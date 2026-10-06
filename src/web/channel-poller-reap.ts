@@ -23,7 +23,7 @@
 //      environment when invoked with `e`; we grep that.
 
 import { execFileSync, execSync } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ChannelProviderType } from '../channel-provider.js'
 import { channelStateDir } from '../channel-provider.js'
@@ -98,6 +98,11 @@ export interface ReapResult {
   // True when the tmux server itself matched the candidate sources and was
   // spared (TMUXSERVERREAP929). Killing it takes every agent session down.
   skippedTmuxServer?: boolean
+  // 35ea0375: targets spared because another uid owns them, or their owner could not be read.
+  skippedOtherUid: number[]
+  skippedUnknownOwner: number[]
+  // 35ea0375: the signal outcome by kind; `reaped` holds only the pids actually killed.
+  killOutcome: KillOutcomes
 }
 
 // ---------------------------------------------------------------------------
@@ -201,12 +206,177 @@ export function collectPollerEvidence(
   )
 }
 
+// ---------------------------------------------------------------------------
+// Own-uid guard and kill outcomes (card 35ea0375).
+//
+// The process tables the reapers read are host-wide: `ps -axww` and `ps eww -e`
+// list every user's processes. A detached `claude --channels` that belongs to
+// ANOTHER user on the same host therefore passed the orphan test, its SIGTERM
+// failed with EPERM, the catch read that as "already gone", and the log said
+// "killed" for the same pids every cycle while they lived on. Two rules close it:
+//   - every kill path signals only processes owned by the dashboard's own uid
+//     (the owner of /proc/<pid>; `ps -o uid=` where there is no /proc). The rest
+//     is skipped, and the skips are ONE count per reap call, not a line per pid;
+//   - each signal's outcome is kept by kind (ok / ESRCH / EPERM / other), and a
+//     pid counts as killed only when a signal of ours reached it and it is gone
+//     or got SIGKILL. The returned and the logged `reaped` lists are those pids.
+
+const HAS_PROC = existsSync('/proc/self')
+
+/**
+ * The owner uid of a process: the owner of /proc/<pid> where /proc exists, else
+ * `ps -o uid= -p <pid>`. null when it cannot be read (the process is gone, or
+ * neither source answers); such a pid is never signalled. `useProc` is a test
+ * seam (the ps path on a host that has /proc). Exported for testability.
+ */
+export function processOwnerUid(pid: number, useProc: boolean = HAS_PROC): number | null {
+  if (useProc) {
+    try { return statSync(`/proc/${pid}`).uid } catch { return null }
+  }
+  try {
+    const out = execFileSync('/bin/ps', ['-o', 'uid=', '-p', String(pid)], { timeout: 3000, encoding: 'utf-8' }).trim()
+    return /^\d+$/.test(out) ? Number(out) : null
+  } catch { return null }
+}
+
+/** The dashboard's own uid; null where the platform has none (then nothing is signalled). */
+function dashboardUid(): number | null {
+  return typeof process.getuid === 'function' ? process.getuid() : null
+}
+
+export interface OwnerSplit {
+  // owned by the dashboard's uid: the only pids a reaper may signal
+  own: number[]
+  // owned by another uid: skipped
+  foreign: number[]
+  // the owner could not be read (gone, or no source answered): skipped
+  unknown: number[]
+}
+
+/** Pure: split candidate pids by owner against `uid` (null: nothing is ours). Exported for testability. */
+export function splitByOwner(
+  pids: number[],
+  uid: number | null,
+  ownerOf: (pid: number) => number | null = processOwnerUid,
+): OwnerSplit {
+  const split: OwnerSplit = { own: [], foreign: [], unknown: [] }
+  for (const pid of pids) {
+    const owner = uid === null ? null : ownerOf(pid)
+    if (owner === null) split.unknown.push(pid)
+    else if (owner === uid) split.own.push(pid)
+    else split.foreign.push(pid)
+  }
+  return split
+}
+
+export type SignalOutcome = 'ok' | 'ESRCH' | 'EPERM' | 'other'
+export type KillFn = (pid: number, signal: NodeJS.Signals | 0) => void
+
+const processKill: KillFn = (pid, signal) => { process.kill(pid, signal) }
+
+/**
+ * One signal and its outcome by kind: process.kill throws ESRCH for a pid that is
+ * gone and EPERM for one this user may not signal. Exported for testability.
+ */
+export function sendSignal(pid: number, signal: NodeJS.Signals | 0, kill: KillFn = processKill): SignalOutcome {
+  try {
+    kill(pid, signal)
+    return 'ok'
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code
+    return code === 'ESRCH' || code === 'EPERM' ? code : 'other'
+  }
+}
+
+export interface KillOutcomes {
+  // a signal of ours reached the pid, and it is gone or got SIGKILL
+  killed: number[]
+  // ESRCH on the first SIGTERM: it was gone before we signalled
+  alreadyGone: number[]
+  // EPERM: not ours to signal
+  permissionDenied: number[]
+  // any other failure
+  failed: number[]
+}
+
+function noKills(): KillOutcomes {
+  return { killed: [], alreadyGone: [], permissionDenied: [], failed: [] }
+}
+
+/** Test seams of the reapers (35ea0375): the owner lookup, the own uid and the signal function. */
+export interface ReapSeams {
+  ownerOf?: (pid: number) => number | null
+  ownUid?: number | null
+  kill?: KillFn
+}
+
+function pauseForFlush(): void {
+  try { execFileSync('/bin/sleep', ['0.3'], { timeout: 2000 }) } catch { /* ignore */ }
+}
+
+/**
+ * SIGTERM every pid, give bun/node ~300ms to flush, then SIGKILL any survivor,
+ * keeping each pid's outcome by kind. `kill` and `pause` are test seams.
+ * Exported for testability.
+ */
+export function terminatePids(pids: number[], deps: { kill?: KillFn; pause?: () => void } = {}): KillOutcomes {
+  const kill = deps.kill ?? processKill
+  const out = noKills()
+  const notKilled = (pid: number, outcome: SignalOutcome) => {
+    if (outcome === 'EPERM') out.permissionDenied.push(pid)
+    else out.failed.push(pid)
+  }
+  const termed: number[] = []
+  for (const pid of pids) {
+    const sent = sendSignal(pid, 'SIGTERM', kill)
+    if (sent === 'ok') termed.push(pid)
+    else if (sent === 'ESRCH') out.alreadyGone.push(pid)
+    else notKilled(pid, sent)
+  }
+  if (termed.length === 0) return out
+  const pause = deps.pause ?? pauseForFlush
+  pause()
+  for (const pid of termed) {
+    const probe = sendSignal(pid, 0, kill)
+    if (probe === 'ESRCH') { out.killed.push(pid); continue } // our SIGTERM ended it
+    if (probe !== 'ok') { notKilled(pid, probe); continue }
+    const sigkill = sendSignal(pid, 'SIGKILL', kill)
+    if (sigkill === 'ok' || sigkill === 'ESRCH') out.killed.push(pid) // delivered, or it died just now
+    else notKilled(pid, sigkill)
+  }
+  return out
+}
+
+/** The outcome counts by kind for a log line. */
+function outcomeByKind(o: KillOutcomes): { ok: number; ESRCH: number; EPERM: number; other: number } {
+  return { ok: o.killed.length, ESRCH: o.alreadyGone.length, EPERM: o.permissionDenied.length, other: o.failed.length }
+}
+
+/** One line per reap call for the spared owners: counts only, never a line per pid. */
+function logOwnerSkips(where: Record<string, unknown>, split: OwnerSplit): void {
+  if (split.foreign.length === 0 && split.unknown.length === 0) return
+  logger.info({ ...where, skippedOtherUid: split.foreign.length, skippedUnknownOwner: split.unknown.length },
+    'channel-poller-reap: spared processes not owned by this user (35ea0375)')
+}
+
+/** The signalled pids that were NOT killed, with the outcome by kind (warn when a signal was refused or failed). */
+function logNotKilled(where: Record<string, unknown>, o: KillOutcomes): void {
+  const notKilled = [...o.alreadyGone, ...o.permissionDenied, ...o.failed]
+  if (notKilled.length === 0) return
+  const unexpected = o.permissionDenied.length + o.failed.length > 0
+  const line = { ...where, notKilled, outcome: outcomeByKind(o) }
+  const msg = 'channel-poller-reap: signalled pid(s) not killed, outcome by kind'
+  if (unexpected) logger.warn(line, msg)
+  else logger.info(line, msg)
+}
+
 /**
  * Reap every channel-plugin poller process associated with this agent.
  * Combines bot.pid (cheap, supervised pid) with a `ps eww -e` env-var scan
  * (catches orphans whose pid is no longer in bot.pid). SIGTERM first; after
  * a short grace period, SIGKILL any survivor. Safe to call multiple times
- * (process.kill on a missing pid is caught).
+ * (process.kill on a missing pid is caught). Signals only processes of the
+ * dashboard's own uid, and `reaped` lists only the pids actually killed (35ea0375).
  */
 // ---------------------------------------------------------------------------
 // WHO IS ACTUALLY A POLLER (2026-09-21, card ee485f5e).
@@ -312,7 +482,7 @@ export function selectReapablePollers(
 export function reapChannelOrphans(
   provider: ChannelProviderType,
   agentDirPath: string,
-  opts: { tmuxPath?: string } = {},
+  opts: { tmuxPath?: string } & ReapSeams = {},
 ): ReapResult {
   const chanDir = channelStateDir(provider, agentDirPath)
   const envVar = STATE_ENV_VAR[provider]
@@ -337,7 +507,7 @@ export function reapChannelOrphans(
   const procs = candidates.length > 0 ? snapshotProcs() : []
   if (candidates.length > 0 && procs.length === 0) {
     logger.warn({ provider, chanDir, candidates }, 'channel-poller-reap: ps snapshot unavailable, skipping reap (fail-safe)')
-    return { reaped: [], source: { fromBotPid, fromEnvScan }, skippedLivePane: [] }
+    return { reaped: [], source: { fromBotPid, fromEnvScan }, skippedLivePane: [], skippedOtherUid: [], skippedUnknownOwner: [], killOutcome: noKills() }
   }
   // Second fail-safe layer (upstream, Logra's review 2026-09-19, card 08a02137):
   // an empty live-pane set means the tmux query itself failed (a real server
@@ -348,7 +518,7 @@ export function reapChannelOrphans(
   if (candidates.length > 0 && panePids.size === 0) {
     logger.warn({ provider, chanDir, candidates },
       'channel-poller-reap: could not resolve live tmux panes, refusing to reap (fail-safe)')
-    return { reaped: [], source: { fromBotPid, fromEnvScan }, skippedLivePane: [] }
+    return { reaped: [], source: { fromBotPid, fromEnvScan }, skippedLivePane: [], skippedOtherUid: [], skippedUnknownOwner: [], killOutcome: noKills() }
   }
   const selection = selectReapablePollers(candidates, procs, panePids, fromBotPid)
   // A candidate that IS a live pane leader is the exact 08a02137 signature;
@@ -386,25 +556,31 @@ export function reapChannelOrphans(
       'channel-poller-reap: candidate IS the tmux server, sparing it (killing it would take down every agent session)')
   }
 
-  // SIGTERM, give bun/node ~300ms to flush, then SIGKILL stragglers.
-  for (const pid of all) {
-    try { process.kill(pid, 'SIGTERM') } catch { /* already gone */ }
-  }
-  if (all.length > 0) {
-    try { execFileSync('/bin/sleep', ['0.3'], { timeout: 2000 }) } catch { /* ignore */ }
-    for (const pid of all) {
-      try { process.kill(pid, 0) /* probe */; process.kill(pid, 'SIGKILL') } catch { /* gone */ }
-    }
-  }
+  // 35ea0375: only this user's processes are signalled. SIGTERM, give bun/node
+  // ~300ms to flush, then SIGKILL stragglers; the outcome is kept by kind.
+  const owners = splitByOwner(all, opts.ownUid === undefined ? dashboardUid() : opts.ownUid, opts.ownerOf)
+  logOwnerSkips({ provider, chanDir }, owners)
+  const killOutcome = terminatePids(owners.own, { kill: opts.kill })
+  const reaped = killOutcome.killed
 
-  if (all.length > 0) {
-    logger.info({ provider, chanDir, reaped: all, fromBotPid, fromEnvScan }, 'channel-poller-reap: orphans killed')
+  if (reaped.length > 0) {
+    logger.info({ provider, chanDir, reaped, outcome: outcomeByKind(killOutcome), fromBotPid, fromEnvScan },
+      'channel-poller-reap: orphans killed')
   }
+  logNotKilled({ provider, chanDir }, killOutcome)
   if (skippedLivePane.length > 0) {
     logger.warn({ provider, chanDir, skippedLivePane, fromBotPid, fromEnvScan },
       'channel-poller-reap: candidate IS a live pane leader, sparing it (respawn-pane will replace it)')
   }
-  return { reaped: all, source: { fromBotPid, fromEnvScan }, skippedLivePane, skippedTmuxServer }
+  return {
+    reaped,
+    source: { fromBotPid, fromEnvScan },
+    skippedLivePane,
+    skippedTmuxServer,
+    skippedOtherUid: owners.foreign,
+    skippedUnknownOwner: owners.unknown,
+    killOutcome,
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -534,15 +710,12 @@ function livePanePids(tmuxPath: string): Set<number> {
   }
 }
 
-function killBunChildren(claudePid: number): void {
+function killBunChildren(claudePid: number, uid: number | null, seams: ReapSeams): void {
   try {
     const out = execSync(`/usr/bin/pgrep -P ${claudePid} bun`, { timeout: 3000, encoding: 'utf-8' })
-    for (const line of out.split('\n')) {
-      const pid = parseInt(line.trim(), 10)
-      if (Number.isFinite(pid) && pid > 1) {
-        try { process.kill(pid, 'SIGTERM') } catch { /* gone */ }
-      }
-    }
+    const children = out.split('\n').map((line) => parseInt(line.trim(), 10)).filter((pid) => Number.isFinite(pid) && pid > 1)
+    // 35ea0375: the same own-uid rule as for the claude itself.
+    for (const pid of splitByOwner(children, uid, seams.ownerOf).own) sendSignal(pid, 'SIGTERM', seams.kill)
   } catch { /* no bun children (pgrep exits 1) */ }
 }
 
@@ -551,12 +724,13 @@ function killBunChildren(claudePid: number): void {
  * before any (re)spawn: it spares every claude attached to a live tmux pane, so
  * it never kills the active session or a live sibling agent -- only truly
  * detached leftovers. Kills each orphan's bun poller children first, then the
- * claude (SIGTERM, ~300ms grace, SIGKILL stragglers). Returns reaped pids.
+ * claude (SIGTERM, ~300ms grace, SIGKILL stragglers). Signals only processes of
+ * the dashboard's own uid (35ea0375). Returns the pids actually killed.
  *
  * tmuxPath defaults to a bare `tmux` (resolved on PATH); callers that already
  * hold an absolute path should pass it.
  */
-export function reapDetachedChannelClaudes(opts: { channelNeedle?: string; tmuxPath?: string } = {}): number[] {
+export function reapDetachedChannelClaudes(opts: { channelNeedle?: string; tmuxPath?: string } & ReapSeams = {}): number[] {
   const tmuxPath = opts.tmuxPath ?? 'tmux'
   const procs = snapshotProcs()
   const live = livePanePids(tmuxPath)
@@ -567,18 +741,19 @@ export function reapDetachedChannelClaudes(opts: { channelNeedle?: string; tmuxP
     return []
   }
   const orphans = findOrphanChannelClaudes(procs, live, opts.channelNeedle)
-  for (const pid of orphans) {
-    killBunChildren(pid)
-    try { process.kill(pid, 'SIGTERM') } catch { /* gone */ }
+  // 35ea0375: the process table is host-wide; only this user's orphans are signalled.
+  const uid = opts.ownUid === undefined ? dashboardUid() : opts.ownUid
+  const owners = splitByOwner(orphans, uid, opts.ownerOf)
+  const where = { channelNeedle: opts.channelNeedle ?? '(all)' }
+  logOwnerSkips(where, owners)
+  for (const pid of owners.own) killBunChildren(pid, uid, opts)
+  const killOutcome = terminatePids(owners.own, { kill: opts.kill })
+  if (killOutcome.killed.length > 0) {
+    logger.info({ reaped: killOutcome.killed, outcome: outcomeByKind(killOutcome), ...where },
+      'channel-poller-reap: detached channel claudes killed')
   }
-  if (orphans.length > 0) {
-    try { execFileSync('/bin/sleep', ['0.3'], { timeout: 2000 }) } catch { /* ignore */ }
-    for (const pid of orphans) {
-      try { process.kill(pid, 0); process.kill(pid, 'SIGKILL') } catch { /* gone */ }
-    }
-    logger.info({ reaped: orphans, channelNeedle: opts.channelNeedle ?? '(all)' }, 'channel-poller-reap: detached channel claudes killed')
-  }
-  return orphans
+  logNotKilled(where, killOutcome)
+  return killOutcome.killed
 }
 
 // ---------------------------------------------------------------------------
@@ -718,14 +893,15 @@ function mainSessionPanePids(session: string, tmuxPath: string): Set<number> {
  * above). SIGTERM -> ~300ms grace -> SIGKILL stragglers. Kills only the poller
  * process, never its owning claude (a real Agent/Task subagent may still be
  * doing legit work -- it just must not hold the main channel's poller). Returns
- * the pids killed. Fail-safe: does nothing when the main session can't be
- * resolved or the ps/tmux snapshot fails.
+ * the pids killed; signals only processes of the dashboard's own uid (35ea0375).
+ * Fail-safe: does nothing when the main session can't be resolved or the ps/tmux
+ * snapshot fails.
  */
 export function reapForeignMainPollers(opts: {
   provider: ChannelProviderType
   mainSession: string
   tmuxPath?: string
-}): number[] {
+} & ReapSeams): number[] {
   const tmuxPath = opts.tmuxPath ?? 'tmux'
   const legit = mainSessionPanePids(opts.mainSession, tmuxPath)
   if (legit.size === 0) return [] // fail-safe: cannot distinguish legit from thief
@@ -741,18 +917,17 @@ export function reapForeignMainPollers(opts: {
   if (candidates.length === 0) return []
 
   const foreign = findForeignMainPollers(candidates, snapshotProcs(), legit)
-  for (const pid of foreign) {
-    try { process.kill(pid, 'SIGTERM') } catch { /* gone */ }
-  }
-  if (foreign.length > 0) {
-    try { execFileSync('/bin/sleep', ['0.3'], { timeout: 2000 }) } catch { /* ignore */ }
-    for (const pid of foreign) {
-      try { process.kill(pid, 0); process.kill(pid, 'SIGKILL') } catch { /* gone */ }
-    }
+  // 35ea0375: only this user's pollers are signalled; the outcome is kept by kind.
+  const owners = splitByOwner(foreign, opts.ownUid === undefined ? dashboardUid() : opts.ownUid, opts.ownerOf)
+  const where = { provider: opts.provider, mainSession: opts.mainSession }
+  logOwnerSkips(where, owners)
+  const killOutcome = terminatePids(owners.own, { kill: opts.kill })
+  if (killOutcome.killed.length > 0) {
     logger.info(
-      { provider: opts.provider, mainSession: opts.mainSession, reaped: foreign, legit: [...legit] },
+      { ...where, reaped: killOutcome.killed, outcome: outcomeByKind(killOutcome), legit: [...legit] },
       'channel-poller-reap: foreign main-token poller(s) killed (thief contending for the main bot token)',
     )
   }
-  return foreign
+  logNotKilled(where, killOutcome)
+  return killOutcome.killed
 }
