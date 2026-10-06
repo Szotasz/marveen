@@ -49,8 +49,8 @@ export const DISTRIBUTION_DEFAULT_AGENT_MODEL = 'claude-opus-5-5[1m]'
 // installed Claude Code CLI is measured (claude-cli-support.ts) not to launch
 // DISTRIBUTION_DEFAULT_AGENT_MODEL. The default above reaches every existing
 // model-less install on a plain code update, and nothing else on that launch
-// path checks the CLI: an AVX-less host is pinned to CLI 2.1.110 (CLAUDE_PIN
-// in channels.sh / install-linux.sh / fix-avx.sh), DISABLE_AUTOUPDATER keeps
+// path checks the CLI: an AVX-less host is pinned to CLI 2.1.112 (CLAUDE_PIN
+// in channels.sh / install-linux.sh / fix-avx.sh; 2.1.110 before #1494), DISABLE_AUTOUPDATER keeps
 // any older CLI where it is, and on such a CLI claude-opus-5-5 answers every
 // prompt with 400 unrecognized_model -- the session comes up and goes silent.
 // This must be a model the OLDEST pinned CLI launches (a test pins that), and

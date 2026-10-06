@@ -164,6 +164,7 @@ import {
 import { getTokenSummary } from '../token-usage.js'
 import { listScheduledTasks } from '../scheduled-tasks-io.js'
 import { readAgentTranscript, isTranscriptAllowed } from '../agent-transcript.js'
+import { configDirFor } from '../main-transcript-root.js'
 import { kindAllowed, FORBIDDEN_KIND } from './auth.js'
 
 // Which credential kinds may read a transcript. NAMED principals only: a
@@ -1638,12 +1639,18 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       json(res, { error: 'Transcript access is not enabled for this agent' }, 403)
       return true
     }
-    const workingDir = name === MAIN_AGENT_ID ? PROJECT_ROOT : agentDir(name)
+    // Read where the session WRITES (TRANSCRIPTLOC1006). The working dir is
+    // the row's (GH #816: the main agent runs in PROJECT_ROOT). The config
+    // root is configDirFor(), the reader root the watchdogs share: it follows
+    // a sub-agent's auto-provisioned agents/<name>/.claude-config and the main
+    // agent's isolated or MAIN_AGENT_CONFIG_DIR root. resolveAgentConfigDir()
+    // answers only what was CONFIGURED, so on an install where those roots
+    // diverge it read an old session's log as if it were the live one.
     const bytesRaw = Number(url.searchParams.get('bytes'))
     const sinceRaw = url.searchParams.get('since')
     json(res, readAgentTranscript(name, {
-      workingDir,
-      configDir: resolveAgentConfigDir(name).configDir ?? undefined,
+      workingDir: resolveTranscriptLocation(name).workingDir,
+      configDir: configDirFor(name),
       tailBytes: Number.isFinite(bytesRaw) && bytesRaw > 0 ? bytesRaw : undefined,
       since: sinceRaw ?? undefined,
     }))

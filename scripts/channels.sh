@@ -226,8 +226,8 @@ resolve_main_model() {
   # CLI, through the same table and decision the dashboard uses
   # (dist/claude-cli-support.js launchableDefaultModel; the TS twin is
   # readConfiguredMainModel, and main-model-resolution-parity.test.ts keeps the
-  # two equal). An AVX-less host is pinned to CLI 2.1.110 (CLAUDE_PIN below)
-  # and DISABLE_AUTOUPDATER keeps any older CLI in place, so a default that
+  # two equal). An AVX-less host is pinned to CLI 2.1.112 (CLAUDE_PIN below;
+  # 2.1.110 before #1494) and DISABLE_AUTOUPDATER keeps any older CLI in place, so a default that
   # CLI cannot run would bring the session up and 400 every prompt -- a silent
   # bot. On a CLI measured too old, the previous tier
   # (DISTRIBUTION_DEFAULT_FALLBACK_MODEL) launches instead, with a named line.
