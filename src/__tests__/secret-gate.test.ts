@@ -149,6 +149,22 @@ describe('detector 2b: Telegram bot token (TGBOTPAT915)', () => {
     expect(scanFile(f('docs/x.md', `bot_token: ${rovid}`))).toHaveLength(0);
   });
 
+  it('fogja a Bot API URL-alakot (nincs szohatar a "bot" es az id kozott; review #1347)', () => {
+    const hits = scanFile(f('docs/x.md', `curl https://api.telegram.org/bot${full}/getUpdates`));
+    expect(hits.length).toBeGreaterThan(0);
+  });
+
+  it('fogja a "-"-re vegzodo titkot is, teljes es kulcs-neves alakban (review #1347)', () => {
+    const kotojeles = 'AAHd9xKpQ2mWvZ7nR4tLbY' + '6cE1sJfG3hUi-'; // 35 karakter, '-' a vegen
+    expect(scanFile(f('docs/x.md', `token: ${botId}:${kotojeles} kesz`)).length).toBeGreaterThan(0);
+    expect(scanFile(f('docs/x.md', `bot_token: ${kotojeles} kesz`)).length).toBeGreaterThan(0);
+  });
+
+  it('a hatarok tovabbra is allnak: 11 jegyu id es 36 karakteres farok NEM lelet', () => {
+    expect(scanFile(f('docs/x.md', `token: ${'801' + '23456789'}:${secret}`))).toHaveLength(0);
+    expect(scanFile(f('docs/x.md', `token: ${botId}:${secret}X`))).toHaveLength(0);
+  });
+
   it('NEM tuzel ket egyszeru zaj-alakra', () => {
     expect(scanFile(f('docs/x.md', 'idopont 20260915:reggel'))).toHaveLength(0);
     expect(scanFile(f('docs/x.md', `sha: ${'a1b2c3d4'.repeat(5)}`))).toHaveLength(0);

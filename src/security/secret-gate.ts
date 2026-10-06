@@ -99,8 +99,11 @@ export const SECRET_PATTERNS: { name: string; pattern: RegExp }[] = [
   // titkos felre irt mintara, a titkos fel pedig onmagaban is titok (az OCR-ut
   // pont azt allitja elo). A titkos resz a Telegram formatuma szerint pontosan
   // 35 karakter [A-Za-z0-9_-] halmazbol.
-  { name: 'Telegram bot token', pattern: /\b[0-9]{8,10}:[A-Za-z0-9_-]{35}\b/ },
-  { name: 'Telegram bot token secret half', pattern: /(?:TELEGRAM[A-Z_]*TOKEN|bot_token|botToken)["'\s:=]+[A-Za-z0-9_-]{35}\b/i },
+  // Lookarounds, not \b (review #1347, Dani): in the Bot API URL form
+  // (`api.telegram.org/bot<id>:<secret>/...`) there is no word boundary between
+  // `bot` and the id, and a secret ending in `-` (about 1 in 64) has none after it.
+  { name: 'Telegram bot token', pattern: /(?<![0-9])[0-9]{8,10}:[A-Za-z0-9_-]{35}(?![A-Za-z0-9_-])/ },
+  { name: 'Telegram bot token secret half', pattern: /(?:TELEGRAM[A-Z_]*TOKEN|bot_token|botToken)["'\s:=]+[A-Za-z0-9_-]{35}(?![A-Za-z0-9_-])/i },
   { name: 'Supabase service_role JWT hint', pattern: /service_role["'\s:=]+eyJ/ },
 ];
 
