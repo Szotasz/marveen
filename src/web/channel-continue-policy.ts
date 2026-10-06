@@ -46,12 +46,6 @@ export interface ContinueDecisionInput {
   useMcpJsonForChannel: boolean
   /** Measured installed Claude Code version, null when unmeasured. */
   installedCli: string | null
-  /**
-   * Co-listen providers loaded next to the primary one (AGENTEXTRACH1006).
-   * Resume was measured for a single telegram plugin only; a second plugin on
-   * the --channels list is not, so any extra forces a fresh launch.
-   */
-  extraProviders?: readonly string[]
 }
 
 export interface ContinueDecision { useContinue: boolean; reason: string }
@@ -60,7 +54,6 @@ export interface ContinueDecision { useContinue: boolean; reason: string }
 export function decideContinueFlag(i: ContinueDecisionInput): ContinueDecision {
   if (!i.hasPriorSession) return { useContinue: false, reason: 'no prior session to continue' }
   if (i.fresh) return { useContinue: false, reason: 'fresh launch requested' }
-  if (i.extraProviders && i.extraProviders.length > 0) return { useContinue: false, reason: `extra channel(s) ${i.extraProviders.join(', ')} not measured on resume; only a single telegram plugin was (CONTRESUME922)` }
   if (!i.hasChannel) return { useContinue: true, reason: 'channel-less agent keeps its context' }
   if (i.isMainAgent) return { useContinue: false, reason: 'main agent lifecycle is service-managed; not in scope' }
   if (i.provider !== 'telegram') return { useContinue: false, reason: `provider '${i.provider}' not measured; only telegram was (CONTRESUME922)` }

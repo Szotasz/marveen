@@ -28,6 +28,7 @@ vi.mock('../web/agent-config.js', async (orig) => {
 const { parseExtraChannels, buildExtraChannelLaunch, enableExtraPlugins } = await import('../web/agent-extra-channels.js')
 const { ensureIsolatedChannelConfigDir, scopeChannelPlugins, CHANNEL_PLUGIN_IDS } = await import('../web/agent-process.js')
 const { decideContinueFlag } = await import('../web/channel-continue-policy.js')
+const { pluginInTree, combineLiveness } = await import('../web/extra-channel-liveness.js')
 
 const TG = CHANNEL_PLUGIN_IDS.telegram
 const SL = CHANNEL_PLUGIN_IDS.slack
@@ -95,21 +96,38 @@ describe('enableExtraPlugins', () => {
   })
 })
 
-describe('resume decision with extras', () => {
+describe('resume with extras: kept only when every plugin comes back', () => {
+  // The decision itself is unchanged by extras (Marveen 34770: an extra must
+  // not cost the agent its context on every restart). What protects the resume
+  // is the post-launch verification, which now covers the extras too.
   const base = {
     hasPriorSession: true, fresh: false, hasChannel: true, isMainAgent: false, provider: 'telegram',
     usesLaunchSecret: false, fleetTokenLaunch: true, useMcpJsonForChannel: false, installedCli: '9.9.9',
   }
-  it('a measured telegram-only launch still resumes (positive control)', () => {
+  it('a measured telegram launch resumes', () => {
     expect(decideContinueFlag(base).useContinue).toBe(true)
   })
-  it('any extra channel forces a fresh launch: resume was measured for one telegram plugin only', () => {
-    const d = decideContinueFlag({ ...base, extraProviders: ['slack'] })
-    expect(d.useContinue).toBe(false)
-    expect(d.reason).toContain('slack')
+
+  const PS = [
+    '  PID  PPID COMMAND',
+    '  100     1 /opt/homebrew/bin/claude --channels plugin:telegram@x plugin:slack-channel@y',
+    '  101   100 bun run --cwd /h/.claude/plugins/cache/claude-plugins-official/telegram/0.0.6 start',
+    '  102   100 node /h/.claude/plugins/cache/marveen-marketplace/slack-channel/0.1.0/node_modules/.bin/tsx /h/.claude/plugins/cache/marveen-marketplace/slack-channel/0.1.0/server.ts',
+    '  200     1 /opt/homebrew/bin/claude --channels plugin:telegram@x plugin:slack-channel@y',
+    '  201   200 bun run --cwd /h/.claude/plugins/cache/claude-plugins-official/telegram/0.0.6 start',
+  ].join('\n')
+
+  it('pluginInTree finds the slack poller under ITS claude', () => {
+    expect(pluginInTree(PS, 100, 'slack')).toBe(true)
   })
-  it('also when the primary has no channel (the channel-less shortcut must not win)', () => {
-    expect(decideContinueFlag({ ...base, hasChannel: false, extraProviders: ['slack'] }).useContinue).toBe(false)
+  it('pluginInTree does NOT count another session\'s slack poller (the main agent co-listens on Slack too)', () => {
+    expect(pluginInTree(PS, 200, 'slack')).toBe(false)
+    expect(pluginInTree(PS, 200, 'telegram')).toBe(true)
+  })
+  it('combineLiveness: all alive -> alive; any down -> down; else unknown', () => {
+    expect(combineLiveness(['alive', 'alive'])).toBe('alive')
+    expect(combineLiveness(['alive', 'down'])).toBe('down')
+    expect(combineLiveness(['unknown', 'alive'])).toBe('unknown')
   })
 })
 
@@ -167,8 +185,18 @@ describe('launcher binding (agent-process.ts startAgentProcess)', () => {
     expect(calls.length).toBe(3)
     for (const c of calls) expect(c).toContain('extraLaunch.pluginIds')
   })
-  it('the resume decision is told about the extras', () => {
-    expect(FN).toContain('extraProviders: extraLaunch.providers')
+  it('a resumed launch with extras is verified, primary AND extras, with the fresh fallback', () => {
+    const at = FN.indexOf('if (continueFlag && hasAnyChannel && name !== MAIN_AGENT_ID) {')
+    expect(at).toBeGreaterThan(-1)
+    const block = FN.slice(at, at + 1800)
+    expect(block).toContain('probeExtraPluginsInTree(pid, extraLaunch.providers)')
+    expect(block).toContain("hasChannel ? probeChannelPluginLiveness(pid, agentProvider, name) : 'alive'")
+    expect(block).toContain('startAgentProcess(name, { fresh: true })')
+  })
+  it('the extras\' orphan pollers are reaped on STOP too (a stopped agent must not keep a socket)', () => {
+    const stopAt = SRC.indexOf("'post-stop channel-poller reap failed'")
+    const block = SRC.slice(stopAt - 600, stopAt)
+    expect(block).toMatch(/for \(const p of readAgentExtraChannels\(name\)\) \{\n\s+if \(p !== agentProvider\) reapChannelOrphans\(p, dir, \{ tmuxPath: tmuxBin\(\) \}\)/)
   })
   it('the extras\' orphan pollers are reaped before launch', () => {
     expect(FN).toContain('for (const p of extraLaunch.providers) reapChannelOrphans(p, dir, { tmuxPath: tmuxBin() })')
@@ -191,6 +219,10 @@ describe('channel setup route binding (routes/agents.ts)', () => {
     expect(at).toBeGreaterThan(-1)
     const block = SRC.slice(at, at + 400)
     expect(block).toContain('writeAgentExtraChannels(name, extras.filter(p => p !== provider))')
-    expect(block.indexOf('return true')).toBeLessThan(block.indexOf('writeAgentChannelProvider(name, \'\')'))
+    const earlyReturn = block.indexOf('return true')
+    const primaryReset = block.indexOf('writeAgentChannelProvider(name, \'\')')
+    expect(earlyReturn).toBeGreaterThan(-1)
+    expect(primaryReset).toBeGreaterThan(-1)
+    expect(earlyReturn).toBeLessThan(primaryReset)
   })
 })

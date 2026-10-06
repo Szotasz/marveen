@@ -34,6 +34,7 @@ import { scheduleRecoveryBrief } from './restart-recovery-brief.js'
 import { beginRestart, endRestart } from './restart-lock.js'
 import { agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentStateObserver, readAgentWorksourceChannel, readAgentCustomProvider, readAgentExtraChannels, readFileOr, readJsonObjectForWrite } from './agent-config.js'
 import { buildExtraChannelLaunch, enableExtraPlugins } from './agent-extra-channels.js'
+import { probeExtraPluginsInTree, combineLiveness } from './extra-channel-liveness.js'
 import { loadCustomProvider, type CustomProviderDef } from './custom-providers.js'
 import { decideOwnOauthToken, ownOauthTokenExport, ownOauthLaunchVerdict } from './agent-oauth-token-file.js'
 import { worksourceRootFor } from './worksource-queue.js'
@@ -2464,7 +2465,7 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     const continueDecision = decideContinueFlag({
       hasPriorSession, fresh: !!opts.fresh, hasChannel, isMainAgent: name === MAIN_AGENT_ID,
       provider: agentProvider, usesLaunchSecret, fleetTokenLaunch: oauthTokenEnv !== '',
-      useMcpJsonForChannel, installedCli, extraProviders: extraLaunch.providers,
+      useMcpJsonForChannel, installedCli,
     })
     if (hasAnyChannel && hasPriorSession && !opts.fresh) {
       logger.info({ name, useContinue: continueDecision.useContinue, reason: continueDecision.reason, installedCli }, 'channel agent resume decision')
@@ -2607,11 +2608,19 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     // seconds on a healthy resume; a deaf resume never shows it. Async so the
     // start call returns as before; the fallback goes through the normal
     // start path (kill + reap + fresh), which never uses --continue.
-    if (continueFlag && hasChannel && name !== MAIN_AGENT_ID) {
+    // AGENTEXTRACH1006: an agent with co-listen channels resumes too, and the
+    // SAME verification decides: every plugin -- primary and extras -- must
+    // come back, or the agent is relaunched fresh. The extras are probed in the
+    // resumed claude's own process tree only (extra-channel-liveness.ts).
+    if (continueFlag && hasAnyChannel && name !== MAIN_AGENT_ID) {
       void verifyContinueLaunch({
         probe: () => {
           const pid = getClaudePidForSession(session)
-          return pid ? probeChannelPluginLiveness(pid, agentProvider, name) : 'unknown'
+          if (!pid) return 'unknown'
+          return combineLiveness([
+            hasChannel ? probeChannelPluginLiveness(pid, agentProvider, name) : 'alive',
+            probeExtraPluginsInTree(pid, extraLaunch.providers),
+          ])
         },
       }).then(async (v) => {
         if (v.outcome === 'alive') {

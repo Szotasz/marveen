@@ -69,7 +69,7 @@ describe('the launch path is wired to the policy', () => {
     expect(PROCESS_SRC).toContain("const continueFlag = continueDecision.useContinue ? '--continue ' : ''")
   })
   it('a resumed channel launch is verified with the plugin-liveness probe and falls back to a FRESH start', () => {
-    const at = PROCESS_SRC.indexOf('if (continueFlag && hasChannel && name !== MAIN_AGENT_ID) {')
+    const at = PROCESS_SRC.indexOf('if (continueFlag && hasAnyChannel && name !== MAIN_AGENT_ID) {')
     expect(at).toBeGreaterThan(-1)
     const block = PROCESS_SRC.slice(at, at + 2500)
     expect(block).toContain('verifyContinueLaunch({')
