@@ -2465,7 +2465,7 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     const continueDecision = decideContinueFlag({
       hasPriorSession, fresh: !!opts.fresh, hasChannel, isMainAgent: name === MAIN_AGENT_ID,
       provider: agentProvider, usesLaunchSecret, fleetTokenLaunch: oauthTokenEnv !== '',
-      useMcpJsonForChannel, installedCli,
+      useMcpJsonForChannel, installedCli, extraProviders: extraLaunch.providers,
     })
     if (hasAnyChannel && hasPriorSession && !opts.fresh) {
       logger.info({ name, useContinue: continueDecision.useContinue, reason: continueDecision.reason, installedCli }, 'channel agent resume decision')

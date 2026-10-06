@@ -44,7 +44,7 @@ describe('launcher binding (agent-process.ts startAgentProcess)', () => {
   const FN = SRC.slice(SRC.indexOf('export async function startAgentProcess('))
 
   it('the fence is computed from the providers this launch exports itself', () => {
-    expect(FN).toContain('const stateFence = buildChannelStateFence(hasChannel ? [agentProvider] : [], dir)')
+    expect(FN).toContain('const stateFence = buildChannelStateFence([...(hasChannel ? [agentProvider] : []), ...extraLaunch.providers], dir)')
   })
   it('the fence sits right AFTER the unset in the launch command (an unset after it would undo it)', () => {
     expect(FN).toContain('${unsetTokens} && ${stateFence}')

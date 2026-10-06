@@ -107,6 +107,23 @@ describe('resume with extras: kept only when every plugin comes back', () => {
   it('a measured telegram launch resumes', () => {
     expect(decideContinueFlag(base).useContinue).toBe(true)
   })
+  it('telegram primary + slack extra resumes (Marveen 34770); the post-launch verify guards the extra', () => {
+    expect(decideContinueFlag({ ...base, extraProviders: ['slack'] }).useContinue).toBe(true)
+  })
+  it('NO primary channel + slack extra: the gates are evaluated on the extra -> fresh, like a slack primary', () => {
+    const d = decideContinueFlag({ ...base, hasChannel: false, extraProviders: ['slack'] })
+    expect(d.useContinue).toBe(false)
+    expect(d.reason).toContain("'slack'")
+    expect(decideContinueFlag({ ...base, provider: 'slack' }).useContinue).toBe(false)
+  })
+  it('NO primary channel + telegram extra: the measured gates still apply (CLI floor, fleet token)', () => {
+    expect(decideContinueFlag({ ...base, hasChannel: false, extraProviders: ['telegram'] }).useContinue).toBe(true)
+    expect(decideContinueFlag({ ...base, hasChannel: false, extraProviders: ['telegram'], fleetTokenLaunch: false }).useContinue).toBe(false)
+    expect(decideContinueFlag({ ...base, hasChannel: false, extraProviders: ['telegram'], installedCli: '0.0.1' }).useContinue).toBe(false)
+  })
+  it('a truly channel-less agent (no primary, no extras) still keeps its context', () => {
+    expect(decideContinueFlag({ ...base, hasChannel: false }).useContinue).toBe(true)
+  })
 
   const PS = [
     '  PID  PPID COMMAND',
@@ -198,6 +215,12 @@ describe('launcher binding (agent-process.ts startAgentProcess)', () => {
     const block = SRC.slice(stopAt - 600, stopAt)
     expect(block).toMatch(/for \(const p of readAgentExtraChannels\(name\)\) \{\n\s+if \(p !== agentProvider\) reapChannelOrphans\(p, dir, \{ tmuxPath: tmuxBin\(\) \}\)/)
   })
+  it('the #1711 state fence leaves the extras\' real state dirs alone', () => {
+    expect(FN).toContain('const stateFence = buildChannelStateFence([...(hasChannel ? [agentProvider] : []), ...extraLaunch.providers], dir)')
+  })
+  it('the resume decision is told about the extras (gates when there is no primary channel)', () => {
+    expect(FN).toContain('extraProviders: extraLaunch.providers')
+  })
   it('the extras\' orphan pollers are reaped before launch', () => {
     expect(FN).toContain('for (const p of extraLaunch.providers) reapChannelOrphans(p, dir, { tmuxPath: tmuxBin() })')
   })
@@ -218,6 +241,9 @@ describe('channel setup route binding (routes/agents.ts)', () => {
     const at = SRC.indexOf('const extras = readAgentExtraChannels(name)')
     expect(at).toBeGreaterThan(-1)
     const block = SRC.slice(at, at + 400)
+    // The CONDITION, not only the strings: an `if (false)` keeps every string
+    // in place and runs the primary reset (Dani's mutant on b8e44691).
+    expect(block).toMatch(/const extras = readAgentExtraChannels\(name\)\n\s+if \(extras\.includes\(provider as ChannelProviderType\)\) \{\n\s+writeAgentExtraChannels\(name, extras\.filter\(p => p !== provider\)\)\n\s+json\(res, \{ ok: true, extra: true \}\)\n\s+return true\n\s+\}/)
     expect(block).toContain('writeAgentExtraChannels(name, extras.filter(p => p !== provider))')
     const earlyReturn = block.indexOf('return true')
     const primaryReset = block.indexOf('writeAgentChannelProvider(name, \'\')')
