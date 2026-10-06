@@ -26,6 +26,8 @@
       "Bash(${HOME}/.local/bin/pdf2txt.py:*)",
       "Bash(${HOME}/.local/bin/dumppdf.py:*)",
       "Bash(bash ${PROJECT_ROOT}/scripts/agent-msg.sh:*)",
+      "Bash(bash ${PROJECT_ROOT}/scripts/yt-ingest/yt-ingest.sh:*)",
+      "Bash(bash ${PROJECT_ROOT}/scripts/yt-ingest/yt-read.sh:*)",
       "Bash(bash ${PROJECT_ROOT}/scripts/agent-mem.sh:*)",
       "Bash(cd ${PROJECT_ROOT} && bash scripts/agent-mem.sh:*)",
       "Bash(bash scripts/agent-mem.sh:*)",
