@@ -304,10 +304,11 @@
     <!-- === Kanban Page === -->
     <div class="page" id="kanbanPage" hidden>
       <!-- View switcher: board vs gantt (top, always visible) -->
-      <div style="display:flex;align-items:center;gap:6px;margin-bottom:10px;">
+      <div style="display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-bottom:10px;">
         <button class="view-btn active" id="kanbanViewBoard" style="width:auto;padding:0 12px;" data-i18n="kanban.view.board">Tábla</button>
         <button class="view-btn" id="kanbanViewGantt" style="width:auto;padding:0 12px;" data-i18n="kanban.view.gantt">Idővonal</button>
-        <button class="view-btn" id="kanbanViewArchived" style="width:auto;padding:0 12px;margin-left:auto;" data-i18n="kanban.view.archived">Archiváltak</button>
+        <span id="kanbanTotals" style="margin-left:auto;font-size:13px;color:var(--muted);white-space:nowrap;"></span>
+        <button class="view-btn" id="kanbanViewArchived" style="width:auto;padding:0 12px;margin-left:12px;" data-i18n="kanban.view.archived">Archiváltak</button>
       </div>
 
       <!-- Board-specific filter row (hidden when gantt active) -->

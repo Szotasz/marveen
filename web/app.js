@@ -1076,6 +1076,17 @@ function renderKanbanQuickFilters() {
   }
 }
 
+function renderKanbanTotals(visibleCardIds) {
+  const el = document.getElementById('kanbanTotals')
+  if (!el) return
+  const open = kanbanCards.filter((c) => c.status !== 'done').length
+  let txt = t('kanban.totals', { open, all: kanbanCards.length })
+  if (visibleCardIds && visibleCardIds.size !== kanbanCards.length) {
+    txt += ' ' + t('kanban.totals_filtered', { n: visibleCardIds.size })
+  }
+  el.textContent = txt
+}
+
 function renderKanban() {
   const cardById = new Map(kanbanCards.map(c => [c.id, c]))
 
@@ -1089,6 +1100,8 @@ function renderKanban() {
     if (!kanbanCardMatchesLabelFilter(card)) continue
     visibleCardIds.add(card.id)
   }
+
+  renderKanbanTotals(visibleCardIds)
 
   // A subtask is "embedded" when its parent is visible AND both share the same
   // column. Embedded subtasks are hidden as standalone cards and rendered
