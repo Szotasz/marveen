@@ -59,6 +59,11 @@ const INTERNAL = [
   'rsync -a src/ dst/',
   'sync && echo done',
   'git commit -m "sync the fleet"',
+  // Q032: the sanctioned YouTube path, and reading/maintaining yt-dlp, stay open.
+  'bash /srv/install/scripts/yt-ingest/yt-ingest.sh https://www.youtube.com/watch?v=Bk6HBGap7PU',
+  'bash /srv/install/scripts/yt-ingest/yt-read.sh Bk6HBGap7PU meta',
+  'grep -n yt-dlp scripts/yt-ingest/yt-ingest.sh',
+  'pipx upgrade yt-dlp',
 ]
 
 // What the gate is for: fetching URL content from the shell.
@@ -73,6 +78,11 @@ const EXTERNAL = [
   'nc example.org 443',
   'ncat --ssl example.org 443',
   'telnet example.org 80',
+  // Q032: yt-dlp only through scripts/yt-ingest/yt-ingest.sh.
+  'yt-dlp --skip-download https://www.youtube.com/watch?v=Bk6HBGap7PU',
+  '/home/u/.local/bin/yt-dlp -f best https://youtu.be/Bk6HBGap7PU',
+  '/home/u/.local/share/pipx/venvs/yt-dlp/bin/python -m yt_dlp https://youtu.be/Bk6HBGap7PU',
+  'cd /tmp && yt-dlp https://youtu.be/Bk6HBGap7PU',
 ]
 
 describe('BASH_EGRESS_DENY rule set', () => {
