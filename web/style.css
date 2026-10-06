@@ -1248,14 +1248,45 @@ main {
   position: relative;
   overflow: hidden;
 }
-.kanban-card[data-priority="urgent"] { border-left: 3px solid var(--danger); }
-.kanban-card[data-priority="high"] { border-left: 3px solid var(--accent); }
-.kanban-card[data-priority="normal"] { border-left: 3px solid transparent; }
-.kanban-card[data-priority="low"] { border-left: 3px solid var(--border); }
+/* === Priority: the WHOLE card carries the colour, not a 3px edge ===
+   On a dense board a 3px stripe is not readable at a glance.
 
-/* Card aging: left stripe overrides priority border when card is stale.
-   Colour is set as --card-aging-color via inline style by JS. */
-.kanban-card[data-aging] { border-left: 3px solid var(--card-aging-color); }
+   The tint is layered OVER --bg-card with a two-stop gradient instead of being
+   written as a background colour: --bg-card differs between the light and dark
+   themes, and a hard-coded tint would go muddy in one of them. This way the
+   same rgba sits on whichever card background is current.
+
+   The left edge stays, thicker, because card aging (below) overrides it and
+   needs somewhere visible to land. */
+.kanban-card[data-priority] {
+  --card-tint: transparent;
+  --card-edge: var(--border);
+  background: linear-gradient(var(--card-tint), var(--card-tint)), var(--bg-card);
+  border-left: 4px solid var(--card-edge);
+}
+/* Deliberately NOT four equal steps: only the top two levels should pull the
+   eye, normal is the neutral middle and low recedes. Tinting all four would
+   turn the whole board into colour and tell you nothing. */
+.kanban-card[data-priority="urgent"] { --card-tint: rgba(191, 77, 67, 0.20); --card-edge: var(--danger); }
+.kanban-card[data-priority="high"]   { --card-tint: rgba(217, 119, 87, 0.18); --card-edge: var(--accent); }
+.kanban-card[data-priority="normal"] { --card-tint: transparent;              --card-edge: var(--border); }
+.kanban-card[data-priority="low"]    { --card-tint: rgba(20, 20, 19, 0.035);  --card-edge: var(--border); }
+/* Low also steps back in contrast, not just in hue: a background tint alone is
+   too weak to read as "background work" on a dense board. */
+.kanban-card[data-priority="low"] .kanban-card-title { color: var(--text-dim); }
+
+/* Dark theme needs both a stronger tint and the opposite direction for `low`:
+   the same alpha that reads on a white card is invisible on a dark one, and a
+   dark wash on a dark card would be indistinguishable from a shadow. */
+[data-theme="dark"] .kanban-card[data-priority="urgent"] { --card-tint: rgba(191, 77, 67, 0.32); }
+[data-theme="dark"] .kanban-card[data-priority="high"]   { --card-tint: rgba(217, 119, 87, 0.28); }
+[data-theme="dark"] .kanban-card[data-priority="low"]    { --card-tint: rgba(250, 249, 245, 0.03); }
+
+/* Card aging: left stripe overrides the priority edge when the card is stale.
+   Colour is set as --card-aging-color via inline style by JS. Only the colour
+   is overridden; the width comes from the priority block above. Must stay
+   AFTER that block: both selectors have the same specificity. */
+.kanban-card[data-aging] { border-left-color: var(--card-aging-color); }
 
 /* Aging badge: hourglass + day/hour counter, top-right (left of the ⚡ action) */
 .kanban-card-aging-badge {
