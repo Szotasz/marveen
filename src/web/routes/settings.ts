@@ -4,7 +4,7 @@ import { SETTINGS_REGISTRY, validateSettingValue } from '../../config-registry.j
 import { getEffectiveSettingValue, setOverride } from '../../settings-store.js'
 import { logConfigChange } from '../../db.js'
 import { setStoreWriteActor } from '../../store-watcher.js'
-import { ensureRotationHeartbeatTask } from '../claude-rotation-heartbeat.js'
+import { syncRotationHeartbeatTask } from '../claude-rotation-heartbeat.js'
 import type { RouteContext } from './types.js'
 
 export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
@@ -73,15 +73,16 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
       logConfigChange(key, oldValue, validation.value!, resolvedActor)
       logger.info({ key, oldValue, newValue: validation.value }, 'Setting updated')
 
-      // Turning rotation on must also give it the heartbeat that runs it --
-      // otherwise the switch is inert (measured 2026-09-26). An existing task
-      // is left exactly as it is; see ensureRotationHeartbeatTask.
-      if (key === 'CLAUDE_ROTATION_ENABLED' && String(validation.value) === '1') {
+      // The rotation switch also wires its heartbeat, in both directions: on
+      // creates or re-enables it (otherwise the switch is inert, measured
+      // 2026-09-26), off disables it (otherwise a leftover task keeps ticking,
+      // PR #1602 review). See syncRotationHeartbeatTask.
+      if (key === 'CLAUDE_ROTATION_ENABLED') {
         try {
-          const seeded = ensureRotationHeartbeatTask()
-          if (seeded === 'created') logger.info({ task: 'claude-plan-rotate-check' }, 'Claude rotation heartbeat task created')
+          const synced = syncRotationHeartbeatTask()
+          if (synced !== 'unchanged' && synced !== 'rotation-off') logger.info({ task: 'claude-plan-rotate-check', result: synced }, 'Claude rotation heartbeat task synced')
         } catch (err) {
-          logger.warn({ err }, 'Claude rotation heartbeat task seed failed')
+          logger.warn({ err }, 'Claude rotation heartbeat task sync failed')
         }
       }
       json(res, { ok: true, key, value: validation.value, requiresRestart: def.requiresRestart })

@@ -108,6 +108,14 @@ export async function runRotateCheck(): Promise<void> {
     console.error('claude-plan-rotate-check: fleet report failed:', err instanceof Error ? err.name : 'error')
   }
 
+  // Rotation off means a quiet tick: no active probe, no idle probes, no
+  // usage-collect, no decision. Every probe is a live API call that spends the
+  // probed plan's own quota, and with rotation off nobody acts on the numbers
+  // (PR #1602 review: a leftover task made 1 live probe per tick this way).
+  // The fleet report above still runs: it closes a rotation that already
+  // happened before the switch was turned off.
+  if (!settingIsOn('CLAUDE_ROTATION_ENABLED')) return
+
   // The active plan's usage, from exactly ONE source (see ActiveReading):
   // its own probe when it is a token-mode plan in effect, otherwise
   // usage-collect.py (the host login, which is then the right account).
@@ -142,8 +150,6 @@ export async function runRotateCheck(): Promise<void> {
   // numbers. With a healthy active plan nothing is probed: every probe spends
   // the probed plan's own quota for a decision nobody is about to make.
   // CLAUDE_PLAN_USAGE_REFRESH (default on) is the operator's off switch.
-  // Independent of CLAUDE_ROTATION_ENABLED, so the Settings usage bars still
-  // refresh near a limit without automatic rotation.
   try {
     if (settingIsOn('CLAUDE_PLAN_USAGE_REFRESH') && activeReadingNearLimit(reading, Date.now())) await refreshIdlePlans()
   } catch (err) {
@@ -151,6 +157,8 @@ export async function runRotateCheck(): Promise<void> {
     console.error('claude-plan-rotate-check: idle-plan probe pass failed:', err instanceof Error ? err.name : 'error')
   }
 
+  // Re-checked on purpose (defence in depth): this is the last gate before a
+  // ROTATE line, so it must not depend on the early return above staying put.
   if (!settingIsOn('CLAUDE_ROTATION_ENABLED') || !settingIsOn('MAIN_AGENT_ISOLATED_CONFIG')) return
 
   const result = decideAndRecord({

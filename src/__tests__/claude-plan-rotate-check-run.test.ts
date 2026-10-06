@@ -80,6 +80,10 @@ beforeEach(() => {
   state = { activePlanByAgent: { marveen: 'a' }, plans: {} }
   // Near a limit by default, so the gating tests below isolate their own rule.
   usageJson = activeUsage(IDLE_PROBE_GATE.fiveHourPercent)
+  // Rotation on, main agent NOT isolated: the probe-wiring tests below then
+  // read usage-collect for the active plan and isolate the idle-probe rules.
+  // With rotation off the tick does nothing at all (see the rotation-off block).
+  settings.set('CLAUDE_ROTATION_ENABLED', '1')
   vi.spyOn(console, 'error').mockImplementation(() => {})
   vi.spyOn(console, 'log').mockImplementation(() => {})
 })
@@ -112,14 +116,6 @@ describe('runRotateCheck -> idle-plan probe wiring', () => {
     await runRotateCheck()
     // The active plan's own reading is not an idle probe; b must stay untouched.
     expect(probeMock).not.toHaveBeenCalledWith('token-for-claude-plan-token-b')
-  })
-
-  it('opted in without rotation: probes anyway (the Settings bars use case)', async () => {
-    settings.set('CLAUDE_PLAN_USAGE_REFRESH', '1')
-    settings.set('CLAUDE_ROTATION_ENABLED', '0')
-    plans = [tokenPlan('a'), tokenPlan('b')]
-    await runRotateCheck()
-    expect(probeMock).toHaveBeenCalledTimes(1)
   })
 
   it('active plan healthy: zero probes', async () => {
@@ -279,5 +275,50 @@ describe('runRotateCheck -> the active plan is read from the right account', () 
     await runRotateCheck()
     expect(usageCollectCalls).toBe(1)
     expect(probeMock).not.toHaveBeenCalled()
+  })
+})
+
+// PR #1602 review: with rotation off, a leftover heartbeat task made one live
+// probe per tick with the active plan's token (probeActivePlan ran before the
+// CLAUDE_ROTATION_ENABLED return). Rotation off must be a fully quiet tick.
+describe('runRotateCheck -> rotation off is quiet', () => {
+  function rotationOffButEverythingElseOn(): void {
+    settings.set('CLAUDE_PLAN_USAGE_REFRESH', '1')
+    settings.set('CLAUDE_ROTATION_ENABLED', '0')
+    settings.set('MAIN_AGENT_ISOLATED_CONFIG', '1')
+  }
+
+  it('isolated main agent on a token plan that is over the limit: no probe, no ROTATE, no usage-collect', async () => {
+    rotationOffButEverythingElseOn()
+    plans = [tokenPlan('a'), tokenPlan('b')]
+    // Would rotate a -> b if anything ran: a is exhausted, b is empty.
+    probeReturns({ a: 100, b: 0 })
+    usageJson = activeUsage(100, 100)
+    const logs = captureLogs()
+    await runRotateCheck()
+    expect(probeMock).not.toHaveBeenCalled()
+    expect(logs.some((l) => l.startsWith('ROTATE ') || l.startsWith('NO_ALTERNATIVE '))).toBe(false)
+    expect(usageCollectCalls).toBe(0)
+  })
+
+  it('not isolated, near the limit with 2+ plans: no idle probe, no usage-collect', async () => {
+    rotationOffButEverythingElseOn()
+    settings.set('MAIN_AGENT_ISOLATED_CONFIG', '0')
+    plans = [tokenPlan('a'), tokenPlan('b')]
+    usageJson = activeUsage(100, 100)
+    await runRotateCheck()
+    expect(probeMock).not.toHaveBeenCalled()
+    expect(usageCollectCalls).toBe(0)
+  })
+
+  it('the unset default (no override at all) is off too', async () => {
+    settings.clear()
+    settings.set('MAIN_AGENT_ISOLATED_CONFIG', '1')
+    plans = [tokenPlan('a'), tokenPlan('b')]
+    probeReturns({ a: 100, b: 0 })
+    const logs = captureLogs()
+    await runRotateCheck()
+    expect(probeMock).not.toHaveBeenCalled()
+    expect(logs).toEqual([])
   })
 })

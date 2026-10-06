@@ -17,7 +17,9 @@ const tmpRoot = mkdtempSync(join(tmpdir(), 'rotation-heartbeat-root-'))
 const realHome = process.env.HOME
 process.env.HOME = tmpHome
 
-vi.mock('../config.js', () => ({
+vi.mock('../config.js', async (importOriginal) => ({
+  // Spread the real module: develop's transitive imports read more than these.
+  ...(await importOriginal<typeof import('../config.js')>()),
   PROJECT_ROOT: tmpRoot,
   STORE_DIR: join(tmpRoot, 'store'),
   MAIN_AGENT_ID: 'host-main',
@@ -138,6 +140,30 @@ describe('POST /api/settings trigger', () => {
     settings.set('CLAUDE_ROTATION_ENABLED', '1')
     await tryHandleSettings(fakePost('/api/settings', { key: 'CLAUDE_ROTATION_FLEET', value: '1' }).ctx)
     expect(existsSync(taskDir())).toBe(false)
+  })
+
+  // PR #1602 review: turning rotation off left the seeded task enabled, and
+  // every tick was a main-session LLM turn plus a live probe.
+  it('turning it off disables the seeded task (kept, not deleted), and on again re-enables it', async () => {
+    await tryHandleSettings(fakePost('/api/settings', { key: 'CLAUDE_ROTATION_ENABLED', value: '1' }).ctx)
+    const seededPrompt = io.readScheduledTask(ROTATION_HEARTBEAT_TASK)!.prompt
+    // An operator edit that must survive the round trip.
+    io.writeScheduledTask(ROTATION_HEARTBEAT_TASK, { schedule: '*/30 * * * *' })
+
+    const { ctx, out } = fakePost('/api/settings', { key: 'CLAUDE_ROTATION_ENABLED', value: '0' })
+    await tryHandleSettings(ctx)
+    expect(out.status).toBe(200)
+    expect(io.readScheduledTask(ROTATION_HEARTBEAT_TASK)).toMatchObject({ enabled: false, schedule: '*/30 * * * *', prompt: seededPrompt })
+
+    await tryHandleSettings(fakePost('/api/settings', { key: 'CLAUDE_ROTATION_ENABLED', value: '1' }).ctx)
+    expect(io.readScheduledTask(ROTATION_HEARTBEAT_TASK)).toMatchObject({ enabled: true, schedule: '*/30 * * * *', prompt: seededPrompt })
+  })
+
+  it('a restart never re-enables a task that rotation-off disabled', async () => {
+    await tryHandleSettings(fakePost('/api/settings', { key: 'CLAUDE_ROTATION_ENABLED', value: '1' }).ctx)
+    await tryHandleSettings(fakePost('/api/settings', { key: 'CLAUDE_ROTATION_ENABLED', value: '0' }).ctx)
+    expect(ensureRotationHeartbeatTask({ respectRemoval: true })).toBe('rotation-off')
+    expect(io.readScheduledTask(ROTATION_HEARTBEAT_TASK)?.enabled).toBe(false)
   })
 })
 

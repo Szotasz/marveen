@@ -112,6 +112,35 @@ export function ensureRotationHeartbeatTask(opts: { respectRemoval?: boolean } =
   return 'created'
 }
 
+export type SyncRotationHeartbeatResult = EnsureRotationHeartbeatResult | 'enabled' | 'disabled' | 'unchanged'
+
+/**
+ * The Settings toggle's side effect, in both directions (PR #1602 review).
+ *
+ * - Rotation turned ON: create the task if missing (ignoring a tombstone, see
+ *   ensureRotationHeartbeatTask), and re-enable it if it exists but is off --
+ *   switching rotation on is the deliberate act that asks for it to run.
+ * - Rotation turned OFF: disable the task (enabled: false), never delete it, so
+ *   an operator's edits survive the round trip. Without this a leftover task
+ *   kept ticking every 10 minutes, each tick a main-session LLM turn.
+ *
+ * The startup path stays ensureRotationHeartbeatTask({ respectRemoval: true }):
+ * a restart never flips the task's enabled flag either way.
+ */
+export function syncRotationHeartbeatTask(): SyncRotationHeartbeatResult {
+  const on = settingValue('CLAUDE_ROTATION_ENABLED') === '1'
+  const task = readScheduledTask(ROTATION_HEARTBEAT_TASK)
+  if (on) {
+    if (!task) return ensureRotationHeartbeatTask()
+    if (task.enabled) return 'unchanged'
+    writeScheduledTask(ROTATION_HEARTBEAT_TASK, { enabled: true })
+    return 'enabled'
+  }
+  if (!task || !task.enabled) return 'unchanged'
+  writeScheduledTask(ROTATION_HEARTBEAT_TASK, { enabled: false })
+  return 'disabled'
+}
+
 export interface ReadinessBlocker {
   code: string
   message: string
