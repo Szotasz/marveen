@@ -387,6 +387,7 @@ function switchPage(pageId) {
   if (pageId === 'tokenUsage') loadTokenUsage()
   if (pageId === 'costs') loadCosts()
   if (pageId === 'ideas') loadIdeasPage()
+  if (pageId === 'notes') loadNotesPage()
   if (pageId === 'archived') loadArchivedPage()
   if (pageId === 'naplo') loadNaplo()
   if (pageId === 'federation') loadFederationPage()
@@ -511,7 +512,7 @@ const NAV_I18N = {
   approvals: 'nav.approvals',
   docs: 'nav.docs', research: 'nav.research', status: 'nav.status',
   settings: 'nav.settings', vault: 'nav.vault', tokenUsage: 'nav.tokenUsage',
-  ideas: 'nav.ideas', federation: 'nav.federation', updates: 'nav.updates', costs: 'nav.costs',
+  ideas: 'nav.ideas', notes: 'nav.notes', federation: 'nav.federation', updates: 'nav.updates', costs: 'nav.costs',
 }
 
 function renderNav() {
@@ -16869,6 +16870,152 @@ let ideaScope = (() => {
 })()
 const STATUS_COLORS = { new: 'var(--accent)', reviewed: '#f59e0b', kanban: '#22c55e', rejected: '#ef4444' }
 const STATUS_LABELS = { new: () => t('ideas.status.new'), reviewed: () => t('ideas.status.reviewed'), kanban: () => t('ideas.status.kanban'), rejected: () => t('ideas.status.rejected') }
+
+// ============================================================
+// === Team notes ("Jegyzetek") ===
+// ============================================================
+// The team's small follow-ups, kept off the kanban board. Rows come from
+// /api/notes (active, sorted by due date) and ?include_deleted=1 for the
+// last-7-days deleted section. Deletion is soft on the server.
+
+let notesAssigneesLoaded = false
+
+function notesLocalToday() {
+  // The owner's local date (the browser runs in his timezone), not UTC.
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+function notesFmtTs(unix) {
+  if (!unix) return ''
+  const locale = (window._lang || 'hu') === 'en' ? 'en-GB' : 'hu-HU'
+  return new Date(unix * 1000).toLocaleString(locale, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+}
+
+function notesAssigneeLabel(name) {
+  if (name === 'mindenki') return t('notes.assignee.mindenki')
+  if (name === 'gazda') return t('notes.assignee.gazda')
+  return name
+}
+
+async function loadNotesAssignees() {
+  const sel = document.getElementById('notesAssignee')
+  if (!sel) return
+  let names = []
+  try {
+    const r = await fetch('/api/agents')
+    if (r.ok) {
+      const list = await r.json()
+      if (Array.isArray(list)) names = list.map((a) => a && a.name).filter(Boolean)
+    }
+  } catch { /* the fixed entries below are enough to keep the form usable */ }
+  const all = ['mindenki', 'gazda', 'marveen', ...names.filter((n) => n !== 'marveen' && n !== 'gazda' && n !== 'mindenki').sort()]
+  const prev = sel.value
+  sel.innerHTML = all.map((n) => `<option value="${escapeHtml(n)}">${escapeHtml(notesAssigneeLabel(n))}</option>`).join('')
+  if (prev && all.includes(prev)) sel.value = prev
+  notesAssigneesLoaded = true
+}
+
+async function loadNotesPage() {
+  wireNotesPage()
+  if (!notesAssigneesLoaded) loadNotesAssignees()
+  const tbody = document.getElementById('notesTbody')
+  const delTbody = document.getElementById('notesDeletedTbody')
+  let rows = []
+  try {
+    const r = await fetch('/api/notes?include_deleted=1')
+    if (!r.ok) throw new Error(`HTTP ${r.status}`)
+    rows = await r.json()
+  } catch (err) {
+    if (tbody) tbody.innerHTML = `<tr><td colspan="5" class="notes-empty">${escapeHtml(t('notes.load_error', { msg: String(err.message || err) }))}</td></tr>`
+    return
+  }
+  const active = rows.filter((n) => n.deleted_at == null)
+  const deleted = rows.filter((n) => n.deleted_at != null).sort((a, b) => b.deleted_at - a.deleted_at)
+  const today = notesLocalToday()
+
+  if (tbody) {
+    tbody.innerHTML = active.length ? active.map((n) => {
+      const overdue = n.due_date && n.due_date < today
+      const dueToday = n.due_date === today
+      const cls = overdue ? 'notes-row-overdue' : dueToday ? 'notes-row-today' : ''
+      const dueLabel = n.due_date
+        ? escapeHtml(n.due_date) + (overdue ? ` <span class="notes-due-tag">${escapeHtml(t('notes.overdue'))}</span>` : dueToday ? ` <span class="notes-due-tag">${escapeHtml(t('notes.today'))}</span>` : '')
+        : '<span class="notes-muted">-</span>'
+      return `<tr class="${cls}">
+        <td data-label="${escapeHtml(t('notes.col.assignee'))}" class="notes-assignee">${escapeHtml(notesAssigneeLabel(n.assignee))}</td>
+        <td data-label="${escapeHtml(t('notes.col.content'))}" class="notes-content">${escapeHtml(n.content)}</td>
+        <td data-label="${escapeHtml(t('notes.col.created'))}" class="notes-muted">${escapeHtml(notesFmtTs(n.created_at))} · ${escapeHtml(n.created_by)}</td>
+        <td data-label="${escapeHtml(t('notes.col.due'))}">${dueLabel}</td>
+        <td class="notes-actions"><button class="btn-secondary btn-compact" data-note-done="${escapeHtml(n.id)}">${escapeHtml(t('notes.btn.done'))}</button></td>
+      </tr>`
+    }).join('') : `<tr><td colspan="5" class="notes-empty">${escapeHtml(t('notes.empty'))}</td></tr>`
+  }
+
+  if (delTbody) {
+    delTbody.innerHTML = deleted.length ? deleted.map((n) => `<tr>
+        <td data-label="${escapeHtml(t('notes.col.assignee'))}">${escapeHtml(notesAssigneeLabel(n.assignee))}</td>
+        <td data-label="${escapeHtml(t('notes.col.content'))}" class="notes-content">${escapeHtml(n.content)}</td>
+        <td data-label="${escapeHtml(t('notes.deleted.col_when'))}" class="notes-muted">${escapeHtml(notesFmtTs(n.deleted_at))}</td>
+        <td data-label="${escapeHtml(t('notes.deleted.col_by'))}">${escapeHtml(n.deleted_by || '')}</td>
+        <td data-label="${escapeHtml(t('notes.deleted.col_reason'))}" class="notes-muted">${escapeHtml(n.delete_reason || '-')}</td>
+      </tr>`).join('') : `<tr><td colspan="5" class="notes-empty">${escapeHtml(t('notes.deleted.empty'))}</td></tr>`
+  }
+  const summary = document.querySelector('#notesDeleted > summary')
+  if (summary) summary.textContent = `${t('notes.deleted.title')} (${deleted.length})`
+}
+
+let notesPageWired = false
+function wireNotesPage() {
+  if (notesPageWired) return
+  notesPageWired = true
+  document.getElementById('notesForm')?.addEventListener('submit', async (e) => {
+    e.preventDefault()
+    const assignee = document.getElementById('notesAssignee')?.value || ''
+    const contentEl = document.getElementById('notesContent')
+    const dueEl = document.getElementById('notesDue')
+    const content = (contentEl?.value || '').trim()
+    if (!content) { contentEl?.focus(); return }
+    const body = { assignee, content, created_by: 'gazda' }
+    if (dueEl?.value) body.due_date = dueEl.value
+    const btn = document.getElementById('notesAddBtn')
+    if (btn) btn.disabled = true
+    try {
+      const r = await fetch('/api/notes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      const data = await r.json().catch(() => ({}))
+      if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`)
+      if (contentEl) contentEl.value = ''
+      if (dueEl) dueEl.value = ''
+      showToast(t('notes.toast.added'))
+      loadNotesPage()
+    } catch (err) {
+      showToast(t('notes.toast.error', { msg: String(err.message || err) }))
+    } finally {
+      if (btn) btn.disabled = false
+    }
+  })
+  document.getElementById('notesTbody')?.addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-note-done]')
+    if (!btn) return
+    const reason = window.prompt(t('notes.prompt.reason'), '')
+    if (reason === null) return // cancelled
+    btn.disabled = true
+    try {
+      const r = await fetch(`/api/notes/${encodeURIComponent(btn.dataset.noteDone)}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ by: 'gazda', reason: reason.trim() || null }),
+      })
+      const data = await r.json().catch(() => ({}))
+      if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`)
+      showToast(t('notes.toast.deleted'))
+      loadNotesPage()
+    } catch (err) {
+      btn.disabled = false
+      showToast(t('notes.toast.error', { msg: String(err.message || err) }))
+    }
+  })
+}
 
 async function loadIdeasPage() {
   const statusFilter = document.getElementById('ideaStatusFilter')?.value ?? 'active'
