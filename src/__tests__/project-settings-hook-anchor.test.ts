@@ -40,6 +40,11 @@ const EXPECTED: Record<string, string[]> = {
     'provenance-gate.py', 'staleness-guard.py', 'memory-lookup-nudge.py', 'channel-inbox-drain.py',
     'voice-reply-directive.py', 'telegram_progress.py', 'slack_progress.py',
     'marveen-commands.py',
+    // #946 (taskstate stub writer), a reviewed decision: every exit path is
+    // sys.exit(0), the only cross-module import is guarded, there is no network
+    // call or subprocess, and the write is atomic (os.replace). It cannot block
+    // a prompt.
+    'taskstate-stub.py',
   ],
   PostToolUse: [
     'ledger-outbound.py', 'tool-log-capture.py',
