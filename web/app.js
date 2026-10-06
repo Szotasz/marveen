@@ -1380,6 +1380,138 @@ function renderKanbanOwnerStrip() {
   el.appendChild(groups)
 }
 
+// === Team view: one row per person, not one column per status ===
+//
+// Per team member: what they are working on now and what comes next. The
+// swimlane board already groups BY assignee, but it still answers "where are
+// the cards"; this view answers "where are the people".
+//
+// "Now" comes from the column (in_progress). "Up next" comes from priority:
+// open cards at normal or urgent priority, lowest card number first. That
+// assumes a board where normal priority marks the next card (and low marks
+// parked work); neither column is a guess, both are states somebody set.
+//
+// What this view deliberately does NOT show is an estimated finish date. The
+// only honest source would be measured in_progress -> done times, and a board
+// rarely has enough of them per person; a number printed from a handful would
+// look like a measurement and be a guess. The elapsed figure below is labelled
+// for what it actually measures: time since the card last moved, not time
+// spent working.
+function renderKanbanTeamView() {
+  const host = document.getElementById('kanbanTeamView')
+  if (!host) return
+  host.innerHTML = ''
+
+  // The owner's own queue is the strip above the board, not a row here, so
+  // the same card does not show twice. See kanbanHideFromLanes.
+  const open = kanbanCards.filter((c) => c.status !== 'done' && !kanbanHideFromLanes(c))
+  const keyOf = (c) => {
+    const raw = c.assignee ? String(c.assignee).trim() : ''
+    if (!raw) return '__unassigned__'
+    const m = kanbanAssignees.find((a) => a.name.toLowerCase() === raw.toLowerCase())
+    return m ? m.name : raw
+  }
+  const byPerson = new Map()
+  for (const c of open) {
+    const k = keyOf(c)
+    if (!byPerson.has(k)) byPerson.set(k, [])
+    byPerson.get(k).push(c)
+  }
+  // People with something in progress first, then by workload. A row that is
+  // idle is not hidden: "nobody is working on this person's queue" is exactly
+  // the thing to see at a glance.
+  const rows = [...byPerson.entries()].sort((a, b) => {
+    const ai = a[1].some((c) => c.status === 'in_progress') ? 0 : 1
+    const bi = b[1].some((c) => c.status === 'in_progress') ? 0 : 1
+    if (ai !== bi) return ai - bi
+    return b[1].length - a[1].length
+  })
+
+  if (rows.length === 0) {
+    host.innerHTML = `<p class="naplo-empty">${t('kanban.team.empty')}</p>`
+    return
+  }
+
+  for (const [key, cards] of rows) {
+    const meta = kanbanSwimlaneMeta(key)
+    const now = Date.now() / 1000
+    const doing = cards.filter((c) => c.status === 'in_progress')
+    const next = cards
+      .filter((c) => c.status !== 'in_progress' && (c.priority === 'normal' || c.priority === 'urgent'))
+      .sort((a, b) => (a.seq ?? Infinity) - (b.seq ?? Infinity))
+
+    const row = document.createElement('div')
+    row.className = 'kanban-team-row' + (doing.length ? '' : ' idle')
+
+    const head = document.createElement('div')
+    head.className = 'kanban-team-head'
+    head.innerHTML = `<span class="kanban-team-avatar ${meta.avatarClass}">${escapeHtml(meta.avatarChar || '')}</span>` +
+      `<span class="kanban-team-name">${escapeHtml(meta.label)}</span>` +
+      (meta.nickname ? `<span class="kanban-nickname">${escapeHtml(meta.nickname)}</span>` : '') +
+      `<span class="kanban-team-open">${t('kanban.team.open_n', { n: cards.length })}</span>`
+    kanbanDecorateAvatar(head.querySelector('.kanban-team-avatar'), key)
+    row.appendChild(head)
+
+    const cell = (titleKey, list, emptyKey) => {
+      const box = document.createElement('div')
+      box.className = 'kanban-team-cell'
+      const h = document.createElement('div')
+      h.className = 'kanban-team-cell-head'
+      h.textContent = t(titleKey)
+      box.appendChild(h)
+      if (list.length === 0) {
+        const e = document.createElement('div')
+        e.className = 'kanban-team-none'
+        e.textContent = t(emptyKey)
+        box.appendChild(e)
+        return box
+      }
+      for (const c of list.slice(0, 3)) {
+        const item = document.createElement('div')
+        item.className = 'kanban-team-card'
+        const age = Math.max(0, now - (c.updated_at || c.created_at || now))
+        const ageTxt = age >= 86400
+          ? t('kanban.team.moved_d', { n: Math.floor(age / 86400) })
+          : t('kanban.team.moved_h', { n: Math.max(1, Math.floor(age / 3600)) })
+        // For a card being worked on right now, show the time already spent on
+        // it, which is a different number from "last moved":
+        // it sums every stay in the column, and it keeps running while the card
+        // sits there. Cards that are NOT in progress keep the moved-ago text --
+        // for those, time-in-progress is history, and how stale the card is is
+        // the live question.
+        const activeTxt = c.status === 'in_progress' ? formatActiveTime(c.active_seconds, 'short') : null
+        const rightTxt = activeTxt ?? ageTxt
+        const rightTip = activeTxt ? t('kanban.active.tooltip') : t('kanban.team.moved_tooltip')
+        item.innerHTML = `<span class="seq">#${c.seq ?? '?'}</span><span class="title">${escapeHtml(c.title)}</span>` +
+          `<span class="age" title="${escapeHtml(rightTip)}">${escapeHtml(rightTxt)}</span>`
+        item.addEventListener('click', () => showCardDetail(c))
+        box.appendChild(item)
+      }
+      if (list.length > 3) {
+        const more = document.createElement('div')
+        more.className = 'kanban-team-none'
+        more.textContent = t('kanban.team.more', { n: list.length - 3 })
+        box.appendChild(more)
+      }
+      return box
+    }
+
+    const body = document.createElement('div')
+    body.className = 'kanban-team-body'
+    body.append(
+      cell('kanban.team.now', doing, 'kanban.team.now_none'),
+      cell('kanban.team.next', next, 'kanban.team.next_none'),
+    )
+    row.appendChild(body)
+    host.appendChild(row)
+  }
+
+  const note = document.createElement('p')
+  note.className = 'kanban-team-note'
+  note.textContent = t('kanban.team.estimate_note')
+  host.appendChild(note)
+}
+
 function renderKanban() {
   const cardById = new Map(kanbanCards.map(c => [c.id, c]))
 
@@ -1387,6 +1519,7 @@ function renderKanban() {
   renderKanbanQuickFilters()
   renderKanbanSearchHint()
   renderKanbanOwnerStrip()
+  renderKanbanTeamView()
 
   // Determine which top-level cards are visible under current filters.
   const visibleCardIds = new Set()
@@ -2461,18 +2594,24 @@ async function renderCardBlockersSection(card) {
 }
 
 // === Card detail ===
-// Card.active_seconds -> human text for the card detail panel.
+// Card.active_seconds -> human text. Two forms: `long` for the detail panel,
+// `short` for the one-line chip on a team row.
 //
 // undefined means the card has no status-change history at all, which is NOT
 // the same as zero and must not render as "0m" -- the event table starts
 // mid-history, so an old card that never moved since would otherwise claim a
 // measured zero it has not got.
-function formatActiveTime(sec) {
+function formatActiveTime(sec, form = 'long') {
   if (sec === undefined || sec === null) return null
   const s = Math.max(0, Math.floor(sec))
   const d = Math.floor(s / 86400)
   const h = Math.floor((s % 86400) / 3600)
   const m = Math.floor((s % 3600) / 60)
+  if (form === 'short') {
+    if (d >= 1) return t('kanban.active.short_d', { d })
+    if (h >= 1) return t('kanban.active.short_h', { h })
+    return t('kanban.active.short_m', { m })
+  }
   if (s === 0) return t('kanban.active.zero')
   if (d >= 1) return t('kanban.active.d_h', { d, h })
   if (h >= 1) return t('kanban.active.h_m', { h, m })
@@ -19089,6 +19228,8 @@ async function openResearchDoc(agent, name) {
 
     const boardBtn  = document.getElementById('kanbanViewBoard')
     const ganttBtn  = document.getElementById('kanbanViewGantt')
+    const teamBtn   = document.getElementById('kanbanViewTeam')
+    const teamEl    = document.getElementById('kanbanTeamView')
     const boardFilters = document.getElementById('kanbanBoardFilters')
     const ganttFilters = document.getElementById('kanbanGanttFilters')
     const boardEls  = [document.getElementById('kanbanBoard'), document.getElementById('kanbanSwimlaneBoard')]
@@ -19097,24 +19238,44 @@ async function openResearchDoc(agent, name) {
     function activateBoard() {
       boardBtn.classList.add('active')
       ganttBtn.classList.remove('active')
+      teamBtn?.classList.remove('active')
       boardFilters.style.display = 'flex'
       ganttFilters.style.display = 'none'
       boardEls.forEach(el => { if (el) el.style.removeProperty('display') })
       ganttEl.style.display = 'none'
+      if (teamEl) teamEl.style.display = 'none'
     }
 
     function activateGantt() {
       ganttBtn.classList.add('active')
       boardBtn.classList.remove('active')
+      teamBtn?.classList.remove('active')
       ganttFilters.style.display = 'flex'
       boardFilters.style.display = 'none'
       boardEls.forEach(el => { if (el) el.style.display = 'none' })
       ganttEl.style.display = 'block'
+      if (teamEl) teamEl.style.display = 'none'
       renderGantt()
+    }
+
+    // The team view reuses the board's data, so it needs no filter row of its
+    // own: it always shows the whole team. A filtered "who is working on what"
+    // would answer a question nobody asks.
+    function activateTeam() {
+      teamBtn?.classList.add('active')
+      boardBtn.classList.remove('active')
+      ganttBtn.classList.remove('active')
+      boardFilters.style.display = 'none'
+      ganttFilters.style.display = 'none'
+      boardEls.forEach(el => { if (el) el.style.display = 'none' })
+      ganttEl.style.display = 'none'
+      if (teamEl) teamEl.style.display = 'block'
+      if (typeof renderKanbanTeamView === 'function') renderKanbanTeamView()
     }
 
     boardBtn.addEventListener('click', activateBoard)
     ganttBtn.addEventListener('click', activateGantt)
+    if (teamBtn) teamBtn.addEventListener('click', activateTeam)
 
     // Archived button: navigates AWAY to the archived page (its sidebar entry
     // was removed -- this button is now the entry point). It never takes the

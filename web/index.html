@@ -307,6 +307,7 @@
       <div style="display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-bottom:10px;">
         <button class="view-btn active" id="kanbanViewBoard" style="width:auto;padding:0 12px;" data-i18n="kanban.view.board">Tábla</button>
         <button class="view-btn" id="kanbanViewGantt" style="width:auto;padding:0 12px;" data-i18n="kanban.view.gantt">Idővonal</button>
+        <button class="view-btn" id="kanbanViewTeam" style="width:auto;padding:0 12px;" data-i18n="kanban.view.team">Csapat</button>
         <span id="kanbanTotals" style="margin-left:auto;font-size:13px;color:var(--muted);white-space:nowrap;"></span>
         <button class="view-btn" id="kanbanViewArchived" style="width:auto;padding:0 12px;margin-left:12px;" data-i18n="kanban.view.archived">Archiváltak</button>
       </div>
@@ -409,6 +410,9 @@
       <div class="kanban-board kanban-swimlane-board" id="kanbanSwimlaneBoard" hidden></div>
       <!-- Gantt / timeline view container -->
       <div id="kanbanGanttView" style="display:none;"></div>
+
+      <!-- Team view: one row per person (who is on what, what is next). -->
+      <div id="kanbanTeamView" class="kanban-team-view" style="display:none;"></div>
     </div>
 
     <!-- === Archived Cards Page === -->
