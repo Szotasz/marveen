@@ -2233,10 +2233,13 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
         const scopeProvider = useMcpJsonForChannel
           ? null
           : ownChannelProviderForScope(!!token, agentProvider)
-        s.enabledPlugins = enableExtraPlugins(
-          scopeChannelPlugins(scopeProvider, s.enabledPlugins as Record<string, boolean> | undefined),
-          extraLaunch.pluginIds,
+        s.enabledPlugins = scopeChannelPlugins(
+          scopeProvider,
+          s.enabledPlugins as Record<string, boolean> | undefined,
         )
+        // AGENTEXTRACH1006: the co-listen plugins stay on after the
+        // primary-only scope above turned them off.
+        s.enabledPlugins = enableExtraPlugins(s.enabledPlugins as Record<string, boolean>, extraLaunch.pluginIds)
         writeFileSync(settingsPath, JSON.stringify(s, null, 2))
       } catch (err) {
         logger.warn({ err, name }, 'Could not scope channel plugins for sub-agent')

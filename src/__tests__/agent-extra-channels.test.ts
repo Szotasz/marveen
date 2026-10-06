@@ -155,7 +155,12 @@ describe('launcher binding (agent-process.ts startAgentProcess)', () => {
     expect(FN).toMatch(/\$\{channelSetup\}/)
   })
   it('the agent settings.json keeps the extras enabled after the scope step', () => {
-    expect(FN).toMatch(/s\.enabledPlugins = enableExtraPlugins\(\s*scopeChannelPlugins\(scopeProvider,[^)]*\),\s*extraLaunch\.pluginIds,\s*\)/)
+    const scopeAt = FN.indexOf('s.enabledPlugins = scopeChannelPlugins(')
+    const extraAt = FN.indexOf('s.enabledPlugins = enableExtraPlugins(s.enabledPlugins as Record<string, boolean>, extraLaunch.pluginIds)')
+    expect(scopeAt).toBeGreaterThan(-1)
+    // AFTER the scope step, or the scope would switch the extras off again.
+    expect(extraAt).toBeGreaterThan(scopeAt)
+    expect(FN.slice(extraAt, extraAt + 400)).toContain('writeFileSync(settingsPath')
   })
   it('every isolation provisioner call passes the extras', () => {
     const calls = FN.match(/ensureIsolatedChannelConfigDir\([^)]*\)/g) ?? []
