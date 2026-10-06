@@ -6,7 +6,8 @@
 //
 // WHY THIS EXISTS (PICKERCLIKAPU923, measured 2026-09-23): the dashboard's
 // model picker is a static list, and a customer install pins the CLI
-// (install-linux.sh CLAUDE_PIN="2.1.110"). On that CLI, `claude-fable-5-1`
+// (install-linux.sh CLAUDE_PIN, "2.1.110" when this was measured, "2.1.112"
+// since #1494). On 2.1.110, `claude-fable-5-1`
 // and `claude-opus-5-5` answer HTTP 400 `unrecognized_model` on the FIRST
 // prompt, while `claude-opus-5` and `claude-sonnet-5` run (positive control,
 // same box, same run). Nothing in the launch path catches this: the session

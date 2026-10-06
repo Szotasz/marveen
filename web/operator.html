@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="hu">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Üzemeltetői felület</title>
+<link rel="stylesheet" href="/style.css">
+<style>
+  /* DASHOPERATOR1005: the IT operator's page, a single column on the dashboard tokens. */
+  body { display: block; background: var(--bg); color: var(--text); margin: 0; }
+  .op { max-width: 1100px; margin: 0 auto; padding: 16px; box-sizing: border-box; }
+  .op-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 16px; }
+  .op-head h1 { font-size: 1.25rem; margin: 0; }
+  .op-head .spacer { flex: 1; }
+  .op-muted { color: var(--text-muted); font-size: 0.85rem; }
+  .op-card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; margin-bottom: 14px; box-shadow: var(--shadow-sm); }
+  .op-card h2 { font-size: 1rem; margin: 0 0 10px; }
+  .op-btn { background: var(--bg-card); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 5px 10px; font: inherit; font-size: 0.85rem; cursor: pointer; }
+  .op-btn:hover { background: var(--bg-card-hover); }
+  .op-btn.primary { border-color: var(--border-focus); }
+  .op-btn.danger { color: var(--danger); }
+  .op-btn:disabled { opacity: 0.5; cursor: default; }
+  .op-input { background: var(--bg-input); color: var(--text); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 6px 8px; font: inherit; max-width: 100%; box-sizing: border-box; }
+  .op-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .op-table-wrap { overflow-x: auto; }
+  table.op-table { border-collapse: collapse; width: 100%; font-size: 0.85rem; }
+  .op-table th, .op-table td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  .op-table th { color: var(--text-muted); font-weight: 500; }
+  .op-badge { display: inline-block; border-radius: 999px; padding: 1px 8px; font-size: 0.75rem; }
+  .op-badge.ok { background: var(--success-soft); color: var(--success); }
+  .op-badge.off { background: var(--bg-input); color: var(--text-muted); }
+  .op-badge.warn { background: var(--danger-soft); color: var(--danger); }
+  .op-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; }
+  dl.op-kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 0; font-size: 0.85rem; }
+  .op-kv dt { color: var(--text-muted); }
+  .op-kv dd { margin: 0; overflow-wrap: anywhere; }
+  .op-msg { margin: 8px 0 0; font-size: 0.85rem; }
+  .op-msg.err { color: var(--danger); }
+  .op-msg.ok { color: var(--success); }
+  pre.op-pane { background: var(--bg-code); border-radius: var(--radius-sm); padding: 10px; max-height: 60vh; overflow: auto; font-size: 0.75rem; line-height: 1.3; white-space: pre; margin: 8px 0 0; }
+  .op-login { max-width: 420px; margin: 12vh auto 0; }
+  .op-login .op-input { width: 100%; margin: 8px 0; }
+</style>
+</head>
+<body>
+<div class="op">
+
+  <section class="op-card op-login" id="op-login" hidden>
+    <h1>Üzemeltetői belépés</h1>
+    <p class="op-muted">Az üzemeltetői kulcsot a gép tulajdonosa adja ki a dashboardon. A kulcs a belépés után nem marad a böngészőben.</p>
+    <form id="op-login-form" autocomplete="off">
+      <input class="op-input" id="op-login-key" type="password" placeholder="mvdk_..." aria-label="Üzemeltetői kulcs" required>
+      <button class="op-btn primary" type="submit">Belépés</button>
+    </form>
+    <p class="op-msg err" id="op-login-msg" hidden></p>
+  </section>
+
+  <div id="op-app" hidden>
+    <div class="op-head">
+      <h1>Üzemeltetői felület</h1>
+      <span class="op-muted" id="op-who"></span>
+      <span class="spacer"></span>
+      <button class="op-btn" id="op-refresh" type="button">Frissítés</button>
+      <button class="op-btn" id="op-logout" type="button">Kilépés</button>
+    </div>
+    <p class="op-msg err" id="op-fatal" hidden></p>
+
+    <section class="op-card">
+      <h2>Ágensek</h2>
+      <div class="op-table-wrap">
+        <table class="op-table">
+          <thead><tr><th>Ágens</th><th>Állapot</th><th>Modell</th><th>Kontextus</th><th>Fut óta</th><th>Bejelentkezés</th><th>Műveletek</th></tr></thead>
+          <tbody id="op-agents"></tbody>
+        </table>
+      </div>
+      <p class="op-msg" id="op-agents-msg" hidden></p>
+    </section>
+
+    <section class="op-card" id="op-pane-card" hidden>
+      <div class="op-row">
+        <h2 style="margin:0">Panel: <span id="op-pane-name"></span></h2>
+        <span class="spacer" style="flex:1"></span>
+        <button class="op-btn" id="op-pane-close" type="button">Bezárás</button>
+      </div>
+      <p class="op-muted">Csak olvasható nézet. A megnyitás a tulajdonos naplójába bekerül.</p>
+      <pre class="op-pane" id="op-pane"></pre>
+    </section>
+
+    <div class="op-grid">
+      <section class="op-card">
+        <h2>Verzió és frissítés</h2>
+        <dl class="op-kv" id="op-update"></dl>
+        <div class="op-row" style="margin-top:10px" id="op-update-actions" hidden>
+          <button class="op-btn" id="op-update-check" type="button">Frissítés keresése</button>
+          <button class="op-btn primary" id="op-update-apply" type="button">Frissítés telepítése</button>
+        </div>
+        <p class="op-msg" id="op-update-msg" hidden></p>
+      </section>
+      <section class="op-card">
+        <h2>Keret</h2>
+        <dl class="op-kv" id="op-quota"></dl>
+      </section>
+      <section class="op-card">
+        <h2>Gép</h2>
+        <dl class="op-kv" id="op-host"></dl>
+      </section>
+      <section class="op-card">
+        <h2>Hálózat</h2>
+        <dl class="op-kv" id="op-network"></dl>
+      </section>
+    </div>
+
+    <section class="op-card">
+      <h2>Telepítés-egészség</h2>
+      <div id="op-health"></div>
+    </section>
+
+    <section class="op-card" id="op-vault-card" hidden>
+      <h2>Titkok (csak írás)</h2>
+      <p class="op-muted">Itt új titkot lehet beállítani, és ha a tulajdonos engedi, egy meglévőt felülírni. Kiolvasni egyiket sem lehet. Minden írásról a tulajdonos értesítést kap (az érték nélkül).</p>
+      <div class="op-table-wrap">
+        <table class="op-table">
+          <thead><tr><th>Azonosító</th><th>Megnevezés</th><th>Utolsó módosítás</th></tr></thead>
+          <tbody id="op-vault"></tbody>
+        </table>
+      </div>
+      <form id="op-vault-form" class="op-row" style="margin-top:10px" autocomplete="off">
+        <input class="op-input" id="op-vault-id" placeholder="Azonosító (pl. OPENAI_API_KEY)" aria-label="Azonosító" required pattern="[A-Za-z0-9._-]{1,128}">
+        <input class="op-input" id="op-vault-label" placeholder="Megnevezés (nem kötelező)" aria-label="Megnevezés">
+        <input class="op-input" id="op-vault-value" type="password" placeholder="Érték" aria-label="Érték" required>
+        <button class="op-btn primary" type="submit">Mentés</button>
+      </form>
+      <p class="op-msg" id="op-vault-msg" hidden></p>
+    </section>
+  </div>
+</div>
+<script src="/operator.js"></script>
+</body>
+</html>

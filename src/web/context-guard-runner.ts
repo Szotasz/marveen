@@ -29,8 +29,7 @@ import {
   contextLimitForModel,
   calibrateLimit,
   handoffStaleMinutes,
-  dailyHandoffArmed,
-  dailyHandoffStep,
+  applyDailyHandoffSweep,
   DAILY_HANDOFF_REASON_PREFIX,
   IDLE_FLUSH_REASON_PREFIX,
   INITIAL_GUARD_STATE,
@@ -463,25 +462,9 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
     // (handoffStaleMinutes) needs the transcript mtime on every decision path
     // that can restart, and the probe is a single stat().
     idleMs: running && needPct ? measureIdleMs(name, nowMs) : null,
-    // Seed-on-first-ARMED-sight (dailyHandoffStep): an agent first seen with
-    // the tier armed is recorded as served NOW and is never due on that sweep;
-    // a disarmed tier forgets the record, so arming it later in the day does
-    // not find a stale seed from before the slot and fire at once.
-    dailyHandoffDue: (() => {
-      // Forgetting does NOT wait for an idle sweep: an agent that was never idle
-      // while the tier was off would otherwise keep its old armed record, and
-      // re-arming after the slot would fire at once. Seeding
-      // and firing stay behind the idle gate, as before.
-      if (!dailyHandoffArmed(cfg)) {
-        lastDailyHandoff.delete(name)
-        return false
-      }
-      if (!running || state.phase !== 'idle') return false
-      const step = dailyHandoffStep(cfg, lastDailyHandoff.get(name), localMidnightMs(nowMs), nowMs)
-      if (step.record === undefined) lastDailyHandoff.delete(name)
-      else lastDailyHandoff.set(name, step.record)
-      return step.due
-    })(),
+    // Seed-on-first-ARMED-sight, and forget-while-disarmed on every sweep:
+    // dailyHandoffSweep decides both, applyDailyHandoffSweep applies the record.
+    dailyHandoffDue: applyDailyHandoffSweep(lastDailyHandoff, name, cfg, running && state.phase === 'idle', localMidnightMs(nowMs), nowMs),
   }
 
   const decision = decideGuard(state, inputs, cfg)

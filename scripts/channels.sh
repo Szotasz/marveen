@@ -226,8 +226,8 @@ resolve_main_model() {
   # CLI, through the same table and decision the dashboard uses
   # (dist/claude-cli-support.js launchableDefaultModel; the TS twin is
   # readConfiguredMainModel, and main-model-resolution-parity.test.ts keeps the
-  # two equal). An AVX-less host is pinned to CLI 2.1.110 (CLAUDE_PIN below)
-  # and DISABLE_AUTOUPDATER keeps any older CLI in place, so a default that
+  # two equal). An AVX-less host is pinned to CLI 2.1.112 (CLAUDE_PIN below;
+  # 2.1.110 before #1494) and DISABLE_AUTOUPDATER keeps any older CLI in place, so a default that
   # CLI cannot run would bring the session up and 400 every prompt -- a silent
   # bot. On a CLI measured too old, the previous tier
   # (DISTRIBUTION_DEFAULT_FALLBACK_MODEL) launches instead, with a named line.
@@ -637,7 +637,7 @@ FLEET_VENV_PREFIX="$(fleet_venv_prefix "$INSTALL_DIR" "$INSTALL_DIR/store/channe
 # first run, killing every session. Recorded here because it also decides WHICH
 # package spec the self-heal below reinstalls: on such a host "latest" is the
 # one thing we must never install.
-CLAUDE_PIN="2.1.110"   # keep in sync with install-linux.sh / scripts/fix-avx.sh
+CLAUDE_PIN="2.1.112"   # keep in sync with install-linux.sh / scripts/fix-avx.sh
 CLAUDE_PKG="@anthropic-ai/claude-code"
 AVX_LESS=0
 if grep -qE '^flags[[:space:]]*:' /proc/cpuinfo 2>/dev/null && ! grep -qiw avx /proc/cpuinfo 2>/dev/null; then

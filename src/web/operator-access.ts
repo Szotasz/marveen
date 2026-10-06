@@ -17,7 +17,11 @@ import { logger } from '../logger.js'
 
 export const OPERATOR_ACCESS_PATH = join(STORE_DIR, 'operator-access.json')
 
-export const OPERATOR_CAPABILITIES = ['agentControl', 'update', 'vaultWrite', 'paneView', 'commands'] as const
+// mainAgentRestart is separate from agentControl (owner decision 2026-10-05): a
+// hard restart of the main agent touches the owner's own channel and context.
+// vaultWrite creates NEW secrets only; replacing an existing one is vaultOverwrite
+// (owner decision 2026-10-05, Marveen 34399).
+export const OPERATOR_CAPABILITIES = ['agentControl', 'mainAgentRestart', 'update', 'vaultWrite', 'vaultOverwrite', 'paneView', 'commands'] as const
 export type OperatorCapability = typeof OPERATOR_CAPABILITIES[number]
 
 /** Commands the owner may allow as buttons; the server maps each to a fixed text. */
@@ -33,7 +37,7 @@ export interface OperatorAccess {
 export function defaultOperatorAccess(): OperatorAccess {
   return {
     enabled: false,
-    capabilities: { agentControl: false, update: false, vaultWrite: false, paneView: false, commands: false },
+    capabilities: { agentControl: false, mainAgentRestart: false, update: false, vaultWrite: false, vaultOverwrite: false, paneView: false, commands: false },
     commands: [],
   }
 }

@@ -55,11 +55,42 @@ systemctl --user enable --now disk-space-guard.timer stuck-modal-guard.timer
 systemctl --user list-timers | grep -E 'disk-space|stuck-modal'
 ```
 
+### macOS (stuck-modal guard)
+
+The stuck-modal guard also runs on macOS, as a launchd job (MODELCONFIRM1005).
+Until 2026-10-05 it was systemd-only, and on a Mac nothing even noticed a wedged
+main session. The case that showed it: the CLI's "Switch model?" confirmation
+after a `/model` held the session for half an hour.
+`install-macos.sh` installs it on new installs, and `update.sh` installs it on
+Macs that are already installed (keyed on the job being loaded; a failed load is
+retried and reported on every run). By hand:
+
+```bash
+scripts/install-stuck-modal-guard.sh --load      # every 60 s + at load
+launchctl list | grep stuck-modal-guard          # verify
+tail -f store/stuck-modal-guard.log
+```
+
+**Mode (`STUCK_MODAL_MODE`, env or `.env`; both platforms).** Automatic recovery is
+opt-in:
+
+| Value | What the guard does with a confirmed stuck pane |
+|---|---|
+| `log` (default) | one log line per episode |
+| `alert` | as `log`, plus one owner alert per episode; no keys, no respawn |
+| `act` | Escape (bounded), then `respawn-pane` if that fails. On the "Switch model?" dialog, Escape means "No, go back", and the respawn starts a fresh session without `--continue` |
+| `off` | nothing; on macOS `update.sh` does not install it either (the opt-out survives updates) |
+
+An unknown value falls back to `log`, so a typo never turns recovery on.
+
+The disk-space guard has no launchd twin yet.
+
 ## Tests
 
 ```bash
 bash scripts/__tests__/disk-space-guard.test.sh    # thresholds / age-guard / alert+cooldown / malformed
 bash scripts/__tests__/stuck-modal-guard.test.sh   # classify fixtures (idle/busy/stuck/empty) + confirm-window
+bash scripts/__tests__/stuck-modal-guard-install.test.sh   # macOS launchd unit, install-macos.sh, update.sh migration
 ```
 
 ## Re-review hardening (2026-06-03, post-cross-model)

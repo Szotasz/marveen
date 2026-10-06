@@ -19,7 +19,8 @@
 # $TMPDIR, so it is probed, not assumed. The sweep only ever deletes the one
 # uniquely named file this test planted, never anything else in that shared
 # directory, and it skips this test's own tree (the fixture and BACKUP_DIR sit
-# under the same macOS temp root and are not what dirhelper's rule is about). If the stage lives under $TMPDIR, that file is gone before tar
+# under the same macOS temp root and are not what dirhelper's rule is about).
+# If the stage lives under $TMPDIR, that file is gone before tar
 # runs and backup.sh's verification exits 6; if the stage lives elsewhere, the
 # file is in the archive and the script exits 0.
 #
@@ -60,11 +61,21 @@ printf 'rarely read content' > "$FAKE/store/$PLANT"
 touch -a -t "$(date -v-10d +%Y%m%d%H%M 2>/dev/null || date -d '10 days ago' +%Y%m%d%H%M)" \
   "$FAKE/store/$PLANT"
 
+# The sweep only descends into temp-root entries changed since this marker, not
+# the whole root: a stage made by the run is new, and on a long-lived host the
+# per-user macOS temp root holds gigabytes, which a full walk after every cp
+# turned into a ~27-minute test. The marker is back-dated a minute so a
+# same-second mtime cannot hide the stage.
+EPOCH="$TMP/sweep-epoch"
+touch -m -t "$(date -v-1M +%Y%m%d%H%M.%S 2>/dev/null || date -d '1 minute ago' +%Y%m%d%H%M.%S)" "$EPOCH"
 REAL_CP="$(command -v cp)"
 cat > "$SHIM/cp" <<EOF
 #!/bin/bash
 "$REAL_CP" "\$@"; rc=\$?
-find "$TMPROOT" -path "$TMP" -prune -o -type f -name "$PLANT" -atime +3 -print0 2>/dev/null | xargs -0 rm -f
+find "$TMPROOT" -mindepth 1 -maxdepth 1 -newer "$EPOCH" ! -path "$TMP" -print0 2>/dev/null |
+  while IFS= read -r -d '' d; do
+    find "\$d" -type f -name "$PLANT" -atime +3 -print0 2>/dev/null | xargs -0 rm -f
+  done
 exit \$rc
 EOF
 chmod +x "$SHIM/cp"

@@ -1415,6 +1415,7 @@ window._i18n.en = {
 
   // --- Agent model save + host oauth toasts ---
   'agents.toast.model_save_restart': 'Model saved, restarting agent...',
+  'agents.toast.model_saved_stopped': 'Model saved. The agent is stopped; it will use the new model at its next start.',
   'agents.toast.host_oauth_restart': 'Agent restarted with host OAuth',
 
   // --- Agent auth flow extra ---
@@ -1899,6 +1900,24 @@ window._i18n.en = {
   'auth.devices.err_name':         'Give the device a name.',
   'auth.devices.bridge_badge':     'Bridge',
   'auth.devices.revoke_ssh_warning': 'Device key revoked, but the SSH entry could not be removed, so the device can still open the tunnel. Delete the matching marveen-remote line from ~/.ssh/authorized_keys manually (details: docs/dashboard-auth-recovery.md).',
+
+  'auth.operator.title':           'IT operator access',
+  'auth.operator.desc':            'An IT operator signs in at /operator with their own key, sees the system status, and can do only what you switch on here. No conversations, memories or cards, and no secret can be read. The key always expires.',
+  'auth.operator.enabled':         'IT operator access on',
+  'auth.operator.cap.agentControl': 'Start, stop and restart agents (not the main agent)',
+  'auth.operator.cap.mainAgentRestart': 'Restart the main agent (your Telegram channel and the conversation restart too)',
+  'auth.operator.cap.update':      'Check for and install updates',
+  'auth.operator.cap.vaultWrite':  'Set a new secret (cannot read it; you are notified of every write)',
+  'auth.operator.cap.vaultOverwrite': 'Overwrite an existing secret, e.g. a key rotation (you are notified)',
+  'auth.operator.cap.paneView':    'View an agent pane (read-only)',
+  'auth.operator.cap.commands':    'Send commands into the pane (only from this list):',
+  'auth.operator.pane_warning':    'With the pane view the operator also sees the conversation itself. Turn it on?',
+  'auth.operator.saved':           'Saved.',
+  'auth.operator.name_placeholder': 'Operator name (e.g. IT partner Ltd.)',
+  'auth.operator.expiry_placeholder': 'Expiry in days (default 90, at most 365)',
+  'auth.operator.mint':            'Create operator key',
+  'auth.operator.minted_hint':     'This key is shown only now. Expires: {date}. The operator signs in here: {url}',
+  'auth.operator.badge':           'Operator',
 
   'auth.bridge.title':             'Bridge pairing',
   'auth.bridge.desc':              'Paste the key line shown by the Bridge app (ssh-ed25519 ... marveen-remote:...), name the device, then copy the returned bundle back into the Bridge. The device gets its own, individually revocable key.',

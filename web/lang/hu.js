@@ -1418,6 +1418,7 @@ window._i18n.hu = {
 
   // --- Agent model save + host oauth toasts ---
   'agents.toast.model_save_restart': 'Modell mentve, agent újraindítása...',
+  'agents.toast.model_saved_stopped': 'Modell mentve. Az ügynök le van állítva, a következő indításkor az új modellel indul.',
   'agents.toast.host_oauth_restart': 'Agent újraindítva host OAuth-tal',
 
   // --- Agent auth flow extra ---
@@ -1901,6 +1902,24 @@ window._i18n.hu = {
   'auth.devices.err_name':         'Adj nevet az eszköznek.',
   'auth.devices.bridge_badge':     'Bridge',
   'auth.devices.revoke_ssh_warning': 'Az eszközkulcs visszavonva, de az SSH-bejegyzést nem sikerült törölni, így az eszköz az alagutat még ki tudja nyitni. Töröld kézzel az ~/.ssh/authorized_keys megfelelő marveen-remote sorát (részletek: docs/dashboard-auth-recovery.md).',
+
+  'auth.operator.title':           'Üzemeltetői hozzáférés',
+  'auth.operator.desc':            'Egy IT-üzemeltető saját kulccsal a /operator oldalon látja a rendszer állapotát, és csak azt teheti, amit itt bekapcsolsz. Beszélgetést, memóriát, kártyát nem lát, titkot nem olvashat. A kulcs mindig lejár.',
+  'auth.operator.enabled':         'Üzemeltetői hozzáférés bekapcsolva',
+  'auth.operator.cap.agentControl': 'Ágensek indítása, leállítása, újraindítása (a fő ágens kivételével)',
+  'auth.operator.cap.mainAgentRestart': 'A fő ágens újraindítása (a Telegram-csatornád és a beszélgetés is újraindul)',
+  'auth.operator.cap.update':      'Frissítés keresése és telepítése',
+  'auth.operator.cap.vaultWrite':  'Új titok beállítása (kiolvasni nem tudja; minden írásról értesítést kapsz)',
+  'auth.operator.cap.vaultOverwrite': 'Meglévő titok felülírása, például kulcscsere (értesítést kapsz róla)',
+  'auth.operator.cap.paneView':    'Ágens-panel megtekintése (csak olvasás)',
+  'auth.operator.cap.commands':    'Parancsok küldése a panelbe (csak az alábbi listából):',
+  'auth.operator.pane_warning':    'A panel-nézettel az üzemeltető a beszélgetés tartalmát is látja. Bekapcsolod?',
+  'auth.operator.saved':           'Mentve.',
+  'auth.operator.name_placeholder': 'Üzemeltető neve (pl. IT-partner Kft.)',
+  'auth.operator.expiry_placeholder': 'Lejárat napokban (alapból 90, legfeljebb 365)',
+  'auth.operator.mint':            'Üzemeltetői kulcs létrehozása',
+  'auth.operator.minted_hint':     'Ez a kulcs csak most látható. Lejár: {date}. Az üzemeltető itt lép be vele: {url}',
+  'auth.operator.badge':           'Üzemeltető',
 
   'auth.bridge.title':             'Bridge-párosítás',
   'auth.bridge.desc':              'Illeszd be a Bridge alkalmazásban megjelenő kulcs-sort (ssh-ed25519 ... marveen-remote:...), adj nevet az eszköznek, és a kapott csomagot másold vissza a Bridge-be. Az eszköz saját, külön visszavonható kulcsot kap.',

@@ -16,6 +16,7 @@ import {
   scanFile,
   allowlistReason,
   ALLOWLISTED_PATHS,
+  SECRET_PATTERNS,
   type ScanInput,
 } from '../security/secret-gate.js';
 
@@ -129,6 +130,100 @@ describe('detector 2: content', () => {
     const [hit] = scanFile(f('docs/x.md', `key: ${titok}`));
     expect(hit.reason).not.toContain(titok);
     expect(JSON.stringify(hit)).not.toContain(titok);
+  });
+
+  // Review condition on #1095 (2026-09-14). ENV-VAR shape on purpose, as asked:
+  // in a sentence (`a token sbp_...`) the labelled pass catches this by
+  // accident, so a sentence-shaped test would pass even with the pattern wrong.
+  // `SUPABASE_ACCESS_TOKEN=` ends in an underscore, so `\btoken` does NOT match
+  // there -- this is the form that actually exercises the new entry.
+  it('blocks a Supabase PAT in its environment-variable form', () => {
+    const pat = `sbp_${'0123456789abcdef0123456789abcdef01234567'}`;
+    const r = runGate([f('scripts/deploy.sh', `export SUPABASE_ACCESS_TOKEN="${pat}"`)]);
+    expect(r.ok).toBe(false);
+    expect(r.findings[0].reason).toContain('Supabase personal access token');
+    expect(JSON.stringify(r.findings)).not.toContain(pat);
+  });
+
+  // The gate calls `pattern.exec()` once per file on THESE objects
+  // (runGate -> inputs.flatMap(scanFile)). A /g regex keeps `lastIndex` between
+  // those calls, so the file after a match resumes past the end and returns
+  // null: a silent false negative, and the gate's whole job is to not have one.
+  // The mask adds the flag itself where it needs every occurrence.
+  it('no SECRET_PATTERNS entry is global -- exec() would carry lastIndex across files', () => {
+    const globalisak = SECRET_PATTERNS.filter(p => p.pattern.flags.includes('g')).map(p => p.name);
+    expect(globalisak).toEqual([]);
+  });
+
+  // The red probe for the line above, so it is a measurement and not a claim:
+  // the same shape with /g misses the SECOND file.
+  it('demonstrates the /g failure it guards against', () => {
+    const pat = `sbp_${'0123456789abcdef0123456789abcdef01234567'}`;
+    const globalis = /\bsbp_[0-9a-f]{40}\b/g;
+    expect(globalis.exec(`A=${pat}`)).not.toBeNull();
+    expect(globalis.exec(`B=${pat}`)).toBeNull();
+  });
+});
+
+describe('detector 2b: Telegram bot token (TGBOTPAT915)', () => {
+  // Osszerakva futasidoben, mint a tobbi szintetikus titok ebben a fajlban.
+  const botId = '80' + '12345678';
+  const secret = 'AAHd9xKpQ2mWvZ7nR4tLbY' + '6cE1sJfG3hUiO'; // 35 karakter
+  const full = `${botId}:${secret}`;
+
+  it('fogja a TELJES tokent -- ez ment at a keszleten 2026-09-15-ig', () => {
+    const hits = scanFile(f('docs/x.md', `token: ${full}`));
+    expect(hits.length).toBeGreaterThan(0);
+  });
+
+  it('fogja az env-sor alakot, ahogy egy .env-ben allna', () => {
+    const hits = scanFile(f('docs/x.md', `TELEGRAM_BOT_TOKEN=${full}`));
+    expect(hits.length).toBeGreaterThan(0);
+  });
+
+  it('fogja a titkos felet is, HA van mellette kulcs-nev', () => {
+    const hits = scanFile(f('docs/x.md', `bot_token: ${secret}`));
+    expect(hits.length).toBeGreaterThan(0);
+  });
+
+  it('KIMONDOTT HATAR: a titkos fel KONTEXTUS NELKUL nem lelet', () => {
+    // Szandekos: egy csupasz 35 karakteres alnum sztring a base64-darabok es a
+    // minified valtozonevek alakja is. A kontextus nelkuli felismerest az
+    // ALAK-alapu detektor viszi (OCR-ut, Iris), nem ez a keszlet -- a ketto
+    // egyutt fedez, es egyik sem reszhalmaza a masiknak.
+    expect(scanFile(f('docs/x.md', `value: ${secret}`))).toHaveLength(0);
+  });
+
+  it('a HOSSZ resze a kontraktusnak: egy roviditett titok-alak NEM lelet', () => {
+    // A Telegram formatuma szerint a titkos resz PONTOSAN 35 karakter. Ez a
+    // teszt azert all itt, mert egy mutans-kontroll megmutatta, hogy nelkule a
+    // 35 -> {20,} lazitas MINDEN tesztet zolden hagy -- vagyis a hossz nem lenne
+    // lekotve, es egy kesobbi "legyen megengedobb" modositas csendben megnovelne
+    // a hamis pozitivakat (a sajat repon a szigoru minta ma NULLA talalatot ad).
+    const rovid = 'AAHd9xKpQ2mWvZ7nR4tLbY'; // 22 karakter, nem 35
+    expect(scanFile(f('docs/x.md', `token: ${'80' + '12345678'}:${rovid}`))).toHaveLength(0);
+    expect(scanFile(f('docs/x.md', `bot_token: ${rovid}`))).toHaveLength(0);
+  });
+
+  it('fogja a Bot API URL-alakot (nincs szohatar a "bot" es az id kozott; review #1347)', () => {
+    const hits = scanFile(f('docs/x.md', `curl https://api.telegram.org/bot${full}/getUpdates`));
+    expect(hits.length).toBeGreaterThan(0);
+  });
+
+  it('fogja a "-"-re vegzodo titkot is, teljes es kulcs-neves alakban (review #1347)', () => {
+    const kotojeles = 'AAHd9xKpQ2mWvZ7nR4tLbY' + '6cE1sJfG3hUi-'; // 35 karakter, '-' a vegen
+    expect(scanFile(f('docs/x.md', `token: ${botId}:${kotojeles} kesz`)).length).toBeGreaterThan(0);
+    expect(scanFile(f('docs/x.md', `bot_token: ${kotojeles} kesz`)).length).toBeGreaterThan(0);
+  });
+
+  it('a hatarok tovabbra is allnak: 11 jegyu id es 36 karakteres farok NEM lelet', () => {
+    expect(scanFile(f('docs/x.md', `token: ${'801' + '23456789'}:${secret}`))).toHaveLength(0);
+    expect(scanFile(f('docs/x.md', `token: ${botId}:${secret}X`))).toHaveLength(0);
+  });
+
+  it('NEM tuzel ket egyszeru zaj-alakra', () => {
+    expect(scanFile(f('docs/x.md', 'idopont 20260915:reggel'))).toHaveLength(0);
+    expect(scanFile(f('docs/x.md', `sha: ${'a1b2c3d4'.repeat(5)}`))).toHaveLength(0);
   });
 });
 

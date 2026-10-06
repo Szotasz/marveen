@@ -71,7 +71,7 @@ const INVALID_CREDENTIALS = { error: 'Invalid credentials' }
 // x-forwarded-proto). The primary transport is plain http://127.0.0.1 where an
 // unconditional Secure attribute would make Safari drop the cookie (Chrome
 // exempts 127.0.0.1 as trustworthy; Safari's behavior there is inconsistent).
-function isHttps(req: http.IncomingMessage): boolean {
+export function isHttps(req: http.IncomingMessage): boolean {
   const xf = req.headers['x-forwarded-proto']
   const v = Array.isArray(xf) ? xf[0] : xf
   return typeof v === 'string' && v.split(',')[0]!.trim().toLowerCase() === 'https'
@@ -101,11 +101,15 @@ function str(v: unknown): string {
 // Explicit principal allowlist. Compares on the kind string so tests can
 // exercise kinds the AuthResult union does not carry yet; anything not listed
 // (including undefined auth, which the gate should have 401'd already) fails.
-function kindAllowed(auth: RouteContext['auth'], kinds: readonly string[]): boolean {
+//
+// Exported (2026-09-03) because the transcript route needs the same predicate:
+// a caller-side gate duplicated in two files is exactly the kind of security
+// check that drifts apart. One definition, one place to audit.
+export function kindAllowed(auth: RouteContext['auth'], kinds: readonly string[]): boolean {
   return auth !== undefined && kinds.includes(auth.kind)
 }
 
-const FORBIDDEN_KIND = { error: 'Forbidden for this credential type' }
+export const FORBIDDEN_KIND = { error: 'Forbidden for this credential type' }
 
 // Who may manage dashboard users (list/create/delete). 'session' is included
 // deliberately: a logged-in operator managing users is the existing behavior.

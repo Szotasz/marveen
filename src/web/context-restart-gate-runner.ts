@@ -756,6 +756,20 @@ export async function sendSlashCommand(session: string, command: string): Promis
   })
 }
 
+// One named key into the pane (tmux key name, not literal text: '1', 'Enter'),
+// on the same send lane as the slash commands. MODELCONFIRM1005: answers the
+// CLI's "Switch model?" confirmation after a /model.
+export async function sendKey(session: string, key: string): Promise<void> {
+  await withSessionSendLock(session, null, 'deliver', async () => {
+    try {
+      execFileSync(tmuxBin(), ['send-keys', '-t', session, key], { timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] })
+    } catch (err) {
+      logger.warn({ site: 'context-restart-gate-runner.sendKey', session, key, tmux: tmuxStderr(err) }, 'tmux key send failed')
+      throw err
+    }
+  })
+}
+
 // One Escape into the pane: Claude Code stops the running turn. Same send lane
 // as the slash commands, so it never lands in the middle of a typed line.
 export async function sendInterrupt(session: string): Promise<void> {
