@@ -806,6 +806,45 @@ main {
 .overview-activity-time { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
 
 /* === Kanban Board === */
+/* Ongoing tasks strip: one slim row above the board (see KANBAN_ONGOING_LABEL). */
+.kanban-ongoing[hidden] { display: none; }
+.kanban-ongoing {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  background: var(--bg-input);
+  border-radius: var(--radius);
+  border-left: 3px solid #64748b;
+}
+.kanban-ongoing-title {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.kanban-ongoing-body { display: flex; gap: 6px; flex-wrap: wrap; min-width: 0; }
+.kanban-ongoing-chip {
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--bg-card);
+  border: 1px solid var(--border, transparent);
+  border-radius: 14px;
+  padding: 3px 10px;
+  cursor: pointer;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.kanban-ongoing-chip:hover { border-color: #64748b; }
+.kanban-ongoing-seq { color: var(--text-muted); font-weight: 600; }
+
 /* Five statuses, four fixed tracks: the board always wrapped "done" onto a
  * second row of its own, at every window size. auto-fit fits as many columns
  * as can hold KANBAN_COL_MIN and collapses the rest, so the count follows the

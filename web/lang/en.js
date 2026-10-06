@@ -194,6 +194,7 @@ window._i18n.en = {
   'kanban.col.testing':          'Testing',
   'kanban.col.waiting':          'Waiting',
   'kanban.col.done':             'Done',
+  'kanban.ongoing.title':        'Ongoing tasks',
   'kanban.filter.project':       'Project:',
   'kanban.filter.group_by':      'Group by:',
   'kanban.btn.new_card':         'New card',
