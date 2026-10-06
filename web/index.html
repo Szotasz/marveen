@@ -1589,7 +1589,7 @@
               </div>
             </div>
             <div class="vault-field-group">
-              <label class="vault-field-label">Leírás (opcionális)</label>
+              <label class="vault-field-label" data-i18n="vault.field.desc_label">Leírás (opcionális)</label>
               <input type="text" id="sshDescInput" class="input" placeholder="pl. Produkciós webszerver">
             </div>
           </div>
@@ -2057,7 +2057,7 @@
           <input type="text" id="cardTitle" placeholder="Feladat megnevezése" data-i18n-placeholder="kanban.modal.title_ph">
         </div>
         <div class="form-group">
-          <label for="cardDesc" data-i18n="common.description">Leírás <span class="hint">(opcionális)</span></label>
+          <label for="cardDesc" data-i18n="common.description">Leírás <span class="hint" data-i18n="common.optional_hint">(opcionális)</span></label>
           <textarea id="cardDesc" rows="3" placeholder="Részletek, kontextus..." data-i18n-placeholder="kanban.modal.desc_ph"></textarea>
         </div>
         <div class="form-row">
@@ -2077,11 +2077,11 @@
         </div>
         <div class="form-row">
           <div class="form-group form-half">
-            <label for="cardDue" data-i18n="kanban.modal.due_label">Határidő <span class="hint">(opcionális)</span></label>
+            <label for="cardDue" data-i18n="kanban.modal.due_label">Határidő <span class="hint" data-i18n="common.optional_hint">(opcionális)</span></label>
             <input type="date" id="cardDue">
           </div>
           <div class="form-group form-half">
-            <label for="cardProject" data-i18n="common.project">Projekt <span class="hint">(opcionális)</span></label>
+            <label for="cardProject" data-i18n="common.project">Projekt <span class="hint" data-i18n="common.optional_hint">(opcionális)</span></label>
             <input type="text" id="cardProject" list="projectSuggestions" placeholder="pl. Dream Engine" autocomplete="off">
             <datalist id="projectSuggestions"></datalist>
           </div>
@@ -3219,16 +3219,16 @@
           <input type="text" id="connectorCmd" placeholder="npx -y @my/mcp-server">
         </div>
         <div class="form-group" id="connectorArgsGroup" hidden>
-          <label for="connectorArgs" data-i18n="connectors.field.args">Argumentumok <span class="hint">(opcionális)</span></label>
+          <label for="connectorArgs" data-i18n="connectors.field.args">Argumentumok <span class="hint" data-i18n="common.optional_hint">(opcionális)</span></label>
           <input type="text" id="connectorArgs" placeholder="--port 3000">
         </div>
         <div class="form-group" id="connectorEnvGroup" hidden>
-          <label data-i18n="connectors.field.env_vars">Környezeti változók <span class="hint">(opcionális)</span></label>
+          <label data-i18n="connectors.field.env_vars">Környezeti változók <span class="hint" data-i18n="common.optional_hint">(opcionális)</span></label>
           <div id="connectorEnvList"></div>
           <button type="button" class="btn-link" id="connectorEnvAddBtn" style="font-size:12px;margin-top:4px" data-i18n="connectors.field.env_add_btn">+ Változó hozzáadása</button>
         </div>
         <div class="form-group" id="connectorAssignGroup">
-          <label data-i18n="connectors.field.assign">Hozzárendelés ügynökökhöz <span class="hint">(opcionális)</span></label>
+          <label data-i18n="connectors.field.assign">Hozzárendelés ügynökökhöz <span class="hint" data-i18n="common.optional_hint">(opcionális)</span></label>
           <div id="connectorNewAssignList"></div>
         </div>
         <button class="btn-primary" id="saveConnectorBtn">

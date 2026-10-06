@@ -45,6 +45,10 @@ const KANBAN_READONLY_FIELDS = new Set<string>([
   'dispatched_at',
 ])
 
+// Every key POST /api/kanban/:id/move accepts; anything else is a 400, same
+// rule as the PUT above.
+const KANBAN_MOVE_FIELDS = ['status', 'sort_order', 'actor'] as const
+
 // A headless agent cannot "drag" a card to done, so the dispatch hands it the
 // exact curl commands to (1) post a short, human-readable result summary as a
 // comment -- so the finished task's result lands on its OWN card, visible in the
@@ -755,7 +759,20 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   if (kanbanMoveMatch && method === 'POST') {
     const id = decodeURIComponent(kanbanMoveMatch[1])
     const body = await readBody(req)
-    const { status, sort_order, actor } = JSON.parse(body.toString())
+    const moveBody = JSON.parse(body.toString()) as unknown
+    // An unknown key used to be dropped while the move still answered ok:true,
+    // so a misspelt field (`sortOrder`, `state`) looked applied. Refuse the
+    // whole move and name the accepted fields, as the PUT does.
+    if (moveBody === null || typeof moveBody !== 'object' || Array.isArray(moveBody)) {
+      json(res, { error: `Body must be a JSON object. Accepted fields: ${KANBAN_MOVE_FIELDS.join(', ')}` }, 400)
+      return true
+    }
+    const unknownMoveKeys = Object.keys(moveBody).filter((k) => !(KANBAN_MOVE_FIELDS as readonly string[]).includes(k))
+    if (unknownMoveKeys.length > 0) {
+      json(res, { error: `Unknown field(s): ${unknownMoveKeys.join(', ')}. Accepted: ${KANBAN_MOVE_FIELDS.join(', ')}` }, 400)
+      return true
+    }
+    const { status, sort_order, actor } = moveBody as { status: Parameters<typeof moveKanbanCard>[1]; sort_order?: number; actor?: unknown }
     // The same actor rule as the PUT (card f6fba9ec, X16): before X16 a boolean actor moved the card, then the event
     // insert threw (500), and the move stayed with no row.
     const who = kanbanWriteActor(actor, ctx.auth)
@@ -809,6 +826,9 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   const kanbanCommentsMatch = path.match(/^\/api\/kanban\/([^/]+)\/comments$/)
   if (kanbanCommentsMatch && method === 'GET') {
     const cardId = decodeURIComponent(kanbanCommentsMatch[1])
+    // Same guard as the POST below: an empty array for a mistyped id reads as
+    // "this card has no comments", which is indistinguishable from a real answer.
+    if (!getKanbanCard(cardId)) { json(res, { error: `Kártya nem található: ${cardId}` }, 404); return true }
     json(res, getKanbanComments(cardId))
     return true
   }
@@ -907,7 +927,10 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
           id,
           title: st.title,
           description: st.description,
-          assignee: st.assignee ?? undefined,
+          // The breakdown prompt allows a null assignee, and an ownerless child
+          // is easy to lose on the board; the parent's owner is almost always
+          // right for a piece of the same work, and is one click to change.
+          assignee: st.assignee ?? parent.assignee ?? undefined,
           priority: (st.priority as any) ?? 'normal',
           project: parent.project ?? undefined,
           parent_id: parentId,
