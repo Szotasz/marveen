@@ -1350,7 +1350,14 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     if (!token) { json(res, { error: `${provider} not configured for this agent` }, 404); return true }
     const channelProvider = getProvider(provider)
     const result = await channelProvider.validateToken(token)
-    if (result.ok) { json(res, { ok: true, botName: result.botName }); return true }
+    if (result.ok) {
+      json(res, {
+        ok: true,
+        botName: result.botName,
+        ...(result.missingScopes ? { scopes: result.scopes, missingScopes: result.missingScopes } : {}),
+      })
+      return true
+    }
     json(res, { error: result.error }, 400)
     return true
   }
