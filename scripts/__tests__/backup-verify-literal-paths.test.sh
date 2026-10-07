@@ -61,8 +61,15 @@ has "a load-bearing directory marker" "home/.claude/skills"
 hasnt "the character-class reading of [id] does not match" \
   "repo/agents/x/reports/r1/app/items/i/edit/form.tsx"
 hasnt "a prefix without a path boundary does not match" "repo/sto"
-hasnt "store/x is not satisfied by store/xyz" "repo/store/claudeclaw.dbx"
-hasnt "a longer file name does not match" "repo/app/(group)/a+b.tsx"
+# The path boundary, in the direction the names describe: the ARCHIVED name is the
+# longer one, the wanted path is a prefix of it without a "/" after it. Only the
+# boundary check stops these (card TESTFOLLOWUP1007D: the two cases below used to
+# hold the opposite direction under these names).
+hasnt "store/x is not satisfied by store/xyz" "repo/store/claudeclaw"
+hasnt "a longer archived file name does not satisfy a shorter wanted one" "repo/app/(group)/a+b.t"
+# The opposite direction: a wanted path LONGER than any archived member.
+hasnt "a wanted path longer than the archived file does not match" "repo/store/claudeclaw.dbx"
+hasnt "a wanted file name longer than the archived one does not match" "repo/app/(group)/a+b.tsx"
 hasnt "an empty path never matches" ""
 : > "$TMP/empty.txt"
 if archive_list_has "$TMP/empty.txt" "repo/store"; then fail "an empty listing holds nothing"; else pass "an empty listing holds nothing"; fi
