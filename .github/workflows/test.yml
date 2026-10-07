@@ -73,6 +73,10 @@ jobs:
       - run: bash scripts/__tests__/morning-timer-park.test.sh
       - run: bash scripts/__tests__/userbot-arming-gate.test.sh
       - run: bash scripts/__tests__/supabase-q-token-hiding.test.sh
+      # The file_mtime() helper's GNU branch is only exercised on Linux, so this
+      # is where the "Linux unchanged" claim is actually checked. Hermetic:
+      # extracts the helper and stats a file in a throwaway dir.
+      - run: bash scripts/__tests__/file-mtime-portable.test.sh
       # REPLAYTOOL924: the reply-tool naming in the ledger hooks had tests that
       # only ran by hand, so a green PR said nothing about them. All three are
       # hermetic (LEDGER_DB_PATH on a throwaway DB, temp dirs).

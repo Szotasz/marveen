@@ -12,6 +12,17 @@ WEB_PORT="${WEB_PORT:-3420}"
 
 timestamp() { date '+%Y-%m-%d %H:%M:%S'; }
 
+# File mtime in epoch seconds, portably: GNU stat (Linux) first, BSD stat
+# (macOS) as the fallback. GNU-only `stat -c %Y` is an illegal option on macOS;
+# behind `|| echo 0` that silently read every stamp as epoch 0. Prints 0 when
+# the file is missing/unreadable or the result is not a plain integer.
+file_mtime() {
+  local m
+  m="$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null)" || m=0
+  case "$m" in (''|*[!0-9]*) m=0;; esac
+  printf '%s\n' "$m"
+}
+
 # Resolve which channel an agent must be respawned on, from its OWN
 # agent-config.json channelProvider -- the same field src/web/agent-process.ts
 # launches from. Sets AGENT_PROVIDER / TOKEN_VAR / STATE_ENV_VAR.
@@ -182,7 +193,7 @@ if ! tmux has-session -t "$MAIN_SESSION" 2>/dev/null; then
   # only act as the last-resort backstop once every other actor has stopped trying.
   MAIN_RESPAWN_STAMP="$INSTALL_DIR/store/.channel-last-respawn"
   _mlast=0
-  [ -f "$MAIN_RESPAWN_STAMP" ] && _mlast="$(stat -c %Y "$MAIN_RESPAWN_STAMP" 2>/dev/null || echo 0)"
+  [ -f "$MAIN_RESPAWN_STAMP" ] && _mlast="$(file_mtime "$MAIN_RESPAWN_STAMP")"
   if [ "$(( $(date +%s) - _mlast ))" -lt 900 ]; then
     echo "$(timestamp) [watchdog] $MAIN_SESSION missing but a respawn is within the 900s grace -- deferring (systemd/channels.sh/channel-watchdog cover it)" >> "$LOG"
   else
