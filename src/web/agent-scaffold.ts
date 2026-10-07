@@ -1674,13 +1674,38 @@ export function quarantineReaderDomains(storeDir = STORE_DIR): string[] {
   }
 }
 
+// e708d096 (be27524d (1)): the reader's posture, read the way the
+// egress-gate hook reads it (scripts/hooks/egress-gate.mjs): ONLY the literal
+// string "denylist" is the open posture; any other value, a missing file or
+// malformed JSON is the default allowlist posture. The rendered posture block
+// follows this, so the prompt never states an open posture the hook does not run.
+export type QuarantineReaderPosture = 'allowlist' | 'denylist'
+
+export function quarantineReaderPosture(storeDir = STORE_DIR): QuarantineReaderPosture {
+  try {
+    const raw = JSON.parse(readFileSync(join(storeDir, 'egress-allowlist.json'), 'utf-8'))
+    return raw?.quarantine_reader_posture === 'denylist' ? 'denylist' : 'allowlist'
+  } catch {
+    return 'allowlist'
+  }
+}
+
 // Render the reader definition: the template's shipped feeds, plus the domains
-// the owner allowed on this install. Pure, so the tests drive the same string
-// the deploy writes.
+// the owner allowed on this install, plus (e708d096) the install's posture.
+// Pure, so the tests drive the same string the deploy writes.
 //
 // Marker-delimited so a re-render replaces the previous block instead of
 // stacking copies, and so a reader can see which lines are per-install.
-export function renderQuarantineReader(template: string, domains: string[]): string {
+export function renderQuarantineReader(
+  template: string,
+  domains: string[],
+  posture: QuarantineReaderPosture = 'allowlist',
+): string {
+  return renderPostureBlock(renderDomainBlock(template, domains), posture)
+}
+
+// The per-install domain block (the whole render before e708d096).
+function renderDomainBlock(template: string, domains: string[]): string {
   const BEGIN = '<!-- BEGIN PER-INSTALL DOMAINS (from store/egress-allowlist.json) -->'
   const END = '<!-- END PER-INSTALL DOMAINS -->'
   // Strip a previous block by literal position, NOT with a regex: the markers
@@ -1717,6 +1742,51 @@ export function renderQuarantineReader(template: string, domains: string[]): str
   const last = bullets[bullets.length - 1]
   const at = sectionStart + (last.index ?? 0) + last[0].length
   return `${stripped.slice(0, at)}\n${block}${stripped.slice(at)}`
+}
+
+// e708d096: the per-install POSTURE block. In the open (denylist) posture the
+// reader's prompt refused an unfamiliar host unless the CALLER said the install
+// runs the open posture (the template's "The open posture" section); a
+// sub-agent's caller does not know the posture (only the main agent imports the
+// owner rule), so its reader refused without ever fetching (measured on a live install).
+// The render states the posture as a per-install fact, which the template takes
+// as the caller's statement; the hook still enforces the real posture on every
+// call. Placed at the end of the open posture section, before the next ##
+// heading (at the end of the text when the template has no such section), and
+// marker-delimited like the domain block: a re-render replaces it, and the
+// allowlist posture removes it, leaving the template bytes as they were.
+const POSTURE_BEGIN = '<!-- BEGIN PER-INSTALL POSTURE (from store/egress-allowlist.json) -->'
+const POSTURE_END = '<!-- END PER-INSTALL POSTURE -->'
+const POSTURE_TEXT = [
+  '**This install runs the open posture.** The operator set `"quarantine_reader_posture": "denylist"`',
+  'in `store/egress-allowlist.json` (read when this definition was rendered). This counts as the',
+  'caller stating the open posture: attempt the fetch of a public `http`/`https` URL even when the',
+  'caller does not mention the posture. The hook still enforces the real posture on every call, and',
+  'the always-refused list below applies in every posture.',
+].join('\n')
+
+function renderPostureBlock(text: string, posture: QuarantineReaderPosture): string {
+  // Strip a previous block, with the blank line the insertion added after it,
+  // by literal position (no regex over the markers, as in the domain block).
+  let out = text
+  const b = out.indexOf(POSTURE_BEGIN)
+  if (b >= 0) {
+    const e = out.indexOf(POSTURE_END, b)
+    if (e > b) {
+      let end = e + POSTURE_END.length
+      if (out.startsWith('\n\n', end)) end += 2
+      out = out.slice(0, b) + out.slice(end)
+    }
+  }
+  if (posture !== 'denylist') return out
+  const heading = /^##\s+The open posture\b.*$/m.exec(out)
+  let at = out.length
+  if (heading) {
+    const sectionStart = (heading.index ?? 0) + heading[0].length
+    const next = /^##\s+/m.exec(out.slice(sectionStart))
+    if (next) at = sectionStart + (next.index ?? 0)
+  }
+  return `${out.slice(0, at)}${POSTURE_BEGIN}\n${POSTURE_TEXT}\n${POSTURE_END}\n\n${out.slice(at)}`
 }
 
 // Idempotent migration: ensure a sub-agent's email-send + self-pace gate hook
@@ -1824,7 +1894,11 @@ export function ensureQuarantineReader(
   const destPath = join(destDir, 'quarantine-reader.md')
   let rendered: string
   try {
-    rendered = renderQuarantineReader(readFileSync(tplPath, 'utf-8'), quarantineReaderDomains(paths?.storeDir))
+    rendered = renderQuarantineReader(
+      readFileSync(tplPath, 'utf-8'),
+      quarantineReaderDomains(paths?.storeDir),
+      quarantineReaderPosture(paths?.storeDir),
+    )
   } catch {
     return false
   }
