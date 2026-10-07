@@ -56,6 +56,7 @@ import { writeScheduledRunSnapshot, isScheduledRunReference } from './scheduled-
 import { cronPrevOccurrence, effectiveCronTz } from './cron.js'
 import {
   listScheduledTasks,
+  readScheduledTask,
   SCHEDULED_TASKS_DIR,
   SCHEDULED_TASK_INLINE_MAX_CHARS,
   SCHEDULED_TASK_BODY_WARN_CHARS,
@@ -1138,9 +1139,28 @@ export function resetPreCheckAnswersForTests(): void {
 // or disabled since the tick read the list. A fire must act on this, not on the
 // tick's snapshot: an edited prompt or target is the one that goes out, and a
 // task switched off in the meantime does not fire.
+//
+// SCHEDFRESH1007: read the one task, not the whole list (93 tasks on the owner's
+// host, two files each, on every fire). A task's folder is normally named after
+// it, so the folder of that name is tried first; the full scan stays the
+// fallback for a folder whose SKILL.md names another task, or a task whose
+// folder is named differently -- the folder-read answer is only taken when its
+// name matches.
 function currentEnabledTask(name: string): ScheduledTask | null {
-  const t = listScheduledTasks().find(x => x.name === name)
+  const direct = readScheduledTask(name)
+  const t = direct && direct.name === name ? direct : listScheduledTasks().find(x => x.name === name)
   return t && t.enabled ? t : null
+}
+
+// Who a task fires at, from its `agent` field: everyone running plus the main
+// agent for 'all', otherwise the one agent (the main agent when unset).
+function resolveTargetAgents(task: ScheduledTask): string[] {
+  if (task.agent === 'all') {
+    // Broadcast to all running agents + main
+    const running = listAgentNames().filter(a => isAgentRunning(a))
+    return [MAIN_AGENT_ID, ...running]
+  }
+  return [task.agent || MAIN_AGENT_ID]
 }
 
 // Try to fire a task at a single target agent. Returns the outcome so the
@@ -2670,15 +2690,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
         continue
       }
 
-      let targetAgents: string[]
-
-      if (task.agent === 'all') {
-        // Broadcast to all running agents + main
-        const running = listAgentNames().filter(a => isAgentRunning(a))
-        targetAgents = [MAIN_AGENT_ID, ...running]
-      } else {
-        targetAgents = [task.agent || MAIN_AGENT_ID]
-      }
+      const targetAgents = resolveTargetAgents(task)
 
       // Quota gate. Every heartbeat across the fleet spends from the same
       // subscription pool as the owner's own turns, so a routine background
@@ -2776,6 +2788,11 @@ export function startScheduleRunner(): NodeJS.Timeout {
         // meanwhile fires at none of its remaining targets.
         const current = currentEnabledTask(task.name)
         if (!current) break
+        // SCHEDFRESH1007: the target list above is from the tick's snapshot too.
+        // If the task's `agent` field changed meanwhile, a remaining target that
+        // the current definition no longer names does not fire. A target the
+        // edit ADDED is not fired in this tick; the next occurrence reaches it.
+        if (current.agent !== task.agent && !resolveTargetAgents(current).includes(agentName)) continue
         const result = await attemptFireTask(current, agentName, now, cronPc.prefix, lateCatchUpMs)
         if (result === 'starting') {
           // Agent was auto-started this tick. ALWAYS enqueue the retry that

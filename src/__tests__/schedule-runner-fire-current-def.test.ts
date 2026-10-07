@@ -17,6 +17,13 @@ import type { ScheduledTask } from '../web/scheduled-tasks-io.js'
 
 const mockAppendTaskRun = vi.fn()
 const mockListScheduledTasks = vi.fn(() => [] as ScheduledTask[])
+// Default: the folder of a task is named after it (the normal case).
+const mockReadScheduledTask = vi.fn((n: string): ScheduledTask | null => mockListScheduledTasks().find(t => t.name === n) ?? null)
+// The RUNNER's listScheduledTasks calls (the read mock below also consults the
+// list, so the vi.fn call count would mix the two), and that count when the
+// first fire started: the difference is the per-fire full scans.
+const runnerListCalls = { n: 0 }
+let listCallsAtFirstFire = -1
 const sentPrompts: Array<{ session: string; prompt: string }> = []
 // What the first fire does to the task list, before the second task's turn.
 let duringFirstFire: () => void = () => {}
@@ -56,7 +63,8 @@ vi.mock('../channel-provider.js', async (importOriginal) => {
 })
 
 vi.mock('../web/scheduled-tasks-io.js', () => ({
-  listScheduledTasks: () => mockListScheduledTasks(),
+  listScheduledTasks: () => { runnerListCalls.n++; return mockListScheduledTasks() },
+  readScheduledTask: (n: string) => mockReadScheduledTask(n),
   SCHEDULED_TASKS_DIR: '/tmp/marveen-fire-current-def-no-tasks-dir',
   SCHEDULED_TASK_INLINE_MAX_CHARS: 1_500,
   SCHEDULED_TASK_BODY_WARN_CHARS: 20_000,
@@ -70,6 +78,7 @@ vi.mock('../web/agent-process.js', () => ({
   isSessionReadyForPrompt: () => true,
   sendPromptToSession: async (session: string, prompt: string) => {
     const first = sentPrompts.length === 0
+    if (first) listCallsAtFirstFire = runnerListCalls.n
     sentPrompts.push({ session, prompt })
     if (first) duringFirstFire()
     return 'sent'
@@ -119,7 +128,10 @@ describe('schedule runner: a cron fire uses the task as it is now, not the tick 
     vi.setSystemTime(new Date('2026-07-31T10:30:00.000Z'))
     sentPrompts.length = 0
     duringFirstFire = () => {}
+    listCallsAtFirstFire = -1
+    runnerListCalls.n = 0
     mockListScheduledTasks.mockReturnValue([FIRST, SECOND])
+    mockReadScheduledTask.mockImplementation((n: string) => mockListScheduledTasks().find(t => t.name === n) ?? null)
   })
 
   afterEach(() => {
@@ -157,5 +169,49 @@ describe('schedule runner: a cron fire uses the task as it is now, not the tick 
     expect(second).toHaveLength(1)
     expect(second[0].prompt).toContain('SECOND task prompt, EDITED')
     expect(second[0].prompt).not.toContain('SECOND task prompt, original')
+  })
+
+  // SCHEDFRESH1007 (1): the target list is from the tick's snapshot too.
+  it('the second task\'s agent is changed while the first one fires -> the old target is not fired', async () => {
+    const BY_AGENT = task({ name: 'bb-second-task', prompt: 'SECOND by agent', agent: 'curagent' })
+    mockListScheduledTasks.mockReturnValue([FIRST, BY_AGENT])
+    duringFirstFire = () => { mockListScheduledTasks.mockReturnValue([FIRST, { ...BY_AGENT, agent: 'otheragent' }]) }
+    await runOneTick()
+    expect(sentTo('first-session')).toHaveLength(1)
+    expect(sentTo('agent-curagent')).toHaveLength(0)
+    // documented limit: a target the edit ADDED is reached at the next occurrence, not in this tick
+    expect(sentTo('agent-otheragent')).toHaveLength(0)
+  })
+
+  it('control: the agent unchanged -> the task fires at its agent', async () => {
+    const BY_AGENT = task({ name: 'bb-second-task', prompt: 'SECOND by agent', agent: 'curagent' })
+    mockListScheduledTasks.mockReturnValue([FIRST, BY_AGENT])
+    await runOneTick()
+    expect(sentTo('agent-curagent')).toHaveLength(1)
+  })
+
+  // SCHEDFRESH1007 (2): one task is read, not the whole list.
+  it('a fire reads the one task by name: no full list scan once the fires have started', async () => {
+    await runOneTick()
+    expect(sentTo('second-session')).toHaveLength(1)
+    expect(listCallsAtFirstFire).toBeGreaterThanOrEqual(0)
+    expect(runnerListCalls.n).toBe(listCallsAtFirstFire)
+    expect(mockReadScheduledTask).toHaveBeenCalledWith('bb-second-task')
+  })
+
+  it('a task whose folder is named differently is still found (full-scan fallback) and fires', async () => {
+    mockReadScheduledTask.mockImplementation(() => null)
+    await runOneTick()
+    expect(sentTo('second-session')).toHaveLength(1)
+    expect(sentTo('second-session')[0].prompt).toContain('SECOND task prompt, original')
+  })
+
+  it('a folder named after the task but holding ANOTHER task is not taken for it', async () => {
+    mockReadScheduledTask.mockImplementation((n: string) =>
+      n === 'bb-second-task' ? { ...SECOND, name: 'zz-another-task', prompt: 'ANOTHER task prompt', enabled: false } : null)
+    await runOneTick()
+    const second = sentTo('second-session')
+    expect(second).toHaveLength(1)
+    expect(second[0].prompt).toContain('SECOND task prompt, original')
   })
 })
