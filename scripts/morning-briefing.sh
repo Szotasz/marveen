@@ -54,11 +54,13 @@ cd "$INSTALL_DIR"
 # with neither, the run must not start at all: no owner chat, nothing to
 # deliver, no point spending the model call, and NO stamp (so the guard
 # retries next trigger instead of silently marking the day done).
+#
+# MBSLACKFALLBACK1007: a missing Telegram owner chat is no longer the end of
+# the run by itself -- a Slack-only install delivers to NOTIFY_SLACK_TARGET.
+# The "nothing to deliver to" decision is made below, once both channels are
+# known (still before the model call).
 . "$INSTALL_DIR/scripts/lib/owner-chat.sh"
-if ! CHAT_ID="$(resolve_owner_chat_id "$INSTALL_DIR/.env" 2>>"$LOG")"; then
-  echo "=== Reggeli napindító kihagyva: nincs tulajdonos-chat (guard nem pecsételve) ===" >> "$LOG"
-  exit 0
-fi
+CHAT_ID="$(resolve_owner_chat_id "$INSTALL_DIR/.env" 2>>"$LOG")" || CHAT_ID=""
 
 # Delivery-proof sentinel. The dedup stamp must record "the briefing REACHED
 # the owner", not "the process exited 0" -- those diverged on 2026-09-13: the
@@ -117,8 +119,29 @@ if [ -z "$TG_TOKEN" ]; then
   _tg_sd="$(_owner_chat_state_dir "$INSTALL_DIR/.env" telegram)"
   TG_TOKEN="$(_owner_chat_normalize "$(grep -E '^TELEGRAM_BOT_TOKEN=' "$_tg_sd/.env" 2>/dev/null | head -1 | cut -d= -f2-)")"
 fi
-if [ -z "$TG_TOKEN" ]; then
-  echo "=== Reggeli napindító kihagyva: nincs TELEGRAM_BOT_TOKEN (guard nem pecsételve) ===" >> "$LOG"
+
+# MBSLACKFALLBACK1007 (SLACKATALLAS1006): the same channel rule as notify.sh,
+# without its two snags for this caller -- notify.sh reads the Telegram token
+# from the install .env only (the state-dir token above would be lost) and
+# sends Telegram with parse_mode=HTML (a plain briefing with "&" or "<" would
+# risk a refused send). The rule:
+#   - Slack first when NOTIFY_SLACK_TARGET is set (scripts/slack-notify.mjs
+#     --kind owner, the same helper and target lookup notify.sh uses);
+#   - Telegram too, unless Slack delivered AND NOTIFY_TELEGRAM=0 (the helper
+#     answers "telegram":"skip"); a Slack failure never drops Telegram;
+#   - neither channel configured -> no model call, no stamp.
+SLACK_TARGET=""
+if command -v node >/dev/null 2>&1 && [ -f "$INSTALL_DIR/dist/settings-store.js" ] && [ -f "$INSTALL_DIR/scripts/slack-notify.mjs" ]; then
+  SLACK_TARGET="$(node -e '
+    import(process.argv[1]).then((m) => {
+      try { process.stdout.write(String(m.getEffectiveSettingValue("NOTIFY_SLACK_TARGET") ?? "").trim()) } catch {}
+    }).catch(() => {})
+  ' "$INSTALL_DIR/dist/settings-store.js" 2>/dev/null)"
+fi
+TG_READY=0
+if [ -n "$TG_TOKEN" ] && [ -n "$CHAT_ID" ]; then TG_READY=1; fi
+if [ "$TG_READY" = "0" ] && [ -z "$SLACK_TARGET" ]; then
+  echo "=== Reggeli napindító kihagyva: se Telegram (token + tulajdonos-chat), se Slack-cél (NOTIFY_SLACK_TARGET) -- guard nem pecsételve ===" >> "$LOG"
   exit 0
 fi
 
@@ -166,32 +189,53 @@ if [ "$RUN_RC" -ne 0 ] || [ "$LAST_LINE" != "$SENTINEL" ]; then
 fi
 grep -vxF "$SENTINEL" "$RUN_OUT" > "$BODY"
 
+if [ ! -s "$BODY" ] || ! grep -q '[^[:space:]]' "$BODY"; then
+  echo "=== NEM kézbesítve: üres szöveg -- guard NEM pecsételve ===" >> "$LOG"
+  echo "=== Kész $(date) ===" >> "$LOG"
+  exit 0
+fi
+
+SLACK_OK=0; TG_WANT="$TG_READY"
+if [ -n "$SLACK_TARGET" ]; then
+  # The helper chunks for Slack itself (splitForSlack); the text goes on stdin.
+  SLACK_OUT="$(node "$INSTALL_DIR/scripts/slack-notify.mjs" --kind owner -- - < "$BODY" 2>> "$LOG")"
+  SLACK_RC=$?
+  echo "Slack: rc=$SLACK_RC $SLACK_OUT" >> "$LOG"
+  [ "$SLACK_RC" -eq 0 ] && SLACK_OK=1
+  case "$SLACK_OUT" in *'"telegram":"skip"'*) [ "$SLACK_RC" -eq 0 ] && TG_WANT=0 ;; esac
+fi
+
 # Byte-exact chunks under the Bot API's 4096 limit, split at line ends where it
 # can (their concatenation is the body), NUL-separated for `read -d ''`.
-DELIVERED=1; CHUNKS=0
-while IFS= read -r -d '' chunk; do
-  CHUNKS=$((CHUNKS + 1))
-  if ! send_telegram_message "$TG_TOKEN" "$CHAT_ID" "$chunk" 2>> "$LOG"; then
-    DELIVERED=0
-    break
-  fi
-done < <(node -e '
-  const t = require("fs").readFileSync(process.argv[1], "utf-8").replace(/\s+$/, "")
-  const MAX = 4000
-  let i = 0
-  while (i < t.length) {
-    let end = Math.min(i + MAX, t.length)
-    if (end < t.length) { const nl = t.lastIndexOf("\n", end - 1); if (nl >= i) end = nl + 1 }
-    process.stdout.write(t.slice(i, end) + "\0")
-    i = end
-  }
-' "$BODY")
+TG_DELIVERED=0; CHUNKS=0
+if [ "$TG_WANT" = "1" ]; then
+  TG_DELIVERED=1
+  while IFS= read -r -d '' chunk; do
+    CHUNKS=$((CHUNKS + 1))
+    if ! send_telegram_message "$TG_TOKEN" "$CHAT_ID" "$chunk" 2>> "$LOG"; then
+      TG_DELIVERED=0
+      break
+    fi
+  done < <(node -e '
+    const t = require("fs").readFileSync(process.argv[1], "utf-8").replace(/\s+$/, "")
+    const MAX = 4000
+    let i = 0
+    while (i < t.length) {
+      let end = Math.min(i + MAX, t.length)
+      if (end < t.length) { const nl = t.lastIndexOf("\n", end - 1); if (nl >= i) end = nl + 1 }
+      process.stdout.write(t.slice(i, end) + "\0")
+      i = end
+    }
+  ' "$BODY")
+  [ "$CHUNKS" -gt 0 ] || TG_DELIVERED=0
+fi
 
-if [ "$DELIVERED" = "1" ] && [ "$CHUNKS" -gt 0 ]; then
+# "The owner got it" = at least one channel delivered the whole text.
+if [ "$SLACK_OK" = "1" ] || [ "$TG_DELIVERED" = "1" ]; then
   echo "$TODAY" > "$STAMP"
-  echo "=== Kézbesítve ($CHUNKS darab), guard bepecsételve: $TODAY ===" >> "$LOG"
+  echo "=== Kézbesítve (Slack: $SLACK_OK, Telegram: $TG_DELIVERED, $CHUNKS darab), guard bepecsételve: $TODAY ===" >> "$LOG"
 else
-  echo "=== NEM kézbesítve (Bot API: $CHUNKS darabból nem mind ok, vagy üres szöveg) -- guard NEM pecsételve ===" >> "$LOG"
+  echo "=== NEM kézbesítve (Slack: $SLACK_OK, Telegram: $TG_DELIVERED) -- guard NEM pecsételve ===" >> "$LOG"
 fi
 
 echo "=== Kész $(date) ===" >> "$LOG"
