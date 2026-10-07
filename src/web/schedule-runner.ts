@@ -1134,6 +1134,15 @@ export function resetPreCheckAnswersForTests(): void {
   preCheckAnswers.clear()
 }
 
+// SCHEDRECHECK1007: the task as it is on disk now, or null when it was deleted
+// or disabled since the tick read the list. A fire must act on this, not on the
+// tick's snapshot: an edited prompt or target is the one that goes out, and a
+// task switched off in the meantime does not fire.
+function currentEnabledTask(name: string): ScheduledTask | null {
+  const t = listScheduledTasks().find(x => x.name === name)
+  return t && t.enabled ? t : null
+}
+
 // Try to fire a task at a single target agent. Returns the outcome so the
 // caller can decide whether to queue a retry. Splitting this out means the
 // pendingTaskRetries loop and the normal cron loop share one code path.
@@ -2531,12 +2540,12 @@ export function startScheduleRunner(): NodeJS.Timeout {
       // this retry, meanwhile. The checks above saw the state from before the
       // await, so read both again before acting on the answer. Nothing fires
       // here; a disabled or deleted task's row is dropped by the checks above
-      // on the next tick, as for any other retry.
-      if (taskDef.preCheck) {
-        const current = listScheduledTasks().find(t => t.name === row.task_name)
-        if (!current || !current.enabled) continue
-        if (!getPendingTaskRetry(row.task_name, row.agent_name)) continue
-      }
+      // on the next tick, as for any other retry. SCHEDRECHECK1007: the task
+      // is re-read even without a pre-check (an earlier row's fire in this
+      // tick awaits too), and the fire below uses the CURRENT definition.
+      const current = currentEnabledTask(row.task_name)
+      if (!current) continue
+      if (taskDef.preCheck && !getPendingTaskRetry(row.task_name, row.agent_name)) continue
       if (retryPc.skip) {
         deletePendingTaskRetry(row.task_name, row.agent_name)
         appendTaskRun(row.task_name, row.agent_name, 'skipped')
@@ -2544,7 +2553,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
       }
 
       const view = toPendingRetryView(row, now)
-      const result = await attemptFireTask(taskDef, row.agent_name, now, retryPc.prefix)
+      const result = await attemptFireTask(current, row.agent_name, now, retryPc.prefix)
       if (result === 'fired') {
         deletePendingTaskRetry(row.task_name, row.agent_name)
         continue
@@ -2582,7 +2591,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
       // refuses anything that is genuinely mid-turn; if it clears, the next
       // tick's retry delivers on its own.
       if (stillPresent && result === 'busy' && view.ageMs > SCHEDULE_JANITOR_PARKED_MIN_AGE_MS) {
-        const { session, host } = resolveTaskTarget(taskDef, row.agent_name)
+        const { session, host } = resolveTaskTarget(current, row.agent_name)
         if (await clearStaleParkedInput(session, host)) {
           logger.warn(
             { task: row.task_name, agent: row.agent_name, session, waitingMs: view.ageMs, attempts: row.attempt_count },
@@ -2760,7 +2769,14 @@ export function startScheduleRunner(): NodeJS.Timeout {
         // If already queued for retry from an earlier tick, leave it to
         // the retry handler -- don't re-queue or double-fire.
         if (pendingKeys.has(key)) continue
-        const result = await attemptFireTask(task, agentName, now, cronPc.prefix, lateCatchUpMs)
+        // SCHEDRECHECK1007: `task` is from the list read at the start of the
+        // tick, and every await since (an earlier task's fire, this task's fire
+        // at an earlier target, a direct digest) let the operator change it.
+        // Fire with the definition as it is now; a task disabled or deleted
+        // meanwhile fires at none of its remaining targets.
+        const current = currentEnabledTask(task.name)
+        if (!current) break
+        const result = await attemptFireTask(current, agentName, now, cronPc.prefix, lateCatchUpMs)
         if (result === 'starting') {
           // Agent was auto-started this tick. ALWAYS enqueue the retry that
           // delivers the prompt once the session is ready -- skipIfBusy must
@@ -2774,7 +2790,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
           // state is bypassed. Dropping that on skipIfBusy would turn the
           // deferral into a silent loss, so forceSend is exempt from the
           // skip and always queues the retry.
-          if (task.skipIfBusy && !task.forceSend) {
+          if (current.skipIfBusy && !current.forceSend) {
             // Opt-in skip for short-cadence tasks (e.g. 30-min heartbeats):
             // a single missed tick is harmless because the next one is
             // already on the way, and queueing them produces spurious

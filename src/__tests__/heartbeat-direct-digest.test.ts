@@ -139,7 +139,7 @@ describe('(A) which tasks the runner sends itself -- flag-less tasks are untouch
     const src = readFileSync(join(__dirname, '..', 'web', 'schedule-runner.ts'), 'utf-8')
     const direct = src.indexOf('if (isDirectDigestTask(task)) {\n        await sendHeartbeatDigestDirect(')
     const quota = src.indexOf('const quota = decideQuotaAction({')
-    const dispatch = src.indexOf('const result = await attemptFireTask(task, agentName, now, cronPc.prefix, lateCatchUpMs)')
+    const dispatch = src.indexOf('const result = await attemptFireTask(current, agentName, now, cronPc.prefix, lateCatchUpMs)')
     expect(direct).toBeGreaterThan(0)
     expect(direct).toBeLessThan(quota)
     expect(direct).toBeLessThan(dispatch)

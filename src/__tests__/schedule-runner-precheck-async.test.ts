@@ -229,7 +229,7 @@ describe('wiring (source-level)', () => {
   it('the pending-retry loop awaits the thinned pre-check before attemptFireTask, and the synchronous form is gone from it', () => {
     expect(retryLoop).toMatch(/const retryPc = await retryPreCheck\(taskDef, now\)/)
     expect(retryLoop).not.toMatch(/runPreCheck\(taskDef\)/)
-    expect(retryLoop.indexOf('retryPreCheck(taskDef')).toBeLessThan(retryLoop.indexOf('attemptFireTask(taskDef,'))
+    expect(retryLoop.indexOf('retryPreCheck(taskDef')).toBeLessThan(retryLoop.indexOf('attemptFireTask(current,'))
   })
 
   it('the cron loop records its fresh answer right after running it', () => {

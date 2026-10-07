@@ -154,6 +154,7 @@ describe('schedule runner: a pending retry re-reads the task and the row after i
   beforeEach(() => {
     vi.stubEnv('SCHEDULER_TZ', 'Europe/Budapest')
     vi.clearAllMocks()
+    mockSendPrompt.mockImplementation(() => 'sent')
     vi.useFakeTimers()
     // A quiet moment (no cron occurrence for the fixture): only the retry loop acts.
     vi.setSystemTime(new Date('2026-07-31T10:30:00.000Z'))
@@ -190,6 +191,36 @@ describe('schedule runner: a pending retry re-reads the task and the row after i
     expect(preCheckRuns).toBeGreaterThan(0)
     expect(fired()).toBe(false)
     expect(mockDeletePendingRetry).toHaveBeenCalledWith(TASK.name, 'retryagent')
+  })
+
+  // SCHEDRECHECK1007: the fire uses the definition read AFTER the await.
+  it('the prompt is edited during the pre-check -> the EDITED prompt goes out', async () => {
+    duringPreCheck = () => { mockListScheduledTasks.mockReturnValue([{ ...TASK, prompt: 'Do the EDITED thing.' }]) }
+    await runOneTick()
+    expect(preCheckRuns).toBeGreaterThan(0)
+    const prompts = mockSendPrompt.mock.calls.map(c => String((c as unknown[])[1]))
+    expect(prompts.length).toBeGreaterThan(0)
+    for (const p of prompts) {
+      expect(p).toContain('Do the EDITED thing.')
+      expect(p).not.toContain('Do the thing.')
+    }
+  })
+
+  // SCHEDRECHECK1007: an earlier row's fire is an await too. A second retry, of
+  // a task WITHOUT a pre-check, whose task is disabled while the first one
+  // fires, must not fire from the tick's snapshot.
+  it('a task without a pre-check, disabled while an earlier retry fires -> it does not fire', async () => {
+    const PLAIN: ScheduledTask = { ...TASK, name: 'retry-recheck-plain', preCheck: undefined, targetSession: 'plain-session' }
+    mockListScheduledTasks.mockReturnValue([TASK, PLAIN])
+    mockListPendingRetries.mockReturnValue([{ ...ROW }, { ...ROW, task_name: PLAIN.name }])
+    mockSendPrompt.mockImplementation(((...a: unknown[]) => {
+      if (a[0] === 'retry-test-session') mockListScheduledTasks.mockReturnValue([TASK, { ...PLAIN, enabled: false }])
+      return 'sent'
+    }) as never)
+    await runOneTick()
+    const sessions = mockSendPrompt.mock.calls.map(c => (c as unknown[])[0])
+    expect(sessions).toContain('retry-test-session')
+    expect(sessions).not.toContain('plain-session')
   })
 
   it('the retry is cancelled during the pre-check -> no fire, and the row is not touched again', async () => {

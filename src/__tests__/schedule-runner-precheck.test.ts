@@ -103,7 +103,7 @@ describe('schedule-runner pre-check integration (source-level)', () => {
     expect(cronLoopIdx).toBeGreaterThan(0)
     const cronLoop = SRC.slice(cronLoopIdx)
     const preCheckIdx = cronLoop.indexOf('runPreCheck(task)')
-    const fireIdx = cronLoop.indexOf('attemptFireTask(task,')
+    const fireIdx = cronLoop.indexOf('attemptFireTask(current,')
     expect(preCheckIdx).toBeGreaterThan(0)
     expect(preCheckIdx).toBeLessThan(fireIdx)
   })
@@ -113,11 +113,11 @@ describe('schedule-runner pre-check integration (source-level)', () => {
     expect(retryLoopIdx).toBeGreaterThan(0)
     const retryLoop = SRC.slice(retryLoopIdx, SRC.indexOf('for (const task of tasks)'))
     expect(retryLoop).toMatch(/await retryPreCheck\(taskDef, now\)/)
-    expect(retryLoop).toMatch(/attemptFireTask\(taskDef,/)
+    expect(retryLoop).toMatch(/attemptFireTask\(current,/)
   })
 
   it('passes preCheckPrefix to attemptFireTask in the cron loop', () => {
-    expect(SRC).toMatch(/attemptFireTask\(task, agentName, now, cronPc\.prefix, lateCatchUpMs\)/)
+    expect(SRC).toMatch(/attemptFireTask\(current, agentName, now, cronPc\.prefix, lateCatchUpMs\)/)
   })
 
   it('skips and records the run when pre-check returns skip in cron loop', () => {
