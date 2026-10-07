@@ -60,6 +60,8 @@ const EXPECTED: Record<string, string[]> = {
     'outgoing-copy-gate.py', 'email-approval-gate.py',
     'channel-image-resize.sh', 'egress-gate.mjs', 'memory-frontmatter-gate.py',
     'memory-frontmatter-bash-gate.py',
+    // fc282e39: a question to an owner gets the owner's earlier messages as context (non-blocking)
+    'owner-question-lookup.py',
   ],
   Stop: ['marveen-commands.py', 'telegram-reply-guard.py', 'telegram_progress_clear.py', 'slack_progress_clear.py'],
   SessionStart: ['ledger-replay.py', 'taskstate-replay.py', 'clear-replay.py', 'marveen-commands.py'],

@@ -130,6 +130,8 @@ const CHECKOUT_ONLY: Record<string, string> = {
     'conversation-continuity ledger: same design as ledger-capture.py (docs/conversation-continuity.md, project settings only)',
   'ledger-replay.py':
     'conversation-continuity ledger: same design as ledger-capture.py; the docs state it is "wired in the repo\'s project settings only (the main agent)"',
+  'owner-question-lookup.py':
+    'the owner-question lookup (fc282e39) searches conversation_log, which only the main-only ledger trio fills; seeded to a sub-agent it would search an empty ledger and report "no earlier message" for every question, a misleading zero -- and the card scopes the first round to the main agent\'s owner chats, the agents\' own channels being a separate second round',
   'persona-change-notify.py':
     'fleet-wide BY CONSTRUCTION, so one wiring already covers every agent: it resolves the repo root from its own file location, and watched() enumerates agents/*/CLAUDE.md and SOUL.md alongside the main pair. Seeding it per-agent would point every seeded session at the SAME store/.persona-hashes.json, and because the hook stamps the new digest BEFORE it sends, whichever session reaches it first silences the others -- the race can only LOSE an alert, so seeding would weaken the guard rather than extend it',
   'telegram-reply-guard.py':
