@@ -5536,7 +5536,16 @@ document.getElementById('chTestBtn').addEventListener('click', async () => {
   try {
     const res = await fetch(`${channelApiBase()}/test`, { method: 'POST' })
     if (!res.ok) throw new Error()
-    showToast('Kapcsolat rendben!')
+    const data = await res.json().catch(() => ({}))
+    // SLACKSCOPEJELZ1007: a Slack token that lacks a manifest scope works, but
+    // part of the plugin silently does not (im:read: writing to the owner's DM
+    // after a restart). Say so instead of "all right".
+    const missing = Array.isArray(data.missingScopes) ? data.missingScopes : []
+    if (missing.length > 0) {
+      showToast(t('channel.toast.missing_scopes', { scopes: missing.join(', ') }), true)
+    } else {
+      showToast('Kapcsolat rendben!')
+    }
   } catch {
     showToast(t('channel.toast.smoke_failed'))
   }

@@ -19,9 +19,20 @@ export interface ChannelProvider {
   readonly chatIdFormat: string
   sendMessage(token: string, chatId: string, text: string, parseMode?: string): Promise<void>
   sendPhoto(token: string, chatId: string, photoPath: string, caption: string): Promise<void>
-  validateToken(token: string): Promise<{ ok: boolean; botName?: string; error?: string }>
+  validateToken(token: string): Promise<TokenValidation>
   formatMessage(text: string): string
   splitMessage(text: string): string[]
+}
+
+/** What validateToken reports. `scopes` and `missingScopes` are filled only by
+ *  a provider that can read the token's granted scopes (Slack); absent means
+ *  "not known", never "none missing". */
+export interface TokenValidation {
+  ok: boolean
+  botName?: string
+  error?: string
+  scopes?: string[]
+  missingScopes?: string[]
 }
 
 // -- Telegram implementation --
@@ -293,7 +304,17 @@ const slackProvider: ChannelProvider = {
       })
       const data = await resp.json() as { ok: boolean; bot_id?: string; user?: string; error?: string }
       if (data.ok) {
-        return { ok: true, botName: data.user || data.bot_id }
+        // SLACKSCOPEJELZ1007: the granted bot scopes come back in the
+        // x-oauth-scopes header only. Reported against the manifest's list so
+        // a missing scope (im:read: the slack-channel plugin needs it to write
+        // to an allowFrom user's DM after a restart, SLACKOUTDM1007) shows up
+        // without anyone asking the owner. No header -> no claim.
+        const granted = parseSlackScopes(resp.headers.get('x-oauth-scopes'))
+        return {
+          ok: true,
+          botName: data.user || data.bot_id,
+          ...(granted ? { scopes: granted, missingScopes: missingSlackScopes(granted) } : {}),
+        }
       }
       return { ok: false, error: data.error || 'Invalid token' }
     } catch {
@@ -486,6 +507,18 @@ const SLACK_BOT_SCOPES = [
   'reactions:write',
   'users:read',
 ]
+
+/** The `x-oauth-scopes` header as a list; null when the header is absent. */
+export function parseSlackScopes(header: string | null | undefined): string[] | null {
+  if (header == null) return null
+  return header.split(',').map(s => s.trim()).filter(Boolean)
+}
+
+/** The manifest's bot scopes the token was not granted, in manifest order. */
+export function missingSlackScopes(granted: readonly string[]): string[] {
+  const have = new Set(granted)
+  return SLACK_BOT_SCOPES.filter(s => !have.has(s))
+}
 
 const SLACK_BOT_EVENTS = [
   'app_mention',

@@ -1489,6 +1489,7 @@ window._i18n.hu = {
 
   // --- Channel toasts ---
   'channel.toast.smoke_failed':  'Kapcsolat tesztelése sikertelen',
+  'channel.toast.missing_scopes': 'A kapcsolat él, de a Slack-appból hiányzó jogosultság: {scopes}. Az im:read nélkül újraindítás után a bot nem tud írni a DM-be. Add hozzá az app OAuth-beállításaiban, és telepítsd újra az appot.',
   'channel.toast.pairing_approved': 'Párosítás jóváhagyva!',
   'channel.toast.invite_copied': 'Meghívó link létrehozva és vágólapra másolva',
   'channel.toast.invite_created':'Meghívó link létrehozva - kattints a Másol gombra',
