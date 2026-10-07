@@ -1386,6 +1386,13 @@ export function initDatabase(dbPathOverride?: string): void {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders(status, send_after)`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_reminders_recipient ON reminders(recipient_chat_id, due_at)`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_reminders_agent ON reminders(agent_id, due_at)`)
+  // One row per day the daily check went to the main agent: the claim that keeps it once a day across restarts.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS reminder_digests (
+      day TEXT PRIMARY KEY,
+      created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
+    )
+  `)
 
   // --- Control-bot custom commands (CMD920 3.12) ---
   // The owner's own slash commands. DB, not a file, so a later web admin writes
@@ -5668,6 +5675,24 @@ export function markReminderSent(id: string, nowSec: number, messageId: number |
 export function markReminderFailed(id: string, error: string): boolean {
   return db.prepare(`UPDATE reminders SET status = 'failed', error = ? WHERE id = ? AND status = 'sending'`)
     .run(error.slice(0, 500), id).changes > 0
+}
+
+/** The daily check's rows: still to go in [fromSec, toSec) by send moment, and the ones that did not go: due before
+ *  `missedBeforeSec` and not sent (failed, cancelled, or still waiting past their moment). */
+export function reminderDigestRows(fromSec: number, toSec: number, missedFromSec: number, missedBeforeSec: number): { today: Reminder[]; missed: Reminder[] } {
+  const today = db.prepare(`SELECT * FROM reminders WHERE status IN ('pending','sending') AND send_after >= ? AND send_after < ? ORDER BY send_after ASC LIMIT 200`)
+    .all(fromSec, toSec) as Reminder[]
+  const missed = db.prepare(`
+    SELECT * FROM reminders
+     WHERE (status IN ('failed','cancelled') AND due_at >= ? AND due_at < ?)
+        OR (status IN ('pending','sending') AND send_after < ?)
+     ORDER BY due_at ASC LIMIT 200`).all(missedFromSec, missedBeforeSec, missedBeforeSec) as Reminder[]
+  return { today, missed }
+}
+
+/** Claim the daily check of `day` (YYYY-MM-DD): true only the first time. */
+export function claimReminderDigest(day: string): boolean {
+  return db.prepare('INSERT OR IGNORE INTO reminder_digests (day) VALUES (?)').run(day).changes > 0
 }
 
 /** Claims older than the cutoff (a crash between the claim and the result): 'failed', never resent. Returns the rows. */

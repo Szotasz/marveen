@@ -23,7 +23,7 @@ vi.mock('../logger.js', () => ({
 }))
 
 const { initDatabase, createReminder, getReminder, getDb } = await import('../db.js')
-const { reminderTick, liveReminderSend, reminderBotToken, _resetReminderSenderForTest, REMINDER_CLAIM_STALE_SEC } = await import('../web/reminder-sender.js')
+const { reminderTick, dailyDigest, liveReminderSend, reminderBotToken, _resetReminderSenderForTest, REMINDER_CLAIM_STALE_SEC } = await import('../web/reminder-sender.js')
 import type { ReminderSenderDeps, WindowsLoad } from '../web/reminder-sender.js'
 import type { ReminderWindowsConfig } from '../reminder-window.js'
 
@@ -39,14 +39,15 @@ let n = 0
 function reminder(over: Partial<Parameters<typeof createReminder>[0]> = {}) {
   n++
   return createReminder({
-    id: `00000000-0000-4000-8000-${String(n).padStart(12, '0')}`,
+    // the short id (first 8 characters) differs per row: the daily check names rows by it
+    id: `${String(n).padStart(8, '0')}-0000-4000-8000-000000000000`,
     requester: 'owner-a', recipient_chat_id: STAFF_CHAT, agent_id: 'area-agent', text: `Szólj a szállítónak (${n})`,
     due_at: sec(WED_17) - 60, send_after: sec(WED_17) - 60, ...over,
   })
 }
 
 function deps(over: Partial<ReminderSenderDeps> = {}) {
-  const calls = { send: [] as Array<[string, string, string]>, alerts: [] as string[], copies: [] as Array<[string, string]> }
+  const calls = { send: [] as Array<[string, string, string]>, alerts: [] as string[], copies: [] as Array<[string, string]>, digests: [] as string[] }
   let now = WED_17
   const d: ReminderSenderDeps = {
     nowMs: () => now,
@@ -54,6 +55,7 @@ function deps(over: Partial<ReminderSenderDeps> = {}) {
     send: async (a, c, t) => { calls.send.push([a, c, t]); return 4242 },
     alertMain: (t) => { calls.alerts.push(t) },
     copyToAgent: (a, t) => { calls.copies.push([a, t]) },
+    digestMain: (t) => { calls.digests.push(t) },
     ...over,
   }
   return { d, calls, setNow: (ms: number) => { now = ms } }
@@ -218,6 +220,64 @@ describe('reminderTick', () => {
     await Promise.all([t1, t2])
     expect(calls.send).toHaveLength(1)
     expect(getReminder(r.id)!.status).toBe('sent')
+  })
+})
+
+describe('the daily check (d), 05:00Z to the main agent', () => {
+  const THU_0459 = Date.parse('2026-10-08T04:59:00Z')
+  const THU_0500 = Date.parse('2026-10-08T05:00:00Z') // 07:00 Budapest
+
+  it('not before 05:00Z; at 05:00Z the day goes once, also across a restart', async () => {
+    reminder({ due_at: sec(THU_0500) + 7200, send_after: sec(THU_0500) + 7200, text: 'Ma 9-kor: szállító' })
+    const a = deps()
+    expect(dailyDigest(a.d, THU_0459)).toBe(false)
+    expect(dailyDigest(a.d, THU_0500)).toBe(true)
+    expect(a.calls.digests).toHaveLength(1)
+    expect(a.calls.digests[0]).toContain('[EMLÉKEZTETŐK, NAPI ELLENŐRZÉS] 2026-10-08 (Budapest)')
+    expect(a.calls.digests[0]).toContain('MA KIMEGY (1)')
+    expect(a.calls.digests[0]).toContain('09:00')
+    expect(a.calls.digests[0]).toContain('Ma 9-kor: szállító')
+    expect(dailyDigest(a.d, THU_0500 + 60_000)).toBe(false)
+    // a restart: new deps, the same database; the day is claimed there
+    const b = deps()
+    expect(dailyDigest(b.d, THU_0500 + 120_000)).toBe(false)
+    expect(a.calls.digests.length + b.calls.digests.length).toBe(1)
+    expect(a.calls.alerts).toHaveLength(0)
+  })
+
+  it('lists what did not go: failed or cancelled yesterday, and the ones still waiting past their moment', async () => {
+    const yday = Date.parse('2026-10-07T10:00:00Z')
+    const f = reminder({ due_at: sec(yday), send_after: sec(yday) })
+    getDb().prepare(`UPDATE reminders SET status = 'failed', error = 'Telegram API 403: blocked' WHERE id = ?`).run(f.id)
+    const c = reminder({ due_at: sec(yday), send_after: sec(yday) })
+    getDb().prepare(`UPDATE reminders SET status = 'cancelled' WHERE id = ?`).run(c.id)
+    const w = reminder({ due_at: sec(yday), send_after: sec(yday) }) // still pending: it should have gone
+    const s = reminder({ due_at: sec(yday), send_after: sec(yday) })
+    getDb().prepare(`UPDATE reminders SET status = 'sent' WHERE id = ?`).run(s.id)
+    const { d, calls } = deps()
+    expect(dailyDigest(d, THU_0500)).toBe(true)
+    const t = calls.digests[0]
+    expect(t).toContain('NEM MENT KI (3)')
+    expect(t).toContain(f.id.slice(0, 8))
+    expect(t).toContain('blocked')
+    expect(t).toContain(c.id.slice(0, 8))
+    expect(t).toContain(w.id.slice(0, 8))
+    expect(t).not.toContain(s.id.slice(0, 8))
+  })
+
+  it('an empty day claims the day but sends nothing', async () => {
+    const { d, calls } = deps()
+    expect(dailyDigest(d, THU_0500)).toBe(false)
+    expect(calls.digests).toHaveLength(0)
+  })
+
+  it('the tick runs the daily check after the sends', async () => {
+    reminder({ due_at: sec(THU_0500) + 3600, send_after: sec(THU_0500) + 3600 })
+    const { d, calls, setNow } = deps()
+    setNow(THU_0500)
+    const out = await reminderTick(d)
+    expect(out.digest).toBe(true)
+    expect(calls.digests).toHaveLength(1)
   })
 })
 

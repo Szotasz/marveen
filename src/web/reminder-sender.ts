@@ -16,11 +16,11 @@ import { join } from 'node:path'
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
 import { channelStateDir, readChannelToken } from '../channel-provider.js'
 import {
-  claimReminder, createAgentMessage, deferReminder, dueReminders, failStaleReminderClaims,
-  markReminderFailed, markReminderSent, type Reminder,
+  claimReminder, claimReminderDigest, createAgentMessage, deferReminder, dueReminders, failStaleReminderClaims,
+  markReminderFailed, markReminderSent, reminderDigestRows, type Reminder,
 } from '../db.js'
 import { logger } from '../logger.js'
-import { allowedAt, EMPTY_WINDOWS, nextAllowedMs, parseReminderWindows, type ReminderWindowsConfig } from '../reminder-window.js'
+import { allowedAt, EMPTY_WINDOWS, localParts, nextAllowedMs, parseReminderWindows, zonedToUtcMs, type ReminderWindowsConfig } from '../reminder-window.js'
 import { agentDir } from './agent-config.js'
 import { parseTelegramToken, sendTelegramMessage } from './telegram.js'
 
@@ -32,6 +32,8 @@ export const REMINDER_CLAIM_STALE_SEC = 10 * 60
 export const REMINDER_BATCH = 20
 /** The broken-config alert repeats at most this often. */
 export const REMINDER_CONFIG_ALERT_EVERY_MS = 60 * 60_000
+/** fb79dc1f (d): the daily check goes to the main agent at this UTC hour (05:00Z = 07:00 Budapest in summer time). */
+export const REMINDER_DIGEST_UTC_HOUR = 5
 
 export type WindowsLoad = { ok: true; config: ReminderWindowsConfig } | { ok: false; error: string }
 
@@ -60,9 +62,11 @@ export interface ReminderSenderDeps {
   send: (agentId: string, chatId: string, text: string) => Promise<number | null>
   alertMain: (text: string) => void
   copyToAgent: (agentId: string, text: string) => void
+  /** The daily check's message to the main agent (its inbox); not an alert. */
+  digestMain: (text: string) => void
 }
 
-export interface ReminderTickResult { sent: number; failed: number; deferred: number; stale: number; configError: boolean }
+export interface ReminderTickResult { sent: number; failed: number; deferred: number; stale: number; configError: boolean; digest: boolean }
 
 const BP = 'Europe/Budapest'
 function bpTime(sec: number): string {
@@ -85,7 +89,7 @@ export function _resetReminderSenderForTest(): void {
 }
 
 export async function reminderTick(deps: ReminderSenderDeps): Promise<ReminderTickResult> {
-  const out: ReminderTickResult = { sent: 0, failed: 0, deferred: 0, stale: 0, configError: false }
+  const out: ReminderTickResult = { sent: 0, failed: 0, deferred: 0, stale: 0, configError: false, digest: false }
   const nowMs = deps.nowMs()
   const nowSec = Math.floor(nowMs / 1000)
 
@@ -106,6 +110,7 @@ export async function reminderTick(deps: ReminderSenderDeps): Promise<ReminderTi
       deps.alertMain(`[EMLÉKEZTETŐ-KONFIG HIBA] A store/${REMINDER_WINDOWS_FILE} nem olvasható (${w.error}): amíg nincs javítva, emlékeztető NEM megy ki.`)
     }
     logger.warn({ error: w.error }, 'reminder-sender: the windows config is invalid, nothing sent')
+    out.digest = dailyDigest(deps, nowMs)
     return out
   }
 
@@ -136,7 +141,43 @@ export async function reminderTick(deps: ReminderSenderDeps): Promise<ReminderTi
       if (r.agent_id !== MAIN_AGENT_ID) deps.copyToAgent(r.agent_id, msg)
     }
   }
+  out.digest = dailyDigest(deps, nowMs)
   return out
+}
+
+/**
+ * fb79dc1f (d): once a day from REMINDER_DIGEST_UTC_HOUR, the main agent gets the reminders that go TODAY (Budapest
+ * day, by send moment) and the ones that did NOT go (due yesterday and failed or cancelled, or still waiting past
+ * their moment). The day is claimed in the DB first, so a restart does not send it twice; an empty day sends nothing.
+ */
+export function dailyDigest(deps: ReminderSenderDeps, nowMs: number): boolean {
+  if (new Date(nowMs).getUTCHours() < REMINDER_DIGEST_UTC_HOUR) return false
+  const p = localParts(nowMs, BP)
+  const day = `${p.y}-${String(p.mo).padStart(2, '0')}-${String(p.d).padStart(2, '0')}`
+  const startMs = zonedToUtcMs(p.y, p.mo, p.d, 0, 0, BP)
+  const next = new Date(Date.UTC(p.y, p.mo - 1, p.d + 1))
+  const prev = new Date(Date.UTC(p.y, p.mo - 1, p.d - 1))
+  const endMs = zonedToUtcMs(next.getUTCFullYear(), next.getUTCMonth() + 1, next.getUTCDate(), 0, 0, BP)
+  const yStartMs = zonedToUtcMs(prev.getUTCFullYear(), prev.getUTCMonth() + 1, prev.getUTCDate(), 0, 0, BP)
+  if (!claimReminderDigest(day)) return false
+  const { today, missed } = reminderDigestRows(Math.floor(startMs / 1000), Math.floor(endMs / 1000), Math.floor(yStartMs / 1000), Math.floor(startMs / 1000))
+  if (today.length === 0 && missed.length === 0) {
+    logger.info({ day }, 'reminder-sender: daily check, nothing to report')
+    return false
+  }
+  const hhmm = (sec: number) => new Date(sec * 1000).toLocaleTimeString('hu-HU', { timeZone: BP, hour: '2-digit', minute: '2-digit' })
+  const cut = (t: string) => (t.length > 100 ? `${t.slice(0, 100)}...` : t).replace(/\s+/g, ' ')
+  const lines = [`[EMLÉKEZTETŐK, NAPI ELLENŐRZÉS] ${day} (Budapest)`]
+  lines.push(`MA KIMEGY (${today.length}):`)
+  for (const r of today) lines.push(`- ${hhmm(r.send_after)} -> chat ${r.recipient_chat_id} (${r.agent_id}): ${cut(r.text)}`)
+  lines.push(`NEM MENT KI (${missed.length}):`)
+  for (const r of missed) {
+    const why = r.status === 'failed' ? `hiba: ${r.error ?? '?'}` : r.status === 'cancelled' ? 'visszavonva' : `vár, ${bpTime(r.send_after)} óta esedékes`
+    lines.push(`- ${short(r)} (${r.status}) esedékes ${bpTime(r.due_at)}, chat ${r.recipient_chat_id} (${r.agent_id}): ${why}`)
+  }
+  lines.push('Részletek: GET /api/reminders?status=failed (vagy ?recipient=<chat id>).')
+  deps.digestMain(lines.join('\n'))
+  return true
 }
 
 /** The agent's own Telegram bot token: the main agent's from the install .env or its channel dir, a sub-agent's from its channel .env. */
@@ -168,6 +209,7 @@ const liveDeps: ReminderSenderDeps = {
   send: liveReminderSend,
   alertMain: (text) => postSystemMessage(MAIN_AGENT_ID, text),
   copyToAgent: (agentId, text) => postSystemMessage(agentId, text),
+  digestMain: (text) => postSystemMessage(MAIN_AGENT_ID, text),
 }
 
 export function startReminderSender(deps: ReminderSenderDeps = liveDeps): NodeJS.Timeout {
