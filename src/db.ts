@@ -1351,6 +1351,42 @@ export function initDatabase(dbPathOverride?: string): void {
   try { db.exec('ALTER TABLE approvals ADD COLUMN consumed_at INTEGER') } catch { /* already exists */ }
   db.exec(`CREATE INDEX IF NOT EXISTS idx_approvals_hash ON approvals(content_hash)`)
 
+  // --- Reminders (fb79dc1f) ---
+  // The "remind me / tell me at X" requests in ONE place, sent by the dashboard
+  // itself (src/web/reminder-sender.ts) on the recipient channel's bot, so a
+  // busy or stopped agent session cannot make a reminder late or lost.
+  // send_after: the moment the sender may send it (due_at moved past the
+  // recipient's quiet hours / weekend, src/reminder-window.ts). 'sending' is the
+  // claim of one send (at most once): a claim left behind by a crash becomes
+  // 'failed' (send_uncertain), never a second send.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS reminders (
+      id TEXT PRIMARY KEY,
+      requester TEXT NOT NULL,
+      recipient_chat_id TEXT NOT NULL,
+      agent_id TEXT NOT NULL,
+      text TEXT NOT NULL,
+      due_at INTEGER NOT NULL,
+      send_after INTEGER NOT NULL,
+      allow_weekend INTEGER NOT NULL DEFAULT 0,
+      source_ref TEXT,
+      status TEXT NOT NULL DEFAULT 'pending'
+        CHECK(status IN ('pending','sending','sent','cancelled','failed')),
+      attempts INTEGER NOT NULL DEFAULT 0,
+      claimed_at INTEGER,
+      sent_at INTEGER,
+      sent_message_id INTEGER,
+      error TEXT,
+      created_by TEXT,
+      created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER)),
+      updated_by TEXT,
+      updated_at INTEGER
+    )
+  `)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders(status, send_after)`)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_reminders_recipient ON reminders(recipient_chat_id, due_at)`)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_reminders_agent ON reminders(agent_id, due_at)`)
+
   // --- Control-bot custom commands (CMD920 3.12) ---
   // The owner's own slash commands. DB, not a file, so a later web admin writes
   // the same table; store/commands.json stays the import (into an EMPTY table)
@@ -5492,6 +5528,153 @@ export function expireTimedOutApprovals(): number {
     UPDATE approvals SET status = 'timeout', resolved_at = ?
     WHERE status = 'pending' AND timeout_at IS NOT NULL AND timeout_at <= ?
   `).run(now, now).changes
+}
+
+// --- Reminders (fb79dc1f) ---
+
+export type ReminderStatus = 'pending' | 'sending' | 'sent' | 'cancelled' | 'failed'
+
+export interface Reminder {
+  id: string
+  requester: string
+  recipient_chat_id: string
+  agent_id: string
+  text: string
+  due_at: number
+  send_after: number
+  allow_weekend: number
+  source_ref: string | null
+  status: ReminderStatus
+  attempts: number
+  claimed_at: number | null
+  sent_at: number | null
+  sent_message_id: number | null
+  error: string | null
+  created_by: string | null
+  created_at: number
+  updated_by: string | null
+  updated_at: number | null
+}
+
+export function createReminder(params: {
+  id: string
+  requester: string
+  recipient_chat_id: string
+  agent_id: string
+  text: string
+  due_at: number
+  send_after: number
+  allow_weekend?: boolean
+  source_ref?: string | null
+  created_by?: string | null
+}): Reminder {
+  const now = Math.floor(Date.now() / 1000)
+  db.prepare(`
+    INSERT INTO reminders (id, requester, recipient_chat_id, agent_id, text, due_at, send_after, allow_weekend, source_ref, created_by, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    params.id, params.requester, params.recipient_chat_id, params.agent_id, params.text, params.due_at, params.send_after,
+    params.allow_weekend ? 1 : 0, params.source_ref ?? null, params.created_by ?? null, now,
+  )
+  return getReminder(params.id) as Reminder
+}
+
+export function getReminder(id: string): Reminder | undefined {
+  return db.prepare('SELECT * FROM reminders WHERE id = ?').get(id) as Reminder | undefined
+}
+
+export function listReminders(opts: {
+  status?: string
+  agent_id?: string
+  recipient_chat_id?: string
+  due_from?: number
+  due_to?: number
+  limit?: number
+}): Reminder[] {
+  const conditions: string[] = []
+  const params: unknown[] = []
+  if (opts.status) { conditions.push('status = ?'); params.push(opts.status) }
+  if (opts.agent_id) { conditions.push('agent_id = ?'); params.push(opts.agent_id) }
+  if (opts.recipient_chat_id) { conditions.push('recipient_chat_id = ?'); params.push(opts.recipient_chat_id) }
+  if (opts.due_from !== undefined) { conditions.push('due_at >= ?'); params.push(opts.due_from) }
+  if (opts.due_to !== undefined) { conditions.push('due_at < ?'); params.push(opts.due_to) }
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
+  const limit = Math.min(opts.limit ?? 100, 500)
+  params.push(limit)
+  return db.prepare(`SELECT * FROM reminders ${where} ORDER BY due_at ASC, created_at ASC LIMIT ?`).all(...params) as Reminder[]
+}
+
+/** The edits a pending reminder accepts (PATCH). Only a 'pending' row changes; returns false otherwise. */
+export function updatePendingReminder(id: string, fields: {
+  text?: string
+  due_at?: number
+  send_after?: number
+  allow_weekend?: boolean
+  recipient_chat_id?: string
+}, updatedBy: string | null): boolean {
+  const sets: string[] = []
+  const params: unknown[] = []
+  if (fields.text !== undefined) { sets.push('text = ?'); params.push(fields.text) }
+  if (fields.due_at !== undefined) { sets.push('due_at = ?'); params.push(fields.due_at) }
+  if (fields.send_after !== undefined) { sets.push('send_after = ?'); params.push(fields.send_after) }
+  if (fields.allow_weekend !== undefined) { sets.push('allow_weekend = ?'); params.push(fields.allow_weekend ? 1 : 0) }
+  if (fields.recipient_chat_id !== undefined) { sets.push('recipient_chat_id = ?'); params.push(fields.recipient_chat_id) }
+  if (sets.length === 0) return false
+  sets.push('updated_by = ?', 'updated_at = ?')
+  params.push(updatedBy, Math.floor(Date.now() / 1000), id)
+  return db.prepare(`UPDATE reminders SET ${sets.join(', ')} WHERE id = ? AND status = 'pending'`).run(...params).changes > 0
+}
+
+/**
+ * A status move by hand (PATCH): cancel a pending or failed reminder, or put a
+ * failed one back to pending (with its new send moment). Guarded on the
+ * current status, so a row the sender claimed meanwhile is not touched.
+ */
+export function setReminderStatusByHand(id: string, from: ReminderStatus[], to: 'cancelled' | 'pending', updatedBy: string | null, sendAfter?: number): boolean {
+  const now = Math.floor(Date.now() / 1000)
+  const marks = from.map(() => '?').join(', ')
+  if (to === 'pending') {
+    return db.prepare(`
+      UPDATE reminders SET status = 'pending', error = NULL, claimed_at = NULL, send_after = COALESCE(?, send_after), updated_by = ?, updated_at = ?
+      WHERE id = ? AND status IN (${marks})
+    `).run(sendAfter ?? null, updatedBy, now, id, ...from).changes > 0
+  }
+  return db.prepare(`UPDATE reminders SET status = 'cancelled', updated_by = ?, updated_at = ? WHERE id = ? AND status IN (${marks})`)
+    .run(updatedBy, now, id, ...from).changes > 0
+}
+
+/** The pending reminders whose send moment has come, oldest first. */
+export function dueReminders(nowSec: number, limit = 20): Reminder[] {
+  return db.prepare(`SELECT * FROM reminders WHERE status = 'pending' AND send_after <= ? ORDER BY send_after ASC, created_at ASC LIMIT ?`)
+    .all(nowSec, limit) as Reminder[]
+}
+
+/** Claim ONE pending reminder for sending ('pending' -> 'sending'). False when someone else moved it first. */
+export function claimReminder(id: string, nowSec: number): boolean {
+  return db.prepare(`UPDATE reminders SET status = 'sending', attempts = attempts + 1, claimed_at = ? WHERE id = ? AND status = 'pending'`)
+    .run(nowSec, id).changes > 0
+}
+
+/** Move the send moment of a pending reminder (the window changed since it was planned). */
+export function deferReminder(id: string, sendAfter: number): boolean {
+  return db.prepare(`UPDATE reminders SET send_after = ? WHERE id = ? AND status = 'pending'`).run(sendAfter, id).changes > 0
+}
+
+export function markReminderSent(id: string, nowSec: number, messageId: number | null): boolean {
+  return db.prepare(`UPDATE reminders SET status = 'sent', sent_at = ?, sent_message_id = ?, error = NULL WHERE id = ? AND status = 'sending'`)
+    .run(nowSec, messageId, id).changes > 0
+}
+
+export function markReminderFailed(id: string, error: string): boolean {
+  return db.prepare(`UPDATE reminders SET status = 'failed', error = ? WHERE id = ? AND status = 'sending'`)
+    .run(error.slice(0, 500), id).changes > 0
+}
+
+/** Claims older than the cutoff (a crash between the claim and the result): 'failed', never resent. Returns the rows. */
+export function failStaleReminderClaims(cutoffSec: number): Reminder[] {
+  const rows = db.prepare(`SELECT * FROM reminders WHERE status = 'sending' AND claimed_at IS NOT NULL AND claimed_at < ?`).all(cutoffSec) as Reminder[]
+  const upd = db.prepare(`UPDATE reminders SET status = 'failed', error = 'send_uncertain' WHERE id = ? AND status = 'sending'`)
+  return rows.filter(r => upd.run(r.id).changes > 0)
 }
 
 // --- OTel Distributed Tracing (card def5a189) ---
