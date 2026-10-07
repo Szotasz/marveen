@@ -2,7 +2,7 @@ import { tmuxStderr } from './tmux-stderr.js'
 import { writeMainExtraPluginsSettings } from './main-extra-plugins-settings.js'
 import { decideSkipTrace, decideMenuPassTrace, type SkipTraceState } from './monitor-trace.js'
 import { existsSync, readFileSync, statSync, writeFileSync, utimesSync } from 'node:fs'
-import { hostname } from 'node:os'
+import { hostname, loadavg, cpus } from 'node:os'
 import { join } from 'node:path'
 import { execFileSync, spawn } from 'node:child_process'
 import { makeLazyBinResolver } from '../platform.js'
@@ -23,6 +23,7 @@ import {
   dismissModelConsentDialogIfPresent,
   stampFableOverageConsentSharedRoots,
   isAgentRunning,
+  isSessionReadyForPrompt,
   sendPromptToSession,
   startAgentProcess,
   stopAgentProcess,
@@ -71,6 +72,7 @@ import {
 // module so the standalone channel-coordinator reuses the exact same probe.
 import { getClaudePidForSession, hasChannelPluginAlive, probeChannelPluginLiveness, classifyRespawnStampAdvance } from '../channel-coordinator/liveness.js'
 import { colistenProviders, runColistenCheck, type ColistenState } from './main-colisten-health.js'
+import { mainFirstGate, waitReconcileGap, RECONCILE_MAIN_FIRST_MAX_WAIT_MS } from './reconcile-stagger.js'
 import { getDesiredAgents } from './agent-desired-state.js'
 import { startSleepWakeDetector, systemSleptBetween } from './sleep-wake-detector.js'
 import { ROOT_SANDBOX_ENV } from './root-sandbox-env.js'
@@ -2727,12 +2729,32 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
   return setInterval(() => { void check() }, 60000)
 }
 
-// Start desired-but-missing agents one at a time (~15s apart). The stagger is
-// mandatory: starting several channel agents at once makes them all die in the
+// Start desired-but-missing agents one at a time. The stagger is mandatory:
+// starting several channel agents at once makes them all die in the
 // resume-from-summary modal race. A single in-flight burst at a time.
+// BOOTSTAGGER1007 (c): the main session first, then one agent at a time by
+// readiness (or a quiet box), bounded -- see reconcile-stagger.ts.
 let reconcileBurstInProgress = false
-const AGENT_RECONCILE_STAGGER_MS = 15000
 function delay(ms: number): Promise<void> { return new Promise((r) => setTimeout(r, ms)) }
+const monitorModuleLoadedAt = Date.now()
+let mainFirstWaitLogged = false
+
+/** The main session is up for the owner: its primary channel plugin and every co-listen plugin are alive. */
+function mainSessionChannelsReady(): boolean {
+  const claudePid = getClaudePidForSession(MAIN_CHANNELS_SESSION)
+  if (claudePid == null) return false
+  const primary = getMainAgentProvider()
+  if (probeChannelPluginLiveness(claudePid, primary) !== 'alive') return false
+  const extras = colistenProviders(primary, readExtraChannelPluginIds(), ALL_PROVIDER_TYPES.map((t) => getProvider(t)))
+  // strictTree: a Slack sub-agent's plugin must not stand in for the main
+  // session's own (the #1762 review finding).
+  return extras.every((p) => probeChannelPluginLiveness(claudePid, p, undefined, { strictTree: true }) === 'alive')
+}
+
+function loadPerCpu(): number | null {
+  const n = cpus().length
+  return n > 0 ? loadavg()[0] / n : null
+}
 
 // --- Commit 3 v1: fleet memory gate (safe-mode) ---
 // Before starting a desired-but-down agent, ask scripts/fleet-memory-gate.sh
@@ -2766,6 +2788,17 @@ async function reconcileDesiredAgents(): Promise<void> {
   if (desired.size === 0) return
   const down = [...desired].filter((name) => !isAgentRunning(name))
   if (down.length === 0) return
+  // Main first: after a boot the owner's channel matters more than the fleet,
+  // and every sub-agent boot competes with the main session's MCP connects.
+  const sinceStart = Date.now() - monitorModuleLoadedAt
+  if (mainFirstGate(mainSessionChannelsReady(), sinceStart) === 'wait') {
+    if (!mainFirstWaitLogged) {
+      logger.info({ pending: down, maxWaitMs: RECONCILE_MAIN_FIRST_MAX_WAIT_MS }, 'Reconcile: waiting for the main session\'s channels before starting sub-agents')
+      mainFirstWaitLogged = true
+    }
+    return
+  }
+  mainFirstWaitLogged = false
   reconcileBurstInProgress = true
   try {
     for (const name of down) {
@@ -2794,7 +2827,13 @@ async function reconcileDesiredAgents(): Promise<void> {
       } catch (err) {
         logger.error({ err, agent: name }, 'Reconcile start threw')
       }
-      await delay(AGENT_RECONCILE_STAGGER_MS)
+      const gap = await waitReconcileGap({
+        now: Date.now,
+        sleep: delay,
+        isReady: () => isSessionReadyForPrompt(agentSessionName(name)),
+        loadPerCpu,
+      })
+      logger.info({ agent: name, gapEnd: gap.end, waitedMs: gap.waitedMs }, 'Reconcile: next agent may start')
     }
   } finally {
     reconcileBurstInProgress = false
