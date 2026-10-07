@@ -28,12 +28,21 @@ import glob
 
 # Volatile tmpfs prefixes: any hook command referencing these is transient.
 _TMP_PREFIXES = ('/tmp/', '/var/tmp/', '/private/tmp/', '/dev/shm/')
+# BOOTPRUNEASCII1007: a volatile directory counts only where a PATH STARTS
+# (start of the command, or after whitespace, a quote, `=`, `:`, `;`, `(` or a
+# backtick). A bare substring test also matched a live hook such as
+# "$HOME/tmp/hook.py" or /Users/x/tmp/hook.py and pruned it on every boot. The
+# test runs on the command TEXT only, never on a resolved path: $HOME itself may
+# live under /tmp (a CI runner), and that says nothing about the hook.
+_TMP_RE = re.compile(
+    r'(?:^|[\s\'"=:;(`])(?:' + '|'.join(re.escape(p) for p in _TMP_PREFIXES) + r')'
+)
 
 
 def _is_stale_command(command, project_dir=None):
     """Return True when the command references a volatile or non-existent path."""
     # Check for /tmp-like prefixes in the command string.
-    if any(prefix in command for prefix in _TMP_PREFIXES):
+    if _TMP_RE.search(command):
         return True
     # Extract the first file path that looks like a script (.py / .mjs / .js / .sh).
     m = re.search(r'/[^\s\'"`;&|()<>=]+\.(?:py|mjs|js|sh)\b', command)
@@ -118,7 +127,10 @@ def prune_settings(path, project_dir=None):
         bak = path + '.bak'
         shutil.copy2(path, bak)
         with open(path, 'w', encoding='utf-8') as f:
-            json.dump(settings, f, indent=2)
+            # BOOTPRUNEASCII1007: keep non-ASCII text as written ("Árvíztűrő",
+            # not "\u00c1rv..."); the default ensure_ascii rewrote every
+            # accented value of the user's settings on the first prune.
+            json.dump(settings, f, indent=2, ensure_ascii=False)
             f.write('\n')
         print(
             f'boot-hook-prune: pruned {total_pruned} stale hook(s) from {path} (backup: {bak})',
