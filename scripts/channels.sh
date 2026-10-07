@@ -1123,7 +1123,33 @@ case "$CHANNEL_PROVIDER" in
   discord)  STATE_ENV_VAR="DISCORD_STATE_DIR" ;;
   *)        STATE_ENV_VAR="TELEGRAM_STATE_DIR" ;;
 esac
+# SELFANCESTOR930: the env-var scan matches by ENVIRONMENT, and the environment
+# is INHERITED, so the match set is not limited to pollers. Anything that ran
+# start.sh from a shell that had ${STATE_ENV_VAR} exported is in it too -- this
+# script itself, its parents, and (measured 2026-09-30) the DETACHED UPDATE
+# FINALIZER, whose whole job is to write the update verdict AFTER start.sh
+# returns. Killing it is exactly the long-open "the finalizer never writes the
+# verdict" lelet: the dashboard then shows a stale/false failure for an update
+# that actually succeeded. The TS-side reaper already spares the live pane
+# leader and the tmux server for the same class of reason; this is the same
+# guard for the shell side, and it cannot spare a genuine orphan, because a
+# leftover poller from a PREVIOUS server is never an ancestor of this run.
+_self_and_ancestors() {
+  local p="$$" out="" i=0
+  while [ -n "$p" ] && [ "$p" -gt 1 ] && [ "$i" -lt 40 ]; do
+    out="$out $p"
+    p="$(ps -o ppid= -p "$p" 2>/dev/null | tr -d ' ')"
+    i=$(( i + 1 ))
+  done
+  printf '%s' "$out "
+}
+_drop_self_chain() { # stdin: pid list (whitespace-separated) -> stdout: filtered
+  local chain; chain="$(_self_and_ancestors)"
+  tr ' ' '\n' | awk -v skip=" $chain" 'NF && index(skip, " " $1 " ") == 0 { print }'
+}
+
 ORPHAN_PIDS="$(/bin/ps eww -e 2>/dev/null | awk -v needle="${STATE_ENV_VAR}=${MAIN_CHAN_DIR}" '$0 ~ needle { print $1 }')"
+ORPHAN_PIDS="$(printf '%s ' $ORPHAN_PIDS | _drop_self_chain | tr '\n' ' ')"
 if [ -n "$ORPHAN_PIDS" ]; then
   # shellcheck disable=SC2086
   /bin/kill -TERM $ORPHAN_PIDS 2>/dev/null || true
@@ -1151,6 +1177,8 @@ fi
 # is named `subdir` (not `sub`) because `sub` is a reserved awk function name and
 # BSD/macOS awk syntax-errors on it.
 ORPHAN_PIDS2="$(/bin/ps eww -e 2>/dev/null | awk -v needle="CLAUDE_PLUGIN_ROOT=" -v prov="/${CHANNEL_PROVIDER}" -v subdir="${INSTALL_DIR}/agents/" '$0 ~ needle && $0 ~ prov && index($0, subdir) == 0 { print $1 }')"
+# Same self/ancestor guard as the first pass (SELFANCESTOR930).
+ORPHAN_PIDS2="$(printf '%s ' $ORPHAN_PIDS2 | _drop_self_chain | tr '\n' ' ')"
 if [ -n "$ORPHAN_PIDS2" ]; then
   # shellcheck disable=SC2086
   /bin/kill -TERM $ORPHAN_PIDS2 2>/dev/null || true
