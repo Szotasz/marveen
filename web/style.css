@@ -636,7 +636,9 @@ main {
    measured at 10 px in DejaVu Sans, wider than the system UI fonts), so
    below 7 x ~62 px = 440 px the short forms (H K Sze Cs P Szo V /
    Mon..Sun, <= 22 px) take over, and below 180 px English drops to
-   M T W T F S S. */
+   M T W T F S S. Hungarian has no unambiguous one-letter form, so there
+   (.no-narrow) the day names hide below 180 px; the separators and the now
+   marker on the track still mark the days. */
 .quota-bar-days {
   display: grid;
   grid-template-columns: repeat(7, 1fr);
@@ -659,6 +661,7 @@ main {
 @container quota-days (max-width: 180px) {
   .quota-bar-days .day-short { display: none; }
   .quota-bar-days .day-narrow { display: inline; }
+  .quota-bar-days.no-narrow > span { display: none; }
 }
 .quota-bar-fill {
   height: 100%;

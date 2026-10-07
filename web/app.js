@@ -12166,14 +12166,17 @@ function weekSegments(resetsAt, nowSec, lang, timeZone) {
   // Three widths, chosen by the CSS container query on .quota-bar-days, never
   // by an ellipsis (a portrait phone showed "Hé… Ke… Sz… … Sz…": two
   // indistinguishable "Sz…"). hu short = H K Sze Cs P Szo V. hu has no safe
-  // one-letter form (Szerda/Szombat both "Sz"), so hu narrow stays short;
+  // one-letter form (Szerda/Szombat both "Sz"), so hu has NO narrow tier:
+  // narrowLabels is null and the day-name row hides below that width (the
+  // separators and the now marker still show where the days are). Its short
+  // forms need ~140 px and ran together ("SzeCs") on a 390 px phone.
   // en narrow = M T W T F S S.
   const short = name('short')
   return {
     starts,
     labels: name('long'),
     shortLabels: short,
-    narrowLabels: lang === 'en' ? name('narrow') : short,
+    narrowLabels: lang === 'en' ? name('narrow') : null,
     nowPct: ((nowSec - start) / WEEK) * 100,
   }
 }
@@ -12258,7 +12261,7 @@ function renderQuotaStrip(q, fable) {
       ${week ? `<div class="quota-bar-col">
         ${track}
         <div class="quota-bar-now" style="left:${week.nowPct.toFixed(2)}%"></div>
-        <div class="quota-bar-days">${week.labels.map((d, i) => `<span><span class="day-full">${escapeHtml(d)}</span><span class="day-short">${escapeHtml(week.shortLabels[i])}</span><span class="day-narrow">${escapeHtml(week.narrowLabels[i])}</span></span>`).join('')}</div>
+        <div class="quota-bar-days${week.narrowLabels ? '' : ' no-narrow'}">${week.labels.map((d, i) => `<span><span class="day-full">${escapeHtml(d)}</span><span class="day-short">${escapeHtml(week.shortLabels[i])}</span>${week.narrowLabels ? `<span class="day-narrow">${escapeHtml(week.narrowLabels[i])}</span>` : ''}</span>`).join('')}</div>
       </div>` : track}
       <div class="quota-bar-value">${pct}%<span class="quota-bar-reset">${escapeHtml(tail)}</span></div>
     `

@@ -25,7 +25,7 @@ function extractFn(name: string): string {
   throw new Error(`${name}: unbalanced braces`)
 }
 
-type Week = { starts: number[]; labels: string[]; shortLabels: string[]; narrowLabels: string[]; nowPct: number } | null
+type Week = { starts: number[]; labels: string[]; shortLabels: string[]; narrowLabels: string[] | null; nowPct: number } | null
 // eslint-disable-next-line @typescript-eslint/no-implied-eval
 const weekSegments = new Function(`${extractFn('weekSegments')}; return weekSegments`)() as (
   resetsAt: unknown, nowSec: unknown, lang: string, timeZone?: string,
@@ -58,11 +58,11 @@ describe('weekSegments', () => {
       .toEqual(['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'])
   })
 
-  it('short and narrow labels: hu H K Sze Cs P Szo V (never a bare "Sz"), en Mon..Sun / M T W T F S S', () => {
+  it('short and narrow labels: hu H K Sze Cs P Szo V and no narrow tier (never a bare "Sz"), en Mon..Sun / M T W T F S S', () => {
     const hu = weekSegments(MONDAY_RESET, TUE_2317, 'hu', TZ)!
     expect(hu.shortLabels).toEqual(['H', 'K', 'Sze', 'Cs', 'P', 'Szo', 'V'])
-    expect(hu.narrowLabels).toEqual(hu.shortLabels)
-    expect(new Set(hu.narrowLabels).size).toBe(7)
+    expect(new Set(hu.shortLabels).size).toBe(7)
+    expect(hu.narrowLabels).toBeNull()
     const en = weekSegments(MONDAY_RESET, TUE_2317, 'en', TZ)!
     expect(en.shortLabels).toEqual(['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'])
     expect(en.narrowLabels).toEqual(['M', 'T', 'W', 'T', 'F', 'S', 'S'])
@@ -89,7 +89,7 @@ describe('weekSegments', () => {
 
 // The rendered row, with the DOM and helpers stubbed: the week pieces appear on
 // the weekly row only, and a missing resetsAt leaves the old bar untouched.
-function render(quota: Record<string, unknown>): string[] {
+function render(quota: Record<string, unknown>, lang = 'hu'): string[] {
   const els: Record<string, { hidden: boolean; innerHTML: string; textContent: string; className: string; children: string[]; appendChild: (c: { innerHTML: string }) => void }> = {}
   for (const id of ['quotaStrip', 'quotaBars', 'quotaStripNote', 'quotaStripAge']) {
     const el = { hidden: true, innerHTML: '', textContent: '', className: '', children: [] as string[],
@@ -100,7 +100,7 @@ function render(quota: Record<string, unknown>): string[] {
   // eslint-disable-next-line @typescript-eslint/no-implied-eval
   const fn = new Function('document', 'window', 't', 'escapeHtml', 'formatDurationShort', 'formatRelative',
     `${extractFn('quotaLevelClass')}; ${extractFn('quotaMeasuredText')}; ${extractFn('weekSegments')}; ${extractFn('renderQuotaStrip')}; return renderQuotaStrip`,
-  )(document, { _lang: 'hu' }, (k: string) => k, (s: string) => String(s), () => '1n', () => 'most')
+  )(document, { _lang: lang }, (k: string) => k, (s: string) => String(s), () => '1n', () => 'most')
   fn(quota, null)
   return els.quotaBars.children
 }
@@ -130,6 +130,8 @@ describe('day-name CSS', () => {
     expect(block(440)).toContain('.day-short { display: inline; }')
     expect(block(180)).toContain('.day-short { display: none; }')
     expect(block(180)).toContain('.day-narrow { display: inline; }')
+    // hu has no narrow form: below 180 px its whole day-name row hides
+    expect(block(180)).toContain('.quota-bar-days.no-narrow > span { display: none; }')
     expect(css).toMatch(/\.day-short,\s*\.quota-bar-days \.day-narrow \{ display: none; \}/)
   })
 })
@@ -145,10 +147,34 @@ describe('renderQuotaStrip weekly row', () => {
     expect(week).toContain('quota-bar-track week')
     expect(week).toContain('class="quota-bar-now"')
     expect((week.match(/<span>/g) || []).length).toBe(7)
-    expect(week).toContain('<span class="day-full">Hétfő</span><span class="day-short">H</span><span class="day-narrow">H</span>')
+    expect(week).toContain('<span class="day-full">Hétfő</span><span class="day-short">H</span></span>')
     expect(week).toContain('<span class="day-full">Szerda</span><span class="day-short">Sze</span>')
     expect(five).not.toContain('quota-bar-days')
     expect(five).not.toContain('quota-bar-now')
+  })
+
+  // Szotasz's review of #1703: at 390 px the hu short forms (~140 px) ran
+  // together in a ~100 px track ("SzeCs"), at 320 px they spilled under the
+  // value. hu therefore has no narrow tier: the row is marked no-narrow (the
+  // 180 px container rule hides it) and carries no day-narrow spans that
+  // could show instead. The track, separators and now marker stay.
+  it('hu narrow tier: day row marked no-narrow, no day-narrow spans; separators and marker stay', () => {
+    const [, week] = render({ status: 'ok', ageSec: 5,
+      fiveHour: { usedPercentage: 26, resetsAt: now + 3600 },
+      sevenDay: { usedPercentage: 34, resetsAt: reset } }, 'hu')
+    expect(week).toContain('class="quota-bar-days no-narrow"')
+    expect(week).not.toContain('day-narrow')
+    expect(week).toContain('quota-bar-track week')
+    expect(week).toContain('class="quota-bar-now"')
+  })
+
+  it('en narrow tier: day row NOT marked no-narrow, one-letter day-narrow spans', () => {
+    const [, week] = render({ status: 'ok', ageSec: 5,
+      fiveHour: { usedPercentage: 26, resetsAt: now + 3600 },
+      sevenDay: { usedPercentage: 34, resetsAt: reset } }, 'en')
+    expect(week).toContain('class="quota-bar-days"')
+    expect(week).not.toContain('no-narrow')
+    expect((week.match(/class="day-narrow">[A-Z]<\/span>/g) || []).length).toBe(7)
   })
 
   it('missing / null resetsAt: plain bar, no division, no marker', () => {
