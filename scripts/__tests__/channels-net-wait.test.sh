@@ -162,9 +162,16 @@ launch_ln="$(grep -n 'new-session -d -s "\$SESSION" -c "\$INSTALL_DIR"' "$SRC" |
 [ -n "$wait_ln" ] && [ -n "$launch_ln" ] && [ "$wait_ln" -lt "$launch_ln" ] && pass "...before the main session is created" || fail "...before new-session" "wait < launch" "wait=$wait_ln launch=$launch_ln"
 # Review #1761: EXACTLY one call outside the test seam, and it is before the
 # watchdog loop. A call inside the loop would add up to 120 s to every respawn.
-calls="$(grep -nE '^[[:space:]]*wait_for_channel_hosts[[:space:]]' "$SRC" | grep -v 'wait_for_channel_hosts "\$@"')"
-ncalls="$(printf '%s\n' "$calls" | grep -c .)"
-eq "exactly one wait call outside the test seam" "1" "$ncalls"
+# EVERY occurrence counts, in any position (`if wait_for_channel_hosts ...;
+# then`, `x=$(wait_for_channel_hosts ...)`, after `&&` ...), not only one at the
+# start of a line: the first version of this pin missed an `if` form in the
+# loop (review). Comment lines are skipped; the test seam's `"$@"` call is not
+# a launch. One line may hold two calls, so occurrences are counted, not lines.
+calls="$(grep -n 'wait_for_channel_hosts' "$SRC" \
+  | grep -vE '^[0-9]+:[[:space:]]*#' \
+  | grep -v 'wait_for_channel_hosts "\$@"')"
+ncalls="$(printf '%s\n' "$calls" | grep -o 'wait_for_channel_hosts' | grep -c .)"
+eq "exactly one wait call outside the test seam (every occurrence, any form)" "1" "$ncalls"
 loop_ln="$(grep -n 'while \$TMUX has-session -t "\$SESSION"' "$SRC" | head -1 | cut -d: -f1)"
 call_ln="$(printf '%s\n' "$calls" | head -1 | cut -d: -f1)"
 [ -n "$loop_ln" ] && [ -n "$call_ln" ] && [ "$call_ln" -lt "$loop_ln" ] && pass "...and it is before the watchdog loop (initial start only)" || fail "...before the watchdog loop" "call < loop" "call=$call_ln loop=$loop_ln"
