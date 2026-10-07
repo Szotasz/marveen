@@ -166,6 +166,16 @@ describe('notify.ts funnel: Slack then Telegram', () => {
   })
 })
 
+describe('notify.ts funnel: degradation and Slack-only security events', () => {
+  beforeEach(() => { for (const k of Object.keys(settings)) delete settings[k] })
+  it('notifySecurityEvent is not silenced on a Slack-only install (the old Telegram-only gate is gone)', () => {
+    const src = readFileSync(join(__dirname, '..', 'notify.ts'), 'utf-8')
+    const fn = src.slice(src.indexOf('export async function notifySecurityEvent'))
+    expect(fn).toContain("if (!hasTelegram && !(await slackTargetFor('owner'))) return")
+    expect(fn).not.toMatch(/if \(!CHANNEL_TOKEN \|\| !resolveAlertOwnerChat\([^)]*\)\.chatId\) return/)
+  })
+})
+
 describe('wiring', () => {
   const ROOT = join(__dirname, '..', '..')
   const NOTIFY = readFileSync(join(ROOT, 'src', 'notify.ts'), 'utf-8')

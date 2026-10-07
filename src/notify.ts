@@ -40,7 +40,14 @@ export async function deliverWithSlack(
   const setting = await loadSetting()
   const target = await slackTargetFor(kind, setting)
   if (!target) return telegram()
-  const sendFn = send ?? (await import('./slack-notify.js')).sendSlackNotification
+  let sendFn: typeof SendSlack
+  try {
+    sendFn = send ?? (await import('./slack-notify.js')).sendSlackNotification
+  } catch (err) {
+    // A half-finished build must not cost the notification: Telegram instead.
+    logger.warn({ err: err instanceof Error ? err.message : String(err) }, 'Slack modul nem toltheto be; Telegram tartalek')
+    return telegram()
+  }
   const r = await sendFn(target, markIfTestRun(text), { ownerUserId: setting('SLACK_OWNER_USER_ID') })
   if (!r.ok) logger.warn({ target, error: r.error }, 'Slack ertesites nem ment ki; Telegram tartalek')
   if (!r.ok || setting('NOTIFY_TELEGRAM') !== '0') await telegram()
