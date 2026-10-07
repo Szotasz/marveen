@@ -623,6 +623,33 @@ try:
           RM + " -f jegyzet.txt", os.path.join(GROOT, "agents", "valaki")))
 finally:
     gate._live_install = _orig_live
+print()
+print("ELES TELEPITESEN az INDOK a valodi akadalyt nevezi meg (67433099):")
+# A verdikt eles gyokeren mindig BLOKK; ez a szakasz az INDOKLAST meri. MERVE
+# 2026-10-07: a /tmp alatti session-scratchpad torleset a kapu "munkakonyvtar
+# ALATTI torles"-kent indokolta, holott a cel a gyokeren KIVUL volt.
+def _block_msg(cmd, cwd):
+    try:
+        gate.check_bash(cmd, cwd=cwd)
+        return None
+    except Blocked as e:
+        return str(e)
+_orig_live2 = gate._live_install
+try:
+    gate._live_install = lambda root: True
+    _m = _block_msg(RM + " -rf /tmp/kivul-allo-scratch/x", GROOT) or ""
+    check("eles gyokeren, kivulre mutato cel: BLOKK", bool(_m))
+    check("...es az indok a KIVULRE mutato celt nevezi meg", "KIVULRE" in _m)
+    check("...es megemliti az eles gyokeret is", "ELES" in _m)
+    _m = _block_msg(RM + " -rf " + GROOT + "/build", GROOT) or ""
+    check("eles gyokeren, gyoker alatti cel: BLOKK, indok az ELES gyoker",
+          "ELES telepites gyokere" in _m and "KIVULRE" not in _m)
+    _m = _block_msg(RM + " -rf " + GROOT + "/store", GROOT) or ""
+    check("eles gyokeren, vedett ut: az indok a vedett utat nevezi meg",
+          "vedett utvonal" in _m)
+finally:
+    gate._live_install = _orig_live2
+
 # A visszaallitas utan ugyanaz a parancs ismet atmegy -- ez bizonyitja, hogy a
 # fenti harom blokkot a kapcsolo okozta, nem valami mas.
 check("a kapcsolo visszaallitasa utan ismet atmegy",
