@@ -103,7 +103,7 @@ fi
 now=$(date +%s)
 
 # --- gate 1: the channels session must EXIST (bridge "running") ---
-if ! "$TMUX_BIN" has-session -t "$SESSION" 2>/dev/null; then
+if ! "$TMUX_BIN" has-session -t "=$SESSION:" 2>/dev/null; then
   log "session $SESSION not present -- systemd ${MAIN_AGENT_ID}-channels.service owns (re)start; watchdog no-op"
   exit 0
 fi
@@ -129,7 +129,7 @@ auth_count=$(cat "$AUTH_DEAD_COUNT_FILE" 2>/dev/null || echo 0)
 case "$auth_count" in (*[!0-9]*|'') auth_count=0;; esac
 NODE_BIN="$(command -v node || true)"
 if [ -n "$NODE_BIN" ] && [ -f "$INSTALL_DIR/dist/web/reauth-detect.js" ]; then
-  probe_out="$("$TMUX_BIN" capture-pane -p -t "$SESSION" 2>/dev/null | "$NODE_BIN" "$INSTALL_DIR/scripts/channels-auth-probe.mjs" 2>/dev/null)"
+  probe_out="$("$TMUX_BIN" capture-pane -p -t "=$SESSION:" 2>/dev/null | "$NODE_BIN" "$INSTALL_DIR/scripts/channels-auth-probe.mjs" 2>/dev/null)"
   probe_exit=$?
   if [ "$probe_exit" -eq 1 ]; then
     auth_count=$(( auth_count + 1 ))
@@ -257,7 +257,7 @@ if [ "$AUTHDEAD" = true ]; then
 fi
 
 log "$reason and session up -- respawn-pane $SESSION (respawn #$((count+1)))"
-if "$TMUX_BIN" respawn-pane -k -t "$SESSION" "$RESPAWN_CMD" 2>/dev/null; then
+if "$TMUX_BIN" respawn-pane -k -t "=$SESSION:" "$RESPAWN_CMD" 2>/dev/null; then
   date +%s > "$RESPAWN_STAMP"
   echo $(( count + 1 )) > "$RESPAWN_COUNT_FILE"
   rm -f "$AUTH_DEAD_COUNT_FILE" 2>/dev/null || true

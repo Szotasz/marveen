@@ -76,6 +76,7 @@ import { runReconcileBurst, waitReconcileGap, RECONCILE_MAIN_FIRST_MAX_WAIT_MS }
 import { getDesiredAgents } from './agent-desired-state.js'
 import { startSleepWakeDetector, systemSleptBetween } from './sleep-wake-detector.js'
 import { ROOT_SANDBOX_ENV } from './root-sandbox-env.js'
+import { exactTmuxTarget } from '../tmux-target.js'
 
 // Lazily resolved (see makeLazyBinResolver): a module-level `resolveFromPath`
 // const throws at IMPORT time, so any environment where the binary is not
@@ -602,7 +603,7 @@ async function performStuckInputAction(
           // first (no-op when absent); an Enter on the then-idle prompt is
           // harmless.
           await dismissModelConsentDialogIfPresent(session)
-          execFileSync(tmuxBin(), ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+          execFileSync(tmuxBin(), ['send-keys', '-t', exactTmuxTarget(session), 'Enter'], { timeout: 5000 })
         }
         submitted = true
         break
@@ -663,7 +664,7 @@ async function performStuckInputAction(
         // Enter must never reach the model consent dialog (its default SWITCHES
         // the model). No-op when the dialog is absent.
         await dismissModelConsentDialogIfPresent(session)
-        execFileSync(tmuxBin(), ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+        execFileSync(tmuxBin(), ['send-keys', '-t', exactTmuxTarget(session), 'Enter'], { timeout: 5000 })
         submitted = true
         break
       case 'hold':
@@ -1043,7 +1044,7 @@ export function respawnMainSessionFresh(): void {
   // paths drift apart. 'grace' means a launch is already in flight and the session is booting;
   // that is a success for our purposes (something IS coming up), not a failure to retry.
   if (mainChannelsSessionExists()) {
-    execFileSync(tmuxBin(), ['respawn-pane', '-k', '-t', MAIN_CHANNELS_SESSION, claudeCmd], { timeout: 15000 })
+    execFileSync(tmuxBin(), ['respawn-pane', '-k', '-t', exactTmuxTarget(MAIN_CHANNELS_SESSION), claudeCmd], { timeout: 15000 })
   } else {
     const created = createMainChannelsSession()
     logger.warn({ session: MAIN_CHANNELS_SESSION, created },
@@ -1128,7 +1129,7 @@ export async function resumeMarveenSession(): Promise<boolean> {
       // preserving the prior shared-root behaviour.
       config: resolveMainConfigDecision(),
     })
-    execFileSync(tmuxBin(), ['respawn-pane', '-k', '-t', MAIN_CHANNELS_SESSION, claudeCmd], { timeout: 15000 })
+    execFileSync(tmuxBin(), ['respawn-pane', '-k', '-t', exactTmuxTarget(MAIN_CHANNELS_SESSION), claudeCmd], { timeout: 15000 })
 
     // --continue replays the last conversation. When the prior session is large
     // (>200k tokens) Claude Code opens with a "Resume from summary" modal that
@@ -1316,7 +1317,7 @@ export function mainChannelsSessionExists(): boolean {
     // TMUXWINDOWATTR920: stderr piped -- a missing session is an ANSWER here
     // (false), not an error, so it is logged at debug with the call site rather
     // than copied undated onto dashboard.error.log.
-    execFileSync(tmuxBin(), ['has-session', '-t', MAIN_CHANNELS_SESSION], { timeout: 3000, stdio: ['ignore', 'pipe', 'pipe'] })
+    execFileSync(tmuxBin(), ['has-session', '-t', exactTmuxTarget(MAIN_CHANNELS_SESSION)], { timeout: 3000, stdio: ['ignore', 'pipe', 'pipe'] })
     return true
   } catch (err) {
     logger.debug({ site: 'channel-monitor.mainChannelsSessionExists', session: MAIN_CHANNELS_SESSION, tmux: tmuxStderr(err) }, 'tmux has-session: absent')
@@ -1387,7 +1388,7 @@ function respawnMarveenSessionFresh(): boolean {
       // itself or it 401s on the rotating macOS Keychain. null when off/no token.
       config: resolveMainConfigDecision(),
     })
-    execFileSync(tmuxBin(), ['respawn-pane', '-k', '-t', MAIN_CHANNELS_SESSION, claudeCmd], { timeout: 15000 })
+    execFileSync(tmuxBin(), ['respawn-pane', '-k', '-t', exactTmuxTarget(MAIN_CHANNELS_SESSION), claudeCmd], { timeout: 15000 })
     logger.warn({ provider: provider.type }, 'Hard restart: marveen session respawned fresh (no --continue)')
     // Re-establish /rename on the fresh process (see note in resumeMarveenSession).
     // scheduleIdentitySetup only schedules delayed timers -> fire-and-forget.
@@ -1507,7 +1508,7 @@ export function launchdRestartTookEffect(before: number | null, after: number | 
 // message now goes through the logger with the call site and the session.
 function mainPaneClaudePid(): number | null {
   try {
-    const raw = execFileSync(tmuxBin(), ['list-panes', '-t', MAIN_CHANNELS_SESSION, '-F', '#{pane_pid}'],
+    const raw = execFileSync(tmuxBin(), ['list-panes', '-t', exactTmuxTarget(MAIN_CHANNELS_SESSION), '-F', '#{pane_pid}'],
       { timeout: 3000, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] })
     const pid = parseInt(raw.trim().split('\n')[0] ?? '', 10)
     return Number.isFinite(pid) && pid > 0 ? pid : null
@@ -2343,7 +2344,7 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
           } else {
             logger.warn({ session: t.session, agent: label }, 'Session parked in a blocking interactive menu -- sending Escape to recover')
             try {
-              execFileSync(tmuxBin(), ['send-keys', '-t', t.session, 'Escape'], { timeout: 5000 })
+              execFileSync(tmuxBin(), ['send-keys', '-t', exactTmuxTarget(t.session), 'Escape'], { timeout: 5000 })
             } catch (err) {
               logger.warn({ err, session: t.session }, 'Menu-recovery Escape failed')
             }

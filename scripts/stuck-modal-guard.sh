@@ -234,9 +234,9 @@ run_guard() {
   if [ -z "$SESSION" ]; then
     log "no channels session configured (set CHANNELS_SESSION or MAIN_AGENT_ID in .env) -- no-op"; return 0
   fi
-  "$TMUX_BIN" has-session -t "$SESSION" 2>/dev/null || { log "session $SESSION absent -- no-op"; return 0; }
+  "$TMUX_BIN" has-session -t "=$SESSION:" 2>/dev/null || { log "session $SESSION absent -- no-op"; return 0; }
 
-  pane="$("$TMUX_BIN" capture-pane -t "$SESSION" -p 2>/dev/null || true)"
+  pane="$("$TMUX_BIN" capture-pane -t "=$SESSION:" -p 2>/dev/null || true)"
   state="$(printf '%s' "$pane" | classify_pane)"
   now="$(date +%s)"
   firstseen=0; [ -f "$FIRSTSEEN_STAMP" ] && firstseen="$(cat "$FIRSTSEEN_STAMP" 2>/dev/null || echo 0)"
@@ -280,14 +280,14 @@ run_guard() {
   # --- recovery: Escape (bounded), like ensure_modal_closed --------------------
   local i p
   for i in $(seq 1 "$MAX_ESCAPES"); do
-    p="$("$TMUX_BIN" capture-pane -t "$SESSION" -p 2>/dev/null || true)"
+    p="$("$TMUX_BIN" capture-pane -t "=$SESSION:" -p 2>/dev/null || true)"
     case "$(printf '%s' "$p" | classify_pane)" in
       idle|busy) log "modal closed via Escape -- session healthy"; rm -f "$FIRSTSEEN_STAMP" 2>/dev/null || true; return 0 ;;
     esac
-    "$TMUX_BIN" send-keys -t "$SESSION" Escape 2>/dev/null || true
+    "$TMUX_BIN" send-keys -t "=$SESSION:" Escape 2>/dev/null || true
     sleep 0.5
   done
-  p="$("$TMUX_BIN" capture-pane -t "$SESSION" -p 2>/dev/null || true)"
+  p="$("$TMUX_BIN" capture-pane -t "=$SESSION:" -p 2>/dev/null || true)"
   case "$(printf '%s' "$p" | classify_pane)" in
     idle|busy) log "modal closed via Escape -- session healthy"; rm -f "$FIRSTSEEN_STAMP" 2>/dev/null || true; return 0 ;;
   esac
@@ -402,7 +402,7 @@ run_guard() {
   log "stuck modal not cleared by Escape -- respawn-pane $SESSION (respawn #$((count+1)))"
   # G: alert ONLY after the respawn-pane actually succeeds, so a failed respawn
   # never sends the owner a false "respawned" message.
-  if [ -n "$CLAUDE" ] && "$TMUX_BIN" respawn-pane -k -t "$SESSION" "$RESPAWN_CMD" 2>/dev/null; then
+  if [ -n "$CLAUDE" ] && "$TMUX_BIN" respawn-pane -k -t "=$SESSION:" "$RESPAWN_CMD" 2>/dev/null; then
     date +%s > "$RESPAWN_STAMP" 2>/dev/null || true
     echo $(( count + 1 )) > "$RESPAWN_COUNT_FILE" 2>/dev/null || true
     rm -f "$FIRSTSEEN_STAMP" 2>/dev/null || true

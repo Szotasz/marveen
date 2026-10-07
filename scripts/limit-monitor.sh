@@ -174,10 +174,10 @@ PANE_TAIL=15
 # Every fleet session, plus the main channels one explicitly so a rename is
 # still followed even when tmux cannot be listed.
 pane_text() {
-  tmux capture-pane -t "$SESSION" -p 2>/dev/null | tail -n "$PANE_TAIL"
+  tmux capture-pane -t "=$SESSION:" -p 2>/dev/null | tail -n "$PANE_TAIL"
   tmux list-sessions -F '#{session_name}' 2>/dev/null | while read -r s; do
     [ "$s" = "$SESSION" ] && continue
-    tmux capture-pane -t "$s" -p 2>/dev/null | tail -n "$PANE_TAIL"
+    tmux capture-pane -t "=$s:" -p 2>/dev/null | tail -n "$PANE_TAIL"
   done
 }
 

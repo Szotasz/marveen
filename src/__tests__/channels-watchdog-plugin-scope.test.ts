@@ -16,7 +16,7 @@ const channelsSh = readFileSync(join(REPO_ROOT, 'scripts', 'channels.sh'), 'utf-
 // post-init unlock Check 1 a few hundred lines above in this same file).
 
 function extractWatchdogLoop(): string {
-  const start = channelsSh.indexOf('while $TMUX has-session -t "$SESSION"')
+  const start = channelsSh.indexOf('while $TMUX has-session -t "=$SESSION:"')
   expect(start, 'watchdog while-loop not found').toBeGreaterThan(0)
   const end = channelsSh.indexOf('\ndone\n', start)
   expect(end, 'watchdog while-loop close (done) not found').toBeGreaterThan(start)
@@ -25,11 +25,11 @@ function extractWatchdogLoop(): string {
 
 describe('channels.sh watchdog plugin-liveness fallback is scoped to this session, not host-wide', () => {
   it('computes the session pane_pid once, before the watchdog loop', () => {
-    const preLoop = channelsSh.slice(0, channelsSh.indexOf('while $TMUX has-session -t "$SESSION"'))
+    const preLoop = channelsSh.slice(0, channelsSh.indexOf('while $TMUX has-session -t "=$SESSION:"'))
     const idx = preLoop.lastIndexOf('_watchdog_claude_pid=')
     expect(idx, '_watchdog_claude_pid assignment not found before the loop').toBeGreaterThan(0)
     const line = preLoop.slice(idx, preLoop.indexOf('\n', idx))
-    expect(line).toMatch(/list-panes -t "\$SESSION"/)
+    expect(line).toMatch(/list-panes -t "=\$SESSION:"/)
     expect(line).toMatch(/#\{pane_pid\}/)
   })
 
