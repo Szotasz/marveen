@@ -36,7 +36,10 @@ channel_hosts_for_provider() {
 # Does $1 resolve? Through getaddrinfo, the call the plugins make (node's
 # dns.lookup and python's socket.getaddrinfo both use it); getent where neither
 # exists (Linux). CHANNEL_DNS_PROBE replaces the whole chain (tests).
-# Exit 0 = resolves, 1 = does not, 2 = no resolver available.
+# Exit 0 = resolves, 1 = does not, 2 = no resolver available. A resolver's own
+# non-zero exit is always 1 here: getent exits 2 for "key not found", which
+# must not be read as "no resolver" (that would skip the wait exactly when the
+# name does not resolve -- caught by the fake-getent test, #1761 review).
 channel_host_resolves() {
   local host="$1" _node
   if [ -n "${CHANNEL_DNS_PROBE:-}" ]; then
@@ -48,16 +51,16 @@ channel_host_resolves() {
     "$_node" -e '
       const t = setTimeout(() => process.exit(1), 5000)
       require("dns").lookup(process.argv[1], (err) => { clearTimeout(t); process.exit(err ? 1 : 0) })
-    ' "$host" >/dev/null 2>&1
-    return $?
+    ' "$host" >/dev/null 2>&1 && return 0
+    return 1
   fi
   if command -v python3 >/dev/null 2>&1; then
-    python3 -c 'import socket,sys; socket.setdefaulttimeout(5); socket.getaddrinfo(sys.argv[1], 443)' "$host" >/dev/null 2>&1
-    return $?
+    python3 -c 'import socket,sys; socket.setdefaulttimeout(5); socket.getaddrinfo(sys.argv[1], 443)' "$host" >/dev/null 2>&1 && return 0
+    return 1
   fi
   if command -v getent >/dev/null 2>&1; then
-    getent hosts "$host" >/dev/null 2>&1
-    return $?
+    getent hosts "$host" >/dev/null 2>&1 && return 0
+    return 1
   fi
   return 2
 }

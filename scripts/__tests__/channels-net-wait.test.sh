@@ -56,7 +56,21 @@ printf '#!/bin/sh\nexit 1\n' > "$TMPD/probe-never"; chmod +x "$TMPD/probe-never"
 printf '#!/bin/sh\nexit 2\n' > "$TMPD/probe-none"; chmod +x "$TMPD/probe-none"
 printf '#!/bin/sh\nexit 0\n' > "$TMPD/probe-up"; chmod +x "$TMPD/probe-up"
 
-run_wait() { CHANNEL_NET_WAIT_INTERVAL_S="${INTERVAL:-0.1}" CHANNEL_NET_WAIT_MAX_S="${MAX:-10}" bash "$CHANNELS" --channel-net-wait "$@" 2>"$TMPD/err"; }
+run_wait() { CHANNEL_NET_WAIT_INTERVAL_S="${INTERVAL:-0.1}" CHANNEL_NET_WAIT_MAX_S="${MAX:-10}" with_timeout 20 bash "$CHANNELS" --channel-net-wait "$@" 2>"$TMPD/err"; }
+
+# The suite's own time limit (review #1761): a wait that never ends must FAIL
+# here, readably, not hang until the CI job is killed. perl's alarm is on macOS
+# and on the ubuntu runner; exit 142 = killed by the alarm (SIGALRM).
+PERL_BIN="$(command -v perl 2>/dev/null || true)"
+ENV_BIN="$(command -v env)"
+with_timeout() {
+  local secs="$1"; shift
+  if [ -n "$PERL_BIN" ]; then
+    "$PERL_BIN" -e 'alarm shift; exec @ARGV or die "exec: $!"' "$secs" "$@"
+  else
+    "$@"
+  fi
+}
 
 mkdir -p "$TMPD/c1"
 PROBE_DIR="$TMPD/c1" PROBE_OK_AFTER=3 CHANNEL_DNS_PROBE="$TMPD/probe-after" run_wait api.telegram.org slack.com; rc=$?
@@ -69,6 +83,7 @@ grep -q "all channel hosts resolve after" "$TMPD/err" && pass "...and so is the 
 t0=$(date +%s)
 MAX=1 CHANNEL_DNS_PROBE="$TMPD/probe-never" run_wait slack.com; rc=$?
 el=$(( $(date +%s) - t0 ))
+if [ "$rc" -eq 142 ]; then fail "never resolves" "a give-up (exit 1)" "HUNG: killed by the test's own 20s limit"; fi
 eq "never resolves -> gives up with exit 1" "1" "$rc"
 [ "$el" -le 4 ] && pass "...at the limit, not later (${el}s for a 1s limit)" || fail "...at the limit" "<=4s" "${el}s"
 grep -q "GAVE UP" "$TMPD/err" && grep -q "starting the session anyway" "$TMPD/err" && pass "...and says the session starts anyway" || fail "...says it starts anyway" "GAVE UP line" "$(cat "$TMPD/err")"
@@ -106,7 +121,7 @@ tooldir() {
 only_resolver() {  # $1 = resolver binary name, rest = hosts; prints the exit code
   local d; d="$(tooldir "only-$1")"
   ln -sf "$(command -v "$1")" "$d/$1"
-  PATH="$d" CHANNEL_NET_WAIT_INTERVAL_S=0.1 CHANNEL_NET_WAIT_MAX_S=1 "$BASH_BIN" "$CHANNELS" --channel-net-wait "${@:2}" 2>/dev/null; echo $?
+  with_timeout 20 "$ENV_BIN" PATH="$d" CHANNEL_NET_WAIT_INTERVAL_S=0.1 CHANNEL_NET_WAIT_MAX_S=1 "$BASH_BIN" "$CHANNELS" --channel-net-wait "${@:2}" 2>/dev/null; echo $?
 }
 if command -v python3 >/dev/null 2>&1; then
   eq "python3 branch (no node): localhost resolves" "0" "$(only_resolver python3 localhost)"
@@ -114,14 +129,26 @@ if command -v python3 >/dev/null 2>&1; then
 else
   echo "  SKIP: python3 branch (no python3 on this host)"
 fi
-if command -v getent >/dev/null 2>&1; then
-  eq "getent branch (no node, no python3): localhost resolves" "0" "$(only_resolver getent localhost)"
-  eq "getent branch (no node, no python3): an .invalid name does not" "1" "$(only_resolver getent no-such-host.invalid)"
-else
-  echo "  SKIP: getent branch (no getent on this host -- macOS)"
-fi
+# The getent branch runs against a FAKE getent: measured in CI (run
+# 37642744511, ubuntu), the runner's real getent answers an .invalid name too,
+# so a real-DNS assertion there tested the runner, not this branch. The fake
+# records that the chain reached it, and answers by name.
+d="$(tooldir only-fake-getent)"
+cat > "$d/getent" <<'EOF'
+#!/bin/sh
+echo "$*" >> "$GETENT_CALLS"
+[ "$1" = hosts ] || exit 2
+case "$2" in up.example) exit 0 ;; *) exit 2 ;; esac
+EOF
+chmod +x "$d/getent"
+: > "$TMPD/getent-calls"
+with_timeout 20 "$ENV_BIN" GETENT_CALLS="$TMPD/getent-calls" PATH="$d" CHANNEL_NET_WAIT_INTERVAL_S=0.1 CHANNEL_NET_WAIT_MAX_S=1 "$BASH_BIN" "$CHANNELS" --channel-net-wait up.example 2>/dev/null; rc=$?
+eq "getent branch (no node, no python3): a name getent knows resolves" "0" "$rc"
+eq "...and the chain asked getent for it" "hosts up.example" "$(head -1 "$TMPD/getent-calls")"
+with_timeout 20 "$ENV_BIN" GETENT_CALLS="$TMPD/getent-calls" PATH="$d" CHANNEL_NET_WAIT_INTERVAL_S=0.1 CHANNEL_NET_WAIT_MAX_S=1 "$BASH_BIN" "$CHANNELS" --channel-net-wait down.example 2>/dev/null; rc=$?
+eq "getent branch: a name getent does not know -> waits, then gives up" "1" "$rc"
 d="$(tooldir none)"
-PATH="$d" CHANNEL_NET_WAIT_MAX_S=1 "$BASH_BIN" "$CHANNELS" --channel-net-wait slack.com 2>/dev/null; rc=$?
+with_timeout 20 "$ENV_BIN" PATH="$d" CHANNEL_NET_WAIT_MAX_S=1 "$BASH_BIN" "$CHANNELS" --channel-net-wait slack.com 2>/dev/null; rc=$?
 eq "no resolver at all (none of node/python3/getent): does not block" "0" "$rc"
 
 echo ""
@@ -133,6 +160,14 @@ wait_ln="$(grep -n 'wait_for_channel_hosts \$(channel_wait_hosts "\$CHANNEL_PROV
 launch_ln="$(grep -n 'new-session -d -s "\$SESSION" -c "\$INSTALL_DIR"' "$SRC" | head -1 | cut -d: -f1)"
 [ -n "$wait_ln" ] && pass "the launch path waits for the primary + co-listen hosts, and never aborts on a give-up (|| true)" || fail "launch path waits" "the wait line" "none"
 [ -n "$wait_ln" ] && [ -n "$launch_ln" ] && [ "$wait_ln" -lt "$launch_ln" ] && pass "...before the main session is created" || fail "...before new-session" "wait < launch" "wait=$wait_ln launch=$launch_ln"
+# Review #1761: EXACTLY one call outside the test seam, and it is before the
+# watchdog loop. A call inside the loop would add up to 120 s to every respawn.
+calls="$(grep -nE '^[[:space:]]*wait_for_channel_hosts[[:space:]]' "$SRC" | grep -v 'wait_for_channel_hosts "\$@"')"
+ncalls="$(printf '%s\n' "$calls" | grep -c .)"
+eq "exactly one wait call outside the test seam" "1" "$ncalls"
+loop_ln="$(grep -n 'while \$TMUX has-session -t "\$SESSION"' "$SRC" | head -1 | cut -d: -f1)"
+call_ln="$(printf '%s\n' "$calls" | head -1 | cut -d: -f1)"
+[ -n "$loop_ln" ] && [ -n "$call_ln" ] && [ "$call_ln" -lt "$loop_ln" ] && pass "...and it is before the watchdog loop (initial start only)" || fail "...before the watchdog loop" "call < loop" "call=$call_ln loop=$loop_ln"
 
 echo ""
 echo "passed: $PASS  failed: $FAIL"
