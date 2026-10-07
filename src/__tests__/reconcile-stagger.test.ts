@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   RECONCILE_GAP_POLL_MS, RECONCILE_MAIN_FIRST_MAX_WAIT_MS, RECONCILE_MAX_GAP_MS, RECONCILE_MIN_GAP_MS,
-  mainFirstGate, waitReconcileGap,
+  mainFirstGate, runReconcileBurst, waitReconcileGap, type ReconcileBurstDeps,
 } from '../web/reconcile-stagger.js'
 
 // BOOTSTAGGER1007 (c). Measured 2026-10-07 after a power cut: the reconcile
@@ -86,23 +86,105 @@ describe('waitReconcileGap', () => {
   })
 })
 
+// #1764 review (Samu): the gate's WIRING had no assertion of its own -- a
+// mutant `if (false && mainFirstGate(...))` stayed green under the source pin.
+// The burst is now a function with injected deps, and these tests drive it.
+describe('runReconcileBurst: the main-first gate actually holds the starts', () => {
+  function burst(over: Partial<ReconcileBurstDeps> = {}) {
+    const events: string[] = []
+    let mainAsked = 0
+    const deps: ReconcileBurstDeps = {
+      down: ['boni', 'dani', 'zara'],
+      mainReady: () => { mainAsked++; return true },
+      msSinceMonitorStart: 0,
+      isAgentRunning: () => false,
+      isRestartInFlight: () => false,
+      isWithinRestartGrace: () => false,
+      memGateAllowsStart: () => true,
+      start: async (n) => { events.push(`start:${n}`); return { ok: true } },
+      afterStart: (n) => { events.push(`after:${n}`) },
+      gap: async (n) => { events.push(`gap:${n}`); return { end: 'ready', waitedMs: 15_000 } },
+      log: () => {},
+      ...over,
+    }
+    return { deps, events, mainAsked: () => mainAsked }
+  }
+
+  it('main session NOT ready (inside the cap): the burst returns before a single start', async () => {
+    const b = burst({ mainReady: () => false, msSinceMonitorStart: 60_000 })
+    const r = await runReconcileBurst(b.deps)
+    expect(r).toEqual({ gate: 'wait', started: [] })
+    expect(b.events).toEqual([])
+  })
+
+  it('main session ready: each down agent is started in order, its gap waited before the next', async () => {
+    const b = burst()
+    const r = await runReconcileBurst(b.deps)
+    expect(r).toEqual({ gate: 'go', started: ['boni', 'dani', 'zara'] })
+    expect(b.events).toEqual([
+      'start:boni', 'after:boni', 'gap:boni',
+      'start:dani', 'after:dani', 'gap:dani',
+      'start:zara', 'after:zara', 'gap:zara',
+    ])
+    expect(b.mainAsked()).toBe(1)
+  })
+
+  it('main session never ready, past the cap: the fleet starts anyway', async () => {
+    const b = burst({ mainReady: () => false, msSinceMonitorStart: RECONCILE_MAIN_FIRST_MAX_WAIT_MS })
+    expect((await runReconcileBurst(b.deps)).started).toEqual(['boni', 'dani', 'zara'])
+  })
+
+  it('nothing down: the main session is not even probed', async () => {
+    const b = burst({ down: [] })
+    expect(await runReconcileBurst(b.deps)).toEqual({ gate: 'go', started: [] })
+    expect(b.mainAsked()).toBe(0)
+  })
+
+  it('the old skips still hold: running, a managed restart in flight, the restart grace, the memory gate', async () => {
+    const b = burst({
+      down: ['up', 'restarting', 'graced', 'memblocked', 'ok'],
+      isAgentRunning: (n) => n === 'up',
+      isRestartInFlight: (n) => n === 'restarting',
+      isWithinRestartGrace: (n) => n === 'graced',
+      memGateAllowsStart: (n) => n !== 'memblocked',
+    })
+    expect((await runReconcileBurst(b.deps)).started).toEqual(['ok'])
+  })
+
+  it('one agent failing to start does not stop the burst, and its gap is still waited', async () => {
+    const b = burst({
+      start: async (n) => {
+        b.events.push(`start:${n}`)
+        if (n === 'boni') throw new Error('boom')
+        if (n === 'dani') return { ok: false, error: 'tmux failed' }
+        return { ok: true }
+      },
+    })
+    const r = await runReconcileBurst(b.deps)
+    expect(r.started).toEqual(['boni', 'dani', 'zara'])
+    expect(b.events.filter((e) => e.startsWith('gap:'))).toEqual(['gap:boni', 'gap:dani', 'gap:zara'])
+  })
+})
+
 describe('the binding in the reconcile (source)', () => {
   const src = readFileSync(join(__dirname, '../web/channel-monitor.ts'), 'utf-8')
   const fn = src.slice(src.indexOf('async function reconcileDesiredAgents'), src.indexOf('// Backward-compatible alias'))
 
-  it('asks the main-first gate before any start, with the main session\'s channel readiness', () => {
-    const gate = fn.indexOf("mainFirstGate(mainSessionChannelsReady(), sinceStart) === 'wait'")
-    expect(gate).toBeGreaterThan(0)
-    expect(gate).toBeLessThan(fn.indexOf('startAgentProcess(name)'))
+  it('the reconcile delegates the whole burst, with the REAL main readiness and the agent\'s own readiness gap', () => {
+    expect(fn).toContain('await runReconcileBurst({')
+    expect(fn).toContain('mainReady: mainSessionChannelsReady,')
+    expect(fn).toContain('msSinceMonitorStart: Date.now() - monitorModuleLoadedAt,')
+    expect(fn).toContain('isReady: () => isSessionReadyForPrompt(agentSessionName(name)),')
+    expect(fn).toContain('memGateAllowsStart,')
   })
 
-  it('after each start waits on THAT agent\'s readiness, never a fixed delay', () => {
-    expect(fn).toContain('isReady: () => isSessionReadyForPrompt(agentSessionName(name))')
-    expect(fn.indexOf('waitReconcileGap(')).toBeGreaterThan(fn.indexOf('startAgentProcess(name)'))
+  it('no start bypasses the burst: startAgentProcess appears only as the injected start', () => {
+    expect(fn.match(/startAgentProcess\(/g)?.length).toBe(1)
+    expect(fn).toContain('start: (name) => startAgentProcess(name),')
     expect(fn).not.toMatch(/await delay\(/)
   })
 
-  it('main readiness = the primary plugin AND every co-listen plugin alive under the main claude', () => {
+  it('main readiness = the primary plugin AND every co-listen plugin alive under the main claude, strict', () => {
     const ready = src.slice(src.indexOf('function mainSessionChannelsReady'), src.indexOf('function loadPerCpu'))
     expect(ready).toContain('probeChannelPluginLiveness(claudePid, primary) !== \'alive\'')
     expect(ready).toContain('colistenProviders(primary, readExtraChannelPluginIds()')

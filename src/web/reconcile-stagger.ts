@@ -58,3 +58,61 @@ export async function waitReconcileGap(d: GapDeps): Promise<{ end: GapEnd; waite
     await d.sleep(Math.min(RECONCILE_GAP_POLL_MS, RECONCILE_MAX_GAP_MS - waited))
   }
 }
+
+export interface ReconcileBurstDeps {
+  /** Desired agents that were down when the burst was decided. */
+  down: string[]
+  /** Is the main session up for the owner (primary + every co-listen plugin)? Asked once. */
+  mainReady: () => boolean
+  msSinceMonitorStart: number
+  isAgentRunning: (name: string) => boolean
+  isRestartInFlight: (name: string) => boolean
+  isWithinRestartGrace: (name: string) => boolean
+  memGateAllowsStart: (name: string) => boolean
+  start: (name: string) => Promise<{ ok: boolean; error?: string }>
+  /** Bookkeeping right after a start attempt (the monitor's restart grace stamp). */
+  afterStart: (name: string) => void
+  /** The gap after a start (waitReconcileGap with the real probes). */
+  gap: (name: string) => Promise<{ end: GapEnd; waitedMs: number }>
+  log: (level: 'info' | 'warn' | 'error', fields: Record<string, unknown>, msg: string) => void
+}
+
+/**
+ * One reconcile burst: the main-first gate, then the down agents one at a
+ * time, each followed by its readiness gap. Returns the gate's answer and the
+ * agents a start was attempted for. Never throws for one agent's failure.
+ */
+export async function runReconcileBurst(d: ReconcileBurstDeps): Promise<{ gate: 'go' | 'wait'; started: string[] }> {
+  const started: string[] = []
+  if (d.down.length === 0) return { gate: 'go', started }
+  // Main first: after a boot the owner's channel matters more than the fleet,
+  // and every sub-agent boot competes with the main session's MCP connects.
+  const gate = mainFirstGate(d.mainReady(), d.msSinceMonitorStart)
+  if (gate === 'wait') return { gate, started }
+  for (const name of d.down) {
+    if (d.isAgentRunning(name)) continue
+    // A managed restart (context guard, auto-restart, model fallback, the
+    // dashboard button) is stop+start, and isAgentRunning() reports false for
+    // the ~2s the stop spends waiting on tmux. Starting the agent in that
+    // window does not heal a crash -- it overtakes the restarter and boots
+    // the agent with OUR options instead of theirs (see restart-lock.ts).
+    if (d.isRestartInFlight(name)) {
+      d.log('info', { agent: name }, 'Reconcile: managed restart in flight -- leaving the start to it')
+      continue
+    }
+    if (d.isWithinRestartGrace(name)) continue
+    if (!d.memGateAllowsStart(name)) continue // safe-mode / memory gate
+    d.log('warn', { agent: name }, 'Desired agent not running -- auto-starting (reconcile)')
+    started.push(name)
+    try {
+      const r = await d.start(name)
+      d.afterStart(name)
+      if (!r.ok && r.error !== 'Agent is already running') d.log('error', { agent: name, error: r.error }, 'Reconcile start failed')
+    } catch (err) {
+      d.log('error', { err, agent: name }, 'Reconcile start threw')
+    }
+    const gap = await d.gap(name)
+    d.log('info', { agent: name, gapEnd: gap.end, waitedMs: gap.waitedMs }, 'Reconcile: next agent may start')
+  }
+  return { gate, started }
+}

@@ -72,7 +72,7 @@ import {
 // module so the standalone channel-coordinator reuses the exact same probe.
 import { getClaudePidForSession, hasChannelPluginAlive, probeChannelPluginLiveness, classifyRespawnStampAdvance } from '../channel-coordinator/liveness.js'
 import { colistenProviders, runColistenCheck, type ColistenState } from './main-colisten-health.js'
-import { mainFirstGate, waitReconcileGap, RECONCILE_MAIN_FIRST_MAX_WAIT_MS } from './reconcile-stagger.js'
+import { runReconcileBurst, waitReconcileGap, RECONCILE_MAIN_FIRST_MAX_WAIT_MS } from './reconcile-stagger.js'
 import { getDesiredAgents } from './agent-desired-state.js'
 import { startSleepWakeDetector, systemSleptBetween } from './sleep-wake-detector.js'
 import { ROOT_SANDBOX_ENV } from './root-sandbox-env.js'
@@ -2788,52 +2788,35 @@ async function reconcileDesiredAgents(): Promise<void> {
   if (desired.size === 0) return
   const down = [...desired].filter((name) => !isAgentRunning(name))
   if (down.length === 0) return
-  // Main first: after a boot the owner's channel matters more than the fleet,
-  // and every sub-agent boot competes with the main session's MCP connects.
-  const sinceStart = Date.now() - monitorModuleLoadedAt
-  if (mainFirstGate(mainSessionChannelsReady(), sinceStart) === 'wait') {
-    if (!mainFirstWaitLogged) {
-      logger.info({ pending: down, maxWaitMs: RECONCILE_MAIN_FIRST_MAX_WAIT_MS }, 'Reconcile: waiting for the main session\'s channels before starting sub-agents')
-      mainFirstWaitLogged = true
-    }
-    return
-  }
-  mainFirstWaitLogged = false
   reconcileBurstInProgress = true
   try {
-    for (const name of down) {
-      if (isAgentRunning(name)) continue
-      // A managed restart (context guard, auto-restart, model fallback, the
-      // dashboard button) is stop+start, and isAgentRunning() reports false for
-      // the ~2s the stop spends waiting on tmux. Starting the agent in that
-      // window does not heal a crash -- it overtakes the restarter and boots
-      // the agent with OUR options instead of theirs (default = --continue,
-      // which is exactly what a saturation rescue is trying to drop). The two
-      // loops are phase-locked, so this is not a rare interleaving: see
-      // restart-lock.ts for the measured levente case.
-      if (isRestartInFlight(name)) {
-        logger.info({ agent: name }, 'Reconcile: managed restart in flight -- leaving the start to it')
-        continue
-      }
-      if (isWithinRestartGrace(name)) continue
-      if (!memGateAllowsStart(name)) continue   // Commit 3 v1: safe-mode / memory gate
-      logger.warn({ agent: name }, 'Desired agent not running -- auto-starting (reconcile)')
-      try {
-        const r = await startAgentProcess(name)
-        agentLastRestart.set(name, Date.now())
-        if (!r.ok && r.error !== 'Agent is already running') {
-          logger.error({ agent: name, error: r.error }, 'Reconcile start failed')
-        }
-      } catch (err) {
-        logger.error({ err, agent: name }, 'Reconcile start threw')
-      }
-      const gap = await waitReconcileGap({
+    // BOOTSTAGGER1007 (c): the gate, the skips and the readiness gap live in
+    // runReconcileBurst (reconcile-stagger.ts), behaviour-tested there.
+    const { gate } = await runReconcileBurst({
+      down,
+      mainReady: mainSessionChannelsReady,
+      msSinceMonitorStart: Date.now() - monitorModuleLoadedAt,
+      isAgentRunning,
+      isRestartInFlight,
+      isWithinRestartGrace,
+      memGateAllowsStart,
+      start: (name) => startAgentProcess(name),
+      afterStart: (name) => { agentLastRestart.set(name, Date.now()) },
+      gap: (name) => waitReconcileGap({
         now: Date.now,
         sleep: delay,
         isReady: () => isSessionReadyForPrompt(agentSessionName(name)),
         loadPerCpu,
-      })
-      logger.info({ agent: name, gapEnd: gap.end, waitedMs: gap.waitedMs }, 'Reconcile: next agent may start')
+      }),
+      log: (level, fields, msg) => logger[level](fields, msg),
+    })
+    if (gate === 'wait') {
+      if (!mainFirstWaitLogged) {
+        logger.info({ pending: down, maxWaitMs: RECONCILE_MAIN_FIRST_MAX_WAIT_MS }, 'Reconcile: waiting for the main session\'s channels before starting sub-agents')
+        mainFirstWaitLogged = true
+      }
+    } else {
+      mainFirstWaitLogged = false
     }
   } finally {
     reconcileBurstInProgress = false
