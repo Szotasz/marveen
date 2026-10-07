@@ -3,6 +3,8 @@ import {
   checkUpdatePreflight,
   checkNoConcurrentUpdate,
   classifyLockWriteError,
+  FUTURE_START_TOLERANCE_MS,
+  pidfileStartEpochMs,
   type GitRunner,
   type PidfileRunner,
 } from '../update-preflight.js'
@@ -351,6 +353,55 @@ describe('checkNoConcurrentUpdate -- age-based staleness', () => {
       makePidfile('7777\n0\n', [7777], 2_000_000_000_000),
     )
     expect(result.ok).toBe(false)
+  })
+})
+
+describe('checkNoConcurrentUpdate -- start epoch units and a future start (card 48612d05)', () => {
+  // A `date +%s%3N` that ignores the width (uutils coreutils 0.8.0, measured
+  // on a fleet host: 1791339884828136399) writes nanoseconds; the start then
+  // looked far in the future, the age stayed negative, and a stale pidfile
+  // behind a recycled pid never aged out.
+  const HOUR_MS = 60 * 60 * 1000
+  const NOW = 1_791_400_000_000
+  const ns = (ms: number) => `${ms}000000`
+  const us = (ms: number) => `${ms}000`
+
+  it('a 19-digit (nanosecond) start two hours old with a live foreign pid is stale', () => {
+    const result = checkNoConcurrentUpdate(makePidfile(`7777\n${ns(NOW - 2 * HOUR_MS)}\n`, [7777], NOW))
+    expect(result.ok).toBe(true)
+  })
+
+  it('a 19-digit start one second old keeps the lock (an update running under an older update.sh)', () => {
+    const result = checkNoConcurrentUpdate(makePidfile(`7777\n${ns(NOW - 1000)}\n`, [7777], NOW))
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.pid).toBe(7777)
+  })
+
+  it('a 16-digit (microsecond) start: two hours old is stale, one second old keeps the lock', () => {
+    expect(checkNoConcurrentUpdate(makePidfile(`7777\n${us(NOW - 2 * HOUR_MS)}\n`, [7777], NOW)).ok).toBe(true)
+    expect(checkNoConcurrentUpdate(makePidfile(`7777\n${us(NOW - 1000)}\n`, [7777], NOW)).ok).toBe(false)
+  })
+
+  it('a ms start two hours in the future is corrupt and counts as stale', () => {
+    const result = checkNoConcurrentUpdate(makePidfile(`7777\n${NOW + 2 * HOUR_MS}\n`, [7777], NOW))
+    expect(result.ok).toBe(true)
+  })
+
+  it('a start exactly at the clock tolerance keeps the lock; 1 ms beyond it is stale', () => {
+    expect(
+      checkNoConcurrentUpdate(makePidfile(`7777\n${NOW + FUTURE_START_TOLERANCE_MS}\n`, [7777], NOW)).ok,
+    ).toBe(false)
+    expect(
+      checkNoConcurrentUpdate(makePidfile(`7777\n${NOW + FUTURE_START_TOLERANCE_MS + 1}\n`, [7777], NOW)).ok,
+    ).toBe(true)
+  })
+
+  it('pidfileStartEpochMs reads 13, 16 and 19 digits as the same ms, exactly past 2^53', () => {
+    expect(pidfileStartEpochMs('1791339884828136399')).toBe(1791339884828)
+    expect(pidfileStartEpochMs('1791339884828136')).toBe(1791339884828)
+    expect(pidfileStartEpochMs('1791339884828')).toBe(1791339884828)
+    expect(pidfileStartEpochMs('0001791339884828')).toBe(1791339884828)
   })
 })
 
