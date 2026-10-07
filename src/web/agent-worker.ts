@@ -7,7 +7,9 @@ import { createHash } from 'node:crypto'
 import { resolveFromPath, tryResolveFromPath } from '../platform.js'
 import { logger } from '../logger.js'
 import { launchableInstallDefaultSync } from './default-model-guard.js'
-import { MAIN_AGENT_ID, PROJECT_ROOT, DEFAULT_AGENT_MODEL } from '../config.js'
+import { measureClaudeCliVersionSync } from './claude-cli-version.js'
+import { CLAUDE_MODEL_MIN_CLI, baseModelId, isModelUnsupportedByCli } from '../claude-cli-support.js'
+import { MAIN_AGENT_ID, PROJECT_ROOT, DEFAULT_AGENT_MODEL, DEFAULT_AGENT_MODEL_IS_DISTRIBUTION } from '../config.js'
 import {
   capturePane,
   isSessionReadyForPrompt,
@@ -56,10 +58,52 @@ const TMUX = resolveFromPath('tmux')
 // when neither override nor custom provider is in play.
 const WORKER_MODEL_OVERRIDE = process.env.MARVEEN_WORKER_MODEL ?? null
 
-// APRO920 (c)(2): pure so the launch-model log line's source label is unit
-// testable without spinning up a real tmux session.
-export function workerModelSource(env: NodeJS.ProcessEnv = process.env): string {
-  return env.MARVEEN_WORKER_MODEL ? 'env:MARVEEN_WORKER_MODEL' : 'default'
+
+// WORKERMODEL1773 (#1773): the worker's --model, resolved in one pure place
+// (it also carries the launch log's source label, APRO920 (c)(2): replaces
+// workerModelSource, which called a custom-provider or an explicit
+// DEFAULT_AGENT_MODEL launch "default").
+// The #1609 guard (DEFAULTCLIGUARD927) only ever looked at the SHIPPED default:
+// an explicit value -- MARVEEN_WORKER_MODEL, or a configured DEFAULT_AGENT_MODEL
+// -- reached --model unchecked, so on a CLI below the model's minimum the worker
+// came up and every prompt got 400 unrecognized_model. Measured 2026-10-07 with
+// the real guard and CLI 2.1.110: an explicit claude-opus-5-5[1m] passed through
+// unchanged, while the shipped default fell back to claude-opus-5[1m].
+//
+// The decision now carries `unlaunchable` for an explicit value the measured
+// CLI cannot run (fail-open: an unmeasured CLI flags nothing; a custom-provider
+// model is not a Claude model and is not checked).
+export type WorkerModelSourceLabel = 'env:MARVEEN_WORKER_MODEL' | 'custom-provider' | 'env:DEFAULT_AGENT_MODEL' | 'default'
+export interface WorkerModelDecision {
+  model: string
+  source: WorkerModelSourceLabel
+  unlaunchable: { minCli: string; installedCli: string } | null
+}
+export interface WorkerModelInputs {
+  /** MARVEEN_WORKER_MODEL, or null. */
+  override: string | null
+  /** The main agent's custom-provider model, or null when none is configured. */
+  customProviderModel: string | null
+  /** DEFAULT_AGENT_MODEL as resolved by config. */
+  configuredDefault: string
+  /** True when no operator configured DEFAULT_AGENT_MODEL (the shipped default). */
+  defaultIsDistribution: boolean
+  /** The #1609 guard for the shipped default (called only on that path). */
+  launchableDefault: () => string
+  /** The measured installed CLI version, or null when unmeasured. */
+  installedCli: () => string | null
+}
+export function resolveWorkerModel(i: WorkerModelInputs): WorkerModelDecision {
+  const explicit = (model: string, source: WorkerModelSourceLabel): WorkerModelDecision => {
+    const installed = i.installedCli()
+    const req = CLAUDE_MODEL_MIN_CLI[baseModelId(model)]
+    const unlaunchable = installed && req && isModelUnsupportedByCli(model, installed) ? { minCli: req.minCli, installedCli: installed } : null
+    return { model, source, unlaunchable }
+  }
+  if (i.override) return explicit(i.override, 'env:MARVEEN_WORKER_MODEL')
+  if (i.customProviderModel) return { model: i.customProviderModel, source: 'custom-provider', unlaunchable: null }
+  if (!i.defaultIsDistribution) return explicit(i.configuredDefault, 'env:DEFAULT_AGENT_MODEL')
+  return { model: i.launchableDefault(), source: 'default', unlaunchable: null }
 }
 
 // How long to wait for a freshly launched worker to reach an idle prompt.
@@ -519,15 +563,13 @@ function startWorkerSessionFor(ctx: WorkerCtx): void {
   // which already disables the suggestion for the same scrape-misread reason.
   // Resolve model and optional custom-provider env prefix.
   // Priority: MARVEEN_WORKER_MODEL override > main-agent custom provider > default.
-  let workerModel = WORKER_MODEL_OVERRIDE ?? DEFAULT_AGENT_MODEL
   let customEnvPrefix = ''
-  let fromCustomProvider = false
+  let customProviderModel: string | null = null
   if (!WORKER_MODEL_OVERRIDE) {
     try {
       const cpEnv = buildCustomProviderLaunchEnv(MAIN_AGENT_ID)
       if (cpEnv) {
-        workerModel = cpEnv.model
-        fromCustomProvider = true
+        customProviderModel = cpEnv.model
         customEnvPrefix = cpEnv.envPrefix
         if (cpEnv.customApiKeyForApproval) {
           stampCustomApiKeyApproval(join(ctx.configDir, '.claude.json'), cpEnv.customApiKeyForApproval)
@@ -536,9 +578,23 @@ function startWorkerSessionFor(ctx: WorkerCtx): void {
     } catch (err) {
       logger.warn({ err }, 'agent-worker: could not resolve main-agent custom provider; falling back to default model')
     }
-    // DEFAULTCLIGUARD927: the default path only -- a CLI that cannot run the
-    // shipped default gets the previous tier instead of a deaf worker.
-    if (!fromCustomProvider) workerModel = launchableInstallDefaultSync('worker')
+  }
+  // DEFAULTCLIGUARD927 keeps guarding the shipped default inside; WORKERMODEL1773
+  // flags an explicit value the measured CLI cannot run.
+  const decision = resolveWorkerModel({
+    override: WORKER_MODEL_OVERRIDE,
+    customProviderModel,
+    configuredDefault: DEFAULT_AGENT_MODEL,
+    defaultIsDistribution: DEFAULT_AGENT_MODEL_IS_DISTRIBUTION,
+    launchableDefault: () => launchableInstallDefaultSync('worker'),
+    installedCli: () => measureClaudeCliVersionSync().version,
+  })
+  const workerModel = decision.model
+  if (decision.unlaunchable) {
+    logger.warn(
+      { session: ctx.session, model: decision.model, source: decision.source, ...decision.unlaunchable },
+      'WORKERMODEL1773: the configured worker model is not launchable by the installed Claude Code CLI; every prompt will be refused (400 unrecognized_model)',
+    )
   }
 
   const claudeLaunchBin = tryResolveFromPath('claude') ?? 'claude'
@@ -558,7 +614,7 @@ function startWorkerSessionFor(ctx: WorkerCtx): void {
   // APRO920 (c)(2): same rationale as startAgentProcess's model-resolved log --
   // which config-chain element supplied the --model value.
   logger.info(
-    { session: ctx.session, model: workerModel, source: workerModelSource() },
+    { session: ctx.session, model: workerModel, source: decision.source },
     'agent-worker: launch model resolved',
   )
   logWorkerClaudeVersion(ctx)
