@@ -8,6 +8,7 @@ import {
   pruneToolCallLogRetention,
   checkpointAndCompact,
 } from '../db.js'
+import { runDecaySweep } from '../memory.js'
 
 const DAY = 86400
 
@@ -163,5 +164,58 @@ describe('checkpointAndCompact', () => {
     // Fresh in-memory DB: nothing has been deleted, so there is nothing to
     // reclaim and the gate must hold the (exclusive-lock, full-rewrite) VACUUM.
     expect(checkpointAndCompact().vacuumed).toBe(false)
+  })
+})
+
+describe('runDecaySweep (the daily entry point)', () => {
+  // The prune tests above call each prune directly, so they would stay green if
+  // the daily sweep stopped calling them. This drives the real entry point that
+  // index.ts schedules, with an old and a fresh row in every table.
+  beforeEach(() => {
+    getDb().exec(
+      'DELETE FROM conversation_log; DELETE FROM otel_spans; DELETE FROM agent_messages; DELETE FROM tool_call_log',
+    )
+  })
+
+  it('runs all four retention prunes: old rows go, fresh and in-flight rows stay', () => {
+    const now = NOW()
+    const db = getDb()
+    const conv = db.prepare(
+      `INSERT INTO conversation_log (agent_id, chat_id, direction, message_id, text, ts, created_at)
+       VALUES ('test-agent', 'chat-1', 'in', ?, 'x', '2026-01-01T00:00:00Z', ?)`,
+    )
+    conv.run('conv-old', now - 120 * DAY)
+    conv.run('conv-fresh', now)
+
+    const span = db.prepare(
+      `INSERT INTO otel_spans (trace_id, span_id, agent_id, operation, start_ms, status)
+       VALUES ('trace-1', ?, 'test-agent', 'op', ?, 'ok')`,
+    )
+    span.run('span-old', Date.now() - 30 * DAY * 1000)
+    span.run('span-fresh', Date.now())
+
+    const msg = db.prepare(
+      `INSERT INTO agent_messages (id, from_agent, to_agent, content, status, created_at)
+       VALUES (?, 'a', 'b', 'x', ?, ?)`,
+    )
+    msg.run(1, 'done', now - 60 * DAY)
+    msg.run(2, 'done', now)
+    msg.run(3, 'pending', now - 365 * DAY)
+    msg.run(4, 'delivered', now - 365 * DAY)
+
+    const tool = db.prepare(
+      `INSERT INTO tool_call_log (session_id, tool_name, input_summary, success, created_at)
+       VALUES (?, 'Bash', 'x', 1, ?)`,
+    )
+    tool.run('tool-old', now - 45 * DAY)
+    tool.run('tool-fresh', now)
+
+    runDecaySweep()
+
+    const col = (sql: string) => (db.prepare(sql).all() as Array<Record<string, unknown>>).map((r) => Object.values(r)[0])
+    expect(col('SELECT message_id FROM conversation_log ORDER BY message_id')).toEqual(['conv-fresh'])
+    expect(col('SELECT span_id FROM otel_spans ORDER BY span_id')).toEqual(['span-fresh'])
+    expect(col('SELECT id FROM agent_messages ORDER BY id')).toEqual([2, 3, 4])
+    expect(col('SELECT session_id FROM tool_call_log ORDER BY session_id')).toEqual(['tool-fresh'])
   })
 })
