@@ -107,7 +107,12 @@ const TASK: ScheduledTask = {
   name: 'cron-precheck-daily',
   description: 'cron pre-check fixture',
   prompt: 'Do the thing.',
-  schedule: '0 8 * * *',
+  // Every minute: an occurrence falls inside the first tick's window in ANY
+  // host zone. The cron zone is the host's (SCHEDULER_TZ is read through
+  // cfg() from the install .env, never from process.env, so a test cannot
+  // stub it); a fixed hour matched on a Budapest host and never on the
+  // ubuntu CI runner (UTC), which is how the first push went red.
+  schedule: '* * * * *',
   agent: 'cronagent',
   enabled: true,
   createdAt: 0,
@@ -133,11 +138,9 @@ async function runOneTick(done: () => boolean) {
 
 describe('the cron loop\'s pre-check runs off the event loop (CRONPRECHECKSYNC1007)', () => {
   beforeEach(() => {
-    vi.stubEnv('SCHEDULER_TZ', 'Europe/Budapest')
     vi.clearAllMocks()
     mockSendPrompt.mockImplementation(() => 'sent')
     vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] })
-    // 08:00:30 Budapest: the 08:00 occurrence is inside the first tick's window.
     vi.setSystemTime(new Date('2026-07-31T06:00:30.000Z'))
     served = 0
     onRequest = () => {}
@@ -146,7 +149,6 @@ describe('the cron loop\'s pre-check runs off the event loop (CRONPRECHECKSYNC10
   })
   afterEach(() => {
     vi.useRealTimers()
-    vi.unstubAllEnvs()
   })
 
   it('a pre-check that calls the dashboard gets its answer, and the answer reaches the fired prompt', async () => {
@@ -173,6 +175,8 @@ describe('the cron loop\'s pre-check runs off the event loop (CRONPRECHECKSYNC10
     onRequest = () => { mockListScheduledTasks.mockReturnValue([{ ...TASK, preCheck: scriptPath, enabled: false }]) }
     await runOneTick(() => served > 0)
     await until(() => false, 1_500)
+    // The pre-check DID run (a tick that never fired would pass the next line vacuously).
+    expect(served).toBe(1)
     expect(mockAppendTaskRun.mock.calls.filter(c => c[0] === TASK.name)).toEqual([])
   })
 
@@ -187,6 +191,7 @@ describe('the cron loop\'s pre-check runs off the event loop (CRONPRECHECKSYNC10
     onRequest = () => { mockListScheduledTasks.mockReturnValue([]) }
     await runOneTick(() => served > 0)
     await until(() => false, 1_500)
+    expect(served).toBe(1)
     expect(mockSendPrompt).not.toHaveBeenCalled()
   })
 
