@@ -79,6 +79,15 @@ describe('readScheduledDeliveryDefault: a set but bad value is warned about and 
     expect(warn.mock.calls.filter((c) => String(c[1]).includes('SCHEDULED_DELIVERY_CHANNEL')).length).toBe(0)
   })
 
+  it('SCHEDULED_DELIVERY_CHANNEL is a registered setting (Beallitasok), a plain string, live without restart', async () => {
+    const { getSettingDefinition } = await import('../config-registry.js')
+    const def = getSettingDefinition('SCHEDULED_DELIVERY_CHANNEL')
+    expect(def?.type).toBe('string')
+    expect(def?.default).toBe('')
+    expect(def?.secret).toBe(false)
+    expect(def?.requiresRestart).toBe(false)
+  })
+
   it('the default reader reads the install .env (launchd: the .env never reaches process.env)', () => {
     const before = process.env.SCHEDULED_DELIVERY_CHANNEL
     delete process.env.SCHEDULED_DELIVERY_CHANNEL
@@ -180,6 +189,16 @@ describe('deliveryFallbackClause: the main agent falls back to the owner Telegra
     expect(c).toContain('ne tippelj')
   })
 
+  it('covers a reply tool that FAILS, not only a missing one, and has the first line name the Slack error (review 35241)', () => {
+    // Live failure mode: the slack-channel plugin's outbound gate refuses a
+    // cold DM with an "Outbound gate" error while the tool exists.
+    const c = deliveryFallbackClause('slack', true, '1268077055')
+    expect(c).toContain('hianyzik VAGY hibat ad')
+    expect(c).toContain('Outbound gate')
+    expect(c).toContain('ELSO sora nevezze meg a Slack hibat')
+    expect(deliveryFallbackClause('teams', true, '1')).toContain('a Teams hibat')
+  })
+
   it('no clause on Telegram itself, for a sub-agent, or without an owner chat', () => {
     expect(deliveryFallbackClause('telegram', true, '1268077055')).toBe('')
     expect(deliveryFallbackClause('slack', false, '1268077055')).toBe('')
@@ -196,5 +215,12 @@ describe('the binding: the delivery prompt line carries the fallback clause', ()
     const { readFileSync } = await import('node:fs')
     const src = readFileSync(join(__dirname, '..', 'web', 'schedule-runner.ts'), 'utf-8')
     expect(src).toMatch(/Az eredmenyt kuldd el \$\{channelDeliveryName\(bound\.provider\)\} \(chat_id: \$\{bound\.chatId\}, reply tool\)\. \$\{deliveryFallbackClause\(bound\.provider, agentName === MAIN_AGENT_ID\)\}`/)
+  })
+
+  it('the fallback sentence covers a FAILING reply tool and asks for the error on the first line (review 35241)', async () => {
+    const { readFileSync } = await import('node:fs')
+    const src = readFileSync(join(__dirname, '..', 'web', 'schedule-runner.ts'), 'utf-8')
+    expect(src).toContain('(a reply tool hianyzik VAGY hibat ad, pl. "Outbound gate")')
+    expect(src).toContain('es az uzenet ELSO sora nevezze meg a ${channelDisplayName(provider)} hibat')
   })
 })

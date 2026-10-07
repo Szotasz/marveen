@@ -562,6 +562,15 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     requiresRestart: false,
   },
   {
+    key: 'SCHEDULED_DELIVERY_CHANNEL',
+    type: 'string',
+    default: '',
+    description: 'Hova menjen a fő ágens ütemezett feladatainak eredménye, "<csatorna>:<chat id>" alakban (csatorna: telegram, slack, discord, googlechat, teams), pl. "slack:D0123456789". Üresen (alapértelmezés) a fő ágens saját csatornája marad. Az al-ágensek feladataira nem hat, és az a feladat, amelyik saját chatet vagy "none"-t ad meg, megtartja. Ha a cél nem Telegram, és ott a küldés nem megy, a gazda Telegram-chatje (ALLOWED_CHAT_ID) a tartalék. Hibás érték esetén nincs felülírás, csak naplóbejegyzés.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: false,
+  },
+  {
     key: 'MAIN_AGENT_CONFIG_DIR',
     type: 'string',
     default: '',

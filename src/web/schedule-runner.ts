@@ -24,7 +24,7 @@ import {
   TASK_STALL_TIMEOUT_MS,
 } from '../config.js'
 import { resolveOwnerChatId, configuredOwnerChatFor, normalizeChatId } from '../owner-chat.js'
-import { readEnvFile } from '../env.js'
+import { getEffectiveSettingValue } from '../settings-store.js'
 import {
   appendTaskRun,
   getHeartbeatKanbanLive,
@@ -950,18 +950,18 @@ const warnedDeliveryDefaults = new Set<string>()
 
 /**
  * The install's SCHEDULED_DELIVERY_CHANNEL, read fresh on every call: from
- * process.env (an operator or test override), else the install .env. NOT
- * process.env alone: the dashboard runs under launchd and NONE of the .env
- * keys reach its process.env (measured 2026-09-20, see rolloutFlag in
- * batch-inject.ts), so a process.env-only setting would be unreachable through
- * "put it in .env". A set but unusable value is warned about once per value
- * and ignored.
+ * process.env (an operator or test override), else the settings store
+ * (Beallitasok override > install .env > registry default ''). NOT process.env
+ * alone: the dashboard runs under launchd and NONE of the .env keys reach its
+ * process.env (measured 2026-09-20, see rolloutFlag in batch-inject.ts), so a
+ * process.env-only setting would be unreachable through "put it in .env". A
+ * set but unusable value is warned about once per value and ignored.
  */
 export function readScheduledDeliveryDefault(
   read: () => string | undefined = () => {
     const fromProcess = process.env.SCHEDULED_DELIVERY_CHANNEL
     if (fromProcess !== undefined && fromProcess.trim() !== '') return fromProcess
-    return readEnvFile(['SCHEDULED_DELIVERY_CHANNEL']).SCHEDULED_DELIVERY_CHANNEL
+    try { return String(getEffectiveSettingValue('SCHEDULED_DELIVERY_CHANNEL') ?? '') } catch { return undefined }
   },
 ): DeliveryDefault | null {
   const raw = read()
@@ -973,11 +973,26 @@ export function readScheduledDeliveryDefault(
   return parsed
 }
 
+/** The provider's name in the nominative, for "a <name> hibat". */
+export function channelDisplayName(provider: ChannelProviderType): string {
+  switch (provider) {
+    case 'slack': return 'Slack'
+    case 'discord': return 'Discord'
+    case 'googlechat': return 'Google Chat'
+    case 'teams': return 'Teams'
+    case 'telegram': return 'Telegram'
+  }
+}
+
 /**
  * The fallback clause of the MAIN agent's delivery instruction when it is told
- * to deliver somewhere other than Telegram: if that channel's reply tool is not
- * available in the session, the owner's Telegram chat (ALLOWED_CHAT_ID) is the
- * fallback. Empty for Telegram itself, for sub-agents (ALLOWED_CHAT_ID is the
+ * to deliver somewhere other than Telegram: if that channel's reply tool is
+ * missing OR FAILS, the owner's Telegram chat (ALLOWED_CHAT_ID) is the
+ * fallback, and its first line names the failure. The failing case is the
+ * live one (review 35241): the slack-channel plugin's outbound gate refuses a
+ * COLD DM -- one not in access.json channels that has not messaged this
+ * process yet -- with an "Outbound gate" error, while the tool itself exists.
+ * Same shape as the morning-briefing task's fallback. Empty for Telegram itself, for sub-agents (ALLOWED_CHAT_ID is the
  * boss's chat, never a sub-agent owner's -- WRONGRECIP819), and when no
  * Telegram owner chat is configured: no chat, no fallback, no guess.
  */
@@ -987,7 +1002,7 @@ export function deliveryFallbackClause(
   ownerTelegramChat: string | null = normalizeChatId(configuredOwnerChatFor('telegram')),
 ): string {
   if (provider === 'telegram' || !isMain || !ownerTelegramChat) return ''
-  return `Ha ${channelDeliveryName(provider)} nem tudod elkuldeni (nincs ilyen reply tool), kuldd Telegramon (chat_id: ${ownerTelegramChat}, reply tool); mas cimzettet ne tippelj. `
+  return `Ha ${channelDeliveryName(provider)} nem tudod elkuldeni (a reply tool hianyzik VAGY hibat ad, pl. "Outbound gate"), kuldd Telegramon (chat_id: ${ownerTelegramChat}, reply tool), es az uzenet ELSO sora nevezze meg a ${channelDisplayName(provider)} hibat (a hibauzenettel); mas cimzettet ne tippelj. `
 }
 
 /** How a scheduled-task prompt names the delivery channel, in Hungarian, for
