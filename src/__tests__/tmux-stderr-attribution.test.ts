@@ -58,6 +58,7 @@ describe('tmux stderr attribution (TMUXWINDOWATTR920)', () => {
   const SITES: Array<[file: string, call: RegExp, site: string]> = [
     ['channel-monitor.ts', /\['list-panes', '-t', MAIN_CHANNELS_SESSION, '-F', '#\{pane_pid\}'\],\s*\{[^}]*stdio: \['ignore', 'pipe', 'pipe'\]/, 'channel-monitor.mainPaneClaudePid'],
     ['channel-monitor.ts', /\['has-session', '-t', MAIN_CHANNELS_SESSION\], \{[^}]*stdio: \['ignore', 'pipe', 'pipe'\]/, 'channel-monitor.mainChannelsSessionExists'],
+    ['channel-monitor.ts', /\['send-keys', '-t', t\.session, 'Escape'\], \{[^}]*stdio: \['ignore', 'pipe', 'pipe'\]/, 'channel-monitor.usageLimitPickerEscape'],
     ['context-restart-gate-runner.ts', /\['list-panes', '-t', session, '-F', '#\{pane_pid\}'\],\s*\{[^}]*stdio: \['ignore', 'pipe', 'pipe'\]/, 'context-restart-gate-runner.getPanePid'],
     ['channel-plugin-unlock.ts', /\['list-panes', '-t', session, '-F', '#\{pane_pid\}'\], \{[^}]*stdio: \['ignore', 'pipe', 'pipe'\]/, 'channel-plugin-unlock.getSessionClaudePid'],
     ['stuck-tool-call-watcher.ts', /\['list-panes', '-t', session, '-F', '#\{pane_pid\}'\], \{[^}]*stdio: \['ignore', 'pipe', 'pipe'\]/, 'stuck-tool-call-watcher.sampleMainClaudeCpuPercent'],

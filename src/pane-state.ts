@@ -559,6 +559,11 @@ export function detectsBlockingMenu(pane: string): boolean {
   const footerRegion = liveTailRegion(lines, MENU_FOOTER_REGION_LINES)
   if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return false
   if (IDLE_FOOTER_RX.test(pane)) return false
+  // USAGELIMIT1003: the usage-limit footer ("... continuing automatically at <time> ·
+  // esc to cancel") is the prompt with a pending automatic resume, not a menu:
+  // Escape there cancels the resume. Guarded here so a future footer layout that
+  // slips past IDLE_FOOTER_RX still never draws a recovery Escape.
+  if (USAGE_LIMIT_FOOTER_RX.test(footerRegion) && !USAGE_LIMIT_MENU_OPTION_RX.test(footerRegion)) return false
   return MENU_NAV_RX.test(footerRegion) || MENU_ESC_RX.test(footerRegion)
 }
 
@@ -1000,6 +1005,91 @@ export function detectsModelConsentDialog(pane: string): boolean {
   return MODEL_CONSENT_TITLE_RX.test(pane)
     && MODEL_CONSENT_CONTINUE_RX.test(pane)
     && MODEL_CONSENT_CONFIRM_RX.test(footerRegion)
+}
+
+// USAGELIMIT1003: the account's usage limit is not a stuck menu.
+//
+// When the plan's limit is hit, Claude Code shows a rate-limit options picker
+// (title "You've hit your <weekly|session|...> limit · resets <time>", options
+// such as "Stop and wait for limit to reset" / "Upgrade your plan" / "Ask your
+// admin for more usage", Esc to cancel). Once it is dismissed, the prompt comes
+// back with a footer "Usage limit reached · continuing automatically at <time> ·
+// esc to cancel". Measured on a customer install (2026-10-02/03): the menu pass
+// read the picker as a generic stuck menu and told the owner "stuck in an
+// interactive menu (e.g. /mcp)" -- the wrong cause, while the real one (the
+// weekly limit, hours to the reset) went unsaid.
+//
+// Two shapes, two rules:
+//   - the picker ('menu'): Escape is its cancel = "Stop and wait for limit to
+//     reset", the safe choice, so the caller decides whether to send it; the
+//     owner is told the real cause once per episode;
+//   - the footer ('footer'): Escape there CANCELS the automatic resume, so this
+//     shape must never be read as a menu (detectsBlockingMenu guards it).
+const USAGE_LIMIT_MENU_OPTION_RX = /Stop and wait for limit to reset|Upgrade your plan|Ask your admin for more usage|Don[’']t continue automatically|Request (?:more|extra) usage/
+const USAGE_LIMIT_HIT_RX = /You[’']ve hit your [^\n·∙]{0,40}limit|usage limit reached|limit reached/i
+const USAGE_LIMIT_FOOTER_RX = /usage limit reached[^\n]*continuing automatically/i
+// [ \t] rather than \s: "Stop and wait for limit to reset" ends a line, and \s would
+// read the next option as the reset time.
+const USAGE_LIMIT_RESET_RX = /\bresets?[ \t]+(?:at[ \t]+)?([^\n·∙]{1,40}?)[ \t]*(?=[·∙]|$)/gim
+const USAGE_LIMIT_RESUME_RX = /continuing automatically at[ \t]+([^\n·∙]{1,30}?)[ \t]*(?=[·∙]|$)/gim
+// The picker is taller than the menu footer region (title + 3-4 options +
+// footer), so its options are looked for in a wider live tail.
+const USAGE_LIMIT_PICKER_REGION_LINES = 22
+
+export type UsageLimitScreen = { kind: 'menu' | 'footer', reset: string | null }
+
+function lastCapture(text: string, rx: RegExp): string | null {
+  let last: string | null = null
+  for (const m of text.matchAll(rx)) last = m[1].trim()
+  return last
+}
+
+export function detectsUsageLimitScreen(pane: string): UsageLimitScreen | null {
+  if (!pane || !pane.trim()) return null
+  const lines = pane.split('\n')
+  const busyRegion = lines.slice(-BUSY_LIVE_REGION_LINES).join('\n')
+  for (const rx of BUSY_INDICATORS) {
+    if (rx.test(busyRegion)) return null
+  }
+  const footerRegion = liveTailRegion(lines, MENU_FOOTER_REGION_LINES)
+  if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return null
+  const tail = liveTailRegion(lines, USAGE_LIMIT_PICKER_REGION_LINES)
+  let kind: UsageLimitScreen['kind'] | null = null
+  if ((MENU_NAV_RX.test(footerRegion) || MENU_ESC_RX.test(footerRegion))
+    && USAGE_LIMIT_MENU_OPTION_RX.test(tail) && USAGE_LIMIT_HIT_RX.test(tail)) {
+    kind = 'menu'
+  } else if (USAGE_LIMIT_FOOTER_RX.test(footerRegion)) {
+    kind = 'footer'
+  }
+  if (kind === null) return null
+  const reset = lastCapture(tail, USAGE_LIMIT_RESET_RX) ?? lastCapture(tail, USAGE_LIMIT_RESUME_RX)
+  return { kind, reset }
+}
+
+// One owner alert per limit episode. The picker reappears on every new prompt
+// while the limit lasts (a scheduled task every few minutes), so without this
+// the owner would get the same message each time. An episode is keyed by the
+// reset time the CLI shows and ends when the limit screen has not been seen for
+// USAGE_LIMIT_EPISODE_GAP_MS (the next week's limit, even with the same reset
+// text, is a new episode). Pure: the caller owns the Map.
+export const USAGE_LIMIT_EPISODE_GAP_MS = 6 * 60 * 60 * 1000
+export type UsageLimitAlertState = { key: string, alertedAt: number, lastSeenAt: number }
+
+export function decideUsageLimitAlert(
+  prev: UsageLimitAlertState | undefined,
+  screen: UsageLimitScreen | null,
+  now: number,
+): { alert: boolean, next: UsageLimitAlertState | undefined } {
+  if (!screen) {
+    if (prev && now - prev.lastSeenAt > USAGE_LIMIT_EPISODE_GAP_MS) return { alert: false, next: undefined }
+    return { alert: false, next: prev }
+  }
+  const key = screen.reset ?? '?'
+  const sameEpisode = prev !== undefined
+    && now - prev.lastSeenAt <= USAGE_LIMIT_EPISODE_GAP_MS
+    && (prev.key === key || key === '?' || prev.key === '?')
+  if (sameEpisode) return { alert: false, next: { ...prev!, lastSeenAt: now } }
+  return { alert: true, next: { key, alertedAt: now, lastSeenAt: now } }
 }
 
 // Claude Code's self-drafted feedback modal (first observed 2026-08-31 on

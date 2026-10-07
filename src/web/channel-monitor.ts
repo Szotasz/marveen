@@ -45,6 +45,7 @@ import { schedulePluginUnlockAfterRespawn, wasPluginConfirmedAbsent, clearPlugin
 import { getInjectedPrompt, matchesInjectedPrompt } from './injected-prompt-registry.js'
 import {
   detectPaneState, decidePaneErrorAlert, detectsBlockingMenu, detectsPermissionDialog, detectsFirstRunGate, detectsModelConsentDialog, type PaneErrorAlertState, type PaneState,
+  detectsUsageLimitScreen, decideUsageLimitAlert, type UsageLimitAlertState,
   stuckInputSignature, decideStuckInputRecovery, parkedChannelInput,
   parkedInputText, shouldClearTruncatedPreamble,
   parkedInputRowCount, submitLanded, decideStuckInputAction,
@@ -732,6 +733,17 @@ const paneMenuState: Map<string, PaneErrorAlertState> = new Map()
 const MENU_RECOVER_CONFIRM_MS = 45_000
 const MENU_RECOVER_DEDUP_MS = 5 * 60 * 1000
 const MENU_RECOVER_CLEAR_MS = 2 * 60 * 1000
+
+// USAGELIMIT1003: one owner alert per usage-limit episode, keyed per session
+// (see decideUsageLimitAlert). The picker reappears on every new prompt while the
+// limit lasts, so the menu pass alone would repeat the message each time.
+const usageLimitAlertState: Map<string, UsageLimitAlertState> = new Map()
+
+function usageLimitAlertText(label: string, reset: string | null): string {
+  return `⏳ A(z) ${label} most nem dolgozik: elfogyott a Claude-fiók használati kerete${reset ? ` (a nullázás: ${reset})` : ''}. `
+    + 'Ez nem beragadás, a menübe nem kell belenyúlni. A nullázásig nem válaszol, utána magától folytatja; '
+    + 'a közben küldött kéréseket érdemes akkor újraküldeni. Ha addig is dolgoznia kell, a Claude-szervezet adminja bekapcsolhatja az extra használatot.'
+}
 
 type MarveenRecoveryStage = 'soft' | 'save' | 'resume' | 'hard' | 'gave_up'
 interface MarveenDownState {
@@ -2239,6 +2251,19 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
     for (const t of targets) {
       const pane = capturePane(t.session)
       menuTargetsWalked++
+      // USAGELIMIT1003: the usage-limit picker or footer is not a stuck menu; tell
+      // the owner the real cause and the reset time, once per episode.
+      const limitScreen = pane != null ? detectsUsageLimitScreen(pane) : null
+      {
+        const limitDecision = decideUsageLimitAlert(usageLimitAlertState.get(t.session), limitScreen, Date.now())
+        if (limitDecision.next) usageLimitAlertState.set(t.session, limitDecision.next)
+        else usageLimitAlertState.delete(t.session)
+        if (limitDecision.alert && limitScreen) {
+          const label = t.isMarveen ? BOT_NAME : (t.agentName ?? t.session)
+          logger.warn({ session: t.session, agent: label, kind: limitScreen.kind, reset: limitScreen.reset }, 'Usage limit reached -- telling the owner the real cause (not a stuck menu)')
+          sendAlert(usageLimitAlertText(label, limitScreen.reset))
+        }
+      }
       // First-run gates (fresh-install folder-trust / bypass acceptance /
       // login picker) are detected SEPARATELY from generic blocking menus,
       // because the recovery differs: Escape on the trust/bypass dialogs
@@ -2306,6 +2331,18 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
             // above: no keystroke is neutral, so send none and say so, loudly.
             logger.warn({ session: t.session, agent: label }, 'Blocking "menu" is a tool-permission prompt -- a human decides, NO keystrokes sent')
             sendAlert(`🔐 A(z) ${label} session egy engedélykérésen vár, és NEM nyomtam meg semmit: ott az Escape NEM-et jelentene. Döntsd el te: tmux attach -t ${t.session}`)
+          } else if (paneNow != null && detectsUsageLimitScreen(paneNow)?.kind === 'menu') {
+            // USAGELIMIT1003: Escape on the usage-limit picker is its cancel = "Stop
+            // and wait for limit to reset", the safe choice, and it brings the prompt
+            // back so the automatic resume can run. The owner was already told the
+            // real cause above (once per episode), so no misleading menu alert here.
+            logger.warn({ session: t.session, agent: label }, 'Usage-limit picker -- Escape = "Stop and wait for limit to reset" (no menu alert)')
+            try {
+              // TMUXWINDOWATTR920: stderr piped, the failure is logged with its call site.
+              execFileSync(tmuxBin(), ['send-keys', '-t', t.session, 'Escape'], { timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] })
+            } catch (err) {
+              logger.warn({ site: 'channel-monitor.usageLimitPickerEscape', session: t.session, tmux: tmuxStderr(err) }, 'Usage-limit picker Escape failed')
+            }
           } else {
             logger.warn({ session: t.session, agent: label }, 'Session parked in a blocking interactive menu -- sending Escape to recover')
             try {
