@@ -89,6 +89,7 @@ import {
 import { isRestartInFlight } from './restart-lock.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { runCommandTask } from './command-task.js'
+import { trackDetachedGroup } from './detached-groups.js'
 import { decideQuotaAction, type QuotaWorkClass } from '../quota-gate.js'
 import { readQuotaSnapshot } from '../quota-snapshot.js'
 import { detectsFirstRunGate, detectPaneState, overfullParkedInputTail, type PaneState } from '../pane-state.js'
@@ -1148,9 +1149,9 @@ export function runPreCheck(task: ScheduledTask): PreCheckResult {
 // synchronous form; the same gap was here).
 export const PRECHECK_KILL_GRACE_MS = 1_000
 
-function endPreCheckGroup(child: ReturnType<typeof spawn>, task: ScheduledTask): void {
+function endPreCheckGroup(child: ReturnType<typeof spawn>, task: ScheduledTask, onEnded: () => void = () => {}): void {
   const pid = child.pid
-  if (pid == null) return
+  if (pid == null) { onEnded(); return }
   const signalGroup = (sig: NodeJS.Signals): void => {
     try { process.kill(-pid, sig) } catch (err) {
       // ESRCH: the group is already gone, which is the goal.
@@ -1158,7 +1159,9 @@ function endPreCheckGroup(child: ReturnType<typeof spawn>, task: ScheduledTask):
     }
   }
   signalGroup('SIGTERM')
-  setTimeout(() => signalGroup('SIGKILL'), PRECHECK_KILL_GRACE_MS).unref()
+  // DETACHEDSHUTDOWN1007: the group stays tracked until the KILL, so a
+  // shutdown inside the grace second still ends it.
+  setTimeout(() => { signalGroup('SIGKILL'); onEnded() }, PRECHECK_KILL_GRACE_MS).unref()
 }
 
 export function runPreCheckAsync(
@@ -1192,12 +1195,18 @@ export function runPreCheckAsync(
       settle({ skip: false })
       return
     }
+    // DETACHEDSHUTDOWN1007: the dashboard's shutdown ends this group while it
+    // runs. It leaves the registry when the script exits on its own, or, after
+    // a limit, once endPreCheckGroup's KILL has gone out.
+    const untrack = trackDetachedGroup(child.pid, `pre-check:${task.name}`)
+    let ending = false
+    const endGroup = (): void => { ending = true; endPreCheckGroup(child, task, untrack) }
     const stdout: Buffer[] = []
     let stdoutBytes = 0
     let stderr = ''
     timer = setTimeout(() => {
       logger.warn({ task: task.name, timeoutMs }, 'pre-check script timed out, running LLM anyway')
-      endPreCheckGroup(child, task)
+      endGroup()
       settle({ skip: false })
     }, timeoutMs)
     child.stdout?.on('data', (chunk: Buffer) => {
@@ -1205,7 +1214,7 @@ export function runPreCheckAsync(
       stdoutBytes += chunk.length
       if (stdoutBytes > maxStdoutBytes) {
         logger.warn({ task: task.name, maxStdoutBytes }, 'pre-check script output too long, running LLM anyway')
-        endPreCheckGroup(child, task)
+        endGroup()
         settle({ skip: false })
         return
       }
@@ -1215,10 +1224,12 @@ export function runPreCheckAsync(
       if (stderr.length < 200) stderr += chunk.toString('utf-8')
     })
     child.on('error', (err) => {
+      untrack()
       logger.warn({ task: task.name, error: err.message }, 'pre-check script spawn error, running LLM anyway')
       settle({ skip: false })
     })
     child.on('close', (status) => {
+      if (!ending) untrack()
       if (settled) return
       if (status !== 0) {
         logger.warn({ task: task.name, status, stderr: stderr.trim().slice(0, 200) }, 'pre-check script exited non-zero, running LLM anyway')

@@ -8,6 +8,7 @@ import { atomicWriteFileSync } from "./atomic-write.js"
 import { logger } from "../logger.js"
 import { sendTelegramMessage } from "./telegram.js"
 import { appendTaskRun, markTaskRunCompleted } from "../db.js"
+import { trackDetachedGroup } from "./detached-groups.js"
 import type { ScheduledTask } from "./scheduled-tasks-io.js"
 
 // command-type scheduled tasks run a raw shell command directly (no LLM
@@ -117,12 +118,16 @@ function runCommand(cmd: string, timeoutMs: number, task: string): Promise<{ ok:
       resolve({ ok: false, detail: (err as Error).message })
       return
     }
+    // DETACHEDSHUTDOWN1007: the dashboard's shutdown ends this group while it
+    // runs; it leaves the registry when the run is over (exit or timeout kill).
+    const untrack = trackDetachedGroup(child.pid, `command-task:${task}`)
     let stderr = ""
     let settled = false
     const done = (r: { ok: boolean; detail: string }) => {
       if (settled) return
       settled = true
       clearTimeout(timer)
+      untrack()
       resolve(r)
     }
     // The kill is ours now: spawn() has no `timeout` option that fires
