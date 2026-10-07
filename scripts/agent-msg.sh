@@ -8,7 +8,7 @@
 # the HTTP status AND the returned message id, and RETRIES on failure. A message counts as sent only
 # when an id came back.
 #
-# Usage:  bash scripts/agent-msg.sh <from> <to> "<content>"
+# Usage:  bash scripts/agent-msg.sh [--priority high|normal] <from> <to> "<content>"
 #   content: plain text (quotes / newlines OK) -- the body is built with json.dumps (no quoting pitfalls).
 #   large / multi-line content may come from STDIN when the 3rd arg is "-":
 #     echo "<long text>" | bash scripts/agent-msg.sh <from> <to> -
@@ -23,6 +23,12 @@
 #   then exactly "OK id=<n>" as before.
 #   At MARVEEN_QUEUE_WARN_AT (default 3) or more waiting, a stderr notice says so
 #   at the moment the sender decides whether to send the next one.
+#   --priority (card ad771121): "high" puts the row ahead of the recipient's normal rows; absent means
+#     "normal" (FIFO, the server default). Any other value fails here, before anything is sent. A sender
+#     over its hourly high budget toward that recipient gets the row accepted as normal (never dropped),
+#     and a stderr NOTICE says DOWNGRADED. The switch goes BEFORE <from>; an empty value, or the switch
+#     anywhere else (after the sender, the recipient or the content), also fails here, before anything
+#     is sent.
 #
 # LOG FORMAT, store/agent-msg-failures.log (tab-separated, one line per failure):
 #   <YYYY-MM-DD HH:MM:SS>  FAIL  from=<a>  to=<b>  url=<endpoint>  http=<code>  resp=<first 200 bytes>
@@ -52,6 +58,22 @@ TOKEN_FILE="${MARVEEN_TOKEN_FILE:-$BASE/store/.dashboard-token}"
 URL="${API_BASE}/api/messages"
 LOG="$BASE/store/agent-msg-failures.log"
 
+PRIORITY=""; PRIORITY_GIVEN=0
+case "${1:-}" in
+  --priority) PRIORITY_GIVEN=1; PRIORITY="${2:-}"; if [ "$#" -ge 2 ]; then shift 2; else shift; fi ;;
+  --priority=*) PRIORITY_GIVEN=1; PRIORITY="${1#--priority=}"; shift ;;
+esac
+# Measured by the card's independent test (card ad771121): an empty value went out as normal, a switch
+# after the content was silently dropped, and one after the sender took the recipient's place. A given
+# switch must carry one of the two words, and it may stand only before <from>.
+if [ "$PRIORITY_GIVEN" = 1 ] && [ "$PRIORITY" != "high" ] && [ "$PRIORITY" != "normal" ]; then
+  echo "FAIL: --priority must be high or normal (absent = normal)"; exit 1
+fi
+for arg in "$@"; do
+  case "$arg" in
+    --priority|--priority=*) echo "FAIL: --priority goes before <from>: agent-msg.sh [--priority high|normal] <from> <to> <content>; nothing was sent"; exit 1 ;;
+  esac
+done
 FROM="${1:?from required}"; TO="${2:?to required}"; C="${3:?content required (or - for STDIN)}"
 [ "$C" = "-" ] && C="$(cat)"
 [ -r "$TOKEN_FILE" ] || { echo "FAIL: no token file at $TOKEN_FILE"; exit 1; }
@@ -107,7 +129,10 @@ else
   echo "WARN: homoglyph checker not found at $HG -- sending UNCHECKED." >&2
 fi
 
-BODY="$(FROM="$FROM" TO="$TO" C="$C" python3 -c 'import json,os; print(json.dumps({"from":os.environ["FROM"],"to":os.environ["TO"],"content":os.environ["C"]}))')"
+BODY="$(FROM="$FROM" TO="$TO" C="$C" P="$PRIORITY" python3 -c 'import json,os
+d={"from":os.environ["FROM"],"to":os.environ["TO"],"content":os.environ["C"]}
+if os.environ.get("P"): d["priority"]=os.environ["P"]
+print(json.dumps(d))')"
 
 attempt=0; max=3; CODE=""; ID=""
 while [ "$attempt" -lt "$max" ]; do
@@ -166,6 +191,16 @@ EOF
     if [ -n "${DEPTH:-}" ] && [ "$WARN_AT" -gt 0 ] && [ "$DEPTH" -ge "$WARN_AT" ]; then
       echo "NOTICE: $DEPTH message(s) are waiting for $TO${MINS:+, measured delay ~${MINS} min}." >&2
       echo "  It is busy; prefer adding to an existing message or a shared card over another message." >&2
+    fi
+    # Card ad771121: a high request over the pair's hourly budget went in as normal (accepted, never
+    # dropped); the server says so with "downgraded": true, and the sender hears it here.
+    if [ "$PRIORITY" = "high" ] && printf '%s' "$JSON" | python3 -c 'import sys,json
+try:
+  d=json.load(sys.stdin)
+except Exception:
+  d={}
+sys.exit(0 if isinstance(d,dict) and d.get("downgraded") is True else 1)' 2>/dev/null; then
+      echo "NOTICE: DOWNGRADED -- the row to $TO was accepted as normal: the hourly high budget toward it is used up (MESSAGE_HIGH_PRIORITY_PER_HOUR)." >&2
     fi
     exit 0
   fi
