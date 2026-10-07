@@ -210,7 +210,8 @@ describe('the binding in channel-monitor (source)', () => {
   it('probes each co-listen provider under the main claude, restarts with the conversation kept, alerts through sendAlert', () => {
     const fn = src.slice(src.indexOf('async function checkMainColistenChannels'), src.indexOf('function handleMarveenUp'))
     expect(fn).toContain('colistenProviders(primary, readExtraChannelPluginIds(), ALL_PROVIDER_TYPES.map((t) => getProvider(t)))')
-    expect(fn).toContain('probe: (p) => probeChannelPluginLiveness(claudePid, p)')
+    // strictTree (#1762 review): the default probe answers "any Slack poller on the host".
+    expect(fn).toContain('probe: (p) => probeChannelPluginLiveness(claudePid, p, undefined, { strictTree: true })')
     expect(fn).toContain('restart: () => resumeMarveenSession()')
     expect(fn).toContain('alert: sendAlert')
     expect(fn).toContain('respawnGraceMs: MARVEEN_POST_RESPAWN_GRACE_MS')

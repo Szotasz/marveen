@@ -2109,7 +2109,10 @@ async function checkMainColistenChannels(claudePid: number): Promise<void> {
   await runColistenCheck({
     primary,
     extras,
-    probe: (p) => probeChannelPluginLiveness(claudePid, p),
+    // strictTree: only a plugin inside the MAIN claude's tree counts. The
+    // default probe falls back to "any Slack poller on the host", and every
+    // Slack sub-agent runs one (#1762 review).
+    probe: (p) => probeChannelPluginLiveness(claudePid, p, undefined, { strictTree: true }),
     now: Date.now(),
     lastRespawnAt: lastMainRespawnAt(),
     respawnGraceMs: MARVEEN_POST_RESPAWN_GRACE_MS,
