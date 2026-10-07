@@ -82,6 +82,10 @@
         <span class="sb-label">Jóváhagyások</span>
         <span class="approvals-pending-badge sb-badge" id="approvalsPendingBadge" hidden></span>
       </a>
+      <a href="#" class="sb-link" data-page="reminders">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+        <span class="sb-label" data-i18n="nav.reminders">Emlékeztetők</span>
+      </a>
       <div class="sb-group" data-group="team">
         <button type="button" class="sb-group-header" aria-expanded="false" aria-controls="sbGroupTeam">
           <span class="sb-group-label" data-i18n="nav.group.team">CSAPAT</span>
@@ -1186,6 +1190,24 @@
       </div>
 
       <div class="approvals-pagination" id="approvalsPagination"></div>
+    </div>
+
+<!-- === Reminders Page (fb79dc1f) === -->
+    <div class="page" id="remindersPage" hidden>
+      <div class="page-header">
+        <div class="page-header-row">
+          <div>
+            <h1 data-i18n="reminders.page_title">Emlékeztetők</h1>
+            <p class="subtitle" data-i18n="reminders.page_subtitle">A dashboard által küldött emlékeztetők címzettenként: a következő 7 nap, az elküldöttek és az elmaradtak</p>
+          </div>
+          <button class="btn-secondary btn-compact" id="refreshRemindersBtn" data-i18n="common.btn.refresh">Frissítés</button>
+        </div>
+      </div>
+      <div class="approvals-toolbar">
+        <input class="input-sm" type="text" id="remindersFilterRecipient" data-i18n-placeholder="reminders.filter.recipient" placeholder="Címzett (chat id)..." style="min-width:140px">
+        <input class="input-sm" type="text" id="remindersFilterAgent" data-i18n-placeholder="reminders.filter.agent" placeholder="Ügynök..." style="min-width:120px">
+      </div>
+      <div id="remindersSections"></div>
     </div>
 
     <!-- === Settings Page === -->
