@@ -22,7 +22,7 @@ vi.mock('../logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() },
 }))
 
-const { initDatabase, createReminder, getReminder, getDb } = await import('../db.js')
+const { initDatabase, createReminder, getReminder, getDb, claimReminder, setReminderStatusByHand } = await import('../db.js')
 const { reminderTick, dailyDigest, liveReminderSend, reminderBotToken, _resetReminderSenderForTest, REMINDER_CLAIM_STALE_SEC } = await import('../web/reminder-sender.js')
 import type { ReminderSenderDeps, WindowsLoad } from '../web/reminder-sender.js'
 import type { ReminderWindowsConfig } from '../reminder-window.js'
@@ -207,6 +207,19 @@ describe('reminderTick', () => {
     setNow(WED_17 + 61 * 60_000)
     await reminderTick(d)
     expect(calls.alerts).toHaveLength(2)
+  })
+
+  it('the claim is one-shot: a second claim of the same row fails, and a cancelled row cannot be claimed', () => {
+    // inside one process the due list already skips a claimed row; the claim's own guard is what holds against a
+    // second process (or an await between the list and the claim)
+    const r = reminder()
+    expect(claimReminder(r.id, sec(WED_17))).toBe(true)
+    expect(claimReminder(r.id, sec(WED_17))).toBe(false)
+    expect(getReminder(r.id)!.attempts).toBe(1)
+    const c = reminder()
+    expect(setReminderStatusByHand(c.id, ['pending'], 'cancelled', 'area-agent')).toBe(true)
+    expect(claimReminder(c.id, sec(WED_17))).toBe(false)
+    expect(getReminder(c.id)!.status).toBe('cancelled')
   })
 
   it('at most once: two overlapping ticks send a reminder once', async () => {
