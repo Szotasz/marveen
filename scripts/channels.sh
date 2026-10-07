@@ -1123,13 +1123,20 @@ case "$CHANNEL_PROVIDER" in
   discord)  STATE_ENV_VAR="DISCORD_STATE_DIR" ;;
   *)        STATE_ENV_VAR="TELEGRAM_STATE_DIR" ;;
 esac
-ORPHAN_PIDS="$(/bin/ps eww -e 2>/dev/null | awk -v needle="${STATE_ENV_VAR}=${MAIN_CHAN_DIR}" '$0 ~ needle { print $1 }')"
+#
+# NARROWED 2026-09-24 (card cc4d0ddd): the state-dir variable alone matched every
+# process the main agent had started (Bash tools, jobs launched from them, builds,
+# test databases) and the tmux server whenever this script had started it; that is
+# how the whole fleet went down at 12:23Z that day (through the dashboard's twin
+# of this rule). A candidate now needs the exact state-dir token AND the
+# provider's CLAUDE_PLUGIN_ROOT, both matched literally, and the tmux server and
+# live panes are never signalled. Every kill is logged to store/channels-reap.log.
+# shellcheck source=lib/channel-reap.sh
+. "$INSTALL_DIR/scripts/lib/channel-reap.sh"
+ORPHAN_PIDS="$(/bin/ps eww -e 2>/dev/null | channel_reap_select_pass1 "${STATE_ENV_VAR}=${MAIN_CHAN_DIR}" "/${CHANNEL_PROVIDER}")"
 if [ -n "$ORPHAN_PIDS" ]; then
   # shellcheck disable=SC2086
-  /bin/kill -TERM $ORPHAN_PIDS 2>/dev/null || true
-  /bin/sleep 0.3
-  # shellcheck disable=SC2086
-  /bin/kill -KILL $ORPHAN_PIDS 2>/dev/null || true
+  channel_reap_kill "$INSTALL_DIR/store/channels-reap.log" pass1 "$TMUX" $ORPHAN_PIDS
 fi
 
 # Second reap pass for plugin builds that DON'T set *_STATE_DIR in the poller
