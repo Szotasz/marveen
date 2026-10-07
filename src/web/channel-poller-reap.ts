@@ -57,6 +57,18 @@ const STATE_ENV_VAR: Record<ChannelProviderType, string> = {
 // `TELEGRAM_STATE_DIR=/path-elsewhere` is acceptable because the value is an
 // absolute path, but we still anchor on the env-var literal to avoid
 // matching a row that just *mentions* the path string in its argv.
+//
+// The row must ALSO carry a CLAUDE_PLUGIN_ROOT env entry (PSEWWMACOSBLIND1007,
+// Geri's review). *_STATE_DIR is inherited by everything the agent's claude
+// starts -- a background `node`/`npm` job from its Bash tool included -- and
+// with `ps axeww` those tty-less jobs are now visible on macOS too, where
+// nothing in the guards behind this scan would spare them (a JS runtime, not a
+// pane, not claude). A channel plugin poller is launched by Claude Code as a
+// plugin, so it always has CLAUDE_PLUGIN_ROOT (measured on the host: every
+// telegram and slack-channel poller does; the agent's background jobs and its
+// non-plugin MCP servers do not). The bot.pid path is unaffected.
+const PLUGIN_ROOT_ENV_RE = /(?:^|\s)CLAUDE_PLUGIN_ROOT=\S/
+
 export function parsePollerPidsFromPs(
   psOutput: string,
   envVar: string,
@@ -66,6 +78,7 @@ export function parsePollerPidsFromPs(
   const out: number[] = []
   for (const line of psOutput.split('\n')) {
     if (!line.includes(needle)) continue
+    if (!PLUGIN_ROOT_ENV_RE.test(line)) continue
     const m = line.match(/^\s*(\d+)\s/)
     if (!m) continue
     const pid = parseInt(m[1]!, 10)

@@ -14,14 +14,16 @@ import { collectPollerEvidence } from '../web/channel-poller-reap.js'
 // This drives the real scan against a real detached process: a source-text pin
 // on the command string would not catch a regression to a blind form.
 
-let child: ChildProcess | null = null
+let children: ChildProcess[] = []
 let agentDir: string | null = null
 
 afterEach(() => {
-  if (child?.pid) {
-    try { process.kill(child.pid, 'SIGKILL') } catch { /* already gone */ }
+  for (const child of children) {
+    if (child.pid) {
+      try { process.kill(child.pid, 'SIGKILL') } catch { /* already gone */ }
+    }
   }
-  child = null
+  children = []
   if (agentDir) rmSync(agentDir, { recursive: true, force: true })
   agentDir = null
 })
@@ -30,31 +32,44 @@ function ttyOf(pid: number): string {
   return execFileSync('/bin/ps', ['-o', 'tty=', '-p', String(pid)], { encoding: 'utf-8' }).trim()
 }
 
+function spawnDetached(env: NodeJS.ProcessEnv): number {
+  // detached: true -> setsid(), so the child has no controlling terminal,
+  // whatever terminal (if any) the test runner itself has.
+  const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], {
+    detached: true,
+    stdio: 'ignore',
+    env,
+  })
+  children.push(child)
+  expect(child.pid).toBeGreaterThan(1)
+  return child.pid!
+}
+
 describe('env scan sees pollers without a controlling terminal', () => {
-  it('collectPollerEvidence finds a detached (tty-less) process carrying the channel state dir', async () => {
+  it('collectPollerEvidence finds a detached (tty-less) plugin poller, but not a detached background job', async () => {
     agentDir = mkdtempSync(join(tmpdir(), 'psaxeww-agent-'))
     const chanDir = channelStateDir('telegram', agentDir)
+    const base: NodeJS.ProcessEnv = { ...process.env, TELEGRAM_STATE_DIR: chanDir }
+    delete base.CLAUDE_PLUGIN_ROOT
 
-    // detached: true -> setsid(), so the child has no controlling terminal,
-    // whatever terminal (if any) the test runner itself has.
-    child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], {
-      detached: true,
-      stdio: 'ignore',
-      env: { ...process.env, TELEGRAM_STATE_DIR: chanDir },
-    })
-    const pid = child.pid!
-    expect(pid).toBeGreaterThan(1)
-    // Give the kernel a moment to expose the new process's environment to ps.
+    // Shape of an orphaned channel poller: launched by Claude Code as a plugin.
+    const poller = spawnDetached({ ...base, CLAUDE_PLUGIN_ROOT: join(agentDir, 'plugins/cache/x/telegram/0.0.6') })
+    // Shape of an agent's background job (e.g. a long node script from its Bash
+    // tool): it inherited the state dir, but it is not a plugin (Geri's review).
+    const job = spawnDetached(base)
+    // Give the kernel a moment to expose the new processes' environments to ps.
     await new Promise((r) => setTimeout(r, 300))
 
-    // Self-check of the fixture: the probe really is tty-less. Without this,
-    // a runner that somehow handed the child a tty would make the test pass on
-    // the blind form too.
-    expect(['??', '?']).toContain(ttyOf(pid))
+    // Self-check of the fixture: the probes really are tty-less. Without this,
+    // a runner that somehow handed them a tty would make the test pass on the
+    // blind form too.
+    expect(['??', '?']).toContain(ttyOf(poller))
+    expect(['??', '?']).toContain(ttyOf(job))
 
     const evidence = collectPollerEvidence('telegram', agentDir, 999_999_999)
-    expect(evidence.envScanPids).toContain(pid)
-    expect(evidence.rows.map((r) => r.pid)).toContain(pid)
+    expect(evidence.envScanPids).toContain(poller)
+    expect(evidence.rows.map((r) => r.pid)).toContain(poller)
+    expect(evidence.envScanPids).not.toContain(job)
   })
 })
 
