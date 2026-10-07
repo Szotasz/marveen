@@ -15,11 +15,11 @@ TOKEN=$(grep '^TELEGRAM_BOT_TOKEN=' "$ENV_FILE" | cut -d= -f2-)
 MAIN_AGENT_ID=$(grep '^MAIN_AGENT_ID=' "$ENV_FILE" | head -1 | cut -d= -f2-)
 MAIN_AGENT_ID="${MAIN_AGENT_ID:-marveen}"
 
-if [ -z "$TOKEN" ]; then
-  echo "Hiba: TELEGRAM_BOT_TOKEN nincs beallitva"
-  exit 1
-fi
-
+# A missing Telegram token or owner chat is NOT fatal here any more: on a
+# Slack-only install (no TELEGRAM_BOT_TOKEN) the Slack branch below is the
+# only channel, and an early exit would drop every notification before it
+# was ever tried. The Telegram prerequisites are checked where Telegram is
+# actually used, after the Slack attempt.
 # CHATID0: resolve_owner_chat_id, not a raw ALLOWED_CHAT_ID read -- "0" is the
 # installer placeholder, not a chat, and neither empty nor falsy. Without this
 # the FALLBACK channel fails exactly where it is needed most -- it fires when
@@ -32,9 +32,11 @@ fi
 . "$SCRIPT_DIR/lib/owner-chat.sh"
 # The resolver's reason line goes to stderr as is (not captured: any stderr
 # noise on the success path would otherwise become part of the chat id).
-if ! CHAT_ID="$(resolve_owner_chat_id "$ENV_FILE")"; then
-  echo "Hiba: ALLOWED_CHAT_ID nincs beallitva (az ok a fenti sorban)"
-  exit 1
+CHAT_OK=1
+if [ -n "$TOKEN" ]; then
+  CHAT_ID="$(resolve_owner_chat_id "$ENV_FILE")" || CHAT_OK=0
+else
+  CHAT_ID=""
 fi
 
 MESSAGE="$1"
@@ -78,6 +80,7 @@ esac
 # AND the Slack send succeeded -- a Slack failure never loses the message.
 # No target configured -> exit 2 from the helper, Telegram exactly as before.
 SEND_TELEGRAM=1
+SLACK_RC=2
 if command -v node >/dev/null 2>&1 && [ -f "$PROJECT_DIR/dist/slack-notify.js" ]; then
   SLACK_OUT="$(node "$SCRIPT_DIR/slack-notify.mjs" --kind owner ${SENDER:+--as "$SENDER"} -- "$MESSAGE" 2>/dev/null)"
   SLACK_RC=$?
@@ -111,6 +114,17 @@ fi
 
 if [ "$SEND_TELEGRAM" -eq 0 ]; then
   echo "Ertesites elkuldve (Slack)."
+elif [ -z "$TOKEN" ] || [ "$CHAT_OK" -eq 0 ]; then
+  # Telegram is not usable on this install. Success only if Slack delivered.
+  if [ "$SLACK_RC" -eq 0 ]; then
+    echo "Ertesites elkuldve (Slack; Telegram nincs beallitva)."
+  elif [ -z "$TOKEN" ]; then
+    echo "Hiba: TELEGRAM_BOT_TOKEN nincs beallitva, es Slack-ertesites sem ment ki"
+    exit 1
+  else
+    echo "Hiba: ALLOWED_CHAT_ID nincs beallitva (az ok a fenti sorban), es Slack-ertesites sem ment ki"
+    exit 1
+  fi
 elif send_telegram_message "$TOKEN" "$CHAT_ID" "$MESSAGE" --data-urlencode "parse_mode=HTML"; then
   echo "Ertesites elkuldve."
 else

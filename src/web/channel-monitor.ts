@@ -2,7 +2,7 @@ import { tmuxStderr } from './tmux-stderr.js'
 import { writeMainExtraPluginsSettings } from './main-extra-plugins-settings.js'
 import { decideSkipTrace, decideMenuPassTrace, type SkipTraceState } from './monitor-trace.js'
 import { existsSync, readFileSync, statSync, writeFileSync, utimesSync } from 'node:fs'
-import { hostname } from 'node:os'
+import { hostname, loadavg, cpus } from 'node:os'
 import { join } from 'node:path'
 import { execFileSync, spawn } from 'node:child_process'
 import { makeLazyBinResolver } from '../platform.js'
@@ -23,6 +23,7 @@ import {
   dismissModelConsentDialogIfPresent,
   stampFableOverageConsentSharedRoots,
   isAgentRunning,
+  isSessionReadyForPrompt,
   sendPromptToSession,
   startAgentProcess,
   stopAgentProcess,
@@ -70,6 +71,8 @@ import {
 // getClaudePidForSession + hasChannelPluginAlive live in the shared liveness
 // module so the standalone channel-coordinator reuses the exact same probe.
 import { getClaudePidForSession, hasChannelPluginAlive, probeChannelPluginLiveness, classifyRespawnStampAdvance } from '../channel-coordinator/liveness.js'
+import { colistenProviders, runColistenCheck, type ColistenState } from './main-colisten-health.js'
+import { runReconcileBurst, waitReconcileGap, RECONCILE_MAIN_FIRST_MAX_WAIT_MS } from './reconcile-stagger.js'
 import { getDesiredAgents } from './agent-desired-state.js'
 import { startSleepWakeDetector, systemSleptBetween } from './sleep-wake-detector.js'
 import { ROOT_SANDBOX_ENV } from './root-sandbox-env.js'
@@ -853,9 +856,11 @@ export function readConfiguredMainModel(projectRoot: string = PROJECT_ROOT): str
 // Why this exists: a respawn that omits the extras comes up on the PRIMARY provider
 // only, which is a HALF-mute -- outbound still works (the plugin's MCP reply tool is
 // loaded) while inbound on every secondary provider is silently dropped ("server not
-// in --channels list"). Liveness probes watch the primary, so nothing looks wrong.
-// Observed in practice: a context-saturation hard restart dropped the secondary
+// in --channels list"). Liveness probes watched only the primary, so nothing looked
+// wrong. Observed in practice: a context-saturation hard restart dropped the secondary
 // inbound for ~20 minutes while the primary channel kept working normally.
+// Since BOOTSTAGGER1007 (b) the co-listen plugins are probed too
+// (checkMainColistenChannels / main-colisten-health.ts).
 export function readExtraChannelPluginIds(projectRoot: string = PROJECT_ROOT): string[] {
   return readEnvValue(projectRoot, 'CHANNEL_PLUGINS_EXTRA').split(/\s+/).filter(Boolean)
 }
@@ -2092,6 +2097,35 @@ async function handleMarveenDown(): Promise<void> {
   }
 }
 
+// BOOTSTAGGER1007 (b): the co-listen plugins of the main session (see
+// main-colisten-health.ts). One state per provider, for the dashboard's life.
+const colistenState = new Map<ChannelProviderType, ColistenState>()
+const ALL_PROVIDER_TYPES: ChannelProviderType[] = ['telegram', 'slack', 'discord', 'googlechat', 'teams']
+
+// Called on every sweep where the main session's PRIMARY plugin is alive (a
+// dead primary is the down-cascade's job, and a restart from here would race it).
+async function checkMainColistenChannels(claudePid: number): Promise<void> {
+  const primary = getMainAgentProvider()
+  const extras = colistenProviders(primary, readExtraChannelPluginIds(), ALL_PROVIDER_TYPES.map((t) => getProvider(t)))
+  if (extras.length === 0) return
+  await runColistenCheck({
+    primary,
+    extras,
+    // strictTree: only a plugin inside the MAIN claude's tree counts. The
+    // default probe falls back to "any Slack poller on the host", and every
+    // Slack sub-agent runs one (#1762 review).
+    probe: (p) => probeChannelPluginLiveness(claudePid, p, undefined, { strictTree: true }),
+    now: Date.now(),
+    lastRespawnAt: lastMainRespawnAt(),
+    respawnGraceMs: MARVEEN_POST_RESPAWN_GRACE_MS,
+    state: colistenState,
+    alert: sendAlert,
+    log: (level, fields, msg) => logger[level](fields, msg),
+    restart: () => resumeMarveenSession(),
+    botName: BOT_NAME,
+  })
+}
+
 function handleMarveenUp(): void {
   marveenSuspectFirstSeen = null
   if (marveenDownState) {
@@ -2414,6 +2448,8 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
           // Process-alive does NOT prove the inbound MCP pipe is healthy (the
           // deafness blind spot). Cross-check the keep-alive freshness.
           checkMainKeepaliveStaleness()
+          // BOOTSTAGGER1007 (b): the primary is alive -- now the co-listen ones.
+          await checkMainColistenChannels(claudePid)
         } else {
           if (agentDownSince.has(t.session)) {
             logger.info({ session: t.session, provider: t.provider }, 'Agent channel plugin recovered')
@@ -2693,12 +2729,32 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
   return setInterval(() => { void check() }, 60000)
 }
 
-// Start desired-but-missing agents one at a time (~15s apart). The stagger is
-// mandatory: starting several channel agents at once makes them all die in the
+// Start desired-but-missing agents one at a time. The stagger is mandatory:
+// starting several channel agents at once makes them all die in the
 // resume-from-summary modal race. A single in-flight burst at a time.
+// BOOTSTAGGER1007 (c): the main session first, then one agent at a time by
+// readiness (or a quiet box), bounded -- see reconcile-stagger.ts.
 let reconcileBurstInProgress = false
-const AGENT_RECONCILE_STAGGER_MS = 15000
 function delay(ms: number): Promise<void> { return new Promise((r) => setTimeout(r, ms)) }
+const monitorModuleLoadedAt = Date.now()
+let mainFirstWaitLogged = false
+
+/** The main session is up for the owner: its primary channel plugin and every co-listen plugin are alive. */
+function mainSessionChannelsReady(): boolean {
+  const claudePid = getClaudePidForSession(MAIN_CHANNELS_SESSION)
+  if (claudePid == null) return false
+  const primary = getMainAgentProvider()
+  if (probeChannelPluginLiveness(claudePid, primary) !== 'alive') return false
+  const extras = colistenProviders(primary, readExtraChannelPluginIds(), ALL_PROVIDER_TYPES.map((t) => getProvider(t)))
+  // strictTree: a Slack sub-agent's plugin must not stand in for the main
+  // session's own (the #1762 review finding).
+  return extras.every((p) => probeChannelPluginLiveness(claudePid, p, undefined, { strictTree: true }) === 'alive')
+}
+
+function loadPerCpu(): number | null {
+  const n = cpus().length
+  return n > 0 ? loadavg()[0] / n : null
+}
 
 // --- Commit 3 v1: fleet memory gate (safe-mode) ---
 // Before starting a desired-but-down agent, ask scripts/fleet-memory-gate.sh
@@ -2734,33 +2790,36 @@ async function reconcileDesiredAgents(): Promise<void> {
   if (down.length === 0) return
   reconcileBurstInProgress = true
   try {
-    for (const name of down) {
-      if (isAgentRunning(name)) continue
-      // A managed restart (context guard, auto-restart, model fallback, the
-      // dashboard button) is stop+start, and isAgentRunning() reports false for
-      // the ~2s the stop spends waiting on tmux. Starting the agent in that
-      // window does not heal a crash -- it overtakes the restarter and boots
-      // the agent with OUR options instead of theirs (default = --continue,
-      // which is exactly what a saturation rescue is trying to drop). The two
-      // loops are phase-locked, so this is not a rare interleaving: see
-      // restart-lock.ts for the measured levente case.
-      if (isRestartInFlight(name)) {
-        logger.info({ agent: name }, 'Reconcile: managed restart in flight -- leaving the start to it')
-        continue
+    // BOOTSTAGGER1007 (c): the gate, the skips and the readiness gap live in
+    // runReconcileBurst (reconcile-stagger.ts), behaviour-tested there.
+    const { gate } = await runReconcileBurst({
+      down,
+      isDesired: (name) => getDesiredAgents().has(name),
+      mainReady: mainSessionChannelsReady,
+      msSinceMonitorStart: Date.now() - monitorModuleLoadedAt,
+      isAgentRunning,
+      isRestartInFlight,
+      isWithinRestartGrace,
+      memGateAllowsStart,
+      start: (name) => startAgentProcess(name),
+      afterStart: (name) => { agentLastRestart.set(name, Date.now()) },
+      gap: (name) => waitReconcileGap({
+        now: Date.now,
+        sleep: delay,
+        // saturationLog 'debug': a saturated fresh agent is polled every 3 s
+        // here; the refusal is not news on every poll (#1764 review).
+        isReady: () => isSessionReadyForPrompt(agentSessionName(name), null, { saturationLog: 'debug' }),
+        loadPerCpu,
+      }),
+      log: (level, fields, msg) => logger[level](fields, msg),
+    })
+    if (gate === 'wait') {
+      if (!mainFirstWaitLogged) {
+        logger.info({ pending: down, maxWaitMs: RECONCILE_MAIN_FIRST_MAX_WAIT_MS }, 'Reconcile: waiting for the main session\'s channels before starting sub-agents')
+        mainFirstWaitLogged = true
       }
-      if (isWithinRestartGrace(name)) continue
-      if (!memGateAllowsStart(name)) continue   // Commit 3 v1: safe-mode / memory gate
-      logger.warn({ agent: name }, 'Desired agent not running -- auto-starting (reconcile)')
-      try {
-        const r = await startAgentProcess(name)
-        agentLastRestart.set(name, Date.now())
-        if (!r.ok && r.error !== 'Agent is already running') {
-          logger.error({ agent: name, error: r.error }, 'Reconcile start failed')
-        }
-      } catch (err) {
-        logger.error({ err, agent: name }, 'Reconcile start threw')
-      }
-      await delay(AGENT_RECONCILE_STAGGER_MS)
+    } else {
+      mainFirstWaitLogged = false
     }
   } finally {
     reconcileBurstInProgress = false

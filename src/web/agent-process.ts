@@ -3807,7 +3807,15 @@ export function saturationRefusesDispatch(capture: string, session: string): boo
   return saturationBannerTrusted(session)
 }
 
-export async function isSessionReadyForPrompt(session: string, host: string | null = null): Promise<boolean> {
+export async function isSessionReadyForPrompt(
+  session: string,
+  host: string | null = null,
+  // A caller that polls the same session every few seconds (the reconcile's
+  // readiness gap) asks for 'debug' so a saturated session does not write a
+  // warn line per poll. Every other caller keeps 'warn'.
+  opts: { saturationLog?: 'warn' | 'debug' } = {},
+): Promise<boolean> {
+  const saturationLog = opts.saturationLog ?? 'warn'
   // Dim-ghost tolerant idle read: CC >=2.1.202 paints a dim placeholder into
   // the empty input box, which a plain capture reads as parked text. Only when
   // the plain view says 'typing' do we pay for the second (-e, dim-stripped)
@@ -3818,7 +3826,7 @@ export async function isSessionReadyForPrompt(session: string, host: string | nu
   const first = capturePane(session, host)
   if (first == null) return false
   if (saturationRefusesDispatch(first, session)) {
-    logger.warn({ session }, 'dispatch: refusing prompt — session shows context saturation (100% context)')
+    logger[saturationLog]({ session }, 'dispatch: refusing prompt — session shows context saturation (100% context)')
     return false
   }
   if (!idleOrGhost(first)) return false
@@ -3828,7 +3836,7 @@ export async function isSessionReadyForPrompt(session: string, host: string | nu
   const second = capturePane(session, host)
   if (second == null) return false
   if (saturationRefusesDispatch(second, session)) {
-    logger.warn({ session }, 'dispatch: refusing prompt — session shows context saturation (100% context)')
+    logger[saturationLog]({ session }, 'dispatch: refusing prompt — session shows context saturation (100% context)')
     return false
   }
   return idleOrGhost(second)
