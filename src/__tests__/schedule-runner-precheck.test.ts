@@ -98,11 +98,12 @@ describe('schedule-runner pre-check integration (source-level)', () => {
     expect(SRC).toMatch(/export function runPreCheck/)
   })
 
-  it('calls runPreCheck in the cron loop before attemptFireTask', () => {
+  // CRONPRECHECKSYNC1007: the cron loop awaits the async form (was runPreCheck(task)).
+  it('awaits runPreCheckAsync in the cron loop before attemptFireTask', () => {
     const cronLoopIdx = SRC.indexOf('for (const task of tasks)')
     expect(cronLoopIdx).toBeGreaterThan(0)
     const cronLoop = SRC.slice(cronLoopIdx)
-    const preCheckIdx = cronLoop.indexOf('runPreCheck(task)')
+    const preCheckIdx = cronLoop.indexOf('await runPreCheckAsync(task)')
     const fireIdx = cronLoop.indexOf('attemptFireTask(current,')
     expect(preCheckIdx).toBeGreaterThan(0)
     expect(preCheckIdx).toBeLessThan(fireIdx)
