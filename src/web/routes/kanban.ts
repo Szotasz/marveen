@@ -408,7 +408,11 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       labels: labelsByCard.get(card.id) ?? [],
       blockers: blockersByCard.get(card.id) ?? [],
     }))
-    jsonMaybeGzip(req, res, cards)
+    // c4e47223: X-Total-Count is the number of cards in THIS response (after the
+    // filters), so a reader can check the array it parsed against it. A count
+    // taken from a cut body -- by a line counter or a tolerant reader -- can turn
+    // a dashboard stop into a false "no such card" and a duplicate card.
+    jsonMaybeGzip(req, res, cards, 200, { 'X-Total-Count': String(cards.length) })
     return true
   }
 

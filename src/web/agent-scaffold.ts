@@ -2411,6 +2411,96 @@ export function ensureMessageCloseSection(name: string): void {
   atomicWriteFileSync(claudeMdPath, updated)
 }
 
+// ---- List read: a negative finding only from a COMPLETE list (c4e47223) ----
+//
+// A negative claim read off a list endpoint ("no such card", "0 pending", "no
+// memory of it") is only true when the response was COMPLETE. During a dashboard
+// stop or restart the request is cut or gets no answer at all; `curl -s` says
+// nothing about it, and the head of a cut body can pass for a shorter list with a
+// line counter or a tolerant reader. Reported on this install (2026-09-14, a
+// 14-minute outage): two reads in a row counted 283, then 596 of 774 cards, with
+// HTTP 000, and a duplicate card was opened around it. The endpoint builds the
+// whole list in memory and sends it in one piece, so a cut body is never valid
+// JSON and curl exits 18 on it: the check belongs to the READER, and the reader
+// is the agent, so the rule ships as a section.
+//
+// A whole RESPONSE is not yet a whole LIST (c4e47223 review): the archived
+// kanban list, /api/messages and /api/memories cut on the server side without a
+// word, and /api/messages filters on status=pending only. The section names each
+// endpoint's limit; list-read-limits.test.ts measures those numbers on the real
+// handlers and holds the text to them.
+const LISTREAD_BEGIN = '<!-- BEGIN GENERATED: list-read (auto-generated, do not edit by hand) -->'
+const LISTREAD_END = '<!-- END GENERATED: list-read -->'
+const LISTREAD_BLOCK_RE = new RegExp(
+  `${LISTREAD_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${LISTREAD_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
+)
+
+export function buildListReadBody(name: string): string {
+  return [
+    '## Lista-olvasás: nemleges lelet csak teljes listából',
+    '',
+    'Egy lista-végpontból (`GET /api/kanban`, `GET /api/messages?agent=`, `GET /api/memories`) levont NEMLEGES',
+    'állítás ("nincs ilyen lap", "0 függő üzenet", "erről nincs emlék") csak akkor igaz, ha a lista TELJES volt:',
+    'a válasz ép, ÉS a szerver sem vágta le. Egy leálló vagy újrainduló dashboard alatt a kérés félbeszakad, vagy',
+    'választ sem kap; a `curl -s` ezt nem írja ki, és egy félbeszakadt törzs eleje egy sor-számlálónak (`grep -c`)',
+    'vagy egy tűrő olvasónak rövidebb, de valódinak látszó lista lehet. Jelentett eset (2026-09-14, 14 perces',
+    'kiesés): két egymás utáni olvasás 283, majd 596 lapot számolt a 774-ből, HTTP 000 mellett, és a kiesés',
+    'körül duplikátum-lap nyílt.',
+    '',
+    '- A curl kilépési kódját és a HTTP-kódot KÜLÖN mérd, a törzset szigorú JSON-olvasóval olvasd:',
+    '```bash',
+    `code=$(curl -sS -o /tmp/lista-${name}.json -w '%{http_code}' -H "Authorization: Bearer $(cat ${tokenPath})" ${dashboardOrigin}/api/kanban); rc=$?`,
+    `echo "rc=$rc http=$code"; python3 -c "import json,sys; print(len(json.load(open(sys.argv[1]))))" /tmp/lista-${name}.json`,
+    '```',
+    '  A VÁLASZ csak akkor ép, ha `rc=0`, `http=200`, és a `json.load` hiba nélkül fut. `rc=18` a félbeszakadt',
+    '  átvitel, `rc=7` a kapcsolat hiánya, a `000` a válasz nélküli kérés.',
+    '- Az ép válasz még NEM teljes lista: a korlátos végpont szerver-oldalon, jelzés nélkül vág. A lista csak',
+    '  akkor teljes, ha az elemszám a korlát ALATT van; a korlátnál lapozz vagy szűkíts. Végpontonként:',
+    '  - `GET /api/kanban`: a teljes, nem archivált lista, korlát nélkül (archivált lap csak `includeArchived=1`-gyel).',
+    '    Az `X-Total-Count` fejléc a válasz lapjainak száma a szűrők után: vesd össze a tömb hosszával.',
+    '  - `GET /api/kanban/archived`: a `limit` alapból a `KANBAN_ARCHIVED_MAX_ROWS` beállítás (alapérték 500,',
+    '    legfeljebb 5000); a válasz `total` és `limit` mezőt ad: `total < limit` a teljes, `total = limit` csonka lehet.',
+    '  - `GET /api/messages?agent=`: CSAK a `status=pending` szűr, és az a teljes függő sort adja, korlát nélkül.',
+    '    Más `status` (delivered, done, failed) HATÁSTALAN: a válasz az ügynök beszélgetése, a legújabbal kezdve,',
+    '    alapból 50, legfeljebb 200 sor (`limit=`), csonkolás-jelzés nélkül; a régebbi sorokat a',
+    '    `before=<a kapott legkisebb id>` adja. Nem függő üzenetről csak a JSON `status` mezőjére szűrve, a',
+    '    korlát alatti vagy végiglapozott listán mondj nemleges leletet.',
+    '  - `GET /api/memories`: alapból 50, legfeljebb 200 sor (`limit=`). Listázásnál az `X-Memory-Search` fejléc',
+    '    `truncated=true`-t mond a korlátnál (lapozás: `offset=`); keresésnél (`q=`) a `hits` = `limit` jelenti',
+    '    ugyanezt, ott szűkíts.',
+    '- Ha bármelyik feltétel hiányzik (nem ép a válasz, vagy a lista a korlátnál áll), nemleges lelet TILOS: se',
+    '  "nincs ilyen lap", se "0 függő", se új lap nyitása a "nem találtam" alapján. Várj, és olvasd újra, amíg',
+    '  ép választ kapsz; a korlátnál lapozz vagy szűkíts.',
+    '- Darabszámot a JSON elemszámából mondj, ne `grep`-pel számolt sorokból.',
+  ].join('\n')
+}
+
+// Idempotently ensures the list-read block is present and current in the
+// agent's CLAUDE.md; same contract as ensureMessageCloseSection, called from
+// the same two surfaces (web.ts for the main agent, agent-process.ts for the rest).
+export function ensureListReadSection(name: string): void {
+  const claudeMdPath = name === MAIN_AGENT_ID
+    ? join(PROJECT_ROOT, 'CLAUDE.md')
+    : join(agentDir(name), 'CLAUDE.md')
+  if (!existsSync(claudeMdPath)) return
+
+  const block = `${LISTREAD_BEGIN}\n${buildListReadBody(name)}\n${LISTREAD_END}`
+
+  let existing: string
+  try {
+    existing = readFileSync(claudeMdPath, 'utf-8')
+  } catch {
+    return
+  }
+
+  const updated = LISTREAD_BLOCK_RE.test(existing)
+    ? existing.replace(LISTREAD_BLOCK_RE, block)
+    : existing.trimEnd() + '\n\n' + block + '\n'
+
+  if (updated === existing) return
+  atomicWriteFileSync(claudeMdPath, updated)
+}
+
 // Idempotently ensures the autonomy-wiring block is present and current in the
 // agent's CLAUDE.md. Called on every startAgentProcess() alongside
 // ensureFleetRosterSection() so that existing agents receive the block

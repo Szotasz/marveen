@@ -101,17 +101,34 @@ function acceptsGzip(req: http.IncomingMessage): boolean {
   return /(^|,)\s*gzip\s*(;\s*q=(?!0(\.0*)?\s*(,|$))[\d.]+)?\s*(,|$)/i.test(value)
 }
 
+// The helper owns the framing. An extra header could otherwise set it: header
+// names are case-insensitive on the wire but not as object keys, so a lowercase
+// `content-length` went out NEXT TO the real one (curl exit 8), and an extra
+// `Content-Encoding: gzip` stayed on the plain branch, marking plain JSON as
+// gzip (c4e47223 (1)). Extras with these names are dropped.
+const FRAMING_HEADERS = new Set(['content-length', 'content-encoding', 'transfer-encoding'])
+
 /**
  * Like json() but gzips the body when the client accepts it and the payload
  * exceeds GZIP_MIN_BYTES. Meant for the handful of heavy list endpoints
  * (kanban, messages, memories, ...) that dominate bandwidth on slow links;
  * json() itself is untouched because it has hundreds of call sites.
+ *
+ * c4e47223: the length is sent up front (Content-Length, the gzipped length on
+ * the gzip branch). The body is always built in full before the head goes out,
+ * so the length is known, and a reader can tell a body cut by a dashboard stop
+ * from a whole one by the length it was promised (curl: "transfer closed with N
+ * bytes remaining", exit 18) instead of by guessing from the JSON. Without it the
+ * response went out chunked, which also ends in exit 18 on a cut but promises no
+ * size. `extraHeaders` carries per-endpoint facts such as a list's X-Total-Count;
+ * it cannot override the framing, in any letter case (see FRAMING_HEADERS).
  */
 export function jsonMaybeGzip(
   req: http.IncomingMessage,
   res: http.ServerResponse,
   data: unknown,
   status = 200,
+  extraHeaders: Record<string, string> = {},
 ): void {
   const body = Buffer.from(JSON.stringify(data))
   const headers: Record<string, string> = {
@@ -119,12 +136,23 @@ export function jsonMaybeGzip(
     'Cache-Control': 'private, no-store',
     Vary: 'Accept-Encoding',
   }
+  for (const [name, value] of Object.entries(extraHeaders)) {
+    const lower = name.toLowerCase()
+    if (FRAMING_HEADERS.has(lower)) continue
+    // One line per header name: an extra replaces a default whatever its case,
+    // instead of going out next to it.
+    for (const key of Object.keys(headers)) if (key.toLowerCase() === lower) delete headers[key]
+    headers[name] = value
+  }
   if (body.length > GZIP_MIN_BYTES && acceptsGzip(req)) {
+    const gz = gzipSync(body)
     headers['Content-Encoding'] = 'gzip'
+    headers['Content-Length'] = String(gz.length)
     res.writeHead(status, headers)
-    res.end(gzipSync(body))
+    res.end(gz)
     return
   }
+  headers['Content-Length'] = String(body.length)
   res.writeHead(status, headers)
   res.end(body)
 }
