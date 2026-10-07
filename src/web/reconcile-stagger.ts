@@ -62,6 +62,13 @@ export async function waitReconcileGap(d: GapDeps): Promise<{ end: GapEnd; waite
 export interface ReconcileBurstDeps {
   /** Desired agents that were down when the burst was decided. */
   down: string[]
+  /**
+   * Is the agent still desired NOW? Asked right before each start: the gaps
+   * make a burst last minutes, and the dashboard's stop/delete paths rely on
+   * a removed agent not being started again (an orphan session, or an rmSync
+   * under a live one -- #1764 review).
+   */
+  isDesired: (name: string) => boolean
   /** Is the main session up for the owner (primary + every co-listen plugin)? Asked once. */
   mainReady: () => boolean
   msSinceMonitorStart: number
@@ -90,6 +97,10 @@ export async function runReconcileBurst(d: ReconcileBurstDeps): Promise<{ gate: 
   const gate = mainFirstGate(d.mainReady(), d.msSinceMonitorStart)
   if (gate === 'wait') return { gate, started }
   for (const name of d.down) {
+    if (!d.isDesired(name)) {
+      d.log('info', { agent: name }, 'Reconcile: agent no longer desired (stopped or deleted during the burst) -- not starting it')
+      continue
+    }
     if (d.isAgentRunning(name)) continue
     // A managed restart (context guard, auto-restart, model fallback, the
     // dashboard button) is stop+start, and isAgentRunning() reports false for

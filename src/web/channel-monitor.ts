@@ -2794,6 +2794,7 @@ async function reconcileDesiredAgents(): Promise<void> {
     // runReconcileBurst (reconcile-stagger.ts), behaviour-tested there.
     const { gate } = await runReconcileBurst({
       down,
+      isDesired: (name) => getDesiredAgents().has(name),
       mainReady: mainSessionChannelsReady,
       msSinceMonitorStart: Date.now() - monitorModuleLoadedAt,
       isAgentRunning,
@@ -2805,7 +2806,9 @@ async function reconcileDesiredAgents(): Promise<void> {
       gap: (name) => waitReconcileGap({
         now: Date.now,
         sleep: delay,
-        isReady: () => isSessionReadyForPrompt(agentSessionName(name)),
+        // saturationLog 'debug': a saturated fresh agent is polled every 3 s
+        // here; the refusal is not news on every poll (#1764 review).
+        isReady: () => isSessionReadyForPrompt(agentSessionName(name), null, { saturationLog: 'debug' }),
         loadPerCpu,
       }),
       log: (level, fields, msg) => logger[level](fields, msg),

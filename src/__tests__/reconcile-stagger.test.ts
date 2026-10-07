@@ -95,6 +95,7 @@ describe('runReconcileBurst: the main-first gate actually holds the starts', () 
     let mainAsked = 0
     const deps: ReconcileBurstDeps = {
       down: ['boni', 'dani', 'zara'],
+      isDesired: () => true,
       mainReady: () => { mainAsked++; return true },
       msSinceMonitorStart: 0,
       isAgentRunning: () => false,
@@ -151,6 +152,31 @@ describe('runReconcileBurst: the main-first gate actually holds the starts', () 
     expect((await runReconcileBurst(b.deps)).started).toEqual(['ok'])
   })
 
+  // #1764 review: the dashboard's stop/delete paths remove the agent from the
+  // desired set and rely on the reconcile not starting it again. A burst now
+  // lasts minutes (15-90 s per agent), so the snapshot alone is not enough.
+  it('an agent removed from the desired set DURING the burst (in an earlier agent\'s gap) is not started', async () => {
+    const desired = new Set(['boni', 'dani', 'zara'])
+    const b = burst({ isDesired: (n) => desired.has(n) })
+    b.deps.gap = async (n) => {
+      b.events.push(`gap:${n}`)
+      if (n === 'boni') desired.delete('dani') // the owner stops dani while boni boots
+      return { end: 'ready', waitedMs: 15_000 }
+    }
+    const r = await runReconcileBurst(b.deps)
+    expect(r.started).toEqual(['boni', 'zara'])
+    expect(b.events).not.toContain('start:dani')
+  })
+
+  it('the desired check is asked right before each start, after the previous gap', async () => {
+    const order: string[] = []
+    const b = burst({ isDesired: (n) => { order.push(`desired?:${n}`); return true } })
+    b.deps.start = async (n) => { order.push(`start:${n}`); return { ok: true } }
+    b.deps.gap = async (n) => { order.push(`gap:${n}`); return { end: 'ready', waitedMs: 15_000 } }
+    await runReconcileBurst(b.deps)
+    expect(order).toEqual(['desired?:boni', 'start:boni', 'gap:boni', 'desired?:dani', 'start:dani', 'gap:dani', 'desired?:zara', 'start:zara', 'gap:zara'])
+  })
+
   it('one agent failing to start does not stop the burst, and its gap is still waited', async () => {
     const b = burst({
       start: async (n) => {
@@ -174,8 +200,26 @@ describe('the binding in the reconcile (source)', () => {
     expect(fn).toContain('await runReconcileBurst({')
     expect(fn).toContain('mainReady: mainSessionChannelsReady,')
     expect(fn).toContain('msSinceMonitorStart: Date.now() - monitorModuleLoadedAt,')
-    expect(fn).toContain('isReady: () => isSessionReadyForPrompt(agentSessionName(name)),')
+    expect(fn).toContain("isReady: () => isSessionReadyForPrompt(agentSessionName(name), null, { saturationLog: 'debug' }),")
     expect(fn).toContain('memGateAllowsStart,')
+  })
+
+  // #1764 review: the caller-side wiring of the skips had no assertion (a
+  // mutant passing isWithinRestartGrace => false, isAgentRunning => false, a
+  // no-op afterStart or an always-desired check stayed green).
+  it('the monitor hands in the REAL desired set, running check, restart grace and restart stamp', () => {
+    expect(fn).toContain('isDesired: (name) => getDesiredAgents().has(name),')
+    expect(fn).toMatch(/^\s*isAgentRunning,\s*$/m)
+    expect(fn).toMatch(/^\s*isWithinRestartGrace,\s*$/m)
+    expect(fn).toContain('afterStart: (name) => { agentLastRestart.set(name, Date.now()) },')
+  })
+
+  it('isSessionReadyForPrompt: the saturation refusal logs at the caller\'s level, warn by default', () => {
+    const ap = readFileSync(join(__dirname, '../web/agent-process.ts'), 'utf-8')
+    const body = ap.slice(ap.indexOf('export async function isSessionReadyForPrompt'), ap.indexOf('\n}\n', ap.indexOf('export async function isSessionReadyForPrompt')))
+    expect(body).toContain("const saturationLog = opts.saturationLog ?? 'warn'")
+    expect(body.match(/logger\[saturationLog\]\(/g)?.length).toBe(2)
+    expect(body).not.toContain('logger.warn(')
   })
 
   it('no start bypasses the burst: startAgentProcess appears only as the injected start', () => {
