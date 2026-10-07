@@ -252,6 +252,45 @@ describe('a transcript that is not only appended to is read whole', () => {
     expect(readers().model).toBe('claude-b')
   })
 
+  // TESTFOLLOWUP1007D: the two mutants the #1724 review left green. Each case is built so that ONLY the guard under
+  // test decides it: the other checks (size, mtime, the anchor) all point to "unchanged".
+
+  it('shorter, cut behind the anchor (the last line is unfinished): read whole, not from the last line', () => {
+    // No final newline, so the last line starts before the end and its 64-byte anchor sits inside the filler line,
+    // which the rewrite keeps byte for byte. Only `size > prev.size` sends a shorter file to the whole read.
+    const filler = '{"type":"system","note":"' + 'w'.repeat(100) + '"}\n'
+    const unfinished = '{"type":"system","note":"' + 'x'.repeat(200)
+    writeFileSync(file, modelLine('claude-b') + filler + unfinished)
+    expect(readers().model).toBe('claude-b')
+    // same length answer line (b -> c), the filler and the anchor unchanged, the unfinished line cut short
+    writeFileSync(file, modelLine('claude-c') + filler + unfinished.slice(0, 100))
+    const later = new Date(Date.now() + 5_000)
+    utimesSync(file, later, later)
+    expect(statSync(file).size).toBeLessThan(Buffer.byteLength(modelLine('claude-b') + filler + unfinished))
+    expect(readers().model).toBe('claude-c')
+  })
+
+  it('replaced by another file of the SAME size and mtime (rename over it): the new inode is read, not remembered', () => {
+    // Size and mtime are equal on purpose, so only the identity check (dev + ino) tells the files apart.
+    const tail = '{"type":"system","note":"' + 'w'.repeat(100) + '"}\n'
+    // One whole-second timestamp for both files: a Date copied from statSync drops the sub-millisecond part, and the
+    // two mtimes would then differ by a fraction, which would let the mtime check decide instead.
+    const stamp = new Date(Math.floor(Date.now() / 1000) * 1000 - 60_000)
+    writeFileSync(file, modelLine('claude-a') + tail)
+    utimesSync(file, stamp, stamp)
+    expect(readers().model).toBe('claude-a')
+    const was = statSync(file)
+    const other = file + '.uj'
+    writeFileSync(other, modelLine('claude-z') + tail)
+    utimesSync(other, stamp, stamp)
+    renameSync(other, file)
+    const now = statSync(file)
+    expect(now.size).toBe(was.size)
+    expect(now.mtimeMs).toBe(was.mtimeMs)
+    expect(now.ino).not.toBe(was.ino)
+    expect(readers().model).toBe('claude-z')
+  })
+
   it('rewritten in place to a larger size (the same inode): the anchor before the last line no longer matches', () => {
     writeFileSync(file, modelLine('claude-a') + '{"type":"system"}\n')
     expect(readers().model).toBe('claude-a')
