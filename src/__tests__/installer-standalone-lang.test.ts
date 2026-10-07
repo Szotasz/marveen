@@ -10,7 +10,8 @@
  * exit, so nothing past the loader ever runs on this host. A local HTTP server
  * plays raw.githubusercontent.com and serves this checkout's install-lang.sh.
  * - From an EMPTY directory, the README's exact command shape (curl -o install.sh
- *   && bash install.sh) gets past the loader: the language works (hu and en),
+ *   && bash install.sh), and the Windows/WSL wrapper's shape (downloaded into a
+ *   tmp dir as marveen-install.sh, run from another cwd), get past the loader: the language works (hu and en),
  *   the file came from the ref in MARVEEN_REF (default main), the temp copy is
  *   removed.
  * - With install-lang.sh next to the script (a checkout, the Bridge), it is
@@ -112,6 +113,30 @@ describe.each(shells)('install-linux.sh run on its own (%s)', (shell) => {
     expect(r.status).toBe(0)
     expect(r.stdout).toContain('LANG_OK:[1/7] Checking prerequisites...')
     expect(hits).toEqual(['/feature-x/install-linux.sh', '/feature-x/install-lang.sh'])
+  })
+
+  it('the Windows/WSL wrapper shape (install-windows.ps1:107): downloaded into a tmp dir as marveen-install.sh and run from there', async () => {
+    mode = 'ok'; hits.length = 0
+    // stand-in for /tmp (never the real one), and a different cwd, as `wsl -- bash -c` has
+    const fakeTmp = mkdtempSync(join(tmpdir(), 'marveen-fake-slash-tmp-'))
+    const cwd = mkdtempSync(join(tmpdir(), 'marveen-wsl-cwd-'))
+    const lang = mkdtempSync(join(tmpdir(), 'marveen-tmpdir-'))
+    const target = join(fakeTmp, 'marveen-install.sh')
+    const cmd = `curl -fsSL ${base}/main/install-linux.sh -o ${target} && ${shell} ${target}`
+    const r = await run(shell, ['-c', cmd], {
+      cwd,
+      env: { PATH: process.env.PATH || '', HOME: cwd, TMPDIR: lang, TERM: 'xterm-256color', MARVEEN_RAW_BASE: base },
+    })
+    const inFakeTmp = readdirSync(fakeTmp)
+    const left = readdirSync(lang)
+    for (const d of [fakeTmp, cwd, lang]) rmSync(d, { recursive: true, force: true })
+    expect(r.stderr).not.toMatch(/install-lang\.sh: No such file/)
+    expect(r.status).toBe(0)
+    expect(r.stdout).toContain('LANG_OK:[1/7] Előfeltételek ellenőrzése...')
+    expect(hits).toEqual(['/main/install-linux.sh', '/main/install-lang.sh'])
+    // nothing but the downloaded script next to it, and no temp copy left
+    expect(inFakeTmp).toEqual(['marveen-install.sh'])
+    expect(left).toEqual([])
   })
 
   it('install-lang.sh next to the script (checkout, Bridge): sourced from there, nothing downloaded', async () => {
