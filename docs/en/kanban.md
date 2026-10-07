@@ -45,6 +45,17 @@ Every project task runs on a card: the orchestrator records it as a card, delega
 
 Direct SQLite, or the dashboard kanban interface. Card status is automatically included in every agent's context.
 
+### Card history
+
+Two append-only tables record what changed on a card, and who changed it (the `actor` field of the request):
+
+- `kanban_card_events`: one row per real status transition (`from_status`, `to_status`), written by the `/move` route and by `PUT /api/kanban/:id`. Read it with `GET /api/kanban/:id/events`.
+- `kanban_card_field_events`: one row per real change of `due_date`, `assignee` or `priority` through `PUT /api/kanban/:id` (`field`, `old_value`, `new_value`, as text; `null` when the field was or became empty). A value sent back unchanged writes no row. Read it with `GET /api/kanban/:id/field-events`.
+
+The `actor` of both writes (`PUT /api/kanban/:id` and `POST /api/kanban/:id/move`) is a string or `null`; any other type is refused with 400 before anything is written, and the write and its rows are one transaction. An empty or blank actor counts as none: then a dashboard session's user is recorded, and a token caller's row stays anonymous (`null`).
+
+The two are kept apart on purpose: every reader of `kanban_card_events` (the stuck-card detector and the status-age queries among them) takes a row there as a status transition. A fleet transfer carries `kanban_card_events`, but not `kanban_card_field_events`.
+
 ### Dashboard kanban interface
 
 Key behaviours in the card editor on the web dashboard (`http://localhost:3420`):

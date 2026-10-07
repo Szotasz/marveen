@@ -47,7 +47,7 @@ describe('channels.sh watchdog plugin-liveness fallback is scoped to this sessio
     const loop = extractWatchdogLoop()
     const codeLines = loop.split('\n').filter(l => !l.trim().startsWith('#'))
     const codeOnly = codeLines.join('\n')
-    expect(codeOnly).not.toMatch(/ps eww -e/)
+    expect(codeOnly).not.toMatch(/ps (eww -e|axeww)/)
     expect(codeOnly).not.toMatch(/CLAUDE_PLUGIN_ROOT=\[\^ \]\*/)
   })
 

@@ -16,7 +16,7 @@
 //
 // Strategy: combine two identifiers.
 //   1. bot.pid (cheap, works for the supervised process).
-//   2. `ps eww -e` scan for the *_STATE_DIR=<chanDir> env-var match. This
+//   2. `ps axeww` scan for the *_STATE_DIR=<chanDir> env-var match. This
 //      catches orphans whose pid is no longer in bot.pid - any process that
 //      was started against this channel state dir is in scope, regardless
 //      of how its argv was rendered. macOS BSD ps emits each process's full
@@ -29,6 +29,17 @@ import type { ChannelProviderType } from '../channel-provider.js'
 import { channelStateDir } from '../channel-provider.js'
 import { logger } from '../logger.js'
 
+// The env scan MUST list processes without a controlling terminal. On macOS
+// `ps eww -e` does not: `-e` there only adds other users' processes, and the
+// BSD default still drops every tty-less one (measured 2026-10-07 on the host:
+// 255 rows vs 981 for `ps axeww`; a detached node carrying
+// TELEGRAM_STATE_DIR=<probe> was absent from the former, present in the
+// latter). An orphaned poller is exactly a tty-less process -- its tmux pane
+// is gone -- so the old form was blind to the very thing this scan exists to
+// find (card PSEWWMACOSBLIND1007). `x` adds the tty-less processes; procps on
+// Linux accepts the same BSD-style `axeww`.
+export const PS_ENV_SCAN_CMD = '/bin/ps axeww'
+
 const STATE_ENV_VAR: Record<ChannelProviderType, string> = {
   telegram: 'TELEGRAM_STATE_DIR',
   slack: 'SLACK_STATE_DIR',
@@ -37,15 +48,27 @@ const STATE_ENV_VAR: Record<ChannelProviderType, string> = {
   teams: 'TEAMS_STATE_DIR',
 }
 
-// Parse `ps eww -e` output and return every PID whose process environment
+// Parse `ps axeww` output and return every PID whose process environment
 // contains `<envVar>=<value>`. Exported for testability.
 //
-// `ps eww -e` rows on macOS look like:
+// `ps axeww` rows on macOS look like:
 //   90798 s000  S+   0:00.01 bun run --cwd ... HOME=/Users/... TELEGRAM_STATE_DIR=/path... ...
 // The match must be precise: substring `TELEGRAM_STATE_DIR=/path` against
 // `TELEGRAM_STATE_DIR=/path-elsewhere` is acceptable because the value is an
 // absolute path, but we still anchor on the env-var literal to avoid
 // matching a row that just *mentions* the path string in its argv.
+//
+// The row must ALSO carry a CLAUDE_PLUGIN_ROOT env entry (PSEWWMACOSBLIND1007,
+// Geri's review). *_STATE_DIR is inherited by everything the agent's claude
+// starts -- a background `node`/`npm` job from its Bash tool included -- and
+// with `ps axeww` those tty-less jobs are now visible on macOS too, where
+// nothing in the guards behind this scan would spare them (a JS runtime, not a
+// pane, not claude). A channel plugin poller is launched by Claude Code as a
+// plugin, so it always has CLAUDE_PLUGIN_ROOT (measured on the host: every
+// telegram and slack-channel poller does; the agent's background jobs and its
+// non-plugin MCP servers do not). The bot.pid path is unaffected.
+const PLUGIN_ROOT_ENV_RE = /(?:^|\s)CLAUDE_PLUGIN_ROOT=\S/
+
 export function parsePollerPidsFromPs(
   psOutput: string,
   envVar: string,
@@ -55,6 +78,7 @@ export function parsePollerPidsFromPs(
   const out: number[] = []
   for (const line of psOutput.split('\n')) {
     if (!line.includes(needle)) continue
+    if (!PLUGIN_ROOT_ENV_RE.test(line)) continue
     const m = line.match(/^\s*(\d+)\s/)
     if (!m) continue
     const pid = parseInt(m[1]!, 10)
@@ -65,7 +89,7 @@ export function parsePollerPidsFromPs(
 
 function listPollerPidsByStateDir(envVar: string, chanDir: string): number[] {
   try {
-    const out = execSync('/bin/ps eww -e', { timeout: 5000, encoding: 'utf-8', maxBuffer: 8 * 1024 * 1024 })
+    const out = execSync(PS_ENV_SCAN_CMD, { timeout: 5000, encoding: 'utf-8', maxBuffer: 8 * 1024 * 1024 })
     return parsePollerPidsFromPs(out, envVar, chanDir)
   } catch (err) {
     logger.warn({ err, chanDir }, 'channel-poller-reap: ps scan failed')
@@ -372,7 +396,7 @@ function logNotKilled(where: Record<string, unknown>, o: KillOutcomes): void {
 
 /**
  * Reap every channel-plugin poller process associated with this agent.
- * Combines bot.pid (cheap, supervised pid) with a `ps eww -e` env-var scan
+ * Combines bot.pid (cheap, supervised pid) with a `ps axeww` env-var scan
  * (catches orphans whose pid is no longer in bot.pid). SIGTERM first; after
  * a short grace period, SIGKILL any survivor. Safe to call multiple times
  * (process.kill on a missing pid is caught). Signals only processes of the
@@ -908,9 +932,9 @@ export function reapForeignMainPollers(opts: {
 
   let psEww: string
   try {
-    psEww = execSync('/bin/ps eww -e', { timeout: 5000, encoding: 'utf-8', maxBuffer: 8 * 1024 * 1024 })
+    psEww = execSync(PS_ENV_SCAN_CMD, { timeout: 5000, encoding: 'utf-8', maxBuffer: 8 * 1024 * 1024 })
   } catch (err) {
-    logger.warn({ err }, 'channel-poller-reap: ps eww scan failed (foreign-main reap skipped)')
+    logger.warn({ err }, 'channel-poller-reap: ps env scan failed (foreign-main reap skipped)')
     return []
   }
   const candidates = parseMainDirPollerPids(psEww, PLUGIN_ROOT_NEEDLE[opts.provider], STATE_ENV_VAR[opts.provider])

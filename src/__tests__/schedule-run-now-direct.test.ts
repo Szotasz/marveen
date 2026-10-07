@@ -23,6 +23,7 @@ const h = vi.hoisted(() => ({
 vi.mock('../web/scheduled-tasks-io.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../web/scheduled-tasks-io.js')>()),
   listScheduledTasks: () => h.tasks,
+  readScheduledTask: (n: string) => (h.tasks as Array<{ name: string }>).find(t => t.name === n) ?? null,
 }))
 
 vi.mock('../web/heartbeat-direct-digest.js', async (importOriginal) => ({
