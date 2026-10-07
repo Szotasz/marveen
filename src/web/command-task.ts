@@ -84,11 +84,35 @@ export function evaluateCommandResult(
 //
 // Each direction looked correct in isolation: a scheduler may wait for its
 // task, and a task may talk to the API. The defect only exists in the pair.
-function runCommand(cmd: string, timeoutMs: number): Promise<{ ok: boolean; detail: string }> {
+//
+// CMDTASKKILL1772 (#1772): the command runs in its OWN process group
+// (detached), and the timeout ends the whole group. Killing the `bash -lc`
+// child alone left everything bash had started (a `&` job, a pipeline member,
+// a curl, a sleep) re-parented to init and running past the task's deadline --
+// the same gap the pre-check closed in #1759 (endPreCheckGroup).
+function endCommandGroup(child: ReturnType<typeof spawn>, task: string): void {
+  const pid = child.pid
+  if (pid != null) {
+    try {
+      process.kill(-pid, "SIGKILL")
+      return
+    } catch (err) {
+      // ESRCH: the group is already gone, which is the goal. Anything else is
+      // said out loud, then the direct child is still killed below.
+      if ((err as NodeJS.ErrnoException).code === "ESRCH") return
+      logger.warn({ task, error: (err as Error).message }, "command task: could not kill the command's process group, killing bash only")
+    }
+  }
+  try { child.kill("SIGKILL") } catch { /* already gone */ }
+}
+
+function runCommand(cmd: string, timeoutMs: number, task: string): Promise<{ ok: boolean; detail: string }> {
   return new Promise((resolve) => {
     let child: ReturnType<typeof spawn>
     try {
-      child = spawn("bash", ["-lc", cmd])
+      // detached: bash leads its own process group, so the timeout can end
+      // everything it started (endCommandGroup), not just bash.
+      child = spawn("bash", ["-lc", cmd], { detached: true })
     } catch (err) {
       resolve({ ok: false, detail: (err as Error).message })
       return
@@ -106,7 +130,7 @@ function runCommand(cmd: string, timeoutMs: number): Promise<{ ok: boolean; deta
     // slot for ever. SIGKILL rather than SIGTERM -- a hung command is by
     // definition not responding to a polite request.
     const timer = setTimeout(() => {
-      try { child.kill("SIGKILL") } catch { /* already gone */ }
+      endCommandGroup(child, task)
       done({ ok: false, detail: `timeout ${timeoutMs}ms` })
     }, timeoutMs)
     // Drain stdout: nothing else reads it, and an undrained pipe blocks a
@@ -154,7 +178,7 @@ export function runCommandTask(task: ScheduledTask, now: number): void {
   }
   const map = load()
   inFlight.add(task.name)
-  void runCommand(resolveCommandPlaceholders(task.command), timeoutMs)
+  void runCommand(resolveCommandPlaceholders(task.command), timeoutMs, task.name)
     .then(({ ok, detail }) => finish(task, now, failThreshold, map, ok, detail))
     .catch((err) => finish(task, now, failThreshold, map, false, (err as Error).message))
     .finally(() => inFlight.delete(task.name))
