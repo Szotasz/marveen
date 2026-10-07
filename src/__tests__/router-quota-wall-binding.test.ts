@@ -141,6 +141,26 @@ describe('router: a stuck session at the plan usage limit is reported once per w
     expect(mockCapturePane.mock.calls.filter((c) => c[0] === 'agent-wallbind1').length).toBeGreaterThanOrEqual(11)
   })
 
+  // TESTFOLLOWUP1007G (the #1737 review's surviving mutant): only an ALERT may
+  // stamp the per-agent wall record. If a 'silent' step stamped it too, every
+  // escalation over the same wall (11 min apart, under the 30 min gap) would
+  // push the gap forward, and a NEW wall would never be alerted. Wall A is
+  // alerted at the first escalation and stays quiet at +11 and +22 min; at +33
+  // min the pane shows wall B (another reset time): 33 min after the only
+  // alert, past the gap, and a different key -- so it must be alerted.
+  it('a new wall after the gap is alerted even when the old wall was silent in between', async () => {
+    const WALL_B_PANE = WALL_PANE.replace(/6:20pm/g, '11:20pm')
+    await escalateOver('wallbind4', WALL_PANE, 3)
+    expect(stuckAlerts('wallbind4')).toHaveLength(1)
+    mockCapturePane.mockReturnValue(WALL_B_PANE)
+    clock += 11 * 60 * 1000
+    await runMessageRouterTick()
+    const alerts = stuckAlerts('wallbind4')
+    expect(alerts).toHaveLength(2)
+    expect(alerts[0]).toContain('resumes by itself at 6:20pm')
+    expect(alerts[1]).toContain('resumes by itself at 11:20pm')
+  })
+
   it('control: a permission prompt keeps today\'s cadence -- an alert at every escalation', async () => {
     await escalateOver('wallbind2', PERMISSION_PANE, 4)
     const alerts = stuckAlerts('wallbind2')
