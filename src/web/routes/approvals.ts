@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { PROJECT_ROOT, MAIN_AGENT_ID, TELEGRAM_BOT_TOKEN } from '../../config.js'
 import {
   createApproval, getApproval, resolveApproval, listApprovals, expireTimedOutApprovals,
-  createAgentMessage, setApprovalTelegramMessageId,
+  createAgentMessage, setApprovalTelegramMessageId, consumeApproval,
   type Approval,
 } from '../../db.js'
 import { logger } from '../../logger.js'
@@ -25,6 +25,23 @@ const AUTONOMY_CONFIG_PATH = join(PROJECT_ROOT, 'store', 'autonomy-config.json')
 export const DEFAULT_TIMEOUT_MINUTES = 1440
 // Cap: a timeout past a week is indistinguishable from the old "never".
 export const MAX_TIMEOUT_SECONDS = 7 * 24 * 3600
+
+// MEMAPPROVALVEGTELEN923: how long a yes stays usable after the owner gave it.
+// The email gate uses 30 minutes, which fits a letter written in the same
+// breath as the answer. A memory-maintenance yes is different: the request goes
+// out at dawn and the owner answers when he wakes, so a 30-minute window would
+// expire every approval the fleet ever asks for. A day is long enough for
+// "answered in the morning, executed on the next round" and short enough that a
+// three-day-old row stops counting -- which was the whole defect.
+export const DEFAULT_CONSUME_WINDOW_SECONDS = 24 * 3600
+
+// Pure + exported for tests.
+export function computeConsumeWindow(windowSeconds: unknown): number {
+  if (typeof windowSeconds === 'number' && Number.isFinite(windowSeconds) && windowSeconds > 0) {
+    return Math.min(Math.floor(windowSeconds), MAX_TIMEOUT_SECONDS)
+  }
+  return DEFAULT_CONSUME_WINDOW_SECONDS
+}
 
 function readCategoryTimeoutMinutes(category: string): number | null {
   try {
@@ -225,6 +242,56 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
 
     const items = listApprovals({ agent_id, category, status, limit })
     json(res, items)
+    return true
+  }
+
+  // POST /api/approvals/:id/consume -- spend the yes (MEMAPPROVALVEGTELEN923).
+  // Until this existed, only the email gate consumed anything: every other
+  // category left the row `approved` + `consumed_at IS NULL` forever, so the
+  // same yes could authorize a different set of items on a different day, and
+  // nothing in the system said no. The executing agent calls this the moment
+  // before it acts; a 200 means it may act, and every 409 verdict names why not.
+  const consumeMatch = path.match(/^\/api\/approvals\/([^/]+)\/consume$/)
+  if (consumeMatch && method === 'POST') {
+    let body: { content_hash?: unknown; window_seconds?: unknown; actor?: unknown } = {}
+    const raw = (await readBody(req)).toString()
+    if (raw.trim()) {
+      try {
+        body = JSON.parse(raw)
+      } catch {
+        json(res, { error: 'Invalid JSON' }, 400)
+        return true
+      }
+    }
+    const { content_hash, window_seconds, actor } = body
+    if (content_hash !== undefined && (typeof content_hash !== 'string' || !/^[0-9a-f]{64}$/.test(content_hash))) {
+      json(res, { error: 'content_hash must be a 64-char lowercase sha256 hex string if provided' }, 400)
+      return true
+    }
+    const windowSeconds = computeConsumeWindow(window_seconds)
+    const result = consumeApproval(consumeMatch[1], {
+      contentHash: typeof content_hash === 'string' ? content_hash : undefined,
+      windowSeconds,
+    })
+    const payload = {
+      verdict: result.verdict,
+      bound: result.bound,
+      window_seconds: windowSeconds,
+      approval: result.approval ?? null,
+    }
+    if (result.verdict === 'not_found') {
+      json(res, { ...payload, error: 'Not found' }, 404)
+      return true
+    }
+    if (result.verdict !== 'allowed') {
+      json(res, { ...payload, error: `Not consumable: ${result.verdict}` }, 409)
+      return true
+    }
+    logger.info(
+      { id: consumeMatch[1], actor: typeof actor === 'string' ? actor : null, bound: result.bound, windowSeconds },
+      'Approval consumed',
+    )
+    json(res, payload)
     return true
   }
 

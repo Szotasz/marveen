@@ -304,6 +304,17 @@ describe('install-macos.sh -- launchd units must be verified, not assumed', () =
     expect(before).toMatch(/if \[ -n "\$LAUNCHD_FAILED" \]/)
     expect(before).toMatch(/exit 1/)
   })
+
+  // 2026-10-07: the 05:05 morning-start found the dashboard down, wrote it to
+  // store/morning-start.error.log and exited; the owner learned it at 11:29 by
+  // asking why no briefing came. The failure branch must reach the owner over
+  // the Bot API, before its exit 1.
+  it('scripts/start.sh notifies the owner via notify.sh when a unit did not come up', () => {
+    const guard = START.indexOf('if [ -n "$LAUNCHD_FAILED" ]')
+    expect(guard).toBeGreaterThan(0)
+    const branch = START.slice(guard, START.indexOf('\n  exit 1\n', guard))
+    expect(branch).toContain('scripts/notify.sh')
+  })
 })
 
 describe('every touched shell entry point stays parseable', () => {

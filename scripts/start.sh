@@ -174,6 +174,13 @@ if [ -n "$LAUNCHD_FAILED" ]; then
     echo "  Ellenorzes:   launchctl print gui/$(id -u)/com.${SLUG}.${_svc} | grep -E 'state|pid'" >&2
   done
   unset _svc
+  # The owner must hear about this, not just a log file nobody reads: when the
+  # dashboard is down the scheduler (and with it the morning briefing) is down
+  # too, so the failure is otherwise silent until the owner asks. notify.sh
+  # talks to the Bot API directly and needs neither the dashboard nor the
+  # channel plugin. Best effort: a failed notify must not mask the exit 1.
+  bash "${INSTALL_DIR}/scripts/notify.sh" "⚠️ ${BOT_NAME:-Marveen}: a szolgaltatas indulasa nem igazolt (${LAUNCHD_FAILED% }). Amig ez all, utemezett feladat (napindito is) nem fut. Reszletek: store/morning-start.error.log" >/dev/null 2>&1 \
+    || echo "  notify.sh sikertelen, Telegram-ertesites nem ment ki." >&2
   exit 1
 fi
 echo "✓ Dashboard: http://localhost:${WEB_PORT:-3420}"
