@@ -3,6 +3,48 @@ import { normalizeChatId, resolveAlertOwnerChat } from './owner-chat.js'
 import { getProvider } from './channel-provider.js'
 import { logger } from './logger.js'
 import { markIfTestRun } from './test-run-marker.js'
+import type { sendSlackNotification as SendSlack } from './slack-notify.js'
+
+// SLACKATALLAS1006: the Slack side of this funnel. 'owner' = owner-facing
+// content, 'alert' = operational alerts (falls back to the owner target).
+// Read per send, so a Settings change applies without a restart. Loaded
+// lazily: this module is imported almost everywhere, and a load failure of
+// the settings layer must degrade to "no Slack target" (the Telegram path),
+// never take every notification down with it.
+type SettingFn = (key: string) => string
+async function loadSetting(): Promise<SettingFn> {
+  try {
+    const { getEffectiveSettingValue } = await import('./settings-store.js')
+    return (key) => { try { return String(getEffectiveSettingValue(key) ?? '').trim() } catch { return '' } }
+  } catch {
+    return () => ''
+  }
+}
+export async function slackTargetFor(kind: 'owner' | 'alert', setting?: SettingFn): Promise<string> {
+  const get = setting ?? await loadSetting()
+  const owner = get('NOTIFY_SLACK_TARGET')
+  return kind === 'alert' ? (get('NOTIFY_SLACK_ALERT_TARGET') || owner) : owner
+}
+
+/**
+ * Slack first (when a target is set), then Telegram unless NOTIFY_TELEGRAM=0.
+ * A failed Slack send always falls back to Telegram, so nothing is lost while
+ * the Slack path is new. Exported for tests.
+ */
+export async function deliverWithSlack(
+  kind: 'owner' | 'alert',
+  text: string,
+  telegram: () => Promise<void>,
+  send?: typeof SendSlack,
+): Promise<void> {
+  const setting = await loadSetting()
+  const target = await slackTargetFor(kind, setting)
+  if (!target) return telegram()
+  const sendFn = send ?? (await import('./slack-notify.js')).sendSlackNotification
+  const r = await sendFn(target, markIfTestRun(text), { ownerUserId: setting('SLACK_OWNER_USER_ID') })
+  if (!r.ok) logger.warn({ target, error: r.error }, 'Slack ertesites nem ment ki; Telegram tartalek')
+  if (!r.ok || setting('NOTIFY_TELEGRAM') !== '0') await telegram()
+}
 
 // True when operational alerts go to a chat other than the owner's. Callers
 // must then leave owner/partner conversation content (e.g. a preview of a
@@ -14,14 +56,20 @@ export function alertIsRedirected(): boolean {
 // Operational alert (watchdogs, restarts, stuck sessions). Goes to
 // ALERT_CHAT_ID when it is set, otherwise to the owner chat.
 export async function notifyChannel(text: string): Promise<void> {
-  const alertChat = normalizeChatId(ALERT_CHAT_ID)
-  if (alertChat) return sendToChat(alertChat, text)
-  return notifyOwner(text)
+  return deliverWithSlack('alert', text, () => {
+    const alertChat = normalizeChatId(ALERT_CHAT_ID)
+    if (alertChat) return sendToChat(alertChat, text)
+    return telegramOwner(text)
+  })
 }
 
 // Owner-facing content (heartbeat digest, security events): always the owner
 // chat, never rerouted by ALERT_CHAT_ID.
 export async function notifyOwner(text: string): Promise<void> {
+  return deliverWithSlack('owner', text, () => telegramOwner(text))
+}
+
+async function telegramOwner(text: string): Promise<void> {
   // CHATID0 -- resolveAlertOwnerChat, not a truthiness test on the raw .env
   // value. The installer writes ALLOWED_CHAT_ID=0 as its placeholder, and "0"
   // is neither empty nor falsy, so a plain truthiness/normalizeChatId-only
@@ -77,7 +125,9 @@ export const notifyTelegram = notifyChannel
 // (fresh installs, channel-less deployments), so it stays fully silent -- the
 // recovery path must never depend on, or be noisy about, Telegram being wired.
 export async function notifySecurityEvent(text: string): Promise<void> {
-  if (!CHANNEL_TOKEN || !resolveAlertOwnerChat(undefined, CHANNEL_CHAT_ID, CHANNEL_PROVIDER).chatId) return
+  // Silent when NEITHER channel is configured; a Slack-only install still gets it.
+  const hasTelegram = !!CHANNEL_TOKEN && !!resolveAlertOwnerChat(undefined, CHANNEL_CHAT_ID, CHANNEL_PROVIDER).chatId
+  if (!hasTelegram && !(await slackTargetFor('owner'))) return
   try {
     await notifyOwner(text)
   } catch {

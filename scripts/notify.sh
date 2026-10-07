@@ -72,6 +72,19 @@ case "$SESS" in
     ;;
 esac
 
+# SLACKATALLAS1006: Slack first, when NOTIFY_SLACK_TARGET is set (settings or
+# .env). The sender's own Slack bot posts; the helper falls back to the main
+# bot with the sender's name. Telegram still goes out unless NOTIFY_TELEGRAM=0
+# AND the Slack send succeeded -- a Slack failure never loses the message.
+# No target configured -> exit 2 from the helper, Telegram exactly as before.
+SEND_TELEGRAM=1
+if command -v node >/dev/null 2>&1 && [ -f "$PROJECT_DIR/dist/slack-notify.js" ]; then
+  SLACK_OUT="$(node "$SCRIPT_DIR/slack-notify.mjs" --kind owner ${SENDER:+--as "$SENDER"} -- "$MESSAGE" 2>/dev/null)"
+  SLACK_RC=$?
+  case "$SLACK_OUT" in *'"telegram":"skip"'*) [ "$SLACK_RC" -eq 0 ] && SEND_TELEGRAM=0 ;; esac
+  [ "$SLACK_RC" -eq 1 ] && echo "Figyelem: a Slack-ertesites nem ment ki, Telegram tartalek: $SLACK_OUT" >&2
+fi
+
 if [ -n "$SENDER" ] && [ "$SENDER" != "$MAIN_AGENT_ID" ]; then
   # Capitalize the first letter (bash 3.2 portable -- no ${var^}).
   _first=$(printf '%s' "${SENDER%"${SENDER#?}"}" | tr '[:lower:]' '[:upper:]')
@@ -96,7 +109,9 @@ fi
 # truth (NOTIFYVAKSWEEP826) -- this script consumes it, it no longer inlines it.
 . "$SCRIPT_DIR/lib/send-telegram.sh"
 
-if send_telegram_message "$TOKEN" "$CHAT_ID" "$MESSAGE" --data-urlencode "parse_mode=HTML"; then
+if [ "$SEND_TELEGRAM" -eq 0 ]; then
+  echo "Ertesites elkuldve (Slack)."
+elif send_telegram_message "$TOKEN" "$CHAT_ID" "$MESSAGE" --data-urlencode "parse_mode=HTML"; then
   echo "Ertesites elkuldve."
 else
   echo "Hiba: ertesites kuldese sikertelen (reszletek fent)." >&2
