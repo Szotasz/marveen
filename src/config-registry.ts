@@ -534,6 +534,37 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: true,
   },
+  // The three opt-in switches below are boot-time consts in src/config.ts
+  // (cfg(): config-overrides.json > .env), so a value saved here takes effect
+  // only after the dashboard restarts. Default '0' matches config.ts, where an
+  // unset key resolves to false.
+  {
+    key: 'SUBAGENT_INBOX_TEE',
+    type: 'boolean',
+    default: '0',
+    description: 'Telegramos sub-agentek bejövő üzeneteinek lemezre tükrözése (inbound-tee). Bekapcsolva a sub-agent a csatorna-plugint egy saját mcp.json-on keresztül, a scripts/channel-inbound-tee.mjs burkolóval tölti be (--channels helyett), és minden bejövő üzenet a <state>/inbox-pending.jsonl fájlba is kerül, ahonnan a channel-inbox-drain hook a következő körbe húzza be. Ez a bejövő üzenetek tartalmát lemezre írja. A fő agentre és a nem Telegramos agentekre nem vonatkozik. Alapértelmezés: kikapcsolva (változatlan --channels út). A SUBAGENT_TELEGRAM_WAKE_ENABLED csak ezzel együtt csinál bármit. A módosítás a dashboard újraindítása után, és agentenként a sub-agent következő indításakor lép életbe.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
+    key: 'SUBAGENT_TELEGRAM_WAKE_ENABLED',
+    type: 'boolean',
+    default: '0',
+    description: 'A message-router felébreszti azt a tétlen Telegramos sub-agentet, akinek a <state>/inbox-pending.jsonl fájljában beragadt bejövő üzenet van, hogy a drain hook behúzza őket. Csak SUBAGENT_INBOX_TEE=1 mellett van hatása: anélkül nem keletkezik inbox-fájl, és a figyelő no-op. Alapértelmezés: kikapcsolva. A módosítás a dashboard újraindításakor lép életbe.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
+    key: 'VOICE_TRANSCRIBE_INBOUND',
+    type: 'boolean',
+    default: '0',
+    description: 'Telepítés-szintű alapértelmezés a bejövő hangüzenetek átiratához a text módú ügynököknél. Bekapcsolva minden olyan text módú ügynöknél helyi faster-whisper átirat készül, amelynek az agent-config.json-jában nincs voice.transcribeInbound beállítás (az ügynökönkénti érték felülírja ezt). A voice/auto módú ügynököknél az átirat ettől függetlenül mindig elkészül. Hangüzenetenként CPU-időbe kerül. Alapértelmezés: kikapcsolva. A módosítás a dashboard újraindításakor lép életbe.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: true,
+  },
   // --- System module ---
   {
     key: 'SCHEDULER_TZ',
