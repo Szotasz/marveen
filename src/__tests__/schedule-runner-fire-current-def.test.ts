@@ -28,8 +28,11 @@ const sentPrompts: Array<{ session: string; prompt: string }> = []
 // What the first fire does to the task list, before the second task's turn.
 let duringFirstFire: () => void = () => {}
 
+// Shared across vi.resetModules(): each runOneTick re-imports the runner, and a
+// factory-local vi.fn would be a new spy every time.
+const mockLoggerInfo = vi.fn()
 vi.mock('../logger.js', () => ({
-  logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() },
+  logger: { info: (...a: unknown[]) => mockLoggerInfo(...a), warn: vi.fn(), debug: vi.fn(), error: vi.fn() },
 }))
 
 // The runner persists its last-run map on every fire; never touch the real store.
@@ -181,6 +184,10 @@ describe('schedule runner: a cron fire uses the task as it is now, not the tick 
     expect(sentTo('agent-curagent')).toHaveLength(0)
     // documented limit: a target the edit ADDED is reached at the next occurrence, not in this tick
     expect(sentTo('agent-otheragent')).toHaveLength(0)
+    // SCHEDALLPIN1007: the dropped target leaves a line naming the task, the target and both agent fields.
+    const dropped = mockLoggerInfo.mock.calls.filter(c => String(c[1]).startsWith('Schedule target dropped'))
+    expect(dropped).toHaveLength(1)
+    expect(dropped[0][0]).toMatchObject({ task: 'bb-second-task', agent: 'curagent', agentFieldWas: 'curagent', agentFieldNow: 'otheragent' })
   })
 
   it('control: the agent unchanged -> the task fires at its agent', async () => {
@@ -188,6 +195,7 @@ describe('schedule runner: a cron fire uses the task as it is now, not the tick 
     mockListScheduledTasks.mockReturnValue([FIRST, BY_AGENT])
     await runOneTick()
     expect(sentTo('agent-curagent')).toHaveLength(1)
+    expect(mockLoggerInfo.mock.calls.filter(c => String(c[1]).startsWith('Schedule target dropped'))).toHaveLength(0)
   })
 
   // SCHEDFRESH1007 (2): one task is read, not the whole list.
@@ -213,5 +221,16 @@ describe('schedule runner: a cron fire uses the task as it is now, not the tick 
     const second = sentTo('second-session')
     expect(second).toHaveLength(1)
     expect(second[0].prompt).toContain('SECOND task prompt, original')
+  })
+
+  // SCHEDALLPIN1007 (an old gap, not from #1752): nothing pinned that an 'all'
+  // broadcast also reaches the main agent. Without agent dirs in the test's
+  // PROJECT_ROOT no sub-agent is listed, so the main agent is the one target.
+  it("an 'all' task fires at the main agent too", async () => {
+    const { MAIN_CHANNELS_SESSION } = await import('../web/main-agent.js')
+    mockListScheduledTasks.mockReturnValue([task({ name: 'cc-all-task', prompt: 'to everyone', agent: 'all' })])
+    await runOneTick()
+    expect(sentTo(MAIN_CHANNELS_SESSION)).toHaveLength(1)
+    expect(sentTo(MAIN_CHANNELS_SESSION)[0].prompt).toContain('to everyone')
   })
 })

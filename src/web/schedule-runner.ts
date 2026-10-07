@@ -2792,7 +2792,14 @@ export function startScheduleRunner(): NodeJS.Timeout {
         // If the task's `agent` field changed meanwhile, a remaining target that
         // the current definition no longer names does not fire. A target the
         // edit ADDED is not fired in this tick; the next occurrence reaches it.
-        if (current.agent !== task.agent && !resolveTargetAgents(current).includes(agentName)) continue
+        if (current.agent !== task.agent && !resolveTargetAgents(current).includes(agentName)) {
+          // SCHEDALLPIN1007: a dropped target leaves a line, not silence.
+          logger.info(
+            { task: task.name, agent: agentName, agentFieldWas: task.agent, agentFieldNow: current.agent },
+            'Schedule target dropped: the task\'s agent field changed during the tick',
+          )
+          continue
+        }
         const result = await attemptFireTask(current, agentName, now, cronPc.prefix, lateCatchUpMs)
         if (result === 'starting') {
           // Agent was auto-started this tick. ALWAYS enqueue the retry that
