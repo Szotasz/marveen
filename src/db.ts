@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3'
 import { join } from 'node:path'
 import { existsSync, mkdirSync, readFileSync, renameSync, chmodSync, openSync, closeSync, statSync } from 'node:fs'
-import { STORE_DIR, DB_FILENAME, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ, EMBED_URL, EMBED_MODEL, EMBED_DIMS, MAIN_AGENT_ID } from './config.js'
+import { STORE_DIR, DB_FILENAME, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ, EMBED_URL, EMBED_MODEL, EMBED_DIMS, MAIN_AGENT_ID, PRESENTATION_PRIORITY_SENDER_IDS, parsePresentationPrioritySenders } from './config.js'
 import { getEffectiveSettingValue } from './settings-store.js'
 import { logger } from './logger.js'
 import { TOOL_TIMEOUTS } from './tool-timeouts.js'
@@ -892,6 +892,27 @@ export function initDatabase(dbPathOverride?: string): void {
   try { db.exec('ALTER TABLE agent_messages ADD COLUMN trace_id TEXT') } catch { /* exists */ }
   try { db.exec('ALTER TABLE agent_messages ADD COLUMN span_id TEXT') } catch { /* exists */ }
   try { db.exec('ALTER TABLE agent_messages ADD COLUMN parent_span_id TEXT') } catch { /* exists */ }
+
+  // Card 4edaf0a1: presentation mode (the owner's switch). An APPEND-ONLY event log;
+  // the state is DERIVED from the newest row (getPresentationModeState), so a switch
+  // without its log row cannot happen by construction. UPDATE and DELETE are refused
+  // by trigger: an edited history would make the derived state lie.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS presentation_mode_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      action TEXT NOT NULL CHECK(action IN ('on','off','expired')),
+      until_at INTEGER,
+      actor TEXT NOT NULL,
+      auth_kind TEXT,
+      auth_device TEXT,
+      reason TEXT,
+      created_at INTEGER NOT NULL
+    )
+  `)
+  db.exec(`CREATE TRIGGER IF NOT EXISTS presentation_mode_events_no_update BEFORE UPDATE ON presentation_mode_events
+    BEGIN SELECT RAISE(ABORT, 'presentation_mode_events is append-only'); END`)
+  db.exec(`CREATE TRIGGER IF NOT EXISTS presentation_mode_events_no_delete BEFORE DELETE ON presentation_mode_events
+    BEGIN SELECT RAISE(ABORT, 'presentation_mode_events is append-only'); END`)
 
   // INVARIANT: a row that says 'delivered' must carry a delivered_at.
   //
@@ -3713,6 +3734,142 @@ export function claimPendingForAgent(toAgent: string, limit: number): AgentMessa
   // RETURNING row order is unspecified; restore FIFO (created_at, then id as the
   // tiebreaker for same-second inserts) for delivery.
   return rows.sort((a, b) => (a.created_at - b.created_at) || (a.id - b.id))
+}
+
+// --- Card 4edaf0a1: presentation mode ---------------------------------------
+// The owner's switch: while ON, the main agent's drain hands over the pending rows of
+// the owner gateways (PRESENTATION_PRIORITY_SENDERS in .env) FIRST and EXCLUSIVELY
+// (decision D1 (B)); every other sender
+// waits for the next drain. It changes ORDER only, never trust: the framing stays
+// whatever classifyAgentMessage gives. The senders are matched EXACTLY on the stored
+// from_agent (no sanitize/normalize): for a privilege the strict direction is the safe
+// one. claimPendingForAgent above is NOT touched: with the mode OFF the drain runs it
+// unchanged, so the OFF order is today's by construction.
+export const PRESENTATION_PRIORITY_SENDERS: readonly string[] = parsePresentationPrioritySenders(PRESENTATION_PRIORITY_SENDER_IDS)
+export const PRESENTATION_DEFAULT_MINUTES = 60
+export const PRESENTATION_MAX_MINUTES = 240
+
+export interface PresentationModeEvent {
+  id: number
+  action: 'on' | 'off' | 'expired'
+  until_at: number | null
+  actor: string
+  auth_kind: string | null
+  auth_device: string | null
+  reason: string | null
+  created_at: number
+}
+
+export interface PresentationModeState {
+  on: boolean
+  /** Unix seconds; set only while ON. */
+  untilAt: number | null
+  last: PresentationModeEvent | null
+}
+
+// One warn per failure spell, not one per drain (the drain runs on every prompt); a
+// DIFFERENT failure kind is a new spell and warns again.
+let presentationFailure: 'unreadable' | 'malformed' | null = null
+
+function warnPresentationOnce(kind: 'unreadable' | 'malformed', obj: Record<string, unknown>, msg: string): void {
+  if (presentationFailure !== kind) logger.warn(obj, msg)
+  presentationFailure = kind
+}
+
+/** Derived state: ON iff the newest event is 'on' AND now < until_at. Everything else
+ *  -- no row, off, expired, a past until_at, a malformed row, an unreadable table --
+ *  is OFF (fail-closed). A lapsed switch therefore reads OFF even if no tick has run,
+ *  and after a restart too. */
+export function getPresentationModeState(nowMs: number = Date.now()): PresentationModeState {
+  let last: PresentationModeEvent | null
+  try {
+    last = (db.prepare('SELECT * FROM presentation_mode_events ORDER BY id DESC LIMIT 1').get() as PresentationModeEvent | undefined) ?? null
+  } catch (err) {
+    warnPresentationOnce('unreadable', { err }, 'presentation mode: event log unreadable; the mode is OFF (fail-closed)')
+    return { on: false, untilAt: null, last: null }
+  }
+  if (last && last.action === 'on' && !(typeof last.until_at === 'number' && Number.isInteger(last.until_at))) {
+    warnPresentationOnce('malformed', { id: last.id }, 'presentation mode: malformed on-event (until_at); the mode is OFF (fail-closed)')
+    return { on: false, untilAt: null, last }
+  }
+  presentationFailure = null
+  if (last && last.action === 'on' && Math.floor(nowMs / 1000) < (last.until_at as number)) {
+    return { on: true, untilAt: last.until_at, last }
+  }
+  return { on: false, untilAt: null, last }
+}
+
+export function appendPresentationModeEvent(
+  ev: { action: 'on' | 'off' | 'expired'; untilAt?: number | null; actor: string; authKind?: string | null; authDevice?: string | null; reason?: string | null },
+  nowMs: number = Date.now(),
+): PresentationModeEvent {
+  const info = db.prepare(
+    'INSERT INTO presentation_mode_events (action, until_at, actor, auth_kind, auth_device, reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+  ).run(ev.action, ev.untilAt ?? null, ev.actor, ev.authKind ?? null, ev.authDevice ?? null, ev.reason ?? null, Math.floor(nowMs / 1000))
+  return db.prepare('SELECT * FROM presentation_mode_events WHERE id = ?').get(Number(info.lastInsertRowid)) as PresentationModeEvent
+}
+
+export function listPresentationModeEvents(limit = 20): PresentationModeEvent[] {
+  return db.prepare('SELECT * FROM presentation_mode_events ORDER BY id DESC LIMIT ?').all(limit) as PresentationModeEvent[]
+}
+
+/** The lapse tick: when the newest event is an 'on' whose until_at has passed, append
+ *  exactly ONE 'expired' event and return it; otherwise null. Idempotent (the newest
+ *  row is then 'expired'), and in one transaction so a concurrent switch cannot
+ *  interleave. The derived state is OFF either way: this only makes the lapse visible. */
+export function expirePresentationModeIfDue(nowMs: number = Date.now()): PresentationModeEvent | null {
+  return db.transaction(() => {
+    const last = db.prepare('SELECT * FROM presentation_mode_events ORDER BY id DESC LIMIT 1').get() as PresentationModeEvent | undefined
+    if (!last || last.action !== 'on' || typeof last.until_at !== 'number') return null
+    if (Math.floor(nowMs / 1000) < last.until_at) return null
+    return appendPresentationModeEvent({ action: 'expired', untilAt: last.until_at, actor: 'system', reason: `lejart (on #${last.id})` }, nowMs)
+  })()
+}
+
+/** The ON claim (D1 (B), exclusive). When a priority sender has a pending row: claim
+ *  ONLY those (oldest first, up to `limit`) plus -- the D1 exception -- the pending
+ *  rows of `systemSender` (directives and alerts never wait behind a presentation),
+ *  up to `limit` of their own, FIFO, AFTER the priority block. Every other row stays
+ *  pending. Returns null when no priority row is pending: the caller then runs the
+ *  ordinary claimPendingForAgent. One transaction, the same atomic
+ *  UPDATE ... WHERE status='pending' RETURNING shape (no double claim) and the same
+ *  returned columns as claimPendingForAgent. */
+export function claimPresentationPriority(
+  toAgent: string,
+  limit: number,
+  systemSender: string,
+  prioritySenders: readonly string[] = PRESENTATION_PRIORITY_SENDERS,
+): { claimed: AgentMessage[]; priority: number; system: number; stillPending: number } | null {
+  if (prioritySenders.length === 0) return null
+  const now = Math.floor(Date.now() / 1000)
+  const cols = 'id, from_agent, to_agent, content, status, result, created_at, delivered_at, completed_at'
+  const marks = prioritySenders.map(() => '?').join(', ')
+  const fifo = (a: AgentMessage, b: AgentMessage) => (a.created_at - b.created_at) || (a.id - b.id)
+  return db.transaction(() => {
+    const priority = db.prepare(
+      `UPDATE agent_messages SET status = 'delivered', delivered_at = ?
+         WHERE id IN (
+           SELECT id FROM agent_messages
+           WHERE to_agent = ? AND status = 'pending' AND from_agent IN (${marks})
+           ORDER BY created_at ASC, id ASC
+           LIMIT ?
+         )
+       RETURNING ${cols}`,
+    ).all(now, toAgent, ...prioritySenders, limit) as AgentMessage[]
+    if (priority.length === 0) return null
+    const system = db.prepare(
+      `UPDATE agent_messages SET status = 'delivered', delivered_at = ?
+         WHERE id IN (
+           SELECT id FROM agent_messages
+           WHERE to_agent = ? AND status = 'pending' AND from_agent = ?
+           ORDER BY created_at ASC, id ASC
+           LIMIT ?
+         )
+       RETURNING ${cols}`,
+    ).all(now, toAgent, systemSender, limit) as AgentMessage[]
+    const stillPending = (db.prepare("SELECT count(*) AS n FROM agent_messages WHERE to_agent = ? AND status = 'pending'").get(toAgent) as { n: number }).n
+    return { claimed: [...priority.sort(fifo), ...system.sort(fifo)], priority: priority.length, system: system.length, stillPending }
+  })()
 }
 
 export function markMessageDone(id: number, result?: string): boolean {

@@ -32,6 +32,7 @@ import {
 } from '../pane-state.js'
 import { scheduleRecoveryBrief } from './restart-recovery-brief.js'
 import { beginRestart, endRestart } from './restart-lock.js'
+import { cancelRestartWake, scheduleRestartWake, type RestartWakeRequest } from './restart-wake.js'
 import { agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentStateObserver, readAgentWorksourceChannel, readAgentCustomProvider, readAgentExtraChannels, readFileOr, readJsonObjectForWrite } from './agent-config.js'
 import { buildExtraChannelLaunch, enableExtraPlugins } from './agent-extra-channels.js'
 import { probeExtraPluginsInTree, combineLiveness } from './extra-channel-liveness.js'
@@ -2795,7 +2796,10 @@ export function getAgentProcessInfo(name: string): { running: boolean; session?:
   }
 }
 
-export async function restartAgentProcess(name: string, opts: { fresh?: boolean } = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
+export async function restartAgentProcess(
+  name: string,
+  opts: { fresh?: boolean; wake?: RestartWakeRequest } = {},
+): Promise<{ ok: boolean; pid?: number; error?: string }> {
   // Hold the restart slot across BOTH halves. stopAgentProcess waits ~2s for
   // tmux to tear the session down, and for that window isAgentRunning() already
   // says false -- every liveness-driven supervisor (channel-monitor reconcile,
@@ -2808,6 +2812,10 @@ export async function restartAgentProcess(name: string, opts: { fresh?: boolean 
     return { ok: false, error: 'A restart is already in flight for this agent' }
   }
   try {
+    // RESTARTWAKE927: a fresh restart brings its own directive (the context
+    // guard's resume prompt); a wake still owed by an earlier --continue
+    // restart must not land in that session as a second instruction.
+    if (opts.fresh) cancelRestartWake(name)
     if (isAgentRunning(name)) {
       const stopResult = await stopAgentProcess(name)
       if (!stopResult.ok) return { ok: false, error: stopResult.error || 'Failed to stop running agent before restart' }
@@ -2823,6 +2831,9 @@ export async function restartAgentProcess(name: string, opts: { fresh?: boolean 
         'Restart lost the start race -- another supervisor started this agent inside the stop window',
       )
     }
+    // RESTARTWAKE927: only a caller that asked for it, only a --continue
+    // restart, only one that really started this session (see restart-wake.ts).
+    if (started.ok && !opts.fresh && opts.wake) scheduleRestartWake(name, agentSessionName(name), opts.wake.reason)
     return started
   } finally {
     endRestart(name)

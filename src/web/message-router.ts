@@ -32,10 +32,10 @@ import {
 } from './agent-process.js'
 import { detectPaneState, detectQuotaWall, detectsFirstRunGate, detectsPermissionDialog, permissionPromptSummary, type PaneState, type PermissionPromptSummary, type QuotaWall } from '../pane-state.js'
 import { setLastInboundModality } from './voice-modality.js'
-import { classifyAgentMessage, wrapAgentMessageForDelivery } from './agent-message-wrap.js'
+import { classifyAgentMessage, isChannelInboundSender, wrapAgentMessageForDelivery } from './agent-message-wrap.js'
 import { composeBatchInjection, batchInjectCapFor } from './batch-inject.js'
 import { maybeWakeSubAgentsForTelegram } from './telegram-inbox-wake.js'
-import { selectTickWindow } from './message-router-window.js'
+import { isStopMessage, selectTickWindow } from './message-router-window.js'
 
 // A message that cannot be delivered within this window (target session never
 // exists / stays busy) is marked failed so it stops clogging the pending
@@ -162,6 +162,40 @@ function notifyOrchestratorOfFailedHandoff(msg: AgentMessage, reason: string): v
     logger.warn({ err, id: msg.id }, 'Failed to enqueue handoff-failure notification')
   }
 }
+
+/**
+ * Card 71263d15 (A), 01603e03: may the SENDER of a failed message get a notice?
+ *
+ * The sender got an id back when it posted, so on its side the send looks done;
+ * until now only the main agent heard about the failure. The exceptions keep the
+ * notice from looping or doubling: 'system' rows get no receipt (a failed notice
+ * cannot beget another), the main agent already gets the orchestrator notice, a
+ * channel-inbound sender is a person on a channel rather than an agent inbox, and a
+ * federated sender is notifyDelegationFailed's job.
+ */
+export function shouldNotifySenderOfFailure(fromAgent: string, mainAgentId: string): boolean {
+  if (!fromAgent || fromAgent === 'system' || fromAgent === mainAgentId) return false
+  if (isQualifiedId(fromAgent) || fromAgent.includes('/')) return false
+  return !isChannelInboundSender(fromAgent)
+}
+
+/** The sender's notice. The preview says how much it cut, so nobody answers half a message (15060). */
+export function formatSenderFailureNotice(msg: AgentMessage, reason: string): string {
+  const content = msg.content ?? ''
+  const preview = content.length > 220 ? `${content.slice(0, 220)} [... +${content.length - 220} karakter]` : content
+  return `[handoff-failure] A(z) ${msg.to_agent} címre küldött üzeneted (#${msg.id}) NEM kézbesült: ${reason}. ` +
+    `A visszakapott id a befogadást igazolta, nem a kézbesítést; ha még számít, küldd újra. Tartalom eleje: ${preview}`
+}
+
+function notifySenderOfFailedHandoff(msg: AgentMessage, reason: string): void {
+  try {
+    if (!shouldNotifySenderOfFailure(msg.from_agent, MAIN_AGENT_ID)) return
+    createAgentMessage('system', msg.from_agent, formatSenderFailureNotice(msg, reason))
+    logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent, reason }, 'handoff-failure surfaced to sender')
+  } catch (err) {
+    logger.warn({ err, id: msg.id }, 'Failed to enqueue handoff-failure notification to sender')
+  }
+}
 // Bounce a terminal federated-delivery failure back to the SENDER's inbox as
 // a local 'system' notice, so a delegating agent learns its task never
 // arrived (otherwise the failure only flips a DB row nobody reads, and the
@@ -282,6 +316,18 @@ const RECONNECT_BATCH_AGE_MS = 30 * 60 * 1000    // oldest > 30 min
 const agentWasAbsent = new Set<string>()
 // Agents we already batched this reconnect (one-shot per reconnect cycle).
 const agentBatchedThisReconnect = new Set<string>()
+// Card 71263d15 (A): since when each receiver has been absent WITHOUT A BREAK. Set on
+// the first tick it is seen absent, cleared the moment it is seen again. Empty after a
+// dashboard start, so a restart cannot make an old message look abandoned: the clock
+// starts at the router's first observation, not at the message's creation.
+const agentAbsentSince = new Map<string, number>()
+
+/** Card 71263d15 (A): continuous absence of `agent` at `now`; 0 while present or not yet seen absent. */
+function continuousAbsenceMs(agent: string, sessionExists: boolean, now: number): number {
+  if (sessionExists) return 0
+  const since = agentAbsentSince.get(agent)
+  return since === undefined ? 0 : now - since
+}
 
 /**
  * Pure decision: should a pending inter-agent message be abandoned?
@@ -295,12 +341,19 @@ const agentBatchedThisReconnect = new Set<string>()
  * session at the 1h mark even though the session was continuously running
  * (incident: two reports lost while the session was busy).
  *
+ * Card 71263d15 (A): the duration is how long the session has been absent
+ * WITHOUT A BREAK, not how old the message is. The caller used to pass the
+ * message's age, so a message that had waited over an hour behind a busy
+ * recipient was dropped the moment that recipient's session blinked out
+ * (measured 2026-09-24: 12 messages to live, busy agents lost on absences of
+ * 21 s to 3.9 min, and 4 more five seconds after a dashboard restart).
+ *
  * @param sessionExists Whether the target tmux session is currently alive.
- * @param ageMs         How long the message has been pending (ms).
+ * @param absentForMs   How long the session has been continuously absent (ms).
  * @param windowMs      The abandon window threshold (ms).
  */
-export function shouldAbandon(sessionExists: boolean, ageMs: number, windowMs: number): boolean {
-  return !sessionExists && ageMs > windowMs
+export function shouldAbandon(sessionExists: boolean, absentForMs: number, windowMs: number): boolean {
+  return !sessionExists && absentForMs > windowMs
 }
 
 // ---- Distributed trace context (card def5a189) ------------------------------
@@ -577,9 +630,22 @@ export async function runMessageRouterTick(): Promise<void> {
       agentWasAbsent.add(agent)
       agentBatchedThisReconnect.delete(agent) // reset batched flag on new absence
       agentStuckSince.delete(agent)           // absent = not stuck, just gone
+      if (!agentAbsentSince.has(agent)) agentAbsentSince.set(agent, now)
     }
     for (const agent of presentNow) {
       agentWasAbsent.delete(agent)
+      agentAbsentSince.delete(agent)
+    }
+    // Card 71263d15 (A), S1: the clock stands for absence seen at EVERY
+    // tick. A receiver with no row in this tick's window was not looked at, so whether it
+    // came back in the meantime is unknown: its clock is dropped, and restarts at the next
+    // tick that sees it absent. Without this, a receiver whose rows had all been abandoned
+    // or closed kept its old clock while it was back and working, and a fresh message met a
+    // 5 s blip as "absent for the whole window". The round-robin window looks at every
+    // receiver with a pending row (up to MAX_MESSAGES_PER_TICK of them), so a receiver that
+    // still has work waiting keeps its clock.
+    for (const agent of agentAbsentSince.keys()) {
+      if (!receiversInTick.has(agent)) agentAbsentSince.delete(agent)
     }
 
     // Federated (slash-qualified) recipients delivered over the HTTPS bridge,
@@ -662,12 +728,17 @@ export async function runMessageRouterTick(): Promise<void> {
           'worksource agent is not serving its queue (session absent or parked on a startup dialog) -- keeping the tmux stall gates armed')
       }
 
-      if (!worksourceServing && shouldAbandon(sessionExists, ageMs, MESSAGE_ABANDON_WINDOW_MS)) {
-        logger.warn({ id: msg.id, from: msg.from_agent, to: msg.to_agent, ageMs }, 'Agent message abandoned: target session absent for full retry window')
-        if (!markMessageFailed(msg.id, 'Abandoned: target session absent for full retry window')) {
+      const absentForMs = continuousAbsenceMs(msg.to_agent, sessionExists, now)
+      if (!worksourceServing && shouldAbandon(sessionExists, absentForMs, MESSAGE_ABANDON_WINDOW_MS)) {
+        logger.warn({ id: msg.id, from: msg.from_agent, to: msg.to_agent, ageMs, absentForMs }, 'Agent message abandoned: target session absent for full retry window')
+        const closed = markMessageFailed(msg.id, 'Abandoned: target session absent for full retry window')
+        if (!closed) {
           logger.warn({ id: msg.id }, 'markMessageFailed affected 0 rows (deleted concurrently?)')
         }
         notifyOrchestratorOfFailedHandoff(msg, 'target session was absent for the entire retry window')
+        // Only the row this call closed earns a sender notice: a row closed concurrently
+        // was not failed by us, and must not be reported as failed.
+        if (closed) notifySenderOfFailedHandoff(msg, 'a címzett munkamenete a teljes türelmi ablakban (60 perc) folyamatosan hiányzott')
         routerInjectFailures.delete(msg.id)
         routerLoggedMisses.delete(msg.id)
         continue
@@ -681,7 +752,14 @@ export async function runMessageRouterTick(): Promise<void> {
         continue
       }
 
-      if (!worksourceServing && !(await isSessionReadyForPrompt(session, host))) {
+      // Card 71263d15 (C), 795d1f48: a STOP row does not wait for the pane to be ready.
+      // Typed into a busy pane and submitted, it is queued by Claude Code and surfaced at
+      // the next tool boundary ("while you were working"); the pane send lane still
+      // serializes it with every other writer. Session existence and the abandon rule
+      // above still apply, and a worksource agent's STOP goes to its queue like any row.
+      const isStop = isStopMessage(msg, MAIN_AGENT_ID)
+      const paneNotReady = !worksourceServing && !(await isSessionReadyForPrompt(session, host))
+      if (paneNotReady && !isStop) {
         // A self-drafted feedback modal ("Bug report drafted ... 0 to dismiss")
         // holds the pane in a not-ready state, and the pre-flight dismissal in
         // sendPromptToSession never runs because this gate short-circuits
@@ -774,8 +852,10 @@ export async function runMessageRouterTick(): Promise<void> {
         continue
       }
 
-      // Session is ready — clear stuck tracking.
-      agentStuckSince.delete(msg.to_agent)
+      // Session is ready — clear stuck tracking. A STOP that passed a not-ready pane leaves the
+      // stuck clock running: the pane is still not ready, and clearing it delayed the
+      // [session-stuck] alert by a window per STOP (71263d15 (C), S5).
+      if (!paneNotReady) agentStuckSince.delete(msg.to_agent)
 
       // Classify (channel-inbound / trusted-peer / untrusted) + reject an empty
       // from_agent -- SINGLE SOURCE in agent-message-wrap so the router and the
@@ -943,7 +1023,10 @@ export async function runMessageRouterTick(): Promise<void> {
             if (mates.lastTraceCtx) traceCtxToRecord = mates.lastTraceCtx
             logger.info({ head: msg.id, to: msg.to_agent, batchSize: mates.items.length + 1, remaining: mates.remaining }, 'message-router: multi-envelope injection')
           } else {
-            await sendPromptToSession(session, prefix + wrapped, host)
+            // STOP: no idle wait (the 12 s budget exists to find an idle gap, and a STOP
+            // must not wait for one).
+            await sendPromptToSession(session, prefix + wrapped, host, isStop ? { waitForIdle: false } : undefined)
+            if (isStop) logger.info({ id: msg.id, to: msg.to_agent }, 'message-router: STOP row sent without waiting for an idle pane')
           }
         }
         if (!markMessageDelivered(msg.id)) {
@@ -969,17 +1052,25 @@ export async function runMessageRouterTick(): Promise<void> {
           continue
         }
         logger.error({ err, id: msg.id, failCount }, 'Failed to inject agent message after retries, giving up')
-        if (!markMessageFailed(msg.id, `Failed to inject into tmux session after ${failCount} attempts`)) {
+        const closed = markMessageFailed(msg.id, `Failed to inject into tmux session after ${failCount} attempts`)
+        if (!closed) {
           logger.warn({ id: msg.id }, 'markMessageFailed affected 0 rows (deleted concurrently?)')
         }
         notifyOrchestratorOfFailedHandoff(msg, `tmux inject failed ${failCount}x`)
+        if (closed) notifySenderOfFailedHandoff(msg, `a címzett paneljébe írás ${failCount}-szer elbukott`)
         routerInjectFailures.delete(msg.id)
         routerLoggedMisses.delete(msg.id)
       }
       } catch (err) {
         logger.warn({ err, id: msg.id, to: msg.to_agent }, 'Agent message processing threw; marking failed so the queue cannot wedge')
-        if (!markMessageFailed(msg.id, `Delivery error: ${String(err).slice(0, 200)}`)) {
+        const closed = markMessageFailed(msg.id, `Delivery error: ${String(err).slice(0, 200)}`)
+        if (!closed) {
           logger.warn({ id: msg.id }, 'markMessageFailed affected 0 rows (deleted concurrently?)')
+        }
+        // Card 71263d15 (A): this branch used to fail the row silently, telling nobody.
+        if (closed) {
+          notifyOrchestratorOfFailedHandoff(msg, `delivery error: ${String(err).slice(0, 200)}`)
+          notifySenderOfFailedHandoff(msg, 'kézbesítési hiba a routerben')
         }
         routerLoggedMisses.delete(msg.id)
       }
@@ -1019,6 +1110,9 @@ function collectBatchMates(
   agentSessionCache: Map<string, {host: string | null, session: string, exists: boolean, worksource: boolean}>,
 ): { items: { prefix: string; wrapped: string }[]; rows: AgentMessage[]; remaining: number; lastTraceCtx: { trace_id: string; span_id: string } | null } {
   const empty = { items: [], rows: [], remaining: 0, lastTraceCtx: null }
+  // Card 71263d15 (C): a STOP head goes alone. Its mates would ride past the readiness
+  // gate into a busy pane with it, and ordinary rows must keep waiting for an idle one.
+  if (isStopMessage(head, MAIN_AGENT_ID)) return empty
   const cap = batchInjectCapFor(head.to_agent)
   if (cap < 2) return empty
   if (agentSessionCache.get(head.to_agent)?.worksource) return empty

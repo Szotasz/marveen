@@ -1,5 +1,19 @@
 import type { AgentMessage } from '../db.js'
 
+/** The prefix that marks a STOP row (card 795d1f48). */
+export const STOP_PREFIX = '[STOP]'
+
+/**
+ * Card 71263d15 (C), 795d1f48: a STOP row must reach a BUSY agent now, not at the end
+ * of its turn: on 2026-09-17 an owner's stop sat pending for 30 minutes behind a turn
+ * that then sent the mail it was meant to stop. Only the main agent and the system may
+ * send one; any other sender's "[STOP]" is an ordinary message.
+ */
+export function isStopMessage(m: Pick<AgentMessage, 'from_agent' | 'content'>, mainAgentId: string): boolean {
+  if (m.from_agent !== mainAgentId && m.from_agent !== 'system') return false
+  return (m.content ?? '').trimStart().startsWith(STOP_PREFIX)
+}
+
 /**
  * Which pending rows one router tick evaluates (card fc5748f5).
  *
@@ -20,15 +34,24 @@ import type { AgentMessage } from '../db.js'
  *
  * The main agent's rows are left out: it drains its own inbox (pull model) and
  * the tick skips its rows anyway, so in the window they only took a slot.
+ *
+ * Card 71263d15 (C): STOP rows come first, whatever their recipient's backlog. The
+ * round-robin takes each recipient's rows oldest first, so the newest row of a
+ * recipient with a deep queue did not reach the window at all, and a STOP is always
+ * the newest row.
  */
 export function selectTickWindow(
   localPending: readonly AgentMessage[],
   max: number,
   mainAgentId: string,
 ): AgentMessage[] {
+  const stops = localPending
+    .filter((m) => m.to_agent !== mainAgentId && isStopMessage(m, mainAgentId))
+    .slice(0, max)
+  const stopIds = new Set(stops.map((m) => m.id))
   const perRecipient = new Map<string, AgentMessage[]>()
   for (const m of localPending) {
-    if (m.to_agent === mainAgentId) continue
+    if (m.to_agent === mainAgentId || stopIds.has(m.id)) continue
     const rows = perRecipient.get(m.to_agent)
     if (rows) rows.push(m)
     else perRecipient.set(m.to_agent, [m])
@@ -36,7 +59,7 @@ export function selectTickWindow(
   // localPending comes oldest-first, so each list keeps that order, and the
   // Map's insertion order is the order of each recipient's oldest row.
   const queues = [...perRecipient.values()]
-  const window: AgentMessage[] = []
+  const window: AgentMessage[] = [...stops]
   for (let round = 0; window.length < max; round++) {
     let took = false
     for (const rows of queues) {

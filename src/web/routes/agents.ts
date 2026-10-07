@@ -4,10 +4,13 @@ import { homedir, platform, tmpdir } from 'node:os'
 import { execSync } from 'node:child_process'
 import { logger } from '../../logger.js'
 import { beginRestart, endRestart } from '../restart-lock.js'
+import { restartOptsFromBody } from '../restart-wake.js'
 import { isModelProfileId, MODEL_PROFILE_IDS } from '../../model-profiles.js'
 import { MAIN_AGENT_ID, currentBotName, PROJECT_ROOT } from '../../config.js'
-import { createAgentMessage, listPendingChannelRequests, updateChannelRequestStatus, getDb, claimPendingForAgent, markMessageFailed, countNewerMessagesFromSameSender,
+import { createAgentMessage, listPendingChannelRequests, updateChannelRequestStatus, getDb, claimPendingForAgent, claimPresentationPriority, getPresentationModeState, markMessageFailed, countNewerMessagesFromSameSender,
   getAgentToolActivity, getAgentMessageActivity, getAgentCurrentCards } from '../../db.js'
+import { SYSTEM_DIRECTIVE_SENDER } from '../system-directive.js'
+import { PRESENTATION_MARK } from '../presentation-mode.js'
 import { deriveAgentStatus, AGENT_STATUS_THRESHOLDS } from '../agent-status.js'
 import type { AgentStatusSignals, AgentStatusRow } from '../agent-status.js'
 import { classifyAgentMessage, wrapAgentMessageForDelivery } from '../agent-message-wrap.js'
@@ -640,6 +643,51 @@ export function listAgentSummaries(): AgentSummary[] {
 // stay pending (FIFO) for the next turn's drain -- bounds the context a single
 // turn absorbs, mirroring the router's MAX_MESSAGES_PER_TICK.
 const INBOX_DRAIN_CAP = 10
+
+/** The main-agent drain core (the drain-inbox endpoint's body): claim, frame, join.
+ *  Card 4edaf0a1: with the presentation mode OFF this is the ordinary FIFO claim,
+ *  unchanged. ON with a pending owner-gateway row: those rows first and exclusively
+ *  (plus the pending system rows, D1 exception), each priority block behind the
+ *  server-written PRESENTATION_MARK line, OUTSIDE its framing; the trust category is
+ *  whatever classifyAgentMessage gives. Every ON drain logs what it took and what it
+ *  left pending. */
+export function drainMainInbox(name: string): { count: number; text: string } {
+  const mode = getPresentationModeState()
+  const pri = mode.on ? claimPresentationPriority(name, INBOX_DRAIN_CAP, SYSTEM_DIRECTIVE_SENDER) : null
+  const claimed = pri ? pri.claimed : claimPendingForAgent(name, INBOX_DRAIN_CAP)
+  const priorityIds = new Set(pri ? pri.claimed.slice(0, pri.priority).map((m) => m.id) : [])
+  if (mode.on) {
+    logger.info(
+      { presentationMode: true, priority: pri?.priority ?? 0, system: pri?.system ?? 0, stillPending: pri?.stillPending ?? null, claimed: claimed.length, untilAt: mode.untilAt },
+      pri ? 'drain-inbox: presentation mode, owner gateways first' : 'drain-inbox: presentation mode on, no owner-gateway row pending (FIFO)',
+    )
+  }
+  const blocks: string[] = []
+  for (const msg of claimed) {
+    const cls = classifyAgentMessage(msg.from_agent, msg.to_agent)
+    if (!cls) {
+      // The claim already flipped the row to 'delivered'; a silent skip
+      // here is invisible message loss (delivered in the DB, never shown
+      // to the agent, no log, no retry). Surface it like the router does.
+      logger.warn({ id: msg.id, rawFrom: msg.from_agent }, 'drain-inbox: message rejected, from_agent cannot be framed safely')
+      if (!markMessageFailed(msg.id, 'Invalid or empty from_agent')) {
+        logger.warn({ id: msg.id }, 'markMessageFailed affected 0 rows (deleted concurrently?)')
+      }
+      continue
+    }
+    // Freshness/supersession signal (mirror the router path): flag a claimed
+    // message that is old and/or superseded by newer messages from the same
+    // sender, so a main-agent inbox drain after a busy gap cannot silently act
+    // on stale instructions.
+    const freshness = {
+      ageMs: Date.now() - msg.created_at * 1000,
+      newerFromSameSender: countNewerMessagesFromSameSender(msg.from_agent, msg.to_agent, msg.id),
+    }
+    const { prefix, wrapped } = wrapAgentMessageForDelivery(cls.category, cls.safeFrom, msg.from_agent, msg.content, msg.id, msg.origin_note, freshness)
+    blocks.push(priorityIds.has(msg.id) ? `${PRESENTATION_MARK}\n${prefix}${wrapped}` : prefix + wrapped)
+  }
+  return { count: blocks.length, text: blocks.join('\n\n') }
+}
 
 // Pane -> coarse activity label. Shared by /api/agents/activity and
 // /api/agents/status so the two surfaces can never drift into disagreeing
@@ -2251,32 +2299,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       json(res, { error: 'drain-inbox is main-agent only (sub-agents use the router push path)' }, 400)
       return true
     }
-    const claimed = claimPendingForAgent(name, INBOX_DRAIN_CAP)
-    const blocks: string[] = []
-    for (const msg of claimed) {
-      const cls = classifyAgentMessage(msg.from_agent, msg.to_agent)
-      if (!cls) {
-        // The claim already flipped the row to 'delivered'; a silent skip
-        // here is invisible message loss (delivered in the DB, never shown
-        // to the agent, no log, no retry). Surface it like the router does.
-        logger.warn({ id: msg.id, rawFrom: msg.from_agent }, 'drain-inbox: message rejected, from_agent cannot be framed safely')
-        if (!markMessageFailed(msg.id, 'Invalid or empty from_agent')) {
-          logger.warn({ id: msg.id }, 'markMessageFailed affected 0 rows (deleted concurrently?)')
-        }
-        continue
-      }
-      // Freshness/supersession signal (mirror the router path): flag a claimed
-      // message that is old and/or superseded by newer messages from the same
-      // sender, so a main-agent inbox drain after a busy gap cannot silently act
-      // on stale instructions.
-      const freshness = {
-        ageMs: Date.now() - msg.created_at * 1000,
-        newerFromSameSender: countNewerMessagesFromSameSender(msg.from_agent, msg.to_agent, msg.id),
-      }
-      const { prefix, wrapped } = wrapAgentMessageForDelivery(cls.category, cls.safeFrom, msg.from_agent, msg.content, msg.id, msg.origin_note, freshness)
-      blocks.push(prefix + wrapped)
-    }
-    json(res, { count: blocks.length, text: blocks.join('\n\n') })
+    json(res, drainMainInbox(name))
     return true
   }
 
@@ -2319,9 +2342,12 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       return true
     }
     // Optional { "fresh": true } body -> no `--continue` (see /start note).
-    let restartFresh = false
-    try { restartFresh = JSON.parse((await readBody(req)).toString() || '{}').fresh === true } catch {}
-    const result = await restartAgentProcess(name, { fresh: restartFresh })
+    // RESTARTWAKE927: a --continue restart wakes the agent once it is up; a
+    // caller that wakes it itself sends { "wake": false } (the key-rotation
+    // automat does). See restart-wake.ts.
+    let restartBody = ''
+    try { restartBody = (await readBody(req)).toString() } catch {}
+    const result = await restartAgentProcess(name, restartOptsFromBody(restartBody))
     if (result.ok) { json(res, { ok: true }); return true }
     json(res, { error: result.error }, 400)
     return true

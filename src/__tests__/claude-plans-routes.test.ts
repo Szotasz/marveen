@@ -29,9 +29,9 @@ const hardRestartMarveenChannels = vi.fn((): { ok: boolean; error?: string } => 
 vi.mock('../web/channel-monitor.js', () => ({ hardRestartMarveenChannels: () => hardRestartMarveenChannels() }))
 
 const restartAgentProcess = vi.fn(
-  async (_name: string): Promise<{ ok: boolean; pid?: number; error?: string }> => ({ ok: true, pid: 123 }),
+  async (_name: string, _opts?: unknown): Promise<{ ok: boolean; pid?: number; error?: string }> => ({ ok: true, pid: 123 }),
 )
-vi.mock('../web/agent-process.js', () => ({ restartAgentProcess: (name: string) => restartAgentProcess(name) }))
+vi.mock('../web/agent-process.js', () => ({ restartAgentProcess: (name: string, opts?: unknown) => restartAgentProcess(name, opts) }))
 
 // Fake vault: a plain in-memory Map, never touches the real encrypted store or
 // macOS Keychain (see vault-master-key.test.ts for that machinery's own
@@ -532,7 +532,8 @@ describe('POST /api/claude-plans/rotate (PR2c)', () => {
     await tryHandleClaudePlans(ctx)
     expect(out.status).toBe(200)
     expect(out.body).toEqual({ ok: true, agentId: 'devy', activePlanId: 'team' })
-    expect(restartAgentProcess).toHaveBeenCalledWith('devy')
+    // RESTARTWAKE927: the plan switch may cut a running turn, so it asks for the wake.
+    expect(restartAgentProcess).toHaveBeenCalledWith('devy', { wake: { reason: 'plan-switch' } })
     expect(hardRestartMarveenChannels).not.toHaveBeenCalled()
 
     const state = fakeCtx('GET', '/api/claude-plans/state')

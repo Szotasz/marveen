@@ -46,17 +46,23 @@
 // shell, mirroring decideStuckInputRecovery.
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID } from '../config.js'
-import { getPendingMessages } from '../db.js'
+import { getPendingMessages, getPresentationModeState, expirePresentationModeIfDue, PRESENTATION_PRIORITY_SENDERS } from '../db.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { isSessionReadyForPrompt, sendPromptToSession, sessionExistsOnHost, clearFeedbackModalAndRecheck } from './agent-process.js'
 import { sendAlert } from './channel-monitor.js'
+import { notifyPresentationSwitch } from './presentation-mode.js'
 
 export const INBOX_NUDGE_INITIAL_DELAY_MS = 55_000 // free slot (taken: 5/10/20/25/30/35/40/45/50/90s)
 export const INBOX_NUDGE_INTERVAL_MS = 20_000
 // A message younger than this is left alone: a concurrently-starting turn (or
 // the send that just created it) may claim it in seconds anyway.
 export const MIN_PENDING_AGE_MS = 10_000
+// Card 4edaf0a1 (D2): the presentation-mode fast lane. While the mode is ON and an
+// owner-gateway row is pending, the minimum age is 3 s and neither the 60 s debounce nor
+// the hourly budget applies. The idle check and the stale-nudge stop STAY: a busy pane
+// still never gets a keystroke, and a broken drain still stops after MAX_STALE_NUDGES.
+export const PRESENTATION_MIN_PENDING_AGE_MS = 3_000
 // Wall-clock-global floor between nudges. Deliberately NOT reset when the
 // inbox empties: nudge -> drain empties the inbox on the next tick, so a full
 // state reset would let a message stream re-nudge every ~20-30s.
@@ -119,10 +125,11 @@ export type NudgePreflight =
  *  BEFORE any tmux IO. Returns the next state; the shell only touches tmux
  *  when proceed is true. */
 export function decideNudgePreflight(
-  input: { now: number; oldestId: number | null; oldestAgeMs: number },
+  input: { now: number; oldestId: number | null; oldestAgeMs: number; fastLane?: boolean },
   state: NudgeState,
 ): NudgePreflight {
   const { now, oldestId, oldestAgeMs } = input
+  const fastLane = input.fastLane === true
   if (oldestId === null) {
     // Inbox empty: end the spell. lastNudgeAt and the budget window survive
     // (global debounce floor); spell-scoped fields reset.
@@ -135,8 +142,8 @@ export function decideNudgePreflight(
       state: { ...state, lastNudgeOldestId: null, staleNudges: 0, staleAlerted: false, lastBusyLogAt: 0, absenceLogged: false },
     }
   }
-  if (oldestAgeMs < MIN_PENDING_AGE_MS) return { proceed: false, state }
-  if (now - state.lastNudgeAt < NUDGE_DEBOUNCE_MS) return { proceed: false, state }
+  if (oldestAgeMs < (fastLane ? PRESENTATION_MIN_PENDING_AGE_MS : MIN_PENDING_AGE_MS)) return { proceed: false, state }
+  if (!fastLane && now - state.lastNudgeAt < NUDGE_DEBOUNCE_MS) return { proceed: false, state }
 
   // Stale spell: the previous nudge targeted this same oldest message and it
   // is STILL pending -> the drain did not claim it.
@@ -150,9 +157,9 @@ export function decideNudgePreflight(
     if (now - state.lastNudgeAt < STALE_NUDGE_COOLDOWN_MS) return { proceed: false, state }
   }
 
-  // Rolling hourly budget.
+  // Rolling hourly budget (not in the presentation fast lane; its nudges still count).
   const recent = state.recentNudges.filter((t) => now - t < NUDGE_BUDGET_WINDOW_MS)
-  if (recent.length >= MAX_NUDGES_PER_HOUR) {
+  if (!fastLane && recent.length >= MAX_NUDGES_PER_HOUR) {
     if (!state.budgetLogged) {
       return { proceed: false, budgetLog: true, state: { ...state, recentNudges: recent, budgetLogged: true } }
     }
@@ -197,10 +204,18 @@ async function tick(): Promise<void> {
   // and take the dashboard down.
   try {
     const now = Date.now()
+    // Card 4edaf0a1: a lapsed presentation switch becomes visible here (one 'expired'
+    // row, one line to the main agent; idempotent), and while the mode is ON a pending
+    // owner-gateway row is the nudge target and takes the fast lane (D2).
+    const lapsed = expirePresentationModeIfDue(now)
+    if (lapsed) notifyPresentationSwitch(lapsed)
     const pending = getPendingMessages(MAIN_AGENT_ID)
-    const oldest = pending[0]
+    const priorityPending = getPresentationModeState(now).on
+      ? pending.filter((m) => PRESENTATION_PRIORITY_SENDERS.includes(m.from_agent))
+      : []
+    const oldest = priorityPending[0] ?? pending[0]
     const pre = decideNudgePreflight(
-      { now, oldestId: oldest ? oldest.id : null, oldestAgeMs: oldest ? now - oldest.created_at * 1000 : 0 },
+      { now, oldestId: oldest ? oldest.id : null, oldestAgeMs: oldest ? now - oldest.created_at * 1000 : 0, fastLane: priorityPending.length > 0 },
       state,
     )
     state = pre.state
