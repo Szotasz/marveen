@@ -1,6 +1,7 @@
 import { tmuxStderr } from './tmux-stderr.js'
 import { writeMainExtraPluginsSettings } from './main-extra-plugins-settings.js'
 import { decideSkipTrace, decideMenuPassTrace, type SkipTraceState } from './monitor-trace.js'
+import { releaseOwnRespawnStamp, type OwnRespawnStamp } from './respawn-stamp-release.js'
 import { existsSync, readFileSync, statSync, writeFileSync, utimesSync } from 'node:fs'
 import { hostname } from 'node:os'
 import { join } from 'node:path'
@@ -1236,11 +1237,32 @@ function fileRespawnStampMs(): number {
 }
 function writeRespawnStamp(): void {
   try {
-    writeFileSync(RESPAWN_STAMP_FILE, String(Math.floor(Date.now() / 1000)))
+    const value = String(Math.floor(Date.now() / 1000))
+    writeFileSync(RESPAWN_STAMP_FILE, value)
     // Attribution input for the external-respawn detector below: a stamp we
     // wrote ourselves must never be reported as an external actor.
     lastSelfStampWriteMs = Date.now()
+    lastSelfStampValue = value
   } catch { /* best effort */ }
+}
+// GAVEUPGRACE917: the exact stamp value our last stage-4 hard restart wrote,
+// so the gave_up branch can release that stamp -- and only that one -- once it
+// has settled (see respawn-stamp-release.ts).
+let lastSelfStampValue: string | null = null
+let ownHardRestartStamp: OwnRespawnStamp | null = null
+function noteOwnHardRestartStamp(at: number): void {
+  ownHardRestartStamp = lastSelfStampValue ? { value: lastSelfStampValue, at } : null
+}
+function tryReleaseOwnRespawnStamp(now: number): void {
+  if (!ownHardRestartStamp) return
+  const result = releaseOwnRespawnStamp(RESPAWN_STAMP_FILE, ownHardRestartStamp, now, RESUME_GRACE_MS)
+  if (result === 'settling') return // retried on the next gave_up tick
+  ownHardRestartStamp = null
+  if (result === 'release') {
+    logger.warn('Respawn grace released -- the independent channel-watchdog may act on its next tick (GAVEUPGRACE917)')
+  } else {
+    logger.info({ result }, 'Respawn grace not released: the stamp is not this monitor\'s hard-restart stamp (GAVEUPGRACE917)')
+  }
 }
 
 // --- external-respawn detector (SOAKRESPAWN819) ---
@@ -1546,6 +1568,7 @@ export function hardRestartMarveenChannels(): { ok: boolean; error?: string } {
       logger.warn({ pidBefore, pidAfter }, `Hard restart: launchctl reload of com.${SERVICE_ID}.channels`)
       marveenLastHardRestart = Date.now()
       writeRespawnStamp() // coordinate with the systemd-timer watchdog
+      noteOwnHardRestartStamp(marveenLastHardRestart)
       return { ok: true }
     }
     logger.warn(
@@ -1569,6 +1592,7 @@ export function hardRestartMarveenChannels(): { ok: boolean; error?: string } {
   // leaving the server and all other sessions intact.
   if (respawnMarveenSessionFresh()) {
     marveenLastHardRestart = Date.now()
+    noteOwnHardRestartStamp(marveenLastHardRestart) // respawnMarveenSessionFresh wrote the stamp
     return { ok: true }
   }
   return { ok: false, error: 'hard restart failed: tmux respawn-pane failed' }
@@ -2084,8 +2108,13 @@ async function handleMarveenDown(): Promise<void> {
     // denied" when the operator is running it from another tmux session. Prefix
     // with `unset TMUX` so the hint works in both nested and non-nested cases.
     sendAlert(`🚨 Hard restart SEM segitett. Kezzel kell megnezni: \`unset TMUX && tmux attach -t ${MAIN_CHANNELS_SESSION}\` es ${serviceCmd}.`)
+    // Hand the channel to the independent backstops instead of holding them off
+    // with the stamp of a hard restart that did not work -- our own stamp only,
+    // and only after its settle time (retried on later gave_up ticks).
+    tryReleaseOwnRespawnStamp(now)
     return
   }
+  if (marveenDownState.stage === 'gave_up') tryReleaseOwnRespawnStamp(now)
   if (now - marveenDownState.lastAlertAt > PLUGIN_ALERT_DEDUP_MS) {
     marveenDownState.lastAlertAt = now
     sendAlert(`🚨 ${BOT_NAME} ${providerLabel} plugin meg mindig halott. Nezd meg kezzel.`)
@@ -2094,6 +2123,7 @@ async function handleMarveenDown(): Promise<void> {
 
 function handleMarveenUp(): void {
   marveenSuspectFirstSeen = null
+  ownHardRestartStamp = null // recovered: the stamp is no longer ours to release
   if (marveenDownState) {
     const downedFor = Math.round((Date.now() - marveenDownState.downSince) / 1000)
     const stage = marveenDownState.stage
