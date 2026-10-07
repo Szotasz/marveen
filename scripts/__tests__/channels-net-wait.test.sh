@@ -156,7 +156,9 @@ echo "channels.sh network wait: wired into the main launch"
 echo "===================================================="
 # The launch itself needs tmux and claude; the order is pinned on the source.
 SRC="$CHANNELS"
-wait_ln="$(grep -n 'wait_for_channel_hosts \$(channel_wait_hosts "\$CHANNEL_PROVIDER" \$CHANNEL_PLUGINS_EXTRA) || true' "$SRC" | head -1 | cut -d: -f1)"
+# Anchored at column 0 (no indentation, nothing before it): the TOP-LEVEL launch
+# statement, not the same text inside a function or a loop (review #1767).
+wait_ln="$(grep -n '^wait_for_channel_hosts \$(channel_wait_hosts "\$CHANNEL_PROVIDER" \$CHANNEL_PLUGINS_EXTRA) || true$' "$SRC" | head -1 | cut -d: -f1)"
 launch_ln="$(grep -n 'new-session -d -s "\$SESSION" -c "\$INSTALL_DIR"' "$SRC" | head -1 | cut -d: -f1)"
 [ -n "$wait_ln" ] && pass "the launch path waits for the primary + co-listen hosts, and never aborts on a give-up (|| true)" || fail "launch path waits" "the wait line" "none"
 [ -n "$wait_ln" ] && [ -n "$launch_ln" ] && [ "$wait_ln" -lt "$launch_ln" ] && pass "...before the main session is created" || fail "...before new-session" "wait < launch" "wait=$wait_ln launch=$launch_ln"
@@ -175,6 +177,11 @@ eq "exactly one wait call outside the test seam (every occurrence, any form)" "1
 loop_ln="$(grep -n 'while \$TMUX has-session -t "\$SESSION"' "$SRC" | head -1 | cut -d: -f1)"
 call_ln="$(printf '%s\n' "$calls" | head -1 | cut -d: -f1)"
 [ -n "$loop_ln" ] && [ -n "$call_ln" ] && [ "$call_ln" -lt "$loop_ln" ] && pass "...and it is before the watchdog loop (initial start only)" || fail "...before the watchdog loop" "call < loop" "call=$call_ln loop=$loop_ln"
+# ...and that one occurrence IS the top-level launch line. Without this a
+# wrapper `_w() { wait_for_channel_hosts ...; }` passes the count with its
+# definition line, while the loop calls the wrapper on every respawn and the
+# initial start does not wait at all (review #1767, mutant c2).
+[ -n "$wait_ln" ] && [ "$call_ln" = "$wait_ln" ] && pass "...and that one occurrence is the top-level launch line itself" || fail "...the occurrence is the top-level launch line" "call_ln == wait_ln" "call=$call_ln wait=$wait_ln"
 
 echo ""
 echo "passed: $PASS  failed: $FAIL"
