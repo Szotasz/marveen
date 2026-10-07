@@ -37,7 +37,9 @@ describe('parseSlackScopes / missingSlackScopes', () => {
     expect(parseSlackScopes(' chat:write, im:read ,users:read')).toEqual(['chat:write', 'im:read', 'users:read'])
     expect(parseSlackScopes(null)).toBeNull()
     expect(parseSlackScopes(undefined)).toBeNull()
-    expect(parseSlackScopes('')).toEqual([])
+    // an empty header is "not known", never "everything missing"
+    expect(parseSlackScopes('')).toBeNull()
+    expect(parseSlackScopes('  ')).toBeNull()
   })
   it('names the manifest scopes not granted, in manifest order', () => {
     expect(missingSlackScopes(ALL.split(','))).toEqual([])
@@ -82,12 +84,33 @@ describe('wiring', () => {
   it('the /test route passes the scope report on', () => {
     expect(read('src/web/routes/agents.ts')).toContain('...(result.missingScopes ? { scopes: result.scopes, missingScopes: result.missingScopes } : {}),')
   })
-  it('the dashboard warns with the missing list instead of "all right"', () => {
+  it('the dashboard warns with the missing list, long enough to read, instead of "all right"', () => {
     const app = read('web/app.js')
-    expect(app).toContain("showToast(t('channel.toast.missing_scopes', { scopes: missing.join(', ') }), true)")
+    // showToast(msg, duration): the 2nd argument is milliseconds. `true`
+    // coerces to 1 ms and the warning vanishes unseen (Samu, #1760 review).
+    expect(app).toMatch(/function showToast\(msg, duration = \d+\)/)
+    expect(app).toContain("const msg = t('channel.toast.missing_scopes', { scopes: missing.join(', ') })")
+    expect(app).toContain('showToast(msg, 12000)')
     expect(app).toContain('if (missing.length > 0) {')
     for (const f of ['web/lang/hu.js', 'web/lang/en.js']) {
-      expect(read(f)).toMatch(/'channel\.toast\.missing_scopes':\s*'[^']*\{scopes\}[^']*im:read/)
+      expect(read(f)).toMatch(/'channel\.toast\.missing_scopes':\s*'[^']*\{scopes\}/)
     }
+  })
+
+  it('the im:read sentence is added only when im:read is the one missing', () => {
+    const app = read('web/app.js')
+    expect(app).toContain("+ (missing.includes('im:read') ? ' ' + t('channel.toast.missing_scopes_imread') : '')")
+    for (const f of ['web/lang/hu.js', 'web/lang/en.js']) {
+      const s = read(f)
+      expect(s).toMatch(/'channel\.toast\.missing_scopes_imread':\s*'[^']*im:read/)
+      expect(s).not.toMatch(/'channel\.toast\.missing_scopes':\s*'[^']*im:read/)
+    }
+  })
+
+  it('an empty x-oauth-scopes header makes no claim', async () => {
+    stubAuthTest({ ok: true, user: 'marveen' }, '')
+    const r = await getProvider('slack').validateToken('xoxb-test')
+    expect(r.ok).toBe(true)
+    expect(r).not.toHaveProperty('missingScopes')
   })
 })

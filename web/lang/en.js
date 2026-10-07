@@ -1486,7 +1486,8 @@ window._i18n.en = {
 
   // --- Channel toasts ---
   'channel.toast.smoke_failed':  'Connection test failed',
-  'channel.toast.missing_scopes': 'Connected, but the Slack app lacks: {scopes}. Without im:read the bot cannot write to the DM after a restart. Add it under the app OAuth settings and reinstall the app.',
+  'channel.toast.missing_scopes': 'Connected, but the Slack app lacks: {scopes}. Add it under the app OAuth settings and reinstall the app.',
+  'channel.toast.missing_scopes_imread': 'Without im:read the bot cannot write to the DM after a restart until the user writes to it.',
   'channel.toast.pairing_approved': 'Pairing approved!',
   'channel.toast.invite_copied': 'Invite link created and copied to clipboard',
   'channel.toast.invite_created':'Invite link created - click the Copy button',

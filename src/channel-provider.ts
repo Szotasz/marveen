@@ -508,9 +508,11 @@ const SLACK_BOT_SCOPES = [
   'users:read',
 ]
 
-/** The `x-oauth-scopes` header as a list; null when the header is absent. */
+/** The `x-oauth-scopes` header as a list; null when the header is absent OR
+ *  empty: an empty header is "not known", not "no scope granted" (an
+ *  auth.test that succeeded always has at least one scope). */
 export function parseSlackScopes(header: string | null | undefined): string[] | null {
-  if (header == null) return null
+  if (header == null || header.trim() === '') return null
   return header.split(',').map(s => s.trim()).filter(Boolean)
 }
 
