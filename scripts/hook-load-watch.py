@@ -299,15 +299,33 @@ def py_code_only(text):
 
 JS_REGEX_BEFORE = set("(,=:[!&|?{};+-*%<>~^")
 JS_REGEX_WORDS = {"return", "typeof", "case", "do", "else", "in", "of", "new", "delete", "void", "throw", "yield", "await"}
+JS_CONDITION_WORDS = {"if", "while", "for", "with"}
 
 
 def js_code_only(text):
     """The node source with its comments blanked, offsets and lines kept. Strings, template literals and regex literals are
     stepped over, so a // or /* inside them is not taken for a comment (a regex literal is told from a division by the code
-    before it, as minifiers do)."""
+    before it, as minifiers do). A template literal is followed into its ${...} expressions: the code there is read as code
+    (a string, a nested template or a comment in it is what it is there), and the template goes on after the closing brace.
+    A / right after the closing paren of an if/while/for/with condition starts a regex literal, as in the language. Where the
+    scanner still cannot tell, it leans to code: a stretch stepped over as a string or regex is not blanked."""
     spans, i, n, prev, word = [], 0, len(text), "", ""
+    stack = []   # "tpl" for a template literal, [depth] for a ${...} expression inside one
+    parens = []  # one flag per open paren: does it close an if/while/for/with condition
     while i < n:
         c = text[i]
+        if stack and stack[-1] == "tpl":
+            if c == "\\":
+                i += 2
+            elif c == "`":
+                stack.pop()
+                i, prev, word = i + 1, "`", ""
+            elif text.startswith("${", i):
+                stack.append([0])
+                i, prev, word = i + 2, "{", ""
+            else:
+                i += 1
+            continue
         if c == "/" and text.startswith("//", i):
             j = text.find("\n", i)
             j = n if j < 0 else j
@@ -320,13 +338,17 @@ def js_code_only(text):
             spans.append((i, j))
             i = j
             continue
-        if c in "'\"`":
+        if c == "`":
+            stack.append("tpl")
+            i += 1
+            continue
+        if c in "'\"":
             j = i + 1
-            while j < n and text[j] != c and (c == "`" or text[j] != "\n"):
+            while j < n and text[j] != c and text[j] != "\n":
                 j += 2 if text[j] == "\\" else 1
             i, prev, word = j + 1, c, ""
             continue
-        if c == "/" and (prev == "" or prev in JS_REGEX_BEFORE or word in JS_REGEX_WORDS):
+        if c == "/" and (prev == "" or prev in JS_REGEX_BEFORE or prev == "cond)" or word in JS_REGEX_WORDS):
             j, in_class = i + 1, False
             while j < n and text[j] != "\n":
                 if text[j] == "\\":
@@ -350,6 +372,20 @@ def js_code_only(text):
                 j += 1
             word, prev, i = text[i:j], text[j - 1], j
             continue
+        if c == "(":
+            parens.append(word in JS_CONDITION_WORDS)
+        elif c == ")":
+            if parens and parens.pop():
+                i, prev, word = i + 1, "cond)", ""
+                continue
+        elif c == "{" and stack:
+            stack[-1][0] += 1
+        elif c == "}" and stack:
+            if stack[-1][0] == 0:
+                stack.pop()
+                i, prev, word = i + 1, "", ""
+                continue
+            stack[-1][0] -= 1
         if not c.isspace():
             prev, word = c, ""
         i += 1

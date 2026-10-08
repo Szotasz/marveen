@@ -525,6 +525,14 @@ JS_COMMENT_GATE_MJS = ("import { readFileSync } from 'node:fs'\n"
                        "if (((p.tool_input || {}).command || '').startsWith('kill')) { await import('./real-ghost.mjs') }\n"
                        "process.exit(url && re ? 0 : 0)\n")
 BROKEN_IMPORT_GATE_PY = "import json, sys\nimport ghost_x\njson.load(sys.stdin)\nsys.exit(0)\n'''never closed\n"
+JS_EDGE_GATE_MJS = ("import { readFileSync } from 'node:fs'\n"
+                    "const p = JSON.parse(readFileSync(0, 'utf-8'))\n"
+                    "const k = ((p.tool_input || {}).command || '').startsWith('kill')\n"
+                    "const s = `x ${k ? `//` : ''} z`; if (k) { await import('./ghost-tpl.mjs') }\n"
+                    "if (k) /a\\/*/.test(s); if (k) { await import('./ghost-re.mjs') }\n"
+                    "const t = `a ${ /* import('./ghost-c.mjs') */ 1 } b`; if (k) /* import('./ghost-d.mjs') */ {}\n"
+                    "const u = `a ${1} b`; // import('./ghost-f.mjs')\n"
+                    "process.exit(t && u ? 0 : 0)\n")
 
 
 class Missing(DependencyRoot):
@@ -645,6 +653,17 @@ class Missing(DependencyRoot):
         self.assertEqual(rc, 1, out)
         self.assertRegex(out, r"OPEN +rc=1 +scripts/hooks/broken-import-gate\.py \(1 ügynök\) probe=Bash")
         self.assertIn("local dependencies named in a gate's source but missing: 0", out)
+
+    def test_a_nested_template_and_a_regex_after_a_condition_hide_nothing(self):
+        # The tester's edge shapes: a // in a template nested in ${...}, and a /* in a regex literal right after an if condition's
+        # closing paren, are no comment: the real lazy loads after them are seen; a real comment inside ${...} and one
+        # after the condition stay comments, and so does a // comment after a template that holds ${...}
+        self.add_gate("scripts/hooks/js-edge-gate.mjs", JS_EDGE_GATE_MJS, "node")
+        rc, out = run(self.root, "--check")
+        self.assertEqual(rc, 1, out)
+        self.assertEqual(sorted(re.findall(r"MISSING rc=None +(\S+) ", out)),
+                         ["scripts/hooks/ghost-re.mjs", "scripts/hooks/ghost-tpl.mjs"])
+        self.assertIn("local dependencies named in a gate's source but missing: 2", out)
 
     def test_quoted_names_outside_a_load_form_stay_silent(self):
         # the shapes measured on the live install: a name in a comment and in a list (outgoing-copy-gate), an extension
