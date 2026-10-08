@@ -236,7 +236,7 @@ describe('reminderTick', () => {
   })
 })
 
-describe('the daily check (d), 05:00Z to the main agent', () => {
+describe('the daily check (d), 07:00 Budapest to the main agent', () => {
   const THU_0459 = Date.parse('2026-10-08T04:59:00Z')
   const THU_0500 = Date.parse('2026-10-08T05:00:00Z') // 07:00 Budapest
 
@@ -282,6 +282,44 @@ describe('the daily check (d), 05:00Z to the main agent', () => {
     const { d, calls } = deps()
     expect(dailyDigest(d, THU_0500)).toBe(false)
     expect(calls.digests).toHaveLength(0)
+  })
+
+  it('the gate is the Budapest hour of the Budapest day: not at Budapest midnight; 07:00 Budapest in summer, in winter and on the DST change day (one database)', async () => {
+    const at = (iso: string) => Date.parse(iso)
+    // a reminder on each measured day, so a check that passes the gate has something to say
+    reminder({ due_at: sec(at('2026-10-21T07:00:00Z')), send_after: sec(at('2026-10-21T07:00:00Z')), text: 'Okt 21 9-kor' })
+    reminder({ due_at: sec(at('2026-10-25T08:00:00Z')), send_after: sec(at('2026-10-25T08:00:00Z')), text: 'Okt 25 9-kor' })
+    reminder({ due_at: sec(at('2026-11-04T08:00:00Z')), send_after: sec(at('2026-11-04T08:00:00Z')), text: 'Nov 4 9-kor' })
+    const { d, calls } = deps()
+    // summer time: 22:30Z is 00:30 on 10-21 in Budapest (no check, the day is not claimed); 04:59Z is 06:59; 05:00Z is 07:00
+    expect(dailyDigest(d, at('2026-10-20T22:30:00Z'))).toBe(false)
+    expect(dailyDigest(d, at('2026-10-21T04:59:00Z'))).toBe(false)
+    expect(calls.digests).toHaveLength(0)
+    expect(dailyDigest(d, at('2026-10-21T05:00:00Z'))).toBe(true)
+    expect(calls.digests[0]).toContain('[EMLÉKEZTETŐK, NAPI ELLENŐRZÉS] 2026-10-21 (Budapest)')
+    expect(calls.digests[0]).toContain('Okt 21 9-kor')
+    // the DST change day (CEST -> CET at 01:00Z): 05:00Z is 06:00 CET (no), 06:00Z is 07:00 CET
+    expect(dailyDigest(d, at('2026-10-25T05:00:00Z'))).toBe(false)
+    expect(dailyDigest(d, at('2026-10-25T06:00:00Z'))).toBe(true)
+    expect(calls.digests[1]).toContain('2026-10-25 (Budapest)')
+    // winter: 23:30Z is 00:30 on 11-04, 05:30Z is 06:30 CET, 06:00Z is 07:00 CET
+    expect(dailyDigest(d, at('2026-11-03T23:30:00Z'))).toBe(false)
+    expect(dailyDigest(d, at('2026-11-04T05:30:00Z'))).toBe(false)
+    expect(dailyDigest(d, at('2026-11-04T06:00:00Z'))).toBe(true)
+    expect(calls.digests[2]).toContain('2026-11-04 (Budapest)')
+    expect(calls.digests).toHaveLength(3)
+  })
+
+  it('the real tick, one database: the 22:30Z tick runs no check, the 05:00Z tick does', async () => {
+    reminder({ due_at: sec(Date.parse('2026-10-21T07:00:00Z')), send_after: sec(Date.parse('2026-10-21T07:00:00Z')) })
+    const { d, calls, setNow } = deps()
+    setNow(Date.parse('2026-10-20T22:30:00Z'))
+    expect((await reminderTick(d)).digest).toBe(false)
+    expect(calls.digests).toHaveLength(0)
+    setNow(Date.parse('2026-10-21T05:00:00Z'))
+    expect((await reminderTick(d)).digest).toBe(true)
+    expect(calls.digests).toHaveLength(1)
+    expect(calls.digests[0]).toContain('2026-10-21 (Budapest)')
   })
 
   it('the tick runs the daily check after the sends', async () => {

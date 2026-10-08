@@ -32,8 +32,9 @@ export const REMINDER_CLAIM_STALE_SEC = 10 * 60
 export const REMINDER_BATCH = 20
 /** The broken-config alert repeats at most this often. */
 export const REMINDER_CONFIG_ALERT_EVERY_MS = 60 * 60_000
-/** fb79dc1f (d): the daily check goes to the main agent at this UTC hour (05:00Z = 07:00 Budapest in summer time). */
-export const REMINDER_DIGEST_UTC_HOUR = 5
+/** fb79dc1f (d): the daily check goes to the main agent from this Budapest hour on (07:00 Europe/Budapest: 05:00Z in summer
+ *  time, 06:00Z in winter); the hour and the day are both read in Europe/Budapest, like the quiet hours and the weekend rule. */
+export const REMINDER_DIGEST_LOCAL_HOUR = 7
 
 export type WindowsLoad = { ok: true; config: ReminderWindowsConfig } | { ok: false; error: string }
 
@@ -146,13 +147,15 @@ export async function reminderTick(deps: ReminderSenderDeps): Promise<ReminderTi
 }
 
 /**
- * fb79dc1f (d): once a day from REMINDER_DIGEST_UTC_HOUR, the main agent gets the reminders that go TODAY (Budapest
+ * fb79dc1f (d): once a day from REMINDER_DIGEST_LOCAL_HOUR o'clock Budapest, the main agent gets the reminders that go TODAY (Budapest
  * day, by send moment) and the ones that did NOT go (due yesterday and failed or cancelled, or still waiting past
  * their moment). The day is claimed in the DB first, so a restart does not send it twice; an empty day sends nothing.
+ * The gate is the Budapest hour of that Budapest day: a UTC-hour gate with the Budapest day let the check out at Budapest
+ * midnight (22:00Z in summer, 23:00Z in winter) and claimed the day before the morning.
  */
 export function dailyDigest(deps: ReminderSenderDeps, nowMs: number): boolean {
-  if (new Date(nowMs).getUTCHours() < REMINDER_DIGEST_UTC_HOUR) return false
   const p = localParts(nowMs, BP)
+  if (p.h < REMINDER_DIGEST_LOCAL_HOUR) return false
   const day = `${p.y}-${String(p.mo).padStart(2, '0')}-${String(p.d).padStart(2, '0')}`
   const startMs = zonedToUtcMs(p.y, p.mo, p.d, 0, 0, BP)
   const next = new Date(Date.UTC(p.y, p.mo - 1, p.d + 1))
