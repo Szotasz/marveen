@@ -168,8 +168,8 @@ classify_mcp_plugin_row() {
 # shSingleQuote (src/web/agent-process.ts): a quote in the value becomes '\'',
 # so nothing in it can end the word. Used for every value inlined into a
 # command string that a later shell (tmux respawn) parses again. The same
-# definition lives in channels.sh and channel-watchdog.sh (a test keeps them
-# identical).
+# definition lives in channels.sh, channel-watchdog.sh and stuck-modal-guard.sh
+# (a test keeps the three byte-identical).
 sh_single_quote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 
 # SECSZIVEK1007: the resolved model must have the shape of a model id (the same

@@ -29,6 +29,8 @@ set -euo pipefail
 DB="$(cd "$(dirname "$0")/.." && pwd)/store/claudeclaw.db"
 NAME="${1:-}"
 HOURS="${2:-}"
+# The window goes into the SQL as a number: a whole number or nothing.
+case "$HOURS" in ''|*[!0-9]*) [ -z "$HOURS" ] || { echo "HOURS: egesz szam kell (kapott: nem szam)" >&2; exit 2; } ;; esac
 
 if [ "$NAME" = "--stats" ]; then
   # Kimaradasi rata task-onkent. Az ablak relativ epoch-on, a ts/1000 osztas
@@ -69,7 +71,8 @@ if [ -z "$NAME" ]; then
   exit 0
 fi
 
-WHERE="name = '$NAME'"
+_sq="'"; NAME_SQL="'${NAME//$_sq/$_sq$_sq}'"   # the task name as an SQL string literal ('' for a quote)
+WHERE="name = $NAME_SQL"
 if [ -n "$HOURS" ]; then
   # Relativ ablak epoch-on: sem a timezone, sem az off-by-one-hour nem merul fel.
   WHERE="$WHERE AND ts/1000 > strftime('%s','now') - ($HOURS * 3600)"
@@ -92,4 +95,4 @@ echo "-- pozitiv kontroll (szuro nelkul, ugyanerre a nevre) --"
 sqlite3 -header -column "$DB" "
   SELECT count(*) AS osszes_futas,
          datetime(max(ts)/1000,'unixepoch','localtime') AS legutolso
-    FROM task_runs WHERE name = '$NAME';"
+    FROM task_runs WHERE name = $NAME_SQL;"
