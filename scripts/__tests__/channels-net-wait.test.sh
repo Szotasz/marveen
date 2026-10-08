@@ -174,7 +174,7 @@ calls="$(grep -n 'wait_for_channel_hosts' "$SRC" \
   | grep -v 'wait_for_channel_hosts "\$@"')"
 ncalls="$(printf '%s\n' "$calls" | grep -o 'wait_for_channel_hosts' | grep -c .)"
 eq "exactly one wait call outside the test seam (every occurrence, any form)" "1" "$ncalls"
-loop_ln="$(grep -n 'while \$TMUX has-session -t "\$SESSION"' "$SRC" | head -1 | cut -d: -f1)"
+loop_ln="$(grep -n 'while \$TMUX has-session -t "=\$SESSION:"' "$SRC" | head -1 | cut -d: -f1)"
 call_ln="$(printf '%s\n' "$calls" | head -1 | cut -d: -f1)"
 [ -n "$loop_ln" ] && [ -n "$call_ln" ] && [ "$call_ln" -lt "$loop_ln" ] && pass "...and it is before the watchdog loop (initial start only)" || fail "...before the watchdog loop" "call < loop" "call=$call_ln loop=$loop_ln"
 # ...and that one occurrence IS the top-level launch line. Without this a

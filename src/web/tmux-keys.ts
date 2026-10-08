@@ -1,3 +1,4 @@
+import { exactTmuxTarget } from '../tmux-target.js'
 // Pure mapping of dashboard keyboard input -> `tmux send-keys` arguments, and
 // the scripted /login keystroke sequence. Kept dependency-free + exported so
 // the mapping (the part most likely to drift) is unit-testable without spawning
@@ -48,7 +49,7 @@ export function literalKeyArgs(session: string, text: string): string[] | null {
   if (!text) return null
   // `-l` sends the keys literally (no key-name interpretation), so text like
   // "Enter" or "C-c" typed by the user is inserted as characters, not actions.
-  return ['send-keys', '-t', session, '-l', '--', text]
+  return ['send-keys', '-t', exactTmuxTarget(session), '-l', '--', text]
 }
 
 /**
@@ -57,7 +58,7 @@ export function literalKeyArgs(session: string, text: string): string[] | null {
 export function specialKeyArgs(session: string, name: string): string[] | null {
   const keys = resolveSpecialKey(name)
   if (!keys) return null
-  return ['send-keys', '-t', session, ...keys]
+  return ['send-keys', '-t', exactTmuxTarget(session), ...keys]
 }
 
 // The scripted /login flow, split into the two phases Szabi described

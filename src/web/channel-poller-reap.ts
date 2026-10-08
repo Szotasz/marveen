@@ -28,6 +28,8 @@ import { join } from 'node:path'
 import type { ChannelProviderType } from '../channel-provider.js'
 import { channelStateDir } from '../channel-provider.js'
 import { logger } from '../logger.js'
+import { exactTmuxTarget } from '../tmux-target.js'
+import { shQuote } from './ssh-tmux.js'
 
 // The env scan MUST list processes without a controlling terminal. On macOS
 // `ps eww -e` does not: `-e` there only adds other users' processes, and the
@@ -724,7 +726,7 @@ export function findForeignMainPollers(
 
 function mainSessionPanePids(session: string, tmuxPath: string): Set<number> {
   try {
-    const out = execSync(`${tmuxPath} list-panes -t ${session} -F '#{pane_pid}'`, { timeout: 5000, encoding: 'utf-8' })
+    const out = execSync(`${tmuxPath} list-panes -t ${shQuote(exactTmuxTarget(session))} -F '#{pane_pid}'`, { timeout: 5000, encoding: 'utf-8' })
     const s = new Set<number>()
     for (const line of out.split('\n')) {
       const n = parseInt(line.trim(), 10)
