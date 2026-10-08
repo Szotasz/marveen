@@ -14,10 +14,15 @@ What the stand-ins model, from the live measurement (af12a1d3, on a throwaway co
                      The probe MUST call Bash to see it -- the case a probe with a neutral tool name would miss;
   webfetch-gate.py   a gate that is not wired to Bash: probed with the neutral tool name, which it records;
   helper.py          called somewhere in the "...; exit 0" helper form: left out everywhere.
+Local dependencies (card 06c9aa79; class Imports): signal-gate.py models a gate with a lazy dependency -- it loads signal-dep.py by
+file path ONLY for a command that starts with "kill", so the harmless call never reaches it; signal-dep.py imports
+signal_helper.py (a transitive dependency) and has a main that would leave main-ran.txt behind; sig-node-gate.mjs and
+sig-node-dep.mjs are the same in node. The base root's dep_mod.py, static-dep.mjs and lazy-dep.mjs are loaded too.
 """
 import http.server
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -268,7 +273,8 @@ class Tick(Base):
     def test_alert_cycle(self):
         rc, out = self.tick()
         self.assertEqual((rc, out.count("ALERT_DRYRUN")), (0, 0), out)
-        self.assertTrue(read(self.p("store/.hook-load-watch")).endswith(" 5/5 ok\n"))
+        # 5 commands and their 3 local dependencies (dep_mod.py, static-dep.mjs, lazy-dep.mjs)
+        self.assertTrue(read(self.p("store/.hook-load-watch")).endswith(" 8/8 ok\n"))
         self.append("scripts/hooks/dep_mod.py")
         rc, out = self.tick()
         self.assertEqual(rc, 0, out)
@@ -276,7 +282,7 @@ class Tick(Base):
         self.assertIn("scripts/hooks/dep-gate.py (a fő ügynök): NYITVA", out)
         self.assertIn('File "dep_mod.py"', out, "the alert names the broken module")
         first = self.state()
-        self.assertEqual(first["fingerprint"], ["scripts/hooks/dep-gate.py|OPEN|1"])
+        self.assertEqual(first["fingerprint"], ["scripts/hooks/dep-gate.py|OPEN|1", "scripts/hooks/dep_mod.py|IMPORT|1"])
         rc, out = self.tick()
         self.assertEqual(out.count("ALERT_DRYRUN"), 0, "an unchanged finding inside the window was repeated")
         self.append("scripts/static-dep.mjs")
@@ -357,6 +363,115 @@ class PythonOnly(Base):
         rc, out = run(self.root, "--check")
         self.assertEqual(rc, 0, out)
         self.assertIn("derived 3 commands, 3 scripts", out)
+
+
+SIGNAL_GATE_PY = ("import importlib.util, json, os, sys\n"
+                  "HERE = os.path.dirname(os.path.abspath(__file__))\n"
+                  "p = json.load(sys.stdin)\n"
+                  "if ((p.get('tool_input') or {}).get('command') or '').startswith('kill'):\n"
+                  "    try:\n"
+                  "        spec = importlib.util.spec_from_file_location('_signal_scanner', os.path.join(HERE, 'signal-dep.py'))\n"
+                  "        mod = importlib.util.module_from_spec(spec)\n"
+                  "        spec.loader.exec_module(mod)\n"
+                  "    except Exception as exc:\n"
+                  "        sys.stderr.write('signal-gate: scanner failed to load (%s), BLOCKING\\n' % exc)\n"
+                  "        sys.exit(2)\n"
+                  "sys.exit(0)\n")
+SIGNAL_DEP_PY = ("import os, sys\n"
+                 "sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))\n"
+                 "import signal_helper  # a transitive dependency\n"
+                 "LIMIT = signal_helper.LIMIT\n"
+                 "if __name__ == '__main__':\n"
+                 "    open(os.path.join(os.environ['CLAUDE_PROJECT_DIR'], 'main-ran.txt'), 'w').write('signal-dep')\n")
+SIG_NODE_GATE_MJS = ("import { readFileSync } from 'node:fs'\nconst p = JSON.parse(readFileSync(0, 'utf-8'))\n"
+                     "if (((p.tool_input || {}).command || '').startsWith('kill')) {\n"
+                     "  try { await import('./sig-node-dep.mjs') } catch (e) { process.stderr.write('sig-node-gate: BLOCKING\\n'); process.exit(2) }\n}\n"
+                     "process.exit(0)\n")
+SIG_NODE_DEP_MJS = ("import { writeFileSync } from 'node:fs'\nimport { fileURLToPath } from 'node:url'\nexport const ok = true\n"
+                    "if (process.argv[1] === fileURLToPath(import.meta.url)) writeFileSync(process.env.CLAUDE_PROJECT_DIR + '/node-main-ran.txt', 'x')\n")
+
+
+class Imports(Base):
+    """06c9aa79: the gates' local dependencies, each loaded on its own without a main."""
+
+    def setUp(self):
+        super().setUp()
+        hooks = self.p("scripts/hooks")
+        write(os.path.join(hooks, "signal-gate.py"), SIGNAL_GATE_PY)
+        write(os.path.join(hooks, "signal-dep.py"), SIGNAL_DEP_PY, 0o644)
+        write(os.path.join(hooks, "signal_helper.py"), "LIMIT = 9\n", 0o644)
+        write(os.path.join(hooks, "sig-node-gate.mjs"), SIG_NODE_GATE_MJS)
+        write(os.path.join(hooks, "sig-node-dep.mjs"), SIG_NODE_DEP_MJS, 0o644)
+        extra = [{"matcher": "Bash", "hooks": [{"type": "command", "command": 'python3 "%s/scripts/hooks/signal-gate.py"' % self.root, "timeout": 10}]},
+                 {"matcher": "Bash", "hooks": [{"type": "command", "command": 'node "%s/scripts/hooks/sig-node-gate.mjs"' % self.root, "timeout": 10}]}]
+        for a in ("a1", "a2"):
+            path = self.p("agents/%s/.claude/settings.json" % a)
+            d = json.loads(read(path))
+            d["hooks"]["PreToolUse"] += extra
+            write(path, json.dumps(d), 0o644)
+
+    @staticmethod
+    def imported(out):
+        return sorted(re.findall(r"\] (\w+) +rc=\S+ +(scripts/\S+) \([^)]*\) probe=import", out))
+
+    def test_healthy_dependencies_load_without_a_main(self):
+        rc, out = run(self.root, "--check")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("derived 7 commands, 7 scripts", out)
+        self.assertEqual(self.imported(out), [("OK", "scripts/hooks/dep_mod.py"), ("OK", "scripts/hooks/lazy-dep.mjs"),
+                                              ("OK", "scripts/hooks/sig-node-dep.mjs"), ("OK", "scripts/hooks/signal-dep.py"),
+                                              ("OK", "scripts/hooks/signal_helper.py"), ("OK", "scripts/static-dep.mjs")])
+        self.assertRegex(out, r"OK +rc=0 +scripts/hooks/signal-dep\.py \(2 ügynök\) probe=import \(<- scripts/hooks/signal-gate\.py\)")
+        self.assertRegex(out, r"OK +rc=0 +scripts/hooks/signal_helper\.py \(2 ügynök\) probe=import \(<- scripts/hooks/signal-gate\.py\)")
+        self.assertIn("local dependencies: 6 loaded on their own, without a main; failing: 0", out)
+        self.assertFalse(os.path.exists(self.p("main-ran.txt")), "the python dependency probe ran a main")
+        self.assertFalse(os.path.exists(self.p("node-main-ran.txt")), "the node dependency probe ran a main")
+        self.assertEqual([d for d, _, _ in os.walk(self.root) if os.path.basename(d) == "__pycache__"], [],
+                         "a probe wrote python bytecode")
+
+    def test_lazy_file_dependency_broken_is_a_finding_and_an_alert(self):
+        self.append("scripts/hooks/signal-dep.py")
+        rc, out = run(self.root, "--check")
+        self.assertEqual(rc, 1, out)
+        # the harmless call does not reach it -- the hole the dependency probe covers
+        self.assertRegex(out, r"OK +rc=0 +scripts/hooks/signal-gate\.py \(2 ügynök\) probe=Bash")
+        self.assertRegex(out, r'IMPORT +rc=1 +scripts/hooks/signal-dep\.py \(2 ügynök\) probe=import \(<- scripts/hooks/signal-gate\.py\) '
+                              r'\| File "signal-dep\.py", line \d+ \| SyntaxError')
+        self.assertIn("failing: 1", out)
+        rc, out = run(self.root, HOOK_LOAD_WATCH_ALERT_DRYRUN=1)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("ALERT_DRYRUN: [HOOK-FIGYELŐ] 1/6 helyi kapu-függőség nem tölthető be (mérve", out)
+        self.assertIn("- scripts/hooks/signal-dep.py (2 ügynök): NEM TÖLTHETŐ BE", out)
+        self.assertIn("próba: import (<- scripts/hooks/signal-gate.py)", out)
+
+    def test_transitive_dependency_is_named_itself(self):
+        self.append("scripts/hooks/signal_helper.py")
+        rc, out = run(self.root, "--check")
+        self.assertEqual(rc, 1, out)
+        self.assertRegex(out, r"IMPORT +rc=1 +scripts/hooks/signal_helper\.py \(2 ügynök\) probe=import \(<- scripts/hooks/signal-gate\.py\)")
+        # the module that imports it fails too, and its finding points at the broken file
+        self.assertRegex(out, r'IMPORT +rc=1 +scripts/hooks/signal-dep\.py .*File "signal_helper\.py", line \d+')
+
+    def test_node_lazy_dependency_broken_is_a_finding(self):
+        self.append("scripts/hooks/sig-node-dep.mjs")
+        rc, out = run(self.root, "--check")
+        self.assertEqual(rc, 1, out)
+        self.assertRegex(out, r"OK +rc=0 +scripts/hooks/sig-node-gate\.mjs \(2 ügynök\) probe=Bash")
+        self.assertRegex(out, r"IMPORT +rc=1 +scripts/hooks/sig-node-dep\.mjs \(2 ügynök\) probe=import \(<- scripts/hooks/sig-node-gate\.mjs\) \| .*SyntaxError")
+
+    def test_dependency_load_timeout_kills_its_process_group(self):
+        pidfile = self.p("dep-slow.pid")
+        write(self.p("scripts/hooks/signal_helper.py"), "import subprocess, time\n"
+              "c = subprocess.Popen(['sleep', '30'])\nopen(%r, 'w').write(str(c.pid))\ntime.sleep(30)\nLIMIT = 9\n" % pidfile, 0o644)
+        t0 = time.monotonic()
+        rc, out = run(self.root, "--check", HOOK_LOAD_WATCH_IMPORT_TIMEOUT=1)
+        self.assertLess(time.monotonic() - t0, 25)
+        self.assertEqual(rc, 1, out)
+        self.assertRegex(out, r"TIMEOUT rc=None +scripts/hooks/signal_helper\.py")
+        pid = int(read(pidfile))
+        time.sleep(0.3)
+        with self.assertRaises(ProcessLookupError, msg="the dependency's child outlived the timeout"):
+            os.kill(pid, 0)
 
 
 if __name__ == "__main__":
