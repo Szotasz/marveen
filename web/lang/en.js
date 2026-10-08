@@ -864,6 +864,9 @@ window._i18n.en = {
   'settings.desc.KANBAN_ARCHIVED_MAX_ROWS':    'Maximum number of archived cards to retain. Older archived cards beyond this limit are deleted during the sweep.',
   'settings.desc.HEARTBEAT_CALENDAR_ACCOUNT':  'Google Calendar account name/email for the heartbeat calendar summary. Empty = heartbeat does not fetch calendar events.',
   'settings.desc.HEARTBEAT_CALENDAR_ID':       'Google Calendar ID for the heartbeat summary (e.g. primary). Empty = heartbeat does not fetch calendar events.',
+  'settings.desc.SUBAGENT_INBOX_TEE': 'Mirror inbound messages of Telegram sub-agents to disk (inbound tee): the sub-agent loads the channel plugin through its own mcp.json (instead of --channels), and every inbound message is also written to inbox-pending.jsonl, which the drain hook pulls into the next turn. Writes inbound message content to disk. Does not apply to the main agent. Off by default; takes effect after a dashboard restart, and per agent on that sub-agent\'s next start.',
+  'settings.desc.SUBAGENT_TELEGRAM_WAKE_ENABLED': 'The router wakes an idle Telegram sub-agent that has stuck inbound messages in its inbox-pending.jsonl. Only has an effect with SUBAGENT_INBOX_TEE=1. Off by default; takes effect after a dashboard restart.',
+  'settings.desc.VOICE_TRANSCRIBE_INBOUND': 'Install-wide default: also transcribe inbound voice notes locally with faster-whisper for text-mode agents (an agent\'s own voice.transcribeInbound overrides it; voice/auto agents are always transcribed). Costs CPU time per voice note. Off by default; takes effect after a dashboard restart.',
 
   // --- Vault ---
   'vault.page_title':            'Vault',

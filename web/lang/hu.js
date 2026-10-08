@@ -1184,6 +1184,9 @@ window._i18n.hu = {
   'settings.desc.KANBAN_ARCHIVED_MAX_ROWS':    'Az archivált kártyák maximálisan megőrzött száma. Az ennél régebbi archivált kártyák a sweep során törlődnek.',
   'settings.desc.HEARTBEAT_CALENDAR_ACCOUNT':  'Google Calendar fiók neve/e-mailje a heartbeat naptár-összefoglalóhoz. Üresen hagyva a heartbeat nem kérdez le naptáreseményeket.',
   'settings.desc.HEARTBEAT_CALENDAR_ID':       'Google Calendar naptár-azonosítója a heartbeat összefoglalóhoz (pl. primary). Üresen hagyva a heartbeat nem kérdez le naptáreseményeket.',
+  'settings.desc.SUBAGENT_INBOX_TEE': 'Telegramos sub-agentek bejövő üzeneteinek lemezre tükrözése (inbound-tee): a sub-agent saját mcp.json-on keresztül tölti be a csatorna-plugint (--channels helyett), és minden bejövő üzenet az inbox-pending.jsonl fájlba is kerül, ahonnan a drain hook a következő körbe húzza be. A bejövő üzenetek tartalmát lemezre írja. A fő agentre nem vonatkozik. Alapból ki; a dashboard újraindítása után, agentenként a sub-agent következő indításakor lép életbe.',
+  'settings.desc.SUBAGENT_TELEGRAM_WAKE_ENABLED': 'A router felébreszti azt a tétlen Telegramos sub-agentet, akinek beragadt bejövő üzenete van az inbox-pending.jsonl-ben. Csak SUBAGENT_INBOX_TEE=1 mellett van hatása. Alapból ki; a dashboard újraindításakor lép életbe.',
+  'settings.desc.VOICE_TRANSCRIBE_INBOUND': 'Telepítés-szintű alapértelmezés: a text módú ügynököknél is készüljön helyi faster-whisper átirat a bejövő hangüzenetről (az ügynökönkénti voice.transcribeInbound felülírja; voice/auto módban mindig készül). Hangüzenetenként CPU-időbe kerül. Alapból ki; a dashboard újraindításakor lép életbe.',
 
   // --- Vault ---
   'vault.page_title':            'Vault',
