@@ -18,6 +18,10 @@ Local dependencies (card 06c9aa79; class Imports): signal-gate.py models a gate 
 file path ONLY for a command that starts with "kill", so the harmless call never reaches it; signal-dep.py imports
 signal_helper.py (a transitive dependency) and has a main that would leave main-ran.txt behind; sig-node-gate.mjs and
 sig-node-dep.mjs are the same in node. The base root's dep_mod.py, static-dep.mjs and lazy-dep.mjs are loaded too.
+Missing dependencies (card 06c9aa79 (2); class Missing): the same stand-ins with a named file DELETED (the lazy python and
+node file, an eager and a transitive python import, a root-relative load), an import that only an installed module
+satisfies (a PYTHONPATH dir outside the root stands for site-packages), and quoted names outside a load form (a comment,
+a list, the egress parser's own resolver), which stay silent, as measured on the live install.
 """
 import http.server
 import json
@@ -391,8 +395,8 @@ SIG_NODE_DEP_MJS = ("import { writeFileSync } from 'node:fs'\nimport { fileURLTo
                     "if (process.argv[1] === fileURLToPath(import.meta.url)) writeFileSync(process.env.CLAUDE_PROJECT_DIR + '/node-main-ran.txt', 'x')\n")
 
 
-class Imports(Base):
-    """06c9aa79: the gates' local dependencies, each loaded on its own without a main."""
+class DependencyRoot(Base):
+    """The base root plus the 06c9aa79 stand-ins: signal-gate.py and sig-node-gate.mjs with their dependencies."""
 
     def setUp(self):
         super().setUp()
@@ -413,6 +417,10 @@ class Imports(Base):
     @staticmethod
     def imported(out):
         return sorted(re.findall(r"\] (\w+) +rc=\S+ +(scripts/\S+) \([^)]*\) probe=import", out))
+
+
+class Imports(DependencyRoot):
+    """06c9aa79: the gates' local dependencies, each loaded on its own without a main."""
 
     def test_healthy_dependencies_load_without_a_main(self):
         rc, out = run(self.root, "--check")
@@ -472,6 +480,137 @@ class Imports(Base):
         time.sleep(0.3)
         with self.assertRaises(ProcessLookupError, msg="the dependency's child outlived the timeout"):
             os.kill(pid, 0)
+
+
+OPT_GATE_PY = ("import json, sys\np = json.load(sys.stdin)\n"
+               "if ((p.get('tool_input') or {}).get('command') or '').startswith('kill'):\n"
+               "    import hlw_fake_pkg  # not local, not stdlib: loaded only on this branch\n"
+               "sys.exit(0)\n")
+ROOT_LOAD_GATE_PY = ("import importlib.util, json, os, sys\np = json.load(sys.stdin)\n"
+                     "if ((p.get('tool_input') or {}).get('command') or '').startswith('kill'):\n"
+                     "    path = os.path.join(os.environ['CLAUDE_PROJECT_DIR'], 'scripts/hooks/root-dep.py')\n"
+                     "    spec = importlib.util.spec_from_file_location('_root_dep', path)\n"
+                     "    spec.loader.exec_module(importlib.util.module_from_spec(spec))\n"
+                     "sys.exit(0)\n")
+DEEP_GATE_PY = ("import importlib.util, json, os, sys\np = json.load(sys.stdin)\n"
+                "if ((p.get('tool_input') or {}).get('command') or '').startswith('kill'):\n"
+                "    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),\n"
+                "                        'deep-dep.py')  # the usual idiom: two calls deep, over two lines\n"
+                "    spec = importlib.util.spec_from_file_location('_deep_dep', path)\n"
+                "    spec.loader.exec_module(importlib.util.module_from_spec(spec))\n"
+                "sys.exit(0)\n")
+TALK_GATE_PY = ("import json, sys\n"
+                "# a send looks like 'send.py' in a command; here the name is data, not a dependency\n"
+                "NAMES = ['send.py', 'mailer.mjs']\n"
+                "json.load(sys.stdin)\nsys.exit(0 if NAMES else 0)\n")
+TALK_GATE_MJS = ("import { readFileSync } from 'node:fs'\nimport { join } from 'node:path'\n"
+                 "const EXTS = ['', '.js', '/index.js', '/index.mjs']\n"
+                 "const pkg = (d, rel) => join(d, rel, '__init__.py')\n"
+                 "JSON.parse(readFileSync(0, 'utf-8'))\nprocess.exit(EXTS.length && pkg ? 0 : 0)\n")
+
+
+class Missing(DependencyRoot):
+    """06c9aa79 (2): a dependency the source NAMES whose file is not there is a finding, the same as a broken one."""
+
+    def add_gate(self, rel, text, runner, agents=("a1",)):
+        write(self.p(rel), text)
+        for a in agents:
+            path = self.p("agents/%s/.claude/settings.json" % a)
+            d = json.loads(read(path))
+            d["hooks"]["PreToolUse"].append({"matcher": "Bash", "hooks": [{"type": "command", "command": '%s "%s/%s"' % (runner, self.root, rel), "timeout": 10}]})
+            write(path, json.dumps(d), 0o644)
+
+    def test_deleted_lazy_file_dependency_is_missing_and_alerted(self):
+        os.remove(self.p("scripts/hooks/signal-dep.py"))
+        rc, out = run(self.root, "--check")
+        self.assertEqual(rc, 1, out)
+        # the harmless call still passes: only the source names the file
+        self.assertRegex(out, r"OK +rc=0 +scripts/hooks/signal-gate\.py \(2 ügynök\) probe=Bash")
+        self.assertRegex(out, r'MISSING rc=None +scripts/hooks/signal-dep\.py \(2 ügynök\) probe=import \(<- scripts/hooks/signal-gate\.py\) '
+                              r'\| HIÁNYZIK: scripts/hooks/signal-dep\.py; a forrásban betöltött "signal-dep\.py" \(scripts/hooks/signal-gate\.py:6\)')
+        self.assertIn("local dependencies: 4 loaded on their own, without a main; failing: 0", out)
+        self.assertIn("local dependencies named in a gate's source but missing: 1", out)
+        self.assertNotIn("signal_helper", out, "a file reached only through the missing one cannot be followed")
+        rc, out = run(self.root, HOOK_LOAD_WATCH_ALERT_DRYRUN=1)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("ALERT_DRYRUN: [HOOK-FIGYELŐ] 1/5 helyi kapu-függőség hiányzik (mérve", out)
+        self.assertIn("- HIÁNYZIK: scripts/hooks/signal-dep.py (2 ügynök): a kapu forrásában megnevezett helyi függőség, "
+                      "a fájl nincs meg (ahol a kapu betölti, ott hibázik, a burkolóval tilt), próba: import (<- scripts/hooks/signal-gate.py): "
+                      'a forrásban betöltött "signal-dep.py" (scripts/hooks/signal-gate.py:6)', out)
+        state = json.loads(read(self.p("store/.hook-load-watch.json")))
+        self.assertIn("scripts/hooks/signal-dep.py|MISSING|None", state["fingerprint"])
+
+    def test_deleted_node_lazy_dependency_is_missing(self):
+        os.remove(self.p("scripts/hooks/sig-node-dep.mjs"))
+        rc, out = run(self.root, "--check")
+        self.assertEqual(rc, 1, out)
+        self.assertRegex(out, r"OK +rc=0 +scripts/hooks/sig-node-gate\.mjs \(2 ügynök\) probe=Bash")
+        self.assertRegex(out, r'MISSING rc=None +scripts/hooks/sig-node-dep\.mjs \(2 ügynök\) probe=import \(<- scripts/hooks/sig-node-gate\.mjs\) '
+                              r'\| HIÁNYZIK: scripts/hooks/sig-node-dep\.mjs; a forrásban betöltött "\./sig-node-dep\.mjs" \(scripts/hooks/sig-node-gate\.mjs:4\)')
+
+    def test_deleted_eager_python_import_is_missing_and_the_gate_open(self):
+        os.remove(self.p("scripts/hooks/dep_mod.py"))
+        rc, out = run(self.root, "--check")
+        self.assertEqual(rc, 1, out)
+        # the command probe sees the eager one, as before ...
+        self.assertRegex(out, r"OPEN +rc=1 +scripts/hooks/dep-gate\.py .*ModuleNotFoundError")
+        # ... and the source names it as well
+        self.assertRegex(out, r'MISSING rc=None +scripts/hooks/dep_mod\.py, scripts/lib/dep_mod\.py \(a fő ügynök\) probe=import \(<- scripts/hooks/dep-gate\.py\) '
+                              r'\| HIÁNYZIK: scripts/hooks/dep_mod\.py, scripts/lib/dep_mod\.py; python import "dep_mod" \(scripts/hooks/dep-gate\.py:3\): '
+                              r'nincs helyi fájlként, és telepített modulként sincs')
+
+    def test_deleted_transitive_import_is_missing_and_its_importer_broken(self):
+        os.remove(self.p("scripts/hooks/signal_helper.py"))
+        rc, out = run(self.root, "--check")
+        self.assertEqual(rc, 1, out)
+        self.assertRegex(out, r"IMPORT +rc=1 +scripts/hooks/signal-dep\.py .*ModuleNotFoundError")
+        self.assertRegex(out, r'MISSING rc=None +scripts/hooks/signal_helper\.py, scripts/lib/signal_helper\.py \(2 ügynök\) '
+                              r'probe=import \(<- scripts/hooks/signal-gate\.py\) \| HIÁNYZIK: .*python import "signal_helper" \(scripts/hooks/signal-dep\.py:3\)')
+
+    def test_root_relative_load_is_shown_at_its_own_path(self):
+        self.add_gate("scripts/hooks/root-load-gate.py", ROOT_LOAD_GATE_PY, "python3")
+        write(self.p("scripts/hooks/root-dep.py"), "X = 1\n", 0o644)
+        rc, out = run(self.root, "--check")
+        self.assertEqual(rc, 0, out)
+        os.remove(self.p("scripts/hooks/root-dep.py"))
+        rc, out = run(self.root, "--check")
+        self.assertEqual(rc, 1, out)
+        self.assertRegex(out, r'MISSING rc=None +scripts/hooks/root-dep\.py \(1 ügynök\) probe=import \(<- scripts/hooks/root-load-gate\.py\) '
+                              r'\| HIÁNYZIK: scripts/hooks/root-dep\.py; a forrásban betöltött "scripts/hooks/root-dep\.py"')
+
+    def test_nested_join_over_two_lines_is_a_load(self):
+        self.add_gate("scripts/hooks/deep-gate.py", DEEP_GATE_PY, "python3")
+        write(self.p("scripts/hooks/deep-dep.py"), "X = 1\n", 0o644)
+        rc, out = run(self.root, "--check")
+        self.assertEqual(rc, 0, out)
+        self.assertRegex(out, r"OK +rc=0 +scripts/hooks/deep-dep\.py \(1 ügynök\) probe=import \(<- scripts/hooks/deep-gate\.py\)")
+        os.remove(self.p("scripts/hooks/deep-dep.py"))
+        rc, out = run(self.root, "--check")
+        self.assertEqual(rc, 1, out)
+        self.assertRegex(out, r'MISSING rc=None +scripts/hooks/deep-dep\.py \(1 ügynök\) probe=import \(<- scripts/hooks/deep-gate\.py\) '
+                              r'\| HIÁNYZIK: scripts/hooks/deep-dep\.py; a forrásban betöltött "deep-dep\.py" \(scripts/hooks/deep-gate\.py:5\)')
+
+    def test_an_installed_module_is_not_missing(self):
+        self.add_gate("scripts/hooks/opt-gate.py", OPT_GATE_PY, "python3")
+        rc, out = run(self.root, "--check")
+        self.assertEqual(rc, 1, out)
+        self.assertRegex(out, r'MISSING rc=None +scripts/hooks/hlw_fake_pkg\.py, scripts/lib/hlw_fake_pkg\.py \(1 ügynök\) '
+                              r'probe=import \(<- scripts/hooks/opt-gate\.py\)')
+        # a module provided OUTSIDE the install root (site-packages, here a PYTHONPATH dir) is not a local dependency
+        site = os.path.join(self.tmp, "site")
+        write(os.path.join(site, "hlw_fake_pkg.py"), "OK = 1\n", 0o644)
+        rc, out = run(self.root, "--check", PYTHONPATH=site)
+        self.assertEqual(rc, 0, out)
+        self.assertIn("local dependencies named in a gate's source but missing: 0", out)
+
+    def test_quoted_names_outside_a_load_form_stay_silent(self):
+        # the shapes measured on the live install: a name in a comment and in a list (outgoing-copy-gate), an extension
+        # list and a join in the egress parser's own resolver -- no dependency, and none of these files exists
+        self.add_gate("scripts/hooks/talk-gate.py", TALK_GATE_PY, "python3")
+        self.add_gate("scripts/hooks/talk-gate.mjs", TALK_GATE_MJS, "node")
+        rc, out = run(self.root, "--check")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("local dependencies named in a gate's source but missing: 0", out)
 
 
 if __name__ == "__main__":

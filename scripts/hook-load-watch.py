@@ -35,10 +35,18 @@ in the importing file's directory, then scripts/lib, then a unique file of that 
 Each one is loaded on its own WITHOUT running a main -- python -B under a module name other than __main__,
 node's import() from -e (a gate starts its main only as the entry script) -- with stdin closed, a timeout and
 the process-group kill. A module that does not load is an IMPORT finding, named with the gates that reach it,
-in the same alert.
-WHAT IT DOES NOT SEE. A dependency whose path is computed rather than written as a literal (or a node
-specifier without its extension). A module that runs a main of its own when imported is not missed but
-reported (it reads an empty stdin): such a module should guard its main.
+in the same alert. A dependency the source NAMES whose file is not there is a MISSING finding ("HIÁNYZIK: <path>"),
+in the same alert, because the gate fails on it the same way (card 06c9aa79 (2)): a python import that is neither
+stdlib, nor a local file (resolved as above), nor an installed module (searched outside the install root), shown
+at the importing file's directory and scripts/lib; and a file name in a load form -- os.path.join(..., "<name>")
+in python, a relative import/require specifier in node -- shown at the path it resolves to.
+WHAT IT DOES NOT SEE. A dependency whose path is put together at run time (a computed or formatted path, a name
+read from config or the environment) rather than written as a literal; a node specifier without its extension; a
+python name that two files under scripts/ share (ambiguous: neither loaded nor reported). A quoted file name in
+any other form (pathlib's / or with_name, a bare string to spec_from_file_location, a message or a comment) is
+loaded when the file exists, but its absence is not reported. A deliberately optional import (try/except
+ImportError) of a module that is not installed IS reported. A module that runs a main of its own when imported is
+not missed but reported (it reads an empty stdin): such a module should guard its main.
 
 THE ALERT goes to the main agent through the dashboard API (/api/messages), sent as `hook-load-watch`
 when SYSTEM_SENDER_IDS lists it, otherwise as MAIN_AGENT_ID -- the sender rule of the scripts/channels.sh
@@ -66,6 +74,7 @@ Env:
   HOOK_LOAD_WATCH_IMPORT_TIMEOUT  seconds for one dependency's load (default 20)
 """
 import glob
+import importlib.machinery
 import json
 import os
 import pathlib
@@ -180,6 +189,12 @@ def derive():
 PY_IMPORT = re.compile(r"^[ \t]*(?:from[ \t]+([A-Za-z_]\w*)[\w.]*[ \t]+import\b"
                        r"|import[ \t]+([A-Za-z_][\w.]*(?:[ \t]+as[ \t]+\w+)?(?:[ \t]*,[ \t]*[A-Za-z_][\w.]*(?:[ \t]+as[ \t]+\w+)?)*))", re.M)
 FILE_LIT = re.compile(r"""["']([A-Za-z0-9_./@+-]*[A-Za-z0-9_@+-]\.(?:py|mjs|cjs|js))["']""")
+# 06c9aa79 (2): the forms in which a quoted file name is LOADED, so its absence is a finding. Measured on this install
+# 2026-10-08: the other unresolved quoted names are no dependencies ('/index.js' in an extension list, '__init__.py'
+# in the egress parser's resolver, 'send.py' in a comment), and they stay silent.
+PY_JOIN = re.compile(r"\bos\.path\.join\(")
+JS_LOAD = re.compile(r"""(?:\bfrom\s*|\bimport\s*\(\s*|\brequire\s*\(\s*)(["'])(\.\.?/[A-Za-z0-9_./@+-]*[A-Za-z0-9_@+-]\.(?:mjs|cjs|js))\1""")
+
 STDLIB = frozenset(getattr(sys, "stdlib_module_names", ()))
 PY_IMPORT_PROBE = ("import importlib.util, os, sys\n"
                    "p = sys.argv[1]\n"
@@ -205,14 +220,67 @@ def python_index():
     return index
 
 
+def call_args(text, start):
+    """The argument text of a call, from just after its "(" to the matching ")"; quoted strings are skipped."""
+    depth, i, quote = 1, start, None
+    while i < len(text) and depth:
+        c = text[i]
+        if quote:
+            if c == "\\":
+                i += 1
+            elif c == quote:
+                quote = None
+        elif c in "'\"":
+            quote = c
+        elif c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+        i += 1
+    return text[start:i - 1] if not depth else ""
+
+
+def load_literals(path, text):
+    """(file name, offset) for every quoted .py/.mjs/.cjs/.js name the source LOADS: an argument of os.path.join(...) at
+    any depth in python, a relative import/export-from/import()/require() specifier in node."""
+    if path.endswith(".py"):
+        for m in PY_JOIN.finditer(text):
+            for lit in FILE_LIT.finditer(call_args(text, m.end())):
+                yield lit.group(1), m.end() + lit.start()
+    elif path.endswith((".mjs", ".cjs", ".js")):
+        for m in JS_LOAD.finditer(text):
+            yield m.group(2), m.start(2)
+
+
+
+def installed(name):
+    """A python module importable from OUTSIDE the install root (stdlib paths, site-packages, PYTHONPATH)."""
+    root = os.path.abspath(ROOT) + os.sep
+    path = [p for p in sys.path if p and not (os.path.abspath(p) + os.sep).startswith(root)]
+    try:
+        return importlib.machinery.PathFinder.find_spec(name, path) is not None
+    except (ImportError, ValueError):
+        return False
+
+
 def local_deps(path, index):
-    """The local files one script loads: its python imports and the quoted file names that exist."""
+    """The local files one script loads (its python imports and the quoted file names that exist), and the ones its
+    source names whose file is not there: (found, {shown paths tuple: why})."""
     try:
         with open(path, encoding="utf-8", errors="replace") as fh:
             text = fh.read()
     except OSError:
-        return set()
-    here, scripts, found = os.path.dirname(path), os.path.join(ROOT, "scripts"), set()
+        return set(), {}
+    here, scripts, found, missing = os.path.dirname(path), os.path.join(ROOT, "scripts"), set(), {}
+
+    def miss(cands, why):
+        shown = [p for p in dict.fromkeys(os.path.normpath(c) for c in cands)
+                 if p != path and os.path.commonpath([scripts, p]) == scripts]
+        if shown:
+            missing.setdefault(tuple(os.path.relpath(p, ROOT) for p in shown), why)
+
+    def line_of(offset):
+        return "%s:%d" % (os.path.relpath(path, ROOT), text.count("\n", 0, offset) + 1)
 
     def add(cand):
         cand = os.path.normpath(cand)
@@ -232,13 +300,22 @@ def local_deps(path, index):
                     if add(cand):
                         break
                 else:
-                    if len(index.get(name, [])) == 1:
-                        add(index[name][0])
+                    hits = index.get(name, [])
+                    if len(hits) == 1:
+                        add(hits[0])
+                    elif not hits and not installed(name):
+                        miss([os.path.join(here, name + ".py"), os.path.join(scripts, "lib", name + ".py")],
+                             'python import "%s" (%s): nincs helyi fájlként, és telepített modulként sincs' % (name, line_of(m.start())))
     for m in FILE_LIT.finditer(text):
         for cand in (os.path.join(here, m.group(1)), os.path.join(ROOT, m.group(1))):
             if add(cand):
                 break
-    return found
+    for lit, offset in load_literals(path, text):
+        if any(os.path.isfile(os.path.normpath(c)) for c in (os.path.join(here, lit), os.path.join(ROOT, lit))):
+            continue
+        miss([os.path.join(ROOT, lit) if lit.startswith("scripts/") else os.path.join(here, lit)],
+             'a forrásban betöltött "%s" (%s)' % (lit, line_of(offset)))
+    return found, missing
 
 
 def dependency_map(commands):
@@ -251,13 +328,21 @@ def dependency_map(commands):
                 continue
             seen, todo = {gate}, [gate]
             while todo:
-                for dep in sorted(local_deps(todo.pop(), index)):
+                found, missing = local_deps(todo.pop(), index)
+                for dep in sorted(found):
                     if dep not in seen:
                         seen.add(dep)
                         todo.append(dep)
                         d = deps.setdefault(dep, {"gates": set(), "owners": set()})
                         d["gates"].add(os.path.relpath(gate, ROOT))
                         d["owners"].update(rec["owners"])
+                # 06c9aa79 (2): named but not there -- nothing to load or to follow; a string key ("MISSING:..."), so
+                # the map still sorts
+                for shown, why in sorted(missing.items()):
+                    d = deps.setdefault("MISSING:" + ",".join(shown), {"gates": set(), "owners": set(),
+                                                                       "shown": list(shown), "why": why})
+                    d["gates"].add(os.path.relpath(gate, ROOT))
+                    d["owners"].update(rec["owners"])
     return deps
 
 
@@ -389,9 +474,13 @@ def measure():
         log("left out, no script file in the command: %s" % first_line(cmd)[:120])
     # 06c9aa79: the gates' local dependencies, each loaded on its own; their results come after the commands'
     for dep, d in sorted(dependency_map(commands).items()):
-        res = import_probe(dep)
-        res.update(kind="import", command="", scripts=[os.path.relpath(dep, ROOT)], owners=sorted(d["owners"]),
-                   tool="import (<- %s)" % ", ".join(sorted(d["gates"])))
+        if "why" in d:
+            res = {"class": "MISSING", "rc": None, "why": d["why"],
+                   "detail": "HIÁNYZIK: %s; %s" % (", ".join(d["shown"]), d["why"]), "scripts": list(d["shown"])}
+        else:
+            res = import_probe(dep)
+            res["scripts"] = [os.path.relpath(dep, ROOT)]
+        res.update(kind="import", command="", owners=sorted(d["owners"]), tool="import (<- %s)" % ", ".join(sorted(d["gates"])))
         results.append(res)
     return results, sorted(os.path.relpath(h, ROOT) for h in helpers)
 
@@ -408,7 +497,8 @@ MEANING = {"SETTINGS": "OLVASHATATLAN BEÁLLÍTÁS (a hookjai nem mérhetők, é
            "OPEN": "NYITVA (nem tiltó hibakód: a hívás átmegy, a kapu nem véd)",
            "CLOSED": "ZÁRVA (egy ártalmatlan hívást is tilt: minden ilyen eszközhívás áll)",
            "TIMEOUT": "IDŐTÚLLÉPÉS (a saját határidején belül nem válaszolt)",
-           "IMPORT": "NEM TÖLTHETŐ BE (egy kapu helyi függősége: ahol a kapu betölti, ott hibázik, a burkolóval tilt)"}
+           "IMPORT": "NEM TÖLTHETŐ BE (egy kapu helyi függősége: ahol a kapu betölti, ott hibázik, a burkolóval tilt)",
+           "MISSING": "a kapu forrásában megnevezett helyi függőség, a fájl nincs meg (ahol a kapu betölti, ott hibázik, a burkolóval tilt)"}
 
 
 def findings_of(results):
@@ -422,13 +512,21 @@ def fingerprint(findings):
 def alert_text(findings, results):
     when = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     imp_total = sum(1 for r in results if r.get("kind") == "import")
-    imp_found = sum(1 for f in findings if f.get("kind") == "import")
-    cmd_total, cmd_found = len(results) - imp_total, len(findings) - imp_found
-    parts = ["%d/%d PreToolUse biztonsági hook-parancs nem tölt be rendesen" % (cmd_found, cmd_total)] if cmd_found or not imp_found else []
+    miss_found = sum(1 for f in findings if f["class"] == "MISSING")
+    imp_found = sum(1 for f in findings if f.get("kind") == "import") - miss_found
+    cmd_total, cmd_found = len(results) - imp_total, len(findings) - imp_found - miss_found
+    parts = (["%d/%d PreToolUse biztonsági hook-parancs nem tölt be rendesen" % (cmd_found, cmd_total)]
+             if cmd_found or not (imp_found or miss_found) else [])
     if imp_found:
         parts.append("%d/%d helyi kapu-függőség nem tölthető be" % (imp_found, imp_total))
+    if miss_found:
+        parts.append("%d/%d helyi kapu-függőség hiányzik" % (miss_found, imp_total))
     lines = ["[HOOK-FIGYELŐ] %s (mérve %s, %s):" % (", ".join(parts), when, ROOT)]
     for f in findings[:12]:
+        if f["class"] == "MISSING":
+            lines.append("- HIÁNYZIK: %s (%s): %s, próba: %s: %s" % (
+                ", ".join(f["scripts"]), owners_text(f["owners"]), MEANING["MISSING"], f["tool"], f["why"][:160]))
+            continue
         lines.append("- %s (%s): %s, rc %s, próba: %s%s" % (
             ", ".join(f["scripts"]), owners_text(f["owners"]), MEANING[f["class"]], f["rc"], f["tool"],
             (": " + f["detail"][:160]) if f["detail"] else ""))
@@ -560,8 +658,10 @@ def main(argv):
     log("derived %d commands, %d scripts; helpers left out: %s; findings: %d"
         % (len(probed), len({s for r in probed for s in r["scripts"]}), ", ".join(helpers) or "-",
            len(findings_of(results))))
-    imports = [r for r in results if r.get("kind") == "import"]
+    imports = [r for r in results if r.get("kind") == "import" and r["class"] != "MISSING"]
     log("local dependencies: %d loaded on their own, without a main; failing: %d" % (len(imports), len(findings_of(imports))))
+    log("local dependencies named in a gate's source but missing: %d"
+        % sum(1 for r in results if r["class"] == "MISSING"))
     if check:
         return 1 if findings_of(results) else 0
     return tick(results)
