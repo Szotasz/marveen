@@ -11,8 +11,9 @@ import { join } from 'node:path'
 
 const mockCreateAgentMessage = vi.fn((..._a: unknown[]) => ({ id: 1 }))
 
+const mockDebug = vi.fn()
 vi.mock('../logger.js', () => ({
-  logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() },
+  logger: { info: vi.fn(), warn: vi.fn(), debug: (...a: unknown[]) => mockDebug(...a), error: vi.fn() },
 }))
 vi.mock('../config.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../config.js')>()),
@@ -27,10 +28,15 @@ vi.mock('../web/agent-config.js', () => ({ agentDir: (n: string) => `/agents/${n
 vi.mock('../web/main-transcript-root.js', () => ({ configDirFor: () => undefined }))
 vi.mock('../web/active-model.js', () => ({ projectsDirFor: () => dir }))
 
-// Real fs work runs on libuv, not on the faked timers: poll with setImmediate.
-async function settle(done: () => boolean = () => false) {
-  for (let i = 0; i < 400 && !done(); i++) await new Promise((r) => setImmediate(r))
+// Real fs work runs on libuv, not on the faked timers: poll with setImmediate
+// until `done` holds, bounded by REAL time (performance.now is not faked). A
+// fixed iteration count passed locally and failed on the slower CI runner,
+// where the check then finished inside the NEXT test (run 37740338953).
+async function settle(done: () => boolean, budgetMs = 10_000) {
+  const end = performance.now() + budgetMs
+  while (!done() && performance.now() < end) await new Promise((r) => setImmediate(r))
 }
+const debugSaid = (text: string) => () => mockDebug.mock.calls.some((c) => String(c[1] ?? '').includes(text))
 
 import {
   classifyTranscriptLines,
@@ -92,6 +98,7 @@ const req = (ids: number[], toAgent = 'dex', host: string | null = null) => ({ t
 beforeEach(() => {
   resetTurnCheckState()
   mockCreateAgentMessage.mockClear()
+  mockDebug.mockClear()
   root = mkdtempSync(join(tmpdir(), 'turncheck-'))
   dir = join(root, 'projects', '-agents-dex')
   mkdirSync(dir, { recursive: true })
@@ -229,7 +236,7 @@ describe('scheduleDeliveryTurnCheck', () => {
     const ret = scheduleDeliveryTurnCheck({ toAgent: 'dex', msgIds: [201], sentAtMs: Date.now(), host: null })
     expect(ret).toBeUndefined()
     await vi.advanceTimersByTimeAsync(59_000)
-    await settle()
+    await settle(() => false, 100)
     expect(mockCreateAgentMessage).not.toHaveBeenCalled()
     await vi.advanceTimersByTimeAsync(2_000)
     await settle(() => mockCreateAgentMessage.mock.calls.length > 0)
@@ -245,7 +252,10 @@ describe('scheduleDeliveryTurnCheck', () => {
     rmSync(dir, { recursive: true, force: true })
     scheduleDeliveryTurnCheck({ toAgent: 'dex', msgIds: [202], sentAtMs: Date.now(), host: null })
     await vi.advanceTimersByTimeAsync(61_000)
-    await settle()
+    // Wait for the check to FINISH (its unknown-path debug line), so a pass
+    // here means "ran and stayed silent", not "had not run yet".
+    await settle(debugSaid('transcript not readable'))
+    expect(mockDebug.mock.calls.some((c) => String(c[1] ?? '').includes('transcript not readable'))).toBe(true)
     expect(mockCreateAgentMessage).not.toHaveBeenCalled()
   })
 
