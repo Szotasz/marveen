@@ -60,10 +60,26 @@ class Base(unittest.TestCase):
             row['isMeta'] = True
         self.add(row)
 
-    def run_check(self, env_extra=None):
-        with open(os.path.join(self.tdir, 'main.jsonl'), 'w') as fh:
-            for r in self.rows:
+    def stamp_result(self):
+        # In a live transcript the round that wrote the stamp keeps writing after
+        # it (the stamp's own tool_result, the closing text), so a real window
+        # always holds rows newer than the stamp. Not activity by itself.
+        return {'type': 'user', 'timestamp': iso(self.last + 1), 'message': {
+            'content': [{'type': 'tool_result', 'content': ''}]}}
+
+    def write_transcript(self, fresh_tail=True):
+        rows = self.rows + ([self.stamp_result()] if fresh_tail else [])
+        path = os.path.join(self.tdir, 'main.jsonl')
+        with open(path, 'w') as fh:
+            for r in rows:
                 fh.write(json.dumps(r) + '\n')
+        return path
+
+    def run_check(self, env_extra=None, fresh_tail=True):
+        self.write_transcript(fresh_tail)
+        return self.invoke(env_extra)
+
+    def invoke(self, env_extra=None):
         env = dict(os.environ, MHP_STATE_PATH=self.state, MHP_TRANSCRIPT_DIR=self.tdir,
                    MHP_LOG_PATH=self.logp, MHP_MODE_PATH=self.mode)
         if env_extra:
@@ -167,9 +183,56 @@ class DecisionTest(Base):
     def test_a_stamp_within_the_clock_skew_tolerance_is_judged_normally(self):
         self.set_mode('live')
         self.write_state(int(self.now + 60))
-        code, out, log = self.run_check()
+        self.last = int(self.now + 60)  # the round's own rows follow the skewed stamp
+        path = self.write_transcript()
+        os.utime(path, (self.last + 2, self.last + 2))
+        code, out, log = self.invoke()
         self.assertEqual((code, out), (0, 'SKIP'))
         self.assertEqual(log['reason'], 'empty-window')
+
+    # --- a window the check did not actually see (PRECHECKRES1008) ------
+
+    def test_a_transcript_untouched_since_the_stamp_runs_the_round(self):
+        # The folder exists but nothing in it was written after the stamp (a
+        # stale config root, a renamed project folder): files == 0 is not an
+        # empty window, it is a window nobody looked at.
+        self.set_mode('live')
+        self.tool(self.last - 60)
+        path = self.write_transcript(fresh_tail=False)
+        old = self.last - 600
+        os.utime(path, (old, old))
+        code, out, log = self.invoke()
+        self.assertEqual((code, out), (0, ''))
+        self.assertEqual(log['reason'], 'no-fresh-transcript')
+        self.assertEqual(log['files'], 0)
+        self.assertFalse(log['would_skip'])
+
+    def test_a_fresh_file_holding_only_old_rows_runs_the_round(self):
+        # A touched or copied archive: the mtime is new, every row predates the stamp.
+        self.set_mode('live')
+        self.tool(self.last - 60)
+        code, out, log = self.run_check(fresh_tail=False)
+        self.assertEqual((code, out), (0, ''))
+        self.assertEqual(log['reason'], 'no-fresh-transcript')
+        self.assertEqual(log['files'], 1)
+        self.assertEqual(log['fresh_rows'], 0)
+
+    def test_a_decision_that_could_not_be_logged_does_not_skip(self):
+        # The log's parent is a regular file, so the append fails: an unlogged
+        # SKIP would be a missed round nobody can account for.
+        self.set_mode('live')
+        blocker = os.path.join(self.tmp.name, 'blocker')
+        with open(blocker, 'w') as fh:
+            fh.write('x')
+        code, out, _ = self.run_check({'MHP_LOG_PATH': os.path.join(blocker, 'precheck.jsonl')})
+        self.assertEqual((code, out), (0, ''))
+
+    def test_the_same_window_with_a_working_log_still_skips(self):
+        # Control for the test above: only the log failure changes the outcome.
+        self.set_mode('live')
+        code, out, log = self.run_check()
+        self.assertEqual(out, 'SKIP')
+        self.assertGreaterEqual(log['fresh_rows'], 1)
 
     # --- failing open ---------------------------------------------------
 
@@ -261,7 +324,7 @@ class ResolutionTest(Base):
 
     def test_an_empty_window_in_the_resolved_folder_skips_in_live(self):
         self.set_mode('live')
-        self.place(os.path.join(self.home, '.claude'), [])
+        self.place(os.path.join(self.home, '.claude'), [self.stamp_result()])
         out, log = self.run_resolved()
         self.assertEqual(out, 'SKIP')
 
