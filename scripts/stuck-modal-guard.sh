@@ -43,6 +43,7 @@ FIRSTSEEN_STAMP="$STORE/.stuck-modal-firstseen"
 RESPAWN_STAMP="$STORE/.channel-last-respawn"           # SHARED with channel-watchdog.sh
 RESPAWN_COUNT_FILE="$STORE/.stuck-modal-respawns"
 BACKOFF_STAMP="$STORE/.stuck-modal-backoff-alerted"
+REPORTED_STAMP="$STORE/.stuck-modal-reported"         # log/alert mode: one report per episode
 # #915: main channel state is install-scoped once migrated; the legacy shared
 # path only serves unmigrated installs.
 TG_CHAN_DIR="${TELEGRAM_STATE_DIR:-}"
@@ -71,6 +72,14 @@ RESPAWN_PLUGIN="${STUCK_MODAL_PLUGIN:-plugin:telegram@claude-plugins-official}"
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [$LOG_TAG] $*" || true; }
 
+# A file's mtime (epoch seconds), 0 when it is missing. GNU stat first, BSD
+# stat (macOS) second: the guard was systemd-only and used `stat -c %Y`, which
+# BSD stat rejects -- on a Mac every stamp then read as 0, so the shared
+# respawn grace and the backoff never held (MODELCONFIRM1005).
+file_mtime() {
+  stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null || echo 0
+}
+
 # --- pure classifier (mirrors src/pane-state.ts detectPaneState) ---------------
 # Reads a captured pane on stdin; prints one of: empty | busy | idle | stuck.
 classify_pane() {
@@ -95,6 +104,41 @@ classify_pane() {
   fi
   # 4. neither -> the idle footer is hidden by a modal overlay and no live turn
   echo stuck
+}
+
+# --- mode (MODELCONFIRM1005, #1694 review) --------------------------------------
+# Automatic recovery is opt-in (the maintainers' rule): by default the guard only
+# DETECTS and LOGS. STUCK_MODAL_MODE (env, else .env, else "log"):
+#   off   -- the guard does nothing (and update.sh does not install it on macOS)
+#   log   -- default: a confirmed stuck pane is logged once per episode
+#   alert -- as log, plus one owner alert per episode; no keys, no respawn
+#   act   -- recover: Escape, then respawn-pane (the pre-#1694 behaviour)
+# Why not act by default: on the CLI's "Switch model?" dialog Escape means
+# "No, go back" (it would silently cancel the owner's switch), and the respawn
+# starts a fresh session without --continue.
+resolve_mode() {
+  local m="${STUCK_MODAL_MODE:-}"
+  if [ -z "$m" ] && [ -f "$INSTALL_DIR/.env" ]; then
+    m="$(grep -E '^STUCK_MODAL_MODE=' "$INSTALL_DIR/.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"'"'"'\r ')"
+  fi
+  m="$(printf '%s' "$m" | tr '[:upper:]' '[:lower:]')"
+  case "$m" in
+    off|log|alert|act) printf '%s' "$m" ;;
+    '') printf 'log' ;;
+    *) printf 'log' ;;   # a typo must never switch recovery ON
+  esac
+}
+
+# Pure: what a confirmed stuck pane (decide_action -> act) leads to in MODE.
+# REPORTED = 1 when this episode was already reported. Prints one of:
+#   recover | report | skip
+mode_action() {
+  local mode="$1" reported="$2"
+  case "$mode" in
+    act) echo recover ;;
+    log|alert) if [ "$reported" = 1 ]; then echo skip; else echo report; fi ;;
+    *) echo skip ;;
+  esac
 }
 
 # --- pure decision (testable without tmux) -------------------------------------
@@ -163,6 +207,8 @@ run_guard() {
 
   # NB: use TMUX_BIN, not TMUX -- the latter is tmux's own env var (socket,pid,
   # session); assigning the binary path to it corrupts server-socket detection.
+  local MODE; MODE="$(resolve_mode)"
+  [ "$MODE" = off ] && return 0
   TMUX_BIN="$(command -v tmux)"; CLAUDE="$(command -v claude)"
   if [ -z "$TMUX_BIN" ]; then log "tmux not on PATH; cannot act"; return 0; fi
 
@@ -188,9 +234,9 @@ run_guard() {
   if [ -z "$SESSION" ]; then
     log "no channels session configured (set CHANNELS_SESSION or MAIN_AGENT_ID in .env) -- no-op"; return 0
   fi
-  "$TMUX_BIN" has-session -t "$SESSION" 2>/dev/null || { log "session $SESSION absent -- no-op"; return 0; }
+  "$TMUX_BIN" has-session -t "=$SESSION:" 2>/dev/null || { log "session $SESSION absent -- no-op"; return 0; }
 
-  pane="$("$TMUX_BIN" capture-pane -t "$SESSION" -p 2>/dev/null || true)"
+  pane="$("$TMUX_BIN" capture-pane -t "=$SESSION:" -p 2>/dev/null || true)"
   state="$(printf '%s' "$pane" | classify_pane)"
   now="$(date +%s)"
   firstseen=0; [ -f "$FIRSTSEEN_STAMP" ] && firstseen="$(cat "$FIRSTSEEN_STAMP" 2>/dev/null || echo 0)"
@@ -200,7 +246,7 @@ run_guard() {
   case "$action" in
     clear)
       if [ "$firstseen" != 0 ]; then log "session healthy ($state) -- clearing confirm window"; fi
-      rm -f "$FIRSTSEEN_STAMP" "$RESPAWN_COUNT_FILE" "$BACKOFF_STAMP" 2>/dev/null || true
+      rm -f "$FIRSTSEEN_STAMP" "$RESPAWN_COUNT_FILE" "$BACKOFF_STAMP" "$REPORTED_STAMP" 2>/dev/null || true
       return 0 ;;
     hold)
       return 0 ;;
@@ -212,20 +258,36 @@ run_guard() {
       log "stuck $(( now - firstseen ))s (< ${STUCK_SECONDS}s) -- still confirming"
       return 0 ;;
     act)
+      local reported=0
+      [ "$(cat "$REPORTED_STAMP" 2>/dev/null)" = "$firstseen" ] && reported=1
+      case "$(mode_action "$MODE" "$reported")" in
+        skip) return 0 ;;
+        report)
+          log "STUCK modal confirmed ($(( now - firstseen ))s) -- mode=$MODE: no Escape, no respawn (STUCK_MODAL_MODE=act enables recovery)"
+          if [ "$MODE" = alert ]; then
+            # Marked as reported only once the alert is DELIVERED, so a failed
+            # send is retried on the next tick instead of being lost.
+            alert_owner "⚠️ The ${SESSION} session has been stuck for $(( now - firstseen ))s: a dialog is open (no idle footer, no running turn), and inbound messages queue behind it. Automatic recovery is off (STUCK_MODAL_MODE=alert). Check it: tmux attach -t ${SESSION}" \
+              && echo "$firstseen" > "$REPORTED_STAMP" 2>/dev/null || true
+          else
+            echo "$firstseen" > "$REPORTED_STAMP" 2>/dev/null || true
+          fi
+          return 0 ;;
+      esac
       log "STUCK modal confirmed ($(( now - firstseen ))s) -> Escape (max ${MAX_ESCAPES}x)" ;;
   esac
 
   # --- recovery: Escape (bounded), like ensure_modal_closed --------------------
   local i p
   for i in $(seq 1 "$MAX_ESCAPES"); do
-    p="$("$TMUX_BIN" capture-pane -t "$SESSION" -p 2>/dev/null || true)"
+    p="$("$TMUX_BIN" capture-pane -t "=$SESSION:" -p 2>/dev/null || true)"
     case "$(printf '%s' "$p" | classify_pane)" in
       idle|busy) log "modal closed via Escape -- session healthy"; rm -f "$FIRSTSEEN_STAMP" 2>/dev/null || true; return 0 ;;
     esac
-    "$TMUX_BIN" send-keys -t "$SESSION" Escape 2>/dev/null || true
+    "$TMUX_BIN" send-keys -t "=$SESSION:" Escape 2>/dev/null || true
     sleep 0.5
   done
-  p="$("$TMUX_BIN" capture-pane -t "$SESSION" -p 2>/dev/null || true)"
+  p="$("$TMUX_BIN" capture-pane -t "=$SESSION:" -p 2>/dev/null || true)"
   case "$(printf '%s' "$p" | classify_pane)" in
     idle|busy) log "modal closed via Escape -- session healthy"; rm -f "$FIRSTSEEN_STAMP" 2>/dev/null || true; return 0 ;;
   esac
@@ -243,7 +305,7 @@ run_guard() {
   fi
 
   if [ -f "$RESPAWN_STAMP" ]; then
-    local last; last="$(stat -c %Y "$RESPAWN_STAMP" 2>/dev/null || echo 0)"
+    local last; last="$(file_mtime "$RESPAWN_STAMP")"
     if [ $(( now - last )) -lt "$GRACE_SECONDS" ]; then
       log "Escape failed but a respawn happened $(( now - last ))s ago (< grace) -- deferring"
       return 0
@@ -253,12 +315,12 @@ run_guard() {
   case "$count" in (*[!0-9]*|'') count=0;; esac
   if [ "$count" -ge "$MAX_CONSECUTIVE" ]; then
     log "ALERT: stuck modal after $count respawns -- backing off, manual check needed"
-    local bstamp=0; [ -f "$BACKOFF_STAMP" ] && bstamp="$(stat -c %Y "$BACKOFF_STAMP" 2>/dev/null || echo 0)"
+    local bstamp=0; [ -f "$BACKOFF_STAMP" ] && bstamp="$(file_mtime "$BACKOFF_STAMP")"
     if [ $(( now - bstamp )) -ge 3600 ]; then
       # Backoff stamp ONLY on confirmed delivery (NOTIFYVAKSWEEP826): this is
       # the "your messages may be lost, resend" alert -- burying its own
       # failure under an hour of backoff was the worst possible combination.
-      if alert_owner "🔴 The ${SESSION} session is stuck in a /mcp modal and ${count} auto-respawns did not clear it. Manual check needed: tmux attach -t ${SESSION}. Messages sent during the outage may be lost -- please resend."; then
+      if alert_owner "🔴 The ${SESSION} session is stuck behind an open dialog (no idle footer, no running turn) and ${count} auto-respawns did not clear it. Manual check needed: tmux attach -t ${SESSION}. Messages sent during the outage may be lost -- please resend."; then
         date +%s > "$BACKOFF_STAMP" 2>/dev/null || true
       else
         log "alert not delivered -- backoff stamp NOT written, will retry next tick"
@@ -340,12 +402,12 @@ run_guard() {
   log "stuck modal not cleared by Escape -- respawn-pane $SESSION (respawn #$((count+1)))"
   # G: alert ONLY after the respawn-pane actually succeeds, so a failed respawn
   # never sends the owner a false "respawned" message.
-  if [ -n "$CLAUDE" ] && "$TMUX_BIN" respawn-pane -k -t "$SESSION" "$RESPAWN_CMD" 2>/dev/null; then
+  if [ -n "$CLAUDE" ] && "$TMUX_BIN" respawn-pane -k -t "=$SESSION:" "$RESPAWN_CMD" 2>/dev/null; then
     date +%s > "$RESPAWN_STAMP" 2>/dev/null || true
     echo $(( count + 1 )) > "$RESPAWN_COUNT_FILE" 2>/dev/null || true
     rm -f "$FIRSTSEEN_STAMP" 2>/dev/null || true
     log "respawn-pane issued"
-    alert_owner "⚠️ The ${SESSION} session was stuck in a /mcp modal -- auto-respawn #$((count+1)) issued. If you messaged during the outage and got no reply, please resend."
+    alert_owner "⚠️ The ${SESSION} session was stuck behind an open dialog -- auto-respawn #$((count+1)) issued. If you messaged during the outage and got no reply, please resend."
   else
     log "respawn-pane FAILED (or claude not on PATH) for $SESSION"
   fi
@@ -356,6 +418,9 @@ case "${1:-}" in
   classify)       classify_pane ;;
   decide)         decide_action "${2:-}" "${3:-0}" "${4:-0}" ;;
   sanitize-model) sanitize_model "${2:-}" ;;
+  mtime)          file_mtime "${2:-}" ;;
+  mode)           resolve_mode ;;
+  mode-action)    mode_action "${2:-}" "${3:-0}" ;;
   # Test-only seam (scripts/__tests__/stuck-modal-guard.test.sh, CHATID0): exercise
   # alert_owner's real owner-chat resolution without driving the full pane flow.
   alert-owner-test) alert_owner "${2:-probe}" ;;

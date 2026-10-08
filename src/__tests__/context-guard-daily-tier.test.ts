@@ -16,6 +16,9 @@ import {
   normalizeContextGuardConfig,
   dailyHandoffArmed,
   dailyHandoffDue,
+  dailyHandoffStep,
+  dailyHandoffSweep,
+  applyDailyHandoffSweep,
   DAILY_HANDOFF_REASON_PREFIX,
   IDLE_FLUSH_REASON_PREFIX,
   DEFAULT_CONTEXT_GUARD,
@@ -99,6 +102,111 @@ describe('dailyHandoffDue -- same due-semantics as the nightly restart', () => {
   it('is never due when the tier is not armed', () => {
     expect(dailyHandoffDue({ ...DAILY_ONLY, dailyHandoffTime: null }, MIDNIGHT, null, NOW)).toBe(false)
     expect(dailyHandoffDue({ ...DAILY_ONLY, dailyHandoffEnabled: false }, MIDNIGHT, null, NOW)).toBe(false)
+  })
+})
+
+describe('dailyHandoffStep -- the served record is seeded while ARMED', () => {
+  // The measured case (a live fleet, 2026-09-29): the dashboard process first
+  // saw the agents at ~02:05 with the tier OFF, the tier was armed at 12:53 for
+  // 03:00, and four agents were handed off at 12:56 -- a slot already passed
+  // today counted as missed. Every time below is on one local day.
+  const at = (h: number, m: number, dayOffset = 0) =>
+    MIDNIGHT + dayOffset * 86_400_000 + (h * 60 + m) * 60_000
+  const OFF: ContextGuardConfig = { ...DAILY_ONLY, dailyHandoffEnabled: false, dailyHandoffTime: '03:00' }
+  const ON: ContextGuardConfig = { ...DAILY_ONLY, dailyHandoffTime: '03:00' }
+
+  it('a disarmed tier keeps no record, so nothing stale survives to the arming', () => {
+    expect(dailyHandoffStep(OFF, undefined, MIDNIGHT, at(2, 5))).toEqual({ due: false, record: undefined })
+    // ...and one seeded earlier is forgotten, not kept.
+    expect(dailyHandoffStep(OFF, at(2, 5), MIDNIGHT, at(12, 0))).toEqual({ due: false, record: undefined })
+  })
+
+  it('armed after today\'s slot: seeds at the arming, does NOT fire today, fires tomorrow', () => {
+    let record = dailyHandoffStep(OFF, undefined, MIDNIGHT, at(2, 5)).record   // first sight, tier off
+    let step = dailyHandoffStep(ON, record, MIDNIGHT, at(12, 53))              // armed
+    expect(step.due).toBe(false)
+    record = step.record
+    step = dailyHandoffStep(ON, record, MIDNIGHT, at(12, 56))                  // the sweep that fired
+    expect(step.due).toBe(false)
+    const tomorrow = MIDNIGHT + 86_400_000
+    expect(dailyHandoffStep(ON, step.record, tomorrow, at(2, 59, 1)).due).toBe(false)
+    expect(dailyHandoffStep(ON, step.record, tomorrow, at(3, 0, 1)).due).toBe(true)
+  })
+
+  it('armed before today\'s slot: fires AT the slot, not before', () => {
+    let record = dailyHandoffStep(OFF, undefined, MIDNIGHT, at(0, 1)).record
+    const armed = dailyHandoffStep(ON, record, MIDNIGHT, at(0, 15))
+    expect(armed.due).toBe(false)
+    record = armed.record
+    expect(dailyHandoffStep(ON, record, MIDNIGHT, at(2, 59)).due).toBe(false)
+    expect(dailyHandoffStep(ON, record, MIDNIGHT, at(3, 0)).due).toBe(true)
+  })
+
+  it('an already-armed agent keeps its record and is due at the slot as before', () => {
+    const step = dailyHandoffStep(ON, at(3, 0, -1), MIDNIGHT, at(3, 1))
+    expect(step).toEqual({ due: true, record: at(3, 0, -1) })
+  })
+})
+
+describe('dailyHandoffSweep -- one sweep, in the order the runner applies it', () => {
+  const at = (h: number, m: number) => MIDNIGHT + (h * 60 + m) * 60_000
+  const OFF: ContextGuardConfig = { ...DAILY_ONLY, dailyHandoffEnabled: false, dailyHandoffTime: '03:00' }
+  const ON: ContextGuardConfig = { ...DAILY_ONLY, dailyHandoffTime: '03:00' }
+
+  it('a disarmed tier forgets the record even when the agent is NOT eligible (never idle)', () => {
+    // The case the order exists for: forgetting must not wait behind the idle gate,
+    // or a never-idle agent keeps its old armed record and re-arming fires at once.
+    expect(dailyHandoffSweep(OFF, at(2, 5), false, MIDNIGHT, at(12, 0))).toEqual({ due: false, record: undefined })
+    expect(dailyHandoffSweep(OFF, at(2, 5), true, MIDNIGHT, at(12, 0))).toEqual({ due: false, record: undefined })
+  })
+
+  it('armed but not eligible: the record is kept as it is, neither seeded nor forgotten', () => {
+    expect(dailyHandoffSweep(ON, at(1, 0), false, MIDNIGHT, at(12, 0))).toEqual({ due: false, record: at(1, 0) })
+    expect(dailyHandoffSweep(ON, undefined, false, MIDNIGHT, at(12, 0))).toEqual({ due: false, record: undefined })
+  })
+
+  it('armed and eligible: first sight seeds without firing; a record from before the slot fires after it', () => {
+    expect(dailyHandoffSweep(ON, undefined, true, MIDNIGHT, at(12, 53))).toEqual({ due: false, record: at(12, 53) })
+    expect(dailyHandoffSweep(ON, at(1, 0), true, MIDNIGHT, at(3, 0))).toEqual({ due: true, record: at(1, 0) })
+  })
+
+  it('the misfire end to end: armed after the slot, an agent busy while disarmed does not fire on arming', () => {
+    let record = dailyHandoffSweep(ON, undefined, true, MIDNIGHT, at(0, 30)).record   // seeded, armed
+    record = dailyHandoffSweep(OFF, record, false, MIDNIGHT, at(2, 0)).record         // disarmed while busy
+    const armed = dailyHandoffSweep(ON, record, true, MIDNIGHT, at(12, 53))           // armed after 03:00
+    expect(armed.due).toBe(false)
+  })
+})
+
+describe('applyDailyHandoffSweep -- the sweep applied to the runner\'s record map', () => {
+  const at = (h: number, m: number) => MIDNIGHT + (h * 60 + m) * 60_000
+  const OFF: ContextGuardConfig = { ...DAILY_ONLY, dailyHandoffEnabled: false, dailyHandoffTime: '03:00' }
+  const ON: ContextGuardConfig = { ...DAILY_ONLY, dailyHandoffTime: '03:00' }
+
+  it('a never-running agent on a disarmed tier loses its record, so arming after the slot does not fire', () => {
+    const records = new Map([['a', at(0, 30)]])
+    expect(applyDailyHandoffSweep(records, 'a', OFF, false, MIDNIGHT, at(2, 0))).toBe(false)
+    expect(records.has('a')).toBe(false)
+    expect(applyDailyHandoffSweep(records, 'a', ON, true, MIDNIGHT, at(12, 53))).toBe(false)
+    expect(records.get('a')).toBe(at(12, 53))
+  })
+
+  it('armed but not eligible: the record is left exactly as it was', () => {
+    const records = new Map([['a', at(1, 0)]])
+    expect(applyDailyHandoffSweep(records, 'a', ON, false, MIDNIGHT, at(12, 0))).toBe(false)
+    expect(records.get('a')).toBe(at(1, 0))
+    const empty = new Map<string, number>()
+    applyDailyHandoffSweep(empty, 'a', ON, false, MIDNIGHT, at(12, 0))
+    expect(empty.has('a')).toBe(false)
+  })
+
+  it('armed and eligible: returns due for a record from before the slot, and touches only its own agent', () => {
+    const records = new Map([['a', at(1, 0)], ['b', at(0, 10)]])
+    expect(applyDailyHandoffSweep(records, 'a', ON, true, MIDNIGHT, at(3, 0))).toBe(true)
+    expect(records.get('a')).toBe(at(1, 0))
+    expect(applyDailyHandoffSweep(records, 'a', OFF, false, MIDNIGHT, at(3, 0))).toBe(false)
+    expect(records.has('a')).toBe(false)
+    expect(records.get('b')).toBe(at(0, 10))
   })
 })
 
@@ -267,6 +375,18 @@ describe('runner wiring', () => {
       '    lastDailyHandoff.set(name, nowMs)\n' +
       '  }',
     )
+  })
+
+  it('the runner computes dailyHandoffDue in ONE call, gated on running and idle', () => {
+    const code = src('src/web/context-guard-runner.ts')
+    // Applying the record is behaviour-tested above (applyDailyHandoffSweep); what only
+    // the runner can get wrong is the eligibility it passes. The whole property line is
+    // pinned, so nothing can stand in front of the call: an early `if (!running) return
+    // false` or a `running && ...` guard would put the forget behind the idle gate again.
+    expect(code).toContain(
+      "\n    dailyHandoffDue: applyDailyHandoffSweep(lastDailyHandoff, name, cfg, running && state.phase === 'idle', localMidnightMs(nowMs), nowMs),\n",
+    )
+    expect(code.match(/dailyHandoffDue:/g)).toHaveLength(1)
   })
 
   it('the daily reason selects the scheduled wording, not the act tier percentage prompt', () => {

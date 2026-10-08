@@ -24,7 +24,38 @@ warn() { echo -e "  ${ORANGE}!${NC} $*"; }
 INSTALL_STEP="init"
 
 # shellcheck source=install-lang.sh
-source "$(dirname "$0")/install-lang.sh"
+# MARVEENLANG1763: the README's one-liner (curl ... install-linux.sh -o install.sh &&
+# bash install.sh) and the Windows/WSL wrapper (/tmp/marveen-install.sh) run this
+# script ON ITS OWN, before the repo is cloned, so install-lang.sh is not next to it.
+# Next to it (a checkout, the Bridge) -> sourced from there, exactly as before.
+# Missing -> fetched from the same ref the repo is cloned from below (MARVEEN_REF,
+# default main), checked (non-empty, defines _t), sourced from a mktemp file.
+# Unreachable -> a plain bilingual stop with the manual way, before any install step.
+MARVEEN_REF="${MARVEEN_REF:-main}"
+if [ -f "$(dirname "$0")/install-lang.sh" ]; then
+  source "$(dirname "$0")/install-lang.sh"
+else
+  _lang_url="${MARVEEN_RAW_BASE:-https://raw.githubusercontent.com/Szotasz/marveen}/${MARVEEN_REF}/install-lang.sh"
+  _lang_tmp="$(mktemp "${TMPDIR:-/tmp}/marveen-install-lang.XXXXXX")"
+  _lang_ok=0
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$_lang_url" -o "$_lang_tmp" 2>/dev/null && _lang_ok=1
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO "$_lang_tmp" "$_lang_url" 2>/dev/null && _lang_ok=1
+  fi
+  if [ "$_lang_ok" = "1" ] && [ -s "$_lang_tmp" ] && grep -q '^_t() {' "$_lang_tmp"; then
+    source "$_lang_tmp"
+    rm -f "$_lang_tmp"
+  else
+    rm -f "$_lang_tmp"
+    echo "Hiba: a telepito nyelvi fajlja (install-lang.sh) nem toltheto le: $_lang_url" >&2
+    echo "Error: the installer's language file (install-lang.sh) could not be downloaded: $_lang_url" >&2
+    echo "  Kezzel / manually: git clone --branch ${MARVEEN_REF} https://github.com/Szotasz/marveen.git ~/marveen && bash ~/marveen/install-linux.sh" >&2
+    exit 1
+  fi
+  unset _lang_url _lang_tmp _lang_ok
+fi
+# end of the install-lang loader (MARVEENLANG1763)
 
 offer_claude_fallback() {
   local step="$1" err_msg="$2" line_info="${3:+:$3}"
@@ -502,8 +533,9 @@ if [ ! -f "$INSTALL_DIR/package.json" ]; then
     echo -e "  Repo klonozasa -> ${TARGET_DIR} ..."
     # A repo default branch-e a develop, de a publikus telepito main-rol fut
     # (a Windows/WSL wrapper is main-rol fetcheli a scriptet) -> pineljuk a main-t.
-    git clone --depth 1 --branch main https://github.com/Szotasz/marveen.git "$TARGET_DIR" \
-      || fail "git clone sikertelen: https://github.com/Szotasz/marveen.git (main branch)"
+    # MARVEENLANG1763: the same ref the language file came from (default main).
+    git clone --depth 1 --branch "$MARVEEN_REF" https://github.com/Szotasz/marveen.git "$TARGET_DIR" \
+      || fail "git clone sikertelen: https://github.com/Szotasz/marveen.git (${MARVEEN_REF} branch)"
     ok "Repo klonozva: $TARGET_DIR"
   fi
   echo -e "  Telepito ujrainditasa a checkoutbol..."
@@ -565,12 +597,18 @@ _shelve_broken_claude() {
   hash -r
 }
 
-# Pinned Node-based fallback for AVX-less hosts. @2.1.110 is the LAST version
+# Pinned Node-based fallback for AVX-less hosts. @2.1.112 is the LAST version
 # that ships bin=cli.js (a `#!/usr/bin/env node` entrypoint) running without
-# AVX -- 2.1.120+ bundles only the Bun ELF binary, so DO NOT use latest here.
-# Unlike the old 2.0.76 pin, 2.1.110 also understands `--channels`, which
-# channels.sh requires to boot the bot. Verified on the AVX-less pilot VPS.
-CLAUDE_PIN="2.1.110"
+# AVX -- from 2.1.113 on every published version ships bin=bin/claude.exe with
+# a postinstall that downloads the Bun ELF binary, so DO NOT use latest here.
+# Measured 2026-09-23 on the AVX-less pilot VPS (QEMU Virtual CPU 2.5+, 0 avx
+# flags) with a REAL `claude -p ... --output-format json` probe, not
+# `--version` (which still exits 0 on some Bun builds there): 2.1.110/111/112
+# answer, 2.1.113/150/170 SIGILL ("CPU lacks AVX support"), 2.1.200/240/260/280
+# spin silently for 120 s. 2.1.112 understands `--channels` (same parser
+# as 2.1.110), which channels.sh requires to boot the bot. Keep in sync with
+# scripts/channels.sh and scripts/fix-avx.sh (a test pins the three together).
+CLAUDE_PIN="2.1.112"
 
 if _claude_runs; then
   ok "claude mar telepitve es fut: $(claude --version 2>/dev/null || echo 'ok')"

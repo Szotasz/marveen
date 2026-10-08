@@ -131,6 +131,27 @@ function runHook(prompt: string, apiBase = base, agent = 'marveen', args: string
 }
 
 const sends = () => calls.filter(c => c.path === '/botbot-tok/sendMessage').map(c => c.body)
+
+// FLAKYCMDLOG1006: the log is SHARED by every test in this file (one stateDir,
+// beforeAll), and a deferred write's detached watcher writes its closing
+// "deferred write answered" line AFTER it sends the reply. A test that ends on
+// the send leaves that writer running into the next test (measured: the v1.41.0
+// release CI, and reproduced by holding the watcher's write until the next
+// test's line was in). So a deferred test waits for its own watcher to finish,
+// and a log reader looks for ITS line, never at the last one.
+const hookLog = () => {
+  try { return readFileSync(join(stateDir, 'progress', 'commands-hook.log'), 'utf-8').trim().split('\n') } catch { return [] }
+}
+const watcherDoneCount = (command: string) => hookLog().filter(l => l.includes(`${command} deferred write answered`)).length
+/** Waits until a watcher closing line for `command` beyond `seenBefore` is in the log. */
+async function waitForWatcherDone(command: string, seenBefore: number, timeoutMs = 8000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (watcherDoneCount(command) > seenBefore) return
+    await new Promise(r => setTimeout(r, 25))
+  }
+  throw new Error(`the ${command} deferred watcher did not finish within ${timeoutMs} ms`)
+}
 const dispatches = () => calls.filter(c => c.path === '/api/commands/dispatch')
 
 describe('marveen-commands.py', () => {
@@ -274,6 +295,7 @@ describe('marveen-commands.py', () => {
     dispatchReply = (body) => body.deferWrites
       ? { status: 200, body: { handled: true, outcome: 'deferred', replies: [] } }
       : { status: 200, body: { handled: true, outcome: 'ran', replies: ['átváltva'] } }
+    const seen = watcherDoneCount('/model')
     const exitedAt = await runHook(channel('/model opus 5m')).then(r => { expect(r.code).toBe(2); return Date.now() })
     expect(sends()).toHaveLength(0)
     const deadline = Date.now() + 5000
@@ -284,6 +306,7 @@ describe('marveen-commands.py', () => {
     expect(d[0].body.deferWrites).toBe(true)
     expect(d[1].body).toEqual({ text: '/model opus 5m', chatId: '42', mainSession: true, deferWrites: false, forwarded: false, messageId: '7' })
     expect(Date.now() - exitedAt).toBeGreaterThanOrEqual(400) // the settle wait ran after the exit
+    await waitForWatcherDone('/model', seen)
   })
 
   it('the main session dispatches with mainSession:true', async () => {
@@ -527,7 +550,7 @@ describe('marveen-commands.py reply logging (for the command harness)', () => {
   it('the answered line carries the reply text', async () => {
     dispatchReply = () => ({ status: 200, body: { handled: true, outcome: 'ran', replies: ['sor1\nsor2'] } })
     await runHook(channel('/status'))
-    const log = readFileSync(join(stateDir, 'progress', 'commands-hook.log'), 'utf-8').trim().split('\n').pop()
+    const log = hookLog().filter(l => l.includes('/status answered')).pop()
     expect(log).toMatch(/\/status answered \(ran\).* reply="sor1\\nsor2"$/)
   })
 })
@@ -575,31 +598,37 @@ describe('marveen-commands.py deferred write, slow dashboard', () => {
     dispatchReply = (b) => b.deferWrites
       ? { status: 200, body: { handled: true, outcome: 'deferred', replies: [] } }
       : { status: 200, body: { handled: true, outcome: 'ran', replies: ['kész'] }, delayMs: 1500 }
+    const seen = watcherDoneCount('/new')
     await runHook(channel('/new'), base, 'marveen', [], { MARVEEN_CMD_DEFERRED_TIMEOUT: '0.5' })
     const deadline = Date.now() + 6000
     while (sends().length === 0 && Date.now() < deadline) await new Promise(r => setTimeout(r, 50))
     expect(sends()).toEqual([{ chat_id: '42', text: '/new: elküldtem, de a dashboard 0 mp alatt sem válaszolt, lehet, hogy lefutott. Nézd meg /status-szal, mielőtt újra kiadod.' }])
+    await waitForWatcherDone('/new', seen)
   })
 
   it('a slow but answering dashboard (1.5 s) gets its reply through at the default timeout', async () => {
     dispatchReply = (b) => b.deferWrites
       ? { status: 200, body: { handled: true, outcome: 'deferred', replies: [] } }
       : { status: 200, body: { handled: true, outcome: 'ran', replies: ['kész'] }, delayMs: 1500 }
+    const seen = watcherDoneCount('/new')
     await runHook(channel('/new'))
     const deadline = Date.now() + 8000
     while (sends().length === 0 && Date.now() < deadline) await new Promise(r => setTimeout(r, 50))
     expect(sends()).toEqual([{ chat_id: '42', text: 'kész' }])
     expect(readFileSync(HOOK, 'utf-8')).toMatch(/MARVEEN_CMD_DEFERRED_TIMEOUT", "90"/)
+    await waitForWatcherDone('/new', seen)
   })
 
   it('the detached re-send is not held to the hook deadline (Claude Code no longer waits on it)', async () => {
     dispatchReply = (b) => b.deferWrites
       ? { status: 200, body: { handled: true, outcome: 'deferred', replies: [] } }
       : { status: 200, body: { handled: true, outcome: 'ran', replies: ['kész'] }, delayMs: 1500 }
+    const seen = watcherDoneCount('/new')
     await runHook(channel('/new'), base, 'marveen', [], { MARVEEN_HOOK_DEADLINE_SEC: '1' })
     const deadline = Date.now() + 8000
     while (sends().length === 0 && Date.now() < deadline) await new Promise(r => setTimeout(r, 50))
     expect(sends()).toEqual([{ chat_id: '42', text: 'kész' }])
+    await waitForWatcherDone('/new', seen)
   })
 })
 
@@ -610,8 +639,10 @@ describe('marveen-commands.py pass-through logging', () => {
     expect(r.code).toBe(0)
     expect(r.stdout).toBe('')
     expect(sends()).toEqual([])
-    const last = readFileSync(join(stateDir, 'progress', 'commands-hook.log'), 'utf-8').trim().split('\n').pop()
-    expect(last).toMatch(/\/xyzproba: not a registry command \(unknown\), passed to the model chat=42/)
+    // its own line (FLAKYCMDLOG1006): another test's detached writer may append after it
+    const own = hookLog().filter(l => l.includes('/xyzproba'))
+    expect(own).toHaveLength(1)
+    expect(own[0]).toMatch(/\/xyzproba: not a registry command \(unknown\), passed to the model chat=42/)
   })
 })
 

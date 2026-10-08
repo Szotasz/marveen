@@ -56,13 +56,13 @@ fi
 
 MAIN_SESSION="${MAIN_AGENT_ID}-channels"
 
-ATTACH_CMD=(tmux -CC attach -t "$SESSION")
+ATTACH_CMD=(tmux -CC attach -t "=$SESSION:")
 if [ -n "${MONITOR_READONLY:-}" ]; then
   ATTACH_CMD+=(-r)
 fi
 
 # Fast path: monitor session already exists -- reattach as-is.
-if tmux has-session -t "$SESSION" 2>/dev/null; then
+if tmux has-session -t "=$SESSION:" 2>/dev/null; then
   exec "${ATTACH_CMD[@]}"
 fi
 
@@ -74,7 +74,7 @@ capitalize() {
 AGENTS=()
 LABELS=()
 
-if tmux has-session -t "$MAIN_SESSION" 2>/dev/null; then
+if tmux has-session -t "=$MAIN_SESSION:" 2>/dev/null; then
   AGENTS+=("$MAIN_SESSION")
   LABELS+=("$(capitalize "$MAIN_AGENT_ID")")
 fi
@@ -98,15 +98,15 @@ idx=0
 for i in "${!AGENTS[@]}"; do
   src="${AGENTS[$i]}"
   label="${LABELS[$i]}"
-  if tmux link-window -s "${src}:0" -t "$SESSION:$((idx+1))" 2>/dev/null; then
-    tmux rename-window -t "$SESSION:$((idx+1))" "$label"
+  if tmux link-window -s "=${src}:0" -t "=$SESSION:$((idx+1))" 2>/dev/null; then
+    tmux rename-window -t "=$SESSION:$((idx+1))" "$label"
     idx=$((idx+1))
   else
     echo "warning: could not link $src -- skipping" >&2
   fi
 done
 
-tmux kill-window -t "$SESSION:_placeholder" 2>/dev/null || true
-tmux select-window -t "$SESSION:1" 2>/dev/null || true
+tmux kill-window -t "=$SESSION:_placeholder" 2>/dev/null || true
+tmux select-window -t "=$SESSION:1" 2>/dev/null || true
 
 exec "${ATTACH_CMD[@]}"

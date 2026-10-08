@@ -27,10 +27,10 @@ function extractReapAwkProgram(): string {
   return m[1]
 }
 
-function runReapMatcher(psLines: string[]): string[] {
+function runReapMatcher(psLines: string[], prov = `/${PROVIDER}`): string[] {
   const program = extractReapAwkProgram()
   const out = execSync(
-    `awk -v needle='CLAUDE_PLUGIN_ROOT=' -v prov='/${PROVIDER}' -v subdir='${INSTALL_DIR}/agents/' '${program}'`,
+    `awk -v needle='CLAUDE_PLUGIN_ROOT=' -v prov='${prov}' -v subdir='${INSTALL_DIR}/agents/' '${program}'`,
     { input: psLines.join('\n') + '\n', encoding: 'utf-8' },
   )
   return out.split('\n').map(s => s.trim()).filter(Boolean)
@@ -63,6 +63,22 @@ describe('channels.sh second-pass orphan reap is scoped to the main agent', () =
 
   it('ignores a different provider and non-poller processes', () => {
     expect(runReapMatcher([OTHER_PROVIDER, UNRELATED])).toEqual([])
+  })
+
+  // PSEWWMACOSBLIND1007 (Geri's review): with `ps axeww` this pass also sees
+  // tty-less processes, so the provider segment is matched inside the
+  // CLAUDE_PLUGIN_ROOT value, on a path boundary.
+  it('does not take a longer sibling plugin (telegram-coordinator) or a process that only mentions both strings', () => {
+    const coordinator = '55501 ?? S 0:01 node CLAUDE_PLUGIN_ROOT=/Users/u/.claude/plugins/cache/x/telegram-coordinator/0.1.0 BOT=x'
+    const mention = '55502 ?? S 0:00 grep CLAUDE_PLUGIN_ROOT= /telegram HOME=/Users/u'
+    expect(runReapMatcher([coordinator, mention])).toEqual([])
+    expect(runReapMatcher([coordinator, MAIN_ORPHAN_B, mention])).toEqual(['67154'])
+  })
+
+  it('matches the slack plugin by its slack-channel cache dir', () => {
+    expect(channelsSh).toMatch(/slack\) PLUGIN_SEG="\/slack-channel" ;;/)
+    const slackOrphan = '55503 ?? S 0:01 node CLAUDE_PLUGIN_ROOT=/Users/u/.claude/plugins/cache/marveen-marketplace/slack-channel/0.1.0 HOME=/Users/u'
+    expect(runReapMatcher([slackOrphan, MAIN_ORPHAN_B], '/slack-channel')).toEqual(['55503'])
   })
 
   it('keeps the sub-agent exclusion guard so it cannot revert to the unscoped form', () => {

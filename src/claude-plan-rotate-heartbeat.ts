@@ -5,7 +5,7 @@
 // entry point) so it unit-tests under tsc's rootDir=src, the same reason
 // quota-gate.ts's decision logic lives under src/ instead of inside a script.
 import { parseQuotaSnapshot } from './quota-snapshot.js'
-import { decideRotationAction, candidateFromObservation, type RotationCandidate } from './claude-plan-rotation.js'
+import { decideRotationAction, candidateFromObservation, effectiveUsedPct, IDLE_PROBE_GATE, type RotationCandidate, type ObservedWindow } from './claude-plan-rotation.js'
 import type { ClaudePlan } from './web/claude-plans.js'
 import {
   recordObservation,
@@ -26,6 +26,81 @@ export interface RotateCheckResult {
 const roundMin = (ms: number) => Math.round(ms / 60_000)
 
 /**
+ * The ACTIVE plan's current usage, from exactly one source:
+ *   - a live probe with that plan's own token (token-mode active plan), or
+ *   - usage-collect.py --json (configDir-mode or no recorded active plan).
+ * usage-collect reads the HOST session login (~/.claude/.credentials.json,
+ * the keychain, or an env_file token), which is a different account from a
+ * token-mode plan's. Measured live 2026-09-26: the main agent ran on a token
+ * plan at 5h 87% (probe) while usage-collect reported another account at
+ * 5h 0% / 7d 100%, and the heartbeat stayed silent. The two sources are
+ * therefore never mixed: the caller picks one and passes only its reading.
+ */
+export interface ActiveReading {
+  source: string
+  fiveHour: ObservedWindow
+  sevenDay?: ObservedWindow
+}
+
+/**
+ * The reading from the raw usage-collect.py --json output, or null when the
+ * snapshot is not trustworthy enough to act on. Same fail-open rule as
+ * quota-gate.ts: an untrusted/missing/incomplete snapshot is not evidence of
+ * pressure.
+ */
+export function activeReadingFromUsageCollect(usageCollectRaw: unknown): ActiveReading | null {
+  const snapshot = parseQuotaSnapshot(usageCollectRaw)
+  const trustedSources = ['authoritative', 'authoritative_cached']
+  if (!snapshot || !trustedSources.includes((snapshot.source ?? '').toLowerCase())) return null
+  const fiveHour = snapshot.windows?.five_hour
+  if (!fiveHour || typeof fiveHour.used_percent !== 'number' || typeof fiveHour.resets_at !== 'number') return null
+  const sevenDay = snapshot.windows?.seven_day
+  return {
+    source: snapshot.source ?? 'unknown',
+    fiveHour: { usedPercent: fiveHour.used_percent, resetsAt: fiveHour.resets_at },
+    ...(sevenDay && typeof sevenDay.used_percent === 'number' && typeof sevenDay.resets_at === 'number'
+      ? { sevenDay: { usedPercent: sevenDay.used_percent, resetsAt: sevenDay.resets_at } }
+      : {}),
+  }
+}
+
+/**
+ * The reading from a live probe's parsed usage (usageFromProbe), or null when
+ * the probe yielded no 5h window. A per-window "rejected" status is kept, so
+ * an exhausted plan reads as 100% (effectiveUsedPct) whatever its percentage.
+ */
+export function activeReadingFromProbe(
+  usage: { fiveHour: { usedPercent: number; resetsAt: number; status: string | null } | null; sevenDay: { usedPercent: number; resetsAt: number; status: string | null } | null } | null,
+  source: string,
+): ActiveReading | null {
+  if (!usage?.fiveHour) return null
+  const win = (w: { usedPercent: number; resetsAt: number; status: string | null }): ObservedWindow => ({
+    usedPercent: w.usedPercent,
+    resetsAt: w.resetsAt,
+    ...(w.status ? { status: w.status } : {}),
+  })
+  return {
+    source,
+    fiveHour: win(usage.fiveHour),
+    ...(usage.sevenDay ? { sevenDay: win(usage.sevenDay) } : {}),
+  }
+}
+
+/**
+ * Is the active plan close enough to a limit that the idle plans are worth a
+ * live probe this tick (IDLE_PROBE_GATE, a little below ROTATION_GATE)? False
+ * without a reading: not knowing is never a reason to spend another plan's
+ * quota. Takes the same reading the decision gets, so the two cannot disagree
+ * about which account they are looking at.
+ */
+export function activeReadingNearLimit(reading: ActiveReading | null, nowMs: number): boolean {
+  if (!reading) return false
+  if (effectiveUsedPct(reading.fiveHour, nowMs) >= IDLE_PROBE_GATE.fiveHourPercent) return true
+  if (!reading.sevenDay) return false
+  return effectiveUsedPct(reading.sevenDay, nowMs) >= IDLE_PROBE_GATE.sevenDayPercent
+}
+
+/**
  * Everything design 6.3/6.6 decides, given the already-collected inputs:
  * the registered plans, the current state side-car, and the raw
  * usage-collect.py --json output. Preconditions (design 6.2) and the
@@ -37,7 +112,11 @@ export function decideAndRecord(input: {
   agentId: string
   plans: ClaudePlan[]
   state: ClaudePlansState
-  usageCollectRaw: unknown
+  /** usage-collect.py --json output. Ignored when `activeReading` is given. */
+  usageCollectRaw?: unknown
+  /** The active plan's reading from its own probe (token-mode). When this key
+   *  is present -- even as null -- usageCollectRaw is not looked at at all. */
+  activeReading?: ActiveReading | null
   nowMs: number
 }): RotateCheckResult {
   const { agentId, plans, state, usageCollectRaw, nowMs } = input
@@ -59,27 +138,25 @@ export function decideAndRecord(input: {
   const activePlan = plans.find((p) => p.id === activePlanId)
   if (!activePlan) return { printLine: null, nextState: null }
 
-  const snapshot = parseQuotaSnapshot(usageCollectRaw)
   // Same fail-open rule as quota-gate.ts: an untrusted/missing/incomplete
   // snapshot is not evidence of pressure, so never act on it.
-  const trustedSources = ['authoritative', 'authoritative_cached']
-  if (!snapshot || !trustedSources.includes((snapshot.source ?? '').toLowerCase())) {
-    return { printLine: null, nextState: null }
-  }
-  const fiveHour = snapshot.windows?.five_hour
-  if (!fiveHour || typeof fiveHour.used_percent !== 'number' || typeof fiveHour.resets_at !== 'number') {
-    return { printLine: null, nextState: null }
-  }
-  const sevenDay = snapshot.windows?.seven_day
+  const readingGiven = 'activeReading' in input
+  const active = readingGiven ? input.activeReading ?? null : activeReadingFromUsageCollect(usageCollectRaw)
+  if (!active) return { printLine: null, nextState: null }
+  const { fiveHour, sevenDay } = active
 
+  const previous = state.plans[activePlanId]
   const observed: ObservedPlanState = {
+    // A caller-supplied reading may come from a probe the caller already
+    // recorded (token-mode active plan, with its lastProbe outcome); keep that
+    // and overallStatus instead of wiping them here.
+    ...(readingGiven && previous?.lastProbe ? { lastProbe: previous.lastProbe } : {}),
+    ...(readingGiven && previous?.overallStatus ? { overallStatus: previous.overallStatus } : {}),
     observedAt: nowMs,
-    source: snapshot.source ?? 'unknown',
+    source: active.source,
     windows: {
-      five_hour: { usedPercent: fiveHour.used_percent, resetsAt: fiveHour.resets_at },
-      ...(sevenDay && typeof sevenDay.used_percent === 'number' && typeof sevenDay.resets_at === 'number'
-        ? { seven_day: { usedPercent: sevenDay.used_percent, resetsAt: sevenDay.resets_at } }
-        : {}),
+      five_hour: fiveHour,
+      ...(sevenDay ? { seven_day: sevenDay } : {}),
     },
   }
   // Telemetry is recorded on every trustworthy tick, independent of whether a
@@ -98,14 +175,14 @@ export function decideAndRecord(input: {
   const activeSevenDay = observed.windows.seven_day
   const decision = decideRotationAction({
     activePlanId,
-    activeFiveHour: { usedPercent: fiveHour.used_percent, resetsAt: fiveHour.resets_at },
+    activeFiveHour: fiveHour,
     ...(activeSevenDay ? { activeSevenDay } : {}),
     candidates,
     nowMs,
   })
 
-  const resetsInMin = roundMin(fiveHour.resets_at * 1000 - nowMs)
-  const pct = Math.round(fiveHour.used_percent)
+  const resetsInMin = roundMin(fiveHour.resetsAt * 1000 - nowMs)
+  const pct = Math.round(fiveHour.usedPercent)
   // Appended AFTER the historical fields so a prompt that parses the old
   // ROTATE/NO_ALTERNATIVE shape keeps working; `trigger` names the window
   // that demanded the switch (5h or 7d).

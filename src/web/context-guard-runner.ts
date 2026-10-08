@@ -29,7 +29,7 @@ import {
   contextLimitForModel,
   calibrateLimit,
   handoffStaleMinutes,
-  dailyHandoffDue,
+  applyDailyHandoffSweep,
   DAILY_HANDOFF_REASON_PREFIX,
   IDLE_FLUSH_REASON_PREFIX,
   INITIAL_GUARD_STATE,
@@ -462,18 +462,9 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
     // (handoffStaleMinutes) needs the transcript mtime on every decision path
     // that can restart, and the probe is a single stat().
     idleMs: running && needPct ? measureIdleMs(name, nowMs) : null,
-    // Seed-on-first-sight: an agent we have not seen this process is recorded
-    // as served NOW and is never due on the same sweep. dailyHandoffDue is
-    // therefore false on the first tick by construction, not by luck.
-    dailyHandoffDue: (() => {
-      if (!running || state.phase !== 'idle') return false
-      const last = lastDailyHandoff.get(name)
-      if (last === undefined) {
-        lastDailyHandoff.set(name, nowMs)
-        return false
-      }
-      return dailyHandoffDue(cfg, localMidnightMs(nowMs), last, nowMs)
-    })(),
+    // Seed-on-first-ARMED-sight, and forget-while-disarmed on every sweep:
+    // dailyHandoffSweep decides both, applyDailyHandoffSweep applies the record.
+    dailyHandoffDue: applyDailyHandoffSweep(lastDailyHandoff, name, cfg, running && state.phase === 'idle', localMidnightMs(nowMs), nowMs),
   }
 
   const decision = decideGuard(state, inputs, cfg)

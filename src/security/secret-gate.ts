@@ -89,6 +89,21 @@ export const SECRET_PATTERNS: { name: string; pattern: RegExp }[] = [
   // around "32 hex" would have missed it.
   { name: 'generic vendor secret key (sk_ or sk-)', pattern: /\bsk[-_][A-Za-z0-9_-]{24,}/ },
   { name: 'AWS access key id', pattern: /\bAKIA[0-9A-Z]{16}\b/ },
+  // TGBOTPAT915: a Telegram bot token MINDHAROM alakban atment ezen a keszleten
+  // (teljes `<id>:<titok>`, csak a titkos fel, es a `TELEGRAM_BOT_TOKEN=` env-sor)
+  // -- merve a keszlet ELO peldanyan, harom ismert alak pozitiv kontrollja mellett.
+  // Nem elmeleti: 2026-09-15-en pontosan ez a token volt olvashato egy oktatovideo
+  // nyers felvetelen, es a maszkolo kapu is atengedte, mert az OCR a KETTOSPONTNAL
+  // vagta kette a sztringet, igy egyetlen token-minta sem illeszkedett.
+  // A ket ag KULON kell: a teljes alak a kettospont miatt nem illeszkedik a
+  // titkos felre irt mintara, a titkos fel pedig onmagaban is titok (az OCR-ut
+  // pont azt allitja elo). A titkos resz a Telegram formatuma szerint pontosan
+  // 35 karakter [A-Za-z0-9_-] halmazbol.
+  // Lookarounds, not \b (review #1347, Dani): in the Bot API URL form
+  // (`api.telegram.org/bot<id>:<secret>/...`) there is no word boundary between
+  // `bot` and the id, and a secret ending in `-` (about 1 in 64) has none after it.
+  { name: 'Telegram bot token', pattern: /(?<![0-9])[0-9]{8,10}:[A-Za-z0-9_-]{35}(?![A-Za-z0-9_-])/ },
+  { name: 'Telegram bot token secret half', pattern: /(?:TELEGRAM[A-Z_]*TOKEN|bot_token|botToken)["'\s:=]+[A-Za-z0-9_-]{35}(?![A-Za-z0-9_-])/i },
   { name: 'Supabase service_role JWT hint', pattern: /service_role["'\s:=]+eyJ/ },
   // SBPMINTAHIANY914 (2026-09-14): a Supabase PERSONAL ACCESS TOKEN alakja. A sor
   // FOLOTT mar allt egy Supabase-tetel (a service_role JWT), amitol a Supabase
@@ -155,6 +170,7 @@ export const ALLOWLISTED_PATHS: { path: string; reason: string }[] = [
   // akadni -- akkor ide kerul, ugyanezzel az indokkal.
   { path: 'src/__tests__/fixtures/skill-scan/14-api-key-shaped.md', reason: 'skill-scan fixture: an api-key-shaped string is the subject under test' },
   { path: 'src/__tests__/fixtures/skill-scan/14-api-key-shaped.expected.json', reason: 'skill-scan golden output from the original Python scanner: it quotes the fixture above' },
+  { path: 'src/__tests__/agent-transcript.test.ts', reason: 'transcript masking test: the synthetic credentials ARE the subject under test -- each one asserts that maskSecrets() removes it' },
 ];
 
 /**

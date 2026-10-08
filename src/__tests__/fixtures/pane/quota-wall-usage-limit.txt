@@ -1,0 +1,16 @@
+  Measured the three files against the base; the report is on the card.
+
+● Usage limit reached again · continuing automatically at 6:20pm · esc 
+  to cancel
+  ⎿  You've hit your session limit · resets 6:20pm (UTC)
+
+✻ Brewed for 0s · done 4:12 PM
+
+──────────────────────────────────────────────────────────────────── worker-1 ──
+❯ 
+────────────────────────────────────────────────────────────────────────────────
+  ⚠ Usage limit reached · limit resets 6:20pm
+    Continuing automatically at 6:20pm · esc to cancel · /usage-credits to 
+    continue now
+  Opus 5.5 | ctx 50% | 5h 100% | 7d 26%
+  ⏵⏵ bypass permissions on (shift+tab to cycle)

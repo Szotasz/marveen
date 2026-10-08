@@ -6,6 +6,7 @@ import {
   isQuotaExceededError,
   candidateFromObservation,
   ROTATION_GATE,
+  IDLE_PROBE_GATE,
   type ObservedWindow,
   type RotationCandidate,
 } from '../claude-plan-rotation.js'
@@ -282,7 +283,7 @@ describe('candidateFromObservation', () => {
     const spent = { observedAt: NOW, windows: { five_hour: { usedPercent: 100, resetsAt: NOW_S + 3600 } } }
     const busy = { observedAt: NOW, windows: { five_hour: { usedPercent: 92, resetsAt: NOW_S + 3600 } } }
     expect(candidateFromObservation('p', spent, NOW)).toBeNull()
-    expect(candidateFromObservation('p', busy, NOW)).toEqual({ planId: 'p', freeFivePct: 8, freeSevenDayPct: 100 })
+    expect(candidateFromObservation('p', busy, NOW)).toEqual({ planId: 'p', freeFivePct: 8, freeSevenDayPct: 100, limitingResetsAt: NOW_S + 3600 })
   })
 })
 
@@ -293,5 +294,53 @@ describe('pickRotationTarget: ranks by the tighter of the two windows', () => {
       { planId: 'b', freeFivePct: 50, freeSevenDayPct: 95 },
     ]
     expect(pickRotationTarget(candidates, 'active')).toBe('b')
+  })
+})
+
+// Owner suggestion 2026-09-26: among candidates with enough headroom, spend
+// the one whose quota resets soonest first, so it is not wasted at reset.
+describe('pickRotationTarget: sooner reset wins among sufficient candidates', () => {
+  it('two sufficient candidates: the earlier-resetting one wins, even with less headroom', () => {
+    const candidates: RotationCandidate[] = [
+      { planId: 'fresh', freeFivePct: 90, freeSevenDayPct: 90, limitingResetsAt: NOW_S + 4 * 3600 },
+      { planId: 'soon', freeFivePct: 40, freeSevenDayPct: 80, limitingResetsAt: NOW_S + 20 * 60 },
+    ]
+    expect(pickRotationTarget(candidates, 'active')).toBe('soon')
+  })
+
+  it('a known reset beats an unknown one (an unused plan keeps its quota for later)', () => {
+    const candidates: RotationCandidate[] = [
+      { planId: 'unused', freeFivePct: 100, freeSevenDayPct: 100 },
+      { planId: 'soon', freeFivePct: 50, freeSevenDayPct: 90, limitingResetsAt: NOW_S + 3600 },
+    ]
+    expect(pickRotationTarget(candidates, 'active')).toBe('soon')
+  })
+
+  it('a candidate without sufficient headroom never wins on reset time', () => {
+    const nearLimitUsed = IDLE_PROBE_GATE.fiveHourPercent // exactly at the gate: not sufficient
+    const candidates: RotationCandidate[] = [
+      { planId: 'tight', freeFivePct: 100 - nearLimitUsed, freeSevenDayPct: 100, limitingResetsAt: NOW_S + 60 },
+      { planId: 'roomy', freeFivePct: 60, freeSevenDayPct: 70, limitingResetsAt: NOW_S + 6 * 3600 },
+    ]
+    expect(pickRotationTarget(candidates, 'active')).toBe('roomy')
+  })
+
+  it('no sufficient candidate at all: falls back to the most headroom, not the soonest reset', () => {
+    const candidates: RotationCandidate[] = [
+      { planId: 'x', freeFivePct: 5, freeSevenDayPct: 100, limitingResetsAt: NOW_S + 60 },
+      { planId: 'y', freeFivePct: 12, freeSevenDayPct: 100, limitingResetsAt: NOW_S + 3 * 3600 },
+    ]
+    expect(pickRotationTarget(candidates, 'active')).toBe('y')
+  })
+
+  it('candidateFromObservation reports the LIMITING window reset (the more used one)', () => {
+    const obs = {
+      observedAt: NOW,
+      windows: {
+        five_hour: { usedPercent: 20, resetsAt: NOW_S + 3600 },
+        seven_day: { usedPercent: 60, resetsAt: NOW_S + 3 * 24 * 3600 },
+      },
+    }
+    expect(candidateFromObservation('p', obs, NOW)?.limitingResetsAt).toBe(NOW_S + 3 * 24 * 3600)
   })
 })
