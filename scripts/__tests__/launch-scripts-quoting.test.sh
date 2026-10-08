@@ -72,6 +72,34 @@ for S in "$CH" "$WD"; do
   assert_eq "$name: isolated CFG_ENV exports the whole dir" "isolated:/tmp/it's dir" "$(printf '%s\n' "$RESULT" | grep '^isolated:')"
 done
 
+# --- LAUNCHQUOTEREST1008: the channel state dir and the auth pane file ---
+for S in "$CH" "$WD"; do
+  name="$(basename "$S")"
+  {
+    grep '^sh_single_quote() {' "$S"
+    grep -E 'STATE_DIR_ENV="export \$\{STATE_ENV_VAR\}=' "$S" | sed -E 's/^.*(STATE_DIR_ENV=)/\1/'
+  } > "$TMP/state-$name.sh"
+  [ "$(grep -c '^STATE_DIR_ENV=' "$TMP/state-$name.sh")" = 1 ] && pass "$name: the STATE_DIR_ENV line was found" || fail "$name: the STATE_DIR_ENV line was found"
+  OUT="$(env -i PATH="$PATH" bash -c '
+    STATE_ENV_VAR=TELEGRAM_STATE_DIR; MAIN_CHAN_DIR="/tmp/it'"'"'s chan dir"
+    . "$1"
+    bash -c "${STATE_DIR_ENV}printf \"%s\" \"\$TELEGRAM_STATE_DIR\""
+  ' _ "$TMP/state-$name.sh" 2>&1)"
+  assert_eq "$name: STATE_DIR_ENV exports the whole state dir" "/tmp/it's chan dir" "$OUT"
+done
+{
+  grep '^sh_single_quote() {' "$CH"
+  grep -E '^      AUTH_PANE_ENV="\. ' "$CH" | sed -E 's/^ +//'
+} > "$TMP/auth.sh"
+[ "$(grep -c '^AUTH_PANE_ENV=' "$TMP/auth.sh")" = 1 ] && pass "channels.sh: the AUTH_PANE_ENV line was found" || fail "channels.sh: the AUTH_PANE_ENV line was found"
+mkdir -p "$TMP/it's auth"
+printf 'export AUTH_PROBE=sourced\n' > "$TMP/it's auth/pane.env"
+OUT="$(env -i PATH="$PATH" bash -c '
+  _auth_file="$2"; . "$1"
+  bash -c "${AUTH_PANE_ENV}printf \"%s\" \"\$AUTH_PROBE\""
+' _ "$TMP/auth.sh" "$TMP/it's auth/pane.env" 2>&1)"
+assert_eq "channels.sh: AUTH_PANE_ENV sources the whole file path" "sourced" "$OUT"
+
 echo
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]

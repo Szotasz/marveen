@@ -250,7 +250,7 @@ case "$CHANNEL_PROVIDER" in
 esac
 MAIN_CHAN_DIR="$INSTALL_DIR/.claude/channels/$CHANNEL_PROVIDER"
 STATE_DIR_ENV=""
-[ -f "$MAIN_CHAN_DIR/.env" ] && STATE_DIR_ENV="export ${STATE_ENV_VAR}='${MAIN_CHAN_DIR}' && "
+[ -f "$MAIN_CHAN_DIR/.env" ] && STATE_DIR_ENV="export ${STATE_ENV_VAR}=$(sh_single_quote "$MAIN_CHAN_DIR") && "
 # FLEETVENV923: the fleet venv's bin/ first, exactly as channels.sh boots the
 # session -- a respawn must not hand it a different python3 (#1626 review).
 . "$INSTALL_DIR/scripts/fleet-venv-prefix.sh" 2>/dev/null || fleet_venv_prefix() { :; }
