@@ -22,6 +22,8 @@
 #
 # Everything runs in a throwaway temp tree. Nothing touches a real inbox.
 set -uo pipefail
+# Byte size, portable (GNU stat -c%s fails on macOS/BSD).
+fsize() { wc -c < "$1" | tr -d ' '; }
 
 PASS=0; FAIL=0
 pass() { PASS=$((PASS+1)); echo "  PASS  $1"; }
@@ -67,7 +69,7 @@ if ! ffmpeg -y -loglevel error -f lavfi -i "testsrc2=s=2400x2400:d=1" \
   echo "SETUP FAILED: ffmpeg could not build the fixture image"
   exit 1
 fi
-BIG_SIZE=$(stat -c%s "$BIG")
+BIG_SIZE=$(fsize "$BIG")
 if [ "$BIG_SIZE" -le 524288 ]; then
   echo "SETUP FAILED: fixture is only ${BIG_SIZE}B, below the hook's 524288B threshold"
   exit 1
@@ -111,16 +113,16 @@ fi
 echo
 echo "(1) a real oversized inbox image"
 IMG="$(fresh_image a.jpg)"
-BEFORE=$(stat -c%s "$IMG")
+BEFORE=$(fsize "$IMG")
 run_hook "$(payload Read "$IMG")"
-AFTER=$(stat -c%s "$IMG")
+AFTER=$(fsize "$IMG")
 if [ "$RC" -eq 0 ]; then pass "exit 0"; else fail "exit $RC (stderr: $ERR)"; fi
 if [ "$AFTER" -lt "$BEFORE" ]; then
   pass "the file on disk actually shrank ($BEFORE -> $AFTER)"
 else
   fail "the file did NOT shrink ($BEFORE -> $AFTER) -- the resize is a second no-op"
 fi
-if [ -f "$INBOX/original/a.jpg" ] && [ "$(stat -c%s "$INBOX/original/a.jpg")" -eq "$BEFORE" ]; then
+if [ -f "$INBOX/original/a.jpg" ] && [ "$(fsize "$INBOX/original/a.jpg")" -eq "$BEFORE" ]; then
   pass "the full-resolution original is preserved at the promised path"
 else
   fail "the original is missing or not the original size"
@@ -192,7 +194,7 @@ for t in cat sed stat cp mv rm mkdir dirname basename date python3; do
   p="$(command -v "$t" 2>/dev/null)" && ln -sf "$p" "$BIN2/$t"
 done
 IMG="$(fresh_image a.jpg)"
-BEFORE=$(stat -c%s "$IMG")
+BEFORE=$(fsize "$IMG")
 OUT="$(payload Read "$IMG" | PATH="$BIN2" "$BASH_BIN" "$HOOK" 2>"$BASE/err")"; RC=$?; ERR="$(cat "$BASE/err")"
 if [ "$RC" -eq 1 ] && [ -n "$ERR" ]; then
   pass "exit 1 (the hook's own loud exit) + stderr naming the missing tools"
@@ -204,7 +206,7 @@ if [ -z "$OUT" ]; then
 else
   fail "it still emitted a note: $OUT"
 fi
-if [ "$(stat -c%s "$IMG")" -eq "$BEFORE" ]; then
+if [ "$(fsize "$IMG")" -eq "$BEFORE" ]; then
   pass "the image was left untouched"
 else
   fail "the image changed although no resizer ran"
@@ -230,14 +232,14 @@ for mode in rc1 noop; do
   fi
   chmod +x "$BIN3/sips"
   IMG="$(fresh_image a.jpg)"
-  BEFORE=$(stat -c%s "$IMG")
+  BEFORE=$(fsize "$IMG")
   OUT="$(payload Read "$IMG" | PATH="$BIN3" "$BASH_BIN" "$HOOK" 2>"$BASE/err")"; RC=$?; ERR="$(cat "$BASE/err")"
   if printf '%s' "$OUT" | grep -q 'auto-resized'; then
     fail "[$mode] the note claims a resize that sips did not do: $OUT"
   else
     pass "[$mode] no 'auto-resized' claim"
   fi
-  if [ "$(stat -c%s "$IMG")" -eq "$BEFORE" ]; then
+  if [ "$(fsize "$IMG")" -eq "$BEFORE" ]; then
     pass "[$mode] the image bytes are untouched"
   else
     fail "[$mode] the image changed although sips did nothing"
@@ -276,7 +278,7 @@ if [ "$RC" -eq 0 ] && [ -z "$OUT" ] && [ -z "$ERR" ]; then pass "an image outsid
 IMG="$(fresh_image small.png)"
 head -c 1000 /dev/urandom > "$IMG"
 run_hook "$(payload Read "$IMG")"
-if [ "$RC" -eq 0 ] && [ -z "$OUT" ] && [ -z "$ERR" ] && [ "$(stat -c%s "$IMG")" -eq 1000 ]; then
+if [ "$RC" -eq 0 ] && [ -z "$OUT" ] && [ -z "$ERR" ] && [ "$(fsize "$IMG")" -eq 1000 ]; then
   pass "a file under the 500KB threshold, left alone"
 else
   fail "small file: rc=$RC out='$OUT' err='$ERR'"
@@ -292,7 +294,7 @@ fi
 echo
 echo "(6) two instances on the same file at the same instant"
 IMG="$(fresh_image a.jpg)"
-BEFORE=$(stat -c%s "$IMG")
+BEFORE=$(fsize "$IMG")
 for n in 1 2 3; do
   ( payload Read "$IMG" | bash "$HOOK" >"$BASE/c$n.out" 2>"$BASE/c$n.err"; echo $? > "$BASE/c$n.rc" ) &
 done
@@ -308,16 +310,16 @@ if [ "$NOTES" -eq 1 ]; then
 else
   fail "$NOTES of 3 emitted a note -- the duplicate registration is racing"
 fi
-AFTER=$(stat -c%s "$IMG")
+AFTER=$(fsize "$IMG")
 if [ "$AFTER" -lt "$BEFORE" ] && [ "$AFTER" -gt 0 ]; then
   pass "the file survived the race intact ($BEFORE -> $AFTER)"
 else
   fail "the file is $AFTER B after three concurrent runs"
 fi
-if [ "$(stat -c%s "$INBOX/original/a.jpg")" -eq "$BEFORE" ]; then
+if [ "$(fsize "$INBOX/original/a.jpg")" -eq "$BEFORE" ]; then
   pass "the original is the original, not a resized copy of itself"
 else
-  fail "the preserved original is $(stat -c%s "$INBOX/original/a.jpg") B, expected $BEFORE"
+  fail "the preserved original is $(fsize "$INBOX/original/a.jpg") B, expected $BEFORE"
 fi
 if [ -z "$(find "$INBOX" -maxdepth 1 -name '.channel-image-resize*' -print -quit)" ]; then
   pass "no lock or temp file left behind"
@@ -330,9 +332,9 @@ echo
 echo "(7) a stale lock is stolen, a live one is loud"
 IMG="$(fresh_image a.jpg)"
 STALE="$INBOX/.channel-image-resize.lock-a.jpg"   # a FILE: the lock is O_EXCL, not mkdir
-: > "$STALE"; touch -d '2 hours ago' "$STALE"
+: > "$STALE"; perl -e 'my $t = time - 7200; utime $t, $t, $ARGV[0]' "$STALE"
 run_hook "$(payload Read "$IMG")"
-if [ "$RC" -eq 0 ] && [ "$(stat -c%s "$IMG")" -lt "$(stat -c%s "$BIG")" ]; then
+if [ "$RC" -eq 0 ] && [ "$(fsize "$IMG")" -lt "$(fsize "$BIG")" ]; then
   pass "a lock older than 60s is stolen, the work still happens"
 else
   fail "a stale lock disabled the hook: rc=$RC (this is the no-op bug by another route)"
