@@ -75,8 +75,14 @@ function textOf(content: unknown): string | null {
 
 /**
  * PURE. What the transcript lines say about one delivered message.
- *   seen            -- a user prompt, a queued_command attachment, or a queue
- *                      enqueue carries the message's envelope tag;
+ *   seen            -- a user prompt or a queued_command attachment carries
+ *                      the message's envelope tag. A bare queue ENQUEUE is
+ *                      deliberately not evidence: measured 2026-10-08 (21
+ *                      days, 43 enqueues) every one was consumed as a
+ *                      queued_command within 8.5s, so counting it changes no
+ *                      verdict, while a prompt removed from the queue
+ *                      unprocessed (Esc) would read as arrived and silence
+ *                      the alert;
  *   blocked-by-hook -- the only trace is a "UserPromptSubmit operation blocked
  *                      by hook" system row carrying the tag;
  *   absent          -- no row after the send carries the tag.
@@ -90,7 +96,7 @@ export function classifyTranscriptLines(lines: Iterable<string>, msgId: number, 
   for (const line of lines) {
     if (!line.includes(needle)) continue
     let row: {
-      type?: unknown; subtype?: unknown; timestamp?: unknown; content?: unknown; operation?: unknown
+      type?: unknown; subtype?: unknown; timestamp?: unknown; content?: unknown
       message?: { content?: unknown }; attachment?: { type?: unknown; prompt?: unknown }
     }
     try { row = JSON.parse(line) } catch { continue }
@@ -101,8 +107,6 @@ export function classifyTranscriptLines(lines: Iterable<string>, msgId: number, 
       if (t != null && rx.test(t)) return 'seen'
     } else if (row.type === 'attachment' && row.attachment?.type === 'queued_command') {
       if (typeof row.attachment.prompt === 'string' && rx.test(row.attachment.prompt)) return 'seen'
-    } else if (row.type === 'queue-operation' && row.operation === 'enqueue') {
-      if (typeof row.content === 'string' && rx.test(row.content)) return 'seen'
     } else if (row.type === 'system' && typeof row.content === 'string' &&
       row.content.startsWith(BLOCKED_PREFIX) && rx.test(row.content)) {
       blocked = true

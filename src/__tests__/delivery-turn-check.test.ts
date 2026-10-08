@@ -106,9 +106,14 @@ describe('classifyTranscriptLines', () => {
   it('a typed user prompt carrying the envelope tag is seen', () => {
     expect(classifyTranscriptLines([unrelated(), userPrompt(41)], 41, SENT)).toBe('seen')
   })
-  it('a prompt typed into a busy pane (queue enqueue / queued_command) is seen', () => {
+  it('a prompt typed into a busy pane and handed to the model (queued_command) is seen', () => {
     expect(classifyTranscriptLines(queued(42).split('\n'), 42, SENT)).toBe('seen')
     expect(classifyTranscriptLines([attachmentOnly(42)], 42, SENT)).toBe('seen')
+  })
+  it('a bare queue enqueue is NOT evidence (removed unprocessed would read as arrived)', () => {
+    const enqueueOnly = JSON.stringify({ type: 'queue-operation', operation: 'enqueue', timestamp: iso(SENT + 300), content: envelope(47) })
+    const removed = JSON.stringify({ type: 'queue-operation', operation: 'remove', timestamp: iso(SENT + 900), content: envelope(47) })
+    expect(classifyTranscriptLines([enqueueOnly, removed], 47, SENT)).toBe('absent')
   })
   it('a prompt blocked by a UserPromptSubmit hook is blocked-by-hook, not seen', () => {
     expect(classifyTranscriptLines([blocked(43)], 43, SENT)).toBe('blocked-by-hook')
