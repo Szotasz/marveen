@@ -39,12 +39,15 @@ in the same alert. A dependency the source NAMES whose file is not there is a MI
 in the same alert, because the gate fails on it the same way (card 06c9aa79 (2)): a python import that is neither
 stdlib, nor a local file (resolved as above), nor an installed module (searched outside the install root), shown
 at the importing file's directory and scripts/lib; and a file name in a load form -- os.path.join(..., "<name>")
-in python, a relative import/require specifier in node -- shown at the path it resolves to.
+in python, a relative import/require specifier in node -- shown at the path it resolves to. The missing rule reads the
+source without its comments and (python) docstrings: a commented-out load or import is no finding (card 06c9aa79 (3)).
 WHAT IT DOES NOT SEE. A dependency whose path is put together at run time (a computed or formatted path, a name
 read from config or the environment) rather than written as a literal; a node specifier without its extension; a
 python name that two files under scripts/ share (ambiguous: neither loaded nor reported). A quoted file name in
-any other form (pathlib's / or with_name, a bare string to spec_from_file_location, a message or a comment) is
-loaded when the file exists, but its absence is not reported. A deliberately optional import (try/except
+any other form (pathlib's / or with_name, a bare string to spec_from_file_location, a message) is loaded when the
+file exists, but its absence is not reported; a python source that does not tokenize gets no missing finding from its text
+(its own load fails, which the probes report); a node side-effect import (import "./x.mjs") is not in the missing rule (a
+static one breaks its gate, which the command probe reports). A deliberately optional import (try/except
 ImportError) of a module that is not installed IS reported. A module that runs a main of its own when imported is
 not missed but reported (it reads an empty stdin): such a module should guard its main.
 
@@ -75,6 +78,7 @@ Env:
 """
 import glob
 import importlib.machinery
+import io
 import json
 import os
 import pathlib
@@ -83,6 +87,7 @@ import signal
 import subprocess
 import sys
 import time
+import tokenize
 import urllib.error
 import urllib.request
 
@@ -253,6 +258,104 @@ def load_literals(path, text):
 
 
 
+def blank_spans(text, spans):
+    """text with every character of the (start, end) offset spans turned into a space, line breaks kept."""
+    chars = list(text)
+    for a, b in spans:
+        for x in range(a, b):
+            if chars[x] not in "\r\n":
+                chars[x] = " "
+    return "".join(chars)
+
+
+def py_code_only(text):
+    """The python source with its comments and string statements (docstrings) blanked, offsets and lines kept; None when it
+    does not tokenize (such a file fails its own load, which the probes report)."""
+    try:
+        toks = list(tokenize.generate_tokens(io.StringIO(text).readline))
+    except (tokenize.TokenError, SyntaxError):
+        return None
+    starts = [0]
+    for line in text.splitlines(keepends=True):
+        starts.append(starts[-1] + len(line))
+    off = lambda rc: starts[rc[0] - 1] + rc[1]
+    spans = [(off(t.start), off(t.end)) for t in toks if t.type == tokenize.COMMENT]
+    sig = [t for t in toks if t.type not in (tokenize.NL, tokenize.COMMENT)]
+    i = 0
+    while i < len(sig):
+        if sig[i].type != tokenize.STRING:
+            i += 1
+            continue
+        j = i
+        while j + 1 < len(sig) and sig[j + 1].type == tokenize.STRING:
+            j += 1
+        before = sig[i - 1].type if i else tokenize.NEWLINE
+        after = sig[j + 1].type if j + 1 < len(sig) else tokenize.ENDMARKER
+        if before in (tokenize.NEWLINE, tokenize.INDENT, tokenize.DEDENT) and after in (tokenize.NEWLINE, tokenize.ENDMARKER):
+            spans += [(off(t.start), off(t.end)) for t in sig[i:j + 1]]
+        i = j + 1
+    return blank_spans(text, spans)
+
+
+JS_REGEX_BEFORE = set("(,=:[!&|?{};+-*%<>~^")
+JS_REGEX_WORDS = {"return", "typeof", "case", "do", "else", "in", "of", "new", "delete", "void", "throw", "yield", "await"}
+
+
+def js_code_only(text):
+    """The node source with its comments blanked, offsets and lines kept. Strings, template literals and regex literals are
+    stepped over, so a // or /* inside them is not taken for a comment (a regex literal is told from a division by the code
+    before it, as minifiers do)."""
+    spans, i, n, prev, word = [], 0, len(text), "", ""
+    while i < n:
+        c = text[i]
+        if c == "/" and text.startswith("//", i):
+            j = text.find("\n", i)
+            j = n if j < 0 else j
+            spans.append((i, j))
+            i = j
+            continue
+        if c == "/" and text.startswith("/*", i):
+            j = text.find("*/", i + 2)
+            j = n if j < 0 else j + 2
+            spans.append((i, j))
+            i = j
+            continue
+        if c in "'\"`":
+            j = i + 1
+            while j < n and text[j] != c and (c == "`" or text[j] != "\n"):
+                j += 2 if text[j] == "\\" else 1
+            i, prev, word = j + 1, c, ""
+            continue
+        if c == "/" and (prev == "" or prev in JS_REGEX_BEFORE or word in JS_REGEX_WORDS):
+            j, in_class = i + 1, False
+            while j < n and text[j] != "\n":
+                if text[j] == "\\":
+                    j += 2
+                    continue
+                if text[j] == "[":
+                    in_class = True
+                elif text[j] == "]":
+                    in_class = False
+                elif text[j] == "/" and not in_class:
+                    break
+                j += 1
+            j += 1
+            while j < n and (text[j].isalnum() or text[j] == "_"):
+                j += 1
+            i, prev, word = j, "/", ""
+            continue
+        if c.isalnum() or c in "_$":
+            j = i
+            while j < n and (text[j].isalnum() or text[j] in "_$"):
+                j += 1
+            word, prev, i = text[i:j], text[j - 1], j
+            continue
+        if not c.isspace():
+            prev, word = c, ""
+        i += 1
+    return blank_spans(text, spans)
+
+
 def installed(name):
     """A python module importable from OUTSIDE the install root (stdlib paths, site-packages, PYTHONPATH)."""
     root = os.path.abspath(ROOT) + os.sep
@@ -282,6 +385,11 @@ def local_deps(path, index):
     def line_of(offset):
         return "%s:%d" % (os.path.relpath(path, ROOT), text.count("\n", 0, offset) + 1)
 
+    # 06c9aa79 (3): the missing rule reads the source without its comments and (python) docstrings, so a commented-out load
+    # or import is not reported; what a file loads when the file exists is still taken from the whole text
+    code = py_code_only(text) if path.endswith(".py") else js_code_only(text) if path.endswith((".mjs", ".cjs", ".js")) else text
+    code_imports = {m.start() for m in PY_IMPORT.finditer(code)} if code is not None and path.endswith(".py") else set()
+
     def add(cand):
         cand = os.path.normpath(cand)
         if cand != path and os.path.isfile(cand) and os.path.commonpath([scripts, cand]) == scripts:
@@ -303,14 +411,14 @@ def local_deps(path, index):
                     hits = index.get(name, [])
                     if len(hits) == 1:
                         add(hits[0])
-                    elif not hits and not installed(name):
+                    elif not hits and m.start() in code_imports and not installed(name):
                         miss([os.path.join(here, name + ".py"), os.path.join(scripts, "lib", name + ".py")],
                              'python import "%s" (%s): nincs helyi fájlként, és telepített modulként sincs' % (name, line_of(m.start())))
     for m in FILE_LIT.finditer(text):
         for cand in (os.path.join(here, m.group(1)), os.path.join(ROOT, m.group(1))):
             if add(cand):
                 break
-    for lit, offset in load_literals(path, text):
+    for lit, offset in (load_literals(path, code) if code is not None else ()):
         if any(os.path.isfile(os.path.normpath(c)) for c in (os.path.join(here, lit), os.path.join(ROOT, lit))):
             continue
         miss([os.path.join(ROOT, lit) if lit.startswith("scripts/") else os.path.join(here, lit)],

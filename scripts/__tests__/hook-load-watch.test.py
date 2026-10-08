@@ -508,6 +508,24 @@ TALK_GATE_MJS = ("import { readFileSync } from 'node:fs'\nimport { join } from '
                  "const pkg = (d, rel) => join(d, rel, '__init__.py')\n"
                  "JSON.parse(readFileSync(0, 'utf-8'))\nprocess.exit(EXTS.length && pkg ? 0 : 0)\n")
 
+PY_COMMENT_GATE_PY = ('"""A stand-in whose docstring shows an import:\n\n    from ghost_mod import thing\n"""\n'
+                      "import importlib.util, json, os, sys\n"
+                      "HERE = os.path.dirname(os.path.abspath(__file__))\n"
+                      "# p = os.path.join(HERE, \"ghost_join.py\")  -- the old load, commented out\n"
+                      "p = json.load(sys.stdin)\n"
+                      "if ((p.get('tool_input') or {}).get('command') or '').startswith('kill'):\n"
+                      "    spec = importlib.util.spec_from_file_location('_real', os.path.join(HERE, 'real-ghost.py'))\n"
+                      "    spec.loader.exec_module(importlib.util.module_from_spec(spec))\n"
+                      "sys.exit(0)\n")
+JS_COMMENT_GATE_MJS = ("import { readFileSync } from 'node:fs'\n"
+                       "// import { x } from './ghost.mjs'   (the old import, commented out)\n"
+                       "/*\nimport { y } from './ghost2.mjs'\n*/\n"
+                       "const p = JSON.parse(readFileSync(0, 'utf-8'))\n"
+                       "const url = 'https://example.invalid/a'; const re = /\\/\\//; "
+                       "if (((p.tool_input || {}).command || '').startsWith('kill')) { await import('./real-ghost.mjs') }\n"
+                       "process.exit(url && re ? 0 : 0)\n")
+BROKEN_IMPORT_GATE_PY = "import json, sys\nimport ghost_x\njson.load(sys.stdin)\nsys.exit(0)\n'''never closed\n"
+
 
 class Missing(DependencyRoot):
     """06c9aa79 (2): a dependency the source NAMES whose file is not there is a finding, the same as a broken one."""
@@ -601,6 +619,31 @@ class Missing(DependencyRoot):
         write(os.path.join(site, "hlw_fake_pkg.py"), "OK = 1\n", 0o644)
         rc, out = run(self.root, "--check", PYTHONPATH=site)
         self.assertEqual(rc, 0, out)
+        self.assertIn("local dependencies named in a gate's source but missing: 0", out)
+
+    def test_commented_python_load_and_docstring_import_stay_silent(self):
+        # The tester's shapes: a commented-out load and an import shown in a docstring are no dependency; the real lazy load is
+        self.add_gate("scripts/hooks/py-comment-gate.py", PY_COMMENT_GATE_PY, "python3")
+        rc, out = run(self.root, "--check")
+        self.assertEqual(rc, 1, out)
+        self.assertEqual(re.findall(r"MISSING rc=None +(\S+) ", out), ["scripts/hooks/real-ghost.py"])
+        self.assertIn('a forrásban betöltött "real-ghost.py" (scripts/hooks/py-comment-gate.py:10)', out)
+        self.assertIn("local dependencies named in a gate's source but missing: 1", out)
+
+    def test_commented_node_import_stays_silent_and_strings_or_regexes_hide_nothing(self):
+        # a // or /* inside a string or a regex literal is no comment: the real import after them on the same line is seen
+        self.add_gate("scripts/hooks/js-comment-gate.mjs", JS_COMMENT_GATE_MJS, "node")
+        rc, out = run(self.root, "--check")
+        self.assertEqual(rc, 1, out)
+        self.assertEqual(re.findall(r"MISSING rc=None +(\S+) ", out), ["scripts/hooks/real-ghost.mjs"])
+        self.assertIn('a forrásban betöltött "./real-ghost.mjs" (scripts/hooks/js-comment-gate.mjs:7)', out)
+
+    def test_a_python_source_that_does_not_tokenize_gets_no_missing_from_its_text(self):
+        # the gate does not even compile: the command probe reports it; its text is not read for missing names
+        self.add_gate("scripts/hooks/broken-import-gate.py", BROKEN_IMPORT_GATE_PY, "python3")
+        rc, out = run(self.root, "--check")
+        self.assertEqual(rc, 1, out)
+        self.assertRegex(out, r"OPEN +rc=1 +scripts/hooks/broken-import-gate\.py \(1 ügynök\) probe=Bash")
         self.assertIn("local dependencies named in a gate's source but missing: 0", out)
 
     def test_quoted_names_outside_a_load_form_stay_silent(self):
