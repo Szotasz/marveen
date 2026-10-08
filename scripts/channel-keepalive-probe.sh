@@ -100,13 +100,13 @@ if [ -z "$TMUX_BIN" ]; then
 fi
 
 # --- gate 1: the channels session must exist ---
-if ! "$TMUX_BIN" has-session -t "$SESSION" 2>/dev/null; then
+if ! "$TMUX_BIN" has-session -t "=$SESSION:" 2>/dev/null; then
   log "session $SESSION absent -- ${MAIN_AGENT_ID}-channels.service owns start; no touch"
   exit 0
 fi
 
 # --- gate 2: resolve the claude pid under the session's pane ---
-pane_pid="$("$TMUX_BIN" list-panes -t "$SESSION" -F '#{pane_pid}' 2>/dev/null | head -1)"
+pane_pid="$("$TMUX_BIN" list-panes -t "=$SESSION:" -F '#{pane_pid}' 2>/dev/null | head -1)"
 if [ -z "$pane_pid" ]; then
   log "no pane pid for $SESSION -- no touch"
   exit 0

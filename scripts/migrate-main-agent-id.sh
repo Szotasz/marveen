@@ -73,7 +73,7 @@ elif [ "$OS" = "Linux" ]; then
   systemctl --user stop marveen-channels.service marveen-dashboard.service marveen-morning.timer 2>/dev/null || true
   systemctl --user disable marveen-channels.service marveen-dashboard.service marveen-morning.timer marveen-host-watchdog.service 2>/dev/null || true
 fi
-tmux kill-session -t marveen-channels 2>/dev/null || true
+tmux kill-session -t "=marveen-channels:" 2>/dev/null || true
 
 # DB rewrite. Use the SQLite CLI that ships with the project.
 DB="$INSTALL_DIR/store/claudeclaw.db"

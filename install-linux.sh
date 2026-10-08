@@ -24,7 +24,38 @@ warn() { echo -e "  ${ORANGE}!${NC} $*"; }
 INSTALL_STEP="init"
 
 # shellcheck source=install-lang.sh
-source "$(dirname "$0")/install-lang.sh"
+# MARVEENLANG1763: the README's one-liner (curl ... install-linux.sh -o install.sh &&
+# bash install.sh) and the Windows/WSL wrapper (/tmp/marveen-install.sh) run this
+# script ON ITS OWN, before the repo is cloned, so install-lang.sh is not next to it.
+# Next to it (a checkout, the Bridge) -> sourced from there, exactly as before.
+# Missing -> fetched from the same ref the repo is cloned from below (MARVEEN_REF,
+# default main), checked (non-empty, defines _t), sourced from a mktemp file.
+# Unreachable -> a plain bilingual stop with the manual way, before any install step.
+MARVEEN_REF="${MARVEEN_REF:-main}"
+if [ -f "$(dirname "$0")/install-lang.sh" ]; then
+  source "$(dirname "$0")/install-lang.sh"
+else
+  _lang_url="${MARVEEN_RAW_BASE:-https://raw.githubusercontent.com/Szotasz/marveen}/${MARVEEN_REF}/install-lang.sh"
+  _lang_tmp="$(mktemp "${TMPDIR:-/tmp}/marveen-install-lang.XXXXXX")"
+  _lang_ok=0
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$_lang_url" -o "$_lang_tmp" 2>/dev/null && _lang_ok=1
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO "$_lang_tmp" "$_lang_url" 2>/dev/null && _lang_ok=1
+  fi
+  if [ "$_lang_ok" = "1" ] && [ -s "$_lang_tmp" ] && grep -q '^_t() {' "$_lang_tmp"; then
+    source "$_lang_tmp"
+    rm -f "$_lang_tmp"
+  else
+    rm -f "$_lang_tmp"
+    echo "Hiba: a telepito nyelvi fajlja (install-lang.sh) nem toltheto le: $_lang_url" >&2
+    echo "Error: the installer's language file (install-lang.sh) could not be downloaded: $_lang_url" >&2
+    echo "  Kezzel / manually: git clone --branch ${MARVEEN_REF} https://github.com/Szotasz/marveen.git ~/marveen && bash ~/marveen/install-linux.sh" >&2
+    exit 1
+  fi
+  unset _lang_url _lang_tmp _lang_ok
+fi
+# end of the install-lang loader (MARVEENLANG1763)
 
 offer_claude_fallback() {
   local step="$1" err_msg="$2" line_info="${3:+:$3}"
@@ -98,22 +129,38 @@ ensure_in_rc() {
   done
 }
 
-# Like ensure_in_rc, but REPLACES an existing `export <VAR>=` line instead of
-# keeping it. For credentials ensure_in_rc was wrong: once a bad or old token
-# line was in ~/.bashrc, a re-run with the correct token skipped the rc ("marker
-# already there"), so every interactive shell kept exporting the stale value.
-set_export_in_rc() {
-  local var="$1" line="$2"
+# SECSZIVEK1007: secrets belong in the 0600 install files, not in shell
+# startup files. The services never read an rc file: they use <install>/.env
+# and <install>/store/.claude-oauth-token, both 0600 (see
+# service_auth_present). A re-run removes the credential export lines from the
+# rc files and says so. The rewrite keeps the rc file's inode and permissions
+# (cat back, not mv), and `|| true` because grep -v exits 1 when every line is
+# filtered out.
+remove_secret_export_from_rc() {
+  local var="$1" rc
   for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
     [ -f "$rc" ] || continue
-    # Portable (BSD/macOS sed has no `sed -i` without a suffix argument).
-    # Rewrite in place via cat so the rc file keeps its inode and permissions;
-    # `|| true` because grep -v exits 1 when every line is filtered out.
+    grep -Eq "^[[:space:]]*export[[:space:]]+${var}=" "$rc" 2>/dev/null || continue
     { grep -Ev "^[[:space:]]*export[[:space:]]+${var}=" "$rc" || true; } >"$rc.tmp" \
       && cat "$rc.tmp" >"$rc" && rm -f "$rc.tmp"
-    printf '%s\n' "$line" >>"$rc"
-    warn "RC frissitve ($(basename "$rc")): export ${var}=..."
+    warn "$(basename "$rc"): a korabbi ${var} export-sor torolve (titok nem kerul shell rc fajlba)"
   done
+}
+
+# Interactive convenience without the secret in the rc: one line that READS the
+# value from a 0600 install file at shell start, and exports it only when it is
+# there. The file path is single-quoted for the shell ('\'' for a quote in it).
+# Usage: ensure_secret_reader_in_rc VAR FILE KIND   (KIND: file = whole file, env = VAR= line of a .env)
+ensure_secret_reader_in_rc() {
+  local var="$1" file="$2" kind="$3" q marker line
+  q="'$(printf '%s' "$file" | sed "s/'/'\\\\''/g")'"
+  marker="# marveen: ${var} from the install's 0600 file"
+  if [ "$kind" = "env" ]; then
+    line="${marker}"$'\n'"_mv=\"\$(grep -m1 '^${var}=' ${q} 2>/dev/null | cut -d= -f2-)\"; [ -n \"\$_mv\" ] && export ${var}=\"\$_mv\"; unset _mv"
+  else
+    line="${marker}"$'\n'"[ -s ${q} ] && export ${var}=\"\$(cat ${q})\""
+  fi
+  ensure_in_rc "$marker" "$line"
 }
 
 # Tobbsoros blokkot ad az rc fajlokhoz ha a <marker> meg nem szerepel bennuk.
@@ -502,8 +549,9 @@ if [ ! -f "$INSTALL_DIR/package.json" ]; then
     echo -e "  Repo klonozasa -> ${TARGET_DIR} ..."
     # A repo default branch-e a develop, de a publikus telepito main-rol fut
     # (a Windows/WSL wrapper is main-rol fetcheli a scriptet) -> pineljuk a main-t.
-    git clone --depth 1 --branch main https://github.com/Szotasz/marveen.git "$TARGET_DIR" \
-      || fail "git clone sikertelen: https://github.com/Szotasz/marveen.git (main branch)"
+    # MARVEENLANG1763: the same ref the language file came from (default main).
+    git clone --depth 1 --branch "$MARVEEN_REF" https://github.com/Szotasz/marveen.git "$TARGET_DIR" \
+      || fail "git clone sikertelen: https://github.com/Szotasz/marveen.git (${MARVEEN_REF} branch)"
     ok "Repo klonozva: $TARGET_DIR"
   fi
   echo -e "  Telepito ujrainditasa a checkoutbol..."
@@ -751,7 +799,8 @@ else
     read -p "  ANTHROPIC_API_KEY (sk-ant-...): " ANTHROPIC_API_KEY_INPUT
     if [ -n "$ANTHROPIC_API_KEY_INPUT" ]; then
       export ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY_INPUT"
-      set_export_in_rc 'ANTHROPIC_API_KEY' "export ANTHROPIC_API_KEY=\"$ANTHROPIC_API_KEY_INPUT\""
+      remove_secret_export_from_rc ANTHROPIC_API_KEY
+      ensure_secret_reader_in_rc ANTHROPIC_API_KEY "$INSTALL_DIR/.env" env
       CLAUDE_AUTH_ENV_LINE="ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY_INPUT}"
       ok "ANTHROPIC_API_KEY beallitva"
     else
@@ -770,7 +819,7 @@ else
     echo ""
     # Shape-check BEFORE the value is written anywhere. Without it any paste was
     # accepted -- typically the one-time code the browser shows during
-    # `claude setup-token` -- and landed in ~/.bashrc and .env as if it were the
+    # `claude setup-token` -- and landed in .env as if it were the
     # token; the services then failed to authenticate with no hint why. Same
     # pattern the store/.claude-oauth-token write below already gates on.
     OAUTH_TOKEN_INPUT=""
@@ -790,7 +839,8 @@ else
     unset _tok _try
     if [ -n "$OAUTH_TOKEN_INPUT" ]; then
       export CLAUDE_CODE_OAUTH_TOKEN="$OAUTH_TOKEN_INPUT"
-      set_export_in_rc 'CLAUDE_CODE_OAUTH_TOKEN' "export CLAUDE_CODE_OAUTH_TOKEN=\"$OAUTH_TOKEN_INPUT\""
+      remove_secret_export_from_rc CLAUDE_CODE_OAUTH_TOKEN
+      ensure_secret_reader_in_rc CLAUDE_CODE_OAUTH_TOKEN "$INSTALL_DIR/store/.claude-oauth-token" file
       CLAUDE_AUTH_ENV_LINE="CLAUDE_CODE_OAUTH_TOKEN=${OAUTH_TOKEN_INPUT}"
       # Ellenorzes
       if claude auth status &>/dev/null; then

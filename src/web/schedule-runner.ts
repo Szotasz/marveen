@@ -89,6 +89,7 @@ import {
 import { isRestartInFlight } from './restart-lock.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { runCommandTask } from './command-task.js'
+import { trackDetachedGroup } from './detached-groups.js'
 import { decideQuotaAction, type QuotaWorkClass } from '../quota-gate.js'
 import { readQuotaSnapshot } from '../quota-snapshot.js'
 import { detectsFirstRunGate, detectPaneState, overfullParkedInputTail, type PaneState } from '../pane-state.js'
@@ -1092,6 +1093,10 @@ export const PRECHECK_TIMEOUT_MS = 10_000
 // spawnSync's default maxBuffer: a longer stdout fails the run the same way in both forms.
 const PRECHECK_MAX_STDOUT_BYTES = 1024 * 1024
 
+// The synchronous form. Since CRONPRECHECKSYNC1007 the runner calls it from
+// nowhere: both loops use runPreCheckAsync. Kept only as the reference the
+// async form's contract tests compare against; do not call it from the runner
+// (it holds the event loop, and its timeout ends only the direct child).
 export function runPreCheck(task: ScheduledTask): PreCheckResult {
   if (!task.preCheck) return { skip: false }
   const scriptPath = resolvePreCheckPath(task.name, task.preCheck)
@@ -1129,6 +1134,36 @@ export function runPreCheck(task: ScheduledTask): PreCheckResult {
 // synchronous retry pre-checks stood for 734.7 s of the loop's stalls. Same
 // limit, same answers: a missing script, a spawn error, a timeout, a non-zero
 // exit or an oversized stdout all run the LLM anyway.
+//
+// CRONPRECHECKSYNC1007: the cron loop uses it too. A pre-check that calls the
+// dashboard's own API could not be answered while spawnSync held the loop, so
+// it stood until the limit and its request landed after it (measured on two
+// community installs, 2026-09-30..10-07: on one, 6 of 12 timeouts had the
+// message created 0.02-0.32 s AFTER the timeout).
+//
+// The script runs in its OWN process group (detached), and a timeout or an
+// oversized output ends the whole group: TERM, then KILL a second later. A
+// kill of the direct child alone left what the script started running as an
+// orphan; on 2026-10-05 an orphaned python, still in its ssh session, ran next
+// to the task's own run and wiped its key file (#1698, sigee82, measured on the
+// synchronous form; the same gap was here).
+export const PRECHECK_KILL_GRACE_MS = 1_000
+
+function endPreCheckGroup(child: ReturnType<typeof spawn>, task: ScheduledTask, onEnded: () => void = () => {}): void {
+  const pid = child.pid
+  if (pid == null) { onEnded(); return }
+  const signalGroup = (sig: NodeJS.Signals): void => {
+    try { process.kill(-pid, sig) } catch (err) {
+      // ESRCH: the group is already gone, which is the goal.
+      if ((err as NodeJS.ErrnoException).code !== 'ESRCH') logger.warn({ task: task.name, sig, error: (err as Error).message }, 'pre-check: could not signal the script\'s process group')
+    }
+  }
+  signalGroup('SIGTERM')
+  // DETACHEDSHUTDOWN1007: the group stays tracked until the KILL, so a
+  // shutdown inside the grace second still ends it.
+  setTimeout(() => { signalGroup('SIGKILL'); onEnded() }, PRECHECK_KILL_GRACE_MS).unref()
+}
+
 export function runPreCheckAsync(
   task: ScheduledTask,
   opts: { timeoutMs?: number; maxStdoutBytes?: number } = {},
@@ -1152,18 +1187,26 @@ export function runPreCheckAsync(
     }
     let child: ReturnType<typeof spawn>
     try {
-      child = spawn('bash', [scriptPath], { stdio: ['ignore', 'pipe', 'pipe'] })
+      // detached: the script leads its own process group, so the limit can end
+      // everything it started (endPreCheckGroup), not just bash.
+      child = spawn('bash', [scriptPath], { stdio: ['ignore', 'pipe', 'pipe'], detached: true })
     } catch (err) {
       logger.warn({ err, task: task.name }, 'pre-check script threw, running LLM anyway')
       settle({ skip: false })
       return
     }
+    // DETACHEDSHUTDOWN1007: the dashboard's shutdown ends this group while it
+    // runs. It leaves the registry when the script exits on its own, or, after
+    // a limit, once endPreCheckGroup's KILL has gone out.
+    const untrack = trackDetachedGroup(child.pid, `pre-check:${task.name}`)
+    let ending = false
+    const endGroup = (): void => { ending = true; endPreCheckGroup(child, task, untrack) }
     const stdout: Buffer[] = []
     let stdoutBytes = 0
     let stderr = ''
     timer = setTimeout(() => {
       logger.warn({ task: task.name, timeoutMs }, 'pre-check script timed out, running LLM anyway')
-      child.kill('SIGTERM')
+      endGroup()
       settle({ skip: false })
     }, timeoutMs)
     child.stdout?.on('data', (chunk: Buffer) => {
@@ -1171,7 +1214,7 @@ export function runPreCheckAsync(
       stdoutBytes += chunk.length
       if (stdoutBytes > maxStdoutBytes) {
         logger.warn({ task: task.name, maxStdoutBytes }, 'pre-check script output too long, running LLM anyway')
-        child.kill('SIGTERM')
+        endGroup()
         settle({ skip: false })
         return
       }
@@ -1181,10 +1224,12 @@ export function runPreCheckAsync(
       if (stderr.length < 200) stderr += chunk.toString('utf-8')
     })
     child.on('error', (err) => {
+      untrack()
       logger.warn({ task: task.name, error: err.message }, 'pre-check script spawn error, running LLM anyway')
       settle({ skip: false })
     })
     child.on('close', (status) => {
+      if (!ending) untrack()
       if (settled) return
       if (status !== 0) {
         logger.warn({ task: task.name, status, stderr: stderr.trim().slice(0, 200) }, 'pre-check script exited non-zero, running LLM anyway')
@@ -2819,8 +2864,19 @@ export function startScheduleRunner(): NodeJS.Timeout {
 
       // Run pre-check once per task (not per agent) since it queries shared
       // state (DB, filesystem) that does not vary by target agent.
-      const cronPc = runPreCheck(task)
+      // CRONPRECHECKSYNC1007: off the event loop, like the retry loop's, so a
+      // pre-check that calls the dashboard's own API gets its answer. The
+      // tickRunning guard holds the next tick while this one awaits.
+      const cronPc = await runPreCheckAsync(task)
       rememberPreCheckAnswer(task, now, cronPc)
+      // The await is new here, so a task disabled or deleted while its
+      // pre-check ran is left alone: no fire (the per-target re-read below
+      // would catch that too) and no 'skipped-precheck' run or last-run stamp
+      // for a task that is no longer on.
+      if (task.preCheck && !currentEnabledTask(task.name)) {
+        logger.info({ task: task.name }, 'Schedule dropped: the task was disabled or deleted while its pre-check ran')
+        continue
+      }
       if (cronPc.skip) {
         scheduleLastRun.set(task.name, now)
         persistScheduleLastRun()

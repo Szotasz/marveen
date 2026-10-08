@@ -112,6 +112,8 @@ export function delay(ms: number): Promise<void> {
 
 import { CHANNEL_PLUGIN_IDS } from './plugin-ids.js'
 import { ROOT_SANDBOX_ENV } from './root-sandbox-env.js'
+import { exactTmuxTarget, sessionOfTmuxTarget } from '../tmux-target.js'
+import { expandAndValidateConfigDir } from '../config-dir-path.js'
 export { CHANNEL_PLUGIN_IDS }
 
 // Pure: compute the enabledPlugins map for a sub-agent so that exactly its own
@@ -675,7 +677,13 @@ export function resolveMainAgentConfigDir(): string | null {
   let raw = ''
   try { raw = String(getEffectiveSettingValue('MAIN_AGENT_CONFIG_DIR') ?? '').trim() } catch { return null }
   if (!raw) return null
-  const dir = raw.startsWith('~') ? join(homedir(), raw.slice(1)) : raw
+  // SECSZIVEK1007: a value from .env or the systemd environment never met the
+  // settings write check; the read applies the same path rules.
+  const dir = expandAndValidateConfigDir(raw, homedir())
+  if (!dir) {
+    logger.warn('main-agent config dir: MAIN_AGENT_CONFIG_DIR is not a valid config dir path, keeping the shared ~/.claude')
+    return null
+  }
   if (!existsSync(dir)) {
     logger.warn({ dir }, 'main-agent config dir: MAIN_AGENT_CONFIG_DIR does not exist, keeping the shared ~/.claude')
     return null
@@ -1583,8 +1591,10 @@ function sessionRunAsUserMap(): Map<string, string> {
 export function runAsUserForTmuxArgs(tmuxArgs: string[], map: Map<string, string>): string | null {
   for (let i = 0; i < tmuxArgs.length - 1; i++) {
     if (tmuxArgs[i] !== '-t' && tmuxArgs[i] !== '-s') continue
-    // `-t agent-x:0.1` addresses a window/pane inside the same session.
-    const session = tmuxArgs[i + 1].split(':')[0]
+    // `-t agent-x:0.1` addresses a window/pane inside the same session, and
+    // since TMUXEXACT1771 every target is in the exact form `=agent-x:` -- the
+    // session name is what the map is keyed on, so both are stripped.
+    const session = sessionOfTmuxTarget(tmuxArgs[i + 1])
     const user = map.get(session)
     if (user) return user
   }
@@ -1697,7 +1707,7 @@ export function getAgentRunningSince(name: string, session: string = agentSessio
   try {
     const target = agentTmuxTarget(name)
     const host = target.host
-    const out = captureTmux(target, ['display-message', '-p', '-t', session, '#{session_created}']).trim()
+    const out = captureTmux(target, ['display-message', '-p', '-t', exactTmuxTarget(session), '#{session_created}']).trim()
     const ts = parseInt(out, 10)
     return Number.isFinite(ts) ? ts : null
   } catch {
@@ -1899,7 +1909,7 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
 
   try {
     try {
-      runTmux(agentTmuxTarget(name), ['kill-session', '-t', session])
+      runTmux(agentTmuxTarget(name), ['kill-session', '-t', exactTmuxTarget(session)])
       await delay(3000)
     } catch { /* ok */ }
 
@@ -2628,7 +2638,7 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
           return
         }
         logger.warn({ name, session, polls: v.polls, elapsedMs: v.elapsedMs }, 'resumed channel agent: plugin NOT alive within the window; relaunching FRESH')
-        try { runTmux(agentTmuxTarget(name), ['kill-session', '-t', session], { timeout: 5000 }) } catch { /* already gone */ }
+        try { runTmux(agentTmuxTarget(name), ['kill-session', '-t', exactTmuxTarget(session)], { timeout: 5000 }) } catch { /* already gone */ }
         try {
           const r = await startAgentProcess(name, { fresh: true })
           logger.info({ name, ok: r.ok, error: r.error ?? null }, 'resumed channel agent: fresh fallback launched')
@@ -2659,7 +2669,7 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
         try { pane = capturePane(session) ?? '' } catch { /* transient capture miss */ }
         if (!epermRestarted && /EPERM|[Oo]peration not permitted/.test(pane)) {
           epermRestarted = true
-          try { runTmux(null, ['kill-session', '-t', session], { timeout: 5000 }) } catch { /* already gone */ }
+          try { runTmux(null, ['kill-session', '-t', exactTmuxTarget(session)], { timeout: 5000 }) } catch { /* already gone */ }
           try {
             const fallbackCwd = mkdtempSync(join(tmpdir(), `marveen-agent-${name}-`))
             const agentClaudeMd = join(dir, 'CLAUDE.md')
@@ -2685,11 +2695,11 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
         // EPERM branch returns early, so the non-EPERM path fell through to here.
         if (epermRestarted) {
           if (/Do you trust the files in this folder\?/.test(pane)) {
-            try { runTmux(null, ['send-keys', '-t', session, '1', 'Enter'], { timeout: 4000 }) } catch { /* ignore */ }
+            try { runTmux(null, ['send-keys', '-t', exactTmuxTarget(session), '1', 'Enter'], { timeout: 4000 }) } catch { /* ignore */ }
           } else if (/Bypass Permissions mode/.test(pane) && /Yes, I accept/.test(pane)) {
-            try { runTmux(null, ['send-keys', '-t', session, '2', 'Enter'], { timeout: 4000 }) } catch { /* ignore */ }
+            try { runTmux(null, ['send-keys', '-t', exactTmuxTarget(session), '2', 'Enter'], { timeout: 4000 }) } catch { /* ignore */ }
           } else if (/Welcome to Claude Code/.test(pane)) {
-            try { runTmux(null, ['send-keys', '-t', session, 'Enter'], { timeout: 4000 }) } catch { /* ignore */ }
+            try { runTmux(null, ['send-keys', '-t', exactTmuxTarget(session), 'Enter'], { timeout: 4000 }) } catch { /* ignore */ }
           }
         }
         if (/Listening for channel messages/.test(pane)) return
@@ -2756,7 +2766,7 @@ export async function stopAgentProcess(name: string): Promise<{ ok: boolean; err
   const host = target.host
 
   try {
-    runTmux(target, ['kill-session', '-t', session], { timeout: 5000 })
+    runTmux(target, ['kill-session', '-t', exactTmuxTarget(session)], { timeout: 5000 })
     // A LAUNCH-TITKOK NEM ELIK TUL A LEALLITAST. Enelkul egy rotalt kulcs REGI erteke a lemezen
     // maradna a kovetkezo inditasig, egy leallitott agense pedig hataridotlenul.
     clearLaunchSecrets(name)
@@ -2840,9 +2850,9 @@ const SURVEY_MODAL_RX = /How is Claude doing this session/
 
 async function dismissSurveyModalIfPresent(session: string, host: string | null = null): Promise<void> {
   try {
-    const pane = captureTmux(host, ['capture-pane', '-t', session, '-p'])
+    const pane = captureTmux(host, ['capture-pane', '-t', exactTmuxTarget(session), '-p'])
     if (!SURVEY_MODAL_RX.test(pane)) return
-    runTmux(host, ['send-keys', '-t', session, '0'], { timeout: 5000 })
+    runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), '0'], { timeout: 5000 })
     // Modal close is one frame; settle window so the next send-keys lands in
     // the prompt input, not the now-stale modal handler.
     await delay(300)
@@ -2862,11 +2872,11 @@ const RESUME_SUMMARY_MODAL_RX = /Resume from summary/
 
 export async function dismissResumeSummaryModalIfPresent(session: string, host: string | null = null): Promise<void> {
   try {
-    const pane = captureTmux(host, ['capture-pane', '-t', session, '-p'])
+    const pane = captureTmux(host, ['capture-pane', '-t', exactTmuxTarget(session), '-p'])
     if (!RESUME_SUMMARY_MODAL_RX.test(pane)) return
-    runTmux(host, ['send-keys', '-t', session, '1'], { timeout: 5000 })
+    runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), '1'], { timeout: 5000 })
     await delay(100)
-    runTmux(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+    runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), 'Enter'], { timeout: 5000 })
     // /compact starts immediately and can run for minutes; we only need to
     // unblock the modal so detectPaneState can transition off 'unknown'.
     await delay(300)
@@ -2935,13 +2945,13 @@ export async function clearFeedbackModalAndRecheck(session: string, host: string
 
 export async function dismissFeedbackDraftModalIfPresent(session: string, host: string | null = null): Promise<void> {
   try {
-    const pane = captureTmux(host, ['capture-pane', '-t', session, '-p'])
+    const pane = captureTmux(host, ['capture-pane', '-t', exactTmuxTarget(session), '-p'])
     if (!detectsFeedbackDraftModal(pane)) return
-    runTmux(host, ['send-keys', '-t', session, '0'], { timeout: 5000 })
+    runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), '0'], { timeout: 5000 })
     await delay(300)
-    const after = captureTmux(host, ['capture-pane', '-t', session, '-p'])
+    const after = captureTmux(host, ['capture-pane', '-t', exactTmuxTarget(session), '-p'])
     if (detectsFeedbackOptOutPrompt(after)) {
-      runTmux(host, ['send-keys', '-t', session, 'Escape'], { timeout: 5000 })
+      runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), 'Escape'], { timeout: 5000 })
       await delay(300)
     }
     logger.info({ session }, 'Dismissed Claude Code feedback-draft modal before sending prompt (feedback drafting left ON)')
@@ -2963,11 +2973,11 @@ export async function dismissFeedbackDraftModalIfPresent(session: string, host: 
 // (pure detector, quoted-text-proof), so this adds no blind-injection surface.
 export async function dismissModelConsentDialogIfPresent(session: string, host: string | null = null): Promise<void> {
   try {
-    const pane = captureTmux(host, ['capture-pane', '-t', session, '-p'])
+    const pane = captureTmux(host, ['capture-pane', '-t', exactTmuxTarget(session), '-p'])
     if (!detectsModelConsentDialog(pane)) return
-    runTmux(host, ['send-keys', '-t', session, '1'], { timeout: 5000 })
+    runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), '1'], { timeout: 5000 })
     await delay(150)
-    runTmux(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+    runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), 'Enter'], { timeout: 5000 })
     await delay(300)
     logger.info({ session }, 'Answered model usage-credit consent dialog: kept the configured model (option 1, never the switch default)')
   } catch (err) {
@@ -3024,7 +3034,7 @@ export async function answerFirstRunGates(
           return 'blocked'
         }
         for (const k of keys) {
-          runTmux(host, ['send-keys', '-t', session, k], { timeout: 5000 })
+          runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), k], { timeout: 5000 })
           await delay(150)
         }
       } else if (gate === 'bypass-permissions') {
@@ -3038,7 +3048,7 @@ export async function answerFirstRunGates(
           return 'blocked'
         }
         for (const k of keys) {
-          runTmux(host, ['send-keys', '-t', session, k], { timeout: 5000 })
+          runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), k], { timeout: 5000 })
           await delay(150)
         }
       } else if (gate === 'mcp-trust') {
@@ -3054,12 +3064,12 @@ export async function answerFirstRunGates(
           return 'blocked'
         }
         for (const k of keys) {
-          runTmux(host, ['send-keys', '-t', session, k], { timeout: 5000 })
+          runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), k], { timeout: 5000 })
           await delay(150)
         }
       } else {
         // theme / welcome: Enter accepts the highlighted default and moves on.
-        runTmux(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+        runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), 'Enter'], { timeout: 5000 })
       }
     } catch (err) {
       logger.warn({ err, session, gate }, 'first-run gate: answer keystroke failed')
@@ -3156,7 +3166,7 @@ export async function scheduleIdentitySetup(session: string, displayName: string
             }
             try {
               for (const cmd of identitySlashCommands(displayName)) {
-                runTmux(host, ['send-keys', '-t', session, cmd, 'Enter'], { timeout: 5000 })
+                runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), cmd, 'Enter'], { timeout: 5000 })
                 await delay(1000)
               }
               logger.info({ session, displayName, attempt }, 'Set session /rename')
@@ -3261,7 +3271,7 @@ export async function clearInputBuffer(session: string, host: string | null = nu
     try {
       const pane = capturePane(session, host)
       for (const key of parkedClearSequence(pane != null ? parkedInputRowCount(pane) : 0)) {
-        runTmux(host, ['send-keys', '-t', session, key], { timeout: 5000 })
+        runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), key], { timeout: 5000 })
       }
       // Settle briefly so the next send-keys lands in the freshly cleared
       // buffer rather than racing the clear.
@@ -3317,7 +3327,7 @@ async function discardPlaceholderBuffer(session: string, host: string | null = n
     // would quit the TUI.
     if (pane != null && !detectsPastePlaceholder(pane)) return true
     try {
-      runTmux(host, ['send-keys', '-t', session, 'C-c'], { timeout: 5000 })
+      runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), 'C-c'], { timeout: 5000 })
     } catch (err) {
       logger.warn({ err, session }, 'discardPlaceholderBuffer: Ctrl-C send failed')
       return false
@@ -3515,7 +3525,7 @@ export async function sendPromptToSession(
   // prove the buffer is clean, but proceeding without the clear is no
   // worse than the pre-fix status quo.
   try {
-    const preCapture = captureTmux(host, ['capture-pane', '-t', session, '-p'])
+    const preCapture = captureTmux(host, ['capture-pane', '-t', exactTmuxTarget(session), '-p'])
     if (shouldClearTruncatedPreamble(preCapture)) {
       logger.info({ session }, 'Cleared stale preamble from input buffer before sending prompt')
       await clearInputBuffer(session, host)
@@ -3542,7 +3552,7 @@ export async function sendPromptToSession(
     let i = 0
     while (i < oneLine.length) {
       const { chunk, end } = computeTmuxChunk(oneLine, i, CHUNK, TMUX_CHUNK_MAX_SLIDE)
-      runTmux(host, ['send-keys', '-t', session, '-l', chunk], { timeout: 5000 })
+      runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), '-l', chunk], { timeout: 5000 })
       i = end
       if (i < oneLine.length) await delay(30)
     }
@@ -3555,7 +3565,7 @@ export async function sendPromptToSession(
     // taller than the pane, see overfullParkedInputTail), so nothing
     // re-pressed it. Single-chunk prompts keep the immediate Enter.
     if (oneLine.length > CHUNK) await waitForPaneSettle(() => capturePane(session, host))
-    runTmux(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+    runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), 'Enter'], { timeout: 5000 })
   }
   await sendChunks()
 
@@ -3606,7 +3616,7 @@ export async function sendPromptToSession(
     }
     // action === 'retry-enter'
     try {
-      runTmux(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+      runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), 'Enter'], { timeout: 5000 })
     } catch (err) {
       logger.warn({ err, session, attempt }, 'Retry-Enter send failed')
       break
@@ -3653,7 +3663,7 @@ const PANE_READY_CONFIRM_DELAY_MS = 250
 // tmux failure is logged and swallowed so the watcher loop keeps going.
 export function sendEnterToSession(session: string, host: string | null = null): boolean {
   try {
-    runTmux(host, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+    runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), 'Enter'], { timeout: 5000 })
     return true
   } catch (err) {
     logger.warn({ err, session }, 'sendEnterToSession: failed to send recovery Enter')
@@ -3695,7 +3705,7 @@ export function capturePane(session: string, host: string | null = null): string
     // to the bottom it is removed so the live footer/spinner classifies normally
     // (a banner otherwise pins detectPaneState 'unknown', blocking scheduler +
     // inter-agent delivery). See stripSessionTitleBanner.
-    return stripAllAnsi(stripSessionTitleBanner(captureTmux(host, ['capture-pane', '-t', session, '-e', '-p'])))
+    return stripAllAnsi(stripSessionTitleBanner(captureTmux(host, ['capture-pane', '-t', exactTmuxTarget(session), '-e', '-p'])))
   } catch {
     return null
   }
@@ -3712,7 +3722,7 @@ export function capturePane(session: string, host: string | null = null): string
 // failure (treated as "nothing parked"), matching capturePane's contract.
 export function captureParkedInputView(session: string, host: string | null = null): string | null {
   try {
-    return stripGhostSuggestion(captureTmux(host, ['capture-pane', '-t', session, '-e', '-p']))
+    return stripGhostSuggestion(captureTmux(host, ['capture-pane', '-t', exactTmuxTarget(session), '-e', '-p']))
   } catch {
     return null
   }
@@ -3807,7 +3817,15 @@ export function saturationRefusesDispatch(capture: string, session: string): boo
   return saturationBannerTrusted(session)
 }
 
-export async function isSessionReadyForPrompt(session: string, host: string | null = null): Promise<boolean> {
+export async function isSessionReadyForPrompt(
+  session: string,
+  host: string | null = null,
+  // A caller that polls the same session every few seconds (the reconcile's
+  // readiness gap) asks for 'debug' so a saturated session does not write a
+  // warn line per poll. Every other caller keeps 'warn'.
+  opts: { saturationLog?: 'warn' | 'debug' } = {},
+): Promise<boolean> {
+  const saturationLog = opts.saturationLog ?? 'warn'
   // Dim-ghost tolerant idle read: CC >=2.1.202 paints a dim placeholder into
   // the empty input box, which a plain capture reads as parked text. Only when
   // the plain view says 'typing' do we pay for the second (-e, dim-stripped)
@@ -3818,7 +3836,7 @@ export async function isSessionReadyForPrompt(session: string, host: string | nu
   const first = capturePane(session, host)
   if (first == null) return false
   if (saturationRefusesDispatch(first, session)) {
-    logger.warn({ session }, 'dispatch: refusing prompt — session shows context saturation (100% context)')
+    logger[saturationLog]({ session }, 'dispatch: refusing prompt — session shows context saturation (100% context)')
     return false
   }
   if (!idleOrGhost(first)) return false
@@ -3828,7 +3846,7 @@ export async function isSessionReadyForPrompt(session: string, host: string | nu
   const second = capturePane(session, host)
   if (second == null) return false
   if (saturationRefusesDispatch(second, session)) {
-    logger.warn({ session }, 'dispatch: refusing prompt — session shows context saturation (100% context)')
+    logger[saturationLog]({ session }, 'dispatch: refusing prompt — session shows context saturation (100% context)')
     return false
   }
   return idleOrGhost(second)
@@ -4176,7 +4194,7 @@ async function clearStaleParkedInputInLane(
   // immediately instead of spending the whole budget.
   const sequence = parkedClearSequence(parkedInputRowCount(a))
   for (let i = 0; i < sequence.length; i++) {
-    runTmux(host, ['send-keys', '-t', session, sequence[i]], { timeout: 5000 })
+    runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), sequence[i]], { timeout: 5000 })
     if (i % PARKED_CLEAR_RECHECK_EVERY === PARKED_CLEAR_RECHECK_EVERY - 1) {
       await delay(PARKED_CLEAR_SETTLE_MS)
       const after = capturePane(session, host)

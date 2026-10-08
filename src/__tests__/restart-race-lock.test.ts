@@ -152,8 +152,20 @@ describe('restart-lock wiring (pinned at the source)', () => {
     expect(body).not.toMatch(/return\s*\{\s*ok:\s*true/)
   })
 
+  // BOOTSTAGGER1007 (c): the reconcile's burst moved into runReconcileBurst
+  // (reconcile-stagger.ts, injected deps; its skip is also behaviour-tested in
+  // reconcile-stagger.test.ts). The guard is pinned in both halves: the monitor
+  // hands the real isRestartInFlight in, and the burst asks it before it starts.
+  it('channel-monitor.ts + reconcile-stagger.ts: the reconcile burst stands down while a managed restart is in flight', () => {
+    const monitor = fnBody(src('channel-monitor.ts'), 'reconcileDesiredAgents')
+    expect(monitor).toContain('await runReconcileBurst({')
+    expect(monitor).toMatch(/^\s*isRestartInFlight,\s*$/m)
+    const burst = fnBody(src('reconcile-stagger.ts'), 'runReconcileBurst')
+    expect(burst).toContain('d.isRestartInFlight(name)')
+    expect(burst.indexOf('d.isRestartInFlight(name)')).toBeLessThan(burst.indexOf('d.start(name)'))
+  })
+
   for (const [file, fn] of [
-    ['channel-monitor.ts', 'reconcileDesiredAgents'],
     ['schedule-runner.ts', null],
     ['reauth-healer.ts', 'restartFirstRunGatedAgent'],
   ] as Array<[string, string | null]>) {
