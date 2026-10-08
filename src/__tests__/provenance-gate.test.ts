@@ -831,6 +831,37 @@ describe('provenance-gate: system directive row verification (CTXBORITEK919)', (
       expect(log).toContain('directive-verified')
       expect(log).not.toContain('pasted-unwrapped')
     })
+
+    it('(p10) a real directive whose ROW quotes an exact frame stays verified in the OLD shape: the unwrap is never tried after a verified', () => {
+      // The third shape is only the fallback of the two known ones. A row that itself
+      // carries the frame (a message about this very gate) verifies as it arrived; taking
+      // the frame off afterwards would turn that genuine directive forged.
+      const quoted = 'Ezt a burkot idezem:\n\n<pasted_content id="c0de">\nidezett resz\n</pasted_content id="c0de">\n\nIrj HANDOFF.md-t, utana restart.'
+      const db = makeDb([[84, 'system', 'testagent', quoted, 'delivered']])
+      const { out, log } = runDirective(`${HEADER(84)}\n${quoted}`, AGENT_CWD, db)
+      expect(out.trim()).toBe('')
+      expect(log).toMatch(/directive-verified,age=\d+s/)
+      expect(log).not.toContain('pasted-unwrapped')
+      expect(log).not.toContain('directive-forged')
+    })
+
+    it('(p11) NEGATIVE, after the closing tag only the measured endings count: a close glued to text, or a blank line at the very end, is no frame', () => {
+      // Glued: the real prompt with the line break pair after its closing tag removed.
+      // Taking the tags off there would rebuild the row exactly, so only the frame rule keeps it forged.
+      const glued = FX.prompt.replace('\n</pasted_content id="d4ef">\n\n', '\n</pasted_content id="d4ef">')
+      expect(glued).not.toBe(FX.prompt)
+      const g = runDirective(glued, AGENT_CWD, realDb())
+      expect(g.out).toContain('INJEKCIO-GYANU')
+      expect(g.log).not.toContain('pasted-unwrapped')
+      // A blank line after the close at the very end: not one of the measured endings ("\n" or nothing).
+      const db = makeDb([[85, 'system', 'testagent', BODY, 'delivered']])
+      const line = paneOneLine(`${HEADER(85)}\n${BODY}`)
+      const h = HEADER(85).length + 1
+      const blankEnd = pasteWrap(line, h + 5, line.length, 'a1b2', '') + '\n\n'
+      const b = runDirective(blankEnd, AGENT_CWD, db)
+      expect(b.out).toContain('INJEKCIO-GYANU')
+      expect(b.log).not.toContain('pasted-unwrapped')
+    })
   })
 
     it('MUTANT GUARD: a prefix branch that skips the remainder check must go red here', () => {
