@@ -1,9 +1,9 @@
 /**
- * SECSZIVEK1007: the Linux installer never writes a credential into a shell rc
- * file. An rc file is typically 0644 and the services never read it (they use
- * <install>/.env and <install>/store/.claude-oauth-token, both 0600). A re-run
- * removes the export lines earlier installer versions wrote; an interactive
- * shell can still get the value through one line that READS the 0600 file.
+ * SECSZIVEK1007: the Linux installer keeps secrets in the 0600 install files,
+ * not in shell startup files; the services never read an rc file (they use
+ * <install>/.env and <install>/store/.claude-oauth-token). A re-run removes the
+ * credential export lines from the rc files; an interactive shell can still get
+ * the value through one line that READS the 0600 file.
  *
  * The functions are cut out of install-linux.sh and run under bash with a
  * throwaway HOME (the same approach as installer-windows-wsl.test.ts).

@@ -129,12 +129,11 @@ ensure_in_rc() {
   done
 }
 
-# SECSZIVEK1007: a credential is never written into a shell rc file. An rc file
-# is typically 0644 (any local account can read it), and the services never
-# read it: they use <install>/.env and <install>/store/.claude-oauth-token, both
-# 0600 (see service_auth_present). Earlier installer versions appended
-# `export <VAR>="<secret>"` to ~/.bashrc and ~/.zshrc; a re-run removes those
-# lines and says so. The rewrite keeps the rc file's inode and permissions
+# SECSZIVEK1007: secrets belong in the 0600 install files, not in shell
+# startup files. The services never read an rc file: they use <install>/.env
+# and <install>/store/.claude-oauth-token, both 0600 (see
+# service_auth_present). A re-run removes the credential export lines from the
+# rc files and says so. The rewrite keeps the rc file's inode and permissions
 # (cat back, not mv), and `|| true` because grep -v exits 1 when every line is
 # filtered out.
 remove_secret_export_from_rc() {
