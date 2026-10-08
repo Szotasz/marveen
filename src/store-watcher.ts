@@ -157,7 +157,7 @@ export function startStoreWatcher(): void {
     })
     // An unreadable subdirectory (another user's sandbox dir) makes the
     // recursive watcher emit 'error'; without a listener that is an
-    // uncaughtException and the dashboard exits. Log once per path, keep going.
+    // uncaughtException and the dashboard exits. Log once per (code, path), keep going.
     const reportedWatchErrors = new Set<string>()
     watcher.on('error', (err: NodeJS.ErrnoException) => {
       const key = `${err?.code ?? ''}:${err?.path ?? ''}`
