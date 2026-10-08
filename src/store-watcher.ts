@@ -160,7 +160,7 @@ export function startStoreWatcher(): void {
     // uncaughtException and the dashboard exits. Log once per (code, path), keep going.
     const reportedWatchErrors = new Set<string>()
     watcher.on('error', (err: NodeJS.ErrnoException) => {
-      const key = `${err?.code ?? ''}:${err?.path ?? ''}`
+      const key = JSON.stringify([err?.code ?? null, err?.path ?? null])
       if (reportedWatchErrors.has(key)) return
       reportedWatchErrors.add(key)
       logger.warn({ code: err?.code, path: err?.path }, 'store-watcher: subdirectory not watchable, skipped')

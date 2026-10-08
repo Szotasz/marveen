@@ -73,6 +73,16 @@ describe('store-watcher: a watch error does not take the process down', () => {
     expect(skipped()).toHaveLength(3)
   })
 
+  it('does not merge pairs that only look alike', () => {
+    // A joined "code:path" string would collapse both pairs below into one key.
+    h.watcher.emit('error', watchErr('EACCES'))
+    h.watcher.emit('error', watchErr('EACCES', ''))
+    expect(skipped()).toHaveLength(2)
+    h.watcher.emit('error', watchErr('EACCES', 'a:b'))
+    h.watcher.emit('error', watchErr('EACCES:a', 'b'))
+    expect(skipped()).toHaveLength(4)
+  })
+
   it('handles an error with neither code nor path', () => {
     expect(() => h.watcher.emit('error', watchErr())).not.toThrow()
     h.watcher.emit('error', watchErr())
