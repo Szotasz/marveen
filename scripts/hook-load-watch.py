@@ -47,7 +47,10 @@ python name that two files under scripts/ share (ambiguous: neither loaded nor r
 any other form (pathlib's / or with_name, a bare string to spec_from_file_location, a message) is loaded when the
 file exists, but its absence is not reported; a python source that does not tokenize gets no missing finding from its text
 (its own load fails, which the probes report); a node side-effect import (import "./x.mjs") is not in the missing rule (a
-static one breaks its gate, which the command probe reports). A deliberately optional import (try/except
+static one breaks its gate, which the command probe reports). In a node source, a regex literal right after a division
+operator (n / /re/.source.length) is read as a second division, not as a doubtful case: a comment opener inside it (two
+slashes, or a slash and an asterisk) is taken for one, and a load in the stretch it blanks (the rest of the line, or up to
+the next comment end or the end of the file) is no missing finding. A deliberately optional import (try/except
 ImportError) of a module that is not installed IS reported. A module that runs a main of its own when imported is
 not missed but reported (it reads an empty stdin): such a module should guard its main.
 
