@@ -196,7 +196,8 @@ class Findings(Base):
         self.append("scripts/hooks/dep_mod.py")
         rc, out = run(self.root, "--check")
         self.assertEqual(rc, 1, out)
-        self.assertRegex(out, r"OPEN +rc=1 +scripts/hooks/dep-gate\.py .*SyntaxError")
+        # the place is the broken module itself, not the gate that imports it
+        self.assertRegex(out, r'OPEN +rc=1 +scripts/hooks/dep-gate\.py .*File "dep_mod\.py", line \d+ \| SyntaxError')
 
     def test_lazy_bash_dependency_is_seen_because_the_probe_calls_bash(self):
         self.append("scripts/hooks/lazy-dep.mjs")
@@ -273,6 +274,7 @@ class Tick(Base):
         self.assertEqual(rc, 0, out)
         self.assertIn("ALERT_DRYRUN: [HOOK-FIGYELŐ] 1/5", out)
         self.assertIn("scripts/hooks/dep-gate.py (a fő ügynök): NYITVA", out)
+        self.assertIn('File "dep_mod.py"', out, "the alert names the broken module")
         first = self.state()
         self.assertEqual(first["fingerprint"], ["scripts/hooks/dep-gate.py|OPEN|1"])
         rc, out = self.tick()

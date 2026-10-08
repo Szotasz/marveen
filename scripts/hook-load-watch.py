@@ -206,11 +206,16 @@ def first_line(text):
 
 
 def error_detail(text):
-    """The first stderr line, and the error-class line after it when there is one (a Python traceback starts
-    with "Traceback ...", the cause is its last "...Error: ..." line; node prints the file:line first)."""
+    """The place and the cause. Node prints the file:line first; a Python traceback starts with "Traceback ...",
+    its last 'File "...", line N' line is the place (for a broken import: the broken module, not the gate) and
+    its last "...Error: ..." line is the cause."""
     # an absolute path or file:// URL shrinks to its file name: the cause, not the directory, has to fit the line
     text = re.sub(r"(?:file://)?/[^\s:'\"]*/([^/\s:'\"]+)", r"\1", text or "")
     head = first_line(text)
+    if head.startswith("Traceback"):
+        places = [l for l in text.splitlines() if re.match(r'\s*File "[^"<]+", line \d+', l)]
+        if places:
+            head = first_line(places[-1])
     errs = [l.strip() for l in text.splitlines() if re.match(r"\s*[A-Za-z_.]*(Error|Exception)\b", l)]
     tail = re.sub(r"[\x00-\x1f\x7f]", " ", errs[-1])[:160] if errs else ""
     return head if not tail or tail == head else "%s | %s" % (head[:100], tail)
