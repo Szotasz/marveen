@@ -48,11 +48,26 @@
 //
 // Fail-open on unparseable input or an internal error (logged): a crashed gate must not silence the
 // fleet; that is today's behaviour, not a new hole. Every DENY is appended to the block log.
+// Fail-CLOSED on a dependency that does not load (HOOKDEPLOAD1008): that is not one input the gate
+// failed on, it is a gate that judges nothing, so every Bash call is denied (exit 2) with the module
+// named. The main agent does not run this hook (agentGetsBashEgressParser), so the one session that
+// can repair the module keeps its Bash.
 import { readFileSync, appendFileSync, realpathSync, mkdirSync, existsSync, statSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve, isAbsolute } from 'node:path'
 import { homedir } from 'node:os'
-import { maskInertLiterals } from '../self-pace-gate.mjs'
+
+// HOOKDEPLOAD1008: a DYNAMIC import. As a static import, a broken self-pace-gate.mjs (a syntax error,
+// a conflicted merge, a renamed export) failed the module link before any line of this file ran:
+// node exited 1, which PreToolUse treats as NON-blocking, so a denied curl went through.
+let maskInertLiterals = null
+let MASK_LOAD_ERROR = null
+try {
+  ({ maskInertLiterals } = await import('../self-pace-gate.mjs'))
+  if (typeof maskInertLiterals !== 'function') throw new Error('missing export: maskInertLiterals')
+} catch (err) {
+  MASK_LOAD_ERROR = err
+}
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 export const BLOCK_LOG = process.env.BASH_EGRESS_BLOCK_LOG || join(ROOT, 'store', 'bash-egress-blocks.jsonl')
@@ -1066,6 +1081,14 @@ if (isInvokedDirectly()) {
   let payload
   try { payload = JSON.parse(readFileSync(0, 'utf-8')) } catch { process.exit(0) }
   if (payload?.tool_name !== 'Bash') process.exit(0)
+  if (MASK_LOAD_ERROR) {
+    process.stderr.write(
+      'EGRESS-KAPU: TILTVA. A kapu fuggosege (scripts/self-pace-gate.mjs) nem toltheto be ' +
+      `(${MASK_LOAD_ERROR?.message ?? MASK_LOAD_ERROR}) -- fail-closed: a Bash-hivas halozati celja nem ` +
+      'ellenorizheto, ezert minden Bash-hivas tiltva, amig a modul nem javul. A javitas a fo ugynoke ' +
+      '(ez a kapu az o munkameneteben nem fut); addig a Bash-t ne probald ujra.\n')
+    process.exit(2)
+  }
   let r
   try { r = classify(payload?.tool_input?.command, 0, loadVendorHosts(), loadVendorDomains(), { cwd: payload?.cwd || process.cwd() }) } catch (e) { process.stderr.write(`bash-egress-parser: internal error, allowing: ${e?.message}\n`); process.exit(0) }
   if (r.deny) {

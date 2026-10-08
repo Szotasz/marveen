@@ -15,7 +15,7 @@
 // (isInvokedDirectly), so importing it here runs no side effects.
 import { describe, it, expect } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, readFileSync, existsSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, copyFileSync, mkdtempSync, mkdirSync, readFileSync, existsSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -867,4 +867,72 @@ describe('(e) the command a launcher, a string or a pipe hides (c83a6bf6)', () =
     const got = fx.forms.map((f) => ({ cmd: f.cmd, deny: judge(at(f.cmd), dir).deny === true }))
     expect(got).toEqual(fx.forms.map((f) => ({ cmd: f.cmd, deny: f.deny })))
   }))
+})
+
+// HOOKDEPLOAD1008: a self-pace-gate.mjs that does not load. As a static import it failed the module
+// link: node exited 1, PreToolUse reads 1 as NON-blocking, and a denied curl went through. Now it
+// fails closed on EVERY Bash call (exit 2), naming the module -- bearable only because the main
+// agent, the one session that can repair the module, never runs this hook (the last case). Run on a
+// disposable copy of the two files; the intact copy is first shown to decide like the real hook.
+describe('a self-pace-gate.mjs that does not load (HOOKDEPLOAD1008)', () => {
+  const TMP = mkdtempSync(join(tmpdir(), 'bash-egress-dep-'))
+  const copyHook = (name: string, mutate?: (masker: string) => void) => {
+    const root = join(TMP, name)
+    mkdirSync(join(root, 'scripts', 'hooks'), { recursive: true })
+    copyFileSync(HOOK, join(root, 'scripts', 'hooks', 'bash-egress-parser.mjs'))
+    copyFileSync(join(ROOT, 'scripts', 'self-pace-gate.mjs'), join(root, 'scripts', 'self-pace-gate.mjs'))
+    mutate?.(join(root, 'scripts', 'self-pace-gate.mjs'))
+    return join(root, 'scripts', 'hooks', 'bash-egress-parser.mjs')
+  }
+  const run = (hook: string, payload: unknown) => {
+    const r = spawnSync(process.execPath, [hook], {
+      input: typeof payload === 'string' ? payload : JSON.stringify(payload),
+      encoding: 'utf-8',
+      timeout: 15_000,
+      env: { ...process.env, BASH_EGRESS_BLOCK_LOG: join(TMP, 'blocks.jsonl'), BASH_EGRESS_VENDOR_HOSTS: join(TMP, 'no-such-vendor-hosts.json') },
+    })
+    return { status: r.status, stdout: r.stdout, stderr: r.stderr }
+  }
+  const bash = (command: string) => ({ tool_name: 'Bash', tool_input: { command } })
+  const EXTERNAL = 'curl -s http://example.org/x'
+  const intact = copyHook('intact')
+  const broken = copyHook('broken', (p) => appendFileSync(p, '<'.repeat(7) + ' Updated upstream\n'))
+  const renamed = copyHook('renamed', (p) => writeFileSync(p,
+    readFileSync(p, 'utf-8').replace('export function maskInertLiterals(', 'export function maskInertLiteralsRenamed(')))
+
+  it('control: the intact copy decides like the real hook', () => {
+    for (const command of [EXTERNAL, LOCALHOST[0]]) expect(run(intact, bash(command)), command).toEqual(run(HOOK, bash(command)))
+    expect(JSON.parse(run(intact, bash(EXTERNAL)).stdout).hookSpecificOutput.permissionDecision).toBe('deny')
+  })
+
+  it('every Bash call is DENIED with exit 2 (1 would let the curl through), naming the module', () => {
+    for (const command of [EXTERNAL, LOCALHOST[0], 'ls -la']) {
+      const r = run(broken, bash(command))
+      expect(r.status, command).toBe(2)
+      expect(r.stderr, command).toContain('scripts/self-pace-gate.mjs')
+      expect(r.stderr, command).toContain('nem toltheto be')
+      expect(r.stderr, command).toContain('fo ugynoke')
+    }
+  })
+
+  it('a missing export is a load failure too', () => {
+    const r = run(renamed, bash('ls -la'))
+    expect(r.status).toBe(2)
+    expect(r.stderr).toContain('missing export: maskInertLiterals')
+  })
+
+  it('another tool and unparseable input are left alone, as before', () => {
+    expect(run(broken, { tool_name: 'WebFetch', tool_input: { url: 'http://example.org' } })).toEqual({ status: 0, stdout: '', stderr: '' })
+    expect(run(broken, 'not json')).toEqual({ status: 0, stdout: '', stderr: '' })
+  })
+
+  it('the main agent never runs this hook, so the session that repairs the module keeps its Bash', () => {
+    expect(agentGetsBashEgressParser(MAIN_AGENT_ID)).toBe(false)
+    const project = JSON.parse(readFileSync(join(ROOT, '.claude', 'settings.json'), 'utf-8'))
+    expect(JSON.stringify(project.hooks ?? {})).not.toContain('bash-egress-parser')
+    // control: the same reading finds the hook where it IS wired, in a sub-agent's settings
+    const sub: Record<string, unknown> = {}
+    injectBashEgressParser(sub)
+    expect(JSON.stringify(sub.hooks ?? {})).toContain('bash-egress-parser')
+  })
 })
