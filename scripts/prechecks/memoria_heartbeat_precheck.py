@@ -34,7 +34,11 @@ restored snapshot, a stamp written in milliseconds): the activity window
 so the round runs and the log says 'future-stamp'.
 A window in which no candidate transcript gained a single row after the stamp
 was not seen (in a live transcript the round that wrote the stamp keeps writing
-after it): the round runs and the log says 'no-fresh-transcript'.
+after it): the round runs and the log says 'no-fresh-transcript'. A row counts
+as fresh when its timestamp, cut to whole seconds, is later than the stamp; a
+row in the stamp's own second does not. A stamp ahead of the clock that wrote
+the rows (within FUTURE_TOLERANCE_S) therefore usually runs the round too: an
+extra round, never a missed one.
 A SKIP is printed only after its decision line was appended to LOG_PATH; if the
 append raises, the round runs.
 
@@ -215,8 +219,10 @@ def main():
     entry.update({'mode': mode, 'would_skip': would_skip, 'skipped': skipped})
     try:
         log(entry)
-    except Exception:
-        # An unlogged SKIP would be a missed round nobody can account for.
+    except Exception as err:
+        # An unlogged SKIP would be a missed round nobody can account for. Say
+        # why on stderr (stdout stays empty: that is the run-the-round answer).
+        print(f'precheck: log append failed: {type(err).__name__}: {err}', file=sys.stderr)
         return 0
     if skipped:
         print('SKIP')

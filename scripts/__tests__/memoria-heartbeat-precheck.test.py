@@ -9,6 +9,7 @@ log line. Nothing touches the live store or the main agent's transcripts.
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -180,15 +181,44 @@ class DecisionTest(Base):
         self.assertEqual((code, out), (0, ''))
         self.assertEqual(log['reason'], 'future-stamp')
 
-    def test_a_stamp_within_the_clock_skew_tolerance_is_judged_normally(self):
+    def test_a_stamp_within_the_clock_skew_tolerance_is_not_an_error(self):
+        # #1765: a stamp up to FUTURE_TOLERANCE_S ahead is not 'future-stamp'.
+        # The transcript here is written after the stamp, so the window is judged
+        # on its rows and an empty one skips.
         self.set_mode('live')
         self.write_state(int(self.now + 60))
-        self.last = int(self.now + 60)  # the round's own rows follow the skewed stamp
+        self.last = int(self.now + 60)
         path = self.write_transcript()
         os.utime(path, (self.last + 2, self.last + 2))
         code, out, log = self.invoke()
         self.assertEqual((code, out), (0, 'SKIP'))
         self.assertEqual(log['reason'], 'empty-window')
+
+    def test_a_skewed_stamp_with_only_real_time_rows_runs_the_round(self):
+        # PRECHECKRES1008 changes this case on purpose: when the stamp is ahead
+        # of the clock that wrote the rows, every row of the round predates it,
+        # nothing is fresh, and the round runs ('no-fresh-transcript') instead
+        # of being judged empty. A cost (one extra round), never a missed one.
+        self.set_mode('live')
+        self.write_state(int(self.now + 60))
+        self.tool(self.now - 30)
+        code, out, log = self.run_check(fresh_tail=False)
+        self.assertEqual((code, out), (0, ''))
+        self.assertEqual(log['reason'], 'no-fresh-transcript')
+        self.assertEqual(log['fresh_rows'], 0)
+
+    def test_a_failed_log_append_says_so_on_stderr(self):
+        self.set_mode('live')
+        blocker = os.path.join(self.tmp.name, 'blocker')
+        with open(blocker, 'w') as fh:
+            fh.write('x')
+        self.write_transcript()
+        env = dict(os.environ, MHP_STATE_PATH=self.state, MHP_TRANSCRIPT_DIR=self.tdir,
+                   MHP_LOG_PATH=os.path.join(blocker, 'p.jsonl'), MHP_MODE_PATH=self.mode)
+        r = subprocess.run([sys.executable, os.path.join(os.path.dirname(WRAPPER), 'memoria_heartbeat_precheck.py')],
+                           env=env, capture_output=True, text=True, timeout=10)
+        self.assertEqual(r.stdout.strip(), '')
+        self.assertIn('log append failed', r.stderr)
 
     # --- a window the check did not actually see (PRECHECKRES1008) ------
 
