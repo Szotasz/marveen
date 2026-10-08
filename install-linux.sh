@@ -129,22 +129,39 @@ ensure_in_rc() {
   done
 }
 
-# Like ensure_in_rc, but REPLACES an existing `export <VAR>=` line instead of
-# keeping it. For credentials ensure_in_rc was wrong: once a bad or old token
-# line was in ~/.bashrc, a re-run with the correct token skipped the rc ("marker
-# already there"), so every interactive shell kept exporting the stale value.
-set_export_in_rc() {
-  local var="$1" line="$2"
+# SECSZIVEK1007: a credential is never written into a shell rc file. An rc file
+# is typically 0644 (any local account can read it), and the services never
+# read it: they use <install>/.env and <install>/store/.claude-oauth-token, both
+# 0600 (see service_auth_present). Earlier installer versions appended
+# `export <VAR>="<secret>"` to ~/.bashrc and ~/.zshrc; a re-run removes those
+# lines and says so. The rewrite keeps the rc file's inode and permissions
+# (cat back, not mv), and `|| true` because grep -v exits 1 when every line is
+# filtered out.
+remove_secret_export_from_rc() {
+  local var="$1" rc
   for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
     [ -f "$rc" ] || continue
-    # Portable (BSD/macOS sed has no `sed -i` without a suffix argument).
-    # Rewrite in place via cat so the rc file keeps its inode and permissions;
-    # `|| true` because grep -v exits 1 when every line is filtered out.
+    grep -Eq "^[[:space:]]*export[[:space:]]+${var}=" "$rc" 2>/dev/null || continue
     { grep -Ev "^[[:space:]]*export[[:space:]]+${var}=" "$rc" || true; } >"$rc.tmp" \
       && cat "$rc.tmp" >"$rc" && rm -f "$rc.tmp"
-    printf '%s\n' "$line" >>"$rc"
-    warn "RC frissitve ($(basename "$rc")): export ${var}=..."
+    warn "$(basename "$rc"): a korabbi ${var} export-sor torolve (titok nem kerul shell rc fajlba)"
   done
+}
+
+# Interactive convenience without the secret in the rc: one line that READS the
+# value from a 0600 install file at shell start, and exports it only when it is
+# there. The file path is single-quoted for the shell ('\'' for a quote in it).
+# Usage: ensure_secret_reader_in_rc VAR FILE KIND   (KIND: file = whole file, env = VAR= line of a .env)
+ensure_secret_reader_in_rc() {
+  local var="$1" file="$2" kind="$3" q marker line
+  q="'$(printf '%s' "$file" | sed "s/'/'\\\\''/g")'"
+  marker="# marveen: ${var} from the install's 0600 file"
+  if [ "$kind" = "env" ]; then
+    line="${marker}"$'\n'"_mv=\"\$(grep -m1 '^${var}=' ${q} 2>/dev/null | cut -d= -f2-)\"; [ -n \"\$_mv\" ] && export ${var}=\"\$_mv\"; unset _mv"
+  else
+    line="${marker}"$'\n'"[ -s ${q} ] && export ${var}=\"\$(cat ${q})\""
+  fi
+  ensure_in_rc "$marker" "$line"
 }
 
 # Tobbsoros blokkot ad az rc fajlokhoz ha a <marker> meg nem szerepel bennuk.
@@ -783,7 +800,8 @@ else
     read -p "  ANTHROPIC_API_KEY (sk-ant-...): " ANTHROPIC_API_KEY_INPUT
     if [ -n "$ANTHROPIC_API_KEY_INPUT" ]; then
       export ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY_INPUT"
-      set_export_in_rc 'ANTHROPIC_API_KEY' "export ANTHROPIC_API_KEY=\"$ANTHROPIC_API_KEY_INPUT\""
+      remove_secret_export_from_rc ANTHROPIC_API_KEY
+      ensure_secret_reader_in_rc ANTHROPIC_API_KEY "$INSTALL_DIR/.env" env
       CLAUDE_AUTH_ENV_LINE="ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY_INPUT}"
       ok "ANTHROPIC_API_KEY beallitva"
     else
@@ -802,7 +820,7 @@ else
     echo ""
     # Shape-check BEFORE the value is written anywhere. Without it any paste was
     # accepted -- typically the one-time code the browser shows during
-    # `claude setup-token` -- and landed in ~/.bashrc and .env as if it were the
+    # `claude setup-token` -- and landed in .env as if it were the
     # token; the services then failed to authenticate with no hint why. Same
     # pattern the store/.claude-oauth-token write below already gates on.
     OAUTH_TOKEN_INPUT=""
@@ -822,7 +840,8 @@ else
     unset _tok _try
     if [ -n "$OAUTH_TOKEN_INPUT" ]; then
       export CLAUDE_CODE_OAUTH_TOKEN="$OAUTH_TOKEN_INPUT"
-      set_export_in_rc 'CLAUDE_CODE_OAUTH_TOKEN' "export CLAUDE_CODE_OAUTH_TOKEN=\"$OAUTH_TOKEN_INPUT\""
+      remove_secret_export_from_rc CLAUDE_CODE_OAUTH_TOKEN
+      ensure_secret_reader_in_rc CLAUDE_CODE_OAUTH_TOKEN "$INSTALL_DIR/store/.claude-oauth-token" file
       CLAUDE_AUTH_ENV_LINE="CLAUDE_CODE_OAUTH_TOKEN=${OAUTH_TOKEN_INPUT}"
       # Ellenorzes
       if claude auth status &>/dev/null; then
