@@ -135,7 +135,10 @@ describe('launcher wiring', () => {
     // just the plan's own, not the flotta's) is not swept into this capture.
     const branch = CHANNELS.match(/if \[ "\$_cfg_mode" = "explicit" \] \|\| \[ "\$_cfg_mode" = "rotated" \]; then\n([\s\S]*?)\n\s*(?:elif|else)/)
     expect(branch).not.toBeNull()
-    expect(branch?.[1]).not.toMatch(/CLAUDE_CODE_OAUTH_TOKEN/)
+    // Never EXPORTED; MAINOWNLOGIN1008 additionally UNSETS it, so the token
+    // AUTH_PANE_ENV / the tmux global env carry cannot beat the dir's login.
+    expect(branch?.[1]).not.toMatch(/export CLAUDE_CODE_OAUTH_TOKEN/)
+    expect(branch?.[1]).toMatch(/unset CLAUDE_CODE_OAUTH_TOKEN/)
     expect(branch?.[1]).toMatch(/CLAUDE_CONFIG_DIR/)
   })
 

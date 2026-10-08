@@ -887,7 +887,7 @@ export function buildMainSessionRespawnCmd(opts: {
    * resolveMainConfigDecision(), which reports as it resolves -- see
    * main-config-decision.ts for why the guard is wired as a value rather than a
    * callback. `isolatedConfigDir` set with `ownCredentials` => export ONLY the
-   * dir (it carries its own .credentials.json -- explicit or a rotated
+   * dir and unset any inherited token (it carries its own .credentials.json -- explicit or a rotated
    * claude-plans entry; injecting the fleet token on top would swap that
    * login for the flotta's shared one, CLAUDEPLANWATCHDOG912); `isolatedConfigDir`
    * set with `tokenSecretId` => export the dir plus THAT plan's vault-stored
@@ -962,7 +962,12 @@ export function buildMainSessionRespawnCmd(opts: {
     // unauthenticated session).
     ...(opts.config.isolatedConfigDir
       ? (opts.config.ownCredentials
-          ? [`&& export CLAUDE_CONFIG_DIR='${opts.config.isolatedConfigDir}'`]
+          // MAINOWNLOGIN1008: and UNSET the token, not just skip exporting it.
+          // respawn-pane hands the pane the tmux server's global env, which
+          // channels.sh seeds with the fleet token for the sub-agents; an env
+          // CLAUDE_CODE_OAUTH_TOKEN beats the dir's .credentials.json, so the
+          // own login silently ran inference-only (no Remote Control).
+          ? [`&& export CLAUDE_CONFIG_DIR='${opts.config.isolatedConfigDir}' && unset CLAUDE_CODE_OAUTH_TOKEN`]
           : opts.config.tokenSecretId
             ? [`&& export CLAUDE_CONFIG_DIR='${opts.config.isolatedConfigDir}' && _plan_token="$(node '${RESOLVE_PLAN_TOKEN_PATH}' '${opts.config.tokenSecretId}' '${FLEET_OAUTH_TOKEN_PATH}' '${CHANNELS_FAILURES_LOG_PATH}')" && export CLAUDE_CODE_OAUTH_TOKEN="$_plan_token"`]
             : [`&& export CLAUDE_CONFIG_DIR='${opts.config.isolatedConfigDir}' && export CLAUDE_CODE_OAUTH_TOKEN="$(cat '${FLEET_OAUTH_TOKEN_PATH}')"`])

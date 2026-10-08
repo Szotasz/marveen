@@ -1005,7 +1005,14 @@ if [ -n "$_node_bin" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
       # Both carry their OWN .credentials.json (an operator-logged-in dir for
       # `explicit`, a registered plan's dir for `rotated` -- design 6.5/4) --
       # neither wants the fleet token injected below.
-      CFG_ENV="export CLAUDE_CONFIG_DIR=$(sh_single_quote "$_cfg_dir") && "
+      # MAINOWNLOGIN1008: and neither may INHERIT it. This script exported the
+      # fleet token at the top, AUTH_PANE_ENV sources it into the pane first,
+      # and the tmux server's global env carries it into every respawn. An env
+      # CLAUDE_CODE_OAUTH_TOKEN beats the dir's .credentials.json, so the
+      # "own login" silently ran on the inference-only fleet token (measured
+      # 2026-10-08: /remote-control refused with "requires a full-scope login
+      # token"). CFG_ENV runs AFTER AUTH_PANE_ENV, so this unset wins.
+      CFG_ENV="export CLAUDE_CONFIG_DIR=$(sh_single_quote "$_cfg_dir") && unset CLAUDE_CODE_OAUTH_TOKEN && "
     elif [ "$_cfg_mode" = "token" ]; then
       # Token-mode rotated plan: same credential-less dir as `isolated`, but
       # export THAT plan's vault-stored token instead of the flotta's.
