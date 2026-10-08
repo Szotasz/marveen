@@ -79,3 +79,8 @@ jobs:
       - run: python3 scripts/__tests__/telegram-reply-guard.test.py
       - run: python3 scripts/__tests__/ledger-replay-reply-tool.test.py
       - run: bash scripts/__tests__/conversation-ledger.test.sh
+      # 723bbb70 (3): the hook-load watcher is a gate instrument -- a watcher whose
+      # contract only runs by hand rots like the rest of this list warns. Hermetic:
+      # a throwaway install root, stand-in python and node gates, a local stub for
+      # the alert POST.
+      - run: python3 scripts/__tests__/hook-load-watch.test.py
