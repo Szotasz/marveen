@@ -177,9 +177,16 @@ fi
 # the shipped settings.json stopped pinning a model (#924), this path started
 # building a flag-less respawn. One resolver exists and the launch path already
 # uses it; ask IT instead of maintaining another copy.
+# SECSZIVEK1007: a value as ONE single-quoted shell word, the bash twin of
+# shSingleQuote (src/web/agent-process.ts): a quote in the value becomes '\'',
+# so nothing in it can end the word. Used for every value inlined into a
+# command string that a later shell (tmux respawn) parses again. The same
+# definition lives in channels.sh and channel-watchdog.sh (a test keeps them
+# identical).
+sh_single_quote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 MAIN_MODEL="$(bash "$INSTALL_DIR/scripts/channels.sh" --resolve-main-model 2>/dev/null | head -1)"
 MODEL_FLAG=""
-[ -n "$MAIN_MODEL" ] && MODEL_FLAG="--model '$MAIN_MODEL' "
+[ -n "$MAIN_MODEL" ] && MODEL_FLAG="--model $(sh_single_quote "$MAIN_MODEL") "
 
 # Main-agent isolated-config parity (PLAN.md GAP 1 completeness fix): without
 # this, a watchdog-triggered respawn would silently drop the main agent OUT of
@@ -212,15 +219,15 @@ if [ -n "$NODE_BIN" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
   fi
   if [ -n "$_cfg_line" ] && [ -d "$_cfg_dir" ]; then
     if [ "$_cfg_mode" = "explicit" ] || [ "$_cfg_mode" = "rotated" ]; then
-      CFG_ENV="export CLAUDE_CONFIG_DIR='$_cfg_dir' && "
+      CFG_ENV="export CLAUDE_CONFIG_DIR=$(sh_single_quote "$_cfg_dir") && "
     elif [ "$_cfg_mode" = "token" ]; then
       # Token-mode rotated plan -- same credential-less dir as `isolated`, but
       # export THAT plan's vault-stored token. See channels.sh's identical
       # branch, including the fleet-token fallback and the loud-failure gate
       # (PR #1304 review (c)) via the bare `_plan_token=$(...)` assignment.
-      CFG_ENV="export CLAUDE_CONFIG_DIR='$_cfg_dir' && _plan_token=\"\$(\"$NODE_BIN\" '$INSTALL_DIR/scripts/resolve-plan-token-env.mjs' '$_cfg_token_secret' '$INSTALL_DIR/store/.claude-oauth-token' '$INSTALL_DIR/store/channels-failures.log')\" && export CLAUDE_CODE_OAUTH_TOKEN=\"\$_plan_token\" && "
+      CFG_ENV="export CLAUDE_CONFIG_DIR=$(sh_single_quote "$_cfg_dir") && _plan_token=\"\$($(sh_single_quote "$NODE_BIN") $(sh_single_quote "$INSTALL_DIR/scripts/resolve-plan-token-env.mjs") $(sh_single_quote "$_cfg_token_secret") $(sh_single_quote "$INSTALL_DIR/store/.claude-oauth-token") $(sh_single_quote "$INSTALL_DIR/store/channels-failures.log"))\" && export CLAUDE_CODE_OAUTH_TOKEN=\"\$_plan_token\" && "
     else
-      CFG_ENV="export CLAUDE_CONFIG_DIR='$_cfg_dir' && export CLAUDE_CODE_OAUTH_TOKEN=\"\$(cat '$INSTALL_DIR/store/.claude-oauth-token')\" && "
+      CFG_ENV="export CLAUDE_CONFIG_DIR=$(sh_single_quote "$_cfg_dir") && export CLAUDE_CODE_OAUTH_TOKEN=\"\$(cat $(sh_single_quote "$INSTALL_DIR/store/.claude-oauth-token"))\" && "
     fi
     log "main-agent $_cfg_mode CLAUDE_CONFIG_DIR=$_cfg_dir"
   fi
