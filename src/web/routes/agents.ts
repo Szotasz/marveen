@@ -41,6 +41,8 @@ import {
   isKnownAgent,
   readAgentChannelProvider,
   writeAgentChannelProvider,
+  readAgentExtraChannels,
+  writeAgentExtraChannels,
   readAgentAuthMode,
   writeAgentAuthMode,
   readAgentClaudePlan,
@@ -115,8 +117,9 @@ import {
   sendPromptToSession,
   capturePane,
   delay,
+  resolveAgentProvider,
 } from '../agent-process.js'
-import { addDesiredAgent, removeDesiredAgent } from '../agent-desired-state.js'
+import { addDesiredAgent, getDesiredAgents, removeDesiredAgent } from '../agent-desired-state.js'
 import { RemoteStatusCache } from '../remote-status-cache.js'
 import type { AgentRunState } from '../ssh-tmux.js'
 import { readActiveModelFromProjectDir, readContextTokensFromProjectDir } from '../active-model.js'
@@ -163,6 +166,18 @@ import {
 } from '../model-suggest-signals.js'
 import { getTokenSummary } from '../token-usage.js'
 import { listScheduledTasks } from '../scheduled-tasks-io.js'
+import { readAgentTranscript, isTranscriptAllowed } from '../agent-transcript.js'
+import { configDirFor } from '../main-transcript-root.js'
+import { kindAllowed, FORBIDDEN_KIND } from './auth.js'
+import { isValidModelId, InvalidModelIdError } from '../../model-id.js'
+
+// Which credential kinds may read a transcript. NAMED principals only: a
+// logged-in human, or a key enrolled to that human's own device. Deliberately
+// excludes the shared dashboard 'token' (the fleet credential every sub-agent
+// reads) and 'federation' (a peer must never reach a transcript). Kept as a
+// named constant next to the route so the decision is greppable, not buried
+// in a boolean.
+const TRANSCRIPT_CALLER_KINDS = ['session', 'device'] as const
 
 const VALID_PROVIDERS = new Set<ChannelProviderType>(['telegram', 'slack', 'discord', 'googlechat', 'teams'])
 
@@ -402,7 +417,7 @@ function findBotTokenDuplicate(
   return null
 }
 
-interface AgentSummary {
+export interface AgentSummary {
   name: string
   displayName: string
   description: string
@@ -618,7 +633,7 @@ function getAgentDetail(name: string): AgentDetail {
   }
 }
 
-function listAgentSummaries(): AgentSummary[] {
+export function listAgentSummaries(): AgentSummary[] {
   return listAgentNames().map(getAgentSummary)
 }
 
@@ -659,7 +674,7 @@ export async function refuseIfCliCannotLaunch(model: string): Promise<Record<str
 }
 
 export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promise<boolean> {
-  const { req, res, path, method } = ctx
+  const { req, res, path, method, url } = ctx
 
   // Lists every model the dashboard is willing to serve up to an agent.
   // Claude IDs are static. DeepSeek is gated behind a vault secret because
@@ -1033,6 +1048,10 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const profileId = (rawProfile || 'default').trim() || 'default'
 
     if (!name) { json(res, { error: 'Name is required' }, 400); return true }
+    // SECSZIVEK1007: the model id is checked BEFORE anything is created;
+    // writeAgentModel used to be the first check, after scaffoldAgentDir, and a
+    // malformed id left a half-created agent dir behind.
+    if (!isValidModelId(model)) { json(res, { error: new InvalidModelIdError(model).message }, 400); return true }
     // PICKERCLIKAPU923: the API is a writer too, not only the picker. A fresh
     // probe, so a CLI upgraded a minute ago is not refused on a stale cache.
     const cliGate = await refuseIfCliCannotLaunch(model)
@@ -1329,14 +1348,28 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   const testMatch = matchChannelRoute(path, '/test')
   if (testMatch && method === 'POST') {
     const [name, provider] = testMatch
-    if (!existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
-    const stateDir = channelStateDir(provider, agentDir(name))
+    // SLACKMAINTEST1007: the main agent lives at the install root, not under
+    // agents/<name>/, and its channel tokens (primary and co-listen alike) are
+    // in the MAIN channel state dir, as the setup route below and the
+    // schedule-runner's resolveBoundChannel read them. Reading agents/<main>/
+    // here answered 404 "not configured", so the dashboard's Teszt button and
+    // its scope warning (SLACKSCOPEJELZ1007) never worked for the main agent.
+    const isMain = name === MAIN_AGENT_ID
+    if (!isMain && !existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
+    const stateDir = isMain ? channelStateDir(provider) : channelStateDir(provider, agentDir(name))
     const envPath = join(stateDir, '.env')
-    const token = readChannelToken(provider, envPath) || (provider === 'telegram' ? parseTelegramToken(name) : null)
+    const token = readChannelToken(provider, envPath) || (!isMain && provider === 'telegram' ? parseTelegramToken(name) : null)
     if (!token) { json(res, { error: `${provider} not configured for this agent` }, 404); return true }
     const channelProvider = getProvider(provider)
     const result = await channelProvider.validateToken(token)
-    if (result.ok) { json(res, { ok: true, botName: result.botName }); return true }
+    if (result.ok) {
+      json(res, {
+        ok: true,
+        botName: result.botName,
+        ...(result.missingScopes ? { scopes: result.scopes, missingScopes: result.missingScopes } : {}),
+      })
+      return true
+    }
     json(res, { error: result.error }, 400)
     return true
   }
@@ -1417,8 +1450,29 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       return true
     }
 
-    const { botToken, appToken, channelId } = JSON.parse(body.toString()) as { botToken: string; appToken?: string; channelId?: string }
+    const { botToken, appToken, channelId, extra, allowFrom } = JSON.parse(body.toString()) as { botToken: string; appToken?: string; channelId?: string; extra?: unknown; allowFrom?: unknown }
     if (!botToken?.trim()) { json(res, { error: 'botToken is required' }, 400); return true }
+
+    // AGENTEXTRACH1006: `extra: true` connects this provider NEXT TO the
+    // agent's primary channel instead of replacing it. The primary's
+    // channelProvider and enabledPlugins stay untouched; the provider is
+    // appended to agent-config extraChannels and the launcher co-listens.
+    const asExtra = extra === true
+    if (asExtra) {
+      if (isMain) { json(res, { error: 'The main agent co-listens through CHANNEL_PLUGINS_EXTRA in .env, not through extraChannels' }, 400); return true }
+      if (resolveAgentProvider(name) === provider) { json(res, { error: `${provider} is already this agent's primary channel` }, 400); return true }
+    }
+    // Optional explicit allowlist (AGENTEXTRACH1006): a non-empty list of user
+    // ids writes dmPolicy 'allowlist' instead of 'pairing', so an operator
+    // wiring a known owner does not have to pair by hand. Anything that is not
+    // a plain id is refused rather than written into an access policy.
+    let accessAllowFrom: string[] | null = null
+    if (allowFrom !== undefined) {
+      if (!Array.isArray(allowFrom) || allowFrom.length === 0 || !allowFrom.every(v => typeof v === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(v))) {
+        json(res, { error: 'allowFrom must be a non-empty array of user ids' }, 400); return true
+      }
+      accessAllowFrom = [...new Set(allowFrom as string[])]
+    }
 
     // Discord-specific channelId guard: the dashboard ships the channel where
     // the bot will post by default; without it the plugin spins up but cannot
@@ -1481,8 +1535,8 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     }
     atomicWriteFileSync(join(stateDir, '.env'), envContent, { mode: 0o600 })
     atomicWriteFileSync(join(stateDir, 'access.json'), JSON.stringify({
-      dmPolicy: 'pairing',
-      allowFrom: [],
+      dmPolicy: accessAllowFrom ? 'allowlist' : 'pairing',
+      allowFrom: accessAllowFrom ?? [],
       groups: {},
       pending: {},
     }, null, 2))
@@ -1498,8 +1552,12 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       restarted = r.ok
       wasRunning = true
     } else {
-      writeAgentChannelProvider(name, provider)
-      setAgentEnabledPlugins(name, provider)
+      if (asExtra) {
+        writeAgentExtraChannels(name, [...readAgentExtraChannels(name), provider])
+      } else {
+        writeAgentChannelProvider(name, provider)
+        setAgentEnabledPlugins(name, provider)
+      }
       if (provider === 'telegram') sendWelcomeMessage(name, botToken.trim()).catch(() => {})
       wasRunning = isAgentRunning(name)
       // Same restart-slot discipline as the GC branch above: this too is a
@@ -1525,7 +1583,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       }
     }
 
-    json(res, { ok: true, botName: validation.botName, restarted, wasRunning })
+    json(res, { ok: true, botName: validation.botName, restarted, wasRunning, ...(asExtra ? { extra: true } : {}) })
     return true
   }
 
@@ -1538,6 +1596,14 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const accessFile = join(stateDir, 'access.json')
     if (existsSync(envFile)) unlinkSync(envFile)
     if (existsSync(accessFile)) unlinkSync(accessFile)
+    // AGENTEXTRACH1006: removing a co-listen provider must not take the
+    // primary channel with it -- only the extras list changes.
+    const extras = readAgentExtraChannels(name)
+    if (extras.includes(provider as ChannelProviderType)) {
+      writeAgentExtraChannels(name, extras.filter(p => p !== provider))
+      json(res, { ok: true, extra: true })
+      return true
+    }
     writeAgentChannelProvider(name, '')
     resetAgentEnabledPlugins(name)
     json(res, { ok: true })
@@ -1580,6 +1646,69 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     writeAgentSecurityProfile(name, requested)
     writeAgentSettingsFromProfile(name, profile)
     json(res, { ok: true, requiresRestart: isAgentRunning(name) })
+    return true
+  }
+
+  // GET /api/agents/:name/transcript -- read-only tail of the agent's live
+  // session log, so an operator can see whether it is working or stuck.
+  //
+  // TWO gates, and they answer DIFFERENT questions. This split came out of the
+  // review (Szotasz, 2026-09-03): the first shape had only the allowlist, and
+  // the PR's own security claim ("a decision about WHO MAY READ WHOSE
+  // material") was therefore only half true. The allowlist decides WHOSE log
+  // is readable. It says nothing about WHO is reading -- and `/api/*` auth is
+  // a single SHARED Bearer token that every sub-agent in the fleet reads out
+  // of store/.dashboard-token, by its own standing instructions, every day.
+  // So without a caller-side gate, "enabling" one agent would have exposed
+  // that agent's log to every holder of the fleet token.
+  //
+  // 1. CALLER: named principals only -- 'session' (a logged-in human) and
+  //    'device' (a key enrolled to the invoking user's own device, i.e. the
+  //    owner checking from his phone, which is the stated use case). The
+  //    shared 'token' is refused: it is the fleet credential, not a person.
+  //    'federation' is refused too -- a peer must never reach a transcript --
+  //    and it could not get here anyway, the federation token is scoped to
+  //    two wire endpoints. Fail-closed: anything not listed, including a
+  //    missing auth, is a 403.
+  // 2. TARGET: the explicit allowlist below.
+  //
+  // Why the caller gate is the load-bearing one: the response is NOT truncated
+  // (whole events by design), plus `since` paging, so a caller who gets in can
+  // walk the entire log. Adding a name to store/transcript-allowlist.json is a
+  // decision about whose material becomes readable, and it is not routine
+  // config -- but it is only meaningful once the reader is a person.
+  //
+  // An agent that is not on the list gets 403, not an empty list: an empty
+  // result would let a caller enumerate which agents exist.
+  const transcriptMatch = path.match(/^\/api\/agents\/([^/]+)\/transcript$/)
+  if (transcriptMatch && method === 'GET') {
+    const name = decodeURIComponent(transcriptMatch[1])
+    // Caller gate BEFORE the 404: a shared-token holder must not be able to
+    // probe which agents exist by reading the not-found/forbidden difference.
+    if (!kindAllowed(ctx.auth, TRANSCRIPT_CALLER_KINDS)) {
+      json(res, FORBIDDEN_KIND, 403)
+      return true
+    }
+    if (name !== MAIN_AGENT_ID && !existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
+    if (!isTranscriptAllowed(name)) {
+      json(res, { error: 'Transcript access is not enabled for this agent' }, 403)
+      return true
+    }
+    // Read where the session WRITES (TRANSCRIPTLOC1006). The working dir is
+    // the row's (GH #816: the main agent runs in PROJECT_ROOT). The config
+    // root is configDirFor(), the reader root the watchdogs share: it follows
+    // a sub-agent's auto-provisioned agents/<name>/.claude-config and the main
+    // agent's isolated or MAIN_AGENT_CONFIG_DIR root. resolveAgentConfigDir()
+    // answers only what was CONFIGURED, so on an install where those roots
+    // diverge it read an old session's log as if it were the live one.
+    const bytesRaw = Number(url.searchParams.get('bytes'))
+    const sinceRaw = url.searchParams.get('since')
+    json(res, readAgentTranscript(name, {
+      workingDir: resolveTranscriptLocation(name).workingDir,
+      configDir: configDirFor(name),
+      tailBytes: Number.isFinite(bytesRaw) && bytesRaw > 0 ? bytesRaw : undefined,
+      since: sinceRaw ?? undefined,
+    }))
     return true
   }
 
@@ -2185,6 +2314,29 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       return true
     }
     if (!existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
+    // RESTARTSTOPPED1005: a restart must not resurrect an agent that was stopped
+    // on purpose. restartAgentProcess() starts a non-running agent outright, so
+    // any caller that walks the whole agent list (a token-swap or maintenance
+    // script) used to bring back every agent an operator had stopped -- measured
+    // 2026-10-05: a fleet-wide token swap restarted a deliberately paused agent,
+    // and the explicit /stop that took it off the desired run-state counted for
+    // nothing. A running agent restarts as before; a stopped one that is still
+    // desired (it should be up) is started, as the reconciler would; a stopped one
+    // that is NOT desired is refused, and /start is the one door that runs it.
+    //
+    // A remote agent whose host does not answer reads as not-running too, and
+    // "stopped on purpose" would be the wrong diagnosis there -- nobody knows
+    // whether it runs. That case gets its own answer (503, host-unreachable)
+    // and nothing is attempted: a restart over a dead ssh link cannot succeed.
+    const runState = agentRunState(name)
+    if (runState === 'unreachable') {
+      json(res, { error: 'Agent runs on a remote host that is not reachable right now, so its run state is unknown; nothing was restarted', code: 'host-unreachable' }, 503)
+      return true
+    }
+    if (runState !== 'running' && !getDesiredAgents().has(name)) {
+      json(res, { error: 'Agent is not running and was stopped on purpose (not in the desired run-state); use /start to run it', code: 'stopped-not-desired' }, 409)
+      return true
+    }
     // Optional { "fresh": true } body -> no `--continue` (see /start note).
     let restartFresh = false
     try { restartFresh = JSON.parse((await readBody(req)).toString() || '{}').fresh === true } catch {}

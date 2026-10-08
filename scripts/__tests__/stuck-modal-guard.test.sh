@@ -186,6 +186,118 @@ fi
 rm -rf "$GBASE"
 
 # ---------------------------------------------------------------------------
+# (h) MODELCONFIRM1005 -- macOS
+# ---------------------------------------------------------------------------
+echo ""
+echo "(h) macOS: the Switch-model dialog is stuck, mtime is portable"
+
+# The pane exactly as captured from the live main session on 2026-10-05: the
+# CLI's confirmation after a /model. No idle footer, no live turn -> stuck, so
+# the guard (now also scheduled on macOS) would close it.
+SWITCH_MODEL='← telegram · 7380188614: Itt vagy?
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
+   Switch model?
+   Your next response will be slower and use more tokens
+   This conversation is cached for the current model. Switching to Sonnet 5.5
+   means the full history gets re-read on your next message.
+   ❯ 1. Yes, switch to Sonnet 5.5
+     2. No, go back'
+assert_eq "the Switch-model confirmation classifies as stuck" "stuck" "$(classify "$SWITCH_MODEL")"
+
+# `stat -c %Y` is GNU-only; on macOS it failed and every stamp read as 0, so
+# the shared respawn grace and the backoff never held. The helper must give
+# the real mtime on both, and 0 for a missing file.
+MT_DIR="$(mktemp -d)"
+TZ=UTC touch -t 202610050419.35 "$MT_DIR/stamp"
+assert_eq "mtime: the real epoch of a stamp (GNU or BSD stat)" "1791173975" "$(bash "$GUARD" mtime "$MT_DIR/stamp")"
+assert_eq "mtime: a missing file is 0" "0" "$(bash "$GUARD" mtime "$MT_DIR/nope")"
+assert_eq "no GNU-only 'stat -c' call is left outside the helper" "1" "$(grep -cE '^[^#]*stat -c' "$GUARD" | tr -d ' ')"
+rm -rf "$MT_DIR"
+
+# ---------------------------------------------------------------------------
+# (i) #1694 review -- automatic recovery is opt-in (STUCK_MODAL_MODE)
+# ---------------------------------------------------------------------------
+echo ""
+echo "(i) Mode: log by default, recovery only with act"
+
+# Resolution, in a throwaway install (its own .env), so the repo's .env never leaks in.
+MI="$(mktemp -d)"
+mkdir -p "$MI/scripts/lib"
+cp "$GUARD" "$MI/scripts/stuck-modal-guard.sh"
+cp "$INSTALL_DIR"/scripts/lib/*.sh "$MI/scripts/lib/"
+MG="$MI/scripts/stuck-modal-guard.sh"
+mode_of() { env -u STUCK_MODAL_MODE ${1:+STUCK_MODAL_MODE="$1"} bash "$MG" mode; }
+assert_eq "no setting anywhere -> log" "log" "$(mode_of '')"
+assert_eq "env act -> act" "act" "$(mode_of act)"
+assert_eq "env ALERT (any case) -> alert" "alert" "$(mode_of ALERT)"
+assert_eq "a typo never turns recovery on -> log" "log" "$(mode_of acct)"
+printf 'MAIN_AGENT_ID=x\nSTUCK_MODAL_MODE="alert"\n' > "$MI/.env"
+assert_eq ".env (quoted) -> alert" "alert" "$(mode_of '')"
+assert_eq "env wins over .env" "off" "$(mode_of off)"
+rm -rf "$MI"
+
+assert_eq "mode_action act -> recover" "recover" "$(bash "$GUARD" mode-action act 0)"
+assert_eq "mode_action log, first time -> report" "report" "$(bash "$GUARD" mode-action log 0)"
+assert_eq "mode_action log, already reported -> skip" "skip" "$(bash "$GUARD" mode-action log 1)"
+assert_eq "mode_action alert, first time -> report" "report" "$(bash "$GUARD" mode-action alert 0)"
+assert_eq "mode_action off -> skip" "skip" "$(bash "$GUARD" mode-action off 0)"
+assert_eq "no owner alert names /mcp any more" "0" "$(grep -cE 'alert_owner ".*/mcp' "$GUARD" | tr -d ' ')"
+
+# Behaviour, end to end, against a tmux stub: the captured "Switch model?" pane,
+# a confirm window that has already elapsed. log/alert must send NO key and NO
+# respawn; act must start recovery. Hermetic: stub tmux first on PATH, state
+# dir and session are throwaway, TELEGRAM_STATE_DIR is an empty dir: no token is
+# ever found, the alert path only logs (TG_ENV is derived inside the guard).
+SB="$(mktemp -d)"
+mkdir -p "$SB/bin" "$SB/store" "$SB/tg"
+cat > "$SB/bin/tmux" <<STUB
+#!/bin/bash
+case "\$1" in
+  has-session) exit 0 ;;
+  capture-pane) printf '%s\n' "\$(cat "$SB/pane")" ;;
+  *) echo "\$*" >> "$SB/tmux.calls" ;;
+esac
+exit 0
+STUB
+chmod +x "$SB/bin/tmux"
+printf '%s' "$SWITCH_MODEL" > "$SB/pane"
+run_live() {  # $1 = mode
+  : > "$SB/tmux.calls"
+  PATH="$SB/bin:$PATH" STUCK_MODAL_MODE="$1" STUCK_MODAL_STATE_DIR="$SB/store" \
+    CHANNELS_SESSION=sbx-channels STUCK_MODAL_SECONDS=1 TELEGRAM_STATE_DIR="$SB/tg" \
+    bash "$GUARD" 2>&1
+}
+for m in log alert; do
+  rm -f "$SB/store/".stuck-modal-*
+  echo "$(( $(date +%s) - 300 ))" > "$SB/store/.stuck-modal-firstseen"
+  OUT="$(run_live "$m")"
+  assert_eq "$m: no key and no respawn sent to the pane" "0" "$(wc -l < "$SB/tmux.calls" | tr -d ' ')"
+  case "$OUT" in *"mode=$m"*) pass "$m: the stuck pane is logged with its mode" ;; *) fail "$m: no mode log line ($OUT)" ;; esac
+done
+# log reports once per episode; alert retries until an alert is delivered
+rm -f "$SB/store/".stuck-modal-*
+echo "$(( $(date +%s) - 300 ))" > "$SB/store/.stuck-modal-firstseen"
+run_live log >/dev/null
+OUT="$(run_live log)"
+assert_eq "log: the second tick of the same episode is silent" "" "$OUT"
+rm -f "$SB/store/".stuck-modal-*
+echo "$(( $(date +%s) - 300 ))" > "$SB/store/.stuck-modal-firstseen"
+run_live alert >/dev/null
+OUT="$(run_live alert)"
+case "$OUT" in *"ALERT"*) pass "alert: an undelivered alert is retried on the next tick" ;; *) fail "alert: no retry ($OUT)" ;; esac
+# act: recovery starts (Escape into the pane)
+rm -f "$SB/store/".stuck-modal-*
+echo "$(( $(date +%s) - 300 ))" > "$SB/store/.stuck-modal-firstseen"
+run_live act >/dev/null
+case "$(cat "$SB/tmux.calls")" in *"Escape"*) pass "act: recovery starts with Escape" ;; *) fail "act: no Escape sent" ;; esac
+# off: nothing at all, not even a capture
+: > "$SB/tmux.calls"
+OUT="$(PATH="$SB/bin:$PATH" STUCK_MODAL_MODE=off STUCK_MODAL_STATE_DIR="$SB/store" CHANNELS_SESSION=sbx-channels bash "$GUARD" 2>&1)"
+assert_eq "off: no output" "" "$OUT"
+assert_eq "off: no pane call" "0" "$(wc -l < "$SB/tmux.calls" | tr -d ' ')"
+rm -rf "$SB"
+
+# ---------------------------------------------------------------------------
 echo ""
 echo "======================="
 TOTAL=$((PASS + FAIL))

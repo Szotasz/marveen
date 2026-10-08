@@ -606,6 +606,63 @@ main {
   background: var(--bg-input);
   overflow: hidden;
 }
+/* Weekly row: 7 equal day segments over the fill (separators drawn in the
+   card colour, so they read as gaps), day names underneath, and a thin
+   "now" marker. The fill is USAGE, the marker is TIME: usage right of the
+   marker means the week is being spent faster than it passes. */
+.quota-bar-col { position: relative; min-width: 0; }
+.quota-bar-track.week { position: relative; }
+.quota-bar-track.week::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(to right,
+    transparent 0, transparent calc(100% / 7 - 2px),
+    var(--bg-card) calc(100% / 7 - 2px), var(--bg-card) calc(100% / 7));
+  pointer-events: none;
+}
+.quota-bar-now {
+  position: absolute;
+  top: -3px;
+  width: 2px;
+  height: 12px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background: var(--text);
+  pointer-events: none;
+}
+/* Day names switch by the width of the label row itself (container query),
+   not by an ellipsis: full names need ~58 px per day (longest: "Wednesday",
+   measured at 10 px in DejaVu Sans, wider than the system UI fonts), so
+   below 7 x ~62 px = 440 px the short forms (H K Sze Cs P Szo V /
+   Mon..Sun, <= 22 px) take over, and below 180 px English drops to
+   M T W T F S S. Hungarian has no unambiguous one-letter form, so there
+   (.no-narrow) the day names hide below 180 px; the separators and the now
+   marker on the track still mark the days. */
+.quota-bar-days {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  margin-top: 3px;
+  font-size: 10px;
+  color: var(--text-muted);
+  container-type: inline-size;
+  container-name: quota-days;
+}
+.quota-bar-days > span {
+  text-align: center;
+  white-space: nowrap;
+}
+.quota-bar-days .day-short,
+.quota-bar-days .day-narrow { display: none; }
+@container quota-days (max-width: 440px) {
+  .quota-bar-days .day-full { display: none; }
+  .quota-bar-days .day-short { display: inline; }
+}
+@container quota-days (max-width: 180px) {
+  .quota-bar-days .day-short { display: none; }
+  .quota-bar-days .day-narrow { display: inline; }
+  .quota-bar-days.no-narrow > span { display: none; }
+}
 .quota-bar-fill {
   height: 100%;
   border-radius: 3px;
@@ -2948,6 +3005,21 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   color: var(--text);
 }
 .approvals-pending-banner[hidden] { display: none; }
+
+/* Settings -> Claude plans: rotation is on but something keeps it inert.
+   Same warning token set as .approvals-pending-banner. */
+.claude-plans-readiness-banner {
+  padding: 10px 14px;
+  margin-bottom: 14px;
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--warning, #d4a52c) 12%, transparent);
+  border: 1px solid var(--warning, #d4a52c);
+  font-size: 13px;
+  color: var(--text);
+}
+.claude-plans-readiness-banner[hidden] { display: none; }
+.claude-plans-readiness-banner ul { margin: 6px 0 0; padding-left: 18px; }
+.claude-plans-readiness-title { font-weight: 600; }
 
 /* Wizard step 3: the agent was created but its personality is a placeholder.
    Warning tone, not danger: nothing failed for the operator to undo, the agent
@@ -6449,6 +6521,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   padding: 2px 6px;
 }
 .claude-plan-edit:hover { color: var(--text); }
+.claude-plan-switch-btn { margin-right: 4px; white-space: nowrap; }
 
 /* === connectors.hu cross-promo banner === */
 .cxhu-banner {

@@ -39,7 +39,7 @@ note() { echo "  $1"; }
 #
 # The pane of $SESSION is the only authoritative source. tmux runs the claude as
 # the pane process directly, but tolerate a wrapper shell by walking descendants.
-PANE_PID="$(tmux list-panes -t "$SESSION" -F '#{pane_pid}' 2>/dev/null | head -1)"
+PANE_PID="$(tmux list-panes -t "=$SESSION:" -F '#{pane_pid}' 2>/dev/null | head -1)"
 CLAUDE_PID=""
 if [ -n "$PANE_PID" ]; then
   case "$(ps -p "$PANE_PID" -o args= 2>/dev/null)" in
@@ -72,7 +72,7 @@ echo "verify-channels-health: session=$SESSION"
 # "bun server.ts" process.  Every PID checked is a descendant of the
 # pane PID — never a global match — so Dia's or Ernő's bun processes
 # on the same host are not accidentally matched.
-PANE_PID="$(tmux list-panes -t "$SESSION" -F '#{pane_pid}' 2>/dev/null | head -1)"
+PANE_PID="$(tmux list-panes -t "=$SESSION:" -F '#{pane_pid}' 2>/dev/null | head -1)"
 if [ -z "$PANE_PID" ]; then
   note "(a) FAIL: tmux session $SESSION not found"; fail=1
 else

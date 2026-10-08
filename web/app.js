@@ -4733,7 +4733,9 @@ document.getElementById('saveModelBtn').addEventListener('click', async () => {
     if (!restartRes.ok) {
       document.getElementById('agentDetailModelRestarting').hidden = true
       if (currentAgent) updateProcessControl(currentAgent)
-      showToast(t('agents.restart_failed'))
+      // RESTARTSTOPPED1005: a deliberately stopped agent is not restarted; the
+      // model is saved and applies at its next start -- not a failure.
+      showToast(t(restartRes.status === 409 ? 'agents.toast.model_saved_stopped' : 'agents.restart_failed'))
       return
     }
     startModelRestartPolling(name, newModel, triggeredAt)
@@ -5534,7 +5536,20 @@ document.getElementById('chTestBtn').addEventListener('click', async () => {
   try {
     const res = await fetch(`${channelApiBase()}/test`, { method: 'POST' })
     if (!res.ok) throw new Error()
-    showToast('Kapcsolat rendben!')
+    const data = await res.json().catch(() => ({}))
+    // SLACKSCOPEJELZ1007: a Slack token that lacks a manifest scope works, but
+    // part of the plugin silently does not (im:read: writing to the owner's DM
+    // after a restart). Say so instead of "all right".
+    const missing = Array.isArray(data.missingScopes) ? data.missingScopes : []
+    if (missing.length > 0) {
+      // showToast's 2nd argument is the DURATION (ms). Long enough to read
+      // a sentence that names scopes and what to do.
+      const msg = t('channel.toast.missing_scopes', { scopes: missing.join(', ') })
+        + (missing.includes('im:read') ? ' ' + t('channel.toast.missing_scopes_imread') : '')
+      showToast(msg, 12000)
+    } else {
+      showToast('Kapcsolat rendben!')
+    }
   } catch {
     showToast(t('channel.toast.smoke_failed'))
   }
@@ -5553,10 +5568,10 @@ document.getElementById('chReconnectBtn').addEventListener('click', async () => 
       showToast('Channel-MCP reconnect sikeres')
       document.getElementById('chDisconnectedNotice').hidden = true
     } else {
-      showToast(data.message || 'Reconnect sikertelen', true)
+      showToast(data.message || 'Reconnect sikertelen', 8000)
     }
   } catch {
-    showToast('Reconnect hiba', true)
+    showToast('Reconnect hiba', 8000)
   } finally {
     btn.disabled = false
     btn.textContent = origText
@@ -5573,12 +5588,12 @@ document.getElementById('chSmokeTestBtn').addEventListener('click', async () => 
     const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent)}/channels/slack/smoke-test`, { method: 'POST' })
     const data = await res.json()
     if (!res.ok) {
-      showToast(data.error || 'Smoke-test sikertelen', true)
+      showToast(data.error || 'Smoke-test sikertelen', 8000)
       return
     }
     showSmokeTestResult(data.output || 'OK')
   } catch {
-    showToast('Smoke-test hiba', true)
+    showToast('Smoke-test hiba', 8000)
   } finally {
     btn.disabled = false
     btn.textContent = origText
@@ -12143,6 +12158,44 @@ function quotaLevelClass(pct) {
   return ''
 }
 
+// Weekly quota row: 7 day segments, day names underneath and a "now" marker.
+// The window is NOT a calendar week: it runs resetsAt-7d -> resetsAt
+// (measured 2026-09-29: Monday 09:00 CEST for both the previous and the
+// current window), so the labels and the marker are derived from resetsAt,
+// never from "Monday". Each segment is labelled with the weekday it STARTS
+// on. Returns null when there is no usable current window -- the row then
+// keeps the plain bar instead of drawing a week it cannot place.
+// timeZone is for tests only; the dashboard uses the viewer's local time.
+function weekSegments(resetsAt, nowSec, lang, timeZone) {
+  const WEEK = 7 * 86400
+  if (typeof resetsAt !== 'number' || !Number.isFinite(resetsAt)) return null
+  if (typeof nowSec !== 'number' || !Number.isFinite(nowSec)) return null
+  const start = resetsAt - WEEK
+  if (resetsAt <= nowSec || nowSec < start) return null
+  const locale = lang === 'en' ? 'en-US' : 'hu-HU'
+  const starts = Array.from({ length: 7 }, (_, i) => start + i * 86400)
+  const name = (weekday) => starts.map((sec) => {
+    const s = new Date(sec * 1000).toLocaleDateString(locale, { weekday, timeZone })
+    return s.charAt(0).toUpperCase() + s.slice(1)
+  })
+  // Three widths, chosen by the CSS container query on .quota-bar-days, never
+  // by an ellipsis (a portrait phone showed "Hé… Ke… Sz… … Sz…": two
+  // indistinguishable "Sz…"). hu short = H K Sze Cs P Szo V. hu has no safe
+  // one-letter form (Szerda/Szombat both "Sz"), so hu has NO narrow tier:
+  // narrowLabels is null and the day-name row hides below that width (the
+  // separators and the now marker still show where the days are). Its short
+  // forms need ~140 px and ran together ("SzeCs") on a 390 px phone.
+  // en narrow = M T W T F S S.
+  const short = name('short')
+  return {
+    starts,
+    labels: name('long'),
+    shortLabels: short,
+    narrowLabels: lang === 'en' ? name('narrow') : null,
+    nowPct: ((nowSec - start) / WEEK) * 100,
+  }
+}
+
 // Render the subscription quota strip from /api/overview's `quota` block.
 //
 // The rule this follows: a quota reading is only worth showing while it is
@@ -12214,9 +12267,17 @@ function renderQuotaStrip(q, fable) {
     if (q.source === 'mod' && w.sourceAgent) {
       tail += ' · ' + w.sourceAgent
     }
+    const week = labelKey === 'overview.quota.seven_day' && !w.expired
+      ? weekSegments(w.resetsAt, nowSec, window._lang)
+      : null
+    const track = `<div class="quota-bar-track${week ? ' week' : ''}"><div class="quota-bar-fill ${muted ? '' : quotaLevelClass(pct)}" style="width:${pct}%"></div></div>`
     row.innerHTML = `
       <div class="quota-bar-label">${escapeHtml(t(labelKey))}</div>
-      <div class="quota-bar-track"><div class="quota-bar-fill ${muted ? '' : quotaLevelClass(pct)}" style="width:${pct}%"></div></div>
+      ${week ? `<div class="quota-bar-col">
+        ${track}
+        <div class="quota-bar-now" style="left:${week.nowPct.toFixed(2)}%"></div>
+        <div class="quota-bar-days${week.narrowLabels ? '' : ' no-narrow'}">${week.labels.map((d, i) => `<span><span class="day-full">${escapeHtml(d)}</span><span class="day-short">${escapeHtml(week.shortLabels[i])}</span>${week.narrowLabels ? `<span class="day-narrow">${escapeHtml(week.narrowLabels[i])}</span>` : ''}</span>`).join('')}</div>
+      </div>` : track}
       <div class="quota-bar-value">${pct}%<span class="quota-bar-reset">${escapeHtml(tail)}</span></div>
     `
     bars.appendChild(row)
@@ -13954,6 +14015,7 @@ async function renderAuthCard() {
   if (status.method === 'token' || status.method === 'session') {
     renderDeviceKeysSection(body)
     renderBridgeEnrollSection(body)
+    renderOperatorAccessSection(body)
   }
 }
 
@@ -14081,6 +14143,7 @@ async function refreshDeviceKeyList() {
       const lastUsed = k.lastUsedAt ? new Date(k.lastUsedAt * 1000).toLocaleString() : t('auth.devices.never_used')
       const expires = k.expiresAt ? ` &middot; ${t('auth.devices.expires', { date: new Date(k.expiresAt * 1000).toLocaleDateString() })}` : ''
       const bridge = k.installId ? ` <span class="auth-device-bridge-badge">${t('auth.devices.bridge_badge')}</span>` : ''
+        + (k.scope === 'operator' ? ` <span class="auth-device-bridge-badge">${t('auth.operator.badge')}</span>` : '')
       return `<div class="auth-session-row auth-device-row" data-key-id="${k.id}">` +
         `<span class="auth-device-name">${escapeHtml(k.name)}${bridge}</span>` +
         `<span class="auth-device-meta">${created} &middot; ${t('auth.devices.last_used', { date: lastUsed })}${expires}</span>` +
@@ -14144,6 +14207,115 @@ async function mintDeviceKey() {
         await navigator.clipboard.writeText(data.key)
         document.getElementById('authDevCopyBtn').textContent = t('auth.devices.copied')
       } catch { document.getElementById('authDevMintedKey').select() }
+    })
+    refreshDeviceKeyList()
+  } catch { msg.classList.add('err'); msg.textContent = t('auth.login.err_network') }
+}
+
+// === IT operator access (DASHOPERATOR1005) ===
+// The owner decides what an IT operator may do: one switch per capability,
+// all OFF by default, and the whole surface OFF until "enabled". An operator
+// key reaches /operator and /api/operator/* only (the server enforces it), and
+// it always expires.
+
+const OPERATOR_CAPS = ['agentControl', 'mainAgentRestart', 'update', 'vaultWrite', 'vaultOverwrite', 'paneView', 'commands']
+const OPERATOR_CMDS = ['login', 'mcp']
+
+function renderOperatorAccessSection(body) {
+  const wrap = document.createElement('div')
+  wrap.className = 'auth-device-keys'
+  wrap.id = 'authOperatorAccess'
+  wrap.innerHTML =
+    `<div class="auth-sessions-title">${t('auth.operator.title')}</div>` +
+    `<p class="auth-muted">${t('auth.operator.desc')}</p>` +
+    `<label class="auth-operator-switch"><input type="checkbox" id="opAccEnabled"> <strong>${t('auth.operator.enabled')}</strong></label>` +
+    `<div id="opAccCaps">` +
+      OPERATOR_CAPS.map((c) => `<label class="auth-operator-switch"><input type="checkbox" data-op-cap="${c}"> ${t('auth.operator.cap.' + c)}</label>`).join('') +
+      `<div class="auth-muted" style="margin-left:1.5em">` +
+        OPERATOR_CMDS.map((c) => `<label class="auth-operator-switch"><input type="checkbox" data-op-cmd="${c}"> /${c}</label>`).join(' ') +
+      `</div>` +
+    `</div>` +
+    `<div class="auth-form-msg" id="opAccMsg"></div>` +
+    `<div class="auth-form auth-device-mint">` +
+      `<input id="opKeyName" type="text" autocapitalize="off" spellcheck="false" maxlength="64" placeholder="${t('auth.operator.name_placeholder')}">` +
+      `<input id="opKeyExpiry" type="number" min="1" max="365" placeholder="${t('auth.operator.expiry_placeholder')}">` +
+      `<button class="btn-secondary" id="opKeyMintBtn">${t('auth.operator.mint')}</button>` +
+      `<div class="auth-form-msg" id="opKeyMsg"></div>` +
+      `<div id="opKeyMinted" hidden></div>` +
+    `</div>`
+  body.appendChild(wrap)
+  wrap.querySelectorAll('input[type=checkbox]').forEach((cb) => cb.addEventListener('change', saveOperatorAccess))
+  document.getElementById('opKeyMintBtn').addEventListener('click', mintOperatorKey)
+  loadOperatorAccess()
+}
+
+function applyOperatorAccess(a) {
+  document.getElementById('opAccEnabled').checked = !!a.enabled
+  for (const c of OPERATOR_CAPS) document.querySelector(`[data-op-cap="${c}"]`).checked = !!(a.capabilities && a.capabilities[c])
+  for (const c of OPERATOR_CMDS) document.querySelector(`[data-op-cmd="${c}"]`).checked = (a.commands || []).includes(c)
+  document.getElementById('opAccCaps').style.opacity = a.enabled ? '1' : '0.5'
+}
+
+async function loadOperatorAccess() {
+  try {
+    const r = await fetch('/api/operator-access')
+    if (r.ok) applyOperatorAccess(await r.json())
+  } catch { /* the section stays at its unchecked defaults */ }
+}
+
+async function saveOperatorAccess(ev) {
+  const msg = document.getElementById('opAccMsg')
+  msg.className = 'auth-form-msg'
+  // Turning on the pane view shows the operator the conversation itself: ask first.
+  if (ev && ev.target && ev.target.dataset.opCap === 'paneView' && ev.target.checked && !confirm(t('auth.operator.pane_warning'))) {
+    ev.target.checked = false
+    return
+  }
+  const next = {
+    enabled: document.getElementById('opAccEnabled').checked,
+    capabilities: Object.fromEntries(OPERATOR_CAPS.map((c) => [c, document.querySelector(`[data-op-cap="${c}"]`).checked])),
+    commands: OPERATOR_CMDS.filter((c) => document.querySelector(`[data-op-cmd="${c}"]`).checked),
+  }
+  try {
+    const r = await fetch('/api/operator-access', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(next) })
+    if (!r.ok) throw new Error(String(r.status))
+    applyOperatorAccess(await r.json())
+    msg.classList.add('ok'); msg.textContent = t('auth.operator.saved')
+  } catch {
+    msg.classList.add('err'); msg.textContent = t('auth.card.err_generic')
+    loadOperatorAccess()
+  }
+}
+
+async function mintOperatorKey() {
+  const msg = document.getElementById('opKeyMsg')
+  const minted = document.getElementById('opKeyMinted')
+  const name = (document.getElementById('opKeyName').value || '').trim()
+  const expiryRaw = document.getElementById('opKeyExpiry').value
+  msg.className = 'auth-form-msg'
+  minted.hidden = true
+  if (!name) { msg.classList.add('err'); msg.textContent = t('auth.devices.err_name'); return }
+  const payload = { name, scope: 'operator' }
+  if (expiryRaw) payload.expires_in_days = Number(expiryRaw)
+  try {
+    const r = await fetch('/api/auth/device-keys', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+    const data = await r.json().catch(() => ({}))
+    if (!r.ok) { msg.classList.add('err'); msg.textContent = data.error || t('auth.card.err_generic'); return }
+    document.getElementById('opKeyName').value = ''
+    document.getElementById('opKeyExpiry').value = ''
+    const url = `${location.origin}/operator`
+    minted.hidden = false
+    minted.innerHTML =
+      `<p class="auth-muted">${t('auth.operator.minted_hint', { date: new Date(data.expires_at * 1000).toLocaleDateString(), url: escapeHtml(url) })}</p>` +
+      `<div class="auth-form auth-device-minted-row">` +
+        `<input id="opKeyMintedVal" type="text" readonly value="${escapeHtml(data.key)}" onclick="this.select()">` +
+        `<button class="btn-secondary btn-compact" id="opKeyCopyBtn">${t('auth.devices.copy')}</button>` +
+      `</div>`
+    document.getElementById('opKeyCopyBtn').addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(data.key)
+        document.getElementById('opKeyCopyBtn').textContent = t('auth.devices.copied')
+      } catch { document.getElementById('opKeyMintedVal').select() }
     })
     refreshDeviceKeyList()
   } catch { msg.classList.add('err'); msg.textContent = t('auth.login.err_network') }
@@ -14543,13 +14715,14 @@ function activateSettingsTab(mod) {
 // active-plan / last-known-usage badges. The "active" dot reflects the MAIN
 // agent's entry in activePlanByAgent (PR2c, design decision #1: the state is
 // per-agent, but this tab only shows the one that also drives the dashboard
-// header). There is still no manual rotate button here: this tab lets the
-// operator view and hand-edit the registry, the same way it already lets
-// them for store/claude-plans.json by hand; actual rotation is triggered by
-// the heartbeat script or POST /api/claude-plans/rotate directly.
+// header). Each non-active, channels-allowed plan has a "switch to this
+// plan" button (switchToClaudePlan -> POST /api/claude-plans/rotate): the
+// manual path, and the first assignment the rotation heartbeat needs before
+// it can decide anything. Automatic rotation is the heartbeat's job.
 async function renderClaudePlansPanel(body) {
   body.innerHTML = `
     <p style="color:var(--text-muted);font-size:13px;margin:0 0 16px">${t('settings.claude_plans.intro')}</p>
+    <div id="claudePlansReadiness" class="claude-plans-readiness-banner" role="alert" hidden></div>
     <div id="claudePlansList"></div>
     <div class="claude-plans-add-form">
       <div class="claude-plans-form-title" id="cpFormTitle">${t('settings.claude_plans.form.title_add')}</div>
@@ -14760,6 +14933,29 @@ async function saveClaudePlan() {
   }
 }
 
+// POST /api/claude-plans/rotate for the main agent (agentId defaults to it
+// server-side). Restarts the main agent's session, hence the confirm.
+async function switchToClaudePlan(plan) {
+  if (!confirm(t('settings.claude_plans.confirm_switch', { label: plan.label }))) return
+  try {
+    const res = await fetch('/api/claude-plans/rotate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ targetPlanId: plan.id }),
+    })
+    let data = null
+    try { data = await res.json() } catch { /* non-JSON error body */ }
+    if (!res.ok) {
+      showToast((data && data.error) || t('settings.claude_plans.switch_error'), 'error')
+    } else {
+      showToast(t('settings.claude_plans.switch_done', { label: plan.label }))
+    }
+  } catch {
+    showToast(t('settings.claude_plans.switch_error'), 'error')
+  }
+  await loadClaudePlansList()
+}
+
 async function deleteClaudePlan(id) {
   if (!confirm(t('settings.claude_plans.confirm_delete', { id }))) return
   await fetch(`/api/claude-plans/${encodeURIComponent(id)}`, { method: 'DELETE' })
@@ -14879,9 +15075,49 @@ async function probeClaudePlan(id, btn) {
   await loadClaudePlansList()
 }
 
+// Pure: GET /api/claude-plans/readiness -> the banner's lines, or null when
+// no banner belongs on screen. Shown only while rotation is ON but something
+// keeps it inert (with rotation off there is nothing to warn about: the
+// toggle itself says so). Known codes get the localized text; an unknown one
+// falls back to the server's own Hungarian message rather than vanishing.
+function claudePlansReadinessLines(readiness) {
+  if (!readiness || readiness.ready) return null
+  const codes = Array.isArray(readiness.blockers) ? readiness.blockers : []
+  if (!codes.length || codes.includes('rotation_disabled')) return null
+  const details = Array.isArray(readiness.details) ? readiness.details : []
+  return codes.map((code) => {
+    const key = 'settings.claude_plans.readiness.' + code
+    const text = t(key)
+    if (text !== key) return text
+    const d = details.find((x) => x && x.code === code)
+    return (d && d.message) || code
+  })
+}
+
+async function loadClaudePlansReadiness() {
+  const el = document.getElementById('claudePlansReadiness')
+  if (!el) return
+  let lines = null
+  try {
+    const res = await fetch('/api/claude-plans/readiness')
+    if (res.ok) lines = claudePlansReadinessLines(await res.json())
+  } catch { /* banner is advisory: no answer, no banner */ }
+  if (!lines) {
+    el.hidden = true
+    el.innerHTML = ''
+    return
+  }
+  el.innerHTML = `<div class="claude-plans-readiness-title">${escapeHtml(t('settings.claude_plans.readiness.title'))}</div>`
+    + `<ul>${lines.map((l) => `<li>${escapeHtml(l)}</li>`).join('')}</ul>`
+  el.hidden = false
+}
+
 async function loadClaudePlansList() {
   const list = document.getElementById('claudePlansList')
   if (!list) return
+  // Plan count and channelsAllowed feed the readiness report, so it is
+  // refreshed together with the list (add/edit/delete all end up here).
+  loadClaudePlansReadiness()
   list.innerHTML = `<p style="color:var(--text-muted);font-size:13px">${t('common.loading')}</p>`
   try {
     const [plansRes, stateRes] = await Promise.all([
@@ -14937,6 +15173,18 @@ async function loadClaudePlansList() {
       editBtn.textContent = '✎'
       editBtn.addEventListener('click', () => editClaudePlan(plan))
       actions.appendChild(editBtn)
+
+      // Manual switch (also the first assignment the rotation heartbeat
+      // needs before it can decide anything, see readiness no_active_plan).
+      // Only for a plan that may run the channel and is not already active.
+      if (plan.channelsAllowed && !isActive) {
+        const switchBtn = document.createElement('button')
+        switchBtn.className = 'btn-secondary btn-compact claude-plan-switch-btn'
+        switchBtn.textContent = t('settings.claude_plans.switch_btn')
+        switchBtn.title = t('settings.claude_plans.switch_btn')
+        switchBtn.addEventListener('click', () => switchToClaudePlan(plan))
+        actions.appendChild(switchBtn)
+      }
 
       const delBtn = document.createElement('button')
       delBtn.className = 'claude-plan-delete'
@@ -15256,6 +15504,9 @@ async function saveAllSettings() {
   updateSettingsSaveBar()
 
   if (btn) { btn.disabled = false; btn.textContent = t('settings.btn.save') }
+  // The rotation toggle lives on the Claude plans tab and changes its
+  // readiness banner (and turning it on seeds the heartbeat task server-side).
+  loadClaudePlansReadiness()
   if (errors.length) {
     showToast(t('settings.toast.partial_error'), 'error')
   } else {

@@ -129,22 +129,62 @@ ensure_in_rc() {
   done
 }
 
-# Like ensure_in_rc, but REPLACES an existing `export <VAR>=` line instead of
-# keeping it. For credentials ensure_in_rc was wrong: once a bad or old token
-# line was in ~/.bashrc, a re-run with the correct token skipped the rc ("marker
-# already there"), so every interactive shell kept exporting the stale value.
-set_export_in_rc() {
-  local var="$1" line="$2"
+# SECSZIVEK1007: secrets belong in the 0600 install files, not in shell
+# startup files. The services never read an rc file: they use <install>/.env
+# and <install>/store/.claude-oauth-token, both 0600 (see
+# service_auth_present). A re-run removes the credential export lines from the
+# rc files and says so. The rewrite keeps the rc file's inode and permissions
+# (cat back, not mv), and `|| true` because grep -v exits 1 when every line is
+# filtered out.
+remove_secret_export_from_rc() {
+  local var="$1" rc
   for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
     [ -f "$rc" ] || continue
-    # Portable (BSD/macOS sed has no `sed -i` without a suffix argument).
-    # Rewrite in place via cat so the rc file keeps its inode and permissions;
-    # `|| true` because grep -v exits 1 when every line is filtered out.
+    grep -Eq "^[[:space:]]*export[[:space:]]+${var}=" "$rc" 2>/dev/null || continue
     { grep -Ev "^[[:space:]]*export[[:space:]]+${var}=" "$rc" || true; } >"$rc.tmp" \
       && cat "$rc.tmp" >"$rc" && rm -f "$rc.tmp"
-    printf '%s\n' "$line" >>"$rc"
-    warn "RC frissitve ($(basename "$rc")): export ${var}=..."
+    warn "$(basename "$rc"): a korabbi ${var} export-sor torolve (titok nem kerul shell rc fajlba)"
   done
+}
+
+# Interactive convenience without the secret in the rc: one line that READS the
+# value from a 0600 install file at shell start, and exports it only when it is
+# there. The file path is single-quoted for the shell ('\'' for a quote in it).
+# Usage: ensure_secret_reader_in_rc VAR FILE KIND   (KIND: file = whole file, env = VAR= line of a .env)
+ensure_secret_reader_in_rc() {
+  local var="$1" file="$2" kind="$3" q marker line
+  q="'$(printf '%s' "$file" | sed "s/'/'\\\\''/g")'"
+  marker="# marveen: ${var} from the install's 0600 file"
+  if [ "$kind" = "env" ]; then
+    line="${marker}"$'\n'"_mv=\"\$(grep -m1 '^${var}=' ${q} 2>/dev/null | cut -d= -f2-)\"; [ -n \"\$_mv\" ] && export ${var}=\"\$_mv\"; unset _mv"
+  else
+    line="${marker}"$'\n'"[ -s ${q} ] && export ${var}=\"\$(cat ${q})\""
+  fi
+  ensure_in_rc "$marker" "$line"
+}
+
+# SECSZIVEKKIADAS1008: the same scrub for an install that already carries auth
+# (a re-run never reaches the prompt above). scripts/lib/rc-secrets.sh holds
+# the identical copy update.sh uses; update-rc-secret-scrub.test.ts keeps them equal.
+rc_has_secret_export() {
+  local rc
+  for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
+    [ -f "$rc" ] || continue
+    grep -Eq "^[[:space:]]*export[[:space:]]+${1}=" "$rc" 2>/dev/null && return 0
+  done
+  return 1
+}
+
+scrub_secret_exports_from_rc() {
+  if rc_has_secret_export ANTHROPIC_API_KEY; then
+    remove_secret_export_from_rc ANTHROPIC_API_KEY
+    ensure_secret_reader_in_rc ANTHROPIC_API_KEY "$INSTALL_DIR/.env" env
+  fi
+  if rc_has_secret_export CLAUDE_CODE_OAUTH_TOKEN; then
+    remove_secret_export_from_rc CLAUDE_CODE_OAUTH_TOKEN
+    ensure_secret_reader_in_rc CLAUDE_CODE_OAUTH_TOKEN "$INSTALL_DIR/store/.claude-oauth-token" file
+  fi
+  return 0
 }
 
 # Tobbsoros blokkot ad az rc fajlokhoz ha a <marker> meg nem szerepel bennuk.
@@ -597,12 +637,18 @@ _shelve_broken_claude() {
   hash -r
 }
 
-# Pinned Node-based fallback for AVX-less hosts. @2.1.110 is the LAST version
+# Pinned Node-based fallback for AVX-less hosts. @2.1.112 is the LAST version
 # that ships bin=cli.js (a `#!/usr/bin/env node` entrypoint) running without
-# AVX -- 2.1.120+ bundles only the Bun ELF binary, so DO NOT use latest here.
-# Unlike the old 2.0.76 pin, 2.1.110 also understands `--channels`, which
-# channels.sh requires to boot the bot. Verified on the AVX-less pilot VPS.
-CLAUDE_PIN="2.1.110"
+# AVX -- from 2.1.113 on every published version ships bin=bin/claude.exe with
+# a postinstall that downloads the Bun ELF binary, so DO NOT use latest here.
+# Measured 2026-09-23 on the AVX-less pilot VPS (QEMU Virtual CPU 2.5+, 0 avx
+# flags) with a REAL `claude -p ... --output-format json` probe, not
+# `--version` (which still exits 0 on some Bun builds there): 2.1.110/111/112
+# answer, 2.1.113/150/170 SIGILL ("CPU lacks AVX support"), 2.1.200/240/260/280
+# spin silently for 120 s. 2.1.112 understands `--channels` (same parser
+# as 2.1.110), which channels.sh requires to boot the bot. Keep in sync with
+# scripts/channels.sh and scripts/fix-avx.sh (a test pins the three together).
+CLAUDE_PIN="2.1.112"
 
 if _claude_runs; then
   ok "claude mar telepitve es fut: $(claude --version 2>/dev/null || echo 'ok')"
@@ -739,6 +785,7 @@ fi
 # first -- the correct user behaviour triggered the bug.
 if service_auth_present; then
   ok "A telepites mar hordoz auth kulcsot (.env / store/.claude-oauth-token)"
+  scrub_secret_exports_from_rc
 else
   if claude auth status &>/dev/null; then
     echo -e "  ${ORANGE}A terminalod be van jelentkezve, de a SZOLGALTATASOK ehhez nem ferenek hozza.${NC}"
@@ -777,7 +824,8 @@ else
     read -p "  ANTHROPIC_API_KEY (sk-ant-...): " ANTHROPIC_API_KEY_INPUT
     if [ -n "$ANTHROPIC_API_KEY_INPUT" ]; then
       export ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY_INPUT"
-      set_export_in_rc 'ANTHROPIC_API_KEY' "export ANTHROPIC_API_KEY=\"$ANTHROPIC_API_KEY_INPUT\""
+      remove_secret_export_from_rc ANTHROPIC_API_KEY
+      ensure_secret_reader_in_rc ANTHROPIC_API_KEY "$INSTALL_DIR/.env" env
       CLAUDE_AUTH_ENV_LINE="ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY_INPUT}"
       ok "ANTHROPIC_API_KEY beallitva"
     else
@@ -796,7 +844,7 @@ else
     echo ""
     # Shape-check BEFORE the value is written anywhere. Without it any paste was
     # accepted -- typically the one-time code the browser shows during
-    # `claude setup-token` -- and landed in ~/.bashrc and .env as if it were the
+    # `claude setup-token` -- and landed in .env as if it were the
     # token; the services then failed to authenticate with no hint why. Same
     # pattern the store/.claude-oauth-token write below already gates on.
     OAUTH_TOKEN_INPUT=""
@@ -816,7 +864,8 @@ else
     unset _tok _try
     if [ -n "$OAUTH_TOKEN_INPUT" ]; then
       export CLAUDE_CODE_OAUTH_TOKEN="$OAUTH_TOKEN_INPUT"
-      set_export_in_rc 'CLAUDE_CODE_OAUTH_TOKEN' "export CLAUDE_CODE_OAUTH_TOKEN=\"$OAUTH_TOKEN_INPUT\""
+      remove_secret_export_from_rc CLAUDE_CODE_OAUTH_TOKEN
+      ensure_secret_reader_in_rc CLAUDE_CODE_OAUTH_TOKEN "$INSTALL_DIR/store/.claude-oauth-token" file
       CLAUDE_AUTH_ENV_LINE="CLAUDE_CODE_OAUTH_TOKEN=${OAUTH_TOKEN_INPUT}"
       # Ellenorzes
       if claude auth status &>/dev/null; then

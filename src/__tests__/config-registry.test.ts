@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { describe, it, expect } from 'vitest'
 import { SETTINGS_REGISTRY, getSettingDefinition, listSettingModules, validateSettingValue } from '../config-registry.js'
 
@@ -28,6 +30,45 @@ describe('config-registry', () => {
     expect(new Set(mods).size).toBe(mods.length) // distinct, no duplicates
     expect(new Set(mods)).toEqual(new Set(SETTINGS_REGISTRY.map((s) => s.module)))
     expect(mods).toContain('kanban')
+  })
+
+  // Opt-in operator switches consumed as boot-time consts in src/config.ts.
+  // Default must stay '0' (config.ts resolves an unset key to false), and the
+  // UI must flag the restart, since the value is read once at module load.
+  it.each(['SUBAGENT_INBOX_TEE', 'SUBAGENT_TELEGRAM_WAKE_ENABLED', 'VOICE_TRANSCRIBE_INBOUND'])(
+    'registers %s as an off-by-default boolean that requires a restart',
+    (key) => {
+      const def = getSettingDefinition(key)
+      expect(def).toBeDefined()
+      expect(def!.type).toBe('boolean')
+      expect(def!.default).toBe('0')
+      expect(def!.module).toBe('channels')
+      expect(def!.secret).toBe(false)
+      expect(def!.requiresRestart).toBe(true)
+      expect(def!.description.length).toBeGreaterThan(0)
+      // the boolean validator persists canonical '1'/'0'
+      expect(validateSettingValue(def!, true)).toEqual({ ok: true, value: '1' })
+      expect(validateSettingValue(def!, 'false')).toEqual({ ok: true, value: '0' })
+    },
+  )
+
+  // The canonical '1' the Settings page writes must be a value the consumer
+  // accepts. Pin the parser in src/config.ts: if it ever stops accepting '1',
+  // a switch saved as on would silently stay off.
+  it.each(['SUBAGENT_INBOX_TEE', 'SUBAGENT_TELEGRAM_WAKE_ENABLED', 'VOICE_TRANSCRIBE_INBOUND'])(
+    'src/config.ts parses %s so that the saved "1" means on',
+    (key) => {
+      const code = readFileSync(join(process.cwd(), 'src', 'config.ts'), 'utf-8')
+      const parse = new RegExp(
+        String.raw`export const ${key} =\s*\['1', 'true', 'yes', 'on'\]\.includes\(\(cfg\('${key}'\) \?\? ''\)\.trim\(\)\.toLowerCase\(\)\)`,
+      )
+      expect(code).toMatch(parse)
+    },
+  )
+
+  it('registers each key at most once', () => {
+    const keys = SETTINGS_REGISTRY.map((s) => s.key)
+    expect(new Set(keys).size).toBe(keys.length)
   })
 
   describe('validateSettingValue', () => {

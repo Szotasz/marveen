@@ -33,6 +33,7 @@ import {
   WAKE_DELAY_MS,
   type GateInputs,
 } from '../context-restart-gate.js'
+import { exactTmuxTarget } from '../tmux-target.js'
 
 // Fleet context-restart gate: proactively send /clear to an agent session
 // before the context grows unwieldy, while holding the send lane and only
@@ -216,7 +217,7 @@ function capturePaneOrNull(session: string): string | null {
 // message now goes through the logger with the call site and the session.
 function getPanePid(session: string): number | null {
   try {
-    const raw = execFileSync(tmuxBin(), ['list-panes', '-t', session, '-F', '#{pane_pid}'],
+    const raw = execFileSync(tmuxBin(), ['list-panes', '-t', exactTmuxTarget(session), '-F', '#{pane_pid}'],
       { timeout: 3000, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] })
     const pid = parseInt(raw.split('\n')[0]?.trim() ?? '', 10)
     return Number.isFinite(pid) && pid > 0 ? pid : null
@@ -751,8 +752,22 @@ export function diagnoseAgent(name: string, nowMs: number) {
  */
 export async function sendSlashCommand(session: string, command: string): Promise<void> {
   await withSessionSendLock(session, null, 'deliver', async () => {
-    execFileSync(tmuxBin(), ['send-keys', '-t', session, '-l', command], { timeout: 5000 })
-    execFileSync(tmuxBin(), ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+    execFileSync(tmuxBin(), ['send-keys', '-t', exactTmuxTarget(session), '-l', command], { timeout: 5000 })
+    execFileSync(tmuxBin(), ['send-keys', '-t', exactTmuxTarget(session), 'Enter'], { timeout: 5000 })
+  })
+}
+
+// One named key into the pane (tmux key name, not literal text: '1', 'Enter'),
+// on the same send lane as the slash commands. MODELCONFIRM1005: answers the
+// CLI's "Switch model?" confirmation after a /model.
+export async function sendKey(session: string, key: string): Promise<void> {
+  await withSessionSendLock(session, null, 'deliver', async () => {
+    try {
+      execFileSync(tmuxBin(), ['send-keys', '-t', exactTmuxTarget(session), key], { timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] })
+    } catch (err) {
+      logger.warn({ site: 'context-restart-gate-runner.sendKey', session, key, tmux: tmuxStderr(err) }, 'tmux key send failed')
+      throw err
+    }
   })
 }
 
@@ -761,7 +776,7 @@ export async function sendSlashCommand(session: string, command: string): Promis
 export async function sendInterrupt(session: string): Promise<void> {
   await withSessionSendLock(session, null, 'deliver', async () => {
     try {
-      execFileSync(tmuxBin(), ['send-keys', '-t', session, 'Escape'], { timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] })
+      execFileSync(tmuxBin(), ['send-keys', '-t', exactTmuxTarget(session), 'Escape'], { timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] })
     } catch (err) {
       logger.warn({ site: 'context-restart-gate-runner.sendInterrupt', session, tmux: tmuxStderr(err) }, 'tmux send-keys Escape failed')
       throw err

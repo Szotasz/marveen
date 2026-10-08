@@ -63,6 +63,9 @@ describe('the launcher binding', () => {
     expect(block).toMatch(/decideStateObserver\(/)
     expect(block).toMatch(/stateObserverLaunchEnv\(observer\.load, name, shSingleQuote\)/)
     expect(block).toMatch(/isMainAgent: name === MAIN_AGENT_ID/)
+    // Geri's #1692 review gap (c): the other two inputs are pinned too.
+    expect(block).toMatch(/installedCli: \(await measureClaudeCliVersion\(\)\)\.version/)
+    expect(block).toMatch(/runAs: !!agentTmuxTarget\(name\)\.runAsUser/)
     expect(SRC).toMatch(/\$\{providerEnv\}\$\{stateObserverEnv\}cd "\$\{launchCwd\}"/)
   })
 

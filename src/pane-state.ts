@@ -649,6 +649,83 @@ export function permissionPromptSummary(pane: string): PermissionPromptSummary |
   return { title, reason }
 }
 
+// Plan usage limit ("quota wall"), card 41a0c3a3. When the plan's usage limit
+// is hit, the CLI ends the turn and paints a banner BELOW the input box, with
+// the prompt itself idle. Two live captures of the same moment (two sessions on
+// one key, 2026-09-30 16:14Z; fixture quota-wall-usage-limit.txt):
+//
+//   ────────────────────────────────────────
+//   ❯
+//   ────────────────────────────────────────
+//     ⚠ Usage limit reached · limit resets 6:20pm
+//       Continuing automatically at 6:20pm · esc to cancel · /usage-credits to
+//       continue now
+//     Opus 5.5 | ctx 50% | 5h 100% | 7d 26%
+//
+// An earlier CLI (measured 2026-09-24) drew the same banner on one line:
+//   ⚠ Usage limit reached · continuing automatically at 7:40pm · esc to cancel
+//
+// Only a ⚠ line UNDER the box's bottom rule counts. The same words above the
+// box are conversation: the failed turn echoes "You've hit your session limit ·
+// resets 6:20pm" there, and an agent can quote a banner in a reply. The
+// "has reset" forms ("Usage limit reset · continuing automatically") and the
+// "approaching" warning are not a wall, and neither regex below matches them.
+const QUOTA_WALL_RX = /\busage limit reached\b|\bhit (?:your|the) (?:session|usage|weekly) limit\b|\b(?:session|weekly|\d+-hour) limit reached\b/i
+// "limit resets 6:20pm", "resets at 2am", "continuing automatically at 7:40pm":
+// the time is whatever the CLI printed, up to the next · separator or the line
+// end. A real one is short ("Sep 28, 5pm (UTC)" is 17 characters); anything
+// longer is not a time we can quote, so it reads as "the banner does not say".
+const QUOTA_WALL_RESET_RX = /\b(?:resets(?: at)?|continuing automatically at)\s+([^·\n]{1,40}?)\s*(?:·|$)/i
+const QUOTA_WALL_BANNER_MAX = 220
+
+export interface QuotaWall {
+  /** The banner as painted, its wrapped continuation lines rejoined into one line. */
+  banner: string
+  /** When the CLI says it resumes, verbatim ("6:20pm"); null when the banner does not say. */
+  resetsAt: string | null
+}
+
+/**
+ * The plan usage-limit banner under the live input box, or null.
+ *
+ * Pure + dependency-free. The reset time is kept as the CLI printed it: the
+ * clock it is in belongs to the session's host, so turning it into an instant
+ * here would be a guess.
+ */
+export function detectQuotaWall(pane: string): QuotaWall | null {
+  if (!pane || !pane.trim()) return null
+  const lines = pane.split('\n')
+  let bottomRule = -1
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (BOX_SEP_RX.test(lines[i])) { bottomRule = i; break }
+  }
+  if (bottomRule < 0) return null
+  for (let i = bottomRule + 1; i < lines.length; i++) {
+    const text = lines[i].trimStart()
+    if (!text.startsWith('⚠') || !QUOTA_WALL_RX.test(text)) continue
+    // The banner wraps at the pane width; its continuation lines are indented
+    // deeper than the ⚠ line, the status line under it is not.
+    const indent = lines[i].length - text.length
+    const parts = [text.trimEnd()]
+    for (let j = i + 1; j < lines.length; j++) {
+      const next = lines[j].trimStart()
+      if (!next || lines[j].length - next.length <= indent) break
+      parts.push(next.trimEnd())
+    }
+    // Per part, not on the rejoined line: a wrapped part ends where the next
+    // sentence starts, and only the part's own end bounds the time.
+    let resetsAt: string | null = null
+    for (const p of parts) {
+      const m = QUOTA_WALL_RESET_RX.exec(p)
+      if (m) { resetsAt = m[1].trim(); break }
+    }
+    let banner = parts.join(' ').replace(/\s+/g, ' ').trim()
+    if (banner.length > QUOTA_WALL_BANNER_MAX) banner = banner.slice(0, QUOTA_WALL_BANNER_MAX - 1).trimEnd() + '…'
+    return { banner, resetsAt }
+  }
+  return null
+}
+
 // Claude Code FIRST-RUN gates: the interactive dialogs a brand-new install
 // parks on before the prompt ever renders -- the per-project "Do you trust the
 // files in this folder?" consent, the --dangerously-skip-permissions "Bypass
