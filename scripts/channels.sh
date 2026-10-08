@@ -168,8 +168,8 @@ classify_mcp_plugin_row() {
 # shSingleQuote (src/web/agent-process.ts): a quote in the value becomes '\'',
 # so nothing in it can end the word. Used for every value inlined into a
 # command string that a later shell (tmux respawn) parses again. The same
-# definition lives in channels.sh and channel-watchdog.sh (a test keeps them
-# identical).
+# definition lives in channels.sh, channel-watchdog.sh and stuck-modal-guard.sh
+# (a test keeps the three byte-identical).
 sh_single_quote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 
 # SECSZIVEK1007: the resolved model must have the shape of a model id (the same
@@ -180,6 +180,10 @@ MODEL_ID_SHAPE='^[][A-Za-z0-9._:/-]{1,128}$'
 resolve_main_model() {
   local _m
   _m="$(_resolve_main_model_raw)"
+  # C locale for the match: a bracket range like A-Z is locale-dependent in
+  # some bash/libc builds; under C it is exactly the ASCII set MODEL_ID_RE means
+  # (model-id-shape-parity.test.ts compares the two under C).
+  local LC_ALL=C
   if [ -n "$_m" ] && ! [[ "$_m" =~ $MODEL_ID_SHAPE ]]; then
     { echo "resolve_main_model: the configured main-agent model is not a valid model id (allowed: letters, digits, . _ : / - [ ], 1-128); main-agent model left UNSET" >>"$INSTALL_DIR/store/channels-failures.log"; } 2>/dev/null || true
     return 0
@@ -1259,7 +1263,7 @@ fi
 # session's poller does carry it (measured in #915) -- the old comment claiming
 # otherwise described the unexported state.
 export "$STATE_ENV_VAR"="$MAIN_CHAN_DIR"
-STATE_DIR_ENV="export ${STATE_ENV_VAR}='${MAIN_CHAN_DIR}' && "
+STATE_DIR_ENV="export ${STATE_ENV_VAR}=$(sh_single_quote "$MAIN_CHAN_DIR") && "
 
 # P1 FIX: put the Claude auth token into the tmux SERVER global env BEFORE
 # new-session. A new session inherits the tmux SERVER's global environment, not
@@ -1349,7 +1353,7 @@ if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || [ -n "${ANTHROPIC_API_KEY:-}" ]; the
       true
     } > "$_auth_tmp"
     if mv -f "$_auth_tmp" "$_auth_file"; then
-      AUTH_PANE_ENV=". '$_auth_file' && "
+      AUTH_PANE_ENV=". $(sh_single_quote "$_auth_file") && "
     else
       rm -f "$_auth_tmp" 2>/dev/null || true
     fi

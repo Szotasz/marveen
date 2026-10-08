@@ -22,8 +22,9 @@ CH="$REPO/scripts/channels.sh"; WD="$REPO/scripts/channel-watchdog.sh"
 
 echo "launch scripts quote inlined values (SECSZIVEK1007)"
 
-H1="$(grep '^sh_single_quote() {' "$CH")"; H2="$(grep '^sh_single_quote() {' "$WD")"
-[ -n "$H1" ] && [ "$H1" = "$H2" ] && pass "sh_single_quote is defined, identically, in both scripts" || fail "sh_single_quote is defined, identically, in both scripts"
+SG="$REPO/scripts/stuck-modal-guard.sh"
+H1="$(grep '^sh_single_quote() {' "$CH")"; H2="$(grep '^sh_single_quote() {' "$WD")"; H3="$(grep '^sh_single_quote() {' "$SG")"
+[ -n "$H1" ] && [ "$H1" = "$H2" ] && [ "$H1" = "$H3" ] && pass "sh_single_quote is defined, byte-identically, in all three scripts" || fail "sh_single_quote is defined, byte-identically, in all three scripts"
 
 # --- the resolved main model must look like a model id ---
 mk_root() { local r="$TMP/root$1"; mkdir -p "$r/scripts" "$r/store" "$r/.claude"; cp "$CH" "$r/scripts/channels.sh"; printf '%s\n' "$2" > "$r/.env"; echo "$r"; }
@@ -71,6 +72,53 @@ for S in "$CH" "$WD"; do
   assert_eq "$name: token-mode CFG_ENV hands node exactly 4 args, the secret id whole" "token:/tmp/it's dir:4|/tmp/it's install/scripts/resolve-plan-token-env.mjs|plan's id|/tmp/it's install/store/.claude-oauth-token|/tmp/it's install/store/channels-failures.log|" "$(printf '%s\n' "$RESULT" | grep '^token:')"
   assert_eq "$name: isolated CFG_ENV exports the whole dir" "isolated:/tmp/it's dir" "$(printf '%s\n' "$RESULT" | grep '^isolated:')"
 done
+
+# --- LAUNCHQUOTEREST1008: stuck-modal-guard.sh builds the same CFG_ENV ---
+{
+  grep '^sh_single_quote() {' "$SG"
+  grep -E '^ +CFG_ENV="export CLAUDE_CONFIG_DIR=' "$SG" | sed -n '1p' | sed -E 's/^ +CFG_ENV=/CFG_EXPLICIT=/'
+  grep -E '^ +CFG_ENV="export CLAUDE_CONFIG_DIR=' "$SG" | sed -n '2p' | sed -E 's/^ +CFG_ENV=/CFG_TOKEN=/'
+  grep -E '^ +CFG_ENV="export CLAUDE_CONFIG_DIR=' "$SG" | sed -n '3p' | sed -E 's/^ +CFG_ENV=/CFG_ISOLATED=/'
+} > "$TMP/frag-sg.sh"
+[ "$(grep -c '^CFG_' "$TMP/frag-sg.sh")" = 3 ] && pass "stuck-modal-guard.sh: the three CFG_ENV lines were found" || fail "stuck-modal-guard.sh: the three CFG_ENV lines were found"
+RESULT="$(env -i PATH="$PATH" bash -c '
+  _cfg_dir="/tmp/it'"'"'s dir"; _cfg_token_secret="plan'"'"'s id"; INSTALL_DIR="/tmp/it'"'"'s install"; NODE_BIN="$1"
+  . "$2"
+  bash -c "${CFG_EXPLICIT}printf \"explicit:%s\n\" \"\$CLAUDE_CONFIG_DIR\""
+  bash -c "${CFG_TOKEN}printf \"token:%s:%s\n\" \"\$CLAUDE_CONFIG_DIR\" \"\$CLAUDE_CODE_OAUTH_TOKEN\""
+  bash -c "${CFG_ISOLATED}printf \"isolated:%s\n\" \"\$CLAUDE_CONFIG_DIR\"" 2>/dev/null
+' _ "$TMP/node" "$TMP/frag-sg.sh" 2>&1)"
+assert_eq "stuck-modal-guard.sh: explicit/rotated CFG_ENV exports the whole dir" "explicit:/tmp/it's dir" "$(printf '%s\n' "$RESULT" | grep '^explicit:')"
+assert_eq "stuck-modal-guard.sh: token-mode CFG_ENV hands node exactly 4 args, the secret id whole" "token:/tmp/it's dir:4|/tmp/it's install/scripts/resolve-plan-token-env.mjs|plan's id|/tmp/it's install/store/.claude-oauth-token|/tmp/it's install/store/channels-failures.log|" "$(printf '%s\n' "$RESULT" | grep '^token:')"
+assert_eq "stuck-modal-guard.sh: isolated CFG_ENV exports the whole dir" "isolated:/tmp/it's dir" "$(printf '%s\n' "$RESULT" | grep '^isolated:')"
+
+# --- LAUNCHQUOTEREST1008: the channel state dir and the auth pane file ---
+for S in "$CH" "$WD"; do
+  name="$(basename "$S")"
+  {
+    grep '^sh_single_quote() {' "$S"
+    grep -E 'STATE_DIR_ENV="export \$\{STATE_ENV_VAR\}=' "$S" | sed -E 's/^.*(STATE_DIR_ENV=)/\1/'
+  } > "$TMP/state-$name.sh"
+  [ "$(grep -c '^STATE_DIR_ENV=' "$TMP/state-$name.sh")" = 1 ] && pass "$name: the STATE_DIR_ENV line was found" || fail "$name: the STATE_DIR_ENV line was found"
+  OUT="$(env -i PATH="$PATH" bash -c '
+    STATE_ENV_VAR=TELEGRAM_STATE_DIR; MAIN_CHAN_DIR="/tmp/it'"'"'s chan dir"
+    . "$1"
+    bash -c "${STATE_DIR_ENV}printf \"%s\" \"\$TELEGRAM_STATE_DIR\""
+  ' _ "$TMP/state-$name.sh" 2>&1)"
+  assert_eq "$name: STATE_DIR_ENV exports the whole state dir" "/tmp/it's chan dir" "$OUT"
+done
+{
+  grep '^sh_single_quote() {' "$CH"
+  grep -E '^      AUTH_PANE_ENV="\. ' "$CH" | sed -E 's/^ +//'
+} > "$TMP/auth.sh"
+[ "$(grep -c '^AUTH_PANE_ENV=' "$TMP/auth.sh")" = 1 ] && pass "channels.sh: the AUTH_PANE_ENV line was found" || fail "channels.sh: the AUTH_PANE_ENV line was found"
+mkdir -p "$TMP/it's auth"
+printf 'export AUTH_PROBE=sourced\n' > "$TMP/it's auth/pane.env"
+OUT="$(env -i PATH="$PATH" bash -c '
+  _auth_file="$2"; . "$1"
+  bash -c "${AUTH_PANE_ENV}printf \"%s\" \"\$AUTH_PROBE\""
+' _ "$TMP/auth.sh" "$TMP/it's auth/pane.env" 2>&1)"
+assert_eq "channels.sh: AUTH_PANE_ENV sources the whole file path" "sourced" "$OUT"
 
 echo
 echo "PASS=$PASS FAIL=$FAIL"
