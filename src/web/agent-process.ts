@@ -935,8 +935,11 @@ function provisionIsolatedConfigDir(
       if (ISOLATED_CONFIG_SKIP.has(entry) || (perUserAgent && entry === '.claude.json')) {
         // Defensively drop a real .credentials.json that an older build may have
         // symlinked/copied here, so the env-var token is the only auth source.
+        // An own_team agent is the exception: its .credentials.json IS its own
+        // /login credential, written here by `claude auth login`, and deleting it
+        // on every spawn logs the agent out (OWNTEAMCREDWIPE1008).
         const stale = join(cfg, entry)
-        if (entry === '.credentials.json') {
+        if (entry === '.credentials.json' && readAgentAuthMode(name) !== 'own_team') {
           try { rmSync(stale, { force: true }) } catch { /* absent */ }
         }
         continue
