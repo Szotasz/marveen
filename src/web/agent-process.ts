@@ -113,6 +113,7 @@ export function delay(ms: number): Promise<void> {
 import { CHANNEL_PLUGIN_IDS } from './plugin-ids.js'
 import { ROOT_SANDBOX_ENV } from './root-sandbox-env.js'
 import { exactTmuxTarget, sessionOfTmuxTarget } from '../tmux-target.js'
+import { expandAndValidateConfigDir } from '../config-dir-path.js'
 export { CHANNEL_PLUGIN_IDS }
 
 // Pure: compute the enabledPlugins map for a sub-agent so that exactly its own
@@ -676,7 +677,13 @@ export function resolveMainAgentConfigDir(): string | null {
   let raw = ''
   try { raw = String(getEffectiveSettingValue('MAIN_AGENT_CONFIG_DIR') ?? '').trim() } catch { return null }
   if (!raw) return null
-  const dir = raw.startsWith('~') ? join(homedir(), raw.slice(1)) : raw
+  // SECSZIVEK1007: a value from .env or the systemd environment never met the
+  // settings write check; the read applies the same path rules.
+  const dir = expandAndValidateConfigDir(raw, homedir())
+  if (!dir) {
+    logger.warn('main-agent config dir: MAIN_AGENT_CONFIG_DIR is not a valid config dir path, keeping the shared ~/.claude')
+    return null
+  }
   if (!existsSync(dir)) {
     logger.warn({ dir }, 'main-agent config dir: MAIN_AGENT_CONFIG_DIR does not exist, keeping the shared ~/.claude')
     return null

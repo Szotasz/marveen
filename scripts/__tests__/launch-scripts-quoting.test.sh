@@ -1,0 +1,77 @@
+#!/bin/bash
+# SECSZIVEK1007: the values channels.sh and channel-watchdog.sh inline into the
+# command string a later shell parses again (the main model, the main agent's
+# config dir, the plan's secret id, the install and node paths) are quoted as
+# ONE shell word each (sh_single_quote, the twin of shSingleQuote), and the
+# resolved main model must have the shape of a model id.
+#
+# Every check uses a harmless value with an apostrophe and/or a space: after
+# the fix it stays one argument.
+# Run: bash scripts/__tests__/launch-scripts-quoting.test.sh
+
+set -u
+PASS=0; FAIL=0
+pass() { PASS=$((PASS + 1)); echo "  PASS: $1"; }
+fail() { FAIL=$((FAIL + 1)); echo "  FAIL: $1"; }
+assert_eq() { if [ "$2" = "$3" ]; then pass "$1"; else fail "$1 (expected '$2', got '$3')"; fi; }
+
+REPO="$(cd "$(dirname "$0")/../.." && pwd)"
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+CH="$REPO/scripts/channels.sh"; WD="$REPO/scripts/channel-watchdog.sh"
+
+echo "launch scripts quote inlined values (SECSZIVEK1007)"
+
+H1="$(grep '^sh_single_quote() {' "$CH")"; H2="$(grep '^sh_single_quote() {' "$WD")"
+[ -n "$H1" ] && [ "$H1" = "$H2" ] && pass "sh_single_quote is defined, identically, in both scripts" || fail "sh_single_quote is defined, identically, in both scripts"
+
+# --- the resolved main model must look like a model id ---
+mk_root() { local r="$TMP/root$1"; mkdir -p "$r/scripts" "$r/store" "$r/.claude"; cp "$CH" "$r/scripts/channels.sh"; printf '%s\n' "$2" > "$r/.env"; echo "$r"; }
+R="$(mk_root 1 "MAIN_AGENT_MODEL=claude-opus-5[1m]")"
+assert_eq "a valid model id is resolved as is" "claude-opus-5[1m]" "$(bash "$R/scripts/channels.sh" --resolve-main-model 2>/dev/null | head -1)"
+R="$(mk_root 2 "MAIN_AGENT_MODEL=\"it's model\"")"
+OUT="$(bash "$R/scripts/channels.sh" --resolve-main-model 2>/dev/null | head -1)"
+assert_eq "a value that is not a model id resolves EMPTY (the launch runs the CLI default)" "" "$OUT"
+grep -q "not a valid model id" "$R/store/channels-failures.log" 2>/dev/null && pass "...and the refusal is named in channels-failures.log" || fail "...and the refusal is named in channels-failures.log"
+grep -q "it's model" "$R/store/channels-failures.log" 2>/dev/null && fail "the refused value itself is not echoed into the log" || pass "the refused value itself is not echoed into the log"
+
+# --- the command-string fragments, cut out of each script and re-parsed ---
+# The fragments are the script's own lines; a stub "node" prints its argv so the
+# token-mode fragment can be checked without any real secret.
+cat > "$TMP/node" <<'STUB'
+#!/bin/bash
+printf '%s|' "$#" "$@"
+STUB
+chmod +x "$TMP/node"
+for S in "$CH" "$WD"; do
+  name="$(basename "$S")"
+  {
+    grep '^sh_single_quote() {' "$S"
+    grep -E '^\[ -n "\$MAIN_MODEL" \] && MODEL_FLAG=' "$S"
+    grep -E '^      CFG_ENV="export CLAUDE_CONFIG_DIR=' "$S" | sed -n '1p' | sed 's/^      CFG_ENV=/CFG_EXPLICIT=/'
+    grep -E '^      CFG_ENV="export CLAUDE_CONFIG_DIR=' "$S" | sed -n '2p' | sed 's/^      CFG_ENV=/CFG_TOKEN=/'
+    grep -E '^      CFG_ENV="export CLAUDE_CONFIG_DIR=' "$S" | sed -n '3p' | sed 's/^      CFG_ENV=/CFG_ISOLATED=/'
+  } > "$TMP/frag-$name.sh"
+  [ "$(grep -c '^CFG_' "$TMP/frag-$name.sh")" = 3 ] && [ "$(grep -c 'MODEL_FLAG=' "$TMP/frag-$name.sh")" = 1 ] \
+    && pass "$name: the MODEL_FLAG line and the three CFG_ENV lines were found" || fail "$name: the MODEL_FLAG line and the three CFG_ENV lines were found"
+
+  RESULT="$(env -i PATH="$PATH" bash -c '
+    MAIN_MODEL="it'"'"'s model"; _cfg_dir="/tmp/it'"'"'s dir"; _cfg_token_secret="plan'"'"'s id"
+    INSTALL_DIR="/tmp/it'"'"'s install"; _node_bin="$1"; NODE_BIN="$1"; MODEL_FLAG=""
+    . "$2"
+    # MODEL_FLAG re-parsed: exactly two words, the second the whole model value.
+    eval "set -- $MODEL_FLAG"; printf "flag:%s:%s\n" "$#" "$2"
+    # Each CFG_ENV re-parsed by a shell, followed by a probe of what it exported.
+    bash -c "${CFG_EXPLICIT}printf \"explicit:%s\n\" \"\$CLAUDE_CONFIG_DIR\""
+    bash -c "${CFG_TOKEN}printf \"token:%s:%s\n\" \"\$CLAUDE_CONFIG_DIR\" \"\$CLAUDE_CODE_OAUTH_TOKEN\""
+    bash -c "${CFG_ISOLATED}printf \"isolated:%s\n\" \"\$CLAUDE_CONFIG_DIR\"" 2>/dev/null
+  ' _ "$TMP/node" "$TMP/frag-$name.sh" 2>&1)"
+  assert_eq "$name: --model stays ONE argument with the whole value" "flag:2:it's model" "$(printf '%s\n' "$RESULT" | grep '^flag:')"
+  assert_eq "$name: explicit/rotated CFG_ENV exports the whole dir" "explicit:/tmp/it's dir" "$(printf '%s\n' "$RESULT" | grep '^explicit:')"
+  assert_eq "$name: token-mode CFG_ENV hands node exactly 4 args, the secret id whole" "token:/tmp/it's dir:4|/tmp/it's install/scripts/resolve-plan-token-env.mjs|plan's id|/tmp/it's install/store/.claude-oauth-token|/tmp/it's install/store/channels-failures.log|" "$(printf '%s\n' "$RESULT" | grep '^token:')"
+  assert_eq "$name: isolated CFG_ENV exports the whole dir" "isolated:/tmp/it's dir" "$(printf '%s\n' "$RESULT" | grep '^isolated:')"
+done
+
+echo
+echo "PASS=$PASS FAIL=$FAIL"
+[ "$FAIL" -eq 0 ]

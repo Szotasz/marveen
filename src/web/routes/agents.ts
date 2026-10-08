@@ -169,6 +169,7 @@ import { listScheduledTasks } from '../scheduled-tasks-io.js'
 import { readAgentTranscript, isTranscriptAllowed } from '../agent-transcript.js'
 import { configDirFor } from '../main-transcript-root.js'
 import { kindAllowed, FORBIDDEN_KIND } from './auth.js'
+import { isValidModelId, InvalidModelIdError } from '../../model-id.js'
 
 // Which credential kinds may read a transcript. NAMED principals only: a
 // logged-in human, or a key enrolled to that human's own device. Deliberately
@@ -1047,6 +1048,10 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const profileId = (rawProfile || 'default').trim() || 'default'
 
     if (!name) { json(res, { error: 'Name is required' }, 400); return true }
+    // SECSZIVEK1007: the model id is checked BEFORE anything is created;
+    // writeAgentModel used to be the first check, after scaffoldAgentDir, and a
+    // malformed id left a half-created agent dir behind.
+    if (!isValidModelId(model)) { json(res, { error: new InvalidModelIdError(model).message }, 400); return true }
     // PICKERCLIKAPU923: the API is a writer too, not only the picker. A fresh
     // probe, so a CLI upgraded a minute ago is not refused on a stale cache.
     const cliGate = await refuseIfCliCannotLaunch(model)

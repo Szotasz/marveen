@@ -164,7 +164,30 @@ classify_mcp_plugin_row() {
 #
 # Kept as a function so `--resolve-main-model` can exercise exactly the code
 # the launch path uses, with no tmux, store or network involved.
+# SECSZIVEK1007: a value as ONE single-quoted shell word, the bash twin of
+# shSingleQuote (src/web/agent-process.ts): a quote in the value becomes '\'',
+# so nothing in it can end the word. Used for every value inlined into a
+# command string that a later shell (tmux respawn) parses again. The same
+# definition lives in channels.sh and channel-watchdog.sh (a test keeps them
+# identical).
+sh_single_quote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+
+# SECSZIVEK1007: the resolved model must have the shape of a model id (the same
+# allowlist as MODEL_ID_RE in src/model-id.ts: letters, digits, . _ : / - [ ],
+# 1-128 long). Any other value is named in the failure log (not echoed) and
+# left UNSET, so the launch runs the CLI default instead of a broken command.
+MODEL_ID_SHAPE='^[][A-Za-z0-9._:/-]{1,128}$'
 resolve_main_model() {
+  local _m
+  _m="$(_resolve_main_model_raw)"
+  if [ -n "$_m" ] && ! [[ "$_m" =~ $MODEL_ID_SHAPE ]]; then
+    { echo "resolve_main_model: the configured main-agent model is not a valid model id (allowed: letters, digits, . _ : / - [ ], 1-128); main-agent model left UNSET" >>"$INSTALL_DIR/store/channels-failures.log"; } 2>/dev/null || true
+    return 0
+  fi
+  printf '%s' "$_m"
+}
+
+_resolve_main_model_raw() {
   if [ -n "${MAIN_AGENT_MODEL:-}" ]; then
     printf '%s' "$MAIN_AGENT_MODEL"
     return 0
@@ -907,7 +930,7 @@ MAIN_MODEL="$(resolve_main_model)"
 MODEL_FLAG=""
 # Single-quote the model id so values like `claude-opus-4-8[1m]` survive the
 # tmux command-string round-trip without the inner shell glob-expanding `[1m]`.
-[ -n "$MAIN_MODEL" ] && MODEL_FLAG="--model '$MAIN_MODEL' "
+[ -n "$MAIN_MODEL" ] && MODEL_FLAG="--model $(sh_single_quote "$MAIN_MODEL") "
 
 # Main-agent config isolation (OPT-IN, default OFF).
 #
@@ -978,7 +1001,7 @@ if [ -n "$_node_bin" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
       # Both carry their OWN .credentials.json (an operator-logged-in dir for
       # `explicit`, a registered plan's dir for `rotated` -- design 6.5/4) --
       # neither wants the fleet token injected below.
-      CFG_ENV="export CLAUDE_CONFIG_DIR='$_cfg_dir' && "
+      CFG_ENV="export CLAUDE_CONFIG_DIR=$(sh_single_quote "$_cfg_dir") && "
     elif [ "$_cfg_mode" = "token" ]; then
       # Token-mode rotated plan: same credential-less dir as `isolated`, but
       # export THAT plan's vault-stored token instead of the flotta's.
@@ -990,13 +1013,13 @@ if [ -n "$_node_bin" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
       # `_plan_token=$(...)` assignment propagates that exit status, so the
       # `&&` chain stops here rather than launching unauthenticated (PR #1304
       # review (c)).
-      CFG_ENV="export CLAUDE_CONFIG_DIR='$_cfg_dir' && _plan_token=\"\$(\"$_node_bin\" '$INSTALL_DIR/scripts/resolve-plan-token-env.mjs' '$_cfg_token_secret' '$INSTALL_DIR/store/.claude-oauth-token' '$INSTALL_DIR/store/channels-failures.log')\" && export CLAUDE_CODE_OAUTH_TOKEN=\"\$_plan_token\" && "
+      CFG_ENV="export CLAUDE_CONFIG_DIR=$(sh_single_quote "$_cfg_dir") && _plan_token=\"\$($(sh_single_quote "$_node_bin") $(sh_single_quote "$INSTALL_DIR/scripts/resolve-plan-token-env.mjs") $(sh_single_quote "$_cfg_token_secret") $(sh_single_quote "$INSTALL_DIR/store/.claude-oauth-token") $(sh_single_quote "$INSTALL_DIR/store/channels-failures.log"))\" && export CLAUDE_CODE_OAUTH_TOKEN=\"\$_plan_token\" && "
     else
       # Seed the token from the SAME 0600 file the isolated dir is gated on, so
       # the config dir and the active token always match (the isolated dir carries
       # no .credentials.json). $(cat) is evaluated in the launched shell so the
       # secret never lands in the argv/`ps` command string.
-      CFG_ENV="export CLAUDE_CONFIG_DIR='$_cfg_dir' && export CLAUDE_CODE_OAUTH_TOKEN=\"\$(cat '$INSTALL_DIR/store/.claude-oauth-token')\" && "
+      CFG_ENV="export CLAUDE_CONFIG_DIR=$(sh_single_quote "$_cfg_dir") && export CLAUDE_CODE_OAUTH_TOKEN=\"\$(cat $(sh_single_quote "$INSTALL_DIR/store/.claude-oauth-token"))\" && "
     fi
     echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: main-agent $_cfg_mode CLAUDE_CONFIG_DIR=$_cfg_dir" >> "$INSTALL_DIR/store/channels-failures.log"
   fi

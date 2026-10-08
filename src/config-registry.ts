@@ -1,3 +1,5 @@
+import { homedir } from 'node:os'
+import { expandAndValidateConfigDir } from './config-dir-path.js'
 // Single source of truth for settings the dashboard's "Beallitasok" page can
 // show and edit. Each entry describes one .env-backed config key: its type
 // (drives the input widget + validation), default, human description, the
@@ -74,6 +76,12 @@ export interface SettingDefinition {
   /** Inclusive bounds, only meaningful for type 'int'. */
   min?: number
   max?: number
+  /**
+   * Optional extra check for a 'string' value: returns an error message, or
+   * null when the value is acceptable. Runs on every write through
+   * validateSettingValue (SECSZIVEK1007).
+   */
+  validate?: (value: string) => string | null
 }
 
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/
@@ -574,6 +582,12 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     key: 'MAIN_AGENT_CONFIG_DIR',
     type: 'string',
     default: '',
+    // SECSZIVEK1007: the same path rules as an agent's claudeConfigDir and a
+    // plan's configDir (expandAndValidateConfigDir); the value reaches the
+    // channels launch command. Empty = unset, allowed.
+    validate: (v) => (v.trim() === '' || expandAndValidateConfigDir(v, homedir()) !== null
+      ? null
+      : 'Érvénytelen könyvtár: csak betű, szám és a _ . / ~ - karakterek, ".." nélkül, a ~ csak az elején (~/...).'),
     description: 'A fő channels-agent explicit CLAUDE_CONFIG_DIR-je (pl. ~/.claude-bot). Akkor kell, ha a botnak SAJÁT Claude-loginja van, külön a flottáétól: a MAIN_AGENT_ISOLATED_CONFIG erre nem alkalmas, mert az a fleet setup-tokenből hitelesít, tehát a flotta identitását adja a botnak (és token nélkül no-op). Üresen hagyva a fő agent a közös ~/.claude-ot használja (alapértelmezés). Ha a megadott könyvtár nem létezik, a beállítás no-op és figyelmeztetést logol. Elsőbbséget élvez a MAIN_AGENT_ISOLATED_CONFIG-gal szemben. A módosítás a channels session újraindításakor lép életbe.',
     module: 'channels',
     secret: false,
@@ -719,5 +733,9 @@ export function validateSettingValue(def: SettingDefinition, raw: unknown): Sett
   }
 
   // 'string'
+  if (def.validate) {
+    const err = def.validate(String(raw))
+    if (err) return { ok: false, error: err }
+  }
   return { ok: true, value: String(raw) }
 }
