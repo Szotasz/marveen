@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { execFileSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync, mkdirSync } from 'node:fs'
+import { execFileSync, spawnSync } from 'node:child_process'
+import { appendFileSync, copyFileSync, mkdtempSync, writeFileSync, mkdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -116,5 +116,47 @@ describe('memory-frontmatter-gate: never exit 1 (fail-open is a verdict of "not 
   })
   it('a tool the gate does not judge -> 0', () => {
     expect(run({ tool_name: 'Bash', tool_input: { command: 'echo hi' } }).code).toBe(0)
+  })
+})
+
+// HOOKDEPLOAD1008: the shared check used to be imported at module load, so a
+// broken memory_frontmatter_lib.py made the gate exit 1, the code it promises
+// never to return. On a disposable copy (the intact copy shown first to decide
+// like the real gate), a lib that does not load is "not judged": exit 0, and
+// stderr names the file.
+describe('memory-frontmatter-gate: a memory_frontmatter_lib.py that does not load (HOOKDEPLOAD1008)', () => {
+  const copyGate = (name: string, broken: boolean) => {
+    const dir = join(SCRATCH, 'gate-copy', name)
+    mkdirSync(dir, { recursive: true })
+    for (const f of ['memory-frontmatter-gate.py', 'memory_frontmatter_lib.py']) {
+      copyFileSync(join(ROOT, 'scripts', 'hooks', f), join(dir, f))
+    }
+    if (broken) appendFileSync(join(dir, 'memory_frontmatter_lib.py'), '<'.repeat(7) + ' Updated upstream\n')
+    return join(dir, 'memory-frontmatter-gate.py')
+  }
+  // spawnSync, not run(): run() drops stderr on exit 0, and exit 0 is the
+  // expected code here while stderr carries the reason.
+  const spawn = (gate: string, payload: unknown) => {
+    const r = spawnSync('python3', [gate], { input: JSON.stringify(payload), encoding: 'utf-8', timeout: 15_000 })
+    return { code: r.status, stderr: r.stderr }
+  }
+  const intact = copyGate('intact', false)
+  const broken = copyGate('broken', true)
+
+  it('control: the intact copy decides like the real gate', () => {
+    for (const content of [GOOD, UNQUOTED_COLON]) {
+      expect(spawn(intact, write(memPath, content))).toEqual(spawn(GATE, write(memPath, content)))
+    }
+    expect(spawn(intact, write(memPath, UNQUOTED_COLON)).code).toBe(2)
+  })
+  it('a lib that does not load -> exit 0 (never 1), and stderr names the file', () => {
+    const r = spawn(broken, write(memPath, UNQUOTED_COLON))
+    expect(r.code).toBe(0)
+    expect(r.stderr).toContain('scripts/hooks/memory_frontmatter_lib.py')
+    expect(r.stderr).toContain('nem toltheto be')
+    expect(r.stderr).toContain('ATENGED')
+  })
+  it('a tool the gate does not judge stays silent', () => {
+    expect(spawn(broken, { tool_name: 'Bash', tool_input: { command: 'echo hi' } })).toEqual({ code: 0, stderr: '' })
   })
 })
