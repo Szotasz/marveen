@@ -163,6 +163,30 @@ ensure_secret_reader_in_rc() {
   ensure_in_rc "$marker" "$line"
 }
 
+# SECSZIVEKKIADAS1008: the same scrub for an install that already carries auth
+# (a re-run never reaches the prompt above). scripts/lib/rc-secrets.sh holds
+# the identical copy update.sh uses; update-rc-secret-scrub.test.ts keeps them equal.
+rc_has_secret_export() {
+  local rc
+  for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
+    [ -f "$rc" ] || continue
+    grep -Eq "^[[:space:]]*export[[:space:]]+${1}=" "$rc" 2>/dev/null && return 0
+  done
+  return 1
+}
+
+scrub_secret_exports_from_rc() {
+  if rc_has_secret_export ANTHROPIC_API_KEY; then
+    remove_secret_export_from_rc ANTHROPIC_API_KEY
+    ensure_secret_reader_in_rc ANTHROPIC_API_KEY "$INSTALL_DIR/.env" env
+  fi
+  if rc_has_secret_export CLAUDE_CODE_OAUTH_TOKEN; then
+    remove_secret_export_from_rc CLAUDE_CODE_OAUTH_TOKEN
+    ensure_secret_reader_in_rc CLAUDE_CODE_OAUTH_TOKEN "$INSTALL_DIR/store/.claude-oauth-token" file
+  fi
+  return 0
+}
+
 # Tobbsoros blokkot ad az rc fajlokhoz ha a <marker> meg nem szerepel bennuk.
 # Hasznalat: ensure_block_in_rc "marker" "$BLOKK_VALTOZO"
 ensure_block_in_rc() {
@@ -761,6 +785,7 @@ fi
 # first -- the correct user behaviour triggered the bug.
 if service_auth_present; then
   ok "A telepites mar hordoz auth kulcsot (.env / store/.claude-oauth-token)"
+  scrub_secret_exports_from_rc
 else
   if claude auth status &>/dev/null; then
     echo -e "  ${ORANGE}A terminalod be van jelentkezve, de a SZOLGALTATASOK ehhez nem ferenek hozza.${NC}"
