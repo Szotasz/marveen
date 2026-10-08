@@ -57,6 +57,12 @@ Anchor semantics (Marveen msg 17900, 5+1 conditions):
 
 Exit codes (PreToolUse contract): 0 = allow, 2 = block. A crash must never
 exit 1 (non-blocking) -- the __main__ net converts it to 2 on send paths.
+The net only covers main(), so only the standard library loads at module
+level (HOOKDEPLOAD1008): the two repo dependencies, email_extract.py and
+outgoing-copy-gate.py, are loaded where they are first needed, and a load
+failure is a deny that names the file. A syntax error in THIS file, or a
+broken interpreter, still exits 1 before any of it runs; only the hook
+command that starts the file can catch that.
 EVERY malformed input (unparseable stdin included) blocks: unlike the copy
 gate, which audits and stays alive on harness faults, this gate authorizes,
 so "cannot decide" is always a deny.
@@ -82,11 +88,22 @@ CONFIG_PATH = os.path.join(STORE_DIR, "autonomy-config.json")
 # what raising the level to 3 would do, because the level knows nothing about
 # who the letter goes to.
 STANDING_PATH = os.path.join(STORE_DIR, "email-standing-recipients.json")
-# ~30 minutes from approval (resolved_at) to send; env override is for tests.
-WINDOW_S = int(os.environ.get("EMAIL_APPROVAL_WINDOW_S", "1800"))
 
-sys.path.insert(0, _HERE)
-from email_extract import collect_email_envelope  # noqa: E402
+
+def _window_from_env():
+    """(seconds, error). HOOKDEPLOAD1008: a non-integer override used to
+    raise at module load, before the __main__ net: exit 1, which PreToolUse
+    treats as NON-blocking. The error is kept here, and the send path denies
+    with it."""
+    raw = os.environ.get("EMAIL_APPROVAL_WINDOW_S", "1800")
+    try:
+        return int(raw), None
+    except ValueError:
+        return None, f"EMAIL_APPROVAL_WINDOW_S={raw!r} nem egesz szam"
+
+
+# ~30 minutes from approval (resolved_at) to send; env override is for tests.
+WINDOW_S, _WINDOW_ERR = _window_from_env()
 
 # GMAILCONNECTOR914: the claude.ai Gmail connector's send-shaped tools carry
 # neither word (mcp__claude_ai_Gmail__send_message / reply / forward), so the
@@ -148,12 +165,25 @@ def manage_email_is_send(tool_input: dict) -> bool:
 def _load_is_send_invocation():
     """Import is_send_invocation from outgoing-copy-gate.py (dashed filename,
     so importlib by path). Single implementation: the same classifier that
-    decides what the copy gate audits decides what this gate levels."""
-    spec = importlib.util.spec_from_file_location(
-        "outgoing_copy_gate", os.path.join(_HERE, "outgoing-copy-gate.py"))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod.is_send_invocation
+    decides what the copy gate audits decides what this gate levels.
+
+    HOOKDEPLOAD1008: a load failure here was already a deny (the __main__ net), but
+    its message told the agent to make the CALL checkable, and no rewrite of a
+    command helps when the classifier itself does not load. Without it no Bash
+    call can be told apart from a send, so every one is refused until the
+    module loads again; the deny names the file to repair."""
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "outgoing_copy_gate", os.path.join(_HERE, "outgoing-copy-gate.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod.is_send_invocation
+    except Exception as exc:  # noqa: BLE001 -- SyntaxError, missing file, anything: fail-closed
+        deny("A kapu fuggosege (scripts/hooks/outgoing-copy-gate.py) nem toltheto be "
+             f"({exc!r}) -- fail-closed: nem dontheto el, hogy egy Bash-hivas levelet "
+             "kuld-e, ezert minden Bash-hivas tiltva, amig a modul nem javul. A javitas "
+             "fajl-szerkeszto eszkozzel mehet: ez a kapu csak a Bash- es a levelezo "
+             "eszkozokon fut.")
 
 
 def read_email_level():
@@ -474,6 +504,22 @@ def deny(msg: str):
     sys.exit(2)
 
 
+def _load_collect_email_envelope():
+    """The extractor, loaded where the gate first needs it (HOOKDEPLOAD1008).
+    A module-level import of a broken email_extract.py (a syntax error, a
+    conflicted merge) raised before the __main__ net: exit 1, which PreToolUse
+    treats as NON-blocking, so the letter went out UNCHECKED. Here any load
+    failure is a deny with the reason, and a call that is not a send never
+    needs the module."""
+    try:
+        sys.path.insert(0, _HERE)
+        from email_extract import collect_email_envelope
+    except Exception as exc:  # noqa: BLE001 -- SyntaxError, ImportError, anything: fail-closed
+        deny(f"A kapu fuggosege (scripts/hooks/email_extract.py) nem toltheto be ({exc!r}) "
+             "-- fail-closed: a level nem mehet ki, amig a modul nem javul.")
+    return collect_email_envelope
+
+
 def summarize(env: dict) -> str:
     to = ", ".join(env["to"]) or "(nincs)"
     cc = ", ".join(env["cc"]) or "-"
@@ -526,7 +572,10 @@ def main():
              "emelese a store/autonomy-config.json-ban a gazda dontese.")
 
     # level 2: CHECK-BEFORE-SEND
-    env = collect_email_envelope(tool, tool_input)
+    if _WINDOW_ERR:
+        deny(prefix + f"A kapu beallitasa hibas ({_WINDOW_ERR}) -- fail-closed, "
+             "a level nem mehet ki.")
+    env = _load_collect_email_envelope()(tool, tool_input)
     if env["unreadable_reason"]:
         deny(prefix +
              f"A level nem horgonyozhato: {env['unreadable_reason']}.\n"

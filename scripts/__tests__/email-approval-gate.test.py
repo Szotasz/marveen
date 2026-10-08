@@ -13,6 +13,9 @@ Branches proven (Marveen msgs 17900/17936):
   - FAIL-CLOSED, proven separately from the happy path: missing approvals DB,
     missing/corrupt autonomy-config, unreadable letter ($VAR body), and a
     recipient that cannot be extracted all DENY (exit 2, never 1).
+  - HOOKDEPLOAD1008: a dependency that does not load (email_extract.py,
+    outgoing-copy-gate.py) or a malformed EMAIL_APPROVAL_WINDOW_S DENIES the
+    send with exit 2 (never 1), measured on a disposable copy of the hooks.
 
 Run: python3 <thisfile>   Exit 0 = all pass.
 """
@@ -20,6 +23,7 @@ import json
 import os
 import re
 import hashlib
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -110,14 +114,14 @@ def make_daily_log_stub(received):
     return Handler
 
 
-def run_gate(store, payload, extra_env=None):
+def run_gate(store, payload, extra_env=None, gate=GATE):
     env = dict(os.environ,
                EMAIL_APPROVAL_GATE_STORE=store,
                EMAIL_APPROVAL_WINDOW_S=str(WINDOW),
                OUTGOING_COPY_GATE_RULES=os.path.join(store, "no-rules.json"))
     if extra_env:
         env.update(extra_env)
-    proc = subprocess.run([sys.executable, GATE], input=json.dumps(payload).encode(),
+    proc = subprocess.run([sys.executable, gate], input=json.dumps(payload).encode(),
                           capture_output=True, env=env)
     return proc.returncode, proc.stdout.decode(), proc.stderr.decode()
 
@@ -815,6 +819,82 @@ with tempfile.TemporaryDirectory() as td:
           bool(banned.search("SELECT unix" + "epoch()-60")))
     check("control: the host's own sqlite3 really executes the replacement expression",
           sqlite3.connect(":memory:").execute(f"SELECT {NOW_S}").fetchone()[0] > 1_700_000_000)
+
+# --- HOOKDEPLOAD1008: a dependency that does not load DENIES (exit 2), never exit 1 ---
+# The extractor used to be imported at MODULE level, outside the __main__ net:
+# a broken email_extract.py (a conflicted stash pop leaves exactly such a
+# marker line) made the gate exit 1, which PreToolUse treats as NON-blocking,
+# so the letter went out unchecked. Every case runs on a disposable copy of
+# scripts/hooks + scripts/lib, never on the repo's own files, and the intact
+# copy is first shown to decide exactly like the real gate: otherwise a broken
+# copy's verdict could be the copy's own fault.
+CONFLICT_LINE = "<" * 7 + " Updated upstream\n"  # assembled, so this file holds no marker line
+
+
+def copy_hook_tree(dst):
+    """The gate's disposable copy: scripts/hooks + scripts/lib under dst."""
+    skip = shutil.ignore_patterns("__pycache__")
+    shutil.copytree(HOOKS, os.path.join(dst, "scripts", "hooks"), ignore=skip)
+    shutil.copytree(os.path.join(os.path.dirname(HOOKS), "lib"),
+                    os.path.join(dst, "scripts", "lib"), ignore=skip)
+    return os.path.join(dst, "scripts", "hooks", "email-approval-gate.py")
+
+
+def break_module(gate_copy, name):
+    with open(os.path.join(os.path.dirname(gate_copy), name), "a", encoding="utf-8") as fh:
+        fh.write(CONFLICT_LINE)
+
+
+LS = {"tool_name": "Bash", "tool_input": {"command": "ls -la"}}
+BASH_SEND = {"tool_name": "Bash", "tool_input": {
+    "command": 'sendmail --to a@b.hu --subject "Bash tárgy" --body "Bash törzs."'}}
+
+with tempfile.TemporaryDirectory() as td:
+    store = make_store(os.path.join(td, "dep"), level=2)
+    intact = copy_hook_tree(os.path.join(td, "intact"))
+    for label, payload in (("MCP send", mcp_send()), ("Bash send", BASH_SEND), ("non-send Bash", LS)):
+        real, copy = run_gate(store, payload), run_gate(store, payload, gate=intact)
+        check(f"HOOKDEPLOAD1008 control: the intact copy decides like the real gate ({label})",
+              (copy[0], copy[2]) == (real[0], real[2]),
+              f"real={real[0]} copy={copy[0]} err={copy[2][:200]!r}")
+
+    broken = copy_hook_tree(os.path.join(td, "broken-extract"))
+    break_module(broken, "email_extract.py")
+    for label, payload in (("MCP send", mcp_send()), ("Bash send", BASH_SEND)):
+        code, _, err = run_gate(store, payload, gate=broken)
+        check(f"HOOKDEPLOAD1008: broken email_extract.py -> {label} DENIED, exit 2 (1 would send unchecked)",
+              code == 2 and "email_extract.py" in err and "nem toltheto be" in err,
+              f"exit={code} err={err[:200]!r}")
+    code, _, err = run_gate(store, LS, gate=broken)
+    check("HOOKDEPLOAD1008: broken email_extract.py -> a non-send Bash still passes (the extractor is not needed)",
+          code == 0, f"exit={code} err={err[:200]!r}")
+    # Levels 1 and 3 never read the letter, so they decide as before. At level
+    # 3 the send itself is still stopped by the copy gate: its guarded import
+    # turns a missing or broken extractor into a deny (the missing-module case
+    # is email-extract-parity.test.py, section 3).
+    for level, want in ((1, 2), (3, 0)):
+        code, _, err = run_gate(make_store(os.path.join(td, f"dep-l{level}"), level=level),
+                                mcp_send(), gate=broken)
+        check(f"HOOKDEPLOAD1008: broken email_extract.py -> level {level} decides as before (exit {want})",
+              code == want, f"exit={code} err={err[:200]!r}")
+
+    broken = copy_hook_tree(os.path.join(td, "broken-classifier"))
+    break_module(broken, "outgoing-copy-gate.py")
+    code, _, err = run_gate(store, LS, gate=broken)
+    check("HOOKDEPLOAD1008: broken outgoing-copy-gate.py -> Bash DENIED, exit 2, naming the file",
+          code == 2 and "outgoing-copy-gate.py" in err and "nem toltheto be" in err,
+          f"exit={code} err={err[:200]!r}")
+    real, copy = run_gate(store, mcp_send()), run_gate(store, mcp_send(), gate=broken)
+    check("HOOKDEPLOAD1008: broken outgoing-copy-gate.py -> an MCP send is decided as before (no classifier needed)",
+          (copy[0], copy[2]) == (real[0], real[2]), f"real={real[0]} copy={copy[0]} err={copy[2][:200]!r}")
+
+    bad_window = {"EMAIL_APPROVAL_WINDOW_S": "abc"}
+    code, _, err = run_gate(store, mcp_send(), extra_env=bad_window)
+    check("HOOKDEPLOAD1008: malformed EMAIL_APPROVAL_WINDOW_S -> send DENIED, exit 2, naming the variable",
+          code == 2 and "EMAIL_APPROVAL_WINDOW_S" in err, f"exit={code} err={err[:200]!r}")
+    code, _, err = run_gate(store, LS, extra_env=bad_window)
+    check("HOOKDEPLOAD1008: malformed EMAIL_APPROVAL_WINDOW_S -> a non-send Bash still passes",
+          code == 0, f"exit={code} err={err[:200]!r}")
 
 print()
 if failed:
