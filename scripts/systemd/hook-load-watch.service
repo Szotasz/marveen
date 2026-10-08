@@ -1,0 +1,14 @@
+# NOTE: replace /path/to/marveen (install dir), /home/USER (home) and the PATH with your values.
+# The PATH should match the agents' sessions: the hook commands it runs look up python3 and node on it.
+[Unit]
+Description=Marveen out-of-process watcher: do the PreToolUse security hooks still load? (card 723bbb70)
+
+[Service]
+Type=oneshot
+WorkingDirectory=/path/to/marveen
+ExecStart=/path/to/marveen/scripts/hook-load-watch.py
+Environment=PATH=/home/USER/.local/bin:/home/USER/.bun/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/USER
+Environment=TZ=Etc/UTC
+StandardOutput=append:/path/to/marveen/store/hook-load-watch.log
+StandardError=append:/path/to/marveen/store/hook-load-watch.log
