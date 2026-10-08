@@ -23,14 +23,14 @@ case "$AGENT" in
   *)           SESSION="agent-$AGENT" ;;
 esac
 
-if ! tmux has-session -t "$SESSION" 2>/dev/null; then
+if ! tmux has-session -t "=$SESSION:" 2>/dev/null; then
   echo "STATE: stopped ($SESSION nem fut)"
   exit 0
 fi
 
 # The trailing prompt box and the tmux hint line are noise for a Telegram
 # relay -- strip them so the orchestrator forwards content, not chrome.
-tmux capture-pane -p -t "$SESSION" 2>/dev/null \
+tmux capture-pane -p -t "=$SESSION:" 2>/dev/null \
   | grep -vE '^\s*$' \
   | grep -vE 'tmux detected · scroll|shift\+tab to cycle|for agents$' \
   | tail -n "$LINES"

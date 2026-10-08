@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import {
   listKanbanCards, kanbanAssigneeExists, createKanbanCard, updateKanbanCard, KANBAN_WRITABLE_FIELDS, KANBAN_CREATE_FIELDS,
   deleteKanbanCard, moveKanbanCard, archiveKanbanCard, unarchiveKanbanCard,
-  getKanbanComments, addKanbanComment, getKanbanCardEvents, listKanbanProjects,
+  getKanbanComments, addKanbanComment, getKanbanCardEvents, getKanbanCardFieldEvents, listKanbanProjects,
   getKanbanCard, getChildCards, getDb,
   createAgentMessage, markKanbanCardDispatched,
   getKanbanSeqByIdPrefix,
@@ -156,6 +156,17 @@ export function kanbanMoveInstructions(id: string, target: string): string {
       : `FONTOS: ${OWNER_NAME}-hez (az operátorhoz) EGYENESEN NE told át a kártyát, még ha a blokk végül tőle igényel is döntést -- ${MAIN_AGENT_ID} a delegálód, ő triázsol és ő dönti el, hogy tovább kell-e ${OWNER_NAME}-hez eszkalálnia. Ez azért kritikus, mert ${MAIN_AGENT_ID} nem tudja kitalálni a dashboardon hogy egy nála maradt/rossz-assignee-jű kártya rá vár -- explicit átadás + explicit kérdés nélkül a felelősség-váltás elvész.`,
     'A "done"-t mindenképp te jelezd — a dashboard csak az in_progress/waiting állapotot követi automatikusan a session aktivitásából. Az eredmény-kommentet (1) ne hagyd ki: az a kártyán a látható eredmény.',
   ].join('\n')
+}
+
+// The actor rule of the two kanban writes, PUT /api/kanban/:id and POST /api/kanban/:id/move (card f6fba9ec). The actor
+// is bound into the event rows, which only take a string or NULL: anything else is refused BEFORE any write (X7 on the
+// PUT, X16 on /move). An empty or blank string names nobody, so it counts as no actor (X15). With no actor, a browser
+// session's user made the change (the dashboard's own edits may send none), so the rows name them; a token caller
+// without one stays anonymous (NULL), as before.
+function kanbanWriteActor(actor: unknown, auth: RouteContext['auth']): { error: string } | { actor: string | undefined } {
+  if (actor !== undefined && actor !== null && typeof actor !== 'string') return { error: 'actor must be a string or null' }
+  if (typeof actor === 'string' && actor.trim() !== '') return { actor }
+  return { actor: auth?.kind === 'session' && auth.user ? auth.user : undefined }
 }
 
 // Option D: kanban -> agent dispatch. When a card moves to in_progress, wake the
@@ -650,7 +661,14 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // `actor` is metadata for the audit event, not a card column -- keep it out
     // of the field set so it can never be mistaken for one. Same name the /move
     // route already accepts, so callers do not have to learn a second spelling.
-    const { actor, ...data } = JSON.parse(body.toString()) as Record<string, unknown> & { actor?: string }
+    const { actor, ...data } = JSON.parse(body.toString()) as Record<string, unknown> & { actor?: unknown }
+    // The actor rule (kanbanWriteActor): a non-string actor is refused BEFORE any write (card f6fba9ec, found in review:
+    // `actor: true` changed the card, then the row insert threw, 500).
+    const who = kanbanWriteActor(actor, ctx.auth)
+    if ('error' in who) {
+      json(res, { error: who.error }, 400)
+      return true
+    }
     // #1023: reject unknown fields loudly instead of dropping them silently.
     // updateKanbanCard writes only KANBAN_WRITABLE_FIELDS, so anything outside
     // the accepted set below was silently discarded while the write still
@@ -691,7 +709,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
         return true
       }
     }
-    if (updateKanbanCard(id, data, actor)) { json(res, { ok: true }); return true }
+    if (updateKanbanCard(id, data, who.actor)) { json(res, { ok: true }); return true }
     json(res, { error: 'Kártya nem található' }, 404)
     return true
   }
@@ -709,10 +727,17 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const id = decodeURIComponent(kanbanMoveMatch[1])
     const body = await readBody(req)
     const { status, sort_order, actor } = JSON.parse(body.toString())
-    if (moveKanbanCard(id, status, sort_order ?? 0, actor)) {
+    // The same actor rule as the PUT (card f6fba9ec, X16): before X16 a boolean actor moved the card, then the event
+    // insert threw (500), and the move stayed with no row.
+    const who = kanbanWriteActor(actor, ctx.auth)
+    if ('error' in who) {
+      json(res, { error: who.error }, 400)
+      return true
+    }
+    if (moveKanbanCard(id, status, sort_order ?? 0, who.actor)) {
       // Wake the assigned agent once when the card enters in_progress -- unless
       // that agent is the one who moved it (self-pickup needs no wake-up).
-      if (status === 'in_progress') fireKanbanDispatch(id, actor)
+      if (status === 'in_progress') fireKanbanDispatch(id, who.actor)
       json(res, { ok: true })
       return true
     }
@@ -802,6 +827,15 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   if (kanbanEventsMatch && method === 'GET') {
     const cardId = decodeURIComponent(kanbanEventsMatch[1])
     json(res, getKanbanCardEvents(cardId))
+    return true
+  }
+
+  // The due_date / assignee / priority changes (card f6fba9ec). A route of its
+  // own, so the /events array above keeps its shape for every existing reader.
+  const kanbanFieldEventsMatch = path.match(/^\/api\/kanban\/([^/]+)\/field-events$/)
+  if (kanbanFieldEventsMatch && method === 'GET') {
+    const cardId = decodeURIComponent(kanbanFieldEventsMatch[1])
+    json(res, getKanbanCardFieldEvents(cardId))
     return true
   }
 

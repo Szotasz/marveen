@@ -6,6 +6,7 @@ import {
   closeOtelSpan,
   getPendingBacklogByAgent,
   countNewerMessagesForRows,
+  getHeartbeatKanbanLive,
   COMPLETION_REPORT_PREFIX,
   type AgentMessage,
 } from '../../db.js'
@@ -15,11 +16,12 @@ import { COORDINATOR_AGENT_ID, VOICE_CHANNEL_AGENT_ID } from '../../channel-coor
 import { SYSTEM_DIRECTIVE_SENDER } from '../system-directive.js'
 import { sanitizeAgentIdent } from '../../prompt-safety.js'
 import { isKnownAgent } from '../agent-config.js'
-import { MAIN_AGENT_ID, OWNER_NAME, SYSTEM_SENDER_IDS, parseSystemSenderIds } from '../../config.js'
+import { MAIN_AGENT_ID, HEARTBEAT_AGENT_ID, OWNER_NAME, SYSTEM_SENDER_IDS, parseSystemSenderIds } from '../../config.js'
 import { isAgentRunning } from '../agent-process.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
 import { isHeartbeatTemplateLeak, stampHeartbeatHeader } from '../heartbeat-header-stamp.js'
+import { verifyHeartbeatKanban, HEARTBEAT_KANBAN_WINDOW_SEC } from '../heartbeat-kanban-verify.js'
 import { buildFreshnessInfo, type MessageFreshness } from '../agent-message-wrap.js'
 import { parseQualifiedId, formatQualifiedId, isQualifiedId } from '../federation/address.js'
 import { getFederationConfig } from '../federation/config.js'
@@ -48,6 +50,9 @@ export function shouldNotifyDelegator(fromAgent: string, toAgent: string, conten
   if (content.startsWith(COMPLETION_REPORT_PREFIX)) return false
   return true
 }
+
+/** The result a voice-channel answer is closed with: it is read by the relay, never delivered. */
+export const VOICE_MAILBOX_RESULT = 'voice-channel mailbox: no session delivery; the voice relay reads it'
 
 // Frozen at module load, like the config constant it derives from.
 const SYSTEM_SENDERS = parseSystemSenderIds(SYSTEM_SENDER_IDS, sanitizeAgentIdent)
@@ -117,6 +122,25 @@ export function attachFreshness(messages: AgentMessage[]): AgentMessageWithFresh
   }))
 }
 
+// HBFABRIC1003 follow-up: a refused heartbeat digest is reported to the main
+// agent as an informational system note (no action is requested of it), at
+// most once per HEARTBEAT_REFUSAL_NOTE_GAP_MS. Exported for the test.
+export const HEARTBEAT_REFUSAL_NOTE_GAP_MS = 10 * 60 * 1000
+let lastHeartbeatRefusalNoteMs = 0
+export function resetHeartbeatRefusalNoteForTest(): void { lastHeartbeatRefusalNoteMs = 0 }
+function noteHeartbeatRefusal(problems: string[], nowMs: number = Date.now()): void {
+  if (nowMs - lastHeartbeatRefusalNoteMs < HEARTBEAT_REFUSAL_NOTE_GAP_MS) return
+  lastHeartbeatRefusalNoteMs = nowMs
+  try {
+    createAgentMessage('system', MAIN_AGENT_ID,
+      '[HB-KAPU] A heartbeat digestjét a szerver elutasította (422, HBFABRIC1003): a Kanban-sorai nem egyeztek az élő táblával, '
+      + 'ezért ebben a körben NEM érkezik digest. Eltérések: ' + problems.join('; ')
+      + '. Tájékoztatás, teendőt nem kér; ha a digest kell, a GET /api/kanban/heartbeat-summary adja az élő számokat.')
+  } catch (err) {
+    logger.warn({ err }, 'HBFABRIC1003: could not queue the heartbeat refusal note')
+  }
+}
+
 export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method, url } = ctx
 
@@ -136,6 +160,28 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     if (isHeartbeatTemplateLeak(content)) {
       logger.warn({ from: from.trim(), to: to.trim() }, 'Rejected /api/messages POST: heartbeat template placeholder header')
       json(res, { error: 'heartbeat_template_placeholder: the header still reads "YYYY-MM-DD"; send the report with the real timestamp' }, 422)
+      return true
+    }
+    // HBFABRIC1003: a digest's Kanban lines must match the live board at send
+    // time (counts within the drift the board actually had, every listed card
+    // real and in the state its line claims). On 2026-10-03 17:00 the agent sent
+    // a card id that never existed and counts it had typed before reading its
+    // metrics block. Refused before anything is written, so the sender sees the
+    // difference and the made-up report never reaches the main agent's box.
+    const kanbanVerdict = verifyHeartbeatKanban(content, () => getHeartbeatKanbanLive(HEARTBEAT_KANBAN_WINDOW_SEC))
+    if (!kanbanVerdict.ok) {
+      logger.warn({ from: from.trim(), to: to.trim(), problems: kanbanVerdict.problems }, 'Rejected /api/messages POST: heartbeat Kanban lines do not match the live board')
+      // The heartbeat agent does not read the POST's status (its task ends at
+      // "send, stop"), so a refusal would otherwise be an hour with NO digest
+      // that only the dashboard log knows about (Geri's #1684 verify). The
+      // main agent is told instead -- server-side, not by the sender's
+      // discipline -- at most once per window, so a retrying sender cannot
+      // flood its box.
+      if (sanitizeAgentIdent(from) === HEARTBEAT_AGENT_ID) noteHeartbeatRefusal(kanbanVerdict.problems)
+      json(res, {
+        error: 'heartbeat_kanban_mismatch: the Kanban lines do not match the live board. Re-read the metrics block (GET /api/kanban/heartbeat-summary) and copy it, do not retype it.',
+        problems: kanbanVerdict.problems,
+      }, 422)
       return true
     }
     // Security: the channel-coordinator id grants channel-inbound delivery
@@ -296,7 +342,19 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // window, so the sender believed they had been delivered. In the last 30
     // days these were the ONLY non-agent recipients. A registered agent that is
     // merely not running is a different case and keeps the retry path below.
-    if (!storedTo.includes('/') && !isKnownAgent(sanitizeAgentIdent(storedTo))) {
+    // VOICEREPLY1005: the voice channel id is a PULL MAILBOX, not an agent. The
+    // voice relay sends the owner's dictation in as VOICE_CHANNEL_AGENT_ID, and
+    // an answer goes back to the same id; the relay reads it from the sender's
+    // conversation (GET /api/messages?agent=<sender>). No session owns it, so
+    // it must be accepted here even though it is not a registered agent -- the
+    // UNKNOWNTO924 gate below rejected every voice answer (measured 2026-10-05,
+    // 400 "unknown recipient") -- and closed at once below, so the router never
+    // tries to deliver it and raises no [handoff-failure].
+    // EXACT match on the stored id (review #1697): the row is closed at once, so
+    // a near-miss (the voice id plus a stray character, sanitised back to the voice id) would be stored under a
+    // name the relay never reads, and lost without a sound. It gets the 400.
+    const isVoiceMailbox = storedTo === VOICE_CHANNEL_AGENT_ID
+    if (!storedTo.includes('/') && !isVoiceMailbox && !isKnownAgent(sanitizeAgentIdent(storedTo))) {
       logger.warn({ from: from.trim(), to: storedTo }, 'Rejected /api/messages POST to an unregistered recipient')
       json(res, { error: `unknown recipient '${storedTo}' -- to must be a registered fleet agent id (or "<system>/<agent>" for federation)` }, 400)
       return true
@@ -316,6 +374,12 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // itself -- capped short so it stays a label, not a second content field.
     const trimmedOriginNote = origin_note?.trim().slice(0, 120) || null
     const msg = createAgentMessage(from.trim(), storedTo, normalizedContent, trimmedOriginNote)
+    if (isVoiceMailbox) {
+      markMessageDone(msg.id, VOICE_MAILBOX_RESULT)
+      logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent }, 'Voice-channel answer stored in the mailbox (no session delivery)')
+      json(res, { ...(getAgentMessage(msg.id) ?? msg), mailbox: true })
+      return true
+    }
     // Backpressure, returned WITH the id rather than behind a second call:
     // `{"id":N,"status":"pending"}` alone reads as "sent", and on a busy
     // recipient it can be 80 minutes from true. See getRecipientQueueState for

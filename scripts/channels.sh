@@ -226,8 +226,8 @@ resolve_main_model() {
   # CLI, through the same table and decision the dashboard uses
   # (dist/claude-cli-support.js launchableDefaultModel; the TS twin is
   # readConfiguredMainModel, and main-model-resolution-parity.test.ts keeps the
-  # two equal). An AVX-less host is pinned to CLI 2.1.110 (CLAUDE_PIN below)
-  # and DISABLE_AUTOUPDATER keeps any older CLI in place, so a default that
+  # two equal). An AVX-less host is pinned to CLI 2.1.112 (CLAUDE_PIN below;
+  # 2.1.110 before #1494) and DISABLE_AUTOUPDATER keeps any older CLI in place, so a default that
   # CLI cannot run would bring the session up and 400 every prompt -- a silent
   # bot. On a CLI measured too old, the previous tier
   # (DISTRIBUTION_DEFAULT_FALLBACK_MODEL) launches instead, with a named line.
@@ -303,7 +303,7 @@ fi
 # Returns 0 (dead) only on a positive `1` from tmux; a failed query is NOT dead
 # (fail-safe: never restart on a broken instrument).
 pane_dead_detected() {
-  "$TMUX" list-panes -t "$1" -F '#{pane_dead}' 2>/dev/null | grep -q '^1$'
+  "$TMUX" list-panes -t "=$1:" -F '#{pane_dead}' 2>/dev/null | grep -q '^1$'
 }
 
 # Test seam: `channels.sh --pane-dead-check <session>` prints dead|alive and
@@ -314,6 +314,28 @@ if [ "${1:-}" = "--pane-dead-check" ]; then
   TMUX="${CHANNELS_TMUX_BIN:-$(command -v tmux)}"
   if pane_dead_detected "${2:-}"; then echo dead; else echo alive; fi
   exit 0
+fi
+
+# BOOTSTAGGER1007 (a): wait for the channel hosts to resolve before the main
+# session starts (see scripts/lib/channel-net-wait.sh for the measured boot).
+# shellcheck source=lib/channel-net-wait.sh
+. "$INSTALL_DIR/scripts/lib/channel-net-wait.sh"
+
+# Test seams, exiting before the store or a session is touched:
+#   --channel-wait-hosts <primary> [extra plugin ids...]  prints the hosts the
+#     launch below waits for (one per line);
+#   --channel-net-wait <host...>  runs the wait itself, exit 0 = all resolved,
+#     1 = gave up (CHANNEL_DNS_PROBE / CHANNEL_NET_WAIT_* steer it in tests).
+# See scripts/__tests__/channels-net-wait.test.sh.
+if [ "${1:-}" = "--channel-wait-hosts" ]; then
+  shift
+  channel_wait_hosts "$@"
+  exit 0
+fi
+if [ "${1:-}" = "--channel-net-wait" ]; then
+  shift
+  wait_for_channel_hosts "$@"
+  exit $?
 fi
 
 # CHANSPARE925: is the process that owns bot.pid OURS? Measured 2026-09-25: a
@@ -574,6 +596,11 @@ for _p in $CHANNEL_PLUGINS_EXTRA; do
   [ -n "$_p" ] && EXTRA_CHANNELS="$EXTRA_CHANNELS plugin:$_p"
 done
 unset _p
+# SLACKDMVESZT1006: enable the extras for THIS session only, via a --settings
+# file (see the helper's header for why not a settings layer).
+. "$INSTALL_DIR/scripts/main-extra-plugins-settings.sh"
+# shellcheck disable=SC2086 # word-split on purpose: space-separated plugin ids
+EXTRA_SETTINGS_FLAG="$(main_extra_settings_flag "$INSTALL_DIR" $CHANNEL_PLUGINS_EXTRA)"
 
 # ROOT-CAUSE NOTE (kali-linux WSL, claude-code 2.1.152, 2026-05-27):
 # Inbound MCP notifications from the `--channels` plugin go through a SECOND
@@ -637,7 +664,7 @@ FLEET_VENV_PREFIX="$(fleet_venv_prefix "$INSTALL_DIR" "$INSTALL_DIR/store/channe
 # first run, killing every session. Recorded here because it also decides WHICH
 # package spec the self-heal below reinstalls: on such a host "latest" is the
 # one thing we must never install.
-CLAUDE_PIN="2.1.110"   # keep in sync with install-linux.sh / scripts/fix-avx.sh
+CLAUDE_PIN="2.1.112"   # keep in sync with install-linux.sh / scripts/fix-avx.sh
 CLAUDE_PKG="@anthropic-ai/claude-code"
 AVX_LESS=0
 if grep -qE '^flags[[:space:]]*:' /proc/cpuinfo 2>/dev/null && ! grep -qiw avx /proc/cpuinfo 2>/dev/null; then
@@ -1101,7 +1128,7 @@ if command -v node >/dev/null 2>&1; then
 fi
 
 # Régi session takarítás
-$TMUX kill-session -t "$SESSION" 2>/dev/null
+$TMUX kill-session -t "=$SESSION:" 2>/dev/null
 
 # Reap orphan main-agent channel pollers (bun/node grandchildren of the
 # previous tmux server). A tmux kill-session does not always tear them down,
@@ -1145,7 +1172,19 @@ fi
 # an install path with regex metacharacters can't break the exclusion. The var
 # is named `subdir` (not `sub`) because `sub` is a reserved awk function name and
 # BSD/macOS awk syntax-errors on it.
-ORPHAN_PIDS2="$(/bin/ps eww -e 2>/dev/null | awk -v needle="CLAUDE_PLUGIN_ROOT=" -v prov="/${CHANNEL_PROVIDER}" -v subdir="${INSTALL_DIR}/agents/" '$0 ~ needle && $0 ~ prov && index($0, subdir) == 0 { print $1 }')"
+# `ps axeww`, not `ps eww -e`: on macOS the latter drops every process without
+# a controlling terminal, and an orphan whose tmux pane is gone is exactly that
+# (card PSEWWMACOSBLIND1007). The first pass above is fixed in its own PR (#1738).
+# The provider segment is matched INSIDE the CLAUDE_PLUGIN_ROOT value and must end
+# on a path/version/space boundary (same rule as PLUGIN_ROOT_NEEDLE in
+# src/web/channel-poller-reap.ts): a bare `$0 ~ "/telegram"` also hit a
+# `/telegram-coordinator` plugin, or any process whose argv merely mentioned both
+# strings. The slack plugin's cache dir is `slack-channel`.
+case "$CHANNEL_PROVIDER" in
+  slack) PLUGIN_SEG="/slack-channel" ;;
+  *)     PLUGIN_SEG="/${CHANNEL_PROVIDER}" ;;
+esac
+ORPHAN_PIDS2="$(/bin/ps axeww 2>/dev/null | awk -v needle="CLAUDE_PLUGIN_ROOT=" -v prov="$PLUGIN_SEG" -v subdir="${INSTALL_DIR}/agents/" '$0 ~ (needle "[^ ]*" prov "([/@ ]|$)") && index($0, subdir) == 0 { print $1 }')"
 if [ -n "$ORPHAN_PIDS2" ]; then
   # shellcheck disable=SC2086
   /bin/kill -TERM $ORPHAN_PIDS2 2>/dev/null || true
@@ -1335,7 +1374,15 @@ fi
 # trade-off is that a prior "$SESSION" can survive into this relaunch, so kill
 # just THIS session first -- never the server, never another agent's session --
 # otherwise new-session below fails with "duplicate session".
-$TMUX kill-session -t "$SESSION" 2>/dev/null || true
+#
+# BOOTSTAGGER1007 (a): first, wait (bounded) until the primary and every
+# co-listen provider's host resolves. After a power cut the main session was
+# started before DNS was up, the Slack plugin's MCP connect failed for good
+# ("getaddrinfo ENOTFOUND slack.com"), and the owner's main channel stayed deaf
+# for 30 minutes. With the network up this is one lookup per host.
+# shellcheck disable=SC2046,SC2086
+wait_for_channel_hosts $(channel_wait_hosts "$CHANNEL_PROVIDER" $CHANNEL_PLUGINS_EXTRA) || true
+$TMUX kill-session -t "=$SESSION:" 2>/dev/null || true
 # TMUXSERVERREAP929: create the session WITHOUT this shell's state-dir var in
 # the tmux client's environment. The export above is meant for THIS session's
 # claude/poller, and the command below re-exports it for the pane anyway. But
@@ -1349,7 +1396,7 @@ $TMUX kill-session -t "$SESSION" 2>/dev/null || true
 # MAIN session's channel state dir. The -g -u after the launch cleans a server
 # polluted earlier.
 env -u "$STATE_ENV_VAR" $TMUX new-session -d -s "$SESSION" -c "$INSTALL_DIR" \
-  "${AUTH_PANE_ENV}${STATE_DIR_ENV}${MCP_BATCH_ENV}${CFG_ENV}${CUSTOM_PROVIDER_ENV}$CLAUDE --dangerously-skip-permissions ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}${EXTRA_CHANNELS}"
+  "${AUTH_PANE_ENV}${STATE_DIR_ENV}${MCP_BATCH_ENV}${CFG_ENV}${CUSTOM_PROVIDER_ENV}$CLAUDE --dangerously-skip-permissions${EXTRA_SETTINGS_FLAG} ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}${EXTRA_CHANNELS}"
 # The server certainly exists now: see CHANNELSAUTHRACE923 above.
 _tmux_set_auth_globals
 # remain-on-exit: without this, if the pane's claude process dies for ANY
@@ -1366,7 +1413,7 @@ _tmux_set_auth_globals
 # remain-on-exit on, the pane survives as "dead" and the relaunch can always
 # find and reuse it. (Also fixed at the reap itself, see channel-poller-reap.ts;
 # this is the defense-in-depth layer, not the only fix.)
-$TMUX set-option -t "$SESSION" remain-on-exit on 2>/dev/null || true
+$TMUX set-option -t "=$SESSION:" remain-on-exit on 2>/dev/null || true
 $TMUX set-environment -g -u "$STATE_ENV_VAR" 2>/dev/null || true
 
 # Session startup guard: a Claude Code first-run dialogusait auto-accept-eljuk
@@ -1403,11 +1450,11 @@ _answer_accept_dialog() {
   _cur=$(printf '%s\n' "$1" | grep -n "❯" | head -1 | cut -d: -f1)
   _yes=$(printf '%s\n' "$1" | grep -n "Yes" | grep -v "No, exit" | head -1 | cut -d: -f1)
   if [ -n "$_cur" ] && [ -n "$_yes" ] && [ "$_yes" = "$_cur" ]; then
-    $TMUX send-keys -t "$SESSION" Enter
+    $TMUX send-keys -t "=$SESSION:" Enter
   elif [ -n "$_cur" ] && [ -n "$_yes" ] && [ "$_yes" = "$((_cur + 1))" ]; then
-    $TMUX send-keys -t "$SESSION" Down
+    $TMUX send-keys -t "=$SESSION:" Down
     sleep 1
-    $TMUX send-keys -t "$SESSION" Enter
+    $TMUX send-keys -t "=$SESSION:" Enter
   else
     echo "channels.sh: elfogado dialogus ismeretlen alakban -- nem kuldok billentyut (TRUSTGATE901)" >&2
   fi
@@ -1417,12 +1464,12 @@ _answer_accept_dialog() {
 _eperm_restarted=0
 for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
   sleep 1
-  pane=$($TMUX capture-pane -t "$SESSION" -p 2>/dev/null || true)
+  pane=$($TMUX capture-pane -t "=$SESSION:" -p 2>/dev/null || true)
   case "$pane" in
     *"EPERM"*|*"Operation not permitted"*|*"operation not permitted"*)
       if [ "$_eperm_restarted" = "0" ]; then
         _eperm_restarted=1
-        $TMUX kill-session -t "$SESSION" 2>/dev/null
+        $TMUX kill-session -t "=$SESSION:" 2>/dev/null
         _CHANNELS_STARTDIR="$(mktemp -d /tmp/marveen-channels-XXXXXX)"
         # Carry the project CLAUDE.md into the fallback cwd so the session keeps
         # Marveen's instructions/personality instead of running as a generic,
@@ -1441,11 +1488,11 @@ for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
         # entry); see the PR description / card 7EB18437.
         [ -e "$INSTALL_DIR/CLAUDE.md" ] && ln -sf "$INSTALL_DIR/CLAUDE.md" "$_CHANNELS_STARTDIR/CLAUDE.md" 2>/dev/null || true
         env -u "$STATE_ENV_VAR" $TMUX new-session -d -s "$SESSION" -c "$_CHANNELS_STARTDIR" \
-          "${AUTH_PANE_ENV}${STATE_DIR_ENV}${MCP_BATCH_ENV}${CFG_ENV}${CUSTOM_PROVIDER_ENV}$CLAUDE --dangerously-skip-permissions ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}${EXTRA_CHANNELS}"
+          "${AUTH_PANE_ENV}${STATE_DIR_ENV}${MCP_BATCH_ENV}${CFG_ENV}${CUSTOM_PROVIDER_ENV}$CLAUDE --dangerously-skip-permissions${EXTRA_SETTINGS_FLAG} ${MODEL_FLAG}--channels plugin:${PLUGIN_ID}${EXTRA_CHANNELS}"
         # See the primary new-session above: remain-on-exit keeps the pane
         # (and session) alive if claude dies early, so the scheduled relaunch
         # can always find it. This is the /tmp-fallback launch path, same fix.
-        $TMUX set-option -t "$SESSION" remain-on-exit on 2>/dev/null || true
+        $TMUX set-option -t "=$SESSION:" remain-on-exit on 2>/dev/null || true
         unset _CHANNELS_STARTDIR
       fi
       continue
@@ -1461,7 +1508,7 @@ for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
       continue
       ;;
     *"Welcome to Claude Code"*)
-      $TMUX send-keys -t "$SESSION" Enter
+      $TMUX send-keys -t "=$SESSION:" Enter
       sleep 1
       continue
       ;;
@@ -1476,7 +1523,7 @@ unset _eperm_restarted
 # longer uses Remote Control.)
 _bot_name="${BOT_NAME:-${MAIN_AGENT_ID:-marveen}}"
 sleep 1
-$TMUX send-keys -t "$SESSION" "/rename ${_bot_name}" Enter
+$TMUX send-keys -t "=$SESSION:" "/rename ${_bot_name}" Enter
 unset _bot_name
 
 # Reset the keep-alive watchdog baseline so a session that was just restarted
@@ -1538,7 +1585,7 @@ date +%s > "$INSTALL_DIR/store/.channel-last-respawn"
 #     line alone said nothing about whether the fix landed.
 (
   sleep 15
-  CLAUDE_PID="$($TMUX list-panes -t "$SESSION" -F '#{pane_pid}' 2>/dev/null | head -1)"
+  CLAUDE_PID="$($TMUX list-panes -t "=$SESSION:" -F '#{pane_pid}' 2>/dev/null | head -1)"
   # Check 1: bun grandchild of the marveen-channels claude
   BUN_CHILD=""
   if [ -n "$CLAUDE_PID" ]; then
@@ -1558,7 +1605,7 @@ date +%s > "$INSTALL_DIR/store/.channel-last-respawn"
   # the dashboard channel-monitor's recovery ladder owns the pane from there.
   PROBE_STATE="unverifiable"
   for _try in 1 2 3; do
-    PROBE_STATE="$($TMUX capture-pane -t "$SESSION" -e -p 2>/dev/null | probe_pane_input_state)"
+    PROBE_STATE="$($TMUX capture-pane -t "=$SESSION:" -e -p 2>/dev/null | probe_pane_input_state)"
     [ "$PROBE_STATE" = "idle" ] && break
     case "$PROBE_STATE" in
       parked:*)
@@ -1568,7 +1615,7 @@ date +%s > "$INSTALL_DIR/store/.channel-last-respawn"
         # parked text is never touched here; the stuck-input recovery stack
         # owns it.
         if is_own_probe_residue "${PROBE_STATE#parked:}"; then
-          $TMUX send-keys -t "$SESSION" C-c
+          $TMUX send-keys -t "=$SESSION:" C-c
           sleep 1
         fi
         ;;
@@ -1585,22 +1632,22 @@ date +%s > "$INSTALL_DIR/store/.channel-last-respawn"
   # disabled (Enable-only submenu has no Reconnect, the Up+Enter+Enter sequence
   # would land somewhere unsafe). See classify_mcp_plugin_row above for why the
   # matching is row-scoped and glyph-agnostic.
-  $TMUX send-keys -t "$SESSION" Escape
+  $TMUX send-keys -t "=$SESSION:" Escape
   sleep 1
-  $TMUX send-keys -t "$SESSION" "/mcp" Enter
+  $TMUX send-keys -t "=$SESSION:" "/mcp" Enter
   sleep 3
-  PANE="$($TMUX capture-pane -t "$SESSION" -p 2>/dev/null || true)"
+  PANE="$($TMUX capture-pane -t "=$SESSION:" -p 2>/dev/null || true)"
 
   classify_mcp_plugin_row "$PANE"
   UNLOCK_FIRED=0
   case "$MCP_PLUGIN_STATE" in
     failed)
       echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh post-init: $CHANNEL_PROVIDER plugin row failed, firing /mcp Up+Enter+Enter unlock -- row: $MCP_PLUGIN_ROW" >> "$INSTALL_DIR/store/channels-failures.log"
-      $TMUX send-keys -t "$SESSION" Up
+      $TMUX send-keys -t "=$SESSION:" Up
       sleep 1
-      $TMUX send-keys -t "$SESSION" Enter
+      $TMUX send-keys -t "=$SESSION:" Enter
       sleep 2
-      $TMUX send-keys -t "$SESSION" Enter
+      $TMUX send-keys -t "=$SESSION:" Enter
       sleep 4
       UNLOCK_FIRED=1
       ;;
@@ -1621,17 +1668,17 @@ date +%s > "$INSTALL_DIR/store/.channel-last-respawn"
   # stuck-input recovery stack) is cleared with a single Ctrl-C and re-proven.
   END_STATE="unknown"
   for _i in 1 2 3 4 5; do
-    $TMUX send-keys -t "$SESSION" Escape
+    $TMUX send-keys -t "=$SESSION:" Escape
     sleep 1
-    END_STATE="$($TMUX capture-pane -t "$SESSION" -e -p 2>/dev/null | probe_pane_input_state)"
+    END_STATE="$($TMUX capture-pane -t "=$SESSION:" -e -p 2>/dev/null | probe_pane_input_state)"
     [ "$END_STATE" = "idle" ] && break
   done
   case "$END_STATE" in
     parked:*)
       if is_own_probe_residue "${END_STATE#parked:}"; then
-        $TMUX send-keys -t "$SESSION" C-c
+        $TMUX send-keys -t "=$SESSION:" C-c
         sleep 1
-        END_STATE="$($TMUX capture-pane -t "$SESSION" -e -p 2>/dev/null | probe_pane_input_state)"
+        END_STATE="$($TMUX capture-pane -t "=$SESSION:" -e -p 2>/dev/null | probe_pane_input_state)"
       fi
       ;;
   esac
@@ -1796,10 +1843,10 @@ respawn_log() {
 # amugy is kileptet ha a session eltunik). A ${SESSION}-hoz tartozo claude
 # process pid-je -- ugyanaz a lekerdezes mint a post-init unlock Check 1-e
 # feljebb.
-_watchdog_claude_pid="$($TMUX list-panes -t "$SESSION" -F '#{pane_pid}' 2>/dev/null | head -1)"
+_watchdog_claude_pid="$($TMUX list-panes -t "=$SESSION:" -F '#{pane_pid}' 2>/dev/null | head -1)"
 
 # Várakozás amíg a session él
-while $TMUX has-session -t "$SESSION" 2>/dev/null; do
+while $TMUX has-session -t "=$SESSION:" 2>/dev/null; do
   sleep 5
 
   # PANEDEAD919: claude itself exited but remain-on-exit kept the pane (and so
@@ -1816,7 +1863,7 @@ while $TMUX has-session -t "$SESSION" 2>/dev/null; do
   # CHANSPARE925 review: channel-watchdog.sh and stuck-modal-guard.sh use
   # a pane respawn (-k), which gives the pane a NEW pid while this session and loop
   # live on. Re-read it every tick, or our own fresh plugin reads as foreign.
-  _pane_pid_now="$($TMUX list-panes -t "$SESSION" -F '#{pane_pid}' 2>/dev/null | head -1)"
+  _pane_pid_now="$($TMUX list-panes -t "=$SESSION:" -F '#{pane_pid}' 2>/dev/null | head -1)"
   [ -n "$_pane_pid_now" ] && _watchdog_claude_pid="$_pane_pid_now"
   unset _pane_pid_now
   _plugin_alive=false

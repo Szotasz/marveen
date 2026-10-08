@@ -85,6 +85,11 @@ for _p in $CHANNEL_PLUGINS_EXTRA; do
   [ -n "$_p" ] && EXTRA_CHANNELS="$EXTRA_CHANNELS plugin:$_p"
 done
 unset _p
+# SLACKDMVESZT1006: same --settings file as channels.sh, or the respawn comes
+# back with the extras disabled by the project scope.
+. "$INSTALL_DIR/scripts/main-extra-plugins-settings.sh"
+# shellcheck disable=SC2086 # word-split on purpose: space-separated plugin ids
+EXTRA_SETTINGS_FLAG="$(main_extra_settings_flag "$INSTALL_DIR" $CHANNEL_PLUGINS_EXTRA)"
 
 # NB: use TMUX_BIN, not TMUX -- the latter is tmux's own env var (socket,pid,
 # session); assigning the binary path to it corrupts server-socket detection.
@@ -98,7 +103,7 @@ fi
 now=$(date +%s)
 
 # --- gate 1: the channels session must EXIST (bridge "running") ---
-if ! "$TMUX_BIN" has-session -t "$SESSION" 2>/dev/null; then
+if ! "$TMUX_BIN" has-session -t "=$SESSION:" 2>/dev/null; then
   log "session $SESSION not present -- systemd ${MAIN_AGENT_ID}-channels.service owns (re)start; watchdog no-op"
   exit 0
 fi
@@ -124,7 +129,7 @@ auth_count=$(cat "$AUTH_DEAD_COUNT_FILE" 2>/dev/null || echo 0)
 case "$auth_count" in (*[!0-9]*|'') auth_count=0;; esac
 NODE_BIN="$(command -v node || true)"
 if [ -n "$NODE_BIN" ] && [ -f "$INSTALL_DIR/dist/web/reauth-detect.js" ]; then
-  probe_out="$("$TMUX_BIN" capture-pane -p -t "$SESSION" 2>/dev/null | "$NODE_BIN" "$INSTALL_DIR/scripts/channels-auth-probe.mjs" 2>/dev/null)"
+  probe_out="$("$TMUX_BIN" capture-pane -p -t "=$SESSION:" 2>/dev/null | "$NODE_BIN" "$INSTALL_DIR/scripts/channels-auth-probe.mjs" 2>/dev/null)"
   probe_exit=$?
   if [ "$probe_exit" -eq 1 ]; then
     auth_count=$(( auth_count + 1 ))
@@ -243,7 +248,7 @@ STATE_DIR_ENV=""
 # session -- a respawn must not hand it a different python3 (#1626 review).
 . "$INSTALL_DIR/scripts/fleet-venv-prefix.sh" 2>/dev/null || fleet_venv_prefix() { :; }
 FLEET_VENV_PREFIX="$(fleet_venv_prefix "$INSTALL_DIR" "$STORE/channels-failures.log")"
-RESPAWN_CMD="export PATH=\"${FLEET_VENV_PREFIX}/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin\" && export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && ${STATE_DIR_ENV}${CFG_ENV}$CLAUDE --dangerously-skip-permissions ${MODEL_FLAG}--channels plugin:${CHANNEL_PROVIDER}@claude-plugins-official${EXTRA_CHANNELS}"
+RESPAWN_CMD="export PATH=\"${FLEET_VENV_PREFIX}/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin\" && export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && ${STATE_DIR_ENV}${CFG_ENV}$CLAUDE --dangerously-skip-permissions${EXTRA_SETTINGS_FLAG} ${MODEL_FLAG}--channels plugin:${CHANNEL_PROVIDER}@claude-plugins-official${EXTRA_CHANNELS}"
 
 reason="keepalive stale ${age}s"
 [ "$STALE" != true ] && reason=""
@@ -252,7 +257,7 @@ if [ "$AUTHDEAD" = true ]; then
 fi
 
 log "$reason and session up -- respawn-pane $SESSION (respawn #$((count+1)))"
-if "$TMUX_BIN" respawn-pane -k -t "$SESSION" "$RESPAWN_CMD" 2>/dev/null; then
+if "$TMUX_BIN" respawn-pane -k -t "=$SESSION:" "$RESPAWN_CMD" 2>/dev/null; then
   date +%s > "$RESPAWN_STAMP"
   echo $(( count + 1 )) > "$RESPAWN_COUNT_FILE"
   rm -f "$AUTH_DEAD_COUNT_FILE" 2>/dev/null || true

@@ -12,6 +12,7 @@ import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { detectReauthNeeded } from './reauth-detect.js'
 import { loginSequence, literalKeyArgs, specialKeyArgs } from './tmux-keys.js'
 import { withSessionSendLock } from './session-send-lock.js'
+import { exactTmuxTarget } from '../tmux-target.js'
 
 // Autonomous re-auth healer (Adam stability-fix #1, scoped 2026-06-03).
 //
@@ -360,7 +361,7 @@ async function restartFirstRunGatedAgent(name: string, session: string): Promise
     return
   }
   await new Promise<void>((resolve) => {
-    execFile(TMUX, ['kill-session', '-t', session], { timeout: 5000 }, () => resolve())
+    execFile(TMUX, ['kill-session', '-t', exactTmuxTarget(session)], { timeout: 5000 }, () => resolve())
   })
   await sleep(1000)
   try {

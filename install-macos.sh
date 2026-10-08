@@ -1576,6 +1576,21 @@ if [ -x "$INSTALL_DIR/scripts/install-channel-keepalive-probe.sh" ]; then
   fi
 fi
 
+# Stuck-modal guard, the launchd counterpart of the systemd unit template. A
+# modal left open in the main session (a /mcp dialog after a full disk, the
+# CLI's "Switch model?" after a /model -- measured 2026-10-05, half an hour of
+# queued Telegram messages) blocks every inbound message, and on macOS nothing
+# even noticed it. Installed in its default mode, log-only: detection and a
+# log line; recovery stays opt-in (STUCK_MODAL_MODE=alert|act in .env, see
+# docs/disk-modal-guards.md). Non-fatal, like the probe above.
+if [ -x "$INSTALL_DIR/scripts/install-stuck-modal-guard.sh" ]; then
+  if "$INSTALL_DIR/scripts/install-stuck-modal-guard.sh" --load >/dev/null 2>&1; then
+    ok "Beragadt-ablak or telepitve (percenkent; alapbol csak naploz, beavatkozni a STUCK_MODAL_MODE=act kapcsoloval fog)"
+  else
+    warn "A beragadt-ablak or telepitese nem sikerult -- inditsd kezzel: scripts/install-stuck-modal-guard.sh --load"
+  fi
+fi
+
 # Main-agent inbox observer, installed the same way and for the same reason: a
 # probe nobody schedules is not a probe. Every delivery path except the main
 # agent's queue is watched by something, and the one in-process reader of that

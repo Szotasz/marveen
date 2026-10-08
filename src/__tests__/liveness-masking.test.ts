@@ -188,3 +188,54 @@ describe('decideHasPluginAlive -- slack/discord cross-tree scan', () => {
     })).toBe(false)
   })
 })
+
+// BOOTSTAGGER1007 (b), #1762 review: the main session's co-listen Slack shares
+// its provider with every Slack sub-agent on the host. The default probe's
+// slack/discord fallback scans the WHOLE machine, so a dead main-session Slack
+// read as alive whenever any sub-agent's Slack lived -- the 2026-10-07 case
+// exactly. strictTree counts only a plugin inside the given claude's tree.
+describe('decideHasPluginAlive -- strictTree (a provider shared with other sessions)', () => {
+  const MAIN_CLAUDE = 100
+  const OTHER_CLAUDE = 200
+  const SLACK_CMD = 'bun run --cwd /home/user/.claude/plugins/cache/marveen-marketplace/slack-channel/0.1.0 --silent start'
+  const mainTelegramOtherSlack = ps([
+    { pid: MAIN_CLAUDE, ppid: 1, command: 'claude --channels plugin:telegram@claude-plugins-official plugin:slack-channel@marveen-marketplace' },
+    { pid: 101, ppid: MAIN_CLAUDE, command: TELEGRAM_CMD },
+    { pid: OTHER_CLAUDE, ppid: 1, command: 'claude --channels plugin:slack-channel@marveen-marketplace' },
+    { pid: 201, ppid: OTHER_CLAUDE, command: SLACK_CMD },
+  ])
+
+  it('main claude with only a telegram child, ANOTHER claude with a slack child -> the main session\'s slack is DOWN under strictTree', () => {
+    expect(decideHasPluginAlive({
+      psOutput: mainTelegramOtherSlack, claudePid: MAIN_CLAUDE, providerType: 'slack',
+      botPid: null, isPidAlive: ALL_PIDS_ALIVE, strictTree: true,
+    })).toBe(false)
+  })
+
+  it('...while the default probe (unchanged) still answers true from the machine-wide fallback', () => {
+    expect(decideHasPluginAlive({
+      psOutput: mainTelegramOtherSlack, claudePid: MAIN_CLAUDE, providerType: 'slack',
+      botPid: null, isPidAlive: ALL_PIDS_ALIVE,
+    })).toBe(true)
+  })
+
+  it('a bot.pid pointing at the other session\'s slack poller does not count under strictTree either', () => {
+    expect(decideHasPluginAlive({
+      psOutput: mainTelegramOtherSlack, claudePid: MAIN_CLAUDE, providerType: 'slack',
+      botPid: 201, isPidAlive: ALL_PIDS_ALIVE, strictTree: true,
+    })).toBe(false)
+  })
+
+  it('the main session\'s own slack child IS alive under strictTree', () => {
+    const out = ps([
+      { pid: MAIN_CLAUDE, ppid: 1, command: 'claude --channels plugin:telegram@claude-plugins-official plugin:slack-channel@marveen-marketplace' },
+      { pid: 101, ppid: MAIN_CLAUDE, command: TELEGRAM_CMD },
+      { pid: 102, ppid: MAIN_CLAUDE, command: SLACK_CMD },
+      { pid: OTHER_CLAUDE, ppid: 1, command: 'claude' },
+    ])
+    expect(decideHasPluginAlive({
+      psOutput: out, claudePid: MAIN_CLAUDE, providerType: 'slack',
+      botPid: null, isPidAlive: ALL_PIDS_ALIVE, strictTree: true,
+    })).toBe(true)
+  })
+})

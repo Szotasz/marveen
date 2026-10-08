@@ -49,8 +49,8 @@ export const DISTRIBUTION_DEFAULT_AGENT_MODEL = 'claude-opus-5-5[1m]'
 // installed Claude Code CLI is measured (claude-cli-support.ts) not to launch
 // DISTRIBUTION_DEFAULT_AGENT_MODEL. The default above reaches every existing
 // model-less install on a plain code update, and nothing else on that launch
-// path checks the CLI: an AVX-less host is pinned to CLI 2.1.110 (CLAUDE_PIN
-// in channels.sh / install-linux.sh / fix-avx.sh), DISABLE_AUTOUPDATER keeps
+// path checks the CLI: an AVX-less host is pinned to CLI 2.1.112 (CLAUDE_PIN
+// in channels.sh / install-linux.sh / fix-avx.sh; 2.1.110 before #1494), DISABLE_AUTOUPDATER keeps
 // any older CLI where it is, and on such a CLI claude-opus-5-5 answers every
 // prompt with 400 unrecognized_model -- the session comes up and goes silent.
 // This must be a model the OLDEST pinned CLI launches (a test pins that), and
@@ -526,6 +526,51 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     requiresRestart: true,
   },
   {
+    key: 'NOTIFY_SLACK_TARGET',
+    type: 'string',
+    default: '',
+    description: 'A tulajdonosnak szóló értesítések (heartbeat-összefoglaló, biztonsági és egyéb gazda-értesítések) Slack-célja: "dm" (a gazda DM-je), egy csatorna neve a store/slack-channels.json térképből, vagy egy C/G/D-vel kezdődő Slack-azonosító. Üresen (alapértelmezés) nincs Slack-küldés. A küldés a fő ágens Slack-bot tokenjével megy.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: false,
+  },
+  {
+    key: 'NOTIFY_SLACK_ALERT_TARGET',
+    type: 'string',
+    default: '',
+    description: 'Az üzemeltetési riasztások (watchdog, újraindítás, beragadt munkamenet, context-guard) Slack-célja, ugyanabban az alakban, mint a NOTIFY_SLACK_TARGET. Üresen a NOTIFY_SLACK_TARGET-et használja.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: false,
+  },
+  {
+    key: 'NOTIFY_TELEGRAM',
+    type: 'boolean',
+    default: '1',
+    description: 'Menjen-e az értesítés Telegramra is. Bekapcsolva (alapértelmezés) a Telegram-küldés változatlan, a Slack mellé kerül. Kikapcsolva, ha van Slack-cél, csak Slackre megy; ha a Slack-küldés elbukik, a Telegram tartalékként mégis kimegy, hogy semmi ne vesszen el.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: false,
+  },
+  {
+    key: 'SLACK_OWNER_USER_ID',
+    type: 'string',
+    default: '',
+    description: 'A gazda Slack user-azonosítója (U...), a "dm" cél ehhez nyit DM-et. Üresen a fő ágens Slack access.json-jából veszi, ha ott pontosan egy engedélyezett felhasználó áll.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: false,
+  },
+  {
+    key: 'SCHEDULED_DELIVERY_CHANNEL',
+    type: 'string',
+    default: '',
+    description: 'Hova menjen a fő ágens ütemezett feladatainak eredménye, "<csatorna>:<chat id>" alakban (csatorna: telegram, slack, discord, googlechat, teams), pl. "slack:D0123456789". Üresen (alapértelmezés) a fő ágens saját csatornája marad. Az al-ágensek feladataira nem hat, és az a feladat, amelyik saját chatet vagy "none"-t ad meg, megtartja. Ha a cél nem Telegram, és ott a küldés nem megy, a gazda Telegram-chatje (ALLOWED_CHAT_ID) a tartalék. Hibás érték esetén nincs felülírás, csak naplóbejegyzés.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: false,
+  },
+  {
     key: 'MAIN_AGENT_CONFIG_DIR',
     type: 'string',
     default: '',
@@ -586,7 +631,7 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     key: 'CLAUDE_ROTATION_ENABLED',
     type: 'boolean',
     default: '0',
-    description: 'Automata Claude-kulcs rotáció: ha a fő agent aktív előfizetése kifogy, automatikusan váltson egy másik regisztrált planre. Előfeltétel: MAIN_AGENT_ISOLATED_CONFIG=1 és legalább 2 regisztrált plan a claude-plans.json-ban. A váltás a fő agent session-jének újraindításával jár.',
+    description: 'Automata Claude-kulcs rotáció: ha a fő agent aktív előfizetése kifogy, automatikusan váltson egy másik regisztrált planre. Előfeltétel: MAIN_AGENT_ISOLATED_CONFIG=1 és legalább 2 regisztrált plan a claude-plans.json-ban. A váltás a fő agent session-jének újraindításával jár. Bekapcsoláskor a 10 percenkénti rotációs heartbeat ütemezés (claude-plan-rotate-check) automatikusan létrejön, ha még nincs; a hiányzó előfeltételeket a Claude plans fül figyelmeztetése mutatja.',
     module: 'claude-plans',
     secret: false,
     requiresRestart: false,
@@ -604,16 +649,19 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: false,
   },
-  // Opt-in background refresh of IDLE plans' 5h/7d usage by the rotation
-  // heartbeat (scripts/claude-plan-rotate-check.ts -> refreshIdlePlans). Each
-  // probe is a real Messages API call that spends the probed plan's own quota,
-  // so it is off by default and independent of CLAUDE_ROTATION_ENABLED: an
-  // operator can keep the Settings bars fresh without automatic rotation.
+  // On-demand refresh of IDLE plans' 5h/7d usage by the rotation heartbeat
+  // (scripts/claude-plan-rotate-check.ts -> refreshIdlePlans). Each probe is a
+  // real Messages API call that spends the probed plan's own quota, so it only
+  // fires while the ACTIVE plan is near a limit (IDLE_PROBE_GATE in
+  // claude-plan-rotation.ts), right before the rotation decision that uses the
+  // numbers. With a healthy active plan it costs nothing, hence default ON;
+  // this key is the operator's off switch. Independent of
+  // CLAUDE_ROTATION_ENABLED.
   {
     key: 'CLAUDE_PLAN_USAGE_REFRESH',
     type: 'boolean',
-    default: '0',
-    description: 'A tétlen (épp nem használt) token-módú planek 5 órás és heti keretét a rotációs heartbeat a háttérben is lekérdezi, planenként legfeljebb 30 percenként. Minden lekérdezés egy valódi, minimális API-hívás, ami az adott plan saját keretéből fogy, ezért alapból KI. A rotációtól (CLAUDE_ROTATION_ENABLED) függetlenül bekapcsolható, ha csak a Beállítások sávjait akarod frissen tartani.',
+    default: '1',
+    description: 'Igény szerinti lekérdezés engedélyezése: a rotációs heartbeat a tétlen (épp nem használt) token-módú planek 5 órás és heti keretét CSAK akkor kérdezi le élőben, ha az aktív plan közel jár a határhoz (5 órás keret legalább 80%, vagy heti legalább 85%), közvetlenül a váltási döntés előtt, hogy az friss számokkal dolgozzon. Planenként legfeljebb 30 percenként. Minden lekérdezés egy valódi, minimális API-hívás az adott plan saját keretéből, de amíg az aktív plan rendben van, egyetlen hívás sem történik, ezért alapból BE. Kikapcsolva a tétlen planek utolsó ismert értéke marad érvényben.',
     module: 'claude-plans',
     secret: false,
     requiresRestart: false,

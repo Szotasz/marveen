@@ -7,7 +7,7 @@
 // REAL `marveen-remote` key, and stayed green while doing it: the branch's only
 // assertion (`not.toMatch(/Invalid host/)`) is satisfied by a SUCCESSFUL
 // enrollment just as well as by the refusal it meant to rule out. 62 keys piled
-// up across the fleet before anyone looked (Tecton 13, isapp06 51, pestihazak 4).
+// up across the fleet before anyone looked (three installs: 13, 51 and 4).
 //
 // Why the existing live-install gate could not have caught this -- worth stating,
 // because it makes this file look redundant next to assert-not-live-install.ts:
