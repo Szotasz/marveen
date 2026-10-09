@@ -740,11 +740,15 @@ export function absolutizeFileRule(rule: string): string {
 // comes up in bypass mode can touch anything its deny-list does not name. The
 // mode can arrive from the operator's own ~/.claude/settings.json
 // (provisionIsolatedConfigDir copies it into the agent's isolated config dir),
-// and nothing pinned it. This pins permissions.defaultMode to 'default' for a
-// strict profile whenever the incoming value is absent, bypassPermissions or
-// acceptEdits; an operator-chosen 'default' or 'plan' is left alone (neither
-// defeats the allow-list). Applied in BOTH places a strict agent's mode can come
-// from: the project settings written here and the isolated user-level copy.
+// and nothing pinned it. This pins permissions.defaultMode to 'dontAsk' for a
+// strict profile: per the documented modes (code.claude.com/docs/en/permissions)
+// dontAsk "auto-denies every call that would otherwise prompt", while allow-
+// listed tools still run -- exactly the strict contract. 'default' is NOT
+// enough: it prompts on an unmatched call, and a sub-agent runs in tmux with no
+// one to answer, so it would hang on the prompt (Dani, #1844 review). Only an
+// operator-chosen 'plan' is left alone. Applied in BOTH places a strict agent's
+// mode can come from: the project settings written here and the isolated
+// user-level copy (project settings outrank user settings anyway).
 // Returns whether it changed anything. Pure: unit-tested directly.
 export function enforceStrictPermissionMode(
   settings: Record<string, unknown>,
@@ -756,9 +760,8 @@ export function enforceStrictPermissionMode(
     ? raw
     : (settings.permissions = {})) as Record<string, unknown>
   const current = perms.defaultMode
-  const defeatsAllowList = current === undefined || current === 'bypassPermissions' || current === 'acceptEdits'
-  if (!defeatsAllowList) return false
-  perms.defaultMode = 'default'
+  if (current === 'dontAsk' || current === 'plan') return false
+  perms.defaultMode = 'dontAsk'
   return true
 }
 

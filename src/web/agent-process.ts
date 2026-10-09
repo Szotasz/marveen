@@ -1043,7 +1043,7 @@ function provisionIsolatedConfigDir(
       let permissionMode: string | undefined
       try { permissionMode = loadProfileTemplate(resolveAgentSecurityProfile(name))?.permissionMode } catch { permissionMode = undefined }
       if (enforceStrictPermissionMode(settings, permissionMode)) {
-        logger.info({ name }, 'isolated-config: strict profile, permissions.defaultMode pinned to default (#1837)')
+        logger.info({ name }, 'isolated-config: strict profile, permissions.defaultMode pinned to dontAsk (#1837)')
       }
     }
     // Atomic: the file's CONTENT now depends on reading its own previous

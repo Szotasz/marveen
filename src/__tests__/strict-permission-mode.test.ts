@@ -21,20 +21,22 @@ describe('enforceStrictPermissionMode (pure)', () => {
     return { changed, mode: (s.permissions as Record<string, unknown>).defaultMode, perms: s.permissions as Record<string, unknown> }
   }
 
-  it('pins bypassPermissions, acceptEdits and an absent mode to default for a strict profile', () => {
-    for (const m of ['bypassPermissions', 'acceptEdits']) {
+  it('pins bypassPermissions, acceptEdits, default and an absent mode to dontAsk for a strict profile', () => {
+    // 'default' too: it PROMPTS on an unmatched call, and a sub-agent in tmux has
+    // no one to answer, so it would hang (#1844 review). dontAsk denies instead.
+    for (const m of ['bypassPermissions', 'acceptEdits', 'default', 'auto']) {
       const r = pinned(m)
       expect(r.changed).toBe(true)
-      expect(r.mode).toBe('default')
+      expect(r.mode).toBe('dontAsk')
       expect(r.perms.allow).toEqual(['Read(./x)'])
     }
     const absent = pinned(undefined)
     expect(absent.changed).toBe(true)
-    expect(absent.mode).toBe('default')
+    expect(absent.mode).toBe('dontAsk')
   })
 
-  it('leaves an operator-chosen default or plan alone', () => {
-    for (const m of ['default', 'plan']) {
+  it('leaves dontAsk and an operator-chosen plan alone', () => {
+    for (const m of ['dontAsk', 'plan']) {
       const r = pinned(m)
       expect(r.changed).toBe(false)
       expect(r.mode).toBe(m)
@@ -52,7 +54,7 @@ describe('enforceStrictPermissionMode (pure)', () => {
   it('replaces a non-object permissions value instead of writing into it', () => {
     const s: Record<string, unknown> = { permissions: ['not', 'an', 'object'] }
     expect(enforceStrictPermissionMode(s, 'strict')).toBe(true)
-    expect(s.permissions).toEqual({ defaultMode: 'default' })
+    expect(s.permissions).toEqual({ defaultMode: 'dontAsk' })
   })
 })
 
@@ -75,11 +77,11 @@ function render(profile: ProfileTemplate): Record<string, unknown> {
 }
 
 describe('the project settings a strict sub-agent gets', () => {
-  it('carry permissions.defaultMode = default next to the allow-list', () => {
+  it('carry permissions.defaultMode = dontAsk next to the allow-list', () => {
     const strict: ProfileTemplate = { ...loadProfileTemplate('developer-junior') }
     expect(strict.permissionMode).toBe('strict')
     const perms = render(strict).permissions as Record<string, unknown>
-    expect(perms.defaultMode).toBe('default')
+    expect(perms.defaultMode).toBe('dontAsk')
     expect(Array.isArray(perms.allow)).toBe(true)
   })
 
