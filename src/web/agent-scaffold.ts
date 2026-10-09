@@ -2725,7 +2725,12 @@ const AGENT_ID_HEADER_BLOCK_RE = new RegExp(
   `${AGENT_ID_HEADER_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${AGENT_ID_HEADER_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
 )
 
-function buildAgentIdHeaderBody(name: string): string {
+// VERZIOTORLES1009: the last paragraph used to promise that a DELETE also keeps
+// the previous content as a version. deleteMemoryById (src/db.ts) removes the
+// versions with the row on purpose (#1357), so that promise was false, and a
+// customer deleted 84 rows trusting it. agent-id-header-delete-truth.test.ts
+// ties this text to that behaviour.
+export function buildAgentIdHeaderBody(name: string): string {
   return [
     '## Ki hívta az API-t: az `X-Agent-Id` fejléc',
     '',
@@ -2745,8 +2750,10 @@ function buildAgentIdHeaderBody(name: string): string {
     'hitelesítés. A fejléc nélkül a hívás ugyanúgy sikerül, és ha idegen emléket írsz,',
     'a szerver FIGYELMEZTET (`owner_mismatch` a válaszban), de NEM állít meg. Tehát a',
     'fejléc nem véd meg attól, hogy rossz sort írj -- csak láthatóvá teszi. A tényleges',
-    'védelem a verziózás: minden felülírás és törlés előtt eltárolódik az előző tartalom',
-    '(`GET /api/memories/<id>/versions`).',
+    'védelem a verziózás, de CSAK FELÜLÍRÁSNÁL: minden felülírás előtt eltárolódik az',
+    'előző tartalom (`GET /api/memories/<id>/versions`). A TÖRLÉS viszont VÉGLEGES: a sorral',
+    'együtt a verzióit is törli, ezekből utána nem állítható vissza. Ha mégis törölnöd kell,',
+    'előtte olvasd ki és mentsd el a sort (`GET /api/memories/<id>`).',
   ].join('\n')
 }
 
