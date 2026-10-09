@@ -53,7 +53,8 @@ export interface TokenValidation {
 // error, so a socket that never answers would pin the stamp forever and
 // silence that alert for good. A timeout turns the hang into an error the
 // callers already classify as transient (no HTTP status) and retry next tick.
-function telegramHttpPost(token: string, method: string, body: string, contentType: string): Promise<SendReceipt> {
+// Resolves with the Bot API's `result` (undefined when the body is not JSON).
+function telegramHttpPostResult(token: string, method: string, body: string, contentType: string): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const req = https.request(
       `https://api.telegram.org/bot${token}/${method}`,
@@ -74,15 +75,13 @@ function telegramHttpPost(token: string, method: string, body: string, contentTy
         res.on('data', (chunk: Buffer) => { chunks.push(chunk) })
         res.on('end', () => {
           const responseBody = Buffer.concat(chunks).toString('utf-8')
+          let result: unknown
           if (res.statusCode !== 200) {
             reject(new Error(`Telegram API ${res.statusCode}: ${responseBody.slice(0, 200)}`))
             return
           }
-          let messageId: string | undefined
           try {
-            const parsed = JSON.parse(responseBody) as {
-              ok?: boolean; error_code?: number; description?: string; result?: { message_id?: unknown }
-            }
+            const parsed = JSON.parse(responseBody) as { ok?: boolean; error_code?: number; description?: string; result?: unknown }
             if (parsed.ok === false) {
               // Carry the body's error_code in the "Telegram API <code>" shape so
               // classifySendError sorts it transient/permanent like an HTTP status;
@@ -91,12 +90,12 @@ function telegramHttpPost(token: string, method: string, body: string, contentTy
               reject(new Error(`Telegram API${code}: ok:false ${String(parsed.description ?? '').slice(0, 200)}`))
               return
             }
-            if (typeof parsed.result?.message_id === 'number') messageId = String(parsed.result.message_id)
+            result = parsed.result
           } catch {
             // A malformed body on HTTP 200 is not a send failure; the message
             // may well be delivered. Same tolerance as sendTelegramMessage.
           }
-          resolve({ status: 200, messageId })
+          resolve(result)
         })
         res.on('error', reject)
       }
@@ -107,6 +106,23 @@ function telegramHttpPost(token: string, method: string, body: string, contentTy
     req.write(body)
     req.end()
   })
+}
+
+// sendMessage's receipt: the message id when the Bot API returned a numeric one.
+async function telegramHttpPost(token: string, method: string, body: string, contentType: string): Promise<SendReceipt> {
+  const result = await telegramHttpPostResult(token, method, body, contentType)
+  const messageId = (result as { message_id?: unknown } | undefined)?.message_id
+  return { status: 200, messageId: typeof messageId === 'number' ? String(messageId) : undefined }
+}
+
+/** Opens a topic in a chat (a private chat needs topics switched on in BotFather); returns its message_thread_id. */
+export async function createTelegramForumTopic(token: string, chatId: string, name: string): Promise<number> {
+  const result = await telegramHttpPostResult(token, 'createForumTopic', JSON.stringify({ chat_id: chatId, name }), 'application/json')
+  const threadId = (result as { message_thread_id?: unknown } | undefined)?.message_thread_id
+  if (typeof threadId !== 'number' || !Number.isInteger(threadId) || threadId <= 0) {
+    throw new Error('Telegram API: createForumTopic returned no message_thread_id')
+  }
+  return threadId
 }
 
 const telegramProvider: ChannelProvider = {

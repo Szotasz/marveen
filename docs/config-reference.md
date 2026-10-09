@@ -24,6 +24,7 @@ Ezek a fájlok a dashboard által kezelt, futásidőben módosuló konfiguráci�
 | `store/custom-providers.json` | dashboard UI (Beállítások > Provider-ok) | Egyéni Anthropic Messages API-kompatibilis végpontok listája -- ld. docs/custom-providers.md |
 | `store/config-overrides.json` | dashboard UI | Beállítások-oldal által mentett felülbírálatok (plain értékek, sosem tartalmaz titkokat) |
 | `store/update.pid` | automatikus | Frissítési folyamat PID fájl (concurrency lock) |
+| `store/telegram-topics.json` | `/topic new <név>` (Telegram) | A fő chat elnevezett témái: `{ "chatId", "topics": { "<név>": <message_thread_id> } }` (0600); csak `TELEGRAM_TOPICS_ENABLED` mellett íródik |
 
 ### A dashboard nyelve
 
@@ -247,6 +248,25 @@ a viselkedésük változatlan.
 **Ami nem változik.** A `chat_id` ugyanaz marad, ezért a gazda-azonosítás, a parancsok
 jogosultsága és a jóváhagyások nem érintettek. A riasztások, a jóváhagyás-kérések, az
 ütemezett feladatok eredménye és a hang-válasz továbbra is téma nélkül mennek ki.
+
+**Elnevezett témák (`/topic`).** Bekapcsolva a `/topic` megjelenik a `/help`-ben és a bot
+menüjében, három alakban: a `/topic` felsorolja az elnevezett témákat, a `/topic new <név>` (író parancs,
+csak a fő chatből) a Bot API `createForumTopic` hívásával új témát nyit, és a nevét a
+kapott `message_thread_id`-vel a `store/telegram-topics.json`-ba menti. Erre azért van
+szükség, mert ha a BotFather-ben a felhasználói témanyitás ki van kapcsolva, témát csak a
+bot nyithat, és mert az azonosítót csak a Bot API adja ki. Egy már meglévő név nem nyit
+új témát. Hibánál a parancs nem próbálkozik újra: egy időtúllépéses hívás a témát ettől
+még megnyithatta, a válasz ezt meg is mondja. A `/topic remove <név>` (író) elfelejti a
+nevet: csak a helyi sort törli, a Telegram-témát nem. Ha egy témát a Telegramban kézzel
+törölnek, ez kell utána, különben az elavult sor miatt a név nem nyitható újra, és egy rá
+mutató ütemezett feladat a már nem létező témába küld. A fájl annak a chatnek az azonosítóját is
+tárolja, amelyikhez a témák tartoznak; ha a fő chat megváltozik, a régi témák a következő
+íráskor elvesznek, és addig sem kerülnek elő. Kikapcsolva a `/topic` nem létezik (a
+dashboard indításkor dönt róla), így a `/help`, a menü és a parancs-kezelés a mai.
+
+**Némítás.** Témás chatben a Telegram témánként némít: egy némított témából nem jön
+értesítés, akkor sem, ha a chat többi része szól. Ha egy válasz „nem jött meg”, előbb a
+téma némítását érdemes megnézni.
 
 **Bekapcsolás.** Dashboard: *Beállítások → Csatornák → `TELEGRAM_TOPICS_ENABLED`*, vagy
 `.env`-ben `TELEGRAM_TOPICS_ENABLED=1`. A csatorna következő indításakor lép életbe. A

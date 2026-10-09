@@ -52,6 +52,8 @@ import { tryHandleMessages } from './web/routes/messages.js'
 import { tryHandleFederation } from './web/routes/federation.js'
 import { startFederationPoller } from './web/federation/poller.js'
 import { registerBuiltinCommands } from './web/builtin-commands.js'
+import { registerTopicCommands } from './web/topic-commands.js'
+import { telegramTopicsEnabled } from './web/telegram-topics.js'
 import { tryHandleCommands } from './web/routes/commands.js'
 import { initCustomCommands } from './web/custom-commands.js'
 import { sweepModelHold, armHoldExpiryFromFile } from './web/main-model.js'
@@ -605,6 +607,8 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
   // UserPromptSubmit hook (scripts/hooks/marveen-commands.py) dispatches into
   // through POST /api/commands/dispatch, answered without a main-session turn.
   registerBuiltinCommands()
+  // /topic exists only with the topics switch on (topic-commands.ts header).
+  if (telegramTopicsEnabled()) registerTopicCommands()
   if (!webOnly) {
     initCustomCommands()
     // The /model hold revert: a one-shot timer at the exact expiry (re-armed

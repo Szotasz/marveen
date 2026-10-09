@@ -23,6 +23,7 @@ These files are managed by the dashboard and change at runtime. They are not che
 | `store/claudeclaw.db` | not directly | SQLite database -- memory, kanban, messages, token log, etc. |
 | `store/config-overrides.json` | dashboard UI | Settings-page overrides (plain values only, never contains secrets) |
 | `store/update.pid` | automatic | Update process PID file (concurrency lock) |
+| `store/telegram-topics.json` | `/topic new <name>` (Telegram) | The named topics of the main chat: `{ "chatId", "topics": { "<name>": <message_thread_id> } }` (0600); written only while `TELEGRAM_TOPICS_ENABLED` is on |
 
 ### Dashboard language
 
@@ -245,6 +246,25 @@ parameter, they behave as before.
 **What does not change.** The `chat_id` stays the same, so owner identification, command
 permissions and approvals are not affected. Alerts, approval requests, scheduled task
 results and the voice reply still go out without a topic.
+
+**Named topics (`/topic`).** While the switch is on, `/topic` appears in `/help` and in the
+bot menu, in three forms: `/topic` lists the named topics, `/topic new <name>` (a write command,
+main chat only) opens a new topic with the Bot API's `createForumTopic` and stores its name
+with the returned `message_thread_id` in `store/telegram-topics.json`. This is needed
+because with user-created topics switched off in BotFather only the bot can open a topic,
+and because only the Bot API hands out the id. A name that already exists opens no new
+topic. On an error the command does not retry: a timed-out call may still have opened the
+topic, and the answer says so. `/topic remove <name>` (a write) forgets a name: it removes
+the local row only, not the Telegram topic. It is needed after a topic is deleted by hand in
+Telegram; otherwise the stale row keeps the name from being opened again, and a scheduled
+task pointing at it sends into a topic that no longer exists. The file also records the chat its topics belong to; if the
+main chat changes, the old topics are dropped on the next write and are never used before
+that. With the switch off `/topic` does not exist (the dashboard decides at start), so
+`/help`, the menu and command handling are what they are today.
+
+**Muting.** In a chat with topics, Telegram mutes per topic: a muted topic sends no
+notification even while the rest of the chat does. If an answer "did not arrive", check
+whether its topic is muted first.
 
 **Enabling.** Dashboard: *Settings → Channels → `TELEGRAM_TOPICS_ENABLED`*, or
 `TELEGRAM_TOPICS_ENABLED=1` in `.env`. It takes effect at the next channel start. While

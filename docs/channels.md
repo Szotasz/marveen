@@ -42,7 +42,9 @@ Ha a bot privát chatjében be vannak kapcsolva a témák (BotFather), a beszél
 bontható, például projektenként. A `TELEGRAM_TOPICS_ENABLED` beállítással (alapból ki) az
 ügynök abba a témába válaszol, ahonnan az üzenet jött, és a gépelés-jelzés, a „Dolgozom
 rajta” helyőrző és a hookból megválaszolt parancsok is ott jelennek meg. A rendszerüzenetek
-(riasztás, jóváhagyás-kérés, ütemezett feladat eredménye) téma nélkül mennek ki. A
+(riasztás, jóváhagyás-kérés, ütemezett feladat eredménye) téma nélkül mennek ki. Témát a
+bot a `/topic new <név>` paranccsal nyit, névvel. A Telegram témánként némít: egy némított
+témából nem jön értesítés, akkor sem, ha a chat többi része szól. A
 részletek és a működés: [config-reference.md](config-reference.md#telegram_topics_enabled-a-válasz-abba-a-témába-megy-ahonnan-az-üzenet-jött).
 
 ### Slack-specifikum
@@ -127,6 +129,8 @@ A tulajdonos slash-parancsaira (`/status`, `/queue`, `/runs`, `/model`, `/usage`
 - Az effort ugyanennek a sornak a része: a megadott szint `/effort`-ként megy a sessionbe (visszamérni nem tudjuk), és a tartásba is bekerül. Lejáratkor csak akkor áll vissza, ha van beállított alapérték (`CLAUDE_CODE_EFFORT_LEVEL` vagy `.claude/settings.json` `effortLevel`); ha nincs, a válasz kimondja, hogy kézzel kell visszaállítani (a CLI-nek nincs „vissza az alapértelmezettre” effort-parancsa).
 - `/model default` (a `/model back` ugyanez): azonnal vissza az alapmodellre, és a tartásban lévő effort is vissza az alapra.
 - `/context clear` (és a szállított `/new`, `/clear` saját parancs): a context-restart gate soft-restartjának kódútja (ugyanazok a csendesség-feltételek, csak a méret-küszöb nélkül), `/clear` a küldési sávon, a replay-hookok viszik tovább a szálat. Foglalt sessionnél nem töröl, a `/runs`-ra mutat.
+- `/topic new <név>` (csak bekapcsolt `TELEGRAM_TOPICS_ENABLED` mellett létezik, a `/topic` olvasóval együtt): új témát nyit a fő chatben, és a nevét a `store/telegram-topics.json`-ba menti. Ha már van ilyen nevű, nem nyit újat; hibánál nem próbálja újra (egy időtúllépéses hívás a témát ettől még megnyithatta).
+- `/topic remove <név>`: elfelejti a nevet, csak a helyi sort törli, a Telegram-témát nem. Egy kézzel törölt téma után kell, különben az elavult sor miatt a név nem nyitható újra, és az ütemezett feladat a már nem létező témába küld. Részletek: [config-reference.md](config-reference.md#telegram_topics_enabled-a-válasz-abba-a-témába-megy-ahonnan-az-üzenet-jött).
 
 **Maradék kockázat: a bizonyíték küszöb, nem határ.** Ahol a flotta ágensei ugyanazzal az OS-felhasználóval futnak, mint a plugin és a dashboard, ott az író út három fájlban bízik meg, és mindhármat bármelyik ágens írhatja:
 
