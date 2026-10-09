@@ -562,6 +562,7 @@ try:
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "lib"))
     from mixed_script import (  # noqa: E402
         UWORD, SCRIPT_NEUTRAL, char_script, mixed_script_words,
+        isolated_foreign_words,
     )
 except Exception as _mixed_exc:  # noqa: BLE001 -- deliberate fail-closed stub
     _MIXED_ERR = repr(_mixed_exc)
@@ -572,6 +573,11 @@ except Exception as _mixed_exc:  # noqa: BLE001 -- deliberate fail-closed stub
         return "UNKNOWN"
 
     def mixed_script_words(text: str):
+        raise MixedScriptUnavailable(_MIXED_ERR)
+
+    def isolated_foreign_words(text: str):
+        # UGYANAZ A FAIL-CLOSED ALAK, mint a vegyes-szo szabalynal: egy le nem
+        # futott ellenorzes nem "rendben", es a hivo oldalon ugyanaz az ag kapja el.
         raise MixedScriptUnavailable(_MIXED_ERR)
 
 _char_script = char_script   # the name this file used before the extraction
@@ -1185,6 +1191,30 @@ def audit(text: str):
             f"VEGYES IRASRENDSZERU SZO (homoglifa), {len(mixed)} db: {shown}{more}. "
             "Latin szoba keveredett nem-latin betu: olvasva lathatatlan, de a keresest/grepet neman eltori."
         )
+    # MAGANYOS NEM-LATIN SZO (kartya #893). Ez NEM homoglifa-talalat, es ezert
+    # kulon sor: a szo tisztan cirill vagy gorog, tehat a vegyes-szo szabaly --
+    # helyesen -- nem lat rajta semmit. A kar viszont ugyanaz: 2026-10-09-en egy
+    # magyar uzenetben a "majus" helyett az orosz "май" ment ki, es a mondat
+    # magyarul olvasva ertelmes maradt.
+    try:
+        lone = isolated_foreign_words(prose)
+    except MixedScriptUnavailable as exc:
+        problems.append(
+            "A MAGANYOS-IDEGEN-SZO SZABALY NEM TOLTHETO BE "
+            f"(scripts/lib/mixed_script.py: {exc}). A szabaly meg sem futott, "
+            "tehat a szovegrol semmit nem tudunk. Szandekosan fail-closed."
+        )
+        lone = []
+    if lone:
+        shown = "; ".join(f"{w!r} ({iras}) -- {name}" for w, iras, name in lone[:5])
+        more = f" (+{len(lone) - 5} tovabbi)" if len(lone) > 5 else ""
+        problems.append(
+            f"MAGANYOS NEM-LATIN SZO, {len(lone)} db: {shown}{more}. "
+            "Egy magyar mondatban allo, tisztan idegen irasu szo jellemzoen elgepeles "
+            "(pl. \"\u043c\u0430\u0439\" a \"majus\" helyett), es olvasva ertelmesnek latszik. "
+            "Idegen nyelvu idezet NEM esik ide: tobb egymast koveto idegen szo vagy "
+            "idezojelben allo szoveg atmegy."
+        )
     tok_pos = accent_check_tokens(prose)
     words = [w for w, _ in tok_pos]
     if is_hungarian(plain) or accentless_evidence(words):
@@ -1393,6 +1423,26 @@ def inter_agent_homoglyph_gate(cmd: str) -> None:
             f"NEM TOLTHETO BE (scripts/lib/mixed_script.py: {exc}).\n"
             "Ez nem a szovegrol szol: a szabaly meg sem futott. Szandekosan fail-closed, "
             "mert egy le nem futott ellenorzes nem 'rendben'.\n"
+        )
+        sys.exit(2)
+    try:
+        lone = isolated_foreign_words(text)
+    except MixedScriptUnavailable as exc:
+        sys.stderr.write(
+            "KIMENO-SZOVEG KAPU (inter-agent): TILTVA -- a maganyos-idegen-szo szabaly "
+            f"NEM TOLTHETO BE (scripts/lib/mixed_script.py: {exc}).\n"
+            "A szabaly meg sem futott, tehat a szovegrol semmit nem tudunk. Fail-closed.\n"
+        )
+        sys.exit(2)
+    if lone:
+        shown = "; ".join(f"{w!r} ({iras}) -- {name}" for w, iras, name in lone[:5])
+        more = f" (+{len(lone) - 5} tovabbi)" if len(lone) > 5 else ""
+        sys.stderr.write(
+            "KIMENO-SZOVEG KAPU (inter-agent): TILTVA -- MAGANYOS NEM-LATIN SZO, "
+            f"{len(lone)} db: {shown}{more}.\n"
+            "Magyar mondatban allo, tisztan idegen irasu szo jellemzoen elgepeles, es olvasva "
+            "ertelmesnek latszik. Idegen idezet (tobb egymast koveto idegen szo vagy idezojelben "
+            "allo szoveg) atmegy. Ird ujra a szot, es kuldd ujra.\n"
         )
         sys.exit(2)
     if mixed:
