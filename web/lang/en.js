@@ -1782,6 +1782,8 @@ window._i18n.en = {
   'kanban.view.board':              'Board',
   'kanban.view.gantt':              'Timeline',
   'kanban.view.archived':           'Archived',
+  'kanban.totals':                  '{open} open / {all} on the board',
+  'kanban.totals_filtered':         '({n} shown)',
   'kanban.gantt.filter.period_week':    'This week',
   'kanban.gantt.filter.period_month':   'Month',
   'kanban.gantt.filter.period_quarter': 'Quarter',

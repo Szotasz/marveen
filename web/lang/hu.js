@@ -1785,6 +1785,8 @@ window._i18n.hu = {
   'kanban.view.board':              'Tábla',
   'kanban.view.gantt':              'Idővonal',
   'kanban.view.archived':           'Archiváltak',
+  'kanban.totals':                  '{open} nyitott / {all} a táblán',
+  'kanban.totals_filtered':         '({n} látszik)',
   'kanban.gantt.filter.period_week':    'Ezen hét',
   'kanban.gantt.filter.period_month':   'Hónap',
   'kanban.gantt.filter.period_quarter': 'Negyedév',
