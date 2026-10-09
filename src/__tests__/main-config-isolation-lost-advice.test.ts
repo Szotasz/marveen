@@ -52,7 +52,7 @@ vi.mock('../web/agent-process.js', async (orig) => ({
   resolveMainAgentRotatedConfigDir: () => null,
   resolveMainAgentRotatedTokenSecretId: () => null,
   ensureMainAgentIsolatedConfigDir: () => null,
-  readMainSharedConfigState: (dir: string | null) => ({ isolatedConfigDir: dir, fleetToken: true, isolatedDirExists: true }),
+  readMainSharedConfigState: (dir: string | null) => ({ isolatedConfigDir: dir, fleetToken: true, isolatedDirExists: true, fleetTokenExported: true }),
 }))
 
 const { OVERRIDES_PATH, getEffectiveSettingSource, getEffectiveSettingValue, getOverridesFileState, reloadOverridesForTest } =

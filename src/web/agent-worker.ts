@@ -6,8 +6,10 @@ import { homedir, userInfo } from 'node:os'
 import { createHash } from 'node:crypto'
 import { resolveFromPath, tryResolveFromPath } from '../platform.js'
 import { logger } from '../logger.js'
-import { launchableInstallDefaultSync } from './default-model-guard.js'
-import { MAIN_AGENT_ID, PROJECT_ROOT, DEFAULT_AGENT_MODEL } from '../config.js'
+import { launchableInstallDefaultSync, launchableDistributionDefaultSync } from './default-model-guard.js'
+import { measureClaudeCliVersionSync } from './claude-cli-version.js'
+import { CLAUDE_MODEL_MIN_CLI, baseModelId, isModelUnsupportedByCli } from '../claude-cli-support.js'
+import { MAIN_AGENT_ID, PROJECT_ROOT, DEFAULT_AGENT_MODEL, DEFAULT_AGENT_MODEL_IS_DISTRIBUTION } from '../config.js'
 import {
   capturePane,
   isSessionReadyForPrompt,
@@ -57,10 +59,72 @@ const TMUX = resolveFromPath('tmux')
 // when neither override nor custom provider is in play.
 const WORKER_MODEL_OVERRIDE = process.env.MARVEEN_WORKER_MODEL ?? null
 
-// APRO920 (c)(2): pure so the launch-model log line's source label is unit
-// testable without spinning up a real tmux session.
-export function workerModelSource(env: NodeJS.ProcessEnv = process.env): string {
-  return env.MARVEEN_WORKER_MODEL ? 'env:MARVEEN_WORKER_MODEL' : 'default'
+
+// WORKERMODEL1773 (#1773): the worker's --model, resolved in one pure place
+// (it also carries the launch log's source label, APRO920 (c)(2): replaces
+// workerModelSource, which called a custom-provider or an explicit
+// DEFAULT_AGENT_MODEL launch "default").
+// The #1609 guard (DEFAULTCLIGUARD927) only ever looked at the SHIPPED default:
+// an explicit value -- MARVEEN_WORKER_MODEL, or a configured DEFAULT_AGENT_MODEL
+// -- reached --model unchecked, so on a CLI below the model's minimum the worker
+// came up and every prompt got 400 unrecognized_model. Measured 2026-10-07 with
+// the real guard and CLI 2.1.110: an explicit claude-opus-5-5[1m] passed through
+// unchanged, while the shipped default fell back to claude-opus-5[1m].
+//
+// The decision now carries `unlaunchable` for an explicit value the measured
+// CLI cannot run (fail-open: an unmeasured CLI flags nothing; a custom-provider
+// model is not a Claude model and is not checked).
+export type WorkerModelSourceLabel = 'env:MARVEEN_WORKER_MODEL' | 'custom-provider' | 'env:DEFAULT_AGENT_MODEL' | 'default'
+export interface WorkerModelDecision {
+  model: string
+  source: WorkerModelSourceLabel
+  /**
+   * Set when the explicitly configured model cannot be launched by the
+   * measured CLI. `requested` is the configured value; `fallback` is the model
+   * this run uses instead (the owner's decision (A), WORKERMODEL1773 part 2),
+   * or null when the fallback is not launchable either and the requested model
+   * is kept (nothing better to run).
+   */
+  unlaunchable: { requested: string; minCli: string; installedCli: string; fallback: string | null } | null
+}
+export interface WorkerModelInputs {
+  /** MARVEEN_WORKER_MODEL, or null. */
+  override: string | null
+  /** The main agent's custom-provider model, or null when none is configured. */
+  customProviderModel: string | null
+  /** DEFAULT_AGENT_MODEL as resolved by config. */
+  configuredDefault: string
+  /** True when no operator configured DEFAULT_AGENT_MODEL (the shipped default). */
+  defaultIsDistribution: boolean
+  /** The #1609 guard for the shipped default (called only on that path). */
+  launchableDefault: () => string
+  /**
+   * The distribution default as the #1609 guard launches it on this CLI (the
+   * shipped default, or its previous tier). Called only when an explicit value
+   * is unlaunchable: it is the model that run falls back to.
+   */
+  launchableFallback: () => string
+  /** The measured installed CLI version, or null when unmeasured. */
+  installedCli: () => string | null
+}
+export function resolveWorkerModel(i: WorkerModelInputs): WorkerModelDecision {
+  // The owner's decision (A), WORKERMODEL1773 part 2: an explicit model the
+  // measured CLI cannot run is replaced FOR THIS RUN by the model a model-less
+  // launch would use (the #1609 guard's choice). The setting itself is only
+  // read here, never written: the next launch decides again, so a CLI upgrade
+  // brings the configured model back without anyone touching it.
+  const explicit = (model: string, source: WorkerModelSourceLabel): WorkerModelDecision => {
+    const installed = i.installedCli()
+    const req = CLAUDE_MODEL_MIN_CLI[baseModelId(model)]
+    if (!(installed && req && isModelUnsupportedByCli(model, installed))) return { model, source, unlaunchable: null }
+    const candidate = i.launchableFallback()
+    const fallback = isModelUnsupportedByCli(candidate, installed) ? null : candidate
+    return { model: fallback ?? model, source, unlaunchable: { requested: model, minCli: req.minCli, installedCli: installed, fallback } }
+  }
+  if (i.override) return explicit(i.override, 'env:MARVEEN_WORKER_MODEL')
+  if (i.customProviderModel) return { model: i.customProviderModel, source: 'custom-provider', unlaunchable: null }
+  if (!i.defaultIsDistribution) return explicit(i.configuredDefault, 'env:DEFAULT_AGENT_MODEL')
+  return { model: i.launchableDefault(), source: 'default', unlaunchable: null }
 }
 
 // How long to wait for a freshly launched worker to reach an idle prompt.
@@ -520,15 +584,13 @@ function startWorkerSessionFor(ctx: WorkerCtx): void {
   // which already disables the suggestion for the same scrape-misread reason.
   // Resolve model and optional custom-provider env prefix.
   // Priority: MARVEEN_WORKER_MODEL override > main-agent custom provider > default.
-  let workerModel = WORKER_MODEL_OVERRIDE ?? DEFAULT_AGENT_MODEL
   let customEnvPrefix = ''
-  let fromCustomProvider = false
+  let customProviderModel: string | null = null
   if (!WORKER_MODEL_OVERRIDE) {
     try {
       const cpEnv = buildCustomProviderLaunchEnv(MAIN_AGENT_ID)
       if (cpEnv) {
-        workerModel = cpEnv.model
-        fromCustomProvider = true
+        customProviderModel = cpEnv.model
         customEnvPrefix = cpEnv.envPrefix
         if (cpEnv.customApiKeyForApproval) {
           stampCustomApiKeyApproval(join(ctx.configDir, '.claude.json'), cpEnv.customApiKeyForApproval)
@@ -537,9 +599,27 @@ function startWorkerSessionFor(ctx: WorkerCtx): void {
     } catch (err) {
       logger.warn({ err }, 'agent-worker: could not resolve main-agent custom provider; falling back to default model')
     }
-    // DEFAULTCLIGUARD927: the default path only -- a CLI that cannot run the
-    // shipped default gets the previous tier instead of a deaf worker.
-    if (!fromCustomProvider) workerModel = launchableInstallDefaultSync('worker')
+  }
+  // DEFAULTCLIGUARD927 keeps guarding the shipped default inside; WORKERMODEL1773
+  // flags an explicit value the measured CLI cannot run.
+  const decision = resolveWorkerModel({
+    override: WORKER_MODEL_OVERRIDE,
+    customProviderModel,
+    configuredDefault: DEFAULT_AGENT_MODEL,
+    defaultIsDistribution: DEFAULT_AGENT_MODEL_IS_DISTRIBUTION,
+    launchableDefault: () => launchableInstallDefaultSync('worker'),
+    launchableFallback: () => launchableDistributionDefaultSync('worker'),
+    installedCli: () => measureClaudeCliVersionSync().version,
+  })
+  const workerModel = decision.model
+  if (decision.unlaunchable) {
+    logger.warn(
+      { session: ctx.session, model: decision.model, source: decision.source, ...decision.unlaunchable },
+      decision.unlaunchable.fallback
+        ? 'WORKERMODEL1773: the configured worker model is not launchable by the installed Claude Code CLI; this run falls back (the setting is unchanged)'
+        : 'WORKERMODEL1773: the configured worker model is not launchable by the installed Claude Code CLI, and neither is the fallback; launching it anyway, every prompt will be refused (400 unrecognized_model)',
+    )
+    notifyWorkerModelFallback(decision, Date.now())
   }
 
   const claudeLaunchBin = tryResolveFromPath('claude') ?? 'claude'
@@ -559,7 +639,7 @@ function startWorkerSessionFor(ctx: WorkerCtx): void {
   // APRO920 (c)(2): same rationale as startAgentProcess's model-resolved log --
   // which config-chain element supplied the --model value.
   logger.info(
-    { session: ctx.session, model: workerModel, source: workerModelSource() },
+    { session: ctx.session, model: workerModel, source: decision.source },
     'agent-worker: launch model resolved',
   )
   logWorkerClaudeVersion(ctx)
@@ -649,6 +729,51 @@ function selfHealWorkerOnce(ctx: WorkerCtx): boolean {
   restartWorkerSession(ctx)
   return true
 }
+
+// WORKERMODEL1773 part 2: one operator signal per configured model and CLI
+// version per day. Every worker (re)start resolves the model again, and a
+// restart loop must not turn into a message loop; a CLI upgrade or a changed
+// setting is a new key and is announced at once.
+export const WORKER_MODEL_FALLBACK_NOTIFY_WINDOW_MS = 24 * 60 * 60 * 1000
+const workerModelFallbackNotified = new Map<string, number>()
+
+/** Pure: should this decision be announced now? Records the announcement when it says yes. */
+export function shouldNotifyWorkerModelFallback(
+  sent: Map<string, number>,
+  key: string,
+  nowMs: number,
+  windowMs: number = WORKER_MODEL_FALLBACK_NOTIFY_WINDOW_MS,
+): boolean {
+  const last = sent.get(key)
+  if (last !== undefined && nowMs - last < windowMs) return false
+  sent.set(key, nowMs)
+  return true
+}
+
+/** Pure: the rate-limit key -- the configured model AND the CLI version, so an upgrade announces again. */
+export function workerModelFallbackKey(d: WorkerModelDecision): string {
+  const u = d.unlaunchable!
+  return `${u.requested}|${u.installedCli}`
+}
+
+/** Pure: the operator text for an unlaunchable configured worker model. */
+export function workerModelFallbackText(d: WorkerModelDecision): string {
+  const u = d.unlaunchable!
+  const head = `⚠️ Marveen worker: a beállított worker-modellt (${u.requested}, forrás: ${d.source}) a telepített Claude Code ${u.installedCli} nem tudja elindítani (legalább ${u.minCli} kell).`
+  return u.fallback
+    ? `${head} Ez a futás helyette ezzel indult: ${u.fallback}. A beállítást nem írtuk át; Claude Code-frissítés után a beállított modell magától visszajön.`
+    : `${head} A tartalék modell sem indítható ezen a verzión, ezért a beállított modellel indult: minden kérés hibát fog adni. Frissítsd a Claude Code-ot, vagy állíts be indítható modellt.`
+}
+
+function notifyWorkerModelFallback(d: WorkerModelDecision, nowMs: number): void {
+  const u = d.unlaunchable
+  if (!u) return
+  if (!shouldNotifyWorkerModelFallback(workerModelFallbackNotified, workerModelFallbackKey(d), nowMs)) return
+  void notifyChannel(workerModelFallbackText(d)).catch(() => { /* notifyChannel logs internally */ })
+}
+
+/** Test hook: forget which fallbacks were already announced. */
+export function resetWorkerModelFallbackNotices(): void { workerModelFallbackNotified.clear() }
 
 /** Loud, rate-limited operator signal: the worker never became ready. */
 function alertWorkerStuck(ctx: WorkerCtx, paneTail: string): void {
