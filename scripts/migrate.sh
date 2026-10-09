@@ -13,6 +13,28 @@ NC='\033[0m'
 INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 [ -f "$INSTALL_DIR/.env" ] && WEB_PORT="$(grep -E '^WEB_PORT=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"')"
 API="http://localhost:${WEB_PORT:-3420}/api"
+# #1840: the dashboard API requires the install's Bearer token on every /api
+# call. Without it each import got 401, and two of the three calls threw the
+# answer away and printed a check mark anyway. "X-No-Auth: 1" keeps -H non-empty
+# when there is no token, so that case gets the same 401 (reported below), not
+# a curl syntax error.
+TOKEN_FILE="$INSTALL_DIR/store/.dashboard-token"
+AUTH_HEADER="X-No-Auth: 1"
+[ -r "$TOKEN_FILE" ] && AUTH_HEADER="Authorization: Bearer $(cat "$TOKEN_FILE")"
+
+# POST one memory; a check mark only on a 2xx, otherwise the HTTP code is named.
+# Never fatal under set -e: one refused file must not stop the rest.
+post_memory() {
+  local payload="$1" ok_label="$2" code
+  code="$(curl -s -o /dev/null -w '%{http_code}' -X POST "$API/memories" \
+    -H "Content-Type: application/json" -H "$AUTH_HEADER" \
+    --data-binary "$payload" 2>/dev/null)" || true
+  case "$code" in
+    2??) echo -e "  ${GREEN}✓${NC}$ok_label" ;;
+    *) echo -e "  ${ORANGE}!${NC} not migrated: the dashboard answered HTTP ${code:-000} (${API}/memories)" ;;
+  esac
+  return 0
+}
 
 MARVEEN_LANG="$(cat "${INSTALL_DIR}/.lang" 2>/dev/null || echo hu)"
 # shellcheck source=../install-lang.sh
@@ -75,6 +97,10 @@ discover_openclaw() {
   for cronfile in "$SOURCE_PATH"/.claude/scheduled_tasks* "$SOURCE_PATH"/cron-registry.json; do
     [ -f "$cronfile" ] && FOUND_CRON+=("$cronfile") && echo -e "  ${GREEN}✓${NC} $(basename "$cronfile") $(_t migrate.found_cron)"
   done
+  # #1840: the last `[ -f ... ] && ...` above is false whenever that file is
+  # missing, which made this function return 1 and set -e end the migration
+  # right after discovery, before any import.
+  return 0
 }
 
 discover_general() {
@@ -112,6 +138,7 @@ discover_general() {
       done
     fi
   done
+  return 0
 }
 
 case "$SOURCE_TYPE" in
@@ -142,20 +169,14 @@ echo ""
 SOUL_FILE=$(grep -i "soul\|personality" "$MEMORY_FILES" | head -1)
 if [ -n "$SOUL_FILE" ] && [ -f "$SOUL_FILE" ]; then
   echo -e "$(_t migrate.migrating_soul)"
-  curl -s -X POST "$API/memories" \
-    -H "Content-Type: application/json" \
-    -d "{\"agent_id\": \"$AGENT_ID\", \"content\": $(echo "Importált személyiség (SOUL.md): $(cat "$SOUL_FILE" | head -100)" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'), \"tier\": \"warm\", \"keywords\": \"személyiség, soul, import\"}" > /dev/null 2>&1
-  echo -e "  ${GREEN}✓${NC}$(_t migrate.migrated_soul)"
+  post_memory "{\"agent_id\": \"$AGENT_ID\", \"content\": $(echo "Importált személyiség (SOUL.md): $(cat "$SOUL_FILE" | head -100)" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'), \"category\": \"warm\", \"keywords\": \"személyiség, soul, import\"}" "$(_t migrate.migrated_soul)"
 fi
 
 # Process USER.md
 USER_FILE=$(grep -i "user\|profile" "$MEMORY_FILES" | head -1)
 if [ -n "$USER_FILE" ] && [ -f "$USER_FILE" ]; then
   echo -e "$(_t migrate.migrating_user)"
-  curl -s -X POST "$API/memories" \
-    -H "Content-Type: application/json" \
-    -d "{\"agent_id\": \"$AGENT_ID\", \"content\": $(cat "$USER_FILE" | head -200 | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'), \"tier\": \"warm\", \"keywords\": \"felhasználó, profil, import\"}" > /dev/null 2>&1
-  echo -e "  ${GREEN}✓${NC}$(_t migrate.migrated_user)"
+  post_memory "{\"agent_id\": \"$AGENT_ID\", \"content\": $(cat "$USER_FILE" | head -200 | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))'), \"category\": \"warm\", \"keywords\": \"felhasználó, profil, import\"}" "$(_t migrate.migrated_user)"
 fi
 
 # Process all memory files via the API with AI categorization
@@ -217,12 +238,19 @@ CHUNK_COUNT=$(python3 -c "import json; print(len(json.load(open('/tmp/marveen-mi
 echo -e "  ${BOLD}$CHUNK_COUNT${NC}$(_t migrate.chunks_prefix)"
 
 if [ "$CHUNK_COUNT" -gt 0 ]; then
-  curl -s -X POST "$API/memories/import" \
-    -H "Content-Type: application/json" \
+  curl -s -w '\n%{http_code}' -X POST "$API/memories/import" \
+    -H "Content-Type: application/json" -H "$AUTH_HEADER" \
     -d "{\"agent_id\": \"$AGENT_ID\", \"chunks\": $(cat /tmp/marveen-migrate-chunks.json)}" | python3 -c "
 import json, sys
-d = json.load(sys.stdin)
-if d.get('ok'):
+raw = sys.stdin.read().rsplit('\\n', 1)
+body, code = (raw[0], raw[1].strip()) if len(raw) == 2 else (raw[0], '000')
+try:
+    d = json.loads(body) if body.strip() else {}
+except Exception:
+    d = {}
+if not isinstance(d, dict):
+    d = {}
+if code.startswith('2') and d.get('ok'):
     stats = d.get('stats', {})
     print(f'  Imported: {d.get(\"imported\", 0)} memories')
     print(f'    Hot: {stats.get(\"hot\", 0)}')
@@ -230,8 +258,8 @@ if d.get('ok'):
     print(f'    Cold: {stats.get(\"cold\", 0)}')
     print(f'    Shared: {stats.get(\"shared\", 0)}')
 else:
-    print(f'  Error: {d.get(\"error\", \"Unknown\")}')
-"
+    print(f'  ! Chunks not migrated: the dashboard answered HTTP {code} ({d.get(\"error\", \"no details\")})')
+" || true
 fi
 
 # Step 4: Summary
