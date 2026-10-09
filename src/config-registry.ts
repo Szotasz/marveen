@@ -552,6 +552,15 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     requiresRestart: false,
   },
   {
+    key: 'SESSION_ALERTS_TO_MAIN_AGENT',
+    type: 'boolean',
+    default: '0',
+    description: 'Ha egy sub-agent munkamenete eszköz-engedélykérésen vár, a riasztás ne a riasztási csatornára (Telegram/Slack) menjen, hanem belső üzenetként a fő agentnek, aki dönt róla. A fő agent saját engedélykérése és minden leállás-riasztás (a fő agent leállt, csatornahiba) továbbra is a riasztási csatornára megy. Alapértelmezés: kikapcsolva (változatlan viselkedés). A módosítás a dashboard újraindításakor lép életbe.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
     key: 'NOTIFY_TELEGRAM',
     type: 'boolean',
     default: '1',

@@ -10,10 +10,10 @@ import { makeLazyBinResolver } from '../platform.js'
 import { WEB_PORT } from '../config.js'
 import { logger } from '../logger.js'
 import { mainRelaunchSucceeded } from '../auto-restart.js'
-import { MAIN_AGENT_ID, SERVICE_ID, BOT_NAME, CHANNEL_PROVIDER, PROJECT_ROOT, RESPAWN_ENABLED } from '../config.js'
+import { MAIN_AGENT_ID, SERVICE_ID, BOT_NAME, CHANNEL_PROVIDER, PROJECT_ROOT, RESPAWN_ENABLED, SESSION_ALERTS_TO_MAIN_AGENT } from '../config.js'
 import { launchableDistributionDefaultSync } from './default-model-guard.js'
 import { agentDir, listAgentNames, readAgentChannelProvider } from './agent-config.js'
-import { listKanbanCards } from '../db.js'
+import { listKanbanCards, createAgentMessage } from '../db.js'
 import {
   agentHasChannel,
   agentSessionName,
@@ -2008,6 +2008,35 @@ export function sendAlert(text: string): void {
   notifyChannel(text).catch(() => {})
 }
 
+// SESSIONALERT8937: a sub-agent parked on a tool-permission prompt is the main
+// agent's call. With SESSION_ALERTS_TO_MAIN_AGENT on, the alert is an in-process
+// message to the main agent (system sender, as delivery-turn-check does) and
+// never reaches the alert chat. The main agent's OWN prompt still goes to the
+// alert chat: a session parked on a prompt cannot read its inbox. A failed
+// insert falls back to the alert chat -- a lost permission alert leaves an agent
+// blocked with nobody told.
+export function sendSessionAlert(
+  isMainSession: boolean | undefined,
+  text: string,
+  deps: {
+    toMainAgent?: boolean
+    create?: (from: string, to: string, content: string) => unknown
+    alert?: (text: string) => void
+  } = {},
+): 'main-agent' | 'alert-chat' {
+  const toMainAgent = deps.toMainAgent ?? SESSION_ALERTS_TO_MAIN_AGENT
+  if (toMainAgent && !isMainSession) {
+    try {
+      (deps.create ?? createAgentMessage)('system', MAIN_AGENT_ID, text)
+      return 'main-agent'
+    } catch (err) {
+      logger.warn({ err: err instanceof Error ? err.message : String(err) }, 'Session alert to the main agent failed -- sending it to the alert chat instead')
+    }
+  }
+  (deps.alert ?? sendAlert)(text)
+  return 'alert-chat'
+}
+
 async function handleMarveenDown(): Promise<void> {
   const now = Date.now()
   const providerLabel = getMainAgentProvider()
@@ -2383,7 +2412,7 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
             // they had approved them. Same rule as the unrecognised trust dialog
             // above: no keystroke is neutral, so send none and say so, loudly.
             logger.warn({ session: t.session, agent: label }, 'Blocking "menu" is a tool-permission prompt -- a human decides, NO keystrokes sent')
-            sendAlert(`🔐 A(z) ${label} session egy engedélykérésen vár, és NEM nyomtam meg semmit: ott az Escape NEM-et jelentene. Döntsd el te: tmux attach -t ${t.session}`)
+            sendSessionAlert(t.isMarveen, `🔐 A(z) ${label} session egy engedélykérésen vár, és NEM nyomtam meg semmit: ott az Escape NEM-et jelentene. Döntsd el te: tmux attach -t ${t.session}`)
           } else {
             logger.warn({ session: t.session, agent: label }, 'Session parked in a blocking interactive menu -- sending Escape to recover')
             try {

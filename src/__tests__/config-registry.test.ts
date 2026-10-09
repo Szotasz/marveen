@@ -35,7 +35,7 @@ describe('config-registry', () => {
   // Opt-in operator switches consumed as boot-time consts in src/config.ts.
   // Default must stay '0' (config.ts resolves an unset key to false), and the
   // UI must flag the restart, since the value is read once at module load.
-  it.each(['SUBAGENT_INBOX_TEE', 'SUBAGENT_TELEGRAM_WAKE_ENABLED', 'VOICE_TRANSCRIBE_INBOUND'])(
+  it.each(['SUBAGENT_INBOX_TEE', 'SUBAGENT_TELEGRAM_WAKE_ENABLED', 'VOICE_TRANSCRIBE_INBOUND', 'SESSION_ALERTS_TO_MAIN_AGENT'])(
     'registers %s as an off-by-default boolean that requires a restart',
     (key) => {
       const def = getSettingDefinition(key)
@@ -55,7 +55,7 @@ describe('config-registry', () => {
   // The canonical '1' the Settings page writes must be a value the consumer
   // accepts. Pin the parser in src/config.ts: if it ever stops accepting '1',
   // a switch saved as on would silently stay off.
-  it.each(['SUBAGENT_INBOX_TEE', 'SUBAGENT_TELEGRAM_WAKE_ENABLED', 'VOICE_TRANSCRIBE_INBOUND'])(
+  it.each(['SUBAGENT_INBOX_TEE', 'SUBAGENT_TELEGRAM_WAKE_ENABLED', 'VOICE_TRANSCRIBE_INBOUND', 'SESSION_ALERTS_TO_MAIN_AGENT'])(
     'src/config.ts parses %s so that the saved "1" means on',
     (key) => {
       const code = readFileSync(join(process.cwd(), 'src', 'config.ts'), 'utf-8')
