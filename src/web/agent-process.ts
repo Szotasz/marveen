@@ -86,7 +86,7 @@ import { filterInheritableMcpServers, readInheritableMcpServerNames, logNotInher
 import { readEnvFile } from '../env.js'
 import { loadProfileTemplate, profileWantsThinChiefHandoff } from './profiles.js'
 import { resolveAgentSecurityProfile } from './agent-team.js'
-import { writeAgentSettingsFromProfile, ensureFleetRosterSection, ensureProjectRootInClaudeMd, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSystemDirectiveAuthSection, ensureAgentIdHeaderSection, ensureThinChiefHandoffSection, ensureMemorySearchLabelSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, ensureMessageCloseSection } from './agent-scaffold.js'
+import { enforceStrictPermissionMode, writeAgentSettingsFromProfile, ensureFleetRosterSection, ensureProjectRootInClaudeMd, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSystemDirectiveAuthSection, ensureAgentIdHeaderSection, ensureThinChiefHandoffSection, ensureMemorySearchLabelSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, ensureMessageCloseSection } from './agent-scaffold.js'
 import { schedulePluginUnlockAfterRespawn } from './channel-plugin-unlock.js'
 import { recordInjectedPrompt } from './injected-prompt-registry.js'
 import { getSecret } from './vault.js'
@@ -1063,6 +1063,17 @@ function provisionIsolatedConfigDir(
         // Deliberately loud: rewriting an unparseable own-settings file from
         // the shared one is exactly the silent-loss shape this block fixes.
         logger.warn({ err, name, path: ownSettingsPath }, 'isolated-config: unparseable own settings.json, rewriting from shared')
+      }
+    }
+    // #1837: the shared copy can carry the operator's permissions.defaultMode
+    // (bypassPermissions is a common operator setting), which would make a
+    // strict profile's allow-list inert. Pinned AFTER the own-settings merge so
+    // nothing above can bring the bypass back. The main agent has no profile.
+    if (name !== MAIN_AGENT_ID) {
+      let permissionMode: string | undefined
+      try { permissionMode = loadProfileTemplate(resolveAgentSecurityProfile(name))?.permissionMode } catch { permissionMode = undefined }
+      if (enforceStrictPermissionMode(settings, permissionMode)) {
+        logger.info({ name }, 'isolated-config: strict profile, permissions.defaultMode pinned to dontAsk (#1837)')
       }
     }
     // Atomic: the file's CONTENT now depends on reading its own previous
