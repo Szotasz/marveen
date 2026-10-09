@@ -380,11 +380,20 @@ function noKills(): KillOutcomes {
   return { killed: [], alreadyGone: [], permissionDenied: [], failed: [] }
 }
 
-/** Test seams of the reapers (35ea0375): the owner lookup, the own uid and the signal function. */
+/**
+ * Test seams of the reapers (35ea0375): the owner lookup, the own uid and the signal function. cf075d41 (review): also what the
+ * reapers read from the host, so a test can hand them a fixed snapshot instead of real processes and a tmux server: `psEww` is
+ * the `ps eww -e` text, `procs` the `ps -axww` rows, `panePids` the live pane leaders (`tmux list-panes -a`; an empty set is a
+ * failed query) and `tmuxServerPid` the server's pid (null is a failed query). Unset, each reads the host as before.
+ */
 export interface ReapSeams {
   ownerOf?: (pid: number) => number | null
   ownUid?: number | null
   kill?: KillFn
+  psEww?: () => string
+  procs?: () => ProcRow[]
+  panePids?: () => Set<number>
+  tmuxServerPid?: () => number | null
 }
 
 function pauseForFlush(): void {
@@ -582,7 +591,7 @@ export function reapChannelOrphans(
 
   // cf075d41: one `ps eww -e` snapshot, both sources narrowed to plugin
   // processes (see "Plugin-process markers" above).
-  const psEww = psEwwSnapshot(chanDir)
+  const psEww = opts.psEww ? opts.psEww() : psEwwSnapshot(chanDir)
   const botPid = readBotPid(chanDir)
   const fromBotPid = botPid !== null && isPluginPollerPid(psEww, botPid, pluginRootNeedle) ? botPid : null
   const fromEnvScan = parseStateDirPollerPids(psEww, envVar, chanDir, pluginRootNeedle)
@@ -609,7 +618,7 @@ export function reapChannelOrphans(
   // process snapshot we cannot tell the poller from the pane, and the wrong
   // guess costs the whole channel. An un-reaped orphan costs one 409-racing
   // sweep. Refuse rather than kill blind.
-  const procs = candidates.length > 0 ? snapshotProcs() : []
+  const procs = candidates.length > 0 ? (opts.procs ? opts.procs() : snapshotProcs()) : []
   if (candidates.length > 0 && procs.length === 0) {
     logger.warn({ provider, chanDir, candidates }, 'channel-poller-reap: ps snapshot unavailable, skipping reap (fail-safe)')
     return { reaped: [], source: { fromBotPid, fromEnvScan }, skippedLivePane: [], skippedOtherUid: [], skippedUnknownOwner: [], killOutcome: noKills(), skippedNotPlugin }
@@ -619,7 +628,9 @@ export function reapChannelOrphans(
   // always has at least one pane), not "nothing is live". Without it the
   // pane / pane-ancestor guards in selectReapablePollers have nothing to match
   // against, so refuse instead of relying on the runtime check alone.
-  const panePids = candidates.length > 0 ? livePanePids(opts.tmuxPath ?? 'tmux') : new Set<number>()
+  const panePids = candidates.length > 0
+    ? (opts.panePids ? opts.panePids() : livePanePids(opts.tmuxPath ?? 'tmux'))
+    : new Set<number>()
   if (candidates.length > 0 && panePids.size === 0) {
     logger.warn({ provider, chanDir, candidates },
       'channel-poller-reap: could not resolve live tmux panes, refusing to reap (fail-safe)')
@@ -648,7 +659,9 @@ export function reapChannelOrphans(
   // guard (the server is every pane's parent); this explicit check is the
   // independent second layer, and it covers the one path the selection lets
   // through: the server pid sitting in bot.pid with no resolved pane under it.
-  const serverPid = candidates.length > 0 ? tmuxServerPid(opts.tmuxPath ?? 'tmux') : null
+  const serverPid = candidates.length > 0
+    ? (opts.tmuxServerPid ? opts.tmuxServerPid() : tmuxServerPid(opts.tmuxPath ?? 'tmux'))
+    : null
   const serverQueryFailed = candidates.length > 0 && serverPid === null
   if (serverQueryFailed) {
     logger.warn({ provider, chanDir, candidates },
@@ -838,8 +851,8 @@ function killBunChildren(claudePid: number, uid: number | null, seams: ReapSeams
  */
 export function reapDetachedChannelClaudes(opts: { channelNeedle?: string; tmuxPath?: string } & ReapSeams = {}): number[] {
   const tmuxPath = opts.tmuxPath ?? 'tmux'
-  const procs = snapshotProcs()
-  const live = livePanePids(tmuxPath)
+  const procs = opts.procs ? opts.procs() : snapshotProcs()
+  const live = opts.panePids ? opts.panePids() : livePanePids(tmuxPath)
   // No live panes resolved (tmux query failed) -> refuse to reap: without the
   // live set we cannot tell orphans from the active session. Fail safe.
   if (live.size === 0) {

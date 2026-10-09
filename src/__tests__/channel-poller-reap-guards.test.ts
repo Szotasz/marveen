@@ -189,3 +189,79 @@ describe('cf075d41 reapDetachedChannelClaudes on real processes', () => {
     expect(alive(claude)).toBe(false)
   })
 })
+
+// ---------------------------------------------------------------------------
+// The seams (review of #1829): the same guards on a handed snapshot. No process is
+// started and no tmux is asked: `psEww`, `procs`, `panePids` and `tmuxServerPid`
+// stand for the host, and the kill seam records the signals against a fake process
+// table (a pid in it answers, a SIGTERM or SIGKILL ends it, any other pid is ESRCH).
+describe('cf075d41 seams: the reapers read a handed snapshot, not the host', () => {
+  const sAgent = join(tmp, 'seam-agent')
+  const sChan = channelStateDir('telegram', sAgent)
+  mkdirSync(sChan, { recursive: true })
+  const root = '/c/plugins/cache/x/telegram/0.0.7'
+  const POLLER = 3_900_001, STRANGER = 3_900_002, JOB = 3_900_003, PANE = 3_900_010, SERVER = 3_900_020
+  const psEww = () => [
+    `${POLLER} ?  S  0:00 bun server.ts TELEGRAM_STATE_DIR=${sChan} CLAUDE_PLUGIN_ROOT=${root}`,
+    `${STRANGER} ?  S  0:00 sleep 300 HOME=/h`,
+    `${JOB} ?  S  0:00 node build.js TELEGRAM_STATE_DIR=${sChan} HOME=/h`,
+  ].join('\n')
+  const procs = (): ProcRow[] => [
+    { pid: SERVER, ppid: 1, command: 'tmux new-session -d' },
+    { pid: PANE, ppid: SERVER, command: 'bash' },
+    { pid: POLLER, ppid: 1, command: 'bun server.ts' },
+    { pid: STRANGER, ppid: 1, command: 'sleep 300' },
+    { pid: JOB, ppid: 1, command: 'node build.js' },
+  ]
+  function fakeKill(pids: number[]) {
+    const live = new Set(pids)
+    const signalled: number[] = []
+    const kill = (pid: number, signal: NodeJS.Signals | 0) => {
+      if (!live.has(pid)) throw Object.assign(new Error('kill ESRCH'), { code: 'ESRCH' })
+      if (signal !== 0) { signalled.push(pid); live.delete(pid) }
+    }
+    return { signalled, kill }
+  }
+  const handed = (kill: (pid: number, signal: NodeJS.Signals | 0) => void) =>
+    ({ psEww, procs, panePids: () => new Set([PANE]), tmuxServerPid: () => SERVER, ownUid: 1000, ownerOf: () => 1000, kill })
+
+  it('(s1) the snapshot decides: the orphan plugin poller is signalled; the stale bot.pid and the inherited-env job are not', () => {
+    writeFileSync(join(sChan, 'bot.pid'), String(STRANGER))
+    const k = fakeKill([POLLER, STRANGER, JOB])
+    const r = reapChannelOrphans('telegram', sAgent, handed(k.kill))
+    expect(r.reaped).toEqual([POLLER])
+    expect([...r.skippedNotPlugin].sort()).toEqual([STRANGER, JOB].sort())
+    expect(k.signalled).toEqual([POLLER])
+    rmSync(join(sChan, 'bot.pid'), { force: true })
+  })
+
+  it('(s2) an empty pane list from the seam is a failed tmux query: nothing is signalled', () => {
+    const k = fakeKill([POLLER])
+    const r = reapChannelOrphans('telegram', sAgent, { ...handed(k.kill), panePids: () => new Set<number>() })
+    expect(r.reaped).toEqual([])
+    expect(k.signalled).toEqual([])
+  })
+
+  it('(s3) a null server pid from the seam is a failed tmux query: nothing is signalled', () => {
+    const k = fakeKill([POLLER])
+    const r = reapChannelOrphans('telegram', sAgent, { ...handed(k.kill), tmuxServerPid: () => null })
+    expect(r.reaped).toEqual([])
+    expect(k.signalled).toEqual([])
+  })
+
+  it('(s4) reapDetachedChannelClaudes: a detached claude above a live pane is spared, one with no pane under it is signalled', () => {
+    const needle = 'plugin:telegram@seam-cf075d41'
+    const ABOVE = 3_900_101, ITS_PANE = 3_900_102, ALONE = 3_900_103
+    const rows: ProcRow[] = [
+      { pid: ABOVE, ppid: 1, command: `claude --channels ${needle}` },
+      { pid: ITS_PANE, ppid: ABOVE, command: 'bash' },
+      { pid: ALONE, ppid: 1, command: `claude --channels ${needle}` },
+    ]
+    const k = fakeKill([ABOVE, ITS_PANE, ALONE])
+    const reaped = reapDetachedChannelClaudes({
+      channelNeedle: needle, procs: () => rows, panePids: () => new Set([ITS_PANE]), ownUid: 1000, ownerOf: () => 1000, kill: k.kill,
+    })
+    expect(reaped).toEqual([ALONE])
+    expect(k.signalled).toEqual([ALONE])
+  })
+})
