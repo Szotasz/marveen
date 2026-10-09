@@ -735,6 +735,33 @@ export function absolutizeFileRule(rule: string): string {
   return rule
 }
 
+// #1837 (opontop): a strict profile's allow-list is its whole value, but Claude
+// Code evaluates bypassPermissions BEFORE the allow-list, so a strict agent that
+// comes up in bypass mode can touch anything its deny-list does not name. The
+// mode can arrive from the operator's own ~/.claude/settings.json
+// (provisionIsolatedConfigDir copies it into the agent's isolated config dir),
+// and nothing pinned it. This pins permissions.defaultMode to 'default' for a
+// strict profile whenever the incoming value is absent, bypassPermissions or
+// acceptEdits; an operator-chosen 'default' or 'plan' is left alone (neither
+// defeats the allow-list). Applied in BOTH places a strict agent's mode can come
+// from: the project settings written here and the isolated user-level copy.
+// Returns whether it changed anything. Pure: unit-tested directly.
+export function enforceStrictPermissionMode(
+  settings: Record<string, unknown>,
+  permissionMode: string | undefined,
+): boolean {
+  if (permissionMode !== 'strict') return false
+  const raw = settings.permissions
+  const perms = (raw && typeof raw === 'object' && !Array.isArray(raw)
+    ? raw
+    : (settings.permissions = {})) as Record<string, unknown>
+  const current = perms.defaultMode
+  const defeatsAllowList = current === undefined || current === 'bypassPermissions' || current === 'acceptEdits'
+  if (!defeatsAllowList) return false
+  perms.defaultMode = 'default'
+  return true
+}
+
 export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemplate): void {
   const agentRoot = agentDir(name)
   const settingsDir = join(agentRoot, '.claude')
@@ -793,6 +820,7 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
     deny: denyList,
     ...(extraDirs.length ? { additionalDirectories: extraDirs } : {}),
   }
+  enforceStrictPermissionMode(existing, profile.permissionMode)
   // Governance hard-gates: every sub-agent (NOT the main agent) gets PreToolUse
   // hooks. Re-applied on every spawn (this function regenerates settings.json),
   // so they survive respawns. (a) email-send block -- outbound email routes
