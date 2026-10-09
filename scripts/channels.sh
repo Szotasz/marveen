@@ -505,6 +505,12 @@ fi
 CHANNELS_EXITS_LOG="${CHANNELS_EXITS_LOG:-$INSTALL_DIR/store/channels-exits.log}"
 record_channels_exit() {
   _rc="$1"
+  # LAUNCHGATE1008: a gate refusal from a checkout that is not an install (no store/)
+  # has already said why on stderr; the exit row would only add two failure lines.
+  # Every other exit keeps the loud "exit-log write FAILED" below.
+  if [ -n "${LAUNCHGATE_REFUSED:-}" ] && [ ! -d "$(dirname "$CHANNELS_EXITS_LOG")" ]; then
+    return 0
+  fi
   echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh exit code=${_rc} line=${CHEXIT_LAST_LINE:-?} cmd=[${CHEXIT_LAST_CMD:-?}] pid=$$" >> "$CHANNELS_EXITS_LOG" 2>/dev/null \
     || echo "channels.sh: exit-log write FAILED (code=${_rc} line=${CHEXIT_LAST_LINE:-?} target=$CHANNELS_EXITS_LOG)" >&2
 }
@@ -543,6 +549,39 @@ trap 'record_channels_exit "$?"' EXIT
 if [ "${1:-}" = "--exit-probe" ]; then
   exit "${2:-0}"
 fi
+
+# LAUNCHGATE1008: the launch boundary. Every seam above exits before it gets here,
+# and nothing above starts tmux, claude or a kill. From the next line on, this
+# script LAUNCHES the main channel session. Two shapes used to fall through to a
+# real launch:
+#   - an argument this version does not know (a test calling a seam that only a
+#     newer channels.sh has): it launched a second session on the live tmux
+#     server, i.e. a second getUpdates poller on the owner's bot -> 409, the live
+#     channel deaf until a restart;
+#   - a checkout without .env (a worktree, a fixture): it launched under the
+#     guessed name "marveen-channels" with the shared channel state.
+# Both stop here, loudly, with nothing started. No argument and a lone `restart`
+# (the documented manual restart in the installers' hint) launch as before; any
+# extra argument is refused too ($# is checked, not only $1). A .env without
+# MAIN_AGENT_ID keeps the old "marveen" default (older installs).
+# Behaviour changes, on purpose:
+#   - an env-only setup (MAIN_AGENT_ID exported, no .env file) no longer launches;
+#   - an install whose .env is missing now exits 3 on every start, so a supervisor
+#     restarts it at its own cadence (systemd up to its start limit, launchd about
+#     every 30 s) instead of running a guessed session.
+# A new test seam must be added ABOVE this gate: below it, it gets exit 2.
+case "$#:${1:-}" in
+  "0:"|"1:restart") : ;;
+  *) printf 'channels.sh: unknown argument(s) %q -- nothing started (LAUNCHGATE1008)\n' "$*" >&2
+     LAUNCHGATE_REFUSED=1
+     exit 2 ;;
+esac
+if [ ! -f "$INSTALL_DIR/.env" ]; then
+  echo "channels.sh: no $INSTALL_DIR/.env -- this checkout is not an install, nothing started (LAUNCHGATE1008)" >&2
+  LAUNCHGATE_REFUSED=1
+  exit 3
+fi
+# LAUNCHGATE1008-END: everything below launches.
 
 # Self-healing guard: ensure PLUGIN_ID is enabled in the PROJECT settings.json
 # before launch. A PR review-reset or branch-switch that reverts
