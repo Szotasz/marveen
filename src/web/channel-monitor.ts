@@ -58,7 +58,7 @@ import {
 import { MAIN_CHANNELS_SESSION, MAIN_CHANNELS_PLIST } from './main-agent.js'
 import { recordChannelEvent } from './channel-event-log.js'
 import { notifyChannel } from '../notify.js'
-import { sendRoutineAlert } from './routine-alert.js'
+import { sendRoutineAlert, decideRoutineAlert, routineAlertSuffix, ROUTINE_ALERT_COOLDOWN_MS, type RoutineAlertState } from './routine-alert.js'
 import { getProvider, channelStateDir, channelStateDirEnvVar, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
 import { attemptChannelMcpReconnect } from './channel-mcp-reconnect.js'
 import { readLastIngestionTimestampAcross, mainTranscriptDirs } from './inbound-probe.js'
@@ -2008,32 +2008,51 @@ export function sendAlert(text: string): void {
   notifyChannel(text).catch(() => {})
 }
 
-// SESSIONALERT8937: a sub-agent parked on a tool-permission prompt is the main
+// SESSIONALERT8937: a sub-agent parked on a session dialog (tool-permission
+// prompt, model-consent dialog, unrecognised folder-trust dialog) is the main
 // agent's call. With SESSION_ALERTS_TO_MAIN_AGENT on, the alert is an in-process
 // message to the main agent (system sender, as delivery-turn-check does) and
-// never reaches the alert chat. The main agent's OWN prompt still goes to the
-// alert chat: a session parked on a prompt cannot read its inbox. A failed
-// insert falls back to the alert chat -- a lost permission alert leaves an agent
-// blocked with nobody told.
+// never reaches the alert chat. The main agent's OWN session still goes to the
+// alert chat: a session parked on a dialog cannot read its inbox. A failed
+// insert falls back to the alert chat -- a lost alert leaves an agent blocked
+// with nobody told. A routine alert (routineKey) keeps its 30-minute de-dup on
+// either route: sendRoutineAlert on the alert chat, the same rule here.
+const sessionAlertStates = new Map<string, RoutineAlertState>()
 export function sendSessionAlert(
   isMainSession: boolean | undefined,
   text: string,
   deps: {
+    routineKey?: string
     toMainAgent?: boolean
     create?: (from: string, to: string, content: string) => unknown
     alert?: (text: string) => void
+    routine?: (key: string, text: string) => unknown
+    now?: number
   } = {},
-): 'main-agent' | 'alert-chat' {
+): 'main-agent' | 'alert-chat' | 'suppressed' {
   const toMainAgent = deps.toMainAgent ?? SESSION_ALERTS_TO_MAIN_AGENT
   if (toMainAgent && !isMainSession) {
+    let body = text
+    if (deps.routineKey) {
+      const now = deps.now ?? Date.now()
+      const prev = sessionAlertStates.get(deps.routineKey)
+      const decision = decideRoutineAlert(prev, now, ROUTINE_ALERT_COOLDOWN_MS)
+      if (!decision.send) {
+        if (prev) prev.suppressed += 1
+        return 'suppressed'
+      }
+      sessionAlertStates.set(deps.routineKey, { lastSentAt: now, suppressed: 0 })
+      body = text + routineAlertSuffix(decision.repeats, ROUTINE_ALERT_COOLDOWN_MS)
+    }
     try {
-      (deps.create ?? createAgentMessage)('system', MAIN_AGENT_ID, text)
+      (deps.create ?? createAgentMessage)('system', MAIN_AGENT_ID, body)
       return 'main-agent'
     } catch (err) {
       logger.warn({ err: err instanceof Error ? err.message : String(err) }, 'Session alert to the main agent failed -- sending it to the alert chat instead')
     }
   }
-  (deps.alert ?? sendAlert)(text)
+  if (deps.routineKey) (deps.routine ?? sendRoutineAlert)(deps.routineKey, text)
+  else (deps.alert ?? sendAlert)(text)
   return 'alert-chat'
 }
 
@@ -2386,7 +2405,7 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
             // Enter confirms whatever is highlighted, which in 2.1.252 is the
             // exit). A human picks; we only say so, loudly.
             logger.warn({ session: t.session, agent: label }, 'first-run trust dialog in an unrecognised shape -- parked, NO keystrokes sent')
-            sendAlert(`🛑 A(z) ${label} session a mappa-megbízhatósági dialóguson parkol, de a panel alakját nem ismerem fel, ezért NEM nyomtam meg semmit. Se az Enter, se az Escape nem semleges rajta (az Escape a "No, exit"). Válassz kézzel: tmux attach -t ${t.session}, majd a "Yes, I trust this folder" sort jelöld ki és Enter.`)
+            sendSessionAlert(t.isMarveen, `🛑 A(z) ${label} session a mappa-megbízhatósági dialóguson parkol, de a panel alakját nem ismerem fel, ezért NEM nyomtam meg semmit. Se az Enter, se az Escape nem semleges rajta (az Escape a "No, exit"). Válassz kézzel: tmux attach -t ${t.session}, majd a "Yes, I trust this folder" sort jelöld ki és Enter.`)
           } else {
             sendRoutineAlert(`firstrun-gate:${label}`, `🧭 A(z) ${label} session a Claude Code első-indítási képernyőjén parkolt (${firstRunGate}); automatikusan továbbléptettem. A várakozó ütemezett feladatok a következő körben kézbesítődnek.`)
           }
@@ -2403,7 +2422,7 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
           if (paneNow != null && detectsModelConsentDialog(paneNow)) {
             logger.warn({ session: t.session, agent: label }, 'Blocking "menu" is the model usage-credit consent dialog -- answering it safely instead of Escape')
             await dismissModelConsentDialogIfPresent(t.session)
-            sendRoutineAlert(`model-consent:${label}`, `🎛️ A(z) ${label} session a modell-hozzájárulás dialóguson parkolt; az 1-es opcióval (a beállított modell megtartása) továbbléptettem. Modellváltás NEM történt.`)
+            sendSessionAlert(t.isMarveen, `🎛️ A(z) ${label} session a modell-hozzájárulás dialóguson parkolt; az 1-es opcióval (a beállított modell megtartása) továbbléptettem. Modellváltás NEM történt.`, { routineKey: `model-consent:${label}` })
           } else if (paneNow != null && detectsPermissionDialog(paneNow)) {
             // PERMDENY905: a tool-permission prompt also says "Esc to cancel",
             // so detectsBlockingMenu matches it -- but Escape there is NO, not a

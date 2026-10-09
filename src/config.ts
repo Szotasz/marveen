@@ -481,7 +481,8 @@ export const SUBAGENT_INBOX_TEE =
   ['1', 'true', 'yes', 'on'].includes((cfg('SUBAGENT_INBOX_TEE') ?? '').trim().toLowerCase())
 
 // Sub-agent session alerts to the main agent (opt-in, DEFAULT OFF). A sub-agent
-// parked on a tool-permission prompt is the main agent's call: with
+// parked on a session dialog (tool-permission prompt, model consent, an
+// unrecognised folder-trust dialog) is the main agent's call: with
 // SESSION_ALERTS_TO_MAIN_AGENT=1 that alert becomes an in-process message to the
 // main agent instead of an alert-chat (Telegram/Slack) notice. The main agent's
 // own prompt and every outage alert keep the alert chat.
