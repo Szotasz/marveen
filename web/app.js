@@ -15675,6 +15675,11 @@ const TU_MODEL_PRICING = {
   'claude-sonnet-4-5':   { in: 3.0,   out: 15.0,  cw: 3.75,  cr: 0.30 },
   'claude-fable-5':      { in: 10.0,  out: 50.0,  cw: 12.50, cr: 1.00 },
   'claude-mythos-5':     { in: 10.0,  out: 50.0,  cw: 12.50, cr: 1.00 },
+  // Haiku 5.5, from the official pricing page (2026-10-08): prompts up to 100k
+  // tokens 0.10 / 0.50 (5m cache write 0.125, hit 0.01); prompts over 100k
+  // tokens 0.50 / 2.50. This table holds one price per model, so the <=100k
+  // tier is used and spend on >100k prompts is understated.
+  'claude-haiku-5-5':    { in: 0.10,  out: 0.50,  cw: 0.125, cr: 0.01 },
   'claude-haiku-4-5':    { in: 1.0,   out: 5.0,   cw: 1.25,  cr: 0.10 },
   default:               { in: 3.0,   out: 15.0,  cw: 3.75,  cr: 0.30 },
 }
