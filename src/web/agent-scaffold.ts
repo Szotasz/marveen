@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, readdirSync, statSync, rmSync, watchFile, unwatchFile } from 'node:fs'
 import { readRemovedDefaultTasks } from './scheduled-tasks-io.js'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { homedir } from 'node:os'
 import { PROJECT_ROOT, OWNER_NAME, MAIN_AGENT_ID, HEARTBEAT_AGENT_ID, BOT_NAME, CHANNEL_PROVIDER, WEB_PORT, OWNER_DRIVE_FOLDER, APP_TZ, DASHBOARD_PUBLIC_URL, AGENT_API_ORIGIN, STORE_DIR } from '../config.js'
 import { channelStateDir } from '../channel-provider.js'
@@ -63,7 +63,7 @@ export const HOOK_NODE_BIN = process.execPath
 // space -- exit 127, silently non-enforcing, the exact failure this file
 // exists to close. A single builder also keeps the injectors and every
 // wired-already comparison byte-identical, so they cannot drift.
-export function hookCommand(scriptPath: string): string {
+export function hookCommand(scriptPath: string, args: readonly string[] = [], hookTimeoutSec = 10): string {
   // The interpreter is checked before it is used, and a missing one BLOCKS.
   //
   // HOOK_NODE_BIN is process.execPath, which on a brew install is the
@@ -85,7 +85,8 @@ export function hookCommand(scriptPath: string): string {
   // the ensure* migrations, which rewrite the path. A blocking gate with no
   // stated way out is worse than a loud error.
   const miss = `governance-kapu: a hook interpretere nem talalhato (${HOOK_NODE_BIN}). A kapu ezert BLOKKOL. Javitas: inditsd ujra a dashboardot, az ujrairja a hook-utakat.`
-  return `test -x "${HOOK_NODE_BIN}" || { echo "${miss}" >&2; exit 2; }; "${HOOK_NODE_BIN}" "${scriptPath}"`
+  const invocation = gateInvocation(`"${HOOK_NODE_BIN}"`, scriptPath, args)
+  return `test -x "${HOOK_NODE_BIN}" || { echo "${miss}" >&2; exit 2; }; ${failClosedGateRun(invocation, basename(scriptPath), hookTimeoutSec)}`
 }
 
 // The python twin of hookCommand(). The outgoing-copy-gate is a .py script, so
@@ -97,9 +98,53 @@ export function hookCommand(scriptPath: string): string {
 // is the 127 exit, because Claude Code treats 127 as NON-blocking and lets the
 // tool call through -- a gate that silently stops enforcing. So the interpreter
 // is probed first and a miss exits 2, which blocks.
-export function pythonHookCommand(scriptPath: string): string {
+export function pythonHookCommand(scriptPath: string, args: readonly string[] = [], hookTimeoutSec = 10): string {
   const miss = 'governance-kapu: a hook interpretere nem talalhato (python3 nincs a PATH-on). A kapu ezert BLOKKOL. Javitas: telepitsd a python3-at, vagy inditsd ujra a dashboardot.'
-  return `command -v python3 >/dev/null 2>&1 || { echo "${miss}" >&2; exit 2; }; python3 "${scriptPath}"`
+  const invocation = gateInvocation('python3', scriptPath, args)
+  return `command -v python3 >/dev/null 2>&1 || { echo "${miss}" >&2; exit 2; }; ${failClosedGateRun(invocation, basename(scriptPath), hookTimeoutSec)}`
+}
+
+// Card 723bbb70: the gate command's exit status is made FAIL-CLOSED here, in one place for every gate
+// the builders above assemble. Claude Code blocks a tool call only on exit 2 (or a deny on stdout with
+// exit 0); any other status is a NON-blocking error and the call goes through. A gate that is itself
+// broken therefore let everything pass: a SyntaxError in the gate file or in one of its imports exits 1
+// in both node and python, a missing script exits 1 (2 for python3), a signal exits 128+n (measured on
+// the eight security hooks, af12a1d3 73814: a syntax error in the gate FILE gave rc 1 on every one).
+// The tail keeps 0 and 2 as they are and turns every other status into 2, with the reason on stderr
+// after whatever the interpreter itself printed; the gate's stdout (a deny JSON on exit 0) is untouched.
+//
+// The deadline: where the host has coreutils `timeout`, the gate runs under it, two seconds inside the
+// hook's own timeout, so a hung gate ends here with 124 (or 137 after the one-second kill grace) and
+// blocks, instead of being cut off by Claude Code's timeout, whose outcome this wrapper does not
+// control. Without `timeout` (a stock macOS) the gate runs as before and only that one case stays with
+// Claude Code. The `test -x` / `command -v` interpreter probe before it is unchanged and still blocks
+// with its own message.
+export const GATE_FAIL_CLOSED_TAG = 'governance-kapu (fail-closed)'
+
+/** The gate's deadline inside a hook whose timeout is `hookTimeoutSec`: two seconds earlier, at least one. */
+export function gateDeadlineSec(hookTimeoutSec: number): number {
+  return Math.max(1, Math.floor(hookTimeoutSec) - 2)
+}
+
+// Extra arguments ride inside the invocation, never after the whole command: appended after the
+// fail-closed tail they would land on `exit` instead of the gate (the email gate's thread-reply flag).
+// Only plain flag characters are accepted, so nothing needs shell quoting.
+function gateInvocation(interpreter: string, scriptPath: string, args: readonly string[]): string {
+  for (const a of args) {
+    if (!/^[A-Za-z0-9_=.:-]+$/.test(a)) throw new Error(`hook argument needs no quoting, got: ${a}`)
+  }
+  return [interpreter, `"${scriptPath}"`, ...args].join(' ')
+}
+
+/**
+ * The run-and-map tail of a gate command (exported for tests and for the main agent's hand-written
+ * project settings, which carry the same shape around a $CLAUDE_PROJECT_DIR path).
+ */
+export function failClosedGateRun(invocation: string, label: string, hookTimeoutSec: number): string {
+  if (!/^[A-Za-z0-9_.-]+$/.test(label)) throw new Error(`gate label must be a plain file name, got: ${label}`)
+  const t = gateDeadlineSec(hookTimeoutSec)
+  const fail = `${GATE_FAIL_CLOSED_TAG}: ${label}: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.`
+  return `if command -v timeout >/dev/null 2>&1; then timeout -k 1 ${t} ${invocation}; else ${invocation}; fi; rc=$?; [ "$rc" = 0 ] || [ "$rc" = 2 ] || { echo "${fail}" >&2; exit 2; }; exit "$rc"`
 }
 
 // Wired-already predicate for the ensure* migrations: is `command` present in
@@ -882,7 +927,7 @@ export function injectEmailSendGate(existing: Record<string, unknown>, threadRep
   // in the same regenerated-on-every-spawn settings.json as the gate itself:
   // revoking the capability removes the flag at the next spawn, and a manual
   // settings edit can neither grant nor keep it.
-  const command = threadReply ? `${base} ${EMAIL_THREAD_REPLY_FLAG}` : base
+  const command = threadReply ? hookCommand(join(PROJECT_ROOT, 'scripts', 'email-send-gate.mjs'), [EMAIL_THREAD_REPLY_FLAG]) : base
   const entry = {
     matcher: EMAIL_GATE_MATCHER,
     hooks: [{ type: 'command', command, timeout: 10 }],
@@ -1755,7 +1800,9 @@ export function ensureGovernanceGateCommands(name: string, profile?: ProfileTemp
   // match a qualified MCP tool name. The second one is why the wiring check
   // alone is not enough -- it would report the gate healthy forever.
   const threadReply = hasThreadReplyCapability(name, readAgentCapabilities(name))
-  const emailCmdExpected = threadReply ? `${emailCmd} ${EMAIL_THREAD_REPLY_FLAG}` : emailCmd
+  const emailCmdExpected = threadReply
+    ? hookCommand(join(PROJECT_ROOT, 'scripts', 'email-send-gate.mjs'), [EMAIL_THREAD_REPLY_FLAG])
+    : emailCmd
   const needEmail = agentGetsEmailGate(name)
     && (!hookCommandWired(ptuJson, emailCmdExpected)
       || emailGateMatcherStale(ptu)
