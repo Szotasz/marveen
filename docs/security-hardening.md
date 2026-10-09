@@ -274,3 +274,64 @@ names and counts only; the payload itself goes to the log.
 `envelope_attempted` in the log records which shape the hook tried. It says
 "attempted", never "succeeded": the hook cannot observe the harness's decision,
 and a field that claimed success would be the most misleading line in the file.
+
+# Email approvals consumed on the send path
+
+At `email_send` level 2 an approval authorizes ONE letter: `content_hash` pins
+it to the exact envelope and `consumed_at` makes it one-shot. The gate
+(`scripts/hooks/email-approval-gate.py`) flips `consumed_at` itself, but only
+for a send it can read in the command text (an MCP mail tool, `send.py --to`,
+an inline mailer call). A tool that mails through a script on another host,
+for example `ssh <host> 'tsx send-letter.mjs'`, is invisible to it, so its
+approval stayed unconsumed and could authorize a second send.
+
+Such a tool consumes on its own path, right BEFORE the letter goes out, and
+sends only on a yes:
+
+```bash
+python3 scripts/approval-consume.py --id <approval id> --content-hash <anchor> \
+  --consumer <tool name> --message-id '<id@your.domain>' || exit 1   # 0 = send now
+```
+
+`POST /api/approvals/<id>/consume` is one conditional write (approved,
+`email_send`, unconsumed, the same anchor, inside `EMAIL_APPROVAL_WINDOW_S`,
+1800 s like the gate). Of two attempts exactly one gets 200; the other gets
+409 with a reason (`already_consumed`, `not_approved`, `hash_mismatch`,
+`expired`, `wrong_category`). The row records the consumer and the Message-Id
+the tool generated up front (`consumed_by`, `consumed_ref`), and every call on
+an existing approval, refused ones included, leaves a row in `approval_events`
+(an unknown id is a 404 and leaves none). The gate and the
+endpoint read the same `consumed_at IS NULL`, so a letter consumed by one path
+is refused by the other.
+
+A 409 means: do not send, and check the sent mailbox before deciding anything,
+because the earlier attempt may already have gone out.
+
+## SMS approvals (external_message)
+
+An `external_message` approval authorizes ONE SMS through
+`scripts/sms/seeme-send.py`. The script used to read the approval only
+(approved, the right category, the recipient's number in the description), so
+one approved row let any number of messages out. It now consumes the approval
+on the same endpoint right before the gateway call, and calls the gateway only
+on a yes:
+
+```bash
+python3 scripts/approval-consume.py --category external_message --id <approval id> \
+  --consumer seeme-send --ref <gateway reference> || exit 1   # 0 = send now
+```
+
+An SMS approval has no content anchor and no Message-Id: its recipient is
+pinned by the approval text, which the sender checks before it consumes. `ref`
+(1-120 printable characters) is the reference the gateway gets, recorded as
+`consumed_ref`. The category must match exactly in both directions, so a letter
+approval never pays for an SMS and an SMS approval never pays for a letter. The
+window is the letter's (`EMAIL_APPROVAL_WINDOW_S`, 1800 s from the approval):
+the sender runs right after the approval, and an old, forgotten approval should
+not send to an outside party later.
+
+The sender consumes after its credentials load (a missing key does not burn an
+approval) and before the gateway call. A failure after the consume, a gateway
+error or an ambiguous network error, has used the approval: a new send needs a
+new approval, because in the ambiguous case the message may have gone out. The
+dry run consumes nothing, and an internal number needs no approval at all.

@@ -3,6 +3,7 @@ import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { PROJECT_ROOT, MAIN_AGENT_ID, TELEGRAM_BOT_TOKEN } from '../../config.js'
 import {
+  consumeApproval,
   createApproval, getApproval, resolveApproval, listApprovals, expireTimedOutApprovals,
   createAgentMessage, setApprovalTelegramMessageId,
   type Approval,
@@ -51,6 +52,55 @@ export function computeTimeoutAt(category: string, timeoutSeconds: unknown, nowM
   const catMinutes = readCategoryTimeoutMinutes(category)
   if (catMinutes != null && catMinutes > 0) return now + catMinutes * 60
   return now + DEFAULT_TIMEOUT_MINUTES * 60
+}
+
+// f2c5edb0: the window inside which an approved letter (and since db121902 an
+// approved SMS: card decision D1, one bound for both) may still be consumed,
+// counted from resolved_at. The SAME variable and default as the gate
+// (EMAIL_APPROVAL_WINDOW_S, 1800 s in scripts/hooks/email-approval-gate.py), so
+// the two consume paths agree on when an approval has gone stale.
+// Strict parse (db121902 D2): plain ASCII digits only, surrounding blanks allowed
+// as the gate's int() allows them. parseInt read "1e3" as 1 s and "60s" as 60;
+// anything that is not a positive safe integer now falls back to the default.
+export function approvalWindowSeconds(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = (env.EMAIL_APPROVAL_WINDOW_S ?? '').trim()
+  if (!/^[0-9]+$/.test(raw)) return 1800
+  const v = Number(raw)
+  return Number.isSafeInteger(v) && v > 0 ? v : 1800
+}
+
+// The consumer names the sending tool in the audit trail. Printable only (no
+// control characters, checked by code point so the source carries no escape),
+// 1-120 characters after trimming.
+export function isConsumerName(v: unknown): v is string {
+  if (typeof v !== 'string') return false
+  const t = v.trim()
+  if (t.length < 1 || t.length > 120) return false
+  for (let i = 0; i < t.length; i++) {
+    const c = t.charCodeAt(i)
+    if (c < 32 || c === 127) return false
+  }
+  return true
+}
+
+// One RFC 5322 msg-id, angle brackets included: the sender generates it BEFORE
+// the send and hands the same value to its mailer, so the approval row names the
+// letter that used it.
+export function isMessageId(v: unknown): v is string {
+  return typeof v === 'string' && v.length <= 250 && /^<[^<>\s@]+@[^<>\s@]+>$/.test(v)
+}
+
+// db121902: the reference an SMS sender hands its gateway (seeme-send.py
+// --reference), recorded as consumed_ref so the approval row names the message
+// that used it. Stored exactly as sent, so it is checked as is: 1-120
+// printable characters (by code point, as above) and no surrounding blanks.
+export function isSendRef(v: unknown): v is string {
+  if (typeof v !== 'string' || v.length < 1 || v.length > 120 || v.trim() !== v) return false
+  for (let i = 0; i < v.length; i++) {
+    const c = v.charCodeAt(i)
+    if (c < 32 || c === 127) return false
+  }
+  return true
 }
 
 // Owner-facing Telegram text. Pure + exported for tests. Plain text (no
@@ -225,6 +275,85 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
 
     const items = listApprovals({ agent_id, category, status, limit })
     json(res, items)
+    return true
+  }
+
+  // POST /api/approvals/:id/consume -- f2c5edb0: one-shot consumption on the
+  // SEND path. A sender the gate cannot see (a script that mails from another
+  // host) calls this right BEFORE the letter goes out and sends only on 200.
+  // 409 means do NOT send: the approval is used, unapproved, for another letter,
+  // or stale -- and a second attempt on a used approval is the double send this
+  // exists to stop. db121902: an SMS approval (category external_message) is
+  // consumed here too, by scripts/sms/seeme-send.py right before the gateway
+  // call: no content anchor and no Message-Id (the recipient is pinned by the
+  // approval text, which the sender checks), the gateway reference as `ref`, and
+  // the same window as a letter.
+  const consumeMatch = path.match(/^\/api\/approvals\/([^/]+)\/consume$/)
+  if (consumeMatch && method === 'POST') {
+    let body: { category?: unknown; content_hash?: unknown; consumer?: unknown; message_id?: unknown; ref?: unknown }
+    try {
+      body = JSON.parse((await readBody(req)).toString())
+    } catch {
+      json(res, { error: 'Invalid JSON' }, 400)
+      return true
+    }
+    const { category = 'email_send', content_hash, consumer, message_id, ref } = body
+    if (category !== 'email_send' && category !== 'external_message') {
+      json(res, { error: "category, if given, is 'email_send' (the default) or 'external_message'" }, 400)
+      return true
+    }
+    let anchor: string | null = null
+    if (category === 'email_send') {
+      if (typeof content_hash !== 'string' || !/^[0-9a-f]{64}$/.test(content_hash)) {
+        json(res, { error: 'content_hash must be the 64-char lowercase sha256 hex anchor of the letter being sent' }, 400)
+        return true
+      }
+      anchor = content_hash
+      if (ref !== undefined && ref !== null) {
+        json(res, { error: 'ref belongs to external_message; a letter names itself with message_id' }, 400)
+        return true
+      }
+    } else if ((content_hash !== undefined && content_hash !== null) || (message_id !== undefined && message_id !== null)) {
+      json(res, { error: 'an external_message approval has no content anchor and no Message-Id: send neither, name the message with ref' }, 400)
+      return true
+    }
+    if (!isConsumerName(consumer)) {
+      json(res, { error: 'consumer is required: 1-120 printable characters naming the sending tool' }, 400)
+      return true
+    }
+    if (message_id !== undefined && message_id !== null && !isMessageId(message_id)) {
+      json(res, { error: 'message_id, if given, must be one RFC 5322 id like <local@domain> (max 250 chars)' }, 400)
+      return true
+    }
+    if (ref !== undefined && ref !== null && !isSendRef(ref)) {
+      json(res, { error: 'ref, if given, must be 1-120 printable characters without surrounding blanks' }, 400)
+      return true
+    }
+    const sentRef = typeof message_id === 'string' ? message_id : typeof ref === 'string' ? ref : null
+    const result = consumeApproval({
+      id: consumeMatch[1],
+      category,
+      contentHash: anchor,
+      consumer: consumer.trim(),
+      messageId: sentRef,
+      windowSeconds: approvalWindowSeconds(),
+    })
+    if (result.ok) {
+      logger.info({ id: consumeMatch[1], category, consumer: consumer.trim(), ref: sentRef }, 'Approval consumed by the send path')
+      json(res, { ok: true, approval: result.approval })
+      return true
+    }
+    if (result.reason === 'not_found') {
+      json(res, { ok: false, reason: 'not_found' }, 404)
+      return true
+    }
+    const a = result.approval
+    logger.warn({ id: consumeMatch[1], category, consumer: consumer.trim(), reason: result.reason }, 'Approval consume refused')
+    json(res, {
+      ok: false,
+      reason: result.reason,
+      approval: a ? { id: a.id, status: a.status, consumed_at: a.consumed_at, consumed_by: a.consumed_by, consumed_ref: a.consumed_ref } : null,
+    }, 409)
     return true
   }
 

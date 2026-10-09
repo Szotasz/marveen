@@ -1350,6 +1350,33 @@ export function initDatabase(dbPathOverride?: string): void {
   try { db.exec('ALTER TABLE approvals ADD COLUMN content_hash TEXT') } catch { /* already exists */ }
   try { db.exec('ALTER TABLE approvals ADD COLUMN consumed_at INTEGER') } catch { /* already exists */ }
   db.exec(`CREATE INDEX IF NOT EXISTS idx_approvals_hash ON approvals(content_hash)`)
+  // f2c5edb0: the gate only sees a send it can read in the command text, so a
+  // letter sent by a script (ssh + a mailer run on another host) never flipped
+  // consumed_at and one approved row could authorize a second send. Such a
+  // sender now consumes on its own path (POST /api/approvals/:id/consume)
+  // BEFORE the letter goes out. consumed_by names the consumer, consumed_ref
+  // the Message-Id the sender generated up front, so the row says which letter
+  // used it. Rows consumed by the gate leave both NULL.
+  try { db.exec('ALTER TABLE approvals ADD COLUMN consumed_by TEXT') } catch { /* already exists */ }
+  try { db.exec('ALTER TABLE approvals ADD COLUMN consumed_ref TEXT') } catch { /* already exists */ }
+  // Every consume call on an EXISTING approval leaves a row here, the refused
+  // ones too: a second send attempt on a used approval is exactly the event
+  // worth seeing afterwards. An unknown id (404) leaves none, so every row
+  // names a real approval.
+  // consumed_backfill is for a one-off data fix of rows a past send never
+  // consumed; it is written by an operator script, never by the API.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS approval_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      approval_id TEXT NOT NULL,
+      event TEXT NOT NULL CHECK(event IN ('consumed','consume_refused','consumed_backfill')),
+      reason TEXT,
+      actor TEXT,
+      ref TEXT,
+      created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
+    )
+  `)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_approval_events_approval ON approval_events(approval_id, created_at)`)
 
   // --- Control-bot custom commands (CMD920 3.12) ---
   // The owner's own slash commands. DB, not a file, so a later web admin writes
@@ -5387,6 +5414,12 @@ export interface Approval {
   requested_at: number
   resolved_at: number | null
   resolved_by: string | null
+  // f2c5edb0: who consumed the approval and with which letter; they pair with
+  // consumed_at below. Optional in the type only: a row read from the DB always
+  // carries both (NULL until consumed); hand-built literals made before these
+  // columns existed need not list them.
+  consumed_by?: string | null
+  consumed_ref?: string | null
   content_hash: string | null
   consumed_at: number | null
 }
@@ -5426,6 +5459,8 @@ export function createApproval(params: {
     requested_at: now,
     resolved_at: null,
     resolved_by: null,
+    consumed_by: null,
+    consumed_ref: null,
     content_hash: params.content_hash ?? null,
     consumed_at: null,
   }
@@ -5492,6 +5527,89 @@ export function expireTimedOutApprovals(): number {
     UPDATE approvals SET status = 'timeout', resolved_at = ?
     WHERE status = 'pending' AND timeout_at IS NOT NULL AND timeout_at <= ?
   `).run(now, now).changes
+}
+
+// f2c5edb0: why a consume was refused. Classified AFTER the write failed, so
+// the write itself never depends on a read that could go stale.
+export type ApprovalConsumeRefusal =
+  | 'not_found' | 'wrong_category' | 'already_consumed' | 'not_approved' | 'hash_mismatch' | 'expired'
+
+export interface ApprovalConsumeResult {
+  ok: boolean
+  reason?: ApprovalConsumeRefusal
+  approval?: Approval
+}
+
+// db121902: the categories the send path consumes. An email_send approval is
+// pinned to one letter by its content_hash. An external_message approval (an
+// SMS through scripts/sms/seeme-send.py) has no anchor: its recipient is pinned
+// by the approval text, which the sender checks before it consumes.
+export type ConsumableCategory = 'email_send' | 'external_message'
+
+// One-shot consumption of an approval by the SEND path itself (f2c5edb0 for
+// letters, db121902 for SMS). The single conditional UPDATE is the whole
+// decision: only the call that flips consumed_at from NULL wins, so two
+// concurrent senders can never both get a yes. The conditions mirror the gate's
+// find_and_consume (scripts/hooks/email-approval-gate.py): the exact category
+// (an email approval never pays for an SMS, nor the other way round), approved,
+// unconsumed, resolved inside the time window, and for email_send the exact
+// content anchor. A row the gate consumed is refused here and vice versa --
+// both read consumed_at IS NULL. messageId is the reference the row records:
+// the Message-Id of a letter, the gateway reference of an SMS.
+export function consumeApproval(params: {
+  id: string
+  category?: ConsumableCategory
+  contentHash?: string | null
+  consumer: string
+  messageId?: string | null
+  windowSeconds: number
+  nowS?: number
+}): ApprovalConsumeResult {
+  const now = params.nowS ?? Math.floor(Date.now() / 1000)
+  const category: ConsumableCategory = params.category ?? 'email_send'
+  const anchored = category === 'email_send'
+  const ref = params.messageId ?? null
+  return db.transaction((): ApprovalConsumeResult => {
+    // A letter without an anchor never matches: content_hash = NULL is never true.
+    const args: unknown[] = [now, params.consumer, ref, params.id, category, now - params.windowSeconds]
+    if (anchored) args.push(params.contentHash ?? null)
+    const changes = db.prepare(`
+      UPDATE approvals SET consumed_at = ?, consumed_by = ?, consumed_ref = ?
+       WHERE id = ? AND category = ? AND status = 'approved' AND consumed_at IS NULL
+         AND resolved_at IS NOT NULL AND resolved_at >= ?${anchored ? ' AND content_hash = ?' : ''}
+    `).run(...args).changes
+    const event = db.prepare(`
+      INSERT INTO approval_events (approval_id, event, reason, actor, ref, created_at) VALUES (?, ?, ?, ?, ?, ?)
+    `)
+    const row = getApproval(params.id)
+    if (changes === 1) {
+      event.run(params.id, 'consumed', null, params.consumer, ref, now)
+      return { ok: true, approval: row }
+    }
+    let reason: ApprovalConsumeRefusal
+    if (!row) reason = 'not_found'
+    else if (row.category !== category) reason = 'wrong_category'
+    else if (row.consumed_at != null) reason = 'already_consumed'
+    else if (row.status !== 'approved') reason = 'not_approved'
+    else if (anchored && (params.contentHash == null || row.content_hash !== params.contentHash)) reason = 'hash_mismatch'
+    else reason = 'expired'
+    if (row) event.run(params.id, 'consume_refused', reason, params.consumer, ref, now)
+    return { ok: false, reason, approval: row }
+  })()
+}
+
+export interface ApprovalEvent {
+  id: number
+  approval_id: string
+  event: 'consumed' | 'consume_refused' | 'consumed_backfill'
+  reason: string | null
+  actor: string | null
+  ref: string | null
+  created_at: number
+}
+
+export function listApprovalEvents(approvalId: string): ApprovalEvent[] {
+  return db.prepare('SELECT * FROM approval_events WHERE approval_id = ? ORDER BY id').all(approvalId) as ApprovalEvent[]
 }
 
 // --- OTel Distributed Tracing (card def5a189) ---
