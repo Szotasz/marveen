@@ -22,6 +22,7 @@ import {
   paneShowsContextSaturationHardError,
   mcpTrustAcceptKeys,
   detectsFirstRunGate,
+  detectsModelConsentDialog,
 } from '../pane-state.js'
 
 // Realistic pane fixtures modelled on actual `tmux capture-pane -p`
@@ -2568,4 +2569,109 @@ describe('detectsFirstRunGate / mcpTrustAcceptKeys: the MCP approval dialog', ()
     const quoted = `New MCP server found in this project: worksource\n  1. Use this MCP server\n\n✻ Thinking… (esc to interrupt)`
     expect(detectsFirstRunGate(quoted)).toBeNull()
   })
+})
+
+describe('truncated idle footer (tmux width clipping)', () => {
+  // tmux clips the footer to the pane width and marks the cut with `…`, so on
+  // a narrow pane the `← for agents` tail never arrives whole. Before the fix
+  // this read 'unknown' and every idle-waiting consumer stalled on it.
+  const CLIPPED_FOOTER = '  ⏵⏵ bypass permissions on · install gh for PR status · 3 shells · ← for agen…'
+  const IDLE_TRUNCATED_TAIL = modeFooter(CLIPPED_FOOTER)
+  const IDLE_TRUNCATED_EARLIER = modeFooter('  ⏵⏵ bypass permissions on · install gh for PR status · 3 sh…')
+  const TRUNCATED_SINGLE_SEP = modeFooter('  ez egy mondat ami valamin dolgozik on · es itt megszakad…')
+  // A prose line that happens to carry the footer shape and end in `…`.
+  const PROSE_CLIPPED = '  the reviewer turned it on · then off · and then it was cut…'
+
+  it('reads a footer clipped mid-tail as idle', () => {
+    expect(detectPaneState(IDLE_TRUNCATED_TAIL)).toBe('idle')
+    expect(isReadyForPrompt(IDLE_TRUNCATED_TAIL)).toBe(true)
+  })
+
+  it('reads a footer clipped one segment earlier as idle', () => {
+    expect(detectPaneState(IDLE_TRUNCATED_EARLIER)).toBe('idle')
+  })
+
+  it('reads idle when blank rows follow the clipped footer', () => {
+    expect(detectPaneState(IDLE_TRUNCATED_TAIL + '\n\n\n')).toBe('idle')
+  })
+
+  it('refuses a clipped line carrying only one separator', () => {
+    expect(detectPaneState(TRUNCATED_SINGLE_SEP)).toBe('unknown')
+  })
+
+  it('does not let the truncation rule override a busy spinner', () => {
+    const busy = IDLE_TRUNCATED_TAIL + '\n✻ Accomplishing… (3m 8s · ↓ 9.3k tokens · esc to interrupt)'
+    expect(detectPaneState(busy)).toBe('busy')
+  })
+
+  it('does not count a clipped footer that is not the last line', () => {
+    const above = [CLIPPED_FOOTER, '', SEP, '❯ ', SEP, '  some status line'].join('\n')
+    expect(detectPaneState(above)).toBe('unknown')
+  })
+
+  // #1743 review: with the rule applied to the whole pane, a clipped footer
+  // or `…` prose in the scrollback ABOVE an open dialog made the pane read idle,
+  // and delivery could type a message plus Enter into a prompt with "1. Yes"
+  // preselected. Each fixture is a real dialog with such a line on top.
+  const PERMISSION_DIALOG = [
+    ' Bash command',
+    '   rm -rf ./build',
+    '   Remove the build directory',
+    '',
+    ' Do you want to proceed?',
+    ' ❯ 1. Yes',
+    "   2. Yes, and don't ask again for rm commands in /home/marveen/marveen",
+    '   3. No, and tell Claude what to do differently (esc)',
+    '',
+    ' Esc to cancel',
+  ].join('\n')
+  const EDIT_PERMISSION_DIALOG = [
+    ' ../../home/marveen/.claude/bond-teszt.txt',
+    ' Do you want to make this edit to bond-teszt.txt?',
+    ' ❯ 1. Yes',
+    '   2. Yes, and allow Claude to edit its own settings for this session',
+    '   3. No',
+    '',
+    ' Esc to cancel · Tab to amend',
+  ].join('\n')
+  const MENU = [
+    '   Manage MCP servers',
+    '   ❯ claude.ai Canva · ✔ connected · 39 tools',
+    '',
+    '   ↑/↓ to navigate · Enter to confirm · Esc to cancel',
+  ].join('\n')
+  const CONSENT = [
+    '  Fable 5 now uses usage credits',
+    '    1. Continue with Fable 5',
+    '  ❯ 2. Switch to Sonnet 5 and continue',
+    '  Enter to confirm · Esc to cancel',
+  ].join('\n')
+
+  for (const [name, line] of [['clipped footer', CLIPPED_FOOTER], ['clipped prose', PROSE_CLIPPED]] as const) {
+    it(`a ${name} above a command-permission prompt does not hide it`, () => {
+      const pane = line + '\n' + PERMISSION_DIALOG
+      expect(detectPaneState(pane)).not.toBe('idle')
+      expect(isReadyForPrompt(pane)).toBe(false)
+      expect(detectsPermissionDialog(pane)).toBe(true)
+      expect(detectsBlockingMenu(pane)).toBe(true)
+    })
+
+    it(`a ${name} above an edit-permission prompt does not hide it`, () => {
+      const pane = line + '\n' + EDIT_PERMISSION_DIALOG
+      expect(isReadyForPrompt(pane)).toBe(false)
+      expect(detectsPermissionDialog(pane)).toBe(true)
+    })
+
+    it(`a ${name} above a blocking menu does not hide it`, () => {
+      const pane = line + '\n' + MENU
+      expect(isReadyForPrompt(pane)).toBe(false)
+      expect(detectsBlockingMenu(pane)).toBe(true)
+    })
+
+    it(`a ${name} above the usage-credit consent dialog does not hide it`, () => {
+      const pane = line + '\n' + CONSENT
+      expect(isReadyForPrompt(pane)).toBe(false)
+      expect(detectsModelConsentDialog(pane)).toBe(true)
+    })
+  }
 })
