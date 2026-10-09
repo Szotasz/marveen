@@ -401,9 +401,22 @@ describe('75c3d163 G2: the channel notice keeps the quiet period of the LISTED r
     expect(body.transcriptConfidence).toBe('uncertain')
     expect(h.notified).toHaveLength(0)
     expect(body.noticeDelivered).toBeNull()
-    expect(body.transcriptNotice).toContain('A KULDO MEG NEM KAPOTT JELZEST: csendes idoszak (23:00-07:00 Budapest)')
+    expect(body.transcriptNotice).toContain('A KULDO NEM KAPOTT JELZEST, ES A SZERVER 07:00 UTAN SEM KULD (csendes idoszak, 23:00-07:00 Budapest)')
     expect(body.transcriptNotice).not.toContain('mar kapott egy csatorna-jelzest')
     expect(body.transcriptNotice).not.toContain('NEM ERTESITETTE')
+  })
+
+  // Review of #1732, request 2: nothing in the repo reads the morning batch row, so the agent must not be told that the
+  // sender will get the notice; it is told what delivery depends on, and what happens without it.
+  it('#1732 review (2): the agent is NOT promised a delivery, and is told what the delivery depends on', async () => {
+    vi.setSystemTime(new Date('2026-07-15T21:30:00Z')) // 23:30 CEST
+    silent()
+    const body = await directive()
+    expect(h.batchRows).toHaveLength(1)
+    expect(body.transcriptNotice).not.toMatch(/kapja meg|megkapja|meg fogja kapni|el fog jutni/)
+    expect(body.transcriptNotice).toContain('reggeli-koteg-hang memoria-soraba kerult')
+    expect(body.transcriptNotice).toContain('csak akkor jut el, ha ezen a telepitesen egy reggeli koteg ezt a sort kezbesiti')
+    expect(body.transcriptNotice).toContain('a kuldo csak a te valaszodbol tudja meg, hogy a hangüzenetet nem sikerult leiratozni')
   })
 
   it('(a) POSITIVE: the night\'s notices go into ONE morning batch row of the main agent, and 07:00:05 sends nothing', async () => {
@@ -424,7 +437,7 @@ describe('75c3d163 G2: the channel notice keeps the quiet period of the LISTED r
     expect(h.batchRows[0].content).toContain('csak bizonytalanul értettem')
     expect(h.batchRows[0].content).toContain('nem sikerült leiratozni')
     expect(first.noticeDelivered).toBeNull()
-    expect(first.transcriptNotice).toContain('a jelzes a fo ugynok reggeli kotegebe kerult')
+    expect(first.transcriptNotice).toContain('A jelzes a fo ugynok reggeli-koteg-hang memoria-soraba kerult')
     expect(first.transcriptNotice).not.toContain('egyben kuldi el')
   })
 

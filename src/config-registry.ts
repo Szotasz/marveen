@@ -384,7 +384,7 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     key: 'VOICE_NOTICE_QUIET_CHATS',
     type: 'string',
     default: '',
-    description: 'Vesszővel elválasztott Telegram chat-azonosítók: ezeknek a címzetteknek a hangüzenet csatorna-jelzése (nem sikerült vagy bizonytalan leirat) 23:00 és 07:00 között (Europe/Budapest) nem megy ki azonnal, hanem 07:00 után, chatenként egy üzenetben. A csendes időszak címzettenként szól: aki nincs a listán, azonnal kapja. Üres = senki.',
+    description: 'Vesszővel elválasztott Telegram chat-azonosítók: ezeknek a címzetteknek a hangüzenet csatorna-jelzése (nem sikerült vagy bizonytalan leirat) 23:00 és 07:00 között (Europe/Budapest) nem megy ki, 07:00 után sem: a fő ügynök "reggeli-koteg-hang" memória-sorába kerül. A repó ezt a sort nem kézbesíti: ehhez a telepítésen saját reggeli köteg kell, amely a sorokat beolvassa és kiviszi; enélkül a címzett nem kap jelzést (az ügynök ezt meg is kapja). A csendes időszak címzettenként szól: aki nincs a listán, azonnal kapja. Üres = senki.',
     module: 'channels',
     secret: false,
     requiresRestart: false,

@@ -25,7 +25,7 @@ import { getLastInboundModality, setLastInboundModality } from '../voice-modalit
 import { buildTtsDirective, resolveAgentChannelStateDir, inboundIsAudio, mainChannelStateDirFor } from '../voice-directive.js'
 import { PROJECT_ROOT, STORE_DIR, VOICE_CALIBRATION_ALERT_AGENT, voiceSttCalibration, type VoiceSttCalibration } from '../../config.js'
 import { notifyChat } from '../../notify.js'
-import { queueVoiceNoticeForMorningBatch, voiceNoticeHeldFor, VOICE_QUIET_END_HOUR, VOICE_QUIET_START_HOUR } from '../voice-quiet-hours.js'
+import { MORNING_BATCH_VOICE_KEYWORD, queueVoiceNoticeForMorningBatch, voiceNoticeHeldFor, VOICE_QUIET_END_HOUR, VOICE_QUIET_START_HOUR } from '../voice-quiet-hours.js'
 import { createAgentMessage } from '../../db.js'
 import type { RouteContext } from './types.js'
 
@@ -575,8 +575,9 @@ export async function tryHandleVoice(ctx: RouteContext): Promise<boolean> {
       if (voiceNoticeHeldFor(chatId, now)) {
         // 75c3d163 (a): a recipient on the quiet list (VOICE_NOTICE_QUIET_CHATS) gets no
         // server-initiated channel message for it, neither 23:00-07:00 Budapest nor after 07:00: the notice goes at
-        // once into the main agent's morning batch row (src/web/voice-quiet-hours.ts), and the owner's morning batch
-        // carries it as one line. Everyone else is notified at once, as before.
+        // once into the main agent's morning batch row (src/web/voice-quiet-hours.ts). The repo ships NO consumer of
+        // that row: only an install's own morning batch carries it, so the agent is not told that it will arrive.
+        // Everyone else is notified at once, as before.
         try {
           const q = queueVoiceNoticeForMorningBatch({ chatId, text, heldAt: now })
           noticeQueued = true
@@ -606,7 +607,12 @@ export async function tryHandleVoice(ctx: RouteContext): Promise<boolean> {
       if (noticeDelivered === true) {
         if (transcriptConfidence === 'uncertain') transcriptNotice += ' A kuldo mar kapott egy csatorna-jelzest, hogy ezt varja tolunk.'
       } else if (noticeQueued === true) {
-        transcriptNotice += ` A KULDO MEG NEM KAPOTT JELZEST: csendes idoszak (${VOICE_QUIET_START_HOUR}:00-0${VOICE_QUIET_END_HOUR}:00 Budapest); a jelzes a fo ugynok reggeli kotegebe kerult, a kuldo 0${VOICE_QUIET_END_HOUR}:00 utan onnan kapja meg, kulon uzenet nem megy.`
+        // Review of #1732, request 2: no delivery is promised. The row reaches the sender only through a morning batch
+        // that reads it, and this repo has none (VOICE_NOTICE_QUIET_CHATS documents it as a requirement).
+        const mit = transcriptStatus === 'no-transcript' ? 'nem sikerult leiratozni' : 'csak bizonytalanul ertettuk'
+        transcriptNotice += ` A KULDO NEM KAPOTT JELZEST, ES A SZERVER 0${VOICE_QUIET_END_HOUR}:00 UTAN SEM KULD (csendes idoszak, ${VOICE_QUIET_START_HOUR}:00-0${VOICE_QUIET_END_HOUR}:00 Budapest). ` +
+          `A jelzes a fo ugynok ${MORNING_BATCH_VOICE_KEYWORD} memoria-soraba kerult: a kuldohoz csak akkor jut el, ha ezen a telepitesen egy reggeli koteg ezt a sort kezbesiti. ` +
+          `Ha ilyen nincs, a kuldo csak a te valaszodbol tudja meg, hogy a hangüzenetet ${mit}.`
       } else if (noticeQueued === false) {
         const mit = transcriptStatus === 'no-transcript' ? 'nem sikerult leiratozni' : 'csak bizonytalanul ertettuk'
         transcriptNotice += ` A KULDO NEM KAPOTT JELZEST, ES A REGGELI KOTEG-SOR IRASA HIBARA FUTOTT (csendes idoszak, ${VOICE_QUIET_START_HOUR}:00-0${VOICE_QUIET_END_HOUR}:00 Budapest): a reggeli kotegben te mondd meg neki, hogy a hangüzenetet ${mit}.`

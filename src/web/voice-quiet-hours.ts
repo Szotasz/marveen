@@ -10,9 +10,12 @@ import { getEffectiveSettingValue } from '../settings-store.js'
 // (23:00-07:00 Budapest: no Telegram message at all, not even a reply) applies
 // to it like to any other. Inside the
 // window the notice is NOT sent on the channel at all, not even after 07:00: it
-// goes into the main agent's morning batch row, and the owner's morning batch
-// carries it as one line (75c3d163 (a): after the quiet
-// period ONE message).
+// goes into the main agent's morning batch row (75c3d163 (a): after the quiet
+// period ONE message). THE REPO SHIPS NO CONSUMER OF THAT ROW (review of #1732,
+// request 2): an install that lists chats here needs its own morning batch step
+// that reads these rows and delivers them, one message per chat. Without one,
+// nothing reaches the sender, and the agent is told exactly that, never that the
+// notice will arrive (src/web/routes/voice.ts).
 //
 // The rule is per RECIPIENT: it holds only the chats
 // listed in the VOICE_NOTICE_QUIET_CHATS setting; everyone else is notified at
@@ -26,8 +29,9 @@ import { getEffectiveSettingValue } from '../settings-store.js'
 //
 // The row is a HOT memory of the main agent, ONE per chat and morning, written
 // when the notice arises: a dashboard restart inside the window loses nothing
-// (M-G2a). The code sends nothing at 07:00; the main agent's morning
-// batch reads the rows (its prompt step, added when this is live) and closes them.
+// (M-G2a). The code sends nothing at 07:00. An install's morning batch, if it
+// has one, finds the rows by MORNING_BATCH_VOICE_KEYWORD, carries them and closes
+// them; a dashboard memory row does not reach an agent's context by itself.
 export const VOICE_QUIET_TZ = 'Europe/Budapest'
 export const VOICE_QUIET_START_HOUR = 23 // inclusive
 export const VOICE_QUIET_END_HOUR = 7 // exclusive
