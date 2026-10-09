@@ -121,10 +121,21 @@ def _quiet_chats(state_dir, pend):
     except ImportError as e:
         _wd_quiet_defect(f"import telegram_quiet_hours failed ({e}) -- QUIET HOURS NOT ENFORCED")
         return []
-    st = _q.config_state(state_dir)
-    if st in (_q.STATE_MISSING, _q.STATE_UNREADABLE):
-        _wd_quiet_defect(f"quiet-hours config {st} at {_q.config_path(state_dir)} -- QUIET HOURS NOT ENFORCED")
+    # card 20e178fc's three cases: LOST or UNREADABLE is a defect, loud on every run; a missing config this
+    # install never recorded is the normal state of a channel without quiet hours, noted once per state dir.
+    seen = _q.seen_path()
+    case = _q.config_case(state_dir, seen)
+    defect = _q.defect_text(case, state_dir, seen)
+    if defect:
+        _wd_quiet_defect(defect + " -- QUIET HOURS NOT ENFORCED")
         return []
+    if case == _q.CASE_NOT_CONFIGURED:
+        note = _q.not_configured_note_once(state_dir)
+        if note:
+            _wd_quiet_note(note)
+        return []
+    if case == _q.CASE_OK:
+        _q.remember_configured(state_dir, seen, "telegram_progress_watchdog")
     out = []
     for p in pend or []:
         try:
@@ -139,6 +150,14 @@ def _wd_quiet_defect(msg):
     """The absence of the quiet brake must leave a trace; it never stops the watchdog."""
     try:
         sys.stderr.write("[watchdog] QUIET-HOURS DEFECT: " + str(msg) + "\n")
+    except Exception:
+        pass
+
+
+def _wd_quiet_note(msg):
+    """A normal state worth one line (quiet hours not configured): no DEFECT label; given once per state dir."""
+    try:
+        sys.stderr.write("[watchdog] " + str(msg) + "\n")
     except Exception:
         pass
 

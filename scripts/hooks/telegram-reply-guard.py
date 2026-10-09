@@ -72,6 +72,19 @@ def _quiet_defect(msg):
     except Exception:
         pass
 
+
+def _quiet_note(msg):
+    """A NORMAL state worth one line (quiet hours not configured): the same log file as the defects, but
+    no DEFECT label and nothing on stderr. The module gives the line only once per state dir."""
+    try:
+        sd = os.environ.get("TELEGRAM_STATE_DIR") or os.path.join(
+            os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd(), ".claude", "channels", "telegram")
+        stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        with open(os.path.join(sd, "quiet-hours-defect.log"), "a", encoding="utf-8") as f:
+            f.write(stamp + " [reply-guard] " + str(msg) + "\n")
+    except Exception:
+        pass
+
 import ledger_lib  # noqa: E402
 
 # Tunables (overridable via env for tests / ops).
@@ -303,11 +316,20 @@ def main():
         # quiet-hours protection and nothing, anywhere, said it was gone.
         _quiet_defect(f"import telegram_quiet_hours failed ({e}) -- QUIET HOURS NOT ENFORCED")
     if _q is not None:
-        # The same distinction one level down: a MISSING config and an EMPTY config both make
-        # in_quiet() False, but only the first one means the deployment is not what we think.
-        _st = _q.config_state(_sd)
-        if _st in (_q.STATE_MISSING, _q.STATE_UNREADABLE):
-            _quiet_defect(f"quiet-hours config {_st} at {_q.config_path(_sd)} -- QUIET HOURS NOT ENFORCED")
+        # One level down, three cases (card 20e178fc): a config that was in use and is gone (LOST) or one
+        # that cannot be read is a defect, loud on every run; a missing config this install never recorded
+        # is the normal state of an install without quiet hours, noted once; a usable one is recorded.
+        _seen = _q.seen_path()
+        _case = _q.config_case(_sd, _seen)
+        _defect = _q.defect_text(_case, _sd, _seen)
+        if _defect:
+            _quiet_defect(_defect + " -- QUIET HOURS NOT ENFORCED")
+        elif _case == _q.CASE_NOT_CONFIGURED:
+            _note = _q.not_configured_note_once(_sd)
+            if _note:
+                _quiet_note(_note)
+        elif _case == _q.CASE_OK:
+            _q.remember_configured(_sd, _seen, "telegram-reply-guard")
         try:
             if _q.in_quiet(_sd, chat_id):
                 sys.exit(0)

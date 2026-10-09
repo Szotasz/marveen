@@ -79,6 +79,8 @@ def probe(guard_path):
     """Run the four rounds against one guard. Returns (ok, rows)."""
     state_dir = tempfile.mkdtemp()
     os.environ["TELEGRAM_STATE_DIR"] = state_dir
+    # the guard records the usable config in the install marker (card 20e178fc): a temp root, not the checkout's store
+    os.environ["MARVEEN_ROOT"] = tempfile.mkdtemp()
     json.dump({CHAT_ID: {"start": "23:00", "end": "07:00", "tz": "Europe/Budapest"}},
               open(os.path.join(state_dir, "quiet-hours.json"), "w"))
 

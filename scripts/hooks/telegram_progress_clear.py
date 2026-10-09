@@ -181,10 +181,19 @@ def main():
         log(sd, f"[stop] QUIET-HOURS DEFECT: import telegram_quiet_hours failed ({e}) -- NOT ENFORCED")
         _q = None
     if _q is not None:
-        st = _q.config_state(sd)
-        if st in (_q.STATE_MISSING, _q.STATE_UNREADABLE):
-            # MISSING and EMPTY both silence in_quiet(); only the first is a deployment defect.
-            log(sd, f"[stop] QUIET-HOURS DEFECT: config {st} at {_q.config_path(sd)} -- NOT ENFORCED")
+        # card 20e178fc's three cases: LOST or UNREADABLE is a defect, loud on every run; a missing config this
+        # install never recorded is the normal state of an install without quiet hours, noted once.
+        seen = _q.seen_path()
+        case = _q.config_case(sd, seen)
+        defect = _q.defect_text(case, sd, seen)
+        if defect:
+            log(sd, f"[stop] QUIET-HOURS DEFECT: {defect} -- NOT ENFORCED")
+        elif case == _q.CASE_NOT_CONFIGURED:
+            note = _q.not_configured_note_once(sd)
+            if note:
+                log(sd, f"[stop] {note}")
+        elif case == _q.CASE_OK:
+            _q.remember_configured(sd, seen, "telegram_progress_clear")
         try:
             quiet = {str(p.get("chat_id")) for p in pend if _q.in_quiet(sd, p.get("chat_id"))}
         except Exception as e:

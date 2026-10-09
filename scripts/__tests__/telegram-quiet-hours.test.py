@@ -46,6 +46,10 @@ def config_ir(dir_, adat):
         json.dump(adat, f)
 
 
+# The hooks record a usable config in the install marker (card 20e178fc). Every run here points the install root at
+# a temp tree, so no check writes into the checkout's own store directory.
+os.environ["MARVEEN_ROOT"] = tempfile.mkdtemp(prefix="quiet-hours-test-root-")
+
 q = betolt("telegram_quiet_hours", "telegram_quiet_hours.py")
 
 print("=== A) A MODUL MEGKULONBOZTETI A HIANYZO ES AZ URES CONFIGOT")
@@ -167,7 +171,7 @@ pc_src = io.open(os.path.join(HOOKS, "telegram_progress_clear.py"), encoding="ut
 ok("a Stop-fallback sajat konyvtarbol importal",
    "dirname(os.path.abspath(__file__))" in pc_src and "telegram_quiet_hours" in pc_src)
 ok("a hianyzo MODULT jelzi", "import telegram_quiet_hours failed" in pc_src)
-ok("a hianyzo/olvashatatlan CONFIGOT jelzi", "config_state" in pc_src and "NOT ENFORCED" in pc_src)
+ok("az elveszett/olvashatatlan CONFIGOT jelzi", "config_case" in pc_src and "defect_text" in pc_src and "NOT ENFORCED" in pc_src)
 ok("a futasideju hibat is jelzi", "in_quiet raised" in pc_src)
 # NEGATIV KONTROLL: a regi, NEMA alak nem allhat vissza. A mero arra a pontos alakra tuzel,
 # ami 2026-09-22-ig ott allt: egy csupasz except, ami csak ures halmazt ad es nem naploz.
@@ -175,6 +179,83 @@ nema_alak = "    except Exception:\n        quiet = set()"
 ok("NEGATIV KONTROLL: a regi NEMA alak nincs a fajlban", nema_alak not in pc_src)
 ok("NEGATIV KONTROLL: a mero tuzelne ra (a mintat onmagara probalva)",
    nema_alak in ("x\n" + nema_alak))
+
+print("\n=== F) HAROM ESET A CONFIGRA (card 20e178fc): nincs beallitva / elveszett / olvashatatlan")
+# A review: a "config missing" DEFECT minden Stopon egy normal allapotot (csendes ido nincs beallitva) nevezett hibanak,
+# es a naplo korlat nelkul nott. A jelolo (quiet-hours.seen a telepites store konyvtaraban) valasztja szet a kettot.
+with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as sd, tempfile.TemporaryDirectory() as masik:
+    seen = q.seen_path(root)
+    ok("a jelolo a gyoker store konyvtaraban all", seen == os.path.join(root, "store", "quiet-hours.seen"), seen)
+    ok("nincs config, nincs jelolo -> NOT_CONFIGURED", q.config_case(sd, seen) == q.CASE_NOT_CONFIGURED,
+       q.config_case(sd, seen))
+    ok("a NOT_CONFIGURED nem hiba (nincs DEFECT-cimke)", q.defect_text(q.CASE_NOT_CONFIGURED, sd, seen) is None)
+    elso, masodik = q.not_configured_note_once(sd), q.not_configured_note_once(sd)
+    ok("a 'quiet hours not configured' sor EGYSZER jon, nem minden futaskor",
+       bool(elso) and "quiet hours not configured" in elso and masodik is None, (elso, masodik))
+    ok("NEGATIV KONTROLL: egy masik allapotmappa a sajat egy sorat kapja", bool(q.not_configured_note_once(masik)))
+
+    config_ir(sd, {CHAT: {"start": "23:00", "end": "07:00", "tz": TZ}})
+    ok("hasznalhato config -> CASE_OK", q.config_case(sd, seen) == q.CASE_OK, q.config_case(sd, seen))
+    ok("a jelolo rogziti a config utjat", q.remember_configured(sd, seen, "teszt") is True
+       and os.path.realpath(q.config_path(sd)) in q.seen_configs(seen))
+    tartalom = io.open(seen, encoding="utf-8").read()
+    ok("masodszor nem ir (utonkent egyszer)", q.remember_configured(sd, seen, "ujra") is False
+       and io.open(seen, encoding="utf-8").read() == tartalom)
+
+    os.remove(q.config_path(sd))
+    ok("eltunt config, amit a jelolo rogzitett -> LOST", q.config_case(sd, seen) == q.CASE_LOST, q.config_case(sd, seen))
+    hiba = q.defect_text(q.CASE_LOST, sd, seen) or ""
+    ok("a LOST cimke megmondja: 'config lost', a config utja es a jelolo", "config lost" in hiba
+       and q.config_path(sd) in hiba and seen in hiba, hiba)
+    # NEGATIV KONTROLL: a jelolo utonkent dont. Egy csatorna, amelyiknek SOHA nem volt configja, ugyanazon a telepitesen
+    # NEM lesz LOST attol, hogy egy MASIK csatorna configjat a jelolo rogzitette (a flotta nem kiabal hamisan).
+    ok("NEGATIV KONTROLL: a jelolo altal nem rogzitett mappa NOT_CONFIGURED marad", q.config_case(masik, seen) == q.CASE_NOT_CONFIGURED)
+    ok("NEGATIV KONTROLL: jelolo nelkul a hianyzo config NOT_CONFIGURED (nem LOST)", q.config_case(sd, None) == q.CASE_NOT_CONFIGURED)
+
+    for nev, tart in (("nem json", "{ ez nem json"), ("0 bajt", ""), ("nem objektum", "[1, 2]")):
+        with io.open(q.config_path(sd), "w", encoding="utf-8") as f:
+            f.write(tart)
+        ok("olvashatatlan (%s) -> UNREADABLE, a jelolovel es nelkule is" % nev,
+           q.config_case(sd, seen) == q.CASE_UNREADABLE and q.config_case(sd, None) == q.CASE_UNREADABLE)
+    ok("az UNREADABLE cimke: 'config unreadable' es a config utja",
+       "config unreadable" in (q.defect_text(q.CASE_UNREADABLE, sd, seen) or "")
+       and q.config_path(sd) in (q.defect_text(q.CASE_UNREADABLE, sd, seen) or ""))
+
+    config_ir(masik, {})
+    ok("ures {} -> EMPTY, nem hiba", q.config_case(masik, seen) == q.CASE_EMPTY
+       and q.defect_text(q.CASE_EMPTY, masik, seen) is None)
+    ok("az ures {} nem kerul a jelolobe (az elvesztese nem hiba)", q.remember_configured(masik, seen, "teszt") is False)
+
+    with tempfile.TemporaryDirectory() as harmadik:
+        config_ir(harmadik, {CHAT: {"start": "22:00", "end": "06:00", "tz": TZ}})
+        ok("egy masodik hasznalhato config uj sort kap, az elso megmarad",
+           q.remember_configured(harmadik, seen, "teszt") is True
+           and {os.path.realpath(q.config_path(sd)), os.path.realpath(q.config_path(harmadik))} <= q.seen_configs(seen))
+    with io.open(seen, "a", encoding="utf-8") as f:
+        f.write('{"config": "/nincs/ilyen/quiet-hours.json"')        # torn line: no closing brace, no newline
+    ok("a szakadt sor kimarad, a jo sorok megmaradnak", os.path.realpath(q.config_path(sd)) in q.seen_configs(seen)
+       and os.path.realpath("/nincs/ilyen/quiet-hours.json") not in q.seen_configs(seen))
+
+with tempfile.TemporaryDirectory() as root2, tempfile.TemporaryDirectory() as sd2:
+    io.open(os.path.join(root2, "store"), "w").close()      # a FILE where the store directory should be
+    config_ir(sd2, {CHAT: {"start": "23:00", "end": "07:00", "tz": TZ}})
+    ok("a jelolo irasa nem dob, ha nem irhato (False)", q.remember_configured(sd2, q.seen_path(root2), "teszt") is False)
+
+ok("seen_path(): a MARVEEN_ROOT felulirja", q.seen_path() == os.path.join(os.environ["MARVEEN_ROOT"], "store", "quiet-hours.seen"),
+   q.seen_path())
+_regi_root = os.environ.pop("MARVEEN_ROOT")
+_sajat = q.seen_path() or ""
+os.environ["MARVEEN_ROOT"] = _regi_root
+ok("seen_path(): MARVEEN_ROOT nelkul a modul sajat helyebol (<gyoker>/scripts/hooks) jon",
+   _sajat == os.path.join(os.path.dirname(os.path.dirname(HOOKS)), "store", "quiet-hours.seen"), _sajat)
+
+ok("a harom horog ugyanazt a cimke-forrast hasznalja (config_case + defect_text)",
+   all("config_case(" in s and "defect_text(" in s for s in (rg_src, pc_src, wd_src)))
+ok("a harom horog a 'not configured' sort a modultol kapja (egyszer)",
+   all("not_configured_note_once(" in s for s in (rg_src, pc_src, wd_src)))
+ok("NEGATIV KONTROLL: a regi alak ('config {st} at') egyik horogban sincs",
+   all("config {st} at" not in s and "config {_st} at" not in s for s in (rg_src, pc_src, wd_src)))
+ok("NEGATIV KONTROLL: a mero tuzelne a regi alakra", "config {st} at" in 'f"[stop] QUIET-HOURS DEFECT: config {st} at {p}"')
 
 print("\n=> OSSZESEN: %d/%d ZOLD" % (sum(E), len(E)))
 sys.exit(0 if all(E) else 1)
