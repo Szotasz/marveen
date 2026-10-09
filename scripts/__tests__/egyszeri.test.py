@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """scripts/egyszeri.py: the one-shot writer, against a stub dashboard (hermetic: a throwaway install dir and HOME).
 
-What is measured: every refusal writes nothing (no POST reaches the dashboard); a main-agent one-shot is created with
+What is measured: every refusal writes nothing (no POST reaches the dashboard); the list is read with ?include=prompt (the
+stub leaves the prompts out otherwise, as a prompt-less list does); a main-agent one-shot is created with
 forceSend on by default, its telegramChatId set by a PUT, and read back from the task-config.json on disk; the optional
 registry is merged only where the install keeps one (with a backup, old entries kept); a sub-agent one-shot appends the
 cleanup line to the main agent's later one-shot; --no-force-send and --dry-run; a failed later step exits 2
@@ -84,9 +85,14 @@ def handler_for(current):
             dash.calls.append((method, self.path, data))
             if self.headers.get("Authorization") != "Bearer " + TOKEN:
                 return self.reply(401, {"error": "unauthorized"})
-            path = self.path.split("?", 1)[0]
+            path, _, query = self.path.partition("?")
             if method == "GET" and path == "/api/schedules":
-                return self.reply(200, list(dash.tasks.values()))
+                # a list that leaves the prompts out unless asked (?include=prompt), as a prompt-less list does
+                if query not in ("", "include=prompt"):
+                    return self.reply(400, {"error": "unknown include"})
+                if query == "include=prompt":
+                    return self.reply(200, list(dash.tasks.values()))
+                return self.reply(200, [{k: v for k, v in x.items() if k != "prompt"} for x in dash.tasks.values()])
             if method == "POST" and path == "/api/schedules":
                 name = data["name"]
                 if name in dash.tasks:
@@ -257,6 +263,8 @@ check("created (exit 0)", r.returncode == 0, f"{r.stdout[-300:]!r} {r.stderr[-30
 check("the cleanup line is appended to the main agent's later one-shot", cp.startswith("main round")
       and "CLEANUP: if worker-wake fired" in cp and cp.count("CLEANUP:") == 1, cp[-300:])
 check("READBACK says cleanup=True", "cleanup=True" in r.stdout, r.stdout[-200:])
+gets = [c[1] for c in d.calls if c[0] == "GET"]
+check("every list read asks for the prompts (?include=prompt)", gets and all(g == "/api/schedules?include=prompt" for g in gets), repr(gets))
 
 print("--no-force-send and --dry-run")
 root, home, d = fresh()

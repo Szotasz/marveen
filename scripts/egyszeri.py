@@ -78,7 +78,9 @@ def call(method, path, body=None):
 
 
 def schedules():
-    s = call("GET", "/api/schedules")  # the list carries each task's prompt
+    # Ask for the prompts explicitly: a schedule list may leave them out by default (a prompt-less list with
+    # ?include=prompt to opt in), and the cleanup step reads one.
+    s = call("GET", "/api/schedules?include=prompt")
     return {x["name"]: x for x in (s if isinstance(s, list) else s.get("schedules", s))}
 
 

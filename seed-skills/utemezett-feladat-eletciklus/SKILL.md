@@ -24,8 +24,9 @@ description: Lifecycle of a scheduled task (~/.claude/scheduled-tasks, /api/sche
    `/api/schedules`; a sub-agent one-shot without `--cleanup-by`. Exit 2 means half-written (the task exists, a later
    step failed): finish that step by hand. forceSend is the default; `--no-force-send` only on purpose, never for a
    time-bound wake-up. The main agent's raw POST with a dated cron is denied by scripts/hooks/schedule-dated-post-gate.py.
-1. **List before writing:** `GET /api/schedules` -- is there already a task for the same thing? (Fields: name,
-   schedule, agent, enabled, skipIfBusy, forceSend, type, prompt. There is no last-run field.)
+1. **List before writing:** `GET /api/schedules?include=prompt` -- is there already a task for the same thing?
+   (Fields: name, schedule, agent, enabled, skipIfBusy, forceSend, type, and the prompt when asked for. There is
+   no last-run field.)
 2. **The cron runs in the scheduler's time zone** (SCHEDULER_TZ, else TZ, else UTC). Check it before writing, and put
    the time in the description in both forms (the scheduler's zone and the reader's local time).
 3. **A time-critical wake-up has to absorb the recipient's turn.** With `skipIfBusy: false` the runner retries while the
