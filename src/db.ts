@@ -3883,7 +3883,7 @@ export function getDispatchedPendingStats(
  * The message id of the newest inbound that has no outbound after it, or null
  * when nothing is open. Same rule as hasOpenInboundQuestion, but it hands back
  * WHICH message, so a caller can ask whether the agent has already been shown
- * it (see openQuestionBlocks in the restart-gate runner).
+ * it (see openQuestionBlocks in web/open-question.ts).
  *
  * Returns '' for an open question whose row carries no message id: the caller
  * cannot match that against a marker, and the safe reading of "unknown" is
