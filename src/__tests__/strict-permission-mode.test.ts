@@ -95,7 +95,7 @@ describe('wiring: the isolated user-level copy is pinned too', () => {
   const fn = src.slice(src.indexOf('function provisionIsolatedConfigDir('), src.indexOf('// 3. Own plugins/ dir'))
 
   it('provisionIsolatedConfigDir pins the mode from the agent profile, for sub-agents only', () => {
-    expect(fn).toMatch(/if \(name !== MAIN_AGENT_ID\) \{[\s\S]*?loadProfileTemplate\(resolveAgentSecurityProfile\(name\)\)\?\.permissionMode[\s\S]*?enforceStrictPermissionMode\(settings, permissionMode\)/)
+    expect(fn).toMatch(/if \(name !== MAIN_AGENT_ID\) \{[\s\S]*?loadProfileTemplate\(resolveAgentSecurityProfile\(name\)\)\?\.permissionMode[\s\S]*?\n\s*if \(enforceStrictPermissionMode\(settings, permissionMode\)\) \{/)
   })
 
   it('pins AFTER the own-settings merge and BEFORE the write, so nothing re-adds a bypass', () => {
