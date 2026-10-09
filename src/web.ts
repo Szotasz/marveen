@@ -86,6 +86,8 @@ import { tryHandleOnboarding } from './web/routes/onboarding.js'
 import { tryHandleStatus } from './web/routes/status.js'
 import { tryHandleAutonomy } from './web/routes/autonomy.js'
 import { tryHandleApprovals, startApprovalTimeoutSweeper } from './web/routes/approvals.js'
+import { tryHandleReminders } from './web/routes/reminders.js'
+import { startReminderSender } from './web/reminder-sender.js'
 import { tryHandleDesktopLock, sweepExpiredDesktopLock } from './web/routes/desktop-lock.js'
 import { tryHandleTokenUsage } from './web/routes/token-usage.js'
 import { tryHandleCosts, startCostsSyncTask } from './web/routes/costs.js'
@@ -246,6 +248,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleCustomCommands(routeCtx)) return
       if (await tryHandleAutonomy(routeCtx)) return
       if (await tryHandleApprovals(routeCtx)) return
+      if (await tryHandleReminders(routeCtx)) return
       if (await tryHandleDesktopLock(routeCtx)) return
       if (await tryHandleTokenUsage(routeCtx)) return
       if (await tryHandleCosts(routeCtx)) return
@@ -482,6 +485,11 @@ export function startWebServer(port = 3420): http.Server {
 
   const midTurnCommandInterval = webOnly ? undefined : startMidTurnCommandWatcher()
   if (!webOnly) logger.info('Mid-turn command watcher started (3s poll)')
+
+  // fb79dc1f: the reminders go out from here, on the recipient channel's bot, not through an agent session.
+  // WEB_ONLY: a staging copy never sends.
+  const reminderSenderInterval = webOnly ? undefined : startReminderSender()
+  if (!webOnly) logger.info('Reminder sender started (60s poll, 75s offset)')
 
   const stuckToolCallInterval = webOnly ? undefined : startStuckToolCallWatcher()
   if (!webOnly) logger.info('Stuck-tool-call watcher started (30s poll, 35s offset)')
@@ -740,6 +748,7 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
     if (costsSyncInterval) clearInterval(costsSyncInterval)
     clearInterval(stuckInputInterval)
     if (midTurnCommandInterval) clearInterval(midTurnCommandInterval)
+    if (reminderSenderInterval) clearInterval(reminderSenderInterval)
     clearInterval(stuckToolCallInterval)
     if (inboxNudgeInterval) clearInterval(inboxNudgeInterval)
     if (reauthHealerInterval) clearInterval(reauthHealerInterval)

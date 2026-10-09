@@ -380,6 +380,7 @@ function switchPage(pageId) {
   if (pageId === 'bgTasks') loadBgTasksPage()
   if (pageId === 'vault') loadVaultPage()
   if (pageId === 'approvals') loadApprovalsPage()
+  if (pageId === 'reminders') loadRemindersPage()
   if (pageId === 'settings') loadSettings()
   if (pageId === 'updates') loadUpdates()
   // 'team' page is merged into 'agents' -- redirect for any lingering deep-links
@@ -508,7 +509,7 @@ const NAV_I18N = {
   messages: 'nav.messages', tasks: 'nav.tasks', memories: 'nav.memories',
   recall: 'nav.recall', naplo: 'nav.recall', bgTasks: 'nav.bgTasks',
   skills: 'nav.skills', connectors: 'nav.connectors', migrate: 'nav.migrate',
-  approvals: 'nav.approvals',
+  approvals: 'nav.approvals', reminders: 'nav.reminders',
   docs: 'nav.docs', research: 'nav.research', status: 'nav.status',
   settings: 'nav.settings', vault: 'nav.vault', tokenUsage: 'nav.tokenUsage',
   ideas: 'nav.ideas', federation: 'nav.federation', updates: 'nav.updates', costs: 'nav.costs',
@@ -13934,6 +13935,136 @@ async function _resolveApproval(id, decision) {
     _renderApprovalsTable()
   } catch (err) {
     showToast(t('approvals.toast.error', { msg: String(err.message || err) }))
+  }
+}
+
+// ============================================================
+// === Reminders (fb79dc1f) ===
+// ============================================================
+// The reminders the dashboard sends itself (src/web/reminder-sender.ts), per
+// recipient (the principal's chat): the next 7 days, the sent ones and the
+// missed ones of the last 7 days. Times are Budapest wall time.
+
+const REMINDERS_DAYS = 7
+let _remindersAll = []
+const _remindersState = { recipient: '', agent: '' }
+
+document.getElementById('refreshRemindersBtn').addEventListener('click', loadRemindersPage)
+document.getElementById('remindersFilterRecipient').addEventListener('input', (e) => {
+  _remindersState.recipient = e.target.value.trim()
+  _renderReminders()
+})
+document.getElementById('remindersFilterAgent').addEventListener('input', (e) => {
+  _remindersState.agent = e.target.value.trim()
+  _renderReminders()
+})
+
+async function loadRemindersPage() {
+  const box = document.getElementById('remindersSections')
+  box.innerHTML = `<p style="color:var(--text-muted);padding:24px;text-align:center">${t('reminders.loading')}</p>`
+  try {
+    const from = Math.floor(Date.now() / 1000) - REMINDERS_DAYS * 86400
+    const res = await fetch(`/api/reminders?limit=500&due_from=${from}`)
+    if (!res.ok) throw new Error('HTTP ' + res.status)
+    _remindersAll = await res.json()
+    _renderReminders()
+  } catch (err) {
+    box.innerHTML = `<p style="color:var(--danger);padding:24px;text-align:center">${t('reminders.error')}</p>`
+  }
+}
+
+// Which section a reminder belongs to now: 'upcoming' (goes in the next 7
+// days), 'sent' (in the last 7 days), 'missed' (failed, cancelled, or still
+// waiting 10 minutes past its moment), or null (out of the 7-day view).
+function reminderSection(r, nowSec) {
+  const week = REMINDERS_DAYS * 86400
+  if (r.status === 'sent') return r.sent_at && r.sent_at >= nowSec - week ? 'sent' : null
+  if (r.status === 'failed' || r.status === 'cancelled') return 'missed'
+  if (r.status === 'pending' || r.status === 'sending') {
+    if (r.send_after < nowSec - 600) return 'missed'
+    return r.send_after <= nowSec + week ? 'upcoming' : null
+  }
+  return null
+}
+
+function _renderReminders() {
+  const nowSec = Math.floor(Date.now() / 1000)
+  const { recipient, agent } = _remindersState
+  const rows = _remindersAll.filter(r => (!recipient || r.recipient_chat_id.includes(recipient)) && (!agent || r.agent_id.includes(agent)))
+  const sections = { upcoming: [], sent: [], missed: [] }
+  for (const r of rows) {
+    const s = reminderSection(r, nowSec)
+    if (s) sections[s].push(r)
+  }
+  sections.upcoming.sort((a, b) => a.send_after - b.send_after)
+  sections.sent.sort((a, b) => b.sent_at - a.sent_at)
+  sections.missed.sort((a, b) => b.due_at - a.due_at)
+  const fmt = (sec) => sec ? new Date(sec * 1000).toLocaleString('hu-HU', { timeZone: 'Europe/Budapest', dateStyle: 'short', timeStyle: 'short' }) : '-'
+  const section = (key, timeOf) => {
+    const list = sections[key]
+    const groups = new Map()
+    for (const r of list) {
+      if (!groups.has(r.recipient_chat_id)) groups.set(r.recipient_chat_id, [])
+      groups.get(r.recipient_chat_id).push(r)
+    }
+    const body = list.length
+      ? [...groups.entries()].map(([chat, items]) =>
+        `<tr><td colspan="6" style="font-size:12px;font-weight:600;background:color-mix(in srgb, var(--text-muted) 8%, transparent)">${escapeHtml(t('reminders.recipient', { chat }))} (${items.length})</td></tr>` +
+        items.map(r => {
+          const act = r.status === 'pending'
+            ? `<button class="btn-danger btn-compact reminders-act" data-id="${escapeAttr(r.id)}" data-act="cancelled" style="font-size:11px">${t('reminders.btn.cancel')}</button>`
+            : r.status === 'failed'
+              ? `<button class="btn-secondary btn-compact reminders-act" data-id="${escapeAttr(r.id)}" data-act="pending" style="font-size:11px">${t('reminders.btn.retry')}</button>`
+              : ''
+          const slid = key === 'upcoming' && r.send_after !== r.due_at
+            ? ` <span style="font-size:11px;color:var(--text-muted)" title="${escapeAttr(t('reminders.slid_title'))}">(${escapeHtml(fmt(r.due_at))})</span>`
+            : ''
+          const why = r.status === 'failed' && r.error ? `<br><span style="font-size:11px;color:var(--danger)">${escapeHtml(r.error)}</span>` : ''
+          return `<tr>
+            <td style="white-space:nowrap;font-size:12px">${escapeHtml(fmt(timeOf(r)))}${slid}</td>
+            <td><code style="font-size:12px">${escapeHtml(r.agent_id)}</code></td>
+            <td style="font-size:12px">${escapeHtml(r.requester)}</td>
+            <td style="max-width:360px;font-size:12px" title="${escapeAttr(r.text)}">${escapeHtml(r.text.length > 120 ? r.text.slice(0, 120) + '...' : r.text)}${why}</td>
+            <td>${_reminderBadge(r.status)}</td>
+            <td>${act}</td>
+          </tr>`
+        }).join('')).join('')
+      : `<tr><td colspan="6" style="color:var(--text-muted);padding:16px;text-align:center">${t('reminders.empty')}</td></tr>`
+    return `<h3 style="margin:18px 0 8px">${t('reminders.section.' + key)} (${list.length})</h3>
+      <div class="ssh-table-wrap"><table class="ssh-table"><thead><tr>
+        <th>${t('reminders.col.time')}</th><th>${t('reminders.col.agent')}</th><th>${t('reminders.col.requester')}</th>
+        <th>${t('reminders.col.text')}</th><th>${t('reminders.col.status')}</th><th>${t('reminders.col.actions')}</th>
+      </tr></thead><tbody>${body}</tbody></table></div>`
+  }
+  const box = document.getElementById('remindersSections')
+  box.innerHTML = section('upcoming', r => r.send_after) + section('sent', r => r.sent_at) + section('missed', r => r.due_at)
+  box.querySelectorAll('.reminders-act').forEach(btn => {
+    btn.addEventListener('click', () => _reminderAction(btn.dataset.id, btn.dataset.act))
+  })
+}
+
+function _reminderBadge(status) {
+  const colors = { pending: 'var(--warning)', sending: 'var(--warning)', sent: 'var(--success)', failed: 'var(--danger)', cancelled: 'var(--text-muted)' }
+  const color = colors[status] || 'var(--text-muted)'
+  return `<span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;background:color-mix(in srgb,${color} 15%,transparent);color:${color}">${t('reminders.status.' + status) || status}</span>`
+}
+
+async function _reminderAction(id, status) {
+  if (status === 'cancelled' && !confirm(t('reminders.confirm_cancel'))) return
+  try {
+    const res = await fetch(`/api/reminders/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status }),
+    })
+    const data = await res.json()
+    if (!res.ok) { showToast(t('reminders.toast.error', { msg: data.error || ('HTTP ' + res.status) })); return }
+    const idx = _remindersAll.findIndex(r => r.id === id)
+    if (idx !== -1) _remindersAll[idx] = data
+    showToast(t(status === 'cancelled' ? 'reminders.toast.cancelled' : 'reminders.toast.retry'))
+    _renderReminders()
+  } catch (err) {
+    showToast(t('reminders.toast.error', { msg: String(err.message || err) }))
   }
 }
 
