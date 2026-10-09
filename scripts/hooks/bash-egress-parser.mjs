@@ -193,10 +193,16 @@ const MAX_LOOP_VARIANTS = 64
 // A value goes into the text as ONE word: pasting `'{"a":"b c"}'` raw broke the command's own
 // quoting, and its fragments were read as hosts (measured on the fleet's week of commands: a loop
 // of JSON bodies posted to localhost with -d "$p" was denied). A URL never holds whitespace or a
-// quote, so such a value is replaced by the first URL inside it, or by a neutral word.
+// quote, so such a value is replaced by the first URL inside it, or by COMPUTED_WORD.
+// COMPUTED_WORD is a regular, never resolvable hostname, so every reading treats it exactly as a
+// literal host: where it lands in a destination, that destination is computed at runtime and cannot
+// be judged, and the call is DENIED on purpose (fail closed), with the reason <target>-computed-host
+// and the host logged as <computed> (#1817 review). Anywhere else (a -d body, a flag) it is inert.
+export const COMPUTED_WORD = 'sf-computed-value.invalid'
+export const COMPUTED_HOST = '<computed>'
 function asWord(value) {
   if (/^[^\s'"`\\]+$/.test(value)) return value
-  return (String(value).match(URL_RE) ?? [])[0] ?? 'x'
+  return (String(value).match(URL_RE) ?? [])[0] ?? COMPUTED_WORD
 }
 function loopVariants(text, env, loops) {
   let out = [text]
@@ -1060,7 +1066,15 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
       // A listed vendor host (or a host under a listed domain) passes only by itself: any other
       // destination in the same call still denies.
       const hosts = [...new Set(found)].filter((h) => !vendorHosts.has(h) && !hostInDomains(h, vendorDomains))
-      if (hosts.length) return { deny: true, reason: `${target}-external`, hosts }
+      if (hosts.length) {
+        // a host computed at runtime (COMPUTED_WORD) is denied on purpose; the reason and the log say so
+        const computedOnly = hosts.every((h) => h === COMPUTED_WORD)
+        return {
+          deny: true,
+          reason: computedOnly ? `${target}-computed-host` : `${target}-external`,
+          hosts: hosts.map((h) => (h === COMPUTED_WORD ? COMPUTED_HOST : h)),
+        }
+      }
       if (variants === null) return { deny: true, reason: `${target}-loop-unbounded`, hosts: [] }
     }
   }

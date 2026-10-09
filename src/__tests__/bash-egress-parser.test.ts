@@ -20,7 +20,7 @@ import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { classify, isExternal, liftSubstitutions, parseVendorHosts, loadVendorHosts, parseVendorDomains, loadVendorDomains, maskCode, codeDestinations, unwrapLaunchers, clientDestinations } from '../../scripts/hooks/bash-egress-parser.mjs'
+import { COMPUTED_HOST, COMPUTED_WORD, classify, isExternal, liftSubstitutions, parseVendorHosts, loadVendorHosts, parseVendorDomains, loadVendorDomains, maskCode, codeDestinations, unwrapLaunchers, clientDestinations } from '../../scripts/hooks/bash-egress-parser.mjs'
 import {
   BASH_EGRESS_DENY,
   agentGetsBashEgressParser,
@@ -382,6 +382,28 @@ describe('still open after (a) and (d) -- pinned on purpose', () => {
   })
 })
 
+// #1817 review: a loop value that is not one shell word (whitespace, a quote) and holds no URL goes into
+// the text as COMPUTED_WORD. Where it lands in a destination, the host is computed at runtime and cannot
+// be judged: the call is denied ON PURPOSE (fail closed), and the reason and the log say so, instead of
+// a made-up host 'x'. Anywhere else the word is inert, and a URL inside such a value is still its own host.
+describe('a host computed at runtime (#1817 review)', () => {
+  it('is denied on purpose, with the -computed-host reason and the <computed> host', () => {
+    expect(classify('for h in "a b"; do curl -s "http://$h/x"; done')).toEqual({ deny: true, reason: 'curl-computed-host', hosts: [COMPUTED_HOST] })
+    expect(classify('for h in "a b"; do wget -q "http://$h/x"; done')).toEqual({ deny: true, reason: 'wget-computed-host', hosts: [COMPUTED_HOST] })
+    expect(classify('for h in "a b"; do curl -s $h; done')).toEqual({ deny: true, reason: 'curl-computed-host', hosts: [COMPUTED_HOST] })
+  })
+  it('never shows the placeholder word itself, and the placeholder is an external host (never a pass)', () => {
+    const r = classify('for h in "a b"; do curl -s "http://$h/x"; done')
+    expect(JSON.stringify(r)).not.toContain(COMPUTED_WORD)
+    expect(isExternal(`http://${COMPUTED_WORD}/x`)).toBe(true)
+  })
+  it('keeps the rest as before: a real external host in the same call, a JSON body to localhost, a URL inside the value', () => {
+    expect(classify('for h in "a b"; do curl -s "http://$h/x" https://example.org/y; done')).toMatchObject({ deny: true, reason: 'curl-external' })
+    expect(deny(`for p in '{"a":"b c"}'; do curl -s -d "$p" http://localhost:3420/api/x; done`)).toBe(false)
+    expect(classify('for u in "https://example.org/a b"; do curl -s "$u"; done')).toEqual({ deny: true, reason: 'curl-external', hosts: ['example.org'] })
+  })
+})
+
 // The hook as Claude Code runs it: a process reading the payload on stdin.
 describe('the hook process', () => {
   const run = (payload: unknown, log: string) => spawnSync(process.execPath, [HOOK], {
@@ -404,6 +426,20 @@ describe('the hook process', () => {
       const line = readFileSync(log, 'utf-8')
       expect(line).toContain('"hosts":["example.org"]')
       expect(line).not.toContain('secret')
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+
+  it('logs a host computed at runtime as <computed>, with the -computed-host reason (#1817 review)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bash-egress-'))
+    try {
+      const log = join(dir, 'blocks.jsonl')
+      const r = run({ tool_name: 'Bash', tool_input: { command: 'for h in "a b"; do curl -s "http://$h/x"; done' } }, log)
+      expect(r.status).toBe(0)
+      const out = JSON.parse(r.stdout)
+      expect(out.hookSpecificOutput.permissionDecision).toBe('deny')
+      expect(out.hookSpecificOutput.permissionDecisionReason).toContain('(hoszt: <computed>)')
+      const line = JSON.parse(readFileSync(log, 'utf-8').trim())
+      expect({ reason: line.reason, hosts: line.hosts }).toEqual({ reason: 'curl-computed-host', hosts: ['<computed>'] })
     } finally { rmSync(dir, { recursive: true, force: true }) }
   })
 
