@@ -14,6 +14,8 @@ import { join } from 'node:path'
 import {
   agentGetsKillGate,
   injectKillGate,
+  failClosedGateRun,
+  GATE_FAIL_CLOSED_TAG,
   ensureKillGate,
   injectBashEgressParser,
   injectEgressGate,
@@ -30,7 +32,7 @@ const TEST_AGENT = 'kill-gate-probe'
 // main agent to ~/.claude/settings.json, the owner's live file.
 const agentRoot = (n: string) => join(AGENTS_BASE_DIR, n)
 
-type Entry = { matcher?: string; hooks?: Array<{ command?: string }> }
+type Entry = { matcher?: string; hooks?: Array<{ command?: string; timeout?: number }> }
 const ptu = (s: Record<string, unknown>) =>
   (((s.hooks as Record<string, unknown>)?.PreToolUse ?? []) as Entry[])
 const gateEntries = (s: Record<string, unknown>) => ptu(s).filter((e) => JSON.stringify(e).includes('kill-gate.py'))
@@ -129,6 +131,19 @@ describe('the rendered settings file', () => {
     expect(gateEntries(JSON.parse(readFileSync(p, 'utf-8')))[0].matcher).toBe('Bash')
   })
 
+  it('ensureKillGate rewires an entry written before the fail-closed tail (#1814), then is a no-op', () => {
+    // The command the scaffold wrote before the tail: the interpreter probe and a bare python3 call.
+    const miss = 'governance-kapu: a hook interpretere nem talalhato (python3 nincs a PATH-on). A kapu ezert BLOKKOL. Javitas: telepitsd a python3-at, vagy inditsd ujra a dashboardot.'
+    const bare = `command -v python3 >/dev/null 2>&1 || { echo "${miss}" >&2; exit 2; }; python3 "${join(PROJECT_ROOT, 'scripts', 'hooks', 'kill-gate.py')}"`
+    const p = writeSettings({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: bare, timeout: 10 }] }] } })
+    expect(ensureKillGate(TEST_AGENT)).toBe(true)
+    const entries = gateEntries(JSON.parse(readFileSync(p, 'utf-8')))
+    expect(entries).toHaveLength(1)
+    expect(entries[0].hooks?.[0]?.command).toContain(GATE_FAIL_CLOSED_TAG)
+    expect(entries[0].hooks?.[0]?.command?.endsWith('exit "$rc"')).toBe(true)
+    expect(ensureKillGate(TEST_AGENT)).toBe(false)
+  })
+
   it('ensureKillGate creates nothing for an agent that has no settings file yet', () => {
     expect(ensureKillGate(TEST_AGENT)).toBe(false)
     expect(existsSync(agentSettingsPath(TEST_AGENT))).toBe(false)
@@ -149,11 +164,13 @@ describe('call sites and the main agent copy', () => {
     expect(web).toMatch(/if \(ensureKillGate\(agentName\)\) killGatePatched\.push\(agentName\)/)
   })
 
-  it('the committed project settings carry exactly one kill-gate entry, on Bash, through $CLAUDE_PROJECT_DIR', () => {
+  it('the committed project settings carry exactly one kill-gate entry, on Bash, through $CLAUDE_PROJECT_DIR, with the fail-closed tail', () => {
     const s = JSON.parse(readFileSync(join(PROJECT_ROOT, '.claude', 'settings.json'), 'utf-8'))
     const entries = gateEntries(s)
     expect(entries).toHaveLength(1)
     expect(entries[0].matcher).toBe('Bash')
-    expect(entries[0].hooks?.[0]?.command).toBe('python3 "$CLAUDE_PROJECT_DIR/scripts/hooks/kill-gate.py"')
+    // The same run-and-map tail as the other security entries (#1814): a broken gate file blocks.
+    expect(entries[0].hooks?.[0]?.command).toBe(failClosedGateRun('python3 "$CLAUDE_PROJECT_DIR/scripts/hooks/kill-gate.py"', 'kill-gate.py', 10))
+    expect(entries[0].hooks?.[0]?.timeout).toBe(10)
   })
 })
