@@ -528,7 +528,7 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     key: 'MAIN_AGENT_ISOLATED_CONFIG',
     type: 'boolean',
     default: '0',
-    description: 'Bármely platformon: a fő channels-agent kapjon-e saját, izolált CLAUDE_CONFIG_DIR-t (mint a sub-agentek). Bekapcsolva a fő agent a hosszú élettartamú fleet setup-tokenből (store/.claude-oauth-token) hitelesít, nem a megosztott, önmagát frissítő session-hitelesítésből (macOS: rotálódó Keychain OAuth-session; Linux: megosztott ~/.claude/.credentials.json) -- mindkettő periodikusan lejár, és a lejárt fájl a Claude Code precedencia miatt akkor is nyer az érvényes env-tokennel szemben, ha az élő token ott van mellette (2026-07-23 kiesés). Token hiányában no-op. A módosítás a channels session újraindításakor lép életbe.',
+    description: 'Bármely platformon: a fő channels-agent kapjon-e saját, izolált CLAUDE_CONFIG_DIR-t (mint a sub-agentek). Bekapcsolva a fő agent a hosszú élettartamú fleet setup-tokenből (store/.claude-oauth-token) hitelesít, nem a megosztott, önmagát frissítő session-hitelesítésből (macOS: rotálódó Keychain OAuth-session; Linux: megosztott ~/.claude/.credentials.json) -- mindkettő periodikusan lejár. Ha a token exportálva van, a dokumentált precedencia szerint az nyer a /login session-nel szemben (mérve 2026-10-09, Claude Code 2.1.294: lejárt credentials-fájl mellett az érvényes env-token hitelesített, issue #1805). Token hiányában no-op. A módosítás a channels session újraindításakor lép életbe.',
     module: 'channels',
     secret: false,
     requiresRestart: true,

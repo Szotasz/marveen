@@ -617,7 +617,21 @@ export function readExtraChannelPluginIds(): string[] {
 export type MainSharedConfigTrigger =
   /** A fleet setup-token exists but the resolution came back empty: the setting
    *  is missing, not declined. Shape of issue #835; the isolation-lost trigger
-   *  is structurally blind to it because there is no .channels-config dir yet. */
+   *  is structurally blind to it because there is no .channels-config dir yet.
+   *
+   *  NARROWED (issue #1805): only when this launch does NOT export the token.
+   *  Both launch paths export CLAUDE_CODE_OAUTH_TOKEN whenever the token file
+   *  is non-empty (scripts/channels.sh at the top; the shared-root branch of
+   *  buildMainSessionRespawnCmd), and Claude Code's documented precedence puts
+   *  that env token (rank 5) above the /login session (rank 7):
+   *  https://code.claude.com/docs/en/authentication#authentication-precedence.
+   *  Measured 2026-10-09 on 2.1.294, isolated temp CLAUDE_CONFIG_DIR: an EXPIRED
+   *  .credentials.json next to a valid env token -> rc 0, the file untouched;
+   *  the same file without the token -> "OAuth session expired". So an exported
+   *  token is what authenticates and there is nothing to expire or 401. The
+   *  old notice claimed the opposite and asked for a restart that costs the
+   *  running conversation: 23 such false notices were measured on one healthy
+   *  host (#1805). */
   | 'fleet-token-unused'
   /** This install HAS run isolated (its .channels-config is still on disk), yet
    *  this launch resolved to the shared root -- so the setting was LOST, e.g.
@@ -632,6 +646,11 @@ export function mainSharedConfigTrigger(state: {
   fleetToken: boolean
   /** PROJECT_ROOT/.channels-config exists on disk. */
   isolatedDirExists: boolean
+  /** This launch exports the fleet token as CLAUDE_CODE_OAUTH_TOKEN. REQUIRED on
+   *  purpose (issue #1805, the reporter's point): a defaulted fact is how a
+   *  caller picks a verdict it never measured, and this trigger's history is a
+   *  verdict asserted without its evidence. */
+  fleetTokenExported: boolean
 }): MainSharedConfigTrigger {
   // Running isolated -- the whole point of the guard is already satisfied.
   if (state.isolatedConfigDir) return null
@@ -640,22 +659,33 @@ export function mainSharedConfigTrigger(state: {
   // could apply. Swapping these would report a LOST setting as a fresh install
   // and send the operator to the wrong fix.
   if (state.isolatedDirExists) return 'isolation-lost'
-  if (state.fleetToken) return 'fleet-token-unused'
+  // An exported fleet token outranks the /login session (see the type's note), so
+  // a shared root that exports it authenticates from the token and is healthy.
+  // Only a launch that holds the token but does NOT export it is left exposed.
+  if (state.fleetToken && !state.fleetTokenExported) return 'fleet-token-unused'
   return null
 }
 
-/** Reads the three facts mainSharedConfigTrigger decides on. Separate from the
+/** Reads the four facts mainSharedConfigTrigger decides on. Separate from the
  *  decision so the decision needs no filesystem, and separate from the emitter
  *  so the emitter can be swapped in a test. */
 export function readMainSharedConfigState(isolatedConfigDir: string | null): {
   isolatedConfigDir: string | null
   fleetToken: boolean
   isolatedDirExists: boolean
+  fleetTokenExported: boolean
 } {
+  const fleetToken = hasFleetOauthToken()
   return {
     isolatedConfigDir,
-    fleetToken: hasFleetOauthToken(),
+    fleetToken,
     isolatedDirExists: existsSync(join(PROJECT_ROOT, '.channels-config')),
+    // Both main launch paths export the token exactly when the file is non-empty:
+    // scripts/channels.sh (from .env, else store/.claude-oauth-token) and the
+    // shared-root branch of buildMainSessionRespawnCmd (opts.config.fleetToken).
+    // Pinned by main-shared-config-guard.test.ts, so a launcher that stops
+    // exporting it turns this fact false in a test before it does on a host.
+    fleetTokenExported: fleetToken,
   }
 }
 
