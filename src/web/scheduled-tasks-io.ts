@@ -173,6 +173,11 @@ export interface ScheduledTask {
   once?: boolean
   // When the runner switched a once task off (ISO time); absent until then.
   onceDisabledAt?: string
+  // A named topic of the main chat (`/topic new <name>`, store/telegram-topics.json)
+  // the result goes into. Used only while TELEGRAM_TOPICS_ENABLED is on, for the
+  // main agent's tasks delivered on Telegram; otherwise ignored (see
+  // resolveTaskTopicThreadId in schedule-runner.ts).
+  telegramTopic?: string
 }
 
 const CHANNEL_PROVIDER_VALUES: readonly ChannelProviderType[] = ['telegram', 'slack', 'discord', 'googlechat', 'teams']
@@ -235,7 +240,7 @@ export function readScheduledTask(taskName: string): ScheduledTask | null {
   const skillContent = hasSkill ? readFileOr(skillPath, '') : ''
   const { name, description, body } = parseSkillMdFrontmatter(skillContent)
 
-  let config: { schedule?: string; agent?: string; enabled?: boolean; createdAt?: number; type?: string; skipIfBusy?: boolean; requiresDesktop?: boolean; forceSend?: boolean; targetSession?: string; description?: string; command?: string; timeoutMs?: number; failThreshold?: number; preCheck?: string; catchUpMaxAgeMinutes?: unknown; stuckAfterMinutes?: unknown; requires?: { mcp_servers?: unknown }; injectMetrics?: unknown; sendDigestDirect?: unknown; telegramChatId?: string; channelProvider?: unknown; once?: unknown; onceDisabledAt?: unknown } = {}
+  let config: { schedule?: string; agent?: string; enabled?: boolean; createdAt?: number; type?: string; skipIfBusy?: boolean; requiresDesktop?: boolean; forceSend?: boolean; targetSession?: string; description?: string; command?: string; timeoutMs?: number; failThreshold?: number; preCheck?: string; catchUpMaxAgeMinutes?: unknown; stuckAfterMinutes?: unknown; requires?: { mcp_servers?: unknown }; injectMetrics?: unknown; sendDigestDirect?: unknown; telegramChatId?: string; channelProvider?: unknown; once?: unknown; onceDisabledAt?: unknown; telegramTopic?: unknown } = {}
   try {
     config = JSON.parse(readFileOr(configPath, '{}'))
   } catch { /* use defaults */ }
@@ -266,6 +271,7 @@ export function readScheduledTask(taskName: string): ScheduledTask | null {
     channelProvider: parseChannelProvider(config.channelProvider),
     once: readOnceFlag(taskName, config.once),
     onceDisabledAt: typeof config.onceDisabledAt === 'string' ? config.onceDisabledAt : undefined,
+    telegramTopic: typeof config.telegramTopic === 'string' && config.telegramTopic.trim() ? config.telegramTopic.trim() : undefined,
   }
 }
 

@@ -91,6 +91,7 @@ import {
 import { isRestartInFlight } from './restart-lock.js'
 import { mainRespawnHold } from './main-respawn-hold.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
+import { findTelegramTopic, telegramTopicsEnabled } from './telegram-topics.js'
 import { runCommandTask } from './command-task.js'
 import { trackDetachedGroup } from './detached-groups.js'
 import { decideQuotaAction, type QuotaWorkClass } from '../quota-gate.js'
@@ -1093,9 +1094,39 @@ export function deliveryFallbackClause(
   return `Ha ${channelDeliveryName(provider)} nem tudod elkuldeni (a reply tool hianyzik VAGY hibat ad, pl. "Outbound gate"), kuldd Telegramon (chat_id: ${ownerTelegramChat}, reply tool), es az uzenet ELSO sora nevezze meg a ${channelDisplayName(provider)} hibat (a hibauzenettel); mas cimzettet ne tippelj. `
 }
 
-/** The prompt prefix of a non-heartbeat scheduled task whose delivery target resolved. */
-export function taskDeliveryPrefix(taskName: string, provider: ChannelProviderType, chatId: string, isMain: boolean): string {
-  return `[Utemezett feladat: ${taskName}] Az eredmenyt kuldd el ${channelDeliveryName(provider)} (chat_id: ${chatId}, reply tool). ${deliveryFallbackClause(provider, isMain)}`
+/** The prompt prefix of a non-heartbeat scheduled task whose delivery target resolved.
+ *  `threadId`: a Telegram topic (resolveTaskTopicThreadId); without one the text is unchanged. */
+export function taskDeliveryPrefix(taskName: string, provider: ChannelProviderType, chatId: string, isMain: boolean, threadId: number | null = null): string {
+  const topic = threadId === null ? '' : `, message_thread_id: ${threadId}`
+  return `[Utemezett feladat: ${taskName}] Az eredmenyt kuldd el ${channelDeliveryName(provider)} (chat_id: ${chatId}${topic}, reply tool). ${deliveryFallbackClause(provider, isMain)}`
+}
+
+export interface TaskTopicResolution {
+  threadId: number | null
+  /** Why a configured telegramTopic is not used; absent when none is configured or the switch is off. */
+  problem?: string
+}
+
+// task-config.json `telegramTopic`: a topic NAME from store/telegram-topics.json,
+// resolved to its thread id here, so the agent gets the number and never guesses
+// one from the name. Only the main bot's chat has named topics (`/topic new`
+// runs in the main chat), and a thread id is only valid in the chat of the bot
+// that opened it, so a sub-agent's or a non-Telegram task gets no topic. Any
+// failure delivers to the chat without a topic (the owner still gets the
+// result) and is reported; with the switch off the field is ignored, silently.
+export function resolveTaskTopicThreadId(
+  task: Pick<ScheduledTask, 'telegramTopic'>,
+  bound: { provider: ChannelProviderType; chatId: string },
+  isMain: boolean,
+  topicsOn: boolean = telegramTopicsEnabled(),
+  find: typeof findTelegramTopic = findTelegramTopic,
+): TaskTopicResolution {
+  if (!task.telegramTopic || !topicsOn) return { threadId: null }
+  if (bound.provider !== 'telegram') return { threadId: null, problem: `the task delivers on ${bound.provider}, not Telegram` }
+  if (!isMain) return { threadId: null, problem: 'only the main agent has named topics' }
+  const found = find(task.telegramTopic, bound.chatId)
+  if (!found) return { threadId: null, problem: 'no topic of this name for the delivery chat (/topic lists them)' }
+  return { threadId: found.threadId }
 }
 
 /** How a scheduled-task prompt names the delivery channel, in Hungarian, for
@@ -1669,7 +1700,12 @@ async function attemptFireTask(
         // Resolved cleanly: forget any earlier ambiguity alert for this task so
         // that removing the pin again is not silently swallowed.
         ambiguousTargetAlerted.delete(task.name)
-        prefix = taskDeliveryPrefix(task.name, bound.provider, bound.chatId, agentName === MAIN_AGENT_ID)
+        const isMain = agentName === MAIN_AGENT_ID
+        const topic = resolveTaskTopicThreadId(task, { provider: bound.provider, chatId: bound.chatId }, isMain)
+        if (topic.problem) {
+          logger.warn({ task: task.name, agent: agentName, telegramTopic: task.telegramTopic, reason: topic.problem }, 'scheduled task: telegramTopic not used, the result goes to the chat without a topic')
+        }
+        prefix = taskDeliveryPrefix(task.name, bound.provider, bound.chatId, isMain, topic.threadId)
       } else if (bound.ambiguousCandidates) {
         // WRONGRECIP819: 2+ possible human contacts and no explicit pin -- do
         // NOT guess. Delivery is skipped (bare tag, same as the config-gap

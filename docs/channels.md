@@ -42,8 +42,9 @@ Ha a bot privát chatjében be vannak kapcsolva a témák (BotFather), a beszél
 bontható, például projektenként. A `TELEGRAM_TOPICS_ENABLED` beállítással (alapból ki) az
 ügynök abba a témába válaszol, ahonnan az üzenet jött, és a gépelés-jelzés, a „Dolgozom
 rajta” helyőrző és a hookból megválaszolt parancsok is ott jelennek meg. A rendszerüzenetek
-(riasztás, jóváhagyás-kérés, ütemezett feladat eredménye) téma nélkül mennek ki. Témát a
-bot a `/topic new <név>` paranccsal nyit, névvel. A Telegram témánként némít: egy némított
+(riasztás, jóváhagyás-kérés) téma nélkül mennek ki. Témát a bot a `/topic new <név>`
+paranccsal nyit, névvel, és a fő ügynök egy ütemezett feladatának eredménye a
+`task-config.json` `telegramTopic` mezőjével ilyen elnevezett témába küldhető. A Telegram témánként némít: egy némított
 témából nem jön értesítés, akkor sem, ha a chat többi része szól. A
 részletek és a működés: [config-reference.md](config-reference.md#telegram_topics_enabled-a-válasz-abba-a-témába-megy-ahonnan-az-üzenet-jött).
 

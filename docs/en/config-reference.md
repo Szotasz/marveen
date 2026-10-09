@@ -244,8 +244,9 @@ and the attribute on a topic message's tag as well; as long as they do not pass 
 parameter, they behave as before.
 
 **What does not change.** The `chat_id` stays the same, so owner identification, command
-permissions and approvals are not affected. Alerts, approval requests, scheduled task
-results and the voice reply still go out without a topic.
+permissions and approvals are not affected. Alerts, approval requests and the voice reply
+still go out without a topic; a scheduled task's result goes to a topic only when the task
+asks for it (below).
 
 **Named topics (`/topic`).** While the switch is on, `/topic` appears in `/help` and in the
 bot menu, in three forms: `/topic` lists the named topics, `/topic new <name>` (a write command,
@@ -261,6 +262,17 @@ task pointing at it sends into a topic that no longer exists. The file also reco
 main chat changes, the old topics are dropped on the next write and are never used before
 that. With the switch off `/topic` does not exist (the dashboard decides at start), so
 `/help`, the menu and command handling are what they are today.
+
+**Scheduled task result into a topic (`telegramTopic`).** In a task's `task-config.json`,
+`"telegramTopic": "<name>"` names a topic opened with `/topic new`. The runner turns the name
+into the topic's id from `store/telegram-topics.json` and writes `message_thread_id` next to
+the `chat_id` in the task's delivery instruction, so the agent gets the number and never
+guesses it from the name. It works only for the main agent's tasks delivered on Telegram:
+named topics exist only in the main bot's chat, and a topic id is valid only in the chat of
+the bot that opened it. If the name is not found, the task belongs to a sub-agent, or it
+delivers on another channel, the result goes to the chat without a topic and a warning in
+the log says why. With the switch off the runner does not look at the field, and the
+instruction is letter for letter what it is today.
 
 **Muting.** In a chat with topics, Telegram mutes per topic: a muted topic sends no
 notification even while the rest of the chat does. If an answer "did not arrive", check

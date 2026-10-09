@@ -246,8 +246,9 @@ paramétere és a témából jött üzenet tagjének attribútuma; amíg nem adj
 a viselkedésük változatlan.
 
 **Ami nem változik.** A `chat_id` ugyanaz marad, ezért a gazda-azonosítás, a parancsok
-jogosultsága és a jóváhagyások nem érintettek. A riasztások, a jóváhagyás-kérések, az
-ütemezett feladatok eredménye és a hang-válasz továbbra is téma nélkül mennek ki.
+jogosultsága és a jóváhagyások nem érintettek. A riasztások, a jóváhagyás-kérések és a
+hang-válasz továbbra is téma nélkül mennek ki; az ütemezett feladat eredménye csak akkor
+megy témába, ha a feladat kéri (lent).
 
 **Elnevezett témák (`/topic`).** Bekapcsolva a `/topic` megjelenik a `/help`-ben és a bot
 menüjében, három alakban: a `/topic` felsorolja az elnevezett témákat, a `/topic new <név>` (író parancs,
@@ -263,6 +264,17 @@ mutató ütemezett feladat a már nem létező témába küld. A fájl annak a c
 tárolja, amelyikhez a témák tartoznak; ha a fő chat megváltozik, a régi témák a következő
 íráskor elvesznek, és addig sem kerülnek elő. Kikapcsolva a `/topic` nem létezik (a
 dashboard indításkor dönt róla), így a `/help`, a menü és a parancs-kezelés a mai.
+
+**Ütemezett feladat eredménye témába (`telegramTopic`).** A feladat `task-config.json`-jában
+a `"telegramTopic": "<név>"` egy `/topic new`-val elnevezett témát jelöl. A futtató a nevet
+a `store/telegram-topics.json` alapján a téma azonosítójára fordítja, és a feladat
+utasításába a `chat_id` mellé `message_thread_id`-t is ír; az ügynök így a számot kapja,
+nem a névből találgat. Csak a fő ügynök Telegramon kézbesített feladatainál működik, mert
+elnevezett téma csak a fő bot chatjében van, és egy téma-azonosító csak annak a botnak a
+chatjében érvényes, amelyik a témát nyitotta. Ha a név nem található, a feladat egy
+sub-ágensé, vagy nem Telegramon kézbesít, az eredmény téma nélkül megy a chatbe, és a
+naplóban egy figyelmeztetés jelzi, miért. Kikapcsolt kapcsolónál a mezőt a futtató nem
+nézi, az utasítás betűre a mai.
 
 **Némítás.** Témás chatben a Telegram témánként némít: egy némított témából nem jön
 értesítés, akkor sem, ha a chat többi része szól. Ha egy válasz „nem jött meg”, előbb a

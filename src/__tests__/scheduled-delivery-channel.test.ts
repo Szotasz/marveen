@@ -216,8 +216,9 @@ describe('the binding: the delivery prompt line carries the fallback clause', ()
     const src = readFileSync(join(__dirname, '..', 'web', 'schedule-runner.ts'), 'utf-8')
     // The prefix is built by taskDeliveryPrefix (pinned byte for byte in
     // schedule-runner-delivery-prefix.test.ts); the call site passes the main-agent flag.
-    expect(src).toMatch(/Az eredmenyt kuldd el \$\{channelDeliveryName\(provider\)\} \(chat_id: \$\{chatId\}, reply tool\)\. \$\{deliveryFallbackClause\(provider, isMain\)\}`/)
-    expect(src).toContain('taskDeliveryPrefix(task.name, bound.provider, bound.chatId, agentName === MAIN_AGENT_ID)')
+    expect(src).toMatch(/Az eredmenyt kuldd el \$\{channelDeliveryName\(provider\)\} \(chat_id: \$\{chatId\}\$\{topic\}, reply tool\)\. \$\{deliveryFallbackClause\(provider, isMain\)\}`/)
+    expect(src).toContain('const isMain = agentName === MAIN_AGENT_ID')
+    expect(src).toContain('taskDeliveryPrefix(task.name, bound.provider, bound.chatId, isMain, topic.threadId)')
   })
 
   it('the fallback sentence covers a FAILING reply tool and asks for the error on the first line (review 35241)', async () => {
