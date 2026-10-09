@@ -92,9 +92,22 @@ const IDLE_FOOTER_RX = /(?:[A-Za-z][\w-]* ){1,3}on(?: \(shift\+tab to cycle\)| �
 // plus Enter into the dialog with "1. Yes" preselected (#1743 review).
 const FOOTER_TRUNCATED_RX = /(?:[A-Za-z][\w-]* ){1,3}on · [^\n]*·[^\n]*…\s*$/
 
+// VAGTECHIDLE1009 (customer report, Vág-Tech, 2026-10-09; also seen on our own
+// fleet 2026-10-08): while a background shell is still running, the footer can
+// END in its count -- `⏵⏵ bypass permissions on · 1 shell` -- with none of the
+// tails IDLE_FOOTER_RX requires (`ctrl+t`, `↓ to manage`, `← for agents`). The
+// pane then read 'unknown', paneLooksIdle never became true, and every
+// readiness-gated path stopped: delivery, the auto-restart idle guard (6.5 and
+// 18.5 hours of silence at the customer). Same rule as the clipped form: the
+// mode word, `on`, then only `· N shell(s)` and an optional `· N monitor(s)`
+// to the end of the line, and ONLY on the last non-empty line, so the same
+// words quoted in a log line in the scrollback never count.
+const FOOTER_SHELL_TAIL_RX = /(?:[A-Za-z][\w-]* ){1,3}on(?: \(shift\+tab to cycle\))? · \d+ shells?(?: · \d+ monitors?)?\s*$/
+
 /**
  * Index of the idle footer line, or -1. The full footer may sit anywhere the
- * callers already accepted it; the tmux-clipped form counts ONLY as the last
+ * callers already accepted it; the tmux-clipped form and the bare background-
+ * shell tail (VAGTECHIDLE1009) count ONLY as the last
  * non-empty line, which is where the live footer is drawn. A dialog replaces
  * the input box and footer, so its last line is the dialog's own hint, never
  * a clipped footer.
@@ -104,7 +117,7 @@ function idleFooterIndex(lines: string[]): number {
   if (full >= 0) return full
   let last = lines.length - 1
   while (last >= 0 && lines[last].trim() === '') last--
-  return last >= 0 && FOOTER_TRUNCATED_RX.test(lines[last]) ? last : -1
+  return last >= 0 && (FOOTER_TRUNCATED_RX.test(lines[last]) || FOOTER_SHELL_TAIL_RX.test(lines[last])) ? last : -1
 }
 
 function hasIdleFooter(lines: string[]): boolean {
