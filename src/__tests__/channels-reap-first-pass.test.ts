@@ -18,11 +18,13 @@
 //                 are passed in as candidates; a poller dies and is logged
 //                 with its command line;
 //   wiring     -- channels.sh sources the helpers for pass 1, and the old regex
-//                 form is gone. The second pass is covered, unchanged, by
+//                 form is gone; when the helpers cannot be loaded, the skipped
+//                 pass leaves a line in store/channels-reap.log (review of #1811).
+//                 The second pass is covered, unchanged, by
 //                 channels-reap-scope.test.ts (acceptance (4)).
 import { describe, it, expect, afterAll } from 'vitest'
 import { execFileSync, spawn } from 'node:child_process'
-import { readFileSync, writeFileSync, chmodSync, mkdtempSync, rmSync, existsSync } from 'node:fs'
+import { readFileSync, writeFileSync, chmodSync, mkdtempSync, rmSync, existsSync, mkdirSync, copyFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -307,5 +309,36 @@ describe('cc4d0ddd channels.sh pass 1: wiring', () => {
 
   it('has no state-dir-only regex match left in pass 1', () => {
     expect(channelsSh).not.toContain(`awk -v needle="\${STATE_ENV_VAR}=\${MAIN_CHAN_DIR}" '$0 ~ needle`)
+  })
+
+  // The pass-1 block of channels.sh itself (from the source line to its `fi`), run in bash against a scratch
+  // INSTALL_DIR, once without and once with the helper library; the state dir exists nowhere, so no process
+  // is a candidate and nothing is signalled either way.
+  it('a helper library that cannot be loaded leaves a skip line in store/channels-reap.log; a loaded one does not', () => {
+    const lines = channelsSh.split('\n')
+    const start = lines.findIndex((l) => l.startsWith('. "$INSTALL_DIR/scripts/lib/channel-reap.sh"'))
+    expect(start).toBeGreaterThan(-1)
+    let end = start
+    while (end < lines.length && !/^fi\b/.test(lines[end])) end++
+    const block = lines.slice(start, end + 1).join('\n')
+    for (const withLib of [false, true]) {
+      const dir = mkdtempSync(join(tmpdir(), 'reap-wiring-'))
+      try {
+        mkdirSync(join(dir, 'store'))
+        if (withLib) {
+          mkdirSync(join(dir, 'scripts', 'lib'), { recursive: true })
+          copyFileSync(LIB, join(dir, 'scripts', 'lib', 'channel-reap.sh'))
+        }
+        const vars = `INSTALL_DIR="${dir}"\nSTATE_ENV_VAR=TELEGRAM_STATE_DIR\nMAIN_CHAN_DIR="${dir}/no-such-channel-dir"\n` +
+          'CHANNEL_PROVIDER=telegram\nTMUX=/bin/false\n'
+        execFileSync('bash', ['-c', vars + block], { stdio: 'pipe' })
+        const logFile = join(dir, 'store', 'channels-reap.log')
+        const log = existsSync(logFile) ? readFileSync(logFile, 'utf-8') : ''
+        if (withLib) expect(log).toBe('')
+        else expect(log).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z channels\.sh reap pass1: skipped, scripts\/lib\/channel-reap\.sh could not be loaded/)
+      } finally {
+        rmSync(dir, { recursive: true, force: true })
+      }
+    }
   })
 })

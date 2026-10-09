@@ -1131,8 +1131,11 @@ esac
 # of this rule). A candidate now needs the exact state-dir token AND the
 # provider's CLAUDE_PLUGIN_ROOT, both matched literally, and the tmux server and
 # live panes are never signalled. Every kill is logged to store/channels-reap.log.
+# There is no `set -e` here: when the helpers cannot be loaded, pass 1 finds no
+# candidate and is skipped, and the log says so instead of nothing.
 # shellcheck source=lib/channel-reap.sh
-. "$INSTALL_DIR/scripts/lib/channel-reap.sh"
+. "$INSTALL_DIR/scripts/lib/channel-reap.sh" \
+  || echo "$(date -u '+%Y-%m-%dT%H:%M:%SZ') channels.sh reap pass1: skipped, scripts/lib/channel-reap.sh could not be loaded (no orphan poller is reaped by this pass)" >> "$INSTALL_DIR/store/channels-reap.log"
 ORPHAN_PIDS="$(/bin/ps eww -e 2>/dev/null | channel_reap_select_pass1 "${STATE_ENV_VAR}=${MAIN_CHAN_DIR}" "/${CHANNEL_PROVIDER}")"
 if [ -n "$ORPHAN_PIDS" ]; then
   # shellcheck disable=SC2086
