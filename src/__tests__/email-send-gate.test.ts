@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { appendFileSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { appendFileSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 // @ts-expect-error -- plain .mjs hook script, no types
@@ -296,7 +296,10 @@ describe('injectEmailSendGate', () => {
 // the broken module's and not the copy's.
 describe('a recipient-ledger module that does not load (HOOKDEPLOAD1008)', () => {
   const SCRIPTS = join(__dirname, '..', '..', 'scripts')
-  const TMP = mkdtempSync(join(tmpdir(), 'email-send-gate-dep-'))
+  // The real path: node resolves the main module's own path (import.meta.url) through symlinks, and the hook names the
+  // ledger CLI by it; on a symlinked temp dir (macOS: /var/folders -> /private/var/folders) the copy's `dir` must be the
+  // same string, or the <scripts> replacement below misses and the control differs from the real hook (#1818 review).
+  const TMP = realpathSync(mkdtempSync(join(tmpdir(), 'email-send-gate-dep-')))
   // The deny wording carries the install's brand names from its .env; the copy
   // gets the same two values (and nothing else from that file).
   const { botName, ownerName } = readBrandEnv()
