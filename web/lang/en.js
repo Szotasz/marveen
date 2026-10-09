@@ -69,6 +69,7 @@ window._i18n.en = {
   'common.created_at':        'Created',
   'common.updated_at':        'Updated',
   'common.description':       'Description',
+  'common.optional_hint':     '(optional)',
   'common.title':             'Title',
   'common.name':              'Name',
   'common.type':              'Type',

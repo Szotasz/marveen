@@ -69,6 +69,7 @@ window._i18n.hu = {
   'common.created_at':        'Létrehozva',
   'common.updated_at':        'Módosítva',
   'common.description':       'Leírás',
+  'common.optional_hint':     '(opcionális)',
   'common.title':             'Cím',
   'common.name':              'Név',
   'common.type':              'Típus',
