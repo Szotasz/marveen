@@ -55,6 +55,17 @@ describe('sendSessionAlert', () => {
     expect(routine).not.toHaveBeenCalled()
   })
 
+  it('routine alert whose insert fails: sendRoutineAlert as fallback, and the next one retries the main agent', () => {
+    const routine = vi.fn()
+    const key = 'model-consent:test-insert-fails'
+    const failing = vi.fn(() => { throw new Error('database is locked') })
+    expect(sendSessionAlert(false, 'c', { routineKey: key, toMainAgent: true, create: failing, routine, now: 5_000_000 })).toBe('alert-chat')
+    expect(routine).toHaveBeenCalledWith(key, 'c')
+    const working = vi.fn()
+    expect(sendSessionAlert(false, 'c', { routineKey: key, toMainAgent: true, create: working, routine, now: 5_060_000 })).toBe('main-agent')
+    expect(working).toHaveBeenCalledTimes(1)
+  })
+
   it('routine alert with the switch off (or the main session) goes through sendRoutineAlert unchanged', () => {
     const create = vi.fn()
     const routine = vi.fn()

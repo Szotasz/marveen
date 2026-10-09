@@ -2033,19 +2033,21 @@ export function sendSessionAlert(
   const toMainAgent = deps.toMainAgent ?? SESSION_ALERTS_TO_MAIN_AGENT
   if (toMainAgent && !isMainSession) {
     let body = text
+    const now = deps.now ?? Date.now()
     if (deps.routineKey) {
-      const now = deps.now ?? Date.now()
       const prev = sessionAlertStates.get(deps.routineKey)
       const decision = decideRoutineAlert(prev, now, ROUTINE_ALERT_COOLDOWN_MS)
       if (!decision.send) {
         if (prev) prev.suppressed += 1
         return 'suppressed'
       }
-      sessionAlertStates.set(deps.routineKey, { lastSentAt: now, suppressed: 0 })
       body = text + routineAlertSuffix(decision.repeats, ROUTINE_ALERT_COOLDOWN_MS)
     }
     try {
       (deps.create ?? createAgentMessage)('system', MAIN_AGENT_ID, body)
+      // committed only once the message exists: a failed insert must not
+      // suppress the next occurrence on this route
+      if (deps.routineKey) sessionAlertStates.set(deps.routineKey, { lastSentAt: now, suppressed: 0 })
       return 'main-agent'
     } catch (err) {
       logger.warn({ err: err instanceof Error ? err.message : String(err) }, 'Session alert to the main agent failed -- sending it to the alert chat instead')
