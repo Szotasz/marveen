@@ -23,7 +23,7 @@ import { readBody, json } from '../http-helpers.js'
 import { KNOWN_VOICE_MODELS, AGENTS_BASE_DIR, readAgentVoiceConfig } from '../agent-config.js'
 import { getLastInboundModality, setLastInboundModality } from '../voice-modality.js'
 import { buildTtsDirective, resolveAgentChannelStateDir, inboundIsAudio, mainChannelStateDirFor } from '../voice-directive.js'
-import { PROJECT_ROOT, STORE_DIR, VOICE_CALIBRATION_ALERT_AGENT } from '../../config.js'
+import { PROJECT_ROOT, STORE_DIR, VOICE_CALIBRATION_ALERT_AGENT, voiceSttCalibration, type VoiceSttCalibration } from '../../config.js'
 import { notifyChat } from '../../notify.js'
 import { queueVoiceNoticeForMorningBatch, voiceNoticeHeldFor, VOICE_QUIET_END_HOUR, VOICE_QUIET_START_HOUR } from '../voice-quiet-hours.js'
 import { createAgentMessage } from '../../db.js'
@@ -142,7 +142,7 @@ export type VoiceTranscription =
   | { status: 'unavailable'; transcript: null; reason: string }
 
 // The calibrated speech-to-text chain and the one that actually ran, when the two
-// differ (card 75c3d163). See CALIBRATED_STT_MODEL below.
+// differ (card 75c3d163). See VOICE_STT_CALIBRATED_MODEL below.
 export type CalibrationMismatch = { expected: string; actual: string }
 
 // Above this the model is telling us it probably was not speech. A transcript from
@@ -163,10 +163,12 @@ export type CalibrationMismatch = { expected: string; actual: string }
 // SO: whoever changes the model or the decoding options of the INSTALLED toolkit
 // (~/.local/share/marveen-voice/_vtools.py, deployed by scripts/install-voice.sh) is
 // also moving this threshold, whether they mean to or not. Re-measure the known-good
-// files first and put the new range here, with the model name next to it. A threshold
-// without its measurement conditions is a number without a denominator.
+// files first and put the new value into the install's configuration, with the model
+// name next to it (the end of this block). A threshold without its measurement
+// conditions is a number without a denominator.
 //
-// THE VALUE, AND WHAT IT RESTS ON (measured 2026-09-07 15:30-15:45Z on the calibrating install):
+// ONE INSTALL'S VALUE, 0.9, AND WHAT IT RESTS ON (measured 2026-09-07 15:30-15:45Z on the
+// calibrating install; a record of how the measurement is done, NOT a default):
 //   chain      faster-whisper MEDIUM, revision 08e178d4879074, float16 on a GPU,
 //              WITH vad_filter=True, condition_on_previous_text=False AND an
 //              initial_prompt domain vocabulary (STT_INITIAL_PROMPT). That was a
@@ -174,8 +176,8 @@ export type CalibrationMismatch = { expected: string; actual: string }
 //              scripts/voice/_vtools.py, which runs MARVEEN_WHISPER_MODEL from the Hub
 //              (default small), int8 on the CPU, without VAD or vocabulary. Every one
 //              of those is part of the calibration; change any and this number is
-//              stale. The repo's toolkit therefore reports a calibrationMismatch BY
-//              DESIGN until someone re-measures on it (card 75c3d163).
+//              stale. So the repo ships neither this number nor its key (the end of
+//              this block).
 //   speech     n=4 real owner voice messages, 4.4-9.1s, all plainly understandable
 //              Hungarian: 0.153, 0.213, 0.304, 0.860. Measured max 0.860.
 //   NON-speech n=3 synthetic controls -- digital silence, quiet pink noise, loud white
@@ -222,15 +224,29 @@ export type CalibrationMismatch = { expected: string; actual: string }
 // n=4 IS A SMALL SAMPLE. This is the best available evidence, not a law; four owner
 // recordings are what exists. Widen it before leaning harder on this number than
 // "suppress a notice", and re-measure on the FIRST model change either way.
-const UNCERTAIN_NO_SPEECH_PROB = 0.9
-// THE CHAIN THE NUMBER ABOVE WAS MEASURED ON, as the toolkit names it on its diag line
-// (card 75c3d163): the pinned model directory, whose name carries the revision. It sits
-// HERE, in the same block as the threshold, so that whoever re-measures the threshold
-// updates its key in the same edit: a threshold and its calibration key that live apart
-// drift apart, which is how the 2026-09-07 model change moved this number while nobody
-// knew it had moved.
-export const CALIBRATED_STT_MODEL = 'faster-whisper-medium-08e178d48790749d25932bbc082711ddcfdfbc4f'
-export const CALIBRATED_STT_REVISION = '08e178d48790749d25932bbc082711ddcfdfbc4f'
+//
+// THE NUMBER AND THE CHAIN IT WAS MEASURED ON ARE INSTALL CONFIGURATION (card 75c3d163),
+// read TOGETHER in src/config.ts (voiceSttCalibration), so that whoever re-measures the
+// threshold updates its key in the same edit: a threshold and its calibration key that
+// live apart drift apart, which is how the 2026-09-07 model change moved this number
+// while nobody knew it had moved. The key is the model as the toolkit names it on its
+// diag line; the install above runs a pinned model directory whose name carries the
+// revision, so it sets
+//   VOICE_STT_CALIBRATED_MODEL=faster-whisper-medium-08e178d48790749d25932bbc082711ddcfdfbc4f@08e178d48790749d25932bbc082711ddcfdfbc4f
+//   VOICE_STT_UNCERTAIN_NO_SPEECH_PROB=0.9
+// UNSET, the default and the repo's own toolkit's case (it has not been calibrated): no
+// transcript is labelled 'uncertain' from no_speech_prob (the 'unreliable' and
+// 'no-transcript' outcomes do not depend on it), and there is no calibration for a model
+// to mismatch, so no warn, no state and no alert.
+let sttCalibrationProblemLogged = false
+function sttCalibration(): VoiceSttCalibration | null {
+  const { calibration, problem } = voiceSttCalibration()
+  if (problem && !sttCalibrationProblemLogged) {
+    sttCalibrationProblemLogged = true
+    logger.warn({ problem }, 'voice: the STT calibration setting is ignored -- no uncertainty labelling and no mismatch signal')
+  }
+  return calibration
+}
 
 type VtoolsDiag = {
   model: string | null
@@ -282,13 +298,14 @@ function parseVtoolsDiag(stderr: string): VtoolsDiag {
 // chain" belongs to US; packing the second into the first is a category error. So the
 // mismatch travels separately (the response field, a warn, a one-time message, a state).
 // A MISSING model field is an OLDER toolkit, not a foreign model: today's behaviour,
-// no degradation, no signal.
-function calibrationMismatchOf(diag: VtoolsDiag): CalibrationMismatch | null {
-  if (diag.model == null) return null
-  const sameModel = diag.model === CALIBRATED_STT_MODEL
-  const sameRevision = diag.revision == null || diag.revision === CALIBRATED_STT_REVISION
+// no degradation, no signal. NO CALIBRATION CONFIGURED is not a mismatch either: there
+// is nothing to compare with, so the repo's default model raises nothing.
+function calibrationMismatchOf(diag: VtoolsDiag, cal: VoiceSttCalibration | null): CalibrationMismatch | null {
+  if (cal == null || diag.model == null) return null
+  const sameModel = diag.model === cal.model
+  const sameRevision = cal.revision == null || diag.revision == null || diag.revision === cal.revision
   if (sameModel && sameRevision) return null
-  return { expected: CALIBRATED_STT_MODEL, actual: diag.revision ? `${diag.model}@${diag.revision}` : diag.model }
+  return { expected: cal.model, actual: diag.revision ? `${diag.model}@${diag.revision}` : diag.model }
 }
 
 // The persistent state of the mismatches seen so far, one entry per (expected, actual)
@@ -309,6 +326,9 @@ type CalibrationEntry = {
 // Fallback dedup for a process that cannot write the state file: without it, every
 // voice message would queue the same notice again.
 const calibrationNotifiedThisProcess = new Set<string>()
+// The warn goes once per model pair per process, not once per message: the state keeps
+// counting, and GET /api/voice/status shows the count.
+const calibrationWarnedThisProcess = new Set<string>()
 
 function calibrationStatePath(): string {
   return join(STORE_DIR, 'voice-calibration.json')
@@ -343,10 +363,13 @@ function writeCalibrationState(state: Record<string, CalibrationEntry>): void {
   }
 }
 
-function reportCalibrationMismatch(m: CalibrationMismatch): void {
-  logger.warn({ expected: m.expected, actual: m.actual },
-    'voice: the STT model is not the calibrated one -- the uncertainty threshold is NOT measured on this chain')
+function reportCalibrationMismatch(m: CalibrationMismatch, threshold: number): void {
   const key = `${m.expected} -> ${m.actual}`
+  if (!calibrationWarnedThisProcess.has(key)) {
+    calibrationWarnedThisProcess.add(key)
+    logger.warn({ expected: m.expected, actual: m.actual },
+      'voice: the STT model is not the calibrated one -- the uncertainty threshold is NOT measured on this chain')
+  }
   const now = new Date().toISOString()
   const state = readCalibrationState()
   const entry: CalibrationEntry = state[key] ?? {
@@ -361,8 +384,8 @@ function reportCalibrationMismatch(m: CalibrationMismatch): void {
         'voice-calibration',
         VOICE_CALIBRATION_ALERT_AGENT,
         `[voice-calibration] A hang-toolkit mas beszedfelismero modellt futtat, mint amire a leirat-bizonytalansagi kuszob kalibralva van: kalibralt ${m.expected}, a diag-sor szerint ${m.actual}. ` +
-        `A besorolas (high/uncertain/unreliable) valtozatlanul fut, de a kuszob (${UNCERTAIN_NO_SPEECH_PROB}) ezen a modellen NEM MERT, tehat a bizonytalan-jelolesek ervenyessege ismeretlen. ` +
-        'Teendo: az ismert jo felveteleken a no_speech_prob tartomany ujramerese, es a src/web/routes/voice.ts kuszob-blokkjaba beirni a modell nevevel (card 75c3d163). ' +
+        `A besorolas (high/uncertain/unreliable) valtozatlanul fut, de a kuszob (${threshold}) ezen a modellen NEM MERT, tehat a bizonytalan-jelolesek ervenyessege ismeretlen. ` +
+        'Teendo: az ismert jo felveteleken a no_speech_prob tartomany ujramerese ezen a modellen, es a telepites VOICE_STT_CALIBRATED_MODEL es VOICE_STT_UNCERTAIN_NO_SPEECH_PROB beallitasanak egyutt frissitese (card 75c3d163). ' +
         'Ez az uzenet erre a modell-parra egyszer megy; az allapot: GET /api/voice/status, calibration mezo.',
       )
       calibrationNotifiedThisProcess.add(key)
@@ -387,8 +410,9 @@ export async function transcribeVoiceFileDetailed(fileId: string, stateDir: stri
     logger.warn({ fileId, code: result.code, stderr: result.stderr.slice(0, 200) }, 'transcribeVoiceFile: STT chain failed')
     return { status: 'failed', transcript: null, reason: `stt exited ${result.code}` }
   }
-  const calibrationMismatch = calibrationMismatchOf(diag)
-  if (calibrationMismatch) reportCalibrationMismatch(calibrationMismatch)
+  const cal = sttCalibration()
+  const calibrationMismatch = calibrationMismatchOf(diag, cal)
+  if (calibrationMismatch && cal) reportCalibrationMismatch(calibrationMismatch, cal.threshold)
   const text = result.stdout.trim()
   if (!text) {
     // The chain SUCCEEDED and produced nothing. This is the case that used to be
@@ -413,7 +437,8 @@ export async function transcribeVoiceFileDetailed(fileId: string, stateDir: stri
   // a dropped segment has none. So today this branch catches nothing the other one misses.
   // It is here for the case that DOES reach us: a sampled text that survives the filter.
   const sampled = diag.temperature != null && diag.temperature > 0
-  const uncertain = diag.noSpeechProb != null && diag.noSpeechProb >= UNCERTAIN_NO_SPEECH_PROB
+  // No calibration configured, no threshold: no_speech_prob labels nothing (see the threshold block).
+  const uncertain = cal != null && diag.noSpeechProb != null && diag.noSpeechProb >= cal.threshold
   return {
     status: 'ok',
     transcript: text,
@@ -634,11 +659,15 @@ export async function tryHandleVoice(ctx: RouteContext): Promise<boolean> {
     const voices = installed
       ? Array.from(KNOWN_VOICE_MODELS).filter((m) => existsSync(join(VOICE_DIR, 'voices', `${m}.onnx`)))
       : []
-    // calibration: the model the uncertainty threshold was measured on, and every
-    // model-pair mismatch seen so far with its first/last time and whether the
-    // one-time notice went out (card 75c3d163). Readable here long after the
-    // notice itself has scrolled out of a queue.
-    json(res, { installed, voices, voiceDir: VOICE_DIR, calibration: { model: CALIBRATED_STT_MODEL, mismatches: Object.values(readCalibrationState()) } })
+    // calibration: the model the uncertainty threshold was measured on and the threshold
+    // (null, null: none configured), and every model-pair mismatch seen so far with its
+    // first/last time and whether the one-time notice went out (card 75c3d163). Readable
+    // here long after the notice itself has scrolled out of a queue.
+    const cal = sttCalibration()
+    json(res, { installed, voices, voiceDir: VOICE_DIR, calibration: {
+      model: cal?.model ?? null, revision: cal?.revision ?? null, threshold: cal?.threshold ?? null,
+      mismatches: Object.values(readCalibrationState()),
+    } })
     return true
   }
 

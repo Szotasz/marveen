@@ -47,6 +47,17 @@ vi.mock('node:fs', async (importOriginal) => {
   return { ...real, existsSync: () => true }
 })
 
+// The threshold is install configuration (src/config.ts voiceSttCalibration; without one nothing is labelled from
+// no_speech_prob): these cases classify with the calibrating install's 0.9. The diag lines below do not name a model
+// (an older toolkit's shape), so no mismatch is raised either way.
+vi.mock('../config.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../config.js')>()),
+  voiceSttCalibration: () => ({
+    calibration: { model: 'faster-whisper-medium-08e178d48790749d25932bbc082711ddcfdfbc4f', revision: null, threshold: 0.9 },
+    problem: null,
+  }),
+}))
+
 const { transcribeVoiceFileDetailed } = await import('../web/routes/voice.js')
 
 // A synthetic id of the Telegram shape (SAFE_FILE_ID_RE), not a real message's.

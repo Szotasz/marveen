@@ -13,6 +13,9 @@ import { join } from 'node:path'
 //     diag line with NO model field, i.e. an older installed toolkit (no signal, today's result);
 //   - the dedup holds across a dashboard restart (the state file), and does not depend on the state file
 //     being writable (the in-process fallback).
+// The calibration itself is INSTALL configuration (src/config.ts voiceSttCalibration, upstream review of #1732): the
+// tests hand the route the calibrating install's values (CALIBRATED below), and the "no calibration" block pins the
+// stock install, which sets none: no labelling from no_speech_prob, no mismatch, no warn, no state, no alert.
 
 const h = vi.hoisted(() => ({
   dir: `${process.env.TMPDIR ?? '/tmp'}/voice-calibration-test-${process.pid}-${Date.now()}`,
@@ -26,6 +29,10 @@ const h = vi.hoisted(() => ({
   // 75c3d163 (a): the main agent's morning batch rows (the memory store), and a switch to make its write fail
   batchRows: [] as Array<{ id: number; agentId: string; content: string; keywords: string }>,
   batchFail: false,
+  // the install's calibration (src/config.ts voiceSttCalibration); beforeEach sets the calibrating install's values
+  cal: { calibration: null, problem: null } as {
+    calibration: { model: string; revision: string | null; threshold: number } | null; problem: string | null
+  },
 }))
 
 vi.mock('node:child_process', () => ({
@@ -56,6 +63,7 @@ vi.mock('../config.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../config.js')>()),
   STORE_DIR: h.dir,
   VOICE_CALIBRATION_ALERT_AGENT: 'dev-lead-x',
+  voiceSttCalibration: () => h.cal,
 }))
 
 vi.mock('../db.js', async (importOriginal) => ({
@@ -115,6 +123,9 @@ let voice: VoiceModule
 const FILE_ID = 'AwACAgQAAxkBAAITestVoiceId0002'
 const STATE_DIR = `${process.env.HOME}/.claude/channels/telegram`
 const REV = '08e178d48790749d25932bbc082711ddcfdfbc4f'
+// The calibrating install's configuration (VOICE_STT_CALIBRATED_MODEL=<model>@<revision>, VOICE_STT_UNCERTAIN_NO_SPEECH_PROB=0.9).
+const CAL_MODEL = 'faster-whisper-medium-08e178d48790749d25932bbc082711ddcfdfbc4f'
+const CALIBRATED = { calibration: { model: CAL_MODEL, revision: REV, threshold: 0.9 }, problem: null }
 const OTHER_REV = '2222222222222222222222222222222222222222'
 const STATE_FILE = () => join(h.dir, 'voice-calibration.json')
 
@@ -147,6 +158,7 @@ beforeEach(async () => {
   h.stateDir = null
   h.quietChats = ''
   h.failNextMessage = false
+  h.cal = CALIBRATED
   // A fixed DAYTIME clock (12:00 Budapest): the channel notice keeps the owners' quiet period (75c3d163 G2), so a test
   // that expects a notice must not depend on the hour the suite happens to run at.
   vi.useFakeTimers({ toFake: ['Date'] })
@@ -161,7 +173,7 @@ afterAll(() => rmSync(h.dir, { recursive: true, force: true }))
 
 describe('75c3d163: the three acceptance controls', () => {
   it('POSITIVE: the calibrated model keeps HIGH and raises nothing', async () => {
-    const r = await speak(diag({ model: voice.CALIBRATED_STT_MODEL, revision: REV }))
+    const r = await speak(diag({ model: CAL_MODEL, revision: REV }))
     expect(r.status).toBe('ok')
     if (r.status !== 'ok') return
     expect(r.confidence).toBe('high')
@@ -176,14 +188,14 @@ describe('75c3d163: the three acceptance controls', () => {
     if (r.status !== 'ok') return
     // the design decision: the classification is NOT touched by the mismatch
     expect(r.confidence).toBe('high')
-    expect(r.calibrationMismatch).toEqual({ expected: voice.CALIBRATED_STT_MODEL, actual: `small@${OTHER_REV}` })
+    expect(r.calibrationMismatch).toEqual({ expected: CAL_MODEL, actual: `small@${OTHER_REV}` })
     expect(h.sent).toHaveLength(1)
     expect(h.sent[0].from).toBe('voice-calibration')
     expect(h.sent[0].to).toBe('dev-lead-x')
-    expect(h.sent[0].content).toContain(voice.CALIBRATED_STT_MODEL)
+    expect(h.sent[0].content).toContain(CAL_MODEL)
     expect(h.sent[0].content).toContain(`small@${OTHER_REV}`)
     const s = state()
-    const e = s[`${voice.CALIBRATED_STT_MODEL} -> small@${OTHER_REV}`]
+    const e = s[`${CAL_MODEL} -> small@${OTHER_REV}`]
     expect(e.count).toBe(1)
     expect(e.notifiedAgent).toBe('dev-lead-x')
     expect(e.messageId).toBe(9001)
@@ -211,17 +223,17 @@ describe('75c3d163: what a mismatch must and must not change', () => {
   })
 
   it('the same model name with a different revision is a mismatch too', async () => {
-    const r = await speak(diag({ model: voice.CALIBRATED_STT_MODEL, revision: OTHER_REV }))
+    const r = await speak(diag({ model: CAL_MODEL, revision: OTHER_REV }))
     expect(r.status).toBe('ok')
     if (r.status !== 'ok') return
-    expect(r.calibrationMismatch?.actual).toBe(`${voice.CALIBRATED_STT_MODEL}@${OTHER_REV}`)
+    expect(r.calibrationMismatch?.actual).toBe(`${CAL_MODEL}@${OTHER_REV}`)
   })
 
   it('a no-transcript result carries the mismatch as well', async () => {
     const r = await speak(diag({ model: 'small', revision: '', seg: 0, nsp: '', temp: '' }), '')
     expect(r.status).toBe('no-transcript')
     if (r.status !== 'no-transcript') return
-    expect(r.calibrationMismatch).toEqual({ expected: voice.CALIBRATED_STT_MODEL, actual: 'small' })
+    expect(r.calibrationMismatch).toEqual({ expected: CAL_MODEL, actual: 'small' })
   })
 
   it('an earlier vtools-diag line (a GPU fallback notice) does not hide the measurements', async () => {
@@ -241,7 +253,7 @@ describe('75c3d163: the one-time message', () => {
     await speak(diag({ model: 'small', revision: OTHER_REV }))
     await speak(diag({ model: 'small', revision: OTHER_REV }))
     expect(h.sent).toHaveLength(1)
-    expect(state()[`${voice.CALIBRATED_STT_MODEL} -> small@${OTHER_REV}`].count).toBe(2)
+    expect(state()[`${CAL_MODEL} -> small@${OTHER_REV}`].count).toBe(2)
     await speak(diag({ model: 'medium', revision: OTHER_REV }))
     expect(h.sent).toHaveLength(2)
   })
@@ -253,7 +265,7 @@ describe('75c3d163: the one-time message', () => {
     voice = await import('../web/routes/voice.js')
     await speak(diag({ model: 'small', revision: OTHER_REV }))
     expect(h.sent).toHaveLength(1)
-    expect(state()[`${voice.CALIBRATED_STT_MODEL} -> small@${OTHER_REV}`].count).toBe(2)
+    expect(state()[`${CAL_MODEL} -> small@${OTHER_REV}`].count).toBe(2)
   })
 
   it('a failed send is retried on the next occurrence, and the transcription is not affected', async () => {
@@ -261,7 +273,7 @@ describe('75c3d163: the one-time message', () => {
     const r = await speak(diag({ model: 'small', revision: OTHER_REV }))
     expect(r.status).toBe('ok')
     expect(h.sent).toHaveLength(0)
-    expect(state()[`${voice.CALIBRATED_STT_MODEL} -> small@${OTHER_REV}`].notifiedAt).toBeNull()
+    expect(state()[`${CAL_MODEL} -> small@${OTHER_REV}`].notifiedAt).toBeNull()
     await speak(diag({ model: 'small', revision: OTHER_REV }))
     expect(h.sent).toHaveLength(1)
   })
@@ -284,7 +296,9 @@ describe('75c3d163: where the mismatch can be read later, and where it must not 
     })
     expect(handled).toBe(true)
     const body = JSON.parse(res.body)
-    expect(body.calibration.model).toBe(voice.CALIBRATED_STT_MODEL)
+    expect(body.calibration.model).toBe(CAL_MODEL)
+    expect(body.calibration.revision).toBe(REV)
+    expect(body.calibration.threshold).toBe(0.9)
     expect(body.calibration.mismatches).toHaveLength(1)
     expect(body.calibration.mismatches[0].actual).toBe(`small@${OTHER_REV}`)
   })
@@ -296,7 +310,7 @@ describe('75c3d163: where the mismatch can be read later, and where it must not 
     await voice.tryHandleVoice({ req: {} as never, res: res as never, path: '/api/voice/directive', method: 'GET', url })
     const body = JSON.parse(res.body)
     expect(body.transcriptConfidence).toBe('uncertain')
-    expect(body.calibrationMismatch).toEqual({ expected: voice.CALIBRATED_STT_MODEL, actual: `small@${OTHER_REV}` })
+    expect(body.calibrationMismatch).toEqual({ expected: CAL_MODEL, actual: `small@${OTHER_REV}` })
     expect(body.noticeDelivered).toBe(true)
     expect(h.notified).toHaveLength(1)
     expect(h.notified[0].chatId).toBe('123456789')
@@ -319,8 +333,8 @@ describe('75c3d163 G1: the channel notice goes out only on the main bot, and the
     await voice.tryHandleVoice({ req: {} as never, res: res as never, path: '/api/voice/directive', method: 'GET', url })
     return JSON.parse(res.body)
   }
-  const uncertain = () => { h.run = { stdout: 'Sziasztok!\n', stderr: diag({ model: voice.CALIBRATED_STT_MODEL, revision: REV, nsp: '0.907' }), code: 0 } }
-  const silent = () => { h.run = { stdout: '', stderr: diag({ model: voice.CALIBRATED_STT_MODEL, revision: REV, seg: 0, nsp: '', temp: '' }), code: 0 } }
+  const uncertain = () => { h.run = { stdout: 'Sziasztok!\n', stderr: diag({ model: CAL_MODEL, revision: REV, nsp: '0.907' }), code: 0 } }
+  const silent = () => { h.run = { stdout: '', stderr: diag({ model: CAL_MODEL, revision: REV, seg: 0, nsp: '', temp: '' }), code: 0 } }
 
   it('OWN BOT, uncertain: no notice from the main bot, and the agent is told the sender knows nothing yet', async () => {
     h.stateDir = OWN_BOT
@@ -377,8 +391,8 @@ describe('75c3d163 G2: the channel notice keeps the quiet period of the LISTED r
     await voice.tryHandleVoice({ req: {} as never, res: res as never, path: '/api/voice/directive', method: 'GET', url })
     return JSON.parse(res.body)
   }
-  const uncertain = () => { h.run = { stdout: 'Sziasztok!\n', stderr: diag({ model: voice.CALIBRATED_STT_MODEL, revision: REV, nsp: '0.907' }), code: 0 } }
-  const silent = () => { h.run = { stdout: '', stderr: diag({ model: voice.CALIBRATED_STT_MODEL, revision: REV, seg: 0, nsp: '', temp: '' }), code: 0 } }
+  const uncertain = () => { h.run = { stdout: 'Sziasztok!\n', stderr: diag({ model: CAL_MODEL, revision: REV, nsp: '0.907' }), code: 0 } }
+  const silent = () => { h.run = { stdout: '', stderr: diag({ model: CAL_MODEL, revision: REV, seg: 0, nsp: '', temp: '' }), code: 0 } }
 
   it('NEGATIVE: a voice message at 23:30 Budapest sends nothing at once to a LISTED recipient, and the agent is told the notice is held', async () => {
     vi.setSystemTime(new Date('2026-07-15T21:30:00Z')) // 23:30 CEST
@@ -443,5 +457,83 @@ describe('75c3d163 G2: the channel notice keeps the quiet period of the LISTED r
     expect(body.noticeDelivered).toBe(true)
     expect(body.transcriptNotice).not.toContain('csendes idoszak')
     expect(h.batchRows).toHaveLength(0)
+  })
+})
+
+// Upstream review of #1732, request 1: the stock install calibrates nothing, so the repo's default model must raise nothing.
+describe('#1732 review (1): no calibration configured -- the stock install', () => {
+  const calWarns = (warn: { mock: { calls: unknown[][] } }) => warn.mock.calls.filter((c) => /calibrat/i.test(String(c[1])))
+
+  it('a foreign model raises nothing: no field, no warn, no message, no state', async () => {
+    h.cal = { calibration: null, problem: null }
+    const { logger } = await import('../logger.js')
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => logger)
+    const r = await speak(diag({ model: 'small', revision: OTHER_REV }))
+    expect(r.status).toBe('ok')
+    if (r.status !== 'ok') return
+    expect(r.confidence).toBe('high')
+    expect(r.calibrationMismatch).toBeNull()
+    expect(h.sent).toHaveLength(0)
+    expect(state()).toBeNull()
+    expect(calWarns(warn)).toHaveLength(0)
+    warn.mockRestore()
+  })
+
+  it('no_speech_prob labels nothing without a threshold: a 0.95 transcript stays HIGH, and the sender is not notified', async () => {
+    h.cal = { calibration: null, problem: null }
+    h.run = { stdout: 'Sziasztok!\n', stderr: diag({ model: 'small', revision: OTHER_REV, nsp: '0.95' }), code: 0 }
+    const res = { status: 0, body: '', writeHead(s: number) { this.status = s }, end(b: string) { this.body = b } }
+    const url = new URL(`http://x/api/voice/directive?agent=tesztagens&chat=123456789&file=${FILE_ID}&kind=voice`)
+    await voice.tryHandleVoice({ req: {} as never, res: res as never, path: '/api/voice/directive', method: 'GET', url })
+    const body = JSON.parse(res.body)
+    expect(body.transcriptConfidence).toBe('high')
+    expect(body.transcriptNotice).toBeNull()
+    expect(body.calibrationMismatch).toBeNull()
+    expect(h.notified).toHaveLength(0)
+  })
+
+  it('CONTROL: the same 0.95 transcript is UNCERTAIN once a calibration is configured', async () => {
+    const r = await speak(diag({ model: CAL_MODEL, revision: REV, nsp: '0.95' }), 'Sziasztok!\n')
+    expect(r.status === 'ok' && r.confidence).toBe('uncertain')
+  })
+
+  it('GET /api/voice/status says that nothing is calibrated', async () => {
+    h.cal = { calibration: null, problem: null }
+    await speak(diag({ model: 'small', revision: OTHER_REV }))
+    const res = { status: 0, body: '', writeHead(s: number) { this.status = s }, end(b: string) { this.body = b } }
+    await voice.tryHandleVoice({
+      req: {} as never, res: res as never, path: '/api/voice/status', method: 'GET', url: new URL('http://x/api/voice/status'),
+    })
+    const body = JSON.parse(res.body)
+    expect(body.calibration).toEqual({ model: null, revision: null, threshold: null, mismatches: [] })
+  })
+
+  it('a half-set calibration is ignored like no calibration, and the reason is logged once', async () => {
+    h.cal = { calibration: null, problem: 'VOICE_STT_CALIBRATED_MODEL is set without VOICE_STT_UNCERTAIN_NO_SPEECH_PROB' }
+    const { logger } = await import('../logger.js')
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => logger)
+    const r1 = await speak(diag({ model: 'small', revision: OTHER_REV, nsp: '0.95' }), 'Sziasztok!\n')
+    await speak(diag({ model: 'small', revision: OTHER_REV, nsp: '0.95' }), 'Sziasztok!\n')
+    expect(r1.status === 'ok' && r1.confidence).toBe('high')
+    expect(calWarns(warn)).toHaveLength(1)
+    expect(calWarns(warn)[0][0]).toEqual({ problem: h.cal.problem })
+    expect(h.sent).toHaveLength(0)
+    expect(state()).toBeNull()
+    warn.mockRestore()
+  })
+})
+
+describe('#1732 review (1): the mismatch warn goes once per model pair, not once per message', () => {
+  it('two messages on the same foreign model warn once (the state still counts both); a second pair warns once more', async () => {
+    const { logger } = await import('../logger.js')
+    const warn = vi.spyOn(logger, 'warn').mockImplementation(() => logger)
+    const mismatchWarns = () => warn.mock.calls.filter((c) => String(c[1]).includes('not the calibrated one'))
+    await speak(diag({ model: 'small', revision: OTHER_REV }))
+    await speak(diag({ model: 'small', revision: OTHER_REV }))
+    expect(mismatchWarns()).toHaveLength(1)
+    expect(state()[`${CAL_MODEL} -> small@${OTHER_REV}`].count).toBe(2)
+    await speak(diag({ model: 'base', revision: OTHER_REV }))
+    expect(mismatchWarns()).toHaveLength(2)
+    warn.mockRestore()
   })
 })

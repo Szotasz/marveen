@@ -238,12 +238,50 @@ export function brandSlug(raw: string): string {
 // fall back to "marveen" so nothing breaks when upgrading in place.
 export const MAIN_AGENT_ID = env['MAIN_AGENT_ID'] ?? 'marveen'
 // Who is told, once per (expected, actual) pair, that the voice toolkit runs a
-// different speech-to-text chain than the one the uncertainty threshold in
-// src/web/routes/voice.ts was calibrated on (card 75c3d163). Falls back to
-// FLEET_LEAD_ID, then to MAIN_AGENT_ID, so an install that sets neither still
-// has a named recipient.
+// different speech-to-text chain than the calibrated one configured below
+// (VOICE_STT_CALIBRATED_MODEL; card 75c3d163). Without a calibration nobody is
+// told anything. Falls back to FLEET_LEAD_ID, then to MAIN_AGENT_ID, so an
+// install that sets neither still has a named recipient.
 export const VOICE_CALIBRATION_ALERT_AGENT =
   (env['VOICE_CALIBRATION_ALERT_AGENT'] ?? '').trim() || (env['FLEET_LEAD_ID'] ?? '').trim() || MAIN_AGENT_ID
+// The speech-to-text chain the transcript-uncertainty threshold was calibrated on,
+// and the threshold itself (card 75c3d163): INSTALL configuration, both or neither.
+// The repo's own toolkit (scripts/voice/_vtools.py: MARVEEN_WHISPER_MODEL from the
+// Hub, int8 on the CPU, no VAD) has not been calibrated, so the repo ships neither a
+// key nor a number: a threshold without the chain it was measured on is a number
+// without a denominator, and a key without its threshold guards nothing.
+//   VOICE_STT_CALIBRATED_MODEL          the model as the toolkit's diag line names it
+//                                       (model=), optionally "@<revision>" (revision=)
+//   VOICE_STT_UNCERTAIN_NO_SPEECH_PROB  the no_speech_prob at or above which a
+//                                       transcript is 'uncertain', in (0, 1]
+// Unset (the default): no no_speech_prob labelling, no mismatch signal, no alert.
+// Half-set or invalid: the same, and the voice route logs why, once (config.ts
+// cannot own a logger, see APP_TZ_INVALID).
+export type VoiceSttCalibration = { model: string; revision: string | null; threshold: number }
+export function parseVoiceSttCalibration(
+  model: string | undefined,
+  threshold: string | undefined,
+): { calibration: VoiceSttCalibration | null; problem: string | null } {
+  const m = (model ?? '').trim()
+  const t = (threshold ?? '').trim()
+  if (!m && !t) return { calibration: null, problem: null }
+  if (!m) return { calibration: null, problem: 'VOICE_STT_UNCERTAIN_NO_SPEECH_PROB is set without VOICE_STT_CALIBRATED_MODEL' }
+  if (!t) return { calibration: null, problem: 'VOICE_STT_CALIBRATED_MODEL is set without VOICE_STT_UNCERTAIN_NO_SPEECH_PROB' }
+  const n = /^[0-9]*\.?[0-9]+$/.test(t) ? Number(t) : NaN
+  if (!(n > 0 && n <= 1)) return { calibration: null, problem: 'VOICE_STT_UNCERTAIN_NO_SPEECH_PROB is not a number in (0, 1]' }
+  const at = m.indexOf('@')
+  const name = at < 0 ? m : m.slice(0, at)
+  const revision = at < 0 ? null : m.slice(at + 1)
+  if (!/^\S+$/.test(name) || (revision !== null && !/^[^\s@]+$/.test(revision))) {
+    return { calibration: null, problem: 'VOICE_STT_CALIBRATED_MODEL is not of the form <model>[@<revision>]' }
+  }
+  return { calibration: { model: name, revision, threshold: n }, problem: null }
+}
+const voiceSttCalibrationParsed = parseVoiceSttCalibration(env['VOICE_STT_CALIBRATED_MODEL'], env['VOICE_STT_UNCERTAIN_NO_SPEECH_PROB'])
+// A function rather than a constant, so a test can hand the voice route either case.
+export function voiceSttCalibration(): { calibration: VoiceSttCalibration | null; problem: string | null } {
+  return voiceSttCalibrationParsed
+}
 // The hidden heartbeat worker's agent id. Lives here (not in
 // heartbeat-agent-scaffold) so agent-scaffold can key gates on it without an
 // import cycle: heartbeat-agent-scaffold already imports agent-scaffold.
