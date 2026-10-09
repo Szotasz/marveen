@@ -129,4 +129,24 @@ describe('alert delivery line (card 68cb6715)', () => {
       fields: { agent: null, kind: null, recipient: 'owner', outcome: 'sent', chunks: 1, failedChunks: 0 },
     }])
   })
+
+  // notifyChannel reaches the owner chat through telegramOwner, not notifyOwner
+  // (the Slack wrapper of #1745), so notifyOwner's own meta pass and the
+  // redirected leg's agent and case each need a case of their own.
+  it('notifyOwner passes its meta to the line', async () => {
+    await notifyOwner('digest', { agent: 'agent-x', kind: 'security' })
+    expect(deliveryLines()).toEqual([{
+      level: 'info',
+      fields: { agent: 'agent-x', kind: 'security', recipient: 'owner', outcome: 'sent', chunks: 1, failedChunks: 0 },
+    }])
+  })
+
+  it('a redirected alert keeps its agent and case', async () => {
+    cfg.alertChatId = '222'
+    await notifyChannel('x', { agent: 'agent-x', kind: 'permission-prompt' })
+    expect(deliveryLines()).toEqual([{
+      level: 'info',
+      fields: { agent: 'agent-x', kind: 'permission-prompt', recipient: 'alert-chat', outcome: 'sent', chunks: 1, failedChunks: 0 },
+    }])
+  })
 })
