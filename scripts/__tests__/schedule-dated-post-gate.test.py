@@ -154,6 +154,16 @@ new = log_lines()[before:]
 check("ALLOW when egyszeri.py is missing", r.returncode == 0 and r.stderr == "", f"rc={r.returncode} stderr={r.stderr[:120]!r}")
 check("and one log line names the cron and the missing script", len(new) == 1 and "15 7 9 10 *" in new[0] and "missing" in new[0], repr(new))
 
+print("the default path: scripts/egyszeri.py next to the hooks directory")
+default_script = os.path.join(os.path.dirname(os.path.dirname(GATE)), "egyszeri.py")
+check("the default script ships in the tree (scripts/egyszeri.py)", os.path.isfile(default_script), default_script)
+env = dict(os.environ, HOOK_ERRLOG_PATH=ERRLOG, PYTHONDONTWRITEBYTECODE="1")
+env.pop("SCHEDULE_GATE_ONESHOT_SCRIPT", None)
+r = subprocess.run([sys.executable, GATE], capture_output=True, text=True, env=env, timeout=30, input=json.dumps(
+    {"tool_name": "Bash", "tool_input": {"command": f"""curl -s -X POST {URL} {AUTH} -d '{{"name":"x","prompt":"p","schedule":"15 7 9 10 *"}}'"""}}))
+check("DENY a raw dated POST without the override (the default path is found)",
+      r.returncode == 2 and r.stderr.strip() == MESSAGE, f"rc={r.returncode} stderr={r.stderr[:200]!r}")
+
 print("fail-open: the gate's own failure never stops the call")
 before = len(log_lines())
 r = run("{not json")

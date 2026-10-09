@@ -2,7 +2,7 @@
 """schedule-dated-post-gate.py -- a one-shot wake-up goes through egyszeri.py, not a raw POST (card 44ac3366).
 
 WHY: a dated cron ("15 7 9 10 *": the day and the month are fixed) is how this install writes a one-shot wake-up, and
-the install's own skill writes one with a script (utemezett-feladat-eletciklus, rule 0, scripts/egyszeri.py). The script
+the scheduling skill writes one with a script (utemezett-feladat-eletciklus, rule 0: scripts/egyszeri.py). The script
 does in one step what a raw POST /api/schedules leaves out: the schedule registry entry, forceSend and telegramChatId,
 the cleanup line, and the read-back. The rule stood in the skill and in memory, and the main agent still wrote raw
 POSTs three times (2026-10-01, 2026-10-03, 2026-10-08). Knowing the rule is not a brake.
@@ -29,8 +29,9 @@ an f-string whose day and month are literal numbers).
 NOT SEEN, by design (a command is text): a cron whose day or month comes from a variable ("$CRON",
 f"{m} {h} {d} {mo} *"), and a request body read from a file an earlier command wrote.
 
-ONLY WHERE THE SCRIPT EXISTS: egyszeri.py lives in the install's own skill directory (.claude/skills, gitignored). An
-install without it keeps the raw POST as its only path: the gate allows, and logs one line.
+ONLY WHERE THE SCRIPT EXISTS: egyszeri.py ships in scripts/ (the seed skill utemezett-feladat-eletciklus documents
+it). A tree without it (an older checkout, a partial copy) keeps the raw POST as its only path: the gate allows, and
+logs one line. SCHEDULE_GATE_ONESHOT_SCRIPT points the gate at another copy.
 
 FAIL-OPEN: any error of the gate itself (stdin, parsing) never stops a Bash call: exit 0 and one line to
 store/hook-errors.log (hook_errlog). This hook never exits 1.
@@ -47,8 +48,7 @@ sys.path.insert(0, HERE)
 HOOK = "schedule-dated-post-gate"
 MESSAGE = "egyszeri ébresztő csak az egyszeri.py-jal (utemezett-feladat-eletciklus 0.)"
 ONESHOT_SCRIPT = os.environ.get("SCHEDULE_GATE_ONESHOT_SCRIPT") or os.path.join(
-    os.path.realpath(os.path.join(HERE, "..", "..")),
-    ".claude", "skills", "utemezett-feladat-eletciklus", "scripts", "egyszeri.py",
+    os.path.realpath(os.path.join(HERE, "..", "..")), "scripts", "egyszeri.py",
 )
 
 # The collection path: /api/schedules itself (a query string allowed), never /api/schedules/<name>/...
