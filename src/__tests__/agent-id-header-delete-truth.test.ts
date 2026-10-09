@@ -66,6 +66,7 @@ describe('agent-id-header: what it says about delete and versions (VERZIOTORLES1
     expect(body).toMatch(/felülírás előtt eltárolódik[\s\S]{0,80}\/versions/)
     expect(body).toMatch(/TÖRLÉS viszont VÉGLEGES/)
     expect(body).toMatch(/verzióit is törli/)
+    expect(body).toMatch(/így utána semmiből nem állítható vissza/)
   })
 
   it('tells the reader to read the row out before a delete, with the read endpoint', () => {
