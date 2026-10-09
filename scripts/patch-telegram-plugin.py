@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """
 Take /status and /help away from the Telegram channel plugin (ELSOKOR922 D-4),
-mark forwarded messages in the inbound meta (forwarded="1"), and record every
-inbound message the bot receives (the evidence owner WRITE commands need).
+mark forwarded messages in the inbound meta (forwarded="1"), record every
+inbound message the bot receives (the evidence owner WRITE commands need),
+and -- only while TELEGRAM_TOPICS_ENABLED is on -- carry the topic of a
+message in and the answer back into it (see TOPICS_STEPS).
 
 The official plugin (claude-plugins-official/telegram/<ver>/server.ts) answers
 /status ("Paired as ...") and /help itself, inside its bot poller -- those
@@ -34,8 +36,9 @@ must not rewrite the user-level cache other Claude Code sessions load
   JSON, so /status can say in one line when a patch is missing
   (src/web/system-status.ts) instead of the command silently falling back.
 
-Usage: patch-telegram-plugin.py [--state FILE] [<plugins cache root>]
-(default root: $CLAUDE_CONFIG_DIR/plugins/cache, else ~/.claude/plugins/cache)
+Usage: patch-telegram-plugin.py [--state FILE] [--topics on|off] [<plugins cache root>]
+(default root: $CLAUDE_CONFIG_DIR/plugins/cache, else ~/.claude/plugins/cache;
+without --topics the TELEGRAM_TOPICS_ENABLED setting of this install decides)
 """
 import json
 import os
@@ -127,6 +130,60 @@ PATCHES = [
      "fallback": "the reply tool has no buttons: a question goes out without them and is answered by typing"},
 ]
 
+# Topics (TELEGRAM_TOPICS_ENABLED, default off). A private chat with topic mode
+# enabled in BotFather, or a forum, delivers each message with the topic it was
+# written in -- but the plugin drops that id from the inbound meta and its reply
+# tool cannot address a topic, so every answer lands outside the topic. This
+# patch carries message_thread_id in (meta, only for a real topic message) and
+# back out (reply text chunks, attached files, the typing indicator).
+#
+# Unlike the patches above it is switchable, so it must also come OFF again:
+# every line it adds ends with TOPICS_TAG, and every line it replaces is kept
+# verbatim behind TOPICS_ORIG at column 0. Removing all TOPICS_TAG lines and
+# the TOPICS_ORIG prefixes gives back the unpatched text byte for byte.
+# Without a topic every changed call gets exactly the arguments it gets today.
+TOPICS_TAG = "// MARVEEN-PATCH(tgtopics)"
+TOPICS_ORIG = "// MARVEEN-PATCH(tgtopics-orig) "
+TOPICS_SETTING = "TELEGRAM_TOPICS_ENABLED"
+# The values src/config.ts reads as on; the Settings page itself writes "1".
+TRUTHY = ("1", "true", "yes", "on")
+
+_INBOUND_THREAD = "ctx.message?.is_topic_message && ctx.message.message_thread_id != null"
+TOPICS_STEPS = [
+    ("inbound meta ts", "insert-after",
+     re.compile(r"^( *)ts: new Date\(\(ctx\.message\?\.date \?\? 0\) \* 1000\)\.toISOString\(\),\n", re.MULTILINE),
+     ["...(" + _INBOUND_THREAD + " ? { message_thread_id: String(ctx.message.message_thread_id) } : {}),"]),
+    ("typing indicator", "replace",
+     re.compile(r"^( *)void bot\.api\.sendChatAction\(chat_id, 'typing'\)\.catch\(\(\) => \{\}\)\n", re.MULTILINE),
+     ["void bot.api.sendChatAction(chat_id, 'typing', ...(" + _INBOUND_THREAD
+      + " ? [{ message_thread_id: ctx.message.message_thread_id }] : [])).catch(() => {})"]),
+    ("instructions inbound tag", "insert-after",
+     re.compile(r"^( *)'Messages from Telegram arrive as <channel source=\"telegram\" [^\n]*\n", re.MULTILINE),
+     ["'In a topic (a private chat with topics enabled, or a forum) the tag also has message_thread_id: "
+      "pass it back to reply as message_thread_id, so the answer lands in the same topic.',"]),
+    ("reply schema files", "insert-before",
+     re.compile(r"^( *)files: \{\n *type: 'array',\n *items: \{ type: 'string' \},\n *description: 'Absolute file paths",
+                re.MULTILINE),
+     ["message_thread_id: {",
+      "  type: 'string',",
+      "  description: 'Topic to post into. Pass message_thread_id from the inbound <channel> block when it has one; omit it otherwise.',",
+      "},"]),
+    ("reply args", "insert-after",
+     re.compile(r"^( *)const reply_to = args\.reply_to != null \? Number\(args\.reply_to\) : undefined\n", re.MULTILINE),
+     ["const message_thread_id = args.message_thread_id != null && args.message_thread_id !== '' ? Number(args.message_thread_id) : undefined",
+      "if (message_thread_id !== undefined && !(Number.isSafeInteger(message_thread_id) && message_thread_id > 0)) "
+      "throw new Error(`invalid message_thread_id: ${String(args.message_thread_id)}`)"]),
+    ("reply text options", "insert-after",
+     re.compile(r"^( *)\.\.\.\(shouldReplyTo \? \{ reply_parameters: \{ message_id: reply_to \} \} : \{\}\),\n", re.MULTILINE),
+     ["...(message_thread_id != null ? { message_thread_id } : {}),"]),
+    ("reply file options", "replace",
+     re.compile(r"^( *)const opts = reply_to != null && replyMode !== 'off'\n *\? \{ reply_parameters: \{ message_id: reply_to \} \}\n *: undefined\n",
+                re.MULTILINE),
+     ["const replyOpts = reply_to != null && replyMode !== 'off' ? { reply_parameters: { message_id: reply_to } } : undefined",
+      "const opts = message_thread_id != null ? { ...replyOpts, message_thread_id } : replyOpts"]),
+]
+TOPICS_FALLBACK = "replies and the typing indicator land outside the topic the message came from"
+
 
 def log(msg):
     sys.stderr.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} patch-telegram-plugin: {msg}\n")
@@ -155,27 +212,72 @@ def apply_patch(text, patch):
     return out, "patched"
 
 
-def patch_text(text):
-    """Returns (new_text, [(patch name, status), ...])."""
+def apply_topics(text):
+    """Returns (new_text, status), all-or-nothing like apply_patch."""
+    if TOPICS_TAG in text:
+        return text, "already"
+    out = text
+    for name, mode, rx, lines in TOPICS_STEPS:
+        found = list(rx.finditer(out))
+        if len(found) != 1:
+            return text, f"anchor-missing:{name}"
+        m = found[0]
+        indent = m.group(1)
+        added = "".join(f"{indent}{line} {TOPICS_TAG}\n" for line in lines)
+        if mode == "insert-before":
+            out = out[:m.start()] + added + out[m.start():]
+        elif mode == "insert-after":
+            out = out[:m.end()] + added + out[m.end():]
+        else:
+            kept = "".join(TOPICS_ORIG + line for line in m.group(0).splitlines(keepends=True))
+            out = out[:m.start()] + kept + added + out[m.end():]
+    return out, "patched"
+
+
+def remove_topics(text):
+    """Returns (new_text, 'removed'), or (text, None) when the patch is not there."""
+    if TOPICS_TAG not in text and TOPICS_ORIG not in text:
+        return text, None
+    out = []
+    for line in text.splitlines(keepends=True):
+        if line.rstrip("\n").endswith(" " + TOPICS_TAG):
+            continue
+        out.append(line[len(TOPICS_ORIG):] if line.startswith(TOPICS_ORIG) else line)
+    return "".join(out), "removed"
+
+
+TOPICS_PATCH = {"name": "topics", "fallback": TOPICS_FALLBACK}
+
+
+def patch_text(text, topics=False):
+    """Returns (new_text, [(patch, status), ...]). The topics entry is there
+    when the switch is on, or when switching it off took the patch out."""
     results = []
     for patch in PATCHES:
         text, status = apply_patch(text, patch)
         results.append((patch, status))
+    if topics:
+        text, status = apply_topics(text)
+        results.append((TOPICS_PATCH, status))
+    else:
+        text, status = remove_topics(text)
+        if status:
+            results.append((TOPICS_PATCH, status))
     return text, results
 
 
 def file_status(results):
     """One word for the file: 'already' when every patch was there,
-    'patched' when this run wrote one, else the first anchor-missing."""
+    'patched' when this run wrote (or took out) one, else the first anchor-missing."""
     statuses = [st for _, st in results]
-    if "patched" in statuses:
+    if "patched" in statuses or "removed" in statuses:
         return "patched"
     if all(st == "already" for st in statuses):
         return "already"
     return next(st for st in statuses if st.startswith("anchor-missing"))
 
 
-def patch_file(path):
+def patch_file(path, topics=False):
     """Returns (file status, {patch name: status})."""
     try:
         with open(path, encoding="utf-8") as f:
@@ -183,13 +285,13 @@ def patch_file(path):
     except Exception as e:
         log(f"cannot read {path}: {type(e).__name__}")
         return "unreadable", {}
-    new, results = patch_text(text)
+    new, results = patch_text(text, topics)
     per_patch = {p["name"]: st for p, st in results}
     for patch, status in results:
         if status.startswith("anchor-missing"):
             log(f"LOUD: {status.split(':', 1)[1]} not found exactly once in {path} (plugin changed?) -- "
                 f"the {patch['name']} patch left out, {patch['fallback']}")
-    patched = [p["name"] for p, st in results if st == "patched"]
+    patched = [p["name"] + (" removed" if st == "removed" else "") for p, st in results if st in ("patched", "removed")]
     if not patched:
         return file_status(results), per_patch
     tmp = path + ".marveen-tmp"
@@ -203,7 +305,7 @@ def patch_file(path):
             os.remove(tmp)
         except Exception:
             pass
-        return "unwritable", {n: ("unwritable" if st == "patched" else st) for n, st in per_patch.items()}
+        return "unwritable", {n: ("unwritable" if st in ("patched", "removed") else st) for n, st in per_patch.items()}
     log(f"patched {path} ({', '.join(patched)})")
     return file_status(results), per_patch
 
@@ -225,11 +327,39 @@ def write_state(state_path, state):
         log(f"cannot write state {state_path}: {type(e).__name__}")
 
 
+def topics_setting(install_dir):
+    """TELEGRAM_TOPICS_ENABLED as the dashboard settings store resolves it:
+    store/config-overrides.json, then .env, then the registry default (off)."""
+    try:
+        with open(os.path.join(install_dir, "store", "config-overrides.json"), encoding="utf-8") as f:
+            overrides = json.load(f)
+        if isinstance(overrides, dict) and TOPICS_SETTING in overrides:
+            return str(overrides[TOPICS_SETTING]).strip().lower() in TRUTHY
+    except Exception:
+        pass
+    try:
+        with open(os.path.join(install_dir, ".env"), encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line.startswith(TOPICS_SETTING + "="):
+                    return line.split("=", 1)[1].strip().strip("\"'").lower() in TRUTHY
+    except Exception:
+        pass
+    return False
+
+
 def main(argv):
     args = argv[1:]
     state_path = None
-    if len(args) >= 2 and args[0] == "--state":
-        state_path, args = args[1], args[2:]
+    topics = None
+    while len(args) >= 2 and args[0] in ("--state", "--topics"):
+        if args[0] == "--state":
+            state_path = args[1]
+        else:
+            topics = args[1] == "on"
+        args = args[2:]
+    if topics is None:
+        topics = topics_setting(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     root = args[0] if args else default_root()
     files = []
     base = os.path.join(root, "claude-plugins-official", "telegram")
@@ -237,10 +367,10 @@ def main(argv):
         for ver in sorted(os.listdir(base)):
             path = os.path.join(base, ver, "server.ts")
             if os.path.isfile(path):
-                status, patches = patch_file(path)
+                status, patches = patch_file(path, topics)
                 files.append({"version": ver, "path": path, "status": status, "patches": patches})
     if state_path:
-        write_state(state_path, {"at": int(time.time()), "root": root, "files": files})
+        write_state(state_path, {"at": int(time.time()), "root": root, "topics": "on" if topics else "off", "files": files})
     return 0
 
 
