@@ -2783,7 +2783,7 @@ export function buildAgentIdHeaderBody(name: string): string {
     'fejléc nem véd meg attól, hogy rossz sort írj -- csak láthatóvá teszi. A tényleges',
     'védelem a verziózás, de CSAK FELÜLÍRÁSNÁL: minden felülírás előtt eltárolódik az',
     'előző tartalom (`GET /api/memories/<id>/versions`). A TÖRLÉS viszont VÉGLEGES: a sorral',
-    'együtt a verzióit is törli, ezekből utána nem állítható vissza. Ha mégis törölnöd kell,',
+    'együtt a verzióit is törli, így utána semmiből nem állítható vissza. Ha mégis törölnöd kell,',
     'előtte olvasd ki és mentsd el a sort (`GET /api/memories/<id>`).',
   ].join('\n')
 }
