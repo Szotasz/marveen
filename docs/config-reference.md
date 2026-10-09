@@ -169,6 +169,7 @@ Minden dashboard-szerkeszthető beállítás egy bejegyzésként szerepel a regi
 | Kulcs | Típus | Alapérték | Platform | Újraindítás |
 |-------|-------|-----------|----------|-------------|
 | `MAIN_AGENT_ISOLATED_CONFIG` | boolean | `0` (ki) | csak macOS | igen |
+| `TELEGRAM_TOPICS_ENABLED` | boolean | `0` (ki) | mind | igen (csatorna-indítás) |
 
 #### `MAIN_AGENT_ISOLATED_CONFIG` -- a fő agent config-izolációja (macOS)
 
@@ -208,6 +209,49 @@ rotálódó `credentials.json`-t ehelyett a külön credentials-guard kezeli.
 **Visszaállítás.** Kapcsold KI (dashboard) vagy `MAIN_AGENT_ISOLATED_CONFIG=0`
 (`.env`), majd indítsd újra a channels sessiont -- mindhárom indítási út visszaáll
 a közös `~/.claude` viselkedésre.
+
+#### `TELEGRAM_TOPICS_ENABLED`: a válasz abba a témába megy, ahonnan az üzenet jött
+
+**Mire szolgál.** A Telegram a bot privát chatjében is enged témákat (a BotFather-ben
+kapcsolható be a botnál). Ilyenkor minden üzenet egy témában születik, de a Telegram
+plugin a téma azonosítóját nem adja tovább az ügynöknek, és a `reply` tool nem tud
+témát címezni: a válasz a témán kívülre kerül.
+
+**Mit csinál bekapcsolva.** A csatorna indításakor a `scripts/patch-telegram-plugin.py`
+(ugyanaz a script, ami a `/status`-t és a bejövő-naplót is intézi) egy kiegészítést
+tesz a plugin forrására:
+- a témából jött üzenet `<channel>` tagje `message_thread_id` attribútumot kap (csak
+  valódi téma-üzenetnél, `is_topic_message`);
+- a gépelés-jelzés a témában jelenik meg;
+- a `reply` tool új, opcionális `message_thread_id` paramétere a szöveg minden darabját
+  és minden csatolt fájlt a témába küldi; nem pozitív egész értékre hibát ad, és nem
+  küld semmit;
+- a plugin utasítása és a `telegram-reply-directive.py` hook kéri az ügynököt, hogy a
+  témát adja vissza.
+
+A Marveen saját válasz-útjai ugyanígy a témába mennek: a „Dolgozom rajta” helyőrző és
+annak tartalék-küldései (`telegram_progress*.py`), a hookból megválaszolt parancsok
+(`marveen-commands.py`, a futás közbeni parancsok is), és a tartalék-poller
+(`channel-coordinator`) átadása.
+
+Téma nélküli üzenetnél minden hívás pontosan ugyanaz, mint kikapcsolva.
+
+**Ami nem változik.** A `chat_id` ugyanaz marad, ezért a gazda-azonosítás, a parancsok
+jogosultsága és a jóváhagyások nem érintettek. A riasztások, a jóváhagyás-kérések, az
+ütemezett feladatok eredménye és a hang-válasz továbbra is téma nélkül mennek ki.
+
+**Bekapcsolás.** Dashboard: *Beállítások → Csatornák → `TELEGRAM_TOPICS_ENABLED`*, vagy
+`.env`-ben `TELEGRAM_TOPICS_ENABLED=1`. A csatorna következő indításakor lép életbe. A
+`/status` „Telegram plugin-patch” sora bekapcsolva a kiegészítést is méri: ha hiányzik,
+`HIÁNYZIK (témák)` sor jelzi.
+
+**Visszaállítás.** Kapcsold KI, és indítsd újra a csatornát: a script leveszi a
+kiegészítést, a plugin fájlja bájtra a kiegészítés előtti.
+
+**Plugin-frissítés után.** Az új plugin-verziót a következő csatorna-indítás foltozza. Ha
+a kiegészítés horgonyai nem illeszkednek, a kiegészítés egészében kimarad (egy hangos
+sor a `store/channels-failures.log`-ban, és a `/status` is jelzi); a válaszok ilyenkor a
+témán kívülre mennek, a csatorna maga működik tovább.
 
 **API végpontok:**
 

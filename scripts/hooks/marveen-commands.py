@@ -212,18 +212,20 @@ def chunks(text, limit=TELEGRAM_MAX_TEXT):
     return out
 
 
-def send(sd, tok, chat_id, text):
+def send(sd, tok, chat_id, text, thread=None):
     """Returns True iff at least one chunk actually went out -- the caller
     uses this to decide whether to close the ledger's open question (a
     send that fully failed must NOT be marked answered; the live-drain
-    should still pick it up)."""
+    should still pick it up). `thread`: the topic the command came from
+    (TELEGRAM_TOPICS_ENABLED); the answer goes back into it."""
+    topic = {"message_thread_id": int(thread)} if thread else {}
     sent_any = False
     for part in chunks(text):
         # Measured on the test bot (2026-09-23 15:00): one connect ETIMEDOUT to
         # api.telegram.org lost a whole answer. Two more tries, then give up.
         for attempt in range(1, SEND_ATTEMPTS + 1):
             try:
-                tg(tok, "sendMessage", {"chat_id": chat_id, "text": part})
+                tg(tok, "sendMessage", {"chat_id": chat_id, "text": part, **topic})
                 sent_any = True
                 break
             except DeadlineExceeded:
@@ -448,11 +450,12 @@ def wait_for_exit(pid, timeout):
     return False
 
 
-def spawn_deferred(sd, payload, body, chat_id, main_session, message_id=None):
+def spawn_deferred(sd, payload, body, chat_id, main_session, message_id=None, thread=None):
     job = {
         "pid": os.getpid(),
         "text": body,
         "chat_id": chat_id,
+        "thread": thread,
         "main_session": main_session,
         "message_id": message_id,
         "payload": {k: payload.get(k) for k in ("transcript_path", "cwd", "session_id")},
@@ -508,7 +511,7 @@ def run_deferred():
         replies = [r for r in (result.get("replies") or []) if isinstance(r, str) and r]
     sent_any = False
     for r in replies:
-        if send(sd, tok, chat_id, r):
+        if send(sd, tok, chat_id, r, job.get("thread")):
             sent_any = True
     if sent_any:
         mark_answered(sd, job.get("payload") or {}, chat_id, replies[-1])
@@ -627,12 +630,16 @@ def main():
 
     forwarded = attr(attrs, "forwarded") == "1"
     message_id = attr(attrs, "message_id")
+    # Only a topic message carries it (TELEGRAM_TOPICS_ENABLED, plugin patch).
+    thread = attr(attrs, "message_thread_id")
+    if not (thread and thread.isdigit()):
+        thread = None
     result, why = dispatch(body, chat_id, main_session, defer_writes=True, forwarded=forwarded,
                            message_id=message_id)
     if result is not None and result.get("outcome") == "deferred":
-        if not spawn_deferred(sd, payload, body, chat_id, main_session, message_id):
+        if not spawn_deferred(sd, payload, body, chat_id, main_session, message_id, thread):
             reply = DEFERRED_SPAWN_FAILED_REPLY.format(name=name)
-            if send(sd, tok, chat_id, reply):
+            if send(sd, tok, chat_id, reply, thread):
                 mark_answered(sd, payload, chat_id, reply)
         clear_stray_placeholder(sd, tok, sid, attr(attrs, "message_id"))
         log(sd, f"/{name} deferred until the hook exits chat={chat_id} sid={sid}")
@@ -644,7 +651,7 @@ def main():
         reply = DASHBOARD_DOWN_REPLY.format(name=name, why=why)
         if name == "usage":
             reply = quota_text(sd) + "\n\n" + reply
-        if send(sd, tok, chat_id, reply):
+        if send(sd, tok, chat_id, reply, thread):
             mark_answered(sd, payload, chat_id, reply)
         clear_stray_placeholder(sd, tok, sid, attr(attrs, "message_id"))
         log(sd, f"/{name}: dashboard unreachable ({why}), error reply sent, turn blocked")
@@ -661,7 +668,7 @@ def main():
         replies = [quota_text(sd) + ("\n\n" + replies[0] if replies else "")] + replies[1:]
     sent_any = False
     for r in replies:
-        if send(sd, tok, chat_id, r):
+        if send(sd, tok, chat_id, r, thread):
             sent_any = True
     if sent_any:
         mark_answered(sd, payload, chat_id, replies[-1])

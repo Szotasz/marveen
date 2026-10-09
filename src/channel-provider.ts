@@ -17,7 +17,8 @@ export interface ChannelProvider {
   readonly envKeys: string[]
   readonly stateDir: string
   readonly chatIdFormat: string
-  sendMessage(token: string, chatId: string, text: string, parseMode?: string): Promise<void>
+  /** threadId: a Telegram topic (TELEGRAM_TOPICS_ENABLED); providers without topics ignore it. */
+  sendMessage(token: string, chatId: string, text: string, parseMode?: string, threadId?: string): Promise<void>
   sendPhoto(token: string, chatId: string, photoPath: string, caption: string): Promise<void>
   validateToken(token: string): Promise<TokenValidation>
   formatMessage(text: string): string
@@ -102,9 +103,10 @@ const telegramProvider: ChannelProvider = {
   stateDir: 'telegram',
   chatIdFormat: 'numeric (e.g. 1268077055)',
 
-  async sendMessage(token, chatId, text, parseMode) {
-    const payload: Record<string, string> = { chat_id: chatId, text }
+  async sendMessage(token, chatId, text, parseMode, threadId) {
+    const payload: Record<string, string | number> = { chat_id: chatId, text }
     if (parseMode) payload.parse_mode = parseMode
+    if (threadId) payload.message_thread_id = Number(threadId)
     const body = JSON.stringify(payload)
     await telegramHttpPost(token, 'sendMessage', body, 'application/json')
   },
@@ -604,8 +606,9 @@ const providers: Record<ChannelProviderType, ChannelProvider> = {
 function withTestRunMarking(provider: ChannelProvider): ChannelProvider {
   return {
     ...provider,
-    sendMessage: (token, chatId, text, parseMode) =>
-      provider.sendMessage(token, chatId, markIfTestRun(text), parseMode),
+    sendMessage: (token, chatId, text, parseMode, threadId) => threadId
+      ? provider.sendMessage(token, chatId, markIfTestRun(text), parseMode, threadId)
+      : provider.sendMessage(token, chatId, markIfTestRun(text), parseMode),
     sendPhoto: (token, chatId, photoPath, caption) =>
       provider.sendPhoto(token, chatId, photoPath, markIfTestRun(caption)),
   }

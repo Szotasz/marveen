@@ -318,13 +318,20 @@ def log(progress_dir, msg):
         pass
 
 
-def deliver(tok, chat_id, message_id, answer, progress_dir):
+def topic_of(entry):
+    """The topic the placeholder was posted into (TELEGRAM_TOPICS_ENABLED), as
+    sendMessage parameters; empty for a plain chat, so the payload stays as is."""
+    t = entry.get("message_thread_id")
+    return {"message_thread_id": t} if isinstance(t, int) and t > 0 else {}
+
+
+def deliver(tok, chat_id, message_id, answer, progress_dir, topic=None):
     """Deliver the real answer if we have one (sendMessage + drop the
     placeholder), else rewrite the placeholder into a generic error. Returns a
     short label for logging."""
     if answer:
         try:
-            api(tok, "sendMessage", {"chat_id": chat_id, "text": answer[:4000]})
+            api(tok, "sendMessage", {"chat_id": chat_id, "text": answer[:4000], **(topic or {})})
         except Exception as e:
             log(progress_dir, f"real-answer send failed (mid={message_id}): {e}")
             return "send-failed"
@@ -454,7 +461,7 @@ def handle_dir(progress_dir):
         modes = []
         for p in pend:
             modes.append(deliver(tok, p.get("chat_id"), p.get("message_id"),
-                                 answer, progress_dir))
+                                 answer, progress_dir, topic_of(p)))
         try:
             os.remove(path)
         except Exception:
