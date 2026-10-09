@@ -37,6 +37,7 @@
 #   MARVEEN_TOKEN_FILE bearer token file (default <repo>/store/.dashboard-token)
 #   MARVEEN_HOMOGLYPH_BIN  the checker (default <repo>/scripts/lib/homoglyph.py)
 #   MARVEEN_QUEUE_WARN_AT  queue depth that triggers the stderr notice (default 3, 0 = off)
+#   MARVEEN_HIDDEN_MARKS_BIN  the warn-only hidden-mark sweep (default <repo>/scripts/lib/hidden_marks.py)
 # MEASURED 2026-09-13: a remote agent runs this helper OUTSIDE this repo, where localhost:3420
 # does not exist -- it had to fall back to raw curl, i.e. exactly the unchecked pattern this file was
 # written to eliminate. A hardcoded base URL silently un-installs the helper for everyone not on this
@@ -105,6 +106,32 @@ if [ -r "$HG" ] && command -v python3 >/dev/null 2>&1; then
   esac
 else
   echo "WARN: homoglyph checker not found at $HG -- sending UNCHECKED." >&2
+fi
+
+# --- Hidden-mark sweep, WARN ONLY (c4e47223) --------------------------------
+# The gate above refuses a Latin word with a Cyrillic or Greek letter in it. It
+# does not look at the other invisible class -- zero-width and other format
+# characters, the no-break and typographic spaces, U+2028/U+2029, control
+# characters -- and those pass it today (measured 2026-09-30 on the live
+# helper: a zero-width space, a no-break space and an em dash all sent with
+# rc 0). They read right and match nothing, same as the homoglyph.
+#
+# FOR THIS CLASS THE DECISION IS A WARNING, NOT A REFUSAL (c4e47223,
+# 2026-09-30, following an earlier request of 2026-09-15): the
+# report names each mark by code point and position on stderr, and the message
+# is sent unchanged. A crashed or missing sweep says so and the send goes on,
+# because a warn-only step must never be the reason a message did not arrive.
+# The refusal above is untouched; this runs only on text it let through.
+HM="${MARVEEN_HIDDEN_MARKS_BIN:-$BASE/scripts/lib/hidden_marks.py}"
+if [ -r "$HM" ] && command -v python3 >/dev/null 2>&1; then
+  printf '%s' "$C" | python3 "$HM" >/dev/null
+  HM_RC=$?
+  case "$HM_RC" in
+    0|5) : ;;  # 5 = the marks are listed on stderr; the send goes on
+    *) echo "WARN: hidden-mark sweep failed (rc=$HM_RC) at $HM -- sent without it." >&2 ;;
+  esac
+else
+  echo "WARN: hidden-mark sweep not found at $HM -- sent without it." >&2
 fi
 
 BODY="$(FROM="$FROM" TO="$TO" C="$C" python3 -c 'import json,os; print(json.dumps({"from":os.environ["FROM"],"to":os.environ["TO"],"content":os.environ["C"]}))')"
