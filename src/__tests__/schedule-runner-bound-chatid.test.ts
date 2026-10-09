@@ -159,8 +159,10 @@ describe('schedule-runner source contract (sentinel removed, provider-aware)', (
   it('the delivery instruction names the resolved provider, not a hardcoded Telegram', () => {
     // Regression guard: the instruction used to say "Telegramon" for every
     // agent. It must now interpolate channelDeliveryName(bound.provider) so a
-    // Slack-bound agent is told to reply on Slack.
-    expect(src).toContain('channelDeliveryName(bound.provider)')
+    // Slack-bound agent is told to reply on Slack. The prefix is built by
+    // taskDeliveryPrefix (behaviour pinned in schedule-runner-delivery-prefix.test.ts).
+    expect(src).toContain('taskDeliveryPrefix(task.name, bound.provider, bound.chatId')
+    expect(src).toContain('kuldd el ${channelDeliveryName(provider)} (chat_id: ${chatId}')
     expect(src).not.toMatch(/kuldd el Telegramon \(chat_id/)
   })
 

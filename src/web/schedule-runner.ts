@@ -1093,6 +1093,11 @@ export function deliveryFallbackClause(
   return `Ha ${channelDeliveryName(provider)} nem tudod elkuldeni (a reply tool hianyzik VAGY hibat ad, pl. "Outbound gate"), kuldd Telegramon (chat_id: ${ownerTelegramChat}, reply tool), es az uzenet ELSO sora nevezze meg a ${channelDisplayName(provider)} hibat (a hibauzenettel); mas cimzettet ne tippelj. `
 }
 
+/** The prompt prefix of a non-heartbeat scheduled task whose delivery target resolved. */
+export function taskDeliveryPrefix(taskName: string, provider: ChannelProviderType, chatId: string, isMain: boolean): string {
+  return `[Utemezett feladat: ${taskName}] Az eredmenyt kuldd el ${channelDeliveryName(provider)} (chat_id: ${chatId}, reply tool). ${deliveryFallbackClause(provider, isMain)}`
+}
+
 /** How a scheduled-task prompt names the delivery channel, in Hungarian, for
  *  the "kuldd el <ide>" instruction. The reply tool itself is the same across
  *  providers -- only the channel noun and the chat_id format differ. */
@@ -1664,7 +1669,7 @@ async function attemptFireTask(
         // Resolved cleanly: forget any earlier ambiguity alert for this task so
         // that removing the pin again is not silently swallowed.
         ambiguousTargetAlerted.delete(task.name)
-        prefix = `[Utemezett feladat: ${task.name}] Az eredmenyt kuldd el ${channelDeliveryName(bound.provider)} (chat_id: ${bound.chatId}, reply tool). ${deliveryFallbackClause(bound.provider, agentName === MAIN_AGENT_ID)}`
+        prefix = taskDeliveryPrefix(task.name, bound.provider, bound.chatId, agentName === MAIN_AGENT_ID)
       } else if (bound.ambiguousCandidates) {
         // WRONGRECIP819: 2+ possible human contacts and no explicit pin -- do
         // NOT guess. Delivery is skipped (bare tag, same as the config-gap
