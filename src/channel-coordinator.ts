@@ -32,7 +32,7 @@ import { homedir } from 'node:os'
 import { pathToFileURL } from 'node:url'
 import { execFile } from 'node:child_process'
 import { logger } from './logger.js'
-import { getEffectiveSettingValue } from './settings-store.js'
+import { isSettingOn } from './setting-flag.js'
 import { PROJECT_ROOT, MAIN_AGENT_ID, CHANNEL_PROVIDER, BOT_NAME } from './config.js'
 import { getUpdates, probeHighWater, mapUpdate, TelegramApiError } from './channel-coordinator/telegram-client.js'
 import { probeNativeChannelDown } from './channel-coordinator/liveness.js'
@@ -187,7 +187,7 @@ export function neutralizeChannelTags(text: string): string {
 // The topic of a message is part of the tag only while TELEGRAM_TOPICS_ENABLED
 // is on, as with the native plugin, whose topics patch is applied only then.
 function topicsEnabled(): boolean {
-  try { return String(getEffectiveSettingValue('TELEGRAM_TOPICS_ENABLED')) === '1' } catch { return false }
+  return isSettingOn('TELEGRAM_TOPICS_ENABLED')
 }
 
 // Mirror the native plugin's <channel ...> block so the message-router can
