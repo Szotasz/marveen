@@ -338,6 +338,14 @@
         </label>
       </div>
 
+      <!-- Ongoing tasks ("Folyamatos" label): a slim strip above the board,
+           not a column. Hidden when there are none. -->
+      <div class="kanban-ongoing" id="kanbanOngoing" hidden>
+        <span class="kanban-ongoing-title" data-i18n="kanban.ongoing.title">Folyamatos feladatok</span>
+        <span class="kanban-col-count" id="countOngoing">0</span>
+        <div class="kanban-ongoing-body" id="kanbanOngoingBody"></div>
+      </div>
+
       <div class="kanban-board" id="kanbanBoard">
         <div class="kanban-col" data-status="planned">
           <div class="kanban-col-header">

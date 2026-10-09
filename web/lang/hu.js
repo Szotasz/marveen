@@ -195,6 +195,7 @@ window._i18n.hu = {
   'kanban.col.testing':          'Tesztelés',
   'kanban.col.waiting':          'Várakozik',
   'kanban.col.done':             'Kész',
+  'kanban.ongoing.title':        'Folyamatos feladatok',
   'kanban.filter.project':       'Projekt:',
   'kanban.filter.group_by':      'Csoportosítás:',
   'kanban.btn.new_card':         'Új kártya',
