@@ -43,6 +43,10 @@ export const CLAUDE_MODEL_MIN_CLI: Readonly<Record<string, ClaudeModelCliRequire
     minCli: '2.1.283',
     measured: '2.1.283 -> OK (claude -p, plugin-free config, main host, 2026-09-28 21:4x); lower versions NOT measured, so they count as unsupported',
   },
+  'claude-haiku-5-5': {
+    minCli: '2.1.284',
+    measured: '2.1.284 -> OK (claude -p --model claude-haiku-5-5 ran to stop_reason end_turn with a real answer, but printed a [claude-code:unrecognized_model] warning; two long-running agents also came up on it, main host, 2026-10-08 16:14 and ~16:25 CEST); lower versions NOT measured, so they count as unsupported',
+  },
   'claude-opus-5-5': {
     minCli: '2.1.280',
     measured: '2.1.110 and 2.1.278 -> 400 unrecognized_model; 2.1.280 -> OK for both claude-opus-5-5 and claude-opus-5-5[1m] (owner Mac, 2026-09-22)',

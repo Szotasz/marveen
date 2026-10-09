@@ -313,6 +313,11 @@
 
       <!-- Board-specific filter row (hidden when gantt active) -->
       <div id="kanbanBoardFilters" style="margin-bottom:12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+        <label for="kanbanSearch" style="font-size:13px;color:var(--muted);white-space:nowrap;" data-i18n="kanban.filter.search_label">Keresés:</label>
+        <input id="kanbanSearch" type="search" name="kanban-q" autocomplete="off" spellcheck="false" readonly
+               data-i18n-placeholder="kanban.filter.search_placeholder" placeholder="#295 vagy cím..."
+               style="font-size:13px;padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--fg);min-width:170px;">
+        <span id="kanbanSearchHint" style="font-size:12px;color:var(--muted);white-space:nowrap;margin-right:8px;"></span>
         <label for="kanbanProjectFilter" style="font-size:13px;color:var(--muted);white-space:nowrap;">Projekt:</label>
         <select id="kanbanProjectFilter" style="font-size:13px;padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--fg);min-width:140px;">
           <option value="">Mind</option>
@@ -322,6 +327,15 @@
           <option value="none" data-i18n="kanban.filter.group_none">Nincs</option>
           <option value="assignee" data-i18n="kanban.filter.group_assignee">Felelős szerint</option>
           <option value="priority" data-i18n="kanban.filter.group_priority">Prioritás szerint</option>
+        </select>
+        <label for="kanbanSortBy" style="font-size:13px;color:var(--muted);white-space:nowrap;margin-left:8px;" data-i18n="kanban.filter.sort_label">Rendezés:</label>
+        <select id="kanbanSortBy" style="font-size:13px;padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--fg);min-width:150px;">
+          <option value="manual" data-i18n="kanban.filter.sort_manual">Kézi (húzható)</option>
+          <option value="seq_asc" data-i18n="kanban.filter.sort_seq_asc">Szám szerint 1 &rarr; 9</option>
+          <option value="seq_desc" data-i18n="kanban.filter.sort_seq_desc">Szám szerint 9 &rarr; 1</option>
+          <option value="created_asc" data-i18n="kanban.filter.sort_created_asc">Legrégebbi elöl</option>
+          <option value="created_desc" data-i18n="kanban.filter.sort_created_desc">Legújabb elöl</option>
+          <option value="updated_desc" data-i18n="kanban.filter.sort_updated_desc">Utoljára módosított elöl</option>
         </select>
         <span id="kanbanColumnChipsLabel" style="font-size:13px;color:var(--muted);white-space:nowrap;margin-left:8px;" data-i18n="kanban.filter.columns_label">Oszlopok:</span>
         <div id="kanbanColumnChips" style="display:flex;gap:4px;flex-wrap:wrap;align-items:center;"></div>
@@ -337,6 +351,14 @@
           <input type="checkbox" id="ganttOverdueOnly" style="cursor:pointer;">
           <span data-i18n="kanban.gantt.filter.overdue_only">Csak lejárt/közelgő</span>
         </label>
+      </div>
+
+      <!-- Ongoing tasks ("Folyamatos" label): a slim strip above the board,
+           not a column. Hidden when there are none. -->
+      <div class="kanban-ongoing" id="kanbanOngoing" hidden>
+        <span class="kanban-ongoing-title" data-i18n="kanban.ongoing.title">Folyamatos feladatok</span>
+        <span class="kanban-col-count" id="countOngoing">0</span>
+        <div class="kanban-ongoing-body" id="kanbanOngoingBody"></div>
       </div>
 
       <div class="kanban-board" id="kanbanBoard">
@@ -1590,7 +1612,7 @@
               </div>
             </div>
             <div class="vault-field-group">
-              <label class="vault-field-label">Leírás (opcionális)</label>
+              <label class="vault-field-label" data-i18n="vault.field.desc_label">Leírás (opcionális)</label>
               <input type="text" id="sshDescInput" class="input" placeholder="pl. Produkciós webszerver">
             </div>
           </div>
@@ -2058,7 +2080,7 @@
           <input type="text" id="cardTitle" placeholder="Feladat megnevezése" data-i18n-placeholder="kanban.modal.title_ph">
         </div>
         <div class="form-group">
-          <label for="cardDesc" data-i18n="common.description">Leírás <span class="hint">(opcionális)</span></label>
+          <label for="cardDesc" data-i18n="common.description">Leírás <span class="hint" data-i18n="common.optional_hint">(opcionális)</span></label>
           <textarea id="cardDesc" rows="3" placeholder="Részletek, kontextus..." data-i18n-placeholder="kanban.modal.desc_ph"></textarea>
         </div>
         <div class="form-row">
@@ -2078,11 +2100,11 @@
         </div>
         <div class="form-row">
           <div class="form-group form-half">
-            <label for="cardDue" data-i18n="kanban.modal.due_label">Határidő <span class="hint">(opcionális)</span></label>
+            <label for="cardDue" data-i18n="kanban.modal.due_label">Határidő <span class="hint" data-i18n="common.optional_hint">(opcionális)</span></label>
             <input type="date" id="cardDue">
           </div>
           <div class="form-group form-half">
-            <label for="cardProject" data-i18n="common.project">Projekt <span class="hint">(opcionális)</span></label>
+            <label for="cardProject" data-i18n="common.project">Projekt <span class="hint" data-i18n="common.optional_hint">(opcionális)</span></label>
             <input type="text" id="cardProject" list="projectSuggestions" placeholder="pl. Dream Engine" autocomplete="off">
             <datalist id="projectSuggestions"></datalist>
           </div>
@@ -2276,7 +2298,8 @@
                 <option value="claude-sonnet-5-5" data-i18n="agents.model.sonnet55">Sonnet 5.5 (legújabb Sonnet, gyors és olcsóbb)</option>
                 <option value="claude-sonnet-5" data-i18n="agents.model.sonnet5">Sonnet 5 (Opus-közeli)</option>
                 <option value="claude-sonnet-4-6" data-i18n="agents.model.sonnet46">Sonnet 4.6 (gyors és okos)</option>
-                <option value="claude-haiku-4-5-20251001" data-i18n="agents.model.haiku45">Haiku 4.5 (leggyorsabb)</option>
+                <option value="claude-haiku-5-5" data-i18n="agents.model.haiku55">Haiku 5.5 (legújabb Haiku, leggyorsabb)</option>
+                <option value="claude-haiku-4-5-20251001" data-i18n="agents.model.haiku45">Haiku 4.5</option>
               </optgroup>
               <optgroup label="🌊 DeepSeek (alternatív)" id="agentModelDeepseekGroup">
               </optgroup>
@@ -2459,7 +2482,8 @@
                 <option value="claude-sonnet-5-5" data-i18n="agents.model.sonnet55">Sonnet 5.5 (legújabb Sonnet, gyors és olcsóbb)</option>
                 <option value="claude-sonnet-5" data-i18n="agents.model.sonnet5">Sonnet 5 (Opus-közeli)</option>
                 <option value="claude-sonnet-4-6" data-i18n="agents.model.sonnet46">Sonnet 4.6 (gyors és okos)</option>
-                <option value="claude-haiku-4-5-20251001" data-i18n="agents.model.haiku45">Haiku 4.5 (leggyorsabb)</option>
+                <option value="claude-haiku-5-5" data-i18n="agents.model.haiku55">Haiku 5.5 (legújabb Haiku, leggyorsabb)</option>
+                <option value="claude-haiku-4-5-20251001" data-i18n="agents.model.haiku45">Haiku 4.5</option>
               </optgroup>
               <optgroup label="🌊 DeepSeek (alternatív)" id="deepseekModelGroup">
               </optgroup>
@@ -3220,16 +3244,16 @@
           <input type="text" id="connectorCmd" placeholder="npx -y @my/mcp-server">
         </div>
         <div class="form-group" id="connectorArgsGroup" hidden>
-          <label for="connectorArgs" data-i18n="connectors.field.args">Argumentumok <span class="hint">(opcionális)</span></label>
+          <label for="connectorArgs" data-i18n="connectors.field.args">Argumentumok <span class="hint" data-i18n="common.optional_hint">(opcionális)</span></label>
           <input type="text" id="connectorArgs" placeholder="--port 3000">
         </div>
         <div class="form-group" id="connectorEnvGroup" hidden>
-          <label data-i18n="connectors.field.env_vars">Környezeti változók <span class="hint">(opcionális)</span></label>
+          <label data-i18n="connectors.field.env_vars">Környezeti változók <span class="hint" data-i18n="common.optional_hint">(opcionális)</span></label>
           <div id="connectorEnvList"></div>
           <button type="button" class="btn-link" id="connectorEnvAddBtn" style="font-size:12px;margin-top:4px" data-i18n="connectors.field.env_add_btn">+ Változó hozzáadása</button>
         </div>
         <div class="form-group" id="connectorAssignGroup">
-          <label data-i18n="connectors.field.assign">Hozzárendelés ügynökökhöz <span class="hint">(opcionális)</span></label>
+          <label data-i18n="connectors.field.assign">Hozzárendelés ügynökökhöz <span class="hint" data-i18n="common.optional_hint">(opcionális)</span></label>
           <div id="connectorNewAssignList"></div>
         </div>
         <button class="btn-primary" id="saveConnectorBtn">

@@ -554,6 +554,73 @@ export function applyDailyHandoffSweep(
   return sweep.due
 }
 
+/**
+ * dailyHandoffSweep plus the open-question skip, for one agent.
+ *
+ * Why: the daily tier ends in a fresh restart, and an owner message the agent
+ * has not yet been shown or answered would be lost to it: the fresh session
+ * starts from a handoff note, not from the pending exchange. The nightly auto-restart already holds back for
+ * an open question (its own raw ledger check), but it stands aside whenever
+ * this tier is armed.
+ *
+ * The rule is deliberately small. When the slot is due and the owner has an
+ * open question, today's slot is skipped: recorded as served, so it is due
+ * again at its usual time tomorrow. The next due slot fires regardless if the
+ * previous one was skipped. So the tier only ever fires when it would have
+ * fired without this rule (never at an unusual hour, never into the exchange
+ * it waited for), and an open question costs at most one handoff in a row,
+ * whatever the owner's pattern. "Open" is the /clear gate's rule
+ * (ownerQuestionHolds: unanswered and not yet surfaced to the agent by the
+ * ledger drain). A failed ledger read counts as no question.
+ *
+ * The skip flag survives until a slot is actually served (the runner clears it
+ * when the daily reason wins the decision), so a forced slot pre-empted by a
+ * higher-ranked tier is still forced on the next sweep. Eligibility, seeding
+ * and the disarmed forget are dailyHandoffSweep's; a disarmed tier also forgets
+ * the flag. `readQuestionOpen` is called only on a due, eligible sweep that is
+ * not already forced, so ordinary sweeps read no ledger.
+ */
+export function dailyHandoffSkipSweep(
+  cfg: ContextGuardConfig,
+  lastRunMs: number | undefined,
+  skippedLast: boolean,
+  eligible: boolean,
+  localMidnightMs: number,
+  nowMs: number,
+  readQuestionOpen: () => boolean | undefined,
+): { due: boolean; record: number | undefined; skippedLast: boolean; skippedNow: boolean } {
+  const sweep = dailyHandoffSweep(cfg, lastRunMs, eligible, localMidnightMs, nowMs)
+  if (!dailyHandoffArmed(cfg)) return { due: false, record: sweep.record, skippedLast: false, skippedNow: false }
+  if (!sweep.due || skippedLast) return { ...sweep, skippedLast, skippedNow: false }
+  if (readQuestionOpen() === true) return { due: false, record: nowMs, skippedLast: true, skippedNow: true }
+  return { ...sweep, skippedLast: false, skippedNow: false }
+}
+
+/**
+ * dailyHandoffSkipSweep applied to the runner's record map and skip set, the
+ * way applyDailyHandoffSweep applies the sweep. Returns whether the slot is
+ * due; calls `onSkip` when this sweep skipped it.
+ */
+export function applyDailyHandoffSkipSweep(
+  records: Map<string, number>,
+  skipped: Set<string>,
+  name: string,
+  cfg: ContextGuardConfig,
+  eligible: boolean,
+  localMidnightMs: number,
+  nowMs: number,
+  readQuestionOpen: () => boolean | undefined,
+  onSkip: () => void,
+): boolean {
+  const r = dailyHandoffSkipSweep(cfg, records.get(name), skipped.has(name), eligible, localMidnightMs, nowMs, readQuestionOpen)
+  if (r.record === undefined) records.delete(name)
+  else records.set(name, r.record)
+  if (r.skippedLast) skipped.add(name)
+  else skipped.delete(name)
+  if (r.skippedNow) onSkip()
+  return r.due
+}
+
 /** Slack between HANDOFF.md's mtime and the last transcript activity before
  *  the handoff counts as stale. The handoff-writing turn itself touches the
  *  transcript slightly AFTER the file write (tool result + closing reply), so
