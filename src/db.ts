@@ -158,6 +158,7 @@ export function initDatabase(dbPathOverride?: string): void {
       id TEXT PRIMARY KEY,
       title TEXT NOT NULL,
       description TEXT,
+      test_steps TEXT,
       status TEXT NOT NULL DEFAULT 'planned' CHECK(status IN ('planned','in_progress','testing','waiting','done')),
       assignee TEXT,
       priority TEXT NOT NULL DEFAULT 'normal' CHECK(priority IN ('low','normal','high','urgent')),
@@ -227,6 +228,16 @@ export function initDatabase(dbPathOverride?: string): void {
     }
   } catch (err) {
     logger.warn({ err }, 'kanban_cards testing-status migration failed -- continuing')
+  }
+  // Migration: add test_steps to kanban_cards (card 8fe51afd -- the testing
+  // instructions get a field of their own instead of living in the comment
+  // thread). Placed AFTER the testing-status rebuild above on purpose: that
+  // rebuild copies an explicit column list, so a column added before it would
+  // be dropped again on the very installs that still need it.
+  try {
+    db.exec('ALTER TABLE kanban_cards ADD COLUMN test_steps TEXT')
+  } catch {
+    // column already exists
   }
   // Migration: add agent_id, category, auto_generated columns to memories
   try {
@@ -2387,6 +2398,11 @@ export interface KanbanCard {
   seq?: number
   title: string
   description: string | null
+  // Numbered, short steps the tester has to walk through (card 8fe51afd). Kept
+  // apart from `description` because the two answer different questions: the
+  // description is what the task IS, this is how to check it is done. Written
+  // into comments before, where the current version was unfindable.
+  test_steps: string | null
   status: 'planned' | 'in_progress' | 'waiting' | 'testing' | 'done'
   assignee: string | null
   priority: 'low' | 'normal' | 'high' | 'urgent'
@@ -2590,13 +2606,14 @@ export function parentWouldCycle(cardId: string, parentId: string): boolean {
 // review on #1501: `POST {title, archived_at: 12345, sort_order: 99}`
 // returned 200, stored `archived_at=null` and `sort_order=0`, logged nothing).
 export const KANBAN_CREATE_FIELDS = [
-  'title', 'description', 'status', 'assignee', 'priority', 'project', 'parent_id', 'due_date',
+  'title', 'description', 'test_steps', 'status', 'assignee', 'priority', 'project', 'parent_id', 'due_date',
 ] as const
 
 export function createKanbanCard(card: {
   id: string
   title: string
   description?: string
+  test_steps?: string
   status?: KanbanCard['status']
   assignee?: string
   priority?: KanbanCard['priority']
@@ -2612,10 +2629,10 @@ export function createKanbanCard(card: {
   const sortOrder = (maxRow?.m ?? -1) + 1
 
   db.prepare(
-    `INSERT INTO kanban_cards (id, title, description, status, assignee, priority, project, parent_id, due_date, sort_order, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    `INSERT INTO kanban_cards (id, title, description, test_steps, status, assignee, priority, project, parent_id, due_date, sort_order, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   ).run(
-    card.id, card.title, card.description ?? null, status,
+    card.id, card.title, card.description ?? null, card.test_steps ?? null, status,
     card.assignee ?? null, card.priority ?? 'normal',
     card.project ?? null, card.parent_id ?? null, card.due_date ?? null, sortOrder, now, now
   )
@@ -2635,7 +2652,7 @@ export function createKanbanCard(card: {
 // spread below, which is the #1023 data-loss bug when the caller believed it
 // was writing one (e.g. `description_append`).
 export const KANBAN_WRITABLE_FIELDS = [
-  'title', 'description', 'status', 'assignee', 'priority', 'project',
+  'title', 'description', 'test_steps', 'status', 'assignee', 'priority', 'project',
   'parent_id', 'due_date', 'sort_order', 'archived_at',
 ] as const
 
@@ -2669,9 +2686,9 @@ export function updateKanbanCard(
   // left the card changed with no row saying who changed it.
   return db.transaction((): boolean => {
     const changed = db.prepare(
-      `UPDATE kanban_cards SET title=?, description=?, status=?, assignee=?, priority=?, project=?, parent_id=?, due_date=?, sort_order=?, updated_at=?, archived_at=?
+      `UPDATE kanban_cards SET title=?, description=?, test_steps=?, status=?, assignee=?, priority=?, project=?, parent_id=?, due_date=?, sort_order=?, updated_at=?, archived_at=?
        WHERE id=?`
-    ).run(f.title, f.description, f.status, f.assignee, f.priority, f.project, f.parent_id, f.due_date, f.sort_order, f.updated_at, f.archived_at, id).changes > 0
+    ).run(f.title, f.description, f.test_steps, f.status, f.assignee, f.priority, f.project, f.parent_id, f.due_date, f.sort_order, f.updated_at, f.archived_at, id).changes > 0
     if (changed) {
       touchAncestorChain(f.parent_id, now, id)
       // Re-parenting is activity on BOTH threads: the old one lost a card, the new one gained it.

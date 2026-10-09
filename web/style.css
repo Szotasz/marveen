@@ -1402,6 +1402,37 @@ main {
 }
 .card-detail-desc:empty { display: none; }
 
+/* Card 8fe51afd: the testing steps. A left border, not a box, so the block
+   reads as part of the card and not as a warning; `is-testing` is the only
+   state that raises the contrast, and the dashboard sets it only while the
+   card sits in the testing column. */
+.card-detail-test-steps {
+  margin-bottom: 20px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--border);
+  border-radius: 0 6px 6px 0;
+  background: var(--bg-hover, rgba(127, 127, 127, 0.06));
+}
+.card-detail-test-steps h4 {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.card-detail-test-steps-body {
+  margin: 0;
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.card-detail-test-steps.is-testing {
+  border-left-color: var(--accent, #7c9cff);
+}
+.card-detail-test-steps.is-testing h4 { color: var(--accent, #7c9cff); }
+
 .card-detail-labels { margin-bottom: 20px; }
 .card-detail-labels h4 {
   font-size: 12px;

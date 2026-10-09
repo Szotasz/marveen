@@ -25,6 +25,7 @@ SQLite (`store/`): `kanban_cards` (id, title, status, project, priority, assigne
 
 - **Statuses:** `planned`, `in_progress`, `waiting`, `testing`, `done`
 - **Priorities:** `low`, `normal`, `high`, `urgent`
+- **`test_steps`:** the tester's numbered, short steps. A field of its own rather than a paragraph of `description`, because the two answer different questions: the description is what the task IS, this is how to check it is done. `POST`/`PUT` write it like any other field, the dashboard shows it as its own block on the card detail, and marks it while the card is in `testing`.
 
 ### Automatic breakdown
 

@@ -1790,6 +1790,7 @@ function openNewCardModal(status) {
   document.getElementById('cardModalTitle').textContent = t('kanban.modal.title_new')
   document.getElementById('cardTitle').value = ''
   document.getElementById('cardDesc').value = ''
+  document.getElementById('cardTestSteps').value = ''
   document.getElementById('cardPriority').value = 'normal'
   document.getElementById('cardProject').value = ''
   document.getElementById('cardDue').value = ''
@@ -1821,6 +1822,7 @@ document.getElementById('saveCardBtn').addEventListener('click', async () => {
   const data = {
     title,
     description: document.getElementById('cardDesc').value.trim() || null,
+    test_steps: document.getElementById('cardTestSteps').value.trim() || null,
     assignee: document.getElementById('cardAssignee').value || null,
     priority: document.getElementById('cardPriority').value,
     project: document.getElementById('cardProject').value.trim() || null,
@@ -2213,6 +2215,17 @@ async function showCardDetail(card) {
 
   document.getElementById('cardDetailDesc').textContent = card.description || ''
 
+  // Card 8fe51afd: the testing steps in a block of their own. Hidden when the
+  // card has none -- an empty "Tesztelési lépések" heading on every card would
+  // train the reader to skip past the one card where it is filled in. The
+  // `is-testing` mark is what makes it stand out exactly when it is due.
+  const testStepsBox = document.getElementById('cardDetailTestSteps')
+  const testStepsBody = document.getElementById('cardDetailTestStepsBody')
+  const steps = (card.test_steps || '').trim()
+  testStepsBody.textContent = steps
+  testStepsBox.hidden = !steps
+  testStepsBox.classList.toggle('is-testing', !!steps && card.status === 'testing')
+
   renderCardLabelsSection(card)
   renderCardBlockersSection(card)
 
@@ -2313,6 +2326,7 @@ async function showCardDetail(card) {
     document.getElementById('cardModalTitle').textContent = t('kanban.modal.title_edit')
     document.getElementById('cardTitle').value = card.title
     document.getElementById('cardDesc').value = card.description || ''
+    document.getElementById('cardTestSteps').value = card.test_steps || ''
     document.getElementById('cardPriority').value = card.priority
     document.getElementById('cardProject').value = card.project || ''
     document.getElementById('cardDue').value = card.due_date

@@ -233,6 +233,8 @@ window._i18n.en = {
   'kanban.modal.add_comment':    'Add comment',
   'kanban.modal.author_label':   'Author',
   'kanban.modal.parent_label':   'Parent',
+  'kanban.test_steps.title':     'Testing steps',
+  'kanban.test_steps.ph':        '1. ...\n2. ...',
   'kanban.modal.labels_title':   'Labels',
   'kanban.modal.comment_author_label': 'Comment author:',
   'kanban.modal.subtasks_title': 'Subtasks',

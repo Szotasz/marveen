@@ -1152,10 +1152,10 @@ export function importFleet(
         }
         db.prepare(
           `INSERT OR IGNORE INTO kanban_cards
-           (id, title, description, status, assignee, priority, project,
+           (id, title, description, test_steps, status, assignee, priority, project,
             due_date, sort_order, created_at, updated_at, archived_at, parent_id, dispatched_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-        ).run(c.id, c.title, c.description ?? null, c.status, c.assignee ?? null,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ).run(c.id, c.title, c.description ?? null, c.test_steps ?? null, c.status, c.assignee ?? null,
           c.priority, c.project ?? null, c.due_date ?? null, c.sort_order,
           c.created_at, c.updated_at, c.archived_at ?? null, c.parent_id ?? null, c.dispatched_at ?? null)
       }
