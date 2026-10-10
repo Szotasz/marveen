@@ -192,6 +192,57 @@ def _komment_insert(db, card_id, author, content, now, automated):
                           ' VALUES (?,?,?,?,?)', (card_id, author, content, now, 1 if automated else 0))
     return db.execute('INSERT INTO kanban_comments (card_id,author,content,created_at) VALUES (?,?,?,?)',
                       (card_id, author, content, now))
+
+
+# ESEMENYSOROK (KARTYAEVENTS1010). A szerver minden statuszvaltasrol kanban_card_events sort,
+# a lenti mezok valtozasarol kanban_card_field_events sort ir (db.ts: moveKanbanCard /
+# updateKanbanCard, KANBAN_AUDITED_FIELDS). Ez a szkript a sort NYERS UPDATE-tel irta, es egyik
+# tablaba sem irt: merve 2026-10-10-en az eles DB-n MINDKET tabla 0 soros volt, tehat minden
+# statuszvaltas ezen az uton ment, es a "mikor, ki mozgatta" kerdesre a tabla nem tudott
+# valaszolni (a #1863 in-progress ideje nalunk emiatt minden kartyara "nincs mervet" irna).
+# A mezo-lista a db.ts KANBAN_AUDITED_FIELDS tukre; a kartya-esemenysor teszt a ketto
+# egyezeset meri, tehat ha a szerver bovul, a teszt szol, nem a hianyzo sor.
+AUDITALT_MEZOK = ('due_date', 'assignee', 'priority')
+
+
+def _tabla_van(db, nev):
+    return db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (nev,)).fetchone() is not None
+
+
+def _esemeny_tablak_kellenek(valtozik):
+    """Melyik esemeny-tabla kell ehhez a mozgatashoz (status -> kanban_card_events,
+    auditalt mezo -> kanban_card_field_events)."""
+    kell = []
+    if 'status' in valtozik:
+        kell.append('kanban_card_events')
+    if any(k in AUDITALT_MEZOK for k in valtozik):
+        kell.append('kanban_card_field_events')
+    return kell
+
+
+def _esemenysorok(db, card_id, elotte, valtozik, actor, now):
+    """A mozgatas tartozo sorai, UGYANABBAN a tranzakcioban, mint a kartya UPDATE-je (a hivo
+    commitol): vagy a mozgatas es a sora is megvan, vagy egyik sem. Ugyanaz az alak, mint a
+    szerveren: from/to statusz, actor, created_at; a mezo-ertekek SZOVEGKENT, a NULL NULL marad.
+    Visszaadja a beirt sorok (tabla, rowid, vart ertekek) listajat a fuggetlen visszaolvasashoz."""
+    irt = []
+    if 'status' in valtozik:
+        ert = (card_id, elotte['status'], valtozik['status'], actor, now)
+        cur = db.execute('INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at)'
+                         ' VALUES (?, ?, ?, ?, ?)', ert)
+        irt.append(('kanban_card_events', cur.lastrowid, ert))
+    for mezo in AUDITALT_MEZOK:
+        if mezo not in valtozik:
+            continue
+        regi = None if elotte.get(mezo) is None else str(elotte[mezo])
+        uj = None if valtozik[mezo] is None else str(valtozik[mezo])
+        if regi == uj:
+            continue
+        ert = (card_id, mezo, regi, uj, actor, now)
+        cur = db.execute('INSERT INTO kanban_card_field_events (card_id, field, old_value, new_value, actor, created_at)'
+                         ' VALUES (?, ?, ?, ?, ?, ?)', ert)
+        irt.append(('kanban_card_field_events', cur.lastrowid, ert))
+    return irt
 # Ismert FELELOS-nevek. NEM zart halmaz: a tablan 2026-09-06-an 40 kulonbozo felelos allt, es a
 # tobbsegi nem-flotta ertek kulso GitHub-felhasznalonev (PR-kartyak szerzoi). Ezert a nem-ismert
 # nev nem automatikusan hiba -- lasd _felelos_feloldas.
@@ -681,6 +732,14 @@ def komment_mod(a):
                 if v is not None}
     valtozik = {k: v for k, v in mozgatas.items() if v != elotte[k]}
     valtozatlan = {k: v for k, v in mozgatas.items() if v == elotte[k]}
+    # ESEMENYSOR-KAPU az ELSO iras (a komment) ELOTT, a dry-run agon is: egy mozgatas, aminek a
+    # sora nem irhato be, ne irjon kommentet sem. Az eles, dashboard-inicializalt DB-n mindket
+    # tabla letezik; ez a sor egy kezzel osszerakott vagy nagyon regi DB-t allit meg.
+    _hianyzo_tabla = [t for t in _esemeny_tablak_kellenek(valtozik) if not _tabla_van(db, t)]
+    if _hianyzo_tabla:
+        sys.exit('MEGTAGADVA: a mozgatas esemenysort kovetel, de ezen a DB-n (' + DB + ') nincs: '
+                 + ', '.join(_hianyzo_tabla) + '.\nSemmi nem irodott be. A dashboard initDatabase-e hozza '
+                 'letre a tablakat; inditsd el egyszer az uj fan, utana futtasd ujra.')
 
     now = int(time.time())
     fejlec = f'[{a.author} {time.strftime("%Y-%m-%d %H:%M", time.localtime(now))}, rendszerora]'
@@ -767,11 +826,17 @@ def komment_mod(a):
     _elozmeny_figyelmeztetes(db, a, now)
 
     sets = ', '.join(f'{k}=?' for k in valtozik)
+    # A MOZGATO a tablan: ugyanaz a kisbetus agens-nev, amit a szerver /move-ja actor-kent kap
+    # (a dispatch-recept "actor":"<agens>"-et kuld), es amit ez a szkript feladokent hasznal.
+    actor = (a.from_agent or a.author).strip().lower()
     cur = db.execute(f'UPDATE kanban_cards SET {sets}, updated_at=? WHERE id=?',
                      (*valtozik.values(), now, a.id))
-    db.commit()
     if cur.rowcount != 1:
+        db.rollback()
         sys.exit(f'HIBA: a mezomozgatas {cur.rowcount} sort erintett (1 helyett) -- a komment MAR BEIRT.')
+    # EGY TRANZAKCIO a mozgatasra es a sorara (KARTYAEVENTS1010), mint a szerveren.
+    esemenyek = _esemenysorok(db, a.id, elotte, valtozik, actor, now)
+    db.commit()
     # FUGGETLEN visszaolvasas: uj SELECT, nem a cursor allitasa. A 0-talalatos UPDATE
     # es a sikeres UPDATE kulonben megkulonboztethetetlen lenne.
     utana = db.execute('SELECT status,priority,title,assignee,description FROM kanban_cards WHERE id=?', (a.id,)).fetchone()
@@ -785,6 +850,16 @@ def komment_mod(a):
         return v if len(v) <= 60 else v[:57] + '...'
     print(f'MEZOMOZGATAS OK (fuggetlenul visszaolvasva innen: {DB}): '
           + ', '.join(f'{k}: {rov(elotte[k])} -> {rov(kapott[k])}' for k in valtozik))
+    # Az esemenysorok FUGGETLEN visszaolvasasa: uj SELECT rowid szerint, a teljes sor osszevetve.
+    for tabla, rowid, vart in esemenyek:
+        oszlopok = ('card_id, from_status, to_status, actor, created_at' if tabla == 'kanban_card_events'
+                    else 'card_id, field, old_value, new_value, actor, created_at')
+        sor = db.execute(f'SELECT {oszlopok} FROM {tabla} WHERE rowid=?', (rowid,)).fetchone()
+        if sor != vart:
+            sys.exit(f'HIBA: a(z) {tabla} sor visszaolvasva {sor}, nem a beirt {vart}. A mozgatas MAR BEIRT.')
+    if esemenyek:
+        print(f'ESEMENYSOR OK (visszaolvasva): ' + ', '.join(f'{t}#{r}' for t, r, _ in esemenyek)
+              + f' | actor={actor}')
     # A MOZGATAS NYOMA A KARTYAN: a komment szovege Bonie, ez a sor a gepe. Enelkul a
     # tabla olvasoja latja az uj statuszt, de nem latja, hogy KI es MIKOR mozgatta.
     #
