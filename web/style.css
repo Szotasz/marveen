@@ -1126,7 +1126,9 @@ main {
   display: flex;
   align-items: center;
   gap: 3px;
+  min-width: 0;
 }
+.kanban-card-assignee .kanban-nickname { font-size: 10px; opacity: 0.85; }
 .assignee-dot {
   width: 14px;
   height: 14px;
@@ -1375,14 +1377,17 @@ main {
   padding: 0 4px;
   background: var(--bg);
 }
+/* 40px, not the 28 this used to be: at 28px a circle-cropped character
+   portrait is only a colour and a silhouette, at 48px the details read. 40 is
+   what the lane header carries without reflowing. */
 .kanban-swimlane-avatar {
-  width: 28px;
-  height: 28px;
+  width: 40px;
+  height: 40px;
   border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-size: 12px;
+  font-size: 16px;
   font-weight: 700;
   color: #fff;
   flex-shrink: 0;
@@ -1395,13 +1400,59 @@ main {
 .kanban-swimlane-avatar.priority-high { background: var(--accent); }
 .kanban-swimlane-avatar.priority-normal { background: var(--text-muted); }
 .kanban-swimlane-avatar.priority-low { background: var(--border); }
+
+/* Character portrait laid over the initial. See kanbanDecorateAvatar in app.js:
+   the letter is painted first and this covers it, so a missing picture needs no
+   round trip -- the <img> removes itself on error and the letter is underneath. */
+.kanban-swimlane-avatar,
+.kanban-team-avatar { position: relative; overflow: hidden; }
+.kanban-avatar-img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: 50%;
+}
+.kanban-team-avatar {
+  width: 48px;
+  height: 48px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 18px;
+  font-weight: 700;
+  color: #fff;
+  flex-shrink: 0;
+}
+/* The character name next to the person's name. Quiet on purpose: it is
+   flavour, and the name is what you navigate by. */
+.kanban-nickname {
+  font-size: 11px;
+  font-style: italic;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.kanban-owner-strip-avatar { width: 34px; height: 34px; font-size: 14px; }
+.kanban-team-avatar.owner { background: var(--accent); }
+.kanban-team-avatar.bot { background: var(--info); }
+.kanban-team-avatar.agent { background: var(--success); }
+.kanban-team-avatar.unknown { background: var(--text-muted); }
 .kanban-swimlane-name {
   font-weight: 600;
   font-size: 14px;
   color: var(--text);
-  margin-right: auto;
 }
+/* The nickname belongs NEXT TO THE NAME, not out at the right edge. It used to
+   be the NAME that carried `margin-right: auto`, which shoved everything after
+   it -- nickname included -- against the card count. The push now starts at
+   the count instead. */
 .kanban-swimlane-count {
+  margin-left: auto;
   font-size: 11px;
   font-weight: 600;
   color: var(--text-muted);
@@ -1743,6 +1794,10 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   display: flex;
   align-items: center;
   gap: 8px;
+  /* A long .agent-nickname must wrap or shrink, never push out of the card. */
+  flex-wrap: wrap;
+  row-gap: 2px;
+  min-width: 0;
 }
 
 .agent-desc {
@@ -7902,3 +7957,119 @@ body {
   color: var(--text, inherit);
 }
 .mem-search-label code { font-size: 11px; opacity: .85; }
+
+/* === Owner strip: "what is waiting on YOU" ===
+   A single row, ordered by priority, of the cards the process is blocked on
+   until the person acts. It sits ABOVE the filter row and deliberately ignores every filter: it is a
+   personal queue, not a view of the board, and a queue that a stray filter can
+   empty is worse than no queue at all. */
+.kanban-owner-strip {
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: linear-gradient(var(--accent-soft), var(--accent-soft)), var(--bg-card);
+}
+.kanban-owner-strip-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+  cursor: pointer;
+  user-select: none;
+}
+.kanban-owner-strip-count {
+  font-size: 12px;
+  font-weight: 700;
+  padding: 1px 7px;
+  border-radius: 10px;
+  background: var(--accent);
+  color: var(--bg-card);
+}
+.kanban-owner-strip-toggle { margin-left: auto; font-size: 11px; color: var(--text-muted); }
+.kanban-owner-strip-items {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 9px;
+}
+.kanban-owner-strip.collapsed .kanban-owner-strip-groups { display: none; }
+/* Three colour-coded tiers: red = urgent on top, yellow = "when I have time",
+   green = can wait. The colour is on the whole group, not only on a dot, so
+   the urgent block is visible without reading the chips. The colours are the
+   palette's own: --danger, the --warning fallback used elsewhere in this
+   file, and --success. Head text is mixed toward --text so it stays readable
+   on the tinted background in both themes. */
+.kanban-owner-strip-groups { display: flex; flex-direction: column; gap: 8px; margin-top: 9px; }
+.kanban-owner-strip-group { --tier: var(--border); padding: 6px 8px 8px; border-left: 4px solid var(--tier); border-radius: var(--radius-sm); background: color-mix(in srgb, var(--tier) 14%, transparent); }
+.kanban-owner-strip-group .kanban-owner-strip-items { margin-top: 5px; }
+.kanban-owner-strip-group .kanban-owner-strip-item { border-color: var(--tier); }
+.kanban-owner-strip-group .kanban-owner-strip-item:hover { border-color: var(--accent); }
+.kanban-owner-strip-group-head { font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: color-mix(in srgb, var(--tier) 70%, var(--text)); }
+.kanban-owner-strip-group.tier-urgent { --tier: var(--danger); }
+.kanban-owner-strip-group.tier-later  { --tier: var(--warning, #d4a52c); }
+.kanban-owner-strip-group.tier-parked { --tier: var(--success); }
+.kanban-owner-strip-group.tier-later  .kanban-owner-strip-item .dot.normal { background: var(--tier); }
+.kanban-owner-strip-group.tier-parked .kanban-owner-strip-item .dot.low    { background: var(--tier); }
+.kanban-owner-strip-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 4px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-card);
+  font-size: 12px;
+  color: var(--text);
+  cursor: pointer;
+  transition: border-color var(--transition);
+}
+.kanban-owner-strip-item:hover { border-color: var(--accent); }
+.kanban-owner-strip-item .seq { font-family: monospace; font-size: 11px; color: var(--text-muted); }
+.kanban-owner-strip-item .title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 320px;
+}
+.kanban-owner-strip-item .dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.kanban-owner-strip-item .dot.urgent { background: var(--danger); }
+.kanban-owner-strip-item .dot.high   { background: var(--accent); }
+.kanban-owner-strip-item .dot.normal { background: var(--info); }
+.kanban-owner-strip-item .dot.low    { background: var(--border); }
+/* Whose card it is, when it reached the strip through the "Rád vár" label. */
+.kanban-owner-strip-item .who {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding-left: 6px;
+  border-left: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 11px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+.kanban-owner-strip-who-avatar { width: 18px; height: 18px; font-size: 10px; }
+
+/* Character nickname beside a team member's name on the Team page. It may
+   shrink and ellipsise, but not wrap. */
+.agent-nickname {
+  font-size: 12px;
+  font-weight: 500;
+  font-style: italic;
+  color: var(--text-muted);
+  white-space: nowrap;
+  min-width: 0;
+  flex-shrink: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
