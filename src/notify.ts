@@ -89,6 +89,38 @@ export async function notifyChannel(text: string): Promise<void> {
   })
 }
 
+// Card 3ed09d25 (71263d15): a message with no resolvable owner chat is not dropped in
+// silence. The log line fires every time; the main agent's inbox hears about it once
+// per window, through a sink the dashboard registers at start. notify.ts does not
+// reach into the database itself: processes that never open it import this module
+// too, and there the log line is the signal. Which chat counts as the owner is the
+// alert rule below (resolveAlertOwnerChat); this only makes its refusal heard.
+type OwnerChatMissingSink = (text: string) => void
+let ownerChatMissingSink: OwnerChatMissingSink | null = null
+let lastOwnerChatMissingSignalAt = 0
+const OWNER_CHAT_MISSING_SIGNAL_MS = 60 * 60 * 1000
+
+export function setOwnerChatMissingSink(sink: OwnerChatMissingSink | null): void {
+  ownerChatMissingSink = sink
+  lastOwnerChatMissingSignalAt = 0
+}
+
+function signalOwnerChatMissing(text: string, reason: string): void {
+  const now = Date.now()
+  if (!ownerChatMissingSink || now - lastOwnerChatMissingSignalAt < OWNER_CHAT_MISSING_SIGNAL_MS) return
+  lastOwnerChatMissingSignalAt = now
+  const preview = text.length > 200 ? `${text.slice(0, 200)} [... +${text.length - 200} karakter]` : text
+  try {
+    ownerChatMissingSink(
+      `[notify-undelivered] Egy riasztás nem ment ki: a tulajdonosi chat nem oldható fel (${reason}). ` +
+      'Óránként legfeljebb egy ilyen jelzés jön, a többi csak a naplóba kerül. ' +
+      `A kihagyott riasztás eleje: ${preview}`,
+    )
+  } catch (err) {
+    logger.warn({ err }, 'owner-chat-missing signal could not be delivered')
+  }
+}
+
 // Owner-facing content (heartbeat digest, security events): always the owner
 // chat, never rerouted by ALERT_CHAT_ID.
 export async function notifyOwner(text: string): Promise<void> {
@@ -113,6 +145,9 @@ async function telegramOwner(text: string): Promise<void> {
   if (!CHANNEL_TOKEN || !owner.chatId) {
     const reason = !CHANNEL_TOKEN ? 'nincs token' : `nincs tulajdonos-chat (${owner.reason})`
     logger.warn(`Channel ertesites kihagyva: ${reason}`)
+    // No token means no channel on this install: the log line is enough. A token
+    // with no owner chat is the 2026-09-16 shape, and that one must reach someone.
+    if (CHANNEL_TOKEN) signalOwnerChatMissing(text, owner.reason ?? 'ismeretlen ok')
     return
   }
   return sendToChat(owner.chatId, text)

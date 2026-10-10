@@ -364,7 +364,8 @@ export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> 
     // rotation side-car must not already claim the switch happened.
     writeAgentClaudePlan(agentId, targetPlanId)
     writeClaudePlansState(applyRotation(readClaudePlansState(), agentId, targetPlanId))
-    const result = await restartAgentProcess(agentId)
+    // RESTARTWAKE927: the plan switch restarts a pane that may be mid-turn.
+    const result = await restartAgentProcess(agentId, { wake: { reason: 'plan-switch' } })
     if (!result.ok) {
       json(res, { error: result.error || `Restart failed for agent ${agentId}` }, 500)
       return true

@@ -4,6 +4,7 @@ import { homedir, platform, tmpdir } from 'node:os'
 import { execSync } from 'node:child_process'
 import { logger } from '../../logger.js'
 import { beginRestart, endRestart } from '../restart-lock.js'
+import { restartOptsFromBody } from '../restart-wake.js'
 import { isModelProfileId, MODEL_PROFILE_IDS } from '../../model-profiles.js'
 import { MAIN_AGENT_ID, currentBotName, PROJECT_ROOT } from '../../config.js'
 import { createAgentMessage, listPendingChannelRequests, updateChannelRequestStatus, getDb, claimPendingForAgent, markMessageFailed, countNewerMessagesFromSameSender,
@@ -2339,9 +2340,12 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       return true
     }
     // Optional { "fresh": true } body -> no `--continue` (see /start note).
-    let restartFresh = false
-    try { restartFresh = JSON.parse((await readBody(req)).toString() || '{}').fresh === true } catch {}
-    const result = await restartAgentProcess(name, { fresh: restartFresh })
+    // RESTARTWAKE927: a --continue restart wakes the agent once it is up; a
+    // caller that wakes the agent itself can send { "wake": false } (no caller
+    // in this repository does today). See restart-wake.ts.
+    let restartBody = ''
+    try { restartBody = (await readBody(req)).toString() } catch {}
+    const result = await restartAgentProcess(name, restartOptsFromBody(restartBody))
     if (result.ok) { json(res, { ok: true }); return true }
     json(res, { error: result.error }, 400)
     return true

@@ -24,6 +24,8 @@ import { shouldRegisterHooks, pruneStaleHooksFromSettingsFile } from './web/hook
 import { mainAgentConfigDirIfSeparate } from './web/agent-process.js'
 import { refreshMarveenBotUsername } from './web/telegram.js'
 import { startMessageRouter } from './web/message-router.js'
+import { createAgentMessage } from './db.js'
+import { setOwnerChatMissingSink } from './notify.js'
 import { startUpdateChecker } from './web/update-checker.js'
 import { startScheduleRunner, startHeartbeatGapGuard } from './web/schedule-runner.js'
 import { startChannelPluginMonitor } from './web/channel-monitor.js'
@@ -411,6 +413,9 @@ export function startWebServer(port = 3420): http.Server {
 
   const routerInterval = webOnly ? undefined : startMessageRouter()
   if (!webOnly) logger.info('Agent message router started (5s poll)')
+  // Card 3ed09d25: an alert whose owner chat cannot be resolved reaches the main
+  // agent's inbox (once an hour) instead of vanishing; the log line fires every time.
+  if (!webOnly) setOwnerChatMissingSink((text) => { createAgentMessage('system', MAIN_AGENT_ID, text) })
 
   const scheduleInterval = webOnly ? undefined : startScheduleRunner()
   if (!webOnly) logger.info('Schedule runner started (60s poll)')
