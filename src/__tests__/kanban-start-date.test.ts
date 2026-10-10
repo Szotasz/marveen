@@ -2,10 +2,12 @@
 // planned to begin, drawn as the left end of its timeline bar.
 //
 // Under test:
-//   1. normaliseCardDate coerces the shapes a caller naturally sends (unix
-//      seconds, seconds as text, "YYYY-MM-DD") to integer seconds, and a bare
-//      date becomes UTC midnight -- the instant the dashboard's own date input
-//      produces, so the edit modal reads the same day back;
+//   1. normaliseCardDate accepts exactly three shapes (epoch seconds as a
+//      number or text, "YYYY-MM-DD", an ISO timestamp with an explicit offset)
+//      and a bare date becomes UTC midnight -- the instant the dashboard's own
+//      date input produces, so the edit modal reads the same day back; every
+//      other shape (V8's legacy Date.parse formats, millisecond timestamps,
+//      impossible calendar days) becomes null instead of a wrong date;
 //   2. POST and PUT /api/kanban accept start_date (POST without an
 //      unknown-field warning), and a PUT that does not send it leaves it alone;
 //   3. the column survives the testing-status table rebuild on an old database.
@@ -17,6 +19,7 @@ import { join } from 'node:path'
 import Database from 'better-sqlite3'
 import {
   initDatabase, getDb, createKanbanCard, getKanbanCard, updateKanbanCard, normaliseCardDate,
+  MAX_CARD_EPOCH_SECONDS,
 } from '../db.js'
 import { logger } from '../logger.js'
 import { tryHandleKanban } from '../web/routes/kanban.js'
@@ -42,8 +45,9 @@ describe('normaliseCardDate', () => {
     expect(normaliseCardDate(OCT10 + 0.7)).toBe(OCT10)
   })
 
-  it('reads seconds sent as text', () => {
+  it('reads seconds sent as text, also in a decimal shape', () => {
     expect(normaliseCardDate(String(OCT10))).toBe(OCT10)
+    expect(normaliseCardDate(` ${OCT10}.0 `)).toBe(OCT10)
   })
 
   it('turns a bare YYYY-MM-DD into UTC midnight, the same instant the date input sends', () => {
@@ -51,6 +55,35 @@ describe('normaliseCardDate', () => {
     expect(normaliseCardDate('2026-10-10')).toBe(Math.floor(new Date('2026-10-10').getTime() / 1000))
     // the edit modal reads the value back with toISOString: it must be the same day
     expect(new Date(normaliseCardDate('2026-10-10')! * 1000).toISOString().slice(0, 10)).toBe('2026-10-10')
+  })
+
+  it('accepts a full ISO timestamp with an explicit offset', () => {
+    expect(normaliseCardDate('2026-10-10T00:00:00Z')).toBe(OCT10)
+    expect(normaliseCardDate('2026-10-10T00:00:00.000Z')).toBe(OCT10)
+    expect(normaliseCardDate('2026-10-10T02:00:00+02:00')).toBe(OCT10)
+    expect(normaliseCardDate('2026-10-10T02:00+0200')).toBe(OCT10)
+  })
+
+  // Review on #1862: each of these went through the old Date.parse fallback
+  // and was stored as a WRONG date (day-first read month-first, local
+  // midnight, 2001 defaults, milliseconds stored as seconds).
+  it('maps the legacy Date.parse shapes and millisecond timestamps to null, not a wrong date', () => {
+    for (const v of [
+      '12.09.2026', '12/09/2026', // day-first, stored as 9 December
+      '2026.09.12', '2026. 09. 12.', // local midnight, the modal showed 11 September
+      '-5', 'Sep 12', // 2001-05-01 and 2001-09-12
+      1790000000123, '1790000000123', // milliseconds, as a number and as text
+      '2026-10-10T00:00:00', // ISO without an offset: depends on the server's timezone
+      '2026-02-30', '2026-13-01', // not a calendar day (V8 rolls 02-30 over to 2 March)
+      -5,
+    ]) {
+      expect(normaliseCardDate(v), String(v)).toBeNull()
+    }
+  })
+
+  it('keeps the largest second-shaped value and refuses the bound itself', () => {
+    expect(normaliseCardDate(MAX_CARD_EPOCH_SECONDS - 1)).toBe(MAX_CARD_EPOCH_SECONDS - 1)
+    expect(normaliseCardDate(MAX_CARD_EPOCH_SECONDS)).toBeNull()
   })
 
   it('maps empty and unparseable input to null instead of storing it', () => {

@@ -2621,23 +2621,50 @@ export function parentWouldCycle(cardId: string, parentId: string): boolean {
 // back as NaN -- "Invalid Date" on the card and a card missing from the
 // timeline. Coerced once, on the way in, instead of at every read site.
 //
-// A bare "YYYY-MM-DD" becomes UTC midnight, the same instant the dashboard's
-// own <input type="date"> handler produces (`new Date(value)`). Local midnight
-// would be off by one in the edit modal (which reads the value back with
-// toISOString) for any timezone east of UTC, and saving the modal would then
-// move the date a day earlier.
+// Exactly three shapes are accepted, everything else becomes null:
+//   1. epoch SECONDS, as a number or as digits in a string (also a decimal
+//      shape, "1790000000.0", which the INTEGER column would store as the same
+//      value -- kanban-field-events test), floored, below MAX_CARD_EPOCH_SECONDS
+//      so a millisecond timestamp is refused instead of stored as a date tens
+//      of thousands of years ahead;
+//   2. a bare "YYYY-MM-DD", as UTC midnight -- the same instant the dashboard's
+//      own <input type="date"> handler produces (`new Date(value)`). Local
+//      midnight would be off by one in the edit modal (which reads the value
+//      back with toISOString) for any timezone east of UTC, and saving the
+//      modal would then move the date a day earlier;
+//   3. a full ISO timestamp with an explicit offset ("Z" or "+02:00"), so the
+//      instant does not depend on the server's timezone.
+// No `Date.parse` fallback: V8's legacy formats read "12.09.2026" and
+// "12/09/2026" month-first, "2026.09.12" as local midnight, "-5" and "Sep 12"
+// as dates in 2001 -- a wrong date stored silently is worse than null. A day
+// that does not exist on the calendar ("2026-02-30", which V8 rolls over to
+// 2 March) is null too.
+export const MAX_CARD_EPOCH_SECONDS = 1e11 // year 5138; any ms timestamp after 1973 is above it
+
+const CARD_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/
+const CARD_ISO_OFFSET_RE =
+  /^(\d{4})-(\d{2})-(\d{2})T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})$/
+
+function isCalendarDay(y: string, m: string, d: string): boolean {
+  const dt = new Date(Date.UTC(Number(y), Number(m) - 1, Number(d)))
+  return dt.getUTCFullYear() === Number(y) && dt.getUTCMonth() === Number(m) - 1 && dt.getUTCDate() === Number(d)
+}
+
+function epochSecondsOrNull(n: number): number | null {
+  if (!Number.isFinite(n) || n < 0 || n >= MAX_CARD_EPOCH_SECONDS) return null
+  return Math.floor(n)
+}
+
 export function normaliseCardDate(v: unknown): number | null {
   if (v === null || v === undefined || v === '') return null
-  if (typeof v === 'number') return Number.isFinite(v) ? Math.floor(v) : null
-  if (typeof v === 'string') {
-    const trimmed = v.trim()
-    // epoch sent as text, also in a decimal shape ("1790000000.0"), which the
-    // INTEGER column would store as the same value (kanban-field-events test)
-    if (/^\d+(\.\d+)?$/.test(trimmed)) return Math.floor(Number(trimmed))
-    const ms = Date.parse(trimmed)
-    return Number.isNaN(ms) ? null : Math.floor(ms / 1000)
-  }
-  return null
+  if (typeof v === 'number') return epochSecondsOrNull(v)
+  if (typeof v !== 'string') return null
+  const trimmed = v.trim()
+  if (/^\d+(\.\d+)?$/.test(trimmed)) return epochSecondsOrNull(Number(trimmed))
+  const m = CARD_DATE_RE.exec(trimmed) ?? CARD_ISO_OFFSET_RE.exec(trimmed)
+  if (!m || !isCalendarDay(m[1], m[2], m[3])) return null
+  const ms = Date.parse(trimmed)
+  return Number.isNaN(ms) ? null : epochSecondsOrNull(ms / 1000)
 }
 
 // The fields createKanbanCard actually reads off its argument. Deliberately a
