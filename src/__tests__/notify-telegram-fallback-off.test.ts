@@ -77,7 +77,7 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 let dir: string | null = null
 afterEach(() => { if (dir) rmSync(dir, { recursive: true, force: true }); dir = null })
 
-function install(slack: { rc: number; out: string }): string {
+function install(slack: { rc: number; out: string } | 'absent' | 'crash', extra: { env?: string; overrides?: Record<string, string> } = {}): string {
   dir = mkdtempSync(join(tmpdir(), 'notify-tgoff-'))
   mkdirSync(join(dir, 'scripts', 'lib'), { recursive: true })
   mkdirSync(join(dir, 'dist'), { recursive: true })
@@ -85,10 +85,18 @@ function install(slack: { rc: number; out: string }): string {
   copyFileSync(join(ROOT, 'scripts', 'notify.sh'), join(dir, 'scripts', 'notify.sh'))
   for (const lib of ['owner-chat.sh', 'send-telegram.sh']) copyFileSync(join(ROOT, 'scripts', 'lib', lib), join(dir, 'scripts', 'lib', lib))
   chmodSync(join(dir, 'scripts', 'notify.sh'), 0o755)
-  writeFileSync(join(dir, 'dist', 'slack-notify.js'), '')
-  writeFileSync(join(dir, 'scripts', 'slack-notify.mjs'), `process.stdout.write(${JSON.stringify(slack.out)}); process.exit(${slack.rc})\n`)
+  // 'absent': no dist/slack-notify.js, so notify.sh never runs the helper.
+  // 'crash': the helper dies without a JSON verdict (a dist module that does not load).
+  if (slack !== 'absent') writeFileSync(join(dir, 'dist', 'slack-notify.js'), '')
+  writeFileSync(join(dir, 'scripts', 'slack-notify.mjs'), slack === 'absent' || slack === 'crash'
+    ? `process.stderr.write('Error: Cannot find module dist/settings-store.js'); process.exit(1)\n`
+    : `process.stdout.write(${JSON.stringify(slack.out)}); process.exit(${slack.rc})\n`)
   // A configured Telegram: token AND owner chat, so only the fallback rule can stop it.
-  writeFileSync(join(dir, '.env'), 'MAIN_AGENT_ID=marveen\nTELEGRAM_BOT_TOKEN=123:abc\nALLOWED_CHAT_ID=1268077055\n')
+  writeFileSync(join(dir, '.env'), 'MAIN_AGENT_ID=marveen\nTELEGRAM_BOT_TOKEN=123:abc\nALLOWED_CHAT_ID=1268077055\n' + (extra.env ?? ''))
+  if (extra.overrides) {
+    mkdirSync(join(dir, 'store'), { recursive: true })
+    writeFileSync(join(dir, 'store', 'config-overrides.json'), JSON.stringify(extra.overrides, null, 2))
+  }
   writeFileSync(join(dir, 'bin', 'curl'), `#!/bin/bash\ntouch "${join(dir, 'TELEGRAM_ATTEMPTED')}"\necho '{"ok":true}'\n`)
   chmodSync(join(dir, 'bin', 'curl'), 0o755)
   return dir
@@ -125,5 +133,40 @@ describe('notify.sh with the Telegram fallback off', () => {
     const root = install({ rc: 1, out: '{"ok":false,"error":"boom","telegram":"send"}' })
     run(root)
     expect(existsSync(join(root, 'TELEGRAM_ATTEMPTED'))).toBe(true)
+  })
+})
+
+// Dani's #1854 review: with no verdict from the helper, notify.sh must read the
+// switch itself -- from the dashboard's store/config-overrides.json first, then .env.
+describe('notify.sh with the fallback off and NO helper verdict', () => {
+  const attempted = (root: string) => existsSync(join(root, 'TELEGRAM_ATTEMPTED'))
+  it('helper absent, switch in .env: exits 1, no Telegram', () => {
+    const root = install('absent', { env: 'NOTIFY_TELEGRAM_FALLBACK=0\n' })
+    const r = run(root)
+    expect(r.status).toBe(1)
+    expect(r.stderr).toContain('NOTIFY_TELEGRAM_FALLBACK=0')
+    expect(attempted(root)).toBe(false)
+  })
+  it('helper crashes without JSON, switch in the dashboard overrides: exits 1, no Telegram', () => {
+    const root = install('crash', { overrides: { NOTIFY_SLACK_TARGET: 'D0C74N9SAF6', NOTIFY_TELEGRAM_FALLBACK: '0' } })
+    const r = run(root)
+    expect(r.status).toBe(1)
+    expect(r.stdout).not.toContain('Ertesites elkuldve')
+    expect(attempted(root)).toBe(false)
+  })
+  it('the dashboard override wins over .env (override 1, .env 0): Telegram allowed', () => {
+    const root = install('crash', { env: 'NOTIFY_TELEGRAM_FALLBACK=0\n', overrides: { NOTIFY_TELEGRAM_FALLBACK: '1' } })
+    run(root)
+    expect(attempted(root)).toBe(true)
+  })
+  it('control: helper absent, switch not set -> Telegram as before', () => {
+    const root = install('absent')
+    run(root)
+    expect(attempted(root)).toBe(true)
+  })
+  it('control: helper crashes, switch not set -> Telegram as before', () => {
+    const root = install('crash')
+    run(root)
+    expect(attempted(root)).toBe(true)
   })
 })

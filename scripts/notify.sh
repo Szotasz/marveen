@@ -81,6 +81,25 @@ esac
 # No target configured -> exit 2 from the helper, Telegram exactly as before.
 SEND_TELEGRAM=1
 SLACK_RC=2
+SLACK_OUT=""
+# NOTIFY_TELEGRAM_FALLBACK, read HERE too (Dani's #1854 review): the helper's
+# verdict carries it, but when the helper does not run (no node, no dist) or
+# dies without a JSON verdict, there is no verdict to obey -- and the default
+# would reach Telegram. Same layering as getEffectiveSettingValue:
+# store/config-overrides.json (what the dashboard writes) over .env.
+setting_value() {
+  _key="$1"; _v=""
+  _ov="$PROJECT_DIR/store/config-overrides.json"
+  if [ -f "$_ov" ]; then
+    _v="$(grep -oE "\"$_key\"[[:space:]]*:[[:space:]]*\"?[^\",}]*" "$_ov" | head -1 | sed -E 's/^[^:]*:[[:space:]]*"?//')"
+  fi
+  if [ -z "$_v" ]; then
+    _v="$(grep -E "^$_key=" "$ENV_FILE" | head -1 | cut -d= -f2-)"
+  fi
+  printf '%s' "$_v"
+}
+TELEGRAM_FALLBACK_OFF=0
+[ "$(setting_value NOTIFY_TELEGRAM_FALLBACK)" = "0" ] && TELEGRAM_FALLBACK_OFF=1
 if command -v node >/dev/null 2>&1 && [ -f "$PROJECT_DIR/dist/slack-notify.js" ]; then
   SLACK_OUT="$(node "$SCRIPT_DIR/slack-notify.mjs" --kind owner ${SENDER:+--as "$SENDER"} -- "$MESSAGE" 2>/dev/null)"
   SLACK_RC=$?
@@ -90,6 +109,16 @@ if command -v node >/dev/null 2>&1 && [ -f "$PROJECT_DIR/dist/slack-notify.js" ]
   case "$SLACK_OUT" in *'"telegram":"skip"'*) SEND_TELEGRAM=0 ;; esac
   [ "$SLACK_RC" -eq 1 ] && [ "$SEND_TELEGRAM" -eq 1 ] && echo "Figyelem: a Slack-ertesites nem ment ki, Telegram tartalek: $SLACK_OUT" >&2
 fi
+# No verdict at all (the helper did not run, or died without JSON) while the
+# Telegram fallback is off: that is a Slack miss, never a Telegram send.
+case "$SLACK_OUT" in
+  *'"telegram":'*) ;;
+  *) if [ "$TELEGRAM_FALLBACK_OFF" -eq 1 ]; then
+       SEND_TELEGRAM=0
+       [ "$SLACK_RC" -eq 0 ] && SLACK_RC=3
+       [ -n "$SLACK_OUT" ] || SLACK_OUT="(a Slack-segedfolyamat nem futott, vagy nem adott valaszt)"
+     fi ;;
+esac
 
 if [ -n "$SENDER" ] && [ "$SENDER" != "$MAIN_AGENT_ID" ]; then
   # Capitalize the first letter (bash 3.2 portable -- no ${var^}).
