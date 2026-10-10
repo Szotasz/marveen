@@ -47,7 +47,7 @@ import { probeTelegramConflict } from './channel-conflict-probe.js'
 import { schedulePluginUnlockAfterRespawn, wasPluginConfirmedAbsent, clearPluginAbsent } from './channel-plugin-unlock.js'
 import { getInjectedPrompt, matchesInjectedPrompt } from './injected-prompt-registry.js'
 import {
-  detectPaneState, decidePaneErrorAlert, detectsBlockingMenu, detectsPermissionDialog, detectsFirstRunGate, detectsModelConsentDialog, type PaneErrorAlertState, type PaneState,
+  detectPaneState, idleConsideringDimGhost, decidePaneErrorAlert, detectsBlockingMenu, detectsPermissionDialog, detectsFirstRunGate, detectsModelConsentDialog, type PaneErrorAlertState, type PaneState,
   stuckInputSignature, decideStuckInputRecovery, parkedChannelInput,
   parkedInputText, shouldClearTruncatedPreamble,
   parkedInputRowCount, submitLanded, decideStuckInputAction,
@@ -337,7 +337,7 @@ const MAIN_STUCK_THRESHOLDS: StuckInputThresholds = {
 // wedge a restart cannot clear never becomes a restart loop.
 const STUCK_RESTART_MIN_INTERVAL_MS = 5 * 60 * 1000
 const STUCK_RESTART_MAX_CONSECUTIVE = 3
-let stuckRestartCount = 0
+const stuckLadder = createStuckLadder()
 let lastStuckRestartAt = 0
 
 // STUCKFRAGMENT915. A clear that FAILED leaves behind a fragment we KNOW is
@@ -418,6 +418,116 @@ export function decideStuckInputRestart(
   if (now - lastRestartAt < minIntervalMs) return 'skip'
   if (restartCount >= maxConsecutive) return restartCount === maxConsecutive ? 'alert' : 'skip'
   return 'restart'
+}
+
+// Bookkeeping of the stuck-input restart ladder between ticks.
+//   count     -> restarts spent in the current spell
+//   alertOpen -> the cap alert went out and no closing message followed yet
+//   claudePid / pidSeenAt -> the main claude pid at the last readable tick, and
+//                when it was seen; used to tell a manual replacement apart
+//                from a respawn this monitor performed itself
+export interface StuckRestartLadder {
+  count: number
+  alertOpen: boolean
+  claudePid: number | null
+  pidSeenAt: number
+}
+
+export interface StuckRestartObservation {
+  /** The soft-recovery tracker holds a parked signature this tick. */
+  parked: boolean
+  /** A readable capture of the main pane classified idle: the input box is
+   *  live AND empty. Busy, typing, unknown and an unreadable capture are all
+   *  false here: none of them proves the box emptied. */
+  boxProvenEmpty: boolean
+  /** The main claude pid now, or null when it could not be read. */
+  claudePid: number | null
+  now: number
+  /** Most recent main-session respawn the channel monitor initiated itself
+   *  (monitorMainRespawnAt); a resume counts from its start. */
+  lastSelfRespawnAt: number
+}
+
+export interface StuckRestartLadderStep {
+  next: StuckRestartLadder
+  /** Send the closing message for an open cap alert. */
+  sendResolved: boolean
+  /** A different claude process appeared that this monitor did not start. */
+  manualReplacement: boolean
+}
+
+// Pure. One tick of ladder bookkeeping, run before the restart decision.
+//
+// The ladder resets ONLY on evidence. A readable, idle pane with an empty input
+// box ends the spell (count back to 0, an open cap alert closed). A busy or
+// unreadable tick proves nothing about the box, so it leaves the ladder
+// untouched instead of counting as "emptied".
+//
+// A claude pid change also gives a fresh ladder, but only when it is a manual
+// replacement: if this monitor respawned the session since the old pid was
+// last seen, the new pid is ours and the cap must hold.
+//
+// The STUCKFRAGMENT915 record is NOT handled here; it keeps its own lifecycle
+// (onParkedState at the call site).
+export function stepStuckRestartLadder(prev: StuckRestartLadder, obs: StuckRestartObservation): StuckRestartLadderStep {
+  const next: StuckRestartLadder = { ...prev }
+  let manualReplacement = false
+  if (obs.claudePid != null) {
+    if (prev.claudePid != null && obs.claudePid !== prev.claudePid && obs.lastSelfRespawnAt <= prev.pidSeenAt) {
+      manualReplacement = true
+      next.count = 0
+    }
+    next.claudePid = obs.claudePid
+    next.pidSeenAt = obs.now
+  }
+  const provenEmpty = !obs.parked && obs.boxProvenEmpty
+  let sendResolved = false
+  if (provenEmpty) {
+    next.count = 0
+    if (prev.alertOpen) {
+      sendResolved = true
+      next.alertOpen = false
+    }
+  }
+  return { next, sendResolved, manualReplacement }
+}
+
+// The ladder state behind its only legal transitions: a tick (the step above),
+// a successful restart, and the cap alert. Nothing else can set the count or
+// the alert flag.
+export interface StuckLadder {
+  /** One tick of bookkeeping; returns the step (with the state before it in `prev`). */
+  observe(obs: StuckRestartObservation): StuckRestartLadderStep & { prev: StuckRestartLadder }
+  /** Restarts spent in the current spell. */
+  count(): number
+  /** A restart by the ladder succeeded. */
+  noteRestart(): void
+  /** The cap alert went out: tick past the cap so it fires once, and open it. */
+  noteCapAlert(): void
+}
+
+export function createStuckLadder(): StuckLadder {
+  let state: StuckRestartLadder = { count: 0, alertOpen: false, claudePid: null, pidSeenAt: 0 }
+  return {
+    observe(obs) {
+      const prev = state
+      const step = stepStuckRestartLadder(prev, obs)
+      state = step.next
+      return { ...step, prev }
+    },
+    count: () => state.count,
+    noteRestart() { state = { ...state, count: state.count + 1 } },
+    noteCapAlert() { state = { ...state, count: state.count + 1, alertOpen: true } },
+  }
+}
+
+// Pure. Evidence that the main input box is empty: a readable pane that the
+// readiness rule (idleConsideringDimGhost) calls idle. The plain capture keeps
+// the footer whatever its colour; the dim-stripped view is consulted only when
+// the plain one reads 'typing', so a dim placeholder in an empty box still
+// counts as empty. A null plain capture, busy, unknown or error is no evidence.
+export function mainInputBoxProvenEmpty(plain: string | null, dimStripped: string | null): boolean {
+  return plain != null && idleConsideringDimGhost(plain, dimStripped)
 }
 
 // Busy-guard over the stuck-input restart decision (false-positive fix,
@@ -739,7 +849,7 @@ const MENU_RECOVER_CONFIRM_MS = 45_000
 const MENU_RECOVER_DEDUP_MS = 5 * 60 * 1000
 const MENU_RECOVER_CLEAR_MS = 2 * 60 * 1000
 
-type MarveenRecoveryStage = 'soft' | 'save' | 'resume' | 'hard' | 'gave_up'
+export type MarveenRecoveryStage = 'soft' | 'save' | 'resume' | 'hard' | 'gave_up'
 interface MarveenDownState {
   downSince: number
   stage: MarveenRecoveryStage
@@ -755,6 +865,61 @@ const SAVE_WINDOW_MS = 60_000
 const MARVEEN_DOWN_CONFIRM_MS = 120_000
 let marveenSuspectFirstSeen: number | null = null
 let marveenDownState: MarveenDownState | null = null
+// An outage that was open when the vanished main session was recreated. The
+// recreate restarts the down cascade from scratch (marveenDownState = null), but
+// the outage itself is not over until the plugin is seen alive again, so its
+// start and stage are kept here for the closing message in handleMarveenUp.
+let marveenRecreatedOutage: CarriedOutage | null = null
+
+export interface CarriedOutage {
+  downSince: number
+  stage: MarveenRecoveryStage
+}
+
+// Pure. What survives a session recreate: the earliest known start of the
+// outage and the last stage the cascade reached. No open state and nothing
+// carried yet stays null (a recreate of a session that was never reported
+// down has nothing to close).
+export function carryOutageAcrossRecreate(
+  state: { downSince: number; stage: MarveenRecoveryStage } | null,
+  carried: CarriedOutage | null,
+): CarriedOutage | null {
+  if (!state) return carried
+  if (!carried) return { downSince: state.downSince, stage: state.stage }
+  return { downSince: Math.min(carried.downSince, state.downSince), stage: state.stage }
+}
+
+export interface MarveenRecoveryReport {
+  downedForSec: number
+  stage: MarveenRecoveryStage | 'recreated'
+  notify: boolean
+}
+
+// Pure. The closing report when the main plugin is seen alive again, from the
+// open cascade state and/or an outage carried across a recreate. null when
+// there is nothing open. A recreate rebuilt the session (the conversation is
+// gone), so it is disruptive like a resume and is always reported; otherwise
+// short soft/save blips stay quiet unless they lasted 180s or more.
+export function decideMarveenRecoveryReport(
+  state: { downSince: number; stage: MarveenRecoveryStage } | null,
+  carried: CarriedOutage | null,
+  now: number,
+): MarveenRecoveryReport | null {
+  if (!state && !carried) return null
+  const downSince = Math.min(state?.downSince ?? Infinity, carried?.downSince ?? Infinity)
+  const downedForSec = Math.round((now - downSince) / 1000)
+  const stateDisruptive = state != null && state.stage !== 'soft' && state.stage !== 'save'
+  const stage: MarveenRecoveryStage | 'recreated' = stateDisruptive ? state.stage : carried ? 'recreated' : state!.stage
+  const disruptive = stateDisruptive || carried != null
+  return { downedForSec, stage, notify: disruptive || downedForSec >= 180 }
+}
+
+// Pure. The stage-4 message, written AFTER the hard restart returned so it
+// reports what actually happened instead of announcing an attempt.
+export function hardRestartStageAlertText(svcName: string, session: string, r: { ok: boolean; error?: string }): string {
+  if (r.ok) return `⚠️ Session resume nem segitett. Hard restart (${svcName}) elinditva a ${session} session-on.`
+  return `⚠️ Session resume nem segitett, es a hard restart (${svcName}) sem sikerult a ${session} session-on: ${r.error ?? 'ismeretlen hiba'}.`
+}
 
 function getMainAgentProvider(): ChannelProviderType {
   return CHANNEL_PROVIDER
@@ -1077,6 +1242,16 @@ export function respawnMainSessionFresh(): void {
   schedulePluginUnlockAfterRespawn(MAIN_CHANNELS_SESSION, provider.type)
 }
 
+// When the channel monitor itself last respawned the main session: the ladder's
+// restart, the down cascade (resume, hard restart, recreate) and the
+// keep-alive respawn. Restarts asked for elsewhere (dashboard routes, plan
+// rotation, the stuck-tool-call watcher, the co-listen check) leave it alone,
+// so the stuck-input ladder reads their new pid as a replacement and starts
+// fresh.
+// A monitor resume sets it right before its respawn-pane: the shared stamp is
+// written only seconds later. Read by the ladder only.
+let monitorMainRespawnAt = 0
+
 // Exported so the stuck-tool-call-watcher recovers a wedged main session via
 // this respawn-pane path (reap + `tmux respawn-pane -k --continue`) INSTEAD of
 // the launchctl hard-restart. respawn-pane replaces only the claude process in
@@ -1084,7 +1259,7 @@ export function respawnMainSessionFresh(): void {
 // kicked ([exited]) -- the #248 user-visible crash. It also runs the
 // pane-attribution detached-claude reap first, breaking the orphan->409->freeze
 // doom-loop that the launchctl path (channels.sh env-grep reap) never cleaned.
-export async function resumeMarveenSession(): Promise<boolean> {
+export async function resumeMarveenSession(opts: { byMonitor?: boolean } = {}): Promise<boolean> {
   const provider = getProvider(getMainAgentProvider())
   try {
     // Reap any orphan bun/node poller BEFORE we respawn. tmux respawn-pane -k
@@ -1131,6 +1306,7 @@ export async function resumeMarveenSession(): Promise<boolean> {
       // preserving the prior shared-root behaviour.
       config: resolveMainConfigDecision(),
     })
+    if (opts.byMonitor) monitorMainRespawnAt = Date.now()
     execFileSync(tmuxBin(), ['respawn-pane', '-k', '-t', exactTmuxTarget(MAIN_CHANNELS_SESSION), claudeCmd], { timeout: 15000 })
 
     // --continue replays the last conversation. When the prior session is large
@@ -1623,10 +1799,34 @@ export function restartMainForRotationContinue(): Promise<ContinueRestartResult>
 // main stuck-input recovery.
 function maybeRestartWedgedMainChannel(state: StuckInputState): void {
   const parked = state.parkedSig !== null
+  // The STUCKFRAGMENT915 record keeps its own lifecycle, unchanged: it is
+  // forgotten on every tick without a parked signature.
+  onParkedState(MAIN_CHANNELS_SESSION, parked)
   // A cleared input box ends the spell -> reset the escalation counter so the
   // next genuine wedge starts fresh (and a successful restart is not penalised).
-  onParkedState(MAIN_CHANNELS_SESSION, parked)
-  if (!parked) { stuckRestartCount = 0; return }
+  // "Cleared" needs evidence: parkedSig is also null for a busy pane and for an
+  // unreadable capture, and neither proves the box emptied. The evidence is the
+  // readiness rule (see mainInputBoxProvenEmpty), so a dim placeholder is not text.
+  const plain = parked ? null : capturePane(MAIN_CHANNELS_SESSION)
+  const dimStripped = plain != null && detectPaneState(plain) === 'typing' ? captureParkedInputView(MAIN_CHANNELS_SESSION) : null
+  // A non-parked tick whose capture failed (typically: no main session) skips
+  // the pid read too: it would prove nothing, and its tmux error is not piped.
+  const step = stuckLadder.observe({
+    parked,
+    boxProvenEmpty: mainInputBoxProvenEmpty(plain, dimStripped),
+    claudePid: parked || plain != null ? getClaudePidForSession(MAIN_CHANNELS_SESSION) : null,
+    now: Date.now(),
+    lastSelfRespawnAt: monitorMainRespawnAt,
+  })
+  if (step.manualReplacement && step.prev.count > 0) {
+    logger.info({ session: MAIN_CHANNELS_SESSION, from: step.prev.claudePid, to: step.next.claudePid, count: step.prev.count },
+      'Main claude was replaced outside the monitor -- stuck-input restart ladder starts fresh')
+  }
+  if (step.sendResolved) {
+    logger.info({ session: MAIN_CHANNELS_SESSION }, 'Stuck main channel input cleared -- closing the cap alert')
+    sendAlert(`✅ A ${MAIN_CHANNELS_SESSION} bemenete felszabadult: a panel tetlen es a beviteli mezo ures. A beragadt-bemenet riasztas lezarva.`)
+  }
+  if (!parked) return
   // Busy-guard: never hard-restart while the main pane is actively generating --
   // a parked <channel> block then is a busy session, not a wedge. See
   // applyStuckRestartBusyGuard. detectPaneState reads 'unknown' for an
@@ -1654,7 +1854,7 @@ function maybeRestartWedgedMainChannel(state: StuckInputState): void {
   const softRemedy = parkedView != null && parkedMainInputHasRemedy(parkedView, recordedMatch)
   const action = applyStuckRestartBusyGuard(paneState, decideStuckInputRestart(
     parked, state.attempts, MAIN_STUCK_THRESHOLDS.maxAttempts,
-    Date.now(), lastStuckRestartAt, stuckRestartCount,
+    Date.now(), lastStuckRestartAt, stuckLadder.count(),
     STUCK_RESTART_MIN_INTERVAL_MS, STUCK_RESTART_MAX_CONSECUTIVE,
   ), { machineOrigin, softRemedy })
   if (action === 'skip' && shouldDeferKeepaliveRespawn(paneState)) {
@@ -1669,14 +1869,15 @@ function maybeRestartWedgedMainChannel(state: StuckInputState): void {
   if (action === 'alert') {
     logger.error({ session: MAIN_CHANNELS_SESSION }, 'Stuck main channel input survived max restart escalations -- manual intervention needed')
     sendAlert(`⛔ A ${MAIN_CHANNELS_SESSION} bemenete beragadt es ${STUCK_RESTART_MAX_CONSECUTIVE} automatikus respawn-pane sem szabaditotta ki. Kezi beavatkozas kell: inditsd ujra a ${SERVICE_ID}-channels szolgaltatast.`)
-    stuckRestartCount++ // tick past the cap so the alert fires only once
+    stuckLadder.noteCapAlert()
     return
   }
-  logger.warn({ session: MAIN_CHANNELS_SESSION, attempts: state.attempts, restart: stuckRestartCount + 1 }, 'Stuck main channel input survived soft recovery -- escalating to hard restart (respawn-pane)')
+  logger.warn({ session: MAIN_CHANNELS_SESSION, attempts: state.attempts, restart: stuckLadder.count() + 1 }, 'Stuck main channel input survived soft recovery -- escalating to hard restart (respawn-pane)')
   const r = hardRestartMarveenChannels()
   lastStuckRestartAt = Date.now()
+  monitorMainRespawnAt = lastStuckRestartAt
   if (r.ok) {
-    stuckRestartCount++
+    stuckLadder.noteRestart()
     // Reset the tracker so the fresh post-restart pane is re-evaluated cleanly.
     mainStuckInput = { parkedSig: null, firstSeenAt: null, lastRecoverAt: null, attempts: 0 }
   } else {
@@ -1998,6 +2199,7 @@ function checkMainKeepaliveStaleness(): void {
   keepaliveMtimeAtLastRespawn = keepaliveMtimeMs
   if (respawnMarveenSessionFresh()) {
     marveenLastKeepaliveRespawn = now
+    monitorMainRespawnAt = Date.now()
     // Suppress the process-down handler during the respawn window (reuses the
     // existing hard-restart grace) so the two recovery paths don't collide.
     marveenLastHardRestart = now
@@ -2101,7 +2303,7 @@ async function handleMarveenDown(): Promise<void> {
     marveenDownState.stageStartedAt = now
     marveenDownState.lastAlertAt = now
     logger.warn({ provider: providerLabel }, 'Marveen channel plugin still down -- stage 3 (session resume)')
-    await resumeMarveenSession()
+    await resumeMarveenSession({ byMonitor: true })
     return
   }
   if (marveenDownState.stage === 'resume') {
@@ -2112,8 +2314,10 @@ async function handleMarveenDown(): Promise<void> {
     marveenDownState.lastAlertAt = now
     logger.warn({ provider: providerLabel }, 'Marveen channel plugin still down -- stage 4 (hard restart)')
     const svcName = process.platform === 'linux' ? 'systemctl' : 'launchctl'
-    sendAlert(`⚠️ Session resume nem segitett. Hard restart (${svcName}) most a ${MAIN_CHANNELS_SESSION} session-on...`)
-    hardRestartMarveenChannels()
+    const r = hardRestartMarveenChannels()
+    monitorMainRespawnAt = Date.now()
+    if (!r.ok) logger.error({ provider: providerLabel, err: r.error }, 'Stage-4 hard restart failed')
+    sendAlert(hardRestartStageAlertText(svcName, MAIN_CHANNELS_SESSION, r))
     return
   }
   if (marveenDownState.stage === 'hard') {
@@ -2172,9 +2376,10 @@ async function checkMainColistenChannels(claudePid: number): Promise<void> {
 function handleMarveenUp(): void {
   marveenSuspectFirstSeen = null
   ownHardRestartStamp = null // recovered: the stamp is no longer ours to release
-  if (marveenDownState) {
-    const downedFor = Math.round((Date.now() - marveenDownState.downSince) / 1000)
-    const stage = marveenDownState.stage
+  const report = decideMarveenRecoveryReport(marveenDownState, marveenRecreatedOutage, Date.now())
+  if (report) {
+    const downedFor = report.downedForSec
+    const stage = report.stage
     const providerLabel = getMainAgentProvider()
     logger.info({ stage, downedFor, provider: providerLabel }, 'Marveen channel plugin recovered')
     // Owner transparency (2026-07-30, "reggeli leallas"): a resume-stage
@@ -2182,14 +2387,16 @@ function handleMarveenUp(): void {
     // in-flight messages may have been dropped, so it must not be silent. Short
     // soft/save blips stay quiet, but a LONG outage is reported even when the
     // fix itself was soft: messages sent into that window went unanswered.
-    const disruptive = stage !== 'soft' && stage !== 'save'
-    if (disruptive || downedFor >= 180) {
+    // A recreate of the vanished session (stage 'recreated') counts as
+    // disruptive too; decideMarveenRecoveryReport owns the rule.
+    if (report.notify) {
       sendAlert(
         `✅ ${BOT_NAME} ${providerLabel} kapcsolat helyreallt (${downedFor}s kieses, ${stage} szint). ` +
         `Ha a kieses alatt irtal es nem jott valasz, mindjart potolom.`,
       )
     }
     marveenDownState = null
+    marveenRecreatedOutage = null
   }
 }
 
@@ -2468,6 +2675,12 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
           // silently skips (scheduler !sessionExists branch).
           if (!mainChannelsSessionExists()) {
             if (shouldEscalateMarveenDown() && createMainChannelsSession() === 'started') {
+              // The cascade restarts from scratch on the new session, but an
+              // outage that was already open stays open until the plugin is
+              // seen alive, so the closing message still goes out with the
+              // full duration.
+              monitorMainRespawnAt = Date.now()
+              marveenRecreatedOutage = carryOutageAcrossRecreate(marveenDownState, marveenRecreatedOutage)
               marveenDownState = null
               marveenSuspectFirstSeen = null
             }
