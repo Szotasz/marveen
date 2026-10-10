@@ -188,9 +188,6 @@ function writePendingFailureAlert(pendingSince: number | null): void {
 // sweep, while losing the PERSISTED stamp above would lose it entirely.
 let healthyStreak = 0
 
-// Pure: is the recovery verdict stale because the session's transcript shows
-// recent activity? null mtime (dir unreadable) -> false: fail-open, the
-// stagnation signal stands on its own, same rule as the CPU guard.
 // The transcript mtime the kill-boundary gate reads. A function with its own default arguments so that
 // "the gate reads EVERY candidate root" (STUCKROOT923) is something a test can pin: reverting the gate to a
 // single root (`[mainConfigRoots()[0]]`) used to pass the whole suite. Newest wins across the roots.
@@ -201,6 +198,9 @@ export function killGateTranscriptMtime(
   return readTranscriptMtimeAcrossConfigDirs(workingDir, roots)
 }
 
+// Pure: is the recovery verdict stale because the session's transcript shows
+// recent activity? null mtime (dir unreadable) -> false: fail-open, the
+// stagnation signal stands on its own, same rule as the CPU guard.
 export function verdictStaleByTranscript(
   transcriptMtimeMs: number | null,
   nowMs: number,

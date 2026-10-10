@@ -270,6 +270,26 @@ def main():
         h.write(".env", body)
         check(".env " + label, h.mod.notify_enabled(), want_on)
         h.done()
+
+    print("notify OFF is log-only: every event kind leaves exactly one row, nothing is sent")
+    o = Tree(notify=None)  # token and chat are present, so a send would be recorded
+    o.write("CLAUDE.md", "a\n")
+    o.write("agents/x/SOUL.md", "x\n")
+    o.run()
+    o.write("CLAUDE.md", "a\nb\n")
+    o.run("Bash")
+    o.write("agents/new/SOUL.md", "n\n")
+    o.run("Write")
+    o.remove("agents/x/SOUL.md")
+    o.run("Bash")
+    o.run()
+    rows = [r.split("\t")[1:] for r in o.log().splitlines()]
+    check("nothing sent", o.sent, [])
+    check("one row per event, none repeated", len(rows), 3)
+    check("modified row", rows[0:1], [["CLAUDE.md", "modositva", "Bash", "2 sor"]])
+    check("created row", rows[1:2], [["agents/new/SOUL.md", "letrehozva", "Write", "1 sor"]])
+    check("deleted row", rows[2:3], [["agents/x/SOUL.md", "torolve", "Bash", "-1 sor"]])
+    o.done()
     print()
     if FAILED:
         print("FAILED:", ", ".join(FAILED))
