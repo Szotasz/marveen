@@ -778,6 +778,20 @@ let kanbanAssigneeFilter = ''
 // fully user-controlled via the toolbar dropdown.
 let kanbanGroupBy = 'none'
 let kanbanGroupByInitialized = false
+// Free-text / card-number search box in the board toolbar. A query of the form
+// "295" or "#295" matches the card SEQUENCE NUMBER exactly (that is the number
+// the board prints on every card and the one people actually use); anything
+// else is a case-insensitive substring match on the title. Deliberately NOT
+// persisted: a filter that survives a reload and hides most of the board is a
+// trap, and this one is typed in a second.
+let kanbanSearchQuery = ''
+// Card order inside a column: 'manual' (sort_order, i.e. the drag order --
+// the default and the only one where drag & drop makes sense) | 'seq_asc' |
+// 'seq_desc' | 'created_asc' | 'created_desc' | 'updated_desc'. Persisted in
+// localStorage.
+let kanbanSortBy = 'manual'
+// Every value the sort dropdown offers besides 'manual'.
+const KANBAN_SORTS = ['seq_asc', 'seq_desc', 'created_asc', 'created_desc', 'updated_desc']
 // Which swimlane keys (assignee name or priority value) are collapsed. Lives
 // for the page session only -- intentionally not persisted across reloads.
 const kanbanCollapsedLanes = new Set()
@@ -843,6 +857,12 @@ async function loadKanban() {
         const storedHiddenCols = JSON.parse(localStorage.getItem('marveen.kanbanHiddenColumns') || '[]')
         if (Array.isArray(storedHiddenCols)) kanbanHiddenColumns = new Set(storedHiddenCols)
       } catch { /* ignore malformed storage */ }
+      const storedSort = localStorage.getItem('marveen.kanbanSortBy')
+      if (KANBAN_SORTS.includes(storedSort)) {
+        kanbanSortBy = storedSort
+        const sortSel = document.getElementById('kanbanSortBy')
+        if (sortSel) sortSel.value = storedSort
+      }
     }
     const [cardsRes, assigneesRes, projectsRes, labelsRes] = await Promise.all([
       fetch('/api/kanban'),
@@ -866,6 +886,34 @@ async function loadKanban() {
 document.getElementById('kanbanGroupBy').addEventListener('change', (e) => {
   kanbanGroupBy = e.target.value
   localStorage.setItem('marveen.kanbanGroupBy', kanbanGroupBy)
+  renderKanban()
+})
+
+document.getElementById('kanbanSortBy')?.addEventListener('change', (e) => {
+  kanbanSortBy = e.target.value
+  localStorage.setItem('marveen.kanbanSortBy', kanbanSortBy)
+  renderKanban()
+})
+
+// 'input' rather than 'change' so the board narrows while typing -- with a few
+// hundred cards the whole render is a few milliseconds, so no debounce is
+// needed. Escape clears, because a search box you cannot empty in one key is
+// the reason filters get left on by accident.
+// The browser's password manager ignores autocomplete="off" and drops the saved
+// dashboard login name into the first text box on the page, which is this one.
+// It never fills a readonly field, so the box stays readonly until the user
+// reaches for it.
+for (const ev of ['pointerdown', 'focus']) {
+  document.getElementById('kanbanSearch')?.addEventListener(ev, (e) => e.target.removeAttribute('readonly'))
+}
+document.getElementById('kanbanSearch')?.addEventListener('input', (e) => {
+  kanbanSearchQuery = e.target.value
+  renderKanban()
+})
+document.getElementById('kanbanSearch')?.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return
+  e.target.value = ''
+  kanbanSearchQuery = ''
   renderKanban()
 })
 
@@ -1007,12 +1055,53 @@ function setupAssigneeFilter() {
   syncOwnerFilterBtn()
 }
 
+// Does the card match the toolbar search box? Two modes, decided by the shape
+// of the query, so one field serves both needs:
+//   "295" / "#295"  -> exact card-number (seq) match, nothing else
+//   anything else   -> case-insensitive substring of the title
+// The number mode is exact on purpose: "29" must not drag in 129 and 295 when
+// the point of typing a number is to land on one card.
+function kanbanCardMatchesSearch(card) {
+  const q = kanbanSearchQuery.trim()
+  if (!q) return true
+  const num = q.match(/^#?(\d+)$/)
+  if (num) return card.seq != null && Number(card.seq) === Number(num[1])
+  return String(card.title || '').toLowerCase().includes(q.toLowerCase())
+}
+
+// Comparator for the cards inside one column, per the sort dropdown. Cards
+// without a seq (there should be none, but the field is nullable) sort last in
+// both directions rather than jumping to the top on a NaN comparison.
+function kanbanCardSorter() {
+  if (kanbanSortBy === 'seq_asc') {
+    return (a, b) => (a.seq ?? Infinity) - (b.seq ?? Infinity)
+  }
+  if (kanbanSortBy === 'seq_desc') {
+    return (a, b) => (b.seq ?? -Infinity) - (a.seq ?? -Infinity)
+  }
+  // Timestamps: a missing one sorts last in both directions, same rule as seq.
+  // The seq breaks ties, so cards created in the same second keep a stable order.
+  const ts = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null)
+  const byTime = (field, dir) => (a, b) => {
+    const x = ts(a[field]), y = ts(b[field])
+    if (x === null && y === null) return (a.seq ?? 0) - (b.seq ?? 0)
+    if (x === null) return 1
+    if (y === null) return -1
+    return dir * (x - y) || dir * ((a.seq ?? 0) - (b.seq ?? 0))
+  }
+  if (kanbanSortBy === 'created_asc') return byTime('created_at', 1)
+  if (kanbanSortBy === 'created_desc') return byTime('created_at', -1)
+  if (kanbanSortBy === 'updated_desc') return byTime('updated_at', -1)
+  return (a, b) => a.sort_order - b.sort_order
+}
+
 // Project + assignee + label filters, independent of the priority quick-filter
 // Project + assignee filters only -- the baseline the label quick-filter
 // chip counts are computed against, independent of which labels are
 // currently active, so a chip's count stays meaningful whether it's the one
 // being toggled or not.
 function kanbanCardMatchesBaseFilters(card) {
+  if (!kanbanCardMatchesSearch(card)) return false
   if (kanbanProjectFilter && (card.project || '') !== kanbanProjectFilter) return false
   const assigneeFilter = kanbanAssigneeFilter.toLowerCase()
   if (assigneeFilter && String(card.assignee || '').trim().toLowerCase() !== assigneeFilter) return false
@@ -1076,11 +1165,83 @@ function renderKanbanQuickFilters() {
   }
 }
 
+function renderKanbanTotals(visibleCardIds) {
+  const el = document.getElementById('kanbanTotals')
+  if (!el) return
+  const open = kanbanCards.filter((c) => c.status !== 'done').length
+  let txt = t('kanban.totals', { open, all: kanbanCards.length })
+  if (visibleCardIds && visibleCardIds.size !== kanbanCards.length) {
+    txt += ' ' + t('kanban.totals_filtered', { n: visibleCardIds.size })
+  }
+  el.textContent = txt
+}
+
+// One line next to the search box saying what the query actually found. Two
+// cases deserve their own words, because in both of them the board legitimately
+// shows nothing and the reason is not the query:
+//   - every match sits in a column the user hid (the chips above)
+//   - no match at all, which for a card number usually means it is archived,
+//     and the archived view is a separate tab that this search does not reach
+function renderKanbanSearchHint() {
+  const hintEl = document.getElementById('kanbanSearchHint')
+  if (!hintEl) return
+  if (!kanbanSearchQuery.trim()) { hintEl.textContent = ''; return }
+  const matches = kanbanCards.filter((c) => kanbanCardMatchesSearch(c))
+  const hiddenCount = matches.filter((c) => kanbanHiddenColumns.has(c.status)).length
+  if (matches.length === 0) {
+    hintEl.textContent = t('kanban.filter.search_none')
+  } else if (hiddenCount === matches.length) {
+    hintEl.textContent = t('kanban.filter.search_all_hidden', { n: matches.length })
+  } else if (hiddenCount > 0) {
+    hintEl.textContent = t('kanban.filter.search_some_hidden', { n: matches.length, h: hiddenCount })
+  } else {
+    hintEl.textContent = t('kanban.filter.search_hits', { n: matches.length })
+  }
+}
+
+// Ongoing tasks: open cards labelled "Folyamatos" are standing duties (a weekly
+// check, a long-running watch), not work heading for "done". In the In progress
+// column they read as if they were about to finish, so they are pulled out of
+// their status column into a slim strip above the board. The card keeps its
+// real status, which can still be changed from its detail view; the strip is
+// not a drop target and nothing is ever posted with a virtual status.
+// The label is matched by name, case-insensitively: "Folyamatos" (the Hungarian
+// name the fleet uses) or "Ongoing".
+const KANBAN_ONGOING_LABELS = ['folyamatos', 'ongoing']
+
+function kanbanIsOngoing(card) {
+  return card.status !== 'done' && (card.labels || []).some((l) =>
+    l && typeof l.name === 'string' && KANBAN_ONGOING_LABELS.includes(l.name.trim().toLowerCase()))
+}
+
+function renderKanbanOngoing(cards) {
+  const strip = document.getElementById('kanbanOngoing')
+  const body = document.getElementById('kanbanOngoingBody')
+  if (!strip || !body) return
+  document.getElementById('countOngoing').textContent = cards.length
+  strip.hidden = cards.length === 0
+  body.innerHTML = ''
+  for (const card of cards.slice().sort((a, b) => (a.seq || 0) - (b.seq || 0))) {
+    const chip = document.createElement('button')
+    chip.type = 'button'
+    chip.className = 'kanban-ongoing-chip'
+    const seq = document.createElement('span')
+    seq.className = 'kanban-ongoing-seq'
+    seq.textContent = card.seq ? '#' + card.seq : ''
+    chip.appendChild(seq)
+    chip.appendChild(document.createTextNode(' ' + (card.title || '')))
+    chip.title = card.title || ''
+    chip.addEventListener('click', () => showCardDetail(card))
+    body.appendChild(chip)
+  }
+}
+
 function renderKanban() {
   const cardById = new Map(kanbanCards.map(c => [c.id, c]))
 
   renderKanbanColumnChips()
   renderKanbanQuickFilters()
+  renderKanbanSearchHint()
 
   // Determine which top-level cards are visible under current filters.
   const visibleCardIds = new Set()
@@ -1089,6 +1250,8 @@ function renderKanban() {
     if (!kanbanCardMatchesLabelFilter(card)) continue
     visibleCardIds.add(card.id)
   }
+
+  renderKanbanTotals(visibleCardIds)
 
   // A subtask is "embedded" when its parent is visible AND both share the same
   // column. Embedded subtasks are hidden as standalone cards and rendered
@@ -1103,11 +1266,14 @@ function renderKanban() {
   }
 
   const grouped = { planned: [], in_progress: [], waiting: [], testing: [], done: [] }
+  const ongoing = []
   for (const card of kanbanCards) {
     if (embeddedSubtaskIds.has(card.id)) continue
     if (!visibleCardIds.has(card.id)) continue
+    if (kanbanIsOngoing(card)) { ongoing.push(card); continue }
     if (grouped[card.status]) grouped[card.status].push(card)
   }
+  renderKanbanOngoing(ongoing)
 
   // Update counts (embedded subtasks don't count as separate cards)
   document.getElementById('countPlanned').textContent = grouped.planned.length
@@ -1125,12 +1291,12 @@ function renderKanban() {
     for (const [status, cards] of Object.entries(grouped)) {
       const col = document.querySelector(`#kanbanBoard .kanban-col-body[data-status="${status}"]`)
       col.innerHTML = ''
-      cards.sort((a, b) => a.sort_order - b.sort_order)
+      cards.sort(kanbanCardSorter())
 
       for (const card of cards) {
         const embeddedChildren = kanbanCards
           .filter(c => c.parent_id === card.id && embeddedSubtaskIds.has(c.id))
-          .sort((a, b) => a.sort_order - b.sort_order)
+          .sort(kanbanCardSorter())
         col.appendChild(createCardEl(card, embeddedChildren))
       }
     }
@@ -1265,11 +1431,11 @@ function renderSwimlaneBoard(grouped, embeddedSubtaskIds) {
       colBody.className = 'kanban-col-body kanban-swimlane-col-body'
       colBody.dataset.status = def.status
 
-      const cards = laneCardsByStatus[def.status].sort((a, b) => a.sort_order - b.sort_order)
+      const cards = laneCardsByStatus[def.status].sort(kanbanCardSorter())
       for (const card of cards) {
         const embeddedChildren = kanbanCards
           .filter(c => c.parent_id === card.id && embeddedSubtaskIds.has(c.id))
-          .sort((a, b) => a.sort_order - b.sort_order)
+          .sort(kanbanCardSorter())
         colBody.appendChild(createCardEl(card, embeddedChildren))
       }
       wireKanbanColumnDnD(colBody)
@@ -1354,7 +1520,11 @@ function createCardEl(card, embeddedChildren = []) {
   el.className = 'kanban-card'
   el.dataset.id = card.id
   el.dataset.priority = card.priority
-  el.draggable = true
+  // Drag & drop rewrites sort_order, which is what 'manual' order shows. Under
+  // a seq sort the drop would be accepted and then have no visible effect --
+  // a move that looks like it failed. So the card is simply not draggable
+  // there; the touch path reads the same flag.
+  el.draggable = kanbanSortBy === 'manual'
 
   // Assignee chip. Match the card's assignee against the known list
   // case-insensitively (a card stored as "gorcsevivan" must still match the
@@ -1745,6 +1915,7 @@ async function kanbanTouchEnd(e) {
 function wireKanbanCardTouchDnD(el, card) {
   el.addEventListener('touchstart', (e) => {
     if (e.touches.length !== 1) return
+    if (!el.draggable) return
     const p = e.touches[0]
     endTouchDrag()
     touchDrag = {
@@ -5536,7 +5707,20 @@ document.getElementById('chTestBtn').addEventListener('click', async () => {
   try {
     const res = await fetch(`${channelApiBase()}/test`, { method: 'POST' })
     if (!res.ok) throw new Error()
-    showToast('Kapcsolat rendben!')
+    const data = await res.json().catch(() => ({}))
+    // SLACKSCOPEJELZ1007: a Slack token that lacks a manifest scope works, but
+    // part of the plugin silently does not (im:read: writing to the owner's DM
+    // after a restart). Say so instead of "all right".
+    const missing = Array.isArray(data.missingScopes) ? data.missingScopes : []
+    if (missing.length > 0) {
+      // showToast's 2nd argument is the DURATION (ms). Long enough to read
+      // a sentence that names scopes and what to do.
+      const msg = t('channel.toast.missing_scopes', { scopes: missing.join(', ') })
+        + (missing.includes('im:read') ? ' ' + t('channel.toast.missing_scopes_imread') : '')
+      showToast(msg, 12000)
+    } else {
+      showToast('Kapcsolat rendben!')
+    }
   } catch {
     showToast(t('channel.toast.smoke_failed'))
   }
@@ -5555,10 +5739,10 @@ document.getElementById('chReconnectBtn').addEventListener('click', async () => 
       showToast('Channel-MCP reconnect sikeres')
       document.getElementById('chDisconnectedNotice').hidden = true
     } else {
-      showToast(data.message || 'Reconnect sikertelen', true)
+      showToast(data.message || 'Reconnect sikertelen', 8000)
     }
   } catch {
-    showToast('Reconnect hiba', true)
+    showToast('Reconnect hiba', 8000)
   } finally {
     btn.disabled = false
     btn.textContent = origText
@@ -5575,12 +5759,12 @@ document.getElementById('chSmokeTestBtn').addEventListener('click', async () => 
     const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent)}/channels/slack/smoke-test`, { method: 'POST' })
     const data = await res.json()
     if (!res.ok) {
-      showToast(data.error || 'Smoke-test sikertelen', true)
+      showToast(data.error || 'Smoke-test sikertelen', 8000)
       return
     }
     showSmokeTestResult(data.output || 'OK')
   } catch {
-    showToast('Smoke-test hiba', true)
+    showToast('Smoke-test hiba', 8000)
   } finally {
     btn.disabled = false
     btn.textContent = origText
@@ -12145,6 +12329,44 @@ function quotaLevelClass(pct) {
   return ''
 }
 
+// Weekly quota row: 7 day segments, day names underneath and a "now" marker.
+// The window is NOT a calendar week: it runs resetsAt-7d -> resetsAt
+// (measured 2026-09-29: Monday 09:00 CEST for both the previous and the
+// current window), so the labels and the marker are derived from resetsAt,
+// never from "Monday". Each segment is labelled with the weekday it STARTS
+// on. Returns null when there is no usable current window -- the row then
+// keeps the plain bar instead of drawing a week it cannot place.
+// timeZone is for tests only; the dashboard uses the viewer's local time.
+function weekSegments(resetsAt, nowSec, lang, timeZone) {
+  const WEEK = 7 * 86400
+  if (typeof resetsAt !== 'number' || !Number.isFinite(resetsAt)) return null
+  if (typeof nowSec !== 'number' || !Number.isFinite(nowSec)) return null
+  const start = resetsAt - WEEK
+  if (resetsAt <= nowSec || nowSec < start) return null
+  const locale = lang === 'en' ? 'en-US' : 'hu-HU'
+  const starts = Array.from({ length: 7 }, (_, i) => start + i * 86400)
+  const name = (weekday) => starts.map((sec) => {
+    const s = new Date(sec * 1000).toLocaleDateString(locale, { weekday, timeZone })
+    return s.charAt(0).toUpperCase() + s.slice(1)
+  })
+  // Three widths, chosen by the CSS container query on .quota-bar-days, never
+  // by an ellipsis (a portrait phone showed "Hé… Ke… Sz… … Sz…": two
+  // indistinguishable "Sz…"). hu short = H K Sze Cs P Szo V. hu has no safe
+  // one-letter form (Szerda/Szombat both "Sz"), so hu has NO narrow tier:
+  // narrowLabels is null and the day-name row hides below that width (the
+  // separators and the now marker still show where the days are). Its short
+  // forms need ~140 px and ran together ("SzeCs") on a 390 px phone.
+  // en narrow = M T W T F S S.
+  const short = name('short')
+  return {
+    starts,
+    labels: name('long'),
+    shortLabels: short,
+    narrowLabels: lang === 'en' ? name('narrow') : null,
+    nowPct: ((nowSec - start) / WEEK) * 100,
+  }
+}
+
 // Render the subscription quota strip from /api/overview's `quota` block.
 //
 // The rule this follows: a quota reading is only worth showing while it is
@@ -12216,9 +12438,17 @@ function renderQuotaStrip(q, fable) {
     if (q.source === 'mod' && w.sourceAgent) {
       tail += ' · ' + w.sourceAgent
     }
+    const week = labelKey === 'overview.quota.seven_day' && !w.expired
+      ? weekSegments(w.resetsAt, nowSec, window._lang)
+      : null
+    const track = `<div class="quota-bar-track${week ? ' week' : ''}"><div class="quota-bar-fill ${muted ? '' : quotaLevelClass(pct)}" style="width:${pct}%"></div></div>`
     row.innerHTML = `
       <div class="quota-bar-label">${escapeHtml(t(labelKey))}</div>
-      <div class="quota-bar-track"><div class="quota-bar-fill ${muted ? '' : quotaLevelClass(pct)}" style="width:${pct}%"></div></div>
+      ${week ? `<div class="quota-bar-col">
+        ${track}
+        <div class="quota-bar-now" style="left:${week.nowPct.toFixed(2)}%"></div>
+        <div class="quota-bar-days${week.narrowLabels ? '' : ' no-narrow'}">${week.labels.map((d, i) => `<span><span class="day-full">${escapeHtml(d)}</span><span class="day-short">${escapeHtml(week.shortLabels[i])}</span>${week.narrowLabels ? `<span class="day-narrow">${escapeHtml(week.narrowLabels[i])}</span>` : ''}</span>`).join('')}</div>
+      </div>` : track}
       <div class="quota-bar-value">${pct}%<span class="quota-bar-reset">${escapeHtml(tail)}</span></div>
     `
     bars.appendChild(row)
@@ -15616,6 +15846,11 @@ const TU_MODEL_PRICING = {
   'claude-sonnet-4-5':   { in: 3.0,   out: 15.0,  cw: 3.75,  cr: 0.30 },
   'claude-fable-5':      { in: 10.0,  out: 50.0,  cw: 12.50, cr: 1.00 },
   'claude-mythos-5':     { in: 10.0,  out: 50.0,  cw: 12.50, cr: 1.00 },
+  // Haiku 5.5, from the official pricing page (2026-10-08): prompts up to 100k
+  // tokens 0.10 / 0.50 (5m cache write 0.125, hit 0.01); prompts over 100k
+  // tokens 0.50 / 2.50. This table holds one price per model, so the <=100k
+  // tier is used and spend on >100k prompts is understated.
+  'claude-haiku-5-5':    { in: 0.10,  out: 0.50,  cw: 0.125, cr: 0.01 },
   'claude-haiku-4-5':    { in: 1.0,   out: 5.0,   cw: 1.25,  cr: 0.10 },
   default:               { in: 3.0,   out: 15.0,  cw: 3.75,  cr: 0.30 },
 }
@@ -18677,6 +18912,10 @@ async function openResearchDoc(agent, name) {
 
   window._initGanttViewSwitcher = initGanttViewSwitcher
   window.renderGantt = renderGantt
+  // A direct #kanban load routes (switchPage) earlier in this file, before the
+  // initializer above exists, so that first call skipped it and the Board /
+  // Timeline / Archived buttons stayed dead. Catch up if the board is showing.
+  if (document.getElementById('kanbanPage')?.hidden === false) initGanttViewSwitcher()
 })()
 
 // VIDEOREVIEW1002: reveal the sidebar link to the review page only when the

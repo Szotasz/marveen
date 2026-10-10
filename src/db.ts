@@ -576,6 +576,26 @@ export function initDatabase(dbPathOverride?: string): void {
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_kanban_events_card ON kanban_card_events(card_id, created_at)`)
 
+  // Field-change audit trail (card f6fba9ec): one row per REAL change of a
+  // KANBAN_AUDITED_FIELDS column, written by updateKanbanCard with the actor.
+  // A table of its own, not more rows in kanban_card_events: every reader of
+  // that one (the stuck detector, the status-age queries, fleet-transfer) takes
+  // a row there as a STATUS transition, so a due-date row written into it would
+  // silently read as a status change. Values are kept as text, NULL for an
+  // empty field.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS kanban_card_field_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      card_id TEXT NOT NULL,
+      field TEXT NOT NULL,
+      old_value TEXT,
+      new_value TEXT,
+      actor TEXT,
+      created_at INTEGER NOT NULL
+    )
+  `)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_kanban_field_events_card ON kanban_card_field_events(card_id, created_at)`)
+
   // listKanbanCards()'s auto-archive sweep (below) treats a card's updated_at
   // as "when did this card last change", and archives a done card once that
   // timestamp is older than KANBAN_ARCHIVE_DONE_DAYS. Both production status
@@ -1330,6 +1350,31 @@ export function initDatabase(dbPathOverride?: string): void {
   try { db.exec('ALTER TABLE approvals ADD COLUMN content_hash TEXT') } catch { /* already exists */ }
   try { db.exec('ALTER TABLE approvals ADD COLUMN consumed_at INTEGER') } catch { /* already exists */ }
   db.exec(`CREATE INDEX IF NOT EXISTS idx_approvals_hash ON approvals(content_hash)`)
+  // f2c5edb0: the gate only sees a send it can read in the command text, so a
+  // letter sent by a script (ssh + a mailer run on another host) never flipped
+  // consumed_at and one approved row could authorize a second send. Such a
+  // sender now consumes on its own path (POST /api/approvals/:id/consume)
+  // BEFORE the letter goes out. consumed_by names the consumer, consumed_ref
+  // the Message-Id the sender generated up front, so the row says which letter
+  // used it. Rows consumed by the gate leave both NULL.
+  try { db.exec('ALTER TABLE approvals ADD COLUMN consumed_by TEXT') } catch { /* already exists */ }
+  try { db.exec('ALTER TABLE approvals ADD COLUMN consumed_ref TEXT') } catch { /* already exists */ }
+  // Every consume call leaves a row here, the refused ones too: a second send
+  // attempt on a used approval is exactly the event worth seeing afterwards.
+  // consumed_backfill is for a one-off data fix of rows a past send never
+  // consumed; it is written by an operator script, never by the API.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS approval_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      approval_id TEXT NOT NULL,
+      event TEXT NOT NULL CHECK(event IN ('consumed','consume_refused','consumed_backfill')),
+      reason TEXT,
+      actor TEXT,
+      ref TEXT,
+      created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
+    )
+  `)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_approval_events_approval ON approval_events(approval_id, created_at)`)
 
   // --- Control-bot custom commands (CMD920 3.12) ---
   // The owner's own slash commands. DB, not a file, so a later web admin writes
@@ -2619,6 +2664,12 @@ export const KANBAN_WRITABLE_FIELDS = [
   'parent_id', 'due_date', 'sort_order', 'archived_at',
 ] as const
 
+// The columns whose changes updateKanbanCard records in kanban_card_field_events
+// (card f6fba9ec). An audit asking "when did the deadline move, and who moved
+// it" could not be answered: kanban_card_events holds status transitions only,
+// and updated_at moves on any write. Status keeps its own table.
+export const KANBAN_AUDITED_FIELDS = ['due_date', 'assignee', 'priority'] as const
+
 export function updateKanbanCard(
   id: string,
   fields: Partial<Omit<KanbanCard, 'id' | 'created_at'>>,
@@ -2636,30 +2687,54 @@ export function updateKanbanCard(
   // (the card exists) but touch nothing.
   const realChange = KANBAN_WRITABLE_FIELDS.some((k) => f[k] !== card[k])
   if (!realChange) return true
-  const changed = db.prepare(
-    `UPDATE kanban_cards SET title=?, description=?, status=?, assignee=?, priority=?, project=?, parent_id=?, due_date=?, sort_order=?, updated_at=?, archived_at=?
-     WHERE id=?`
-  ).run(f.title, f.description, f.status, f.assignee, f.priority, f.project, f.parent_id, f.due_date, f.sort_order, f.updated_at, f.archived_at, id).changes > 0
-  if (changed) {
-    touchAncestorChain(f.parent_id, now, id)
-    // Re-parenting is activity on BOTH threads: the old one lost a card, the new one gained it.
-    // Stamping only the new parent would leave the old one looking frozen -- the very bug this
-    // function is fixing, just rarer and therefore harder to notice.
-    if (card.parent_id && card.parent_id !== f.parent_id) touchAncestorChain(card.parent_id, now, id)
-  }
-  // Only a REAL transition is an event: a PUT that edits the title or the
-  // assignee and echoes the unchanged status back must not log one, or the
-  // history fills with noise that hides the transitions worth reading.
-  //
-  // TWO INDEPENDENT CONDITIONS, not one: the ancestor stamp is owed on ANY change
-  // (a retitled subcard is still activity on the thread), the event only on a real
-  // status transition. Folding them together would silence one of the two.
-  if (changed && f.status !== card.status) {
-    db.prepare(
-      'INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at) VALUES (?, ?, ?, ?, ?)'
-    ).run(id, card.status, f.status, actor ?? null, now)
-  }
-  return changed
+  // ONE TRANSACTION for the card write and every row it owes (card f6fba9ec,
+  // a review finding): the UPDATE, the ancestor stamps, the status event and the
+  // field events either all happen or none does. Before, a row insert that
+  // threw (an actor SQLite cannot bind: a PUT with actor true answered 500)
+  // left the card changed with no row saying who changed it.
+  return db.transaction((): boolean => {
+    const changed = db.prepare(
+      `UPDATE kanban_cards SET title=?, description=?, status=?, assignee=?, priority=?, project=?, parent_id=?, due_date=?, sort_order=?, updated_at=?, archived_at=?
+       WHERE id=?`
+    ).run(f.title, f.description, f.status, f.assignee, f.priority, f.project, f.parent_id, f.due_date, f.sort_order, f.updated_at, f.archived_at, id).changes > 0
+    if (changed) {
+      touchAncestorChain(f.parent_id, now, id)
+      // Re-parenting is activity on BOTH threads: the old one lost a card, the new one gained it.
+      // Stamping only the new parent would leave the old one looking frozen -- the very bug this
+      // function is fixing, just rarer and therefore harder to notice.
+      if (card.parent_id && card.parent_id !== f.parent_id) touchAncestorChain(card.parent_id, now, id)
+    }
+    // Only a REAL transition is an event: a PUT that edits the title or the
+    // assignee and echoes the unchanged status back must not log one, or the
+    // history fills with noise that hides the transitions worth reading.
+    //
+    // TWO INDEPENDENT CONDITIONS, not one: the ancestor stamp is owed on ANY change
+    // (a retitled subcard is still activity on the thread), the event only on a real
+    // status transition. Folding them together would silence one of the two.
+    if (changed && f.status !== card.status) {
+      db.prepare(
+        'INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at) VALUES (?, ?, ?, ?, ?)'
+      ).run(id, card.status, f.status, actor ?? null, now)
+    }
+    // Field changes, same rule: only a REAL change is a row. Compared against the
+    // row as STORED after the write, as text, so a value echoed back in another
+    // shape that the column stores the same way (a due date sent as the string
+    // "1790000000" for a stored 1790000000) is not a change.
+    if (changed) {
+      const stored = getKanbanCard(id)
+      if (stored) {
+        const insertField = db.prepare(
+          'INSERT INTO kanban_card_field_events (card_id, field, old_value, new_value, actor, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+        )
+        for (const field of KANBAN_AUDITED_FIELDS) {
+          const before = card[field] == null ? null : String(card[field])
+          const after = stored[field] == null ? null : String(stored[field])
+          if (before !== after) insertField.run(id, field, before, after, actor ?? null, now)
+        }
+      }
+    }
+    return changed
+  })()
 }
 
 export function getChildCards(parentId: string): KanbanCard[] {
@@ -2683,18 +2758,23 @@ export function moveKanbanCard(id: string, status: KanbanCard['status'], sortOrd
   // every move that does not land in in_progress re-arms the next activation --
   // and heals a row already stuck this way, since the clear does not depend on
   // the previous status.
-  const changed = db.prepare(
-    status === 'in_progress'
-      ? 'UPDATE kanban_cards SET status=?, sort_order=?, updated_at=? WHERE id=?'
-      : 'UPDATE kanban_cards SET status=?, sort_order=?, updated_at=?, dispatched_at=NULL WHERE id=?'
-  ).run(status, sortOrder, now, id).changes > 0
-  if (changed) touchAncestorChain(row?.parent_id, now, id)
-  if (changed && prev !== undefined && prev !== status) {
-    db.prepare(
-      'INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at) VALUES (?, ?, ?, ?, ?)'
-    ).run(id, prev, status, actor ?? null, now)
-  }
-  return changed
+  // ONE TRANSACTION for the move and the row it owes, as in updateKanbanCard (card f6fba9ec, X16): the UPDATE, the
+  // ancestor stamps and the status event either all happen or none does, so a row insert that throws cannot leave a
+  // card moved with no row saying who moved it.
+  return db.transaction((): boolean => {
+    const changed = db.prepare(
+      status === 'in_progress'
+        ? 'UPDATE kanban_cards SET status=?, sort_order=?, updated_at=? WHERE id=?'
+        : 'UPDATE kanban_cards SET status=?, sort_order=?, updated_at=?, dispatched_at=NULL WHERE id=?'
+    ).run(status, sortOrder, now, id).changes > 0
+    if (changed) touchAncestorChain(row?.parent_id, now, id)
+    if (changed && prev !== undefined && prev !== status) {
+      db.prepare(
+        'INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at) VALUES (?, ?, ?, ?, ?)'
+      ).run(id, prev, status, actor ?? null, now)
+    }
+    return changed
+  })()
 }
 
 // Stamp the once-only kanban -> agent dispatch guard. Returns false if the
@@ -2808,6 +2888,20 @@ export interface KanbanCardEvent {
 
 export function getKanbanCardEvents(cardId: string): KanbanCardEvent[] {
   return db.prepare('SELECT * FROM kanban_card_events WHERE card_id = ? ORDER BY created_at ASC, id ASC').all(cardId) as KanbanCardEvent[]
+}
+
+export interface KanbanCardFieldEvent {
+  id: number
+  card_id: string
+  field: (typeof KANBAN_AUDITED_FIELDS)[number]
+  old_value: string | null
+  new_value: string | null
+  actor: string | null
+  created_at: number
+}
+
+export function getKanbanCardFieldEvents(cardId: string): KanbanCardFieldEvent[] {
+  return db.prepare('SELECT * FROM kanban_card_field_events WHERE card_id = ? ORDER BY created_at ASC, id ASC').all(cardId) as KanbanCardFieldEvent[]
 }
 
 // Lookup a kanban card's `seq` (its sqlite rowid) by the 8-char hex id stored
@@ -3814,7 +3908,7 @@ export function getDispatchedPendingStats(
  * The message id of the newest inbound that has no outbound after it, or null
  * when nothing is open. Same rule as hasOpenInboundQuestion, but it hands back
  * WHICH message, so a caller can ask whether the agent has already been shown
- * it (see openQuestionBlocks in the restart-gate runner).
+ * it (see openQuestionBlocks in web/open-question.ts).
  *
  * Returns '' for an open question whose row carries no message id: the caller
  * cannot match that against a marker, and the safe reading of "unknown" is
@@ -5318,6 +5412,12 @@ export interface Approval {
   requested_at: number
   resolved_at: number | null
   resolved_by: string | null
+  // f2c5edb0: who consumed the approval and with which letter; they pair with
+  // consumed_at below. Optional in the type only: a row read from the DB always
+  // carries both (NULL until consumed); hand-built literals made before these
+  // columns existed need not list them.
+  consumed_by?: string | null
+  consumed_ref?: string | null
   content_hash: string | null
   consumed_at: number | null
 }
@@ -5357,6 +5457,8 @@ export function createApproval(params: {
     requested_at: now,
     resolved_at: null,
     resolved_by: null,
+    consumed_by: null,
+    consumed_ref: null,
     content_hash: params.content_hash ?? null,
     consumed_at: null,
   }
@@ -5423,6 +5525,74 @@ export function expireTimedOutApprovals(): number {
     UPDATE approvals SET status = 'timeout', resolved_at = ?
     WHERE status = 'pending' AND timeout_at IS NOT NULL AND timeout_at <= ?
   `).run(now, now).changes
+}
+
+// f2c5edb0: why a consume was refused. Classified AFTER the write failed, so
+// the write itself never depends on a read that could go stale.
+export type ApprovalConsumeRefusal =
+  | 'not_found' | 'wrong_category' | 'already_consumed' | 'not_approved' | 'hash_mismatch' | 'expired'
+
+export interface ApprovalConsumeResult {
+  ok: boolean
+  reason?: ApprovalConsumeRefusal
+  approval?: Approval
+}
+
+// One-shot consumption of an email_send approval by the SEND path itself
+// (f2c5edb0). The single conditional UPDATE is the whole decision: only the
+// call that flips consumed_at from NULL wins, so two concurrent senders can
+// never both get a yes. The conditions mirror the gate's find_and_consume
+// (scripts/hooks/email-approval-gate.py): same category, approved, unconsumed,
+// the exact content anchor, resolved inside the time window. A row the gate
+// consumed is refused here and vice versa -- both read consumed_at IS NULL.
+export function consumeApproval(params: {
+  id: string
+  contentHash: string
+  consumer: string
+  messageId?: string | null
+  windowSeconds: number
+  nowS?: number
+}): ApprovalConsumeResult {
+  const now = params.nowS ?? Math.floor(Date.now() / 1000)
+  const ref = params.messageId ?? null
+  return db.transaction((): ApprovalConsumeResult => {
+    const changes = db.prepare(`
+      UPDATE approvals SET consumed_at = ?, consumed_by = ?, consumed_ref = ?
+       WHERE id = ? AND category = 'email_send' AND status = 'approved' AND consumed_at IS NULL
+         AND content_hash = ? AND resolved_at IS NOT NULL AND resolved_at >= ?
+    `).run(now, params.consumer, ref, params.id, params.contentHash, now - params.windowSeconds).changes
+    const event = db.prepare(`
+      INSERT INTO approval_events (approval_id, event, reason, actor, ref, created_at) VALUES (?, ?, ?, ?, ?, ?)
+    `)
+    const row = getApproval(params.id)
+    if (changes === 1) {
+      event.run(params.id, 'consumed', null, params.consumer, ref, now)
+      return { ok: true, approval: row }
+    }
+    let reason: ApprovalConsumeRefusal
+    if (!row) reason = 'not_found'
+    else if (row.category !== 'email_send') reason = 'wrong_category'
+    else if (row.consumed_at != null) reason = 'already_consumed'
+    else if (row.status !== 'approved') reason = 'not_approved'
+    else if (row.content_hash !== params.contentHash) reason = 'hash_mismatch'
+    else reason = 'expired'
+    if (row) event.run(params.id, 'consume_refused', reason, params.consumer, ref, now)
+    return { ok: false, reason, approval: row }
+  })()
+}
+
+export interface ApprovalEvent {
+  id: number
+  approval_id: string
+  event: 'consumed' | 'consume_refused' | 'consumed_backfill'
+  reason: string | null
+  actor: string | null
+  ref: string | null
+  created_at: number
+}
+
+export function listApprovalEvents(approvalId: string): ApprovalEvent[] {
+  return db.prepare('SELECT * FROM approval_events WHERE approval_id = ? ORDER BY id').all(approvalId) as ApprovalEvent[]
 }
 
 // --- OTel Distributed Tracing (card def5a189) ---

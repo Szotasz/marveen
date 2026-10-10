@@ -15,6 +15,7 @@ import {
   type ModelProfileMapState,
   type ModelResolution,
 } from '../model-profiles.js'
+import { expandAndValidateConfigDir, hasParentTraversal } from '../config-dir-path.js'
 
 export const AGENTS_BASE_DIR = join(PROJECT_ROOT, 'agents')
 
@@ -34,6 +35,8 @@ export const MODEL_ALIASES: Record<string, string> = {
   'opus-5': 'claude-opus-5',
   'opus5': 'claude-opus-5',
   'haiku': 'claude-haiku-4-5-20251001',
+  'haiku-5-5': 'claude-haiku-5-5',
+  'haiku55': 'claude-haiku-5-5',
   'fable': 'claude-fable-5',
   'fable-5': 'claude-fable-5',
   'fable5': 'claude-fable-5',
@@ -227,85 +230,17 @@ export function readAgentSecurityProfile(name: string): string {
   return 'default'
 }
 
+// expandAndValidateConfigDir and its rules live in ../config-dir-path.ts
+// (dependency-free, shared with the settings registry); re-exported here for
+// the existing callers.
+export { expandAndValidateConfigDir } from '../config-dir-path.js'
+
 // Pure-logic resolver for the optional per-agent claudeConfigDir field.
 // Takes the raw agent-config.json text (or `{}` when no file exists) plus an
 // explicit home-dir, and returns the absolute path to use as
 // CLAUDE_CONFIG_DIR, or null when the field is missing/blank/non-string or
 // the JSON is unparseable. Tilde forms are expanded against the supplied
 // homeDir. Kept dependency-free so it can be unit-tested without the fs.
-//
-// Allowed character set for the path: alphanumerics, dot, slash, hyphen,
-// underscore, tilde. Anything else is rejected.
-//
-// This is a whitelist rather than a blacklist for a reason. The launcher
-// inlines the path into a tmux command via nested template literals, which
-// produces a shell string with both an outer and an inner double-quoted
-// region. Bash treats the inner `"` as a quote delimiter, not a literal,
-// so the path actually lands partly inside and partly outside double-quote
-// context. Inside double quotes most metachars are tame; outside, almost
-// anything (parens, single quote, spaces, semicolons, &, |) is shell-
-// significant. Enumerating "safe outside double quotes" by blacklist is a
-// trap -- a whitelist of characters that survive both layers is far
-// shorter to write and more robust to future changes in the launcher.
-//
-// Local config is only writable by the host operator, so this is defense-
-// in-depth rather than a hard security boundary, but it cheaply removes
-// the trivial way to break the launcher with a config typo.
-//
-// Path values containing `..` segments are also rejected. Without this
-// guard `path.join` would silently collapse them ("~/../../../etc/passwd"
-// resolves to "/etc/passwd"), which is almost never what the operator
-// meant. Absolute paths without `..` remain accepted, so legitimate non-
-// home locations like "/var/lib/claude-coding" still work.
-const CLAUDE_CONFIG_DIR_ALLOWED = /^[A-Za-z0-9_./~-]+$/
-
-// Only `..` segments are rejected, not `.` (current dir) or empty segments
-// from doubled slashes (`//`). Both of those are no-ops -- the OS and
-// `path.join` normalize them away without changing where the path points.
-// `..` is the only segment that meaningfully alters the destination, so
-// it's the only one we treat as suspicious.
-function hasParentTraversal(raw: string): boolean {
-  return raw.split('/').some(segment => segment === '..')
-}
-
-// Expand + validate a raw config-dir string (already extracted from wherever
-// it was stored) against the launcher's shell-safety rules. Shared by the
-// per-agent `claudeConfigDir` resolver and the named-plan registry
-// (claude-plans.ts) so both feed the tmux launcher through the exact same
-// whitelist/traversal/tilde gauntlet -- there is only one place that decides
-// what is safe to inline into the launch command. Returns the absolute path,
-// or null when the value is blank/malformed/unsafe.
-export function expandAndValidateConfigDir(
-  rawValue: string,
-  homeDir: string,
-): string | null {
-  const raw = rawValue.trim()
-  if (!raw) return null
-  if (!CLAUDE_CONFIG_DIR_ALLOWED.test(raw)) return null
-  if (hasParentTraversal(raw)) return null
-  // Tilde may appear at most once, and only as the bare `~` or as the
-  // leading `~/` of a `~/...` form. `~user`, mid-string `~`, double tildes
-  // -- all rejected because the runtime shell would re-expand them at
-  // assignment time even though our resolver does not, and we do not want
-  // the launcher to silently route an agent to a different user's home
-  // directory or to a path the operator did not write.
-  if (raw.includes('~')) {
-    const tildeCount = raw.split('~').length - 1
-    const validForm = raw === '~' || raw.startsWith('~/')
-    if (!validForm || tildeCount > 1) return null
-  }
-  let resolved: string
-  if (raw === '~') resolved = homeDir
-  else if (raw.startsWith('~/')) resolved = join(homeDir, raw.slice(2))
-  else resolved = raw
-  // Re-validate after expansion: if `homeDir` itself contains a character
-  // outside the whitelist (e.g. a space in a multi-word account name), the
-  // resolved path would land in unquoted shell context and break the
-  // launcher cmd. Reject rather than ship a broken export.
-  if (!CLAUDE_CONFIG_DIR_ALLOWED.test(resolved)) return null
-  return resolved
-}
-
 export function resolveClaudeConfigDir(
   rawConfigJson: string,
   homeDir: string,

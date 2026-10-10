@@ -26,6 +26,7 @@ import { getBindings } from './vault-bindings.js'
 import { resolveMasterKeyForExport } from './vault.js'
 import { getDb, backfillEmbeddings } from '../db.js'
 import { logger } from '../logger.js'
+import { isValidModelId } from '../model-id.js'
 
 // ---------------------------------------------------------------------------
 // Schema version -- bump when the JSON shape changes incompatibly.
@@ -762,6 +763,26 @@ function validateSchema(fleet: unknown): string[] {
 }
 
 // B1: validate all untrusted names before any file operation
+// SECSZIVEK1007: the model ids an import would write (the main agent's
+// .claude/settings.json and agent-config.json, each agent's agent-config.json
+// and settings.json) go through the same allowlist as every other model writer
+// (isValidModelId). A malformed id rejects the whole import before any write.
+function validateModels(fleet: FleetJson): string[] {
+  const errors: string[] = []
+  const check = (where: string, obj: Record<string, unknown> | undefined): void => {
+    const m = obj?.model
+    if (m === undefined || m === null || m === '') return
+    if (!isValidModelId(m)) errors.push(`Érvénytelen modell-azonosító (${where}).`)
+  }
+  check('mainAgent settings.json', fleet.mainAgent?.settings)
+  check('mainAgent agent-config.json', fleet.mainAgent?.config)
+  for (const agent of fleet.agents ?? []) {
+    check(`agent ${String(agent.name).slice(0, 60)} agent-config.json`, agent.config)
+    check(`agent ${String(agent.name).slice(0, 60)} settings.json`, agent.settings)
+  }
+  return errors
+}
+
 function validateNames(fleet: FleetJson): string[] {
   const errors: string[] = []
 
@@ -1046,6 +1067,10 @@ export function importFleet(
   const nameErrors = validateNames(fleet)
   if (nameErrors.length > 0) {
     return { ...EMPTY_DIFF, errors: nameErrors }
+  }
+  const modelErrors = validateModels(fleet)
+  if (modelErrors.length > 0) {
+    return { ...EMPTY_DIFF, errors: modelErrors }
   }
 
   if (!options.apply) {
