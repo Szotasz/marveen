@@ -1976,7 +1976,7 @@ function checkMainKeepaliveStaleness(): void {
     if (loop.decision === 'hold-and-alert') {
       keepaliveLoopAlerted = true
       logger.warn({ ageMs, uselessRespawns: loop.uselessRespawns }, 'Keepalive loop breaker: respawns did not advance the keepalive while the poller is alive -- holding further respawns (KEEPALIVELOOP923)')
-      sendAlert(`⚠️ A fő channel keep-alive ${ageMin} perce nem frissül, de a Telegram-poller él, és ${loop.uselessRespawns} újraindítás sem segített. További újraindítást NEM csinálok (csak a beszélgetést vinné el). Valószínűleg a jelző-forrás akadt el: nézd meg a com.marveen.channel-keepalive-probe launchd jobot és a store/channel-keepalive-probe.log-ot. Ha a jelző újra frissül, a figyelő magától visszaáll.`)
+      sendAlert(`⚠️ A fő channel keep-alive ${ageMin} perce nem frissül, de a Telegram-poller él, és ${loop.uselessRespawns} újraindítás sem segített. További újraindítást NEM csinálok (csak a beszélgetést vinné el). Valószínűleg a jelző-forrás akadt el: nézd meg a com.${SERVICE_ID}.channel-keepalive-probe launchd jobot és a store/channel-keepalive-probe.log-ot. Ha a jelző újra frissül, a figyelő magától visszaáll.`)
     }
     return
   }

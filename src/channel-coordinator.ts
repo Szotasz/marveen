@@ -23,7 +23,7 @@
 // discarding it if the native just recovered. Bias: under-deliver, since the
 // native + typing is the better UX and Telegram holds unconfirmed updates 24h.
 //
-// Lifecycle: launchd (com.marveen.channel-coordinator) with KeepAlive. SIGTERM
+// Lifecycle: launchd (com.<SERVICE_ID>.channel-coordinator, #1873) with KeepAlive. SIGTERM
 // drains, persists offset, exits cleanly.
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from 'node:fs'
