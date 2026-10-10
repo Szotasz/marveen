@@ -58,5 +58,5 @@ retire_legacy_helper_label() {
     || launchctl unload "$_rhl_plist" >/dev/null 2>&1 \
     || true
   rm -f "$_rhl_plist"
-  echo "  Regi, kozos launchd-cimke kivezetve: $_rhl_old (ennek a telepitesnek most: $3)"
+  echo "  Régi, közös launchd-címke kivezetve: $_rhl_old (ennek a telepítésnek most: $3)"
 }
