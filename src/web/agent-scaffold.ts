@@ -10,7 +10,7 @@ import { findDuplicateJsonKeys } from './json-dup-keys.js'
 import { logger } from '../logger.js'
 import { filterInheritableMcpServers, readInheritableMcpServerNames, logNotInherited } from './mcp-inheritance.js'
 import { agentDir, agentConfigRoot, listAgentNames, readAgentCapabilities, readAgentToolDeny } from './agent-config.js'
-import { loadProfileTemplate, profileWantsDestructiveGate, resolveProfilePlaceholders,
+import { loadProfileTemplate, profileWantsCredentialGate, profileWantsDestructiveGate, resolveProfilePlaceholders,
   type ProfileTemplate } from './profiles.js'
 import { resolveAgentSecurityProfile } from './agent-team.js'
 import { sanitizeCapabilityTag, CAPABILITY_TAG_MAX_PER_AGENT } from '../prompt-safety.js'
@@ -848,6 +848,7 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   }
   if (agentGetsTelegramCopyGate(name)) injectTelegramCopyGate(existing)
   if (agentGetsDestructiveGate(name, profile)) injectDestructiveGate(existing)
+  if (agentGetsCredentialGate(name, profile)) injectCredentialGate(existing)
   injectEgressGate(existing)
   if (agentGetsBashEgressParser(name)) injectBashEgressParser(existing)
   atomicWriteFileSync(settingsPath, JSON.stringify(existing, null, 2))
@@ -1475,6 +1476,42 @@ export function injectDestructiveGate(existing: Record<string, unknown>): void {
   ]
 }
 
+// CREDGATE1003: the credential gate on a sub-agent's letter tools. Opt-in per
+// security profile (`"credentialGate": true`), default OFF, the same posture as
+// the destructive gate: whether a letter may carry a password is the
+// operator's policy, so a fresh install wires nothing until someone decides.
+// Off renders a settings.json byte-identical to an install without this code;
+// off does not tear down an entry an agent already has. The main agent is
+// never wired here: its settings are not rendered by this scaffold, so it gets
+// the hook through the install's own settings (see docs/credential-gate.md).
+export function agentGetsCredentialGate(name: string, profile?: ProfileTemplate): boolean {
+  if (name === MAIN_AGENT_ID) return false
+  const p = profile ?? loadProfileTemplate(resolveAgentSecurityProfile(name))
+  return profileWantsCredentialGate(p)
+}
+
+// Idempotently wire the credential gate, on the SAME matcher as the email-send
+// gate: every surface that can carry a letter (Bash sends, send/manage/draft
+// MCP tools, the Gmail connector). The hook itself exits 0 on anything that is
+// not a letter, so the wide matcher costs a no-op, not a deny.
+export function injectCredentialGate(existing: Record<string, unknown>): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'credential-gate.py'))
+  // Registration guard: a /tmp or missing path must never enter shared settings.
+  if (isUnsafeHookCommand(command)) return
+  const entry = {
+    matcher: EMAIL_GATE_MATCHER,
+    hooks: [{ type: 'command', command, timeout: 10 }],
+  }
+  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  hooks.PreToolUse = [
+    ...prev.filter((e) => !JSON.stringify(e).includes('credential-gate.py')),
+    entry,
+  ]
+}
+
 // Idempotent migration for the EXISTING fleet: the scaffold only rewrites a
 // sub-agent's settings on spawn, so without this the gate would reach the three
 // running agents no sooner than their next respawn. Returns true if written.
@@ -1850,12 +1887,18 @@ export function ensureGovernanceGateCommands(name: string, profile?: ProfileTemp
   })
   const needDestructive = agentGetsDestructiveGate(name, profile)
     && (!hookCommandWired(ptuJson, destructiveCmd) || destructiveStale)
-  if (!needEmail && !needPace && !needDestructive) return false
+  const credentialCmd = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'credential-gate.py'))
+  const credentialStale = ptu.some((e) => JSON.stringify(e).includes('credential-gate.py')
+    && (e as { matcher?: unknown })?.matcher !== EMAIL_GATE_MATCHER)
+  const needCredential = agentGetsCredentialGate(name, profile)
+    && (!hookCommandWired(ptuJson, credentialCmd) || credentialStale)
+  if (!needEmail && !needPace && !needDestructive && !needCredential) return false
   // The injectors dedupe by script basename, so a stale bare-`node` entry is
   // replaced in place rather than accumulated.
   if (needEmail) injectEmailSendGate(settings, threadReply)
   if (needPace) injectSelfPaceGate(settings)
   if (needDestructive) injectDestructiveGate(settings)
+  if (needCredential) injectCredentialGate(settings)
   atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
   return true
 }
