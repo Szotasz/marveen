@@ -53,11 +53,14 @@ const setting = (k) => { try { return String(getEffectiveSettingValue(k) ?? '').
 
 if (!to) {
   to = kind === 'alert' ? (setting('NOTIFY_SLACK_ALERT_TARGET') || setting('NOTIFY_SLACK_TARGET')) : setting('NOTIFY_SLACK_TARGET')
-  if (!to) out({ ok: false, skipped: true, reason: 'no Slack target configured', telegram: 'send' }, 2)
+  if (!to) out({ ok: false, skipped: true, reason: 'no Slack target configured', telegram: setting('NOTIFY_TELEGRAM_FALLBACK') === '0' ? 'skip' : 'send' }, 2)
 }
 const { markIfTestRun } = await import(join(root, 'dist', 'test-run-marker.js'))
 // Same rule as the Telegram funnel: a test run sends a REAL, labelled message.
 const r = await sendSlackNotification(to, markIfTestRun(text), { sender: as || undefined, ownerUserId: setting('SLACK_OWNER_USER_ID') })
-// For notify.sh: whether Telegram should ALSO go out (always on a Slack failure).
-const telegram = !r.ok || setting('NOTIFY_TELEGRAM') !== '0' ? 'send' : 'skip'
+// For notify.sh: whether Telegram should ALSO go out. On a Slack failure it is the
+// fallback, unless NOTIFY_TELEGRAM_FALLBACK=0 (then never, and notify.sh fails loudly).
+const telegram = r.ok
+  ? (setting('NOTIFY_TELEGRAM') !== '0' ? 'send' : 'skip')
+  : (setting('NOTIFY_TELEGRAM_FALLBACK') === '0' ? 'skip' : 'send')
 out({ ...r, target: to, sender: as || 'main', telegram }, r.ok ? 0 : 1)

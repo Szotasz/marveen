@@ -187,11 +187,16 @@ describe('wiring', () => {
     const alert = NOTIFY.slice(NOTIFY.indexOf('export async function notifyChannel'), NOTIFY.indexOf('export async function notifyOwner'))
     expect(alert).not.toContain('notifyOwner(')
   })
-  it('notify.sh asks the Slack helper first and only skips Telegram on a successful skip verdict', () => {
+  it('notify.sh asks the Slack helper first; a skip verdict after a FAILED Slack send is a failure, never a success', () => {
+    // The helper says "skip" after a failure only under NOTIFY_TELEGRAM_FALLBACK=0
+    // (behaviour pinned in notify-telegram-fallback-off.test.ts); here the order.
     const slackAt = SH.indexOf('slack-notify.mjs" --kind owner')
     const tgAt = SH.indexOf('send_telegram_message "$TOKEN"')
+    const failAt = SH.indexOf('NOTIFY_TELEGRAM_FALLBACK=0). Szolj a fo agensnek')
+    const okAt = SH.indexOf('echo "Ertesites elkuldve (Slack)."')
     expect(slackAt).toBeGreaterThan(-1)
     expect(slackAt).toBeLessThan(tgAt)
-    expect(SH).toContain('[ "$SLACK_RC" -eq 0 ] && SEND_TELEGRAM=0')
+    expect(failAt).toBeGreaterThan(-1)
+    expect(failAt).toBeLessThan(okAt)
   })
 })
