@@ -71,6 +71,64 @@ describe('isOnceRunSuccess: a run closed done AND delivered intact, nothing else
     expect(io.isOnceRunSuccess('abandoned', 'intact')).toBe(false)
     expect(io.isOnceRunSuccess('lost', 'intact')).toBe(false)
   })
+  it('a REMOTE run (no verdict can exist) is a success when it closed done, and only then (review on #1806)', () => {
+    expect(io.isOnceRunSuccess('done', undefined, { remote: true })).toBe(true)
+    expect(io.isOnceRunSuccess('abandoned', undefined, { remote: true })).toBe(false)
+    expect(io.isOnceRunSuccess('lost', undefined, { remote: true })).toBe(false)
+  })
+  it('a LOCAL run without a verdict is still "never checked", not a success', () => {
+    expect(io.isOnceRunSuccess('done', undefined, { remote: false })).toBe(false)
+    expect(io.isOnceRunSuccess('done', undefined, {})).toBe(false)
+  })
+})
+
+describe('settleOnceAfterRun: the sweep\'s done branch, behaviour on a real task-config.json', () => {
+  let runner: typeof import('../web/schedule-runner.js')
+  let warn: ReturnType<typeof vi.spyOn>
+  let info: ReturnType<typeof vi.spyOn>
+  const NOW = Date.parse('2026-10-10T18:00:00Z')
+  const onceLogs = (spy: ReturnType<typeof vi.spyOn>) =>
+    spy.mock.calls.filter((c: unknown[]) => typeof c[1] === 'string' && /Once-task/.test(c[1] as string))
+
+  beforeAll(async () => { runner = await import('../web/schedule-runner.js') })
+  beforeEach(() => {
+    warn = vi.spyOn(logger, 'warn').mockImplementation(() => logger)
+    info = vi.spyOn(logger, 'info').mockImplementation(() => logger)
+  })
+  afterEach(() => { warn.mockRestore(); info.mockRestore() })
+
+  it('a once task on a REMOTE agent is switched off after a done run, though no delivery verdict exists', () => {
+    fixture('remote-once', { schedule: '0 5 22 9 *', agent: 'remote-bot', enabled: true, once: true })
+    runner.settleOnceAfterRun('remote-once', 'done', undefined, NOW, true)
+    expect(cfgOf('remote-once').enabled).toBe(false)
+    expect(cfgOf('remote-once').onceDisabledAt).toBe(new Date(NOW).toISOString())
+    expect(onceLogs(warn)).toHaveLength(0)
+  })
+  it('a remote run that did not close done leaves the once task on, and says so', () => {
+    fixture('remote-once-abandoned', { schedule: '0 5 22 9 *', agent: 'remote-bot', enabled: true, once: true })
+    runner.settleOnceAfterRun('remote-once-abandoned', 'abandoned', undefined, NOW, true)
+    expect(cfgOf('remote-once-abandoned').enabled).toBe(true)
+    expect(onceLogs(warn)).toHaveLength(1)
+  })
+  it('a LOCAL done run with no verdict leaves the once task on (the remote exception does not leak)', () => {
+    fixture('local-once-unchecked', { schedule: '0 5 22 9 *', agent: 'c3po', enabled: true, once: true })
+    runner.settleOnceAfterRun('local-once-unchecked', 'done', undefined, NOW, false)
+    expect(cfgOf('local-once-unchecked').enabled).toBe(true)
+    expect(onceLogs(warn)).toHaveLength(1)
+  })
+  it('a local done run delivered intact switches the once task off', () => {
+    fixture('local-once-intact', { schedule: '0 5 22 9 *', agent: 'c3po', enabled: true, once: true })
+    runner.settleOnceAfterRun('local-once-intact', 'done', 'intact', NOW, false)
+    expect(cfgOf('local-once-intact').enabled).toBe(false)
+  })
+  it('a non-once task with a damaged delivery logs nothing about once, and its file is byte-identical', () => {
+    fixture('plain-task', { schedule: '*/30 * * * *', agent: 'c3po', enabled: true })
+    const before = rawOf('plain-task', 'task-config.json')
+    runner.settleOnceAfterRun('plain-task', 'done', 'head-lost', NOW, false)
+    expect(onceLogs(warn)).toHaveLength(0)
+    expect(onceLogs(info)).toHaveLength(0)
+    expect(rawOf('plain-task', 'task-config.json')).toBe(before)
+  })
 })
 
 describe('disableOnceTask: only task-config.json, only a once task that is still on', () => {
@@ -248,7 +306,8 @@ describe('the runner and the command path call it, and only on success (source l
     const at = RUNNER.indexOf("if (decision === 'done') {\n          lostRedeliveryCounts.delete")
     expect(at).toBeGreaterThan(-1)
     const branch = RUNNER.slice(at, RUNNER.indexOf('\n        }', at))
-    expect(branch).toContain('settleOnceAfterRun(entry.taskName, decision, entry.deliveryVerdict')
+    // ...and tells it whether the run went to a remote agent, where no verdict can exist (review on #1806).
+    expect(branch).toContain('settleOnceAfterRun(entry.taskName, decision, entry.deliveryVerdict, now, entry.host != null)')
   })
   it('the command path switches off only when the command succeeded', () => {
     expect(COMMAND).toMatch(/if \(ok && task\.once\) \{[\s\S]{0,400}disableOnceTask\(task\.name, now\)/)

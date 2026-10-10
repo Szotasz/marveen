@@ -363,9 +363,21 @@ export function writeScheduledTask(
  * run closed 'done' -- the session worked on it and went idle -- AND the transcript shows the prompt arrived
  * intact. Every other ending ('abandoned', 'lost') and every other delivery verdict (damaged, not arrived,
  * unverifiable, never checked) is not a success: the task stays on and visible rather than silently gone.
+ *
+ * A REMOTE agent is the one exception (review on #1806): its transcript lives on its own host, so the
+ * runner never records sentText/typedAt for it and no delivery verdict can exist. For such a run a closed
+ * 'done' is the success bar -- the same bar a command task meets with exit 0 ('done' already requires
+ * sawTurn). The caller says so explicitly with `remote: true`; a missing verdict on a LOCAL run is still
+ * "never checked" and still not a success.
  */
-export function isOnceRunSuccess(decision: string, deliveryVerdict: string | null | undefined): boolean {
-  return decision === 'done' && deliveryVerdict === 'intact'
+export function isOnceRunSuccess(
+  decision: string,
+  deliveryVerdict: string | null | undefined,
+  delivery: { remote?: boolean } = {},
+): boolean {
+  if (decision !== 'done') return false
+  if (delivery.remote === true) return true
+  return deliveryVerdict === 'intact'
 }
 
 /**
