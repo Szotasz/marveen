@@ -9,37 +9,38 @@ Creds: store/.watchdog-userbot.json (api_id, api_hash). Phone is passed/loaded.
 Final authorized session string is written to store/.watchdog-userbot.session (mode 600).
 
 ARMING PRECONDITION (HBTAILVAK914) -- read before running `signin`:
-creating the session file ARMS the deafness-respawn path, and that path is
-currently built on a transcript reader that is measurably blind. Do not sign in
-until the fix below is merged; the script asks for explicit confirmation.
+creating the session file ARMS the deafness-respawn path. That path used to be
+built on a transcript reader that was measurably blind (see below); it now
+reads back to the pending probe. The script still asks for explicit
+confirmation, so arming stays a deliberate operator step.
 """
 import asyncio, json, os, sys
 from telethon import TelegramClient
 from telethon.sessions import StringSession
 
 # HBTAILVAK914 (2026-09-14, measured twice, independently): the deafness check
-# reads only the last 256KB of the newest main-session transcript. Between two
-# inbound messages the session appends MBs, so on the MAIN root the window held
-# no ingestion line for ~82% of the time (time-weighted), median inter-message
-# append 284KB. An ARMED prober turns that blindness into false "deaf" verdicts,
-# and the 15-minute respawn grace reproduces exactly the measured "13 restarts a
-# night" shape. Precondition: the event-based last-ingestion state file (card
-# HBTAILVAK914) must be merged BEFORE a session is created. Remove this gate
-# when that card is closed.
+# used to read only the last 256KB of the newest main-session transcript.
+# Between two inbound messages the session appends MBs, so on the MAIN root the
+# window held no ingestion line for ~82% of the time (time-weighted), median
+# inter-message append 284KB. An ARMED prober would have turned that blindness
+# into false "deaf" verdicts. The deafness check now reads each transcript back
+# to the pending probe (1 MB steps, at most 32 MB per file; when that limit is
+# hit it holds instead of respawning; see backscanStart in
+# src/web/inbound-probe.ts), which closes that blindness for the deafness
+# verdict. The confirmation is kept so that arming stays a deliberate step;
+# drop it once the maintainers agree the precondition is met.
 TAIL_BLIND_WARNING = """
 ================================================================================
-  FIGYELEM -- ELESITESI ELOFELTETEL (HBTAILVAK914)
+  FIGYELEM -- ELESITES (HBTAILVAK914)
 
-  A session-fajl letrehozasa ELESITI a deafness-respawn agat, amely ma a
-  transcript-reader 256KB-os tail-ablakara epul. Merve (2026-09-14, ket
-  fuggetlen modszerrel): a fo munkameneten az ablak az ido ~82%-aban VAK --
-  ket bejovo uzenet kozott a session tobb MB-ot appendel, es az ingestion
-  kicsuszik az ablakbol. Elesitett proberrel ez HAMIS "deaf" iteletet ad, es
-  a 15 perces respawn-grace pont a mert "13 ejszakai ujrainditas" alakzatot
-  termeli ujra.
+  A session-fajl letrehozasa ELESITI a deafness-respawn agat. Korabban ez a
+  transcript 256KB-os tail-ablakara epult, ami a fo munkameneten az ido
+  ~82%-aban VAK volt (merve 2026-09-14), es elesitett proberrel HAMIS "deaf"
+  iteletet adott volna. A suketseg-ellenorzes most a fuggo probaig
+  visszaolvassa a transcriptet (1 MB-os lepesekben, fajlonkent legfeljebb
+  32 MB; ha ezt eleri, nem indit ujra).
 
-  ELOFELTETEL: az esemeny-alapu last-ingestion state-fajl (HBTAILVAK914
-  kartya) legyen mergelve, MIELOTT sessiont hozol letre.
+  Elesites elott a prober-fiokot allowlistelni kell (/telegram:access).
 ================================================================================
 """
 
