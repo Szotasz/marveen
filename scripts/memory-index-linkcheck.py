@@ -28,6 +28,21 @@ SCOPE: the index plus the pages the index points at (the hubs). That is the set
 the cut-and-move rounds actually touch; a hub is where a line goes when it
 leaves the index, so a hub that lost its own target is the next silent hole.
 
+THE OTHER DIRECTION: A PAGE NOTHING POINTS AT (`orphans`)
+The count above walks index -> disk. The reverse walk is a different silent
+failure with the same cost: the page is written, it is correct, and no line
+leads to it, so nothing ever loads it. Measured on this install's own history:
+a one-way check was GREEN while two memories were absent from the index
+altogether -- written, saved, and never read again.
+An orphan is an `.md` file next to the index that is neither the index itself
+nor the target of any link in SCOPE. Reachability is what is measured, not
+index membership: a page the index does not name but a hub does is reachable
+(that is where a line goes when it leaves the index), and reporting it would
+turn the designed structure into a defect. The limit of that is stated rather
+than hidden: SCOPE is one hop deep, so a page reachable only from a SECOND-level
+page is reported as an orphan. Widening the walk would also widen what the
+scanner can be wrong about; one hop is the set the rounds actually touch.
+
 THE UNIT OF AN ALARM IS THE TARGET, NOT THE OCCURRENCE. Measured 2026-09-18 on
 one page: 43 occurrences, 27 distinct targets -- both numbers correct, and they
 answer different questions. A page that is missing and linked from four places
@@ -163,6 +178,22 @@ def main(argv):
                                 "line": lineno, "target": target})
 
     missing = sorted(holes.values(), key=lambda e: (e["in"], e["line"]))
+
+    # The reverse walk. `pages` is what lies next to the index, `seen_targets`
+    # is what something in SCOPE points at; the difference is what no line
+    # leads to. A directory we cannot list is NOT zero orphans -- the caller is
+    # told the scan did not run, exactly as an unreadable index is.
+    try:
+        pages = sorted(
+            os.path.normpath(os.path.join(root, name))
+            for name in os.listdir(root)
+            if name.endswith(".md") and os.path.isfile(os.path.join(root, name))
+        )
+    except OSError as exc:
+        print(json.dumps({"error": "memory directory unreadable: %s" % exc.__class__.__name__}))
+        return 2
+    orphans = [p for p in pages if p != index and p not in seen_targets]
+
     print(json.dumps({
         "files_scanned": len(scope),
         "links_checked": checked,
@@ -171,6 +202,14 @@ def main(argv):
         "missing_occurrences": sum(e["occurrences"] for e in missing),
         "missing_list": missing[:max_report],
         "truncated": len(missing) > max_report,
+        # `pages_seen` stands next to `orphans` for the same reason
+        # `links_checked` stands next to `missing`: a scanner that listed
+        # nothing also reports zero orphans, and the two cases must not read
+        # the same.
+        "pages_seen": len(pages),
+        "orphans": len(orphans),
+        "orphan_list": [os.path.relpath(p, root) for p in orphans[:max_report]],
+        "orphans_truncated": len(orphans) > max_report,
     }))
     return 0
 

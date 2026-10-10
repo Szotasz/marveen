@@ -159,7 +159,12 @@ lc_valid() {   # lc_valid <missing-count> -> SKIP or WAKE
   cat > "$SANDBOX/lc.py" <<EOF
 import json
 print(json.dumps({"missing": $1, "missing_occurrences": $1, "unique_targets": 3,
-                  "links_checked": 10, "files_scanned": 2, "missing_list": []}))
+                  "links_checked": 10, "files_scanned": 2, "missing_list": [],
+                  # A clean measurement has to be clean in BOTH directions, or
+                  # the gate reads a reply without the orphan number as a scan
+                  # that did not run -- and wakes, which is what this case is
+                  # here to rule out.
+                  "pages_seen": 3, "orphans": 0, "orphan_list": []}))
 EOF
   out="$(env PATH="$BIN" MEMORY_INDEX_PATH="$SMALL" MEMORY_INDEX_STATE="$SANDBOX/lstate.json" \
              MEMORY_LINKCHECK_BIN="$SANDBOX/lc.py" /bin/bash "$GATE" 2>/dev/null)"
