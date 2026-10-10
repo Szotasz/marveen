@@ -35,7 +35,27 @@ import { readFileSync, realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
-import { loadLedger, isVerifiedIn, splitAddresses, SOURCE_HELP } from './recipient-ledger.mjs'
+
+// HOOKDEPLOAD1008: the ledger module is a DYNAMIC import. As a static import, a
+// broken recipient-ledger.mjs (a syntax error, a conflicted merge, a missing
+// export) failed the module link before any line of this file ran: node exited
+// 1, which PreToolUse treats as NON-blocking, so EVERY call went through
+// unchecked -- the send_email deny included, which never needs the ledger.
+// Now the failure is kept, only a decision that needs the ledger hits it, and
+// that one fails closed at the entrypoint (exit 2, the reason on stderr).
+let loadLedger, isVerifiedIn, splitAddresses, SOURCE_HELP
+let LEDGER_LOAD_ERROR = null
+try {
+  ({ loadLedger, isVerifiedIn, splitAddresses, SOURCE_HELP } = await import('./recipient-ledger.mjs'))
+  const missing = Object.entries({ loadLedger, isVerifiedIn, splitAddresses })
+    .filter(([, fn]) => typeof fn !== 'function').map(([name]) => name)
+  if (missing.length) throw new Error(`missing export: ${missing.join(', ')}`)
+} catch (err) {
+  LEDGER_LOAD_ERROR = err
+  const unavailable = () => { throw new Error(`recipient-ledger.mjs did not load: ${err?.message ?? err}`) }
+  loadLedger = isVerifiedIn = splitAddresses = unavailable
+  SOURCE_HELP = '(a ledger modul nem toltheto be)'
+}
 
 // Bash command patterns that send mail. SUBGATEPOZ822 (2026-08-22): these are
 // no longer the primary trigger -- they matched CONTENT anywhere in the
@@ -599,6 +619,18 @@ export function buildUnverifiedRecipientMsg(addresses) {
   )
 }
 
+// Wording for a call that needs the ledger while the ledger MODULE does not
+// load (HOOKDEPLOAD1008). It goes to stderr with exit 2, not as the JSON deny:
+// no rewrite of the call helps, the module has to be repaired, and that is the
+// main agent's job -- this gate does not run in its session.
+export function buildLedgerUnavailableMsg(err) {
+  return (
+    'EMAIL-KAPU: TILTVA. A kapu fuggosege (scripts/recipient-ledger.mjs) nem toltheto be ' +
+    `(${err?.message ?? err}) -- fail-closed: a cimzett nem ellenorizheto, ezert a hivas nem mehet at. ` +
+    'A modult a fo ugynok javitja (ez a kapu az o munkameneteben nem fut): jelezd neki.\n'
+  )
+}
+
 // Pure builder for the deny message, so the brand/owner substitution is
 // provable without spawning the hook. With the stock defaults (botName
 // 'Marveen', ownerName 'Szabolcs') the wording is byte-identical to before.
@@ -807,7 +839,17 @@ if (isInvokedDirectly()) {
   } catch {
     allow() // malformed/empty input must never break the agent's tool calls
   }
-  const { deny: shouldDeny, kind, addresses } = gateDecision(payload?.tool_name, payload?.tool_input)
+  let decision
+  try {
+    decision = gateDecision(payload?.tool_name, payload?.tool_input)
+  } catch (err) {
+    // HOOKDEPLOAD1008: the call needed the ledger, and the ledger module did
+    // not load. Anything else that throws here is not this branch's to judge.
+    if (!LEDGER_LOAD_ERROR) throw err
+    process.stderr.write(buildLedgerUnavailableMsg(LEDGER_LOAD_ERROR))
+    process.exit(2)
+  }
+  const { deny: shouldDeny, kind, addresses } = decision
   if (shouldDeny) {
     const { botName, ownerName } = readBrandEnv()
     // An address with no recorded source loses before every other branch,
