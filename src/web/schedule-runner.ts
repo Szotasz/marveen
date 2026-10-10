@@ -63,12 +63,14 @@ import {
   SCHEDULED_TASK_INLINE_MAX_CHARS,
   SCHEDULED_TASK_BODY_WARN_CHARS,
   MAX_SCHEDULED_TASK_PROMPT_LEN,
+  isOnceRunSuccess,
+  disableOnceTask,
   type ScheduledTask,
 } from './scheduled-tasks-io.js'
 import { listAgentNames, readFileOr, readAgentRemoteHost, agentDir } from './agent-config.js'
 import { resolveAgentConfigDirForRead } from './claude-plans.js'
 import { readTranscriptMtimeAcrossConfigDirs, projectsDirFor } from './active-model.js'
-import { classifyDelivery, readUserPromptsSince, type DeliveryVerdict } from './delivery-integrity.js'
+import { classifyDelivery, readUserPromptsSince, type DeliveryVerdict, type ReceivedPrompt } from './delivery-integrity.js'
 import { paneOneLine } from './pane-text.js'
 import { mainConfigRoots } from './inbound-probe.js'
 import { channelStateDir, getProvider, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
@@ -373,7 +375,7 @@ export type TaskTimeoutDecision = 'done' | 'abandoned' | 'alert' | 'escalate' | 
 export function checkTaskDeliveryIntegrity(
   entry: Pick<TaskInflightEntry, 'sentText' | 'typedAt' | 'deliveryVerdict' | 'workingDir' | 'configDirs'>,
   final: boolean,
-  read: (dirs: readonly string[], sinceMs: number) => string[] = readUserPromptsSince,
+  read: (dirs: readonly string[], sinceMs: number) => ReadonlyArray<string | ReceivedPrompt> = readUserPromptsSince,
   dirExists: (dir: string) => boolean = existsSync,
 ): DeliveryVerdict | null {
   if (entry.sentText == null || entry.typedAt == null || entry.deliveryVerdict != null) return null
@@ -387,6 +389,38 @@ export function checkTaskDeliveryIntegrity(
   if (verdict === 'tail-lost' && !final) return null
   if (verdict == null && final) return dirs.some((d) => dirExists(d)) ? 'not-arrived' : 'unverifiable'
   return verdict
+}
+
+// Card 7d2b49b4: a once task is switched off after its first SUCCESSFUL run (isOnceRunSuccess: the run
+// closed 'done' and the transcript shows the prompt intact). The config is read fresh here, at the end of
+// the run, so a once flag removed in the meantime is respected. Bookkeeping only, like the delivery verdict
+// above it: never alters the sweep's decision, never throws into the sweep.
+// `remote` is true when the run went to a remote agent (entry.host set): no delivery verdict can exist
+// there, so a closed 'done' is the bar (see isOnceRunSuccess). The early return for a non-once task also
+// keeps the "not verified intact" warning off ordinary tasks with a damaged delivery.
+// Exported for the behaviour tests (schedule-once.test.ts); the sweep is its only production caller.
+export function settleOnceAfterRun(
+  taskName: string,
+  decision: string,
+  deliveryVerdict: DeliveryVerdict | undefined,
+  now: number,
+  remote = false,
+): void {
+  try {
+    if (!readScheduledTask(taskName)?.once) return
+    if (!isOnceRunSuccess(decision, deliveryVerdict, { remote })) {
+      logger.warn(
+        { task: taskName, decision, delivery: deliveryVerdict ?? 'unchecked' },
+        'Once-task ran but its delivery was not verified intact -- left enabled, so it stays visible',
+      )
+      return
+    }
+    if (disableOnceTask(taskName, now)) {
+      logger.info({ task: taskName, delivery: remote ? 'remote-unchecked' : deliveryVerdict }, 'Once-task switched off after its first successful run')
+    }
+  } catch (err) {
+    logger.warn({ err, task: taskName }, 'Once-task could not be switched off -- left enabled')
+  }
 }
 
 export function decideTaskTimeout(
@@ -2560,7 +2594,13 @@ export function startScheduleRunner(): NodeJS.Timeout {
             logger.warn({ err, task: entry.taskName, runId: entry.runId }, 'Failed to record task-run delivery verdict')
           }
         }
-        if (verdict !== 'intact') {
+        if (verdict === 'intact-queued') {
+          // Whole, not damaged: the pane was busy, so the agent got it inside the running turn (card c8a6c2cc).
+          logger.info(
+            { task: entry.taskName, agent: entry.agentName, session: entry.session, runId: entry.runId, delivery: verdict },
+            'Scheduled prompt arrived whole but queued -- the pane was busy, the agent received it inside the running turn',
+          )
+        } else if (verdict !== 'intact') {
           logger.warn(
             { task: entry.taskName, agent: entry.agentName, session: entry.session, runId: entry.runId, delivery: verdict },
             'Scheduled prompt did NOT arrive as typed -- the session transcript shows a damaged delivery',
@@ -2577,6 +2617,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
         // still be silently swallowing prompts.
         if (decision === 'done') {
           lostRedeliveryCounts.delete(`${entry.taskName}@${entry.agentName}`)
+          settleOnceAfterRun(entry.taskName, decision, entry.deliveryVerdict, now, entry.host != null)
         }
         // The one moment the system knows how the run ended. Before 2026-08-26
         // this branch only deleted the map entry, so the knowledge died here and

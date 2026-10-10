@@ -1000,6 +1000,7 @@ export function initDatabase(dbPathOverride?: string): void {
   db.exec(`CREATE INDEX IF NOT EXISTS idx_task_runs_open ON task_runs(completed_at, ts)`)
   // Migration: delivery integrity (PROMPTCSONK923). What the session's own
   // transcript shows actually ARRIVED, compared with what was typed: 'intact',
+  // 'intact-queued' (whole, but handed over inside a running turn, c8a6c2cc),
   // or how it broke ('head-lost', 'split', ...). NULL = not verified (remote
   // agent, command task, transcript not readable, or a row from before this
   // column). Separate from `status`, which says how the DISPATCH went and is

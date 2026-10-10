@@ -2,7 +2,7 @@ import { describe, expect, it, beforeEach, afterEach } from 'vitest'
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { classifyDelivery, readUserPromptsSince } from '../web/delivery-integrity.js'
+import { classifyDelivery, readUserPromptsSince, type ReceivedPrompt } from '../web/delivery-integrity.js'
 import { checkTaskDeliveryIntegrity } from '../web/schedule-runner.js'
 import { projectsDirFor } from '../web/active-model.js'
 
@@ -17,6 +17,13 @@ import { projectsDirFor } from '../web/active-model.js'
 //   - bracketed paste           -> whole text inside <pasted_content> => 'paste-wrapped'
 // and the reference install's real truncation (2026-09-13 07:58:08Z,
 // ledger-live-drain): only the last 870 of 1750 chars ever arrived => 'head-lost'.
+//
+// Card c8a6c2cc (measured 2026-09-27 on the reference install): a prompt typed into a BUSY pane is queued by
+// Claude Code and handed to the agent inside the running turn. The transcript then holds no user row for it,
+// only queue-operation rows and a {"type":"attachment","attachment":{"type":"queued_command",...}} row with
+// the typed text -- 58 of 59 'not-arrived' runs in 24 h were this shape. Such a delivery is 'intact-queued'.
+
+const texts = (r: readonly ReceivedPrompt[]) => r.map((p) => p.text)
 
 function prompt(runId: string, len = 1750): string {
   let s = `[Utemezett feladat: ${runId}] <scheduled-task source="scheduled-task:${runId}"> body `
@@ -95,7 +102,7 @@ describe('readUserPromptsSince', () => {
       line({ type: 'user', timestamp: '2026-09-13T07:58:10.000Z', message: { content: [{ type: 'tool_result', tool_use_id: 'x', content: 'first' }] } }) +
       line({ type: 'assistant', timestamp: '2026-09-13T07:58:11.000Z', message: { content: 'user said first' } }) +
       'not json at all\n')
-    expect(readUserPromptsSince([dir], T0)).toEqual(['first', 'second'])
+    expect(readUserPromptsSince([dir], T0)).toEqual([{ text: 'first', queued: false }, { text: 'second', queued: false }])
   })
 
   it('does not open a transcript last modified before sinceMs', () => {
@@ -103,7 +110,7 @@ describe('readUserPromptsSince', () => {
     writeFileSync(f, line({ type: 'user', timestamp: '2026-09-13T07:58:30.000Z', message: { content: 'x' } }))
     const past = (T0 - 60_000) / 1000
     utimesSync(f, past, past)
-    expect(readUserPromptsSince([dir], T0)).toEqual([])
+    expect(texts(readUserPromptsSince([dir], T0))).toEqual([])
   })
 
   it('reads only the tail window and drops the partial first line', () => {
@@ -111,7 +118,7 @@ describe('readUserPromptsSince', () => {
     const early = line({ type: 'user', timestamp: '2026-09-13T07:58:01.000Z', message: { content: 'E'.repeat(5000) } })
     const late = line({ type: 'user', timestamp: '2026-09-13T07:58:02.000Z', message: { content: 'late' } })
     writeFileSync(f, early + late)
-    expect(readUserPromptsSince([dir], T0, late.length + 100)).toEqual(['late'])
+    expect(texts(readUserPromptsSince([dir], T0, late.length + 100))).toEqual(['late'])
   })
 
   it('a directory reached through two roots (symlink) is read once', () => {
@@ -120,11 +127,11 @@ describe('readUserPromptsSince', () => {
     writeFileSync(join(real, 's.jsonl'), line({ type: 'user', timestamp: '2026-09-13T07:58:08.000Z', message: { content: 'once' } }))
     const link = join(dir, 'link')
     symlinkSync(real, link)
-    expect(readUserPromptsSince([real, link], T0)).toEqual(['once'])
+    expect(texts(readUserPromptsSince([real, link], T0))).toEqual(['once'])
   })
 
   it('a missing directory is not an error', () => {
-    expect(readUserPromptsSince([join(dir, 'nope')], T0)).toEqual([])
+    expect(texts(readUserPromptsSince([join(dir, 'nope')], T0))).toEqual([])
   })
 })
 
@@ -204,6 +211,114 @@ describe('checkTaskDeliveryIntegrity (the sweep decision)', () => {
   })
 })
 
+describe('queued into a running turn: intact-queued (card c8a6c2cc)', () => {
+  const sent = prompt('plan-rotate')
+  const q = (text: string): ReceivedPrompt => ({ text, queued: true })
+  const line = (o: unknown) => JSON.stringify(o) + '\n'
+  // The measured row shapes, with our text in them.
+  const enqueue = (ts: string, text: string) => line({ type: 'queue-operation', operation: 'enqueue', timestamp: ts, sessionId: 's', content: text })
+  const absorbed = (ts: string, text: string) => line({ type: 'queue-operation', operation: 'remove', reason: 'absorbed_mid_turn', timestamp: ts, sessionId: 's', content: text })
+  const handedOver = (ts: string, text: string, commandMode = 'prompt', origin: unknown = { kind: 'human' }) => line({
+    type: 'attachment', timestamp: ts, uuid: 'u1', sessionId: 's', userType: 'external',
+    // origin null = the row has no origin field at all
+    attachment: { type: 'queued_command', commandMode, prompt: text, ...(origin === null ? {} : { origin }) },
+  })
+
+  it('a queued copy equal to the typed text is intact-queued; a bare string is still a typed prompt', () => {
+    expect(classifyDelivery(sent, [q(sent)])).toBe('intact-queued')
+    expect(classifyDelivery(sent, [`${sent}\n`])).toBe('intact')
+    expect(classifyDelivery(sent, [{ text: sent, queued: false }])).toBe('intact')
+  })
+
+  it('a damaged queued copy keeps its damage verdict: whole is the only thing queued changes', () => {
+    expect(classifyDelivery(sent, [q(sent.slice(880))])).toBe('head-lost')
+    expect(classifyDelivery(sent, [q(sent.slice(0, 900) + sent.slice(913))])).toBe('spliced')
+  })
+
+  it('the verdict still closes at the FIRST prompt carrying the tail, typed or queued', () => {
+    expect(classifyDelivery(sent, [q(sent), sent])).toBe('intact-queued')
+    expect(classifyDelivery(sent, [sent, q(sent)])).toBe('intact')
+  })
+
+  describe('reading the transcript', () => {
+    let dir: string
+    beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'deliv-queued-')) })
+    afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
+    const T0 = Date.parse('2026-09-26T01:15:00.000Z')
+
+    it('a queued_command hand-over is read as a queued prompt, in time order with the typed ones', () => {
+      writeFileSync(join(dir, 's.jsonl'),
+        line({ type: 'user', timestamp: '2026-09-26T01:15:04.500Z', message: { content: 'typed first' } }) +
+        enqueue('2026-09-26T01:15:06.100Z', 'queued second') +
+        absorbed('2026-09-26T01:15:12.000Z', 'queued second') +
+        handedOver('2026-09-26T01:15:06.100Z', 'queued second') +
+        line({ type: 'user', timestamp: '2026-09-26T01:15:20.000Z', message: { content: 'typed third' } }))
+      expect(readUserPromptsSince([dir], T0)).toEqual([
+        { text: 'typed first', queued: false },
+        { text: 'queued second', queued: true },
+        { text: 'typed third', queued: false },
+      ])
+    })
+
+    it('queue-operation rows alone are not an arrival, a task-notification is not typed input, a hand-over before sinceMs is old', () => {
+      writeFileSync(join(dir, 's.jsonl'),
+        enqueue('2026-09-26T01:15:06.100Z', 'only enqueued') +
+        absorbed('2026-09-26T01:15:12.000Z', 'only enqueued') +
+        handedOver('2026-09-26T01:15:07.000Z', 'a notification', 'task-notification') +
+        handedOver('2026-09-26T01:14:59.000Z', 'too old'))
+      expect(readUserPromptsSince([dir], T0)).toEqual([])
+    })
+
+    it('a commandMode prompt hand-over from a CHANNEL (or without an origin) is not typed input (review on #1828)', () => {
+      writeFileSync(join(dir, 's.jsonl'),
+        handedOver('2026-09-26T01:15:06.000Z', 'a telegram message', 'prompt', { kind: 'channel' }) +
+        handedOver('2026-09-26T01:15:07.000Z', 'no origin at all', 'prompt', null) +
+        handedOver('2026-09-26T01:15:08.000Z', 'typed while busy'))
+      expect(readUserPromptsSince([dir], T0)).toEqual([{ text: 'typed while busy', queued: true }])
+    })
+
+    const base ={ typedAt: T0 + 6_000, deliveryVerdict: undefined, workingDir: '/Users/x/ClaudeClaw' }
+    function onDisk(rows: string): string {
+      const root = mkdtempSync(join(tmpdir(), 'deliv-queued-e2e-'))
+      const pdir = projectsDirFor('/Users/x/ClaudeClaw', root)
+      mkdirSync(pdir, { recursive: true })
+      writeFileSync(join(pdir, 'fresh.jsonl'), rows)
+      return root
+    }
+
+    it('THE MEASURED SHAPE, end to end at the close: enqueue + absorbed + hand-over = intact-queued, not not-arrived', () => {
+      const root = onDisk(
+        enqueue('2026-09-26T01:15:06.100Z', sent) +
+        absorbed('2026-09-26T01:15:12.000Z', sent) +
+        handedOver('2026-09-26T01:15:06.100Z', sent))
+      try {
+        expect(checkTaskDeliveryIntegrity({ ...base, sentText: sent, configDirs: [root] }, true)).toBe('intact-queued')
+      } finally { rmSync(root, { recursive: true, force: true }) }
+    })
+
+    it('NEGATIVE: a prompt that really did not arrive stays not-arrived (only other prompts, typed and queued)', () => {
+      // Fixture guard: prompt() pads with a shared counter, so two ids of nearly equal length share a tail. These
+      // two must be provably not ours, or the test would measure the fixture.
+      const typedOther = prompt('kanban-audit', 900)
+      const queuedOther = '[Inbox] Ha fent uj bejovo blokk van, dolgozd fel; ha nincs, hagyd.'
+      expect(classifyDelivery(sent, [typedOther, q(queuedOther)])).toBeNull()
+      const root = onDisk(
+        line({ type: 'user', timestamp: '2026-09-26T01:15:08.000Z', message: { content: typedOther } }) +
+        handedOver('2026-09-26T01:15:09.000Z', queuedOther))
+      try {
+        expect(checkTaskDeliveryIntegrity({ ...base, sentText: sent, configDirs: [root] }, true)).toBe('not-arrived')
+      } finally { rmSync(root, { recursive: true, force: true }) }
+    })
+
+    it('NEGATIVE: queued but never handed over (an enqueue with no hand-over, the one measured case) stays not-arrived', () => {
+      const root = onDisk(enqueue('2026-09-26T01:15:06.100Z', sent))
+      try {
+        expect(checkTaskDeliveryIntegrity({ ...base, sentText: sent, configDirs: [root] }, true)).toBe('not-arrived')
+      } finally { rmSync(root, { recursive: true, force: true }) }
+    })
+  })
+})
+
 describe('the sweep is wired to it (source-level: the sweep needs live tmux)', () => {
   const RUNNER = readFileSync(join(__dirname, '../web/schedule-runner.ts'), 'utf-8')
   const DB = readFileSync(join(__dirname, '../db.ts'), 'utf-8')
@@ -230,6 +345,14 @@ describe('the sweep is wired to it (source-level: the sweep needs live tmux)', (
     expect(checkIdx).toBeLessThan(doneIdx)
     expect(RUNNER.slice(checkIdx, doneIdx)).toContain('setTaskRunDelivery(entry.runId, verdict)')
     expect(RUNNER).toMatch(/const closing = decision === 'done' \|\| decision === 'abandoned' \|\| decision === 'lost'/)
+  })
+
+  it("an intact-queued delivery is not reported as damaged: the WARN branch excludes it (card c8a6c2cc)", () => {
+    const at = RUNNER.indexOf("if (verdict === 'intact-queued') {")
+    const warn = RUNNER.indexOf("'Scheduled prompt did NOT arrive as typed -- the session transcript shows a damaged delivery'")
+    expect(at).toBeGreaterThan(0)
+    expect(warn).toBeGreaterThan(at)
+    expect(RUNNER.slice(at, warn)).toContain("} else if (verdict !== 'intact') {")
   })
 
   it('the verdict lives in its own column, written once; status keeps its meaning', () => {
