@@ -89,14 +89,10 @@ export function parsePollerPidsFromPs(
   return out
 }
 
+// The scan itself is psEwwSnapshot's (below): one PS_ENV_SCAN_CMD call site for
+// this path and reapChannelOrphans, so neither can drift back to a blind form.
 function listPollerPidsByStateDir(envVar: string, chanDir: string): number[] {
-  try {
-    const out = execSync(PS_ENV_SCAN_CMD, { timeout: 5000, encoding: 'utf-8', maxBuffer: 8 * 1024 * 1024 })
-    return parsePollerPidsFromPs(out, envVar, chanDir)
-  } catch (err) {
-    logger.warn({ err, chanDir }, 'channel-poller-reap: ps scan failed')
-    return []
-  }
+  return parsePollerPidsFromPs(psEwwSnapshot(chanDir), envVar, chanDir)
 }
 
 // ---------------------------------------------------------------------------
@@ -124,8 +120,24 @@ function pluginRootRegex(pluginRootNeedle: string): RegExp {
   return new RegExp(`CLAUDE_PLUGIN_ROOT=\\S*${escapeRe(pluginRootNeedle)}(?:[/@ ]|$)`)
 }
 
+// The rows of ONE channel state dir: the state-dir literal `<envVar>=<chanDir>`
+// ending on whitespace or end of line (so `/x/telegram` does not also match
+// `/x/telegram-old`), and, when `rootRe` is given, that anchor too.
+function stateDirRowPids(psEwwOutput: string, envVar: string, chanDir: string, rootRe?: RegExp): number[] {
+  const dirRe = new RegExp(`(?:^|\\s)${escapeRe(envVar)}=${escapeRe(chanDir)}(?:\\s|$)`)
+  const out: number[] = []
+  for (const line of psEwwOutput.split('\n')) {
+    if (!dirRe.test(line) || (rootRe && !rootRe.test(line))) continue
+    const m = line.match(/^\s*(\d+)\s/)
+    if (!m) continue
+    const pid = parseInt(m[1]!, 10)
+    if (pid > 1) out.push(pid)
+  }
+  return out
+}
+
 /**
- * The poller candidates of ONE channel state dir: a `ps eww -e` row counts only
+ * The poller candidates of ONE channel state dir: an env-scan row counts only
  * if it carries BOTH the state-dir literal `<envVar>=<chanDir>` (ending on
  * whitespace or end of line, so `/x/telegram` does not also match
  * `/x/telegram-old`) AND the provider's CLAUDE_PLUGIN_ROOT anchor.
@@ -137,21 +149,11 @@ export function parseStateDirPollerPids(
   chanDir: string,
   pluginRootNeedle: string,
 ): number[] {
-  const rootRe = pluginRootRegex(pluginRootNeedle)
-  const dirRe = new RegExp(`(?:^|\\s)${escapeRe(envVar)}=${escapeRe(chanDir)}(?:\\s|$)`)
-  const out: number[] = []
-  for (const line of psEwwOutput.split('\n')) {
-    if (!dirRe.test(line) || !rootRe.test(line)) continue
-    const m = line.match(/^\s*(\d+)\s/)
-    if (!m) continue
-    const pid = parseInt(m[1]!, 10)
-    if (pid > 1) out.push(pid)
-  }
-  return out
+  return stateDirRowPids(psEwwOutput, envVar, chanDir, pluginRootRegex(pluginRootNeedle))
 }
 
 /**
- * Is `pid`, in the same `ps eww -e` snapshot, a plugin process of the provider
+ * Is `pid`, in the same env-scan snapshot, a plugin process of the provider
  * (CLAUDE_PLUGIN_ROOT anchor present)? bot.pid is only trusted through this
  * check. Exported for testability.
  */
@@ -164,10 +166,11 @@ export function isPluginPollerPid(psEwwOutput: string, pid: number, pluginRootNe
   return false
 }
 
-// One `ps eww -e` snapshot; empty on failure (no candidate then, so nothing is reaped).
+// One env-scan snapshot (PS_ENV_SCAN_CMD, so tty-less processes are listed on
+// macOS too); empty on failure (no candidate then, so nothing is reaped).
 function psEwwSnapshot(chanDir: string): string {
   try {
-    return execSync('/bin/ps eww -e', { timeout: 5000, encoding: 'utf-8', maxBuffer: 8 * 1024 * 1024 })
+    return execSync(PS_ENV_SCAN_CMD, { timeout: 5000, encoding: 'utf-8', maxBuffer: 8 * 1024 * 1024 })
   } catch (err) {
     logger.warn({ err, chanDir }, 'channel-poller-reap: ps scan failed')
     return ''
@@ -409,8 +412,8 @@ function noKills(): KillOutcomes {
 /**
  * Test seams of the reapers (35ea0375): the owner lookup, the own uid and the signal function. cf075d41 (review): also what the
  * reapers read from the host, so a test can hand them a fixed snapshot instead of real processes and a tmux server: `psEww` is
- * the `ps eww -e` text, `procs` the `ps -axww` rows, `panePids` the live pane leaders (`tmux list-panes -a`; an empty set is a
- * failed query) and `tmuxServerPid` the server's pid (null is a failed query). Unset, each reads the host as before.
+ * the env-scan text (PS_ENV_SCAN_CMD), `procs` the `ps -axww` rows, `panePids` the live pane leaders (`tmux list-panes -a`; an
+ * empty set is a failed query) and `tmuxServerPid` the server's pid (null is a failed query). Unset, each reads the host as before.
  */
 export interface ReapSeams {
   ownerOf?: (pid: number) => number | null
@@ -615,15 +618,18 @@ export function reapChannelOrphans(
   const envVar = STATE_ENV_VAR[provider]
   const pluginRootNeedle = PLUGIN_ROOT_NEEDLE[provider]
 
-  // cf075d41: one `ps eww -e` snapshot, both sources narrowed to plugin
+  // cf075d41: one env-scan snapshot, both sources narrowed to plugin
   // processes (see "Plugin-process markers" above).
   const psEww = opts.psEww ? opts.psEww() : psEwwSnapshot(chanDir)
   const botPid = readBotPid(chanDir)
   const fromBotPid = botPid !== null && isPluginPollerPid(psEww, botPid, pluginRootNeedle) ? botPid : null
   const fromEnvScan = parseStateDirPollerPids(psEww, envVar, chanDir, pluginRootNeedle)
+  // The spared rows are this state dir's rows WITHOUT the plugin anchor, taken
+  // from the rows themselves: parsePollerPidsFromPs drops every row with no
+  // CLAUDE_PLUGIN_ROOT (#1746), so it cannot say what was spared.
   const skippedNotPlugin = [...new Set([
     ...(botPid !== null && fromBotPid === null ? [botPid] : []),
-    ...parsePollerPidsFromPs(psEww, envVar, chanDir).filter((pid) => !fromEnvScan.includes(pid) && pid !== fromBotPid),
+    ...stateDirRowPids(psEww, envVar, chanDir).filter((pid) => !fromEnvScan.includes(pid) && pid !== fromBotPid),
   ])]
   if (skippedNotPlugin.length > 0) {
     logger.info({ provider, chanDir, skippedNotPlugin: skippedNotPlugin.length },
