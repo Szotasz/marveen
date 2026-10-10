@@ -94,7 +94,10 @@ setting_value() {
     _v="$(grep -oE "\"$_key\"[[:space:]]*:[[:space:]]*\"?[^\",}]*" "$_ov" | head -1 | sed -E 's/^[^:]*:[[:space:]]*"?//')"
   fi
   if [ -z "$_v" ]; then
-    _v="$(grep -E "^$_key=" "$ENV_FILE" | head -1 | cut -d= -f2-)"
+    # Parity with src/env-parse.ts: the LAST occurrence wins, CR and surrounding
+    # whitespace are dropped, one pair of surrounding quotes is removed.
+    _v="$(grep -E "^[[:space:]]*$_key=" "$ENV_FILE" | tail -1 | cut -d= -f2- | tr -d '\r' \
+      | sed -E -e 's/^[[:space:]]+//' -e 's/[[:space:]]+$//' -e 's/^"(.*)"$/\1/' -e "s/^'(.*)'\$/\1/")"
   fi
   printf '%s' "$_v"
 }
@@ -107,7 +110,7 @@ if command -v node >/dev/null 2>&1 && [ -f "$PROJECT_DIR/dist/slack-notify.js" ]
   # "skip" with rc != 0: NOTIFY_TELEGRAM_FALLBACK=0, Telegram is never the
   # fallback, so the run fails below instead of reaching the channel the owner left.
   case "$SLACK_OUT" in *'"telegram":"skip"'*) SEND_TELEGRAM=0 ;; esac
-  [ "$SLACK_RC" -eq 1 ] && [ "$SEND_TELEGRAM" -eq 1 ] && echo "Figyelem: a Slack-ertesites nem ment ki, Telegram tartalek: $SLACK_OUT" >&2
+  [ "$SLACK_RC" -eq 1 ] && [ "$SEND_TELEGRAM" -eq 1 ] && [ "$TELEGRAM_FALLBACK_OFF" -eq 0 ] && echo "Figyelem: a Slack-ertesites nem ment ki, Telegram tartalek: $SLACK_OUT" >&2
 fi
 # No verdict at all (the helper did not run, or died without JSON) while the
 # Telegram fallback is off: that is a Slack miss, never a Telegram send.

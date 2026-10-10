@@ -170,3 +170,30 @@ describe('notify.sh with the fallback off and NO helper verdict', () => {
     expect(attempted(root)).toBe(true)
   })
 })
+
+// Dani's #1854 delta review: the .env read matches src/env-parse.ts (quotes,
+// CRLF, last occurrence wins), and the old "Telegram tartalek" warning is not
+// printed when the fallback is off.
+describe('notify.sh: .env parity and no misleading warning', () => {
+  const attempted = (root: string) => existsSync(join(root, 'TELEGRAM_ATTEMPTED'))
+  for (const [label, line] of [
+    ['a quoted value', 'NOTIFY_TELEGRAM_FALLBACK="0"\n'],
+    ['a CRLF line', 'NOTIFY_TELEGRAM_FALLBACK=0\r\n'],
+    ['a duplicated key, the last one 0', 'NOTIFY_TELEGRAM_FALLBACK=1\nNOTIFY_TELEGRAM_FALLBACK=0\n'],
+  ] as const) {
+    it(`${label}: switch read as off, no Telegram`, () => {
+      const root = install('crash', { env: line })
+      expect(run(root).status).toBe(1)
+      expect(attempted(root)).toBe(false)
+    })
+  }
+  it('control: a duplicated key whose LAST value is 1 keeps the fallback on', () => {
+    const root = install('crash', { env: 'NOTIFY_TELEGRAM_FALLBACK=0\nNOTIFY_TELEGRAM_FALLBACK=1\n' })
+    run(root)
+    expect(attempted(root)).toBe(true)
+  })
+  it('the fallback off: no "Telegram tartalek" warning before the failure line', () => {
+    const root = install('crash', { env: 'NOTIFY_TELEGRAM_FALLBACK=0\n' })
+    expect(run(root).stderr).not.toContain('Telegram tartalek')
+  })
+})
