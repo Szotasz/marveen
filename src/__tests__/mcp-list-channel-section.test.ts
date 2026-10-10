@@ -72,8 +72,16 @@ describe('mcp-list channel warning: what it says', () => {
 
   it('names the mechanism (shared bot.pid) and the safe way to run a child', () => {
     expect(body).toMatch(/bot\.pid/)
-    expect(body).toMatch(/TELEGRAM_\*/)
     expect(body).toMatch(/CLAUDE_CONFIG_DIR/)
+  })
+
+  // Review on #1851: unsetting TELEGRAM_STATE_DIR makes the plugin fall back to
+  // ~/.claude/channels/telegram, the main agent's state dir, so the safe recipe
+  // points it at an empty dir and names the config dir as what isolates.
+  it('says to point the state dir at an empty dir, not to unset it', () => {
+    expect(body).toMatch(/állítsd egy üres mappára/)
+    expect(body).toMatch(/NE töröld/)
+    expect(body).not.toMatch(/vedd ki a környezetéből/)
   })
 })
 
@@ -108,5 +116,11 @@ describe('mcp-list channel warning: the evidence doc', () => {
     expect(DOC).toMatch(/A mechanizmus \(mérve 2026-10-10/)
     expect(DOC).toMatch(/replacing stale poller pid=/)
     expect(DOC).toMatch(/bot\.pid/)
+  })
+
+  it('states which plugin version checks what, and the token precondition', () => {
+    expect(DOC).toMatch(/0\.0\.6-os plugin csak azt nézi, hogy a pid él-e/)
+    expect(DOC).toMatch(/token nélkül a `server\.ts` még a `bot\.pid` előtt kilép/)
+    expect(DOC).toMatch(/NE töröld/)
   })
 })

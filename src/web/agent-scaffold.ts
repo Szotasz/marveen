@@ -2150,10 +2150,12 @@ function buildMcpListChannelBody(): string {
     '(reply, react, edit_message, download_attachment) elérhetetlenné válnak. A parancs kimenete',
     'közben `Connected`-et ír, és 0-val tér vissza, tehát a hibát semmi nem jelzi. Más sessionök',
     'nem sérülnek, és a session újraindítása visszahozza a plugint. Ha mégis kell gyerek-`claude`:',
-    'vedd ki a környezetéből a `TELEGRAM_*` változókat, és adj neki saját, plugin nélküli',
-    '`CLAUDE_CONFIG_DIR`-t. Máshol a parancs hasznos diagnosztika: a korlát a csatornát birtokló',
-    'session, nem a parancs. A BEJÖVŐ üzenetek sorsát nem mértük általánosan (egy esetben az',
-    'újraindítás után megérkezett); a részletes mérés: `docs/mcp-list-channel-plugin.md`.',
+    'adj neki saját, plugin nélküli `CLAUDE_CONFIG_DIR`-t (ez választja le), a `TELEGRAM_STATE_DIR`-t',
+    'pedig állítsd egy üres mappára. NE töröld: a plugin ekkor a fő ügynök `~/.claude/channels/telegram`',
+    'mappájára esik vissza, és a fő bot pollerét lövi le. Máshol a parancs hasznos diagnosztika:',
+    'a korlát a csatornát birtokló session, nem a parancs. A BEJÖVŐ üzenetek sorsát nem mértük',
+    'általánosan (egy esetben az újraindítás után megérkezett); a részletes mérés:',
+    '`docs/mcp-list-channel-plugin.md`.',
   ].join('\n')
 }
 
