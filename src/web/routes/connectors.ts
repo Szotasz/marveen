@@ -14,7 +14,7 @@ import { readFileOr, AGENTS_BASE_DIR, listAgentNames , readJsonObjectForWrite } 
 import { getMcpListCache, refreshMcpListCache, purgeFromMcpListCache } from '../mcp-list.js'
 import { readBody, json } from '../http-helpers.js'
 import { shellEscape } from '../sanitize.js'
-import { getExternalProjectPaths, addExternalProjectPath, removeExternalProjectPath, getGitHubRepos, installGitHubRepo, removeGitHubRepo, updateGitHubRepo, detectRequiredEnvVars } from '../dashboard-settings.js'
+import { getExternalProjectPaths, addExternalProjectPath, removeExternalProjectPath, getGitHubRepos, installGitHubRepo, removeGitHubRepo, updateGitHubRepo, detectRequiredEnvVars, parseRunScriptsFlag } from '../dashboard-settings.js'
 import { listSecrets, setSecret, getSecret, deleteSecret } from '../vault.js'
 import { logVaultRead, isSshPrivateKeyId, principalOf } from '../vault-acl.js'
 import {
@@ -291,8 +291,10 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/connectors/github-repos' && method === 'POST') {
     const body = await readBody(req)
-    const { url, env } = JSON.parse(body.toString()) as { url: string, env?: Record<string, string> }
+    const { url, env, runScripts } = JSON.parse(body.toString()) as { url: string, env?: Record<string, string>, runScripts?: unknown }
     if (!url?.trim()) { json(res, { error: 'URL is required' }, 400); return true }
+    const runScriptsFlag = parseRunScriptsFlag(runScripts)
+    if (runScriptsFlag.error) { json(res, { error: runScriptsFlag.error }, 400); return true }
 
     const envVarMapping: Record<string, string> = {}
     if (env) {
@@ -303,9 +305,14 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
       }
     }
 
-    const result = await installGitHubRepo(url.trim(), Object.keys(envVarMapping).length > 0 ? envVarMapping : undefined)
+    const result = await installGitHubRepo(
+      url.trim(),
+      Object.keys(envVarMapping).length > 0 ? envVarMapping : undefined,
+      undefined,
+      { runScripts: runScriptsFlag.value === true },
+    )
     if (result.error) { json(res, { error: result.error }, 400); return true }
-    json(res, { ok: true, repo: result.repo, requiredEnvVars: result.requiredEnvVars })
+    json(res, { ok: true, repo: result.repo, requiredEnvVars: result.requiredEnvVars, installWarning: result.installWarning, scriptsSkipped: result.scriptsSkipped })
     return true
   }
 
@@ -320,9 +327,17 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
 
   if (githubRepoMatch && method === 'PATCH') {
     const name = decodeURIComponent(githubRepoMatch[1])
-    const result = updateGitHubRepo(name)
+    // The body is optional (older clients send none); only `runScripts` is read.
+    const raw = (await readBody(req)).toString().trim()
+    let parsedBody: { runScripts?: unknown } = {}
+    if (raw) {
+      try { parsedBody = JSON.parse(raw) ?? {} } catch { json(res, { error: 'Invalid JSON' }, 400); return true }
+    }
+    const runScriptsFlag = parseRunScriptsFlag(parsedBody.runScripts)
+    if (runScriptsFlag.error) { json(res, { error: runScriptsFlag.error }, 400); return true }
+    const result = updateGitHubRepo(name, runScriptsFlag.value === undefined ? {} : { runScripts: runScriptsFlag.value })
     if (result.error) { json(res, { error: result.error }, 400); return true }
-    json(res, { ok: true })
+    json(res, { ok: true, scriptsSkipped: result.scriptsSkipped })
     return true
   }
 
