@@ -248,6 +248,9 @@ const PLUGIN_PATCHES = [
   { name: 'd4', marker: PLUGIN_PATCH_MARKER, label: '', fallback: 'a /status és a /help a plugin saját válasza' },
   { name: 'fwd', marker: 'MARVEEN-PATCH(elsokor922-fwd)', label: ' (továbbítás-jelölő)', fallback: 'egy továbbított parancs úgy fut, mint a begépelt' },
   { name: 'evid', marker: 'MARVEEN-PATCH(cmd920-evid)', label: ' (bejövő-napló)', fallback: 'az író parancsok (/model, /context clear, saját parancsok) nem futnak, nincs mihez ellenőrizni őket' },
+  { name: 'kbd', marker: 'MARVEEN-PATCH(c67f5f34-kbd)', label: ' (válaszgombok)', fallback: 'a kérdések gomb nélkül mennek ki, a válasz betűvel jön' },
+  // fc8629d7: the one patch with a fail-closed fallback; which of the two stands is read from the file itself.
+  { name: 'perm', marker: 'MARVEEN-PATCH(fc8629d7-perm)', label: ' (engedélykérés csak a jóváhagyóknak)', fallback: 'engedélykérés-gombot minden allowlistes chat kaphat', closedMarker: 'MARVEEN-PATCH(fc8629d7-perm-off)', closedFallback: 'a perm-off sor áll: az engedélykérés egyik chatbe sem megy ki, csak a terminálban dönthető el' },
 ]
 
 export function telegramPluginPatchStatus(stateFile = join(STORE_DIR, 'telegram-plugin-patch.json')): string {
@@ -264,6 +267,7 @@ export function telegramPluginPatchStatus(stateFile = join(STORE_DIR, 'telegram-
   const lines: string[] = []
   for (const p of PLUGIN_PATCHES) {
     const missing: string[] = []
+    const missingVersions: string[] = []
     for (const v of versions) {
       if (texts.get(v)!.includes(p.marker)) continue
       const file = state.files?.find(f => f.version === v)
@@ -272,8 +276,11 @@ export function telegramPluginPatchStatus(stateFile = join(STORE_DIR, 'telegram-
         : recorded === 'patched' || recorded === 'already' ? 'a fájl az indítás óta cserélődött'
         : recorded
       missing.push(`${v} (${why})`)
+      missingVersions.push(v)
     }
-    if (missing.length) lines.push(`HIÁNYZIK${p.label}: ${missing.join(', ')} · ${p.fallback}`)
+    // A fail-closed fallback counts only when it stands in EVERY version that misses the patch.
+    const closed = p.closedMarker !== undefined && missingVersions.every(v => texts.get(v)!.includes(p.closedMarker!))
+    if (missing.length) lines.push(`HIÁNYZIK${p.label}: ${missing.join(', ')} · ${closed ? p.closedFallback : p.fallback}`)
   }
   if (lines.length === 0) return `rendben (${versions.join(', ')})`
   return lines.join('; ')
