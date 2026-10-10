@@ -6,7 +6,8 @@ import { compareDeliveryOrder } from '../delivery-order.js'
 // the router then had to follow that order instead of the id or the age:
 //   - the batch (collectBatchMates): its "ascending only" guard compared ids, so behind a NEWER high
 //     head the OLDER normal rows were left out of the injection -- now the guard is the delivery order;
-//   - the reconnect backlog summary: a high row is never folded into it, it is delivered on its own.
+//   - the reconnect backlog summary: a high row is never folded into it, it is delivered on its own,
+//     and the backlog's age is the OLDEST row's, never the head's: a fresh high head must not hide it.
 // Same harness as router-batch-inject.test.ts; the order of the snapshot comes from the real
 // compareDeliveryOrder (src/delivery-order.ts), never from a hand-written list.
 
@@ -130,5 +131,17 @@ describe('message router: priority delivery (ad771121)', () => {
     expect(summary).toContain('6 inter-agent message(s)')
     expect(summary).not.toContain('urgent while away')
     expect(mockMarkDelivered.mock.calls.map((c) => c[0])).toContain(970)
+  })
+
+  it('a FRESH high head does not hide the old backlog: the reconnect age is the oldest row, not the head', async () => {
+    const rows: Row[] = [40, 41, 42, 43, 44, 45].map((m, i) => ({ id: 980 + i, to: 'visszatero', ageSec: m * 60 }))
+    rows.push({ id: 990, to: 'visszatero', ageSec: 5, priority: 1, content: 'urgent just now' })
+    snapshot(rows)
+    sessionPresent.set('visszatero', false)          // tick 1: away
+    await runMessageRouterTick()
+    sessionPresent.set('visszatero', true)           // tick 2: back; the head in delivery order is 5 s old
+    await runMessageRouterTick()
+    expect(mockMarkDone.mock.calls.map((c) => c[0]).sort()).toEqual([980, 981, 982, 983, 984, 985])
+    expect(mockMarkDelivered.mock.calls.map((c) => c[0])).toContain(990)
   })
 })
