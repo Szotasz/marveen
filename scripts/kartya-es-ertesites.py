@@ -243,6 +243,59 @@ def _esemenysorok(db, card_id, elotte, valtozik, actor, now):
                          ' VALUES (?, ?, ?, ?, ?, ?)', ert)
         irt.append(('kanban_card_field_events', cur.lastrowid, ert))
     return irt
+
+
+# DISPATCH-NULLAZAS ES SZULO-LANC (KARTYADISPATCH1010). A szerver mindket statusz-utja
+# (moveKanbanCard es a teljes-kartyas PUT, updateKanbanCard) ket dolgot tesz meg az UPDATE-tel
+# EGY tranzakcioban, amit ez a szkript nem tett:
+#  - dispatched_at: egy iras, ami utan a kartya NEM in_progress, nullazza (db.ts
+#    kanbanWriteClearsDispatch). Enelkul a szkripttel visszatett kartya megtartotta a belyeget, es
+#    a kovetkezo /move in_progress-re NEM ebresztette a felelost. A szkript CSAK nullaz, sosem
+#    ebreszt: az ebresztes egyetlen utja a /move marad.
+#  - a szulo-lanc updated_at-je (db.ts touchAncestorChain): az alkartya mozgasa a szal elete.
+#    Enelkul a szulo "allonak" latszott, mikozben az alkartyai mozogtak.
+# A ket konstans a db.ts tukre; a kartya-dispatch-lanc teszt az egyezest meri.
+DISPATCH_STATUSZ = 'in_progress'
+OS_LANC_MELYSEG = 16
+
+
+def _dispatch_nullaz(uj_status):
+    """kanbanWriteClearsDispatch tukre: az iras utani statusz NEM in_progress -> dispatched_at NULL,
+    az elozo statusztol fuggetlenul (igy egy mar beragadt sor is gyogyul)."""
+    return uj_status != DISPATCH_STATUSZ
+
+
+def _oszlop_van(db, tabla, oszlop):
+    return any(r[1] == oszlop for r in db.execute(f'PRAGMA table_info({tabla})'))
+
+
+def _os_lanc_belyeg(db, card_id, now):
+    """touchAncestorChain tukre, UGYANABBAN a tranzakcioban (a hivo commitol): a kartya szulojetol
+    felfele minden ososre updated_at=now. Kor vagy OS_LANC_MELYSEG-nel melyebb lanc: hangos
+    figyelmeztetes es megallas, mint a szerveren. Visszaadja a belyegzett (letezo) ososok listajat
+    a fuggetlen visszaolvasashoz."""
+    def szulo(kid):
+        sor = db.execute('SELECT parent_id FROM kanban_cards WHERE id=?', (kid,)).fetchone()
+        return sor[0] if sor else None
+    latott = {card_id}
+    aktualis = szulo(card_id)
+    melyseg = 0
+    belyegzett = []
+    while aktualis:
+        if aktualis in latott:
+            print(f'FIGYELEM: parent_id kor itt: {aktualis} (innen: {card_id}) -- a szulo-lanc '
+                  'belyegzese megallt.', file=sys.stderr)
+            break
+        melyseg += 1
+        if melyseg > OS_LANC_MELYSEG:
+            print(f'FIGYELEM: a szulo-lanc melyebb, mint {OS_LANC_MELYSEG} (innen: {card_id}) -- a '
+                  'belyegzes megallt.', file=sys.stderr)
+            break
+        latott.add(aktualis)
+        if db.execute('UPDATE kanban_cards SET updated_at=? WHERE id=?', (now, aktualis)).rowcount == 1:
+            belyegzett.append(aktualis)
+        aktualis = szulo(aktualis)
+    return belyegzett
 # Ismert FELELOS-nevek. NEM zart halmaz: a tablan 2026-09-06-an 40 kulonbozo felelos allt, es a
 # tobbsegi nem-flotta ertek kulso GitHub-felhasznalonev (PR-kartyak szerzoi). Ezert a nem-ismert
 # nev nem automatikusan hiba -- lasd _felelos_feloldas.
@@ -736,6 +789,9 @@ def komment_mod(a):
     # sora nem irhato be, ne irjon kommentet sem. Az eles, dashboard-inicializalt DB-n mindket
     # tabla letezik; ez a sor egy kezzel osszerakott vagy nagyon regi DB-t allit meg.
     _hianyzo_tabla = [t for t in _esemeny_tablak_kellenek(valtozik) if not _tabla_van(db, t)]
+    # A dispatch-nullazas es a szulo-lanc (KARTYADISPATCH1010) ket oszlopot kovetel; ugyanaz a kapu.
+    _hianyzo_tabla += [f'kanban_cards.{o}' for o in ('dispatched_at', 'parent_id')
+                       if valtozik and not _oszlop_van(db, 'kanban_cards', o)]
     if _hianyzo_tabla:
         sys.exit('MEGTAGADVA: a mozgatas esemenysort kovetel, de ezen a DB-n (' + DB + ') nincs: '
                  + ', '.join(_hianyzo_tabla) + '.\nSemmi nem irodott be. A dashboard initDatabase-e hozza '
@@ -829,12 +885,16 @@ def komment_mod(a):
     # A MOZGATO a tablan: ugyanaz a kisbetus agens-nev, amit a szerver /move-ja actor-kent kap
     # (a dispatch-recept "actor":"<agens>"-et kuld), es amit ez a szkript feladokent hasznal.
     actor = (a.from_agent or a.author).strip().lower()
-    cur = db.execute(f'UPDATE kanban_cards SET {sets}, updated_at=? WHERE id=?',
-                     (*valtozik.values(), now, a.id))
+    # dispatched_at az UPDATE-ben, mint a /move SQL-jeben (KARTYADISPATCH1010).
+    nullaz = _dispatch_nullaz(valtozik.get('status', elotte['status']))
+    cur = db.execute(f'UPDATE kanban_cards SET {sets}, updated_at=?' + (', dispatched_at=NULL' if nullaz else '')
+                     + ' WHERE id=?', (*valtozik.values(), now, a.id))
     if cur.rowcount != 1:
         db.rollback()
         sys.exit(f'HIBA: a mezomozgatas {cur.rowcount} sort erintett (1 helyett) -- a komment MAR BEIRT.')
-    # EGY TRANZAKCIO a mozgatasra es a sorara (KARTYAEVENTS1010), mint a szerveren.
+    # EGY TRANZAKCIO a mozgatasra, a szulo-lancra es a sorara (KARTYAEVENTS1010,
+    # KARTYADISPATCH1010), mint a szerveren.
+    szulok = _os_lanc_belyeg(db, a.id, now)
     esemenyek = _esemenysorok(db, a.id, elotte, valtozik, actor, now)
     db.commit()
     # FUGGETLEN visszaolvasas: uj SELECT, nem a cursor allitasa. A 0-talalatos UPDATE
@@ -860,6 +920,17 @@ def komment_mod(a):
     if esemenyek:
         print(f'ESEMENYSOR OK (visszaolvasva): ' + ', '.join(f'{t}#{r}' for t, r, _ in esemenyek)
               + f' | actor={actor}')
+    if nullaz:
+        d = db.execute('SELECT dispatched_at FROM kanban_cards WHERE id=?', (a.id,)).fetchone()
+        if d[0] is not None:
+            sys.exit(f'HIBA: dispatched_at visszaolvasva {d[0]}, nem NULL. A mozgatas MAR BEIRT.')
+        print(f'DISPATCH OK (visszaolvasva): dispatched_at NULL (a kartya nem in_progress; ebresztes nem ment).')
+    for os_id in szulok:
+        u = db.execute('SELECT updated_at FROM kanban_cards WHERE id=?', (os_id,)).fetchone()
+        if not u or u[0] != now:
+            sys.exit(f'HIBA: a(z) {os_id} szulo updated_at-je visszaolvasva {u}, nem {now}. A mozgatas MAR BEIRT.')
+    if szulok:
+        print('SZULO-LANC OK (visszaolvasva): ' + ' -> '.join(szulok) + ' updated_at==mozgatas ideje')
     # A MOZGATAS NYOMA A KARTYAN: a komment szovege Bonie, ez a sor a gepe. Enelkul a
     # tabla olvasoja latja az uj statuszt, de nem latja, hogy KI es MIKOR mozgatta.
     #

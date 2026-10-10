@@ -742,6 +742,9 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
         return true
       }
     }
+    // PUT to in_progress clears but does not dispatch; /move remains the only
+    // dispatch path (KARTYADISPATCH1010). updateKanbanCard applies the shared
+    // dispatched_at clear; no fireKanbanDispatch call belongs here.
     if (updateKanbanCard(id, data, who.actor)) { json(res, { ok: true }); return true }
     json(res, { error: 'Kártya nem található' }, 404)
     return true
