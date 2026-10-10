@@ -39,7 +39,9 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from mixed_script import char_script, mixed_script_words  # noqa: E402
+from mixed_script import (  # noqa: E402
+    char_script, mixed_script_words, isolated_foreign_words,
+)
 
 
 def mask(word):
@@ -55,6 +57,21 @@ def mask(word):
 
 def main():
     t = sys.stdin.read()
+    # MAGANYOS NEM-LATIN SZO (kartya #893): kulon szabaly, kulon uzenet. A
+    # vegyes-szo szabaly a szon BELULI keveredest nezi, ez a szo KORNYEZETET.
+    lone = isolated_foreign_words(t)
+    if lone:
+        for szo, iras, nev in lone[:10]:
+            sys.stderr.write(f"  {szo}  <- {iras}, {nev}\n")
+        if len(lone) > 10:
+            sys.stderr.write(f"  ... and {len(lone) - 10} more\n")
+        sys.stderr.write(
+            f"NEM KULDOM EL: {len(lone)} maganyos, nem-latin szo a magyar szovegben.\n")
+        sys.stderr.write(
+            "  Mit tegyel: ird UJRA a fenti szo(ka)t latin betukkel. Idegen nyelvu\n"
+            "  idezet nem esik ide: tobb egymast koveto idegen szo vagy idezojelben\n"
+            "  allo szoveg atmegy.\n")
+        return 3
     bad = mixed_script_words(t)
     if bad:
         for word, _ch, name in bad[:10]:
