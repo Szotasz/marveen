@@ -282,8 +282,11 @@ describe('install-macos.sh -- launchd units must be verified, not assumed', () =
     const before = tail.slice(0, banner!.index)
     expect(before).toMatch(new RegExp(`${FN}\\s`))
     expect(before).toMatch(/if \[ -n "\$DASHBOARD_PID" \] && \[ -n "\$CHANNELS_PID" \]/)
-    // and there must be a loud else-branch for the failure the operator hit
-    expect(tail.slice(banner!.index)).toMatch(/launchctl kickstart/)
+    // and there must be a loud else-branch for the failure the operator hit. The
+    // remedy lines live in print_services_remedy since #1871 (the closing summary
+    // repeats them), so: the branch calls it, and the function carries kickstart.
+    expect(tail.slice(banner!.index)).toMatch(/\n\s+print_services_remedy\n/)
+    expect(MACOS).toMatch(/print_services_remedy\(\) \{[\s\S]*?launchctl kickstart[\s\S]*?\n\}/)
   })
 
   // scripts/start.sh carried the identical defect: measured live on 26.5.1 it

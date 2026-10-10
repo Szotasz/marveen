@@ -75,6 +75,8 @@ _t() {
     hu:warn_pair_missing) echo "  FIGYELEM: Telegram párosítás nem történt meg!" ;;
     en:success_installed) echo "  ✓ Marveen successfully installed!" ;;
     hu:success_installed) echo "  ✓ Marveen sikeresen telepítve!" ;;
+    en:success_installed_services_down) echo "  ! Marveen is installed, but its services are NOT running yet (see below)." ;;
+    hu:success_installed_services_down) echo "  ! Marveen telepítve, de a szolgáltatások MÉG NEM FUTNAK (lásd lent)." ;;
     # ── Tagline / wizard ─────────────────────────────────────────────
     en:tagline) echo "Your AI team, running while you sleep." ;;
     hu:tagline) echo "AI csapatod, ami fut amíg te alszol." ;;

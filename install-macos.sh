@@ -1516,11 +1516,32 @@ echo -e "  ${GREEN}✓${NC} $(_t macos.launchagents_created)"
 # both entry points behave identically.
 . "$INSTALL_DIR/scripts/launchd-unit.sh"
 
+# REMEDYCMD807: the remedy for a unit that is not running. A function because
+# the closing summary repeats it word for word (#1871): whoever reads only the
+# end of the run must get the same commands as the mid-run block.
+print_services_remedy() {
+  echo -e "    ${BOLD}Javitas most:${NC}"
+  # kickstart alone cannot start a unit that was never REGISTERED in the gui
+  # domain -- and that is exactly the state this fires in most often (an
+  # SSH-driven install cannot bootstrap into gui/$UID; measured live, rc=5 EIO).
+  # The remedy the user runs from a GUI terminal must be state-agnostic:
+  # bootstrap first (registers + RunAtLoad-starts; errors harmlessly if already
+  # registered), then kickstart (covers the registered-but-dead state).
+  echo -e "    ${BLUE}launchctl bootstrap gui/$(id -u) \"\$HOME/Library/LaunchAgents/${DASHBOARD_PLIST}.plist\" 2>/dev/null; launchctl kickstart -p gui/$(id -u)/${DASHBOARD_PLIST}${NC}"
+  echo -e "    ${BLUE}launchctl bootstrap gui/$(id -u) \"\$HOME/Library/LaunchAgents/${CHANNELS_PLIST}.plist\" 2>/dev/null; launchctl kickstart -p gui/$(id -u)/${CHANNELS_PLIST}${NC}"
+  echo -e "    ${DIM}Ellenorzes: launchctl print gui/$(id -u)/${CHANNELS_PLIST} | grep -E 'state|pid'${NC}"
+}
+
+# #1871: the outcome is kept, like INSTALL_AUTH_STATE / CHANNELS_GATE_STATE, so
+# the closing banner and the exit status can tell the truth about it.
+SERVICES_STATE="unknown"
 DASHBOARD_PID="$(start_launchd_unit "$DASHBOARD_PLIST")"
 CHANNELS_PID="$(start_launchd_unit "$CHANNELS_PLIST")"
 if [ -n "$DASHBOARD_PID" ] && [ -n "$CHANNELS_PID" ]; then
+  SERVICES_STATE="ok"
   echo -e "  ${GREEN}✓${NC} Szolgaltatasok elinditva (dashboard pid $DASHBOARD_PID, channels pid $CHANNELS_PID)"
 else
+  SERVICES_STATE="down"
   # "nem igazolt", not "nem indultak el": this branch fires when EITHER pid is
   # missing, so the plural claim was false whenever one unit came up. It also
   # says only what was measured -- the verification did not succeed -- instead of
@@ -1542,17 +1563,7 @@ else
   # return value is ever inspected. "Loaded but not started" was a diagnosis
   # nobody measured -- the same defect as the banner above it.
   echo -e "    ${DIM}A unit-fajlok a helyukon vannak, de futo folyamatot nem talaltunk.${NC}"
-  echo -e "    ${BOLD}Javitas most:${NC}"
-  # REMEDYCMD807: kickstart alone cannot start a unit that was never REGISTERED
-  # in the gui domain -- and that is exactly the state this branch fires in most
-  # often (an SSH-driven install cannot bootstrap into gui/$UID; measured live,
-  # rc=5 EIO). The remedy the user runs from a GUI terminal must be
-  # state-agnostic: bootstrap first (registers + RunAtLoad-starts; errors
-  # harmlessly if already registered), then kickstart (covers the
-  # registered-but-dead state).
-  echo -e "    ${BLUE}launchctl bootstrap gui/$(id -u) \"\$HOME/Library/LaunchAgents/${DASHBOARD_PLIST}.plist\" 2>/dev/null; launchctl kickstart -p gui/$(id -u)/${DASHBOARD_PLIST}${NC}"
-  echo -e "    ${BLUE}launchctl bootstrap gui/$(id -u) \"\$HOME/Library/LaunchAgents/${CHANNELS_PLIST}.plist\" 2>/dev/null; launchctl kickstart -p gui/$(id -u)/${CHANNELS_PLIST}${NC}"
-  echo -e "    ${DIM}Ellenorzes: launchctl print gui/$(id -u)/${CHANNELS_PLIST} | grep -E 'state|pid'${NC}"
+  print_services_remedy
 fi
 
 # Idle-path keepalive probe (launchd twin of the Linux systemd timer). Without
@@ -1731,7 +1742,12 @@ fi
 echo ""
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
-echo -e "${BOLD}${GREEN}$(_t success_installed)${NC}"
+# #1871: "successfully installed" only when the services were seen running.
+if [ "${SERVICES_STATE:-unknown}" = "down" ]; then
+  echo -e "${BOLD}${ORANGE}$(_t success_installed_services_down)${NC}"
+else
+  echo -e "${BOLD}${GREEN}$(_t success_installed)${NC}"
+fi
 echo ""
 
 # Read dashboard token for access URL
@@ -1775,4 +1791,24 @@ if [ "${INSTALL_AUTH_STATE:-UNKNOWN}" != "OK" ]; then
   fi
   echo -e "  ${BOLD}  Javitas: ${BLUE}bash \"$INSTALL_DIR/scripts/auth.sh\"${NC}${BOLD} majd ${BLUE}bash \"$INSTALL_DIR/scripts/channels.sh\" restart${NC}"
   echo ""
+fi
+
+# #1871: the services' state is repeated LAST too, with the same remedy, and a
+# run whose main units are not running does not exit 0 -- so a scripted install
+# can tell (scripts/start.sh already exits 1 in the same situation). 3, not 1:
+# 1 is what fail() and the ERR trap use for a build that aborted.
+# EXCEPT in the machine progress mode (MARVEEN_JSON_PROGRESS=1, the Bridge
+# installer): its derived script appends the final emit_result AFTER this line,
+# so an exit here would turn a finished install into "the install stopped
+# before finishing" on the customer's screen.
+if [ "${SERVICES_STATE:-unknown}" = "down" ]; then
+  echo ""
+  echo -e "  ${RED}✗ A SZOLGALTATASOK NEM FUTNAK:${NC}"
+  if [ -z "${DASHBOARD_PID:-}" ]; then echo -e "    ${DIM}  - ${DASHBOARD_PLIST}: nem fut${NC}"; fi
+  if [ -z "${CHANNELS_PID:-}" ]; then echo -e "    ${DIM}  - ${CHANNELS_PLIST}: nem fut${NC}"; fi
+  print_services_remedy
+  echo ""
+  if [ "${MARVEEN_JSON_PROGRESS:-0}" != "1" ]; then
+    exit 3
+  fi
 fi
