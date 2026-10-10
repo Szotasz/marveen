@@ -156,3 +156,5 @@ transcripts/
 #   supabase/.temp/  -> ignores a real directory, MISSES the symlink (it shows in
 #                       `git status`, so the next CLI run commits it again)
 supabase/.temp
+# c83a6bf6: the concrete egress-gate forms a tester measured live stay local (the public tests carry one per class)
+src/__tests__/fixtures/*.local.json
