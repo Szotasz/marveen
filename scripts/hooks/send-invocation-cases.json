@@ -112,6 +112,141 @@
       "expected": true
     },
     {
+      "name": "RESENDGETTWIN1010: read-only GET /domains, no method flag",
+      "cmd": "curl -s -H \"Authorization: Bearer re_x\" https://api.resend.com/domains",
+      "expected": false
+    },
+    {
+      "name": "RESENDGETTWIN1010: read-only explicit -X GET",
+      "cmd": "curl -sS -X GET https://api.resend.com/emails/abc123 -H \"Authorization: Bearer re_x\"",
+      "expected": false
+    },
+    {
+      "name": "RESENDGETTWIN1010: read-only forced -G",
+      "cmd": "curl -G https://api.resend.com/domains -H \"Authorization: Bearer re_x\"",
+      "expected": false
+    },
+    {
+      "name": "RESENDGETTWIN1010: read-only -G with query data",
+      "cmd": "curl -G https://api.resend.com/domains -d 'limit=1'",
+      "expected": false
+    },
+    {
+      "name": "RESENDGETTWIN1010: read-only --request=GET",
+      "cmd": "curl --request=GET https://api.resend.com/domains",
+      "expected": false
+    },
+    {
+      "name": "RESENDGETTWIN1010: read-only HEAD",
+      "cmd": "curl -I -X HEAD https://api.resend.com/domains",
+      "expected": false
+    },
+    {
+      "name": "RESENDGETTWIN1010: read-only wget",
+      "cmd": "wget -qO- https://api.resend.com/domains",
+      "expected": false
+    },
+    {
+      "name": "RESENDGETTWIN1010: bundled -sX POST",
+      "cmd": "curl -sX POST https://api.resend.com/emails -d '{}'",
+      "expected": true
+    },
+    {
+      "name": "RESENDGETTWIN1010: glued -XPOST",
+      "cmd": "curl -XPOST https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "RESENDGETTWIN1010: --request=POST without a body",
+      "cmd": "curl --request=POST https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "RESENDGETTWIN1010: --json body",
+      "cmd": "curl --json '{\"to\":\"a@b.hu\"}' https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "RESENDGETTWIN1010: bundled -sd body",
+      "cmd": "curl -sd '{}' https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "RESENDGETTWIN1010: --data-binary=@file",
+      "cmd": "curl --data-binary=@/tmp/m.json https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "RESENDGETTWIN1010: wget --post-data",
+      "cmd": "wget --post-data='{}' https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "RESENDGETTWIN1010: wget --method=POST",
+      "cmd": "wget --method=POST https://api.resend.com/emails",
+      "expected": true
+    },
+    {
+      "name": "RESENDGETTWIN1010: DELETE",
+      "cmd": "curl -X DELETE https://api.resend.com/emails/abc123",
+      "expected": true
+    },
+    {
+      "name": "RESENDGETTWIN1010: PATCH with a body",
+      "cmd": "curl --request PATCH https://api.resend.com/emails/abc123 -d '{\"scheduled_at\":null}'",
+      "expected": true
+    },
+    {
+      "name": "RESENDGETTWIN1010: GET carrying a body stays closed",
+      "cmd": "curl -X GET https://api.resend.com/emails -d '{\"to\":\"a@b.hu\"}'",
+      "expected": true
+    },
+    {
+      "name": "RESENDGETTWIN1010: undecidable: variable method",
+      "cmd": "curl -X \"$METHOD\" https://api.resend.com/domains",
+      "expected": true
+    },
+    {
+      "name": "RESENDGETTWIN1010: undecidable: truncated -X",
+      "cmd": "curl https://api.resend.com/domains -X",
+      "expected": true
+    },
+    {
+      "name": "RESENDGETTWIN1010: undecidable: config file -K",
+      "cmd": "curl -K /tmp/curlrc https://api.resend.com/domains",
+      "expected": true
+    },
+    {
+      "name": "RESENDGETTWIN1010: undecidable: bundled -sK",
+      "cmd": "curl -sK /tmp/curlrc https://api.resend.com/domains",
+      "expected": true
+    },
+    {
+      "name": "RESENDGETTWIN1010: undecidable: long --config file",
+      "cmd": "curl --config /tmp/curlrc https://api.resend.com/domains",
+      "expected": true
+    },
+    {
+      "name": "RESENDGETTWIN1010: bundled -sX DELETE without a body",
+      "cmd": "curl -sX DELETE https://api.resend.com/emails/abc123",
+      "expected": true
+    },
+    {
+      "name": "RESENDGETTWIN1010: httpie positional POST (the python twin passed it before)",
+      "cmd": "http POST https://api.resend.com/emails to=a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "RESENDGETTWIN1010: httpie implicit POST via a data item",
+      "cmd": "http https://api.resend.com/emails to=a@b.hu subject=x",
+      "expected": true
+    },
+    {
+      "name": "RESENDGETTWIN1010: httpie GET stays closed: its method is not read here",
+      "cmd": "http GET https://api.resend.com/domains",
+      "expected": true
+    },
+    {
       "name": "wrapper shell -c with a real send (round 2)",
       "cmd": "bash -c \"python3 scripts/support-mail/send.py --to a@b.hu --subject X\"",
       "expected": true

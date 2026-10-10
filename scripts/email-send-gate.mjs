@@ -97,6 +97,81 @@ const GRAPHMAIL = /^graph-mail(\.ts|\.js)?$/i
 const WRAPPER_SHELL = /^(sh|bash|zsh|dash)$/i
 const CURLISH = /^(curl|wget|http)$/i
 const RESEND_TARGET = /^(https?:\/\/)?([^/@\s]*\.)?api\.resend\.com(\/|$)/i
+// RESENDGETTWIN1010: port of the python twin's method verdict (RESENDGATE826,
+// outgoing-copy-gate.py :: _curl_resend_verdict). Until now this copy was
+// method-blind and denied a read-only GET /domains the python copy passed.
+// Strict direction kept: the method must be RECOGNIZED (explicit -X/--request/
+// --method, or an implicit POST from a body flag); an undecidable method
+// (variable, truncated flag, config file) stays a send. httpie (`http`) takes
+// its method positionally and its body as `key=value` items, none of which this
+// flag scan reads, so it is undecidable too and stays a send in both twins.
+const HTTPIE = /^http$/i
+const CURL_BODY_OPTS = new Set([
+  '-d', '--data', '--data-raw', '--data-binary', '--data-urlencode',
+  '--data-ascii', '-F', '--form', '--form-string', '--json',
+  '-T', '--upload-file',
+  // wget body flags
+  '--post-data', '--post-file', '--body-data', '--body-file',
+])
+const SAFE_METHODS = new Set(['GET', 'HEAD'])
+const ALPHA = /^\p{L}+$/u // python str.isalpha()
+
+// 'read' | 'send' | 'unknown' -- the caller treats unknown as a send.
+function curlResendVerdict(prog, rest) {
+  if (HTTPIE.test(prog)) return 'unknown'
+  let method = null
+  let hasBody = false
+  let getForced = false
+  const n = rest.length
+  for (let i = 0; i < n; i++) {
+    const t = rest[i]
+    if (t === '-X' || t === '--request' || t === '--method') {
+      if (i + 1 >= n || !ALPHA.test(rest[i + 1])) return 'unknown'
+      method = rest[i + 1].toUpperCase()
+      i++
+      continue
+    }
+    if (t.startsWith('--request=') || t.startsWith('--method=')) {
+      const m = t.split('=').slice(1).join('=')
+      if (!ALPHA.test(m)) return 'unknown'
+      method = m.toUpperCase()
+      continue
+    }
+    if (t === '-G' || t === '--get') { getForced = true; continue }
+    if (t === '-K' || t === '--config') return 'unknown' // a config file can carry a hidden method or body
+    if (CURL_BODY_OPTS.has(t) ||
+        [...CURL_BODY_OPTS].some((o) => o.startsWith('--') && t.startsWith(o + '='))) {
+      hasBody = true
+      continue
+    }
+    if (t.startsWith('-') && !t.startsWith('--') && t.length > 1) {
+      // single-dash cluster (-sS, -sX POST, -sd '{}'): the letters are bundled
+      const letters = t.slice(1)
+      if (letters.includes('X')) {
+        const after = letters.slice(letters.indexOf('X') + 1)
+        if (after) {
+          if (!ALPHA.test(after)) return 'unknown'
+          method = after.toUpperCase()
+        } else {
+          if (i + 1 >= n || !ALPHA.test(rest[i + 1])) return 'unknown'
+          method = rest[i + 1].toUpperCase()
+          i++
+        }
+      } else if (letters.includes('d') || letters.includes('F') || letters.includes('T')) {
+        hasBody = true
+      } else if (letters.includes('G')) {
+        getForced = true
+      } else if (letters.includes('K')) {
+        return 'unknown'
+      }
+    }
+  }
+  if (method !== null && !SAFE_METHODS.has(method)) return 'send'
+  // implicit POST (the default of curl -d/-F/--json/-T), or a suspicious
+  // "GET with a body" -- both are treated as a send
+  if (hasBody && !getForced) return 'send'
+  return 'read'
+}
 const CODE_SEND = /\bsmtplib\b|SMTP\s*\(|\bsendMail\s*\(|\bsendEmail\b|\bmail\.send\b/i
 // Naive-shape exec heuristic (msg 14298): process-spawn AND a known mailer
 // name together in one interpreter code string. Covers the accidental shapes;
@@ -262,7 +337,11 @@ function headIsSend(toks, depth) {
   if (candidates.some((c) => SENDPY.test(c)) &&
       rest.some((t) => t === '--to' || t.startsWith('--to='))) return true
   if (toks.some((t) => GRAPHMAIL.test(basename(t))) && rest.includes('send')) return true
-  if (CURLISH.test(prog) && rest.some((t) => RESEND_TARGET.test(t))) return true
+  // RESENDGETTWIN1010: only an actual send (POST/PUT/..., or a body) fires; a
+  // read-only GET/HEAD passes; an undecidable method stays fail-closed.
+  if (CURLISH.test(prog) && rest.some((t) => RESEND_TARGET.test(t))) {
+    return curlResendVerdict(prog, rest) !== 'read'
+  }
   return false
 }
 
