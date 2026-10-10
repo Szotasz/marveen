@@ -2215,16 +2215,20 @@ const MCPLIST_BLOCK_RE = new RegExp(
  */
 function buildMcpListChannelBody(): string {
   return [
-    '## `claude mcp list` egy csatornát birtokló ügynökben',
+    '## `claude mcp list` és gyerek-`claude` egy csatornát birtokló ügynökben',
     '',
     'Ha ez az ügynök csatornát birtokol (Telegram/Discord/Slack), a saját sessionjében NE futtasd',
-    'a `claude mcp list`-et: mérve 2026-09-21-én, a parancs leállítja ennek a sessionnek a',
-    'csatorna-plugin szerverét, és a csatorna-eszközök (reply, react, edit_message,',
-    'download_attachment) elérhetetlenné válnak. A parancs kimenete közben `Connected`-et ír, és',
-    '0-val tér vissza, tehát a hibát semmi nem jelzi. Más sessionök nem sérülnek, a többi',
-    'MCP-szerver életben marad, és a session újraindítása visszahozza a plugint.',
-    'Máshol a parancs hasznos diagnosztika: a korlát a csatornát birtokló session, nem a parancs.',
-    'A BEJÖVŐ üzenetek sorsát nem mértük (külső bejelentés); a részletes mérés:',
+    'a `claude mcp list`-et, és ne indíts gyerek-`claude`-ot (pl. `claude -p`) az örökölt',
+    'környezettel: mérve 2026-09-21-én és 2026-10-10-én, a gyerek betölti a csatorna-plugint, az a',
+    'közös `bot.pid` alapján leállítja ennek a sessionnek a pollerét, és a csatorna-eszközök',
+    '(reply, react, edit_message, download_attachment) elérhetetlenné válnak. A parancs kimenete',
+    'közben `Connected`-et ír, és 0-val tér vissza, tehát a hibát semmi nem jelzi. Más sessionök',
+    'nem sérülnek, és a session újraindítása visszahozza a plugint. Ha mégis kell gyerek-`claude`:',
+    'adj neki saját, plugin nélküli `CLAUDE_CONFIG_DIR`-t (ez választja le), a `TELEGRAM_STATE_DIR`-t',
+    'pedig állítsd egy üres mappára. NE töröld: a plugin ekkor a fő ügynök `~/.claude/channels/telegram`',
+    'mappájára esik vissza, és a fő bot pollerét lövi le. Máshol a parancs hasznos diagnosztika:',
+    'a korlát a csatornát birtokló session, nem a parancs. A BEJÖVŐ üzenetek sorsát nem mértük',
+    'általánosan (egy esetben az újraindítás után megérkezett); a részletes mérés:',
     '`docs/mcp-list-channel-plugin.md`.',
   ].join('\n')
 }
