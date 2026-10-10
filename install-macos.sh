@@ -370,11 +370,16 @@ else
   fi
 fi
 
-# Pre-flight headless probe — Issue #179.
+# Pre-flight headless probe (Issue #179, scope corrected by #1872).
 # `claude auth login` may exit 0 even when the resulting token is unusable for
-# headless queries (browser flow interrupted, stale cached state, etc.). The
-# agent-create flow runs `claude --print` under the hood; surface the failure
-# here while the user is still at the install prompt.
+# headless queries (browser flow interrupted, stale cached state, etc.). This
+# probe runs with the OPERATOR's environment and Keychain only, so it checks the
+# login of the terminal the user is sitting at (what the pairing step's
+# `claude` uses) -- NOT the agents' credential. The launchd units read .env and
+# store/.claude-oauth-token, the token entered above is not even saved yet, and
+# the fail-closed service-auth gate further down probes exactly that path. So a
+# failure here must not predict that agent creation will fail: it did, falsely,
+# on every token-based install over SSH (#1872).
 echo ""
 echo -e "  ${DIM}$(_t macos.headless_test)${NC}"
 # The exit status here used to be `head`'s, not claude's: `VAR=$(cmd | head)`
@@ -392,8 +397,8 @@ if [ "$CLAUDE_PROBE_EXIT" -eq 0 ] && [ -n "$CLAUDE_PROBE_OUT" ]; then
 else
   warn "$(_t macos.headless_fail)"
   echo -e "    ${DIM}Kimenet: ${CLAUDE_PROBE_OUT:-<ures>}${NC}"
-  echo -e "    ${DIM}Tipikus okok: nincs ervenyes auth, halozati problema, regi claude CLI.${NC}"
-  echo -e "    ${DIM}Javitas: \`claude --version\` -> \`claude /login\` (vagy ANTHROPIC_API_KEY/CLAUDE_CODE_OAUTH_TOKEN beallitas) -> \`claude --print \"ping\"\` ujra.${NC}"
+  echo -e "    ${DIM}Tipikus okok: ebben a terminalban nincs Claude-bejelentkezes (pl. SSH-n at), halozati problema, regi claude CLI.${NC}"
+  echo -e "    ${DIM}Javitas, ha ebbol a terminalbol hasznalod a claude-ot (pl. a parositashoz): \`claude /login\` -> \`claude --print \"ping\"\` ujra.${NC}"
 fi
 
 INSTALL_STEP="personal-info"
