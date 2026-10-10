@@ -219,7 +219,10 @@ if [ -n "$NODE_BIN" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
   fi
   if [ -n "$_cfg_line" ] && [ -d "$_cfg_dir" ]; then
     if [ "$_cfg_mode" = "explicit" ] || [ "$_cfg_mode" = "rotated" ]; then
-      CFG_ENV="export CLAUDE_CONFIG_DIR=$(sh_single_quote "$_cfg_dir") && "
+      # MAINOWNLOGIN1008: own .credentials.json -- drop the fleet token the tmux
+      # global env would otherwise hand this respawn (an env token beats the
+      # dir's login). See channels.sh's identical branch.
+      CFG_ENV="export CLAUDE_CONFIG_DIR=$(sh_single_quote "$_cfg_dir") && unset CLAUDE_CODE_OAUTH_TOKEN && "
     elif [ "$_cfg_mode" = "token" ]; then
       # Token-mode rotated plan -- same credential-less dir as `isolated`, but
       # export THAT plan's vault-stored token. See channels.sh's identical
