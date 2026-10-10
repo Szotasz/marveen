@@ -344,7 +344,16 @@ export function buildHeartbeatSummaryResponse(
 // The methods the single-card path actually serves. One source, so the Allow
 // header can never drift from the branches above it -- advertising a method
 // that is not routed would send the caller one step further into the same fog.
-const KANBAN_CARD_METHODS = ['PUT', 'DELETE'] as const
+// 2dd78397: GET is served now (one card, archived ones included).
+const KANBAN_CARD_METHODS = ['GET', 'PUT', 'DELETE'] as const
+
+// 2dd78397: a write that lands on an ARCHIVED card used to answer exactly like one on a live card,
+// so the writer never learned that nobody reads the card any more. The write still happens (a 409
+// would break every existing caller that closes or comments after archiving); the successful
+// response says it, additively. On a live card the response is unchanged: no field at all.
+function archivedNote(card: { archived_at: number | null } | undefined): { archived?: true } {
+  return card && card.archived_at != null ? { archived: true } : {}
+}
 
 /**
  * Parse the `includeArchived` query parameter.
@@ -742,7 +751,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
         return true
       }
     }
-    if (updateKanbanCard(id, data, who.actor)) { json(res, { ok: true }); return true }
+    if (updateKanbanCard(id, data, who.actor)) { json(res, { ok: true, ...archivedNote(getKanbanCard(id)) }); return true }
     json(res, { error: 'Kártya nem található' }, 404)
     return true
   }
@@ -784,7 +793,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       // Wake the assigned agent once when the card enters in_progress -- unless
       // that agent is the one who moved it (self-pickup needs no wake-up).
       if (status === 'in_progress') fireKanbanDispatch(id, who.actor)
-      json(res, { ok: true })
+      json(res, { ok: true, ...archivedNote(getKanbanCard(id)) })
       return true
     }
     json(res, { error: 'Kártya nem található' }, 404)
@@ -866,9 +875,10 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const normalizedContent = normalizeKanbanRefs(content, getKanbanSeqByIdPrefix)
     // `automated: true`: a bulk/machine writer marks its own comment, so the
     // stuck detector never reads it as a work-trace (KANBANSTUCKURES916).
-    json(res, automated === true
+    const comment = automated === true
       ? addKanbanComment(cardId, author, normalizedContent, { automated: true })
-      : addKanbanComment(cardId, author, normalizedContent))
+      : addKanbanComment(cardId, author, normalizedContent)
+    json(res, { ...comment, ...archivedNote(card) })
     return true
   }
 
@@ -948,6 +958,18 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   if (childrenMatch && method === 'GET') {
     const parentId = decodeURIComponent(childrenMatch[1])
     json(res, getChildCards(parentId))
+    return true
+  }
+
+  // 2dd78397: ONE card by id, archived ones included (the list GET leaves those out), with its
+  // description. Here, after every fixed single-segment path (/api/kanban/archived and the rest),
+  // for the same reason as the 405 below: placed earlier, "archived" would be read as a card id.
+  const singleCardGetMatch = path.match(/^\/api\/kanban\/([^/]+)$/)
+  if (singleCardGetMatch && method === 'GET') {
+    const id = decodeURIComponent(singleCardGetMatch[1])
+    const card = getKanbanCard(id)
+    if (!card) { json(res, { error: `Kártya nem található: ${id}` }, 404); return true }
+    json(res, card)
     return true
   }
 
