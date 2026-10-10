@@ -232,8 +232,12 @@ describe('wiring (source-level)', () => {
     expect(retryLoop.indexOf('retryPreCheck(taskDef')).toBeLessThan(retryLoop.indexOf('attemptFireTask(current,'))
   })
 
-  it('the cron loop records its fresh answer right after running it', () => {
-    expect(SRC).toMatch(/const cronPc = runPreCheck\(task\)\n\s+rememberPreCheckAnswer\(task, now, cronPc\)/)
+  // CRONPRECHECKSYNC1007: the cron loop awaits the async form now (was
+  // `runPreCheck(task)`); the answer is still recorded right after it.
+  it('the cron loop awaits the async pre-check and records its fresh answer right after it', () => {
+    expect(SRC).toMatch(/const cronPc = await runPreCheckAsync\(task\)\n\s+rememberPreCheckAnswer\(task, now, cronPc\)/)
+    const cronLoop = SRC.slice(SRC.indexOf('for (const task of tasks)'))
+    expect(cronLoop).not.toMatch(/runPreCheck\(task\)/)
   })
 
   it('runPreCheckAsync spawns without the synchronous call', () => {

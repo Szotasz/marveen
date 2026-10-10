@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, readdirSync, statSync, rmSync, watchFile, unwatchFile } from 'node:fs'
 import { readRemovedDefaultTasks } from './scheduled-tasks-io.js'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { homedir } from 'node:os'
 import { PROJECT_ROOT, OWNER_NAME, MAIN_AGENT_ID, HEARTBEAT_AGENT_ID, BOT_NAME, CHANNEL_PROVIDER, WEB_PORT, OWNER_DRIVE_FOLDER, APP_TZ, DASHBOARD_PUBLIC_URL, AGENT_API_ORIGIN, STORE_DIR } from '../config.js'
 import { channelStateDir } from '../channel-provider.js'
@@ -63,7 +63,7 @@ export const HOOK_NODE_BIN = process.execPath
 // space -- exit 127, silently non-enforcing, the exact failure this file
 // exists to close. A single builder also keeps the injectors and every
 // wired-already comparison byte-identical, so they cannot drift.
-export function hookCommand(scriptPath: string): string {
+export function hookCommand(scriptPath: string, args: readonly string[] = [], hookTimeoutSec = 10): string {
   // The interpreter is checked before it is used, and a missing one BLOCKS.
   //
   // HOOK_NODE_BIN is process.execPath, which on a brew install is the
@@ -85,7 +85,8 @@ export function hookCommand(scriptPath: string): string {
   // the ensure* migrations, which rewrite the path. A blocking gate with no
   // stated way out is worse than a loud error.
   const miss = `governance-kapu: a hook interpretere nem talalhato (${HOOK_NODE_BIN}). A kapu ezert BLOKKOL. Javitas: inditsd ujra a dashboardot, az ujrairja a hook-utakat.`
-  return `test -x "${HOOK_NODE_BIN}" || { echo "${miss}" >&2; exit 2; }; "${HOOK_NODE_BIN}" "${scriptPath}"`
+  const invocation = gateInvocation(`"${HOOK_NODE_BIN}"`, scriptPath, args)
+  return `test -x "${HOOK_NODE_BIN}" || { echo "${miss}" >&2; exit 2; }; ${failClosedGateRun(invocation, basename(scriptPath), hookTimeoutSec)}`
 }
 
 // The python twin of hookCommand(). The outgoing-copy-gate is a .py script, so
@@ -97,9 +98,53 @@ export function hookCommand(scriptPath: string): string {
 // is the 127 exit, because Claude Code treats 127 as NON-blocking and lets the
 // tool call through -- a gate that silently stops enforcing. So the interpreter
 // is probed first and a miss exits 2, which blocks.
-export function pythonHookCommand(scriptPath: string): string {
+export function pythonHookCommand(scriptPath: string, args: readonly string[] = [], hookTimeoutSec = 10): string {
   const miss = 'governance-kapu: a hook interpretere nem talalhato (python3 nincs a PATH-on). A kapu ezert BLOKKOL. Javitas: telepitsd a python3-at, vagy inditsd ujra a dashboardot.'
-  return `command -v python3 >/dev/null 2>&1 || { echo "${miss}" >&2; exit 2; }; python3 "${scriptPath}"`
+  const invocation = gateInvocation('python3', scriptPath, args)
+  return `command -v python3 >/dev/null 2>&1 || { echo "${miss}" >&2; exit 2; }; ${failClosedGateRun(invocation, basename(scriptPath), hookTimeoutSec)}`
+}
+
+// Card 723bbb70: the gate command's exit status is made FAIL-CLOSED here, in one place for every gate
+// the builders above assemble. Claude Code blocks a tool call only on exit 2 (or a deny on stdout with
+// exit 0); any other status is a NON-blocking error and the call goes through. A gate that is itself
+// broken therefore let everything pass: a SyntaxError in the gate file or in one of its imports exits 1
+// in both node and python, a missing script exits 1 (2 for python3), a signal exits 128+n (measured on
+// the eight security hooks, af12a1d3 73814: a syntax error in the gate FILE gave rc 1 on every one).
+// The tail keeps 0 and 2 as they are and turns every other status into 2, with the reason on stderr
+// after whatever the interpreter itself printed; the gate's stdout (a deny JSON on exit 0) is untouched.
+//
+// The deadline: where the host has coreutils `timeout`, the gate runs under it, two seconds inside the
+// hook's own timeout, so a hung gate ends here with 124 (or 137 after the one-second kill grace) and
+// blocks, instead of being cut off by Claude Code's timeout, whose outcome this wrapper does not
+// control. Without `timeout` (a stock macOS) the gate runs as before and only that one case stays with
+// Claude Code. The `test -x` / `command -v` interpreter probe before it is unchanged and still blocks
+// with its own message.
+export const GATE_FAIL_CLOSED_TAG = 'governance-kapu (fail-closed)'
+
+/** The gate's deadline inside a hook whose timeout is `hookTimeoutSec`: two seconds earlier, at least one. */
+export function gateDeadlineSec(hookTimeoutSec: number): number {
+  return Math.max(1, Math.floor(hookTimeoutSec) - 2)
+}
+
+// Extra arguments ride inside the invocation, never after the whole command: appended after the
+// fail-closed tail they would land on `exit` instead of the gate (the email gate's thread-reply flag).
+// Only plain flag characters are accepted, so nothing needs shell quoting.
+function gateInvocation(interpreter: string, scriptPath: string, args: readonly string[]): string {
+  for (const a of args) {
+    if (!/^[A-Za-z0-9_=.:-]+$/.test(a)) throw new Error(`hook argument needs no quoting, got: ${a}`)
+  }
+  return [interpreter, `"${scriptPath}"`, ...args].join(' ')
+}
+
+/**
+ * The run-and-map tail of a gate command (exported for tests and for the main agent's hand-written
+ * project settings, which carry the same shape around a $CLAUDE_PROJECT_DIR path).
+ */
+export function failClosedGateRun(invocation: string, label: string, hookTimeoutSec: number): string {
+  if (!/^[A-Za-z0-9_.-]+$/.test(label)) throw new Error(`gate label must be a plain file name, got: ${label}`)
+  const t = gateDeadlineSec(hookTimeoutSec)
+  const fail = `${GATE_FAIL_CLOSED_TAG}: ${label}: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.`
+  return `if command -v timeout >/dev/null 2>&1; then timeout -k 1 ${t} ${invocation}; else ${invocation}; fi; rc=$?; [ "$rc" = 0 ] || [ "$rc" = 2 ] || { echo "${fail}" >&2; exit 2; }; exit "$rc"`
 }
 
 // Wired-already predicate for the ensure* migrations: is `command` present in
@@ -690,6 +735,36 @@ export function absolutizeFileRule(rule: string): string {
   return rule
 }
 
+// #1837 (opontop): a strict profile's allow-list is its whole value, but Claude
+// Code evaluates bypassPermissions BEFORE the allow-list, so a strict agent that
+// comes up in bypass mode can touch anything its deny-list does not name. The
+// mode can arrive from the operator's own ~/.claude/settings.json
+// (provisionIsolatedConfigDir copies it into the agent's isolated config dir),
+// and nothing pinned it. This pins permissions.defaultMode to 'dontAsk' for a
+// strict profile: per the documented modes (code.claude.com/docs/en/permissions)
+// dontAsk "auto-denies every call that would otherwise prompt", while allow-
+// listed tools still run -- exactly the strict contract. 'default' is NOT
+// enough: it prompts on an unmatched call, and a sub-agent runs in tmux with no
+// one to answer, so it would hang on the prompt (Dani, #1844 review). Only an
+// operator-chosen 'plan' is left alone. Applied in BOTH places a strict agent's
+// mode can come from: the project settings written here and the isolated
+// user-level copy (project settings outrank user settings anyway).
+// Returns whether it changed anything. Pure: unit-tested directly.
+export function enforceStrictPermissionMode(
+  settings: Record<string, unknown>,
+  permissionMode: string | undefined,
+): boolean {
+  if (permissionMode !== 'strict') return false
+  const raw = settings.permissions
+  const perms = (raw && typeof raw === 'object' && !Array.isArray(raw)
+    ? raw
+    : (settings.permissions = {})) as Record<string, unknown>
+  const current = perms.defaultMode
+  if (current === 'dontAsk' || current === 'plan') return false
+  perms.defaultMode = 'dontAsk'
+  return true
+}
+
 export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemplate): void {
   const agentRoot = agentDir(name)
   const settingsDir = join(agentRoot, '.claude')
@@ -748,6 +823,7 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
     deny: denyList,
     ...(extraDirs.length ? { additionalDirectories: extraDirs } : {}),
   }
+  enforceStrictPermissionMode(existing, profile.permissionMode)
   // Governance hard-gates: every sub-agent (NOT the main agent) gets PreToolUse
   // hooks. Re-applied on every spawn (this function regenerates settings.json),
   // so they survive respawns. (a) email-send block -- outbound email routes
@@ -882,7 +958,7 @@ export function injectEmailSendGate(existing: Record<string, unknown>, threadRep
   // in the same regenerated-on-every-spawn settings.json as the gate itself:
   // revoking the capability removes the flag at the next spawn, and a manual
   // settings edit can neither grant nor keep it.
-  const command = threadReply ? `${base} ${EMAIL_THREAD_REPLY_FLAG}` : base
+  const command = threadReply ? hookCommand(join(PROJECT_ROOT, 'scripts', 'email-send-gate.mjs'), [EMAIL_THREAD_REPLY_FLAG]) : base
   const entry = {
     matcher: EMAIL_GATE_MATCHER,
     hooks: [{ type: 'command', command, timeout: 10 }],
@@ -1674,13 +1750,38 @@ export function quarantineReaderDomains(storeDir = STORE_DIR): string[] {
   }
 }
 
+// e708d096 (be27524d (1)): the reader's posture, read the way the
+// egress-gate hook reads it (scripts/hooks/egress-gate.mjs): ONLY the literal
+// string "denylist" is the open posture; any other value, a missing file or
+// malformed JSON is the default allowlist posture. The rendered posture block
+// follows this, so the prompt never states an open posture the hook does not run.
+export type QuarantineReaderPosture = 'allowlist' | 'denylist'
+
+export function quarantineReaderPosture(storeDir = STORE_DIR): QuarantineReaderPosture {
+  try {
+    const raw = JSON.parse(readFileSync(join(storeDir, 'egress-allowlist.json'), 'utf-8'))
+    return raw?.quarantine_reader_posture === 'denylist' ? 'denylist' : 'allowlist'
+  } catch {
+    return 'allowlist'
+  }
+}
+
 // Render the reader definition: the template's shipped feeds, plus the domains
-// the owner allowed on this install. Pure, so the tests drive the same string
-// the deploy writes.
+// the owner allowed on this install, plus (e708d096) the install's posture.
+// Pure, so the tests drive the same string the deploy writes.
 //
 // Marker-delimited so a re-render replaces the previous block instead of
 // stacking copies, and so a reader can see which lines are per-install.
-export function renderQuarantineReader(template: string, domains: string[]): string {
+export function renderQuarantineReader(
+  template: string,
+  domains: string[],
+  posture: QuarantineReaderPosture = 'allowlist',
+): string {
+  return renderPostureBlock(renderDomainBlock(template, domains), posture)
+}
+
+// The per-install domain block (the whole render before e708d096).
+function renderDomainBlock(template: string, domains: string[]): string {
   const BEGIN = '<!-- BEGIN PER-INSTALL DOMAINS (from store/egress-allowlist.json) -->'
   const END = '<!-- END PER-INSTALL DOMAINS -->'
   // Strip a previous block by literal position, NOT with a regex: the markers
@@ -1719,6 +1820,51 @@ export function renderQuarantineReader(template: string, domains: string[]): str
   return `${stripped.slice(0, at)}\n${block}${stripped.slice(at)}`
 }
 
+// e708d096: the per-install POSTURE block. In the open (denylist) posture the
+// reader's prompt refused an unfamiliar host unless the CALLER said the install
+// runs the open posture (the template's "The open posture" section); a
+// sub-agent's caller does not know the posture (only the main agent imports the
+// owner rule), so its reader refused without ever fetching (measured on a live install).
+// The render states the posture as a per-install fact, which the template takes
+// as the caller's statement; the hook still enforces the real posture on every
+// call. Placed at the end of the open posture section, before the next ##
+// heading (at the end of the text when the template has no such section), and
+// marker-delimited like the domain block: a re-render replaces it, and the
+// allowlist posture removes it, leaving the template bytes as they were.
+const POSTURE_BEGIN = '<!-- BEGIN PER-INSTALL POSTURE (from store/egress-allowlist.json) -->'
+const POSTURE_END = '<!-- END PER-INSTALL POSTURE -->'
+const POSTURE_TEXT = [
+  '**This install runs the open posture.** The operator set `"quarantine_reader_posture": "denylist"`',
+  'in `store/egress-allowlist.json` (read when this definition was rendered). This counts as the',
+  'caller stating the open posture: attempt the fetch of a public `http`/`https` URL even when the',
+  'caller does not mention the posture. The hook still enforces the real posture on every call, and',
+  'the always-refused list below applies in every posture.',
+].join('\n')
+
+function renderPostureBlock(text: string, posture: QuarantineReaderPosture): string {
+  // Strip a previous block, with the blank line the insertion added after it,
+  // by literal position (no regex over the markers, as in the domain block).
+  let out = text
+  const b = out.indexOf(POSTURE_BEGIN)
+  if (b >= 0) {
+    const e = out.indexOf(POSTURE_END, b)
+    if (e > b) {
+      let end = e + POSTURE_END.length
+      if (out.startsWith('\n\n', end)) end += 2
+      out = out.slice(0, b) + out.slice(end)
+    }
+  }
+  if (posture !== 'denylist') return out
+  const heading = /^##\s+The open posture\b.*$/m.exec(out)
+  let at = out.length
+  if (heading) {
+    const sectionStart = (heading.index ?? 0) + heading[0].length
+    const next = /^##\s+/m.exec(out.slice(sectionStart))
+    if (next) at = sectionStart + (next.index ?? 0)
+  }
+  return `${out.slice(0, at)}${POSTURE_BEGIN}\n${POSTURE_TEXT}\n${POSTURE_END}\n\n${out.slice(at)}`
+}
+
 // Idempotent migration: ensure a sub-agent's email-send + self-pace gate hook
 // commands use the absolute node binary (HOOK_NODE_BIN). Legacy entries wrote a
 // bare `node`, which is missing from the non-interactive hook PATH on nvm
@@ -1755,7 +1901,9 @@ export function ensureGovernanceGateCommands(name: string, profile?: ProfileTemp
   // match a qualified MCP tool name. The second one is why the wiring check
   // alone is not enough -- it would report the gate healthy forever.
   const threadReply = hasThreadReplyCapability(name, readAgentCapabilities(name))
-  const emailCmdExpected = threadReply ? `${emailCmd} ${EMAIL_THREAD_REPLY_FLAG}` : emailCmd
+  const emailCmdExpected = threadReply
+    ? hookCommand(join(PROJECT_ROOT, 'scripts', 'email-send-gate.mjs'), [EMAIL_THREAD_REPLY_FLAG])
+    : emailCmd
   const needEmail = agentGetsEmailGate(name)
     && (!hookCommandWired(ptuJson, emailCmdExpected)
       || emailGateMatcherStale(ptu)
@@ -1824,7 +1972,11 @@ export function ensureQuarantineReader(
   const destPath = join(destDir, 'quarantine-reader.md')
   let rendered: string
   try {
-    rendered = renderQuarantineReader(readFileSync(tplPath, 'utf-8'), quarantineReaderDomains(paths?.storeDir))
+    rendered = renderQuarantineReader(
+      readFileSync(tplPath, 'utf-8'),
+      quarantineReaderDomains(paths?.storeDir),
+      quarantineReaderPosture(paths?.storeDir),
+    )
   } catch {
     return false
   }
@@ -2678,7 +2830,12 @@ const AGENT_ID_HEADER_BLOCK_RE = new RegExp(
   `${AGENT_ID_HEADER_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${AGENT_ID_HEADER_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
 )
 
-function buildAgentIdHeaderBody(name: string): string {
+// VERZIOTORLES1009: the last paragraph used to promise that a DELETE also keeps
+// the previous content as a version. deleteMemoryById (src/db.ts) removes the
+// versions with the row on purpose (#1357), so that promise was false, and a
+// customer deleted 84 rows trusting it. agent-id-header-delete-truth.test.ts
+// ties this text to that behaviour.
+export function buildAgentIdHeaderBody(name: string): string {
   return [
     '## Ki hívta az API-t: az `X-Agent-Id` fejléc',
     '',
@@ -2698,8 +2855,10 @@ function buildAgentIdHeaderBody(name: string): string {
     'hitelesítés. A fejléc nélkül a hívás ugyanúgy sikerül, és ha idegen emléket írsz,',
     'a szerver FIGYELMEZTET (`owner_mismatch` a válaszban), de NEM állít meg. Tehát a',
     'fejléc nem véd meg attól, hogy rossz sort írj -- csak láthatóvá teszi. A tényleges',
-    'védelem a verziózás: minden felülírás és törlés előtt eltárolódik az előző tartalom',
-    '(`GET /api/memories/<id>/versions`).',
+    'védelem a verziózás, de CSAK FELÜLÍRÁSNÁL: minden felülírás előtt eltárolódik az',
+    'előző tartalom (`GET /api/memories/<id>/versions`). A TÖRLÉS viszont VÉGLEGES: a sorral',
+    'együtt a verzióit is törli, így utána semmiből nem állítható vissza. Ha mégis törölnöd kell,',
+    'előtte olvasd ki és mentsd el a sort (`GET /api/memories/<id>`).',
   ].join('\n')
 }
 

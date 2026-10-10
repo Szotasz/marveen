@@ -43,6 +43,15 @@
 # index mutat). Miert kulon fajl: a jelolt-szures (proza, kod-blokk, link-szoveg)
 # az, amitol ez a mero nem hazudik, es azt kulon kell tudni tesztelni.
 #
+# A NEGYEDIK MERES: A LAP, AMIRE SEMMI NEM MUTAT (2026-10-09).
+# A harmadik meres index -> lemez irányban jar. A visszafele seta ugyanaz a nema
+# kar forditva: a lap meg van irva, helyes, es nem vezet hozza sor -- tehat
+# sosem toltodik be. Ezen a telepitesen mar elsult: az egyiranyu meres ZOLD
+# volt, mikozben ket emlek egyaltalan nem szerepelt az indexben.
+# A szamot ugyanaz a scripts/memory-index-linkcheck.py adja (`orphans`), es a
+# mero az ELERHETOSEG, nem az index-tagsag: amire az index nem mutat, de egy hub
+# igen, az elerheto -- oda megy egy sor, amikor elhagyja az indexet.
+#
 # Protokoll (schedule-runner preCheck):
 #   stdout "SKIP" -> a runner NEM ebreszti az LLM-et (a meret rendben)
 #   stdout ures   -> ebresztes (vagni kell, vagy a gate maga romlott el)
@@ -236,6 +245,7 @@ esac
 # FAIL-OPEN, ahogy a meret-agakon: ha nem tudjuk MEGMERNI, nem allithatjuk, hogy
 # rendben van. Az ok a state-fajlba megy, hogy az ebresztes ne legyen nema.
 MISSINGLINKS=0
+ORPHANS=0
 LINKWAKE=0
 LINKNOTE='"link_scan":"ok"'
 LINKERR=""
@@ -257,18 +267,22 @@ else
   LCCHECKED="$(printf '%s' "$LCOUT" | _json_get links_checked empty)"
   LCFILES="$(printf '%s' "$LCOUT" | _json_get files_scanned empty)"
   LCLIST="$(printf '%s' "$LCOUT" | _json_get missing_list '[]' json)"
+  LCORPH="$(printf '%s' "$LCOUT" | _json_get orphans empty)"
+  LCPAGES="$(printf '%s' "$LCOUT" | _json_get pages_seen empty)"
+  LCORPHLIST="$(printf '%s' "$LCOUT" | _json_get orphan_list '[]' json)"
   if [ "$LCRC" != 0 ]; then
     LINKERR="$(printf '%s' "$LCOUT" | _json_get error empty)"
     [ -n "$LINKERR" ] || LINKERR="a link-ellenorzo hibaval allt le (rc=$LCRC)"
   else
     # Ures-ellenorzes ELOSZOR: hianyzo mezo es nem-szam ugyanaz a hiba, de a
     # `''*` minta MINDENRE illeszkedne, tehat a ketto kulon all.
-    if [ -z "$LCMISS" ] || [ -z "$LCCHECKED" ] || [ -z "$LCFILES" ]; then
+    if [ -z "$LCMISS" ] || [ -z "$LCCHECKED" ] || [ -z "$LCFILES" ] \
+       || [ -z "$LCORPH" ] || [ -z "$LCPAGES" ]; then
       LINKERR="a link-meres nem adott szamot"
     else
-      case "$LCMISS$LCCHECKED$LCFILES" in
+      case "$LCMISS$LCCHECKED$LCFILES$LCORPH$LCPAGES" in
         *[!0-9]*) LINKERR="a link-meres nem adott szamot" ;;
-        *) MISSINGLINKS="$LCMISS" ;;
+        *) MISSINGLINKS="$LCMISS"; ORPHANS="$LCORPH" ;;
       esac
     fi
   fi
@@ -280,9 +294,10 @@ if [ -n "$LINKERR" ]; then
   LINKNOTE="$(printf '"link_scan":"%s"' "$LINKERR")"
 else
   [ -n "$LCLIST" ] || LCLIST='[]'
+  [ -n "$LCORPHLIST" ] || LCORPHLIST='[]'
   case "$LCMISSOCC$LCUNIQ" in *[!0-9]*) LCMISSOCC=0; LCUNIQ=0 ;; esac
-  LINKNOTE="$(printf '"link_scan":"ok","link_files":%s,"links_checked":%s,"unique_targets":%s,"missing_links":%s,"missing_occurrences":%s,"missing_list":%s' \
-    "$LCFILES" "$LCCHECKED" "$LCUNIQ" "$LCMISS" "$LCMISSOCC" "$LCLIST")"
+  LINKNOTE="$(printf '"link_scan":"ok","link_files":%s,"links_checked":%s,"unique_targets":%s,"missing_links":%s,"missing_occurrences":%s,"missing_list":%s,"pages_seen":%s,"orphans":%s,"orphan_list":%s' \
+    "$LCFILES" "$LCCHECKED" "$LCUNIQ" "$LCMISS" "$LCMISSOCC" "$LCLIST" "$LCPAGES" "$LCORPH" "$LCORPHLIST")"
 fi
 
 printf '{"measured_at":%s,"size":%s,"max_seen":%s,"max_seen_at":%s,"since":%s,"warn":%s,"hard":%s,"over_hard":%s,%s,%s}\n' \
@@ -296,5 +311,9 @@ printf '{"measured_at":%s,"size":%s,"max_seen":%s,"max_seen_at":%s,"since":%s,"w
 # A logo hivatkozas ugyanaz a nema kar, mint a csonkolas: a sor all, a tudas
 # nincs mogotte. Es ha maga a meres szallt el, az sem lehet csend.
 [ "$MISSINGLINKS" -gt 0 ] 2>/dev/null && exit 0   # WAKE -- van logo hivatkozas
+# Es a visszafele seta: egy lap, amire semmi nem mutat, ugyanugy nem jut be a
+# kontextusba, mint egy levagott sor. A javitas itt NEM torles, hanem egy sor az
+# indexbe (vagy abba a hubba, ahova tartozik).
+[ "$ORPHANS" -gt 0 ] 2>/dev/null && exit 0        # WAKE -- van lap, amire semmi nem mutat
 [ "$LINKWAKE" = 1 ] && exit 0       # WAKE -- a link-meres nem futott le
 echo SKIP

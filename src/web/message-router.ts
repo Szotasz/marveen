@@ -19,6 +19,7 @@ import {
 import { isQualifiedId } from './federation/address.js'
 import { sendFederatedMessage } from './federation/bridge.js'
 import { getFederationConfig, abandonWindowMsForPeer } from './federation/config.js'
+import { scheduleDeliveryTurnCheck } from './delivery-turn-check.js'
 import { readAgentRemoteHost, readAgentVoiceConfig, readAgentWorksourceChannel, type AgentVoiceConfig } from './agent-config.js'
 import { enqueueWorksourceItem, worksourceItemId } from './worksource-queue.js'
 import {
@@ -964,6 +965,10 @@ export async function runMessageRouterTick(): Promise<void> {
         // What the recipient inherits as trace context after this delivery:
         // the head's, unless a multi-envelope batch below ends on a later row.
         let traceCtxToRecord: { trace_id: string; span_id: string } | null = traceCtx
+        // Set only on the keyboard (tmux) path: when the keys started going out,
+        // and which batch mates rode along with the head row.
+        let turnCheckSentAt: number | null = null
+        const turnCheckIds: number[] = []
         // Inline preamble so a fresh session (post hard-restart) doesn't miss
         // the context that explains the tag semantics.
         if (usesWorksource) {
@@ -994,6 +999,7 @@ export async function runMessageRouterTick(): Promise<void> {
             ? 'message-router: queued to worksource'
             : 'message-router: worksource item already present, not re-queued')
         } else {
+          turnCheckSentAt = Date.now()
           // MULTI-ENVELOPE INJECTION (B1F38C8C): while the pane is free, take the
           // OTHER pending inter-agent rows for this same recipient from the
           // tick's snapshot and send them in this one injection, each with its
@@ -1012,6 +1018,7 @@ export async function runMessageRouterTick(): Promise<void> {
                 logger.warn({ id: mate.id }, 'markMessageDelivered affected 0 rows (deleted concurrently?)')
               }
               batchedMsgIdsThisTick.add(mate.id)
+              turnCheckIds.push(mate.id)
               routerInjectFailures.delete(mate.id)
               routerLoggedMisses.delete(mate.id)
               logger.info({ id: mate.id, from: mate.from_agent, to: mate.to_agent, batchHead: msg.id }, 'Agent message delivered (multi-envelope batch)')
@@ -1031,6 +1038,15 @@ export async function runMessageRouterTick(): Promise<void> {
         }
         if (!markMessageDelivered(msg.id)) {
           logger.warn({ id: msg.id }, 'markMessageDelivered affected 0 rows (deleted concurrently?)')
+        }
+        // ROUTERSAWTURN824: 'delivered' above means "keys were pressed". Look in
+        // the recipient's transcript a grace period later and tell the main
+        // agent if the prompt never arrived. Keyboard deliveries only (the
+        // worksource path has its own ack), and only rows that carry an
+        // envelope msg_id (channel-inbound has none to look for). Async and
+        // fire-and-forget: it neither delays nor blocks this loop.
+        if (turnCheckSentAt != null && !isChannelInbound) {
+          scheduleDeliveryTurnCheck({ toAgent: msg.to_agent, msgIds: [msg.id, ...turnCheckIds], sentAtMs: turnCheckSentAt, host })
         }
         // Propagate trace context: the receiving agent inherits this trace_id
         // and span_id so its next outbound message continues the same chain.

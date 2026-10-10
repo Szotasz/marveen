@@ -152,7 +152,7 @@ describe('sendPromptToSession delivery-lock wiring', () => {
     // The send-keys that types the slash command must be guarded: the acquire
     // has to appear BEFORE it in the function body.
     const acquireAt = body.indexOf('releaseIdentityLane = tryAcquireSessionSendLane')
-    const sendAt = body.indexOf("runTmux(host, ['send-keys', '-t', session, cmd, 'Enter']")
+    const sendAt = body.indexOf("runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), cmd, 'Enter']")
     expect(acquireAt).toBeGreaterThanOrEqual(0)
     expect(sendAt).toBeGreaterThan(acquireAt)
     // And it must be released, or the pane's lane wedges for every later writer.

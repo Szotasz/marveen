@@ -17,16 +17,20 @@ import { homedir } from 'node:os'
 import { existsSync } from 'node:fs'
 import { readBody, json } from '../http-helpers.js'
 import { logger } from '../../logger.js'
-import { MAIN_AGENT_ID } from '../../config.js'
+import { MAIN_AGENT_ID, PROJECT_ROOT } from '../../config.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
 import { readClaudePlans, writeClaudePlans, validatePlan, PLAN_ID_ALLOWED, tokenSecretIdFor } from '../claude-plans.js'
 import { setSecret, deleteSecret, getSecret } from '../vault.js'
 import { readClaudePlansState, writeClaudePlansState, applyRotation, recordPlanObservation } from '../claude-plans-state.js'
 import { probePlanUsage, observationFromProbe, usageFromProbe } from '../../claude-plan-usage-probe.js'
 import { agentDir, writeAgentClaudePlan } from '../agent-config.js'
-import { restartAgentProcess } from '../agent-process.js'
-import { hardRestartMarveenChannels } from '../channel-monitor.js'
+import {
+  restartAgentProcess, resolveMainAgentConfigDir, resolveMainAgentRotatedConfigDir, resolveMainAgentRotatedTokenSecretId,
+  hasFleetOauthToken, mainAgentSharedConfigDir,
+} from '../agent-process.js'
+import { hardRestartMarveenChannels, restartMainForRotationContinue } from '../channel-monitor.js'
 import { rotationReadiness } from '../claude-rotation-heartbeat.js'
+import { mainRotationContinueVerdict, type ContinueRestartResult } from '../main-rotation-continue.js'
 import type { RouteContext } from './types.js'
 
 /** Minimum gap between two manual probes of the same plan (POST .../probe). */
@@ -238,6 +242,14 @@ export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> 
       json(res, { error: 'targetPlanId is required' }, 400)
       return true
     }
+    // 8c338dc4: "continue": true restarts the main agent with --continue (same conversation, new
+    // plan). Only a real JSON boolean counts: a "true" string would otherwise fall back to the fresh
+    // restart without telling the caller.
+    if (b.continue !== undefined && typeof b.continue !== 'boolean') {
+      json(res, { error: 'continue must be a JSON boolean' }, 400)
+      return true
+    }
+    const wantContinue = b.continue === true
 
     if (!isRotationEnabled()) {
       json(res, { error: 'Rotation is disabled (CLAUDE_ROTATION_ENABLED=0)' }, 409)
@@ -271,6 +283,24 @@ export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> 
         return true
       }
 
+      // 8c338dc4: decided BEFORE anything is written, so a refused continue leaves the plan and the
+      // session untouched and the caller can still ask for the plain (fresh) rotation.
+      if (wantContinue) {
+        const verdict = mainRotationContinueVerdict({
+          explicitDir: resolveMainAgentConfigDir(),
+          activeRotatedDir: resolveMainAgentRotatedConfigDir(),
+          activeIsTokenPlan: resolveMainAgentRotatedTokenSecretId() !== null,
+          fleetToken: hasFleetOauthToken(),
+          targetConfigDir: target.configDir ?? null,
+          sharedDir: mainAgentSharedConfigDir(),
+          projectRoot: PROJECT_ROOT,
+        })
+        if (!verdict.ok) {
+          json(res, { error: `continue is not possible: ${verdict.reason}` }, 409)
+          return true
+        }
+      }
+
       // Record the decision BEFORE restarting: the next launch resolves its
       // CLAUDE_CONFIG_DIR by reading this file back
       // (main-agent-isolated-config.mjs -> resolveMainAgentRotatedConfigDir),
@@ -278,12 +308,24 @@ export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> 
       // comes up.
       writeClaudePlansState(applyRotation(readClaudePlansState(), MAIN_AGENT_ID, targetPlanId))
 
-      const result = hardRestartMarveenChannels()
-      if (!result.ok) {
-        json(res, { error: result.error || 'Main agent restart failed' }, 500)
-        return true
+      // The default stays the fresh restart; only "continue": true takes the --continue path, and only
+      // that path adds "mode" to the response (continue, or fresh-fallback when the resume failed).
+      let mode: ContinueRestartResult['mode'] | null = null
+      if (wantContinue) {
+        const restarted = await restartMainForRotationContinue()
+        if (!restarted.ok) {
+          json(res, { error: restarted.error }, 500)
+          return true
+        }
+        mode = restarted.mode
+      } else {
+        const result = hardRestartMarveenChannels()
+        if (!result.ok) {
+          json(res, { error: result.error || 'Main agent restart failed' }, 500)
+          return true
+        }
       }
-      logger.info({ agentId, targetPlanId }, 'Claude plan rotation: main agent restarted')
+      logger.info({ agentId, targetPlanId, ...(mode ? { mode } : {}) }, 'Claude plan rotation: main agent restarted')
 
       // Fleet leg (opt-in, CLAUDE_ROTATION_FLEET): the shared fleet token and
       // the sub-agents on it follow the main agent. Deliberately NOT awaited:
@@ -300,7 +342,14 @@ export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> 
           .then(({ runFleetLeg }) => runFleetLeg(target))
           .catch((err) => logger.error({ err: err instanceof Error ? err.name : 'error' }, 'Claude plan rotation: fleet leg failed to load'))
       }
-      json(res, { ok: true, agentId, activePlanId: targetPlanId, fleet: fleetOn ? 'started' : 'off' })
+      json(res, { ok: true, agentId, activePlanId: targetPlanId, fleet: fleetOn ? 'started' : 'off', ...(mode ? { mode } : {}) })
+      return true
+    }
+
+    // 8c338dc4: a sub-agent's restart keeps its own --continue rule (restartAgentProcess); a
+    // "continue" asked for here could not be honoured as asked, so it is refused, not ignored.
+    if (wantContinue) {
+      json(res, { error: 'continue applies to the main agent only' }, 400)
       return true
     }
 

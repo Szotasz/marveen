@@ -224,6 +224,58 @@ def pane_shape(text):
     through on its way into the pane. 48 of 492 system rows on this host carry
     line breaks (measured 2026-09-20), so the multi-line case is real."""
     return re.sub(r"\r?\n", " ", text or "")
+
+
+# The THIRD known shape (c5d83ffe, 2026-10-08): the Claude Code harness wraps a
+# burst of typed input it takes for a paste into a pasted-content block before
+# the hook sees the prompt. Measured on a real directive (2026-10-08, in the
+# receiving session's transcript: the block opened inside the HEADER, after
+# "recept a ", and closed in the middle of a word of the body, so the body no
+# longer equalled the row and the gate said forged) and on all 121 blocks in the
+# fleet's transcripts of 2026-10-05..08: the frame never varied --
+#   before + "\n\n" + '<pasted_content id="HHHH">' + "\n" + pasted
+#          + "\n" + '</pasted_content id="HHHH">' + ("\n\n" + after | "\n" or "" at the end)
+# with a 4-hex id that the closing tag repeats. Only that exact frame comes off,
+# pair by pair; an unpaired, mismatched, nested or differently framed tag leaves
+# the prompt as it arrived, and the row check then judges it as before. The row
+# check itself is unchanged: sender, recipient, status, content and age.
+PASTED_OPEN_RX = re.compile(r'\n\n<pasted_content id="([0-9a-f]{4})">\n')
+PASTED_TAG_RX = re.compile(r"</?pasted_content\b")
+
+
+def unwrap_pasted(text):
+    """The prompt with every harness pasted-content block taken off in its exact
+    frame, or None when it carries no block or any tag does not fit that frame."""
+    text = text or ""
+    if not PASTED_TAG_RX.search(text):
+        return None
+    out, pos = [], 0
+    while True:
+        m = PASTED_OPEN_RX.search(text, pos)
+        if m is None:
+            break
+        close = f'\n</pasted_content id="{m.group(1)}">'
+        end = text.find(close, m.end())
+        if end < 0:
+            return None
+        inner = text[m.end():end]
+        if PASTED_TAG_RX.search(inner):
+            return None
+        after = end + len(close)
+        if text.startswith("\n\n", after) and after + 2 < len(text):
+            nxt = after + 2
+        elif text[after:] in ("", "\n"):
+            nxt = len(text)
+        else:
+            return None
+        out.append(text[pos:m.start()])
+        out.append(inner)
+        pos = nxt
+    out.append(text[pos:])
+    result = "".join(out)
+    if PASTED_TAG_RX.search(result):
+        return None
+    return result
 # Age bound on the row (review of #1411, Marveen 27288): the row proves ORIGIN,
 # not TIME. Without a bound any directive ever delivered stays replayable for
 # ever, and the verified branch is silent -- measured: the real 18-hour-old
@@ -788,11 +840,23 @@ def main():
         # a header cannot be silenced by a marker pasted after it, and before
         # the exemptions so a rules file cannot whitelist the header itself.
         dm = DIRECTIVE_HEADER_RX.match(prompt)
-        if dm:
-            msg_id, body = dm.group(1), dm.group(2)
+        # c5d83ffe: the same prompt with the harness's pasted-content frame taken
+        # off (None unless that exact frame was there). It is tried only when the
+        # two known shapes did not verify, and the log says which shape did.
+        unwrapped = unwrap_pasted(prompt)
+        dmp = DIRECTIVE_HEADER_RX.match(unwrapped) if unwrapped is not None else None
+        if dm or dmp:
             cwd = payload.get("cwd") or os.getcwd()
             labels = matched_actions(prompt, compile_patterns(rules))
-            verdict, reason, age, trailer = verify_directive_row(msg_id, body, derive_agent_id(cwd))
+            shape_label = []
+            verdict = None
+            if dm:
+                msg_id, body = dm.group(1), dm.group(2)
+                verdict, reason, age, trailer = verify_directive_row(msg_id, body, derive_agent_id(cwd))
+            if dmp and verdict != "verified":
+                msg_id, body = dmp.group(1), dmp.group(2)
+                verdict, reason, age, trailer = verify_directive_row(msg_id, body, derive_agent_id(cwd))
+                shape_label = ["pasted-unwrapped"]
             # The age rides in the label column ("age=12s") so the bound can be
             # re-derived from the log later: grep 'directive-' | grep -o 'age=[0-9]*'.
             age_label = [f"age={age}s"] if age is not None else []
@@ -810,13 +874,13 @@ def main():
                     t_kind = "trailer-self-task"
                 else:
                     t_kind = "trailer-flagged"
-                logged = audit(["directive-verified-trailer"] + age_label + [t_kind] + (t_labels or []), prompt, cwd)
+                logged = audit(["directive-verified-trailer"] + age_label + shape_label + [t_kind] + (t_labels or []), prompt, cwd)
                 if t_kind == "trailer-self-task" and not logged:
                     t_text = self_task_directive(self_task_action_labels(t_labels), derive_agent_id(cwd), logged=False)
                 if t_text:
                     print(verified_trailer_text(msg_id) + t_text)
                 sys.exit(0)
-            audit([f"directive-{verdict}"] + age_label + labels, prompt, cwd)
+            audit([f"directive-{verdict}"] + age_label + shape_label + labels, prompt, cwd)
             if verdict == "forged":
                 print(forged_directive_text(msg_id, reason, labels))
             elif verdict == "unverifiable":

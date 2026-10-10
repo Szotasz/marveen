@@ -103,7 +103,21 @@ const CODE_SEND = /\bsmtplib\b|SMTP\s*\(|\bsendMail\s*\(|\bsendEmail\b|\bmail\.s
 // see the STATED LIMIT in the header for what it deliberately does not claim.
 const CODE_EXECISH = /\bsubprocess\b|os\.system|\bpopen\b|child_process|\bexec[A-Za-z]*\s*\(|\bspawn[A-Za-z]*\s*\(/i
 const CODE_SENDER_LIT = /sendmail|msmtp|swaks|send\.py/i
-const codeStringSends = (code) => CODE_SEND.test(code) || (CODE_EXECISH.test(code) && CODE_SENDER_LIT.test(code))
+// Issue #1853 (stylnet): the support-mail sender LOADED AS A MODULE (`import send`,
+// `from send import main`, runpy, __import__/import_module, a spec built from send.py).
+// Case-sensitive on purpose; `send` must be the whole module name. Mirrors
+// _CODE_SEND_MODULE in hooks/outgoing-copy-gate.py; send-invocation-cases.json binds them.
+const CODE_SEND_MODULE = new RegExp(
+  String.raw`\bimport\s+(?:[\w.]+\s*,\s*)*send\b(?![\w.])` +
+  String.raw`|\bfrom\s+send\s+import\b` +
+  String.raw`|\brunpy\b[^\n]*\bsend\b` +
+  String.raw`|\b(?:__import__|import_module)\s*\(\s*['"]send['"]` +
+  String.raw`|\bspec_from_file_location\b[^\n]*\bsend\.py\b` +
+  // The same class on the Graph sender (export sendMail): renamed on import, or a string key.
+  String.raw`|\bsendMail\s+as\b|\[\s*['"]sendMail['"]\s*\]`,
+)
+const codeStringSends = (code) =>
+  CODE_SEND.test(code) || CODE_SEND_MODULE.test(code) || (CODE_EXECISH.test(code) && CODE_SENDER_LIT.test(code))
 
 // Unquoted newline / backtick / `$(` become segment separators; quoted text is
 // untouched (it is content). Tracks quote state by hand -- no shell involved.
@@ -239,6 +253,12 @@ function headIsSend(toks, depth) {
   }
   const candidates = [prog]
   if ((PYTHON.test(prog) || NODEISH.test(prog)) && rest.length) candidates.push(basename(rest[0]))
+  // Issue #1853: `python3 -m send` (or -m pkg.send) is the same sender by module name.
+  if (PYTHON.test(prog)) {
+    for (let i = 0; i < rest.length - 1; i++) {
+      if (rest[i] === '-m' && rest[i + 1].split('.').pop() === 'send') candidates.push('send.py')
+    }
+  }
   if (candidates.some((c) => SENDPY.test(c)) &&
       rest.some((t) => t === '--to' || t.startsWith('--to='))) return true
   if (toks.some((t) => GRAPHMAIL.test(basename(t))) && rest.includes('send')) return true
@@ -270,7 +290,69 @@ export function buildWrapperDepthMsg() {
   )
 }
 
+// Issue #1853, the heredoc form: the segmenter drops heredoc BODIES, but when the
+// command that opens one is an interpreter (`python3 - <<'PY'`, `node <<EOF`) the body
+// IS the program. Mirrors _heredoc_program_sends in hooks/outgoing-copy-gate.py.
+// NARROWED (Geri's #1855 review): inside a heredoc body the exec + sender-literal half takes
+// the literal only as a lowercase, QUOTED command word (an argv item or an os.system command),
+// so a card id like SENDMAIL... in a report's prose no longer matches. Mirrors
+// _HEREDOC_SENDER_ARGV / _heredoc_body_sends in hooks/outgoing-copy-gate.py.
+// NOT COVERED, named: a program the classifier never reads -- `python3 /tmp/x.py`,
+// `python3 < /tmp/x.py`, `cat /tmp/x.py | python3 -`, `python3 -c "exec(open('/tmp/x.py').read())"`;
+// also a here-string fed to an interpreter (`python3 <<<'import send'`) and a CommonJS
+// destructuring rename of the Graph sender (`const { sendMail: s } = require(...)`).
+// A heredoc fed to a SHELL (`bash <<EOF`) is a shell program: its body is judged with
+// isSendInvocation itself, one level deeper (Geri/Samu, #1855).
+// WRITTEN, THEN RUN IN THE SAME COMMAND (#1855): `cat > P <<TAG` / `cat <<TAG > P`, then an
+// interpreter or a shell on the same path token P: the body is judged as if fed directly.
+// Exact token match; a file run by ANOTHER Bash call stays out of reach. Also NOT COVERED yet:
+// a heredoc PIPED on to an interpreter or a shell (`cat <<'EOF' | bash`, `| python3 -`), a
+// follow-up to #1855.
+const HEREDOC_SENDER_ARGV = /['"](?:[^'"\s]*\/)?(?:sendmail|msmtp|swaks|send\.py)(?=['"\s])/
+const heredocBodySends = (body) =>
+  CODE_SEND.test(body) || CODE_SEND_MODULE.test(body) || (CODE_EXECISH.test(body) && HEREDOC_SENDER_ARGV.test(body))
+const HEREDOC_SHELL = /(?:^|[\s;&|(])(?:\S*\/)?(?:bash|sh|zsh|dash)\b[^\n<]*$/i
+const HEREDOC_INTERP = /(?:^|[\s;&|(])(?:\S*\/)?(python3?(?:\.\d+)?|node|tsx|ts-node|deno|bun)\b[^\n<]*$/i
+const HEREDOC_REDIRECT = /(?:^|[\s;&|(])(?:cat|tee)\b[^\n]*?(?:>>?|\btee(?:\s+-a)?)\s*(['"]?)([^\s'"<>;&|]+)\1/
+function writtenThenRun(cmd, written, depth) {
+  if (!written.size) return false
+  let segments
+  try { segments = segmentsTokens(cmd) } catch { return false }
+  for (const toks of segments) {
+    for (const head of commandHeads(toks)) {
+      if (!head || !head.length) continue
+      const prog = basename(head[0])
+      let args = head.slice(1).filter((t) => !t.startsWith('-'))
+      if (prog.toLowerCase() === 'npx' && args.length) args = args.slice(1) // npx <runner> <file>
+      if (!args.length || !written.has(args[0])) continue
+      const body = written.get(args[0])
+      if ((PYTHON.test(prog) || NODEISH.test(prog)) && heredocBodySends(body)) return true
+      if (WRAPPER_SHELL.test(prog) && depth < 3 && isSendInvocation(body, depth + 1)) return true
+    }
+  }
+  return false
+}
+function heredocProgramSends(cmd, depth = 0) {
+  const written = new Map()
+  for (const m of cmd.matchAll(HEREDOC_RE)) {
+    const opener = cmd.slice(cmd.lastIndexOf('\n', m.index - 1) + 1, m.index) + m[1]
+    const w = HEREDOC_REDIRECT.exec(opener)
+    if (w) written.set(w[2], cmd.slice(m.index + m[1].length + 1, m.index + m[0].length - m[2].length))
+    const lineStart = cmd.lastIndexOf('\n', m.index - 1) + 1
+    const head = cmd.slice(lineStart, m.index)
+    const bodyStart = m.index + m[1].length + 1
+    const body = cmd.slice(bodyStart, m.index + m[0].length - m[2].length)
+    if (HEREDOC_INTERP.test(head)) {
+      if (heredocBodySends(body)) return true
+    } else if (HEREDOC_SHELL.test(head) && depth < 3) {
+      if (isSendInvocation(body, depth + 1)) return true
+    }
+  }
+  return writtenThenRun(cmd, written, depth)
+}
+
 export function isSendInvocation(cmd, depth = 0) {
+  if (heredocProgramSends(cmd, depth)) return true
   let segments
   try {
     segments = segmentsTokens(cmd)

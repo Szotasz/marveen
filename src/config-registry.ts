@@ -1,3 +1,5 @@
+import { homedir } from 'node:os'
+import { expandAndValidateConfigDir } from './config-dir-path.js'
 // Single source of truth for settings the dashboard's "Beallitasok" page can
 // show and edit. Each entry describes one .env-backed config key: its type
 // (drives the input widget + validation), default, human description, the
@@ -74,6 +76,12 @@ export interface SettingDefinition {
   /** Inclusive bounds, only meaningful for type 'int'. */
   min?: number
   max?: number
+  /**
+   * Optional extra check for a 'string' value: returns an error message, or
+   * null when the value is acceptable. Runs on every write through
+   * validateSettingValue (SECSZIVEK1007).
+   */
+  validate?: (value: string) => string | null
 }
 
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/
@@ -520,7 +528,7 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     key: 'MAIN_AGENT_ISOLATED_CONFIG',
     type: 'boolean',
     default: '0',
-    description: 'Bármely platformon: a fő channels-agent kapjon-e saját, izolált CLAUDE_CONFIG_DIR-t (mint a sub-agentek). Bekapcsolva a fő agent a hosszú élettartamú fleet setup-tokenből (store/.claude-oauth-token) hitelesít, nem a megosztott, önmagát frissítő session-hitelesítésből (macOS: rotálódó Keychain OAuth-session; Linux: megosztott ~/.claude/.credentials.json) -- mindkettő periodikusan lejár, és a lejárt fájl a Claude Code precedencia miatt akkor is nyer az érvényes env-tokennel szemben, ha az élő token ott van mellette (2026-07-23 kiesés). Token hiányában no-op. A módosítás a channels session újraindításakor lép életbe.',
+    description: 'Bármely platformon: a fő channels-agent kapjon-e saját, izolált CLAUDE_CONFIG_DIR-t (mint a sub-agentek). Bekapcsolva a fő agent a hosszú élettartamú fleet setup-tokenből (store/.claude-oauth-token) hitelesít, nem a megosztott, önmagát frissítő session-hitelesítésből (macOS: rotálódó Keychain OAuth-session; Linux: megosztott ~/.claude/.credentials.json) -- mindkettő periodikusan lejár. Ha a token exportálva van, a dokumentált precedencia szerint az nyer a /login session-nel szemben. A korábbi "a lejárt fájl nyer" állítás (2026-07-23) FELÜLMÉRVE 10-09 (flotta-mérés, msg 36667, issue #1805): Claude Code 2.1.294-en lejárt credentials-fájl mellett az érvényes env-token hitelesített; a Keychainben tárolt login esetét ez nem mérte. Token hiányában no-op. A módosítás a channels session újraindításakor lép életbe.',
     module: 'channels',
     secret: false,
     requiresRestart: true,
@@ -553,6 +561,15 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     requiresRestart: false,
   },
   {
+    key: 'NOTIFY_TELEGRAM_FALLBACK',
+    type: 'boolean',
+    default: '1',
+    description: 'Mehet-e Telegram TARTALÉKKÉNT, ha a Slack-értesítés nem megy ki (nincs Slack-cél, a Slack-modul nem töltődik be, vagy a küldés hibát ad). Bekapcsolva (alapértelmezés) semmi nem vész el: a Telegram átveszi. Kikapcsolva a Telegram SOHA nem kap értesítést tartalékként: a Slack-hiba hangos naplósor (a notify.sh nem nullával lép ki), és az ütemezett feladatok tartalék-utasítása is a notify.sh-t nevezi meg. A NOTIFY_TELEGRAM a "menjen-e MELLÉ" kérdés, ez a "menjen-e HELYETTE".',
+    module: 'channels',
+    secret: false,
+    requiresRestart: false,
+  },
+  {
     key: 'SLACK_OWNER_USER_ID',
     type: 'string',
     default: '',
@@ -562,10 +579,56 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     requiresRestart: false,
   },
   {
+    key: 'SCHEDULED_DELIVERY_CHANNEL',
+    type: 'string',
+    default: '',
+    description: 'Hova menjen a fő ágens ütemezett feladatainak eredménye, "<csatorna>:<chat id>" alakban (csatorna: telegram, slack, discord, googlechat, teams), pl. "slack:D0123456789". Üresen (alapértelmezés) a fő ágens saját csatornája marad. Az al-ágensek feladataira nem hat, és az a feladat, amelyik saját chatet vagy "none"-t ad meg, megtartja. Ha a cél nem Telegram, és ott a küldés nem megy, a gazda Telegram-chatje (ALLOWED_CHAT_ID) a tartalék. Hibás érték esetén nincs felülírás, csak naplóbejegyzés.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: false,
+  },
+  {
     key: 'MAIN_AGENT_CONFIG_DIR',
     type: 'string',
     default: '',
+    // SECSZIVEK1007: the same path rules as an agent's claudeConfigDir and a
+    // plan's configDir (expandAndValidateConfigDir); the value reaches the
+    // channels launch command. Empty = unset, allowed.
+    validate: (v) => (v.trim() === '' || expandAndValidateConfigDir(v, homedir()) !== null
+      ? null
+      : 'Érvénytelen könyvtár: csak betű, szám és a _ . / ~ - karakterek, ".." nélkül, a ~ csak az elején (~/...).'),
     description: 'A fő channels-agent explicit CLAUDE_CONFIG_DIR-je (pl. ~/.claude-bot). Akkor kell, ha a botnak SAJÁT Claude-loginja van, külön a flottáétól: a MAIN_AGENT_ISOLATED_CONFIG erre nem alkalmas, mert az a fleet setup-tokenből hitelesít, tehát a flotta identitását adja a botnak (és token nélkül no-op). Üresen hagyva a fő agent a közös ~/.claude-ot használja (alapértelmezés). Ha a megadott könyvtár nem létezik, a beállítás no-op és figyelmeztetést logol. Elsőbbséget élvez a MAIN_AGENT_ISOLATED_CONFIG-gal szemben. A módosítás a channels session újraindításakor lép életbe.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: true,
+  },
+  // The three opt-in switches below are boot-time consts in src/config.ts
+  // (cfg(): config-overrides.json > .env), so a value saved here takes effect
+  // only after the dashboard restarts. Default '0' matches config.ts, where an
+  // unset key resolves to false.
+  {
+    key: 'SUBAGENT_INBOX_TEE',
+    type: 'boolean',
+    default: '0',
+    description: 'Telegramos sub-agentek bejövő üzeneteinek lemezre tükrözése (inbound-tee). Bekapcsolva a sub-agent a csatorna-plugint egy saját mcp.json-on keresztül, a scripts/channel-inbound-tee.mjs burkolóval tölti be (--channels helyett), és minden bejövő üzenet a <state>/inbox-pending.jsonl fájlba is kerül, ahonnan a channel-inbox-drain hook a következő körbe húzza be. Ez a bejövő üzenetek tartalmát lemezre írja. A fő agentre és a nem Telegramos agentekre nem vonatkozik. Alapértelmezés: kikapcsolva (változatlan --channels út). A SUBAGENT_TELEGRAM_WAKE_ENABLED csak ezzel együtt csinál bármit. A módosítás a dashboard újraindítása után, és agentenként a sub-agent következő indításakor lép életbe.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
+    key: 'SUBAGENT_TELEGRAM_WAKE_ENABLED',
+    type: 'boolean',
+    default: '0',
+    description: 'A message-router felébreszti azt a tétlen Telegramos sub-agentet, akinek a <state>/inbox-pending.jsonl fájljában beragadt bejövő üzenet van, hogy a drain hook behúzza őket. Csak SUBAGENT_INBOX_TEE=1 mellett van hatása: anélkül nem keletkezik inbox-fájl, és a figyelő no-op. Alapértelmezés: kikapcsolva. A módosítás a dashboard újraindításakor lép életbe.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
+    key: 'VOICE_TRANSCRIBE_INBOUND',
+    type: 'boolean',
+    default: '0',
+    description: 'Telepítés-szintű alapértelmezés a bejövő hangüzenetek átiratához a text módú ügynököknél. Bekapcsolva minden olyan text módú ügynöknél helyi faster-whisper átirat készül, amelynek az agent-config.json-jában nincs voice.transcribeInbound beállítás (az ügynökönkénti érték felülírja ezt). A voice/auto módú ügynököknél az átirat ettől függetlenül mindig elkészül. Hangüzenetenként CPU-időbe kerül. Alapértelmezés: kikapcsolva. A módosítás a dashboard újraindításakor lép életbe.',
     module: 'channels',
     secret: false,
     requiresRestart: true,
@@ -608,6 +671,7 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
       'claude-fable-5',
       'claude-fable-5-1',
       'claude-opus-4-8[1m]',
+      'claude-haiku-5-5',
       'claude-haiku-4-5-20251001',
     ],
   },
@@ -710,5 +774,9 @@ export function validateSettingValue(def: SettingDefinition, raw: unknown): Sett
   }
 
   // 'string'
+  if (def.validate) {
+    const err = def.validate(String(raw))
+    if (err) return { ok: false, error: err }
+  }
   return { ok: true, value: String(raw) }
 }

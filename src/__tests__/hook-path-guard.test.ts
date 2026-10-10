@@ -107,7 +107,7 @@ describe('boot-hook-prune.py', () => {
     }, null, 2))
 
     execFileSync('python3', [PRUNE_SCRIPT], {
-      env: { ...process.env, HOME: tmpHome, INSTALL_DIR: ROOT },
+      env: { ...process.env, HOME: tmpHome, INSTALL_DIR: tmpHome },
     })
 
     const result = JSON.parse(readFileSync(settingsPath, 'utf-8'))
@@ -136,7 +136,7 @@ describe('boot-hook-prune.py', () => {
     }, null, 2))
 
     execFileSync('python3', [PRUNE_SCRIPT], {
-      env: { ...process.env, HOME: tmpHome, INSTALL_DIR: ROOT },
+      env: { ...process.env, HOME: tmpHome, INSTALL_DIR: tmpHome },
     })
 
     const result = JSON.parse(readFileSync(settingsPath, 'utf-8'))
@@ -158,11 +158,119 @@ describe('boot-hook-prune.py', () => {
     writeFileSync(settingsPath, original)
 
     execFileSync('python3', [PRUNE_SCRIPT], {
-      env: { ...process.env, HOME: tmpHome, INSTALL_DIR: ROOT },
+      env: { ...process.env, HOME: tmpHome, INSTALL_DIR: tmpHome },
     })
 
     expect(readFileSync(settingsPath, 'utf-8')).toBe(original)
     expect(existsSync(settingsPath + '.bak')).toBe(false)
+  })
+
+  // A user hook written as `python3 "$HOME/x/hook.py"` must be checked as
+  // <HOME>/x/hook.py, not as /x/hook.py: the latter never exists, so a live
+  // hook was pruned on every boot.
+  function pruneCommands(commands: string[]): string[] {
+    const settingsDir = join(tmpHome, '.claude')
+    mkdirSync(settingsDir, { recursive: true })
+    const settingsPath = join(settingsDir, 'settings.json')
+    writeFileSync(settingsPath, JSON.stringify({
+      hooks: {
+        UserPromptSubmit: [{
+          hooks: commands.map((command) => ({ type: 'command', command, timeout: 10 })),
+        }],
+      },
+    }, null, 2))
+    const env: NodeJS.ProcessEnv = { ...process.env, HOME: tmpHome, INSTALL_DIR: tmpHome }
+    delete env.BOOT_PRUNE_TEST_UNSET
+    execFileSync('python3', [PRUNE_SCRIPT], { env })
+    const result = JSON.parse(readFileSync(settingsPath, 'utf-8'))
+    const hooks = result.hooks?.UserPromptSubmit?.[0]?.hooks ?? []
+    return hooks.map((h: { command?: string }) => h.command ?? '')
+  }
+
+  it('keeps HOME-relative hooks whose script exists (quoted, braced, tilde, bash -c, after ;)', () => {
+    mkdirSync(join(tmpHome, 'hooks'), { recursive: true })
+    writeFileSync(join(tmpHome, 'hooks', 'guard.py'), '')
+    const commands = [
+      'python3 "$HOME/hooks/guard.py"',
+      'python3 "${HOME}/hooks/guard.py"',
+      'python3 "$HOME"/hooks/guard.py',
+      'python3 ~/hooks/guard.py',
+      "bash -c '[ -f $HOME/hooks/guard.py ] && exec python3 $HOME/hooks/guard.py; exit 0'",
+      'cd /;$HOME/hooks/guard.py',
+    ]
+    expect(pruneCommands(commands)).toEqual(commands)
+  })
+
+  it('prunes a HOME-relative hook whose script is missing', () => {
+    expect(pruneCommands([
+      'python3 "$HOME/hooks/gone.py"',
+      'python3 ~/hooks/gone.py',
+      'cd /;$HOME/hooks/gone.py',
+      'env HOOK_MODE=1 $HOME/hooks/gone.py',
+    ])).toEqual([])
+  })
+
+  it('keeps a relative hook path (it resolves against the hook cwd, unknown at boot)', () => {
+    const commands = ['python3 .claude/hooks/guard.py', 'node ./hooks/guard.mjs']
+    expect(pruneCommands(commands)).toEqual(commands)
+  })
+
+  it('keeps a hook behind any other expansion ($VAR, ${HOME:-...}, $(...), ~user)', () => {
+    const commands = [
+      'python3 "$BOOT_PRUNE_TEST_UNSET/hooks/guard.py"',
+      'python3 "$PWD/.claude/hooks/guard.py"',
+      'python3 ${HOME:-/nowhere}/hooks/guard.py',
+      'python3 ~someone/hooks/guard.py',
+      'python3 "$(git rev-parse --show-toplevel)/.claude/hooks/guard.py"',
+    ]
+    expect(pruneCommands(commands)).toEqual(commands)
+  })
+
+  it('still prunes a missing absolute script inside a subshell or command substitution', () => {
+    expect(pruneCommands([
+      '(/opt/removed-checkout/hook.sh || true)',
+      'x=$(/opt/removed-checkout/hook.sh)',
+    ])).toEqual([])
+  })
+
+  // An agent's own settings file runs its hooks with the agent dir as
+  // $CLAUDE_PROJECT_DIR, so such paths are judged there.
+  function pruneAgentCommands(commands: string[]): string[] {
+    const agentDir = join(tmpHome, 'agents', 'helper')
+    mkdirSync(join(agentDir, '.claude', 'hooks'), { recursive: true })
+    writeFileSync(join(agentDir, '.claude', 'hooks', 'live.py'), '')
+    const settingsPath = join(agentDir, '.claude', 'settings.json')
+    writeFileSync(settingsPath, JSON.stringify({
+      hooks: {
+        UserPromptSubmit: [{
+          hooks: commands.map((command) => ({ type: 'command', command, timeout: 10 })),
+        }],
+      },
+    }, null, 2))
+    execFileSync('python3', [PRUNE_SCRIPT], { env: { ...process.env, HOME: tmpHome, INSTALL_DIR: tmpHome } })
+    const result = JSON.parse(readFileSync(settingsPath, 'utf-8'))
+    const hooks = result.hooks?.UserPromptSubmit?.[0]?.hooks ?? []
+    return hooks.map((h: { command?: string }) => h.command ?? '')
+  }
+
+  it('judges $CLAUDE_PROJECT_DIR hooks against the agent dir', () => {
+    expect(pruneAgentCommands([
+      'python3 "$CLAUDE_PROJECT_DIR"/.claude/hooks/live.py',
+      'python3 ${CLAUDE_PROJECT_DIR}/.claude/hooks/live.py',
+      'python3 "$CLAUDE_PROJECT_DIR"/.claude/hooks/gone.py',
+    ])).toEqual([
+      'python3 "$CLAUDE_PROJECT_DIR"/.claude/hooks/live.py',
+      'python3 ${CLAUDE_PROJECT_DIR}/.claude/hooks/live.py',
+    ])
+  })
+
+  it('keeps relative hook paths in agent settings (an earlier cd can move them)', () => {
+    const commands = [
+      'python3 .claude/hooks/gone.py',
+      "bash -c 'cd /opt/elsewhere && python3 scripts/hooks/guard.py'",
+      'uv run --directory /opt/elsewhere scripts/hooks/guard.py',
+    ]
+    expect(pruneAgentCommands(commands)).toEqual(commands)
   })
 })
 

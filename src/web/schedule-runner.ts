@@ -23,7 +23,8 @@ import {
   CHANNEL_PROVIDER,
   TASK_STALL_TIMEOUT_MS,
 } from '../config.js'
-import { resolveOwnerChatId, configuredOwnerChatFor } from '../owner-chat.js'
+import { resolveOwnerChatId, configuredOwnerChatFor, normalizeChatId } from '../owner-chat.js'
+import { getEffectiveSettingValue } from '../settings-store.js'
 import {
   appendTaskRun,
   getHeartbeatKanbanLive,
@@ -57,6 +58,7 @@ import { cronPrevOccurrence, effectiveCronTz } from './cron.js'
 import {
   listScheduledTasks,
   readScheduledTask,
+  parseChannelProvider,
   SCHEDULED_TASKS_DIR,
   SCHEDULED_TASK_INLINE_MAX_CHARS,
   SCHEDULED_TASK_BODY_WARN_CHARS,
@@ -87,6 +89,7 @@ import {
 import { isRestartInFlight } from './restart-lock.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { runCommandTask } from './command-task.js'
+import { trackDetachedGroup } from './detached-groups.js'
 import { decideQuotaAction, type QuotaWorkClass } from '../quota-gate.js'
 import { readQuotaSnapshot } from '../quota-snapshot.js'
 import { detectsFirstRunGate, detectPaneState, overfullParkedInputTail, type PaneState } from '../pane-state.js'
@@ -886,22 +889,135 @@ export function chatIdFromAccessConfig(raw: unknown): string | null {
 // to the owner" instruction. A warn line does not prevent the misdelivery; only
 // refusing to guess does.
 //
+// SLACKFOCSATORNA1007C (owner, 2026-10-07: "Ez legyen a fo ag!" -- the Slack
+// DM is the main channel): the main agent is bound to Telegram, so every one
+// of its scheduled tasks was told to deliver on Telegram, and the task config
+// had no way to say otherwise. Two knobs, neither of which touches sub-agents
+// unless a task names it explicitly:
+//   - task-config.json `channelProvider`: this task delivers on that provider;
+//   - SCHEDULED_DELIVERY_CHANNEL="<provider>:<chat id>" in the install .env:
+//     the default for the MAIN agent's tasks that pin nothing themselves.
+//
 // Precedence for a scheduled task's delivery target:
 //   1. task.telegramChatId === 'none'  -> no chat target, by design.
-//   2. task.telegramChatId set         -> that value, always (author-pinned).
-//   3. otherwise                       -> the agent's own bound channel, which
+//   2. task.channelProvider set        -> that provider; the chat is
+//      task.telegramChatId when pinned, else (main agent) the install default
+//      when it names the same provider, else the agent's own binding on that
+//      provider (with the same 2+-contact refusal).
+//   3. task.telegramChatId set         -> that value, always (author-pinned),
+//      on the agent's own provider.
+//   4. main agent + install default    -> the default.
+//   5. otherwise                       -> the agent's own bound channel, which
 //      returns ambiguousCandidates instead of picking one when 2+ DM contacts
 //      exist.
 // The config key keeps its historical `telegramChatId` name across providers so
-// existing task-config.json files stay valid; the resolved provider comes from
-// the agent, not from the key.
+// existing task-config.json files stay valid.
 export function resolveTaskChannelTarget(
-  task: Pick<ScheduledTask, 'agent' | 'telegramChatId'>,
+  task: Pick<ScheduledTask, 'agent' | 'telegramChatId' | 'channelProvider'>,
+  deliveryDefault: DeliveryDefault | null = readScheduledDeliveryDefault(),
 ): BoundChannel {
   const agentName = task.agent || MAIN_AGENT_ID
-  if (task.telegramChatId === 'none') return { provider: resolveAgentProvider(agentName), chatId: null }
+  const isMain = agentName === MAIN_AGENT_ID
+  if (task.telegramChatId === 'none') return { provider: task.channelProvider ?? resolveAgentProvider(agentName), chatId: null }
+  if (task.channelProvider) {
+    if (task.telegramChatId) return { provider: task.channelProvider, chatId: task.telegramChatId }
+    if (isMain && deliveryDefault && deliveryDefault.provider === task.channelProvider) return { ...deliveryDefault }
+    return resolveBoundChannel(agentName, task.channelProvider)
+  }
   if (task.telegramChatId) return { provider: resolveAgentProvider(agentName), chatId: task.telegramChatId }
+  if (isMain && deliveryDefault) return { ...deliveryDefault }
   return resolveBoundChannel(agentName)
+}
+
+export type DeliveryDefault = { provider: ChannelProviderType; chatId: string }
+
+/**
+ * SCHEDULED_DELIVERY_CHANNEL parsed: "<provider>:<chat id>", e.g.
+ * "slack:D0C74N9SAF6". Anything else -- no colon, an unknown provider, an
+ * empty chat, the "0" placeholder -- is null: no override, never a guess.
+ */
+export function parseDeliveryDefault(raw: string | undefined | null): DeliveryDefault | null {
+  const v = (raw ?? '').trim()
+  if (!v) return null
+  const i = v.indexOf(':')
+  if (i <= 0) return null
+  const provider = parseChannelProvider(v.slice(0, i))
+  const chatId = normalizeChatId(v.slice(i + 1))
+  if (!provider || !chatId || chatId === 'none') return null
+  return { provider, chatId }
+}
+
+const warnedDeliveryDefaults = new Set<string>()
+
+/**
+ * The install's SCHEDULED_DELIVERY_CHANNEL, read fresh on every call: from
+ * process.env (an operator or test override), else the settings store
+ * (Beallitasok override > install .env > registry default ''). NOT process.env
+ * alone: the dashboard runs under launchd and NONE of the .env keys reach its
+ * process.env (measured 2026-09-20, see rolloutFlag in batch-inject.ts), so a
+ * process.env-only setting would be unreachable through "put it in .env". A
+ * set but unusable value is warned about once per value and ignored.
+ */
+export function readScheduledDeliveryDefault(
+  read: () => string | undefined = () => {
+    const fromProcess = process.env.SCHEDULED_DELIVERY_CHANNEL
+    if (fromProcess !== undefined && fromProcess.trim() !== '') return fromProcess
+    try { return String(getEffectiveSettingValue('SCHEDULED_DELIVERY_CHANNEL') ?? '') } catch { return undefined }
+  },
+): DeliveryDefault | null {
+  const raw = read()
+  const parsed = parseDeliveryDefault(raw)
+  if (!parsed && raw && raw.trim() && !warnedDeliveryDefaults.has(raw)) {
+    warnedDeliveryDefaults.add(raw)
+    logger.warn({ value: raw }, 'SCHEDULED_DELIVERY_CHANNEL is set but not "<provider>:<chat id>" with a known provider -- ignored, scheduled tasks keep their own channel')
+  }
+  return parsed
+}
+
+/** NOTIFY_TELEGRAM_FALLBACK=0: Telegram is never a fallback (read fresh, a read error keeps the default). */
+export function readTelegramFallbackOff(): boolean {
+  try { return String(getEffectiveSettingValue('NOTIFY_TELEGRAM_FALLBACK') ?? '').trim() === '0' } catch { return false }
+}
+
+/** The provider's name in the nominative, for "a <name> hibat". */
+export function channelDisplayName(provider: ChannelProviderType): string {
+  switch (provider) {
+    case 'slack': return 'Slack'
+    case 'discord': return 'Discord'
+    case 'googlechat': return 'Google Chat'
+    case 'teams': return 'Teams'
+    case 'telegram': return 'Telegram'
+  }
+}
+
+/**
+ * The fallback clause of the MAIN agent's delivery instruction when it is told
+ * to deliver somewhere other than Telegram: if that channel's reply tool is
+ * missing OR FAILS, the owner's Telegram chat (ALLOWED_CHAT_ID) is the
+ * fallback, and its first line names the failure. The failing case is the
+ * live one (review 35241): the slack-channel plugin's outbound gate refuses a
+ * COLD DM -- one not in access.json channels that has not messaged this
+ * process yet -- with an "Outbound gate" error, while the tool itself exists.
+ * Same shape as the morning-briefing task's fallback. Empty for Telegram itself, for sub-agents (ALLOWED_CHAT_ID is the
+ * boss's chat, never a sub-agent owner's -- WRONGRECIP819), and when no
+ * Telegram owner chat is configured: no chat, no fallback, no guess.
+ */
+export function deliveryFallbackClause(
+  provider: ChannelProviderType,
+  isMain: boolean,
+  ownerTelegramChat: string | null = normalizeChatId(configuredOwnerChatFor('telegram')),
+  telegramFallbackOff: boolean = readTelegramFallbackOff(),
+): string {
+  if (provider === 'telegram' || !isMain) return ''
+  // NOTIFY_TELEGRAM_FALLBACK=0 (SLACKATALLAS1006, owner 2026-10-10: "Telegram
+  // SOHA"): the owner left Telegram, so the fallback is notify.sh, which posts
+  // with the dashboard's own Slack token and is not subject to the plugin's
+  // outbound gate that refuses a cold DM.
+  if (telegramFallbackOff) {
+    return `Ha ${channelDeliveryName(provider)} nem tudod elkuldeni (a reply tool hianyzik VAGY hibat ad, pl. "Outbound gate"), kuldd a ${join(PROJECT_ROOT, 'scripts', 'notify.sh')} "<szoveg>" paranccsal (a gazda Slack-celjara megy); Telegramra NE kuldd. Ha a notify.sh sem "(Slack)"-ot ir, a hibat ird a napi naploba, mas csatornat ne probalj. `
+  }
+  if (!ownerTelegramChat) return ''
+  return `Ha ${channelDeliveryName(provider)} nem tudod elkuldeni (a reply tool hianyzik VAGY hibat ad, pl. "Outbound gate"), kuldd Telegramon (chat_id: ${ownerTelegramChat}, reply tool), es az uzenet ELSO sora nevezze meg a ${channelDisplayName(provider)} hibat (a hibauzenettel); mas cimzettet ne tippelj. `
 }
 
 /** How a scheduled-task prompt names the delivery channel, in Hungarian, for
@@ -944,8 +1060,8 @@ export interface BoundChannel {
  *  deliverable by construction. Deliberately NOT falling back to
  *  ALLOWED_CHAT_ID: that is the boss's chat, and pointing a sub-agent's result
  *  there is the precise bug the old sentinel existed to avoid. */
-export function resolveBoundChannel(agentName: string): BoundChannel {
-  const provider = resolveAgentProvider(agentName)
+export function resolveBoundChannel(agentName: string, providerOverride?: ChannelProviderType): BoundChannel {
+  const provider = providerOverride ?? resolveAgentProvider(agentName)
   const dir = agentName === MAIN_AGENT_ID
     ? channelStateDir(provider)
     : channelStateDir(provider, agentDir(agentName))
@@ -991,6 +1107,10 @@ export const PRECHECK_TIMEOUT_MS = 10_000
 // spawnSync's default maxBuffer: a longer stdout fails the run the same way in both forms.
 const PRECHECK_MAX_STDOUT_BYTES = 1024 * 1024
 
+// The synchronous form. Since CRONPRECHECKSYNC1007 the runner calls it from
+// nowhere: both loops use runPreCheckAsync. Kept only as the reference the
+// async form's contract tests compare against; do not call it from the runner
+// (it holds the event loop, and its timeout ends only the direct child).
 export function runPreCheck(task: ScheduledTask): PreCheckResult {
   if (!task.preCheck) return { skip: false }
   const scriptPath = resolvePreCheckPath(task.name, task.preCheck)
@@ -1028,6 +1148,36 @@ export function runPreCheck(task: ScheduledTask): PreCheckResult {
 // synchronous retry pre-checks stood for 734.7 s of the loop's stalls. Same
 // limit, same answers: a missing script, a spawn error, a timeout, a non-zero
 // exit or an oversized stdout all run the LLM anyway.
+//
+// CRONPRECHECKSYNC1007: the cron loop uses it too. A pre-check that calls the
+// dashboard's own API could not be answered while spawnSync held the loop, so
+// it stood until the limit and its request landed after it (measured on two
+// community installs, 2026-09-30..10-07: on one, 6 of 12 timeouts had the
+// message created 0.02-0.32 s AFTER the timeout).
+//
+// The script runs in its OWN process group (detached), and a timeout or an
+// oversized output ends the whole group: TERM, then KILL a second later. A
+// kill of the direct child alone left what the script started running as an
+// orphan; on 2026-10-05 an orphaned python, still in its ssh session, ran next
+// to the task's own run and wiped its key file (#1698, sigee82, measured on the
+// synchronous form; the same gap was here).
+export const PRECHECK_KILL_GRACE_MS = 1_000
+
+function endPreCheckGroup(child: ReturnType<typeof spawn>, task: ScheduledTask, onEnded: () => void = () => {}): void {
+  const pid = child.pid
+  if (pid == null) { onEnded(); return }
+  const signalGroup = (sig: NodeJS.Signals): void => {
+    try { process.kill(-pid, sig) } catch (err) {
+      // ESRCH: the group is already gone, which is the goal.
+      if ((err as NodeJS.ErrnoException).code !== 'ESRCH') logger.warn({ task: task.name, sig, error: (err as Error).message }, 'pre-check: could not signal the script\'s process group')
+    }
+  }
+  signalGroup('SIGTERM')
+  // DETACHEDSHUTDOWN1007: the group stays tracked until the KILL, so a
+  // shutdown inside the grace second still ends it.
+  setTimeout(() => { signalGroup('SIGKILL'); onEnded() }, PRECHECK_KILL_GRACE_MS).unref()
+}
+
 export function runPreCheckAsync(
   task: ScheduledTask,
   opts: { timeoutMs?: number; maxStdoutBytes?: number } = {},
@@ -1051,18 +1201,26 @@ export function runPreCheckAsync(
     }
     let child: ReturnType<typeof spawn>
     try {
-      child = spawn('bash', [scriptPath], { stdio: ['ignore', 'pipe', 'pipe'] })
+      // detached: the script leads its own process group, so the limit can end
+      // everything it started (endPreCheckGroup), not just bash.
+      child = spawn('bash', [scriptPath], { stdio: ['ignore', 'pipe', 'pipe'], detached: true })
     } catch (err) {
       logger.warn({ err, task: task.name }, 'pre-check script threw, running LLM anyway')
       settle({ skip: false })
       return
     }
+    // DETACHEDSHUTDOWN1007: the dashboard's shutdown ends this group while it
+    // runs. It leaves the registry when the script exits on its own, or, after
+    // a limit, once endPreCheckGroup's KILL has gone out.
+    const untrack = trackDetachedGroup(child.pid, `pre-check:${task.name}`)
+    let ending = false
+    const endGroup = (): void => { ending = true; endPreCheckGroup(child, task, untrack) }
     const stdout: Buffer[] = []
     let stdoutBytes = 0
     let stderr = ''
     timer = setTimeout(() => {
       logger.warn({ task: task.name, timeoutMs }, 'pre-check script timed out, running LLM anyway')
-      child.kill('SIGTERM')
+      endGroup()
       settle({ skip: false })
     }, timeoutMs)
     child.stdout?.on('data', (chunk: Buffer) => {
@@ -1070,7 +1228,7 @@ export function runPreCheckAsync(
       stdoutBytes += chunk.length
       if (stdoutBytes > maxStdoutBytes) {
         logger.warn({ task: task.name, maxStdoutBytes }, 'pre-check script output too long, running LLM anyway')
-        child.kill('SIGTERM')
+        endGroup()
         settle({ skip: false })
         return
       }
@@ -1080,10 +1238,12 @@ export function runPreCheckAsync(
       if (stderr.length < 200) stderr += chunk.toString('utf-8')
     })
     child.on('error', (err) => {
+      untrack()
       logger.warn({ task: task.name, error: err.message }, 'pre-check script spawn error, running LLM anyway')
       settle({ skip: false })
     })
     child.on('close', (status) => {
+      if (!ending) untrack()
       if (settled) return
       if (status !== 0) {
         logger.warn({ task: task.name, status, stderr: stderr.trim().slice(0, 200) }, 'pre-check script exited non-zero, running LLM anyway')
@@ -1416,7 +1576,7 @@ async function attemptFireTask(
         // Resolved cleanly: forget any earlier ambiguity alert for this task so
         // that removing the pin again is not silently swallowed.
         ambiguousTargetAlerted.delete(task.name)
-        prefix = `[Utemezett feladat: ${task.name}] Az eredmenyt kuldd el ${channelDeliveryName(bound.provider)} (chat_id: ${bound.chatId}, reply tool). `
+        prefix = `[Utemezett feladat: ${task.name}] Az eredmenyt kuldd el ${channelDeliveryName(bound.provider)} (chat_id: ${bound.chatId}, reply tool). ${deliveryFallbackClause(bound.provider, agentName === MAIN_AGENT_ID)}`
       } else if (bound.ambiguousCandidates) {
         // WRONGRECIP819: 2+ possible human contacts and no explicit pin -- do
         // NOT guess. Delivery is skipped (bare tag, same as the config-gap
@@ -2718,8 +2878,19 @@ export function startScheduleRunner(): NodeJS.Timeout {
 
       // Run pre-check once per task (not per agent) since it queries shared
       // state (DB, filesystem) that does not vary by target agent.
-      const cronPc = runPreCheck(task)
+      // CRONPRECHECKSYNC1007: off the event loop, like the retry loop's, so a
+      // pre-check that calls the dashboard's own API gets its answer. The
+      // tickRunning guard holds the next tick while this one awaits.
+      const cronPc = await runPreCheckAsync(task)
       rememberPreCheckAnswer(task, now, cronPc)
+      // The await is new here, so a task disabled or deleted while its
+      // pre-check ran is left alone: no fire (the per-target re-read below
+      // would catch that too) and no 'skipped-precheck' run or last-run stamp
+      // for a task that is no longer on.
+      if (task.preCheck && !currentEnabledTask(task.name)) {
+        logger.info({ task: task.name }, 'Schedule dropped: the task was disabled or deleted while its pre-check ran')
+        continue
+      }
       if (cronPc.skip) {
         scheduleLastRun.set(task.name, now)
         persistScheduleLastRun()

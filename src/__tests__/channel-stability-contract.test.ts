@@ -96,7 +96,7 @@ describe('P2#4 — independent systemd-timer watchdog', () => {
     expect(stripBashComments(sh)).not.toMatch(/systemctl\s+(--user\s+)?restart/)
   })
   it('recovers via tmux respawn-pane of ONLY the channels session', () => {
-    expect(sh).toMatch(/respawn-pane -k -t "\$SESSION"/)
+    expect(sh).toMatch(/respawn-pane -k -t "=\$SESSION:"/)
   })
   it('runs every 5 minutes', () => {
     expect(timer).toMatch(/OnUnitActiveSec=5min/)

@@ -28,8 +28,10 @@ export async function slackTargetFor(kind: 'owner' | 'alert', setting?: SettingF
 
 /**
  * Slack first (when a target is set), then Telegram unless NOTIFY_TELEGRAM=0.
- * A failed Slack send always falls back to Telegram, so nothing is lost while
- * the Slack path is new. Exported for tests.
+ * A failed Slack send falls back to Telegram, so nothing is lost while the
+ * Slack path is new -- unless NOTIFY_TELEGRAM_FALLBACK=0: then Telegram never
+ * gets the message, and the miss is an error line instead (an owner who moved
+ * to Slack does not want alerts on the channel they left). Exported for tests.
  */
 export async function deliverWithSlack(
   kind: 'owner' | 'alert',
@@ -38,17 +40,34 @@ export async function deliverWithSlack(
   send?: typeof SendSlack,
 ): Promise<void> {
   const setting = await loadSetting()
+  const noFallback = setting('NOTIFY_TELEGRAM_FALLBACK') === '0'
   const target = await slackTargetFor(kind, setting)
-  if (!target) return telegram()
+  if (!target) {
+    if (noFallback) {
+      logger.error({ kind }, 'Ertesites ELVESZETT: nincs Slack-cel, a Telegram-tartalek ki van kapcsolva (NOTIFY_TELEGRAM_FALLBACK=0)')
+      return
+    }
+    return telegram()
+  }
   let sendFn: typeof SendSlack
   try {
     sendFn = send ?? (await import('./slack-notify.js')).sendSlackNotification
   } catch (err) {
-    // A half-finished build must not cost the notification: Telegram instead.
-    logger.warn({ err: err instanceof Error ? err.message : String(err) }, 'Slack modul nem toltheto be; Telegram tartalek')
+    const msg = err instanceof Error ? err.message : String(err)
+    // A half-finished build must not cost the notification: Telegram instead,
+    // unless the owner switched the Telegram fallback off.
+    if (noFallback) {
+      logger.error({ err: msg }, 'Ertesites ELVESZETT: a Slack modul nem toltheto be, a Telegram-tartalek ki van kapcsolva (NOTIFY_TELEGRAM_FALLBACK=0)')
+      return
+    }
+    logger.warn({ err: msg }, 'Slack modul nem toltheto be; Telegram tartalek')
     return telegram()
   }
   const r = await sendFn(target, markIfTestRun(text), { ownerUserId: setting('SLACK_OWNER_USER_ID') })
+  if (!r.ok && noFallback) {
+    logger.error({ target, error: r.error }, 'Ertesites ELVESZETT: a Slack-kuldes bukott, a Telegram-tartalek ki van kapcsolva (NOTIFY_TELEGRAM_FALLBACK=0)')
+    return
+  }
   if (!r.ok) logger.warn({ target, error: r.error }, 'Slack ertesites nem ment ki; Telegram tartalek')
   if (!r.ok || setting('NOTIFY_TELEGRAM') !== '0') await telegram()
 }

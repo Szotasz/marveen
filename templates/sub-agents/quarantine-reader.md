@@ -115,8 +115,10 @@ The operator can switch this install to open reading in the same file:
 `http`/`https` URL is fetchable, not just the listed domains. You cannot read
 that file either, so the same rule as above applies:
 
-- If the caller states that the install runs the open posture, **attempt the
-  fetch**. Do not refuse a host merely because it is unfamiliar.
+- If the caller states that the install runs the open posture, or this
+  definition carries the per-install posture block below (the dashboard renders
+  it from that file), **attempt the fetch**. Do not refuse a host merely because
+  it is unfamiliar.
 - The hook enforces the REAL posture on every call. If the install is actually
   on the default allowlist posture, the fetch is blocked and you report that
   block as the `error` field. A false claim opens nothing.

@@ -22,6 +22,7 @@ import { detectPaneState, paneShowsContextSaturation, paneShowsContextSaturation
 import { readContextTokensFromProjectDir, readActiveModelFromProjectDir, readTranscriptMtimeFromProjectDir } from './active-model.js'
 import { readContextGuardConfig } from './context-guard-store.js'
 import { localMidnightMs } from '../auto-restart.js'
+import { ownerQuestionHolds } from './open-question.js'
 import { recordRescueFailure, clearRescueFailures } from './rescue-failure-tracker.js'
 import { createAgentMessage } from '../db.js'
 import {
@@ -29,7 +30,7 @@ import {
   contextLimitForModel,
   calibrateLimit,
   handoffStaleMinutes,
-  applyDailyHandoffSweep,
+  applyDailyHandoffSkipSweep,
   DAILY_HANDOFF_REASON_PREFIX,
   IDLE_FLUSH_REASON_PREFIX,
   INITIAL_GUARD_STATE,
@@ -77,6 +78,17 @@ const guardStates = new Map<string, GuardState>()
 // which is the safe direction (a missed daily handoff costs one day of
 // context; a spurious one ends a live conversation).
 const lastDailyHandoff = new Map<string, number>()
+// Agents whose last due daily slot was skipped for an open inbound question;
+// their next due slot fires regardless (see dailyHandoffSkipSweep). In-memory
+// like lastDailyHandoff: a dashboard restart forgets it, which can allow one
+// more skip in a row.
+const dailySkipped = new Set<string>()
+
+/** Does the owner's open question hold this agent back (the /clear gate's rule)? undefined = unreadable. */
+function dailyQuestionOpen(name: string): boolean | undefined {
+  try { return ownerQuestionHolds(name) }
+  catch { return undefined }
+}
 const remoteSkipLogged = new Set<string>()
 // Agents currently in the banner-vs-measurement mismatch state. The
 // condition holds on EVERY sweep while a mis-tagged agent keeps running, so
@@ -462,9 +474,10 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
     // (handoffStaleMinutes) needs the transcript mtime on every decision path
     // that can restart, and the probe is a single stat().
     idleMs: running && needPct ? measureIdleMs(name, nowMs) : null,
-    // Seed-on-first-ARMED-sight, and forget-while-disarmed on every sweep:
-    // dailyHandoffSweep decides both, applyDailyHandoffSweep applies the record.
-    dailyHandoffDue: applyDailyHandoffSweep(lastDailyHandoff, name, cfg, running && state.phase === 'idle', localMidnightMs(nowMs), nowMs),
+    // Seed-on-first-ARMED-sight, forget-while-disarmed on every sweep, and the
+    // open-question skip: dailyHandoffSkipSweep decides all three,
+    // applyDailyHandoffSkipSweep applies the record and the skip flag.
+    dailyHandoffDue: applyDailyHandoffSkipSweep(lastDailyHandoff, dailySkipped, name, cfg, running && state.phase === 'idle', localMidnightMs(nowMs), nowMs, () => dailyQuestionOpen(name), () => logger.info({ name }, 'context-guard: daily handoff skipped today -- open inbound question (the next slot fires regardless)')),
   }
 
   const decision = decideGuard(state, inputs, cfg)
@@ -476,6 +489,7 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
   // until midnight.
   if (decision.reason.startsWith(DAILY_HANDOFF_REASON_PREFIX)) {
     lastDailyHandoff.set(name, nowMs)
+    dailySkipped.delete(name)
   }
 
   // Post-respawn grace for the main session. Making the Linux restart path work

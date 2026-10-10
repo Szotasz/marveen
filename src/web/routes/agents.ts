@@ -172,6 +172,7 @@ import { listScheduledTasks } from '../scheduled-tasks-io.js'
 import { readAgentTranscript, isTranscriptAllowed } from '../agent-transcript.js'
 import { configDirFor } from '../main-transcript-root.js'
 import { kindAllowed, FORBIDDEN_KIND } from './auth.js'
+import { isValidModelId, InvalidModelIdError } from '../../model-id.js'
 
 // Which credential kinds may read a transcript. NAMED principals only: a
 // logged-in human, or a key enrolled to that human's own device. Deliberately
@@ -763,7 +764,8 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
         { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
         { id: 'claude-fable-5', label: 'Fable 5' },
         { id: 'claude-opus-4-8[1m]', label: 'Opus 4.8 (1M kontextus)' },
-        { id: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5 (leggyorsabb)' },
+        { id: 'claude-haiku-5-5', label: 'Haiku 5.5 (legújabb Haiku, leggyorsabb)', minCli: CLAUDE_MODEL_MIN_CLI['claude-haiku-5-5'].minCli },
+        { id: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5' },
       ],
       deepseek: hasDeepseek
         ? [
@@ -1095,6 +1097,10 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const profileId = (rawProfile || 'default').trim() || 'default'
 
     if (!name) { json(res, { error: 'Name is required' }, 400); return true }
+    // SECSZIVEK1007: the model id is checked BEFORE anything is created;
+    // writeAgentModel used to be the first check, after scaffoldAgentDir, and a
+    // malformed id left a half-created agent dir behind.
+    if (!isValidModelId(model)) { json(res, { error: new InvalidModelIdError(model).message }, 400); return true }
     // PICKERCLIKAPU923: the API is a writer too, not only the picker. A fresh
     // probe, so a CLI upgraded a minute ago is not refused on a stale cache.
     const cliGate = await refuseIfCliCannotLaunch(model)
@@ -1391,14 +1397,28 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   const testMatch = matchChannelRoute(path, '/test')
   if (testMatch && method === 'POST') {
     const [name, provider] = testMatch
-    if (!existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
-    const stateDir = channelStateDir(provider, agentDir(name))
+    // SLACKMAINTEST1007: the main agent lives at the install root, not under
+    // agents/<name>/, and its channel tokens (primary and co-listen alike) are
+    // in the MAIN channel state dir, as the setup route below and the
+    // schedule-runner's resolveBoundChannel read them. Reading agents/<main>/
+    // here answered 404 "not configured", so the dashboard's Teszt button and
+    // its scope warning (SLACKSCOPEJELZ1007) never worked for the main agent.
+    const isMain = name === MAIN_AGENT_ID
+    if (!isMain && !existsSync(agentDir(name))) { json(res, { error: 'Agent not found' }, 404); return true }
+    const stateDir = isMain ? channelStateDir(provider) : channelStateDir(provider, agentDir(name))
     const envPath = join(stateDir, '.env')
-    const token = readChannelToken(provider, envPath) || (provider === 'telegram' ? parseTelegramToken(name) : null)
+    const token = readChannelToken(provider, envPath) || (!isMain && provider === 'telegram' ? parseTelegramToken(name) : null)
     if (!token) { json(res, { error: `${provider} not configured for this agent` }, 404); return true }
     const channelProvider = getProvider(provider)
     const result = await channelProvider.validateToken(token)
-    if (result.ok) { json(res, { ok: true, botName: result.botName }); return true }
+    if (result.ok) {
+      json(res, {
+        ok: true,
+        botName: result.botName,
+        ...(result.missingScopes ? { scopes: result.scopes, missingScopes: result.missingScopes } : {}),
+      })
+      return true
+    }
     json(res, { error: result.error }, 400)
     return true
   }

@@ -24,6 +24,7 @@ import { runLogRotationSweep, LOG_ROTATION_SWEEP_MS } from './web/log-rotation.j
 import { sweepScheduledRunSnapshots } from './web/scheduled-run-snapshot.js'
 import { renameSharedCredentialsIfSafe, fleetTokenBootPass } from './web/claude-credentials-guard.js'
 import { startWebServer } from './web.js'
+import { endAllDetachedGroups } from './web/detached-groups.js'
 import { logger } from './logger.js'
 import { startInviteMonitor, stopInviteMonitor } from './web/channel-invites.js'
 import { ensureDiscordChannelGroup } from './web/discord-group-bootstrap.js'
@@ -414,6 +415,10 @@ const shutdown = (): void => {
   try {
     shuttingDown = true
     logger.info('Leallitas...')
+    // DETACHEDSHUTDOWN1007: the command-task and pre-check groups run DETACHED
+    // (outside our process group), so neither launchd nor our own exit ends
+    // them, and their timeout timers die with us. End them first.
+    try { endAllDetachedGroups('dashboard shutdown') } catch (err) { logger.warn({ err }, 'endAllDetachedGroups threw during shutdown') }
     if (heartbeatStarted) {
       try { stopHeartbeat() } catch (err) { logger.warn({ err }, 'stopHeartbeat threw during shutdown') }
     }

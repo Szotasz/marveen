@@ -195,19 +195,28 @@ UPDATE_PIDFILE_TMP="$UPDATE_PIDFILE.$$.tmp"
 # leaked; leave the dashboard's pidfile alone so the lock does not
 # disappear on a write error.
 trap 'rc=$?; write_result "$rc"; rm -f "$UPDATE_PIDFILE_TMP"' EXIT
+# Wall-clock epoch in ms for the pidfile's second line. date +%s%3N is
+# GNU-only: on BSD (macOS) %3N is no conversion at all, and uutils
+# coreutils (the Rust date, 0.8.0) ignores the width and prints the full
+# nanoseconds, 19 digits, which checkNoConcurrentUpdate read as a start
+# far in the future, so a stale pidfile never aged out (card 48612d05).
+# Only an exactly 13-digit value is taken as ms (good until the year
+# 2286); anything else falls back to seconds * 1000. One-second
+# granularity is plenty for an hour-level age cutoff, and the fallback
+# never prints an empty line, which the helper would read as a legacy
+# pidfile without age info (alive-probe only, no age cutoff).
+update_pidfile_epoch_ms() {
+  local ms
+  ms=$(date +%s%3N 2>/dev/null) || ms=""
+  if [[ "$ms" =~ ^[0-9]{13}$ ]]; then
+    printf '%s\n' "$ms"
+  else
+    printf '%s\n' "$(( $(date +%s) * 1000 ))"
+  fi
+}
 {
   echo "$$"
-  # Portable wall-clock epoch in ms. date +%s%3N is GNU-only; on BSD
-  # (macOS) we fall back to seconds * 1000. One-second granularity is
-  # plenty for an hour-level age cutoff.
-  # Require one-or-more digits; `*` would accept an empty line and
-  # write "<pid>\n\n", which the helper would read as a legacy pidfile
-  # without age info (alive-probe only, no age cutoff).
-  if date +%s%3N 2>/dev/null | grep -q '^[0-9][0-9]*$'; then
-    date +%s%3N
-  else
-    echo $(( $(date +%s) * 1000 ))
-  fi
+  update_pidfile_epoch_ms
 } > "$UPDATE_PIDFILE_TMP"
 mv "$UPDATE_PIDFILE_TMP" "$UPDATE_PIDFILE"
 # Only after mv succeeds do we own the lock; extend the trap to remove
@@ -951,6 +960,22 @@ strip_legacy_notifier_telegram_env() {
   return 0
 }
 
+# Shell rc secret scrub (Linux only, SECSZIVEKKIADAS1008). Installers before
+# #1785 wrote the Claude token / API key as `export ...=` lines into ~/.bashrc
+# and ~/.zshrc; nothing on the update path removed them, and a re-run of the
+# installer never reached its own cleanup on an install that already has auth.
+# The functions live in scripts/lib/rc-secrets.sh (identical to the installer's
+# copy, kept equal by a test). Idempotent: no export line, no change. Like every
+# repair here it lands on the update.sh run AFTER the one that pulls it (no
+# re-exec). A failure never stops the update: it is reported, and retried next run.
+scrub_rc_secrets() {
+  [ "$(uname -s 2>/dev/null)" = "Linux" ] || return 0
+  [ -f "$INSTALL_DIR/scripts/lib/rc-secrets.sh" ] || return 0
+  ( . "$INSTALL_DIR/scripts/lib/rc-secrets.sh" && scrub_secret_exports_from_rc ) \
+    || echo -e "  ${ORANGE}FIGYELEM:${NC} a shell rc fajlok titok-takaritasa nem sikerult, a kovetkezo frissites ujraprobalja."
+  return 0
+}
+
 run_unit_maintenance() {
   repair_morning_timer "$@"
   migrate_channels_restart "$@"
@@ -960,6 +985,7 @@ run_unit_maintenance() {
   install_main_inbox_observer_unit "$@"
   strip_legacy_notifier_telegram_env "$@"
   park_morning_timer "$@"
+  scrub_rc_secrets
   return 0
 }
 run_unit_maintenance
