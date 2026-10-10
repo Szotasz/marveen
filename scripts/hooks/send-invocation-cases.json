@@ -685,6 +685,26 @@
       "name": "#1853 control: the Graph module loaded only to list messages",
       "cmd": "npx tsx -e \"import { listMessages } from './src/graph-mail.ts'; console.log(await listMessages({top: 5}))\"",
       "expected": false
+    },
+    {
+      "name": "#1855: a heredoc-fed python running send.py as an argv item",
+      "cmd": "python3 - <<'PY'\nimport subprocess\nsubprocess.run(['python3', 'scripts/support-mail/send.py', '--to', 'a@b.hu'])\nPY",
+      "expected": true
+    },
+    {
+      "name": "#1855: a heredoc-fed python calling sendmail through os.system",
+      "cmd": "python3 - <<'PY'\nimport os\nos.system('sendmail -t < /tmp/m.eml')\nPY",
+      "expected": true
+    },
+    {
+      "name": "#1855 control: a heredoc report whose prose holds an uppercase SENDMAIL card id, posted via subprocess",
+      "cmd": "python3 - <<'PY'\nimport subprocess, json\nt = 'Hourly: card FIXSENDMAIL1009 still open, the sendmail wrapper is fine'\nsubprocess.run(['curl', '-s', 'http://localhost:3420/api/messages', '-d', json.dumps({'content': t})])\nPY",
+      "expected": false
+    },
+    {
+      "name": "#1855 control: an uppercase SENDMAIL word that starts a quoted report line, next to subprocess",
+      "cmd": "python3 - <<'PY'\nimport subprocess\nsubprocess.run(['echo', 'SENDMAIL relay check: all green'])\nPY",
+      "expected": false
     }
   ]
 }

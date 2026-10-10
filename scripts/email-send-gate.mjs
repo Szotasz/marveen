@@ -293,6 +293,15 @@ export function buildWrapperDepthMsg() {
 // Issue #1853, the heredoc form: the segmenter drops heredoc BODIES, but when the
 // command that opens one is an interpreter (`python3 - <<'PY'`, `node <<EOF`) the body
 // IS the program. Mirrors _heredoc_program_sends in hooks/outgoing-copy-gate.py.
+// NARROWED (Geri's #1855 review): inside a heredoc body the exec + sender-literal half takes
+// the literal only as a lowercase, QUOTED command word (an argv item or an os.system command),
+// so a card id like SENDMAIL... in a report's prose no longer matches. Mirrors
+// _HEREDOC_SENDER_ARGV / _heredoc_body_sends in hooks/outgoing-copy-gate.py.
+// NOT COVERED, named: a program the classifier never reads -- `python3 /tmp/x.py`,
+// `python3 < /tmp/x.py`, `cat /tmp/x.py | python3 -`, `python3 -c "exec(open('/tmp/x.py').read())"`.
+const HEREDOC_SENDER_ARGV = /['"](?:[^'"\s]*\/)?(?:sendmail|msmtp|swaks|send\.py)(?=['"\s])/
+const heredocBodySends = (body) =>
+  CODE_SEND.test(body) || CODE_SEND_MODULE.test(body) || (CODE_EXECISH.test(body) && HEREDOC_SENDER_ARGV.test(body))
 const HEREDOC_INTERP = /(?:^|[\s;&|(])(?:\S*\/)?(python3?(?:\.\d+)?|node|tsx|ts-node|deno|bun)\b[^\n<]*$/i
 function heredocProgramSends(cmd) {
   for (const m of cmd.matchAll(HEREDOC_RE)) {
@@ -301,7 +310,7 @@ function heredocProgramSends(cmd) {
     if (!HEREDOC_INTERP.test(head)) continue
     const bodyStart = m.index + m[1].length + 1
     const body = cmd.slice(bodyStart, m.index + m[0].length - m[2].length)
-    if (codeStringSends(body)) return true
+    if (heredocBodySends(body)) return true
   }
   return false
 }

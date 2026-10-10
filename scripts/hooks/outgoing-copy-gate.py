@@ -442,6 +442,26 @@ def wrapper_depth_hit(cmd: str) -> bool:
 # unseen. The opening line is read up to its `<<`; when its last command word there
 # is python/node-ish, the body is judged with the -c / -e code rule. A heuristic
 # of the same naive class as the -c rule (see the boundary note above).
+# NARROWED (Geri's #1855 review, a 14-day replay: 1 real catch, 17 false): inside a heredoc
+# body the program is mostly PROSE that a script writes (an hourly report whose text held a
+# card id with SENDMAIL in it, next to `subprocess`). So the exec + sender-literal half of the
+# code rule takes the literal here only as a lowercase, QUOTED command word: a string that
+# starts with sendmail/msmtp/swaks or ends a path in send.py, as an argv item or an os.system
+# command is written. The real catch (`['python3', '.../send.py', '--to', ...]`) keeps it.
+# Development heredocs that patch or test the gates, and mention `import send` in a string,
+# still hit the module rule: that is the price of a naive rule, accepted.
+# NOT COVERED, named so nobody counts them as covered: a program the classifier never reads --
+# `python3 /tmp/x.py`, `python3 < /tmp/x.py`, `cat /tmp/x.py | python3 -`, and
+# `python3 -c "exec(open('/tmp/x.py').read())"`.
+_HEREDOC_SENDER_ARGV = re.compile(r"""['"](?:[^'"\s]*/)?(?:sendmail|msmtp|swaks|send\.py)(?=['"\s])""")
+
+
+def _heredoc_body_sends(body: str) -> bool:
+    if _CODE_SEND.search(body) or _CODE_SEND_MODULE.search(body):
+        return True
+    return bool(_CODE_EXECISH.search(body) and _HEREDOC_SENDER_ARGV.search(body))
+
+
 _HEREDOC_INTERP = re.compile(
     r"(?:^|[\s;&|(])(?:\S*/)?(python3?(?:\.\d+)?|node|tsx|ts-node|deno|bun)\b[^\n<]*$", re.I
 )
@@ -454,7 +474,7 @@ def _heredoc_program_sends(cmd: str) -> bool:
         if not _HEREDOC_INTERP.search(head):
             continue
         body = cmd[m.end(1) + 1:m.end() - len(m.group(2))]
-        if _code_string_sends(body):
+        if _heredoc_body_sends(body):
             return True
     return False
 
