@@ -95,6 +95,26 @@ export type ConcurrencyResult =
 // and intervene.
 export const MAX_PIDFILE_AGE_MS = 60 * 60 * 1000
 
+// How far in the future a pidfile's start may lie before it counts as
+// corrupt. The writer and the reader share one clock, so only a step of
+// that clock (an NTP correction) can put a real start ahead of now; five
+// minutes covers it.
+export const FUTURE_START_TOLERANCE_MS = 5 * 60 * 1000
+
+// The pidfile's start epoch in ms. update.sh writes ms (13 digits), but a
+// `date +%s%3N` that ignores the field width (uutils coreutils 0.8.0 does:
+// 19 digits, measured on a fleet host; card 48612d05) writes nanoseconds,
+// and a microsecond writer would write 16 digits. Normalise by the digit
+// count, so such a pidfile still ages out, and an update that is really
+// running under an older update.sh keeps its lock across a dashboard
+// restart mid-run. Slicing the digits keeps the value exact past 2^53.
+export function pidfileStartEpochMs(digits: string): number {
+  const d = digits.replace(/^0+(?=\d)/, '')
+  if (d.length >= 18) return Number.parseInt(d.slice(0, -6), 10)
+  if (d.length >= 15) return Number.parseInt(d.slice(0, -3), 10)
+  return Number.parseInt(d, 10)
+}
+
 // Classify the errno from the retry writeFileSync that follows a
 // stale-pidfile unlink. Only EEXIST means a parallel caller genuinely
 // raced us to the lock; any other code is a real write failure
@@ -123,12 +143,16 @@ export function checkNoConcurrentUpdate(pf: PidfileRunner): ConcurrencyResult {
   // If the optional second line is present and older than the max
   // age, treat as stale regardless of kill(pid, 0). Missing second
   // line means a legacy pidfile with no age info: fall through to
-  // the alive probe alone.
+  // the alive probe alone. The start is normalised to ms first
+  // (pidfileStartEpochMs), and a start still in the future after that
+  // cannot be a real update's: a corrupt epoch must not hold the lock
+  // forever behind a recycled pid, so it counts as stale too.
   if (match[2]) {
-    const startEpoch = Number.parseInt(match[2], 10)
+    const startEpoch = pidfileStartEpochMs(match[2])
     if (Number.isFinite(startEpoch) && startEpoch > 0) {
       const age = pf.now() - startEpoch
       if (age > MAX_PIDFILE_AGE_MS) return { ok: true }
+      if (age < -FUTURE_START_TOLERANCE_MS) return { ok: true }
     }
   }
   if (!pf.isProcessAlive(pid)) return { ok: true }
