@@ -2341,8 +2341,8 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     }
     // Optional { "fresh": true } body -> no `--continue` (see /start note).
     // RESTARTWAKE927: a --continue restart wakes the agent once it is up; a
-    // caller that wakes it itself sends { "wake": false } (the key-rotation
-    // automat does). See restart-wake.ts.
+    // caller that wakes the agent itself can send { "wake": false } (no caller
+    // in this repository does today). See restart-wake.ts.
     let restartBody = ''
     try { restartBody = (await readBody(req)).toString() } catch {}
     const result = await restartAgentProcess(name, restartOptsFromBody(restartBody))

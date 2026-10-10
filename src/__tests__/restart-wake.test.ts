@@ -138,7 +138,7 @@ describe('restartOptsFromBody: the /restart route wakes a --continue restart unl
     expect(restartOptsFromBody('')).toEqual({ fresh: false, wake: { reason: 'api-restart' } })
     expect(restartOptsFromBody('{}')).toEqual({ fresh: false, wake: { reason: 'api-restart' } })
   })
-  it('{"wake": false} turns the wake off (the key-rotation automat wakes the agent itself)', () => {
+  it('{"wake": false} turns the wake off (a caller that wakes the agent itself)', () => {
     expect(restartOptsFromBody('{"wake": false}')).toEqual({ fresh: false })
   })
   it('a fresh restart never wakes, even when asked', () => {

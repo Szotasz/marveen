@@ -19,8 +19,9 @@
 // wake is a system directive (GUARDHITELES903): it asks the agent to act, so it
 // travels with a verifiable queue anchor, and it waits for an idle pane and
 // gives up on a busy one -- a pane that is already working was woken by
-// someone else (the key-rotation automat sends its own wake and calls the
-// route with {"wake": false}).
+// someone else. No caller in this repository sends {"wake": false} today; the
+// switch is there for an external script that restarts an agent and then types
+// its own instruction, so it does not get a second one ~25 s later.
 import { logger } from '../logger.js'
 
 /** Grace for the restarted session's boot + SessionStart hooks, as the restart gate's WAKE_DELAY_MS. */
