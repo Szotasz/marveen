@@ -1646,13 +1646,20 @@ export function saveMemory(
   chatId: string,
   content: string,
   sector: 'semantic' | 'episodic',
-  topicKey?: string
+  topicKey?: string,
+  // Owner of the row. The column default is the literal 'marveen', but every
+  // per-agent reader filters on `agent_id = ?`, so on an install whose main
+  // agent id is anything else a row that relied on the default was invisible
+  // to that agent's views and search.
+  agentId: string = MAIN_AGENT_ID
 ): void {
   const now = Math.floor(Date.now() / 1000)
   const info = db.prepare(
-    'INSERT INTO memories (chat_id, topic_key, content, sector, salience, created_at, accessed_at) VALUES (?, ?, ?, ?, 1.0, ?, ?)'
-  ).run(chatId, topicKey ?? null, content, sector, now, now)
+    'INSERT INTO memories (chat_id, topic_key, content, sector, salience, created_at, accessed_at, agent_id) VALUES (?, ?, ?, ?, 1.0, ?, ?, ?)'
+  ).run(chatId, topicKey ?? null, content, sector, now, now, agentId)
   const id = Number(info.lastInsertRowid)
+  // The row now lands in the owner's list, so a cached copy of that list is stale.
+  memoryCacheInvalidate(agentId)
 
   // Fire-and-forget embedding, same as saveAgentMemory. Without this the rows
   // written through THIS path stayed unvectorised for good: the nightly daily
@@ -2441,6 +2448,15 @@ export interface KanbanCard {
   // is woken (kanban -> agent dispatch). NULL = never dispatched; the once-only
   // guard so re-dragging a card does not re-prompt the agent.
   dispatched_at: number | null
+  // Seconds this card has spent SITTING IN in_progress, summed over every stay
+  // there (kanban_card_events), plus the open stay up to now when it is in
+  // progress right now. This is wall-clock time in the column, NOT hours of
+  // work: nobody clocks in and out, so a card left in the column overnight
+  // counts the night. undefined = the card has no event rows at all (it
+  // predates the event table, or it has never moved), which is different from
+  // 0 and must stay distinguishable -- 0 would claim a measurement we do not
+  // have. Every reader must carry the distinction into what it renders.
+  active_seconds?: number
 }
 
 // A card as referenced FROM another card (blocker links). Deliberately narrow:
@@ -2509,12 +2525,19 @@ export function listKanbanCards(
   // assignees are typically lowercase (`marveen`); an exact match found neither spelling.
   if (opts.agent) { feltetelek.push('c.assignee = ? COLLATE NOCASE'); ertekek.push(opts.agent) }
   const where = feltetelek.length ? `WHERE ${feltetelek.join(' AND ')} ` : ''
-  return db
+  const cards = db
     .prepare(`SELECT c.rowid AS seq, c.*,
                      COALESCE((SELECT MAX(e.created_at) FROM kanban_card_events e
                                WHERE e.card_id = c.id), c.created_at) AS last_status_at
               FROM kanban_cards c ${where}ORDER BY c.sort_order ASC`)
     .all(...ertekek) as KanbanCard[]
+  // In-progress dwell time per card (see sumInProgressSeconds below).
+  const active = sumInProgressSeconds(cards.map((c) => c.id))
+  for (const c of cards) {
+    const v = active.get(c.id)
+    if (v !== undefined) c.active_seconds = v
+  }
+  return cards
 }
 
 // Whether any card -- archived included -- is assigned to `name`, case-insensitively.
@@ -2522,6 +2545,59 @@ export function listKanbanCards(
 // external contributors get cards too, and they must be filterable.
 export function kanbanAssigneeExists(name: string): boolean {
   return db.prepare('SELECT 1 FROM kanban_cards WHERE assignee = ? COLLATE NOCASE LIMIT 1').get(name) !== undefined
+}
+
+// How long each card has stood in in_progress, summed over every separate stay.
+//
+// Read off kanban_card_events, which records from_status -> to_status per move.
+// A stay opens on any event whose to_status is 'in_progress' and closes on the
+// next event for that card; a card sitting in the column right now has an open
+// stay that runs to `now`.
+//
+// WHAT THIS NUMBER IS NOT. It is wall-clock time in the column, not time worked.
+// An agent that picks a card up at 09:00 and hands it back at 17:00 having spent
+// twenty minutes on it scores eight hours here. We have no per-card clock-in, so
+// this is the honest upper bound and nothing better is available today; every
+// place that shows it says so.
+//
+// Cards with no event rows return NO entry rather than 0. The event table starts
+// mid-history, so "never moved, or moved before we logged moves" and "moved, and
+// spent zero time in progress" are genuinely different, and collapsing them into
+// 0 would dress an absent measurement up as a measured zero.
+export function sumInProgressSeconds(cardIds: string[]): Map<string, number> {
+  const out = new Map<string, number>()
+  if (cardIds.length === 0) return out
+  const rows = db
+    .prepare('SELECT card_id, to_status, created_at FROM kanban_card_events ORDER BY card_id, created_at ASC, id ASC')
+    .all() as { card_id: string; to_status: string; created_at: number }[]
+  const wanted = new Set(cardIds)
+  const now = Math.floor(Date.now() / 1000)
+  let openedAt: number | null = null
+  let current = ''
+  const flush = () => {
+    // An open stay at the end of a card's event list is still running: the card
+    // is in in_progress now, so it is charged up to the present moment.
+    if (current && wanted.has(current) && openedAt !== null) {
+      out.set(current, (out.get(current) ?? 0) + Math.max(0, now - openedAt))
+    }
+    openedAt = null
+  }
+  for (const r of rows) {
+    if (r.card_id !== current) {
+      flush()
+      current = r.card_id
+      // A card seen in the event table gets an entry even if it never entered
+      // in_progress: that is a measured zero, unlike a card with no rows at all.
+      if (wanted.has(current) && !out.has(current)) out.set(current, 0)
+    }
+    if (openedAt !== null) {
+      if (wanted.has(current)) out.set(current, (out.get(current) ?? 0) + Math.max(0, r.created_at - openedAt))
+      openedAt = null
+    }
+    if (r.to_status === 'in_progress') openedAt = r.created_at
+  }
+  flush()
+  return out
 }
 
 export function getKanbanCard(id: string): KanbanCard | undefined {
@@ -2709,6 +2785,17 @@ export function createKanbanCard(card: {
     card.assignee ?? null, card.priority ?? 'normal',
     card.project ?? null, card.parent_id ?? null, normaliseCardDate(card.due_date), normaliseCardDate(card.start_date), sortOrder, now, now
   )
+  // A card BORN in a status other than 'planned' gets its opening event row
+  // here, because nothing else will ever write one for it: kanban_card_events
+  // is only appended on a MOVE, so a card created straight into in_progress had
+  // no history at all and its time-in-progress read "not measured" forever.
+  // from_status is NULL, which is the honest value -- the card came into being
+  // here, it did not move from somewhere.
+  if (status !== 'planned') {
+    db.prepare(
+      'INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at) VALUES (?, ?, ?, ?, ?)'
+    ).run(card.id, null, status, card.assignee ?? null, now)
+  }
   // Filing a new subcard is work on the thread.
   touchAncestorChain(card.parent_id, now, card.id)
 }
@@ -2734,6 +2821,18 @@ export const KANBAN_WRITABLE_FIELDS = [
 // it" could not be answered: kanban_card_events holds status transitions only,
 // and updated_at moves on any write. Status keeps its own table.
 export const KANBAN_AUDITED_FIELDS = ['due_date', 'assignee', 'priority'] as const
+
+// dispatched_at guards ONE in_progress spell (one activation -> one wake-up
+// message), it is not a permanent tombstone. The rule every status path shares
+// -- moveKanbanCard, updateKanbanCard and scripts/kartya-es-ertesites.py (whose
+// test mirrors this function): a write that leaves the card anywhere but
+// in_progress clears it, whatever the previous status was, so the next pull to
+// in_progress wakes the assignee again and a row already stuck this way heals.
+// Only clearing is shared: the wake-up itself (fireKanbanDispatch) stays on the
+// /move route, so a PUT or the script never sends one.
+export function kanbanWriteClearsDispatch(nextStatus: string | null | undefined): boolean {
+  return nextStatus !== 'in_progress'
+}
 
 export function updateKanbanCard(
   id: string,
@@ -2768,6 +2867,12 @@ export function updateKanbanCard(
       `UPDATE kanban_cards SET title=?, description=?, status=?, assignee=?, priority=?, project=?, parent_id=?, due_date=?, start_date=?, sort_order=?, updated_at=?, archived_at=?
        WHERE id=?`
     ).run(f.title, f.description, f.status, f.assignee, f.priority, f.project, f.parent_id, f.due_date, f.start_date ?? null, f.sort_order, f.updated_at, f.archived_at, id).changes > 0
+    // Same dispatched_at rule as moveKanbanCard (kanbanWriteClearsDispatch). Before,
+    // a card the PUT took out of in_progress kept its stamp, and the next /move to
+    // in_progress woke nobody. The PUT only clears: it never dispatches.
+    if (changed && kanbanWriteClearsDispatch(f.status)) {
+      db.prepare('UPDATE kanban_cards SET dispatched_at=NULL WHERE id=?').run(id)
+    }
     if (changed) {
       touchAncestorChain(f.parent_id, now, id)
       // Re-parenting is activity on BOTH threads: the old one lost a card, the new one gained it.
@@ -2822,21 +2927,18 @@ export function moveKanbanCard(id: string, status: KanbanCard['status'], sortOrd
   const row = db.prepare('SELECT status, parent_id FROM kanban_cards WHERE id=?').get(id) as
     { status: string; parent_id: string | null } | undefined
   const prev = row?.status
-  // dispatched_at guards ONE in_progress spell (one activation -> one wake-up
-  // message), it is not a permanent tombstone. Nothing used to clear it, so a
-  // card pulled to in_progress and put BACK burned its dispatch forever: the
-  // board showed it alive while the next pull woke nobody. Clearing it on
-  // every move that does not land in in_progress re-arms the next activation --
-  // and heals a row already stuck this way, since the clear does not depend on
-  // the previous status.
+  // dispatched_at: nothing used to clear it, so a card pulled to in_progress and
+  // put BACK burned its dispatch forever: the board showed it alive while the
+  // next pull woke nobody. The clear follows kanbanWriteClearsDispatch, the rule
+  // the whole-card PUT and the card script share.
   // ONE TRANSACTION for the move and the row it owes, as in updateKanbanCard (card f6fba9ec, X16): the UPDATE, the
   // ancestor stamps and the status event either all happen or none does, so a row insert that throws cannot leave a
   // card moved with no row saying who moved it.
   return db.transaction((): boolean => {
     const changed = db.prepare(
-      status === 'in_progress'
-        ? 'UPDATE kanban_cards SET status=?, sort_order=?, updated_at=? WHERE id=?'
-        : 'UPDATE kanban_cards SET status=?, sort_order=?, updated_at=?, dispatched_at=NULL WHERE id=?'
+      kanbanWriteClearsDispatch(status)
+        ? 'UPDATE kanban_cards SET status=?, sort_order=?, updated_at=?, dispatched_at=NULL WHERE id=?'
+        : 'UPDATE kanban_cards SET status=?, sort_order=?, updated_at=? WHERE id=?'
     ).run(status, sortOrder, now, id).changes > 0
     if (changed) touchAncestorChain(row?.parent_id, now, id)
     if (changed && prev !== undefined && prev !== status) {

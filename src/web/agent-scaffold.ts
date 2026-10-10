@@ -3480,7 +3480,7 @@ MINDIG az install időzónáját használd: **${APP_TZ}** (a teljes telepítés 
 - **Channel message \`ts\`**: UTC-ben jön (postfix \`Z\`), átkonvertálni ${APP_TZ}-re
 - **Google Calendar list_events \`dateTime\`**: már lokál ISO 8601 offszettel, OK
 - **SQLite \`unixepoch()\`**: UTC, humán-megjelenítéshez \`localtime\` modifier kell
-- **Cron expressions** (scheduled-tasks + fleet-timer): a scheduler ${APP_TZ} időben értelmezi (SCHEDULER_TZ); a fleet-timer \`once --at\` = ${APP_TZ} fali óra
+- **Cron expressions** (scheduled-tasks): a scheduler ${APP_TZ} időben értelmezi (SCHEDULER_TZ)
 
 Heartbeat-eknél és minden időpontot kezelő feladatnál kötelező: \`date\` Bash parancs az elemzés ELŐTT.
 

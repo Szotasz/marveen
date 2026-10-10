@@ -639,7 +639,10 @@ function renderStaticI18n() {
       const nodes = [...el.childNodes]
       for (let i = nodes.length - 1; i >= 0; i--) {
         if (nodes[i].nodeType === 3 && nodes[i].textContent.trim()) {
-          nodes[i].textContent = ' ' + val
+          // Keep the node's trailing whitespace: it separates the label text from a
+          // following inline child such as the "(optional)" hint.
+          const trailing = nodes[i].textContent.match(/\s*$/)[0]
+          nodes[i].textContent = ' ' + val + trailing
           break
         }
       }
@@ -1187,7 +1190,8 @@ function renderKanbanSearchHint() {
   if (!hintEl) return
   if (!kanbanSearchQuery.trim()) { hintEl.textContent = ''; return }
   const matches = kanbanCards.filter((c) => kanbanCardMatchesSearch(c))
-  const hiddenCount = matches.filter((c) => kanbanHiddenColumns.has(c.status)).length
+  // An ongoing card stays visible in the strip even when its status column is hidden.
+  const hiddenCount = matches.filter((c) => kanbanHiddenColumns.has(c.status) && !kanbanIsOngoing(c)).length
   if (matches.length === 0) {
     hintEl.textContent = t('kanban.filter.search_none')
   } else if (hiddenCount === matches.length) {
@@ -2245,6 +2249,24 @@ async function renderCardBlockersSection(card) {
 }
 
 // === Card detail ===
+// Card.active_seconds -> human text for the card detail panel.
+//
+// undefined means the card has no status-change history at all, which is NOT
+// the same as zero and must not render as "0m" -- the event table starts
+// mid-history, so an old card that never moved since would otherwise claim a
+// measured zero it has not got.
+function formatActiveTime(sec) {
+  if (sec === undefined || sec === null) return null
+  const s = Math.max(0, Math.floor(sec))
+  const d = Math.floor(s / 86400)
+  const h = Math.floor((s % 86400) / 3600)
+  const m = Math.floor((s % 3600) / 60)
+  if (s === 0) return t('kanban.active.zero')
+  if (d >= 1) return t('kanban.active.d_h', { d, h })
+  if (h >= 1) return t('kanban.active.h_m', { h, m })
+  return t('kanban.active.m', { m })
+}
+
 async function showCardDetail(card) {
   // Running number (#N) in the title bar, plus the stable hex id in the meta.
   const seqPrefix = card.seq != null ? `#${card.seq} ` : ''
@@ -2290,6 +2312,10 @@ async function showCardDetail(card) {
     <div class="meta-item">
       <span class="meta-label">${t('kanban.meta.deadline')}</span>
       <span class="meta-value">${card.due_date ? new Date(card.due_date * 1000).toLocaleDateString(_lang === 'en' ? 'en-US' : 'hu-HU') : t('kanban.meta.none')}</span>
+    </div>
+    <div class="meta-item">
+      <span class="meta-label">${t('kanban.meta.active')}</span>
+      <span class="meta-value" title="${escapeHtml(formatActiveTime(card.active_seconds) ? t('kanban.active.tooltip') : t('kanban.active.tooltip_none'))}">${escapeHtml(formatActiveTime(card.active_seconds) ?? t('kanban.active.none'))}</span>
     </div>
   `
 
