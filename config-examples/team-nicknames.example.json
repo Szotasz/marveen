@@ -1,0 +1,9 @@
+{
+  "_doc": "Character nicknames shown next to each person on the kanban board. Copy to store/team-nicknames.json and edit. store/ is gitignored, so a fleet's own names stay on the machine. The key is the assignee name as the kanban knows it: the owner's full name, the bot name, or an agent id. Matching is case-insensitive. A missing file, a missing key, or a malformed file all mean the same thing: no nickname, and the board shows the plain name. The flat form (no `nicknames` wrapper) is accepted too.",
+  "nicknames": {
+    "Jane Doe": "Grand Designer",
+    "Assistant": "Gate Warden",
+    "researcher": "Lore Seeker",
+    "developer": "Codesmith"
+  }
+}
