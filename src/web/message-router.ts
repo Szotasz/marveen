@@ -364,7 +364,7 @@ export function shouldNoticeUrgentHold(hold: UrgentPaneHold, prev: { key: string
 }
 
 export function formatUrgentHoldNotice(msg: Pick<AgentMessage, 'id' | 'from_agent' | 'to_agent'>, session: string, hold: UrgentPaneHold, label: string): string {
-  const head = `[urgent-held] A ${label} row (#${msg.id} from ${msg.from_agent}) to '${msg.to_agent}' (tmux ${session}) is waiting and was NOT typed:`
+  const head = `[urgent-held] ${label} row #${msg.id} (from ${msg.from_agent}) to '${msg.to_agent}' (tmux ${session}) is waiting and was NOT typed:`
   const keep = 'The row stays pending and goes out on the first tick after the pane is free.'
   if (hold.kind === 'permission-prompt') {
     const ask = hold.ask ? ` It asks: ${hold.ask.title} -- ${hold.ask.reason}` : ''
