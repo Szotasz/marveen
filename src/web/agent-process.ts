@@ -3471,12 +3471,31 @@ export function computeTmuxChunk(
 // still reports stuck, send up to SUBMIT_RETRY_MAX_ATTEMPTS extra
 // Enters. The retry budget bounds the loop so a pathologically stuck
 // pane gives up rather than spinning.
+export interface SendPromptOpts {
+  waitForIdle?: boolean
+  onBusyTimeout?: 'send' | 'abort'
+  idleTimeoutMs?: number
+  lockMode?: SendLockMode
+  onBusySend?: () => void
+  onEmitStart?: () => void
+}
+/** Card 71263d15 (C): returns a reason to send nothing (see emitToPane), or null to go ahead. */
+export type SendEmitGuard = (pane: string | null) => string | null
+
+// Two signatures so only a caller that passes an emitGuard has to handle 'aborted-guard'. The
+// plain one is LAST on purpose: Parameters<>/ReturnType<> (system-directive.ts) read the last one.
+export function sendPromptToSession(
+  session: string, text: string, host: string | null, opts: SendPromptOpts & { emitGuard: SendEmitGuard },
+): Promise<'sent' | 'aborted-busy' | 'skipped-locked' | 'aborted-guard'>
+export function sendPromptToSession(
+  session: string, text: string, host?: string | null, opts?: SendPromptOpts,
+): Promise<'sent' | 'aborted-busy' | 'skipped-locked'>
 export async function sendPromptToSession(
   session: string,
   text: string,
   host: string | null = null,
-  opts: { waitForIdle?: boolean; onBusyTimeout?: 'send' | 'abort'; idleTimeoutMs?: number; lockMode?: SendLockMode; onBusySend?: () => void; onEmitStart?: () => void } = {},
-): Promise<'sent' | 'aborted-busy' | 'skipped-locked'> {
+  opts: SendPromptOpts & { emitGuard?: SendEmitGuard } = {},
+): Promise<'sent' | 'aborted-busy' | 'skipped-locked' | 'aborted-guard'> {
   const lockMode: SendLockMode = opts.lockMode ?? 'deliver'
   // PANEWRITERS805: the three modal dismissals are probe+act keystroke writers
   // that ran BEFORE the lane lock -- so they could press Escape/Enter into a
@@ -3572,7 +3591,26 @@ export async function sendPromptToSession(
   // is the per-session critical section. Held under a per-pane in-process mutex
   // (session-send-lock): normal delivery is fail-open (a stuck holder must not
   // silence the fleet); a `recover` caller skips instead of racing a live send.
-  const emitToPane = async (): Promise<'sent'> => {
+  const emitToPane = async (): Promise<'sent' | 'aborted-guard'> => {
+  // Card 71263d15 (C): the caller's last look at the pane, taken INSIDE the lane right
+  // before the first keystroke. The router's STOP path passes one: a STOP skips the idle
+  // wait, so between its pane check and this point a running turn can open a permission
+  // prompt, and text + Enter typed into that prompt answers it (measured live on Claude
+  // Code 2.1.294: the pending command ran and the text was lost). A non-null answer sends
+  // NOTHING -- no text, no Escape (an Escape would deny the pending call) -- and returns
+  // 'aborted-guard' so the caller keeps its row.
+  if (opts.emitGuard) {
+    let reason: string | null = null
+    try {
+      reason = opts.emitGuard(capturePane(session, host))
+    } catch (err) {
+      reason = `emit guard threw: ${String(err).slice(0, 120)}`
+    }
+    if (reason) {
+      logger.warn({ session, reason }, 'sendPromptToSession: emit guard refused the pane; no keystrokes sent')
+      return 'aborted-guard'
+    }
+  }
   // PROMPTCSONK923: tell the caller the moment the first keystroke of THIS
   // prompt is about to be emitted (we hold the lane from here). The scheduler
   // judges delivery from transcript prompts recorded after this instant.
@@ -3652,6 +3690,16 @@ export async function sendPromptToSession(
   for (let attempt = 0; ; attempt++) {
     await delay(SUBMIT_RETRY_POLL_MS)
     const pane = capturePane(session, host)
+    // Card 71263d15 (C): a guarded send presses no follow-up key into a pane that has
+    // turned into a prompt since the text went in (a retry Enter would answer it).
+    if (opts.emitGuard) {
+      let reason: string | null = null
+      try { reason = opts.emitGuard(pane) } catch { reason = 'emit guard threw' }
+      if (reason) {
+        logger.warn({ session, attempt, reason }, 'sendPromptToSession: emit guard refused the pane after the send; no follow-up keys')
+        break
+      }
+    }
     const action = decideSubmitFollowup(pane, payloadHint, attempt, SUBMIT_RETRY_MAX_ATTEMPTS)
     if (action === 'done') break
     if (action === 'give-up') {
@@ -3695,6 +3743,7 @@ export async function sendPromptToSession(
   }
 
   const lockResult = await withSessionSendLock(session, host, lockMode, emitToPane)
+  if (lockResult.ran && lockResult.value === 'aborted-guard') return 'aborted-guard'
   if (!lockResult.ran) {
     // recover mode + lane busy: a delivery is mid-flight into this pane. Do NOT
     // race it (we would clear or submit the wrong buffer). Skip this round and

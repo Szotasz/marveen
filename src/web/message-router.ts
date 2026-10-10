@@ -31,7 +31,7 @@ import {
   capturePane,
   clearFeedbackModalAndRecheck,
 } from './agent-process.js'
-import { detectPaneState, detectQuotaWall, detectsFirstRunGate, detectsPermissionDialog, permissionPromptSummary, type PaneState, type PermissionPromptSummary, type QuotaWall } from '../pane-state.js'
+import { detectPaneState, detectQuotaWall, detectsBlockingMenu, detectsFirstRunGate, detectsPermissionDialog, permissionPromptSummary, type FirstRunGateKind, type PaneState, type PermissionPromptSummary, type QuotaWall } from '../pane-state.js'
 import { setLastInboundModality } from './voice-modality.js'
 import { classifyAgentMessage, isChannelInboundSender, wrapAgentMessageForDelivery } from './agent-message-wrap.js'
 import { composeBatchInjection, batchInjectCapFor } from './batch-inject.js'
@@ -303,6 +303,90 @@ export function quotaWallEscalation(
     if (prev.key === key && since < QUOTA_WALL_SILENCE_MS) return { kind: 'silent', key }
   }
   return { kind: 'alert', key }
+}
+
+// ---- a STOP row and a pane that is asking something (71263d15 C) -----------------
+// A STOP row skips the idle wait, and ONLY the idle wait. A pane parked on a
+// permission prompt, a first-run gate or the plan usage limit is not "busy", it is
+// asking a question: text + Enter typed into a permission prompt APPROVES the pending
+// tool call, and the message is lost (reproduced live by the #1809/#1835 review on
+// Claude Code 2.1.294: the pending `touch` ran, the text appeared nowhere). Escape is
+// no way out either, it answers "no" on the asker's behalf. So such a pane gets no
+// keystroke at all: the row stays pending, and the main agent learns which agent is
+// waiting on what, rate-limited below.
+
+export type UrgentPaneHold =
+  | { kind: 'permission-prompt'; ask: PermissionPromptSummary | null }
+  | { kind: 'first-run'; gate: FirstRunGateKind }
+  | { kind: 'quota-wall'; wall: QuotaWall }
+
+/** Pure: is the pane asking something that only a person (or the reset) can answer? null = no such surface seen. */
+export function detectUrgentPaneHold(pane: string | null): UrgentPaneHold | null {
+  if (pane == null || !pane.trim()) return null
+  if (detectsPermissionDialog(pane)) return { kind: 'permission-prompt', ask: permissionPromptSummary(pane) }
+  const gate = detectsFirstRunGate(pane)
+  if (gate) return { kind: 'first-run', gate }
+  const wall = detectQuotaWall(pane)
+  if (wall) return { kind: 'quota-wall', wall }
+  return null
+}
+
+/**
+ * Pure: the last look at the pane inside the send lane, right before the first key
+ * (sendPromptToSession's emitGuard). Stricter than detectUrgentPaneHold: any blocking
+ * menu, and a pane that cannot be read, refuse too -- here no later step could undo an
+ * Enter that landed in the wrong place. null = type.
+ */
+export function urgentEmitRefusal(pane: string | null): string | null {
+  if (pane == null || !pane.trim()) return 'pane unreadable'
+  const hold = detectUrgentPaneHold(pane)
+  if (hold) return hold.kind
+  if (detectsBlockingMenu(pane)) return 'blocking-menu'
+  return null
+}
+
+// One notice per agent per hold, repeated while it lasts: a permission prompt or a
+// first-run gate every STUCK_ESCALATE_MS (the session-stuck cadence), the same quota
+// wall only after QUOTA_WALL_SILENCE_MS (the wall alert's one-per-wall rule). A
+// different hold (another question, another wall) is a new notice at once.
+const agentUrgentHoldNoticed = new Map<string, { key: string; at: number }>()
+
+export function urgentHoldKey(hold: UrgentPaneHold): string {
+  if (hold.kind === 'permission-prompt') return `permission:${hold.ask?.title ?? '?'}`
+  if (hold.kind === 'first-run') return `first-run:${hold.gate}`
+  return `quota-wall:${(hold.wall.resetsAt ?? '?').toLowerCase()}`
+}
+
+/** Pure: should this hold be told to the main agent now? */
+export function shouldNoticeUrgentHold(hold: UrgentPaneHold, prev: { key: string; at: number } | undefined, now: number): boolean {
+  if (!prev || prev.key !== urgentHoldKey(hold)) return true
+  return now - prev.at >= (hold.kind === 'quota-wall' ? QUOTA_WALL_SILENCE_MS : STUCK_ESCALATE_MS)
+}
+
+export function formatUrgentHoldNotice(msg: Pick<AgentMessage, 'id' | 'from_agent' | 'to_agent'>, session: string, hold: UrgentPaneHold, label: string): string {
+  const head = `[urgent-held] A ${label} row (#${msg.id} from ${msg.from_agent}) to '${msg.to_agent}' (tmux ${session}) is waiting and was NOT typed:`
+  const keep = 'The row stays pending and goes out on the first tick after the pane is free.'
+  if (hold.kind === 'permission-prompt') {
+    const ask = hold.ask ? ` It asks: ${hold.ask.title} -- ${hold.ask.reason}` : ''
+    return `${head} the pane is on a TOOL-PERMISSION PROMPT.${ask} Typed text + Enter would APPROVE that prompt, and an Escape would deny it, so the router sends neither. Answer the prompt in the pane (tmux attach -t ${session}). ${keep}`
+  }
+  if (hold.kind === 'first-run') {
+    return `${head} the pane is on a Claude Code first-run gate (${hold.gate}); a keystroke would answer it. Clear the gate in the pane (tmux attach -t ${session}). ${keep}`
+  }
+  const resume = hold.wall.resetsAt ? `The CLI resumes by itself at ${hold.wall.resetsAt} (as the pane prints it).` : 'The banner does not say when it resets.'
+  return `${head} the agent is at the PLAN USAGE LIMIT (quota wall). ${resume} Banner: "${hold.wall.banner}". It cannot act on the row before the reset or a key switch. ${keep}`
+}
+
+function noticeUrgentHold(msg: AgentMessage, session: string, hold: UrgentPaneHold, label: string, now: number): void {
+  const prev = agentUrgentHoldNoticed.get(msg.to_agent)
+  if (!shouldNoticeUrgentHold(hold, prev, now)) return
+  agentUrgentHoldNoticed.set(msg.to_agent, { key: urgentHoldKey(hold), at: now })
+  try {
+    createAgentMessage('system', MAIN_AGENT_ID, formatUrgentHoldNotice(msg, session, hold, label))
+    logger.info({ id: msg.id, to: msg.to_agent, hold: hold.kind }, 'urgent-held surfaced to orchestrator')
+  } catch (err) {
+    logger.warn({ err, id: msg.id }, 'Failed to enqueue urgent-held notification')
+  }
 }
 
 // ---- reconnect-backlog batching (card 2922e380 thread b) --------------------
@@ -758,9 +842,30 @@ export async function runMessageRouterTick(): Promise<void> {
       // the next tool boundary ("while you were working"); the pane send lane still
       // serializes it with every other writer. Session existence and the abandon rule
       // above still apply, and a worksource agent's STOP goes to its queue like any row.
+      //
+      // It skips ONLY the idle wait. A pane that is asking something (a permission
+      // prompt, a first-run gate, the quota wall) holds the row with no keystroke and
+      // tells the main agent (detectUrgentPaneHold above); and a not-ready pane is passed
+      // only when it reads positively BUSY. Any other not-ready pane (a feedback modal, a
+      // parked input, an unknown surface) takes the ordinary not-ready branch below, with
+      // its modal clearing, janitor and stuck alert, exactly like an ordinary row.
       const isStop = isStopMessage(msg, MAIN_AGENT_ID)
       const paneNotReady = !worksourceServing && !(await isSessionReadyForPrompt(session, host))
-      if (paneNotReady && !isStop) {
+      let stopPassesBusyPane = false
+      if (isStop && !worksourceServing) {
+        const stopPane = capturePane(session, host)
+        const hold = detectUrgentPaneHold(stopPane)
+        if (hold) {
+          if (!routerLoggedMisses.has(msg.id)) {
+            logger.warn({ id: msg.id, to: msg.to_agent, session, hold: hold.kind }, 'message-router: STOP row held, the pane is asking something; nothing typed')
+            routerLoggedMisses.add(msg.id)
+          }
+          noticeUrgentHold(msg, session, hold, 'STOP', now)
+          continue
+        }
+        stopPassesBusyPane = paneNotReady && stopPane != null && detectPaneState(stopPane) === 'busy'
+      }
+      if (paneNotReady && !stopPassesBusyPane) {
         // A self-drafted feedback modal ("Bug report drafted ... 0 to dismiss")
         // holds the pane in a not-ready state, and the pre-flight dismissal in
         // sendPromptToSession never runs because this gate short-circuits
@@ -1031,9 +1136,21 @@ export async function runMessageRouterTick(): Promise<void> {
             logger.info({ head: msg.id, to: msg.to_agent, batchSize: mates.items.length + 1, remaining: mates.remaining }, 'message-router: multi-envelope injection')
           } else {
             // STOP: no idle wait (the 12 s budget exists to find an idle gap, and a STOP
-            // must not wait for one).
-            await sendPromptToSession(session, prefix + wrapped, host, isStop ? { waitForIdle: false } : undefined)
-            if (isStop) logger.info({ id: msg.id, to: msg.to_agent }, 'message-router: STOP row sent without waiting for an idle pane')
+            // must not wait for one), but a last look at the pane inside the send lane,
+            // right before the first key: a running turn can open a permission prompt
+            // between the check above and this send (urgentEmitRefusal).
+            if (isStop) {
+              const outcome = await sendPromptToSession(session, prefix + wrapped, host, { waitForIdle: false, emitGuard: urgentEmitRefusal })
+              if (outcome === 'aborted-guard') {
+                const hold = detectUrgentPaneHold(capturePane(session, host))
+                logger.warn({ id: msg.id, to: msg.to_agent, hold: hold?.kind ?? null }, 'message-router: STOP row not typed, the pane turned into a prompt before the send; the row stays pending')
+                if (hold) noticeUrgentHold(msg, session, hold, 'STOP', now)
+                continue
+              }
+              logger.info({ id: msg.id, to: msg.to_agent }, 'message-router: STOP row sent without waiting for an idle pane')
+            } else {
+              await sendPromptToSession(session, prefix + wrapped, host)
+            }
           }
         }
         if (!markMessageDelivered(msg.id)) {
