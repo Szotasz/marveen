@@ -168,11 +168,16 @@ function promptText(content: unknown): string | null {
 // "queued_command","commandMode":"prompt","prompt":"<the typed text>"}}. Only
 // commandMode 'prompt' is typed input; 'task-notification' rows are Claude
 // Code's own. An 'enqueue' queue-operation alone is NOT an arrival: the item
-// may never be handed over.
+// may never be handed over. A commandMode 'prompt' row also carries channel
+// messages (origin kind 'channel', review on #1828), so only origin kind
+// 'human' -- typed input, which is what the runner's keystrokes are -- is read
+// as a queued prompt. A row without an origin is not counted either: the
+// verdict then stays 'not-arrived', the conservative side.
 function queuedPromptText(attachment: unknown): string | null {
   if (attachment == null || typeof attachment !== 'object') return null
-  const a = attachment as { type?: unknown; commandMode?: unknown; prompt?: unknown }
+  const a = attachment as { type?: unknown; commandMode?: unknown; prompt?: unknown; origin?: { kind?: unknown } | null }
   if (a.type !== 'queued_command' || a.commandMode !== 'prompt') return null
+  if (a.origin == null || typeof a.origin !== 'object' || a.origin.kind !== 'human') return null
   return typeof a.prompt === 'string' ? a.prompt : null
 }
 
