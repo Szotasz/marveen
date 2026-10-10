@@ -120,11 +120,11 @@ _t() {
     en:macos.firstrun_done) echo "  Claude Code first-run setup done" ;;
     hu:macos.firstrun_done) echo "  Claude Code first-run beállítás kész" ;;
     en:macos.headless_test) echo "  Checking your terminal's Claude login (headless)..." ;;
-    hu:macos.headless_test) echo "  A terminalod Claude-bejelentkezesenek ellenorzese (headless)..." ;;
+    hu:macos.headless_test) echo "  A terminálod Claude-bejelentkezésének ellenőrzése (headless)..." ;;
     en:macos.headless_ok) echo "  Your terminal's Claude login works (claude --print responded)" ;;
-    hu:macos.headless_ok) echo "  A terminalod Claude-bejelentkezese mukodik (claude --print valaszolt)" ;;
+    hu:macos.headless_ok) echo "  A terminálod Claude-bejelentkezése működik (claude --print válaszolt)" ;;
     en:macos.headless_fail) echo "Your terminal's Claude login did not answer (claude --print). This is NOT the agents' credential: the background services use their own, which is checked separately further down." ;;
-    hu:macos.headless_fail) echo "A terminalod Claude-bejelentkezese nem valaszolt (claude --print). Ez NEM az ugynokok hitelesitoje: a hatterszolgaltatasok sajat kulcsat a telepito lent kulon ellenorzi." ;;
+    hu:macos.headless_fail) echo "A terminálod Claude-bejelentkezése nem válaszolt (claude --print). Ez NEM az ügynökök hitelesítője: a háttérszolgáltatások saját kulcsát a telepítő lent külön ellenőrzi." ;;
     # ── Channel selection ─────────────────────────────────────────────
     en:macos.channel_select_hint) echo "  Which channel should your AI assistant use?" ;;
     hu:macos.channel_select_hint) echo "  Melyik csatornan kommunikaljon az AI asszisztensed?" ;;

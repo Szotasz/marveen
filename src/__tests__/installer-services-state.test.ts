@@ -109,7 +109,7 @@ describe('the closing section (real text from "# Done!" to the end, real strings
     expect(r.code).toBe(0)
     expect(r.out).toContain('Marveen successfully installed!')
     expect(r.out).not.toContain('NOT running')
-    expect(r.out).not.toContain('A SZOLGALTATASOK NEM FUTNAK')
+    expect(r.out).not.toContain('A SZOLGÁLTATÁSOK NEM FUTNAK')
   })
 
   it('down: no success banner; the state and the remedy are repeated last; exit 3', () => {
@@ -117,7 +117,7 @@ describe('the closing section (real text from "# Done!" to the end, real strings
     expect(r.code).toBe(3)
     expect(r.out).not.toContain('Marveen successfully installed!')
     expect(r.out).toContain('Marveen is installed, but its services are NOT running yet')
-    const last = r.out.slice(r.out.lastIndexOf('A SZOLGALTATASOK NEM FUTNAK'))
+    const last = r.out.slice(r.out.lastIndexOf('A SZOLGÁLTATÁSOK NEM FUTNAK'))
     expect(last).toContain('com.test.dashboard: nem fut')
     expect(last).not.toContain('com.test.channels: nem fut')
     expect(last).toContain('launchctl bootstrap gui/')
@@ -128,7 +128,7 @@ describe('the closing section (real text from "# Done!" to the end, real strings
   it('down in the machine progress mode (Bridge): the block still prints, but exit 0 so its appended emit_result runs', () => {
     const r = tail('down', { MARVEEN_JSON_PROGRESS: '1' }, 'DASHBOARD_PID=; CHANNELS_PID=')
     expect(r.code).toBe(0)
-    expect(r.out).toContain('A SZOLGALTATASOK NEM FUTNAK')
+    expect(r.out).toContain('A SZOLGÁLTATÁSOK NEM FUTNAK')
     expect(r.out).not.toContain('Marveen successfully installed!')
   })
 
@@ -136,7 +136,7 @@ describe('the closing section (real text from "# Done!" to the end, real strings
     const r = tail('down', {}, 'DASHBOARD_PID=; CHANNELS_PID=; INSTALL_AUTH_STATE=BROKEN')
     expect(r.code).toBe(3)
     expect(r.out).toContain('AZ UGYNOKOK MEG NEM FOGNAK VALASZOLNI')
-    expect(r.out).toContain('A SZOLGALTATASOK NEM FUTNAK')
+    expect(r.out).toContain('A SZOLGÁLTATÁSOK NEM FUTNAK')
   })
 
   it('an unknown state (the block never ran) is not reported as a failure', () => {

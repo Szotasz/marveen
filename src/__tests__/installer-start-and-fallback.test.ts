@@ -326,7 +326,9 @@ describe('install-macos.sh -- the not-started remedy must work on an UNREGISTERE
   // kickstart-only remedy is guaranteed dead advice in the most common state.
   // The printed remedy must be state-agnostic: bootstrap the plist first, then
   // kickstart the label.
-  const remedy = MACOS.slice(MACOS.indexOf('Javitas most'))
+  // anchored on the remedy function itself (#1871): the first 'Javitas most' in the
+  // file is the AUTH gate's, and the accented line no longer matches that spelling
+  const remedy = MACOS.slice(MACOS.indexOf('print_services_remedy() {'))
 
   it('bootstraps the plist before kickstarting, for both units', () => {
     for (const unit of ['DASHBOARD_PLIST', 'CHANNELS_PLIST']) {

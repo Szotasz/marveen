@@ -74,7 +74,7 @@ describe('the early probe says what it checks (real block, stubbed claude)', () 
     const r = runProbe(1, 'Not logged in', 'hu')
     expect(r.code).toBe(0)
     expect(r.out).not.toMatch(/KESOBB EL fog hasalni/)
-    expect(r.out).toContain('Ez NEM az ugynokok hitelesitoje')
+    expect(r.out).toContain('Ez NEM az ügynökök hitelesítője')
   })
 
   it('a working terminal login is reported as exactly that', () => {
