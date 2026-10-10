@@ -590,6 +590,101 @@
       "name": "SENDWRAP924: reverse -- eight nested wrappers + a non-sender, inside the bound",
       "cmd": "nohup nohup nohup nohup nohup nohup nohup nohup echo sendmail",
       "expected": false
+    },
+    {
+      "name": "#1853: the sender imported as a module in a -c string",
+      "cmd": "cd scripts/support-mail && python3 -c \"import send; send.main()\"",
+      "expected": true
+    },
+    {
+      "name": "#1853: from send import main, after a sys.path insert",
+      "cmd": "python3 -c \"import sys; sys.path.insert(0,'scripts/support-mail'); from send import main; main()\"",
+      "expected": true
+    },
+    {
+      "name": "#1853: runpy runs send.py",
+      "cmd": "python3 -c \"import runpy; runpy.run_path('scripts/support-mail/send.py')\"",
+      "expected": true
+    },
+    {
+      "name": "#1853: __import__ of the sender",
+      "cmd": "python3 -c \"m = __import__('send'); m.main()\"",
+      "expected": true
+    },
+    {
+      "name": "#1853: importlib.import_module of the sender",
+      "cmd": "python3 -c \"import importlib; importlib.import_module('send').main()\"",
+      "expected": true
+    },
+    {
+      "name": "#1853: python -m send with a recipient",
+      "cmd": "cd scripts/support-mail && python3 -m send --to a@b.hu --subject x",
+      "expected": true
+    },
+    {
+      "name": "#1853: a heredoc-fed python that imports the sender",
+      "cmd": "cd scripts/support-mail && python3 - <<'PY'\nimport send\nsend.main()\nPY",
+      "expected": true
+    },
+    {
+      "name": "#1853: a heredoc-fed python that sends with smtplib",
+      "cmd": "python3 - <<'PY'\nimport smtplib\ns = smtplib.SMTP('localhost')\nPY",
+      "expected": true
+    },
+    {
+      "name": "#1853 control: a module whose name only starts with send",
+      "cmd": "python3 -c \"import sendgrid_helpers_x\"",
+      "expected": false
+    },
+    {
+      "name": "#1853 control: the word send inside a printed string",
+      "cmd": "python3 -c \"print('send it')\"",
+      "expected": false
+    },
+    {
+      "name": "#1853 control: a module named sender",
+      "cmd": "python3 -c \"from sender import x\"",
+      "expected": false
+    },
+    {
+      "name": "#1853 control: -m of a module whose last part is not send",
+      "cmd": "python3 -m sendmail_parser --to a@b.hu",
+      "expected": false
+    },
+    {
+      "name": "#1853 control: python -m send without a recipient (same rule as send.py)",
+      "cmd": "cd scripts/support-mail && python3 -m send --help",
+      "expected": false
+    },
+    {
+      "name": "#1853 control: a heredoc to cat that mentions import send",
+      "cmd": "cat <<'PY' > notes.txt\nimport send\nPY",
+      "expected": false
+    },
+    {
+      "name": "#1853 control: a heredoc-fed python that only writes a file mentioning send",
+      "cmd": "python3 - <<'PY'\nopen('n.md','w').write('the send step')\nPY",
+      "expected": false
+    },
+    {
+      "name": "#1853: the Graph sender imported under another name",
+      "cmd": "npx tsx -e \"import { sendMail as s } from './src/graph-mail.ts'; await s({to:'a@b.hu'})\"",
+      "expected": true
+    },
+    {
+      "name": "#1853: the Graph sender reached by a string key",
+      "cmd": "npx tsx -e \"const m = await import('./src/graph-mail.ts'); await m['sendMail']({to:'a@b.hu'})\"",
+      "expected": true
+    },
+    {
+      "name": "#1853: a heredoc-fed tsx that renames the Graph sender",
+      "cmd": "npx tsx - <<'TS'\nimport { sendMail as s } from './src/graph-mail.ts'\nawait s({ to: 'a@b.hu' })\nTS",
+      "expected": true
+    },
+    {
+      "name": "#1853 control: the Graph module loaded only to list messages",
+      "cmd": "npx tsx -e \"import { listMessages } from './src/graph-mail.ts'; console.log(await listMessages({top: 5}))\"",
+      "expected": false
     }
   ]
 }

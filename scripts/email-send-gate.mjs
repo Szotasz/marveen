@@ -103,7 +103,21 @@ const CODE_SEND = /\bsmtplib\b|SMTP\s*\(|\bsendMail\s*\(|\bsendEmail\b|\bmail\.s
 // see the STATED LIMIT in the header for what it deliberately does not claim.
 const CODE_EXECISH = /\bsubprocess\b|os\.system|\bpopen\b|child_process|\bexec[A-Za-z]*\s*\(|\bspawn[A-Za-z]*\s*\(/i
 const CODE_SENDER_LIT = /sendmail|msmtp|swaks|send\.py/i
-const codeStringSends = (code) => CODE_SEND.test(code) || (CODE_EXECISH.test(code) && CODE_SENDER_LIT.test(code))
+// Issue #1853 (stylnet): the support-mail sender LOADED AS A MODULE (`import send`,
+// `from send import main`, runpy, __import__/import_module, a spec built from send.py).
+// Case-sensitive on purpose; `send` must be the whole module name. Mirrors
+// _CODE_SEND_MODULE in hooks/outgoing-copy-gate.py; send-invocation-cases.json binds them.
+const CODE_SEND_MODULE = new RegExp(
+  String.raw`\bimport\s+(?:[\w.]+\s*,\s*)*send\b(?![\w.])` +
+  String.raw`|\bfrom\s+send\s+import\b` +
+  String.raw`|\brunpy\b[^\n]*\bsend\b` +
+  String.raw`|\b(?:__import__|import_module)\s*\(\s*['"]send['"]` +
+  String.raw`|\bspec_from_file_location\b[^\n]*\bsend\.py\b` +
+  // The same class on the Graph sender (export sendMail): renamed on import, or a string key.
+  String.raw`|\bsendMail\s+as\b|\[\s*['"]sendMail['"]\s*\]`,
+)
+const codeStringSends = (code) =>
+  CODE_SEND.test(code) || CODE_SEND_MODULE.test(code) || (CODE_EXECISH.test(code) && CODE_SENDER_LIT.test(code))
 
 // Unquoted newline / backtick / `$(` become segment separators; quoted text is
 // untouched (it is content). Tracks quote state by hand -- no shell involved.
@@ -239,6 +253,12 @@ function headIsSend(toks, depth) {
   }
   const candidates = [prog]
   if ((PYTHON.test(prog) || NODEISH.test(prog)) && rest.length) candidates.push(basename(rest[0]))
+  // Issue #1853: `python3 -m send` (or -m pkg.send) is the same sender by module name.
+  if (PYTHON.test(prog)) {
+    for (let i = 0; i < rest.length - 1; i++) {
+      if (rest[i] === '-m' && rest[i + 1].split('.').pop() === 'send') candidates.push('send.py')
+    }
+  }
   if (candidates.some((c) => SENDPY.test(c)) &&
       rest.some((t) => t === '--to' || t.startsWith('--to='))) return true
   if (toks.some((t) => GRAPHMAIL.test(basename(t))) && rest.includes('send')) return true
@@ -270,7 +290,24 @@ export function buildWrapperDepthMsg() {
   )
 }
 
+// Issue #1853, the heredoc form: the segmenter drops heredoc BODIES, but when the
+// command that opens one is an interpreter (`python3 - <<'PY'`, `node <<EOF`) the body
+// IS the program. Mirrors _heredoc_program_sends in hooks/outgoing-copy-gate.py.
+const HEREDOC_INTERP = /(?:^|[\s;&|(])(?:\S*\/)?(python3?(?:\.\d+)?|node|tsx|ts-node|deno|bun)\b[^\n<]*$/i
+function heredocProgramSends(cmd) {
+  for (const m of cmd.matchAll(HEREDOC_RE)) {
+    const lineStart = cmd.lastIndexOf('\n', m.index - 1) + 1
+    const head = cmd.slice(lineStart, m.index)
+    if (!HEREDOC_INTERP.test(head)) continue
+    const bodyStart = m.index + m[1].length + 1
+    const body = cmd.slice(bodyStart, m.index + m[0].length - m[2].length)
+    if (codeStringSends(body)) return true
+  }
+  return false
+}
+
 export function isSendInvocation(cmd, depth = 0) {
+  if (heredocProgramSends(cmd)) return true
   let segments
   try {
     segments = segmentsTokens(cmd)

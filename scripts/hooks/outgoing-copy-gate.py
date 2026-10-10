@@ -107,6 +107,22 @@ _CURLISH = re.compile(r"^(curl|wget|http)$", re.I)
 _CODE_SEND = re.compile(
     r"\bsmtplib\b|SMTP\s*\(|\bsendMail\s*\(|\bsendEmail\b|\bmail\.send\b", re.I
 )
+# Issue #1853 (stylnet): the support-mail sender LOADED AS A MODULE, not run by its
+# file name -- `import send`, `from send import main`, runpy, __import__/import_module,
+# or a spec built from send.py. The file-name rule below never saw these, so the call
+# went past the approval gate. Case-sensitive on purpose (Python names are), and
+# `send` must be the whole module name: `import sendgrid_x` or a "send" word in a
+# string stays out. Mirrored in email-send-gate.mjs (CODE_SEND_MODULE).
+_CODE_SEND_MODULE = re.compile(
+    r"\bimport\s+(?:[\w.]+\s*,\s*)*send\b(?![\w.])"
+    r"|\bfrom\s+send\s+import\b"
+    r"|\brunpy\b[^\n]*\bsend\b"
+    r"|\b(?:__import__|import_module)\s*\(\s*['\"]send['\"]"
+    r"|\bspec_from_file_location\b[^\n]*\bsend\.py\b"
+    # The same class on the Graph sender (src/graph-mail.ts, export sendMail): renamed on
+    # import, or reached by a string key -- the call itself then never reads `sendMail(`.
+    r"|\bsendMail\s+as\b|\[\s*['\"]sendMail['\"]\s*\]"
+)
 _CODE_EXECISH = re.compile(
     r"\bsubprocess\b|os\.system|\bpopen\b|child_process|\bexec[A-Za-z]*\s*\(|\bspawn[A-Za-z]*\s*\(",
     re.I,
@@ -115,7 +131,7 @@ _CODE_SENDER_LIT = re.compile(r"sendmail|msmtp|swaks|send\.py", re.I)
 
 
 def _code_string_sends(code: str) -> bool:
-    if _CODE_SEND.search(code):
+    if _CODE_SEND.search(code) or _CODE_SEND_MODULE.search(code):
         return True
     return bool(_CODE_EXECISH.search(code) and _CODE_SENDER_LIT.search(code))
 # Token-ELEJERE horgonyzott cel-minta: egy URL-argumentum vagy csupasz
@@ -380,6 +396,12 @@ def _head_is_send(toks, depth: int) -> bool:
     candidates = [prog] + (
         [_basename(rest[0])] if rest and (_PYTHON.match(prog) or _NODEISH.match(prog)) else []
     )
+    # Issue #1853: `python3 -m send` (or -m pkg.send) is the same sender run by module
+    # name; it gets the same --to rule as the file-name form.
+    if _PYTHON.match(prog):
+        for i, t in enumerate(rest):
+            if t == "-m" and i + 1 < len(rest) and rest[i + 1].rsplit(".", 1)[-1] == "send":
+                candidates.append("send.py")
     if any(_SENDPY.match(c) for c in candidates) and any(
         t == "--to" or t.startswith("--to=") for t in rest
     ):
@@ -414,7 +436,32 @@ def wrapper_depth_hit(cmd: str) -> bool:
         h is not None and _head_is_send(h, 0) for h in heads)
 
 
+# Issue #1853, the heredoc form: the segmenter drops every heredoc BODY (it is data
+# to the shell), but when the command that opens it is an interpreter
+# (`python3 - <<'PY'`, `node <<EOF`) the body IS the program, and a send in it went
+# unseen. The opening line is read up to its `<<`; when its last command word there
+# is python/node-ish, the body is judged with the -c / -e code rule. A heuristic
+# of the same naive class as the -c rule (see the boundary note above).
+_HEREDOC_INTERP = re.compile(
+    r"(?:^|[\s;&|(])(?:\S*/)?(python3?(?:\.\d+)?|node|tsx|ts-node|deno|bun)\b[^\n<]*$", re.I
+)
+
+
+def _heredoc_program_sends(cmd: str) -> bool:
+    for m in _HEREDOC.finditer(cmd):
+        line_start = cmd.rfind("\n", 0, m.start()) + 1
+        head = cmd[line_start:m.start()]
+        if not _HEREDOC_INTERP.search(head):
+            continue
+        body = cmd[m.end(1) + 1:m.end() - len(m.group(2))]
+        if _code_string_sends(body):
+            return True
+    return False
+
+
 def is_send_invocation(cmd: str, _depth: int = 0) -> bool:
+    if _heredoc_program_sends(cmd):
+        return True
     try:
         segments = _segments_tokens(cmd)
     except ValueError:
