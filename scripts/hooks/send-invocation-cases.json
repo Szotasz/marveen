@@ -705,6 +705,21 @@
       "name": "#1855 control: an uppercase SENDMAIL word that starts a quoted report line, next to subprocess",
       "cmd": "python3 - <<'PY'\nimport subprocess\nsubprocess.run(['echo', 'SENDMAIL relay check: all green'])\nPY",
       "expected": false
+    },
+    {
+      "name": "#1855: a heredoc fed to bash runs send.py with a recipient",
+      "cmd": "bash <<'SH'\ncd scripts/support-mail\npython3 send.py --to a@b.hu --subject x\nSH",
+      "expected": true
+    },
+    {
+      "name": "#1855: a heredoc fed to sh -s imports the sender",
+      "cmd": "sh -s <<'SH'\ncd scripts/support-mail && python3 -c \"import send; send.main()\"\nSH",
+      "expected": true
+    },
+    {
+      "name": "#1855 control: a heredoc fed to bash that only lists files",
+      "cmd": "bash <<'SH'\nls scripts/support-mail\ngrep -n 'def main' scripts/support-mail/send.py\nSH",
+      "expected": false
     }
   ]
 }

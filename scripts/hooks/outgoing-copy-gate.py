@@ -452,7 +452,11 @@ def wrapper_depth_hit(cmd: str) -> bool:
 # still hit the module rule: that is the price of a naive rule, accepted.
 # NOT COVERED, named so nobody counts them as covered: a program the classifier never reads --
 # `python3 /tmp/x.py`, `python3 < /tmp/x.py`, `cat /tmp/x.py | python3 -`, and
-# `python3 -c "exec(open('/tmp/x.py').read())"`.
+# `python3 -c "exec(open('/tmp/x.py').read())"`; also a here-string fed to an interpreter
+# (`python3 <<<'import send'`) and a CommonJS destructuring rename of the Graph sender
+# (`const { sendMail: s } = require(...)`).
+# A heredoc fed to a SHELL (`bash <<EOF`, `sh -s <<EOF`) is a shell program: its body is
+# judged with this classifier itself, one level deeper (Geri/Samu, #1855).
 _HEREDOC_SENDER_ARGV = re.compile(r"""['"](?:[^'"\s]*/)?(?:sendmail|msmtp|swaks|send\.py)(?=['"\s])""")
 
 
@@ -462,25 +466,28 @@ def _heredoc_body_sends(body: str) -> bool:
     return bool(_CODE_EXECISH.search(body) and _HEREDOC_SENDER_ARGV.search(body))
 
 
+_HEREDOC_SHELL = re.compile(r"(?:^|[\s;&|(])(?:\S*/)?(?:bash|sh|zsh|dash)\b[^\n<]*$", re.I)
 _HEREDOC_INTERP = re.compile(
     r"(?:^|[\s;&|(])(?:\S*/)?(python3?(?:\.\d+)?|node|tsx|ts-node|deno|bun)\b[^\n<]*$", re.I
 )
 
 
-def _heredoc_program_sends(cmd: str) -> bool:
+def _heredoc_program_sends(cmd: str, depth: int = 0) -> bool:
     for m in _HEREDOC.finditer(cmd):
         line_start = cmd.rfind("\n", 0, m.start()) + 1
         head = cmd[line_start:m.start()]
-        if not _HEREDOC_INTERP.search(head):
-            continue
         body = cmd[m.end(1) + 1:m.end() - len(m.group(2))]
-        if _heredoc_body_sends(body):
-            return True
+        if _HEREDOC_INTERP.search(head):
+            if _heredoc_body_sends(body):
+                return True
+        elif _HEREDOC_SHELL.search(head) and depth < 3:
+            if is_send_invocation(body, _depth=depth + 1):
+                return True
     return False
 
 
 def is_send_invocation(cmd: str, _depth: int = 0) -> bool:
-    if _heredoc_program_sends(cmd):
+    if _heredoc_program_sends(cmd, _depth):
         return True
     try:
         segments = _segments_tokens(cmd)

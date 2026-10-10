@@ -298,25 +298,33 @@ export function buildWrapperDepthMsg() {
 // so a card id like SENDMAIL... in a report's prose no longer matches. Mirrors
 // _HEREDOC_SENDER_ARGV / _heredoc_body_sends in hooks/outgoing-copy-gate.py.
 // NOT COVERED, named: a program the classifier never reads -- `python3 /tmp/x.py`,
-// `python3 < /tmp/x.py`, `cat /tmp/x.py | python3 -`, `python3 -c "exec(open('/tmp/x.py').read())"`.
+// `python3 < /tmp/x.py`, `cat /tmp/x.py | python3 -`, `python3 -c "exec(open('/tmp/x.py').read())"`;
+// also a here-string fed to an interpreter (`python3 <<<'import send'`) and a CommonJS
+// destructuring rename of the Graph sender (`const { sendMail: s } = require(...)`).
+// A heredoc fed to a SHELL (`bash <<EOF`) is a shell program: its body is judged with
+// isSendInvocation itself, one level deeper (Geri/Samu, #1855).
 const HEREDOC_SENDER_ARGV = /['"](?:[^'"\s]*\/)?(?:sendmail|msmtp|swaks|send\.py)(?=['"\s])/
 const heredocBodySends = (body) =>
   CODE_SEND.test(body) || CODE_SEND_MODULE.test(body) || (CODE_EXECISH.test(body) && HEREDOC_SENDER_ARGV.test(body))
+const HEREDOC_SHELL = /(?:^|[\s;&|(])(?:\S*\/)?(?:bash|sh|zsh|dash)\b[^\n<]*$/i
 const HEREDOC_INTERP = /(?:^|[\s;&|(])(?:\S*\/)?(python3?(?:\.\d+)?|node|tsx|ts-node|deno|bun)\b[^\n<]*$/i
-function heredocProgramSends(cmd) {
+function heredocProgramSends(cmd, depth = 0) {
   for (const m of cmd.matchAll(HEREDOC_RE)) {
     const lineStart = cmd.lastIndexOf('\n', m.index - 1) + 1
     const head = cmd.slice(lineStart, m.index)
-    if (!HEREDOC_INTERP.test(head)) continue
     const bodyStart = m.index + m[1].length + 1
     const body = cmd.slice(bodyStart, m.index + m[0].length - m[2].length)
-    if (heredocBodySends(body)) return true
+    if (HEREDOC_INTERP.test(head)) {
+      if (heredocBodySends(body)) return true
+    } else if (HEREDOC_SHELL.test(head) && depth < 3) {
+      if (isSendInvocation(body, depth + 1)) return true
+    }
   }
   return false
 }
 
 export function isSendInvocation(cmd, depth = 0) {
-  if (heredocProgramSends(cmd)) return true
+  if (heredocProgramSends(cmd, depth)) return true
   let segments
   try {
     segments = segmentsTokens(cmd)
