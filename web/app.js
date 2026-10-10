@@ -443,14 +443,14 @@ SIDEBAR_GROUPS.forEach((def) => def.pages.forEach((p) => { PAGE_SIDEBAR_GROUP[p]
 // Re-parent the 23 static links to match the map. Moving an existing DOM node
 // does not invalidate the navLinks refs captured by querySelectorAll at boot.
 SIDEBAR_GROUPS.forEach((def) => {
-  const group = document.querySelector(`.sb-group[data-group="${def.key}"]`)
+  const group = document.querySelector(`.sb-group[data-group="${CSS.escape(String(def.key))}"]`)
   if (!group) return
   const label = group.querySelector('.sb-group-label')
   if (label) label.dataset.i18n = def.labelKey
   const items = group.querySelector('.sb-group-items')
   if (!items) return
   def.pages.forEach((p) => {
-    const link = document.querySelector(`.sb-link[data-page="${p}"]`)
+    const link = document.querySelector(`.sb-link[data-page="${CSS.escape(String(p))}"]`)
     if (link) items.appendChild(link)
   })
 })
@@ -659,7 +659,7 @@ function renderStaticI18n() {
   })
   // Elements whose translation contains inline markup (strong/code/a): set innerHTML.
   document.querySelectorAll('[data-i18n-html]').forEach(el => {
-    el.innerHTML = t(el.dataset.i18nHtml)
+    el.innerHTML = tHtml(el.dataset.i18nHtml)
   })
   // #updatesSubtitle opts out of the [data-i18n] sweep (renderUpdatesVersion owns
   // it). Re-apply from the cached status so a language switch re-localizes its
@@ -1154,7 +1154,7 @@ function renderKanbanQuickFilters() {
     const chip = document.createElement('span')
     chip.className = 'kanban-quick-filter-chip' + (active ? ' active' : '')
     chip.dataset.labelId = label.id
-    chip.style.setProperty('--chip-color', label.color)
+    chip.style.setProperty('--chip-color', safeCssColor(label.color, '#64748b'))
     chip.innerHTML = `#${escapeHtml(label.name)} <span class="kanban-quick-filter-count">${count}</span>${active ? '<span class="kanban-quick-filter-clear">&times;</span>' : ''}`
     chip.addEventListener('click', () => toggleKanbanLabelFilter(label.id))
     row.appendChild(chip)
@@ -1293,7 +1293,7 @@ function renderKanban() {
     swimlaneBoard.hidden = true
     flatBoard.hidden = false
     for (const [status, cards] of Object.entries(grouped)) {
-      const col = document.querySelector(`#kanbanBoard .kanban-col-body[data-status="${status}"]`)
+      const col = document.querySelector(`#kanbanBoard .kanban-col-body[data-status="${CSS.escape(String(status))}"]`)
       col.innerHTML = ''
       cards.sort(kanbanCardSorter())
 
@@ -1307,7 +1307,7 @@ function renderKanban() {
     // Hide/show flat-board columns based on visibility set
     const allColsHidden = KANBAN_STATUS_DEFS.every(d => kanbanHiddenColumns.has(d.status))
     for (const def of KANBAN_STATUS_DEFS) {
-      const colEl = flatBoard.querySelector(`.kanban-col[data-status="${def.status}"]`)
+      const colEl = flatBoard.querySelector(`.kanban-col[data-status="${CSS.escape(String(def.status))}"]`)
       if (colEl) colEl.hidden = kanbanHiddenColumns.has(def.status)
     }
     // "All columns hidden" hint
@@ -1402,7 +1402,7 @@ function renderSwimlaneBoard(grouped, embeddedSubtaskIds) {
     const lane = document.createElement('div')
     lane.className = 'kanban-swimlane' + (collapsed ? ' collapsed' : '')
     lane.dataset.group = key
-    if (separatorColor) lane.style.borderBottomColor = separatorColor
+    if (separatorColor) lane.style.borderBottomColor = safeCssColor(separatorColor)
 
     const header = document.createElement('div')
     header.className = 'kanban-swimlane-header'
@@ -1494,8 +1494,8 @@ function updateWipBadges(grouped) {
       state = 'ok'; color = cfg.okColor
     }
     el.dataset.wip = state
-    el.style.color = color
-    el.style.borderColor = color
+    el.style.color = safeCssColor(color)
+    el.style.borderColor = safeCssColor(color)
   }
 }
 
@@ -1569,7 +1569,7 @@ function createCardEl(card, embeddedChildren = []) {
     const shown = card.labels.slice(0, 3)
     const overflow = card.labels.length - shown.length
     const pills = shown.map((l) =>
-      `<span class="kanban-card-label-pill" data-label-id="${escapeHtml(l.id)}" style="--label-color:${escapeHtml(l.color)}" title="${t('kanban.label.filter_tooltip', { name: escapeHtml(l.name) })}">#${escapeHtml(l.name)}</span>`
+      `<span class="kanban-card-label-pill" data-label-id="${escapeHtml(l.id)}" style="--label-color:${escapeHtml(safeCssColor(l.color, '#64748b'))}" title="${t('kanban.label.filter_tooltip', { name: escapeHtml(l.name) })}">#${escapeHtml(l.name)}</span>`
     ).join('')
     const overflowHtml = overflow > 0
       ? `<span class="kanban-card-label-pill kanban-card-label-overflow" title="${t('kanban.label.overflow_tooltip', { n: overflow })}">+${overflow}</span>`
@@ -1616,9 +1616,9 @@ function createCardEl(card, embeddedChildren = []) {
       const days = Math.floor(hoursOld / 24)
       const ageLabel = days >= 1 ? `${days}d` : `${Math.floor(hoursOld)}h`
       const exact = new Date(agingBasis * 1000).toLocaleString('hu-HU')
-      agingBadgeHtml = `<span class="kanban-card-aging-badge kanban-card-aging-${agingLevel}" style="color:${agingColor}" title="${t('kanban.aging.tooltip', { exact })}">⏳ ${ageLabel}</span>`
+      agingBadgeHtml = `<span class="kanban-card-aging-badge kanban-card-aging-${agingLevel}" style="color:${escapeHtml(safeCssColor(agingColor))}" title="${t('kanban.aging.tooltip', { exact })}">⏳ ${ageLabel}</span>`
       el.dataset.aging = agingLevel
-      el.style.setProperty('--card-aging-color', agingColor)
+      el.style.setProperty('--card-aging-color', safeCssColor(agingColor))
     }
   }
 
@@ -1891,7 +1891,7 @@ async function kanbanTouchEnd(e) {
   if (chip) {
     // Dropped on the status bar: no position information, so append.
     newStatus = chip.dataset.status
-    sortOrder = document.querySelectorAll(`.kanban-col-body[data-status="${newStatus}"] .kanban-card`).length
+    sortOrder = document.querySelectorAll(`.kanban-col-body[data-status="${CSS.escape(String(newStatus))}"] .kanban-card`).length
   } else if (col) {
     newStatus = col.dataset.status
     const after = getDragAfterElement(col, p.clientY)
@@ -2055,7 +2055,7 @@ async function renderCardLabelsSection(card) {
   for (const label of attached) {
     const pill = document.createElement('span')
     pill.className = 'label-pill'
-    pill.style.setProperty('--label-color', label.color)
+    pill.style.setProperty('--label-color', safeCssColor(label.color, '#64748b'))
     pill.innerHTML = `#${escapeHtml(label.name)} <button class="label-pill-remove" title="${t('kanban.label.remove_btn')}" aria-label="${t('kanban.label.remove_btn')}">&times;</button>`
     pill.querySelector('.label-pill-remove').addEventListener('click', async () => {
       try {
@@ -2101,7 +2101,7 @@ async function renderCardLabelsSection(card) {
   palette.forEach((color, i) => {
     const sw = document.createElement('span')
     sw.className = 'label-color-swatch' + (i === 0 ? ' selected' : '')
-    sw.style.background = color
+    sw.style.backgroundColor = safeCssColor(color)
     sw.addEventListener('click', () => {
       selectedColor = color
       newColorsEl.querySelectorAll('.label-color-swatch').forEach((s) => s.classList.remove('selected'))
@@ -2287,11 +2287,11 @@ async function showCardDetail(card) {
     </div>
     <div class="meta-item">
       <span class="meta-label">${t('kanban.meta.status')}</span>
-      <span class="meta-value meta-value-editable" id="metaStatusValue" data-card-id="${card.id}" title="${t('kanban.meta.edit_tooltip')}">${statusLabels[card.status] || card.status}</span>
+      <span class="meta-value meta-value-editable" id="metaStatusValue" data-card-id="${escapeHtml(card.id)}" title="${t('kanban.meta.edit_tooltip')}">${escapeHtml(statusLabels[card.status] || card.status)}</span>
     </div>
     <div class="meta-item">
       <span class="meta-label">${t('kanban.meta.assignee')}</span>
-      <span class="meta-value meta-value-editable" id="metaAssigneeValue" data-card-id="${card.id}" title="${t('kanban.meta.edit_tooltip')}">${escapeHtml(assigneeDisplay)}</span>
+      <span class="meta-value meta-value-editable" id="metaAssigneeValue" data-card-id="${escapeHtml(card.id)}" title="${t('kanban.meta.edit_tooltip')}">${escapeHtml(assigneeDisplay)}</span>
     </div>
     <div class="meta-item">
       <span class="meta-label">${t('kanban.meta.priority')}</span>
@@ -2591,8 +2591,8 @@ async function showCardDetail(card) {
         div.style.cssText = 'cursor:pointer; display:flex; justify-content:space-between; align-items:center; gap:8px'
         const info = document.createElement('div')
         info.style.flex = '1'
-        info.innerHTML = `<div><strong>${escapeHtml(ch.title)}</strong> <span style="color:var(--text-muted)">[${statusLabelsShort[ch.status] || ch.status}]</span></div>
-          <div style="font-size:0.85em;color:var(--text-muted)">${ch.assignee ? escapeHtml(ch.assignee) : ''}${ch.description ? ' -- ' + escapeHtml(ch.description).slice(0, 80) : ''}</div>`
+        info.innerHTML = `<div><strong>${escapeHtml(ch.title)}</strong> <span style="color:var(--text-muted)">[${escapeHtml(statusLabelsShort[ch.status] || ch.status)}]</span></div>
+          <div style="font-size:0.85em;color:var(--text-muted)">${ch.assignee ? escapeHtml(ch.assignee) : ''}${ch.description ? ' -- ' + escSnippet(ch.description, 80) : ''}</div>`
         info.onclick = () => { closeModal(cardDetailOverlay); showCardDetail(ch) }
         div.appendChild(info)
         if (canDeleteChild) {
@@ -2650,7 +2650,7 @@ async function showCardDetail(card) {
 }
 
 async function triggerBreakdown(card) {
-  const btn = document.querySelector(`.kanban-card[data-id="${card.id}"] .card-breakdown-btn`)
+  const btn = document.querySelector(`.kanban-card[data-id="${CSS.escape(String(card.id))}"] .card-breakdown-btn`)
   if (btn) { btn.disabled = true; btn.textContent = '...' }
   try {
     const res = await fetch(`/api/kanban/${encodeURIComponent(card.id)}/breakdown`, { method: 'POST' })
@@ -2668,7 +2668,7 @@ async function triggerBreakdown(card) {
 }
 
 function showBreakdownModal(subtasks, parentCard) {
-  document.getElementById('breakdownProvider').textContent = t('kanban.breakdown.parent_label', { title: escapeHtml(parentCard.title) })
+  document.getElementById('breakdownProvider').textContent = t('kanban.breakdown.parent_label', { title: parentCard.title })
   const list = document.getElementById('breakdownList')
   list.innerHTML = ''
 
@@ -2696,7 +2696,7 @@ function showBreakdownModal(subtasks, parentCard) {
           <option value="">-- nincs --</option>
           ${assigneeOptions}
         </select>
-        <span class="priority-badge priority-${st.priority}">${priorityLabels[st.priority] || st.priority}</span>
+        <span class="priority-badge priority-${escapeHtml(st.priority)}">${escapeHtml(priorityLabels[st.priority] || st.priority)}</span>
       </div>
     `
     // Set assignee select value after insert
@@ -3768,7 +3768,7 @@ function renderAgents() {
     const card = document.createElement('div')
     card.className = 'agent-card'
     card.dataset.name = agent.name
-    const initial = label.charAt(0).toUpperCase()
+    const initial = escapeHtml(label.charAt(0).toUpperCase())
     const gradientClass = getAvatarGradient(agent.name)
     const avatarHtml = (agent.hasImage || agent.hasAvatar)
       ? `<img src="/api/agents/${encodeURIComponent(agent.name)}/avatar${avatarBust()}" alt="${escapeHtml(label)}">`
@@ -3942,7 +3942,7 @@ function renderFederatedAgentCards(agentsGrid, addBtn) {
       <div class="agent-card-top">
         <div class="agent-avatar ${gradientClass}">${escapeHtml(fa.displayName.charAt(0).toUpperCase())}</div>
         <div class="agent-card-info">
-          <div class="agent-name">${escapeHtml(fa.displayName)} <span class="federated-badge">${t('federation.badge', { peer: fa.peer })}</span></div>
+          <div class="agent-name">${escapeHtml(fa.displayName)} <span class="federated-badge">${t('federation.badge', { peer: escapeHtml(fa.peer) })}</span></div>
           <div class="agent-desc">${escapeHtml(fa.qualified)}</div>
         </div>
       </div>
@@ -3988,7 +3988,7 @@ async function openAgentDetail(agentName) {
   document.getElementById('agentDetailTitle').textContent = detailLabel
 
   // Overview tab
-  const initial = detailLabel.charAt(0).toUpperCase()
+  const initial = escapeHtml(detailLabel.charAt(0).toUpperCase())
   const gradientClass = getAvatarGradient(currentAgent.name)
   const avatar = document.getElementById('agentDetailAvatar')
   avatar.className = 'detail-avatar ' + gradientClass
@@ -4980,13 +4980,13 @@ document.getElementById('analyzeAllModelsBtn').addEventListener('click', async (
       html += '<ul style="margin:0 0 10px;padding-left:18px">'
       for (const r of changes) {
         const safeReason = r.reason.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
-        html += `<li style="margin-bottom:6px"><strong>${r.agent}</strong>: ${r.currentModel} &rarr; ${r.suggestedModel}`
+        html += `<li style="margin-bottom:6px"><strong>${escapeHtml(r.agent)}</strong>: ${escapeHtml(r.currentModel)} &rarr; ${escapeHtml(r.suggestedModel)}`
         html += ` <details style="display:inline-block;vertical-align:top;margin-left:4px"><summary style="cursor:pointer;font-size:11px;color:var(--text-muted)">${t('agents.model.details')}</summary>`
         html += `<pre style="white-space:pre-wrap;font-size:11px;margin:4px 0 0;background:var(--surface);padding:6px 8px;border-radius:4px;color:var(--text-muted)">${safeReason}</pre></details></li>`
       }
       html += '</ul>'
       if (ok.length > 0) {
-        html += `<p style="color:var(--text-muted);margin:0;font-size:12px">${t('agents.model.ok_agents', { list: ok.map(r => r.agent).join(', ') })}</p>`
+        html += `<p style="color:var(--text-muted);margin:0;font-size:12px">${t('agents.model.ok_agents', { list: escapeHtml(ok.map(r => r.agent).join(', ')) })}</p>`
       }
       html += `<button class="btn-secondary btn-compact" id="createModelChangeCardsBtn" style="margin-top:10px">${t('agents.model.create_cards_btn')}</button>`
     }
@@ -5191,9 +5191,9 @@ async function loadVoiceConfig(agentName) {
     if (!r.ok) return
     const cfg = await r.json()
     voiceModelSel.innerHTML = (cfg.availableVoices || []).map(v =>
-      `<option value="${v}"${v === cfg.voiceModel ? ' selected' : ''}>${v}</option>`
+      `<option value="${escapeHtml(v)}"${v === cfg.voiceModel ? ' selected' : ''}>${escapeHtml(v)}</option>`
     ).join('')
-    const modeInput = document.querySelector(`input[name="voiceResponseMode"][value="${cfg.responseMode || 'text'}"]`)
+    const modeInput = document.querySelector(`input[name="voiceResponseMode"][value="${CSS.escape(String(cfg.responseMode || 'text'))}"]`)
     if (modeInput) modeInput.checked = true
   } catch { /* silent */ }
 }
@@ -5419,7 +5419,7 @@ document.getElementById('authFlowInitBtn').addEventListener('click', async () =>
     const data = await res.json()
     if (data.ok && data.authUrl) {
       const urlEl = document.getElementById('authFlowUrl')
-      urlEl.href = data.authUrl
+      urlEl.href = safeHref(data.authUrl) || '#'
       urlEl.textContent = data.authUrl
       resultDiv.hidden = false
     } else {
@@ -5574,7 +5574,7 @@ function updateProviderUI() {
 
   if (isTg) {
     if (title) title.textContent = t('channel.setup.tg_title')
-    if (steps) steps.innerHTML = t('channel.setup.tg_steps')
+    if (steps) steps.innerHTML = tHtml('channel.setup.tg_steps')
     if (label) label.textContent = 'Bot API Token'
     if (input) input.placeholder = '123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11'
     if (slackGroup) slackGroup.hidden = true
@@ -5584,7 +5584,7 @@ function updateProviderUI() {
     if (pairingInfo) pairingInfo.textContent = t('channel.setup.tg_pairing')
   } else if (currentChannelProvider === 'discord') {
     if (title) title.textContent = t('channel.setup.discord_title')
-    if (steps) steps.innerHTML = t('channel.setup.discord_steps')
+    if (steps) steps.innerHTML = tHtml('channel.setup.discord_steps')
     if (label) label.textContent = 'Bot Token'
     if (input) input.placeholder = 'MTIzNDU2Nzg5MDEyMzQ1Njc4OQ...'
     if (slackGroup) slackGroup.hidden = true
@@ -5594,7 +5594,7 @@ function updateProviderUI() {
     if (pairingInfo) pairingInfo.textContent = t('channel.setup.discord_pairing')
   } else if (currentChannelProvider === 'teams') {
     if (title) title.textContent = t('channel.setup.teams_title')
-    if (steps) steps.innerHTML = t('channel.setup.teams_steps')
+    if (steps) steps.innerHTML = tHtml('channel.setup.teams_steps')
     if (slackGroup) slackGroup.hidden = true
     if (manifestBtnGroup) manifestBtnGroup.hidden = true
     if (smokeTestBtn) smokeTestBtn.hidden = true
@@ -5604,7 +5604,7 @@ function updateProviderUI() {
     if (pairingInfo) pairingInfo.textContent = t('channel.setup.teams_pairing')
   } else {
     if (title) title.textContent = t('channel.setup.slack_title')
-    if (steps) steps.innerHTML = t('channel.setup.slack_steps')
+    if (steps) steps.innerHTML = tHtml('channel.setup.slack_steps')
     if (label) label.textContent = 'Bot Token (xoxb-...)'
     if (input) input.placeholder = 'xoxb-...'
     if (slackGroup) slackGroup.hidden = false
@@ -5948,8 +5948,8 @@ async function refreshInvites() {
       const status = inv.used
         ? `<span class="tg-allowed-kind" style="background:rgba(180,180,180,0.15); color:var(--text-muted);">${t('channel.invite.used_badge')}</span>`
         : `<span class="tg-allowed-kind tg-allowed-kind-group">${t('channel.invite.active_badge', { min: expiresIn })}</span>`
-      const linkHtml = inv.deepLink
-        ? `<a href="${escapeHtml(inv.deepLink)}" target="_blank" class="tg-allowed-id" style="text-decoration:underline;">${escapeHtml(inv.deepLink)}</a>`
+      const linkHtml = safeHref(inv.deepLink)
+        ? `<a href="${escapeHtml(safeHref(inv.deepLink))}" target="_blank" class="tg-allowed-id" style="text-decoration:underline;">${escapeHtml(inv.deepLink)}</a>`
         : `<span class="tg-allowed-id">${t('channel.invite.no_username')}</span>`
       item.innerHTML = `
         <div class="tg-allowed-meta" style="flex-wrap:wrap; gap:6px;">
@@ -6050,7 +6050,7 @@ async function refreshChannelRequests() {
     for (const req of items) {
       const item = document.createElement('div')
       item.className = 'tg-allowed-item'
-      const name = req.channel_name ? escapeHtml(req.channel_name) : req.channel_id
+      const name = escapeHtml(req.channel_name || req.channel_id)
       const ts = new Date(req.requested_at * 1000).toLocaleString('hu-HU')
       const userId = req.user_id ? `<span class="tg-allowed-id">user: ${escapeHtml(req.user_id)}</span>` : ''
       item.innerHTML = `
@@ -6077,8 +6077,8 @@ let _approveReqId = null
 function openApproveModal(id, channelName, userId) {
   _approveReqId = id
   const desc = document.getElementById('chApproveModalDesc')
-  const userNote = userId ? t('channel.approve.requester', { user: escapeHtml(userId) }) : ''
-  desc.textContent = t('channel.approve.desc', { channel: escapeHtml(channelName), requester: userNote })
+  const userNote = userId ? t('channel.approve.requester', { user: userId }) : ''
+  desc.textContent = t('channel.approve.desc', { channel: channelName, requester: userNote })
   document.getElementById('chApproveRequireMention').checked = true
   document.getElementById('chApproveAllowFromAll').checked = false
   document.getElementById('chApproveModalOverlay').hidden = false
@@ -6101,7 +6101,7 @@ async function submitApproveModal() {
     })
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Hiba')
     document.getElementById('chApproveModalOverlay').hidden = true
-    const item = document.querySelector(`[data-req-id="${id}"]`)
+    const item = document.querySelector(`[data-req-id="${CSS.escape(String(id))}"]`)
     if (item) item.remove()
     showToast(t('channel.toast.approved'))
     refreshChannelRequests()
@@ -6730,7 +6730,7 @@ function makeScheduleRow(task) {
         </div>
         <div class="schedule-meta">
           <span class="schedule-cron">${escapeHtml(task.schedule)}</span>
-          <span>${describeCron(task.schedule)}</span>
+          <span>${escapeHtml(describeCron(task.schedule))}</span>
           <span class="schedule-agent-name">${escapeHtml(agent.label || agent.name)}</span>
         </div>
       </div>
@@ -7110,7 +7110,7 @@ function openEditSchedule(task) {
 
     // Set agent
     const agentSel = document.getElementById('scheduleAgent')
-    if (agentSel.querySelector(`option[value="${task.agent}"]`)) {
+    if (agentSel.querySelector(`option[value="${CSS.escape(String(task.agent))}"]`)) {
       agentSel.value = task.agent
     }
 
@@ -7309,8 +7309,8 @@ async function loadMemAgents() {
     sel.innerHTML = `<option value="">${t('memories.agent_all')}</option>`
     memSel.innerHTML = ''
     for (const a of agents) {
-      sel.innerHTML += `<option value="${a.name}">${a.label}</option>`
-      memSel.innerHTML += `<option value="${a.name}">${a.label}</option>`
+      sel.innerHTML += `<option value="${escapeHtml(a.name)}">${escapeHtml(a.label)}</option>`
+      memSel.innerHTML += `<option value="${escapeHtml(a.name)}">${escapeHtml(a.label)}</option>`
     }
   } catch {}
 }
@@ -7421,7 +7421,7 @@ async function loadMemStats() {
     memStats.innerHTML = `
       <div class="stat-card"><div class="stat-value">${stats.total}</div><div class="stat-label">${t('memories.stat.total')}</div></div>
       ${Object.entries(stats.byTier || {}).map(([tier, count]) =>
-        `<div class="stat-card"><div class="stat-value" style="color:${tierColors[tier] || 'var(--accent)'}">${count}</div><div class="stat-label">${tierLabels[tier] || tier}</div></div>`
+        `<div class="stat-card"><div class="stat-value" style="color:${tierColors[tier] || 'var(--accent)'}">${count}</div><div class="stat-label">${escapeHtml(tierLabels[tier] || tier)}</div></div>`
       ).join('')}
       <div class="stat-card"><div class="stat-value">${embCount}</div><div class="stat-label">${t('memories.stat.vectors_pct', { pct: embPct })}</div></div>
       <button class="btn-secondary btn-compact" id="memBackfillBtn" style="margin-left:auto;font-size:11px;padding:6px 12px;align-self:center">${t('memories.stat.vectors_btn')}</button>
@@ -7504,7 +7504,7 @@ function renderMemories(memories) {
     item.className = 'mem-item'
 
     const tier = mem.tier || mem.category || 'warm'
-    const tierBadge = tierLabels[tier] || tier
+    const tierBadge = escapeHtml(tierLabels[tier] || tier)
     const badgeClass = 'badge-' + tier
     const shortContent = mem.content.length > 120 ? mem.content.slice(0, 120) + '...' : mem.content
     const agentLabel = mem.agent_id || mainAgentId()
@@ -8105,7 +8105,7 @@ function showGraphPanel(node) {
   const created = node.mem.created_label || ''
   panel.innerHTML = `
     <div class="graph-panel-header">
-      <span class="badge badge-${node.tier}">${tierLabelsMap[node.tier] || node.tier}</span>
+      <span class="badge badge-${escapeHtml(node.tier)}">${escapeHtml(tierLabelsMap[node.tier] || node.tier)}</span>
       <span class="graph-panel-agent">${escapeHtml(node.agent)}</span>
       <button class="graph-panel-close" id="graphPanelCloseBtn">&times;</button>
     </div>
@@ -8501,20 +8501,20 @@ function renderCatalog() {
     const authHint = item.authType === 'oauth' && item.authNote ? `<span class="catalog-auth-hint">${escapeHtml(item.authNote)}</span>` : ''
     card.innerHTML = `
       <div class="catalog-card-header">
-        <div class="catalog-card-icon">${item.icon || '?'}</div>
+        <div class="catalog-card-icon">${escapeHtml(item.icon || '?')}</div>
         <div class="catalog-card-info">
           <div class="catalog-card-name">
             ${escapeHtml(item.name)}
-            <span class="catalog-card-type ${item.type}">${item.type}</span>
-            ${item.infoUrl ? `<a href="${escapeHtml(item.infoUrl)}" target="_blank" rel="noopener" class="catalog-card-link" title="${t('connectors.tooltip.docs')}" onclick="event.stopPropagation()">&#x2197;</a>` : ''}
+            <span class="catalog-card-type ${escapeHtml(item.type)}">${escapeHtml(item.type)}</span>
+            ${safeHref(item.infoUrl, { relative: true }) ? `<a href="${escapeHtml(safeHref(item.infoUrl, { relative: true }))}" target="_blank" rel="noopener" class="catalog-card-link" title="${t('connectors.tooltip.docs')}" onclick="event.stopPropagation()">&#x2197;</a>` : ''}
           </div>
           <div class="catalog-card-desc">${escapeHtml(item.description)}</div>
         </div>
       </div>
       <div class="catalog-card-footer">
         ${item.installed
-          ? `<span class="catalog-install-btn installed" title="${item.configMatch ? t('connectors.tooltip.installed_mcp') : t('connectors.tooltip.installed_src', { src: escapeHtml(item.installedSource || '') })}">Telepítve &#10003;${item.configMatch ? ' (.mcp.json)' : item.installedSource === 'claude.ai' ? ' (claude.ai)' : item.installedSource === 'plugin' ? ' (plugin)' : ''}</span>${(item.installedSource === 'claude.ai' || item.configMatch) ? '' : `<a class="catalog-uninstall-link" data-id="${item.id}">Eltávolítás</a>`}`
-          : `<button class="catalog-install-btn install" data-id="${item.id}">${t('connectors.catalog.install_btn')}</button>${authHint}`
+          ? `<span class="catalog-install-btn installed" title="${item.configMatch ? t('connectors.tooltip.installed_mcp') : t('connectors.tooltip.installed_src', { src: escapeHtml(item.installedSource || '') })}">Telepítve &#10003;${item.configMatch ? ' (.mcp.json)' : item.installedSource === 'claude.ai' ? ' (claude.ai)' : item.installedSource === 'plugin' ? ' (plugin)' : ''}</span>${(item.installedSource === 'claude.ai' || item.configMatch) ? '' : `<a class="catalog-uninstall-link" data-id="${escapeHtml(item.id)}">Eltávolítás</a>`}`
+          : `<button class="catalog-install-btn install" data-id="${escapeHtml(item.id)}">${t('connectors.catalog.install_btn')}</button>${authHint}`
         }
       </div>
     `
@@ -8726,13 +8726,13 @@ const BUILTIN_MCPS = [
     name: 'computer-use',
     label: 'Computer Use',
     desc: () => t('connectors.builtin.computer_use'),
-    get detailHtml() { return t('connectors.builtin.computer_use_html') },
+    get detailHtml() { return tHtml('connectors.builtin.computer_use_html') },
   },
   {
     name: 'chrome',
     label: 'Claude in Chrome',
     desc: () => t('connectors.builtin.chrome'),
-    get detailHtml() { return t('connectors.builtin.chrome_html') },
+    get detailHtml() { return tHtml('connectors.builtin.chrome_html') },
   },
 ]
 
@@ -8741,9 +8741,9 @@ function openBuiltinDetail(item) {
   if (!overlay) return
   document.getElementById('builtinDetailTitle').textContent = item.label
   document.getElementById('builtinDetailDesc').textContent = typeof item.desc === 'function' ? item.desc() : item.desc
-  // Static strings only. Never interpolate user or server input here
-  // without passing it through escapeHtml first -- detailHtml is a
-  // raw HTML sink.
+  // detailHtml is a raw HTML sink: it comes from tHtml(), which escapes the
+  // {brand} token (.env BRAND_NAME / BOT_NAME) and every param. Never build it
+  // from plain t() or from unescaped user or server input.
   document.getElementById('builtinDetailBody').innerHTML = item.detailHtml
   openModal(overlay)
   // Move focus into the dialog so keyboard users land inside the new
@@ -8803,7 +8803,7 @@ function renderConnectors() {
   if (connectors.length > 0 && !connectorCacheWarming && connectorCacheError && hasClaudeAiEntries) {
     const banner = document.createElement('div')
     banner.className = 'connector-stale-banner'
-    banner.innerHTML = t('connectors.stale_banner', { msg: escapeHtml(connectorCacheError) })
+    banner.innerHTML = tHtml('connectors.stale_banner', { msg: connectorCacheError })
     connectorGrid.appendChild(banner)
   }
   if (connectors.length === 0 && !BUILTIN_MCPS.length) {
@@ -9275,7 +9275,7 @@ function _sshKeyBadge(status) {
     missing: '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>',
     expired: '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>',
   }
-  return `<span class="ssh-key-badge ${status}">${icons[status] || ''} ${labels[status] || status}</span>`
+  return `<span class="ssh-key-badge ${escapeHtml(status)}">${icons[status] || ''} ${escapeHtml(labels[status] || status)}</span>`
 }
 
 function _sshKeyAssignSelect(s) {
@@ -10080,7 +10080,8 @@ function renderVaultGrid(secrets) {
 
     const grouped = new Map()
     for (const f of actionable) {
-      const key = `${f.serverName}|${f.envVar}`
+      // JSON tuple: server names and env keys are free text and may contain '|'.
+      const key = JSON.stringify([f.serverName, f.envVar])
       if (!grouped.has(key)) grouped.set(key, { ...f, allTargets: [] })
       grouped.get(key).allTargets.push({ mcpFilePath: f.mcpFilePath, serverName: f.serverName })
     }
@@ -10118,9 +10119,10 @@ function renderVaultGrid(secrets) {
       const cb = row.querySelector('input[type="checkbox"]')
       if (!cb?.checked) continue
       const key = cb.getAttribute('data-key')
-      const [serverName, envVar] = key.split('|')
+      let serverName, envVar
+      try { [serverName, envVar] = JSON.parse(key) } catch { continue }
       const vaultIdInput = row.querySelector('.vault-scan-vault-id')
-      const vaultId = vaultIdInput?.value?.trim() || key
+      const vaultId = vaultIdInput?.value?.trim() || `${serverName}|${envVar}`
 
       const matchingFindings = allFindings.filter(
         f => f.serverName === serverName && f.envVar === envVar && !f.alreadyInVault,
@@ -10231,10 +10233,12 @@ async function openConnectorDetail(connector) {
     const statusLabels = { connected: t('connectors.status.connected'), needs_auth: t('connectors.status.needs_auth'), failed: t('connectors.status.failed'), unknown: t('connectors.status.unknown') }
     const statusColors = { connected: 'var(--success)', needs_auth: 'var(--accent)', failed: 'var(--danger)', unknown: 'var(--text-muted)' }
 
+    // Every field here can come from an agent's, a project's or an external
+    // .mcp.json (routes/connectors.ts), so each one is escaped -- the env KEYS too.
     document.getElementById('connectorDetailInfo').innerHTML = `
       <div class="connector-detail-row">
         <span class="meta-label">Statusz</span>
-        <span class="meta-value" style="color:${statusColors[detail.status] || ''}">${statusLabels[detail.status] || detail.status}</span>
+        <span class="meta-value" style="color:${statusColors[detail.status] || ''}">${escapeHtml(statusLabels[detail.status] || detail.status || '')}</span>
       </div>
       <div class="connector-detail-row">
         <span class="meta-label">Hatokor</span>
@@ -10242,7 +10246,7 @@ async function openConnectorDetail(connector) {
       </div>
       ${detail.type ? `<div class="connector-detail-row"><span class="meta-label">Tipus</span><span class="meta-value">${escapeHtml(detail.type)}</span></div>` : ''}
       ${detail.command ? `<div class="connector-detail-row"><span class="meta-label">Parancs</span><span class="meta-value" style="font-family:monospace;font-size:12px">${escapeHtml(detail.command)} ${escapeHtml(detail.args || '')}</span></div>` : ''}
-      ${Object.keys(detail.env || {}).length ? `<div class="connector-detail-row"><span class="meta-label">Env</span><span class="meta-value" style="font-family:monospace;font-size:11px">${Object.entries(detail.env).map(([k,v]) => `${k}=${v}`).join(', ')}</span></div>` : ''}
+      ${Object.keys(detail.env || {}).length ? `<div class="connector-detail-row"><span class="meta-label">Env</span><span class="meta-value" style="font-family:monospace;font-size:11px">${Object.entries(detail.env).map(([k,v]) => `${escapeHtml(k)}=${escapeHtml(String(v))}`).join(', ')}</span></div>` : ''}
     `
   } catch {
     document.getElementById('connectorDetailInfo').innerHTML = `<p>${t('connectors.detail_error')}</p>`
@@ -10280,8 +10284,8 @@ async function openConnectorDetail(connector) {
       const item = document.createElement('div')
       item.className = 'connector-agent-item'
       item.innerHTML = `
-        <input type="checkbox" id="assign-${agent.name}" value="${agent.name}" ${isAssigned ? 'checked' : ''}>
-        <label for="assign-${agent.name}">${escapeHtml(agent.label || agent.name)}</label>
+        <input type="checkbox" id="assign-${escapeHtml(agent.name)}" value="${escapeHtml(agent.name)}" ${isAssigned ? 'checked' : ''}>
+        <label for="assign-${escapeHtml(agent.name)}">${escapeHtml(agent.label || agent.name)}</label>
       `
       listEl.appendChild(item)
     }
@@ -10351,8 +10355,8 @@ async function loadNewConnectorAgents() {
       const item = document.createElement('div')
       item.className = 'connector-agent-item'
       item.innerHTML = `
-        <input type="checkbox" id="new-assign-${agent.name}" value="${agent.name}">
-        <label for="new-assign-${agent.name}">${escapeHtml(agent.label || agent.name)}</label>
+        <input type="checkbox" id="new-assign-${escapeHtml(agent.name)}" value="${escapeHtml(agent.name)}">
+        <label for="new-assign-${escapeHtml(agent.name)}">${escapeHtml(agent.label || agent.name)}</label>
       `
       list.appendChild(item)
     }
@@ -10442,6 +10446,250 @@ function escapeHtml(str) {
   return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;')
 }
 
+// A value passed as a string argument of an inline handler
+// (onclick="fn(${jsArg(id)})"). escapeHtml alone is NOT enough there: the
+// HTML parser decodes &#39; back to ' before the handler's JavaScript is
+// parsed, so a quote in the value would end the JS string. JSON.stringify
+// makes it a JS string literal; escapeHtml then keeps it inside the attribute.
+function jsArg(v) {
+  return escapeHtml(JSON.stringify(String(v ?? '')))
+}
+
+// A shortened text for HTML: cut the RAW text, then escape it, and add the
+// ellipsis by the raw length. Escaping first and slicing after could split an
+// entity (&quot; -> &q) and would count entity bytes as visible characters.
+function escSnippet(raw, max) {
+  const s = String(raw ?? '')
+  return escapeHtml(s.slice(0, max)) + (s.length > max ? '…' : '')
+}
+
+// The one gate for a URL from data (a catalogue file, the API, CLI output, a
+// markdown doc) before it becomes an href. escapeHtml stops an attribute
+// breakout but not the scheme: only http(s) and mailto pass, or -- with
+// { relative: true } -- a scheme-less relative or fragment link. The URL
+// parser drops control characters and spaces, and a leading // or /\ means
+// another host, so the check judges the URL the same way. Returns the URL
+// unchanged when it passes, '' otherwise. HTML-encode the result in markup.
+function safeHref(raw, { relative = false } = {}) {
+  const s = String(raw ?? '')
+  const u = s.replace(/[\x00-\x20\x7f]/g, '')
+  if (!u) return ''
+  const scheme = /^[a-z][a-z0-9+.-]*:/i.exec(u)
+  if (scheme) return /^(https?|mailto):$/i.test(scheme[0]) ? s : ''
+  return relative && !/^[\\/][\\/]/.test(u) ? s : ''
+}
+
+// The dashboard's mirror of src/css-color.ts normalizeCssColor -- the same
+// colour table, regexes and arithmetic; both are checked against the same
+// vectors (src/__tests__/fixtures/css-color-vectors.json) and the table is
+// compared entry by entry, so the server and the page apply ONE policy:
+// hex kept, a CSS colour name or a strictly numeric rgb()/rgba()/hsl()/hsla()
+// becomes hex, anything else (url(), declarations, words, bad hex) is null.
+const CSS_NAMED_COLORS = {
+  aliceblue: '#f0f8ff', antiquewhite: '#faebd7', aqua: '#00ffff', aquamarine: '#7fffd4', azure: '#f0ffff',
+  beige: '#f5f5dc', bisque: '#ffe4c4', black: '#000000', blanchedalmond: '#ffebcd', blue: '#0000ff',
+  blueviolet: '#8a2be2', brown: '#a52a2a', burlywood: '#deb887', cadetblue: '#5f9ea0', chartreuse: '#7fff00',
+  chocolate: '#d2691e', coral: '#ff7f50', cornflowerblue: '#6495ed', cornsilk: '#fff8dc', crimson: '#dc143c',
+  cyan: '#00ffff', darkblue: '#00008b', darkcyan: '#008b8b', darkgoldenrod: '#b8860b', darkgray: '#a9a9a9',
+  darkgreen: '#006400', darkgrey: '#a9a9a9', darkkhaki: '#bdb76b', darkmagenta: '#8b008b', darkolivegreen: '#556b2f',
+  darkorange: '#ff8c00', darkorchid: '#9932cc', darkred: '#8b0000', darksalmon: '#e9967a', darkseagreen: '#8fbc8f',
+  darkslateblue: '#483d8b', darkslategray: '#2f4f4f', darkslategrey: '#2f4f4f', darkturquoise: '#00ced1', darkviolet: '#9400d3',
+  deeppink: '#ff1493', deepskyblue: '#00bfff', dimgray: '#696969', dimgrey: '#696969', dodgerblue: '#1e90ff',
+  firebrick: '#b22222', floralwhite: '#fffaf0', forestgreen: '#228b22', fuchsia: '#ff00ff', gainsboro: '#dcdcdc',
+  ghostwhite: '#f8f8ff', gold: '#ffd700', goldenrod: '#daa520', gray: '#808080', green: '#008000',
+  greenyellow: '#adff2f', grey: '#808080', honeydew: '#f0fff0', hotpink: '#ff69b4', indianred: '#cd5c5c',
+  indigo: '#4b0082', ivory: '#fffff0', khaki: '#f0e68c', lavender: '#e6e6fa', lavenderblush: '#fff0f5',
+  lawngreen: '#7cfc00', lemonchiffon: '#fffacd', lightblue: '#add8e6', lightcoral: '#f08080', lightcyan: '#e0ffff',
+  lightgoldenrodyellow: '#fafad2', lightgray: '#d3d3d3', lightgreen: '#90ee90', lightgrey: '#d3d3d3', lightpink: '#ffb6c1',
+  lightsalmon: '#ffa07a', lightseagreen: '#20b2aa', lightskyblue: '#87cefa', lightslategray: '#778899', lightslategrey: '#778899',
+  lightsteelblue: '#b0c4de', lightyellow: '#ffffe0', lime: '#00ff00', limegreen: '#32cd32', linen: '#faf0e6',
+  magenta: '#ff00ff', maroon: '#800000', mediumaquamarine: '#66cdaa', mediumblue: '#0000cd', mediumorchid: '#ba55d3',
+  mediumpurple: '#9370db', mediumseagreen: '#3cb371', mediumslateblue: '#7b68ee', mediumspringgreen: '#00fa9a', mediumturquoise: '#48d1cc',
+  mediumvioletred: '#c71585', midnightblue: '#191970', mintcream: '#f5fffa', mistyrose: '#ffe4e1', moccasin: '#ffe4b5',
+  navajowhite: '#ffdead', navy: '#000080', oldlace: '#fdf5e6', olive: '#808000', olivedrab: '#6b8e23',
+  orange: '#ffa500', orangered: '#ff4500', orchid: '#da70d6', palegoldenrod: '#eee8aa', palegreen: '#98fb98',
+  paleturquoise: '#afeeee', palevioletred: '#db7093', papayawhip: '#ffefd5', peachpuff: '#ffdab9', peru: '#cd853f',
+  pink: '#ffc0cb', plum: '#dda0dd', powderblue: '#b0e0e6', purple: '#800080', rebeccapurple: '#663399',
+  red: '#ff0000', rosybrown: '#bc8f8f', royalblue: '#4169e1', saddlebrown: '#8b4513', salmon: '#fa8072',
+  sandybrown: '#f4a460', seagreen: '#2e8b57', seashell: '#fff5ee', sienna: '#a0522d', silver: '#c0c0c0',
+  skyblue: '#87ceeb', slateblue: '#6a5acd', slategray: '#708090', slategrey: '#708090', snow: '#fffafa',
+  springgreen: '#00ff7f', steelblue: '#4682b4', tan: '#d2b48c', teal: '#008080', thistle: '#d8bfd8',
+  tomato: '#ff6347', turquoise: '#40e0d0', violet: '#ee82ee', wheat: '#f5deb3', white: '#ffffff',
+  whitesmoke: '#f5f5f5', yellow: '#ffff00', yellowgreen: '#9acd32', transparent: '#00000000',
+}
+
+const CSS_HEX_COLOR = /^#(?:[0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/i
+// CSS <number>: optional sign, digits with an optional fraction or a leading
+// dot, optional exponent (1e2, -1, .5, +3.25E-1); nothing else
+const CSS_NUMBER = /^[+-]?(?:\d*\.\d+|\d+)(?:e[+-]?\d+)?$/i
+const CSS_HUE_UNIT = { deg: 1, grad: 0.9, rad: 180 / Math.PI, turn: 360 }
+
+const CSS_HUE_UNITS = ['grad', 'turn', 'deg', 'rad']
+// Input budget, as on the server: a resource bound
+// well above any real spelling (a full-precision JS number serialization is
+// ~85 characters); a longer value is not a colour, decided before parsing.
+const MAX_CSS_COLOR_LENGTH = 256
+
+function isCssWs(ch) {
+  return ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r' || ch === '\f'
+}
+
+// Trim and split are plain character scans, one pass each, no regex (the
+// regex trim was quadratic on a long internal whitespace run)
+function cssTrim(s) {
+  let i = 0
+  let j = s.length
+  while (i < j && isCssWs(s[i])) i++
+  while (j > i && isCssWs(s[j - 1])) j--
+  return s.slice(i, j)
+}
+
+// the tokens of a TRIMMED string separated by runs of CSS whitespace
+function cssSplitWs(s) {
+  const out = []
+  let i = 0
+  while (i < s.length) {
+    let j = i
+    while (j < s.length && !isCssWs(s[j])) j++
+    out.push(s.slice(i, j))
+    while (j < s.length && isCssWs(s[j])) j++
+    i = j
+  }
+  return out
+}
+
+function cssHex2(n) {
+  // + 1e-7: a half-way channel that float arithmetic left at 127.4999999
+  // rounds up like the browser's 127.5 does
+  return Math.round(Math.min(255, Math.max(0, n)) + 1e-7).toString(16).padStart(2, '0')
+}
+
+function cssToHex(r, g, b, a) {
+  const rgb = `#${cssHex2(r)}${cssHex2(g)}${cssHex2(b)}`
+  return a >= 1 ? rgb : rgb + cssHex2(Math.max(0, a) * 255)
+}
+
+// a token: a number (pct=false) or a percentage (pct=true), else null
+function cssNum(token) {
+  const pct = token.endsWith('%')
+  const t = pct ? token.slice(0, -1) : token
+  if (!CSS_NUMBER.test(t)) return null
+  const n = Number(t)
+  return Number.isNaN(n) ? null : { n, pct }
+}
+
+// alpha: a number or a percentage, clamped to 0..1
+function cssAlpha(token) {
+  const v = cssNum(token)
+  if (!v) return null
+  const a = v.pct ? v.n / 100 : v.n
+  return Math.min(1, Math.max(0, a))
+}
+
+// hue: a number (degrees) or a number with deg / grad / rad / turn
+// (the unit is matched ASCII case-insensitively; 'grad' is tried before 'rad')
+function cssHue(token) {
+  const unit = CSS_HUE_UNITS.find((u) => token.slice(-u.length).replace(/[A-Z]/g, (c) => c.toLowerCase()) === u)
+  const v = cssNum(unit ? token.slice(0, -unit.length) : token)
+  if (!v || v.pct) return null
+  const deg = v.n * (unit ? CSS_HUE_UNIT[unit] : 1)
+  return Number.isFinite(deg) ? ((deg % 360) + 360) % 360 : null
+}
+
+function cssHslToRgb(hue, s, l) {
+  const h = hue / 360
+  const sat = Math.min(1, Math.max(0, s / 100))
+  const lig = Math.min(1, Math.max(0, l / 100))
+  if (sat === 0) return [lig * 255, lig * 255, lig * 255]
+  const q = lig < 0.5 ? lig * (1 + sat) : lig + sat - lig * sat
+  const p = 2 * lig - q
+  const ch = (t) => {
+    if (t < 0) t += 1
+    if (t > 1) t -= 1
+    if (t < 1 / 6) return p + (q - p) * 6 * t
+    if (t < 1 / 2) return q
+    if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6
+    return p
+  }
+  return [ch(h + 1 / 3) * 255, ch(h) * 255, ch(h - 1 / 3) * 255]
+}
+
+// rgb()/rgba()/hsl()/hsla() with numeric arguments (CSS Color 4):
+// - legacy comma syntax: 3 values (+ alpha); rgb channels all numbers or all
+//   percentages; hsl saturation / lightness must be percentages
+// - modern space syntax: 3 values (+ "/ alpha"); rgb channels may mix numbers
+//   and percentages; hsl saturation / lightness numbers or percentages
+// Numbers may carry a sign, a leading dot or an exponent; channels clamp to
+// 0..255, alpha to 0..1, saturation / lightness to 0..100. No nested
+// function, keyword (none, calc, var) or anything else is accepted.
+function cssColorFunction(c) {
+  const m = /^(rgba?|hsla?)\(([^()]*)\)$/i.exec(c)
+  if (!m) return null
+  const fn = m[1].toLowerCase()
+  const body = cssTrim(m[2])
+  let parts
+  let alphaToken
+  const legacy = body.includes(',')
+  if (legacy) {
+    parts = body.split(',').map(cssTrim)
+    if (parts.length === 4) alphaToken = parts.pop()
+  } else {
+    const slash = body.split('/')
+    if (slash.length > 2) return null
+    if (slash.length === 2) alphaToken = cssTrim(slash[1])
+    parts = cssSplitWs(cssTrim(slash[0]))
+  }
+  if (parts.length !== 3) return null
+  const a = alphaToken === undefined ? 1 : cssAlpha(alphaToken)
+  if (a === null) return null
+  if (fn.startsWith('rgb')) {
+    const ch = parts.map(cssNum)
+    if (ch.some((v) => v === null)) return null
+    if (legacy && !(ch.every((v) => v.pct) || ch.every((v) => !v.pct))) return null
+    const [r, g, b] = ch.map((v) => (v.pct ? (v.n * 255) / 100 : v.n))
+    return cssToHex(r, g, b, a)
+  }
+  const hue = cssHue(parts[0])
+  const s = cssNum(parts[1])
+  const l = cssNum(parts[2])
+  if (hue === null || !s || !l) return null
+  if (legacy && !(s.pct && l.pct)) return null
+  const [r, g, b] = cssHslToRgb(hue, s.n, l.n)
+  return cssToHex(r, g, b, a)
+}
+
+function normalizeCssColor(value) {
+  if (typeof value !== 'string' || value.length > MAX_CSS_COLOR_LENGTH) return null
+  const c = cssTrim(value)
+  if (CSS_HEX_COLOR.test(c)) return c
+  const named = /^[a-z]+$/i.test(c) && Object.prototype.hasOwnProperty.call(CSS_NAMED_COLORS, c.toLowerCase()) ? CSS_NAMED_COLORS[c.toLowerCase()] : undefined
+  if (named) return named
+  return cssColorFunction(c)
+}
+
+// A colour from data (settings files, label records) before it lands in a
+// style: escapeHtml keeps it inside the attribute, but a ';' or url(...) would
+// still add CSS declarations or fetch a resource. A colour normalizeCssColor
+// accepts comes back as hex; a var(--token) passes as is; anything else
+// becomes the fallback.
+function safeCssColor(v, fallback = '') {
+  const n = normalizeCssColor(v)
+  if (n) return n
+  const c = String(v ?? '').trim()
+  return /^var\(--[a-z0-9-]+\)$/i.test(c) ? c : fallback
+}
+
+// t() for a translation that is itself HTML (the *_html keys, data-i18n-html):
+// the template is trusted markup, but every substituted value -- the brand
+// tokens, which come from .env BRAND_NAME / BOT_NAME, and the caller's params
+// -- is text, so each one is HTML-escaped. Plain t() stays raw for its
+// textContent / confirm / toast callers.
+function tHtml(key, params = {}) {
+  const enc = {}
+  for (const [k, v] of Object.entries({ ...window._brandTokens, ...params })) enc[k] = v == null ? v : escapeHtml(String(v))
+  return t(key, enc)
+}
+
 // ============================================================
 // === Status ===
 // ============================================================
@@ -10519,7 +10767,7 @@ async function loadStatus() {
         div.innerHTML = `
           <div class="status-incident-header">
             <span class="status-incident-title">${escapeHtml(inc.title)}</span>
-            <span class="status-incident-badge ${inc.status}">${(typeof statusLabels[inc.status] === 'function' ? statusLabels[inc.status]() : statusLabels[inc.status]) || inc.status}</span>
+            <span class="status-incident-badge ${escapeHtml(inc.status)}">${escapeHtml((typeof statusLabels[inc.status] === 'function' ? statusLabels[inc.status]() : statusLabels[inc.status]) || inc.status)}</span>
           </div>
           <div class="status-incident-desc">${escapeHtml(inc.description.slice(0, 300))}</div>
           <div class="status-incident-date">${date}</div>
@@ -10587,7 +10835,7 @@ async function loadCosts() {
       </table></div>`
     }
 
-    html += `<p style="${mutedStyle};margin-top:16px">${t('costs.token_usage_note')} (${(s.token_usage?.calls ?? 0)} ${t('costs.calls')}, ${(s.token_usage?.input_tokens ?? 0) + (s.token_usage?.output_tokens ?? 0)} tokens)</p>`
+    html += `<p style="${mutedStyle};margin-top:16px">${t('costs.token_usage_note')} (${Number(s.token_usage?.calls ?? 0)} ${t('costs.calls')}, ${Number(s.token_usage?.input_tokens ?? 0) + Number(s.token_usage?.output_tokens ?? 0)} tokens)</p>`
 
     el.innerHTML = html
   } catch (err) {
@@ -11571,7 +11819,7 @@ async function loadTeamGraph() {
     renderTeamGraph(container, data, { editable: true, activeIds: _workingAgentIds })
     if (agentsBusyTimer) refreshAgentTerminalBusy()
   } catch (err) {
-    container.innerHTML = `<div class="team-empty">${t('team.error', { msg: err.message || err })}</div>`
+    container.innerHTML = `<div class="team-empty">${t('team.error', { msg: escapeHtml(String(err.message || err)) })}</div>`
   }
 }
 
@@ -11835,7 +12083,7 @@ const chatAgentHasAvatar = new Map() // name -> true|false
 let chatSelectedAgent = null
 
 function chatMonogramEl(agentName, size) {
-  const letter = agentName.charAt(0).toUpperCase()
+  const letter = escapeHtml(agentName.charAt(0).toUpperCase())
   const colors = ['#d97757','#00C2A8','#818cf8','#22c55e','#f59e0b','#ec4899']
   const color = colors[agentName.split('').reduce((a,c)=>a+c.charCodeAt(0),0) % colors.length]
   return `<div class="chat-avatar chat-avatar-mono" style="width:${size}px;height:${size}px;background:${color};font-size:${Math.round(size*0.4)}px">${letter}</div>`
@@ -12054,7 +12302,7 @@ async function loadChatThread(agentName) {
     <div class="chat-thread-header">
       ${chatAvatarHtml(agentName, 32)}
       <span class="chat-thread-title">${escapeHtml(threadDisplayName)}</span>
-      <button class="btn-secondary btn-compact" style="margin-left:auto" onclick="loadChatThread('${escapeHtml(agentName)}')">
+      <button class="btn-secondary btn-compact" style="margin-left:auto" onclick="loadChatThread(${jsArg(agentName)})">
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
       </button>
     </div>
@@ -12467,14 +12715,14 @@ function renderQuotaStrip(q, fable) {
     const week = labelKey === 'overview.quota.seven_day' && !w.expired
       ? weekSegments(w.resetsAt, nowSec, window._lang)
       : null
-    const track = `<div class="quota-bar-track${week ? ' week' : ''}"><div class="quota-bar-fill ${muted ? '' : quotaLevelClass(pct)}" style="width:${pct}%"></div></div>`
+    const trackHtml = `<div class="quota-bar-track${week ? ' week' : ''}"><div class="quota-bar-fill ${muted ? '' : quotaLevelClass(pct)}" style="width:${pct}%"></div></div>`
     row.innerHTML = `
       <div class="quota-bar-label">${escapeHtml(t(labelKey))}</div>
       ${week ? `<div class="quota-bar-col">
-        ${track}
+        ${trackHtml}
         <div class="quota-bar-now" style="left:${week.nowPct.toFixed(2)}%"></div>
         <div class="quota-bar-days${week.narrowLabels ? '' : ' no-narrow'}">${week.labels.map((d, i) => `<span><span class="day-full">${escapeHtml(d)}</span><span class="day-short">${escapeHtml(week.shortLabels[i])}</span>${week.narrowLabels ? `<span class="day-narrow">${escapeHtml(week.narrowLabels[i])}</span>` : ''}</span>`).join('')}</div>
-      </div>` : track}
+      </div>` : trackHtml}
       <div class="quota-bar-value">${pct}%<span class="quota-bar-reset">${escapeHtml(tail)}</span></div>
     `
     bars.appendChild(row)
@@ -12760,7 +13008,7 @@ async function loadUpdates() {
       applyBtn.hidden = true
     } else if (data.behind === 0) {
       summary.className = 'updates-summary up-to-date'
-      summary.innerHTML = `<strong>${t('updates.up_to_date_html')}</strong>. ${t('updates.no_changes')}`
+      summary.innerHTML = `<strong>${tHtml('updates.up_to_date_html')}</strong>. ${t('updates.no_changes')}`
       applyBtn.hidden = true
     } else {
       summary.className = 'updates-summary behind'
@@ -13682,9 +13930,9 @@ function renderRecallTimeline(el, data) {
 
 function esc(s) {
   if (!s) return ''
-  const d = document.createElement('div')
-  d.textContent = String(s)
-  return d.innerHTML
+  // Quote-safe like escapeHtml: esc() output also lands in attributes
+  // (data-cat, style), where a bare " would break out of the attribute.
+  return escapeHtml(String(s))
 }
 
 // ============================================================
@@ -13771,26 +14019,26 @@ async function loadBgTasks() {
       return
     }
 
-    list.innerHTML = tasks.map(t => {
+    list.innerHTML = tasks.map(task => {
       const statusColors = { running: '#f59e0b', done: '#22c55e', failed: '#ef4444', timeout: '#6b7280' }
       const statusLabels = { running: () => t('bgTasks.status.running'), done: () => t('bgTasks.status.done'), failed: () => t('bgTasks.status.failed'), timeout: () => t('bgTasks.status.timeout') }
-      const color = statusColors[t.status] || '#6b7280'
-      const labelRaw = statusLabels[t.status]; const label = labelRaw ? (typeof labelRaw === 'function' ? labelRaw() : labelRaw) : t.status
-      const output = t.output ? `<pre style="margin-top:8px;padding:8px;background:var(--bg);border-radius:6px;font-size:12px;max-height:200px;overflow:auto;white-space:pre-wrap;">${esc(t.output.slice(-2000))}</pre>` : ''
+      const color = statusColors[task.status] || '#6b7280'
+      const labelRaw = statusLabels[task.status]; const label = labelRaw ? (typeof labelRaw === 'function' ? labelRaw() : labelRaw) : task.status
+      const output = task.output ? `<pre style="margin-top:8px;padding:8px;background:var(--bg);border-radius:6px;font-size:12px;max-height:200px;overflow:auto;white-space:pre-wrap;">${esc(task.output.slice(-2000))}</pre>` : ''
       return `<div style="margin-bottom:12px;padding:12px 16px;border-radius:8px;background:var(--surface);border:1px solid var(--border);border-left:3px solid ${color};">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
           <div style="display:flex;gap:8px;align-items:center;">
-            <span style="font-weight:600;font-size:13px;">${esc(t.id)}</span>
-            <span class="badge" style="font-size:11px;background:${color};color:#fff;padding:2px 8px;border-radius:12px;">${label}</span>
-            <span class="badge" style="font-size:11px;background:var(--primary);color:#fff;padding:2px 8px;border-radius:12px;">${esc(t.agent_id)}</span>
+            <span style="font-weight:600;font-size:13px;">${esc(task.id)}</span>
+            <span class="badge" style="font-size:11px;background:${color};color:#fff;padding:2px 8px;border-radius:12px;">${escapeHtml(label)}</span>
+            <span class="badge" style="font-size:11px;background:var(--primary);color:#fff;padding:2px 8px;border-radius:12px;">${esc(task.agent_id)}</span>
           </div>
           <div style="display:flex;gap:8px;align-items:center;">
-            <span style="font-size:12px;color:var(--text-muted)">${esc(t.started_label)}</span>
-            ${t.status === 'running' ? `<button class="btn btn-sm" onclick="viewBgTask('${esc(t.id)}')" style="font-size:11px;padding:2px 8px;">${t('bgTasks.output_btn')}</button><button class="btn btn-sm" onclick="cancelBgTask('${esc(t.id)}')" style="font-size:11px;padding:2px 8px;color:var(--danger)">${t('bgTasks.stop_btn')}</button>` : ''}
+            <span style="font-size:12px;color:var(--text-muted)">${esc(task.started_label)}</span>
+            ${task.status === 'running' ? `<button class="btn btn-sm" onclick="viewBgTask(${jsArg(task.id)})" style="font-size:11px;padding:2px 8px;">${t('bgTasks.output_btn')}</button><button class="btn btn-sm" onclick="cancelBgTask(${jsArg(task.id)})" style="font-size:11px;padding:2px 8px;color:var(--danger)">${t('bgTasks.stop_btn')}</button>` : ''}
           </div>
         </div>
-        <div style="font-size:13px;color:var(--text-primary);margin-bottom:4px;">${esc(t.prompt)}</div>
-        ${t.finished_label ? `<div style="font-size:12px;color:var(--text-muted);">${t('bgTasks.finished_label')} ${esc(t.finished_label)}</div>` : ''}
+        <div style="font-size:13px;color:var(--text-primary);margin-bottom:4px;">${esc(task.prompt)}</div>
+        ${task.finished_label ? `<div style="font-size:12px;color:var(--text-muted);">${t('bgTasks.finished_label')} ${esc(task.finished_label)}</div>` : ''}
         ${output}
       </div>`
     }).join('')
@@ -14072,7 +14320,7 @@ function _renderApprovalsTable() {
 function _approvalBadge(status) {
   const colors = { pending: 'var(--warning)', approved: 'var(--success)', rejected: 'var(--danger)', timeout: 'var(--text-muted)' }
   const color = colors[status] || 'var(--text-muted)'
-  return `<span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;background:color-mix(in srgb,${color} 15%,transparent);color:${color}">${t('approvals.status.' + status) || status}</span>`
+  return `<span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;background:color-mix(in srgb,${color} 15%,transparent);color:${color}">${escapeHtml(t('approvals.status.' + status) || status)}</span>`
 }
 
 function _updateCountdowns() {
@@ -14427,9 +14675,9 @@ function renderOperatorAccessSection(body) {
     `<p class="auth-muted">${t('auth.operator.desc')}</p>` +
     `<label class="auth-operator-switch"><input type="checkbox" id="opAccEnabled"> <strong>${t('auth.operator.enabled')}</strong></label>` +
     `<div id="opAccCaps">` +
-      OPERATOR_CAPS.map((c) => `<label class="auth-operator-switch"><input type="checkbox" data-op-cap="${c}"> ${t('auth.operator.cap.' + c)}</label>`).join('') +
+      OPERATOR_CAPS.map((c) => `<label class="auth-operator-switch"><input type="checkbox" data-op-cap="${escapeHtml(c)}"> ${escapeHtml(t('auth.operator.cap.' + c))}</label>`).join('') +
       `<div class="auth-muted" style="margin-left:1.5em">` +
-        OPERATOR_CMDS.map((c) => `<label class="auth-operator-switch"><input type="checkbox" data-op-cmd="${c}"> /${c}</label>`).join(' ') +
+        OPERATOR_CMDS.map((c) => `<label class="auth-operator-switch"><input type="checkbox" data-op-cmd="${escapeHtml(c)}"> /${escapeHtml(c)}</label>`).join(' ') +
       `</div>` +
     `</div>` +
     `<div class="auth-form-msg" id="opAccMsg"></div>` +
@@ -14448,8 +14696,8 @@ function renderOperatorAccessSection(body) {
 
 function applyOperatorAccess(a) {
   document.getElementById('opAccEnabled').checked = !!a.enabled
-  for (const c of OPERATOR_CAPS) document.querySelector(`[data-op-cap="${c}"]`).checked = !!(a.capabilities && a.capabilities[c])
-  for (const c of OPERATOR_CMDS) document.querySelector(`[data-op-cmd="${c}"]`).checked = (a.commands || []).includes(c)
+  for (const c of OPERATOR_CAPS) document.querySelector(`[data-op-cap="${CSS.escape(String(c))}"]`).checked = !!(a.capabilities && a.capabilities[c])
+  for (const c of OPERATOR_CMDS) document.querySelector(`[data-op-cmd="${CSS.escape(String(c))}"]`).checked = (a.commands || []).includes(c)
   document.getElementById('opAccCaps').style.opacity = a.enabled ? '1' : '0.5'
 }
 
@@ -14470,8 +14718,8 @@ async function saveOperatorAccess(ev) {
   }
   const next = {
     enabled: document.getElementById('opAccEnabled').checked,
-    capabilities: Object.fromEntries(OPERATOR_CAPS.map((c) => [c, document.querySelector(`[data-op-cap="${c}"]`).checked])),
-    commands: OPERATOR_CMDS.filter((c) => document.querySelector(`[data-op-cmd="${c}"]`).checked),
+    capabilities: Object.fromEntries(OPERATOR_CAPS.map((c) => [c, document.querySelector(`[data-op-cap="${CSS.escape(String(c))}"]`).checked])),
+    commands: OPERATOR_CMDS.filter((c) => document.querySelector(`[data-op-cmd="${CSS.escape(String(c))}"]`).checked),
   }
   try {
     const r = await fetch('/api/operator-access', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(next) })
@@ -15714,7 +15962,7 @@ async function saveAllSettings() {
 function resetAllSettings() {
   for (const [key, { input, originalValue }] of settingsDirty) {
     input.value = originalValue
-    const errorEl = document.querySelector(`[data-setting-key="${key}"]`)?.closest('.settings-row')?.querySelector('.settings-row-error')
+    const errorEl = document.querySelector(`[data-setting-key="${CSS.escape(String(key))}"]`)?.closest('.settings-row')?.querySelector('.settings-row-error')
     if (errorEl) errorEl.textContent = ''
   }
   settingsDirty.clear()
@@ -16466,7 +16714,7 @@ function renderTuTimeline(data, filterAgent) {
       let html = `<div style="font-weight:600;margin-bottom:4px">${tuFormatLocalShort(hit.bucket)}${isPeak ? ` <span style="color:#ef4444;font-size:10px">${t('tokenUsage.chart.peak')}</span>` : ''}</div>`
       let total = 0
       for (const seg of hit.segments) {
-        html += `<div><span style="color:${tuGetColor(seg.agent)}">&#9632;</span> ${seg.agent}: ${tuFormatTokens(seg.val)}</div>`
+        html += `<div><span style="color:${tuGetColor(seg.agent)}">&#9632;</span> ${escapeHtml(seg.agent)}: ${tuFormatTokens(seg.val)}</div>`
         total += seg.val
       }
       if (hit.segments.length > 1) html += `<div style="border-top:1px solid rgba(255,255,255,0.2);margin-top:4px;padding-top:4px;font-weight:600">${t('tokenUsage.total')} ${tuFormatTokens(total)}</div>`
@@ -16969,7 +17217,7 @@ function ideaScoreBadge(idea) {
   if (!idea.impact || !idea.effort) return ''
   const score = idea.impact - idea.effort
   const color = score > 0 ? '#22c55e' : score < 0 ? '#ef4444' : 'var(--text-muted)'
-  return `<span style="font-size:11px;color:${color};border:1px solid ${color};border-radius:4px;padding:2px 5px" title="Impact ${idea.impact} - Effort ${idea.effort}">I${idea.impact}·E${idea.effort}</span>`
+  return `<span style="font-size:11px;color:${color};border:1px solid ${color};border-radius:4px;padding:2px 5px" title="Impact ${escapeHtml(idea.impact)} - Effort ${escapeHtml(idea.effort)}">I${escapeHtml(idea.impact)}·E${escapeHtml(idea.effort)}</span>`
 }
 
 function renderIdeaCard(idea) {
@@ -16981,20 +17229,20 @@ function renderIdeaCard(idea) {
     <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px">
       <div style="flex:1;min-width:0">
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-          <span class="idea-title-link" style="font-weight:600;font-size:14px;cursor:pointer" onclick="openIdeaDetail('${idea.id}')">${escapeHtml(idea.title)}</span>
-          <span style="font-size:11px;color:${statusColor};padding:2px 6px;border:1px solid ${statusColor};border-radius:4px">${statusLabel}</span>
+          <span class="idea-title-link" style="font-weight:600;font-size:14px;cursor:pointer" onclick="openIdeaDetail(${jsArg(idea.id)})">${escapeHtml(idea.title)}</span>
+          <span style="font-size:11px;color:${statusColor};padding:2px 6px;border:1px solid ${statusColor};border-radius:4px">${escapeHtml(statusLabel)}</span>
           ${ideaScoreBadge(idea)}
           ${staleBadge}
         </div>
         ${desc}
       </div>
       <div style="display:flex;gap:4px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end">
-        ${idea.status !== 'reviewed' && idea.status !== 'kanban' ? `<button class="btn-secondary btn-compact" onclick="setIdeaStatus('${idea.id}','reviewed')" style="font-size:11px">${t('ideas.btn.reviewed')}</button>` : ''}
-        ${idea.status !== 'rejected' ? `<button class="btn-secondary btn-compact" onclick="setIdeaStatus('${idea.id}','rejected')" style="font-size:11px;color:#ef4444">${t('ideas.btn.rejected')}</button>` : ''}
-        ${idea.status === 'reviewed' || idea.status === 'rejected' ? `<button class="btn-secondary btn-compact" onclick="setIdeaStatus('${idea.id}','new')" style="font-size:11px">${t('ideas.btn.reopen')}</button>` : ''}
-        <button class="btn-secondary btn-compact" onclick="openIdeaEdit('${idea.id}')" style="font-size:11px">${t('ideas.btn.edit')}</button>
-        ${idea.status !== 'kanban' && idea.status !== 'rejected' ? `<button class="btn-primary btn-compact" onclick="openIdeaBreakdown('${idea.id}')" style="font-size:11px">${t('ideas.btn.kanban_ai')}</button>` : ''}
-        <button class="btn-secondary btn-compact" onclick="deleteIdeaItem('${idea.id}')" style="font-size:11px;color:#ef4444">${t('ideas.btn.delete')}</button>
+        ${idea.status !== 'reviewed' && idea.status !== 'kanban' ? `<button class="btn-secondary btn-compact" onclick="setIdeaStatus(${jsArg(idea.id)},'reviewed')" style="font-size:11px">${t('ideas.btn.reviewed')}</button>` : ''}
+        ${idea.status !== 'rejected' ? `<button class="btn-secondary btn-compact" onclick="setIdeaStatus(${jsArg(idea.id)},'rejected')" style="font-size:11px;color:#ef4444">${t('ideas.btn.rejected')}</button>` : ''}
+        ${idea.status === 'reviewed' || idea.status === 'rejected' ? `<button class="btn-secondary btn-compact" onclick="setIdeaStatus(${jsArg(idea.id)},'new')" style="font-size:11px">${t('ideas.btn.reopen')}</button>` : ''}
+        <button class="btn-secondary btn-compact" onclick="openIdeaEdit(${jsArg(idea.id)})" style="font-size:11px">${t('ideas.btn.edit')}</button>
+        ${idea.status !== 'kanban' && idea.status !== 'rejected' ? `<button class="btn-primary btn-compact" onclick="openIdeaBreakdown(${jsArg(idea.id)})" style="font-size:11px">${t('ideas.btn.kanban_ai')}</button>` : ''}
+        <button class="btn-secondary btn-compact" onclick="deleteIdeaItem(${jsArg(idea.id)})" style="font-size:11px;color:#ef4444">${t('ideas.btn.delete')}</button>
       </div>
     </div>
   </div>`
@@ -17111,7 +17359,7 @@ async function loadIdeaAttachments(id) {
           <div style="font-size:11px;color:var(--text-muted)">${formatIdeaAttachmentSize(a.size)}${a.has_text ? ` · <span title="${t('ideas.detail.attach.has_text')}" style="color:var(--success)">✓ ${t('ideas.detail.attach.text_marker')}</span>` : ''}</div>
         </div>
         <a class="btn-secondary btn-compact" style="font-size:11px;text-decoration:none" href="/api/ideas/attachments/${encodeURIComponent(a.id)}/download">${t('ideas.detail.attach.download')}</a>
-        <button class="btn-secondary btn-compact" style="font-size:11px;color:var(--danger)" onclick="deleteIdeaAttachmentItem('${encodeURIComponent(a.id)}')">${t('ideas.detail.attach.delete')}</button>
+        <button class="btn-secondary btn-compact" style="font-size:11px;color:var(--danger)" onclick="deleteIdeaAttachmentItem(${jsArg(encodeURIComponent(a.id))})">${t('ideas.detail.attach.delete')}</button>
       </div>`).join('')
   } catch {
     list.innerHTML = `<div style="color:var(--danger);font-size:12px">${t('ideas.detail.attach.load_error')}</div>`
@@ -17994,8 +18242,17 @@ function mdInline(text) {
   s = s.replace(/`([^`]+)`/g, (m, c) => '<code>' + c + '</code>')
   s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
   s = s.replace(/\*([^*]+)\*/g, '<em>$1</em>')
-  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, txt, url) =>
-    '<a href="' + escapeAttr(url) + '" target="_blank" rel="noopener noreferrer">' + txt + '</a>')
+  // Only a link safeHref() accepts (http(s), mailto, or scheme-less relative)
+  // becomes an anchor; anything else stays its text.
+  // url is a piece of the escaped text (and may hold the <em>/<strong>/<code>
+  // tags inserted above): turn it back into the raw URL, judge that, and
+  // encode it once for the attribute.
+  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, txt, url) => {
+    const raw = url.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&')
+    return safeHref(raw, { relative: true })
+      ? '<a href="' + escapeHtml(safeHref(raw, { relative: true })) + '" target="_blank" rel="noopener noreferrer">' + txt + '</a>'
+      : txt
+  })
   return s
 }
 
@@ -18303,11 +18560,11 @@ async function openResearchDoc(agent, name) {
     let labelsHtml = ''
     if (Array.isArray(card.labels) && card.labels.length > 0) {
       const pills = card.labels
-        .map(l => `<span class="kanban-card-label-pill" style="--label-color:${esc(l.color)}">#${esc(l.name)}</span>`)
+        .map(l => `<span class="kanban-card-label-pill" style="--label-color:${escapeHtml(safeCssColor(l.color, '#64748b'))}">#${esc(l.name)}</span>`)
         .join('')
       labelsHtml = `<div class="kanban-card-labels">${pills}</div>`
     }
-    const prioPill = `<span class="archived-prio-pill" style="--prio-color:${prioColor}">${prioLabel}</span>`
+    const prioPill = `<span class="archived-prio-pill" style="--prio-color:${prioColor}">${escapeHtml(prioLabel)}</span>`
     return `<div class="kanban-card archived-card" data-id="${esc(card.id)}" data-priority="${esc(card.priority)}">
       ${projectHtml}
       <div class="kanban-card-title">${seqHtml}${esc(card.title)}</div>
@@ -18329,9 +18586,9 @@ async function openResearchDoc(agent, name) {
     const idLabel = (card.seq != null ? `#${card.seq} · ` : '') + card.id
     meta.innerHTML = `
       <div class="meta-item"><span class="meta-label">${t('kanban.meta.id')}</span><span class="meta-value" style="font-family:monospace">${esc(idLabel)}</span></div>
-      <div class="meta-item"><span class="meta-label">${t('kanban.meta.status')}</span><span class="meta-value">${STATUS_LABELS[card.status]?.() ?? card.status}</span></div>
+      <div class="meta-item"><span class="meta-label">${t('kanban.meta.status')}</span><span class="meta-value">${escapeHtml(STATUS_LABELS[card.status]?.() ?? card.status)}</span></div>
       <div class="meta-item"><span class="meta-label">${t('kanban.meta.assignee')}</span><span class="meta-value">${card.assignee ? esc(card.assignee) : t('kanban.meta.none')}</span></div>
-      <div class="meta-item"><span class="meta-label">${t('kanban.meta.priority')}</span><span class="meta-value">${PRIORITY_LABELS[card.priority]?.() ?? card.priority}</span></div>
+      <div class="meta-item"><span class="meta-label">${t('kanban.meta.priority')}</span><span class="meta-value">${escapeHtml(PRIORITY_LABELS[card.priority]?.() ?? card.priority)}</span></div>
       <div class="meta-item"><span class="meta-label">${t('kanban.meta.project')}</span><span class="meta-value">${card.project ? esc(card.project) : t('kanban.meta.none')}</span></div>
       <div class="meta-item"><span class="meta-label">${t('archived.meta.archived_at')}</span><span class="meta-value">${fmtDate(card.archived_at)}</span></div>
     `
@@ -18339,7 +18596,7 @@ async function openResearchDoc(agent, name) {
     const labelsBox = document.getElementById('archivedDetailLabels')
     if (Array.isArray(card.labels) && card.labels.length > 0) {
       labelsBox.innerHTML = card.labels
-        .map(l => `<span class="kanban-card-label-pill" style="--label-color:${esc(l.color)}">#${esc(l.name)}</span>`)
+        .map(l => `<span class="kanban-card-label-pill" style="--label-color:${escapeHtml(safeCssColor(l.color, '#64748b'))}">#${esc(l.name)}</span>`)
         .join('')
       labelsWrap.style.display = ''
     } else {
@@ -18467,7 +18724,7 @@ async function openResearchDoc(agent, name) {
         })
       })
     } catch (err) {
-      list.innerHTML = '<p class="naplo-empty error">' + t('common.error_network', {msg: err.message}) + '</p>'
+      list.innerHTML = '<p class="naplo-empty error">' + t('common.error_network', {msg: escapeHtml(String(err.message))}) + '</p>'
     }
   }
 
@@ -18509,7 +18766,7 @@ async function openResearchDoc(agent, name) {
   function renderEntry(e) {
     const sourceColor = SOURCE_COLORS[e.source] || '#6b7280'
     const sourceLabelRaw = SOURCE_LABELS[e.source]; const sourceLabel = sourceLabelRaw ? (typeof sourceLabelRaw === 'function' ? sourceLabelRaw() : sourceLabelRaw) : e.source
-    const badge = `<span class="naplo-badge" style="background:${sourceColor}">${sourceLabel}</span>`
+    const badge = `<span class="naplo-badge" style="background:${sourceColor}">${escapeHtml(sourceLabel)}</span>`
     const ts = `<span class="naplo-ts">${fmtTs(e.created_at)}</span>`
     let detail = ''
     if (e.source === 'config') {
@@ -18529,10 +18786,9 @@ async function openResearchDoc(agent, name) {
     } else if (e.source === 'diary') {
       const entryColor = DIARY_ENTRY_COLORS[e.entry_type] || '#6b7280'
       const entryLabelRaw = DIARY_ENTRY_LABELS[e.entry_type]; const entryLabel = entryLabelRaw ? (typeof entryLabelRaw === 'function' ? entryLabelRaw() : entryLabelRaw) : e.entry_type
-      const entryBadge = `<span class="naplo-badge" style="background:${entryColor};font-size:10px">${entryLabel}</span>`
+      const entryBadge = `<span class="naplo-badge" style="background:${entryColor};font-size:10px">${escapeHtml(entryLabel)}</span>`
       const agentStr = e.agent_id ? ` <span class="naplo-actor">${esc(e.agent_id)}</span>` : ''
-      let contentSnippet = esc(e.content || '').replace(/\n/g, ' ').slice(0, 200)
-      if ((e.content || '').length > 200) contentSnippet += '…'
+      const contentSnippet = escSnippet((e.content || '').replace(/\n/g, ' '), 200)
       const keywordsStr = e.keywords ? `<div class="naplo-note" style="margin-top:2px">Kulcsszavak: ${esc(e.keywords)}</div>` : ''
       const catStr = e.category ? ` <span class="naplo-event-type">${esc(e.category)}</span>` : ''
       detail = `${entryBadge}${catStr}${agentStr}<div class="naplo-diary-content">${contentSnippet}</div>${keywordsStr}`
@@ -18568,7 +18824,7 @@ async function openResearchDoc(agent, name) {
       if (entries.length === 0) { timeline.innerHTML = `<p class="naplo-empty">${t('naplo.empty')}</p>`; return }
       timeline.innerHTML = entries.map(renderEntry).join('')
     } catch (err) {
-      timeline.innerHTML = `<p class="naplo-empty error">${t('naplo.error', { msg: err.message })}</p>`
+      timeline.innerHTML = `<p class="naplo-empty error">${t('naplo.error', { msg: escapeHtml(String(err.message)) })}</p>`
     }
   }
 

@@ -4,6 +4,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { readEnvFile } from './env.js'
+import { parseLabelPalette } from './css-color.js'
 import { resolveFleetVenvDir } from './fleet-venv.js'
 import { DISTRIBUTION_DEFAULT_AGENT_MODEL } from './config-registry.js'
 import { getProviderType, getChannelToken, getChannelChatId, type ChannelProviderType } from './channel-provider.js'
@@ -417,11 +418,17 @@ export const KANBAN_SWIMLANE_SEPARATOR_COLOR = env['KANBAN_SWIMLANE_SEPARATOR_CO
 // offers these as swatches instead of a free-text colour input, so every
 // label's colour traces back to this single configurable list rather than
 // a hardcoded per-label mapping in the frontend.
-const rawKanbanLabelColors = (env['KANBAN_LABEL_COLORS'] ?? '#3b82f6,#0ea5e9,#10b981,#14b8a6,#8b5cf6,#64748b')
-  .split(',')
-  .map((c) => c.trim())
-  .filter(Boolean)
-export const KANBAN_LABEL_COLORS = rawKanbanLabelColors.length > 0 ? rawKanbanLabelColors : ['#64748b']
+// Each entry is normalized (parseLabelPalette: hex and var(--token) kept, a
+// colour name or a numeric rgb()/hsl() becomes hex): the palette reaches CSS backgrounds on the
+// dashboard, where url(...) would be an active resource. Entries that are not
+// colours are dropped and exported in KANBAN_LABEL_COLORS_REJECTED, colours
+// past the palette size bound are counted in KANBAN_LABEL_COLORS_OVERFLOW;
+// config.ts cannot own a logger (see APP_TZ_INVALID), so routes/kanban.ts
+// reports both.
+const kanbanLabelPalette = parseLabelPalette(env['KANBAN_LABEL_COLORS'] ?? '#3b82f6,#0ea5e9,#10b981,#14b8a6,#8b5cf6,#64748b')
+export const KANBAN_LABEL_COLORS = kanbanLabelPalette.colors
+export const KANBAN_LABEL_COLORS_REJECTED = kanbanLabelPalette.rejected
+export const KANBAN_LABEL_COLORS_OVERFLOW = kanbanLabelPalette.overflow
 
 export const CHANNEL_PROVIDER: ChannelProviderType = getProviderType(env['CHANNEL_PROVIDER'])
 export const CHANNEL_TOKEN = getChannelToken(CHANNEL_PROVIDER, env)
