@@ -30,12 +30,15 @@ const fakeTmux = join(tmp, 'fake-tmux')
 const kids: number[] = []
 
 // A long-lived process that matches BOTH candidate sources: bot.pid (written
-// below) and the env-var scan (TELEGRAM_STATE_DIR in its environment).
+// below) and the env-var scan (TELEGRAM_STATE_DIR in its environment). Both
+// sources count only plugin processes (cf075d41), so it carries the plugin
+// marker too, as a real poller does.
+const pluginRoot = join(tmp, 'plugins', 'cache', 'official', 'telegram', '0.0.1')
 function victim(): number {
   const p = spawn('/bin/sleep', ['300'], {
     detached: true,
     stdio: 'ignore',
-    env: { ...process.env, TELEGRAM_STATE_DIR: chanDir },
+    env: { ...process.env, TELEGRAM_STATE_DIR: chanDir, CLAUDE_PLUGIN_ROOT: pluginRoot },
   })
   p.unref()
   kids.push(p.pid!)
