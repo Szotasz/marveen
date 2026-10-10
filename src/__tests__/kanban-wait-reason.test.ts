@@ -5,8 +5,8 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import vm from 'node:vm'
 import {
-  initDatabase, getDb, createKanbanCard, getKanbanCard, moveKanbanCard,
-  createLabel, listLabels, getLabelsForCard, getBlockersForCard,
+  initDatabase, getDb, createKanbanCard, getKanbanCard, moveKanbanCard, updateKanbanCard,
+  createLabel, listLabels, getLabelsForCard, getBlockersForCard, addLabelToCard,
   setKanbanWaitReason, validateKanbanWaitReason,
 } from '../db.js'
 import { tryHandleKanban } from '../web/routes/kanban.js'
@@ -105,6 +105,33 @@ describe('wait-reason database contract', () => {
     expect(getLabelsForCard('a')).toHaveLength(0)
   })
 
+  it('the whole-card update out of waiting clears the reason and owner label too (review #1861)', () => {
+    createKanbanCard({ id: 'a', title: 'A', status: 'waiting' })
+    createLabel({ id: 'owner-label', name: 'Rád vár', color: '#fff' })
+    setKanbanWaitReason('a', { kind: 'owner', note: 'decision' })
+    // A write that leaves status alone is not a transition: the reason stays.
+    expect(updateKanbanCard('a', { title: 'Renamed' })).toBe(true)
+    expect(getKanbanCard('a')).toMatchObject({ status: 'waiting', wait_kind: 'owner', wait_note: 'decision' })
+    expect(getLabelsForCard('a')).toHaveLength(1)
+    expect(updateKanbanCard('a', { status: 'in_progress' })).toBe(true)
+    expect(getKanbanCard('a')).toMatchObject({ status: 'in_progress', wait_kind: null, wait_note: null, wait_until: null })
+    expect(getLabelsForCard('a')).toHaveLength(0)
+    // Back to waiting later: the stale reason does not reappear.
+    expect(updateKanbanCard('a', { status: 'waiting' })).toBe(true)
+    expect(getKanbanCard('a')).toMatchObject({ status: 'waiting', wait_kind: null })
+    expect(getLabelsForCard('a')).toHaveLength(0)
+  })
+
+  it('the whole-card update clears a non-owner reason and leaves an unrelated label alone', () => {
+    createKanbanCard({ id: 'a', title: 'A', status: 'waiting' })
+    createLabel({ id: 'owner-label', name: 'Rád vár', color: '#fff' })
+    addLabelToCard('a', 'owner-label')
+    setKanbanWaitReason('a', { kind: 'date', until: 1_900_000_000, note: 'review' })
+    updateKanbanCard('a', { status: 'done' })
+    expect(getKanbanCard('a')).toMatchObject({ status: 'done', wait_kind: null, wait_note: null, wait_until: null })
+    expect(getLabelsForCard('a').map((l) => l.id)).toEqual(['owner-label'])
+  })
+
   it('moving to waiting without a reason remains supported and stores NULL', () => {
     createKanbanCard({ id: 'a', title: 'A' })
     expect(moveKanbanCard('a', 'waiting', 0)).toBe(true)
@@ -175,6 +202,20 @@ describe('wait-reason routes', () => {
     await tryHandleKanban(ctx)
     expect(out.status).toBe(409)
     expect(getKanbanCard('a')!.wait_kind).toBeNull()
+  })
+
+  it('PUT of a whole card out of waiting clears the owner reason and the Rád vár label (review #1861)', async () => {
+    createKanbanCard({ id: 'a', title: 'A', status: 'waiting' })
+    setKanbanWaitReason('a', { kind: 'owner', note: 'decision' })
+    expect(getLabelsForCard('a').map((l) => l.name)).toEqual(['Rád vár'])
+    // The dashboard round-trips the whole card, wait_* included: the echoed
+    // stale values must not survive the transition.
+    const card = getKanbanCard('a')!
+    const { ctx, out } = route('PUT', '/api/kanban/a', { ...card, status: 'in_progress' })
+    await tryHandleKanban(ctx)
+    expect(out.status).toBe(200)
+    expect(getKanbanCard('a')).toMatchObject({ status: 'in_progress', wait_kind: null, wait_note: null, wait_until: null })
+    expect(getLabelsForCard('a')).toHaveLength(0)
   })
 
   it('PUT of a whole card accepts wait_* read-only fields and still applies writable changes', async () => {

@@ -2693,6 +2693,23 @@ export const KANBAN_WRITABLE_FIELDS = [
 // and updated_at moves on any write. Status keeps its own table.
 export const KANBAN_AUDITED_FIELDS = ['due_date', 'assignee', 'priority'] as const
 
+// A wait reason only describes the current waiting spell: a real transition out
+// of the waiting column clears it (and the owner label it put on), a reorder
+// inside the column or a write that leaves status alone keeps it. Both status
+// paths (moveKanbanCard and the whole-card updateKanbanCard) go through these
+// two helpers, so neither can forget half of the clear.
+function kanbanLeavesWaiting(prev: string | null | undefined, next: string | null | undefined): boolean {
+  return prev === 'waiting' && next != null && next !== 'waiting'
+}
+
+function clearKanbanWaitReasonOnLeave(id: string, prevWaitKind: string | null | undefined): void {
+  db.prepare('UPDATE kanban_cards SET wait_kind=NULL, wait_note=NULL, wait_until=NULL WHERE id=?').run(id)
+  if (prevWaitKind === 'owner') {
+    const ownerLabel = findKanbanOwnerWaitLabel()
+    if (ownerLabel) removeLabelFromCard(id, ownerLabel.id)
+  }
+}
+
 export function updateKanbanCard(
   id: string,
   fields: Partial<Omit<KanbanCard, 'id' | 'created_at'>>,
@@ -2720,6 +2737,9 @@ export function updateKanbanCard(
       `UPDATE kanban_cards SET title=?, description=?, status=?, assignee=?, priority=?, project=?, parent_id=?, due_date=?, sort_order=?, updated_at=?, archived_at=?
        WHERE id=?`
     ).run(f.title, f.description, f.status, f.assignee, f.priority, f.project, f.parent_id, f.due_date, f.sort_order, f.updated_at, f.archived_at, id).changes > 0
+    // Same rule as moveKanbanCard: the whole-card PUT changes status too, and a
+    // card it takes out of waiting must not keep the old reason or the owner label.
+    if (changed && kanbanLeavesWaiting(card.status, f.status)) clearKanbanWaitReasonOnLeave(id, card.wait_kind)
     if (changed) {
       touchAncestorChain(f.parent_id, now, id)
       // Re-parenting is activity on BOTH threads: the old one lost a card, the new one gained it.
@@ -2781,23 +2801,17 @@ export function moveKanbanCard(id: string, status: KanbanCard['status'], sortOrd
   // every move that does not land in in_progress re-arms the next activation --
   // and heals a row already stuck this way, since the clear does not depend on
   // the previous status.
-  // A wait reason only describes the current waiting spell: leaving the column
-  // clears it (and the owner label it put on), a reorder inside the column keeps it.
-  const leavesWaiting = prev === 'waiting' && status !== 'waiting'
-  const clearWait = leavesWaiting ? ', wait_kind=NULL, wait_note=NULL, wait_until=NULL' : ''
+  const leavesWaiting = kanbanLeavesWaiting(prev, status)
   // ONE TRANSACTION for the move and the row it owes, as in updateKanbanCard (card f6fba9ec, X16): the UPDATE, the
   // ancestor stamps and the status event either all happen or none does, so a row insert that throws cannot leave a
   // card moved with no row saying who moved it.
   return db.transaction((): boolean => {
     const changed = db.prepare(
       status === 'in_progress'
-        ? `UPDATE kanban_cards SET status=?, sort_order=?, updated_at=?${clearWait} WHERE id=?`
-        : `UPDATE kanban_cards SET status=?, sort_order=?, updated_at=?, dispatched_at=NULL${clearWait} WHERE id=?`
+        ? 'UPDATE kanban_cards SET status=?, sort_order=?, updated_at=? WHERE id=?'
+        : 'UPDATE kanban_cards SET status=?, sort_order=?, updated_at=?, dispatched_at=NULL WHERE id=?'
     ).run(status, sortOrder, now, id).changes > 0
-    if (changed && leavesWaiting && row?.wait_kind === 'owner') {
-      const ownerLabel = findKanbanOwnerWaitLabel()
-      if (ownerLabel) removeLabelFromCard(id, ownerLabel.id)
-    }
+    if (changed && leavesWaiting) clearKanbanWaitReasonOnLeave(id, row?.wait_kind)
     if (changed) touchAncestorChain(row?.parent_id, now, id)
     if (changed && prev !== undefined && prev !== status) {
       db.prepare(
