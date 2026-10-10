@@ -54,6 +54,17 @@ RESPAWN_COUNT_FILE="$STORE/.channel-watchdog-respawns"
 AUTH_DEAD_COUNT_FILE="$STORE/.channel-watchdog-auth-dead-count"
 LOG_TAG="channel-watchdog"
 
+# File mtime in epoch seconds, portably: GNU stat (Linux) first, BSD stat
+# (macOS) as the fallback. GNU-only `stat -c %Y` is an illegal option on macOS;
+# behind `|| echo 0` that silently read every stamp as epoch 0. Prints 0 when
+# the file is missing/unreadable or the result is not a plain integer.
+file_mtime() {
+  local m
+  m="$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null)" || m=0
+  case "$m" in (''|*[!0-9]*) m=0;; esac
+  printf '%s\n' "$m"
+}
+
 STALE_SECONDS=$(( 15 * 60 ))    # keepalive older than this => wedged/deaf
 GRACE_SECONDS=$(( 15 * 60 ))    # don't respawn again within this window
 MAX_CONSECUTIVE=3               # after this many respawns w/o recovery, back off + alert
@@ -118,7 +129,7 @@ if [ ! -f "$KEEPALIVE_FILE" ]; then
   # keepalive probe itself was never configured.
   log "no keepalive file yet ($KEEPALIVE_FILE) -- keep-alive task not established, STALE=false"
 else
-  ka_mtime=$(stat -c %Y "$KEEPALIVE_FILE" 2>/dev/null || echo 0)
+  ka_mtime=$(file_mtime "$KEEPALIVE_FILE")
   age=$(( now - ka_mtime ))
   [ "$age" -ge "$STALE_SECONDS" ] && STALE=true
 fi
@@ -155,7 +166,7 @@ fi
 
 # --- gate 4: respawn grace (shared with the dashboard watchdog) ---
 if [ -f "$RESPAWN_STAMP" ]; then
-  last=$(stat -c %Y "$RESPAWN_STAMP" 2>/dev/null || echo 0)
+  last=$(file_mtime "$RESPAWN_STAMP")
   if [ $(( now - last )) -lt "$GRACE_SECONDS" ]; then
     log "problem detected (STALE=$STALE AUTHDEAD=$AUTHDEAD) but within respawn grace -- deferring"
     exit 0
