@@ -14,11 +14,25 @@ export const STOP_PREFIX = '[STOP]'
  * a STOP also needs the row's stop_authorized flag, which only an in-process writer sets
  * (createAgentMessage with stopAuthorized; the HTTP route never does). An HTTP-posted
  * "[STOP]" claiming the main agent is delivered as an ordinary row.
+ *
+ * Card 795d1f48 (a): the urgent lane authenticates a STOP too. An urgent row is written
+ * only in-process or on a FULL device key the install lists (MESSAGE_URGENT_DEVICE_IDS,
+ * mayMarkUrgent in routes/messages.ts), so such a key may send a STOP over HTTP:
+ * {from: "<main agent>", content: "[STOP] ...", urgent: true}. The shared token still
+ * cannot: it is refused urgent (403), and without urgent its row has neither flag.
  */
-export function isStopMessage(m: Pick<AgentMessage, 'from_agent' | 'content' | 'stop_authorized'>, mainAgentId: string): boolean {
-  if (m.stop_authorized !== 1) return false
+export function isStopMessage(m: Pick<AgentMessage, 'from_agent' | 'content' | 'stop_authorized' | 'urgent'>, mainAgentId: string): boolean {
+  if (m.stop_authorized !== 1 && m.urgent !== 1) return false
   if (m.from_agent !== mainAgentId && m.from_agent !== 'system') return false
   return (m.content ?? '').trimStart().startsWith(STOP_PREFIX)
+}
+
+/**
+ * Card 795d1f48 (a): the rows the router types into a BUSY pane: an authenticated urgent row (urgent = 1; only an
+ * in-process writer or a device key the install lists can set it, routes/messages.ts) or a STOP (above, unchanged).
+ */
+export function isUrgentDelivery(m: Pick<AgentMessage, 'from_agent' | 'content' | 'urgent' | 'stop_authorized'>, mainAgentId: string): boolean {
+  return m.urgent === 1 || isStopMessage(m, mainAgentId)
 }
 
 /**
@@ -45,7 +59,7 @@ export function isStopMessage(m: Pick<AgentMessage, 'from_agent' | 'content' | '
  * Card 71263d15 (C): STOP rows come first, whatever their recipient's backlog. The
  * round-robin takes each recipient's rows oldest first, so the newest row of a
  * recipient with a deep queue did not reach the window at all, and a STOP is always
- * the newest row.
+ * the newest row. Card 795d1f48 (a): an urgent row gets the same place.
  */
 export function selectTickWindow(
   localPending: readonly AgentMessage[],
@@ -53,7 +67,7 @@ export function selectTickWindow(
   mainAgentId: string,
 ): AgentMessage[] {
   const stops = localPending
-    .filter((m) => m.to_agent !== mainAgentId && isStopMessage(m, mainAgentId))
+    .filter((m) => m.to_agent !== mainAgentId && isUrgentDelivery(m, mainAgentId))
     .slice(0, max)
   const stopIds = new Set(stops.map((m) => m.id))
   const perRecipient = new Map<string, AgentMessage[]>()
