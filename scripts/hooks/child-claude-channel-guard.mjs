@@ -1,45 +1,91 @@
 #!/usr/bin/env node
-// PreToolUse hook (matcher: Bash): a channel-owning session must not start a
-// child `claude` that inherits its channel state (CHILDCLAUDEPOLLER1010).
+// PreToolUse hook (matcher: Bash): a session whose Telegram poller can be killed
+// must not start a child `claude` that would kill it (CHILDCLAUDEPOLLER1010).
 //
-// WHY. The Telegram plugin's server.ts reads $TELEGRAM_STATE_DIR/bot.pid on
-// start and SIGTERMs the server.ts named there ("replacing stale poller"). It
-// checks that the pid is a server.ts, not that it is orphaned. A child `claude`
-// started from this session's Bash inherits TELEGRAM_STATE_DIR and
-// CLAUDE_CONFIG_DIR, loads the enabled channel plugin, reads the SAME bot.pid
-// and kills this session's live poller. When the child exits its own poller
-// goes too, so nothing polls until the session restarts. Measured 2026-10-10
-// (three `claude -p` calls from a live sub-agent); `claude mcp list` is the
-// same mechanism (docs/mcp-list-channel-plugin.md). Nothing reports it: the
-// child exits 0 and the parent only notices that its channel tools are gone.
+// WHY. On start the Telegram plugin's server.ts reads $TELEGRAM_STATE_DIR/bot.pid
+// and SIGTERMs the pid it finds there ("replacing stale poller"). In 0.0.6 it only
+// checks that the pid is alive; 0.0.7 adds a check that it is a `server.ts`.
+// Neither checks that the holder is orphaned. A child `claude` started from this
+// session's Bash inherits TELEGRAM_STATE_DIR and CLAUDE_CONFIG_DIR, loads the
+// enabled plugin, reads the SAME bot.pid and kills this session's live poller.
+// When the child exits its own poller goes too, so nothing polls until the
+// session restarts. Measured 2026-10-10 (three `claude -p` calls from a live
+// sub-agent); `claude mcp list` is the same mechanism
+// (docs/mcp-list-channel-plugin.md). The child exits 0 and nothing reports it.
 //
-// WHAT IS BLOCKED. A `claude` invocation in command position whose arguments
-// can start MCP/plugin servers, unless the same command isolates the child:
-//   - `env -i ...` (empty environment), or
-//   - it sets its own CLAUDE_CONFIG_DIR= AND neutralises TELEGRAM_STATE_DIR
-//     (`env -u TELEGRAM_STATE_DIR` or a `TELEGRAM_STATE_DIR=` assignment).
-// Read-only subcommands that start no plugin servers stay allowed
-// (`--version`, `--help`, `install`, `update`, `auth ...`).
+// THE PRECONDITION. The plugin reaches the kill only with a bot token: it reads
+// TELEGRAM_BOT_TOKEN from the real environment, else from <state dir>/.env, and
+// exits before the bot.pid code when there is none. The sub-agent launcher
+// exports TELEGRAM_STATE_DIR to every sub-agent, with or without a bot
+// (buildChannelStateFence, SLACKDMVESZT1006), so the variable alone is not the
+// hazard. The guard acts only where the state dir the plugin would use holds a
+// token. Without TELEGRAM_STATE_DIR the plugin falls back to
+// ~/.claude/channels/telegram (0.0.6) or $CLAUDE_CONFIG_DIR/channels/telegram
+// (0.0.7); both are checked.
+//
+// Telegram only: the installed discord 0.0.4 and slack-channel 0.1.0 sources
+// have no bot.pid kill, so their state variables play no part here.
+//
+// A CHILD IS HARMLESS when either holds:
+//   (a) it runs with a config dir of its own, so no channel plugin is enabled:
+//       a non-empty CLAUDE_CONFIG_DIR that is neither this session's config dir
+//       nor ~/.claude, and whose settings.json (if readable) does not enable a
+//       telegram plugin. Measured 2026-10-10: a fresh config dir started no
+//       telegram server, even from a cwd whose project settings enable it.
+//   (b) the plugin would exit before the kill: the child's TELEGRAM_STATE_DIR is
+//       set to a directory without a token, and the child has no
+//       TELEGRAM_BOT_TOKEN in its environment. Measured 2026-10-10: with a
+//       plugin-enabled config dir and an empty state dir the server logged
+//       "TELEGRAM_BOT_TOKEN required" and exited; the parent's poller lived.
+// Unsetting TELEGRAM_STATE_DIR is NOT harmless: the child then falls back to
+// ~/.claude/channels/telegram, the main agent's state dir on a default install,
+// and kills the main bot's poller instead. `env -i` is judged by the same rule
+// on the environment the child actually gets.
 //
 // WHAT IS NOT SEEN. A `claude` started indirectly (a python/node script that
 // spawns it) is invisible to a command-string check; that path is covered by
-// the CLAUDE.md warning, not by this gate. Sessions without a channel state
-// dir in their environment are left alone.
+// the CLAUDE.md warning, not by this gate.
 //
 // Fail-open on unparseable input: this is a guard against an accident, not a
 // security boundary, and a hook crash must not block every Bash call.
 
 import { readFileSync, realpathSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const CHANNEL_STATE_VARS = ['TELEGRAM_STATE_DIR', 'DISCORD_STATE_DIR', 'SLACK_STATE_DIR']
 const SAFE_FIRST_ARGS = new Set(['--version', '-v', '-V', '--help', '-h', 'install', 'update', 'auth'])
+// Subcommands that only edit configuration and start no MCP or plugin server.
+const SAFE_SUBCOMMANDS = [['mcp', 'add'], ['mcp', 'add-json'], ['mcp', 'remove']]
 const SEGMENT_SPLIT = /\|\||&&|[;|&\n]|\$\(|`|\(/
 const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/
 const WRAPPERS = new Set(['exec', 'nohup', 'time', 'command', 'builtin', 'caffeinate'])
+// Placeholders for whitespace and separators inside quoted text (see stripInertText).
+const Q_SPACE = '\u0001'
+const Q_SEP = '\u0002'
 
+function homeOf(env) {
+  return env.HOME || homedir()
+}
+
+function tokenIn(dir) {
+  try { return /^TELEGRAM_BOT_TOKEN=\S/m.test(readFileSync(join(dir, '.env'), 'utf8')) } catch { return false }
+}
+
+// The state dirs the plugin would use with this environment (both fallbacks,
+// since 0.0.6 and 0.0.7 differ when TELEGRAM_STATE_DIR is unset).
+export function telegramStateDirs(env) {
+  if (env.TELEGRAM_STATE_DIR) return [env.TELEGRAM_STATE_DIR]
+  const dirs = [join(homeOf(env), '.claude', 'channels', 'telegram')]
+  if (env.CLAUDE_CONFIG_DIR) dirs.push(join(env.CLAUDE_CONFIG_DIR, 'channels', 'telegram'))
+  return dirs
+}
+
+// True when a Telegram plugin started with this environment would reach the
+// bot.pid kill, i.e. it would find a bot token.
 export function sessionOwnsChannel(env = process.env) {
-  return CHANNEL_STATE_VARS.some((v) => typeof env[v] === 'string' && env[v].length > 0)
+  if (env.TELEGRAM_BOT_TOKEN) return true
+  return telegramStateDirs(env).some(tokenIn)
 }
 
 function tokens(segment) {
@@ -49,13 +95,16 @@ function tokens(segment) {
 }
 
 // Returns null if the segment does not start a claude process, else what the
-// segment does to the child's environment.
+// segment does to the child's environment, in order.
 export function inspectSegment(segment) {
   const t = tokens(segment)
   let i = 0
   let envEmpty = false
-  let setsConfigDir = false
-  const neutralised = new Set()
+  const ops = [] // ['unset', NAME] | ['set', NAME, VALUE]
+  const assign = (w) => {
+    const eq = w.indexOf('=')
+    ops.push(['set', w.slice(0, eq), w.slice(eq + 1).replace(/^['"]|['"]$/g, '')])
+  }
   while (i < t.length) {
     const w = t[i]
     if (WRAPPERS.has(w)) { i++; continue }
@@ -64,46 +113,105 @@ export function inspectSegment(segment) {
       i++
       while (i < t.length && (t[i].startsWith('-') || ASSIGNMENT.test(t[i]))) {
         if (t[i] === '-i' || t[i] === '--ignore-environment' || t[i] === '-') envEmpty = true
-        if (t[i] === '-u' || t[i] === '--unset') {
-          if (CHANNEL_STATE_VARS.includes(t[i + 1])) neutralised.add(t[i + 1])
-          i += 2
-          continue
-        }
-        if (t[i].startsWith('-u') && CHANNEL_STATE_VARS.includes(t[i].slice(2))) neutralised.add(t[i].slice(2))
-        if (t[i].startsWith('CLAUDE_CONFIG_DIR=')) setsConfigDir = true
-        for (const v of CHANNEL_STATE_VARS) if (t[i].startsWith(`${v}=`)) neutralised.add(v)
+        else if (t[i] === '-u' || t[i] === '--unset') { ops.push(['unset', t[i + 1]]); i += 2; continue }
+        else if (t[i].startsWith('-u')) ops.push(['unset', t[i].slice(2)])
+        else if (ASSIGNMENT.test(t[i])) assign(t[i])
         i++
       }
       continue
     }
-    if (ASSIGNMENT.test(w)) {
-      if (w.startsWith('CLAUDE_CONFIG_DIR=')) setsConfigDir = true
-      for (const v of CHANNEL_STATE_VARS) if (w.startsWith(`${v}=`)) neutralised.add(v)
-      i++
-      continue
-    }
+    if (ASSIGNMENT.test(w)) { assign(w); i++; continue }
     break
   }
   const cmd = t[i]
   if (!cmd) return null
   const base = cmd.split('/').pop()
   if (base !== 'claude') return null
-  const args = t.slice(i + 1)
-  return { args, envEmpty, setsConfigDir, neutralised }
+  return { args: t.slice(i + 1), envEmpty, ops }
+}
+
+// Expand $VAR / ${VAR} / a leading ~ from the session environment. Returns null
+// when something cannot be resolved (an unknown variable, quoted text whose
+// content we replaced, a command substitution).
+function expandValue(raw, env) {
+  let unresolved = raw.includes(Q_SEP)
+  let v = raw.replaceAll(Q_SPACE, ' ').replace(/\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?/g, (m, name) => {
+    if (typeof env[name] === 'string') return env[name]
+    unresolved = true
+    return m
+  })
+  if (v.startsWith('~') && (v.length === 1 || v[1] === '/')) v = homeOf(env) + v.slice(1)
+  return unresolved ? null : v
+}
+
+// The environment the child gets: { values, unknown } where unknown holds the
+// names whose value could not be resolved.
+export function childEnv(hit, env) {
+  const values = hit.envEmpty ? {} : { ...env }
+  const unknown = new Set()
+  for (const op of hit.ops) {
+    if (op[0] === 'unset') { delete values[op[1]]; unknown.delete(op[1]); continue }
+    const v = expandValue(op[2], env)
+    if (v === null) { values[op[1]] = op[2]; unknown.add(op[1]) } else { values[op[1]] = v; unknown.delete(op[1]) }
+  }
+  return { values, unknown }
+}
+
+function samePath(a, b) {
+  return typeof a === 'string' && typeof b === 'string' && resolve(a) === resolve(b)
+}
+
+function enablesTelegram(configDir) {
+  try {
+    const s = JSON.parse(readFileSync(join(configDir, 'settings.json'), 'utf8'))
+    return Object.entries(s?.enabledPlugins ?? {}).some(([k, on]) => on && k.startsWith('telegram@'))
+  } catch { return false }
+}
+
+// (a) A config dir of its own, so no channel plugin is enabled.
+function ownConfigDir({ values, unknown }, env) {
+  const dir = values.CLAUDE_CONFIG_DIR
+  if (typeof dir !== 'string' || dir.length === 0) return false
+  // A value we cannot resolve but that has a literal part (`$S/cfg`) is a
+  // deliberate, non-empty separate dir; the forms that would point back at a
+  // plugin home resolve from the session environment. A bare unknown variable
+  // (`$X`, `"${X}"`) may expand to nothing, and an empty CLAUDE_CONFIG_DIR is
+  // not a config dir of its own, so it does not count.
+  if (unknown.has('CLAUDE_CONFIG_DIR')) return !/^\$\{?[A-Za-z_][A-Za-z0-9_]*\}?$/.test(dir)
+  if (samePath(dir, env.CLAUDE_CONFIG_DIR)) return false
+  if (samePath(dir, join(homeOf(values.HOME ? values : env), '.claude'))) return false
+  return !enablesTelegram(dir)
+}
+
+// (b) The plugin would exit before the kill: an explicit token-less state dir.
+function tokenlessStateDir({ values, unknown }) {
+  const dir = values.TELEGRAM_STATE_DIR
+  if (typeof dir !== 'string' || dir.length === 0 || unknown.has('TELEGRAM_STATE_DIR')) return false
+  if (values.TELEGRAM_BOT_TOKEN) return false
+  return !tokenIn(dir)
 }
 
 // Text the shell does not execute must not be read as a command: heredoc bodies
 // (a commit message, a markdown note) and quoted strings routinely MENTION
 // `claude`. Measured 2026-10-10: the first live version blocked a python heredoc
 // that documented this very guard, because a backtick inside the heredoc text
-// started a new segment. Removing inert text before the split keeps the check on
-// what actually runs. Known gap, accepted: a `$(claude ...)` inside double
-// quotes is not seen.
+// started a new segment. Heredoc bodies are removed. Inside quotes, whitespace
+// and separators are replaced by placeholders, so the quoted text stays one
+// token (an assignment like CLAUDE_CONFIG_DIR="$S/cfg" keeps a non-empty value)
+// but can neither split a segment nor start a command. Known gap, accepted: a
+// `$(claude ...)` inside double quotes is not seen.
 export function stripInertText(command) {
+  const mask = (s) => s.replace(/\s/g, Q_SPACE).replace(/[;|&()`]/g, Q_SEP)
   let out = command.replace(/<<-?[ \t]*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1[^\n]*\n[\s\S]*?\n[ \t]*\2[ \t]*(?=\n|$)/g, ' ')
-  out = out.replace(/'[^']*'/g, "''")
-  out = out.replace(/"(?:\\.|[^"\\])*"/g, '""')
+  out = out.replace(/'[^']*'/g, (m) => mask(m))
+  out = out.replace(/"(?:\\.|[^"\\])*"/g, (m) => mask(m))
   return out
+}
+
+function startsNoServer(args) {
+  if (args.length > 0 && SAFE_FIRST_ARGS.has(args[0])) return true
+  if (args.includes('--help') || args.includes('-h')) return true
+  return SAFE_SUBCOMMANDS.some(([a, b]) => args[0] === a && args[1] === b)
 }
 
 export function decide(command, env = process.env) {
@@ -112,25 +220,23 @@ export function decide(command, env = process.env) {
   for (const segment of stripInertText(command).split(SEGMENT_SPLIT)) {
     const hit = inspectSegment(segment)
     if (!hit) continue
-    if (hit.args.length > 0 && SAFE_FIRST_ARGS.has(hit.args[0])) continue
-    // Isolated = empty environment, or its own config dir AND every channel
-    // state variable THIS session carries is unset/overridden for the child
-    // (the launcher may export TELEGRAM_, DISCORD_ and SLACK_STATE_DIR at once).
-    const present = CHANNEL_STATE_VARS.filter((v) => typeof env[v] === 'string' && env[v].length > 0)
-    if (hit.envEmpty || (hit.setsConfigDir && present.every((v) => hit.neutralised.has(v)))) continue
-    return { allow: false, segment: segment.trim().slice(0, 200) }
+    if (startsNoServer(hit.args)) continue
+    const child = childEnv(hit, env)
+    if (ownConfigDir(child, env) || tokenlessStateDir(child)) continue
+    return { allow: false, segment: segment.trim().replaceAll(Q_SPACE, ' ').replaceAll(Q_SEP, '_').slice(0, 200) }
   }
   return { allow: true }
 }
 
 const REASON = [
-  'child-claude-channel-guard (CHILDCLAUDEPOLLER1010): this session owns a channel, and a child `claude`',
-  'started with the inherited environment loads the channel plugin, which SIGTERMs THIS session\'s live',
-  'poller via the shared bot.pid ("replacing stale poller"). The channel then stays dead until restart.',
-  'Run the child isolated instead, e.g.:',
-  '  env -u TELEGRAM_STATE_DIR -u DISCORD_STATE_DIR -u SLACK_STATE_DIR CLAUDE_CONFIG_DIR=<empty-dir> claude -p ...',
-  '(unset every *_STATE_DIR this session carries)',
-  'or `env -i PATH="$PATH" HOME="$HOME" ...`. Details: docs/mcp-list-channel-plugin.md',
+  'child-claude-channel-guard (CHILDCLAUDEPOLLER1010): this session\'s Telegram state dir holds a bot token, and a',
+  'child `claude` with the inherited environment loads the Telegram plugin, which SIGTERMs the poller named in',
+  'that dir\'s bot.pid ("replacing stale poller") -- this session\'s. The channel then stays dead until restart.',
+  'Run the child with a config dir of its own AND an empty state dir, e.g.:',
+  '  TELEGRAM_STATE_DIR=<empty-dir> CLAUDE_CONFIG_DIR=<empty-dir> claude -p ...',
+  'Do NOT unset TELEGRAM_STATE_DIR: the plugin then falls back to ~/.claude/channels/telegram, the main',
+  'agent\'s state dir on a default install, and kills the main bot\'s poller instead.',
+  'Details: docs/mcp-list-channel-plugin.md',
 ].join('\n')
 
 function main() {

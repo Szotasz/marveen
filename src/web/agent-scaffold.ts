@@ -1443,10 +1443,14 @@ export function agentGetsDestructiveGate(name: string, profile?: ProfileTemplate
 // inherits TELEGRAM_STATE_DIR / CLAUDE_CONFIG_DIR, loads the channel plugin,
 // and the plugin's bot.pid logic SIGTERMs the PARENT's live poller -- measured
 // 2026-10-10 with three `claude -p` calls from a live sub-agent, see
-// docs/mcp-list-channel-plugin.md. The main agent is left to its committed
-// project settings, as with the outgoing-copy gate; it runs on the shared
-// config root and the guard decides on the session's *_STATE_DIR variables,
-// which the sub-agent launcher exports.
+// docs/mcp-list-channel-plugin.md. The guard itself acts only where the
+// Telegram state dir the plugin would use holds a bot token, so a sub-agent
+// without a bot is wired but never blocked. The main agent is left to its
+// committed project settings, as with the outgoing-copy gate: its settings are
+// the shared ~/.claude config, which every interactive Claude session on the
+// machine reads, so wiring a deny hook there is the operator's call. The
+// guard resolves the state dir the way the plugin does (including the
+// ~/.claude/channels/telegram fallback), so it works there if wired.
 export const CHILD_CLAUDE_GUARD_SCRIPT = 'child-claude-channel-guard.mjs'
 
 export function agentGetsChildClaudeGuard(name: string): boolean {
