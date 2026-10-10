@@ -36,7 +36,7 @@ import { setLastInboundModality } from './voice-modality.js'
 import { classifyAgentMessage, isChannelInboundSender, wrapAgentMessageForDelivery } from './agent-message-wrap.js'
 import { composeBatchInjection, batchInjectCapFor } from './batch-inject.js'
 import { maybeWakeSubAgentsForTelegram } from './telegram-inbox-wake.js'
-import { isStopMessage, selectTickWindow } from './message-router-window.js'
+import { isStopMessage, isUrgentDelivery, selectTickWindow } from './message-router-window.js'
 
 // A message that cannot be delivered within this window (target session never
 // exists / stays busy) is marked failed so it stops clogging the pending
@@ -849,7 +849,10 @@ export async function runMessageRouterTick(): Promise<void> {
       // only when it reads positively BUSY. Any other not-ready pane (a feedback modal, a
       // parked input, an unknown surface) takes the ordinary not-ready branch below, with
       // its modal clearing, janitor and stuck alert, exactly like an ordinary row.
-      const isStop = isStopMessage(msg, MAIN_AGENT_ID)
+      // Card 795d1f48 (a): an authenticated urgent row takes the same path (isUrgentDelivery),
+      // with the same pane checks.
+      const isStop = isUrgentDelivery(msg, MAIN_AGENT_ID)
+      const urgentLabel = isStopMessage(msg, MAIN_AGENT_ID) ? 'STOP' : 'URGENT'
       const paneNotReady = !worksourceServing && !(await isSessionReadyForPrompt(session, host))
       let stopPassesBusyPane = false
       if (isStop && !worksourceServing) {
@@ -857,10 +860,10 @@ export async function runMessageRouterTick(): Promise<void> {
         const hold = detectUrgentPaneHold(stopPane)
         if (hold) {
           if (!routerLoggedMisses.has(msg.id)) {
-            logger.warn({ id: msg.id, to: msg.to_agent, session, hold: hold.kind }, 'message-router: STOP row held, the pane is asking something; nothing typed')
+            logger.warn({ id: msg.id, to: msg.to_agent, session, hold: hold.kind, urgent: msg.urgent === 1 }, 'message-router: urgent or STOP row held, the pane is asking something; nothing typed')
             routerLoggedMisses.add(msg.id)
           }
-          noticeUrgentHold(msg, session, hold, 'STOP', now)
+          noticeUrgentHold(msg, session, hold, urgentLabel, now)
           continue
         }
         stopPassesBusyPane = paneNotReady && stopPane != null && detectPaneState(stopPane) === 'busy'
@@ -1066,7 +1069,7 @@ export async function runMessageRouterTick(): Promise<void> {
         const freshness = isChannelInbound
           ? undefined
           : { ageMs, newerFromSameSender: countNewerMessagesFromSameSender(msg.from_agent, msg.to_agent, msg.id) }
-        const { prefix, wrapped } = wrapAgentMessageForDelivery(category, safeFromAgent, msg.from_agent, content, msg.id, msg.origin_note, freshness)
+        const { prefix, wrapped } = wrapAgentMessageForDelivery(category, safeFromAgent, msg.from_agent, content, msg.id, msg.origin_note, freshness, { urgent: msg.urgent === 1 })
         // What the recipient inherits as trace context after this delivery:
         // the head's, unless a multi-envelope batch below ends on a later row.
         let traceCtxToRecord: { trace_id: string; span_id: string } | null = traceCtx
@@ -1143,11 +1146,11 @@ export async function runMessageRouterTick(): Promise<void> {
               const outcome = await sendPromptToSession(session, prefix + wrapped, host, { waitForIdle: false, emitGuard: urgentEmitRefusal })
               if (outcome === 'aborted-guard') {
                 const hold = detectUrgentPaneHold(capturePane(session, host))
-                logger.warn({ id: msg.id, to: msg.to_agent, hold: hold?.kind ?? null }, 'message-router: STOP row not typed, the pane turned into a prompt before the send; the row stays pending')
-                if (hold) noticeUrgentHold(msg, session, hold, 'STOP', now)
+                logger.warn({ id: msg.id, to: msg.to_agent, hold: hold?.kind ?? null }, 'message-router: urgent or STOP row not typed, the pane turned into a prompt before the send; the row stays pending')
+                if (hold) noticeUrgentHold(msg, session, hold, urgentLabel, now)
                 continue
               }
-              logger.info({ id: msg.id, to: msg.to_agent }, 'message-router: STOP row sent without waiting for an idle pane')
+              logger.info({ id: msg.id, to: msg.to_agent, urgent: msg.urgent === 1 }, 'message-router: urgent or STOP row sent without waiting for an idle pane')
             } else {
               await sendPromptToSession(session, prefix + wrapped, host)
             }
@@ -1245,7 +1248,8 @@ function collectBatchMates(
   const empty = { items: [], rows: [], remaining: 0, lastTraceCtx: null }
   // Card 71263d15 (C): a STOP head goes alone. Its mates would ride past the readiness
   // gate into a busy pane with it, and ordinary rows must keep waiting for an idle one.
-  if (isStopMessage(head, MAIN_AGENT_ID)) return empty
+  // Card 795d1f48 (a): an urgent head too.
+  if (isUrgentDelivery(head, MAIN_AGENT_ID)) return empty
   const cap = batchInjectCapFor(head.to_agent)
   if (cap < 2) return empty
   if (agentSessionCache.get(head.to_agent)?.worksource) return empty

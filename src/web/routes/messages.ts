@@ -16,7 +16,7 @@ import { COORDINATOR_AGENT_ID, VOICE_CHANNEL_AGENT_ID } from '../../channel-coor
 import { SYSTEM_DIRECTIVE_SENDER } from '../system-directive.js'
 import { sanitizeAgentIdent } from '../../prompt-safety.js'
 import { isKnownAgent } from '../agent-config.js'
-import { MAIN_AGENT_ID, HEARTBEAT_AGENT_ID, OWNER_NAME, SYSTEM_SENDER_IDS, parseSystemSenderIds } from '../../config.js'
+import { MAIN_AGENT_ID, HEARTBEAT_AGENT_ID, OWNER_NAME, SYSTEM_SENDER_IDS, parseSystemSenderIds, MESSAGE_URGENT_DEVICE_IDS, parseDeviceKeyIds } from '../../config.js'
 import { isAgentRunning } from '../agent-process.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
@@ -56,6 +56,16 @@ export const VOICE_MAILBOX_RESULT = 'voice-channel mailbox: no session delivery;
 
 // Frozen at module load, like the config constant it derives from.
 const SYSTEM_SENDERS = parseSystemSenderIds(SYSTEM_SENDER_IDS, sanitizeAgentIdent)
+// Card 795d1f48 (a): the device keys the install lists for urgent rows (config.ts), frozen the same way.
+const URGENT_DEVICE_KEY_IDS = parseDeviceKeyIds(MESSAGE_URGENT_DEVICE_IDS)
+
+/**
+ * Card 795d1f48 (a): may this request mark a row urgent? Only a FULL device key whose id the install lists. A device
+ * key alone is not enough: the shared dashboard token (the agent API) can mint one. Exported for the unit test.
+ */
+export function mayMarkUrgent(auth: RouteContext['auth'], listedDeviceIds: ReadonlySet<number>): boolean {
+  return auth?.kind === 'device' && auth.scope === 'full' && auth.deviceId !== undefined && listedDeviceIds.has(auth.deviceId)
+}
 
 /**
  * How much of a `result` travels inside the completion notification, and what the recipient
@@ -146,10 +156,25 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/messages' && method === 'POST') {
     const body = await readBody(req)
-    const { from, to, content, origin_note } = JSON.parse(body.toString()) as
-      { from: string; to: string; content: string; origin_note?: string }
+    const { from, to, content, origin_note, urgent } = JSON.parse(body.toString()) as
+      { from: string; to: string; content: string; origin_note?: string; urgent?: unknown }
     if (!from?.trim() || !to?.trim() || !content?.trim()) {
       json(res, { error: 'from, to, and content are required' }, 400)
+      return true
+    }
+    // Card 795d1f48 (a): an URGENT row is typed into a BUSY pane by the router (e.g. the save signal a key rotation
+    // sends before it restarts the agents), so a lost or an injected key could interrupt every agent. Who may ask for
+    // one: a FULL device key whose id the install lists in MESSAGE_URGENT_DEVICE_IDS (mayMarkUrgent). Not the shared
+    // dashboard token (the agent API, readable by every sub-agent), and not any device key, since that token can mint
+    // one. The in-process writers set it directly. Checked before anything is written; a non-boolean is a 400, so a
+    // typo does not silently send an ordinary row.
+    if (urgent !== undefined && typeof urgent !== 'boolean') {
+      json(res, { error: 'urgent must be a JSON boolean' }, 400)
+      return true
+    }
+    if (urgent === true && !mayMarkUrgent(ctx.auth, URGENT_DEVICE_KEY_IDS)) {
+      logger.warn({ from: from.trim(), to: to.trim(), authKind: ctx.auth?.kind ?? 'none', deviceId: ctx.auth?.deviceId }, 'Rejected /api/messages POST: urgent without a listed device key')
+      json(res, { error: 'urgent delivery requires a device key listed in MESSAGE_URGENT_DEVICE_IDS; the shared dashboard token (the agent API) cannot send an urgent row' }, 403)
       return true
     }
     // HBTEMPLATELEAK1002: a heartbeat report that still carries its template's
@@ -373,7 +398,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // Card 06f062e4: optional attributability tag, self-declared like `from`
     // itself -- capped short so it stays a label, not a second content field.
     const trimmedOriginNote = origin_note?.trim().slice(0, 120) || null
-    const msg = createAgentMessage(from.trim(), storedTo, normalizedContent, trimmedOriginNote)
+    const msg = createAgentMessage(from.trim(), storedTo, normalizedContent, trimmedOriginNote, null, { urgent: urgent === true })
     if (isVoiceMailbox) {
       markMessageDone(msg.id, VOICE_MAILBOX_RESULT)
       logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent }, 'Voice-channel answer stored in the mailbox (no session delivery)')
