@@ -1349,6 +1349,22 @@ export function initDatabase(dbPathOverride?: string): void {
   // authorize two sends.
   try { db.exec('ALTER TABLE approvals ADD COLUMN content_hash TEXT') } catch { /* already exists */ }
   try { db.exec('ALTER TABLE approvals ADD COLUMN consumed_at INTEGER') } catch { /* already exists */ }
+  // bc7c1e9d: the written owner GO the main agent cites for an email_send it
+  // already holds a decision on (e.g. "tesztelek-tg-101"). Stored only when it
+  // is honoured, so the row itself says why no owner Telegram went out.
+  try { db.exec('ALTER TABLE approvals ADD COLUMN owner_go_ref TEXT') } catch { /* already exists */ }
+  // bc7c1e9d (b): those GO-cited requests do not ping one by one; a daily digest to the owner
+  // lists them. One row per settled Budapest calendar day: the digest went out (telegram / in_band) or the day
+  // had no such request (empty, no message). The primary key is the dedup: a day is never digested twice.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS approval_owner_go_digests (
+      day TEXT PRIMARY KEY,
+      settled_at INTEGER NOT NULL,
+      row_count INTEGER NOT NULL,
+      delivery TEXT NOT NULL CHECK(delivery IN ('empty','telegram','in_band')),
+      telegram_message_id INTEGER
+    )
+  `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_approvals_hash ON approvals(content_hash)`)
   // f2c5edb0: the gate only sees a send it can read in the command text, so a
   // letter sent by a script (ssh + a mailer run on another host) never flipped
@@ -5420,6 +5436,7 @@ export interface Approval {
   consumed_ref?: string | null
   content_hash: string | null
   consumed_at: number | null
+  owner_go_ref: string | null
 }
 
 export function createApproval(params: {
@@ -5430,11 +5447,12 @@ export function createApproval(params: {
   action_payload?: string | null
   timeout_at?: number | null
   content_hash?: string | null
+  owner_go_ref?: string | null
 }): Approval {
   const now = Math.floor(Date.now() / 1000)
   db.prepare(`
-    INSERT INTO approvals (id, agent_id, category, action_description, action_payload, timeout_at, requested_at, content_hash)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO approvals (id, agent_id, category, action_description, action_payload, timeout_at, requested_at, content_hash, owner_go_ref)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     params.id,
     params.agent_id,
@@ -5444,6 +5462,7 @@ export function createApproval(params: {
     params.timeout_at ?? null,
     now,
     params.content_hash ?? null,
+    params.owner_go_ref ?? null,
   )
   return {
     id: params.id,
@@ -5461,6 +5480,7 @@ export function createApproval(params: {
     consumed_ref: null,
     content_hash: params.content_hash ?? null,
     consumed_at: null,
+    owner_go_ref: params.owner_go_ref ?? null,
   }
 }
 
@@ -5501,6 +5521,27 @@ export function listApprovals(opts: {
   const limit = Math.min(opts.limit ?? 100, 500)
   params.push(limit)
   return db.prepare(`SELECT * FROM approvals ${where} ORDER BY requested_at DESC LIMIT ?`).all(...params) as Approval[]
+}
+
+// bc7c1e9d (b): the main agent's GO-cited requests of one digest window (owner_go_ref is stored only when honoured).
+export function listOwnerGoApprovalsBetween(fromSec: number, toSec: number): Approval[] {
+  return db.prepare(`
+    SELECT * FROM approvals
+     WHERE owner_go_ref IS NOT NULL AND requested_at >= ? AND requested_at < ?
+     ORDER BY requested_at, id
+  `).all(fromSec, toSec) as Approval[]
+}
+
+export function lastOwnerGoDigestDay(): string | null {
+  const row = db.prepare('SELECT max(day) AS day FROM approval_owner_go_digests').get() as { day: string | null } | undefined
+  return row?.day ?? null
+}
+
+export function recordOwnerGoDigest(day: string, rowCount: number, delivery: 'empty' | 'telegram' | 'in_band', telegramMessageId: number | null): boolean {
+  return db.prepare(`
+    INSERT OR IGNORE INTO approval_owner_go_digests (day, settled_at, row_count, delivery, telegram_message_id)
+    VALUES (?, ?, ?, ?, ?)
+  `).run(day, Math.floor(Date.now() / 1000), rowCount, delivery, telegramMessageId).changes > 0
 }
 
 // Stamp trace context onto an agent_messages row that was created without one.
