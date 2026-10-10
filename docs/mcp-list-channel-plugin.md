@@ -94,10 +94,48 @@ A döntés alapja az volt, hogy a `/mcp` ugyanabba a családba esik, a várható
 (egy restart két percen belül jött, és ugyanazt oldotta meg), a lefelé mutató kockázat viszont a
 saját Telegram-ága. Nulla várható haszon mellett bármekkora kockázat rossz csere.
 
+## A mechanizmus (mérve 2026-10-10, élő sub-agentnél)
+
+A fenti mérés azt mutatta meg, HOGY leáll a plugin, azt nem, hogy MIÉRT. Egy élő esetből
+(a `hacker` sub-agent a saját sessionjéből három `claude -p` hívást indított) most megvan az ok, és
+az nem a `claude mcp list` sajátja, hanem minden olyan gyerek-`claude` folyamaté, amely betölti a
+csatorna-plugint.
+
+1. **A plugin egyetlen pollert enged.** A Telegram plugin `server.ts`-e indulásakor beolvassa a
+   `$TELEGRAM_STATE_DIR/bot.pid` fájlt, és az ott álló `server.ts` folyamatot SIGTERM-mel leállítja
+   (`telegram channel: replacing stale poller pid=<N>`), mert egy bot tokenjére egyszerre csak egy
+   `getUpdates`-fogyasztó lehet. A logika árva (crash után ottmaradt) pollerekre készült, de nem
+   ellenőrzi, hogy a régi poller árva-e: azt nézi, hogy `server.ts` folyamat-e. Egy élő session
+   pollere ugyanígy megy.
+2. **A gyerek örökli az állapot-mappát.** A sub-agent sessionjének környezetében ott a
+   `TELEGRAM_STATE_DIR` és a `CLAUDE_CONFIG_DIR`; egy Bash-ből indított `claude` ezeket örökli,
+   betölti az engedélyezett csatorna-plugint, és az UGYANAZT a `bot.pid`-et olvassa. A
+   `claude mcp list` ugyanígy elindítja a plugin-szervereket az egészség-ellenőrzéshez.
+3. **Utána senki nem pollol.** A gyerek kilép, a saját pollere is leáll, a szülő pollere már halott.
+
+A bizonyíték szó szerint (a gyerek MCP-logja macOS-en,
+`~/Library/Caches/claude-cli-nodejs/<cwd-slug>/mcp-logs-plugin-telegram-telegram/`):
+```
+05:32:52.873Z  Server stderr: telegram channel: replacing stale poller pid=45479
+05:32:53.548Z  Sending SIGINT to MCP server process
+05:32:53.712Z  MCP server process exited cleanly
+```
+A szülő session plugin-logja 05:32:44-kor (az utolsó bejövő üzenet) elhallgat, és a session
+újraindításáig (05:42) nem is ír többet.
+
+**A bejövő ág ebben az esetben:** a leállás alatt (05:38:50Z) küldött üzenet NEM veszett el, a session
+újraindítása után megérkezett. Ez egy eset, nem általános garancia: azt mutatja, hogy a kiesés
+késleltetett, nem elveszett kézbesítést jelentett.
+
+**Biztonságos gyerek-hívás**, ha egy csatornát birtokló sessionből mégis kell `claude` (például
+modell-mérés): a gyerek környezetéből vedd ki a `TELEGRAM_*` (és más csatorna) változókat, és adj neki
+saját, plugin nélküli `CLAUDE_CONFIG_DIR`-t, így más `bot.pid`-et lát, és csatorna-plugint sem tölt be.
+
 ## Amit ebből NE olvass ki
 
 Nem tiltjuk a `claude mcp list`-et. Hasznos diagnosztika, és csatorna nélküli sessionben nincs mit
-elrontania. A korlát a **csatornát birtokló session**, nem a parancs.
+elrontania. A korlát a **csatornát birtokló session**, nem a parancs. Ugyanez áll a `claude -p`-re és
+minden más gyerek-`claude` hívásra: leválasztott környezettel (lásd fent) ártalmatlan.
 
 ## Helyreállítás
 

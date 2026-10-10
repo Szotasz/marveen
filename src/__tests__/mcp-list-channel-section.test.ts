@@ -60,6 +60,21 @@ describe('mcp-list channel warning: what it says', () => {
     const lines = (body.match(/^\s+'/gm) || []).length
     expect(lines).toBeLessThanOrEqual(16)
   })
+
+  // CHILDCLAUDEPOLLER1010: the cause is not `mcp list` itself but ANY child
+  // `claude` that inherits the channel state dir and loads the plugin, whose
+  // bot.pid logic then SIGTERMs the parent's live poller. Measured 2026-10-10
+  // with three `claude -p` calls from a live sub-agent session.
+  it('extends the warning to any child `claude` (e.g. `claude -p`), not only `mcp list`', () => {
+    expect(body).toMatch(/claude -p/)
+    expect(body).toMatch(/2026-10-10/)
+  })
+
+  it('names the mechanism (shared bot.pid) and the safe way to run a child', () => {
+    expect(body).toMatch(/bot\.pid/)
+    expect(body).toMatch(/TELEGRAM_\*/)
+    expect(body).toMatch(/CLAUDE_CONFIG_DIR/)
+  })
 })
 
 describe('mcp-list channel warning: where it lands', () => {
@@ -87,5 +102,11 @@ describe('mcp-list channel warning: the evidence doc', () => {
 
   it('records the before-state as a separate round, which is what makes the after meaningful', () => {
     expect(DOC).toMatch(/két külön körben|KÜLÖN körben/)
+  })
+
+  it('documents the mechanism with the verbatim log line, not a guess', () => {
+    expect(DOC).toMatch(/A mechanizmus \(mérve 2026-10-10/)
+    expect(DOC).toMatch(/replacing stale poller pid=/)
+    expect(DOC).toMatch(/bot\.pid/)
   })
 })
