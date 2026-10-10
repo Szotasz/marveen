@@ -125,6 +125,43 @@ describe('child-claude guard: what it blocks', () => {
     const c = typeof command === 'function' ? command() : command
     expect(decide(c, CHANNEL_ENV).allow).toBe(false)
   })
+
+  // Optional point of the second review: unknown variables alone may expand to
+  // nothing, like a bare `$X`.
+  it.each([
+    ['CLAUDE_CONFIG_DIR=$X$Y claude -p x'],
+    ['CLAUDE_CONFIG_DIR="${X}${Y}" claude -p x'],
+  ])('denies a config dir made only of unknown variables: %s', (command) => {
+    expect(decide(command, CHANNEL_ENV).allow).toBe(false)
+  })
+})
+
+// Second review of #1852: the hazard is the child's, so a session without a
+// token is not safe by itself. Its child can be pointed at a state dir that
+// holds one -- on a default install the main bot's ~/.claude/channels/telegram.
+describe('child-claude guard: a token-less session redirecting its child', () => {
+  let TOKENLESS: Record<string, string>
+  beforeAll(() => { TOKENLESS = { ...CHANNEL_ENV, TELEGRAM_STATE_DIR: bare } })
+
+  it.each([
+    ['unsets the state dir (falls back to the main bot dir)', 'env -u TELEGRAM_STATE_DIR claude -p x'],
+    ['unsets it with -u<NAME>', 'env -uTELEGRAM_STATE_DIR claude -p x'],
+    ['empties the environment (falls back to the main bot dir)', () => `env -i PATH=/usr/bin HOME=${home} claude -p x`],
+    ['points the state dir at one with a token', () => `TELEGRAM_STATE_DIR=${tg} claude -p x`],
+    ['points the state dir at an unresolvable value', 'TELEGRAM_STATE_DIR=$UNSET_VAR_X claude -p x'],
+  ])('denies a child that %s', (_name, command) => {
+    const c = typeof command === 'function' ? command() : command
+    expect(sessionOwnsChannel(TOKENLESS)).toBe(false)
+    expect(decide(c, TOKENLESS).allow).toBe(false)
+  })
+
+  it('allows the same redirect when the fallback holds no token', () => {
+    expect(decide('env -u TELEGRAM_STATE_DIR claude -p x', { ...TOKENLESS, HOME: empty }).allow).toBe(true)
+  })
+
+  it('allows a redirected child that has a config dir of its own', () => {
+    expect(decide(`env -u TELEGRAM_STATE_DIR CLAUDE_CONFIG_DIR=${empty} claude -p x`, TOKENLESS).allow).toBe(true)
+  })
 })
 
 describe('child-claude guard: what it leaves alone', () => {
@@ -135,6 +172,7 @@ describe('child-claude guard: what it leaves alone', () => {
     ['fresh literal config dir', () => `CLAUDE_CONFIG_DIR=${empty} claude -p x`],
     ['config dir from a shell variable', 'CLAUDE_CONFIG_DIR=$S/cfg claude -p x'],
     ['quoted config dir from a shell variable', 'CLAUDE_CONFIG_DIR="$S/cfg" claude --model haiku -p "say ok"'],
+    ['single-quoted literal config dir', () => `CLAUDE_CONFIG_DIR='${empty}' claude -p x`],
     ['own config dir via env', () => `env CLAUDE_CONFIG_DIR=${empty} claude plugin validate .`],
   ])('allows a %s', (_name, command) => {
     const c = typeof command === 'function' ? command() : command
@@ -220,6 +258,12 @@ describe('child-claude guard: the real hook process', () => {
     const r = run('claude -p x', { ...CHANNEL_ENV, TELEGRAM_STATE_DIR: bare })
     expect(r.status).toBe(0)
     expect(r.stdout).toBe('')
+  })
+
+  it('denies a token-less sub-agent unsetting its state dir', () => {
+    const r = run('env -u TELEGRAM_STATE_DIR claude -p x', { ...CHANNEL_ENV, TELEGRAM_STATE_DIR: bare })
+    expect(r.status).toBe(0)
+    expect(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision).toBe('deny')
   })
 
   it('fails open on a payload it cannot parse', () => {

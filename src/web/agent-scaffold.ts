@@ -1444,8 +1444,10 @@ export function agentGetsDestructiveGate(name: string, profile?: ProfileTemplate
 // and the plugin's bot.pid logic SIGTERMs the PARENT's live poller -- measured
 // 2026-10-10 with three `claude -p` calls from a live sub-agent, see
 // docs/mcp-list-channel-plugin.md. The guard itself acts only where the
-// Telegram state dir the plugin would use holds a bot token, so a sub-agent
-// without a bot is wired but never blocked. The main agent is left to its
+// Telegram state dir the CHILD's plugin would use holds a bot token, so a plain
+// child of a sub-agent without a bot is never blocked; only a child redirected
+// at a token-bearing state dir (an unset or overridden TELEGRAM_STATE_DIR,
+// env -i) is. The main agent is left to its
 // committed project settings, as with the outgoing-copy gate: its settings are
 // the shared ~/.claude config, which every interactive Claude session on the
 // machine reads, so wiring a deny hook there is the operator's call. The

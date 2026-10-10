@@ -18,10 +18,12 @@
 // exits before the bot.pid code when there is none. The sub-agent launcher
 // exports TELEGRAM_STATE_DIR to every sub-agent, with or without a bot
 // (buildChannelStateFence, SLACKDMVESZT1006), so the variable alone is not the
-// hazard. The guard acts only where the state dir the plugin would use holds a
-// token. Without TELEGRAM_STATE_DIR the plugin falls back to
-// ~/.claude/channels/telegram (0.0.6) or $CLAUDE_CONFIG_DIR/channels/telegram
-// (0.0.7); both are checked.
+// hazard. The guard acts only where the state dir the CHILD's plugin would use
+// holds a token, judged on the child's environment, not the session's: a
+// token-less sub-agent that unsets or overrides TELEGRAM_STATE_DIR, or runs
+// `env -i`, points its child at another state dir that may hold one. Without
+// TELEGRAM_STATE_DIR the plugin falls back to ~/.claude/channels/telegram
+// (0.0.6) or $CLAUDE_CONFIG_DIR/channels/telegram (0.0.7); both are checked.
 //
 // Telegram only: the installed discord 0.0.4 and slack-channel 0.1.0 sources
 // have no bot.pid kill, so their state variables play no part here.
@@ -86,6 +88,15 @@ export function telegramStateDirs(env) {
 export function sessionOwnsChannel(env = process.env) {
   if (env.TELEGRAM_BOT_TOKEN) return true
   return telegramStateDirs(env).some(tokenIn)
+}
+
+// The same question for the child's environment. A state dir we cannot resolve
+// may hold a token, so it counts as one; an unresolved config dir only drops
+// the 0.0.7 fallback, since (a) below judges an own config dir separately.
+export function childOwnsChannel({ values, unknown }) {
+  if (values.TELEGRAM_BOT_TOKEN || unknown.has('TELEGRAM_STATE_DIR')) return true
+  const known = unknown.has('CLAUDE_CONFIG_DIR') ? { ...values, CLAUDE_CONFIG_DIR: undefined } : values
+  return sessionOwnsChannel(known)
 }
 
 function tokens(segment) {
@@ -174,10 +185,10 @@ function ownConfigDir({ values, unknown }, env) {
   if (typeof dir !== 'string' || dir.length === 0) return false
   // A value we cannot resolve but that has a literal part (`$S/cfg`) is a
   // deliberate, non-empty separate dir; the forms that would point back at a
-  // plugin home resolve from the session environment. A bare unknown variable
-  // (`$X`, `"${X}"`) may expand to nothing, and an empty CLAUDE_CONFIG_DIR is
-  // not a config dir of its own, so it does not count.
-  if (unknown.has('CLAUDE_CONFIG_DIR')) return !/^\$\{?[A-Za-z_][A-Za-z0-9_]*\}?$/.test(dir)
+  // plugin home resolve from the session environment. Unknown variables alone
+  // (`$X`, `"${X}"`, `$X$Y`) may expand to nothing, and an empty
+  // CLAUDE_CONFIG_DIR is not a config dir of its own, so they do not count.
+  if (unknown.has('CLAUDE_CONFIG_DIR')) return !/^(?:\$\{?[A-Za-z_][A-Za-z0-9_]*\}?)+$/.test(dir)
   if (samePath(dir, env.CLAUDE_CONFIG_DIR)) return false
   if (samePath(dir, join(homeOf(values.HOME ? values : env), '.claude'))) return false
   return !enablesTelegram(dir)
@@ -215,13 +226,14 @@ function startsNoServer(args) {
 }
 
 export function decide(command, env = process.env) {
-  if (typeof command !== 'string' || !command) return { allow: true }
-  if (!sessionOwnsChannel(env)) return { allow: true }
+  if (typeof command !== 'string' || !command.includes('claude')) return { allow: true }
   for (const segment of stripInertText(command).split(SEGMENT_SPLIT)) {
     const hit = inspectSegment(segment)
     if (!hit) continue
     if (startsNoServer(hit.args)) continue
     const child = childEnv(hit, env)
+    // The hazard is the child's: judge its environment, not the session's.
+    if (!childOwnsChannel(child)) continue
     if (ownConfigDir(child, env) || tokenlessStateDir(child)) continue
     return { allow: false, segment: segment.trim().replaceAll(Q_SPACE, ' ').replaceAll(Q_SEP, '_').slice(0, 200) }
   }
@@ -229,9 +241,10 @@ export function decide(command, env = process.env) {
 }
 
 const REASON = [
-  'child-claude-channel-guard (CHILDCLAUDEPOLLER1010): this session\'s Telegram state dir holds a bot token, and a',
-  'child `claude` with the inherited environment loads the Telegram plugin, which SIGTERMs the poller named in',
-  'that dir\'s bot.pid ("replacing stale poller") -- this session\'s. The channel then stays dead until restart.',
+  'child-claude-channel-guard (CHILDCLAUDEPOLLER1010): the Telegram state dir this child would use holds a bot',
+  'token, and a child `claude` with that environment loads the Telegram plugin, which SIGTERMs the poller named',
+  'in that dir\'s bot.pid ("replacing stale poller") -- this session\'s or the main bot\'s. The channel then stays',
+  'dead until restart.',
   'Run the child with a config dir of its own AND an empty state dir, e.g.:',
   '  TELEGRAM_STATE_DIR=<empty-dir> CLAUDE_CONFIG_DIR=<empty-dir> claude -p ...',
   'Do NOT unset TELEGRAM_STATE_DIR: the plugin then falls back to ~/.claude/channels/telegram, the main',
