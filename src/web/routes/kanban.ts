@@ -24,6 +24,7 @@ import {
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
 import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, STORE_DIR, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS, DB_FILENAME } from '../../config.js'
 import { listAgentNames, readAgentDisplayName } from '../agent-config.js'
+import { nicknameFor } from '../team-nicknames.js'
 import { isAgentRunning } from '../agent-process.js'
 import { resolveKanbanDispatch } from '../../kanban-dispatch.js'
 import { generateBreakdown } from '../llm-breakdown.js'
@@ -626,10 +627,18 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   }
 
   if (path === '/api/kanban/assignees' && method === 'GET') {
-    const agents = listAgentNames().map((name) => ({ name, type: 'agent', displayName: readAgentDisplayName(name) || name }))
+    // `nickname` is the character name behind the portrait. Undefined when
+    // store/team-nicknames.json has no entry, and the board then falls back to
+    // the plain name.
+    const agents = listAgentNames().map((name) => ({
+      name,
+      type: 'agent',
+      displayName: readAgentDisplayName(name) || name,
+      nickname: nicknameFor(name),
+    }))
     json(res, [
-      { name: OWNER_NAME, type: 'owner' },
-      { name: BOT_NAME, type: 'bot' },
+      { name: OWNER_NAME, type: 'owner', nickname: nicknameFor(OWNER_NAME) },
+      { name: BOT_NAME, type: 'bot', nickname: nicknameFor(BOT_NAME) },
       ...agents,
     ])
     return true

@@ -1236,12 +1236,153 @@ function renderKanbanOngoing(cards) {
   }
 }
 
+// The owner's own queue, above the board and OUTSIDE every filter.
+//
+// Why it ignores the filters: this answers "what is the process waiting on me
+// for", which is a question about the person, not about the current view. A
+// queue that an unrelated project filter can silently empty would be worse
+// than no queue, because an empty strip reads as "nothing to do".
+//
+// Order: priority first (urgent > high > normal > low), then card number, so
+// the oldest card wins inside a priority. Done cards never appear.
+//
+// Two ways onto the strip: the owner's own cards, and any agent's card carrying
+// the "Rád vár" ("waiting on you") label -- the agent keeps the work, the owner
+// owes it a decision. Assignment alone missed most of that queue, because an
+// agent that needs an answer keeps its card. A card that is both appears once
+// (one filter pass over kanbanCards).
+//
+// The label is matched by name, not by id, so a re-created label (new id,
+// same name) still counts. Accents and case are folded because the label
+// editor accepts free text.
+const KANBAN_OWNER_QUEUE_LABEL = 'Rád vár'
+
+function kanbanNormalizeLabelName(s) {
+  return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').trim().toLowerCase()
+}
+
+function kanbanIsOnOwnerStrip(card, owner) {
+  if (card.status === 'done') return false
+  if (String(card.assignee || '').trim().toLowerCase() === owner.toLowerCase()) return true
+  const want = kanbanNormalizeLabelName(KANBAN_OWNER_QUEUE_LABEL)
+  return (card.labels || []).some((l) => kanbanNormalizeLabelName(l && l.name) === want)
+}
+
+function renderKanbanOwnerStrip() {
+  const el = document.getElementById('kanbanOwnerStrip')
+  if (!el) return
+  const owner = ownerAssigneeName()
+  if (!owner) { el.hidden = true; return }
+  const mine = kanbanCards
+    .filter((c) => kanbanIsOnOwnerStrip(c, owner))
+    .sort((a, b) => {
+      const pa = KANBAN_PRIORITY_ORDER.indexOf(a.priority || 'normal')
+      const pb = KANBAN_PRIORITY_ORDER.indexOf(b.priority || 'normal')
+      if (pa !== pb) return pa - pb
+      return (a.seq ?? Infinity) - (b.seq ?? Infinity)
+    })
+  if (mine.length === 0) { el.hidden = true; return }
+  el.hidden = false
+
+  const collapsed = localStorage.getItem('marveen.kanbanOwnerStripCollapsed') === '1'
+  el.classList.toggle('collapsed', collapsed)
+  el.innerHTML = ''
+
+  const head = document.createElement('div')
+  head.className = 'kanban-owner-strip-head'
+  // The owner's portrait belongs here, because this strip is the ONLY place
+  // the owner's open cards are drawn (see kanbanHideFromLanes).
+  const face = document.createElement('span')
+  face.className = 'kanban-team-avatar owner kanban-owner-strip-avatar'
+  face.textContent = (owner[0] || '?').toUpperCase()
+  kanbanDecorateAvatar(face, owner)
+  const label = document.createElement('span')
+  label.textContent = t('kanban.owner_strip.title')
+  // The owner's nickname goes here too: this strip replaces the owner's lane,
+  // and the lane header is the other place a nickname is drawn.
+  const ownerNick = kanbanSwimlaneMeta(owner).nickname
+  const nick = document.createElement('span')
+  nick.className = 'kanban-nickname'
+  if (ownerNick) nick.textContent = ownerNick
+  const count = document.createElement('span')
+  count.className = 'kanban-owner-strip-count'
+  count.textContent = mine.length
+  const toggle = document.createElement('span')
+  toggle.className = 'kanban-owner-strip-toggle'
+  toggle.textContent = collapsed ? t('kanban.owner_strip.show') : t('kanban.owner_strip.hide')
+  head.append(face, label, nick, count, toggle)
+  head.addEventListener('click', () => {
+    const now = !el.classList.contains('collapsed')
+    localStorage.setItem('marveen.kanbanOwnerStripCollapsed', now ? '1' : '0')
+    renderKanbanOwnerStrip()
+  })
+  el.appendChild(head)
+
+  // Three tiers, urgent on top, each with its own colour: one chip row in
+  // priority order still made the owner read every dot to find what was
+  // urgent. The tier comes from the priority field: urgent+high = urgent,
+  // normal = when I have time, low = can wait.
+  const groups = document.createElement('div')
+  groups.className = 'kanban-owner-strip-groups'
+  const tierOf = (c) => (c.priority === 'urgent' || c.priority === 'high') ? 'urgent' : (c.priority === 'low' ? 'parked' : 'later')
+  for (const tier of ['urgent', 'later', 'parked']) {
+    const cards = mine.filter((c) => tierOf(c) === tier)
+    if (cards.length === 0) continue
+    const group = document.createElement('div')
+    group.className = 'kanban-owner-strip-group tier-' + tier
+    const gh = document.createElement('div')
+    gh.className = 'kanban-owner-strip-group-head'
+    gh.textContent = t('kanban.owner_strip.tier_' + tier) + ' · ' + cards.length
+    const items = document.createElement('div')
+    items.className = 'kanban-owner-strip-items'
+    group.append(gh, items)
+    groups.appendChild(group)
+    for (const card of cards) {
+      const chip = document.createElement('div')
+      chip.className = 'kanban-owner-strip-item'
+      chip.title = card.title
+      const dot = document.createElement('span')
+      dot.className = 'dot ' + (card.priority || 'normal')
+      const seq = document.createElement('span')
+      seq.className = 'seq'
+      seq.textContent = card.seq != null ? '#' + card.seq : ''
+      const title = document.createElement('span')
+      title.className = 'title'
+      title.textContent = card.title
+      chip.append(dot, seq, title)
+      // A labelled card stays with its agent; the chip says whose it is, so the
+      // owner knows who is waiting on the answer. Their own cards carry no marker.
+      const raw = String(card.assignee || '').trim()
+      if (raw && raw.toLowerCase() !== owner.toLowerCase()) {
+        const m = kanbanAssignees.find((a) => a.name.toLowerCase() === raw.toLowerCase())
+        const name = m ? (m.displayName || m.name) : raw
+        const who = document.createElement('span')
+        who.className = 'who'
+        const av = document.createElement('span')
+        av.className = 'kanban-team-avatar kanban-owner-strip-who-avatar ' + (m ? m.type : 'unknown')
+        av.textContent = (name[0] || '?').toUpperCase()
+        if (m) kanbanDecorateAvatar(av, m.name)
+        const nm = document.createElement('span')
+        nm.className = 'who-name'
+        nm.textContent = name
+        who.append(av, nm)
+        chip.appendChild(who)
+        chip.title = card.title + ' (' + name + ')'
+      }
+      chip.addEventListener('click', () => showCardDetail(card))
+      items.appendChild(chip)
+    }
+  }
+  el.appendChild(groups)
+}
+
 function renderKanban() {
   const cardById = new Map(kanbanCards.map(c => [c.id, c]))
 
   renderKanbanColumnChips()
   renderKanbanQuickFilters()
   renderKanbanSearchHint()
+  renderKanbanOwnerStrip()
 
   // Determine which top-level cards are visible under current filters.
   const visibleCardIds = new Set()
@@ -1362,7 +1503,72 @@ function kanbanSwimlaneMeta(key) {
   if (key === '__unassigned__') return { label: t('kanban.unassigned'), avatarClass: 'unknown', avatarChar: '?' }
   const match = kanbanAssignees.find(a => a.name === key)
   const label = match ? (match.displayName || match.name) : key
-  return { label, avatarClass: match ? match.type : 'unknown', avatarChar: (label[0] || '?').toUpperCase() }
+  return {
+    label,
+    // The character name behind the portrait, from store/team-nicknames.json.
+    // Empty when nobody set one, and the lane then shows the plain name.
+    nickname: (match && match.nickname) ? match.nickname : '',
+    avatarClass: match ? match.type : 'unknown',
+    avatarChar: (label[0] || '?').toUpperCase(),
+  }
+}
+
+// === Character portraits on the board ===
+//
+// Each lane head (and the owner strip) shows the person's portrait over the
+// coloured circle with the first letter of the name.
+//
+// The image is served by the SAME endpoints the agents page already uses, so no
+// new storage and no new upload path: agents/<name>/avatar.png for an agent,
+// store/marveen-avatar.png for the bot, store/owner-avatar.png for the owner.
+//
+// Why an <img> laid OVER the letter instead of asking first whether a picture
+// exists: the board would otherwise need a per-assignee "hasAvatar" round trip
+// before it could draw a single lane. The letter is rendered first and the image
+// covers it; if the file is missing the request 404s, the <img> removes itself,
+// and the letter is already underneath. One less thing that can be stale, and a
+// half-populated set of portraits degrades one lane at a time instead of all.
+function kanbanAvatarUrlFor(key) {
+  if (kanbanGroupBy === 'priority') return null
+  if (!key || key === '__unassigned__') return null
+  const m = kanbanAssignees.find(a => a.name === key)
+  if (!m) return null
+  if (m.type === 'owner') return '/api/marveen/owner-avatar' + avatarBust()
+  if (m.type === 'bot') return '/api/marveen/avatar' + avatarBust()
+  if (m.type === 'agent') return `/api/agents/${encodeURIComponent(m.name)}/avatar` + avatarBust()
+  return null
+}
+
+function kanbanDecorateAvatar(spanEl, key) {
+  if (!spanEl) return
+  const url = kanbanAvatarUrlFor(key)
+  if (!url) return
+  const img = document.createElement('img')
+  img.className = 'kanban-avatar-img'
+  img.alt = ''
+  img.addEventListener('error', () => img.remove())
+  img.src = url
+  spanEl.appendChild(img)
+}
+
+// The owner's cards live in the strip above the board, OUTSIDE every filter
+// (see renderKanbanOwnerStrip). Drawing them in a swimlane as well would show
+// the same card twice. The strip wins: it is always visible and no filter can
+// empty it.
+//
+// Only the owner's OPEN cards are dropped, not the lane itself. The strip
+// deliberately omits done cards, so if one is closed and still on the board,
+// the lane reappears carrying exactly what the strip does not show. Nothing can
+// fall between the two.
+//
+// The "Rád vár" label does NOT hide a card here, on purpose: a labelled agent
+// card shows in the strip AND in its agent's lane, because the lane is where
+// that agent's whole queue is read. Only the owner's cards live in one place.
+function kanbanHideFromLanes(card) {
+  if (card.status === 'done') return false
+  const owner = ownerAssigneeName()
+  if (!owner) return false
+  return String(card.assignee || '').trim().toLowerCase() === owner.toLowerCase()
 }
 
 function renderSwimlaneBoard(grouped, embeddedSubtaskIds) {
@@ -1371,7 +1577,10 @@ function renderSwimlaneBoard(grouped, embeddedSubtaskIds) {
 
   const presentKeys = new Set()
   for (const cards of Object.values(grouped)) {
-    for (const c of cards) presentKeys.add(kanbanSwimlaneKeyFor(c))
+    for (const c of cards) {
+      if (kanbanHideFromLanes(c)) continue
+      presentKeys.add(kanbanSwimlaneKeyFor(c))
+    }
   }
 
   const canonicalOrder = kanbanGroupBy === 'priority'
@@ -1390,7 +1599,7 @@ function renderSwimlaneBoard(grouped, embeddedSubtaskIds) {
     const laneCardsByStatus = {}
     let totalCount = 0
     for (const def of KANBAN_STATUS_DEFS) {
-      const cards = grouped[def.status].filter(c => kanbanSwimlaneKeyFor(c) === key)
+      const cards = grouped[def.status].filter(c => !kanbanHideFromLanes(c) && kanbanSwimlaneKeyFor(c) === key)
       laneCardsByStatus[def.status] = cards
       if (!kanbanHiddenColumns.has(def.status)) totalCount += cards.length
     }
@@ -1405,9 +1614,11 @@ function renderSwimlaneBoard(grouped, embeddedSubtaskIds) {
     header.innerHTML = `
       <span class="kanban-swimlane-avatar ${meta.avatarClass}">${escapeHtml(meta.avatarChar)}</span>
       <span class="kanban-swimlane-name">${escapeHtml(meta.label)}</span>
+      ${meta.nickname ? `<span class="kanban-nickname">${escapeHtml(meta.nickname)}</span>` : ''}
       <span class="kanban-swimlane-count">${totalCount}</span>
       <button class="kanban-swimlane-toggle" type="button" aria-expanded="${!collapsed}" title="${collapsed ? t('kanban.swimlane.expand') : t('kanban.swimlane.collapse')}">${collapsed ? '▶' : '▼'}</button>
     `
+    kanbanDecorateAvatar(header.querySelector('.kanban-swimlane-avatar'), key)
     header.querySelector('.kanban-swimlane-toggle').addEventListener('click', (e) => {
       e.stopPropagation()
       if (kanbanCollapsedLanes.has(key)) kanbanCollapsedLanes.delete(key)
@@ -1538,8 +1749,13 @@ function createCardEl(card, embeddedChildren = []) {
   // Display the persona displayName (falling back to the id) per #216, while
   // keeping the robust match above and the raw-name fallback chip below.
   const assigneeLabel = assignee ? (assignee.displayName || assignee.name) : ''
+  // The nickname rides along with the name here too. It matters most on the
+  // FLAT board: with no swimlanes there are no lane headers, so this chip is
+  // the only place a person is named at all.
+  const assigneeNick = (assignee && assignee.nickname)
+    ? `<span class="kanban-nickname">${escapeHtml(assignee.nickname)}</span>` : ''
   const assigneeHtml = assignee
-    ? `<span class="kanban-card-assignee"><span class="assignee-dot ${assignee.type}">${escapeHtml(assigneeLabel[0])}</span>${escapeHtml(assigneeLabel)}</span>`
+    ? `<span class="kanban-card-assignee"><span class="assignee-dot ${assignee.type}">${escapeHtml(assigneeLabel[0])}</span>${escapeHtml(assigneeLabel)}${assigneeNick}</span>`
     : rawAssignee
       ? `<span class="kanban-card-assignee"><span class="assignee-dot unknown">${escapeHtml(rawAssignee[0])}</span>${escapeHtml(rawAssignee)}</span>`
       : ''
@@ -3698,7 +3914,7 @@ function renderAgents() {
       <div class="agent-card-top">
         <div class="agent-avatar gradient-1"><img src="/api/marveen/avatar${avatarBust()}" alt="${escapeHtml(displayName)}"></div>
         <div class="agent-card-info">
-          <div class="agent-name">${escapeHtml(displayName)} <span class="marveen-badge">${t('agents.main_badge')}</span></div>
+          <div class="agent-name">${escapeHtml(displayName)}${m.nickname ? ` <span class="agent-nickname">${escapeHtml(m.nickname)}</span>` : ''} <span class="marveen-badge">${t('agents.main_badge')}</span></div>
           <div class="agent-desc">${escapeHtml(m.description || '')}</div>
         </div>
       </div>
@@ -3761,7 +3977,7 @@ function renderAgents() {
       <div class="agent-card-top">
         <div class="agent-avatar ${gradientClass}">${avatarHtml}</div>
         <div class="agent-card-info">
-          <div class="agent-name">${escapeHtml(label)}</div>
+          <div class="agent-name">${escapeHtml(label)}${agent.nickname ? ` <span class="agent-nickname">${escapeHtml(agent.nickname)}</span>` : ''}</div>
           <div class="agent-desc">${escapeHtml(agent.description || '')}</div>
         </div>
       </div>

@@ -1780,6 +1780,12 @@ window._i18n.hu = {
   'kanban.filter.sort_created_asc': 'Legrégebbi elöl',
   'kanban.filter.sort_created_desc':'Legújabb elöl',
   'kanban.filter.sort_updated_desc':'Utoljára módosított elöl',
+  'kanban.owner_strip.title':       'Rád vár',
+  'kanban.owner_strip.show':        'mutasd',
+  'kanban.owner_strip.hide':        'elrejt',
+  'kanban.owner_strip.tier_urgent':  'Sürgős',
+  'kanban.owner_strip.tier_later':   'Amint van rá időm',
+  'kanban.owner_strip.tier_parked':  'Ráér',
 
   // --- Kanban Gantt/idővonal nézet ---
   'kanban.view.board':              'Tábla',

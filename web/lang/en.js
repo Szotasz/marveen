@@ -1777,6 +1777,12 @@ window._i18n.en = {
   'kanban.filter.sort_created_asc': 'Oldest first',
   'kanban.filter.sort_created_desc':'Newest first',
   'kanban.filter.sort_updated_desc':'Recently updated first',
+  'kanban.owner_strip.title':       'Waiting on you',
+  'kanban.owner_strip.show':        'show',
+  'kanban.owner_strip.hide':        'hide',
+  'kanban.owner_strip.tier_urgent':  'Urgent',
+  'kanban.owner_strip.tier_later':   'When I have time',
+  'kanban.owner_strip.tier_parked':  'Can wait',
 
   // --- Kanban Gantt/timeline view ---
   'kanban.view.board':              'Board',
