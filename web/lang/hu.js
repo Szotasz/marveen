@@ -235,6 +235,8 @@ window._i18n.hu = {
   'kanban.modal.add_comment':    'Megjegyzés hozzáadása',
   'kanban.modal.author_label':   'Szerző',
   'kanban.modal.parent_label':   'Szülő',
+  'kanban.test_steps.title':     'Tesztelési lépések',
+  'kanban.test_steps.ph':        '1. ...\n2. ...',
   'kanban.modal.labels_title':   'Cimkék',
   'kanban.modal.comment_author_label': 'Komment szerzője:',
   'kanban.modal.subtasks_title': 'Subtask-ok',

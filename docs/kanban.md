@@ -25,6 +25,7 @@ SQLite (`store/`): `kanban_cards` (id, title, status, project, priority, assigne
 
 - **Státuszok:** `planned`, `in_progress`, `waiting`, `testing`, `done`
 - **Prioritások:** `low`, `normal`, `high`, `urgent`
+- **`test_steps`:** a tesztelő számozott, rövid lépései. Külön mező, nem a `description` egy bekezdése, mert a kettő más kérdésre válaszol: a leírás az, hogy MI a feladat, ez pedig az, hogy hogyan ellenőrizhető. A `POST`/`PUT` ugyanúgy írja, mint a többi mezőt, a dashboard a kártya-részletekben külön blokkban mutatja, és `testing` státuszban kiemeli.
 
 ### Automatikus bontás
 

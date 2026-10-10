@@ -2083,6 +2083,10 @@
           <label for="cardDesc" data-i18n="common.description">Leírás <span class="hint" data-i18n="common.optional_hint">(opcionális)</span></label>
           <textarea id="cardDesc" rows="3" placeholder="Részletek, kontextus..." data-i18n-placeholder="kanban.modal.desc_ph"></textarea>
         </div>
+        <div class="form-group">
+          <label for="cardTestSteps" data-i18n="kanban.test_steps.title">Tesztelési lépések <span class="hint">(opcionális)</span></label>
+          <textarea id="cardTestSteps" rows="3" placeholder="1. ...&#10;2. ..." data-i18n-placeholder="kanban.test_steps.ph"></textarea>
+        </div>
         <div class="form-row">
           <div class="form-group form-half">
             <label for="cardAssignee" data-i18n="common.assignee">Felelős</label>
@@ -2133,6 +2137,13 @@
           <select id="parentSelect" style="flex:1; width:100%; padding:5px 8px; border-radius:6px; border:1px solid var(--border); background:var(--bg); color:var(--text); font-size:13px" title="Szülő feladat módosítása"></select>
         </div>
         <div class="card-detail-desc" id="cardDetailDesc"></div>
+        <!-- Card 8fe51afd: the testing steps are a block of their own, not a
+             line in the description, so the tester can find them without
+             reading the thread. Hidden while the card has none. -->
+        <div class="card-detail-test-steps" id="cardDetailTestSteps" hidden>
+          <h4 data-i18n="kanban.test_steps.title">Tesztelési lépések</h4>
+          <pre class="card-detail-test-steps-body" id="cardDetailTestStepsBody"></pre>
+        </div>
         <div class="card-detail-labels">
           <h4 data-i18n="kanban.modal.labels_title">Címkék</h4>
           <div class="label-pill-list" id="cardLabelList"></div>
