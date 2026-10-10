@@ -121,6 +121,18 @@ def main():
         if not claim(os.path.join(sd, "progress"), sid, src_mid):
             log(sd, f"[submit] dedup skip src={src_mid}")
             continue
+        # Quiet hours (telegram_quiet_hours.py, <state_dir>/quiet-hours.json): no
+        # placeholder and no pending entry, so neither the Stop fallback nor the
+        # watchdog can deliver anything into the owner's window. Restored
+        # 2026-09-22 21:2xZ: the 09-12 fix was overwritten at 09-12 15:32Z.
+        try:
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            import telegram_quiet_hours as _q
+            if _q.in_quiet(sd, chat_id):
+                log(sd, f"[submit] quiet-hours skip chat={chat_id} src={src_mid}")
+                continue
+        except Exception as e:
+            log(sd, f"[submit] quiet check failed: {e}")
         # Note: no reaction on the user's message — the "Dolgozom rajta…"
         # placeholder already signals receipt, so a reaction would be redundant
         # (per user preference 2026-06-07).

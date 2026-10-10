@@ -168,12 +168,42 @@ def main():
 
     # Already nudged once (or loop guard tripped) and STILL no reply -> guaranteed
     # fallback: deliver the agent's final answer to the chat, then clear.
+    # Quiet hours: never deliver the transcript fallback into an owner's window
+    # (measured 2026-09-22: fallback-delivered=True to an owner chat inside its window).
+    # The absence of this brake must not be silent. THIS is the branch that delivered into an
+    # owner's window on 2026-09-22, and a bare `except: quiet = set()` here would repeat the
+    # 09-12 regression with no trace at all -- the missing log is what made it last ten days.
+    quiet = set()
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    try:
+        import telegram_quiet_hours as _q
+    except ImportError as e:
+        log(sd, f"[stop] QUIET-HOURS DEFECT: import telegram_quiet_hours failed ({e}) -- NOT ENFORCED")
+        _q = None
+    if _q is not None:
+        # card 20e178fc's three cases: LOST or UNREADABLE is a defect, loud on every run; a missing config this
+        # install never recorded is the normal state of an install without quiet hours, noted once.
+        seen = _q.seen_path()
+        case = _q.config_case(sd, seen)
+        defect = _q.defect_text(case, sd, seen)
+        if defect:
+            log(sd, f"[stop] QUIET-HOURS DEFECT: {defect} -- NOT ENFORCED")
+        elif case == _q.CASE_NOT_CONFIGURED:
+            note = _q.not_configured_note_once(sd)
+            if note:
+                log(sd, f"[stop] {note}")
+        elif case == _q.CASE_OK:
+            _q.remember_configured(sd, seen, "telegram_progress_clear")
+        try:
+            quiet = {str(p.get("chat_id")) for p in pend if _q.in_quiet(sd, p.get("chat_id"))}
+        except Exception as e:
+            log(sd, f"[stop] QUIET-HOURS DEFECT: in_quiet raised {type(e).__name__}: {e}")
     answer = last_assistant_text(transcript)
     tok = token(sd)
     if tok:
         for p in pend:
             cid, mid = p.get("chat_id"), p.get("message_id")
-            if answer:
+            if answer and str(cid) not in quiet:
                 try:
                     api(tok, "sendMessage", {"chat_id": cid, "text": answer[:4000]})
                 except Exception as e:
