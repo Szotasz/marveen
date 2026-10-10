@@ -22,6 +22,7 @@ import {
   paneShowsContextSaturationHardError,
   mcpTrustAcceptKeys,
   detectsFirstRunGate,
+  detectsModelConsentDialog,
 } from '../pane-state.js'
 
 // Realistic pane fixtures modelled on actual `tmux capture-pane -p`
@@ -497,30 +498,27 @@ describe('detectPaneState', () => {
     expect(detectPaneState(IDLE_BACKGROUND_ONE_SHELL_HIDDEN)).toBe('idle')
   })
 
-  it('does NOT classify a truncated "· N shell" prefix as idle', () => {
-    // Defense in depth: the shells-variant requires either the
-    // "· N shells · ctrl+t" marker or the "· N shells · ↓ to manage"
-    // marker, not just the bare "· N shell(s)" prefix. Two reasons we
-    // pin this down with an explicit negative test:
-    //   1. A malformed or partially rendered footer (terminal
-    //      corruption, mid-render frame) must classify as 'unknown'
-    //      so we do not deliver a prompt into a pane that is not
-    //      really ready.
-    //   2. The "bypass permissions on · 1 shell" substring could
-    //      appear in scrollback as quoted log output or an echoed
-    //      message, and the regex must not be tricked into treating
-    //      that as a live footer.
-    // The fixture is deliberately minimal: no other idle markers
-    // (no "(shift+tab to cycle)", no "? for shortcuts") so the
-    // assertion isolates the truncated-shells path specifically.
-    const truncated = [
+  it('a bare "· N shell" tail is idle ONLY as the live (last) footer line (VAGTECHIDLE1009 reversed #61)', () => {
+    // #61 (2026-05) pinned the bare "bypass permissions on · 1 shell" footer as
+    // 'unknown', for two reasons: (1) it could be a mid-render frame, and (2)
+    // the substring could be quoted in scrollback. A customer's 35 captures
+    // (Vág-Tech, 2026-10-09) and our own fleet (2026-10-08) showed that this
+    // bare tail is the STABLE idle footer while a background shell runs, for
+    // hours, so reading it as 'unknown' stopped delivery and the auto-restart
+    // idle guard. Reason (2) is kept: the tail counts only on the last non-empty
+    // line, and the scrollback case is pinned in the VAGTECHIDLE1009 block.
+    // Reason (1) is a known residual: one capture cannot tell a mid-render
+    // frame from the stable footer.
+    const bare = [
       '',
       SEP,
       '❯ ',
       SEP,
       '  ⏵⏵ bypass permissions on · 1 shell',
     ].join('\n')
-    expect(detectPaneState(truncated)).toBe('unknown')
+    expect(detectPaneState(bare)).toBe('idle')
+    const quotedAbove = ['  ⏵⏵ bypass permissions on · 1 shell', '', SEP, '❯ ', SEP, '  some status line'].join('\n')
+    expect(detectPaneState(quotedAbove)).toBe('unknown')
   })
 
   it('detects busy when "esc to interrupt" footer marker is present', () => {
@@ -2567,5 +2565,168 @@ describe('detectsFirstRunGate / mcpTrustAcceptKeys: the MCP approval dialog', ()
   it('a busy pane quoting the dialog is never the dialog', () => {
     const quoted = `New MCP server found in this project: worksource\n  1. Use this MCP server\n\n✻ Thinking… (esc to interrupt)`
     expect(detectsFirstRunGate(quoted)).toBeNull()
+  })
+})
+
+describe('truncated idle footer (tmux width clipping)', () => {
+  // tmux clips the footer to the pane width and marks the cut with `…`, so on
+  // a narrow pane the `← for agents` tail never arrives whole. Before the fix
+  // this read 'unknown' and every idle-waiting consumer stalled on it.
+  const CLIPPED_FOOTER = '  ⏵⏵ bypass permissions on · install gh for PR status · 3 shells · ← for agen…'
+  const IDLE_TRUNCATED_TAIL = modeFooter(CLIPPED_FOOTER)
+  const IDLE_TRUNCATED_EARLIER = modeFooter('  ⏵⏵ bypass permissions on · install gh for PR status · 3 sh…')
+  const TRUNCATED_SINGLE_SEP = modeFooter('  ez egy mondat ami valamin dolgozik on · es itt megszakad…')
+  // A prose line that happens to carry the footer shape and end in `…`.
+  const PROSE_CLIPPED = '  the reviewer turned it on · then off · and then it was cut…'
+
+  it('reads a footer clipped mid-tail as idle', () => {
+    expect(detectPaneState(IDLE_TRUNCATED_TAIL)).toBe('idle')
+    expect(isReadyForPrompt(IDLE_TRUNCATED_TAIL)).toBe(true)
+  })
+
+  it('reads a footer clipped one segment earlier as idle', () => {
+    expect(detectPaneState(IDLE_TRUNCATED_EARLIER)).toBe('idle')
+  })
+
+  it('reads idle when blank rows follow the clipped footer', () => {
+    expect(detectPaneState(IDLE_TRUNCATED_TAIL + '\n\n\n')).toBe('idle')
+  })
+
+  it('refuses a clipped line carrying only one separator', () => {
+    expect(detectPaneState(TRUNCATED_SINGLE_SEP)).toBe('unknown')
+  })
+
+  it('does not let the truncation rule override a busy spinner', () => {
+    const busy = IDLE_TRUNCATED_TAIL + '\n✻ Accomplishing… (3m 8s · ↓ 9.3k tokens · esc to interrupt)'
+    expect(detectPaneState(busy)).toBe('busy')
+  })
+
+  it('does not count a clipped footer that is not the last line', () => {
+    const above = [CLIPPED_FOOTER, '', SEP, '❯ ', SEP, '  some status line'].join('\n')
+    expect(detectPaneState(above)).toBe('unknown')
+  })
+
+  // #1743 review: with the rule applied to the whole pane, a clipped footer
+  // or `…` prose in the scrollback ABOVE an open dialog made the pane read idle,
+  // and delivery could type a message plus Enter into a prompt with "1. Yes"
+  // preselected. Each fixture is a real dialog with such a line on top.
+  const PERMISSION_DIALOG = [
+    ' Bash command',
+    '   rm -rf ./build',
+    '   Remove the build directory',
+    '',
+    ' Do you want to proceed?',
+    ' ❯ 1. Yes',
+    "   2. Yes, and don't ask again for rm commands in /home/marveen/marveen",
+    '   3. No, and tell Claude what to do differently (esc)',
+    '',
+    ' Esc to cancel',
+  ].join('\n')
+  const EDIT_PERMISSION_DIALOG = [
+    ' ../../home/marveen/.claude/bond-teszt.txt',
+    ' Do you want to make this edit to bond-teszt.txt?',
+    ' ❯ 1. Yes',
+    '   2. Yes, and allow Claude to edit its own settings for this session',
+    '   3. No',
+    '',
+    ' Esc to cancel · Tab to amend',
+  ].join('\n')
+  const MENU = [
+    '   Manage MCP servers',
+    '   ❯ claude.ai Canva · ✔ connected · 39 tools',
+    '',
+    '   ↑/↓ to navigate · Enter to confirm · Esc to cancel',
+  ].join('\n')
+  const CONSENT = [
+    '  Fable 5 now uses usage credits',
+    '    1. Continue with Fable 5',
+    '  ❯ 2. Switch to Sonnet 5 and continue',
+    '  Enter to confirm · Esc to cancel',
+  ].join('\n')
+
+  for (const [name, line] of [['clipped footer', CLIPPED_FOOTER], ['clipped prose', PROSE_CLIPPED]] as const) {
+    it(`a ${name} above a command-permission prompt does not hide it`, () => {
+      const pane = line + '\n' + PERMISSION_DIALOG
+      expect(detectPaneState(pane)).not.toBe('idle')
+      expect(isReadyForPrompt(pane)).toBe(false)
+      expect(detectsPermissionDialog(pane)).toBe(true)
+      expect(detectsBlockingMenu(pane)).toBe(true)
+    })
+
+    it(`a ${name} above an edit-permission prompt does not hide it`, () => {
+      const pane = line + '\n' + EDIT_PERMISSION_DIALOG
+      expect(isReadyForPrompt(pane)).toBe(false)
+      expect(detectsPermissionDialog(pane)).toBe(true)
+    })
+
+    it(`a ${name} above a blocking menu does not hide it`, () => {
+      const pane = line + '\n' + MENU
+      expect(isReadyForPrompt(pane)).toBe(false)
+      expect(detectsBlockingMenu(pane)).toBe(true)
+    })
+
+    it(`a ${name} above the usage-credit consent dialog does not hide it`, () => {
+      const pane = line + '\n' + CONSENT
+      expect(isReadyForPrompt(pane)).toBe(false)
+      expect(detectsModelConsentDialog(pane)).toBe(true)
+    })
+  }
+})
+
+describe('idle footer that ends in a background-shell count (VAGTECHIDLE1009)', () => {
+  // Customer report (Vág-Tech, 2026-10-09), seen on our own fleet the evening
+  // before: while a background shell is still running the footer can end in its
+  // count and nothing else. Before the fix this read 'unknown', paneLooksIdle
+  // never became true, and delivery plus the auto-restart idle guard stalled
+  // (6.5 and 18.5 hours of silence, 5570 dropped deliveries at the customer).
+  const SHELL_TAIL = '  ⏵⏵ bypass permissions on · 1 shell'
+  const IDLE_SHELL_TAIL = modeFooter(SHELL_TAIL)
+  const IDLE_SHELLS_TAIL = modeFooter('  ⏵⏵ bypass permissions on · 2 shells')
+  const IDLE_SHELL_MONITOR_TAIL = modeFooter('  ⏵⏵ accept edits on · 3 shells · 1 monitor')
+
+  it('reads a footer that ends in "· 1 shell" as idle', () => {
+    expect(detectPaneState(IDLE_SHELL_TAIL)).toBe('idle')
+    expect(isReadyForPrompt(IDLE_SHELL_TAIL)).toBe(true)
+  })
+
+  it('reads the plural and the shells-plus-monitor tail as idle', () => {
+    expect(detectPaneState(IDLE_SHELLS_TAIL)).toBe('idle')
+    expect(detectPaneState(IDLE_SHELL_MONITOR_TAIL)).toBe('idle')
+  })
+
+  it('reads idle when blank rows follow the footer', () => {
+    expect(detectPaneState(IDLE_SHELL_TAIL + '\n\n\n')).toBe('idle')
+  })
+
+  it('does not let the shell-tail rule override a busy spinner', () => {
+    const busy = IDLE_SHELL_TAIL + '\n✻ Accomplishing… (3m 8s · ↓ 9.3k tokens · esc to interrupt)'
+    expect(detectPaneState(busy)).toBe('busy')
+  })
+
+  it('does not count the shell tail when it is not the last line (a log line in the scrollback)', () => {
+    const above = ['2026-07-29 log: bypass permissions on · 1 shell', '', SEP, '❯ ', SEP, '  some status line'].join('\n')
+    expect(detectPaneState(above)).toBe('unknown')
+  })
+
+  it('refuses a line that only looks like it (no count, or text after the count)', () => {
+    expect(detectPaneState(modeFooter('  ⏵⏵ bypass permissions on · shell'))).toBe('unknown')
+    expect(detectPaneState(modeFooter('  the toggle was turned on · 1 shell later it broke'))).toBe('unknown')
+  })
+
+  it('a shell-tail line above a command-permission prompt does not hide the prompt', () => {
+    const pane = [
+      SHELL_TAIL,
+      ' Bash command',
+      '   rm -rf ./build',
+      '   Remove the build directory',
+      '',
+      ' Do you want to proceed?',
+      ' ❯ 1. Yes',
+      '   2. No, and tell Claude what to do differently (esc)',
+      '',
+      ' Esc to cancel',
+    ].join('\n')
+    expect(isReadyForPrompt(pane)).toBe(false)
+    expect(detectsPermissionDialog(pane)).toBe(true)
   })
 })

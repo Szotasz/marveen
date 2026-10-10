@@ -41,14 +41,20 @@ place.
 ## What it does
 
 `BASH_EGRESS_DENY` in `src/web/agent-scaffold.ts` is the single source of truth
-for a small `permissions.deny` list that lands in **every** agent's
-`settings.json`:
+for the EGRESS part of `permissions.deny`, and it lands in **every** agent's
+`settings.json` by three routes:
 
 - on spawn, via `writeAgentSettingsFromProfile()`,
 - on server startup, via `ensureBashEgressDeny()` (existing fleet, and the main
   agent -- see the scope note below),
 - on scaffold, via `templates/settings.json.template` (so the next agent created
   starts gated -- a parity test keeps the template and the constant in step).
+
+It is **not** the only list any more: since DENYARGS925 a second constant, the
+fleet deny FLOOR, feeds the same block. The two are described together in the
+next section, because the difference between them is not what they deny but how
+they REACH an agent -- and that is the part that decides what happens when one
+of them is edited.
 
 Denied: `curl` to an `https://` URL, and `wget` / `nc` / `ncat` / `telnet`
 outright. A `deny` rule is checked **before** the
@@ -60,6 +66,44 @@ anything an agent could not do through it anyway.
 The sanctioned route for external content is unchanged: the quarantine-reader
 sub-agent, through `WebFetch`, where the domain check already runs. A host being
 on the egress allowlist does not open it to the shell.
+
+## Two lists, and why they are not one
+
+Since DENYARGS925 (2026-09-25) `permissions.deny` is fed by TWO constants in
+`src/web/agent-scaffold.ts`. Reading either one as "the" deny list is the
+mistake this section exists to prevent.
+
+| | `BASH_EGRESS_DENY` | `FLEET_BASELINE_DENY` |
+|---|---|---|
+| covers | shell URL-fetch verbs: `curl` to `https://`, `wget`, `nc`, `ncat`, `telnet` | the fleet FLOOR: key/credential dirs, `.env`, `sudo`, `rm -rf` of `$HOME` and `/`, force-push (friction only), the unsafe browser-code MCP tool |
+| sub-agent gets it | spawn + server-startup migration + scaffold template | **spawn only** (`writeAgentSettingsFromProfile`) |
+| main agent gets it | `ensureBashEgressDeny()` into its own config dir | the repo's tracked `.claude/settings.json` (the scaffold never writes the main agent, #1305) |
+| parity guarded by | `bash-egress-deny.test.ts` (template vs constant) | `fleet-baseline-deny.test.ts` (shipped file vs constant, both directions) |
+
+Two consequences follow from the row that differs, and both are deliberate:
+
+**The floor has no startup migration.** An agent that is running right now and is
+not respawned keeps whatever deny list it started with; the egress rules would be
+merged into its file at the next server start, the floor would not. The floor
+therefore takes effect at the next spawn, not at the next server restart. This is
+the honest limit, not a claim of immediate fleet-wide cover.
+
+**The floor is deliberately NOT in `templates/settings.json.template`.** Measured
+2026-09-25: after `scaffoldAgentDir()` the template-derived file carries 10 deny
+rules and **zero** of the floor's 13 -- but on the create path
+(`routes/agents.ts`) `scaffoldAgentDir()`, `writeAgentModel()`,
+`writeAgentSecurityProfile()` and `writeAgentSettingsFromProfile()` are four
+SYNCHRONOUS calls with no await and no session launch between them, and on the
+spawn path the profile write runs before the Claude Code process starts. So the
+template-only state exists on disk but no session reads it, and
+`loadProfileTemplate()` cannot throw its way around that: a missing or unparseable
+profile falls back to `default` and finally to `HARDCODED_DEFAULT_PROFILE`. The
+live fleet agrees: the leanest agent here carries 16 rules, none carries 10.
+
+If a future change adds a route that scaffolds WITHOUT writing the profile
+straight after, that reasoning expires and the floor belongs in the template too.
+The parity test names this condition so the decision can be re-measured rather
+than re-argued.
 
 ## Where the main agent's copy goes
 
@@ -230,3 +274,34 @@ names and counts only; the payload itself goes to the log.
 `envelope_attempted` in the log records which shape the hook tried. It says
 "attempted", never "succeeded": the hook cannot observe the harness's decision,
 and a field that claimed success would be the most misleading line in the file.
+
+# Email approvals consumed on the send path
+
+At `email_send` level 2 an approval authorizes ONE letter: `content_hash` pins
+it to the exact envelope and `consumed_at` makes it one-shot. The gate
+(`scripts/hooks/email-approval-gate.py`) flips `consumed_at` itself, but only
+for a send it can read in the command text (an MCP mail tool, `send.py --to`,
+an inline mailer call). A tool that mails through a script on another host,
+for example `ssh <host> 'tsx send-letter.mjs'`, is invisible to it, so its
+approval stayed unconsumed and could authorize a second send.
+
+Such a tool consumes on its own path, right BEFORE the letter goes out, and
+sends only on a yes:
+
+```bash
+python3 scripts/approval-consume.py --id <approval id> --content-hash <anchor> \
+  --consumer <tool name> --message-id '<id@your.domain>' || exit 1   # 0 = send now
+```
+
+`POST /api/approvals/<id>/consume` is one conditional write (approved,
+`email_send`, unconsumed, the same anchor, inside `EMAIL_APPROVAL_WINDOW_S`,
+1800 s like the gate). Of two attempts exactly one gets 200; the other gets
+409 with a reason (`already_consumed`, `not_approved`, `hash_mismatch`,
+`expired`, `wrong_category`). The row records the consumer and the Message-Id
+the tool generated up front (`consumed_by`, `consumed_ref`), and every call,
+refused ones included, leaves a row in `approval_events`. The gate and the
+endpoint read the same `consumed_at IS NULL`, so a letter consumed by one path
+is refused by the other.
+
+A 409 means: do not send, and check the sent mailbox before deciding anything,
+because the earlier attempt may already have gone out.

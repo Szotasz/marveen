@@ -16,6 +16,7 @@ import { PROJECT_ROOT } from '../config.js'
 import { channelStateDir, type ChannelProviderType } from '../channel-provider.js'
 import { agentDir } from '../web/agent-config.js'
 import { matchesProviderPollerCmd } from './provider-poller-match.js'
+import { exactTmuxTarget } from '../tmux-target.js'
 
 const TMUX = resolveFromPath('tmux')
 
@@ -33,7 +34,7 @@ export const RESPAWN_STAMP_FILE = join(PROJECT_ROOT, 'store', '.channel-last-res
 
 export function getClaudePidForSession(session: string): number | null {
   try {
-    const out = execFileSync(TMUX, ['list-panes', '-t', session, '-F', '#{pane_pid}'], { timeout: 3000, encoding: 'utf-8' })
+    const out = execFileSync(TMUX, ['list-panes', '-t', exactTmuxTarget(session), '-F', '#{pane_pid}'], { timeout: 3000, encoding: 'utf-8' })
     const panePid = parseInt(out.trim().split('\n')[0], 10)
     if (!panePid) return null
     const cmd = execFileSync('/bin/ps', ['-p', String(panePid), '-o', 'comm='], { timeout: 3000, encoding: 'utf-8' }).trim()
@@ -67,10 +68,18 @@ export interface PluginAliveContext {
   isPidAlive: (pid: number) => boolean
   agentName?: string
   debugLog?: (event: string, fields: Record<string, unknown>) => void
+  /**
+   * Only a plugin process INSIDE claudePid's tree counts: no bot.pid and no
+   * machine-wide fallback. For a session that shares a provider with other
+   * sessions on the host (the main session's co-listen Slack next to the
+   * sub-agents' Slack plugins), the fallbacks answer "some Slack poller lives
+   * somewhere", not "this session has one" (BOOTSTAGGER1007 b review, #1762).
+   */
+  strictTree?: boolean
 }
 
 export function decideHasPluginAlive(ctx: PluginAliveContext): boolean {
-  const { psOutput, claudePid, providerType, botPid, isPidAlive, agentName, debugLog } = ctx
+  const { psOutput, claudePid, providerType, botPid, isPidAlive, agentName, debugLog, strictTree } = ctx
   const lines = psOutput.split('\n').slice(1)
   const childrenOf = new Map<number, number[]>()
   const cmdOf = new Map<number, string>()
@@ -95,6 +104,8 @@ export function decideHasPluginAlive(ctx: PluginAliveContext): boolean {
     if (matchesProviderPollerCmd(cmd, providerType)) return true
     for (const k of (childrenOf.get(p) || [])) stack.push(k)
   }
+
+  if (strictTree) return false
 
   if (botPid !== null && botPid > 1) {
     if (isPidAlive(botPid)) {
@@ -165,6 +176,7 @@ export function probeChannelPluginLiveness(
   claudePid: number,
   providerType: ChannelProviderType,
   agentName?: string,
+  opts: { strictTree?: boolean } = {},
 ): PluginLiveness {
   let psOutput: string
   try {
@@ -204,6 +216,7 @@ export function probeChannelPluginLiveness(
       providerType,
       botPid,
       agentName,
+      strictTree: opts.strictTree,
       isPidAlive: (pid) => {
         try { process.kill(pid, 0); return true } catch { return false }
       },

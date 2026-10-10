@@ -45,6 +45,10 @@ import {
   listDeviceKeys,
   revokeDeviceKey,
   getDeviceKey,
+  DEVICE_KEY_SCOPES,
+  OPERATOR_KEY_DEFAULT_EXPIRY_DAYS,
+  OPERATOR_KEY_MAX_EXPIRY_DAYS,
+  type DeviceKeyScope,
 } from '../auth-device-keys.js'
 import { removeBridgeSshAccess, sshDirOverride } from '../bridge-enroll.js'
 import {
@@ -67,7 +71,7 @@ const INVALID_CREDENTIALS = { error: 'Invalid credentials' }
 // x-forwarded-proto). The primary transport is plain http://127.0.0.1 where an
 // unconditional Secure attribute would make Safari drop the cookie (Chrome
 // exempts 127.0.0.1 as trustworthy; Safari's behavior there is inconsistent).
-function isHttps(req: http.IncomingMessage): boolean {
+export function isHttps(req: http.IncomingMessage): boolean {
   const xf = req.headers['x-forwarded-proto']
   const v = Array.isArray(xf) ? xf[0] : xf
   return typeof v === 'string' && v.split(',')[0]!.trim().toLowerCase() === 'https'
@@ -97,11 +101,15 @@ function str(v: unknown): string {
 // Explicit principal allowlist. Compares on the kind string so tests can
 // exercise kinds the AuthResult union does not carry yet; anything not listed
 // (including undefined auth, which the gate should have 401'd already) fails.
-function kindAllowed(auth: RouteContext['auth'], kinds: readonly string[]): boolean {
+//
+// Exported (2026-09-03) because the transcript route needs the same predicate:
+// a caller-side gate duplicated in two files is exactly the kind of security
+// check that drifts apart. One definition, one place to audit.
+export function kindAllowed(auth: RouteContext['auth'], kinds: readonly string[]): boolean {
   return auth !== undefined && kinds.includes(auth.kind)
 }
 
-const FORBIDDEN_KIND = { error: 'Forbidden for this credential type' }
+export const FORBIDDEN_KIND = { error: 'Forbidden for this credential type' }
 
 // Who may manage dashboard users (list/create/delete). 'session' is included
 // deliberately: a logged-in operator managing users is the existing behavior.
@@ -360,20 +368,33 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'Invalid device name (1-64 chars: letters, digits, space, . _ -)' }, 400)
       return true
     }
-    // Expiry is opt-in: absent/0 means the key lives until revoked.
-    let expiresInDays: number | undefined
+    // DASHOPERATOR1005: an 'operator' key reaches /api/operator/* only and MUST
+    // expire (90 days unless set); asking for one without an end date is a 400.
+    const scope = body.scope === undefined ? 'full' : body.scope
+    if (!(DEVICE_KEY_SCOPES as readonly unknown[]).includes(scope)) {
+      json(res, { error: `Invalid scope (${DEVICE_KEY_SCOPES.join(' | ')})` }, 400)
+      return true
+    }
+    if (scope === 'operator' && (body.expires_in_days === 0 || body.expires_in_days === null)) {
+      json(res, { error: 'An operator key must expire' }, 400)
+      return true
+    }
+    // Expiry is opt-in for a full key: absent/0 means it lives until revoked.
+    let expiresInDays: number | undefined = scope === 'operator' ? OPERATOR_KEY_DEFAULT_EXPIRY_DAYS : undefined
     if (body.expires_in_days !== undefined && body.expires_in_days !== null && body.expires_in_days !== 0) {
       const n = Number(body.expires_in_days)
-      if (!Number.isFinite(n) || n <= 0 || n > DEVICE_KEY_MAX_EXPIRY_DAYS) {
-        json(res, { error: `Invalid expires_in_days (1-${DEVICE_KEY_MAX_EXPIRY_DAYS})` }, 400)
+      // An operator key has its own, shorter ceiling (a year); a full key keeps 3650.
+      const maxDays = scope === 'operator' ? OPERATOR_KEY_MAX_EXPIRY_DAYS : DEVICE_KEY_MAX_EXPIRY_DAYS
+      if (!Number.isFinite(n) || n <= 0 || n > maxDays) {
+        json(res, { error: `Invalid expires_in_days (1-${maxDays})` }, 400)
         return true
       }
       expiresInDays = n
     }
-    const minted = createDeviceKey(name, { expiresInDays })
-    logger.info({ id: minted.id, name: minted.name, expiresAt: minted.expiresAt }, 'device key minted')
+    const minted = createDeviceKey(name, { expiresInDays, scope: scope as DeviceKeyScope })
+    logger.info({ id: minted.id, name: minted.name, expiresAt: minted.expiresAt, scope: minted.scope }, 'device key minted')
     // `key` is the one and only disclosure of the raw credential.
-    json(res, { ok: true, id: minted.id, name: minted.name, key: minted.key, created_at: minted.createdAt, expires_at: minted.expiresAt }, 201)
+    json(res, { ok: true, id: minted.id, name: minted.name, key: minted.key, created_at: minted.createdAt, expires_at: minted.expiresAt, scope: minted.scope }, 201)
     return true
   }
 

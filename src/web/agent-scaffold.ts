@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, readdirSync, statSync, rmSync, watchFile, unwatchFile } from 'node:fs'
 import { readRemovedDefaultTasks } from './scheduled-tasks-io.js'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { homedir } from 'node:os'
 import { PROJECT_ROOT, OWNER_NAME, MAIN_AGENT_ID, HEARTBEAT_AGENT_ID, BOT_NAME, CHANNEL_PROVIDER, WEB_PORT, OWNER_DRIVE_FOLDER, APP_TZ, DASHBOARD_PUBLIC_URL, AGENT_API_ORIGIN, STORE_DIR } from '../config.js'
 import { channelStateDir } from '../channel-provider.js'
@@ -10,7 +10,9 @@ import { findDuplicateJsonKeys } from './json-dup-keys.js'
 import { logger } from '../logger.js'
 import { filterInheritableMcpServers, readInheritableMcpServerNames, logNotInherited } from './mcp-inheritance.js'
 import { agentDir, agentConfigRoot, listAgentNames, readAgentCapabilities, readAgentToolDeny } from './agent-config.js'
-import { resolveProfilePlaceholders, type ProfileTemplate } from './profiles.js'
+import { loadProfileTemplate, profileWantsDestructiveGate, resolveProfilePlaceholders,
+  type ProfileTemplate } from './profiles.js'
+import { resolveAgentSecurityProfile } from './agent-team.js'
 import { sanitizeCapabilityTag, CAPABILITY_TAG_MAX_PER_AGENT } from '../prompt-safety.js'
 import { TMP_ROOT_PREFIXES as _TMP_PREFIXES } from './tmp-root-prefixes.js'
 
@@ -61,7 +63,7 @@ export const HOOK_NODE_BIN = process.execPath
 // space -- exit 127, silently non-enforcing, the exact failure this file
 // exists to close. A single builder also keeps the injectors and every
 // wired-already comparison byte-identical, so they cannot drift.
-export function hookCommand(scriptPath: string): string {
+export function hookCommand(scriptPath: string, args: readonly string[] = [], hookTimeoutSec = 10): string {
   // The interpreter is checked before it is used, and a missing one BLOCKS.
   //
   // HOOK_NODE_BIN is process.execPath, which on a brew install is the
@@ -83,7 +85,8 @@ export function hookCommand(scriptPath: string): string {
   // the ensure* migrations, which rewrite the path. A blocking gate with no
   // stated way out is worse than a loud error.
   const miss = `governance-kapu: a hook interpretere nem talalhato (${HOOK_NODE_BIN}). A kapu ezert BLOKKOL. Javitas: inditsd ujra a dashboardot, az ujrairja a hook-utakat.`
-  return `test -x "${HOOK_NODE_BIN}" || { echo "${miss}" >&2; exit 2; }; "${HOOK_NODE_BIN}" "${scriptPath}"`
+  const invocation = gateInvocation(`"${HOOK_NODE_BIN}"`, scriptPath, args)
+  return `test -x "${HOOK_NODE_BIN}" || { echo "${miss}" >&2; exit 2; }; ${failClosedGateRun(invocation, basename(scriptPath), hookTimeoutSec)}`
 }
 
 // The python twin of hookCommand(). The outgoing-copy-gate is a .py script, so
@@ -95,9 +98,53 @@ export function hookCommand(scriptPath: string): string {
 // is the 127 exit, because Claude Code treats 127 as NON-blocking and lets the
 // tool call through -- a gate that silently stops enforcing. So the interpreter
 // is probed first and a miss exits 2, which blocks.
-export function pythonHookCommand(scriptPath: string): string {
+export function pythonHookCommand(scriptPath: string, args: readonly string[] = [], hookTimeoutSec = 10): string {
   const miss = 'governance-kapu: a hook interpretere nem talalhato (python3 nincs a PATH-on). A kapu ezert BLOKKOL. Javitas: telepitsd a python3-at, vagy inditsd ujra a dashboardot.'
-  return `command -v python3 >/dev/null 2>&1 || { echo "${miss}" >&2; exit 2; }; python3 "${scriptPath}"`
+  const invocation = gateInvocation('python3', scriptPath, args)
+  return `command -v python3 >/dev/null 2>&1 || { echo "${miss}" >&2; exit 2; }; ${failClosedGateRun(invocation, basename(scriptPath), hookTimeoutSec)}`
+}
+
+// Card 723bbb70: the gate command's exit status is made FAIL-CLOSED here, in one place for every gate
+// the builders above assemble. Claude Code blocks a tool call only on exit 2 (or a deny on stdout with
+// exit 0); any other status is a NON-blocking error and the call goes through. A gate that is itself
+// broken therefore let everything pass: a SyntaxError in the gate file or in one of its imports exits 1
+// in both node and python, a missing script exits 1 (2 for python3), a signal exits 128+n (measured on
+// the eight security hooks, af12a1d3 73814: a syntax error in the gate FILE gave rc 1 on every one).
+// The tail keeps 0 and 2 as they are and turns every other status into 2, with the reason on stderr
+// after whatever the interpreter itself printed; the gate's stdout (a deny JSON on exit 0) is untouched.
+//
+// The deadline: where the host has coreutils `timeout`, the gate runs under it, two seconds inside the
+// hook's own timeout, so a hung gate ends here with 124 (or 137 after the one-second kill grace) and
+// blocks, instead of being cut off by Claude Code's timeout, whose outcome this wrapper does not
+// control. Without `timeout` (a stock macOS) the gate runs as before and only that one case stays with
+// Claude Code. The `test -x` / `command -v` interpreter probe before it is unchanged and still blocks
+// with its own message.
+export const GATE_FAIL_CLOSED_TAG = 'governance-kapu (fail-closed)'
+
+/** The gate's deadline inside a hook whose timeout is `hookTimeoutSec`: two seconds earlier, at least one. */
+export function gateDeadlineSec(hookTimeoutSec: number): number {
+  return Math.max(1, Math.floor(hookTimeoutSec) - 2)
+}
+
+// Extra arguments ride inside the invocation, never after the whole command: appended after the
+// fail-closed tail they would land on `exit` instead of the gate (the email gate's thread-reply flag).
+// Only plain flag characters are accepted, so nothing needs shell quoting.
+function gateInvocation(interpreter: string, scriptPath: string, args: readonly string[]): string {
+  for (const a of args) {
+    if (!/^[A-Za-z0-9_=.:-]+$/.test(a)) throw new Error(`hook argument needs no quoting, got: ${a}`)
+  }
+  return [interpreter, `"${scriptPath}"`, ...args].join(' ')
+}
+
+/**
+ * The run-and-map tail of a gate command (exported for tests and for the main agent's hand-written
+ * project settings, which carry the same shape around a $CLAUDE_PROJECT_DIR path).
+ */
+export function failClosedGateRun(invocation: string, label: string, hookTimeoutSec: number): string {
+  if (!/^[A-Za-z0-9_.-]+$/.test(label)) throw new Error(`gate label must be a plain file name, got: ${label}`)
+  const t = gateDeadlineSec(hookTimeoutSec)
+  const fail = `${GATE_FAIL_CLOSED_TAG}: ${label}: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.`
+  return `if command -v timeout >/dev/null 2>&1; then timeout -k 1 ${t} ${invocation}; else ${invocation}; fi; rc=$?; [ "$rc" = 0 ] || [ "$rc" = 2 ] || { echo "${fail}" >&2; exit 2; }; exit "$rc"`
 }
 
 // Wired-already predicate for the ensure* migrations: is `command` present in
@@ -367,7 +414,21 @@ export function hookScriptAlreadyEffectiveInOtherScope(
 // than the CURRENT PROJECT_ROOT is rewritten to the current root. Suffixes,
 // not a remembered old root, are the detector, so it needs no migration
 // record and is idempotent: a second run finds nothing foreign.
-const INSTALL_ANCHORED_SUFFIXES = ['/store/.dashboard-token', '/scripts/hooks/', '/scripts/skill-index.sh'] as const
+//
+// Every install path the scaffold or the templates write into a CLAUDE.md or a
+// hook prompt must be listed here, or it keeps the old root after a move: the
+// recipient-ledger recipe and the skill-lint line were missing (HOSTMOVE1003,
+// found 2026-10-03 against the live fleet's CLAUDE.md files).
+// host-move-proof-recipes.test.ts pins the list against the source and the
+// templates. Exact file suffixes on purpose: a bare `/scripts/` or `/agents/`
+// would also match paths of other projects (or ~/.claude/agents/).
+export const INSTALL_ANCHORED_SUFFIXES = [
+  '/store/.dashboard-token',
+  '/scripts/hooks/',
+  '/scripts/skill-index.sh',
+  '/scripts/recipient-ledger.mjs',
+  '/scripts/skill-lint.mjs',
+] as const
 // An absolute path prefix: starts with a `/` that is not the tail of something
 // else (`~/x`, `{{X}}/x`, `a/x` are not absolute roots -- the lookbehind keeps
 // them out), runs until the suffix, and never crosses whitespace, quotes,
@@ -397,7 +458,10 @@ export function rewriteForeignProjectRoot(text: string, currentRoot: string): Fo
   const foreign = new Set<string>()
   let replaced = 0
   const out = text.replace(FOREIGN_ROOT_RE, (whole, prefix: string, suffix: string) => {
-    if (prefix === root) return whole
+    // A path INSIDE the current install is never foreign: the lazy prefix of
+    // <root>/agents/x/scripts/hooks/y is <root>/agents/x, which must not be
+    // "re-anchored" to <root>/scripts/hooks/y (HOSTMOVE1003).
+    if (prefix === root || prefix.startsWith(root + '/')) return whole
     foreign.add(prefix)
     replaced++
     return root + suffix
@@ -649,6 +713,58 @@ export function ensureAgentProvenanceHook(name: string): boolean {
   return true
 }
 
+// A file-tool permission rule whose path starts with a SINGLE slash is read as
+// relative to the project root, not as an absolute filesystem path -- so
+// `Edit(/home/.../agents/x/**)` silently matched nothing and EVERY file write
+// asked for approval, even inside the agent's own directory. The absolute form
+// needs a leading `//`. MEASURED 2026-09-06 (gembaecho): with the profile
+// unchanged except for adding the `//` variants, all four probes (new file and
+// edit, own dir and /mnt/e) went through with zero prompts; before it, all four
+// asked. Only Read/Write/Edit carry paths -- Bash(...) rules are commands and
+// must NOT be touched.
+const FILE_PATH_TOOLS = ['Read', 'Write', 'Edit'] as const
+
+export function absolutizeFileRule(rule: string): string {
+  for (const tool of FILE_PATH_TOOLS) {
+    const prefix = `${tool}(`
+    if (!rule.startsWith(prefix) || !rule.endsWith(')')) continue
+    const inner = rule.slice(prefix.length, -1)
+    if (!inner.startsWith('/') || inner.startsWith('//')) return rule
+    return `${prefix}/${inner})`
+  }
+  return rule
+}
+
+// #1837 (opontop): a strict profile's allow-list is its whole value, but Claude
+// Code evaluates bypassPermissions BEFORE the allow-list, so a strict agent that
+// comes up in bypass mode can touch anything its deny-list does not name. The
+// mode can arrive from the operator's own ~/.claude/settings.json
+// (provisionIsolatedConfigDir copies it into the agent's isolated config dir),
+// and nothing pinned it. This pins permissions.defaultMode to 'dontAsk' for a
+// strict profile: per the documented modes (code.claude.com/docs/en/permissions)
+// dontAsk "auto-denies every call that would otherwise prompt", while allow-
+// listed tools still run -- exactly the strict contract. 'default' is NOT
+// enough: it prompts on an unmatched call, and a sub-agent runs in tmux with no
+// one to answer, so it would hang on the prompt (Dani, #1844 review). Only an
+// operator-chosen 'plan' is left alone. Applied in BOTH places a strict agent's
+// mode can come from: the project settings written here and the isolated
+// user-level copy (project settings outrank user settings anyway).
+// Returns whether it changed anything. Pure: unit-tested directly.
+export function enforceStrictPermissionMode(
+  settings: Record<string, unknown>,
+  permissionMode: string | undefined,
+): boolean {
+  if (permissionMode !== 'strict') return false
+  const raw = settings.permissions
+  const perms = (raw && typeof raw === 'object' && !Array.isArray(raw)
+    ? raw
+    : (settings.permissions = {})) as Record<string, unknown>
+  const current = perms.defaultMode
+  if (current === 'dontAsk' || current === 'plan') return false
+  perms.defaultMode = 'dontAsk'
+  return true
+}
+
 export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemplate): void {
   const agentRoot = agentDir(name)
   const settingsDir = join(agentRoot, '.claude')
@@ -659,7 +775,13 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
     try { existing = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { /* overwrite */ }
   }
   const ctx = { HOME: homedir(), AGENT_DIR: agentRoot }
-  const denyList = profile.filesystem.deny.map(p => resolveProfilePlaceholders(p, ctx))
+  // Deny rules carry paths too, and the SAME leading-`//` rule applies to them: a
+  // `Write(/mnt/e/...)` deny written with one slash resolves against the project root and
+  // therefore never matches, which silently downgrades a fail-closed deny into a mere
+  // "ask". Found 2026-09-06 on the leanwriter profile: allow was absolutized, deny was not.
+  // absolutizeFileRule only touches Read/Write/Edit, so Bash(...)/WebFetch/tool-name denies
+  // pass through untouched.
+  const denyList = profile.filesystem.deny.map(p => absolutizeFileRule(resolveProfilePlaceholders(p, ctx)))
   // Self-pace tool-name deny: every sub-agent (NOT the main agent) is denied the
   // Claude Code runtime self-scheduling tools. A whole-tool-name deny IS enforced
   // even under --dangerously-skip-permissions (deny is checked BEFORE the bypass
@@ -671,6 +793,14 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   // function replaces permissions wholesale on each spawn, so without it a
   // respawn would silently drop what ensureBashEgressDeny() merged in.
   denyList.push(...BASH_EGRESS_DENY)
+  // Fleet baseline: the deny FLOOR every agent gets regardless of profile.
+  // Pushed here rather than copied into each templates/profiles/*.json so a
+  // profile added tomorrow cannot silently ship without it. Deduped against what
+  // the profile already declared (developer-senior and marketer both carry some
+  // of these), so the written file stays readable.
+  for (const rule of FLEET_BASELINE_DENY.map(r => resolveProfilePlaceholders(r, ctx))) {
+    if (!denyList.includes(rule)) denyList.push(rule)
+  }
   // Per-agent tool-name deny (agent-config.json "toolDeny"): merged LAST and
   // on EVERY spawn, because this function replaces the deny list wholesale --
   // a name written straight into settings.json disappears at the next respawn
@@ -680,19 +810,31 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   for (const tool of readAgentToolDeny(name)) {
     if (!denyList.includes(tool)) denyList.push(tool)
   }
+
+  // additionalDirectories: scope OUTSIDE the agent's own cwd. Without it an
+  // allowlisted `Bash(ls:*)` + `Read(/mnt/e/.../**)` STILL prompts on every
+  // single call against that path (measured 2026-09-06 on gembaecho: the same
+  // `ls -la "/mnt/e/03_LEAN Library/03_OWN_EXPERIENCE/cards"` asked for approval
+  // before the grant and ran silently after it). Omitted entirely when the
+  // profile declares none, so existing profiles are unaffected.
+  const extraDirs = (profile.additionalDirectories ?? []).map(p => resolveProfilePlaceholders(p, ctx))
   existing.permissions = {
-    allow: profile.filesystem.allow.map(p => resolveProfilePlaceholders(p, ctx)),
+    allow: profile.filesystem.allow.map(p => absolutizeFileRule(resolveProfilePlaceholders(p, ctx))),
     deny: denyList,
+    ...(extraDirs.length ? { additionalDirectories: extraDirs } : {}),
   }
+  enforceStrictPermissionMode(existing, profile.permissionMode)
   // Governance hard-gates: every sub-agent (NOT the main agent) gets PreToolUse
   // hooks. Re-applied on every spawn (this function regenerates settings.json),
   // so they survive respawns. (a) email-send block -- outbound email routes
   // through the main agent. (b) self-pace block -- no ScheduleWakeup/Cron*/Bash
   // self-injection. (c) egress gate -- WebFetch calls that are not on the known
   // API allowlist are hard-blocked and logged; arbitrary web content must go
-  // through the quarantine-reader sub-agent. The MAIN_AGENT_ID is exempt from
-  // (a) and (b) but NOT from (c) -- every agent can be hijacked via an injected
-  // WebFetch call, including the main one. Merge/deploy is NOT gated: the operator
+  // through the quarantine-reader sub-agent. (d) destructive gate -- banned
+  // commands (rm/mv/sudo/...) and credential-file reads, blocked regardless of
+  // permission mode. The MAIN_AGENT_ID is exempt from
+  // (a), (b) and (d) but NOT from (c) -- every agent can be hijacked via an
+  // injected WebFetch call, including the main one. Merge/deploy is NOT gated: the operator
   // authorizes those autonomously (so test/deploy runs are never blocked); the
   // actual incident vector -- an agent answering its OWN posed question -- is
   // covered by the self-pace block + the #0 CLAUDE.md doctrine.
@@ -705,6 +847,7 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
     injectDigestProvenanceGate(existing)
   }
   if (agentGetsTelegramCopyGate(name)) injectTelegramCopyGate(existing)
+  if (agentGetsDestructiveGate(name, profile)) injectDestructiveGate(existing)
   injectEgressGate(existing)
   if (agentGetsBashEgressParser(name)) injectBashEgressParser(existing)
   atomicWriteFileSync(settingsPath, JSON.stringify(existing, null, 2))
@@ -815,7 +958,7 @@ export function injectEmailSendGate(existing: Record<string, unknown>, threadRep
   // in the same regenerated-on-every-spawn settings.json as the gate itself:
   // revoking the capability removes the flag at the next spawn, and a manual
   // settings edit can neither grant nor keep it.
-  const command = threadReply ? `${base} ${EMAIL_THREAD_REPLY_FLAG}` : base
+  const command = threadReply ? hookCommand(join(PROJECT_ROOT, 'scripts', 'email-send-gate.mjs'), [EMAIL_THREAD_REPLY_FLAG]) : base
   const entry = {
     matcher: EMAIL_GATE_MATCHER,
     hooks: [{ type: 'command', command, timeout: 10 }],
@@ -899,6 +1042,95 @@ export const BASH_EGRESS_DENY = [
   'Bash(*/ncat *)',
   'Bash(telnet *)',
   'Bash(*/telnet *)',
+]
+
+// The fleet-wide deny FLOOR: applied to EVERY profile, exactly like
+// BASH_EGRESS_DENY above and for the same reason. permissions.deny is rebuilt
+// WHOLESALE from the security profile on every spawn, so a rule that lives only
+// in one profile -- or worse, hand-written into a settings.json -- is not a
+// floor at all: it is whatever the agent's profile happens to carry, and it
+// disappears at the next respawn.
+//
+// Measured 2026-09-25 (DENYARGS925). The hand-edited lists would have dropped 5
+// rules on one agent and 9 on another at their next restart, and a
+// default-profile agent never had them at all: default.json carries ONE rule, so
+// it sat at 16 while a developer-senior agent sat at 24. Raising default.json
+// alone does not fix that -- profiles are independent, so a marketer or
+// developer-senior agent would still miss whatever was added there, and every
+// future profile is a new hole. One list, applied to all.
+//
+// Two rules in here are deliberately weaker than they look, and are kept for the
+// owner's stated posture rather than as protection:
+//   Bash(curl -X POST:*) is DECORATION. An argument-bearing rule matches the
+//     command's leading words exactly, so `curl -s -X POST` -- the form every
+//     example in our own docs uses -- walks past it (measured twice).
+//     Do not read it as coverage.
+//   Bash(git push --force:*) and Bash(git push -f:*) are FRICTION against a
+//     slip, not a guard: `git push --quiet --force <remote>` and
+//     `/usr/bin/git push --force <remote>` both RAN on a list carrying them
+//     (measured 2026-09-25 and again 2026-10-03). A deny rule matches the
+//     command text from its leading words, so an inserted flag, `git -C <path>`
+//     or an absolute path moves the words out from under it. It is NOT fixable
+//     by a better pattern: the one pattern that would catch every form denies
+//     the whole `git` command (`Bash(*/git *)`), and that was measured to block
+//     read-only calls such as `/usr/bin/git -C <worktree> status --short`. A
+//     force-push guard has to PARSE the command, which is a hook's job, not a
+//     deny list's.
+//   Bash(sudo:*) holds against an inserted prefix word but NOT against an
+//     absolute path (`/usr/bin/sudo -n true` ran on a list carrying only the
+//     name rule, measured 2026-09-25), which is why it has the `*/sudo *`
+//     partner the network rules always had. NOTE the shape's cost: the partner
+//     matches the whole command text, so a command that merely NAMES a path
+//     ending in `/sudo` is denied too. That is the safe direction, but it is an
+//     over-match, not a precise rule.
+//
+// The narrow rm rules (`rm -rf ${HOME}`, `rm -rf /`) have NO `*/` partner, and that is deliberate, not an
+// omission: the review asked to keep them "and their */ partners", but the developer-senior profile
+// they come from never had any. The absolute-path form (`/usr/bin/rm -rf /`) is therefore NOT covered by
+// the deny list, exactly as `/usr/bin/sudo` was before its partner (measured 2026-09-25). The partner that
+// would fit is an exact-text glob (`Bash(*/rm -rf /)`), because the broad `*/rm *` also denies every
+// `/usr/bin/rm -rf <anything>`; that shape has NOT been measured, and an unmeasured rule that reads as
+// cover is what this block warns about, so it is left out until it is.
+//
+// The HOME form differs by channel, and only one of the two is measured: a sub-agent gets the RESOLVED
+// absolute home (`rm -rf /home/<user>`), the main agent gets the tracked .claude/settings.json with `~`
+// (`rm -rf ~`). `~` was measured to match in a Read() rule (TMPLPERM908); that a Bash rule matches the
+// typed `~` text, and not the shell's expansion of it, has NOT been measured.
+//
+// What is NOT in the floor, and why (upstream review of #1562, 2026-09-25): the
+// broad Bash(rm:*) and its `*/rm *` partner. A fleet-wide rm ban refuses real
+// daily work (scratch and worktree cleanup, restoring files after a mutation
+// test: roughly 650 commands with a real rm subcommand in 7 days on the
+// reviewing fleet), and a compound command containing one is refused AS A
+// WHOLE. The floor carries the narrow forms instead (`rm -rf ${HOME}`,
+// `rm -rf /`), which are what the developer-senior profile already denied.
+// Whether to ban rm fleet-wide is a policy decision an installation can take
+// per profile (the marketer profile carries Bash(rm:*) itself), not a default
+// this list should impose.
+//
+// Cover for the token files that actually hold the secrets on an install
+// (store/.dashboard-token and friends) is deliberately NOT here. Every agent
+// reads those with `cat` every round, so whether a Read() rule reaches a Bash
+// read decides between "partial cover" and "the fleet stops". That measurement
+// is open; the rule waits for it.
+//
+// The HOME placeholder is resolved through resolveProfilePlaceholders like any
+// profile rule, which also rewrites a single leading '/' to '//': a single-slash
+// absolute Read rule is PROJECT-RELATIVE and silently never matches (TMPLPERM908).
+export const FLEET_BASELINE_DENY = [
+  'Read(${HOME}/.ssh/**)',
+  'Read(${HOME}/.aws/**)',
+  'Read(${HOME}/.gnupg/**)',
+  'Read(${HOME}/.env)',
+  'Read(**/.env)',
+  'Bash(sudo:*)',
+  'Bash(*/sudo *)',
+  'Bash(rm -rf ${HOME}:*)',
+  'Bash(rm -rf /:*)',
+  'Bash(curl -X POST:*)',
+  'Bash(git push --force:*)',
+  'Bash(git push -f:*)',
+  'mcp__playwright__browser_run_code_unsafe',
 ]
 
 // Idempotently merge the egress deny rules into a settings object's
@@ -1168,6 +1400,77 @@ export function injectTelegramCopyGate(existing: Record<string, unknown>): void 
       if (!j.includes('outgoing-copy-gate.py')) return true
       return (e as { matcher?: unknown })?.matcher !== TELEGRAM_COPY_GATE_MATCHER
     }),
+    entry,
+  ]
+}
+
+// Which tools the destructive-gate inspects. Bash carries the banned commands
+// (rm/mv/sudo/...) and the credential reads; the file tools are the second route
+// to the same credential files, which a Bash-only matcher would leave open.
+// Kept byte-identical to the hand-wired entry it replaces (2026-09-08) so the
+// migration below is a normalization, not a behaviour change.
+export const DESTRUCTIVE_GATE_MATCHER = 'Bash|Read|Edit|Write|NotebookEdit'
+
+// Which agents get the destructive-gate. TWO conditions, both required:
+//
+//   (a) not the main agent -- the same split the email and self-pace gates use.
+//       The operator authorizes the main agent's destructive work directly; a
+//       sub-agent's does not pass a human.
+//   (b) the agent's security profile opts in (`"destructiveGate": true`).
+//
+// (b) is new and DEFAULT OFF (PR #1357 review). What an agent may delete is a
+// property of the operator's process, not of this software, and no shipped
+// template sets the flag -- so a fresh install gates nothing until someone
+// decides it should. The fleet that wrote this code keeps the gate by setting
+// the flag on its own profiles.
+//
+// Off does NOT unwire an agent that already has the hook: writeAgentSettingsFromProfile
+// merges into the settings.json on disk, so an existing entry survives. The
+// flag decides what gets APPLIED, never what gets torn down -- disarming a live
+// agent has to be someone's explicit act, not a default flipping under it.
+//
+// `profile` is optional so the startup migration (which has no profile in hand)
+// can call it; omitted, the agent's own profile is resolved from its config.
+export function agentGetsDestructiveGate(name: string, profile?: ProfileTemplate): boolean {
+  if (name === MAIN_AGENT_ID) return false
+  const p = profile ?? loadProfileTemplate(resolveAgentSecurityProfile(name))
+  return profileWantsDestructiveGate(p)
+}
+
+// Idempotently wire the destructive-gate PreToolUse hook.
+//
+// WHY THIS LIVES IN CODE AND NOT IN settings.json (card a14ea5c7): the gate was
+// hand-wired into six agents' settings.json on 2026-09-08. But this scaffold
+// REGENERATES settings.json from the profile template, and the templates carry
+// no hooks section -- so any re-render would have silently dropped the gate and
+// left the fleet running permissive with nothing in its way. A hand-placed gate
+// is not a gate, it is a file that happens to be correct until the next write.
+//
+// The deny-list cannot carry this either: permissive profiles launch with
+// --dangerously-skip-permissions, which bypasses allow/deny. Hooks run
+// regardless of permission mode, which is the whole reason the gate is a hook.
+export function injectDestructiveGate(existing: Record<string, unknown>): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'destructive-gate.py'))
+  // Registration guard: a /tmp or missing path must never enter shared settings.
+  if (isUnsafeHookCommand(command)) return
+  const entry = {
+    matcher: DESTRUCTIVE_GATE_MATCHER,
+    hooks: [{ type: 'command', command, timeout: 10 }],
+  }
+  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  // Drop EVERY prior destructive-gate entry, whatever its matcher, then re-add
+  // the canonical one. This deliberately differs from injectTelegramCopyGate,
+  // which KEEPS its script under a foreign matcher because the main agent
+  // legitimately runs that one on Bash and on the email tools too. There is no
+  // such case here -- the main agent gets no destructive gate at all -- so a
+  // surviving stale-matcher entry would be a gate that never fires, and
+  // ensureGovernanceGateCommands (which treats a stale matcher as "needs work")
+  // would rewrite the file at every boot without ever converging.
+  hooks.PreToolUse = [
+    ...prev.filter((e) => !JSON.stringify(e).includes('destructive-gate.py')),
     entry,
   ]
 }
@@ -1505,7 +1808,11 @@ export function renderQuarantineReader(template: string, domains: string[]): str
 // command takes effect at that agent's next (re)spawn; this call only makes
 // the migration zero-touch, not instantaneous.
 // Returns true if the file was updated, false if already correct.
-export function ensureGovernanceGateCommands(name: string): boolean {
+// `profile` is an optional override for the agent's resolved security profile;
+// production passes nothing (the profile is read from the agent's config) and
+// only tests supply one, so the opt-in gate can be exercised without writing a
+// fixture into templates/profiles/ where every other suite would see it.
+export function ensureGovernanceGateCommands(name: string, profile?: ProfileTemplate): boolean {
   if (name === MAIN_AGENT_ID) return false
   const settingsPath = agentSettingsPath(name)
   if (!existsSync(settingsPath)) return false
@@ -1513,6 +1820,7 @@ export function ensureGovernanceGateCommands(name: string): boolean {
   try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
   const emailCmd = hookCommand(join(PROJECT_ROOT, 'scripts', 'email-send-gate.mjs'))
   const paceCmd = hookCommand(join(PROJECT_ROOT, 'scripts', 'self-pace-gate.mjs'))
+  const destructiveCmd = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'destructive-gate.py'))
   const hooks = (settings.hooks && typeof settings.hooks === 'object')
     ? settings.hooks as Record<string, unknown>
     : {}
@@ -1523,17 +1831,31 @@ export function ensureGovernanceGateCommands(name: string): boolean {
   // match a qualified MCP tool name. The second one is why the wiring check
   // alone is not enough -- it would report the gate healthy forever.
   const threadReply = hasThreadReplyCapability(name, readAgentCapabilities(name))
-  const emailCmdExpected = threadReply ? `${emailCmd} ${EMAIL_THREAD_REPLY_FLAG}` : emailCmd
+  const emailCmdExpected = threadReply
+    ? hookCommand(join(PROJECT_ROOT, 'scripts', 'email-send-gate.mjs'), [EMAIL_THREAD_REPLY_FLAG])
+    : emailCmd
   const needEmail = agentGetsEmailGate(name)
     && (!hookCommandWired(ptuJson, emailCmdExpected)
       || emailGateMatcherStale(ptu)
       || emailGateCommandStale(ptu, emailCmdExpected))
   const needPace = agentGetsGovernanceGates(name) && !hookCommandWired(ptuJson, paceCmd)
-  if (!needEmail && !needPace) return false
+  // The destructive gate has the same two failure modes, plus a third that is
+  // specific to it: it was hand-wired on 2026-09-08, so an install can carry a
+  // correct-looking entry this code never wrote. Treat a stale matcher as
+  // not-wired and let the injector replace it in place.
+  const destructiveStale = ptu.some((e) => {
+    const j = JSON.stringify(e)
+    return j.includes('destructive-gate.py')
+      && (e as { matcher?: unknown })?.matcher !== DESTRUCTIVE_GATE_MATCHER
+  })
+  const needDestructive = agentGetsDestructiveGate(name, profile)
+    && (!hookCommandWired(ptuJson, destructiveCmd) || destructiveStale)
+  if (!needEmail && !needPace && !needDestructive) return false
   // The injectors dedupe by script basename, so a stale bare-`node` entry is
   // replaced in place rather than accumulated.
   if (needEmail) injectEmailSendGate(settings, threadReply)
   if (needPace) injectSelfPaceGate(settings)
+  if (needDestructive) injectDestructiveGate(settings)
   atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
   return true
 }
@@ -1750,6 +2072,20 @@ export function scaffoldAgentDir(name: string) {
   // Seed settings.json from template so the agent gets the PreCompact
   // hook (memory save + skill reflection) out of the box. Only if the
   // file doesn't exist yet -- user edits and later profile writes stay.
+  //
+  // The template carries BASH_EGRESS_DENY but deliberately NOT
+  // FLEET_BASELINE_DENY, and the asymmetry is measured, not an oversight
+  // (DENYARGS925, 2026-09-25): the file written here holds 10 deny rules and
+  // zero of the floor's 13, but no session ever reads it in that state. On the
+  // create path (routes/agents.ts) this call and writeAgentSettingsFromProfile()
+  // are separated by two synchronous writes -- no await, no process launch --
+  // and on the spawn path the profile write runs before Claude Code starts.
+  // loadProfileTemplate() cannot fail its way past that either: it falls back to
+  // `default` and finally to HARDCODED_DEFAULT_PROFILE rather than throwing.
+  // The floor's single route is therefore the profile write, and the parity test
+  // in fleet-baseline-deny.test.ts pins that choice WITH its condition: add a
+  // route that scaffolds without writing the profile right after, and the floor
+  // belongs in this template too.
   const settingsJson = join(dir, '.claude', 'settings.json')
   if (!existsSync(settingsJson)) {
     const tplPath = join(PROJECT_ROOT, 'templates', 'settings.json.template')
@@ -2274,6 +2610,38 @@ function buildSkillsPathTrapBody(): string {
     'A saját, csak neked szóló vagy kipróbálatlan külső skill a munkakönyvtárad',
     '`.claude/skills/` mappájába megy. A globálisba írás tudatos, flotta-szintű',
     'döntés legyen, ne alapértelmezés.',
+    '',
+    // 2026-09-07: a leanarchivist a saját tanulságát a
+    // `.claude-config/projects/-home-istvan-marveen/memory/MEMORY.md`-be akarta
+    // írni. Megmérve: `projects -> ~/.claude/projects`, tehát az a fájl a Lean
+    // Chief memóriája. A skills symlink nem az egyetlen ilyen út; a szabály
+    // általános, ezért itt, ugyanabban a blokkban kap helyet.
+    //
+    // 2026-10-05 HATÓKÖR-JAVÍTÁS, a review (#1700) és két mérés alapján: a Claude
+    // Code az auto-memória könyvtárát a GIT-REPÓ GYÖKERE szerint kulcsolja, nem a
+    // munkakönyvtár szerint. Mérve CC 2.1.289-en (macOS) és 2.1.284-en (Linux),
+    // eldobható mappákkal: git-checkouton belül saját repó nélkül
+    // `<config>/projects/<gyökér-slug>/memory`, saját (stub) `.git`-tel
+    // `<config>/projects/<...-agents-<név>>/memory`. Stub nélkül a `-agents-<név>`
+    // slug csak transcript-könyvtár. Hogy egy ügynök memóriája KÖZÖS-e a fő
+    // ágensével, azt a git-gyökér ÉS az dönti el, hogy a `projects` könyvtára közös-e
+    // (symlink a `~/.claude/projects`-re). A 2026-09-07-i eset (`-home-istvan-marveen`)
+    // is ez volt: a telepítés gyökér-slugja, vagyis a közös könyvtár. Ezért a
+    // kritérium a rendszerprompt által MEGADOTT, feloldott útvonal, nem egy
+    // levezetett slug -- a munkakönyvtár-szabály git-checkouton épp a megelőzni
+    // kívánt néma veszteséget okozná, csak a másik oldalon.
+    'Ugyanez a csapda a MEMÓRIÁRA is áll: a `.claude-config/projects` lehet symlink',
+    'a `~/.claude/projects`-re. Hogy melyik memória-könyvtár a tiéd, azt NE a',
+    'munkakönyvtárad nevéből vezesd le: a mérvadó a rendszerprompt memória-szakaszában',
+    'MEGADOTT útvonal, `readlink -f`-fel feloldva. Git-checkout telepítésen (alapeset)',
+    'a Claude Code ezt a REPO GYÖKERE szerint kulcsolja: ha a feloldott útvonal a',
+    '`~/.claude/projects/` alatti, a telepítés gyökerének slugjával kulcsolt könyvtár,',
+    'akkor az a fő ágensé, és ami oda kerül, azt a fő ágens és minden ugyanezt kapó',
+    'ügynök session-je betölti. A tiéd, ha a feloldott útvonal a saját',
+    '`.claude-config`-od valódi könyvtárában van, vagy a saját mappád slugja szerepel',
+    'benne (saját stub git-repó vagy git nélküli telepítés). A saját, csak rád',
+    'tartozó emlék helye ettől függetlenül a dashboard API (`POST /api/memories`,',
+    '`agent_id`-vel).',
   ].join('\n')
 }
 
@@ -2369,6 +2737,343 @@ export function ensureSystemDirectiveAuthSection(name: string): void {
   let updated: string
   if (SYSTEM_DIRECTIVE_AUTH_BLOCK_RE.test(existing)) {
     updated = existing.replace(SYSTEM_DIRECTIVE_AUTH_BLOCK_RE, block)
+  } else {
+    updated = existing.trimEnd() + '\n\n' + block + '\n'
+  }
+
+  if (updated === existing) return
+  atomicWriteFileSync(claudeMdPath, updated)
+}
+
+// X-Agent-Id fejléc a memória-hívásokhoz (kártya 29c8cf33, A) opció).
+// Ugyanaz az öt-szabályos idempotencia-szerződés, mint a fenti szekcióknál.
+// A szekció szándékosan RÖVID és szándékosan mondja ki, hogy a fejléc nem
+// véd: ha "azonosításnak" olvasnák, az rosszabb volna a hiányánál -- egy
+// ágens azt hinné, a tulajdonos-szabály megállítja, holott csak megnevezi.
+const AGENT_ID_HEADER_BEGIN = '<!-- BEGIN GENERATED: agent-id-header (auto-generated, do not edit by hand) -->'
+const AGENT_ID_HEADER_END = '<!-- END GENERATED: agent-id-header -->'
+const AGENT_ID_HEADER_BLOCK_RE = new RegExp(
+  `${AGENT_ID_HEADER_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${AGENT_ID_HEADER_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
+)
+
+// VERZIOTORLES1009: the last paragraph used to promise that a DELETE also keeps
+// the previous content as a version. deleteMemoryById (src/db.ts) removes the
+// versions with the row on purpose (#1357), so that promise was false, and a
+// customer deleted 84 rows trusting it. agent-id-header-delete-truth.test.ts
+// ties this text to that behaviour.
+export function buildAgentIdHeaderBody(name: string): string {
+  return [
+    '## Ki hívta az API-t: az `X-Agent-Id` fejléc',
+    '',
+    'A flotta EGYETLEN közös Bearer tokent használ, ezért a dashboard nem látja, melyik',
+    'ágens hívta. A memória-írásoknál (`PUT` / `DELETE /api/memories/<id>`) küldd el a saját',
+    'nevedet, hogy a szerver meg tudja nevezni, ki írt felül egy idegen bejegyzést:',
+    '',
+    '```bash',
+    `curl -s -X PUT ${dashboardOrigin}/api/memories/<id> \\`,
+    '  -H "Content-Type: application/json" \\',
+    `  -H "Authorization: Bearer $(cat ${tokenPath})" \\`,
+    `  -H "X-Agent-Id: ${name}" \\`,
+    `  -d '{"content":"..."}'`,
+    '```',
+    '',
+    'Amit tudni kell róla, mert könnyű félreérteni: ez ÖNBEVALLOTT azonosítás, nem',
+    'hitelesítés. A fejléc nélkül a hívás ugyanúgy sikerül, és ha idegen emléket írsz,',
+    'a szerver FIGYELMEZTET (`owner_mismatch` a válaszban), de NEM állít meg. Tehát a',
+    'fejléc nem véd meg attól, hogy rossz sort írj -- csak láthatóvá teszi. A tényleges',
+    'védelem a verziózás, de CSAK FELÜLÍRÁSNÁL: minden felülírás előtt eltárolódik az',
+    'előző tartalom (`GET /api/memories/<id>/versions`). A TÖRLÉS viszont VÉGLEGES: a sorral',
+    'együtt a verzióit is törli, így utána semmiből nem állítható vissza. Ha mégis törölnöd kell,',
+    'előtte olvasd ki és mentsd el a sort (`GET /api/memories/<id>`).',
+  ].join('\n')
+}
+
+// Same five-rule idempotency contract as ensureSystemDirectiveAuthSection.
+export function ensureAgentIdHeaderSection(name: string): void {
+  const claudeMdPath = name === MAIN_AGENT_ID
+    ? join(PROJECT_ROOT, 'CLAUDE.md')
+    : join(agentDir(name), 'CLAUDE.md')
+  if (!existsSync(claudeMdPath)) return
+
+  const block = `${AGENT_ID_HEADER_BEGIN}\n${buildAgentIdHeaderBody(name)}\n${AGENT_ID_HEADER_END}`
+
+  let existing: string
+  try {
+    existing = readFileSync(claudeMdPath, 'utf-8')
+  } catch {
+    return
+  }
+
+  const updated = AGENT_ID_HEADER_BLOCK_RE.test(existing)
+    ? existing.replace(AGENT_ID_HEADER_BLOCK_RE, block)
+    : existing.trimEnd() + '\n\n' + block + '\n'
+
+  if (updated === existing) return
+  atomicWriteFileSync(claudeMdPath, updated)
+}
+
+// THIN CHIEF handoff standard. István döntése 2026-09-07, a specialisták
+// visszajelzése után (mind az öt megkérdezve, négy válaszolt a döntés előtt).
+// Ugyanaz az öt-szabályos idempotencia-szerződés, mint a fenti szekcióknál.
+// A ROLE QUALIFIER szerepenként EGY kötelező mező -- a csapat négy különböző
+// mezőt kért, és mind a négy ugyanaz a dolog más nyelven: a fejlécnek az ítélet
+// MINŐSÍTÉSÉT is vinnie kell, nem csak az ítéletet. A Scouté szándékosan nyitva
+// marad: ő maga javasolja, nem találjuk ki helyette.
+const THIN_CHIEF_BEGIN = '<!-- BEGIN GENERATED: thin-chief-handoff (auto-generated, do not edit by hand) -->'
+const THIN_CHIEF_END = '<!-- END GENERATED: thin-chief-handoff -->'
+const THIN_CHIEF_BLOCK_RE = new RegExp(
+  `${THIN_CHIEF_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${THIN_CHIEF_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
+)
+
+const ROLE_QUALIFIERS: Record<string, { field: string; detail: string[] }> = {
+  leanlibrarian: {
+    field: 'AFFECTED PATHS',
+    detail: [
+      'Az ÖSSZES érintett fájl kötelező felsorolása: áthelyezett eredeti, célfájl,',
+      'INDEX.md, CHANGELOG.md bejegyzés. Egyetlen artifact-útvonal a te munkádnál',
+      'nem adja ki a visszakövethető képet -- a rendezés szinte mindig több helyen',
+      'hagy nyomot, és a hiányzó nyom az, amit később senki nem talál meg.',
+    ],
+  },
+  gembaecho: {
+    field: 'SOURCE CHAIN DEPTH',
+    detail: [
+      'DIRECT / 1 RELAY / 2+ RELAYS. A provenance és a közvetítési távolság',
+      'láthatóvá tétele. Az evidencia-szint a RÉTEGET mondja meg (ISTVAN FIELD',
+      'EXPERIENCE stb.), nem azt, hány kézen ment át. Egy "István megerősítette X-et"',
+      'mondat ténynek olvasódik akkor is, ha valójában a Lean Chief hangátirat-',
+      'értelmezésén keresztül jutott hozzád. A tömörítés csendben feljebb tolja a',
+      'bizonyossági szintet; ez a mező az ellenszer.',
+    ],
+  },
+  leanarchivist: {
+    field: 'RELATIONSHIP',
+    detail: [
+      'A kapcsolat TÍPUSA és ERŐSSÉGE (pl. SUPPORTS / CONTRADICTS / RELATED_CONCEPT /',
+      'POSSIBLE_CAUSAL_LINK, és hogy megerősített vagy hipotézis). Kötelezően',
+      'megkülönböztetve: az "ELLENŐRIZTEM, és nincs evidencia" NEM ugyanaz, mint a',
+      '"nem ellenőriztem". Fejléc-szinten ez a két állapot egyformán néz ki, pedig az',
+      'egyik eredmény, a másik mulasztás.',
+    ],
+  },
+  leanwriter: {
+    field: 'INTENTIONAL DECISIONS',
+    detail: [
+      'Röviden: mit hagytál ki SZÁNDÉKOSAN, hogyan kereteztél, milyen feltételezéssel',
+      'éltél. A szövegből kihagyott dolog ugyanolyan döntés, mint a benne lévő, és',
+      'egyik másik mezőbe sem fér bele -- de pont ezt bírálhatja felül a Chief.',
+      'Ide tartozik a célközönségre vagy a brief hiányzó pontjaira tett feltételezés is:',
+      'ha azt rosszul tippelted, az egész anyag rossz, és máshol ez nem látszik.',
+    ],
+  },
+  leanpublisher: {
+    // Nyitva hagyva, ugyanazon az elven, mint a Scouté volt: István kikötése,
+    // hogy a szerepspecifikus mezőt ne találjuk ki az érintett helyett.
+    field: '(még nincs definiálva -- neked kell javasolnod)',
+    detail: [
+      'A te meződet szándékosan nem határoztuk meg előre. A Lean Chief megkér, hogy',
+      'a többiek mintájára javasold meg a SAJÁT egyetlen kötelező minősítő meződet.',
+      'A kérdés, amire válaszolnia kell: mi az, ami a TE munkádban egy 3-5 pontos',
+      'fejlécből kimaradna, és attól a Chief tévesen döntene? Nálad ez valószínűleg a',
+      'publikálás visszafordíthatatlanságával függ össze -- de ezt te döntsd el, ne én.',
+      'Amíg nincs definiálva, a fejlécben írd oda, mit tartasz a leglényegesebb',
+      'minősítőnek az adott átadásnál.',
+    ],
+  },
+  leanscout: {
+    // A Scout SAJÁT javaslata, 2026-09-07 -- István kikötése volt, hogy ne
+    // találjuk ki helyette. Elfogadva: a négy társ mezőjétől eltérően ez nem a
+    // provenance-ot, hanem az állításonkénti megállást minősíti.
+    field: 'EVIDENCE STRENGTH',
+    detail: [
+      'ÁLLÍTÁSONKÉNT külön, nem a jelentés egészére. Egy kutatói átadáson belül',
+      'négy állítás négy különböző erősségen állhat, és a globális CONFIDENCE ezt',
+      'elfedi. Nem esik egybe a KEY FINDINGS evidencia-szint jelölésével sem: az a',
+      'RÉTEGET mondja meg (RESEARCH EVIDENCE / AI INTERPRETATION), ez azt, hogy az',
+      'adott állítás mennyire ÁLL. Az EXP-20260906-02 kártyánál épp ez a szétbontás',
+      'volt a legértékesebb lépés: a negatív lelet erős volt, a rá épülő értelmezés',
+      'közepes, és egyetlen szám mindkettőt eltüntette volna.',
+      '',
+      'A COVERAGE (mit olvastál teljes szövegben, mit csak címről) NEM külön mező, hanem',
+      'ennek a mezőnek a része: az erősség alapja. "erős -- 4 teljes szöveg" egyszerre',
+      'mondja meg mindkettőt. DE van egy maradéka, ami egyetlen állításhoz sem tapad --',
+      'amit EGYÁLTALÁN nem olvastál el --, és az mégis határolja az egész átadást. Azt',
+      'külön bejegyzésként írd ide (pl. "NEM OLVASVA: a Hamzeh-vita két forrása -- csak',
+      'absztrakt volt elérhető"). A leanwriter vette észre 2026-09-07-én, hogy ez alakilag',
+      'ugyanaz, mint nála a "NEM ÍRTAM MEG" bejegyzés: döntés valamiről, ami nincs benne.',
+    ],
+  },
+}
+
+function buildThinChiefBody(name: string): string {
+  const isMain = name === MAIN_AGENT_ID
+  const rq = ROLE_QUALIFIERS[name]
+  const lines: string[] = [
+    '## THIN CHIEF handoff (KÖTELEZŐ minden átadásnál)',
+    '',
+    'István döntése, 2026-09-07, a csapat visszajelzése után. A teljes munkaeredmény',
+    'alapértelmezetten FÁJL (artifact). A Lean Chief beszélgetési kontextusába csak az',
+    'alábbi fejléc kerül; a teljes anyagot a Chief akkor olvassa be, amikor a döntéshez',
+    'ténylegesen kell.',
+    '',
+    '### A sorrend kötelező, és nem fordítható meg',
+    '',
+    '    TELJES MUNKA  ->  ELLENŐRZÖTT ARTIFACT  ->  THIN HANDOFF',
+    '',
+    'Először elkészül és ellenőrződik a teljes anyag, és CSAK EZUTÁN készül belőle a',
+    'fejléc. Soha nem fordítva. A fejléc NEM a végtermék, hanem a végtermék mutatója.',
+    'A specialistának továbbra is teljes mélységben kell dolgoznia és ellenőriznie.',
+    'Ha azon kapod magad, hogy már munka közben fejléc-méretre gondolkodsz és emiatt',
+    'sekélyebben ellenőrzöl, az maga a hiba -- a szabvány az ÁTADÁST rövidíti, nem a',
+    'munkát. (Ezt a kockázatot a csapatból hárman egymástól függetlenül nevezték meg.)',
+    '',
+    '### A közös fejléc',
+    '',
+    '```',
+    'TASK',
+    'STATUS',
+    '',
+    'KEY FINDINGS',
+    '  max. 3-5 rövid pont',
+    '',
+    'DECISION BASIS / MIÉRT',
+    '  max. 1-2 mondat',
+    '',
+    'CONFIDENCE',
+    '  HIGH / MEDIUM / LOW',
+    '',
+    'ARTIFACT / ARTIFACTS',
+    '  kötelező útvonal(ak)',
+    '',
+    'RISK / UNCERTAINTY',
+    '  kötelező; ha nincs ismert kockázat: NONE IDENTIFIED',
+    '',
+    'ROLE QUALIFIER',
+    `  ${rq ? rq.field : 'a szerepedhez rendelt egyetlen kötelező minősítő mező'}`,
+    '',
+    'NEXT RECOMMENDED ACTION',
+    '```',
+    '',
+    '### Mit jelentenek a mezők',
+    '',
+    '- **KEY FINDINGS**: minden pont elé írd oda az evidencia-szintjét (RESEARCH',
+    '  EVIDENCE / EXTERNAL CASE STUDY / ISTVAN FIELD EXPERIENCE / AI INTERPRETATION).',
+    '  Ez nem új mező, hanem a meglévő evidencia-fegyelem alkalmazása a fejlécen belül:',
+    '  a CONFIDENCE azt mondja meg, mennyire vagy biztos, az evidencia-szint azt, hogy',
+    '  MIN alapul. A kettő nem helyettesíti egymást.',
+    '- **STATUS**: az állapotgép szavával KEZDŐDIK, utána a részletezés és az, hogy KI',
+    '  állította be: `STATUS: DRAFT -- v0.2, evidenciailag ellenőrzött, Q020-ra vár`',
+    '  vagy `STATUS: REVIEWED -- lean-chief, 2026-09-07`. A leanwriter vette észre',
+    '  2026-09-07-én, a Lean Publisher megjelenésekor: a DRAFT / REVIEWED / APPROVED /',
+    '  PUBLISHED szavak ettől kezdve ÁLLAPOTOT jelentenek egy másik ágensnek, nem jelzőt,',
+    '  és a prózában leírt állapot addig ártalmatlan, amíg csak ember olvassa.',
+    '  KI ÍRHATJA MELYIKET, és ezen ne lépj túl:',
+    '    `DRAFT`     -- a készítő specialista. Ez az alapértelmezett állapot.',
+    '    `REVIEWED`  -- KIZÁRÓLAG a Lean Chief, és csak akkor, ha a TELJES artifactet',
+    '                   megnyitotta. Nem a fejléc elolvasása, hanem az anyagé.',
+    '    `APPROVED`  -- KIZÁRÓLAG István döntése. A Lean Chief csak RÖGZÍTI, a',
+    '                   jóváhagyó nevével és dátumával. Magától senki nem adhatja.',
+    '    `PUBLISHED` -- KIZÁRÓLAG a Lean Publisher, és csak a platform sikeres',
+    '                   visszaigazolása után.',
+    '  Egyetlen lépés sem ugorható át, és a saját státuszodat nem emelheted feljebb.',
+    '- **DECISION BASIS / MIÉRT**: nem részletes levezetés, hanem annak rövid jelzése,',
+    '  milyen megfontolás alapján született az ítélet. A csapat mind a négy válaszolója',
+    '  ugyanazt mondta: a fejléc az EREDMÉNYT átviszi, az indoklását nem. Ez a mező az.',
+    '- **ARTIFACT / ARTIFACTS**: útvonal nélkül az átadás ÉRVÉNYTELEN. E nélkül a',
+    '  szabvány nem tömörítés, hanem tudásvesztés.',
+    '- **RISK / UNCERTAINTY**: nem hagyható ki. Üres mezőnél a hiány és az ellenőrzött',
+    '  nulla megkülönböztethetetlen, és akkor a hallgatás olcsóbb lesz az ellenőrzésnél.',
+    '  Ha tényleg nincs: `NONE IDENTIFIED`.',
+    '',
+    '### A CÁFOLHATÓSÁGI SZABÁLY (minden minősítésre, nem csak a ROLE QUALIFIER-re)',
+    '',
+    'Minden minősítés az ALAPJÁVAL együtt áll: `érték -- alap`. És az alap-rész',
+    '**konkrét, ellenőrizhető, CÁFOLHATÓ tényt** nevezzen meg, soha ne minősítő jelzőt.',
+    '',
+    '    JÓ:    "erős -- 4 teljes szöveg"   "KIHAGYVA -- olvasatlan forráson áll"',
+    '           "1 RELAY -- hangátirat értelmezésén át"   "archiválva -- diff: azonos"',
+    '    ROSSZ: "erős -- alapos ellenőrzés"   "közepes -- mély elemzés"   "1 RELAY -- közvetítve"',
+    '    A LEGROSSZABB, és a legkönnyebben átcsúszó: a PUSZTA ÉRTÉK, alap nélkül.',
+    '    `CONFIDENCE: MEDIUM` nem rossz alapot ad, hanem SEMMILYET -- és épp ezért nem is',
+    '    néz ki hiányosnak. A leanscout mérte meg 2026-09-07-én a saját fejlécén: hat',
+    '    EVIDENCE STRENGTH bejegyzése átment, és a CONFIDENCE sora bukott meg, mert a',
+    '    figyelme a szerepspecifikus mezőn volt. A helyes alak: `CONFIDENCE: MEDIUM -- 2',
+    '    teljes szöveg a kérdés magjára, de a pozitív rész EGYETLEN szimuláción áll`.',
+    '',
+    'A próba egyszerű: ha az alap-rész ellenőrizhetően lehet ROSSZ, akkor információ.',
+    'Ha csak mérlegeléssel vitatható, akkor dísz. Ezt a szabályt a csapat négy tagja',
+    'egymástól függetlenül javasolta 2026-09-07-én, ugyanarra a veszélyre válaszul: az',
+    'alap-rész sablonná üresedik, és akkor hosszabb lesz a fejléc, de nem véd semmit.',
+    'Ugyanez áll a CONFIDENCE-re és az evidencia-szintre is, nem csak a saját meződre.',
+    '',
+    '**És ami NINCS benne, az is döntés.** Ha szándékosan kihagytál, nem olvastál el vagy',
+    'nem írtál meg valamit, az a saját meződ egyik bejegyzés-típusa -- nem külön mező, és',
+    'nem is elhagyható. Ez az a fajta hiány, amit a fejlécről semmi más nem mutat meg.',
+    '',
+    '**A szabály NEM tisztasági teszt.** A mező nem attól működik, hogy minden sora',
+    'cáfolható, hanem attól, hogy LÁTSZIK, melyik nem az. Ha egy döntés alapja a',
+    'természeténél fogva nem cáfolható -- retorikai, szerkesztői vagy ízlésbeli ítélet --,',
+    'akkor NE hagyd el a bejegyzést, és főleg NE írj rá hamis tényt, hogy megfeleljen:',
+    'nevezd meg, írd oda, hogy `NEM CÁFOLHATÓ`, és mutass az artifact indoklására. A',
+    'legrosszabb kimenet az volna, ha a szabály épp a legnehezebb ítéleteket szorítaná ki',
+    'a fejlécből. (A leanwriter mérte meg 2026-09-07-én, a szabály ELSŐ éles használatakor:',
+    'a saját hat bejegyzéséből három nem felelt meg, és a javításnál pont ez az egy',
+    'maradt, ami nem tehető cáfolhatóvá -- ezt kiírni többet ér, mint eltüntetni.)',
+    '',
+    '### A te ROLE QUALIFIER meződ',
+    '',
+  ]
+  if (rq) {
+    lines.push(`**${rq.field}**`, '')
+    lines.push(...rq.detail)
+  } else {
+    lines.push('Ehhez az ágenshez még nincs szerepspecifikus mező rendelve.')
+  }
+  lines.push(
+    '',
+    '### Mikor nyitja meg a Lean Chief a teljes artifactet',
+    '',
+    'Kötelezően, ha: végleges jóváhagyást ad; publikálásról dönt; szakmai állítást fogad',
+    'el; ellentmondást old fel; irreverzibilis műveletet engedélyez; vagy a',
+    'RISK / UNCERTAINTY nem `NONE IDENTIFIED`.',
+    '',
+    'Publikálási, lezárási vagy más végleges, visszafordíthatatlan döntés SOHA nem',
+    'születhet kizárólag a fejlécből. Minden más kérdésre a fejléc elég.',
+  )
+  if (isMain) {
+    lines.push(
+      '',
+      '### Ez a szabály RÁD is kötelező',
+      '',
+      'A fenti hat eset nem ajánlás: ha ezek bármelyike fennáll, a teljes artifactet',
+      'meg KELL nyitnod, mielőtt döntesz. Ezen felül a lezárt munkák egy részét',
+      'mintavételszerűen teljes szövegében is nézd át -- nem bizalmatlanságból, hanem',
+      'mert az összefoglaló definíció szerint nem tudja megmutatni, mi hiányzik belőle.',
+    )
+  }
+  return lines.join('\n')
+}
+
+// Same five-rule idempotency contract as ensureSkillsPathTrapSection; called on
+// every startAgentProcess() so a respawn re-asserts the standard.
+export function ensureThinChiefHandoffSection(name: string): void {
+  const claudeMdPath = name === MAIN_AGENT_ID
+    ? join(PROJECT_ROOT, 'CLAUDE.md')
+    : join(agentDir(name), 'CLAUDE.md')
+  if (!existsSync(claudeMdPath)) return
+
+  const block = `${THIN_CHIEF_BEGIN}\n${buildThinChiefBody(name)}\n${THIN_CHIEF_END}`
+
+  let existing: string
+  try {
+    existing = readFileSync(claudeMdPath, 'utf-8')
+  } catch {
+    return
+  }
+
+  let updated: string
+  if (THIN_CHIEF_BLOCK_RE.test(existing)) {
+    updated = existing.replace(THIN_CHIEF_BLOCK_RE, block)
   } else {
     updated = existing.trimEnd() + '\n\n' + block + '\n'
   }

@@ -23,6 +23,7 @@ import {
   effortSentFileFor,
   readEffortSent,
   scheduleHoldExpiry,
+  modelSwitchConfirmOpen,
   BLOCK_ALERT_MS,
   type ModelDeps,
   type HoldState,
@@ -39,16 +40,29 @@ const T0 = Date.parse('2026-09-22T08:00:00Z')
 
 let dir: string
 
-function deps(over: Partial<ModelDeps> = {}, opts: { noAck?: boolean; reject?: string } = {}) {
+// MODELCONFIRM1005: the dialog exactly as captured from the live main pane on
+// 2026-10-05 (leading spaces and the selection marker included).
+const CONFIRM_DIALOG = [
+  '▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔',
+  '   Switch model?',
+  '   Your next response will be slower and use more tokens',
+  '   This conversation is cached for the current model. Switching to Sonnet 5.5',
+  '   means the full history gets re-read on your next message.',
+  '   ❯ 1. Yes, switch to Sonnet 5.5',
+  '     2. No, go back',
+].join('\n') + '\n'
+
+function deps(over: Partial<ModelDeps> = {}, opts: { noAck?: boolean; reject?: string; confirm?: 'answers' | 'stuck' } = {}) {
   const sent: string[] = []
+  const keys: string[] = []
   const notes: string[] = []
   const env: Array<Record<string, string>> = []
   const expiries: Array<number | null> = []
   let now = T0
   let acks = 3 // older "Set model to" lines already on the pane
   let pane = 'API error: 529 {"type":"error","error":{"message":"old, overloaded"}}\n'
-  const d: ModelDeps & { sent: string[]; notes: string[]; env: typeof env; expiries: typeof expiries; setNow(n: number): void } = {
-    sent, notes, env, expiries,
+  const d: ModelDeps & { sent: string[]; keys: string[]; notes: string[]; env: typeof env; expiries: typeof expiries; setNow(n: number): void } = {
+    sent, keys, notes, env, expiries,
     setNow(n: number) { now = n },
     now: () => now,
     choicesFile: join(dir, 'model-choices.json'),
@@ -62,7 +76,16 @@ function deps(over: Partial<ModelDeps> = {}, opts: { noAck?: boolean; reject?: s
       sent.push(c)
       if (!c.startsWith('/model')) return
       if (opts.reject) pane += `❯ ${c}\n  ⎿  API error: 400\n     {"type":"error","error":{"type":"invalid_request_error","message":"${opts.reject}"}}\n`
+      else if (opts.confirm) pane += CONFIRM_DIALOG // the CLI asks first, no ack yet
       else if (!opts.noAck) acks++
+    },
+    // The fake CLI: "1" on the open dialog switches (and acks); a wedged dialog ignores it.
+    key: async (k) => {
+      keys.push(k)
+      if (opts.confirm === 'answers' && k === '1' && pane.endsWith(CONFIRM_DIALOG)) {
+        pane = pane.slice(0, -CONFIRM_DIALOG.length) + '  ⎿  Set model to Sonnet 5.5\n'
+        acks++
+      }
     },
     pane: () => pane,
     writeEnv: (u) => { env.push(u) },
@@ -502,6 +525,98 @@ describe('/model status: the measurement is shown with its age', () => {
 
   it('no hold, nothing pending, a different measured model: the warning stays', () => {
     expect(measuredModelLines({ model: 'claude-opus-5', atMs: at1452 }, { model: BASE, at: at1447, acked: true }, null, BASE).warn).toMatch(/⚠️ A futó modell eltér a beállítottól/)
+  })
+})
+
+describe('MODELCONFIRM1005: the CLI\'s "Switch model?" confirmation is answered, never left open', () => {
+  it('recognises the dialog only while it is the open one at the bottom of the pane', () => {
+    expect(modelSwitchConfirmOpen(CONFIRM_DIALOG)).toBe(true)
+    expect(modelSwitchConfirmOpen('some output\n' + CONFIRM_DIALOG)).toBe(true)
+    // scrolled away: an answered dialog followed by a screenful of later output
+    expect(modelSwitchConfirmOpen(CONFIRM_DIALOG + Array.from({ length: 14 }, (_, i) => `line ${i}`).join('\n'))).toBe(false)
+    expect(modelSwitchConfirmOpen('   Switch model?\n   2. No, go back\n')).toBe(false) // no "1. Yes, switch to"
+    expect(modelSwitchConfirmOpen('❯ 1. Yes, switch to Opus\n')).toBe(false) // no title
+    expect(modelSwitchConfirmOpen(null)).toBe(false)
+    // #1694 review survivor: the title alone is not enough, option 1 must be THE switch
+    expect(modelSwitchConfirmOpen('   Switch model?\n   ❯ 1. Keep the current model\n     2. Cancel\n')).toBe(false)
+  })
+
+  it('a late dialog gets a FRESH ack window after the answer (#1694 review survivor)', async () => {
+    // Fake clock: the dialog shows up 2.5 s into the 3 s ack window, and the
+    // CLI acknowledges 1.5 s after the "1" -- beyond the original window. Without
+    // the fresh window the reply would be the cautious "elküldve".
+    writeChoices()
+    let t = 0
+    let answeredAt: number | null = null
+    let acks = 0
+    const d = deps({
+      sleep: async (ms) => { t += ms },
+      send: async (c) => { d.sent.push(c) },
+      pane: () => (answeredAt === null && t >= 2500 ? CONFIRM_DIALOG : 'idle\n'),
+      key: async (k) => { d.keys.push(k); answeredAt = t },
+      ackCount: () => acks + (answeredAt !== null && t >= answeredAt + 1500 ? 1 : 0),
+    })
+    const r = await setModel(['opus'], d)
+    expect(d.keys).toEqual(['1'])
+    expect(r.text).toMatch(/^Átváltva: opus\./)
+  })
+
+  it('setModel: the dialog opens, "1" is typed once, the switch is acknowledged and kept', async () => {
+    writeChoices()
+    const d = deps({}, { confirm: 'answers' })
+    const r = await setModel(['opus', 'keep'], d)
+    expect(r.ok).toBe(true)
+    expect(d.keys).toEqual(['1'])
+    expect(r.text).toMatch(/^Átváltva: opus\./)
+    expect(d.env).toEqual([{ MAIN_AGENT_MODEL: 'claude-opus-5[1m]' }])
+  })
+
+  it('setModel: no dialog, no key -- the normal switch is untouched', async () => {
+    writeChoices()
+    const d = deps()
+    await setModel(['opus'], d)
+    expect(d.keys).toEqual([])
+  })
+
+  it('setModel: the dialog stays open after the answer -> loud failure, one key only, no /effort, no hold', async () => {
+    writeChoices()
+    const d = deps({}, { confirm: 'stuck' })
+    const r = await setModel(['opus', 'high', 'keep'], d)
+    expect(r.ok).toBe(false)
+    expect(r.text).toMatch(/Switch model\?/)
+    expect(r.text).toMatch(/nem fogad üzenetet/)
+    expect(d.keys).toEqual(['1'])
+    expect(d.sent).toEqual(['/model claude-opus-5[1m]'])
+    expect(d.env).toEqual([])
+    expect(existsSync(d.holdFile)).toBe(false)
+  })
+
+  it('/model default: a wedged dialog is reported, not "Visszaváltva"', async () => {
+    const d = deps({ measured: () => 'claude-opus-5' }, { confirm: 'stuck' })
+    writeHold(d.holdFile, { model: 'claude-opus-5', name: 'opus', revert_to: 'claude-sonnet-5', until: T0 + 3600_000, set_at: T0, effort: null, revert_effort: null, verify_pending: false, blocked_since: null, block_alert_at: null })
+    const r = await modelBack(d)
+    expect(r.ok).toBe(false)
+    expect(r.text).toMatch(/Switch model\?/)
+    expect(d.keys).toEqual(['1'])
+  })
+
+  it('unattended expiry revert: the dialog is answered, the revert completes', async () => {
+    writeChoices()
+    const d = deps({ measured: () => 'claude-opus-5' }, { confirm: 'answers' })
+    writeHold(d.holdFile, { model: 'claude-opus-5', name: 'opus', revert_to: BASE, until: T0 + 60_000, set_at: T0, effort: null, revert_effort: null, verify_pending: false, blocked_since: null, block_alert_at: null })
+    expect(await sweepModelHold(T0 + 2 * 60_000, d)).toBe('reverted')
+    expect(d.keys).toEqual(['1'])
+    expect(d.notes[0]).toMatch(/visszaváltva/)
+  })
+
+  it('unattended expiry revert with a wedged dialog: owner alerted, no /effort typed into it, hold cleared', async () => {
+    const d = deps({ measured: () => 'claude-opus-5' }, { confirm: 'stuck' })
+    writeHold(d.holdFile, { model: 'claude-opus-5', name: 'opus', revert_to: BASE, until: T0 + 60_000, set_at: T0, effort: 'high', revert_effort: 'medium', verify_pending: false, blocked_since: null, block_alert_at: null })
+    expect(await sweepModelHold(T0 + 2 * 60_000, d)).toBe('confirm-stuck')
+    expect(d.sent).toEqual([`/model ${BASE}`])
+    expect(d.notes).toHaveLength(1)
+    expect(d.notes[0]).toMatch(/visszaváltás elakadt.*Switch model\?/)
+    expect(existsSync(d.holdFile)).toBe(false)
   })
 })
 

@@ -22,7 +22,12 @@ function authBlock(): string {
   const start = SH.indexOf('_tmux_set_auth_globals() {')
   const end = SH.indexOf('unset _auth_file', start)
   if (start < 0 || end < 0) throw new Error('auth block not found in channels.sh')
-  return SH.slice(start, end + 'unset _auth_file'.length)
+  // LAUNCHQUOTEREST1008: AUTH_PANE_ENV quotes the auth file with the script's
+  // own sh_single_quote, defined earlier in channels.sh; the cut-out block needs
+  // that definition too (read from the script, not copied).
+  const helper = (SH.match(/^sh_single_quote\(\) \{.*\}$/m) ?? [''])[0]
+  expect(helper, 'sh_single_quote definition in channels.sh').not.toBe('')
+  return helper + '\n' + SH.slice(start, end + 'unset _auth_file'.length)
 }
 
 const PRIMARY_LAUNCH = '$TMUX new-session -d -s "$SESSION" -c "$INSTALL_DIR"'

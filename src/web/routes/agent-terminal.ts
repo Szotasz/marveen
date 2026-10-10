@@ -8,6 +8,7 @@ import { isMainChannelsAgent, MAIN_CHANNELS_SESSION } from '../main-agent.js'
 import { literalKeyArgs, specialKeyArgs, loginSequence, type LoginStep } from '../tmux-keys.js'
 import { readTerminalInputEnabled, writeTerminalInputEnabled } from '../terminal-input-store.js'
 import type { RouteContext } from './types.js'
+import { exactTmuxTarget } from '../../tmux-target.js'
 
 // Per-agent dashboard terminal: live pane stream (SSE), keystroke injection,
 // and the scripted /login flow. All gated by the dashboard token (the SSE
@@ -20,7 +21,7 @@ function sleep(ms: number): Promise<void> {
 
 function isTmuxSessionAlive(session: string): boolean {
   try {
-    const inv = tmuxInvocationFor(['has-session', '-t', session])
+    const inv = tmuxInvocationFor(['has-session', '-t', exactTmuxTarget(session)])
     execFileSync(inv.file, inv.args, { timeout: 3000, stdio: 'ignore' })
     return true
   } catch {
@@ -172,7 +173,7 @@ export async function tryHandleAgentTerminal(ctx: RouteContext): Promise<boolean
       // that user's tmux server, and a raw binary call returns nothing -- which
       // the stream renders as a blank terminal rather than an error. That blank
       // pane is what the operator reported as "nem jelenit meg semmit".
-      const capture = tmuxInvocationFor(['capture-pane', '-t', session, '-S', '-2000', '-e', '-p'])
+      const capture = tmuxInvocationFor(['capture-pane', '-t', exactTmuxTarget(session), '-S', '-2000', '-e', '-p'])
       execFile(capture.file, capture.args, { timeout: 3000, encoding: 'utf-8', maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
         inFlight = false
         if (closed) return

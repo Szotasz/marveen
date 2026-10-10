@@ -6,7 +6,8 @@
 //
 // WHY THIS EXISTS (PICKERCLIKAPU923, measured 2026-09-23): the dashboard's
 // model picker is a static list, and a customer install pins the CLI
-// (install-linux.sh CLAUDE_PIN="2.1.110"). On that CLI, `claude-fable-5-1`
+// (install-linux.sh CLAUDE_PIN, "2.1.110" when this was measured, "2.1.112"
+// since #1494). On 2.1.110, `claude-fable-5-1`
 // and `claude-opus-5-5` answer HTTP 400 `unrecognized_model` on the FIRST
 // prompt, while `claude-opus-5` and `claude-sonnet-5` run (positive control,
 // same box, same run). Nothing in the launch path catches this: the session
@@ -41,6 +42,10 @@ export const CLAUDE_MODEL_MIN_CLI: Readonly<Record<string, ClaudeModelCliRequire
   'claude-sonnet-5-5': {
     minCli: '2.1.283',
     measured: '2.1.283 -> OK (claude -p, plugin-free config, main host, 2026-09-28 21:4x); lower versions NOT measured, so they count as unsupported',
+  },
+  'claude-haiku-5-5': {
+    minCli: '2.1.284',
+    measured: '2.1.284 -> OK (claude -p --model claude-haiku-5-5 ran to stop_reason end_turn with a real answer, but printed a [claude-code:unrecognized_model] warning; two long-running agents also came up on it, main host, 2026-10-08 16:14 and ~16:25 CEST); lower versions NOT measured, so they count as unsupported',
   },
   'claude-opus-5-5': {
     minCli: '2.1.280',

@@ -17,16 +17,46 @@ export const OVERRIDES_PATH = join(STORE_DIR, 'config-overrides.json')
 let cache: Record<string, string | number> = {}
 let watcher: FSWatcher | undefined
 
-function loadFromDisk(): Record<string, string | number> {
+// 'unreadable' = the file is on disk but cannot be read, does not parse as JSON,
+// or parses to something that is not an object. Every getter then treats it
+// as empty, so a key written in it does not take effect -- which a message must
+// not report as "the file does not contain the key" (card 8a4056ad, a review
+// finding). The cause is kept apart, because it is measured, not guessed: the
+// fs error code of the read (EACCES, EISDIR, ...), 'invalid-json' or
+// 'not-an-object' (found in review: a chmod 000 file was reported as bad JSON).
+export type OverridesFileState = 'missing' | 'readable' | 'unreadable'
+export type OverridesFileCheck = { state: OverridesFileState; cause?: string }
+
+function readOverridesFile(): OverridesFileCheck & { values: Record<string, string | number> } {
+  if (!existsSync(OVERRIDES_PATH)) return { state: 'missing', values: {} }
+  let raw: string
   try {
-    if (!existsSync(OVERRIDES_PATH)) return {}
-    const raw = readFileSync(OVERRIDES_PATH, 'utf-8')
-    const parsed = JSON.parse(raw)
-    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed
-    return {}
-  } catch {
-    return {}
+    raw = readFileSync(OVERRIDES_PATH, 'utf-8')
+  } catch (err) {
+    return { state: 'unreadable', cause: (err as NodeJS.ErrnoException)?.code ?? 'read-error', values: {} }
   }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch {
+    return { state: 'unreadable', cause: 'invalid-json', values: {} }
+  }
+  if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+    return { state: 'readable', values: parsed as Record<string, string | number> }
+  }
+  return { state: 'unreadable', cause: 'not-an-object', values: {} }
+}
+
+function loadFromDisk(): Record<string, string | number> {
+  return readOverridesFile().values
+}
+
+// The state of config-overrides.json on disk right now (and, when unreadable,
+// the measured cause), by the same read the cache is loaded with, so
+// "unreadable" here means exactly "read as empty".
+export function getOverridesFileState(): OverridesFileCheck {
+  const { state, cause } = readOverridesFile()
+  return cause === undefined ? { state } : { state, cause }
 }
 
 cache = loadFromDisk()
@@ -57,18 +87,28 @@ function coerce(def: SettingDefinition, raw: string | number): string | number {
   return String(raw)
 }
 
-// Resolves the effective value for a registered key: override > .env >
-// registry default. Reads .env fresh (cheap, scoped to one key) rather than
-// relying on the boot-time config.ts constants, so this resolution stays
-// correct independent of when the process last restarted.
-export function getEffectiveSettingValue(key: string): string | number {
+export type SettingSource = 'override' | 'env' | 'default'
+
+// Resolves the effective value for a registered key AND says which layer
+// answered: override > .env > registry default. Reads .env fresh (cheap,
+// scoped to one key) rather than relying on the boot-time config.ts
+// constants, so this resolution stays correct independent of when the
+// process last restarted. The source is for messages that have to NAME the
+// reason for a value instead of guessing it (card 8a4056ad: a guard said
+// "config-overrides.json was deleted and there is no .env key" about an
+// explicit 0 in .env).
+export function getEffectiveSettingSource(key: string): { value: string | number; source: SettingSource } {
   ensureWatching()
   const def = getSettingDefinition(key)
   if (!def) throw new Error(`Unknown setting key: ${key}`)
-  if (key in cache) return coerce(def, cache[key])
+  if (key in cache) return { value: coerce(def, cache[key]), source: 'override' }
   const envValue = readEnvFile([key])[key]
-  if (envValue !== undefined) return coerce(def, envValue)
-  return def.default
+  if (envValue !== undefined) return { value: coerce(def, envValue), source: 'env' }
+  return { value: def.default, source: 'default' }
+}
+
+export function getEffectiveSettingValue(key: string): string | number {
+  return getEffectiveSettingSource(key).value
 }
 
 export interface SetOverrideResult {
