@@ -1,7 +1,8 @@
 import Database from 'better-sqlite3'
 import { join } from 'node:path'
+import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, renameSync, chmodSync, openSync, closeSync, statSync } from 'node:fs'
-import { STORE_DIR, DB_FILENAME, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ, EMBED_URL, EMBED_MODEL, EMBED_DIMS, MAIN_AGENT_ID } from './config.js'
+import { STORE_DIR, DB_FILENAME, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ, EMBED_URL, EMBED_MODEL, EMBED_DIMS, MAIN_AGENT_ID, KANBAN_LABEL_COLORS } from './config.js'
 import { getEffectiveSettingValue } from './settings-store.js'
 import { logger } from './logger.js'
 import { TOOL_TIMEOUTS } from './tool-timeouts.js'
@@ -227,6 +228,23 @@ export function initDatabase(dbPathOverride?: string): void {
     }
   } catch (err) {
     logger.warn({ err }, 'kanban_cards testing-status migration failed -- continuing')
+  }
+  // Migration: why a waiting card waits (wait reason). Added AFTER the testing
+  // migration above, which recreates the table from a fixed column list.
+  try {
+    db.exec('ALTER TABLE kanban_cards ADD COLUMN wait_kind TEXT')
+  } catch {
+    // column already exists
+  }
+  try {
+    db.exec('ALTER TABLE kanban_cards ADD COLUMN wait_note TEXT')
+  } catch {
+    // column already exists
+  }
+  try {
+    db.exec('ALTER TABLE kanban_cards ADD COLUMN wait_until INTEGER')
+  } catch {
+    // column already exists
   }
   // Migration: add agent_id, category, auto_generated columns to memories
   try {
@@ -2430,6 +2448,11 @@ export interface KanbanCard {
   // is woken (kanban -> agent dispatch). NULL = never dispatched; the once-only
   // guard so re-dragging a card does not re-prompt the agent.
   dispatched_at: number | null
+  // Why a waiting card waits (set with the move to waiting or PUT /wait, cleared
+  // when the card leaves waiting). wait_until is unix seconds, kind 'date' only.
+  wait_kind?: 'owner' | 'external' | 'card' | 'date' | null
+  wait_note?: string | null
+  wait_until?: number | null
 }
 
 // A card as referenced FROM another card (blocker links). Deliberately narrow:
@@ -2748,8 +2771,8 @@ export function moveKanbanCard(id: string, status: KanbanCard['status'], sortOrd
   // parent_id comes along in the same read: the ancestor chain has to be stamped too, and this
   // path (drag / status change) is the most common subcard event there is -- an subcard moved to
   // done. Leaving it out would make the false alarm rarer instead of gone.
-  const row = db.prepare('SELECT status, parent_id FROM kanban_cards WHERE id=?').get(id) as
-    { status: string; parent_id: string | null } | undefined
+  const row = db.prepare('SELECT status, parent_id, wait_kind FROM kanban_cards WHERE id=?').get(id) as
+    { status: string; parent_id: string | null; wait_kind: string | null } | undefined
   const prev = row?.status
   // dispatched_at guards ONE in_progress spell (one activation -> one wake-up
   // message), it is not a permanent tombstone. Nothing used to clear it, so a
@@ -2758,15 +2781,23 @@ export function moveKanbanCard(id: string, status: KanbanCard['status'], sortOrd
   // every move that does not land in in_progress re-arms the next activation --
   // and heals a row already stuck this way, since the clear does not depend on
   // the previous status.
+  // A wait reason only describes the current waiting spell: leaving the column
+  // clears it (and the owner label it put on), a reorder inside the column keeps it.
+  const leavesWaiting = prev === 'waiting' && status !== 'waiting'
+  const clearWait = leavesWaiting ? ', wait_kind=NULL, wait_note=NULL, wait_until=NULL' : ''
   // ONE TRANSACTION for the move and the row it owes, as in updateKanbanCard (card f6fba9ec, X16): the UPDATE, the
   // ancestor stamps and the status event either all happen or none does, so a row insert that throws cannot leave a
   // card moved with no row saying who moved it.
   return db.transaction((): boolean => {
     const changed = db.prepare(
       status === 'in_progress'
-        ? 'UPDATE kanban_cards SET status=?, sort_order=?, updated_at=? WHERE id=?'
-        : 'UPDATE kanban_cards SET status=?, sort_order=?, updated_at=?, dispatched_at=NULL WHERE id=?'
+        ? `UPDATE kanban_cards SET status=?, sort_order=?, updated_at=?${clearWait} WHERE id=?`
+        : `UPDATE kanban_cards SET status=?, sort_order=?, updated_at=?, dispatched_at=NULL${clearWait} WHERE id=?`
     ).run(status, sortOrder, now, id).changes > 0
+    if (changed && leavesWaiting && row?.wait_kind === 'owner') {
+      const ownerLabel = findKanbanOwnerWaitLabel()
+      if (ownerLabel) removeLabelFromCard(id, ownerLabel.id)
+    }
     if (changed) touchAncestorChain(row?.parent_id, now, id)
     if (changed && prev !== undefined && prev !== status) {
       db.prepare(
@@ -3037,6 +3068,90 @@ export function getLabelsForAllCards(): Map<string, Label[]> {
     else map.set(card_id, [label])
   }
   return map
+}
+
+// === Wait reason ===
+// Why a card in the waiting column waits: on the owner, on an external party
+// (named in the note), on another card (stored as a blocker link) or until a date.
+// The "owner" kind is the same concept as the owner strip's "Rád vár" label, so
+// setting it puts that label on the card and clearing it takes the label off.
+
+export const KANBAN_OWNER_WAIT_LABEL = 'Rád vár'
+
+export type KanbanWaitReason = {
+  kind: 'owner' | 'external' | 'card' | 'date'
+  note?: string
+  until?: number
+  blockerId?: string
+}
+
+export type KanbanWaitReasonValidation =
+  | { ok: true; reason: KanbanWaitReason | null }
+  | { ok: false; error: string }
+
+export function validateKanbanWaitReason(raw: unknown): KanbanWaitReasonValidation {
+  if (raw === null) return { ok: true, reason: null }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    return { ok: false, error: 'A várakozás oka objektum kell legyen' }
+  }
+  const obj = raw as Record<string, unknown>
+  const allowed = new Set(['kind', 'note', 'until', 'blockerId'])
+  const unknown = Object.keys(obj).filter((key) => !allowed.has(key))
+  if (unknown.length) return { ok: false, error: `Ismeretlen mező(k): ${unknown.join(', ')}` }
+  if (!['owner', 'external', 'card', 'date'].includes(String(obj.kind))) {
+    return { ok: false, error: 'Ismeretlen várakozási ok' }
+  }
+  if (obj.note !== undefined && typeof obj.note !== 'string') {
+    return { ok: false, error: 'A megjegyzés szöveg kell legyen' }
+  }
+  const note = typeof obj.note === 'string' ? obj.note.trim() : ''
+  if (note.length > 200) return { ok: false, error: 'A megjegyzés legfeljebb 200 karakter lehet' }
+  const kind = obj.kind as KanbanWaitReason['kind']
+  if (kind === 'external' && !note) return { ok: false, error: 'Külső fél esetén a „Ki?” mező kötelező' }
+  if (kind === 'date' && (!Number.isInteger(obj.until) || (obj.until as number) < 0)) {
+    return { ok: false, error: 'Dátum esetén egész unix időbélyeg kötelező' }
+  }
+  if (kind === 'card' && (typeof obj.blockerId !== 'string' || !obj.blockerId.trim())) {
+    return { ok: false, error: 'Másik kártya esetén a blockerId kötelező' }
+  }
+  const reason: KanbanWaitReason = { kind }
+  if (note) reason.note = note
+  if (kind === 'date') reason.until = obj.until as number
+  if (kind === 'card') reason.blockerId = (obj.blockerId as string).trim()
+  return { ok: true, reason }
+}
+
+// Matched by name with accents and case folded, like the owner strip does.
+function normalizeKanbanLabelName(value: unknown): string {
+  return String(value ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase()
+}
+
+function findKanbanOwnerWaitLabel(): Label | undefined {
+  const want = normalizeKanbanLabelName(KANBAN_OWNER_WAIT_LABEL)
+  return listLabels().find((label) => normalizeKanbanLabelName(label.name) === want)
+}
+
+export function setKanbanWaitReason(id: string, reason: KanbanWaitReason | null): void {
+  const card = getKanbanCard(id)
+  if (!card) throw new Error('Kártya nem található')
+
+  db.transaction(() => {
+    // A fresh install has no "Rád vár" label: create it on first use rather than
+    // refuse the "owner" kind.
+    let ownerLabel = findKanbanOwnerWaitLabel()
+    if (!ownerLabel && reason?.kind === 'owner') {
+      ownerLabel = createLabel({ id: randomUUID().slice(0, 8), name: KANBAN_OWNER_WAIT_LABEL, color: KANBAN_LABEL_COLORS[0] })
+    }
+    db.prepare('UPDATE kanban_cards SET wait_kind=?, wait_note=?, wait_until=? WHERE id=?').run(
+      reason?.kind ?? null,
+      reason?.note ?? null,
+      reason?.kind === 'date' ? reason.until ?? null : null,
+      id,
+    )
+    if (card.wait_kind === 'owner' && reason?.kind !== 'owner' && ownerLabel) removeLabelFromCard(id, ownerLabel.id)
+    if (reason?.kind === 'owner' && ownerLabel) addLabelToCard(id, ownerLabel.id)
+    if (reason?.kind === 'card' && reason.blockerId) addCardBlocker(id, reason.blockerId)
+  })()
 }
 
 // === Card blockers ===

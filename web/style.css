@@ -7942,6 +7942,31 @@ body {
   border: 1px solid color-mix(in srgb, #f59e0b 45%, transparent);
 }
 
+.kanban-card-wait {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--accent-soft);
+  color: var(--text-muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.kanban-card-wait.kind-owner { color: var(--accent); }
+.kanban-card-wait.missing { background: transparent; border-style: dashed; opacity: .75; }
+.kanban-card-wait.expired { color: var(--danger); font-weight: 600; }
+.kanban-wait-modal { width: min(92vw, 430px); }
+.kanban-wait-modal .modal-body { display: flex; flex-direction: column; gap: 12px; }
+.kanban-wait-kinds { display: grid; gap: 8px; }
+.kanban-wait-field { display: flex; flex-direction: column; gap: 5px; color: var(--text-muted); }
+.kanban-wait-field input { width: 100%; box-sizing: border-box; padding: 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-card); color: var(--text); }
+.kanban-wait-field small { min-height: 1em; color: var(--text-muted); }
+.kanban-wait-field[hidden] { display: none; }
+
 /* MEMKERESVAK917: the memory search is forgiving -- when nothing matches the
    query as asked it answers with the rescued near-misses, and in the LIST those
    are indistinguishable from real hits. The endpoint says which it was in the

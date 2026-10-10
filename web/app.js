@@ -1268,6 +1268,38 @@ function kanbanIsOnOwnerStrip(card, owner) {
   return (card.labels || []).some((l) => kanbanNormalizeLabelName(l && l.name) === want)
 }
 
+function kanbanWaitReason(card) {
+  if (card && ['owner', 'external', 'card', 'date'].includes(card.wait_kind)) {
+    const until = Number.isInteger(card.wait_until) ? card.wait_until : null
+    return {
+      kind: card.wait_kind,
+      note: card.wait_note || null,
+      until,
+      expired: card.wait_kind === 'date' && until != null && until < Date.now() / 1000,
+      source: 'explicit',
+    }
+  }
+  const want = kanbanNormalizeLabelName(KANBAN_OWNER_QUEUE_LABEL)
+  if ((card?.labels || []).some((l) => kanbanNormalizeLabelName(l && l.name) === want)) {
+    return { kind: 'owner', source: 'label' }
+  }
+  const open = (card?.blockers || []).filter((blocker) => blocker.status !== 'done')
+  if (open.length) return { kind: 'card', source: 'blockers' }
+  return null
+}
+
+function kanbanWaitReasonText(card, reason = kanbanWaitReason(card)) {
+  if (!reason) return t('kanban.wait.missing')
+  if (reason.kind === 'owner') return t('kanban.wait.owner')
+  if (reason.kind === 'external') return reason.note || t('kanban.wait.external')
+  if (reason.kind === 'date') {
+    const date = reason.until ? new Date(reason.until * 1000).toLocaleDateString(_lang === 'en' ? 'en-US' : 'hu-HU', { month: 'short', day: 'numeric' }) : t('kanban.wait.date')
+    return reason.expired ? `${date} · ${t('kanban.wait.expired')}` : date
+  }
+  const open = (card.blockers || []).filter((blocker) => blocker.status !== 'done')
+  return open.length ? open.map((blocker) => `#${blocker.seq ?? blocker.id}`).join(', ') : t('kanban.wait.card')
+}
+
 function renderKanbanOwnerStrip() {
   const el = document.getElementById('kanbanOwnerStrip')
   if (!el) return
@@ -1802,6 +1834,10 @@ function createCardEl(card, embeddedChildren = []) {
   const blockedHtml = openBlockers.length > 0
     ? `<span class="kanban-card-blocked" title="${escapeHtml(t('kanban.blocker.card_tooltip', { n: openBlockers.length }))}">${t('kanban.blocker.card_badge')}${openBlockers.length > 1 ? ' ' + openBlockers.length : ''}</span>`
     : ''
+  const waitReason = card.status === 'waiting' ? kanbanWaitReason(card) : null
+  const waitHtml = card.status === 'waiting' && waitReason?.source !== 'blockers'
+    ? `<span class="kanban-card-wait ${waitReason ? `kind-${waitReason.kind}` : 'missing'} ${waitReason?.expired ? 'expired' : ''}"${waitReason?.note && waitReason.kind !== 'external' ? ` title="${escapeHtml(waitReason.note)}"` : ''}>${escapeHtml(kanbanWaitReasonText(card, waitReason))}</span>`
+    : ''
 
   // Card aging: left stripe + top-right badge based on hours since last update.
   // Skipped for done cards. Config thresholds and colours come from window._marveen.kanbanAging.
@@ -1852,7 +1888,7 @@ function createCardEl(card, embeddedChildren = []) {
   el.innerHTML = `
     ${projectHtml}
     <div class="kanban-card-title">${seqHtml}${escapeHtml(card.title)}</div>
-    <div class="kanban-card-footer">${assigneeHtml}${dueHtml}${blockedHtml}</div>
+    <div class="kanban-card-footer">${assigneeHtml}${dueHtml}${waitHtml}${blockedHtml}</div>
     ${labelsHtml}
     <div class="kanban-card-actions">
       <button class="card-breakdown-btn" title="${t('kanban.btn.breakdown')}" aria-label="${t('kanban.btn.breakdown')}">⚡</button>
@@ -1950,17 +1986,93 @@ function wireKanbanColumnDnD(col) {
     let sortOrder = idx
 
     try {
-      await fetch(`/api/kanban/${encodeURIComponent(cardId)}/move`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: newStatus, sort_order: sortOrder, actor: kanbanMoveActor() }),
-      })
+      const card = kanbanCards.find((candidate) => candidate.id === cardId)
+      if (!card || !(await kanbanMoveRequest(card, newStatus, sortOrder))) return
       loadKanban()
     } catch {
       showToast(t('kanban.toast.move_error'))
     }
   })
 }
+function kanbanAskWaitReason(card) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div')
+    overlay.className = 'modal-overlay active kanban-wait-modal-overlay'
+    overlay.innerHTML = `
+      <div class="modal kanban-wait-modal" role="dialog" aria-modal="true" aria-labelledby="kanbanWaitTitle">
+        <div class="modal-header"><h3 id="kanbanWaitTitle">${t('kanban.wait.question')}</h3></div>
+        <div class="modal-body">
+          <div class="kanban-wait-kinds">
+            ${['owner', 'external', 'card', 'date'].map((kind, i) => `<label><input type="radio" name="wait-kind" value="${kind}" ${i === 0 ? 'checked' : ''}> ${t(`kanban.wait.${kind}`)}</label>`).join('')}
+          </div>
+          <label class="kanban-wait-field wait-external">${t('kanban.wait.who')}<input type="text" maxlength="200"></label>
+          <label class="kanban-wait-field wait-card">${t('kanban.wait.which_card')}<input type="text" autocomplete="off"><small></small></label>
+          <label class="kanban-wait-field wait-date">${t('kanban.wait.until')}<input type="date"></label>
+          <label class="kanban-wait-field wait-note">${t('kanban.wait.note')}<input type="text" maxlength="200"></label>
+        </div>
+        <div class="modal-footer"><button type="button" class="btn btn-secondary wait-cancel">${t('common.cancel')}</button><button type="button" class="btn btn-primary wait-ok">${t('common.ok')}</button></div>
+      </div>`
+    document.body.appendChild(overlay)
+    const ok = overlay.querySelector('.wait-ok')
+    const externalInput = overlay.querySelector('.wait-external input')
+    const cardInput = overlay.querySelector('.wait-card input')
+    const cardHint = overlay.querySelector('.wait-card small')
+    const dateInput = overlay.querySelector('.wait-date input')
+    const noteInput = overlay.querySelector('.wait-note input')
+    let matchedCard = null
+    const selectedKind = () => overlay.querySelector('input[name="wait-kind"]:checked').value
+    const resolveCard = () => {
+      const raw = cardInput.value.trim().replace(/^#/, '')
+      matchedCard = kanbanCards.find((candidate) => candidate.id !== card.id && (String(candidate.seq) === raw || candidate.id === raw)) || null
+      cardHint.textContent = matchedCard ? `${matchedCard.seq != null ? `#${matchedCard.seq} ` : ''}${matchedCard.title}` : (raw ? t('kanban.wait.card_not_found') : '')
+    }
+    const update = () => {
+      const kind = selectedKind()
+      overlay.querySelector('.wait-external').hidden = kind !== 'external'
+      overlay.querySelector('.wait-card').hidden = kind !== 'card'
+      overlay.querySelector('.wait-date').hidden = kind !== 'date'
+      overlay.querySelector('.wait-note').hidden = kind === 'external'
+      if (kind === 'card') resolveCard()
+      ok.disabled = (kind === 'external' && !externalInput.value.trim()) || (kind === 'card' && !matchedCard) || (kind === 'date' && !dateInput.value)
+    }
+    const finish = (value) => { document.removeEventListener('keydown', keydown); overlay.remove(); resolve(value) }
+    const keydown = (event) => { if (event.key === 'Escape') finish(null) }
+    overlay.addEventListener('click', (event) => { if (event.target === overlay) finish(null) })
+    overlay.querySelector('.wait-cancel').addEventListener('click', () => finish(null))
+    overlay.querySelectorAll('input').forEach((input) => input.addEventListener('input', update))
+    overlay.querySelectorAll('input[name="wait-kind"]').forEach((input) => input.addEventListener('change', update))
+    ok.addEventListener('click', () => {
+      const kind = selectedKind()
+      const wait = { kind }
+      if (kind === 'external') wait.note = externalInput.value.trim()
+      else if (noteInput.value.trim()) wait.note = noteInput.value.trim()
+      if (kind === 'card') wait.blockerId = matchedCard.id
+      if (kind === 'date') {
+        const until = new Date(`${dateInput.value}T23:59:59`)
+        wait.until = Math.floor(until.getTime() / 1000)
+      }
+      finish(wait)
+    })
+    document.addEventListener('keydown', keydown)
+    update()
+  })
+}
+
+async function kanbanMoveRequest(card, status, sortOrder) {
+  let wait
+  if (status === 'waiting' && card.status !== 'waiting') {
+    wait = await kanbanAskWaitReason(card)
+    if (!wait) { loadKanban(); return false }
+  }
+  const body = { status, sort_order: sortOrder, actor: kanbanMoveActor() }
+  if (wait) body.wait = wait
+  const response = await fetch(`/api/kanban/${encodeURIComponent(card.id)}/move`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  })
+  if (!response.ok) throw new Error('move failed')
+  return true
+}
+
 columns.forEach(wireKanbanColumnDnD)
 
 // === Touch drag & drop (mobile) ===
@@ -2116,12 +2228,8 @@ async function kanbanTouchEnd(e) {
   // that is a reorder within the column, which is just as valid a move.
   if (!newStatus) return
   try {
-    const r = await fetch(`/api/kanban/${encodeURIComponent(cardId)}/move`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ status: newStatus, sort_order: sortOrder, actor: kanbanMoveActor() }),
-    })
-    if (!r.ok) throw new Error('move failed')
+    const card = kanbanCards.find((candidate) => candidate.id === cardId)
+    if (!card || !(await kanbanMoveRequest(card, newStatus, sortOrder))) return
     loadKanban()
   } catch {
     showToast(t('kanban.toast.move_error'))
@@ -2483,6 +2591,11 @@ async function showCardDetail(card) {
       <span class="meta-label">${t('kanban.meta.status')}</span>
       <span class="meta-value meta-value-editable" id="metaStatusValue" data-card-id="${card.id}" title="${t('kanban.meta.edit_tooltip')}">${statusLabels[card.status] || card.status}</span>
     </div>
+    ${card.status === 'waiting' ? `<div class="meta-item kanban-wait-detail">
+      <span class="meta-label">${t('kanban.wait.reason')}</span>
+      <span class="meta-value">${escapeHtml(kanbanWaitReasonText(card))}</span>
+      <span class="kanban-wait-detail-actions"><button type="button" class="btn-secondary btn-compact wait-edit">${t('common.edit')}</button><button type="button" class="btn-secondary btn-compact wait-clear">${t('kanban.wait.clear')}</button></span>
+    </div>` : ''}
     <div class="meta-item">
       <span class="meta-label">${t('kanban.meta.assignee')}</span>
       <span class="meta-value meta-value-editable" id="metaAssigneeValue" data-card-id="${card.id}" title="${t('kanban.meta.edit_tooltip')}">${escapeHtml(assigneeDisplay)}</span>
@@ -2500,6 +2613,33 @@ async function showCardDetail(card) {
       <span class="meta-value">${card.due_date ? new Date(card.due_date * 1000).toLocaleDateString(_lang === 'en' ? 'en-US' : 'hu-HU') : t('kanban.meta.none')}</span>
     </div>
   `
+
+  const waitEdit = meta.querySelector('.wait-edit')
+  if (waitEdit) waitEdit.addEventListener('click', async () => {
+    const wait = await kanbanAskWaitReason(card)
+    if (!wait) return
+    try {
+      const response = await fetch(`/api/kanban/${encodeURIComponent(card.id)}/wait`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(wait),
+      })
+      if (!response.ok) throw new Error('wait update failed')
+      card.wait_kind = wait.kind
+      card.wait_note = wait.note || null
+      card.wait_until = wait.until || null
+      await loadKanban()
+      showCardDetail(kanbanCards.find((candidate) => candidate.id === card.id) || card)
+    } catch { showToast(t('kanban.toast.move_error')) }
+  })
+  const waitClear = meta.querySelector('.wait-clear')
+  if (waitClear) waitClear.addEventListener('click', async () => {
+    try {
+      const response = await fetch(`/api/kanban/${encodeURIComponent(card.id)}/wait`, { method: 'DELETE' })
+      if (!response.ok) throw new Error('wait clear failed')
+      card.wait_kind = card.wait_note = card.wait_until = null
+      await loadKanban()
+      showCardDetail(kanbanCards.find((candidate) => candidate.id === card.id) || card)
+    } catch { showToast(t('kanban.toast.move_error')) }
+  })
 
   // Inline edit for status on detail view. HTML5 drag & drop is the only way to
   // change a card's column, and it is dead on touch devices (no dragstart is
@@ -2529,12 +2669,7 @@ async function showCardDetail(card) {
       const newVal = sel.value
       if (newVal === current) { restore(current); return }
       try {
-        const r = await fetch(`/api/kanban/${encodeURIComponent(card.id)}/move`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ status: newVal, sort_order: 0, actor: kanbanMoveActor() }),
-        })
-        if (!r.ok) throw new Error('move failed')
+        if (!(await kanbanMoveRequest(card, newVal, 0))) { restore(current); return }
         card.status = newVal
         restore(newVal)
         showToast(t('kanban.toast.status_updated'))
