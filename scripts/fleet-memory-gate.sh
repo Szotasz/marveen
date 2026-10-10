@@ -17,10 +17,20 @@
 #   (any internal error -> exit 0 / ALLOW: fail-open, so a broken gate can never
 #    freeze the fleet -- worst case is the pre-Commit-3 behaviour.)
 #
-# Bands (usedPct = 100 * (MemTotal - MemAvailable) / MemTotal):
+# Bands on Linux (usedPct = 100 * (MemTotal - MemAvailable) / MemTotal, from
+# /proc/meminfo):
 #   usedPct < WARN            -> allow all; clear safe-mode flag
 #   WARN <= usedPct < HARD    -> allow ONLY core agents (safe-mode); warn once
 #   usedPct >= HARD           -> hard pause: block ALL new spawns; alert once
+# Bands on macOS (no /proc/meminfo): the kernel's own memory pressure level
+# decides, see read_darwin_pressure below. MARVEEN_MEM_WARN_PCT and
+# MARVEEN_MEM_HARD_PCT are Linux-only and have no effect there.
+#   level normal (1)          -> ok band
+#   level warn (2)            -> safe-mode band (core only)
+#   level critical (4)        -> hard band
+#   anything else             -> fail-open allow
+# Both platforms (on macOS since the pressure-level branch; before it a Mac
+# exited fail-open before reaching this rule):
 #   running non-core >= CAP   -> block non-core regardless of band
 #
 # Kill-switch: MARVEEN_MEM_GATE_DISABLE=1 -> immediate exit 0 (pure pass-through).
@@ -67,6 +77,8 @@ INSTALL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 _env_val() { [[ -f "$INSTALL_DIR/.env" ]] && grep -E "^$1=" "$INSTALL_DIR/.env" | head -1 | cut -d= -f2- | tr -d '"'"'"'\r'; }
 MAIN_AGENT_ID="$(_env_val MAIN_AGENT_ID)"; MAIN_AGENT_ID="${MAIN_AGENT_ID:-marveen}"
 
+# Percent thresholds: Linux only. On macOS the band comes from the kernel's
+# memory pressure level instead (see read_darwin_pressure).
 WARN_PCT="${MARVEEN_MEM_WARN_PCT:-80}"
 HARD_PCT="${MARVEEN_MEM_HARD_PCT:-90}"
 AGENT_CAP="${MARVEEN_AGENT_CAP:-12}"
@@ -130,13 +142,115 @@ log() { echo "[fleet-memory-gate] $*" >&2; }
 PROC_MEMINFO="${MEMGATE_PROC_MEMINFO:-/proc/meminfo}"
 mem_total="$(awk '/^MemTotal:/{print $2}' "$PROC_MEMINFO" 2>/dev/null)"
 mem_avail="$(awk '/^MemAvailable:/{print $2}' "$PROC_MEMINFO" 2>/dev/null)"
-if [[ -z "${mem_total:-}" || -z "${mem_avail:-}" || "$mem_total" -le 0 ]]; then
-  log "cannot read /proc/meminfo -- fail-open (allow)"
-  echo "meminfo-unreadable: allow"
-  exit 0
+
+# macOS has no /proc/meminfo, so without this block the gate took the fail-open
+# branch below on every Mac and never gated anything.
+#
+# On macOS the BAND comes from the kernel's own memory pressure level, not from
+# a used-percent figure. A percent model does not transfer: wired memory and
+# the compressor dominate there and are not an OOM signal. Measured on a
+# healthy 24 GiB Apple Silicon Mac (macOS 26): about 15.5 GiB wired, so the
+# vm_stat reading below said 90-91% used (the default hard band) while the
+# kernel said pressure level 1 (normal) and memory_pressure -Q about 26% free.
+#
+# kern.memorystatus_vm_pressure_level values: 1 = normal, 2 = warn,
+# 4 = critical. Source checked locally: /usr/bin/memory_pressure reads this
+# sysctl (the name is in its strings), and the values match
+# DISPATCH_MEMORYPRESSURE_NORMAL 0x01 / _WARN 0x02 / _CRITICAL 0x04 in the
+# macOS SDK header usr/include/dispatch/source.h. No public header in the SDK
+# states that the sysctl reports exactly these dispatch values; that mapping
+# is taken from the matching numbers plus a live reading of 1 under normal
+# pressure. Any other value (or none) is treated as unreadable -> fail-open.
+# MEMGATE_DARWIN_PRESSURE (the level value) exists for tests only.
+read_darwin_pressure() {
+  local raw
+  if [[ -n "${MEMGATE_DARWIN_PRESSURE+x}" ]]; then
+    raw="$MEMGATE_DARWIN_PRESSURE"
+  else
+    raw="$(/usr/sbin/sysctl -n kern.memorystatus_vm_pressure_level 2>/dev/null)"
+  fi
+  pressure_raw="$(printf '%s' "$raw" | tr -d '[:space:]' | cut -c1-32)"
+  case "$pressure_raw" in
+    1) pressure_level=1; pressure_name="normal" ;;
+    2) pressure_level=2; pressure_name="warn" ;;
+    4) pressure_level=4; pressure_name="critical" ;;
+    *) return 1 ;;
+  esac
+  return 0
+}
+
+# INFORMATIONAL on macOS (status text and alert only, never the band):
+#   MemTotal     = sysctl hw.memsize / 1024
+#   MemAvailable = (Pages free + File-backed pages + Pages purgeable)
+#                  * page size / 1024        (all from vm_stat)
+# Free pages plus clean file cache and purgeable pages is the closest match to
+# Linux MemAvailable; wired, compressor and anonymous pages count as used.
+# Speculative pages are not added: they are already inside "File-backed
+# pages" (measured: file-backed + anonymous = active + inactive + speculative).
+# Absolute tool paths: sysctl lives in /usr/sbin, which a minimal service PATH
+# may not contain. MEMGATE_UNAME / MEMGATE_DARWIN_VMSTAT (a file holding vm_stat
+# output) / MEMGATE_DARWIN_MEMSIZE (bytes) exist for tests only, so the Darwin
+# branch can be exercised on any host.
+read_darwin_mem() {
+  local vmstat_out memsize avail_kb
+  if [[ -n "${MEMGATE_DARWIN_VMSTAT:-}" ]]; then
+    vmstat_out="$(cat "$MEMGATE_DARWIN_VMSTAT" 2>/dev/null)"
+  else
+    vmstat_out="$(/usr/bin/vm_stat 2>/dev/null)"
+  fi
+  if [[ -n "${MEMGATE_DARWIN_MEMSIZE:-}" ]]; then
+    memsize="$MEMGATE_DARWIN_MEMSIZE"
+  else
+    memsize="$(/usr/sbin/sysctl -n hw.memsize 2>/dev/null)"
+  fi
+  [[ "$memsize" =~ ^[0-9]+$ ]] || return 1
+  avail_kb="$(printf '%s\n' "$vmstat_out" | awk '
+    /page size of [0-9]+ bytes/ {
+      for (i = 1; i < NF; i++) if ($i == "of") ps = $(i + 1) + 0
+    }
+    /^Pages free:/        { v = $NF; gsub(/[^0-9]/, "", v); if (v != "") { free = v + 0; nf = 1 } }
+    /^File-backed pages:/ { v = $NF; gsub(/[^0-9]/, "", v); if (v != "") { file = v + 0; nb = 1 } }
+    /^Pages purgeable:/   { v = $NF; gsub(/[^0-9]/, "", v); if (v != "") { purg = v + 0; np = 1 } }
+    END {
+      if (!nf || !nb || !np || ps <= 0) exit 1
+      printf "%.0f\n", (free + file + purg) * ps / 1024
+    }' 2>/dev/null)" || return 1
+  [[ "$avail_kb" =~ ^[0-9]+$ ]] || return 1
+  local total_kb=$(( memsize / 1024 ))
+  (( total_kb > 0 && avail_kb <= total_kb )) || return 1
+  mem_total="$total_kb"
+  mem_avail="$avail_kb"
+  return 0
+}
+
+SIGNAL="meminfo"
+if [[ -z "${mem_total:-}" || -z "${mem_avail:-}" ]] \
+   && [[ "${MEMGATE_UNAME:-$(uname -s 2>/dev/null)}" == "Darwin" ]]; then
+  SIGNAL="pressure"
+  pressure_level=""; pressure_name=""; pressure_raw=""
+  if ! read_darwin_pressure; then
+    log "cannot read macOS memory pressure level (kern.memorystatus_vm_pressure_level='${pressure_raw}') -- fail-open (allow)"
+    echo "pressure-unreadable: allow"
+    exit 0
+  fi
+  mem_total=""; mem_avail=""
+  if read_darwin_mem; then
+    used_txt="$(( (mem_total - mem_avail) * 100 / mem_total ))%"
+    avail_txt="$(( mem_avail / 1024 ))MB"
+  else
+    log "vm_stat / sysctl hw.memsize unreadable -- numbers unknown; band still from the pressure level"
+    used_txt="unknown"; avail_txt="unknown"
+  fi
 fi
-used_pct=$(( (mem_total - mem_avail) * 100 / mem_total ))
-avail_mb=$(( mem_avail / 1024 ))
+if [[ "$SIGNAL" == "meminfo" ]]; then
+  if [[ -z "${mem_total:-}" || -z "${mem_avail:-}" || "$mem_total" -le 0 ]]; then
+    log "cannot read /proc/meminfo -- fail-open (allow)"
+    echo "meminfo-unreadable: allow"
+    exit 0
+  fi
+  used_pct=$(( (mem_total - mem_avail) * 100 / mem_total ))
+  avail_mb=$(( mem_avail / 1024 ))
+fi
 
 # --- count running non-core agents (tmux agent-* sessions; dependency-free) ---
 running=0
@@ -189,7 +303,7 @@ send_alert() {
 set_safe_mode() {
   (( DRY_RUN )) && return 0
   (( OBSERVE )) && return 0   # observe-only: never persist the safe-mode marker
-  [[ -f "$SAFE_FLAG" ]] || echo "$(date '+%Y-%m-%d %H:%M:%S') used=${used_pct}% avail=${avail_mb}MB" >"$SAFE_FLAG" 2>/dev/null || true
+  [[ -f "$SAFE_FLAG" ]] || echo "$(date '+%Y-%m-%d %H:%M:%S') ${mem_summary}" >"$SAFE_FLAG" 2>/dev/null || true
 }
 clear_safe_mode() {
   (( DRY_RUN )) && return 0
@@ -198,19 +312,41 @@ clear_safe_mode() {
 
 # --- determine band + side effects ---
 band="ok"
-if (( used_pct >= HARD_PCT )); then
-  band="hard"
-  set_safe_mode
-  send_alert hard "Marveen memória-kapu: HARD PAUSE. Használt memória ${used_pct}% (elérhető ${avail_mb} MB), a ${HARD_PCT}% küszöb felett. Új agent-indítás LEÁLLÍTVA (futók érintetlenek). Nézd a párhuzamos agent-számot."
-elif (( used_pct >= WARN_PCT )); then
-  band="warn"
-  set_safe_mode
-  send_alert warn "Marveen memória-kapu: SAFE-MODE. Használt memória ${used_pct}% (elérhető ${avail_mb} MB), a ${WARN_PCT}% küszöb felett. Csak core agentek indulhatnak, a többi indítás visszafogva."
+if [[ "$SIGNAL" == "pressure" ]]; then
+  # macOS: the kernel pressure level decides; used/avail are informational.
+  mem_summary="pressure=${pressure_name}(${pressure_level}) used=${used_txt} avail=${avail_txt}"
+  case "$pressure_level" in
+    4) band="hard" ;;
+    2) band="warn" ;;
+  esac
+  info_txt="Tájékoztató adat (nem ez dönt macOS-en): vm_stat szerint használt ${used_txt}, elérhető ${avail_txt}."
+  if [[ "$band" == "hard" ]]; then
+    set_safe_mode
+    send_alert hard "Marveen memória-kapu: HARD PAUSE. A macOS kernel memórianyomás-szintje kritikus (kern.memorystatus_vm_pressure_level=${pressure_level}). ${info_txt} Új agent-indítás LEÁLLÍTVA (futók érintetlenek). Nézd a párhuzamos agent-számot."
+  elif [[ "$band" == "warn" ]]; then
+    set_safe_mode
+    send_alert warn "Marveen memória-kapu: SAFE-MODE. A macOS kernel memórianyomás-szintje figyelmeztető (kern.memorystatus_vm_pressure_level=${pressure_level}). ${info_txt} Csak core agentek indulhatnak, a többi indítás visszafogva."
+  else
+    clear_safe_mode
+  fi
+  status_line="pressure=${pressure_name}(${pressure_level}) used=${used_txt}(info) avail=${avail_txt}(info) running_agents=${running} cap=${AGENT_CAP} band=${band} signal=kernel-pressure"
 else
-  clear_safe_mode
+  mem_summary="used=${used_pct}% avail=${avail_mb}MB"
+  if (( used_pct >= HARD_PCT )); then
+    band="hard"
+    set_safe_mode
+    send_alert hard "Marveen memória-kapu: HARD PAUSE. Használt memória ${used_pct}% (elérhető ${avail_mb} MB), a ${HARD_PCT}% küszöb felett. Új agent-indítás LEÁLLÍTVA (futók érintetlenek). Nézd a párhuzamos agent-számot."
+  elif (( used_pct >= WARN_PCT )); then
+    band="warn"
+    set_safe_mode
+    send_alert warn "Marveen memória-kapu: SAFE-MODE. Használt memória ${used_pct}% (elérhető ${avail_mb} MB), a ${WARN_PCT}% küszöb felett. Csak core agentek indulhatnak, a többi indítás visszafogva."
+  else
+    clear_safe_mode
+  fi
+  # Linux line kept byte-identical to before; no "signal=" field means the
+  # /proc/meminfo percent bands decided.
+  status_line="used=${used_pct}% avail=${avail_mb}MB running_agents=${running} cap=${AGENT_CAP} band=${band}"
 fi
-
-status_line="used=${used_pct}% avail=${avail_mb}MB running_agents=${running} cap=${AGENT_CAP} band=${band}"
 
 # Observe-only: alerts have already fired above; from here the gate only reports and
 # always ALLOWS -- no block exit (10), no cap-block. Istvan owns the throttle call.

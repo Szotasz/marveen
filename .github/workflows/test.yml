@@ -87,3 +87,7 @@ jobs:
       - run: python3 scripts/__tests__/telegram-reply-guard.test.py
       - run: python3 scripts/__tests__/ledger-replay-reply-tool.test.py
       - run: bash scripts/__tests__/conversation-ledger.test.sh
+      # The memory gate's macOS branch (kernel pressure level, vm_stat numbers
+      # informational) is forced on this Linux runner with fixtures; the
+      # live-Mac smoke inside it skips here.
+      - run: bash scripts/__tests__/memgate-darwin.test.sh
