@@ -8,7 +8,9 @@ import { EventEmitter } from 'node:events'
 // system; the negative controls keep the gate closed for everything else.
 vi.mock('../config.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../config.js')>()),
-  SYSTEM_SENDER_IDS: 'cortex',
+  // 'system' is listed on purpose: the reserved directive sender must stay
+  // unaddressable even when an operator lists it (review of #1827).
+  SYSTEM_SENDER_IDS: 'cortex,system',
 }))
 
 import { initDatabase } from '../db.js'
@@ -64,5 +66,23 @@ describe('POST /api/messages: a SYSTEM_SENDER_IDS id is a valid recipient (card 
   it('does not widen a listed id to a longer lookalike', async () => {
     const r = await post({ from: MAIN_AGENT_ID, to: 'cortex-router', content: 'x' })
     expect(r.statusCode).toBe(400)
+  })
+
+  it('keeps the reserved system directive id closed as a recipient even when it is listed', async () => {
+    const r = await post({ from: MAIN_AGENT_ID, to: 'system', content: 'x' })
+    expect(r.statusCode).toBe(400)
+    expect(String(r.json.error)).toContain('unknown recipient')
+  })
+
+  it('rejects a near-miss that only sanitises to a listed id (it would be stored under a name nobody reads)', async () => {
+    const r = await post({ from: MAIN_AGENT_ID, to: 'cort ex', content: 'x' })
+    expect(r.statusCode).toBe(400)
+    expect(String(r.json.error)).toContain('unknown recipient')
+  })
+
+  it('accepts the listed id surrounded by whitespace, stored trimmed', async () => {
+    const r = await post({ from: MAIN_AGENT_ID, to: '  cortex  ', content: 'x' })
+    expect(r.statusCode).toBe(200)
+    expect(r.json.to_agent).toBe('cortex')
   })
 })
