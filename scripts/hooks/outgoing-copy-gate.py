@@ -1045,6 +1045,16 @@ def collect_channel_body(tool_input: dict, unescape_mdv2: bool) -> str:
     a literal the author wrote, not gate noise."""
     fields = ("text", "caption", "message")
     got = [str(tool_input[f]) for f in fields if tool_input.get(f)]
+    # c67f5f34: the Telegram reply tool's one-tap answer buttons (a Marveen patch
+    # of the plugin, scripts/patch-telegram-plugin.py) are outgoing text too: the
+    # tapped label is what the recipient sees and sends back. A label this gate
+    # did not read would be the silent zero above, so every label joins the body;
+    # a value that is not a list is read as it is (the loud side).
+    buttons = tool_input.get("buttons")
+    if isinstance(buttons, (list, tuple)):
+        got += [str(b) for b in buttons if str(b).strip()]
+    elif buttons:
+        got.append(str(buttons))
     joined = "\n".join(got)
     return MDV2_ESCAPE.sub(r"\1", joined) if unescape_mdv2 else joined
 

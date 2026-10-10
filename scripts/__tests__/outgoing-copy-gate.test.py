@@ -334,6 +334,27 @@ def main():
         check("escape-elt SPAN-ben rejtett gondolatjel blokkol (sorrend-fog)", code, 2)
         check("...es a GONDOLATJEL indokkal", "GONDOLATJEL" in (err or ""), True)
 
+        # --- C67F5F34: A GOMBFELIRATOK IS KIMENO SZOVEG ----------------------
+        # A Telegram reply eszkoz buttons mezoje (a plugin Marveen-foltja) egy
+        # koppintassal valaszolhato gombokat tesz a kerdes ala; a felirat az, amit
+        # a cimzett lat es visszakuld. A SZOVEG SZANDEKOSAN TISZTA (teljesen
+        # ekezetes, gondolatjel nelkul), hogy a tiltas CSAK a feliratbol johessen
+        # (a COPYGATEENT914 tanulsaga: egy mas okbol is tuzelo teszt nem mer).
+        def gombos(buttons):
+            return {"tool_name": "mcp__plugin_telegram_telegram__reply",
+                    "tool_input": {"text": CLEAN_HU_OK, "buttons": buttons}}
+        code, out, err = run_hook(gombos(["A. Elfogadom", "B. Már megoldva — köszönöm"]), rules_file=active)
+        check("gondolatjel a gombfeliratban blokkol (exit 2)", code, 2)
+        check_true("...es a GONDOLATJEL indokkal", "GONDOLATJEL" in (err or ""), detail=(err or "")[:120])
+        code, out, err = run_hook(gombos("A — B"), rules_file=active)
+        check("nem lista alaku buttons is vizsgalt (exit 2)", code, 2)
+        # NEGATIV KONTROLL: tiszta feliratok atmennek, es a tiszta szoveg magaban is.
+        code, out, err = run_hook(gombos(["A. Elfogadom", "B. Már megoldva", "C. Valami más lesz a megoldás"]),
+                                  rules_file=active)
+        check("tiszta gombfeliratok atmennek (exit 0)", code, 0)
+        code, out, err = run_hook(gombos([]), rules_file=active)
+        check("ures gomblista (a billentyuzet levetele) atmegy (exit 0)", code, 0)
+
         # --- GMAILCONNECTOR914: the claude.ai Gmail connector ----------------
         # mcp__claude_ai_Gmail__send_message carries ONE underscore before Gmail,
         # so the old (^|__)gmail__ alternative never matched and the send fell
