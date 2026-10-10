@@ -6,7 +6,9 @@
 # critical mutable state first. Code is already safe in git; this captures the
 # state git does NOT track: the SQLite DB, the vault, and runtime config.
 #
-# Rolling retention: keep the newest $KEEP snapshots, prune the rest.
+# Rolling retention: keep the newest $KEEP VERIFIED snapshots, prune the rest. A
+# failed or unverified run is marked -INCOMPLETE and kept apart, the newest
+# $KEEP_INCOMPLETE of them (card 252ab361; see the rotation below).
 # Usage: scripts/pre-modify-backup.sh [label]
 #   label is an optional short tag for the snapshot dir (e.g. "openrouter-ui").
 set -uo pipefail
@@ -31,6 +33,7 @@ else
 fi
 BKDIR="$STORE/backups"
 KEEP=10
+KEEP_INCOMPLETE=3
 LABEL="${1:-manual}"
 TS="$(date +%Y%m%d-%H%M%S)"
 DEST="$BKDIR/${TS}-${LABEL}"
@@ -54,9 +57,24 @@ if [ -f "$STORE/claudeclaw.db" ]; then
      && [ -s "$DEST/claudeclaw.db" ]; then
     DB_MODE="sqlite3 .backup"
     echo "  db: consistent snapshot ok"
+  elif rm -f "$DEST/claudeclaw.db" 2>/dev/null; command -v python3 >/dev/null 2>&1 \
+     && python3 - "$STORE/claudeclaw.db" "$DEST/claudeclaw.db" 2>/dev/null <<'PYSNAP' \
+     && [ -s "$DEST/claudeclaw.db" ]; then
+import sqlite3, sys
+# The same online backup the CLI's .backup runs, through python3's stdlib: python3
+# IS an install dependency, the sqlite3 CLI is not (card 252ab361, item (a)).
+src = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True, timeout=30)
+dst = sqlite3.connect(sys.argv[2])
+with dst:
+    src.backup(dst)
+dst.close()
+src.close()
+PYSNAP
+    DB_MODE="python3 sqlite3 backup"
+    echo "  db: consistent snapshot ok (python3 sqlite3 backup, no sqlite3 CLI)"
   else
-    # Degraded fallback, the same one scripts/backup.sh uses without sqlite3:
-    # copy the file trio as-is. A raw copy CAN be torn mid-write, so this is a
+    # Degraded fallback, the same one scripts/backup.sh uses without sqlite3, and
+    # now only when python3's backup could not run either: copy the file trio as-is. A raw copy CAN be torn mid-write, so this is a
     # RECOVERABLE snapshot, not a consistent one -- the -wal carries the recent
     # writes and SQLite replays it on open; the -shm is only an index and is
     # rebuilt. Copying the db without its -wal would silently lose everything
@@ -161,6 +179,31 @@ fi
 git -C "$REPO" rev-parse HEAD          > "$DEST/git-HEAD.txt"    2>/dev/null
 git -C "$REPO" branch --show-current   > "$DEST/git-branch.txt"  2>/dev/null
 
+# Manifest for the WHOLE snapshot (card 252ab361, item (d)): one line per file,
+# sha256 (or NOSUM), size in bytes, path. Without it "does this backup hold the
+# database, and is it the one we think" is a directory walk and a judgement call.
+# Portable: the sum through $SHA_CMD, the size through wc -c, the listing through
+# find and sort. With no find the manifest cannot be written, and the run does not
+# count as verified (the same event of weight as a missing checksum, exit 3).
+MANIFEST="$DEST/MANIFEST.sha256"
+SNAPSHOT_NOSUM=0
+MANIFEST_OK=0
+if command -v find >/dev/null 2>&1; then
+  (
+    cd "$DEST" || exit 1
+    find . -type f ! -name 'MANIFEST.sha256' 2>/dev/null | sed 's|^\./||' | LC_ALL=C sort | while IFS= read -r rel; do
+      sum=""
+      [ -n "$SHA_CMD" ] && sum="$($SHA_CMD "$rel" 2>/dev/null | cut -d' ' -f1)"
+      size="$(wc -c < "$rel")"; size="${size//[[:space:]]/}"
+      printf '%s  %s  %s\n' "${sum:-NOSUM}" "$size" "$rel"
+    done
+  ) > "$MANIFEST" && MANIFEST_OK=1
+  SNAPSHOT_NOSUM="$(grep -c '^NOSUM  ' "$MANIFEST" 2>/dev/null || true)"
+  echo "  manifest: $(grep -c '' "$MANIFEST" 2>/dev/null || true) file(s) listed with sha256 + size"
+else
+  echo "  manifest: WARNING cannot list the snapshot (no find) -- the run does not count as verified"
+fi
+
 # Verify what is in $DEST -- do NOT infer success from having reached this line.
 # The old closing "backup ok" was bound to the script running through, not to
 # the backup existing, so the reader who needed the truth (someone about to make
@@ -181,12 +224,48 @@ for f in $CRITICAL_FILES; do
   fi
 done
 
-# Rotate: keep the newest $KEEP snapshot dirs, remove older ones. Skipped when
-# this snapshot is incomplete (see above).
-if [ -z "$MISSING" ] && [ -d "$BKDIR" ]; then
-  ls -1dt "$BKDIR"/*/ 2>/dev/null | tail -n +$((KEEP + 1)) | while read -r old; do
-    rm -rf "$old" && echo "  pruned old snapshot: $(basename "$old")"
-  done
+# The run's state, decided BEFORE the rotation (card 252ab361, items (b) and (c)):
+#   failed     -- the snapshot cannot restore the state (MISSING above), exit 1;
+#   unverified -- written, but a manifest path carries no checksum, or the
+#                 snapshot manifest could not be written at all, exit 3;
+#   ok         -- a verified snapshot, exit 0.
+# A failed or unverified run's directory is renamed with the -INCOMPLETE suffix, so
+# it never counts among the $KEEP kept snapshots. Before, both kept their plain
+# name: 9 failed runs, then 1 successful one, left 0 of 3 good snapshots, and 3
+# unverified runs pushed the 3 oldest verified ones out (measured on develop
+# 4a12c410, 2026-09-28).
+STATE=ok
+if [ -n "$MISSING" ]; then
+  STATE=failed
+elif [ "$PERSONAL_NOSUM" -gt 0 ] || [ "$SNAPSHOT_NOSUM" -gt 0 ] || [ "$MANIFEST_OK" != 1 ]; then
+  STATE=unverified
+fi
+MARKED=0
+if [ "$STATE" != ok ]; then
+  if mv "$DEST" "${DEST}-INCOMPLETE" 2>/dev/null; then
+    DEST="${DEST}-INCOMPLETE"
+    MANIFEST="$DEST/MANIFEST.sha256"
+    MARKED=1
+  else
+    echo "pre-modify-backup: WARNING -- could not mark $DEST as -INCOMPLETE; nothing is pruned in this run" >&2
+  fi
+fi
+
+# Rotate. Only a verified run prunes verified snapshots (a failed or unverified
+# one must not push a good one out); the -INCOMPLETE compartment is kept at its
+# newest $KEEP_INCOMPLETE by every run that could mark its own directory. If the
+# mark itself failed, nothing is pruned: that directory would read as a good one.
+if [ -d "$BKDIR" ]; then
+  if [ "$STATE" = ok ]; then
+    ls -1dt "$BKDIR"/*/ 2>/dev/null | grep -v -- '-INCOMPLETE/$' | tail -n +$((KEEP + 1)) | while read -r old; do
+      rm -rf "$old" && echo "  pruned old snapshot: $(basename "$old")"
+    done
+  fi
+  if [ "$STATE" = ok ] || [ "$MARKED" = 1 ]; then
+    ls -1dt "$BKDIR"/*-INCOMPLETE/ 2>/dev/null | tail -n +$((KEEP_INCOMPLETE + 1)) | while read -r old; do
+      rm -rf "$old" && echo "  pruned old incomplete snapshot: $(basename "$old")"
+    done
+  fi
 fi
 
 SIZE="$(du -sh "$DEST" 2>/dev/null | cut -f1)"
@@ -205,10 +284,15 @@ fi
 # found" lines to stderr, then "backup ok" and exit 0. A scheduled caller reads
 # the exit code, not the stderr, so every round would have looked perfect while
 # the drift check quietly did not exist.
-if [ "$PERSONAL_NOSUM" -gt 0 ]; then
-  echo "backup INCOMPLETE: $DEST ($SIZE, retain newest $KEEP)"
-  echo "  the snapshot IS written, but $PERSONAL_NOSUM manifest path(s) carry NO checksum:"
-  echo "  the post-update comparison can only prove EXISTENCE for those, not content."
+if [ "$STATE" = unverified ]; then
+  echo "backup INCOMPLETE: $DEST ($SIZE, retain newest $KEEP verified)"
+  if [ "$MANIFEST_OK" != 1 ]; then
+    echo "  the snapshot IS written, but its manifest could not be written: there is nothing to compare later."
+  else
+    echo "  the snapshot IS written, but $((PERSONAL_NOSUM + SNAPSHOT_NOSUM)) manifest path(s) carry NO checksum:"
+    echo "  the post-update comparison can only prove EXISTENCE for those, not content."
+  fi
+  echo "  so this run does not count among the kept snapshots (marked -INCOMPLETE)."
   exit 3
 fi
 echo "backup ok: $DEST ($SIZE, retain newest $KEEP, db: $DB_MODE)"
