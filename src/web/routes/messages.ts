@@ -25,6 +25,7 @@ import { verifyHeartbeatKanban, HEARTBEAT_KANBAN_WINDOW_SEC } from '../heartbeat
 import { buildFreshnessInfo, type MessageFreshness } from '../agent-message-wrap.js'
 import { parseQualifiedId, formatQualifiedId, isQualifiedId } from '../federation/address.js'
 import { getFederationConfig } from '../federation/config.js'
+import { decidePriority, parsePriorityField } from '../message-priority.js'
 import type { RouteContext } from './types.js'
 
 // Should closing a message produce a reverse "[Eredmény]" notification to its sender?
@@ -146,8 +147,8 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/messages' && method === 'POST') {
     const body = await readBody(req)
-    const { from, to, content, origin_note } = JSON.parse(body.toString()) as
-      { from: string; to: string; content: string; origin_note?: string }
+    const { from, to, content, origin_note, priority } = JSON.parse(body.toString()) as
+      { from: string; to: string; content: string; origin_note?: string; priority?: unknown }
     if (!from?.trim() || !to?.trim() || !content?.trim()) {
       json(res, { error: 'from, to, and content are required' }, 400)
       return true
@@ -373,7 +374,16 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // Card 06f062e4: optional attributability tag, self-declared like `from`
     // itself -- capped short so it stays a label, not a second content field.
     const trimmedOriginNote = origin_note?.trim().slice(0, 120) || null
-    const msg = createAgentMessage(from.trim(), storedTo, normalizedContent, trimmedOriginNote)
+    // Card ad771121: the optional priority. Absent = "normal" (today's FIFO); an unknown value is a
+    // loud 400. Checked after every guard above, so their answers keep their precedence; the budget
+    // decision and the insert run back to back with no await between them.
+    const parsedPriority = parsePriorityField(priority)
+    if (!parsedPriority.ok) {
+      json(res, { error: parsedPriority.error }, 400)
+      return true
+    }
+    const decided = decidePriority(parsedPriority.level, from.trim(), storedTo, Math.floor(Date.now() / 1000))
+    const msg = createAgentMessage(from.trim(), storedTo, normalizedContent, trimmedOriginNote, undefined, decided.priority)
     if (isVoiceMailbox) {
       markMessageDone(msg.id, VOICE_MAILBOX_RESULT)
       logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent }, 'Voice-channel answer stored in the mailbox (no session delivery)')
@@ -389,8 +399,12 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // below carries it, the warning ones included.
     const queue = isQualifiedId(storedTo) ? undefined : getRecipientQueueState(storedTo)
     const queueField = queue ? { queue } : {}
+    // Card ad771121: the row carries its stored priority (0 normal, 1 high); a high request over the pair's
+    // hourly budget was accepted as normal, never dropped, and the answer says so. Every success answer
+    // below carries it, like the queue.
+    const downgradedField = decided.downgraded ? { downgraded: true } : {}
     logger.info(
-      { id: msg.id, from: msg.from_agent, to: msg.to_agent, originNote: msg.origin_note, queueDepth: queue?.queueDepth },
+      { id: msg.id, from: msg.from_agent, to: msg.to_agent, originNote: msg.origin_note, queueDepth: queue?.queueDepth, priority: msg.priority, downgraded: decided.downgraded },
       'Agent message created',
     )
     // A LOCAL recipient that is not running never receives this: the router
@@ -415,6 +429,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       json(res, {
         ...msg,
         ...queueField,
+        ...downgradedField,
         targetRunning: false,
         warning: `'${msg.to_agent}' nem fut -- indítsd el (POST /api/agents/${msg.to_agent}/start), várd meg amíg feláll, és küldd újra. Egy leállított ügynöknek küldött üzenet nem várakozik, hanem elveszik.`,
       })
@@ -436,10 +451,10 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     if (homoglyphs.length > 0) {
       const warning = formatHomoglyphWarning(homoglyphs)
       logger.warn({ id: msg.id, from: msg.from_agent, to: msg.to_agent }, `agent message created with ${warning}`)
-      json(res, { ...msg, ...queueField, homoglyph_warning: warning })
+      json(res, { ...msg, ...queueField, ...downgradedField, homoglyph_warning: warning })
       return true
     }
-    json(res, { ...msg, ...queueField })
+    json(res, { ...msg, ...queueField, ...downgradedField })
     return true
   }
 
