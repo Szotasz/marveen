@@ -173,6 +173,9 @@ write_mac_installer() {
   cat > "$MAC/install/scripts/install-channel-keepalive-probe.sh" <<EOF
 #!/bin/bash
 LABEL="$1"
+# #1873: update.sh asks the installer for its label (--print-label), the way
+# the real installers answer it; that call is not an install, so not logged.
+if [ "\${1:-}" = "--print-label" ]; then echo "\$LABEL"; exit 0; fi
 echo "\$*" >> "$MAC/installer.calls"
 mkdir -p "\$HOME/Library/LaunchAgents"
 : > "\$HOME/Library/LaunchAgents/$1.plist"

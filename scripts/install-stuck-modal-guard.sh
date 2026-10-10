@@ -33,7 +33,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-LABEL="com.marveen.stuck-modal-guard"
+# #1873: com.<SERVICE_ID>.stuck-modal-guard, not a fixed com.marveen.stuck-modal-guard -- two installs
+# under one user must not share (and overwrite) one helper job.
+. "$SCRIPT_DIR/launchd-label.sh"
+LABEL="$(helper_launchd_label "$PROJECT_DIR" stuck-modal-guard)"
+# update.sh asks the installer for the label instead of grepping a fixed one.
+if [ "${1:-}" = "--print-label" ]; then printf '%s\n' "$LABEL"; exit 0; fi
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 GUARD="$PROJECT_DIR/scripts/stuck-modal-guard.sh"
 
@@ -47,6 +52,7 @@ fi
 
 mkdir -p "$HOME/Library/LaunchAgents"
 
+retire_legacy_helper_label "$PROJECT_DIR" stuck-modal-guard "$LABEL" "$HOME/Library/LaunchAgents"
 cat > "$PLIST" <<PLIST_EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">

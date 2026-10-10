@@ -737,7 +737,8 @@ install_keepalive_probe_launchd() {
   _ka_installer="$INSTALL_DIR/scripts/install-channel-keepalive-probe.sh"
   [ -x "$_ka_installer" ] || return 0
   command -v launchctl >/dev/null 2>&1 || return 0
-  _ka_label="$(sed -n 's/^LABEL="\(.*\)"$/\1/p' "$_ka_installer" | head -1)"
+  # #1873: the installer resolves its own com.<SERVICE_ID>.* label.
+  _ka_label="$("$_ka_installer" --print-label 2>/dev/null | head -1)"
   [ -n "$_ka_label" ] || _ka_label="com.marveen.channel-keepalive-probe"
   if [ -f "$HOME/Library/LaunchAgents/${_ka_label}.plist" ]; then
     return 0
@@ -771,7 +772,8 @@ install_stuck_modal_guard_launchd() {
   command -v launchctl >/dev/null 2>&1 || return 0
   _sm_mode="$(grep -E '^STUCK_MODAL_MODE=' "$INSTALL_DIR/.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"'"'"'\r ' | tr '[:upper:]' '[:lower:]')"
   [ "$_sm_mode" = "off" ] && return 0
-  _sm_label="$(sed -n 's/^LABEL="\(.*\)"$/\1/p' "$_sm_installer" | head -1)"
+  # #1873: the installer resolves its own com.<SERVICE_ID>.* label.
+  _sm_label="$("$_sm_installer" --print-label 2>/dev/null | head -1)"
   [ -n "$_sm_label" ] || _sm_label="com.marveen.stuck-modal-guard"
   if launchctl list "$_sm_label" >/dev/null 2>&1; then
     return 0

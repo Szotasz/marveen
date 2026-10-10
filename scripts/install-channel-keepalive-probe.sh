@@ -31,7 +31,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-LABEL="com.marveen.channel-keepalive-probe"
+# #1873: com.<SERVICE_ID>.channel-keepalive-probe, not a fixed com.marveen.channel-keepalive-probe -- two installs
+# under one user must not share (and overwrite) one helper job.
+. "$SCRIPT_DIR/launchd-label.sh"
+LABEL="$(helper_launchd_label "$PROJECT_DIR" channel-keepalive-probe)"
+# update.sh asks the installer for the label instead of grepping a fixed one.
+if [ "${1:-}" = "--print-label" ]; then printf '%s\n' "$LABEL"; exit 0; fi
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 PROBE="$PROJECT_DIR/scripts/channel-keepalive-probe.sh"
 
@@ -44,6 +49,7 @@ if [ ! -f "$PROBE" ]; then
 fi
 
 mkdir -p "$HOME/Library/LaunchAgents"
+retire_legacy_helper_label "$PROJECT_DIR" channel-keepalive-probe "$LABEL" "$HOME/Library/LaunchAgents"
 cat > "$PLIST" <<PLIST_EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
