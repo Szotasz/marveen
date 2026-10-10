@@ -84,8 +84,11 @@ SLACK_RC=2
 if command -v node >/dev/null 2>&1 && [ -f "$PROJECT_DIR/dist/slack-notify.js" ]; then
   SLACK_OUT="$(node "$SCRIPT_DIR/slack-notify.mjs" --kind owner ${SENDER:+--as "$SENDER"} -- "$MESSAGE" 2>/dev/null)"
   SLACK_RC=$?
-  case "$SLACK_OUT" in *'"telegram":"skip"'*) [ "$SLACK_RC" -eq 0 ] && SEND_TELEGRAM=0 ;; esac
-  [ "$SLACK_RC" -eq 1 ] && echo "Figyelem: a Slack-ertesites nem ment ki, Telegram tartalek: $SLACK_OUT" >&2
+  # "skip" with rc 0: Slack delivered and Telegram is not wanted beside it.
+  # "skip" with rc != 0: NOTIFY_TELEGRAM_FALLBACK=0, Telegram is never the
+  # fallback, so the run fails below instead of reaching the channel the owner left.
+  case "$SLACK_OUT" in *'"telegram":"skip"'*) SEND_TELEGRAM=0 ;; esac
+  [ "$SLACK_RC" -eq 1 ] && [ "$SEND_TELEGRAM" -eq 1 ] && echo "Figyelem: a Slack-ertesites nem ment ki, Telegram tartalek: $SLACK_OUT" >&2
 fi
 
 if [ -n "$SENDER" ] && [ "$SENDER" != "$MAIN_AGENT_ID" ]; then
@@ -113,6 +116,10 @@ fi
 . "$SCRIPT_DIR/lib/send-telegram.sh"
 
 if [ "$SEND_TELEGRAM" -eq 0 ]; then
+  if [ "$SLACK_RC" -ne 0 ]; then
+    echo "Hiba: a Slack-ertesites nem ment ki, es a Telegram-tartalek ki van kapcsolva (NOTIFY_TELEGRAM_FALLBACK=0). Szolj a fo agensnek inter-agent uzenetben. Reszletek: $SLACK_OUT" >&2
+    exit 1
+  fi
   echo "Ertesites elkuldve (Slack)."
 elif [ -z "$TOKEN" ] || [ "$CHAT_OK" -eq 0 ]; then
   # Telegram is not usable on this install. Success only if Slack delivered.

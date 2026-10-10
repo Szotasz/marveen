@@ -561,6 +561,15 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     requiresRestart: false,
   },
   {
+    key: 'NOTIFY_TELEGRAM_FALLBACK',
+    type: 'boolean',
+    default: '1',
+    description: 'Mehet-e Telegram TARTALÉKKÉNT, ha a Slack-értesítés nem megy ki (nincs Slack-cél, a Slack-modul nem töltődik be, vagy a küldés hibát ad). Bekapcsolva (alapértelmezés) semmi nem vész el: a Telegram átveszi. Kikapcsolva a Telegram SOHA nem kap értesítést tartalékként: a Slack-hiba hangos naplósor (a notify.sh nem nullával lép ki), és az ütemezett feladatok tartalék-utasítása is a notify.sh-t nevezi meg. A NOTIFY_TELEGRAM a "menjen-e MELLÉ" kérdés, ez a "menjen-e HELYETTE".',
+    module: 'channels',
+    secret: false,
+    requiresRestart: false,
+  },
+  {
     key: 'SLACK_OWNER_USER_ID',
     type: 'string',
     default: '',
