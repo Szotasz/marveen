@@ -124,6 +124,37 @@ async function sendToChat(chatId: string, text: string): Promise<void> {
   }
 }
 
+// Send to a SPECIFIC chat, not the install-wide alert or owner chat (card deeaa175).
+//
+// Why this exists next to notifyChannel rather than inside it: notifyChannel and
+// notifyOwner are addressed by configuration (ALERT_CHAT_ID, the owner chat), and
+// the owner chat cannot always be resolved (see the CHATID0 note in notifyOwner).
+// For a voice reply the correct address is already in hand: /api/voice/directive
+// receives the real, validated `chat` of the person who just spoke. Routing the
+// notice there is what makes it a DELIVERY rather than a hope.
+//
+// Returns whether the send actually happened. Callers are expected to log a
+// failure -- the whole point of this path is that a voice message never fails
+// silently again, so the notice must not fail silently either.
+export async function notifyChat(chatId: string, text: string): Promise<boolean> {
+  const id = normalizeChatId(chatId)
+  if (!CHANNEL_TOKEN || !id) {
+    logger.warn({ chatId }, 'notifyChat kihagyva: token vagy chat ID hianyzik')
+    return false
+  }
+  const outbound = markIfTestRun(text)
+  const provider = getProvider(CHANNEL_PROVIDER)
+  try {
+    // Plain text on purpose: no parse mode, so a stray character in a future
+    // notice cannot make the API reject the whole message.
+    await provider.sendMessage(CHANNEL_TOKEN, id, outbound)
+    return true
+  } catch (err) {
+    logger.warn({ err, chatId: id }, 'notifyChat: a csatorna-ertesites nem ment ki')
+    return false
+  }
+}
+
 // Backward-compatible alias
 export const notifyTelegram = notifyChannel
 
