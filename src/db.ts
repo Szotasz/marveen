@@ -1636,13 +1636,20 @@ export function saveMemory(
   chatId: string,
   content: string,
   sector: 'semantic' | 'episodic',
-  topicKey?: string
+  topicKey?: string,
+  // Owner of the row. The column default is the literal 'marveen', but every
+  // per-agent reader filters on `agent_id = ?`, so on an install whose main
+  // agent id is anything else a row that relied on the default was invisible
+  // to that agent's views and search.
+  agentId: string = MAIN_AGENT_ID
 ): void {
   const now = Math.floor(Date.now() / 1000)
   const info = db.prepare(
-    'INSERT INTO memories (chat_id, topic_key, content, sector, salience, created_at, accessed_at) VALUES (?, ?, ?, ?, 1.0, ?, ?)'
-  ).run(chatId, topicKey ?? null, content, sector, now, now)
+    'INSERT INTO memories (chat_id, topic_key, content, sector, salience, created_at, accessed_at, agent_id) VALUES (?, ?, ?, ?, 1.0, ?, ?, ?)'
+  ).run(chatId, topicKey ?? null, content, sector, now, now, agentId)
   const id = Number(info.lastInsertRowid)
+  // The row now lands in the owner's list, so a cached copy of that list is stale.
+  memoryCacheInvalidate(agentId)
 
   // Fire-and-forget embedding, same as saveAgentMemory. Without this the rows
   // written through THIS path stayed unvectorised for good: the nightly daily
