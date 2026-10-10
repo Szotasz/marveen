@@ -167,20 +167,6 @@ export const BRAND_NAME = env['BRAND_NAME'] ?? BOT_NAME
 // not change that; the token remains the actual boundary.
 export const SYSTEM_SENDER_IDS = env['SYSTEM_SENDER_IDS'] ?? ''
 
-// Card 4edaf0a1: the senders the presentation mode hands over first, as EXACT stored
-// from_agent ids (no normalization: for a privilege the strict direction is the safe
-// one). Install-specific, so .env, and empty by default: with no id the mode reorders
-// nothing. The same ids (plus the main agent) may switch the mode. Comma-separated:
-//   PRESENTATION_PRIORITY_SENDERS=cowork-gateway,codex-gateway
-// Read at module load -- a change needs a dashboard restart.
-export const PRESENTATION_PRIORITY_SENDER_IDS = env['PRESENTATION_PRIORITY_SENDERS'] ?? ''
-
-/** Pure parse rule for PRESENTATION_PRIORITY_SENDERS: split on commas, trim, drop the
- *  empty entries. NO case folding and NO sanitizing: exact match is the contract. */
-export function parsePresentationPrioritySenders(raw: string): readonly string[] {
-  return Object.freeze(raw.split(',').map((s) => s.trim()).filter((s) => s.length > 0))
-}
-
 // Pure parse rule for SYSTEM_SENDER_IDS, so the default (unset => empty set) is
 // provable without a live .env. Entries are normalized with the SAME function
 // the route matches on, keeping this guard symmetric with the coordinator and
