@@ -27,6 +27,7 @@ import {
   detectsFeedbackOptOutPrompt,
   firstRunAcceptKeys,
   stuckInputSignature,
+  inputEchoCaughtUp,
   mcpTrustAcceptKeys,
   type FirstRunGateKind,
 } from '../pane-state.js'
@@ -3598,13 +3599,41 @@ export async function sendPromptToSession(
   // clear-and-resend recovery path below can replay the EXACT same byte
   // stream after a Ctrl-C, rather than duplicating the boundary logic
   // (see computeTmuxChunk for the two chunk-boundary dodges it applies).
+  //
+  // ECHOPACE1010: between two chunks we wait until the previous one is on
+  // screen (inputEchoCaughtUp), not a fixed 30 ms. A pane that stalls after a
+  // chunk otherwise lets the following ones pile up and be read as one burst,
+  // which the TUI's paste detector lifts out of the prompt. If the box cannot
+  // be read, or the pacing budget runs out, the rest of THIS stream goes with
+  // the old fixed gap -- pacing never blocks a delivery.
   const sendChunks = async (): Promise<void> => {
     let i = 0
+    let pace = oneLine.length > CHUNK
+    let paceBudgetMs = ECHO_PACE_BUDGET_MS
     while (i < oneLine.length) {
       const { chunk, end } = computeTmuxChunk(oneLine, i, CHUNK, TMUX_CHUNK_MAX_SLIDE)
       runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), '-l', chunk], { timeout: 5000 })
       i = end
-      if (i < oneLine.length) await delay(30)
+      if (i >= oneLine.length) break
+      if (!pace) {
+        await delay(30)
+        continue
+      }
+      const startedAt = Date.now()
+      const echo = await waitForInputEcho(
+        () => captureInputEchoView(session, host),
+        oneLine.slice(0, i),
+        { maxMs: Math.min(ECHO_PACE_STEP_MAX_MS, paceBudgetMs) },
+      )
+      paceBudgetMs -= Date.now() - startedAt
+      if (echo !== 'echoed' || paceBudgetMs <= 0) {
+        pace = false
+        logger.warn(
+          { session, typedChars: i, totalChars: oneLine.length, echo, paceBudgetMs },
+          'sendPromptToSession: chunk echo not confirmed; rest of this prompt goes with fixed 30 ms gaps (ECHOPACE1010)',
+        )
+        await delay(30)
+      }
     }
     // A multi-chunk prompt gets its Enter only once the TUI has stopped
     // redrawing. Sent straight after the last chunk, the Enter races the
@@ -3745,6 +3774,56 @@ export async function waitForPaneSettle(
     prev = cur
   }
   return false
+}
+
+// ECHOPACE1010: per-step and per-prompt ceilings on the chunk-echo wait. The
+// stall that produced the damaged deliveries lasted about 12 chunks' worth of
+// typing (~0.5 s); 2 s per step covers it with room, and the 10 s total keeps
+// a pane that never echoes (wrong layout, remote lag) from slowing a delivery
+// by more than that before pacing switches itself off.
+export const ECHO_PACE_STEP_MAX_MS = 2000
+export const ECHO_PACE_BUDGET_MS = 10000
+const ECHO_PACE_POLL_MS = 15
+
+/**
+ * Wait until the pane's input box shows the end of `typedSoFar`.
+ * 'echoed'     -- it does; the next chunk is safe to write.
+ * 'unreadable' -- the first capture shows no input box (or failed): this pane
+ *                 cannot be paced, the caller should not keep trying.
+ * 'timeout'    -- a box is there but did not catch up within maxMs.
+ * Capture, sleep and clock are injectable so the loop is unit-tested without
+ * tmux or real time.
+ */
+export async function waitForInputEcho(
+  capture: () => string | null,
+  typedSoFar: string,
+  opts: { maxMs?: number; pollMs?: number; sleep?: (ms: number) => Promise<void>; now?: () => number } = {},
+): Promise<'echoed' | 'unreadable' | 'timeout'> {
+  const maxMs = opts.maxMs ?? ECHO_PACE_STEP_MAX_MS
+  const pollMs = opts.pollMs ?? ECHO_PACE_POLL_MS
+  const sleep = opts.sleep ?? delay
+  const now = opts.now ?? Date.now
+  const deadline = now() + maxMs
+  let first = true
+  for (;;) {
+    const pane = capture()
+    const caughtUp = pane == null ? null : inputEchoCaughtUp(pane, typedSoFar)
+    if (caughtUp === true) return 'echoed'
+    if (caughtUp === null && first) return 'unreadable'
+    first = false
+    if (now() >= deadline) return 'timeout'
+    await sleep(pollMs)
+  }
+}
+
+// The pane as the echo check needs it: no rename banner, no dim ghost
+// suggestion (a ghost after the cursor is not typed text), no ANSI.
+function captureInputEchoView(session: string, host: string | null): string | null {
+  try {
+    return stripGhostSuggestion(stripSessionTitleBanner(captureTmux(host, ['capture-pane', '-t', exactTmuxTarget(session), '-e', '-p'])))
+  } catch {
+    return null
+  }
 }
 
 export function capturePane(session: string, host: string | null = null): string | null {

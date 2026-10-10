@@ -1353,6 +1353,54 @@ function liveInputBox(pane: string): string | null {
   return lines.slice(topSep + 1, bottomSep).join('\n')
 }
 
+// ECHOPACE1010: how many trailing non-whitespace characters of the typed text
+// must be visible at the end of the input box before the next chunk may go.
+// Long enough that a repeated phrase earlier in the prompt cannot fake it,
+// short enough to sit inside one 80-char chunk.
+export const ECHO_TAIL_CHARS = 24
+
+/**
+ * Has the input box caught up with the text typed so far? sendPromptToSession
+ * asks this between two send-keys chunks so it never writes the next chunk
+ * while the TUI still holds the previous one unread.
+ *
+ * Why it matters (measured 2026-10-09/10 from the fleet's transcripts): a
+ * Claude Code pane that stalls after the FIRST chunk lets the next ~12 chunks
+ * pile up in the PTY; the TUI then reads them as one ~1000-char burst, its
+ * paste detector fires, and that span arrives wrapped in <pasted_content> or
+ * not at all. 50 of 132 scheduled prompts were damaged that way (3 of 13981
+ * before 10-09, none of them cut), and every one broke
+ * at exactly character 80, the first chunk boundary. With each chunk confirmed
+ * on screen before the next is written, no single read can exceed one chunk.
+ *
+ * Returns null when no input box can be found (the caller cannot pace this
+ * pane and falls back to fixed gaps). The box is the footer-anchored live box,
+ * or -- for an overfull or busy-footer pane -- the rows above the last
+ * separator. Whitespace is ignored on both sides: the TUI re-wraps long input
+ * and drops the space at a soft wrap. The tail is searched near the box's END,
+ * not anywhere in it, so text repeated earlier in the prompt does not count.
+ */
+export function inputEchoCaughtUp(pane: string, typedSoFar: string, tailChars: number = ECHO_TAIL_CHARS): boolean | null {
+  const want = typedSoFar.replace(/\s+/g, '').slice(-tailChars)
+  const lines = pane.split('\n')
+  let box = liveInputBox(pane)
+  if (box == null) {
+    let bottomSep = -1
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (BOX_SEP_RX.test(lines[i])) { bottomSep = i; break }
+    }
+    if (bottomSep <= 0) return null
+    let topSep = -1
+    for (let i = bottomSep - 1; i >= 0; i--) {
+      if (BOX_SEP_RX.test(lines[i])) { topSep = i; break }
+    }
+    box = lines.slice(topSep + 1, bottomSep).join('\n')
+  }
+  if (want.length === 0) return true
+  const got = box.replace(/\s+/g, '')
+  return got.slice(-(want.length * 2 + 8)).includes(want)
+}
+
 // Marker strings from prompt-safety.ts preambles. We do NOT import them
 // to keep this module dependency-free for unit testing; the markers
 // here are stable opening phrases pinned to the first sentence of each
