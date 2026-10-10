@@ -379,9 +379,23 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // a near-miss (the voice id plus a stray character, sanitised back to the voice id) would be stored under a
     // name the relay never reads, and lost without a sound. It gets the 400.
     const isVoiceMailbox = storedTo === VOICE_CHANNEL_AGENT_ID
-    if (!storedTo.includes('/') && !isVoiceMailbox && !isKnownAgent(sanitizeAgentIdent(storedTo))) {
+    //
+    // A SYSTEM_SENDER_IDS entry is not unknown either (card 9fc6dc3e): those
+    // ids name the neighbouring systems that talk to the fleet over this API,
+    // and the fleet answers them over the same POST (to=<system id>). Without
+    // this, every reply to such a system would get a 400 since this gate
+    // shipped. Only an id that is neither a registered agent nor a listed
+    // system is rejected.
+    // EXACT match on the stored id (review #1827), like the voice mailbox: the
+    // SYSTEM_SENDERS entries are already normalized, so a near-miss ('cort ex')
+    // that only SANITISES to a listed id would be stored under a name its
+    // system never reads. And the reserved directive sender stays closed on the
+    // recipient side too, even if an operator lists it in SYSTEM_SENDER_IDS
+    // (SYSRESERVED918 reserves it on the sender side above).
+    const isSystemRecipient = storedTo !== SYSTEM_DIRECTIVE_SENDER && SYSTEM_SENDERS.has(storedTo)
+    if (!storedTo.includes('/') && !isVoiceMailbox && !isSystemRecipient && !isKnownAgent(sanitizeAgentIdent(storedTo))) {
       logger.warn({ from: from.trim(), to: storedTo }, 'Rejected /api/messages POST to an unregistered recipient')
-      json(res, { error: `unknown recipient '${storedTo}' -- to must be a registered fleet agent id (or "<system>/<agent>" for federation)` }, 400)
+      json(res, { error: `unknown recipient '${storedTo}' -- to must be a registered fleet agent id, a SYSTEM_SENDER_IDS system id, or "<system>/<agent>" for federation` }, 400)
       return true
     }
     // Code-side enforcement of the kanban-ref convention: rewrite any
