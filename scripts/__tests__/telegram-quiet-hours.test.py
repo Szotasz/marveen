@@ -257,5 +257,133 @@ ok("NEGATIV KONTROLL: a regi alak ('config {st} at') egyik horogban sincs",
    all("config {st} at" not in s and "config {_st} at" not in s for s in (rg_src, pc_src, wd_src)))
 ok("NEGATIV KONTROLL: a mero tuzelne a regi alakra", "config {st} at" in 'f"[stop] QUIET-HOURS DEFECT: config {st} at {p}"')
 
+print("\n=== G) A WATCHDOG ES A STOP-FALLBACK FUTVA: nincs beallitva / elveszett (card 20e178fc)")
+# A review pontja mindharom horogra szol: egyik se nevezze hibanak a normal allapotot. A reply guardot a sajat tesztje
+# futtatja vegig; itt a masik kettot, ugyanazzal a mertekkel. A horog sajat folyamatban fut, es azt olvassuk, amit a
+# naplojaba ir: a watchdog a stderr-re, a Stop-fallback a progress mappa debug-naplojaba. Bot-token nincs, tehat egyik
+# futas sem hiv Bot API-t; a HOME es a telepites gyokere ideiglenes fa.
+import subprocess
+import time
+
+WD_UT = os.path.join(HOOKS, "telegram_progress_watchdog.py")
+PC_UT = os.path.join(HOOKS, "telegram_progress_clear.py")
+MASIK = "999"      # the config names another chat: whether CHAT is quiet never depends on the clock
+LOST_WD = "[watchdog] QUIET-HOURS DEFECT: quiet-hours config lost"
+LOST_STOP = "[stop] QUIET-HOURS DEFECT: quiet-hours config lost"
+
+
+def horog_env(gyoker, otthon, **tobb):
+    """No inherited TELEGRAM_* knob; the install root and HOME are temp trees (the watchdog also scans ~/.claude);
+    the API base is local, so not even a stray token could reach the real Bot API."""
+    env = {k: v for k, v in os.environ.items() if not k.startswith("TELEGRAM_")}
+    env.update({"MARVEEN_ROOT": gyoker, "HOME": otthon, "TELEGRAM_API_BASE": "http://127.0.0.1:9"})
+    env.update(tobb)
+    return env
+
+
+def quiet_sorok(szoveg):
+    return [s for s in szoveg.splitlines() if "quiet" in s.lower()]
+
+
+def wd_flotta(gyoker):
+    """A fleet with one channel, <root>/agents/wd, and one pending placeholder, 2000 s old: past the agent-down grace
+    and the wedged backstop, far from the 24 h stale bound, so every pass fires and reaches the quiet-hours gate.
+    Without a token the pass stops right after the gate, and the placeholder stays for the next pass."""
+    sd = os.path.join(gyoker, "agents", "wd", ".claude", "channels", "telegram")
+    os.makedirs(os.path.join(sd, "progress"))
+    jelzo = os.path.join(sd, "progress", "SID.json")
+    with io.open(jelzo, "w", encoding="utf-8") as f:
+        json.dump([{"chat_id": CHAT, "message_id": 555}], f)
+    regi = time.time() - 2000
+    os.utime(jelzo, (regi, regi))
+    return sd
+
+
+def wd_fut(gyoker, otthon):
+    """One watchdog pass, the agent forced down. Returns (rc, stderr): the watchdog's quiet-hours lines go there."""
+    p = subprocess.run([sys.executable, WD_UT], env=horog_env(gyoker, otthon, TELEGRAM_WATCHDOG_FORCE_AGENT_UP="0"),
+                       capture_output=True, text=True, timeout=60)
+    return p.returncode, p.stderr
+
+
+def stop_fut(sd, gyoker, otthon):
+    """One Stop after the nudge (stop_hook_active) with an un-replied Telegram turn pending: the fallback branch, where
+    the gate runs. The hook clears the pending entry, so each run plants it again. Returns (rc, the text this run added
+    to the hook's debug log in the progress directory)."""
+    pdir = os.path.join(sd, "progress")
+    os.makedirs(pdir, exist_ok=True)
+    with io.open(os.path.join(pdir, "SID.json"), "w", encoding="utf-8") as f:
+        json.dump([{"chat_id": CHAT, "message_id": 555}], f)
+    naplo = os.path.join(pdir, "debug.log")
+    elotte = io.open(naplo, encoding="utf-8").read() if os.path.exists(naplo) else ""
+    p = subprocess.run([sys.executable, PC_UT], input=json.dumps({"session_id": "SID", "stop_hook_active": True}),
+                       env=horog_env(gyoker, otthon, TELEGRAM_STATE_DIR=sd), capture_output=True, text=True, timeout=60)
+    utana = io.open(naplo, encoding="utf-8").read() if os.path.exists(naplo) else ""
+    return p.returncode, utana[len(elotte):]
+
+
+def rogzitve(sd, gyoker):
+    return os.path.realpath(q.config_path(sd)) in q.seen_configs(q.seen_path(gyoker))
+
+
+with tempfile.TemporaryDirectory(prefix="tg-hooks-g-") as munka:
+    otthon = os.path.join(munka, "home")
+    os.makedirs(otthon)
+
+    # WATCHDOG, NINCS BEALLITVA: az elso futas egy sort ir DEFECT nelkul, a masodik semmit. KONTROLL: a jegyzet torlese
+    # utan a harmadik futas ujra irja, tehat a masodik is a kapunal jart, es a csendet a jegyzet adja.
+    gy = os.path.join(munka, "wd-nincs")
+    sd = wd_flotta(gy)
+    rc1, ki1 = wd_fut(gy, otthon)
+    rc2, ki2 = wd_fut(gy, otthon)
+    ok("watchdog, nincs beallitva: EGY 'quiet hours not configured' sor, DEFECT nelkul",
+       (rc1, len(quiet_sorok(ki1)), "[watchdog] quiet hours not configured" in ki1, "QUIET-HOURS DEFECT" in ki1)
+       == (0, 1, True, False), ki1)
+    ok("watchdog, nincs beallitva: a masodik futas semmit nem ir rola", (rc2, quiet_sorok(ki2)) == (0, []), ki2)
+    jegyzet = os.path.join(sd, q.NOTED_NAME)
+    if os.path.exists(jegyzet):      # a hook that never notes must give a named red above, not a traceback here
+        os.remove(jegyzet)
+    rc3, ki3 = wd_fut(gy, otthon)
+    ok("KONTROLL: a jegyzet torlese utan a sor ujra jon (a masodik futas is a kapunal jart)",
+       (rc3, len(quiet_sorok(ki3))) == (0, 1), ki3)
+
+    # WATCHDOG, ELVESZETT: a futas, amelyik hasznalhato configot lat, rogziti a jelolobe; a config eltunik, es onnantol
+    # MINDEN futas DEFECT. Ugyanaz a flotta, mint fent, csak a config tortenete mas.
+    gy = os.path.join(munka, "wd-elveszett")
+    sd = wd_flotta(gy)
+    config_ir(sd, {MASIK: {"start": "23:00", "end": "07:00", "tz": TZ}})
+    rc0, ki0 = wd_fut(gy, otthon)
+    ok("watchdog, hasznalhato config: nincs DEFECT, es a futas rogziti a jelolobe",
+       (rc0, "QUIET-HOURS DEFECT" in ki0, rogzitve(sd, gy)) == (0, False, True), ki0)
+    os.remove(q.config_path(sd))
+    futasok = [wd_fut(gy, otthon) for _ in range(2)]
+    ok("watchdog, elveszett config: MINDKET futas DEFECT, 'config lost' cimkevel",
+       [(rc, ki.count(LOST_WD)) for rc, ki in futasok] == [(0, 1), (0, 1)], futasok)
+
+    # STOP-FALLBACK, NINCS BEALLITVA: ugyanaz a mertek. Az '[enforce] fallback-delivered' sor mutatja, hogy a masodik
+    # Stop is a fallback-agon (a kapunal) jart, tehat a csendje nem abbol jon, hogy oda sem ert.
+    gy = os.path.join(munka, "stop-nincs")
+    sd = os.path.join(munka, "stop-nincs-csatorna")
+    rc1, uj1 = stop_fut(sd, gy, otthon)
+    rc2, uj2 = stop_fut(sd, gy, otthon)
+    ok("Stop-fallback, nincs beallitva: EGY '[stop] quiet hours not configured' sor, DEFECT nelkul",
+       (rc1, len(quiet_sorok(uj1)), "[stop] quiet hours not configured" in uj1, "QUIET-HOURS DEFECT" in uj1)
+       == (0, 1, True, False), uj1)
+    ok("Stop-fallback, nincs beallitva: a masodik Stop semmit nem ir rola, pedig a fallback-agon jart",
+       (rc2, quiet_sorok(uj2), "fallback-delivered" in uj2) == (0, [], True), uj2)
+
+    # STOP-FALLBACK, ELVESZETT
+    gy = os.path.join(munka, "stop-elveszett")
+    sd = os.path.join(munka, "stop-elveszett-csatorna")
+    os.makedirs(sd)
+    config_ir(sd, {MASIK: {"start": "23:00", "end": "07:00", "tz": TZ}})
+    rc0, uj0 = stop_fut(sd, gy, otthon)
+    ok("Stop-fallback, hasznalhato config: nincs DEFECT, es a Stop rogziti a jelolobe",
+       (rc0, "QUIET-HOURS DEFECT" in uj0, rogzitve(sd, gy)) == (0, False, True), uj0)
+    os.remove(q.config_path(sd))
+    futasok = [stop_fut(sd, gy, otthon) for _ in range(2)]
+    ok("Stop-fallback, elveszett config: MINDKET Stop DEFECT, 'config lost' cimkevel",
+       [(rc, uj.count(LOST_STOP)) for rc, uj in futasok] == [(0, 1), (0, 1)], futasok)
+
 print("\n=> OSSZESEN: %d/%d ZOLD" % (sum(E), len(E)))
 sys.exit(0 if all(E) else 1)
