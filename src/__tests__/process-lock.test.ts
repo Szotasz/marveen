@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'node:fs'
 import {
   findOwnNodeHolders,
   findOwnBinaryMatches,
@@ -15,7 +16,9 @@ import {
 // table directly so we can simulate PIDs dying at specific points, foreign
 // UIDs, non-node commands, etc. without ever touching real processes.
 
-interface MockProc { pid: number; uid: number; cmd: string; args?: string; alive: boolean; cwd?: string | null }
+interface MockProc { pid: number; uid: number; cmd: string; args?: string; alive: boolean; cwd?: string | null
+  /** Which install the process belongs to; defaults to this one (SELF_ROOT). */
+  install?: string }
 
 interface MockOptions {
   currentPid?: number
@@ -69,6 +72,11 @@ function makeCtx(options: MockOptions): {
       const p = table.get(pid)
       if (!p) return null
       return p.cwd === undefined ? SELF_ROOT : p.cwd
+    },
+    processBelongsToThisInstall: (pid: number) => {
+      const p = table.get(pid)
+      if (!p) return false
+      return (p.install ?? SELF_ROOT) === SELF_ROOT
     },
     listPortHolders: (port: number) => options.portHolders?.[port] ?? [],
     listOwnProcessesMatching: (pattern: RegExp) => {
@@ -387,6 +395,77 @@ describe('terminateProcesses', () => {
     const { ctx, signalCalls } = makeCtx({ procs, signalOverride })
     await terminateProcesses([200], ctx, { graceMs: 10 })
     expect(signalCalls.find(c => c.sig === 'SIGKILL')).toBeTruthy()
+  })
+})
+
+describe('port takeover is scoped to this install (#1870)', () => {
+  // A second checkout on the same host whose .env says the same WEB_PORT (a
+  // copy of the install prepared for a WEB_ONLY trial) used to see the live
+  // dashboard as its own previous instance: same UID, a node command, on the
+  // port. It terminated it and took the port over.
+  const OTHER = '/home/user/live-install'
+
+  it('a port holder of another install is not a holder to terminate', () => {
+    const procs: MockProc[] = [{ pid: 200, uid: 501, cmd: 'node', alive: true, install: OTHER }]
+    const { ctx, logs } = makeCtx({ procs, portHolders: { 3420: [200] } })
+    expect(findOwnNodeHolders(3420, ctx)).toEqual([])
+    expect(logs.some((l) => l.level === 'warn' && l.msg.includes('different install') && l.obj.pid === 200)).toBe(true)
+  })
+
+  it('acquirePortLock leaves the other install running and sends it no signal', async () => {
+    const procs: MockProc[] = [{ pid: 200, uid: 501, cmd: 'node', args: 'node dist/index.js', alive: true, install: OTHER }]
+    const { ctx, table, signalCalls, sleptFor } = makeCtx({ procs, portHolders: { 3420: [200] } })
+    await acquirePortLock(3420, ctx, { graceMs: 10 })
+    expect(table.get(200)!.alive).toBe(true)
+    expect(signalCalls).toEqual([])
+    expect(sleptFor).toEqual([]) // no takeover, so no grace wait and no drain
+  })
+
+  it('an own previous instance on the same port is still reclaimed (positive control)', async () => {
+    const procs: MockProc[] = [{ pid: 200, uid: 501, cmd: 'node', alive: true }]
+    const { ctx, table } = makeCtx({ procs, portHolders: { 3420: [200] } })
+    await acquirePortLock(3420, ctx, { graceMs: 10 })
+    expect(table.get(200)!.alive).toBe(false)
+  })
+
+  it('with both on the port, only the own instance is terminated', async () => {
+    const procs: MockProc[] = [
+      { pid: 200, uid: 501, cmd: 'node', alive: true },
+      { pid: 300, uid: 501, cmd: 'node', alive: true, install: OTHER },
+    ]
+    const { ctx, table, signalCalls } = makeCtx({ procs, portHolders: { 3420: [200, 300] } })
+    await acquirePortLock(3420, ctx, { graceMs: 10 })
+    expect(table.get(200)!.alive).toBe(false)
+    expect(table.get(300)!.alive).toBe(true)
+    expect(signalCalls.some((c) => c.pid === 300)).toBe(false)
+  })
+
+  it('the drain loop does not wait on a port the other install keeps holding', async () => {
+    const procs: MockProc[] = [
+      { pid: 200, uid: 501, cmd: 'node', alive: true },
+      { pid: 300, uid: 501, cmd: 'node', alive: true, install: OTHER },
+    ]
+    // The holder list follows liveness, so the port frees up for 200 once it dies.
+    const portHolders: Record<number, number[]> = {}
+    const { ctx, table, logs } = makeCtx({ procs, portHolders })
+    Object.defineProperty(portHolders, 3420, { get: () => [200, 300].filter((pid) => table.get(pid)!.alive) })
+    await acquirePortLock(3420, ctx, { graceMs: 10, postKillDrainMs: 50, postKillPollMs: 10 })
+    expect(logs.some((l) => l.msg.includes('Port still held after drain window'))).toBe(false)
+  })
+})
+
+describe('index.ts wires the install check to the real attribution (#1870)', () => {
+  // The pure tests above drive a mock ctx; this pins that the production ctx
+  // answers processBelongsToThisInstall with the same argv/cwd attribution the
+  // binary-pattern path uses, not with a constant.
+  it('processBelongsToThisInstall reads the argv and calls argvBelongsToThisInstall', () => {
+    const src = readFileSync(new URL('../index.ts', import.meta.url), 'utf-8')
+    const start = src.indexOf('processBelongsToThisInstall(pid: number): boolean {')
+    expect(start).toBeGreaterThan(0)
+    const body = src.slice(start, src.indexOf('getProcessUid(pid: number)', start))
+    expect(body).toContain("['-p', String(pid), '-o', 'args=']")
+    expect(body).toContain('argvBelongsToThisInstall(argv, pid)')
+    expect(body).not.toMatch(/return true\b/)
   })
 })
 

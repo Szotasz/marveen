@@ -54,6 +54,15 @@ export interface ProcessLockContext {
    */
   getProcessCwd(pid: number): string | null
   /**
+   * True when the PID is a process of THIS install: its argv names a path
+   * under the project root, or its cwd is under it (the same attribution the
+   * binary-pattern path uses, `argvBelongsToThisInstall` in index.ts). False
+   * for a process of another checkout or install on the same host, and for a
+   * PID that is gone. Used to keep a port takeover from terminating a
+   * dashboard that merely shares the port number (#1870).
+   */
+  processBelongsToThisInstall(pid: number): boolean
+  /**
    * Send a signal. Signal 0 is the liveness probe. Returns:
    *  - 'sent' if the signal was delivered (process alive for sig 0)
    *  - 'gone' only for ESRCH (the process no longer exists)
@@ -86,13 +95,26 @@ const DEFAULT_POST_KILL_POLL_MS = 100
 
 /**
  * Enumerate port holders that are safe to terminate: own-UID node/tsx
- * processes, excluding the current PID. Foreign-UID holders and non-node
- * commands are left alone and logged so the caller doesn't silently kill
- * an unrelated process (e.g. a dev server that happens to share the port).
+ * processes of THIS install, excluding the current PID. Foreign-UID holders,
+ * non-node commands and processes of another install are left alone and
+ * logged so the caller doesn't silently kill an unrelated process (e.g. a dev
+ * server that happens to share the port).
+ *
+ * The install check (#1870): same UID and a node command are not enough. A
+ * second checkout on the same host whose .env names the same WEB_PORT (a copy
+ * of the install tree prepared for a WEB_ONLY trial, say) resolved the live
+ * dashboard as its own "previous instance" and terminated it. A port held by
+ * another install is now left alone, and the caller's listen() fails loudly
+ * with EADDRINUSE instead of taking the port over.
  */
 export function findOwnNodeHolders(port: number, ctx: ProcessLockContext): number[] {
   const raw = ctx.listPortHolders(port)
-  return filterOwnNodeCandidates(raw, ctx, { scopeToProjectRoot: false })
+  const candidates = filterOwnNodeCandidates(raw, ctx, { scopeToProjectRoot: false })
+  return candidates.filter((pid) => {
+    if (ctx.processBelongsToThisInstall(pid)) return true
+    ctx.log.warn({ port, pid }, 'Port holder belongs to a different install, leaving alone')
+    return false
+  })
 }
 
 /**
