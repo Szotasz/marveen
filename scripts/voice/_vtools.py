@@ -102,19 +102,100 @@ def _whisper(path, words=False):
     # Model size is configurable: 'medium' is noticeably better than 'small' on
     # Hungarian accents/diacritics, at a cost in latency and memory. Default
     # stays 'small'; set MARVEEN_WHISPER_MODEL=medium to trade speed for accuracy.
-    m = WhisperModel(_whisper_model_name(), device="cpu", compute_type="int8")
-    segs, _ = m.transcribe(path, language="hu", beam_size=5, condition_on_previous_text=False,
-                           word_timestamps=words)
+    name = _whisper_model_name()
+    m = WhisperModel(name, device="cpu", compute_type="int8")
+    segs, info = m.transcribe(path, language="hu", beam_size=5, condition_on_previous_text=False,
+                              word_timestamps=words)
     segs = list(segs)
+    # STDOUT stays exactly what it always was (card deeaa175): the transcript text on
+    # the words=False branch, one JSON line on the words=True branch. Every existing
+    # caller (stt.sh, canary.sh, transcribeVoiceFile) reads stdout, so a structured
+    # format there would be a breaking change for a diagnostic gain.
     if not words:
         print(" ".join(s.text.strip() for s in segs).strip())
-        return
-    out = []
-    for s_ in segs:
-        for w in (getattr(s_, "words", None) or []):
-            out.append({"word": w.word.strip(), "start": round(w.start, 3), "end": round(w.end, 3)})
-    print(json.dumps({"text": " ".join(s_.text.strip() for s_ in segs).strip(), "words": out},
-                     ensure_ascii=False))
+    else:
+        out = []
+        for s_ in segs:
+            for w in (getattr(s_, "words", None) or []):
+                out.append({"word": w.word.strip(), "start": round(w.start, 3), "end": round(w.end, 3)})
+        print(json.dumps({"text": " ".join(s_.text.strip() for s_ in segs).strip(), "words": out},
+                         ensure_ascii=False))
+    sys.stdout.flush()
+    _write_diag(name, segs, info)
+
+
+def _diag_token(value):
+    """One whitespace-free token, so a value can never split the diag line's key=value fields."""
+    return re.sub(r"\s+", "_", str(value or ""))
+
+
+def _model_identity(name):
+    """(model, revision) of the model this toolkit actually loaded (card 75c3d163). Never raises.
+
+    The uncertainty threshold in src/web/routes/voice.ts is calibrated against ONE
+    decoding chain, and on 2026-09-07 that chain moved twice in one hour without
+    anyone calling it a threshold change (first the model, then the decoding
+    vocabulary). A reader that cannot tell WHICH model produced a number cannot know
+    whether its threshold still applies, so the diag line names it:
+      - a local model directory: model = the directory name, revision = a trailing
+        40-hex commit id in that name when it carries one (pinned builds do);
+      - a Hub name ('small', 'medium', 'Systran/...'): model = the name, revision =
+        the snapshot faster-whisper resolved it to in the local cache. The lookup is
+        local_files_only, so it never reaches the network: the model was just loaded
+        from that cache.
+    Anything unexpected degrades to an empty revision, never to a failed transcription.
+    """
+    try:
+        if os.path.isdir(name):
+            base = os.path.basename(os.path.normpath(name))
+            m = re.search(r"([0-9a-f]{40})$", base)
+            return base, (m.group(1) if m else "")
+        from faster_whisper.utils import download_model
+        resolved = os.path.normpath(download_model(name, local_files_only=True))
+        if os.path.basename(os.path.dirname(resolved)) == "snapshots":
+            return name, os.path.basename(resolved)
+        return name, ""
+    except Exception:
+        return name, ""
+
+
+def _write_diag(name, segs, info):
+    """The diagnosis goes to STDERR as ONE machine-readable line (card deeaa175).
+
+    It exists because an empty stdout used to be indistinguishable from a crash: the
+    route mapped `code===0 + empty` and `code!==0` onto the same null, and a voice
+    message that produced no transcript vanished with no signal to anyone (measured
+    2026-09-07: two real voice messages lost this way). What the caller reads from it:
+      model, revision -> WHICH chain produced the numbers below (card 75c3d163);
+                         the threshold is only valid for the chain it was measured on.
+      segments=0      -> the model ran and decided there was nothing to say.
+      no_speech_prob  -> HOW sure it was that this was not speech. A transcript from
+                         the upper band is a candidate, not a fact.
+      avg_logprob     -> the other half of faster-whisper's drop rule (a segment is
+                         discarded only when no_speech_prob > 0.6 AND avg_logprob < -1.0),
+                         so no_speech_prob alone does not explain what happened.
+      temperature     -> WHICH decoding branch produced the text. The default
+                         temperature is a fallback ladder: 0.0 means the deterministic
+                         pass read it, > 0.0 means that pass failed and the text was
+                         sampled, i.e. there is no reliable reading of the audio.
+    Missing per-segment values (no segments) are written as empty fields.
+    """
+    first = segs[0] if segs else None
+    temp = getattr(first, "temperature", None) if first is not None else None
+    model, revision = _model_identity(name)
+    sys.stderr.write(
+        "vtools-diag model=%s revision=%s segments=%d duration=%.2f no_speech_prob=%s avg_logprob=%s temperature=%s\n" % (
+            _diag_token(model),
+            _diag_token(revision),
+            len(segs),
+            getattr(info, "duration", 0.0) or 0.0,
+            ("%.3f" % first.no_speech_prob) if first is not None else "",
+            ("%.3f" % first.avg_logprob) if first is not None else "",
+            # getattr: the field exists in faster-whisper 1.2.1, but an older installed
+            # copy must degrade to an empty value, not crash the transcription.
+            ("%.2f" % temp) if temp is not None else "",
+        ))
+    sys.stderr.flush()
 
 
 def transcribe(file_id, state_dir):

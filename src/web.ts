@@ -99,6 +99,7 @@ import { tryHandleAuditLog } from './web/routes/audit-log.js'
 import { tryHandleFleetQ } from './web/routes/fleet-q.js'
 import { tryHandleStatic } from './web/routes/static.js'
 import { tryHandleVoice } from './web/routes/voice.js'
+import { voiceQuietChats } from './web/voice-quiet-hours.js'
 import { tryHandleVaultSsh } from './web/routes/vault-ssh.js'
 import { tryHandleFleet } from './web/routes/fleet.js'
 import { tryHandleVaultSshKeys } from './web/routes/vault-ssh-keys.js'
@@ -407,6 +408,14 @@ export function startWebServer(port = 3420): http.Server {
   const webOnly = process.env['WEB_ONLY'] === 'true'
   if (webOnly) {
     logger.info('[staging] WEB_ONLY mode: background services disabled')
+  }
+
+  // bd849630 (2): a malformed VOICE_NOTICE_QUIET_CHATS is reported at boot (one log line, without the value), not
+  // first with the voice notice the list should have held. Both modes: the voice route serves in either.
+  try {
+    voiceQuietChats()
+  } catch (err) {
+    logger.warn({ err }, 'voice: VOICE_NOTICE_QUIET_CHATS could not be checked at boot')
   }
 
   const routerInterval = webOnly ? undefined : startMessageRouter()

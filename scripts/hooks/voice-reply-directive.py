@@ -136,8 +136,32 @@ def main():
         sys.exit(0)  # dashboard unavailable -- fail-safe, no injection
 
     transcript = data.get("transcript")
+    # `transcriptNotice` is the whole point of the 2026-09-07 change (kanban
+    # deeaa175). Until then this hook printed the transcript when there was one
+    # and NOTHING when there was not -- so a voice message that failed to
+    # transcribe reached the agent as complete silence, while the sender saw a
+    # delivered message and waited for an answer. Two of them were lost that way
+    # in one morning. A log line is not delivery; this stdout write is.
+    notice = data.get("transcriptNotice")
+    # An uncertain transcript is still shown -- hiding it would trade one silent
+    # loss for another -- but the doubt travels WITH it, in the same line the
+    # agent reads. Measured that day: a quiet-noise clip produced a confident
+    # "Sziasztok!" that the old path would have handed over as fact.
+    confidence = data.get("transcriptConfidence")
     if transcript:
-        sys.stdout.write("\n[Hang átirat]: " + transcript + "\n")
+        # Three outcomes, not two (card deeaa175). "unreliable" is a STRONGER claim
+        # than "uncertain": it means the deterministic decode failed and this text was
+        # sampled, i.e. there is no reliable reading of the audio -- as opposed to
+        # "the model doubts this was speech but read it confidently". Measured
+        # 2026-09-07: the confident hallucination is born at temperature 0.0, so the
+        # two labels genuinely point at different failures and must not be merged.
+        marker = (" -- NINCS MEGBÍZHATÓ OLVASAT" if confidence == "unreliable"
+                  else " -- BIZONYTALAN" if confidence == "uncertain"
+                  else "")
+        sys.stdout.write("\n[Hang átirat%s]: %s\n" % (marker, transcript))
+        sys.stdout.flush()
+    if notice:
+        sys.stdout.write("\n[Hangüzenet]: " + notice + "\n")
         sys.stdout.flush()
 
     directive = data.get("directive")

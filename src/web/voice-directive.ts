@@ -14,15 +14,22 @@ const KNOWN_PROVIDERS = new Set<string>(['telegram', 'slack', 'discord', 'google
 //   3. channelStateDir(provider)                                 (main agent -- env override,
 //      then legacy shared path while unmigrated, then install-scoped; #915)
 export function resolveAgentChannelStateDir(agentId: string, provider: string): string {
-  const mainDir = KNOWN_PROVIDERS.has(provider)
-    ? channelStateDir(provider as ChannelProviderType)
-    : join(homedir(), '.claude', 'channels', provider)
+  const mainDir = mainChannelStateDirFor(provider)
   const candidates = [
     join(AGENTS_BASE_DIR, agentId, '.claude', 'channels', provider),
     join(homedir(), '.claude', 'channels', `${provider}-${agentId}`),
     mainDir,
   ]
   return candidates.find((d) => existsSync(join(d, '.env'))) ?? candidates[candidates.length - 1]
+}
+
+// Step 3 of the search order above: the main agent's channel state dir. Its bot is the install's channel, the
+// one notify.ts sends with (CHANNEL_TOKEN), so an agent that resolves to any OTHER dir talks on its own bot
+// (75c3d163 G1: the voice route must not send that agent's sender a notice from the main bot).
+export function mainChannelStateDirFor(provider: string): string {
+  return KNOWN_PROVIDERS.has(provider)
+    ? channelStateDir(provider as ChannelProviderType)
+    : join(homedir(), '.claude', 'channels', provider)
 }
 
 // Which inbound attachment kinds are actually audio.

@@ -237,6 +237,13 @@ export function brandSlug(raw: string): string {
 // (NFKD + ASCII + lowercase dashes). Older installs without this env var
 // fall back to "marveen" so nothing breaks when upgrading in place.
 export const MAIN_AGENT_ID = env['MAIN_AGENT_ID'] ?? 'marveen'
+// Who is told, once per (expected, actual) pair, that the voice toolkit runs a
+// different speech-to-text chain than the one the uncertainty threshold in
+// src/web/routes/voice.ts was calibrated on (card 75c3d163). Falls back to
+// FLEET_LEAD_ID, then to MAIN_AGENT_ID, so an install that sets neither still
+// has a named recipient.
+export const VOICE_CALIBRATION_ALERT_AGENT =
+  (env['VOICE_CALIBRATION_ALERT_AGENT'] ?? '').trim() || (env['FLEET_LEAD_ID'] ?? '').trim() || MAIN_AGENT_ID
 // The hidden heartbeat worker's agent id. Lives here (not in
 // heartbeat-agent-scaffold) so agent-scaffold can key gates on it without an
 // import cycle: heartbeat-agent-scaffold already imports agent-scaffold.
