@@ -2750,6 +2750,18 @@ export const KANBAN_WRITABLE_FIELDS = [
 // and updated_at moves on any write. Status keeps its own table.
 export const KANBAN_AUDITED_FIELDS = ['due_date', 'assignee', 'priority'] as const
 
+// dispatched_at guards ONE in_progress spell (one activation -> one wake-up
+// message), it is not a permanent tombstone. The rule every status path shares
+// -- moveKanbanCard, updateKanbanCard and scripts/kartya-es-ertesites.py (whose
+// test mirrors this function): a write that leaves the card anywhere but
+// in_progress clears it, whatever the previous status was, so the next pull to
+// in_progress wakes the assignee again and a row already stuck this way heals.
+// Only clearing is shared: the wake-up itself (fireKanbanDispatch) stays on the
+// /move route, so a PUT or the script never sends one.
+export function kanbanWriteClearsDispatch(nextStatus: string | null | undefined): boolean {
+  return nextStatus !== 'in_progress'
+}
+
 export function updateKanbanCard(
   id: string,
   fields: Partial<Omit<KanbanCard, 'id' | 'created_at'>>,
@@ -2777,6 +2789,12 @@ export function updateKanbanCard(
       `UPDATE kanban_cards SET title=?, description=?, status=?, assignee=?, priority=?, project=?, parent_id=?, due_date=?, sort_order=?, updated_at=?, archived_at=?
        WHERE id=?`
     ).run(f.title, f.description, f.status, f.assignee, f.priority, f.project, f.parent_id, f.due_date, f.sort_order, f.updated_at, f.archived_at, id).changes > 0
+    // Same dispatched_at rule as moveKanbanCard (kanbanWriteClearsDispatch). Before,
+    // a card the PUT took out of in_progress kept its stamp, and the next /move to
+    // in_progress woke nobody. The PUT only clears: it never dispatches.
+    if (changed && kanbanWriteClearsDispatch(f.status)) {
+      db.prepare('UPDATE kanban_cards SET dispatched_at=NULL WHERE id=?').run(id)
+    }
     if (changed) {
       touchAncestorChain(f.parent_id, now, id)
       // Re-parenting is activity on BOTH threads: the old one lost a card, the new one gained it.
@@ -2831,21 +2849,18 @@ export function moveKanbanCard(id: string, status: KanbanCard['status'], sortOrd
   const row = db.prepare('SELECT status, parent_id FROM kanban_cards WHERE id=?').get(id) as
     { status: string; parent_id: string | null } | undefined
   const prev = row?.status
-  // dispatched_at guards ONE in_progress spell (one activation -> one wake-up
-  // message), it is not a permanent tombstone. Nothing used to clear it, so a
-  // card pulled to in_progress and put BACK burned its dispatch forever: the
-  // board showed it alive while the next pull woke nobody. Clearing it on
-  // every move that does not land in in_progress re-arms the next activation --
-  // and heals a row already stuck this way, since the clear does not depend on
-  // the previous status.
+  // dispatched_at: nothing used to clear it, so a card pulled to in_progress and
+  // put BACK burned its dispatch forever: the board showed it alive while the
+  // next pull woke nobody. The clear follows kanbanWriteClearsDispatch, the rule
+  // the whole-card PUT and the card script share.
   // ONE TRANSACTION for the move and the row it owes, as in updateKanbanCard (card f6fba9ec, X16): the UPDATE, the
   // ancestor stamps and the status event either all happen or none does, so a row insert that throws cannot leave a
   // card moved with no row saying who moved it.
   return db.transaction((): boolean => {
     const changed = db.prepare(
-      status === 'in_progress'
-        ? 'UPDATE kanban_cards SET status=?, sort_order=?, updated_at=? WHERE id=?'
-        : 'UPDATE kanban_cards SET status=?, sort_order=?, updated_at=?, dispatched_at=NULL WHERE id=?'
+      kanbanWriteClearsDispatch(status)
+        ? 'UPDATE kanban_cards SET status=?, sort_order=?, updated_at=?, dispatched_at=NULL WHERE id=?'
+        : 'UPDATE kanban_cards SET status=?, sort_order=?, updated_at=? WHERE id=?'
     ).run(status, sortOrder, now, id).changes > 0
     if (changed) touchAncestorChain(row?.parent_id, now, id)
     if (changed && prev !== undefined && prev !== status) {
