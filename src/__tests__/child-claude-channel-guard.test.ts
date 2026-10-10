@@ -56,6 +56,22 @@ describe('child-claude guard: what it leaves alone', () => {
     expect(decide(command, CHANNEL_ENV).allow).toBe(true)
   })
 
+  // Measured 2026-10-10 on the first live version: a python heredoc that only
+  // DOCUMENTED the guard was blocked, because a backtick inside the heredoc text
+  // started a new segment. Inert text must not count as a command.
+  it.each([
+    ["python3 - <<'PY'\nprint('a plain child `claude` does')\nPY\n"],
+    ['cat > note.md <<EOF\nclaude -p hi\nEOF'],
+    ['git commit -m "docs: never run claude -p from a channel session"'],
+    ["echo 'x; claude -p'"],
+  ])('allows inert text that only mentions claude: %s', (command) => {
+    expect(decide(command, CHANNEL_ENV).allow).toBe(true)
+  })
+
+  it('still sees a real invocation after a heredoc ends', () => {
+    expect(decide('cat > f <<EOF\nhi\nEOF\nclaude -p x', CHANNEL_ENV).allow).toBe(false)
+  })
+
   it('does nothing in a session without a channel state dir', () => {
     expect(sessionOwnsChannel({})).toBe(false)
     expect(decide('claude -p x', {}).allow).toBe(true)

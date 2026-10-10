@@ -92,10 +92,24 @@ export function inspectSegment(segment) {
   return { args, envEmpty, setsConfigDir, neutralised }
 }
 
+// Text the shell does not execute must not be read as a command: heredoc bodies
+// (a commit message, a markdown note) and quoted strings routinely MENTION
+// `claude`. Measured 2026-10-10: the first live version blocked a python heredoc
+// that documented this very guard, because a backtick inside the heredoc text
+// started a new segment. Removing inert text before the split keeps the check on
+// what actually runs. Known gap, accepted: a `$(claude ...)` inside double
+// quotes is not seen.
+export function stripInertText(command) {
+  let out = command.replace(/<<-?[ \t]*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1[^\n]*\n[\s\S]*?\n[ \t]*\2[ \t]*(?=\n|$)/g, ' ')
+  out = out.replace(/'[^']*'/g, "''")
+  out = out.replace(/"(?:\\.|[^"\\])*"/g, '""')
+  return out
+}
+
 export function decide(command, env = process.env) {
   if (typeof command !== 'string' || !command) return { allow: true }
   if (!sessionOwnsChannel(env)) return { allow: true }
-  for (const segment of command.split(SEGMENT_SPLIT)) {
+  for (const segment of stripInertText(command).split(SEGMENT_SPLIT)) {
     const hit = inspectSegment(segment)
     if (!hit) continue
     if (hit.args.length > 0 && SAFE_FIRST_ARGS.has(hit.args[0])) continue
