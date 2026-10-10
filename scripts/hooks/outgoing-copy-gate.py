@@ -462,7 +462,9 @@ def wrapper_depth_hit(cmd: str) -> bool:
 # heredoc writes a file (`cat > P <<TAG` or `cat <<TAG > P`) and the same command runs an
 # interpreter or a shell on the same path token P, the body is judged as if it had been fed to
 # that program directly. The match is by the exact token: `./x.py` and `x.py` are different. A
-# file written by one Bash call and run by ANOTHER stays out of reach (named above).
+# file written by one Bash call and run by ANOTHER stays out of reach (named above). Also NOT
+# COVERED yet: a heredoc PIPED on to an interpreter or a shell (`cat <<'EOF' | bash`,
+# `cat <<'EOF' | python3 -`) -- a follow-up to #1855.
 _HEREDOC_SENDER_ARGV = re.compile(r"""['"](?:[^'"\s]*/)?(?:sendmail|msmtp|swaks|send\.py)(?=['"\s])""")
 
 

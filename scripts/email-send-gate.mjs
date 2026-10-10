@@ -305,7 +305,9 @@ export function buildWrapperDepthMsg() {
 // isSendInvocation itself, one level deeper (Geri/Samu, #1855).
 // WRITTEN, THEN RUN IN THE SAME COMMAND (#1855): `cat > P <<TAG` / `cat <<TAG > P`, then an
 // interpreter or a shell on the same path token P: the body is judged as if fed directly.
-// Exact token match; a file run by ANOTHER Bash call stays out of reach.
+// Exact token match; a file run by ANOTHER Bash call stays out of reach. Also NOT COVERED yet:
+// a heredoc PIPED on to an interpreter or a shell (`cat <<'EOF' | bash`, `| python3 -`), a
+// follow-up to #1855.
 const HEREDOC_SENDER_ARGV = /['"](?:[^'"\s]*\/)?(?:sendmail|msmtp|swaks|send\.py)(?=['"\s])/
 const heredocBodySends = (body) =>
   CODE_SEND.test(body) || CODE_SEND_MODULE.test(body) || (CODE_EXECISH.test(body) && HEREDOC_SENDER_ARGV.test(body))
