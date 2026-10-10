@@ -299,6 +299,10 @@ A `memoryIsolation` mező (opcionális, alapértelmezés: kikapcsolva) az ágens
 
 Mikor kapcsold be: több-felhasználós (több megbízós) telepítésen, ágensenként, hogy az egyes megbízók memóriái ne szivárogjanak át egymáshoz. Egy-felhasználós telepítésen hagyd kikapcsolva: ott a közös MEMORY.md a flotta-szabályok szándékolt terítő-csatornája. Életbe lépés: az ágens következő (újra)indítása. Visszavonás: a mező törlése és az `agents/<név>/.git` stub eltávolítása. A fő ágensre nem alkalmazható (a dashboard el is rejti ott a kapcsolót).
 
+A `team` szakasz dönti el azt is, milyen keretben érkezik egy inter-agent üzenet (`src/team-trust.ts`, `isTrustedPeer`). Egy üzenet akkor jön `<trusted-peer>` keretben, ha a küldő és a címzett is ismert ágens, és kettejük között kapcsolat áll valamelyik irányban: az egyik `reportsTo`-ja a másik, az egyik `delegatesTo` listájában ott a másik, vagy az egyik `trustFrom` listájában ott a másik. A fő ágens felé és felől minden üzenet trusted, kivéve az önmagának küldöttet. Minden más üzenet `<untrusted>` keretben érkezik, és a címzett adatként kezeli, nem utasításként; egy olvashatatlan `agent-config.json` üres csapatnak számít, tehát ott is untrusted a keret.
+
+A `trustFrom` ezért bizalmi döntés, nem csak ábra-adat: a kapcsolat szimmetrikus, egy bejegyzés után a lista gazdája és a felsorolt ágens közötti üzenetek MINDKÉT irányban trusted-peerként érkeznek, és a címzett utasításként olvassa őket. Egy külső adatot feldolgozó ágens (levél, ügyfél- vagy banki adat) üzenete a legvalószínűbb injekciós út, ott az untrusted keret szándékos védelem lehet.
+
 ---
 
 ## Linux OAuth-token race + CLAUDE_CREDENTIALS_GUARD

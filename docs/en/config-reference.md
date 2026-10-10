@@ -293,6 +293,10 @@ Every sub-agent's directory is gitignored (`agents/` folder), keeping secrets sa
 }
 ```
 
+The `team` section also decides how an inter-agent message is framed (`src/team-trust.ts`, `isTrustedPeer`). A message arrives in a `<trusted-peer>` frame when sender and recipient are both known agents and a link exists between them in either direction: one's `reportsTo` is the other, one's `delegatesTo` lists the other, or one's `trustFrom` lists the other. Every message to or from the main agent is trusted, except one it sends to itself. Every other message arrives in an `<untrusted>` frame, and the recipient treats it as data, not as instructions; an unreadable `agent-config.json` counts as an empty team, so the frame is untrusted there too.
+
+`trustFrom` is therefore a trust decision, not just chart data: the link is symmetric, so after one entry the messages between the list's owner and the listed agent arrive as trusted-peer in BOTH directions, and the recipient reads them as instructions. An agent that processes outside data (mail, customer or bank data) is the likeliest injection path, and the untrusted frame can be a deliberate defence there.
+
 ---
 
 ## templates/ -- Agent Creation Templates
