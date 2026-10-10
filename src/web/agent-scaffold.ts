@@ -1042,6 +1042,13 @@ export const BASH_EGRESS_DENY = [
   'Bash(*/ncat *)',
   'Bash(telnet *)',
   'Bash(*/telnet *)',
+  // yt-dlp: István, Q032 (2026-10-06) -- no agent calls it directly; the only
+  // way in is scripts/yt-ingest/yt-ingest.sh, which runs it under bwrap with a
+  // gated URL. The third rule catches `<venv>/bin/python -m yt_dlp`. A call
+  // hidden inside another program is out of reach here (see the parser note).
+  'Bash(yt-dlp *)',
+  'Bash(*/yt-dlp *)',
+  'Bash(* -m yt_dlp*)',
 ]
 
 // The fleet-wide deny FLOOR: applied to EVERY profile, exactly like
