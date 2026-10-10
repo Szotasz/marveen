@@ -43,7 +43,8 @@ Az `id` rövid előtagja is elég a válaszhoz, ha egyértelmű -- de a PATCH-he
 
 ### 3. Zárd le
 ```bash
-curl -s -X PATCH "http://localhost:3420/api/approvals/<id>" \
+PORT="$(sed -n 's/^WEB_PORT=//p' <install>/.env 2>/dev/null | head -1 | tr -d '"')"; PORT="${PORT:-3420}"
+curl -s -X PATCH "http://localhost:$PORT/api/approvals/<id>" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $(cat <install>/store/.dashboard-token)" \
   -d '{"status":"approved","resolved_by":"telegram_text","telegram_message_id":<int|null>}'
