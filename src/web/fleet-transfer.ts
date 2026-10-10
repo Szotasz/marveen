@@ -21,6 +21,7 @@ import { atomicWriteFileSync } from './atomic-write.js'
 import { updateEnvFile } from '../env.js'
 import { AGENTS_BASE_DIR, listAgentNames, readJsonObjectForWrite } from './agent-config.js'
 import { safeJoin } from './sanitize.js'
+import { importedLabelColor } from '../css-color.js'
 import { SCHEDULED_TASKS_DIR } from './scheduled-tasks-io.js'
 import { getBindings } from './vault-bindings.js'
 import { resolveMasterKeyForExport } from './vault.js'
@@ -1141,8 +1142,13 @@ export function importFleet(
       for (const label of fleet.kanban?.labels ?? []) {
         const l = label as any
         if (!l.id || !l.name) { logger.warn({ id: l.id }, 'Fleet import: skipping label with missing required fields'); continue }
+        // the colour reaches CSS backgrounds on the dashboard: hex is kept as
+        // written, a colour name / numeric rgb() / hsl() becomes hex, a bare
+        // var(--token) is kept, anything else is replaced with the default
+        const imported = importedLabelColor(l.color)
+        if (imported.replaced) logger.warn({ id: l.id }, 'Fleet import: label colour is not a colour, replaced with the default')
         db.prepare('INSERT OR IGNORE INTO labels (id, name, color, created_at) VALUES (?, ?, ?, ?)')
-          .run(l.id, l.name, l.color, l.created_at)
+          .run(l.id, l.name, imported.color, l.created_at)
       }
 
       for (const card of fleet.kanban?.cards ?? []) {
