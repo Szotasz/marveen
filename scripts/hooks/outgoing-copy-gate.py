@@ -156,8 +156,17 @@ _CURL_BODY_OPTS = {
 _SAFE_METHODS = {"GET", "HEAD"}
 
 
-def _curl_resend_verdict(rest):
+# RESENDGETTWIN1010: a httpie (`http`) metodusa POZICIONALIS (http POST URL),
+# a torzse `kulcs=ertek` / `kulcs:=json` elem -- egyiket sem ismeri az alabbi
+# curl/wget flag-olvaso, ezert a `http POST .../emails to=...` "read" lett, es a
+# kapu atengedte. A httpie-re a metodus itt nem dontheto: fail-closed.
+_HTTPIE = re.compile(r"^http$", re.I)
+
+
+def _curl_resend_verdict(prog, rest):
     """'read' | 'send' | 'unknown' -- unknown a hivo oldalon fail-closed."""
+    if _HTTPIE.match(prog):
+        return "unknown"
     method = None
     has_body = False
     get_forced = False
@@ -415,7 +424,7 @@ def _head_is_send(toks, depth: int) -> bool:
     # fenn; a read-only GET/HEAD lekerdezes atmegy; a nem-donthato metodus
     # tovabbra is fail-closed.
     if _CURLISH.match(prog) and any(_RESEND_TARGET.match(t) for t in rest):
-        return _curl_resend_verdict(rest) != "read"
+        return _curl_resend_verdict(prog, rest) != "read"
     return False
 
 
@@ -1097,7 +1106,7 @@ def _http_channel_segment(cmd: str):
         rest = toks[1:]
         for label, target in _HTTP_CHANNEL_TARGETS:
             if any(target.match(t) for t in rest):
-                if _curl_resend_verdict(rest) == "read":
+                if _curl_resend_verdict(_basename(toks[0]), rest) == "read":
                     return None, None  # a GET of the feed: nothing is sent
                 return label, toks
     return None, None
