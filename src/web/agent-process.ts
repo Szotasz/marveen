@@ -518,12 +518,21 @@ export function ensureMainAgentIsolatedConfigDir(
   return provisionMainIsolatedConfigDir(provider)
 }
 
+// The generic isolated CLAUDE_CONFIG_DIR of the main agent: the plain isolated
+// setup and every token-mode plan share it. The path only -- nothing is
+// provisioned here (provisionMainIsolatedConfigDir does that), so a read-only
+// caller can ask where the main agent's transcripts live (8c338dc4: the
+// rotation's continue check).
+export function mainAgentSharedConfigDir(): string {
+  return join(PROJECT_ROOT, '.channels-config')
+}
+
 // Shared provisioning call for the generic isolated dir, factored out so the
 // fleet-token-gated path (above) and the token-mode-rotation path (below)
 // cannot drift on what they actually provision.
 function provisionMainIsolatedConfigDir(provider?: string): string | null {
   return provisionIsolatedConfigDir(
-    join(PROJECT_ROOT, '.channels-config'),
+    mainAgentSharedConfigDir(),
     PROJECT_ROOT,
     getProviderType(provider),
     MAIN_AGENT_ID,
