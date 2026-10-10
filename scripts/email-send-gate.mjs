@@ -305,14 +305,15 @@ export function buildWrapperDepthMsg() {
 // isSendInvocation itself, one level deeper (Geri/Samu, #1855).
 // WRITTEN, THEN RUN IN THE SAME COMMAND (#1855): `cat > P <<TAG` / `cat <<TAG > P`, then an
 // interpreter or a shell on the same path token P: the body is judged as if fed directly.
-// Exact token match; a file run by ANOTHER Bash call stays out of reach. Also NOT COVERED yet:
-// a heredoc PIPED on to an interpreter or a shell (`cat <<'EOF' | bash`, `| python3 -`), a
-// follow-up to #1855.
+// Exact token match; a file run by ANOTHER Bash call stays out of reach.
+// PIPED (#1855): `cat <<'EOF' | bash` or `| python3 -` hands the body over the pipe on the
+// heredoc's opening line; it is judged the same way.
 const HEREDOC_SENDER_ARGV = /['"](?:[^'"\s]*\/)?(?:sendmail|msmtp|swaks|send\.py)(?=['"\s])/
 const heredocBodySends = (body) =>
   CODE_SEND.test(body) || CODE_SEND_MODULE.test(body) || (CODE_EXECISH.test(body) && HEREDOC_SENDER_ARGV.test(body))
 const HEREDOC_SHELL = /(?:^|[\s;&|(])(?:\S*\/)?(?:bash|sh|zsh|dash)\b[^\n<]*$/i
 const HEREDOC_INTERP = /(?:^|[\s;&|(])(?:\S*\/)?(python3?(?:\.\d+)?|node|tsx|ts-node|deno|bun)\b[^\n<]*$/i
+const HEREDOC_PIPE = /\|\s*(?:\S*\/)?(python3?(?:\.\d+)?|node|tsx|ts-node|deno|bun|bash|sh|zsh|dash)\b/i
 const HEREDOC_REDIRECT = /(?:^|[\s;&|(])(?:cat|tee)\b[^\n]*?(?:>>?|\btee(?:\s+-a)?)\s*(['"]?)([^\s'"<>;&|]+)\1/
 function writtenThenRun(cmd, written, depth) {
   if (!written.size) return false
@@ -338,6 +339,13 @@ function heredocProgramSends(cmd, depth = 0) {
     const opener = cmd.slice(cmd.lastIndexOf('\n', m.index - 1) + 1, m.index) + m[1]
     const w = HEREDOC_REDIRECT.exec(opener)
     if (w) written.set(w[2], cmd.slice(m.index + m[1].length + 1, m.index + m[0].length - m[2].length))
+    const piped = HEREDOC_PIPE.exec(m[1])
+    if (piped) {
+      const pbody = cmd.slice(m.index + m[1].length + 1, m.index + m[0].length - m[2].length)
+      if (WRAPPER_SHELL.test(piped[1])) {
+        if (depth < 3 && isSendInvocation(pbody, depth + 1)) return true
+      } else if (heredocBodySends(pbody)) return true
+    }
     const lineStart = cmd.lastIndexOf('\n', m.index - 1) + 1
     const head = cmd.slice(lineStart, m.index)
     const bodyStart = m.index + m[1].length + 1

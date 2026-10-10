@@ -462,9 +462,9 @@ def wrapper_depth_hit(cmd: str) -> bool:
 # heredoc writes a file (`cat > P <<TAG` or `cat <<TAG > P`) and the same command runs an
 # interpreter or a shell on the same path token P, the body is judged as if it had been fed to
 # that program directly. The match is by the exact token: `./x.py` and `x.py` are different. A
-# file written by one Bash call and run by ANOTHER stays out of reach (named above). Also NOT
-# COVERED yet: a heredoc PIPED on to an interpreter or a shell (`cat <<'EOF' | bash`,
-# `cat <<'EOF' | python3 -`) -- a follow-up to #1855.
+# file written by one Bash call and run by ANOTHER stays out of reach (named above).
+# PIPED (Samu/Geri, #1855): `cat <<'EOF' | bash` or `| python3 -` hands the body to the
+# program through the pipe on the heredoc's opening line, and it is judged the same way.
 _HEREDOC_SENDER_ARGV = re.compile(r"""['"](?:[^'"\s]*/)?(?:sendmail|msmtp|swaks|send\.py)(?=['"\s])""")
 
 
@@ -480,6 +480,7 @@ _HEREDOC_INTERP = re.compile(
 )
 
 
+_HEREDOC_PIPE = re.compile(r"\|\s*(?:\S*/)?(python3?(?:\.\d+)?|node|tsx|ts-node|deno|bun|bash|sh|zsh|dash)\b", re.I)
 _HEREDOC_REDIRECT = re.compile(r"(?:^|[\s;&|(])(?:cat|tee)\b[^\n]*?(?:>>?|\btee(?:\s+-a)?)\s*(['\"]?)([^\s'\"<>;&|]+)\1")
 
 
@@ -516,6 +517,14 @@ def _heredoc_program_sends(cmd: str, depth: int = 0) -> bool:
         w = _HEREDOC_REDIRECT.search(opener)
         if w:
             written[w.group(2)] = cmd[m.end(1) + 1:m.end() - len(m.group(2))]
+        piped = _HEREDOC_PIPE.search(m.group(1))
+        if piped:
+            pbody = cmd[m.end(1) + 1:m.end() - len(m.group(2))]
+            if _WRAPPER_SHELL.match(piped.group(1)):
+                if depth < 3 and is_send_invocation(pbody, _depth=depth + 1):
+                    return True
+            elif _heredoc_body_sends(pbody):
+                return True
         line_start = cmd.rfind("\n", 0, m.start()) + 1
         head = cmd[line_start:m.start()]
         body = cmd[m.end(1) + 1:m.end() - len(m.group(2))]
