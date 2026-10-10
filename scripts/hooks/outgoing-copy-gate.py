@@ -457,6 +457,12 @@ def wrapper_depth_hit(cmd: str) -> bool:
 # (`const { sendMail: s } = require(...)`).
 # A heredoc fed to a SHELL (`bash <<EOF`, `sh -s <<EOF`) is a shell program: its body is
 # judged with this classifier itself, one level deeper (Geri/Samu, #1855).
+# WRITTEN, THEN RUN IN THE SAME COMMAND (Samu/Geri, #1855: two of the three real gate-passing
+# sends in the sample had this shape): `cat > $S/x.py <<'EOF' ... EOF; python3 $S/x.py`. When a
+# heredoc writes a file (`cat > P <<TAG` or `cat <<TAG > P`) and the same command runs an
+# interpreter or a shell on the same path token P, the body is judged as if it had been fed to
+# that program directly. The match is by the exact token: `./x.py` and `x.py` are different. A
+# file written by one Bash call and run by ANOTHER stays out of reach (named above).
 _HEREDOC_SENDER_ARGV = re.compile(r"""['"](?:[^'"\s]*/)?(?:sendmail|msmtp|swaks|send\.py)(?=['"\s])""")
 
 
@@ -472,8 +478,42 @@ _HEREDOC_INTERP = re.compile(
 )
 
 
+_HEREDOC_REDIRECT = re.compile(r"(?:^|[\s;&|(])(?:cat|tee)\b[^\n]*?(?:>>?|\btee(?:\s+-a)?)\s*(['\"]?)([^\s'\"<>;&|]+)\1")
+
+
+def _written_then_run(cmd: str, written: dict, depth: int) -> bool:
+    """A heredoc body written to a file that the same command then runs (see the note above)."""
+    if not written:
+        return False
+    try:
+        segments = _segments_tokens(cmd)
+    except ValueError:
+        return False
+    for toks in segments:
+        for head in _command_heads(toks):
+            if not head:
+                continue
+            prog = _basename(head[0])
+            args = [t for t in head[1:] if not t.startswith("-")]
+            if prog.lower() == "npx" and args:
+                args = args[1:]  # npx <runner> <file>
+            if not args or args[0] not in written:
+                continue
+            body = written[args[0]]
+            if (_PYTHON.match(prog) or _NODEISH.match(prog)) and _heredoc_body_sends(body):
+                return True
+            if _WRAPPER_SHELL.match(prog) and depth < 3 and is_send_invocation(body, _depth=depth + 1):
+                return True
+    return False
+
+
 def _heredoc_program_sends(cmd: str, depth: int = 0) -> bool:
+    written = {}
     for m in _HEREDOC.finditer(cmd):
+        opener = cmd[cmd.rfind("\n", 0, m.start()) + 1:m.start()] + m.group(1)
+        w = _HEREDOC_REDIRECT.search(opener)
+        if w:
+            written[w.group(2)] = cmd[m.end(1) + 1:m.end() - len(m.group(2))]
         line_start = cmd.rfind("\n", 0, m.start()) + 1
         head = cmd[line_start:m.start()]
         body = cmd[m.end(1) + 1:m.end() - len(m.group(2))]
@@ -483,7 +523,7 @@ def _heredoc_program_sends(cmd: str, depth: int = 0) -> bool:
         elif _HEREDOC_SHELL.search(head) and depth < 3:
             if is_send_invocation(body, _depth=depth + 1):
                 return True
-    return False
+    return _written_then_run(cmd, written, depth)
 
 
 def is_send_invocation(cmd: str, _depth: int = 0) -> bool:

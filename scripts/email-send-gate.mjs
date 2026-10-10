@@ -303,13 +303,39 @@ export function buildWrapperDepthMsg() {
 // destructuring rename of the Graph sender (`const { sendMail: s } = require(...)`).
 // A heredoc fed to a SHELL (`bash <<EOF`) is a shell program: its body is judged with
 // isSendInvocation itself, one level deeper (Geri/Samu, #1855).
+// WRITTEN, THEN RUN IN THE SAME COMMAND (#1855): `cat > P <<TAG` / `cat <<TAG > P`, then an
+// interpreter or a shell on the same path token P: the body is judged as if fed directly.
+// Exact token match; a file run by ANOTHER Bash call stays out of reach.
 const HEREDOC_SENDER_ARGV = /['"](?:[^'"\s]*\/)?(?:sendmail|msmtp|swaks|send\.py)(?=['"\s])/
 const heredocBodySends = (body) =>
   CODE_SEND.test(body) || CODE_SEND_MODULE.test(body) || (CODE_EXECISH.test(body) && HEREDOC_SENDER_ARGV.test(body))
 const HEREDOC_SHELL = /(?:^|[\s;&|(])(?:\S*\/)?(?:bash|sh|zsh|dash)\b[^\n<]*$/i
 const HEREDOC_INTERP = /(?:^|[\s;&|(])(?:\S*\/)?(python3?(?:\.\d+)?|node|tsx|ts-node|deno|bun)\b[^\n<]*$/i
+const HEREDOC_REDIRECT = /(?:^|[\s;&|(])(?:cat|tee)\b[^\n]*?(?:>>?|\btee(?:\s+-a)?)\s*(['"]?)([^\s'"<>;&|]+)\1/
+function writtenThenRun(cmd, written, depth) {
+  if (!written.size) return false
+  let segments
+  try { segments = segmentsTokens(cmd) } catch { return false }
+  for (const toks of segments) {
+    for (const head of commandHeads(toks)) {
+      if (!head || !head.length) continue
+      const prog = basename(head[0])
+      let args = head.slice(1).filter((t) => !t.startsWith('-'))
+      if (prog.toLowerCase() === 'npx' && args.length) args = args.slice(1) // npx <runner> <file>
+      if (!args.length || !written.has(args[0])) continue
+      const body = written.get(args[0])
+      if ((PYTHON.test(prog) || NODEISH.test(prog)) && heredocBodySends(body)) return true
+      if (WRAPPER_SHELL.test(prog) && depth < 3 && isSendInvocation(body, depth + 1)) return true
+    }
+  }
+  return false
+}
 function heredocProgramSends(cmd, depth = 0) {
+  const written = new Map()
   for (const m of cmd.matchAll(HEREDOC_RE)) {
+    const opener = cmd.slice(cmd.lastIndexOf('\n', m.index - 1) + 1, m.index) + m[1]
+    const w = HEREDOC_REDIRECT.exec(opener)
+    if (w) written.set(w[2], cmd.slice(m.index + m[1].length + 1, m.index + m[0].length - m[2].length))
     const lineStart = cmd.lastIndexOf('\n', m.index - 1) + 1
     const head = cmd.slice(lineStart, m.index)
     const bodyStart = m.index + m[1].length + 1
@@ -320,7 +346,7 @@ function heredocProgramSends(cmd, depth = 0) {
       if (isSendInvocation(body, depth + 1)) return true
     }
   }
-  return false
+  return writtenThenRun(cmd, written, depth)
 }
 
 export function isSendInvocation(cmd, depth = 0) {

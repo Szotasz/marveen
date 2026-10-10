@@ -720,6 +720,41 @@
       "name": "#1855 control: a heredoc fed to bash that only lists files",
       "cmd": "bash <<'SH'\nls scripts/support-mail\ngrep -n 'def main' scripts/support-mail/send.py\nSH",
       "expected": false
+    },
+    {
+      "name": "#1855: a heredoc writes x.py, the same command runs it (cat > P <<)",
+      "cmd": "S=/tmp/s; cat > $S/x.py <<'EOF'\nimport subprocess\nsubprocess.run(['python3', 'scripts/support-mail/send.py', '--to', 'a@example.invalid'])\nEOF\npython3 $S/x.py",
+      "expected": true
+    },
+    {
+      "name": "#1855: a heredoc writes x.py with the redirect after the tag, then runs it quoted",
+      "cmd": "S=/tmp/s; cat <<'EOF' > \"$S/x.py\"\nimport subprocess\nsubprocess.run(['python3', 'scripts/support-mail/send.py', '--to', 'a@example.invalid'])\nEOF\npython3 \"$S/x.py\"",
+      "expected": true
+    },
+    {
+      "name": "#1855: a heredoc writes a shell script that runs send.py, bash runs it",
+      "cmd": "cat > /tmp/s/r.sh <<'EOF'\ncd scripts/support-mail && python3 send.py --to a@example.invalid\nEOF\nbash /tmp/s/r.sh",
+      "expected": true
+    },
+    {
+      "name": "#1855: a heredoc writes a ts file that renames the Graph sender, npx tsx runs it",
+      "cmd": "cat > /tmp/s/x.ts <<'EOF'\nimport { sendMail as s } from './src/graph-mail.ts'\nEOF\nnpx tsx /tmp/s/x.ts",
+      "expected": true
+    },
+    {
+      "name": "#1855 control: the written sender script is not run, another path is",
+      "cmd": "S=/tmp/s; cat > $S/x.py <<'EOF'\nimport subprocess\nsubprocess.run(['python3', 'scripts/support-mail/send.py', '--to', 'a@example.invalid'])\nEOF\npython3 $S/other.py",
+      "expected": false
+    },
+    {
+      "name": "#1855 control: the sender script is only written, nothing runs it",
+      "cmd": "S=/tmp/s; cat > $S/x.py <<'EOF'\nimport subprocess\nsubprocess.run(['python3', 'scripts/support-mail/send.py', '--to', 'a@example.invalid'])\nEOF\necho written",
+      "expected": false
+    },
+    {
+      "name": "#1855 control: a written harmless script run on the same path",
+      "cmd": "S=/tmp/s; cat > $S/x.py <<'EOF'\nprint('hello')\nEOF\npython3 $S/x.py",
+      "expected": false
     }
   ]
 }
