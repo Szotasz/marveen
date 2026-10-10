@@ -892,6 +892,13 @@ export function initDatabase(dbPathOverride?: string): void {
   try { db.exec('ALTER TABLE agent_messages ADD COLUMN trace_id TEXT') } catch { /* exists */ }
   try { db.exec('ALTER TABLE agent_messages ADD COLUMN span_id TEXT') } catch { /* exists */ }
   try { db.exec('ALTER TABLE agent_messages ADD COLUMN parent_span_id TEXT') } catch { /* exists */ }
+  // Card 71263d15 (C), 795d1f48: 1 = a STOP an authenticated writer created. A "[STOP]" row
+  // reaches a BUSY pane (message-router-window.ts isStopMessage), so the privilege cannot rest on
+  // the content prefix plus the self-declared from: the shared dashboard token lets any holder
+  // POST from:"<main agent>". Only an in-process writer (createAgentMessage with stopAuthorized)
+  // sets it; POST /api/messages never does, so a 1 here is authenticated by construction.
+  // 0 for every older row.
+  try { db.exec('ALTER TABLE agent_messages ADD COLUMN stop_authorized INTEGER NOT NULL DEFAULT 0') } catch { /* exists */ }
 
   // INVARIANT: a row that says 'delivered' must carry a delivered_at.
   //
@@ -3424,6 +3431,9 @@ export interface AgentMessage {
   trace_id: string | null
   span_id: string | null
   parent_span_id: string | null
+  // Card 71263d15 (C): 1 = a STOP from an authenticated writer (see the migration). Optional in the type
+  // only because rows built in code before the column (tests, fixtures) do not carry it.
+  stop_authorized?: number
 }
 
 export function createAgentMessage(
@@ -3432,11 +3442,14 @@ export function createAgentMessage(
   content: string,
   originNote?: string | null,
   traceCtx?: { trace_id: string; span_id: string; parent_span_id: string | null } | null,
+  opts?: { stopAuthorized?: boolean },
 ): AgentMessage {
   const now = Math.floor(Date.now() / 1000)
+  // Card 71263d15 (C): STOP authority only when an in-process caller asks for it; POST /api/messages never does.
+  const stopAuthorized = opts?.stopAuthorized === true ? 1 : 0
   const info = db.prepare(
-    'INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at, origin_note, trace_id, span_id, parent_span_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
-  ).run(from, to, content, 'pending', now, originNote ?? null, traceCtx?.trace_id ?? null, traceCtx?.span_id ?? null, traceCtx?.parent_span_id ?? null)
+    'INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at, origin_note, trace_id, span_id, parent_span_id, stop_authorized) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+  ).run(from, to, content, 'pending', now, originNote ?? null, traceCtx?.trace_id ?? null, traceCtx?.span_id ?? null, traceCtx?.parent_span_id ?? null, stopAuthorized)
   return {
     id: Number(info.lastInsertRowid),
     from_agent: from, to_agent: to, content, status: 'pending',
@@ -3445,6 +3458,7 @@ export function createAgentMessage(
     trace_id: traceCtx?.trace_id ?? null,
     span_id: traceCtx?.span_id ?? null,
     parent_span_id: traceCtx?.parent_span_id ?? null,
+    stop_authorized: stopAuthorized,
   }
 }
 

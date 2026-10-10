@@ -8,8 +8,15 @@ export const STOP_PREFIX = '[STOP]'
  * of its turn: on 2026-09-17 an owner's stop sat pending for 30 minutes behind a turn
  * that then sent the mail it was meant to stop. Only the main agent and the system may
  * send one; any other sender's "[STOP]" is an ordinary message.
+ *
+ * The sender and the prefix are not enough on their own: POST /api/messages accepts
+ * from:"<main agent>" on the shared dashboard token, which every sub-agent can read. So
+ * a STOP also needs the row's stop_authorized flag, which only an in-process writer sets
+ * (createAgentMessage with stopAuthorized; the HTTP route never does). An HTTP-posted
+ * "[STOP]" claiming the main agent is delivered as an ordinary row.
  */
-export function isStopMessage(m: Pick<AgentMessage, 'from_agent' | 'content'>, mainAgentId: string): boolean {
+export function isStopMessage(m: Pick<AgentMessage, 'from_agent' | 'content' | 'stop_authorized'>, mainAgentId: string): boolean {
+  if (m.stop_authorized !== 1) return false
   if (m.from_agent !== mainAgentId && m.from_agent !== 'system') return false
   return (m.content ?? '').trimStart().startsWith(STOP_PREFIX)
 }
