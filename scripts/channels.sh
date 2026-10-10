@@ -1527,6 +1527,79 @@ _answer_accept_dialog() {
   unset _cur _yes
 }
 
+# RENAMEREADY1010: the /rename + Enter after the startup guard below must never
+# land in a dialog. The guard answers the trust/bypass dialogs only inside its
+# 12 s window; on a slow start (MCP batch, network, the /tmp EPERM fallback's
+# fresh path) the trust dialog can paint AFTER it. The unconditional send then
+# typed "/rename <name>" into the panel and the Enter confirmed whatever option
+# held the cursor -- "No, exit" on 2.1.252+ (see TRUSTGATE901), so claude quit,
+# the supervise loop relaunched, and the same race could repeat.
+#
+# rename_pane_verdict <plain pane> <input state> prints exactly one word:
+#   dialog -- a trust/bypass accept dialog is showing (the guard's own anchors);
+#             answer it, never type into it
+#   ready  -- no dialog and the input line is provably empty (probe_pane_input_state
+#             says idle). When the probe cannot measure (no node or dist), the
+#             pre-fix readiness signal is kept: the "Listening for channel
+#             messages" banner with no dialog on screen.
+#   wait   -- anything else (busy, parked text, unknown screen)
+rename_pane_verdict() {
+  case "$1" in
+    *"Bypass Permissions mode"*"Yes, I accept"*|*"Do you trust the files in this folder?"*|*"Yes, I trust this folder"*)
+      echo dialog; return 0 ;;
+  esac
+  case "$2" in
+    idle) echo ready ;;
+    unverifiable)
+      case "$1" in
+        *"Listening for channel messages"*) echo ready ;;
+        *) echo wait ;;
+      esac ;;
+    *) echo wait ;;
+  esac
+}
+
+# Bounded wait (CHANNELS_RENAME_READY_TRIES x CHANNELS_RENAME_READY_SLEEP s,
+# default 10 x 2 s) for a ready pane, answering an accept dialog with
+# _answer_accept_dialog on the way. Returns 0 when ready, 1 when the pane never
+# got there; RENAME_LAST_VERDICT / RENAME_LAST_STATE name the last view. A
+# session that is gone or a dead pane (claude exited, remain-on-exit) ends the
+# wait at once (verdict gone/dead): START_TS is already taken, so waiting out
+# the tries would push a startup crash toward the 30 s rapid-exit threshold.
+wait_for_rename_ready() {
+  _rr_tries="${CHANNELS_RENAME_READY_TRIES:-10}"
+  _rr_i=0
+  while [ "$_rr_i" -lt "$_rr_tries" ]; do
+    _rr_i=$((_rr_i + 1))
+    if ! $TMUX has-session -t "=$SESSION:" 2>/dev/null; then RENAME_LAST_VERDICT=gone; break; fi
+    if pane_dead_detected "$SESSION"; then RENAME_LAST_VERDICT=dead; break; fi
+    _rr_plain="$($TMUX capture-pane -t "=$SESSION:" -p 2>/dev/null || true)"
+    RENAME_LAST_STATE="$($TMUX capture-pane -t "=$SESSION:" -e -p 2>/dev/null | probe_pane_input_state)"
+    RENAME_LAST_VERDICT="$(rename_pane_verdict "$_rr_plain" "$RENAME_LAST_STATE")"
+    case "$RENAME_LAST_VERDICT" in
+      ready) unset _rr_tries _rr_i _rr_plain; return 0 ;;
+      dialog) _answer_accept_dialog "$_rr_plain" ;;
+    esac
+    sleep "${CHANNELS_RENAME_READY_SLEEP:-2}"
+  done
+  unset _rr_tries _rr_i _rr_plain
+  return 1
+}
+
+# send_rename_when_ready <name> <failure log>: type "/rename <name>" + Enter
+# only into a ready pane; otherwise skip it with one logged line. A skipped
+# rename costs only the session's display name; typing into an unknown screen
+# can cost the session. Tested by lifting these functions out of this file
+# (scripts/__tests__/channels-rename-ready.test.sh).
+send_rename_when_ready() {
+  if wait_for_rename_ready; then
+    $TMUX send-keys -t "=$SESSION:" "/rename $1" Enter
+    return 0
+  fi
+  { echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: /rename SKIPPED -- pane not ready (verdict: ${RENAME_LAST_VERDICT:-?}, input: ${RENAME_LAST_STATE:-?}); not typing into an unknown screen (RENAMEREADY1010)" >> "$2"; } 2>/dev/null || true
+  return 1
+}
+
 _eperm_restarted=0
 for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
   sleep 1
@@ -1589,8 +1662,6 @@ unset _eperm_restarted
 # longer uses Remote Control.)
 _bot_name="${BOT_NAME:-${MAIN_AGENT_ID:-marveen}}"
 sleep 1
-$TMUX send-keys -t "=$SESSION:" "/rename ${_bot_name}" Enter
-unset _bot_name
 
 # Reset the keep-alive watchdog baseline so a session that was just restarted
 # is not immediately judged stale by the dashboard's checkMainKeepaliveStaleness
@@ -1607,6 +1678,21 @@ unset _bot_name
 mkdir -p "$INSTALL_DIR/store"
 touch "$INSTALL_DIR/store/.channel-keepalive"
 date +%s > "$INSTALL_DIR/store/.channel-last-respawn"
+
+# Rapid-failure detection: if claude exits within 30s of startup, this is
+# likely a config error (bad token, missing plugin, auth issue). We log the
+# failure and exit non-zero so the service manager's own back-off kicks in
+# instead of tight-looping and burning API tokens.
+START_TS=$(date +%s)
+
+# RENAMEREADY1010: only into a ready, dialog-free pane (see send_rename_when_ready).
+# The keep-alive baseline, the respawn stamp and START_TS above are taken first,
+# at the same point as before the gate: the bounded wait (up to ~20 s on a slow
+# start) must not delay the stamp the watchdog and the channel monitor use to
+# leave a booting session alone, nor shift the rapid-exit window. Everything
+# that types into the pane (the post-init /mcp unlock below) starts after it.
+send_rename_when_ready "${_bot_name}" "$INSTALL_DIR/store/channels-failures.log" || true
+unset _bot_name
 
 # POST-INIT PLUGIN UNLOCK (2026-06-01 Szabi 15:24 incident workaround):
 # Claude Code 2.1.159 + telegram-plugin 0.0.6: the `--channels` parameter
@@ -1781,12 +1867,6 @@ date +%s > "$INSTALL_DIR/store/.channel-last-respawn"
 if [ "$CHANNEL_PROVIDER" = "telegram" ]; then
   "$INSTALL_DIR/scripts/set-bot-menu.sh" &
 fi
-
-# Rapid-failure detection: if claude exits within 30s of startup, this is
-# likely a config error (bad token, missing plugin, auth issue). We log the
-# failure and exit non-zero so the service manager's own back-off kicks in
-# instead of tight-looping and burning API tokens.
-START_TS=$(date +%s)
 
 # Plugin liveness watchdog (main channels session only) -- a last-resort
 # backstop UNDER the dashboard channel-monitor, not a replacement. The monitor
