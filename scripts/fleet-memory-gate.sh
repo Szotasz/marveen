@@ -93,34 +93,13 @@ if [ -z "$TG_CHAN_DIR" ]; then
   [ -f "$TG_CHAN_DIR/.env" ] || TG_CHAN_DIR="$HOME/.claude/channels/telegram"
 fi
 ENV_FILE="${TELEGRAM_ENV:-$TG_CHAN_DIR/.env}"
-# Alert target: the owner's chat id. Resolve from the channel access.json (the
-# first allow-listed sender) so no chat-id is ever hardcoded; override with
-# MARVEEN_ALERT_CHAT_ID. Empty -> the Telegram alert is skipped (log only), never
-# sent to a stranger.
-ACCESS_JSON="${TELEGRAM_ACCESS:-$TG_CHAN_DIR/access.json}"
-CHAT_ID="${MARVEEN_ALERT_CHAT_ID:-}"
-if [[ -z "$CHAT_ID" && -f "$ACCESS_JSON" ]] && command -v python3 >/dev/null 2>&1; then
-  CHAT_ID="$(python3 -c 'import json,sys
-try:
-  a=json.load(open(sys.argv[1]));v=a.get("allowFrom") or []
-  print(v[0] if v else "")
-except Exception: print("")' "$ACCESS_JSON" 2>/dev/null)"
-fi
-# NULLAORFLEET921: the "0" installer placeholder is not a chat (install-linux.sh:812).
-# The two notifiers got this guard in #1450 and this file did not, so the three
-# surfaces diverged. MEASURED before adding it, and the honest state is worth
-# writing down: today NO path puts a "0" here. Nothing in the repo sets
-# MARVEEN_ALERT_CHAT_ID (no unit, no plist, no installer line), the placeholder
-# lands in ALLOWED_CHAT_ID which this script never reads, and no shipped installer
-# version ever seeded access.json's allowFrom from CHAT_ID (107 historical versions
-# checked, 0 hits, positive control passed). This line is therefore defence in
-# depth, not a live bug fix: it matters the moment someone populates the alert
-# chat id from the install config -- which is exactly what the external ticket
-# suggests doing for the notifiers.
-# Without it the value is NOT silent but noisy-useless: measured, "0" takes the
-# same path as a real id, so the send is attempted, fails, and is retried every
-# run because a failed send deliberately never stamps the cooldown.
-[ "$CHAT_ID" = "0" ] && CHAT_ID=""
+# Alert recipients: MARVEEN_ALERT_CHAT_ID (a comma-separated list, 615002e1), or -- only when it is empty -- the
+# owner chat of lib/owner-chat.sh (the install .env's ALLOWED_CHAT_ID, else a single-entry access.json allowFrom).
+# Resolved, logged and recorded by lib/alert-recipients.sh, the one copy for the three alert scripts (b2e9c0c1).
+# There is deliberately NO hardcoded id: a hardcoded id would make every downstream install send its alerts to
+# that one private chat via its own bot token.
+# NULLAORFLEET921: the "0" installer-placeholder guard lives in that one copy too, so the three surfaces cannot
+# diverge on it again.
 ALERT_COOLDOWN=600   # seconds; do not repeat the same band's alert within this
 
 log() { echo "[fleet-memory-gate] $*" >&2; }
@@ -155,9 +134,6 @@ is_core() {
 send_alert() {
   local band="$1" msg="$2"
   (( DRY_RUN )) && { log "DRY-RUN alert [$band]: $msg"; return 0; }
-  # No resolvable owner chat id -> never send (would otherwise go nowhere or, with
-  # a hardcoded default, to a stranger). Log and move on.
-  [[ -z "$CHAT_ID" ]] && { log "no owner chat id resolved; skipping Telegram alert [$band]"; return 0; }
   local now prev_band prev_ep
   now="$(date +%s)"
   if [[ -f "$ALERT_STAMP" ]]; then
@@ -167,19 +143,52 @@ send_alert() {
       log "alert [$band] within cooldown; skipping"; return 0
     fi
   fi
+  # Recipients AFTER the cooldown check, so the fallback / no-recipient events (lib/alert-recipients.sh: logged and
+  # appended to $STATE_DIR/alert-recipients.log) are written only when an alert is actually due. No resolvable
+  # recipient -> never send (no invented or hardcoded id); the gate's exit code stays its allow/block decision.
+  . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/alert-recipients.sh"
+  local CHAT_IDS=()
+  if alert_resolve_recipients "$INSTALL_DIR/.env" log "$STATE_DIR"; then
+    CHAT_IDS=("${ALERT_CHAT_IDS[@]}")
+  else
+    log "no owner chat id resolved; skipping Telegram alert [$band]"; return 0
+  fi
   local token=""
   [[ -f "$ENV_FILE" ]] && token="$(grep -E '^TELEGRAM_BOT_TOKEN=' "$ENV_FILE" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"'"'"' \r\n')"
   if [[ -n "$token" ]]; then
     # Honest send + cooldown stamp ONLY on confirmed delivery
     # (NOTIFYVAKSWEEP826): stamping a failed send suppressed the retry for
     # ALERT_COOLDOWN while the fleet was heading into OOM.
+    # b2e9c0c1: with a list, delivery is recorded PER RECIPIENT for this band ("<band> <chat id>" lines): a recipient
+    # already served is not sent again, a failed one retries on the next run, and the cooldown stamp is written once
+    # every recipient has it. One failing recipient neither silences the others nor floods them with repeats.
     . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/lib/send-telegram.sh"
-    local send_err
-    if send_err="$(send_telegram_message "$token" "$CHAT_ID" "$msg" 2>&1)"; then
-      log "Telegram sent [$band]"
+    local send_err delivered="$ALERT_STAMP.delivered" total=${#CHAT_IDS[@]} ok=0 bad=0 i=0 cid tag
+    if [[ -f "$delivered" ]]; then
+      # a record of another band belongs to an earlier episode: keep only this band's lines
+      grep -E "^${band} " "$delivered" >"$delivered.tmp" 2>/dev/null || true
+      mv -f "$delivered.tmp" "$delivered" 2>/dev/null || true
+    fi
+    for cid in "${CHAT_IDS[@]}"; do
+      i=$((i + 1))
+      tag="$(alert_recipient_tag "$i" "$total" "$cid")"   # masked, FALLBACK-tagged (lib/alert-recipients.sh)
+      if [[ -f "$delivered" ]] && grep -qxF -- "${band} ${cid}" "$delivered"; then
+        ok=$((ok + 1)); log "alert [$band] already delivered in this episode -- ${tag}"; continue
+      fi
+      # NOTE: no break/return on a failure: a failing recipient must not decide for the others.
+      if send_err="$(send_telegram_message "$token" "$cid" "$msg" 2>&1)"; then
+        ok=$((ok + 1)); echo "${band} ${cid}" >>"$delivered" 2>/dev/null || true
+        log "Telegram sent [$band] -- ${tag}"
+      else
+        bad=$((bad + 1)); log "Telegram send FAILED [$band] -- ${tag}: ${send_err}"
+      fi
+    done
+    if (( bad == 0 )); then
       echo "${band}:${now}" >"$ALERT_STAMP" 2>/dev/null || true
+      rm -f "$delivered" 2>/dev/null || true
+      log "Telegram sent [$band] to all ${total} recipient(s)"
     else
-      log "Telegram send FAILED -- cooldown stamp NOT written, will retry next run: ${send_err}"
+      log "Telegram [$band]: ${ok}/${total} delivered, ${bad} failed -- cooldown stamp NOT written, the failed one(s) retry next run"
     fi
   else
     log "no TELEGRAM_BOT_TOKEN; alert only logged"

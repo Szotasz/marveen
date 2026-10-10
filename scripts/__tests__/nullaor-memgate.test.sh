@@ -25,10 +25,17 @@ check() { DB=$((DB+1)); if [ "$2" = "0" ]; then echo "PASS  $1"; else echo "FAIL
 SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/nullaor.XXXXXX")"
 trap 'rm -rf "$SANDBOX"' EXIT
 
-mkdir -p "$SANDBOX/store" "$SANDBOX/chan" "$SANDBOX/bin"
+mkdir -p "$SANDBOX/store" "$SANDBOX/bin" "$SANDBOX/home"
+# The gate runs from a COPIED install (b2e9c0c1): since its fallback is lib/owner-chat.sh, which reads the install
+# .env and the MAIN install's channel dir by design, a run from $ROOT would read whatever install the checkout is.
+INST="$SANDBOX/inst"
+mkdir -p "$INST/scripts/lib" "$INST/.claude/channels/telegram"
+cp "$ROOT/scripts/fleet-memory-gate.sh" "$INST/scripts/"
+cp "$ROOT/scripts/lib/alert-recipients.sh" "$ROOT/scripts/lib/owner-chat.sh" "$ROOT/scripts/lib/send-telegram.sh" "$INST/scripts/lib/"
+printf 'ALLOWED_CHAT_ID=0\n' > "$INST/.env"   # the installer's placeholder: the fallback then reads access.json
 # A token must be present, otherwise the run stops before the send for an unrelated
 # reason and every case would look the same.
-printf 'TELEGRAM_BOT_TOKEN=123456:TESZT-TOKEN\n' > "$SANDBOX/chan/.env"
+printf 'TELEGRAM_BOT_TOKEN=123456:TESZT-TOKEN\n' > "$INST/.claude/channels/telegram/.env"
 # Memory well past the hard band, so an alert is always attempted.
 printf 'MemTotal:       16000000 kB\nMemAvailable:     400000 kB\n' > "$SANDBOX/meminfo"
 
@@ -45,17 +52,17 @@ run_gate() {
   local chat="$1" access="${2:-}"
   : > "$SANDBOX/args.txt"
   rm -f "$SANDBOX/store/.fleet-memgate-alert"
-  if [ -n "$access" ]; then printf '%s' "$access" > "$SANDBOX/chan/access.json"
-  else rm -f "$SANDBOX/chan/access.json"; fi
-  env PATH="$SANDBOX/bin:$PATH" \
+  if [ -n "$access" ]; then printf '%s' "$access" > "$INST/.claude/channels/telegram/access.json"
+  else rm -f "$INST/.claude/channels/telegram/access.json"; fi
+  env -u TELEGRAM_STATE_DIR -u TELEGRAM_ENV -u TELEGRAM_ACCESS \
+      PATH="$SANDBOX/bin:$PATH" \
+      HOME="$SANDBOX/home" \
       STUB_ARGS_FILE="$SANDBOX/args.txt" \
       MEMGATE_PROC_MEMINFO="$SANDBOX/meminfo" \
       MARVEEN_STORE="$SANDBOX/store" \
-      TELEGRAM_ENV="$SANDBOX/chan/.env" \
-      TELEGRAM_ACCESS="$SANDBOX/chan/access.json" \
       MARVEEN_ALERT_CHAT_ID="$chat" \
       MARVEEN_MEM_GATE_OBSERVE=1 \
-      bash "$ROOT/scripts/fleet-memory-gate.sh" check >/dev/null 2>"$SANDBOX/log.txt"
+      bash "$INST/scripts/fleet-memory-gate.sh" check >/dev/null 2>"$SANDBOX/log.txt"
   cat "$SANDBOX/log.txt"
 }
 
@@ -90,12 +97,16 @@ check "5 valodi access.json-beli id tovabbra is MEGY" \
   "$(grep -q 'chat_id=555444333' "$SANDBOX/args.txt" && echo 0 || echo 1)" \
   "kuldott chat-id-k: $(sent_chat_ids) | log: $out"
 
-# 6. the three surfaces carry the SAME guard line -- this is what diverged
+# 6. the three surfaces cannot diverge on the guard again: since b2e9c0c1 none of them carries a copy of its own,
+#    all three resolve through lib/alert-recipients.sh, and that one copy drops the "0" (1-5 above measure it).
 mismatch=0
 for f in scripts/fleet-memory-gate.sh scripts/host-restart-watchdog.sh scripts/unit-fail-notify.sh; do
-  grep -qF '[ "$CHAT_ID" = "0" ] && CHAT_ID=""' "$ROOT/$f" || { mismatch=1; echo "    hianyzik: $f"; }
+  { grep -qF 'lib/alert-recipients.sh' "$ROOT/$f" && grep -qF 'alert_resolve_recipients ' "$ROOT/$f"; } \
+    || { mismatch=1; echo "    nem a kozos feloldot hivja: $f"; }
+  if grep -qF 'MARVEEN_ALERT_CHAT_ID:-' "$ROOT/$f"; then mismatch=1; echo "    sajat MARVEEN_ALERT_CHAT_ID-olvasas maradt: $f"; fi
 done
-check "6 mindharom felulet ugyanazt a '0'-ort viszi" "$mismatch"
+grep -qF '"$id" != "0"' "$ROOT/scripts/lib/alert-recipients.sh" || { mismatch=1; echo "    a kozos feloldobol hianyzik a \"0\"-or"; }
+check "6 mindharom felulet a kozos feloldot hivja, es abban all a '0'-or" "$mismatch"
 
 echo ""
 echo "nullaor-memgate: $((DB-FAILS))/$DB"
