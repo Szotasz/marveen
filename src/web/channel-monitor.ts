@@ -992,6 +992,31 @@ export function mainChannelStateEnv(provider: ChannelProviderType): { name: stri
   return { name: channelStateDirEnvVar(provider), dir: channelStateDir(provider) }
 }
 
+// 45b778e9: the relaunch branch of respawnMainSessionFresh, with its two effects injected so the
+// "no silent success" promise is held by BEHAVIOUR. The source-only asserts in
+// channel-monitor-respawn-session-gone.test.ts let a real mutation of the call site
+// (`if (false && !mainRelaunchSucceeded(created))`) stay green in that test and in the full suite.
+//
+// 'grace' counts as success ON PURPOSE (mainRelaunchSucceeded): a launch is already in flight.
+// Its measured limit: createMainChannelsSession() starts the grace window right after the
+// synchronous spawn(), and channels.sh runs detached, unref'd and with stdio ignored, so a launch
+// that dies early is never observed here. For at most MAIN_SESSION_CREATE_GRACE_MS such a failed
+// launch still reads as 'grace'; after the window the monitor's session-absent check calls
+// createMainChannelsSession() again. A missing script or a synchronous spawn error stays loud.
+export function relaunchGoneMainSession(
+  create: () => MainSessionCreateResult,
+  stamp: () => void,
+): MainSessionCreateResult {
+  const created = create()
+  logger.warn({ session: MAIN_CHANNELS_SESSION, created },
+    'respawnMainSessionFresh: session gone after reap, relaunched via channels.sh')
+  if (!mainRelaunchSucceeded(created)) {
+    throw new Error(`main channels session gone and relaunch failed: ${created}`)
+  }
+  stamp()
+  return created
+}
+
 // FRESH respawn of the main channels session, for hosts with no launchd.
 //
 // Exported for the scheduled auto-restart (auto-restart-runner.ts), whose macOS
@@ -1047,15 +1072,9 @@ export function respawnMainSessionFresh(): void {
   if (mainChannelsSessionExists()) {
     execFileSync(tmuxBin(), ['respawn-pane', '-k', '-t', exactTmuxTarget(MAIN_CHANNELS_SESSION), claudeCmd], { timeout: 15000 })
   } else {
-    const created = createMainChannelsSession()
-    logger.warn({ session: MAIN_CHANNELS_SESSION, created },
-      'respawnMainSessionFresh: session gone after reap, relaunched via channels.sh')
-    if (!mainRelaunchSucceeded(created)) {
-      throw new Error(`main channels session gone and relaunch failed: ${created}`)
-    }
     // A fresh session starts its own claude: the respawn-specific follow-ups below
     // (identity, plugin unlock) are channels.sh's job on this path, not ours.
-    writeRespawnStamp()
+    relaunchGoneMainSession(createMainChannelsSession, writeRespawnStamp)
     return
   }
   // Stamp IMMEDIATELY after the respawn, before the scheduling follow-ups.

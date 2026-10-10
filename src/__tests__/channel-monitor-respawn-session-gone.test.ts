@@ -18,6 +18,8 @@ import { readFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import { dirname, join } from "node:path"
 
+import { relaunchGoneMainSession, type MainSessionCreateResult } from "../web/channel-monitor.js"
+
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const src = readFileSync(join(__dirname, "..", "web", "channel-monitor.ts"), "utf-8")
 
@@ -44,19 +46,45 @@ describe("respawnMainSessionFresh: the session may be gone after the reap", () =
   })
 
   it("relaunches through channels.sh (the guard's path), not a bespoke tmux command", () => {
-    expect(body).toMatch(/createMainChannelsSession\(\)/)
+    // 45b778e9: the relaunch branch lives in relaunchGoneMainSession, with createMainChannelsSession
+    // and writeRespawnStamp passed in; its behaviour is tested below.
+    expect(body).toMatch(/relaunchGoneMainSession\(createMainChannelsSession, writeRespawnStamp\)/)
     // A hand-rolled `tmux new-session` here is the drift this comment warns about: it would
     // miss the first-run dialog handling, the /rename and the plugin bring-up.
     expect(body).not.toMatch(/'new-session'/)
   })
 
-  it("throws when the relaunch could not start anything (no silent success)", () => {
-    expect(body).toMatch(/mainRelaunchSucceeded\(created\)/)
-    expect(body).toMatch(/throw new Error\(/)
+  it("the relaunch branch returns right after the helper: no respawn-pane follow-ups on that path", () => {
+    const callAt = body.indexOf("relaunchGoneMainSession(createMainChannelsSession, writeRespawnStamp)")
+    expect(callAt, "relaunch call not found").toBeGreaterThan(0)
+    expect(body.slice(callAt).split("\n")[1]).toMatch(/^\s*return\s*$/)
   })
+})
 
-  it("stamps the respawn on the relaunch path too, so the watchers stand aside while it boots", () => {
-    const elseAt = body.indexOf("createMainChannelsSession()")
-    expect(body.indexOf("writeRespawnStamp()", elseAt)).toBeGreaterThan(elseAt)
-  })
+// 45b778e9: the "no silent success" promise by BEHAVIOUR. The earlier source asserts
+// (mainRelaunchSucceeded(created) and throw new Error( present) stayed green under the real
+// mutation `if (false && !mainRelaunchSucceeded(created))`, in this test and in the full suite.
+describe("relaunchGoneMainSession: a relaunch that started nothing throws, and nothing is stamped", () => {
+  const futtat = (created: MainSessionCreateResult) => {
+    let stamps = 0
+    const run = () => relaunchGoneMainSession(() => created, () => { stamps += 1 })
+    return { run, stamps: () => stamps }
+  }
+
+  for (const created of ["script-missing", "spawn-failed"] as const) {
+    it(`throws on '${created}' and does not stamp a respawn`, () => {
+      const f = futtat(created)
+      expect(f.run).toThrow(`main channels session gone and relaunch failed: ${created}`)
+      expect(f.stamps()).toBe(0)
+    })
+  }
+
+  // 'grace' is success on purpose (a launch is in flight); its bound is stated at the helper.
+  for (const created of ["started", "grace"] as const) {
+    it(`returns '${created}' and stamps the respawn exactly once, so the watchers stand aside`, () => {
+      const f = futtat(created)
+      expect(f.run()).toBe(created)
+      expect(f.stamps()).toBe(1)
+    })
+  }
 })
