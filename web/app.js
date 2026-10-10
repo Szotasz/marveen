@@ -639,7 +639,10 @@ function renderStaticI18n() {
       const nodes = [...el.childNodes]
       for (let i = nodes.length - 1; i >= 0; i--) {
         if (nodes[i].nodeType === 3 && nodes[i].textContent.trim()) {
-          nodes[i].textContent = ' ' + val
+          // Keep the node's trailing whitespace: it separates the label text from a
+          // following inline child such as the "(optional)" hint.
+          const trailing = nodes[i].textContent.match(/\s*$/)[0]
+          nodes[i].textContent = ' ' + val + trailing
           break
         }
       }
@@ -1187,7 +1190,8 @@ function renderKanbanSearchHint() {
   if (!hintEl) return
   if (!kanbanSearchQuery.trim()) { hintEl.textContent = ''; return }
   const matches = kanbanCards.filter((c) => kanbanCardMatchesSearch(c))
-  const hiddenCount = matches.filter((c) => kanbanHiddenColumns.has(c.status)).length
+  // An ongoing card stays visible in the strip even when its status column is hidden.
+  const hiddenCount = matches.filter((c) => kanbanHiddenColumns.has(c.status) && !kanbanIsOngoing(c)).length
   if (matches.length === 0) {
     hintEl.textContent = t('kanban.filter.search_none')
   } else if (hiddenCount === matches.length) {
