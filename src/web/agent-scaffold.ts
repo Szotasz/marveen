@@ -3484,7 +3484,7 @@ MINDIG az install időzónáját használd: **${APP_TZ}** (a teljes telepítés 
 - **Channel message \`ts\`**: UTC-ben jön (postfix \`Z\`), átkonvertálni ${APP_TZ}-re
 - **Google Calendar list_events \`dateTime\`**: már lokál ISO 8601 offszettel, OK
 - **SQLite \`unixepoch()\`**: UTC, humán-megjelenítéshez \`localtime\` modifier kell
-- **Cron expressions** (scheduled-tasks): a scheduler ${APP_TZ} időben értelmezi (SCHEDULER_TZ)
+- **Cron expressions** (scheduled-tasks): a scheduler ${APP_TZ} időben értelmezi (SCHEDULER_TZ). Egy dátumos cron (pl. \`0 5 22 9 *\`) évente ismétlődik; egyszeri futáshoz a task-config \`"once": true\` mezője kell: az első sikeres futás után a runner maga kapcsolja ki
 
 Heartbeat-eknél és minden időpontot kezelő feladatnál kötelező: \`date\` Bash parancs az elemzés ELŐTT.
 

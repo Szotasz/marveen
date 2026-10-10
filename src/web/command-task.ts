@@ -9,7 +9,7 @@ import { logger } from "../logger.js"
 import { sendTelegramMessage } from "./telegram.js"
 import { appendTaskRun, markTaskRunCompleted } from "../db.js"
 import { trackDetachedGroup } from "./detached-groups.js"
-import type { ScheduledTask } from "./scheduled-tasks-io.js"
+import { disableOnceTask, type ScheduledTask } from "./scheduled-tasks-io.js"
 
 // command-type scheduled tasks run a raw shell command directly (no LLM
 // agent, no tmux session) and alert on Telegram after N consecutive
@@ -209,6 +209,15 @@ function finish(
     markTaskRunCompleted(runId, "done")
   } catch { /* non-fatal */ }
   logger.info({ task: task.name, ok, detail, fails: next.fails, action }, "command task ran")
+  // Card 7d2b49b4: a once command task is switched off after its first successful run (exit 0). A failed run
+  // leaves it on, so the failure alert above still has something to point at.
+  if (ok && task.once) {
+    try {
+      if (disableOnceTask(task.name, now)) logger.info({ task: task.name }, "once-task switched off after its first successful run")
+    } catch (err) {
+      logger.warn({ err, task: task.name }, "once-task could not be switched off -- left enabled")
+    }
+  }
 
   if (action === "none") return
   const ownerChat = resolveOwnerChatId()
