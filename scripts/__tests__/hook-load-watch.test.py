@@ -22,6 +22,9 @@ Missing dependencies (card 06c9aa79 (2); class Missing): the same stand-ins with
 node file, an eager and a transitive python import, a root-relative load), an import that only an installed module
 satisfies (a PYTHONPATH dir outside the root stands for site-packages), and quoted names outside a load form (a comment,
 a list, the egress parser's own resolver), which stay silent, as measured on the live install.
+Probe safety (review of #1830; class ProbeSafety): a file a gate only mentions in a comment is not loaded; a dependency
+without a main guard (its top level is its main: sender-dep.py, sender-node-dep.mjs) is reported, not executed; the probes
+get a minimal environment, not the watcher's (SECRET_X in the watcher's environment must not reach a gate or a dependency).
 """
 import http.server
 import json
@@ -414,6 +417,14 @@ class DependencyRoot(Base):
             d["hooks"]["PreToolUse"] += extra
             write(path, json.dumps(d), 0o644)
 
+    def add_gate(self, rel, text, runner, agents=("a1",)):
+        write(self.p(rel), text)
+        for a in agents:
+            path = self.p("agents/%s/.claude/settings.json" % a)
+            d = json.loads(read(path))
+            d["hooks"]["PreToolUse"].append({"matcher": "Bash", "hooks": [{"type": "command", "command": '%s "%s/%s"' % (runner, self.root, rel), "timeout": 10}]})
+            write(path, json.dumps(d), 0o644)
+
     @staticmethod
     def imported(out):
         return sorted(re.findall(r"\] (\w+) +rc=\S+ +(scripts/\S+) \([^)]*\) probe=import", out))
@@ -470,7 +481,9 @@ class Imports(DependencyRoot):
     def test_dependency_load_timeout_kills_its_process_group(self):
         pidfile = self.p("dep-slow.pid")
         write(self.p("scripts/hooks/signal_helper.py"), "import subprocess, time\n"
-              "c = subprocess.Popen(['sleep', '30'])\nopen(%r, 'w').write(str(c.pid))\ntime.sleep(30)\nLIMIT = 9\n" % pidfile, 0o644)
+              "c = subprocess.Popen(['sleep', '30'])\nopen(%r, 'w').write(str(c.pid))\ntime.sleep(30)\nLIMIT = 9\n"
+              # guarded, so it is loaded: a module whose top level hangs although its main is guarded
+              "if __name__ == '__main__':\n    pass\n" % pidfile, 0o644)
         t0 = time.monotonic()
         rc, out = run(self.root, "--check", HOOK_LOAD_WATCH_IMPORT_TIMEOUT=1)
         self.assertLess(time.monotonic() - t0, 25)
@@ -537,14 +550,6 @@ JS_EDGE_GATE_MJS = ("import { readFileSync } from 'node:fs'\n"
 
 class Missing(DependencyRoot):
     """06c9aa79 (2): a dependency the source NAMES whose file is not there is a finding, the same as a broken one."""
-
-    def add_gate(self, rel, text, runner, agents=("a1",)):
-        write(self.p(rel), text)
-        for a in agents:
-            path = self.p("agents/%s/.claude/settings.json" % a)
-            d = json.loads(read(path))
-            d["hooks"]["PreToolUse"].append({"matcher": "Bash", "hooks": [{"type": "command", "command": '%s "%s/%s"' % (runner, self.root, rel), "timeout": 10}]})
-            write(path, json.dumps(d), 0o644)
 
     def test_deleted_lazy_file_dependency_is_missing_and_alerted(self):
         os.remove(self.p("scripts/hooks/signal-dep.py"))
@@ -673,6 +678,123 @@ class Missing(DependencyRoot):
         rc, out = run(self.root, "--check")
         self.assertEqual(rc, 0, out)
         self.assertIn("local dependencies named in a gate's source but missing: 0", out)
+
+
+# 06c9aa79 (4), review of #1830: what the import probe is allowed to execute, and with which environment.
+MENTION_GATE_PY = ("import json, sys\n"
+                   "# the old scanner used to live in 'mentioned-dep.py'; it is not loaded any more\n"
+                   "json.load(sys.stdin)\nsys.exit(0)\n")
+MENTION_GATE_MJS = ("import { readFileSync } from 'node:fs'\n"
+                    "// the old scanner was './mentioned-node-dep.mjs'; it is not loaded any more\n"
+                    "/* nor is 'mentioned-node-dep2.mjs' */\n"
+                    "JSON.parse(readFileSync(0, 'utf-8'))\nprocess.exit(0)\n")
+# guarded, so only the load SET can keep them from being executed: their top level leaves a marker behind
+MENTIONED_DEP_PY = ("import os\nopen(os.path.join(os.environ['CLAUDE_PROJECT_DIR'], 'mentioned-ran.txt'), 'w').write('x')\n"
+                    "if __name__ == '__main__':\n    pass\n")
+MENTIONED_DEP_MJS = ("import { writeFileSync, realpathSync } from 'node:fs'\nimport { fileURLToPath } from 'node:url'\n"
+                     "writeFileSync(process.env.CLAUDE_PROJECT_DIR + '/%s', 'x')\n"
+                     "function isInvokedDirectly() { try { return realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1] ?? '') } catch { return false } }\n"
+                     "if (isInvokedDirectly()) process.exit(0)\n")
+SENDER_GATE_PY = ("import importlib.util, json, os, sys\np = json.load(sys.stdin)\n"
+                  "if ((p.get('tool_input') or {}).get('command') or '').startswith('kill'):\n"
+                  "    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'sender-dep.py')\n"
+                  "    spec = importlib.util.spec_from_file_location('_sender', path)\n"
+                  "    spec.loader.exec_module(importlib.util.module_from_spec(spec))\n"
+                  "sys.exit(0)\n")
+# a script with no main guard: its top level IS its main (a sender would send)
+SENDER_DEP_PY = "import os\nopen(os.path.join(os.environ['CLAUDE_PROJECT_DIR'], 'sender-ran.txt'), 'w').write('sent')\n"
+SENDER_GATE_MJS = ("import { readFileSync } from 'node:fs'\nconst p = JSON.parse(readFileSync(0, 'utf-8'))\n"
+                   "if (((p.tool_input || {}).command || '').startsWith('kill')) { await import('./sender-node-dep.mjs') }\n"
+                   "process.exit(0)\n")
+SENDER_DEP_MJS = "import { writeFileSync } from 'node:fs'\nwriteFileSync(process.env.CLAUDE_PROJECT_DIR + '/sender-node-ran.txt', 'sent')\n"
+ENV_GATE_PY = ("import importlib.util, json, os, sys\np = json.load(sys.stdin)\n"
+               "open(os.path.join(os.environ['CLAUDE_PROJECT_DIR'], 'gate-env.json'), 'w').write(json.dumps(dict(os.environ)))\n"
+               "if ((p.get('tool_input') or {}).get('command') or '').startswith('kill'):\n"
+               "    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'env-dep.py')\n"
+               "    spec = importlib.util.spec_from_file_location('_env', path)\n"
+               "    spec.loader.exec_module(importlib.util.module_from_spec(spec))\n"
+               "sys.exit(0)\n")
+ENV_DEP_PY = ("import json, os\n"
+              "open(os.path.join(os.environ['CLAUDE_PROJECT_DIR'], 'dep-env.json'), 'w').write(json.dumps(dict(os.environ)))\n"
+              "if __name__ == '__main__':\n    pass\n")
+ENV_DEP_MJS = ("import { writeFileSync, realpathSync } from 'node:fs'\nimport { fileURLToPath } from 'node:url'\n"
+               "writeFileSync(process.env.CLAUDE_PROJECT_DIR + '/node-dep-env.json', JSON.stringify(process.env))\n"
+               "if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) process.exit(0)\n")
+ENV_GATE_MJS = ("import { readFileSync } from 'node:fs'\nconst p = JSON.parse(readFileSync(0, 'utf-8'))\n"
+                "if (((p.tool_input || {}).command || '').startsWith('kill')) { await import('./env-node-dep.mjs') }\n"
+                "process.exit(0)\n")
+
+
+class ProbeSafety(DependencyRoot):
+    """Review of #1830: a probe executes a dependency's top level, so the load set, the main guard and the environment decide
+    what a 5-minute timer runs on the install."""
+
+    def test_a_file_named_only_in_a_comment_is_not_loaded(self):
+        self.add_gate("scripts/hooks/mention-gate.py", MENTION_GATE_PY, "python3")
+        self.add_gate("scripts/hooks/mention-gate.mjs", MENTION_GATE_MJS, "node")
+        write(self.p("scripts/hooks/mentioned-dep.py"), MENTIONED_DEP_PY, 0o644)
+        write(self.p("scripts/hooks/mentioned-node-dep.mjs"), MENTIONED_DEP_MJS % "mentioned-node-ran.txt", 0o644)
+        write(self.p("scripts/hooks/mentioned-node-dep2.mjs"), MENTIONED_DEP_MJS % "mentioned-node2-ran.txt", 0o644)
+        rc, out = run(self.root, "--check")
+        self.assertEqual(rc, 0, out)
+        self.assertNotIn("mentioned-", out, "a file that a gate only mentions in a comment was taken for a dependency")
+        for marker in ("mentioned-ran.txt", "mentioned-node-ran.txt", "mentioned-node2-ran.txt"):
+            self.assertFalse(os.path.exists(self.p(marker)), "a file named only in a comment was executed: %s" % marker)
+        # control: the same file in a load form IS loaded (and, being guarded, its top level runs)
+        self.add_gate("scripts/hooks/sender-gate.py", SENDER_GATE_PY.replace("sender-dep.py", "mentioned-dep.py"), "python3")
+        rc, out = run(self.root, "--check")
+        self.assertEqual(rc, 0, out)
+        self.assertRegex(out, r"OK +rc=0 +scripts/hooks/mentioned-dep\.py \(1 ügynök\) probe=import")
+
+    def test_a_dependency_without_a_main_guard_is_reported_not_executed(self):
+        self.add_gate("scripts/hooks/sender-gate.py", SENDER_GATE_PY, "python3")
+        self.add_gate("scripts/hooks/sender-gate.mjs", SENDER_GATE_MJS, "node")
+        write(self.p("scripts/hooks/sender-dep.py"), SENDER_DEP_PY, 0o644)
+        write(self.p("scripts/hooks/sender-node-dep.mjs"), SENDER_DEP_MJS, 0o644)
+        rc, out = run(self.root, "--check")
+        self.assertFalse(os.path.exists(self.p("sender-ran.txt")), "the probe executed a python dependency that has no main guard")
+        self.assertFalse(os.path.exists(self.p("sender-node-ran.txt")), "the probe executed a node dependency that has no main guard")
+        self.assertEqual(rc, 1, out)
+        self.assertRegex(out, r"UNGUARDED rc=None +scripts/hooks/sender-dep\.py \(1 ügynök\) probe=import \(<- scripts/hooks/sender-gate\.py\) "
+                              r"\| .*__main__")
+        self.assertRegex(out, r"UNGUARDED rc=None +scripts/hooks/sender-node-dep\.mjs \(1 ügynök\) probe=import \(<- scripts/hooks/sender-gate\.mjs\)")
+        self.assertIn("not loaded, no main guard: 2", out)
+        rc, out = run(self.root, HOOK_LOAD_WATCH_ALERT_DRYRUN=1)
+        self.assertIn("2/8 helyi kapu-függőség main-őr nélkül, nem töltöttem be", out)
+        self.assertIn("- scripts/hooks/sender-dep.py (1 ügynök): NINCS MAIN-ŐR", out)
+        self.assertFalse(os.path.exists(self.p("sender-ran.txt")))
+        # a definitions-only library has nothing to guard and is still loaded: the base root's dep_mod.py, static-dep.mjs ...
+        self.assertNotRegex(out, r"UNGUARD.*(dep_mod|static-dep|lazy-dep|signal_helper)")
+
+    def test_an_unguarded_dependency_that_does_not_parse_is_an_import_finding(self):
+        # a syntax check runs nothing, so a broken unguarded file is still told apart from a loadable one
+        self.add_gate("scripts/hooks/sender-gate.py", SENDER_GATE_PY, "python3")
+        self.add_gate("scripts/hooks/sender-gate.mjs", SENDER_GATE_MJS, "node")
+        write(self.p("scripts/hooks/sender-dep.py"), SENDER_DEP_PY + BROKEN, 0o644)
+        write(self.p("scripts/hooks/sender-node-dep.mjs"), SENDER_DEP_MJS + BROKEN, 0o644)
+        rc, out = run(self.root, "--check")
+        self.assertEqual(rc, 1, out)
+        self.assertRegex(out, r"IMPORT +rc=1 +scripts/hooks/sender-dep\.py .*SyntaxError")
+        self.assertRegex(out, r"IMPORT +rc=1 +scripts/hooks/sender-node-dep\.mjs .*SyntaxError")
+        self.assertFalse(os.path.exists(self.p("sender-ran.txt")))
+        self.assertFalse(os.path.exists(self.p("sender-node-ran.txt")))
+
+    def test_the_probes_do_not_inherit_the_watchers_environment(self):
+        self.add_gate("scripts/hooks/env-gate.py", ENV_GATE_PY, "python3")
+        self.add_gate("scripts/hooks/env-gate.mjs", ENV_GATE_MJS, "node")
+        write(self.p("scripts/hooks/env-dep.py"), ENV_DEP_PY, 0o644)
+        write(self.p("scripts/hooks/env-node-dep.mjs"), ENV_DEP_MJS, 0o644)
+        rc, out = run(self.root, "--check", SECRET_X="leak-me", DASHBOARD_TOKEN="tok")
+        self.assertEqual(rc, 0, out)
+        for name in ("gate-env.json", "dep-env.json", "node-dep-env.json"):
+            env = json.loads(read(self.p(name)))
+            # assertFalse, not assertNotIn: a failure must not print the environment of the machine running the tests
+            self.assertFalse("SECRET_X" in env, "%s: the probe inherited an arbitrary variable" % name)
+            self.assertFalse("DASHBOARD_TOKEN" in env, "%s: the probe inherited an arbitrary variable" % name)
+            self.assertEqual(env.get("CLAUDE_PROJECT_DIR"), self.root, name)
+            self.assertTrue(env.get("PATH"), name)
+            self.assertEqual(env.get("HOME"), os.environ.get("HOME"), name)
+        self.assertEqual(json.loads(read(self.p("gate-env.json"))).get("PYTHONDONTWRITEBYTECODE"), "1")
 
 
 if __name__ == "__main__":

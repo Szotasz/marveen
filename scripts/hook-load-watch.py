@@ -14,8 +14,9 @@ shared with the wrapper: the PreToolUse union of <root>/.claude/settings.json an
 <root>/agents/*/.claude/settings.json. A script that any of them calls in the "...; exit 0" helper
 form is deliberately non-blocking and is left out (on this install: channel-image-resize and the two
 memory-frontmatter gates). Each distinct command is run the way Claude Code runs it (/bin/sh -c,
-CLAUDE_PROJECT_DIR set, cwd at the root, the hook's own timeout) with a HARMLESS call on stdin: a Bash
-`true` when one of its matchers takes Bash -- so a gate that loads a dependency only on its Bash
+CLAUDE_PROJECT_DIR set, cwd at the root, the hook's own timeout), but with a minimal environment instead of the
+watcher's own (PATH, HOME, TZ, the locale, TMPDIR, PYTHONPATH, NODE_PATH, CLAUDE_PROJECT_DIR, PYTHONDONTWRITEBYTECODE),
+and with a HARMLESS call on stdin: a Bash `true` when one of its matchers takes Bash -- so a gate that loads a dependency only on its Bash
 branch is reached too -- otherwise a tool name no hook acts on. A loadable gate lets that call through
 (exit 0, no deny). Anything else is a finding:
   OPEN    exit code other than 0 and 2 (a load error, a missing module, a signal): the call passes,
@@ -31,11 +32,18 @@ destructive-gate.py only for a command that sends a signal -- and the harmless c
 module broken, the wrapped gate blocks every such command and nobody is told. So the gates' local dependencies
 (files under <root>/scripts) are derived from their source at run time, transitively: python imports (resolved
 in the importing file's directory, then scripts/lib, then a unique file of that name under scripts/) and quoted
-.py/.mjs/.cjs/.js file names that exist (node's relative imports, destructive-gate.py, outgoing-copy-gate.py).
-Each one is loaded on its own WITHOUT running a main -- python -B under a module name other than __main__,
-node's import() from -e (a gate starts its main only as the entry script) -- with stdin closed, a timeout and
-the process-group kill. A module that does not load is an IMPORT finding, named with the gates that reach it,
-in the same alert. A dependency the source NAMES whose file is not there is a MISSING finding ("HIÁNYZIK: <path>"),
+.py/.mjs/.cjs/.js file names that exist (node's relative imports, destructive-gate.py, outgoing-copy-gate.py), read
+from the source WITHOUT its comments (string literals kept; python imports without docstrings either): loading
+executes, so a file a comment merely mentions is not loaded. Each one is loaded on its own WITHOUT running a main --
+python -B under a module name other than __main__, node's import() from -e (a gate starts its main only as the entry
+script) -- with stdin closed, the minimal environment above, a timeout and the process-group kill. A load still runs
+the module's top level, so only a module whose top level is safe to run is loaded: one with a main guard (python's
+if __name__ == "__main__", node's isInvokedDirectly() / process.argv[1] against import.meta.url, require.main ===
+module), or a definitions-only library with nothing to guard (imports, defs, classes, assignments, a docstring, a
+sys.path change; node: import, export, const, let, var, function, class). Any other dependency is NOT loaded but
+reported as UNGUARDED (NINCS MAIN-ŐR): its top level is its main -- a sender script would send -- and only its syntax
+is checked (compile, node --check; a broken one is an IMPORT finding). A module that does not load is an IMPORT
+finding, named with the gates that reach it, in the same alert. A dependency the source NAMES whose file is not there is a MISSING finding ("HIÁNYZIK: <path>"),
 in the same alert, because the gate fails on it the same way (card 06c9aa79 (2)): a python import that is neither
 stdlib, nor a local file (resolved as above), nor an installed module (searched outside the install root), shown
 at the importing file's directory and scripts/lib; and a file name in a load form -- os.path.join(..., "<name>")
@@ -50,9 +58,11 @@ file exists, but its absence is not reported; a python source that does not toke
 static one breaks its gate, which the command probe reports). In a node source, a regex literal right after a division
 operator (n / /re/.source.length) is read as a second division, not as a doubtful case: a comment opener inside it (two
 slashes, or a slash and an asterisk) is taken for one, and a load in the stretch it blanks (the rest of the line, or up to
-the next comment end or the end of the file) is no missing finding. A deliberately optional import (try/except
-ImportError) of a module that is not installed IS reported. A module that runs a main of its own when imported is
-not missed but reported (it reads an empty stdin): such a module should guard its main.
+the next comment end or the end of the file) is neither loaded nor a missing finding. A deliberately optional import (try/except
+ImportError) of a module that is not installed IS reported. The definitions-only test takes a call inside an
+assignment (X = f()) or an if/try condition for a definition, and its node half is a line heuristic, not a parser (a
+statement split so that a line starts with a plain word is taken for code, the side that loads nothing). A guarded
+module's top level outside the guard still runs when it is loaded.
 
 THE ALERT goes to the main agent through the dashboard API (/api/messages), sent as `hook-load-watch`
 when SYSTEM_SENDER_IDS lists it, otherwise as MAIN_AGENT_ID -- the sender rule of the scripts/channels.sh
@@ -79,6 +89,7 @@ Env:
   HOOK_LOAD_WATCH_COOLDOWN      seconds between repeats of an unchanged alert (default 3600)
   HOOK_LOAD_WATCH_IMPORT_TIMEOUT  seconds for one dependency's load (default 20)
 """
+import ast
 import glob
 import importlib.machinery
 import io
@@ -300,19 +311,41 @@ def py_code_only(text):
     return blank_spans(text, spans)
 
 
+def py_comments_only(text):
+    """The python source with ONLY its comments blanked: string literals, docstrings included, stay. The load set reads this
+    (review of #1830): a file a comment merely mentions is not loaded, and so not executed. None when it does not tokenize."""
+    try:
+        toks = list(tokenize.generate_tokens(io.StringIO(text).readline))
+    except (tokenize.TokenError, SyntaxError):
+        return None
+    starts = [0]
+    for line in text.splitlines(keepends=True):
+        starts.append(starts[-1] + len(line))
+    off = lambda rc: starts[rc[0] - 1] + rc[1]
+    return blank_spans(text, [(off(t.start), off(t.end)) for t in toks if t.type == tokenize.COMMENT])
+
+
 JS_REGEX_BEFORE = set("(,=:[!&|?{};+-*%<>~^")
 JS_REGEX_WORDS = {"return", "typeof", "case", "do", "else", "in", "of", "new", "delete", "void", "throw", "yield", "await"}
 JS_CONDITION_WORDS = {"if", "while", "for", "with"}
 
 
 def js_code_only(text):
-    """The node source with its comments blanked, offsets and lines kept. Strings, template literals and regex literals are
+    return blank_spans(text, js_scan(text)[0])
+
+
+def js_scan(text):
+    """(comment spans, literal spans) of a node source. The comment spans make js_code_only: the node source with its comments blanked, offsets and lines kept. Strings, template literals and regex literals are
     stepped over, so a // or /* inside them is not taken for a comment (a regex literal is told from a division by the code
     before it, as minifiers do). A template literal is followed into its ${...} expressions: the code there is read as code
     (a string, a nested template or a comment in it is what it is there), and the template goes on after the closing brace.
     A / right after the closing paren of an if/while/for/with condition starts a regex literal, as in the language. Where the
-    scanner still cannot tell, it leans to code: a stretch stepped over as a string or regex is not blanked."""
-    spans, i, n, prev, word = [], 0, len(text), "", ""
+    scanner still cannot tell, it leans to code: a stretch stepped over as a string or regex is not blanked. The literal spans
+    (strings, whole outermost template literals, regex literals) let js_top_level read the statements alone."""
+    spans, lits, i, n, prev, word, tpl_start = [], [], 0, len(text), "", "", 0
+    if text.startswith("#!"):  # a hashbang line is a comment to node
+        i = text.find("\n") if "\n" in text else n
+        spans.append((0, i))
     stack = []   # "tpl" for a template literal, [depth] for a ${...} expression inside one
     parens = []  # one flag per open paren: does it close an if/while/for/with condition
     while i < n:
@@ -322,6 +355,8 @@ def js_code_only(text):
                 i += 2
             elif c == "`":
                 stack.pop()
+                if not stack:
+                    lits.append((tpl_start, i + 1))
                 i, prev, word = i + 1, "`", ""
             elif text.startswith("${", i):
                 stack.append([0])
@@ -342,6 +377,8 @@ def js_code_only(text):
             i = j
             continue
         if c == "`":
+            if not stack:
+                tpl_start = i
             stack.append("tpl")
             i += 1
             continue
@@ -349,6 +386,7 @@ def js_code_only(text):
             j = i + 1
             while j < n and text[j] != c and text[j] != "\n":
                 j += 2 if text[j] == "\\" else 1
+            lits.append((i, min(j + 1, n)))
             i, prev, word = j + 1, c, ""
             continue
         if c == "/" and (prev == "" or prev in JS_REGEX_BEFORE or prev == "cond)" or word in JS_REGEX_WORDS):
@@ -367,6 +405,7 @@ def js_code_only(text):
             j += 1
             while j < n and (text[j].isalnum() or text[j] == "_"):
                 j += 1
+            lits.append((i, min(j, n)))
             i, prev, word = j, "/", ""
             continue
         if c.isalnum() or c in "_$":
@@ -392,7 +431,9 @@ def js_code_only(text):
         if not c.isspace():
             prev, word = c, ""
         i += 1
-    return blank_spans(text, spans)
+    if stack:  # a template literal left open runs to the end of the file
+        lits.append((tpl_start, n))
+    return spans, lits
 
 
 def installed(name):
@@ -425,9 +466,14 @@ def local_deps(path, index):
         return "%s:%d" % (os.path.relpath(path, ROOT), text.count("\n", 0, offset) + 1)
 
     # 06c9aa79 (3): the missing rule reads the source without its comments and (python) docstrings, so a commented-out load
-    # or import is not reported; what a file loads when the file exists is still taken from the whole text
-    code = py_code_only(text) if path.endswith(".py") else js_code_only(text) if path.endswith((".mjs", ".cjs", ".js")) else text
-    code_imports = {m.start() for m in PY_IMPORT.finditer(code)} if code is not None and path.endswith(".py") else set()
+    # or import is not reported. Review of #1830: what a file loads is read without comments as well -- loading executes,
+    # so a file a comment merely mentions must not be loaded -- but with its string literals, where the file names are
+    # (python imports from the code without docstrings too). From a python source that does not tokenize only its import
+    # statements are followed.
+    is_py, is_js = path.endswith(".py"), path.endswith((".mjs", ".cjs", ".js"))
+    code = py_code_only(text) if is_py else js_code_only(text) if is_js else text
+    loads = py_comments_only(text) if is_py else code
+    code_imports = {m.start() for m in PY_IMPORT.finditer(code)} if code is not None and is_py else set()
 
     def add(cand):
         cand = os.path.normpath(cand)
@@ -436,8 +482,9 @@ def local_deps(path, index):
             return True
         return False
 
-    if path.endswith(".py"):
-        for m in PY_IMPORT.finditer(text):
+    if is_py:
+        # a source that does not tokenize still names its imports (its own load fails, the ones it reaches are followed)
+        for m in PY_IMPORT.finditer(code if code is not None else text):
             names = [m.group(1)] if m.group(1) else [part.split()[0] for part in m.group(2).split(",") if part.strip()]
             for name in (n.split(".")[0] for n in names):
                 if name in STDLIB:
@@ -453,7 +500,7 @@ def local_deps(path, index):
                     elif not hits and m.start() in code_imports and not installed(name):
                         miss([os.path.join(here, name + ".py"), os.path.join(scripts, "lib", name + ".py")],
                              'python import "%s" (%s): nincs helyi fájlként, és telepített modulként sincs' % (name, line_of(m.start())))
-    for m in FILE_LIT.finditer(text):
+    for m in (FILE_LIT.finditer(loads) if loads is not None else ()):
         for cand in (os.path.join(here, m.group(1)), os.path.join(ROOT, m.group(1))):
             if add(cand):
                 break
@@ -493,18 +540,123 @@ def dependency_map(commands):
     return deps
 
 
-def import_probe(path):
-    """Load ONE dependency on its own, without running a main: OK, IMPORT (it does not load) or TIMEOUT."""
-    if path.endswith(".py"):
-        argv = ["python3", "-B", "-c", PY_IMPORT_PROBE, path]
-    else:
-        argv = ["node", "--input-type=module", "-e", "await import(%s)" % json.dumps(pathlib.Path(path).as_uri())]
-    timeout = import_timeout()
+# Review of #1830: loading a dependency executes its top level, so only a file whose top level is safe to run is loaded --
+# one with a main guard (the main is then not run), or a definitions-only library that has nothing to guard. Anything else
+# is reported as UNGUARDED and only syntax-checked (compile / node --check run nothing).
+PY_DEF_STMTS = (ast.Import, ast.ImportFrom, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Assign, ast.AnnAssign,
+                ast.AugAssign, ast.Pass, ast.Raise, ast.Global)
+JS_DECL_WORDS = {"import", "export", "const", "let", "var", "function", "async", "class"}
+JS_CONTINUES = set("=,([{+-*/%?:&|<>!.~^")
+
+
+def py_main_guard(node):
+    """An `if __name__ == "__main__":` at the top level (either operand order)."""
+    t = node.test if isinstance(node, ast.If) else None
+    if not (isinstance(t, ast.Compare) and len(t.ops) == 1 and isinstance(t.ops[0], ast.Eq)):
+        return False
+    pair = [t.left, t.comparators[0]]
+    return (any(isinstance(x, ast.Name) and x.id == "__name__" for x in pair)
+            and any(isinstance(x, ast.Constant) and x.value == "__main__" for x in pair))
+
+
+def py_top_level_code(body):
+    """The first top-level statement that RUNS something (not a definition, an import, an assignment, a docstring or a
+    sys.path change), looking into try and if blocks; None for a definitions-only module."""
+    for node in body:
+        if isinstance(node, PY_DEF_STMTS) or py_main_guard(node):
+            continue
+        if isinstance(node, ast.Expr):
+            v = node.value
+            if isinstance(v, ast.Constant):
+                continue
+            if (isinstance(v, ast.Call) and isinstance(v.func, ast.Attribute) and v.func.attr in ("insert", "append")
+                    and ast.unparse(v.func.value) == "sys.path"):
+                continue
+            return node
+        if isinstance(node, ast.If):
+            hit = py_top_level_code(node.body) or py_top_level_code(node.orelse)
+        elif isinstance(node, getattr(ast, "TryStar", ast.Try)) or isinstance(node, ast.Try):
+            hit = (py_top_level_code(node.body) or py_top_level_code(node.orelse) or py_top_level_code(node.finalbody)
+                   or next((h for x in node.handlers for h in [py_top_level_code(x.body)] if h), None))
+        else:
+            return node
+        if hit:
+            return hit
+    return None
+
+
+def js_top_level_code(text):
+    """(line, text) of the first top-level statement of a node source that is no declaration (import, export, const, let,
+    var, function, class), read with comments and literals blanked and continuation lines followed; None when there is none.
+    A heuristic, not a parser: a statement split so that a line starts with a plain word is taken for code (the safe side)."""
+    comments, lits = js_scan(text)
+    masked = blank_spans(text, comments + lits)
+    depth, last = 0, ""
+    for no, line in enumerate(masked.split("\n"), 1):
+        stripped = line.strip()
+        if stripped and depth == 0 and last not in JS_CONTINUES and stripped[0] not in ".?:+-*/%&|=,)]}>;":
+            word = re.match(r"[A-Za-z_$][\w$]*", stripped)
+            if not (word and word.group(0) in JS_DECL_WORDS):
+                return no, first_line(text.split("\n")[no - 1])
+        for c in line:
+            if c in "([{":
+                depth += 1
+            elif c in ")]}":
+                depth = max(0, depth - 1)
+        if stripped:
+            last = stripped[-1]
+    return None
+
+
+def js_main_guard(text):
+    """The repo's node main guards: isInvokedDirectly() / process.argv[1] against import.meta.url, or require.main === module."""
+    code = js_code_only(text)
+    return (("import.meta.url" in code and "process.argv[1]" in code)
+            or re.search(r"\brequire\.main\s*===?\s*module\b", code) is not None)
+
+
+def guard_check(path):
+    """(True, "") when loading the file runs nothing but its definitions (a main guard, or a definitions-only top level), or
+    when it does not parse (then nothing runs either: the load fails at compile); (False, why) otherwise."""
     try:
-        proc = subprocess.Popen(argv, cwd=ROOT, env=dict(os.environ, CLAUDE_PROJECT_DIR=ROOT), stdin=subprocess.DEVNULL,
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
-    except OSError as exc:
-        return {"class": "IMPORT", "rc": None, "detail": "%s: %s" % (type(exc).__name__, argv[0])}
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+    except OSError:
+        return True, ""
+    if path.endswith(".py"):
+        try:
+            tree = ast.parse(text)
+        except (SyntaxError, ValueError):
+            return True, ""
+        if any(py_main_guard(n) for n in tree.body):
+            return True, ""
+        hit = py_top_level_code(tree.body)
+        if hit is None:
+            return True, ""
+        return False, 'no if __name__ == "__main__" guard, top-level code at line %d: %s' % (
+            hit.lineno, first_line(ast.unparse(hit))[:80])
+    if js_main_guard(text):
+        return True, ""
+    hit = js_top_level_code(text)
+    if hit is None:
+        return True, ""
+    return False, "no isInvokedDirectly() / import.meta.url main guard, top-level code at line %d: %s" % (hit[0], hit[1][:80])
+
+
+# Review of #1830: the probes get the environment a hook needs to start, not the watcher's own (which may carry tokens).
+PROBE_ENV_KEEP = ("PATH", "HOME", "TZ", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "PYTHONPATH", "NODE_PATH")
+
+
+def probe_env():
+    env = {k: os.environ[k] for k in PROBE_ENV_KEEP if k in os.environ}
+    env.update(CLAUDE_PROJECT_DIR=ROOT, PYTHONDONTWRITEBYTECODE="1")
+    return env
+
+
+def run_bounded(argv, timeout):
+    """(rc, stdout, stderr) or None on a timeout (the process group is killed); OSError propagates."""
+    proc = subprocess.Popen(argv, cwd=ROOT, env=probe_env(), stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
     try:
         out, err = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
@@ -513,9 +665,50 @@ def import_probe(path):
         except OSError:
             pass
         proc.communicate()
+        return None
+    return proc.returncode, out.decode("utf-8", "replace"), err.decode("utf-8", "replace")
+
+
+def syntax_probe(path, why):
+    """An unguarded dependency is not loaded: a syntax check (it runs nothing) still tells a broken file apart."""
+    if path.endswith(".py"):
+        try:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                compile(fh.read(), path, "exec", dont_inherit=True)
+        except (SyntaxError, ValueError) as exc:
+            return {"class": "IMPORT", "rc": 1, "detail": "%s: %s | SyntaxError: %s" % (
+                os.path.basename(path), getattr(exc, "lineno", "?"), first_line(getattr(exc, "msg", "") or str(exc)))}
+    else:
+        try:
+            res = run_bounded(["node", "--check", path], import_timeout())
+        except OSError as exc:
+            return {"class": "IMPORT", "rc": None, "detail": "%s: node" % type(exc).__name__}
+        if res is None:
+            return {"class": "TIMEOUT", "rc": None, "detail": "not syntax-checked within %ss" % import_timeout()}
+        if res[0] != 0:
+            return {"class": "IMPORT", "rc": res[0], "detail": error_detail(res[2]) or first_line(res[1])}
+    return {"class": "UNGUARDED", "rc": None, "detail": why}
+
+
+def import_probe(path):
+    """Load ONE dependency on its own, without running a main: OK, IMPORT (it does not load) or TIMEOUT; UNGUARDED (not
+    loaded) when its top level would run more than definitions."""
+    safe, why = guard_check(path)
+    if not safe:
+        return syntax_probe(path, why)
+    if path.endswith(".py"):
+        argv = ["python3", "-B", "-c", PY_IMPORT_PROBE, path]
+    else:
+        argv = ["node", "--input-type=module", "-e", "await import(%s)" % json.dumps(pathlib.Path(path).as_uri())]
+    timeout = import_timeout()
+    try:
+        res = run_bounded(argv, timeout)
+    except OSError as exc:
+        return {"class": "IMPORT", "rc": None, "detail": "%s: %s" % (type(exc).__name__, argv[0])}
+    if res is None:
         return {"class": "TIMEOUT", "rc": None, "detail": "not loaded within %ss" % timeout}
-    rc = proc.returncode
-    detail = "" if rc == 0 else (error_detail(err.decode("utf-8", "replace")) or first_line(out.decode("utf-8", "replace")))
+    rc, out, err = res
+    detail = "" if rc == 0 else (error_detail(err) or first_line(out))
     return {"class": "OK" if rc == 0 else "IMPORT", "rc": rc, "detail": detail}
 
 
@@ -579,7 +772,7 @@ def error_detail(text):
 
 def probe(command, rec):
     bash = takes_bash(rec["matchers"])
-    env = dict(os.environ, CLAUDE_PROJECT_DIR=ROOT, PYTHONDONTWRITEBYTECODE="1")
+    env = probe_env()
     timeout = rec["timeout"] or DEFAULT_TIMEOUT
     started = time.monotonic()
     proc = subprocess.Popen(["/bin/sh", "-c", command], cwd=ROOT, env=env, stdin=subprocess.PIPE,
@@ -645,6 +838,8 @@ MEANING = {"SETTINGS": "OLVASHATATLAN BEÁLLÍTÁS (a hookjai nem mérhetők, é
            "CLOSED": "ZÁRVA (egy ártalmatlan hívást is tilt: minden ilyen eszközhívás áll)",
            "TIMEOUT": "IDŐTÚLLÉPÉS (a saját határidején belül nem válaszolt)",
            "IMPORT": "NEM TÖLTHETŐ BE (egy kapu helyi függősége: ahol a kapu betölti, ott hibázik, a burkolóval tilt)",
+           "UNGUARDED": "NINCS MAIN-ŐR (a betöltése a teljes felső szintjét futtatná, ezért nem töltöttem be, csak a szintaxisát "
+                        "néztem; ahol a kapu betölti, ott ez a kód lefut)",
            "MISSING": "a kapu forrásában megnevezett helyi függőség, a fájl nincs meg (ahol a kapu betölti, ott hibázik, a burkolóval tilt)"}
 
 
@@ -660,12 +855,15 @@ def alert_text(findings, results):
     when = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     imp_total = sum(1 for r in results if r.get("kind") == "import")
     miss_found = sum(1 for f in findings if f["class"] == "MISSING")
-    imp_found = sum(1 for f in findings if f.get("kind") == "import") - miss_found
-    cmd_total, cmd_found = len(results) - imp_total, len(findings) - imp_found - miss_found
+    ung_found = sum(1 for f in findings if f["class"] == "UNGUARDED")
+    imp_found = sum(1 for f in findings if f.get("kind") == "import") - miss_found - ung_found
+    cmd_total, cmd_found = len(results) - imp_total, len(findings) - imp_found - miss_found - ung_found
     parts = (["%d/%d PreToolUse biztonsági hook-parancs nem tölt be rendesen" % (cmd_found, cmd_total)]
-             if cmd_found or not (imp_found or miss_found) else [])
+             if cmd_found or not (imp_found or miss_found or ung_found) else [])
     if imp_found:
         parts.append("%d/%d helyi kapu-függőség nem tölthető be" % (imp_found, imp_total))
+    if ung_found:
+        parts.append("%d/%d helyi kapu-függőség main-őr nélkül, nem töltöttem be" % (ung_found, imp_total))
     if miss_found:
         parts.append("%d/%d helyi kapu-függőség hiányzik" % (miss_found, imp_total))
     lines = ["[HOOK-FIGYELŐ] %s (mérve %s, %s):" % (", ".join(parts), when, ROOT)]
@@ -805,8 +1003,9 @@ def main(argv):
     log("derived %d commands, %d scripts; helpers left out: %s; findings: %d"
         % (len(probed), len({s for r in probed for s in r["scripts"]}), ", ".join(helpers) or "-",
            len(findings_of(results))))
-    imports = [r for r in results if r.get("kind") == "import" and r["class"] != "MISSING"]
+    imports = [r for r in results if r.get("kind") == "import" and r["class"] not in ("MISSING", "UNGUARDED")]
     log("local dependencies: %d loaded on their own, without a main; failing: %d" % (len(imports), len(findings_of(imports))))
+    log("local dependencies not loaded, no main guard: %d" % sum(1 for r in results if r["class"] == "UNGUARDED"))
     log("local dependencies named in a gate's source but missing: %d"
         % sum(1 for r in results if r["class"] == "MISSING"))
     if check:
