@@ -847,6 +847,7 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
     injectDigestProvenanceGate(existing)
   }
   if (agentGetsTelegramCopyGate(name)) injectTelegramCopyGate(existing)
+  if (agentGetsChildClaudeGuard(name)) injectChildClaudeGuard(existing)
   if (agentGetsDestructiveGate(name, profile)) injectDestructiveGate(existing)
   injectEgressGate(existing)
   if (agentGetsBashEgressParser(name)) injectBashEgressParser(existing)
@@ -1435,6 +1436,65 @@ export function agentGetsDestructiveGate(name: string, profile?: ProfileTemplate
   if (name === MAIN_AGENT_ID) return false
   const p = profile ?? loadProfileTemplate(resolveAgentSecurityProfile(name))
   return profileWantsDestructiveGate(p)
+}
+
+// CHILDCLAUDEPOLLER1010. Which agents get the child-claude channel guard: every
+// sub-agent. A child `claude` started from a channel-owning session's Bash
+// inherits TELEGRAM_STATE_DIR / CLAUDE_CONFIG_DIR, loads the channel plugin,
+// and the plugin's bot.pid logic SIGTERMs the PARENT's live poller -- measured
+// 2026-10-10 with three `claude -p` calls from a live sub-agent, see
+// docs/mcp-list-channel-plugin.md. The main agent is left to its committed
+// project settings, as with the outgoing-copy gate; it runs on the shared
+// config root and the guard decides on the session's *_STATE_DIR variables,
+// which the sub-agent launcher exports.
+export const CHILD_CLAUDE_GUARD_SCRIPT = 'child-claude-channel-guard.mjs'
+
+export function agentGetsChildClaudeGuard(name: string): boolean {
+  return name !== MAIN_AGENT_ID
+}
+
+// Same dedupe discipline as injectDestructiveGate: drop every prior entry that
+// carries this script (whatever its matcher) and re-add the canonical one, so a
+// stale matcher can never leave a guard that silently never fires.
+export function injectChildClaudeGuard(existing: Record<string, unknown>): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const command = hookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', CHILD_CLAUDE_GUARD_SCRIPT))
+  // Registration guard: a /tmp or missing path must never enter shared settings.
+  if (isUnsafeHookCommand(command)) return
+  const entry = {
+    matcher: 'Bash',
+    hooks: [{ type: 'command', command, timeout: 10 }],
+  }
+  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  hooks.PreToolUse = [
+    ...prev.filter((e) => !JSON.stringify(e).includes(CHILD_CLAUDE_GUARD_SCRIPT)),
+    entry,
+  ]
+}
+
+// Idempotent migration for the EXISTING fleet: the scaffold only rewrites a
+// sub-agent's settings on spawn, so without this the guard would reach the
+// running agents no sooner than their next respawn. A settings file that is not
+// there is not created. Returns true if written.
+export function ensureChildClaudeGuard(name: string): boolean {
+  if (!agentGetsChildClaudeGuard(name)) return false
+  const settingsPath = agentSettingsPath(name)
+  if (!existsSync(settingsPath)) return false
+  let settings: Record<string, unknown> = {}
+  try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+  const command = hookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', CHILD_CLAUDE_GUARD_SCRIPT))
+  const hooks = (settings.hooks && typeof settings.hooks === 'object')
+    ? settings.hooks as Record<string, unknown>
+    : {}
+  const ptu = Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse : []
+  const wiredHere = ptu.some((e) => JSON.stringify(e).includes(CHILD_CLAUDE_GUARD_SCRIPT)
+    && (e as { matcher?: unknown })?.matcher === 'Bash')
+  if (wiredHere && hookCommandWired(JSON.stringify(ptu), command)) return false
+  injectChildClaudeGuard(settings)
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
 }
 
 // Idempotently wire the destructive-gate PreToolUse hook.
