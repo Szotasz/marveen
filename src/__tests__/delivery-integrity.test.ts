@@ -218,9 +218,10 @@ describe('queued into a running turn: intact-queued (card c8a6c2cc)', () => {
   // The measured row shapes, with our text in them.
   const enqueue = (ts: string, text: string) => line({ type: 'queue-operation', operation: 'enqueue', timestamp: ts, sessionId: 's', content: text })
   const absorbed = (ts: string, text: string) => line({ type: 'queue-operation', operation: 'remove', reason: 'absorbed_mid_turn', timestamp: ts, sessionId: 's', content: text })
-  const handedOver = (ts: string, text: string, commandMode = 'prompt') => line({
+  const handedOver = (ts: string, text: string, commandMode = 'prompt', origin: unknown = { kind: 'human' }) => line({
     type: 'attachment', timestamp: ts, uuid: 'u1', sessionId: 's', userType: 'external',
-    attachment: { type: 'queued_command', commandMode, prompt: text, origin: { kind: 'human' } },
+    // origin null = the row has no origin field at all
+    attachment: { type: 'queued_command', commandMode, prompt: text, ...(origin === null ? {} : { origin }) },
   })
 
   it('a queued copy equal to the typed text is intact-queued; a bare string is still a typed prompt', () => {
@@ -268,7 +269,15 @@ describe('queued into a running turn: intact-queued (card c8a6c2cc)', () => {
       expect(readUserPromptsSince([dir], T0)).toEqual([])
     })
 
-    const base = { typedAt: T0 + 6_000, deliveryVerdict: undefined, workingDir: '/Users/x/ClaudeClaw' }
+    it('a commandMode prompt hand-over from a CHANNEL (or without an origin) is not typed input (review on #1828)', () => {
+      writeFileSync(join(dir, 's.jsonl'),
+        handedOver('2026-09-26T01:15:06.000Z', 'a telegram message', 'prompt', { kind: 'channel' }) +
+        handedOver('2026-09-26T01:15:07.000Z', 'no origin at all', 'prompt', null) +
+        handedOver('2026-09-26T01:15:08.000Z', 'typed while busy'))
+      expect(readUserPromptsSince([dir], T0)).toEqual([{ text: 'typed while busy', queued: true }])
+    })
+
+    const base ={ typedAt: T0 + 6_000, deliveryVerdict: undefined, workingDir: '/Users/x/ClaudeClaw' }
     function onDisk(rows: string): string {
       const root = mkdtempSync(join(tmpdir(), 'deliv-queued-e2e-'))
       const pdir = projectsDirFor('/Users/x/ClaudeClaw', root)
