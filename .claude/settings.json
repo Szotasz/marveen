@@ -63,7 +63,8 @@
       { "matcher": "Read", "hooks": [ { "type": "command", "command": "bash \"$CLAUDE_PROJECT_DIR/scripts/hooks/channel-image-resize.sh\"", "timeout": 15 } ] },
       { "matcher": "WebFetch", "hooks": [ { "type": "command", "command": "command -v node >/dev/null 2>&1 || { echo \"governance-kapu: node interpreter hianyzik, a kapu BLOKKOL\" >&2; exit 2; }; if command -v timeout >/dev/null 2>&1; then timeout -k 1 8 node \"$CLAUDE_PROJECT_DIR/scripts/hooks/egress-gate.mjs\"; else node \"$CLAUDE_PROJECT_DIR/scripts/hooks/egress-gate.mjs\"; fi; rc=$?; [ \"$rc\" = 0 ] || [ \"$rc\" = 2 ] || { echo \"governance-kapu (fail-closed): egress-gate.mjs: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.\" >&2; exit 2; }; exit \"$rc\"", "timeout": 10 } ] },
       { "matcher": "Write|Edit|MultiEdit", "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/memory-frontmatter-gate.py\"", "timeout": 10 } ] },
-      { "matcher": "Bash", "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/memory-frontmatter-bash-gate.py\"", "timeout": 10 } ] }
+      { "matcher": "Bash", "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/memory-frontmatter-bash-gate.py\"", "timeout": 10 } ] },
+      { "matcher": "Bash", "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/schedule-dated-post-gate.py\"", "timeout": 10 } ] }
     ],
     "Stop": [
       { "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/telegram-reply-guard.py\"", "timeout": 10 } ] },
