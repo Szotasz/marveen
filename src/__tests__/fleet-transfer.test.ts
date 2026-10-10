@@ -47,12 +47,15 @@ describe('encrypt/decrypt round-trip', () => {
 // importFleet: encrypted wrapper detection (with mocked FS / DB)
 // ---------------------------------------------------------------------------
 
+// Every statement the import runs, with its bound values, so a test can check
+// which columns a fixed-list INSERT carries.
+const dbRuns = vi.hoisted(() => [] as { sql: string; args: unknown[] }[])
 vi.mock('../db.js', () => ({
   getDb: () => ({
-    prepare: () => ({
+    prepare: (sql: string) => ({
       all: () => [],
       get: () => null,
-      run: () => ({ changes: 0 }),
+      run: (...args: unknown[]) => { dbRuns.push({ sql, args }); return { changes: 0 } },
     }),
     transaction: (fn: Function) => fn,
   }),
@@ -419,5 +422,31 @@ describe('importFleet: model ids are validated before any write', () => {
     expect((r.errors ?? []).join(' ')).not.toContain('modell-azonosító')
     const r2 = importFleet(fleetWith(agent({})), { apply: false }) as { errors?: string[] }
     expect((r2.errors ?? []).join(' ')).not.toContain('modell-azonosító')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Kanban cards: every exported column the board relies on survives the import
+// ---------------------------------------------------------------------------
+
+describe('importFleet: kanban card columns', () => {
+  // The export is SELECT *, the import a fixed column list: a column missing
+  // from that list is exported and then silently dropped on the new machine.
+  it('a card keeps its start_date', async () => {
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    const card = {
+      id: 'c1', title: 'Card', status: 'planned', priority: 'normal', sort_order: 0,
+      created_at: 1, updated_at: 1, due_date: 1790000000, start_date: 1789000000,
+    }
+    const fleet = JSON.parse(MINIMAL_FLEET)
+    fleet.kanban.cards = [card]
+    dbRuns.length = 0
+    importFleet(JSON.stringify(fleet), { apply: true })
+    const insert = dbRuns.find((r) => /INTO kanban_cards/.test(r.sql))
+    expect(insert).toBeDefined()
+    const cols = insert!.sql.slice(insert!.sql.indexOf('(') + 1, insert!.sql.indexOf(')')).split(',').map((c) => c.trim())
+    const row = Object.fromEntries(cols.map((c, i) => [c, insert!.args[i]]))
+    expect(row.start_date).toBe(1789000000)
+    expect(row.due_date).toBe(1790000000)
   })
 })
