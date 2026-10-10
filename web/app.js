@@ -8964,6 +8964,22 @@ function renderConnectors() {
 }
 
 // --- GitHub repo management ---
+// Install/update ran with npm lifecycle scripts skipped and the repo (or a
+// dependency) declares some: say so, and offer the per-repo opt-in, which
+// re-runs the update with scripts and stores the choice for later updates.
+async function offerGitHubRepoScriptsOptIn(name, skipped) {
+  if (!Array.isArray(skipped) || skipped.length === 0) return
+  const ok = confirm(t('connectors.scripts_skipped_confirm', { name: name.replace('--', '/'), list: skipped.join(', ') }))
+  if (!ok) return
+  const res = await fetch(`/api/connectors/github-repos/${encodeURIComponent(name)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ runScripts: true }),
+  })
+  const data = await res.json()
+  if (data.error) alert(data.error)
+}
+
 async function loadGitHubRepos() {
   try {
     const res = await fetch('/api/connectors/github-repos')
@@ -8985,6 +9001,7 @@ async function loadGitHubRepos() {
           const res = await fetch(`/api/connectors/github-repos/${encodeURIComponent(r.name)}`, { method: 'PATCH' })
           const data = await res.json()
           if (data.error) { alert(data.error); return }
+          await offerGitHubRepoScriptsOptIn(r.name, data.scriptsSkipped)
           loadConnectors()
         } finally { btn.disabled = false; btn.innerHTML = '&#x21bb;' }
       })
@@ -9015,6 +9032,9 @@ async function loadGitHubRepos() {
   addBtn.addEventListener('click', async () => {
     const val = input.value.trim()
     if (!val) return
+    const runScriptsBox = document.getElementById('githubRepoRunScripts')
+    const runScripts = !!(runScriptsBox && runScriptsBox.checked)
+    if (!confirm(t(runScripts ? 'connectors.install_confirm_scripts' : 'connectors.install_confirm', { url: val }))) return
     addBtn.disabled = true
     addBtn.textContent = 'Telepites...'
     status.hidden = false
@@ -9024,7 +9044,7 @@ async function loadGitHubRepos() {
       const res = await fetch('/api/connectors/github-repos', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: val }),
+        body: JSON.stringify({ url: val, runScripts }),
       })
       const data = await res.json()
       if (data.error) {
@@ -9032,6 +9052,10 @@ async function loadGitHubRepos() {
         status.textContent = data.error
         return
       }
+      // Installed, but npm install failed: keep it visible instead of reporting success.
+      // The opt-in is only offered after an install that completed.
+      if (data.installWarning) alert(t('connectors.install_warning', { msg: data.installWarning }))
+      else await offerGitHubRepoScriptsOptIn(data.repo.name, data.scriptsSkipped)
       if (data.requiredEnvVars && data.requiredEnvVars.length > 0) {
         status.className = 'github-repo-status loading'
         status.textContent = t('connectors.api_keys_needed')
