@@ -234,6 +234,13 @@ its fallback senders (`telegram_progress*.py`), the commands the hook answers
 
 For a message without a topic every call is exactly what it is with the switch off.
 
+**Shared plugin cache.** The patch changes the plugin source in the plugin cache
+(`$CLAUDE_CONFIG_DIR/plugins/cache`, else `~/.claude/plugins/cache`), and every Claude Code
+session that uses the same cache loads the Telegram plugin from there, sessions outside
+Marveen included. They see the optional `message_thread_id` parameter of the `reply` tool
+and the attribute on a topic message's tag as well; as long as they do not pass the
+parameter, they behave as before.
+
 **What does not change.** The `chat_id` stays the same, so owner identification, command
 permissions and approvals are not affected. Alerts, approval requests, scheduled task
 results and the voice reply still go out without a topic.

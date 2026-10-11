@@ -236,6 +236,13 @@ annak tartalék-küldései (`telegram_progress*.py`), a hookból megválaszolt p
 
 Téma nélküli üzenetnél minden hívás pontosan ugyanaz, mint kikapcsolva.
 
+**Közös plugin-cache.** A kiegészítés a plugin-cache-ben lévő forrást módosítja
+(`$CLAUDE_CONFIG_DIR/plugins/cache`, ennek hiányában `~/.claude/plugins/cache`), és ebből
+tölti a Telegram plugint minden Claude Code session, amely ugyanezt a cache-t használja, a
+Marveen-en kívüliek is. Azokban is megjelenik a `reply` tool opcionális `message_thread_id`
+paramétere és a témából jött üzenet tagjének attribútuma; amíg nem adják meg a paramétert,
+a viselkedésük változatlan.
+
 **Ami nem változik.** A `chat_id` ugyanaz marad, ezért a gazda-azonosítás, a parancsok
 jogosultsága és a jóváhagyások nem érintettek. A riasztások, a jóváhagyás-kérések, az
 ütemezett feladatok eredménye és a hang-válasz továbbra is téma nélkül mennek ki.
