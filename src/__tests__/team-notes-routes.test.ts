@@ -114,6 +114,17 @@ describe('/api/notes', () => {
     expect(getTeamNote(agent.body.id)!.created_by).toBe('margo')
   })
 
+  it('a non-string author in the body is a 400 even when a session names the author', async () => {
+    const session = { kind: 'session', user: 'alex' } as RouteContext['auth']
+    const bad = await call('POST', '/api/notes', { assignee: 'cody', content: 'x', created_by: 123 }, session)
+    expect(bad.status).toBe(400)
+    expect((getDb().prepare("SELECT COUNT(*) AS n FROM team_notes WHERE content = 'x'").get() as { n: number }).n).toBe(0)
+    const id = await create({ assignee: 'cody', content: 'keep me', created_by: 'margo' })
+    const del = await call('DELETE', `/api/notes/${id}`, { by: {} }, session)
+    expect(del.status).toBe(400)
+    expect(getTeamNote(id)!.deleted_at).toBeNull()
+  })
+
   it('DELETE: a too-long reason is a 400 (not cut short) and a malformed id a 400 (not a 500)', async () => {
     const id = await create({ assignee: 'cody', content: 'x' })
     const long = await call('DELETE', `/api/notes/${id}`, { by: 'cody', reason: 'r'.repeat(2001) })

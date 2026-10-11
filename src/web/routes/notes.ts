@@ -89,6 +89,11 @@ function stringField(ctx: RouteContext, body: Body, name: string, required: bool
  * Returns null after writing a 400.
  */
 function actorField(ctx: RouteContext, body: Body, name: string): string | null {
+  // The body field is checked first, whatever the credential: a non-string
+  // name is a 400 here as in the other kanban writes, never a silent 200.
+  if (body[name] !== undefined && body[name] !== null && typeof body[name] !== 'string') {
+    json(ctx.res, { error: `${name} must be a string` }, 400); return null
+  }
   const auth = ctx.auth
   const who = auth?.kind === 'session' ? auth.user?.trim() : auth?.kind === 'device' ? auth.device?.trim() : undefined
   if (who) return who.slice(0, MAX_NAME_CHARS)

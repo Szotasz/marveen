@@ -19,6 +19,7 @@ Run: python3 scripts/__tests__/jegyzetek.test.py
 import http.server
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -26,7 +27,17 @@ import threading
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
-SCRIPT = os.path.join(ROOT, "scripts", "jegyzetek.py")
+# The CLI and agent-msg.sh run from a throwaway copy of the install: agent-msg.sh
+# logs a failed send to <its install>/store/agent-msg-failures.log, and a test
+# must not write into the real one.
+SANDBOX = tempfile.mkdtemp(prefix="jegyzetek-test-")
+os.makedirs(os.path.join(SANDBOX, "scripts"))
+os.makedirs(os.path.join(SANDBOX, "store"))
+for name in ("jegyzetek.py", "agent-msg.sh"):
+    shutil.copy(os.path.join(ROOT, "scripts", name), os.path.join(SANDBOX, "scripts", name))
+SCRIPT = os.path.join(SANDBOX, "scripts", "jegyzetek.py")
+REAL_FAIL_LOG = os.path.join(ROOT, "store", "agent-msg-failures.log")
+SANDBOX_FAIL_LOG = os.path.join(SANDBOX, "store", "agent-msg-failures.log")
 FAILS = []
 
 NOTES = [
@@ -158,9 +169,15 @@ check("ertesit sends one message, from MAIN_AGENT_ID, exit 0",
       r.stdout + r.stderr + str(sent))
 check("the sent message carries no note text", sent and "SECRET-NOTE-TEXT" not in json.dumps(sent[0][2]), str(sent))
 Fake.messages_status = 500
+real_log_before = os.path.getsize(REAL_FAIL_LOG) if os.path.exists(REAL_FAIL_LOG) else None
 r, calls = cli("ertesit", "este")
 check("a failed send makes ertesit exit 1", r.returncode == 1 and "not sent to cody" in r.stderr, r.stdout + r.stderr)
+check("the failed send is logged in the sandbox, not in the real install",
+      os.path.exists(SANDBOX_FAIL_LOG) and "to=cody" in open(SANDBOX_FAIL_LOG).read()
+      and (os.path.getsize(REAL_FAIL_LOG) if os.path.exists(REAL_FAIL_LOG) else None) == real_log_before)
 
 server.shutdown()
+shutil.rmtree(SANDBOX, ignore_errors=True)
+shutil.rmtree(TMP, ignore_errors=True)
 print("\n%d failure(s)" % len(FAILS))
 sys.exit(1 if FAILS else 0)
