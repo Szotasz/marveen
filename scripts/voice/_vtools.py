@@ -95,6 +95,30 @@ def _token(state_dir):
     return m.group(1).strip().strip('"').strip("'")
 
 
+WHISPER_SAMPLE_RATE = 16000
+
+
+def _decode_audio(path):
+    """Decode any audio file to 16 kHz mono float32 samples in [-1, 1) with ffmpeg.
+
+    faster-whisper decodes a file PATH through PyAV, and 1.2.1 calls
+    av.open(..., metadata_errors="ignore"). PyAV 19 removed that keyword
+    (present in 18.1.0's av/container/core.pyi, gone from 19.0.1), so a fresh
+    install that resolves av 19 dies on every voice message with
+    "TypeError: open() got an unexpected keyword argument 'metadata_errors'"
+    (measured 2026-09-30, av 19.0.0 + faster-whisper 1.2.1). Handing
+    transcribe() a numpy array skips faster-whisper's decoder entirely, so the
+    PyAV version no longer matters. ffmpeg is already a hard dependency of the
+    voice installer (it encodes the outbound opus)."""
+    import numpy as np
+    pcm = subprocess.run(
+        ["ffmpeg", "-nostdin", "-loglevel", "error", "-i", path,
+         "-ac", "1", "-ar", str(WHISPER_SAMPLE_RATE), "-f", "s16le", "-"],
+        check=True, capture_output=True,
+    ).stdout
+    return np.frombuffer(pcm, np.int16).astype(np.float32) / 32768.0
+
+
 def _whisper(path, words=False):
     # ADDITIV (2026-09-12): a words=False ag VALTOZATLAN -- a stt.sh es a canary erre epul, es a
     # repetition-teszt a stdoutjat kapja el. A words=True ag KULON kimenet (JSON), uj hivoknak:
@@ -104,8 +128,8 @@ def _whisper(path, words=False):
     # Hungarian accents/diacritics, at a cost in latency and memory. Default
     # stays 'small'; set MARVEEN_WHISPER_MODEL=medium to trade speed for accuracy.
     m = WhisperModel(_whisper_model_name(), device="cpu", compute_type="int8")
-    segs, _ = m.transcribe(path, language="hu", beam_size=5, condition_on_previous_text=False,
-                           word_timestamps=words)
+    segs, _ = m.transcribe(_decode_audio(path), language="hu", beam_size=5,
+                           condition_on_previous_text=False, word_timestamps=words)
     segs = list(segs)
     if not words:
         print(" ".join(s.text.strip() for s in segs).strip())
@@ -462,7 +486,8 @@ def canary(voice_onnx, expected_text):
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         from faster_whisper import WhisperModel
         m = WhisperModel(_whisper_model_name(), device="cpu", compute_type="int8")
-        segs, _ = m.transcribe(wav, language="hu", beam_size=5, condition_on_previous_text=False)
+        segs, _ = m.transcribe(_decode_audio(wav), language="hu", beam_size=5,
+                               condition_on_previous_text=False)
         transcript = " ".join(s.text.strip() for s in segs).strip()
         exp_words = _normalize(expected_text).split()
         got_words = set(_normalize(transcript).split())
