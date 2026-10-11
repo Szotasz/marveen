@@ -1,13 +1,15 @@
 // Team notes ("Jegyzetek"): /api/notes CRUD with soft delete. Covers create,
-// list ordering, the assignee filter (which must also return 'mindenki' lines),
-// edit, soft delete + include_deleted, and the 400/404/405 edges.
+// list ordering, the assignee filter (which must also return 'mindenki' lines,
+// case-insensitively), soft delete + include_deleted, who wrote or deleted a
+// line (body, else the session user, never a guess), and the 400/404/405 edges.
+// There is no edit (PUT): every change to the list is a create or a delete.
 import { describe, it, expect, beforeEach } from 'vitest'
 import { Readable } from 'node:stream'
 import { initDatabase, getDb, getTeamNote } from '../db.js'
 import { tryHandleNotes } from '../web/routes/notes.js'
 import type { RouteContext } from '../web/routes/types.js'
 
-async function call(method: string, pathAndQuery: string, payload?: unknown): Promise<{ handled: boolean; status: number; body: any }> {
+async function call(method: string, pathAndQuery: string, payload?: unknown, auth?: RouteContext['auth']): Promise<{ handled: boolean; status: number; body: any }> {
   const out = { status: 200, body: null as any }
   const res: any = {
     writeHead(status: number) { out.status = status; return res },
@@ -17,7 +19,7 @@ async function call(method: string, pathAndQuery: string, payload?: unknown): Pr
   const raw = payload === undefined ? '' : typeof payload === 'string' ? payload : JSON.stringify(payload)
   const req: any = Readable.from(raw ? [Buffer.from(raw)] : [])
   const url = new URL(`http://localhost:3420${pathAndQuery}`)
-  const handled = await tryHandleNotes({ req, res, path: url.pathname, method, url } as RouteContext)
+  const handled = await tryHandleNotes({ req, res, path: url.pathname, method, url, auth } as RouteContext)
   return { handled, ...out }
 }
 
@@ -67,24 +69,54 @@ describe('/api/notes', () => {
     expect(r.body.unknown).toEqual(['asignee'])
   })
 
-  it('edits an active note', async () => {
-    const id = await create({ assignee: 'cody', content: 'old', due_date: '2026-09-30' })
-    const r = await call('PUT', `/api/notes/${id}`, { content: 'new', assignee: 'margo', due_date: null })
-    expect(r.status).toBe(200)
-    expect(r.body.note).toMatchObject({ content: 'new', assignee: 'margo', due_date: null })
-    expect(getTeamNote(id)!.content).toBe('new')
+  it('stores the assignee lower-case and filters case-insensitively, old mixed-case rows included', async () => {
+    const mine = await create({ assignee: 'Roxy ', content: 'mine' })
+    expect(getTeamNote(mine)!.assignee).toBe('roxy')
+    // A row written before the API lower-cased (or straight into the table).
+    getDb().prepare("INSERT INTO team_notes (id, assignee, content, created_at, created_by) VALUES ('0ld001', 'ROXY', 'old row', 1, 'x'), ('0ld002', 'Mindenki', 'old all', 1, 'x')").run()
+    const r = await call('GET', '/api/notes?assignee=RoXy')
+    expect(r.body.map((n: any) => n.id).sort()).toEqual([mine, '0ld001', '0ld002'].sort())
   })
 
-  it('PUT: 404 on missing and on deleted note, 400 on unknown field', async () => {
-    expect((await call('PUT', '/api/notes/abcdef', { content: 'x' })).status).toBe(404)
+  it('an empty assignee filter is a 400, not every note', async () => {
+    await create({ assignee: 'roxy', content: 'x' })
+    for (const q of ['assignee=', 'assignee=%20']) {
+      const r = await call('GET', `/api/notes?${q}`)
+      expect(r.status, q).toBe(400)
+      expect(r.body.error).toContain('assignee')
+    }
+    expect((await call('GET', '/api/notes?include_deleted=yes')).body.error).toContain('1, 0, true or false')
+  })
+
+  it('PUT is not offered: 405, the note unchanged', async () => {
     const id = await create({ assignee: 'cody', content: 'x' })
-    const unknown = await call('PUT', `/api/notes/${id}`, { content: 'y', status: 'done' })
-    expect(unknown.status).toBe(400)
-    expect(unknown.body.error).toContain('status')
-    expect(unknown.body.error).toContain('Accepted: content, assignee, due_date')
+    const r = await call('PUT', `/api/notes/${id}`, { content: 'y' })
+    expect(r.status).toBe(405)
     expect(getTeamNote(id)!.content).toBe('x')
-    await call('DELETE', `/api/notes/${id}`, { by: 'cody' })
-    expect((await call('PUT', `/api/notes/${id}`, { content: 'z' })).status).toBe(404)
+  })
+
+  it('without created_by / by a browser session names its user; a token caller must name itself', async () => {
+    const session = { kind: 'session', user: 'gabor' } as RouteContext['auth']
+    const post = await call('POST', '/api/notes', { assignee: 'cody', content: 'from the page' }, session)
+    expect(post.status).toBe(200)
+    expect(getTeamNote(post.body.id)!.created_by).toBe('gabor')
+    expect((await call('POST', '/api/notes', { assignee: 'cody', content: 'x' }, { kind: 'token' } as RouteContext['auth'])).status).toBe(400)
+    const del = await call('DELETE', `/api/notes/${post.body.id}`, { reason: 'done' }, session)
+    expect(del.status).toBe(200)
+    expect(getTeamNote(post.body.id)).toMatchObject({ deleted_by: 'gabor', delete_reason: 'done' })
+    const device = await call('POST', '/api/notes', { assignee: 'cody', content: 'from a phone' }, { kind: 'device', device: 'Gabor phone', deviceId: 1 } as RouteContext['auth'])
+    expect(getTeamNote(device.body.id)!.created_by).toBe('Gabor phone')
+    // An explicit name wins over the session.
+    const named = await call('POST', '/api/notes', { assignee: 'cody', content: 'y', created_by: 'margo' }, session)
+    expect(getTeamNote(named.body.id)!.created_by).toBe('margo')
+  })
+
+  it('DELETE: a too-long reason is a 400 (not cut short) and a malformed id a 400 (not a 500)', async () => {
+    const id = await create({ assignee: 'cody', content: 'x' })
+    const long = await call('DELETE', `/api/notes/${id}`, { by: 'cody', reason: 'r'.repeat(2001) })
+    expect(long.status).toBe(400)
+    expect(getTeamNote(id)!.deleted_at).toBeNull()
+    expect((await call('DELETE', '/api/notes/%E0%A4%A', { by: 'cody' })).status).toBe(400)
   })
 
   it('soft-deletes: hidden from the default list, kept with deleted_* under include_deleted=1', async () => {
@@ -128,6 +160,8 @@ describe('/api/notes', () => {
       [{ assignee: 'cody', content: 'x' }, 'created_by'],
       [{ assignee: 'cody', content: 'x', created_by: 'gazda', due_date: '27/09/2026' }, 'YYYY-MM-DD'],
       [{ assignee: 'cody', content: 'x', created_by: 'gazda', due_date: '2026-02-30' }, 'YYYY-MM-DD'],
+      [{ assignee: 'cody', content: 'x', created_by: 'gazda', due_date: '0000-01-01' }, 'YYYY-MM-DD'],
+      [{ assignee: 'cody', content: 'x', created_by: 'gazda', due_date: '1969-12-31' }, 'YYYY-MM-DD'],
       [{ assignee: 'cody', content: 'x', created_by: 'gazda', priority: 'high' }, 'Accepted: assignee, content, due_date, created_by'],
       ['{not json', 'JSON'],
     ]

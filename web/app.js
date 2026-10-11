@@ -16881,7 +16881,7 @@ const STATUS_LABELS = { new: () => t('ideas.status.new'), reviewed: () => t('ide
 let notesAssigneesLoaded = false
 
 function notesLocalToday() {
-  // The owner's local date (the browser runs in his timezone), not UTC.
+  // The viewer's local date (the browser's timezone), not UTC.
   const d = new Date()
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 }
@@ -16902,23 +16902,31 @@ async function loadNotesAssignees() {
   const sel = document.getElementById('notesAssignee')
   if (!sel) return
   let names = []
+  let loaded = false
   try {
     const r = await fetch('/api/agents')
     if (r.ok) {
       const list = await r.json()
-      if (Array.isArray(list)) names = list.map((a) => a && a.name).filter(Boolean)
+      if (Array.isArray(list)) { names = list.map((a) => a && a.name).filter(Boolean); loaded = true }
     }
   } catch { /* the fixed entries below are enough to keep the form usable */ }
-  const all = ['mindenki', 'gazda', 'marveen', ...names.filter((n) => n !== 'marveen' && n !== 'gazda' && n !== 'mindenki').sort()]
+  // Stored assignees are lower-case (the server lower-cases them too).
+  const main = mainAgentId().toLowerCase()
+  const fixed = ['mindenki', 'gazda', main]
+  const all = [...fixed, ...[...new Set(names.map((n) => String(n).toLowerCase()))].filter((n) => !fixed.includes(n)).sort()]
   const prev = sel.value
   sel.innerHTML = all.map((n) => `<option value="${escapeHtml(n)}">${escapeHtml(notesAssigneeLabel(n))}</option>`).join('')
   if (prev && all.includes(prev)) sel.value = prev
-  notesAssigneesLoaded = true
+  // Only a real agent list counts as loaded: after a failed request the next
+  // visit tries again instead of keeping the fallback list for the session.
+  notesAssigneesLoaded = loaded
 }
 
 async function loadNotesPage() {
   wireNotesPage()
   if (!notesAssigneesLoaded) loadNotesAssignees()
+  // A language switch since the options were drawn: relabel them in place.
+  document.querySelectorAll('#notesAssignee option').forEach((o) => { o.textContent = notesAssigneeLabel(o.value) })
   const tbody = document.getElementById('notesTbody')
   const delTbody = document.getElementById('notesDeletedTbody')
   let rows = []
@@ -16962,7 +16970,7 @@ async function loadNotesPage() {
       </tr>`).join('') : `<tr><td colspan="5" class="notes-empty">${escapeHtml(t('notes.deleted.empty'))}</td></tr>`
   }
   const summary = document.querySelector('#notesDeleted > summary')
-  if (summary) summary.textContent = `${t('notes.deleted.title')} (${deleted.length})`
+  if (summary) summary.textContent = t('notes.deleted.title_n', { n: deleted.length })
 }
 
 let notesPageWired = false
@@ -16976,7 +16984,9 @@ function wireNotesPage() {
     const dueEl = document.getElementById('notesDue')
     const content = (contentEl?.value || '').trim()
     if (!content) { contentEl?.focus(); return }
-    const body = { assignee, content, created_by: 'gazda' }
+    // No author field: the server names the logged-in user (or device), the
+    // same person the session belongs to, instead of a fixed label.
+    const body = { assignee, content }
     if (dueEl?.value) body.due_date = dueEl.value
     const btn = document.getElementById('notesAddBtn')
     if (btn) btn.disabled = true
@@ -17004,7 +17014,7 @@ function wireNotesPage() {
       const r = await fetch(`/api/notes/${encodeURIComponent(btn.dataset.noteDone)}`, {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ by: 'gazda', reason: reason.trim() || null }),
+        body: JSON.stringify({ reason: reason.trim() || null }),
       })
       const data = await r.json().catch(() => ({}))
       if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`)

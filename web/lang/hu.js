@@ -1251,7 +1251,7 @@ window._i18n.hu = {
   'tokenUsage.biggest_calls_title':   'Legnagyobb hívások',
   'tokenUsage.changes_title':         'Változások',
 
-  // --- Ideas ---
+  // --- Team notes ---
   'notes.page_title':            'Jegyzetek',
   'notes.page_subtitle':         'A csapat apró teendői, a kanbanon kívül. Reggel és este mindenki átnézi, a kész vagy elavult sort törli.',
   'notes.col.assignee':          'Kinek',
@@ -1268,7 +1268,8 @@ window._i18n.hu = {
   'notes.load_error':            'Nem sikerült betölteni: {msg}',
   'notes.assignee.mindenki':     'mindenki',
   'notes.assignee.gazda':        'gazda',
-  'notes.deleted.title':         'Törölt (utolsó 7 nap)',
+  'notes.deleted.title':         'Az elmúlt 7 napban törölve',
+  'notes.deleted.title_n':       'Az elmúlt 7 napban törölve: {n}',
   'notes.deleted.col_when':      'Törölve',
   'notes.deleted.col_by':        'Ki törölte',
   'notes.deleted.col_reason':    'Miért',
@@ -1277,6 +1278,7 @@ window._i18n.hu = {
   'notes.toast.deleted':         'Jegyzet törölve',
   'notes.toast.error':           'Hiba: {msg}',
 
+  // --- Ideas ---
   'ideas.page_title':            'Ötletláda',
   'ideas.page_subtitle':         'Fejlesztési ötletek és javaslatok',
   'ideas.btn.new':               '+ Új ötlet',

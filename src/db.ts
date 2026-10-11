@@ -4844,7 +4844,9 @@ export function listTeamNotes(opts?: { assignee?: string; includeDeletedSince?: 
   } else {
     q += 'deleted_at IS NULL'
   }
-  if (opts?.assignee) { q += " AND (assignee = ? OR assignee = 'mindenki')"; params.push(opts.assignee) }
+  // Case-insensitive: the API stores lower-case, but a row written before
+  // that (or straight into the table) must not fall out of the filter.
+  if (opts?.assignee) { q += " AND (lower(assignee) = lower(?) OR lower(assignee) = 'mindenki')"; params.push(opts.assignee) }
   q += ' ORDER BY (due_date IS NULL), due_date ASC, created_at ASC, rowid ASC'
   return db.prepare(q).all(...params) as TeamNoteRow[]
 }
@@ -4858,18 +4860,6 @@ export function createTeamNote(note: Pick<TeamNoteRow, 'id' | 'assignee' | 'cont
     `INSERT INTO team_notes (id, assignee, content, due_date, created_at, created_by)
      VALUES (?, ?, ?, ?, ?, ?)`
   ).run(note.id, note.assignee, note.content, note.due_date ?? null, Math.floor(Date.now() / 1000), note.created_by)
-}
-
-/** Edits an ACTIVE note only; returns false when missing or soft-deleted. */
-export function updateTeamNote(id: string, patch: Partial<Pick<TeamNoteRow, 'assignee' | 'content' | 'due_date'>>): boolean {
-  const sets: string[] = []
-  const params: unknown[] = []
-  if (patch.assignee !== undefined) { sets.push('assignee = ?'); params.push(patch.assignee) }
-  if (patch.content !== undefined) { sets.push('content = ?'); params.push(patch.content) }
-  if (patch.due_date !== undefined) { sets.push('due_date = ?'); params.push(patch.due_date) }
-  if (sets.length === 0) return getTeamNote(id)?.deleted_at === null
-  params.push(id)
-  return db.prepare(`UPDATE team_notes SET ${sets.join(', ')} WHERE id = ? AND deleted_at IS NULL`).run(...params).changes > 0
 }
 
 /** Soft delete; returns false when missing or already deleted. */

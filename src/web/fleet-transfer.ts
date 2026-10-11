@@ -71,6 +71,9 @@ export interface FleetJson {
   dailyLogs: DailyLogRow[]   // ALL agent_ids
   kanban: KanbanExport
   ideaBox: IdeaBoxExport
+  // Team notes (the Notes page). Optional: an export made before the page
+  // existed has none, and imports as zero notes.
+  teamNotes?: Record<string, unknown>[]
   dashboardSettings: DashboardSettingsExport
   vault?: VaultExport
 }
@@ -182,6 +185,7 @@ export interface DiffReport {
     labels: number
     dailyLogs: number
     ideaBox: number
+    teamNotes: number
   }
   wouldOverwrite: {
     agents: string[]  // existing sub-agent names that would be overwritten
@@ -203,6 +207,7 @@ export interface ImportResult {
     labels: number
     dailyLogs: number
     ideaBox: number
+    teamNotes: number
   }
   warnings?: string[]
 }
@@ -716,6 +721,7 @@ export function exportFleet(options: { vaultPassword?: string } = {}): ExportedF
     dailyLogs,
     kanban,
     ideaBox,
+    teamNotes: db.prepare('SELECT * FROM team_notes').all() as Record<string, unknown>[],
     dashboardSettings: exportDashboardSettings(),
     ...(vault ? { vault } : {}),
   }
@@ -899,6 +905,7 @@ function buildDiffReport(fleet: FleetJson): DiffReport {
       labels: newLabels,
       dailyLogs: newDailyLogs,
       ideaBox: (fleet.ideaBox?.ideas ?? []).length,
+      teamNotes: (fleet.teamNotes ?? []).filter((n) => !db.prepare('SELECT 1 FROM team_notes WHERE id = ?').get((n as any).id)).length,
     },
     wouldOverwrite: {
       agents: existingAgentsToOverwrite,
@@ -1019,7 +1026,7 @@ function importVaultSection(vault: VaultExport, tracker: WriteTracker): void {
 
 const EMPTY_DIFF: DiffReport = {
   dryRun: true,
-  wouldCreate: { mainAgent: false, agents: [], globalSkills: 0, scheduledTasks: 0, memories: 0, kanbanCards: 0, kanbanComments: 0, labels: 0, dailyLogs: 0, ideaBox: 0 },
+  wouldCreate: { mainAgent: false, agents: [], globalSkills: 0, scheduledTasks: 0, memories: 0, kanbanCards: 0, kanbanComments: 0, labels: 0, dailyLogs: 0, ideaBox: 0, teamNotes: 0 },
   wouldOverwrite: { agents: [], mainAgent: false },
   warnings: [],
   errors: [],
@@ -1243,6 +1250,21 @@ export function importFleet(
         }
       }
 
+      // team_notes -- idempotent on id; deleted rows come along so the 7-day
+      // deletion history (who, when, why) survives the move too.
+      for (const note of fleet.teamNotes ?? []) {
+        const n = note as any
+        if (!n.id || !n.assignee || !n.content || n.created_at == null || !n.created_by) {
+          logger.warn({ id: n.id }, 'Fleet import: skipping team note with missing required fields'); continue
+        }
+        db.prepare(
+          `INSERT OR IGNORE INTO team_notes
+           (id, assignee, content, due_date, created_at, created_by, deleted_at, deleted_by, delete_reason)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ).run(n.id, n.assignee, n.content, n.due_date ?? null, n.created_at, n.created_by,
+          n.deleted_at ?? null, n.deleted_by ?? null, n.delete_reason ?? null)
+      }
+
       // FTS rebuild after all memory inserts
       db.prepare("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')").run()
     })
@@ -1319,6 +1341,7 @@ export function importFleet(
         labels: (fleet.kanban?.labels ?? []).length,
         dailyLogs: (fleet.dailyLogs ?? []).length,
         ideaBox: (fleet.ideaBox?.ideas ?? []).length,
+        teamNotes: (fleet.teamNotes ?? []).length,
       },
       ...(applyWarnings.length > 0 ? { warnings: applyWarnings } : {}),
     }

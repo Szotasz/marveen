@@ -930,7 +930,7 @@ window._i18n.en = {
   'tokenUsage.biggest_calls_title':   'Biggest calls',
   'tokenUsage.changes_title':         'Changes',
 
-  // --- Ideas ---
+  // --- Team notes ---
   'notes.page_title':            'Notes',
   'notes.page_subtitle':         "The team's small to-dos, kept off the kanban. Everyone reviews them morning and evening and deletes lines that are done or stale.",
   'notes.col.assignee':          'For',
@@ -947,7 +947,8 @@ window._i18n.en = {
   'notes.load_error':            'Could not load: {msg}',
   'notes.assignee.mindenki':     'everyone',
   'notes.assignee.gazda':        'owner',
-  'notes.deleted.title':         'Deleted (last 7 days)',
+  'notes.deleted.title':         'Deleted in the last 7 days',
+  'notes.deleted.title_n':       'Deleted in the last 7 days: {n}',
   'notes.deleted.col_when':      'Deleted',
   'notes.deleted.col_by':        'Deleted by',
   'notes.deleted.col_reason':    'Reason',
@@ -956,6 +957,7 @@ window._i18n.en = {
   'notes.toast.deleted':         'Note deleted',
   'notes.toast.error':           'Error: {msg}',
 
+  // --- Ideas ---
   'ideas.page_title':            'Ideas',
   'ideas.page_subtitle':         'Development ideas and suggestions',
   'ideas.btn.new':               '+ New idea',

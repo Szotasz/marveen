@@ -7916,9 +7916,9 @@ body {
 .notes-actions { text-align: right; white-space: nowrap; }
 .notes-empty { text-align: center; color: var(--text-muted, #888); padding: 16px; }
 .notes-row-overdue td { background: var(--danger-soft); }
-.notes-row-today td { background: rgba(212, 165, 44, 0.10); }
+.notes-row-today td { background: var(--accent-soft); }
 .notes-due-tag { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 8px; font-size: 0.8em; font-weight: 600; background: var(--danger); color: #fff; }
-.notes-row-today .notes-due-tag { background: var(--warning, #d4a52c); }
+.notes-row-today .notes-due-tag { background: var(--accent); }
 .notes-deleted > summary { cursor: pointer; color: var(--text-muted, #888); margin-bottom: 8px; }
 @media (max-width: 768px) {
   .notes-table thead { display: none; }
@@ -7926,4 +7926,5 @@ body {
   .notes-table td { display: block; border: none; padding: 2px 8px; }
   .notes-table td[data-label]::before { content: attr(data-label) ": "; color: var(--text-muted, #888); font-size: 0.85em; }
   .notes-actions { text-align: left; }
+  .notes-assignee { white-space: normal; overflow-wrap: anywhere; }
 }
