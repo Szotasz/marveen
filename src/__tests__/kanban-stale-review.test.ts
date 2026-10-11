@@ -120,14 +120,14 @@ describe('decideStaleKanbanCard', () => {
     card('agent', 30)
     card('own', 30, { assignee: OWNER_NAME })
     card('nobody', 30); getDb().prepare('UPDATE kanban_cards SET assignee = NULL WHERE id = ?').run('nobody')
-    decideStaleKanbanCard('agent', 'keep', 'Gabor')
-    decideStaleKanbanCard('own', 'idea', 'Gabor')
-    decideStaleKanbanCard('nobody', 'close', 'Gabor')
+    decideStaleKanbanCard('agent', 'keep', 'Alex')
+    decideStaleKanbanCard('own', 'idea', 'Alex')
+    decideStaleKanbanCard('nobody', 'close', 'Alex')
     for (const id of ['agent', 'own', 'nobody']) {
       const comments = getKanbanComments(id)
       expect(comments).toHaveLength(1)
-      expect(comments[0]).toMatchObject({ author: 'Gabor', automated: 1 })
-      expect(comments[0].content).toContain('[Elavult kártyák átnézése] Gabor döntése:')
+      expect(comments[0]).toMatchObject({ author: 'Alex', automated: 1 })
+      expect(comments[0].content).toContain('[Elavult kártyák átnézése] Alex döntése:')
     }
   })
 
@@ -144,35 +144,35 @@ describe('decideStaleKanbanCard', () => {
   it('refuses a card that is no longer stale: moved since the list, kept, or done', () => {
     card('moved', 30)
     moveKanbanCard('moved', 'in_progress', 0, 'cody')
-    card('kept', 30); decideStaleKanbanCard('kept', 'keep', 'Gabor')
+    card('kept', 30); decideStaleKanbanCard('kept', 'keep', 'Alex')
     card('done', 30, { status: 'done' })
     card('young', 5)
     for (const id of ['moved', 'kept', 'done', 'young']) {
-      expect(() => decideStaleKanbanCard(id, 'close', 'Gabor')).toThrow(expect.objectContaining({ code: 'not_stale' }))
+      expect(() => decideStaleKanbanCard(id, 'close', 'Alex')).toThrow(expect.objectContaining({ code: 'not_stale' }))
       expect(getKanbanCard(id)?.archived_at).toBeNull()
     }
     expect(getKanbanCard('moved')?.status).toBe('in_progress')
     // The threshold is the caller's: listed with days=3, the 5-day card is stale.
-    expect(decideStaleKanbanCard('young', 'keep', 'Gabor', { days: 3 })).toMatchObject({ ok: true })
+    expect(decideStaleKanbanCard('young', 'keep', 'Alex', { days: 3 })).toMatchObject({ ok: true })
   })
 
   it('idea on a card promoted from an idea returns it to THAT idea, with no duplicate', () => {
     card('a', 30)
     createIdea({ id: 'orig', title: 'Original idea', description: 'first text', category: 'Egyéb', scope: 'munka', status: 'kanban', source: 'manual', kanban_id: 'a', impact: null, effort: null })
     const before = listIdeas().length
-    const result = decideStaleKanbanCard('a', 'idea', 'Gabor')
+    const result = decideStaleKanbanCard('a', 'idea', 'Alex')
     expect(result.idea_id).toBe('orig')
     expect(listIdeas()).toHaveLength(before)
     const idea = listIdeas().find((i) => i.id === 'orig')!
     expect(idea).toMatchObject({ status: 'reviewed', kanban_id: null })
     expect(idea.description).toContain('first text')
-    expect(idea.description).toContain('-> Ötletláda, Gabor')
+    expect(idea.description).toContain('-> Ötletláda, Alex')
   })
 
   it('close on a card promoted from an idea releases the idea, like the archive route', () => {
     card('a', 30)
     createIdea({ id: 'orig', title: 'Original idea', description: null, category: 'Egyéb', scope: 'munka', status: 'kanban', source: 'manual', kanban_id: 'a', impact: null, effort: null })
-    decideStaleKanbanCard('a', 'close', 'Gabor')
+    decideStaleKanbanCard('a', 'close', 'Alex')
     expect(listIdeas().find((i) => i.id === 'orig')).toMatchObject({ status: 'reviewed', kanban_id: null })
   })
 })
@@ -220,10 +220,10 @@ describe('stale routes', () => {
 
   it('with no actor in the body a browser session names its user, a token caller stays anonymous', async () => {
     card('s', 30); card('t', 30)
-    const session = route('POST', '/api/kanban/s/stale-decision', { decision: 'close' }, { kind: 'session', user: 'gabor' } as RouteContext['auth'])
+    const session = route('POST', '/api/kanban/s/stale-decision', { decision: 'close' }, { kind: 'session', user: 'alex' } as RouteContext['auth'])
     await tryHandleKanban(session.ctx)
     expect(session.out.status).toBe(200)
-    expect(getKanbanCardEvents('s').at(-1)).toMatchObject({ actor: 'gabor' })
+    expect(getKanbanCardEvents('s').at(-1)).toMatchObject({ actor: 'alex' })
     const token = route('POST', '/api/kanban/t/stale-decision', { decision: 'close' }, { kind: 'token' } as RouteContext['auth'])
     await tryHandleKanban(token.ctx)
     expect(token.out.status).toBe(200)
