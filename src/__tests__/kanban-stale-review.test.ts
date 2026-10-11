@@ -262,7 +262,7 @@ describe('stale review modal row', () => {
       src.slice(a, b) + '\nglobalThis.row = kanbanStaleRowHtml',
     ctx,
   )
-  const row = ctx.row as (c: unknown, pending?: boolean) => string
+  const row = ctx.row as (c: unknown, pending?: boolean, outcome?: string | null) => string
 
   it('escapes the title and renders the three decisions', () => {
     const html = row({ id: 'x1', seq: 7, title: '<img src=x onerror=alert(1)>', status: 'planned', assignee: 'cody', idle_days: 20 })
