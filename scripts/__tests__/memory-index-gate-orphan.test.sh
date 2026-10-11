@@ -269,6 +269,52 @@ if [ "$(jqv "$S" .missing_links)" = 0 ]; then pass "missing_links stays 0"; else
 if [ "$OUT" = "SKIP" ]; then pass "and the gate prints SKIP"; else fail "the gate prints SKIP" "$OUT"; fi
 echo ""
 
+# ---------------------------------------------------------------------------
+# (m) A WIKILINK OUTSIDE SCOPE DOES NOT REACH. SCOPE is the index plus its
+#     hubs; a `[[name]]` written on a second-level page is the stated one-hop
+#     limit, so its target stays an orphan and the gate wakes.
+# ---------------------------------------------------------------------------
+echo "(m) A [[wikilink]] on a page outside SCOPE leaves its target an orphan"
+clean_index
+echo "Tovabb: [[deep]]." >> "$MEM/lap.md"
+echo "csak masodik szintrol elert" > "$MEM/deep.md"
+S="$TMP/m.json"; rm -f "$S"
+OUT="$(run_gate "$S")"
+if [ "$(jqv "$S" .orphans)" = 1 ] && [ "$(jqv "$S" '.orphan_list[0]')" = "deep.md" ]; then
+  pass "deep.md (wikilinked from lap.md only) is an orphan"
+else
+  fail "a wikilink outside SCOPE does not reach" "$(jqv "$S" .orphan_list)"
+fi
+if [ -z "$OUT" ]; then pass "and the gate wakes (no SKIP)"; else fail "the gate wakes" "$OUT"; fi
+echo ""
+
+# ---------------------------------------------------------------------------
+# (n) AN NFD FILENAME IS REACHED BY AN NFC WIKILINK. A decomposed filename is
+#     kept as written on disk, so without normalization the stem would not
+#     equal the (composed) name in the link. The fixture is checked to really
+#     BE decomposed on disk -- otherwise the case would prove nothing.
+# ---------------------------------------------------------------------------
+echo "(n) A page with an NFD filename is reached by an NFC [[wikilink]]"
+clean_index
+NFD_ON_DISK="$(python3 - "$MEM" <<'PY2'
+import os, sys, unicodedata
+mem = sys.argv[1]
+name = unicodedata.normalize("NFD", "ékezet") + ".md"
+with open(os.path.join(mem, name), "w", encoding="utf-8") as fh:
+    fh.write("tartalom\n")
+with open(os.path.join(mem, "hub.md"), "a", encoding="utf-8") as fh:
+    fh.write("Lasd " + "[[" + unicodedata.normalize("NFC", "ékezet") + "]].\n")
+listed = [n for n in os.listdir(mem) if n.endswith(".md") and n.startswith("e")]
+print("yes" if any(n == name and n != unicodedata.normalize("NFC", n) for n in listed) else "no")
+PY2
+)"
+if [ "$NFD_ON_DISK" = yes ]; then pass "the fixture filename is NFD on disk (the case is not vacuous)"; else fail "the fixture filename is NFD on disk" "$NFD_ON_DISK"; fi
+S="$TMP/n.json"; rm -f "$S"
+OUT="$(run_gate "$S")"
+if [ "$(jqv "$S" .orphans)" = 0 ]; then pass "the NFD page is reachable"; else fail "the NFD page is reachable" "$(jqv "$S" .orphan_list)"; fi
+if [ "$OUT" = "SKIP" ]; then pass "and the gate prints SKIP"; else fail "the gate prints SKIP" "$OUT"; fi
+echo ""
+
 echo "======================================="
 echo "PASS: $PASS   FAIL: $FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
