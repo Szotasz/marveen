@@ -880,8 +880,9 @@ async function loadKanban() {
     kanbanAssignees = await assigneesRes.json()
     kanbanProjects = await projectsRes.json()
     kanbanAllLabels = await labelsRes.json()
-    // A non-OK answer keeps the previous list.
-    if (staleRes?.ok) kanbanStaleCards = (await staleRes.json()).cards || []
+    // A non-OK or unreadable answer keeps the previous list.
+    const staleBody = staleRes?.ok ? await staleRes.json().catch(() => null) : null
+    if (staleBody) kanbanStaleSetCards(staleBody.cards || [])
     populateProjectFilter()
     populateProjectSuggestions()
     setupAssigneeFilter()
@@ -1250,9 +1251,9 @@ const KANBAN_STALE_DAYS = 14
 let kanbanStaleCards = []
 let kanbanStaleDeepLinkHandled = false
 let kanbanStaleOverlay = null
-// Cards whose decision is on its way. A re-render (the board reloads every
-// few seconds) must not re-enable their buttons, or a second tap would send
-// a second decision.
+// Cards whose decision is on its way. A re-render (another card's decision
+// finishing redraws the modal) must not re-enable their buttons, or a second
+// tap would send a second decision.
 const kanbanStalePending = new Set()
 // The modal lists the cards it was opened with, and a decided card keeps its
 // row until the modal closes (card id -> the toast key of its outcome). If the
@@ -1260,6 +1261,12 @@ const kanbanStalePending = new Set()
 // a double tap on "Close" would close a card nobody chose.
 let kanbanStaleShown = []
 const kanbanStaleDone = new Map()
+
+// A board reload that started before a decision can answer after it, with the
+// decided card still in it; that card must not come back into the count.
+function kanbanStaleSetCards(cards) {
+  kanbanStaleCards = cards.filter((card) => !kanbanStalePending.has(card.id) && !kanbanStaleDone.has(card.id))
+}
 
 function kanbanStaleRowHtml(card, pending = false, outcome = null) {
   const assignee = String(card.assignee || '').trim() || t('kanban.stale.unassigned')
@@ -1279,6 +1286,10 @@ function kanbanStaleRowHtml(card, pending = false, outcome = null) {
 
 function renderKanbanStaleModal() {
   if (!kanbanStaleOverlay) return
+  // Set on every render, so a modal reopened after a language switch is in
+  // the new language, title included.
+  const title = kanbanStaleOverlay.querySelector('.modal-header h2')
+  if (title) title.textContent = t('kanban.stale.title')
   const list = kanbanStaleOverlay.querySelector('.kanban-stale-list')
   list.innerHTML = kanbanStaleShown.length
     ? kanbanStaleShown.map((card) => kanbanStaleRowHtml(card, kanbanStalePending.has(card.id), kanbanStaleDone.get(card.id) || null)).join('')

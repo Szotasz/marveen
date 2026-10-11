@@ -156,6 +156,19 @@ describe('decideStaleKanbanCard', () => {
     expect(decideStaleKanbanCard('young', 'keep', 'Alex', { days: 3 })).toMatchObject({ ok: true })
   })
 
+  it('refuses a card labelled ongoing or owner-queue after the list was drawn', () => {
+    card('labelled', 30)
+    card('queued', 30)
+    expect(staleIds()).toEqual(['labelled', 'queued'])
+    label('labelled', 'Folyamatos')
+    label('queued', 'Rád vár')
+    for (const id of ['labelled', 'queued']) {
+      expect(() => decideStaleKanbanCard(id, 'close', 'Alex')).toThrow(expect.objectContaining({ code: 'not_stale' }))
+      expect(getKanbanCard(id)?.archived_at).toBeNull()
+      expect(getKanbanCard(id)?.status).toBe('planned')
+    }
+  })
+
   it('idea on a card promoted from an idea returns it to THAT idea, with no duplicate', () => {
     card('a', 30)
     createIdea({ id: 'orig', title: 'Original idea', description: 'first text', category: 'Egyéb', scope: 'munka', status: 'kanban', source: 'manual', kanban_id: 'a', impact: null, effort: null })
@@ -231,6 +244,25 @@ describe('stale routes', () => {
   })
 })
 
+describe('whole-card PUT echo', () => {
+  beforeEach(() => initDatabase(':memory:'))
+
+  it('the board\'s card, echoed back with stale_kept_at, saves and keeps the stored value', async () => {
+    card('a', 30)
+    decideStaleKanbanCard('a', 'keep', 'Alex')
+    const kept = getKanbanCard('a')!.stale_kept_at
+    expect(kept).toBeGreaterThan(0)
+    const list = route('GET', '/api/kanban')
+    await tryHandleKanban(list.ctx)
+    const echoed = (list.out.body as any[]).find((c) => c.id === 'a')
+    expect(echoed.stale_kept_at).toBe(kept)
+    const put = route('PUT', '/api/kanban/a', { ...echoed, title: 'renamed', stale_kept_at: 1 })
+    await tryHandleKanban(put.ctx)
+    expect(put.out.status).toBe(200)
+    expect(getKanbanCard('a')).toMatchObject({ title: 'renamed', stale_kept_at: kept })
+  })
+})
+
 describe('fleet transfer carries stale_kept_at', () => {
   it('the kanban card import names every kanban_cards column, with one value per column', () => {
     initDatabase(':memory:')
@@ -298,7 +330,7 @@ describe('stale review modal: a decided card keeps its row', () => {
   type FakeButton = { dataset: { decision: string }; disabled: boolean; click: () => Promise<void> }
   type FakeRow = { id: string; buttons: FakeButton[] }
 
-  function setup(cards: Array<{ id: string; seq: number }>, status = 200) {
+  function setup(cards: Array<{ id: string; seq: number }>, status = 200, gate?: Record<string, Promise<void>>) {
     const posts: string[] = []
     let rows: FakeRow[] = []
     const list = {
@@ -327,7 +359,12 @@ describe('stale review modal: a decided card keeps its row', () => {
     }
     const ctx: Record<string, unknown> = {
       document: { createElement: () => overlay, body: { appendChild: () => {} } },
-      fetch: async (url: string) => { posts.push(decodeURIComponent(url.split('/api/kanban/')[1].split('/')[0])); return { ok: status === 200, status, json: async () => ({}) } },
+      fetch: async (url: string) => {
+        const id = decodeURIComponent(url.split('/api/kanban/')[1].split('/')[0])
+        posts.push(id)
+        if (gate?.[id]) await gate[id]
+        return { ok: status === 200, status, json: async () => ({}) }
+      },
       showToast: () => {}, loadKanban: async () => {}, kanbanMoveActor: () => 'Alex',
       openModal: () => {}, closeModal: () => {}, attachOverlayCloseGuard: () => {},
       t: (key: string) => key,
@@ -337,8 +374,9 @@ describe('stale review modal: a decided card keeps its row', () => {
     vm.runInContext(src.slice(a, b) + `
       kanbanStaleCards = ${JSON.stringify(cards.map((c) => ({ ...c, title: c.id, status: 'planned', assignee: 'nova', idle_days: 20 })))}
       openKanbanStaleReview()
-      globalThis.staleLeft = () => kanbanStaleCards.map((c) => c.id)`, ctx)
-    return { posts, rows: () => rows, staleLeft: ctx.staleLeft as () => string[] }
+      globalThis.staleLeft = () => kanbanStaleCards.map((c) => c.id)
+      globalThis.setCards = (ids) => kanbanStaleSetCards(ids.map((id) => ({ id })))`, ctx)
+    return { posts, rows: () => rows, staleLeft: ctx.staleLeft as () => string[], setCards: ctx.setCards as (ids: string[]) => void }
   }
 
   it('a second tap on the same spot hits the decided row, not the next card', async () => {
@@ -350,6 +388,32 @@ describe('stale review modal: a decided card keeps its row', () => {
     expect(m.posts).toEqual(['a'])
     expect(m.rows()[1].buttons.some((x) => x.disabled)).toBe(false)
     expect(m.staleLeft()).toEqual(['b']) // the chip still counts down
+  })
+
+  it('a card whose decision is still on its way stays disabled when another card\'s decision redraws the modal', async () => {
+    let releaseA!: () => void
+    let releaseB!: () => void
+    const gate = { a: new Promise<void>((r) => { releaseA = r }), b: new Promise<void>((r) => { releaseB = r }) }
+    const m = setup([{ id: 'a', seq: 1 }, { id: 'b', seq: 2 }, { id: 'c', seq: 3 }], 200, gate)
+    const tapA = m.rows()[0].buttons[0].click()
+    const tapB = m.rows()[1].buttons[0].click()
+    releaseB(); await tapB // b finishes first and redraws the modal
+    expect(m.rows()[0].buttons.every((x) => x.disabled)).toBe(true) // a is still on its way
+    await m.rows()[0].buttons[0].click() // a tap on a's redrawn row sends nothing
+    expect(m.posts).toEqual(['a', 'b'])
+    expect(m.rows()[2].buttons.some((x) => x.disabled)).toBe(false)
+    releaseA(); await tapA
+    expect(m.staleLeft()).toEqual(['c'])
+  })
+
+  it('a board reload that answers after a decision does not bring the decided card back into the count', async () => {
+    let releaseA!: () => void
+    const m = setup([{ id: 'a', seq: 1 }, { id: 'b', seq: 2 }, { id: 'c', seq: 3 }], 200, { a: new Promise<void>((r) => { releaseA = r }) })
+    await m.rows()[1].buttons[0].click() // b decided
+    const tapA = m.rows()[0].buttons[0].click() // a on its way
+    m.setCards(['a', 'b', 'c']) // a reload drawn before both decisions answers now
+    expect(m.staleLeft()).toEqual(['c'])
+    releaseA(); await tapA
   })
 
   it('a card that changed meanwhile also stays in place, decided', async () => {

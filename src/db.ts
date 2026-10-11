@@ -2565,6 +2565,18 @@ function normalizeKanbanLabelName(value: unknown): string {
 // match KANBAN_ONGOING_LABELS in web/app.js; 'rad var' is the owner-queue label.
 const KANBAN_STALE_EXCLUDED_LABELS = ['folyamatos', 'ongoing', 'rad var']
 
+// Whether a card carries a label that keeps it out of the stale review
+// whatever its age (ongoing work, the owner queue). The decision asks again,
+// so a card labelled after the list was drawn is not closed on that outdated
+// list. (The owner's own cards stay decidable here: the list leaves them out,
+// but a decision on one is the owner's own act.)
+function hasStaleExcludedLabel(id: string): boolean {
+  const names = db.prepare(
+    'SELECT l.name FROM kanban_card_labels k JOIN labels l ON l.id = k.label_id WHERE k.card_id = ?',
+  ).all(id) as Array<{ name: string }>
+  return names.some(({ name }) => KANBAN_STALE_EXCLUDED_LABELS.includes(normalizeKanbanLabelName(name)))
+}
+
 export interface StaleKanbanCard {
   id: string
   seq: number
@@ -2653,7 +2665,7 @@ export function decideStaleKanbanCard(
       WHERE c.id = ? GROUP BY c.id
     `).get(id) as { last_status_at: number; stale_kept_at: number | null }
     const idleAt = Math.max(idle.last_status_at, idle.stale_kept_at ?? 0)
-    if (card.status === 'done' || idleAt > now - days * 86400) {
+    if (card.status === 'done' || idleAt > now - days * 86400 || hasStaleExcludedLabel(id)) {
       throw new StaleKanbanDecisionError('not_stale', 'Kanban card is no longer stale')
     }
     const by = typeof actor === 'string' && actor.trim() ? actor.trim() : null
