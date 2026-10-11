@@ -1387,9 +1387,9 @@ function renderKanbanOwnerStrip() {
 // the cards"; this view answers "where are the people".
 //
 // "Now" comes from the column (in_progress). "Up next" comes from priority:
-// open cards at normal or urgent priority, lowest card number first. That
-// assumes a board where normal priority marks the next card (and low marks
-// parked work); neither column is a guess, both are states somebody set.
+// planned cards that are not low priority, most urgent first, then lowest card
+// number (low marks parked work). Neither column is a guess, both are states
+// somebody set.
 //
 // What this view deliberately does NOT show is an estimated finish date. The
 // only honest source would be measured in_progress -> done times, and a board
@@ -1404,22 +1404,25 @@ function renderKanbanTeamView() {
 
   // The owner's own queue is the strip above the board, not a row here, so
   // the same card does not show twice. See kanbanHideFromLanes.
-  // The view counts what the board shows as a card of its own: a subtask
-  // drawn inside its parent (same column) and an ongoing card (its own strip)
-  // are left out, so "N open" matches the board and a standing "ongoing" card
-  // does not make a person look busy forever.
-  const byId = new Map(kanbanCards.map((c) => [c.id, c]))
-  const embedded = (c) => {
-    const p = c.parent_id ? byId.get(c.parent_id) : null
-    return !!p && p.status === c.status
-  }
-  const open = kanbanCards.filter((c) => c.status !== 'done' && !kanbanHideFromLanes(c) && !embedded(c) && !kanbanIsOngoing(c))
   const keyOf = (c) => {
     const raw = c.assignee ? String(c.assignee).trim() : ''
     if (!raw) return '__unassigned__'
     const m = kanbanAssignees.find((a) => a.name.toLowerCase() === raw.toLowerCase())
     return m ? m.name : raw
   }
+  // An ongoing card (its own strip) is left out, so a standing "ongoing" card
+  // does not make a person look busy forever. A subtask is left out only when
+  // its parent is already in this same row (same column, same person, parent
+  // shown here), so the work is not counted twice. A subtask under someone
+  // else's parent, the owner's or an ongoing one stays: the board draws it
+  // inside that parent, and this row is the only place it shows as this
+  // person's work.
+  const byId = new Map(kanbanCards.map((c) => [c.id, c]))
+  const embedded = (c) => {
+    const p = c.parent_id ? byId.get(c.parent_id) : null
+    return !!p && p.status === c.status && keyOf(p) === keyOf(c) && !kanbanHideFromLanes(p) && !kanbanIsOngoing(p)
+  }
+  const open = kanbanCards.filter((c) => c.status !== 'done' && !kanbanHideFromLanes(c) && !embedded(c) && !kanbanIsOngoing(c))
   const byPerson = new Map()
   for (const c of open) {
     const k = keyOf(c)

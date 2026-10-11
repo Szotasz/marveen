@@ -232,6 +232,30 @@ describe('renderKanbanTeamView', () => {
     expect(heads.join('')).not.toContain('__unassigned__')
   })
 
+  it('keeps a subtask whose parent is someone else\'s, the owner\'s or ongoing: this row is the only place it shows', () => {
+    const { rows } = render([
+      card('pb', 1, 'bob', 'planned'),
+      card('c1', 2, 'ada', 'planned', 'normal', { parent_id: 'pb' }),
+      card('po', 3, 'owner', 'planned'),
+      card('c2', 4, 'ada', 'planned', 'normal', { parent_id: 'po' }),
+      card('pg', 5, 'ada', 'planned', 'normal', { labels: [{ name: 'ongoing' }] }),
+      card('c3', 6, 'ada', 'planned', 'normal', { parent_id: 'pg' }),
+    ])
+    const ada = rows.find((r) => r.head.includes('kanban-team-name">ada<'))!
+    expect(ada.head).toContain('3 open')
+    expect(ada.next.map((h) => h.match(/#(\d+)/)![1])).toEqual(['2', '4', '6'])
+    const bob = rows.find((r) => r.head.includes('kanban-team-name">bob<'))!
+    expect(bob.head).toContain('1 open')
+  })
+
+  it('escapes the avatar class, which comes from the assignee list', () => {
+    const { rows } = render([card('a', 1, 'ada', 'planned')], 'en', {
+      assignees: [{ name: 'ada', type: 'agent" onmouseover="x' }],
+    })
+    expect(rows[0].head).toContain('kanban-team-avatar agent&quot; onmouseover=&quot;x"')
+    expect(rows[0].head).not.toContain('onmouseover="x')
+  })
+
   it('renders an empty message when nothing is open', () => {
     const { host, rows } = render([card('d', 1, 'ada', 'done')])
     expect(rows).toHaveLength(0)
@@ -254,5 +278,18 @@ describe('team view wiring', () => {
     expect(INDEX_HTML).toContain('id="kanbanTeamView"')
     expect(slice(APP_JS, 'function renderKanban() {', '\n}\n')).toContain('renderKanbanTeamView()')
     expect(APP_JS).toContain("teamBtn.addEventListener('click', activateTeam)")
+  })
+
+  it('gives a person a portrait whatever the board grouping; the priority lane header skips it at its call site', () => {
+    const ctx: Record<string, unknown> = {
+      kanbanGroupBy: 'priority',
+      kanbanAssignees: [{ name: 'ada', type: 'agent' }, { name: 'owner', type: 'owner' }],
+      avatarBust: () => '',
+    }
+    vm.createContext(ctx)
+    vm.runInContext(slice(APP_JS, 'function kanbanAvatarUrlFor(', '\n}\n') + '\n}\nthis.url = [kanbanAvatarUrlFor("ada"), kanbanAvatarUrlFor("owner"), kanbanAvatarUrlFor("__unassigned__")]', ctx)
+    expect(ctx.url).toEqual(['/api/agents/ada/avatar', '/api/marveen/owner-avatar', null])
+    expect(APP_JS).toContain("if (kanbanGroupBy !== 'priority') kanbanDecorateAvatar(header.querySelector('.kanban-swimlane-avatar'), key)")
+    expect(APP_JS).toContain('<span class="kanban-swimlane-avatar ${escapeHtml(meta.avatarClass)}">')
   })
 })
