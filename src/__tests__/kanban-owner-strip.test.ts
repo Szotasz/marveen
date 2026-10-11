@@ -67,7 +67,9 @@ function setup(owner: string | null, cards: unknown[], assignees: unknown[] = []
     kanbanAssignees: assignees,
     KANBAN_PRIORITY_ORDER: ['urgent', 'high', 'normal', 'low'],
     kanbanDecorateAvatar: (_el: unknown, key: string) => decorated.push(key),
-    kanbanSwimlaneMeta: (key: string) => ({ nickname: key === owner ? 'Grand Designer' : '' }),
+    // The strip draws people through kanbanPersonMeta, never the grouping-aware
+    // kanbanSwimlaneMeta (that one labels by priority when the board is grouped so).
+    kanbanPersonMeta: (key: string) => ({ nickname: key === owner ? 'Grand Designer' : '' }),
     showCardDetail: (c: unknown) => opened.push(c),
   }
   vm.createContext(ctx)
