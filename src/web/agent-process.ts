@@ -3830,7 +3830,9 @@ export function capturePane(session: string, host: string | null = null): string
 // SGR-2 (dim) ghost + all ANSI, so a hint shown in an empty input box is never
 // mistaken for a genuinely parked input. Every auto-submitting recovery path
 // (channel-monitor recoverStuckInputForSession, stuck-input-watcher
-// bareEnterRecovery) MUST read the pane through THIS, not plain capturePane --
+// recoverParkedPaste) MUST read the pane through THIS -- or through
+// captureInputBoxViews' `ghostless` (the same view, banner cut first; the
+// watcher's remote bareEnterRecovery) -- not plain capturePane --
 // otherwise the dim ghost reads as real text and gets re-typed + Enter-
 // submitted (phantom prompt-injection, 2026-06-26). Returns null on capture
 // failure (treated as "nothing parked"), matching capturePane's contract.
@@ -3843,9 +3845,10 @@ export function captureParkedInputView(session: string, host: string | null = nu
 }
 
 // ONE coloured capture seen two ways, for classifyInputBox (the all-agent
-// input-state report): `ghostless` is exactly captureParkedInputView's view (the
-// dim ghost suggestion removed), `withGhost` keeps the dim text but drops every
-// ANSI code. Host-aware (a remote agent is captured over ssh). null on capture
+// input-state report, and the remote recovery in stuck-input-watcher):
+// `ghostless` is captureParkedInputView's view (the dim ghost suggestion
+// removed, after a pinned title banner is cut), `withGhost` keeps the dim text
+// but drops every ANSI code (capturePane's view). Host-aware (a remote agent is captured over ssh). null on capture
 // failure -- the caller reports that as 'unreadable', never as 'empty'.
 export function captureInputBoxViews(session: string, host: string | null = null): { ghostless: string; withGhost: string } | null {
   try {

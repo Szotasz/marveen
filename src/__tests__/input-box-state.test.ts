@@ -44,6 +44,12 @@ describe('classifyInputBox', () => {
     expect(views(pane('\x1b[39m❯\xa0\x1b[39m', busy)).state).toBe('busy')
   })
 
+  it('REAL text in the box DURING a running turn is BUSY, not PARKED (mid-turn message waits the turn out)', () => {
+    const busy = ['● Working on it', '', '\x1b[38;5;174m✻\x1b[39m Thinking… (12s · ↓ 1.2k tokens · esc to interrupt)']
+    const r = views(pane('\x1b[39m❯\xa0TEAM MEMBER NOTICE -- delivered mid-turn\x1b[39m', busy))
+    expect(r).toEqual({ state: 'busy', chars: 0 })
+  })
+
   it('a parked [Pasted text #N] placeholder is PASTE', () => {
     expect(views(pane('\x1b[39m❯\xa0[Pasted text #1 +42 lines]\x1b[39m')).state).toBe('paste')
   })

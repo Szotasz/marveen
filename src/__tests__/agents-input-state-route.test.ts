@@ -1,5 +1,4 @@
-import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { join } from 'node:path'
 import { buildInputStateRows, type InputStateDeps, type InputViews } from '../web/input-state.js'
 
@@ -77,39 +76,139 @@ describe('buildInputStateRows (the endpoint contract, behaviour)', () => {
   })
 })
 
-// --- wiring: the route is the thin I/O shell around buildInputStateRows ---
-const ROOT = join(__dirname, '..', '..')
-const ROUTES = readFileSync(join(ROOT, 'src', 'web', 'routes', 'agents.ts'), 'utf-8')
-const PROC = readFileSync(join(ROOT, 'src', 'web', 'agent-process.ts'), 'utf-8')
+// --- the REAL route handler and the REAL agent-process over a mocked tmux/ssh ---
+// execFileSync is the one I/O seam: `tmux list-sessions` / `tmux capture-pane`
+// locally, or the same wrapped in `ssh <host> '<tmux ...>'` for a remote agent.
+const T = vi.hoisted(() => ({
+  calls: [] as Array<{ host: string | null; cmd: string }>,
+  localList: 'main-channels\nagent-loc\n' as string | { status: number },
+  panes: {} as Record<string, string>,
+}))
 
-describe('GET /api/agents/input-state wiring', () => {
-  const start = ROUTES.indexOf("if (path === '/api/agents/input-state' && method === 'GET')")
-  const body = ROUTES.slice(start, ROUTES.indexOf('\n    return true\n  }', start))
-  it('uses buildInputStateRows over the agent list, the coloured capture, and the remote cache', () => {
-    expect(start).toBeGreaterThan(0)
-    expect(body).toMatch(/buildInputStateRows\(/)
-    expect(body).toMatch(/agents: withoutMainAgent\(listAgentNames\(\)\)/)
-    expect(body).toMatch(/captureInputBoxViews\(session, host\)/)
-    expect(body).toMatch(/remoteInputViewCache\.getOrRefresh/)
+vi.mock('node:child_process', async (orig) => ({
+  ...(await orig() as object),
+  execFileSync: vi.fn((file: string, args: string[] = []) => {
+    const host = file === 'ssh' ? args[args.length - 2] : null
+    const cmd = file === 'ssh' ? args[args.length - 1] : args.join(' ')
+    if (!/list-sessions|capture-pane/.test(cmd)) return ''
+    T.calls.push({ host, cmd })
+    if (host === 'u@gone-host') throw Object.assign(new Error('ssh: connect timed out'), { status: 255 })
+    if (cmd.includes('list-sessions')) {
+      if (host === 'u@laptop') return 'agent-rem\n'
+      if (typeof T.localList !== 'string') throw Object.assign(new Error('no server running'), T.localList)
+      return T.localList
+    }
+    const session = Object.keys(T.panes).find(sn => cmd.includes(sn))
+    if (session == null) throw Object.assign(new Error("can't find session"), { status: 1 })
+    return T.panes[session]
+  }),
+}))
+vi.mock('../web/agent-config.js', async (orig) => ({
+  ...(await orig() as object),
+  listAgentNames: () => ['main', 'loc', 'rem', 'off', 'gone'],
+  readAgentRemoteHost: (n: string) => (n === 'rem' ? 'u@laptop' : n === 'gone' ? 'u@gone-host' : null),
+  readAgentRunAsUser: () => null,
+}))
+vi.mock('../config.js', async (orig) => ({ ...(await orig() as object), MAIN_AGENT_ID: 'main' }))
+vi.mock('../web/ssh-tmux.js', async (orig) => ({ ...(await orig() as object), ensureControlDir: () => {} }))
+
+const { tryHandleAgents } = await import('../web/routes/agents.js')
+const { agentRunState, isAgentRunning } = await import('../web/agent-process.js')
+type RouteContext = import('../web/routes/types.js').RouteContext
+
+async function getInputState(): Promise<{ status: number; rows: Array<Record<string, unknown>>; raw: string }> {
+  const out = { status: 0, raw: '' }
+  const res = {
+    writeHead(status: number) { out.status = status; return res },
+    setHeader() { return res },
+    end(chunk?: string | Buffer) { if (chunk) out.raw = String(chunk) },
+  }
+  const url = new URL('http://localhost:3420/api/agents/input-state')
+  const ctx = { req: { headers: {} } as RouteContext['req'], res, path: url.pathname, method: 'GET', url } as unknown as RouteContext
+  expect(await tryHandleAgents(ctx, join(__dirname, '..', '..', 'web'))).toBe(true)
+  return { status: out.status, rows: JSON.parse(out.raw) as Array<Record<string, unknown>>, raw: out.raw }
+}
+
+describe('GET /api/agents/input-state through the real route handler', () => {
+  let clock = Date.now()
+  beforeEach(() => {
+    // the remote caches are module-level with a real-clock TTL: each case starts past every TTL
+    clock += 60_000
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(clock)
+    T.calls.length = 0
+    T.localList = 'main-channels\nagent-loc\n'
+    T.panes = {
+      'main-channels': pane('❯\xa0'),
+      'agent-loc': pane('❯\xa0' + SECRET),
+      'agent-rem': pane('❯\xa0\x1b[2mreview the remaining cards\x1b[0m'),
+    }
+  })
+
+  afterEach(() => { vi.useRealTimers() })
+
+  it('every agent from the agent list (main once), run states, ghost-aware input, the parked TEXT never in the body', async () => {
+    const { status, rows, raw } = await getInputState()
+    expect(status).toBe(200)
+    expect(rows.map(r => [r.name, r.isMain, r.host, r.run, r.input])).toEqual([
+      ['main', true, null, 'running', 'empty'],
+      ['loc', false, null, 'running', 'parked'],
+      ['rem', false, 'u@laptop', 'running', 'ghost'],     // a colour-less capture would have read this as parked
+      ['off', false, null, 'stopped', null],
+      ['gone', false, 'u@gone-host', 'unreachable', null],
+    ])
+    expect(rows.find(r => r.name === 'loc')!.chars).toBe(SECRET.length)
+    expect(raw).not.toContain('parked secret-looking payload')
+    expect(raw).not.toContain('review the remaining')
+  })
+
+  it('every pane is captured IN COLOUR (-e), the remote one over ssh to ITS host; stopped/unreachable agents are never captured', async () => {
+    await getInputState()
+    const caps = T.calls.filter(c => c.cmd.includes('capture-pane'))
+    expect(caps.every(c => /(^| |')-e( |'|$)/.test(c.cmd))).toBe(true)
+    expect(caps.map(c => [c.host, ['main-channels', 'agent-loc', 'agent-rem'].find(sn => c.cmd.includes(sn))])).toEqual([
+      [null, 'main-channels'], [null, 'agent-loc'], ['u@laptop', 'agent-rem'],
+    ])
+  })
+
+  it('a burst of requests does not re-capture the remote pane over ssh (short-TTL cache); local panes are read fresh', async () => {
+    await getInputState()
+    await getInputState()
+    const caps = T.calls.filter(c => c.cmd.includes('capture-pane'))
+    expect(caps.filter(c => c.host === 'u@laptop').length).toBe(1)
+    expect(caps.filter(c => c.host === null).length).toBe(4)
+  })
+
+  it('a /rename title banner pinned to the bottom is cut before classifying (else a busy pane reads unknown)', async () => {
+    // the 2026-08-01 shape (session-title-banner.test.ts): a busy line, then a wrapped banner below it
+    const banner = Array.from({ length: 8 }, (_, i) => `\x1b[38;5;16m\x1b[48;5;37m renamed session name wrap line ${i} \x1b[39m\x1b[49m`)
+    T.panes['agent-loc'] = ['✻ Working… (· esc to interrupt)', ...banner].join('\n')
+    const { rows } = await getInputState()
+    expect(rows.find(r => r.name === 'loc')).toMatchObject({ run: 'running', input: 'busy' })
+  })
+
+  it("a RUNNING main whose capture fails is 'running'/'unreadable'; a missing main session is 'stopped'", async () => {
+    delete T.panes['main-channels']
+    let { rows } = await getInputState()
+    expect(rows[0]).toMatchObject({ name: 'main', run: 'running', input: 'unreadable' })
+    T.localList = 'agent-loc\n'
+    ;({ rows } = await getInputState())
+    expect(rows[0]).toMatchObject({ name: 'main', run: 'stopped', input: null })
   })
 })
 
-describe('captureInputBoxViews: one COLOUR capture, two views', () => {
-  const s = PROC.indexOf('export function captureInputBoxViews')
-  const fn = PROC.slice(s, PROC.indexOf('\n}', s))
-  it('captures with -e (colour) and derives ghostless + withGhost from the SAME capture, banner cut first', () => {
-    expect(s).toBeGreaterThan(0)
-    expect(fn).toMatch(/'capture-pane', '-t', exactTmuxTarget\(session\), '-e', '-p'/)
-    expect(fn).toMatch(/ghostless: stripGhostSuggestion\(raw\), withGhost: stripAllAnsi\(raw\)/)
-    expect(fn).toMatch(/const raw = stripSessionTitleBanner\(captureTmux\(/)
-    expect((fn.match(/captureTmux\(/g) || []).length).toBe(1)
-  })
-})
-
-describe('the sweep\'s agentRunState(name) === \'running\' is EXACTLY isAgentRunning(name) (local path unchanged)', () => {
-  it('isAgentRunning is defined as agentRunState(name) === \'running\'', () => {
-    const s = PROC.indexOf('export function isAgentRunning(name: string): boolean {')
-    expect(s).toBeGreaterThan(0)
-    expect(PROC.slice(s, PROC.indexOf('\n}', s))).toMatch(/return agentRunState\(name\) === 'running'/)
-  })
+describe("a LOCAL agent: the sweep's agentRunState(name) === 'running' decides exactly as isAgentRunning(name)", () => {
+  const cases: Array<[string, string | { status: number }, string]> = [
+    ['session listed', 'main-channels\nagent-loc\n', 'running'],
+    ['session not listed', 'main-channels\n', 'stopped'],
+    ['no tmux server (exit 1)', { status: 1 }, 'stopped'],
+    ['tmux killed / exit 255 (local: still stopped, never unreachable)', { status: 255 }, 'stopped'],
+  ]
+  for (const [what, list, want] of cases) {
+    it(what, () => {
+      T.localList = list
+      expect(agentRunState('loc')).toBe(want)
+      expect(isAgentRunning('loc')).toBe(want === 'running')
+    })
+  }
 })

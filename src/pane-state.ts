@@ -1794,7 +1794,7 @@ export function parkedInputText(pane: string): string | null {
 // suggestion for an "unsent prompt" (2026-10-11) -- the agent was simply idle.
 //   paste   -- a parked `[Pasted text #N]` placeholder (parkedPasteSignature)
 //   parked  -- real text sits in the box (what an Enter would submit)
-//   busy    -- a turn is running (a message delivered mid-turn waits it out)
+//   busy    -- a turn is running (text in the box mid-turn waits it out: busy, not parked)
 //   ghost   -- the box holds only a dim suggestion: nothing to submit
 //   empty   -- idle, nothing in the box
 //   unknown -- the pane is not a recognisable Claude Code prompt
@@ -1802,12 +1802,17 @@ export function parkedInputText(pane: string): string | null {
 // never returned: a report must not echo an agent's inbox content.
 export type InputBoxState = 'empty' | 'ghost' | 'parked' | 'paste' | 'busy' | 'unknown'
 
+//
+// Order: paste FIRST (detectPaneState reads a placeholder as 'busy' by design,
+// and parkedPasteSignature already returns null under a real busy indicator),
+// then BUSY, and only then parked -- text sitting in the box during a running
+// turn is a message waiting the turn out, reported 'busy', never 'parked'.
 export function classifyInputBox(ghostless: string, withGhost: string): { state: InputBoxState; chars: number } {
   if (parkedPasteSignature(ghostless) != null) return { state: 'paste', chars: 0 }
-  const real = parkedInputText(ghostless)
-  if (real != null) return { state: 'parked', chars: real.length }
   const st = detectPaneState(ghostless)
   if (st === 'busy') return { state: 'busy', chars: 0 }
+  const real = parkedInputText(ghostless)
+  if (real != null) return { state: 'parked', chars: real.length }
   const ghost = parkedInputText(withGhost)
   if (ghost != null) return { state: 'ghost', chars: ghost.length }
   if (st === 'idle' || st === 'typing') return { state: 'empty', chars: 0 }

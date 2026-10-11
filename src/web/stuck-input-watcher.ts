@@ -1,7 +1,7 @@
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID } from '../config.js'
 import { listAgentNames, readAgentRemoteHost } from './agent-config.js'
-import { agentRunState, captureParkedInputView, sendEnterToSession, capturePane } from './agent-process.js'
+import { agentRunState, captureParkedInputView, captureInputBoxViews, sendEnterToSession, capturePane } from './agent-process.js'
 import { resolveAgentSession } from './channel-mcp-reconnect.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { recoverStuckInputForSession, sendAlert } from './channel-monitor.js'
@@ -11,6 +11,7 @@ import {
   parkedPasteSignature,
   decideStuckInputRecovery,
   detectPaneState,
+  classifyInputBox,
   type PaneState,
   type StuckInputState,
   type StuckInputThresholds,
@@ -41,8 +42,9 @@ import {
 //
 // A remote agent the watcher cannot see -- its host unreachable (agentRunState
 // 'unreachable') or its pane capture failing -- alerts ONCE after windowMs of
-// continuous blindness, and re-arms only after a readable tick. A transient
-// ssh blip shorter than the window never alerts.
+// continuous blindness, and re-arms only after a readable tick. The two causes
+// are ONE blind spell: a flip between them neither ends it nor starts a new one.
+// A transient ssh blip shorter than the window never alerts.
 export interface UnreadableState { since: number | null; alerted: boolean }
 export const NO_UNREADABLE: UnreadableState = { since: null, alerted: false }
 
@@ -132,12 +134,22 @@ const LOCAL_FAST_THRESHOLDS: StuckInputThresholds = {
 
 const INITIAL_DELAY_MS = 20_000
 const INTERVAL_MS = 15_000
-// A remote HOST the watcher has been blind to (unreachable / capture failing) for this many minutes gets ONE alert
-// -- and only while an agent on it has inbound messages waiting: a laptop asleep with nothing queued for it is not
-// an incident. MARVEEN_REMOTE_BLIND_ALERT_MIN=0 turns the blind alert off.
+// A remote agent the watcher has been blind to (unreachable / capture failing) for this many minutes is alerted
+// ONCE -- and only while it has inbound messages waiting: a laptop asleep with nothing queued for it is not an
+// incident. MARVEEN_REMOTE_BLIND_ALERT_MIN=0 turns the blind alert off; unset, empty or not a non-negative number
+// means the default (an invalid value is logged by name, never a silent off).
+const REMOTE_BLIND_ALERT_DEFAULT_MIN = 15
+export function parseBlindAlertMinutes(raw: string | undefined): { minutes: number; invalid: boolean } {
+  if (raw == null || raw.trim() === '') return { minutes: REMOTE_BLIND_ALERT_DEFAULT_MIN, invalid: raw != null }
+  const n = Number(raw.trim())
+  if (!Number.isFinite(n) || n < 0) return { minutes: REMOTE_BLIND_ALERT_DEFAULT_MIN, invalid: true }
+  return { minutes: n, invalid: false }
+}
 const REMOTE_BLIND_ALERT_MS = (() => {
-  const n = Number(process.env.MARVEEN_REMOTE_BLIND_ALERT_MIN ?? '15')
-  return Number.isFinite(n) && n >= 0 ? n * 60_000 : 15 * 60_000
+  const raw = process.env.MARVEEN_REMOTE_BLIND_ALERT_MIN
+  const { minutes, invalid } = parseBlindAlertMinutes(raw)
+  if (invalid) logger.warn({ MARVEEN_REMOTE_BLIND_ALERT_MIN: raw, usingMinutes: minutes }, 'stuck-input-watcher: MARVEEN_REMOTE_BLIND_ALERT_MIN is empty or invalid -- using the default (0 turns the blind alert off)')
+  return minutes * 60_000
 })()
 
 const NO_STATE: StuckInputState = { parkedSig: null, firstSeenAt: null, lastRecoverAt: null, attempts: 0 }
@@ -147,62 +159,70 @@ const watchState = new Map<string, StuckInputState>()
 // open and are dropped with it, so a NEW spell on the same session alerts
 // again. Not persisted -- a dashboard restart may re-alert once, acceptable.
 const alertedSpells = new Set<string>()
-// REMOTE give-up dedup keyed on the PARKED TEXT (session -> parkedSig): a transient ssh blip (capture null for a
-// tick, or 'unreachable') must not re-arm the alert for the SAME stuck text -- only a proven-empty box does.
+// REMOTE give-up dedup keyed on the PARKED TEXT (session -> parkedSig): the alert for the SAME stuck text re-arms
+// ONLY on a proven-empty box (classifyInputBox 'empty': readable, idle, nothing parked, no ghost). A failed capture,
+// 'unreachable', a busy turn, a ghost suggestion or an unrecognisable pane all leave it armed.
 // In-process, like alertedSpells above (the upstream convention): a dashboard restart may re-alert ONCE for a still
 // parked text or a still blind host -- acceptable, and not persisted on purpose (no new state file for an alert dedup).
 const remoteAlertedSig = new Map<string, string>()
-// REMOTE blindness per HOST (N agents on one sleeping laptop = one alert, not N)
+// REMOTE blindness per AGENT (key host|agent), whatever the cause: an unreachable host and a failing capture are the
+// SAME blind spell -- a flip between the two causes neither ends it nor starts a new one, only a readable tick does,
+// so an agent already alerted for is not alerted again while it stays blind. One alert per HOST per sweep: the agents
+// of a host crossing the window together (a sleeping laptop -- they go blind in the same sweep) give ONE message.
 const blindState = new Map<string, UnreadableState>()
 
 // REMOTE give-up: the bare Enters are spent and the input is still parked. A
 // remote host has no clear+re-inject here, so -- unlike a local agent -- the
 // spell used to end in a log line nobody reads. Same owner gate as the local
 // path (RIASZTASZAJ819: never at a BUSY pane, once per spell). For a parked
-// PASTE the pane state is not consulted: detectPaneState reads a placeholder as
-// 'busy' by design, and parkedPasteSignature already returned null if a real
-// busy indicator was on screen.
+// PASTE: parkedPasteSignature already returned null if a real busy indicator
+// was on screen. For an INPUT: the signature exists only on a 'typing' pane
+// (stuckInputSignature), read from the SAME capture -- a busy pane never opens a
+// spell, so it never reaches here. Busy is excluded by construction, not by a
+// second capture whose view could disagree with the first.
 function maybeAlertRemoteGiveUp(label: string, session: string, host: string, attempts: number, kind: 'input' | 'paste', sig: string): void {
-  // Already alerted for THIS parked text: return before any extra ssh capture (no per-tick cost after the alert).
   if (remoteAlertedSig.get(session) === sig) return
-  let paneState: PaneState | null = null
-  if (kind === 'input') {
-    const pane = capturePane(session, host)
-    paneState = pane != null ? detectPaneState(pane) : null
-  }
-  if (!shouldAlertParkedGiveUp({ attempts, maxAttempts: THRESHOLDS.maxAttempts, alreadyAlerted: false, paneState })) return
+  if (!shouldAlertParkedGiveUp({ attempts, maxAttempts: THRESHOLDS.maxAttempts, alreadyAlerted: false, paneState: null })) return
   remoteAlertedSig.set(session, sig)
-  logger.warn({ label, session, host, paneState, kind }, 'stuck-input-watcher: REMOTE sub-agent input still parked after max recovery Enters, alerting (no clear+re-inject on a remote host)')
+  logger.warn({ label, session, host, kind }, 'stuck-input-watcher: REMOTE sub-agent input still parked after max recovery Enters, alerting (no clear+re-inject on a remote host)')
   sendAlert(`⚠️ A(z) ${label} távoli agens (${host}) bemenete beragadt: ${THRESHOLDS.maxAttempts} recovery Enter nem küldte el, és távoli gépen nincs clear/re-inject. Kézi beavatkozás kell (nézd meg a pane-t, vagy POST /api/agents/${label}/restart).`)
 }
 
-// One sweep's view of every remote BLIND-CLOCK target. An unreachable host is ONE target (key: the host -- N agents on
-// a sleeping laptop give one alert); a capture failing on a REACHABLE host is the agent's OWN target (key:
-// host|session) -- one readable agent on a host must not hide another agent's permanently unreadable pane.
-interface HostTick { readable: boolean; agents: string[]; why: 'unreachable' | 'capture'; host: string }
+// One sweep's view of one remote agent: readable (its pane was captured) or blind, and why.
+interface AgentTick { host: string; name: string; readable: boolean; why: 'unreachable' | 'capture' }
 
-// Feed one sweep's per-host readability into the pure decision; alert once per blind spell per host, and only while
-// an agent on that host has inbound messages waiting (getPendingBacklogByAgent).
-function noteRemoteHosts(hosts: Map<string, HostTick>, now: number): void {
-  for (const h of [...blindState.keys()]) if (!hosts.has(h)) blindState.delete(h)  // host left the sweep (stopped)
+const WHY_TEXT = { unreachable: 'a gép / az ssh nem érhető el', capture: 'a tmux-pane nem olvasható' } as const
+
+// Feed one sweep's per-agent readability into the pure decision. An agent past the window is "due"; the due agents
+// of one host are alerted together, once, and only while they have inbound messages waiting
+// (getPendingBacklogByAgent) -- until then the clock keeps running and the alert stays armed.
+function noteRemoteBlindness(ticks: Map<string, AgentTick>, now: number): void {
+  for (const k of [...blindState.keys()]) if (!ticks.has(k)) blindState.delete(k)  // agent left the sweep (stopped)
   if (REMOTE_BLIND_ALERT_MS === 0) { blindState.clear(); return }
-  for (const [key, tick] of hosts) {
-    const host = tick.host
+  const due = new Map<string, Array<{ key: string; tick: AgentTick; next: UnreadableState }>>()
+  for (const [key, tick] of ticks) {
     const prev = blindState.get(key) ?? NO_UNREADABLE
+    const { alert, next } = decideUnreadableAlert(prev, tick.readable, now, REMOTE_BLIND_ALERT_MS)
     if (tick.readable) { blindState.delete(key); continue }
-    const since = prev.since ?? now
-    let pending = 0
-    if (!prev.alerted && now - since >= REMOTE_BLIND_ALERT_MS) {
-      pending = getPendingBacklogByAgent().filter(b => tick.agents.includes(b.agent)).reduce((s, b) => s + b.pending, 0)
-    }
-    const { alert, next } = decideUnreadableAlert(prev, false, now, REMOTE_BLIND_ALERT_MS)
     // decideUnreadableAlert answers "blind long enough"; the waiting-messages gate decides whether it is an incident
-    const fire = alert && pending > 0
-    blindState.set(key, fire ? next : { since: next.since, alerted: prev.alerted })
-    if (!fire) continue
-    const minutes = Math.round(REMOTE_BLIND_ALERT_MS / 60_000)
-    logger.warn({ host, agents: tick.agents, why: tick.why, pending }, 'stuck-input-watcher: REMOTE host blind past the window with messages waiting, alerting')
-    sendAlert(`⚠️ A(z) ${host} távoli gépen futó agens(ek) (${tick.agents.join(', ')}) ${minutes} perce nem láthatók (${tick.why === 'unreachable' ? 'a gép / az ssh nem érhető el' : 'a tmux-pane nem olvasható'}), és ${pending} bejövő üzenet vár rájuk -- a beragadás-figyelő vak. Ellenőrizd a gépet és az ügynököt.`)
+    blindState.set(key, { since: next.since, alerted: prev.alerted })
+    if (!alert) continue
+    const list = due.get(tick.host) ?? []
+    list.push({ key, tick, next })
+    due.set(tick.host, list)
+  }
+  if (due.size === 0) return
+  const backlog = getPendingBacklogByAgent()
+  for (const [host, list] of due) {
+    const agents = list.map(e => e.tick.name)
+    const pending = backlog.filter(b => agents.includes(b.agent)).reduce((s, b) => s + b.pending, 0)
+    if (pending <= 0) continue
+    for (const e of list) blindState.set(e.key, e.next)
+    // the REAL elapsed blindness (the longest of the host's due agents), not the window size
+    const minutes = Math.max(...list.map(e => Math.round((now - (e.next.since ?? now)) / 60_000)))
+    const why = [...new Set(list.map(e => WHY_TEXT[e.tick.why]))].join(' / ')
+    logger.warn({ host, agents, why: list.map(e => e.tick.why), pending, minutes }, 'stuck-input-watcher: REMOTE agent(s) blind past the window with messages waiting, alerting')
+    sendAlert(`⚠️ A(z) ${host} távoli gépen futó agens(ek) (${agents.join(', ')}) ${minutes} perce nem láthatók (${why}), és ${pending} bejövő üzenet vár rájuk -- a beragadás-figyelő vak. Ellenőrizd a gépet és az ügynököt.`)
   }
 }
 
@@ -266,10 +286,13 @@ function recoverParkedPaste(
 // Returns whether the pane was READABLE this tick (the caller feeds that into
 // the remote unreadable-alert).
 function bareEnterRecovery(label: string, session: string, host: string | null): boolean {
-  // Ghost-stripped capture: a bare recovery Enter submits whatever is parked,
-  // so a dim autocomplete hint read as parked input would be Enter-submitted as
-  // a forged message. captureParkedInputView removes the SGR-2 ghost first.
-  const pane = captureParkedInputView(session, host)
+  // Ghost-stripped view: a bare recovery Enter submits whatever is parked, so a
+  // dim autocomplete hint read as parked input would be Enter-submitted as a
+  // forged message. captureInputBoxViews' `ghostless` is captureParkedInputView's
+  // view (SGR-2 ghost removed); the same capture's `withGhost` tells a proven-
+  // empty box from a ghost suggestion for the alert re-arm below.
+  const views = captureInputBoxViews(session, host)
+  const pane = views?.ghostless ?? null
   // A failed capture is treated as "nothing parked" -- it ends any active
   // spell rather than holding stale state across a transient tmux miss.
   const sig = pane == null ? null : stuckInputSignature(pane)
@@ -282,8 +305,8 @@ function bareEnterRecovery(label: string, session: string, host: string | null):
   } else {
     watchState.set(session, next)
   }
-  // the remote alert re-arms only on a PROVEN-empty box (readable pane, nothing parked) -- never on a failed capture
-  if (pane != null && sig == null) remoteAlertedSig.delete(session)
+  // the remote alert re-arms only on a PROVEN-empty box -- never on a failed capture, a busy turn, a ghost or 'unknown'
+  if (views != null && classifyInputBox(views.ghostless, views.withGhost).state === 'empty') remoteAlertedSig.delete(session)
 
   if (recover) {
     logger.info(
@@ -386,12 +409,9 @@ export function startStuckInputWatcher(): NodeJS.Timeout {
     } catch (err) {
       logger.debug({ err }, 'stuck-input-watcher: main agent check error')
     }
-    const hosts = new Map<string, HostTick>()
-    const hostTick = (key: string, host: string, name: string, readable: boolean, why: 'unreachable' | 'capture') => {
-      const h = hosts.get(key) ?? { readable: false, agents: [], why, host }
-      h.readable = h.readable || readable
-      h.agents.push(name)
-      hosts.set(key, h)
+    const remoteTicks = new Map<string, AgentTick>()
+    const agentTick = (host: string, name: string, readable: boolean, why: 'unreachable' | 'capture') => {
+      remoteTicks.set(host + '|' + name, { host, name, readable, why })
     }
     for (const name of listAgentNames()) {
       const session = resolveAgentSession(name)
@@ -402,11 +422,9 @@ export function startStuckInputWatcher(): NodeJS.Timeout {
       const run = agentRunState(name)
       if (run !== 'running') {
         watchState.delete(session)
-        if (host != null && run === 'unreachable') hostTick(host, host, name, false, 'unreachable')
+        if (host != null && run === 'unreachable') agentTick(host, name, false, 'unreachable')
         continue
       }
-      // a running remote agent proves its host reachable: the host-level (unreachable) clock resets
-      if (host != null) hostTick(host, host, name, true, 'unreachable')
       try {
         // Local sub-agents get the full robust escalation (with a give-up
         // alert); remote-host ones (no local tmux for clear+re-inject) stay on
@@ -421,16 +439,16 @@ export function startStuckInputWatcher(): NodeJS.Timeout {
           // recoverParkedPaste returns true only on a readable pane holding a
           // paste; otherwise bareEnterRecovery reports the readability.
           const readable = recoverParkedPaste(name, session, host, THRESHOLDS) || bareEnterRecovery(name, session, host)
-          hostTick(host + '|' + session, host, name, readable, 'capture')
+          agentTick(host, name, readable, 'capture')
         }
       } catch (err) {
         logger.debug({ err, agent: name }, 'stuck-input-watcher: agent check error')
         // a check that keeps THROWING is a blind spot too: it must still reach the blind clock, not drop out of it
-        if (host != null) hostTick(host + '|' + session, host, name, false, 'capture')
+        if (host != null) agentTick(host, name, false, 'capture')
       }
     }
     try {
-      noteRemoteHosts(hosts, Date.now())
+      noteRemoteBlindness(remoteTicks, Date.now())
     } catch (err) {
       logger.debug({ err }, 'stuck-input-watcher: remote host check error')
     }
