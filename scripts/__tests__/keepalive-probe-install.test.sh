@@ -50,6 +50,42 @@ assert_contains "ExecStart points at the probe" "$LINUX" 'ExecStart=$INSTALL_DIR
 ENABLE_LINE="$(grep -n 'systemctl --user enable "\${DASH_UNIT}"' "$REPO/install-linux.sh" | head -1)"
 assert_contains "the timer is in the enable list" "$ENABLE_LINE" '${KEEPALIVE_UNIT}.timer'
 
+# TIMERSTART1011: enabled is not running. Both timers fire on OnBootSec=90s,
+# which on a host that has been up for a while has already passed, so a timer
+# that is only enabled stays inactive until the next reboot -- the same outage
+# as a missing timer (measured on a fresh Linux install: three hard restarts in
+# 80 minutes). The installer's start block is extracted and run against a
+# `systemctl` stub: `start` marks a unit active, `is-active` reads the mark.
+TSTART="$(awk '/# TIMERSTART1011:/,/^  done$/' "$REPO/install-linux.sh")"
+if [ -z "$TSTART" ]; then
+  fail "the timer start block (TIMERSTART1011) is in install-linux.sh"
+else
+  pass "the timer start block (TIMERSTART1011) is in install-linux.sh"
+  TS="$TMP/tstart"; mkdir -p "$TS/bin" "$TS/active"
+  cat > "$TS/bin/systemctl" <<STUB
+#!/bin/sh
+echo "\$*" >> "$TS/calls"
+[ "\$2" = start ] && [ ! -e "$TS/inert" ] && for u in "\$@"; do case "\$u" in *.timer) touch "$TS/active/\$u";; esac; done
+if [ "\$2" = is-active ]; then for u in "\$@"; do :; done; [ -e "$TS/active/\$u" ]; exit \$?; fi
+exit 0
+STUB
+  chmod +x "$TS/bin/systemctl"
+  run_tstart() {
+    PATH="$TS/bin:/usr/bin:/bin" KEEPALIVE_UNIT=hex-channel-keepalive-probe INBOX_OBSERVER_UNIT=hex-main-inbox-observer \
+      bash -c 'ok() { echo "OK $*"; }; warn() { echo "WARN $*"; }; '"$TSTART" 2>&1
+  }
+  OUT="$(run_tstart)"
+  assert_contains "the installer STARTS both timers, not only enables them" "$(cat "$TS/calls")" \
+    "--user start hex-channel-keepalive-probe.timer hex-main-inbox-observer.timer"
+  assert_contains "the probe timer is reported running" "$OUT" "OK hex-channel-keepalive-probe.timer fut"
+  assert_contains "the observer timer is reported running" "$OUT" "OK hex-main-inbox-observer.timer fut"
+  rm -f "$TS/active/"*; : > "$TS/calls"; touch "$TS/inert"
+  OUT="$(run_tstart)"
+  assert_contains "a timer that did not start is named with the fix command" "$OUT" \
+    "WARN hex-channel-keepalive-probe.timer nem fut -- inditsd: systemctl --user start hex-channel-keepalive-probe.timer"
+  assert_contains "the observer timer too" "$OUT" "WARN hex-main-inbox-observer.timer nem fut"
+fi
+
 # No Requires=/Wants= on the triggered service (the morning-timer lesson: a
 # [Unit] dependency fires the service on every activation of the timer unit).
 PROBE_TIMER_BLOCK="$(awk '/cat >"\$SYSTEMD_DIR\/\$\{KEEPALIVE_UNIT\}\.timer"/,/^EOF$/' "$REPO/install-linux.sh")"
