@@ -147,6 +147,9 @@ TOPICS_ORIG = "// MARVEEN-PATCH(tgtopics-orig) "
 TOPICS_SETTING = "TELEGRAM_TOPICS_ENABLED"
 # The values src/config.ts reads as on; the Settings page itself writes "1".
 TRUTHY = ("1", "true", "yes", "on")
+# What JavaScript's String.prototype.trim() removes. Python's own strip() set
+# differs both ways: it keeps U+FEFF (a BOM) and removes U+001C-U+001F and U+0085.
+JS_TRIM = "\t\n\v\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff"
 
 _INBOUND_THREAD = "ctx.message?.is_topic_message && ctx.message.message_thread_id != null"
 TOPICS_STEPS = [
@@ -327,6 +330,32 @@ def write_state(state_path, state):
         log(f"cannot write state {state_path}: {type(e).__name__}")
 
 
+def parse_env_content(content):
+    """src/env-parse.ts parseEnvContent, rule for rule: lines split on \\n only,
+    trimmed like JS trim(), comments and blank lines skipped, the key trimmed
+    around the first =, ONE pair of matching surrounding quotes stripped, and
+    a later line for the same key wins."""
+    result = {}
+    for line in content.split("\n"):
+        trimmed = line.strip(JS_TRIM)
+        if not trimmed or trimmed.startswith("#"):
+            continue
+        eq = trimmed.find("=")
+        if eq == -1:
+            continue
+        key = trimmed[:eq].strip(JS_TRIM)
+        value = trimmed[eq + 1:].strip(JS_TRIM)
+        if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
+            value = value[1:-1]
+        result[key] = value
+    return result
+
+
+def is_on(value):
+    """src/setting-flag.ts isSettingValueOn."""
+    return str(value).strip(JS_TRIM).lower() in TRUTHY
+
+
 def topics_setting(install_dir):
     """TELEGRAM_TOPICS_ENABLED as the dashboard settings store resolves it:
     store/config-overrides.json, then .env, then the registry default (off)."""
@@ -334,15 +363,17 @@ def topics_setting(install_dir):
         with open(os.path.join(install_dir, "store", "config-overrides.json"), encoding="utf-8") as f:
             overrides = json.load(f)
         if isinstance(overrides, dict) and TOPICS_SETTING in overrides:
-            return str(overrides[TOPICS_SETTING]).strip().lower() in TRUTHY
+            return is_on(overrides[TOPICS_SETTING])
     except Exception:
         pass
     try:
-        with open(os.path.join(install_dir, ".env"), encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line.startswith(TOPICS_SETTING + "="):
-                    return line.split("=", 1)[1].strip().strip("\"'").lower() in TRUTHY
+        # As Node's readFileSync(path, 'utf-8') reads it: no newline translation
+        # (a lone \r does not end a line there), a bad byte becomes U+FFFD
+        # instead of failing the whole file.
+        with open(os.path.join(install_dir, ".env"), encoding="utf-8", errors="replace", newline="") as f:
+            env = parse_env_content(f.read())
+        if TOPICS_SETTING in env:
+            return is_on(env[TOPICS_SETTING])
     except Exception:
         pass
     return False
