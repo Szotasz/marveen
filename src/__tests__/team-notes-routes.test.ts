@@ -96,19 +96,19 @@ describe('/api/notes', () => {
   })
 
   it('a browser session or device names the author whatever the body says; a token caller must name itself', async () => {
-    const session = { kind: 'session', user: 'gabor' } as RouteContext['auth']
+    const session = { kind: 'session', user: 'alex' } as RouteContext['auth']
     const post = await call('POST', '/api/notes', { assignee: 'cody', content: 'from the page' }, session)
     expect(post.status).toBe(200)
-    expect(getTeamNote(post.body.id)!.created_by).toBe('gabor')
+    expect(getTeamNote(post.body.id)!.created_by).toBe('alex')
     expect((await call('POST', '/api/notes', { assignee: 'cody', content: 'x' }, { kind: 'token' } as RouteContext['auth'])).status).toBe(400)
     const del = await call('DELETE', `/api/notes/${post.body.id}`, { reason: 'done' }, session)
     expect(del.status).toBe(200)
-    expect(getTeamNote(post.body.id)).toMatchObject({ deleted_by: 'gabor', delete_reason: 'done' })
-    const device = await call('POST', '/api/notes', { assignee: 'cody', content: 'from a phone' }, { kind: 'device', device: 'Gabor phone', deviceId: 1 } as RouteContext['auth'])
-    expect(getTeamNote(device.body.id)!.created_by).toBe('Gabor phone')
+    expect(getTeamNote(post.body.id)).toMatchObject({ deleted_by: 'alex', delete_reason: 'done' })
+    const device = await call('POST', '/api/notes', { assignee: 'cody', content: 'from a phone' }, { kind: 'device', device: 'Alex phone', deviceId: 1 } as RouteContext['auth'])
+    expect(getTeamNote(device.body.id)!.created_by).toBe('Alex phone')
     // The signed-in user wins over a name in the body (the page sends the owner name).
     const named = await call('POST', '/api/notes', { assignee: 'cody', content: 'y', created_by: 'margo' }, session)
-    expect(getTeamNote(named.body.id)!.created_by).toBe('gabor')
+    expect(getTeamNote(named.body.id)!.created_by).toBe('alex')
     // A token caller is named by the body.
     const agent = await call('POST', '/api/notes', { assignee: 'cody', content: 'z', created_by: 'margo' }, { kind: 'token' } as RouteContext['auth'])
     expect(getTeamNote(agent.body.id)!.created_by).toBe('margo')
