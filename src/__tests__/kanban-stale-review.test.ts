@@ -205,6 +205,22 @@ describe('stale routes', () => {
     }
   })
 
+  it('count=1 answers the count alone; limit=N the N oldest with the full count', async () => {
+    card('d20', 20); card('d50', 50); card('d30', 30); card('d2', 2)
+    const count = route('GET', '/api/kanban/stale?days=14&count=1')
+    await tryHandleKanban(count.ctx)
+    expect(count.out).toEqual({ status: 200, body: { days: 14, count: 3 } })
+    const limited = route('GET', '/api/kanban/stale?days=14&limit=2')
+    await tryHandleKanban(limited.ctx)
+    expect(limited.out.body.count).toBe(3)
+    expect(limited.out.body.cards.map((c: { id: string }) => c.id)).toEqual(['d50', 'd30'])
+    for (const query of ['count=0', 'count=yes', 'limit=0', 'limit=-1', 'limit=2.5', 'limit=abc']) {
+      const bad = route('GET', `/api/kanban/stale?days=14&${query}`)
+      await tryHandleKanban(bad.ctx)
+      expect([query, bad.out.status]).toEqual([query, 400])
+    }
+  })
+
   it('POST answers 400 / 404 / 409 and 200, and refuses a bad body before any write', async () => {
     card('a', 30)
     card('fresh', 2)
@@ -330,11 +346,16 @@ describe('stale review modal: a decided card keeps its row', () => {
   type FakeButton = { dataset: { decision: string }; disabled: boolean; click: () => Promise<void> }
   type FakeRow = { id: string; buttons: FakeButton[] }
 
-  function setup(cards: Array<{ id: string; seq: number }>, status = 200, gate?: Record<string, Promise<void>>) {
+  async function setup(cards: Array<{ id: string; seq: number }>, status = 200, gate?: Record<string, Promise<void>>) {
     const posts: string[] = []
+    const gets: string[] = []
+    // The server's stale list, oldest first; a decided (or changed) card leaves it.
+    let server = cards.map((c) => ({ ...c, title: c.id, status: 'planned', assignee: 'nova', idle_days: 20 }))
     let rows: FakeRow[] = []
+    let lastHtml = ''
     const list = {
       set innerHTML(html: string) {
+        lastHtml = html
         rows = html.split('<div class="kanban-stale-row').slice(1).map((chunk) => {
           const row: FakeRow = { id: /data-card-id="([^"]*)"/.exec(chunk)![1], buttons: [] }
           for (const m of chunk.matchAll(/data-decision="(\w+)"( disabled)?/g)) {
@@ -360,41 +381,52 @@ describe('stale review modal: a decided card keeps its row', () => {
     const ctx: Record<string, unknown> = {
       document: { createElement: () => overlay, body: { appendChild: () => {} } },
       fetch: async (url: string) => {
+        if (url.startsWith('/api/kanban/stale?')) {
+          gets.push(url)
+          const limit = Number(new URL(url, 'http://x').searchParams.get('limit'))
+          return { ok: true, status: 200, json: async () => ({ days: 14, count: server.length, cards: server.slice(0, limit) }) }
+        }
         const id = decodeURIComponent(url.split('/api/kanban/')[1].split('/')[0])
         posts.push(id)
         if (gate?.[id]) await gate[id]
+        if (status === 200 || status === 409) server = server.filter((c) => c.id !== id)
         return { ok: status === 200, status, json: async () => ({}) }
       },
       showToast: () => {}, loadKanban: async () => {}, kanbanMoveActor: () => 'Alex',
       openModal: () => {}, closeModal: () => {}, attachOverlayCloseGuard: () => {},
-      t: (key: string) => key,
+      t: (key: string, vars?: unknown) => key + (vars ? JSON.stringify(vars) : ''),
       escapeHtml: (x: unknown) => String(x).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'),
     }
     vm.createContext(ctx)
     vm.runInContext(src.slice(a, b) + `
-      kanbanStaleCards = ${JSON.stringify(cards.map((c) => ({ ...c, title: c.id, status: 'planned', assignee: 'nova', idle_days: 20 })))}
-      openKanbanStaleReview()
-      globalThis.staleLeft = () => kanbanStaleCards.map((c) => c.id)
-      globalThis.setCards = (ids) => kanbanStaleSetCards(ids.map((id) => ({ id })))`, ctx)
-    return { posts, rows: () => rows, staleLeft: ctx.staleLeft as () => string[], setCards: ctx.setCards as (ids: string[]) => void }
+      globalThis.open = openKanbanStaleReview
+      globalThis.count = () => kanbanStaleCount
+      globalThis.epoch = () => kanbanStaleEpoch
+      globalThis.setCount = (n, epoch) => kanbanStaleSetCount(n, epoch)
+      globalThis.listHtml = () => lastHtml`, ctx)
+    await (ctx.open as () => Promise<void>)()
+    return {
+      posts, gets, rows: () => rows, count: ctx.count as () => number, epoch: ctx.epoch as () => number,
+      setCount: ctx.setCount as (n: number, epoch: number) => void, html: () => lastHtml,
+    }
   }
 
   it('a second tap on the same spot hits the decided row, not the next card', async () => {
-    const m = setup([{ id: 'a', seq: 1 }, { id: 'b', seq: 2 }])
+    const m = await setup([{ id: 'a', seq: 1 }, { id: 'b', seq: 2 }])
     await m.rows()[0].buttons[2].click() // Close on card a
     expect(m.rows().map((r) => r.id)).toEqual(['a', 'b'])
     expect(m.rows()[0].buttons.every((x) => x.disabled)).toBe(true)
     await m.rows()[0].buttons[2].click() // the double tap lands on the same row
     expect(m.posts).toEqual(['a'])
     expect(m.rows()[1].buttons.some((x) => x.disabled)).toBe(false)
-    expect(m.staleLeft()).toEqual(['b']) // the chip still counts down
+    expect(m.count()).toBe(1) // the chip still counts down
   })
 
   it('a card whose decision is still on its way stays disabled when another card\'s decision redraws the modal', async () => {
     let releaseA!: () => void
     let releaseB!: () => void
     const gate = { a: new Promise<void>((r) => { releaseA = r }), b: new Promise<void>((r) => { releaseB = r }) }
-    const m = setup([{ id: 'a', seq: 1 }, { id: 'b', seq: 2 }, { id: 'c', seq: 3 }], 200, gate)
+    const m = await setup([{ id: 'a', seq: 1 }, { id: 'b', seq: 2 }, { id: 'c', seq: 3 }], 200, gate)
     const tapA = m.rows()[0].buttons[0].click()
     const tapB = m.rows()[1].buttons[0].click()
     releaseB(); await tapB // b finishes first and redraws the modal
@@ -403,29 +435,70 @@ describe('stale review modal: a decided card keeps its row', () => {
     expect(m.posts).toEqual(['a', 'b'])
     expect(m.rows()[2].buttons.some((x) => x.disabled)).toBe(false)
     releaseA(); await tapA
-    expect(m.staleLeft()).toEqual(['c'])
+    expect(m.count()).toBe(1)
   })
 
   it('a board reload that answers after a decision does not bring the decided card back into the count', async () => {
     let releaseA!: () => void
-    const m = setup([{ id: 'a', seq: 1 }, { id: 'b', seq: 2 }, { id: 'c', seq: 3 }], 200, { a: new Promise<void>((r) => { releaseA = r }) })
+    const m = await setup([{ id: 'a', seq: 1 }, { id: 'b', seq: 2 }, { id: 'c', seq: 3 }], 200, { a: new Promise<void>((r) => { releaseA = r }) })
+    const before = m.epoch() // a board reload starts here, before both decisions
     await m.rows()[1].buttons[0].click() // b decided
+    const duringA = m.epoch()
     const tapA = m.rows()[0].buttons[0].click() // a on its way
-    m.setCards(['a', 'b', 'c']) // a reload drawn before both decisions answers now
-    expect(m.staleLeft()).toEqual(['c'])
+    m.setCount(3, before) // the early reload answers now, with a, b and c in its count
+    m.setCount(2, duringA) // and one drawn before a was sent
+    expect(m.count()).toBe(2)
     releaseA(); await tapA
+    m.setCount(9, before)
+    expect(m.count()).toBe(1)
+    m.setCount(1, m.epoch()) // a reload drawn after both decisions is taken
+    expect(m.count()).toBe(1)
+  })
+
+  it('opens with the oldest 20 of a long list, says so, and a decision brings in the next oldest', async () => {
+    const many = Array.from({ length: 25 }, (_, i) => ({ id: `c${i + 1}`, seq: i + 1 }))
+    const m = await setup(many)
+    expect(m.gets).toEqual(['/api/kanban/stale?days=14&limit=20'])
+    expect(m.rows().map((r) => r.id)).toEqual(many.slice(0, 20).map((c) => c.id))
+    expect(m.count()).toBe(25)
+    expect(m.html()).toContain('kanban.stale.showing{&quot;n&quot;:20,&quot;total&quot;:25}')
+    await m.rows()[0].buttons[0].click() // keep c1
+    // c1 keeps its row, decided; c21 comes in at the end, nothing slides.
+    expect(m.rows().map((r) => r.id)).toEqual([...many.slice(0, 21).map((c) => c.id)])
+    expect(m.rows()[0].buttons.every((x) => x.disabled)).toBe(true)
+    expect(m.count()).toBe(24)
+    expect(m.html()).toContain('kanban.stale.showing{&quot;n&quot;:20,&quot;total&quot;:24}')
+  })
+
+  it('a short list shows no cap line', async () => {
+    const m = await setup([{ id: 'a', seq: 1 }, { id: 'b', seq: 2 }])
+    expect(m.html()).not.toContain('kanban.stale.showing')
   })
 
   it('a card that changed meanwhile also stays in place, decided', async () => {
-    const m = setup([{ id: 'a', seq: 1 }, { id: 'b', seq: 2 }], 409)
+    const m = await setup([{ id: 'a', seq: 1 }, { id: 'b', seq: 2 }], 409)
     await m.rows()[0].buttons[0].click()
     expect(m.rows().map((r) => r.id)).toEqual(['a', 'b'])
     expect(m.rows()[0].buttons.every((x) => x.disabled)).toBe(true)
-    expect(m.staleLeft()).toEqual(['b'])
+    expect(m.count()).toBe(1)
   })
 })
 
 describe('stale_kept_at migration', () => {
+  it('a second start on the same database does not throw and keeps one stale_kept_at column', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'stale-mig-'))
+    const file = join(dir, 'twice.db')
+    try {
+      initDatabase(file)
+      expect(() => initDatabase(file)).not.toThrow()
+      const cols = (getDb().prepare('PRAGMA table_info(kanban_cards)').all() as { name: string }[]).map((c) => c.name)
+      expect(cols.filter((c) => c === 'stale_kept_at')).toHaveLength(1)
+    } finally {
+      initDatabase(':memory:')
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
   it('survives the testing-status table rebuild on an old database', () => {
     const dir = mkdtempSync(join(tmpdir(), 'stale-mig-'))
     const file = join(dir, 'old.db')

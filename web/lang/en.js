@@ -1804,6 +1804,8 @@ window._i18n.en = {
   'kanban.stale.gone':              'This card no longer exists.',
   'kanban.stale.changed':           'This card changed since the list was drawn, so it is no longer stale.',
   'kanban.stale.error':             'Could not save decision: {msg}',
+  'kanban.stale.showing':           'Showing the oldest {n} of {total}.',
+  'kanban.stale.error_load':        'Could not load the stale cards: {msg}',
   'kanban.gantt.filter.period_week':    'This week',
   'kanban.gantt.filter.period_month':   'Month',
   'kanban.gantt.filter.period_quarter': 'Quarter',

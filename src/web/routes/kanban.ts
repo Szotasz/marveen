@@ -503,8 +503,16 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const raw = url.searchParams.get('days') ?? '14'
     const days = Number(raw)
     if (!Number.isInteger(days) || days <= 0) { json(res, { error: 'days must be a positive integer' }, 400); return true }
+    // count=1 answers the count alone (the board's chip needs nothing else);
+    // limit=N returns the N oldest cards, while count stays the full number.
+    const countOnly = url.searchParams.get('count')
+    if (countOnly !== null && countOnly !== '1') { json(res, { error: 'count must be 1' }, 400); return true }
+    const rawLimit = url.searchParams.get('limit')
+    const limit = rawLimit === null ? null : Number(rawLimit)
+    if (limit !== null && (!Number.isInteger(limit) || limit <= 0)) { json(res, { error: 'limit must be a positive integer' }, 400); return true }
     const cards = listStaleKanbanCards({ days })
-    json(res, { days, count: cards.length, cards })
+    if (countOnly) { json(res, { days, count: cards.length }); return true }
+    json(res, { days, count: cards.length, cards: limit === null ? cards : cards.slice(0, limit) })
     return true
   }
 

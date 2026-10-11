@@ -1807,6 +1807,8 @@ window._i18n.hu = {
   'kanban.stale.gone':              'Ez a kártya már nem létezik.',
   'kanban.stale.changed':           'Ez a kártya a lista óta megmozdult, már nem áll régóta.',
   'kanban.stale.error':             'A döntés nem menthető: {msg}',
+  'kanban.stale.showing':           'A legrégebbi {n} látszik, összesen {total}.',
+  'kanban.stale.error_load':        'A régóta álló kártyák nem tölthetők be: {msg}',
   'kanban.gantt.filter.period_week':    'Ezen hét',
   'kanban.gantt.filter.period_month':   'Hónap',
   'kanban.gantt.filter.period_quarter': 'Negyedév',

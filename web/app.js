@@ -867,22 +867,24 @@ async function loadKanban() {
         if (sortSel) sortSel.value = storedSort
       }
     }
+    const staleEpoch = kanbanStaleEpoch
     const [cardsRes, assigneesRes, projectsRes, labelsRes, staleRes] = await Promise.all([
       fetch('/api/kanban'),
       fetch('/api/kanban/assignees'),
       fetch('/api/kanban-projects'),
       fetch('/api/kanban/labels'),
-      // The stale list is an extra: a network failure here must not fail the
-      // whole board load, so it resolves to null instead of rejecting.
-      fetch(`/api/kanban/stale?days=${KANBAN_STALE_DAYS}`).catch(() => null),
+      // The stale count is an extra: a network failure here must not fail the
+      // whole board load, so it resolves to null instead of rejecting. Only the
+      // count: the rows are fetched when the review modal opens.
+      fetch(`/api/kanban/stale?days=${KANBAN_STALE_DAYS}&count=1`).catch(() => null),
     ])
     kanbanCards = await cardsRes.json()
     kanbanAssignees = await assigneesRes.json()
     kanbanProjects = await projectsRes.json()
     kanbanAllLabels = await labelsRes.json()
-    // A non-OK or unreadable answer keeps the previous list.
+    // A non-OK or unreadable answer keeps the previous count.
     const staleBody = staleRes?.ok ? await staleRes.json().catch(() => null) : null
-    if (staleBody) kanbanStaleSetCards(staleBody.cards || [])
+    if (staleBody) kanbanStaleSetCount(staleBody.count, staleEpoch)
     populateProjectFilter()
     populateProjectSuggestions()
     setupAssigneeFilter()
@@ -1248,7 +1250,14 @@ function renderKanbanOngoing(cards) {
 
 // --- kanban stale review ---
 const KANBAN_STALE_DAYS = 14
-let kanbanStaleCards = []
+// The modal shows the oldest this many at a time, so a first review of a
+// long-lived board stays doable in one sitting; each decision refills it.
+const KANBAN_STALE_LIMIT = 20
+let kanbanStaleCount = 0
+// Bumped when a decision is sent and when it answers: a count fetched before
+// that can still include the decided card, and is dropped.
+let kanbanStaleEpoch = 0
+let kanbanStaleLoading = false
 let kanbanStaleDeepLinkHandled = false
 let kanbanStaleOverlay = null
 // Cards whose decision is on its way. A re-render (another card's decision
@@ -1263,9 +1272,27 @@ let kanbanStaleShown = []
 const kanbanStaleDone = new Map()
 
 // A board reload that started before a decision can answer after it, with the
-// decided card still in it; that card must not come back into the count.
-function kanbanStaleSetCards(cards) {
-  kanbanStaleCards = cards.filter((card) => !kanbanStalePending.has(card.id) && !kanbanStaleDone.has(card.id))
+// decided card still in its count; that answer must not bring it back.
+function kanbanStaleSetCount(count, epoch) {
+  if (epoch === kanbanStaleEpoch && Number.isInteger(count)) kanbanStaleCount = count
+}
+
+// Fetch the oldest KANBAN_STALE_LIMIT stale cards and append the ones not on
+// the modal yet: rows already shown stay where they are (see kanbanStaleShown).
+async function kanbanStaleRefill() {
+  const epoch = kanbanStaleEpoch
+  try {
+    const response = await fetch(`/api/kanban/stale?days=${KANBAN_STALE_DAYS}&limit=${KANBAN_STALE_LIMIT}`)
+    const body = await response.json().catch(() => ({}))
+    if (!response.ok) throw new Error(body.error || response.statusText)
+    const shown = new Set(kanbanStaleShown.map((card) => card.id))
+    kanbanStaleShown = kanbanStaleShown.concat((body.cards || []).filter((card) => !shown.has(card.id) && !kanbanStaleDone.has(card.id)))
+    kanbanStaleSetCount(body.count, epoch)
+  } catch (err) {
+    showToast(t('kanban.stale.error_load', { msg: err.message || String(err) }))
+  }
+  kanbanStaleLoading = false
+  renderKanbanStaleModal()
 }
 
 function kanbanStaleRowHtml(card, pending = false, outcome = null) {
@@ -1291,15 +1318,20 @@ function renderKanbanStaleModal() {
   const title = kanbanStaleOverlay.querySelector('.modal-header h2')
   if (title) title.textContent = t('kanban.stale.title')
   const list = kanbanStaleOverlay.querySelector('.kanban-stale-list')
+  const open = kanbanStaleShown.filter((card) => !kanbanStaleDone.has(card.id)).length
+  const cap = kanbanStaleCount > open
+    ? `<p class="kanban-stale-cap">${escapeHtml(t('kanban.stale.showing', { n: open, total: kanbanStaleCount }))}</p>`
+    : ''
   list.innerHTML = kanbanStaleShown.length
-    ? kanbanStaleShown.map((card) => kanbanStaleRowHtml(card, kanbanStalePending.has(card.id), kanbanStaleDone.get(card.id) || null)).join('')
-    : `<p class="naplo-empty">${escapeHtml(t('kanban.stale.empty'))}</p>`
+    ? cap + kanbanStaleShown.map((card) => kanbanStaleRowHtml(card, kanbanStalePending.has(card.id), kanbanStaleDone.get(card.id) || null)).join('')
+    : `<p class="naplo-empty">${escapeHtml(t(kanbanStaleLoading ? 'common.loading' : 'kanban.stale.empty'))}</p>`
   list.querySelectorAll('[data-decision]').forEach((button) => {
     button.addEventListener('click', async () => {
       const row = button.closest('.kanban-stale-row')
       const id = row.dataset.cardId
       if (kanbanStalePending.has(id) || kanbanStaleDone.has(id)) return
       kanbanStalePending.add(id)
+      kanbanStaleEpoch++
       row.querySelectorAll('button').forEach((item) => { item.disabled = true })
       try {
         const response = await fetch(`/api/kanban/${encodeURIComponent(id)}/stale-decision`, {
@@ -1319,9 +1351,11 @@ function renderKanbanStaleModal() {
         }
         showToast(t(outcome))
         kanbanStaleDone.set(id, outcome)
-        kanbanStaleCards = kanbanStaleCards.filter((card) => card.id !== id)
+        kanbanStaleCount = Math.max(0, kanbanStaleCount - 1)
+        kanbanStaleEpoch++
         kanbanStalePending.delete(id)
         renderKanbanStaleModal()
+        await kanbanStaleRefill()
         await loadKanban()
       } catch (err) {
         kanbanStalePending.delete(id)
@@ -1332,7 +1366,7 @@ function renderKanbanStaleModal() {
   })
 }
 
-function openKanbanStaleReview() {
+async function openKanbanStaleReview() {
   if (!kanbanStaleOverlay) {
     kanbanStaleOverlay = document.createElement('div')
     kanbanStaleOverlay.className = 'modal-overlay'
@@ -1341,10 +1375,12 @@ function openKanbanStaleReview() {
     kanbanStaleOverlay.querySelector('.modal-close').addEventListener('click', () => closeModal(kanbanStaleOverlay))
     attachOverlayCloseGuard(kanbanStaleOverlay)
   }
-  kanbanStaleShown = kanbanStaleCards.slice()
+  kanbanStaleShown = []
   kanbanStaleDone.clear()
+  kanbanStaleLoading = true
   renderKanbanStaleModal()
   openModal(kanbanStaleOverlay)
+  await kanbanStaleRefill()
 }
 
 function renderKanbanStaleChip() {
@@ -1358,8 +1394,8 @@ function renderKanbanStaleChip() {
     chip.addEventListener('click', openKanbanStaleReview)
     anchor?.insertAdjacentElement('afterend', chip)
   }
-  chip.hidden = kanbanStaleCards.length === 0
-  chip.textContent = t('kanban.stale.chip', { n: kanbanStaleCards.length })
+  chip.hidden = kanbanStaleCount === 0
+  chip.textContent = t('kanban.stale.chip', { n: kanbanStaleCount })
   if (!kanbanStaleDeepLinkHandled && new URLSearchParams(location.search).get('review') === 'stale') {
     kanbanStaleDeepLinkHandled = true
     const url = new URL(location.href)
