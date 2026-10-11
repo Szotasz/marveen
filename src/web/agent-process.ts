@@ -3842,6 +3842,21 @@ export function captureParkedInputView(session: string, host: string | null = nu
   }
 }
 
+// ONE coloured capture seen two ways, for classifyInputBox (the all-agent
+// input-state report): `ghostless` is exactly captureParkedInputView's view (the
+// dim ghost suggestion removed), `withGhost` keeps the dim text but drops every
+// ANSI code. Host-aware (a remote agent is captured over ssh). null on capture
+// failure -- the caller reports that as 'unreadable', never as 'empty'.
+export function captureInputBoxViews(session: string, host: string | null = null): { ghostless: string; withGhost: string } | null {
+  try {
+    // a pinned /rename session-title banner is cut first (as capturePane does), else the live footer reads 'unknown'
+    const raw = stripSessionTitleBanner(captureTmux(host, ['capture-pane', '-t', exactTmuxTarget(session), '-e', '-p']))
+    return { ghostless: stripGhostSuggestion(raw), withGhost: stripAllAnsi(raw) }
+  } catch {
+    return null
+  }
+}
+
 // Check if a Claude Code tmux session is ready to accept a new prompt.
 //
 // The detection has two layers, both needed to close the frame-level
