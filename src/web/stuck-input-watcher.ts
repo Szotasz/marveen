@@ -254,6 +254,8 @@ function recoverParkedPaste(
   host: string | null,
   thresholds: StuckInputThresholds,
 ): boolean {
+  // (no banner cut needed here: the placeholder is found between the box separators, not in a bottom tail region,
+  // so a pinned /rename banner below the footer does not hide it)
   const pane = captureParkedInputView(session, host)
   const sig = pane == null ? null : parkedPasteSignature(pane)
   if (sig == null) return false
@@ -289,8 +291,11 @@ function bareEnterRecovery(label: string, session: string, host: string | null):
   // Ghost-stripped view: a bare recovery Enter submits whatever is parked, so a
   // dim autocomplete hint read as parked input would be Enter-submitted as a
   // forged message. captureInputBoxViews' `ghostless` is captureParkedInputView's
-  // view (SGR-2 ghost removed); the same capture's `withGhost` tells a proven-
-  // empty box from a ghost suggestion for the alert re-arm below.
+  // view (SGR-2 ghost removed) with ONE difference: a pinned /rename title banner
+  // is cut first (as capturePane does for delivery), so a remote pane under such a
+  // banner classifies normally instead of 'unknown' -- a parked input there gets
+  // its recovery Enters like any other. The same capture's `withGhost` tells a
+  // proven-empty box from a ghost suggestion for the alert re-arm below.
   const views = captureInputBoxViews(session, host)
   const pane = views?.ghostless ?? null
   // A failed capture is treated as "nothing parked" -- it ends any active
@@ -321,8 +326,8 @@ function bareEnterRecovery(label: string, session: string, host: string | null):
     if (prev.attempts < THRESHOLDS.maxAttempts) {
       logger.warn({ label, session }, 'stuck-input-watcher: input still parked after max recovery Enters, giving up for this spell')
     }
-    // The owner alert is evaluated on EVERY tick past the cap (not just the
-    // crossing one), so a busy-deferred alert fires on the first idle tick.
+    // The remote owner alert is evaluated on EVERY tick past the cap (not just
+    // the crossing one); the parked-text dedup (remoteAlertedSig) suppresses repeats.
     if (host != null) maybeAlertRemoteGiveUp(label, session, host, next.attempts, 'input', next.parkedSig)
   }
   return pane != null
@@ -422,6 +427,9 @@ export function startStuckInputWatcher(): NodeJS.Timeout {
       const run = agentRunState(name)
       if (run !== 'running') {
         watchState.delete(session)
+        // a STOPPED session is gone: a restarted agent parking the same text again is a new incident, not the old one
+        // ('unreachable' keeps it -- the session is most likely still alive with the same box)
+        if (run === 'stopped') remoteAlertedSig.delete(session)
         if (host != null && run === 'unreachable') agentTick(host, name, false, 'unreachable')
         continue
       }

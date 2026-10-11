@@ -143,8 +143,9 @@ describe('remote give-up reaches the owner alert', () => {
       await ticks(2)
       io.parkedView = PARKED
       io.ghostView = null
+      const before = io.enters.length
       await ticks(14)
-      expect(io.enters.length).toBeGreaterThan(3)                           // a new spell DID run its Enters
+      expect(io.enters.length - before).toBe(3)                             // a new spell DID run its 3 Enters
     }
     expect(io.alerts.length).toBe(1)
   })
@@ -218,6 +219,17 @@ describe('remote give-up reaches the owner alert', () => {
     io.captureFails = false
     await ticks(14)
     expect(io.alerts.length).toBe(1)
+  })
+
+  it('a STOPPED agent re-arms: restarted and parking the same text again is a new incident -> alerts again', async () => {
+    io.parkedView = PARKED
+    await ticks(14)
+    expect(io.alerts.length).toBe(1)
+    io.run = 'stopped'
+    await ticks(1)
+    io.run = 'running'
+    await ticks(14)
+    expect(io.alerts.length).toBe(2)
   })
 
   it('a parked PASTE placeholder that 3 Enters do not submit alerts too', async () => {
