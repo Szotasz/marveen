@@ -2561,6 +2561,10 @@ function normalizeKanbanLabelName(value: unknown): string {
   return String(value ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim().toLowerCase()
 }
 
+// Labels that mark a card as meant to sit still. 'folyamatos' and 'ongoing'
+// match KANBAN_ONGOING_LABELS in web/app.js; 'rad var' is the owner-queue label.
+const KANBAN_STALE_EXCLUDED_LABELS = ['folyamatos', 'ongoing', 'rad var']
+
 export interface StaleKanbanCard {
   id: string
   seq: number
@@ -2587,13 +2591,19 @@ export function listStaleKanbanCards(opts: { days?: number; owner?: string; now?
     GROUP BY c.id
   `).all() as Array<Omit<StaleKanbanCard, 'idle_days'>>
   const labels = db.prepare(`
-    SELECT k.card_id, l.name FROM kanban_card_labels k JOIN labels l ON l.id = k.label_id
+    SELECT k.card_id, l.name FROM kanban_card_labels k
+    JOIN labels l ON l.id = k.label_id
+    JOIN kanban_cards c ON c.id = k.card_id
+    WHERE c.archived_at IS NULL AND c.status != 'done'
   `).all() as Array<{ card_id: string; name: string }>
-  // Cards that are meant to sit still are not stale: the ongoing-work label
-  // ("Folyamatos") and the owner-queue label ("Rád vár"), compared without
-  // accents and case. The owner's own cards are left out for the same reason:
-  // this list is what the owner reviews about everybody else's work.
-  const excluded = new Set(labels.filter(({ name }) => ['folyamatos', 'rad var'].includes(normalizeKanbanLabelName(name))).map(({ card_id }) => card_id))
+  // Cards that are meant to sit still are not stale: the ongoing-work labels
+  // (the same set the board's ongoing strip uses, KANBAN_STALE_EXCLUDED_LABELS)
+  // and the owner-queue label, compared without accents and case. The owner's
+  // own cards are left out for the same reason: this list is what the owner
+  // reviews about everybody else's work. Waiting cards ARE listed: a card
+  // blocked for two weeks is exactly what this review is for (the stuck-card
+  // detector skips waiting, and a keep here does not touch that detector).
+  const excluded = new Set(labels.filter(({ name }) => KANBAN_STALE_EXCLUDED_LABELS.includes(normalizeKanbanLabelName(name))).map(({ card_id }) => card_id))
   return rows
     .filter((card) => !excluded.has(card.id))
     .filter((card) => String(card.assignee ?? '').trim().toLowerCase() !== owner)
@@ -2609,38 +2619,73 @@ export function listStaleKanbanCards(opts: { days?: number; owner?: string; now?
 export type StaleKanbanDecision = 'keep' | 'idea' | 'close'
 
 export class StaleKanbanDecisionError extends Error {
-  constructor(public code: 'invalid_decision' | 'not_found' | 'archived', message: string) { super(message) }
+  constructor(public code: 'invalid_decision' | 'not_found' | 'archived' | 'not_stale', message: string) { super(message) }
 }
 
-export function decideStaleKanbanCard(id: string, decision: StaleKanbanDecision, actor?: string): { ok: true; decision: StaleKanbanDecision; idea_id?: string } {
+// The author of the decision comment when the caller named nobody. It names
+// the mechanism, not a person: the decision is not attributed to a guess.
+export const STALE_REVIEW_COMMENT_AUTHOR = 'stale-review'
+
+// Decide one card from the stale list. The card must STILL be stale when the
+// decision arrives (`days` is the threshold the caller listed it with): a card
+// that moved, or was done, since the list was drawn is refused with not_stale
+// instead of being closed or archived on an outdated view.
+//
+// actor is the person who decided, or null/undefined when unknown; it is never
+// filled in with a guessed name. Every decision leaves an automated comment on
+// the card, so even an unassigned card keeps a trace of what happened to it.
+export function decideStaleKanbanCard(
+  id: string,
+  decision: StaleKanbanDecision,
+  actor?: string | null,
+  opts: { days?: number; now?: number } = {},
+): { ok: true; decision: StaleKanbanDecision; idea_id?: string } {
   if (!['keep', 'idea', 'close'].includes(decision)) throw new StaleKanbanDecisionError('invalid_decision', 'Invalid stale-card decision')
+  const days = opts.days ?? 14
   return db.transaction(() => {
     const card = getKanbanCard(id)
     if (!card) throw new StaleKanbanDecisionError('not_found', 'Kanban card not found')
     if (card.archived_at != null) throw new StaleKanbanDecisionError('archived', 'Kanban card is already archived')
-    const now = Math.floor(Date.now() / 1000)
-    const by = String(actor || '').trim() || OWNER_NAME
+    const now = opts.now ?? Math.floor(Date.now() / 1000)
+    const idle = db.prepare(`
+      SELECT COALESCE(MAX(e.created_at), c.created_at) AS last_status_at, c.stale_kept_at
+      FROM kanban_cards c LEFT JOIN kanban_card_events e ON e.card_id = c.id
+      WHERE c.id = ? GROUP BY c.id
+    `).get(id) as { last_status_at: number; stale_kept_at: number | null }
+    const idleAt = Math.max(idle.last_status_at, idle.stale_kept_at ?? 0)
+    if (card.status === 'done' || idleAt > now - days * 86400) {
+      throw new StaleKanbanDecisionError('not_stale', 'Kanban card is no longer stale')
+    }
+    const by = typeof actor === 'string' && actor.trim() ? actor.trim() : null
     let ideaId: string | undefined
     if (decision === 'keep') {
       db.prepare('UPDATE kanban_cards SET stale_kept_at = ? WHERE id = ?').run(now, id)
     } else if (decision === 'idea') {
-      ideaId = randomUUID().slice(0, 8)
-      const note = `Kanban #${card.seq} (${card.id}) -> Ötletláda, ${by}`
-      createIdea({ id: ideaId, title: card.title, description: [card.description, note].filter(Boolean).join('\n'), category: 'Egyéb', scope: 'munka', status: 'reviewed', source: 'kanban-stale', kanban_id: null, impact: null, effort: null })
+      const note = `Kanban #${card.seq} (${card.id}) -> Ötletláda` + (by ? `, ${by}` : '')
+      // A card promoted from an idea goes back to THAT idea (the same revert the
+      // archive and delete routes do), with the note appended; a new idea would
+      // leave the original stuck in status 'kanban' next to a duplicate.
+      const linked = revertIdeaFromKanban(id)
+      if (linked) {
+        db.prepare("UPDATE idea_box SET description = TRIM(COALESCE(description, '') || char(10) || ?) WHERE id = ?").run(note, linked)
+        ideaId = linked
+      } else {
+        ideaId = randomUUID().slice(0, 8)
+        createIdea({ id: ideaId, title: card.title, description: [card.description, note].filter(Boolean).join('\n'), category: 'Egyéb', scope: 'munka', status: 'reviewed', source: 'kanban-stale', kanban_id: null, impact: null, effort: null })
+      }
       archiveKanbanCard(id)
     } else {
-      moveKanbanCard(id, 'done', card.sort_order, by)
+      moveKanbanCard(id, 'done', card.sort_order, by ?? undefined)
+      revertIdeaFromKanban(id)
       archiveKanbanCard(id)
     }
-    const assignee = String(card.assignee ?? '').trim()
-    if (assignee && assignee.toLowerCase() !== OWNER_NAME.trim().toLowerCase()) {
-      const text = decision === 'keep'
-        ? `[Elavult kártyák átnézése] ${OWNER_NAME} döntése: marad (a számláló nullázva)`
-        : decision === 'idea'
-          ? `[Elavult kártyák átnézése] ${OWNER_NAME} döntése: ötletbe került (Ötletláda), a kártya archiválva`
-          : `[Elavult kártyák átnézése] ${OWNER_NAME} döntése: lezárva (done + archiválva)`
-      addKanbanComment(id, by, text)
-    }
+    const who = by ? `${by} döntése` : 'Döntés'
+    const text = decision === 'keep'
+      ? `[Elavult kártyák átnézése] ${who}: marad (a számláló nullázva)`
+      : decision === 'idea'
+        ? `[Elavult kártyák átnézése] ${who}: ötletbe került (Ötletláda), a kártya archiválva`
+        : `[Elavult kártyák átnézése] ${who}: lezárva (done + archiválva)`
+    addKanbanComment(id, by ?? STALE_REVIEW_COMMENT_AUTHOR, text, { automated: true })
     return { ok: true as const, decision, ...(ideaId ? { idea_id: ideaId } : {}) }
   })()
 }

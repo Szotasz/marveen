@@ -872,14 +872,16 @@ async function loadKanban() {
       fetch('/api/kanban/assignees'),
       fetch('/api/kanban-projects'),
       fetch('/api/kanban/labels'),
-      fetch('/api/kanban/stale?days=14'),
+      // The stale list is an extra: a network failure here must not fail the
+      // whole board load, so it resolves to null instead of rejecting.
+      fetch(`/api/kanban/stale?days=${KANBAN_STALE_DAYS}`).catch(() => null),
     ])
     kanbanCards = await cardsRes.json()
     kanbanAssignees = await assigneesRes.json()
     kanbanProjects = await projectsRes.json()
     kanbanAllLabels = await labelsRes.json()
-    // The stale list is an extra: if it fails, the board still loads.
-    if (staleRes.ok) kanbanStaleCards = (await staleRes.json()).cards || []
+    // A non-OK answer keeps the previous list.
+    if (staleRes?.ok) kanbanStaleCards = (await staleRes.json()).cards || []
     populateProjectFilter()
     populateProjectSuggestions()
     setupAssigneeFilter()
@@ -1244,21 +1246,27 @@ function renderKanbanOngoing(cards) {
 }
 
 // --- kanban stale review ---
+const KANBAN_STALE_DAYS = 14
 let kanbanStaleCards = []
 let kanbanStaleDeepLinkHandled = false
 let kanbanStaleOverlay = null
+// Cards whose decision is on its way. A re-render (the board reloads every
+// few seconds) must not re-enable their buttons, or a second tap would send
+// a second decision.
+const kanbanStalePending = new Set()
 
-function kanbanStaleRowHtml(card) {
+function kanbanStaleRowHtml(card, pending = false) {
   const assignee = String(card.assignee || '').trim() || t('kanban.stale.unassigned')
   const status = t('kanban.status.' + card.status)
+  const dis = pending ? ' disabled' : ''
   return `<div class="kanban-stale-row" data-card-id="${escapeHtml(card.id)}">` +
     `<div class="kanban-stale-card"><span class="seq">#${escapeHtml(card.seq ?? '?')}</span>` +
     `<strong>${escapeHtml(card.title)}</strong></div>` +
     `<div class="kanban-stale-meta">${escapeHtml(assignee)} · ${escapeHtml(status)} · ${escapeHtml(t('kanban.stale.idle', { n: card.idle_days }))}</div>` +
     `<div class="kanban-stale-actions">` +
-    `<button type="button" class="btn-secondary" data-decision="keep">${escapeHtml(t('kanban.stale.keep'))}</button>` +
-    `<button type="button" class="btn-secondary" data-decision="idea">${escapeHtml(t('kanban.stale.idea'))}</button>` +
-    `<button type="button" class="btn-danger" data-decision="close">${escapeHtml(t('kanban.stale.close'))}</button>` +
+    `<button type="button" class="btn-secondary" data-decision="keep"${dis}>${escapeHtml(t('kanban.stale.keep'))}</button>` +
+    `<button type="button" class="btn-secondary" data-decision="idea"${dis}>${escapeHtml(t('kanban.stale.idea'))}</button>` +
+    `<button type="button" class="btn-danger" data-decision="close"${dis}>${escapeHtml(t('kanban.stale.close'))}</button>` +
     `</div></div>`
 }
 
@@ -1266,27 +1274,38 @@ function renderKanbanStaleModal() {
   if (!kanbanStaleOverlay) return
   const list = kanbanStaleOverlay.querySelector('.kanban-stale-list')
   list.innerHTML = kanbanStaleCards.length
-    ? kanbanStaleCards.map(kanbanStaleRowHtml).join('')
+    ? kanbanStaleCards.map((card) => kanbanStaleRowHtml(card, kanbanStalePending.has(card.id))).join('')
     : `<p class="naplo-empty">${escapeHtml(t('kanban.stale.empty'))}</p>`
   list.querySelectorAll('[data-decision]').forEach((button) => {
     button.addEventListener('click', async () => {
       const row = button.closest('.kanban-stale-row')
       const id = row.dataset.cardId
+      if (kanbanStalePending.has(id)) return
+      kanbanStalePending.add(id)
       row.querySelectorAll('button').forEach((item) => { item.disabled = true })
       try {
         const response = await fetch(`/api/kanban/${encodeURIComponent(id)}/stale-decision`, {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ decision: button.dataset.decision, actor: kanbanMoveActor() }),
+          body: JSON.stringify({ decision: button.dataset.decision, actor: kanbanMoveActor(), days: KANBAN_STALE_DAYS }),
         })
-        const result = await response.json()
-        if (!response.ok) throw new Error(result.error || response.statusText)
+        const result = await response.json().catch(() => ({}))
+        if (response.ok) {
+          showToast(t('kanban.stale.saved'))
+        } else if (response.status === 404 || response.status === 409) {
+          // Gone, archived, or no longer stale (it moved since the list was
+          // drawn): nothing is left to decide, so the row leaves the list.
+          showToast(t(response.status === 404 ? 'kanban.stale.gone' : 'kanban.stale.changed'))
+        } else {
+          throw new Error(result.error || response.statusText)
+        }
         kanbanStaleCards = kanbanStaleCards.filter((card) => card.id !== id)
-        showToast(t('kanban.stale.saved'))
+        kanbanStalePending.delete(id)
         renderKanbanStaleModal()
         await loadKanban()
       } catch (err) {
+        kanbanStalePending.delete(id)
         showToast(t('kanban.stale.error', { msg: err.message || String(err) }))
-        row.querySelectorAll('button').forEach((item) => { item.disabled = false })
+        renderKanbanStaleModal()
       }
     })
   })

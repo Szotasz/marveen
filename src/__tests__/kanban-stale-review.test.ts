@@ -16,8 +16,8 @@ import { fileURLToPath } from 'node:url'
 import vm from 'node:vm'
 import {
   initDatabase, getDb, createKanbanCard, getKanbanCard, createLabel, addLabelToCard,
-  getKanbanCardEvents, getKanbanComments, listIdeas, archiveKanbanCard,
-  listStaleKanbanCards, decideStaleKanbanCard,
+  getKanbanCardEvents, getKanbanComments, listIdeas, archiveKanbanCard, createIdea, moveKanbanCard,
+  listStaleKanbanCards, decideStaleKanbanCard, STALE_REVIEW_COMMENT_AUTHOR,
 } from '../db.js'
 import { OWNER_NAME } from '../config.js'
 import { tryHandleKanban } from '../web/routes/kanban.js'
@@ -26,7 +26,7 @@ import type { RouteContext } from '../web/routes/types.js'
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 const DAY = 86400
 
-function route(method: string, path: string, body?: unknown | string) {
+function route(method: string, path: string, body?: unknown | string, auth?: RouteContext['auth']) {
   const out: { status: number; body: any } = { status: 200, body: null }
   const res: any = {
     writeHead(status: number) { out.status = status; return res },
@@ -37,7 +37,7 @@ function route(method: string, path: string, body?: unknown | string) {
   const req: any = Readable.from(payload ? [Buffer.from(payload)] : [])
   req.headers = {}
   const url = new URL(`http://localhost:3420${path}`)
-  return { ctx: { req, res, path: url.pathname, method, url } as RouteContext, out }
+  return { ctx: { req, res, path: url.pathname, method, url, auth } as RouteContext, out }
 }
 
 const now = () => Math.floor(Date.now() / 1000)
@@ -73,10 +73,11 @@ describe('listStaleKanbanCards', () => {
     expect(staleIds()).toEqual([])
   })
 
-  it('excludes done, archived, Folyamatos, both Rád vár spellings and owner cards', () => {
+  it('excludes done, archived, Folyamatos, Ongoing, both Rád vár spellings and owner cards', () => {
     card('done', 30, { status: 'done' })
     card('arch', 30); archiveKanbanCard('arch')
     card('ongoing', 30); label('ongoing', 'Folyamatos')
+    card('ongoing-en', 30); label('ongoing-en', ' Ongoing ')
     card('radvar', 30); label('radvar', 'Rád vár')
     card('radvar2', 30); label('radvar2', 'rad var')
     card('owner', 30, { assignee: OWNER_NAME })
@@ -114,13 +115,64 @@ describe('decideStaleKanbanCard', () => {
     expect(getKanbanCard('a')?.archived_at).not.toBeNull()
   })
 
-  it('an agent card gets a comment, an owner card does not', () => {
+  it('every decision leaves one automated comment naming the decider, on any card', () => {
     card('agent', 30)
     card('own', 30, { assignee: OWNER_NAME })
-    decideStaleKanbanCard('agent', 'keep', OWNER_NAME)
-    decideStaleKanbanCard('own', 'keep', OWNER_NAME)
-    expect(getKanbanComments('agent').map((c) => c.content).join('\n')).toContain('[Elavult kártyák átnézése]')
-    expect(getKanbanComments('own')).toHaveLength(0)
+    card('nobody', 30); getDb().prepare('UPDATE kanban_cards SET assignee = NULL WHERE id = ?').run('nobody')
+    decideStaleKanbanCard('agent', 'keep', 'Gabor')
+    decideStaleKanbanCard('own', 'idea', 'Gabor')
+    decideStaleKanbanCard('nobody', 'close', 'Gabor')
+    for (const id of ['agent', 'own', 'nobody']) {
+      const comments = getKanbanComments(id)
+      expect(comments).toHaveLength(1)
+      expect(comments[0]).toMatchObject({ author: 'Gabor', automated: 1 })
+      expect(comments[0].content).toContain('[Elavult kártyák átnézése] Gabor döntése:')
+    }
+  })
+
+  it('with no actor nobody is named: no event actor, a mechanism as comment author, no guessed owner', () => {
+    card('a', 30)
+    decideStaleKanbanCard('a', 'close')
+    expect(getKanbanCardEvents('a').at(-1)).toMatchObject({ to_status: 'done', actor: null })
+    const [comment] = getKanbanComments('a')
+    expect(comment.author).toBe(STALE_REVIEW_COMMENT_AUTHOR)
+    expect(comment.content).toContain('[Elavult kártyák átnézése] Döntés: lezárva')
+    expect(comment.content).not.toContain(OWNER_NAME)
+  })
+
+  it('refuses a card that is no longer stale: moved since the list, kept, or done', () => {
+    card('moved', 30)
+    moveKanbanCard('moved', 'in_progress', 0, 'cody')
+    card('kept', 30); decideStaleKanbanCard('kept', 'keep', 'Gabor')
+    card('done', 30, { status: 'done' })
+    card('young', 5)
+    for (const id of ['moved', 'kept', 'done', 'young']) {
+      expect(() => decideStaleKanbanCard(id, 'close', 'Gabor')).toThrow(expect.objectContaining({ code: 'not_stale' }))
+      expect(getKanbanCard(id)?.archived_at).toBeNull()
+    }
+    expect(getKanbanCard('moved')?.status).toBe('in_progress')
+    // The threshold is the caller's: listed with days=3, the 5-day card is stale.
+    expect(decideStaleKanbanCard('young', 'keep', 'Gabor', { days: 3 })).toMatchObject({ ok: true })
+  })
+
+  it('idea on a card promoted from an idea returns it to THAT idea, with no duplicate', () => {
+    card('a', 30)
+    createIdea({ id: 'orig', title: 'Original idea', description: 'first text', category: 'Egyéb', scope: 'munka', status: 'kanban', source: 'manual', kanban_id: 'a', impact: null, effort: null })
+    const before = listIdeas().length
+    const result = decideStaleKanbanCard('a', 'idea', 'Gabor')
+    expect(result.idea_id).toBe('orig')
+    expect(listIdeas()).toHaveLength(before)
+    const idea = listIdeas().find((i) => i.id === 'orig')!
+    expect(idea).toMatchObject({ status: 'reviewed', kanban_id: null })
+    expect(idea.description).toContain('first text')
+    expect(idea.description).toContain('-> Ötletláda, Gabor')
+  })
+
+  it('close on a card promoted from an idea releases the idea, like the archive route', () => {
+    card('a', 30)
+    createIdea({ id: 'orig', title: 'Original idea', description: null, category: 'Egyéb', scope: 'munka', status: 'kanban', source: 'manual', kanban_id: 'a', impact: null, effort: null })
+    decideStaleKanbanCard('a', 'close', 'Gabor')
+    expect(listIdeas().find((i) => i.id === 'orig')).toMatchObject({ status: 'reviewed', kanban_id: null })
   })
 })
 
@@ -139,26 +191,67 @@ describe('stale routes', () => {
     }
   })
 
-  it('POST answers 400 / 404 / 409 and 200', async () => {
+  it('POST answers 400 / 404 / 409 and 200, and refuses a bad body before any write', async () => {
     card('a', 30)
+    card('fresh', 2)
     const cases: Array<[string, unknown, number]> = [
       ['a', { decision: 'maybe' }, 400],
       ['a', '{not json', 400],
+      ['a', 'null', 400],
+      ['a', '[]', 400],
+      ['a', { decision: 'close', note: 'x' }, 400],
+      ['a', { decision: 'close', actor: { name: 'x' } }, 400],
+      ['a', { decision: 'close', days: 0 }, 400],
+      ['a', { decision: 'close', days: '14' }, 400],
       ['missing', { decision: 'keep' }, 404],
-      ['a', { decision: 'close', actor: OWNER_NAME }, 200],
+      ['fresh', { decision: 'close' }, 409],
+      ['a', { decision: 'close', actor: OWNER_NAME, days: 14 }, 200],
       ['a', { decision: 'keep' }, 409],
     ]
     for (const [id, body, status] of cases) {
       const r = route('POST', `/api/kanban/${id}/stale-decision`, body)
       await tryHandleKanban(r.ctx)
-      expect([id, r.out.status]).toEqual([id, status])
+      expect([id, body, r.out.status]).toEqual([id, body, status])
     }
+    expect(getKanbanCard('fresh')?.archived_at).toBeNull()
+    expect(getKanbanComments('fresh')).toHaveLength(0)
+  })
+
+  it('with no actor in the body a browser session names its user, a token caller stays anonymous', async () => {
+    card('s', 30); card('t', 30)
+    const session = route('POST', '/api/kanban/s/stale-decision', { decision: 'close' }, { kind: 'session', user: 'gabor' } as RouteContext['auth'])
+    await tryHandleKanban(session.ctx)
+    expect(session.out.status).toBe(200)
+    expect(getKanbanCardEvents('s').at(-1)).toMatchObject({ actor: 'gabor' })
+    const token = route('POST', '/api/kanban/t/stale-decision', { decision: 'close' }, { kind: 'token' } as RouteContext['auth'])
+    await tryHandleKanban(token.ctx)
+    expect(token.out.status).toBe(200)
+    expect(getKanbanCardEvents('t').at(-1)).toMatchObject({ actor: null })
+  })
+})
+
+describe('fleet transfer carries stale_kept_at', () => {
+  it('the kanban card import names every kanban_cards column, with one value per column', () => {
+    initDatabase(':memory:')
+    const cols = (getDb().prepare('PRAGMA table_info(kanban_cards)').all() as { name: string }[]).map((c) => c.name)
+    expect(cols).toContain('stale_kept_at')
+    const src = readFileSync(join(ROOT, 'src', 'web', 'fleet-transfer.ts'), 'utf-8')
+    const m = src.match(/INSERT OR IGNORE INTO kanban_cards\s*\(([^)]*)\)\s*VALUES \(([^)]*)\)`\s*\)\.run\(([^)]*(?:\([^)]*\)[^)]*)*)\)/)
+    expect(m).not.toBeNull()
+    const inserted = m![1].split(',').map((c) => c.trim())
+    const placeholders = m![2].split(',').length
+    const values = m![3].split(',').filter((v) => v.trim()).length
+    // A column missing here drops silently on a move to a new machine.
+    expect([...inserted].sort()).toEqual([...cols].sort())
+    expect(placeholders).toBe(inserted.length)
+    expect(values).toBe(inserted.length)
+    expect(m![3]).toContain('c.stale_kept_at')
   })
 })
 
 describe('stale review modal row', () => {
   const src = readFileSync(join(ROOT, 'web', 'app.js'), 'utf-8')
-  const a = src.indexOf('function kanbanStaleRowHtml(card)')
+  const a = src.indexOf('function kanbanStaleRowHtml(')
   const b = src.indexOf('function renderKanbanStaleModal()', a)
   const ctx: Record<string, unknown> = {}
   vm.createContext(ctx)
@@ -168,7 +261,7 @@ describe('stale review modal row', () => {
       src.slice(a, b) + '\nglobalThis.row = kanbanStaleRowHtml',
     ctx,
   )
-  const row = ctx.row as (c: unknown) => string
+  const row = ctx.row as (c: unknown, pending?: boolean) => string
 
   it('escapes the title and renders the three decisions', () => {
     const html = row({ id: 'x1', seq: 7, title: '<img src=x onerror=alert(1)>', status: 'planned', assignee: 'cody', idle_days: 20 })
@@ -177,6 +270,12 @@ describe('stale review modal row', () => {
     expect(html.match(/data-decision="(keep|idea|close)"/g)).toEqual([
       'data-decision="keep"', 'data-decision="idea"', 'data-decision="close"',
     ])
+  })
+
+  it('draws the buttons of a card whose decision is on its way disabled, so a re-render cannot re-arm them', () => {
+    const c = { id: 'x1', seq: 7, title: 't', status: 'planned', assignee: 'cody', idle_days: 20 }
+    expect(row(c, true).match(/data-decision="\w+" disabled>/g)).toHaveLength(3)
+    expect(row(c)).not.toContain('disabled')
   })
 })
 

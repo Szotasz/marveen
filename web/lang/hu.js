@@ -1804,6 +1804,8 @@ window._i18n.hu = {
   'kanban.stale.close':             'Lezár',
   'kanban.stale.empty':             'Nincs több döntésre váró kártya.',
   'kanban.stale.saved':             'A döntés mentve.',
+  'kanban.stale.gone':              'Ez a kártya már nem létezik.',
+  'kanban.stale.changed':           'Ez a kártya a lista óta megmozdult, már nem áll régóta.',
   'kanban.stale.error':             'A döntés nem menthető: {msg}',
   'kanban.gantt.filter.period_week':    'Ezen hét',
   'kanban.gantt.filter.period_month':   'Hónap',

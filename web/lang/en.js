@@ -1801,6 +1801,8 @@ window._i18n.en = {
   'kanban.stale.close':             'Close',
   'kanban.stale.empty':             'No more cards waiting for a decision.',
   'kanban.stale.saved':             'Decision saved.',
+  'kanban.stale.gone':              'This card no longer exists.',
+  'kanban.stale.changed':           'This card changed since the list was drawn, so it is no longer stale.',
   'kanban.stale.error':             'Could not save decision: {msg}',
   'kanban.gantt.filter.period_week':    'This week',
   'kanban.gantt.filter.period_month':   'Month',
