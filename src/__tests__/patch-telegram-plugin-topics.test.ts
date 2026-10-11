@@ -7,7 +7,7 @@
 //    every inbound meta must be exactly what the unswitched patcher produces.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, copyFileSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, copyFileSync, existsSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { join, extname } from 'node:path'
 import { tmpdir } from 'node:os'
 import ts from 'typescript'
@@ -79,6 +79,15 @@ describe('patch-telegram-plugin.py --topics', () => {
     expect(r.stderr).toMatch(/patched .*\(topics removed\)/)
     expect(readFileSync(server, 'utf-8')).toBe(neverSwitched)
     expect(JSON.parse(readFileSync(state, 'utf-8')).files[0].patches).toEqual({ d4: 'already', fwd: 'already', evid: 'already', kbd: 'already', topics: 'removed' })
+  })
+
+  it.each(['yes', 'true', '1', 'On', ''])('--topics %j: refused with exit 2, the plugin file and the state left alone', (value) => {
+    const state = join(cache, 'state.json')
+    const r = run(['--state', state, '--topics', value])
+    expect(r.status).toBe(2)
+    expect(r.stderr).toBe(`patch-telegram-plugin.py: --topics takes on or off, got ${JSON.stringify(value).replace(/"/g, "'")}; nothing patched\n`)
+    expect(readFileSync(server, 'utf-8')).toBe(readFileSync(FIXTURE, 'utf-8'))
+    expect(existsSync(state)).toBe(false)
   })
 
   it('a moved anchor: loud line, topics left out whole, the other patches still applied, exit 0', () => {

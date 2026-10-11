@@ -27,7 +27,9 @@ must not rewrite the user-level cache other Claude Code sessions load
   update changed the code), that patch is left out and one loud line says so
   -- /status and /help then fall back to the plugin's own answers, or a
   forwarded command is not refused; the channel itself is not touched;
-- always exits 0: a failed patch must never stop the channel from starting;
+- always exits 0: a failed patch must never stop the channel from starting
+  (the one exception is a --topics value other than on or off: exit 2, nothing
+  patched; channels.sh never passes --topics);
 - the reply-keyboard patch (c67f5f34) inserts WHOLE LINES only, each carrying
   its marker, so taking it back is deleting the lines that carry
   "MARVEEN-PATCH(c67f5f34-kbd)" (the file is then byte-identical to the one
@@ -386,8 +388,13 @@ def main(argv):
     while len(args) >= 2 and args[0] in ("--state", "--topics"):
         if args[0] == "--state":
             state_path = args[1]
-        else:
+        elif args[1] in ("on", "off"):
             topics = args[1] == "on"
+        else:
+            # An explicit switch: anything else is a typo, and reading it as
+            # "off" would silently take the topics patch off.
+            print(f"patch-telegram-plugin.py: --topics takes on or off, got {args[1]!r}; nothing patched", file=sys.stderr)
+            return 2
         args = args[2:]
     if topics is None:
         topics = topics_setting(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -406,8 +413,10 @@ def main(argv):
 
 
 if __name__ == "__main__":
+    code = 0
     try:
-        main(sys.argv)
+        # Non-zero only for a mistyped --topics, which channels.sh never passes.
+        code = main(sys.argv)
     except Exception as e:  # never stop the channel from starting
         log(f"unexpected {type(e).__name__}, nothing patched")
-    sys.exit(0)
+    sys.exit(code)
