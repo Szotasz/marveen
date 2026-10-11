@@ -62,7 +62,7 @@ describe('patch-telegram-plugin.py --topics', () => {
     expect(r.stderr).toMatch(/patched .*\(d4, fwd, evid, kbd, topics\)/)
     const once = readFileSync(server, 'utf-8')
     expect(syntaxErrors(once)).toEqual([])
-    expect(JSON.parse(readFileSync(state, 'utf-8')).files[0].patches.topics).toBe('patched')
+    expect(JSON.parse(readFileSync(state, 'utf-8'))).toMatchObject({ topics: 'on', files: [{ patches: { topics: 'patched' } }] })
     const again = run(['--state', state, '--topics', 'on'])
     expect(again.stderr).toBe('')
     expect(readFileSync(server, 'utf-8')).toBe(once)

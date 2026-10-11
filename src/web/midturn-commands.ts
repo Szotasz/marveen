@@ -225,7 +225,8 @@ function chunks(text: string): string[] {
   return out.length ? out : ['']
 }
 
-const liveDeps: MidTurnDeps = {
+// Exported for its test (midturn-commands-live-send.test.ts); the watcher below is its only user.
+export const liveDeps: MidTurnDeps = {
   transcriptDir: () => projectsDirFor(PROJECT_ROOT, configDirFor(MAIN_AGENT_ID)),
   ownerChatId: () => resolveOwnerChatId(),
   dispatch: dispatchForChat,

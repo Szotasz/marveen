@@ -107,9 +107,9 @@ function channel(body: string, attrs = 'source="plugin:telegram:telegram" chat_i
   return `<channel ${attrs}>${body}</channel>`
 }
 
-function runHook(prompt: string, apiBase = base, agent = 'marveen', args: string[] = [], extraEnv: Record<string, string> = {}): Promise<{ code: number | null; stdout: string }> {
+function runHook(prompt: string, apiBase = base, agent = 'marveen', args: string[] = [], extraEnv: Record<string, string> = {}, entry: string[] = [HOOK]): Promise<{ code: number | null; stdout: string }> {
   return new Promise((resolve) => {
-    const p = spawn('python3', [HOOK, ...args], {
+    const p = spawn('python3', [...entry, ...args], {
       env: {
         ...process.env,
         MARVEEN_INSTALL_DIR: install,
@@ -131,6 +131,11 @@ function runHook(prompt: string, apiBase = base, agent = 'marveen', args: string
 }
 
 const sends = () => calls.filter(c => c.path === '/botbot-tok/sendMessage').map(c => c.body)
+
+// The hook run as itself, but with a Python that does not exist for the
+// deferred watcher: its Popen fails, which is the hook's "deferred spawn failed"
+// branch, with no change to the hook.
+const HOOK_WITHOUT_DEFERRED_SPAWN = ['-c', 'import runpy, sys\nsys.executable = "/nonexistent/python3"\nsys.argv = sys.argv[1:]\nrunpy.run_path(sys.argv[0], run_name="__main__")', HOOK]
 
 // FLAKYCMDLOG1006: the log is SHARED by every test in this file (one stateDir,
 // beforeAll), and a deferred write's detached watcher writes its closing
@@ -268,6 +273,12 @@ describe('marveen-commands.py', () => {
     expect(s).toHaveLength(1)
     expect(s[0].text).toMatch(/^Nem futott: \/status, mert a dashboard nem érhető el/)
     expect(s[0].text).not.toContain('bot-tok')
+  })
+
+  it('dashboard unreachable + a command from a topic: the error reply goes back into the topic', async () => {
+    const r = await runHook(channel('/status', TOPIC_ATTRS), 'http://127.0.0.1:1')
+    expect(r.code).toBe(2)
+    expect(sends()).toEqual([{ chat_id: '42', text: expect.stringMatching(/^Nem futott: \/status, mert a dashboard nem érhető el/), message_thread_id: 12 }])
   })
 
   it('dashboard answers 500 + builtin command: error reply names the HTTP status, blocked', async () => {
@@ -413,6 +424,19 @@ describe('marveen-commands.py', () => {
     while (sends().length === 0 && Date.now() < deadline) await new Promise(r => setTimeout(r, 50))
     expect(sends()).toEqual([{ chat_id: '42', text: 'átváltva', message_thread_id: 12 }])
     await waitForWatcherDone('/model', seen)
+  })
+
+  it.each([
+    ['a plain chat: the reply as before', channel('/model opus 5m'), {}],
+    ['a topic: the reply goes back into it', channel('/model opus 5m', TOPIC_ATTRS), { message_thread_id: 12 }],
+  ])('a deferred write whose watcher cannot start, %s', async (_label, prompt, topic) => {
+    dispatchReply = () => ({ status: 200, body: { handled: true, outcome: 'deferred', replies: [] } })
+    const spawnFailures = () => hookLog().filter(l => l.includes('deferred spawn failed: FileNotFoundError')).length
+    const before = spawnFailures()
+    const r = await runHook(prompt, base, 'marveen', [], {}, HOOK_WITHOUT_DEFERRED_SPAWN)
+    expect(r.code).toBe(2)
+    expect(spawnFailures()).toBe(before + 1)
+    expect(sends()).toEqual([{ chat_id: '42', text: 'Nem futott: /model -- a késleltetett végrehajtás nem indult el. Napló: progress/commands-hook.log', ...topic }])
   })
 
   it('a malformed message_thread_id is ignored: the answer goes out as in a plain chat', async () => {
