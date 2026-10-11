@@ -5,7 +5,8 @@
 // - the db contract (listStaleKanbanCards / decideStaleKanbanCard) on an
 //   in-memory database;
 // - the two routes, driven through tryHandleKanban like kanban-wait-reason;
-// - the modal row builder, sliced out of web/app.js and evaluated in a vm.
+// - the modal row builder and the modal's decide flow, sliced out of
+//   web/app.js and evaluated in a vm.
 import { describe, it, expect, beforeEach } from 'vitest'
 import { Readable } from 'node:stream'
 import { readFileSync, mkdtempSync, rmSync } from 'node:fs'
@@ -276,6 +277,87 @@ describe('stale review modal row', () => {
     const c = { id: 'x1', seq: 7, title: 't', status: 'planned', assignee: 'cody', idle_days: 20 }
     expect(row(c, true).match(/data-decision="\w+" disabled>/g)).toHaveLength(3)
     expect(row(c)).not.toContain('disabled')
+  })
+
+  it('draws a decided card disabled, with its outcome', () => {
+    const c = { id: 'x1', seq: 7, title: 't', status: 'planned', assignee: 'cody', idle_days: 20 }
+    const html = row(c, false, 'kanban.stale.saved')
+    expect(html.match(/data-decision="\w+" disabled>/g)).toHaveLength(3)
+    expect(html).toContain('kanban-stale-row decided')
+    expect(html).toContain('kanban.stale.saved')
+  })
+})
+
+// The decide flow with a fake list element: innerHTML is parsed into rows of
+// buttons, which is all the modal code touches.
+describe('stale review modal: a decided card keeps its row', () => {
+  const src = readFileSync(join(ROOT, 'web', 'app.js'), 'utf-8')
+  const a = src.indexOf('// --- kanban stale review ---')
+  const b = src.indexOf('function renderKanbanStaleChip()', a)
+
+  type FakeButton = { dataset: { decision: string }; disabled: boolean; click: () => Promise<void> }
+  type FakeRow = { id: string; buttons: FakeButton[] }
+
+  function setup(cards: Array<{ id: string; seq: number }>, status = 200) {
+    const posts: string[] = []
+    let rows: FakeRow[] = []
+    const list = {
+      set innerHTML(html: string) {
+        rows = html.split('<div class="kanban-stale-row').slice(1).map((chunk) => {
+          const row: FakeRow = { id: /data-card-id="([^"]*)"/.exec(chunk)![1], buttons: [] }
+          for (const m of chunk.matchAll(/data-decision="(\w+)"( disabled)?/g)) {
+            const handlers: Array<() => Promise<void>> = []
+            const btn = {
+              dataset: { decision: m[1] }, disabled: !!m[2],
+              addEventListener: (_: string, fn: () => Promise<void>) => { handlers.push(fn) },
+              closest: () => ({ dataset: { cardId: row.id }, querySelectorAll: () => row.buttons }),
+              // A disabled button gets no click event, as in the browser.
+              click: async () => { if (!btn.disabled) for (const h of handlers) await h() },
+            }
+            row.buttons.push(btn)
+          }
+          return row
+        })
+      },
+      querySelectorAll: () => rows.flatMap((r) => r.buttons),
+    }
+    const overlay = {
+      className: '', innerHTML: '',
+      querySelector: (sel: string) => (sel === '.kanban-stale-list' ? list : { addEventListener: () => {} }),
+    }
+    const ctx: Record<string, unknown> = {
+      document: { createElement: () => overlay, body: { appendChild: () => {} } },
+      fetch: async (url: string) => { posts.push(decodeURIComponent(url.split('/api/kanban/')[1].split('/')[0])); return { ok: status === 200, status, json: async () => ({}) } },
+      showToast: () => {}, loadKanban: async () => {}, kanbanMoveActor: () => 'Alex',
+      openModal: () => {}, closeModal: () => {}, attachOverlayCloseGuard: () => {},
+      t: (key: string) => key,
+      escapeHtml: (x: unknown) => String(x).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'),
+    }
+    vm.createContext(ctx)
+    vm.runInContext(src.slice(a, b) + `
+      kanbanStaleCards = ${JSON.stringify(cards.map((c) => ({ ...c, title: c.id, status: 'planned', assignee: 'nova', idle_days: 20 })))}
+      openKanbanStaleReview()
+      globalThis.staleLeft = () => kanbanStaleCards.map((c) => c.id)`, ctx)
+    return { posts, rows: () => rows, staleLeft: ctx.staleLeft as () => string[] }
+  }
+
+  it('a second tap on the same spot hits the decided row, not the next card', async () => {
+    const m = setup([{ id: 'a', seq: 1 }, { id: 'b', seq: 2 }])
+    await m.rows()[0].buttons[2].click() // Close on card a
+    expect(m.rows().map((r) => r.id)).toEqual(['a', 'b'])
+    expect(m.rows()[0].buttons.every((x) => x.disabled)).toBe(true)
+    await m.rows()[0].buttons[2].click() // the double tap lands on the same row
+    expect(m.posts).toEqual(['a'])
+    expect(m.rows()[1].buttons.some((x) => x.disabled)).toBe(false)
+    expect(m.staleLeft()).toEqual(['b']) // the chip still counts down
+  })
+
+  it('a card that changed meanwhile also stays in place, decided', async () => {
+    const m = setup([{ id: 'a', seq: 1 }, { id: 'b', seq: 2 }], 409)
+    await m.rows()[0].buttons[0].click()
+    expect(m.rows().map((r) => r.id)).toEqual(['a', 'b'])
+    expect(m.rows()[0].buttons.every((x) => x.disabled)).toBe(true)
+    expect(m.staleLeft()).toEqual(['b'])
   })
 })
 

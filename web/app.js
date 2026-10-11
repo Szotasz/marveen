@@ -1254,15 +1254,22 @@ let kanbanStaleOverlay = null
 // few seconds) must not re-enable their buttons, or a second tap would send
 // a second decision.
 const kanbanStalePending = new Set()
+// The modal lists the cards it was opened with, and a decided card keeps its
+// row until the modal closes (card id -> the toast key of its outcome). If the
+// row left the list, the next card's buttons would slide under the finger and
+// a double tap on "Close" would close a card nobody chose.
+let kanbanStaleShown = []
+const kanbanStaleDone = new Map()
 
-function kanbanStaleRowHtml(card, pending = false) {
+function kanbanStaleRowHtml(card, pending = false, outcome = null) {
   const assignee = String(card.assignee || '').trim() || t('kanban.stale.unassigned')
   const status = t('kanban.status.' + card.status)
-  const dis = pending ? ' disabled' : ''
-  return `<div class="kanban-stale-row" data-card-id="${escapeHtml(card.id)}">` +
+  const dis = pending || outcome ? ' disabled' : ''
+  const done = outcome ? ` · <span class="kanban-stale-outcome">${escapeHtml(t(outcome))}</span>` : ''
+  return `<div class="kanban-stale-row${outcome ? ' decided' : ''}" data-card-id="${escapeHtml(card.id)}">` +
     `<div class="kanban-stale-card"><span class="seq">#${escapeHtml(card.seq ?? '?')}</span>` +
     `<strong>${escapeHtml(card.title)}</strong></div>` +
-    `<div class="kanban-stale-meta">${escapeHtml(assignee)} · ${escapeHtml(status)} · ${escapeHtml(t('kanban.stale.idle', { n: card.idle_days }))}</div>` +
+    `<div class="kanban-stale-meta">${escapeHtml(assignee)} · ${escapeHtml(status)} · ${escapeHtml(t('kanban.stale.idle', { n: card.idle_days }))}${done}</div>` +
     `<div class="kanban-stale-actions">` +
     `<button type="button" class="btn-secondary" data-decision="keep"${dis}>${escapeHtml(t('kanban.stale.keep'))}</button>` +
     `<button type="button" class="btn-secondary" data-decision="idea"${dis}>${escapeHtml(t('kanban.stale.idea'))}</button>` +
@@ -1273,14 +1280,14 @@ function kanbanStaleRowHtml(card, pending = false) {
 function renderKanbanStaleModal() {
   if (!kanbanStaleOverlay) return
   const list = kanbanStaleOverlay.querySelector('.kanban-stale-list')
-  list.innerHTML = kanbanStaleCards.length
-    ? kanbanStaleCards.map((card) => kanbanStaleRowHtml(card, kanbanStalePending.has(card.id))).join('')
+  list.innerHTML = kanbanStaleShown.length
+    ? kanbanStaleShown.map((card) => kanbanStaleRowHtml(card, kanbanStalePending.has(card.id), kanbanStaleDone.get(card.id) || null)).join('')
     : `<p class="naplo-empty">${escapeHtml(t('kanban.stale.empty'))}</p>`
   list.querySelectorAll('[data-decision]').forEach((button) => {
     button.addEventListener('click', async () => {
       const row = button.closest('.kanban-stale-row')
       const id = row.dataset.cardId
-      if (kanbanStalePending.has(id)) return
+      if (kanbanStalePending.has(id) || kanbanStaleDone.has(id)) return
       kanbanStalePending.add(id)
       row.querySelectorAll('button').forEach((item) => { item.disabled = true })
       try {
@@ -1289,15 +1296,18 @@ function renderKanbanStaleModal() {
           body: JSON.stringify({ decision: button.dataset.decision, actor: kanbanMoveActor(), days: KANBAN_STALE_DAYS }),
         })
         const result = await response.json().catch(() => ({}))
+        let outcome
         if (response.ok) {
-          showToast(t('kanban.stale.saved'))
+          outcome = 'kanban.stale.saved'
         } else if (response.status === 404 || response.status === 409) {
           // Gone, archived, or no longer stale (it moved since the list was
-          // drawn): nothing is left to decide, so the row leaves the list.
-          showToast(t(response.status === 404 ? 'kanban.stale.gone' : 'kanban.stale.changed'))
+          // drawn): nothing is left to decide on this card.
+          outcome = response.status === 404 ? 'kanban.stale.gone' : 'kanban.stale.changed'
         } else {
           throw new Error(result.error || response.statusText)
         }
+        showToast(t(outcome))
+        kanbanStaleDone.set(id, outcome)
         kanbanStaleCards = kanbanStaleCards.filter((card) => card.id !== id)
         kanbanStalePending.delete(id)
         renderKanbanStaleModal()
@@ -1320,6 +1330,8 @@ function openKanbanStaleReview() {
     kanbanStaleOverlay.querySelector('.modal-close').addEventListener('click', () => closeModal(kanbanStaleOverlay))
     attachOverlayCloseGuard(kanbanStaleOverlay)
   }
+  kanbanStaleShown = kanbanStaleCards.slice()
+  kanbanStaleDone.clear()
   renderKanbanStaleModal()
   openModal(kanbanStaleOverlay)
 }
