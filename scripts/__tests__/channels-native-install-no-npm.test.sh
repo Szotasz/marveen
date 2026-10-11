@@ -86,6 +86,7 @@ wait" 2>&1 >/dev/null
   NPM_CALLS="${NPM_CALLS:-0}"
   LINK_TARGET="$(readlink "$root/home/.local/bin/claude" 2>/dev/null || true)"
   LINK_TARGET="${LINK_TARGET#$root/home/}"
+  FAILLOG="$(cat "$root/install/store/channels-failures.log" 2>/dev/null || true)"
   rm -rf "$root"
 }
 
@@ -125,6 +126,26 @@ setup_race_aftermath() {
 setup_old_stamp_native() {
   make_version "$1" 2.1.9
   make_version "$1" 2.1.265
+  : > "$1/install/store/.claude-update-stamp"
+  touch -t 202606090110 "$1/install/store/.claude-update-stamp"
+}
+# 9 (#1901 review, NATIVEBEHIND1011): an intact launcher to an OLDER native build,
+# the npm copy live and newer (stamp newer than the build). The native build wins
+# (no npm call); the failures log names both versions.
+setup_native_behind_npm() {
+  make_version "$1" 2.1.100
+  touch -t 202606090110 "$1/home/.local/share/claude/versions/2.1.100"
+  mkdir -p "$1/home/.local/bin" "$1/npmroot/@anthropic-ai/claude-code"
+  ln -s "$1/home/.local/share/claude/versions/2.1.100" "$1/home/.local/bin/claude"
+  printf '{\n  "name": "@anthropic-ai/claude-code",\n  "version": "2.1.296"\n}\n' \
+    > "$1/npmroot/@anthropic-ai/claude-code/package.json"
+  : > "$1/install/store/.claude-update-stamp"
+}
+# 10: the same launcher, but the stamp is OLDER than the build -> no warning.
+setup_native_ahead_of_stamp() {
+  make_version "$1" 2.1.265
+  mkdir -p "$1/home/.local/bin"
+  ln -s "$1/home/.local/share/claude/versions/2.1.265" "$1/home/.local/bin/claude"
   : > "$1/install/store/.claude-update-stamp"
   touch -t 202606090110 "$1/install/store/.claude-update-stamp"
 }
@@ -189,6 +210,24 @@ else
   fail "stamp older than the newest native build: relinked to the NEWEST version" \
     ".local/share/claude/versions/2.1.265" "${LINK_TARGET:-<no link>}"
 fi
+
+run_case setup_native_behind_npm
+if [ "$NPM_CALLS" = "0" ]; then pass "native launcher behind a newer npm copy: the native build runs (no npm call)"
+else fail "native launcher behind a newer npm copy: the native build runs (no npm call)" "0 npm calls" "$NPM_CALLS"; fi
+case "$FAILLOG" in
+  *"WARN the native claude launcher wins and runs build 2.1.100"*"npm copy: 2.1.296"*)
+    pass "native launcher behind a newer npm copy: channels-failures.log names both versions" ;;
+  *) fail "native launcher behind a newer npm copy: channels-failures.log names both versions" \
+       "WARN ... build 2.1.100 ... npm copy: 2.1.296" "${FAILLOG:-<empty>}" ;;
+esac
+
+run_case setup_native_ahead_of_stamp
+if [ -z "$FAILLOG" ]; then pass "native build newer than the npm stamp: no warning"
+else fail "native build newer than the npm stamp: no warning" "<empty log>" "$FAILLOG"; fi
+
+run_case setup_native_present
+if [ -z "$FAILLOG" ]; then pass "native host without an npm stamp: no warning"
+else fail "native host without an npm stamp: no warning" "<empty log>" "$FAILLOG"; fi
 
 echo "channels.sh native-install guard: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

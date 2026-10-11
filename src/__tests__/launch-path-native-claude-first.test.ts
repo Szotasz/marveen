@@ -66,7 +66,7 @@ function bothDirLines(rel: string): string[] {
 
 const nativeFirst = (line: string) => line.indexOf('.local/bin') < line.indexOf(BREW)
 
-function resolveClaude(exportLine: string): string {
+function resolveClaude(exportLine: string, lookup = 'command -v claude'): string {
   const home = mkdtempSync(join(tmpdir(), 'ncf-home-'))
   const brew = mkdtempSync(join(tmpdir(), 'ncf-brew-'))
   try {
@@ -76,7 +76,7 @@ function resolveClaude(exportLine: string): string {
       chmodSync(join(dir, 'claude'), 0o755)
     }
     const line = exportLine.split(BREW).join(brew)
-    return execFileSync('bash', ['--noprofile', '--norc', '-c', `${line}\ncommand -v claude`], {
+    return execFileSync('bash', ['--noprofile', '--norc', '-c', `${line}\n${lookup.split(BREW).join(brew)}`], {
       encoding: 'utf-8',
       env: { HOME: home, PATH: '/usr/bin:/bin' },
     }).trim()
@@ -101,6 +101,18 @@ describe('NATIVECLAUDEFIRST1011: the native claude leads the launch PATH', () =>
   it('negative control: the pre-fix order returns the Homebrew copy', () => {
     const preFix = 'export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"'
     expect(resolveClaude(preFix)).not.toMatch(/\/\.local\/bin\/claude$/)
+  })
+
+  // #1901 review: the place where watchdog.sh actually RESOLVES claude (its own PATH export, then the
+  // CLAUDE_BIN= lookup the sub-agent restart uses) is run, not only pinned as text -- a lookup line that
+  // re-prepends /opt/homebrew/bin is caught here.
+  it('watchdog.sh: its own PATH + the CLAUDE_BIN lookup return the native launcher', () => {
+    const wd = readFileSync(join(REPO, 'scripts', 'watchdog.sh'), 'utf-8').split('\n')
+    const exp = wd.filter((l) => /^export PATH="/.test(l) && l.includes(BREW))
+    const lookup = wd.filter((l) => /^CLAUDE_BIN=/.test(l))
+    expect(exp).toHaveLength(1)
+    expect(lookup).toHaveLength(1)
+    expect(resolveClaude(exp[0], `${lookup[0]}\necho "$CLAUDE_BIN"`)).toMatch(/\/\.local\/bin\/claude$/)
   })
 
   it('every PATH assignment naming both directories puts $HOME/.local/bin first (or is exempt with a reason)', () => {
