@@ -602,7 +602,7 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: true,
   },
-  // The three opt-in switches below are boot-time consts in src/config.ts
+  // The opt-in switches below are boot-time consts in src/config.ts
   // (cfg(): config-overrides.json > .env), so a value saved here takes effect
   // only after the dashboard restarts. Default '0' matches config.ts, where an
   // unset key resolves to false.
@@ -621,6 +621,15 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     default: '0',
     description: 'A message-router felébreszti azt a tétlen Telegramos sub-agentet, akinek a <state>/inbox-pending.jsonl fájljában beragadt bejövő üzenet van, hogy a drain hook behúzza őket. Csak SUBAGENT_INBOX_TEE=1 mellett van hatása: anélkül nem keletkezik inbox-fájl, és a figyelő no-op. Alapértelmezés: kikapcsolva. A módosítás a dashboard újraindításakor lép életbe.',
     module: 'channels',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
+    key: 'WORKER_AUTOUPDATE',
+    type: 'boolean',
+    default: '0',
+    description: 'Egyetlen kijelölt Claude Code frissítő. Alapból minden indított claude DISABLE_AUTOUPDATER=1-gyel fut, hogy két session ne írja egyszerre a közös telepítést. Bekapcsolva PONTOSAN egy session, a lassú worker indul nélküle, és natív telepítésen naprakészen tartja a Claude Code-ot; a gyors worker, a channels session és a sub-agentek továbbra is rögzítve maradnak. npm-es telepítésen hatástalan (ott a channels.sh claude_ensure frissít). A futó sessionök a régi verzión maradnak, az újat a következő indításukkor veszik fel. A módosítás a dashboard újraindítása után, a lassú worker következő indításakor lép életbe.',
+    module: 'agents',
     secret: false,
     requiresRestart: true,
   },

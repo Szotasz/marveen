@@ -1357,8 +1357,12 @@ _tmux_set_auth_globals() {
   # Same for the auto-updater kill switch. A plain `export` above only reaches
   # sessions that inherit THIS shell, i.e. only when channels.sh happened to
   # create the tmux server first; the dashboard's worker sessions often win that
-  # race. -g makes launch order irrelevant, which matters here because it takes
-  # exactly two self-updating sessions to wipe the shared global install.
+  # race. -g covers every session created AFTER this line, which matters here
+  # because it takes exactly two self-updating sessions to wipe the shared
+  # global install. It does NOT reach a session that already exists: after a
+  # reboot the worker sessions usually predate it, so agent-worker.ts sets the
+  # variable in its own launch line (WORKERAUTOUPDATE1011) instead of relying
+  # on this.
   $TMUX set-environment -g DISABLE_AUTOUPDATER 1 2>/dev/null || true
 }
 $TMUX start-server 2>/dev/null || true

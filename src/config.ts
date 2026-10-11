@@ -492,6 +492,17 @@ export const SUBAGENT_INBOX_TEE =
 export const SUBAGENT_TELEGRAM_WAKE_ENABLED =
   ['1', 'true', 'yes', 'on'].includes((cfg('SUBAGENT_TELEGRAM_WAKE_ENABLED') ?? '').trim().toLowerCase())
 
+// Single designated Claude Code auto-updater (opt-in, DEFAULT OFF).
+// Every launched claude gets DISABLE_AUTOUPDATER=1 so no two sessions race to
+// rewrite the one shared install. With WORKER_AUTOUPDATE=1 exactly ONE session
+// -- the slow worker -- is launched without it and keeps a NATIVE install
+// current; every other session (fast worker, channels, sub-agents) stays
+// pinned. Ignored on an npm-global install, where the boot-time claude_ensure
+// in channels.sh is the updater. Read at boot: takes effect after a dashboard
+// restart and the slow worker's next launch.
+export const WORKER_AUTOUPDATE =
+  ['1', 'true', 'yes', 'on'].includes((cfg('WORKER_AUTOUPDATE') ?? '').trim().toLowerCase())
+
 // Install-wide default for router-side speech-to-text on inbound voice notes
 // (opt-in, DEFAULT OFF). Agents in responseMode 'voice'/'auto' are always
 // transcribed; this only decides what happens for text-mode agents that do not
