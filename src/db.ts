@@ -3602,10 +3602,10 @@ export function getMessageStatus(id: number): string | null {
   return row ? row.status : null
 }
 
-// Card ad771121: the delivery order (compareDeliveryOrder): high rows first, then FIFO. A recipient
-// without high rows gets exactly today's order (created_at; id breaks a same-second tie). "High" is
-// the rank (delivery-order.ts): a granted high row, or a row from the system or the owner, which
-// rank with high whatever they stored (review point 1: a priority only reorders peer traffic).
+// Card ad771121: the delivery order (compareDeliveryOrder): by class, then FIFO. A recipient whose
+// rows are all normal gets exactly today's order (created_at; id breaks a same-second tie). The
+// classes (delivery-order.ts): an authenticated STOP, an urgent row, a system or owner row (whatever
+// it stored: review point 1, a priority only reorders peer traffic), a granted peer high, the rest.
 export function getPendingMessages(toAgent?: string): AgentMessage[] {
   const rank = deliveryRankSql()
   if (toAgent) {

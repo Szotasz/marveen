@@ -3,14 +3,14 @@ import { EventEmitter } from 'node:events'
 import { mkdirSync, rmSync } from 'node:fs'
 import { agentDir } from '../web/agent-config.js'
 import { initDatabase, getDb, createAgentMessage, getPendingMessages, claimPendingForAgent, countHighForPairSince } from '../db.js'
-import { MAIN_AGENT_ID } from '../config.js'
+import { MAIN_AGENT_ID, OWNER_NAME } from '../config.js'
 import { tryHandleMessages } from '../web/routes/messages.js'
 import { selectTickWindow, STOP_PREFIX } from '../web/message-router-window.js'
 import type { RouteContext } from '../web/routes/types.js'
 
-// #1835 + #1808 together (the stated precedence, review of both): an urgent row or an authenticated
-// STOP first, then high (a granted peer high, or a system/owner row), then the rest; and an urgent row
-// never spends the per-pair high budget. Measured on the real SQLite and the real POST route.
+// #1835 + #1808 together (the precedence the review stated): an authenticated STOP, then an urgent row,
+// then a system or owner row, then a granted peer high, then the rest, FIFO inside each class; and an
+// urgent row never spends the per-pair high budget. Measured on the real SQLite and the real POST route.
 
 vi.mock('../config.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../config.js')>()),
@@ -59,17 +59,28 @@ afterAll(() => { for (const a of [PEER, TARGET]) rmSync(agentDir(a), { recursive
 beforeEach(() => { getDb().prepare('DELETE FROM agent_messages').run() })
 afterEach(() => { delete process.env.MESSAGE_HIGH_PRIORITY_PER_HOUR })
 
-describe('urgent/STOP, then high, then the rest', () => {
-  it('the queue order and the main agent\'s claim: urgent, STOP, then high and system FIFO, then normal', () => {
+describe('STOP, urgent, system/owner, high, then the rest', () => {
+  it('the whole precedence on one queue, FIFO inside each class: the queue order and the main agent\'s claim', () => {
+    // Two rows per class, written in REVERSE class order (the lowest class oldest), so every class
+    // boundary is crossed against age: a FIFO-only order, or any two classes sharing a rank, fails.
     const base = nowSec() - 600
-    const normal = createAgentMessage(PEER, MAIN_AGENT_ID, 'normal');                    setCreated(normal.id, base)
-    const sys = createAgentMessage('system', MAIN_AGENT_ID, 'rendszer');                 setCreated(sys.id, base + 10)
-    const high = createAgentMessage(PEER, MAIN_AGENT_ID, 'high', null, null, { priority: 1 }); setCreated(high.id, base + 20)
-    const urgent = createAgentMessage(PEER, MAIN_AGENT_ID, 'urgent', null, null, { urgent: true }); setCreated(urgent.id, base + 30)
-    const stop = createAgentMessage(MAIN_AGENT_ID, MAIN_AGENT_ID, `${STOP_PREFIX} x`, null, null, { stopAuthorized: true }); setCreated(stop.id, base + 40)
-    const want = [urgent.id, stop.id, sys.id, high.id, normal.id]
+    let t = base
+    const row = (from: string, content: string, opts?: Parameters<typeof createAgentMessage>[5]) => {
+      const m = createAgentMessage(from, MAIN_AGENT_ID, content, null, null, opts)
+      setCreated(m.id, (t += 10))
+      return m.id
+    }
+    const normal = [row(PEER, 'normal 1'), row(PEER, 'normal 2')]
+    const high = [row(PEER, 'high 1', { priority: 1 }), row(PEER, 'high 2', { priority: 1 })]
+    const owner = [row('system', 'rendszer'), row(OWNER_NAME, 'a tulajdonos')]
+    const urgent = [row(PEER, 'urgent 1', { urgent: true }), row(PEER, 'urgent 2', { urgent: true })]
+    const stop = [
+      row(MAIN_AGENT_ID, `${STOP_PREFIX} 1`, { stopAuthorized: true }),
+      row(MAIN_AGENT_ID, `${STOP_PREFIX} 2`, { stopAuthorized: true }),
+    ]
+    const want = [...stop, ...urgent, ...owner, ...high, ...normal]
     expect(getPendingMessages(MAIN_AGENT_ID).map((m) => m.id)).toEqual(want)
-    expect(claimPendingForAgent(MAIN_AGENT_ID, 10).map((m) => m.id)).toEqual(want)
+    expect(claimPendingForAgent(MAIN_AGENT_ID, 20).map((m) => m.id)).toEqual(want)
   })
 
   it('the router window: urgent rows first, then the recipients in delivery order (a high row brings its recipient first)', () => {

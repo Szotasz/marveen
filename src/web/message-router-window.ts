@@ -68,9 +68,9 @@ export function isUrgentDelivery(m: Pick<AgentMessage, 'from_agent' | 'content' 
  * recipient with a deep queue did not reach the window at all, and a STOP is always
  * the newest row. Card 795d1f48 (a): an urgent row gets the same place.
  *
- * The resulting precedence (#1835 with #1808): urgent and STOP rows first, then the
- * round-robin above in delivery order, where a high row (or a system/owner row) leads
- * its recipient, then the rest.
+ * The resulting precedence (#1835 with #1808): urgent and STOP rows first, in delivery
+ * order (an authenticated STOP ahead of an urgent row), then the round-robin above in
+ * delivery order, where a system/owner row and then a high row lead their recipient.
  */
 export function selectTickWindow(
   localPending: readonly AgentMessage[],

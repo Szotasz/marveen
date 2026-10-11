@@ -422,13 +422,13 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       json(res, { error: parsedPriority.error }, 400)
       return true
     }
-    // Review point 1: the owner's own rows (and the voice channel's) already rank with high by their
-    // sender (delivery-order.ts), so the per-pair budget, which exists to bound PEER highs, does not
+    // Review point 1: the owner's own rows (and the voice channel's) already rank above a peer high by
+    // their sender (delivery-order.ts), so the per-pair budget, which exists to bound PEER highs, does not
     // apply to them: an explicit "high" is stored as asked and never downgraded.
     //
-    // Precedence (#1835 + #1808): an urgent row (or a STOP) first, then high, then the rest. An urgent
-    // row is already above high by its own column (delivery-order.ts), so it does not go through the
-    // per-pair budget at all and is stored with priority 0: it never spends that budget.
+    // Precedence (delivery-order.ts): STOP, urgent, system/owner, high, the rest. An urgent row is
+    // already above high by its own column, so it does not go through the per-pair budget at all
+    // and is stored with priority 0: it never spends that budget.
     const decided = urgent === true
       ? { priority: 0 as const, downgraded: false }
       : rankedSenders().includes(from.trim())

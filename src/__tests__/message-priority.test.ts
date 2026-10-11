@@ -348,25 +348,25 @@ describe('guards from the independent test', () => {
   })
 })
 
-describe('review point 1: system and owner rows rank with high, so a priority only reorders peer traffic', () => {
-  it('⛔ a pending system notice is not overtaken by a later peer high row (FIFO among the high-ranked)', () => {
+describe('review point 1: system and owner rows rank above a peer high, so a priority only reorders peer traffic', () => {
+  it('⛔ a pending system notice goes ahead of a peer high row, even an older one', () => {
     const normals = fillQueue('rang-celpont', 4)
     const sys = createAgentMessage('system', 'rang-celpont', '[handoff-failure] rendszeruzenet')
-    setCreated(sys.id, nowSec() - 30)
+    setCreated(sys.id, nowSec() - 10)
     const high = createAgentMessage('kuldo-x', 'rang-celpont', 'peer high', null, null, { priority: 1 })
-    setCreated(high.id, nowSec() - 10)
+    setCreated(high.id, nowSec() - 30)
     expect(storedPriority(sys.id)).toBe(0) // the stored column is untouched: the rank is read from the sender
     expect(getPendingMessages('rang-celpont').map((m) => m.id)).toEqual([sys.id, high.id, ...normals.map((m) => m.id)])
     expect(claimPendingForAgent('rang-celpont', 2).map((m) => m.id)).toEqual([sys.id, high.id])
   })
 
-  it('⛔ an owner message from the dashboard compose (no priority field) is not overtaken by a later peer high row', async () => {
+  it('⛔ an owner message from the dashboard compose (no priority field) goes ahead of a peer high row, even an older one', async () => {
     const normals = fillQueue(MAIN_AGENT_ID, 3)
     const owner = await post({ from: OWNER_NAME, to: MAIN_AGENT_ID, content: 'a tulajdonos uzenete' })
     expect(owner.statusCode).toBe(200)
-    setCreated(owner.json.id, nowSec() - 20)
+    setCreated(owner.json.id, nowSec() - 5)
     const high = await post({ from: PEER, to: MAIN_AGENT_ID, content: 'peer high', priority: 'high' })
-    setCreated(high.json.id, nowSec() - 5)
+    setCreated(high.json.id, nowSec() - 20)
     expect(getPendingMessages(MAIN_AGENT_ID).map((m) => m.id)).toEqual([owner.json.id, high.json.id, ...normals.map((m) => m.id)])
   })
 
@@ -400,10 +400,10 @@ describe('review point 1: system and owner rows rank with high, so a priority on
     expect(COORDINATOR_SENDER_ID).toBe(COORDINATOR_AGENT_ID)
     expect(VOICE_CHANNEL_SENDER_ID).toBe(VOICE_CHANNEL_AGENT_ID)
     expect(rankedSenders()).toEqual(expect.arrayContaining(['system', COORDINATOR_AGENT_ID, VOICE_CHANNEL_AGENT_ID, OWNER_NAME.trim()]))
-    expect(deliveryRank({ priority: 0, from_agent: 'system' })).toBe(1)
+    expect(deliveryRank({ priority: 0, from_agent: 'system' })).toBe(2)
     expect(deliveryRank({ priority: 0, from_agent: 'kuldo-x' })).toBe(0)
     expect(deliveryRank({ priority: 1, from_agent: 'kuldo-x' })).toBe(1)
-    const sys = { id: 2, created_at: 200, priority: 0, from_agent: 'system' }
+    const sys = { id: 2, created_at: 400, priority: 0, from_agent: 'system' }
     const high = { id: 3, created_at: 300, priority: 1, from_agent: 'kuldo-x' }
     const normal = { id: 1, created_at: 100, priority: 0, from_agent: 'kuldo-y' }
     expect([normal, high, sys].sort(compareDeliveryOrder).map((m) => m.id)).toEqual([2, 3, 1])

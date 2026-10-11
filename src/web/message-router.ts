@@ -590,8 +590,8 @@ function batchDeliverBacklog(agent: string, agentPending: AgentMessage[], now: n
   const old: typeof agentPending = []
   const recent: typeof agentPending = []
   for (const m of agentPending) {
-    // Card ad771121: a high-ranked row is never folded into the summary; it is delivered on its own,
-    // first. That is a granted high row, and (review point 1) a system or owner row, which rank with high.
+    // Card ad771121: a row above normal is never folded into the summary; it is delivered on its own,
+    // first. That is a STOP, an urgent row, a system or owner row (review point 1), or a granted high.
     if (deliveryRank(m) > 0) { recent.push(m); continue }
     const age = now - m.created_at * 1000
     if (age > RECONNECT_BATCH_AGE_MS) {
