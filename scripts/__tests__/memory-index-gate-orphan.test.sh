@@ -196,6 +196,79 @@ if [ "$RC" = 2 ]; then pass "the checker exits 2 (could not run)"; else fail "th
 if [ "$(printf '%s' "$RES" | jq -r '.orphans // "nincs"')" = "nincs" ]; then pass "and it reports NO orphan number rather than 0"; else fail "no orphan number on a failed scan" "$RES"; fi
 echo ""
 
+# ---------------------------------------------------------------------------
+# (i) A `[[name]]` WIKILINK IN SCOPE MAKES A PAGE REACHABLE. The memory
+#     convention names `[[name]]` as the way pages link; counting only
+#     `](x.md)` reported such a page as an orphan, and the gate woke on the
+#     convention itself.
+# ---------------------------------------------------------------------------
+echo "(i) A page reached by a [[wikilink]] in SCOPE is not an orphan"
+clean_index
+echo "csak wikilinkkel" > "$MEM/wiki-lap.md"
+echo "Rokona: [[wiki-lap]] es [[masik|felirattal]]." >> "$MEM/hub.md"
+echo "felirattal elert" > "$MEM/masik.md"
+S="$TMP/i.json"; rm -f "$S"
+OUT="$(run_gate "$S")"
+if [ "$(jqv "$S" .orphans)" = 0 ]; then pass "wiki-lap.md and masik.md are reachable"; else fail "wikilink-reached pages are not orphans" "$(jqv "$S" .orphan_list)"; fi
+if [ "$OUT" = "SKIP" ]; then pass "and the gate prints SKIP"; else fail "the gate prints SKIP" "$OUT"; fi
+echo ""
+
+# ---------------------------------------------------------------------------
+# (j) A wikilink that only stands in CODE does not make a page reachable --
+#     the same filtering as for `](x.md)` in (e).
+# ---------------------------------------------------------------------------
+echo "(j) A [[wikilink]] inside inline code or a fence leaves the page an orphan"
+clean_index
+echo "arva" > "$MEM/kodban.md"
+echo "arva" > "$MEM/fencben.md"
+{
+  echo 'A minta: `[[kodban]]` -- csak proza.'
+  echo '```'
+  echo '[[fencben]]'
+  echo '```'
+} >> "$MEM/hub.md"
+S="$TMP/j.json"; rm -f "$S"
+run_gate "$S" >/dev/null
+if [ "$(jqv "$S" .orphans)" = 2 ] && [ "$(jqv "$S" '.orphan_list | sort | join(",")')" = "fencben.md,kodban.md" ]; then
+  pass "both code-only wikilink pages stay orphans"
+else
+  fail "code-only wikilinks do not make a page reachable" "$(jqv "$S" .orphan_list)"
+fi
+echo ""
+
+# ---------------------------------------------------------------------------
+# (k) THE STEM AND THE `name:` DIFFER: an accented filename whose frontmatter
+#     `name:` is unaccented. Either key reaches it.
+# ---------------------------------------------------------------------------
+echo "(k) A wikilink resolves by the frontmatter name: as well as by the file stem"
+clean_index
+printf -- '---\nname: ekezetes-nev-a\ndescription: x\n---\ntartalom\n' > "$MEM/ekezetes-nev-á.md"
+echo "Lasd [[ekezetes-nev-a]]." >> "$MEM/hub.md"
+S="$TMP/k.json"; rm -f "$S"
+run_gate "$S" >/dev/null
+if [ "$(jqv "$S" .orphans)" = 0 ]; then pass "the accented-stem page is reached by its name:"; else fail "name: resolves the wikilink" "$(jqv "$S" .orphan_list)"; fi
+# Positive control: without the wikilink the same page IS an orphan, so the
+# zero above is the resolution and not a page the scan never saw.
+clean_index
+printf -- '---\nname: ekezetes-nev-a\ndescription: x\n---\ntartalom\n' > "$MEM/ekezetes-nev-á.md"
+S="$TMP/k2.json"; rm -f "$S"
+run_gate "$S" >/dev/null
+if [ "$(jqv "$S" .orphans)" = 1 ]; then pass "control: without the wikilink it is an orphan"; else fail "control orphan" "$(cat "$S")"; fi
+echo ""
+
+# ---------------------------------------------------------------------------
+# (l) A wikilink with no page is ALLOWED by the convention ("worth writing
+#     later"): it is neither a missing link nor anything else that wakes.
+# ---------------------------------------------------------------------------
+echo "(l) A [[wikilink]] with no page is not a missing link"
+clean_index
+echo "Kesobb: [[meg-nincs-megirva]]." >> "$MEM/hub.md"
+S="$TMP/l.json"; rm -f "$S"
+OUT="$(run_gate "$S")"
+if [ "$(jqv "$S" .missing_links)" = 0 ]; then pass "missing_links stays 0"; else fail "missing_links stays 0" "$(jqv "$S" .missing_links)"; fi
+if [ "$OUT" = "SKIP" ]; then pass "and the gate prints SKIP"; else fail "the gate prints SKIP" "$OUT"; fi
+echo ""
+
 echo "======================================="
 echo "PASS: $PASS   FAIL: $FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
