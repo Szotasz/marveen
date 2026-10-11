@@ -8087,7 +8087,7 @@ body {
    is information, and hiding it would turn the view into a list of the busy. */
 .kanban-team-row.idle { border-left-color: var(--border); }
 .kanban-team-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
-.kanban-team-name { font-weight: 600; font-size: 14px; color: var(--text); }
+.kanban-team-name { font-weight: 600; font-size: 14px; color: var(--text); min-width: 0; overflow-wrap: anywhere; }
 .kanban-team-open { margin-left: auto; font-size: 12px; color: var(--text-muted); }
 .kanban-team-body { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 @media (max-width: 820px) { .kanban-team-body { grid-template-columns: 1fr; } }

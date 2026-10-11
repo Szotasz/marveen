@@ -1,8 +1,9 @@
 // Team view: one row per person (what they work on now, what comes next).
 // The browser code has no module boundary, so renderKanbanTeamView and
 // formatActiveTime are sliced out of web/app.js and run in a vm against a
-// minimal fake document. Board helpers it calls (lane meta, avatar decoration,
-// the owner-strip filter) are stubbed: they have their own tests.
+// minimal fake document. The owner-strip filter and avatar decoration are
+// stubbed (they have their own tests); the priority order, the ongoing-label
+// check and the person meta are the real ones, sliced from app.js too.
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
@@ -32,13 +33,28 @@ class FakeEl {
   listeners: Record<string, () => void> = {}
   append(...c: FakeEl[]) { this.children.push(...c) }
   appendChild(c: FakeEl) { this.children.push(c); return c }
+  attrs: Record<string, string> = {}
+  tabIndex = -1
   addEventListener(ev: string, fn: () => void) { this.listeners[ev] = fn }
+  setAttribute(k: string, v: string) { this.attrs[k] = v }
   querySelector() { return new FakeEl() }
 }
 
-type Card = { id: string; seq: number; title: string; status: string; priority: string; assignee: string | null; updated_at?: number; created_at?: number; active_seconds?: number }
+type Card = {
+  id: string; seq: number; title: string; status: string; priority: string; assignee: string | null
+  updated_at?: number; created_at?: number; last_status_at?: number; active_seconds?: number
+  parent_id?: string | null; labels?: { name: string }[]
+}
+type Assignee = { name: string; type?: string; displayName?: string; nickname?: string }
 
-function render(cards: Card[], lang: 'en' | 'hu' = 'en') {
+const DEFAULT_ASSIGNEES: Assignee[] = [
+  { name: 'ada', type: 'agent' }, { name: 'bob', type: 'agent' }, { name: 'cy', type: 'agent' }, { name: 'owner', type: 'owner' },
+]
+
+// Same output as app.js escapeHtml (text escaping plus both quotes), without a DOM.
+const escapeHtml = (s: unknown) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]!))
+
+function render(cards: Card[], lang: 'en' | 'hu' = 'en', opts: { assignees?: Assignee[]; groupBy?: string } = {}) {
   const host = new FakeEl()
   const opened: string[] = []
   const ctx: Record<string, unknown> = {
@@ -48,11 +64,14 @@ function render(cards: Card[], lang: 'en' | 'hu' = 'en') {
       createElement: () => new FakeEl(),
     },
     kanbanCards: cards,
-    kanbanAssignees: [{ name: 'ada' }, { name: 'bob' }, { name: 'cy' }, { name: 'owner' }],
+    kanbanAssignees: opts.assignees ?? DEFAULT_ASSIGNEES,
+    kanbanGroupBy: opts.groupBy ?? 'assignee',
     kanbanHideFromLanes: (c: Card) => c.assignee === 'owner',
-    kanbanSwimlaneMeta: (key: string) => ({ label: key, avatarClass: 'agent', avatarChar: key[0], nickname: '' }),
+    // The team view must never go through the lane meta: grouped by priority
+    // it returns the raw key. A stub that throws proves it is not called.
+    kanbanSwimlaneMeta: () => { throw new Error('team view must use kanbanPersonMeta') },
     kanbanDecorateAvatar: () => {},
-    escapeHtml: (s: unknown) => String(s),
+    escapeHtml,
     showCardDetail: (c: Card) => opened.push(c.id),
   }
   vm.createContext(ctx)
@@ -64,7 +83,11 @@ function render(cards: Card[], lang: 'en' | 'hu' = 'en') {
     return s.replace(/\{(\w+)\}/g, (_, k) => String(vars[k]))
   }
   vm.runInContext(
-    slice(APP_JS, 'function formatActiveTime(', '\nasync function showCardDetail(') +
+    slice(APP_JS, 'const KANBAN_ONGOING_LABELS =', '\n') + '\n' +
+      slice(APP_JS, 'function kanbanIsOngoing(', '\n}\n') + '\n}\n' +
+      slice(APP_JS, 'const KANBAN_PRIORITY_ORDER =', '\n') + '\n' +
+      slice(APP_JS, 'function kanbanPersonMeta(', '\n}\n') + '\n}\n' +
+      slice(APP_JS, 'function formatActiveTime(', '\nasync function showCardDetail(') +
       slice(APP_JS, 'function renderKanbanTeamView(', '\nfunction renderKanban() {') +
       '\nrenderKanbanTeamView()',
     ctx,
@@ -92,23 +115,65 @@ describe('renderKanbanTeamView', () => {
       card('o1', 6, 'owner', 'in_progress'),
       card('u1', 7, null, 'planned'),
     ])
-    expect(rows.map((r) => r.head.match(/kanban-team-name">([^<]*)/)![1])).toEqual(['bob', 'ada', '__unassigned__'])
+    expect(rows.map((r) => r.head.match(/kanban-team-name">([^<]*)/)![1])).toEqual(['bob', 'ada', 'Unassigned'])
     expect(rows[0].cls).toBe('kanban-team-row')
     expect(rows[1].cls).toBe('kanban-team-row idle')
     expect(rows[1].head).toContain('3 open')
   })
 
-  it('fills "now" from in_progress and "next" from normal/urgent cards by card number, skipping low', () => {
+  it('fills "now" from in_progress and "next" from planned cards, most urgent first, then by card number', () => {
     const { rows } = render([
       card('x9', 9, 'ada', 'planned', 'normal'),
-      card('x2', 2, 'ada', 'waiting', 'urgent'),
+      card('x8', 8, 'ada', 'planned', 'high'),
+      card('x7', 7, 'ada', 'planned', 'urgent'),
+      card('x3', 3, 'ada', 'planned', 'normal'),
       card('x5', 5, 'ada', 'planned', 'low'),
       card('x1', 1, 'ada', 'in_progress', 'normal', { active_seconds: 90 * 60 }),
     ])
     expect(rows).toHaveLength(1)
     expect(rows[0].now).toHaveLength(1)
     expect(rows[0].now[0]).toContain('#1')
-    expect(rows[0].next.map((h) => h.match(/#(\d+)/)![1])).toEqual(['2', '9'])
+    // high is listed (it was dropped once), low is not, urgent leads.
+    expect(rows[0].next.slice(0, 3).map((h) => h.match(/#(\d+)/)![1])).toEqual(['7', '8', '3'])
+    expect(rows[0].next[3]).toBe('(and 1 more)')
+    expect(rows[0].head).toContain('6 open')
+  })
+
+  it('does not offer waiting or testing cards as next, but still counts them as open', () => {
+    const { rows } = render([
+      card('w', 2, 'ada', 'waiting', 'urgent'),
+      card('t', 3, 'ada', 'testing', 'high'),
+      card('p', 9, 'ada', 'planned', 'normal'),
+    ])
+    expect(rows[0].next.map((h) => h.match(/#(\d+)/)![1])).toEqual(['9'])
+    expect(rows[0].head).toContain('3 open')
+  })
+
+  it('leaves out subtasks drawn inside their parent and ongoing cards, like the board does', () => {
+    const { rows } = render([
+      card('p', 1, 'ada', 'planned', 'normal'),
+      card('s-same', 2, 'ada', 'planned', 'normal', { parent_id: 'p' }),
+      card('s-moved', 3, 'ada', 'in_progress', 'normal', { parent_id: 'p' }),
+      card('on', 4, 'bob', 'in_progress', 'normal', { labels: [{ name: ' Ongoing ' }] }),
+      card('on-hu', 5, 'bob', 'planned', 'normal', { labels: [{ name: 'folyamatos' }] }),
+    ])
+    // The subtask in another column is a card of its own on the board, so it counts.
+    expect(rows.map((r) => r.head.match(/kanban-team-name">([^<]*)/)![1])).toEqual(['ada'])
+    expect(rows[0].head).toContain('2 open')
+    expect(rows[0].now[0]).toContain('#3')
+    expect(rows[0].next.map((h) => h.match(/#(\d+)/)![1])).toEqual(['1'])
+  })
+
+  it('measures moved-ago from the last column change, not from the last edit', () => {
+    const { rows } = render([
+      card('a', 1, 'ada', 'planned', 'normal', { last_status_at: NOW - 3 * 86400, updated_at: NOW - 60 }),
+      card('b', 2, 'ada', 'planned', 'normal', { last_status_at: NOW - 5 * 60 }),
+      card('c', 3, 'ada', 'planned', 'normal', { last_status_at: NOW - 5 }),
+    ])
+    expect(rows[0].next[0]).toContain('moved 3d ago')
+    // Under an hour is minutes, under a minute is "just now": no invented 1h floor.
+    expect(rows[0].next[1]).toContain('moved 5m ago')
+    expect(rows[0].next[2]).toContain('moved just now')
   })
 
   it('shows time in progress on a running card and moved-ago on the rest', () => {
@@ -132,11 +197,39 @@ describe('renderKanbanTeamView', () => {
     expect(rows[0].now).toEqual(['(not working on anything)'])
   })
 
-  it('opens the card detail on click', () => {
+  it('opens the card detail on click, and on Enter or Space from the keyboard', () => {
     const { rowEls, opened } = render([card('a1', 1, 'ada', 'planned')])
     const item = rowEls[0].children[1].children[1].children[1]
+    expect(item.tabIndex).toBe(0)
+    expect(item.attrs.role).toBe('button')
     item.listeners.click()
-    expect(opened).toEqual(['a1'])
+    const key = item.listeners.keydown as unknown as (e: { key: string; preventDefault: () => void }) => void
+    let prevented = 0
+    key({ key: 'Enter', preventDefault: () => prevented++ })
+    key({ key: ' ', preventDefault: () => prevented++ })
+    key({ key: 'a', preventDefault: () => prevented++ })
+    expect(opened).toEqual(['a1', 'a1', 'a1'])
+    expect(prevented).toBe(2)
+  })
+
+  it('shows people by name and nickname even when the board is grouped by priority, and escapes them', () => {
+    const { rows } = render([
+      card('a', 1, 'ada', 'planned'),
+      card('e', 2, 'x"><img src=y>', 'planned'),
+      card('u', 3, null, 'planned'),
+    ], 'en', {
+      groupBy: 'priority',
+      assignees: [{ name: 'ada', type: 'agent', displayName: 'Ada L', nickname: 'Countess' }, { name: 'owner', type: 'owner' }],
+    })
+    const heads = rows.map((r) => r.head)
+    const ada = heads.find((h) => h.includes('Ada L'))!
+    expect(ada).toContain('kanban-team-avatar agent')
+    expect(ada).toContain('<span class="kanban-nickname">Countess</span>')
+    const evil = heads.find((h) => h.includes('&lt;img'))!
+    expect(evil).not.toContain('"><img')
+    expect(evil).toContain('kanban-team-avatar unknown')
+    expect(heads.some((h) => h.includes('>Unassigned<'))).toBe(true)
+    expect(heads.join('')).not.toContain('__unassigned__')
   })
 
   it('renders an empty message when nothing is open', () => {
@@ -150,7 +243,7 @@ describe('renderKanbanTeamView', () => {
       card('r', 1, 'ada', 'in_progress', 'normal', { active_seconds: 5 * 3600 }),
       card('n', 2, 'ada', 'planned', 'normal', { updated_at: NOW - 3 * 3600 }),
     ], 'hu')
-    expect(rows[0].now[0]).toContain('5ó folyamatban')
+    expect(rows[0].now[0]).toContain('5 óra folyamatban')
     expect(rows[0].next[0]).toContain('3 órája mozdult')
   })
 })

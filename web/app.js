@@ -1304,7 +1304,7 @@ function renderKanbanOwnerStrip() {
   label.textContent = t('kanban.owner_strip.title')
   // The owner's nickname goes here too: this strip replaces the owner's lane,
   // and the lane header is the other place a nickname is drawn.
-  const ownerNick = kanbanSwimlaneMeta(owner).nickname
+  const ownerNick = kanbanPersonMeta(owner).nickname
   const nick = document.createElement('span')
   nick.className = 'kanban-nickname'
   if (ownerNick) nick.textContent = ownerNick
@@ -1404,7 +1404,16 @@ function renderKanbanTeamView() {
 
   // The owner's own queue is the strip above the board, not a row here, so
   // the same card does not show twice. See kanbanHideFromLanes.
-  const open = kanbanCards.filter((c) => c.status !== 'done' && !kanbanHideFromLanes(c))
+  // The view counts what the board shows as a card of its own: a subtask
+  // drawn inside its parent (same column) and an ongoing card (its own strip)
+  // are left out, so "N open" matches the board and a standing "ongoing" card
+  // does not make a person look busy forever.
+  const byId = new Map(kanbanCards.map((c) => [c.id, c]))
+  const embedded = (c) => {
+    const p = c.parent_id ? byId.get(c.parent_id) : null
+    return !!p && p.status === c.status
+  }
+  const open = kanbanCards.filter((c) => c.status !== 'done' && !kanbanHideFromLanes(c) && !embedded(c) && !kanbanIsOngoing(c))
   const keyOf = (c) => {
     const raw = c.assignee ? String(c.assignee).trim() : ''
     if (!raw) return '__unassigned__'
@@ -1433,19 +1442,27 @@ function renderKanbanTeamView() {
   }
 
   for (const [key, cards] of rows) {
-    const meta = kanbanSwimlaneMeta(key)
+    const meta = kanbanPersonMeta(key)
     const now = Date.now() / 1000
     const doing = cards.filter((c) => c.status === 'in_progress')
+    // "Next" is work that can be picked up: planned, not parked at low.
+    // Waiting cards are blocked and testing cards are past the work, so
+    // neither is listed (they still count as open). Most urgent first, then
+    // lowest card number.
+    const rank = (c) => {
+      const i = KANBAN_PRIORITY_ORDER.indexOf(c.priority || 'normal')
+      return i < 0 ? KANBAN_PRIORITY_ORDER.length : i
+    }
     const next = cards
-      .filter((c) => c.status !== 'in_progress' && (c.priority === 'normal' || c.priority === 'urgent'))
-      .sort((a, b) => (a.seq ?? Infinity) - (b.seq ?? Infinity))
+      .filter((c) => c.status === 'planned' && c.priority !== 'low')
+      .sort((a, b) => rank(a) - rank(b) || (a.seq ?? Infinity) - (b.seq ?? Infinity))
 
     const row = document.createElement('div')
     row.className = 'kanban-team-row' + (doing.length ? '' : ' idle')
 
     const head = document.createElement('div')
     head.className = 'kanban-team-head'
-    head.innerHTML = `<span class="kanban-team-avatar ${meta.avatarClass}">${escapeHtml(meta.avatarChar || '')}</span>` +
+    head.innerHTML = `<span class="kanban-team-avatar ${escapeHtml(meta.avatarClass)}">${escapeHtml(meta.avatarChar || '')}</span>` +
       `<span class="kanban-team-name">${escapeHtml(meta.label)}</span>` +
       (meta.nickname ? `<span class="kanban-nickname">${escapeHtml(meta.nickname)}</span>` : '') +
       `<span class="kanban-team-open">${t('kanban.team.open_n', { n: cards.length })}</span>`
@@ -1469,10 +1486,13 @@ function renderKanbanTeamView() {
       for (const c of list.slice(0, 3)) {
         const item = document.createElement('div')
         item.className = 'kanban-team-card'
-        const age = Math.max(0, now - (c.updated_at || c.created_at || now))
-        const ageTxt = age >= 86400
-          ? t('kanban.team.moved_d', { n: Math.floor(age / 86400) })
-          : t('kanban.team.moved_h', { n: Math.max(1, Math.floor(age / 3600)) })
+        // last_status_at is when the card last changed column; updated_at
+        // also moves on a comment or an edit, which is not "moved".
+        const age = Math.max(0, now - (c.last_status_at ?? c.updated_at ?? c.created_at ?? now))
+        const ageTxt = age >= 86400 ? t('kanban.team.moved_d', { n: Math.floor(age / 86400) })
+          : age >= 3600 ? t('kanban.team.moved_h', { n: Math.floor(age / 3600) })
+          : age >= 60 ? t('kanban.team.moved_m', { n: Math.floor(age / 60) })
+          : t('kanban.team.moved_now')
         // For a card being worked on right now, show the time already spent on
         // it, which is a different number from "last moved":
         // it sums every stay in the column, and it keeps running while the card
@@ -1484,7 +1504,12 @@ function renderKanbanTeamView() {
         const rightTip = activeTxt ? t('kanban.active.tooltip') : t('kanban.team.moved_tooltip')
         item.innerHTML = `<span class="seq">#${c.seq ?? '?'}</span><span class="title">${escapeHtml(c.title)}</span>` +
           `<span class="age" title="${escapeHtml(rightTip)}">${escapeHtml(rightTxt)}</span>`
+        item.tabIndex = 0
+        item.setAttribute('role', 'button')
         item.addEventListener('click', () => showCardDetail(c))
+        item.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); showCardDetail(c) }
+        })
         box.appendChild(item)
       }
       if (list.length > 3) {
@@ -1637,6 +1662,14 @@ function kanbanSwimlaneMeta(key) {
     const _rawPL = KANBAN_PRIORITY_LABELS[key]; const label = _rawPL ? (typeof _rawPL === 'function' ? _rawPL() : _rawPL) : key
     return { label, avatarClass: `priority-${key}`, avatarChar: '' }
   }
+  return kanbanPersonMeta(key)
+}
+
+// A person's label, nickname and avatar class, whatever the board is grouped
+// by. The owner strip and the team view always show people, so they must not
+// go through kanbanSwimlaneMeta: with the board grouped by priority that
+// returns the raw key as the label and a class built from it.
+function kanbanPersonMeta(key) {
   if (key === '__unassigned__') return { label: t('kanban.unassigned'), avatarClass: 'unknown', avatarChar: '?' }
   const match = kanbanAssignees.find(a => a.name === key)
   const label = match ? (match.displayName || match.name) : key
@@ -1666,7 +1699,6 @@ function kanbanSwimlaneMeta(key) {
 // and the letter is already underneath. One less thing that can be stale, and a
 // half-populated set of portraits degrades one lane at a time instead of all.
 function kanbanAvatarUrlFor(key) {
-  if (kanbanGroupBy === 'priority') return null
   if (!key || key === '__unassigned__') return null
   const m = kanbanAssignees.find(a => a.name === key)
   if (!m) return null
@@ -1749,13 +1781,13 @@ function renderSwimlaneBoard(grouped, embeddedSubtaskIds) {
     const header = document.createElement('div')
     header.className = 'kanban-swimlane-header'
     header.innerHTML = `
-      <span class="kanban-swimlane-avatar ${meta.avatarClass}">${escapeHtml(meta.avatarChar)}</span>
+      <span class="kanban-swimlane-avatar ${escapeHtml(meta.avatarClass)}">${escapeHtml(meta.avatarChar)}</span>
       <span class="kanban-swimlane-name">${escapeHtml(meta.label)}</span>
       ${meta.nickname ? `<span class="kanban-nickname">${escapeHtml(meta.nickname)}</span>` : ''}
       <span class="kanban-swimlane-count">${totalCount}</span>
       <button class="kanban-swimlane-toggle" type="button" aria-expanded="${!collapsed}" title="${collapsed ? t('kanban.swimlane.expand') : t('kanban.swimlane.collapse')}">${collapsed ? '▶' : '▼'}</button>
     `
-    kanbanDecorateAvatar(header.querySelector('.kanban-swimlane-avatar'), key)
+    if (kanbanGroupBy !== 'priority') kanbanDecorateAvatar(header.querySelector('.kanban-swimlane-avatar'), key)
     header.querySelector('.kanban-swimlane-toggle').addEventListener('click', (e) => {
       e.stopPropagation()
       if (kanbanCollapsedLanes.has(key)) kanbanCollapsedLanes.delete(key)
