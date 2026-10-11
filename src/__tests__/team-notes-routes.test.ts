@@ -95,7 +95,7 @@ describe('/api/notes', () => {
     expect(getTeamNote(id)!.content).toBe('x')
   })
 
-  it('without created_by / by a browser session names its user; a token caller must name itself', async () => {
+  it('a browser session or device names the author whatever the body says; a token caller must name itself', async () => {
     const session = { kind: 'session', user: 'gabor' } as RouteContext['auth']
     const post = await call('POST', '/api/notes', { assignee: 'cody', content: 'from the page' }, session)
     expect(post.status).toBe(200)
@@ -106,9 +106,12 @@ describe('/api/notes', () => {
     expect(getTeamNote(post.body.id)).toMatchObject({ deleted_by: 'gabor', delete_reason: 'done' })
     const device = await call('POST', '/api/notes', { assignee: 'cody', content: 'from a phone' }, { kind: 'device', device: 'Gabor phone', deviceId: 1 } as RouteContext['auth'])
     expect(getTeamNote(device.body.id)!.created_by).toBe('Gabor phone')
-    // An explicit name wins over the session.
+    // The signed-in user wins over a name in the body (the page sends the owner name).
     const named = await call('POST', '/api/notes', { assignee: 'cody', content: 'y', created_by: 'margo' }, session)
-    expect(getTeamNote(named.body.id)!.created_by).toBe('margo')
+    expect(getTeamNote(named.body.id)!.created_by).toBe('gabor')
+    // A token caller is named by the body.
+    const agent = await call('POST', '/api/notes', { assignee: 'cody', content: 'z', created_by: 'margo' }, { kind: 'token' } as RouteContext['auth'])
+    expect(getTeamNote(agent.body.id)!.created_by).toBe('margo')
   })
 
   it('DELETE: a too-long reason is a 400 (not cut short) and a malformed id a 400 (not a 500)', async () => {

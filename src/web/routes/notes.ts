@@ -82,17 +82,17 @@ function stringField(ctx: RouteContext, body: Body, name: string, required: bool
 }
 
 /**
- * Who wrote or deleted a note. The body field wins; without it the browser
- * credential names it (the dashboard page sends none): a login session its
- * user, a device key its device name. A token caller must name itself: the
- * row records the name, and a default would be a guess.
+ * Who wrote or deleted a note. A browser credential names it: a login session
+ * its user, a device key its device name, whatever the body says. A token
+ * caller (an agent, or a dashboard opened with the token) must name itself in
+ * the body: the row records the name, and a default would be a guess.
  * Returns null after writing a 400.
  */
 function actorField(ctx: RouteContext, body: Body, name: string): string | null {
+  const auth = ctx.auth
+  const who = auth?.kind === 'session' ? auth.user?.trim() : auth?.kind === 'device' ? auth.device?.trim() : undefined
+  if (who) return who.slice(0, MAX_NAME_CHARS)
   if (body[name] === undefined || body[name] === null) {
-    const auth = ctx.auth
-    const who = auth?.kind === 'session' ? auth.user?.trim() : auth?.kind === 'device' ? auth.device?.trim() : undefined
-    if (who) return who.slice(0, MAX_NAME_CHARS)
     json(ctx.res, { error: `${name} is required` }, 400); return null
   }
   const v = stringField(ctx, body, name, true, MAX_NAME_CHARS)

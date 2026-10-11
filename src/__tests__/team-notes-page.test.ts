@@ -55,11 +55,11 @@ describe('Notes page: assignee picker', () => {
   })
 })
 
-describe('Notes page: the writes name nobody themselves', () => {
+describe('Notes page: who the writes name', () => {
   const wiring = slice('function wireNotesPage()', '\nasync function loadIdeasPage(')
-  it('the add form sends no created_by and the delete sends no by: the server names the logged-in user', () => {
-    expect(wiring).not.toMatch(/created_by\s*:/)
-    expect(wiring).not.toMatch(/\bby\s*:/)
+  it('the add form and the delete name the owner from the page config (as board moves do), never a fixed label', () => {
+    expect(wiring).toContain('created_by: kanbanMoveActor()')
+    expect(wiring).toContain('by: kanbanMoveActor()')
     expect(wiring).not.toContain("'gazda'")
   })
 })

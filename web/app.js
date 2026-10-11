@@ -16984,9 +16984,10 @@ function wireNotesPage() {
     const dueEl = document.getElementById('notesDue')
     const content = (contentEl?.value || '').trim()
     if (!content) { contentEl?.focus(); return }
-    // No author field: the server names the logged-in user (or device), the
-    // same person the session belongs to, instead of a fixed label.
-    const body = { assignee, content }
+    // The author is the owner from the page config, as for the board's moves
+    // (kanbanMoveActor). A login session or device key overrides it on the
+    // server with the name of whoever is actually signed in.
+    const body = { assignee, content, created_by: kanbanMoveActor() }
     if (dueEl?.value) body.due_date = dueEl.value
     const btn = document.getElementById('notesAddBtn')
     if (btn) btn.disabled = true
@@ -17014,7 +17015,7 @@ function wireNotesPage() {
       const r = await fetch(`/api/notes/${encodeURIComponent(btn.dataset.noteDone)}`, {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ reason: reason.trim() || null }),
+        body: JSON.stringify({ by: kanbanMoveActor(), reason: reason.trim() || null }),
       })
       const data = await r.json().catch(() => ({}))
       if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`)
