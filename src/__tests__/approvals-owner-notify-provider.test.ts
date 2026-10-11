@@ -9,7 +9,11 @@ import type { RouteContext } from '../web/routes/types.js'
 // These tests pin the provider-agnostic path.
 
 const sent: string[] = []
+// sendOwnerMessage REPORTS delivery (PR1655 review, ask 2); the route reads the
+// result instead of assuming success, so the mock returns one.
+let ownerSendResult: { sent: boolean; reason?: string } = { sent: true }
 vi.mock('../notify.js', () => ({
+  sendOwnerMessage: async (text: string) => { sent.push(text); return ownerSendResult },
   notifyChannel: async (text: string) => { sent.push(text) },
   notifyTelegram: async () => {},
   notifySecurityEvent: async () => {},

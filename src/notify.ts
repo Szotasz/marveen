@@ -75,6 +75,30 @@ export async function deliverWithSlack(
 // True when operational alerts go to a chat other than the owner's. Callers
 // must then leave owner/partner conversation content (e.g. a preview of a
 // parked input line) out of the alert text.
+/** What a channel send did, for callers that must react to a miss. */
+export interface ChannelSendResult {
+  sent: boolean
+  /** Why nothing (or not everything) went out. Absent when `sent` is true. */
+  reason?: 'no-token' | 'no-owner-chat' | 'send-failed' | 'partial'
+}
+
+/**
+ * Owner-facing send that REPORTS whether it went out. notifyOwner() above is
+ * the fire-and-forget funnel (Slack first, then the channel); this is the same
+ * channel path for the one caller that cannot treat a miss as a delivery --
+ * an approval request nobody sees is not a gate.
+ */
+export async function sendOwnerMessage(text: string): Promise<ChannelSendResult> {
+  const owner = resolveAlertOwnerChat(undefined, CHANNEL_CHAT_ID, CHANNEL_PROVIDER)
+  if (!CHANNEL_TOKEN || !owner.chatId) {
+    const reason = !CHANNEL_TOKEN ? 'nincs token' : `nincs tulajdonos-chat (${owner.reason})`
+    logger.warn(`Channel ertesites kihagyva: ${reason}`)
+    if (CHANNEL_TOKEN) signalOwnerChatMissing(text, owner.reason ?? 'ismeretlen ok')
+    return { sent: false, reason: !CHANNEL_TOKEN ? 'no-token' : 'no-owner-chat' }
+  }
+  return sendToChat(owner.chatId, text)
+}
+
 export function alertIsRedirected(): boolean {
   return normalizeChatId(ALERT_CHAT_ID) !== null
 }
@@ -84,7 +108,9 @@ export function alertIsRedirected(): boolean {
 export async function notifyChannel(text: string): Promise<void> {
   return deliverWithSlack('alert', text, () => {
     const alertChat = normalizeChatId(ALERT_CHAT_ID)
-    if (alertChat) return sendToChat(alertChat, text)
+    // sendToChat reports now, this caller does not care: drop the result so the
+    // callback keeps its Promise<void> shape (slack-notify wiring contract).
+    if (alertChat) return sendToChat(alertChat, text).then(() => {})
     return telegramOwner(text)
   })
 }
@@ -150,13 +176,17 @@ async function telegramOwner(text: string): Promise<void> {
     if (CHANNEL_TOKEN) signalOwnerChatMissing(text, owner.reason ?? 'ismeretlen ok')
     return
   }
-  return sendToChat(owner.chatId, text)
+  await sendToChat(owner.chatId, text)
 }
 
-async function sendToChat(chatId: string, text: string): Promise<void> {
+// PR1655 review, ask 2: this used to return void and swallow every provider
+// exception, so a caller could not tell a delivered notification from a dead
+// one. It reports now; every existing caller ignores the value, so nothing
+// else changes shape.
+async function sendToChat(chatId: string, text: string): Promise<ChannelSendResult> {
   if (!CHANNEL_TOKEN) {
     logger.warn('Channel ertesites kihagyva: nincs token')
-    return
+    return { sent: false, reason: 'no-token' }
   }
 
   // Marked here at the funnel, NOT at call sites -- a new caller must not be
@@ -166,16 +196,34 @@ async function sendToChat(chatId: string, text: string): Promise<void> {
   const formatted = provider.formatMessage(outbound)
   const chunks = provider.splitMessage(formatted)
 
+  let delivered = 0
+  let lastError: unknown
   for (const chunk of chunks) {
     try {
       const parseMode = CHANNEL_PROVIDER === 'telegram' ? 'HTML' : undefined
       await provider.sendMessage(CHANNEL_TOKEN, chatId, chunk, parseMode)
-    } catch {
+      delivered++
+    } catch (err) {
+      lastError = err
       try {
+        // Retry once unformatted: a parse-mode rejection is the common case.
         await provider.sendMessage(CHANNEL_TOKEN, chatId, outbound.slice(0, 4096))
-      } catch { /* last resort, give up */ }
+        delivered++
+      } catch (err2) {
+        lastError = err2
+      }
     }
   }
+  if (delivered === 0) {
+    logger.warn({ err: lastError, provider: CHANNEL_PROVIDER }, 'channel send failed on every chunk')
+    return { sent: false, reason: 'send-failed' }
+  }
+  if (delivered < chunks.length) {
+    logger.warn({ err: lastError, provider: CHANNEL_PROVIDER, delivered, chunks: chunks.length },
+      'channel send only partially delivered')
+    return { sent: false, reason: 'partial' }
+  }
+  return { sent: true }
 }
 
 // Backward-compatible alias

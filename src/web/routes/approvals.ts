@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { PROJECT_ROOT, MAIN_AGENT_ID, TELEGRAM_BOT_TOKEN, CHANNEL_PROVIDER, CHANNEL_TOKEN, CHANNEL_CHAT_ID } from '../../config.js'
+import { PROJECT_ROOT, MAIN_AGENT_ID, TELEGRAM_BOT_TOKEN, CHANNEL_PROVIDER } from '../../config.js'
 import {
   consumeApproval,
   createApproval, getApproval, resolveApproval, listApprovals, expireTimedOutApprovals,
@@ -10,8 +10,8 @@ import {
 } from '../../db.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
-import { resolveOwnerChatId, resolveAlertOwnerChat } from '../../owner-chat.js'
-import { notifyChannel } from '../../notify.js'
+import { resolveOwnerChatId } from '../../owner-chat.js'
+import { sendOwnerMessage } from '../../notify.js'
 import { sendTelegramMessage } from '../telegram.js'
 import type { RouteContext } from './types.js'
 
@@ -162,35 +162,35 @@ function notifyOwner(approval: Approval): void {
       return
     }
 
-    // notifyChannel never throws and never reports whether it sent, so the two
-    // conditions it checks are checked HERE too -- otherwise a missing token or
-    // owner chat would look like a delivered notification and the in-band
-    // fallback would never fire.
-    // The two literals below are deliberate, not a computed reason string: the
+    // sendOwnerMessage REPORTS whether it went out (PR1655 review, ask 2). The
+    // funnel it wraps swallows every provider exception, so a `catch` here
+    // would be unreachable and a failed Discord send would be recorded as a
+    // delivered notification. The result is read instead.
+    // The literals below are deliberate, not a computed reason string: the
     // delivery contract test (approvals-delivery.test.ts) reads this function's
     // SOURCE and requires every failure path to name its fallback explicitly.
     // That test exists so a refactor cannot quietly drop a fallback -- and it
     // caught exactly that when this branch first used a template string.
-    if (!CHANNEL_TOKEN) {
+    const r = await sendOwnerMessage(buildOwnerApprovalText(approval))
+    if (r.sent) {
+      logger.info({ approvalId: approval.id, provider: CHANNEL_PROVIDER }, 'approval owner notification sent')
+      return
+    }
+    if (r.reason === 'no-token') {
       logger.warn({ approvalId: approval.id, provider: CHANNEL_PROVIDER },
         'approval owner notification suppressed: no channel token')
       fallbackInBand(approval, 'no-token')
       return
     }
-    const owner = resolveAlertOwnerChat(undefined, CHANNEL_CHAT_ID, CHANNEL_PROVIDER)
-    if (!owner.chatId) {
-      logger.warn({ approvalId: approval.id, provider: CHANNEL_PROVIDER, reason: owner.reason },
+    if (r.reason === 'no-owner-chat') {
+      logger.warn({ approvalId: approval.id, provider: CHANNEL_PROVIDER },
         'approval owner notification suppressed: no owner chat')
       fallbackInBand(approval, 'no-owner-chat')
       return
     }
-    try {
-      await notifyChannel(buildOwnerApprovalText(approval))
-      logger.info({ approvalId: approval.id, provider: CHANNEL_PROVIDER }, 'approval owner notification sent')
-    } catch (err) {
-      logger.warn({ err, approvalId: approval.id }, 'approval owner notification FAILED -- the request is only visible on the dashboard')
-      fallbackInBand(approval, 'send-failed')
-    }
+    logger.warn({ approvalId: approval.id, provider: CHANNEL_PROVIDER, reason: r.reason },
+      'approval owner notification FAILED -- the request is only visible on the dashboard')
+    fallbackInBand(approval, 'send-failed')
   })()
 }
 
