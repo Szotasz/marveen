@@ -77,6 +77,16 @@ describe('isNativeClaudeBin', () => {
     } finally { rmSync(home, { recursive: true, force: true }) }
   })
 
+  it('is false for a sibling dir whose name only starts like the versions dir', () => {
+    const home = fixture()
+    try {
+      const sibling = join(home, '.local', 'share', 'claude', 'versions-old')
+      mkdirSync(sibling, { recursive: true })
+      writeFileSync(join(sibling, '9.9.8'), '')
+      expect(isNativeClaudeBin(join(sibling, '9.9.8'), home)).toBe(false)
+    } finally { rmSync(home, { recursive: true, force: true }) }
+  })
+
   it('is false when the versions dir itself is missing', () => {
     const home = mkdtempSync(join(tmpdir(), 'worker-autoupdate-'))
     try {
@@ -95,5 +105,9 @@ describe('worker launch line carries the auto-updater clause', () => {
   it('the role is the slow-worker identity, and the opt-in comes from config', () => {
     expect(workerSrc).toMatch(/role:\s*ctx === ctxSlow \? 'slow' : 'fast'/)
     expect(workerSrc).toMatch(/optIn:\s*WORKER_AUTOUPDATE/)
+  })
+
+  it('the native flag comes from the install probe, not a constant', () => {
+    expect(workerSrc).toMatch(/nativeInstall:\s*isNativeClaudeBin\(tryResolveFromPath\('claude'\)\)/)
   })
 })
