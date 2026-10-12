@@ -65,6 +65,7 @@ else
   cat > "$TS/bin/systemctl" <<STUB
 #!/bin/sh
 echo "\$*" >> "$TS/calls"
+if [ "\$2" = start ] && [ -e "$TS/failstart" ]; then exit 1; fi
 [ "\$2" = start ] && [ ! -e "$TS/inert" ] && for u in "\$@"; do case "\$u" in *.timer) touch "$TS/active/\$u";; esac; done
 if [ "\$2" = is-active ]; then for u in "\$@"; do :; done; [ -e "$TS/active/\$u" ]; exit \$?; fi
 exit 0
@@ -75,8 +76,11 @@ STUB
       bash -c 'ok() { echo "OK $*"; }; warn() { echo "WARN $*"; }; '"$TSTART" 2>&1
   }
   OUT="$(run_tstart)"
-  assert_contains "the installer STARTS both timers, not only enables them" "$(cat "$TS/calls")" \
-    "--user start hex-channel-keepalive-probe.timer hex-main-inbox-observer.timer"
+  # one start per timer (#1903 review): a timer that cannot start does not take the other one with it
+  assert_contains "the installer STARTS the probe timer, on its own" "$(cat "$TS/calls")" \
+    "$(printf '%s\n' '--user start hex-channel-keepalive-probe.timer' '--user is-active --quiet hex-channel-keepalive-probe.timer')"
+  assert_contains "the installer STARTS the observer timer, on its own" "$(cat "$TS/calls")" \
+    "$(printf '%s\n' '--user start hex-main-inbox-observer.timer' '--user is-active --quiet hex-main-inbox-observer.timer')"
   assert_contains "the probe timer is reported running" "$OUT" "OK hex-channel-keepalive-probe.timer fut"
   assert_contains "the observer timer is reported running" "$OUT" "OK hex-main-inbox-observer.timer fut"
   rm -f "$TS/active/"*; : > "$TS/calls"; touch "$TS/inert"
@@ -84,6 +88,20 @@ STUB
   assert_contains "a timer that did not start is named with the fix command" "$OUT" \
     "WARN hex-channel-keepalive-probe.timer nem fut -- inditsd: systemctl --user start hex-channel-keepalive-probe.timer"
   assert_contains "the observer timer too" "$OUT" "WARN hex-main-inbox-observer.timer nem fut"
+  # #1903 review: a FAILING start (exit 1) under `set -e` and an ERR trap -- the installer's own mode -- must not
+  # stop the install: both timers are named, the block runs to its end, and SVCFAIL (the services) is untouched.
+  rm -f "$TS/active/"* "$TS/inert"; : > "$TS/calls"; touch "$TS/failstart"
+  OUT="$(PATH="$TS/bin:/usr/bin:/bin" KEEPALIVE_UNIT=hex-channel-keepalive-probe INBOX_OBSERVER_UNIT=hex-main-inbox-observer \
+    bash -c 'set -eE; trap "echo ERR-TRAP; exit 9" ERR; SVCFAIL=0; ok() { echo "OK $*"; }; warn() { echo "WARN $*"; }; '"$TSTART"'
+echo "BLOCK-END SVCFAIL=$SVCFAIL"' 2>&1; echo "rc=$?")"
+  assert_contains "a failing timer start under set -e: the probe timer is named" "$OUT" \
+    "WARN hex-channel-keepalive-probe.timer nem fut -- inditsd: systemctl --user start hex-channel-keepalive-probe.timer"
+  assert_contains "a failing timer start under set -e: the observer timer is named" "$OUT" \
+    "WARN hex-main-inbox-observer.timer nem fut -- inditsd: systemctl --user start hex-main-inbox-observer.timer"
+  assert_contains "a failing timer start under set -e: the block runs to its end, rc 0, no ERR trap" "$OUT" \
+    "$(printf '%s\n' 'BLOCK-END SVCFAIL=0' 'rc=0')"
+  assert_not_contains "a failing timer start under set -e: the ERR trap did not fire" "$OUT" "ERR-TRAP"
+  rm -f "$TS/failstart"
 fi
 
 # No Requires=/Wants= on the triggered service (the morning-timer lesson: a

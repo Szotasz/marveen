@@ -2264,11 +2264,13 @@ if pidof systemd >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1; the
   # passed, so without a start they stay inactive until the next reboot. The
   # keepalive probe then never refreshes, and the channel monitor reads the
   # stale keep-alive as a wedged session and respawns the main agent (measured
-  # on a fresh Linux install: three hard restarts in 80 minutes). A separate
-  # start, so a timer that failed to install cannot take the services down with
-  # it; not part of SVCFAIL, since the bridge itself runs, but named with the fix.
-  systemctl --user start "${KEEPALIVE_UNIT}.timer" "${INBOX_OBSERVER_UNIT}.timer" 2>/dev/null || true
+  # on a fresh Linux install: three hard restarts in 80 minutes). One start per
+  # timer, after the services, so a timer that failed to install can take down
+  # neither the services nor the other timer, and a failed start never stops the
+  # installer; not part of SVCFAIL, since the bridge itself runs, but named with
+  # the fix.
   for tmr in "${KEEPALIVE_UNIT}.timer" "${INBOX_OBSERVER_UNIT}.timer"; do
+    systemctl --user start "$tmr" 2>/dev/null || true
     if systemctl --user is-active --quiet "$tmr" 2>/dev/null; then
       ok "$tmr fut"
     else
