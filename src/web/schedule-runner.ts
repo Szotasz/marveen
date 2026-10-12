@@ -54,7 +54,7 @@ import {
   wrapScheduledTaskByReference,
 } from '../prompt-safety.js'
 import { writeScheduledRunSnapshot, isScheduledRunReference } from './scheduled-run-snapshot.js'
-import { cronPrevOccurrence, effectiveCronTz } from './cron.js'
+import { cronMinGapMs, cronPrevOccurrence, effectiveCronTz } from './cron.js'
 import {
   listScheduledTasks,
   readScheduledTask,
@@ -828,6 +828,41 @@ export function decideCatchUp(
 ): CatchUpDecision {
   if (ageMs <= lateThresholdMs) return 'on-time'
   return ageMs <= catchUpMaxAgeMs(task) ? 'catch-up' : 'stale'
+}
+
+// A heartbeat that runs at most this often is not "self-healing" when it misses.
+// See isMissedRunReportable. About half a day: a round that comes once or twice
+// a day loses half a day or more per miss, while every short-cadence heartbeat
+// the catch-up report was muted for (15 minutes, hourly, every 4 hours) stays
+// muted exactly as before. Eleven hours rather than twelve, so that a
+// twice-a-day schedule does not drop under the line on the night the clocks go
+// forward and one of its gaps is 11 h.
+export const HEARTBEAT_MISS_REPORT_MIN_CADENCE_MS = 11 * 60 * 60_000
+
+/**
+ * Pure: does a caught-up or stale occurrence belong in the operator's catch-up
+ * report?
+ *
+ * Everything that is not a heartbeat does, as before. A heartbeat used to be
+ * dropped by TYPE, with the reason "the next occurrence is minutes away". That
+ * reason is a claim about CADENCE, and it is false for a heartbeat that runs
+ * once a day: there the next occurrence is a day away, and with the 30-minute
+ * heartbeat staleness budget a miss is neither caught up nor mentioned. So the
+ * rule now reads the schedule: a heartbeat stays out of the report only while
+ * its tightest gap between occurrences is under the threshold.
+ *
+ * An entry without a readable schedule keeps the old behaviour (not reported):
+ * guessing "report" would bring back the alert storm the mute was added for.
+ */
+export function isMissedRunReportable(
+  entry: { type?: string; schedule?: string },
+  nowMs: number,
+  minCadenceMs: number = HEARTBEAT_MISS_REPORT_MIN_CADENCE_MS,
+): boolean {
+  if (entry.type !== 'heartbeat') return true
+  if (!entry.schedule) return false
+  const gap = cronMinGapMs(entry.schedule, nowMs)
+  return gap != null && gap >= minCadenceMs
 }
 
 /** Pure: where the first post-start scan window begins. */
@@ -2546,8 +2581,8 @@ export function startScheduleRunner(): NodeJS.Timeout {
     const fromMs = lastCheckMs
     // Catch-up bookkeeping for this tick's one-line report (see below). Empty
     // on every normal tick, so the operator only ever hears about real gaps.
-    const caughtUpThisTick: Array<{ task: string; ageMs: number; type?: string }> = []
-    const staleThisTick: Array<{ task: string; ageMs: number; type?: string }> = []
+    const caughtUpThisTick: Array<{ task: string; ageMs: number; type?: string; schedule?: string }> = []
+    const staleThisTick: Array<{ task: string; ageMs: number; type?: string; schedule?: string }> = []
 
     // Post-fire timeout watchdog sweep: check every tracked in-flight injection
     // to see if the target session is still busy. If so past TASK_FIRE_TIMEOUT_MS,
@@ -2853,7 +2888,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
           { task: task.name, ageMinutes: Math.round(ageMs / 60000), maxAgeMinutes: catchUpMaxAgeMs(task) / 60000 },
           'Scheduled occurrence missed while the scheduler was down and is too stale to catch up -- recording as missed',
         )
-        staleThisTick.push({ task: task.name, ageMs, type: task.type })
+        staleThisTick.push({ task: task.name, ageMs, type: task.type, schedule: task.schedule })
         const missedTargets = task.agent === 'all'
           ? [MAIN_AGENT_ID, ...listAgentNames().filter(a => isAgentRunning(a))]
           : [task.agent || MAIN_AGENT_ID]
@@ -2861,7 +2896,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
         continue
       }
       const lateCatchUpMs = decision === 'catch-up' ? ageMs : undefined
-      if (lateCatchUpMs != null) caughtUpThisTick.push({ task: task.name, ageMs, type: task.type })
+      if (lateCatchUpMs != null) caughtUpThisTick.push({ task: task.name, ageMs, type: task.type, schedule: task.schedule })
 
       // type='command' tasks run a raw shell command directly -- no LLM, no
       // tmux, no target agent. They self-manage failure streaks + Telegram
@@ -3056,14 +3091,16 @@ export function startScheduleRunner(): NodeJS.Timeout {
     // Tell the operator, in one line, what the gap cost. Only fires when this
     // tick actually caught something up or declared something too stale, which
     // in steady state is never.
-    // Heartbeats are excluded from the report on purpose. A heartbeat is
-    // self-healing -- the next occurrence is minutes away -- so a missed one
-    // is not operator-actionable, and reporting it turned a routine 15-minute
-    // heartbeat into ~25 Telegram alerts a day (2026-08-24, owner asked twice
-    // for it to stop). The miss is still WARN-logged and recorded in
-    // task_runs, so nothing is silently lost; it just isn't pushed at a human.
-    const caughtUpReportable = caughtUpThisTick.filter(e => e.type !== 'heartbeat')
-    const staleReportable = staleThisTick.filter(e => e.type !== 'heartbeat')
+    // Short-cadence heartbeats are excluded from the report on purpose. Such a
+    // heartbeat is self-healing -- the next occurrence is minutes away -- so a
+    // missed one is not operator-actionable, and reporting it turned a routine
+    // 15-minute heartbeat into ~25 Telegram alerts a day (2026-08-24, owner
+    // asked twice for it to stop). The miss is still WARN-logged and recorded
+    // in task_runs, so nothing is silently lost; it just isn't pushed at a human.
+    // The exclusion is by CADENCE, not by type (isMissedRunReportable): a
+    // heartbeat that runs once a day is not minutes away from its next run.
+    const caughtUpReportable = caughtUpThisTick.filter(e => isMissedRunReportable(e, now))
+    const staleReportable = staleThisTick.filter(e => isMissedRunReportable(e, now))
     if (caughtUpReportable.length || staleReportable.length) {
       // SLEEP GUARD, narrowed on review (#1153, 2026-09-03): only a gap the
       // machine SLEPT through is operator-caused downtime worth muting. A gap

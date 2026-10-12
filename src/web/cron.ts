@@ -129,6 +129,29 @@ export function cronPrevOccurrence(cron: string, fromMs: number, toMs: number, t
   }
 }
 
+// The tightest gap between consecutive occurrences of a schedule, sampled over
+// the next `samples` occurrences after `fromMs`: "how soon can the next one
+// come at best". The minimum, not the next gap, because a schedule like
+// `0 8,12,16,20 * * *` alternates 4 h and 12 h gaps and an answer that depends
+// on the time of day would make every consumer flap. null when the expression
+// does not parse or yields fewer than two occurrences.
+export function cronMinGapMs(cron: string, fromMs: number, samples: number = 8, tz: string = CRON_TZ): number | null {
+  try {
+    const expr = CronExpressionParser.parse(cron, { tz, currentDate: new Date(fromMs) })
+    let prev = expr.next().getTime()
+    let min: number | null = null
+    for (let i = 1; i < Math.max(2, samples); i++) {
+      const next = expr.next().getTime()
+      const gap = next - prev
+      if (gap > 0 && (min == null || gap < min)) min = gap
+      prev = next
+    }
+    return min
+  } catch {
+    return null
+  }
+}
+
 // Back-compat shim faithful to the old fixed-window semantics -- "did an
 // occurrence happen in the last catchUpMs". Kept for callers/tests that ask
 // the question that way; the scheduler loop itself uses cronDueBetween with
