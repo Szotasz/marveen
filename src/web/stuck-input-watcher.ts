@@ -185,13 +185,13 @@ function maybeAlertRemoteGiveUp(label: string, session: string, host: string, at
   if (!shouldAlertParkedGiveUp({ attempts, maxAttempts: THRESHOLDS.maxAttempts, alreadyAlerted: false, paneState: null })) return
   remoteAlertedSig.set(session, sig)
   logger.warn({ label, session, host, kind }, 'stuck-input-watcher: REMOTE sub-agent input still parked after max recovery Enters, alerting (no clear+re-inject on a remote host)')
-  sendAlert(`⚠️ A(z) ${label} távoli agens (${host}) bemenete beragadt: ${THRESHOLDS.maxAttempts} recovery Enter nem küldte el, és távoli gépen nincs clear/re-inject. Kézi beavatkozás kell (nézd meg a pane-t, vagy POST /api/agents/${label}/restart).`)
+  sendAlert(`⚠️ A(z) ${label} távoli ügynök (${host}) bemenete beragadt: ${THRESHOLDS.maxAttempts} helyreállító Enter sem küldte el, és távoli gépen nincs törlés és újraküldés. Kézi beavatkozás kell: nézd meg a tmux-ablakát, vagy indítsd újra (POST /api/agents/${label}/restart).`)
 }
 
 // One sweep's view of one remote agent: readable (its pane was captured) or blind, and why.
 interface AgentTick { host: string; name: string; readable: boolean; why: 'unreachable' | 'capture' }
 
-const WHY_TEXT = { unreachable: 'a gép / az ssh nem érhető el', capture: 'a tmux-pane nem olvasható' } as const
+const WHY_TEXT = { unreachable: 'a gép / az ssh nem érhető el', capture: 'a tmux-ablak nem olvasható' } as const
 
 // Feed one sweep's per-agent readability into the pure decision. An agent past the window is "due"; the due agents
 // of one host are alerted together, once, and only while they have inbound messages waiting
@@ -222,7 +222,7 @@ function noteRemoteBlindness(ticks: Map<string, AgentTick>, now: number): void {
     const minutes = Math.max(...list.map(e => Math.round((now - (e.next.since ?? now)) / 60_000)))
     const why = [...new Set(list.map(e => WHY_TEXT[e.tick.why]))].join(' / ')
     logger.warn({ host, agents, why: list.map(e => e.tick.why), pending, minutes }, 'stuck-input-watcher: REMOTE agent(s) blind past the window with messages waiting, alerting')
-    sendAlert(`⚠️ A(z) ${host} távoli gépen futó agens(ek) (${agents.join(', ')}) ${minutes} perce nem láthatók (${why}), és ${pending} bejövő üzenet vár rájuk -- a beragadás-figyelő vak. Ellenőrizd a gépet és az ügynököt.`)
+    sendAlert(`⚠️ A(z) ${host} távoli gépen futó ügynök(ök) (${agents.join(', ')}) ${minutes} perce nem láthatók (${why}), és ${pending} bejövő üzenet vár rájuk. A beragadás-figyelő vak: ellenőrizd a gépet és az ügynököt.`)
   }
 }
 

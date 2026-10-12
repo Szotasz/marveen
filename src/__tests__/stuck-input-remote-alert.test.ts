@@ -93,6 +93,12 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
+// The owner-facing alert is plain Hungarian: "ügynök" (not "agens"), no " -- " dash, no English recovery jargon.
+const expectPlainHungarian = (text: string) => {
+  expect(text).toContain('ügynök')
+  for (const bad of ['agens', ' -- ', 'recovery', 'clear/re-inject', 'pane']) expect(text).not.toContain(bad)
+}
+
 const ticks = async (n: number) => {
   // the first sweep runs at +20s, then every 15s
   for (let i = 0; i < n; i++) await vi.advanceTimersByTimeAsync(15_000)
@@ -107,6 +113,7 @@ describe('remote give-up reaches the owner alert', () => {
     expect(io.alerts.length).toBe(1)
     expect(io.alerts[0]).toContain('remo')
     expect(io.alerts[0]).toContain('u@remote-host')
+    expectPlainHungarian(io.alerts[0])
     await ticks(10)
     expect(io.alerts.length).toBe(1) // once per spell
   })
@@ -255,6 +262,7 @@ describe('a remote HOST the watcher cannot see alerts once -- only with messages
     expect(io.alerts[0]).toContain('remo')
     expect(io.alerts[0]).toContain('u@remote-host')
     expect(io.alerts[0]).toContain('2 bejövő')
+    expectPlainHungarian(io.alerts[0])
     await ticks(20)
     expect(io.alerts.length).toBe(1)
   })
