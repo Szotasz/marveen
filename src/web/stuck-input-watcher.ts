@@ -1,5 +1,5 @@
 import { logger } from '../logger.js'
-import { MAIN_AGENT_ID } from '../config.js'
+import { MAIN_AGENT_ID, REMOTE_BLIND_ALERT_MIN_RAW } from '../config.js'
 import { listAgentNames, readAgentRemoteHost } from './agent-config.js'
 import { agentRunState, captureParkedInputView, captureInputBoxViews, sendEnterToSession, capturePane } from './agent-process.js'
 import { resolveAgentSession } from './channel-mcp-reconnect.js'
@@ -136,7 +136,7 @@ const INITIAL_DELAY_MS = 20_000
 const INTERVAL_MS = 15_000
 // A remote agent the watcher has been blind to (unreachable / capture failing) for this many minutes is alerted
 // ONCE -- and only while it has inbound messages waiting: a laptop asleep with nothing queued for it is not an
-// incident. MARVEEN_REMOTE_BLIND_ALERT_MIN=0 turns the blind alert off; unset, empty or not a non-negative number
+// incident. MARVEEN_REMOTE_BLIND_ALERT_MIN=0 (Settings page, .env or the process env) turns the blind alert off; unset, empty or not a non-negative number
 // means the default (an invalid value is logged by name, never a silent off).
 const REMOTE_BLIND_ALERT_DEFAULT_MIN = 15
 export function parseBlindAlertMinutes(raw: string | undefined): { minutes: number; invalid: boolean } {
@@ -146,7 +146,7 @@ export function parseBlindAlertMinutes(raw: string | undefined): { minutes: numb
   return { minutes: n, invalid: false }
 }
 const REMOTE_BLIND_ALERT_MS = (() => {
-  const raw = process.env.MARVEEN_REMOTE_BLIND_ALERT_MIN
+  const raw = REMOTE_BLIND_ALERT_MIN_RAW   // cfg(): Settings override > .env > process env (config.ts)
   const { minutes, invalid } = parseBlindAlertMinutes(raw)
   if (invalid) logger.warn({ MARVEEN_REMOTE_BLIND_ALERT_MIN: raw, usingMinutes: minutes }, 'stuck-input-watcher: MARVEEN_REMOTE_BLIND_ALERT_MIN is empty or invalid -- using the default (0 turns the blind alert off)')
   return minutes * 60_000

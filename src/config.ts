@@ -512,6 +512,14 @@ export const HEARTBEAT_CALENDAR_ACCOUNT = (cfg('HEARTBEAT_CALENDAR_ACCOUNT') ?? 
 export const HEARTBEAT_END_HOUR = parseInt(env['HEARTBEAT_END_HOUR'] ?? '23', 10)
 export const HEARTBEAT_CALENDAR_ID = (cfg('HEARTBEAT_CALENDAR_ID') ?? '').trim()
 
+// The remote-blind alert window of the stuck-input watcher, in minutes. Read through cfg() like every other
+// setting, so a value saved on the Settings page or written into .env takes effect -- reading process.env
+// alone (the first version) ignored both: neither lands in process.env (measured on a factory install,
+// 2026-10-12). The process environment (a systemd Environment= line) stays the last fallback. Kept RAW on
+// purpose: the watcher parses it and names an empty or invalid value in the log instead of silently going off.
+export const REMOTE_BLIND_ALERT_MIN_RAW: string | undefined =
+  cfg('MARVEEN_REMOTE_BLIND_ALERT_MIN') ?? process.env.MARVEEN_REMOTE_BLIND_ALERT_MIN
+
 // The embedding model is deliberately NOT tied to OLLAMA_URL or to the chat
 // model. agent-process.ts feeds OLLAMA_URL into ANTHROPIC_BASE_URL for
 // ollama-backed agents, and memories/connectors/migrate all call the NATIVE

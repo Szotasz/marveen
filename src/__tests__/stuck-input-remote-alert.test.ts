@@ -28,7 +28,9 @@ const io = vi.hoisted(() => ({
 }))
 
 vi.mock('../logger.js', () => ({ logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() } }))
-vi.mock('../config.js', () => ({ MAIN_AGENT_ID: 'main' }))
+// The real cfg() layering is pinned in remote-blind-alert-config.test.ts; here the watcher sees the
+// process env through the same export, re-read on every vi.resetModules() import.
+vi.mock('../config.js', () => ({ MAIN_AGENT_ID: 'main', get REMOTE_BLIND_ALERT_MIN_RAW() { return process.env.MARVEEN_REMOTE_BLIND_ALERT_MIN } }))
 vi.mock('../web/main-agent.js', () => ({ MAIN_CHANNELS_SESSION: 'main-channels' }))
 vi.mock('../web/channel-mcp-reconnect.js', () => ({ resolveAgentSession: (n: string) => `agent-${n}` }))
 vi.mock('../web/agent-config.js', () => ({
