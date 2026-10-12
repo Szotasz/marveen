@@ -441,6 +441,64 @@ describe('connector detail modal', () => {
   })
 })
 
+describe('textContent sinks get the raw text, not escaped twice', () => {
+  // textContent never parses markup, so an escapeHtml() before it only makes
+  // the user read "&amp;" / "&lt;b&gt;". The real functions run with the real
+  // t() substitution; a stubbed element records what each sink received.
+  const RAW = 'R&D <b>x</b>'
+  type El = { textContent: string; innerHTML: string; checked: boolean; hidden: boolean; appendChild: () => void }
+  function makeDoc() {
+    const els: Record<string, El> = {}
+    const doc = {
+      ...fakeDocument,
+      getElementById(id: string) {
+        return (els[id] ??= { textContent: '', innerHTML: '', checked: false, hidden: true, appendChild() {} })
+      },
+    }
+    return { els, doc }
+  }
+  function makeWin(templates: Record<string, string>) {
+    const win = makeWindow({ brand: 'Marveen', bot: 'Marveen', agentId: 'marveen' })
+    Object.assign((win._i18n as Record<string, Record<string, string>>).en, templates)
+    return win
+  }
+
+  function renderBreakdown(win: Record<string, unknown>, title: string) {
+    const { els, doc } = makeDoc()
+    const fn = new Function(
+      'document', 'window', 't', 'kanbanAssignees', 'openModal', 'breakdownOverlay',
+      `${helperSrc}\n${extractFn('showBreakdownModal')}\nreturn showBreakdownModal`,
+    )(doc, win, win.t, [], () => {}, {}) as (s: unknown[], p: { title: string }) => void
+    fn([], { title })
+    return els
+  }
+
+  function renderApprove(win: Record<string, unknown>, channelName: string, userId: string) {
+    const { els, doc } = makeDoc()
+    const fn = new Function(
+      'document', 'window', 't',
+      `let _approveReqId = null\n${helperSrc}\n${extractFn('openApproveModal')}\nreturn openApproveModal`,
+    )(doc, win, win.t) as (id: string, c: string, u: string) => void
+    fn('req-1', channelName, userId)
+    return els
+  }
+
+  // the test owns the template, so a copy edit in en.js / hu.js cannot break it;
+  // the "&" in the template must survive too
+  it('breakdown parent line', () => {
+    const els = renderBreakdown(makeWin({ 'kanban.breakdown.parent_label': 'P&C: {title}' }), RAW)
+    expect(els.breakdownProvider.textContent).toBe(`P&C: ${RAW}`)
+    expect(els.breakdownProvider.innerHTML).toBe('')
+  })
+
+  it('approve modal: channel name and requester', () => {
+    const win = makeWin({ 'channel.approve.desc': '#{channel}{requester} Q&A', 'channel.approve.requester': ' (A&B: {user})' })
+    const els = renderApprove(win, RAW, RAW)
+    expect(els.chApproveModalDesc.textContent).toBe(`#${RAW} (A&B: ${RAW}) Q&A`)
+    expect(els.chApproveModalDesc.innerHTML).toBe('')
+  })
+})
+
 describe('sink-level completeness of web/app.js', () => {
   const { strict, review } = scanAppJs(src, Object.values(langSrc))
   const allowlist = JSON.parse(readFileSync(join(__dirname, 'fixtures', 'app-js-html-allowlist.json'), 'utf8')) as Record<string, string>
