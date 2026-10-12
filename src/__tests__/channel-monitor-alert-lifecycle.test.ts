@@ -14,6 +14,7 @@ import {
   type StuckRestartLadder,
   type StuckRestartObservation,
 } from '../web/channel-monitor.js'
+import { detectQuotaWall, idleConsideringDimGhost } from '../pane-state.js'
 
 // Alert lifecycle of the main-channel recovery paths: every alert that opens
 // must be able to close, a counter resets only on evidence, and a message
@@ -169,6 +170,67 @@ describe('mainInputBoxProvenEmpty', () => {
 
   it('a blank capture (unknown state) is no evidence', () => {
     expect(mainInputBoxProvenEmpty('', null)).toBe(false)
+  })
+})
+
+// A plan usage-limit wall (the real capture the router's detector is tested
+// on): the prompt under the banner is idle with an empty box, so the readiness
+// rule alone calls it ready. It must not reset the ladder or close the alert.
+const WALL_PANE = readFileSync(join(__dirname, 'fixtures/pane/quota-wall-usage-limit.txt'), 'utf8')
+
+describe('mainInputBoxProvenEmpty: a usage-limit wall is no evidence', () => {
+  // A capped ladder with the cap alert open, driven by one tick on `pane`.
+  const tickOnPane = (pane: string) => {
+    const l = createStuckLadder()
+    for (let i = 0; i < 3; i++) l.noteRestart()
+    l.noteCapAlert()
+    const step = l.observe(obs({ parked: false, boxProvenEmpty: mainInputBoxProvenEmpty(pane, null) }))
+    return { l, step }
+  }
+
+  it('precondition: the wall fixture reads idle and the detector sees the wall', () => {
+    expect(idleConsideringDimGhost(WALL_PANE, null)).toBe(true)
+    expect(detectQuotaWall(WALL_PANE)).not.toBeNull()
+  })
+
+  it('the real wall capture is not evidence', () => {
+    expect(mainInputBoxProvenEmpty(WALL_PANE, null)).toBe(false)
+  })
+
+  it('a dim-stripped idle view does not turn a wall into evidence', () => {
+    expect(mainInputBoxProvenEmpty(WALL_PANE, IDLE_PANE)).toBe(false)
+  })
+
+  it('a tick on the wall keeps the count and the open cap alert', () => {
+    const { l, step } = tickOnPane(WALL_PANE)
+    expect(step.sendResolved).toBe(false)
+    expect(step.next.alertOpen).toBe(true)
+    expect(l.count()).toBe(4)
+    expect(decideStuckInputRestart(true, 4, 4, T0 + 10 * 60_000, 0, l.count(), 5 * 60_000, 3)).toBe('skip')
+  })
+
+  it('positive control: a normal idle pane still resets the count and closes the alert', () => {
+    const { l, step } = tickOnPane(IDLE_PANE)
+    expect(step.sendResolved).toBe(true)
+    expect(step.next.alertOpen).toBe(false)
+    expect(l.count()).toBe(0)
+  })
+
+  it('the wall lifted (banner gone, same prompt) is evidence again', () => {
+    const lifted = WALL_PANE.split('\n').filter((line) => !/^ {2}⚠|^ {4}\S/.test(line)).join('\n')
+    expect(detectQuotaWall(lifted)).toBeNull()
+    expect(mainInputBoxProvenEmpty(lifted, null)).toBe(true)
+  })
+
+  it('the limit words quoted ABOVE the box (conversation) do not block evidence', () => {
+    const quoted = ['● Usage limit reached · continuing automatically at 7:40pm', '', SEP, '❯ ', SEP, ...FOOTER].join('\n')
+    expect(detectQuotaWall(quoted)).toBeNull()
+    expect(mainInputBoxProvenEmpty(quoted, null)).toBe(true)
+  })
+
+  it('a "has reset" banner under the box is not a wall', () => {
+    const reset = [SEP, '❯ ', SEP, '  ⚠ Usage limit reset · continuing automatically', ...FOOTER].join('\n')
+    expect(mainInputBoxProvenEmpty(reset, null)).toBe(true)
   })
 })
 

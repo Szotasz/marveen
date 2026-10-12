@@ -47,7 +47,7 @@ import { probeTelegramConflict } from './channel-conflict-probe.js'
 import { schedulePluginUnlockAfterRespawn, wasPluginConfirmedAbsent, clearPluginAbsent } from './channel-plugin-unlock.js'
 import { getInjectedPrompt, matchesInjectedPrompt } from './injected-prompt-registry.js'
 import {
-  detectPaneState, idleConsideringDimGhost, decidePaneErrorAlert, detectsBlockingMenu, detectsPermissionDialog, detectsFirstRunGate, detectsModelConsentDialog, type PaneErrorAlertState, type PaneState,
+  detectPaneState, idleConsideringDimGhost, detectQuotaWall, decidePaneErrorAlert, detectsBlockingMenu, detectsPermissionDialog, detectsFirstRunGate, detectsModelConsentDialog, type PaneErrorAlertState, type PaneState,
   stuckInputSignature, decideStuckInputRecovery, parkedChannelInput,
   parkedInputText, shouldClearTruncatedPreamble,
   parkedInputRowCount, submitLanded, decideStuckInputAction,
@@ -437,8 +437,9 @@ export interface StuckRestartObservation {
   /** The soft-recovery tracker holds a parked signature this tick. */
   parked: boolean
   /** A readable capture of the main pane classified idle: the input box is
-   *  live AND empty. Busy, typing, unknown and an unreadable capture are all
-   *  false here: none of them proves the box emptied. */
+   *  live AND empty. Busy, typing, unknown, a plan usage-limit wall and an
+   *  unreadable capture are all false here: none of them proves the box
+   *  emptied into a ready session. */
   boxProvenEmpty: boolean
   /** The main claude pid now, or null when it could not be read. */
   claudePid: number | null
@@ -526,8 +527,11 @@ export function createStuckLadder(): StuckLadder {
 // the footer whatever its colour; the dim-stripped view is consulted only when
 // the plain one reads 'typing', so a dim placeholder in an empty box still
 // counts as empty. A null plain capture, busy, unknown or error is no evidence.
+// Neither is a plan usage-limit wall (detectQuotaWall, the router's detector):
+// its prompt reads idle with an empty box, but the session is held at the
+// plan limit, so a cap alert closed there would read as a recovered channel.
 export function mainInputBoxProvenEmpty(plain: string | null, dimStripped: string | null): boolean {
-  return plain != null && idleConsideringDimGhost(plain, dimStripped)
+  return plain != null && idleConsideringDimGhost(plain, dimStripped) && detectQuotaWall(plain) == null
 }
 
 // Busy-guard over the stuck-input restart decision (false-positive fix,
