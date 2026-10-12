@@ -14,7 +14,8 @@
 # free of send-keys), so there is no seam: like channels-rapid-exit-count, the
 # test lifts the script's OWN function text (send_rename_when_ready,
 # wait_for_rename_ready, rename_pane_verdict, _answer_accept_dialog,
-# probe_pane_input_state, pane_dead_detected) out of channels.sh and runs it with $TMUX pointing at
+# probe_pane_input_state_bounded, probe_pane_input_state, pane_dead_detected)
+# out of channels.sh and runs it with $TMUX pointing at
 # a fake that replays pane frames and logs every call, and a stub
 # pane-state module (CHANNELS_PANE_STATE_JS) so the idle verdict is
 # deterministic. channels.sh itself is never executed; nothing here touches a
@@ -25,6 +26,9 @@
 # no "/rename" send-keys anywhere outside send_rename_when_ready. Every case
 # asserts the exact transcript of tmux and sleep calls (argv by argv), and a
 # fake-tmux runaway guard turns an unbounded wait into a failure, not a hang.
+# A probe that never returns is bounded per call (probe_pane_input_state_bounded);
+# an outer wall-clock guard in run_case kills a case that still hangs, so a
+# regression there fails the case instead of hanging the suite.
 # Run: bash scripts/__tests__/channels-rename-ready.test.sh
 
 set -u
@@ -42,7 +46,7 @@ trap 'rm -rf "$TMPD"' EXIT
 # Lift the functions under test out of the script text.
 LIB="$TMPD/lib.sh"
 : > "$LIB"
-for fn in probe_pane_input_state pane_dead_detected _answer_accept_dialog rename_pane_verdict wait_for_rename_ready send_rename_when_ready; do
+for fn in probe_pane_input_state pane_dead_detected _answer_accept_dialog rename_pane_verdict probe_pane_input_state_bounded rename_wait_limits wait_for_rename_ready send_rename_when_ready; do
   body="$(awk -v f="$fn" '$0 == f "() {" {on=1} on {print} on && $0 == "}" {exit}' "$CHANNELS")"
   if [ -z "$body" ]; then
     echo "  FAIL: could not find $fn() in $CHANNELS (renamed? then this test is blind)"
@@ -52,6 +56,27 @@ for fn in probe_pane_input_state pane_dead_detected _answer_accept_dialog rename
   printf '%s\n' "$body" >> "$LIB"
 done
 
+# Two recording wrappers, so the bounds are asserted as values against the
+# wait's own clock reading instead of as wall time (a slow runner shifts the
+# whole-second clock, not these relations):
+#  - the lifted helper runs as __real_probe_pane_input_state_bounded; the
+#    wrapper appends "<bound> <time left> <per-call max> [<ms>]" to $BOUNDS per
+#    probe call (<time left> and <per-call max> are the wait's own _rr_left and
+#    _rr_pb_max at the call; <ms>, the probe's wall time, only with PROBE_MS);
+#  - a sleep function appends "<arg> <time left> <interval rounded up>" to
+#    $SLEEPS, then runs the fake sleep, so the call log is unchanged.
+sed -i.bak 's/^probe_pane_input_state_bounded() {$/__real_probe_pane_input_state_bounded() {/' "$LIB"
+cat >> "$LIB" <<'WRAP'
+probe_pane_input_state_bounded() {
+  local t0=""
+  [ -n "${PROBE_MS:-}" ] && t0="$(node -e 'console.log(Date.now())')"
+  __real_probe_pane_input_state_bounded "$@"
+  printf '%s %s %s%s\n' "$1" "${_rr_left:-?}" "${_rr_pb_max:-?}" \
+    "${t0:+ $(( $(node -e 'console.log(Date.now())') - t0 ))}" >> "$BOUNDS"
+}
+sleep() { printf '%s %s %s\n' "$1" "${_rr_left:-?}" "${_rr_unit:-?}" >> "$SLEEPS"; command sleep "$@"; }
+WRAP
+
 echo "channels.sh /rename readiness gate"
 echo "=================================="
 
@@ -60,10 +85,24 @@ echo "=================================="
 # `send-keys ... "/rename ..." Enter`) or a removed call would otherwise stay green.
 # Each lifted function is defined exactly once (bash runs the LAST definition,
 # the lift takes the first).
-for fn in pane_dead_detected _answer_accept_dialog rename_pane_verdict wait_for_rename_ready send_rename_when_ready; do
+for fn in pane_dead_detected _answer_accept_dialog rename_pane_verdict probe_pane_input_state_bounded rename_wait_limits wait_for_rename_ready send_rename_when_ready; do
   n="$(grep -cE "^[[:space:]]*(function[[:space:]]+)?${fn}[[:space:]]*\(\)" "$CHANNELS")"
   if [ "$n" = "1" ]; then pass "pin: $fn defined exactly once"; else fail "pin: $fn defined exactly once" 1 "$n"; fi
 done
+# The wait probes only through the bounded helper: a direct call would bring
+# back the unbounded foreground probe.
+WAIT_BODY="$(awk '$0 == "wait_for_rename_ready() {" {on=1} on {print} on && $0 == "}" {exit}' "$CHANNELS")"
+nb="$(printf '%s\n' "$WAIT_BODY" | grep -cE '\| probe_pane_input_state_bounded( |\))' || true)"
+nr="$(printf '%s\n' "$WAIT_BODY" | grep -cE 'probe_pane_input_state([^_]|$)' || true)"
+if [ "$nb:$nr" = "1:0" ]; then pass "pin: wait_for_rename_ready probes only through probe_pane_input_state_bounded"
+else fail "pin: wait_for_rename_ready probes only through probe_pane_input_state_bounded" "1 bounded, 0 direct" "$nb bounded, $nr direct"; fi
+# ...and the post-init unlock subshell is unchanged: outside the wait it still
+# calls probe_pane_input_state directly (3 calls), never the bounded helper.
+REST="$(awk '$0 == "wait_for_rename_ready() {" {skip=1} !skip {print} skip && $0 == "}" {skip=0}' "$CHANNELS" | grep -v '^[[:space:]]*#')"
+ud="$(printf '%s\n' "$REST" | grep -cE '\| probe_pane_input_state\)' || true)"
+ub="$(printf '%s\n' "$REST" | grep -cE '\| probe_pane_input_state_bounded' || true)"
+if [ "$ud:$ub" = "3:0" ]; then pass "pin: the unlock subshell still probes directly (3 direct, 0 bounded outside the wait)"
+else fail "pin: the unlock subshell still probes directly (3 direct, 0 bounded outside the wait)" "3:0" "$ud:$ub"; fi
 # Non-comment lines outside the send_rename_when_ready body, with line numbers.
 OUTSIDE="$(awk '$0 == "send_rename_when_ready() {" {skip=1} !skip && $0 !~ /^[[:space:]]*#/ {print NR ":" $0} skip && $0 == "}" {skip=0}' "$CHANNELS")"
 hits="$(printf '%s\n' "$OUTSIDE" | grep -E 'send-keys.*/rename' || true)"
@@ -88,7 +127,8 @@ esac
 #  - after the time-sensitive ones, which must keep their pre-gate timing: the
 #    keep-alive baseline and the respawn stamp (the watchdog and the channel
 #    monitor read the stamp as "booting, leave it alone") and START_TS (the
-#    rapid-exit window); the bounded wait (up to ~20 s) must not delay them;
+#    rapid-exit window); the bounded wait (deadline 30 s by default) must
+#    not delay them;
 #  - before anything later that types into the pane: the post-init /mcp unlock
 #    subshell (spawn line and its first send-keys), so the two never overlap
 #    on one input line.
@@ -191,9 +231,10 @@ chmod +x "$FAKE"
 
 # Fake sleep: logs into the same call log and returns at once, so the
 # cadence (default 2 s, and the sleep after an answered dialog) is asserted
-# without waiting for it.
+# without waiting for it. With REAL_SLEEP set it also really sleeps (for the
+# case that checks the deadline leaves room for every ordinary try).
 mkdir -p "$TMPD/bin"
-printf '#!/bin/bash\n{ printf "[%%s]" sleep "$@"; echo; } >> "$CALLS"\nexit 0\n' > "$TMPD/bin/sleep"
+printf '#!/bin/bash\n{ printf "[%%s]" sleep "$@"; echo; } >> "$CALLS"\n[ -n "${REAL_SLEEP:-}" ] && /bin/sleep "$@"\nexit 0\n' > "$TMPD/bin/sleep"
 chmod +x "$TMPD/bin/sleep"
 
 # Stub pane-state: "idle" when the frame carries the IDLE_PROMPT marker, or when
@@ -239,23 +280,63 @@ BANNER_ONLY="$BANNER
 >"
 BUSY='* Working... (esc to interrupt)'
 
-# run_case <frames...>: sets GOT (stdout), CALLS_OUT (the call log), LOG_OUT.
+# now_ms: wall clock in milliseconds (node is required by the suite anyway).
+now_ms() { node -e 'console.log(Date.now())'; }
+# kill_tree <pid>: SIGKILL a process and all its descendants, children first.
+kill_tree() {
+  local k
+  for k in $(/usr/bin/pgrep -P "$1" 2>/dev/null); do kill_tree "$k"; done
+  kill -KILL "$1" 2>/dev/null
+}
+
+# run_case <frames...>: sets GOT (stdout), CALLS_OUT (the call log), LOG_OUT,
+# ELAPSED_MS (wall clock of the case when TIMED is set, else -1).
 # Env: TRIES (default 4; "default" = no TRIES/SLEEP override, the script's own
 # limits apply), PANE_JS (default the stub), LOG_SEED (a line written to the
-# failures log before the run; the log is shared and append-only).
+# failures log before the run; the log is shared and append-only),
+# SLEEP (the interval, default 9: the fake sleep returns at once, so this only
+# sets the deadline, 10 s per try, far out of reach of the cases that do not
+# test it; those stay independent of the clock), PROBE_MS (time each probe
+# call in ms into $BOUNDS), PROBE_TIMEOUT (CHANNELS_RENAME_PROBE_TIMEOUT
+# for the case; unset = the script's default), GUARD (outer wall-clock
+# guard in s, default 30: a case still running then is killed with its whole
+# process tree and fails), ALIGN
+# (start the wait right after a whole-second tick, so the whole-second clock
+# reads the true elapsed seconds and time-dependent transcripts are exact).
+# SECONDS starts at 1000 in every case: in channels.sh the wait runs long after
+# the shell started (the startup guard alone takes 12 s), so the deadline must
+# be measured from the wait's own start, not from the process start.
 run_case() {
-  FRAMES="$TMPD/frames"; CALLS="$TMPD/calls"; LOG="$TMPD/failures.log"
-  rm -rf "$FRAMES" "$LOG"; mkdir -p "$FRAMES"; : > "$CALLS"
+  FRAMES="$TMPD/frames"; CALLS="$TMPD/calls"; LOG="$TMPD/failures.log"; BOUNDS="$TMPD/bounds"; : > "$BOUNDS"; SLEEPS="$TMPD/sleeps"; : > "$SLEEPS"
+  rm -rf "$FRAMES" "$LOG" "$TMPD/probe-tmp" "$TMPD/aligned-start"; mkdir -p "$FRAMES" "$TMPD/probe-tmp"; : > "$CALLS"
   if [ -n "${LOG_SEED:-}" ]; then printf '%s\n' "$LOG_SEED" > "$LOG"; fi
   local i=0 f limits
   for f in "$@"; do i=$((i + 1)); printf '%s\n' "$f" > "$FRAMES/$i"; done
-  limits=(CHANNELS_RENAME_READY_TRIES="${TRIES:-4}" CHANNELS_RENAME_READY_SLEEP=0)
+  limits=(CHANNELS_RENAME_READY_TRIES="${TRIES:-4}" CHANNELS_RENAME_READY_SLEEP="${SLEEP:-9}")
   [ "${TRIES:-}" = default ] && limits=()
-  GOT="$(env -u CHANNELS_RENAME_READY_TRIES -u CHANNELS_RENAME_READY_SLEEP \
-    FRAMES="$FRAMES" CALLS="$CALLS" TMUX="$FAKE" SESSION=test-channels \
+  [ -n "${PROBE_TIMEOUT:-}" ] && limits+=(CHANNELS_RENAME_PROBE_TIMEOUT="$PROBE_TIMEOUT")
+  local job n t0 hung=0
+  t0=0; [ -n "${TIMED:-}" ] && t0="$(now_ms)"
+  env -u CHANNELS_RENAME_READY_TRIES -u CHANNELS_RENAME_READY_SLEEP -u CHANNELS_RENAME_PROBE_TIMEOUT \
+    FRAMES="$FRAMES" CALLS="$CALLS" BOUNDS="$BOUNDS" SLEEPS="$SLEEPS" PROBE_MS="${PROBE_MS:-}" TMUX="$FAKE" SESSION=test-channels REAL_SLEEP="${REAL_SLEEP:-}" \
     INSTALL_DIR="$TMPD" CHANNELS_PANE_STATE_JS="${PANE_JS:-$STUB_JS}" PATH="$TMPD/bin:$PATH" \
-    ${limits[@]+"${limits[@]}"} \
-    bash -c 'CASE_PID=$$; export CASE_PID; . "$1"; if send_rename_when_ready bot "$2"; then echo sent; else echo skipped; fi' _ "$LIB" "$LOG" 2>/dev/null)"
+    TMPDIR="$TMPD/probe-tmp" ${limits[@]+"${limits[@]}"} \
+    bash -c 'SECONDS=1000
+      if [ -n "$3" ]; then _s=$SECONDS; while [ "$SECONDS" = "$_s" ]; do :; done; date +%s > "$3"; fi
+      CASE_PID=$$; export CASE_PID; . "$1"; if send_rename_when_ready bot "$2"; then echo sent; else echo skipped; fi' _ "$LIB" "$LOG" "${ALIGN:+$TMPD/aligned-start}" > "$TMPD/got" 2>/dev/null &
+  job=$!
+  n=0
+  while kill -0 "$job" 2>/dev/null; do
+    if [ "$n" -ge "$(( ${GUARD:-30} * 10 ))" ]; then hung=1; kill_tree "$job"; break; fi
+    /bin/sleep 0.1
+    n=$((n + 1))
+  done
+  wait "$job" 2>/dev/null
+  # aligned: measured from the tick the wait started on, not from the launch
+  [ -n "${ALIGN:-}" ] && [ -s "$TMPD/aligned-start" ] && t0=$(( $(cat "$TMPD/aligned-start") * 1000 ))
+  ELAPSED_MS=-1; [ -n "${TIMED:-}" ] && ELAPSED_MS=$(( $(now_ms) - t0 ))
+  GOT="$(cat "$TMPD/got")"
+  if [ "$hung" = 1 ]; then fail "case ends within the outer guard" "<= ${GUARD:-30} s" "still running, killed"; fi
   if [ -e "$FRAMES/.runaway" ]; then fail "case stops on its own (bounded wait)" "<= 25 captures" "runaway, killed"; fi
   CALLS_OUT="$(cat "$CALLS")"
   LOG_OUT="$(cat "$LOG" 2>/dev/null || true)"
@@ -305,6 +386,7 @@ DOWN_ENTER='k:[Down] s1 k:[Enter]'
 
 expect_eq() { if [ "$3" = "$2" ]; then pass "$1"; else fail "$1" "$2" "$3"; fi; }
 expect_has() { case "$3" in *"$2"*) pass "$1";; *) fail "$1" "contains [$2]" "$3";; esac; }
+expect_lacks() { case "$3" in *"$2"*) fail "$1" "no [$2]" "$3";; *) pass "$1";; esac; }
 # expect_calls <label> <golden tokens...>: the exact full call transcript.
 expect_calls() {
   local label="$1"; shift
@@ -341,52 +423,53 @@ expect_calls "placeholder in box, renamed on the first try" try $RENAME
 # must repaint before the next capture), /rename only after the pane is ready
 run_case "$TRUST_CURSOR_ON_YES" "$READY"
 expect_eq    "late trust dialog, then ready -> sent"       sent            "$GOT"
-expect_calls "late trust dialog, cursor on Yes"            try $ENTER s0 try $RENAME
+expect_calls "late trust dialog, cursor on Yes"            try $ENTER s9 try $RENAME
 
 # (a) the regression: dialog stays -> /rename NEVER typed into it
 run_case "$TRUST_CURSOR_ON_NO"
 expect_eq    "persistent dialog -> skipped"                skipped         "$GOT"
-expect_calls "persistent dialog, cursor on No (Down+Enter each try, no /rename)" 4x try $DOWN_ENTER s0 /
+expect_calls "persistent dialog, cursor on No (Down+Enter each try, no /rename)" 4x try $DOWN_ENTER s9 /
 expect_has   "persistent dialog -> skip line names the dialog" "verdict: dialog" "$LOG_OUT"
+expect_lacks "persistent dialog -> skip line names no deadline" "wait deadline" "$LOG_OUT"
 
 # old-style trust dialog in an unknown shape (no cursor glyph): no keys at all
 run_case "$TRUST_OLD"
 expect_eq    "unknown-shape dialog -> skipped"             skipped         "$GOT"
-expect_calls "unknown-shape dialog (no keys)"              4x try s0 /
+expect_calls "unknown-shape dialog (no keys)"              4x try s9 /
 
 # old-panel trust dialog (pre-2.1.246 anchor) over an idle-looking line:
 # still a dialog, never typed into
 run_case "$TRUST_OLD
 IDLE_PROMPT"
-expect_calls "old-panel dialog + idle marker (no keys)"    4x try s0 /
+expect_calls "old-panel dialog + idle marker (no keys)"    4x try s9 /
 expect_has   "old-panel dialog + idle marker -> skip names the dialog" "verdict: dialog" "$LOG_OUT"
 # ...and with the cursor on its Yes line it is answered, then renamed
 run_case "Do you trust the files in this folder?
 
  ❯ Yes, proceed
    No, exit" "$READY"
-expect_calls "old-panel dialog, cursor on Yes"             try $ENTER s0 try $RENAME
+expect_calls "old-panel dialog, cursor on Yes"             try $ENTER s9 try $RENAME
 
 # bypass dialog late -> answered, then rename
 run_case "$BYPASS" "$READY"
 expect_eq    "late bypass dialog, then ready -> sent"      sent            "$GOT"
-expect_calls "late bypass dialog"                          try $DOWN_ENTER s0 try $RENAME
+expect_calls "late bypass dialog"                          try $DOWN_ENTER s9 try $RENAME
 
 # a dialog wins over an idle-looking input line
 run_case "$TRUST_CURSOR_ON_NO
 IDLE_PROMPT"
-expect_calls "dialog + idle marker (answered, no /rename)" 4x try $DOWN_ENTER s0 /
+expect_calls "dialog + idle marker (answered, no /rename)" 4x try $DOWN_ENTER s9 /
 
 # a cursor glyph outside a dialog is NOT a dialog: no key may be sent (the
 # answer helper would press Enter on "Yes please" and submit the parked text)
 TRIES=3 run_case "$BANNER
 ❯ Yes please"
 expect_eq    "banner + '❯ Yes please' in the box -> skipped" skipped       "$GOT"
-expect_calls "banner + '❯ Yes please' in the box (no keys)" 3x try s0 /
+expect_calls "banner + '❯ Yes please' in the box (no keys)" 3x try s9 /
 TRIES=3 run_case "$BANNER
 ❯ No, exit
   Yes, sure"
-expect_calls "banner + '❯ No, exit' over 'Yes, sure', not a dialog (no keys)" 3x try s0 /
+expect_calls "banner + '❯ No, exit' over 'Yes, sure', not a dialog (no keys)" 3x try s9 /
 
 # claude died right after launch (remain-on-exit keeps the dead pane) or the
 # session is gone: the wait stops at once, no capture, no sleep, no key, so
@@ -397,14 +480,16 @@ run_case "PANE_DEAD"
 expect_eq    "dead pane -> skipped"                        skipped         "$GOT"
 expect_calls "dead pane on the first try (stops at once)"  dead
 expect_has   "dead pane -> skip line names it"             "verdict: dead" "$LOG_OUT"
+expect_lacks "dead pane -> skip line names no deadline"    "wait deadline" "$LOG_OUT"
 run_case "SESSION_GONE"
 expect_eq    "session gone -> skipped"                     skipped         "$GOT"
 expect_calls "session gone on the first try (stops at once)" gone
 expect_has   "session gone -> skip line names it"          "verdict: gone" "$LOG_OUT"
+expect_lacks "session gone -> skip line names no deadline" "wait deadline" "$LOG_OUT"
 run_case "$BUSY" "PANE_DEAD"
-expect_calls "busy, then the pane dies (stops on the next try)" try s0 dead
+expect_calls "busy, then the pane dies (stops on the next try)" try s9 dead
 run_case "$TRUST_CURSOR_ON_YES" "PANE_DEAD"
-expect_calls "dialog answered, then the pane dies (no /rename)" try $ENTER s0 dead
+expect_calls "dialog answered, then the pane dies (no /rename)" try $ENTER s9 dead
 
 # (c) never ready -> skipped with one log line, nothing typed, bounded. The
 # failures log is shared (earlier lines of the same launch live there): the
@@ -412,11 +497,12 @@ expect_calls "dialog answered, then the pane dies (no /rename)" try $ENTER s0 de
 SEED='earlier launch line (SEEDLINE)'
 LOG_SEED="$SEED" TRIES=3 run_case "$BUSY"
 expect_eq    "never ready -> skipped"                      skipped         "$GOT"
-expect_calls "never ready, bounded to TRIES"               3x try s0 /
+expect_calls "never ready, bounded to TRIES"               3x try s9 /
 expect_eq    "never ready -> exactly one log line"         1               "$(printf '%s\n' "$LOG_OUT" | grep -c 'RENAMEREADY1010')"
 expect_eq    "never ready -> earlier log line kept, skip line appended after it" "$SEED|RENAMEREADY1010|2" \
   "$(printf '%s\n' "$LOG_OUT" | sed -n 1p)|$(printf '%s\n' "$LOG_OUT" | sed -n 2p | grep -o RENAMEREADY1010)|$(printf '%s\n' "$LOG_OUT" | grep -c .)"
 expect_has   "never ready -> log names the input state"    "input: busy"   "$LOG_OUT"
+expect_lacks "never ready -> skip line names no deadline (tries ran out)" "wait deadline" "$LOG_OUT"
 
 # the banner alone is not readiness when the probe can measure: only an empty
 # input line is (text in the box would be submitted with /rename appended)
@@ -430,7 +516,7 @@ $BUSY|busy" \
   label="${c%%|*}"; rest="${c#*|}"; frame="${rest%|*}"; state="${rest##*|}"
   TRIES=3 run_case "$frame"
   expect_eq    "$label -> skipped"                         skipped         "$GOT"
-  expect_calls "$label (no keys)"                          3x try s0 /
+  expect_calls "$label (no keys)"                          3x try s9 /
   expect_has   "$label -> skip line names input: $state"   "verdict: wait, input: $state" "$LOG_OUT"
 done
 
@@ -441,7 +527,7 @@ expect_calls "default limits, 10 tries x 2 s"              10x try s2 /
 
 # busy for a while, then ready -> sent once
 run_case "$BUSY" "$BUSY" "$READY"
-expect_calls "busy then ready (one /rename)"               try s0 try s0 try $RENAME
+expect_calls "busy then ready (one /rename)"               try s9 try s9 try $RENAME
 
 # probe cannot measure (no pane-state module): pre-fix banner signal is kept
 PANE_JS=/nonexistent/pane-state.js run_case "$BANNER_ONLY"
@@ -449,10 +535,230 @@ expect_eq    "unverifiable + banner -> sent"               sent            "$GOT
 expect_calls "unverifiable + banner"                       try $RENAME
 PANE_JS=/nonexistent/pane-state.js run_case "$BUSY"
 expect_eq    "unverifiable, no banner -> skipped"          skipped         "$GOT"
-expect_calls "unverifiable, no banner (no keys)"           4x try s0 /
+expect_calls "unverifiable, no banner (no keys)"           4x try s9 /
 PANE_JS=/nonexistent/pane-state.js run_case "$TRUST_CURSOR_ON_YES
 $BANNER"
-expect_calls "unverifiable + banner + dialog (answered, no /rename)" 4x try $ENTER s0 /
+expect_calls "unverifiable + banner + dialog (answered, no /rename)" 4x try $ENTER s9 /
+
+# --- per-call probe bound (probe_pane_input_state_bounded) ---------------------
+# A probe stub wrapping the normal one: HANG_PROBE in the frame makes it spin
+# forever (and it ignores SIGTERM, so only a hard kill ends it), SLOW_PROBE makes
+# it answer after 1.2 s. Its path is unique, so a surviving node process is
+# found by its argv.
+HANG_JS="$TMPD/probe-hang-stub.js"
+cat > "$HANG_JS" <<JS
+const base = require('$STUB_JS')
+process.on('SIGTERM', () => {})
+module.exports = Object.assign({}, base, {
+  stripAllAnsi: (s) => {
+    if (s.includes('HANG_PROBE')) for (;;) {}
+    if (s.includes('SLOW_PROBE')) { const t = Date.now(); while (Date.now() - t < 1200) {} }
+    return base.stripAllAnsi(s)
+  },
+})
+JS
+# survivors: node processes still running the hang stub (waits up to 1 s for
+# the killed ones to leave the process table)
+survivors() {
+  local i=0 out
+  while [ "$i" -lt 10 ]; do
+    out="$(/usr/bin/pgrep -f "$HANG_JS" 2>/dev/null || true)"
+    [ -z "$out" ] && break
+    /bin/sleep 0.1; i=$((i + 1))
+  done
+  printf '%s' "$out" | grep -c . || true
+}
+# expect_within <label> <min ms> <max ms>: ELAPSED_MS of the last case.
+expect_within() {
+  if [ "$ELAPSED_MS" -ge "$2" ] && [ "$ELAPSED_MS" -le "$3" ]; then pass "$1 (${ELAPSED_MS} ms)"
+  else fail "$1" "$2..$3 ms" "${ELAPSED_MS} ms"; fi
+}
+# no_keys <label>: not a single send-keys in the call log (used where the
+# number of tries depends on the wall clock, so the exact transcript cannot be
+# pinned).
+no_keys() { expect_eq "$1 -> no keys at all" 0 "$(printf '%s\n' "$CALLS_OUT" | grep -c 'send-keys' || true)"; }
+# bounds_ok <label>: every probe call got min(per-call max, time left), read
+# from $BOUNDS, and there was at least one call.
+bounds_ok() {
+  expect_eq "$1 -> each probe bound is min(per-call max, time left)" ok \
+    "$(awk 'NF < 3 {bad = bad " [" $0 "]"; next}
+            {want = ($3 < $2) ? $3 : $2; n++; if ($1 != want) bad = bad " [" $0 "]"}
+            END {print (n > 0 && bad == "") ? "ok" : "calls=" n bad}' "$TMPD/bounds")"
+}
+# bounds_col <n>: column n of $BOUNDS, space-separated.
+bounds_col() { awk -v c="$1" '{printf "%s%s", (NR > 1 ? " " : ""), $c}' "$TMPD/bounds"; }
+# The limits themselves, read straight from rename_wait_limits: the defaults,
+# the deadline formula TRIES x (SLEEP rounded up + 1), base 10 for leading
+# zeros, and the malformed-value fallbacks.
+# limits_of <tries> <sleep> <probe timeout>: "tries sleep unit pb_max deadline"
+# ("-" = leave that variable unset).
+limits_of() {
+  env -u CHANNELS_RENAME_READY_TRIES -u CHANNELS_RENAME_READY_SLEEP -u CHANNELS_RENAME_PROBE_TIMEOUT \
+  bash -c '. "$1"
+    [ "$2" = - ] || export CHANNELS_RENAME_READY_TRIES="$2"
+    [ "$3" = - ] || export CHANNELS_RENAME_READY_SLEEP="$3"
+    [ "$4" = - ] || export CHANNELS_RENAME_PROBE_TIMEOUT="$4"
+    rename_wait_limits; echo "$_rr_tries $_rr_sleep $_rr_unit $_rr_pb_max $_rr_deadline"' \
+    _ "$LIB" "$1" "$2" "$3" 2>&1
+}
+for c in "defaults (30 s deadline)|- - -|10 2 2 2 30" \
+         "TRIES=08 is decimal 8|08 - -|8 2 2 2 24" \
+         "TRIES=010 is decimal 10|010 - -|10 2 2 2 30" \
+         "TRIES=abc falls back to 10|abc - -|10 2 2 2 30" \
+         "SLEEP=1.5 rounds up to 2 in the deadline|- 1.5 -|10 1.5 2 2 30" \
+         "SLEEP=1.5 TRIES=2 -> deadline 6|2 1.5 -|2 1.5 2 2 6" \
+         "SLEEP=08 is decimal 8|1 08 -|1 08 8 2 9" \
+         "SLEEP=0.1m is malformed -> 2|3 0.1m -|3 2 2 2 9" \
+         "SLEEP=1e1 is malformed -> 2|3 1e1 -|3 2 2 2 9" \
+         "SLEEP=' 2' is malformed -> 2|3 ' 2' -|3 2 2 2 9" \
+         "SLEEP=0 -> deadline TRIES x 1|4 0 -|4 0 0 2 4" \
+         "SLEEP=.5 is malformed -> 2|3 .5 -|3 2 2 2 9" \
+         "SLEEP=5. is malformed -> 2|3 5. -|3 2 2 2 9" \
+         "SLEEP=1.2.3 is malformed -> 2|3 1.2.3 -|3 2 2 2 9" \
+         "SLEEP=2.0 is not rounded up|3 2.0 -|3 2.0 2 2 9" \
+         "SLEEP=1.05 rounds up to 2|3 1.05 -|3 1.05 2 2 9" \
+         "PROBE_TIMEOUT=0 is malformed -> 2|- - 0|10 2 2 2 30" \
+         "PROBE_TIMEOUT=08 is decimal 8|- - 08|10 2 2 8 30" \
+         "PROBE_TIMEOUT=abc falls back to 2|- - abc|10 2 2 2 30"; do
+  label="${c%%|*}"; rest="${c#*|}"; args="${rest%|*}"; want="${rest##*|}"
+  eval "set -- $args"
+  expect_eq "limits: $label" "$want" "$(limits_of "$1" "$2" "$3")"
+done
+
+# Wall-clock cases. The shell clock has whole-second resolution, so the wait
+# may end up to 1 s after the deadline; the upper limits allow that plus 1 s
+# for node start-ups. The fake sleep returns at once, so these cases spend
+# their time in the probes.
+
+# an ordinary not-ready wait keeps every try and never meets the deadline:
+# real 0.1 s sleeps, fast probe, TRIES=3 -> 3 tries, deadline 3 x (1 + 1) =
+# 6 s untouched (each try may take up to about 1.9 s before it would bite)
+ALIGN=1 REAL_SLEEP=1 TRIES=3 SLEEP=0.1 GUARD=15 run_case "$BUSY"
+expect_calls "real sleeps, fast probe: all 3 tries"        3x try s0.1 /
+expect_lacks "real sleeps, fast probe -> skip line names no deadline" "wait deadline" "$LOG_OUT"
+
+# all-hang, TRIES=3, SLEEP=0 -> deadline 3 s. Per-call bound 2 s alone would
+# allow 3 x 2 = 6 s; the deadline cuts the later probe(s) mid-try. Skipped, no
+# key, the skip line names the timeout and the deadline, no surviving probe.
+TIMED=1 PANE_JS="$HANG_JS" PROBE_TIMEOUT=2 TRIES=3 SLEEP=0 GUARD=15 run_case "HANG_PROBE
+$BUSY"
+expect_eq    "hung probe, deadline 3 s -> skipped"         skipped         "$GOT"
+no_keys      "hung probe, deadline 3 s"
+expect_has   "hung probe, deadline 3 s -> skip line names the timeout" "verdict: wait, input: timeout" "$LOG_OUT"
+expect_has   "hung probe, deadline 3 s -> skip line names the deadline" "wait deadline 3 s reached" "$LOG_OUT"
+expect_eq    "hung probe, deadline 3 s -> exactly one log line" 1          "$(printf '%s\n' "$LOG_OUT" | grep -c 'RENAMEREADY1010')"
+expect_within "hung probe, deadline 3 s -> ends within the deadline (+ slack)" 2000 5000
+expect_eq    "hung probe, deadline 3 s -> no surviving probe process" 0    "$(survivors)"
+
+# the per-call bound far above the deadline: the probe gets only the time
+# left (3 s, or 2 s when the clock ticked during the try's tmux calls), never
+# its own 10 s; checked against the wait's own reading of the time left.
+ALIGN=1 PANE_JS="$HANG_JS" PROBE_TIMEOUT=10 TRIES=3 SLEEP=0 GUARD=20 run_case "HANG_PROBE
+$BUSY"
+expect_eq    "per-call 10 s, deadline 3 s -> skipped"      skipped         "$GOT"
+expect_calls "per-call 10 s, deadline 3 s (one try)"       try
+expect_has   "per-call 10 s, deadline 3 s -> skip line names the deadline" "wait deadline 3 s reached" "$LOG_OUT"
+bounds_ok    "per-call 10 s, deadline 3 s"
+expect_eq    "per-call 10 s, deadline 3 s -> one probe, cut below its 10 s" "yes" \
+  "$(awk 'END {print (NR == 1 && $1 < 10 && $1 >= 1) ? "yes" : "no: " NR " calls, last [" $0 "]"}' "$TMPD/bounds")"
+expect_eq    "per-call 10 s, deadline 3 s -> no surviving probe process" 0 "$(survivors)"
+
+# a sleep longer than the time left is cut to exactly the time left: TRIES=1,
+# SLEEP=5, per-call 3 s -> deadline 6 s; after the 3 s hung probe 1-3 s are
+# left (fewer on a slow runner), so the one sleep must equal the wait's own
+# time left, below 5 (a cut one second long or no cut fails).
+PANE_JS="$HANG_JS" PROBE_TIMEOUT=3 TRIES=1 SLEEP=5 GUARD=15 run_case "HANG_PROBE
+$BUSY"
+expect_eq    "sleep cut to exactly the time left" "yes" \
+  "$(awk 'END {print (NR == 1 && $3 > $2 && $1 == $2 && $1 >= 1) ? "yes" : "no: " NR " sleeps, last [" $0 "]"}' "$TMPD/sleeps")"
+expect_calls "sleep cut, one try and one sleep"            try "s$(awk '{print $1}' "$TMPD/sleeps")"
+expect_eq    "sleep cut -> no surviving probe process"     0               "$(survivors)"
+
+# a hung probe is killed after exactly its bound: per-call 1 s, deadline far
+# away (TRIES=2, SLEEP=9). Each probe's own wall time (from the wrapper, so
+# the tmux calls around it do not count; it does include the -e capture the
+# probe reads, about one fake tmux call) must be 1 s and well under 2 s.
+PROBE_MS=1 PANE_JS="$HANG_JS" PROBE_TIMEOUT=1 TRIES=2 GUARD=15 run_case "HANG_PROBE
+$BUSY"
+bounds_ok    "hung probe, bound 1 s"
+expect_eq    "hung probe, bound 1 s -> each probe killed after 1000..1700 ms" "yes" \
+  "$(awk '{n++; if ($4 < 1000 || $4 > 1700) bad = bad " " $4} END {print (n == 2 && bad == "") ? "yes" : "no: " n " calls," bad}' "$TMPD/bounds")"
+expect_eq    "hung probe, bound 1 s -> no surviving probe process" 0     "$(survivors)"
+
+# the last try ends past the deadline: the try limit ended the wait, so the
+# skip line names no deadline. TRIES=1, SLEEP=1, per-call 2 s -> deadline 2 s;
+# the one hung probe ends at 2 s.
+ALIGN=1 PANE_JS="$HANG_JS" PROBE_TIMEOUT=2 TRIES=1 SLEEP=1 GUARD=15 run_case "HANG_PROBE
+$BUSY"
+expect_calls "last try ends past the deadline (one try)"   try
+expect_has   "last try past the deadline -> skip line names the timeout" "input: timeout" "$LOG_OUT"
+expect_lacks "last try past the deadline -> skip line names no deadline" "wait deadline" "$LOG_OUT"
+
+# the deadline found at the top of a try, after a real sleep used up the time
+# left: TRIES=2, SLEEP=2, per-call 4 s -> deadline 6 s. The 4 s probe leaves
+# 1-2 s, the (possibly cut) real sleep uses them, and the next try stops before
+# any tmux call: the transcript ends with that one sleep.
+ALIGN=1 REAL_SLEEP=1 PANE_JS="$HANG_JS" PROBE_TIMEOUT=4 TRIES=2 SLEEP=2 GUARD=20 run_case "HANG_PROBE
+$BUSY"
+expect_calls "deadline at the top of the next try"         try "s$(awk 'NR == 1 {print $1}' "$TMPD/sleeps")"
+expect_eq    "deadline at the top of the next try -> one sleep, cut to the time left if shorter" "yes" \
+  "$(awk 'END {want = ($3 > $2) ? $2 : 2; print (NR == 1 && $1 == want) ? "yes" : "no: " NR " sleeps, last [" $0 "]"}' "$TMPD/sleeps")"
+expect_has   "deadline at the top of the next try -> skip line names it" "input: timeout; wait deadline 6 s reached" "$LOG_OUT"
+
+# the line names the deadline, not the elapsed time: a dialog answered after a
+# probe cut to the deadline (its real sleep 1) ends the try 1 s past it.
+# TRIES=2, SLEEP=0, per-call 10 s -> deadline 2 s; ends at 3 s.
+ALIGN=1 REAL_SLEEP=1 PANE_JS="$HANG_JS" PROBE_TIMEOUT=10 TRIES=2 SLEEP=0 GUARD=15 run_case "$TRUST_CURSOR_ON_NO
+HANG_PROBE"
+expect_calls "dialog answered after a cut probe (one try)" try $DOWN_ENTER
+expect_has   "dialog after a cut probe -> skip line names the 2 s deadline" "verdict: dialog, input: timeout; wait deadline 2 s reached" "$LOG_OUT"
+
+# a timeout is not "unverifiable": the banner fallback must not make it ready
+PANE_JS="$HANG_JS" PROBE_TIMEOUT=1 TRIES=2 SLEEP=1 GUARD=15 run_case "HANG_PROBE
+$BANNER_ONLY"
+expect_eq    "hung probe + banner -> skipped (no fallback)" skipped        "$GOT"
+no_keys      "hung probe + banner"
+expect_has   "hung probe + banner -> skip line names the timeout" "input: timeout" "$LOG_OUT"
+expect_eq    "hung probe + banner -> no surviving probe process" 0         "$(survivors)"
+
+# one hung try, then a ready pane, inside the deadline (8 s) -> exactly one
+# /rename (after the 1 s hang several seconds are left, so the full 1 s sleep
+# runs)
+PANE_JS="$HANG_JS" PROBE_TIMEOUT=1 TRIES=4 SLEEP=1 GUARD=15 run_case "HANG_PROBE
+$BANNER" "$READY"
+expect_eq    "hung once, then ready -> sent"               sent            "$GOT"
+expect_calls "hung once, then ready (one /rename)"         try s1 try $RENAME
+expect_eq    "hung once, then ready -> no surviving probe process" 0       "$(survivors)"
+
+# the default per-call bound (2 s, inside a 10 s deadline), and a malformed
+# override falling back to it: one timed-out try, then ready
+for pt in "" abc; do
+  PANE_JS="$HANG_JS" PROBE_TIMEOUT="$pt" TRIES=5 SLEEP=1 GUARD=15 run_case "HANG_PROBE
+$BANNER" "$READY"
+  expect_calls "per-call bound '${pt:-default}', hung once then ready (one /rename)" try s1 try $RENAME
+  expect_eq    "per-call bound '${pt:-default}' -> 2 s for each probe" "2 2" "$(bounds_col 1)"
+  expect_eq    "per-call bound '${pt:-default}' -> no surviving probe process" 0 "$(survivors)"
+  expect_eq    "per-call bound '${pt:-default}' -> probe scratch dir removed" "" "$(ls -A "$TMPD/probe-tmp")"
+done
+
+# slow but inside the bound -> its answer counts
+TIMED=1 PANE_JS="$HANG_JS" PROBE_TIMEOUT=2 GUARD=15 run_case "SLOW_PROBE
+$READY"
+expect_eq    "slow probe in bound -> sent"                 sent            "$GOT"
+expect_calls "slow probe in bound (one /rename)"           try $RENAME
+expect_within "slow probe in bound -> waited for the answer" 1200 4000
+
+# positive control with the bound set: a normal probe is unaffected, answers
+# without waiting out the bound, and its watchdog (an uncommon 7 s sleep here,
+# inside a 9 s deadline) does not outlive the call; the probe's scratch dir is
+# removed
+TIMED=1 PROBE_TIMEOUT=7 TRIES=9 SLEEP=1 run_case "$READY"
+expect_eq    "normal probe, bound set -> sent"             sent            "$GOT"
+expect_calls "normal probe, bound set (one /rename)"       try $RENAME
+expect_within "normal probe, bound set -> does not wait out the bound" 0 3000
+expect_eq    "normal probe -> no surviving watchdog sleep" 0 \
+  "$( (/usr/bin/pgrep -f '^/bin/sleep 7$' 2>/dev/null || true) | grep -c . || true)"
+expect_eq    "normal probe -> probe scratch dir removed"   "" "$(ls -A "$TMPD/probe-tmp")"
 
 echo ""
 echo "passed: $PASS  failed: $FAIL"
