@@ -10,6 +10,9 @@ import { tmpdir } from 'node:os'
 const tmpRoot = mkdtempSync(join(tmpdir(), 'marveen-autonomy-test-'))
 
 vi.mock('../config.js', () => ({
+  // agent-scaffold imports settings-store (MCPOROKLES923), which derives a path from
+  // STORE_DIR at import time. A never-created dir: nothing here reads the store.
+  STORE_DIR: '/nonexistent/claudeclaw-test-store',
   PROJECT_ROOT: tmpRoot,
   OWNER_NAME: 'TestOwner',
   MAIN_AGENT_ID: 'agent-a',
@@ -18,6 +21,10 @@ vi.mock('../config.js', () => ({
   WEB_PORT: 3420,
   OWNER_DRIVE_FOLDER: '',
   DASHBOARD_PUBLIC_URL: '',
+  // Empty = the resolver falls through to the public URL, then to
+  // localhost -- i.e. exactly the behaviour these tests asserted
+  // before AGENT_API_ORIGIN existed.
+  AGENT_API_ORIGIN: '',
   APP_TZ: 'Europe/Budapest',
 }))
 

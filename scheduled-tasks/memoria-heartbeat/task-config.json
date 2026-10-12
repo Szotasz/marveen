@@ -4,5 +4,6 @@
   "enabled": true,
   "type": "heartbeat",
   "skipIfBusy": true,
+  "preCheck": "{{PROJECT_ROOT}}/scripts/prechecks/memoria-heartbeat-precheck.sh",
   "createdAt": 1775669364
 }

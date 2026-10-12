@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { buildWorkerPrompt, decidePoll, configDirKeychainService } from '../web/agent-worker.js'
+import { readFileSync } from 'node:fs'
+import { join, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { buildWorkerPrompt, decidePoll, configDirKeychainService, workerHomeFor, workerStartAllowed, workerModelSource } from '../web/agent-worker.js'
 
 // Pure-logic tests for the interactive-tmux worker that backs runAgent on the
 // subscription (jun.15 migration). The live-session orchestration is exercised
@@ -26,6 +29,18 @@ describe('buildWorkerPrompt', () => {
   it('does not inject any persona / project voice', () => {
     const p = buildWorkerPrompt('TASK', out, done)
     expect(p).not.toMatch(/Marveen|Szabolcs|asszisztens/i)
+  })
+})
+
+// APRO920 (c)(2): the worker launch log line's source label -- which
+// config-chain element actually supplied --model.
+describe('workerModelSource', () => {
+  it('names the env var when MARVEEN_WORKER_MODEL is set', () => {
+    expect(workerModelSource({ MARVEEN_WORKER_MODEL: 'claude-opus-5' } as NodeJS.ProcessEnv)).toBe('env:MARVEEN_WORKER_MODEL')
+  })
+
+  it('falls back to "default" (the .env-backed DEFAULT_AGENT_MODEL) when unset', () => {
+    expect(workerModelSource({} as NodeJS.ProcessEnv)).toBe('default')
   })
 })
 
@@ -72,5 +87,113 @@ describe('configDirKeychainService', () => {
     const b = configDirKeychainService('/tmp/some-other-config')
     expect(a).not.toBe(b)
     expect(b.startsWith('Claude Code-credentials-')).toBe(true)
+  })
+})
+
+describe('workerHomeFor (WORKERHOME1: worker home derives from MAIN_AGENT_ID)', () => {
+  it('default install keeps the historical paths -- zero migration, unchanged Keychain hash', () => {
+    expect(workerHomeFor('marveen', 'slow').endsWith('/.marveen-worker')).toBe(true)
+    expect(workerHomeFor('marveen', 'fast').endsWith('/.marveen-worker-fast')).toBe(true)
+  })
+
+  it('a non-default id derives its own isolated dirs (sandbox/renamed install)', () => {
+    expect(workerHomeFor('jarvis', 'slow').endsWith('/.jarvis-worker')).toBe(true)
+    expect(workerHomeFor('jarvis', 'fast').endsWith('/.jarvis-worker-fast')).toBe(true)
+  })
+
+  it('never collides with the default install dir for a different id', () => {
+    expect(workerHomeFor('jarvis', 'slow')).not.toBe(workerHomeFor('marveen', 'slow'))
+    expect(workerHomeFor('jarvis', 'fast')).not.toBe(workerHomeFor('marveen', 'fast'))
+  })
+
+  it('slow and fast variants of the same id never share a home', () => {
+    expect(workerHomeFor('marveen', 'slow')).not.toBe(workerHomeFor('marveen', 'fast'))
+  })
+})
+
+describe('workerStartAllowed (WORKERHOME1: WEB_ONLY must suppress every worker start)', () => {
+  it('blocks in WEB_ONLY staging', () => {
+    expect(workerStartAllowed({ WEB_ONLY: 'true' })).toBe(false)
+  })
+
+  it('allows on a normal install (unset or explicit false)', () => {
+    expect(workerStartAllowed({})).toBe(true)
+    expect(workerStartAllowed({ WEB_ONLY: 'false' })).toBe(true)
+    expect(workerStartAllowed({ WEB_ONLY: '' })).toBe(true)
+  })
+
+  // String-contract wiring guard (house idiom: the pure predicate alone cannot
+  // prove the choke points consult it). Every function that creates, kills or
+  // configures a live worker session must check the gate: the lazy-start path
+  // (startWorkerSessionFor covers ensureWorkerCwd + tmux new-session), the
+  // readiness poll (ensureWorkerReady would otherwise spin 90s then page the
+  // LIVE channel via alertWorkerStuck from a staging instance) and the restart
+  // path (kill-session against a live worker). This is exactly how the
+  // 2026-07-28 sandbox boot wrote into the live worker config dir.
+  it('the three session-lifecycle choke points are wired to the gate', () => {
+    const __dirname = dirname(fileURLToPath(import.meta.url))
+    const src = readFileSync(join(__dirname, '../web/agent-worker.ts'), 'utf-8')
+    const gated = (fnName: string) => {
+      const start = src.indexOf(`function ${fnName}(`)
+      expect(start, `${fnName} not found`).toBeGreaterThan(-1)
+      const body = src.slice(start, start + 700)
+      return body.includes('workerStartAllowed()')
+    }
+    expect(gated('startWorkerSessionFor')).toBe(true)
+    expect(gated('ensureWorkerReady')).toBe(true)
+    expect(gated('restartWorkerSession')).toBe(true)
+  })
+
+  // The worker launch line must invoke claude by RESOLVED path, never by bare
+  // name: `bash -lc` login shells on stock Debian/Ubuntu roots lack
+  // ~/.local/bin (the native installer target), which killed the worker within
+  // seconds of every boot on such installs (vps47 cold-start probe, WORKERHOME1).
+  it('the tmux launch line resolves the claude binary instead of relying on login-shell PATH', () => {
+    const __dirname = dirname(fileURLToPath(import.meta.url))
+    const src = readFileSync(join(__dirname, '../web/agent-worker.ts'), 'utf-8')
+    expect(src).toContain("tryResolveFromPath('claude')")
+    expect(src).not.toMatch(/`claude --dangerously-skip-permissions/)
+  })
+})
+
+describe('worker custom-provider inheritance (subscription-less fleet support)', () => {
+  // String-contract guard: the source must wire the custom provider path so
+  // that subscription-less fleets (custom LiteLLM / OpenRouter endpoint) get
+  // working background workers without extra config.
+
+  it('buildCustomProviderLaunchEnv is imported from agent-process', () => {
+    const __dirname = dirname(fileURLToPath(import.meta.url))
+    const src = readFileSync(join(__dirname, '../web/agent-worker.ts'), 'utf-8')
+    expect(src).toContain('buildCustomProviderLaunchEnv')
+    expect(src).toContain('stampCustomApiKeyApproval')
+  })
+
+  it('buildCustomProviderLaunchEnv is only called when no MARVEEN_WORKER_MODEL override is set', () => {
+    const __dirname = dirname(fileURLToPath(import.meta.url))
+    const src = readFileSync(join(__dirname, '../web/agent-worker.ts'), 'utf-8')
+    // The call must be guarded by a WORKER_MODEL_OVERRIDE falsy check so an
+    // explicit override skips the custom-provider lookup entirely.
+    expect(src).toMatch(/if\s*\(\s*!WORKER_MODEL_OVERRIDE\s*\)[\s\S]{1,500}buildCustomProviderLaunchEnv/)
+  })
+
+  it('launch string concatenates customEnvPrefix between config-dir export and cd', () => {
+    const __dirname = dirname(fileURLToPath(import.meta.url))
+    const src = readFileSync(join(__dirname, '../web/agent-worker.ts'), 'utf-8')
+    // The launch template must include customEnvPrefix in its concatenation chain.
+    expect(src).toContain('customEnvPrefix')
+    // Both the CLAUDE_CONFIG_DIR export and the cd must appear alongside it in
+    // the same launch-building block.
+    const launchBlock = src.slice(src.indexOf('const launch ='), src.indexOf('const launch =') + 600)
+    expect(launchBlock).toContain('CLAUDE_CONFIG_DIR')
+    expect(launchBlock).toContain('customEnvPrefix')
+    expect(launchBlock).toContain('ctx.home')
+  })
+
+  it('x-api-key path stamps .claude.json approval in the worker configDir', () => {
+    const __dirname = dirname(fileURLToPath(import.meta.url))
+    const src = readFileSync(join(__dirname, '../web/agent-worker.ts'), 'utf-8')
+    // stampCustomApiKeyApproval must be called with ctx.configDir in scope.
+    expect(src).toContain('stampCustomApiKeyApproval')
+    expect(src).toContain("ctx.configDir, '.claude.json'")
   })
 })

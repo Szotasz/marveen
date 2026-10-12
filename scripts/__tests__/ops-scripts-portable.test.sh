@@ -1,0 +1,179 @@
+#!/bin/bash
+# Portability contract for the operator-side ops scripts.
+# Run: bash scripts/__tests__/ops-scripts-portable.test.sh
+#
+# These four scripts were written against one install and carried its values in
+# the source: an absolute home path, one tmux session name, one chat id, one
+# GitHub slug. Anyone else cloning the repo got scripts that silently watched
+# the wrong things. The tests below pin the rule that replaced them -- every
+# install-specific value is resolved at runtime -- so the next edit cannot
+# quietly bake a local value back in.
+
+set -u
+
+PASS=0; FAIL=0
+TMPDIR_BASE="$(mktemp -d)"
+trap 'rm -rf "$TMPDIR_BASE"' EXIT
+pass() { PASS=$((PASS + 1)); echo "  PASS: $1"; }
+fail() { FAIL=$((FAIL + 1)); echo "  FAIL: $1"; }
+
+INSTALL_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
+SCRIPTS="
+scripts/limit-monitor.sh
+scripts/pre-modify-backup.sh
+scripts/github-pr-monitor.sh
+scripts/hooks/telegram-ack.py
+"
+
+# ---------------------------------------------------------------------------
+# tmux isolation -- cases (b) and (c) run the REAL limit-monitor.sh
+# ---------------------------------------------------------------------------
+# #1565 item 5, second call site. limit-monitor.sh runs `tmux list-sessions`
+# and then `tmux capture-pane` on EVERY session it finds (pane_text). Measured
+# from an agent's pane without this block: case (b)'s trace captured all six
+# live fleet panes, this suite's own pane among them. Case (b) happens to take
+# its verdict from the SESSION= trace line, so it did not flip -- but the suite
+# was reading live screens, and any case that looks at the monitor's alert
+# decision would inherit whatever was printed on them at that second.
+#
+# TMUX_TMPDIR ALONE DOES NOT ISOLATE: while $TMUX is set -- and it always is
+# when the suite runs inside an agent's pane -- tmux takes the socket from
+# $TMUX and ignores TMUX_TMPDIR entirely.
+unset TMUX TMUX_PANE
+export TMUX_TMPDIR="$TMPDIR_BASE/tmux"; mkdir -p "$TMUX_TMPDIR"
+# Prove it instead of trusting it. An error here is FINE (no server = no panes);
+# what must never happen is tmux answering with a session name.
+if tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -q .; then
+  echo "  FAIL: tmux isolation BROKEN: the cases can see live sessions:"
+  tmux list-sessions -F '#{session_name}' 2>/dev/null | sed 's/^/          /'
+  echo "        Cases (b) and (c) would read those screens instead of a clean server."
+  exit 1
+fi
+
+echo "ops-scripts portability tests"
+echo "============================="
+
+# ---------------------------------------------------------------------------
+# (a) No install-specific literals anywhere in the sources
+# ---------------------------------------------------------------------------
+echo ""
+echo "(a) No baked-in install values"
+# An absolute /home/<user> path, a bare numeric chat id assignment, or a
+# hardcoded owner/repo slug are the three shapes that broke portability.
+for rel in $SCRIPTS; do
+  f="$INSTALL_DIR/$rel"
+  [ -f "$f" ] || { fail "$rel exists"; continue; }
+  if grep -qE '/home/[a-z]+/' "$f"; then
+    fail "$rel: absolute /home path"
+  elif grep -qE '^[[:space:]]*(CHAT_ID|ALLOWED_CHAT_ID)=["'"'"']?[0-9]{6,}' "$f"; then
+    fail "$rel: hardcoded chat id"
+  elif grep -qE '^[[:space:]]*REPO=["'"'"'][A-Za-z0-9_-]+/[A-Za-z0-9_.-]+["'"'"']' "$f"; then
+    fail "$rel: hardcoded GitHub slug"
+  else
+    pass "$rel: no baked-in install values"
+  fi
+done
+
+# ---------------------------------------------------------------------------
+# (b) The session name follows a renamed install
+# ---------------------------------------------------------------------------
+# A rename changes MAIN_AGENT_ID, and the channels tmux session is named after
+# it. A monitor still grepping the old session name reads an empty pane forever
+# and reports "healthy" -- the worst failure mode for a guard.
+echo ""
+echo "(b) limit-monitor follows MAIN_AGENT_ID"
+CASE="$TMPDIR_BASE/rename"; mkdir -p "$CASE/scripts" "$CASE/store"
+cp "$INSTALL_DIR/scripts/limit-monitor.sh" "$CASE/scripts/"
+printf 'MAIN_AGENT_ID=renamedbot\nALLOWED_CHAT_ID=111222333\n' > "$CASE/.env"
+OUT="$(cd "$CASE" && bash -x scripts/limit-monitor.sh 2>&1 | grep -E "SESSION=|tmux capture-pane" | head -3)"
+case "$OUT" in
+  *renamedbot-channels*) pass "session resolves to renamedbot-channels" ;;
+  *) fail "session did not follow MAIN_AGENT_ID (got: ${OUT:-empty})" ;;
+esac
+
+# ---------------------------------------------------------------------------
+# (c) No owner chat -> stay silent, do not guess
+# ---------------------------------------------------------------------------
+# A fresh install has no ALLOWED_CHAT_ID yet. Alerting somewhere anyway would
+# mean sending this install's quota warnings to a stranger's chat.
+echo ""
+echo "(c) limit-monitor without ALLOWED_CHAT_ID"
+CASE="$TMPDIR_BASE/nochat"; mkdir -p "$CASE/scripts" "$CASE/store"
+cp "$INSTALL_DIR/scripts/limit-monitor.sh" "$CASE/scripts/"
+printf 'MAIN_AGENT_ID=somebot\n' > "$CASE/.env"
+(cd "$CASE" && bash scripts/limit-monitor.sh >/dev/null 2>&1)
+if grep -q "no ALLOWED_CHAT_ID" "$CASE/store/limit-monitor.log" 2>/dev/null; then
+  pass "exits with a logged reason instead of guessing a chat"
+else
+  fail "no explanatory log line for the missing chat id"
+fi
+
+# ---------------------------------------------------------------------------
+# (d) pre-modify-backup resolves its own repo root
+# ---------------------------------------------------------------------------
+# It used to hold one absolute path, so a second checkout backed up the FIRST
+# install's database while reporting success.
+echo ""
+echo "(d) pre-modify-backup uses its own location"
+CASE="$TMPDIR_BASE/backup"; mkdir -p "$CASE/scripts" "$CASE/store"
+cp "$INSTALL_DIR/scripts/pre-modify-backup.sh" "$CASE/scripts/"
+echo "sentinel" > "$CASE/store/.dashboard-token"
+(cd "$CASE" && bash scripts/pre-modify-backup.sh testlabel >/dev/null 2>&1)
+if find "$CASE/store/backups" -name '.dashboard-token' 2>/dev/null | grep -q .; then
+  pass "snapshot landed under its own store/, not another install's"
+else
+  fail "no snapshot in this checkout's store/backups"
+fi
+
+# ---------------------------------------------------------------------------
+# (e) No GNU-only command INVOKED in an ops script -- these run on macOS too
+# ---------------------------------------------------------------------------
+# This repo has learned the lesson twice in comments and still shipped a third
+# instance: limit-monitor.sh records that a bare `md5sum` returned an EMPTY hash
+# on macOS, github-pr-monitor.sh records that BSD grep has no -P and exited 2
+# with empty output -- and pre-modify-backup.sh then wrote every manifest line
+# with an empty checksum there, while reporting success. The shape is always the
+# same: the GNU tool is absent, the substitution yields EMPTY, and empty passes
+# for an answer. So the rule gets a gate instead of a third comment.
+#
+# What is flagged is an INVOCATION, matched at a command position (line start,
+# or after a pipe, `;`, `&&`, `||`, or `$(`). Naming the tool is not the defect:
+# a comment that warns about it and a `SHA=$(command -v sha256sum || ...)` probe
+# that resolves it are both the RIGHT shape, and a gate that could not tell them
+# from a call would have to be deleted the first time someone did this properly.
+echo ""
+echo "(e) No GNU-only command invoked (macOS has none of these)"
+GNU_INVOKED='(^|[|;&]|\$\()[[:space:]]*(sha256sum|md5sum|tac)\b|[[:space:]](readlink[[:space:]]+-f|stat[[:space:]]+-c|date[[:space:]]+-d|grep[[:space:]]+-P)[[:space:]]'
+for rel in $SCRIPTS; do
+  f="$INSTALL_DIR/$rel"
+  [ -f "$f" ] || { fail "$rel exists"; continue; }
+  hits="$(grep -nE "$GNU_INVOKED" "$f" | grep -vE '^[0-9]+:[[:space:]]*#' || true)"
+  if [ -n "$hits" ]; then
+    fail "$rel: GNU-only command invoked -- $(printf '%s' "$hits" | head -1)"
+  else
+    pass "$rel: no GNU-only command invoked"
+  fi
+done
+
+# POSITIVE CONTROL on the gate itself, both directions. A pattern that matched
+# nothing would print the same all-green block as a clean tree; a pattern that
+# matched everything would make the sanctioned probe unwritable.
+PROBE_BAD="$TMPDIR_BASE/gnu-bad.sh"
+printf '#!/bin/bash\nsum=$(sha256sum "$1" | cut -d" " -f1)\n' > "$PROBE_BAD"
+if grep -nE "$GNU_INVOKED" "$PROBE_BAD" | grep -vE '^[0-9]+:[[:space:]]*#' | grep -q .; then
+  pass "the gate catches a real GNU-only call (positive control)"
+else
+  fail "the gate catches a real GNU-only call" "matched nothing in a file that calls sha256sum"
+fi
+PROBE_OK="$TMPDIR_BASE/gnu-ok.sh"
+printf '#!/bin/bash\n# sha256sum is GNU-only\nif command -v sha256sum >/dev/null; then SHA_CMD="sha256sum"; else SHA_CMD="shasum -a 256"; fi\n' > "$PROBE_OK"
+if grep -nE "$GNU_INVOKED" "$PROBE_OK" | grep -vE '^[0-9]+:[[:space:]]*#' | grep -q .; then
+  fail "the gate leaves the sanctioned probe alone" "a command -v probe and its assignment were flagged"
+else
+  pass "the gate leaves the sanctioned probe alone (negative control)"
+fi
+
+echo ""
+echo "======================="
+echo "PASS: $PASS  FAIL: $FAIL"
+[ "$FAIL" -eq 0 ]

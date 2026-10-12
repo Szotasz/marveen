@@ -1,14 +1,16 @@
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
-import { PROJECT_ROOT, MAIN_AGENT_ID, BOT_NAME } from '../../config.js'
+import { PROJECT_ROOT, MAIN_AGENT_ID, currentBotName } from '../../config.js'
 import { getDb, countTaskRunsBetween } from '../../db.js'
 import {
   agentDir, listAgentNames, readAgentDisplayName,
 } from '../agent-config.js'
 import { readAgentTeam } from '../agent-team.js'
 import { isAgentRunning } from '../agent-process.js'
-import { json } from '../http-helpers.js'
+import { json, jsonMaybeGzip } from '../http-helpers.js'
+import { readQuotaSnapshot, DEFAULT_MAX_AGE_SEC, readFableSnapshot, DEFAULT_FABLE_MAX_AGE_SEC, readModQuotaSnapshot, chooseQuotaSnapshot, type QuotaSnapshot } from '../quota.js'
+import { STATE_OBSERVER_STATE_DIR } from '../state-observer.js'
 import type { RouteContext } from './types.js'
 
 // Count "real" user turns (operator prompts, Telegram messages) in every
@@ -57,8 +59,23 @@ function countUserTurns(fromMs: number, toMs: number = Number.POSITIVE_INFINITY)
   return total
 }
 
+// The fleet's remaining quota, as the overview strip shows it. Same file and
+// the same staleness threshold the quota monitor uses, so the strip and the
+// alert can never disagree about what the fleet has left. QUOTAMOD1005: on a
+// setup-token install the statusLine block never comes; the
+// agent-state-observer mod's readings do. The fresher of the two wins, and the
+// snapshot says which one it is. Shared with the operator status
+// (DASHOPERATOR1005), so the two surfaces cannot disagree either.
+export function readFleetQuota(nowSec: number): QuotaSnapshot {
+  const maxAgeSec = Number(process.env.QUOTA_MAX_AGE_SEC) || DEFAULT_MAX_AGE_SEC
+  return chooseQuotaSnapshot(
+    readQuotaSnapshot(join(PROJECT_ROOT, 'store', '.claude-rate-limits.json'), nowSec, maxAgeSec),
+    readModQuotaSnapshot(STATE_OBSERVER_STATE_DIR, nowSec, maxAgeSec),
+  )
+}
+
 export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
-  const { res, path, method } = ctx
+  const { req, res, path, method } = ctx
 
   if (path === '/api/overview' && method === 'GET') {
     const subAgents = listAgentNames()
@@ -126,7 +143,7 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
     ].some(existsSync)
     agentsForTeam.push({
       id: MAIN_AGENT_ID,
-      label: BOT_NAME,
+      label: currentBotName(),
       role: 'main',
       running: true,
       hasAvatar: mainHasAvatar,
@@ -143,7 +160,17 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
         avatarUrl: `/api/agents/${encodeURIComponent(a)}/avatar`,
       })
     }
-    json(res, {
+    const quota = readFleetQuota(Math.floor(Date.now() / 1000))
+    // Separate source (scripts/usage-collect.py), separate freshness rule --
+    // see src/web/quota.ts for why this isn't folded into readQuotaSnapshot.
+    const fableMaxAgeSec = Number(process.env.QUOTA_FABLE_MAX_AGE_SEC) || DEFAULT_FABLE_MAX_AGE_SEC
+    const quotaFable = readFableSnapshot(
+      join(PROJECT_ROOT, 'store', 'usage-latest.json'),
+      Math.floor(Date.now() / 1000),
+      fableMaxAgeSec,
+    )
+
+    jsonMaybeGzip(req, res, {
       agents: { total, running },
       tasksToday,
       tasksYesterday,
@@ -151,6 +178,8 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
       skills: { count: skillCount, today: skillsToday },
       team: agentsForTeam,
       activity: activity.slice(0, 8),
+      quota,
+      quotaFable,
     })
     return true
   }

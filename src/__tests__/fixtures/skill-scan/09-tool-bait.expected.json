@@ -1,0 +1,1 @@
+{"scanner": {"name": "mio-scan", "version": "1.0.0", "rulepack": "2026-08-24"}, "findings": [{"rule": "tool-invocation-bait", "category": "injection", "match": "use the bash tool", "line": 1, "span": [7, 24]}, {"rule": "tool-invocation-bait", "category": "injection", "match": "invoke the WebFetch tool", "line": 1, "span": [41, 65]}]}

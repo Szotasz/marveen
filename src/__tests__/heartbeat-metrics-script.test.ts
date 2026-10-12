@@ -1,0 +1,322 @@
+// Conformance tests for scripts/heartbeat-metrics.sh -- the heartbeat
+// round's single callable instrument (HBMEMBLIND819, third contract).
+//
+// Two properties are load-bearing and each gets both a positive and a
+// negative control:
+//   1. Fail-closed: a missing/null field NEVER prints as 0 -- it prints an
+//      ERROR line and the exit code is non-zero. (The 2026-08-24 22:00
+//      failure was exactly a missing field surfacing as a silent 0.)
+//   2. Path binding: the scaffold prose references this script by path, so
+//      a rename/move must fail HERE, in CI, not at 22:00 on the host.
+//      (The prose side is fail-safe too -- sentinel rule -- but that only
+//      makes the breakage visible, not impossible.)
+
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest'
+import { execFile, spawnSync } from 'node:child_process'
+import { createServer, type Server } from 'node:http'
+import { accessSync, constants, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { AddressInfo } from 'node:net'
+
+const REPO_ROOT = join(__dirname, '..', '..')
+const SCRIPT = join(REPO_ROOT, 'scripts', 'heartbeat-metrics.sh')
+const TOKEN = 'test-token-abc'
+
+// Mutable fixtures the server serves; individual tests reshape them.
+let summaryBody: unknown
+let schedulesBody: unknown
+// Calendar default: measured-empty. Tests that probe the calendar reshape it;
+// the beforeEach below restores the default so pollution cannot leak forward.
+let calendarBody: unknown = { ok: true, events: [] }
+beforeEach(() => { calendarBody = { ok: true, events: [] } })
+let server: Server
+let origin: string
+let storeDir: string
+
+const FULL_SUMMARY = () => ({
+  counts: {
+    urgent: 2,
+    in_progress: 3,
+    waiting: 280,
+    planned: 5,
+    new_hot_memories_1h: 0,
+    db_size_mb: 166.6,
+  },
+  // HBDBKUSZOB823: the prune verdict rides in the same payload, computed
+  // server-side like every other number here (the retention resolution is
+  // override > .env > registry default -- re-deriving it in the script would
+  // be a second source of truth).
+  token_prune: { state: 'ok', retention_days: 90, lag_hours: 0.27, tolerance_hours: 48 },
+  waiting_shown: 8,
+  urgent: [{ id: 'CARD1', title: 'first urgent' }],
+  waiting: [{ id: 'CARD2', title: 'a waiting card' }],
+})
+
+// ASYNC on purpose: the fixture server lives in THIS process, and a
+// spawnSync would block the event loop for the child's whole lifetime --
+// the server could never answer and every HTTP-dependent case would
+// "fail" with a timeout (measured on the first run of this file).
+function runScript(env: Record<string, string> = {}): Promise<{ status: number; stdout: string }> {
+  return new Promise(resolve => {
+    execFile(
+      'bash',
+      [SCRIPT],
+      {
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          CLAW_STORE_DIR: storeDir,
+          CLAW_DASHBOARD_ORIGIN: origin,
+          ...env,
+        },
+      },
+      (err, stdout) => {
+        const code = (err as { code?: unknown } | null)?.code
+        resolve({ status: err ? (typeof code === 'number' ? code : 1) : 0, stdout })
+      }
+    )
+  })
+}
+
+beforeAll(async () => {
+  storeDir = mkdtempSync(join(tmpdir(), 'hb-metrics-store-'))
+  writeFileSync(join(storeDir, '.dashboard-token'), TOKEN + '\n')
+
+  // Fixture task_runs DB, created with the same python3 the script uses.
+  // Three rows probe the milliseconds cutoff behaviourally:
+  //   - two recent rows with ts in MILLISECONDS -> must be counted
+  //   - one old ms row (2h ago)                 -> must not be counted
+  //   - one row with ts in SECONDS (now-60)     -> must not be counted;
+  //     a seconds-cutoff regression would count it (and the old row too).
+  const mk = spawnSync('python3', ['-c', `
+import sqlite3, sys, time
+con = sqlite3.connect(sys.argv[1])
+con.execute('CREATE TABLE task_runs (ts INTEGER, status TEXT)')
+now_ms = int(time.time() * 1000)
+rows = [(now_ms - 60_000, 'fired'), (now_ms - 120_000, 'fired'),
+        (now_ms - 7_200_000, 'fired'), (int(time.time()) - 60, 'fired')]
+con.executemany('INSERT INTO task_runs VALUES (?, ?)', rows)
+con.commit()
+`, join(storeDir, 'claudeclaw.db')])
+  if (mk.status !== 0) throw new Error('fixture db failed: ' + mk.stderr)
+
+  server = createServer((req, res) => {
+    if (req.headers.authorization !== 'Bearer ' + TOKEN) {
+      res.writeHead(401).end('{"error":"unauthorized"}')
+      return
+    }
+    const body =
+      req.url === '/api/kanban/heartbeat-summary' ? summaryBody
+      : req.url === '/api/schedules' ? schedulesBody
+      : req.url === '/api/heartbeat/calendar' ? calendarBody
+      : undefined
+    if (body === undefined) {
+      res.writeHead(404).end('{}')
+      return
+    }
+    res.writeHead(200, { 'content-type': 'application/json' })
+    res.end(JSON.stringify(body))
+  })
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  origin = 'http://127.0.0.1:' + (server.address() as AddressInfo).port
+})
+
+afterAll(async () => {
+  await new Promise<void>(resolve => server.close(() => resolve()))
+  rmSync(storeDir, { recursive: true, force: true })
+})
+
+describe('path binding (a rename must fail in CI, not at 22:00 on the host)', () => {
+  it('the script exists at the path the scaffold derives and is executable', () => {
+    expect(existsSync(SCRIPT)).toBe(true)
+    accessSync(SCRIPT, constants.X_OK)
+  })
+
+  it('the scaffold source builds exactly this relative path', () => {
+    const src = readFileSync(join(REPO_ROOT, 'src', 'web', 'heartbeat-agent-scaffold.ts'), 'utf8')
+    expect(src).toMatch(/'scripts',\s*'heartbeat-metrics\.sh'/)
+  })
+
+  it('script and the worker-side renderer agree on the sentinel version', () => {
+    // The consumer moved from the prose to heartbeat-metrics-inject.ts
+    // (HBMETRICSWIRE910); the invariant is unchanged: if the script ever
+    // bumps to V2, the renderer must move in the same commit or every round
+    // carries an instrument-failure block.
+    const script = readFileSync(SCRIPT, 'utf8')
+    const inject = readFileSync(join(REPO_ROOT, 'src', 'web', 'heartbeat-metrics-inject.ts'), 'utf8')
+    expect(script).toContain('echo "HB_METRICS_V1 ')
+    expect(inject).toContain("HB_METRICS_SENTINEL = 'HB_METRICS_V1'")
+  })
+})
+
+describe('positive control: full fixture', () => {
+  it('prints the sentinel first, every field, and exits 0', async () => {
+    summaryBody = FULL_SUMMARY()
+    schedulesBody = [{ enabled: true }, { enabled: false }, { enabled: true }]
+    const r = await runScript()
+    expect(r.status).toBe(0)
+    const lines = r.stdout.trim().split('\n')
+    expect(lines[0]).toMatch(/^HB_METRICS_V1 ts=\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/)
+    expect(r.stdout).toContain(
+      'COUNTS urgent=2 in_progress=3 waiting=280 planned=5 new_hot_memories_1h=0 db_size_mb=166.6 waiting_shown=8'
+    )
+    expect(r.stdout).toContain('URGENT CARD1 first urgent')
+    expect(r.stdout).toContain('WAITING CARD2 a waiting card')
+    expect(r.stdout).toContain('CALENDAR_EVENTS n=0 window=2h')
+    expect(r.stdout).toContain('SCHEDULES enabled=2')
+    expect(r.stdout).toContain('TOKEN_PRUNE state=ok retention_days=90 lag_hours=0.27 tolerance_hours=48')
+    expect(r.stdout).not.toContain('ERROR')
+  })
+
+  it('carries a stale prune verdict through verbatim (HBDBKUSZOB823)', async () => {
+    const body = FULL_SUMMARY() as Record<string, unknown>
+    body.token_prune = { state: 'stale', retention_days: 90, lag_hours: 61.2, tolerance_hours: 48 }
+    summaryBody = body
+    schedulesBody = []
+    const r = await runScript()
+    expect(r.stdout).toContain('TOKEN_PRUNE state=stale retention_days=90 lag_hours=61.2 tolerance_hours=48')
+    // The instrument REPORTS the state; it is not the alarm's judge. A stale
+    // prune is a finding for the reader, not a broken measurement, so the
+    // exit code stays 0 -- conflating the two would make every stale round
+    // look like an instrument failure.
+    expect(r.status).toBe(0)
+  })
+
+  it('FAIL-CLOSED: a payload without token_prune is an ERROR and a non-zero exit', async () => {
+    // The realistic shape: an older dashboard paired with this script. The
+    // health line must never quietly disappear -- that is precisely how the
+    // threshold it replaces stayed invisible for weeks.
+    const body = FULL_SUMMARY() as Record<string, unknown>
+    delete body.token_prune
+    summaryBody = body
+    schedulesBody = []
+    const r = await runScript()
+    expect(r.stdout).toContain('ERROR token_prune: token_prune missing from response')
+    expect(r.stdout).not.toContain('TOKEN_PRUNE state=')
+    expect(r.status).not.toBe(0)
+    // NEGATIVE CONTROL on the blast radius: the other sections still measure.
+    expect(r.stdout).toContain('COUNTS urgent=2')
+  })
+
+  it('counts only the millisecond rows inside the hour (the *1000 cutoff, behaviourally)', async () => {
+    summaryBody = FULL_SUMMARY()
+    schedulesBody = []
+    const r = await runScript()
+    // 2 recent ms rows in; the 2h-old ms row and the seconds-unit row out.
+    // A seconds-cutoff regression reports total=4 here.
+    expect(r.stdout).toContain('TASK_RUNS_1H total=2 fired=2')
+  })
+})
+
+// 5E0A32B0: the calendar's two end-states must stay two DIFFERENT lines --
+// collapsing "queried, calendar free" and "could not query" into one look is
+// exactly what let a fossil failure line pass as a fresh measurement.
+describe('calendar section: measured empty vs failed query vs events', () => {
+  it('renders timed and all-day events with a count line', async () => {
+    summaryBody = FULL_SUMMARY()
+    schedulesBody = []
+    calendarBody = {
+      ok: true,
+      events: [
+        { start: { dateTime: '2026-09-03T14:30:00+02:00' }, end: { dateTime: '2026-09-03T15:00:00+02:00' }, summary: 'Ruszkovszki telepites', attendees: 2 },
+        { start: { date: '2026-09-03' }, end: { date: '2026-09-04' }, summary: 'Nevnap', attendees: 0 },
+      ],
+    }
+    const r = await runScript()
+    expect(r.status).toBe(0)
+    expect(r.stdout).toContain('CALENDAR_EVENTS n=2 window=2h')
+    expect(r.stdout).toContain('CAL_EVENT 14:30 Ruszkovszki telepites attendees=2')
+    expect(r.stdout).toContain('CAL_EVENT all-day Nevnap')
+  })
+
+  it('a failed query is an ERROR calendar: line + non-zero exit, never an empty list', async () => {
+    summaryBody = FULL_SUMMARY()
+    schedulesBody = [{ enabled: true }]
+    calendarBody = { ok: false, error: 'Token refresh failed: 400' }
+    const r = await runScript()
+    expect(r.status).not.toBe(0)
+    expect(r.stdout).toContain('ERROR calendar: Token refresh failed: 400')
+    expect(r.stdout).not.toContain('CALENDAR_EVENTS')
+    // Partial output stays usable: the unaffected sections still print.
+    expect(r.stdout).toContain('SCHEDULES enabled=1')
+  })
+
+  it('an unrecognized response shape is an instrument failure, not a quiet skip', async () => {
+    summaryBody = FULL_SUMMARY()
+    schedulesBody = []
+    calendarBody = { something: 'else' }
+    const r = await runScript()
+    expect(r.status).not.toBe(0)
+    expect(r.stdout).toContain('ERROR calendar: unrecognized response shape')
+  })
+})
+
+describe('fail-closed: a missing value is an ERROR line + non-zero exit, never a 0', () => {
+  it('missing new_hot_memories_1h (the 2026-08-24 22:00 shape)', async () => {
+    const s = FULL_SUMMARY()
+    delete (s.counts as Record<string, unknown>).new_hot_memories_1h
+    summaryBody = s
+    schedulesBody = [{ enabled: true }]
+    const r = await runScript()
+    expect(r.status).not.toBe(0)
+    expect(r.stdout).toContain('ERROR summary: missing/null fields: new_hot_memories_1h')
+    expect(r.stdout).not.toContain('new_hot_memories_1h=0')
+    // Partial output stays usable: the unaffected sections still print.
+    expect(r.stdout).toContain('SCHEDULES enabled=1')
+    expect(r.stdout).toContain('TASK_RUNS_1H total=2 fired=2')
+  })
+
+  it('null db_size_mb (the HBDBMERET822 shape) never becomes 0.0', async () => {
+    const s = FULL_SUMMARY()
+    ;(s.counts as Record<string, unknown>).db_size_mb = null
+    summaryBody = s
+    schedulesBody = []
+    const r = await runScript()
+    expect(r.status).not.toBe(0)
+    expect(r.stdout).toContain('ERROR summary: missing/null fields: db_size_mb')
+    expect(r.stdout).not.toMatch(/db_size_mb=/)
+  })
+
+  it('unreachable dashboard: sentinel still first, ERROR lines, non-zero exit', async () => {
+    const r = await runScript({ CLAW_DASHBOARD_ORIGIN: 'http://127.0.0.1:1' })
+    expect(r.status).not.toBe(0)
+    expect(r.stdout.split('\n')[0]).toMatch(/^HB_METRICS_V1 /)
+    expect(r.stdout).toContain('ERROR summary:')
+    expect(r.stdout).toContain('ERROR schedules:')
+    expect(r.stdout).not.toContain('COUNTS')
+    // task_runs reads the local DB and still works.
+    expect(r.stdout).toContain('TASK_RUNS_1H total=2 fired=2')
+  })
+
+  it('missing token file: ERROR token, non-zero exit, no fabricated numbers', async () => {
+    const bare = mkdtempSync(join(tmpdir(), 'hb-metrics-bare-'))
+    try {
+      summaryBody = FULL_SUMMARY()
+      schedulesBody = []
+      const r = await runScript({ CLAW_STORE_DIR: bare })
+      expect(r.status).not.toBe(0)
+      expect(r.stdout).toContain('ERROR token:')
+      expect(r.stdout).toContain('ERROR task_runs: db not found:')
+      expect(r.stdout).not.toContain('COUNTS')
+      expect(r.stdout).not.toContain('SCHEDULES')
+    } finally {
+      rmSync(bare, { recursive: true, force: true })
+    }
+  })
+
+  it('rejected token (401): ERROR from the summary and schedules sections', async () => {
+    summaryBody = FULL_SUMMARY()
+    schedulesBody = []
+    writeFileSync(join(storeDir, '.dashboard-token'), 'wrong-token\n')
+    try {
+      const r = await runScript()
+      expect(r.status).not.toBe(0)
+      expect(r.stdout).toContain('ERROR summary:')
+      expect(r.stdout).toContain('ERROR schedules:')
+      expect(r.stdout).not.toContain('COUNTS')
+    } finally {
+      writeFileSync(join(storeDir, '.dashboard-token'), TOKEN + '\n')
+    }
+  })
+})

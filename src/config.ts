@@ -1,8 +1,11 @@
-import { hostname } from 'node:os'
+import { CronExpressionParser } from 'cron-parser'
+import { hostname, homedir } from 'node:os'
 import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { readEnvFile } from './env.js'
+import { resolveFleetVenvDir } from './fleet-venv.js'
+import { DISTRIBUTION_DEFAULT_AGENT_MODEL } from './config-registry.js'
 import { getProviderType, getChannelToken, getChannelChatId, type ChannelProviderType } from './channel-provider.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -46,7 +49,75 @@ function cfg(key: string): string | undefined {
 // process zone (the TZ env / OS) when unset. Replaces the ~15 hardcoded
 // 'Europe/Budapest' literals -- change the zone in ONE place, and an update that
 // re-introduces a hardcoded literal is caught by a single grep, not a full review.
-export const APP_TZ = cfg('SCHEDULER_TZ') || Intl.DateTimeFormat().resolvedOptions().timeZone
+// Exported separately so the scheduler's startup reporter can tell "an operator
+// pinned this zone" apart from "we fell back to the host zone" -- reading
+// process.env there cannot distinguish the two, because cfg() layers
+// config-overrides.json over .env and neither lands in process.env. See
+// resolveCronTz in web/cron.ts.
+//
+// A MISSPELLED zone is worse than an unset one. cron-parser throws on every
+// parse with an unknown tz ("CronDate: unhandled timestamp: Invalid Date"),
+// cronDueBetween's catch turns that throw into "not due", and so EVERY
+// scheduled task silently never fires -- a total outage with no error, no
+// warning, and a startup report that still looks healthy (it would name the
+// configured-but-invalid zone as the winning source). The dashboard Settings
+// path is fenced -- SCHEDULER_TZ carries a valueSet that validateSettingValue
+// enforces -- but a hand-edited .env or a hand-written config-overrides.json
+// reaches here unchecked, and hand-editing .env is the documented way to set
+// the zone. So validate once at boot, keep scheduling on the process zone
+// (degraded but alive, exactly the unset-value behaviour) and hand the
+// rejected value to the startup report rather than scheduling into a void.
+function isUsableCronTz(tz: string): boolean {
+  // Probe with the ACTUAL consumer, not with Intl. The two disagree on inputs
+  // like "+02:00" -- newer ICU accepts offset strings, older rejects them --
+  // so an Intl guard answers a different question than the code it protects,
+  // engine-dependently. That divergence between a check and its subject is the
+  // exact failure class this patch exists to remove; reproducing it inside the
+  // fix would be self-defeating. Whatever cron-parser can schedule against is
+  // by definition usable here.
+  try {
+    CronExpressionParser.parse('0 0 * * *', { tz }).next()
+    return true
+  } catch {
+    return false
+  }
+}
+
+export function resolveAppTz(
+  configured: string | undefined,
+  systemTz: string = Intl.DateTimeFormat().resolvedOptions().timeZone,
+): { tz: string; configured?: string; invalid?: string } {
+  if (!configured) return { tz: systemTz }
+  if (!isUsableCronTz(configured)) return { tz: systemTz, invalid: configured }
+  return { tz: configured, configured }
+}
+
+const appTz = resolveAppTz(cfg('SCHEDULER_TZ'))
+// Only a zone that survived validation counts as "an operator pinned this":
+// reporting a rejected value here would tell the operator that the zone the
+// scheduler just refused is the one in effect, and would also mask the
+// UTC-fallback warning below it (source would read 'SCHEDULER_TZ', never
+// 'system-default').
+export const SCHEDULER_TZ_CONFIGURED = appTz.configured
+export const APP_TZ = appTz.tz
+// The configured zone that was REJECTED, if any -- undefined on the healthy
+// path. config.ts is imported too early to own a logger (logger imports config
+// -> circular), so the loud reporting lives in startScheduleRunner.
+export const APP_TZ_INVALID = appTz.invalid
+
+// The model new agents are scaffolded with, and the model the background worker
+// sessions run. One key so an install that standardises on a newer model does
+// not have to patch three separate literals in src/ (which an update would then
+// clobber). Deliberately NOT applied to existing agents: agent-config.json keeps
+// whatever model it was created with, so raising this never silently
+// reconfigures a running fleet.
+export const DEFAULT_AGENT_MODEL =
+  cfg('DEFAULT_AGENT_MODEL') || DISTRIBUTION_DEFAULT_AGENT_MODEL
+// DEFAULTCLIGUARD927: true when no operator configured DEFAULT_AGENT_MODEL, so
+// the value above is the SHIPPED default. Only then may a launch swap it for
+// the previous tier on a CLI that cannot run it (default-model-guard.ts); a
+// configured value is the operator's choice and is never replaced.
+export const DEFAULT_AGENT_MODEL_IS_DISTRIBUTION = !cfg('DEFAULT_AGENT_MODEL')
 
 export const TELEGRAM_BOT_TOKEN = env['TELEGRAM_BOT_TOKEN'] ?? ''
 export const ALLOWED_CHAT_ID = env['ALLOWED_CHAT_ID'] ?? ''
@@ -77,6 +148,39 @@ export const BOT_NAME = env['BOT_NAME'] ?? 'Marveen'
 // BOT_NAME, behaves exactly as before.
 export const BRAND_NAME = env['BRAND_NAME'] ?? BOT_NAME
 
+// External, non-fleet systems allowed to appear as `from` on POST
+// /api/messages. The from-auth guard there accepts registered fleet agents
+// (agents/<id>/) plus the human owner; a neighbouring SYSTEM that only ever
+// notifies an agent -- a ticketing backend, a case manager -- has no agent
+// directory and would be rejected, even though its call is token-authenticated.
+// Registering it as a fake fleet agent (mkdir agents/<id>/) "works" but has side
+// effects: the id then shows up in agent listings, restart and scheduler logic.
+//
+// Empty by default, so a fresh install behaves exactly as before and no
+// third-party id is baked into the distribution. Comma-separated in .env:
+//   SYSTEM_SENDER_IDS=cortex,billing
+// Read at module load -- adding a sender needs a dashboard restart.
+//
+// This does NOT weaken sender authentication in any meaningful way: the shared
+// dashboard token already lets its holder claim ANY registered fleet agent id
+// (see the from-auth comment in routes/messages.ts). One more claimable id does
+// not change that; the token remains the actual boundary.
+export const SYSTEM_SENDER_IDS = env['SYSTEM_SENDER_IDS'] ?? ''
+
+// Pure parse rule for SYSTEM_SENDER_IDS, so the default (unset => empty set) is
+// provable without a live .env. Entries are normalized with the SAME function
+// the route matches on, keeping this guard symmetric with the coordinator and
+// federation guards next to it -- an .env entry of "@cortex." must not silently
+// fail to match a request that sanitizes to "cortex".
+export function parseSystemSenderIds(raw: string | undefined, normalize: (s: string) => string): Set<string> {
+  return new Set(
+    (raw ?? '')
+      .split(',')
+      .map(s => normalize(s.trim()))
+      .filter(Boolean)
+  )
+}
+
 // Pure resolution rule for BRAND_NAME, so the default (brandEnv unset =>
 // botName) is provable without a live .env. brandEnv is the raw env value
 // (undefined / empty when unset). Mirrors the `env['BRAND_NAME'] ?? BOT_NAME`
@@ -85,6 +189,23 @@ export const BRAND_NAME = env['BRAND_NAME'] ?? BOT_NAME
 export function resolveBrandName(brandEnv: string | undefined, botName: string): string {
   const b = (brandEnv ?? '').trim()
   return b || botName
+}
+
+// Per-call reads of the two display names, so a wizard rename shows up on the
+// dashboard without a process restart. BOT_NAME/BRAND_NAME above are frozen at
+// module load; the identity/label routes read these instead. Display only --
+// MAIN_AGENT_ID / SERVICE_ID stay the boot-time constants (they key tmux
+// sessions, service units and DB rows, and are never rewritten at runtime).
+export function currentBotName(): string {
+  const b = (readEnvFile(['BOT_NAME'])['BOT_NAME'] ?? '').trim()
+  return b || BOT_NAME
+}
+export function currentBrandName(): string {
+  return resolveBrandName(readEnvFile(['BRAND_NAME'])['BRAND_NAME'], currentBotName())
+}
+export function currentOwnerName(): string {
+  const o = (readEnvFile(['OWNER_NAME'])['OWNER_NAME'] ?? '').trim()
+  return o || OWNER_NAME
 }
 
 // Pure derivation of the OS service id from a brand slug and the agent id:
@@ -116,6 +237,10 @@ export function brandSlug(raw: string): string {
 // (NFKD + ASCII + lowercase dashes). Older installs without this env var
 // fall back to "marveen" so nothing breaks when upgrading in place.
 export const MAIN_AGENT_ID = env['MAIN_AGENT_ID'] ?? 'marveen'
+// The hidden heartbeat worker's agent id. Lives here (not in
+// heartbeat-agent-scaffold) so agent-scaffold can key gates on it without an
+// import cycle: heartbeat-agent-scaffold already imports agent-scaffold.
+export const HEARTBEAT_AGENT_ID = 'heartbeat'
 
 // Identifier the OS service manager uses for the main agent's units (launchd
 // label com.<id>.channels / com.<id>.dashboard, systemd <id>-channels, etc.).
@@ -172,6 +297,25 @@ export const WEB_PORT = parseInt(env['WEB_PORT'] ?? '3420', 10)
 
 export const WEB_HOST = env['WEB_HOST'] ?? '127.0.0.1'
 
+// How long a fired scheduled task may stay busy before the watchdog calls it
+// stuck (default 45 minutes; `stuckAfterMinutes` still overrides it per task).
+//
+// A key rather than a literal for the same reason as DEFAULT_AGENT_MODEL: this
+// number is an OPERATOR judgement, not an engineering constant. Whether "still
+// running after N minutes" means trouble depends on what the install's tasks
+// do, and an install that raises it has to keep raising it after every update
+// if the only way to say so is patching src/. That is not hypothetical -- one
+// install set 10 minutes because 5 produced false "possible hang" alerts, and
+// lost the setting to an update, silently: alerts simply got eager again.
+// .env survives updates, src/ does not.
+export const TASK_STALL_TIMEOUT_MS = (() => {
+  const parsed = parseInt(env['TASK_STALL_TIMEOUT_MS'] ?? '', 10)
+  // A malformed or absurd value must not disable the watchdog outright, so an
+  // out-of-range setting falls back to the default instead of being clamped
+  // into silence.
+  return Number.isFinite(parsed) && parsed >= 60_000 ? parsed : 2_700_000
+})()
+
 // Kanban card aging visual thresholds (hours since last update) and colours.
 // Override per-install via .env; defaults match the design spec (24/72/168h).
 export const KANBAN_AGING_WARN_H = parseInt(env['KANBAN_AGING_WARN_H'] ?? '24', 10)
@@ -203,6 +347,29 @@ export const KANBAN_WIP_OVER_COLOR = env['KANBAN_WIP_OVER_COLOR'] ?? '#c53030'
 // requiresRestart registry keys: read through the override layer so a value
 // saved on the Settings page takes effect on the next restart.
 export const DASHBOARD_PUBLIC_URL = cfg('DASHBOARD_PUBLIC_URL') ?? ''
+// Where the AGENTS reach the dashboard API from wherever they run. This is a
+// DIFFERENT question from DASHBOARD_PUBLIC_URL, which answers "where does the
+// BROWSER reach the dashboard" and feeds the CORS allowlist. On a single-host
+// install the two answers differ: measured 2026-09-03, the public name resolves
+// but its 443 is unreachable from the host itself (hairpin NAT), so every
+// generated curl example pointed at a dead address -- `curl exit 7`, i.e. the
+// agent gets nothing, not an error it could report. Deriving one answer from
+// the other cannot be correct for both deployment shapes, so it is its own key.
+// Empty preserves the previous behaviour exactly (public URL, else localhost).
+export const AGENT_API_ORIGIN = cfg('AGENT_API_ORIGIN') ?? ''
+
+// FLEETVENV923: the fleet's shared Python virtualenv. When `<dir>/bin` exists it
+// is prepended to every agent launch PATH (sub-agents via startAgentProcess,
+// the main session via channels.sh and the recovery relaunch in
+// channel-monitor.ts), so a skill's plain `python3` and the venv's own CLIs
+// (markitdown, ...) resolve to the venv without per-skill interpreter paths.
+// Measured 2026-09-23 on the Mac mini: the Homebrew python3 carried zero
+// packages, so every skill `python3` call import-failed while a venv with the
+// packages sat next to it. A `~` prefix means the home directory; the default
+// is EMPTY (off), and a nonexistent directory disables the prefix too.
+// Resolved by fleet-venv.ts, the same function channels.sh reaches through
+// scripts/fleet-venv-prefix.mjs, so the two launch paths cannot disagree.
+export const FLEET_PYTHON_VENV = resolveFleetVenvDir(PROJECT_ROOT, homedir(), process.env.CLAUDECLAW_ENV_DIR ?? PROJECT_ROOT)
 // Extra browser origins allowed to make state-changing dashboard requests
 // (CORS + CSRF allowlist), comma-separated, e.g. for VPN/LAN addresses that
 // aren't covered by WEB_HOST or DASHBOARD_PUBLIC_URL. Empty by default so
@@ -210,6 +377,9 @@ export const DASHBOARD_PUBLIC_URL = cfg('DASHBOARD_PUBLIC_URL') ?? ''
 // key, so it stays a plain env read (not routed through the override layer).
 export const DASHBOARD_ALLOWED_ORIGINS = env['DASHBOARD_ALLOWED_ORIGINS'] ?? ''
 export const OLLAMA_URL = cfg('OLLAMA_URL') ?? 'http://localhost:11434'
+// Ollama model that tiers memories during /api/memories/import. Empty = off:
+// every chunk goes to warm with no model call, instead of guessing a model.
+export const MEMORY_IMPORT_CATEGORIZE_MODEL = (cfg('MEMORY_IMPORT_CATEGORIZE_MODEL') ?? '').trim()
 
 // Kanban swimlanes: which field the board groups by on first load. Invalid
 // values silently fall back to 'none' (flat board) rather than breaking the
@@ -234,6 +404,14 @@ export const KANBAN_LABEL_COLORS = rawKanbanLabelColors.length > 0 ? rawKanbanLa
 export const CHANNEL_PROVIDER: ChannelProviderType = getProviderType(env['CHANNEL_PROVIDER'])
 export const CHANNEL_TOKEN = getChannelToken(CHANNEL_PROVIDER, env)
 export const CHANNEL_CHAT_ID = getChannelChatId(CHANNEL_PROVIDER, env)
+// Where OPERATIONAL alerts go (watchdog respawns, stuck sessions, restart
+// notices). Empty = the owner chat; set it when the person who runs the
+// system is not the owner, so the owner is not flooded with plumbing noise.
+// Owner-facing content (heartbeat digest, security events) ignores it.
+export function resolveAlertChatIdSetting(e: Record<string, string | undefined>): string {
+  return (e['MARVEEN_ALERT_CHAT_ID'] || e['ALERT_CHAT_ID'] || '').trim()
+}
+export const ALERT_CHAT_ID = resolveAlertChatIdSetting(env)
 
 // Respawn / keep-alive gate.
 // The in-process channel-plugin monitor (main-agent respawn + sub-agent
@@ -292,6 +470,15 @@ export const SUBAGENT_INBOX_TEE =
 export const SUBAGENT_TELEGRAM_WAKE_ENABLED =
   ['1', 'true', 'yes', 'on'].includes((cfg('SUBAGENT_TELEGRAM_WAKE_ENABLED') ?? '').trim().toLowerCase())
 
+// Install-wide default for router-side speech-to-text on inbound voice notes
+// (opt-in, DEFAULT OFF). Agents in responseMode 'voice'/'auto' are always
+// transcribed; this only decides what happens for text-mode agents that do not
+// set voice.transcribeInbound in their agent-config.json. Enable with
+// VOICE_TRANSCRIBE_INBOUND=1 to run faster-whisper on every inbound voice note
+// for every such agent. Read at boot: takes effect after a dashboard restart.
+export const VOICE_TRANSCRIBE_INBOUND =
+  ['1', 'true', 'yes', 'on'].includes((cfg('VOICE_TRANSCRIBE_INBOUND') ?? '').trim().toLowerCase())
+
 // Google Calendar account the heartbeat summarises (next 2h). Empty (the
 // default) means the agent uses whatever calendar its MCP server is
 // authenticated as, so no personal address is baked into the shipped
@@ -302,3 +489,30 @@ export const SUBAGENT_TELEGRAM_WAKE_ENABLED =
 export const HEARTBEAT_CALENDAR_ACCOUNT = (cfg('HEARTBEAT_CALENDAR_ACCOUNT') ?? '').trim()
 export const HEARTBEAT_END_HOUR = parseInt(env['HEARTBEAT_END_HOUR'] ?? '23', 10)
 export const HEARTBEAT_CALENDAR_ID = (cfg('HEARTBEAT_CALENDAR_ID') ?? '').trim()
+
+// The embedding model is deliberately NOT tied to OLLAMA_URL or to the chat
+// model. agent-process.ts feeds OLLAMA_URL into ANTHROPIC_BASE_URL for
+// ollama-backed agents, and memories/connectors/migrate all call the NATIVE
+// ollama API on it -- five consumers in total -- so repointing that one key to
+// change the embedding endpoint drags four unrelated callers along with it.
+//
+// EMBED_DIMS implements Matryoshka truncation: slicing the native vector and
+// letting cosine renormalise. Measured on a 1073-memory corpus, vector-only
+// retrieval, 2026-08-12: 1024 dims held hit@5 at 83% while cutting the stored
+// vector text from 94 MB to ~24 MB and the per-search parse from 291 ms to
+// ~73 ms.
+//
+// Empty EMBED_URL = use OLLAMA_URL and EMBED_DIMS 0 = no truncation, so an
+// install that sets nothing keeps exactly the previous behaviour.
+export const EMBED_URL = cfg('EMBED_URL') || OLLAMA_URL
+export const EMBED_MODEL = cfg('EMBED_MODEL') ?? 'nomic-embed-text'
+const rawEmbedDims = parseInt(cfg('EMBED_DIMS') ?? '0', 10)
+export const EMBED_DIMS = Number.isFinite(rawEmbedDims) && rawEmbedDims > 0 ? rawEmbedDims : 0
+
+// The base URL an OLLAMA-CLASSED agent talks to is not the same thing as the
+// ollama API this install uses elsewhere. agent-process.ts only needs an
+// ANTHROPIC-compatible /v1/messages endpoint; the other four OLLAMA_URL
+// callers need the native ollama API (/api/tags, /api/generate), which an
+// Anthropic-compatible proxy does not serve at all. Empty = fall back to
+// OLLAMA_URL, so an install whose local agent really is ollama is unaffected.
+export const AGENT_LOCAL_BASE_URL = cfg('AGENT_LOCAL_BASE_URL') || OLLAMA_URL

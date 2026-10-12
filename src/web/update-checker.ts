@@ -1,4 +1,6 @@
 import { execFileSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { PROJECT_ROOT } from '../config.js'
 import { TOOL_TIMEOUTS } from '../tool-timeouts.js'
 
@@ -21,6 +23,11 @@ export interface UpdateRelease {
 
 export interface UpdateStatus {
   current: string
+  /** Semver of the running instance (package.json "version"), e.g. "1.32.1".
+   * Resolved live per request. Empty/absent when package.json is missing,
+   * unreadable, or malformed -- the UI then shows the SHA alone and NEVER a
+   * fabricated version. */
+  version?: string
   latest: string
   behind: number
   commits: UpdateCommit[]
@@ -31,6 +38,10 @@ export interface UpdateStatus {
   releases?: UpdateRelease[]
   remote: string
   lastChecked: number
+  /** Branch this checkout follows (what update.sh pulls). The frontend warns
+   * when it is not `main`: customer installs that landed on develop via a
+   * branchless clone keep receiving unreleased code until switched back. */
+  branch?: string
   error?: string
   /** True when the local HEAD is not on the GitHub remote (a customised fork);
    * `behind`/`commits` are then computed from the upstream merge-base. */
@@ -47,7 +58,23 @@ let updateStatusCache: UpdateStatus = {
 }
 
 export function getUpdateStatus(): UpdateStatus {
-  return updateStatusCache
+  // branch and version are resolved live (cheap local rev-parse / file read):
+  // the cache may predate the first refresh cycle, and a checkout switch or
+  // in-place version bump should be visible immediately.
+  return { ...updateStatusCache, branch: trackedBranch(), version: currentVersion() }
+}
+
+// Semver of the running instance, read from package.json at PROJECT_ROOT. Returns
+// '' on ANY failure (missing / unreadable / malformed / no string "version"):
+// the caller must never display a fabricated version, so the field is simply
+// empty and the UI falls back to the commit SHA alone.
+export function currentVersion(root: string = PROJECT_ROOT): string {
+  try {
+    const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf-8'))
+    return typeof pkg?.version === 'string' ? pkg.version : ''
+  } catch {
+    return ''
+  }
 }
 
 export function currentGitHead(): string {
@@ -58,13 +85,125 @@ export function currentGitHead(): string {
   }
 }
 
-export function parseGitHubRemote(): string {
+// Branch this checkout actually follows. update.sh pulls `origin/<this>`, so
+// the update check must compare against the same ref -- hardcoding `main` made
+// every non-release checkout (e.g. `develop`) report a phantom "new version"
+// that the update button could never deliver, while staying silent about the
+// commits that WERE coming. Falls back to `main` on a detached HEAD, which is
+// also the branch update.sh tells the operator to check out in that state.
+export function trackedBranch(root: string = PROJECT_ROOT): string {
   try {
-    const url = execFileSync('/usr/bin/git', ['config', '--get', 'remote.origin.url'], { cwd: PROJECT_ROOT, timeout: 3000, encoding: 'utf-8' }).trim()
-    // Normalize "git@github.com:Owner/Repo.git" or "https://github.com/Owner/Repo.git" to "Owner/Repo"
+    const b = execFileSync('/usr/bin/git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd: root, timeout: 3000, encoding: 'utf-8' }).trim()
+    return b && b !== 'HEAD' ? b : 'main'
+  } catch {
+    return 'main'
+  }
+}
+
+// True when `remote` is the checkout's own origin. Decides whether the branch
+// and the compare base may come from local refs (own repo) or have to be
+// resolved against someone else's default branch.
+export function remoteIsOwnOrigin(remote: string, root: string = PROJECT_ROOT): boolean {
+  try {
+    const url = execFileSync('/usr/bin/git', ['config', '--get', 'remote.origin.url'], { cwd: root, timeout: 3000, encoding: 'utf-8' }).trim()
     const m = url.match(/github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/i)
-    if (m) return m[1]
-  } catch { /* fall through */ }
+    return !!m && m[1].toLowerCase() === remote.toLowerCase()
+  } catch {
+    return false
+  }
+}
+
+// Does `branch` exist on the `origin` remote? Answered from the local
+// remote-tracking refs. NOTE (UPSTREAMSRC927): nothing in the product fetches on
+// a schedule -- these refs are as fresh as the last manual fetch or update.sh
+// run, so a branch pushed since then is not seen yet. This still costs
+// no network call and stays truthful offline. Absent ref -> treat as absent
+// branch: the fallback (the remote's default branch) is always answerable,
+// while a wrong branch name is a silent 422.
+export function branchExistsOnOrigin(branch: string, root: string = PROJECT_ROOT): boolean {
+  try {
+    execFileSync('/usr/bin/git', ['show-ref', '--verify', '--quiet', `refs/remotes/origin/${branch}`],
+      { cwd: root, timeout: 3000 })
+    return true
+  } catch {
+    return false
+  }
+}
+
+// Has this checkout any remote-tracking refs for origin at all? The absence of
+// ONE branch is evidence; the absence of ALL of them is not -- a clone that has
+// never fetched knows nothing, and reading that silence as "the branch is gone"
+// would send every fresh install down the fallback for no reason.
+export function originHasTrackingRefs(root: string = PROJECT_ROOT): boolean {
+  try {
+    const out = execFileSync('/usr/bin/git', ['for-each-ref', '--count=1', '--format=%(refname)', 'refs/remotes/origin/'],
+      { cwd: root, timeout: 3000, encoding: 'utf-8' })
+    return out.trim().length > 0
+  } catch {
+    return false
+  }
+}
+
+// The remote's own default branch, asked of GitHub. Only needed when we are NOT
+// checking our own fork -- our local branch name means nothing over there.
+async function fetchDefaultBranch(remote: string): Promise<string> {
+  try {
+    const res = await fetch(`https://api.github.com/repos/${remote}`, {
+      headers: GH_HEADERS,
+      signal: AbortSignal.timeout(TOOL_TIMEOUTS['github']),
+    })
+    if (!res.ok) return 'develop'
+    const j = await res.json() as { default_branch?: string }
+    return j.default_branch || 'develop'
+  } catch {
+    return 'develop'
+  }
+}
+
+// Which branch to ask the remote about: our own fork answers for the branch this
+// checkout follows (update.sh pulls exactly that), anyone else's repo answers
+// for THEIR default branch -- a local feature branch does not exist there.
+// `root` and `defaultBranchOf` are injected so a test can point this at a
+// throwaway git repo and decide the remote's answer without touching the
+// network. Without that seam the only measurable assertion is "some string came
+// back", which stays green even if the whole upstream preference is deleted.
+export async function branchOnRemote(
+  remote: string,
+  root: string = PROJECT_ROOT,
+  defaultBranchOf: (r: string) => Promise<string> = fetchDefaultBranch,
+  branchExists: (branch: string, root: string) => boolean = branchExistsOnOrigin,
+  isOwnOrigin: (remote: string, root: string) => boolean = remoteIsOwnOrigin,
+  hasTrackingRefs: (root: string) => boolean = originHasTrackingRefs,
+): Promise<string> {
+  if (isOwnOrigin(remote, root)) {
+    // "origin is ours" is a naming CONVENTION, not a fact. A fork that keeps
+    // `origin` pointed at the original author and pushes to a second remote
+    // (`fork`) inverts it, and then the local branch name is exactly the thing
+    // the author's repo has never heard of. Measured here 2026-09-04: the
+    // check asked Szotasz/marveen for `fix/email-gate-mcp-matcher`, GitHub
+    // answered 422, the error was swallowed into `behind: 0`, and the install
+    // reported itself up to date for nine days while 66 commits piled up.
+    // Verify before trusting the convention; a branch nobody has ever pushed
+    // cannot be the one to compare against.
+    const local = trackedBranch(root)
+    if (!hasTrackingRefs(root) || branchExists(local, root)) return local
+  }
+  return await defaultBranchOf(remote)
+}
+
+export function parseGitHubRemote(root: string = PROJECT_ROOT): string {
+  // "Update" means new commits from the ORIGINAL author, so an `upstream` remote
+  // wins over `origin` when one is configured. After a fork, `origin` points at
+  // the user's own copy, which never carries the author's new work: the update
+  // check then asks the fork about itself and stays silent forever.
+  for (const remoteName of ['upstream', 'origin']) {
+    try {
+      const url = execFileSync('/usr/bin/git', ['config', '--get', `remote.${remoteName}.url`], { cwd: root, timeout: 3000, encoding: 'utf-8' }).trim()
+      // Normalize "git@github.com:Owner/Repo.git" or "https://github.com/Owner/Repo.git" to "Owner/Repo"
+      const m = url.match(/github\.com[:/]([^/]+\/[^/]+?)(?:\.git)?$/i)
+      if (m) return m[1]
+    } catch { /* try the next remote */ }
+  }
   return 'Szotasz/marveen'
 }
 
@@ -146,17 +285,44 @@ export function groupByRelease(commits: UpdateCommit[], fullMessages: string[]):
   return out.concat(groups)
 }
 
-// Merge-base of local HEAD with the upstream tracking ref (origin/main, which
-// parseGitHubRemote maps to the GitHub remote). For a customised fork this is
+// Merge-base of local HEAD with the upstream tracking ref (origin/<tracked
+// branch>, which parseGitHubRemote maps to the GitHub remote). For a customised fork this is
 // the fork point -- an actual upstream commit -- so it can be compared on
 // GitHub even though the local HEAD itself never landed there. Empty string
 // when there is no local upstream ref.
-function upstreamMergeBase(): string {
-  try {
-    return execFileSync('/usr/bin/git', ['merge-base', 'HEAD', 'origin/main'], { cwd: PROJECT_ROOT, timeout: 3000, encoding: 'utf-8' }).trim()
-  } catch {
-    return ''
+export function upstreamMergeBase(remote: string, remoteBranch: string, root: string = PROJECT_ROOT): string {
+  // The base has to be a commit the queried remote KNOWS, otherwise the compare
+  // call is meaningless. Asking `origin/<local branch>` while querying someone
+  // else's repo picks our own pushed commit as the base and reports a
+  // fork-distance instead of the real backlog.
+  // UPDATEBRANCH904, the twin of the bug in branchOnRemote: which ref carries
+  // the queried remote's branch is decided by CANDIDATE ORDER, not by the
+  // `origin`/`upstream` naming convention. This fork keeps `origin` on the
+  // original author and pushes elsewhere, so the old own-origin list resolved
+  // to `origin/<our local branch>` -- a ref that has never existed -- every
+  // candidate failed, the base came back empty, and the compare then reported
+  // a nonsense distance (161 commits against a real backlog of 4, measured
+  // 2026-09-04). The branch we actually ASKED the remote about is the branch
+  // whose ref we need, under whichever remote name holds it.
+  const refs = [
+    `upstream/${remoteBranch}`,
+    `origin/${remoteBranch}`,
+    ...(remoteIsOwnOrigin(remote, root) ? [`origin/${trackedBranch(root)}`] : []),
+    'upstream/develop', 'origin/develop',
+    'upstream/main', 'origin/main',
+  ]
+  for (const ref of refs) {
+    try {
+      // Existence first: merge-base against a missing ref throws, but an
+      // ambiguous or partially-valid name can also resolve to something we did
+      // not mean. Verify, then measure.
+      execFileSync('/usr/bin/git', ['show-ref', '--verify', '--quiet', `refs/remotes/${ref}`],
+        { cwd: root, timeout: 3000 })
+      const base = execFileSync('/usr/bin/git', ['merge-base', 'HEAD', ref], { cwd: root, timeout: 3000, encoding: 'utf-8' }).trim()
+      if (base) return base
+    } catch { /* try the next ref */ }
   }
+  return ''
 }
 
 export async function refreshUpdateStatus(): Promise<UpdateStatus> {
@@ -176,14 +342,15 @@ export async function refreshUpdateStatus(): Promise<UpdateStatus> {
     return status
   }
   try {
-    // 1) find HEAD of default branch (main) via the commits endpoint
-    const latestRes = await fetch(`https://api.github.com/repos/${remote}/commits/main`, {
+    // 1) find HEAD of the branch to compare against on THAT remote
+    const branch = await branchOnRemote(remote)
+    const latestRes = await fetch(`https://api.github.com/repos/${remote}/commits/${encodeURIComponent(branch)}`, {
       headers: { 'Accept': 'application/vnd.github+json', 'User-Agent': 'marveen-update-check' },
       signal: AbortSignal.timeout(TOOL_TIMEOUTS['github']),
     })
-    if (!latestRes.ok) throw new Error(`GitHub /commits/main -> ${latestRes.status}`)
+    if (!latestRes.ok) throw new Error(`GitHub /commits/${branch} -> ${latestRes.status}`)
     const latestJson = await latestRes.json() as { sha?: string }
-    if (!latestJson.sha) throw new Error('No sha on commits/main response')
+    if (!latestJson.sha) throw new Error(`No sha on commits/${branch} response`)
     status.latest = latestJson.sha
 
     if (status.latest === current) {
@@ -203,7 +370,7 @@ export async function refreshUpdateStatus(): Promise<UpdateStatus> {
       // `behind`/`commits` reflect genuinely new upstream commits rather than the
       // fork divergence.
       status.fork = true
-      const base = upstreamMergeBase()
+      const base = upstreamMergeBase(remote, branch)
       if (!base || base === status.latest) {
         // No local upstream ref, or the fork point already is the upstream tip:
         // nothing new upstream. A fork being ahead of upstream is expected, not
@@ -225,7 +392,7 @@ export async function refreshUpdateStatus(): Promise<UpdateStatus> {
   return status
 }
 
-// Polls the GitHub repo's main branch for new commits and compares to the
+// Polls the GitHub branch this checkout follows for new commits and compares to the
 // local HEAD. Lets the dashboard show a "new version available" badge
 // without anyone having to SSH in and run update.sh.
 export function startUpdateChecker(): NodeJS.Timeout {

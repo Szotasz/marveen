@@ -25,6 +25,7 @@ JSON. No history -> no-op. Never breaks session start (always exit 0).
 import sys
 import os
 import json
+import re
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ledger_lib  # noqa: E402
@@ -112,7 +113,7 @@ def _snippet(text, limit):
     return s
 
 
-def _build_output(transcript, open_q, owner):
+def _build_output(transcript, open_q, owner, reply_tool=None):
     """Assemble the final SessionStart hook payload dict from the (already
     snippet-trimmed, oldest-first) transcript lines + optional open question.
 
@@ -141,14 +142,29 @@ def _build_output(transcript, open_q, owner):
         "betöltött kontextusból folytass, ne kezdd elölről."
     ]
     if open_q:
-        chat_id, message_id, text, ts = open_q
+        # Prefix-slice on purpose (HOOKARITAS821): a widened open_question()
+        # tuple would ValueError here (no try around this frame), the replay
+        # hook would die, and the fresh session would start with NO context --
+        # fail-open, the silence looks like a calm start.
+        chat_id, message_id, text, ts, att_kind, att_file_id = open_q[:6]
         snippet = _snippet(text, _max_snippet())
         parts.append(
             f'NYITOTT KÉRDÉS (még NEM válaszoltad meg): {owner} utolsó üzenete '
             f'(chat {chat_id}, message_id {message_id}): "{snippet}". Válaszolj rá '
-            f'MOST a telegram reply tool (mcp__plugin_telegram_telegram__reply) '
-            f'meghívásával a megfelelő chat_id-re, a lenti kontextusból folytatva.'
+            + (f'MOST a {reply_tool} tool meghívásával a megfelelő chat_id-re, '
+               if reply_tool else
+               'MOST ANNAK a csatornának a reply tooljával, ahonnan jött, a megfelelő '
+               'chat_id-re, ')
+            + 'a lenti kontextusból folytatva.'
         )
+        if att_file_id:
+            parts.append(
+                f'A nyitott kérdés egy {att_kind or "voice"} csatolmány, aminek '
+                f'a TARTALMA nem veszett el: töltsd le és írasd át MIELŐTT '
+                f'válaszolsz (voice-message-transcribe skill; '
+                f'attachment_file_id="{att_file_id}"). NE kérd a küldőtől hogy '
+                f'ismételje meg.'
+            )
     if recent:
         parts.append(
             "LEGFRISSEBB FORDULÓK (időrendben, a beszélgetés vége -- innen "
@@ -175,28 +191,27 @@ def _payload_bytes(out):
     return len(json.dumps(out, ensure_ascii=False).encode("utf-8"))
 
 
-def _fit_output(transcript, open_q, owner, byte_budget):
+def _fit_output(transcript, open_q, owner, byte_budget, reply_tool=None):
     """Build the payload and keep it under `byte_budget` by dropping the OLDEST
     turn and re-measuring, iteratively (build -> measure -> trim -> repeat). The
     freshest END survives, the oldest turns fall off first. At least one turn is
     kept when any exist (its snippet is already bounded by _max_snippet, so a
     lone freshest turn still fits)."""
     transcript = list(transcript)
-    out = _build_output(transcript, open_q, owner)
+    out = _build_output(transcript, open_q, owner, reply_tool)
     while len(transcript) > 1 and _payload_bytes(out) > byte_budget:
         transcript.pop(0)
-        out = _build_output(transcript, open_q, owner)
+        out = _build_output(transcript, open_q, owner, reply_tool)
     return out
 
 
 def main():
-    cwd = None
+    payload = None
     try:
         payload = json.load(sys.stdin)
-        cwd = payload.get("cwd")
     except Exception:
         pass
-    agent_id = ledger_lib.agent_id_from_cwd(cwd)
+    agent_id = ledger_lib.agent_id_from_payload(payload)
 
     try:
         rows = ledger_lib.recent(agent_id, _window_limit())
@@ -208,11 +223,32 @@ def main():
 
     owner = ledger_lib.owner_name()
 
+    # REPLAYTOOL924: the open-question directive named the Telegram reply tool
+    # unconditionally, so a respawned session was told to answer a DISCORD DM with
+    # the Telegram tool (measured 2026-09-24). The ledger already records the
+    # envelope source (PROVIDERVAK908); derive the tool from it, and fall back to
+    # provider-agnostic wording on a miss -- an invented tool name is worse than
+    # none, the model would call it and fail.
+    reply_tool = None
+    if open_q:
+        try:
+            src = ledger_lib.source_for(agent_id, open_q[0])
+        except Exception:
+            src = None
+        m = re.match(r"^plugin:([A-Za-z0-9_]+):([A-Za-z0-9_]+)$", src or "")
+        if m:
+            reply_tool = "mcp__plugin_{}_{}__reply".format(m.group(1), m.group(2))
+
     max_snippet = _max_snippet()
     transcript = []
-    for direction, chat_id, text, ts in rows:
+    for direction, chat_id, text, ts, att_kind, att_file_id in rows:
         who = owner if direction == "in" else "Te"
         snippet = _snippet(text, max_snippet)
+        # A transcript-less voice turn carries its file_id so the fresh session
+        # can still fetch the audio content instead of seeing an opaque
+        # "(voice message)" placeholder.
+        if att_file_id:
+            snippet = f'{snippet} [{att_kind or "voice"} file_id={att_file_id}]'
         transcript.append(f'  [{ts}] {who}: "{snippet}"')
 
     # Coarse char pre-trim (cheap): drop the OLDEST turns until the transcript
@@ -227,7 +263,7 @@ def main():
     # Authoritative guard: keep the FINAL payload's real UTF-8 byte size under the
     # harness's injection cap, dropping oldest turns and re-measuring until it
     # fits (freshest END survives).
-    out = _fit_output(transcript, open_q, owner, _byte_budget())
+    out = _fit_output(transcript, open_q, owner, _byte_budget(), reply_tool)
 
     print(json.dumps(out, ensure_ascii=False))
     sys.exit(0)

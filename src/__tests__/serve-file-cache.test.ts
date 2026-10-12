@@ -14,8 +14,9 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { writeFileSync, mkdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { gunzipSync } from 'node:zlib'
 import http from 'node:http'
-import { etagMatches, serveFile, json } from '../web/http-helpers.js'
+import { etagMatches, serveFile, json, jsonMaybeGzip } from '../web/http-helpers.js'
 
 // ---------------------------------------------------------------------------
 // json() Cache-Control contract test
@@ -184,5 +185,145 @@ describe('serveFile cache headers', () => {
     const cap = fakeRes()
     serveFile(req, cap.res, join(tmpDir, 'does-not-exist.html'))
     expect(cap.statusCode).toBe(404)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// serveFile cacheSeconds + gzip contract tests
+// ---------------------------------------------------------------------------
+
+function header(cap: ReturnType<typeof fakeRes>, name: string): string | undefined {
+  return (cap.headers[name] ?? cap.headers[name.toLowerCase()]) as string | undefined
+}
+
+describe('serveFile cacheSeconds option', () => {
+  it('sends private max-age instead of no-cache when cacheSeconds is set', () => {
+    const cap = fakeRes()
+    serveFile(fakeReq(), cap.res, testFile, { cacheSeconds: 3600 })
+    expect(cap.statusCode).toBe(200)
+    expect(header(cap, 'Cache-Control')).toBe('private, max-age=3600')
+  })
+
+  it('keeps max-age on the 304 revalidation response', () => {
+    const cap1 = fakeRes()
+    serveFile(fakeReq(), cap1.res, testFile, { cacheSeconds: 3600 })
+    const etag = header(cap1, 'ETag') as string
+
+    const cap2 = fakeRes()
+    serveFile(fakeReq({ 'if-none-match': etag }), cap2.res, testFile, { cacheSeconds: 3600 })
+    expect(cap2.statusCode).toBe(304)
+    expect(header(cap2, 'Cache-Control')).toBe('private, max-age=3600')
+  })
+})
+
+describe('serveFile gzip', () => {
+  let bigJsFile: string
+  let bigPngFile: string
+  const bigContent = `// filler\n${'const x = 1;\n'.repeat(500)}`
+
+  beforeAll(() => {
+    bigJsFile = join(tmpDir, 'big.js')
+    writeFileSync(bigJsFile, bigContent)
+    // Same size but a non-compressible extension: must never be gzipped.
+    bigPngFile = join(tmpDir, 'big.png')
+    writeFileSync(bigPngFile, bigContent)
+  })
+
+  it('gzips a large compressible file when the client accepts gzip', () => {
+    const cap = fakeRes()
+    serveFile(fakeReq({ 'accept-encoding': 'gzip, deflate, br' }), cap.res, bigJsFile)
+    expect(cap.statusCode).toBe(200)
+    expect(header(cap, 'Content-Encoding')).toBe('gzip')
+    expect(header(cap, 'Vary')).toBe('Accept-Encoding')
+    expect(header(cap, 'ETag')).toMatch(/-gz"$/)
+    expect(gunzipSync(cap.body as Buffer).toString()).toBe(bigContent)
+  })
+
+  it('does not gzip without Accept-Encoding and keeps the plain ETag format', () => {
+    const cap = fakeRes()
+    serveFile(fakeReq(), cap.res, bigJsFile)
+    expect(cap.statusCode).toBe(200)
+    expect(header(cap, 'Content-Encoding')).toBeUndefined()
+    expect(header(cap, 'ETag')).toMatch(/^"[\d.]+-\d+"$/)
+    expect((cap.body as Buffer).toString()).toBe(bigContent)
+  })
+
+  it('does not gzip when the client disables gzip with q=0', () => {
+    const cap = fakeRes()
+    serveFile(fakeReq({ 'accept-encoding': 'gzip;q=0, identity' }), cap.res, bigJsFile)
+    expect(header(cap, 'Content-Encoding')).toBeUndefined()
+  })
+
+  it('does not gzip non-compressible extensions', () => {
+    const cap = fakeRes()
+    serveFile(fakeReq({ 'accept-encoding': 'gzip' }), cap.res, bigPngFile)
+    expect(header(cap, 'Content-Encoding')).toBeUndefined()
+    expect(header(cap, 'Vary')).toBeUndefined()
+  })
+
+  it('does not gzip small compressible files', () => {
+    const cap = fakeRes()
+    serveFile(fakeReq({ 'accept-encoding': 'gzip' }), cap.res, testFile)
+    expect(header(cap, 'Content-Encoding')).toBeUndefined()
+  })
+
+  it('serves 304 against the gzip-variant ETag for a gzip-accepting client', () => {
+    const cap1 = fakeRes()
+    serveFile(fakeReq({ 'accept-encoding': 'gzip' }), cap1.res, bigJsFile)
+    const gzEtag = header(cap1, 'ETag') as string
+    expect(gzEtag).toMatch(/-gz"$/)
+
+    const cap2 = fakeRes()
+    serveFile(fakeReq({ 'accept-encoding': 'gzip', 'if-none-match': gzEtag }), cap2.res, bigJsFile)
+    expect(cap2.statusCode).toBe(304)
+    expect(cap2.body?.length).toBe(0)
+  })
+
+  it('does not 304 a non-gzip client holding the gzip-variant ETag', () => {
+    // A cache entry stored from a gzip response must not satisfy a client
+    // that no longer accepts gzip: the etags differ, so the full plain body
+    // is served again.
+    const cap1 = fakeRes()
+    serveFile(fakeReq({ 'accept-encoding': 'gzip' }), cap1.res, bigJsFile)
+    const gzEtag = header(cap1, 'ETag') as string
+
+    const cap2 = fakeRes()
+    serveFile(fakeReq({ 'if-none-match': gzEtag }), cap2.res, bigJsFile)
+    expect(cap2.statusCode).toBe(200)
+    expect(header(cap2, 'Content-Encoding')).toBeUndefined()
+  })
+})
+
+describe('jsonMaybeGzip', () => {
+  const bigData = { rows: Array.from({ length: 200 }, (_, i) => ({ i, text: `row number ${i} with some padding text` })) }
+
+  it('gzips a large payload for a gzip-accepting client', () => {
+    const cap = fakeRes()
+    jsonMaybeGzip(fakeReq({ 'accept-encoding': 'gzip' }), cap.res, bigData)
+    expect(cap.statusCode).toBe(200)
+    expect(header(cap, 'Content-Encoding')).toBe('gzip')
+    expect(header(cap, 'Vary')).toBe('Accept-Encoding')
+    expect(header(cap, 'Cache-Control')).toBe('private, no-store')
+    expect(JSON.parse(gunzipSync(cap.body as Buffer).toString())).toEqual(bigData)
+  })
+
+  it('sends plain JSON without Accept-Encoding', () => {
+    const cap = fakeRes()
+    jsonMaybeGzip(fakeReq(), cap.res, bigData)
+    expect(header(cap, 'Content-Encoding')).toBeUndefined()
+    expect(JSON.parse((cap.body as Buffer).toString())).toEqual(bigData)
+  })
+
+  it('sends small payloads uncompressed even when gzip is accepted', () => {
+    const cap = fakeRes()
+    jsonMaybeGzip(fakeReq({ 'accept-encoding': 'gzip' }), cap.res, { ok: true })
+    expect(header(cap, 'Content-Encoding')).toBeUndefined()
+    expect(JSON.parse((cap.body as Buffer).toString())).toEqual({ ok: true })
+  })
+
+  it('honours a non-200 status', () => {
+    const cap = fakeRes()
+    jsonMaybeGzip(fakeReq(), cap.res, { error: 'nope' }, 500)
+    expect(cap.statusCode).toBe(500)
   })
 })

@@ -159,6 +159,106 @@ assert_eq "rewrites placeholder into a generic error" "1" "$(count editMessageTe
 assert_eq "error text used" "yes" "$(body_has "Valami elakadt")"
 
 # ---------------------------------------------------------------------------
+# TGORPHAN908 cases: stale upper bound + round-scoped answer attribution.
+# ---------------------------------------------------------------------------
+
+# Build a case whose transcript carries TIMESTAMPED user prompts (real format).
+# layout = delivered | undelivered | foreign
+#   delivered:   round-1 prompt @ marker time, answer text + reply call WITH
+#                result; then a later internal round with monologue text.
+#   undelivered: round-1 prompt @ marker time, answer text, NO reply call;
+#                then a later internal round with monologue text.
+#   foreign:     only a later round's prompt (nothing at/before marker time).
+make_ts_case() { # name layout age_seconds
+    local name="$1" layout="$2" age="$3"
+    local pdir="$TMP/root/agents/$name/.claude/channels/telegram/progress"
+    local sdir="$TMP/root/agents/$name/.claude/channels/telegram"
+    mkdir -p "$pdir"
+    printf 'TELEGRAM_BOT_TOKEN=TESTTOKEN\n' > "$sdir/.env"
+    local tr="$sdir/transcript.jsonl"
+    python3 - "$tr" "$layout" "$age" <<'PY'
+import datetime, json, sys, time
+tr, layout, age = sys.argv[1], sys.argv[2], int(sys.argv[3])
+now = time.time()
+def iso(t):
+    return datetime.datetime.fromtimestamp(t, datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z')
+t1, t2 = now - age, now - age / 2
+ev = []
+if layout in ("delivered", "undelivered"):
+    ev.append({"type": "user", "timestamp": iso(t1),
+               "message": {"role": "user", "content": "csatorna-kerdes"}})
+    blocks = [{"type": "text", "text": "VALODI_T1_VALASZ a csatornanak"}]
+    if layout == "delivered":
+        blocks.append({"type": "tool_use", "id": "tuR1",
+                       "name": "mcp__plugin_telegram_telegram__reply"})
+    ev.append({"type": "assistant", "message": {"role": "assistant", "content": blocks}})
+    if layout == "delivered":
+        ev.append({"type": "user", "message": {"role": "user",
+                   "content": [{"type": "tool_result", "tool_use_id": "tuR1"}]}})
+ev.append({"type": "user", "timestamp": iso(t2),
+           "message": {"role": "user", "content": "belso scheduled kor"}})
+ev.append({"type": "assistant", "message": {"role": "assistant",
+           "content": [{"type": "text", "text": "BELSO_NAPLO Szabinak nem kuldtem semmit"}]}})
+with open(tr, "w") as f:
+    for e in ev:
+        f.write(json.dumps(e) + "\n")
+PY
+    printf '[{"chat_id":"%s","message_id":555,"transcript_path":"%s"}]\n' "$CHAT" "$tr" \
+        > "$pdir/SID.json"
+    python3 - "$pdir/SID.json" "$age" <<'PY'
+import os, sys, time
+os.utime(sys.argv[1], (time.time()-int(sys.argv[2]),)*2)
+PY
+    echo "$pdir"
+}
+
+echo ""
+echo "(f) Stale (28 days): dropped silently, no API call at all"
+PF="$(make_case wf hung $((28 * 86400)))"
+run_wd 1 1
+assert_eq "no real-answer send for a dead round" "0" "$(count sendMessage)"
+assert_eq "no error edit for a dead round" "0" "$(count editMessageText)"
+assert_eq "no delete attempt past Telegram's 48h window" "0" "$(count deleteMessage)"
+assert_eq "state file removed (cleanup, not collection)" "no" "$(pend_exists "$PF")"
+
+echo ""
+echo "(g) Stale but <48h: placeholder deleted, nothing delivered"
+PG="$(make_case wg hung 100000)"   # ~27.7h: > 24h stale, < 47h delete window
+run_wd 1 1
+assert_eq "no real-answer send" "0" "$(count sendMessage)"
+assert_eq "no error edit" "0" "$(count editMessageText)"
+assert_eq "placeholder deleted while still possible" "1" "$(count deleteMessage)"
+assert_eq "state file removed" "no" "$(pend_exists "$PG")"
+
+echo ""
+echo "(h) Round's reply already delivered: silent clear, NO resend of anything"
+PH="$(make_ts_case wh delivered 1000)"
+run_wd 1 1
+assert_eq "no resend (answer already reached the channel)" "0" "$(count sendMessage)"
+assert_eq "no error edit" "0" "$(count editMessageText)"
+assert_eq "internal monologue never sent" "no" "$(body_has "BELSO_NAPLO")"
+assert_eq "placeholder cleaned up" "1" "$(count deleteMessage)"
+assert_eq "state file removed" "no" "$(pend_exists "$PH")"
+
+echo ""
+echo "(i) Answer scoped to the marker's round, not the transcript's last text"
+PI="$(make_ts_case wi undelivered 1000)"
+run_wd 1 1
+assert_eq "backstop fires: one delivery" "1" "$(count sendMessage)"
+assert_eq "delivers the marker round's own text" "yes" "$(body_has "VALODI_T1_VALASZ")"
+assert_eq "later internal turn's text NOT sent" "no" "$(body_has "BELSO_NAPLO")"
+assert_eq "state file removed" "no" "$(pend_exists "$PI")"
+
+echo ""
+echo "(j) Timestamped transcript with no prompt at the marker: unattributable"
+PJ="$(make_ts_case wj foreign 1000)"
+run_wd 1 1
+assert_eq "no text delivery (nothing attributable)" "0" "$(count sendMessage)"
+assert_eq "internal text NOT leaked" "no" "$(body_has "BELSO_NAPLO")"
+assert_eq "falls back to generic error" "1" "$(count editMessageText)"
+assert_eq "state file removed" "no" "$(pend_exists "$PJ")"
+
+# ---------------------------------------------------------------------------
 echo ""
 echo "=============================="
 TOTAL=$((PASS + FAIL))

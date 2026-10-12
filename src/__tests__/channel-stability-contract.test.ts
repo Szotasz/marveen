@@ -79,6 +79,15 @@ describe('P1#3 — .bun/bin PATH on every claude (re)spawn path', () => {
   })
 })
 
+describe('P1#4 — DISABLE_AUTOUPDATER=1 on the sub-agent spawn path', () => {
+  // A spawned agent whose Claude Code auto-updater fires does an in-place global
+  // reinstall into the shared package prefix and can corrupt the one install
+  // every agent resolves through. The launch command must disable it.
+  it('agent-process.ts sub-agent launch disables the auto-updater', () => {
+    expect(read('src/web/agent-process.ts')).toMatch(/DISABLE_AUTOUPDATER=1/)
+  })
+})
+
 describe('P2#4 — independent systemd-timer watchdog', () => {
   const sh = read('scripts/channel-watchdog.sh')
   const timer = read('scripts/systemd/channel-watchdog.timer')
@@ -87,7 +96,7 @@ describe('P2#4 — independent systemd-timer watchdog', () => {
     expect(stripBashComments(sh)).not.toMatch(/systemctl\s+(--user\s+)?restart/)
   })
   it('recovers via tmux respawn-pane of ONLY the channels session', () => {
-    expect(sh).toMatch(/respawn-pane -k -t "\$SESSION"/)
+    expect(sh).toMatch(/respawn-pane -k -t "=\$SESSION:"/)
   })
   it('runs every 5 minutes', () => {
     expect(timer).toMatch(/OnUnitActiveSec=5min/)
@@ -112,5 +121,37 @@ describe('P2#5 — dashboard restart routes the main agent through respawn-pane 
     const cm = stripTsComments(read('src/web/channel-monitor.ts'))
     // The function must not shell out to `systemctl --user restart` for the unit.
     expect(cm).not.toMatch(/systemctl[^\n]*restart/)
+  })
+})
+
+describe('P2#6 — channel-watchdog.sh independent auth-dead backstop (GAP 2b)', () => {
+  const sh = read('scripts/channel-watchdog.sh')
+
+  it('still NEVER calls systemctl … restart after the restructuring', () => {
+    expect(stripBashComments(sh)).not.toMatch(/systemctl\s+(--user\s+)?restart/)
+  })
+
+  it('invokes scripts/channels-auth-probe.mjs as the independent auth-dead signal', () => {
+    expect(sh).toMatch(/scripts\/channels-auth-probe\.mjs/)
+  })
+
+  it('computes STALE and AUTHDEAD independently and proceeds to recovery on either', () => {
+    expect(sh).toMatch(/AUTHDEAD=true/)
+    expect(sh).toMatch(/\[\s*"\$STALE"\s*!=\s*true\s*\]\s*&&\s*\[\s*"\$AUTHDEAD"\s*!=\s*true\s*\]/)
+  })
+
+  it('gates AUTHDEAD on AUTH_DEAD_THRESHOLD_TICKS consecutive dead ticks (not a single probe)', () => {
+    expect(sh).toMatch(/AUTH_DEAD_THRESHOLD_TICKS=/)
+  })
+
+  it('RESPAWN_CMD construction references main-agent-isolated-config.mjs (GAP 1 parity fix, 3c)', () => {
+    expect(sh).toMatch(/scripts\/main-agent-isolated-config\.mjs/)
+    // The isolated-mode branch must splice CLAUDE_CONFIG_DIR + the fleet token
+    // (read via $(cat …) at spawn time, never embedded literally) into CFG_ENV,
+    // and RESPAWN_CMD must actually use it -- a completeness gap here would
+    // silently reintroduce GAP 1 on this one recovery path.
+    expect(sh).toMatch(/CFG_ENV="export CLAUDE_CONFIG_DIR=/)
+    expect(sh).toMatch(/CLAUDE_CODE_OAUTH_TOKEN=\\"\\\$\(cat /)
+    expect(sh).toMatch(/RESPAWN_CMD=.*\$\{CFG_ENV\}/)
   })
 })

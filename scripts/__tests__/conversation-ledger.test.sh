@@ -49,13 +49,28 @@ run_drain() { # db
         MAIN_AGENT_ID="marveen" python3 "$HOOKS_DIR/ledger-live-drain.py" )
 }
 
+# The task's scheduler preCheck, run through the shipped wrapper from a foreign
+# cwd: the wrapper itself must pin cwd to the install root.
+run_drain_precheck() { # db
+    ( cd / && LEDGER_DB_PATH="$1" LEDGER_OWNER_CHAT="10000000001" \
+        MAIN_AGENT_ID="marveen" bash "$HOOKS_DIR/ledger-live-drain-precheck.sh" )
+}
+
 # Age every row in a ledger DB backwards so an open question clears the grace window.
 age_rows() { # db seconds
     python3 - "$1" "$2" <<'PYEOF'
 import sqlite3, sys
+# Tolerant of a missing table: when a hook under test recorded nothing, the
+# caller must still reach its assertion and FAIL cleanly. Aborting here would
+# hide every later check in the run.
 con = sqlite3.connect(sys.argv[1])
-con.execute("UPDATE conversation_log SET created_at = created_at - ?", (int(sys.argv[2]),))
-con.commit(); con.close()
+try:
+    con.execute("UPDATE conversation_log SET created_at = created_at - ?", (int(sys.argv[2]),))
+    con.commit()
+except Exception:
+    pass
+finally:
+    con.close()
 PYEOF
 }
 
@@ -89,6 +104,21 @@ print(json.dumps(payload))
 PYEOF
 }
 
+# Emit an inbound payload that quotes an earlier message (reply_to_message_id).
+emit_inbound_replyto() { # chat_id message_id text reply_to_message_id [cwd]
+    python3 - "$@" <<'PYEOF'
+import json, sys
+chat_id, message_id, text, reply_to = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+block = (f'<channel source="plugin:telegram:telegram" chat_id="{chat_id}" '
+         f'message_id="{message_id}" user="x" reply_to_message_id="{reply_to}" '
+         f'ts="2026-06-02T14:20:25.000Z">\n{text}\n</channel>')
+payload = {"hook_event_name": "UserPromptSubmit", "prompt": block}
+if len(sys.argv) > 5:
+    payload["cwd"] = sys.argv[5]
+print(json.dumps(payload))
+PYEOF
+}
+
 # Emit a Telegram reply PostToolUse payload.
 emit_reply() { # chat_id text [cwd]
     python3 - "$@" <<'PYEOF'
@@ -97,6 +127,34 @@ payload = {"tool_name": "mcp__plugin_telegram_telegram__reply",
            "tool_input": {"chat_id": sys.argv[1], "text": sys.argv[2]}}
 if len(sys.argv) > 3:
     payload["cwd"] = sys.argv[3]
+print(json.dumps(payload))
+PYEOF
+}
+
+# Emit an inbound payload from ANY channel provider (the envelope shape is the
+# same for every plugin; only the source attribute differs).
+emit_inbound_provider() { # provider chat_id message_id text [cwd]
+    python3 - "$@" <<'PYEOF'
+import json, sys
+provider, chat_id, message_id, text = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+block = (f'<channel source="plugin:{provider}:{provider}" chat_id="{chat_id}" '
+         f'message_id="{message_id}" user="x" ts="2026-06-02T14:20:25.000Z">\n{text}\n</channel>')
+payload = {"hook_event_name": "UserPromptSubmit", "prompt": block}
+if len(sys.argv) > 5:
+    payload["cwd"] = sys.argv[5]
+print(json.dumps(payload))
+PYEOF
+}
+
+# Emit a reply PostToolUse payload for ANY channel provider. `response` is the
+# tool's plain-text answer, from which the message_id is parsed.
+emit_reply_provider() { # provider chat_id text response
+    python3 - "$@" <<'PYEOF'
+import json, sys
+provider, chat_id, text, response = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+payload = {"tool_name": f"mcp__plugin_{provider}_{provider}__reply",
+           "tool_input": {"chat_id": chat_id, "text": text},
+           "tool_response": [{"type": "text", "text": response}]}
 print(json.dumps(payload))
 PYEOF
 }
@@ -149,6 +207,15 @@ assert_eq "inbound capture: message_id" "1054" \
     "$(db_scalar "$DB_A" "SELECT message_id FROM conversation_log")"
 assert_eq "inbound capture: text recorded" "Jok a Fokusz e-mail cimek" \
     "$(db_scalar "$DB_A" "SELECT text FROM conversation_log")"
+assert_eq "inbound capture: no quote -> reply_to_message_id is NULL" "NULL" \
+    "$(db_scalar "$DB_A" "SELECT reply_to_message_id FROM conversation_log")"
+
+# A message that quotes an earlier one records which message_id it quoted
+# (df3b48a7) -- and never the quoted text itself, only the id.
+DB_A2="$TMPDIR_BASE/a2.db"
+emit_inbound_replyto 10000000001 2001 "lezarhato" 1999 | run_hook ledger-capture.py "$DB_A2"
+assert_eq "inbound capture: reply_to_message_id recorded" "1999" \
+    "$(db_scalar "$DB_A2" "SELECT reply_to_message_id FROM conversation_log")"
 
 # ---------------------------------------------------------------------------
 # (b) OUTBOUND CAPTURE -> conversation_log direction='out'
@@ -453,6 +520,154 @@ mkdir -p "$TMPDIR_BASE/ld4"; DB_LD4="$TMPDIR_BASE/ld4/x.db"
 emit_inbound 10000000001 1131 "Epp most erkezett" | run_hook ledger-capture.py "$DB_LD4"
 OUT_G4="$(run_drain "$DB_LD4")"
 assert_eq "live drain: in-flight question (within grace) is not surfaced" "" "$OUT_G4"
+
+# (g5) preCheck: nothing to surface -> SKIP (no model turn); covers the
+#      answered, in-flight and already-surfaced cases with the drain's own rules
+assert_eq "drain precheck: answered question -> SKIP" "SKIP" "$(run_drain_precheck "$DB_LD3")"
+assert_eq "drain precheck: in-flight question -> SKIP" "SKIP" "$(run_drain_precheck "$DB_LD4")"
+assert_eq "drain precheck: already surfaced -> SKIP" "SKIP" "$(run_drain_precheck "$DB_LD1")"
+
+# (g6) preCheck: something to surface -> empty stdout (the turn runs), and the
+#      statefile is NOT written: the scheduler's busy gate may still drop this
+#      tick, and a recorded id would dedup the question away for good
+mkdir -p "$TMPDIR_BASE/ld6"; DB_LD6="$TMPDIR_BASE/ld6/x.db"
+emit_inbound 10000000001 1140 "Precheck utan is felszinre kell jonnie" | run_hook ledger-capture.py "$DB_LD6"
+age_rows "$DB_LD6" 120
+assert_eq "drain precheck: open question -> empty stdout (run the turn)" "" "$(run_drain_precheck "$DB_LD6")"
+assert_eq "drain precheck: never records the surfaced id" "" \
+    "$(cat "$TMPDIR_BASE/ld6/.ledger-drain-marveen" 2>/dev/null)"
+if printf '%s' "$(run_drain "$DB_LD6")" | grep -q "message_id=1140"; then
+    pass "drain precheck: the real drain still surfaces the question afterwards"
+else
+    fail "drain precheck: the question was lost after a precheck"
+fi
+
+# ---------------------------------------------------------------------------
+# (h) SECOND CHANNEL PROVIDER -- the ledger must not be blind to a non-Telegram
+#     channel. Regression guard: both hooks were hardcoded to
+#     `plugin:telegram:telegram` / a "telegram" substring, so an install whose
+#     primary channel was Discord recorded ZERO turns -- and the failure was
+#     invisible, because the replay still produced a non-empty block from the
+#     one provider that WAS captured.
+# ---------------------------------------------------------------------------
+echo ""
+echo "(h) Second channel provider (discord)"
+
+# (h1) inbound from a non-telegram provider is captured
+DB_H="$TMPDIR_BASE/h.db"
+emit_inbound_provider discord 20000000002 7001 "kerdes egy masik csatornarol" \
+    | run_hook ledger-capture.py "$DB_H"
+H_IN="$(db_scalar "$DB_H" "SELECT text FROM conversation_log WHERE direction='in'")"
+assert_eq "discord inbound is captured" "kerdes egy masik csatornarol" "$H_IN"
+H_CHAT="$(db_scalar "$DB_H" "SELECT chat_id FROM conversation_log WHERE direction='in'")"
+assert_eq "discord inbound keeps its chat_id" "20000000002" "$H_CHAT"
+
+# (h2) outbound reply from a non-telegram provider is captured
+emit_reply_provider discord 20000000002 "valasz egy masik csatornara" "sent (id: 7002)" \
+    | run_hook ledger-outbound.py "$DB_H"
+H_OUT="$(db_scalar "$DB_H" "SELECT text FROM conversation_log WHERE direction='out'")"
+assert_eq "discord outbound is captured" "valasz egy masik csatornara" "$H_OUT"
+H_MID="$(db_scalar "$DB_H" "SELECT message_id FROM conversation_log WHERE direction='out'")"
+assert_eq "discord outbound records its message_id" "7002" "$H_MID"
+
+# (h2b) the Slack plugin's REAL tool name carries a hyphen in the plugin
+#       segment (slack-channel), unlike emit_reply_provider's <p>_<p> shape.
+#       The script gate used to reject it, so no Slack reply ever reached the
+#       ledger and telegram-reply-guard kept blocking an answered message.
+DB_HS="$TMPDIR_BASE/hs.db"
+echo '{"tool_name":"mcp__plugin_slack-channel_slack__reply","tool_input":{"chat_id":"D0SLACKDM1","text":"slack valasz"},"tool_response":[{"type":"text","text":"Sent 1 message(s) to D0SLACKDM1 [ts: 1789638721.065709]"}]}' \
+    | run_hook ledger-outbound.py "$DB_HS"
+HS_OUT="$(db_scalar "$DB_HS" "SELECT text FROM conversation_log WHERE direction='out'")"
+assert_eq "slack-channel outbound (hyphenated plugin id) is captured" "slack valasz" "$HS_OUT"
+
+# (h2c) the repo-shipped PostToolUse matcher that routes to ledger-outbound.py
+#       must reach every provider's reply tool -- a telegram-only matcher
+#       means the hook never even runs for Slack/Discord. Claude Code treats
+#       the matcher as a regex; check it both ways (search and full match).
+MATCHER_CHECK="$(python3 - "$INSTALL_DIR/.claude/settings.json" <<'PYEOF'
+import json, re, sys
+hooks = json.load(open(sys.argv[1]))["hooks"]["PostToolUse"]
+m = [g["matcher"] for g in hooks
+     if any("ledger-outbound.py" in h.get("command", "") for h in g.get("hooks", []))]
+if len(m) != 1:
+    print("matcher-count=%d" % len(m)); sys.exit(0)
+rx = m[0]
+bad = []
+for t in ("mcp__plugin_telegram_telegram__reply",
+          "mcp__plugin_discord_discord__reply",
+          "mcp__plugin_slack-channel_slack__reply"):
+    if not (re.fullmatch(rx, t) and re.search(rx, t)):
+        bad.append("miss:" + t)
+for t in ("mcp__plugin_slack-channel_slack__react",
+          "mcp__github__reply_to_review_comment"):
+    if re.search(rx, t):
+        bad.append("hit:" + t)
+print(" ".join(bad) or "ok")
+PYEOF
+)"
+assert_eq "settings.json ledger-outbound matcher covers every provider's reply tool only" "ok" "$MATCHER_CHECK"
+
+# (h3) a split reply answers "sent 2 parts (ids: A, B)" -> the first id is used
+DB_H2="$TMPDIR_BASE/h2.db"
+emit_reply_provider discord 10000000001 "hosszu valasz" "sent 2 parts (ids: 991, 992)" \
+    | run_hook ledger-outbound.py "$DB_H2"
+H2_MID="$(db_scalar "$DB_H2" "SELECT message_id FROM conversation_log WHERE direction='out'")"
+assert_eq "multi-part reply extracts the first message_id" "991" "$H2_MID"
+
+# (h4) the open question closes across providers: an unanswered discord inbound
+#      IS surfaced by the drain, and stops being surfaced once answered.
+mkdir -p "$TMPDIR_BASE/h3"; DB_H3="$TMPDIR_BASE/h3/x.db"
+emit_inbound_provider discord 10000000001 4201 "kerdes discordon" | run_hook ledger-capture.py "$DB_H3"
+age_rows "$DB_H3" 600
+OUT_H3A="$(run_drain "$DB_H3")"
+case "$OUT_H3A" in
+    *"kerdes discordon"*) pass "discord open question is surfaced by the drain" ;;
+    *) fail "discord open question was NOT surfaced by the drain" ;;
+esac
+emit_reply_provider discord 10000000001 "valasz" "sent (id: 4202)" | run_hook ledger-outbound.py "$DB_H3"
+mkdir -p "$TMPDIR_BASE/h3b"; cp "$DB_H3" "$TMPDIR_BASE/h3b/x.db"
+OUT_H3B="$(run_drain "$TMPDIR_BASE/h3b/x.db")"
+assert_eq "an answered discord question is not surfaced" "" "$OUT_H3B"
+
+# (h5) both providers land in ONE transcript
+DB_H4="$TMPDIR_BASE/h4.db"
+emit_inbound 10000000001 5001 "TELEGRAM_UZENET" | run_hook ledger-capture.py "$DB_H4"
+emit_inbound_provider discord 20000000002 5002 "DISCORD_UZENET" \
+    | run_hook ledger-capture.py "$DB_H4"
+emit_session | run_hook ledger-replay.py "$DB_H4" > "$TMPDIR_BASE/h4.json"
+H4_CTX="$(ctx_of "$TMPDIR_BASE/h4.json")"
+case "$H4_CTX" in
+    *TELEGRAM_UZENET*) pass "replay keeps the telegram turn" ;;
+    *) fail "replay lost the telegram turn" ;;
+esac
+case "$H4_CTX" in
+    *DISCORD_UZENET*) pass "replay includes the discord turn" ;;
+    *) fail "replay lost the discord turn -- the ledger is provider-blind" ;;
+esac
+
+# (h6) NEGATIVE: a non-channel tool that merely contains "reply" is still
+#      rejected. The gate is anchored on the mcp__plugin_<x>__reply shape, so
+#      widening it to a second provider must not widen it to everything.
+DB_H5="$TMPDIR_BASE/h5.db"
+echo '{"tool_name":"mcp__github__reply_to_review_comment","tool_input":{"chat_id":"10000000001","text":"nope"}}' \
+    | run_hook ledger-outbound.py "$DB_H5"
+H5_OUT="$(db_scalar "$DB_H5" "SELECT COUNT(*) FROM conversation_log WHERE direction='out'")"
+if [ "$H5_OUT" = "0" ] || [ "$H5_OUT" = "NULL" ]; then
+    pass "a non-channel tool containing 'reply' records no outbound row"
+else
+    fail "a non-channel 'reply' tool recorded an outbound row: $H5_OUT"
+fi
+
+# (h7) NEGATIVE: a channel plugin's NON-reply tool (react/edit) records nothing.
+DB_H6="$TMPDIR_BASE/h6.db"
+echo '{"tool_name":"mcp__plugin_discord_discord__react","tool_input":{"chat_id":"10000000001","text":"x"}}' \
+    | run_hook ledger-outbound.py "$DB_H6"
+H6_OUT="$(db_scalar "$DB_H6" "SELECT COUNT(*) FROM conversation_log WHERE direction='out'")"
+if [ "$H6_OUT" = "0" ] || [ "$H6_OUT" = "NULL" ]; then
+    pass "a channel plugin's non-reply tool records no outbound row"
+else
+    fail "a non-reply channel tool recorded an outbound row: $H6_OUT"
+fi
 
 # ---------------------------------------------------------------------------
 # Summary

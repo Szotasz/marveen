@@ -8,8 +8,9 @@
 
 import { join } from 'node:path'
 import { MAIN_AGENT_ID } from '../config.js'
+import { logger } from '../logger.js'
 import { atomicWriteFileSync } from './atomic-write.js'
-import { agentDir, readFileOr, listAgentNames, readAgentSecurityProfile } from './agent-config.js'
+import { agentDir, readFileOr, listAgentNames, readAgentSecurityProfile , readJsonObjectForWrite } from './agent-config.js'
 
 export interface TeamConfig {
   role: 'leader' | 'member'
@@ -83,7 +84,7 @@ export function resolveAgentSecurityProfile(name: string): string {
 export function writeAgentTeam(name: string, team: TeamConfig): void {
   const configPath = join(agentDir(name), 'agent-config.json')
   let config: Record<string, unknown> = {}
-  try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
+  config = readJsonObjectForWrite(configPath)
   config.team = team
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
 }
@@ -142,11 +143,54 @@ export function sanitizeTeamConfig(
   }
 }
 
+// Guard against reporting cycles before persisting a new reportsTo. Dragging a
+// manager under one of its own (transitive) reports in the Team graph would
+// otherwise create a loop (A reports to B, B reports to A), detaching the whole
+// subtree from the main agent -- the render only reaches nodes from MAIN, so a
+// cycle silently orphans everyone in it. Pure + reader-injected so it is
+// testable without touching disk.
+//
+// Semantics: `reportsTo` is the manager. Setting agentName.reportsTo =
+// proposedReportsTo forms the chain agentName -> proposedReportsTo -> (its
+// manager) -> ... A cycle exists iff walking that chain upward reaches
+// agentName again. MAIN never reports to anyone, so it terminates the walk.
+export function reportsToCreatesCycle(
+  agentName: string,
+  proposedReportsTo: string | null,
+  readTeam: (name: string) => Pick<TeamConfig, 'reportsTo'>,
+  mainAgentId: string,
+): boolean {
+  if (!proposedReportsTo || proposedReportsTo === mainAgentId) return false
+  if (proposedReportsTo === agentName) return true
+  let cursor: string | null = proposedReportsTo
+  const visited = new Set<string>()
+  while (cursor && cursor !== mainAgentId) {
+    if (cursor === agentName) return true
+    if (visited.has(cursor)) break  // pre-existing loop elsewhere; don't spin
+    visited.add(cursor)
+    cursor = readTeam(cursor).reportsTo
+  }
+  return false
+}
+
 // Removing an agent leaves dangling references in other agents' team configs.
 // Call this from the DELETE handler: members who reported to the removed leader
 // fall back to the main agent, and anyone who delegated to them drops the id.
 export function cleanupTeamReferences(removedName: string): void {
   for (const other of listAgentNames()) {
+    // JSONCLOBBER926: one agent's corrupt agent-config.json (writeAgentTeam now
+    // refuses to overwrite it) must not stop the cleanup of the others -- the
+    // deletion this runs after has already happened. Warn and move on.
+    try {
+      cleanupTeamReferencesFor(other, removedName)
+    } catch (err) {
+      logger.warn({ agent: other, removed: removedName, err: (err as Error)?.message }, 'cleanupTeamReferences: skipping an agent whose config could not be updated')
+    }
+  }
+}
+
+function cleanupTeamReferencesFor(other: string, removedName: string): void {
+  {
     const team = readAgentTeam(other)
     let dirty = false
     if (team.reportsTo === removedName) {

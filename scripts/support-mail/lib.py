@@ -39,6 +39,9 @@ SMTP_HOST = _env("SUPPORT_SMTP_HOST", "smtp.hostinger.com")
 SMTP_PORT = int(_env("SUPPORT_SMTP_PORT", "465"))  # implicit TLS/SSL
 
 FROM_NAME = _env("SUPPORT_FROM_NAME", "Support")
+# Outgoing From address; may differ from the login mailbox (e.g. a product
+# alias hosted on a primary account). Defaults to the login address.
+FROM_ADDRESS = _env("SUPPORT_FROM_ADDRESS") or EMAIL
 WEB_PORT = _env("WEB_PORT", "3420")
 
 

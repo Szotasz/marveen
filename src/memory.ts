@@ -2,16 +2,11 @@ import { mkdirSync, writeFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir, tmpdir } from 'node:os'
 import {
-  searchMemories,
-  recentMemories,
-  touchMemory,
   saveMemory,
   decayMemories as dbDecay,
   pruneAuditLogs,
   pruneTokenUsage,
   getMemoriesForChat,
-  listKanbanCardsSummary,
-  type Memory,
 } from './db.js'
 import { runAgent } from './agent.js'
 import { logger } from './logger.js'
@@ -76,62 +71,21 @@ const SEMANTIC_PATTERN =
 // Skip: trivial messages not worth remembering
 const SKIP_PATTERN = /^(ok|igen|nem|koszi|kosz|hello|szia|hi|hey|thx|thanks|jo|oke|persze|rendben|ja|aha|\.+|!+|\?+)$/i
 
-export async function buildMemoryContext(
-  chatId: string,
-  userMessage: string
-): Promise<string> {
-  const ftsResults = searchMemories(userMessage, chatId, 3)
-  const recent = recentMemories(chatId, 5)
+// buildMemoryContext used to live here: 3 FTS hits + 5 recent rows as a
+// [Memoria kontextus] block. It never had a caller, from the first release
+// (f24eacc8) on, and it did not read the agent tiers at all: it filtered on
+// chat_id (the old Telegram-chat rows) and bumped salience on every hit. Removed
+// rather than wired (HOTMEMHAMIS925). Whether an agent's hot/warm memory should
+// load on its own is a product decision; if yes, it needs a new loader keyed on
+// agent_id + category with a size cap, not this function.
 
-  const seen = new Set<number>()
-  const combined: Memory[] = []
-
-  for (const m of [...ftsResults, ...recent]) {
-    if (!seen.has(m.id)) {
-      seen.add(m.id)
-      combined.push(m)
-    }
-  }
-
-  if (combined.length === 0) return ''
-
-  for (const m of combined) {
-    touchMemory(m.id)
-  }
-
-  const lines = combined.map((m) => `- ${m.content} (${m.sector})`)
-  return `[Memoria kontextus]\n${lines.join('\n')}`
-}
-
-const STATUS_HU: Record<string, string> = {
-  planned: 'Tervezett',
-  in_progress: 'Folyamatban',
-  waiting: 'Várakozik',
-  done: 'Kész',
-}
-
-const PRIORITY_HU: Record<string, string> = {
-  urgent: '🔴',
-  high: '🟠',
-  normal: '⚪',
-  low: '🔵',
-}
-
-export function buildKanbanContext(): string {
-  const cards = listKanbanCardsSummary()
-  if (cards.length === 0) return ''
-
-  const grouped: Record<string, string[]> = {}
-  for (const c of cards) {
-    const key = STATUS_HU[c.status] ?? c.status
-    if (!grouped[key]) grouped[key] = []
-    const assignee = c.assignee ? ` (${c.assignee})` : ''
-    grouped[key].push(`  ${PRIORITY_HU[c.priority] ?? '⚪'} ${c.title}${assignee} [${c.id}]`)
-  }
-
-  const lines = Object.entries(grouped).map(([status, items]) => `${status}:\n${items.join('\n')}`)
-  return `[Kanban tabla]\n${lines.join('\n')}`
-}
+// buildKanbanContext used to live here: it rendered EVERY unarchived card's
+// FULL title into a [Kanban tabla] block (no limit, no truncation -- ~1 MB of
+// titles on the live board, KANBANCTXDEAD824). Nothing ever called it, in src,
+// dist or any plugin. Removed rather than fixed: an unbounded full-board dump
+// is the wrong contract for agent context, and whoever wires kanban context in
+// the future should start from the heartbeat-summary shape (counts first,
+// titles truncated server-side -- see buildHeartbeatSummaryResponse).
 
 export async function saveConversationTurn(
   chatId: string,

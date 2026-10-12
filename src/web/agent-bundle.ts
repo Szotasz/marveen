@@ -13,6 +13,7 @@ import { join, basename } from 'node:path'
 import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
 import { agentDir } from './agent-config.js'
+import { MAIN_AGENT_ID } from '../config.js'
 import { sanitizeAgentName } from './sanitize.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 
@@ -76,11 +77,12 @@ const CHANNEL_SECRET_FILES = ['.env', 'access.json', 'invites.json'] as const
 const CHANNEL_SECRET_DIRS = ['approved'] as const
 
 // agent-config.json keys that are machine-specific and must NOT survive a move
-// to another host: a remote agent's ssh host/workdir and a per-agent
-// CLAUDE_CONFIG_DIR point at paths/credentials that only exist on the source
-// machine. Stripped on import so an imported agent starts as a clean local
-// agent the operator can re-point if needed.
-const MACHINE_SPECIFIC_CONFIG_KEYS = ['remoteHost', 'remoteWorkdir', 'claudeConfigDir'] as const
+// to another host: a remote agent's ssh host/workdir, a per-agent
+// CLAUDE_CONFIG_DIR and a per-agent setup-token file (oauthTokenFile, 2fb86ef2)
+// point at paths/credentials that only exist on the source machine. Stripped on
+// import so an imported agent starts as a clean local agent the operator can
+// re-point if needed.
+const MACHINE_SPECIFIC_CONFIG_KEYS = ['remoteHost', 'remoteWorkdir', 'claudeConfigDir', 'oauthTokenFile'] as const
 
 function makeTempDir(prefix: string): string {
   return mkdtempSync(join(tmpdir(), prefix))
@@ -270,6 +272,8 @@ export function importAgentBundle(
     const rawName = (opts.overrideName ?? manifest.agentName).trim()
     const name = sanitizeAgentName(rawName)
     if (!name) throw new Error('Invalid agent name (empty after sanitization)')
+    // Same reservation as POST /api/agents: the main agent is not under agents/.
+    if (name === MAIN_AGENT_ID) throw new Error(`Agent name "${name}" is reserved for the main agent`)
 
     sanitizeImportedConfig(stagedAgentDir)
 
@@ -461,6 +465,7 @@ export function importAllAgentsBundle(
       try { if (!statSync(stagedAgentDir).isDirectory()) continue } catch { continue }
       const name = sanitizeAgentName(entry)
       if (!name) { skipped.push({ name: entry, reason: 'invalid name' }); continue }
+      if (name === MAIN_AGENT_ID) { skipped.push({ name, reason: 'reserved for the main agent' }); continue }
 
       sanitizeImportedConfig(stagedAgentDir)
       const dest = resolveDest(name) // agentDir: safeJoin rejects traversal

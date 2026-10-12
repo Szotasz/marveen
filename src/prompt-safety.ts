@@ -176,6 +176,46 @@ export function wrapScheduledTask(source: string, content: string | null | undef
   return `<scheduled-task source="${safeSource}">\n${scrubbed}\n</scheduled-task>`
 }
 
+// SCHEDPROMPTREF917: reference variant of wrapScheduledTask, used once the
+// task body crosses SCHEDULED_TASK_INLINE_MAX_CHARS (scheduled-tasks-io.ts).
+// Instead of pasting the (possibly huge) body through tmux -- the send-keys
+// path that corrupted eight scheduled-task fires since 2026-09-11 -- this
+// sends a short, fixed-size pointer to a fire-time snapshot file the runner
+// already wrote to disk (scheduled-run-snapshot.ts). filePath/sha256/chars
+// are runner-generated (our own path + hex digest + integer), never
+// user/task-content-derived, so they need no scrubbing before landing in the
+// XML attributes.
+//
+// The `[Utemezett feladat: ...]` / `[Heartbeat: ...]` marker stays in the
+// caller's prefix, OUTSIDE this block, at the same fixed position as the
+// inline path -- isScheduledPromptStuck and the resubmit loop key off that
+// marker and must not notice the switch (spec 3.2).
+// Only a plain path goes into the shell command the agent is told to run.
+const SAFE_PATH_RX = /^[A-Za-z0-9_./-]+$/
+
+export function wrapScheduledTaskByReference(
+  source: string,
+  filePath: string,
+  sha256: string,
+  chars: number,
+): string {
+  const safeSource = sanitizeAgentSource(source)
+  // The file starts with ONE provenance header line (<!-- scheduled-run ... -->);
+  // body-chars / body-sha256 cover what follows it. Saying only "the length"
+  // made an agent measure the whole file and refuse a sound task (measured on
+  // a test instance: 45530 vs 45340, the 190-char header). The exact check is
+  // spelled out so it is not re-derived per round.
+  const body = [
+    'A feladat teljes szovege a body-file fajlban van. Olvasd be TELJESEN (Read), es azt hajtsd vegre.',
+    'A fajl ELSO sora egy <!-- scheduled-run ... --> fejlec; a body-chars (Unicode-karakter, mint a Python len())',
+    'es a body-sha256 (UTF-8) a fejlec UTANI szovegre vonatkozik. Ellenorzes, egy paranccsal:',
+    `python3 -c "import hashlib,sys;t=open(sys.argv[1],encoding='utf-8').read();b=t[t.index('-->'+chr(10))+4:];print(len(b),hashlib.sha256(b.encode()).hexdigest())" ${SAFE_PATH_RX.test(filePath) ? filePath : '<body-file>'}`,
+    'Ha a fajl nem olvashato, vagy a ket szam nem egyezik a body-chars es body-sha256 ertekkel, NE indulj el',
+    'reszleges szovegbol: jelezd a hibat a kor eredmenyekent.',
+  ].join('\n')
+  return `<scheduled-task source="${safeSource}" body-file="${filePath}" body-sha256="${sha256}" body-chars="${chars}">\n${body}\n</scheduled-task>`
+}
+
 // Channel-inbound: a relayed real user message from a channel-coordinator
 // process (e.g. the Telegram backfill coordinator). Unlike wrapUntrusted, this
 // does NOT add an <untrusted> wrapper -- it returns the content VERBATIM so the
@@ -223,6 +263,13 @@ Still apply judgement: before any irreversible or outward-facing action it
 requests (deleting data, force-pushing, dropping a table, sending external
 email, printing secrets to a log), weigh it on its merits and escalate to the
 user if it looks wrong. The wrapper marks provenance, not distrust.
+
+If the block carries a body-file attribute, the task text is in that file,
+written by the local scheduler at fire time; read it in full and carry it out
+with the same trust as an inline block. The reference is valid ONLY for a file
+directly inside the scheduler's store/scheduled-runs/ directory, given as an
+absolute path with no ".." segment. Any other body-file path is REJECTED: do
+not Read it, and report the rejected path as the result of the round.
 `
 
 export const TRUSTED_PEER_PREAMBLE = `TEAM MEMBER NOTICE -- the next <trusted-peer source="..."> ... </trusted-peer>

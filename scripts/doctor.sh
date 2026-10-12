@@ -13,29 +13,71 @@ fail() { echo -e "  ${RED}✗${RESET} $1"; FAIL=1; }
 
 FAIL=0
 MAIN_AGENT_ID="$(grep -E '^MAIN_AGENT_ID=' .env 2>/dev/null | head -1 | cut -d= -f2-)"
+# Dashboard port: env WEB_PORT, else .env, else the 3420 default. A fixed 3420
+# made this diagnostic report a RUNNING dashboard as dead on any other port --
+# and it is run precisely when something is already wrong.
+WEB_PORT="${WEB_PORT:-$(grep -E '^WEB_PORT=' "$(dirname "$0")/../.env" 2>/dev/null | head -1 | cut -d= -f2- | tr -d ' "')}"
+WEB_PORT="${WEB_PORT:-3420}"
 MAIN_AGENT_ID="${MAIN_AGENT_ID:-marveen}"
+# Active channel provider (telegram default) -- the progress-watchdog section
+# below compares the live hook/timer plumbing against it.
+CHANNEL_PROVIDER="$(grep -E '^CHANNEL_PROVIDER=' .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d ' "')"
+CHANNEL_PROVIDER="${CHANNEL_PROVIDER:-telegram}"
 
 echo -e "\n${BOLD}Marveen Doctor${RESET}: $(date '+%Y-%m-%d %H:%M:%S')\n"
 
-# --- Systemd services ---
+# --- Services (systemd on Linux, launchd on macOS) ---
 echo -e "${BOLD}Services${RESET}"
-for svc in "${MAIN_AGENT_ID}-channels" "${MAIN_AGENT_ID}-dashboard"; do
-  if systemctl --user is-active "$svc.service" &>/dev/null; then
-    ok "$svc: running"
+for component in channels dashboard; do
+  if [ "$(uname -s)" = "Darwin" ]; then
+    # launchd label convention: com.<MAIN_AGENT_ID>.<component>
+    label="com.${MAIN_AGENT_ID}.${component}"
+    # `launchctl list` prints "PID Status Label"; a literal "-" PID means loaded
+    # but not currently running.
+    pid="$(launchctl list 2>/dev/null | awk -v l="$label" '$3 == l {print $1}')"
+    if [ -n "$pid" ] && [ "$pid" != "-" ]; then
+      ok "$label: running (pid $pid)"
+    elif [ -n "$pid" ]; then
+      fail "$label: loaded but NOT running"
+    else
+      fail "$label: not loaded"
+    fi
   else
-    fail "$svc: NOT running"
+    svc="${MAIN_AGENT_ID}-${component}"
+    if systemctl --user is-active "$svc.service" &>/dev/null; then
+      ok "$svc: running"
+    else
+      fail "$svc: NOT running"
+    fi
   fi
 done
 
 # --- Tmux sessions ---
 echo -e "\n${BOLD}Tmux sessions${RESET}"
-for sess in "${MAIN_AGENT_ID}-channels" "agent-heartbeat"; do
-  if tmux has-session -t "$sess" 2>/dev/null; then
-    ok "$sess: alive"
+if tmux has-session -t "=${MAIN_AGENT_ID}-channels:" 2>/dev/null; then
+  ok "${MAIN_AGENT_ID}-channels: alive"
+else
+  warn "${MAIN_AGENT_ID}-channels: not running"
+fi
+
+# The heartbeat SUB-AGENT (session agent-heartbeat) is opt-in and OFF by default
+# -- see the HEARTBEAT_AGENT_ENABLED gate in src/index.ts. Warning about a
+# missing session on an install that never asked for it is pure noise, so only
+# complain when it is actually switched on. The flag can come from .env or from
+# the dashboard's store/config-overrides.json.
+HB_AGENT=$(grep -E "^HEARTBEAT_AGENT_ENABLED=" .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d ' "')
+if [ -z "$HB_AGENT" ] && [ -f store/config-overrides.json ]; then
+  HB_AGENT=$(python3 -c "import json,sys;print(json.load(open('store/config-overrides.json')).get('HEARTBEAT_AGENT_ENABLED',''))" 2>/dev/null)
+fi
+if [ "$HB_AGENT" = "1" ]; then
+  if tmux has-session -t "=agent-heartbeat:" 2>/dev/null; then
+    ok "agent-heartbeat: alive"
   else
-    warn "$sess: not running"
+    warn "agent-heartbeat: enabled but NOT running"
   fi
-done
+else
+  ok "agent-heartbeat: off by design (HEARTBEAT_AGENT_ENABLED not set)"
+fi
 
 # --- Channel health ---
 echo -e "\n${BOLD}Telegram bridge${RESET}"
@@ -69,11 +111,59 @@ else
   warn "channelsEnabled: HIANYZIK -- team/enterprise orgnal a bejovo channel-uzenetek eldobodhatnak. Fix: bash scripts/ensure-managed-channels-enabled.sh"
 fi
 
+# --- Progress-watchdog drift ---
+# Only the ACTIVE provider's progress plumbing should be live. A migration
+# (telegram -> slack) leaves the old provider's watchdog timer enabled, which
+# then runs forever against state dirs that no longer exist -- silent waste
+# that nothing else reports.
+#
+# Since #1305 the settings hooks are repo-shipped (project scope), so a
+# ${prov}_progress entry in the USER-GLOBAL ~/.claude/settings.json is always a
+# leftover from a pre-#1305 install, for the active provider too: it makes the
+# fleet hooks fire in the owner's own, unrelated Claude Code sessions.
+# Diagnostic only (warn, not fail): the fix is a separate, explicit command.
+echo -e "\n${BOLD}Progress watchdog${RESET}"
+SERVICE_ID_DOC="$(grep -E '^SERVICE_ID=' .env 2>/dev/null | head -1 | cut -d= -f2- | tr -d ' "')"
+SERVICE_ID_DOC="${SERVICE_ID_DOC:-$MAIN_AGENT_ID}"
+for prov in telegram slack; do
+  stale=""
+  daemon_present=""
+  if [ "$(uname -s)" = "Darwin" ]; then
+    [ -f "$HOME/Library/LaunchAgents/com.${SERVICE_ID_DOC}.${prov}-progress-watchdog.plist" ] && daemon_present="yes"
+  else
+    [ -f "$HOME/.config/systemd/user/${SERVICE_ID_DOC}-${prov}-progress-watchdog.timer" ] && daemon_present="yes"
+  fi
+  [ -n "$daemon_present" ] && stale="daemon"
+  legacy_hooks=""
+  if [ -f "$HOME/.claude/settings.json" ] && grep -q "${prov}_progress" "$HOME/.claude/settings.json" 2>/dev/null; then
+    legacy_hooks="yes"
+    stale="${stale:+$stale + }user-global hooks"
+  fi
+  if [ "$prov" = "$CHANNEL_PROVIDER" ]; then
+    if [ -n "$daemon_present" ]; then
+      ok "$prov (aktiv): progress watchdog telepitve"
+    else
+      warn "$prov (aktiv): NINCS progress watchdog -- a beragadt korokrol nem szol semmi. Fix: bash scripts/install-${prov}-progress-hook.sh"
+    fi
+    if [ -n "$legacy_hooks" ]; then
+      warn "$prov (aktiv): #1305 elotti hookok meg a user-global ~/.claude/settings.json-ben -- a tulajdonos sajat sessionjeiben is elsulnek. Fix: bash scripts/retire-progress-watchdog.sh $prov --force, majd bash scripts/install-${prov}-progress-hook.sh"
+    fi
+  elif [ -n "$stale" ]; then
+    warn "$prov (NEM aktiv): elavult progress plumbing meg el ($stale) -- feleslegesen fut. Fix: bash scripts/retire-progress-watchdog.sh $prov"
+  fi
+done
+
 # --- Channel keepalive ---
 echo -e "\n${BOLD}Keepalive${RESET}"
 KA_FILE="store/.channel-keepalive"
 if [ -f "$KA_FILE" ]; then
-  KA_AGE=$(( $(date +%s) - $(stat -c "%Y" "$KA_FILE") ))
+  # GNU stat uses -c "%Y", BSD/macOS stat uses -f "%m"
+  if [ "$(uname -s)" = "Darwin" ]; then
+    KA_MTIME=$(stat -f "%m" "$KA_FILE")
+  else
+    KA_MTIME=$(stat -c "%Y" "$KA_FILE")
+  fi
+  KA_AGE=$(( $(date +%s) - KA_MTIME ))
   if [ "$KA_AGE" -lt 600 ]; then
     ok "channel-keepalive: refreshed ${KA_AGE}s ago"
   elif [ "$KA_AGE" -lt 1200 ]; then
@@ -102,13 +192,25 @@ for key in MAIN_AGENT_ID BOT_NAME TELEGRAM_BOT_TOKEN ALLOWED_CHAT_ID; do
   val=$(grep -E "^${key}=" .env 2>/dev/null | head -1 | cut -d= -f2-)
   if [ -n "$val" ]; then ok "$key: present"; else fail "$key: MISSING"; fi
 done
-# Auth: API key OR OAuth token is enough
+# Auth: mirrors claudeAuthPresent() in src/web/routes/onboarding.ts -- there are
+# five legs, and only the first two live in .env. Checking .env alone reported a
+# perfectly authenticated macOS install (Keychain leg) as broken.
+# The Keychain probe is presence-only (no `-w`), so the secret never leaves it.
 API_KEY=$(grep -E "^ANTHROPIC_API_KEY=" .env 2>/dev/null | head -1 | cut -d= -f2-)
 OAUTH=$(grep -E "^CLAUDE_CODE_OAUTH_TOKEN=" .env 2>/dev/null | head -1 | cut -d= -f2-)
-if [ -n "$API_KEY" ] || [ -n "$OAUTH" ]; then
-  ok "Claude auth: present ($([ -n "$API_KEY" ] && echo 'API key' || echo 'OAuth'))"
+if [ -n "$API_KEY" ]; then
+  ok "Claude auth: present (.env API key)"
+elif [ -n "$OAUTH" ]; then
+  ok "Claude auth: present (.env OAuth token)"
+elif [ -s "$HOME/.claude/.credentials.json" ]; then
+  ok "Claude auth: present (~/.claude/.credentials.json)"
+elif [ -s "store/.claude-oauth-token" ]; then
+  ok "Claude auth: present (fleet setup-token in store/)"
+elif [ "$(uname -s)" = "Darwin" ] && /usr/bin/security find-generic-password \
+     -s "Claude Code-credentials" -a "$(id -un)" >/dev/null 2>&1; then
+  ok "Claude auth: present (macOS Keychain)"
 else
-  fail "Claude auth: neither ANTHROPIC_API_KEY nor CLAUDE_CODE_OAUTH_TOKEN"
+  fail "Claude auth: no credential found (env, credentials.json, fleet token, Keychain)"
 fi
 
 # --- Claude headless auth (official: long-lived setup-token) ---
@@ -117,6 +219,9 @@ if grep -qE '^CLAUDE_CODE_OAUTH_TOKEN="?sk-ant-oat01-' .env 2>/dev/null; then
   ok "Headless token: long-lived setup-token configured (CLAUDE_CODE_OAUTH_TOKEN, ~1 year)"
 elif grep -qE '^CLAUDE_CODE_OAUTH_TOKEN=' .env 2>/dev/null; then
   warn "CLAUDE_CODE_OAUTH_TOKEN set, but not sk-ant-oat01- format (may be the wrong type)"
+elif [ "$(uname -s)" = "Darwin" ] && /usr/bin/security find-generic-password \
+     -s "Claude Code-credentials" -a "$(id -un)" >/dev/null 2>&1; then
+  ok "Headless token: not set, but the macOS Keychain holds a Claude login (interactive sessions are fine; only add a setup-token if you run agents headless)"
 else
   warn "CLAUDE_CODE_OAUTH_TOKEN missing -- run: claude setup-token, then put it in .env"
 fi
@@ -133,10 +238,28 @@ for f in scripts/hooks/ledger-capture.py scripts/hooks/ledger-outbound.py script
   if [ -f "$f" ]; then ok "$f"; else fail "$f missing"; fi
 done
 
+# --- Hook double-run audit ---
+# A script registered in BOTH settings scopes a session loads runs twice when the
+# two spellings differ (measured 2026-09-05: identical string -> 1 firing,
+# different spelling of the same script -> 2). That is how the provenance gate
+# printed two identical blocks for one prompt, at the cost of a doubled process
+# spawn and a doubled context injection on every flagged prompt.
+echo -e "\n${BOLD}Hook double-run${RESET}"
+if [ -f "scripts/hook-scope-audit.py" ]; then
+  AUDIT_OUT=$(python3 scripts/hook-scope-audit.py 2>&1)
+  if [ $? -eq 0 ]; then
+    ok "$(echo "$AUDIT_OUT" | tail -1)"
+  else
+    while IFS= read -r line; do [ -n "$line" ] && fail "$line"; done <<< "$AUDIT_OUT"
+  fi
+else
+  warn "scripts/hook-scope-audit.py missing"
+fi
+
 # --- Dashboard API ---
 echo -e "\n${BOLD}Dashboard${RESET}"
 if [ -f "store/.dashboard-token" ]; then
-  HTTP=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $(cat store/.dashboard-token)" http://localhost:3420/api/agents 2>/dev/null)
+  HTTP=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: Bearer $(cat store/.dashboard-token)" "http://localhost:${WEB_PORT}/api/agents" 2>/dev/null)
   if [ "$HTTP" = "200" ]; then
     ok "Dashboard API: responding (HTTP 200)"
   else

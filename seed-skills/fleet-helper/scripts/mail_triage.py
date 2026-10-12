@@ -2,10 +2,15 @@
 """
 Deterministic Mail.app triage for an hourly email heartbeat (macOS).
 
-Reads UNREAD inbox messages via osascript (auth-free), applies rule-based
+Reads UNREAD inbox messages directly from the Mail.app SQLite envelope index
+(auth-free, read-only, never locks/modifies the DB), applies rule-based
 filtering, prints JSON. Does NOT send anything and does NOT mark mail read - the
 final nuanced judgment stays with the agent, which reads this compact JSON
 instead of raw mail, saving tokens.
+
+The envelope index is used instead of AppleScript: on a large mailbox (tens of
+thousands of unread) the Mail scripting bridge times out (>60s), while the
+SQLite index answers in milliseconds and filters by date window in SQL.
 
 Buckets: important (known senders or important keywords), review (ambiguous),
 dropped (clear spam/promo - count only).
@@ -16,11 +21,13 @@ file OUT of version control). See mail_rules.example.json.
 
 Usage: mail_triage.py [max_age_min]   # default 90; 0 = all unread
 """
+import glob
 import json
 import os
 import re
-import subprocess
+import sqlite3
 import sys
+import time
 from datetime import datetime
 
 RULES_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mail_rules.json")
@@ -54,38 +61,54 @@ def load_rules():
     return {k: [s.lower() for s in v] for k, v in rules.items()}
 
 
-def read_unread():
-    us, rs = chr(31), chr(30)
-    script = '''
-    set US to (ASCII character 31)
-    set RS to (ASCII character 30)
-    set outp to ""
-    tell application "Mail"
-        set msgs to (messages of inbox whose read status is false)
-        repeat with m in msgs
-            try
-                set outp to outp & (sender of m) & US & (subject of m) & US & (((current date) - (date received of m)) as string) & RS
-            end try
-        end repeat
-    end tell
-    return outp
-    '''
+def _envelope_index_path():
+    # macOS bumps the V-version per release (V10 on current); pick the newest.
+    cands = glob.glob(os.path.expanduser(
+        "~/Library/Mail/V*/MailData/Envelope Index"))
+    if not cands:
+        return None
+    return max(cands, key=os.path.getmtime)
+
+
+def read_unread(max_age_min=90):
+    """Return [(sender, subject, age_seconds)] for unread INBOX messages.
+
+    Reads the Mail.app SQLite envelope index read-only (immutable=1 never locks
+    or checkpoints the live DB). Filters to the time window in SQL so a mailbox
+    with tens of thousands of unread messages is never fully materialised.
+    max_age_min=0 means no time filter (all unread).
+    """
+    db = _envelope_index_path()
+    if not db:
+        sys.stderr.write("mail_triage: Envelope Index not found\n")
+        return []
+    now = int(time.time())
+    where = ["mb.url LIKE '%/INBOX'", "m.read=0", "m.deleted=0"]
+    params = []
+    if max_age_min:
+        where.append("m.date_received >= ?")
+        params.append(now - max_age_min * 60)
+    sql = (
+        "SELECT COALESCE(a.comment,''), COALESCE(a.address,''), "
+        "COALESCE(s.subject,''), m.date_received "
+        "FROM messages m "
+        "JOIN mailboxes mb ON m.mailbox=mb.ROWID "
+        "LEFT JOIN addresses a ON m.sender=a.ROWID "
+        "LEFT JOIN subjects s ON m.subject=s.ROWID "
+        "WHERE " + " AND ".join(where)
+    )
     try:
-        raw = subprocess.run(["osascript", "-e", script], capture_output=True,
-                             text=True, timeout=60).stdout
-    except (subprocess.TimeoutExpired, FileNotFoundError) as e:
-        sys.stderr.write(f"osascript failed: {e}\n")
+        con = sqlite3.connect(f"file:{db}?immutable=1", uri=True, timeout=5)
+        rows = con.execute(sql, params).fetchall()
+        con.close()
+    except sqlite3.Error as e:
+        sys.stderr.write(f"mail_triage: sqlite error: {e}\n")
         return []
     out = []
-    for rec in raw.split(rs):
-        parts = rec.strip().split(us)
-        if len(parts) < 3:
-            continue
-        try:
-            age = int(float(parts[2]))
-        except ValueError:
-            age = 0
-        out.append((parts[0].strip(), parts[1].strip(), age))
+    for comment, address, subject, date_received in rows:
+        sender = f"{comment} <{address}>".strip() if address else comment
+        age = max(0, now - int(date_received or now))
+        out.append((sender.strip(), subject.strip(), age))
     return out
 
 
@@ -123,7 +146,7 @@ def classify(sender, subject, rules):
 def triage(max_age_min=90):
     rules = load_rules()
     important, review, dropped = [], [], 0
-    for sender, subject, age_s in read_unread():
+    for sender, subject, age_s in read_unread(max_age_min):
         if max_age_min and age_s > max_age_min * 60:
             continue
         bucket, reason = classify(sender, subject, rules)

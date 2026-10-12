@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest'
+import { applyStuckRestartBusyGuard } from '../web/channel-monitor.js'
 import {
   decideStuckInputAction,
   submitLanded,
@@ -49,6 +50,9 @@ function facts(over: Partial<StuckInputActionFacts>): StuckInputActionFacts {
     truncatedPreamble: false,
     allowPlainReinject: false,
     hasPlainText: false,
+    scheduledTaskBlock: false,
+    machineOrigin: false,
+    recordedMatch: false,
     ...over,
   }
 }
@@ -68,11 +72,57 @@ describe('decideStuckInputAction (recovery-decision unit)', () => {
     expect(a).toBe('hold')
   })
 
-  it('multi-row sub-agent plain text -> re-inject plain, never enter', () => {
+  it('multi-row sub-agent MACHINE-marked plain text -> re-inject plain, never enter', () => {
     const a = decideStuckInputAction(
-      facts({ rowCount: 2, allowPlainReinject: true, hasPlainText: true }),
+      facts({ rowCount: 2, allowPlainReinject: true, hasPlainText: true, machineOrigin: true }),
     )
     expect(a).toBe('reinject-plain')
+  })
+
+  // -------------------------------------------------------------------------
+  // STUCKINPUT805: the lossy-rescue regression measured live on 2026-08-05.
+  // The visible-box scrape drops the HEAD rows of an overfull box, so a
+  // re-inject of it is deterministic corruption (10,509-char prompt delivered
+  // as its last ~400 chars, byte-identically at 15:06 and 16:00).
+  // -------------------------------------------------------------------------
+
+  it('STUCKINPUT805: a parked scheduled tick on a SUB-AGENT is clear-only, never reinject-plain', () => {
+    // The old branch order routed this into reinject-plain (the sub-agent
+    // check sat above the scheduled check) -- the exact bug. The scheduler
+    // re-fires the tick whole; the scrape never contains the whole prompt.
+    const a = decideStuckInputAction(facts({
+      rowCount: 5, allowPlainReinject: true, hasPlainText: true,
+      scheduledTaskBlock: true, machineOrigin: true, escalate: true,
+    }))
+    expect(a).toBe('clear-scheduled')
+  })
+
+  it('STUCKINPUT805: uncertain-origin park on a sub-agent -> hold, never clear or re-inject', () => {
+    // "Sub-agent means no human draft" is false: agent-terminal types into
+    // sub-agent panes too. A human's text has no re-delivery; destroying it is
+    // strictly worse than a wedged box. Simulates the human-typed overflow:
+    // long multi-row text, no machine marker anywhere.
+    const a = decideStuckInputAction(facts({
+      rowCount: 8, allowPlainReinject: true, hasPlainText: true,
+      machineOrigin: false, escalate: true,
+    }))
+    expect(a).toBe('hold')
+  })
+
+  it('STUCKINPUT805: box so short even the tail marker is cut -> no machine evidence -> hold', () => {
+    // scheduledTaskBlock and machineOrigin both read false when every marker is
+    // outside the visible box.
+    //
+    // CONTRACT CHANGED (GH #717): the single-row case asserted 'enter' here and
+    // called it "the harmless legacy Enter". It is not harmless. With no machine
+    // evidence the park may be an operator's own draft, and Enter submits it
+    // half-typed. Both row counts now hold.
+    expect(decideStuckInputAction(facts({
+      rowCount: 3, allowPlainReinject: true, hasPlainText: true, escalate: true,
+    }))).toBe('hold')
+    expect(decideStuckInputAction(facts({
+      rowCount: 1, allowPlainReinject: true, hasPlainText: true, escalate: true,
+    }))).toBe('hold')
   })
 
   it('multi-row with nothing safely re-injectable -> hold (never corrupt via Enter)', () => {
@@ -96,8 +146,62 @@ describe('decideStuckInputAction (recovery-decision unit)', () => {
     expect(decideStuckInputAction(facts({ rowCount: 1, blockTruncated: true, escalate: true }))).toBe('enter')
   })
 
-  it('single-row default (swallowed Enter) -> bare Enter', () => {
-    expect(decideStuckInputAction(facts({ rowCount: 1, escalate: true }))).toBe('enter')
+  // CONTRACT CHANGED (GH #717). The default used to bare-Enter any single-row
+  // box on the theory that it was a swallowed Enter. The reporter measured what
+  // else it hits: attach to the main session, type a line, pause past the
+  // confirm window, and the unfinished sentence submits itself.
+  it('single-row default with NO machine origin -> hold, never submit an unidentified park', () => {
+    expect(decideStuckInputAction(facts({ rowCount: 1, escalate: true }))).toBe('hold')
+  })
+
+  it('single-row default WITH machine origin -> bare Enter, the swallowed-Enter remedy survives', () => {
+    expect(decideStuckInputAction(facts({ rowCount: 1, escalate: true, machineOrigin: true }))).toBe('enter')
+    expect(decideStuckInputAction(facts({ rowCount: 1, escalate: false, machineOrigin: true }))).toBe('enter')
+  })
+
+  it('machine origin does not license an Enter on a multi-row box', () => {
+    // The older invariant still holds: a bare Enter in a multi-row box inserts a
+    // newline and corrupts the message, whoever put the text there.
+    expect(decideStuckInputAction(facts({ rowCount: 2, escalate: true, machineOrigin: true }))).toBe('hold')
+  })
+
+  it('a truncated <channel> block still Enters single-row: the block itself is the evidence', () => {
+    // Distinct from the default path: parkedChannelInput found OUR block, so the
+    // origin question is already answered even though the capture is incomplete.
+    expect(decideStuckInputAction(facts({ rowCount: 1, blockTruncated: true, machineOrigin: false }))).toBe('enter')
+  })
+
+  // 2026-07-25 hermes incident: a multi-row scheduled-task tick parked on the
+  // MAIN session (no plain re-inject) used to fall into the no-remedy 'hold'
+  // branch forever -> channel permanently mute. Clear-only is the safe move:
+  // the next schedule fire re-delivers, while re-injecting risks TUI mid-text
+  // truncation corrupting the instruction.
+  it('multi-row parked scheduled-task tick on main -> clear-scheduled, not hold', () => {
+    const a = decideStuckInputAction(facts({ rowCount: 6, scheduledTaskBlock: true }))
+    expect(a).toBe('clear-scheduled')
+  })
+
+  it('escalated single-row scheduled-task tick -> clear-scheduled', () => {
+    expect(decideStuckInputAction(facts({ rowCount: 1, scheduledTaskBlock: true, escalate: true }))).toBe('clear-scheduled')
+  })
+
+  it('single-row scheduled-task tick pre-escalation still tries the harmless Enter', () => {
+    expect(decideStuckInputAction(facts({ rowCount: 1, scheduledTaskBlock: true, escalate: false }))).toBe('enter')
+  })
+
+  it('STUCKINPUT805 precedence FLIP: clear-scheduled beats plain re-inject on sub-agents too', () => {
+    // The previous version of this test pinned the OPPOSITE ("existing path
+    // preserved") -- and that precedence WAS the bug: on a sub-agent pane a
+    // parked scheduled tick took the reinject-plain branch, whose payload is a
+    // scrape of the VISIBLE box. The TUI drops the head rows of an overfull
+    // box, so the scrape was the tail fragment -- re-injected byte-identically
+    // at 15:06 and 16:00 on 2026-08-05 (10,509-char prompt as its last ~400
+    // chars). clear-scheduled is strictly better on every session: the next
+    // schedule fire re-delivers the WHOLE prompt.
+    const a = decideStuckInputAction(
+      facts({ rowCount: 3, scheduledTaskBlock: true, allowPlainReinject: true, hasPlainText: true, machineOrigin: true }),
+    )
+    expect(a).toBe('clear-scheduled')
   })
 })
 
@@ -130,5 +234,26 @@ describe('parkedInputRowCount', () => {
 
   it('idle / empty box -> 0', () => {
     expect(parkedInputRowCount(IDLE)).toBe(0)
+  })
+})
+
+// GH #717 end to end: the same machineOrigin signal must gate BOTH the watcher's
+// keystroke and the hard-restart busy-guard, or the fix on one path becomes a
+// new destructive path on the other. These pin that they agree.
+describe('GH #717: an unidentified park is neither submitted nor restarted away', () => {
+  it('the watcher holds on a suspected human draft', () => {
+    expect(decideStuckInputAction(facts({ rowCount: 1, escalate: true, machineOrigin: false }))).toBe('hold')
+  })
+
+  it('and the busy-guard skips the hard restart for the same pane', () => {
+    // applyStuckRestartBusyGuard only lets a restart through on a 'typing' pane
+    // when machineOrigin is true. So the pane the watcher now refuses to Enter
+    // is also the pane the restart path refuses to act on: holding does not
+    // hand the draft to a restart instead.
+    expect(applyStuckRestartBusyGuard('typing', 'restart', { machineOrigin: false, softRemedy: false })).toBe('skip')
+  })
+
+  it('a machine-origin park with no soft remedy is still restartable, so a real wedge is not immortal', () => {
+    expect(applyStuckRestartBusyGuard('typing', 'restart', { machineOrigin: true, softRemedy: false })).toBe('restart')
   })
 })

@@ -9,6 +9,11 @@
   --text: #141413;
   --text-secondary: #30302e;
   --text-muted: #87867f;
+  /* Dimmed body text that still has to be READ, not just noticed: transcript
+     metadata, notes, action lines. Distinct from --text-muted, which sits at
+     3.5:1 on this background and is fine for a label next to something else,
+     but not for a line someone has to follow. Measured 5.4:1 here. GH #426. */
+  --text-dim: #68675f;
   --border: #d1cfc5;
   --border-focus: #d97757;
   --accent: #d97757;
@@ -40,6 +45,7 @@
   --text: #faf9f5;
   --text-secondary: #b0aea5;
   --text-muted: #73726c;
+  --text-dim: #9a9890;   /* 6.4:1 on --bg. See the light-theme note. */
   --border: #3d3d3a;
   --shadow-sm: 0 1px 3px rgba(0,0,0,0.2);
   --shadow-md: 0 4px 16px rgba(0,0,0,0.25);
@@ -248,6 +254,46 @@ body {
 .sb-link.active { color: var(--text); background: var(--accent-soft); }
 .sb-link.active svg { color: var(--accent); }
 .sb-badge { margin-left: auto; }
+
+/* === Collapsible sidebar groups === */
+.sb-group { display: flex; flex-direction: column; gap: 2px; margin-top: 6px; }
+.sb-group-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  background: none;
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  font-family: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  text-align: left;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+.sb-group-header:hover { color: var(--text); background: var(--accent-soft); }
+.sb-group-label { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.sb-group-chevron { flex-shrink: 0; transition: transform var(--transition); }
+.sb-group.open .sb-group-chevron { transform: rotate(90deg); }
+.sb-group-items { display: flex; flex-direction: column; gap: 2px; }
+.sb-group:not(.open) .sb-group-items { display: none; }
+/* Docs pinned to the sidebar bottom, just above the lang/theme row. Sits
+ * outside the scrolling .sidebar-nav (flex:1), so it stays visible however
+ * long the open group list gets. Separator reuses the .sidebar-footer
+ * border-top pattern. */
+.sidebar-docs {
+  padding-top: 12px;
+  padding-bottom: 12px;
+  margin-top: 8px;
+  border-top: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+}
 .sidebar-footer {
   padding-top: 12px;
   border-top: 1px solid var(--border);
@@ -318,6 +364,8 @@ nav { display: flex; gap: 4px; }
   vertical-align: middle;
 }
 .updates-badge[hidden] { display: none; }
+/* VIDEOREVIEW1002: .sb-link is display:flex, which wins over the UA [hidden] rule. */
+.sb-link[hidden] { display: none; }
 
 .updates-summary {
   padding: 16px 18px;
@@ -408,6 +456,30 @@ nav { display: flex; gap: 4px; }
 .team-node:hover { border-color: var(--accent); transform: translateY(-1px); }
 .team-node.main { background: var(--accent-soft); border-color: var(--accent); }
 .team-node.leader { border-color: var(--accent); }
+/* Live "working" state, same signal and green as the Activity page's left
+   border. Declared after .main/.leader so an active main or leader shows the
+   working colour rather than its role accent. */
+.team-node.team-node-active {
+  border-color: #22c55e;
+  box-shadow: 0 0 0 1px #22c55e;
+}
+.team-node.team-node-active:hover { border-color: #22c55e; }
+/* Run-state line: the pulsing dot the agent cards use, next to Fut / Leállva. */
+.team-node-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+}
+/* Drag-and-drop reporting edit (Team page). */
+.team-node.team-draggable { cursor: grab; }
+.team-node.team-dragging { opacity: 0.45; cursor: grabbing; }
+.team-node.team-drop-target {
+  border-color: var(--accent);
+  border-style: dashed;
+  background: var(--accent-soft);
+  transform: translateY(-1px);
+}
 .team-node-avatar {
   width: 56px;
   height: 56px;
@@ -448,6 +520,12 @@ nav { display: flex; gap: 4px; }
   text-align: center;
   padding: 24px;
 }
+.team-hint {
+  color: var(--text-muted);
+  font-size: 12px;
+  margin-top: 16px;
+  text-align: center;
+}
 
 .theme-toggle {
   display: flex;
@@ -469,7 +547,14 @@ nav { display: flex; gap: 4px; }
 
 /* === Main === */
 main {
-  max-width: 1200px;
+  /* No width cap: on a large screen the content uses the whole window, the way
+   * the kanban board always has. This is not merely "wider lines" -- almost every
+   * card list here is a `repeat(auto-fill, minmax(Npx, 1fr))` grid, so the extra
+   * room turns into extra COLUMNS on its own (measured at 2400px: agents 3 -> 7,
+   * skills -> 5, costs -> 9, status -> 10). The pages with no grid (memories,
+   * messages, settings) become full-width single columns; if one of those ever
+   * reads too wide, the fix belongs to that page's own layout, not to a global
+   * cap that also flattens the grids. */
   padding: 32px 32px 64px;
   width: 100%;
   /* main is the 1fr grid track; a grid item's default minimum size is its
@@ -487,6 +572,113 @@ main {
 .subtitle { color: var(--text-muted); font-size: 14px; margin-top: 4px; }
 
 /* === Overview page === */
+/* Subscription quota strip (overview page, above the stat cards). Deliberately
+   flat and narrow: it is a glance, not a card, and must not compete with the
+   stats below it. Colour follows the status line -- >=80% danger, >=60% accent
+   -- so the terminal and the dashboard cannot disagree about the same number. */
+.quota-strip {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-card);
+  padding: 10px 14px;
+  margin-bottom: 14px;
+}
+.quota-strip-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.quota-strip-title { font-size: 12px; font-weight: 500; color: var(--text-muted); }
+.quota-strip-age { font-size: 11px; color: var(--text-muted); }
+.quota-bars { display: flex; flex-direction: column; gap: 6px; }
+.quota-bar {
+  display: grid;
+  grid-template-columns: 56px 1fr auto;
+  align-items: center;
+  gap: 10px;
+}
+.quota-bar-label { font-size: 12px; color: var(--text-muted); }
+.quota-bar-track {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--bg-input);
+  overflow: hidden;
+}
+/* Weekly row: 7 equal day segments over the fill (separators drawn in the
+   card colour, so they read as gaps), day names underneath, and a thin
+   "now" marker. The fill is USAGE, the marker is TIME: usage right of the
+   marker means the week is being spent faster than it passes. */
+.quota-bar-col { position: relative; min-width: 0; }
+.quota-bar-track.week { position: relative; }
+.quota-bar-track.week::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(to right,
+    transparent 0, transparent calc(100% / 7 - 2px),
+    var(--bg-card) calc(100% / 7 - 2px), var(--bg-card) calc(100% / 7));
+  pointer-events: none;
+}
+.quota-bar-now {
+  position: absolute;
+  top: -3px;
+  width: 2px;
+  height: 12px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background: var(--text);
+  pointer-events: none;
+}
+/* Day names switch by the width of the label row itself (container query),
+   not by an ellipsis: full names need ~58 px per day (longest: "Wednesday",
+   measured at 10 px in DejaVu Sans, wider than the system UI fonts), so
+   below 7 x ~62 px = 440 px the short forms (H K Sze Cs P Szo V /
+   Mon..Sun, <= 22 px) take over, and below 180 px English drops to
+   M T W T F S S. Hungarian has no unambiguous one-letter form, so there
+   (.no-narrow) the day names hide below 180 px; the separators and the now
+   marker on the track still mark the days. */
+.quota-bar-days {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  margin-top: 3px;
+  font-size: 10px;
+  color: var(--text-muted);
+  container-type: inline-size;
+  container-name: quota-days;
+}
+.quota-bar-days > span {
+  text-align: center;
+  white-space: nowrap;
+}
+.quota-bar-days .day-short,
+.quota-bar-days .day-narrow { display: none; }
+@container quota-days (max-width: 440px) {
+  .quota-bar-days .day-full { display: none; }
+  .quota-bar-days .day-short { display: inline; }
+}
+@container quota-days (max-width: 180px) {
+  .quota-bar-days .day-short { display: none; }
+  .quota-bar-days .day-narrow { display: inline; }
+  .quota-bar-days.no-narrow > span { display: none; }
+}
+.quota-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--success);
+  transition: width var(--transition);
+}
+.quota-bar-fill.warn { background: var(--accent); }
+.quota-bar-fill.danger { background: var(--danger); }
+/* Stale or rolled over: the numbers stay visible but must not read as current. */
+.quota-bar.muted .quota-bar-fill { background: var(--text-muted); }
+.quota-bar.muted .quota-bar-value { color: var(--text-muted); }
+.quota-bar-value { font-size: 12px; color: var(--text); font-variant-numeric: tabular-nums; }
+.quota-bar-reset { color: var(--text-muted); }
+.quota-strip-note { margin-top: 8px; font-size: 11px; color: var(--text-muted); }
+.quota-strip-note.warn { color: var(--danger); }
+
 .overview-stats {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
@@ -614,9 +806,17 @@ main {
 .overview-activity-time { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
 
 /* === Kanban Board === */
+/* Five statuses, four fixed tracks: the board always wrapped "done" onto a
+ * second row of its own, at every window size. auto-fit fits as many columns
+ * as can hold KANBAN_COL_MIN and collapses the rest, so the count follows the
+ * window instead of a constant: all five side by side from ~1500px up, and on
+ * a narrow window fewer per row -- but never squeezed below a width where the
+ * card titles stop being readable. (min-width:0 on the column keeps a long
+ * unbroken title from inflating its track past that minimum.) */
 .kanban-board {
+  --kanban-col-min: 280px;
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(var(--kanban-col-min), 1fr));
   gap: 12px;
   min-height: calc(100vh - 160px);
 }
@@ -634,6 +834,10 @@ main {
   display: flex;
   flex-direction: column;
   min-height: 200px;
+  /* A grid item's default minimum is its content's min-content width, so one
+   * long unbroken card title would push its track past the minmax() minimum
+   * and steal room from the other columns. */
+  min-width: 0;
 }
 
 .kanban-col-header {
@@ -706,6 +910,48 @@ main {
 .kanban-col-body.drag-over {
   background: var(--accent-soft);
   border-radius: var(--radius-sm);
+}
+
+/* Touch drag drop bar. Raised only while a long-press drag is in progress:
+   on a phone the columns stack, so the next column is ~2000px below the fold
+   and there is nothing on screen to drop onto. Fixed to the bottom edge so
+   the drop target is always within thumb reach, whatever the scroll position. */
+.kanban-touch-dropbar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 9998; /* under the dragged ghost (9999), over the board */
+  display: flex;
+  gap: 6px;
+  padding: 10px 10px calc(10px + env(safe-area-inset-bottom));
+  background: var(--bg-card);
+  border-top: 1px solid var(--border);
+  box-shadow: 0 -6px 20px rgba(0, 0, 0, .25);
+}
+.kanban-drop-target {
+  flex: 1;
+  min-width: 0;
+  padding: 12px 4px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  text-align: center;
+  font-size: 11px;
+  line-height: 1.2;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* The column the card is already in -- a valid drop (it just reorders), but
+   dimmed so the eye goes to the other four. */
+.kanban-drop-target.is-current {
+  opacity: .5;
+}
+.kanban-drop-target.drag-over {
+  background: var(--accent-soft);
+  border-style: solid;
+  border-color: var(--accent);
+  color: var(--text);
 }
 
 /* === Kanban Card === */
@@ -1110,9 +1356,12 @@ main {
   transition: all var(--transition);
 }
 .kanban-swimlane-toggle:hover { background: var(--accent-soft); color: var(--accent); }
+/* The swimlane rows carry the same five status columns as the flat board, so
+ * they follow the same rule -- otherwise switching to swimlanes would silently
+ * put the column count back to four. */
 .kanban-swimlane-body {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(auto-fit, minmax(var(--kanban-col-min, 280px), 1fr));
   gap: 12px;
   margin-top: 4px;
 }
@@ -1279,9 +1528,9 @@ main {
 
 /* === Page switching === */
 .page[hidden] { display: none; }
-#kanbanPage { max-width: none; }
-/* Full-width layout for the kanban board (overrides main's 1200px cap) */
-main.kanban-active { max-width: none; padding-left: 16px; padding-right: 16px; }
+/* The board keeps its tighter side padding -- it needs every pixel for the
+ * status columns. The width cap it used to override is gone from `main`. */
+main.kanban-active { padding-left: 16px; padding-right: 16px; }
 
 .page-header-row {
   display: flex;
@@ -1298,6 +1547,28 @@ main.kanban-active { max-width: none; padding-left: 16px; padding-right: 16px; }
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  align-items: center;
+}
+
+/* Agents page: cards / activity / org-chart view toggle */
+.view-toggle {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+.view-toggle-btn.active {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+/* Thin vertical rule separating clusters of header buttons. */
+.header-divider {
+  align-self: stretch;
+  width: 1px;
+  min-height: 20px;
+  margin: 0 4px;
+  background: var(--border);
+  flex-shrink: 0;
 }
 
 /* === Agent Grid === */
@@ -1305,6 +1576,40 @@ main.kanban-active { max-width: none; padding-left: 16px; padding-right: 16px; }
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
   gap: 16px;
+}
+
+/* === Agents grid: "Aktivitás" card mode ===
+   Swaps everything below the avatar/name/description block for the live pane
+   status that used to live on its own Activity page. The header stays, so the
+   card never stops saying which agent it is. */
+.agent-card-activity { display: none; }
+.agents-grid[data-card-mode="activity"] .agent-card-footer,
+.agents-grid[data-card-mode="activity"] .agent-card-actions,
+.agents-grid[data-card-mode="activity"] .agent-reauth-banner,
+.agents-grid[data-card-mode="activity"] .agent-tmux-cmds { display: none; }
+.agents-grid[data-card-mode="activity"] .agent-card-activity { display: block; margin-top: 14px; }
+/* Cards that carry no live state: the add button and federated (remote-system)
+   agents, which the activity endpoint does not know about. */
+.agents-grid[data-card-mode="activity"] .add-card,
+.agents-grid[data-card-mode="activity"] .federated-agent-card { display: none; }
+.agent-act-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+.agent-act-head-right { display: flex; align-items: center; gap: 8px; }
+/* State colour, mirroring the Activity page's left border. Only in activity
+   mode -- in profile mode these classes are present but must not paint. */
+.agents-grid[data-card-mode="activity"] .agent-card { border-left-width: 4px; }
+.agents-grid[data-card-mode="activity"] .agent-card.act-working { border-left-color: #22c55e; }
+.agents-grid[data-card-mode="activity"] .agent-card.act-idle    { border-left-color: #9ca3af; }
+.agents-grid[data-card-mode="activity"] .agent-card.act-error   { border-left-color: #ef4444; }
+.agents-grid[data-card-mode="activity"] .agent-card.act-unknown { border-left-color: #eab308; }
+.agents-grid[data-card-mode="activity"] .agent-card.act-stopped { border-left-color: #6b7280; opacity: 0.7; }
+/* A stopped agent has no session to open, so its card is not clickable -- same
+   rule the Activity page used. */
+.agents-grid[data-card-mode="activity"] .agent-card { cursor: default; }
+.agents-grid[data-card-mode="activity"] .agent-card.agent-card-act-clickable { cursor: pointer; }
+.agents-grid[data-card-mode="activity"] .agent-card:not(.agent-card-act-clickable):hover {
+  background: var(--bg-card);
+  border-color: var(--border);
+  box-shadow: none;
 }
 
 /* === Agent Card === */
@@ -1402,6 +1707,20 @@ main.kanban-active { max-width: none; padding-left: 16px; padding-right: 16px; }
 .agent-model-badge.opus { background: rgba(217,119,87,0.12); color: var(--accent); }
 .agent-model-badge.sonnet { background: var(--info-soft); color: var(--info); }
 .agent-model-badge.haiku { background: var(--success-soft); color: var(--success); }
+
+/* Context-window-used badge (Agents grid card). Tiers mirror context-guard's
+   own default actPct/hardPct (90%/97%) -- see contextPctBadgeHtml in app.js. */
+.agent-ctx-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.agent-ctx-badge.ok { background: var(--success-soft); color: var(--success); }
+.agent-ctx-badge.warning { background: rgba(212,165,44,0.12); color: var(--warning, #d4a52c); }
+.agent-ctx-badge.danger { background: var(--danger-soft); color: var(--danger); }
 
 /* === Per-agent tmux attach copy buttons (running agents only) === */
 .agent-tmux-cmds {
@@ -1748,6 +2067,8 @@ main.kanban-active { max-width: none; padding-left: 16px; padding-right: 16px; }
   color: var(--text-secondary);
   line-height: 1.5;
 }
+/* The class display rule outranks the browser's [hidden] default. */
+.tg-notice[hidden] { display: none; }
 .tg-notice svg { flex-shrink: 0; margin-top: 1px; color: var(--accent); }
 .tg-notice code {
   background: var(--bg-code);
@@ -2282,6 +2603,8 @@ main.kanban-active { max-width: none; padding-left: 16px; padding-right: 16px; }
   margin-top: 0;
   white-space: nowrap;
 }
+/* Keep compact controls out of layout when JavaScript marks them hidden. */
+.btn-compact[hidden] { display: none; }
 
 .btn-secondary {
   padding: 10px 20px;
@@ -2682,6 +3005,48 @@ main.kanban-active { max-width: none; padding-left: 16px; padding-right: 16px; }
   color: var(--text);
 }
 .approvals-pending-banner[hidden] { display: none; }
+
+/* Settings -> Claude plans: rotation is on but something keeps it inert.
+   Same warning token set as .approvals-pending-banner. */
+.claude-plans-readiness-banner {
+  padding: 10px 14px;
+  margin-bottom: 14px;
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--warning, #d4a52c) 12%, transparent);
+  border: 1px solid var(--warning, #d4a52c);
+  font-size: 13px;
+  color: var(--text);
+}
+.claude-plans-readiness-banner[hidden] { display: none; }
+.claude-plans-readiness-banner ul { margin: 6px 0 0; padding-left: 18px; }
+.claude-plans-readiness-title { font-weight: 600; }
+
+/* Wizard step 3: the agent was created but its personality is a placeholder.
+   Warning tone, not danger: nothing failed for the operator to undo, the agent
+   works. Same token set as .approvals-pending-banner so the two read as one
+   family. */
+.wizard-pending-banner {
+  padding: 10px 14px;
+  margin-bottom: 14px;
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--warning, #d4a52c) 12%, transparent);
+  border: 1px solid var(--warning, #d4a52c);
+  font-size: 13px;
+  color: var(--text);
+}
+.wizard-pending-banner[hidden] { display: none; }
+.wizard-pending-title {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+.wizard-pending-body { line-height: 1.5; }
+.wizard-pending-detail {
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--text-muted);
+  word-break: break-word;
+}
+.wizard-pending-detail[hidden] { display: none; }
 
 .approvals-stats {
   display: flex;
@@ -6039,6 +6404,125 @@ main.kanban-active { max-width: none; padding-left: 16px; padding-right: 16px; }
   flex-basis: 100%;
 }
 
+/* === Claude plans (PR2b) === */
+.claude-plan-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 8px;
+}
+.claude-plan-row-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 14px;
+}
+.claude-plan-row-meta {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 4px;
+  font-family: var(--font-mono, monospace);
+}
+.claude-plan-active-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--success);
+  flex-shrink: 0;
+}
+.claude-plan-badge {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 6px;
+  white-space: nowrap;
+}
+.claude-plan-badge-muted { color: var(--text-muted); }
+.claude-plan-delete {
+  background: none;
+  border: none;
+  color: var(--danger);
+  cursor: pointer;
+  font-size: 16px;
+  padding: 2px 6px;
+  flex-shrink: 0;
+}
+.claude-plan-delete:hover { opacity: 0.7; }
+.claude-plan-usage { margin-top: 10px; }
+.claude-plan-usage .quota-bar { grid-template-columns: 56px minmax(60px, 1fr) auto; }
+.claude-plan-usage-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.claude-plan-usage-error { color: var(--danger); }
+.claude-plan-status-ok { color: var(--success); border-color: var(--success); }
+.claude-plan-status-warn { color: var(--accent); border-color: var(--accent); }
+.claude-plan-status-exhausted { color: var(--danger); border-color: var(--danger); }
+.claude-plans-add-form {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+.claude-plans-checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.claude-plans-checkbox-row input { width: auto; }
+.claude-plans-form-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  margin-bottom: 12px;
+}
+.claude-plans-add-form .input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+.claude-plans-form-hint {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin-top: 6px;
+}
+.claude-plans-form-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+.claude-plan-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.claude-plan-edit {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  font-size: 14px;
+  padding: 2px 6px;
+}
+.claude-plan-edit:hover { color: var(--text); }
+.claude-plan-switch-btn { margin-right: 4px; white-space: nowrap; }
+
 /* === connectors.hu cross-promo banner === */
 .cxhu-banner {
   margin-bottom: 16px;
@@ -6299,6 +6783,11 @@ main.kanban-active { max-width: none; padding-left: 16px; padding-right: 16px; }
   font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em;
   background: var(--border); color: var(--text-muted); border-radius: 4px; padding: 1px 6px;
 }
+.act-mode-badge {
+  font-size: 10px; font-weight: 600; letter-spacing: 0.02em;
+  background: rgba(234,179,8,0.16); color: #a16207;
+  border-radius: 4px; padding: 1px 6px; white-space: nowrap;
+}
 .activity-badge { font-size: 12px; font-weight: 600; border-radius: 999px; padding: 2px 10px; }
 .activity-badge.act-working {
   background: rgba(34,197,94,0.15); color: #16a34a;
@@ -6317,6 +6806,33 @@ main.kanban-active { max-width: none; padding-left: 16px; padding-right: 16px; }
   0%, 100% { background: rgba(34,197,94,0.12); box-shadow: 0 0 0 0 rgba(34,197,94,0); }
   50%      { background: rgba(34,197,94,0.32); box-shadow: 0 0 8px 1px rgba(34,197,94,0.40); }
 }
+
+/* Thinking orb: a tiny animated sphere inside the "working" activity badge, so a
+   live agent reads as *thinking* at a glance (inspired by the "thinking orb"
+   pattern in AI chat UIs). Pure CSS, no JS lifecycle: the badge markup is
+   re-rendered every few seconds via innerHTML, and a CSS-only orb survives that
+   for free. Colors stay in the same green family as .act-working. */
+.activity-badge.act-working { display: inline-flex; align-items: center; gap: 6px; }
+.act-orb {
+  position: relative; width: 13px; height: 13px; border-radius: 50%;
+  overflow: hidden; flex-shrink: 0;
+  background: #15803d;
+  box-shadow: 0 0 6px rgba(34,197,94,0.55);
+}
+.act-orb::before {
+  content: ''; position: absolute; inset: -30%; border-radius: 50%;
+  background: conic-gradient(from 0deg, #166534, #22c55e, #86efac, #16a34a, #166534);
+  animation: orb-swirl 2.8s linear infinite;
+}
+.act-orb::after {
+  /* fixed specular highlight over the swirling core sells the "sphere" */
+  content: ''; position: absolute; inset: 0; border-radius: 50%;
+  background: radial-gradient(circle at 32% 28%, rgba(255,255,255,0.85), rgba(255,255,255,0) 46%);
+}
+@keyframes orb-swirl { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .act-orb::before { animation: none; }
+}
 .activity-tail {
   margin: 0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px;
   line-height: 1.45; color: var(--text-muted); white-space: pre-wrap; word-break: break-word;
@@ -6325,6 +6841,16 @@ main.kanban-active { max-width: none; padding-left: 16px; padding-right: 16px; }
   border-radius: 6px; padding: 8px 10px;
 }
 .activity-tail-empty { margin: 0; font-size: 12px; color: var(--text-muted); font-style: italic; }
+
+/* Live "working" tint on an agent's Terminal button (Agents page). Mirrors the
+   Activity page's green working badge, including the breathe pulse. The SVG uses
+   currentColor, so the icon greens with the label. */
+.agent-terminal-btn.agent-terminal-btn--busy {
+  background: rgba(34,197,94,0.15);
+  color: #16a34a;
+  border-color: #22c55e;
+  animation: badge-breathe 2s ease-in-out infinite;
+}
 
 /* === Messages / Chat page === */
 .chat-layout {
@@ -6583,6 +7109,15 @@ main.kanban-active { max-width: none; padding-left: 16px; padding-right: 16px; }
   color: var(--text-muted, #888);
   font-variant-numeric: tabular-nums;
 }
+.docs-list-group-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted, #888);
+  padding: 10px 12px 2px;
+}
+.docs-list-group-label:first-child { padding-top: 0; }
 .docs-list-item:hover { background: var(--surface-2, rgba(127,127,127,0.08)); }
 .docs-list-item.active {
   background: var(--surface-2, rgba(127,127,127,0.12));
@@ -6665,13 +7200,31 @@ main.kanban-active { max-width: none; padding-left: 16px; padding-right: 16px; }
 .conv-bubble { max-width: 78%; padding: 8px 12px; border-radius: 12px; font-size: 13.5px; line-height: 1.45; }
 .conv-in .conv-bubble { background: var(--info-soft); border-bottom-left-radius: 3px; }
 .conv-out .conv-bubble { background: var(--success-soft); border-bottom-right-radius: 3px; }
-.conv-meta { font-size: 10.5px; opacity: .6; margin-bottom: 3px; }
+/* GH #426: these four lines used to dim with `opacity`, which is theme-blind.
+   Opacity composites the text toward whatever is BEHIND it, so the same value
+   that stays legible on the dark background washes near-black text out toward
+   the page in light mode. Measured on the real tokens:
+
+     rule                opacity   light      dark
+     .conv-action-text     .5      3.45:1     5.07:1
+     .conv-action-ts       .3*     1.97:1     2.63:1
+     .conv-note-text       .55     4.03:1     5.91:1
+     .conv-meta            .6      4.72:1     6.80:1
+     (* .6 nested inside the parent's .5)
+
+   Three of four fail 4.5:1 in light mode and the timestamp fails in BOTH, which
+   is why the reporter could only read these rows by selecting them: the
+   selection highlight paints a solid background behind the text. A dimmed COLOUR
+   is the same visual intent without the theme dependence. */
+.conv-meta { font-size: 10.5px; color: var(--text-dim); margin-bottom: 3px; }
 .conv-text { white-space: normal; word-break: break-word; }
 .conv-row.conv-note { justify-content: center; }
-.conv-note-text { font-size: 12px; opacity: .55; font-style: italic; max-width: 88%; }
+.conv-note-text { font-size: 12px; color: var(--text-dim); font-style: italic; max-width: 88%; }
 .conv-row.conv-action { justify-content: flex-start; }
-.conv-action-text { font-size: 11.5px; opacity: .5; font-family: 'JetBrains Mono', monospace; display: flex; gap: 8px; align-items: baseline; }
-.conv-action-ts { opacity: .6; font-size: 10px; }
+.conv-action-text { font-size: 11.5px; color: var(--text-dim); font-family: 'JetBrains Mono', monospace; display: flex; gap: 8px; align-items: baseline; }
+/* No second dimming step here: nesting one opacity inside another is what took
+   the timestamp to 1.97:1. It is separated by size, not by fading. */
+.conv-action-ts { font-size: 10px; }
 /* === Mobile login QR modal === */
 .mobile-login-qr {
   width: 240px;
@@ -6966,11 +7519,17 @@ body {
 .updates-version-details .updates-commit-list { padding: 10px 0 2px; }
 /* First-run onboarding wizard */
 .onboarding-overlay { z-index: 10000; }
-.onboarding-modal { max-width: 540px; width: 92%; position: relative; }
+/* The base .modal ships zero padding (other modals pad via .modal-header /
+   .modal-body); the onboarding wizard renders its content directly, so it
+   needs its own inner padding -- without it the title and inputs sit flush
+   against the modal edge (first screen every fresh install sees). */
+.onboarding-modal { max-width: 540px; width: 92%; position: relative; padding: 24px 26px 22px; }
+@media (max-width: 600px) { .onboarding-modal { padding: 18px 16px 16px; } }
 .onboarding-modal .modal-close { position: absolute; top: 12px; right: 12px; }
 .onboarding-modal h2 { margin: 0 0 4px; }
 .onb-sub { color: var(--text-muted); font-size: 13px; margin: 0 0 16px; }
-.onboarding-steps { display: flex; gap: 8px; margin-bottom: 18px; }
+.onboarding-steps { display: flex; gap: 8px; margin-bottom: 10px; }
+.onb-flow-note { font-size: 12px; color: var(--text-muted); background: var(--bg-input); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin: 0 0 14px; }
 .onboarding-step { flex: 1; display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-muted); padding: 6px 8px; border-radius: 8px; background: var(--bg-input); border: 1px solid var(--border); }
 .onboarding-step.active { color: var(--text); border-color: var(--accent); }
 .onboarding-step.done { opacity: 0.55; }
@@ -7010,3 +7569,266 @@ body {
   margin-left: 6px;
   vertical-align: middle;
 }
+
+/* === Dashboard browser login (optional) === */
+.mv-auth-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 99999;
+  background: rgba(20, 20, 19, 0.92);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.mv-auth-card {
+  background: var(--bg-card);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px;
+  width: 100%;
+  max-width: 360px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.35);
+}
+.mv-auth-card h2 {
+  margin: 0;
+  font-size: 18px;
+  text-align: center;
+}
+.mv-auth-desc {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-muted);
+  text-align: center;
+  line-height: 1.5;
+}
+.mv-auth-card input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+}
+.mv-auth-card button {
+  padding: 11px;
+  border: 0;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.mv-auth-card button:hover { background: var(--accent-hover); }
+.mv-auth-card button:disabled { opacity: 0.6; cursor: default; }
+.mv-auth-err {
+  color: var(--danger);
+  font-size: 13px;
+  min-height: 16px;
+  text-align: center;
+}
+
+/* Setup banner */
+.auth-setup-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 0 0 16px;
+  padding: 10px 16px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  background: var(--accent-soft);
+  font-size: 13px;
+}
+/* The `display: flex` above is an author rule, so it outranks the UA's
+   [hidden] { display: none } -- without this override the banner stays on
+   screen even when initAuthBanner()/the dismiss button set el.hidden = true,
+   making the close button look dead. Same fix as .kanban-board[hidden] etc. */
+.auth-setup-banner[hidden] { display: none; }
+
+.auth-setup-banner-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.auth-setup-banner-close {
+  background: none;
+  border: 0;
+  color: var(--text-muted);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 4px;
+}
+
+/* Branch-drift warning (top banner + Updates-page notice). The [hidden] rule
+   is explicit because the shared .auth-setup-banner display:flex would
+   otherwise override the UA's [hidden] { display: none }. */
+.branch-drift-banner { border-left-color: var(--warning, #d97706); }
+.branch-drift-banner[hidden] { display: none; }
+.branch-drift-banner code,
+.updates-branch-notice code {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 1px 6px;
+  font-size: 12px;
+  user-select: all;
+}
+.updates-branch-notice {
+  margin: 0 0 12px;
+  padding: 8px 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+.updates-branch-notice.ok { color: var(--text-muted); }
+.updates-branch-notice.warn { border-left: 3px solid var(--warning, #d97706); }
+
+/* Settings login card */
+.auth-card h3 { margin: 0 0 12px; font-size: 15px; }
+.auth-muted { color: var(--text-muted); font-size: 13px; margin: 0 0 12px; }
+.auth-form { display: flex; flex-direction: column; gap: 8px; max-width: 360px; }
+.auth-form input {
+  padding: 9px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+}
+.auth-form-msg { font-size: 13px; min-height: 16px; }
+.auth-form-msg.err { color: var(--danger); }
+.auth-form-msg.ok { color: var(--accent); }
+.auth-actions { display: flex; gap: 8px; margin-top: 12px; }
+.auth-sessions { margin-top: 14px; }
+.auth-sessions-title { font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+.auth-session-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  font-size: 12px;
+  color: var(--text-muted);
+  padding: 4px 0;
+  border-top: 1px solid var(--border);
+}
+.auth-session-row code { color: var(--text); }
+.auth-session-ua { margin-left: auto; max-width: 40%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.auth-device-keys { margin-top: 18px; }
+.auth-device-name { color: var(--text); font-weight: 600; }
+.auth-device-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.auth-device-row .auth-device-revoke { margin-left: auto; flex-shrink: 0; }
+.auth-device-mint { margin-top: 10px; }
+.auth-device-minted-row { flex-direction: row; max-width: none; }
+.auth-device-minted-row input { flex: 1; font-family: var(--mono, monospace); font-size: 12px; }
+.auth-device-warn { margin-bottom: 8px; }
+.auth-device-bridge-badge {
+  font-size: 10px;
+  font-weight: 600;
+  padding: 1px 6px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  vertical-align: middle;
+}
+
+
+/* === Card blockers ("blocked by") ============================================
+   Rows rather than pills: a blocker carries a whole card title, which a pill
+   would truncate to uselessness. The cleared state keeps a finished blocker
+   visible (the link is history) while making it obvious it no longer holds
+   anything up. */
+.blocker-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-height: 22px;
+}
+.blocker-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  font-size: 13px;
+}
+.blocker-link {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.blocker-link:hover { text-decoration: underline; }
+.blocker-state {
+  flex: none;
+  font-size: 11px;
+  color: var(--text-muted);
+  text-transform: lowercase;
+}
+.blocker-remove {
+  flex: none;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 15px;
+  line-height: 1;
+  padding: 0 2px;
+  opacity: 0.7;
+}
+.blocker-remove:hover { opacity: 1; color: var(--danger, #dc2626); }
+.blocker-cleared .blocker-link { text-decoration: line-through; color: var(--text-muted); }
+.blocker-empty { font-size: 12px; color: var(--text-muted); padding: 2px 0; }
+
+/* Board badge. Sits in the card footer next to assignee/due, so a blocked card
+   is readable without opening it. */
+.kanban-card-blocked {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: auto;
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #b45309;
+  background: color-mix(in srgb, #f59e0b 18%, transparent);
+  border: 1px solid color-mix(in srgb, #f59e0b 45%, transparent);
+}
+
+/* MEMKERESVAK917: the memory search is forgiving -- when nothing matches the
+   query as asked it answers with the rescued near-misses, and in the LIST those
+   are indistinguishable from real hits. The endpoint says which it was in the
+   X-Memory-Search header; this is where the viewer gets told. */
+.mem-search-label {
+  margin: 0 0 10px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  line-height: 1.45;
+  border: 1px solid var(--accent);
+  background: var(--accent-soft);
+  color: var(--text, inherit);
+}
+.mem-search-label code { font-size: 11px; opacity: .85; }

@@ -19,7 +19,7 @@
 // trivially-testable property of this module.
 export const DEFAULT_MODEL_CHAIN: readonly string[] = [
   'claude-opus-4-8[1m]',
-  'claude-sonnet-4-6',
+  'claude-sonnet-5',
   'claude-haiku-4-5-20251001',
 ]
 
@@ -69,8 +69,14 @@ const USAGE_LIMIT_BANNER_REGION_LINES = 15
 // / "API Error: 429" (transient overload, handled elsewhere) must NOT match --
 // that is a momentary blip, not a plan-budget exhaustion that warrants a model
 // switch.
+// KET MERES UNIOJA, egyik oldal sem hagyhato el:
+//  - "session limit" alak, elesben merve 2026-08-08: "You hit your session limit · resets 5:50pm"
+//  - heti/session alakok, merve 2026-08-18: a "reached your weekly limit" es a
+//    "Session limit reached" panelnel a detektor nema maradt -- ez az az eset, aminek kiesés az ara.
+// A rebase (2026-08-19) elott a ket ag KULON-KULON javitotta ezt a regexet, es a sajat aganak
+// `hit ... limit` resze epp a masik meresét (session) ejtette volna ki. Ezert unio, nem valasztas.
 const USAGE_LIMIT_RX =
-  /(usage limit reached|reached your usage limit|hit (?:your|the) usage limit|approaching (?:your )?usage limit|usage limit (?:will )?reset|limit will reset at|\d+-hour limit reached|upgrade to increase your usage limit)/i
+  /(usage limit reached|reached your (?:usage|weekly) limit|hit (?:your|the) (?:session|usage) limit|approaching (?:your )?(?:\w+ )?(?:usage|weekly) limit|usage limit (?:will )?reset|limit will reset at|\d+-hour limit reached|(?:weekly|session) limit reached|upgrade to increase your usage limit)/i
 
 /**
  * True when the live pane shows a Claude *plan usage-limit* banner (not a
@@ -122,7 +128,8 @@ export type ModelAction =
  * actual write+restart) separately.
  *
  *   - limit detected & a lower model exists -> downgrade to it.
- *   - limit detected & already at the bottom -> nothing (cannot go lower).
+ *   - limit detected & already at the bottom -> nothing inside the revert
+ *     window; past it, revert anyway (a stale --continue banner must not pin it).
  *   - no limit & downgraded long enough ago -> revert to the primary (chain[0]).
  *   - otherwise -> nothing.
  */
@@ -130,7 +137,14 @@ export function decideModelAction(f: ModelFallbackFacts): ModelAction {
   if (f.limitDetected) {
     const next = nextFallbackModel(f.currentModel, f.chain)
     if (next && next !== f.currentModel) return { kind: 'downgrade', model: next }
-    return { kind: 'none' }
+    // At the bottom of the chain (FALLBACKSTUCK924): a limit
+    // banner here must not block the revert forever. After a downgrade the
+    // session restarts with --continue, so on an idle pane the OLD banner can
+    // sit in the bottom region indefinitely and the agent never gets back to
+    // the primary. Past the revert window, try the primary anyway: if the
+    // limit is real, the next sweep sees the banner on the primary and
+    // downgrades again -- at most one retry per window, never a pinned fleet.
+    if (f.downgradedAt === null || f.now - f.downgradedAt < f.revertAfterMs) return { kind: 'none' }
   }
   if (f.downgradedAt !== null && f.now - f.downgradedAt >= f.revertAfterMs) {
     const primary = f.chain[0]

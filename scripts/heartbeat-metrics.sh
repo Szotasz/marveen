@@ -1,0 +1,201 @@
+#!/usr/bin/env bash
+# heartbeat-metrics.sh -- the heartbeat round's single callable instrument
+# (HBMEMBLIND819, third contract).
+#
+# Why a script and not a prescribed command, measured three times: the
+# hot-memory metric drifted through three prescription layers -- 2026-08-07
+# (HBMEMBLIND807) a prose bullet let the round compose its own SQL; the fix
+# shipped a ready-made query, and 2026-08-19 (HBMEMBLIND819) post-compact
+# rounds reconstructed it with the wrong agent_id; the next fix shipped a
+# ready-made one-liner, and 2026-08-24 22:00 a round re-composed it with a
+# truncated format string, so a missing field printed as a silent 0.
+# A prescription the agent must re-copy every hour is not a mechanism; a
+# script on disk has nothing to recompose.
+#
+# Output contract (consumed VERBATIM by the heartbeat agent's CLAUDE.md,
+# rendered from src/web/heartbeat-agent-scaffold.ts):
+#
+#   HB_METRICS_V1 ts=<local time in CLAW_TZ>
+#   COUNTS urgent=N in_progress=N waiting=N planned=N new_hot_memories_1h=N db_size_mb=N waiting_shown=N
+#   URGENT <id> <title>            (0..n lines)
+#   WAITING <id> <title>           (0..n lines)
+#   CALENDAR_EVENTS n=N window=2h  (measured; n=0 is a MEASURED empty calendar)
+#   CAL_EVENT <HH:MM|all-day> <summary> [attendees=N]   (0..n lines)
+#   TOKEN_PRUNE state=ok|stale|empty retention_days=N lag_hours=N tolerance_hours=N
+#   SCHEDULES enabled=N
+#   TASK_RUNS_1H total=N [<status>=N ...]
+#   ERROR <section>: <reason>      (any failed measurement)
+#
+# 5E0A32B0: the calendar is measured HERE (server-side /api/heartbeat/calendar,
+# which reaches Google through the dashboard's own OAuth path), never by the
+# agent. The two calendar end-states are deliberately distinct lines:
+# CALENDAR_EVENTS n=0 means "queried, calendar free"; ERROR calendar: means
+# "could not query". A month of migrating agent-side symptoms ended in a
+# fossil (one 404 on a nonexistent endpoint copy-forwarded round after round),
+# and collapsing these two states is exactly how it stayed invisible.
+#
+# Fail-closed (the load-bearing property): a missing or null field NEVER
+# prints as 0 -- it prints an ERROR line and the exit code is non-zero.
+# A 0 in this output is always a measured zero. The sentinel line always
+# prints first, so partial output stays usable; the version in the
+# sentinel is the reader's compatibility check ("known sentinel or
+# instrument failure", never "looks like output").
+#
+# Env (all optional):
+#   CLAW_STORE_DIR         store/ holding .dashboard-token + claudeclaw.db
+#                          (default: <repo root>/store, derived from this
+#                          script's own location)
+#   CLAW_DASHBOARD_ORIGIN  dashboard origin (default http://localhost:3420)
+#   CLAW_TZ                timezone for the ts= stamp (default Europe/Budapest)
+
+set -u
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+STORE_DIR="${CLAW_STORE_DIR:-$ROOT/store}"
+ORIGIN="${CLAW_DASHBOARD_ORIGIN:-http://localhost:3420}"
+TZNAME="${CLAW_TZ:-Europe/Budapest}"
+
+echo "HB_METRICS_V1 ts=$(TZ="$TZNAME" date +'%Y-%m-%d %H:%M')"
+
+# All measurements run in ONE python3 process: no pipes, no shell variables
+# carrying JSON, and no data piped into a heredoc (the HBHEREDOC819 shape
+# was `echo "$JSON" | python3 <<PY` -- the heredoc replaces stdin and the
+# piped data is silently lost; here the heredoc IS the program and nothing
+# is piped). python3's sqlite3 module replaces the sqlite3 CLI, which does
+# not exist on a stock Linux install (exit 127).
+STORE_DIR="$STORE_DIR" ORIGIN="$ORIGIN" TZNAME="$TZNAME" python3 - <<'PY'
+import json, os, sqlite3, sys, urllib.request
+
+store = os.environ['STORE_DIR']
+origin = os.environ['ORIGIN']
+fail = 0
+
+def err(section, reason):
+    global fail
+    print('ERROR %s: %s' % (section, reason))
+    fail = 1
+
+tok = None
+try:
+    with open(os.path.join(store, '.dashboard-token')) as f:
+        tok = f.read().strip()
+except OSError as e:
+    err('token', 'cannot read .dashboard-token: %s' % e)
+
+def get(path):
+    req = urllib.request.Request(
+        origin + path, headers={'Authorization': 'Bearer ' + tok})
+    with urllib.request.urlopen(req, timeout=10) as r:
+        return json.load(r)
+
+if tok is not None:
+    # Kanban + memory + DB size: every number is computed server-side on
+    # /api/kanban/heartbeat-summary and copied here -- there is nothing to
+    # recompose (HBMEMBLIND807/819, HBKANBANDRIFT819, HBDBMERET822).
+    try:
+        d = get('/api/kanban/heartbeat-summary')
+        c = d.get('counts')
+        if not isinstance(c, dict):
+            err('summary', 'counts missing from response')
+        else:
+            required = ['urgent', 'in_progress', 'waiting', 'planned',
+                        'new_hot_memories_1h', 'db_size_mb']
+            missing = [k for k in required if c.get(k) is None]
+            if missing:
+                # Fail-closed: the absent field must not become a 0.
+                err('summary', 'missing/null fields: %s' % ','.join(missing))
+            else:
+                print('COUNTS urgent=%s in_progress=%s waiting=%s planned=%s '
+                      'new_hot_memories_1h=%s db_size_mb=%s waiting_shown=%s'
+                      % (c['urgent'], c['in_progress'], c['waiting'],
+                         c['planned'], c['new_hot_memories_1h'],
+                         c['db_size_mb'], d.get('waiting_shown')))
+            for x in d.get('urgent') or []:
+                print('URGENT', x.get('id'), x.get('title'))
+            for x in d.get('waiting') or []:
+                print('WAITING', x.get('id'), x.get('title'))
+        # HBDBKUSZOB823: the prune-lag state is computed server-side too
+        # (db.ts getTokenPruneLag) -- the retention resolution is
+        # override > .env > registry default, and re-implementing that chain
+        # here would be a second source of truth. Fail-closed like the rest:
+        # a missing block is an ERROR line, never a cheerful default.
+        tp = d.get('token_prune')
+        if not isinstance(tp, dict) or tp.get('state') is None:
+            err('token_prune', 'token_prune missing from response')
+        else:
+            print('TOKEN_PRUNE state=%s retention_days=%s lag_hours=%s '
+                  'tolerance_hours=%s'
+                  % (tp['state'], tp.get('retention_days'),
+                     tp.get('lag_hours'), tp.get('tolerance_hours')))
+    except Exception as e:
+        err('summary', repr(e))
+
+    # Calendar (next 2h) -- measured server-side on /api/heartbeat/calendar
+    # (5E0A32B0). The endpoint answers 200 with {ok:true, events} OR
+    # {ok:false, error}: a failed query is a RESULT to relay, not an empty
+    # list. n=0 therefore always means "queried, calendar free".
+    try:
+        d = get('/api/heartbeat/calendar')
+        if d.get('ok') is True and isinstance(d.get('events'), list):
+            evs = d['events']
+            print('CALENDAR_EVENTS n=%d window=2h' % len(evs))
+            def hhmm(part):
+                # dateTime carries its own offset; render in CLAW_TZ. An
+                # all-day event has only `date`. On any parse trouble print
+                # the raw value -- wrong-looking beats silently dropped.
+                if not isinstance(part, dict):
+                    return '?'
+                if part.get('dateTime'):
+                    try:
+                        from datetime import datetime
+                        from zoneinfo import ZoneInfo
+                        dt = datetime.fromisoformat(part['dateTime'])
+                        return dt.astimezone(ZoneInfo(os.environ.get('TZNAME', 'Europe/Budapest'))).strftime('%H:%M')
+                    except Exception:
+                        return str(part['dateTime'])
+                if part.get('date'):
+                    return 'all-day'
+                return '?'
+            for e in evs:
+                att = e.get('attendees') or 0
+                print('CAL_EVENT %s %s%s' % (
+                    hhmm(e.get('start')),
+                    e.get('summary') or '(nincs cim)',
+                    (' attendees=%d' % att) if att else ''))
+        elif d.get('ok') is False:
+            err('calendar', str(d.get('error') or 'unknown'))
+        else:
+            err('calendar', 'unrecognized response shape: %s' % json.dumps(d)[:120])
+    except Exception as e:
+        err('calendar', repr(e))
+
+    # The live schedule registry -- NOT the scheduled_tasks table, which is
+    # empty on this deployment and would report 0 forever.
+    try:
+        r = get('/api/schedules')
+        print('SCHEDULES enabled=%d' % sum(1 for x in r if x.get('enabled')))
+    except Exception as e:
+        err('schedules', repr(e))
+
+# task_runs.ts is epoch MILLISECONDS: the cutoff must be *1000. With a
+# seconds cutoff every row matches and "last hour" silently becomes "since
+# the beginning". strftime('%s','now') instead of unixepoch() so the query
+# also runs on sqlite < 3.38.
+try:
+    db = os.path.join(store, 'claudeclaw.db')
+    if not os.path.exists(db):
+        err('task_runs', 'db not found: %s' % db)
+    else:
+        con = sqlite3.connect('file:%s?mode=ro' % db, uri=True)
+        rows = con.execute(
+            "SELECT status, COUNT(*) FROM task_runs "
+            "WHERE ts > (strftime('%s','now') - 3600) * 1000 "
+            "GROUP BY status").fetchall()
+        total = sum(n for _, n in rows)
+        parts = ' '.join('%s=%d' % (s, n) for s, n in rows)
+        print('TASK_RUNS_1H total=%d%s' % (total, (' ' + parts) if parts else ''))
+except Exception as e:
+    err('task_runs', repr(e))
+
+sys.exit(1 if fail else 0)
+PY

@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="hu">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Videó-visszajelzés</title>
+<link rel="stylesheet" href="/style.css">
+<style>
+  /* VIDEOREVIEW1002: page-local layout on top of the dashboard tokens. */
+  /* The dashboard body is a grid (sidebar layout); this page is a single column. */
+  body { display: block; background: var(--bg); color: var(--text); margin: 0; }
+  .vr { max-width: 1400px; margin: 0 auto; padding: 16px; box-sizing: border-box; }
+  .vr-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+  .vr-head h1 { font-size: 1.25rem; margin: 0; }
+  .vr-head .vr-version { color: var(--text-muted); font-size: 0.8rem; }
+  .vr-head .spacer { flex: 1; }
+  .vr-bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+  .vr-bar select, .vr-bar input { background: var(--bg-input); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; font: inherit; max-width: 100%; }
+  .vr-bar select { min-width: 0; flex: 1 1 260px; }
+  .vr-btn { background: var(--bg-card); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; font: inherit; cursor: pointer; }
+  .vr-btn:hover { background: var(--bg-card-hover); }
+  .vr-btn.primary { border-color: var(--border-focus); }
+  .vr-btn:disabled { opacity: 0.5; cursor: default; }
+  .vr-main { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 14px; }
+  @media (max-width: 900px) { .vr-main { grid-template-columns: minmax(0, 1fr); } }
+  .vr-players { display: grid; gap: 10px; grid-template-columns: minmax(0, 1fr); }
+  .vr-players.side { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  @media (max-width: 700px) { .vr-players.side { grid-template-columns: minmax(0, 1fr); } }
+  .vr-player { position: relative; background: #000; border-radius: 8px; overflow: hidden; }
+  .vr-player video { display: block; width: 100%; height: auto; }
+  .vr-player .vr-label { position: absolute; top: 6px; left: 8px; color: #fff; background: rgba(0,0,0,0.55); padding: 2px 8px; border-radius: 6px; font-size: 0.75rem; pointer-events: none; }
+  .vr-overlay { position: absolute; inset: 0; cursor: crosshair; }
+  .vr-mark { position: absolute; border: 2px solid #ffcf3f; box-shadow: 0 0 0 1px rgba(0,0,0,0.6); pointer-events: none; }
+  .vr-mark.point { width: 14px; height: 14px; margin: -9px 0 0 -9px; border-radius: 50%; }
+  .vr-time { font-variant-numeric: tabular-nums; color: var(--text-secondary); font-size: 0.9rem; }
+  .vr-side { background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+  .vr-side h2 { font-size: 1rem; margin: 0; }
+  .vr-note-form textarea { width: 100%; box-sizing: border-box; background: var(--bg-input); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; font: inherit; resize: vertical; }
+  .vr-notes { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; max-height: 60vh; overflow: auto; }
+  .vr-note { border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; display: grid; grid-template-columns: auto 1fr auto; gap: 6px; align-items: start; }
+  .vr-note.done { opacity: 0.6; }
+  .vr-note .t { font-variant-numeric: tabular-nums; cursor: pointer; color: var(--border-focus); background: none; border: 0; padding: 0; font: inherit; }
+  .vr-note .txt { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .vr-note .meta { grid-column: 2 / 4; color: var(--text-muted); font-size: 0.75rem; overflow-wrap: anywhere; }
+  .vr-msg { font-size: 0.85rem; color: var(--text-dim); min-height: 1.2em; }
+  .vr-msg.err { color: #c0392b; }
+  .vr-help { color: var(--text-muted); font-size: 0.8rem; margin: 0; }
+  kbd { border: 1px solid var(--border); border-radius: 4px; padding: 0 4px; font-size: 0.75rem; }
+</style>
+</head>
+<body>
+<div class="vr">
+  <div class="vr-head">
+    <a class="vr-btn" href="/" data-testid="vr-back">Vissza a dashboardra</a>
+    <h1>Videó-visszajelzés</h1>
+    <span class="vr-version" id="vr-version"></span>
+    <span class="spacer"></span>
+    <button class="vr-btn" id="vr-reload" type="button" title="A Bridge-fül magától nem tölt újra">Újratöltés</button>
+  </div>
+
+  <p class="vr-msg err" id="vr-fatal" hidden></p>
+
+  <div class="vr-bar">
+    <select id="vr-video" aria-label="Videó"></select>
+    <select id="vr-compare" aria-label="Összevetés másik verzióval"><option value="">Nincs összevetés</option></select>
+    <label class="vr-time">Mód
+      <select id="vr-mode" aria-label="Összevetés módja">
+        <option value="side">Egymás mellett</option>
+        <option value="toggle">Váltva (V)</option>
+      </select>
+    </label>
+    <label class="vr-time">FPS <input id="vr-fps" type="number" min="1" max="240" step="1" value="25" style="width: 4.5em"></label>
+  </div>
+
+  <div class="vr-main">
+    <div>
+      <div class="vr-players" id="vr-players">
+        <div class="vr-player" id="vr-p1">
+          <video id="vr-v1" preload="auto" playsinline></video>
+          <span class="vr-label" id="vr-l1"></span>
+          <div class="vr-overlay" id="vr-overlay" data-testid="vr-overlay"></div>
+        </div>
+        <div class="vr-player" id="vr-p2" hidden>
+          <video id="vr-v2" preload="auto" playsinline muted></video>
+          <span class="vr-label" id="vr-l2"></span>
+        </div>
+      </div>
+      <div class="vr-bar" style="margin-top: 8px">
+        <button class="vr-btn" id="vr-back1" type="button" title="Egy képkocka vissza (←)">◀ kocka</button>
+        <button class="vr-btn" id="vr-play" type="button" title="Lejátszás / szünet (szóköz)">Lejátszás</button>
+        <button class="vr-btn" id="vr-fwd1" type="button" title="Egy képkocka előre (→)">kocka ▶</button>
+        <span class="vr-time" id="vr-now" data-testid="vr-now">0:00.000 · 0. kocka</span>
+      </div>
+      <p class="vr-help"><kbd>←</kbd>/<kbd>→</kbd> egy képkocka, <kbd>Shift</kbd>+nyíl egy másodperc, <kbd>szóköz</kbd> lejátszás, <kbd>V</kbd> verzióváltás. A képre kattintva pontot, húzva téglalapot jelölsz; utána írd meg a megjegyzést.</p>
+    </div>
+
+    <div class="vr-side">
+      <h2>Megjegyzések</h2>
+      <div class="vr-note-form">
+        <textarea id="vr-text" rows="3" maxlength="2000" placeholder="Mi a gond ennél a pontnál? (Enter: mentés, Shift+Enter: új sor)"></textarea>
+        <div class="vr-bar" style="margin: 6px 0 0">
+          <button class="vr-btn primary" id="vr-add" type="button">Megjegyzés ide</button>
+          <span class="vr-time" id="vr-pending"></span>
+        </div>
+      </div>
+      <ul class="vr-notes" id="vr-notes" data-testid="vr-notes"></ul>
+      <div class="vr-msg" id="vr-msg" role="status"></div>
+      <button class="vr-btn primary" id="vr-send" type="button" hidden>Küldés</button>
+    </div>
+  </div>
+</div>
+<script src="/video-review.js"></script>
+</body>
+</html>

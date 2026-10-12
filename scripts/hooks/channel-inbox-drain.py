@@ -21,6 +21,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import command_prompt  # noqa: E402
 try:
     import ledger_lib  # noqa: E402
     _HAS_LEDGER = True
@@ -42,13 +43,14 @@ def _is_main_session(payload):
     """Return True when running inside the main agent session.
 
     Resolution order (mirrors inbox-drain.py / ledger_lib.agent_id_from_cwd):
-    1. ledger_lib.agent_id_from_cwd + main_agent_id() comparison (preferred).
+    1. ledger_lib.agent_id_from_payload + main_agent_id() comparison (preferred;
+       transcript-anchored, LEDGERCWD828 -- the cwd mutates within a session).
     2. Fallback: MAIN_AGENT_ID env var vs cwd-derived agent name.
     """
     cwd = (payload or {}).get("cwd") or ""
     if _HAS_LEDGER:
         try:
-            agent_id = ledger_lib.agent_id_from_cwd(cwd)
+            agent_id = ledger_lib.agent_id_from_payload(payload)
             return agent_id == ledger_lib.main_agent_id()
         except Exception:
             pass
@@ -219,10 +221,21 @@ def main():
     # Sub-agents only: the main agent receives Telegram via --channels directly.
     if _is_main_session(payload):
         sys.exit(0)
+    # the command hook may block this prompt: do not drain into it
+    if command_prompt.command_block(payload.get("prompt") or "") is not None:
+        sys.exit(0)
     try:
         drain(payload)
-    except Exception:
-        pass
+    except Exception as exc:
+        # SILENTOLLAMA926: the tool call must not break, but the failure must
+        # not vanish either. The claimed inbox file stays in place and is picked
+        # up by the next run (see _claim_one), so nothing is lost; the line says
+        # why this run delivered nothing.
+        try:
+            import hook_errlog  # noqa: E402
+            hook_errlog.report("channel-inbox-drain", "drain failed, inbox left claimed for the next run", exc)
+        except Exception:
+            pass
     sys.exit(0)
 
 

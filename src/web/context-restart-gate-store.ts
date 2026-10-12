@@ -1,0 +1,110 @@
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { PROJECT_ROOT } from '../config.js'
+import { atomicWriteFileSync } from './atomic-write.js'
+import {
+  normalizeGateConfig,
+  DEFAULT_GATE_CONFIG,
+  type GateConfig,
+} from '../context-restart-gate.js'
+
+const CONFIG_PATH = join(PROJECT_ROOT, 'store', 'context-restart-gate.json')
+const STATE_PATH  = join(PROJECT_ROOT, 'store', 'context-restart-gate-state.json')
+
+// ---- Config (per-agent, keyed by agent name) --------------------------------
+
+function readConfigRaw(): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(readFileSync(CONFIG_PATH, 'utf-8'))
+    return (parsed && typeof parsed === 'object') ? parsed as Record<string, unknown> : {}
+  } catch { return {} }
+}
+
+// Fallback key for agents with no entry of their own. Without it a newly
+// created agent silently inherited `enabled: false` and never got a gate --
+// the same hole twice: two sub-agents in a row, the second one at 545k
+// tokens before anyone noticed. An
+// agent-specific entry still wins; this only decides the starting point.
+export const DEFAULT_CONFIG_KEY = '_default'
+
+/**
+ * Pure: resolve one agent's config out of the raw config file contents.
+ * Own entry wins, then `_default`, then the built-in default. Exported for tests.
+ */
+export function pickGateConfig(raw: Record<string, unknown>, name: string): GateConfig {
+  if (name in raw) return normalizeGateConfig(raw[name])
+  if (DEFAULT_CONFIG_KEY in raw) return normalizeGateConfig(raw[DEFAULT_CONFIG_KEY])
+  return { ...DEFAULT_GATE_CONFIG }
+}
+
+export function readGateConfig(name: string): GateConfig {
+  return pickGateConfig(readConfigRaw(), name)
+}
+
+/** True when this agent has its own entry (not inheriting `_default`). */
+export function hasOwnGateConfig(name: string): boolean {
+  return name in readConfigRaw()
+}
+
+export function writeGateConfig(name: string, cfg: unknown): GateConfig {
+  const normalized = normalizeGateConfig(cfg)
+  const raw = readConfigRaw()
+  raw[name] = normalized
+  atomicWriteFileSync(CONFIG_PATH, JSON.stringify(raw, null, 2))
+  return normalized
+}
+
+// ---- State (per-agent run-state: blocking streak tracking) ------------------
+
+export interface GateRunState {
+  /** Epoch ms when continuous blocking started; null when not blocked. */
+  firstBlockedAt: number | null
+  /** Epoch ms of the last persistent-block alert sent to bigme. */
+  lastAlertAt: number | null
+  /** Epoch ms when the last /clear was successfully sent. */
+  lastClearAt: number | null
+  /**
+   * Epoch ms of a /clear whose wake-nudge has NOT been delivered yet; null when
+   * nothing is owed. Persisted (not just an in-memory timer) so a dashboard
+   * restart between the /clear and the nudge still leaves the fresh session
+   * woken on the next sweep instead of silently mute.
+   */
+  pendingWakeAt: number | null
+}
+
+const EMPTY_STATE: GateRunState = {
+  firstBlockedAt: null,
+  lastAlertAt: null,
+  lastClearAt: null,
+  pendingWakeAt: null,
+}
+
+function readStateRaw(): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(readFileSync(STATE_PATH, 'utf-8'))
+    return (parsed && typeof parsed === 'object') ? parsed as Record<string, unknown> : {}
+  } catch { return {} }
+}
+
+function normalizeState(raw: unknown): GateRunState {
+  const o = (raw && typeof raw === 'object') ? raw as Record<string, unknown> : {}
+  const msOrNull = (v: unknown): number | null =>
+    (typeof v === 'number' && Number.isFinite(v) && v > 0) ? Math.floor(v) : null
+  return {
+    firstBlockedAt: msOrNull(o.firstBlockedAt),
+    lastAlertAt:    msOrNull(o.lastAlertAt),
+    lastClearAt:    msOrNull(o.lastClearAt),
+    pendingWakeAt:  msOrNull(o.pendingWakeAt),
+  }
+}
+
+export function readGateRunState(name: string): GateRunState {
+  const raw = readStateRaw()
+  return name in raw ? normalizeState(raw[name]) : { ...EMPTY_STATE }
+}
+
+export function writeGateRunState(name: string, state: GateRunState): void {
+  const raw = readStateRaw()
+  raw[name] = state
+  atomicWriteFileSync(STATE_PATH, JSON.stringify(raw, null, 2))
+}

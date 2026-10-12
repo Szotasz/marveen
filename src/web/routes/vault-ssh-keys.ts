@@ -109,22 +109,28 @@ export async function tryHandleVaultSshKeys(ctx: RouteContext): Promise<boolean>
       const body = await readBody(req)
       const data = JSON.parse(body.toString())
 
-      const label      = typeof data.label      === 'string' ? data.label.trim()      : ''
-      const username   = typeof data.username   === 'string' ? data.username.trim()   : ''
-      const privateKey = typeof data.privateKey === 'string' ? data.privateKey.trim() : ''
+      const label        = typeof data.label      === 'string' ? data.label.trim()      : ''
+      const username     = typeof data.username   === 'string' ? data.username.trim()   : ''
+      const rawPrivateKey = typeof data.privateKey === 'string' ? data.privateKey.trim() : ''
 
-      if (!label || !username || !privateKey) {
+      if (!label || !username || !rawPrivateKey) {
         json(res, { error: 'label, username and privateKey are required' }, 400)
         return true
       }
+
+      // Restore the closing newline ONCE, before validation, and use this
+      // normalized value for BOTH validation and storage -- ssh-keygen needs
+      // a trailing newline to accept the PEM, and whatever is not stored
+      // exactly as validated will fail an OpenSSH parser later, silently
+      // (the request itself still returns 201).
+      const privateKey = rawPrivateKey.endsWith('\n') ? rawPrivateKey : rawPrivateKey + '\n'
 
       // Validate key and extract public key via ssh-keygen -y (same pattern as extractPublicKeyFromVault)
       const tmpDir = mkdtempSync(join(tmpdir(), 'marveen-ssh-'))
       const keyPath = join(tmpDir, 'key')
       let publicKey: string
       try {
-        const keyContent = privateKey.endsWith('\n') ? privateKey : privateKey + '\n'
-        writeFileSync(keyPath, keyContent, { mode: 0o600 })
+        writeFileSync(keyPath, privateKey, { mode: 0o600 })
         chmodSync(keyPath, 0o600)
         publicKey = execFileSync('ssh-keygen', ['-y', '-f', keyPath], { stdio: 'pipe' }).toString().trim()
       } catch (err: any) {

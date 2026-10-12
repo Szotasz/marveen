@@ -8,8 +8,9 @@
 //
 // Since card 2922e380, sessionExistsOnHost is called once per unique receiver
 // in the pre-pass and cached for the main loop (not once per message). The work
-// cap is verified by the slice() bound: at most MAX_MESSAGES_PER_TICK messages
-// enter the loop per tick, regardless of backlog size.
+// cap is verified by the tick-window bound (selectTickWindow, fc5748f5): at most
+// MAX_MESSAGES_PER_TICK messages enter the loop per tick, regardless of backlog
+// size.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
@@ -36,10 +37,18 @@ vi.mock('../db.js', () => ({
     if (toAgent) return [] // per-agent query for reconnect pre-pass
     return mockGetPendingMessages()
   },
+  // The router re-reads the row's status immediately before sending (the tick
+  // works from a snapshot taken at its start). Pending here keeps these
+  // fixtures on the delivery path they were written to measure.
+  getMessageStatus: (..._a: unknown[]) => 'pending',
   markMessageDelivered: (...a: unknown[]) => mockMarkDelivered(...a),
   markMessageFailed: (...a: unknown[]) => mockMarkFailed(...a),
   markMessageDone: (..._a: unknown[]) => true,
   createAgentMessage: (..._a: unknown[]) => ({ id: 999 }),
+  // card def5a189: OTel trace stubs -- no-ops in this test
+  stampMessageTrace: (..._a: unknown[]) => false,
+  upsertOtelSpan: (..._a: unknown[]) => undefined,
+  closeOtelSpan: (..._a: unknown[]) => false,
 }))
 
 vi.mock('../web/voice-directive.js', () => ({
@@ -49,9 +58,15 @@ vi.mock('../web/voice-directive.js', () => ({
 vi.mock('../web/agent-config.js', () => ({
   readAgentRemoteHost: () => null,
   readAgentVoiceConfig: () => ({ responseMode: 'text' }),
+  // Default-OFF, matching the real reader: the agents in this test take the
+  // tmux path, so the cap being measured is the cap on the unchanged route.
+  readAgentWorksourceChannel: () => false,
 }))
 
 vi.mock('../web/agent-process.js', () => ({
+  // The not-ready-path modal clear: false = no modal, so every caller keeps
+  // its existing skip/busy behaviour and these fixtures are unaffected.
+  clearFeedbackModalAndRecheck: () => false,
   agentSessionName: (name: string) => `agent-${name}`,
   isSessionReadyForPrompt: vi.fn(() => false),
   clearStaleParkedInput: vi.fn(() => false),

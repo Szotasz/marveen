@@ -34,6 +34,36 @@ describe('createApproval', () => {
     expect(a.telegram_message_id).toBeNull()
   })
 
+  // EMAILKAPU901 PR2: the content-hash anchor must survive the DB roundtrip
+  // exactly -- the python gate matches it byte-for-byte, so a truncated or
+  // re-cased value would silently authorize nothing.
+  it('persists content_hash verbatim and readable back (EMAILKAPU901 PR2)', () => {
+    const hash = 'a'.repeat(40) + '0123456789abcdef01234567'
+    const a = createApproval({
+      id: 'ap-hash-1',
+      agent_id: 'marveen',
+      category: 'email_send',
+      action_description: 'Email: to=a@b.hu, targy=Teszt',
+      content_hash: hash,
+    })
+    expect(a.content_hash).toBe(hash)
+    expect(a.consumed_at).toBeNull()
+    const back = getApproval('ap-hash-1')
+    expect(back?.content_hash).toBe(hash)
+    expect(back?.consumed_at).toBeNull()
+  })
+
+  it('content_hash defaults to null when not provided', () => {
+    const a = createApproval({
+      id: 'ap-hash-2',
+      agent_id: 'agent-a',
+      category: 'email_send',
+      action_description: 'x',
+    })
+    expect(a.content_hash).toBeNull()
+    expect(getApproval('ap-hash-2')?.content_hash).toBeNull()
+  })
+
   it('stores timeout_at when provided', () => {
     const timeout_at = Math.floor(Date.now() / 1000) + 1800
     const a = createApproval({

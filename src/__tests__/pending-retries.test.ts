@@ -3,7 +3,10 @@ import {
   shouldSendAlert,
   toPendingRetryView,
   classifyTelegramSendError,
+  classifySendError,
   ALERT_THRESHOLD_MS,
+  OWNER_ESCALATION_EXTRA_MS,
+  OWNER_ALERT_THRESHOLD_MS,
 } from '../pending-retries.js'
 
 describe('shouldSendAlert', () => {
@@ -105,6 +108,65 @@ describe('toPendingRetryView', () => {
   })
 })
 
+// Two-stage escalation: stage 1 (alertDue/alert_sent_at, unchanged) now goes
+// to the main agent via inter-agent message; stage 2 (ownerAlertDue/
+// owner_alert_sent_at, new) is the direct-to-operator channel fallback,
+// gated behind a strictly larger threshold. Both reuse the SAME
+// shouldSendAlert pure function -- these tests exercise it through
+// toPendingRetryView with the owner fields, not a new decision function.
+describe('toPendingRetryView: owner escalation (stage 2)', () => {
+  const baseRow = {
+    id: 42,
+    task_name: 'morning-summary',
+    agent_name: 'main',
+    first_attempt: 1_000_000,
+    last_attempt: 1_000_500,
+    attempt_count: 5,
+    last_reason: 'busy',
+    alert_sent_at: 1_000_000 + ALERT_THRESHOLD_MS + 1, // stage 1 already fired
+    owner_alert_sent_at: null as number | null,
+  }
+
+  it('OWNER_ALERT_THRESHOLD_MS is ALERT_THRESHOLD_MS plus the extra escalation window', () => {
+    expect(OWNER_ALERT_THRESHOLD_MS).toBe(ALERT_THRESHOLD_MS + OWNER_ESCALATION_EXTRA_MS)
+  })
+
+  it('ownerAlertDue is false before the owner threshold, even though stage 1 already fired', () => {
+    const view = toPendingRetryView(baseRow, 1_000_000 + OWNER_ALERT_THRESHOLD_MS)
+    expect(view.ownerAlertDue).toBe(false)
+  })
+
+  it('ownerAlertDue becomes true once the owner threshold is exceeded', () => {
+    const view = toPendingRetryView(baseRow, 1_000_000 + OWNER_ALERT_THRESHOLD_MS + 1)
+    expect(view.ownerAlertDue).toBe(true)
+  })
+
+  it('ownerAlertDue does NOT require stage 1 to have fired -- independent, firstAttempt-keyed thresholds', () => {
+    // A failed stage-1 (main-agent) notice must never silently suppress the
+    // final owner escalation.
+    const view = toPendingRetryView(
+      { ...baseRow, alert_sent_at: null },
+      1_000_000 + OWNER_ALERT_THRESHOLD_MS + 1,
+    )
+    expect(view.ownerAlertDue).toBe(true)
+  })
+
+  it('ownerAlertDue is false once the owner alert was already sent (one-shot)', () => {
+    const view = toPendingRetryView(
+      { ...baseRow, owner_alert_sent_at: 1_000_000 + OWNER_ALERT_THRESHOLD_MS + 100 },
+      1_000_000 + 2 * OWNER_ALERT_THRESHOLD_MS,
+    )
+    expect(view.ownerAlertDue).toBe(false)
+  })
+
+  it('a row missing owner_alert_sent_at (older shape) defaults to null, not a crash', () => {
+    const { owner_alert_sent_at: _unused, ...rowWithoutOwnerCol } = baseRow
+    const view = toPendingRetryView(rowWithoutOwnerCol, 1_000_000 + OWNER_ALERT_THRESHOLD_MS + 1)
+    expect(view.ownerAlertSentAt).toBeNull()
+    expect(view.ownerAlertDue).toBe(true)
+  })
+})
+
 describe('classifyTelegramSendError', () => {
   it('treats a bare network error (no HTTP status) as transient', () => {
     expect(classifyTelegramSendError('fetch failed')).toBe('transient')
@@ -128,5 +190,60 @@ describe('classifyTelegramSendError', () => {
     expect(classifyTelegramSendError('Telegram API 401: Unauthorized')).toBe('permanent')
     expect(classifyTelegramSendError('Telegram API 403: Forbidden: bot was blocked by the user')).toBe('permanent')
     expect(classifyTelegramSendError('Telegram API 404: Not Found')).toBe('permanent')
+  })
+})
+
+// SLACKAWARE: the scheduler alerts now go over whatever channel the main agent
+// is bound to, so the classifier must recognise Slack's two error shapes too.
+// classifyTelegramSendError is a backward-compatible alias of classifySendError.
+describe('classifySendError (Slack shapes)', () => {
+  it('is the same function as the legacy classifyTelegramSendError alias', () => {
+    expect(classifySendError).toBe(classifyTelegramSendError)
+  })
+
+  it('treats Slack HTTP 429/5xx as transient, other 4xx as permanent', () => {
+    expect(classifySendError('Slack API HTTP 429')).toBe('transient')
+    expect(classifySendError('Slack API HTTP 503')).toBe('transient')
+    expect(classifySendError('Slack API HTTP 400')).toBe('permanent')
+    expect(classifySendError('Slack API HTTP 403')).toBe('permanent')
+  })
+
+  it('treats Slack rate-limit / server error codes as transient', () => {
+    expect(classifySendError('Slack API error: ratelimited')).toBe('transient')
+    expect(classifySendError('Slack API error: rate_limited')).toBe('transient')
+    expect(classifySendError('Slack API error: internal_error')).toBe('transient')
+    expect(classifySendError('Slack API error: service_unavailable')).toBe('transient')
+  })
+
+  it('treats Slack config error codes as permanent (no 60s spin)', () => {
+    expect(classifySendError('Slack API error: channel_not_found')).toBe('permanent')
+    expect(classifySendError('Slack API error: not_in_channel')).toBe('permanent')
+    expect(classifySendError('Slack API error: invalid_auth')).toBe('permanent')
+    expect(classifySendError('Slack API error: token_revoked')).toBe('permanent')
+    expect(classifySendError('Slack API error: is_archived')).toBe('permanent')
+  })
+
+  it('treats a bare Slack network failure (no status/code) as transient', () => {
+    expect(classifySendError('fetch failed')).toBe('transient')
+  })
+})
+
+// Discord is a valid CHANNEL_PROVIDER for the alert path too (channelDeliveryName,
+// resolveSchedulerAlertToken). discordProvider.sendMessage throws
+// "Discord API <status>: <body>"; without its own branch every 4xx fell
+// through the "no recognized prefix" default as transient and respun each tick.
+describe('classifySendError (Discord shapes)', () => {
+  it('treats Discord HTTP 429/5xx as transient, other 4xx as permanent', () => {
+    expect(classifySendError('Discord API 429: rate limited')).toBe('transient')
+    expect(classifySendError('Discord API 502: bad gateway')).toBe('transient')
+    expect(classifySendError('Discord API 401: {"message":"401: Unauthorized"}')).toBe('permanent')
+    expect(classifySendError('Discord API 403: {"message":"Missing Access"}')).toBe('permanent')
+    expect(classifySendError('Discord API 404: {"message":"Unknown Channel"}')).toBe('permanent')
+  })
+
+  it('does not confuse a status-looking number inside the body with the status', () => {
+    // The status is the number right after the prefix; the body may carry
+    // its own codes (Discord echoes "401: Unauthorized" in the JSON).
+    expect(classifySendError('Discord API 503: {"code":40001}')).toBe('transient')
   })
 })

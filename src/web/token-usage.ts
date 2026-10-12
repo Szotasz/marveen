@@ -1,4 +1,5 @@
-import { statSync, readdirSync, existsSync } from 'node:fs'
+import { statSync, readdirSync, existsSync, realpathSync } from 'node:fs'
+import { encodeClaudeProjectDir } from '../claude-project-dir.js'
 import { join, basename } from 'node:path'
 import { homedir } from 'node:os'
 import { createReadStream } from 'node:fs'
@@ -6,15 +7,28 @@ import { createInterface } from 'node:readline'
 import { getDb } from '../db.js'
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
+import { listAgentNames } from './agent-config.js'
+import { resolveAgentConfigDirForRead } from './claude-plans.js'
+import { mainConfigRoots } from './inbound-probe.js'
+import { toolInputPreview } from './tool-input-preview.js'
 
 const PROJECTS_DIR = join(homedir(), '.claude', 'projects')
 
-// Claude Code encodes a project's absolute path into a directory name by
-// replacing every non-alphanumeric/non-dash character with `-`. The main
-// agent's transcripts live under that exact directory, regardless of what
-// the agent calls itself.
-function encodeProjectPath(p: string): string {
-  return p.replace(/[^a-zA-Z0-9-]/g, '-')
+// The main agent's transcripts live under the directory Claude Code derives
+// from PROJECT_ROOT, regardless of what the agent calls itself. The encoder is
+// the tree-wide one (src/claude-project-dir.ts); the local copy that used to
+// live here was the only correct rule in the tree, and it is now the shared one.
+
+// True when `dir` is the shared ~/.claude/projects wearing another name,
+// reached through a symlink. Compared by realpath, so a symlinked parent
+// counts too. A missing path is not the shared root. `sharedRoot` is a
+// parameter only so the test can point both sides at a fixture.
+export function resolvesToSharedProjectsRoot(dir: string, sharedRoot: string = PROJECTS_DIR): boolean {
+  try {
+    return realpathSync(dir) === realpathSync(sharedRoot)
+  } catch {
+    return false
+  }
 }
 
 interface AgentTranscriptSource {
@@ -22,23 +36,134 @@ interface AgentTranscriptSource {
   projectDir: string
 }
 
-function discoverAgentSources(): AgentTranscriptSource[] {
+// `projectRootOverride` exists for the tests, matching the convention
+// resolveAgentConfigDirForRead() already uses: the isolated dir is found by
+// probing the filesystem, so the probe root has to be redirectable to a
+// fixture. Production callers pass nothing.
+export function discoverAgentSources(projectRootOverride?: string): AgentTranscriptSource[] {
   const sources: AgentTranscriptSource[] = []
   if (!existsSync(PROJECTS_DIR)) return sources
-  const mainDirName = encodeProjectPath(PROJECT_ROOT)
+  const mainDirName = encodeClaudeProjectDir(PROJECT_ROOT)
   for (const entry of readdirSync(PROJECTS_DIR)) {
     const full = join(PROJECTS_DIR, entry)
     let stat
     try { stat = statSync(full) } catch { continue }
     if (!stat.isDirectory()) continue
 
-    const agentMatch = entry.match(/-agents-([a-z]+)$/)
+    // sanitizeAgentName() allows [a-z0-9-], so the old /([a-z]+)$/ silently
+    // skipped every agent with a digit or a hyphen in its name -- the whole
+    // per-project worker fleet (davinci-ocura, vermeer-fressa, ...) never
+    // appeared in the token monitor at all. Not zero usage: no rows.
+    const agentMatch = entry.match(/-agents-([a-z0-9-]+)$/)
     if (agentMatch) {
       sources.push({ agent: agentMatch[1], projectDir: full })
     } else if (entry === mainDirName) {
       sources.push({ agent: MAIN_AGENT_ID, projectDir: full })
     }
   }
+
+  // A sub-agent that runs under its own OS user writes into an ISOLATED config
+  // dir (agents/<name>/.claude-config/projects/...), not into ~/.claude. The
+  // loop above only ever sees the shared root, so from the moment an agent is
+  // migrated its token rows stop -- and they stop SILENTLY, because the old
+  // directory still exists and still parses. It looks like an idle agent.
+  //
+  // MEASURED 2026-08-21 10:15: all four sub-agents' newest transcript under
+  // ~/.claude/projects/-home-...-agents-<name>/ was frozen at 2026-08-18 17:44
+  // (0.15-0.53 MB), while the live files under agents/<name>/.claude-config/
+  // carried timestamps from minutes earlier and 3.9-7.2 MB. Three days of the
+  // fleet's consumption were missing from the monitor that a model-assignment
+  // decision was about to be based on.
+  //
+  // This is the same defect resolveAgentConfigDirForRead() was written for
+  // (the dashboard's context counter, fixed the same morning); reusing it is
+  // deliberate, so the two readers cannot drift apart again.
+  //
+  // Both roots are kept for a migrated agent, not swapped: the pre-migration
+  // history is real and lives only in the shared root. Duplicate rows are
+  // impossible anyway -- the UNIQUE INDEX on (agent, session_id, timestamp,
+  // input, output) plus the ON CONFLICT ... DO UPDATE upsert at the insert site
+  // absorbs any overlap. The upsert is not a plain INSERT OR IGNORE: on a
+  // conflict it keeps the stored row and only backfills `model` where it is NULL
+  // and `thinking_tokens` where it is NULL or zero, so a re-read can complete a
+  // partial row but never rewrite one.
+  for (const name of listAgentNames()) {
+    let configDir: string | null = null
+    try { configDir = resolveAgentConfigDirForRead(name, projectRootOverride) } catch { continue }
+    if (!configDir) continue
+    const isolatedProjects = join(configDir, 'projects')
+    if (!existsSync(isolatedProjects)) continue
+    // ...unless the agent was never actually migrated, in which case
+    // agents/<name>/.claude-config/projects is a SYMLINK back to the shared
+    // ~/.claude/projects. Then the comment below is false: the dir holds
+    // EVERY agent's work, and all of it gets booked under this one name.
+    //
+    // MEASURED 2026-09-04 18:40 on a live install: three sub-agents each
+    // reported the whole fleet's consumption, byte-identical down to the
+    // field (43844 calls, 28.5M output, 8.82G cache-read, 636 sessions),
+    // because all three symlinks resolve to the same root; only the main
+    // agent's row was real. 73% of the table was duplicate.
+    // The cursor table cannot absorb it either, being keyed by file path, and
+    // the same transcript reached the parser under three different paths.
+    //
+    // Skipping it loses nothing: the shared root is walked in the loop above,
+    // where attribution comes from the encoded directory name.
+    if (resolvesToSharedProjectsRoot(isolatedProjects)) continue
+    let entries: string[]
+    try { entries = readdirSync(isolatedProjects) } catch { continue }
+    for (const entry of entries) {
+      const full = join(isolatedProjects, entry)
+      let stat
+      try { stat = statSync(full) } catch { continue }
+      if (!stat.isDirectory()) continue
+      // Attribution comes from WHOSE config dir this is, not from the encoded
+      // project name: an agent's isolated dir holds only that agent's work.
+      if (sources.some((s) => s.agent === name && s.projectDir === full)) continue
+      sources.push({ agent: name, projectDir: full })
+    }
+  }
+
+  // The MAIN agent has the same isolated-config problem the sub-agent loop above
+  // was written for, and it was left out of that fix: the loop over PROJECTS_DIR
+  // only ever finds ~/.claude/projects/<encoded>, while a channels session that
+  // runs with its own CLAUDE_CONFIG_DIR writes into <PROJECT_ROOT>/.channels-config/
+  // projects/<encoded>. From the moment the main session moved there its rows
+  // stop, and they stop SILENTLY -- the old directory still exists and still
+  // parses, so the dashboard keeps showing a number instead of a gap.
+  //
+  // MEASURED 2026-09-15 08:5x on this install: the newest transcript under
+  // ~/.claude/projects/-home-bobeklajos-marveen/ was frozen at 2026-09-13 07:27
+  // (288 KB), while the live file under .channels-config/projects/<same name>
+  // was 5.0 MB and minutes old. token_usage's last row carried exactly that
+  // 07:27 timestamp: 30 hours of the main agent's consumption missing from the
+  // monitor, with no error anywhere.
+  //
+  // mainConfigRoots() is reused deliberately rather than re-deriving the roots:
+  // the scheduler's sawTurn probe (SCHEDLOST914) and the channel watchdogs were
+  // fixed the same way, and a second copy of the root list is exactly how they
+  // drifted apart in the first place.
+  //
+  // Both roots are kept, not swapped -- the pre-migration history is real and
+  // lives only in the shared root. Duplicates cannot arise: dirs are deduped by
+  // realpath here (a .channels-config/projects that is merely a SYMLINK back to
+  // the shared root resolves to the same path and is skipped), and the UNIQUE
+  // INDEX plus the ON CONFLICT ... DO UPDATE upsert at the insert site absorbs
+  // any overlap the cursor table misses (backfill-only, see the note above).
+  const seenMainDirs = new Set<string>()
+  for (const s of sources) {
+    if (s.agent !== MAIN_AGENT_ID) continue
+    try { seenMainDirs.add(realpathSync(s.projectDir)) } catch { seenMainDirs.add(s.projectDir) }
+  }
+  for (const root of mainConfigRoots()) {
+    const candidate = join(root, 'projects', mainDirName)
+    if (!existsSync(candidate)) continue
+    let real: string
+    try { real = realpathSync(candidate) } catch { real = candidate }
+    if (seenMainDirs.has(real)) continue
+    seenMainDirs.add(real)
+    sources.push({ agent: MAIN_AGENT_ID, projectDir: candidate })
+  }
+
   return sources
 }
 
@@ -77,7 +202,7 @@ interface ParsedCall {
   cacheCreationTokens: number
   /** Tokens in thinking content blocks (estimated from char length / 4). */
   thinkingTokens: number
-  /** Model identifier from the API response, e.g. "claude-sonnet-4-6". */
+  /** Model identifier from the API response, e.g. "claude-sonnet-5". */
   model: string | null
   contentPreview: string
   toolName: string | null
@@ -170,17 +295,26 @@ async function parseJsonlFile(
     }
 
     let toolName: string | null = null
+    let toolInput: unknown = undefined
     let thinkingTokens = 0
     if (Array.isArray(content)) {
       for (const block of content) {
         if (block.type === 'tool_use' && block.name && !toolName) {
           toolName = block.name
+          toolInput = block.input
         }
         // Estimate thinking tokens from char length (no per-block count in API)
         if (block.type === 'thinking' && typeof block.thinking === 'string') {
           thinkingTokens += Math.ceil(block.thinking.length / 4)
         }
       }
+    }
+
+    // APRO920 (b): a tool-calling turn has no text block, so `preview` above
+    // stays '' -- that's the "Bash" row with no command visible in the token
+    // log. Fill it from the tool's own input (redacted) when there is one.
+    if (!preview && toolName) {
+      preview = toolInputPreview(toolName, toolInput) || ''
     }
 
     calls.push({
@@ -366,6 +500,49 @@ export function getModelDistribution(from?: number, to?: number, agent?: string)
   return db.prepare(sql).all(...params) as ModelDistEntry[]
 }
 
+// APRO920 (c)(1): a Bash row in the token log said only "Bash"; likewise the
+// model distribution said only "claude-sonnet-4-6, 227 rows" with no way to
+// tell WHICH task or agent drove them (D001, ELSOKOR922 Phase 0: all 227 rows
+// were agent='marveen', task_title empty, spread across 21 sessions -- a CLI
+// fallback-model pattern, not one configured source). This breaks a single
+// model's rows down by agent / session_id / task_title so that question is
+// answerable from the API, not by hand-editing a SQL query against the DB.
+export interface ModelSourceBreakdownEntry {
+  agent: string
+  sessionId: string
+  taskTitle: string | null
+  count: number
+  totalTokens: number
+  firstSeen: number
+  lastSeen: number
+}
+
+export function getModelSourceBreakdown(model: string, from?: number, to?: number): ModelSourceBreakdownEntry[] {
+  const db = getDb()
+  const hasModelCol = db.prepare("SELECT COUNT(*) as n FROM pragma_table_info('token_usage') WHERE name='model'").get() as { n: number }
+  if (!hasModelCol.n || !model) return []
+
+  const conditions: string[] = ['model = ?']
+  const params: any[] = [model]
+  if (from) { conditions.push('timestamp >= ?'); params.push(from) }
+  if (to) { conditions.push('timestamp <= ?'); params.push(to) }
+
+  const sql = `
+    SELECT agent,
+      session_id as sessionId,
+      task_title as taskTitle,
+      COUNT(*) as count,
+      SUM(input_tokens + output_tokens + cache_read_tokens + cache_creation_tokens) as totalTokens,
+      MIN(timestamp) as firstSeen,
+      MAX(timestamp) as lastSeen
+    FROM token_usage
+    WHERE ${conditions.join(' AND ')}
+    GROUP BY agent, session_id, task_title
+    ORDER BY count DESC
+  `
+  return db.prepare(sql).all(...params) as ModelSourceBreakdownEntry[]
+}
+
 export interface ToolStatEntry {
   tool_name: string
   model: string | null
@@ -492,11 +669,19 @@ export function correlateWithKanban(): void {
   `).all() as { agent: string; minTs: number; maxTs: number }[]
 
   for (const row of uncorrelated) {
+    // PARENT CARDS ARE NOT WORK ITEMS HERE. This correlation reads updated_at as "the agent was
+    // working on this card at that moment" and uses consecutive timestamps as window boundaries.
+    // Since a subcard write now also stamps its ancestors (db.ts, touchAncestorChain), a parent
+    // carries the SAME timestamp as the child that caused it -- and with a tie, which title won
+    // the token rows came down to row order, not to what was worked on. Parents are skipped so the
+    // leaf card keeps the attribution; a parent's own timestamp can no longer tell us whether it
+    // was written or merely bubbled, and separating those would take a column we are not adding.
     const cards = db.prepare(`
       SELECT id, title, project, assignee, updated_at
       FROM kanban_cards
       WHERE (assignee = ? OR assignee LIKE '%' || ? || '%')
         AND updated_at BETWEEN ? AND ?
+        AND NOT EXISTS (SELECT 1 FROM kanban_cards child WHERE child.parent_id = kanban_cards.id)
       ORDER BY updated_at ASC
     `).all(row.agent, row.agent, row.minTs, row.maxTs) as any[]
 

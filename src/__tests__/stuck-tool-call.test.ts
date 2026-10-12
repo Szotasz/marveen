@@ -2,6 +2,9 @@ import { describe, expect, it } from 'vitest'
 import {
   stuckToolCallSignature,
   decideStuckToolCallRecovery,
+  detectPaneState,
+  parkedChannelInput,
+  parkedMachineOriginInput,
   type StuckToolCallState,
   type StuckToolCallThresholds,
 } from '../pane-state.js'
@@ -360,6 +363,72 @@ describe('stuck-tool-call-watcher wiring contract', () => {
     expect(watcherSrc).toMatch(/confirmsWedgeProfile\(/)
   })
 
+  it('skips recovery while an inbound channel message is parked in the prompt (2026-08-15)', () => {
+    // Owner-observed false positive: the idle-prompt guard is the only thing
+    // holding back a residual footer, and it stops applying the moment an
+    // inbound message is injected (detectPaneState reads 'typing', not 'idle').
+    // Measured that day: counter frozen at 49s and correctly skipped as
+    // residual at 14:52/14:56/15:00; the owner's message landed 15:03:06; at
+    // 15:04:05 the guard no longer applied and the pane was respawned, taking
+    // the not-yet-processed message with it. A parked channel block belongs to
+    // stuck-input-watcher, so this watcher must stand down.
+    expect(watcherSrc).toMatch(/parkedChannelInput\(pane\)\s*!=\s*null/)
+    // Ordering matters: the parked-input guard must be evaluated BEFORE the
+    // CPU-profile guard, otherwise a freshly-arrived message (turn not started,
+    // CPU still low) walks straight through to the respawn.
+    // Anchor on the CALL SITE, not the exported definition (which sits near the
+    // top of the file and would make any ordering assertion vacuously false).
+    const cpuGuardCall = watcherSrc.indexOf('!confirmsWedgeProfile(cpuPercent, WEDGE_MAX_CPU_PERCENT)')
+    expect(cpuGuardCall, 'CPU guard call site not found').toBeGreaterThan(-1)
+    expect(watcherSrc.indexOf('parkedChannelInput(pane)')).toBeLessThan(cpuGuardCall)
+  })
+
+  it('skips recovery while a SCHEDULED-TASK injection is parked in the prompt (STUCKSCHED831)', () => {
+    // The 2026-08-15 guard above was written for `<channel source="plugin:`
+    // blocks and matched nothing else, which left the far more frequent park
+    // uncovered: a scheduled-task tick (heartbeat, kanban audit, dream engine).
+    // Measured on the Marveen install 2026-08-18: 14:11:08 the idle-prompt
+    // guard correctly skipped the residual footer, 14:15:08 this watcher
+    // respawned a session that was merely IDLE, and the first input after the
+    // respawn arrived truncated and fused with the next command.
+    //
+    // Prove the gap on the SHIPPED predicates, not on a copy: the same pane
+    // must read false for the channel-only check and true for the machine-
+    // origin one. If these two ever agree, the widening below is pointless.
+    const SEP = '─'.repeat(80)
+    const parkedScheduledTick = [
+      '',
+      SEP,
+      '❯ SCHEDULED TASK NOTICE -- the next <scheduled-task source="..."> ...',
+      '  </scheduled-task> block is one of YOUR OWN scheduled tasks. It was authored',
+      '  by the operator and fired by the local scheduler. <scheduled-task',
+      '  source="scheduled-task:memoria-heartbeat"> # Memoria-heartbeat',
+      '  ... </scheduled-task>',
+      SEP,
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+    ].join('\n')
+    expect(detectPaneState(parkedScheduledTick)).toBe('typing')
+    expect(parkedChannelInput(parkedScheduledTick), 'channel-only check must MISS a scheduled tick').toBeNull()
+    expect(parkedMachineOriginInput(parkedScheduledTick), 'machine-origin check must CATCH it').toBe(true)
+
+    // And the watcher must consult the widened predicate, still ahead of the
+    // CPU guard (a freshly parked tick has not started burning CPU yet, so a
+    // later position would let it walk straight through to the respawn).
+    expect(watcherSrc).toMatch(/parkedMachineOriginInput\(pane\)/)
+    const cpuGuardCall = watcherSrc.indexOf('!confirmsWedgeProfile(cpuPercent, WEDGE_MAX_CPU_PERCENT)')
+    expect(cpuGuardCall, 'CPU guard call site not found').toBeGreaterThan(-1)
+    expect(watcherSrc.indexOf('parkedMachineOriginInput(pane)')).toBeLessThan(cpuGuardCall)
+  })
+
+  it('the owner-facing alert does not present the frozen counter as a duration', () => {
+    // The number in the message is the FROZEN COUNTER value, not how long the
+    // session has been stuck; the acting threshold is freezeSeconds. The old
+    // wording ("49s óta nem haladt") made the owner read it as a 49-second hair
+    // trigger and ask about it (2026-08-15).
+    expect(watcherSrc).not.toMatch(/s óta nem haladt/)
+    expect(watcherSrc).toMatch(/THRESHOLDS\.freezeSeconds/)
+  })
+
   it('the watcher logs an audit line when it acts', () => {
     expect(watcherSrc).toMatch(/stuck-tool-call-watcher:/)
     expect(watcherSrc).toMatch(/logger\.warn/)
@@ -421,5 +490,302 @@ describe('confirmsWedgeProfile (#248 CPU-profile guard)', () => {
 
   it('fails OPEN on a null sample (ps failed) -- never blocks recovery on a missing reading', () => {
     expect(confirmsWedgeProfile(null, MAX)).toBe(true)
+  })
+})
+
+// STUCKFREEZE819: both false kills of 2026-08-19 hit a LIVE session with a
+// STALE verdict -- stagnation accrued in a parked/idle stretch, and the kill
+// executed ~2 minutes after the verdict's inputs, right as the session woke
+// (measured transcript ages at the two kills: ~2s and ~9s; the 20:23:19 kill
+// landed ONE second after a healthy tool_result). The gate below re-checks
+// validity at KILL time via the session transcript's mtime; a genuinely
+// wedged TUI writes nothing, so its transcript is >= freezeSeconds old by
+// construction.
+import { verdictStaleByTranscript, STALE_VERDICT_FRESH_MS } from '../web/stuck-tool-call-watcher.js'
+import { readFileSync as rfs, writeFileSync as wfs, mkdtempSync as mkdt, statSync as st } from 'node:fs'
+import { join as pjoin } from 'node:path'
+import { tmpdir as ostmp } from 'node:os'
+import { spawn as pspawn } from 'node:child_process'
+
+describe('verdictStaleByTranscript (pure) -- STUCKFREEZE819', () => {
+  const NOW = 10_000_000
+  it('a transcript written moments ago marks the verdict stale (both measured false-kill ages abort)', () => {
+    expect(verdictStaleByTranscript(NOW - 2_000, NOW)).toBe(true)   // 20:23:19 shape (~2s)
+    expect(verdictStaleByTranscript(NOW - 9_400, NOW)).toBe(true)   // 14:08:59 shape (~9s)
+  })
+
+  it('a real wedge does not abort: by construction its transcript is at least freezeSeconds old', () => {
+    expect(verdictStaleByTranscript(NOW - THRESHOLDS.freezeSeconds * 1000, NOW)).toBe(false)
+    expect(verdictStaleByTranscript(NOW - STALE_VERDICT_FRESH_MS, NOW)).toBe(false) // boundary: exactly N -> proceed
+  })
+
+  it('null mtime (dir unreadable) fails OPEN -- the stagnation signal stands, same rule as the CPU guard', () => {
+    expect(verdictStaleByTranscript(null, NOW)).toBe(false)
+  })
+
+  it('the threshold is derived, not round: above the 9s measured false-kill maximum with margin, well below the 180s wedge floor', () => {
+    expect(STALE_VERDICT_FRESH_MS).toBeGreaterThan(9_400 * 2)
+    expect(STALE_VERDICT_FRESH_MS).toBeLessThanOrEqual((THRESHOLDS.freezeSeconds * 1000) / 3)
+  })
+})
+
+describe('negative control: a stopped process writes nothing, so the mtime signal cannot mask a real wedge', () => {
+  it('SIGSTOP freezes the writer and its file mtime stands still', async () => {
+    const dir = mkdt(pjoin(ostmp(), 'wedge-sim-'))
+    const f = pjoin(dir, 'transcript.jsonl')
+    wfs(f, '')
+    // A writer that appends every 100ms -- the healthy-session analogue.
+    const child = pspawn('/bin/sh', ['-c', `while :; do echo line >> ${JSON.stringify(f)}; sleep 0.1; done`], { stdio: 'ignore' })
+    try {
+      await new Promise(r => setTimeout(r, 500))
+      const liveAge = Date.now() - st(f).mtimeMs
+      expect(liveAge).toBeLessThan(STALE_VERDICT_FRESH_MS) // alive -> gate would abort a kill
+      // The simulated wedge: stop the process (the stdio-blocked render loop's analogue).
+      process.kill(child.pid!, 'SIGSTOP')
+      const mtimeAtStop = st(f).mtimeMs
+      await new Promise(r => setTimeout(r, 1200))
+      expect(st(f).mtimeMs).toBe(mtimeAtStop) // the mtime STANDS: a wedge ages past N and recovery proceeds
+      expect(verdictStaleByTranscript(mtimeAtStop, mtimeAtStop + STALE_VERDICT_FRESH_MS + 1)).toBe(false)
+    } finally {
+      try { process.kill(child.pid!, 'SIGKILL') } catch { /* gone */ }
+    }
+  })
+})
+
+describe('wiring: the stale-verdict gate sits at the KILL boundary, not in verdict formation', () => {
+  const SRC = rfs(pjoin(__dirname, '..', 'web', 'stuck-tool-call-watcher.ts'), 'utf-8')
+
+  it('checkSession calls the gate after the CPU guard and before resumeMarveenSession', () => {
+    // Window: the checkSession function's own structural bounds.
+    const start = SRC.indexOf('async function checkSession')
+    expect(start).toBeGreaterThanOrEqual(0)
+    const body = SRC.slice(start, SRC.indexOf('\n}', start))
+    // Comment lines dropped, and the guard pinned as the EXACT live line --
+    // a bare indexOf would stay green with the call neutered (`false && ...`),
+    // which is precisely the declaration-vs-reachability trap: the text is
+    // present, the gate never runs. Caught by mutation on the first version.
+    const code = body.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
+    const cpuIdx = code.indexOf('confirmsWedgeProfile(')
+    const gateIdx = code.indexOf('if (verdictStaleByTranscript(transcriptMtime, Date.now())) {')
+    const killIdx = code.indexOf('resumeMarveenSession()')
+    expect(cpuIdx).toBeGreaterThanOrEqual(0)
+    expect(gateIdx).toBeGreaterThan(cpuIdx)
+    expect(killIdx).toBeGreaterThan(gateIdx)
+  })
+
+  it('an abort logs loudly and names the incident, so a suppressed kill is findable, not a hole', () => {
+    expect(SRC).toContain('ABORTING recovery (STUCKFREEZE819)')
+  })
+})
+
+import {
+  paneLooksRecovered,
+  shouldSendAllClear,
+  ALL_CLEAR_HEALTHY_SWEEPS,
+} from '../web/stuck-tool-call-watcher.js'
+
+// STUCKALLCLEAR923. The failed-recovery alert ("kezi beavatkozas kellhet") had
+// no closing message: it went out and nothing ever said the session came back.
+// Measured 2026-09-23: alert 17:28:07, session usable again 17:28:23, silence
+// afterwards. The owner's response was to stop reading the alerts, which is
+// the correct response to a warning that never resolves.
+describe('all-clear after a failed-recovery alert (STUCKALLCLEAR923)', () => {
+  const SEP = '─'.repeat(80)
+
+  // Shaped on a real capture-pane of a live fleet agent, 2026-09-23 17:58.
+  const idlePane = [
+    '',
+    `${SEP.slice(0, 73)} Igor ${SEP.slice(0, 1)}`,
+    '❯ ',
+    SEP,
+    '  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents',
+  ].join('\n')
+
+  const busyPane = [
+    '',
+    '✻ Worked for 31s',
+    '',
+    SEP,
+    '  ⏵⏵ bypass permissions on · esc to interrupt',
+  ].join('\n')
+
+  it('a live idle prompt counts as recovered -- that is exactly what the alert asked the owner to check', () => {
+    expect(detectPaneState(idlePane), 'fixture must read idle or the test proves nothing').toBe('idle')
+    expect(paneLooksRecovered(idlePane)).toBe(true)
+  })
+
+  it('FAILS CLOSED on a null pane, against the fail-open rule used everywhere else in this file', () => {
+    // capturePane returns null when the session does not exist. Every other
+    // guard here fails OPEN so a capture failure cannot block a recovery.
+    // This one must invert: announcing "helyreallt" off a MISSING session is
+    // the single lie this change exists to prevent.
+    expect(paneLooksRecovered(null)).toBe(false)
+  })
+
+  it('a busy pane is not a recovery', () => {
+    expect(paneLooksRecovered(busyPane)).toBe(false)
+  })
+
+  it('needs two consecutive healthy sweeps, so the gap between a failed respawn and the relaunch cannot fake one', () => {
+    expect(ALL_CLEAR_HEALTHY_SWEEPS).toBeGreaterThanOrEqual(2)
+    expect(shouldSendAllClear(1_000, 1)).toBe(false)
+    expect(shouldSendAllClear(1_000, ALL_CLEAR_HEALTHY_SWEEPS)).toBe(true)
+  })
+
+  it('sends nothing when no alert is outstanding, however healthy the session looks', () => {
+    // The noisy failure mode in the other direction: an all-clear for an alert
+    // that was never sent is a message the owner cannot place.
+    expect(shouldSendAllClear(null, 99)).toBe(false)
+  })
+})
+
+describe('wiring: the all-clear is stamped at the failure and cleared at the recovery (STUCKALLCLEAR923)', () => {
+  const SRC = rfs(pjoin(__dirname, '..', 'web', 'stuck-tool-call-watcher.ts'), 'utf-8')
+  const start = SRC.indexOf('async function checkSession')
+  const body = SRC.slice(start, SRC.indexOf('\n}', start))
+  const code = body.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
+
+  it('the failed-recovery branch stamps the pending alert, right where the 🚨 goes out', () => {
+    const stampIdx = code.indexOf('writePendingFailureAlert(Date.now())')
+    const alertIdx = code.indexOf('A fő session beragadt, és az automatikus újraindítás NEM sikerült')
+    expect(stampIdx, 'no stamp at the failure branch: the all-clear could never fire').toBeGreaterThanOrEqual(0)
+    expect(alertIdx).toBeGreaterThan(stampIdx)
+  })
+
+  it('a second failure in the same outage must not push the stamp forward', () => {
+    // Otherwise the all-clear reports a shorter outage than the owner lived
+    // through, which is worse than no number at all.
+    expect(code).toContain('if (readPendingFailureAlert() === null) writePendingFailureAlert(Date.now())')
+  })
+
+  it('the recovery sweep runs BEFORE the wedge decision, not inside it', () => {
+    // The recovery that saves us is usually not this watcher's own: on
+    // 2026-09-23 respawn-pane failed outright and the service manager brought
+    // the session back 16 seconds later. An all-clear keyed to our own success
+    // would never have fired in the one case it was asked for.
+    const sweepIdx = code.indexOf('readPendingFailureAlert()')
+    const decideIdx = code.indexOf('decideStuckToolCallRecovery(')
+    expect(sweepIdx).toBeGreaterThanOrEqual(0)
+    expect(decideIdx).toBeGreaterThan(sweepIdx)
+  })
+
+  it('clears the stamp before sending, so a repeat all-clear cannot loop every sweep', () => {
+    const clearIdx = code.indexOf('writePendingFailureAlert(null)')
+    const sendIdx = code.indexOf('A fő session magától helyreállt')
+    expect(clearIdx).toBeGreaterThanOrEqual(0)
+    expect(sendIdx).toBeGreaterThan(clearIdx)
+  })
+
+  it('the all-clear says there is nothing to do, and names the alert it closes', () => {
+    expect(SRC).toContain('nincs teendőd')
+    expect(SRC).toMatch(/kézi beavatkozás kellhet.*riasztás ezzel le van zárva/)
+  })
+
+  it('the pending stamp is persisted, not in-memory: a dashboard restart must not swallow the follow-up', () => {
+    expect(SRC).toMatch(/stuck-alert-state\.json/)
+    expect(SRC).toMatch(/writeFileSync\(ALERT_STATE_PATH/)
+  })
+})
+
+// Review of #1526: the two things below used to pass the whole suite when removed.
+import { allClearStep, killGateTranscriptMtime } from '../web/stuck-tool-call-watcher.js'
+import { projectsDirFor } from '../web/active-model.js'
+import { mkdirSync as mkd, utimesSync as utim, rmSync as rmrf } from 'node:fs'
+
+describe('allClearStep: one sweep of the all-clear logic (pure)', () => {
+  const idle = [
+    '',
+    `${'─'.repeat(73)} Igor ─`,
+    '❯ ',
+    '─'.repeat(80),
+    '  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents',
+  ].join('\n')
+  const busy = ['', '✻ Worked for 31s', '', '─'.repeat(80), '  ⏵⏵ bypass permissions on · esc to interrupt'].join('\n')
+
+  it('two healthy sweeps in a row send, and the streak starts over after the send', () => {
+    const a = allClearStep(1_000, idle, 0)
+    expect(a).toEqual({ streak: 1, send: false })
+    const b = allClearStep(1_000, idle, a.streak)
+    expect(b).toEqual({ streak: 0, send: true })
+  })
+
+  it('an UNHEALTHY sweep resets the streak to zero (dropping this reset let one old healthy sweep count)', () => {
+    expect(allClearStep(1_000, busy, 1)).toEqual({ streak: 0, send: false })
+    // healthy, unhealthy, healthy is NOT two in a row
+    const s1 = allClearStep(1_000, idle, 0)
+    const s2 = allClearStep(1_000, busy, s1.streak)
+    const s3 = allClearStep(1_000, idle, s2.streak)
+    expect(s3).toEqual({ streak: 1, send: false })
+  })
+
+  it('a missing pane (null) is unhealthy: it resets, it never sends', () => {
+    expect(allClearStep(1_000, null, 1)).toEqual({ streak: 0, send: false })
+  })
+
+  it('with no pending alert it sends nothing and holds no streak, however healthy the pane', () => {
+    expect(allClearStep(null, idle, 5)).toEqual({ streak: 0, send: false })
+  })
+})
+
+describe('wiring: checkSession uses allClearStep and sends on its verdict (review of #1526)', () => {
+  const SRC = rfs(pjoin(__dirname, '..', 'web', 'stuck-tool-call-watcher.ts'), 'utf-8')
+  const start = SRC.indexOf('async function checkSession')
+  const code = SRC.slice(start, SRC.indexOf('\n}', start)).split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
+
+  it('feeds the persisted stamp, this sweep\'s pane and the streak, and keeps the streak it returns', () => {
+    expect(code).toContain('allClearStep(pendingAlert, pane, healthyStreak)')
+    expect(code).toContain('healthyStreak = clearStep.streak')
+  })
+
+  it('the send is guarded by the step\'s verdict and nothing else (a disabled send is caught here)', () => {
+    expect(code).toContain('if (pendingAlert !== null && clearStep.send) {')
+    const guardIdx = code.indexOf('if (pendingAlert !== null && clearStep.send) {')
+    const sendIdx = code.indexOf('sendAlert(`✅')
+    expect(sendIdx).toBeGreaterThan(guardIdx)
+    expect(code).not.toMatch(/if \(false/)
+  })
+})
+
+describe('STUCKROOT923: the kill-boundary gate reads EVERY candidate root', () => {
+  let base = ''
+  const workingDir = () => pjoin(base, 'marveen')
+  const setup = () => {
+    base = mkdt(pjoin(ostmp(), 'stuck-gate-roots-'))
+    mkd(workingDir(), { recursive: true })
+  }
+  const write = (root: string, name: string, ageMs: number) => {
+    const dir = projectsDirFor(workingDir(), root)
+    mkd(dir, { recursive: true })
+    const f = pjoin(dir, name)
+    wfs(f, '{"type":"turn"}\n')
+    const t = new Date(Date.now() - ageMs)
+    utim(f, t, t)
+  }
+
+  it('sees the FRESH transcript under the isolated root while the shared root only holds a stale one', () => {
+    setup()
+    try {
+      const shared = pjoin(base, 'home', '.claude')
+      const isolated = pjoin(workingDir(), '.channels-config')
+      write(shared, 'old.jsonl', 10 * 24 * 3600_000) // the frozen jsonl of the old root
+      write(isolated, 'live.jsonl', 1_000)
+      const across = killGateTranscriptMtime(workingDir(), [shared, isolated])
+      expect(across).not.toBeNull()
+      expect(verdictStaleByTranscript(across, Date.now())).toBe(true) // fresh: the gate must abort the kill
+      // The reverted single-root read sees only the stale number and would let the kill through:
+      const single = killGateTranscriptMtime(workingDir(), [shared])
+      expect(verdictStaleByTranscript(single, Date.now())).toBe(false)
+    } finally { rmrf(base, { recursive: true, force: true }) }
+  })
+
+  it('the gate calls killGateTranscriptMtime(), and its default roots are mainConfigRoots(), not one of them', () => {
+    const SRC = rfs(pjoin(__dirname, '..', 'web', 'stuck-tool-call-watcher.ts'), 'utf-8')
+    const start = SRC.indexOf('async function checkSession')
+    const code = SRC.slice(start, SRC.indexOf('\n}', start)).split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
+    expect(code).toContain('killGateTranscriptMtime()')
+    expect(code).not.toContain('readTranscriptMtimeAcrossConfigDirs(')
+    expect(SRC).toContain('roots: ReadonlyArray<string | undefined> = mainConfigRoots(),')
+    const noComments = SRC.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
+    expect(noComments).not.toMatch(/mainConfigRoots\(\)\[0\]/)
   })
 })

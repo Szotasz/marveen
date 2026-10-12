@@ -1,0 +1,1 @@
+{"scanner": {"name": "mio-scan", "version": "1.0.0", "rulepack": "2026-08-24"}, "findings": [{"rule": "secret-assignment", "category": "pii", "match": "password: nagyonTitkos987", "line": 2, "span": [82, 107]}]}

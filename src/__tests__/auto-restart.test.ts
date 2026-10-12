@@ -1,11 +1,19 @@
 import { describe, it, expect } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import {
   parseHHMM,
   normalizeAutoRestartConfig,
   restartDue,
   dailyDueAtMs,
+  restartBlockedBy,
+  deferralOverride,
+  OPEN_QUESTION_DEFERRAL_CAP_MS,
   DEFAULT_AUTO_RESTART,
 } from '../auto-restart.js'
+
+// Repo root from this test file: src/__tests__ -> ../..
+const ROOT = join(__dirname, '..', '..')
 
 describe('parseHHMM', () => {
   it('parses valid times to minutes since midnight', () => {
@@ -28,12 +36,12 @@ describe('normalizeAutoRestartConfig', () => {
     expect(normalizeAutoRestartConfig({})).toEqual(DEFAULT_AUTO_RESTART)
   })
   it('keeps a valid daily config and clears interval (daily wins)', () => {
-    const c = normalizeAutoRestartConfig({ enabled: true, mode: 'fresh', dailyTime: '03:00', intervalHours: 6, handoff: true })
-    expect(c).toEqual({ enabled: true, mode: 'fresh', dailyTime: '03:00', intervalHours: null, handoff: true })
+    const c = normalizeAutoRestartConfig({ enabled: true, mode: 'fresh', dailyTime: '03:00', intervalHours: 6 })
+    expect(c).toEqual({ enabled: true, mode: 'fresh', dailyTime: '03:00', intervalHours: null, openQuestionDeferralCapHours: 24 })
   })
   it('keeps a valid interval config when no daily time', () => {
     const c = normalizeAutoRestartConfig({ enabled: true, mode: 'continue', intervalHours: 8 })
-    expect(c).toEqual({ enabled: true, mode: 'continue', dailyTime: null, intervalHours: 8, handoff: false })
+    expect(c).toEqual({ enabled: true, mode: 'continue', dailyTime: null, intervalHours: 8, openQuestionDeferralCapHours: 24 })
   })
   it('drops an invalid dailyTime and non-positive interval', () => {
     const c = normalizeAutoRestartConfig({ enabled: true, dailyTime: '99:99', intervalHours: 0 })
@@ -42,6 +50,12 @@ describe('normalizeAutoRestartConfig', () => {
   })
   it('defaults mode to continue for an unknown mode', () => {
     expect(normalizeAutoRestartConfig({ mode: 'wild' }).mode).toBe('continue')
+  })
+  it('keeps a valid open-question deferral cap and defaults invalid ones', () => {
+    expect(normalizeAutoRestartConfig({ openQuestionDeferralCapHours: 6 }).openQuestionDeferralCapHours).toBe(6)
+    expect(normalizeAutoRestartConfig({ openQuestionDeferralCapHours: 0 }).openQuestionDeferralCapHours).toBe(24)
+    expect(normalizeAutoRestartConfig({ openQuestionDeferralCapHours: -1 }).openQuestionDeferralCapHours).toBe(24)
+    expect(normalizeAutoRestartConfig({ openQuestionDeferralCapHours: 'lots' }).openQuestionDeferralCapHours).toBe(24)
   })
 })
 
@@ -74,5 +88,113 @@ describe('dailyDueAtMs', () => {
     const midnight = 1_700_000_000_000
     expect(dailyDueAtMs(midnight, 0)).toBe(midnight)
     expect(dailyDueAtMs(midnight, 180)).toBe(midnight + 180 * 60_000) // 03:00
+  })
+})
+
+describe('restartBlockedBy', () => {
+  // Regression guard: paneIsIdle used to be the ONLY pre-restart check, and an
+  // agent waiting on the owner's answer is idle precisely then -- so a due
+  // restart swallowed the pending exchange (for a channel agent even a
+  // "continue" restart is effectively fresh).
+  it('an unanswered inbound question defers even an idle pane', () => {
+    expect(restartBlockedBy({ paneIdle: true, openQuestion: true })).toBe('open-question')
+  })
+  it('a busy pane defers, and wins the ordering over an open question', () => {
+    expect(restartBlockedBy({ paneIdle: false, openQuestion: false })).toBe('busy-pane')
+    expect(restartBlockedBy({ paneIdle: false, openQuestion: true })).toBe('busy-pane')
+  })
+  it('idle pane and no open question proceeds', () => {
+    expect(restartBlockedBy({ paneIdle: true, openQuestion: false })).toBeNull()
+  })
+})
+
+describe('deferralOverride', () => {
+  const now = 1_700_000_000_000
+  const day = 24 * 60 * 60 * 1000
+
+  // Regression guard: the open-question signal is clockless (a question the
+  // owner never answers stays open forever), so before the cap an agent with
+  // one stale question had its nightly restart silently deferred for months --
+  // a live ledger showed a streak of 72.6 days.
+  it('overrides an open-question deferral once the streak reaches the cap', () => {
+    expect(deferralOverride('open-question', now - OPEN_QUESTION_DEFERRAL_CAP_MS, now)).toBe(true)
+    expect(deferralOverride('open-question', now - Math.round(72.6 * day), now)).toBe(true)
+  })
+  it('keeps deferring while the streak is under the cap', () => {
+    expect(deferralOverride('open-question', now - OPEN_QUESTION_DEFERRAL_CAP_MS + 1, now)).toBe(false)
+    expect(deferralOverride('open-question', now, now)).toBe(false)
+  })
+  it('never overrides a busy pane, no matter how long the streak', () => {
+    expect(deferralOverride('busy-pane', now - 100 * day, now)).toBe(false)
+  })
+  it('does nothing without a block or without a streak', () => {
+    expect(deferralOverride(null, now - 100 * day, now)).toBe(false)
+    expect(deferralOverride('open-question', null, now)).toBe(false)
+  })
+  it('respects an explicit cap argument', () => {
+    expect(deferralOverride('open-question', now - 2 * day, now, 3 * day)).toBe(false)
+    expect(deferralOverride('open-question', now - 3 * day, now, 3 * day)).toBe(true)
+  })
+})
+
+
+// The `handoff` field was declared here as "Phase 2" and never wired: it sat in
+// every agent's stored config, the PUT accepted it and a GET echoed it back,
+// while the restart path never read it. It has been removed, and these
+// guard the removal from both directions -- that the key is gone, and that no
+// key like it can quietly come back and be believed.
+describe('the auto-restart config carries no unwired handoff switch', () => {
+  it('drops a legacy handoff key instead of storing it', () => {
+    const c = normalizeAutoRestartConfig({ enabled: true, mode: 'fresh', dailyTime: '04:00', handoff: true })
+    expect('handoff' in c).toBe(false)
+    // The rest of the config still normalizes exactly as before.
+    expect(c).toEqual({ enabled: true, mode: 'fresh', dailyTime: '04:00', intervalHours: null, openQuestionDeferralCapHours: 24 })
+  })
+
+  it('has no handoff-shaped key under ANY name in the defaults', () => {
+    expect(Object.keys(DEFAULT_AUTO_RESTART).filter((k) => /handoff/i.test(k))).toEqual([])
+  })
+
+  // The claim this file cannot make from behavior: a config field can only
+  // influence the restart if some code on the restart path READS it, and there
+  // is no runtime path here to observe its absence. So assert the absence
+  // structurally, on the executable source with comments stripped -- the prose
+  // above deliberately says "handoff" many times, and only code counts.
+  it('no code on the restart path reads a handoff field', () => {
+    const stripComments = (src: string): string =>
+      src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1')
+    // Zero mentions at all: neither of these files has any business naming a
+    // handoff FIELD, and the tolerated exceptions are the legacy-key list
+    // (ACCEPTS the field at the API edge and throws it away) and
+    // ensureThinChiefHandoffSection -- a per-spawn CLAUDE.md scaffolding call
+    // (agent-scaffold.ts) unrelated to the auto-restart config: it writes the
+    // THIN CHIEF handoff PROTOCOL doc section, the same shape as its sibling
+    // ensureAgentIdHeaderSection call right above it, and reads no config field
+    // so it cannot influence a restart decision. Since PR #1357 that call sits
+    // behind profileWantsThinChiefHandoff(profile), which is the third
+    // exception: it reads the agent's SECURITY PROFILE, a different file from
+    // the auto-restart config, so the claim this case defends is unchanged.
+    for (const f of ['src/auto-restart.ts', 'src/web/agent-process.ts']) {
+      const code = stripComments(readFileSync(join(ROOT, f), 'utf-8'))
+      const hits = code
+        .split('\n')
+        .filter((l) => /handoff/i.test(l) && !l.includes('LEGACY_AUTO_RESTART_FIELDS') && !l.includes('ensureThinChiefHandoffSection')
+          && !l.includes('profileWantsThinChiefHandoff'))
+      expect(hits, `${f} references handoff on the restart path`).toEqual([])
+    }
+    // The runner is different since the daily-handoff tier landed: it must
+    // NAME the guard's tier in order to stand aside for it, so a blanket
+    // "no line says handoff" would forbid the very delegation that keeps the
+    // two mechanisms from double-restarting one agent.
+    //
+    // The claim being defended was never "the word is absent" -- it is that no
+    // handoff FIELD of the auto-restart config can influence the restart. So
+    // match the field-access shapes (`cfg.handoff`, `handoff:`, `'handoff'`)
+    // rather than the word, and let a named call into the guard through.
+    // Verified by mutation: restoring `if (cfg.handoff)` here fails this.
+    const runner = stripComments(readFileSync(join(ROOT, 'src/web/auto-restart-runner.ts'), 'utf-8'))
+    const fieldShape = /(\.\s*handoff\b|\bhandoff\s*:|['"`]handoff['"`])/i
+    const fieldHits = runner.split('\n').filter((l) => fieldShape.test(l) && !l.includes('LEGACY_AUTO_RESTART_FIELDS'))
+    expect(fieldHits, 'auto-restart-runner.ts reads a handoff field').toEqual([])
   })
 })

@@ -28,10 +28,29 @@ CREATE TABLE IF NOT EXISTS conversation_log (
   text TEXT,
   ts TEXT,
   created_at INTEGER NOT NULL,
+  attachment_kind TEXT,
+  attachment_file_id TEXT,
+  reply_to_message_id TEXT,
   UNIQUE(agent_id, chat_id, direction, message_id)
 )
 """
 INDEX = "CREATE INDEX IF NOT EXISTS idx_convlog_agent ON conversation_log(agent_id, created_at)"
+
+# Columns added after the initial schema shipped. connect() retrofits them onto
+# existing DBs with idempotent ALTERs (CREATE TABLE IF NOT EXISTS is a no-op on
+# an already-created table, so the SCHEMA text alone never upgrades old DBs).
+_MIGRATION_COLUMNS = (
+    ("attachment_kind", "TEXT"),
+    ("attachment_file_id", "TEXT"),
+    ("reply_to_message_id", "TEXT"),
+    # PROVIDERVAK908: the ledger used to record WHAT arrived but not WHERE FROM.
+    # The reply guard therefore named the Telegram reply tool for a Discord
+    # inbound (measured 2026-09-07, the owner's Discord
+    # DM). Stores the full envelope source, e.g. "plugin:discord:discord", so the
+    # reply tool name is derivable without a per-provider table. NULL for every
+    # row written before this column existed -- consumers must fall back.
+    ("source", "TEXT"),
+)
 
 RECENT_LIMIT = 20
 
@@ -90,11 +109,114 @@ def owner_name():
     return "A felhasználó"
 
 
+def agent_id_from_payload(payload):
+    """Session-stable agent identity from a hook payload (LEDGERCWD828).
+
+    The shell cwd is MUTABLE within a session: when the main agent stepped into
+    agents/iris/... for a measurement, its OWN replies to the owner ledgered
+    under iris, the reply guard then found no outbound under the real id and
+    triple-sent an already-answered link. Measured blast radius on the owner
+    chat: 51 outbound rows under 7 names, several of them plain directory
+    names, not agents.
+
+    The session's transcript_path is derived from the agent's own config dir
+    (CLAUDE_CONFIG_DIR), which never changes within a session -- that is the
+    identity anchor. Resolution order:
+      1. transcript_path  (immutable per session)
+      2. MARVEEN_AGENT_ID (explicit launcher override)
+      3. cwd              (last resort, for callers that have nothing else)
+    """
+    payload = payload or {}
+    agent = _agent_id_from_config_path(payload.get("transcript_path"))
+    if agent:
+        return agent
+    env_id = os.environ.get("MARVEEN_AGENT_ID", "").strip()
+    if env_id:
+        return env_id
+    return agent_id_from_cwd(payload.get("cwd"))
+
+
+def _agent_id_from_config_path(path):
+    """Map a transcript/config path to an agent id, or None when the path says
+    nothing (caller falls through to the env/cwd chain).
+
+      <install>/agents/<id>/...  -> <id>            (a sub-agent's config dir)
+      anywhere else in the tree  -> MAIN_AGENT_ID   (.channels-config etc.)
+      under ~/.claude            -> MAIN_AGENT_ID   (non-isolated main session)
+      anything else / empty      -> None
+    """
+    if not path or not isinstance(path, str):
+        return None
+    path = os.path.abspath(path.strip())
+    install = _install_dir().rstrip("/")
+    agents_root = os.path.join(install, "agents")
+    # 1. The CONFIG OWNER is authoritative: a transcript under
+    #    <install>/agents/<id>/... is that agent's isolated config dir, no
+    #    matter where the session's cwd wandered.
+    if path.startswith(agents_root + os.sep):
+        rel = path[len(agents_root) + 1:]
+        head = rel.split(os.sep)[0]
+        return head or None
+    # 2. Non-isolated config roots (~/.claude and friends) key the project dir
+    #    by the session's STARTING cwd, flattened: /a/b -> "-a-b". Every fleet
+    #    agent's tmux session runs this way (measured 2026-08-28: the live
+    #    samu session's transcript sits under
+    #    ~/.claude/projects/-Users-marvin-ClaudeClaw-agents-samu/), so the
+    #    agent id is IN the path -- mapping the whole family to the main agent
+    #    would be the original bug mirrored. Parse the segment instead.
+    seg_agent = _agent_id_from_project_segment(path, install)
+    if seg_agent is not None:
+        return seg_agent
+    if path == install or path.startswith(install + os.sep):
+        return main_agent_id()
+    home_claude = os.path.join(os.path.expanduser("~"), ".claude")
+    if path == home_claude or path.startswith(home_claude + os.sep):
+        return main_agent_id()
+    return None
+
+
+def _agent_id_from_project_segment(path, install):
+    """Read the agent id out of a flattened projects/<segment>/ component.
+
+      .../projects/-Users-...-ClaudeClaw-agents-<id>[-...]/x.jsonl -> <id>
+      .../projects/-Users-...-ClaudeClaw[-...]/x.jsonl             -> MAIN
+      no /projects/ component, or a foreign segment                -> None
+
+    Agent ids may in principle contain hyphens, which the flattening makes
+    ambiguous; when <install>/agents exists its entries disambiguate (longest
+    match wins), otherwise the first hyphen-delimited hunk is taken -- correct
+    for every current fleet name.
+    """
+    marker = os.sep + "projects" + os.sep
+    i = path.find(marker)
+    if i < 0:
+        return None
+    seg = path[i + len(marker):].split(os.sep)[0]
+    flat_install = install.replace(os.sep, "-")
+    agents_prefix = flat_install + "-agents-"
+    if seg.startswith(agents_prefix):
+        rest = seg[len(agents_prefix):]
+        try:
+            names = sorted(os.listdir(os.path.join(install, "agents")), key=len, reverse=True)
+        except OSError:
+            names = []
+        for name in names:
+            if rest == name or rest.startswith(name + "-"):
+                return name
+        head = rest.split("-")[0]
+        return head or None
+    if seg == flat_install or seg.startswith(flat_install + "-"):
+        return main_agent_id()
+    return None
+
+
 def agent_id_from_cwd(cwd):
-    """Which channel agent is this session? Derived from cwd so the hooks are
-    generic across all three agents and never cross-contaminate:
-      <install>/agents/<id>  -> <id>           (sub-agent: dia, erno-ba, ...)
-      <install>               -> MAIN_AGENT_ID  (the main channels agent)
+    """Which channel agent is this session? Derived from cwd. LAST-RESORT ONLY:
+    the cwd changes within a session (a `cd` into agents/<x>/ re-attributes
+    every later row), so payload-carrying hooks must call agent_id_from_payload
+    instead -- its docstring carries the measured incident (LEDGERCWD828).
+      <install>/agents/<id>[/...]  -> <id>           (a sub-agent)
+      anywhere else in the tree    -> MAIN_AGENT_ID   (the main channels agent)
     """
     cwd = (cwd or "").rstrip("/")
     install = _install_dir().rstrip("/")
@@ -102,11 +224,21 @@ def agent_id_from_cwd(cwd):
     if cwd.startswith(agents_root + os.sep):
         rel = cwd[len(agents_root) + 1:]
         return rel.split(os.sep)[0] or main_agent_id()
-    if cwd == install:
+    if cwd == install or cwd.startswith(install + os.sep):
+        # Anywhere else INSIDE the install tree is still the main agent. Without
+        # this, a session whose cwd happens to be a subdirectory (a scratch dir,
+        # a build folder, ...) logs its messages under an agent id invented from
+        # the directory name. That splits the conversation ledger across two
+        # identities and makes the reply guard block on a question it has
+        # already answered, because it finds no outbound under the real id.
         return main_agent_id()
-    # Fallback: last path component (best effort), else main.
-    base = os.path.basename(cwd)
-    return base or main_agent_id()
+    # Outside the install tree: never invent an agent id from the directory name.
+    # The launcher can name the session explicitly via MARVEEN_AGENT_ID; failing
+    # that, attribute to the main agent rather than a bogus basename.
+    env_id = os.environ.get("MARVEEN_AGENT_ID", "").strip()
+    if env_id:
+        return env_id
+    return main_agent_id()
 
 
 def connect():
@@ -114,34 +246,68 @@ def connect():
     con.execute("PRAGMA busy_timeout=10000")
     con.execute(SCHEMA)
     con.execute(INDEX)
+    existing = {row[1] for row in con.execute("PRAGMA table_info(conversation_log)")}
+    for col, coltype in _MIGRATION_COLUMNS:
+        if col not in existing:
+            con.execute(f"ALTER TABLE conversation_log ADD COLUMN {col} {coltype}")
     return con
 
 
-def log_inbound(agent_id, chat_id, message_id, text, ts):
-    """Record an inbound user message. Idempotent on (agent_id, chat_id, in, message_id)."""
+def log_inbound(agent_id, chat_id, message_id, text, ts,
+                attachment_kind=None, attachment_file_id=None,
+                reply_to_message_id=None, source=None):
+    """Record an inbound user message. Idempotent on (agent_id, chat_id, in, message_id).
+
+    attachment_kind/file_id: set for voice / video_note messages that arrived
+    WITHOUT a transcript, so a respawned session can still download and
+    transcribe the audio instead of losing the message content forever.
+
+    reply_to_message_id: the message_id this inbound quoted (Telegram
+    ctx.message.reply_to_message), when the sender replied to a specific
+    earlier message instead of writing standalone. Only the id is kept, not an
+    excerpt -- the quoted text is a copy of that other row's own `text` and is
+    already recoverable via a lookup on message_id (df3b48a7).
+
+    source: the channel envelope's source attribute ("plugin:<provider>:<server>"),
+    or None when the caller does not know it. Used to name the RIGHT reply tool
+    in the reply guard's directive (PROVIDERVAK908)."""
     con = connect()
     try:
         con.execute(
             "INSERT OR IGNORE INTO conversation_log"
-            " (agent_id, chat_id, direction, message_id, text, ts, created_at)"
-            " VALUES (?, ?, 'in', ?, ?, ?, ?)",
-            (str(agent_id), str(chat_id), str(message_id), text, ts, int(time.time())),
+            " (agent_id, chat_id, direction, message_id, text, ts, created_at,"
+            "  attachment_kind, attachment_file_id, reply_to_message_id, source)"
+            " VALUES (?, ?, 'in', ?, ?, ?, ?, ?, ?, ?, ?)",
+            (str(agent_id), str(chat_id), str(message_id), text, ts, int(time.time()),
+             attachment_kind, attachment_file_id, reply_to_message_id, source),
         )
         con.commit()
     finally:
         con.close()
 
 
-def log_outbound(agent_id, chat_id, text):
-    """Record an outbound reply (message_id NULL -> never deduped)."""
+def log_outbound(agent_id, chat_id, text, message_id=None):
+    """Record an outbound reply.
+
+    message_id: the Telegram message_id returned by the reply tool, or None.
+    When provided, INSERT OR IGNORE deduplicates on the UNIQUE constraint so
+    a double-fire of the hook does not produce a duplicate row. When None the
+    constraint does not trigger (NULL != NULL in SQL), preserving the existing
+    behaviour for callers that do not supply a message_id.
+    Note: INSERT OR IGNORE silently swallows ALL constraint violations, not
+    only UNIQUE conflicts. This is intentional: a duplicate outbound row is
+    harmless, and we never want the ledger write to raise an exception.
+    """
     con = connect()
     try:
         now = int(time.time())
+        mid = str(message_id) if message_id is not None else None
         con.execute(
-            "INSERT INTO conversation_log"
+            "INSERT OR IGNORE INTO conversation_log"
             " (agent_id, chat_id, direction, message_id, text, ts, created_at)"
-            " VALUES (?, ?, 'out', NULL, ?, ?, ?)",
-            (str(agent_id), str(chat_id), text, time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)), now),
+            " VALUES (?, ?, 'out', ?, ?, ?, ?)",
+            (str(agent_id), str(chat_id), mid, text,
+             time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)), now),
         )
         con.commit()
     finally:
@@ -149,11 +315,13 @@ def log_outbound(agent_id, chat_id, text):
 
 
 def recent(agent_id, limit=RECENT_LIMIT):
-    """The last `limit` turns for this agent, oldest-first. Rows: (direction, chat_id, text, ts)."""
+    """The last `limit` turns for this agent, oldest-first.
+    Rows: (direction, chat_id, text, ts, attachment_kind, attachment_file_id)."""
     con = connect()
     try:
         rows = con.execute(
-            "SELECT direction, chat_id, text, ts FROM conversation_log"
+            "SELECT direction, chat_id, text, ts, attachment_kind, attachment_file_id"
+            " FROM conversation_log"
             " WHERE agent_id=? ORDER BY created_at DESC, id DESC LIMIT ?",
             (str(agent_id), int(limit)),
         ).fetchall()
@@ -162,20 +330,47 @@ def recent(agent_id, limit=RECENT_LIMIT):
         con.close()
 
 
-def open_question_with_age(agent_id):
-    """Like open_question() but also returns the open inbound's created_at (unix
-    epoch). Returns (chat_id, message_id, text, ts, created_at) or None. Used by
-    the live-drain hook, which needs the age for its grace window."""
+def source_for(agent_id, chat_id):
+    """The channel envelope source ("plugin:<provider>:<server>") most recently
+    recorded for this agent+chat, or None if unknown (PROVIDERVAK908).
+
+    Deliberately a SEPARATE lookup rather than a widened open_question_with_age()
+    tuple: every consumer of that tuple prefix-slices it (HOOKARITAS821), and a
+    new trailing element is exactly the kind of change that keeps working in the
+    tests while silently shifting a field for a caller that unpacks positionally.
+    A miss returns None, and every caller must degrade to provider-agnostic
+    wording -- rows written before the column existed have source NULL.
+    """
     con = connect()
     try:
         row = con.execute(
-            "SELECT chat_id, message_id, text, ts, created_at, id FROM conversation_log"
+            "SELECT source FROM conversation_log"
+            " WHERE agent_id=? AND chat_id=? AND source IS NOT NULL"
+            " ORDER BY created_at DESC, id DESC LIMIT 1",
+            (str(agent_id), str(chat_id)),
+        ).fetchone()
+        return row[0] if row else None
+    finally:
+        con.close()
+
+
+def open_question_with_age(agent_id):
+    """Like open_question() but also returns the open inbound's created_at (unix
+    epoch). Returns (chat_id, message_id, text, ts, created_at, attachment_kind,
+    attachment_file_id) or None. Used by the live-drain hook, which needs the
+    age for its grace window."""
+    con = connect()
+    try:
+        row = con.execute(
+            "SELECT chat_id, message_id, text, ts, created_at, id,"
+            "       attachment_kind, attachment_file_id"
+            " FROM conversation_log"
             " WHERE agent_id=? AND direction='in' ORDER BY created_at DESC, id DESC LIMIT 1",
             (str(agent_id),),
         ).fetchone()
         if not row:
             return None
-        chat_id, message_id, text, ts, created_at, rid = row
+        chat_id, message_id, text, ts, created_at, rid, att_kind, att_file_id = row
         later_out = con.execute(
             "SELECT 1 FROM conversation_log"
             " WHERE agent_id=? AND direction='out'"
@@ -184,13 +379,21 @@ def open_question_with_age(agent_id):
         ).fetchone()
         if later_out:
             return None  # the last inbound has already been answered
-        return (chat_id, message_id, text, ts, created_at)
+        return (chat_id, message_id, text, ts, created_at, att_kind, att_file_id)
     finally:
         con.close()
 
 
 def open_question(agent_id):
     """The most recent inbound with NO later outbound (the unanswered question),
-    or None. Returns (chat_id, message_id, text, ts)."""
+    or None. Returns (chat_id, message_id, text, ts, attachment_kind,
+    attachment_file_id)."""
     oq = open_question_with_age(agent_id)
-    return oq[:4] if oq else None
+    if not oq:
+        return None
+    # Prefix-slice on purpose (HOOKARITAS821): if open_question_with_age()
+    # ever widens again, this unpack would ValueError INSIDE ledger_lib, and
+    # every caller that wraps only the open_question() call in try/except
+    # would read the failure as "ledger unavailable" -- fail-open, silently.
+    chat_id, message_id, text, ts, _created_at, att_kind, att_file_id = oq[:7]
+    return (chat_id, message_id, text, ts, att_kind, att_file_id)

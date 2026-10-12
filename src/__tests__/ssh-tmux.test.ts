@@ -34,6 +34,32 @@ describe('buildTmuxInvocation', () => {
     })
   })
 
+  it('runAsUser on a local agent runs tmux AS that user via sudo -n, args untouched', () => {
+    // The whole point: tmux refuses a cross-user socket connection, so reaching an
+    // agent that owns its uid means BECOMING that user. -n so a missing sudoers
+    // rule fails loudly instead of hanging on a password prompt nobody can type.
+    expect(buildTmuxInvocation(null, '/usr/bin/tmux', ['send-keys', '-t', 'agent-korall', '-l', "a'b c"], 'tmux', 'agent-korall')).toEqual({
+      file: 'sudo',
+      args: ['-n', '-u', 'agent-korall', '/usr/bin/tmux', 'send-keys', '-t', 'agent-korall', '-l', "a'b c"],
+    })
+  })
+
+  it('runAsUser does NOT shell-quote: sudo takes an argv, so metacharacters stay literal without quoting', () => {
+    const inv = buildTmuxInvocation(null, '/usr/bin/tmux', ['send-keys', '-t', 'x', '-l', 'a; rm -rf / && echo $HOME'], 'tmux', 'agent-korall')
+    expect(inv.args[inv.args.length - 1]).toBe('a; rm -rf / && echo $HOME')
+  })
+
+  it('a remote host wins over runAsUser (ssh already logs in as someone; they are alternatives)', () => {
+    const inv = buildTmuxInvocation('devbox', '/usr/bin/tmux', ['list-sessions'], 'tmux', 'agent-korall')
+    expect(inv.file).toBe('ssh')
+    expect(inv.args.join(' ')).not.toContain('sudo')
+  })
+
+  it('runAsUser null is byte-identical to the old two-arg call', () => {
+    expect(buildTmuxInvocation(null, '/usr/bin/tmux', ['list-sessions'], 'tmux', null))
+      .toEqual(buildTmuxInvocation(null, '/usr/bin/tmux', ['list-sessions']))
+  })
+
   it('host set wraps every tmux arg in one shell-quoted ssh command string', () => {
     const inv = buildTmuxInvocation('devbox', '/usr/bin/tmux', ['send-keys', '-t', 'agent-x', '-l', "a'b c"])
     expect(inv.file).toBe('ssh')

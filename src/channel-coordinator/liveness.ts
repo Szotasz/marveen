@@ -16,6 +16,7 @@ import { PROJECT_ROOT } from '../config.js'
 import { channelStateDir, type ChannelProviderType } from '../channel-provider.js'
 import { agentDir } from '../web/agent-config.js'
 import { matchesProviderPollerCmd } from './provider-poller-match.js'
+import { exactTmuxTarget } from '../tmux-target.js'
 
 const TMUX = resolveFromPath('tmux')
 
@@ -33,7 +34,7 @@ export const RESPAWN_STAMP_FILE = join(PROJECT_ROOT, 'store', '.channel-last-res
 
 export function getClaudePidForSession(session: string): number | null {
   try {
-    const out = execFileSync(TMUX, ['list-panes', '-t', session, '-F', '#{pane_pid}'], { timeout: 3000, encoding: 'utf-8' })
+    const out = execFileSync(TMUX, ['list-panes', '-t', exactTmuxTarget(session), '-F', '#{pane_pid}'], { timeout: 3000, encoding: 'utf-8' })
     const panePid = parseInt(out.trim().split('\n')[0], 10)
     if (!panePid) return null
     const cmd = execFileSync('/bin/ps', ['-p', String(panePid), '-o', 'comm='], { timeout: 3000, encoding: 'utf-8' }).trim()
@@ -67,10 +68,18 @@ export interface PluginAliveContext {
   isPidAlive: (pid: number) => boolean
   agentName?: string
   debugLog?: (event: string, fields: Record<string, unknown>) => void
+  /**
+   * Only a plugin process INSIDE claudePid's tree counts: no bot.pid and no
+   * machine-wide fallback. For a session that shares a provider with other
+   * sessions on the host (the main session's co-listen Slack next to the
+   * sub-agents' Slack plugins), the fallbacks answer "some Slack poller lives
+   * somewhere", not "this session has one" (BOOTSTAGGER1007 b review, #1762).
+   */
+  strictTree?: boolean
 }
 
 export function decideHasPluginAlive(ctx: PluginAliveContext): boolean {
-  const { psOutput, claudePid, providerType, botPid, isPidAlive, agentName, debugLog } = ctx
+  const { psOutput, claudePid, providerType, botPid, isPidAlive, agentName, debugLog, strictTree } = ctx
   const lines = psOutput.split('\n').slice(1)
   const childrenOf = new Map<number, number[]>()
   const cmdOf = new Map<number, string>()
@@ -95,6 +104,8 @@ export function decideHasPluginAlive(ctx: PluginAliveContext): boolean {
     if (matchesProviderPollerCmd(cmd, providerType)) return true
     for (const k of (childrenOf.get(p) || [])) stack.push(k)
   }
+
+  if (strictTree) return false
 
   if (botPid !== null && botPid > 1) {
     if (isPidAlive(botPid)) {
@@ -129,6 +140,31 @@ export function decideHasPluginAlive(ctx: PluginAliveContext): boolean {
   return false
 }
 
+// The liveness snapshot (`ps -axww`) normally returns in ~20ms, but on a heavily
+// loaded box (fleet-wide cold-boots, the 04:00 rebuild) it can exceed the
+// fast-path deadline and THROW. A throw used to mean 'unknown' immediately, which
+// spammed the log in bursts at load peaks (measured 2026-07-14+: clusters of
+// consecutive failures at 04:02, 08:08, 21:00 -- never a real plugin death). The
+// first timeout means "the box is loaded", not "ps is broken", so we retry once
+// with a longer deadline before giving up. Only a second failure is a genuine
+// "we cannot tell". Kept as a tiny pure wrapper so the retry logic is unit-testable
+// without spawning ps.
+export const PS_PROBE_TIMEOUT_MS = 5000
+export const PS_PROBE_RETRY_TIMEOUT_MS = 12_000
+const PS_PROBE_MAX_BUFFER = 8 * 1024 * 1024
+
+export function snapshotProcsWithRetry(
+  run: (timeoutMs: number) => string,
+  timeouts: readonly [number, number] = [PS_PROBE_TIMEOUT_MS, PS_PROBE_RETRY_TIMEOUT_MS],
+): string {
+  try {
+    return run(timeouts[0])
+  } catch (firstErr) {
+    logger.debug({ err: firstErr }, 'Channel-plugin liveness probe: ps snapshot timed out, retrying with a longer deadline')
+    return run(timeouts[1])
+  }
+}
+
 // Tri-state liveness verdict. 'unknown' means the PROBE failed (ps timed out on
 // a loaded box, the state dir was unreadable, ...) -- not that the plugin is
 // down. Collapsing that into 'down' let a hiccup in the monitor's own probe
@@ -140,24 +176,28 @@ export function probeChannelPluginLiveness(
   claudePid: number,
   providerType: ChannelProviderType,
   agentName?: string,
+  opts: { strictTree?: boolean } = {},
 ): PluginLiveness {
   let psOutput: string
   try {
     // Parity with the reaper's snapshotProcs: `-ww` (never truncate a command,
     // the poller match lives deep in a long path), an 8MB buffer (the default
     // 1MB is only ~3x the measured fleet-wide ps output, and blowing it makes
-    // execFileSync THROW) and a 5s timeout. A probe that throws is a probe that
-    // knows nothing -- and knowing nothing used to mean "restart the agent".
+    // execFileSync THROW) and a fast-path timeout with one longer-deadline retry
+    // (see snapshotProcsWithRetry). A probe that throws twice is a probe that
+    // knows nothing -- and knowing nothing must NOT restart the agent.
     // Keep the HEADER form (`-o pid,ppid,command`, not `-o pid=,...`):
     // decideHasPluginAlive drops the first line as the header, so a headerless
     // output would silently lose the first process row.
-    psOutput = execFileSync('/bin/ps', ['-axww', '-o', 'pid,ppid,command'], {
-      timeout: 5000,
-      encoding: 'utf-8',
-      maxBuffer: 8 * 1024 * 1024,
-    })
+    psOutput = snapshotProcsWithRetry((timeoutMs) =>
+      execFileSync('/bin/ps', ['-axww', '-o', 'pid,ppid,command'], {
+        timeout: timeoutMs,
+        encoding: 'utf-8',
+        maxBuffer: PS_PROBE_MAX_BUFFER,
+      }),
+    )
   } catch (err) {
-    logger.warn({ err, claudePid, agentName, providerType }, 'Channel-plugin liveness probe failed (ps) -- verdict unknown, not restarting')
+    logger.warn({ err, claudePid, agentName, providerType }, 'Channel-plugin liveness probe failed (ps, after retry) -- verdict unknown, not restarting')
     return 'unknown'
   }
   try {
@@ -176,6 +216,7 @@ export function probeChannelPluginLiveness(
       providerType,
       botPid,
       agentName,
+      strictTree: opts.strictTree,
       isPidAlive: (pid) => {
         try { process.kill(pid, 0); return true } catch { return false }
       },
@@ -256,4 +297,51 @@ export function probeNativeChannelDown(session: string, provider: ChannelProvide
     keepaliveAgeMs: readKeepaliveAgeMs(now),
     msSinceLastRespawn: respawnMs > 0 ? now - respawnMs : null,
   })
+}
+
+// --- external-respawn attribution (SOAKRESPAWN819) ---
+//
+// The respawn stamp is a SUPPRESSION contract: five watchers read it to stay
+// quiet during the post-respawn grace. That contract makes an externally
+// triggered respawn (channels.sh relaunched by the service manager, the
+// systemd-timer channel-watchdog, a manual launch) structurally silent in the
+// dashboard log -- the evidence of the respawn is consumed to suppress, never
+// surfaced. Measured on a live soak box 2026-08-19: 210 service-manager
+// restarts at a ~40min cadence, zero dashboard.log lines.
+//
+// PURE classifier: did the stamp advance, and was the advance ours?
+//   'none'     -- no new stamp value since the last one we processed.
+//   'self'     -- advanced, but within graceMs of a dashboard-initiated
+//                 respawn. channels.sh writes the stamp unconditionally on
+//                 EVERY launch, including launches the dashboard itself
+//                 initiated (hard restart -> service reload -> channels.sh),
+//                 so a second write shortly after our own is part of OUR
+//                 restart, not an external actor.
+//   'external' -- advanced with no dashboard-initiated respawn nearby: some
+//                 other actor recreated the main session. The caller logs
+//                 this loudly; false positives are deliberate signal (a manual
+//                 operator launch IS an external actor worth a log line).
+//
+// KNOWN SHADOW (do not read the absence of a warning as absence of external
+// respawns): the abs() window means a REAL external respawn landing within
+// graceMs (6 min) of a dashboard-initiated one classifies 'self' and is lost.
+// On the measured 40-min churn that is a ~15% blind window per cycle, wider
+// during an active recovery cascade (several self respawns back to back).
+// Deliberate trade-off: shrinking the window would misreport channels.sh's
+// own delayed stamp write on OUR launches as external -- a false alarm on
+// every dashboard restart is worse than a shadowed edge case. The producer
+// mirror (store/channels-respawn.log) still records WHY lines for shadowed
+// respawns, so the evidence survives even when this classifier stays quiet.
+export type RespawnStampAdvance = 'none' | 'self' | 'external'
+
+export function classifyRespawnStampAdvance(opts: {
+  stampMs: number
+  lastSeenStampMs: number
+  lastSelfRespawnMs: number
+  graceMs: number
+}): RespawnStampAdvance {
+  const { stampMs, lastSeenStampMs, lastSelfRespawnMs, graceMs } = opts
+  if (!(stampMs > 0) || stampMs <= lastSeenStampMs) return 'none'
+  if (lastSelfRespawnMs > 0 && Math.abs(stampMs - lastSelfRespawnMs) <= graceMs) return 'self'
+  return 'external'
 }

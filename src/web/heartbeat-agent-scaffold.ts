@@ -33,7 +33,7 @@
 // CLAUDE.md (owner, main-agent name, store path, calendar account) comes
 // from config via currentHeartbeatIdentity().
 
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   PROJECT_ROOT,
@@ -41,15 +41,19 @@ import {
   OWNER_NAME,
   BOT_NAME,
   MAIN_AGENT_ID,
+  HEARTBEAT_AGENT_ID,
   WEB_PORT,
   HEARTBEAT_CALENDAR_ACCOUNT,
   APP_TZ,
   DASHBOARD_PUBLIC_URL,
+  AGENT_API_ORIGIN,
 } from '../config.js'
 import { resolveDashboardOrigin } from './agent-scaffold.js'
 import { logger } from '../logger.js'
+import { CHANNEL_PLUGIN_IDS } from './plugin-ids.js'
+import { HB_METRICS_BLOCK_MARKER } from './heartbeat-metrics-inject.js'
 
-const HEARTBEAT_AGENT_NAME = 'heartbeat'
+const HEARTBEAT_AGENT_NAME = HEARTBEAT_AGENT_ID
 const HEARTBEAT_AGENT_DIR = join(PROJECT_ROOT, 'agents', HEARTBEAT_AGENT_NAME)
 
 // Channel plugins MUST be explicitly disabled in the agent's
@@ -59,11 +63,9 @@ const HEARTBEAT_AGENT_DIR = join(PROJECT_ROOT, 'agents', HEARTBEAT_AGENT_NAME)
 // open its own poller against the OPERATOR's bot token, and race the
 // main agent's poller for the same getUpdates slot -- see
 // agent-process.ts:137 for the same disable baked into startup).
-const CHANNEL_PLUGIN_DISABLES = {
-  'telegram@claude-plugins-official': false,
-  'slack-channel@marveen-marketplace': false,
-  'discord@claude-plugins-official': false,
-}
+const CHANNEL_PLUGIN_DISABLES = Object.fromEntries(
+  Object.values(CHANNEL_PLUGIN_IDS).map(id => [id, false as const])
+)
 
 // Haiku-class model: the heartbeat job is data-formatting (Calendar
 // events + kanban counts + memory + tasks list -> a short structured
@@ -77,7 +79,10 @@ const CHANNEL_PLUGIN_DISABLES = {
 const HEARTBEAT_AGENT_CONFIG = {
   model: 'claude-haiku-4-5',
   authMode: 'oauth' as const,
-  securityProfile: 'standard',
+  // Was 'standard', a profile that has never existed under templates/profiles/:
+  // every heartbeat agent silently resolved to 'default'. Named
+  // for what it already got, so the dashboard does not flag a missing profile.
+  securityProfile: 'default',
 }
 
 // Per-deployment identity threaded into the rendered CLAUDE.md. Pulled
@@ -96,9 +101,15 @@ export interface HeartbeatIdentity {
   // Dashboard origin for the inter-agent message POST, e.g.
   // http://localhost:3420.
   dashboardOrigin: string
-  // Google Calendar account to summarise, or '' to let the calendar MCP
+  // Google Calendar account to summarise (display only), or '' to let the
   // server use whatever account it is authenticated as.
   calendarAccount: string
+  // Absolute path to scripts/heartbeat-metrics.sh. Since HBMETRICSWIRE910
+  // the WORKER runs it at prompt-build time (heartbeat-metrics-inject.ts);
+  // the rendered CLAUDE.md names the path only as provenance -- the round
+  // itself is forbidden to run it, so there is no command prose left to
+  // recompose.
+  metricsScript: string
 }
 
 // Build the identity from the live config. Kept separate from the pure
@@ -109,8 +120,9 @@ export function currentHeartbeatIdentity(): HeartbeatIdentity {
     botName: BOT_NAME,
     mainAgentId: MAIN_AGENT_ID,
     storeDir: STORE_DIR,
-    dashboardOrigin: resolveDashboardOrigin(DASHBOARD_PUBLIC_URL, WEB_PORT),
+    dashboardOrigin: resolveDashboardOrigin(DASHBOARD_PUBLIC_URL, WEB_PORT, AGENT_API_ORIGIN),
     calendarAccount: HEARTBEAT_CALENDAR_ACCOUNT,
+    metricsScript: join(PROJECT_ROOT, 'scripts', 'heartbeat-metrics.sh'),
   }
 }
 
@@ -136,7 +148,7 @@ export function shouldBootHeartbeatAgent(opts: { respawnEnabled: boolean; agentE
 export function renderHeartbeatClaudeMd(id: HeartbeatIdentity): string {
   const calendarTarget = id.calendarAccount
     ? `against \`${id.calendarAccount}\``
-    : 'against your primary calendar (whatever account the calendar MCP server is authenticated as)'
+    : 'against the calendar the dashboard is configured for (HEARTBEAT_CALENDAR_ID)'
   return `# Heartbeat agent
 
 You are the **heartbeat agent** -- a dedicated, headless worker that
@@ -160,51 +172,73 @@ loop entirely.
 
 When you receive the heartbeat prompt:
 
-1. **Collect** the four data sources:
-   - **Calendar (next 2 hours)** -- use the
-     \`mcp__server-google-calendar-mcp__list-events\` tool
-     ${calendarTarget}, timeMin=now, timeMax=now+2h.
-     If the call fails (token revoked / 401), record the failure
-     reason rather than the events; the main agent can act on the
-     failure.
-   - **Kanban** -- read the SQLite DB at
-     \`${id.storeDir}/claudeclaw.db\`:
-     \`sqlite3 ${id.storeDir}/claudeclaw.db "SELECT status, COUNT(*)
-     FROM kanban_cards WHERE archived_at IS NULL GROUP BY status"\`
-     for counts, and grab the titles of cards where
-     \`priority='urgent'\` or \`status='waiting'\`.
-   - **Scheduled tasks** -- count active rows in
-     \`scheduled_tasks\` table; record \`next_run_at\` for the
-     earliest upcoming one.
-   - **Memory + system** -- DB file size, any \`category='hot'\`
-     memories newer than 1 hour, plus presence of any
-     \`status='warning'\` entries in the memory log.
+0. **Read the clock.** Every timestamp you print is local time in
+   ${APP_TZ}, and you have no clock of your own -- so measure it:
+
+   \`\`\`bash
+   TZ=${APP_TZ} date +'%Y-%m-%d %H:%M'
+   \`\`\`
+
+   Use THAT string in the header. Never \`date -u\`, never
+   \`datetime.now(timezone.utc)\`, never the hour the schedule was
+   supposed to fire. UTC printed under a \`${APP_TZ}\` label is worse
+   than no timestamp: every window in this report ("next 2h", "last
+   1h") is read against it, so an hour of drift silently moves the
+   window as well as the label.
+
+1. **Find the measured block in THIS prompt.** Every number -- calendar,
+   kanban, tasks, memory, DB size -- arrives PRE-RENDERED in the prompt
+   itself, in a block that starts with the marker line
+   \`${HB_METRICS_BLOCK_MARKER} ts=...\`. The WORKER already ran the
+   on-disk instrument (\`${id.metricsScript}\`, every number measured
+   server-side on \`${id.dashboardOrigin}\`; the calendar ${calendarTarget})
+   at prompt-build time and rendered its output into the FINAL report
+   sections.
+
+   THE BLOCK RULE (HBMETRICSWIRE910, supersedes the old sentinel rule):
+   your report's body is that block's sections, copied VERBATIM. You
+   never run the instrument, and you NEVER rebuild any of its numbers
+   with your own curl / python3 / sqlite3 / du / ls / stat / calendar
+   call -- not even a correct-looking one-liner. Measured history of
+   the alternative, four failed instruction layers on the same metric:
+   HBMEMBLIND807 (self-composed SQL, false 0), HBMEMBLIND819
+   (recomposed with wrong agent_id, 14/14 rounds false 0), 2026-08-24
+   (truncated format string, false 0), and 2026-09-10/11 (du-shaped DB
+   size 488 vs the instrument's 473.6, shipped even by a fresh-context
+   round WHILE the run-it-yourself instruction stood). The worker-side
+   injection exists because instructing this step was measured not to
+   hold; re-measuring "to be sure" is the defect, not diligence.
+
+   A \`muszer-hiba: ...\` line inside the block IS the measured result:
+   copy it through unchanged. The instrument and the renderer are
+   fail-closed -- a value they could not measure never appears as 0,
+   so a fabricated 0 (or any number not present in the block) is
+   always a defect in YOUR round.
+
+   If the prompt contains NO \`${HB_METRICS_BLOCK_MARKER}\` marker at
+   all, that itself is the finding: send the report with
+   \`muszer-hiba: hianyzo metrika-blokk (worker-injektalas kimaradt)\`
+   as every section's only line. Do not fill in anything yourself.
 
 2. **Format** the result as a single inter-agent message:
 
    \`\`\`
-   ## Heartbeat YYYY-MM-DD HH:MM (${APP_TZ})
+   ## Heartbeat <the string step 0 measured> (${APP_TZ})
+   merve: <the ts= value from the block's marker line>
 
-   ### Calendar (next 2h)
-   - HH:MM -- <summary> (<attendees>)
-   - <or: "no upcoming events">
-   - <or: "calendar fetch failed: <reason>">
-
-   ### Kanban
-   - urgent: <N> (<short titles, comma-separated>)
-   - in_progress: <N>
-   - waiting: <N> (<short titles>)
-   - planned: <N>
-
-   ### Tasks
-   - active: <N>
-   - next: <task name @ YYYY-MM-DD HH:MM>
-
-   ### Memory / system
-   - DB size: <X> MB
-   - new hot memories (1h): <N>
-   - warnings: <none | comma-separated>
+   <the block's sections, from "### Calendar (next 2h)" to the end,
+    VERBATIM -- no line added, dropped, reworded or renumbered>
    \`\`\`
+
+   The \`merve:\` line is the reader's freshness check: it carries the
+   ts the WORKER stamped at prompt-build. If it differs from the step-0
+   clock by more than the current hour, the prompt sat parked before
+   you ran -- still report the block verbatim (it is the measurement
+   that was taken), the two timestamps side by side ARE the finding.
+   Never substitute a value remembered from an earlier round: a stale
+   value is indistinguishable from a fresh one once it is in the
+   message (5E0A32B0: a copy-forwarded failure line masked a day of
+   zero real calendar attempts).
 
 3. **Send** that string to the main agent via the dashboard API:
 
@@ -233,6 +267,16 @@ When you receive the heartbeat prompt:
 - If a data source raises, record the failure reason in that
   section's body and CONTINUE -- partial output is fine, silence is
   not.
+- **NEVER** copy a value from an earlier round's report, and never
+  fill a field from what you remember saying last time. Every number,
+  title and timestamp comes from a query you ran in THIS
+  round. If a query fails, say it failed -- do not substitute the
+  previous answer, because a stale value is indistinguishable from a
+  fresh one once it is in the message.
+  This applies to the whole report: the
+  urgent titles, the task counts, \`next:\`, the DB size and the
+  one-hour hot-memory count are all measurements with a timestamp,
+  and every one of them is wrong the moment it is reused.
 
 ## You are headless
 
@@ -248,19 +292,32 @@ function renderAgentConfigJson(): string {
   return JSON.stringify(HEARTBEAT_AGENT_CONFIG, null, 2) + '\n'
 }
 
-function renderClaudeSettingsJson(): string {
-  return JSON.stringify({ enabledPlugins: CHANNEL_PLUGIN_DISABLES }, null, 2) + '\n'
+// The project-scope settings must MERGE, never overwrite (HBGATEWIRE826):
+// the hook-seeding pass (web.ts) writes gate hooks into this SAME file, and
+// this scaffold reruns at every boot after it -- the previous wholesale
+// rewrite deleted every seeded hook, which was one half of how the heartbeat
+// worker ran with ZERO dashboard-side hooks (the kanban-write-gate included)
+// while every test stayed green. Only the key this scaffold OWNS
+// (enabledPlugins) is enforced; everything else (hooks, permissions) is
+// preserved. Exported pure so the wiring test can pin the contract.
+export function mergeClaudeSettingsJson(existingRaw: string | null): string {
+  let existing: Record<string, unknown> = {}
+  if (existingRaw) {
+    try { existing = JSON.parse(existingRaw) as Record<string, unknown> } catch { existing = {} }
+  }
+  existing.enabledPlugins = CHANNEL_PLUGIN_DISABLES
+  return JSON.stringify(existing, null, 2) + '\n'
 }
 
-// Files we ALWAYS rewrite. Settings + agent-config are recreated to
-// keep them in sync with the constants in this file; if the operator
-// hand-edited the on-disk copy, our boot rewrite wins. CLAUDE.md is
-// re-rendered every boot for the same reason: the canonical source of
-// truth for the agent's instructions lives here, not on disk.
+// Files we ALWAYS rewrite wholesale. Agent-config is recreated to keep it in
+// sync with the constants in this file; if the operator hand-edited the
+// on-disk copy, our boot rewrite wins. CLAUDE.md is re-rendered every boot
+// for the same reason: the canonical source of truth for the agent's
+// instructions lives here, not on disk. settings.json is deliberately NOT
+// here -- it is merge-written (see mergeClaudeSettingsJson).
 const ALWAYS_WRITE: ReadonlyArray<readonly [string, () => string]> = [
   ['CLAUDE.md', () => renderHeartbeatClaudeMd(currentHeartbeatIdentity())],
   ['agent-config.json', renderAgentConfigJson],
-  [join('.claude', 'settings.json'), renderClaudeSettingsJson],
 ] as const
 
 // Files we write only when missing. The sentinel is a marker, not a
@@ -289,6 +346,9 @@ export function ensureHeartbeatAgent(): void {
     for (const [relPath, render] of ALWAYS_WRITE) {
       writeFileSync(join(HEARTBEAT_AGENT_DIR, relPath), render())
     }
+    const settingsPath = join(claudeDir, 'settings.json')
+    const existingRaw = existsSync(settingsPath) ? readFileSync(settingsPath, 'utf-8') : null
+    writeFileSync(settingsPath, mergeClaudeSettingsJson(existingRaw))
     for (const [relPath, body] of SENTINEL_FILES) {
       const p = join(HEARTBEAT_AGENT_DIR, relPath)
       if (!existsSync(p)) writeFileSync(p, body)

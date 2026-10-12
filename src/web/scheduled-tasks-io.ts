@@ -2,7 +2,9 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { MAIN_AGENT_ID } from '../config.js'
+import type { ChannelProviderType } from '../channel-provider.js'
 import { atomicWriteFileSync } from './atomic-write.js'
+import { readJsonObjectForWrite } from './agent-config.js'
 
 export const SCHEDULED_TASKS_DIR = join(homedir(), '.claude', 'scheduled-tasks')
 
@@ -10,8 +12,61 @@ export const SCHEDULED_TASKS_DIR = join(homedir(), '.claude', 'scheduled-tasks')
 // or accidentally-huge POST body from exhausting the target agent's
 // token budget (and wedging the tmux send-keys paste detector). 50,000
 // characters is ~12k tokens of English, which is already far beyond any
-// legitimate schedule prompt -- real ones are usually <1k chars.
+// legitimate schedule prompt -- real ones are usually <1k chars. Doubles
+// (SCHEDPROMPTREF917) as the scheduled-task size-guard ALERT threshold: past
+// this point delivery is fine (reference-based, see below), but the task
+// itself is large enough to warrant a direct owner notice.
 export const MAX_SCHEDULED_TASK_PROMPT_LEN = 50_000
+
+// SCHEDPROMPTREF917: above this length the runner snapshots the full task
+// body to disk (scheduled-run-snapshot.ts) and sends only a short reference
+// through tmux, instead of pasting the whole body via send-keys -- the path
+// that corrupted large scheduled-task fires (spec 1.1, 1.3). Below it, the
+// existing inline path is unchanged. 1,500 chars keeps every measured task
+// under this size inline (the smallest three, spec 3.3) while the previously
+// corrupted ones (kanban-audit at ~49k) all cross it by a wide margin.
+export const SCHEDULED_TASK_INLINE_MAX_CHARS = 1_500
+
+// Below this, no size-guard notice. At/above it: a one-per-task-per-day
+// logger.warn + inter-agent notice to the main agent (spec 3.5). Chosen well
+// under MAX_SCHEDULED_TASK_PROMPT_LEN so the operator sees the growth trend
+// (SKILL.md "Buktatók" accretion, spec 1.2) before it reaches the alert tier.
+export const SCHEDULED_TASK_BODY_WARN_CHARS = 20_000
+
+// #796: a deleted DEFAULT scheduled task must stay deleted. Seeding is
+// skip-if-missing at three points -- ensureDefaultScheduledTasks() on every
+// dashboard start, and the install/update shell seed loops -- so without a
+// record of the deletion, a shipped task the operator removed reappears on the
+// next restart or update. This tombstone is a newline-separated list of task
+// names that all three seed points consult; the DELETE route appends to it and
+// (re)creating a task clears its entry. Kept as a plain dotfile in the tasks
+// dir (not a subdirectory) so listScheduledTasks -- which filters to dirs --
+// never treats it as a task, and the shell seeders can read it with grep.
+export const REMOVED_DEFAULTS_FILE = join(SCHEDULED_TASKS_DIR, '.removed-defaults')
+
+export function readRemovedDefaultTasks(): Set<string> {
+  try {
+    return new Set(
+      readFileSync(REMOVED_DEFAULTS_FILE, 'utf-8')
+        .split('\n').map(l => l.trim()).filter(l => l.length > 0),
+    )
+  } catch { return new Set<string>() }
+}
+
+export function markDefaultTaskRemoved(taskName: string): void {
+  const names = readRemovedDefaultTasks()
+  if (names.has(taskName)) return
+  names.add(taskName)
+  mkdirSync(SCHEDULED_TASKS_DIR, { recursive: true })
+  atomicWriteFileSync(REMOVED_DEFAULTS_FILE, [...names].sort().join('\n') + '\n')
+}
+
+export function clearDefaultTaskRemoved(taskName: string): void {
+  const names = readRemovedDefaultTasks()
+  if (!names.delete(taskName)) return
+  const body = [...names].sort().join('\n')
+  atomicWriteFileSync(REMOVED_DEFAULTS_FILE, body.length > 0 ? body + '\n' : '')
+}
 
 export interface ScheduledTask {
   name: string
@@ -29,6 +84,12 @@ export interface ScheduledTask {
   // skipIfBusy false (default) so the queue + alert path catches a
   // long-running busy state and nothing business-critical is lost.
   skipIfBusy?: boolean
+  // When true, this task drives the shared desktop (GUI automation,
+  // computer-use). While another agent holds the desktop lock, its ticks are
+  // skipped -- and the skip is RECORDED, never silent. Marked per task rather
+  // than matched against a list of task names in the runner: a hand-kept list
+  // is a blind spot the day someone adds a GUI round and forgets it.
+  requiresDesktop?: boolean
   // When true, skip the busy-state check entirely and inject the prompt
   // via tmux send-keys regardless. The Claude session will process it at
   // the next idle slot. Useful for critical tasks that must never be
@@ -53,11 +114,66 @@ export interface ScheduledTask {
   //   exit 0 + empty stdout  → run LLM normally
   //   non-zero exit          → log warning, run LLM anyway (fail-open)
   preCheck?: string
+  // How stale a MISSED occurrence may be and still be executed as a catch-up
+  // after the scheduler was down (host powered off, dashboard restart). Unset
+  // uses the per-type default in DEFAULT_CATCHUP_MAX_AGE_MIN; 0 disables
+  // catch-up for this task entirely (only on-time ticks run it); a negative
+  // value means "always catch up, however late". Occurrences older than the
+  // limit are recorded as a 'missed' run and reported, never silently dropped.
+  catchUpMaxAgeMinutes?: number
+  // How long this task may run before the post-fire watchdog calls it stuck and
+  // alerts the operator. Unset uses the global TASK_FIRE_TIMEOUT_MS (45 min),
+  // which is right for a short-cadence heartbeat and wrong for a task whose job
+  // is to think for a while. Clamped at both ends, see resolveStuckTimeoutMs.
+  // DISTINCT from catchUpMaxAgeMinutes: that one judges a MISSED occurrence's
+  // staleness before firing; this one judges a RUNNING injection's age.
+  stuckAfterMinutes?: number
   // Manifest-style requirements (Roitman 22.5). When mcp_servers is set, the
   // runner pre-checks each named MCP server has a live process under the
   // target session before injecting the prompt; a dead server defers the task
   // with a reasoned alert instead of a silent runtime failure.
   requires?: { mcp_servers?: string[] }
+  // type='heartbeat' only (HBMETRICSWIRE910): the runner executes
+  // scripts/heartbeat-metrics.sh at prompt-build time and appends its output
+  // PRE-RENDERED in final report form to the prompt. The receiving round
+  // copies the block verbatim instead of running the instrument itself --
+  // instructing the round to run it was measured failing 4 separate times
+  // (fabricated numbers with the instruction standing).
+  injectMetrics?: boolean
+  // type='heartbeat' + injectMetrics only (HBFABRIC1003): the runner SENDS the
+  // digest itself -- the measured block, a header and nothing else -- as an
+  // inter-agent message to the main agent, with no LLM round at all. The
+  // round's one job was to copy the block and POST it; it was measured
+  // failing at exactly that (2026-10-03: a number typed before reading the
+  // block, then twice the POST written out as text and never run).
+  sendDigestDirect?: boolean
+  // Explicit Telegram delivery target for this task's result (WRONGRECIP819).
+  // Unset means "resolve it automatically" -- safe only when the agent's own
+  // channel access.json has exactly one DM contact; with 2+ contacts the
+  // runner will no longer guess (see resolveTaskChannelTarget in
+  // schedule-runner.ts; the name lost its Telegram-only spelling when Slack
+  // was added). A real chat_id string pins the exact recipient,
+  // overriding any allowlist-order heuristic. The literal string "none" means
+  // this task has NO direct Telegram recipient at all (e.g. its result goes
+  // out as an inter-agent message, or it is a self-only reminder) -- the
+  // runner omits the Telegram delivery instruction entirely, no warning.
+  telegramChatId?: string
+  // SLACKFOCSATORNA1007C: the provider this task's result is delivered on,
+  // when it is NOT the agent's own bound provider (e.g. the main agent is
+  // bound to Telegram, but the owner reads this task's result in the Slack
+  // DM). The chat id still comes from telegramChatId (the key keeps its
+  // historical name); without one, the agent's binding for THIS provider is
+  // resolved. An unknown value is ignored, as if unset.
+  channelProvider?: ChannelProviderType
+}
+
+const CHANNEL_PROVIDER_VALUES: readonly ChannelProviderType[] = ['telegram', 'slack', 'discord', 'googlechat', 'teams']
+
+/** A ChannelProviderType, or undefined for anything else (absent, mistyped, wrong case). */
+export function parseChannelProvider(raw: unknown): ChannelProviderType | undefined {
+  if (typeof raw !== 'string') return undefined
+  const v = raw.trim()
+  return (CHANNEL_PROVIDER_VALUES as readonly string[]).includes(v) ? v as ChannelProviderType : undefined
 }
 
 function readFileOr(path: string, fallback: string): string {
@@ -90,7 +206,7 @@ export function readScheduledTask(taskName: string): ScheduledTask | null {
   const skillContent = hasSkill ? readFileOr(skillPath, '') : ''
   const { name, description, body } = parseSkillMdFrontmatter(skillContent)
 
-  let config: { schedule?: string; agent?: string; enabled?: boolean; createdAt?: number; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; description?: string; command?: string; timeoutMs?: number; failThreshold?: number; preCheck?: string; requires?: { mcp_servers?: unknown } } = {}
+  let config: { schedule?: string; agent?: string; enabled?: boolean; createdAt?: number; type?: string; skipIfBusy?: boolean; requiresDesktop?: boolean; forceSend?: boolean; targetSession?: string; description?: string; command?: string; timeoutMs?: number; failThreshold?: number; preCheck?: string; catchUpMaxAgeMinutes?: unknown; stuckAfterMinutes?: unknown; requires?: { mcp_servers?: unknown }; injectMetrics?: unknown; sendDigestDirect?: unknown; telegramChatId?: string; channelProvider?: unknown } = {}
   try {
     config = JSON.parse(readFileOr(configPath, '{}'))
   } catch { /* use defaults */ }
@@ -105,14 +221,35 @@ export function readScheduledTask(taskName: string): ScheduledTask | null {
     createdAt: config.createdAt || 0,
     type: (config.type as 'task' | 'heartbeat' | 'command') || 'task',
     skipIfBusy: config.skipIfBusy === true,
+    requiresDesktop: config.requiresDesktop === true,
     forceSend: config.forceSend === true,
     targetSession: config.targetSession || undefined,
     command: config.command,
     timeoutMs: config.timeoutMs,
     failThreshold: config.failThreshold,
     preCheck: config.preCheck,
+    catchUpMaxAgeMinutes: parseCatchUpMaxAge(config.catchUpMaxAgeMinutes),
+    stuckAfterMinutes: parseFiniteMinutes(config.stuckAfterMinutes),
     requires: parseRequires(config.requires),
+    injectMetrics: config.injectMetrics === true,
+    sendDigestDirect: config.sendDigestDirect === true,
+    telegramChatId: typeof config.telegramChatId === 'string' && config.telegramChatId.trim() ? config.telegramChatId.trim() : undefined,
+    channelProvider: parseChannelProvider(config.channelProvider),
   }
+}
+
+// Only a finite number is a policy; anything else (string, null, NaN) is
+// treated as absent so a malformed config falls back to the built-in default
+// instead of disabling a guard by accident.
+export function parseFiniteMinutes(raw: unknown): number | undefined {
+  return typeof raw === 'number' && Number.isFinite(raw) ? raw : undefined
+}
+
+// Same acceptance rule, kept as a named export because the catch-up call sites
+// and tests predate the generic helper (range semantics live downstream in
+// catchUpMaxAgeMs / resolveStuckTimeoutMs, not here).
+export function parseCatchUpMaxAge(raw: unknown): number | undefined {
+  return parseFiniteMinutes(raw)
 }
 
 // Accept only a string array for requires.mcp_servers; anything else is
@@ -138,10 +275,13 @@ export function listScheduledTasks(): ScheduledTask[] {
 
 export function writeScheduledTask(
   taskName: string,
-  data: { description?: string; prompt?: string; schedule?: string; agent?: string; enabled?: boolean; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; command?: string; timeoutMs?: number; failThreshold?: number; preCheck?: string },
+  data: { description?: string; prompt?: string; schedule?: string; agent?: string; enabled?: boolean; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; command?: string; timeoutMs?: number; failThreshold?: number; preCheck?: string; catchUpMaxAgeMinutes?: number; stuckAfterMinutes?: number; injectMetrics?: boolean; sendDigestDirect?: boolean; telegramChatId?: string; channelProvider?: ChannelProviderType | null },
 ): void {
   const dir = join(SCHEDULED_TASKS_DIR, taskName)
   mkdirSync(dir, { recursive: true })
+  // (Re)creating a task with this name is a deliberate act -- lift any tombstone
+  // so a later restart's seeding treats it as present, not as removed (#796).
+  clearDefaultTaskRemoved(taskName)
 
   const skillPath = join(dir, 'SKILL.md')
   const configPath = join(dir, 'task-config.json')
@@ -157,7 +297,7 @@ export function writeScheduledTask(
 
   // Write/update config
   let config: Record<string, unknown> = {}
-  try { config = JSON.parse(readFileOr(configPath, '{}')) } catch { /* use empty */ }
+  config = readJsonObjectForWrite(configPath)
   if (data.schedule !== undefined) config.schedule = data.schedule
   if (data.agent !== undefined) config.agent = data.agent
   if (data.enabled !== undefined) config.enabled = data.enabled
@@ -169,6 +309,18 @@ export function writeScheduledTask(
   if (data.timeoutMs !== undefined) config.timeoutMs = data.timeoutMs
   if (data.failThreshold !== undefined) config.failThreshold = data.failThreshold
   if (data.preCheck !== undefined) config.preCheck = data.preCheck
+  if (data.catchUpMaxAgeMinutes !== undefined) config.catchUpMaxAgeMinutes = data.catchUpMaxAgeMinutes
+  if (data.stuckAfterMinutes !== undefined) config.stuckAfterMinutes = data.stuckAfterMinutes
+  if (data.injectMetrics !== undefined) config.injectMetrics = data.injectMetrics
+  if (data.sendDigestDirect !== undefined) config.sendDigestDirect = data.sendDigestDirect
+  if (data.telegramChatId !== undefined) config.telegramChatId = data.telegramChatId
+  // null clears the override (back to the agent's own provider); an unknown
+  // value is never written, so the reader's "ignored as unset" is not the only guard.
+  if (data.channelProvider === null) delete config.channelProvider
+  else if (data.channelProvider !== undefined) {
+    const cp = parseChannelProvider(data.channelProvider)
+    if (cp) config.channelProvider = cp
+  }
   if (data.description !== undefined) config.description = data.description
   if (!config.createdAt) config.createdAt = Math.floor(Date.now() / 1000)
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))

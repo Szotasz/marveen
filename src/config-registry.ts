@@ -1,3 +1,5 @@
+import { homedir } from 'node:os'
+import { expandAndValidateConfigDir } from './config-dir-path.js'
 // Single source of truth for settings the dashboard's "Beallitasok" page can
 // show and edit. Each entry describes one .env-backed config key: its type
 // (drives the input widget + validation), default, human description, the
@@ -8,6 +10,56 @@
 // v1 scope is intentionally narrow: the 9 Kanban WIP keys. Extending this
 // array is how a future setting becomes editable from the UI -- no route or
 // frontend change needed beyond what already reads the registry.
+
+// The model a fresh install runs when DEFAULT_AGENT_MODEL is unset. Kept here
+// (a zero-import module) so the registry default and the boot-time constant in
+// config.ts cannot drift apart -- bumping the distribution default is a
+// one-line change in exactly one place.
+// MAINMODEL806 (Szabi: "everything on Opus 5"): the default for the OTHER
+// agents and the background-worker sessions -- AND, via resolve_main_model's
+// fallback (channels.sh), the effective default for the MAIN agent on any
+// install whose settings.json has no model. So this value is INHERITED by NEW
+// agents and by existing model-less installs; it is not a mere worker knob.
+// It is ALSO, via model-suggest.ts's TOP_TIER_MODEL, the ceiling the "which
+// model should this agent run" advisor recommends -- that reuse is
+// deliberate (see model-suggest.ts's MODELSUGGEST807 comment), which means
+// this constant must be bumped every time a strictly-better/cheaper tier
+// ships, or the advisor starts recommending a regression.
+// The [1m] suffix is DELIBERATE, and the real reason is that inheritance, not
+// continuity: a new agent is as long-lived as the current fleet (all of whom
+// run explicit [1m]), and a narrower window would reproduce the context-guard
+// restarts we measured. (The prior worker default happening to be [1m] only
+// proves precedent, not need -- do not read it as "it was always this".) It
+// matches the main agent's template value, so the two do not quietly diverge.
+// resolveModelId passes the [1m] id through unchanged (measured), exactly as
+// the CLI already handles the 4.8[1m] default. The valueSet below carries BOTH
+// claude-opus-5 and claude-opus-5[1m] so an operator can still pick the
+// non-1M form.
+// MODELSUGGEST923 (measured 2026-09-26): OPUS55SELECTOR922 (#1492, 2026-09-23)
+// added claude-opus-5-5[1m] to the picker's valueSet but never bumped THIS
+// constant, so model-suggest.ts kept recommending the older claude-opus-5[1m]
+// as an "upgrade" over agents already running claude-opus-5-5[1m] -- a real
+// regression suggestion, live on 5 of 5 fleet agents including two already on
+// 5.5. The picker already offers 5.5, so the ceiling must follow. This is the
+// exact drift class MODELSUGGEST807 already fixed once (for the 4.8->5
+// transition); it recurred because that fix anchored the ceiling to this
+// constant instead of to "whatever the newest tier is", and nothing bumps
+// this constant automatically when a new tier ships.
+export const DISTRIBUTION_DEFAULT_AGENT_MODEL = 'claude-opus-5-5[1m]'
+
+// DEFAULTCLIGUARD927: the tier a MODEL-LESS launch falls back to when the
+// installed Claude Code CLI is measured (claude-cli-support.ts) not to launch
+// DISTRIBUTION_DEFAULT_AGENT_MODEL. The default above reaches every existing
+// model-less install on a plain code update, and nothing else on that launch
+// path checks the CLI: an AVX-less host is pinned to CLI 2.1.112 (CLAUDE_PIN
+// in channels.sh / install-linux.sh / fix-avx.sh; 2.1.110 before #1494), DISABLE_AUTOUPDATER keeps
+// any older CLI where it is, and on such a CLI claude-opus-5-5 answers every
+// prompt with 400 unrecognized_model -- the session comes up and goes silent.
+// This must be a model the OLDEST pinned CLI launches (a test pins that), and
+// it moves one tier up whenever the default does. Explicit operator values
+// (MAIN_AGENT_MODEL, a settings.json model, an agent's own model, a configured
+// DEFAULT_AGENT_MODEL) are never replaced by it.
+export const DISTRIBUTION_DEFAULT_FALLBACK_MODEL = 'claude-opus-5[1m]'
 
 export type SettingType = 'int' | 'string' | 'color' | 'boolean'
 
@@ -24,6 +76,12 @@ export interface SettingDefinition {
   /** Inclusive bounds, only meaningful for type 'int'. */
   min?: number
   max?: number
+  /**
+   * Optional extra check for a 'string' value: returns an error message, or
+   * null when the value is acceptable. Runs on every write through
+   * validateSettingValue (SECSZIVEK1007).
+   */
+  validate?: (value: string) => string | null
 }
 
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/
@@ -138,7 +196,7 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     default: 30,
     min: 1,
     max: 365,
-    description: 'Ennyi napnál régebbi "done" kártyák automatikusan archiválódnak a listKanbanCards() hívásakor.',
+    description: 'Ennyi napnál régebbi "done" kártyák automatikusan archiválódnak. Az óránként futó kanban-archiváló runner végzi (nem a lekérdezés).',
     module: 'kanban',
     secret: false,
     requiresRestart: false,
@@ -246,6 +304,24 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     requiresRestart: true,
   },
   {
+    key: 'AGENT_API_ORIGIN',
+    type: 'string',
+    default: '',
+    description: 'Az a cím, amin az ÜGYNÖKÖK érik el a dashboard API-ját onnan, ahol futnak (pl. http://localhost:3420 egy gépes telepítésnél, vagy egy belső szolgáltatás-név k8s-en). Üres = a régi viselkedés: DASHBOARD_PUBLIC_URL, annak hiányában localhost. Ez NEM a böngészőnek szóló publikus cím.',
+    module: 'system',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
+    key: 'FLEET_PYTHON_VENV',
+    type: 'string',
+    default: '',
+    description: 'A flotta közös Python venv mappája, abszolút útvonal (kezdő ~ = home; relatív útvonal nem érvényes). Ha a <mappa>/bin létezik, minden ügynök indítási PATH-jának elejére kerül, így a skillek sima python3 hívása és a venv CLI-jei (markitdown stb.) a venv-ből jönnek. Nincs beállítva (alapértelmezés) vagy nem létező mappa = kikapcsolva. Az itt üresen hagyott mező NEM kapcsolja ki a .env-ben megadott értéket: kikapcsoláshoz a .env-ből kell törölni, vagy itt nem létező mappát megadni (pl. /nonexistent).',
+    module: 'system',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
     key: 'OLLAMA_URL',
     type: 'string',
     default: 'http://localhost:11434',
@@ -255,11 +331,77 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     requiresRestart: true,
   },
   {
+    key: 'EMBED_URL',
+    type: 'string',
+    default: '',
+    description: 'Az embedding-hívások Ollama alap-URL-je. Üres = az OLLAMA_URL-t használja. Külön kulcs, mert az OLLAMA_URL-t négy másik hívó a natív ollama API-ra használja, és az ágensek ANTHROPIC_BASE_URL-je is abból jön.',
+    module: 'system',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
+    key: 'EMBED_MODEL',
+    type: 'string',
+    default: 'nomic-embed-text',
+    description: 'A memória-embedding modellje. Váltás után MINDEN emléket újra kell embeddelni: a különböző dimenziójú vektorok nem összehasonlíthatók.',
+    module: 'system',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
+    key: 'EMBED_DIMS',
+    type: 'int',
+    default: 0,
+    min: 0,
+    max: 8192,
+    description: 'Matryoshka-csonkolás: a natív vektor első N eleme (a koszinusz újranormalizál). 0 = nincs csonkolás. Csak CSÖKKENTHET, rövidebb vektort nem told fel.',
+    module: 'system',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
+    key: 'AGENT_LOCAL_BASE_URL',
+    type: 'string',
+    default: '',
+    description: 'A lokál modellen futó ágensek ANTHROPIC_BASE_URL-je. Üres = az OLLAMA_URL-t használja. Külön kulcs, mert az OLLAMA_URL-t másik négy hívó a natív ollama API-ra (/api/tags, /api/generate) használja, amit egy Anthropic-kompatibilis proxy nem szolgál ki.',
+    module: 'system',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
+    key: 'MEMORY_IMPORT_CATEGORIZE_MODEL',
+    type: 'string',
+    default: '',
+    description: 'Memória-importkor ezzel az Ollama modellel sorolja be az emlékeket (hot/warm/cold/shared), pl. gemma3:4b. FELÜLBÍRÁLÁS: ha be van állítva, pontosan ez a modell fut, helyettesítés nincs. Üres = a telepített gemma4 felismerése; ha nincs gemma4 és nincs beállítás, minden emlék warm, modellhívás nélkül. 4 GB VRAM-on a gemma3:4b bevált; gondolkodó modell (pl. qwen3) nagyon lassú.',
+    module: 'system',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
+    key: 'TELEGRAM_PROGRESS_MODE',
+    type: 'string',
+    default: 'indicator',
+    valueSet: ['silent', 'indicator', 'verbose'],
+    description: 'Mennyit lásson a tulajdonos Telegramon a munkából. silent = semmi; indicator = egy eltűnő "gondolkodom" üzenet élő token-számlálóval, ami a kör végén törlődik; verbose = ugyanez, plusz a gondolatmenet megmaradó üzenetekben. Ez a flotta alapértelmezése -- egy ügynök felülírhatja a store/progress-config.json-ban.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: false,
+  },
+  {
     key: 'DASHBOARD_LANG',
     type: 'string',
     default: 'hu',
     valueSet: ['hu', 'en'],
     description: 'A dashboard alapértelmezett megjelenítési nyelve (hu = magyar, en = angol). A böngészőben mentett preferencia (localStorage) felülírja.',
+    module: 'system',
+    secret: false,
+    requiresRestart: false,
+  },
+  {
+    key: 'OWNER_DRIVE_FOLDER',
+    type: 'string',
+    default: '',
+    description: 'A flotta közös Google Drive mappájának ID-je (a mappa-URL /folders/ utáni része). A generált kolléga-asszisztensek ide írják az eredmény-fájlokat. Üres = a generált agent a tulajdonostól kéri el a mappát. Hot-reload: agent-generáláskor olvasódik, nem igényel újraindítást.',
     module: 'system',
     secret: false,
     requiresRestart: false,
@@ -290,9 +432,15 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
   {
     key: 'HEARTBEAT_AGENT_ENABLED',
     type: 'string',
-    default: '1',
+    // OFF by default, matching config.ts: an unset key resolves to false there
+    // (deliberate opt-in -- a fresh/upgrading install must not silently spawn a
+    // sub-agent that reads the operator's calendar and database). The registry
+    // previously advertised '1', so the settings UI showed the feature as
+    // enabled while it never booted -- a silent mismatch that can hide for
+    // months.
+    default: '0',
     valueSet: ['0', '1'],
-    description: 'Heartbeat sub-ágens engedélyezése. 1 = bekapcsolva (újraindítás után lép életbe).',
+    description: 'Heartbeat sub-ágens engedélyezése. 1 = bekapcsolva (újraindítás után lép életbe). Alapértelmezés: kikapcsolva.',
     module: 'heartbeat',
     secret: false,
     requiresRestart: true,
@@ -380,16 +528,98 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     key: 'MAIN_AGENT_ISOLATED_CONFIG',
     type: 'boolean',
     default: '0',
-    description: 'CSAK macOS: a fő channels-agent kapjon-e saját, izolált CLAUDE_CONFIG_DIR-t (mint a sub-agentek). Bekapcsolva a fő agent a hosszú élettartamú fleet setup-tokenből (store/.claude-oauth-token) hitelesít, nem a rotálódó macOS Keychain OAuth-sessionből, ami periodikusan lejár és 401-et ad ("Please run /login"), amitől a bot elnémul. Token hiányában vagy nem-macOS gépen no-op. A módosítás a channels session újraindításakor lép életbe.',
+    description: 'Bármely platformon: a fő channels-agent kapjon-e saját, izolált CLAUDE_CONFIG_DIR-t (mint a sub-agentek). Bekapcsolva a fő agent a hosszú élettartamú fleet setup-tokenből (store/.claude-oauth-token) hitelesít, nem a megosztott, önmagát frissítő session-hitelesítésből (macOS: rotálódó Keychain OAuth-session; Linux: megosztott ~/.claude/.credentials.json) -- mindkettő periodikusan lejár, és a lejárt fájl a Claude Code precedencia miatt akkor is nyer az érvényes env-tokennel szemben, ha az élő token ott van mellette (2026-07-23 kiesés). Token hiányában no-op. A módosítás a channels session újraindításakor lép életbe.',
     module: 'channels',
     secret: false,
     requiresRestart: true,
   },
   {
+    key: 'NOTIFY_SLACK_TARGET',
+    type: 'string',
+    default: '',
+    description: 'A tulajdonosnak szóló értesítések (heartbeat-összefoglaló, biztonsági és egyéb gazda-értesítések) Slack-célja: "dm" (a gazda DM-je), egy csatorna neve a store/slack-channels.json térképből, vagy egy C/G/D-vel kezdődő Slack-azonosító. Üresen (alapértelmezés) nincs Slack-küldés. A küldés a fő ágens Slack-bot tokenjével megy.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: false,
+  },
+  {
+    key: 'NOTIFY_SLACK_ALERT_TARGET',
+    type: 'string',
+    default: '',
+    description: 'Az üzemeltetési riasztások (watchdog, újraindítás, beragadt munkamenet, context-guard) Slack-célja, ugyanabban az alakban, mint a NOTIFY_SLACK_TARGET. Üresen a NOTIFY_SLACK_TARGET-et használja.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: false,
+  },
+  {
+    key: 'NOTIFY_TELEGRAM',
+    type: 'boolean',
+    default: '1',
+    description: 'Menjen-e az értesítés Telegramra is. Bekapcsolva (alapértelmezés) a Telegram-küldés változatlan, a Slack mellé kerül. Kikapcsolva, ha van Slack-cél, csak Slackre megy; ha a Slack-küldés elbukik, a Telegram tartalékként mégis kimegy, hogy semmi ne vesszen el.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: false,
+  },
+  {
+    key: 'SLACK_OWNER_USER_ID',
+    type: 'string',
+    default: '',
+    description: 'A gazda Slack user-azonosítója (U...), a "dm" cél ehhez nyit DM-et. Üresen a fő ágens Slack access.json-jából veszi, ha ott pontosan egy engedélyezett felhasználó áll.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: false,
+  },
+  {
+    key: 'SCHEDULED_DELIVERY_CHANNEL',
+    type: 'string',
+    default: '',
+    description: 'Hova menjen a fő ágens ütemezett feladatainak eredménye, "<csatorna>:<chat id>" alakban (csatorna: telegram, slack, discord, googlechat, teams), pl. "slack:D0123456789". Üresen (alapértelmezés) a fő ágens saját csatornája marad. Az al-ágensek feladataira nem hat, és az a feladat, amelyik saját chatet vagy "none"-t ad meg, megtartja. Ha a cél nem Telegram, és ott a küldés nem megy, a gazda Telegram-chatje (ALLOWED_CHAT_ID) a tartalék. Hibás érték esetén nincs felülírás, csak naplóbejegyzés.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: false,
+  },
+  {
     key: 'MAIN_AGENT_CONFIG_DIR',
     type: 'string',
     default: '',
+    // SECSZIVEK1007: the same path rules as an agent's claudeConfigDir and a
+    // plan's configDir (expandAndValidateConfigDir); the value reaches the
+    // channels launch command. Empty = unset, allowed.
+    validate: (v) => (v.trim() === '' || expandAndValidateConfigDir(v, homedir()) !== null
+      ? null
+      : 'Érvénytelen könyvtár: csak betű, szám és a _ . / ~ - karakterek, ".." nélkül, a ~ csak az elején (~/...).'),
     description: 'A fő channels-agent explicit CLAUDE_CONFIG_DIR-je (pl. ~/.claude-bot). Akkor kell, ha a botnak SAJÁT Claude-loginja van, külön a flottáétól: a MAIN_AGENT_ISOLATED_CONFIG erre nem alkalmas, mert az a fleet setup-tokenből hitelesít, tehát a flotta identitását adja a botnak (és token nélkül no-op). Üresen hagyva a fő agent a közös ~/.claude-ot használja (alapértelmezés). Ha a megadott könyvtár nem létezik, a beállítás no-op és figyelmeztetést logol. Elsőbbséget élvez a MAIN_AGENT_ISOLATED_CONFIG-gal szemben. A módosítás a channels session újraindításakor lép életbe.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: true,
+  },
+  // The three opt-in switches below are boot-time consts in src/config.ts
+  // (cfg(): config-overrides.json > .env), so a value saved here takes effect
+  // only after the dashboard restarts. Default '0' matches config.ts, where an
+  // unset key resolves to false.
+  {
+    key: 'SUBAGENT_INBOX_TEE',
+    type: 'boolean',
+    default: '0',
+    description: 'Telegramos sub-agentek bejövő üzeneteinek lemezre tükrözése (inbound-tee). Bekapcsolva a sub-agent a csatorna-plugint egy saját mcp.json-on keresztül, a scripts/channel-inbound-tee.mjs burkolóval tölti be (--channels helyett), és minden bejövő üzenet a <state>/inbox-pending.jsonl fájlba is kerül, ahonnan a channel-inbox-drain hook a következő körbe húzza be. Ez a bejövő üzenetek tartalmát lemezre írja. A fő agentre és a nem Telegramos agentekre nem vonatkozik. Alapértelmezés: kikapcsolva (változatlan --channels út). A SUBAGENT_TELEGRAM_WAKE_ENABLED csak ezzel együtt csinál bármit. A módosítás a dashboard újraindítása után, és agentenként a sub-agent következő indításakor lép életbe.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
+    key: 'SUBAGENT_TELEGRAM_WAKE_ENABLED',
+    type: 'boolean',
+    default: '0',
+    description: 'A message-router felébreszti azt a tétlen Telegramos sub-agentet, akinek a <state>/inbox-pending.jsonl fájljában beragadt bejövő üzenet van, hogy a drain hook behúzza őket. Csak SUBAGENT_INBOX_TEE=1 mellett van hatása: anélkül nem keletkezik inbox-fájl, és a figyelő no-op. Alapértelmezés: kikapcsolva. A módosítás a dashboard újraindításakor lép életbe.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
+    key: 'VOICE_TRANSCRIBE_INBOUND',
+    type: 'boolean',
+    default: '0',
+    description: 'Telepítés-szintű alapértelmezés a bejövő hangüzenetek átiratához a text módú ügynököknél. Bekapcsolva minden olyan text módú ügynöknél helyi faster-whisper átirat készül, amelynek az agent-config.json-jában nincs voice.transcribeInbound beállítás (az ügynökönkénti érték felülírja ezt). A voice/auto módú ügynököknél az átirat ettől függetlenül mindig elkészül. Hangüzenetenként CPU-időbe kerül. Alapértelmezés: kikapcsolva. A módosítás a dashboard újraindításakor lép életbe.',
     module: 'channels',
     secret: false,
     requiresRestart: true,
@@ -404,6 +634,82 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: true,
     valueSet: ['Europe/London', 'Europe/Budapest', 'UTC', 'Europe/Dublin', 'Europe/Berlin', 'Europe/Bucharest', 'America/New_York'],
+  },
+  {
+    key: 'AGENT_INHERITED_MCP_SERVERS',
+    type: 'string',
+    default: '',
+    description: 'Vesszővel elválasztott MCP-szerver-nevek, amelyeket egy ÚJ ügynök örökölhet (pl. aiam-blog). Minden más kimarad, amíg valaki név szerint oda nem adja. Üresen hagyva az új ügynök semmilyen connectort nem örököl (szűk alapértelmezés). Két helyről örököl: a projekt-gyökér .mcp.json-jából és a közös ~/.claude.json-ból, és a lista mindkettőre vonatkozik. A meglévő ügynöktől semmit nem vesz el. A fő ügynökre nem vonatkozik.',
+    module: 'agents',
+    secret: false,
+    requiresRestart: false,
+  },
+  {
+    key: 'DEFAULT_AGENT_MODEL',
+    type: 'string',
+    default: DISTRIBUTION_DEFAULT_AGENT_MODEL,
+    description: 'Az új ügynökök alapértelmezett modellje, egyben a háttér-worker sessionök modellje. Meglévő ügynökök NEM változnak: akinek az agent-config.json-jában konkrét modell van, az marad. A módosítás a szolgáltatás újraindításakor lép életbe.',
+    module: 'agents',
+    secret: false,
+    requiresRestart: true,
+    valueSet: [
+      // Opus 5.5: ONLY the 1M variant is offered (owner decision 2026-09-23, Marveen 28541).
+      'claude-opus-5-5[1m]',
+      'claude-opus-5',
+      'claude-opus-5[1m]',
+      'claude-sonnet-5-5',
+      'claude-sonnet-5',
+      'claude-fable-5',
+      'claude-fable-5-1',
+      'claude-opus-4-8[1m]',
+      'claude-haiku-4-5-20251001',
+    ],
+  },
+  // --- Claude plans module (PR2b/PR2c) ---
+  // Gates BOTH POST /api/claude-plans/rotate (returns 409 while off) and the
+  // heartbeat script's decision to call it (scripts/claude-plan-rotate-check.ts)
+  // -- see docs/superpowers/specs/2026-09-11-claude-key-rotation-design.md
+  // sections 6-7. Default OFF: staging verification (live session-restart,
+  // the riskiest part of this feature) happens before an operator ever flips
+  // this to '1'.
+  {
+    key: 'CLAUDE_ROTATION_ENABLED',
+    type: 'boolean',
+    default: '0',
+    description: 'Automata Claude-kulcs rotáció: ha a fő agent aktív előfizetése kifogy, automatikusan váltson egy másik regisztrált planre. Előfeltétel: MAIN_AGENT_ISOLATED_CONFIG=1 és legalább 2 regisztrált plan a claude-plans.json-ban. A váltás a fő agent session-jének újraindításával jár. Bekapcsoláskor a 10 percenkénti rotációs heartbeat ütemezés (claude-plan-rotate-check) automatikusan létrejön, ha még nincs; a hiányzó előfeltételeket a Claude plans fül figyelmeztetése mutatja.',
+    module: 'claude-plans',
+    secret: false,
+    requiresRestart: false,
+  },
+  // Opt-in: the shared fleet token (store/.claude-oauth-token) follows the
+  // main agent's rotation. Default OFF -- with it off, a rotation touches the
+  // main agent only, exactly as before. Read at rotation time by
+  // POST /api/claude-plans/rotate (src/web/claude-plan-fleet-wiring.ts).
+  {
+    key: 'CLAUDE_ROTATION_FLEET',
+    type: 'boolean',
+    default: '0',
+    description: 'A flotta is kövesse a rotációt: amikor a fő agent egy token-módú planre vált, a közös flotta-token (store/.claude-oauth-token) is erre a plan tokenjére cserélődik (mentéssel), és minden olyan sub-agent újraindul, amely ezt a közös tokent használja. Saját tokenes / saját configDir-os agenteket nem érint. configDir-módú célplannél a flotta-lépés kimarad. Előfeltétel: CLAUDE_ROTATION_ENABLED=1.',
+    module: 'claude-plans',
+    secret: false,
+    requiresRestart: false,
+  },
+  // On-demand refresh of IDLE plans' 5h/7d usage by the rotation heartbeat
+  // (scripts/claude-plan-rotate-check.ts -> refreshIdlePlans). Each probe is a
+  // real Messages API call that spends the probed plan's own quota, so it only
+  // fires while the ACTIVE plan is near a limit (IDLE_PROBE_GATE in
+  // claude-plan-rotation.ts), right before the rotation decision that uses the
+  // numbers. With a healthy active plan it costs nothing, hence default ON;
+  // this key is the operator's off switch. Independent of
+  // CLAUDE_ROTATION_ENABLED.
+  {
+    key: 'CLAUDE_PLAN_USAGE_REFRESH',
+    type: 'boolean',
+    default: '1',
+    description: 'Igény szerinti lekérdezés engedélyezése: a rotációs heartbeat a tétlen (épp nem használt) token-módú planek 5 órás és heti keretét CSAK akkor kérdezi le élőben, ha az aktív plan közel jár a határhoz (5 órás keret legalább 80%, vagy heti legalább 85%), közvetlenül a váltási döntés előtt, hogy az friss számokkal dolgozzon. Planenként legfeljebb 30 percenként. Minden lekérdezés egy valódi, minimális API-hívás az adott plan saját keretéből, de amíg az aktív plan rendben van, egyetlen hívás sem történik, ezért alapból BE. Kikapcsolva a tétlen planek utolsó ismert értéke marad érvényben.',
+    module: 'claude-plans',
+    secret: false,
+    requiresRestart: false,
   },
 ]
 
@@ -458,5 +764,9 @@ export function validateSettingValue(def: SettingDefinition, raw: unknown): Sett
   }
 
   // 'string'
+  if (def.validate) {
+    const err = def.validate(String(raw))
+    if (err) return { ok: false, error: err }
+  }
   return { ok: true, value: String(raw) }
 }

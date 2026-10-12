@@ -1,6 +1,7 @@
 import {
   readFileSync,
   readlinkSync,
+  realpathSync,
   unlinkSync,
   mkdirSync,
   openSync,
@@ -8,16 +9,22 @@ import {
   writeSync,
 } from 'node:fs'
 import { join } from 'node:path'
-import { execFileSync, execSync } from 'node:child_process'
+import { execFileSync } from 'node:child_process'
+import { runLsof } from './lsof.js'
 import type { Server as HttpServer } from 'node:http'
-import { PROJECT_ROOT, STORE_DIR, PID_FILENAME, WEB_PORT, ALLOWED_CHAT_ID, MAIN_AGENT_ID, RESPAWN_ENABLED, HEARTBEAT_AGENT_ENABLED } from './config.js'
+import { PROJECT_ROOT, STORE_DIR, PID_FILENAME, WEB_PORT, MAIN_AGENT_ID, RESPAWN_ENABLED, HEARTBEAT_AGENT_ENABLED } from './config.js'
+import { resolveOwnerChatId } from './owner-chat.js'
 import { initDatabase, backfillEmbeddings } from './db.js'
 import { runDecaySweep, runDailyDigest } from './memory.js'
-import { initHeartbeat, stopHeartbeat } from './heartbeat.js'
+import { DECAY_SWEEP_INTERVAL_MS } from './db.js'
+import { initHeartbeat, stopHeartbeat, ensureHeartbeatWorkerHidden } from './heartbeat.js'
 import { ensureHeartbeatAgent, shouldBootHeartbeatAgent, HEARTBEAT_AGENT_NAME } from './web/heartbeat-agent-scaffold.js'
 import { startAgentProcess } from './web/agent-process.js'
+import { runLogRotationSweep, LOG_ROTATION_SWEEP_MS } from './web/log-rotation.js'
+import { sweepScheduledRunSnapshots } from './web/scheduled-run-snapshot.js'
 import { renameSharedCredentialsIfSafe, fleetTokenBootPass } from './web/claude-credentials-guard.js'
 import { startWebServer } from './web.js'
+import { endAllDetachedGroups } from './web/detached-groups.js'
 import { logger } from './logger.js'
 import { startInviteMonitor, stopInviteMonitor } from './web/channel-invites.js'
 import { ensureDiscordChannelGroup } from './web/discord-group-bootstrap.js'
@@ -75,13 +82,12 @@ function processCwd(pid: number): string | null {
     // Linux: cheap and exact.
     return readlinkSync(`/proc/${pid}/cwd`)
   } catch { /* not Linux or no access; try lsof (macOS) */ }
-  try {
-    const raw = execSync(`lsof -a -p ${pid} -d cwd -Fn 2>/dev/null || true`, { timeout: 2000, encoding: 'utf-8' })
-    const line = raw.split('\n').find((l) => l.startsWith('n'))
-    return line ? line.slice(1) : null
-  } catch {
-    return null
-  }
+  // Resolved-path lsof (LSOFPATH805): a bare `lsof` was command-not-found under
+  // the launchd PATH and silently returned null on the live box.
+  const raw = runLsof(['-a', '-p', String(pid), '-d', 'cwd', '-Fn'], 2000)
+  if (raw == null) return null
+  const line = raw.split('\n').find((l) => l.startsWith('n'))
+  return line ? line.slice(1) : null
 }
 
 function argvBelongsToThisInstall(argv: string, pid: number): boolean {
@@ -96,17 +102,46 @@ function argvBelongsToThisInstall(argv: string, pid: number): boolean {
 // or node:fs directly.
 function buildProcessLockContext(): ProcessLockContext {
   const uid = typeof process.getuid === 'function' ? process.getuid() : null
+  // realpath so this compares equal against /proc/<pid>/cwd, which the
+  // kernel always reports fully symlink-resolved -- an un-resolved
+  // PROJECT_ROOT (e.g. reached via a symlinked path) would otherwise never
+  // match even for our own genuine predecessor.
+  let selfProjectRoot: string | null
+  try {
+    selfProjectRoot = realpathSync(PROJECT_ROOT)
+  } catch {
+    selfProjectRoot = null
+  }
   return {
     currentPid: process.pid,
     uid,
-    listPortHolders(port: number): number[] {
+    selfProjectRoot,
+    getProcessCwd(pid: number): string | null {
+      // Resolve the PID's cwd on BOTH platforms via the shared processCwd
+      // helper: /proc on Linux, `lsof -a -p <pid> -d cwd` on macOS. A previous
+      // version was /proc-only, which returned null for every pid on macOS (no
+      // /proc) and silently disabled the byBinary single-instance reclaim on
+      // the production platform. realpath the result so it compares equal to
+      // selfProjectRoot (also realpath'd) -- two different-looking paths to the
+      // same directory (symlink / bind mount) must still match. If the path is
+      // gone by the time we realpath, fall back to the raw value.
+      const cwd = processCwd(pid)
+      if (cwd == null) return null
       try {
-        const raw = execSync(`lsof -ti :${port} 2>/dev/null || true`, { timeout: 3000, encoding: 'utf-8' }).trim()
-        if (!raw) return []
-        return raw.split('\n').map((s) => parseInt(s.trim(), 10)).filter((n) => Number.isFinite(n) && n > 0)
+        return realpathSync(cwd)
       } catch {
-        return []
+        return cwd
       }
+    },
+    listPortHolders(port: number): number[] {
+      // Resolved-path lsof (LSOFPATH805): under the launchd PATH the old bare
+      // `lsof -ti` was command-not-found and silently returned [], so this
+      // port-holder probe -- which the single-instance reclaim depends on --
+      // found no one on the live box. runLsof resolves an absolute lsof and
+      // warns loudly if none exists rather than returning a silent empty.
+      const raw = (runLsof(['-ti', `:${port}`], 3000) ?? '').trim()
+      if (!raw) return []
+      return raw.split('\n').map((s) => parseInt(s.trim(), 10)).filter((n) => Number.isFinite(n) && n > 0)
     },
     listOwnProcessesMatching(pattern: RegExp): number[] {
       // `ps -A -o pid=,uid=,args=` emits `<pid> <uid> <full argv>` per row.
@@ -368,6 +403,8 @@ function releaseLock(): void {
 let decayInterval: NodeJS.Timeout | null = null
 let digestTimer: NodeJS.Timeout | null = null
 let digestInterval: NodeJS.Timeout | null = null
+let logRotationInterval: NodeJS.Timeout | null = null
+let scheduledRunSnapshotSweepInterval: NodeJS.Timeout | null = null
 let heartbeatStarted = false
 let webServer: HttpServer | null = null
 let shuttingDown = false
@@ -378,6 +415,10 @@ const shutdown = (): void => {
   try {
     shuttingDown = true
     logger.info('Leallitas...')
+    // DETACHEDSHUTDOWN1007: the command-task and pre-check groups run DETACHED
+    // (outside our process group), so neither launchd nor our own exit ends
+    // them, and their timeout timers die with us. End them first.
+    try { endAllDetachedGroups('dashboard shutdown') } catch (err) { logger.warn({ err }, 'endAllDetachedGroups threw during shutdown') }
     if (heartbeatStarted) {
       try { stopHeartbeat() } catch (err) { logger.warn({ err }, 'stopHeartbeat threw during shutdown') }
     }
@@ -387,6 +428,8 @@ const shutdown = (): void => {
     if (decayInterval) clearInterval(decayInterval)
     if (digestTimer) clearTimeout(digestTimer)
     if (digestInterval) clearInterval(digestInterval)
+    if (logRotationInterval) clearInterval(logRotationInterval)
+    if (scheduledRunSnapshotSweepInterval) clearInterval(scheduledRunSnapshotSweepInterval)
 
     const hardKill = setTimeout(() => {
       logger.warn({ timeoutMs: SHUTDOWN_HARD_KILL_MS }, 'Graceful shutdown timeout, hard exit')
@@ -448,8 +491,20 @@ async function main(): Promise<void> {
 
   // Memory decay (24h cycle)
   runDecaySweep()
-  decayInterval = setInterval(runDecaySweep, 24 * 60 * 60 * 1000)
+  decayInterval = setInterval(runDecaySweep, DECAY_SWEEP_INTERVAL_MS)
   logger.info('Memoria leepulesi ciklus beallitva (24 oras)')
+
+  // Log rotation (LOGROTATE910): copytruncate on the launcher-redirected
+  // logs, size-capped, hourly check. Runs inside the dashboard so every
+  // platform gets it without launchd/systemd/cron wiring.
+  runLogRotationSweep()
+  logRotationInterval = setInterval(runLogRotationSweep, LOG_ROTATION_SWEEP_MS)
+
+  // Scheduled-task run snapshot retention (SCHEDPROMPTREF917): same hourly
+  // cadence as log rotation, 7-day age cutoff with a per-task floor of the
+  // most recent 20 (see scheduled-run-snapshot.ts).
+  sweepScheduledRunSnapshots()
+  scheduledRunSnapshotSweepInterval = setInterval(() => sweepScheduledRunSnapshots(), LOG_ROTATION_SWEEP_MS)
 
   // Daily digest at 23:00. Timer handles kept so shutdown can drop them.
   function scheduleDailyDigest() {
@@ -458,15 +513,20 @@ async function main(): Promise<void> {
     target.setHours(23, 0, 0, 0)
     if (target <= now) target.setDate(target.getDate() + 1)
     const msUntil = target.getTime() - now.getTime()
+    // Resolved per run, not captured once: a wizard install pairs AFTER boot,
+    // so a value read at startup would stay the placeholder for the life of
+    // the process and the first digest would go nowhere.
+    const runDigest = () => {
+      const chatId = resolveOwnerChatId()
+      if (!chatId) {
+        logger.warn('Napi naplo kihagyva: nincs gazda-chat (nincs ALLOWED_CHAT_ID es nincs parositott csatorna)')
+        return
+      }
+      runDailyDigest(chatId).catch((err) => logger.error({ err }, 'Napi naplo hiba'))
+    }
     digestTimer = setTimeout(() => {
-      runDailyDigest(ALLOWED_CHAT_ID).catch((err) =>
-        logger.error({ err }, 'Napi naplo hiba')
-      )
-      digestInterval = setInterval(() => {
-        runDailyDigest(ALLOWED_CHAT_ID).catch((err) =>
-          logger.error({ err }, 'Napi naplo hiba')
-        )
-      }, 24 * 60 * 60 * 1000)
+      runDigest()
+      digestInterval = setInterval(runDigest, 24 * 60 * 60 * 1000)
     }, msUntil)
     logger.info({ nextRun: target.toLocaleString('hu-HU') }, 'Napi naplo utemezve')
   }
@@ -512,7 +572,7 @@ async function main(): Promise<void> {
   if (shouldBootHeartbeatAgent({ respawnEnabled: RESPAWN_ENABLED, agentEnabled: HEARTBEAT_AGENT_ENABLED })) {
     ensureHeartbeatAgent()
     logger.info({ agent: HEARTBEAT_AGENT_NAME }, 'Heartbeat agent scaffold ensured (channel-less, dashboard-hidden)')
-    const heartbeatStart = startAgentProcess(HEARTBEAT_AGENT_NAME)
+    const heartbeatStart = await startAgentProcess(HEARTBEAT_AGENT_NAME)
     if (heartbeatStart.ok) {
       logger.info({ agent: HEARTBEAT_AGENT_NAME }, 'Heartbeat agent started')
     } else if (heartbeatStart.error === 'Agent is already running') {
@@ -521,6 +581,10 @@ async function main(): Promise<void> {
       logger.warn({ error: heartbeatStart.error }, 'Heartbeat agent failed to start (legacy native heartbeat is NOT a fallback any more)')
     }
   } else {
+    // Even with the feature off, keep the isolation sandbox out of the agent
+    // list: agents/heartbeat-worker is a cwd, not an agent, and without the
+    // sentinel the dashboard offers it as a startable agent (2026-08-25).
+    ensureHeartbeatWorkerHidden()
     logger.info('Heartbeat agent boot-start skipped (set HEARTBEAT_AGENT_ENABLED=1 on the respawn host to enable)')
   }
 

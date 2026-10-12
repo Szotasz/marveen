@@ -1,0 +1,1 @@
+{"scanner": {"name": "mio-scan", "version": "1.0.0", "rulepack": "2026-08-24"}, "findings": [{"rule": "long-base64-blob", "category": "injection", "match": "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphQUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVphQUJDREVG...", "line": 1, "span": [6, 296]}]}

@@ -132,16 +132,31 @@ else
   fail "MAIN_AGENT_ID NOT substituted in task-config.json"
 fi
 
-if grep -q '/opt/testbot/store/claudeclaw.db' "$SCHED_TARGET/kanban-audit/SKILL.md"; then
+# SHTEST807: this assert used to grep for '/opt/testbot/store/claudeclaw.db',
+# a recipe-content string that #870 rewrote away (sqlite3 paths -> HTTP API), so
+# it failed on every current tree. Assert the substitution MECHANISM, not the
+# recipe text, so the next recipe rewrite cannot break it again.
+if grep -q '/opt/testbot/' "$SCHED_TARGET/kanban-audit/SKILL.md"; then
   pass "INSTALL_DIR substituted in SKILL.md"
 else
   fail "INSTALL_DIR NOT substituted in SKILL.md"
 fi
-
-if grep -q "skip ha assignee='testbot'" "$SCHED_TARGET/kanban-audit/SKILL.md"; then
-  pass "MAIN_AGENT_ID substituted in SKILL.md buktatok"
+if ! grep -rq '{{' "$SCHED_TARGET"; then
+  pass "no unsubstituted {{placeholder}} left anywhere in seeded output"
 else
-  fail "MAIN_AGENT_ID NOT substituted in SKILL.md buktatok"
+  fail "unsubstituted {{placeholder}} left in seeded output: $(grep -rl '{{' "$SCHED_TARGET" | head -2 | tr '\n' ' ')"
+fi
+
+# Same trap as SHTEST807 one assert up, and it caught this one too: this used to
+# grep for "skip ha assignee='testbot'", a sentence 827491c rewrote away when the
+# shipped prompts were refreshed. The test then failed on every tree since, for a
+# reason that had nothing to do with substitution. Assert the MECHANISM: the slug
+# reached SKILL.md and no raw placeholder survived.
+if grep -q 'testbot' "$SCHED_TARGET/kanban-audit/SKILL.md" \
+   && ! grep -q '{{MAIN_AGENT_ID}}' "$SCHED_TARGET/kanban-audit/SKILL.md"; then
+  pass "MAIN_AGENT_ID substituted in SKILL.md"
+else
+  fail "MAIN_AGENT_ID NOT substituted in SKILL.md"
 fi
 
 # No raw placeholders remain

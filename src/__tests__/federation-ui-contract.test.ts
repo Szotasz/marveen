@@ -15,12 +15,23 @@ const HTML = readFileSync(join(__dirname, '../../web/index.html'), 'utf-8')
 const CSS = readFileSync(join(__dirname, '../../web/style.css'), 'utf-8')
 
 describe('federation UI wiring', () => {
-  it('sidebar has the federation nav item AFTER the ideabox item', () => {
-    const ideas = HTML.indexOf('data-page="ideas"')
+  it('sidebar: federation lives in the connections group between connectors and migrate', () => {
+    // Since the sidebar-group re-parenting (#742) the rendered order is defined
+    // by the declarative SIDEBAR_GROUPS map in app.js, not by the raw markup
+    // order; the markup is only the default snapshot the map re-parents at
+    // boot. Assert the mechanism that is true today (browser-verified
+    // 2026-07-29: rendered DOM matches the map): the map places federation
+    // inside connections between connectors and migrate, and the markup
+    // snapshot already keeps the three links inside the connections container.
+    expect(APP).toMatch(/key: 'connections',[^\n]*pages: \['connectors', 'federation', 'migrate'\]/)
+    const connectionsGroup = HTML.indexOf('data-group="connections"')
+    const connectors = HTML.indexOf('data-page="connectors"')
     const federation = HTML.indexOf('data-page="federation"')
-    const updates = HTML.indexOf('data-page="updates"')
-    expect(federation).toBeGreaterThan(ideas)
-    expect(federation).toBeLessThan(updates)
+    const migrate = HTML.indexOf('data-page="migrate"')
+    expect(connectionsGroup).toBeGreaterThan(-1)
+    expect(connectors).toBeGreaterThan(connectionsGroup)
+    expect(federation).toBeGreaterThan(connectors)
+    expect(migrate).toBeGreaterThan(federation)
   })
 
   it('page div, router dispatch and hoisted loader exist', () => {

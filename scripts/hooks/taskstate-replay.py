@@ -20,6 +20,13 @@ import os
 import json
 import urllib.request
 
+# Agent identity comes from the ledger library -- ONE resolver for every hook
+# (LEDGERCWD828: the cwd is mutable within a session, so this file's private
+# cwd-based copy could re-attribute a session that merely cd-ed somewhere; the
+# shared resolver anchors on the session's transcript_path instead).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import ledger_lib  # noqa: E402
+
 def _project_root():
     # scripts/hooks/ -> project root is two up.
     return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -51,16 +58,21 @@ def _token():
         return ""
 
 
-def _agent_id_from_cwd(cwd):
-    # agents/<name>/... -> <name>; the main agent runs from the project root.
-    if not cwd:
-        return None
-    parts = os.path.normpath(cwd).split(os.sep)
-    if "agents" in parts:
-        i = parts.index("agents")
-        if i + 1 < len(parts):
-            return parts[i + 1]
-    return None
+def _main_agent_id():
+    """MAIN_AGENT_ID from env, else .env, else the upstream default."""
+    v = os.environ.get("MAIN_AGENT_ID")
+    if v and v.strip():
+        return v.strip()
+    try:
+        with open(os.path.join(_project_root(), ".env")) as f:
+            for line in f:
+                if line.startswith("MAIN_AGENT_ID="):
+                    return line.split("=", 1)[1].strip().strip('"')
+    except Exception:
+        pass
+    return "marveen"
+
+
 
 
 def _req(method, path, token):
@@ -76,7 +88,7 @@ def main():
     except Exception:
         sys.exit(0)
     source = payload.get("source") or ""
-    agent = _agent_id_from_cwd(payload.get("cwd"))
+    agent = ledger_lib.agent_id_from_payload(payload)
     if not agent:
         sys.exit(0)  # main agent / unknown -> not a sub-agent task-state target
     token = _token()

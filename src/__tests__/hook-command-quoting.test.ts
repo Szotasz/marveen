@@ -1,0 +1,206 @@
+import { describe, it, expect, afterEach } from 'vitest'
+import { mkdirSync, rmSync, readFileSync, writeFileSync, existsSync } from 'node:fs'
+import { join } from 'node:path'
+import {
+  HOOK_NODE_BIN,
+  hookCommand,
+  hookCommandWired,
+  injectEmailSendGate,
+  injectSelfPaceGate,
+  injectEgressGate,
+  ensureEgressGate,
+  ensureGovernanceGateCommands,
+  emailGateMatcherStale,
+  EMAIL_GATE_MATCHER,
+} from '../web/agent-scaffold.js'
+import { PROJECT_ROOT } from '../config.js'
+
+// Review feedback on PR #803, pinned as tests:
+//  1. every injector must write a QUOTED absolute interpreter path -- an
+//     unquoted execPath with a space in it is split by `sh -c`, exit 127,
+//     silently non-enforcing: the exact failure the PR closes, reintroduced;
+//  2. the wired-already comparison must be the JSON-escaped one everywhere,
+//     otherwise a backslash (Windows) path never settles and every boot
+//     rewrites settings.json;
+//  3. the ensure* migrations must be idempotent: second call returns false.
+
+const TEST_AGENT = 'hookquoting-test-agent'
+const testAgentDir = join(PROJECT_ROOT, 'agents', TEST_AGENT)
+
+afterEach(() => {
+  rmSync(testAgentDir, { recursive: true, force: true })
+})
+
+function ptuCommands(settings: Record<string, unknown>): string[] {
+  const hooks = settings.hooks as Record<string, unknown>
+  const ptu = hooks.PreToolUse as { hooks: { command: string }[] }[]
+  return ptu.flatMap((e) => e.hooks.map((h) => h.command))
+}
+
+describe('hookCommand builder', () => {
+  it('quotes BOTH the interpreter and the script path', () => {
+    const cmd = hookCommand('/some/dir/gate.mjs')
+    expect(cmd).toContain(`"${HOOK_NODE_BIN}" "/some/dir/gate.mjs"`)
+  })
+
+  // A missing interpreter must BLOCK, not fall through with 127. process.execPath
+  // is a version-pinned path on brew, so a node upgrade can dangle it; without
+  // this guard the gate goes silent again on a different route.
+  it('blocks with a message when the interpreter is gone, instead of exiting 127', () => {
+    const cmd = hookCommand('/some/dir/gate.mjs')
+    expect(cmd).toMatch(/^test -x /)
+    expect(cmd).toContain('exit 2')
+    // the three things the operator needs: what is missing, that this blocks,
+    // and the way out
+    expect(cmd).toContain(HOOK_NODE_BIN)
+    expect(cmd).toContain('BLOKKOL')
+    expect(cmd).toContain('inditsd ujra a dashboardot')
+  })
+})
+
+// A parancs nem a quoted interpreterrel KEZDODIK, hanem tartalmazza azt: elotte all
+// egy `test -x <BIN> || { echo ...; exit 2; }` or, hogy egy elmozdult interpreter
+// BLOKKOLJON, ne 127-tel csendben atengedjen. Az allitas ezert includes(), es a
+// vedett tulajdonsag valtozatlan: abszolut, idezojelezett interpreter, soha nem
+// csupasz `node`.
+describe('injectors write a quoted absolute interpreter, never a bare node', () => {
+  for (const [label, inject] of [
+    ['injectEmailSendGate', injectEmailSendGate],
+    ['injectSelfPaceGate', injectSelfPaceGate],
+    ['injectEgressGate', injectEgressGate],
+  ] as const) {
+    it(label, () => {
+      const s: Record<string, unknown> = {}
+      inject(s)
+      const commands = ptuCommands(s)
+      expect(commands.length).toBeGreaterThan(0)
+      for (const cmd of commands) {
+        expect(cmd.includes(`"${HOOK_NODE_BIN}" "`)).toBe(true)
+        expect(cmd).not.toMatch(/^node /)
+      }
+    })
+  }
+})
+
+describe('hookCommandWired', () => {
+  it('finds a freshly injected command (posix path)', () => {
+    const s: Record<string, unknown> = {}
+    injectEgressGate(s)
+    const cmd = hookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'egress-gate.mjs'))
+    const ptuJson = JSON.stringify((s.hooks as Record<string, unknown>).PreToolUse)
+    expect(hookCommandWired(ptuJson, cmd)).toBe(true)
+  })
+
+  it('settles on a backslash (Windows-style) path where the raw compare does not', () => {
+    // Reproduces review point 1: the raw includes() disagrees with the
+    // serialized form exactly where the escaped form matches.
+    const cmd = '"C:\\Program Files\\nodejs\\node.exe" "C:\\marveen\\scripts\\hooks\\egress-gate.mjs"'
+    const ptuJson = JSON.stringify([{ matcher: 'WebFetch', hooks: [{ type: 'command', command: cmd, timeout: 10 }] }])
+    expect(hookCommandWired(ptuJson, cmd)).toBe(true)   // escaped compare: settles
+    expect(ptuJson.includes(cmd)).toBe(false)           // raw compare: never settles
+  })
+})
+
+describe('ensure* migrations are idempotent (true, then false)', () => {
+  it('ensureEgressGate', () => {
+    mkdirSync(join(testAgentDir, '.claude'), { recursive: true })
+    expect(ensureEgressGate(TEST_AGENT)).toBe(true)
+    expect(ensureEgressGate(TEST_AGENT)).toBe(false)
+    const written = JSON.parse(readFileSync(join(testAgentDir, '.claude', 'settings.json'), 'utf-8'))
+    for (const cmd of ptuCommands(written)) {
+      expect(cmd.includes(`"${HOOK_NODE_BIN}" "`)).toBe(true)
+    }
+  })
+
+  it('ensureGovernanceGateCommands upgrades a legacy bare-node entry, then settles', () => {
+    mkdirSync(join(testAgentDir, '.claude'), { recursive: true })
+    const legacy = {
+      hooks: {
+        PreToolUse: [
+          { matcher: 'Bash|send_email', hooks: [{ type: 'command', command: `node ${join(PROJECT_ROOT, 'scripts', 'email-send-gate.mjs')}`, timeout: 10 }] },
+          { matcher: 'Bash', hooks: [{ type: 'command', command: `node ${join(PROJECT_ROOT, 'scripts', 'self-pace-gate.mjs')}`, timeout: 10 }] },
+        ],
+      },
+    }
+    const settingsPath = join(testAgentDir, '.claude', 'settings.json')
+    writeFileSync(settingsPath, JSON.stringify(legacy, null, 2))
+
+    expect(ensureGovernanceGateCommands(TEST_AGENT)).toBe(true)
+    expect(ensureGovernanceGateCommands(TEST_AGENT)).toBe(false)
+
+    expect(existsSync(settingsPath)).toBe(true)
+    const written = JSON.parse(readFileSync(settingsPath, 'utf-8'))
+    const commands = ptuCommands(written)
+    expect(commands.some((c) => c.includes('email-send-gate.mjs'))).toBe(true)
+    expect(commands.some((c) => c.includes('self-pace-gate.mjs'))).toBe(true)
+    // The migration also wires the python destructive gate (card a14ea5c7), so
+    // the interpreter invariant is per-interpreter, not node-only. Both shapes
+    // guard the SAME failure: a hook whose interpreter cannot be resolved exits
+    // 127, which Claude Code treats as NON-blocking -- a gate that silently
+    // enforces nothing. Node gets an absolute quoted execPath; python3 gets an
+    // explicit probe that exits 2 (blocking) when the interpreter is missing.
+    for (const cmd of commands) {
+      if (cmd.includes('.py"')) {
+        expect(cmd).toContain('command -v python3 >/dev/null 2>&1 ||')
+        expect(cmd).toContain('exit 2')
+        expect(cmd).toMatch(/python3 "\//)
+      } else {
+        expect(cmd.includes(`"${HOOK_NODE_BIN}" "`)).toBe(true)
+      }
+      expect(cmd).not.toMatch(/^node /)
+    }
+  })
+
+  // 2026-08-10: the second silently-non-enforcing shape. Here the command is
+  // already correct (absolute, quoted interpreter), so the wiring check reports
+  // the gate healthy -- but the matcher is the pre-fix bare one, which never
+  // matches `mcp__<server>__manage_email`, so the hook never runs. The migration
+  // must repair the matcher too, or every install scaffolded before the fix
+  // keeps a gate that passes every check and blocks nothing.
+  it('ensureGovernanceGateCommands repairs a stale matcher on a correctly-wired command', () => {
+    mkdirSync(join(testAgentDir, '.claude'), { recursive: true })
+    const settingsPath = join(testAgentDir, '.claude', 'settings.json')
+    writeFileSync(settingsPath, JSON.stringify({
+      hooks: {
+        PreToolUse: [
+          {
+            matcher: 'Bash|send_email|manage_email',
+            hooks: [{ type: 'command', command: hookCommand(join(PROJECT_ROOT, 'scripts', 'email-send-gate.mjs')), timeout: 10 }],
+          },
+          {
+            matcher: 'Bash',
+            hooks: [{ type: 'command', command: hookCommand(join(PROJECT_ROOT, 'scripts', 'self-pace-gate.mjs')), timeout: 10 }],
+          },
+        ],
+      },
+    }, null, 2))
+
+    expect(ensureGovernanceGateCommands(TEST_AGENT)).toBe(true)
+    expect(ensureGovernanceGateCommands(TEST_AGENT)).toBe(false)
+
+    const written = JSON.parse(readFileSync(settingsPath, 'utf-8'))
+    const ptu = (written.hooks as Record<string, unknown>).PreToolUse as { matcher: string, hooks: { command: string }[] }[]
+    const gate = ptu.find((e) => e.hooks.some((h) => h.command.includes('email-send-gate.mjs')))
+    expect(gate?.matcher).toBe(EMAIL_GATE_MATCHER)
+    // Repaired in place, not duplicated.
+    expect(ptu.filter((e) => e.hooks.some((h) => h.command.includes('email-send-gate.mjs')))).toHaveLength(1)
+    // The unrelated self-pace entry survives untouched.
+    expect(ptu.some((e) => e.hooks.some((h) => h.command.includes('self-pace-gate.mjs')))).toBe(true)
+  })
+})
+
+describe('emailGateMatcherStale', () => {
+  const cmd = { type: 'command', command: hookCommand(join(PROJECT_ROOT, 'scripts', 'email-send-gate.mjs')), timeout: 10 }
+
+  it('flags a pre-fix matcher', () => {
+    expect(emailGateMatcherStale([{ matcher: 'Bash|send_email|manage_email', hooks: [cmd] }])).toBe(true)
+    expect(emailGateMatcherStale([{ matcher: 'Bash|send_email', hooks: [cmd] }])).toBe(true)
+  })
+
+  it('accepts the current matcher and ignores unrelated entries', () => {
+    expect(emailGateMatcherStale([{ matcher: EMAIL_GATE_MATCHER, hooks: [cmd] }])).toBe(false)
+    expect(emailGateMatcherStale([{ matcher: 'WebFetch', hooks: [{ type: 'command', command: 'x egress-gate.mjs' }] }])).toBe(false)
+    expect(emailGateMatcherStale([])).toBe(false)
+    expect(emailGateMatcherStale(undefined)).toBe(false)
+  })
+})

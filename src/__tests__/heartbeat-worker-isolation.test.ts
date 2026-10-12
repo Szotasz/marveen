@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { CHANNEL_PLUGIN_IDS } from '../web/plugin-ids.js'
 
 // Contract tests for the 2026-06-02 channel-disconnect chain.
 //
@@ -45,11 +46,28 @@ describe('heartbeat worker cwd + CLAUDE_CONFIG_DIR isolation (2026-06-02 inciden
     expect(SRC).toMatch(/HEARTBEAT_CONFIG_SKIP[^)]*settings\.json/s)
   })
 
-  it('writes a fresh settings.json with enabledPlugins:false for telegram/slack/discord', () => {
+  it('writes a fresh settings.json with enabledPlugins:false for all channel plugins', () => {
+    // heartbeat.ts must reference HEARTBEAT_DISABLED_PLUGINS -- the contract
+    // that drives the enabledPlugins loop. The actual ID strings now live in
+    // plugin-ids.ts (single source of truth); this test verifies the import
+    // and that plugin-ids.ts contains the canonical IDs.
     expect(SRC).toMatch(/HEARTBEAT_DISABLED_PLUGINS/)
-    expect(SRC).toMatch(/telegram@claude-plugins-official/)
-    expect(SRC).toMatch(/slack-channel@marveen-marketplace/)
-    expect(SRC).toMatch(/discord@claude-plugins-official/)
+    expect(SRC).toMatch(/CHANNEL_PLUGIN_IDS/)
+    const IDS_SRC = readFileSync(join(__dirname, '../web/plugin-ids.ts'), 'utf-8')
+    expect(IDS_SRC).toMatch(/telegram@claude-plugins-official/)
+    expect(IDS_SRC).toMatch(/slack-channel@marveen-marketplace/)
+    expect(IDS_SRC).toMatch(/discord@claude-plugins-official/)
+    expect(IDS_SRC).toMatch(/googlechat@claude-channel-googlechat/)
+    expect(IDS_SRC).toMatch(/teams@marveen-marketplace/)
+  })
+
+  it('CHANNEL_PLUGIN_IDS covers all five providers (regression: googlechat/teams were missing from heartbeat)', () => {
+    const ids = Object.values(CHANNEL_PLUGIN_IDS)
+    expect(ids).toContain('telegram@claude-plugins-official')
+    expect(ids).toContain('slack-channel@marveen-marketplace')
+    expect(ids).toContain('discord@claude-plugins-official')
+    expect(ids).toContain('googlechat@claude-channel-googlechat')
+    expect(ids).toContain('teams@marveen-marketplace')
   })
 
   it('refuses to read through a settings.json symlink (would import user-scope enabledPlugins)', () => {

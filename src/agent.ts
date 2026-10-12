@@ -81,7 +81,15 @@ function detectLinuxLibc(): 'glibc' | 'musl' | 'unknown' {
 
 let cachedClaudeCodeBin: string | undefined | null = null
 function resolveClaudeCodeBin(): string | undefined {
-  if (cachedClaudeCodeBin !== null) return cachedClaudeCodeBin
+  // Return the cache only while it still points at a real file. A bare
+  // `!== null` check memoised the resolution forever, so a node_modules
+  // reinstall/rebuild under a long-lived process could leave a stale path (the
+  // same staleness class makeLazyBinResolver guards against). Re-validate with
+  // existsSync each call; anything else re-resolves (also self-heals the "bin
+  // appeared later" case).
+  if (typeof cachedClaudeCodeBin === 'string' && existsSync(cachedClaudeCodeBin)) {
+    return cachedClaudeCodeBin
+  }
   if (process.env.CLAUDE_CODE_BIN) {
     cachedClaudeCodeBin = process.env.CLAUDE_CODE_BIN
     return cachedClaudeCodeBin

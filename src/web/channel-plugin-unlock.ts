@@ -32,17 +32,20 @@
 // session cannot accept other input, but the helper runs in a setTimeout off
 // the recovery thread and only fires once per respawn, so the cost is bounded.
 
+import { tmuxStderr } from './tmux-stderr.js'
 import { execFileSync } from 'node:child_process'
 import { resolveFromPath } from '../platform.js'
 import { logger } from '../logger.js'
 import type { ChannelProviderType } from '../channel-provider.js'
+import { tryAcquireSessionSendLane } from './session-send-lock.js'
+import { exactTmuxTarget } from '../tmux-target.js'
 
 const TMUX = resolveFromPath('tmux')
 
 // Mirror of scripts/channels.sh post-init grace. The plugin handshake
 // (bun spawn + Telegram getMe + sendMessage) usually completes within 15s
 // of the claude TUI being interactive. After scheduleIdentitySetup's
-// 8s modal-dismiss + 5s /name + a ~1s safety buffer, the prompt is ready
+// 8s modal-dismiss + 5s /rename + a ~1s safety buffer, the prompt is ready
 // around T+15s. We wait another 20s on top of that so a healthy plugin
 // has time to write its bot.pid and spawn the bun child before we read.
 // Total: T+35s post-respawn.
@@ -101,14 +104,17 @@ export function wasPluginConfirmedAbsent(session: string, withinMs: number): boo
 
 function getSessionClaudePid(session: string): number | null {
   try {
-    const raw = execFileSync(TMUX, ['list-panes', '-t', session, '-F', '#{pane_pid}'], {
+    const raw = execFileSync(TMUX, ['list-panes', '-t', exactTmuxTarget(session), '-F', '#{pane_pid}'], {
       timeout: 3000,
       encoding: 'utf-8',
+      // TMUXWINDOWATTR920: piped, so tmux's one-line error is logged below with
+      // the site instead of being copied undated onto dashboard.error.log.
+      stdio: ['ignore', 'pipe', 'pipe'],
     }).trim().split('\n')[0]
     const pid = parseInt(raw ?? '', 10)
     return Number.isFinite(pid) && pid > 1 ? pid : null
   } catch (err) {
-    logger.warn({ err, session }, 'channel-plugin-unlock: failed to read session claude pid')
+    logger.warn({ site: 'channel-plugin-unlock.getSessionClaudePid', session, tmux: tmuxStderr(err) }, 'channel-plugin-unlock: failed to read session claude pid')
     return null
   }
 }
@@ -139,7 +145,7 @@ function hasBunChild(claudePid: number): boolean {
 // the plugin into Disable, exactly the 2026-06-01 18:55 root cause.
 function isSessionReadyForUnlock(session: string): boolean {
   try {
-    const pane = execFileSync(TMUX, ['capture-pane', '-t', session, '-p'], {
+    const pane = execFileSync(TMUX, ['capture-pane', '-t', exactTmuxTarget(session), '-p'], {
       timeout: 3000,
       encoding: 'utf-8',
     })
@@ -161,7 +167,7 @@ function sendUnlockKeystrokes(session: string, provider: ChannelProviderType): v
   try {
     // Open the MCP dialog. Claude renders the server list within ~2s; the
     // 3s settle ensures the cursor is on the first item before we move.
-    execFileSync(TMUX, ['send-keys', '-t', session, '/mcp', 'Enter'], { timeout: 5000 })
+    execFileSync(TMUX, ['send-keys', '-t', exactTmuxTarget(session), '/mcp', 'Enter'], { timeout: 5000 })
     execFileSync('/bin/sleep', [String(MCP_OPEN_SETTLE_MS / 1000)], { timeout: MCP_OPEN_SETTLE_MS + 2000 })
 
     // Safety gate: check whether the channel plugin appears in the /mcp list
@@ -171,13 +177,13 @@ function sendUnlockKeystrokes(session: string, provider: ChannelProviderType): v
     // MCP server. If the provider slug is absent, bail out with Escape.
     let paneAfterOpen = ''
     try {
-      paneAfterOpen = execFileSync(TMUX, ['capture-pane', '-t', session, '-p'], {
+      paneAfterOpen = execFileSync(TMUX, ['capture-pane', '-t', exactTmuxTarget(session), '-p'], {
         timeout: 3000,
         encoding: 'utf-8',
       })
     } catch (err) {
       logger.warn({ err, session }, 'channel-plugin-unlock: capture-pane after /mcp open failed -- aborting')
-      try { execFileSync(TMUX, ['send-keys', '-t', session, 'Escape'], { timeout: 5000 }) } catch { /* ignore */ }
+      try { execFileSync(TMUX, ['send-keys', '-t', exactTmuxTarget(session), 'Escape'], { timeout: 5000 }) } catch { /* ignore */ }
       return
     }
     if (!paneAfterOpen.includes(provider)) {
@@ -187,21 +193,21 @@ function sendUnlockKeystrokes(session: string, provider: ChannelProviderType): v
       // Record the absent verdict so the down-cascade escalates to the operator
       // after one restart instead of looping fresh-restarts that cannot help.
       markPluginAbsent(session)
-      try { execFileSync(TMUX, ['send-keys', '-t', session, 'Escape'], { timeout: 5000 }) } catch { /* ignore */ }
+      try { execFileSync(TMUX, ['send-keys', '-t', exactTmuxTarget(session), 'Escape'], { timeout: 5000 }) } catch { /* ignore */ }
       return
     }
 
     // Up wraps to the bottom of the list, where the plugin servers live
     // (claude lists them last). Built-in MCPs are above Plugin MCPs in the
     // sort order, so the bottommost entry is the channel plugin we want.
-    execFileSync(TMUX, ['send-keys', '-t', session, 'Up'], { timeout: 5000 })
+    execFileSync(TMUX, ['send-keys', '-t', exactTmuxTarget(session), 'Up'], { timeout: 5000 })
     execFileSync('/bin/sleep', [String(KEYSTROKE_SETTLE_MS / 1000)], { timeout: KEYSTROKE_SETTLE_MS + 2000 })
     // First Enter opens the action menu for the selected MCP server.
-    execFileSync(TMUX, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+    execFileSync(TMUX, ['send-keys', '-t', exactTmuxTarget(session), 'Enter'], { timeout: 5000 })
     execFileSync('/bin/sleep', [String(KEYSTROKE_SETTLE_MS / 1000)], { timeout: KEYSTROKE_SETTLE_MS + 2000 })
     // Second Enter activates the first action - "Enable" for disabled,
     // "Reconnect" for failed. Both revive the plugin.
-    execFileSync(TMUX, ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+    execFileSync(TMUX, ['send-keys', '-t', exactTmuxTarget(session), 'Enter'], { timeout: 5000 })
     // After activation, the pane stays in the MCP server list (Claude Code
     // does NOT auto-dismiss to the prompt). detectPaneState reads that as
     // non-idle, every scheduled tick + inter-agent msg piles up with
@@ -213,9 +219,9 @@ function sendUnlockKeystrokes(session: string, provider: ChannelProviderType): v
     // prompt), with a settle between so the first Escape lands before
     // the second arrives.
     execFileSync('/bin/sleep', [String(POST_UNLOCK_SETTLE_MS / 1000)], { timeout: POST_UNLOCK_SETTLE_MS + 2000 })
-    execFileSync(TMUX, ['send-keys', '-t', session, 'Escape'], { timeout: 5000 })
+    execFileSync(TMUX, ['send-keys', '-t', exactTmuxTarget(session), 'Escape'], { timeout: 5000 })
     execFileSync('/bin/sleep', [String(KEYSTROKE_SETTLE_MS / 1000)], { timeout: KEYSTROKE_SETTLE_MS + 2000 })
-    execFileSync(TMUX, ['send-keys', '-t', session, 'Escape'], { timeout: 5000 })
+    execFileSync(TMUX, ['send-keys', '-t', exactTmuxTarget(session), 'Escape'], { timeout: 5000 })
     logger.warn({ session }, 'channel-plugin-unlock: sent /mcp+Up+Enter+Enter+Esc+Esc unlock sequence')
   } catch (err) {
     logger.error({ err, session }, 'channel-plugin-unlock: failed to deliver unlock keystrokes')
@@ -259,11 +265,33 @@ function runUnlockProbe(state: UnlockProbeState): void {
     return
   }
 
+  // PANEWRITERS805: the unlock sequence is direct keystrokes (/mcp, Up, Enter)
+  // into a pane that also receives locked deliveries. Fail-closed on a busy
+  // send lane, reusing the existing not-idle retry ladder: a delivery finishes
+  // within seconds, well inside the ladder's budget.
+  const releaseLane = tryAcquireSessionSendLane(state.session, null)
+  if (!releaseLane) {
+    if (state.retriesLeft > 0) {
+      logger.info(
+        { session: state.session, retriesLeft: state.retriesLeft },
+        'channel-plugin-unlock: pane send lane busy (delivery in flight), retrying',
+      )
+      setTimeout(() => runUnlockProbe({ ...state, retriesLeft: state.retriesLeft - 1 }), UNLOCK_PROBE_RETRY_DELAY_MS)
+      return
+    }
+    logger.warn({ session: state.session }, 'channel-plugin-unlock: pane send lane never freed up, abandoning')
+    return
+  }
+
   logger.warn(
     { session: state.session, claudePid, provider: state.provider },
     'channel-plugin-unlock: bun child absent after cold-start window, firing /mcp unlock sequence',
   )
-  sendUnlockKeystrokes(state.session, state.provider)
+  try {
+    sendUnlockKeystrokes(state.session, state.provider)
+  } finally {
+    releaseLane()
+  }
 }
 
 /**

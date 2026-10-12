@@ -241,7 +241,7 @@ echo ""
 echo -e "${BOLD}${GREEN}$(_t migrate.done)${NC}"
 echo ""
 echo -e "  ${DIM}$(_t migrate.view_memories)${NC}"
-echo -e "  ${DIM}http://localhost:3420 -> Memory${NC}"
+echo -e "  ${DIM}http://localhost:${WEB_PORT:-3420} -> Memory${NC}"
 echo ""
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 

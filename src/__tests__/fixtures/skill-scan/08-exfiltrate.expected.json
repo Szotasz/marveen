@@ -1,0 +1,1 @@
+{"scanner": {"name": "mio-scan", "version": "1.0.0", "rulepack": "2026-08-24"}, "findings": [{"rule": "exfiltrate-instruction", "category": "injection", "match": "send the credentials", "line": 1, "span": [5, 25]}, {"rule": "exfiltrate-instruction", "category": "injection", "match": "upload the api-keys", "line": 1, "span": [45, 64]}]}

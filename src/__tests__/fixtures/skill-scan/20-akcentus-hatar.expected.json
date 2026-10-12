@@ -1,0 +1,1 @@
+{"scanner": {"name": "mio-scan", "version": "1.0.0", "rulepack": "2026-08-24"}, "findings": [{"rule": "ignore-previous-instructions-hu", "category": "injection", "match": "Hagyd figyelmen kívül az eddigi utasítás", "line": 1, "span": [0, 40]}, {"rule": "secret-assignment", "category": "pii", "match": "password: akcentusos-jelszó-123", "line": 3, "span": [127, 158]}]}

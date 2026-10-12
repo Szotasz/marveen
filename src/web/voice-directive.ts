@@ -3,19 +3,46 @@ import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { STORE_DIR, WEB_PORT } from '../config.js'
 import { AGENTS_BASE_DIR } from './agent-config.js'
+import { channelStateDir, type ChannelProviderType } from '../channel-provider.js'
+
+const KNOWN_PROVIDERS = new Set<string>(['telegram', 'slack', 'discord', 'googlechat', 'teams'])
 
 // Resolve the directory where an agent's channel plugin stores its bot .env.
 // Search order:
 //   1. <AGENTS_BASE_DIR>/<agentId>/.claude/channels/<provider>   (sub-agent own channel)
 //   2. ~/.claude/channels/<provider>-<agentId>                   (alternative naming)
-//   3. ~/.claude/channels/<provider>                             (global fallback / main agent)
+//   3. channelStateDir(provider)                                 (main agent -- env override,
+//      then legacy shared path while unmigrated, then install-scoped; #915)
 export function resolveAgentChannelStateDir(agentId: string, provider: string): string {
+  const mainDir = KNOWN_PROVIDERS.has(provider)
+    ? channelStateDir(provider as ChannelProviderType)
+    : join(homedir(), '.claude', 'channels', provider)
   const candidates = [
     join(AGENTS_BASE_DIR, agentId, '.claude', 'channels', provider),
     join(homedir(), '.claude', 'channels', `${provider}-${agentId}`),
-    join(homedir(), '.claude', 'channels', provider),
+    mainDir,
   ]
   return candidates.find((d) => existsSync(join(d, '.env'))) ?? candidates[candidates.length - 1]
+}
+
+// Which inbound attachment kinds are actually audio.
+//
+// The channel tag carries attachment_kind, and the Telegram plugin uses it for
+// EVERY attachment type -- "document", "photo" and so on, not just audio. The
+// directive endpoint used to decide "was this a voice message?" from the mere
+// PRESENCE of an attachment_file_id, so sending a PDF to an agent in `auto`
+// voice mode made it answer a document with a synthesized voice message (and
+// pushed the PDF through speech-to-text). Observed 2026-07-29 with an 826 kB
+// PDF attachment.
+const AUDIO_KINDS = new Set(['voice', 'audio', 'video_note'])
+
+// True only when the inbound attachment is known to be audio. An absent or
+// unrecognised kind counts as NOT audio: the conservative direction is to stay
+// in text, because a wrong "speak" is a wrong-format answer to the owner, while
+// a wrong "stay quiet" only loses the audio nicety.
+export function inboundIsAudio(kind: string | null | undefined, fileId: string | null | undefined): boolean {
+  if (!fileId) return false
+  return AUDIO_KINDS.has(String(kind ?? '').trim().toLowerCase())
 }
 
 // Build a ready-to-run TTS directive block injected after the STT transcript.

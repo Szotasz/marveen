@@ -1,11 +1,13 @@
+import { tmuxStderr } from './tmux-stderr.js'
 import { execFileSync } from 'node:child_process'
 import { existsSync, mkdirSync, rmSync, readFileSync, writeFileSync, readdirSync, lstatSync, symlinkSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir, userInfo } from 'node:os'
 import { createHash } from 'node:crypto'
-import { resolveFromPath } from '../platform.js'
+import { resolveFromPath, tryResolveFromPath } from '../platform.js'
 import { logger } from '../logger.js'
-import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
+import { launchableInstallDefaultSync } from './default-model-guard.js'
+import { MAIN_AGENT_ID, PROJECT_ROOT, DEFAULT_AGENT_MODEL } from '../config.js'
 import {
   capturePane,
   isSessionReadyForPrompt,
@@ -13,10 +15,15 @@ import {
   sessionExistsOnHost,
   hasFleetOauthToken,
   FLEET_OAUTH_TOKEN_PATH,
+  buildCustomProviderLaunchEnv,
+  stampCustomApiKeyApproval,
 } from './agent-process.js'
+import { withSessionSendLock } from './session-send-lock.js'
 import { readClaudeCodeOauthJson } from './claude-credentials.js'
 import { detectPaneState } from '../pane-state.js'
 import { notifyChannel } from '../notify.js'
+import { ROOT_SANDBOX_ENV } from './root-sandbox-env.js'
+import { exactTmuxTarget } from '../tmux-target.js'
 
 // =============================================================================
 // Interactive-tmux agent worker (jun.15 subscription migration).
@@ -42,7 +49,19 @@ import { notifyChannel } from '../notify.js'
 
 const TMUX = resolveFromPath('tmux')
 
-const WORKER_MODEL = process.env.MARVEEN_WORKER_MODEL || 'claude-opus-4-8[1m]'
+// MARVEEN_WORKER_MODEL is an escape hatch (systemd `Environment=`); when set it
+// wins over everything else. Without it the worker inherits the main agent's
+// custom provider (model + endpoint env) if one is configured, so a
+// Claude-subscription-less fleet (e.g. custom LiteLLM endpoint) gets working
+// background workers without any extra config. Falls back to DEFAULT_AGENT_MODEL
+// when neither override nor custom provider is in play.
+const WORKER_MODEL_OVERRIDE = process.env.MARVEEN_WORKER_MODEL ?? null
+
+// APRO920 (c)(2): pure so the launch-model log line's source label is unit
+// testable without spinning up a real tmux session.
+export function workerModelSource(env: NodeJS.ProcessEnv = process.env): string {
+  return env.MARVEEN_WORKER_MODEL ? 'env:MARVEEN_WORKER_MODEL' : 'default'
+}
 
 // How long to wait for a freshly launched worker to reach an idle prompt.
 const WORKER_BOOT_TIMEOUT_MS = 90_000
@@ -53,7 +72,17 @@ const WORKER_DISABLED_PLUGINS = ['telegram', 'slack-channel']
 // ~/.claude entries NOT symlinked into the isolated config dir:
 //  - settings.json: we own it (enabledPlugins:{} override).
 //  - CLAUDE.md: skipped so global user memory never tints one-shot gens (refinement #1).
-const WORKER_CONFIG_SKIP = new Set(['settings.json', 'CLAUDE.md', '.DS_Store', '.lock'])
+// .claude.json is in this set for the same reason settings.json is: the worker
+// OWNS it (ensureWorkerCwd writes it below, stamping projects[ctx.home] trusted).
+// Symlinked, that write lands in the SHARED ~/.claude/.claude.json instead, and
+// then every claude process on the host -- both workers, the channels session,
+// each agent -- rewrites that one file wholesale from its own stale in-memory
+// copy. Measured 2026-08-29: the slow worker's home read trusted, the FAST
+// worker's home read hasTrustDialogAccepted:false, so every restart parked the
+// fast session on the "Do you trust the files in this folder?" modal until a
+// human answered it in the terminal. Nothing was wrong with the stamping code:
+// its write was simply being overwritten through the alias.
+const WORKER_CONFIG_SKIP = new Set(['settings.json', 'CLAUDE.md', '.claude.json', '.DS_Store', '.lock'])
 
 // --- Per-session context ------------------------------------------------------
 //
@@ -83,20 +112,48 @@ export function makeWorkerCtx(session: string, homeDir: string): WorkerCtx {
   }
 }
 
+/**
+ * Default worker home for an agent id. Derived from MAIN_AGENT_ID exactly like
+ * the session name (WORKERHOME1): a sandbox or renamed install booted with its
+ * own MAIN_AGENT_ID must never resolve to -- and write into -- the default
+ * install's live worker config dir (the 2026-07-28 same-host sandbox boot
+ * seeded credentials into the live ~/.marveen-worker/.claude-config this way).
+ * The default id 'marveen' keeps the historical .marveen-worker path, so
+ * existing installs see no migration and their Keychain path-hash
+ * (configDirKeychainService) is unchanged; any other id derives its own dir,
+ * which hashes to its own Keychain service automatically.
+ */
+export function workerHomeFor(agentId: string, variant: 'slow' | 'fast'): string {
+  return join(homedir(), `.${agentId}-worker${variant === 'fast' ? '-fast' : ''}`)
+}
+
+/**
+ * WEB_ONLY=true marks a staging/preview instance that must not touch the live
+ * fleet. The boot-time pre-start in web.ts is already gated, but the worker
+ * also LAZY-starts from runViaWorker (scaffold generation, heartbeat, digest),
+ * which is how a WEB_ONLY sandbox still created live tmux sessions and wrote
+ * into worker config dirs (WORKERHOME1). Read at call time, pure, so the gate
+ * is unit-testable and follows env changes in tests.
+ */
+export function workerStartAllowed(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env['WEB_ONLY'] !== 'true'
+}
+
 // Slow session: long-running tasks (analysis, reports, search). The original
-// worker -- all existing callers default to this. Session name keys off
-// MAIN_AGENT_ID (per #611) so notify.sh's "${MAIN_AGENT_ID}-worker" branch
-// matches on renamed installs; default installs stay "marveen-worker". The
-// WORKER_DIR stays fixed (.marveen-worker) -- the config-dir hash depends on it.
+// worker -- all existing callers default to this. Session name AND worker home
+// key off MAIN_AGENT_ID (per #611 + WORKERHOME1) so notify.sh's
+// "${MAIN_AGENT_ID}-worker" branch matches on renamed installs and a non-default
+// id gets its own isolated home; default installs stay "marveen-worker" /
+// ~/.marveen-worker (byte-identical to the historical fixed path).
 const ctxSlow = makeWorkerCtx(
   process.env.MARVEEN_WORKER_SESSION || `${MAIN_AGENT_ID}-worker`,
-  process.env.MARVEEN_WORKER_DIR || join(homedir(), '.marveen-worker'),
+  process.env.MARVEEN_WORKER_DIR || workerHomeFor(MAIN_AGENT_ID, 'slow'),
 )
 // Fast session: short, conversational tasks (< 300 chars, no analysis keywords).
 // Separate home + config dir eliminates any shared state with the slow session.
 const ctxFast = makeWorkerCtx(
   process.env.MARVEEN_WORKER_SESSION_FAST || `${MAIN_AGENT_ID}-worker-fast`,
-  process.env.MARVEEN_WORKER_DIR_FAST || join(homedir(), '.marveen-worker-fast'),
+  process.env.MARVEEN_WORKER_DIR_FAST || workerHomeFor(MAIN_AGENT_ID, 'fast'),
 )
 
 // --- Message priority routing -------------------------------------------------
@@ -372,6 +429,11 @@ export function ensureWorkerCwd(ctx: WorkerCtx = ctxSlow): void {
   // flags on BOTH ctx.home and its realpath (macOS /var, symlinked $HOME
   // edge-cases) since Claude Code keys trust by the resolved workspace path.
   try {
+    // Heal an install that already has the alias: the skip-set above only stops
+    // NEW symlinks, so without this an existing worker dir keeps writing into
+    // the shared file forever. Same guard settings.json has had all along.
+    const workerClaudeJson = join(ctx.configDir, '.claude.json')
+    if (lstatSyncSafe(workerClaudeJson)?.isSymbolicLink()) rmSync(workerClaudeJson, { force: true })
     const homeClaudeJson = join(homedir(), '.claude.json')
     const parsed: { projects?: Record<string, unknown>; hasCompletedOnboarding?: boolean; [k: string]: unknown } =
       existsSync(homeClaudeJson) ? JSON.parse(readFileSync(homeClaudeJson, 'utf-8')) : {}
@@ -426,6 +488,12 @@ function sleepMs(ms: number): Promise<void> {
  * the Write-to-scratch capture works. Idempotent.
  */
 function startWorkerSessionFor(ctx: WorkerCtx): void {
+  // Gate BEFORE any side effect: in WEB_ONLY staging neither the tmux session
+  // nor the ensureWorkerCwd config-dir writes may happen (WORKERHOME1).
+  if (!workerStartAllowed()) {
+    logger.warn({ session: ctx.session }, 'agent-worker: WEB_ONLY mode -- refusing to start a worker session or write its config dir')
+    return
+  }
   if (workerSessionExists(ctx)) return
   ensureWorkerCwd(ctx)
   // Detached session; launch claude via a login shell so PATH + the config-dir
@@ -433,14 +501,81 @@ function startWorkerSessionFor(ctx: WorkerCtx): void {
   // Fleet setup-token (when present) via $(cat) at launch so the secret never
   // lands in argv/`ps` -- same pattern as startAgentProcess. Keeps the worker
   // on the stable token instead of the shared rotating credentials file.
+  // Launch claude by RESOLVED absolute path, not by bare name: `bash -lc` gets
+  // the login-shell PATH, which on stock Debian/Ubuntu roots does NOT include
+  // ~/.local/bin (the native installer's default target). The channels session
+  // launcher already compensates; the bare `claude` here made the worker die
+  // within seconds of every boot on such Linux installs (command not found,
+  // measured on vps47 during the WORKERHOME1 cold-start probe: session created,
+  // gone before the first 5s poll). tryResolveFromPath probes the known install
+  // dirs; fall back to the bare name so an exotic layout keeps the old behavior.
+  //
+  // CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false (2026-06-29): without it the
+  // worker's empty input box shows a DIM history-based ghost suggestion (e.g.
+  // `❯ Try "refactor channel-monitor.ts"`). isSessionReadyForPrompt scrapes the
+  // pane colourless via capture-pane, so PARKED_INPUT_RX matches the ghost and
+  // detectPaneState returns 'typing' -- the worker reads "not ready" FOREVER and
+  // every agent-create fails with "worker session not ready" (observed: agent-create
+  // failed 4x after a cold start). Mirror the agent-process.ts launcher,
+  // which already disables the suggestion for the same scrape-misread reason.
+  // Resolve model and optional custom-provider env prefix.
+  // Priority: MARVEEN_WORKER_MODEL override > main-agent custom provider > default.
+  let workerModel = WORKER_MODEL_OVERRIDE ?? DEFAULT_AGENT_MODEL
+  let customEnvPrefix = ''
+  let fromCustomProvider = false
+  if (!WORKER_MODEL_OVERRIDE) {
+    try {
+      const cpEnv = buildCustomProviderLaunchEnv(MAIN_AGENT_ID)
+      if (cpEnv) {
+        workerModel = cpEnv.model
+        fromCustomProvider = true
+        customEnvPrefix = cpEnv.envPrefix
+        if (cpEnv.customApiKeyForApproval) {
+          stampCustomApiKeyApproval(join(ctx.configDir, '.claude.json'), cpEnv.customApiKeyForApproval)
+        }
+      }
+    } catch (err) {
+      logger.warn({ err }, 'agent-worker: could not resolve main-agent custom provider; falling back to default model')
+    }
+    // DEFAULTCLIGUARD927: the default path only -- a CLI that cannot run the
+    // shipped default gets the previous tier instead of a deaf worker.
+    if (!fromCustomProvider) workerModel = launchableInstallDefaultSync('worker')
+  }
+
+  const claudeLaunchBin = tryResolveFromPath('claude') ?? 'claude'
   const launch =
     (hasFleetOauthToken() ? `export CLAUDE_CODE_OAUTH_TOKEN="$(cat ${shArg(FLEET_OAUTH_TOKEN_PATH)})"; ` : '') +
     `export CLAUDE_CONFIG_DIR=${shArg(ctx.configDir)}; ` +
+    `export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false; ` +
+    // CHANSPARE925: no Agent view (Left would background the worker into the daemon).
+    `export CLAUDE_CODE_DISABLE_AGENT_VIEW=1; ` +
+    // ROOTRESPAWN1001: IS_SANDBOX=1 on a root host (see root-sandbox-env.ts).
+    `${ROOT_SANDBOX_ENV}; ` +
+    customEnvPrefix +
     `cd ${shArg(ctx.home)} && ` +
-    `claude --dangerously-skip-permissions --model ${shArg(WORKER_MODEL)}`
+    `${shArg(claudeLaunchBin)} --dangerously-skip-permissions --model ${shArg(workerModel)}`
   execFileSync(TMUX, ['new-session', '-d', '-s', ctx.session, '-c', ctx.home, 'bash', '-lc', launch], { timeout: 8000 })
   logger.info({ session: ctx.session, cwd: ctx.home }, 'agent-worker: launched interactive worker session')
+  // APRO920 (c)(2): same rationale as startAgentProcess's model-resolved log --
+  // which config-chain element supplied the --model value.
+  logger.info(
+    { session: ctx.session, model: workerModel, source: workerModelSource() },
+    'agent-worker: launch model resolved',
+  )
   logWorkerClaudeVersion(ctx)
+}
+
+/**
+ * The worker sessions the boot pre-start creates, and a liveness probe for
+ * them. Exported for the liveness monitor (WORKERBOOT1): nothing watched these
+ * sessions, so a death went unrecorded and the cause stayed unknowable.
+ */
+export function workerContexts(): WorkerCtx[] {
+  return [ctxSlow, ctxFast]
+}
+
+export function isWorkerSessionAlive(session: string): boolean {
+  return sessionExistsOnHost(null, session)
 }
 
 /**
@@ -502,7 +637,7 @@ function selfHealWorkerOnce(ctx: WorkerCtx): boolean {
   if (!shouldSelfHeal(cls)) return false
   logger.warn({ cls, session: ctx.session }, 'agent-worker: pane parked on unexpected chrome -- bounded Escape self-heal')
   for (let i = 0; i < WORKER_SELF_HEAL_MAX_ESCAPES; i++) {
-    try { execFileSync(TMUX, ['send-keys', '-t', ctx.session, 'Escape'], { timeout: 5000 }) } catch { break }
+    try { execFileSync(TMUX, ['send-keys', '-t', exactTmuxTarget(ctx.session), 'Escape'], { timeout: 5000 }) } catch { break }
     try { execFileSync('/bin/sleep', ['0.5'], { timeout: 2000 }) } catch { /* best effort */ }
     const now = classifyWorkerPane(capturePane(ctx.session))
     if (now === 'idle' || now === 'busy') {
@@ -521,11 +656,18 @@ function alertWorkerStuck(ctx: WorkerCtx, paneTail: string): void {
   if (Date.now() - ctx.lastStuckAlert < WORKER_STUCK_ALERT_COOLDOWN_MS) return
   ctx.lastStuckAlert = Date.now()
   void notifyChannel(
-    `⚠️ Marveen worker [${ctx.session}]: a hatter-worker session nem all keszen (beragadt dialogus vagy ismeretlen kepernyo). Onjavitas lefutott (Escape + restart), de a keszenlet nem allt helyre. Erintett: agens-generalas, capability-osszefoglalo, heartbeat, digest. Nezz ra: tmux attach -t ${ctx.session}`,
+    `⚠️ Marveen worker [${ctx.session}]: a háttér-worker session nem áll készen (beragadt dialógus vagy ismeretlen képernyő). Önjavítás lefutott (Escape + restart), de a készenlét nem állt helyre. Érintett: ágens-generálás, capability-összefoglaló, heartbeat, digest. Nézz rá: tmux attach -t ${ctx.session}`,
   ).catch(() => { /* notifyChannel logs internally */ })
 }
 
 async function ensureWorkerReady(ctx: WorkerCtx): Promise<boolean> {
+  // Fail fast in WEB_ONLY: without this the 90s readiness poll would spin on a
+  // session that the gated start never created, then alertWorkerStuck would
+  // notifyChannel the LIVE channel from a staging instance.
+  if (!workerStartAllowed()) {
+    logger.warn({ session: ctx.session }, 'agent-worker: WEB_ONLY mode -- worker disabled, failing the request fast')
+    return false
+  }
   startWorkerSessionFor(ctx)
   const start = Date.now()
   const deadline = start + WORKER_BOOT_TIMEOUT_MS
@@ -544,16 +686,25 @@ async function ensureWorkerReady(ctx: WorkerCtx): Promise<boolean> {
 }
 
 function restartWorkerSession(ctx: WorkerCtx): void {
-  try { execFileSync(TMUX, ['kill-session', '-t', ctx.session], { timeout: 5000 }) } catch { /* not running */ }
+  // Defense-in-depth (WORKERHOME1): every WEB_ONLY-reachable path is already
+  // gated upstream, but a restart here would kill-session a LIVE worker from a
+  // staging instance -- never do that.
+  if (!workerStartAllowed()) {
+    logger.warn({ session: ctx.session }, 'agent-worker: WEB_ONLY mode -- refusing to restart (kill) a worker session')
+    return
+  }
+  // TMUXWINDOWATTR920: stderr piped; "not running" is the expected case here,
+  // so it is logged at debug with the site instead of copied onto stderr.
+  try { execFileSync(TMUX, ['kill-session', '-t', exactTmuxTarget(ctx.session)], { timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] }) } catch (err) { logger.debug({ site: 'agent-worker.restart', session: ctx.session, tmux: tmuxStderr(err) }, 'tmux kill-session: not running') }
   try { startWorkerSessionFor(ctx) } catch (err) { logger.warn({ err, session: ctx.session }, 'agent-worker: restart failed') }
 }
 
 // Reset context between requests so unrelated one-shots never share/grow context.
 function clearWorkerContext(ctx: WorkerCtx): void {
   try {
-    execFileSync(TMUX, ['send-keys', '-t', ctx.session, '-l', '/clear'], { timeout: 5000 })
+    execFileSync(TMUX, ['send-keys', '-t', exactTmuxTarget(ctx.session), '-l', '/clear'], { timeout: 5000 })
     execFileSync('/bin/sleep', ['0.2'], { timeout: 2000 })
-    execFileSync(TMUX, ['send-keys', '-t', ctx.session, 'Enter'], { timeout: 5000 })
+    execFileSync(TMUX, ['send-keys', '-t', exactTmuxTarget(ctx.session), 'Enter'], { timeout: 5000 })
     execFileSync('/bin/sleep', ['0.5'], { timeout: 2000 })
   } catch (err) {
     logger.warn({ err }, 'agent-worker: /clear failed (continuing)')
@@ -588,8 +739,18 @@ async function runWorkerAttempt(ctx: WorkerCtx, message: string, timeoutMs: numb
   const donePath = join(ctx.scratchDir, `${reqId}.done`)
   for (const p of [outPath, donePath]) { try { rmSync(p, { force: true }) } catch { /* none */ } }
 
-  clearWorkerContext(ctx)
-  await sendPromptToSession(ctx.session, buildWorkerPrompt(message, outPath, donePath))
+  // PANEWRITERS805: /clear + prompt-send is ONE atomic delivery. Unlocked, the
+  // /clear could eat another writer's in-flight text, and a writer slipping in
+  // between the clear and our send would land its text into the freshly
+  // cleared context ahead of ours. Deliver mode (not recover): a dispatch must
+  // deliver; on a wedged holder we fail open past the budget, logged.
+  const sendRes = await withSessionSendLock(ctx.session, null, 'deliver', async () => {
+    clearWorkerContext(ctx)
+    await sendPromptToSession(ctx.session, buildWorkerPrompt(message, outPath, donePath), null, { lockMode: 'held' })
+  })
+  if (sendRes.failedOpen) {
+    logger.warn({ session: ctx.session, reqId }, 'agent-worker: dispatch ran without the send lane (fail-open past wait budget)')
+  }
 
   const start = Date.now()
   try {

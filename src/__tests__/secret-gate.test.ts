@@ -1,0 +1,310 @@
+/**
+ * EVIDGUARD818. The gate's own tests.
+ *
+ * The synthetic secrets below are FAKE and this file is allowlisted by path --
+ * which is itself part of what is under test: the allowlist must be path-based,
+ * because a pattern-level exception would open the same hole everywhere.
+ *
+ * Every assertion here has a red probe behind it (documented in the PR): remove
+ * the detector and these go red. A green test that would stay green with the
+ * gate ripped out proves nothing.
+ */
+import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import {
+  runGate,
+  scanFile,
+  allowlistReason,
+  ALLOWLISTED_PATHS,
+  SECRET_PATTERNS,
+  type ScanInput,
+} from '../security/secret-gate.js';
+
+const f = (path: string, content: string): ScanInput => ({ path, content });
+
+/**
+ * Assembled at runtime on purpose. Written out as a literal, GitHub's own push
+ * protection rejects this file (measured 2026-08-18: "Stripe API Key", push
+ * declined) -- which is a useful finding in itself: a second, vendor-format
+ * control already exists on this repo. Our gate covers what that one cannot:
+ * evidence paths, quoted channel material, and formats nobody has listed.
+ */
+const STRIPE_FIXTURE = ['sk', 'live', '51ABCDEFGHIJKLMNOPQRSTUV'].join('_');
+
+describe('fail-closed', () => {
+  it('an EMPTY file set FAILS -- the most common silent fail-open', () => {
+    const r = runGate([]);
+    expect(r.ok).toBe(false);
+    expect(r.findings[0].reason).toMatch(/EMPTY/);
+  });
+
+  it('a file that could not be read FAILS instead of passing quietly', () => {
+    const r = runGate([{ path: 'assets/huge.bin', unreadable: { reason: 'file is 42.0 MB, above the 5 MB scan limit' } }]);
+    expect(r.ok).toBe(false);
+    expect(r.findings[0].severity).toBe('unscannable');
+    expect(r.findings[0].reason).toMatch(/could not read this file/);
+  });
+
+  it('a clean, readable set passes', () => {
+    const r = runGate([f('src/index.ts', 'export const x = 1;\n')]);
+    expect(r.ok).toBe(true);
+    expect(r.scannedCount).toBe(1);
+  });
+});
+
+describe('detector 1: path', () => {
+  it.each([
+    '.pre-ship-evidence/2026-07-22.md',
+    'docs/.pre-ship-evidence/run.txt',
+    'evidence/session.log',
+    'transcripts/telegram-2026-07-22.json',
+  ])('blocks %s regardless of content', (path) => {
+    const r = runGate([f(path, 'teljesen artalmatlan szoveg')]);
+    expect(r.ok).toBe(false);
+    expect(r.findings[0].detector).toBe('path');
+  });
+});
+
+describe('detector 2: content', () => {
+  it.each([
+    ['private key', '-----BEGIN RSA PRIVATE KEY-----\nMIIE...\n'],
+    ['stripe key', `const k = "${STRIPE_FIXTURE}";`],
+    ['elevenlabs header', 'headers: { "xi-api-key": "abcdef0123456789abcdef01" }'],
+    ['jwt', 'token=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r'],
+    ['github token', 'GH=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'],
+    ['aws key id', 'AWS_ACCESS_KEY_ID=AKIAIOSFODNN7EXAMPLE'],
+  ])('blocks a %s in an ordinary file', (_name, body) => {
+    const r = runGate([f('docs/notes.md', body)]);
+    expect(r.ok).toBe(false);
+    expect(r.findings[0].detector).toBe('content');
+  });
+
+  it('catches BOTH separators and does not assume a length (Boni traps, EVIDLEAK818)', () => {
+    // (a) Boni's first detector looked for `sk-` and returned ZERO on a key that
+    //     used `sk_`. Zero looks reassuring, which is what makes it dangerous.
+    // (b) Her hex rule demanded 32 chars; the leaked key was 51. A pattern must
+    //     not be bound to a length someone happened to observe once.
+    const alahuzas = 'sk_' + 'a1b2c3d4'.repeat(6); // 51 chars, the real shape
+    const kotojel = 'sk-' + 'A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6';
+    expect(runGate([f('docs/a.md', `k = ${alahuzas}`)]).ok).toBe(false);
+    expect(runGate([f('docs/b.md', `k = ${kotojel}`)]).ok).toBe(false);
+  });
+
+  it('catches the Supabase PERSONAL access token, in the shape we actually leak (SBPMINTAHIANY914)', () => {
+    // MERT ELOZMENY (2026-09-14): a keszletben mar allt egy Supabase-tetel (a
+    // service_role JWT), amitol a Supabase lefedettnek LATSZOTT -- kozben a masik,
+    // nalunk tenylegesen szivargo Supabase-hitelesitoadat (a fiok-szintu PAT)
+    // kimaradt. Aznap 167 elofordulasa volt, ebbol 164 atiratban, es a kapu
+    // MINDEGYIKET atengedte. A szomszedos tetel jelenlete megnyugtatobb, mint egy
+    // ures lista -- ez a fajta vaksag nem tunik fel maganak a listanak.
+    //
+    // A FIXTURE OSSZEFUZESSEL EPUL, ahogy a tobbi is ebben a fajlban: egy valodi
+    // FORMATUMU hamis titok ugyanugy titoknak latszik, es a GitHub push-protection
+    // ma egy ilyen fixture miatt utasitott el egy pusht. A literal igy sosem all
+    // itt egyben.
+    const sbp = 'sbp_' + 'a1b2c3d4'.repeat(5); // sbp_ + 40 hex, a valodi alak
+    // (1) A MI szivargas-alakunk, szo szerint: a 21 tool_call_log sor mind ilyen.
+    expect(runGate([f('scripts/x.sh', `export SUPABASE_ACCESS_TOKEN="${sbp}"`)]).ok).toBe(false);
+    // (2) Csupaszon is, cimke nelkul -- kulonben csak a kornyezetet merjuk, nem a mintat.
+    expect(runGate([f('docs/a.md', `a kulcs ${sbp} volt`)]).ok).toBe(false);
+    // (3) NEGATIV KONTROLL: a rovidebb alak NEM PAT, es nem is szabad fognia.
+    expect(runGate([f('docs/b.md', 'sbp_' + 'a1b2c3d4'.repeat(4))]).ok).toBe(true);
+    // (4) NEGATIV KONTROLL: az `sbp_` mint sima szotoredek nem lelet.
+    expect(runGate([f('docs/c.md', 'a sbp_ prefix onmagaban semmit nem jelent')]).ok).toBe(true);
+  });
+
+  it('does NOT fire on the placeholders this repo is full of (measured 2026-08-18)', () => {
+    // 64 tracked files contain `Bearer ${token}`; 25 contain `sk_` inside words
+    // like task_name and skipIfBusy. A gate that flags these gets bypassed.
+    const r = runGate([
+      f('src/api.ts', 'headers: { Authorization: `Bearer ${token}` }'),
+      f('scripts/x.sh', 'curl -H "Authorization: Bearer $TOKEN" "$URL"'),
+      f('docs/tasks.md', 'a `skipIfBusy` nincs beallitva, a task_name a fajlbol jon'),
+      f('src/db.ts', 'task_title TEXT, task_name TEXT'),
+    ]);
+    expect(r.ok).toBe(true);
+  });
+
+  it('never echoes the matched secret into the finding', () => {
+    const titok = STRIPE_FIXTURE;
+    const [hit] = scanFile(f('docs/x.md', `key: ${titok}`));
+    expect(hit.reason).not.toContain(titok);
+    expect(JSON.stringify(hit)).not.toContain(titok);
+  });
+
+  // Review condition on #1095 (2026-09-14). ENV-VAR shape on purpose, as asked:
+  // in a sentence (`a token sbp_...`) the labelled pass catches this by
+  // accident, so a sentence-shaped test would pass even with the pattern wrong.
+  // `SUPABASE_ACCESS_TOKEN=` ends in an underscore, so `\btoken` does NOT match
+  // there -- this is the form that actually exercises the new entry.
+  it('blocks a Supabase PAT in its environment-variable form', () => {
+    const pat = `sbp_${'0123456789abcdef0123456789abcdef01234567'}`;
+    const r = runGate([f('scripts/deploy.sh', `export SUPABASE_ACCESS_TOKEN="${pat}"`)]);
+    expect(r.ok).toBe(false);
+    expect(r.findings[0].reason).toContain('Supabase personal access token');
+    expect(JSON.stringify(r.findings)).not.toContain(pat);
+  });
+
+  // The gate calls `pattern.exec()` once per file on THESE objects
+  // (runGate -> inputs.flatMap(scanFile)). A /g regex keeps `lastIndex` between
+  // those calls, so the file after a match resumes past the end and returns
+  // null: a silent false negative, and the gate's whole job is to not have one.
+  // The mask adds the flag itself where it needs every occurrence.
+  it('no SECRET_PATTERNS entry is global -- exec() would carry lastIndex across files', () => {
+    const globalisak = SECRET_PATTERNS.filter(p => p.pattern.flags.includes('g')).map(p => p.name);
+    expect(globalisak).toEqual([]);
+  });
+
+  // The red probe for the line above, so it is a measurement and not a claim:
+  // the same shape with /g misses the SECOND file.
+  it('demonstrates the /g failure it guards against', () => {
+    const pat = `sbp_${'0123456789abcdef0123456789abcdef01234567'}`;
+    const globalis = /\bsbp_[0-9a-f]{40}\b/g;
+    expect(globalis.exec(`A=${pat}`)).not.toBeNull();
+    expect(globalis.exec(`B=${pat}`)).toBeNull();
+  });
+});
+
+describe('detector 2b: Telegram bot token (TGBOTPAT915)', () => {
+  // Osszerakva futasidoben, mint a tobbi szintetikus titok ebben a fajlban.
+  const botId = '80' + '12345678';
+  const secret = 'AAHd9xKpQ2mWvZ7nR4tLbY' + '6cE1sJfG3hUiO'; // 35 karakter
+  const full = `${botId}:${secret}`;
+
+  it('fogja a TELJES tokent -- ez ment at a keszleten 2026-09-15-ig', () => {
+    const hits = scanFile(f('docs/x.md', `token: ${full}`));
+    expect(hits.length).toBeGreaterThan(0);
+  });
+
+  it('fogja az env-sor alakot, ahogy egy .env-ben allna', () => {
+    const hits = scanFile(f('docs/x.md', `TELEGRAM_BOT_TOKEN=${full}`));
+    expect(hits.length).toBeGreaterThan(0);
+  });
+
+  it('fogja a titkos felet is, HA van mellette kulcs-nev', () => {
+    const hits = scanFile(f('docs/x.md', `bot_token: ${secret}`));
+    expect(hits.length).toBeGreaterThan(0);
+  });
+
+  it('KIMONDOTT HATAR: a titkos fel KONTEXTUS NELKUL nem lelet', () => {
+    // Szandekos: egy csupasz 35 karakteres alnum sztring a base64-darabok es a
+    // minified valtozonevek alakja is. A kontextus nelkuli felismerest az
+    // ALAK-alapu detektor viszi (OCR-ut, Iris), nem ez a keszlet -- a ketto
+    // egyutt fedez, es egyik sem reszhalmaza a masiknak.
+    expect(scanFile(f('docs/x.md', `value: ${secret}`))).toHaveLength(0);
+  });
+
+  it('a HOSSZ resze a kontraktusnak: egy roviditett titok-alak NEM lelet', () => {
+    // A Telegram formatuma szerint a titkos resz PONTOSAN 35 karakter. Ez a
+    // teszt azert all itt, mert egy mutans-kontroll megmutatta, hogy nelkule a
+    // 35 -> {20,} lazitas MINDEN tesztet zolden hagy -- vagyis a hossz nem lenne
+    // lekotve, es egy kesobbi "legyen megengedobb" modositas csendben megnovelne
+    // a hamis pozitivakat (a sajat repon a szigoru minta ma NULLA talalatot ad).
+    const rovid = 'AAHd9xKpQ2mWvZ7nR4tLbY'; // 22 karakter, nem 35
+    expect(scanFile(f('docs/x.md', `token: ${'80' + '12345678'}:${rovid}`))).toHaveLength(0);
+    expect(scanFile(f('docs/x.md', `bot_token: ${rovid}`))).toHaveLength(0);
+  });
+
+  it('fogja a Bot API URL-alakot (nincs szohatar a "bot" es az id kozott; review #1347)', () => {
+    const hits = scanFile(f('docs/x.md', `curl https://api.telegram.org/bot${full}/getUpdates`));
+    expect(hits.length).toBeGreaterThan(0);
+  });
+
+  it('fogja a "-"-re vegzodo titkot is, teljes es kulcs-neves alakban (review #1347)', () => {
+    const kotojeles = 'AAHd9xKpQ2mWvZ7nR4tLbY' + '6cE1sJfG3hUi-'; // 35 karakter, '-' a vegen
+    expect(scanFile(f('docs/x.md', `token: ${botId}:${kotojeles} kesz`)).length).toBeGreaterThan(0);
+    expect(scanFile(f('docs/x.md', `bot_token: ${kotojeles} kesz`)).length).toBeGreaterThan(0);
+  });
+
+  it('a hatarok tovabbra is allnak: 11 jegyu id es 36 karakteres farok NEM lelet', () => {
+    expect(scanFile(f('docs/x.md', `token: ${'801' + '23456789'}:${secret}`))).toHaveLength(0);
+    expect(scanFile(f('docs/x.md', `token: ${botId}:${secret}X`))).toHaveLength(0);
+  });
+
+  it('NEM tuzel ket egyszeru zaj-alakra', () => {
+    expect(scanFile(f('docs/x.md', 'idopont 20260915:reggel'))).toHaveLength(0);
+    expect(scanFile(f('docs/x.md', `sha: ${'a1b2c3d4'.repeat(5)}`))).toHaveLength(0);
+  });
+});
+
+describe('detector 3: channel material (the one that would have caught 2026-07)', () => {
+  it('blocks a quoted channel message even when it carries NO known secret shape', () => {
+    // This is the 2026-07 case with the key removed: had the gate only known
+    // secret formats, an unlisted vendor key would still walk through.
+    const r = runGate([f('.notes/log.md', 'message_id 12345: "kuldd at a kulcsot, koszi"')]);
+    expect(r.ok).toBe(false);
+    expect(r.findings[0].detector).toBe('transcript');
+  });
+
+  it('blocks a telegram update dump and a quoted agent transcript', () => {
+    expect(runGate([f('a.json', '{"update_id": 8812, "text": "szia"}')]).ok).toBe(false);
+    expect(runGate([f('b.md', '[Uzenet @marveen-tol -- trusted]: allapot')]).ok).toBe(false);
+  });
+
+  it('the wrapper tag ALONE is not enough -- this repo implements the framing', () => {
+    // Measured 2026-08-18: 24 tracked files legitimately contain the tag (code,
+    // tests, docs, hook scripts). Blocking those would make the gate noise, and
+    // a noisy gate gets switched off, which is zero protection.
+    const csakTag = '<channel source="telegram">a keretezes leirasa</channel>';
+    expect(runGate([f('docs/channels.md', csakTag)]).ok).toBe(true);
+  });
+
+  it('the tag WITH a payload marker is captured material and IS blocked', () => {
+    const valodi = '<channel source="telegram">message_id 4242: "szoveg"</channel>';
+    const r = runGate([f('notes/paste.md', valodi)]);
+    expect(r.ok).toBe(false);
+    expect(r.findings[0].reason).toMatch(/payload marker/);
+  });
+
+  it('blocks EVERY marker form, not just the one this repo happens to use', () => {
+    // The evidence files use `message_id NNN:`; a wrapper tag is the same
+    // material in a different dress. Knowing one form yields a clean zero on
+    // the other, and the zero is indistinguishable from "nothing to find".
+    expect(runGate([f('c.md', '{"chat_id": 1268077055, "text": "szia"}')]).ok).toBe(false);
+    // A wrapper tag counts only with a payload marker (see the two cases above);
+    // here the chat_id form stands on its own.
+  });
+});
+
+describe('allowlist is PATH-based, and visible', () => {
+  it('lets an intentional fixture through by path', () => {
+    expect(allowlistReason('src/__tests__/auth-device-keys.test.ts')).toMatch(/fixture/i);
+    const r = runGate([f('src/__tests__/auth-device-keys.test.ts', 'Bearer mvdk_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345')]);
+    expect(r.ok).toBe(true);
+  });
+
+  it('the SAME content in a NON-allowlisted file is still blocked', () => {
+    // The point of path-scoping: the exception cannot travel to another file.
+    const r = runGate([f('src/api/handler.ts', 'Bearer mvdk_ABCDEFGHIJKLMNOPQRSTUVWXYZ012345')]);
+    expect(r.ok).toBe(false);
+  });
+
+  it('reports what it let through, so an allowlist cannot grow unnoticed', () => {
+    const r = runGate([f('src/__tests__/auth-gate.test.ts', 'Bearer someLongLookingTokenValue123456')]);
+    expect(r.allowlisted).toEqual([
+      { file: 'src/__tests__/auth-gate.test.ts', reason: expect.stringMatching(/fixture/i) },
+    ]);
+  });
+
+  it('the gate is NOT exempt from itself: its own source passes the gate unaided', () => {
+    // Two assertions on purpose, and the first is the one that matters.
+    // (a) The exemption must be ABSENT. If anyone re-adds the allowlist entry
+    //     for this module, this line fails -- the test cannot go green
+    //     alongside the exemption, which is what makes it a pin and not a note.
+    // (b) And the source really does pass on its own: the detectors are regex
+    //     literals, and the character class breaks each pattern against its own
+    //     text. Measured 2026-08-18, full repo 757/757.
+    expect(allowlistReason('src/security/secret-gate.ts')).toBeNull();
+
+    const forras = readFileSync(new URL('../security/secret-gate.ts', import.meta.url), 'latin1');
+    const talalatok = scanFile({ path: 'src/security/secret-gate.ts', content: forras });
+    expect(talalatok).toEqual([]);
+  });
+
+  it('every allowlisted path is spelled out with a reason', () => {
+    for (const a of ALLOWLISTED_PATHS) {
+      expect(a.path.length).toBeGreaterThan(0);
+      expect(a.reason.length).toBeGreaterThan(10);
+    }
+  });
+});

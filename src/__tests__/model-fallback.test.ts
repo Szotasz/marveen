@@ -20,6 +20,17 @@ describe('detectsUsageLimit', () => {
     expect(detectsUsageLimit('Approaching usage limit')).toBe(true)
     expect(detectsUsageLimit('Your limit will reset at 18:00')).toBe(true)
     expect(detectsUsageLimit('/upgrade to increase your usage limit')).toBe(true)
+    // "session limit" variant observed 2026-08-08 -- was missing from the original regex
+    expect(detectsUsageLimit('You hit your session limit · resets 5:50pm')).toBe(true)
+    expect(detectsUsageLimit('You hit the session limit')).toBe(true)
+  })
+
+  it('matches the weekly and session wordings too', () => {
+    // The owner asks about "the weekly or the 5-hour limit", so both have to be
+    // caught; these three were measured silent before 2026-08-18.
+    expect(detectsUsageLimit("You've reached your weekly limit for Opus.")).toBe(true)
+    expect(detectsUsageLimit('Approaching Opus weekly limit ∙ 5% left')).toBe(true)
+    expect(detectsUsageLimit('Session limit reached ∙ resets at 2am')).toBe(true)
   })
 
   it('does NOT match a transient API 429 / generic rate limit', () => {
@@ -65,9 +76,19 @@ describe('decideModelAction', () => {
       .toEqual({ kind: 'downgrade', model: HAIKU })
   })
 
-  it('does nothing when limited at the bottom of the chain', () => {
-    expect(decideModelAction({ ...base, limitDetected: true, currentModel: HAIKU, downgradedAt: 500_000 }))
+  it('does nothing when limited at the bottom of the chain inside the revert window', () => {
+    expect(decideModelAction({ ...base, limitDetected: true, currentModel: HAIKU, downgradedAt: 1_000_000 - 59_999 }))
       .toEqual({ kind: 'none' })
+    // never downgraded by us (an agent whose intended model is the bottom one)
+    expect(decideModelAction({ ...base, limitDetected: true, currentModel: HAIKU, downgradedAt: null }))
+      .toEqual({ kind: 'none' })
+  })
+
+  // FALLBACKSTUCK924: a stale limit banner re-rendered by --continue kept a
+  // downgraded agent pinned at the bottom forever.
+  it('reverts past the window even if a (possibly stale) banner is still on screen at the bottom', () => {
+    expect(decideModelAction({ ...base, limitDetected: true, currentModel: HAIKU, downgradedAt: 500_000 }))
+      .toEqual({ kind: 'revert', model: PRIMARY })
   })
 
   it('reverts to the primary after the window once limit-free', () => {

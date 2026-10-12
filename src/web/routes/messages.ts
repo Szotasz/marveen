@@ -1,19 +1,145 @@
 import {
-  createAgentMessage, getPendingMessages, listAgentMessages,
+  createAgentMessage, getPendingMessages, listAgentMessages, getRecipientQueueState,
   getAgentConversation, getAgentConversationThreads,
   getKanbanSeqByIdPrefix,
   markMessageDone, markMessageFailed, getAgentMessage,
+  closeOtelSpan,
+  getPendingBacklogByAgent,
+  countNewerMessagesForRows,
+  getHeartbeatKanbanLive,
+  COMPLETION_REPORT_PREFIX,
   type AgentMessage,
 } from '../../db.js'
+import { detectHomoglyphs, formatHomoglyphWarning } from '../../homoglyph.js'
 import { logger } from '../../logger.js'
-import { COORDINATOR_AGENT_ID } from '../../channel-coordinator/ingest.js'
+import { COORDINATOR_AGENT_ID, VOICE_CHANNEL_AGENT_ID } from '../../channel-coordinator/ingest.js'
+import { SYSTEM_DIRECTIVE_SENDER } from '../system-directive.js'
 import { sanitizeAgentIdent } from '../../prompt-safety.js'
 import { isKnownAgent } from '../agent-config.js'
-import { readBody, json } from '../http-helpers.js'
+import { MAIN_AGENT_ID, HEARTBEAT_AGENT_ID, OWNER_NAME, SYSTEM_SENDER_IDS, parseSystemSenderIds } from '../../config.js'
+import { isAgentRunning } from '../agent-process.js'
+import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
-import { parseQualifiedId, formatQualifiedId } from '../federation/address.js'
+import { isHeartbeatTemplateLeak, stampHeartbeatHeader } from '../heartbeat-header-stamp.js'
+import { verifyHeartbeatKanban, HEARTBEAT_KANBAN_WINDOW_SEC } from '../heartbeat-kanban-verify.js'
+import { buildFreshnessInfo, type MessageFreshness } from '../agent-message-wrap.js'
+import { parseQualifiedId, formatQualifiedId, isQualifiedId } from '../federation/address.js'
 import { getFederationConfig } from '../federation/config.js'
 import type { RouteContext } from './types.js'
+
+// Should closing a message produce a reverse "[Eredmény]" notification to its sender?
+//
+// Exported and tested directly, rather than inlined in the PUT handler: the previous
+// tests re-implemented this condition inside the test file, so they passed no matter
+// what the route actually did.
+//
+// Three senders get no notification:
+//   1. self-messages -- the sender already knows;
+//   2. senders that are not addressable agents. `system` posts the [session-stuck] and
+//      [handoff-failure] notices but owns no tmux session, so a reply to it can never be
+//      delivered: it fails, the retry window expires, and the resulting [handoff-failure]
+//      wakes the main agent -- which, once closed, produced the next one. Measured on the
+//      Acrobot install 2026-08-17: 44 of the last 200 rows were `-> system`, all failed.
+//      `isKnownAgent` is the right test here because it accepts MAIN_AGENT_ID as well as
+//      the sub-agent directories; a plain registry lookup would have suppressed every
+//      notification back to the MAIN agent, which is the case this feature exists for.
+//   3. contents that are themselves completion reports -- breaks ping-pong chains.
+export function shouldNotifyDelegator(fromAgent: string, toAgent: string, content: string): boolean {
+  if (fromAgent === toAgent) return false
+  if (!isKnownAgent(fromAgent)) return false
+  if (content.startsWith(COMPLETION_REPORT_PREFIX)) return false
+  return true
+}
+
+/** The result a voice-channel answer is closed with: it is read by the relay, never delivered. */
+export const VOICE_MAILBOX_RESULT = 'voice-channel mailbox: no session delivery; the voice relay reads it'
+
+// Frozen at module load, like the config constant it derives from.
+const SYSTEM_SENDERS = parseSystemSenderIds(SYSTEM_SENDER_IDS, sanitizeAgentIdent)
+
+/**
+ * How much of a `result` travels inside the completion notification, and what the recipient
+ * is told about the rest.
+ *
+ * WHY THIS IS NOT COSMETIC (measured twice on 2026-08-12): the notification carried the first
+ * 500 characters and then said "the full text is in msg N's result field". Both times the cut
+ * landed mid-argument -- once on a review condition, once on the numbers that decided whether a
+ * filter was safe -- and both times the recipient could only ask for a resend, because the
+ * pointer named a FIELD, not a way to read it. A pointer the consumer cannot follow is the same
+ * as no pointer: the sender ends up retyping, which is exactly what the notification was for.
+ *
+ * TWO CHANGES, AND THE SECOND MATTERS MORE. The cap is 2000, because our results routinely
+ * carry a measurement plus its interpretation and 500 truncates that mid-sentence. And the
+ * marker now names the EXACT command, so following it is one step, not a research task.
+ *
+ * ES A MUTATO MEGMONDJA, MIRE MUTAT (2026-08-21). A megnevezett id NEM az olvasott uzenete,
+ * hanem azé, amelyiknek a `result` mezőjében a teljes szöveg áll. Ezt korábban nem mondtuk ki,
+ * és egy ágens a saját üzenet-id-jével kérdezte le: üres választ kapott, abból adatvesztésre
+ * következtetett, és majdnem hibajelentést írt róla. Egy mutató, ami helyes, de nem mondja meg,
+ * MIRE mutat, ugyanannyi kört visz el, mint egy hiányzó mutató -- csak nem lehet rá fogni.
+ *
+ * The cap stays FINITE on purpose: the notification is injected into a live session, and an
+ * unbounded paste there costs context that the recipient did not choose to spend.
+ */
+export const RESULT_NOTIFY_MAX = 2000
+
+export function resultSummary(id: number, result: string | undefined | null): string {
+  if (!result) return '(nincs eredmény)'
+  if (result.length <= RESULT_NOTIFY_MAX) return result
+  const maradt = result.length - RESULT_NOTIFY_MAX
+  return (
+    result.slice(0, RESULT_NOTIFY_MAX) +
+    `\n... [levágva, még ${maradt} karakter. A teljes szöveg a(z) ${id}. üzenet result mezőjében áll` +
+    ` -- ez NEM ennek az üzenetnek az id-je. Kérd le: bash scripts/agent-msg-get.sh ${id}]`
+  )
+}
+
+// Every JSON read of a message body carries the same freshness / supersession
+// state the router stamps on the delivered text.
+//
+// WHY THE READ PATH NEEDS IT AT ALL. Reading the pending mailbox is a SUPPORTED
+// move, not a workaround: the pull drain-inbox path exists precisely because it
+// hands the main agent its messages in seconds where the router's push can take
+// many minutes. So the answer to an early read acting on stale orders is
+// emphatically NOT to forbid the read -- that would break a working mechanism
+// over a missing annotation. It is to make the two paths say the same thing.
+// Until now they did not: a row read from this endpoint arrived bare, and if its
+// sender corrected or revoked it in the interval before delivery, the reader had
+// nothing to go on. The annotation sat on the path the early read bypasses.
+//
+// Added as a SEPARATE `freshness` object rather than folded into `content`: the
+// row is evidence (the system-directive rule compares `content` byte for byte
+// against the quoted directive), so the body must stay untouched.
+export type AgentMessageWithFreshness = AgentMessage & { freshness: MessageFreshness }
+
+export function attachFreshness(messages: AgentMessage[]): AgentMessageWithFreshness[] {
+  const nowMs = Date.now()
+  // One query per distinct (from, to) partition, not one per row.
+  const newer = countNewerMessagesForRows(messages)
+  return messages.map((m) => ({
+    ...m,
+    freshness: buildFreshnessInfo(nowMs - m.created_at * 1000, newer.get(m.id) ?? 0),
+  }))
+}
+
+// HBFABRIC1003 follow-up: a refused heartbeat digest is reported to the main
+// agent as an informational system note (no action is requested of it), at
+// most once per HEARTBEAT_REFUSAL_NOTE_GAP_MS. Exported for the test.
+export const HEARTBEAT_REFUSAL_NOTE_GAP_MS = 10 * 60 * 1000
+let lastHeartbeatRefusalNoteMs = 0
+export function resetHeartbeatRefusalNoteForTest(): void { lastHeartbeatRefusalNoteMs = 0 }
+function noteHeartbeatRefusal(problems: string[], nowMs: number = Date.now()): void {
+  if (nowMs - lastHeartbeatRefusalNoteMs < HEARTBEAT_REFUSAL_NOTE_GAP_MS) return
+  lastHeartbeatRefusalNoteMs = nowMs
+  try {
+    createAgentMessage('system', MAIN_AGENT_ID,
+      '[HB-KAPU] A heartbeat digestjét a szerver elutasította (422, HBFABRIC1003): a Kanban-sorai nem egyeztek az élő táblával, '
+      + 'ezért ebben a körben NEM érkezik digest. Eltérések: ' + problems.join('; ')
+      + '. Tájékoztatás, teendőt nem kér; ha a digest kell, a GET /api/kanban/heartbeat-summary adja az élő számokat.')
+  } catch (err) {
+    logger.warn({ err }, 'HBFABRIC1003: could not queue the heartbeat refusal note')
+  }
+}
 
 export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method, url } = ctx
@@ -24,6 +150,38 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       { from: string; to: string; content: string; origin_note?: string }
     if (!from?.trim() || !to?.trim() || !content?.trim()) {
       json(res, { error: 'from, to, and content are required' }, 400)
+      return true
+    }
+    // HBTEMPLATELEAK1002: a heartbeat report that still carries its template's
+    // placeholder header is the instruction text, not a report; queued, it reads
+    // as an order in the recipient's box ("Tedd most", a curl recipe). Refuse it
+    // before anything is written, so the sender sees the error and the real
+    // report is the only one that lands.
+    if (isHeartbeatTemplateLeak(content)) {
+      logger.warn({ from: from.trim(), to: to.trim() }, 'Rejected /api/messages POST: heartbeat template placeholder header')
+      json(res, { error: 'heartbeat_template_placeholder: the header still reads "YYYY-MM-DD"; send the report with the real timestamp' }, 422)
+      return true
+    }
+    // HBFABRIC1003: a digest's Kanban lines must match the live board at send
+    // time (counts within the drift the board actually had, every listed card
+    // real and in the state its line claims). On 2026-10-03 17:00 the agent sent
+    // a card id that never existed and counts it had typed before reading its
+    // metrics block. Refused before anything is written, so the sender sees the
+    // difference and the made-up report never reaches the main agent's box.
+    const kanbanVerdict = verifyHeartbeatKanban(content, () => getHeartbeatKanbanLive(HEARTBEAT_KANBAN_WINDOW_SEC))
+    if (!kanbanVerdict.ok) {
+      logger.warn({ from: from.trim(), to: to.trim(), problems: kanbanVerdict.problems }, 'Rejected /api/messages POST: heartbeat Kanban lines do not match the live board')
+      // The heartbeat agent does not read the POST's status (its task ends at
+      // "send, stop"), so a refusal would otherwise be an hour with NO digest
+      // that only the dashboard log knows about (Geri's #1684 verify). The
+      // main agent is told instead -- server-side, not by the sender's
+      // discipline -- at most once per window, so a retrying sender cannot
+      // flood its box.
+      if (sanitizeAgentIdent(from) === HEARTBEAT_AGENT_ID) noteHeartbeatRefusal(kanbanVerdict.problems)
+      json(res, {
+        error: 'heartbeat_kanban_mismatch: the Kanban lines do not match the live board. Re-read the metrics block (GET /api/kanban/heartbeat-summary) and copy it, do not retype it.',
+        problems: kanbanVerdict.problems,
+      }, 422)
       return true
     }
     // Security: the channel-coordinator id grants channel-inbound delivery
@@ -46,6 +204,53 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'from is reserved for the in-process channel coordinator' }, 403)
       return true
     }
+    // System directives (SYSRESERVED918): the same shape, one level up. Every
+    // fleet agent authenticates an operational directive
+    // ([SYSTEM-DIREKTIVA msg_id:<N>]: stop, prepare to restart, drop work) by
+    // reading the referenced row back and requiring from_agent === 'system' --
+    // the header text alone is what a prompt injection would also write. That
+    // recipe is only sound while 'system' cannot be POSTed here.
+    //
+    // Before this guard it could not be -- but only by ACCIDENT: 'system' has
+    // no agents/<id>/ directory, so the known-agent check below rejected it.
+    // Two ordinary, reversible acts would have removed that: adding 'system' to
+    // SYSTEM_SENDER_IDS (an .env line whose entire PURPOSE is to exempt ids
+    // from that check), or `mkdir agents/system/`. Either one hands the shared
+    // dashboard token -- which every sub-agent reads -- the power to forge a
+    // stop order, and nothing would have announced it.
+    //
+    // So the id is RESERVED, ahead of both the SYSTEM_SENDERS exemption and the
+    // known-agent check, and on every auth lane including an enrolled device
+    // key. No legitimate path is lost: every 'system' message is written
+    // in-process via createAgentMessage (system-directive, message-router,
+    // schedule-runner, context-guard-runner, agents), never over HTTP.
+    // The other SYSTEM_SENDER_IDS entries are untouched -- they name external
+    // notifiers, and none of them is the fleet's authentication base.
+    if (sanitizeAgentIdent(from) === SYSTEM_DIRECTIVE_SENDER) {
+      logger.warn({ from: from.trim(), to: to.trim(), authKind: ctx.auth?.kind ?? 'none' }, 'Rejected /api/messages POST forging the system directive sender')
+      json(res, { error: `from '${SYSTEM_DIRECTIVE_SENDER}' is reserved for in-process system directives and can never be POSTed` }, 403)
+      return true
+    }
+    // Voice channel (HANGCSATORNA918): the VOICE_CHANNEL_AGENT_ID also earns
+    // channel-inbound
+    // framing, but unlike the coordinator it is a legitimate POST writer -- the
+    // relay runs out-of-process. So the guard is the AUTH LANE, not a blanket
+    // 403: accept it only from an enrolled DEVICE KEY.
+    //
+    // WHY THE LANE AND NOT THE NAME: channel-inbound tells the receiving agent
+    // "this is the owner, a reply is expected". The dashboard token is readable
+    // by every sub-agent, so a name-only rule would let any of them forge an
+    // owner message. A device key is a per-device secret the sub-agents do not
+    // have, so requiring it is what makes the id trustworthy at DELIVERY time,
+    // where the auth context is long gone and only from_agent survives.
+    if (sanitizeAgentIdent(from) === VOICE_CHANNEL_AGENT_ID && ctx.auth?.kind !== 'device') {
+      logger.warn(
+        { from: from.trim(), to: to.trim(), authKind: ctx.auth?.kind ?? 'none' },
+        'Rejected /api/messages POST as voice channel without a device key',
+      )
+      json(res, { error: `from '${VOICE_CHANNEL_AGENT_ID}' requires an enrolled device key, not the shared dashboard token` }, 403)
+      return true
+    }
     // Federation spoof guard: a slash-qualified from ("teodor/teodor") is the
     // provenance mark of a REMOTE sender and may only ever be written by the
     // token-authenticated /api/federation/inbox. Accepting it here would let
@@ -64,7 +269,28 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // filesystem (agents/<id>/ directory, or MAIN_AGENT_ID). This is not
     // impersonation-proof between fleet agents (they share the same token) but
     // it closes the "unknown sender" injection path without per-agent secrets.
-    if (!isKnownAgent(sanitizeAgentIdent(from))) {
+    //
+    // The human OWNER is a legitimate sender too: the dashboard "Messages" page
+    // composes with from=OWNER_NAME (resolveOwnerName -> the owner assignee), so
+    // without this exemption the operator's own dashboard messages 403 with
+    // "unknown agent". The owner is not a fleet agent (no agents/<id>/ dir), so
+    // isKnownAgent alone rejects it. Match on the router's normalization to stay
+    // symmetric with the other guards above.
+    //
+    // Neighbouring SYSTEMS are legitimate senders too, on the same reasoning as
+    // the owner: they are token-authenticated and only notify an agent, but they
+    // have no agents/<id>/ directory. Opt-in via SYSTEM_SENDER_IDS in .env
+    // (empty by default). Without this, such a system silently loses its push
+    // channel the moment this guard ships -- observed here: an external case
+    // manager pushed 4182 messages, then every call 403'd for nine days while
+    // its fail-soft caller logged nothing.
+    const isOwnerSender = sanitizeAgentIdent(from) === sanitizeAgentIdent(OWNER_NAME)
+    // The voice channel is the OWNER speaking, not a fleet agent: it has no
+    // agents/<id>/ directory, so isKnownAgent alone would 403 it. It is already
+    // device-key gated above, which is a STRONGER check than this one.
+    const isVoiceChannelSender = sanitizeAgentIdent(from) === VOICE_CHANNEL_AGENT_ID
+    const isSystemSender = SYSTEM_SENDERS.has(sanitizeAgentIdent(from))
+    if (!isOwnerSender && !isSystemSender && !isVoiceChannelSender && !isKnownAgent(sanitizeAgentIdent(from))) {
       logger.warn({ from: from.trim(), to: to.trim() }, 'Rejected /api/messages POST from unregistered agent')
       json(res, { error: `unknown agent '${from.trim()}' -- from must be a registered fleet agent id` }, 403)
       return true
@@ -110,18 +336,110 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'Invalid recipient: use "<system>/<agent>" (slash) for a federated address, not the "federation:x:y" source form' }, 400)
       return true
     }
+    // Unknown LOCAL recipient (UNKNOWNTO924): reject at once.
+    // Measured: a literal 'PLACEHOLDER' recipient (x3) and an '<agent>_placeholder' one
+    // were accepted with 200 and only turned 'failed' after the ~65 min retry
+    // window, so the sender believed they had been delivered. In the last 30
+    // days these were the ONLY non-agent recipients. A registered agent that is
+    // merely not running is a different case and keeps the retry path below.
+    // VOICEREPLY1005: the voice channel id is a PULL MAILBOX, not an agent. The
+    // voice relay sends the owner's dictation in as VOICE_CHANNEL_AGENT_ID, and
+    // an answer goes back to the same id; the relay reads it from the sender's
+    // conversation (GET /api/messages?agent=<sender>). No session owns it, so
+    // it must be accepted here even though it is not a registered agent -- the
+    // UNKNOWNTO924 gate below rejected every voice answer (measured 2026-10-05,
+    // 400 "unknown recipient") -- and closed at once below, so the router never
+    // tries to deliver it and raises no [handoff-failure].
+    // EXACT match on the stored id (review #1697): the row is closed at once, so
+    // a near-miss (the voice id plus a stray character, sanitised back to the voice id) would be stored under a
+    // name the relay never reads, and lost without a sound. It gets the 400.
+    const isVoiceMailbox = storedTo === VOICE_CHANNEL_AGENT_ID
+    if (!storedTo.includes('/') && !isVoiceMailbox && !isKnownAgent(sanitizeAgentIdent(storedTo))) {
+      logger.warn({ from: from.trim(), to: storedTo }, 'Rejected /api/messages POST to an unregistered recipient')
+      json(res, { error: `unknown recipient '${storedTo}' -- to must be a registered fleet agent id (or "<system>/<agent>" for federation)` }, 400)
+      return true
+    }
     // Code-side enforcement of the kanban-ref convention: rewrite any
     // `#<hex8>` token that maps to a real kanban_cards row into its
     // human-facing `#<seq>` form before persistence, so the dashboard and
     // every downstream consumer sees the canonical reference even when a
     // sub-agent forgets the CLAUDE.md rule (#75 Cuzcoo dispatch).
-    const normalizedContent = normalizeKanbanRefs(content.trim(), getKanbanSeqByIdPrefix)
+    // HBORACSUSZAS908: the digest header clock is machine-stamped at
+    // persistence -- an agent-typed hour drifts forward as its session fills
+    // (measured 0,0,0,0,0,+1h,+3h on 2026-09-08) and the digest is the surface
+    // the whole fleet reads time from. Same code-side-enforcement pattern as
+    // normalizeKanbanRefs below.
+    const normalizedContent = normalizeKanbanRefs(stampHeartbeatHeader(content.trim()), getKanbanSeqByIdPrefix)
     // Card 06f062e4: optional attributability tag, self-declared like `from`
     // itself -- capped short so it stays a label, not a second content field.
     const trimmedOriginNote = origin_note?.trim().slice(0, 120) || null
     const msg = createAgentMessage(from.trim(), storedTo, normalizedContent, trimmedOriginNote)
-    logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent, originNote: msg.origin_note }, 'Agent message created')
-    json(res, msg)
+    if (isVoiceMailbox) {
+      markMessageDone(msg.id, VOICE_MAILBOX_RESULT)
+      logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent }, 'Voice-channel answer stored in the mailbox (no session delivery)')
+      json(res, { ...(getAgentMessage(msg.id) ?? msg), mailbox: true })
+      return true
+    }
+    // Backpressure, returned WITH the id rather than behind a second call:
+    // `{"id":N,"status":"pending"}` alone reads as "sent", and on a busy
+    // recipient it can be 80 minutes from true. See getRecipientQueueState for
+    // the measurement this came from. Federated recipients are skipped -- their
+    // queue lives on the peer, so any number we computed here would be a local
+    // artefact, and a wrong number is worse than none. Every success response
+    // below carries it, the warning ones included.
+    const queue = isQualifiedId(storedTo) ? undefined : getRecipientQueueState(storedTo)
+    const queueField = queue ? { queue } : {}
+    logger.info(
+      { id: msg.id, from: msg.from_agent, to: msg.to_agent, originNote: msg.origin_note, queueDepth: queue?.queueDepth },
+      'Agent message created',
+    )
+    // A LOCAL recipient that is not running never receives this: the router
+    // retries for a while and then abandons it, and the failure notice goes to
+    // the MAIN agent, not to the sender. The caller therefore sees a plain 200
+    // and believes it delegated. Federated addresses already get an actionable
+    // error at creation time (see above) -- give the local path the same
+    // courtesy, as a non-breaking warning field rather than a status change, so
+    // existing callers keep working.
+    // The MAIN agent is exempt (MSGWARN908): its session is
+    // `${MAIN_AGENT_ID}-channels`, so isAgentRunning() -- which probes
+    // `agent-<name>` -- always says stopped, and the router never abandons a
+    // main-agent message anyway (pull model: the main agent drains its own
+    // inbox each turn). The warning below was therefore always false for it,
+    // and on 2026-09-08 the false "not running" state reached the owner as a
+    // system-down report. The worst reaction it invites -- starting a second
+    // main instance -- is exactly what the pull model must never see.
+    if (!storedTo.includes('/')
+        && sanitizeAgentIdent(storedTo) !== sanitizeAgentIdent(MAIN_AGENT_ID)
+        && !isAgentRunning(sanitizeAgentIdent(storedTo))) {
+      logger.warn({ id: msg.id, to: msg.to_agent }, 'Agent message queued for a STOPPED agent -- likely to be abandoned')
+      json(res, {
+        ...msg,
+        ...queueField,
+        targetRunning: false,
+        warning: `'${msg.to_agent}' nem fut -- indítsd el (POST /api/agents/${msg.to_agent}/start), várd meg amíg feláll, és küldd újra. Egy leállított ügynöknek küldött üzenet nem várakozik, hanem elveszik.`,
+      })
+      return true
+    }
+    // Warn-only homoglyph check -- same contract as memories/daily-log/cases.
+    //
+    // Added 2026-09-14 after a measured case. The two channels that HAD a
+    // check (kanban triggers, memories/daily-log warning field) are the
+    // low-traffic ones; this one carried 442 messages in a single day on
+    // 2026-09-11. And the damage here is not legibility: our own P1/P2/P3
+    // probes are `content LIKE` searches, so one Cyrillic letter inside a
+    // client name or an id makes every later search return zero -- the exact
+    // false-zero that cost us two wrong conclusions the same day.
+    //
+    // Warn, never block: the message is already created above, and a delivery
+    // that fails on a cosmetic check would be worse than a lookalike letter.
+    const homoglyphs = detectHomoglyphs(normalizedContent)
+    if (homoglyphs.length > 0) {
+      const warning = formatHomoglyphWarning(homoglyphs)
+      logger.warn({ id: msg.id, from: msg.from_agent, to: msg.to_agent }, `agent message created with ${warning}`)
+      json(res, { ...msg, ...queueField, homoglyph_warning: warning })
+      return true
+    }
+    json(res, { ...msg, ...queueField })
     return true
   }
 
@@ -132,7 +450,47 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     return true
   }
 
+  // Backlog per agent: count + how long the oldest has been waiting. Cheap
+  // enough to curl on a schedule; the point is that a growing queue behind a
+  // busy agent becomes visible BEFORE someone mistakes it for lost messages.
+  if (path === '/api/messages/backlog' && method === 'GET') {
+    // Ugyanaz a kikotes, mint a /api/messages-en es a /api/kanban-on: ismeretlen param -> HANGOS
+    // 400, szigoru halmaz, alias nelkul. A vegpont eddig NEMAN eldobta az `agent=`-et, tehat a
+    // teljes flotta backlogjat adta vissza -- tobbet, mint amit kertek, ami a dragabb irany.
+    const KNOWN_PARAMS = new Set(['agent', 'assignee'])
+    const unknown = [...url.searchParams.keys()].filter((k) => !KNOWN_PARAMS.has(k))
+    if (unknown.length) {
+      json(res, {
+        error: 'unknown query parameter',
+        unknown,
+        known: [...KNOWN_PARAMS],
+        hint: 'a backlog szurese "agent" (vagy "assignee"); parameter nelkul a TELJES flotta jon',
+      }, 400)
+      return true
+    }
+    const agent = url.searchParams.get('agent') ?? url.searchParams.get('assignee') ?? undefined
+    json(res, getPendingBacklogByAgent(agent))
+    return true
+  }
+
   if (path === '/api/messages' && method === 'GET') {
+    // An UNKNOWN filter param used to fall through to the global list: a typo,
+    // or the plausible-but-wrong `agent_id`, silently returned the fleet's last
+    // N messages instead of one agent's mailbox. Not an error, not an empty
+    // list -- MORE than asked for, which is the expensive direction to be wrong
+    // in: a caller acting in good faith on that answer reads other agents'
+    // traffic as its own. Fail loudly instead.
+    const KNOWN_PARAMS = new Set(['agent', 'status', 'limit', 'before'])
+    const unknown = [...url.searchParams.keys()].filter((k) => !KNOWN_PARAMS.has(k))
+    if (unknown.length) {
+      json(res, {
+        error: 'unknown query parameter',
+        unknown,
+        known: [...KNOWN_PARAMS],
+        hint: 'the mailbox filter is "agent"; "agent_id" and "to" are not read',
+      }, 400)
+      return true
+    }
     const agent = url.searchParams.get('agent') || ''
     const status = url.searchParams.get('status') || ''
     const limit = Math.min(parseInt(url.searchParams.get('limit') || '50', 10), 200)
@@ -152,33 +510,71 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       messages = listAgentMessages(limit)
     }
 
-    json(res, messages)
+    jsonMaybeGzip(req, res, attachFreshness(messages))
     return true
   }
 
   const msgUpdateMatch = path.match(/^\/api\/messages\/(\d+)$/)
+  // EGY uzenet a TELJES tartalmaval -- ezt nevezi meg a levagott ertesites markere.
+  // A lista-vegpont csak agens szerint kerdezheto, tehat egy `msg N` hivatkozast eddig
+  // nem lehetett egy lepesben kovetni.
+  if (msgUpdateMatch && method === 'GET') {
+    const one = getAgentMessage(parseInt(msgUpdateMatch[1], 10))
+    if (!one) { json(res, { error: 'Message not found' }, 404); return true }
+    json(res, attachFreshness([one])[0])
+    return true
+  }
   if (msgUpdateMatch && method === 'PUT') {
     const id = parseInt(msgUpdateMatch[1], 10)
     const body = await readBody(req)
-    const { status: newStatus, result } = JSON.parse(body.toString()) as { status: string; result?: string }
+    const { status: newStatus, result, notify } = JSON.parse(body.toString()) as
+      { status: string; result?: string; notify?: boolean }
+
+    // `notify` lets the CLOSER decide whether the reverse [Eredmény] message is
+    // worth an agent turn at the other end. The two cases share this one code
+    // path and cannot be told apart from here:
+    //   - closing a DELEGATED task   -> the delegator is waiting, the ack IS the result;
+    //   - closing an INCOMING report -> the sender already knows it sent it, and the ack
+    //     (typically the 52-char "(nincs eredmény)" form) only lengthens the very queue
+    //     whose delay made the report late. Measured on a live install: several such acks
+    //     sat queued behind an agent whose delivery was already lagging, so closing the
+    //     reports made the queue that the reports arrive in longer still.
+    // Absent (or null) keeps today's behavior, so no existing caller changes.
+    // Rejected BEFORE the status write, not coerced: a truthy `"false"` string would send
+    // exactly the notification the caller asked to skip, and a half-applied close (status
+    // written, unwanted ack sent) is worse than an actionable error the caller can retry
+    // -- the same reason the GET list handler rejects unknown query params.
+    if (notify !== undefined && notify !== null && typeof notify !== 'boolean') {
+      json(res, {
+        error: 'notify must be a boolean',
+        hint: 'omit it for the default (notify the sender), or send JSON true/false -- not a string',
+      }, 400)
+      return true
+    }
 
     let ok = false
     if (newStatus === 'done') ok = markMessageDone(id, result)
     else if (newStatus === 'failed') ok = markMessageFailed(id, result)
 
     if (ok) {
-      // Notify the delegator: create a reverse message from executor → delegator so
-      // they learn the result without polling. Use a sentinel prefix to break
-      // ping-pong chains (the delegator might write back, which would trigger
-      // markMessageDone on this notification; we skip creating ANOTHER notification
-      // when the original content is already a completion report).
       const done = getAgentMessage(id)
-      if (done && done.from_agent !== done.to_agent && !done.content.startsWith('[Eredmény]')) {
-        const summary = result ? result.slice(0, 500) : '(nincs eredmény)'
+      // Close the OTel span now that the message has a terminal status.
+      if (done?.trace_id && done?.span_id) {
+        closeOtelSpan(done.trace_id, done.span_id, Date.now(), newStatus === 'done' ? 'ok' : 'error')
+      }
+      // Notify the delegator: create a reverse message from executor → delegator so
+      // they learn the result without polling. See shouldNotifyDelegator for which
+      // senders are skipped and why.
+      // `notify: false` suppresses it; `notify: true` is only the default spelled out --
+      // it does NOT override shouldNotifyDelegator, whose guards stop undeliverable and
+      // ping-pong acks, not merely expensive ones.
+      if (done && notify !== false && shouldNotifyDelegator(done.from_agent, done.to_agent, done.content)) {
+        // A vagas NE legyen nema, ES legyen KOVETHETO: lasd resultSummary().
+        const summary = resultSummary(id, result)
         createAgentMessage(
           done.to_agent,
           done.from_agent,
-          `[Eredmény] msg_id:${id} status:${newStatus}\n\n${summary}`,
+          `${COMPLETION_REPORT_PREFIX} msg_id:${id} status:${newStatus}\n\n${summary}`,
         )
       }
       json(res, { ok: true }); return true

@@ -1,8 +1,10 @@
 import { describe, it, expect, afterEach } from 'vitest'
 import { mkdtempSync, writeFileSync, mkdirSync, rmdirSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { tmpdir, homedir } from 'node:os'
 import { join } from 'node:path'
-import { shouldTriggerDeafnessRespawn, readLastIngestionTimestamp } from '../web/inbound-probe.js'
+import { shouldTriggerDeafnessRespawn, readLastIngestionTimestamp, readLastIngestionTimestampAcross, mainTranscriptDirs, mainConfigRoots, TRANSCRIPT_DIR } from '../web/inbound-probe.js'
+import { projectsDirFor } from '../web/active-model.js'
+import { PROJECT_ROOT } from '../config.js'
 
 // ---------------------------------------------------------------------------
 // AC coverage map (channel-watchdog-prompt.md D3 + wolf-swarm-trial.md #3)
@@ -199,5 +201,132 @@ describe('readLastIngestionTimestamp', () => {
     // The tail window starts at the last 256 KB — the earlyLine is NOT in it.
     // The function must return null (the line is beyond the tail window).
     expect(readLastIngestionTimestamp(dir)).toBe(null)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// CONFIG-DIR BLIND SPOT regression (2026-09-11)
+//
+// The main channels agent can run with an isolated CLAUDE_CONFIG_DIR
+// (MAIN_AGENT_ISOLATED_CONFIG=1 -> <PROJECT_ROOT>/.channels-config), which puts
+// its transcript under THAT root instead of the shared ~/.claude. Reading only
+// the shared root reported "no inbound ever" while the owner was actively
+// chatting: the keepalive file was never warmed from live traffic, aged past the
+// 18-minute staleness threshold, and the watchdog respawn-paned the running
+// conversation away (twice in 30 minutes, "124 perce nem frissult").
+//
+//   AC-CFG-1: mainTranscriptDirs() offers BOTH the shared and the isolated root
+//   AC-CFG-2: readLastIngestionTimestampAcross() takes the NEWEST across roots,
+//             so the isolated root wins when the shared one is stale
+//   AC-CFG-3: a non-existent candidate root is ignored, not fatal
+// ---------------------------------------------------------------------------
+describe('transcript roots across config dirs', () => {
+  const tmpDirs: string[] = []
+
+  afterEach(() => {
+    for (const d of tmpDirs) {
+      try { rmSync(d, { recursive: true, force: true }) } catch { /* ignore */ }
+    }
+    tmpDirs.length = 0
+  })
+
+  function makeTmpDir(): string {
+    const d = mkdtempSync(join(tmpdir(), 'inbound-probe-roots-'))
+    tmpDirs.push(d)
+    return d
+  }
+
+  function writeIngestion(dir: string, ts: string): void {
+    writeFileSync(
+      join(dir, 'session.jsonl'),
+      JSON.stringify({ timestamp: ts, content: '<channel source=telegram> hello' }),
+      'utf-8',
+    )
+  }
+
+  // AC-CFG-1
+  it('mainTranscriptDirs offers both the shared and the isolated config root', () => {
+    const dirs = mainTranscriptDirs()
+    expect(dirs.length).toBeGreaterThanOrEqual(2)
+    expect(dirs.some(d => d.includes(join('.claude', 'projects')))).toBe(true)
+    expect(dirs.some(d => d.includes(join('.channels-config', 'projects')))).toBe(true)
+    // no duplicates — the candidates are de-duplicated
+    expect(new Set(dirs).size).toBe(dirs.length)
+  })
+
+  // AC-CFG-2: this is the actual bug. The shared root holds an old transcript
+  // (from before isolation was turned on) and the isolated root holds the live
+  // one. Reading the shared root alone returns the STALE timestamp and the
+  // keepalive never gets warmed.
+  it('takes the newest ingestion across roots when the live one is isolated', () => {
+    const shared = makeTmpDir()
+    const isolated = makeTmpDir()
+    const stale = '2026-09-11T18:36:00.000Z'
+    const live = '2026-09-11T20:41:00.000Z'
+    writeIngestion(shared, stale)
+    writeIngestion(isolated, live)
+
+    expect(readLastIngestionTimestamp(shared)).toBe(new Date(stale).getTime())
+    expect(readLastIngestionTimestampAcross([shared, isolated])).toBe(new Date(live).getTime())
+  })
+
+  it('never moves backward: an older isolated root does not beat a live shared one', () => {
+    const shared = makeTmpDir()
+    const isolated = makeTmpDir()
+    const live = '2026-09-11T20:41:00.000Z'
+    writeIngestion(shared, live)
+    writeIngestion(isolated, '2026-09-11T18:36:00.000Z')
+    expect(readLastIngestionTimestampAcross([shared, isolated])).toBe(new Date(live).getTime())
+  })
+
+  // AC-CFG-3
+  it('ignores candidate roots that do not exist', () => {
+    const real = makeTmpDir()
+    const ts = '2026-09-11T20:41:00.000Z'
+    writeIngestion(real, ts)
+    const missing = '/tmp/nonexistent-inbound-probe-root-' + Date.now()
+    expect(readLastIngestionTimestampAcross([missing, real])).toBe(new Date(ts).getTime())
+  })
+
+  it('returns null when no candidate root has an ingestion', () => {
+    expect(readLastIngestionTimestampAcross([makeTmpDir(), makeTmpDir()])).toBe(null)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// PROJECT-DIR ENCODING regression (866da985, 2026-09-20)
+//
+// Claude Code encodes a project working-dir by replacing EVERY character
+// that is not alphanumeric with '-' (see projectsDirFor in active-model.ts,
+// already relied on by schedule-runner and the context-guard/restart-gate
+// watchdogs) -- not just '/'. TRANSCRIPT_DIR and mainTranscriptDirs() used to
+// hand-roll their own PROJECT_ROOT.replace(/\//g, '-'), which only strips
+// slashes. On any host whose PROJECT_ROOT contains another separator
+// character that Claude Code also encodes (e.g. a dot in the username, as in
+// /Users/a.kobza/marveen), the two encoders disagree: the hand-rolled one
+// computes a directory Claude Code never creates, so
+// readLastIngestionTimestampAcross() always returns null -- real inbound
+// traffic never refreshes the keepalive file, and the channel-monitor
+// watchdog respawns the session on a ~15 minute metronome forever (measured
+// live: 63 respawns in one day, see kanban 866da985).
+//
+//   AC-ENC-1: TRANSCRIPT_DIR must match projectsDirFor's encoding exactly
+//   AC-ENC-2: every mainTranscriptDirs() candidate must match projectsDirFor
+//             for its corresponding config root
+// ---------------------------------------------------------------------------
+describe('project-dir encoding matches Claude Code (866da985)', () => {
+  // AC-ENC-1
+  it('TRANSCRIPT_DIR encodes PROJECT_ROOT the same way projectsDirFor does', () => {
+    const expected = projectsDirFor(PROJECT_ROOT, join(process.env.HOME ?? homedir(), '.claude'))
+    expect(TRANSCRIPT_DIR).toBe(expected)
+  })
+
+  // AC-ENC-2
+  it('every mainTranscriptDirs() candidate matches projectsDirFor for its config root', () => {
+    const dirs = mainTranscriptDirs()
+    const roots = mainConfigRoots()
+    for (const root of roots) {
+      expect(dirs).toContain(projectsDirFor(PROJECT_ROOT, root))
+    }
   })
 })

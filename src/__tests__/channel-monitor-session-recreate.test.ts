@@ -65,6 +65,17 @@ describe("channel-monitor: self-healing vanished main session", () => {
     expect(fn).toContain("writeRespawnStamp()")
   })
 
+  it("respawnMarveenSessionFresh falls back to a full recreate when the pane is gone", () => {
+    // respawn-pane -k fails with 'can't find pane' if the session vanished
+    // entirely; the hard-restart escalation must then recreate the session via
+    // createMainChannelsSession() instead of dead-ending (root-caused 2026-08-06:
+    // respawn-pane looped on 'can't find pane' for hours while the session was
+    // absent, and the main channel stayed down).
+    const fn = sliceFn("respawnMarveenSessionFresh")
+    expect(fn).toContain("can't find pane")
+    expect(fn).toContain("createMainChannelsSession()")
+  })
+
   it("resumeMarveenSession writes the shared respawn stamp (2026-06-08 self-defer fix)", () => {
     // Without this stamp the stuck-tool-call-watcher cannot defer its own
     // self-respawn during the post-respawn grace, because lastMainRespawnAt()
@@ -109,5 +120,41 @@ describe("channel-monitor: self-healing vanished main session", () => {
     // handleMarveenDown fall-through in the same branch.
     expect(existsIdx).toBeLessThan(createIdx)
     expect(createIdx).toBeLessThan(downIdx)
+  })
+})
+
+describe("channel-monitor: createMainChannelsSession discriminated result (PR #779 review)", () => {
+  // A boolean return collapsed "already kicked, still booting" (benign) and
+  // "channels.sh missing/unlaunchable" (broken install) into the same false,
+  // which the onboarding launch endpoint then reported as a silent success.
+  // The result type must keep the two failure classes apart.
+
+  it("returns 'grace' | 'script-missing' | 'started' | 'spawn-failed' instead of booleans", () => {
+    const fn = sliceFn("createMainChannelsSession")
+    expect(fn).toContain("MainSessionCreateResult")
+    expect(fn).toContain("return 'grace'")
+    expect(fn).toContain("return 'script-missing'")
+    expect(fn).toContain("return 'started'")
+    expect(fn).toContain("return 'spawn-failed'")
+    expect(fn).not.toContain("return true")
+    expect(fn).not.toContain("return false")
+  })
+
+  it("monitor loop only clears the down state on an actual 'started'", () => {
+    expect(src).toContain("createMainChannelsSession() === 'started'")
+  })
+
+  it("onboarding launch maps the broken-install results to a 500, not starting:true", () => {
+    const ONBOARDING_PATH = join(__dirname, "..", "web", "routes", "onboarding.ts")
+    const onb = readFileSync(ONBOARDING_PATH, "utf-8")
+    const errIdx = onb.indexOf("created === 'script-missing' || created === 'spawn-failed'")
+    expect(errIdx, "broken-install guard missing from launch handler").toBeGreaterThan(0)
+    const startingIdx = onb.indexOf("starting: true")
+    expect(startingIdx, "starting:true response not found").toBeGreaterThan(0)
+    // The hard-error branch must be decided BEFORE the starting:true response.
+    expect(errIdx).toBeLessThan(startingIdx)
+    // And it must surface a nameable reason for the UI.
+    expect(onb).toContain("'channels-script-missing'")
+    expect(onb).toContain("'channels-spawn-failed'")
   })
 })

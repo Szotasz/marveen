@@ -10,11 +10,19 @@ import {
 // Helper: build a GitRunner from plain strings. Covers the common
 // "return this exact branch / status" fixtures without dragging in a
 // real git invocation.
-function makeGit(branch: string, porcelain = '', ahead = 0): GitRunner {
+function makeGit(
+  branch: string,
+  porcelain = '',
+  ahead = 0,
+  behind = 0,
+  onOrigin: 'yes' | 'no' | 'unknown' = 'yes',
+): GitRunner {
   return {
     currentBranch: () => branch,
     porcelainStatus: () => porcelain,
     aheadCount: () => ahead,
+    behindCount: () => behind,
+    originHasBranch: () => onOrigin,
   }
 }
 
@@ -31,8 +39,8 @@ describe('checkUpdatePreflight --happy path', () => {
 })
 
 describe('checkUpdatePreflight --local commits (diverged history)', () => {
-  it('rejects when the local checkout has commits ahead of upstream', () => {
-    const result = checkUpdatePreflight(makeGit('main', '', 2))
+  it('rejects when the checkout is both ahead of and behind the upstream', () => {
+    const result = checkUpdatePreflight(makeGit('main', '', 2, 5))
     expect(result.ok).toBe(false)
     if (result.ok) return
     expect(result.reason).toBe('local-commits')
@@ -45,11 +53,54 @@ describe('checkUpdatePreflight --local commits (diverged history)', () => {
     expect(checkUpdatePreflight(makeGit('main', '', 0)).ok).toBe(true)
   })
 
-  it('dirty-tree takes precedence over ahead (stash is offered first)', () => {
-    const result = checkUpdatePreflight(makeGit('main', ' M src/x.ts', 3))
+  // The rule update.sh actually applies since 2026-08-30: ahead with nothing
+  // behind is an install that also develops locally, the pull is a no-op, and
+  // the update proceeds. Blocking it here locked the button on a tree that
+  // was in fact current.
+  it('passes when ahead but not behind, matching update.sh', () => {
+    expect(checkUpdatePreflight(makeGit('main', '', 53, 0)).ok).toBe(true)
+  })
+
+  it('dirty-tree takes precedence over divergence (stash is offered first)', () => {
+    const result = checkUpdatePreflight(makeGit('main', ' M src/x.ts', 3, 3))
     expect(result.ok).toBe(false)
     if (result.ok) return
     expect(result.reason).toBe('dirty-tree')
+  })
+})
+
+describe('checkUpdatePreflight --branch missing on origin', () => {
+  // update.sh exits 2 on a local-only branch. Without this gate the dashboard
+  // answered {ok:true}, spawned a run that could never start, and showed the
+  // reload countdown anyway.
+  it('rejects a branch origin does not have', () => {
+    const result = checkUpdatePreflight(makeGit('fix/local-only', '', 0, 0, 'no'))
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.reason).toBe('branch-not-on-origin')
+    if (result.reason !== 'branch-not-on-origin') return
+    expect(result.branch).toBe('fix/local-only')
+    expect(result.message).toMatch(/origin/)
+  })
+
+  it('does NOT block when the probe could not answer (offline, auth failure)', () => {
+    expect(checkUpdatePreflight(makeGit('main', '', 0, 0, 'unknown')).ok).toBe(true)
+  })
+
+  // update.sh checks the branch BEFORE the dirty tree, so both entry points
+  // must name the same first reason; stashing would not have helped here.
+  it('reports the missing branch before the dirty tree, as update.sh does', () => {
+    const result = checkUpdatePreflight(makeGit('fix/local-only', ' M src/x.ts', 0, 0, 'no'))
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.reason).toBe('branch-not-on-origin')
+  })
+
+  it('still reports detached HEAD first', () => {
+    const result = checkUpdatePreflight(makeGit('HEAD', '', 0, 0, 'no'))
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.reason).toBe('detached-head')
   })
 })
 

@@ -1,0 +1,1 @@
+{"scanner": {"name": "mio-scan", "version": "1.0.0", "rulepack": "2026-08-24"}, "findings": [{"rule": "card-number-shaped", "category": "pii", "match": "4111 1111 1111 1111 ", "line": 1, "span": [8, 28]}, {"rule": "card-number-shaped", "category": "pii", "match": "4111-1111-1111-111", "line": 2, "span": [39, 57]}]}

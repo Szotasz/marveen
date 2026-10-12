@@ -24,7 +24,38 @@ warn() { echo -e "  ${ORANGE}!${NC} $*"; }
 INSTALL_STEP="init"
 
 # shellcheck source=install-lang.sh
-source "$(dirname "$0")/install-lang.sh"
+# MARVEENLANG1763: the README's one-liner (curl ... install-linux.sh -o install.sh &&
+# bash install.sh) and the Windows/WSL wrapper (/tmp/marveen-install.sh) run this
+# script ON ITS OWN, before the repo is cloned, so install-lang.sh is not next to it.
+# Next to it (a checkout, the Bridge) -> sourced from there, exactly as before.
+# Missing -> fetched from the same ref the repo is cloned from below (MARVEEN_REF,
+# default main), checked (non-empty, defines _t), sourced from a mktemp file.
+# Unreachable -> a plain bilingual stop with the manual way, before any install step.
+MARVEEN_REF="${MARVEEN_REF:-main}"
+if [ -f "$(dirname "$0")/install-lang.sh" ]; then
+  source "$(dirname "$0")/install-lang.sh"
+else
+  _lang_url="${MARVEEN_RAW_BASE:-https://raw.githubusercontent.com/Szotasz/marveen}/${MARVEEN_REF}/install-lang.sh"
+  _lang_tmp="$(mktemp "${TMPDIR:-/tmp}/marveen-install-lang.XXXXXX")"
+  _lang_ok=0
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$_lang_url" -o "$_lang_tmp" 2>/dev/null && _lang_ok=1
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO "$_lang_tmp" "$_lang_url" 2>/dev/null && _lang_ok=1
+  fi
+  if [ "$_lang_ok" = "1" ] && [ -s "$_lang_tmp" ] && grep -q '^_t() {' "$_lang_tmp"; then
+    source "$_lang_tmp"
+    rm -f "$_lang_tmp"
+  else
+    rm -f "$_lang_tmp"
+    echo "Hiba: a telepito nyelvi fajlja (install-lang.sh) nem toltheto le: $_lang_url" >&2
+    echo "Error: the installer's language file (install-lang.sh) could not be downloaded: $_lang_url" >&2
+    echo "  Kezzel / manually: git clone --branch ${MARVEEN_REF} https://github.com/Szotasz/marveen.git ~/marveen && bash ~/marveen/install-linux.sh" >&2
+    exit 1
+  fi
+  unset _lang_url _lang_tmp _lang_ok
+fi
+# end of the install-lang loader (MARVEENLANG1763)
 
 offer_claude_fallback() {
   local step="$1" err_msg="$2" line_info="${3:+:$3}"
@@ -50,6 +81,7 @@ offer_claude_fallback() {
 
 fail() {
   echo -e "  ${RED}✗${NC} $*"
+  explain_install_error "${INSTALL_ERRLOG:-}"
   offer_claude_fallback "$INSTALL_STEP" "$*" "${BASH_LINENO[0]}"
   exit 1
 }
@@ -57,10 +89,32 @@ fail() {
 on_error() {
   echo ""
   echo -e "${RED}Varatlan hiba a(z) '${INSTALL_STEP}' lepesben (sor: $1).${NC}"
+  explain_install_error "${INSTALL_ERRLOG:-}"
   offer_claude_fallback "$INSTALL_STEP" "Unexpected error at line $1" "$1"
   exit 1
 }
 trap 'on_error $LINENO' ERR
+
+# Does the INSTALL carry an auth credential the SERVICES can read?
+#
+# This is deliberately NOT `claude auth status`. That command answers a
+# different question -- "can the operator's current shell talk to Claude?" --
+# and the two answers diverge in the exact case that broke every affected
+# install: the services (systemd units) read ONLY <install>/.env and
+# <install>/store/.claude-oauth-token. They never see ~/.claude/.credentials.json,
+# the macOS Keychain, or a CLAUDE_CODE_OAUTH_TOKEN exported from ~/.bashrc.
+#
+# Measured on a live host 2026-07-30, same host, same command:
+#   non-interactive shell (how systemd starts a unit):  claude auth status -> FAILS
+#   interactive shell     (how this installer runs):    claude auth status -> SUCCEEDS
+# because a previous install had written `export CLAUDE_CODE_OAUTH_TOKEN=...`
+# into ~/.bashrc. The installer therefore believed auth was done, skipped the
+# token capture, and left the services with nothing.
+service_auth_present() {
+  grep -qE '^(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY)=.+' "$INSTALL_DIR/.env" 2>/dev/null && return 0
+  [ -s "$INSTALL_DIR/store/.claude-oauth-token" ] && return 0
+  return 1
+}
 
 # Ha a <marker> szoveg nem talalhato az rc fajlban, hozzaadja a <sort>.
 # Mindket fajlt kezeli (.bashrc, .zshrc) ha leteznek.
@@ -73,6 +127,64 @@ ensure_in_rc() {
     printf '%s\n' "$line" >>"$rc"
     warn "RC frissitve ($(basename "$rc")): $line"
   done
+}
+
+# SECSZIVEK1007: secrets belong in the 0600 install files, not in shell
+# startup files. The services never read an rc file: they use <install>/.env
+# and <install>/store/.claude-oauth-token, both 0600 (see
+# service_auth_present). A re-run removes the credential export lines from the
+# rc files and says so. The rewrite keeps the rc file's inode and permissions
+# (cat back, not mv), and `|| true` because grep -v exits 1 when every line is
+# filtered out.
+remove_secret_export_from_rc() {
+  local var="$1" rc
+  for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
+    [ -f "$rc" ] || continue
+    grep -Eq "^[[:space:]]*export[[:space:]]+${var}=" "$rc" 2>/dev/null || continue
+    { grep -Ev "^[[:space:]]*export[[:space:]]+${var}=" "$rc" || true; } >"$rc.tmp" \
+      && cat "$rc.tmp" >"$rc" && rm -f "$rc.tmp"
+    warn "$(basename "$rc"): a korabbi ${var} export-sor torolve (titok nem kerul shell rc fajlba)"
+  done
+}
+
+# Interactive convenience without the secret in the rc: one line that READS the
+# value from a 0600 install file at shell start, and exports it only when it is
+# there. The file path is single-quoted for the shell ('\'' for a quote in it).
+# Usage: ensure_secret_reader_in_rc VAR FILE KIND   (KIND: file = whole file, env = VAR= line of a .env)
+ensure_secret_reader_in_rc() {
+  local var="$1" file="$2" kind="$3" q marker line
+  q="'$(printf '%s' "$file" | sed "s/'/'\\\\''/g")'"
+  marker="# marveen: ${var} from the install's 0600 file"
+  if [ "$kind" = "env" ]; then
+    line="${marker}"$'\n'"_mv=\"\$(grep -m1 '^${var}=' ${q} 2>/dev/null | cut -d= -f2-)\"; [ -n \"\$_mv\" ] && export ${var}=\"\$_mv\"; unset _mv"
+  else
+    line="${marker}"$'\n'"[ -s ${q} ] && export ${var}=\"\$(cat ${q})\""
+  fi
+  ensure_in_rc "$marker" "$line"
+}
+
+# SECSZIVEKKIADAS1008: the same scrub for an install that already carries auth
+# (a re-run never reaches the prompt above). scripts/lib/rc-secrets.sh holds
+# the identical copy update.sh uses; update-rc-secret-scrub.test.ts keeps them equal.
+rc_has_secret_export() {
+  local rc
+  for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
+    [ -f "$rc" ] || continue
+    grep -Eq "^[[:space:]]*export[[:space:]]+${1}=" "$rc" 2>/dev/null && return 0
+  done
+  return 1
+}
+
+scrub_secret_exports_from_rc() {
+  if rc_has_secret_export ANTHROPIC_API_KEY; then
+    remove_secret_export_from_rc ANTHROPIC_API_KEY
+    ensure_secret_reader_in_rc ANTHROPIC_API_KEY "$INSTALL_DIR/.env" env
+  fi
+  if rc_has_secret_export CLAUDE_CODE_OAUTH_TOKEN; then
+    remove_secret_export_from_rc CLAUDE_CODE_OAUTH_TOKEN
+    ensure_secret_reader_in_rc CLAUDE_CODE_OAUTH_TOKEN "$INSTALL_DIR/store/.claude-oauth-token" file
+  fi
+  return 0
 }
 
 # Tobbsoros blokkot ad az rc fajlokhoz ha a <marker> meg nem szerepel bennuk.
@@ -120,6 +232,31 @@ echo ""
 echo -e "${DIM}  Telepito wizard - Linux (Ubuntu/Debian)${NC}"
 echo ""
 
+# ── WSLMNT1 vedohalo: /mnt/ ala klonozott repo ──────────────────────
+# WSL-ben a terminal gyakran a Windows-mappaban (/mnt/c/...) nyilik, es az
+# oda klonozott repon a git/npm chmod-muveletei "Operation not permitted"
+# hibakkal halnak (drvfs nem POSIX). A leggyakoribb elakadas MEG a klonnal
+# tortenik (a script el sem indul -- azt a README `cd ~`-ja fedi); ez a
+# check a MASODIK esetet fogja: a klon valahogy letrejott /mnt/ alatt, es
+# a telepito onnan indult. Ertheto mondat + masolhato kiut, sorszam helyett.
+case "$INSTALL_DIR" in
+  /mnt/*)
+    echo -e "${RED}A telepito a Windows-fajlrendszerrol fut (${INSTALL_DIR}).${NC}"
+    echo -e "  A /mnt/ alatti mappakon a git es az npm jogosultsag-muveletei nem mukodnek (WSL/drvfs) -- a telepites itt elhalna."
+    echo -e "  ${DIM}Kiut: klonozd a Linux home-ba, es onnan futtasd (masold az alabbi sorokat):${NC}"
+    echo "    cd ~"
+    echo "    git clone --branch main https://github.com/Szotasz/marveen.git"
+    echo "    cd marveen && ./install.sh"
+    exit 1
+    ;;
+esac
+
+# WSL detection, used by the auth prompt and the service launch below.
+IS_WSL=false
+if [ -n "${WSL_DISTRO_NAME:-}" ] || grep -qi microsoft /proc/sys/kernel/osrelease 2>/dev/null; then
+  IS_WSL=true
+fi
+
 INSTALL_STEP="prerequisites"
 # ─────────────────────────────────────────────
 # [1/7] Elofeltetelek
@@ -139,6 +276,148 @@ fi
 if [ -z "$PKG_MANAGER" ]; then
   fail "Nem tamogatott csomagkezelo. Ez a telepito apt-get (Debian/Ubuntu) vagy dnf/yum (Fedora/Nobara/RHEL) rendszert var."
 fi
+
+# ── apt lock kezeles (APTLOCK1) ──────────────────────────────────────
+# Friss Ubuntun/WSL-en az apt-daily / unattended-upgrades az elso percekben
+# MAGATOL elindul es fogja a dpkg zarolast, majd perceken belul elengedi. Ez
+# ATMENETI allapot: a helyes viselkedes a lathato varakozas, nem a hibauzenet
+# (2026-07-30, workshop: "Could not get lock /var/lib/dpkg/lock-frontend...
+# It is held by process 6250" -> "Varatlan hiba... (sor: 240)"). A harom
+# allapotot szethuzzuk: atmeneti (var), vegleges (lejart cap, nevesitett
+# holderrel), ismeretlen (nincs fuser -- kimondjuk, es a DPkg::Lock::Timeout
+# vedohalora hagyatkozunk).
+APT_LOCK_FILES="/var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/lib/apt/lists/lock"
+APT_LOCK_WAIT_CAP=300   # 5 perc -- az apt-daily ennyi alatt tipikusan vegez
+# Vedohalo minden apt-get hivasra: az apt sajat, fcntl-szintu varakozasa arra
+# az esetre, ha a pre-flight utan, de a parancs elott ugrik be egy uj holder.
+APT_OPTS="-o DPkg::Lock::Timeout=180"
+
+# ── interaktiv dialogusok kizarasa (APTPROMPT802) ────────────────────
+# 2026-08-02, eles gepen merve: az elso VALODI elso-telepitesnel a
+#   sudo apt-get install -y nodejs
+# elakadt egy whiptail ablakon ("Pending kernel upgrade"), amit a needrestart
+# apt-hookja nyitott (apt-pinvoke -m u). A telepito a Marveen appbol fut, ahol
+# nincs terminal es nincs stdin -- a dialogus tehat nem elnyomhato, a telepites
+# ott all, amig valaki kezzel ki nem lovi. A naplo elso jele: "dpkg-preconfigure:
+# unable to re-open stdin". Eddig azert nem jott elo, mert a teszt-gepeken a node
+# mar fent volt a korabbi korokbol, es ez a lepes kimaradt.
+#
+# HAROM retegben zarjuk ki, mert egy reteg sem eleg onmagaban:
+#   1. DEBIAN_FRONTEND=noninteractive -- a debconf keresek ellen.
+#   2. NEEDRESTART_SUSPEND=1 (+ NEEDRESTART_MODE=l tartalek) -- a needrestart
+#      apt-hookja ellen; ez az, ami a konkret gepet megfogta, es amit a frontend
+#      NEM fed.
+#
+#      MIERT "l" ES NEM "a", holott az "a" is elnemitja a kerdest (merve az eles
+#      gepen, needrestart 3.11 / Ubuntu 26.04, 2026-08-02):
+#        - /usr/lib/needrestart/apt-pinvoke 43-46. sor: ha NEEDRESTART_SUSPEND
+#          nem ures, kiir egy sort es `exit 0` -- az `exec needrestart` CSAK
+#          ezutan, az 49. sorban jon. Tehat SUSPEND mellett a needrestart EL SEM
+#          INDUL: sem dialogus, sem ujrainditas. A MODE azon az uton sosem jut
+#          ervenyre.
+#        - A MODE tehat TARTALEK: azokra a (regebbi) verziokra, amelyek hookja
+#          esetleg nem nezi a SUSPEND-et. Es ha a tartalek lep ervenybe, akkor
+#          szamit, MELYIK erteket adtuk: a needrestart -r modjai l = list only,
+#          i = interactive, a = automatically restart.
+#        - Az "a" tehat ujrainditana a varakozo szolgaltatasokat A TELEPITES
+#          KOZBEN. A cel-gepen ez negy szolgaltatast jelentett (dbus,
+#          networkd-dispatcher, serial-getty@ttyS0, systemd-logind), es a
+#          telepito KESOBB epit a felhasznaloi session-buszra (XDG_RUNTIME_DIR /
+#          DBUS_SESSION_BUS_ADDRESS), majd meg kesobb user-unitokat allit be. Egy
+#          dbus/logind restart a csomag-lepesben tehat egy MASIK, kesobbi lepest
+#          buktathatna el -- olyan hibat, ami semmivel nem utal vissza az aptra.
+#        - Az "l" ugyanugy nem kerdez, de nem is indit ujra semmit: a fuggo
+#          szolgaltatasok a kovetkezo rebootig a regi konyvtarakkal futnak, ami
+#          egy friss telepitesnel rendben van.
+#      NE ALLITSD VISSZA "a"-ra azzal, hogy "az alaposabb" -- itt epp az a
+#      kockazat, hogy a tartalek TOBBET csinal, mint amit kertunk tole.
+#   3. </dev/null minden hivason -- ha egy hook megis kerdez, azonnal EOF-ot kap
+#      a helyett, hogy a telepito sajat stdinjere varna.
+#
+# MIERT INLINE ATADAS ES NEM CSAK export: a sudo alapertelmezesben env_reset-tel
+# fut, tehat az exportalt valtozo NEM jut at. Debian 13-on megmerve:
+#   export DEBIAN_FRONTEND=... ; sudo printenv DEBIAN_FRONTEND -> URES
+#   sudo DEBIAN_FRONTEND=... printenv DEBIAN_FRONTEND        -> noninteractive
+#   sudo -E printenv DEBIAN_FRONTEND                          -> noninteractive
+# Ezert a sudo-s hivasoknal a valtozok a parancs ele kerulnek, es az export CSAK
+# a `sudo -E`-vel indulo gyerekek (nodesource setup-script) miatt marad meg.
+NONINTERACTIVE_ENV="DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l NEEDRESTART_SUSPEND=1"
+export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=l NEEDRESTART_SUSPEND=1
+# A meglevo config-fajlokat megtartjuk, ujat nem kerdezunk: a "melyik verziot
+# tartsam meg?" dpkg-prompt ugyanugy megallitana a telepitest, mint a needrestart.
+DPKG_KEEP_CONF="-o Dpkg::Options::=--force-confold -o Dpkg::Options::=--force-confdef"
+
+# MINDEN apt-get hivas ezen a fuggvenyen megy at. Egy hely, ahol a fenti harom
+# reteg egyutt van -- egy uj hivas hozzaadasakor nem lehet elfelejteni az
+# egyiket, es a teszt ezt a fuggvenyt futtatja, nem a leirasat.
+apt_run() {
+  # shellcheck disable=SC2086
+  sudo $NONINTERACTIVE_ENV apt-get $APT_OPTS $DPKG_KEEP_CONF "$@" </dev/null
+}
+
+# dnf/yum: a -y a csomag- es GPG-kulcs-kerdeseket is elfogadja, needrestart ott
+# nincs; a stdin-lezaras viszont ugyanugy kell, es a valtozok atadasa artalmatlan.
+pkg_install_noninteractive() {
+  # shellcheck disable=SC2086
+  sudo $NONINTERACTIVE_ENV "$PKG_MANAGER" install -y "$@" </dev/null
+}
+
+# stdout: "<pid> <procnev>" ha valaki fogja barmelyik lockot; ures + exit 1 ha
+# szabad. fuser nelkul exit 2 = NEM TUDJUK megallapitani (ismeretlen allapot).
+apt_lock_holder() {
+  command -v fuser &>/dev/null || return 2
+  local l pid name
+  for l in $APT_LOCK_FILES; do
+    [ -e "$l" ] || continue
+    pid=$(sudo fuser "$l" 2>/dev/null | tr -s ' ' '\n' | grep -m1 '[0-9]' || true)
+    if [ -n "$pid" ]; then
+      name=$(ps -o comm= -p "$pid" 2>/dev/null || true)
+      echo "$pid ${name:-?}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# A ket ertekadas alatt SZANDEKOSAN `&& rc=0 || rc=$?` all, nem `; rc=$?`.
+# A szkript `set -e` alatt fut (5. sor), es egy ertekadas kilepesi kodja a
+# parancs-behelyettesitese -- tehat `holder=$(apt_lock_holder); rc=$?` eseten a
+# shell MAR AZON A SORON kilep, ha a fuggveny nem nullat ad. Az pedig pontosan
+# akkor ad nem nullat, amikor NINCS zar (return 1) vagy nincs fuser (return 2),
+# vagyis a haromallapotu logika alatta SOSEM futott le: az egyetlen tulelo ag az
+# volt, amikor tenyleg fogta valaki a lockot. A zar-figyelo igy a NYUGODT gepen
+# olte meg a telepitest, es a lock-versenyes gepen engedte at -- ezert ment at a
+# 07-30-i workshopon es bukott egy friss VPS-en 08-02-an.
+wait_for_apt_lock() {
+  local holder rc waited=0 interval=5
+  holder=$(apt_lock_holder) && rc=0 || rc=$?
+  if [ "$rc" -eq 2 ]; then
+    # fuser nincs (minimal image) -- nem tudjuk MEGNEZNI, ki fogja a lockot.
+    # Ezt kimondjuk, es az APT_OPTS timeout-ja kezeli, ha tenyleg fogott.
+    echo -e "  ${DIM}$(_t linux.apt_lock_unknown)${NC}"
+    return 0
+  fi
+  [ "$rc" -ne 0 ] && return 0   # szabad
+  warn "$(_t linux.apt_lock_waiting_prefix) ${holder}"
+  echo -e "  ${DIM}$(_t linux.apt_lock_transient_hint)${NC}"
+  while [ "$waited" -lt "$APT_LOCK_WAIT_CAP" ]; do
+    sleep "$interval"; waited=$((waited + interval))
+    holder=$(apt_lock_holder) && rc=0 || rc=$?
+    if [ "$rc" -ne 0 ]; then
+      ok "$(_t linux.apt_lock_freed_prefix) ${waited}s"
+      return 0
+    fi
+    if [ $((waited % 30)) -eq 0 ]; then
+      echo -e "  ${DIM}$(_t linux.apt_lock_still_prefix) ${holder} -- ${waited}s / ${APT_LOCK_WAIT_CAP}s${NC}"
+    fi
+  done
+  # Lejart a cap: ez mar nem "varjunk meg egy kicsit" -- nevesitett holderrel
+  # es kiuttal allunk meg, nem sorszammal.
+  echo -e "${RED}$(_t linux.apt_lock_timeout_head) ${holder}${NC}"
+  echo -e "  $(_t linux.apt_lock_timeout_body1)"
+  echo -e "  $(_t linux.apt_lock_timeout_body2)"
+  fail "$(_t linux.apt_lock_timeout_fail)"
+}
 
 # RAM check: npm build can fail on low-memory instances (e.g. t3.micro)
 if command -v free &>/dev/null; then
@@ -173,7 +452,7 @@ if command -v free &>/dev/null; then
 fi
 
 MISSING_PKGS=""
-for pkg in ffmpeg git tmux lsof curl python3 pipx unzip; do
+for pkg in ffmpeg git tmux lsof curl python3 pipx unzip zstd; do
   if ! command -v "$pkg" &>/dev/null; then
     MISSING_PKGS="$MISSING_PKGS $pkg"
   fi
@@ -205,22 +484,48 @@ if [ -n "$MISSING_PKGS" ]; then
   warn "Hianyzo csomagok:$MISSING_PKGS"
   echo -e "  Telepites sudo-val ($PKG_MANAGER)..."
   if [ "$PKG_MANAGER" = "apt" ]; then
+    wait_for_apt_lock
     if echo "$MISSING_PKGS" | grep -q nodejs; then
+      # A nodesource setup-script curl-t igenyel, de csupasz VPS-en (Debian
+      # netinst) a curl maga is hianyozhat -- ilyenkor eloszor azt telepitjuk,
+      # kulonben a repo-lepes neman kimarad, a disztro sajat (regebbi) nodejs-e
+      # telepul, es Debianon az npm (kulon csomag) le se jon -> [1/7] fail.
+      if ! command -v curl &>/dev/null; then
+        apt_run update -qq || true
+        apt_run install -y curl -qq || true
+        hash -r
+      fi
       echo -e "  Node.js v22 repo hozzaadasa (nodesource)..."
-      curl -fsSL https://deb.nodesource.com/setup_22.x | sudo -E bash - >/dev/null 2>&1
+      # A setup-scriptet valtozoba toltjuk es a curl exit-kodjat kulon nezzuk:
+      # a 'curl | sudo bash -' pipeline exit-kodja a bash-e lenne (ures stdin-en
+      # 0), igy a curl-hiba nem latszana es a fallback sosem aktivalodna.
+      NODESOURCE_OK=false
+      if command -v curl &>/dev/null; then
+        NODESOURCE_SETUP="$(curl -fsSL https://deb.nodesource.com/setup_22.x 2>/dev/null || true)"
+        if [ -n "$NODESOURCE_SETUP" ] && echo "$NODESOURCE_SETUP" | sudo -E $NONINTERACTIVE_ENV bash - >/dev/null 2>&1; then
+          NODESOURCE_OK=true # a nodesource nodejs csomag node+npm-et egyben hozza
+        fi
+      fi
+      if [ "$NODESOURCE_OK" = false ]; then
+        # Fallback: disztro sajat nodejs-e. Debianon az npm kulon csomag,
+        # a nodesource-bundle-lel ellentetben nem jon a nodejs-sel magatol.
+        warn "nodesource repo hozzaadasa sikertelen -- a disztro sajat nodejs + npm csomagjat telepitem."
+        apt_run update -qq
+        MISSING_PKGS="$MISSING_PKGS npm"
+      fi
     else
-      sudo apt-get update -qq
+      apt_run update -qq
     fi
     # shellcheck disable=SC2086
-    sudo apt-get install -y $MISSING_PKGS -qq
+    apt_run install -y $MISSING_PKGS -qq
   else
     # dnf/yum (Fedora/Nobara/RHEL). A disztro nodejs csomagja v20+ az aktualis
     # kiadasokon, es az npm-et is tartalmazza -- nincs szukseg kulso repora.
     # Csomagnevek megegyeznek a Debian-belivel (ffmpeg/git/tmux/lsof/curl/
-    # python3/pipx/unzip/nodejs). Az ffmpeg-hez Fedoran az RPM Fusion repo
+    # python3/pipx/unzip/zstd/nodejs). Az ffmpeg-hez Fedoran az RPM Fusion repo
     # kellhet; ha mar engedelyezve van, a csomag elerheto.
     # shellcheck disable=SC2086
-    sudo "$PKG_MANAGER" install -y $MISSING_PKGS
+    pkg_install_noninteractive $MISSING_PKGS
   fi
 fi
 
@@ -247,6 +552,7 @@ ok "pipx" $(pipx --version)
 ok "python3 $(python3 --version | awk '{print $2}')"
 ok "tmux $(tmux -V | awk '{print $2}')"
 ok "unzip" $(unzip -v | awk 'NR==1 {print $2}')
+ok "zstd $(zstd --version | grep -oE 'v[0-9]+\.[0-9]+\.[0-9]+' | head -1)"
 
 # ─────────────────────────────────────────────
 # Repo bootstrap
@@ -267,12 +573,15 @@ if [ ! -f "$INSTALL_DIR/package.json" ]; then
     echo -e "  Repo klonozasa -> ${TARGET_DIR} ..."
     # A repo default branch-e a develop, de a publikus telepito main-rol fut
     # (a Windows/WSL wrapper is main-rol fetcheli a scriptet) -> pineljuk a main-t.
-    git clone --depth 1 --branch main https://github.com/Szotasz/marveen.git "$TARGET_DIR" \
-      || fail "git clone sikertelen: https://github.com/Szotasz/marveen.git (main branch)"
+    # MARVEENLANG1763: the same ref the language file came from (default main).
+    git clone --depth 1 --branch "$MARVEEN_REF" https://github.com/Szotasz/marveen.git "$TARGET_DIR" \
+      || fail "git clone sikertelen: https://github.com/Szotasz/marveen.git (${MARVEEN_REF} branch)"
     ok "Repo klonozva: $TARGET_DIR"
   fi
   echo -e "  Telepito ujrainditasa a checkoutbol..."
-  exec bash "$TARGET_DIR/install-linux.sh"
+  # Forward argv so a run from outside the repo (curl bootstrap, or an explicit
+  # `install-linux.sh --port N`) keeps its flags across the self-reclone exec.
+  exec bash "$TARGET_DIR/install-linux.sh" "$@"
 fi
 
 INSTALL_STEP="claude-bun-install"
@@ -288,20 +597,65 @@ export PATH="$HOME/.local/bin:$PATH"
 
 # Does an installed claude actually LAUNCH? On an AVX-less x86 host the official
 # installer's Bun standalone binary SIGILLs / hangs on start, so `command -v`
-# alone is not enough -- we verify it runs (with a timeout so a hanging Bun
-# binary cannot wedge the installer).
-_claude_runs() { command -v claude >/dev/null 2>&1 && timeout 25 claude --version </dev/null >/dev/null 2>&1; }
+# alone is not enough -- we verify it runs. `--version` is NOT that probe:
+# measured 2026-09-23 on the AVX-less pilot VPS (CLIRUNSVERZIO923), the
+# 2.1.200+ Bun ELF answers `--version` with exit 0 and then spins silently on a
+# real prompt, so a host that already carries a latest claude would pass the
+# gate and get an install on which no agent prompt ever runs. The probe is a
+# real `-p` prompt, made auth-free on purpose: an isolated EMPTY config dir and
+# the auth env unset make a healthy CLI exit 1 within ~2 s ("Not logged in",
+# JSON on stdout, no API call, nothing written to the real config), while a Bun
+# binary without AVX either SIGILLs (exit 132) or hangs until `timeout` (124).
+# "Runs" therefore means: exited on its own with a code below 124.
+_claude_runs() {
+  command -v claude >/dev/null 2>&1 || return 1
+  local probe_cfg rc
+  probe_cfg="$(mktemp -d 2>/dev/null || echo "/tmp/claude-probe-$$")"
+  mkdir -p "$probe_cfg"
+  env -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_API_KEY -u ANTHROPIC_AUTH_TOKEN \
+    CLAUDE_CONFIG_DIR="$probe_cfg" DISABLE_AUTOUPDATER=1 \
+    timeout "${CLAUDE_PROBE_TIMEOUT:-25}" claude -p 'ping' --max-turns 1 --output-format json \
+    </dev/null >/dev/null 2>&1
+  rc=$?
+  rm -rf "$probe_cfg"
+  # 124 = hung until timeout, 125-127 = could not even exec, 128+ = killed by a signal (SIGILL/SIGSEGV)
+  [ "$rc" -lt 124 ]
+}
+# A claude that is on PATH but does not launch (typically the official
+# installer's Bun ELF at ~/.local/bin/claude) would keep SHADOWING the pinned
+# Node build: ~/.local/bin is first on PATH and `npm -g` lands in /usr/bin or
+# ~/.npm-global. Move it aside (reversible: <path>.avx-broken) so the pin wins.
+_shelve_broken_claude() {
+  local p
+  p="$(command -v claude 2>/dev/null || true)"
+  [ -n "$p" ] || return 0
+  if mv "$p" "${p}.avx-broken" 2>/dev/null; then
+    warn "A mar telepitett claude ($p) AVX nelkul nem indul; felretettem: ${p}.avx-broken"
+  else
+    warn "A mar telepitett claude ($p) AVX nelkul nem indul, es nem tudtam felretenni -- a pinnelt verziot arnyekolhatja."
+  fi
+  hash -r
+}
 
-# Pinned Node-based fallback for AVX-less hosts. @2.1.110 is the LAST version
+# Pinned Node-based fallback for AVX-less hosts. @2.1.112 is the LAST version
 # that ships bin=cli.js (a `#!/usr/bin/env node` entrypoint) running without
-# AVX -- 2.1.120+ bundles only the Bun ELF binary, so DO NOT use latest here.
-# Unlike the old 2.0.76 pin, 2.1.110 also understands `--channels`, which
-# channels.sh requires to boot the bot. Verified on the AVX-less pilot VPS.
-CLAUDE_PIN="2.1.110"
+# AVX -- from 2.1.113 on every published version ships bin=bin/claude.exe with
+# a postinstall that downloads the Bun ELF binary, so DO NOT use latest here.
+# Measured 2026-09-23 on the AVX-less pilot VPS (QEMU Virtual CPU 2.5+, 0 avx
+# flags) with a REAL `claude -p ... --output-format json` probe, not
+# `--version` (which still exits 0 on some Bun builds there): 2.1.110/111/112
+# answer, 2.1.113/150/170 SIGILL ("CPU lacks AVX support"), 2.1.200/240/260/280
+# spin silently for 120 s. 2.1.112 understands `--channels` (same parser
+# as 2.1.110), which channels.sh requires to boot the bot. Keep in sync with
+# scripts/channels.sh and scripts/fix-avx.sh (a test pins the three together).
+CLAUDE_PIN="2.1.112"
 
 if _claude_runs; then
   ok "claude mar telepitve es fut: $(claude --version 2>/dev/null || echo 'ok')"
 else
+  # Present on PATH but did not launch (the probe above failed while the
+  # binary exists): remembered here so the AVX-less branch can shelve it.
+  CLAUDE_PREEXISTING_BROKEN="$(command -v claude 2>/dev/null || true)"
   # AVX pre-flight: the official installer's Bun binary needs AVX. Only x86
   # (has a `flags :` line in /proc/cpuinfo) can lack it; ARM (`Features :`, no
   # `avx`) runs the arm64 Bun binary fine, so it takes the official path.
@@ -313,8 +667,16 @@ else
     # interactive shells; channels.sh exports it for the agent sessions).
     ensure_in_rc 'DISABLE_AUTOUPDATER' 'export DISABLE_AUTOUPDATER=1'
     export DISABLE_AUTOUPDATER=1
+    [ -n "${CLAUDE_PREEXISTING_BROKEN:-}" ] && _shelve_broken_claude
     if command -v npm >/dev/null 2>&1; then
-      npm install -g "@anthropic-ai/claude-code@${CLAUDE_PIN}" || warn "npm install sikertelen (@${CLAUDE_PIN})."
+      # NPMPERM1: nodesource-os gepen a globalis node_modules root-tulajdonu
+      # lehet. Auto-mod: nem kerdez, sudo-ra valt lathato megjegyzessel.
+      ensure_global_npm_writable auto || true
+      if [ "${NPM_NEEDS_SUDO:-}" = "1" ]; then
+        sudo npm install -g "@anthropic-ai/claude-code@${CLAUDE_PIN}" || warn "npm install sikertelen (@${CLAUDE_PIN})."
+      else
+        npm install -g "@anthropic-ai/claude-code@${CLAUDE_PIN}" || warn "npm install sikertelen (@${CLAUDE_PIN})."
+      fi
     else
       warn "npm nem elerheto; a pinnelt hivatalos installert probalom (@${CLAUDE_PIN})."
       curl -fsSL https://claude.ai/install.sh | bash -s "${CLAUDE_PIN}" || warn "pinnelt install.sh sikertelen."
@@ -331,9 +693,11 @@ else
   else
     echo -e "  ${RED}HIBA:${NC} claude telepitve, de nem indul (valoszinuleg AVX-hianyos CPU + Bun-binary)."
     if command -v npm >/dev/null 2>&1; then
-      echo -e "  ${DIM}Probald manualisan: npm install -g @anthropic-ai/claude-code@${CLAUDE_PIN}${NC}"
+      echo -e "  ${DIM}Probald manualisan (masold ki az alabbi sort):${NC}"
+      echo "    npm install -g @anthropic-ai/claude-code@${CLAUDE_PIN}"
     else
-      echo -e "  ${DIM}Telepits nvm+node-ot, majd: npm install -g @anthropic-ai/claude-code@${CLAUDE_PIN}${NC}"
+      echo -e "  ${DIM}Telepits nvm+node-ot, majd (masold ki az alabbi sort):${NC}"
+      echo "    npm install -g @anthropic-ai/claude-code@${CLAUDE_PIN}"
     fi
   fi
 fi
@@ -381,6 +745,9 @@ export PATH="$BUN_INSTALL/bin:$PATH"
 if command -v bun &>/dev/null; then
   ok "bun mar telepitve: $(bun --version)"
 else
+  # unzip -- a Bun hivatalos telepitoje ezzel csomagolja ki a binarist; nincs alapertelmezetten telepitve friss WSL distrokon,
+  # nelkule "error: unzip is required to install bun"-nal elhasal.
+  command -v unzip &>/dev/null || pkg_install_noninteractive unzip || true
   echo -e "  Bun telepitese (Telegram plugin fuggoseg)..."
   curl -fsSL https://bun.sh/install | bash 2>/dev/null
   if ! command -v bun &>/dev/null; then
@@ -403,15 +770,37 @@ IS_HEADLESS=false
 if [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
   IS_HEADLESS=true
 fi
+# WSLg exports DISPLAY/WAYLAND_DISPLAY on every WSL2 distro, so the check above
+# called a WSL box "desktop" and made Enter mean "3 = skip". On WSL the services
+# can only use a token (see service_auth_present), so default to the token path
+# there, exactly like a headless server.
+if [ "$IS_WSL" = "true" ]; then
+  IS_HEADLESS=true
+fi
 
-if claude auth status &>/dev/null; then
-  ok "Claude mar be van jelentkezve"
+# Skip the prompt only when THIS INSTALL already carries a credential the
+# services can read (a re-run, or the dashboard wizard got there first).
+# Gating on `claude auth status` here is what silently skipped token capture
+# for operators who had followed step 2 below and run `claude setup-token`
+# first -- the correct user behaviour triggered the bug.
+if service_auth_present; then
+  ok "A telepites mar hordoz auth kulcsot (.env / store/.claude-oauth-token)"
+  scrub_secret_exports_from_rc
 else
-  echo -e "  ${ORANGE}Nincs aktiv Claude bejelentkezes.${NC}"
+  if claude auth status &>/dev/null; then
+    echo -e "  ${ORANGE}A terminalod be van jelentkezve, de a SZOLGALTATASOK ehhez nem ferenek hozza.${NC}"
+    echo -e "  ${DIM}A systemd unitok csak a .env-et es a store/.claude-oauth-token-t olvassak.${NC}"
+  else
+    echo -e "  ${ORANGE}Nincs aktiv Claude bejelentkezes.${NC}"
+  fi
   if [ "$IS_HEADLESS" = "true" ]; then
     echo ""
-    echo -e "  ${BLUE}Headless szerver detektalva (nincs DISPLAY).${NC}"
-    echo -e "  ${BLUE}Bongeszo-alapu bejelentkezes nem lehetseges.${NC}"
+    if [ "$IS_WSL" = "true" ]; then
+      echo -e "  ${BLUE}WSL detektalva: a hatterszolgaltatasok csak tokent tudnak hasznalni.${NC}"
+    else
+      echo -e "  ${BLUE}Headless szerver detektalva (nincs DISPLAY).${NC}"
+      echo -e "  ${BLUE}Bongeszo-alapu bejelentkezes nem lehetseges.${NC}"
+    fi
     echo -e "  ${BOLD}Ajanlott: OAuth token (2) vagy API key (1).${NC}"
     echo ""
   fi
@@ -435,7 +824,8 @@ else
     read -p "  ANTHROPIC_API_KEY (sk-ant-...): " ANTHROPIC_API_KEY_INPUT
     if [ -n "$ANTHROPIC_API_KEY_INPUT" ]; then
       export ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY_INPUT"
-      ensure_in_rc 'ANTHROPIC_API_KEY' "export ANTHROPIC_API_KEY=\"$ANTHROPIC_API_KEY_INPUT\""
+      remove_secret_export_from_rc ANTHROPIC_API_KEY
+      ensure_secret_reader_in_rc ANTHROPIC_API_KEY "$INSTALL_DIR/.env" env
       CLAUDE_AUTH_ENV_LINE="ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY_INPUT}"
       ok "ANTHROPIC_API_KEY beallitva"
     else
@@ -449,11 +839,33 @@ else
     echo -e "  ${BOLD}2.${NC} Futtasd: ${BLUE}claude setup-token${NC}"
     echo -e "  ${BOLD}3.${NC} A bongeszo megnyilik, jelentkezz be a Claude fiokoddal"
     echo -e "  ${BOLD}4.${NC} Masold vissza ide a kiirt tokent:"
+    echo -e "  ${DIM}A token sk-ant-oat01- kezdetu. A bongeszoben megjeleno kod NEM a token:${NC}"
+    echo -e "  ${DIM}azt a setup-token ablakaba kell beirni, es utana a terminal irja ki a tokent.${NC}"
     echo ""
-    read -p "  OAuth token: " OAUTH_TOKEN_INPUT
+    # Shape-check BEFORE the value is written anywhere. Without it any paste was
+    # accepted -- typically the one-time code the browser shows during
+    # `claude setup-token` -- and landed in .env as if it were the
+    # token; the services then failed to authenticate with no hint why. Same
+    # pattern the store/.claude-oauth-token write below already gates on.
+    OAUTH_TOKEN_INPUT=""
+    for _try in 1 2 3; do
+      # Read into OAUTH_TOKEN_INPUT (not a new name): the desktop installer
+      # derives its prompts from this file by variable name.
+      read -p "  OAuth token: " OAUTH_TOKEN_INPUT
+      _tok="$(printf '%s' "$OAUTH_TOKEN_INPUT" | tr -d '[:space:]')"
+      OAUTH_TOKEN_INPUT=""
+      [ -z "$_tok" ] && break
+      if printf '%s' "$_tok" | grep -Eq '^sk-ant-oat01-[A-Za-z0-9_-]{40,}$'; then
+        OAUTH_TOKEN_INPUT="$_tok"
+        break
+      fi
+      warn "Ez nem setup-token (nem sk-ant-oat01- kezdetu, vagy tul rovid). Probald ujra, vagy hagyd uresen a kihagyashoz."
+    done
+    unset _tok _try
     if [ -n "$OAUTH_TOKEN_INPUT" ]; then
       export CLAUDE_CODE_OAUTH_TOKEN="$OAUTH_TOKEN_INPUT"
-      ensure_in_rc 'CLAUDE_CODE_OAUTH_TOKEN' "export CLAUDE_CODE_OAUTH_TOKEN=\"$OAUTH_TOKEN_INPUT\""
+      remove_secret_export_from_rc CLAUDE_CODE_OAUTH_TOKEN
+      ensure_secret_reader_in_rc CLAUDE_CODE_OAUTH_TOKEN "$INSTALL_DIR/store/.claude-oauth-token" file
       CLAUDE_AUTH_ENV_LINE="CLAUDE_CODE_OAUTH_TOKEN=${OAUTH_TOKEN_INPUT}"
       # Ellenorzes
       if claude auth status &>/dev/null; then
@@ -466,6 +878,14 @@ else
     fi
 
   else
+    # Record that skipping was a CHOICE, here, at the moment it is made
+    # (INSTDEAD803). Without this the only later evidence is the ABSENCE of
+    # credentials, and absence cannot tell "the operator decided to set this up
+    # later" apart from "the sign-in broke halfway" -- which is exactly the
+    # dead end a bootcamp host hit on 2026-08-03. The installer app reads this
+    # flag to decide whether an install is finished or unfinished. It is not a
+    # renunciation: completing the sign-in later stays available on request.
+    CLAUDE_AUTH_DEFERRED=1
     echo -e "  ${DIM}Kihagyva. Kesobb allitsd be:${NC}"
     echo -e "  ${DIM}  export ANTHROPIC_API_KEY=sk-ant-...${NC}"
     echo -e "  ${DIM}  vagy: claude setup-token (boengeszos gepen), majd export CLAUDE_CODE_OAUTH_TOKEN=...${NC}"
@@ -480,10 +900,19 @@ fi
 # front of the install script.
 echo ""
 echo -e "  ${DIM}Headless Claude Code teszt...${NC}"
-CLAUDE_PROBE_OUT=$(claude --print "ping" 2>&1 | head -c 200)
-CLAUDE_PROBE_EXIT=$?
+# The exit status here used to be `head`'s, not claude's: `VAR=$(cmd | head)`
+# reports the LAST pipeline element, so a failing claude looked like success.
+# PIPESTATUS does NOT help either -- after an assignment it describes the
+# assignment, not the pipeline inside the substitution (measured). Dropping the
+# pipe entirely is the only form that reports claude's own status; the output is
+# truncated afterwards in the shell.
+# The `&& ... || ...` guard is what keeps a failing probe out of the ERR trap:
+# the trap fires regardless of the errexit setting and on_error() exits 1, so an
+# unguarded capture aborted the installer instead of reaching the branch below.
+CLAUDE_PROBE_OUT=$(claude --print "ping" 2>&1) && CLAUDE_PROBE_EXIT=0 || CLAUDE_PROBE_EXIT=$?
+CLAUDE_PROBE_OUT=${CLAUDE_PROBE_OUT:0:200}
 if [ "$CLAUDE_PROBE_EXIT" -eq 0 ] && [ -n "$CLAUDE_PROBE_OUT" ]; then
-  ok "Headless Claude Code futtathato (\`claude --print\` valaszolt)"
+  ok "Az OPERATOR shelljebol futtathato a Claude Code (\`claude --print\` valaszolt)"
 else
   warn "Headless Claude Code probe SIKERTELEN. Az agent-letrehozas KESOBB EL fog hasalni."
   echo -e "    ${DIM}Kimenet: ${CLAUDE_PROBE_OUT:-<ures>}${NC}"
@@ -598,6 +1027,43 @@ else
 fi
 ok "Csatorna: $CHANNEL_PROVIDER"
 
+# INSTTOKEN807: probe the freshly entered bot token BEFORE anything is written.
+# Warn-only (advisory), for two hard reasons: a network hiccup must not block
+# the install, and the headless derive contract (Bridge payload) forbids new
+# interactive reads here -- so we say it loudly and let the install continue.
+# The dashboard save path hard-rejects the same states (#926); this is the
+# installer-side voice for the same three findings, each with its remedy.
+# set -e safe: every path ends in return 0; curl failures are guarded.
+# The token value itself is NEVER printed.
+probe_telegram_token() {
+  _ptt_t="$1"
+  [ -n "$_ptt_t" ] || return 0
+  _ptt_me="$(curl -s --max-time 8 "https://api.telegram.org/bot${_ptt_t}/getMe" 2>/dev/null)" || return 0
+  case "$_ptt_me" in
+    *'"ok":true'*) : ;;
+    *'"ok":false'*)
+      warn "A megadott bot token ERVENYTELEN (a Telegram getMe elutasitotta)."
+      echo -e "    ${DIM}Ellenorizd a @BotFather-tol kapott tokent. A telepites folytatodik, de a bot ezzel a tokennel nem fog valaszolni.${NC}"
+      return 0 ;;
+    *) return 0 ;;
+  esac
+  _ptt_wh="$(curl -s --max-time 8 "https://api.telegram.org/bot${_ptt_t}/getWebhookInfo" 2>/dev/null)" || return 0
+  case "$_ptt_wh" in
+    *'"url":"http'*)
+      warn "A bot token ervenyes, de a bot WEBHOOKRA van kotve -- a Marveen poller igy nem tud ra csatlakozni."
+      echo -e "    ${DIM}Teendo: nyisd meg bongeszoben: https://api.telegram.org/bot<A-TOKENED>/deleteWebhook${NC}"
+      echo -e "    ${DIM}vagy keszits uj botot a @BotFather-nel, es futtasd ujra a telepitot azzal.${NC}"
+      return 0 ;;
+  esac
+  _ptt_up="$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 "https://api.telegram.org/bot${_ptt_t}/getUpdates?timeout=0&limit=1" 2>/dev/null)" || return 0
+  if [ "$_ptt_up" = "409" ]; then
+    warn "A bot token ervenyes, de egy MASIK futo rendszer mar hasznalja (Telegram 409 Conflict)."
+    echo -e "    ${DIM}Egy tokent egyszerre csak egy telepites hasznalhat. Teendo: allitsd le a korabbi telepitest,${NC}"
+    echo -e "    ${DIM}vagy keszits uj botot a @BotFather-nel, es futtasd ujra a telepitot az uj tokennel.${NC}"
+  fi
+  return 0
+}
+
 BOT_TOKEN=""
 SLACK_BOT_TOKEN=""
 SLACK_APP_TOKEN=""
@@ -614,6 +1080,7 @@ if [ "$CHANNEL_PROVIDER" = "telegram" ]; then
   echo -e "${DIM}  4. Masold ide a kapott tokent:${NC}"
   echo ""
   read -rp "$(_t prompt_telegram_token)" BOT_TOKEN
+  probe_telegram_token "$BOT_TOKEN"
 elif [ "$CHANNEL_PROVIDER" = "discord" ]; then
   echo ""
   echo -e "${DIM}  Az AI asszisztensed Discordon kommunikal veled.${NC}"
@@ -683,9 +1150,22 @@ echo -e "${BOLD}$(_t section_5)${NC}"
 cd "$INSTALL_DIR"
 
 echo -e "  npm install..."
-if ! (npm ci --loglevel warn 2>/dev/null || npm install --loglevel warn); then
-  fail "npm install sikertelen. Ellenorizd a hibauzeneteket fentebb."
+# Fast path: npm ci. On a benign lockfile desync it fails harmlessly and we
+# fall back to npm install, so ci's stderr is captured (not shown) to avoid a
+# scary EUSAGE dump on the happy path. But if the fallback ALSO fails -- e.g.
+# node-gyp getting OOM-killed while compiling better-sqlite3 from source, which
+# has no prebuilt binary for newer Node ABIs -- we replay ci's captured stderr
+# so the real error is visible instead of an empty "check above".
+_NPM_CI_LOG=$(mktemp)
+if ! npm ci --loglevel warn 2>"$_NPM_CI_LOG"; then
+  if ! npm install --loglevel warn; then
+    echo -e "  ${DIM}--- npm ci kimenet ---${NC}"
+    cat "$_NPM_CI_LOG" >&2
+    rm -f "$_NPM_CI_LOG"
+    fail "npm install sikertelen. Ellenorizd a fenti hibauzeneteket (pl. node-gyp OOM a better-sqlite3 forditasakor)."
+  fi
 fi
+rm -f "$_NPM_CI_LOG"
 ok "npm csomagok telepitve"
 
 INSTALL_STEP="typescript-build"
@@ -717,33 +1197,117 @@ INSTALL_STEP="configuration"
 echo ""
 echo -e "${BOLD}  Konfiguracio letrehozasa...${NC}"
 
-(
-  umask 077 && cat >"$INSTALL_DIR/.env" <<ENVEOF
-# Main agent konfiguracio
-CHANNEL_PROVIDER=${CHANNEL_PROVIDER}
-OWNER_NAME=${OWNER_NAME}
-BOT_NAME=${BOT_NAME}
-BRAND_NAME=${BRAND_NAME}
-MAIN_AGENT_ID=${MAIN_AGENT_ID}
-SERVICE_ID=${SERVICE_ID}
-WEB_PORT=${WEB_PORT:-3420}
-ENVEOF
-)
+# Create or UPDATE .env -- MERGE, never replace (card 8290FF71). The old
+# cat> heredoc regenerated the file on every run, silently dropping every
+# line the installer does not own: wizard-saved credentials
+# (CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY), operator-added keys
+# (WEB_HOST, GOOGLE_API_KEY, MAIN_AGENT_ISOLATED_CONFIG, ...) and a live
+# pairing (ALLOWED_CHAT_ID) -- so a re-run over a working install broke it.
+# Critical toggles should additionally live in store/config-overrides.json
+# (two-layer store), which install/update never touches.
+env_merge_key() {
+  # env_merge_key KEY VALUE -- drop any existing KEY= line, append KEY=VALUE.
+  _emk_tmp="$INSTALL_DIR/.env.tmp.$$"
+  # ENVTMPMODE925: the tmp holds the WHOLE .env (bot token, API keys) until the
+  # mv below, so it is created 0600 from its first byte -- at the umask default
+  # it was world-readable for that window (the VAULTMODE818 pattern). The rm
+  # matters too: a leftover tmp of the same name would keep its old mode.
+  rm -f "$_emk_tmp"
+  (umask 077; grep -v "^$1=" "$INSTALL_DIR/.env" > "$_emk_tmp" 2>/dev/null) || true
+  printf '%s=%s\n' "$1" "$2" >> "$_emk_tmp"
+  mv "$_emk_tmp" "$INSTALL_DIR/.env"
+  chmod 600 "$INSTALL_DIR/.env"
+}
+env_keep_or_set() {
+  # env_keep_or_set KEY VALUE -- like env_merge_key, but an EMPTY new value
+  # never clobbers an existing non-empty one (re-run with a skipped prompt).
+  _eks_existing="$(grep "^$1=" "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
+  if [ -z "$2" ] && [ -n "$_eks_existing" ]; then return 0; fi
+  env_merge_key "$1" "$2"
+}
+env_set_if_absent() {
+  # env_set_if_absent KEY VALUE -- write only when the KEY line does not exist
+  # at all. Used for a default the installer proposes rather than enforces: an
+  # operator who deliberately set KEY=0 keeps that decision across re-runs, and
+  # an explicitly set KEY=1 is not rewritten either.
+  if grep -q "^$1=" "$INSTALL_DIR/.env" 2>/dev/null; then return 0; fi
+  env_merge_key "$1" "$2"
+}
+env_add_list_entry() {
+  # env_add_list_entry KEY ENTRY -- make sure ENTRY is in the comma list KEY,
+  # keeping every entry already there. Read the way the server reads it: the
+  # LAST KEY= line wins (src/env-parse.ts), one pair of surrounding quotes is
+  # dropped, and each entry is compared after the server's normalisation
+  # (parseSystemSenderIds: split on commas, trim; sanitizeAgentIdent: keep
+  # [A-Za-z0-9_-]). Present -> no write; absent -> appended, as ONE KEY= line.
+  _eal_cur="$(grep "^$1=" "$INSTALL_DIR/.env" 2>/dev/null | tail -1 | cut -d= -f2- | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+  case "$_eal_cur" in
+    \"*\") _eal_cur="${_eal_cur#\"}"; _eal_cur="${_eal_cur%\"}" ;;
+    \'*\') _eal_cur="${_eal_cur#\'}"; _eal_cur="${_eal_cur%\'}" ;;
+  esac
+  _eal_cur="$(printf '%s' "$_eal_cur" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+  _eal_saved_ifs="$IFS"; IFS=','
+  for _eal_e in $_eal_cur; do
+    if [ "$(printf '%s' "$_eal_e" | tr -dc 'A-Za-z0-9_-')" = "$2" ]; then IFS="$_eal_saved_ifs"; return 0; fi
+  done
+  IFS="$_eal_saved_ifs"
+  if [ -n "$(printf '%s' "$_eal_cur" | tr -d ', ')" ]; then env_merge_key "$1" "$_eal_cur,$2"; else env_merge_key "$1" "$2"; fi
+}
+(umask 077 && touch "$INSTALL_DIR/.env")
+chmod 600 "$INSTALL_DIR/.env"
+[ -s "$INSTALL_DIR/.env" ] || printf '# Main agent konfiguracio\n' >> "$INSTALL_DIR/.env"
+env_merge_key CHANNEL_PROVIDER "${CHANNEL_PROVIDER}"
+env_merge_key OWNER_NAME "${OWNER_NAME}"
+env_merge_key BOT_NAME "${BOT_NAME}"
+env_merge_key BRAND_NAME "${BRAND_NAME}"
+env_merge_key MAIN_AGENT_ID "${MAIN_AGENT_ID}"
+env_merge_key SERVICE_ID "${SERVICE_ID}"
+env_merge_key WEB_PORT "${WEB_PORT:-3420}"
+# The fleet's own guards alert under their OWN names: the prod-tree guard
+# (scripts/install-prod-tree-guard-hook.sh) and the channels.sh shared-root
+# guard. The message route accepts a sender only if it is a registered agent,
+# the owner, or listed in SYSTEM_SENDER_IDS, so without these entries each
+# guard falls back to sending as MAIN_AGENT_ID, i.e. the supervisory system
+# writes under the main agent's name. Appended to what the operator listed,
+# never replacing it; an entry already there is not written twice.
+# KNOWN LIMIT: the server reads the list once, at start-up (src/config.ts). A
+# fresh install starts it after this; a RE-RUN over a running install does not
+# restart it, so until the next dashboard restart a guard that reads the new
+# line sends under its own name to a server that does not know it yet.
+env_add_list_entry SYSTEM_SENDER_IDS prod-tree-guard
+env_add_list_entry SYSTEM_SENDER_IDS channels-sh-guard
 if [ "$CHANNEL_PROVIDER" = "telegram" ]; then
-  echo "TELEGRAM_BOT_TOKEN=${BOT_TOKEN}" >> "$INSTALL_DIR/.env"
-  echo "ALLOWED_CHAT_ID=${CHAT_ID}" >> "$INSTALL_DIR/.env"
+  env_keep_or_set TELEGRAM_BOT_TOKEN "${BOT_TOKEN}"
+  # Never demote a paired install: CHAT_ID=0 means pairing was skipped THIS
+  # run -- it must not overwrite a real chat id from a previous run.
+  _existing_chat="$(grep '^ALLOWED_CHAT_ID=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
+  if [ "${CHAT_ID}" != "0" ] || [ -z "$_existing_chat" ]; then
+    env_merge_key ALLOWED_CHAT_ID "${CHAT_ID}"
+  fi
 elif [ "$CHANNEL_PROVIDER" = "discord" ]; then
-  echo "DISCORD_BOT_TOKEN=${DISCORD_BOT_TOKEN}" >> "$INSTALL_DIR/.env"
-  echo "DISCORD_CHANNEL_ID=${DISCORD_CHANNEL_ID}" >> "$INSTALL_DIR/.env"
-  echo "OPERATOR_DISCORD_USER_ID=${OPERATOR_DISCORD_USER_ID}" >> "$INSTALL_DIR/.env"
+  env_keep_or_set DISCORD_BOT_TOKEN "${DISCORD_BOT_TOKEN}"
+  env_keep_or_set DISCORD_CHANNEL_ID "${DISCORD_CHANNEL_ID}"
+  env_keep_or_set OPERATOR_DISCORD_USER_ID "${OPERATOR_DISCORD_USER_ID}"
 else
-  echo "SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN}" >> "$INSTALL_DIR/.env"
-  echo "SLACK_APP_TOKEN=${SLACK_APP_TOKEN}" >> "$INSTALL_DIR/.env"
+  env_keep_or_set SLACK_BOT_TOKEN "${SLACK_BOT_TOKEN}"
+  env_keep_or_set SLACK_APP_TOKEN "${SLACK_APP_TOKEN}"
 fi
+# The operator's deliberate "set auth up later" choice, persisted next to the
+# rest of the configuration. Written only when the skip branch above set it, so
+# it is a record of a decision and never an inference from missing credentials.
+# If the run dies before this point the flag is simply absent, which reads as
+# "unfinished" -- the safe direction, since that offers help rather than
+# assuming the operator wanted no auth.
+if [ "${CLAUDE_AUTH_DEFERRED:-}" = "1" ]; then
+  env_merge_key CLAUDE_AUTH_DEFERRED 1
+fi
+
 # Claude auth credentials (API key or OAuth token) -- channels.sh reads
 # these selectively so the tmux-spawned claude process can authenticate.
+# Merged by key, so an auth line saved by a previous run (or the dashboard
+# wizard) survives a re-run where the prompt was skipped.
 if [ -n "${CLAUDE_AUTH_ENV_LINE:-}" ]; then
-  echo "$CLAUDE_AUTH_ENV_LINE" >> "$INSTALL_DIR/.env"
+  env_merge_key "${CLAUDE_AUTH_ENV_LINE%%=*}" "${CLAUDE_AUTH_ENV_LINE#*=}"
 fi
 chmod 600 "$INSTALL_DIR/.env"
 # Fleet setup-token file: per-agent config-dir isolation and the credentials
@@ -757,8 +1321,97 @@ if [ -n "${OAUTH_TOKEN_INPUT:-}" ] && printf '%s' "$OAUTH_TOKEN_INPUT" | grep -E
   mkdir -p "$INSTALL_DIR/store"
   (umask 077 && printf '%s' "$OAUTH_TOKEN_INPUT" > "$INSTALL_DIR/store/.claude-oauth-token")
   ok "Fleet setup-token eltarolva (store/.claude-oauth-token) -- per-agent izolacio aktiv"
+  # Point the MAIN agent at an isolated config dir too, not just the
+  # sub-agents. Without this the main bot keeps the shared ~/.claude and
+  # authenticates from whatever refreshes that root -- on Linux the shared
+  # ~/.claude/.credentials.json -- which periodically expires and 401s the bot
+  # into a parked TUI that the router reads as busy, so the channel goes silent
+  # with no error (the confirmed root cause of the 2026-07-23 marveen-channels
+  # outage). The setting existed but nothing ever turned it on, so every
+  # default install was wired to that failure mode.
+  #
+  # Only in THIS branch, i.e. only when the installer just captured the fleet
+  # token itself in this same run: the operator handed it over moments ago, so
+  # the identity the main bot will run under is not a surprise. An install that
+  # already carried auth keeps whatever it had. env_set_if_absent, so a
+  # deliberate MAIN_AGENT_ISOLATED_CONFIG=0 stands.
+  env_set_if_absent MAIN_AGENT_ISOLATED_CONFIG 1
 fi
 ok ".env letrehozva (chmod 600)"
+
+# ── Fail-closed auth gate ────────────────────────────────────────────────────
+# Until now nothing verified that the AGENTS will actually be able to log in.
+# A skipped/empty token prompt produced a fully "successful" install whose main
+# agent then sat at "Not logged in" and re-tried forever (2026-07-30: 26 healer
+# escalations and 12 pointless restarts over six hours on one host).
+#
+# Three states, and the failure branches must never print the success text:
+#   OK       -- the services carry a credential AND it answers a live query
+#   BROKEN   -- no credential, or a credential that does not work
+#   UNKNOWN  -- the probe could not run (no claude binary, no network)
+INSTALL_AUTH_STATE="BROKEN"
+_svc_token=""
+if [ -s "$INSTALL_DIR/store/.claude-oauth-token" ]; then
+  _svc_token="$(cat "$INSTALL_DIR/store/.claude-oauth-token" 2>/dev/null || true)"
+fi
+if [ -z "$_svc_token" ]; then
+  _svc_token="$(grep -E '^CLAUDE_CODE_OAUTH_TOKEN=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+fi
+_svc_apikey="$(grep -E '^ANTHROPIC_API_KEY=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2- || true)"
+
+if ! service_auth_present; then
+  INSTALL_AUTH_STATE="BROKEN"
+else
+  # Probe the way a SERVICE will run: an isolated config dir (so ~/.claude and
+  # the operator's shell exports cannot make a broken install look healthy)
+  # carrying ONLY the credential the units will actually get.
+  _probe_cfg="$(mktemp -d 2>/dev/null || echo /tmp/marveen-authprobe.$$)"
+  _probe_out=""
+  _probe_rc=1
+  if command -v claude >/dev/null 2>&1; then
+    # A 401 here is the VERDICT this gate exists to report, not an installer
+    # error -- see the guard rationale above the operator-shell probe.
+    if [ -n "$_svc_token" ]; then
+      _probe_out="$(env -i PATH="$PATH" HOME="$HOME" CLAUDE_CONFIG_DIR="$_probe_cfg" \
+        CLAUDE_CODE_OAUTH_TOKEN="$_svc_token" \
+        claude --print "ping" 2>&1)" && _probe_rc=0 || _probe_rc=$?
+    else
+      _probe_out="$(env -i PATH="$PATH" HOME="$HOME" CLAUDE_CONFIG_DIR="$_probe_cfg" \
+        ANTHROPIC_API_KEY="$_svc_apikey" \
+        claude --print "ping" 2>&1)" && _probe_rc=0 || _probe_rc=$?
+    fi
+    _probe_out=${_probe_out:0:200}
+    if [ "$_probe_rc" -eq 0 ] && [ -n "$_probe_out" ]; then
+      INSTALL_AUTH_STATE="OK"
+    else
+      INSTALL_AUTH_STATE="BROKEN"
+    fi
+  else
+    INSTALL_AUTH_STATE="UNKNOWN"
+  fi
+  rm -rf "$_probe_cfg" 2>/dev/null || true
+fi
+unset _svc_token _svc_apikey
+
+case "$INSTALL_AUTH_STATE" in
+  OK)
+    ok "Auth ellenorizve a SZOLGALTATASOK utjan (izolalt konfig + a unitok hitelesitoje)"
+    ;;
+  UNKNOWN)
+    warn "Az auth-ot NEM tudtam ellenorizni (nincs futtathato claude vagy nincs halozat)."
+    echo -e "    ${DIM}A telepites folytatodik, de az ugynokok indulasa nincs igazolva.${NC}"
+    echo -e "    ${DIM}Ellenorzes kesobb: ${BLUE}bash \"$INSTALL_DIR/scripts/doctor.sh\"${NC}"
+    ;;
+  *)
+    warn "AZ UGYNOKOK IGY NEM FOGNAK ELINDULNI: a telepites nem hordoz mukodo auth kulcsot."
+    echo -e "    ${DIM}A szolgaltatasok CSAK ezt a ket helyet olvassak:${NC}"
+    echo -e "    ${DIM}  - $INSTALL_DIR/.env  (CLAUDE_CODE_OAUTH_TOKEN vagy ANTHROPIC_API_KEY)${NC}"
+    echo -e "    ${DIM}  - $INSTALL_DIR/store/.claude-oauth-token${NC}"
+    echo -e "    ${DIM}Ha a terminalodban mukodik a claude, az NEM eleg: a systemd unit${NC}"
+    echo -e "    ${DIM}nem olvassa a ~/.bashrc-t es a ~/.claude credentialt.${NC}"
+    echo -e "    ${BOLD}Javitas most: ${BLUE}bash \"$INSTALL_DIR/scripts/auth.sh\"${NC}"
+    ;;
+esac
 
 # CLAUDE.md generalasa template-bol
 if [ -f "$INSTALL_DIR/templates/CLAUDE.md.template" ]; then
@@ -821,11 +1474,18 @@ if [ -d "$SEED_SCHED_DIR" ]; then
   mkdir -p "$SCHED_TARGET_DIR"
   SCHED_NEW=0
   SCHED_SKIP=0
+  SCHED_TOMBSTONE="$SCHED_TARGET_DIR/.removed-defaults"
   for tpl in "$SEED_SCHED_DIR"/*/; do
     [ -d "$tpl" ] || continue
     task_name=$(basename "$tpl")
     [[ "$task_name" == "bumblebee-hygiene-scan" ]] && continue
     target="$SCHED_TARGET_DIR/$task_name"
+    # #796: a reinstall over an existing box must honor the dashboard's record
+    # of a deleted default (.removed-defaults); a UI re-create clears it.
+    if [ -f "$SCHED_TOMBSTONE" ] && grep -qxF "$task_name" "$SCHED_TOMBSTONE" 2>/dev/null; then
+      SCHED_SKIP=$((SCHED_SKIP + 1))
+      continue
+    fi
     if [ -d "$target" ]; then
       SCHED_SKIP=$((SCHED_SKIP + 1))
       continue
@@ -1012,14 +1672,34 @@ echo ""
 echo -e "${BOLD}$(_t section_6_linux)${NC}"
 
 # --- Ollama telepites ---
+#
+# Where the RUNTIME will look. src/config.ts:331 reads OLLAMA_URL and falls back
+# to http://localhost:11434; this step used to hardcode that fallback in seven
+# places, so an install pointed at a non-default or remote Ollama probed and
+# pulled the embedding model somewhere the running fleet would never read --
+# and installed a second, local daemon it did not need. Same precedence as the
+# runtime: the environment first, then the .env this installer has already
+# written, then the historical default.
+OLLAMA_API="${OLLAMA_URL:-}"
+if [ -z "$OLLAMA_API" ] && [ -f "$INSTALL_DIR/.env" ]; then
+  OLLAMA_API="$(grep -E '^OLLAMA_URL=' "$INSTALL_DIR/.env" | head -1 | cut -d= -f2- | tr -d ' "')"
+fi
+OLLAMA_API="${OLLAMA_API:-http://localhost:11434}"
+
 echo -e "  Ollama ellenorzese (szemantikus memoria kereseshez)..."
-if command -v ollama &>/dev/null; then
+if curl -s --max-time 5 "${OLLAMA_API}/api/version" &>/dev/null; then
+  # Answering already: nothing to install, wherever it happens to run.
+  ok "ollama elerheto (${OLLAMA_API})"
+elif command -v ollama &>/dev/null; then
   ok "ollama mar telepitve"
 else
   echo -e "  Ollama telepitese..."
   # Az ollama telepitoje sudo-val ir a /usr/local/bin-be es allit be systemd service-t.
   # Elore gyorsitotarazzuk a sudo hitelesitest, hogy a gyermek-script sudo prompt-ja ne bukjon el.
   sudo -v 2>/dev/null || true
+  # zstd -- az ollama telepitoje ezzel csomagolja ki a binarist; nincs alapertelmezetten telepitve friss WSL distron,
+  # nelkule "ERROR: This version requires zstd for extraction" hibaval elhasal.
+  command -v zstd &>/dev/null || pkg_install_noninteractive zstd || true
   # NEM fatalis: ha az ollama telepitoje hibara fut (pl. sudo, halozat, WSL),
   # csak figyelmeztetunk es kihagyjuk a szemantikus memoria lepest -- a telepito megy tovabb.
   if curl -fsSL https://ollama.com/install.sh | sh; then
@@ -1030,16 +1710,18 @@ else
   fi
 fi
 
-# A service-inditas es modell-letoltes csak akkor fut, ha az ollama tenyleg telepult.
-if command -v ollama &>/dev/null; then
+# The service-start + model-pull block runs when there is a local binary to
+# start OR an API to pull through -- a remote/containerised Ollama has no local
+# binary, but the model still has to exist on it.
+if command -v ollama &>/dev/null || curl -s --max-time 5 "${OLLAMA_API}/api/version" &>/dev/null; then
 # A telepito letrehoz egy ollama.service systemd egységet és elindítja.
 # Ha megis nem futna, systemctl-lel indítjuk -- NEM ollama serve &
-if ! curl -s http://localhost:11434/api/version &>/dev/null; then
+if ! curl -s "${OLLAMA_API}/api/version" &>/dev/null; then
   echo -e "$(_t linux.ollama_starting)"
   sudo systemctl enable --now ollama 2>/dev/null || true
   # Megvarjuk amig az API valaszol (max 15 mp)
   for i in $(seq 1 15); do
-    curl -s http://localhost:11434/api/version &>/dev/null && break
+    curl -s "${OLLAMA_API}/api/version" &>/dev/null && break
     sleep 1
   done
 fi
@@ -1048,21 +1730,37 @@ fi
 # stream:false --> szinkron, egyetlen valaszt ad vissza a letoltes utan
 ollama_pull() {
   local model="$1" size="$2"
-  if curl -s http://localhost:11434/api/tags | grep -q "\"$model\""; then
+  # API-up guard (BC100FAIL810): this whole step is declared optional/non-fatal,
+  # but on a host where the ollama BINARY installed yet its SERVICE never came up
+  # (no ollama.service unit, API at :11434 dead -- measured on ai-bootcamp-vps100
+  # 2026-08-10), the pull below would abort the whole install. Under `set -e` the
+  # `status=$(curl ... | python3 json.load)` assignment inherits the pipeline's
+  # exit code -- an empty curl (connection refused) makes json.load raise, python3
+  # exits non-zero, the assignment inherits it, and the ERR trap kills the
+  # install at step "ollama-whisper". So skip -- non-fatal -- whenever the API is
+  # not answering, instead of trying a pull that cannot work.
+  if ! curl -s --max-time 5 "${OLLAMA_API}/api/version" &>/dev/null; then
+    warn "ollama API nem valaszol (${OLLAMA_API}) -- $model letoltese kimarad (a szolgaltatas nem all fel). Kesobb: ollama serve && ollama pull $model"
+    return 0
+  fi
+  if curl -s "${OLLAMA_API}/api/tags" | grep -q "\"$model\""; then
     ok "$model mar letoltve"
     return 0
   fi
   echo -e "  $model letoltese ($size)..."
   local status
+  # `|| status=""` is load-bearing under `set -e`: a command-substitution
+  # assignment aborts the script when its pipeline exits non-zero (empty body ->
+  # json.load raises -> python3 exits 1). The guard turns that into the warn path.
   status=$(curl -s --max-time 600 \
-    -X POST http://localhost:11434/api/pull \
+    -X POST "${OLLAMA_API}/api/pull" \
     -H 'Content-Type: application/json' \
     -d "{\"model\": \"$model\", \"stream\": false}" |
-    python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('status','?'))" 2>/dev/null)
+    python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('status','?'))" 2>/dev/null) || status=""
   if [ "$status" = "success" ]; then
     ok "$model kesz"
   else
-    warn "$model letoltese sikertelen (status: $status) -- kezzel: ollama pull $model"
+    warn "$model letoltese sikertelen (status: ${status:-<ures valasz>}) -- kezzel: ollama pull $model"
   fi
 }
 
@@ -1201,6 +1899,8 @@ NODE_PATH="$(which node)"
 DASH_UNIT="${SERVICE_ID}-dashboard"
 CHAN_UNIT="${SERVICE_ID}-channels"
 MORN_UNIT="${SERVICE_ID}-morning"
+KEEPALIVE_UNIT="${SERVICE_ID}-channel-keepalive-probe"
+INBOX_OBSERVER_UNIT="${SERVICE_ID}-main-inbox-observer"
 
 # Detect the host timezone so the scheduled-task runner (which reads
 # cron expressions in Node's local TZ) fires at the operator's wall
@@ -1278,7 +1978,17 @@ WorkingDirectory=$INSTALL_DIR
 # load for the current Node ABI before starting (2026-07-03 crash-loop fix).
 ExecStartPre=$INSTALL_DIR/scripts/ensure-native-modules.sh
 ExecStart=$INSTALL_DIR/scripts/channels.sh
-Restart=on-failure
+# Restart=always, NOT on-failure. channels.sh has watchdog branches that exit ON
+# PURPOSE to be restarted (sustained plugin death, plugin never started), and
+# under on-failure a zero exit read as "service finished" and the channel stayed
+# dead for good -- silently, with no failed unit to notice. macOS never showed
+# this because the launchd plist uses KeepAlive=true, which restarts regardless
+# of exit code; this line is what makes the Linux side symmetric with it.
+# Observed on a live v1.27.0 install 2026-08-04: unit inactive/dead after
+# ExecMainStatus=0, ten minutes before anyone looked.
+# Restart churn stays bounded by StartLimitIntervalSec/StartLimitBurst in
+# [Unit] above plus channels.sh's own rapid-failure backoff (sleep 60/300).
+Restart=always
 RestartSec=10
 StandardOutput=append:$INSTALL_DIR/store/channels.log
 StandardError=append:$INSTALL_DIR/store/channels.error.log
@@ -1308,14 +2018,125 @@ ${TZ_LINE}
 EOF
 
 # ${MORN_UNIT}.timer
+# WRITTEN BUT NOT ENABLED (see the enable list further down). The morning
+# briefing ships TWICE: as this 07:27 timer and as the seeded
+# scheduled-tasks/reggeli-napindito task at 07:30. Two runs of the same work
+# three minutes apart is one too many, and the timer is the weaker of the two:
+# it launches a headless `claude -p` whose config dir carries no channel
+# allowlist, so its reply tool rejects the owner's chat_id and the run refuses
+# itself as a prompt injection (observed 2026-09-13, and it stamped the day as
+# delivered on the way out). The scheduled task runs inside the live channel
+# session, which has the allowlist. The unit files stay on disk so an operator
+# who wants the timer path can `systemctl --user enable --now <id>-morning.timer`.
+#
+# NO Requires=/Wants= on the service here: a [Unit] dependency on the
+# triggered service makes EVERY activation of the timer unit (each systemd
+# user-manager start, not just the 07:27 elapse) queue an immediate start of
+# the briefing service. Under user-manager restart churn that multiplied the
+# morning briefing (customer report 2026-07-26: 5 deliveries in one day).
+# The [Timer] section binds to ${MORN_UNIT}.service by name on elapse, which
+# is the only coupling a timer needs.
 cat >"$SYSTEMD_DIR/${MORN_UNIT}.timer" <<EOF
 [Unit]
 Description=${BOT_NAME} Reggeli Napindito Timer
-Requires=${MORN_UNIT}.service
 
 [Timer]
 OnCalendar=*-*-* 07:27:00
 Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+
+# ${KEEPALIVE_UNIT}.service/.timer -- token-free IDLE-path keepalive producer.
+#
+# WHY THIS MUST BE INSTALLED (measured on a live install, night of 2026-09-12/13:
+# 13 service restarts, one every ~50 minutes, all night). store/.channel-keepalive
+# has two intended producers: organic inbound (channel-monitor advances the mtime
+# on every ingested message -- covers BUSY periods) and this probe (covers QUIET
+# periods). The repo shipped scripts/channel-keepalive-probe.sh plus placeholder
+# units under scripts/systemd/, but nothing installed them, so on a real host the
+# ONLY producer was inbound traffic. Every night, as soon as the owner stopped
+# writing, the file aged past the dashboard's 45-minute liveness ceiling and
+# channel-monitor "recovered" a perfectly healthy session: respawn-pane (the main
+# agent's conversation gone, restarted fresh with no --continue), which killed the
+# telegram plugin with it, which tripped channels.sh's own dead-plugin watchdog
+# 181s later, which exited 1 for a second, whole-unit restart. A silent channel is
+# normal at 3am; the watchdog read it as a wedge because nothing was left to prove
+# otherwise.
+#
+# The probe does NOT fake liveness: it touches the keepalive only after proving
+# from the process tree that the channels tmux session, its claude pid, and a
+# telegram poller descending from that pid are all alive. A genuinely dead pipe
+# still ages out and still gets recovered.
+cat >"$SYSTEMD_DIR/${KEEPALIVE_UNIT}.service" <<EOF
+[Unit]
+Description=${BOT_NAME} token-free idle-path channel keepalive probe
+
+[Service]
+Type=oneshot
+WorkingDirectory=$INSTALL_DIR
+ExecStart=$INSTALL_DIR/scripts/channel-keepalive-probe.sh
+Environment=PATH=$HOME/.local/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=$HOME
+${TZ_LINE}
+StandardOutput=append:$INSTALL_DIR/store/channel-keepalive-probe.log
+StandardError=append:$INSTALL_DIR/store/channel-keepalive-probe.log
+EOF
+
+# Same "no Requires=/Wants= on the triggered service" rule as the morning timer
+# above: the [Timer] section already binds to ${KEEPALIVE_UNIT}.service by name.
+# 3 minutes is far inside every consumer's staleness threshold (the dashboard's
+# 45-minute ceiling, channel-watchdog's 15).
+cat >"$SYSTEMD_DIR/${KEEPALIVE_UNIT}.timer" <<EOF
+[Unit]
+Description=${BOT_NAME} channel keepalive probe every 3 minutes
+
+[Timer]
+OnBootSec=90s
+OnUnitActiveSec=3min
+AccuracySec=20s
+
+[Install]
+WantedBy=timers.target
+EOF
+
+# ${INBOX_OBSERVER_UNIT}.service/.timer -- the main agent's inbox queue, watched
+# from OUTSIDE the dashboard process. Every other delivery path is watched by
+# something; the main agent's is not, and its only in-process reader lives in
+# the dashboard itself, so a stopped or wedged dashboard takes the watcher down
+# with it and mail to the main agent sits pending with nobody to notice.
+#
+# The repo shipping the script is not enough -- that is the exact defect the
+# observer's own header names about the unscheduled watchdog script, and it is
+# why this block exists next to the keepalive probe rather than in a README.
+cat >"$SYSTEMD_DIR/${INBOX_OBSERVER_UNIT}.service" <<EOF
+[Unit]
+Description=${BOT_NAME} out-of-process observer of the main agent's inbox queue
+
+[Service]
+Type=oneshot
+WorkingDirectory=$INSTALL_DIR
+ExecStart=$INSTALL_DIR/scripts/main-inbox-observer.sh
+Environment=PATH=$HOME/.local/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=$HOME
+${TZ_LINE}
+StandardOutput=append:$INSTALL_DIR/store/main-inbox-observer.log
+StandardError=append:$INSTALL_DIR/store/main-inbox-observer.log
+EOF
+
+# Deliberately NOT bound to the dashboard unit: "the dashboard is down" is one
+# of the states this observes, so the timer has to survive it. Six ticks fit
+# inside the 30-minute stall threshold, so one missed tick cannot push the
+# alert past the window.
+cat >"$SYSTEMD_DIR/${INBOX_OBSERVER_UNIT}.timer" <<EOF
+[Unit]
+Description=${BOT_NAME} main-agent inbox observer every 5 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=30s
 
 [Install]
 WantedBy=timers.target
@@ -1334,7 +2155,6 @@ Wants=network-online.target
 Type=oneshot
 ExecStart=$INSTALL_DIR/scripts/host-restart-watchdog.sh
 Environment=MARVEEN_STORE=$INSTALL_DIR/store
-Environment=TELEGRAM_ENV=$HOME/.claude/channels/telegram/.env
 Environment=PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=$HOME
 ${TZ_LINE}
@@ -1355,7 +2175,6 @@ Description=${BOT_NAME} app-crash notifier for %i
 [Service]
 Type=oneshot
 ExecStart=$INSTALL_DIR/scripts/unit-fail-notify.sh %i
-Environment=TELEGRAM_ENV=$HOME/.claude/channels/telegram/.env
 Environment=PATH=$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=$HOME
 ${TZ_LINE}
@@ -1400,8 +2219,34 @@ fi
 SVCFAIL=0
 if pidof systemd >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1; then
   systemctl --user daemon-reload
-  systemctl --user enable "${DASH_UNIT}" "${CHAN_UNIT}" "${MORN_UNIT}.timer" "${SERVICE_ID}-host-watchdog.service" 2>/dev/null || true
-  ok "systemd unitok generalva es engedelyezve"
+  # The green tick used to print unconditionally after a `|| true`, so a failed
+  # enable was reported as success -- the visible version of the same defect the
+  # macOS branch had. `if` rather than `&&`: a failing enable inside an if
+  # CONDITION is exempt from errexit and from the ERR trap, so the installer
+  # reports it instead of dying on it.
+  # ${MORN_UNIT}.timer is deliberately NOT in this list -- the seeded
+  # reggeli-napindito scheduled task already delivers the morning briefing at
+  # 07:30 from inside the live channel session. See the timer's comment above.
+  if systemctl --user enable "${DASH_UNIT}" "${CHAN_UNIT}" "${KEEPALIVE_UNIT}.timer" "${INBOX_OBSERVER_UNIT}.timer" "${SERVICE_ID}-host-watchdog.service" 2>/dev/null; then
+    ok "systemd unitok generalva es engedelyezve"
+  else
+    warn "A unit-fajlok elkeszultek, de az engedelyezesuk nem sikerult -- ujrainditas utan a szolgaltatasok nem indulnak el maguktol."
+    # ALL FOUR units the enable above covers, not just the two services. A
+    # command that silently drops the keepalive probe or the watchdog would leave
+    # them disabled while the operator sees no error and believes the fix worked
+    # -- an incomplete instruction ends the same way as a false claim.
+    # The label gets its own line. With "Javitas most:" in front of the command,
+    # the backslashes join all three printed lines into ONE command whose first
+    # token is `Javitas`, so a pasted block fails with "Javitas: command not
+    # found" and enables nothing. Measured by rendering the block and running it.
+    # `bash -n` does NOT catch this: the pasted text is valid shell, just a
+    # different command than the one we meant to offer. Same shape as
+    # install-macos.sh, where the label is already on its own line.
+    echo -e "  ${DIM}Javitas most:${NC}"
+    echo -e "  ${DIM}systemctl --user enable \\${NC}"
+    echo -e "  ${DIM}    ${DASH_UNIT} ${CHAN_UNIT} \\${NC}"
+    echo -e "  ${DIM}    ${KEEPALIVE_UNIT}.timer ${INBOX_OBSERVER_UNIT}.timer ${SERVICE_ID}-host-watchdog.service${NC}"
+  fi
   systemctl --user start "${DASH_UNIT}" "${CHAN_UNIT}" 2>/dev/null || true
   sleep 2
   for svc in "${DASH_UNIT}" "${CHAN_UNIT}"; do
@@ -1417,14 +2262,14 @@ if pidof systemd >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1; the
 else
   warn "systemd --user nem elerheto (WSL / konteneren / VPS user-session nelkul) -- kozvetlen inditas."
   mkdir -p "$INSTALL_DIR/store"
-  # Root VPS/container: claude refuses --dangerously-skip-permissions as uid 0,
-  # which would kill the agent tmux sessions the dashboard spawns. Opt into the
-  # sandbox escape hatch so first boot works (start.sh/channels.sh do the same).
-  [ "$(id -u)" = "0" ] && export IS_SANDBOX=1
-  nohup "$NODE_PATH" "$INSTALL_DIR/dist/index.js" >"$INSTALL_DIR/store/dashboard.log" 2>&1 &
-  echo $! >"$INSTALL_DIR/store/dashboard.pid"
-  nohup bash "$INSTALL_DIR/scripts/channels.sh" >"$INSTALL_DIR/store/channels.log" 2>&1 &
-  echo $! >"$INSTALL_DIR/store/channels.pid"
+  # Launch through start.sh rather than a second copy of its nohup lines. The
+  # copy here never checked for a running instance, so re-running the installer
+  # (the usual move after a half-failed install) started a SECOND channels.sh on
+  # the same bot token -- two pollers splitting the incoming messages, no error
+  # anywhere. start.sh's direct-launch branch is idempotent (flock + pidfile +
+  # cmdline check), sets IS_SANDBOX for root, and writes the same pidfiles the
+  # checks below read.
+  bash "$INSTALL_DIR/scripts/start.sh" >>"$INSTALL_DIR/store/boot.log" 2>&1 || true
   sleep 3
   if kill -0 "$(cat "$INSTALL_DIR/store/dashboard.pid" 2>/dev/null)" 2>/dev/null; then
     ok "Dashboard fut (nohup, pid $(cat "$INSTALL_DIR/store/dashboard.pid"))"
@@ -1439,6 +2284,36 @@ else
     SVCFAIL=1
   fi
   echo -e "  ${DIM}Ujrainditas kesobb: ./scripts/start.sh${NC}"
+  if [ "$IS_WSL" = "true" ]; then
+    # Without systemd nothing restarts the services after a WSL restart, and
+    # the installer used to stop at the one-line warning above.
+    echo ""
+    echo -e "  ${ORANGE}WSL-en a systemd nincs bekapcsolva, ezert a Marveen a WSL ujraindulasa utan nem indul el magatol.${NC}"
+    echo -e "  ${DIM}Bekapcsolas: ird be az /etc/wsl.conf fajlba (sudo):${NC}"
+    echo "    [boot]"
+    echo "    systemd=true"
+    echo -e "  ${DIM}majd Windows PowerShellben: wsl --shutdown, nyisd meg ujra az Ubuntut, es futtasd ujra ezt a telepitot.${NC}"
+  fi
+fi
+
+# WSL2 shuts the whole VM down shortly after the last WSL window closes
+# (vmIdleTimeout), and that stops every service with it -- systemd and linger do
+# not help (scripts/systemd/README-host-stability.md). The fix lives on the
+# Windows side and must not be written from Linux, so only detect and explain.
+if [ "$IS_WSL" = "true" ]; then
+  _wslcfg=""
+  _cmd="$(command -v cmd.exe 2>/dev/null || echo /mnt/c/Windows/System32/cmd.exe)"
+  _winprofile="$("$_cmd" /c 'echo %USERPROFILE%' 2>/dev/null | tr -d '\r')"
+  [ -n "$_winprofile" ] && _wslcfg="$(wslpath -u "$_winprofile" 2>/dev/null)/.wslconfig"
+  if [ -z "$_wslcfg" ] || ! grep -Eqi '^[[:space:]]*vmIdleTimeout[[:space:]]*=[[:space:]]*-1' "$_wslcfg" 2>/dev/null; then
+    echo ""
+    echo -e "  ${ORANGE}WSL: ha bezarod az utolso Ubuntu ablakot, a Windows par perc mulva leallitja a WSL-t, es vele a Marveent is.${NC}"
+    echo -e "  ${DIM}Javitas Windowson: a %UserProfile%\\.wslconfig fajlba ird be:${NC}"
+    echo "    [wsl2]"
+    echo "    vmIdleTimeout=-1"
+    echo -e "  ${DIM}majd PowerShellben egyszer: wsl --shutdown${NC}"
+  fi
+  unset _wslcfg _winprofile _cmd
 fi
 
 # Ellenorzes
@@ -1459,6 +2334,16 @@ else
   ok "${CHANNEL_PROVIDER} plugin ellenorizve"
 fi
 
+# INSTPAIRPATH930: the access.json the pairing must read AND write. channels.sh moves the
+# shared $HOME/.claude/channels/<provider> dir into the install on its first start (#915,
+# scripts/channels.sh MAIN_CHAN_DIR), and the plugin writes the pending code there, so the
+# install-scoped file wins; the legacy path is only the fallback for a bridge that has not
+# migrated yet. Resolved AFTER the code is typed in, when the bot has already answered.
+_pairing_access_file() {
+  local scoped="$INSTALL_DIR/.claude/channels/$CHANNEL_PROVIDER/access.json"
+  if [ -f "$scoped" ]; then echo "$scoped"; else echo "$CHANNEL_DIR/access.json"; fi
+}
+
 # ─────────────────────────────────────────────
 # Channel pairing (Telegram only; Slack uses OAuth / App install)
 # ─────────────────────────────────────────────
@@ -1466,13 +2351,38 @@ if [ "$CHANNEL_PROVIDER" = "telegram" ] && [ -n "$BOT_TOKEN" ]; then
   echo ""
   echo -e "${BOLD}Telegram parositas${NC}"
 
-  ACCESS_FILE="$CHANNEL_DIR/access.json"
+
+  # Is the Telegram bridge actually running?
+  #
+  # `systemctl --user is-active` alone answers a NARROWER question than this
+  # step needs -- "does a systemd USER unit for it exist and run" -- and the two
+  # answers diverge on exactly the hosts the [7/7] step already handles. There,
+  # `pidof systemd` / `systemctl --user status` failing is not an error: the
+  # installer falls back to a direct nohup launch and prints
+  #   "Channels (Telegram bridge) fut (nohup, pid N)"
+  # ...and then this check called the very bridge it had just started "not
+  # started", skipped pairing, and left the install with ALLOWED_CHAT_ID=0 plus
+  # a red warning telling the operator to pair by hand. WSL is a documented
+  # supported platform and has no systemd user session by default, so this is
+  # not an exotic shape.
+  #
+  # Ask the same three ways start.sh/stop.sh already distinguish -- user unit,
+  # system unit, direct launch -- so pairing works wherever the launch worked.
+  _bridge_is_up() {
+    systemctl --user is-active --quiet "${CHAN_UNIT}" 2>/dev/null && return 0
+    systemctl is-active --quiet "${CHAN_UNIT}" 2>/dev/null && return 0
+    # The pidfile start.sh writes on its no-systemd branch. `kill -0` only
+    # probes for existence; it sends no signal.
+    local _pid
+    _pid="$(cat "$INSTALL_DIR/store/channels.pid" 2>/dev/null)" || return 1
+    [ -n "$_pid" ] && kill -0 "$_pid" 2>/dev/null
+  }
 
   # Megvarjuk amig a channels service tenyleg valaszol (max 15 mp)
   echo -e "  Varakozas a Telegram bridge elindulasara..."
   BRIDGE_OK=false
   for i in $(seq 1 15); do
-    if systemctl --user is-active --quiet "${CHAN_UNIT}" 2>/dev/null; then
+    if _bridge_is_up; then
       BRIDGE_OK=true
       break
     fi
@@ -1480,9 +2390,10 @@ if [ "$CHANNEL_PROVIDER" = "telegram" ] && [ -n "$BOT_TOKEN" ]; then
   done
 
   if [ "$BRIDGE_OK" = "false" ]; then
-    warn "A ${CHAN_UNIT} service nem indult el. Parositas kihagyva."
-    echo -e "  ${DIM}Ellenorizd: journalctl --user -u ${CHAN_UNIT} -n 30${NC}"
-    echo -e "  ${DIM}Kesobb: systemctl --user start ${CHAN_UNIT}, majd irj a botodnak${NC}"
+    warn "A Telegram bridge nem indult el. Parositas kihagyva."
+    echo -e "  ${DIM}systemd-vel:  journalctl --user -u ${CHAN_UNIT} -n 30${NC}"
+    echo -e "  ${DIM}anelkul:      tail -n 30 $INSTALL_DIR/store/channels.log${NC}"
+    echo -e "  ${DIM}Kesobb: ./scripts/start.sh, majd irj a botodnak${NC}"
   else
     ok "Telegram bridge fut"
     echo ""
@@ -1493,6 +2404,7 @@ if [ "$CHANNEL_PROVIDER" = "telegram" ] && [ -n "$BOT_TOKEN" ]; then
     read -rp "$(_t prompt_pair_code)" PAIR_CODE
 
     if [ -n "$PAIR_CODE" ]; then
+      ACCESS_FILE="$(_pairing_access_file)"
       if [ ! -f "$ACCESS_FILE" ]; then
         warn "access.json nem talalhato: $ACCESS_FILE"
         echo -e "  ${DIM}Bizonyosodj meg rola, hogy a bot futott amikor uzeneteket kuldtel neki.${NC}"
@@ -1527,9 +2439,19 @@ with open('$ACCESS_FILE', 'w') as f:
           ok "Parositas sikeres! (chat ID: $PENDING_CHAT_ID)"
           ok ".env ALLOWED_CHAT_ID frissitve"
           ok "Policy: allowlist (csak te erheted el a botot)"
-          # Ujrainditjuk, hogy felvegye az uj access.json-t
-          systemctl --user restart "${CHAN_UNIT}" 2>/dev/null || true
-          ok "${CHAN_UNIT} $(_t linux.chan_restarted)"
+          # Ujrainditjuk, hogy felvegye az uj access.json-t. The tick used to
+          # print after `restart ... || true`, so on a no-systemd host (WSL) it
+          # claimed a restart that never ran. Without systemd the bridge was
+          # started by start.sh, so restart it the same way.
+          if systemctl --user restart "${CHAN_UNIT}" 2>/dev/null; then
+            ok "${CHAN_UNIT} $(_t linux.chan_restarted)"
+          elif bash "$INSTALL_DIR/scripts/stop.sh" >>"$INSTALL_DIR/store/boot.log" 2>&1 \
+               && bash "$INSTALL_DIR/scripts/start.sh" >>"$INSTALL_DIR/store/boot.log" 2>&1 \
+               && sleep 3 && _bridge_is_up; then
+            ok "${CHAN_UNIT} $(_t linux.chan_restarted)"
+          else
+            warn "A csatorna ujrainditasa nem sikerult -- futtasd: ./scripts/stop.sh && ./scripts/start.sh"
+          fi
         else
           warn "A kod nem talalhato az access.json pending bejegyzesei kozott."
           echo -e "  ${DIM}Lehetseges okok:${NC}"
@@ -1566,8 +2488,9 @@ if [ "$CHANNEL_PROVIDER" = "telegram" ] && [ "$CHAT_ID" = "0" ]; then
   echo ""
   echo -e "${ORANGE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
   echo -e "${RED}$(_t warn_pair_missing)${NC}"
-  echo -e "${ORANGE}  Az ALLOWED_CHAT_ID=0 marad az .env-ben, ami azt jelenti${NC}"
-  echo -e "${ORANGE}  hogy a bot NEM fog valaszolni senkinek.${NC}"
+  echo -e "${ORANGE}  Az ALLOWED_CHAT_ID=0 marad az .env-ben. A bot a beszelgetesre${NC}"
+  echo -e "${ORANGE}  valaszolni FOG (azt a parositas donti el), de a MAGATOL kuldott${NC}"
+  echo -e "${ORANGE}  uzenetek elmaradnak: napi naplo, uj agens udvozlese, riasztasok.${NC}"
   echo ""
   echo -e "  ${BOLD}Javitas:${NC}"
   echo -e "  1. Irj a botodnak Telegramon (barmit)"
@@ -1616,3 +2539,19 @@ echo -e "  ${DIM}  ./scripts/start.sh${NC}                           $(_t linux.
 echo -e "  ${DIM}  ./scripts/stop.sh${NC}                            -- leallitas"
 echo ""
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+
+# The auth verdict is repeated LAST, because the "next steps" above tell the
+# user the bot will answer -- which is false when the services have no working
+# credential. A green frame must not be the final thing a broken install says.
+if [ "${INSTALL_AUTH_STATE:-UNKNOWN}" != "OK" ]; then
+  echo ""
+  if [ "${INSTALL_AUTH_STATE:-}" = "UNKNOWN" ]; then
+    echo -e "  ${ORANGE}! FIGYELEM: az auth-ot nem sikerult ellenoriznunk.${NC}"
+    echo -e "  ${DIM}  Lehet hogy mukodik, de nem igazoltuk. Ha a bot nem valaszol:${NC}"
+  else
+    echo -e "  ${RED}✗ AZ UGYNOKOK MEG NEM FOGNAK VALASZOLNI: hianyzik a mukodo auth kulcs.${NC}"
+    echo -e "  ${DIM}  A fenti 2. lepes (\"irj a botodnak\") addig NEM fog mukodni.${NC}"
+  fi
+  echo -e "  ${BOLD}  Javitas: ${BLUE}bash \"$INSTALL_DIR/scripts/auth.sh\"${NC}${BOLD} majd ${BLUE}bash \"$INSTALL_DIR/scripts/channels.sh\" restart${NC}"
+  echo ""
+fi

@@ -91,12 +91,30 @@ describe('makeLazyBinResolver', () => {
     expect(mockExistsSync).not.toHaveBeenCalled()
   })
 
-  it('resolves on first call and memoises the result', () => {
+  it('resolves on first call and memoises while the cached path still exists', () => {
     mockExecSync.mockReturnValue('/opt/homebrew/bin/tmux\n')
+    mockExistsSync.mockImplementation((p: string) => p === '/opt/homebrew/bin/tmux')
     const tmuxBin = makeLazyBinResolver('tmux')
     expect(tmuxBin()).toBe('/opt/homebrew/bin/tmux')
     expect(tmuxBin()).toBe('/opt/homebrew/bin/tmux')
+    // Second call re-validates via existsSync but does NOT re-run `which`.
     expect(mockExecSync).toHaveBeenCalledTimes(1)
+  })
+
+  it('re-resolves when the cached path disappears (binary moved / symlink repointed)', () => {
+    const stale = join(homedir(), '.local', 'bin', 'claude')
+    const fresh = '/opt/homebrew/bin/claude'
+    mockExecSync.mockReturnValue(stale + '\n')
+    mockExistsSync.mockImplementation((p: string) => p === stale)
+    const claudeBin = makeLazyBinResolver('claude')
+    expect(claudeBin()).toBe(stale)
+
+    // The cached path vanishes and `which` now resolves elsewhere: the next call
+    // must re-resolve instead of returning the dead path -- no restart needed.
+    mockExecSync.mockReturnValue(fresh + '\n')
+    mockExistsSync.mockImplementation((p: string) => p === fresh)
+    expect(claudeBin()).toBe(fresh)
+    expect(mockExecSync).toHaveBeenCalledTimes(2)
   })
 
   it('surfaces the not-found error on first use, not at import', () => {

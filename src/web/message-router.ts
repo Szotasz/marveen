@@ -1,31 +1,42 @@
+import { randomUUID } from 'node:crypto'
 import { logger } from '../logger.js'
-import { MAIN_AGENT_ID } from '../config.js'
+import { MAIN_AGENT_ID, VOICE_TRANSCRIBE_INBOUND } from '../config.js'
 import { resolveAgentChannelStateDir } from './voice-directive.js'
 import {
   getPendingMessages,
+  getMessageStatus,
   markMessageDelivered,
   markMessageDone,
   markMessageFailed,
   markPendingFederatedFailed,
   setMessageResult,
   createAgentMessage,
+  countNewerMessagesFromSameSender,
+  stampMessageTrace,
+  upsertOtelSpan,
   type AgentMessage,
 } from '../db.js'
 import { isQualifiedId } from './federation/address.js'
 import { sendFederatedMessage } from './federation/bridge.js'
 import { getFederationConfig, abandonWindowMsForPeer } from './federation/config.js'
-import { readAgentRemoteHost, readAgentVoiceConfig } from './agent-config.js'
+import { scheduleDeliveryTurnCheck } from './delivery-turn-check.js'
+import { readAgentRemoteHost, readAgentVoiceConfig, readAgentWorksourceChannel, type AgentVoiceConfig } from './agent-config.js'
+import { enqueueWorksourceItem, worksourceItemId } from './worksource-queue.js'
 import {
   agentSessionName,
   isSessionReadyForPrompt,
   clearStaleParkedInput,
   sendPromptToSession,
   sessionExistsOnHost,
+  capturePane,
+  clearFeedbackModalAndRecheck,
 } from './agent-process.js'
+import { detectPaneState, detectQuotaWall, detectsFirstRunGate, detectsPermissionDialog, permissionPromptSummary, type PaneState, type PermissionPromptSummary, type QuotaWall } from '../pane-state.js'
 import { setLastInboundModality } from './voice-modality.js'
 import { classifyAgentMessage, wrapAgentMessageForDelivery } from './agent-message-wrap.js'
-import { MAIN_CHANNELS_SESSION } from './main-agent.js'
+import { composeBatchInjection, batchInjectCapFor } from './batch-inject.js'
 import { maybeWakeSubAgentsForTelegram } from './telegram-inbox-wake.js'
+import { selectTickWindow } from './message-router-window.js'
 
 // A message that cannot be delivered within this window (target session never
 // exists / stays busy) is marked failed so it stops clogging the pending
@@ -71,6 +82,71 @@ export function shouldGiveUpOnInject(failCount: number, maxFailures: number): bo
  * note is addressed to the main agent, which drains via the pull model and
  * never hits this inject path.
  */
+// A stuck session blocks EVERY pending message to that agent, silently. The
+// warn log above never reached anyone on 2026-07-27 (2.5h stall found by hand),
+// so the stall goes to the main agent's inbox too. Rate limit comes from the
+// caller: it fires at most once per STUCK_ESCALATE_MS window per agent, and a
+// quota wall at most once per wall (quotaWallEscalation below).
+//
+// Pure part exported for tests: returns the alert text, or null when no alert
+// may be sent (the main agent must never alert itself about itself).
+export function formatStuckSessionAlert(
+  agent: string,
+  mainAgentId: string,
+  session: string,
+  stuckMs: number,
+  pendingCount: number,
+  paneState: PaneState | null = null,
+  awaitingPermission = false,
+  permissionAsk: PermissionPromptSummary | null = null,
+  quotaWall: QuotaWall | null = null,
+): string | null {
+  if (agent === mainAgentId) return null
+  const min = Math.round(stuckMs / 60000)
+  const queue = `${pendingCount} pending message(s) queued`
+  // An unanswered tool-permission prompt looks EXACTLY like a wedged session
+  // from the queue side, and the not-ready text below tells the reader to
+  // restart. On 2026-09-03 that framing was one step away from throwing out
+  // two running sub-agents (~165k tokens) whose only problem was a question
+  // nobody had answered. A prompt needs an ANSWER, not a restart, so it gets
+  // its own sentence -- and the alert says who has to act.
+  if (awaitingPermission) {
+    // Carry WHAT is being asked. The orchestrator answered two of these by
+    // hand on 2026-09-03 and both times the deciding step was opening the
+    // pane to read the question; an alert that quotes it saves that step.
+    const ask = permissionAsk ? ` It asks: ${permissionAsk.title} -- ${permissionAsk.reason}` : ''
+    return `[session-stuck] Agent '${agent}' (tmux ${session}) is parked on a TOOL-PERMISSION PROMPT for ${min} min with ${queue}.${ask} This is NOT a wedged session: a tool call is waiting for a yes/no answer, and only a person can give it. Do NOT restart (that discards the running work and leaves the question unanswered) and do NOT send a blind Escape (that answers "no" on the asker's behalf). Answer it in the pane: tmux attach -t ${session}`
+  }
+  // A busy pane means the session is working, so the alert must not read like
+  // "wedged, restart it" -- that framing is what turned the earlier busy-pane
+  // alerts into wasted restarts-in-waiting. It says what it is: a long turn,
+  // worth a look, not a restart on sight.
+  if (paneState === 'busy') {
+    return `[session-stuck] Agent '${agent}' (tmux ${session}) has been BUSY (actively working, spinner up) for ${min} min with ${queue}. Not a stall by itself -- check whether the turn is progressing or a tool call is wedged. Do NOT restart on this alert alone.`
+  }
+  // Card 41a0c3a3: a plan usage limit is neither a wedge nor a question. The
+  // CLI resumes by itself at the reset, and a restart on the same key does not
+  // lift the limit, so the not-ready text below ("restart the agent if it is
+  // wedged") would send the reader the wrong way. The alert names the class it
+  // saw, so the diagnosis does not start from a guess about the pane.
+  if (quotaWall) {
+    const resume = quotaWall.resetsAt ? `The CLI resumes by itself at ${quotaWall.resetsAt} (as the pane prints it).` : 'The banner does not say when it resets.'
+    return `[session-stuck] Agent '${agent}' (tmux ${session}) is at the PLAN USAGE LIMIT (quota wall) for ${min} min with ${queue}. ${resume} Banner: "${quotaWall.banner}". Not wedged and not a question: a restart on the same key does not lift the limit, only the reset or a key switch does. One alert per wall: the same banner is not alerted again for 5 h.`
+  }
+  return `[session-stuck] Agent '${agent}' (tmux ${session}) has been not-ready for ${min} min with ${queue}. Run the delivery-stall diagnosis: check the pane (busy vs idle vs full context) and restart the agent if it is wedged.`
+}
+
+function notifyOrchestratorOfStuckSession(agent: string, session: string, stuckMs: number, pendingCount: number, paneState: PaneState | null, awaitingPermission = false, permissionAsk: PermissionPromptSummary | null = null, quotaWall: QuotaWall | null = null): void {
+  try {
+    const alert = formatStuckSessionAlert(agent, MAIN_AGENT_ID, session, stuckMs, pendingCount, paneState, awaitingPermission, permissionAsk, quotaWall)
+    if (!alert) return
+    createAgentMessage('system', MAIN_AGENT_ID, alert)
+    logger.info({ agent, session, stuckMs, pendingCount, paneState, awaitingPermission, quotaWall: quotaWall != null, resetsAt: quotaWall?.resetsAt ?? null }, 'session-stuck surfaced to orchestrator')
+  } catch (err) {
+    logger.warn({ err, agent }, 'Failed to enqueue session-stuck notification')
+  }
+}
+
 function notifyOrchestratorOfFailedHandoff(msg: AgentMessage, reason: string): void {
   try {
     // A failed message to the main agent can't happen (pull model), but guard
@@ -87,13 +163,6 @@ function notifyOrchestratorOfFailedHandoff(msg: AgentMessage, reason: string): v
     logger.warn({ err, id: msg.id }, 'Failed to enqueue handoff-failure notification')
   }
 }
-// Wakeup cooldown for the main agent: the router fires at most one
-// sendPromptToSession wakeup per COOLDOWN_MS window to avoid spamming the
-// channels session. 45s gives enough headroom that a normal turn (typically
-// 5-30s) ends and drain-inbox fires before we would retry.
-let lastMainAgentWakeupMs = 0
-const MAIN_AGENT_WAKEUP_COOLDOWN_MS = 45 * 1000
-
 // Bounce a terminal federated-delivery failure back to the SENDER's inbox as
 // a local 'system' notice, so a delegating agent learns its task never
 // arrived (otherwise the failure only flips a DB row nobody reads, and the
@@ -122,6 +191,85 @@ function notifyDelegationFailed(msg: AgentMessage, error: string): void {
 // message backlog grows large. State cleared when session becomes ready or absent.
 const STUCK_ESCALATE_MS = 10 * 60 * 1000  // 10 min continuously stuck -> escalate
 const agentStuckSince = new Map<string, number>()  // agent -> first tick stuck (Date.now)
+
+// A session in the middle of a long turn is NOT ready for a prompt, which is
+// exactly what a wedged session looks like from the queue side. On 2026-07-31
+// that produced three false alarms in one day (atlas 18:56, prisma 19:27, and
+// an earlier pair): busy pane, spinner and `esc to interrupt` visible, one or
+// two messages queued behind a turn that was working fine. Each one spent a
+// main-agent LLM round on a diagnosis whose answer was "it is working".
+//
+// The delivery-stall runbook's first pane rule -- "esc to interrupt = still
+// working, leave it alone" -- is mechanical, so the router applies it itself:
+// a busy pane does not escalate at the normal threshold. It still escalates
+// eventually, because a tool call CAN wedge with the spinner up, and a session
+// that has been busy for half an hour with mail queued behind it is worth a
+// look either way.
+const BUSY_STUCK_ESCALATE_MS = 30 * 60 * 1000  // busy pane: only after a much longer watchdog
+
+/**
+ * Pure decision: may a continuously not-ready session escalate now?
+ *
+ * `paneState` is what the pane showed at the escalation check, or null when it
+ * could not be read (remote host down, tmux gone). Unreadable is NOT treated as
+ * busy: a pane we cannot see is a reason to look sooner, not later.
+ */
+export function shouldEscalateStuckSession(paneState: PaneState | null, stuckMs: number): boolean {
+  return stuckMs > (paneState === 'busy' ? BUSY_STUCK_ESCALATE_MS : STUCK_ESCALATE_MS)
+}
+
+// A quota wall does not change between two escalation windows: the CLI waits
+// for the reset (a five-hour window resets within five hours by definition),
+// so repeating the alert every STUCK_ESCALATE_MS would be one message every ten
+// minutes about the same fact (card 41a0c3a3). One alert per wall: the same
+// banner (keyed by the printed reset time) stays quiet for QUOTA_WALL_SILENCE_MS,
+// and even a changed banner waits QUOTA_WALL_MIN_GAP_MS after the last wall alert.
+// The state is keyed by agent and only ever read through the time rules, so it
+// is deliberately NOT cleared when the session turns ready: a walled pane can
+// flip between ready and not-ready, and clearing would re-arm the alert.
+const QUOTA_WALL_MIN_GAP_MS = 30 * 60 * 1000
+const QUOTA_WALL_SILENCE_MS = 5 * 60 * 60 * 1000
+const agentQuotaWallAlerted = new Map<string, QuotaWallAlertRecord>()
+
+export interface QuotaWallAlertRecord {
+  /** The wall's key: the reset time as printed, lower-cased ('?' when the banner has none). */
+  key: string
+  /** When that wall was last alerted (Date.now()). */
+  at: number
+}
+
+export type QuotaWallStep =
+  | { kind: 'none' }
+  | { kind: 'alert'; key: string }
+  | { kind: 'silent'; key: string }
+
+/**
+ * Pure decision for the quota-wall class at a stuck escalation.
+ *
+ *   - 'none': the wall rule does not apply -- no wall on the pane, or a
+ *     permission prompt / busy pane, which keep today's cadence (a permission
+ *     prompt is a real stall that only a person can clear, so it is NOT
+ *     rate-limited by this rule).
+ *   - 'alert': a wall not alerted recently; the caller records `key` + now.
+ *   - 'silent': the same wall was alerted less than QUOTA_WALL_SILENCE_MS ago,
+ *     or any wall less than QUOTA_WALL_MIN_GAP_MS ago.
+ */
+export function quotaWallEscalation(
+  wall: QuotaWall | null,
+  awaitingPermission: boolean,
+  paneState: PaneState | null,
+  prev: QuotaWallAlertRecord | undefined,
+  now: number,
+): QuotaWallStep {
+  if (!wall || awaitingPermission || paneState === 'busy') return { kind: 'none' }
+  const key = (wall.resetsAt ?? '?').toLowerCase()
+  if (prev) {
+    const since = now - prev.at
+    if (since < QUOTA_WALL_MIN_GAP_MS) return { kind: 'silent', key }
+    if (prev.key === key && since < QUOTA_WALL_SILENCE_MS) return { kind: 'silent', key }
+  }
+  return { kind: 'alert', key }
+}
 
 // ---- reconnect-backlog batching (card 2922e380 thread b) --------------------
 // When a session was absent and reconnects, old pending messages are summarized
@@ -154,6 +302,31 @@ const agentBatchedThisReconnect = new Set<string>()
  */
 export function shouldAbandon(sessionExists: boolean, ageMs: number, windowMs: number): boolean {
   return !sessionExists && ageMs > windowMs
+}
+
+// ---- Distributed trace context (card def5a189) ------------------------------
+// In-memory map of the last trace context delivered TO each agent. When the
+// agent subsequently sends a new message (no explicit trace_id), the router
+// stamps it with this context so the whole chain shares one root trace_id.
+// Reset on restart (acceptable -- traces only split across restarts, not within).
+const deliveredTraceCtx = new Map<string, { trace_id: string; span_id: string }>()
+
+function generateTraceId(): string { return randomUUID() }
+function generateSpanId(): string { return randomUUID().replace(/-/g, '').slice(0, 16) }
+
+// Stamps a trace context onto an unstamped pending message, using either an
+// inherited context (propagation) or a freshly generated root trace.
+function stampTraceOnMessage(msg: AgentMessage, nowMs: number): { trace_id: string; span_id: string; parent_span_id: string | null } {
+  const inherited = deliveredTraceCtx.get(msg.from_agent)
+  const trace_id = inherited?.trace_id ?? generateTraceId()
+  const span_id  = generateSpanId()
+  const parent_span_id = inherited?.span_id ?? null
+  const stamped = stampMessageTrace(msg.id, trace_id, span_id, parent_span_id)
+  if (stamped) {
+    const operation = `${msg.from_agent}->${msg.to_agent}`
+    upsertOtelSpan({ trace_id, span_id, parent_span_id, agent_id: msg.from_agent, operation, start_ms: nowMs, attributes: null })
+  }
+  return { trace_id, span_id, parent_span_id }
 }
 
 // Checks for pending messages every 5 seconds and injects them into target
@@ -336,7 +509,10 @@ export async function runMessageRouterTick(): Promise<void> {
     // rest roll to the next 5s tick. Bounds a single tick's wall-time so a
     // backlog (e.g. after a delivery stall) can never make one tick run long
     // and starve the event loop -- the slow-tick half of the progressive-hang
-    // pattern. Ordering is preserved (oldest first) so nothing is starved.
+    // pattern. The window is chosen FAIRLY across recipients (selectTickWindow,
+    // card fc5748f5): the globally oldest rows of busy recipients used to fill it
+    // and starve every other recipient, idle ones included. Each recipient's own
+    // rows stay oldest first.
     //
     // Federated (slash-qualified) recipients are split out FIRST: they must
     // never reach the local path (agentSessionName / readAgentRemoteHost would
@@ -346,7 +522,7 @@ export async function runMessageRouterTick(): Promise<void> {
     const localPending: AgentMessage[] = []
     const federatedPending: AgentMessage[] = []
     for (const m of allPending) (isQualifiedId(m.to_agent) ? federatedPending : localPending).push(m)
-    const pending = localPending.slice(0, MAX_MESSAGES_PER_TICK)
+    const pending = selectTickWindow(localPending, MAX_MESSAGES_PER_TICK, MAIN_AGENT_ID)
     const now = Date.now()
     // ---- update absent/present tracking for all receivers in this tick ----
     // Rebuild the stuck-detector's view of which agents are absent RIGHT NOW.
@@ -360,12 +536,15 @@ export async function runMessageRouterTick(): Promise<void> {
     const absentNow = new Set<string>()
     const presentNow = new Set<string>()
     // agent -> {exists: bool, host, session} cached lookup for the main loop.
-    const agentSessionCache = new Map<string, {host: string | null, session: string, exists: boolean}>()
+    const agentSessionCache = new Map<string, {host: string | null, session: string, exists: boolean, worksource: boolean}>()
     for (const agent of receiversInTick) {
       const host = readAgentRemoteHost(agent)
       const session = agentSessionName(agent)
       const exists = sessionExistsOnHost(host, session)
-      agentSessionCache.set(agent, { host, session, exists })
+      // Read once per receiver per tick, not once per message: the flag decides
+      // the whole delivery path below and a per-message read would re-open the
+      // same config file for every queued item.
+      agentSessionCache.set(agent, { host, session, exists, worksource: readAgentWorksourceChannel(agent) })
       if (exists) {
         presentNow.add(agent)
       } else {
@@ -374,6 +553,12 @@ export async function runMessageRouterTick(): Promise<void> {
     }
     // Reconnect detection: agent was absent on the last tick, now present.
     for (const agent of presentNow) {
+      // Worksource agents are exempt: backlog batching exists because a tmux
+      // pane that was gone missed everything and typing 40 messages in a row
+      // would wedge it. A queue directory misses nothing -- the items are still
+      // in pending/ and get handed over one at a time, acknowledged one at a
+      // time. Summarising them away would DISCARD work that was never lost.
+      if (agentSessionCache.get(agent)?.worksource) continue
       if (agentWasAbsent.has(agent) && !agentBatchedThisReconnect.has(agent)) {
         // Check if this agent qualifies for backlog batching.
         const agentPending = getPendingMessages(agent)
@@ -402,7 +587,6 @@ export async function runMessageRouterTick(): Promise<void> {
     // on their own budget so neither queue starves the other.
     await deliverFederatedBatch(federatedPending, now)
 
-    let mainAgentWakeupFiredThisTick = false
     for (const msg of pending) {
       // Skip messages already batched by the reconnect pre-pass: they are
       // 'done' in the DB now but still appear in our snapshot slice.
@@ -425,24 +609,20 @@ export async function runMessageRouterTick(): Promise<void> {
       // day. Leave the message pending; the next main-agent turn claims it
       // atomically. Sub-agents keep the tmux-inject path (they have idle gaps).
       //
-      // WAKEUP: without an active nudge the main agent only drains on the next
-      // user message or heartbeat -- up to 22+ min latency observed in prod.
-      // Fire one lightweight wakeup per cooldown window so an idle channels
-      // session starts a turn and drain-inbox claims the message immediately.
-      // Busy session: Claude Code queues the wakeup for the next turn boundary.
-      if (isMainAgent) {
-        if (!mainAgentWakeupFiredThisTick && now - lastMainAgentWakeupMs >= MAIN_AGENT_WAKEUP_COOLDOWN_MS) {
-          mainAgentWakeupFiredThisTick = true
-          lastMainAgentWakeupMs = now
-          try {
-            await sendPromptToSession(MAIN_CHANNELS_SESSION, '[inbox-wakeup: pending inter-agent messages]', null, { waitForIdle: false })
-            logger.info({ msgId: msg.id }, 'message-router: main-agent wakeup fired')
-          } catch (err) {
-            logger.warn({ err }, 'message-router: main-agent wakeup injection failed')
-          }
-        }
-        continue
-      }
+      // WAKEUP: owned by the inbox-nudge-watcher, NOT by this router. The
+      // wakeup that used to live here (#538) predates that watcher (#557)
+      // and was never removed, so two engines nudged the
+      // same pane -- and this one fired BLIND: waitForIdle:false, no readiness
+      // check, no staleness tracking, once per 45s cooldown for as long as the
+      // row stayed pending. Against a mid-turn pane that lands as a queued
+      // mid-turn message, not a prompt submit: no UserPromptSubmit, so no
+      // drain-inbox call, so no claim -- the row stays pending and the cooldown
+      // re-arms -- observed as four such injections in three minutes for a
+      // single message, five main-agent turns burned, nothing delivered.
+      // The watcher does the same job correctly (double-capture-confirmed idle,
+      // abort-on-busy send, stale-spell escalation, owner alert, hourly budget),
+      // so the router simply leaves the row for the PULL path to claim.
+      if (isMainAgent) continue
       // Use cached session data from the pre-pass (one sessionExistsOnHost call
       // per unique receiver per tick). Fall back to a direct call for agents not
       // in the pending set (shouldn't happen, but safe).
@@ -450,8 +630,40 @@ export async function runMessageRouterTick(): Promise<void> {
       const session = cached?.session ?? agentSessionName(msg.to_agent)
       const host = isMainAgent ? null : cached?.host ?? readAgentRemoteHost(msg.to_agent)
       const sessionExists = cached?.exists ?? sessionExistsOnHost(host, session)
+      // Opt-in queue delivery. EVERY tmux-shaped gate below is skipped for these
+      // agents, and that is the point rather than a shortcut: "session absent",
+      // "session busy" and "session stuck" are all statements about a KEYBOARD.
+      // An item written into the queue directory waits there for an agent that
+      // is busy, and is still there for an agent that has not started yet -- so
+      // abandoning it, or counting the wait as a stall, would invent a failure
+      // the queue does not have. The stuck escalation is the sharpest case: it
+      // tells the operator to consider a restart, and firing it at a merely busy
+      // worksource agent would be a false alarm with a destructive suggestion.
+      const usesWorksource = cached?.worksource ?? readAgentWorksourceChannel(msg.to_agent)
 
-      if (shouldAbandon(sessionExists, ageMs, MESSAGE_ABANDON_WINDOW_MS)) {
+      // ...BUT the carve-out needs POSITIVE EVIDENCE that the queue is actually
+      // being served, not just that the agent opted in (2026-09-03, PR #1099
+      // review). The reviewer measured the hole: a worksource agent parks on
+      // the MCP server-approval dialog at startup, the router keeps writing to
+      // pending/, and every stall gate is already switched off underneath it --
+      // so from the outside the item looks delivered and nobody is working on
+      // it. That is the exact failure this PR set out to remove.
+      //
+      // Evidence, in the weakest form that still closes the hole: the session
+      // must EXIST and must not be parked on a first-run/approval dialog. A
+      // parked pane means the channel is not up, so the tmux-shaped gates
+      // (abandon / not-running / not-ready) must apply again -- they are the
+      // only thing that will report it.
+      const parkedGate = usesWorksource && sessionExists
+        ? detectsFirstRunGate(capturePane(session, host) ?? '')
+        : null
+      const worksourceServing = usesWorksource && sessionExists && parkedGate == null
+      if (usesWorksource && !worksourceServing) {
+        logger.warn({ id: msg.id, to: msg.to_agent, session, sessionExists, parkedGate },
+          'worksource agent is not serving its queue (session absent or parked on a startup dialog) -- keeping the tmux stall gates armed')
+      }
+
+      if (!worksourceServing && shouldAbandon(sessionExists, ageMs, MESSAGE_ABANDON_WINDOW_MS)) {
         logger.warn({ id: msg.id, from: msg.from_agent, to: msg.to_agent, ageMs }, 'Agent message abandoned: target session absent for full retry window')
         if (!markMessageFailed(msg.id, 'Abandoned: target session absent for full retry window')) {
           logger.warn({ id: msg.id }, 'markMessageFailed affected 0 rows (deleted concurrently?)')
@@ -462,7 +674,7 @@ export async function runMessageRouterTick(): Promise<void> {
         continue
       }
 
-      if (!sessionExists) {
+      if (!worksourceServing && !sessionExists) {
         if (!routerLoggedMisses.has(msg.id)) {
           logger.warn({ id: msg.id, to: msg.to_agent, session }, 'Agent message target session not running, will retry')
           routerLoggedMisses.add(msg.id)
@@ -470,23 +682,78 @@ export async function runMessageRouterTick(): Promise<void> {
         continue
       }
 
-      if (!(await isSessionReadyForPrompt(session, host))) {
+      if (!worksourceServing && !(await isSessionReadyForPrompt(session, host))) {
+        // A self-drafted feedback modal ("Bug report drafted ... 0 to dismiss")
+        // holds the pane in a not-ready state, and the pre-flight dismissal in
+        // sendPromptToSession never runs because this gate short-circuits
+        // first. Measured twice on 2026-08-31 on agent-samu: 10 minutes
+        // not-ready, 10 queued messages, the second time AFTER the pre-flight
+        // dismissal had shipped -- the fix was in the wrong place for this
+        // path. Clear it here and re-read readiness ONCE; only a still-held
+        // pane falls through to the stuck bookkeeping below.
+        if (await clearFeedbackModalAndRecheck(session, host)) {
+          agentStuckSince.delete(msg.to_agent)
+          routerLoggedMisses.delete(msg.id)
+          continue // cleared; deliver on the next tick
+        }
         // ---- session-stuck detection (card 2922e380 thread a) ----
         // Track how long this session has been continuously not-ready.
         const stuckStart = agentStuckSince.get(msg.to_agent)
         if (!stuckStart) {
           agentStuckSince.set(msg.to_agent, now)
         } else if (now - stuckStart > STUCK_ESCALATE_MS) {
-          // Session has been continuously stuck past the escalation threshold.
-          // Log at warn level so monitoring/revival tooling can act — the
-          // stuck-input-watcher and channel-monitor pick these patterns up.
-          logger.warn({
-            to: msg.to_agent, session,
-            stuckDurationMs: now - stuckStart,
-            pendingMsgCount: pending.filter(m => m.to_agent === msg.to_agent).length,
-          }, 'message-router: session STUCK — continuously not-ready past escalation threshold')
-          // Reset timer so we don't spam every tick; re-escalate after another window.
-          agentStuckSince.set(msg.to_agent, now)
+          // Past the normal threshold -- now, and only now, read the pane. A
+          // session mid-turn is not-ready for the same reason a wedged one is,
+          // so the queue side alone cannot tell them apart; the pane can.
+          // Capturing here (rather than every tick) keeps the healthy path at
+          // zero extra tmux calls.
+          const stuckMs = now - stuckStart
+          const pane = capturePane(session, host)
+          const paneState = pane != null ? detectPaneState(pane) : null
+          if (shouldEscalateStuckSession(paneState, stuckMs)) {
+            // Session has been continuously stuck past the escalation threshold.
+            // Log at warn level so monitoring/revival tooling can act — the
+            // stuck-input-watcher and channel-monitor pick these patterns up.
+            const pendingMsgCount = pending.filter(m => m.to_agent === msg.to_agent).length
+            logger.warn({
+              to: msg.to_agent, session,
+              stuckDurationMs: stuckMs,
+              pendingMsgCount,
+              paneState,
+            }, 'message-router: session STUCK — continuously not-ready past escalation threshold')
+            // Card 0a641b52: a log line nobody reads is not an alert. Surface the
+            // stall to the main agent's inbox so it can run the delivery-stall
+            // diagnosis (pane state, full context, restart). The escalation-window
+            // reset below doubles as the notification cooldown.
+            // The pane is already in hand; ask it whether the "stall" is in
+            // fact an unanswered permission prompt, so the alert can say what
+            // the reader has to DO (answer it) instead of what would destroy
+            // the work (restart it).
+            const awaitingPermission = pane != null && detectsPermissionDialog(pane)
+            const permissionAsk = awaitingPermission && pane != null ? permissionPromptSummary(pane) : null
+            // Card 41a0c3a3: a plan usage limit gets its own sentence (the reset
+            // time, "not a restart") and ONE alert per wall instead of one per
+            // escalation window.
+            const quotaWall = pane != null ? detectQuotaWall(pane) : null
+            const wallStep = quotaWallEscalation(quotaWall, awaitingPermission, paneState, agentQuotaWallAlerted.get(msg.to_agent), now)
+            if (wallStep.kind === 'silent') {
+              logger.info({
+                to: msg.to_agent, session, stuckDurationMs: stuckMs, resetsAt: quotaWall?.resetsAt ?? null,
+              }, 'message-router: session at the plan usage limit -- this wall was already alerted, staying quiet')
+            } else {
+              if (wallStep.kind === 'alert') agentQuotaWallAlerted.set(msg.to_agent, { key: wallStep.key, at: now })
+              notifyOrchestratorOfStuckSession(msg.to_agent, session, stuckMs, pendingMsgCount, paneState, awaitingPermission, permissionAsk, wallStep.kind === 'alert' ? quotaWall : null)
+            }
+            // Reset timer so we don't spam every tick; re-escalate after another window.
+            agentStuckSince.set(msg.to_agent, now)
+          } else {
+            // Busy pane before the long watchdog: working, not wedged. The timer
+            // is deliberately NOT reset -- it has to keep running so a turn that
+            // never ends still reaches BUSY_STUCK_ESCALATE_MS.
+            logger.debug({
+              to: msg.to_agent, session, stuckDurationMs: stuckMs, paneState,
+            }, 'message-router: not-ready but pane is busy — deferring stuck escalation')
+          }
         }
         // Stale-parked-input janitor: a non-submitted line stuck in the input
         // box (e.g. a weak local model that typed its heartbeat reply into the
@@ -514,6 +781,8 @@ export async function runMessageRouterTick(): Promise<void> {
       // Classify (channel-inbound / trusted-peer / untrusted) + reject an empty
       // from_agent -- SINGLE SOURCE in agent-message-wrap so the router and the
       // main-agent pull endpoint frame messages identically (no security drift).
+      // Trace context (card def5a189): stamp if not yet set. channel-inbound
+      // messages (user → agent) are excluded -- only inter-agent spans.
       const cls = classifyAgentMessage(msg.from_agent, msg.to_agent)
       if (!cls) {
         logger.warn({ id: msg.id, rawFrom: msg.from_agent }, 'Agent message rejected: from_agent empty after sanitize')
@@ -527,6 +796,17 @@ export async function runMessageRouterTick(): Promise<void> {
       const isChannelInbound = category === 'channel-inbound'
       const trusted = category === 'trusted-peer'
 
+      // Stamp trace context onto inter-agent messages (not channel-inbound).
+      // Uses the in-memory deliveredTraceCtx to inherit from the last delivered
+      // message's span -- this is the middleware propagation (no agent-side protocol).
+      let traceCtx: { trace_id: string; span_id: string } | null = null
+      if (!isChannelInbound) {
+        const effective = msg.trace_id && msg.span_id
+          ? { trace_id: msg.trace_id, span_id: msg.span_id }
+          : stampTraceOnMessage(msg, now)
+        traceCtx = effective
+      }
+
       // Voice auto-mode: if this is a channel-inbound voice message, run STT
       // and update the last-inbound-modality flag. The decision (STT or not)
       // lives HERE so both the inbound transcript injection and the modality
@@ -535,11 +815,16 @@ export async function runMessageRouterTick(): Promise<void> {
       if (isChannelInbound) {
         const voiceFileId = extractVoiceFileId(msg.content)
         const chatId = extractChatId(msg.content)
-        const voiceCfg = readAgentVoiceConfig(msg.to_agent)
         if (voiceFileId && chatId) {
           // Always record modality so auto-mode TTS can fire on reply.
           setLastInboundModality(msg.to_agent, chatId, 'voice')
-          if (voiceCfg.responseMode !== 'text') {
+          // Inbound STT runs when the agent speaks back (responseMode voice/auto,
+          // the historical path) or when transcription was switched on
+          // explicitly (per-agent voice.transcribeInbound, or the install-wide
+          // VOICE_TRANSCRIBE_INBOUND default). Off by default for text-mode
+          // agents, so an existing install does not start running
+          // faster-whisper on every inbound voice note after an update.
+          if (shouldTranscribeInboundVoice(readAgentVoiceConfig(msg.to_agent), VOICE_TRANSCRIBE_INBOUND)) {
             // Attempt STT; on failure fall through to raw voice block.
             const transcript = await callVoiceSTT(voiceFileId, msg.to_agent)
             if (transcript) {
@@ -558,20 +843,136 @@ export async function runMessageRouterTick(): Promise<void> {
       }
 
       try {
+        // RE-READ before sending. The work set of this tick is a SNAPSHOT taken
+        // at the top (getPendingMessages into an array), and everything below
+        // has been working from that copy: session lookups, the readiness gate,
+        // voice STT -- which the re-entrancy guard notes can hold a tick for up
+        // to 65 seconds on its own. With up to MAX_MESSAGES_PER_TICK rows sent
+        // serially, the gap between reading a row and sending it is the length
+        // of the tick, not an instant.
+        //
+        // Anything that closed the row in that gap is invisible to the snapshot:
+        // a sender withdrawing its own queued message, an operator fixing a row,
+        // a concurrent path closing it. The message goes out regardless, which
+        // is the one outcome nobody asked for -- the row already says it should
+        // not be delivered.
+        //
+        // One indexed lookup of one column, placed as late as possible (after
+        // STT, immediately before the send) so the blind window it leaves is as
+        // small as the code allows. A row that is no longer 'pending' -- or no
+        // longer there at all -- is skipped and NOT re-closed: it already has a
+        // terminal state and, usually, a reason; overwriting that would erase
+        // who closed it and why.
+        const liveStatus = getMessageStatus(msg.id)
+        if (liveStatus !== 'pending') {
+          logger.info(
+            { id: msg.id, from: msg.from_agent, to: msg.to_agent, liveStatus },
+            'message-router: row is no longer pending at send time, skipping delivery',
+          )
+          continue
+        }
         // channel-inbound carries the STT-applied deliveryContent; the agent
         // wrap (trusted/untrusted) carries the raw content. Single-source frame.
         // msgId passed so receiving agents can write back via PUT /api/messages/:id.
         const content = isChannelInbound ? deliveryContent : msg.content
-        const { prefix, wrapped } = wrapAgentMessageForDelivery(category, safeFromAgent, msg.from_agent, content, msg.id, msg.origin_note)
+        // Freshness/supersession signal: only meaningful for inter-agent
+        // messages (channel-inbound are user messages with no sender-supersede
+        // concept). Skip the DB count for channel-inbound to avoid needless work.
+        const freshness = isChannelInbound
+          ? undefined
+          : { ageMs, newerFromSameSender: countNewerMessagesFromSameSender(msg.from_agent, msg.to_agent, msg.id) }
+        const { prefix, wrapped } = wrapAgentMessageForDelivery(category, safeFromAgent, msg.from_agent, content, msg.id, msg.origin_note, freshness)
+        // What the recipient inherits as trace context after this delivery:
+        // the head's, unless a multi-envelope batch below ends on a later row.
+        let traceCtxToRecord: { trace_id: string; span_id: string } | null = traceCtx
+        // Set only on the keyboard (tmux) path: when the keys started going out,
+        // and which batch mates rode along with the head row.
+        let turnCheckSentAt: number | null = null
+        const turnCheckIds: number[] = []
         // Inline preamble so a fresh session (post hard-restart) doesn't miss
         // the context that explains the tag semantics.
-        await sendPromptToSession(session, prefix + wrapped, host)
+        if (usesWorksource) {
+          // Hand it to the queue instead of the keyboard. The reader turns the
+          // file into a real turn and takes an acknowledgment back.
+          //
+          // WHAT 'delivered' MEANS HERE, stated plainly because it is weaker
+          // than it sounds and stronger than what it replaces: it means the item
+          // is durably queued, NOT that the agent has processed it. That is a
+          // strict improvement on the tmux path, where 'delivered' has always
+          // meant "we pressed some keys at a pane" -- which is exactly the claim
+          // that turned out to be false on the two cortex-router wedges. An item
+          // the agent never acknowledges is re-offered by the reader after its
+          // ack timeout, so a lost hand-off self-heals; the DB row does not have
+          // to model that.
+          //
+          // enqueue returns false when the id is already in pending/active/done.
+          // That is not an error: a tick that could not confirm its own write
+          // retries, and re-queueing would hand the agent the same work twice.
+          const itemId = worksourceItemId(msg.id)
+          const queued = enqueueWorksourceItem(msg.to_agent, itemId, prefix + wrapped, {
+            from: safeFromAgent,
+            category,
+            message_id: msg.id,
+            ...(traceCtx ?? {}),
+          })
+          logger.info({ id: msg.id, to: msg.to_agent, itemId, queued }, queued
+            ? 'message-router: queued to worksource'
+            : 'message-router: worksource item already present, not re-queued')
+        } else {
+          turnCheckSentAt = Date.now()
+          // MULTI-ENVELOPE INJECTION (B1F38C8C): while the pane is free, take the
+          // OTHER pending inter-agent rows for this same recipient from the
+          // tick's snapshot and send them in this one injection, each with its
+          // own envelope. Opt-in per recipient (ROUTER_BATCH_INJECT_AGENTS), so
+          // it is measured on one agent before it is widened. Channel-inbound
+          // rows (user messages, possibly voice/STT) stay on the serial path.
+          const mates = collectBatchMates(pending, msg, now, agentSessionCache)
+          if (mates.items.length > 0) {
+            const text = composeBatchInjection([{ prefix, wrapped }, ...mates.items], mates.remaining)
+            await sendPromptToSession(session, text, host)
+            // The head row is marked delivered by the shared code below; the
+            // mates are marked here and skipped by the loop via
+            // batchedMsgIdsThisTick, exactly like the reconnect batch.
+            for (const mate of mates.rows) {
+              if (!markMessageDelivered(mate.id)) {
+                logger.warn({ id: mate.id }, 'markMessageDelivered affected 0 rows (deleted concurrently?)')
+              }
+              batchedMsgIdsThisTick.add(mate.id)
+              turnCheckIds.push(mate.id)
+              routerInjectFailures.delete(mate.id)
+              routerLoggedMisses.delete(mate.id)
+              logger.info({ id: mate.id, from: mate.from_agent, to: mate.to_agent, batchHead: msg.id }, 'Agent message delivered (multi-envelope batch)')
+            }
+            // The recipient inherits the LAST message's trace, as it would after
+            // a serial delivery of the same rows (each of which overwrote the
+            // previous). Recorded via traceCtxToRecord so the shared line below
+            // does not put the head's context back on top of it.
+            if (mates.lastTraceCtx) traceCtxToRecord = mates.lastTraceCtx
+            logger.info({ head: msg.id, to: msg.to_agent, batchSize: mates.items.length + 1, remaining: mates.remaining }, 'message-router: multi-envelope injection')
+          } else {
+            await sendPromptToSession(session, prefix + wrapped, host)
+          }
+        }
         if (!markMessageDelivered(msg.id)) {
           logger.warn({ id: msg.id }, 'markMessageDelivered affected 0 rows (deleted concurrently?)')
         }
+        // ROUTERSAWTURN824: 'delivered' above means "keys were pressed". Look in
+        // the recipient's transcript a grace period later and tell the main
+        // agent if the prompt never arrived. Keyboard deliveries only (the
+        // worksource path has its own ack), and only rows that carry an
+        // envelope msg_id (channel-inbound has none to look for). Async and
+        // fire-and-forget: it neither delays nor blocks this loop.
+        if (turnCheckSentAt != null && !isChannelInbound) {
+          scheduleDeliveryTurnCheck({ toAgent: msg.to_agent, msgIds: [msg.id, ...turnCheckIds], sentAtMs: turnCheckSentAt, host })
+        }
+        // Propagate trace context: the receiving agent inherits this trace_id
+        // and span_id so its next outbound message continues the same chain.
+        if (traceCtxToRecord) {
+          deliveredTraceCtx.set(msg.to_agent, traceCtxToRecord)
+        }
         routerInjectFailures.delete(msg.id)
         routerLoggedMisses.delete(msg.id)
-        logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent, category }, 'Agent message delivered')
+        logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent, category, traceId: traceCtx?.trace_id }, 'Agent message delivered')
       } catch (err) {
         // An inject throw is usually transient (pane un-ready at the instant of
         // send-keys). Retry across ticks instead of the old silent instant-fail;
@@ -608,7 +1009,81 @@ export async function runMessageRouterTick(): Promise<void> {
     void maybeWakeSubAgentsForTelegram(now)
 }
 
+// ---- multi-envelope batch mates (B1F38C8C) ---------------------------------
+// From the tick's snapshot, the OTHER pending inter-agent rows addressed to
+// the head row's recipient, in ascending id, up to the recipient's cap. Each
+// mate is re-read for liveness (same rule as the head: a row that is no longer
+// pending at send time is not sent), classified and wrapped with its own
+// envelope, trace-stamped, and given its OWN freshness suffix computed now --
+// so an older row whose newer sibling rides in the same batch is annotated.
+// `remaining` is the recipient's REAL pending count beyond this batch, read
+// from the DB at compose time -- NOT the snapshot's leftover. The snapshot is
+// the tick window (selectTickWindow), capped at MAX_MESSAGES_PER_TICK rows across
+// every recipient, so a recipient whose rows fit the batch cap inside the
+// snapshot can still have more rows beyond it; a snapshot-local count
+// would then say "nothing else waits" from a truncated view. Measured by the
+// reviewer (#1415): the pending set exceeded 25 in 38 separate episodes over
+// 30 days, peak 43, i.e. exactly in the congested moments this feature is
+// for. The DB count includes every still-pending row for the recipient
+// (channel-inbound ones too: they wait in the same queue and arrive serially),
+// and excludes rows that are no longer pending, so a mate skipped by the
+// liveness check below is not counted as waiting either.
+function collectBatchMates(
+  pending: AgentMessage[],
+  head: AgentMessage,
+  now: number,
+  agentSessionCache: Map<string, {host: string | null, session: string, exists: boolean, worksource: boolean}>,
+): { items: { prefix: string; wrapped: string }[]; rows: AgentMessage[]; remaining: number; lastTraceCtx: { trace_id: string; span_id: string } | null } {
+  const empty = { items: [], rows: [], remaining: 0, lastTraceCtx: null }
+  const cap = batchInjectCapFor(head.to_agent)
+  if (cap < 2) return empty
+  if (agentSessionCache.get(head.to_agent)?.worksource) return empty
+  const items: { prefix: string; wrapped: string }[] = []
+  const rows: AgentMessage[] = []
+  let lastTraceCtx: { trace_id: string; span_id: string } | null = null
+  const start = pending.indexOf(head) + 1
+  for (let i = start; i < pending.length; i++) {
+    const m = pending[i]
+    if (m.to_agent !== head.to_agent) continue
+    if (m.id <= head.id) continue                 // ascending only
+    if (batchedMsgIdsThisTick.has(m.id)) continue
+    const cls = classifyAgentMessage(m.from_agent, m.to_agent)
+    if (!cls || cls.category === 'channel-inbound' || cls.category === 'federated') continue
+    if (items.length >= cap - 1) break
+    if (getMessageStatus(m.id) !== 'pending') continue
+    const effective = m.trace_id && m.span_id
+      ? { trace_id: m.trace_id, span_id: m.span_id }
+      : stampTraceOnMessage(m, now)
+    const freshness = { ageMs: now - m.created_at * 1000, newerFromSameSender: countNewerMessagesFromSameSender(m.from_agent, m.to_agent, m.id) }
+    const { prefix, wrapped } = wrapAgentMessageForDelivery(cls.category, cls.safeFrom, m.from_agent, m.content, m.id, m.origin_note, freshness)
+    items.push({ prefix, wrapped })
+    rows.push(m)
+    if (effective) lastTraceCtx = effective
+  }
+  if (items.length === 0) return empty
+  // Real count, at compose time: everything still pending for this recipient
+  // that is not in this injection. The head and the mates are still 'pending'
+  // in the DB here (they are marked delivered only after the send succeeds).
+  const inBatch = new Set<number>([head.id, ...rows.map((r) => r.id)])
+  const remaining = getPendingMessages(head.to_agent).filter((r) => !inBatch.has(r.id)).length
+  return { items, rows, remaining, lastTraceCtx }
+}
+
 // ---- voice helpers (message-router level) ----------------------------------
+
+// Should the router transcribe an inbound voice note for this agent?
+// - responseMode 'voice' / 'auto': always (unchanged historical behaviour --
+//   an agent that answers with speech has to understand speech).
+// - responseMode 'text': only when opted in. The per-agent
+//   voice.transcribeInbound wins when set (true or false); otherwise the
+//   install-wide default (VOICE_TRANSCRIBE_INBOUND, off unless configured).
+export function shouldTranscribeInboundVoice(
+  voiceCfg: Pick<AgentVoiceConfig, 'responseMode' | 'transcribeInbound'>,
+  installDefault: boolean,
+): boolean {
+  if (voiceCfg.responseMode !== 'text') return true
+  return voiceCfg.transcribeInbound ?? installDefault
+}
 
 // Extract attachment_file_id from a <channel ... attachment_kind="voice" attachment_file_id="..."> block.
 function extractVoiceFileId(content: string): string | null {

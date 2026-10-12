@@ -3,11 +3,17 @@ import {
   normalizeContextGuardConfig,
   contextLimitForModel,
   calibrateLimit,
+  CALIBRATION_OVERSHOOT_TOLERANCE,
   decideGuard,
   DEFAULT_CONTEXT_GUARD,
+  handoffStaleMinutes,
   INITIAL_GUARD_STATE,
   READY_TIMEOUT_MS,
   SATURATION_CONFIRM_SWEEPS,
+  SATURATION_CREDIBLE_MIN_PCT,
+  saturationBannerCredible,
+  MAX_STALE_REFRESHES,
+  STALE_REFRESH_REASON_PREFIX,
   type ContextGuardConfig,
   type GuardInputs,
   type GuardState,
@@ -24,9 +30,19 @@ function inputs(overrides: Partial<GuardInputs> = {}): GuardInputs {
     pct: null,
     running: true,
     paneIdle: true,
+    paneBusy: false,
     sessionReady: false,
     handoffMtime: null,
     paneSaturated: false,
+    // The daily tier defaults to not-due for the same reason the idle probes
+    // default to unmeasurable: every pre-existing case below must keep
+    // describing an agent this tier cannot act on.
+    dailyHandoffDue: false,
+    // Idle-flush probes default to unmeasurable, so every pre-existing case
+    // below describes an agent the idle tier cannot act on. That keeps this
+    // helper's change from silently arming a new tier under the old tests.
+    contextTokens: null,
+    idleMs: null,
     ...overrides,
   }
 }
@@ -59,10 +75,45 @@ describe('normalizeContextGuardConfig', () => {
 })
 
 describe('contextLimitForModel / calibrateLimit', () => {
-  it('recognizes the 1M suffix, defaults 200k', () => {
+  it('recognizes the 1M suffix and the measured 1M families, defaults 200k', () => {
     expect(contextLimitForModel('claude-opus-4-8[1m]')).toBe(1_000_000)
-    expect(contextLimitForModel('claude-fable-5')).toBe(200_000)
+    // Host-measured 1M families (2026-07-27: fable-5 hit 976k, opus-4-8
+    // 985k-999k, opus-5 979k live) -- the blanket-200k guess restarted
+    // working agents at ~21% real usage.
+    expect(contextLimitForModel('claude-fable-5')).toBe(1_000_000)
+    expect(contextLimitForModel('fable-5')).toBe(1_000_000)
+    expect(contextLimitForModel('claude-mythos-5')).toBe(1_000_000)
+    expect(contextLimitForModel('claude-opus-4-8')).toBe(1_000_000)
+    expect(contextLimitForModel('claude-opus-4-6')).toBe(1_000_000)
+    expect(contextLimitForModel('claude-opus-5')).toBe(1_000_000)
+    expect(contextLimitForModel('claude-opus-5[1m]')).toBe(1_000_000)
+    // Sonnet stays 200k: never observed above 198k on this host. Haiku 200k
+    // by spec; unknown models stay conservative (calibration steps them up).
+    expect(contextLimitForModel('claude-sonnet-5')).toBe(200_000)
+    expect(contextLimitForModel('claude-haiku-4-5')).toBe(200_000)
+    expect(contextLimitForModel('claude-opus-4-5')).toBe(200_000)
+    expect(contextLimitForModel('deepseek-v4-pro')).toBe(200_000)
     expect(contextLimitForModel(null)).toBe(200_000)
+  })
+
+  it('trusts minimax-m3 for the real 1M window -- but ONLY because agent-process.ts forces CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000 to work around a vendor-side compat-layer bug', () => {
+    // MiniMax's own /anthropic compat endpoint misreports 200K in its model
+    // metadata instead of M3's real 1M (MiniMax-AI/MiniMax-M2.7#46). Measured
+    // live 2026-08-19 BEFORE the workaround, on two independently running
+    // fleet agents (mag 108992/54%=201.8k, rendezo 62810/31%=202.6k) -- both
+    // converged on ~200k, matching the vendor bug exactly. AFTER
+    // resolveProviderEnv started forcing CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000,
+    // a live restart confirmed the CLI itself now reports a ~1M window (pane
+    // showed "999k left" / "937k left" post-restart, up from "199k left" /
+    // "137k left"). This constant and that env var override are a PAIR: if the
+    // override in agent-process.ts is ever removed, this must revert to
+    // 200_000 (like deepseek-v4-pro above), or the guard will under-restart
+    // against a window the CLI no longer actually has.
+    expect(contextLimitForModel('minimax-m3')).toBe(1_000_000)
+  })
+
+  it('defaults the handoff timeout to 20 minutes (6 was shorter than a working turn)', () => {
+    expect(DEFAULT_CONTEXT_GUARD.handoffTimeoutMinutes).toBe(20)
   })
 
   it('steps the limit up when the observation disproves the base', () => {
@@ -70,6 +121,68 @@ describe('contextLimitForModel / calibrateLimit', () => {
     expect(calibrateLimit(489_000, 200_000)).toBe(500_000) // tars 2026-07-09
     expect(calibrateLimit(900_000, 200_000)).toBe(1_000_000)
     expect(calibrateLimit(300_000, 1_000_000)).toBe(1_000_000)
+  })
+
+  // A full 200k window is OBSERVED slightly above 200k: the measured quantity is
+  // input+cache_read+cache_creation of the last request, which overshoots the
+  // nominal window. Measured 2026-07-26 across 11 saturated sessions (main agent
+  // + heimdall), the largest overshoot was 213175/200000 = 1.066x. A tolerance
+  // that does not cover that turns a saturated session into a "43% full" one.
+  it('does NOT step up for a merely-overshooting full window (regression)', () => {
+    // The exact production case: the pane showed "100% context used" while the
+    // guard logged pct: 43, because the denominator had jumped to 500k.
+    expect(calibrateLimit(213_175, 200_000)).toBe(200_000)
+    // The whole measured saturation range must stay on the 200k denominator.
+    for (const observed of [194_226, 198_544, 204_082, 207_942, 208_132, 213_175]) {
+      expect(calibrateLimit(observed, 200_000)).toBe(200_000)
+    }
+  })
+
+  it('keeps a saturated session ABOVE the act/hard thresholds', () => {
+    // The property that actually matters: whatever the calibration decides, a
+    // session at genuine exhaustion must not read below the acting thresholds.
+    for (const observed of [180_000, 194_000, 204_082, 213_175]) {
+      const pct = observed / calibrateLimit(observed, 200_000)
+      expect(pct).toBeGreaterThanOrEqual(DEFAULT_CONTEXT_GUARD.actPct)
+    }
+    expect(213_175 / calibrateLimit(213_175, 200_000))
+      .toBeGreaterThanOrEqual(DEFAULT_CONTEXT_GUARD.hardPct)
+  })
+
+  it('still steps up when the observation is too big to be an overshoot', () => {
+    // Counter-example, or the fix would reinstate the nonsense pct > 1 restart
+    // storm the calibration was built for: tars ran at 489k on a model we would
+    // have guessed 200k for -- 2.4x the base, not a 7% accounting overshoot.
+    expect(calibrateLimit(489_000, 200_000)).toBe(500_000)
+    expect(489_000 / calibrateLimit(489_000, 200_000)).toBeLessThanOrEqual(1)
+    expect(calibrateLimit(300_000, 200_000)).toBe(500_000)
+    // A genuine 1M window at 85% must not be forced down onto 500k.
+    expect(calibrateLimit(850_000, 1_000_000)).toBe(1_000_000)
+    expect(calibrateLimit(850_000, 200_000)).toBe(1_000_000)
+  })
+
+  it('pins the step-up boundary (documents the residual, does not hide it)', () => {
+    // The tolerance is a deliberate trade, so its exact edge is pinned here.
+    // Below the edge we keep the smaller denominator -- which means a window
+    // that really IS a tier we did not guess reads as over-full until it grows
+    // past the edge. That is the accepted cost: over-full is loud and
+    // self-correcting, an inflated denominator is silent (see the regression
+    // case above). No fleet model is configured onto a 500k window today.
+    const edge = 200_000 * CALIBRATION_OVERSHOOT_TOLERANCE
+    expect(calibrateLimit(edge, 200_000)).toBe(200_000)
+    expect(calibrateLimit(edge + 1, 200_000)).toBe(500_000)
+    // The edge must sit above every measured full-window overshoot ...
+    expect(edge).toBeGreaterThan(213_175)
+    // ... and stay well below the 200k/500k geometric midpoint, so a step-up is
+    // never a coin flip between two tiers.
+    expect(edge).toBeLessThan(Math.sqrt(200_000 * 500_000))
+  })
+
+  it('leaves the top tier to report pct > 1 (no tier above to step to)', () => {
+    // Above the largest known tier there is nothing to calibrate to, so the
+    // overshoot must surface as pct > 1 and let hardPct fire.
+    expect(calibrateLimit(1_200_000, 1_000_000)).toBe(1_000_000)
+    expect(1_200_000 / calibrateLimit(1_200_000, 1_000_000)).toBeGreaterThan(1)
   })
 })
 
@@ -88,6 +201,13 @@ describe('decideGuard: idle', () => {
     expect(d.nextState.deadlineMs).toBe(NOW + CFG.handoffTimeoutMinutes * 60_000)
   })
 
+  it('defers the idle-phase hard-tier restart while the agent is mid-turn', () => {
+    const d = decideGuard(INITIAL_GUARD_STATE, inputs({ pct: 0.99, paneBusy: true, paneIdle: false }), CFG)
+    expect(d.action).toBe('none')
+    expect(d.reason).toContain('deferring')
+    expect(d.nextState.phase).toBe('idle')
+  })
+
   it('skips straight to restart at hardPct', () => {
     const d = decideGuard(INITIAL_GUARD_STATE, inputs({ pct: 0.98 }), CFG)
     expect(d.action).toBe('restart')
@@ -96,7 +216,7 @@ describe('decideGuard: idle', () => {
 
   it('resets to initial state when fully disarmed (guard + net off)', () => {
     const disarmed = { ...CFG, enabled: false, saturationRestart: false }
-    const stale: GuardState = { phase: 'await-handoff', handoffMtimeAtRequest: 1, deadlineMs: 2, cooldownUntilMs: 0, saturatedStreak: 0 }
+    const stale: GuardState = { phase: 'await-handoff', handoffMtimeAtRequest: 1, deadlineMs: 2, cooldownUntilMs: 0, saturatedStreak: 0, staleRefreshCount: 0, handoffStaleMinutes: null }
     const d = decideGuard(stale, inputs({ pct: 0.99, paneSaturated: true }), disarmed)
     expect(d.action).toBe('none')
     expect(d.nextState).toEqual(INITIAL_GUARD_STATE)
@@ -104,7 +224,7 @@ describe('decideGuard: idle', () => {
 
   it('stands down a stale await-handoff into cooldown when the guard is disabled mid-sequence', () => {
     const netOnly = { ...CFG, enabled: false }
-    const stale: GuardState = { phase: 'await-handoff', handoffMtimeAtRequest: 1, deadlineMs: 2, cooldownUntilMs: 0, saturatedStreak: 0 }
+    const stale: GuardState = { phase: 'await-handoff', handoffMtimeAtRequest: 1, deadlineMs: 2, cooldownUntilMs: 0, saturatedStreak: 0, staleRefreshCount: 0, handoffStaleMinutes: null }
     const d = decideGuard(stale, inputs({ pct: 0.99 }), netOnly)
     expect(d.action).toBe('none')
     expect(d.nextState.phase).toBe('cooldown')
@@ -158,6 +278,8 @@ describe('saturation net (samu 2026-07-18 stall)', () => {
       deadlineMs: NOW + 60_000,
       cooldownUntilMs: 0,
       saturatedStreak: 0,
+      staleRefreshCount: 0,
+      handoffStaleMinutes: null,
     }
     const d = decideGuard(awaiting, inputs({ paneSaturated: true, paneIdle: false }), CFG)
     expect(d.action).toBe('restart')
@@ -177,6 +299,8 @@ describe('saturation net (samu 2026-07-18 stall)', () => {
       deadlineMs: 0,
       cooldownUntilMs: NOW + 60_000,
       saturatedStreak: 0,
+      staleRefreshCount: 0,
+      handoffStaleMinutes: null,
     }
     const d = decideGuard(cooling, inputs({ paneSaturated: true }), netOnly)
     expect(d.action).toBe('none')
@@ -197,6 +321,8 @@ describe('decideGuard: await-handoff', () => {
     deadlineMs: NOW + 60_000,
     cooldownUntilMs: 0,
     saturatedStreak: 0,
+    staleRefreshCount: 0,
+    handoffStaleMinutes: null,
   }
 
   it('restarts once the handoff is written and the pane is idle', () => {
@@ -234,11 +360,209 @@ describe('decideGuard: await-handoff', () => {
     expect(d.action).toBe('restart')
   })
 
+  // 2026-07-27: the guard force-restarted samu MID-TURN twice ("pane still
+  // busy" at 08:38, restart at 08:43), killing dispatched instructions with
+  // the session. A restart must never cut a live turn: while the pane shows
+  // a POSITIVE busy signal, both the hard tier and the timeout defer -- the
+  // deadline stays in the past, so the first not-busy sweep restarts.
+  it('defers the hard-threshold restart while the agent is mid-turn', () => {
+    const d = decideGuard(awaiting, inputs({ pct: 0.99, paneBusy: true }), CFG)
+    expect(d.action).toBe('none')
+    expect(d.reason).toContain('deferring')
+    expect(d.nextState.phase).toBe('await-handoff')
+  })
+
+  it('defers the timeout restart while the agent is mid-turn, fires once the turn ends', () => {
+    const busy = decideGuard(awaiting, inputs({ nowMs: NOW + 61_000, paneBusy: true }), CFG)
+    expect(busy.action).toBe('none')
+    expect(busy.nextState.phase).toBe('await-handoff')
+    // next sweep, turn over: the already-elapsed deadline fires immediately
+    const idle = decideGuard(busy.nextState, inputs({ nowMs: NOW + 90_000, paneBusy: false }), CFG)
+    expect(idle.action).toBe('restart')
+  })
+
+  it('saturation outranks the mid-turn deferral (a saturated pane cannot finish its turn)', () => {
+    const d = decideGuard(awaiting, inputs({ paneSaturated: true, paneBusy: true }), CFG)
+    expect(d.action).toBe('restart')
+    expect(d.reason).toContain('saturated')
+  })
+
+  it('a wedged pane (neither idle nor busy) is still restarted on timeout', () => {
+    const d = decideGuard(awaiting, inputs({ nowMs: NOW + 61_000, paneIdle: false, paneBusy: false }), CFG)
+    expect(d.action).toBe('restart')
+  })
+
   it('stands down into cooldown if the agent was restarted externally', () => {
     const d = decideGuard(awaiting, inputs({ running: false }), CFG)
     expect(d.action).toBe('none')
     expect(d.nextState.phase).toBe('cooldown')
     expect(d.nextState.cooldownUntilMs).toBe(NOW + CFG.cooldownMinutes * 60_000)
+  })
+})
+
+// 2026-08-17 (GUARDSTALEHO817): the guard restarted samu with reason "handoff
+// written" while HANDOFF.md was 20 minutes old and covered NOTHING of the work
+// done since -- including a merge-gate verdict on a payment PR. The agent wrote
+// the handoff on request, then kept working while the guard waited for an idle
+// pane; "mtime advanced since the request" was satisfied by an artifact that no
+// longer described the session. Existence is not freshness: the handoff must be
+// compared against the agent's last transcript activity at RESTART time.
+describe('stale handoff (GUARDSTALEHO817)', () => {
+  const awaiting: GuardState = {
+    phase: 'await-handoff',
+    handoffMtimeAtRequest: NOW - 30 * 60_000,
+    deadlineMs: NOW + 5 * 60_000,
+    cooldownUntilMs: 0,
+    saturatedStreak: 0,
+    staleRefreshCount: 0,
+    handoffStaleMinutes: null,
+  }
+  // Handoff written 20 minutes ago (after the request), last transcript
+  // activity 1 minute ago: 19 minutes of work the handoff does not cover.
+  const staleWritten = {
+    handoffMtime: NOW - 20 * 60_000,
+    idleMs: 60_000,
+    paneIdle: true,
+  }
+
+  it('handoffStaleMinutes: measures the uncovered gap, honours the slack, fails closed', () => {
+    expect(handoffStaleMinutes(inputs(staleWritten))).toBe(19)
+    // within slack: the handoff-writing turn itself touches the transcript after the file write
+    expect(handoffStaleMinutes(inputs({ handoffMtime: NOW - 2 * 60_000, idleMs: 30_000 }))).toBe(null)
+    // no artifact -> nothing to judge
+    expect(handoffStaleMinutes(inputs({ handoffMtime: null, idleMs: 60_000 }))).toBe(null)
+    // artifact exists but the transcript clock is unreadable -> 'unknown',
+    // NOT null: a missing measurement must not impersonate a fresh one
+    expect(handoffStaleMinutes(inputs({ handoffMtime: NOW - 20 * 60_000, idleMs: null }))).toBe('unknown')
+  })
+
+  it("unmeasurable freshness restarts as 'handoff written' (no refresh demand without evidence) and carries 'unknown'", () => {
+    const d = decideGuard(awaiting, inputs({ handoffMtime: NOW - 20 * 60_000, idleMs: null, paneIdle: true }), CFG)
+    expect(d.action).toBe('restart')
+    expect(d.reason).toBe('handoff written')
+    expect(d.nextState.handoffStaleMinutes).toBe('unknown')
+  })
+
+  it('asks for a refresh instead of restarting when the written handoff is stale and there is budget', () => {
+    const d = decideGuard(awaiting, inputs(staleWritten), CFG)
+    expect(d.action).toBe('request-handoff')
+    expect(d.reason).toContain(STALE_REFRESH_REASON_PREFIX)
+    expect(d.nextState.phase).toBe('await-handoff')
+    // the recorded mtime advances so the NEXT write counts as fresh...
+    expect(d.nextState.handoffMtimeAtRequest).toBe(staleWritten.handoffMtime)
+    // ...but the deadline does NOT move: an agent that keeps working through
+    // refresh requests still restarts on time.
+    expect(d.nextState.deadlineMs).toBe(awaiting.deadlineMs)
+  })
+
+  it('restarts normally once the refreshed handoff is fresh', () => {
+    const refreshed = decideGuard(awaiting, inputs(staleWritten), CFG).nextState
+    const d = decideGuard(refreshed, inputs({
+      handoffMtime: NOW - 60_000, idleMs: 30_000, paneIdle: true, nowMs: NOW + 60_000,
+    }), CFG)
+    expect(d.action).toBe('restart')
+    expect(d.reason).toBe('handoff written')
+    expect(d.nextState.handoffStaleMinutes).toBe(null)
+  })
+
+  it('caps stale refreshes: an agent that invalidates every handoff it writes restarts BEFORE the deadline', () => {
+    // Measured 2026-09-20 (cortex-ugypasztor): the agent's own 5-minute
+    // scheduled task fires between every pair of guard sweeps, so the handoff
+    // it has just written is ~4m stale on the next sweep -- above the 3m slack
+    // -- EVERY time. Staleness measures when the last activity was, not what it
+    // was, so an empty poll counts the same as real work. Before the cap this
+    // looped to handoffTimeoutMinutes: 4 requests, 20 minutes, 90% -> 94%.
+    const DEADLINE_MS = NOW + 20 * 60_000
+    const SWEEP_MS = 5 * 60_000
+    let state: GuardState = {
+      phase: 'await-handoff',
+      handoffMtimeAtRequest: NOW - 30 * 60_000,
+      deadlineMs: DEADLINE_MS,
+      cooldownUntilMs: 0,
+      saturatedStreak: 0,
+      staleRefreshCount: 0,
+      handoffStaleMinutes: null,
+    }
+    const actions: string[] = []
+    let restartAtMs: number | null = null
+    let lastReason = ''
+    for (let sweep = 0; sweep < 6; sweep++) {
+      const atMs = NOW + sweep * SWEEP_MS
+      const d = decideGuard(state, inputs({
+        nowMs: atMs,
+        pct: 0.91,
+        paneIdle: true,
+        idleMs: 30_000,
+        // answered the request, then its own poll woke it again: the fresh
+        // write lands ~4 minutes before the last activity, every round.
+        handoffMtime: atMs - 30_000 - 4 * 60_000,
+      }), CFG)
+      actions.push(d.action)
+      lastReason = d.reason
+      state = d.nextState
+      if (d.action === 'restart') { restartAtMs = atMs; break }
+    }
+
+    expect(actions.filter((a) => a === 'request-handoff')).toHaveLength(MAX_STALE_REFRESHES)
+    expect(actions[actions.length - 1]).toBe('restart')
+    // the loop terminates on its own, strictly before the timeout it used to reach
+    expect(restartAtMs).not.toBeNull()
+    expect(restartAtMs as number).toBeLessThan(DEADLINE_MS)
+    // and it says WHY it stopped asking -- "spent the budget" and "never
+    // answered" used to look identical in the log, which is the opposite diagnosis
+    expect(lastReason).toContain('accepting as-is')
+    // the handoff still ships with its staleness attached, so inject-resume can say so
+    expect(state.phase).toBe('await-ready')
+    expect(state.handoffStaleMinutes).toBe(4)
+  })
+
+  it('gives every NEW await-handoff sequence a fresh refresh budget', () => {
+    // Without this, only the first sequence after a dashboard start would ever
+    // get its refresh, and the 2026-08-17 case (real work landing after the
+    // write) would silently stop being covered from the second round on.
+    const d = decideGuard(INITIAL_GUARD_STATE, inputs({ pct: 0.95 }), CFG)
+    expect(d.action).toBe('request-handoff')
+    expect(d.nextState.phase).toBe('await-handoff')
+    expect(d.nextState.staleRefreshCount).toBe(0)
+  })
+
+  it('past the deadline a stale handoff restarts anyway, with the staleness said out loud', () => {
+    const d = decideGuard(awaiting, inputs({ ...staleWritten, nowMs: NOW + 6 * 60_000 }), CFG)
+    expect(d.action).toBe('restart')
+    expect(d.reason).toContain('STALE')
+    expect(d.nextState.handoffStaleMinutes).toBe(25) // 6m later, gap grew with it
+  })
+
+  it('at hardPct a stale handoff restarts immediately (no refresh into a breaking session), staleness carried', () => {
+    const d = decideGuard(awaiting, inputs({ ...staleWritten, pct: 0.99 }), CFG)
+    expect(d.action).toBe('restart')
+    expect(d.reason).toContain('STALE')
+    expect(d.nextState.handoffStaleMinutes).toBe(19)
+  })
+
+  it('a fresh handoff restarts exactly as before (no refresh detour)', () => {
+    const d = decideGuard(awaiting, inputs({ handoffMtime: NOW - 60_000, idleMs: 30_000, paneIdle: true }), CFG)
+    expect(d.action).toBe('restart')
+    expect(d.reason).toBe('handoff written')
+  })
+
+  it('the timeout restart measures the OLD artifact too (it will be presented at resume)', () => {
+    // agent never wrote after the request; a pre-existing handoff is an hour behind
+    const state = { ...awaiting, handoffMtimeAtRequest: NOW - 60 * 60_000 }
+    const d = decideGuard(state, inputs({
+      nowMs: NOW + 6 * 60_000, handoffMtime: NOW - 60 * 60_000, idleMs: 60_000,
+    }), CFG)
+    expect(d.action).toBe('restart')
+    expect(d.reason).toContain('timeout')
+    expect(d.nextState.handoffStaleMinutes).toBe(65)
+  })
+
+  it('inject-resume clears the staleness for the next cycle', () => {
+    const restarted = decideGuard(awaiting, inputs({ ...staleWritten, nowMs: NOW + 6 * 60_000 }), CFG)
+    expect(restarted.nextState.handoffStaleMinutes).toBe(25)
+    const resumed = decideGuard(restarted.nextState, inputs({ nowMs: NOW + 7 * 60_000, sessionReady: true }), CFG)
+    expect(resumed.action).toBe('inject-resume')
+    expect(resumed.nextState.handoffStaleMinutes).toBe(null)
   })
 })
 
@@ -249,6 +573,8 @@ describe('decideGuard: await-ready', () => {
     deadlineMs: NOW + 60_000,
     cooldownUntilMs: 0,
     saturatedStreak: 0,
+    staleRefreshCount: 0,
+    handoffStaleMinutes: null,
   }
 
   it('injects the resume prompt when the session is ready, then cools down', () => {
@@ -278,6 +604,8 @@ describe('decideGuard: cooldown', () => {
     deadlineMs: 0,
     cooldownUntilMs: NOW + 60_000,
     saturatedStreak: 0,
+    staleRefreshCount: 0,
+    handoffStaleMinutes: null,
   }
 
   it('suppresses everything during cooldown, even a huge pct', () => {
@@ -290,5 +618,290 @@ describe('decideGuard: cooldown', () => {
     const d = decideGuard(cooling, inputs({ nowMs: NOW + 61_000 }), CFG)
     expect(d.action).toBe('none')
     expect(d.nextState).toEqual(INITIAL_GUARD_STATE)
+  })
+})
+
+// Idle-flush tier: hand off a session that is expensive to keep re-reading but
+// has stopped doing anything. Distinct from the wedge tiers in what it is FOR
+// (cost, not a stalled session) and therefore in what it must never do -- the
+// cost of a wrong "yes" is an agent losing the thread it was holding, so every
+// condition here fails closed.
+describe('decideGuard -- idle-flush tier', () => {
+  // The idle tier alone: `enabled` false proves it does not lean on the
+  // proactive tiers, which is how an operator who only wants the cost tier
+  // would configure it.
+  const IDLE_CFG: ContextGuardConfig = {
+    ...DEFAULT_CONTEXT_GUARD,
+    enabled: false,
+    idleFlushEnabled: true,
+    idleFlushTokens: 400_000,
+    idleMinutes: 20,
+  }
+  const QUIET = 21 * 60_000     // past idleMinutes
+  const HEAVY = 600_000         // past idleFlushTokens
+
+  it('never acts while switched off, even with every condition met', () => {
+    const armed = inputs({ contextTokens: HEAVY, idleMs: QUIET, paneIdle: true })
+    const off: ContextGuardConfig = { ...IDLE_CFG, idleFlushEnabled: false }
+    const d = decideGuard(INITIAL_GUARD_STATE, armed, off)
+    expect(d.action).toBe('none')
+    expect(d.nextState.phase).toBe('idle')
+    // The switch is the only difference between silence and action here.
+    expect(decideGuard(INITIAL_GUARD_STATE, armed, IDLE_CFG).action).toBe('request-handoff')
+  })
+
+  it('requests a handoff when heavy, quiet and idle', () => {
+    const d = decideGuard(INITIAL_GUARD_STATE, inputs({ contextTokens: HEAVY, idleMs: QUIET, paneIdle: true }), IDLE_CFG)
+    expect(d.action).toBe('request-handoff')
+    expect(d.nextState.phase).toBe('await-handoff')
+    // The reason has to carry both measurements: an operator reading the log
+    // needs to see WHY this session was picked, not just that it was.
+    expect(d.reason).toContain('600k')
+    expect(d.reason).toContain('21m')
+  })
+
+  // The next two are stated as DIFFERENCES, not as bare "action is none".
+  // A test that only asserts inaction passes just as well when the tier does
+  // not exist at all, so it can never show that the pane condition is the
+  // thing doing the blocking. Each pins the acting case beside it.
+  it('does not act on a busy pane, however heavy and quiet the transcript looks', () => {
+    // The case the transcript clock cannot see on its own: one long tool call
+    // appends nothing for its whole duration, so idleMs says "quiet" while the
+    // agent is mid-work.
+    const busy = inputs({ contextTokens: HEAVY, idleMs: QUIET, paneIdle: false, paneBusy: true })
+    const d = decideGuard(INITIAL_GUARD_STATE, busy, IDLE_CFG)
+    expect(d.action).toBe('none')
+    expect(d.nextState.phase).toBe('idle')
+    // ... and the pane is the only reason: flip it and the same session flushes
+    expect(decideGuard(INITIAL_GUARD_STATE, { ...busy, paneIdle: true, paneBusy: false }, IDLE_CFG).action)
+      .toBe('request-handoff')
+  })
+
+  it('does not act on a pane that is neither idle nor busy (error banner, modal)', () => {
+    // paneIdle, not !paneBusy: a parked pane may still hold state a human can
+    // recover. Wedged panes are the saturation net's business, not this tier's.
+    const parked = inputs({ contextTokens: HEAVY, idleMs: QUIET, paneIdle: false, paneBusy: false })
+    expect(decideGuard(INITIAL_GUARD_STATE, parked, IDLE_CFG).action).toBe('none')
+    expect(decideGuard(INITIAL_GUARD_STATE, { ...parked, paneIdle: true }, IDLE_CFG).action)
+      .toBe('request-handoff')
+  })
+
+  it('does not act before the quiet period has elapsed', () => {
+    const d = decideGuard(
+      INITIAL_GUARD_STATE,
+      inputs({ contextTokens: HEAVY, idleMs: 19 * 60_000, paneIdle: true }),
+      IDLE_CFG,
+    )
+    expect(d.action).toBe('none')
+    // and it says how far off it was, so a tier that never fires is diagnosable
+    expect(d.reason).toContain('19m')
+    expect(d.reason).toContain('20m')
+  })
+
+  it('does not act below the token threshold', () => {
+    const under = inputs({ contextTokens: 399_999, idleMs: QUIET, paneIdle: true })
+    expect(decideGuard(INITIAL_GUARD_STATE, under, IDLE_CFG).action).toBe('none')
+    // one token over is the whole difference
+    expect(decideGuard(INITIAL_GUARD_STATE, { ...under, contextTokens: 400_000 }, IDLE_CFG).action)
+      .toBe('request-handoff')
+  })
+
+  it('fails closed when either measurement is unavailable', () => {
+    const ok = inputs({ contextTokens: HEAVY, idleMs: QUIET, paneIdle: true })
+    expect(decideGuard(INITIAL_GUARD_STATE, { ...ok, contextTokens: null }, IDLE_CFG).action).toBe('none')
+    expect(decideGuard(INITIAL_GUARD_STATE, { ...ok, idleMs: null }, IDLE_CFG).action).toBe('none')
+    expect(decideGuard(INITIAL_GUARD_STATE, ok, IDLE_CFG).action).toBe('request-handoff')
+  })
+
+  it('does not act on an agent that is not running', () => {
+    const stopped = inputs({ running: false, contextTokens: HEAVY, idleMs: QUIET, paneIdle: true })
+    expect(decideGuard(INITIAL_GUARD_STATE, stopped, IDLE_CFG).action).toBe('none')
+    expect(decideGuard(INITIAL_GUARD_STATE, { ...stopped, running: true }, IDLE_CFG).action)
+      .toBe('request-handoff')
+  })
+
+  it('yields to the wedge tiers when both would fire', () => {
+    // A session that is both nearly full and quiet must be rescued on the
+    // urgent grounds. Same action here, but the reason has to name the tier
+    // that owns the decision, because the two differ in what they do next.
+    const both: ContextGuardConfig = { ...IDLE_CFG, enabled: true }
+    const d = decideGuard(
+      INITIAL_GUARD_STATE,
+      inputs({ pct: 0.95, contextTokens: HEAVY, idleMs: QUIET, paneIdle: true }),
+      both,
+    )
+    expect(d.action).toBe('request-handoff')
+    expect(d.reason).toContain('act threshold')
+    expect(d.reason).not.toContain('idle-flush')
+  })
+
+  it('lets the hard tier restart rather than flushing first', () => {
+    const both: ContextGuardConfig = { ...IDLE_CFG, enabled: true }
+    const d = decideGuard(
+      INITIAL_GUARD_STATE,
+      inputs({ pct: 0.99, contextTokens: HEAVY, idleMs: QUIET, paneIdle: true }),
+      both,
+    )
+    expect(d.action).toBe('restart')
+  })
+
+  it('sees the handoff sequence through even with the proactive tiers off', () => {
+    // await-handoff used to stand down whenever `enabled` was false. With the
+    // idle tier able to START a handoff on its own, that would abandon its own
+    // sequence on the very next sweep and leave the session untouched forever.
+    const awaiting: GuardState = {
+      phase: 'await-handoff',
+      handoffMtimeAtRequest: null,
+      deadlineMs: NOW + 60_000,
+      cooldownUntilMs: 0,
+      saturatedStreak: 0,
+      staleRefreshCount: 0,
+      handoffStaleMinutes: null,
+    }
+    const d = decideGuard(awaiting, inputs({ handoffMtime: NOW, paneIdle: true }), IDLE_CFG)
+    expect(d.action).toBe('restart')
+    expect(d.nextState.phase).toBe('await-ready')
+  })
+
+  it('stands down when BOTH tiers and the saturation net are off', () => {
+    const allOff: ContextGuardConfig = { ...IDLE_CFG, enabled: false, idleFlushEnabled: false, saturationRestart: false }
+    const d = decideGuard(INITIAL_GUARD_STATE, inputs({ contextTokens: HEAVY, idleMs: QUIET }), allOff)
+    expect(d.action).toBe('none')
+    expect(d.reason).toBe('disabled')
+  })
+})
+
+describe('normalizeContextGuardConfig -- idle-flush fields', () => {
+  it('defaults the tier OFF, so an existing store entry cannot switch it on', () => {
+    // Every agent in store/context-guard.json predates these fields. Reading
+    // one of those must not arm a tier that ends conversations.
+    const cfg = normalizeContextGuardConfig({ enabled: true, saturationRestart: true, actPct: 0.9 })
+    expect(cfg.idleFlushEnabled).toBe(false)
+    expect(cfg.idleFlushTokens).toBe(400_000)
+    expect(cfg.idleMinutes).toBe(20)
+  })
+
+  it('only an explicit true arms it', () => {
+    expect(normalizeContextGuardConfig({ idleFlushEnabled: 'yes' }).idleFlushEnabled).toBe(false)
+    expect(normalizeContextGuardConfig({ idleFlushEnabled: 1 }).idleFlushEnabled).toBe(false)
+    expect(normalizeContextGuardConfig({ idleFlushEnabled: true }).idleFlushEnabled).toBe(true)
+  })
+
+  it('rejects a token threshold small enough to be a typo', () => {
+    // 500 instead of 400_000 would flush a session that had barely started.
+    expect(normalizeContextGuardConfig({ idleFlushTokens: 500 }).idleFlushTokens).toBe(400_000)
+    expect(normalizeContextGuardConfig({ idleFlushTokens: -1 }).idleFlushTokens).toBe(400_000)
+    expect(normalizeContextGuardConfig({ idleFlushTokens: 300_000 }).idleFlushTokens).toBe(300_000)
+  })
+
+  it('rejects a non-positive quiet period', () => {
+    // 0 minutes would make "quiet" true on every sweep.
+    expect(normalizeContextGuardConfig({ idleMinutes: 0 }).idleMinutes).toBe(20)
+    expect(normalizeContextGuardConfig({ idleMinutes: -5 }).idleMinutes).toBe(20)
+    expect(normalizeContextGuardConfig({ idleMinutes: 45 }).idleMinutes).toBe(45)
+  })
+})
+
+// The pane banner and the transcript measurement are two claims about the same
+// fact, and on 2026-09-15 (isapp06) they disagreed for nine days: 318 numeric
+// "pane saturated" hard restarts across four agents, measured context 18-43%,
+// never once above 90%. Cause: a model id that reaches the CLI WITHOUT the
+// `[1m]` marker makes the CLI size its status line to 200k and print
+// "100% context used" at ~179k, while the session keeps working to ~1M.
+// saturationBannerCredible is the referee -- a real measurement may overrule a
+// real PERCENTAGE claim, and nothing else may be overruled at all.
+describe('saturationBannerCredible', () => {
+  it('rejects a percentage banner at the measured false-positive percentages (the 318 kills)', () => {
+    // min / median / max of the production incident, pinned as numbers.
+    expect(saturationBannerCredible(true, false, 0.18)).toBe(false)
+    expect(saturationBannerCredible(true, false, 0.19)).toBe(false)
+    expect(saturationBannerCredible(true, false, 0.43)).toBe(false)
+  })
+
+  it('NEVER overrules an ERROR-shaped banner, at any measurement', () => {
+    // "Context limit reached", "context ... full" and "auto-compact required"
+    // are painted only after a turn ACTUALLY failed at the real limit (CLI
+    // 2.1.205 renders "Context limit reached" in color:"error" off the API's
+    // own "input length and max_tokens exceed context limit"), so no
+    // denominator is involved and no measurement may second-guess them.
+    //
+    // This is the load-bearing case. A turn that dies on a context-limit error
+    // leaves the transcript's last recorded usage at the value BEFORE the
+    // failed turn, which can easily be under 0.5 -- so treating these like a
+    // percentage claim would stand the net down on a genuinely wedged pane AND
+    // open the dispatch gate to it, turning today's ~10 minute rescue into
+    // hours of silent message loss.
+    for (const pct of [0, 0.01, 0.18, 0.19, 0.43, 0.49]) {
+      expect(saturationBannerCredible(true, true, pct)).toBe(true)
+    }
+    expect(saturationBannerCredible(true, true, null)).toBe(true)
+  })
+
+  it('TRUSTS the banner when the context is unmeasurable (the net\'s original purpose)', () => {
+    // 129 of the observed events had pct null. This is the samu 2026-07-18
+    // case the net was built for: an unreadable transcript is not evidence
+    // against the banner, so behaviour there must stay byte-identical.
+    expect(saturationBannerCredible(true, false, null)).toBe(true)
+  })
+
+  it('pins the credibility threshold exactly', () => {
+    expect(saturationBannerCredible(true, false, SATURATION_CREDIBLE_MIN_PCT)).toBe(true)
+    expect(saturationBannerCredible(true, false, 0.5)).toBe(true)
+    expect(saturationBannerCredible(true, false, 0.49)).toBe(false)
+  })
+
+  it('trusts the banner across the measured range of GENUINELY full sessions', () => {
+    // The band recorded in the CALIBRATION_OVERSHOOT_TOLERANCE note: 11 sessions
+    // the CLI itself marked "100% context used" measured 0.89-1.07. If anyone
+    // raises the threshold far enough to reach this band, this fails.
+    expect(saturationBannerCredible(true, false, 0.89)).toBe(true)
+    expect(saturationBannerCredible(true, false, 0.93)).toBe(true)
+    expect(saturationBannerCredible(true, false, 1.07)).toBe(true)
+    expect(SATURATION_CREDIBLE_MIN_PCT).toBeLessThan(0.89)
+    expect(SATURATION_CREDIBLE_MIN_PCT).toBeGreaterThan(0.43)
+  })
+
+  it('never invents a banner that is not there', () => {
+    expect(saturationBannerCredible(false, false, 0.99)).toBe(false)
+    expect(saturationBannerCredible(false, false, null)).toBe(false)
+    // Not even the hard-error flag may manufacture a banner: the caller reads
+    // both predicates off the same capture, so "hard error but not saturated"
+    // is unreachable -- and if it ever became reachable it must stay inert.
+    expect(saturationBannerCredible(false, true, null)).toBe(false)
+  })
+})
+
+// decideGuard is UNCHANGED by this fix; these cases prove what the corrected
+// INPUT buys us: with the banner overruled, neither the net nor the
+// await-handoff trapdoor can fire on a session that is 19% full.
+describe('decideGuard with a corrected saturation input (no kill, no handoff)', () => {
+  it('idle: a 19%-full agent with the banner overruled does nothing at all', () => {
+    const d = decideGuard(
+      INITIAL_GUARD_STATE,
+      inputs({ paneSaturated: false, pct: 0.19, paneIdle: true }),
+      CFG,
+    )
+    expect(d.action).toBe('none')
+    expect(d.reason).toBe('below threshold')
+    expect(d.nextState.phase).toBe('idle')
+    // No streak accumulates, so no confirmation sweep can ever complete.
+    expect(d.nextState.saturatedStreak).toBe(0)
+  })
+
+  it('await-handoff: the debounce-free saturation trapdoor cannot spring', () => {
+    // This is the branch that had NO confirmation sweep: one corrected input is
+    // the whole difference between "keep waiting" and an immediate restart.
+    const awaiting: GuardState = {
+      phase: 'await-handoff',
+      handoffMtimeAtRequest: 100,
+      deadlineMs: NOW + 60_000,
+      cooldownUntilMs: 0,
+      saturatedStreak: 0,
+      staleRefreshCount: 0,
+      handoffStaleMinutes: null,
+    }
+    const d = decideGuard(awaiting, inputs({ paneSaturated: false, pct: 0.19 }), CFG)
+    expect(d.action).toBe('none')
+    expect(d.reason).toBe('waiting for handoff')
   })
 })

@@ -81,12 +81,44 @@ Loop-safe: a per-session `enforce-<sid>.marker` guarantees at most one block, an
 bash ~/ClaudeClaw/scripts/install-telegram-progress-hook.sh
 ```
 
-It is idempotent and is auto-run by `scripts/sync-hooks.sh` on every update. It:
+It is idempotent and is auto-run by `scripts/sync-hooks.sh` on every update.
 
-1. Copies the four hook scripts to `~/.claude/hooks/`.
-2. Patches `~/.claude/settings.json` (UserPromptSubmit / PostToolUse / Stop).
-3. Installs the watchdog as a **launchd** agent (macOS) or **systemd** user
-   service+timer (Linux), running every ~60s.
+Since #1305 the three settings hooks (UserPromptSubmit / PostToolUse / Stop)
+are **repo-shipped** in the tracked `.claude/settings.json` (project scope,
+`$CLAUDE_PROJECT_DIR` form) -- the installer never touches
+`~/.claude/settings.json` and copies nothing into `~/.claude/hooks/`. The only
+thing it installs is the watchdog, as a **launchd** agent (macOS) or
+**systemd** user service+timer (Linux), running every ~60s straight from the
+repo checkout.
+
+Before any of that it applies a **provider gate**: if `CHANNEL_PROVIDER` in the
+install `.env` resolves to anything but `telegram` (exact known value; empty or
+unknown means `telegram`), the installer retires any leftover Telegram plumbing
+and exits with that retire's status (0 unless it failed) without touching
+anything else. When the gate passes, the installer also retires the Slack
+progress plumbing (`scripts/retire-progress-watchdog.sh slack`).
+
+A failed retire is never silent. The retire script used to be called with
+`|| true`, which hid a script the macOS `/bin/bash` (3.2) could not even parse:
+the cleanup did not happen and nothing said so. Now a non-zero retire is
+printed with its exit code and the command to re-run; in the gate branch it is
+the installer's exit code, in the active branch the watchdog is installed
+regardless (never fatal) and the failure is repeated at the end and becomes
+the exit code. `sync-hooks.sh` reports a non-zero installer and carries on.
+Details, the bash 3.2 rule (no here-document inside `$( ... )`) and the test
+hermeticity (every installer run shimmed, both daemon branches on every
+platform) are in the Slack doc.
+
+> **The guarantee: the active provider's installer wins on every update.**
+> `sync-hooks.sh` runs every `install-*-progress-hook.sh` on every update, in
+> glob order (Slack first, Telegram last); because each one gates on
+> `CHANNEL_PROVIDER` before touching anything, the order does not matter and an
+> update always ends with exactly one provider's watchdog live -- the one in
+> `CHANNEL_PROVIDER`. A hand-made state does not survive it: a `--force` retire
+> of the active provider is re-installed by the next update, and there is
+> deliberately no flag to install the inactive one. Change `CHANNEL_PROVIDER`
+> for a different end state. See the Slack doc
+> for the full story; contract: `scripts/__tests__/sync-hooks-provider-gate.test.sh`.
 
 ## Tuning
 
@@ -97,8 +129,17 @@ It is idempotent and is auto-run by `scripts/sync-hooks.sh` on every update. It:
 
 ## Remove
 
-Delete the four `~/.claude/hooks/telegram_progress*.py` files and their entries
-in `~/.claude/settings.json`, then unload the watchdog
-(`launchctl unload ~/Library/LaunchAgents/com.marveen.telegram-progress-watchdog.plist`
-on macOS, or `systemctl --user disable --now marveen-telegram-progress-watchdog.timer`
-on Linux).
+Remove the three `telegram_progress*` entries from the tracked
+`.claude/settings.json`, then retire the watchdog:
+
+```bash
+bash scripts/retire-progress-watchdog.sh telegram --force
+```
+
+(`--force` because it is the active provider; the script stops + removes the
+launchd agent / systemd timer and unwires any pre-#1305 leftover from the
+user-global `~/.claude/settings.json`.) Note that while `CHANNEL_PROVIDER` is
+still `telegram`, the next update's `sync-hooks.sh` re-installs the watchdog --
+the active provider's installer wins on every update. A removal that should
+survive updates means switching `CHANNEL_PROVIDER`; the gate then retires the
+Telegram plumbing on the next update by itself.

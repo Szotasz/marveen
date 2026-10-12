@@ -1,0 +1,1 @@
+{"scanner": {"name": "mio-scan", "version": "1.0.0", "rulepack": "2026-08-24"}, "findings": [{"rule": "ignore-previous-instructions", "category": "injection", "match": "ignore all previous instructions", "line": 2, "span": [14, 46]}]}
