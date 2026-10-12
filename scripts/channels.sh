@@ -933,8 +933,13 @@ claude_relink_native() {
 # named here with both versions, so the owner sees that the CLI went backwards
 # and why. Only a log line: the session still starts. The npm version is read
 # from package.json, never by running a second binary at boot.
+# Once per build (#1901 re-review): the line is written once for a given native
+# build and npm copy, not on every start; a new native build or a new npm copy
+# names it again. Without npm on the PATH the npm half of the advice is moot, so
+# only `claude install stable` is suggested.
 claude_native_behind_npm_note() {
-  local b t ver npm_root npm_ver=""
+  local b t ver npm_root npm_ver="" npm_state fix key
+  local seen="$INSTALL_DIR/store/.claude-native-behind-warned"
   b="$(command -v claude 2>/dev/null)" || return 0
   t="$(claude_realpath "$b")" || return 0
   [ -n "$t" ] && [ -e "$CLAUDE_UPDATE_STAMP" ] && [ "$CLAUDE_UPDATE_STAMP" -nt "$t" ] || return 0
@@ -945,8 +950,17 @@ claude_native_behind_npm_note() {
       npm_ver="$(sed -n 's/^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
         "$npm_root/@anthropic-ai/claude-code/package.json" | head -1)"
     fi
+    npm_state="${npm_ver:-unknown}"
+    fix="\`claude install stable\` to bring the native build forward, or remove ~/.local/bin/claude to stay on npm"
+  else
+    npm_state="unknown (npm not found)"
+    fix="\`claude install stable\` to bring the native build forward"
   fi
-  { echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: WARN the native claude launcher wins and runs build ${ver} ($t), but the npm update stamp is newer than that build -- npm was the live install (npm copy: ${npm_ver:-unknown}). The main session now runs the OLDER native build and the update path is skipped. Fix: \`claude install stable\` to bring the native build forward, or remove ~/.local/bin/claude to stay on npm." >> "$INSTALL_DIR/store/channels-failures.log"; } 2>/dev/null || true
+  key="$t $npm_state"
+  [ "$(cat "$seen" 2>/dev/null)" = "$key" ] && return 0
+  if { echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: WARN the native claude launcher wins and runs build ${ver} ($t), but the npm update stamp is newer than that build -- npm was the live install (npm copy: ${npm_state}). The main session now runs the OLDER native build and the update path is skipped. Fix: ${fix}." >> "$INSTALL_DIR/store/channels-failures.log"; } 2>/dev/null; then
+    { printf '%s\n' "$key" > "$seen"; } 2>/dev/null || true
+  fi
 }
 
 if ! command -v claude >/dev/null 2>&1; then

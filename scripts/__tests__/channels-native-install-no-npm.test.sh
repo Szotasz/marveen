@@ -59,9 +59,21 @@ if [ -z "$BLOCK" ]; then
   exit 1
 fi
 
-# run_case <setup-fn>  -> sets NPM_CALLS, LINK_TARGET, ERR in the caller
+# run_block <root> <system-path>: one start of the install/update block on that host
+run_block() {
+  HOME="$1/home" \
+  PATH="$1/stub:$1/home/.local/bin:$2" \
+  INSTALL_DIR="$1/install" CLAUDE_PKG="@anthropic-ai/claude-code" AVX_LESS=0 \
+  bash -c "$BLOCK
+wait" 2>&1 >/dev/null
+}
+
+# run_case <setup-fn> [<between-fn>]  -> sets NPM_CALLS, LINK_TARGET, ERR, FAILLOG, WARNS in the caller
+# With a <between-fn> the block runs TWICE on the same host (a second start), the fn changing the host in
+# between. A setup that touches <root>/no-npm gets a system PATH without npm (every /usr/bin and /bin
+# entry linked, except npm/npx), so the case does not depend on whether the test host has npm.
 run_case() {
-  local setup="$1" root
+  local setup="$1" between="${2:-}" root sysp="/usr/bin:/bin" f n
   root="$(mktemp -d)"
   mkdir -p "$root/home" "$root/stub" "$root/install/store"
   mkdir -p "$root/npmroot"
@@ -75,18 +87,27 @@ exit 0
 EOF
   chmod +x "$root/stub/npm"
   "$setup" "$root"
-  ERR="$(
-    HOME="$root/home" \
-    PATH="$root/stub:$root/home/.local/bin:/usr/bin:/bin" \
-    INSTALL_DIR="$root/install" CLAUDE_PKG="@anthropic-ai/claude-code" AVX_LESS=0 \
-    bash -c "$BLOCK
-wait" 2>&1 >/dev/null
-  )"
+  if [ -e "$root/no-npm" ]; then
+    sysp="$root/sysbin"
+    mkdir -p "$sysp"
+    for f in /usr/bin/* /bin/*; do
+      n="${f##*/}"
+      case "$n" in npm|npx) continue ;; esac
+      [ -e "$sysp/$n" ] || ln -s "$f" "$sysp/$n"
+    done
+  fi
+  ERR="$(run_block "$root" "$sysp")"
+  if [ -n "$between" ]; then
+    "$between" "$root"
+    ERR="$ERR$(run_block "$root" "$sysp")"
+  fi
   NPM_CALLS="$( { wc -l < "$root/npm.log"; } 2>/dev/null | tr -d ' ')"
   NPM_CALLS="${NPM_CALLS:-0}"
   LINK_TARGET="$(readlink "$root/home/.local/bin/claude" 2>/dev/null || true)"
   LINK_TARGET="${LINK_TARGET#$root/home/}"
   FAILLOG="$(cat "$root/install/store/channels-failures.log" 2>/dev/null || true)"
+  WARNS="$(grep -c 'WARN the native claude launcher wins' "$root/install/store/channels-failures.log" 2>/dev/null)"
+  WARNS="${WARNS:-0}"
   rm -rf "$root"
 }
 
@@ -140,6 +161,24 @@ setup_native_behind_npm() {
   printf '{\n  "name": "@anthropic-ai/claude-code",\n  "version": "2.1.296"\n}\n' \
     > "$1/npmroot/@anthropic-ai/claude-code/package.json"
   : > "$1/install/store/.claude-update-stamp"
+}
+# 11-13 (#1901 re-review): the warning is written once per native build and npm copy -- a second start of
+# the same host adds nothing; a new npm copy or a new native build names it again.
+between_nothing() { :; }
+between_new_npm_copy() {
+  printf '{\n  "name": "@anthropic-ai/claude-code",\n  "version": "2.1.297"\n}\n' \
+    > "$1/npmroot/@anthropic-ai/claude-code/package.json"
+}
+between_new_native_build() {
+  make_version "$1" 2.1.101
+  touch -t 202606090110 "$1/home/.local/share/claude/versions/2.1.101"
+  ln -sfn "$1/home/.local/share/claude/versions/2.1.101" "$1/home/.local/bin/claude"
+}
+# 14 (#1901 re-review): the same host without npm on the PATH -- the npm half of the advice is moot.
+setup_native_behind_no_npm() {
+  setup_native_behind_npm "$1"
+  rm -f "$1/stub/npm"
+  : > "$1/no-npm"
 }
 # 10: the same launcher, but the stamp is OLDER than the build -> no warning.
 setup_native_ahead_of_stamp() {
@@ -228,6 +267,37 @@ else fail "native build newer than the npm stamp: no warning" "<empty log>" "$FA
 run_case setup_native_present
 if [ -z "$FAILLOG" ]; then pass "native host without an npm stamp: no warning"
 else fail "native host without an npm stamp: no warning" "<empty log>" "$FAILLOG"; fi
+
+run_case setup_native_behind_npm between_nothing
+if [ "$WARNS" = "1" ]; then pass "native launcher behind npm, second start of the same host: the warning is NOT repeated"
+else fail "native launcher behind npm, second start of the same host: the warning is NOT repeated" "1 WARN line" "$WARNS"; fi
+
+run_case setup_native_behind_npm between_new_npm_copy
+case "$WARNS:$FAILLOG" in
+  2:*"npm copy: 2.1.296"*"npm copy: 2.1.297"*)
+    pass "native launcher behind npm, a NEW npm copy: warned again, naming the new copy" ;;
+  *) fail "native launcher behind npm, a NEW npm copy: warned again, naming the new copy" \
+       "2 WARN lines, 2.1.296 then 2.1.297" "$WARNS: ${FAILLOG:-<empty>}" ;;
+esac
+
+run_case setup_native_behind_npm between_new_native_build
+case "$WARNS:$FAILLOG" in
+  2:*"runs build 2.1.100"*"runs build 2.1.101"*)
+    pass "native launcher behind npm, a NEW native build: warned again, naming the new build" ;;
+  *) fail "native launcher behind npm, a NEW native build: warned again, naming the new build" \
+       "2 WARN lines, 2.1.100 then 2.1.101" "$WARNS: ${FAILLOG:-<empty>}" ;;
+esac
+
+run_case setup_native_behind_no_npm
+case "$FAILLOG" in
+  *"remove ~/.local/bin/claude"*)
+    fail "native launcher behind npm, npm not on the PATH: only 'claude install stable' is advised" \
+      "no 'remove ~/.local/bin/claude' advice" "$FAILLOG" ;;
+  *"runs build 2.1.100"*"npm copy: unknown (npm not found)"*'Fix: `claude install stable` to bring the native build forward.'*)
+    pass "native launcher behind npm, npm not on the PATH: 'npm copy: unknown (npm not found)', only 'claude install stable' is advised" ;;
+  *) fail "native launcher behind npm, npm not on the PATH: only 'claude install stable' is advised" \
+       "npm copy: unknown (npm not found) + claude install stable" "${FAILLOG:-<empty>}" ;;
+esac
 
 echo "channels.sh native-install guard: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]
