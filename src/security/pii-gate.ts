@@ -213,7 +213,9 @@ export function detect(text: string, opts: { skipEmail?: boolean; denylist?: Den
   const seenAccounts = new Set<string>();
   for (const re of [WIN_HOME_RE, UNIX_HOME_RE]) {
     for (const m of text.matchAll(re)) {
-      const user = m[1].replace(/ +$/, '');
+      // Trailing punctuation belongs to the SENTENCE, not the account: "... /home/u." is
+      // the placeholder account `u` at the end of a sentence, not an account named `u.`.
+      const user = m[1].replace(/[. -]+$/, '');
       const key = user.toLowerCase();
       if (SYNTHETIC_USERS.has(key) || seenAccounts.has(key)) continue;
       seenAccounts.add(key);

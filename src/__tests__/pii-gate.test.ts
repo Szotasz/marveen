@@ -87,6 +87,11 @@ describe('local path', () => {
   it.each(['$USER', '${HOME}', '<user>', '%u', '~'])('lets a placeholder through: %s', (ph) => {
     expect(kinds(j('/ho', 'me/', ph, '/x'))).toEqual([]);
   });
+  it('does not read sentence punctuation as part of the account name', () => {
+    expect(kinds(j('use the placeholder /ho', 'me/', 'u.'))).toEqual([]);
+    expect(kinds(j('path is /ho', 'me/', 'user, not mine'))).toEqual([]);
+    expect(kinds(j('but /ho', 'me/', 'bartok.'))).toEqual(['local-path']);
+  });
   it('does not fire on a path that merely contains the word', () => {
     expect(kinds('see src/home/index.ts and /usr/share/homepage')).toEqual([]);
   });
