@@ -2,7 +2,7 @@
 """Recognizer regression test for the PII service. Needs the service venv
 (Presidio + the xx_ent_wiki_sm spaCy model), so it is not part of CI:
 
-    .venv/bin/python test_recognizers.py
+    .venv/bin/python tests/test_recognizers.py
 
 MUST: every listed value must be masked in MSG1/MSG2 (all data is synthetic).
 CASES: generated texts with what must be masked and what must stay in clear.
@@ -12,7 +12,7 @@ multilingual NER tagged words like "Azt", "Csináld", "Mergelhető" as people.
 import os
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from server import anonymize_text  # noqa: E402
 
 MSG1 = 'Szia Marveen! Segíts egy ügyfélválaszt megírni.\n\nAz ügyfél neve Kovács Eszter, lakcíme 1234 Budapest, Minta utca 12. 3. emelet 5.\nE-mail címe: kovacs.eszter@example.com, telefonszáma: +36 30 123 4567\n(másik szám: 06 20 765 4321).\n\nA számlázási adatai: IBAN HU42 1177 3016 1111 1018 0000 0000,\nadóazonosító jele 8123456789, TAJ-száma 123 456 789.\n\nAz ügyfél férje, Nagy Péter (nagy.peter@example.org) szintén jelezte,\nhogy a szerződést átveszi. Debrecenben, a Teszt köz 7. szám alatt lakik.\n\nKérlek, fogalmazz egy udvarias e-mailt, amelyben tájékoztatjuk Kovács\nEsztert, hogy a szerződése jövő hétfőn lejár.'
