@@ -189,6 +189,38 @@ describe('router: a busy session whose transcript is moving is not reported as s
   })
 })
 
+describe('router: a live loop past the 2 h ceiling alerts, and says the transcript moved (ROUTERSTUCK1012)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    resetTranscriptProgressCacheForTests()
+    clock = Date.UTC(2026, 9, 13, 9, 0, 0)
+    vi.spyOn(Date, 'now').mockImplementation(() => clock)
+  })
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('busy for 2.5 h, the transcript written every 5 min: silent for 2 h, then exactly one MOZOG alert', async () => {
+    const f = sessionFile('looper1')
+    writeFileSync(f, '')
+    mockGetPendingMessages.mockReturnValue([pendingFor('looper1')])
+    mockCapturePane.mockReturnValue(BUSY_PANE)
+    const start = clock
+    const alertedAt: number[] = []
+    for (let i = 0; i <= 30; i++) {
+      if (i > 0) clock += 5 * MIN
+      appendFileSync(f, assistantAt(clock - MIN))
+      const before = stuckAlerts('looper1').length
+      await runMessageRouterTick()
+      if (stuckAlerts('looper1').length > before) alertedAt.push((clock - start) / MIN)
+    }
+    expect(alertedAt).toEqual([125])
+    const [text] = stuckAlerts('looper1')
+    expect(text).toContain('A transzkriptje közben MOZOG (utolsó haladás 1 perce)')
+    expect(text).toContain('125 perce DOLGOZIK (busy)')
+  })
+})
+
 describe('router: the transcript is read only where today\'s rule would alert a busy pane (ROUTERSTUCK1012)', () => {
   const PLAIN_NOT_READY_PANE = ['Some tool output that is not a prompt', '', SEP, '  loading…', SEP].join('\n')
   const reads = () => vi.mocked(readTranscriptProgressAt).mock.calls.length

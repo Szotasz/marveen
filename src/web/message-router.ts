@@ -103,6 +103,7 @@ export function formatStuckSessionAlert(
   awaitingPermission = false,
   permissionAsk: PermissionPromptSummary | null = null,
   quotaWall: QuotaWall | null = null,
+  lastProgressAgoMs: number | null = null,
 ): string | null {
   if (agent === mainAgentId) return null
   const min = Math.round(stuckMs / 60000)
@@ -125,6 +126,15 @@ export function formatStuckSessionAlert(
   // alerts into wasted restarts-in-waiting. It says what it is: a long turn,
   // worth a look, not a restart on sight.
   if (paneState === 'busy') {
+    // ROUTERSTUCK1012: past BUSY_TRANSCRIPT_EXEMPT_CAP_MS a busy session alerts
+    // even with a moving transcript. The reader must know that it moved: that
+    // is a very long turn or a loop that keeps writing, not a frozen call. The
+    // text is Hungarian, as the review asked: it is the one the owner may read.
+    if (lastProgressAgoMs != null && lastProgressAgoMs <= TRANSCRIPT_PROGRESS_FRESH_MS) {
+      const ago = Math.max(0, Math.round(lastProgressAgoMs / 60000))
+      const capH = Math.round(BUSY_TRANSCRIPT_EXEMPT_CAP_MS / 3600000)
+      return `[session-stuck] A(z) '${agent}' ügynök (tmux ${session}) ${min} perce DOLGOZIK (busy), és ${pendingCount} üzenet vár rá. A transzkriptje közben MOZOG (utolsó haladás ${ago} perce), tehát ez vagy egy nagyon hosszú kör, vagy egy önmagát ismétlő hurok (például modell-hurok, vagy egy újra és újra elutasított eszközhívás), nem egy lefagyott hívás. Nézd meg, halad-e a kör érdemben. Erre a riasztásra önmagában NE indítsd újra. Amíg a transzkript mozog, ez a riasztás legfeljebb ${capH} óránként ismétlődik.`
+    }
     return `[session-stuck] Agent '${agent}' (tmux ${session}) has been BUSY (actively working, spinner up) for ${min} min with ${queue}. Not a stall by itself -- check whether the turn is progressing or a tool call is wedged. Do NOT restart on this alert alone.`
   }
   // Card 41a0c3a3: a plan usage limit is neither a wedge nor a question. The
@@ -139,9 +149,9 @@ export function formatStuckSessionAlert(
   return `[session-stuck] Agent '${agent}' (tmux ${session}) has been not-ready for ${min} min with ${queue}. Run the delivery-stall diagnosis: check the pane (busy vs idle vs full context) and restart the agent if it is wedged.`
 }
 
-function notifyOrchestratorOfStuckSession(agent: string, session: string, stuckMs: number, pendingCount: number, paneState: PaneState | null, awaitingPermission = false, permissionAsk: PermissionPromptSummary | null = null, quotaWall: QuotaWall | null = null): void {
+function notifyOrchestratorOfStuckSession(agent: string, session: string, stuckMs: number, pendingCount: number, paneState: PaneState | null, awaitingPermission = false, permissionAsk: PermissionPromptSummary | null = null, quotaWall: QuotaWall | null = null, lastProgressAgoMs: number | null = null): void {
   try {
-    const alert = formatStuckSessionAlert(agent, MAIN_AGENT_ID, session, stuckMs, pendingCount, paneState, awaitingPermission, permissionAsk, quotaWall)
+    const alert = formatStuckSessionAlert(agent, MAIN_AGENT_ID, session, stuckMs, pendingCount, paneState, awaitingPermission, permissionAsk, quotaWall, lastProgressAgoMs)
     if (!alert) return
     createAgentMessage('system', MAIN_AGENT_ID, alert)
     logger.info({ agent, session, stuckMs, pendingCount, paneState, awaitingPermission, quotaWall: quotaWall != null, resetsAt: quotaWall?.resetsAt ?? null }, 'session-stuck surfaced to orchestrator')
@@ -259,6 +269,14 @@ const BUSY_STUCK_ESCALATE_MS = 30 * 60 * 1000  // busy pane: only after a much l
 // would alert on a healthy call in the minute its result lands; a call still
 // pending past the ceiling is wedged by definition and still alerts.
 export const TRANSCRIPT_PROGRESS_FRESH_MS = 15 * 60 * 1000
+// The exemption has a ceiling. A turn that keeps writing is not proof of a
+// healthy one: a model loop, or a tool call retried and refused by a hook again
+// and again, writes progress entries forever, and with no ceiling the router
+// would never say a word while the queue grows. Past this much continuous busy
+// time the session escalates even with a moving transcript; the alert says the
+// transcript moved, and the escalation resets the timer, so a live loop alerts
+// once per this window instead of never (2026-10-13 review).
+export const BUSY_TRANSCRIPT_EXEMPT_CAP_MS = 2 * 60 * 60 * 1000
 
 /**
  * Pure decision: may a continuously not-ready session escalate now?
@@ -269,7 +287,8 @@ export const TRANSCRIPT_PROGRESS_FRESH_MS = 15 * 60 * 1000
  *
  * `lastProgressAt` (ms) is the newest progress entry in the agent's transcript,
  * or null when it could not be read; it only matters for a busy pane past the
- * long watchdog. Null keeps the decision exactly what it was before.
+ * long watchdog and below BUSY_TRANSCRIPT_EXEMPT_CAP_MS. Null keeps the decision
+ * exactly what it was before.
  */
 export function shouldEscalateStuckSession(
   paneState: PaneState | null,
@@ -279,6 +298,7 @@ export function shouldEscalateStuckSession(
 ): boolean {
   if (paneState !== 'busy') return stuckMs > STUCK_ESCALATE_MS
   if (stuckMs <= BUSY_STUCK_ESCALATE_MS) return false
+  if (stuckMs > BUSY_TRANSCRIPT_EXEMPT_CAP_MS) return true
   return lastProgressAt == null || now - lastProgressAt > TRANSCRIPT_PROGRESS_FRESH_MS
 }
 
@@ -988,7 +1008,7 @@ export async function runMessageRouterTick(): Promise<void> {
               }, 'message-router: session at the plan usage limit -- this wall was already alerted, staying quiet')
             } else {
               if (wallStep.kind === 'alert') agentQuotaWallAlerted.set(msg.to_agent, { key: wallStep.key, at: now })
-              notifyOrchestratorOfStuckSession(msg.to_agent, session, stuckMs, pendingMsgCount, paneState, awaitingPermission, permissionAsk, wallStep.kind === 'alert' ? quotaWall : null)
+              notifyOrchestratorOfStuckSession(msg.to_agent, session, stuckMs, pendingMsgCount, paneState, awaitingPermission, permissionAsk, wallStep.kind === 'alert' ? quotaWall : null, lastProgressAt != null ? now - lastProgressAt : null)
             }
             // Reset timer so we don't spam every tick; re-escalate after another window.
             agentStuckSince.set(msg.to_agent, now)
