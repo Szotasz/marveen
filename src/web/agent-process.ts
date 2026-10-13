@@ -1054,13 +1054,19 @@ function provisionIsolatedConfigDir(
     const sharedEnvKeys = isPlainObject(settings.env) ? Object.keys(settings.env) : []
     let prevSharedEnvKeys = new Set<string>()
     let prevKeptKeys: string[] = []
+    let sidecarState: 'ok' | 'missing' | 'unreadable' = 'ok'
     try {
       const side = JSON.parse(readFileSync(sharedEnvKeysPath, 'utf-8')) as unknown
       if (isPlainObject(side)) {
         if (Array.isArray(side.sharedEnvKeys)) prevSharedEnvKeys = new Set(side.sharedEnvKeys.filter((k): k is string => typeof k === 'string'))
         if (Array.isArray(side.keptKeys)) prevKeptKeys = side.keptKeys.filter((k): k is string => typeof k === 'string')
+      } else {
+        sidecarState = 'unreadable'
       }
-    } catch { /* first provisioning with this change, or unreadable: no history */ }
+    } catch (err) {
+      // first provisioning with this change (missing), or a broken file: no history
+      sidecarState = (err as NodeJS.ErrnoException)?.code === 'ENOENT' ? 'missing' : 'unreadable'
+    }
     let keptKeys: string[] = []
     if (existsSync(ownSettingsPath)) {
       try {
@@ -1093,14 +1099,24 @@ function provisionIsolatedConfigDir(
           if (isPlainObject(own.env)) {
             const sharedEnv = isPlainObject(settings.env) ? settings.env : null
             const mergedEnv: Record<string, unknown> = sharedEnv ? { ...sharedEnv } : {}
+            const keptEnv: string[] = []
             for (const [k, v] of Object.entries(own.env)) {
               if (k === '__proto__') continue
               if (sharedEnv && Object.prototype.hasOwnProperty.call(sharedEnv, k)) continue
               if (prevSharedEnvKeys.has(k)) continue
               mergedEnv[k] = v
+              keptEnv.push(k)
               inherited.push(`env.${k}`)
             }
             if (sharedEnv || Object.keys(mergedEnv).length) settings.env = mergedEnv
+            // Without a usable sidecar an own variable that came from an OLDER
+            // shared env cannot be told from an agent-only one, so it is kept
+            // this time. Said out loud, names only, so a deletion that did not
+            // propagate is visible instead of silent.
+            if (sidecarState !== 'ok' && keptEnv.length) {
+              logger.warn({ name, path: sharedEnvKeysPath, sidecar: sidecarState, keys: keptEnv },
+                'isolated-config: no usable shared-env sidecar, own env names kept; one that came from an older shared env is not removed this time')
+            }
           } else if (own.env !== undefined && !('env' in settings)) {
             // not a map: kept as is, exactly like any other target-only key
             settings.env = own.env
@@ -1137,7 +1153,15 @@ function provisionIsolatedConfigDir(
     // code would fall back to the shared file, and that is precisely the
     // key-loss this commit fixes.
     writeJsonAtomic(ownSettingsPath, settings)
-    writeJsonAtomic(sharedEnvKeysPath, { sharedEnvKeys, keptKeys })
+    // The sidecar is bookkeeping for the NEXT start: failing to write it must
+    // not stop this provisioning (the settings above are already in place).
+    // The cost is the case the warning names, so it is logged, not swallowed.
+    try {
+      writeJsonAtomic(sharedEnvKeysPath, { sharedEnvKeys, keptKeys })
+    } catch (err) {
+      logger.warn({ err, name, path: sharedEnvKeysPath },
+        'isolated-config: could not write the shared-env sidecar; a variable deleted from the shared env may stay in this agent until a later start writes it')
+    }
 
     // 3. Own plugins/ dir: symlink the heavy shared parts, own the install state.
     const pluginsDir = join(cfg, 'plugins')

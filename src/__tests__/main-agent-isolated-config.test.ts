@@ -245,6 +245,60 @@ describe('ensureMainAgentIsolatedConfigDir', () => {
     }
   })
 
+  it('warns with the kept env names, never values, when the sidecar is missing or unreadable', () => {
+    const warn = vi.spyOn(logger, 'warn')
+    try {
+      writeFileSync(join(HOME, '.claude', 'settings.json'), JSON.stringify({ env: { OPERATOR_VAR: 'op' } }))
+      const dir = ensureMainAgentIsolatedConfigDir(undefined, 'linux')!
+      const own = join(dir, 'settings.json')
+      const side = join(dir, '.shared-env-keys.json')
+      const msg = 'isolated-config: no usable shared-env sidecar, own env names kept; one that came from an older shared env is not removed this time'
+      const calls = () => warn.mock.calls.filter((c) => c[1] === msg).map((c) => c[0] as { sidecar: string; keys: string[] })
+
+      writeFileSync(own, JSON.stringify({ env: { OPERATOR_VAR: 'op', MINE: 'secret-value-456' } }, null, 2) + '\n')
+      ensureMainAgentIsolatedConfigDir(undefined, 'linux')       // sidecar present: no warning
+      expect(calls()).toHaveLength(0)
+
+      rmSync(side)
+      ensureMainAgentIsolatedConfigDir(undefined, 'linux')
+      expect(calls()).toEqual([expect.objectContaining({ sidecar: 'missing', keys: ['MINE'] })])
+
+      writeFileSync(side, '{not json')
+      ensureMainAgentIsolatedConfigDir(undefined, 'linux')
+      expect(calls()[1]).toEqual(expect.objectContaining({ sidecar: 'unreadable', keys: ['MINE'] }))
+
+      writeFileSync(side, '["valid JSON, not an object"]')
+      ensureMainAgentIsolatedConfigDir(undefined, 'linux')
+      expect(calls()[2]).toEqual(expect.objectContaining({ sidecar: 'unreadable', keys: ['MINE'] }))
+      expect(JSON.stringify(warn.mock.calls)).not.toContain('secret-value-456')
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('a sidecar that cannot be written warns, and the settings and the rest of the dir are still provisioned', () => {
+    const warn = vi.spyOn(logger, 'warn')
+    try {
+      writeFileSync(join(HOME, '.claude', 'settings.json'), JSON.stringify({ env: { OPERATOR_VAR: 'op' } }))
+      const dir = ensureMainAgentIsolatedConfigDir(undefined, 'linux')!
+      const own = join(dir, 'settings.json')
+      const side = join(dir, '.shared-env-keys.json')
+      rmSync(side)
+      mkdirSync(join(side, 'blocker'), { recursive: true })   // a non-empty directory: the atomic rename fails
+      writeFileSync(own, JSON.stringify({ env: { MINE: 'agent' } }, null, 2) + '\n')
+      rmSync(join(dir, 'plugins'), { recursive: true, force: true })
+
+      expect(ensureMainAgentIsolatedConfigDir(undefined, 'linux')).toBe(dir)
+
+      const after = JSON.parse(readFileSync(own, 'utf-8')) as Record<string, unknown>
+      expect(after.env).toEqual({ OPERATOR_VAR: 'op', MINE: 'agent' })
+      expect(existsSync(join(dir, 'plugins'))).toBe(true)
+      expect(warn.mock.calls.some((c) => String(c[1]).startsWith('isolated-config: could not write the shared-env sidecar'))).toBe(true)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
   it('keeps the shared env as is when the own env is not a plain object', () => {
     writeFileSync(join(HOME, '.claude', 'settings.json'), JSON.stringify({ env: { OPERATOR_VAR: 'op' } }))
     const dir = ensureMainAgentIsolatedConfigDir(undefined, 'linux')!
