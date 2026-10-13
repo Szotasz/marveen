@@ -86,7 +86,7 @@ const EXPECTED: Record<string, string[]> = {
     'email-approval-gate.py @ .*[Gg]mail.*__.*',
     'email-approval-gate.py @ .*draft_email.*',
     'email-approval-gate.py @ .*send_draft.*|.*update_draft.*|.*create_draft.*|.*reply_all.*|.*send_gmail_message.*|.*draft_gmail_message.*|.*[Gg][Mm][Aa][Ii][Ll].*send_message.*|.*[Gg][Mm][Aa][Ii][Ll].*reply.*|.*[Gg][Mm][Aa][Ii][Ll].*forward.*',
-    'channel-image-resize.sh @ Read', 'egress-gate.mjs @ WebFetch', 'memory-frontmatter-gate.py @ Write|Edit|MultiEdit',
+    'channel-image-resize.sh @ Read', 'egress-gate.mjs @ WebFetch', 'bash-egress-parser.mjs @ Bash', 'memory-frontmatter-gate.py @ Write|Edit|MultiEdit',
     'memory-frontmatter-bash-gate.py @ Bash',
   ],
   Stop: ['marveen-commands.py', 'telegram-reply-guard.py', 'telegram_progress_clear.py', 'slack_progress_clear.py'],

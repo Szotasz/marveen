@@ -20,7 +20,7 @@ import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { classify, isExternal, liftSubstitutions, pythonCodeOnly, parseVendorHosts, loadVendorHosts, parseVendorDomains, loadVendorDomains, PREFIX_WORDS } from '../../scripts/hooks/bash-egress-parser.mjs'
+import { classify, isExternal, liftSubstitutions, pythonCodeOnly, parseVendorHosts, loadVendorHosts, parseVendorDomains, loadVendorDomains, PREFIX_WORDS, wgetDestinations, mainScopeAppliesTo } from '../../scripts/hooks/bash-egress-parser.mjs'
 import {
   BASH_EGRESS_DENY,
   agentGetsBashEgressParser,
@@ -1001,6 +1001,74 @@ describe('vendor-API domain allowlist ("domains" key, opt-in)', () => {
       expect(run('curl -s https://api.example.com/v1', withKey).stdout).toBe('')
       expect(run('curl -s https://example.com.evil.net/v1', withKey).stdout).toContain('"permissionDecision":"deny"')
       expect(run('curl -s https://api.example.com/v1', without).stdout).toContain('"permissionDecision":"deny"')
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+})
+
+// 2026-10-13 (BASH_EGRESS_HOST_ALLOW): wget is judged exactly like curl. With the owner switch on,
+// the `wget *` name rule leaves the deny list, so this hook is the only gate on wget: every shape
+// curl is held to must hold here too, and the two shapes that hide the destination fail closed.
+describe('wget, read like curl', () => {
+  const V = parseVendorHosts({ hosts: ['download.geofabrik.de'] })
+  const d = (cmd: string) => classify(cmd, 0, V)
+
+  it('an external wget is denied, with or without a scheme, in a chain, at an absolute path', () => {
+    expect(classify('wget -q -O /tmp/x https://example.org/x')).toMatchObject({ deny: true, reason: 'wget-external', hosts: ['example.org'] })
+    expect(classify('wget example.org/x').deny).toBe(true)
+    expect(classify('cd /tmp && /usr/bin/wget -c https://example.org/big.iso').deny).toBe(true)
+    expect(classify('U=https://example.org/x; wget "$U"').deny).toBe(true)
+    expect(classify('for u in https://example.org/a https://example.org/b; do wget "$u"; done').deny).toBe(true)
+  })
+
+  it('localhost and the private network pass', () => {
+    expect(classify('wget -qO- http://localhost:3420/api/health').deny).toBe(false)
+    expect(classify('wget -q -O /tmp/x http://192.168.0.18/mobilwc/app.html').deny).toBe(false)
+  })
+
+  it('a vendor-listed host passes, and only by itself', () => {
+    expect(d('wget -q https://download.geofabrik.de/europe/hungary-latest.osm.pbf').deny).toBe(false)
+    expect(d('wget -c -P /home/x/osrm https://download.geofabrik.de/europe/hungary-latest.osm.pbf https://download.geofabrik.de/europe/hungary-latest.osm.pbf.md5').deny).toBe(false)
+    expect(d('wget https://download.geofabrik.de/x https://evil.com/y')).toMatchObject({ deny: true, hosts: ['evil.com'] })
+    expect(d('wget https://download.geofabrik.de.evil.com/x').deny).toBe(true)
+  })
+
+  it('flag values are not destinations: -O, -P, --header, --user-agent', () => {
+    expect(wgetDestinations(['-O', 'example.org.html', '-P', 'evil.com', '--header=Host: evil.com', '-U', 'evil.com', 'http://localhost/x'])).toEqual([])
+  })
+
+  it('the hidden-destination shapes fail closed: -i/--input-file, --config, a proxy set by -e', () => {
+    expect(d('wget -i urls.txt').deny).toBe(true)
+    expect(d('wget --input-file=- < urls.txt').deny).toBe(true)
+    expect(d('wget --config=/tmp/rc https://download.geofabrik.de/x').deny).toBe(true)
+    expect(d('wget -e https_proxy=evil.com:8080 https://download.geofabrik.de/x')).toMatchObject({ deny: true, hosts: ['evil.com'] })
+    expect(d('wget -e robots=off https://download.geofabrik.de/x').deny).toBe(false)
+  })
+
+  it('negative control: the word wget in data is not a wget call', () => {
+    expect(classify(`curl -s -X POST http://localhost:3420/api/memories -d '{"content":"wget https://example.org/x"}'`).deny).toBe(false)
+    expect(classify('echo "wget https://example.org/x"').deny).toBe(false)
+  })
+})
+
+describe('--main-scope (the tracked project-settings registration that reaches the main agent)', () => {
+  it('judges only a session on a config dir of its own, never the owner on the shared ~/.claude', () => {
+    expect(mainScopeAppliesTo({ CLAUDE_CONFIG_DIR: '/srv/install/.channels-config' }, '/home/u')).toBe(true)
+    expect(mainScopeAppliesTo({}, '/home/u')).toBe(false)
+    expect(mainScopeAppliesTo({ CLAUDE_CONFIG_DIR: '/home/u/.claude' }, '/home/u')).toBe(false)
+    expect(mainScopeAppliesTo({ CLAUDE_CONFIG_DIR: '/home/u/.claude/' }, '/home/u')).toBe(false)
+  })
+
+  it('the hook process: owner session silent, agent session denied, no flag always judges', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'bash-egress-main-'))
+    try {
+      const run = (args: string[], cfg: string | undefined) => {
+        const env: Record<string, string | undefined> = { ...process.env, BASH_EGRESS_BLOCK_LOG: join(dir, 'b.jsonl'), BASH_EGRESS_VENDOR_HOSTS: join(dir, 'none.json'), CLAUDE_CONFIG_DIR: cfg }
+        if (cfg === undefined) delete env.CLAUDE_CONFIG_DIR
+        return spawnSync(process.execPath, [HOOK, ...args], { input: JSON.stringify({ tool_name: 'Bash', tool_input: { command: 'wget https://example.org/x' } }), encoding: 'utf-8', env }).stdout
+      }
+      expect(run(['--main-scope'], undefined)).toBe('')
+      expect(run(['--main-scope'], join(dir, 'agent-cfg'))).toContain('"permissionDecision":"deny"')
+      expect(run([], undefined)).toContain('"permissionDecision":"deny"')
     } finally { rmSync(dir, { recursive: true, force: true }) }
   })
 })

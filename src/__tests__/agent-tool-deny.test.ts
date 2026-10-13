@@ -65,7 +65,7 @@ describe('writeAgentSettingsFromProfile + agent-config.json toolDeny', () => {
     for (const t of SEVEN) expect(deny).not.toContain(t)
     // profile deny + self-pace + egress are present
     expect(deny).toContain('ScheduleWakeup')
-    expect(deny).toContain('Bash(curl *https://*)')
+    expect(deny).toContain('Bash(nc *)')
     expect(deny.some(d => d.startsWith('Read('))).toBe(true)
   })
 
@@ -77,7 +77,7 @@ describe('writeAgentSettingsFromProfile + agent-config.json toolDeny', () => {
     for (const t of SEVEN) expect(first).toContain(t)
     // the profile/gate rules are still there -- toolDeny widens, never replaces
     expect(first).toContain('ScheduleWakeup')
-    expect(first).toContain('Bash(curl *https://*)')
+    expect(first).toContain('Bash(nc *)')
 
     // Respawn: the function rebuilds permissions from the profile again.
     writeAgentSettingsFromProfile(NAME, profile)
