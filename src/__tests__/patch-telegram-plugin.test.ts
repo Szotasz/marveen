@@ -58,13 +58,13 @@ describe('patch-telegram-plugin.py', () => {
   it('2nd run is a no-op: returns `already`, byte-identical, silent', () => {
     const state = join(cache, 'state.json')
     run(['--state', state])
-    expect(readState(state).files).toEqual([{ version: '0.0.7', path: server, status: 'patched', patches: { d4: 'patched', fwd: 'patched', evid: 'patched', kbd: 'patched' } }])
+    expect(readState(state).files).toEqual([{ version: '0.0.7', path: server, status: 'patched', patches: { d4: 'patched', rto: 'patched', fwd: 'patched', evid: 'patched', kbd: 'patched' } }])
     const once = readFileSync(server, 'utf-8')
     const r = run(['--state', state])
     expect(r.status).toBe(0)
     expect(r.stderr).toBe('')
     expect(readFileSync(server, 'utf-8')).toBe(once)
-    expect(readState(state).files).toEqual([{ version: '0.0.7', path: server, status: 'already', patches: { d4: 'already', fwd: 'already', evid: 'already', kbd: 'already' } }])
+    expect(readState(state).files).toEqual([{ version: '0.0.7', path: server, status: 'already', patches: { d4: 'already', rto: 'already', fwd: 'already', evid: 'already', kbd: 'already' } }])
   })
 
   it('a changed anchor (plugin update): loud line, THAT patch left out, the other still applied, exit 0', () => {
@@ -79,7 +79,7 @@ describe('patch-telegram-plugin.py', () => {
     expect(text).toContain("bot.command('help', async ctx => {")
     expect(text).toContain('elsokor922-fwd')
     expect(syntaxErrors(text)).toEqual([])
-    expect(readState(state).files[0].patches).toEqual({ d4: 'anchor-missing:status handler', fwd: 'patched', evid: 'patched', kbd: 'patched' })
+    expect(readState(state).files[0].patches).toEqual({ d4: 'anchor-missing:status handler', rto: 'patched', fwd: 'patched', evid: 'patched', kbd: 'patched' })
   })
 
   // #1530 review: owner write commands need evidence the owner's chat sent
@@ -281,7 +281,7 @@ describe('kbd: reply-keyboard buttons (c67f5f34)', () => {
     expect(r.status).toBe(0)
     expect(r.stderr).toMatch(/LOUD: reply send options not found exactly once.*the kbd patch left out, the reply tool has no buttons/)
     expect(readFileSync(server, 'utf-8')).not.toContain(KBD)
-    expect(readState(state).files[0].patches).toEqual({ d4: 'patched', fwd: 'patched', evid: 'patched', kbd: 'anchor-missing:reply send options' })
+    expect(readState(state).files[0].patches).toEqual({ d4: 'patched', rto: 'patched', fwd: 'patched', evid: 'patched', kbd: 'anchor-missing:reply send options' })
   })
 
   it('a file patched by the previous version (d4, fwd, evid) gets kbd on the next run', () => {
@@ -289,6 +289,76 @@ describe('kbd: reply-keyboard buttons (c67f5f34)', () => {
     const r = run()
     expect(r.stderr).toMatch(/patched .*\(kbd\)/)
     expect(readFileSync(server, 'utf-8').split('\n').filter(l => l.includes(KBD))).toHaveLength(3)
+  })
+})
+
+const RTO = 'MARVEEN-PATCH(reply-to)'
+
+describe('rto: reply_to_message_id in the inbound meta', () => {
+  // hu: Az idezett (reply) uzenet azonositoja a bejovo meta-ban. Egy rovid "mehet" vagy
+  //     "rendben" valaszbol csak ebbol derul ki, melyik uzenetre jott.
+  // en: The id of the quoted (replied-to) message in the inbound meta. A short "go" or
+  //     "ok" reply is only understandable with it.
+  it('one marked line right after user_id, and the file still parses', () => {
+    const r = run()
+    expect(r.status).toBe(0)
+    const text = readFileSync(server, 'utf-8')
+    const lines = text.split('\n').filter(l => l.includes(RTO))
+    expect(lines).toHaveLength(1)
+    expect(text).toMatch(/ +user_id: String\(from\.id\),\n(?: +[^\n]*MARVEEN-PATCH\([^\n]*\n)* +[^\n]*reply_to_message_id[^\n]*MARVEEN-PATCH\(reply-to\)/)
+    expect(syntaxErrors(text)).toEqual([])
+  })
+
+  it('the line adds reply_to_message_id as a string when the message quotes another one, and nothing otherwise', () => {
+    run()
+    const line = readFileSync(server, 'utf-8').split('\n').find(l => l.includes(RTO))!
+    const expr = line.trim().replace(/\/\/.*$/, '').replace(/,\s*$/, '')
+    const meta = new Function('ctx', `return { ${expr} }`) as (ctx: unknown) => Record<string, string>
+    expect(meta({ message: { reply_to_message: { message_id: 856 } } })).toEqual({ reply_to_message_id: '856' })
+    expect(meta({ message: {} })).toEqual({})
+    expect(meta({ message: { reply_to_message: undefined } })).toEqual({})
+  })
+
+  it('2nd run is a no-op, and the state file names the patch', () => {
+    const state = join(cache, 'state.json')
+    run(['--state', state])
+    const once = readFileSync(server, 'utf-8')
+    run(['--state', state])
+    expect(readFileSync(server, 'utf-8')).toBe(once)
+    expect(readState(state).files[0].patches.rto).toBe('already')
+  })
+
+  it('taking it back = deleting the marked line: byte-identical to the file patched without rto', () => {
+    run()
+    const back = readFileSync(server, 'utf-8').split('\n').filter(l => !l.includes(RTO)).join('\n')
+    const code = [
+      'import importlib.util, sys',
+      "spec = importlib.util.spec_from_file_location('ptp', sys.argv[1])",
+      'm = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)',
+      "m.PATCHES = [p for p in m.PATCHES if p['name'] != 'rto']",
+      'sys.stdout.write(m.patch_text(sys.stdin.read())[0])',
+    ].join('\n')
+    const r = spawnSync('python3', ['-c', code, SCRIPT], { input: readFileSync(FIXTURE, 'utf-8'), encoding: 'utf-8' })
+    expect(r.status).toBe(0)
+    expect(back).toBe(r.stdout)
+  })
+
+  it('a moved user_id anchor leaves rto out loudly (and fwd, which shares it)', () => {
+    writeFileSync(server, readFileSync(FIXTURE, 'utf-8').replace('user_id: String(from.id),', 'user_id: String(from.id) /* moved */,'))
+    const state = join(cache, 'state.json')
+    const r = run(['--state', state])
+    expect(r.status).toBe(0)
+    expect(r.stderr).toMatch(/LOUD: inbound meta user_id not found exactly once.*the rto patch left out, /)
+    expect(readFileSync(server, 'utf-8')).not.toContain(RTO)
+    expect(readState(state).files[0].patches.rto).toBe('anchor-missing:inbound meta user_id')
+  })
+
+  it('a file patched by the previous version (d4, fwd, evid, kbd) gets rto on the next run', () => {
+    run()
+    writeFileSync(server, readFileSync(server, 'utf-8').split('\n').filter(l => !l.includes(RTO)).join('\n'))
+    const r = run()
+    expect(r.stderr).toMatch(/patched .*\(rto\)/)
+    expect(readFileSync(server, 'utf-8').split('\n').filter(l => l.includes(RTO))).toHaveLength(1)
   })
 })
 

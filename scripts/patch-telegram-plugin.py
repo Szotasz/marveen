@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
 Take /status and /help away from the Telegram channel plugin (ELSOKOR922 D-4),
-mark forwarded messages in the inbound meta (forwarded="1"), and record every
-inbound message the bot receives (the evidence owner WRITE commands need).
+mark forwarded messages in the inbound meta (forwarded="1"), carry the id of the
+message a sender replied to in the inbound meta (reply_to_message_id), and record
+every inbound message the bot receives (the evidence owner WRITE commands need).
 
 The official plugin (claude-plugins-official/telegram/<ver>/server.ts) answers
 /status ("Paired as ...") and /help itself, inside its bot poller -- those
@@ -47,6 +48,7 @@ MARKER = "// MARVEEN-PATCH(elsokor922-d4): /status and /help belong to the comma
 FWD_MARKER = "// MARVEEN-PATCH(elsokor922-fwd): forwarded flag for the command hook"
 EVID_MARKER = "// MARVEEN-PATCH(cmd920-evid): inbound evidence for owner write commands"
 KBD_MARKER = "// MARVEEN-PATCH(c67f5f34-kbd): one-tap answer buttons"
+RTO_MARKER = "// MARVEEN-PATCH(reply-to): id of the message the sender replied to"
 
 # Each anchor is the handler's full block, up to its closing `})` at column 0.
 ANCHORS = [
@@ -60,6 +62,17 @@ ANCHORS = [
 # test bot, 2026-09-23: a forwarded /status ran). One meta key more, right
 # after user_id, and the hook refuses to run a forwarded command.
 FWD_ANCHOR = ("inbound meta user_id", re.compile(r"^( *)user_id: String\(from\.id\),\n", re.MULTILINE))
+
+# The inbound meta carries the message id, the sender and the time, but not WHICH
+# message the sender replied to: a short "go" or "ok" typed as a Telegram reply is
+# byte-identical to one typed fresh, and the agent cannot tell what it answers.
+# The data is on the update (ctx.message.reply_to_message); one whole line right
+# after user_id puts its message_id into the meta as reply_to_message_id, and only
+# when the message is a reply. Taking it back is deleting the line that carries
+# the marker.
+RTO_ANCHOR = FWD_ANCHOR
+RTO_INSERT = ("{indent}...(ctx.message?.reply_to_message?.message_id != null ? "
+              "{{ reply_to_message_id: String(ctx.message.reply_to_message.message_id) }} : {{}}), " + RTO_MARKER + "\n")
 
 # Owner WRITE commands (/model, /context clear, ...) run only when the message
 # they came in is on record HERE, in the plugin process, the one place that
@@ -116,6 +129,11 @@ KBD_SEND = ("reply send options", re.compile(
 PATCHES = [
     {"name": "d4", "marker": MARKER, "anchors": ANCHORS, "mode": "remove",
      "fallback": "/status and /help fall back to the plugin's own answers"},
+    # rto BEFORE fwd: both insert right after the user_id line, so the later one lands
+    # first; the forward flag stays directly under user_id as it always was.
+    {"name": "rto", "marker": RTO_MARKER, "anchors": [RTO_ANCHOR], "mode": "insert-after",
+     "insert": RTO_INSERT,
+     "fallback": "a reply is not told apart from a fresh message, the agent cannot see which message it answers"},
     {"name": "fwd", "marker": FWD_MARKER, "anchors": [FWD_ANCHOR], "mode": "insert-after",
      "insert": "{indent}...(ctx.message?.forward_origin ? {{ forwarded: '1' }} : {{}}), " + FWD_MARKER + "\n",
      "fallback": "forwarded messages are not marked, a forwarded command runs like a typed one"},

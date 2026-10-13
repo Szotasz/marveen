@@ -246,6 +246,7 @@ export const PLUGIN_PATCH_MARKER = 'MARVEEN-PATCH(elsokor922-d4)'
 // The independent patches, each with what the owner loses without it.
 const PLUGIN_PATCHES = [
   { name: 'd4', marker: PLUGIN_PATCH_MARKER, label: '', fallback: 'a /status és a /help a plugin saját válasza' },
+  { name: 'rto', marker: 'MARVEEN-PATCH(reply-to)', label: ' (válasz-idézés)', fallback: 'az ügynök nem látja, melyik üzenetre válaszolt a gazda' },
   { name: 'fwd', marker: 'MARVEEN-PATCH(elsokor922-fwd)', label: ' (továbbítás-jelölő)', fallback: 'egy továbbított parancs úgy fut, mint a begépelt' },
   { name: 'evid', marker: 'MARVEEN-PATCH(cmd920-evid)', label: ' (bejövő-napló)', fallback: 'az író parancsok (/model, /context clear, saját parancsok) nem futnak, nincs mihez ellenőrizni őket' },
   { name: 'kbd', marker: 'MARVEEN-PATCH(c67f5f34-kbd)', label: ' (válaszgombok)', fallback: 'a kérdések gomb nélkül mennek ki, a válasz betűvel jön' },
