@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, readdirSync, statSync, rmSync, watchFile, unwatchFile, realpathSync } from 'node:fs'
 import { readRemovedDefaultTasks } from './scheduled-tasks-io.js'
 import { registerScheduledTask } from './schedule-registry.js'
-import { basename, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { homedir } from 'node:os'
 import { PROJECT_ROOT, OWNER_NAME, MAIN_AGENT_ID, HEARTBEAT_AGENT_ID, BOT_NAME, CHANNEL_PROVIDER, WEB_PORT, OWNER_DRIVE_FOLDER, APP_TZ, DASHBOARD_PUBLIC_URL, AGENT_API_ORIGIN, STORE_DIR, mainAgentRecipientLedgerEnabled } from '../config.js'
 import { channelStateDir } from '../channel-provider.js'
@@ -1280,7 +1280,8 @@ export function bashEgressDenyTargetPath(name: string, mainAgentConfigDir: strin
 // when the session boots and is NOT re-read while it runs (the project scope
 // is -- measured 2026-09-07, both directions). So a freshly written rule binds
 // the main agent from its next restart, not immediately.
-export function ensureBashEgressDeny(name: string, mainAgentConfigDir: string | null = null): boolean {
+export function ensureBashEgressDeny(name: string, mainAgentConfigDir: string | null = null,
+  mainScopeSettingsPath = MAIN_SCOPE_SETTINGS_PATH): boolean {
   const settingsPath = bashEgressDenyTargetPath(name, mainAgentConfigDir)
   if (!settingsPath) return false
   let settings: Record<string, unknown> = {}
@@ -1293,7 +1294,7 @@ export function ensureBashEgressDeny(name: string, mainAgentConfigDir: string | 
   if (name !== MAIN_AGENT_ID && bashEgressHostAllowEnabled() && ensureBashEgressParser(name)) {
     try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
   }
-  const parserCovers = bashEgressHostAllowEnabled() && bashEgressParserCovers(name, settings)
+  const parserCovers = bashEgressHostAllowEnabled() && bashEgressParserCovers(name, settings, mainScopeSettingsPath)
   if (!mergeBashEgressDeny(settings, parserCovers)) return false
   if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
   atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
@@ -1311,11 +1312,11 @@ export function bashEgressHostAllowEnabled(): boolean {
 // Does the bash-egress-parser hook judge this agent's Bash calls? Decides whether
 // the legacy curl-https / wget deny rules may leave its settings (mergeBashEgressDeny).
 // A sub-agent: its own settings carry the hook under the Bash matcher. The main
-// agent: the TRACKED project settings carry the --main-scope registration (its own
+// agent: the project-local settings carry the --main-scope registration (its own
 // config dir cannot hold hooks, the provisioner deletes them, #1305). An unreadable
 // file reads as NOT covered, which keeps the deny rules: the safe direction.
 export function bashEgressParserCovers(name: string, settings: Record<string, unknown>,
-  projectSettingsPath = join(PROJECT_ROOT, '.claude', 'settings.json')): boolean {
+  projectSettingsPath = MAIN_SCOPE_SETTINGS_PATH): boolean {
   const wiredIn = (s: Record<string, unknown>, needle: string): boolean => {
     const hooks = s.hooks && typeof s.hooks === 'object' ? s.hooks as Record<string, unknown> : {}
     const ptu = Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse as unknown[] : []
@@ -1325,6 +1326,55 @@ export function bashEgressParserCovers(name: string, settings: Record<string, un
   try {
     return wiredIn(JSON.parse(readFileSync(projectSettingsPath, 'utf-8')), 'bash-egress-parser.mjs\\\" --main-scope')
   } catch { return false }
+}
+
+// WHERE the main agent's parser hook is registered: the PROJECT-LOCAL settings,
+// which Claude Code loads for every session in this repo, as it does the tracked
+// .claude/settings.json. Not the tracked file (#1931 review): the registration
+// exists only while BASH_EGRESS_HOST_ALLOW is on, and a runtime write to a tracked
+// file dirties the tree, which the update preflight refuses and the next update
+// reverts. With the switch off the tracked file is byte-for-byte what it was, and
+// this one carries no parser entry. The file may hold the owner's own settings:
+// only the parser entry is ever added or removed, and an unreadable file is left
+// alone (the main agent then keeps the legacy deny rules, bashEgressParserCovers).
+export const MAIN_SCOPE_SETTINGS_PATH = join(PROJECT_ROOT, '.claude', 'settings.local.json')
+
+// Idempotently add (switch on) or remove (switch off) the --main-scope
+// bash-egress-parser entry. Returns true if the file changed.
+export function ensureMainScopeBashEgressParser(enabled = bashEgressHostAllowEnabled(),
+  settingsPath = MAIN_SCOPE_SETTINGS_PATH): boolean {
+  let settings: Record<string, unknown> = {}
+  if (existsSync(settingsPath)) {
+    try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+    if (!settings || typeof settings !== 'object' || Array.isArray(settings)) return false
+  } else if (!enabled) {
+    return false
+  }
+  const hooks = (settings.hooks && typeof settings.hooks === 'object' && !Array.isArray(settings.hooks))
+    ? settings.hooks as Record<string, unknown>
+    : {}
+  const ptu = Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse as unknown[] : []
+  const others = ptu.filter((e) => !JSON.stringify(e).includes('bash-egress-parser.mjs'))
+  if (enabled) {
+    const command = hookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'bash-egress-parser.mjs'), ['--main-scope'])
+    const wired = ptu.some((e) => (e as { matcher?: unknown })?.matcher === 'Bash' && hookCommandWired(JSON.stringify(e), command))
+    if (wired && others.length === ptu.length - 1) return false
+    if (isUnsafeHookCommand(command)) return false
+    hooks.PreToolUse = [...others, { matcher: 'Bash', hooks: [{ type: 'command', command, timeout: 10 }] }]
+    settings.hooks = hooks
+  } else {
+    if (others.length === ptu.length) return false
+    if (others.length) hooks.PreToolUse = others
+    else delete hooks.PreToolUse
+    if (Object.keys(hooks).length) settings.hooks = hooks
+    else delete settings.hooks
+    // Nothing of the owner's left: the file was ours alone, so it goes, and the
+    // directory is as it was before the switch was ever turned on.
+    if (Object.keys(settings).length === 0) { rmSync(settingsPath, { force: true }); return true }
+  }
+  mkdirSync(dirname(settingsPath), { recursive: true })
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
 }
 
 // Which agents are subject to the self-pace gate: every agent EXCEPT the main
