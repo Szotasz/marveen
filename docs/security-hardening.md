@@ -199,9 +199,11 @@ Every way of making git skip a hook is a way of making this gate off, so the
   command creates a moment earlier; the variable rules are what close that.) A relative path
   after a `cd` is resolved against the working directory the gate tracks, so
   `cd .git && printf ... >> config` is judged as the file it is.
-- The dispatcher knows which members **must** exist: the installers list them in
-  `.git/hooks/pre-push.required`, and a listed member that is missing blocks the push, like one
-  that cannot run. Deleting a gate file no longer makes the dispatcher quietly run fewer checks.
+- The dispatcher knows which members **must** exist and what they must contain: the installers
+  list them with the sha256 of the bytes they wrote in `.git/hooks/pre-push.required`, and a
+  listed member that is missing, or whose bytes no longer match, blocks the push, like one that
+  cannot run. Deleting a gate file, or replacing it with `exit 0`, no longer makes the dispatcher
+  quietly run fewer checks; reinstalling re-records the hash.
 - Changing the gate's own files, and every file `core.hooksPath` can be written into: `chmod`,
   `mv`, `rm`, `cp`, `ln`, `sed`, `tee`, `dd`, `truncate`, `find ... -delete/-exec`, a pipe into
   the xargs/parallel family ... on anything under `.git/hooks`, on `.git/config`,
