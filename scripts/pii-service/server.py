@@ -19,6 +19,12 @@ Entity types detected:
   RENDSZAM_N  - licence plate
   IP_N        - IP address
   SZULDATUM_N - birth date (only next to a birth context word)
+  DATUM_N     - full date with a pre-2013 year (birth dates in tables/JSON)
+  AZON_N      - contract / customer / call reference next to its label
+  PROFIL_N    - social profile link
+  FELH_N      - login name
+  TITOK_N     - password, PIN, CVV, card expiry, API token
+  EGESZSEG_N  - health data (GDPR special category) and care places
   CIM_N       - Hungarian addresses (postal code / street pattern)
 """
 import re
@@ -49,6 +55,11 @@ HU_FIRST_NAMES = {
     "Edit", "Andrea", "Gabriella", "Melinda", "Beáta", "Csilla", "Tímea",
     "Rita", "Hajnalka", "Enikő", "Adrienn", "Brigitta", "Kitti", "Bianka",
     "Vivien", "Dóra", "Luca", "Hanna", "Emma", "Lili", "Zoé", "Dalma",
+    "Annamária", "Mónika", "Márta", "Rozália", "Terézia", "Julianna",
+    # Frequent nicknames: customers are often named this way in notes
+    "Zsófi", "Kati", "Zsuzsi", "Gabi", "Pisti", "Laci", "Feri", "Jóska",
+    "Erzsi", "Marika", "Évi", "Andi", "Niki", "Dóri", "Bogi", "Peti",
+    "Tomi", "Kriszti", "Szilvi", "Moni", "Juci", "Bözsi", "Teri", "Zoli",
 }
 
 # Common Hungarian surnames (KSH frequent surnames)
@@ -74,7 +85,7 @@ _AMBIGUOUS_SURNAMES = {
 
 _UP = "A-ZÁÉÍÓÖŐÚÜŰ"
 _LO = "a-záéíóöőúüű"
-_CAP_WORD = re.compile(rf"[{_UP}][{_LO}]+")
+_CAP_WORD = re.compile(rf"[{_UP}][{_LO}]+(?:-[{_UP}][{_LO}]+)?")  # Szűcs-Barta
 # Married-name and case suffixes glued to a name: Andrásné, Bencének, Esztert.
 # An explicit list, not "any lowercase tail": that would read Katalógus as
 # Kata+lógus and Nagyon as Nagy+on.
@@ -130,11 +141,17 @@ def _build_analyzer() -> AnalyzerEngine:
 
     # Hungarian phone numbers. Always anchored on a 36/06 prefix or a
     # parenthesised area code, so bare 9-digit runs (TAJ, IDs) never match.
-    _tail = r"[\s\-/]*\d{3}[\s\-]?(?:\d{3,4}|\d{2}[\s\-]?\d{2})(?!\d)"
+    # Separators may carry spaces around them: "06 30 / 555 - 7788"
+    _sep = r"(?:[ \t]*[-/][ \t]*|[ \t]+)?"
+    _tail = _sep + r"\d{3}" + _sep + r"(?:\d{3,4}|\d{2}" + _sep + r"\d{2})(?!\d)"
     _area = r"\(?(?:1|[2-9]\d)\)?"
     add("PHONE_HU", [
-        ("PHONE_HU_INTL", r"(?<![\w+])(?:\+|00)?36[\s\-/]*" + _area + _tail, 0.95),
-        ("PHONE_HU_LOCAL", r"(?<!\w)06[\s\-/]*" + _area + _tail, 0.95),
+        ("PHONE_HU_INTL", r"(?<![\w+])(?:\+|00)?36" + _sep + _area + _tail, 0.95),
+        ("PHONE_HU_LOCAL", r"(?<!\w)06" + _sep + _area + _tail, 0.95),
+        # Area code + slash without prefix: 72/555-0199, 1/555-0123
+        ("PHONE_HU_SLASH", r"(?<![\w/])(?:1|[2-9]\d)/\d{3}[ \t-]?\d{3,4}(?!\d)", 0.85),
+        # Foreign numbers: +44 20 7946 0123
+        ("PHONE_INTL", r"(?<![\w+])\+(?!36)[1-9]\d{0,2}[ \t-]?\(?\d{1,4}\)?(?:[ \t-]?\d{2,4}){2,4}(?!\d)", 0.85),
         ("PHONE_HU_PAREN", r"(?<!\w)\((?:1|[2-9]\d)\)" + _tail, 0.9),
     ])
 
@@ -153,7 +170,7 @@ def _build_analyzer() -> AnalyzerEngine:
     # Licence plate: ABC-123 (old) and AA BB-123 (2022+)
     add("RENDSZAM", [
         ("RENDSZAM_OLD", r"\b[A-Z]{3}-\d{3}\b", 0.85),
-        ("RENDSZAM_NEW", r"\b[A-Z]{2}\s?[A-Z]{2}-\d{3}\b", 0.85),
+        ("RENDSZAM_NEW", r"\b[A-Z]{2}[ -]?[A-Z]{2}-\d{3}\b", 0.85),
     ])
 
     # Hungarian address: optional "1234 City," prefix, street + house number,
@@ -164,7 +181,8 @@ def _build_analyzer() -> AnalyzerEngine:
         r"(?:utca|út|útja|tér|köz|sor|dűlő|liget|fasor|körút|krt\.?|sétány|lakótelep)"
         r"\s+\d{1,4}(?:/[A-Za-z0-9]+)?\.?"
         r"(?:\s*(?:\d{1,2}|[IVX]{1,4})\.\s*(?:emelet|em\.)(?:\s*\d{1,3}\.?)?"
-        r"|\s*fszt\.?(?:\s*\d{1,3}\.?)?)?"
+        r"|\s*fszt\.?(?:\s*\d{1,3}\.?)?"
+        r"|\s*[IVX]{1,4}/\d{1,3}\.?)?"
         r"(?:\s*\d{1,2}/\d{1,3}\.?)?"
         r"(?:\s*(?:ajtó|szám))?"
     )
@@ -174,6 +192,7 @@ def _build_analyzer() -> AnalyzerEngine:
         # "6720 Szeged" -- but not an amount ("4500 Ft", "1200 Forint")
         ("POSTAL_CITY", rf"\b[1-9]\d{{3}}\s+(?!(?:Forint|Euró|Euro|Dollár|Darab|Liter|Hektár|Tonna|Óra|Perc)\b)[{_UP}][{_LO}]{{2,}}\b", 0.7),
         ("STREET", r"\b" + _street, 0.8),
+        ("POBOX", r"\bPf\.\s*\d{1,5}\b", 0.85),
     ])
 
     return analyzer
@@ -206,17 +225,31 @@ _ENTITY_TO_PREFIX = {
     "OKTAZON": "OKTAZON",
     "ADDRESS_HU": "CIM",
     "SZULDATUM": "SZULDATUM",
+    "DATUM": "DATUM",
+    "AZON": "AZON",
+    "PROFIL": "PROFIL",
+    "FELH": "FELH",
+    "TITOK": "TITOK",
+    "EGESZSEG": "EGESZSEG",
 }
 
 # The multilingual spaCy NER (PERSON / LOCATION) is NOT used: on Hungarian
 # text it tagged ordinary words ("Azt", "Csináld", "Mergelhető", "adatok")
 # as people and places. Names come from the dictionary scan below, places
 # only from the strict address patterns.
-_ANALYZER_ENTITIES = [e for e in _ENTITY_TO_PREFIX if e not in ("PERSON", "SZULDATUM", "CREDIT_CARD")]
+# Entities found by the module-level regex scans below, not by the analyzer
+_SCAN_ONLY = ("PERSON", "SZULDATUM", "CREDIT_CARD", "DATUM", "AZON", "PROFIL", "FELH", "TITOK", "EGESZSEG")
+_ANALYZER_ENTITIES = [e for e in _ENTITY_TO_PREFIX if e not in _SCAN_ONLY]
 
-# Obfuscated e-mail: name(kukac)example.hu, name [at] example.hu
+# Plain e-mail without TLD validation: Presidio's recognizer drops any
+# address whose TLD it does not know (name@company.example, internal hosts).
+_EMAIL = re.compile(r"(?<![\w.+-])[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
+
+# Obfuscated e-mail: name(kukac)example.hu, name [at] example [dot] com,
+# name at example pont hu
 _OBFUSCATED_EMAIL = re.compile(
-    r"[\w.+-]+\s*(?:\(kukac\)|\[kukac\]|\(at\)|\[at\]|\skukac\s)\s*[\w-]+(?:\.[\w-]+)+",
+    r"[\w.+-]+\s*(?:\(kukac\)|\[kukac\]|\(at\)|\[at\]|\s(?:kukac|at)\s)\s*[\w-]+"
+    r"(?:\s*(?:\.|\[dot\]|\(dot\)|\[pont\]|\s(?:dot|pont)\s)\s*[a-z]{2,10})+",
     re.IGNORECASE,
 )
 
@@ -251,6 +284,61 @@ def _card_results(text: str) -> list[RecognizerResult]:
     return out
 
 
+_MONTHS = "január|február|március|április|május|június|július|augusztus|szeptember|október|november|december"
+
+# A full date with a pre-2013 year is almost always a birth date in our
+# traffic (tables, CRM exports, JSON); current dates (logs, deadlines) stay.
+_OLD_DATE = re.compile(
+    r"(?<![\d.])((?:19[2-9]\d|200\d|201[0-2])(?:\.[ \t]?|-)"
+    # Two-digit alternatives first, or 1979-11-02 stops at "1979-1"
+    rf"(?:1[0-2]|0?[1-9]|{_MONTHS})\.?(?:[ \t]?|-)(?:3[01]|[12]\d|0?[1-9])\.?)(?!\d)",
+    re.IGNORECASE,
+)
+
+# Reference numbers next to their label: SZ-2025-0098765, ÜGY-445566, CALL-...
+_LABELLED_ID = re.compile(
+    r"(?:szerződésszám|ügyfélazonosító|hívásazonosító|ügyszám|hivatkozási\s+szám|"
+    r"ügyfélszám|partnerkód|azonosító)\w*\s*:?\s*"
+    rf"([A-Z{_UP[3:]}0-9][A-Z{_UP[3:]}0-9\-/]{{4,}})"
+)
+
+# Social profile links
+_PROFILE = re.compile(r"\b(?:facebook|fb|instagram|linkedin|tiktok|twitter|x)\.[a-z.]+/[\w.\-/]+", re.IGNORECASE)
+
+# Login names: user=zvarga, felhasználónév: zvarga
+_USERNAME = re.compile(r"\b(?:user|username|login|felhasználó\w*)\s*[=:]\s*([\w.\-]+)", re.IGNORECASE)
+
+# Secrets: never meant to be read by anyone, so they are masked on sight
+_SECRETS = [
+    re.compile(r"\bBearer\s+([A-Za-z0-9._~+/\-]{12,}=*)"),
+    re.compile(r"\b((?:sk|pk|rk|ghp|gho|xox[abp])[-_][A-Za-z0-9_\-]{12,})"),
+    re.compile(r"(?:jelsz[óa]\w*|password|passwd|pwd)[^\n:=]{0,50}[:=]\s*(\S+)", re.IGNORECASE),
+    re.compile(r"(?:api[_-]?key|token|secret)\s*[:=]\s*(\S{8,})", re.IGNORECASE),
+    re.compile(r"\bPIN(?:[ -]?kód\w*)?\s*:?\s*(?:is\s+)?(\d{4,8})\b"),
+    re.compile(r"\b(?:CVV|CVC)2?\s*:?\s*(\d{3,4})\b"),
+    re.compile(r"lejár\w*\s*:?\s*(\d{2}/\d{2,4})\b", re.IGNORECASE),
+]
+
+# Health data is a GDPR special category: diagnoses, treatments, care places
+_HEALTH = re.compile(
+    r"\b(?:cukorbeteg\w*|diabét\w*|inzulin\w*|daganat\w*|kemoterápi\w*|"
+    r"depresszi\w*|pszichiátri\w*|epilepszi\w*|asztm\w*|infarktus\w*|stroke|"
+    r"terhes\w*|HIV|AIDS|műtét\w*|kórház\w*|zárójelentés\w*|kezelőorvos\w*|"
+    r"diagnózis\w*|betegség\w*|fogyatékos\w*|rokkant\w*|táppénz\w*|"
+    r"gyógyszer\w*|vérnyomás\w*|allergi\w*)",
+    re.IGNORECASE,
+)
+_CARE_PLACE = re.compile(
+    rf"(?:[{_UP}][{_LO}]+[ \t]+){{1,3}}(?:Klinik\w*|Kórház\w*|Rendelőintézet\w*|Szakrendel\w*)"
+    rf"(?:[ \t]+[{_UP}][{_LO}]+)?"
+)
+
+# Honorific + name, also for foreign names: Mr. Jonathan Smith, Kati néni
+_HONORIFIC = re.compile(
+    r"\b(?:Mr|Mrs|Ms|Miss|Dr|Prof)\.?[ \t]+((?:[A-Z][a-z]+[ \t]+){0,2}[A-Z][a-z]+)"
+)
+_NENI_BACSI = re.compile(rf"\b([{_UP}][{_LO}]+[ \t]+(?:néni|bácsi)\w*)")
+
 # Birth date, only next to a birth context word (a bare date is not PII)
 _BIRTH_DATE = re.compile(
     rf"(?:szület\w*|szül\.)\s*:?\s*(?:[{_UP}][{_LO}]+,\s*)?"
@@ -273,6 +361,10 @@ def _name_stem(word: str) -> tuple[str, str] | None:
         return ("surname", word)
     if word in HU_FIRST_NAMES:
         return ("first", word)
+    if "-" in word:  # double-barrelled surname: Szűcs-Barta, Kiss-Nagy
+        parts = word.split("-")
+        if any(p in HU_SURNAMES or p in HU_FIRST_NAMES for p in parts):
+            return ("surname", word)
     if word.endswith("né") and word[:-2] in HU_SURNAMES:
         return ("surname", word[:-2])  # married-name prefix: Kissné Tóth Anna
     for i in range(len(word) - 1, 2, -1):
@@ -360,6 +452,17 @@ def anonymize_text(text: str) -> tuple[str, dict[str, str]]:
     results += _regex_results(_BIRTH_DATE, text, "SZULDATUM", 0.9, group=1)
     results += _regex_results(_DOCUMENT_ID, text, "SZIG", 0.9, group=1)
     results += _card_results(text)
+    results += _regex_results(_EMAIL, text, "EMAIL_ADDRESS", 0.95)
+    results += _regex_results(_OLD_DATE, text, "DATUM", 0.85, group=1)
+    results += _regex_results(_LABELLED_ID, text, "AZON", 0.9, group=1)
+    results += _regex_results(_PROFILE, text, "PROFIL", 0.9)
+    results += _regex_results(_USERNAME, text, "FELH", 0.9, group=1)
+    for rx in _SECRETS:
+        results += _regex_results(rx, text, "TITOK", 0.97, group=1)
+    results += _regex_results(_HEALTH, text, "EGESZSEG", 0.85)
+    results += _regex_results(_CARE_PLACE, text, "EGESZSEG", 0.9)
+    results += _regex_results(_HONORIFIC, text, "PERSON", 0.85, group=1)
+    results += _regex_results(_NENI_BACSI, text, "PERSON", 0.85, group=1)
 
     # Overlaps: the more specific (higher score) span wins, then the longer
     # one -- so a company tax number is never re-labelled as a phone.
