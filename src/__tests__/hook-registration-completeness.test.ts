@@ -134,6 +134,10 @@ const CHECKOUT_ONLY: Record<string, string> = {
     'fleet-wide BY CONSTRUCTION, so one wiring already covers every agent: it resolves the repo root from its own file location, and watched() enumerates agents/*/CLAUDE.md and SOUL.md alongside the main pair. Seeding it per-agent would point every seeded session at the SAME store/.persona-hashes.json, and because the hook stamps the new digest BEFORE it sends, whichever session reaches it first silences the others -- the race can only LOSE an alert, so seeding would weaken the guard rather than extend it',
   'telegram-reply-guard.py':
     'the Stop-hook half of the Telegram reply enforcement (#856) decides from ledger_lib.open_question_with_age, i.e. the conversation_log the main-only ledger trio writes; seeded alone it would read an empty ledger and allow every stop, a silent no-op -- seeding it means seeding the ledger trio with it, a separate design decision',
+  'pii-anonymize-inbound.py':
+    'opt-in PII anonymization middleware (PII_ANONYMIZE=true) that requires a local Presidio service on localhost:5200; wiring it on sub-agents would block their inbound messages if the service is absent, and sub-agents receive already-anonymized content from the channel-coordinator anyway -- operators enable it per-install by setting PII_ANONYMIZE=true and starting scripts/pii-service/start.sh',
+  'pii-deanonymize-outbound.py':
+    'counterpart to pii-anonymize-inbound.py: reads session-scoped mapping from ~/.pii-mapper/<session_id>/mapping.json; sub-agents do not emit PII markers (they operate on anonymized input), so wiring this on seeded agents would be a silent no-op at best and a fragile cross-session read at worst',
 }
 
 // The direction that was blind: a hook the checkout's own settings wire, which

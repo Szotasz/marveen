@@ -39,7 +39,7 @@ const EXPECTED: Record<string, string[]> = {
     'ledger-capture.py', 'inbox-drain.py', 'telegram-reply-directive.py',
     'provenance-gate.py', 'staleness-guard.py', 'memory-lookup-nudge.py', 'channel-inbox-drain.py',
     'voice-reply-directive.py', 'telegram_progress.py', 'slack_progress.py',
-    'marveen-commands.py',
+    'marveen-commands.py', 'pii-anonymize-inbound.py',
   ],
   PostToolUse: [
     'ledger-outbound.py', 'tool-log-capture.py',
@@ -59,7 +59,7 @@ const EXPECTED: Record<string, string[]> = {
   PreToolUse: [
     'outgoing-copy-gate.py', 'email-approval-gate.py',
     'channel-image-resize.sh', 'egress-gate.mjs', 'memory-frontmatter-gate.py',
-    'memory-frontmatter-bash-gate.py',
+    'memory-frontmatter-bash-gate.py', 'pii-deanonymize-outbound.py',
   ],
   Stop: ['marveen-commands.py', 'telegram-reply-guard.py', 'telegram_progress_clear.py', 'slack_progress_clear.py'],
   SessionStart: ['ledger-replay.py', 'taskstate-replay.py', 'clear-replay.py', 'marveen-commands.py'],

@@ -86,4 +86,5 @@ jobs:
       # hermetic (LEDGER_DB_PATH on a throwaway DB, temp dirs).
       - run: python3 scripts/__tests__/telegram-reply-guard.test.py
       - run: python3 scripts/__tests__/ledger-replay-reply-tool.test.py
+      - run: python3 scripts/__tests__/pii-hooks.test.py
       - run: bash scripts/__tests__/conversation-ledger.test.sh

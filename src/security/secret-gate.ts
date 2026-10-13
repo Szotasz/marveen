@@ -236,6 +236,19 @@ export const FIXTURE_EXCEPTIONS: readonly FixtureException[] = Object.freeze([
     sha256: 'db8f43c042cf5bdf36abda27c6fb50a1eac827489a10916a552531b93cb548cd',
     reason: 'collectors config validation: this literal IS the input to "rejects a raw secret in secret_ref (must be vault:)". Its raw-secret shape is the subject under test.',
   },
+  // PIIGATE1013 -- the PII recognizer test feeds a synthetic log line with a
+  // fake Bearer/sk- token and asserts the anonymizer masks it (TITOK). A
+  // neutral string would no longer exercise the secret recognizers at all.
+  {
+    path: 'scripts/pii-service/tests/test_recognizers.py',
+    sha256: '8f434956f1e5f2e1c65f69575ef048d95f108ae66b6bd7614a3221bc89bf7116',
+    reason: 'PII recognizer test: a synthetic "Authorization: Bearer ..." log line is the input to the assertion that the token gets masked before the model sees it.',
+  },
+  {
+    path: 'scripts/pii-service/tests/test_recognizers.py',
+    sha256: 'aaf34e55732ee5e7a7b6a527d4e74178bd4883a21581c868445cf13f535a6564',
+    reason: 'PII recognizer test: the same synthetic sk- shaped token, matched by the vendor-key detector; its shape is what the TITOK recognizer must catch.',
+  },
 ]);
 
 export type ExceptionProblem = { path: string; reason: string };

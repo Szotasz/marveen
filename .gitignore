@@ -156,3 +156,6 @@ transcripts/
 #   supabase/.temp/  -> ignores a real directory, MISSES the symlink (it shows in
 #                       `git status`, so the next CLI run commits it again)
 supabase/.temp
+
+# PII service venv (install-local, never commit)
+scripts/pii-service/.venv/
