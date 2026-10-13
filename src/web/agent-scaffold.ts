@@ -6,6 +6,7 @@ import { PROJECT_ROOT, OWNER_NAME, MAIN_AGENT_ID, HEARTBEAT_AGENT_ID, BOT_NAME, 
 import { channelStateDir } from '../channel-provider.js'
 import { runAgent } from '../agent.js'
 import { atomicWriteFileSync } from './atomic-write.js'
+import { getEffectiveSettingValue } from '../settings-store.js'
 import { findDuplicateJsonKeys } from './json-dup-keys.js'
 import { logger } from '../logger.js'
 import { filterInheritableMcpServers, readInheritableMcpServerNames, logNotInherited } from './mcp-inheritance.js'
@@ -797,6 +798,10 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   // function replaces permissions wholesale on each spawn, so without it a
   // respawn would silently drop what ensureBashEgressDeny() merged in.
   denyList.push(...BASH_EGRESS_DENY)
+  // The curl-https / wget name rules stay unless the owner switched on host-based
+  // judging (BASH_EGRESS_HOST_ALLOW) -- the parser hook is injected below for
+  // every sub-agent, so with the switch on it is the gate on those two verbs.
+  if (!bashEgressHostAllowEnabled() || !agentGetsBashEgressParser(name)) denyList.push(...LEGACY_BASH_EGRESS_DENY)
   // Fleet baseline: the deny FLOOR every agent gets regardless of profile.
   // Pushed here rather than copied into each templates/profiles/*.json so a
   // profile added tomorrow cannot silently ship without it. Deduped against what
@@ -1034,14 +1039,24 @@ const SELF_PACE_TOOL_DENY = ['ScheduleWakeup', 'CronCreate', 'CronDelete', 'Cron
 //     from pieces, and every other network-capable binary still pass, and the
 //     main agent is not covered by the hook. Closing those needs an allowlist
 //     or network-level gate, which is a separate owner decision.
+//
+// CURL HTTPS + WGET LEFT THIS LIST (2026-10-13), BEHIND AN OWNER SWITCH. A name rule
+// cannot let a vendor host through -- deny beats every allow -- so with these
+// rules on the list store/egress-vendor-hosts.json was dead letter for both
+// download verbs, and a sanctioned release / map download could not run on any
+// agent (measured: the OSRM map refresh stopped on it on the main agent and on
+// a sub-agent alike, with the host already on the vendor list). Both verbs are
+// now judged by the bash-egress-parser hook, which reads the destination host
+// and honours the vendor list. The rules are not dropped: LEGACY_BASH_EGRESS_DENY
+// below names them, and they stay on every agent unless the owner turns on
+// BASH_EGRESS_HOST_ALLOW (default off, so an install that does nothing keeps
+// today's behaviour). Even with the switch on, mergeBashEgressDeny keeps them on
+// any settings file the parser does not cover, so no agent ends up with neither
+// gate.
 export const BASH_EGRESS_DENY = [
-  // curl: the https:// form only -- see the localhost note above.
-  'Bash(curl *https://*)',
-  'Bash(*/curl *https://*)',
-  // wget / nc / ncat / telnet have no internal use in this install, so they are
-  // denied whole; no localhost carve-out is needed and none is possible.
-  'Bash(wget *)',
-  'Bash(*/wget *)',
+  // nc / ncat / telnet are raw channels, not download verbs, and have no internal
+  // use in this install, so they are denied whole; no localhost carve-out is
+  // needed and none is possible.
   'Bash(nc *)',
   'Bash(*/nc *)',
   'Bash(ncat *)',
@@ -1144,17 +1159,33 @@ export const FLEET_BASELINE_DENY = [
 // are unit-testable; ensureBashEgressDeny() below is the filesystem wrapper.
 // Existing entries are preserved and their order kept: an operator's own deny
 // rule must never be dropped by a migration. Returns true if anything changed.
-export function mergeBashEgressDeny(settings: Record<string, unknown>): boolean {
+//
+// parserCovers: whether the bash-egress-parser hook judges the session that
+// reads this file. True -> the LEGACY curl-https / wget rules are removed (and
+// only those exact strings: an operator's own rule is never touched). False ->
+// they are kept or put back, because then they are the only gate on those verbs.
+export function mergeBashEgressDeny(settings: Record<string, unknown>, parserCovers = false): boolean {
   const perms = (settings.permissions && typeof settings.permissions === 'object' && !Array.isArray(settings.permissions))
     ? settings.permissions as Record<string, unknown>
     : {}
   const deny = Array.isArray(perms.deny) ? [...(perms.deny as unknown[])] : []
-  const missing = BASH_EGRESS_DENY.filter((rule) => !deny.includes(rule))
-  if (missing.length === 0) return false
-  perms.deny = [...deny, ...missing]
+  const required = parserCovers ? BASH_EGRESS_DENY : [...BASH_EGRESS_DENY, ...LEGACY_BASH_EGRESS_DENY]
+  const missing = required.filter((rule) => !deny.includes(rule))
+  const kept = parserCovers ? deny.filter((rule) => !LEGACY_BASH_EGRESS_DENY.includes(rule as string)) : deny
+  if (missing.length === 0 && kept.length === deny.length) return false
+  perms.deny = [...kept, ...missing]
   settings.permissions = perms
   return true
 }
+
+// The curl-https / wget name rules this list carried until 2026-10-13. See the
+// note above BASH_EGRESS_DENY: kept wherever the parser hook is not wired.
+export const LEGACY_BASH_EGRESS_DENY = [
+  'Bash(curl *https://*)',
+  'Bash(*/curl *https://*)',
+  'Bash(wget *)',
+  'Bash(*/wget *)',
+]
 
 // WHICH FILE the egress deny is written to -- the part that is not obvious, so
 // it is a pure function with its own tests.
@@ -1207,10 +1238,44 @@ export function ensureBashEgressDeny(name: string, mainAgentConfigDir: string | 
   if (existsSync(settingsPath)) {
     try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
   }
-  if (!mergeBashEgressDeny(settings)) return false
+  // A sub-agent's parser hook is wired FIRST (idempotent): the legacy rules leave
+  // only a settings file the parser already covers, so without this the boot that
+  // turns the switch on would keep them until the next one.
+  if (name !== MAIN_AGENT_ID && bashEgressHostAllowEnabled() && ensureBashEgressParser(name)) {
+    try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+  }
+  const parserCovers = bashEgressHostAllowEnabled() && bashEgressParserCovers(name, settings)
+  if (!mergeBashEgressDeny(settings, parserCovers)) return false
   if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
   atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
   return true
+}
+
+// The owner's switch (Settings, BASH_EGRESS_HOST_ALLOW, default off): off keeps
+// the legacy curl-https / wget name rules on every agent exactly as before; on
+// lets the parser hook judge those two verbs by destination host. An unreadable
+// setting reads as OFF -- the deny rules are the safe direction.
+export function bashEgressHostAllowEnabled(): boolean {
+  try { return String(getEffectiveSettingValue('BASH_EGRESS_HOST_ALLOW')) === '1' } catch { return false }
+}
+
+// Does the bash-egress-parser hook judge this agent's Bash calls? Decides whether
+// the legacy curl-https / wget deny rules may leave its settings (mergeBashEgressDeny).
+// A sub-agent: its own settings carry the hook under the Bash matcher. The main
+// agent: the TRACKED project settings carry the --main-scope registration (its own
+// config dir cannot hold hooks, the provisioner deletes them, #1305). An unreadable
+// file reads as NOT covered, which keeps the deny rules: the safe direction.
+export function bashEgressParserCovers(name: string, settings: Record<string, unknown>,
+  projectSettingsPath = join(PROJECT_ROOT, '.claude', 'settings.json')): boolean {
+  const wiredIn = (s: Record<string, unknown>, needle: string): boolean => {
+    const hooks = s.hooks && typeof s.hooks === 'object' ? s.hooks as Record<string, unknown> : {}
+    const ptu = Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse as unknown[] : []
+    return ptu.some((e) => (e as { matcher?: unknown })?.matcher === 'Bash' && JSON.stringify(e).includes(needle))
+  }
+  if (name !== MAIN_AGENT_ID) return wiredIn(settings, 'bash-egress-parser.mjs')
+  try {
+    return wiredIn(JSON.parse(readFileSync(projectSettingsPath, 'utf-8')), 'bash-egress-parser.mjs\\\" --main-scope')
+  } catch { return false }
 }
 
 // Which agents are subject to the self-pace gate: every agent EXCEPT the main

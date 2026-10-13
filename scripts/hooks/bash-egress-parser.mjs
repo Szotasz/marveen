@@ -18,6 +18,10 @@
 //      (`python3 - <<'PY'`, `node <<EOF`, `powershell.exe -Command - <<'PS'`): its body is judged
 //      exactly like a one-liner body (2.). For a shell (bash/sh/zsh/dash/ksh) the body gets the whole
 //      analysis, as if it were the command itself.
+//   5. wget, read exactly like curl (1.): it left the deny list, because a name rule cannot let a
+//      vendor host through and every sanctioned release download was refused with it. curl https://
+//      left the deny list for the same reason, so for both verbs THIS hook is now the gate, on the
+//      main agent too (its own config dir only, never the owner's shared ~/.claude).
 // The command word is found past assignments, shell keywords and the PREFIX_WORDS commands with
 // their own options (timeout, stdbuf, nice, nohup, env, sudo, command, exec, time), on every path.
 // FALSE-POSITIVE POLICY. A body that uses a network primitive is denied for ANY external URL in it,
@@ -81,7 +85,8 @@
 // fleet; that is today's behaviour, not a new hole. Every DENY is appended to the block log.
 import { readFileSync, appendFileSync, realpathSync, mkdirSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
+import { homedir } from 'node:os'
 import { maskInertLiterals } from '../self-pace-gate.mjs'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
@@ -567,6 +572,64 @@ export function curlDestinations(args) {
   }
   return dests.filter((h) => !isLocalHost(h))
 }
+// wget is judged exactly like curl: it is the same download verb, and the deny-list rule that used
+// to stop it (`wget *`) blocked every host, the vendor allowlist included, so a sanctioned release
+// download could not happen at all. A positional argument is a URL (no scheme -> http://), flags
+// that take a value are skipped with it (option list read from the wget 1.21 man page). Two shapes
+// hide the destination and FAIL CLOSED: -i/--input-file (URLs read from a file or stdin) and
+// --config (a wgetrc can set a proxy or a URL list). An -e/--execute command that sets a proxy names
+// that proxy as a destination. An unknown long option is assumed to take no value, as for curl.
+const WGET_SHORT_WITH_VALUE = new Set('eoaitOTwQUPlARDIXB'.split(''))
+const WGET_LONG_WITH_VALUE = new Set([
+  'execute', 'output-file', 'append-output', 'report-speed', 'input-file', 'input-metalink',
+  'metalink-index', 'base', 'config', 'rejected-log', 'bind-address', 'bind-dns-address',
+  'dns-servers', 'tries', 'output-document', 'backups', 'start-pos', 'progress', 'timeout',
+  'dns-timeout', 'connect-timeout', 'read-timeout', 'limit-rate', 'wait', 'waitretry', 'quota',
+  'restrict-file-names', 'prefer-family', 'user', 'password', 'use-askpass', 'local-encoding',
+  'remote-encoding', 'cut-dirs', 'directory-prefix', 'default-page', 'http-user', 'http-password',
+  'header', 'compression', 'max-redirect', 'proxy-user', 'proxy-password', 'referer', 'user-agent',
+  'post-data', 'post-file', 'method', 'body-data', 'body-file', 'retry-on-http-error',
+  'secure-protocol', 'certificate', 'certificate-type', 'private-key', 'private-key-type',
+  'ca-certificate', 'ca-directory', 'crl-file', 'pinnedpubkey', 'random-file', 'egd-file',
+  'hsts-file', 'warc-file', 'warc-header', 'warc-max-size', 'warc-dedup', 'warc-tempdir',
+  'ftp-user', 'ftp-password', 'level', 'accept', 'reject', 'domains', 'exclude-domains',
+  'follow-tags', 'ignore-tags', 'include-directories', 'exclude-directories', 'accept-regex',
+  'reject-regex', 'regex-type', 'load-cookies', 'save-cookies',
+])
+const WGET_HIDDEN_DEST = new Set(['i', 'input-file', 'input-metalink', 'config'])
+export const WGET_HIDDEN = '<wget: destination read from a file>'
+// Every external destination host in a wget argv (the words AFTER `wget`).
+export function wgetDestinations(args) {
+  const dests = []
+  const addUrl = (v) => { const h = destHost(v); if (h) dests.push(h) }
+  const judgeValue = (name, v) => {
+    if (WGET_HIDDEN_DEST.has(name)) { dests.push(WGET_HIDDEN); return }
+    if ((name === 'e' || name === 'execute') && /^\s*(?:https?_|ftp_)?proxy\s*=/i.test(String(v ?? ''))) {
+      addUrl(String(v).replace(/^[^=]*=\s*/, ''))
+    }
+  }
+  for (let k = 0; k < args.length; k++) {
+    const w = args[k]
+    if (/^\d*[<>]/.test(w) || w === '&') { if (/^\d*(?:>>?|<)&?$/.test(w)) k++; continue } // redirection
+    if (w === '--') continue
+    if (w.startsWith('--')) {
+      const [name, inline] = w.slice(2).split(/=(.*)/s)
+      if (!WGET_LONG_WITH_VALUE.has(name)) continue
+      judgeValue(name, inline !== undefined ? inline : args[++k])
+      continue
+    }
+    if (w.startsWith('-') && w.length > 1) {
+      for (let q = 1; q < w.length; q++) {
+        if (!WGET_SHORT_WITH_VALUE.has(w[q])) continue
+        judgeValue(w[q], q + 1 < w.length ? w.slice(q + 1) : args[++k])
+        break
+      }
+      continue
+    }
+    addUrl(w) // positional: always a URL to wget
+  }
+  return dests.filter((h) => h === WGET_HIDDEN || !isLocalHost(h))
+}
 // EGRESSHEREDOC924: STDIN FEEDS. A heredoc body or a here-string word is what the command on the
 // left reads from stdin. For an interpreter that stdin IS the program (`python3 - <<'PY'`,
 // `node <<EOF`, `bash <<< 'curl ...'`), and for a `while read u` loop it is the list of values `u`
@@ -717,6 +780,7 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
       const cmd = mw[i].split('/').pop()
       let target = null
       if (cmd === 'curl') target = 'curl'
+      else if (cmd === 'wget') target = 'wget'
       else if (INTERPRETER.test(cmd.toLowerCase()) && hasCodeFlag(cmd, mw.slice(i + 1)) && usesNetwork(cmd, text)) target = 'one-liner'
       if (!target) continue
       // curl: the destination is read from the ARGV only. A URL inside a flag VALUE (-d, -e, -H, a
@@ -725,9 +789,9 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
       // with URL_RE denied exactly that (#1514 re-review, measured on the merged head). An interpreter
       // one-liner has no argv to read, so its code is still scanned with URL_RE.
       let found
-      const argv = target === 'curl' ? shellWords(text) : null
-      const at = argv ? argv.findIndex((w) => w.split('/').pop() === 'curl') : -1
-      if (at !== -1) found = curlDestinations(argv.slice(at + 1))
+      const argv = target === 'curl' || target === 'wget' ? shellWords(text) : null
+      const at = argv ? argv.findIndex((w) => w.split('/').pop() === target) : -1
+      if (at !== -1) found = (target === 'curl' ? curlDestinations : wgetDestinations)(argv.slice(at + 1))
       else found = [...text.matchAll(URL_RE)].map((m) => m[0]).filter(isExternal).map(hostOf)
       // A listed vendor host (or a host under a listed domain) passes only by itself: any other
       // destination in the same call still denies.
@@ -740,19 +804,40 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
 }
 
 const GATE_MSG =
-  'Kulso halozati hivas Bash-bol TILTVA (egress hard-gate): curl vagy interpreter-egysoros kulso URL-re, ' +
+  'Kulso halozati hivas Bash-bol TILTVA (egress hard-gate): curl, wget vagy interpreter-egysoros kulso URL-re, ' +
   'akkor is, ha az URL valtozoban van. A localhost/127.0.0.1 hivasok (dashboard) es a helyi halozat ' +
   '(10/8, 172.16/12, 192.168/16, *.local) szabadok. Kulso tartalmat ' +
-  'a quarantine-reader sub-ugynokon at kerj le; ha ez egy vendor-API hivas, kerd a fo-agenst.'
+  'a quarantine-reader sub-ugynokon at kerj le; ha ez egy vendor-API hivas vagy jovahagyott letoltes, a hosztot ' +
+  'a gazda veheti fel a store/egress-vendor-hosts.json listara.'
 function isInvokedDirectly() {
   try { return realpathSync(fileURLToPath(import.meta.url)) === (process.argv[1] ? realpathSync(process.argv[1]) : '') } catch { return false }
 }
+// --main-scope: the registration in the TRACKED project settings (.claude/settings.json), which is how
+// the hook reaches the MAIN agent -- its own config dir cannot carry hooks, the isolated-config
+// provisioner deletes them on every channels.sh start (#1305). The project scope is also loaded by
+// the owner's own interactive sessions in this repo, and the owner decided (2026-09-07) that their
+// shell stays unrestricted. So in this mode the hook judges only a session that runs on a config dir
+// of its OWN (CLAUDE_CONFIG_DIR set and not the shared ~/.claude): the main agent's isolated dir or a
+// sub-agent's provisioned one. A sub-agent registration (no flag) always judges, as before.
+export function mainScopeAppliesTo(env = process.env, home = homedir()) {
+  const dir = env.CLAUDE_CONFIG_DIR
+  if (!dir) return false
+  const real = (x) => { try { return realpathSync(x) } catch { return resolve(x) } }
+  return real(dir) !== real(join(home, '.claude'))
+}
 if (isInvokedDirectly()) {
+  if (process.argv.includes('--main-scope') && !mainScopeAppliesTo()) process.exit(0)
   let payload
   try { payload = JSON.parse(readFileSync(0, 'utf-8')) } catch { process.exit(0) }
   if (payload?.tool_name !== 'Bash') process.exit(0)
   let r
-  try { r = classify(payload?.tool_input?.command, 0, loadVendorHosts(), loadVendorDomains()) } catch (e) { process.stderr.write(`bash-egress-parser: internal error, allowing: ${e?.message}\n`); process.exit(0) }
+  try { r = classify(payload?.tool_input?.command, 0, loadVendorHosts(), loadVendorDomains()) } catch (e) {
+    // Since curl https:// and wget left the deny list, this hook is the ONLY thing between them and an
+    // external host, so an internal error on a command naming either verb denies instead of allowing.
+    // Any other command keeps the old fail-open: a parser bug must not stop the fleet's ordinary work.
+    if (!/\b(?:curl|wget)\b/.test(String(payload?.tool_input?.command ?? ''))) { process.stderr.write(`bash-egress-parser: internal error, allowing: ${e?.message}\n`); process.exit(0) }
+    r = { deny: true, reason: 'internal-error', hosts: [`parser hiba: ${e?.message}`] }
+  }
   if (r.deny) {
     try {
       mkdirSync(dirname(BLOCK_LOG), { recursive: true })
