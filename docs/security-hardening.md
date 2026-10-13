@@ -185,10 +185,14 @@ Every way of making git skip a hook is a way of making this gate off, so the
   `f` or `d` (`-fu`, `-df`) count as force / delete.
 - `core.hooksPath` in **any** git command: `git config core.hooksPath X` (a separate, lasting
   command), `git config --local ...`, `git -c core.hooksPath=X <anything>`, and the
-  `GIT_CONFIG_KEY_n` / `GIT_CONFIG_PARAMETERS` environment forms. Reading it, and *unsetting* it
-  (the repair), stay allowed.
-- Changing the gate's own files: `chmod`, `mv`, `rm`, `cp`, `ln`, `sed`, `tee`, `dd`, `truncate`
-  ... on anything under `.git/hooks`, and shell redirection into it. Reading stays allowed.
+  `GIT_CONFIG_KEY_n` / `GIT_CONFIG_PARAMETERS` environment forms. Reading it (`git config
+  core.hooksPath`, `--get`, `get`, `--list`) and *unsetting* it (the repair) stay allowed.
+- Changing the gate's own files, and every file `core.hooksPath` can be written into: `chmod`,
+  `mv`, `rm`, `cp`, `ln`, `sed`, `tee`, `dd`, `truncate`, `find ... -delete/-exec`, a pipe into
+  the xargs/parallel family ... on anything under `.git/hooks`, on `.git/config`,
+  `config.worktree`, `~/.gitconfig` and `~/.config/git/config`, and shell redirection into any
+  of them (`printf ... >> .git/config` is as lasting as `git config core.hooksPath X`).
+  Reading stays allowed.
 - The dispatcher itself no longer skips a `pre-push.d` member that is present but not
   executable: that is an **error** ("a hook that cannot run is a gate that is off"). Both
   installers write the same dispatcher, and a test pins that they stay identical.
@@ -206,8 +210,9 @@ cannot hide an added line. A **binary** (a NUL byte in what git would diff) is a
 public or unknown target, not a note: an xlsx or a pdf full of personal data must not sail
 through. A reviewed binary goes in `PII_EXCEPTIONS` keyed by path and the sha256 of its git
 object id. Annotated tag messages are scanned too (nested tags peeled), and when the URL behind a
-remote name changes, its old tracking refs stop hiding commits from the scan (the URL is kept as
-a hash in `hooks/pii-gate-remotes.json`).
+remote name changes, its old tracking refs stop hiding commits from the scan. The new URL is
+recorded (as a hash, in `hooks/pii-gate-remotes.json`) only after a run that let the push go,
+so repeating a blocked push unchanged is still scanned in full.
 
 Limits, stated out loud:
 
@@ -218,6 +223,9 @@ Limits, stated out loud:
   calling the GitHub API directly (a PATCH to `repos/<o>/<r>` with `private:false`) is not
   something this gate recognises; it is only as covered as the egress gate covers that script.
   The same goes for any script or interpreter that writes under `.git/hooks` itself.
+- A hook runs inside the repository it was installed in. A fresh clone has none, so cloning the
+  repository elsewhere and pushing from the clone is not seen by this gate; that is the natural
+  edge of any git hook, and the reason CI is the check a hook cannot be.
 - Removing the `15-personal-data-gate` member altogether is indistinguishable from never having
   installed it; the destructive-gate denies the commands that would do it, and a re-run of
   `scripts/sync-hooks.sh` restores it.

@@ -43,10 +43,13 @@ describe('e-mail', () => {
     expect(kinds(j('example', AT, 'gmail.com'))).toEqual([]);
     expect(kinds(j('user', AT, 'gmail.com'))).toEqual([]);
   });
-  it('lets a synthetic domain through: one/two-letter labels and the placeholder words', () => {
-    for (const d of ['b.hu', 'x.co', 'pelda.hu', 'mail.ceg.hu', 'customer.hu', 'your.domain', 'company.com']) {
+  it('lets a synthetic domain through: one-letter .hu labels and the placeholder words', () => {
+    for (const d of ['b.hu', 'x.hu', 'pelda.hu', 'mail.ceg.hu', 'customer.hu', 'your.domain', 'company.com']) {
       expect(kinds(j('kovacs.ilona', AT, d))).toEqual([]);
     }
+  });
+  it('a one-letter label under another TLD can be a real domain and is flagged (Sam, KISEBB 6)', () => {
+    for (const d of ['x.com', 'q.com', 'x.co']) expect(kinds(j('kovacs.janos', AT, d))).toEqual(['email']);
   });
   it('still flags a free-mail provider and an ordinary company domain', () => {
     expect(kinds(j('kovacs.ilona', AT, 'gmail.com'))).toEqual(['email']);
@@ -142,6 +145,11 @@ describe('phone, IBAN, HU account and tax number', () => {
   it('lets an obviously invented number through', () => {
     expect(kinds(j('+36 1 ', '234 ', '5678'))).toEqual([]);
     expect(kinds(j('+36 20 000 ', '0000'))).toEqual([]);
+  });
+  it('a subscriber number that ends in a year-like group is still a number (Sam, KOZEPES 3)', () => {
+    for (const n of [['06 30 987 ', '2024'], ['+36 30 987 ', '2019'], ['+36 20 987 ', '2021'], ['06-30-555-', '2023']]) {
+      expect(kinds(`call ${j(...n)} now`)).toEqual(['phone']);
+    }
   });
   it('does not call a date range or a counting sequence a phone number', () => {
     expect(kinds('release 06-26 / 2026-07 and 06 07 08 09 10')).toEqual([]);

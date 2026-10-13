@@ -143,7 +143,9 @@ function syntheticDomain(domain: string): boolean {
   // The WORDS and the length rule are judged on the REGISTRABLE label only. Judged on any
   // label, an address on a company domain passed because one SUBDOMAIN happened to be called `corp`.
   const registrable = registrableLabel(domain);
-  if (registrable.length === 1) return true; // x.hu, b.com, d.hu
+  // One letter + `.hu` is how this repository writes "some company" (b.hu, x.hu, d.hu). A
+  // one-letter label under any other TLD can be a real domain (x.com, q.com): flag it.
+  if (registrable.length === 1 && domain.toLowerCase().endsWith('.hu')) return true;
   if (registrable.length === 2 && PLACEHOLDER_TWO_LETTER.has(registrable)) return true;
   return SYNTHETIC_DOMAIN_WORDS.has(registrable);
 }
@@ -192,7 +194,12 @@ const HU_TAXID_RE = /(?<![\d-])\d{8}-[1-5]-\d{2}(?![\d-])/g;
  */
 function notAPhone(text: string): boolean {
   const groups = text.match(/\d+/g) ?? [];
-  if (groups.some((g) => /^20[12]\d$/.test(g))) return true;
+  // A date range: a year-like group and EVERY other group one or two digits long
+  // (`06-26 / 2026-07`). A real number keeps a three-digit group next to a four-digit one
+  // (`... 987 2024`), so a subscriber number that happens to end in 20xx is still a number.
+  // The first version excused ANY 20xx group and let those numbers through (Sam, KOZEPES 3).
+  const yearLike = groups.filter((g) => /^20[12]\d$/.test(g));
+  if (yearLike.length === 1 && groups.length >= 3 && groups.filter((g) => g !== yearLike[0]).every((g) => g.length <= 2)) return true;
   if (groups.length >= 4 && groups.every((g) => g.length <= 2)) return true;
   return false;
 }

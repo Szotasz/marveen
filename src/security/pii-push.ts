@@ -306,26 +306,44 @@ export function tagMessages(sha: string, cwd: string): AddedLine[] {
 }
 
 /**
- * Has the URL behind this remote NAME changed since the gate last ran for it?
+ * Has the URL behind this remote NAME changed since the last run that PASSED for it?
  * The URL is stored as a hash (it can carry a token). First sight of a name counts as
  * "unchanged": there is no earlier record to compare with, and an existing install must not
  * rescan the world on its first push.
+ *
+ * READ-ONLY on purpose. The first version wrote the new URL into the record as soon as it
+ * noticed the change -- before the scan -- so a push that was BLOCKED could be repeated
+ * unchanged, the second attempt saw "unchanged", and the old tracking refs hid the commits
+ * again (Sam, SULYOS 1). The record is written by `recordRemoteUrl`, only after a run that
+ * let the push go; until then the state stays "changed".
  */
 export function remoteUrlChanged(name: string, url: string, cwd: string): boolean {
   if (!name) return false;
-  const file = join(hooksDir(cwd), 'pii-gate-remotes.json');
+  const known = readRemoteRecord(cwd);
   const now = createHash('sha256').update(url, 'utf8').digest('hex');
-  let known: Record<string, string> = {};
-  try { known = JSON.parse(readFileSync(file, 'utf8')) as Record<string, string>; } catch { /* absent or unreadable: first sight */ }
-  const changed = typeof known[name] === 'string' && known[name] !== now;
-  if (known[name] !== now) {
-    try {
-      known[name] = now;
-      writeFileSync(`${file}.tmp`, JSON.stringify(known));
-      renameSync(`${file}.tmp`, file);
-    } catch { /* an unwritable record only means the next run compares against the older one */ }
-  }
-  return changed;
+  return typeof known[name] === 'string' && known[name] !== now;
+}
+
+function remoteRecordFile(cwd: string): string {
+  return join(hooksDir(cwd), 'pii-gate-remotes.json');
+}
+
+function readRemoteRecord(cwd: string): Record<string, string> {
+  try { return JSON.parse(readFileSync(remoteRecordFile(cwd), 'utf8')) as Record<string, string>; } catch { return {}; }
+}
+
+/** Remember this URL for the remote name. Call it only after a run that did NOT block the push. */
+export function recordRemoteUrl(name: string, url: string, cwd: string): void {
+  if (!name) return;
+  try {
+    const known = readRemoteRecord(cwd);
+    const now = createHash('sha256').update(url, 'utf8').digest('hex');
+    if (known[name] === now) return;
+    known[name] = now;
+    const file = remoteRecordFile(cwd);
+    writeFileSync(`${file}.tmp`, JSON.stringify(known));
+    renameSync(`${file}.tmp`, file);
+  } catch { /* an unwritable record only means the next run compares against the older one */ }
 }
 
 export async function runPushed(input: PushedInput): Promise<PushedResult> {
@@ -377,6 +395,7 @@ export async function runPushed(input: PushedInput): Promise<PushedResult> {
     }
     if (all.length === 0) {
       say('pii-gate: PASS -- no personal data in the lines or messages this push adds.');
+      recordRemoteUrl(input.remoteName, input.remoteUrl, input.cwd);
       return { exitCode: 0, report: out.join('\n') };
     }
     say('');
@@ -391,6 +410,7 @@ export async function runPushed(input: PushedInput): Promise<PushedResult> {
       say('Pushing a repository from private to public needs the same check over its WHOLE history:');
       say('  npx tsx scripts/secret-gate.ts --pii-range <rev-list args>');
     }
+    if (!strict) recordRemoteUrl(input.remoteName, input.remoteUrl, input.cwd);
     return { exitCode: strict ? 1 : 0, report: out.join('\n') };
   } catch (e) {
     say(`pii-gate: could not complete the check -- BLOCKING (fail-closed): ${(e as Error).message}`);

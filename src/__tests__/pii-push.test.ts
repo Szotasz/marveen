@@ -408,6 +408,22 @@ describe('runPushed', () => {
       expect(second.report).toMatch(/URL behind remote "origin" changed/);
       expect(second.exitCode).toBe(1);                                 // now it is a different repo: old.txt is in scope
       expect(second.report).toContain(dirty.slice(0, 10));
+      // Sam, SULYOS 1: repeating the SAME blocked push, nothing fixed, must not be waved through.
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const again = await runPushed({ remoteName: 'origin', remoteUrl: `${remote}-other`, stdin: refLine(head), cwd: dir });
+        expect(again.exitCode).toBe(1);
+        expect(again.report).toMatch(/URL behind remote "origin" changed/);
+        expect(again.report).toContain(dirty.slice(0, 10));
+      }
+      // The URL is recorded only after a run that let the push go. A reviewed exception makes
+      // the changed-URL scan pass; from then on the new URL is the known one.
+      const { piiHash } = await import('../security/pii-gate.js');
+      const exceptions = [{ path: 'old.txt', sha256: piiHash(PERSON), reason: 'legacy line, reviewed and accepted for this repository' }];
+      const passed = await runPushed({ remoteName: 'origin', remoteUrl: `${remote}-other`, stdin: refLine(head), cwd: dir, exceptions });
+      expect(passed.exitCode).toBe(0);
+      expect(passed.report).toMatch(/URL behind remote "origin" changed/);
+      const settled = await runPushed({ remoteName: 'origin', remoteUrl: `${remote}-other`, stdin: refLine(head), cwd: dir });
+      expect(settled.report).not.toMatch(/URL behind remote/);
     });
   });
 
