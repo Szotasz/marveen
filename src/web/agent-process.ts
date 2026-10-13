@@ -1044,6 +1044,24 @@ function provisionIsolatedConfigDir(
     // enabledPlugins is explicitly never inherited -- it is decided by the
     // scope call above and must not survive from the dir's own older copy.
     const ownSettingsPath = join(cfg, 'settings.json')
+    // `env` is a map of variables, so it is merged one level deeper (below).
+    // To tell an agent-only variable from one that merely came from an older
+    // copy of the shared file, the names the shared env carried at the last
+    // provisioning are kept in a sidecar (names only, never values). Without it
+    // a variable later DELETED from the shared env would look agent-only on
+    // the next start and stay forever.
+    const sharedEnvKeysPath = join(cfg, '.shared-env-keys.json')
+    const sharedEnvKeys = isPlainObject(settings.env) ? Object.keys(settings.env) : []
+    let prevSharedEnvKeys = new Set<string>()
+    let prevKeptKeys: string[] = []
+    try {
+      const side = JSON.parse(readFileSync(sharedEnvKeysPath, 'utf-8')) as unknown
+      if (isPlainObject(side)) {
+        if (Array.isArray(side.sharedEnvKeys)) prevSharedEnvKeys = new Set(side.sharedEnvKeys.filter((k): k is string => typeof k === 'string'))
+        if (Array.isArray(side.keptKeys)) prevKeptKeys = side.keptKeys.filter((k): k is string => typeof k === 'string')
+      }
+    } catch { /* first provisioning with this change, or unreadable: no history */ }
+    let keptKeys: string[] = []
     if (existsSync(ownSettingsPath)) {
       try {
         const own = JSON.parse(readFileSync(ownSettingsPath, 'utf-8')) as unknown
@@ -1056,34 +1074,44 @@ function provisionIsolatedConfigDir(
             // (#1305), so without this exclusion an isolated dir that already
             // carries the old derived hooks would inherit them right back as a
             // "target-only" key on every re-provision.
-            if (key !== 'enabledPlugins' && key !== 'hooks' && !(key in settings)) {
+            if (key !== 'enabledPlugins' && key !== 'hooks' && key !== 'env' && !(key in settings)) {
               settings[key] = value
               inherited.push(key)
             }
           }
-          // `env` is a map of variables, not one setting. Merged at the top
-          // level only, ANY shared `env` (one operator variable is enough)
-          // dropped the agent's own `env` whole on the next start, so an
-          // agent-only variable vanished silently -- measured on a v1.42.0
-          // Linux install: written into the isolated file, gone after a restart.
-          // Same rule one level deeper: the shared file wins for every
-          // variable it defines, agent-only variables survive.
-          if (isPlainObject(own.env) && isPlainObject(settings.env)) {
-            const sharedEnv = settings.env
-            const mergedEnv: Record<string, unknown> = { ...sharedEnv }
+          // `env`: merged at the top level only, ANY shared `env` (one operator
+          // variable is enough) dropped the agent's own `env` whole on the next
+          // start, so an agent-only variable vanished silently -- measured on a
+          // v1.42.0 Linux install: written into the isolated file, gone after a
+          // restart. Same rule one level deeper: the shared file wins for every
+          // variable it defines; an own variable survives only if it is not in
+          // the shared env now AND did not come from it at the last provisioning
+          // (the sidecar above), so a deletion in the shared env still propagates.
+          // Own-property checks only: `in` would also see Object.prototype names
+          // (`constructor`, `toString`), and `__proto__` is never copied, since
+          // assigning it would replace the object's prototype.
+          if (isPlainObject(own.env)) {
+            const sharedEnv = isPlainObject(settings.env) ? settings.env : null
+            const mergedEnv: Record<string, unknown> = sharedEnv ? { ...sharedEnv } : {}
             for (const [k, v] of Object.entries(own.env)) {
-              if (!(k in sharedEnv)) {
-                mergedEnv[k] = v
-                inherited.push(`env.${k}`)
-              }
+              if (k === '__proto__') continue
+              if (sharedEnv && Object.prototype.hasOwnProperty.call(sharedEnv, k)) continue
+              if (prevSharedEnvKeys.has(k)) continue
+              mergedEnv[k] = v
+              inherited.push(`env.${k}`)
             }
-            settings.env = mergedEnv
+            if (sharedEnv || Object.keys(mergedEnv).length) settings.env = mergedEnv
+          } else if (own.env !== undefined && !('env' in settings)) {
+            // not a map: kept as is, exactly like any other target-only key
+            settings.env = own.env
+            inherited.push('env')
           }
           // Additive merges must not be silent: the whole point of this block
           // is that a key nobody can see is a key nobody can debug. Key NAMES
           // only -- a settings.json may hold secrets, so values never land in
-          // the log.
-          if (inherited.length) {
+          // the log. Logged when the kept set CHANGES, not on every start.
+          keptKeys = inherited
+          if (inherited.length && inherited.join('\n') !== prevKeptKeys.join('\n')) {
             logger.info({ name, path: ownSettingsPath, keys: inherited }, 'isolated-config: kept target-only settings keys')
           }
         }
@@ -1109,6 +1137,7 @@ function provisionIsolatedConfigDir(
     // code would fall back to the shared file, and that is precisely the
     // key-loss this commit fixes.
     writeJsonAtomic(ownSettingsPath, settings)
+    writeJsonAtomic(sharedEnvKeysPath, { sharedEnvKeys, keptKeys })
 
     // 3. Own plugins/ dir: symlink the heavy shared parts, own the install state.
     const pluginsDir = join(cfg, 'plugins')

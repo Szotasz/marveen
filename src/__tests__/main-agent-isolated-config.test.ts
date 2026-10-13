@@ -42,6 +42,7 @@ vi.mock('../config.js', async (orig) => {
 })
 
 const { ensureMainAgentIsolatedConfigDir, ensureMainAgentIsolatedConfigDirForRotatedToken } = await import('../web/agent-process.js')
+const { logger } = await import('../logger.js')
 
 beforeEach(() => {
   rmSync(PROJECT, { recursive: true, force: true })
@@ -151,6 +152,97 @@ describe('ensureMainAgentIsolatedConfigDir', () => {
 
     const after = JSON.parse(readFileSync(own, 'utf-8')) as Record<string, unknown>
     expect(after.env).toEqual({ OPERATOR_VAR: 'op', SHARED_VAR: 'shared', AGENT_ONLY_VAR: 'agent' })
+  })
+
+  // The isolated file is itself a copy of the shared env, so without a record
+  // of what came from there, a variable later DELETED from the shared env would
+  // look agent-only on the next start and stay forever.
+  it('a variable deleted from the shared env disappears on the next start; an agent-only one stays', () => {
+    const shared = join(HOME, '.claude', 'settings.json')
+    writeFileSync(shared, JSON.stringify({ env: { KEEP: '1', GONE: 'old' } }))
+    const dir = ensureMainAgentIsolatedConfigDir(undefined, 'linux')!
+    const own = join(dir, 'settings.json')
+    const first = JSON.parse(readFileSync(own, 'utf-8')) as { env: Record<string, string> }
+    writeFileSync(own, JSON.stringify({ env: { ...first.env, AGENT_ONLY_VAR: 'agent' } }, null, 2) + '\n')
+
+    writeFileSync(shared, JSON.stringify({ env: { KEEP: '1' } }))
+    ensureMainAgentIsolatedConfigDir(undefined, 'linux')
+
+    const after = JSON.parse(readFileSync(own, 'utf-8')) as Record<string, unknown>
+    expect(after.env).toEqual({ KEEP: '1', AGENT_ONLY_VAR: 'agent' })
+  })
+
+  it('a variable the shared env takes over later wins over the agent-only value', () => {
+    const shared = join(HOME, '.claude', 'settings.json')
+    writeFileSync(shared, JSON.stringify({ env: { OPERATOR_VAR: 'op' } }))
+    const dir = ensureMainAgentIsolatedConfigDir(undefined, 'linux')!
+    const own = join(dir, 'settings.json')
+    writeFileSync(own, JSON.stringify({ env: { OPERATOR_VAR: 'op', MINE: 'agent' } }, null, 2) + '\n')
+
+    writeFileSync(shared, JSON.stringify({ env: { OPERATOR_VAR: 'op', MINE: 'operator' } }))
+    ensureMainAgentIsolatedConfigDir(undefined, 'linux')
+
+    const after = JSON.parse(readFileSync(own, 'utf-8')) as Record<string, unknown>
+    expect(after.env).toEqual({ OPERATOR_VAR: 'op', MINE: 'operator' })
+  })
+
+  it('removing the whole shared env does not resurrect its variables', () => {
+    const shared = join(HOME, '.claude', 'settings.json')
+    writeFileSync(shared, JSON.stringify({ env: { GONE: 'old' } }))
+    const dir = ensureMainAgentIsolatedConfigDir(undefined, 'linux')!
+    const own = join(dir, 'settings.json')
+    writeFileSync(own, JSON.stringify({ env: { GONE: 'old', AGENT_ONLY_VAR: 'agent' } }, null, 2) + '\n')
+
+    writeFileSync(shared, '{}')
+    ensureMainAgentIsolatedConfigDir(undefined, 'linux')
+
+    const after = JSON.parse(readFileSync(own, 'utf-8')) as Record<string, unknown>
+    expect(after.env).toEqual({ AGENT_ONLY_VAR: 'agent' })
+  })
+
+  it('checks own properties only: constructor survives, __proto__ is never copied', () => {
+    writeFileSync(join(HOME, '.claude', 'settings.json'), JSON.stringify({ env: { OPERATOR_VAR: 'op' } }))
+    const dir = ensureMainAgentIsolatedConfigDir(undefined, 'linux')!
+    const own = join(dir, 'settings.json')
+    writeFileSync(own, '{"env": {"constructor": "c", "toString": "t", "__proto__": {"polluted": true}}}\n')
+
+    const spy = vi.spyOn(logger, 'info')
+    try {
+      ensureMainAgentIsolatedConfigDir(undefined, 'linux')
+      const kept = spy.mock.calls.find((c) => c[1] === 'isolated-config: kept target-only settings keys')
+      expect((kept?.[0] as { keys: string[] }).keys).toEqual(['env.constructor', 'env.toString'])
+    } finally {
+      spy.mockRestore()
+    }
+
+    const after = JSON.parse(readFileSync(own, 'utf-8')) as { env: Record<string, unknown> }
+    expect(Object.prototype.hasOwnProperty.call(after.env, 'constructor')).toBe(true)
+    expect(after.env.constructor).toBe('c')
+    expect(after.env.toString).toBe('t')
+    expect(Object.prototype.hasOwnProperty.call(after.env, '__proto__')).toBe(false)
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined()
+  })
+
+  it('logs kept names only, never values, and only when the kept set changes', () => {
+    const spy = vi.spyOn(logger, 'info')
+    try {
+      writeFileSync(join(HOME, '.claude', 'settings.json'), JSON.stringify({ env: { OPERATOR_VAR: 'op' } }))
+      const dir = ensureMainAgentIsolatedConfigDir(undefined, 'linux')!
+      const own = join(dir, 'settings.json')
+      writeFileSync(own, JSON.stringify({ env: { AGENT_ONLY_VAR: 'secret-value-123' } }, null, 2) + '\n')
+      spy.mockClear()
+
+      ensureMainAgentIsolatedConfigDir(undefined, 'linux')
+      const kept = () => spy.mock.calls.filter((c) => c[1] === 'isolated-config: kept target-only settings keys')
+      expect(kept()).toHaveLength(1)
+      expect((kept()[0][0] as { keys: string[] }).keys).toEqual(['env.AGENT_ONLY_VAR'])
+      expect(JSON.stringify(spy.mock.calls)).not.toContain('secret-value-123')
+
+      ensureMainAgentIsolatedConfigDir(undefined, 'linux')   // same kept set: no repeated line
+      expect(kept()).toHaveLength(1)
+    } finally {
+      spy.mockRestore()
+    }
   })
 
   it('keeps the shared env as is when the own env is not a plain object', () => {
