@@ -581,6 +581,24 @@ describe('installed pre-push hook (real git push, every spelling)', { timeout: 9
     }
   });
 
+  it('a REQUIRED member that has been deleted is an error, not a quiet skip (Sam, 3. kor)', () => {
+    const member = join(work, '.git', 'hooks', 'pre-push.d', '15-personal-data-gate');
+    expect(readFileSync(join(work, '.git', 'hooks', 'pre-push.required'), 'utf8')).toMatch(/^15-personal-data-gate$/m);
+    git(work, ['checkout', '-q', '-b', 'gone-1', 'main']);
+    commit(work, 'gone.txt', `mail ${PERSON}\n`);
+    const saved = readFileSync(member);
+    rmSync(member);
+    try {
+      const r = push(['push', 'origin', 'gone-1']);
+      expect(r.status).not.toBe(0);
+      expect(out(r)).toMatch(/required member 15-personal-data-gate is missing -- BLOCKING/);
+      expect(git(remote, ['branch', '--list', 'gone-1']).trim()).toBe('');
+    } finally {
+      writeFileSync(member, saved);
+      chmodSync(member, 0o755);
+    }
+  });
+
   it('both installers write the SAME dispatcher, so neither can bring the old skip-silently loop back', () => {
     const dispatcher = join(work, '.git', 'hooks', 'pre-push');
     const mine = readFileSync(dispatcher, 'utf8');

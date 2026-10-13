@@ -187,6 +187,21 @@ Every way of making git skip a hook is a way of making this gate off, so the
   command), `git config --local ...`, `git -c core.hooksPath=X <anything>`, and the
   `GIT_CONFIG_KEY_n` / `GIT_CONFIG_PARAMETERS` environment forms. Reading it (`git config
   core.hooksPath`, `--get`, `get`, `--list`) and *unsetting* it (the repair) stay allowed.
+- The **effective value**, not only the spelling. Matching command text is always one writing
+  method behind (an alternative config file, `include.path`, a `cd` followed by a relative path
+  each got past the first two versions), so before a `git push` the gate asks git itself what
+  it would see: `git config --show-origin --get-all core.hooksPath`, with the same `-C` and
+  inline environment the push would run with. Any value from any source (repo, user, system, an
+  included file) blocks the push. `git config include.path` / `includeIf.*` writes are denied
+  for the same reason, and so are the variables that move git's config around:
+  `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM`, `GIT_CONFIG_*`, `XDG_CONFIG_HOME` and a `HOME=`
+  placed in front of `git`. (The effective-value query cannot see a file that the *same*
+  command creates a moment earlier; the variable rules are what close that.) A relative path
+  after a `cd` is resolved against the working directory the gate tracks, so
+  `cd .git && printf ... >> config` is judged as the file it is.
+- The dispatcher knows which members **must** exist: the installers list them in
+  `.git/hooks/pre-push.required`, and a listed member that is missing blocks the push, like one
+  that cannot run. Deleting a gate file no longer makes the dispatcher quietly run fewer checks.
 - Changing the gate's own files, and every file `core.hooksPath` can be written into: `chmod`,
   `mv`, `rm`, `cp`, `ln`, `sed`, `tee`, `dd`, `truncate`, `find ... -delete/-exec`, a pipe into
   the xargs/parallel family ... on anything under `.git/hooks`, on `.git/config`,

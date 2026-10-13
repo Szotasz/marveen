@@ -898,15 +898,36 @@ _HOOKS_REDIRECT = re.compile(r'>{1,2}\s*[^\s;|&<>]*(\.git/(hooks/|config)|\.gitc
 _FIND_ACTIONS = {'-delete', '-exec', '-execdir', '-ok', '-okdir', '-fprint', '-fprintf', '-fls'}
 
 
-def _check_hooks_dir(base, toks, argstart, seg):
-    if _HOOKS_REDIRECT.search(seg):
-        block('Atiranyitas a .git/hooks alá: a push/commit kapuk fajljainak atirasa. '
-              'Nem az ugynok dontese.')
-    if base == 'find' and any(_HOOKS_PATH.search(' ' + t + ' ') for t, _sp in toks[argstart:]) \
-            and any(t in _FIND_ACTIONS for t, _sp in toks[argstart:]):
+_REDIRECT_TARGET = re.compile(r'>{1,2}\s*([^\s;|&<>]+)')
+
+
+def _is_gate_path(tok, cwd):
+    """Mutat-e ez az argumentum a kapuk fajljaira (.git/hooks, a git config fajlok)?
+
+    A nyers szoveg ES a munkakonyvtarhoz kepest feloldott ut is szamit: a `cd .git && ... >> config`
+    es a `cd .git/hooks/pre-push.d && find . -delete` alakban az ut relativ, a szoveg onmagaban
+    nem tartalmazza a `.git/...` reszt (Sam, 2. kor). Ismeretlen cwd + relativ ut: csak a nyers
+    szoveg illesztese tortenik meg.
+    """
+    if _HOOKS_PATH.search(' ' + tok + ' '):
+        return True
+    if tok.startswith('-') or not tok:
+        return False
+    resolved = _resolve(tok, cwd)
+    return bool(resolved and _HOOKS_PATH.search(' ' + resolved + ' '))
+
+
+def _check_hooks_dir(base, toks, argstart, seg, cwd=None):
+    for target in _REDIRECT_TARGET.findall(seg):
+        if _is_gate_path(target, cwd):
+            block('Atiranyitas a .git/hooks vagy egy git config fajl ala: a push/commit kapuk '
+                  'fajljainak atirasa. Nem az ugynok dontese.')
+    args = [t for t, _sp in toks[argstart:]]
+    touches = any(_is_gate_path(t, cwd) for t in args)
+    if base == 'find' and touches and any(t in _FIND_ACTIONS for t in args):
         block('find ... -delete/-exec a .git/hooks vagy a git config fajlokon: a push/commit kapuk '
               'eltavolitasa vagy atirasa. Nem az ugynok dontese.')
-    if base in HOOKS_MUTATORS and any(_HOOKS_PATH.search(' ' + t + ' ') for t, _sp in toks[argstart:]):
+    if base in HOOKS_MUTATORS and touches:
         block('%s a .git/hooks alatt: a push/commit kapuk (force-guard, szemelyes-adat kapu, '
               'secret-gate) fajljainak modositasa vagy eltavolitasa. Nem az ugynok dontese.' % base)
 
@@ -915,6 +936,7 @@ _READ_CONFIG_FLAGS = {'--get', '--get-all', '--get-regexp', '--unset', '--unset-
 
 
 _CONFIG_VALUE_FLAGS = {'--file', '-f', '--blob', '--type', '-t', '--default'}
+_TAMPER_KEYS = ('core.hookspath', 'include.path', 'includeif.')
 
 
 def _hooks_tamper_git(toks, argstart=0):
@@ -926,13 +948,16 @@ def _hooks_tamper_git(toks, argstart=0):
     `git config core.hooksPath` (csak a kulcs), `git config get ...`, `--get`, `--unset`, `--list`.
     """
     text = ' '.join(t for t, _sp in toks).lower()
-    if 'core.hookspath' not in text:
+    # Az `include.path` / `includeIf.*` ugyanazt tudja, mint a core.hooksPath: egy MASIK fajlbol
+    # huzza be, tehat a `git config include.path /tmp/g` tartosan, kozvetve kapcsolja ki a kapukat
+    # (Sam, 2. kor).
+    if not any(k in text for k in _TAMPER_KEYS):
         return
     # a git sajat globalis kapcsoloi: `-c core.hooksPath=X` mindig iras (arra az egy hivasra is)
     i = argstart
     while i < len(toks):
         t = toks[i][0]
-        if t == '-c' and i + 1 < len(toks) and 'core.hookspath' in toks[i + 1][0].lower():
+        if t == '-c' and i + 1 < len(toks) and any(k in toks[i + 1][0].lower() for k in _TAMPER_KEYS):
             block('git -c core.hooksPath=...: a pre-push/pre-commit kapukat kikapcsolo alak. '
                   'Nem az ugynok dontese.')
         if t in ('-C', '-c', '--git-dir', '--work-tree', '--namespace', '--exec-path'):
@@ -957,11 +982,51 @@ def _hooks_tamper_git(toks, argstart=0):
             return                      # olvasas: csak a kulcs, vagy `get`/`list`
     if any(t in _READ_CONFIG_FLAGS for t, _sp in toks):
         return
-    block('git + core.hooksPath: a pre-push/pre-commit kapukat (force-guard, szemelyes-adat '
-          'kapu, secret-gate) kikapcsolo beallitas. Nem az ugynok dontese.')
+    block('git + core.hooksPath / include.path: a pre-push/pre-commit kapukat (force-guard, '
+          'szemelyes-adat kapu, secret-gate) kikapcsolo beallitas. Nem az ugynok dontese.')
 
 
-def _check_git(toks, argstart):
+def _effective_hooks_path(toks, argstart, pi, cwd, cmd_idx):
+    """A core.hooksPath TENYLEGES erteke ahhoz a pushhoz, amit a parancs inditana.
+
+    A parancsszoveg-mintazas mindig egy irasmoddal le van maradva (Sam, 2. kor: alternativ
+    config-fajl, include.path, cd utani relativ ut). Ez a lepes nem az IRAST nezi, hanem az
+    EREDMENYT: ugyanazzal a `-C` / inline kornyezettel lekerdezi, mit latna a git. Ha barmely
+    config-forras (repo, user, system, include) hooksPath-t ad, a kapuk nem futnanak: blokk.
+
+    Amit NEM lat: egy fajl, amely CSAK ugyanabban a parancsban jon letre (`printf > /tmp/g &&
+    GIT_CONFIG_GLOBAL=/tmp/g git push`). Ezt a kornyezeti-valtozo szabaly fogja (a
+    GIT_CONFIG_GLOBAL / _SYSTEM / XDG_CONFIG_HOME / HOME atiranyitas maga tiltott), ez a ketto egyutt zar.
+    """
+    env = dict(os.environ)
+    if cmd_idx is not None:
+        for t, _sp in toks[:cmd_idx]:
+            m = re.match(r'^([A-Za-z_][A-Za-z0-9_]*)=(.*)$', t)
+            if m:
+                env[m.group(1)] = m.group(2)
+    globalflags, i = [], argstart
+    while i < pi:
+        t = toks[i][0]
+        if t in ('-C', '--git-dir', '--work-tree') and i + 1 < pi:
+            globalflags += [t, toks[i + 1][0]]
+            i += 2
+            continue
+        i += 1 if not t in ('-c', '--namespace', '--exec-path') else 2
+    import subprocess
+    try:
+        r = subprocess.run(['git'] + globalflags + ['config', '--show-origin', '--get-all', 'core.hooksPath'],
+                           cwd=cwd or None, env=env, capture_output=True, text=True, timeout=8)
+    except (subprocess.TimeoutExpired, OSError):
+        block('git push: a core.hooksPath tenyleges erteket nem sikerult lekerdezni, a kapu ezert '
+              'nem tudja, futnanak-e a push-kapuk. Nem engedi at.')
+        return
+    if r.returncode == 0 and r.stdout.strip():
+        origin = r.stdout.strip().splitlines()[0].split('\t')[0][:80]
+        block('git push: a core.hooksPath BE VAN ALLITVA (%s), a pre-push kapuk (force-guard, '
+              'szemelyes-adat kapu) ezzel nem futnanak. Nem az ugynok dontese.' % origin)
+
+
+def _check_git(toks, argstart, cwd=None, cmd_idx=None):
     """git push: nem tiltott onmagaban (PR #1357), de harom alakja igen.
 
     Amit a kapu MEGTART: a tortenet ujrairasat (--force es tarsai, '+' refspec), a
@@ -974,6 +1039,7 @@ def _check_git(toks, argstart):
     pi = _git_push_index(toks, argstart)
     if pi is None:
         return
+    _effective_hooks_path(toks, argstart, pi, cwd, cmd_idx)
     args, skip = [], 0
     for tok, _sp in toks[pi + 1:]:
         if skip:
@@ -1310,16 +1376,23 @@ def check_bash(cmd, _depth=0, cwd=None):
             if t in _FIND_EXEC and j + 1 < len(toks) and not toks[j + 1][1]:
                 names.append((toks[j + 1][0], j + 2))
 
-        if 'core.hookspath' in seg.lower() and any(
-                re.match(r'^GIT_CONFIG_(PARAMETERS|COUNT|KEY_\d+|VALUE_\d+)=', t) for t, _sp in toks):
-            block('GIT_CONFIG_* kornyezeti valtozo core.hooksPath-szal: a pre-push/pre-commit '
-                  'kapukat kikapcsolo alak. Nem az ugynok dontese.')
+        # A git config HELYET (vagy tartalmat) atiranyito kornyezeti valtozok: az atiranyitott fajl
+        # barmit mondhat, es a tenyleges-ertek lekerdezes nem latja azt a fajlt, amelyet ugyanez a
+        # parancs hoz letre. Sima munkafolyamathoz nem kellenek, ezert maguk tiltottak (Sam, 2. kor).
+        if re.search(r'(^|[\s;&|(])(export\s+)?(GIT_CONFIG_(GLOBAL|SYSTEM|NOSYSTEM|COUNT|PARAMETERS'
+                     r'|KEY_\d+|VALUE_\d+)|GIT_CONFIG|XDG_CONFIG_HOME)=', seg):
+            block('GIT_CONFIG_* / XDG_CONFIG_HOME kornyezeti valtozo: a git config forrasat atiranyito '
+                  'alak, a pre-push/pre-commit kapukat kikapcsolhatja. Nem az ugynok dontese.')
+        if idx is not None and os.path.basename(toks[idx][0]) == 'git' and any(
+                re.match(r'^HOME=', t) for t, _sp in toks[:idx]):
+            block('HOME= atiranyitas a git elott: a felhasznaloi gitconfig helyet cserelne le. '
+                  'Nem az ugynok dontese.')
 
         for name, argstart in names:
             base = os.path.basename(name)
-            _check_hooks_dir(base, toks, argstart, seg)
+            _check_hooks_dir(base, toks, argstart, seg, cwd)
             if base == 'git':
-                _check_git(toks, argstart)
+                _check_git(toks, argstart, cwd, idx)
                 continue
             if base == 'gh':
                 _check_gh(toks, argstart)

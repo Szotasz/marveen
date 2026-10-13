@@ -95,6 +95,8 @@ fi
 exec "\$TSX" "\$RUNNER" --pushed "\$@"
 EOF
 chmod +x "$PUSH_GUARD"
+PUSH_REQUIRED="$HOOK_DIR/pre-push.required"
+grep -qxF "15-personal-data-gate" "$PUSH_REQUIRED" 2>/dev/null || echo "15-personal-data-gate" >> "$PUSH_REQUIRED"
 
 # The dispatcher may not exist yet (install order is alphabetical: git-guard
 # normally runs first). Write the identical one rather than depend on that, and rewrite it
@@ -113,6 +115,19 @@ set -euo pipefail
 HOOK_DIR="\$(cd "\$(dirname "\$0")" && pwd)"
 payload="\$(cat)"
 status=0
+# The members that MUST be there (pre-push.required, one name per line, written by the
+# installers). A required member that is missing is as off as one that cannot run: deleting a
+# gate file must not make the dispatcher quietly run fewer checks.
+REQ="\$HOOK_DIR/pre-push.required"
+if [ -f "\$REQ" ]; then
+  while IFS= read -r req; do
+    [ -n "\$req" ] || continue
+    if [ ! -e "\$HOOK_DIR/pre-push.d/\$req" ]; then
+      echo "pre-push: required member \$req is missing -- BLOCKING (a gate that was installed and is gone is a gate that is off)." >&2
+      status=1
+    fi
+  done < "\$REQ"
+fi
 for h in "\$HOOK_DIR"/pre-push.d/*; do
   [ -e "\$h" ] || continue
   # A member that is present but not executable is a gate that is OFF. Skipping it silently

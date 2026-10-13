@@ -21,6 +21,7 @@ Futtatas: python3 <ezafajl>   Exit 0 = minden teszt zold.
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -800,6 +801,47 @@ check("echo >> ~/.config/git/config", blocks("echo x >> ~/.config/git/config"))
 check("find .git/hooks -name '15-*' -delete", blocks("find .git/hooks -name '15-*' -delete"))
 check("find .git/hooks -exec rm {} ;", blocks("find .git/hooks -type f -exec rm {} ;"))
 check("ls .git/hooks | xargs rm", blocks("ls .git/hooks/pre-push.d | xargs rm"))
+print("POZITIV kontroll -- alternativ config-forras, include.path, cd utani relativ ut (Sam, 3. kor):")
+WRITE_G = "printf '[core]\\n\\thooksPath = /tmp/e\\n' > /tmp/g && "
+check("GIT_CONFIG_GLOBAL=... git push", blocks(WRITE_G + "GIT_CONFIG_GLOBAL=/tmp/g " + GPUSH + " origin munkaag"))
+check("GIT_CONFIG_SYSTEM=... git push", blocks(WRITE_G + "GIT_CONFIG_SYSTEM=/tmp/g " + GPUSH + " origin munkaag"))
+check("XDG_CONFIG_HOME=... git push", blocks("XDG_CONFIG_HOME=/tmp/x " + GPUSH + " origin munkaag"))
+check("export GIT_CONFIG_GLOBAL=...", blocks("export GIT_CONFIG_GLOBAL=/tmp/g"))
+check("HOME=... git push (a felhasznaloi gitconfig cserelve)", blocks("HOME=/tmp/x " + GPUSH + " origin munkaag"))
+check("git config include.path X (tartos, kozvetett kikapcsolas)", blocks("git config include.path /tmp/g"))
+check("git config --global include.path X", blocks("git config --global include.path /tmp/g"))
+check("git config includeIf.gitdir:/x/.path Y", blocks("git config includeIf.gitdir:/x/.path /tmp/g"))
+check("git -c include.path=X push", blocks("git -c include.path=/tmp/g push origin munkaag"))
+PROJ = "/tmp/proj-" + str(os.getpid())
+check("cd .git && printf >> config (relativ ut a cd utan)",
+      blocks_cwd("cd .git && printf '[core]\\n\\thooksPath = /tmp/e\\n' >> config", PROJ))
+check("cd .git/hooks/pre-push.d && find . -delete",
+      blocks_cwd("cd .git/hooks/pre-push.d && find . -name '15-*' -delete", PROJ))
+check("cd .git/hooks && rm pre-push (relativ ut)", blocks_cwd("cd .git/hooks && rm pre-push", PROJ))
+check("cd .git/hooks && sed -i (relativ ut)", blocks_cwd("cd .git/hooks && sed -i 's/a/b/' pre-push", PROJ))
+print("NEGATIV kontroll -- ugyanez mas konyvtarban szabad:")
+check("cd src && printf > notes.txt", not blocks_cwd("cd src && printf x > notes.txt", PROJ))
+check("cd docs && find . -name '*.md' (csak keres)", not blocks_cwd("cd docs && find . -name '*.md'", PROJ))
+check("cd .git && cat config (olvasas)", not blocks_cwd("cd .git && cat config", PROJ))
+
+print("POZITIV kontroll -- a core.hooksPath TENYLEGES erteke (a push ele):")
+_td = tempfile.mkdtemp(prefix="dgate-hp-", dir=os.path.dirname(ROOT))
+try:
+    def _git(args, cwd):
+        subprocess.run(["git"] + args, cwd=cwd, check=True, capture_output=True)
+    clean = os.path.join(_td, "clean"); os.makedirs(clean); _git(["init", "-q", "-b", "main"], clean)
+    check("tiszta repo: a push szabad", not blocks_cwd(GPUSH + " origin munkaag", clean))
+    setrepo = os.path.join(_td, "set"); os.makedirs(setrepo); _git(["init", "-q", "-b", "main"], setrepo)
+    _git(["config", "core.hooksPath", "/tmp/nowhere"], setrepo)
+    check("a repo configjaban hooksPath: BLOKK", blocks_cwd(GPUSH + " origin munkaag", setrepo))
+    check("git -C <repo> push: BLOKK", blocks_cwd("git -C " + setrepo + " push origin munkaag", clean))
+    inc = os.path.join(_td, "inc"); os.makedirs(inc); _git(["init", "-q", "-b", "main"], inc)
+    with open(os.path.join(_td, "extra.cfg"), "w") as fh:
+        fh.write("[core]\n\thooksPath = /tmp/nowhere\n")
+    _git(["config", "include.path", os.path.join(_td, "extra.cfg")], inc)
+    check("include.path-on at huzott hooksPath: BLOKK", blocks_cwd(GPUSH + " origin munkaag", inc))
+finally:
+    shutil.rmtree(_td, ignore_errors=True)
 print("NEGATIV kontroll -- olvasas es visszaallitas szabad:")
 check("git config core.hooksPath (csak olvasas, a kulcs egyedul)", not blocks("git config core.hooksPath"))
 check("git config --global core.hooksPath (olvasas)", not blocks("git config --global core.hooksPath"))

@@ -51,6 +51,8 @@ done
 exit $fail
 EOF
 chmod +x "$GUARD"
+REQUIRED="$HOOK_DIR/pre-push.required"
+grep -qxF "10-no-force-push-protected" "$REQUIRED" 2>/dev/null || echo "10-no-force-push-protected" >> "$REQUIRED"
 
 # 2. Dispatcher pre-push: replay stdin (the ref list) to every pre-push.d/* hook.
 if [ -f "$DISPATCH" ] && ! grep -q "$MARK" "$DISPATCH" 2>/dev/null; then
@@ -66,6 +68,19 @@ set -euo pipefail
 HOOK_DIR="\$(cd "\$(dirname "\$0")" && pwd)"
 payload="\$(cat)"
 status=0
+# The members that MUST be there (pre-push.required, one name per line, written by the
+# installers). A required member that is missing is as off as one that cannot run: deleting a
+# gate file must not make the dispatcher quietly run fewer checks.
+REQ="\$HOOK_DIR/pre-push.required"
+if [ -f "\$REQ" ]; then
+  while IFS= read -r req; do
+    [ -n "\$req" ] || continue
+    if [ ! -e "\$HOOK_DIR/pre-push.d/\$req" ]; then
+      echo "pre-push: required member \$req is missing -- BLOCKING (a gate that was installed and is gone is a gate that is off)." >&2
+      status=1
+    fi
+  done < "\$REQ"
+fi
 for h in "\$HOOK_DIR"/pre-push.d/*; do
   [ -e "\$h" ] || continue
   # A member that is present but not executable is a gate that is OFF. Skipping it silently
