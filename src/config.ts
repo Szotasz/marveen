@@ -480,6 +480,15 @@ export const HEARTBEAT_AGENT_ENABLED =
 export const SUBAGENT_INBOX_TEE =
   ['1', 'true', 'yes', 'on'].includes((cfg('SUBAGENT_INBOX_TEE') ?? '').trim().toLowerCase())
 
+// Sub-agent session alerts to the main agent (opt-in, DEFAULT OFF). A sub-agent
+// parked on a session dialog (tool-permission prompt, model consent, an
+// unrecognised folder-trust dialog) is the main agent's call: with
+// SESSION_ALERTS_TO_MAIN_AGENT=1 that alert becomes an in-process message to the
+// main agent instead of an alert-chat (Telegram/Slack) notice. The main agent's
+// own prompt and every outage alert keep the alert chat.
+export const SESSION_ALERTS_TO_MAIN_AGENT =
+  ['1', 'true', 'yes', 'on'].includes((cfg('SESSION_ALERTS_TO_MAIN_AGENT') ?? '').trim().toLowerCase())
+
 // Sub-agent Telegram inbox wake-nudge (opt-in, DEFAULT OFF).
 // The message-router can nudge an idle sub-agent whose derived Telegram inbox
 // (<state>/inbox-pending.jsonl) has stuck inbound messages, so its drain hook
