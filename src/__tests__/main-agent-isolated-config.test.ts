@@ -137,6 +137,33 @@ describe('ensureMainAgentIsolatedConfigDir', () => {
     expect(after.model).toBe('shared-model')   // shared wins on conflict
     expect(after.statusLine).toBe('keep-me')   // target-only key still survives
   })
+
+  // `env` is a map of variables: merged at the top level only, any shared
+  // `env` dropped the agent's own `env` whole, so an agent-only variable was
+  // gone after the next restart. The same rule applies one level deeper.
+  it('keeps agent-only env variables when the shared file has its own env (shared wins per variable)', () => {
+    writeFileSync(join(HOME, '.claude', 'settings.json'), JSON.stringify({ env: { OPERATOR_VAR: 'op', SHARED_VAR: 'shared' } }))
+    const dir = ensureMainAgentIsolatedConfigDir(undefined, 'linux')!
+    const own = join(dir, 'settings.json')
+    writeFileSync(own, JSON.stringify({ env: { SHARED_VAR: 'stale', AGENT_ONLY_VAR: 'agent' } }, null, 2) + '\n')
+
+    ensureMainAgentIsolatedConfigDir(undefined, 'linux')
+
+    const after = JSON.parse(readFileSync(own, 'utf-8')) as Record<string, unknown>
+    expect(after.env).toEqual({ OPERATOR_VAR: 'op', SHARED_VAR: 'shared', AGENT_ONLY_VAR: 'agent' })
+  })
+
+  it('keeps the shared env as is when the own env is not a plain object', () => {
+    writeFileSync(join(HOME, '.claude', 'settings.json'), JSON.stringify({ env: { OPERATOR_VAR: 'op' } }))
+    const dir = ensureMainAgentIsolatedConfigDir(undefined, 'linux')!
+    const own = join(dir, 'settings.json')
+    writeFileSync(own, JSON.stringify({ env: ['not', 'a', 'map'] }, null, 2) + '\n')
+
+    ensureMainAgentIsolatedConfigDir(undefined, 'linux')
+
+    const after = JSON.parse(readFileSync(own, 'utf-8')) as Record<string, unknown>
+    expect(after.env).toEqual({ OPERATOR_VAR: 'op' })
+  })
 })
 
 // Token-mode rotation (2026-09-12): the SAME generic dir, but for a plan that

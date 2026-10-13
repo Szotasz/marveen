@@ -1061,6 +1061,24 @@ function provisionIsolatedConfigDir(
               inherited.push(key)
             }
           }
+          // `env` is a map of variables, not one setting. Merged at the top
+          // level only, ANY shared `env` (one operator variable is enough)
+          // dropped the agent's own `env` whole on the next start, so an
+          // agent-only variable vanished silently -- measured on a v1.42.0
+          // Linux install: written into the isolated file, gone after a restart.
+          // Same rule one level deeper: the shared file wins for every
+          // variable it defines, agent-only variables survive.
+          if (isPlainObject(own.env) && isPlainObject(settings.env)) {
+            const sharedEnv = settings.env
+            const mergedEnv: Record<string, unknown> = { ...sharedEnv }
+            for (const [k, v] of Object.entries(own.env)) {
+              if (!(k in sharedEnv)) {
+                mergedEnv[k] = v
+                inherited.push(`env.${k}`)
+              }
+            }
+            settings.env = mergedEnv
+          }
           // Additive merges must not be silent: the whole point of this block
           // is that a key nobody can see is a key nobody can debug. Key NAMES
           // only -- a settings.json may hold secrets, so values never land in
