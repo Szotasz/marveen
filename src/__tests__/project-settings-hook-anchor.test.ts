@@ -58,7 +58,7 @@ const EXPECTED: Record<string, string[]> = {
   PostToolUseFailure: ['tool-log-capture.py', 'memory-frontmatter-bash-gate.py'],
   PreToolUse: [
     'outgoing-copy-gate.py', 'email-approval-gate.py',
-    'channel-image-resize.sh', 'egress-gate.mjs', 'bash-egress-parser.mjs', 'memory-frontmatter-gate.py',
+    'channel-image-resize.sh', 'egress-gate.mjs', 'memory-frontmatter-gate.py',
     'memory-frontmatter-bash-gate.py',
   ],
   Stop: ['marveen-commands.py', 'telegram-reply-guard.py', 'telegram_progress_clear.py', 'slack_progress_clear.py'],

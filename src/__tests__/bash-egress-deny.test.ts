@@ -185,7 +185,7 @@ describe('bashEgressParserCovers', () => {
     expect(bashEgressParserCovers('agent-a', { hooks: { PreToolUse: [{ ...parserEntry, matcher: 'WebFetch' }] } })).toBe(false)
     expect(bashEgressParserCovers('agent-a', {})).toBe(false)
   })
-  it('the main agent is covered by the --main-scope registration in the project settings', () => {
+  it('the main agent is covered by the --main-scope registration in the project-local settings', () => {
     const dir = mkdtempSync(join(tmpdir(), 'marveen-egress-'))
     try {
       const p = join(dir, 'settings.json')
@@ -198,8 +198,11 @@ describe('bashEgressParserCovers', () => {
       rmSync(dir, { recursive: true, force: true })
     }
   })
-  it('the tracked project settings of this repo carry the main-scope registration', () => {
-    expect(bashEgressParserCovers(MAIN_AGENT_ID, {}, join(ROOT, '.claude', 'settings.json'))).toBe(true)
+  // #1931 review: with BASH_EGRESS_HOST_ALLOW off the tracked file must be byte-for-byte what it was,
+  // so the --main-scope entry is never in it; the dashboard writes it to settings.local.json instead.
+  it('the tracked project settings of this repo carry NO parser registration', () => {
+    expect(readFileSync(join(ROOT, '.claude', 'settings.json'), 'utf-8')).not.toContain('bash-egress-parser')
+    expect(bashEgressParserCovers(MAIN_AGENT_ID, {}, join(ROOT, '.claude', 'settings.json'))).toBe(false)
   })
 })
 
