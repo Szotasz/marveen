@@ -11,9 +11,11 @@ Entity types detected:
   IBAN_N      - IBAN numbers (HU and international)
   SZAMLA_N    - domestic bank account numbers (8-8[-8])
   TAJ_N       - TAJ-szam (Hungarian social security)
+  OKTAZON_N   - student ID (oktatási azonosító)
+  KARTYA_N    - payment card number (Luhn-checked)
   ADOAZON_N   - Hungarian personal tax ID (adoazonositó jel)
   ADOSZAM_N   - company tax number (12345678-1-42)
-  SZIG_N      - identity card number
+  SZIG_N      - identity card, driving licence, passport number
   RENDSZAM_N  - licence plate
   IP_N        - IP address
   SZULDATUM_N - birth date (only next to a birth context word)
@@ -63,8 +65,8 @@ HU_SURNAMES = {
     "Borbély", "Bognár", "Deák", "Vörös", "Benkő", "Illés", "Kun",
 }
 
-# Surnames that are also everyday words ("Nagy öröm", "Kiss hiba"): a lone
-# capitalised one at the start of a sentence is not taken as a name.
+# Surnames that are also everyday words ("Nagy öröm", "Barna szín"): on its
+# own such a word is not taken as a name, only next to a first name.
 _AMBIGUOUS_SURNAMES = {
     "Nagy", "Kiss", "Fekete", "Fehér", "Barna", "Király", "Nemes", "Veres",
     "Vörös", "Erdős", "Simon", "Sándor", "Pál", "Boros", "Katona", "Kun",
@@ -128,7 +130,7 @@ def _build_analyzer() -> AnalyzerEngine:
 
     # Hungarian phone numbers. Always anchored on a 36/06 prefix or a
     # parenthesised area code, so bare 9-digit runs (TAJ, IDs) never match.
-    _tail = r"[\s\-/]*\d{3}[\s\-]?\d{3,4}(?!\d)"
+    _tail = r"[\s\-/]*\d{3}[\s\-]?(?:\d{3,4}|\d{2}[\s\-]?\d{2})(?!\d)"
     _area = r"\(?(?:1|[2-9]\d)\)?"
     add("PHONE_HU", [
         ("PHONE_HU_INTL", r"(?<![\w+])(?:\+|00)?36[\s\-/]*" + _area + _tail, 0.95),
@@ -138,9 +140,12 @@ def _build_analyzer() -> AnalyzerEngine:
 
     # IBAN (HU and international)
     add("IBAN_HU", [
-        ("IBAN_HU", r"\bHU\d{2}[\s]?(\d{4}[\s]?){6}\b", 0.98),
+        ("IBAN_HU", r"\bHU\d{2}(?:\s?\d{4}){6}\b", 0.98),
         ("IBAN_INTL", r"\b[A-Z]{2}\d{2}[\s]?[A-Z0-9]{4}[\s]?([A-Z0-9]{4}[\s]?){2,6}[A-Z0-9]{1,4}\b", 0.85),
     ])
+
+    # Student ID (oktatási azonosító): 11 digits starting with 7
+    add("OKTAZON", [("OKTAZON", r"\b7\d{10}\b", 0.85)])
 
     # Identity card number: 123456AB
     add("SZIG", [("SZIG", r"\b\d{6}[A-Z]{2}\b", 0.85)])
@@ -158,7 +163,9 @@ def _build_analyzer() -> AnalyzerEngine:
         rf"[{_UP}][{_LO}]+(?:\s+[{_UP}]?[{_LO}]+){{0,2}}\s+"
         r"(?:utca|út|útja|tér|köz|sor|dűlő|liget|fasor|körút|krt\.?|sétány|lakótelep)"
         r"\s+\d{1,4}(?:/[A-Za-z0-9]+)?\.?"
-        r"(?:\s*\d{1,2}\.\s*(?:emelet|em\.)(?:\s*\d{1,3}\.?)?)?"
+        r"(?:\s*(?:\d{1,2}|[IVX]{1,4})\.\s*(?:emelet|em\.)(?:\s*\d{1,3}\.?)?"
+        r"|\s*fszt\.?(?:\s*\d{1,3}\.?)?)?"
+        r"(?:\s*\d{1,2}/\d{1,3}\.?)?"
         r"(?:\s*(?:ajtó|szám))?"
     )
     add("ADDRESS_HU", [
@@ -195,6 +202,8 @@ _ENTITY_TO_PREFIX = {
     "SZIG": "SZIG",
     "RENDSZAM": "RENDSZAM",
     "IP_ADDRESS": "IP",
+    "CREDIT_CARD": "KARTYA",
+    "OKTAZON": "OKTAZON",
     "ADDRESS_HU": "CIM",
     "SZULDATUM": "SZULDATUM",
 }
@@ -203,13 +212,44 @@ _ENTITY_TO_PREFIX = {
 # text it tagged ordinary words ("Azt", "Csináld", "Mergelhető", "adatok")
 # as people and places. Names come from the dictionary scan below, places
 # only from the strict address patterns.
-_ANALYZER_ENTITIES = [e for e in _ENTITY_TO_PREFIX if e not in ("PERSON", "SZULDATUM")]
+_ANALYZER_ENTITIES = [e for e in _ENTITY_TO_PREFIX if e not in ("PERSON", "SZULDATUM", "CREDIT_CARD")]
 
 # Obfuscated e-mail: name(kukac)example.hu, name [at] example.hu
 _OBFUSCATED_EMAIL = re.compile(
     r"[\w.+-]+\s*(?:\(kukac\)|\[kukac\]|\(at\)|\[at\]|\skukac\s)\s*[\w-]+(?:\.[\w-]+)+",
     re.IGNORECASE,
 )
+
+# Document numbers that look like any product code (AB123456), so they are
+# taken only right after a document word: jogosítvány, útlevél, igazolvány
+_DOCUMENT_ID = re.compile(
+    r"(?:jogosítvány|útlevél|igazolvány|okmány)\w*(?:\s+szám\w*)?\s*:?\s*"
+    r"([A-Z]{2}\d{6,7}|\d{6}[A-Z]{2})"
+)
+
+# Payment card: 13-19 digits in groups, kept only if the Luhn check passes
+# (Presidio's CREDIT_CARD recognizer is not registered for the xx language).
+_CARD = re.compile(r"(?<!\d)\d{4}(?:[ -]?\d{4}){2}[ -]?\d{1,7}(?!\d)")
+
+
+def _luhn_ok(digits: str) -> bool:
+    total = 0
+    for i, ch in enumerate(reversed(digits)):
+        d = int(ch)
+        if i % 2:
+            d = d * 2 - 9 if d > 4 else d * 2
+        total += d
+    return total % 10 == 0
+
+
+def _card_results(text: str) -> list[RecognizerResult]:
+    out = []
+    for m in _CARD.finditer(text):
+        digits = re.sub(r"\D", "", m.group(0))
+        if 13 <= len(digits) <= 19 and _luhn_ok(digits):
+            out.append(RecognizerResult(entity_type="CREDIT_CARD", start=m.start(), end=m.end(), score=0.9))
+    return out
+
 
 # Birth date, only next to a birth context word (a bare date is not PII)
 _BIRTH_DATE = re.compile(
@@ -233,8 +273,18 @@ def _name_stem(word: str) -> tuple[str, str] | None:
         return ("surname", word)
     if word in HU_FIRST_NAMES:
         return ("first", word)
+    if word.endswith("né") and word[:-2] in HU_SURNAMES:
+        return ("surname", word[:-2])  # married-name prefix: Kissné Tóth Anna
     for i in range(len(word) - 1, 2, -1):
         stem, rest = word[:i], word[i:]
+        # -val/-vel and -vá/-vé assimilate to a final consonant, which doubles:
+        # Ferenc+vel -> Ferenccel, Péter+vel -> Péterrel, Gábor+vá -> Gáborrá
+        if (len(rest) >= 2 and rest[0] == stem[-1] and stem[-1] not in "aáeéiíoóöőuúüű"
+                and rest[1:] in ("al", "el", "á", "é")):
+            if stem in HU_FIRST_NAMES:
+                return ("first", stem)
+            if stem in HU_SURNAMES and stem not in _AMBIGUOUS_SURNAMES:
+                return ("surname", stem)
         if _NAME_SUFFIX.fullmatch(rest):
             # Hungarian lengthens a final a/e before a suffix: Bence -> Bencé-nek
             for cand in (stem, stem[:-1] + {"é": "e", "á": "a"}.get(stem[-1], stem[-1])):
@@ -245,11 +295,12 @@ def _name_stem(word: str) -> tuple[str, str] | None:
     return None
 
 
-def _is_sentence_start(text: str, pos: int) -> bool:
-    i = pos - 1
-    while i >= 0 and text[i] in " \t":
-        i -= 1
-    return i < 0 or text[i] in ".!?\n:("
+_NOT_PERSON_AFTER = re.compile(
+    r"[ \t]+(?:[A-ZÁÉÍÓÖŐÚÜŰ][a-záéíóöőúüű]+[ \t]+|és[ \t]+Társa[ \t]+)?"
+    r"(?:utc|út\b|úti|tér|téri|köz\b|közi|sor\b|sori|körút|fasor|liget|"
+    r"Kft|Zrt|Bt\b|Nyrt|Kkt|Rt\b|Kht|Egyesület|Alapítvány)"
+)
+
 
 
 def _hu_name_scan(text: str) -> list[RecognizerResult]:
@@ -278,9 +329,15 @@ def _hu_name_scan(text: str) -> list[RecognizerResult]:
                 j += 1
             else:
                 break
+        # A name that is part of a street or a company is not a person:
+        # "Kiss utcai telephely", "Simon Kft.", "Molnár Agro Kft."
+        if any(_NOT_PERSON_AFTER.match(text, words[k].end()) for k in range(i, j + 1)):
+            i = j + 1
+            continue
         single = j == i
-        if single and kind[0] == "surname" and w.group(0) in _AMBIGUOUS_SURNAMES \
-                and _is_sentence_start(text, start):
+        # A lone everyday-word surname ("Barna pedig", "Nagy öröm") is too
+        # ambiguous to mask; with a first name next to it, it is masked.
+        if single and kind[0] == "surname" and w.group(0) in _AMBIGUOUS_SURNAMES:
             i += 1
             continue
         results.append(RecognizerResult(entity_type="PERSON", start=start, end=end, score=0.8))
@@ -301,6 +358,8 @@ def anonymize_text(text: str) -> tuple[str, dict[str, str]]:
     results += _hu_name_scan(text)
     results += _regex_results(_OBFUSCATED_EMAIL, text, "EMAIL_ADDRESS", 0.9)
     results += _regex_results(_BIRTH_DATE, text, "SZULDATUM", 0.9, group=1)
+    results += _regex_results(_DOCUMENT_ID, text, "SZIG", 0.9, group=1)
+    results += _card_results(text)
 
     # Overlaps: the more specific (higher score) span wins, then the longer
     # one -- so a company tax number is never re-labelled as a phone.

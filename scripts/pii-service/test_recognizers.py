@@ -5,6 +5,7 @@
     .venv/bin/python test_recognizers.py
 
 MUST: every listed value must be masked in MSG1/MSG2 (all data is synthetic).
+CASES: generated texts with what must be masked and what must stay in clear.
 NOISE: ordinary operator messages that must produce NO marker -- the old
 multilingual NER tagged words like "Azt", "Csináld", "Mergelhető" as people.
 """
@@ -22,6 +23,71 @@ MUST = ['Kovács Eszter', '1234 Budapest, Minta utca 12. 3. emelet 5', 'kovacs.e
 
 NOISE = ['van olyan megoldás, hogy a kész visszaadott szövegbe beírja az eredeti nevet ? Kvázi a Claude code maszkolva látja, de nekem az üzenetben helyesen jön vissza', 'A felismerés pontosságát (kimaradt adatok, félrefogott szavak) külön is meg tudom csinálni, ha kéred. Csináld meg előbb.', 'PR #1934 CI zöld, mindkét check átment (scan + test). Mergelhető. nem jó még mindig', 'Nem ment végbe szotasz oldalán a pull request ellenőrzés', 'Holnap 10:30-kor megbeszélés a Budapest Kossuth irodában, kód: ab-123, abc-123.', 'Kérlek nézd meg a PR #1934-et, és a 4500 Ft-os tételt.', 'Szia! Mi a helyzet a kanban kártyákkal? Készült valami új skill?', 'A 4500 Forint és 1200 Euro tétel, 4500 Ft a díj.', 'Katalógus érkezett. Nagyon jó. Annak örülök. Kissé fáradt.']
 
+# (text, must be masked, must stay in clear) -- two generated rounds of ten;
+# the second round was held out while fixing the first.
+CASES = [
+    ('Jó reggelt! Tegnap Horváth Zsuzsanna hívott a 06-30-222-3344 számról, hogy a John Deere 6R traktor szervizét áttenné csütörtökre. Az email címe horvath.zsuzsa@gmail.com.',
+     ['Horváth Zsuzsanna', '06-30-222-3344', 'horvath.zsuzsa@gmail.com'],
+     ['John Deere', 'Jó reggelt', 'csütörtökre']),
+    ('Kérlek küldd ki az ajánlatot Molnár Lászlónak (Molnár Agro Kft., adószám: 23456789-2-13), cím: 7400 Kaposvár, Fő utca 45. Telefon: +36 1 234 5678.',
+     ['Molnár Lászlónak', '23456789-2-13', '7400 Kaposvár, Fő utca 45', '+36 1 234 5678'],
+     ['ajánlatot']),
+    ('A pályázati adatlapon szereplő személy: dr. Varga Katalin, szül. 1972.05.03., anyja neve Kiss Mária, TAJ: 045 678 912, adóazonosító jel: 8401234567.',
+     ['Varga Katalin', '1972.05.03', 'Kiss Mária', '045 678 912', '8401234567'],
+     ['pályázati']),
+    ('Szia! Mergelhető a PR, a CI zöld. Holnap 9-kor demo a Fendt 724-esről, utána ebéd. A kanban kártyát lezártam.',
+     [],
+     ['Mergelhető', 'Fendt', 'Szia', 'Holnap', 'demo']),
+    ('Utalás: Takács Gábor, számlaszám 10403387-00028572-00000000, IBAN: HU93 1040 3387 0002 8572 0000 0000. Összeg: 1 250 000 Ft, közlemény: GÉP-2026/118.',
+     ['Takács Gábor', '10403387-00028572-00000000', 'HU93 1040 3387 0002 8572 0000 0000'],
+     ['1 250 000 Ft', 'GÉP-2026/118']),
+    ('Ismét jelentkezett Péternek a sógora, Lakatos Ferenc. Ferenccel abban maradtunk, hogy a gépet a 4025 Debrecen, Piac utca 12/A alá szállítjuk. Rendszám: AA BC-456.',
+     ['Péternek', 'Lakatos Ferenc', 'Ferenccel', '4025 Debrecen, Piac utca 12/A', 'AA BC-456'],
+     ['sógora', 'szállítjuk']),
+    ('A szerver 10.0.0.15 címen fut, a backup 203.0.113.7-re megy. Port 3420, verzió 1.42.0. Nincs benne személyes adat.',
+     ['10.0.0.15', '203.0.113.7'],
+     ['3420', '1.42.0']),
+    ('Elérhetőségek: Szilágyi Béla, bela.szilagyi[at]freemail.hu, mobil: 0036 70 987 6543; Németh Andrea – andrea.nemeth@ceg.hu – 06 1 456 7890.',
+     ['Szilágyi Béla', 'bela.szilagyi[at]freemail.hu', '0036 70 987 6543', 'Németh Andrea', 'andrea.nemeth@ceg.hu', '06 1 456 7890'],
+     []),
+    ('Nagy kérés lenne, ha a Kiss utcai telephelyen is megnéznéd a gépet. Fekete színű, Simon Kft. gyártotta. Varga úrnak szólj.',
+     ['Varga'],
+     ['Nagy kérés', 'Kiss utcai', 'Fekete színű', 'Simon Kft.']),
+    ('Személyi igazolvány: 987654CD, jogosítvány: AB123456, útlevél: BE1234567. Született Győrben, 1990. december 1-jén. Lakcím: 9021 Győr, Baross Gábor út 3. 2/7.',
+     ['987654CD', 'AB123456', 'BE1234567', '1990. december 1', '9021 Győr, Baross Gábor út 3. 2/7'],
+     ['Győrben']),
+    ('Bálinttal beszéltem, Juhász Bálinttal. Holnap küldi a Claas Axion 870 adatlapját a juhasz.balint@agro-example.hu címre.',
+     ['Bálinttal', 'Juhász Bálinttal', 'juhasz.balint@agro-example.hu'],
+     ['Claas Axion 870', 'Holnap']),
+    ('Ügyfél: Kelemen Józsefné, 3300 Eger, Széchenyi István utca 21. fszt. 2. Tel.: 06 (36) 555-123.',
+     ['Kelemen Józsefné', '3300 Eger, Széchenyi István utca 21. fszt. 2', '06 (36) 555-123'],
+     []),
+    ('A tanuló adatai: Fodor Lilla, oktatási azonosító 72345678901, szül.: 2008. 02. 29., anyja: Bíró Edit.',
+     ['Fodor Lilla', '72345678901', '2008. 02. 29', 'Bíró Edit'],
+     []),
+    ('Ma 14:00-kor review. A Szabó-féle módszert érdemes lenne kipróbálni a kanban auditban. Nincs itt semmi név.',
+     [],
+     ['review', 'kanban', 'Nincs']),
+    ('Kérem utaljon a HU12 1200 1008 0012 3456 0010 0002 számlára, kedvezményezett: Pintér Tibor. Bankkártya: 4111 1111 1111 1111.',
+     ['HU12 1200 1008 0012 3456 0010 0002', 'Pintér Tibor', '4111 1111 1111 1111'],
+     []),
+    ('Írtam Évának és Gergőnek is. Éva szerint a Nagy-féle traktor kész, Gergő a Fehérvári úton várja.',
+     ['Évának', 'Gergőnek', 'Éva', 'Gergő'],
+     ['Fehérvári úton']),
+    ('Hívjon vissza a +36-20/123-45-67 számon vagy írjon: info.kovacs@pelda.hu. Céges: Kovács és Társa Bt.',
+     ['+36-20/123-45-67', 'info.kovacs@pelda.hu'],
+     ['Kovács és Társa Bt.']),
+    ('Szőcs Anita 1985-ben született, a lakcímkártyáján: 1111 Budapest, Bartók Béla út 66. IV. em. 12.',
+     ['Szőcs Anita', '1111 Budapest, Bartók Béla út 66. IV. em. 12'],
+     []),
+    ('Kiss Péter és Kissné Tóth Anna mindketten aláírták. Péterék a Fő téren laknak, 2 gyerekkel.',
+     ['Kiss Péter', 'Kissné Tóth Anna', 'Péterék'],
+     ['Fő téren']),
+    ('Nagyon köszönöm! Sándor napja van ma, de nem tudom ki az. Simon szerint jó, Barna pedig maradjon a szín.',
+     [],
+     ['Nagyon', 'Sándor napja', 'Barna']),
+]
+
 
 def main() -> int:
     failed = False
@@ -36,6 +102,16 @@ def main() -> int:
         if mapping:
             print(f"FALSE POSITIVE in {text[:40]!r}: {list(mapping.values())}")
             failed = True
+    for text, must, keep in CASES:
+        anonymized, _ = anonymize_text(text)
+        for value in must:
+            if value in anonymized:
+                print(f"LEAK: {value!r} not masked")
+                failed = True
+        for value in keep:
+            if value not in anonymized:
+                print(f"OVERMASK: {value!r} was masked")
+                failed = True
     print("FAIL" if failed else "recognizers: all pass")
     return 1 if failed else 0
 
