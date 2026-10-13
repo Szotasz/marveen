@@ -246,6 +246,18 @@ Limits, stated out loud:
 - Removing the `15-personal-data-gate` member altogether is indistinguishable from never having
   installed it; the destructive-gate denies the commands that would do it, and a re-run of
   `scripts/sync-hooks.sh` restores it.
+- The manifest hash covers the members of `.git/hooks/pre-push.d`, not the code they run. The
+  `15-personal-data-gate` member executes the install root's own sources (`scripts/secret-gate.ts`,
+  `src/security/pii-*.ts`); whoever rewrites those files switches the gate off while the member's
+  recorded hash still matches. Editing them is the same class as the interpreter write above.
+- The destructive-gate asks git for the effective `core.hooksPath` of the repository the push
+  runs in. A push aimed at a different repository through the environment (`export GIT_DIR=...`
+  before `git push`) is not that repository's hook problem and is not seen; it is the same edge
+  as the fresh-clone limit above.
+- Known over-blocking, in the fail-closed direction: commands that only *read* `.git/config` or
+  copy `.git/hooks/pre-push` out (`sed -n` on the file, `cp` to a temp path) are denied, and
+  `XDG_CONFIG_HOME=` is denied on any command, not only in front of `git`. Measured by review on
+  the fleet's recorded commands: four copy-out cases, several `sed` reads, and zero env cases.
 - The detectors know *shapes*. An address written as `name at domain dot com`, a path assembled
   by string concatenation or a number written in words is not seen. The e-mail rules also let
   through role mailboxes and the placeholder domains listed in `pii-gate.ts`; each word in those
