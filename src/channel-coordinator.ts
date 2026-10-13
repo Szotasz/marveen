@@ -26,7 +26,7 @@
 // Lifecycle: launchd (com.marveen.channel-coordinator) with KeepAlive. SIGTERM
 // drains, persists offset, exits cleanly.
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { pathToFileURL } from 'node:url'
@@ -90,6 +90,55 @@ const BACKOFF_CAP_MS = 60_000
 // recovery resumes getUpdates from its persisted offset, and Telegram retains
 // updates ~24h; the cooldown only delays low-latency coverage.)
 const NATIVE_409_COOLDOWN_MS = 90 * 1000
+
+// ---- PII anonymization ---------------------------------------------------
+
+const PII_MAPPER_BASE = join(homedir(), '.pii-mapper')
+const COORDINATOR_MAPPING_DIR = join(PII_MAPPER_BASE, 'coordinator')
+const COORDINATOR_MAPPING_FILE = join(COORDINATOR_MAPPING_DIR, 'mapping.json')
+const PII_SERVICE_URL = 'http://127.0.0.1:5200'
+
+function isPiiEnabled(): boolean {
+  try {
+    const content = readFileSync(join(PROJECT_ROOT, '.env'), 'utf-8')
+    for (const line of content.split('\n')) {
+      const t = line.trim()
+      if (!t.startsWith('PII_ANONYMIZE=')) continue
+      const val = t.slice('PII_ANONYMIZE='.length).trim().replace(/^['"]|['"]$/g, '').toLowerCase()
+      return val === 'true' || val === '1' || val === 'yes'
+    }
+  } catch { /* no .env */ }
+  return false
+}
+
+async function anonymizeContent(content: string): Promise<{ anonymized: string; mapping: Record<string, string> }> {
+  try {
+    const resp = await fetch(`${PII_SERVICE_URL}/anonymize`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: content }),
+      signal: AbortSignal.timeout(5000),
+    })
+    if (!resp.ok) return { anonymized: content, mapping: {} }
+    const data = await resp.json() as { anonymized: string; mapping: Record<string, string> }
+    return { anonymized: data.anonymized ?? content, mapping: data.mapping ?? {} }
+  } catch {
+    return { anonymized: content, mapping: {} }
+  }
+}
+
+function saveCoordinatorMapping(newMapping: Record<string, string>): void {
+  try {
+    if (!existsSync(COORDINATOR_MAPPING_DIR)) mkdirSync(COORDINATOR_MAPPING_DIR, { recursive: true, mode: 0o700 })
+    let existing: Record<string, string> = {}
+    try { existing = JSON.parse(readFileSync(COORDINATOR_MAPPING_FILE, 'utf-8')) as Record<string, string> } catch { /* no file yet */ }
+    const tmp = COORDINATOR_MAPPING_FILE + '.tmp'
+    writeFileSync(tmp, JSON.stringify({ ...existing, ...newMapping }, null, 2), { mode: 0o600 })
+    renameSync(tmp, COORDINATOR_MAPPING_FILE)
+  } catch (err) {
+    logger.warn({ err }, 'channel-coordinator: failed to save PII mapping')
+  }
+}
 
 // The coordinator keeps its OWN state dir, separate from the plugin's
 // ~/.claude/channels/telegram. Sharing it would let the plugin's orphan-PID
@@ -230,12 +279,23 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 // Process one getUpdates batch. For each update: normalize, dedup-insert, and
 // (if newly inserted) hand off to Marveen. Returns the highest update_id seen
 // so the caller can advance the offset AFTER the whole batch is durable.
-function processBatch(updates: { update_id: number }[]): number | null {
+async function processBatch(updates: { update_id: number }[]): Promise<number | null> {
+  const piiEnabled = isPiiEnabled()
   let maxUpdateId: number | null = null
   for (const raw of updates) {
     maxUpdateId = maxUpdateId == null ? raw.update_id : Math.max(maxUpdateId, raw.update_id)
     const ev = mapUpdate(raw as Parameters<typeof mapUpdate>[0])
     if (!ev) continue // unhandled update kind: offset still advances past it
+
+    // PII anonymization: replace real names/addresses in content before DB insert
+    if (piiEnabled && ev.content) {
+      const { anonymized, mapping } = await anonymizeContent(ev.content)
+      if (Object.keys(mapping).length > 0) {
+        ev.content = anonymized
+        saveCoordinatorMapping(mapping)
+        logger.info({ update_id: ev.update_id, markers: Object.keys(mapping).length }, 'channel-coordinator: PII anonymized')
+      }
+    }
 
     let ins: InsertResult
     try {
@@ -396,7 +456,7 @@ async function runLoop(token: string): Promise<void> {
       continue
     }
 
-    const maxUpdateId = processBatch(updates)
+    const maxUpdateId = await processBatch(updates)
     // Persist offset ONLY after the batch is durable + handed off.
     if (maxUpdateId != null) setOffset(SOURCE, maxUpdateId)
   }
