@@ -37,7 +37,8 @@ export type PiiDetector =
   | 'iban'
   | 'hu-account'
   | 'hu-taxid'
-  | 'denylist';
+  | 'denylist'
+  | 'binary';
 
 export interface PiiFinding {
   /** Repo path for a diff line, or `commit message` for message text. */
@@ -109,18 +110,49 @@ const SYNTHETIC_DOMAIN_WORDS = new Set([
 /** Addresses that belong to systems (service accounts, calendars, message ids). */
 const SYSTEM_DOMAIN = /(^|\.)(gserviceaccount\.com|group\.calendar\.google\.com|mail\.gmail\.com|googlegroups\.com)$/i;
 
-function syntheticDomain(domain: string): boolean {
+/** Second-level public suffixes: `yahoo.co.uk` registers under `co.uk`, so its label is `yahoo`. */
+const SECOND_LEVEL_SUFFIX = /^(co|com|org|net|ac|gov|edu|ne|or|go|gob|nom)$/;
+
+/** The label a person or company actually registered. `mail.ceg.hu` -> `ceg`; `yahoo.co.uk` -> `yahoo`. */
+export function registrableLabel(domain: string): string {
   const labels = domain.toLowerCase().split('.');
-  const body = labels.slice(0, -1); // drop the TLD
-  if (body.length === 0) return false;
-  // the registrable label: a 1-2 character one (x.hu, b.com, d.hu) is a placeholder
-  const registrable = body[body.length - 1];
-  if (registrable.length <= 2) return true;
-  return body.some((l) => SYNTHETIC_DOMAIN_WORDS.has(l));
+  if (labels.length < 2) return labels[0] ?? '';
+  const tld = labels[labels.length - 1];
+  const sld = labels[labels.length - 2];
+  if (labels.length >= 3 && tld.length === 2 && SECOND_LEVEL_SUFFIX.test(sld)) return labels[labels.length - 3];
+  return sld;
 }
 
-const UNIX_HOME_RE = /(?<![A-Za-z0-9_.-])\/(?:home|Users)\/([A-Za-z0-9][A-Za-z0-9._-]*)/g;
-const WIN_HOME_RE = /(?<![A-Za-z0-9_])[A-Za-z]:[\\/]+Users[\\/]+([A-Za-z0-9][A-Za-z0-9._ -]*)/g;
+/** Two-letter labels that are real mail domains (me.com, wp.pl, qq.com): never placeholders. */
+const PLACEHOLDER_TWO_LETTER = new Set(['xx', 'yy', 'zz', 'aa', 'bb', 'cc', 'dd', 'ab', 'cd', 'xy']);
+
+/**
+ * Free-mail providers. A placeholder LOCAL part (`example@`, `user@`) is only a
+ * placeholder on a provider that nobody owns; on a custom domain (a person's own name
+ * as the domain)
+ * the domain itself names the person, so the local part excuses nothing.
+ */
+const FREEMAIL_REGISTRABLE = new Set([
+  'gmail', 'googlemail', 'outlook', 'hotmail', 'live', 'msn', 'yahoo', 'ymail', 'icloud',
+  'me', 'mac', 'aol', 'proton', 'protonmail', 'pm', 'gmx', 'web', 'wp', 'o2', 'onet',
+  'interia', 'freemail', 'citromail', 'indamail', 't-online', 'zoho', 'mail', 'yandex',
+  'qq', '163', '126', 'naver', 'seznam', 'tutanota', 'fastmail', 'hey',
+]);
+
+function syntheticDomain(domain: string): boolean {
+  // The WORDS and the length rule are judged on the REGISTRABLE label only. Judged on any
+  // label, an address on a company domain passed because one SUBDOMAIN happened to be called `corp`.
+  const registrable = registrableLabel(domain);
+  if (registrable.length === 1) return true; // x.hu, b.com, d.hu
+  if (registrable.length === 2 && PLACEHOLDER_TWO_LETTER.has(registrable)) return true;
+  return SYNTHETIC_DOMAIN_WORDS.has(registrable);
+}
+
+// Separator: a plain slash or the JSON-escaped `\/`. Leading guard: not in the middle of a word,
+// except right after a WSL drive mount (`/mnt/c/Users/...`, this very machine's usual shape).
+// Case-insensitive: Windows folders are (`C:\users\name`), and `Users`/`users` are the same place.
+const UNIX_HOME_RE = /(?:(?<![A-Za-z0-9_.-])|(?<=\/mnt\/[a-z]))\\?\/(?:home|users)\\?\/([A-Za-z0-9][A-Za-z0-9._-]*)/gi;
+const WIN_HOME_RE = /(?<![A-Za-z0-9_])[A-Za-z]:[\\/]+users[\\/]+([A-Za-z0-9][A-Za-z0-9._ -]*)/gi;
 
 /**
  * Account names that are placeholders, not people. Lower-case compare. This list
@@ -138,15 +170,32 @@ const SYNTHETIC_USERS = new Set([
   'somebody', 'marveen', 'linuxbrew',
 ]);
 
+// Separators between digit groups: space ( ) . / - -- Hungarian numbers are written with any of
+// them, mixed (spaces, brackets, slashes, dots, dashes), and a pattern that knows only some of
+// the spellings is a pattern with a hole in it. The spellings are pinned in the tests.
+const PH_SEP = '[\\s().\\/-]*';
 const PHONE_RES: RegExp[] = [
-  /(?<![\d+])(?:\+|00)36[\s().-]*(?:\d[\s().-]*){8,9}\d(?!\d)/g,
-  /(?<![\d+])06[\s-]?(?:1|[2-9]\d)[\s-]?\d{3}[\s-]?\d{3,4}(?!\d)/g,
-  /(?<![\d+])\+\d{1,3}[\s.-]\d{1,4}[\s.-]\d{3,4}[\s.-]\d{3,4}(?!\d)/g,
+  new RegExp(`(?<![\\d+])(?:\\+|00)36${PH_SEP}(?:\\d${PH_SEP}){7,8}\\d(?!\\d)`, 'g'),
+  new RegExp(`(?<![\\d+])06${PH_SEP}(?:\\d${PH_SEP}){7,8}\\d(?!\\d)`, 'g'),
+  new RegExp(`(?<![\\d+])\\+\\d{1,3}[\\s./-]\\d{1,4}[\\s./-]\\d{3,4}[\\s./-]\\d{3,4}(?!\\d)`, 'g'),
 ];
 
 const IBAN_RE = /(?<![A-Za-z0-9])[A-Z]{2}\d{2}(?: [A-Z0-9]{1,5}){2,9}(?![A-Za-z0-9])|(?<![A-Za-z0-9])[A-Z]{2}\d{2}[A-Z0-9]{11,30}(?![A-Za-z0-9])/g;
 const HU_ACCOUNT_RE = /(?<![\d-])\d{8}-\d{8}(?:-\d{8})?(?![\d-])/g;
 const HU_TAXID_RE = /(?<![\d-])\d{8}-[1-5]-\d{2}(?![\d-])/g;
+
+/**
+ * Shapes that are digits-with-separators but not a phone number: a date range
+ * (`06-26 / 2026-07`, a 4-digit group that is a plausible year) and a counting sequence
+ * (`06 07 08 09 10`, every group one or two digits). Found by running the new separator set
+ * over the last 150 develop commits.
+ */
+function notAPhone(text: string): boolean {
+  const groups = text.match(/\d+/g) ?? [];
+  if (groups.some((g) => /^20[12]\d$/.test(g))) return true;
+  if (groups.length >= 4 && groups.every((g) => g.length <= 2)) return true;
+  return false;
+}
 
 function digitsOf(s: string): string {
   return s.replace(/\D/g, '');
@@ -184,7 +233,8 @@ export function emailIsPerson(addr: string): boolean {
   if (NOREPLY_HOST.test(domain)) return false;
   if (SYSTEM_DOMAIN.test(domain)) return false;
   if (MACHINE_LOCAL.test(local)) return false;
-  if (ROLE_LOCAL.has(local.toLowerCase()) || SYNTHETIC_LOCAL.has(local.toLowerCase())) return false;
+  if (ROLE_LOCAL.has(local.toLowerCase())) return false;
+  if (SYNTHETIC_LOCAL.has(local.toLowerCase()) && FREEMAIL_REGISTRABLE.has(registrableLabel(domain))) return false;
   if (syntheticDomain(domain)) return false;
   return true;
 }
@@ -232,7 +282,7 @@ export function detect(text: string, opts: { skipEmail?: boolean; denylist?: Den
       const b = a + m[0].length;
       if (phoneSpans.some(([x, y]) => a < y && b > x)) continue;
       phoneSpans.push([a, b]);
-      if (!looksInvented(digitsOf(m[0]), true)) {
+      if (!looksInvented(digitsOf(m[0]), true) && !notAPhone(m[0])) {
         hits.push({ detector: 'phone', matched: m[0], reason: 'a phone-number shape' });
       }
     }
@@ -452,7 +502,11 @@ export function parseAddedLines(patch: string): { lines: AddedLine[]; binary: st
         const prefix = r.slice(0, parents);
         const inResult = ![...prefix].includes('-');
         if (inResult && [...prefix].every((c) => c === '+') && prefix.length === parents) {
-          out.push({ file, line: newLine, text: r.slice(parents) });
+          const text = r.slice(parents);
+          // The patch is produced with --text, so git never says "Binary files differ": a NUL
+          // byte in an added line IS the signal (it is also git's own binary heuristic).
+          if (text.includes('\0') && file && !binary.includes(file)) binary.push(file);
+          out.push({ file, line: newLine, text });
         }
         if (inResult) { newLine++; newSeen++; }
         [...prefix].forEach((c, k) => { if (c !== '+') oldSeen[k]++; });

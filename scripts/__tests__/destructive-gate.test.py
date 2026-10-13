@@ -749,12 +749,55 @@ print("POZITIV kontroll -- a pre-push kapukat kihagyo alakok:")
 check("git push --no-verify", blocks(GPUSH + " --no-verify origin munkaag"))
 check("git push --no-verify=... nelkul, a ref utan is",
       blocks(GPUSH + " origin munkaag --no-verify"))
-check("git push --no-ver (egyertelmu rovidites)",
-      blocks(GPUSH + " --no-ver origin munkaag"))
+check("git push --no-veri (egyertelmu rovidites: csak a verify kezdodik igy)",
+      blocks(GPUSH + " --no-veri origin munkaag"))
+# A `--no-ver` ketertelmu (verify / verbose): a git maga elutasitja ("ambiguous option"),
+# push nem tortenik, tehat a kapunak nincs mit tiltania. Merve 2026-10-13.
+check("git push --no-ver ketertelmu: a git maga hibazik, a kapu nem tilt",
+      not blocks(GPUSH + " --no-ver origin munkaag"))
+check("git push --force-w (a --force-with-lease egyertelmu rovidites)",
+      blocks(GPUSH + " --force-w origin munkaag"))
+check("git push --del (a --delete rovidites)", blocks(GPUSH + " --del origin munkaag"))
+check("git push --mir (a --mirror rovidites)", blocks(GPUSH + " --mir origin"))
+check("git push --prune (tavoli agak torlese)", blocks(GPUSH + " --prune origin 'refs/heads/*:refs/heads/*'"))
+check("git push -fu (egybeirt rovid kapcsolo, benne -f)", blocks(GPUSH + " -fu origin munkaag"))
+check("git push -df (egybeirt, benne -d)", blocks(GPUSH + " -df origin munkaag"))
+check("git push -u (a set-upstream szabad)", not blocks(GPUSH + " -u origin munkaag"))
+check("git push -v (verbose szabad)", not blocks(GPUSH + " -v origin munkaag"))
 check("git -c core.hooksPath=... push",
       blocks("git -c core.hooksPath=/dev/null push origin munkaag"))
 check("kisbetus core.hookspath", blocks("git -c core.hookspath=/tmp/x push origin munkaag"))
 check("git -C ut push --no-verify", blocks("git -C " + GROOT + " push --no-verify origin munkaag"))
+print("POZITIV kontroll -- a hook-kikapcsolas KULON parancsban (Sam, SULYOS 3):")
+check("git config core.hooksPath X (tartos, kulon parancs)",
+      blocks("git config core.hooksPath /tmp/empty"))
+check("git config --local core.hooksPath X && push",
+      blocks("git config --local core.hooksPath /tmp/empty && " + GPUSH + " origin munkaag"))
+check("git config --global core.hooksPath X", blocks("git config --global core.hooksPath /dev/null"))
+check("git -c core.hooksPath=X commit (a pre-commit kapu is)",
+      blocks("git -c core.hooksPath=/dev/null commit -m x"))
+check("GIT_CONFIG_KEY_0=core.hooksPath kornyezeti alak",
+      blocks("GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null git status"))
+check("git config set core.hooksPath X", blocks("git config set core.hooksPath /tmp/empty"))
+check("chmod -x a pre-push.d tagon", blocks("chmod -x .git/hooks/pre-push.d/15-personal-data-gate"))
+check("chmod abszolut uton", blocks("chmod 000 " + GROOT + "/.git/hooks/pre-push"))
+check("mv .git/hooks/pre-push", blocks("mv .git/hooks/pre-push /tmp/x"))
+check("rm a pre-push.d tagot", blocks("rm .git/hooks/pre-push.d/15-personal-data-gate"))
+check("cp felulirja a hookot", blocks("cp /tmp/empty .git/hooks/pre-push"))
+check("sed -i a hookon", blocks("sed -i 's/exit 1/exit 0/' .git/hooks/pre-push.d/15-personal-data-gate"))
+check("echo > a hook fajl", blocks("echo 'exit 0' > .git/hooks/pre-push.d/15-personal-data-gate"))
+check(">> a hook fajl", blocks("echo x >> " + GROOT + "/.git/hooks/pre-push"))
+check("tee a hook fajl", blocks("echo x | tee .git/hooks/pre-push"))
+print("NEGATIV kontroll -- olvasas es visszaallitas szabad:")
+check("git config --get core.hooksPath", not blocks("git config --get core.hooksPath"))
+check("git config --unset core.hooksPath (visszaallitas)", not blocks("git config --unset core.hooksPath"))
+check("git config user.name (mas kulcs)", not blocks("git config user.name Dev"))
+check("cat .git/hooks/pre-push", not blocks("cat .git/hooks/pre-push"))
+check("ls .git/hooks/pre-push.d", not blocks("ls -la .git/hooks/pre-push.d"))
+check("grep a hook tartalmaban", not blocks("grep -n exit .git/hooks/pre-push"))
+check("chmod mas helyen", not blocks("chmod +x scripts/my-tool.sh"))
+check("sima git commit", not blocks("git commit -m x"))
+
 print("NEGATIV kontroll -- a sima munkaag-push tovabbra is szabad:")
 check("git push origin munkaag", not blocks(GPUSH + " origin munkaag"))
 check("git push --verify (a hook BEkapcsolasa)", not blocks(GPUSH + " --verify origin munkaag"))
@@ -781,6 +824,12 @@ check("gh api repos/o/r -f private=false (modszer nelkul = POST)",
       blocks("gh api repos/o/r -f private=false"))
 check("gh api -X PATCH repos/o/r --input body.json (torzs nem lathato)",
       blocks("gh api -X PATCH repos/o/r --input body.json"))
+check("gh api -XPATCH repos/o/r -Fprivate=false (egybeirt rovid kapcsolok, Sam 7.)",
+      blocks("gh api -XPATCH repos/o/r -Fprivate=false"))
+check("gh api repos/o/r -Fvisibility=public (egybeirt, modszer nelkul)",
+      blocks("gh api repos/o/r -Fvisibility=public"))
+check("gh api -X=PATCH repos/o/r -f private=false", blocks("gh api -X=PATCH repos/o/r -f private=false"))
+check("gh api -XGET repos/o/r (egybeirt GET szabad)", not blocks("gh api -XGET repos/o/r"))
 check("gh api ... -F 'private=false' (idezett, szokoz nelkul)",
       blocks("gh api -X PATCH repos/o/r -F 'private=false'"))
 print("NEGATIV kontroll -- ami nem tesz semmit nyilvanossa:")

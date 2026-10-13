@@ -272,14 +272,143 @@ describe('runPushed', () => {
     expect(r.report).toMatch(/NAMES are not detected/);
   });
 
-  it('reports a binary change as NOT scanned instead of staying silent', async () => {
-    const dir = newRepo(tmp, 'binary');
-    const base = commit(dir, 'a.txt', 'one\n');
-    writeFileSync(join(dir, 'i.bin'), Buffer.from([0, 1, 2, 3, 0, 255, 0]));
-    git(dir, ['add', '-A']); git(dir, ['commit', '-q', '-m', 'bin']);
-    const head = git(dir, ['rev-parse', 'HEAD']).trim();
-    const r = await runPushed({ remoteName: 'origin', remoteUrl: '/x', stdin: refLine(head, base), cwd: dir });
-    expect(r.report).toMatch(/binary change\(s\) were NOT scanned/);
+  describe('what the repository\'s own diff configuration must not be able to hide', () => {
+    it('a textconv driver cannot make an added line disappear (Sam, SULYOS 1)', async () => {
+      const dir = newRepo(tmp, 'textconv');
+      const base = commit(dir, 'a.txt', 'one\n');
+      mkdirSync(join(dir, '.git', 'info'), { recursive: true });
+      writeFileSync(join(dir, '.git', 'info', 'attributes'), '*.cfg diff=hide\n');
+      git(dir, ['config', 'diff.hide.textconv', 'true']);
+      const head = commit(dir, 'x.cfg', `owner: ${PERSON}\n`);
+      const r = await runPushed({ remoteName: 'origin', remoteUrl: '/x', stdin: refLine(head, base), cwd: dir });
+      expect(r.exitCode).toBe(1);
+      expect(r.report).toMatch(/x\.cfg:1\s+\[email\]/);
+    });
+
+    it('a `-diff` attribute cannot turn a text file into "binary" (Sam, SULYOS 2)', async () => {
+      const dir = newRepo(tmp, 'nodiffattr');
+      const base = commit(dir, 'a.txt', 'one\n');
+      commit(dir, '.gitattributes', 'notes.md -diff\n');
+      const head = commit(dir, 'notes.md', `mail ${PERSON}\n`);
+      const r = await runPushed({ remoteName: 'origin', remoteUrl: '/x', stdin: refLine(head, base), cwd: dir });
+      expect(r.exitCode).toBe(1);
+      expect(r.report).toMatch(/notes\.md:1\s+\[email\]/);
+      expect(r.report).not.toMatch(/\[binary\]/);
+    });
+
+    it('an external diff driver is not run either', async () => {
+      const dir = newRepo(tmp, 'extdiff');
+      const base = commit(dir, 'a.txt', 'one\n');
+      git(dir, ['config', 'diff.external', 'true']);
+      const head = commit(dir, 'e.txt', `mail ${PERSON}\n`);
+      const r = await runPushed({ remoteName: 'origin', remoteUrl: '/x', stdin: refLine(head, base), cwd: dir });
+      expect(r.exitCode).toBe(1);
+    });
+
+    it('diff.noprefix does not break the file attribution', async () => {
+      const dir = newRepo(tmp, 'noprefix');
+      const base = commit(dir, 'a.txt', 'one\n');
+      git(dir, ['config', 'diff.noprefix', 'true']);
+      const head = commit(dir, 'deep/p.txt', `mail ${PERSON}\n`);
+      const r = await runPushed({ remoteName: 'origin', remoteUrl: '/x', stdin: refLine(head, base), cwd: dir });
+      expect(r.report).toMatch(/deep\/p\.txt:1\s+\[email\]/);
+    });
+  });
+
+  describe('a real binary is a finding in strict mode, not a NOTE (Sam, SULYOS 2)', () => {
+    const bin = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0, 1, 2, 3, 0, 255, 0]);
+    const addBinary = (dir: string, name = 'i.bin') => {
+      writeFileSync(join(dir, name), bin);
+      git(dir, ['add', '-A']); git(dir, ['commit', '-q', '-m', 'bin']);
+      return git(dir, ['rev-parse', 'HEAD']).trim();
+    };
+    it('blocks, and names the blob without printing content', async () => {
+      const dir = newRepo(tmp, 'binary');
+      const base = commit(dir, 'a.txt', 'one\n');
+      const head = addBinary(dir);
+      const r = await runPushed({ remoteName: 'origin', remoteUrl: '/x', stdin: refLine(head, base), cwd: dir });
+      expect(r.exitCode).toBe(1);
+      expect(r.report).toMatch(/i\.bin\s+\[binary\]/);
+    });
+    it('a reviewed exception names the exact blob (path + sha256 of its object id)', async () => {
+      const dir = newRepo(tmp, 'binexc');
+      const base = commit(dir, 'a.txt', 'one\n');
+      const head = addBinary(dir, 'logo.bin');
+      const oid = git(dir, ['rev-parse', `${head}:logo.bin`]).trim();
+      const { piiHash } = await import('../security/pii-gate.js');
+      const ok = await runPushed({
+        remoteName: 'origin', remoteUrl: '/x', stdin: refLine(head, base), cwd: dir,
+        exceptions: [{ path: 'logo.bin', sha256: piiHash(oid), reason: 'the project logo, reviewed: no metadata' }],
+      });
+      expect(ok.exitCode).toBe(0);
+      expect(ok.report).toMatch(/Exceptions applied \(1\)/);
+      // another path with the same bytes is NOT excused
+      const other = await runPushed({
+        remoteName: 'origin', remoteUrl: '/x', stdin: refLine(head, base), cwd: dir,
+        exceptions: [{ path: 'other.bin', sha256: piiHash(oid), reason: 'the project logo, reviewed: no metadata' }],
+      });
+      expect(other.exitCode).toBe(1);
+    });
+    it('on a PRIVATE target it is a loud warning, not a block', async () => {
+      const dir = newRepo(tmp, 'binpriv');
+      const base = commit(dir, 'a.txt', 'one\n');
+      const head = addBinary(dir);
+      const r = await runPushed({
+        remoteName: 'origin', remoteUrl: 'https://github.com/o/r.git', stdin: refLine(head, base), cwd: dir,
+        fetchImpl: (async () => ({ status: 404, json: async () => ({}) })) as never,
+      });
+      expect(r.exitCode).toBe(0);
+      expect(r.report).toMatch(/WARNING/);
+    });
+  });
+
+  describe('annotated tags and a changed remote URL (Sam, KOZEPES 8 and KISEBB 9)', () => {
+    it('scans the message of an annotated tag, which rev-list never shows', async () => {
+      const dir = newRepo(tmp, 'tag');
+      const base = commit(dir, 'a.txt', 'one\n');
+      git(dir, ['tag', '-a', 'v1', '-m', `release by ${PERSON}`, base]);
+      const tagSha = git(dir, ['rev-parse', 'v1']).trim();
+      const r = await runPushed({ remoteName: 'origin', remoteUrl: '/x', stdin: `refs/tags/v1 ${tagSha} refs/tags/v1 ${ZERO}\n`, cwd: dir });
+      expect(r.exitCode).toBe(1);
+      expect(r.report).toMatch(/tag message:1\s+\[email\]/);
+    });
+    it('a clean annotated tag and a lightweight tag pass', async () => {
+      const dir = newRepo(tmp, 'tagclean');
+      const base = commit(dir, 'a.txt', 'one\n');
+      git(dir, ['tag', '-a', 'v1', '-m', 'release', base]);
+      git(dir, ['tag', 'light', base]);
+      for (const t of ['v1', 'light']) {
+        const sha = git(dir, ['rev-parse', t]).trim();
+        const r = await runPushed({ remoteName: 'origin', remoteUrl: '/x', stdin: `refs/tags/${t} ${sha} refs/tags/${t} ${ZERO}\n`, cwd: dir });
+        expect(r.exitCode).toBe(0);
+      }
+    });
+    it('peels a nested tag and scans every message on the way', async () => {
+      const dir = newRepo(tmp, 'tagnest');
+      const base = commit(dir, 'a.txt', 'one\n');
+      git(dir, ['tag', '-a', 'inner', '-m', `inner ${PERSON}`, base]);
+      git(dir, ['tag', '-a', 'outer', '-m', 'outer clean', 'inner']);
+      const tagSha = git(dir, ['rev-parse', 'outer']).trim();
+      const r = await runPushed({ remoteName: 'origin', remoteUrl: '/x', stdin: `refs/tags/outer ${tagSha} refs/tags/outer ${ZERO}\n`, cwd: dir });
+      expect(r.exitCode).toBe(1);
+    });
+    it('a remote name whose URL changed does not keep hiding commits behind its old tracking refs', async () => {
+      const dir = newRepo(tmp, 'urlchange');
+      const dirty = commit(dir, 'old.txt', `legacy ${PERSON}\n`);
+      const remote = join(tmp, 'urlchange-remote.git');
+      git(tmp, ['init', '-q', '--bare', remote]);
+      git(dir, ['remote', 'add', 'origin', remote]);
+      git(dir, ['push', '-q', '--no-verify', 'origin', 'main']);
+      git(dir, ['checkout', '-q', '-b', 'topic']);
+      const head = commit(dir, 'new.txt', 'clean\n');
+      const first = await runPushed({ remoteName: 'origin', remoteUrl: remote, stdin: refLine(head), cwd: dir });
+      expect(first.exitCode).toBe(0);                                  // dirty commit is already on that remote
+      expect(first.report).not.toMatch(/URL behind remote/);
+      const second = await runPushed({ remoteName: 'origin', remoteUrl: `${remote}-other`, stdin: refLine(head), cwd: dir });
+      expect(second.report).toMatch(/URL behind remote "origin" changed/);
+      expect(second.exitCode).toBe(1);                                 // now it is a different repo: old.txt is in scope
+      expect(second.report).toContain(dirty.slice(0, 10));
+    });
   });
 
   describe('the target decides severity, and only a POSITIVE answer relaxes it', () => {
@@ -330,7 +459,9 @@ describe('runPushed', () => {
 
 // ── the INSTALLED hook, driven by real `git push` ───────────────────────────
 
-describe('installed pre-push hook (real git push, every spelling)', () => {
+// Each test here spawns tsx through a real git push; on a loaded machine (the full suite runs
+// beside it) the default 10 s hook/test timeout is too tight.
+describe('installed pre-push hook (real git push, every spelling)', { timeout: 90_000 }, () => {
   let work: string;
   let remote: string;
   let root: string;
@@ -357,8 +488,9 @@ describe('installed pre-push hook (real git push, every spelling)', () => {
     git(work, ['remote', 'add', 'origin', remote]);
     commit(work, 'README.md', 'hello\n', 'init');
     const first = spawnSync('git', ['push', '-q', 'origin', 'main'], { cwd: work, encoding: 'utf8' });
+    expect(`${first.stdout}${first.stderr}`).not.toMatch(/BLOCKED|fail-closed/);
     expect(first.status).toBe(0);
-  });
+  }, 90_000);
 
   const push = (args: string[], cwd = work) => spawnSync('git', args, { cwd, encoding: 'utf8' });
   const out = (r: ReturnType<typeof push>) => `${r.stdout}${r.stderr}`;
@@ -416,6 +548,31 @@ describe('installed pre-push hook (real git push, every spelling)', () => {
     git(work, ['checkout', '-q', '-b', 'fix-1', 'main']);
     commit(work, 'fix.txt', 'clean\n');
     expect(push(['push', '-q', 'origin', 'fix-1']).status).toBe(0);
+  });
+
+  it('a member that is present but NOT EXECUTABLE is an error, not a silent skip (Sam, SULYOS 3)', () => {
+    const member = join(work, '.git', 'hooks', 'pre-push.d', '15-personal-data-gate');
+    git(work, ['checkout', '-q', '-b', 'chmod-1', 'main']);
+    commit(work, 'chmod.txt', `mail ${PERSON}\n`);
+    chmodSync(member, 0o644);
+    try {
+      const r = push(['push', 'origin', 'chmod-1']);
+      expect(r.status).not.toBe(0);
+      expect(out(r)).toMatch(/is not executable -- BLOCKING/);
+      expect(git(remote, ['branch', '--list', 'chmod-1']).trim()).toBe('');
+    } finally {
+      chmodSync(member, 0o755);
+    }
+  });
+
+  it('both installers write the SAME dispatcher, so neither can bring the old skip-silently loop back', () => {
+    const dispatcher = join(work, '.git', 'hooks', 'pre-push');
+    const mine = readFileSync(dispatcher, 'utf8');
+    cpSync(join(REPO, 'scripts', 'install-git-guard-hook.sh'), join(root, 'scripts', 'install-git-guard-hook.sh'));
+    const inst = spawnSync('bash', [join(root, 'scripts', 'install-git-guard-hook.sh')], { cwd: root, encoding: 'utf8' });
+    expect(inst.status).toBe(0);
+    expect(readFileSync(dispatcher, 'utf8')).toBe(mine);
+    expect(mine).not.toMatch(/\[ -x "\$h" \] \|\| continue/);
   });
 
   it('is fail-closed: if the gate cannot run, the push does not go', () => {

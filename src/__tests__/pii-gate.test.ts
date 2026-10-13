@@ -58,6 +58,20 @@ describe('e-mail', () => {
     // ...but an address after a plain colon is still an address
     expect(kinds(j('From: kovacs.ilona', AT, 'gmail.com'))).toEqual(['email']);
   });
+  it.each(['me.com', 'wp.pl', 'yahoo.co.uk', 'hotmail.co.uk', 'yahoo.co.jp', 'qq.com'])(
+    'flags a real mail provider even when its registrable label is short or sits under a second-level suffix: %s', (d) => {
+      expect(kinds(j('kovacs.janos', AT, d))).toEqual(['email']);
+    });
+  it('a placeholder local part excuses only a free-mail provider, never a custom domain', () => {
+    expect(kinds(j('me', AT, 'kovacsjanos.hu'))).toEqual(['email']);
+    expect(kinds(j('mail', AT, 'kovacsjanos.hu'))).toEqual(['email']);
+    expect(kinds(j('name', AT, 'kovacsjanos.hu'))).toEqual(['email']);
+    expect(kinds(j('example', AT, 'gmail.com'))).toEqual([]);
+  });
+  it('judges the placeholder WORDS on the registrable label, not on any subdomain', () => {
+    expect(kinds(j('kovacs', AT, 'corp.mol.hu'))).toEqual(['email']);
+    expect(kinds(j('kovacs', AT, 'mail.ceg.hu'))).toEqual([]);
+  });
   it('emailIsPerson agrees with detect', () => {
     expect(emailIsPerson(j('kovacs.ilona', AT, 'example.com'))).toBe(false);
     expect(emailIsPerson(j('kovacs.ilona', AT, 'gmail.com'))).toBe(true);
@@ -92,6 +106,14 @@ describe('local path', () => {
     expect(kinds(j('path is /ho', 'me/', 'user, not mine'))).toEqual([]);
     expect(kinds(j('but /ho', 'me/', 'bartok.'))).toEqual(['local-path']);
   });
+  it('flags the WSL form of a windows profile, a lower-case users folder and a JSON-escaped path', () => {
+    expect(kinds(j('/mnt/c/Us', 'ers/', 'KovacsJanos', '/Desktop'))).toEqual(['local-path']);
+    expect(kinds(j('C:', '\\us', 'ers\\', 'kovacsjanos'))).toEqual(['local-path']);
+    expect(kinds(j('"path": "\\/ho', 'me\\/', 'kovacsjanos', '\\/x"'))).toEqual(['local-path']);
+  });
+  it('the WSL form of a placeholder account still passes', () => {
+    expect(kinds(j('/mnt/c/Us', 'ers/', 'Public', '/x'))).toEqual([]);
+  });
   it('does not fire on a path that merely contains the word', () => {
     expect(kinds('see src/home/index.ts and /usr/share/homepage')).toEqual([]);
   });
@@ -103,9 +125,26 @@ describe('phone, IBAN, HU account and tax number', () => {
     expect(kinds(j('+3620', '4819275'))).toEqual(['phone']);
     expect(kinds(j('06-30-', '481-', '9275'))).toEqual(['phone']);
   });
+  // assembled at run time: a literal number in this file would trip the gate it tests
+  const hu = (cc: string, sep: string[], g: string[]) => cc + g.map((x, i) => (sep[i] ?? '') + x).join('');
+  it.each([
+    ['06', ['/', '/', '-'], ['30', '987', '6543']],
+    ['+36', ['-', '/', '-'], ['30', '987', '6543']],
+    ['06', [' (', ') ', ' '], ['30', '987', '6543']],
+    ['06', [' ', ' ', ' '], ['30', '987', '6543']],
+    ['+36', [' ', ' ', ' '], ['30', '987', '6543']],
+    ['06', ['', ' ', ' '], ['30', '987', '6543']],
+    ['+36', ['.', '.', '.'], ['30', '987', '6543']],
+  ] as [string, string[], string[]][])('flags the Hungarian spelling #%#', (cc, sep, g) => {
+    const n = hu(cc, sep, g);
+    expect(kinds(`call ${n} now`)).toEqual(['phone']);
+  });
   it('lets an obviously invented number through', () => {
     expect(kinds(j('+36 1 ', '234 ', '5678'))).toEqual([]);
     expect(kinds(j('+36 20 000 ', '0000'))).toEqual([]);
+  });
+  it('does not call a date range or a counting sequence a phone number', () => {
+    expect(kinds('release 06-26 / 2026-07 and 06 07 08 09 10')).toEqual([]);
   });
   it('does not call a version, date or port a phone number', () => {
     expect(kinds('v1.2.3 2026-10-13 port 8080 build 20261013063000')).toEqual([]);

@@ -67,7 +67,14 @@ HOOK_DIR="\$(cd "\$(dirname "\$0")" && pwd)"
 payload="\$(cat)"
 status=0
 for h in "\$HOOK_DIR"/pre-push.d/*; do
-  [ -x "\$h" ] || continue
+  [ -e "\$h" ] || continue
+  # A member that is present but not executable is a gate that is OFF. Skipping it silently
+  # (the old behaviour) made \`chmod -x\` a one-command way to disable any push check.
+  if [ ! -x "\$h" ]; then
+    echo "pre-push: \$h is not executable -- BLOCKING (a hook that cannot run is a gate that is off)." >&2
+    status=1
+    continue
+  fi
   printf '%s\n' "\$payload" | "\$h" "\$@" || status=1
 done
 exit \$status

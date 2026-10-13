@@ -97,9 +97,11 @@ EOF
 chmod +x "$PUSH_GUARD"
 
 # The dispatcher may not exist yet (install order is alphabetical: git-guard
-# normally runs first). Write the identical one rather than depend on that.
-if [ ! -f "$PUSH_DISPATCH" ] || ! grep -q "$PUSH_MARK" "$PUSH_DISPATCH" 2>/dev/null; then
-  if [ -f "$PUSH_DISPATCH" ]; then
+# normally runs first). Write the identical one rather than depend on that, and rewrite it
+# every time: it is generated, and an older copy must pick up the "a member that cannot run
+# is an error, not a skip" rule.
+if true; then
+  if [ -f "$PUSH_DISPATCH" ] && ! grep -q "$PUSH_MARK" "$PUSH_DISPATCH" 2>/dev/null; then
     mv "$PUSH_DISPATCH" "$HOOK_DIR/pre-push.d/00-existing-prepush"
     chmod +x "$HOOK_DIR/pre-push.d/00-existing-prepush"
     echo "  (preserved existing pre-push as pre-push.d/00-existing-prepush)"
@@ -112,7 +114,14 @@ HOOK_DIR="\$(cd "\$(dirname "\$0")" && pwd)"
 payload="\$(cat)"
 status=0
 for h in "\$HOOK_DIR"/pre-push.d/*; do
-  [ -x "\$h" ] || continue
+  [ -e "\$h" ] || continue
+  # A member that is present but not executable is a gate that is OFF. Skipping it silently
+  # (the old behaviour) made \`chmod -x\` a one-command way to disable any push check.
+  if [ ! -x "\$h" ]; then
+    echo "pre-push: \$h is not executable -- BLOCKING (a hook that cannot run is a gate that is off)." >&2
+    status=1
+    continue
+  fi
   printf '%s\n' "\$payload" | "\$h" "\$@" || status=1
 done
 exit \$status

@@ -22,11 +22,11 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { createHash, randomBytes } from 'node:crypto';
+import { existsSync, readFileSync, writeFileSync, renameSync } from 'node:fs';
 import { join, isAbsolute } from 'node:path';
 import {
-  EMPTY_DENYLIST, PII_EXCEPTIONS, invalidPiiExceptions, parseAddedLines, parseDenylist, scanAdded,
+  EMPTY_DENYLIST, PII_EXCEPTIONS, invalidPiiExceptions, parseAddedLines, parseDenylist, piiExceptionReason, scanAdded,
   type AddedLine, type Denylist, type PiiException, type PiiFinding,
 } from './pii-gate.js';
 
@@ -136,10 +136,12 @@ function remoteIsConfigured(name: string, cwd: string): boolean {
  * from the remote's other tracked refs, so a new branch cut from a published base
  * is judged on its own commits only.
  */
-export function outgoingCommits(u: RefUpdate, remoteName: string, cwd: string): string[] {
+export function outgoingCommits(u: RefUpdate, remoteName: string, cwd: string, trustTracking = true): string[] {
   const exclude: string[] = [];
   if (!ZERO.test(u.remoteSha) && commitExists(u.remoteSha, cwd)) exclude.push(u.remoteSha);
-  if (remoteIsConfigured(remoteName, cwd)) exclude.push(`--remotes=${remoteName}`);
+  // `trustTracking` is false when the remote's URL changed since the last run: the tracking refs
+  // under that NAME then describe a different repository, and must not hide commits from it.
+  if (trustTracking && remoteIsConfigured(remoteName, cwd)) exclude.push(`--remotes=${remoteName}`);
   const args = ['rev-list', '--reverse', u.localSha];
   if (exclude.length) args.push('--not', ...exclude);
   return git(args, cwd).split('\n').filter(Boolean);
@@ -148,7 +150,18 @@ export function outgoingCommits(u: RefUpdate, remoteName: string, cwd: string): 
 /** Patches of a set of commits, framed by a per-run random marker line. */
 function patchesFor(commits: string[], cwd: string, marker: string): Map<string, string> {
   const out = git(
-    ['log', '--no-walk=unsorted', '--stdin', '-p', '--cc', '-U0', '--no-renames', '--no-color', `--format=${marker}%H`],
+    [
+      'log', '--no-walk=unsorted', '--stdin', '-p', '--cc', '-U0', '--no-renames', '--no-color',
+      // The repository's own diff configuration must not decide what the gate can SEE:
+      //   --no-textconv / --no-ext-diff  a `diff=<driver>` attribute (.git/info/attributes, a
+      //                                  committed .gitattributes) can rewrite or erase the patch
+      //   --text                         a `-diff` attribute or a binary guess turns the patch
+      //                                  into "Binary files differ" and hides every added line
+      //   --src/dst-prefix               diff.noprefix / mnemonicPrefix change the file headers
+      // Found by Sam on f03ac3cc: a textconv driver made an added e-mail vanish without a NOTE.
+      '--no-textconv', '--no-ext-diff', '--text', '--src-prefix=a/', '--dst-prefix=b/',
+      `--format=${marker}%H`,
+    ],
     cwd, `${commits.join('\n')}\n`,
   );
   return splitByMarker(out, marker);
@@ -226,10 +239,9 @@ function loadDenylist(cwd: string): { denylist: Denylist; note: string } {
 /** Scan a set of commits; returns findings, applied exceptions and unscanned binaries. */
 export function scanCommits(
   commits: string[], cwd: string, denylist: Denylist, exceptions: readonly PiiException[],
-): { findings: PiiFinding[]; exceptions: { file: string; line?: number; detector: string; reason: string }[]; binary: string[] } {
+): { findings: PiiFinding[]; exceptions: { file: string; line?: number; detector: string; reason: string }[] } {
   const findings: PiiFinding[] = [];
   const applied: { file: string; line?: number; detector: string; reason: string }[] = [];
-  const binary: string[] = [];
   const marker = `PIIGATE-${randomBytes(16).toString('hex')}-`;
   for (let i = 0; i < commits.length; i += CHUNK) {
     const chunk = commits.slice(i, i + CHUNK);
@@ -243,7 +255,16 @@ export function scanCommits(
       }
       const short = sha.slice(0, 10);
       const parsed = parseAddedLines(patch);
-      binary.push(...parsed.binary.map((b) => `${short} ${b}`));
+      // A binary cannot be read by a text detector. It is not "a NOTE": an xlsx or a pdf full of
+      // personal data would sail through a public push. It is a FINDING; a reviewed exception
+      // names the exact blob (path + the sha256 of its git object id).
+      for (const path of parsed.binary) {
+        let oid = 'unresolved';
+        try { oid = git(['rev-parse', `${sha}:${path}`], cwd).trim(); } catch { /* fail closed: no exception can match */ }
+        const why = oid === 'unresolved' ? null : piiExceptionReason(path, oid, exceptions);
+        if (why) applied.push({ file: path, detector: 'binary', reason: why });
+        else findings.push({ file: path, detector: 'binary', commit: short, reason: `a binary file (blob ${oid.slice(0, 10)}): text detectors cannot read it` });
+      }
       for (const r of [
         scanAdded(parsed.lines, short, { denylist, exceptions }),
         scanAdded(messageLines(sha, msg), short, { denylist, exceptions, messageMode: true }),
@@ -253,7 +274,7 @@ export function scanCommits(
       }
     }
   }
-  return { findings, exceptions: applied, binary };
+  return { findings, exceptions: applied };
 }
 
 function describe(findings: PiiFinding[]): string[] {
@@ -263,6 +284,48 @@ function describe(findings: PiiFinding[]): string[] {
   }
   if (findings.length > 60) lines.push(`  ... and ${findings.length - 60} more`);
   return lines;
+}
+
+/** Annotated-tag message lines (nested tags peeled). Empty for a branch or a lightweight tag. */
+export function tagMessages(sha: string, cwd: string): AddedLine[] {
+  const out: AddedLine[] = [];
+  let cur = sha;
+  for (let depth = 0; depth < 8; depth++) {
+    let type = '';
+    try { type = git(['cat-file', '-t', cur], cwd).trim(); } catch { break; }
+    if (type !== 'tag') break;
+    const raw = git(['cat-file', 'tag', cur], cwd);
+    const cut = raw.indexOf('\n\n');
+    const body = cut >= 0 ? raw.slice(cut + 2) : '';
+    body.replace(/\n+$/, '').split('\n').forEach((text, i) => out.push({ file: 'tag message', line: i + 1, text }));
+    const next = /^object ([0-9a-f]{40,64})$/m.exec(raw);
+    if (!next) break;
+    cur = next[1];
+  }
+  return out;
+}
+
+/**
+ * Has the URL behind this remote NAME changed since the gate last ran for it?
+ * The URL is stored as a hash (it can carry a token). First sight of a name counts as
+ * "unchanged": there is no earlier record to compare with, and an existing install must not
+ * rescan the world on its first push.
+ */
+export function remoteUrlChanged(name: string, url: string, cwd: string): boolean {
+  if (!name) return false;
+  const file = join(hooksDir(cwd), 'pii-gate-remotes.json');
+  const now = createHash('sha256').update(url, 'utf8').digest('hex');
+  let known: Record<string, string> = {};
+  try { known = JSON.parse(readFileSync(file, 'utf8')) as Record<string, string>; } catch { /* absent or unreadable: first sight */ }
+  const changed = typeof known[name] === 'string' && known[name] !== now;
+  if (known[name] !== now) {
+    try {
+      known[name] = now;
+      writeFileSync(`${file}.tmp`, JSON.stringify(known));
+      renameSync(`${file}.tmp`, file);
+    } catch { /* an unwritable record only means the next run compares against the older one */ }
+  }
+  return changed;
 }
 
 export async function runPushed(input: PushedInput): Promise<PushedResult> {
@@ -287,15 +350,22 @@ export async function runPushed(input: PushedInput): Promise<PushedResult> {
 
     const all: PiiFinding[] = [];
     const exc: { file: string; line?: number; detector: string; reason: string }[] = [];
-    const bins: string[] = [];
     let commitCount = 0;
+    const urlChange = remoteUrlChanged(input.remoteName, input.remoteUrl, input.cwd);
+    if (urlChange) say(`pii-gate: the URL behind remote "${input.remoteName}" changed since the last run -- its tracking refs describe another repository, so they hide nothing.`);
     for (const u of live) {
-      const commits = outgoingCommits(u, input.remoteName, input.cwd);
+      // An annotated tag carries a MESSAGE that rev-list never shows; scan it, peeling nested tags.
+      const tagMsg = tagMessages(u.localSha, input.cwd);
+      if (tagMsg.length) {
+        const r = scanAdded(tagMsg, u.localSha.slice(0, 10), { denylist: dl.denylist, exceptions: input.exceptions ?? PII_EXCEPTIONS, messageMode: true });
+        all.push(...r.findings);
+        exc.push(...r.exceptions);
+      }
+      const commits = outgoingCommits(u, input.remoteName, input.cwd, !urlChange);
       commitCount += commits.length;
       const r = scanCommits(commits, input.cwd, dl.denylist, input.exceptions ?? PII_EXCEPTIONS);
       all.push(...r.findings);
       exc.push(...r.exceptions);
-      bins.push(...r.binary);
     }
 
     const strict = vis.state !== 'private';
@@ -304,10 +374,6 @@ export async function runPushed(input: PushedInput): Promise<PushedResult> {
     if (exc.length) {
       say(`Exceptions applied (${exc.length}) -- one literal each, re-read them:`);
       exc.forEach((e) => say(`  ${e.file}${e.line ? `:${e.line}` : ''}  [${e.detector}]  <- ${e.reason}`));
-    }
-    if (bins.length) {
-      say(`NOTE: ${bins.length} binary change(s) were NOT scanned (text detectors cannot read them):`);
-      bins.slice(0, 20).forEach((b) => say(`  ${b}`));
     }
     if (all.length === 0) {
       say('pii-gate: PASS -- no personal data in the lines or messages this push adds.');
@@ -340,7 +406,6 @@ export async function runRange(revArgs: string[], cwd: string): Promise<PushedRe
     const dl = loadDenylist(cwd);
     const r = scanCommits(commits, cwd, dl.denylist, PII_EXCEPTIONS);
     out.push(`pii-gate: ${commits.length} commit(s) audited -- ${dl.note}`);
-    if (r.binary.length) out.push(`NOTE: ${r.binary.length} binary change(s) were NOT scanned.`);
     if (r.findings.length === 0) {
       out.push('pii-gate: PASS');
       return { exitCode: 0, report: out.join('\n') };

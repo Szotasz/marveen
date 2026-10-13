@@ -861,6 +861,64 @@ def _git_push_index(toks, argstart):
     return None
 
 
+# A `git push` HOSSZU kapcsoloi (git 2.46). A git minden EGYERTELMU roviditest elfogad
+# (`--force-w` = `--force-with-lease`), a kapu pedig eddig pontos nevre illesztett: a rovidites
+# athaladt. Egy ketertelmu rovidites (`--no-ver`: verify/verbose) a gitnel hiba, tehat nincs push.
+_PUSH_BOOL_LONG = ['all', 'branches', 'prune', 'mirror', 'delete', 'tags', 'follow-tags',
+                   'atomic', 'dry-run', 'porcelain', 'force', 'force-with-lease',
+                   'force-if-includes', 'thin', 'progress', 'verbose', 'quiet', 'set-upstream',
+                   'signed', 'verify', 'recurse-submodules']
+PUSH_LONG_OPTIONS = set(_PUSH_BOOL_LONG) | {'no-' + o for o in _PUSH_BOOL_LONG} | {
+    'repo', 'receive-pack', 'exec', 'push-option', 'ipv4', 'ipv6'}
+
+
+def _resolve_push_long(flag):
+    """A `--kapcsolo[=ertek]` teljes neve, vagy None, ha ismeretlen/ketertelmu."""
+    name = flag[2:].split('=', 1)[0]
+    if name in PUSH_LONG_OPTIONS:
+        return name
+    cands = [o for o in PUSH_LONG_OPTIONS if o.startswith(name)]
+    return cands[0] if len(cands) == 1 else None
+
+
+# A `.git/hooks` MUTALASA: a push-kapuk fajljai (pre-push, pre-push.d/*, pre-commit.d/*). A
+# dispatcher ma mar hibanak veszi a nem futtathato tagot, de a tag TORLESE/atirasa/lecserelese
+# ugyanazt a kapu-kikapcsolast jelenti, ezert azokat a parancsokat tiltja a kapu, amelyek
+# fajlt irnak, mozgatnak, torolnek vagy jogot valtoztatnak. Olvasas (cat, ls, grep) szabad.
+HOOKS_MUTATORS = {'chmod', 'chown', 'chattr', 'mv', 'rm', 'cp', 'ln', 'install', 'truncate',
+                  'tee', 'sed', 'dd', 'touch', 'rmdir', 'unlink', 'rsync', 'patch', 'perl', 'awk'}
+_HOOKS_PATH = re.compile(r'(^|[\s/\'"=])\.git/hooks(/|$|[\s\'"])')
+_HOOKS_REDIRECT = re.compile(r'>{1,2}\s*[^\s;|&<>]*\.git/hooks/')
+
+
+def _check_hooks_dir(base, toks, argstart, seg):
+    if _HOOKS_REDIRECT.search(seg):
+        block('Atiranyitas a .git/hooks alá: a push/commit kapuk fajljainak atirasa. '
+              'Nem az ugynok dontese.')
+    if base in HOOKS_MUTATORS and any(_HOOKS_PATH.search(' ' + t + ' ') for t, _sp in toks[argstart:]):
+        block('%s a .git/hooks alatt: a push/commit kapuk (force-guard, szemelyes-adat kapu, '
+              'secret-gate) fajljainak modositasa vagy eltavolitasa. Nem az ugynok dontese.' % base)
+
+
+_READ_CONFIG_FLAGS = {'--get', '--get-all', '--get-regexp', '--unset', '--unset-all', '--list', '-l'}
+
+
+def _hooks_tamper_git(toks):
+    """core.hooksPath BARMELY git-hivasban: a pre-push/pre-commit kapuk kikapcsolasa.
+
+    A korabbi szabaly csak a `git push` szegmensen BELUL lato `-c core.hooksPath=` alakot fogta;
+    a `git config core.hooksPath X` kulon parancs TARTOSAN kikapcsolta a kapukat, utana a sima
+    push mar tiszta volt (Sam, 013b1bb9). Olvasas es a beallitas TOROLESE (visszaallitas) szabad.
+    """
+    text = ' '.join(t for t, _sp in toks).lower()
+    if 'core.hookspath' not in text:
+        return
+    if any(t in _READ_CONFIG_FLAGS for t, _sp in toks):
+        return
+    block('git + core.hooksPath: a pre-push/pre-commit kapukat (force-guard, szemelyes-adat '
+          'kapu, secret-gate) kikapcsolo beallitas. Nem az ugynok dontese.')
+
+
 def _check_git(toks, argstart):
     """git push: nem tiltott onmagaban (PR #1357), de harom alakja igen.
 
@@ -870,6 +928,7 @@ def _check_git(toks, argstart):
     Amit ELENGED: a sajat munkaag push-a, ami eddig is a munka resze volt, csak
     jovahagyason keresztul.
     """
+    _hooks_tamper_git(toks)
     pi = _git_push_index(toks, argstart)
     if pi is None:
         return
@@ -886,27 +945,27 @@ def _check_git(toks, argstart):
     positional = [a for a in args if not a.startswith('-')]
 
     # A push-ellenorzo kapuk (pre-push.d: force-guard, szemelyes-adat kapu) git hookok;
-    # a hookot kikapcsolo KET alak egy ugynok kezeben a kapu kikapcsolasa lenne. A
-    # szoveg-szintu tiltas csak az ugynok sajat hivasait fogja; a hook maga (git-szint)
-    # minden egyeb alakot lat. Mindketto kell.
-    segment_text = ' '.join(t for t, _sp in toks).lower()
-    if 'core.hookspath' in segment_text:
-        block('git push core.hooksPath mellett: ez a pre-push kapukat (force-guard, '
-              'szemelyes-adat kapu) kikapcsolo alak. Nem az ugynok dontese.')
-    for f in flags:
-        if f.startswith('--no-v') and len(f.split('=', 1)[0]) >= 6 \
-                and '--no-verify'.startswith(f.split('=', 1)[0]):
-            block('git push %s: a pre-push kapukat (force-guard, szemelyes-adat kapu) '
-                  'kihagyo kapcsolo. Nem az ugynok dontese; javitsd a talalatot.' % f[:20])
-
+    # a hookot kikapcsolo alak egy ugynok kezeben a kapu kikapcsolasa lenne. A szoveg-szintu
+    # tiltas csak az ugynok sajat hivasait fogja; a hook maga (git-szint) minden egyeb alakot lat.
+    # Mindketto kell. (A core.hooksPath-t a _hooks_tamper_git mar elbiralta.)
     for f in flags:
         base = f.split('=', 1)[0]
-        if base in PUSH_FORCE_FLAGS:
+        resolved = _resolve_push_long(f) if f.startswith('--') else None
+        if resolved == 'no-verify':
+            block('git push %s: a pre-push kapukat (force-guard, szemelyes-adat kapu) '
+                  'kihagyo kapcsolo. Nem az ugynok dontese; javitsd a talalatot.' % f[:20])
+        # Egybeirt rovid kapcsolok (`-fu`, `-df`): a kapcsolo-csomag barmelyik betuje szamit.
+        if (not f.startswith('--') and len(base) > 2 and not base.startswith('-o')
+                and ('f' in base[1:] or 'd' in base[1:])):
+            block('git push %s: egybeirt rovid kapcsolo, amelyben -f (eroltetett) vagy -d '
+                  '(torles) van. Sima push szabad, eroltetett/torlo nem.' % base[:12])
+        if resolved in ('force', 'force-with-lease', 'force-if-includes', 'mirror') \
+                or base in PUSH_FORCE_FLAGS:
             block('git push %s: a tavoli tortenet ujrairasa mas munkajat is elviheti. '
                   'Sima push szabad, eroltetett nem.' % base)
-        if base in PUSH_DELETE_FLAGS:
+        if resolved in ('delete', 'prune') or base in PUSH_DELETE_FLAGS:
             block('git push %s: tavoli ag torlese. A torles nem az agens dontese.' % base)
-        if base == '--all':
+        if resolved == 'all' or base == '--all':
             block('git push --all: minden agat kitolja, a vedetteket is. '
                   'Nevezd meg, melyik agra pusholsz.')
 
@@ -957,7 +1016,16 @@ def _flag_value(args, name):
 
 
 def _check_gh(toks, argstart):
-    args = [t for t, _sp in toks[argstart:]]
+    raw = [t for t, _sp in toks[argstart:]]
+    # Az egybeirt rovid kapcsolo (`-XPATCH`, `-Fprivate=false`, `-X=PATCH`) ugyanaz, mint a
+    # kulon szavas: a pflag igy is elfogadja (tipp, gh-val nem futtattam), a kapu pedig ne.
+    args = []
+    for a in raw:
+        m = re.match(r'^(-[XfFHqt])=?(.+)$', a)
+        if m and not a.startswith('--'):
+            args.extend([m.group(1), m.group(2)])
+        else:
+            args.append(a)
     words, skip = [], False
     for a in args:
         if skip:
@@ -1200,8 +1268,14 @@ def check_bash(cmd, _depth=0, cwd=None):
             if t in _FIND_EXEC and j + 1 < len(toks) and not toks[j + 1][1]:
                 names.append((toks[j + 1][0], j + 2))
 
+        if 'core.hookspath' in seg.lower() and any(
+                re.match(r'^GIT_CONFIG_(PARAMETERS|COUNT|KEY_\d+|VALUE_\d+)=', t) for t, _sp in toks):
+            block('GIT_CONFIG_* kornyezeti valtozo core.hooksPath-szal: a pre-push/pre-commit '
+                  'kapukat kikapcsolo alak. Nem az ugynok dontese.')
+
         for name, argstart in names:
             base = os.path.basename(name)
+            _check_hooks_dir(base, toks, argstart, seg)
             if base == 'git':
                 _check_git(toks, argstart)
                 continue

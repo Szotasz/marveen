@@ -130,11 +130,12 @@ message** for:
 | Detector | What it flags |
 |----------|---------------|
 | `email` | an address that is not a reserved domain, a no-reply/bot form, a role mailbox (`support@`, `info@`, ...), a synthetic domain (`b.hu`, `pelda.hu`, `ceg.hu`, one/two-letter labels), a system address (service accounts, calendar ids) or a URL's userinfo |
-| `local-path` | `/home/<name>`, `/Users/<name>`, `C:\Users\<name>` with an account that is not a placeholder (`u`, `user`, `foo`, `runner`, `$USER`, ...) |
-| `phone` | `+36` / `06` Hungarian numbers and generic `+cc` numbers with separators, minus obviously invented ones |
+| `local-path` | `/home/<name>`, `/Users/<name>`, `/mnt/c/Users/<name>` (WSL), `C:\Users\<name>` in any case and slash style, and the JSON-escaped form, with an account that is not a placeholder (`u`, `user`, `foo`, `runner`, `$USER`, ...) |
+| `phone` | `+36` / `06` Hungarian numbers written with any mix of spaces, brackets, slashes, dots and dashes, and generic `+cc` numbers, minus obviously invented ones, date ranges and counting sequences |
 | `iban` | an IBAN whose ISO 13616 mod-97 checksum passes |
 | `hu-account`, `hu-taxid` | Hungarian bank-account (8-8, 8-8-8) and tax-number (8-1-2) shapes |
 | `denylist` | any term in your **local** denylist (below) |
+| `binary` | a binary file in the pushed commits (public or unknown target: blocks unless a reviewed exception names the blob) |
 
 Design points, each one a failure of the mod this replaces:
 
@@ -175,24 +176,63 @@ Design points, each one a failure of the mod this replaces:
 
 ## Turning the hook off, and what stops that
 
-`git push --no-verify` and `git -c core.hooksPath=... push` skip any git hook. The
-`destructive-gate` PreToolUse hook denies both (including git's unambiguous abbreviations,
-`--no-ver`) for agent sessions, and denies the *visibility flips* that expose a whole
-history at once: `gh repo edit --visibility public|internal`, `gh repo create --public`,
-and `gh api` PATCH/POST calls to `repos/<owner>/<repo>` that set `private=false` or
-`visibility=public` (a body passed with `--input` is refused because the gate cannot read it).
+Every way of making git skip a hook is a way of making this gate off, so the
+`destructive-gate` PreToolUse hook denies them for agent sessions:
+
+- `git push --no-verify`, including git's *unambiguous* abbreviations (`--no-veri`; `--no-ver`
+  is ambiguous between `--no-verify` and `--no-verbose`, so git itself refuses it), and the
+  same resolution for `--force-w`, `--del`, `--mir`, `--prune`. Bundled short flags that contain
+  `f` or `d` (`-fu`, `-df`) count as force / delete.
+- `core.hooksPath` in **any** git command: `git config core.hooksPath X` (a separate, lasting
+  command), `git config --local ...`, `git -c core.hooksPath=X <anything>`, and the
+  `GIT_CONFIG_KEY_n` / `GIT_CONFIG_PARAMETERS` environment forms. Reading it, and *unsetting* it
+  (the repair), stay allowed.
+- Changing the gate's own files: `chmod`, `mv`, `rm`, `cp`, `ln`, `sed`, `tee`, `dd`, `truncate`
+  ... on anything under `.git/hooks`, and shell redirection into it. Reading stays allowed.
+- The dispatcher itself no longer skips a `pre-push.d` member that is present but not
+  executable: that is an **error** ("a hook that cannot run is a gate that is off"). Both
+  installers write the same dispatcher, and a test pins that they stay identical.
+
+It also denies the *visibility flips* that expose a whole history at once:
+`gh repo edit --visibility public|internal`, `gh repo create --public`, and `gh api` PATCH/POST
+calls to `repos/<owner>/<repo>` that set `private=false` or `visibility=public`, including the
+glued short-flag spellings (`-XPATCH`, `-Fprivate=false`). A body passed with `--input` is
+refused because the gate cannot read it.
+
+What the scan itself cannot be talked out of (found by review on the first version): the patches
+are produced with `--text --no-textconv --no-ext-diff` and fixed `a/` `b/` prefixes, so a
+`diff=` attribute, a `textconv` driver, an external diff driver or `-diff` in `.gitattributes`
+cannot hide an added line. A **binary** (a NUL byte in what git would diff) is a *finding* in a
+public or unknown target, not a note: an xlsx or a pdf full of personal data must not sail
+through. A reviewed binary goes in `PII_EXCEPTIONS` keyed by path and the sha256 of its git
+object id. Annotated tag messages are scanned too (nested tags peeled), and when the URL behind a
+remote name changes, its old tracking refs stop hiding commits from the scan (the URL is kept as
+a hash in `hooks/pii-gate-remotes.json`).
 
 Limits, stated out loud:
 
 - A person at a terminal can still `--no-verify`; the hook protects against mistakes and
   against agents, not against its owner. CI is the check a hook cannot be.
 - The destructive-gate reads command text. A quoted string containing a space is data to
-  it, so a GraphQL mutation inside `-f query='...'` is not seen; a flip made by a script
-  that calls the API itself is only as covered as the egress gate covers that script.
-- Binary files (images, PDFs) are not scanned.
-- Measured on the last 150 develop commits (1401 commits, 9 s): after calibration 132 added
-  lines are flagged, of which the real-looking account names and the free-mail addresses in
-  test fixtures are the bulk. Run `--pii-range` yourself before relying on the numbers.
+  it, so a GraphQL mutation inside `-f query='...'` is not seen. `curl`, `python` or `node`
+  calling the GitHub API directly (a PATCH to `repos/<o>/<r>` with `private:false`) is not
+  something this gate recognises; it is only as covered as the egress gate covers that script.
+  The same goes for any script or interpreter that writes under `.git/hooks` itself.
+- Removing the `15-personal-data-gate` member altogether is indistinguishable from never having
+  installed it; the destructive-gate denies the commands that would do it, and a re-run of
+  `scripts/sync-hooks.sh` restores it.
+- The detectors know *shapes*. An address written as `name at domain dot com`, a path assembled
+  by string concatenation or a number written in words is not seen. The e-mail rules also let
+  through role mailboxes and the placeholder domains listed in `pii-gate.ts`; each word in those
+  lists is a claim that the thing is not a real organisation.
+- The `--remotes=<name>` exclusion trusts the tracking refs under that name. If they are stale
+  they make the scan *larger*, never smaller; the URL-change record above covers the one case
+  where they describe the wrong repository.
+- Measured on the last 150 develop commits (1401 commits, 9 s): after calibration the audit
+  flags 83 home-directory lines and 27 addresses, mostly real-looking account names and free-mail
+  addresses in test fixtures. That is the `--pii-range` audit, not what a push scans: a push
+  scans only the commits the remote does not have. Run `--pii-range` yourself before relying on
+  the numbers.
 
 # Bash egress deny rules
 
