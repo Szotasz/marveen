@@ -243,9 +243,12 @@ Limits, stated out loud:
 - A hook runs inside the repository it was installed in. A fresh clone has none, so cloning the
   repository elsewhere and pushing from the clone is not seen by this gate; that is the natural
   edge of any git hook, and the reason CI is the check a hook cannot be.
-- Removing the `15-personal-data-gate` member altogether is indistinguishable from never having
-  installed it; the destructive-gate denies the commands that would do it, and a re-run of
-  `scripts/sync-hooks.sh` restores it.
+- Removing the `15-personal-data-gate` member from a hook directory the installers wrote is not
+  silent: `pre-push.required` lists it, and a listed member that is missing (or whose bytes no
+  longer match the recorded hash) blocks the push. Measured with the installed hook. A checkout
+  that was never installed has no manifest and so nothing to compare against; the destructive-gate
+  denies the commands that would remove the member, and a re-run of `scripts/sync-hooks.sh`
+  restores it.
 - The manifest hash covers the members of `.git/hooks/pre-push.d`, not the code they run. The
   `15-personal-data-gate` member executes the install root's own sources (`scripts/secret-gate.ts`,
   `src/security/pii-*.ts`); whoever rewrites those files switches the gate off while the member's
@@ -257,7 +260,10 @@ Limits, stated out loud:
 - Known over-blocking, in the fail-closed direction: commands that only *read* `.git/config` or
   copy `.git/hooks/pre-push` out (`sed -n` on the file, `cp` to a temp path) are denied, and
   `XDG_CONFIG_HOME=` is denied on any command, not only in front of `git`. Measured by review on
-  the fleet's recorded commands: four copy-out cases, several `sed` reads, and zero env cases.
+  the fleet's recorded commands: zero pure copy-out cases (the `cp` hits were copies *into*
+  `.git/hooks`, rightly denied, or sat in a command that also edited the hook), about a dozen pure
+  `sed -n` reads, and zero env cases. The copy-out over-block exists, but was only reproduced with
+  hand-made probes.
 - The detectors know *shapes*. An address written as `name at domain dot com`, a path assembled
   by string concatenation or a number written in words is not seen. The e-mail rules also let
   through role mailboxes and the placeholder domains listed in `pii-gate.ts`; each word in those
