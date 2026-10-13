@@ -12,9 +12,7 @@ import os
 import re
 import sys
 
-SESSION_ID = os.environ.get("CLAUDE_SESSION_ID", "default")
 MAPPER_BASE = os.path.expanduser("~/.pii-mapper")
-MAPPING_FILE = os.path.join(MAPPER_BASE, SESSION_ID, "mapping.json")
 COORDINATOR_MAPPING_FILE = os.path.join(MAPPER_BASE, "coordinator", "mapping.json")
 PROJECT_DIR = os.environ.get("CLAUDE_PROJECT_DIR", "")
 
@@ -32,7 +30,13 @@ def is_enabled() -> bool:
     return False
 
 
-def load_mapping() -> dict:
+def mapping_file(session_id: str) -> str:
+    # Claude Code passes session_id in the hook's stdin JSON, not in the env.
+    safe = re.sub(r"[^A-Za-z0-9_-]", "", session_id or "") or "default"
+    return os.path.join(MAPPER_BASE, safe, "mapping.json")
+
+
+def load_mapping(session_id: str) -> dict:
     merged: dict = {}
     # Load coordinator mapping (from channel-coordinator PII pass)
     if os.path.exists(COORDINATOR_MAPPING_FILE):
@@ -42,9 +46,10 @@ def load_mapping() -> dict:
         except Exception:
             pass
     # Load session mapping (from inbound hook PII pass) -- session wins on conflict
-    if os.path.exists(MAPPING_FILE):
+    path = mapping_file(session_id)
+    if os.path.exists(path):
         try:
-            with open(MAPPING_FILE) as f:
+            with open(path) as f:
                 merged.update(json.load(f))
         except Exception:
             pass
@@ -52,10 +57,13 @@ def load_mapping() -> dict:
 
 
 def deanonymize(text: str, mapping: dict) -> str:
-    # Sort by marker length descending to handle SZEMELY_10 before SZEMELY_1
-    for marker, original in sorted(mapping.items(), key=lambda kv: -len(kv[0])):
-        text = text.replace(marker, original)
-    return text
+    # Whole-marker match, so SZEMELY_1 never eats the prefix of SZEMELY_10,
+    # while a glued Hungarian suffix (SZEMELY_1nek) still resolves.
+    return re.sub(
+        r"(?<![A-Za-z0-9_])[A-Z]+_\d+(?!\d)",
+        lambda m: mapping.get(m.group(0), m.group(0)),
+        text,
+    )
 
 
 def main():
@@ -63,16 +71,13 @@ def main():
     try:
         data = json.loads(raw)
     except Exception:
-        sys.stdout.write(raw)
         return
 
     if not is_enabled():
-        sys.stdout.write(raw)
         return
 
-    mapping = load_mapping()
+    mapping = load_mapping(data.get("session_id", ""))
     if not mapping:
-        sys.stdout.write(raw)
         return
 
     tool_input = data.get("tool_input", {})
@@ -92,11 +97,15 @@ def main():
             tool_input["message"] = new_msg
             changed = True
 
+    # Echoing the payload back changes nothing: a PreToolUse hook rewrites the
+    # call only through hookSpecificOutput.updatedInput.
     if changed:
-        data["tool_input"] = tool_input
-        sys.stdout.write(json.dumps(data, ensure_ascii=False))
-    else:
-        sys.stdout.write(raw)
+        sys.stdout.write(json.dumps({
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "updatedInput": tool_input,
+            }
+        }, ensure_ascii=False))
 
 
 if __name__ == "__main__":
