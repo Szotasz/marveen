@@ -2569,11 +2569,14 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       // When a custom provider is being set (either in this same request or
       // already persisted), validate the model id to prevent apostrophe/shell
       // metacharacter breakout from the single-quoted `'${model}'` in the
-      // agent launch command. Allow: alphanumeric, dot, underscore, dash, colon, slash.
+      // agent launch command. Same allowlist as everywhere else (MODEL_ID_RE,
+      // model-id.ts) -- a narrower ad-hoc regex here used to 400 the `[1m]`
+      // 1M-context suffix for custom-provider agents even though it is the
+      // install's own default model shape.
       const incomingProvider = data.customProvider !== undefined ? (data.customProvider || null) : readAgentCustomProvider(name)
       if (incomingProvider) {
-        if (!/^[a-zA-Z0-9._/:+-]+$/.test(data.model)) {
-          json(res, { error: 'Custom provider model id contains disallowed characters (allowed: a-z A-Z 0-9 . _ / : + -)' }, 400)
+        if (!isValidModelId(data.model)) {
+          json(res, { error: new InvalidModelIdError(data.model).message }, 400)
           return true
         }
       }
