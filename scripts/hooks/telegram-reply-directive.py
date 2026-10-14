@@ -39,11 +39,15 @@ def main():
     if not m:
         sys.exit(0)  # not a Telegram message -> stay silent
     chat_id = _attr(m.group(1), "chat_id") or "<a bejövő chat_id>"
+    # Only a topic message carries this (TELEGRAM_TOPICS_ENABLED, plugin patch);
+    # without it the directive is exactly the plain one.
+    thread = _attr(m.group(1), "message_thread_id")
+    target = f"chat_id={chat_id}, message_thread_id={thread}" if thread else f"chat_id={chat_id}"
     sys.stdout.write(
         f"[TELEGRAM-DIREKTÍVA] Ez az üzenet a Telegram csatornáról érkezett "
-        f"(chat_id={chat_id}). A válaszod KÖTELEZŐEN a "
+        f"({target}). A válaszod KÖTELEZŐEN a "
         f"mcp__plugin_telegram_telegram__reply toolon keresztül menjen ki "
-        f"(chat_id={chat_id}) -- a sima assistant-szöveg NEM jut el hozzá, csak a "
+        f"({target}) -- a sima assistant-szöveg NEM jut el hozzá, csak a "
         f"tmux-ba. Ha csak nyugtázás kell (ok/köszi), akkor sem baj, de érdemi "
         f"választ MINDIG a reply toollal küldj.\n"
     )

@@ -84,8 +84,12 @@ const failuresLog = () => join(PROJECT_ROOT, 'store', 'channels-failures.log')
 const warnStamp = () => join(PROJECT_ROOT, 'store', '.main-config-guard-warned')
 const WARN_COOLDOWN_MS = 6 * 60 * 60 * 1000
 
+// Issue #1805: this notice now only goes out when the launch holds a fleet token but does NOT export it, so
+// it may say that the auth runs on the /login session -- the one case where that is true. While the token is
+// exported it outranks the /login session (documented precedence, measured 2026-10-09), and the old text,
+// which said the opposite on every shared-root launch with a token, was false 23 times on one healthy host.
 const FLEET_TOKEN_UNUSED_ADVICE =
-  '[GUARD] A fo agens most a KOZOS ~/.claude alol indult ujra, pedig van flotta setup-token (store/.claude-oauth-token). A MAIN_AGENT_ISOLATED_CONFIG nincs beallitva, ezert az auth a rotalodo megosztott credentialbol megy: ez lejarhat, 401-be all a TUI, es a csatorna NEMAN elerhetetlen lesz. Teendo: MAIN_AGENT_ISOLATED_CONFIG=1 beallitasa, majd a fo session ujrainditasa.'
+  '[GUARD] A fo agens most a KOZOS ~/.claude alol indult ujra, van flotta setup-token (store/.claude-oauth-token), de ez az inditas NEM exportalja CLAUDE_CODE_OAUTH_TOKEN-kent. Igy az auth a /login session-bol megy, ami lejarhat: ekkor 401-be all a TUI, es a csatorna NEMAN elerhetetlen lesz. Teendo: MAIN_AGENT_ISOLATED_CONFIG=1 beallitasa, majd a fo session ujrainditasa; vagy annak kideritese, melyik inditasi ut hagyta ki a token exportjat.'
 
 /** What the guard can MEASURE about MAIN_AGENT_ISOLATED_CONFIG when a launch that has run isolated before
  *  comes up on the shared root: the effective value, the layer it came from, and the state of the overrides
@@ -185,7 +189,11 @@ function noteState(d: Omit<MainConfigDecision, typeof MAIN_CONFIG_DECISION>): vo
       const mode = d.ownCredentials ? 'own-credential' : d.tokenSecretId ? `rotated-token(${d.tokenSecretId})` : 'isolated'
       line(d.isolatedConfigDir
         ? `main-agent respawn: ${mode} CLAUDE_CONFIG_DIR=${d.isolatedConfigDir}`
-        : 'main-agent respawn: shared ~/.claude (no isolation configured, no fleet token) -- expected for a stock install')
+        : d.fleetToken
+          // Issue #1805: the shared root WITH an exported fleet token is healthy, and a trace that called it
+          // a stock install would name the wrong state -- the failure this module exists to end.
+          ? 'main-agent respawn: shared ~/.claude, fleet token exported as CLAUDE_CODE_OAUTH_TOKEN (outranks the /login session per the documented precedence) -- nothing to warn about'
+          : 'main-agent respawn: shared ~/.claude (no isolation configured, no fleet token) -- expected for a stock install')
       return
     }
     const facts = d.trigger === 'isolation-lost' ? readIsolationSettingFacts() : null
@@ -260,6 +268,7 @@ export function mainConfigDecisionForTest(
     ownCredentials,
     tokenSecretId,
     fleetToken,
-    trigger: partial.trigger ?? mainSharedConfigTrigger({ isolatedConfigDir, fleetToken, isolatedDirExists: false }),
+    // fleetTokenExported mirrors readMainSharedConfigState: both launchers export a token that exists.
+    trigger: partial.trigger ?? mainSharedConfigTrigger({ isolatedConfigDir, fleetToken, isolatedDirExists: false, fleetTokenExported: fleetToken }),
   } as MainConfigDecision
 }

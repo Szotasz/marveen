@@ -155,7 +155,8 @@ async function restartFor(name: string): Promise<void> {
   } else {
     // 'continue' (fresh: false) re-spawns with --continue so the conversation
     // survives the model swap.
-    await restartAgentProcess(name, { fresh: false })
+    // RESTARTWAKE927: the demotion restarts a pane whose work stopped at the quota wall.
+    await restartAgentProcess(name, { fresh: false, wake: { reason: 'model-fallback' } })
   }
 }
 

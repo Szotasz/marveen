@@ -40,7 +40,8 @@ export async function runFleetLeg(target: ClaudePlan): Promise<FleetRotationReco
       listAgents: listAllAgentNames,
       usesFleetToken,
       isRunning: isAgentRunning,
-      restart: (name) => restartAgentProcess(name),
+      // RESTARTWAKE927: the fleet leg restarts every running shared-token agent, busy or not.
+      restart: (name) => restartAgentProcess(name, { wake: { reason: 'fleet-plan-switch' } }),
       sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
       nowMs: () => Date.now(),
     })

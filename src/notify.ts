@@ -28,8 +28,10 @@ export async function slackTargetFor(kind: 'owner' | 'alert', setting?: SettingF
 
 /**
  * Slack first (when a target is set), then Telegram unless NOTIFY_TELEGRAM=0.
- * A failed Slack send always falls back to Telegram, so nothing is lost while
- * the Slack path is new. Exported for tests.
+ * A failed Slack send falls back to Telegram, so nothing is lost while the
+ * Slack path is new -- unless NOTIFY_TELEGRAM_FALLBACK=0: then Telegram never
+ * gets the message, and the miss is an error line instead (an owner who moved
+ * to Slack does not want alerts on the channel they left). Exported for tests.
  */
 export async function deliverWithSlack(
   kind: 'owner' | 'alert',
@@ -38,17 +40,34 @@ export async function deliverWithSlack(
   send?: typeof SendSlack,
 ): Promise<void> {
   const setting = await loadSetting()
+  const noFallback = setting('NOTIFY_TELEGRAM_FALLBACK') === '0'
   const target = await slackTargetFor(kind, setting)
-  if (!target) return telegram()
+  if (!target) {
+    if (noFallback) {
+      logger.error({ kind }, 'Ertesites ELVESZETT: nincs Slack-cel, a Telegram-tartalek ki van kapcsolva (NOTIFY_TELEGRAM_FALLBACK=0)')
+      return
+    }
+    return telegram()
+  }
   let sendFn: typeof SendSlack
   try {
     sendFn = send ?? (await import('./slack-notify.js')).sendSlackNotification
   } catch (err) {
-    // A half-finished build must not cost the notification: Telegram instead.
-    logger.warn({ err: err instanceof Error ? err.message : String(err) }, 'Slack modul nem toltheto be; Telegram tartalek')
+    const msg = err instanceof Error ? err.message : String(err)
+    // A half-finished build must not cost the notification: Telegram instead,
+    // unless the owner switched the Telegram fallback off.
+    if (noFallback) {
+      logger.error({ err: msg }, 'Ertesites ELVESZETT: a Slack modul nem toltheto be, a Telegram-tartalek ki van kapcsolva (NOTIFY_TELEGRAM_FALLBACK=0)')
+      return
+    }
+    logger.warn({ err: msg }, 'Slack modul nem toltheto be; Telegram tartalek')
     return telegram()
   }
   const r = await sendFn(target, markIfTestRun(text), { ownerUserId: setting('SLACK_OWNER_USER_ID') })
+  if (!r.ok && noFallback) {
+    logger.error({ target, error: r.error }, 'Ertesites ELVESZETT: a Slack-kuldes bukott, a Telegram-tartalek ki van kapcsolva (NOTIFY_TELEGRAM_FALLBACK=0)')
+    return
+  }
   if (!r.ok) logger.warn({ target, error: r.error }, 'Slack ertesites nem ment ki; Telegram tartalek')
   if (!r.ok || setting('NOTIFY_TELEGRAM') !== '0') await telegram()
 }
@@ -68,6 +87,38 @@ export async function notifyChannel(text: string): Promise<void> {
     if (alertChat) return sendToChat(alertChat, text)
     return telegramOwner(text)
   })
+}
+
+// Card 3ed09d25 (71263d15): a message with no resolvable owner chat is not dropped in
+// silence. The log line fires every time; the main agent's inbox hears about it once
+// per window, through a sink the dashboard registers at start. notify.ts does not
+// reach into the database itself: processes that never open it import this module
+// too, and there the log line is the signal. Which chat counts as the owner is the
+// alert rule below (resolveAlertOwnerChat); this only makes its refusal heard.
+type OwnerChatMissingSink = (text: string) => void
+let ownerChatMissingSink: OwnerChatMissingSink | null = null
+let lastOwnerChatMissingSignalAt = 0
+const OWNER_CHAT_MISSING_SIGNAL_MS = 60 * 60 * 1000
+
+export function setOwnerChatMissingSink(sink: OwnerChatMissingSink | null): void {
+  ownerChatMissingSink = sink
+  lastOwnerChatMissingSignalAt = 0
+}
+
+function signalOwnerChatMissing(text: string, reason: string): void {
+  const now = Date.now()
+  if (!ownerChatMissingSink || now - lastOwnerChatMissingSignalAt < OWNER_CHAT_MISSING_SIGNAL_MS) return
+  lastOwnerChatMissingSignalAt = now
+  const preview = text.length > 200 ? `${text.slice(0, 200)} [... +${text.length - 200} karakter]` : text
+  try {
+    ownerChatMissingSink(
+      `[notify-undelivered] Egy riasztás nem ment ki: a tulajdonosi chat nem oldható fel (${reason}). ` +
+      'Óránként legfeljebb egy ilyen jelzés jön, a többi csak a naplóba kerül. ' +
+      `A kihagyott riasztás eleje: ${preview}`,
+    )
+  } catch (err) {
+    logger.warn({ err }, 'owner-chat-missing signal could not be delivered')
+  }
 }
 
 // Owner-facing content (heartbeat digest, security events): always the owner
@@ -94,6 +145,9 @@ async function telegramOwner(text: string): Promise<void> {
   if (!CHANNEL_TOKEN || !owner.chatId) {
     const reason = !CHANNEL_TOKEN ? 'nincs token' : `nincs tulajdonos-chat (${owner.reason})`
     logger.warn(`Channel ertesites kihagyva: ${reason}`)
+    // No token means no channel on this install: the log line is enough. A token
+    // with no owner chat is the 2026-09-16 shape, and that one must reach someone.
+    if (CHANNEL_TOKEN) signalOwnerChatMissing(text, owner.reason ?? 'ismeretlen ok')
     return
   }
   return sendToChat(owner.chatId, text)

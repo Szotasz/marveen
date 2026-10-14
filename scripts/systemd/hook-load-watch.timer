@@ -1,0 +1,14 @@
+[Unit]
+Description=Run the Marveen hook-load watcher every 5 minutes
+
+[Timer]
+# Deliberately NOT bound to the dashboard unit: what this watches (a gate that stands open, or blocks every call)
+# is independent of the dashboard. The alert itself needs the dashboard API; when it is down, the failed POST is
+# logged and the next tick tries again (the state is not advanced).
+# Five minutes: the longest a broken gate stays unreported; a tick is about a second on this install.
+OnBootSec=3min
+OnUnitActiveSec=5min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

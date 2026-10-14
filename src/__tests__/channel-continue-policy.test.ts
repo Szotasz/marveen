@@ -74,7 +74,7 @@ describe('the launch path is wired to the policy', () => {
     const block = PROCESS_SRC.slice(at, at + 2500)
     expect(block).toContain('verifyContinueLaunch({')
     expect(block).toContain('probeChannelPluginLiveness(pid, agentProvider, name)')
-    expect(block).toContain("['kill-session', '-t', session]")
+    expect(block).toContain("['kill-session', '-t', exactTmuxTarget(session)]")
     expect(block).toContain('startAgentProcess(name, { fresh: true })')
   })
 })

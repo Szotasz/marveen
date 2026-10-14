@@ -78,6 +78,6 @@ fi
 # the dashboard restart (update flow) doesn't need them down, and this
 # script doesn't bring them back up. Leaving them running keeps the
 # update seamless for the operator.
-tmux kill-session -t "${SLUG}-channels" 2>/dev/null || true
+tmux kill-session -t "=${SLUG}-channels:" 2>/dev/null || true
 
 echo "✓ ${BOT_NAME:-Marveen} $(_t stop.stopped)"

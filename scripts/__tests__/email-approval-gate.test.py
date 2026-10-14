@@ -13,6 +13,9 @@ Branches proven (Marveen msgs 17900/17936):
   - FAIL-CLOSED, proven separately from the happy path: missing approvals DB,
     missing/corrupt autonomy-config, unreadable letter ($VAR body), and a
     recipient that cannot be extracted all DENY (exit 2, never 1).
+  - HOOKDEPLOAD1008: a dependency that does not load (email_extract.py,
+    outgoing-copy-gate.py) or a malformed EMAIL_APPROVAL_WINDOW_S DENIES the
+    send with exit 2 (never 1), measured on a disposable copy of the hooks.
 
 Run: python3 <thisfile>   Exit 0 = all pass.
 """
@@ -20,6 +23,7 @@ import json
 import os
 import re
 import hashlib
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -110,14 +114,14 @@ def make_daily_log_stub(received):
     return Handler
 
 
-def run_gate(store, payload, extra_env=None):
+def run_gate(store, payload, extra_env=None, gate=GATE):
     env = dict(os.environ,
                EMAIL_APPROVAL_GATE_STORE=store,
                EMAIL_APPROVAL_WINDOW_S=str(WINDOW),
                OUTGOING_COPY_GATE_RULES=os.path.join(store, "no-rules.json"))
     if extra_env:
         env.update(extra_env)
-    proc = subprocess.run([sys.executable, GATE], input=json.dumps(payload).encode(),
+    proc = subprocess.run([sys.executable, gate], input=json.dumps(payload).encode(),
                           capture_output=True, env=env)
     return proc.returncode, proc.stdout.decode(), proc.stderr.decode()
 
@@ -337,6 +341,119 @@ with tempfile.TemporaryDirectory() as td:
     check("bcc/golden: bcc-less anchor is byte-stable across the bcc fix",
           bccless_anchor == "de87bdb699dcab419b68811bb57b6fab44b34e2fe16bff11cf90b2a5848f82ec",
           f"got {bccless_anchor}")
+
+    # --- EMAILHTMLHORGONY929: the HTML body and the attachments are in the anchor -
+    # The gap this pins closed: the anchor covered to/cc/bcc/text only, so an
+    # approved send.py letter could go out with a DIFFERENT --html file or with
+    # an added or changed --attach: the recipient got something nobody approved.
+    store = make_store(os.path.join(td, "html-bash"))
+    hdir = os.path.join(td, "html-files")
+    os.makedirs(hdir, exist_ok=True)
+    html_path = os.path.join(hdir, "level.html")
+    att_path = os.path.join(hdir, "melleklet.pdf")
+    extra_att = os.path.join(hdir, "masik.pdf")
+
+    def put(path, data):
+        with open(path, "wb") as fh:
+            fh.write(data)
+
+    def bash(command):
+        return run_gate(store, {"tool_name": "Bash", "tool_input": {"command": command}})
+
+    put(html_path, "<p>Kedves Ügyfelünk!</p>\n".encode("utf-8"))
+    put(att_path, b"%PDF-1.4 elso")
+    put(extra_att, b"%PDF-1.4 masik")
+    plain_cmd = ('python3 scripts/send.py --to "a@b.hu" --subject "Teszt tárgy" '
+                 '--body "Kedves Ügyfelünk! Törzs."')
+    html_cmd = plain_cmd + f' --html "{html_path}" --attach "{att_path}"'
+    _, _, err = bash(plain_cmd)
+    plain_anchor = anchor_from_stderr(err)
+    _, _, err = bash(html_cmd)
+    html_anchor = anchor_from_stderr(err)
+    check("html/Bash: --html and --attach change the anchor",
+          bool(plain_anchor) and bool(html_anchor) and plain_anchor != html_anchor,
+          f"plain={plain_anchor} html={html_anchor}")
+    approve(store, html_anchor)
+    put(html_path, "<p>MAS szoveg</p>\n".encode("utf-8"))
+    code, _, _ = bash(html_cmd)
+    check("html/Bash: HTML changed after the approval -> DENIED", code == 2, f"exit={code}")
+    put(html_path, "<p>Kedves Ügyfelünk!</p>\n".encode("utf-8"))
+    put(att_path, b"%PDF-1.4 masodik")
+    code, _, _ = bash(html_cmd)
+    check("html/Bash: attachment changed after the approval -> DENIED", code == 2, f"exit={code}")
+    put(att_path, b"%PDF-1.4 elso")
+    code, _, _ = bash(html_cmd + f' --attach "{extra_att}"')
+    check("html/Bash: an ADDED attachment -> DENIED", code == 2, f"exit={code}")
+    code, _, _ = bash(plain_cmd)
+    check("html/Bash: the same letter WITHOUT its HTML and attachment -> DENIED", code == 2, f"exit={code}")
+    code, _, _ = bash(html_cmd)
+    check("html/Bash: the approved letter (files as approved) sends", code == 0, f"exit={code}")
+    code, _, _ = bash(html_cmd)
+    check("html/Bash: ... and only once (one-shot)", code == 2, f"exit={code}")
+    _, _, err_a = bash(plain_cmd + f' --attach "{att_path}" --attach "{extra_att}"')
+    _, _, err_b = bash(plain_cmd + f' --attach "{extra_att}" --attach "{att_path}"')
+    check("html/Bash: the order of the --attach flags does not change the anchor",
+          anchor_from_stderr(err_a) is not None and anchor_from_stderr(err_a) == anchor_from_stderr(err_b))
+    # Each branch by its OWN reason: a shell-expanded path must be refused as
+    # such, not merely because no file carries the literal name "$LEVEL_HTML".
+    for bad, label, why in ((plain_cmd + ' --html "$LEVEL_HTML"', "shell variable", "shell-behelyettesitest"),
+                            (plain_cmd + ' --attach "$(ls *.pdf)"', "command substitution", "shell-behelyettesitest"),
+                            (plain_cmd + f' --html "{os.path.join(hdir, "nincs.html")}"', "missing file", "nem olvashato"),
+                            (plain_cmd + f' --html "{html_path}" --html "{html_path}"', "two --html", "tobb --html")):
+        code, _, err = bash(bad)
+        check(f"html/Bash fail-closed: {label} -> DENIED, not anchored",
+              code == 2 and "nem horgonyozhato" in err and why in err, f"exit={code} err={err[:160]!r}")
+    # A tester's finding: the repo's only --html is a SWITCH (scripts/support-mail/send.py, store_true). Read as
+    # argparse reads it, "--html --cc x" has no file after --html: the gate must pass that letter exactly as
+    # before (the regression: exit 2 "a --html fajl nem olvashato (--cc ...)" and no approval could cover it).
+    sm_cmd = ('python3 scripts/support-mail/send.py --to "a@b.hu" --subject "Teszt tárgy" '
+              '--body "Kedves Ügyfelünk! Törzs."')
+    _, _, err = bash(sm_cmd)
+    sm_plain_anchor = anchor_from_stderr(err)
+    for form, label in ((sm_cmd + ' --html --cc "c@d.hu"', "--html then --cc"),
+                        (sm_cmd + ' --cc "c@d.hu" --html', "--html as the last token"),
+                        (sm_cmd + ' --cc "c@d.hu" --html-wrap', "--html-wrap")):
+        _, _, err = bash(form)
+        got = anchor_from_stderr(err)
+        check(f"support-mail switch ({label}): anchored like the letter without --html, no unreadable deny",
+              got is not None and "nem horgonyozhato" not in err, f"anchor={got} err={err[:160]!r}")
+        approve(store, got)
+        code, _, err = bash(form)
+        check(f"support-mail switch ({label}): the approved letter sends", code == 0, f"exit={code} err={err[:160]!r}")
+    _, _, err = bash(sm_cmd + ' --cc "c@d.hu"')
+    check("support-mail switch: the --html switch does not change the anchor",
+          anchor_from_stderr(err) is not None and anchor_from_stderr(err) == anchor_from_stderr(bash(sm_cmd + ' --html --cc "c@d.hu"')[2]))
+    check("support-mail switch: control, a plain support-mail letter is anchored at all", bool(sm_plain_anchor))
+    # A switch before a file flag must not hide it: the attachment after a --html switch is still anchored.
+    _, _, err_1 = bash(plain_cmd + f' --html --attach "{att_path}"')
+    put(att_path, b"%PDF-1.4 csere")
+    _, _, err_2 = bash(plain_cmd + f' --html --attach "{att_path}"')
+    put(att_path, b"%PDF-1.4 elso")
+    check("switch then --attach: the attachment is still in the anchor (a changed file changes it)",
+          anchor_from_stderr(err_1) is not None and anchor_from_stderr(err_2) is not None
+          and anchor_from_stderr(err_1) != anchor_from_stderr(err_2))
+    # The low finding: a quoted flag and an argparse prefix are the same flag.
+    for form, label in ((plain_cmd + f' "--attach" "{att_path}"', "quoted --attach"),
+                        (plain_cmd + f' --att "{att_path}"', "abbreviated --att"),
+                        (plain_cmd + f' --htm "{html_path}"', "abbreviated --htm")):
+        _, _, err_a = bash(form)
+        target = html_path if "--htm" in form else att_path
+        put(target, b"csere")
+        _, _, err_b = bash(form)
+        put(html_path, "<p>Kedves Ügyfelünk!</p>\n".encode("utf-8"))
+        put(att_path, b"%PDF-1.4 elso")
+        check(f"{label}: the file is in the anchor", anchor_from_stderr(err_a) is not None
+              and anchor_from_stderr(err_a) != anchor_from_stderr(err_b) and anchor_from_stderr(err_a) != plain_anchor,
+              f"a={anchor_from_stderr(err_a)} b={anchor_from_stderr(err_b)}")
+    # With "=" the value is literal, even when it starts with "-": a file named "--cc" is unreadable -> denied.
+    code, _, err = bash(plain_cmd + ' --html=--cc')
+    check("--html=--cc: a literal value, unreadable -> DENIED", code == 2 and "nem olvashato" in err, f"exit={code} err={err[:160]!r}")
+    # Backward-compat golden: a command WITHOUT --html/--attach hashes to the
+    # old to/cc/text canon, so every open approval stays valid.
+    old_canon = json.dumps({"to": ["a@b.hu"], "cc": [], "text": "Teszt tárgy\nKedves Ügyfelünk! Törzs."},
+                           ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    check("html/golden: a plain command's anchor is the pre-change to/cc/text canon",
+          plain_anchor == hashlib.sha256(old_canon.encode("utf-8")).hexdigest(), f"got {plain_anchor}")
 
     # MANAGEOP904: manage_email is a MULTIPLEXER, not a send tool. Scoping the
     # gate on the tool NAME alone denied `operation=search` and
@@ -702,6 +819,82 @@ with tempfile.TemporaryDirectory() as td:
           bool(banned.search("SELECT unix" + "epoch()-60")))
     check("control: the host's own sqlite3 really executes the replacement expression",
           sqlite3.connect(":memory:").execute(f"SELECT {NOW_S}").fetchone()[0] > 1_700_000_000)
+
+# --- HOOKDEPLOAD1008: a dependency that does not load DENIES (exit 2), never exit 1 ---
+# The extractor used to be imported at MODULE level, outside the __main__ net:
+# a broken email_extract.py (a conflicted stash pop leaves exactly such a
+# marker line) made the gate exit 1, which PreToolUse treats as NON-blocking,
+# so the letter went out unchecked. Every case runs on a disposable copy of
+# scripts/hooks + scripts/lib, never on the repo's own files, and the intact
+# copy is first shown to decide exactly like the real gate: otherwise a broken
+# copy's verdict could be the copy's own fault.
+CONFLICT_LINE = "<" * 7 + " Updated upstream\n"  # assembled, so this file holds no marker line
+
+
+def copy_hook_tree(dst):
+    """The gate's disposable copy: scripts/hooks + scripts/lib under dst."""
+    skip = shutil.ignore_patterns("__pycache__")
+    shutil.copytree(HOOKS, os.path.join(dst, "scripts", "hooks"), ignore=skip)
+    shutil.copytree(os.path.join(os.path.dirname(HOOKS), "lib"),
+                    os.path.join(dst, "scripts", "lib"), ignore=skip)
+    return os.path.join(dst, "scripts", "hooks", "email-approval-gate.py")
+
+
+def break_module(gate_copy, name):
+    with open(os.path.join(os.path.dirname(gate_copy), name), "a", encoding="utf-8") as fh:
+        fh.write(CONFLICT_LINE)
+
+
+LS = {"tool_name": "Bash", "tool_input": {"command": "ls -la"}}
+BASH_SEND = {"tool_name": "Bash", "tool_input": {
+    "command": 'sendmail --to a@b.hu --subject "Bash tárgy" --body "Bash törzs."'}}
+
+with tempfile.TemporaryDirectory() as td:
+    store = make_store(os.path.join(td, "dep"), level=2)
+    intact = copy_hook_tree(os.path.join(td, "intact"))
+    for label, payload in (("MCP send", mcp_send()), ("Bash send", BASH_SEND), ("non-send Bash", LS)):
+        real, copy = run_gate(store, payload), run_gate(store, payload, gate=intact)
+        check(f"HOOKDEPLOAD1008 control: the intact copy decides like the real gate ({label})",
+              (copy[0], copy[2]) == (real[0], real[2]),
+              f"real={real[0]} copy={copy[0]} err={copy[2][:200]!r}")
+
+    broken = copy_hook_tree(os.path.join(td, "broken-extract"))
+    break_module(broken, "email_extract.py")
+    for label, payload in (("MCP send", mcp_send()), ("Bash send", BASH_SEND)):
+        code, _, err = run_gate(store, payload, gate=broken)
+        check(f"HOOKDEPLOAD1008: broken email_extract.py -> {label} DENIED, exit 2 (1 would send unchecked)",
+              code == 2 and "email_extract.py" in err and "nem toltheto be" in err,
+              f"exit={code} err={err[:200]!r}")
+    code, _, err = run_gate(store, LS, gate=broken)
+    check("HOOKDEPLOAD1008: broken email_extract.py -> a non-send Bash still passes (the extractor is not needed)",
+          code == 0, f"exit={code} err={err[:200]!r}")
+    # Levels 1 and 3 never read the letter, so they decide as before. At level
+    # 3 the send itself is still stopped by the copy gate: its guarded import
+    # turns a missing or broken extractor into a deny (the missing-module case
+    # is email-extract-parity.test.py, section 3).
+    for level, want in ((1, 2), (3, 0)):
+        code, _, err = run_gate(make_store(os.path.join(td, f"dep-l{level}"), level=level),
+                                mcp_send(), gate=broken)
+        check(f"HOOKDEPLOAD1008: broken email_extract.py -> level {level} decides as before (exit {want})",
+              code == want, f"exit={code} err={err[:200]!r}")
+
+    broken = copy_hook_tree(os.path.join(td, "broken-classifier"))
+    break_module(broken, "outgoing-copy-gate.py")
+    code, _, err = run_gate(store, LS, gate=broken)
+    check("HOOKDEPLOAD1008: broken outgoing-copy-gate.py -> Bash DENIED, exit 2, naming the file",
+          code == 2 and "outgoing-copy-gate.py" in err and "nem toltheto be" in err,
+          f"exit={code} err={err[:200]!r}")
+    real, copy = run_gate(store, mcp_send()), run_gate(store, mcp_send(), gate=broken)
+    check("HOOKDEPLOAD1008: broken outgoing-copy-gate.py -> an MCP send is decided as before (no classifier needed)",
+          (copy[0], copy[2]) == (real[0], real[2]), f"real={real[0]} copy={copy[0]} err={copy[2][:200]!r}")
+
+    bad_window = {"EMAIL_APPROVAL_WINDOW_S": "abc"}
+    code, _, err = run_gate(store, mcp_send(), extra_env=bad_window)
+    check("HOOKDEPLOAD1008: malformed EMAIL_APPROVAL_WINDOW_S -> send DENIED, exit 2, naming the variable",
+          code == 2 and "EMAIL_APPROVAL_WINDOW_S" in err, f"exit={code} err={err[:200]!r}")
+    code, _, err = run_gate(store, LS, extra_env=bad_window)
+    check("HOOKDEPLOAD1008: malformed EMAIL_APPROVAL_WINDOW_S -> a non-send Bash still passes",
+          code == 0, f"exit={code} err={err[:200]!r}")
 
 print()
 if failed:

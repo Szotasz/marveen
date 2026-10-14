@@ -28,6 +28,10 @@ Every decision is logged as one JSON line to LOG_PATH, in both modes.
 
 Safety net: if the last stamp is older than MAX_SILENCE_S, the round runs
 regardless (a stamp that stopped being written must not silence the task).
+A stamp later than now + FUTURE_TOLERANCE_S is an error state (a clock jump, a
+restored snapshot, a stamp written in milliseconds): the activity window
+[last, now] would be empty by construction and MAX_SILENCE_S could never fire,
+so the round runs and the log says 'future-stamp'.
 
 Paths are overridable by environment variables for the tests only.
 """
@@ -44,6 +48,9 @@ STATE_PATH = os.environ.get('MHP_STATE_PATH', f'{ROOT}/store/memoria-heartbeat-s
 LOG_PATH = os.environ.get('MHP_LOG_PATH', f'{ROOT}/store/precheck/memoria-heartbeat.jsonl')
 MODE_PATH = os.environ.get('MHP_MODE_PATH', f'{ROOT}/store/precheck/memoria-heartbeat.mode')
 MAX_SILENCE_S = 4 * 3600
+# How far ahead of the clock a stamp may be before it counts as broken: room for
+# ordinary clock skew, far below any real gap between two rounds.
+FUTURE_TOLERANCE_S = 300
 # The mode when MODE_PATH is absent or holds anything else. A release decision:
 # 'shadow' logs only and never skips; 'live' skips an empty window. 'live' since
 # the 24 h shadow measurement on the reference install (2026-10-05): after every
@@ -167,6 +174,9 @@ def decide(now):
         last = int(json.load(fh)['last_run_at'])
     entry['last_run_at'] = last
     entry['silence_s'] = int(now - last)
+    if last > now + FUTURE_TOLERANCE_S:
+        entry['reason'] = 'future-stamp'
+        return False, entry
     if now - last > MAX_SILENCE_S:
         entry['reason'] = 'max-silence'
         return False, entry

@@ -36,6 +36,15 @@ Indok: a `notify.sh` futásidőben olvassa az `ALLOWED_CHAT_ID`-t a `.env`-ből,
 
 (A Szabi-specifikus, operator-local taskok a `~/.claude/scheduled-tasks/`-ban maradnak, nem seedelődnek, ott a konkrét chat_id helyes.)
 
+### Témák a Telegram privát chatben
+
+Ha a bot privát chatjében be vannak kapcsolva a témák (BotFather), a beszélgetés témákra
+bontható, például projektenként. A `TELEGRAM_TOPICS_ENABLED` beállítással (alapból ki) az
+ügynök abba a témába válaszol, ahonnan az üzenet jött, és a gépelés-jelzés, a „Dolgozom
+rajta” helyőrző és a hookból megválaszolt parancsok is ott jelennek meg. A rendszerüzenetek
+(riasztás, jóváhagyás-kérés, ütemezett feladat eredménye) téma nélkül mennek ki. A
+részletek és a működés: [config-reference.md](config-reference.md#telegram_topics_enabled-a-válasz-abba-a-témába-megy-ahonnan-az-üzenet-jött).
+
 ### Slack-specifikum
 
 Socket Mode kapcsolat; flottában ügyelni kell hogy ne nyisson több ügynök párhuzamos kapcsolatot ugyanarra a workspace-re (különben az inbound event-ek "fele eltűnik"). A thread-reply auto-deliver opcionálisan kapcsolható.
