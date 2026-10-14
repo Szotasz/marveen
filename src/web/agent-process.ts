@@ -3296,6 +3296,14 @@ export async function scheduleIdentitySetup(session: string, displayName: string
             }
             try {
               for (const cmd of identitySlashCommands(displayName)) {
+                // RENAMEPARK1014: record the command before typing it. When the
+                // TUI swallows this Enter the line parks, and without a record
+                // the stuck-input watcher cannot tell our `/rename` from a human
+                // draft, so it holds (GH #717). Measured: agent-leanpublisher sat
+                // ~15.5h behind a parked `/rename Lean Publisher` (2026-10-14).
+                // With the record the parked scrape matches and the watcher
+                // submits it with a single Enter (reinject-recorded / enter).
+                recordInjectedPrompt(session, cmd)
                 runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), cmd, 'Enter'], { timeout: 5000 })
                 await delay(1000)
               }
