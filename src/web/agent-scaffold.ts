@@ -12,7 +12,7 @@ import { findDuplicateJsonKeys } from './json-dup-keys.js'
 import { logger } from '../logger.js'
 import { filterInheritableMcpServers, readInheritableMcpServerNames, logNotInherited } from './mcp-inheritance.js'
 import { agentDir, agentConfigRoot, listAgentNames, readAgentCapabilities, readAgentToolDeny } from './agent-config.js'
-import { loadProfileTemplate, profileWantsCredentialGate, profileWantsDestructiveGate, resolveProfilePlaceholders,
+import { loadProfileTemplate, profileWantsCredentialGate, profileWantsDestructiveGate, profileWantsYtIngest, resolveProfilePlaceholders,
   type ProfileTemplate } from './profiles.js'
 import { resolveAgentSecurityProfile } from './agent-team.js'
 import { sanitizeCapabilityTag, CAPABILITY_TAG_MAX_PER_AGENT } from '../prompt-safety.js'
@@ -827,7 +827,8 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   // Egress deny: applied to EVERY profile, not just the gated ones. This
   // function replaces permissions wholesale on each spawn, so without it a
   // respawn would silently drop what ensureBashEgressDeny() merged in.
-  denyList.push(...BASH_EGRESS_DENY)
+  const ytIngestOnly = ytDlpIngestOnly()
+  denyList.push(...bashEgressDeny(ytIngestOnly))
   // The curl-https / wget name rules stay unless the owner switched on host-based
   // judging (BASH_EGRESS_HOST_ALLOW) -- the parser hook is injected below for
   // every sub-agent, so with the switch on it is the gate on those two verbs.
@@ -857,8 +858,11 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   // before the grant and ran silently after it). Omitted entirely when the
   // profile declares none, so existing profiles are unaffected.
   const extraDirs = (profile.additionalDirectories ?? []).map(p => resolveProfilePlaceholders(p, ctx))
+  const allowRules = profileWantsYtIngest(profile) && ytIngestOnly
+    ? [...profile.filesystem.allow, ...YT_INGEST_ALLOW.filter(r => !profile.filesystem.allow.includes(r))]
+    : profile.filesystem.allow
   existing.permissions = {
-    allow: profile.filesystem.allow.map(p => absolutizeFileRule(resolveProfilePlaceholders(p, ctx))),
+    allow: allowRules.map(p => absolutizeFileRule(resolveProfilePlaceholders(p, ctx))),
     deny: denyList,
     ...(extraDirs.length ? { additionalDirectories: extraDirs } : {}),
   }
@@ -1116,14 +1120,47 @@ export const BASH_EGRESS_DENY = [
   'Bash(*/ncat *)',
   'Bash(telnet *)',
   'Bash(*/telnet *)',
-  // yt-dlp: István, Q032 (2026-10-06) -- no agent calls it directly; the only
-  // way in is scripts/yt-ingest/yt-ingest.sh, which runs it under bwrap with a
-  // gated URL. The third rule catches `<venv>/bin/python -m yt_dlp`. A call
-  // hidden inside another program is out of reach here (see the parser note).
+]
+
+// yt-dlp only through scripts/yt-ingest/yt-ingest.sh -- an OPT-IN switch,
+// YT_DLP_INGEST_ONLY (config-registry.ts), off by default (#1705 maintainer
+// decision, 2026-10-14). The shared default cannot carry these: skills call
+// yt-dlp directly from a SKILL.md command line, and a default deny would break
+// them on the next respawn of every agent on every install. With the switch on,
+// the rules ride exactly where BASH_EGRESS_DENY rides (every spawn's profile
+// write, the startup merge, the main agent's own config dir); with it off,
+// nothing here is written and the generated settings are byte-identical to an
+// install without this code. The third rule catches `<venv>/bin/python -m
+// yt_dlp`. A call hidden inside another program is out of reach of name rules
+// (see the parser note above).
+export const YT_DLP_EGRESS_DENY = [
   'Bash(yt-dlp *)',
   'Bash(*/yt-dlp *)',
   'Bash(* -m yt_dlp*)',
 ]
+
+// The sanctioned way in, granted to a profile that sets `ytIngest: true`
+// (researcher), and only while the switch is on -- the allow lines go with the
+// deny, not ahead of it.
+export const YT_INGEST_ALLOW = [
+  'Bash(bash ${PROJECT_ROOT}/scripts/yt-ingest/yt-ingest.sh:*)',
+  'Bash(bash ${PROJECT_ROOT}/scripts/yt-ingest/yt-read.sh:*)',
+]
+
+export const YT_DLP_INGEST_ONLY_KEY = 'YT_DLP_INGEST_ONLY'
+
+// Read per call (override > .env > default), so flipping the switch needs no
+// dashboard restart -- it binds each agent from its next spawn. Unreadable or
+// unknown reads as OFF: the off state is the shipped default, not a widening.
+export function ytDlpIngestOnly(read: (key: string) => string | number = getEffectiveSettingValue): boolean {
+  try { return String(read(YT_DLP_INGEST_ONLY_KEY)) === '1' } catch { return false }
+}
+
+// The egress deny set an agent actually gets: BASH_EGRESS_DENY, plus the
+// yt-dlp rules when the switch is on.
+export function bashEgressDeny(ytIngestOnly: boolean = ytDlpIngestOnly()): string[] {
+  return ytIngestOnly ? [...BASH_EGRESS_DENY, ...YT_DLP_EGRESS_DENY] : [...BASH_EGRESS_DENY]
+}
 
 // The fleet-wide deny FLOOR: applied to EVERY profile, exactly like
 // BASH_EGRESS_DENY above and for the same reason. permissions.deny is rebuilt
@@ -1224,12 +1261,14 @@ export const FLEET_BASELINE_DENY = [
 // reads this file. True -> the LEGACY curl-https / wget rules are removed (and
 // only those exact strings: an operator's own rule is never touched). False ->
 // they are kept or put back, because then they are the only gate on those verbs.
-export function mergeBashEgressDeny(settings: Record<string, unknown>, parserCovers = false): boolean {
+// rules: the switch-aware egress set (bashEgressDeny: + the yt-dlp rules while
+// YT_DLP_INGEST_ONLY is on).
+export function mergeBashEgressDeny(settings: Record<string, unknown>, parserCovers = false, rules: string[] = bashEgressDeny()): boolean {
   const perms = (settings.permissions && typeof settings.permissions === 'object' && !Array.isArray(settings.permissions))
     ? settings.permissions as Record<string, unknown>
     : {}
   const deny = Array.isArray(perms.deny) ? [...(perms.deny as unknown[])] : []
-  const required = parserCovers ? BASH_EGRESS_DENY : [...BASH_EGRESS_DENY, ...LEGACY_BASH_EGRESS_DENY]
+  const required = parserCovers ? rules : [...rules, ...LEGACY_BASH_EGRESS_DENY]
   const missing = required.filter((rule) => !deny.includes(rule))
   const kept = parserCovers ? deny.filter((rule) => !LEGACY_BASH_EGRESS_DENY.includes(rule as string)) : deny
   if (missing.length === 0 && kept.length === deny.length) return false
@@ -2537,8 +2576,22 @@ export function scaffoldAgentDir(name: string) {
     const tplPath = join(PROJECT_ROOT, 'templates', 'settings.json.template')
     if (existsSync(tplPath)) {
       const resolved = resolveTemplatePlaceholders(readFileSync(tplPath, 'utf-8'))
-      atomicWriteFileSync(settingsJson, resolved)
+      atomicWriteFileSync(settingsJson, seedSettingsFromTemplate(resolved, ytDlpIngestOnly()))
     }
+  }
+}
+
+// The template carries BASH_EGRESS_DENY only. With YT_DLP_INGEST_ONLY on, the
+// yt-dlp rules are merged into the seeded file too; with it off the template
+// text is returned verbatim, exactly as before the switch existed. Pure, so
+// both switch states are testable without scaffolding a real agent dir.
+export function seedSettingsFromTemplate(resolved: string, ytIngestOnly: boolean): string {
+  if (!ytIngestOnly) return resolved
+  try {
+    const tpl = JSON.parse(resolved) as Record<string, unknown>
+    return mergeBashEgressDeny(tpl, true, bashEgressDeny(true)) ? JSON.stringify(tpl, null, 2) : resolved
+  } catch {
+    return resolved // unparsable template: write it as is, the profile write follows
   }
 }
 

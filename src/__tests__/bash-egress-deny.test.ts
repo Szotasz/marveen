@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync, mkdtempSync, existsSync, rmSync } from 'no
 import { tmpdir, homedir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { BASH_EGRESS_DENY, LEGACY_BASH_EGRESS_DENY, mergeBashEgressDeny, bashEgressDenyTargetPath, ensureBashEgressDeny, bashEgressParserCovers } from '../web/agent-scaffold.js'
+import { BASH_EGRESS_DENY, LEGACY_BASH_EGRESS_DENY, YT_DLP_EGRESS_DENY, bashEgressDeny, ytDlpIngestOnly, mergeBashEgressDeny, bashEgressDenyTargetPath, ensureBashEgressDeny, bashEgressParserCovers } from '../web/agent-scaffold.js'
 import { MAIN_AGENT_ID } from '../config.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
@@ -33,9 +33,9 @@ function ruleMatches(rule: string, command: string): boolean {
 }
 
 // Deny is evaluated per sub-command, so the corpus is matched the same way.
-function denied(command: string): boolean {
+function denied(command: string, rules: string[] = BASH_EGRESS_DENY): boolean {
   const parts = command.split(/\s*(?:&&|\|\||;|\|)\s*/).map((p) => p.trim()).filter(Boolean)
-  return [command.trim(), ...parts].some((c) => BASH_EGRESS_DENY.some((r) => ruleMatches(r, c)))
+  return [command.trim(), ...parts].some((c) => rules.some((r) => ruleMatches(r, c)))
 }
 
 // The fleet's own internal traffic. Every one of these is a real shape from the
@@ -59,7 +59,8 @@ const INTERNAL = [
   'rsync -a src/ dst/',
   'sync && echo done',
   'git commit -m "sync the fleet"',
-  // Q032: the sanctioned YouTube path, and reading/maintaining yt-dlp, stay open.
+  // The sanctioned YouTube path, and reading/maintaining yt-dlp, stay open in
+  // BOTH switch states (see the YT_DLP_INGEST_ONLY block below).
   'bash /srv/install/scripts/yt-ingest/yt-ingest.sh https://www.youtube.com/watch?v=Bk6HBGap7PU',
   'bash /srv/install/scripts/yt-ingest/yt-read.sh Bk6HBGap7PU meta',
   'grep -n yt-dlp scripts/yt-ingest/yt-ingest.sh',
@@ -85,7 +86,10 @@ const EXTERNAL = [
   'nc example.org 443',
   'ncat --ssl example.org 443',
   'telnet example.org 80',
-  // Q032: yt-dlp only through scripts/yt-ingest/yt-ingest.sh.
+]
+
+// yt-dlp called directly: denied ONLY with YT_DLP_INGEST_ONLY on.
+const YT_DIRECT = [
   'yt-dlp --skip-download https://www.youtube.com/watch?v=Bk6HBGap7PU',
   '/home/u/.local/bin/yt-dlp -f best https://youtu.be/Bk6HBGap7PU',
   '/home/u/.local/share/pipx/venvs/yt-dlp/bin/python -m yt_dlp https://youtu.be/Bk6HBGap7PU',
@@ -130,6 +134,47 @@ describe('BASH_EGRESS_DENY rule set', () => {
   it('documents the residual gap: plain-http external fetches still pass', () => {
     expect(denied('curl -s http://example.org/x')).toBe(false)
     expect(denied(`python3 -c "import urllib.request; urllib.request.urlopen('http://example.org/x')"`)).toBe(false)
+  })
+})
+
+// #1705 maintainer decision: the yt-dlp rules are an OPT-IN switch, off by
+// default. Off must be exactly the shared set; on adds the yt-dlp rules and
+// keeps every other verdict of the corpus.
+describe('YT_DLP_INGEST_ONLY switch', () => {
+  it('off: the deny set is exactly BASH_EGRESS_DENY, with no yt-dlp rule', () => {
+    expect(bashEgressDeny(false)).toEqual(BASH_EGRESS_DENY)
+    expect(bashEgressDeny(false).filter((r) => /yt[-_]dlp/.test(r))).toEqual([])
+    for (const cmd of YT_DIRECT) expect({ cmd, denied: denied(cmd, bashEgressDeny(false)) }).toEqual({ cmd, denied: false })
+  })
+
+  it('on: the yt-dlp rules are added and a direct call is denied', () => {
+    expect(bashEgressDeny(true)).toEqual([...BASH_EGRESS_DENY, ...YT_DLP_EGRESS_DENY])
+    for (const cmd of YT_DIRECT) expect({ cmd, denied: denied(cmd, bashEgressDeny(true)) }).toEqual({ cmd, denied: true })
+  })
+
+  it('on: the internal corpus (yt-ingest.sh included) stays open and the external one stays denied', () => {
+    for (const cmd of INTERNAL) expect({ cmd, denied: denied(cmd, bashEgressDeny(true)) }).toEqual({ cmd, denied: false })
+    for (const cmd of EXTERNAL) expect({ cmd, denied: denied(cmd, bashEgressDeny(true)) }).toEqual({ cmd, denied: true })
+  })
+
+  it('the shared set never carries the yt-dlp rules itself', () => {
+    expect(BASH_EGRESS_DENY.filter((r) => YT_DLP_EGRESS_DENY.includes(r))).toEqual([])
+  })
+
+  it('reads the switch fail-closed to OFF: only "1" turns it on', () => {
+    expect(ytDlpIngestOnly(() => '1')).toBe(true)
+    expect(ytDlpIngestOnly(() => '0')).toBe(false)
+    expect(ytDlpIngestOnly(() => '')).toBe(false)
+    expect(ytDlpIngestOnly(() => { throw new Error('Unknown setting key') })).toBe(false)
+  })
+
+  it('merges the on-set when asked, and the shared set alone otherwise', () => {
+    const on: Record<string, unknown> = {}
+    mergeBashEgressDeny(on, true, bashEgressDeny(true))
+    expect((on.permissions as { deny: string[] }).deny).toEqual([...BASH_EGRESS_DENY, ...YT_DLP_EGRESS_DENY])
+    const off: Record<string, unknown> = {}
+    mergeBashEgressDeny(off, true, bashEgressDeny(false))
+    expect((off.permissions as { deny: string[] }).deny).toEqual(BASH_EGRESS_DENY)
   })
 })
 
