@@ -142,8 +142,8 @@ function notifyOwner(approval: Approval): void {
     //
     // The Telegram branch is kept for Telegram installs ONLY because it also
     // records the message id (setApprovalTelegramMessageId); every other
-    // provider goes through notifyChannel, which resolves provider, token and
-    // owner chat the same way every other alert in the fleet does.
+    // provider goes through sendOwnerMessage, which resolves provider, token
+    // and owner chat the same way every other owner message does.
     if (CHANNEL_PROVIDER === 'telegram' && TELEGRAM_BOT_TOKEN) {
       const ownerChat = resolveOwnerChatId()
       if (!ownerChat) {

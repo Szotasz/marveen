@@ -6,8 +6,10 @@ import type { RouteContext } from '../web/routes/types.js'
 // chat) could be deleted without a single test going red, and ask 2's failure
 // branch was UNREACHABLE on a non-Telegram install -- the funnel swallowed
 // every provider exception, so a failed Discord send looked like a delivered
-// notification. These tests pin all three fallback branches by OBSERVABLE
-// behaviour (the in-band message to the main agent), not by reading source.
+// notification. These tests pin the send-result branches (delivered,
+// send-failed, partial) by OBSERVABLE behaviour (the in-band message to the
+// main agent), not by reading source. The no-token / no-owner-chat branches,
+// and the Telegram branch, are in approvals-owner-notify-branches.test.ts.
 
 // The in-band fallback writes a real row through db.createAgentMessage, so the
 // test reads it back from the in-memory database instead of mocking it: that

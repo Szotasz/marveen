@@ -72,9 +72,6 @@ export async function deliverWithSlack(
   if (!r.ok || setting('NOTIFY_TELEGRAM') !== '0') await telegram()
 }
 
-// True when operational alerts go to a chat other than the owner's. Callers
-// must then leave owner/partner conversation content (e.g. a preview of a
-// parked input line) out of the alert text.
 /** What a channel send did, for callers that must react to a miss. */
 export interface ChannelSendResult {
   sent: boolean
@@ -83,10 +80,12 @@ export interface ChannelSendResult {
 }
 
 /**
- * Owner-facing send that REPORTS whether it went out. notifyOwner() above is
- * the fire-and-forget funnel (Slack first, then the channel); this is the same
- * channel path for the one caller that cannot treat a miss as a delivery --
- * an approval request nobody sees is not a gate.
+ * Owner-facing send that REPORTS whether it went out, for the one caller that
+ * cannot treat a miss as a delivery -- an approval request nobody sees is not
+ * a gate. It resolves the owner chat like telegramOwner() below and sends on
+ * the configured channel provider. Unlike notifyOwner() below it does NOT go
+ * through deliverWithSlack, so a NOTIFY_SLACK_TARGET is not honoured here:
+ * the result has to describe the one send it made.
  */
 export async function sendOwnerMessage(text: string): Promise<ChannelSendResult> {
   const owner = resolveAlertOwnerChat(undefined, CHANNEL_CHAT_ID, CHANNEL_PROVIDER)
@@ -99,6 +98,9 @@ export async function sendOwnerMessage(text: string): Promise<ChannelSendResult>
   return sendToChat(owner.chatId, text)
 }
 
+// True when operational alerts go to a chat other than the owner's. Callers
+// must then leave owner/partner conversation content (e.g. a preview of a
+// parked input line) out of the alert text.
 export function alertIsRedirected(): boolean {
   return normalizeChatId(ALERT_CHAT_ID) !== null
 }
