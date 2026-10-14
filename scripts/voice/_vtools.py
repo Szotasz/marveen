@@ -26,6 +26,7 @@ hardcoded -- so each agent speaks/listens on its own bot.
 import math
 import os
 import re
+import shutil
 import sys
 import json
 import socket
@@ -109,14 +110,50 @@ def _decode_audio(path):
     (measured 2026-09-30, av 19.0.0 + faster-whisper 1.2.1). Handing
     transcribe() a numpy array skips faster-whisper's decoder entirely, so the
     PyAV version no longer matters. ffmpeg is already a hard dependency of the
-    voice installer (it encodes the outbound opus)."""
+    voice installer (it encodes the outbound opus).
+
+    Missing ffmpeg is NOT fatal here: the dashboard's PATH may lack it (e.g.
+    PATH=/usr/bin:/bin under launchd) while PyAV, on av < 19, decodes the file
+    fine on its own. So ffmpeg is looked up on PATH and in the usual Homebrew /
+    /usr/local locations; if it is nowhere, one line goes to stderr and the
+    path is returned unchanged, handing the decode back to faster-whisper. On
+    av < 19 that keeps transcribing; on av 19 it still fails loudly with the
+    TypeError, now preceded by a line that says why the fallback was taken.
+    The stderr line comes first on purpose: transcribeVoiceFile() logs only
+    the first 200 characters of stderr."""
+    ffmpeg = _find_ffmpeg()
+    if ffmpeg is None:
+        print(_FFMPEG_MISSING_MSG, file=sys.stderr, flush=True)
+        return path
     import numpy as np
-    pcm = subprocess.run(
-        ["ffmpeg", "-nostdin", "-loglevel", "error", "-i", path,
-         "-ac", "1", "-ar", str(WHISPER_SAMPLE_RATE), "-f", "s16le", "-"],
-        check=True, capture_output=True,
-    ).stdout
+    try:
+        pcm = subprocess.run(
+            [ffmpeg, "-nostdin", "-loglevel", "error", "-i", path,
+             "-ac", "1", "-ar", str(WHISPER_SAMPLE_RATE), "-f", "s16le", "-"],
+            check=True, capture_output=True,
+        ).stdout
+    except FileNotFoundError:
+        # Found a moment ago, gone (or not executable) now: same fallback.
+        print(_FFMPEG_MISSING_MSG, file=sys.stderr, flush=True)
+        return path
     return np.frombuffer(pcm, np.int16).astype(np.float32) / 32768.0
+
+
+_FFMPEG_MISSING_MSG = "ffmpeg not found on PATH, falling back to faster-whisper's own decoder"
+# Checked after PATH, in order: Apple Silicon Homebrew, Intel Homebrew / manual installs.
+_FFMPEG_FALLBACK_DIRS = ("/opt/homebrew/bin", "/usr/local/bin")
+
+
+def _find_ffmpeg():
+    """Absolute path of an executable ffmpeg (PATH first, then the fallback dirs), or None."""
+    found = shutil.which("ffmpeg")
+    if found:
+        return found
+    for d in _FFMPEG_FALLBACK_DIRS:
+        cand = os.path.join(d, "ffmpeg")
+        if os.path.isfile(cand) and os.access(cand, os.X_OK):
+            return cand
+    return None
 
 
 def _whisper(path, words=False):

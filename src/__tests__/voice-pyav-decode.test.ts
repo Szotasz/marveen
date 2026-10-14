@@ -71,6 +71,21 @@ describe('VOICEPYAV930: transcribe() never gets a file path', () => {
     expect(fn).toContain('"s16le"')
     expect(body).toMatch(/^WHISPER_SAMPLE_RATE = 16000$/m)
   })
+
+  // PR #1887 review point 1: a host whose PATH lacks ffmpeg transcribed fine on
+  // av < 19 (PyAV decodes on its own), so a missing ffmpeg must hand the path
+  // back with one stderr line, not die with FileNotFoundError. The behaviour is
+  // driven for real in test_vtools_decode.py; this pins the shape in CI.
+  it('falls back to the path, with one stderr line, when ffmpeg is missing', () => {
+    const fn = body.slice(body.indexOf('def _decode_audio('), body.indexOf('def _whisper('))
+    expect(body).toContain(
+      `_FFMPEG_MISSING_MSG = "ffmpeg not found on PATH, falling back to faster-whisper's own decoder"`,
+    )
+    expect(fn).toContain('shutil.which("ffmpeg")')
+    expect(fn).toMatch(/_FFMPEG_FALLBACK_DIRS = \("\/opt\/homebrew\/bin", "\/usr\/local\/bin"\)/)
+    expect(fn).toContain('except FileNotFoundError:')
+    expect((fn.match(/print\(_FFMPEG_MISSING_MSG, file=sys\.stderr, flush=True\)\n\s+return path\n/g) ?? []).length).toBe(2)
+  })
 })
 
 const SRC = readFileSync(INSTALLER, 'utf-8')

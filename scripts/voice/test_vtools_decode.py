@@ -70,7 +70,66 @@ def main():
     except subprocess.CalledProcessError:
         check("missing file raises", True)
 
+    check_missing_ffmpeg_fallback(ogg, tmp)
     shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _decode_with(ogg, path_env, fallback_dirs, find=None):
+    """Run _decode_audio with a given PATH / fallback dirs; return (result, stderr text)."""
+    import contextlib
+    import io
+    # getattr: run against a _vtools.py without the lookup, this must report FAIL, not crash.
+    saved = (os.environ.get("PATH"), getattr(vt, "_FFMPEG_FALLBACK_DIRS", None),
+             getattr(vt, "_find_ffmpeg", None))
+    err = io.StringIO()
+    try:
+        os.environ["PATH"] = path_env
+        vt._FFMPEG_FALLBACK_DIRS = fallback_dirs
+        if find is not None:
+            vt._find_ffmpeg = find
+        with contextlib.redirect_stderr(err):
+            result = vt._decode_audio(ogg)
+    finally:
+        os.environ["PATH"] = saved[0] or ""
+        vt._FFMPEG_FALLBACK_DIRS, vt._find_ffmpeg = saved[1], saved[2]
+    return result, err.getvalue()
+
+
+def check_missing_ffmpeg_fallback(ogg, tmp):
+    """Review point 1 on PR #1887: no ffmpeg must hand the path back (PyAV decodes
+    it on av < 19) with one diagnosable stderr line, not die with FileNotFoundError."""
+    import numpy as np
+    msg = "ffmpeg not found on PATH, falling back to faster-whisper's own decoder"
+    empty = os.path.join(tmp, "empty-bin")
+    os.mkdir(empty)
+
+    try:
+        result, err = _decode_with(ogg, empty, ())
+    except FileNotFoundError as e:
+        check("no ffmpeg anywhere: falls back instead of raising", False, repr(e))
+        return
+    check("no ffmpeg anywhere: returns the path unchanged", result == ogg, repr(result)[:80])
+    check("no ffmpeg anywhere: exactly one stderr line", err == msg + "\n", repr(err))
+
+    # Located in a fallback dir while PATH lacks it (dashboard PATH=/usr/bin:/bin).
+    alt = os.path.join(tmp, "brew-bin")
+    os.mkdir(alt)
+    os.symlink(shutil.which("ffmpeg"), os.path.join(alt, "ffmpeg"))
+    result, err = _decode_with(ogg, empty, (alt,))
+    check("ffmpeg only in a fallback dir: still decodes",
+          isinstance(result, np.ndarray) and abs(len(result) - 16000) < 800,
+          type(result).__name__)
+    check("ffmpeg only in a fallback dir: stderr stays quiet", err == "", repr(err))
+
+    # Resolved, then gone at exec time: the FileNotFoundError branch.
+    gone = os.path.join(tmp, "vanished", "ffmpeg")
+    try:
+        result, err = _decode_with(ogg, empty, (), find=lambda: gone)
+    except FileNotFoundError as e:
+        check("ffmpeg vanished before exec: falls back instead of raising", False, repr(e))
+        return
+    check("ffmpeg vanished before exec: returns the path", result == ogg, repr(result)[:80])
+    check("ffmpeg vanished before exec: one stderr line", err == msg + "\n", repr(err))
 
 
 if __name__ == "__main__":
