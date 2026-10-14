@@ -2,10 +2,11 @@ import { describe, it, expect } from 'vitest'
 import {
   countSubAgentAlert, shouldAutoclearStuckSubAgent, autoclearGuard, autoclearExcerpt, autoclearMessage,
   autoclearStuckSubAgent, autoclearDeferralIsReportable, AUTOCLEAR_ALLOWED_KEYS, AUTOCLEAR_EXCERPT_CHARS,
-  type AutoclearDeps, type AutoclearOutcome,
+  handleSubAgentStuckTick, SUBAGENT_OVERDUE_ALERT_MIN_INTERVAL_MS,
+  type AutoclearDeps, type AutoclearOutcome, type AutoclearArgs, type SubAgentStuckTickDeps, type SubAgentAlertSpell,
 } from '../web/channel-monitor.js'
 import { parseStuckSubAgentAutoclearAlerts, APP_TZ } from '../config.js'
-import { stuckInputSignature, parkedClearSequence } from '../pane-state.js'
+import { stuckInputSignature, parkedClearSequence, detectPaneState, paneTurnInFlight, type StuckInputState } from '../pane-state.js'
 
 // Q045 (owner decision 2026-10-14): a sub-agent sat seven days behind a parked
 // multi-row input while the overdue-guard re-alerted every 15 minutes. After N
@@ -20,6 +21,13 @@ const PARKED_OTHER = box('❯ valaki tovább gépelt')
 const IDLE = box('❯ ')
 const BUSY = ['✻ Working… (12s · esc to interrupt)', '', SEP, '❯ Szia', SEP, `${FOOTER} · esc to interrupt`].join('\n')
 const SIG = stuckInputSignature(PARKED)!
+// The #1943 review's pane: a live turn, an empty line, then a 10-row parked box
+// with the idle footer. The box pushes the spinner out of detectPaneState's
+// bottom window, so the pane reads 'typing' while the agent is working.
+const TALL_ROWS = ['❯ [Uzenet @lean-chief-tol]: egy hosszu, tobbsoros delegalt feladat', ...Array.from({ length: 9 }, (_, i) => `  ${i + 2}. sor a parkolt uzenetbol`)]
+const TALL_BUSY = ['✢ Combobulating… (1m 16s · ↓ 4.0k tokens · thinking some more)', '', SEP, ...TALL_ROWS, SEP, FOOTER].join('\n')
+const TALL_IDLE = ['● previous turn output', '', SEP, ...TALL_ROWS, SEP, FOOTER].join('\n')
+const TALL_SIG = stuckInputSignature(TALL_BUSY)!
 // Footerless, separator-framed selectors: these still read as a parked box.
 const DIALOG = [' Do you want to proceed?', SEP, ' ❯ 1. Yes', '   2. No', SEP, '', ' Esc to cancel'].join('\n')
 const MENU = ['   Manage MCP servers', SEP, '❯ claude.ai Canva', SEP, '   ↑/↓ to navigate · Enter to confirm · Esc to cancel'].join('\n')
@@ -50,11 +58,14 @@ describe('alert counting and the trigger', () => {
     expect(shouldAutoclearStuckSubAgent(99, 0)).toBe(false)
   })
 
-  it('reads the threshold from env strictly, defaulting to 3', () => {
-    expect(parseStuckSubAgentAutoclearAlerts(undefined)).toBe(3)
+  // OFF unless an install opts in (#1943 review): clearing a box cannot be
+  // undone, so neither an unset nor a malformed value may turn it on.
+  it('reads the threshold from env strictly, OFF by default and on any malformed value', () => {
+    expect(parseStuckSubAgentAutoclearAlerts(undefined)).toBe(0)
     expect(parseStuckSubAgentAutoclearAlerts('0')).toBe(0)
+    expect(parseStuckSubAgentAutoclearAlerts('3')).toBe(3)
     expect(parseStuckSubAgentAutoclearAlerts('5')).toBe(5)
-    for (const bad of ['', 'abc', '-1', '3x', '1.5', '101']) expect(parseStuckSubAgentAutoclearAlerts(bad)).toBe(3)
+    for (const bad of ['', 'abc', '-1', '3x', '1.5', '101']) expect(parseStuckSubAgentAutoclearAlerts(bad)).toBe(0)
   })
 })
 
@@ -84,6 +95,7 @@ describe('autoclearGuard', () => {
   it('only the incident-shaped deferrals are reported', () => {
     expect(autoclearDeferralIsReportable('deferred:not-parked')).toBe(false)
     expect(autoclearDeferralIsReportable('deferred:changed')).toBe(false)
+    expect(autoclearDeferralIsReportable('deferred:busy')).toBe(false)
     expect(autoclearDeferralIsReportable('deferred:attached')).toBe(true)
     expect(autoclearDeferralIsReportable('deferred:delivery-in-flight')).toBe(true)
   })
@@ -270,5 +282,96 @@ describe('never-submit invariant', () => {
       for (const k of h.keys) expect(AUTOCLEAR_ALLOWED_KEYS.has(k)).toBe(true)
       expect(h.keys).not.toContain('Enter')
     }
+  })
+})
+
+// #1943 review, point 1: a working pane behind a tall parked box must never be
+// cleared, and Ctrl+C must never reach it.
+describe('a live turn behind a tall parked box', () => {
+  it('the fixture reproduces the review: typing to detectPaneState, a parked signature, but a turn in flight', () => {
+    expect(detectPaneState(TALL_BUSY)).toBe('typing')
+    expect(TALL_SIG).not.toBeNull()
+    expect(paneTurnInFlight(TALL_BUSY)).toBe(true)
+    // Control: the same box with no spinner above it is a real park.
+    expect(paneTurnInFlight(TALL_IDLE)).toBe(false)
+    expect(stuckInputSignature(TALL_IDLE)).toBe(TALL_SIG)
+  })
+
+  it('autoclearGuard defers it as busy', () => {
+    expect(autoclearGuard(TALL_BUSY, TALL_SIG, false)).toBe('busy')
+    expect(autoclearGuard(TALL_IDLE, TALL_SIG, false)).toBe('ok')
+  })
+
+  it('no archive, no key, no coordinator message while the turn runs', async () => {
+    const h = harness({ pane: TALL_BUSY })
+    const o = await autoclearStuckSubAgent({ ...ARGS, spellSig: TALL_SIG }, h.deps)
+    expect(o.result).toBe('deferred:busy')
+    expect(h.log).toEqual([])
+    expect(h.getPane()).toBe(TALL_BUSY)
+  })
+
+  it('a turn that starts after the clear keys failed gets no Ctrl+C', async () => {
+    const h = harness({ clearKeysEmpties: false, afterClearKeys: TALL_BUSY })
+    const o = await autoclearStuckSubAgent(ARGS, h.deps)
+    expect(h.keys).toEqual([])
+    expect(o.result).toBe('left-fragment')
+  })
+})
+
+// #1943 review, point 3: the wiring around the pure helpers -- threshold, spell
+// counting, spell reset -- driven through the same entry the monitor loop calls.
+describe('handleSubAgentStuckTick (the monitor loop\'s bookkeeping)', () => {
+  const T0 = Date.UTC(2026, 9, 14, 8, 0, 0)
+  const parked = (sig: string): StuckInputState => ({ parkedSig: sig, firstSeenAt: T0, lastRecoverAt: T0, attempts: 4 })
+  const gone: StuckInputState = { parkedSig: null, firstSeenAt: null, lastRecoverAt: null, attempts: 0 }
+
+  function tick(threshold: number) {
+    let clock = T0
+    const alerts: string[] = []
+    const clears: AutoclearArgs[] = []
+    const deps: SubAgentStuckTickDeps = {
+      states: new Map(), alertedAt: new Map(), spells: new Map<string, SubAgentAlertSpell>(),
+      threshold, maxAttempts: 4,
+      now: () => clock,
+      sendAlert: (t) => { alerts.push(t) },
+      autoclear: async (a) => { clears.push(a); return { result: 'cleared', via: 'clear-keys', archivePath: '/a', excerpt: null, messageId: 1 } },
+    }
+    // One alert window per call: the overdue-guard rate limit is 15 minutes.
+    const run = async (state: StuckInputState) => {
+      clock += SUBAGENT_OVERDUE_ALERT_MIN_INTERVAL_MS
+      await handleSubAgentStuckTick('agent-x', 'x', state, deps)
+    }
+    return { deps, run, alerts, clears }
+  }
+
+  it('clears on the threshold-th alert, not before', async () => {
+    const t = tick(3)
+    await t.run(parked('s'))
+    await t.run(parked('s'))
+    expect(t.alerts).toHaveLength(2)
+    expect(t.clears).toEqual([])
+    await t.run(parked('s'))
+    expect(t.clears).toHaveLength(1)
+    expect(t.clears[0].alerts).toBe(3)
+  })
+
+  it('never clears with the threshold off (the default)', async () => {
+    const t = tick(0)
+    for (let i = 0; i < 10; i++) await t.run(parked('s'))
+    expect(t.alerts).toHaveLength(10)
+    expect(t.clears).toEqual([])
+  })
+
+  it('the end of a park resets the count: a later park of the same text starts at 1', async () => {
+    const t = tick(3)
+    await t.run(parked('s'))
+    await t.run(parked('s'))
+    await t.run(gone)
+    expect(t.deps.states.size + t.deps.alertedAt.size + t.deps.spells.size).toBe(0)
+    await t.run(parked('s'))
+    await t.run(parked('s'))
+    expect(t.clears).toEqual([])
+    await t.run(parked('s'))
+    expect(t.clears).toHaveLength(1)
   })
 })

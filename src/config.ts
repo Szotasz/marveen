@@ -339,13 +339,16 @@ export const TASK_STALL_TIMEOUT_MS = (() => {
 })()
 
 // How many sub-agent overdue-guard alerts (one per ~15 min, same parked text)
-// may fire before the monitor archives and clears the stuck input box. 0 turns
-// the auto-clear off and restores the alert-only behaviour. A malformed value
-// falls back to the default rather than to "off": the failure this closes is a
-// box parked for days with nobody acting on the alerts.
+// may fire before the monitor archives and clears the stuck input box.
+//
+// OFF by default (0), and a malformed value is off too: emptying a box cannot
+// be undone from the pane, and the live TUI's reaction to the clear keys on a
+// multi-row box -- and to Ctrl+C on a leftover -- has not been measured on
+// every install. An install opts in by setting a positive count; 3 is the
+// value the feature was designed and reviewed around (~35 minutes into a park).
 export function parseStuckSubAgentAutoclearAlerts(raw: string | undefined): number {
   const parsed = parseInt(raw ?? '', 10)
-  return Number.isFinite(parsed) && parsed >= 0 && parsed <= 100 && String(parsed) === (raw ?? '').trim() ? parsed : 3
+  return Number.isFinite(parsed) && parsed >= 0 && parsed <= 100 && String(parsed) === (raw ?? '').trim() ? parsed : 0
 }
 export const STUCK_SUBAGENT_AUTOCLEAR_AFTER_ALERTS = parseStuckSubAgentAutoclearAlerts(env['STUCK_SUBAGENT_AUTOCLEAR_AFTER_ALERTS'])
 
