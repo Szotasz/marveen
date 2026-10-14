@@ -12,7 +12,7 @@ import { logger } from '../logger.js'
 import { mainRelaunchSucceeded } from '../auto-restart.js'
 import { MAIN_AGENT_ID, SERVICE_ID, BOT_NAME, CHANNEL_PROVIDER, PROJECT_ROOT, RESPAWN_ENABLED, APP_TZ, STUCK_SUBAGENT_AUTOCLEAR_AFTER_ALERTS } from '../config.js'
 import { launchableDistributionDefaultSync } from './default-model-guard.js'
-import { agentDir, listAgentNames, readAgentChannelProvider } from './agent-config.js'
+import { agentDir, listAgentNames, readAgentChannelProvider, readAgentRemoteHost } from './agent-config.js'
 import { listKanbanCards, createAgentMessage } from '../db.js'
 import {
   agentHasChannel,
@@ -1770,6 +1770,50 @@ export async function handleSubAgentStuckTick(
   await maybeAlertStuckSubAgent(session, agentName, next, deps)
 }
 
+/** Where the sub-agent overdue-guard looks. Injected so the scope is held by
+ *  tests (Q046). */
+export interface SubAgentStuckScopeDeps {
+  names: () => string[]
+  running: (name: string) => boolean
+  remoteHost: (name: string) => string | null
+  session: (name: string) => string
+}
+
+const defaultSubAgentStuckScopeDeps: SubAgentStuckScopeDeps = {
+  // Lazy: a module-load read of these bindings throws under the factory
+  // mocks of agent-config / agent-process that some suites use.
+  names: () => listAgentNames(),
+  running: (name) => isAgentRunning(name),
+  remoteHost: (name) => readAgentRemoteHost(name),
+  session: (name) => agentSessionName(name),
+}
+
+/** Every running, local sub-agent session -- channel or not (Q046, owner
+ *  decision 2026-10-14). The guard used to ride the channel targets list, so
+ *  only sub-agents with their own channel (gembaecho) were covered; a parked
+ *  input wedges a channel-less agent just the same, since its work arrives by
+ *  tmux injection. Remote-host agents stay out: there is no local tmux pane to
+ *  archive and clear (stuck-input-watcher gives them a bare Enter). */
+export function localSubAgentStuckTargets(deps: SubAgentStuckScopeDeps = defaultSubAgentStuckScopeDeps): { session: string; agentName: string }[] {
+  const out: { session: string; agentName: string }[] = []
+  for (const name of deps.names()) {
+    if (name === MAIN_AGENT_ID) continue
+    if (!deps.running(name)) continue
+    if (deps.remoteHost(name) != null) continue
+    out.push({ session: deps.session(name), agentName: name })
+  }
+  return out
+}
+
+/** Drop the per-session guard state of every session no longer in scope (the
+ *  agent stopped or moved remote), so a later park starts a fresh alert window
+ *  and auto-clear count instead of inheriting a stale spell. */
+export function pruneSubAgentStuckState(live: ReadonlySet<string>, deps: Pick<SubAgentStuckTickDeps, 'states' | 'alertedAt' | 'spells'> = defaultSubAgentStuckTickDeps): void {
+  for (const m of [deps.states, deps.alertedAt, deps.spells] as Map<string, unknown>[]) {
+    for (const session of [...m.keys()]) if (!live.has(session)) m.delete(session)
+  }
+}
+
 async function maybeAlertStuckSubAgent(session: string, agentName: string | null, state: StuckInputState, deps: SubAgentStuckTickDeps): Promise<void> {
   const last = deps.alertedAt.get(session) ?? 0
   const now = deps.now()
@@ -2781,15 +2825,16 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
     // STILL parked, the TUI is hard-wedged -- escalate to a respawn-pane (the
     // automated form of the manual `systemctl restart channels`). Rate-limited.
     maybeRestartWedgedMainChannel(mainStuckInput)
-    // Same recovery for every running sub-agent session: a parked channel
-    // message wedges a sub-agent ("nem válaszol") exactly as it would the main
-    // session. Per-session state lives in agentStuckInput; drop it once the
-    // spell ends so the map never grows unbounded.
-    for (const t of targets) {
-      if (t.isMarveen) continue
+    // Same recovery for every running local sub-agent session, channel or not
+    // (Q046): a parked input wedges a sub-agent ("nem válaszol") exactly as it
+    // would the main session. Per-session state lives in agentStuckInput; drop
+    // it once the spell ends, or the agent leaves scope, so the map never grows.
+    const stuckScope = localSubAgentStuckTargets()
+    pruneSubAgentStuckState(new Set(stuckScope.map((t) => t.session)))
+    for (const t of stuckScope) {
       const prev = agentStuckInput.get(t.session) ?? { parkedSig: null, firstSeenAt: null, lastRecoverAt: null, attempts: 0 }
       const next = await recoverStuckInputForSession(t.session, prev, MAIN_STUCK_THRESHOLDS, true)
-      await handleSubAgentStuckTick(t.session, t.agentName ?? null, next)
+      await handleSubAgentStuckTick(t.session, t.agentName, next)
     }
 
     for (const t of targets) {
