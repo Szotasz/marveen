@@ -554,6 +554,18 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: false,
   },
+  // Opt-in (#1705 maintainer decision, 2026-10-14): read per spawn by
+  // agent-scaffold.ts (ytDlpIngestOnly / bashEgressDeny). Off == the generated
+  // settings are byte-identical to an install without the switch.
+  {
+    key: 'YT_DLP_INGEST_ONLY',
+    type: 'boolean',
+    default: '0',
+    description: 'yt-dlp csak a scripts/yt-ingest/yt-ingest.sh izolált lépésén át. Bekapcsolva minden ügynök (a fő ügynök is, ha saját config-könyvtára van) deny-szabályt kap a közvetlen yt-dlp hívásra (yt-dlp, <út>/yt-dlp, python -m yt_dlp), a ytIngest-es profil (researcher) pedig engedélyt a yt-ingest.sh és a yt-read.sh futtatására. Figyelem: a yt-dlp-t közvetlenül hívó skillek ezután megtagadást kapnak. Önmagában nem elég: a yt-ingest.sh csak akkor tölt le, ha a store/egress-allowlist.json binary_egress["yt-dlp"] kulcsa engedi (Linuxon bwrap is kell). Az ügynökök következő indításakor lép életbe.',
+    module: 'agents',
+    secret: false,
+    requiresRestart: true,
+  },
   {
     key: 'DEFAULT_AGENT_MODEL',
     type: 'string',

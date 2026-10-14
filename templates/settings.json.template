@@ -14,10 +14,7 @@
       "Bash(ncat *)",
       "Bash(*/ncat *)",
       "Bash(telnet *)",
-      "Bash(*/telnet *)",
-      "Bash(yt-dlp *)",
-      "Bash(*/yt-dlp *)",
-      "Bash(* -m yt_dlp*)"
+      "Bash(*/telnet *)"
     ]
   },
   "hooks": {

@@ -45,6 +45,10 @@ export interface ProfileTemplate {
   // a live agent stays a deliberate, separate act.
   destructiveGate?: boolean
   thinChiefHandoff?: boolean
+  // Gets the scripts/yt-ingest allow lines (YT_INGEST_ALLOW) -- but only while
+  // the install-wide YT_DLP_INGEST_ONLY switch is on, so with the switch off
+  // this flag changes nothing in the written settings.
+  ytIngest?: boolean
 }
 
 /** Absent or non-true == off. Keeps the default in ONE place. */
@@ -54,6 +58,10 @@ export function profileWantsDestructiveGate(p: ProfileTemplate | null | undefine
 
 export function profileWantsThinChiefHandoff(p: ProfileTemplate | null | undefined): boolean {
   return p?.thinChiefHandoff === true
+}
+
+export function profileWantsYtIngest(p: ProfileTemplate | null | undefined): boolean {
+  return p?.ytIngest === true
 }
 
 export const PROFILES_DIR = join(PROJECT_ROOT, 'templates', 'profiles')
