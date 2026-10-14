@@ -4,7 +4,7 @@ import {
   autoclearStuckSubAgent, autoclearDeferralIsReportable, AUTOCLEAR_ALLOWED_KEYS, AUTOCLEAR_EXCERPT_CHARS,
   type AutoclearDeps, type AutoclearOutcome,
 } from '../web/channel-monitor.js'
-import { parseStuckSubAgentAutoclearAlerts } from '../config.js'
+import { parseStuckSubAgentAutoclearAlerts, APP_TZ } from '../config.js'
 import { stuckInputSignature, parkedClearSequence } from '../pane-state.js'
 
 // Q045 (owner decision 2026-10-14): a sub-agent sat seven days behind a parked
@@ -160,6 +160,20 @@ function harness(opts: {
   return { deps, log, keys, notes, getPane: () => pane }
 }
 
+// TZ-agnostic oracle for the archive stamp: the wall clock of the harness's fixed
+// instant in the install zone (APP_TZ), derived independently of the code's
+// sv-SE formatting. A hardcoded '110000' only held on a Europe/Budapest host;
+// the CI runner is UTC (same pattern as reauth-quiet-hours.test.ts).
+function expectedStamp(ms: number): string {
+  const p = Object.fromEntries(
+    new Intl.DateTimeFormat('en-GB', {
+      timeZone: APP_TZ, year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23',
+    }).formatToParts(new Date(ms)).map((x) => [x.type, x.value]),
+  )
+  return `${p.year}${p.month}${p.day}-${p.hour}${p.minute}${p.second}`
+}
+
 const ARGS = { session: 'agent-gembaecho', agentName: 'gembaecho', spellSig: SIG, firstSeenAt: 0, alerts: 3, notifyDeferred: true }
 
 describe('autoclearStuckSubAgent', () => {
@@ -170,7 +184,7 @@ describe('autoclearStuckSubAgent', () => {
     expect(o.via).toBe('clear-keys')
     expect(h.log).toEqual(['archive', 'clearKeys', 'notify'])
     expect(h.keys).toEqual([])
-    expect(o.archivePath).toMatch(/^\/store\/stuck-input-cleared\/20261014-110000-gembaecho\.txt$/)
+    expect(o.archivePath).toBe(`/store/stuck-input-cleared/${expectedStamp(Date.UTC(2026, 9, 14, 9, 0, 0))}-gembaecho.txt`)
     expect(o.messageId).toBe(42)
     expect(h.notes[0]).toContain('eredmeny: cleared')
     expect(h.notes[0]).toContain(o.archivePath!)
