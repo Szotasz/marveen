@@ -83,7 +83,8 @@ describe('notifyChannel: the owner chat is resolved at send time, and a refusal 
     vi.setSystemTime(Date.UTC(2026, 8, 25, 10, 30, 0))
     await notifyChannel('masodik')
     expect(sink).toHaveBeenCalledTimes(1)
-    expect(mockWarn).toHaveBeenCalledTimes(2)
+    // the skip line itself; a skipped send also leaves an 'alert delivery' line (68cb6715), not counted here
+    expect(mockWarn.mock.calls.filter((c) => String(c[0]).startsWith('Channel ertesites kihagyva'))).toHaveLength(2)
     vi.setSystemTime(Date.UTC(2026, 8, 25, 11, 0, 1))
     await notifyChannel('harmadik')
     expect(sink).toHaveBeenCalledTimes(2)
