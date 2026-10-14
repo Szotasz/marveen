@@ -817,12 +817,17 @@ function stdinFeeds(orig, masked, herestrings, env) {
   return feeds
 }
 // The command word of the sub-command that contains offset `at` (basename, prefixes skipped).
-function commandWordAt(masked, at) {
+// The command word is read as bash runs it -- unquoted, with this command's variables expanded --
+// exactly as in the span loop below (#1931 round 3): read from the masked words, `"bash" <<EOF`,
+// `b"ash" <<EOF` and `S=bash; $S <<EOF` fed their body to a shell unjudged.
+function commandWordAt(orig, masked, at, env = {}) {
   for (const [a, b] of spans(masked)) {
     if (at < a || at > b) continue
     const mw = words(masked.slice(a, b))
     const i = commandIndex(mw)
-    return i < mw.length ? mw[i].split('/').pop() : null
+    if (i >= mw.length) return null
+    const uw = shellWords(expand(orig.slice(a, b), env))
+    return (uw[commandIndex(uw)] ?? mw[i]).split('/').pop()
   }
   return null
 }
@@ -997,7 +1002,7 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
   // the fed lines in the same command, exactly like `for u in URL`: the values join the loop values.
   const reads = collectReads(orig, masked)
   for (const f of reads.length ? feeds : []) {
-    const c = commandWordAt(masked, f.at)
+    const c = commandWordAt(orig, masked, f.at, env)
     if (c !== 'done' && c !== 'read') continue
     const text = f.expands ? expand(f.text, env) : f.text
     for (const r of reads) for (const [v, vals] of Object.entries(readValues(text, r))) loops[v] = [...(loops[v] ?? []), ...vals]
@@ -1017,8 +1022,11 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
   // same NET_PRIMITIVE test, the same URL_RE scan, the same local / private / vendor exceptions. A
   // shell interpreter's body is a command line of its own, so it gets the whole analysis.
   for (const f of feeds) {
-    const cmd = commandWordAt(masked, f.at)
-    const shell = cmd !== null && SHELL.test(cmd)
+    const cmd = commandWordAt(orig, masked, f.at, env)
+    // A command word computed at run time ($S, $(...)) may be a shell OR an interpreter: its body is
+    // judged as both.
+    const computed = cmd !== null && cmd.includes('$')
+    const shell = cmd !== null && (SHELL.test(cmd) || computed)
     if (!shell && !(cmd !== null && INTERPRETER.test(cmd.toLowerCase()))) continue
     const plain = f.expands ? expand(f.text, env) : f.text
     const variants = f.expands ? loopVariants(f.text, env, loops) : []
@@ -1027,7 +1035,7 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
         if (depth >= MAX_DEPTH) return NESTING_LIMIT
         const r = classify(text, depth + 1, vendorHosts, vendorDomains)
         if (r.deny) return { ...r, reason: `heredoc-${r.reason}` }
-        continue
+        if (!computed) continue
       }
       if (!(PYTHON.test(cmd.toLowerCase()) ? pythonUsesNetwork(text) : usesNetwork(cmd, text))) continue
       const found = [...text.matchAll(URL_RE)].map((m) => m[0]).filter(isExternal).map(hostOf)
