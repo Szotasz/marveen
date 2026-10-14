@@ -69,7 +69,7 @@ describe('unrouted methods on the single-card path answer 405, not a bare 404', 
   })
 
   // 2dd78397: GET IS routed on this path now (one card, archived ones included; the detailed
-  // tests are in kanban-single-card-get.test.ts). Here only its effect on this file's rule: GET
+  // tests are in kanban-archived-writes.test.ts). Here only its effect on this file's rule: GET
   // is no longer an unrouted method, so it answers 200, and the Allow header names it.
   it('GET is routed now: it answers the card, not 405', async () => {
     const { ctx, out } = fakeCtx(`/api/kanban/${CARD}`, 'GET')
