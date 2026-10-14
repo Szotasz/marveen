@@ -338,6 +338,17 @@ export const TASK_STALL_TIMEOUT_MS = (() => {
   return Number.isFinite(parsed) && parsed >= 60_000 ? parsed : 2_700_000
 })()
 
+// How many sub-agent overdue-guard alerts (one per ~15 min, same parked text)
+// may fire before the monitor archives and clears the stuck input box. 0 turns
+// the auto-clear off and restores the alert-only behaviour. A malformed value
+// falls back to the default rather than to "off": the failure this closes is a
+// box parked for days with nobody acting on the alerts.
+export function parseStuckSubAgentAutoclearAlerts(raw: string | undefined): number {
+  const parsed = parseInt(raw ?? '', 10)
+  return Number.isFinite(parsed) && parsed >= 0 && parsed <= 100 && String(parsed) === (raw ?? '').trim() ? parsed : 3
+}
+export const STUCK_SUBAGENT_AUTOCLEAR_AFTER_ALERTS = parseStuckSubAgentAutoclearAlerts(env['STUCK_SUBAGENT_AUTOCLEAR_AFTER_ALERTS'])
+
 // Kanban card aging visual thresholds (hours since last update) and colours.
 // Override per-install via .env; defaults match the design spec (24/72/168h).
 export const KANBAN_AGING_WARN_H = parseInt(env['KANBAN_AGING_WARN_H'] ?? '24', 10)
