@@ -62,6 +62,7 @@ const EXPECTED: Record<string, string[]> = {
     'memory-frontmatter-bash-gate.py',
   ],
   Stop: ['marveen-commands.py', 'telegram-reply-guard.py', 'telegram_progress_clear.py', 'slack_progress_clear.py'],
+  StopFailure: ['ledger-turn-failure.py'],
   SessionStart: ['ledger-replay.py', 'taskstate-replay.py', 'clear-replay.py', 'marveen-commands.py'],
   SessionEnd: ['clear-capture.py'],
 }

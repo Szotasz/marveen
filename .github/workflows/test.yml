@@ -61,6 +61,9 @@ jobs:
       # DASHAUDITZAJ915: the dash audit's classifier is a gate instrument too --
       # same rot argument as the line above.
       - run: python3 scripts/__tests__/dash-audit-scan.test.py
+      # A turn that died on an API error while a channel message waited must leave
+      # a trace (StopFailure hook); hermetic, isolated ledger DB.
+      - run: python3 scripts/__tests__/ledger-turn-failure.test.py
       # ORSICTX912: the sentinel preCheck's SKIP is "no model turn" -- an
       # error path that said SKIP would silence the community sentinel for
       # good, so its fail-direction cases are gate instruments (hermetic:
