@@ -411,6 +411,11 @@ restore_stash_before_exit() {
     if git stash pop; then
       STASHED_AUTO=0
     else
+      # Carried into store/update.last-result by the EXIT trap, so the stranded
+      # stash is visible on /api/updates/status too, not only in the detached
+      # log nobody reads (a 2026-10-05 conflict silently shelved a feature this
+      # way; scripts/infra_selfcheck.py is the belt to this suspender).
+      RESULT_MSG="auto-stash pop konfliktus: a lokalis valtozasok a stash-ben maradtak (git stash list)"
       if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
         echo -e "${RED}WARNING:${NC} Auto-stash pop had conflicts; the stash remains in 'git stash list'."
       else
@@ -1608,6 +1613,10 @@ if [ "$STASHED_AUTO" = "1" ]; then
       fi
     fi
   else
+    # On this (success) path the detached finalizer owns the result file, so
+    # RESULT_MSG may never land there -- scripts/infra_selfcheck.py's stranded-
+    # stash check is the layer that reliably surfaces this case.
+    RESULT_MSG="auto-stash pop konfliktus: a lokalis valtozasok a stash-ben maradtak (git stash list)"
     if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
       echo -e "${RED}WARNING:${NC} Auto-stash pop had conflicts; the stash remains in 'git stash list'."
     else
