@@ -56,6 +56,8 @@ function deps(over: Partial<ReminderSenderDeps> = {}) {
     alertMain: (t) => { calls.alerts.push(t) },
     copyToAgent: (a, t) => { calls.copies.push([a, t]) },
     digestMain: (t) => { calls.digests.push(t) },
+    // the install's zone (APP_TZ in production); pinned so the suite does not depend on the host's zone
+    tz: 'Europe/Budapest',
     ...over,
   }
   return { d, calls, setNow: (ms: number) => { now = ms } }
@@ -246,7 +248,7 @@ describe('the daily check (d), 07:00 Budapest to the main agent', () => {
     expect(dailyDigest(a.d, THU_0459)).toBe(false)
     expect(dailyDigest(a.d, THU_0500)).toBe(true)
     expect(a.calls.digests).toHaveLength(1)
-    expect(a.calls.digests[0]).toContain('[EMLÉKEZTETŐK, NAPI ELLENŐRZÉS] 2026-10-08 (Budapest)')
+    expect(a.calls.digests[0]).toContain('[EMLÉKEZTETŐK, NAPI ELLENŐRZÉS] 2026-10-08 (Europe/Budapest)')
     expect(a.calls.digests[0]).toContain('MA KIMEGY (1)')
     expect(a.calls.digests[0]).toContain('09:00')
     expect(a.calls.digests[0]).toContain('Ma 9-kor: szállító')
@@ -296,17 +298,17 @@ describe('the daily check (d), 07:00 Budapest to the main agent', () => {
     expect(dailyDigest(d, at('2026-10-21T04:59:00Z'))).toBe(false)
     expect(calls.digests).toHaveLength(0)
     expect(dailyDigest(d, at('2026-10-21T05:00:00Z'))).toBe(true)
-    expect(calls.digests[0]).toContain('[EMLÉKEZTETŐK, NAPI ELLENŐRZÉS] 2026-10-21 (Budapest)')
+    expect(calls.digests[0]).toContain('[EMLÉKEZTETŐK, NAPI ELLENŐRZÉS] 2026-10-21 (Europe/Budapest)')
     expect(calls.digests[0]).toContain('Okt 21 9-kor')
     // the DST change day (CEST -> CET at 01:00Z): 05:00Z is 06:00 CET (no), 06:00Z is 07:00 CET
     expect(dailyDigest(d, at('2026-10-25T05:00:00Z'))).toBe(false)
     expect(dailyDigest(d, at('2026-10-25T06:00:00Z'))).toBe(true)
-    expect(calls.digests[1]).toContain('2026-10-25 (Budapest)')
+    expect(calls.digests[1]).toContain('2026-10-25 (Europe/Budapest)')
     // winter: 23:30Z is 00:30 on 11-04, 05:30Z is 06:30 CET, 06:00Z is 07:00 CET
     expect(dailyDigest(d, at('2026-11-03T23:30:00Z'))).toBe(false)
     expect(dailyDigest(d, at('2026-11-04T05:30:00Z'))).toBe(false)
     expect(dailyDigest(d, at('2026-11-04T06:00:00Z'))).toBe(true)
-    expect(calls.digests[2]).toContain('2026-11-04 (Budapest)')
+    expect(calls.digests[2]).toContain('2026-11-04 (Europe/Budapest)')
     expect(calls.digests).toHaveLength(3)
   })
 
@@ -319,7 +321,35 @@ describe('the daily check (d), 07:00 Budapest to the main agent', () => {
     setNow(Date.parse('2026-10-21T05:00:00Z'))
     expect((await reminderTick(d)).digest).toBe(true)
     expect(calls.digests).toHaveLength(1)
-    expect(calls.digests[0]).toContain('2026-10-21 (Budapest)')
+    expect(calls.digests[0]).toContain('2026-10-21 (Europe/Budapest)')
+  })
+
+  it('the zone comes from configuration: on a New York install the gate is 07:00 New York and the day is the New York day', async () => {
+    const at = (iso: string) => Date.parse(iso)
+    reminder({ due_at: sec(at('2026-10-08T15:00:00Z')), send_after: sec(at('2026-10-08T15:00:00Z')), text: 'NY 11-kor' })
+    const { d, calls } = deps({ tz: 'America/New_York' })
+    // 05:00Z is 07:00 in Budapest but 01:00 EDT on 10-08: no check, the day is not claimed
+    expect(dailyDigest(d, at('2026-10-08T05:00:00Z'))).toBe(false)
+    // 03:30Z is still 10-07 23:30 in New York (past 07:00 of the New York 10-07): that day is checked, and it is empty
+    expect(dailyDigest(d, at('2026-10-08T03:30:00Z'))).toBe(false)
+    // 10:59Z is 06:59 EDT on 10-08: not yet
+    expect(dailyDigest(d, at('2026-10-08T10:59:00Z'))).toBe(false)
+    expect(calls.digests).toHaveLength(0)
+    // 11:00Z is 07:00 EDT
+    expect(dailyDigest(d, at('2026-10-08T11:00:00Z'))).toBe(true)
+    expect(calls.digests[0]).toContain('[EMLÉKEZTETŐK, NAPI ELLENŐRZÉS] 2026-10-08 (America/New_York)')
+    // the send moment in the list is New York time (15:00Z = 11:00 EDT), not Budapest (17:00)
+    expect(calls.digests[0]).toContain('11:00')
+    expect(calls.digests[0]).not.toContain('17:00')
+    expect(calls.digests[0]).toContain('NY 11-kor')
+  })
+
+  it('without a zone in the deps the sender takes the install zone (APP_TZ)', async () => {
+    const { APP_TZ } = await import('../config.js')
+    reminder({ due_at: sec(Date.parse('2026-10-08T15:00:00Z')), send_after: sec(Date.parse('2026-10-08T15:00:00Z')) })
+    const { d, calls } = deps({ tz: undefined })
+    expect(dailyDigest(d, Date.parse('2026-10-08T18:00:00Z'))).toBe(true)
+    expect(calls.digests[0]).toContain(`(${APP_TZ})`)
   })
 
   it('the tick runs the daily check after the sends', async () => {

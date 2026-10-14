@@ -3,11 +3,12 @@ import {
   createReminder, getReminder, listReminders, updatePendingReminder, setReminderStatusByHand,
   type Reminder,
 } from '../../db.js'
+import { APP_TZ } from '../../config.js'
 import { logger } from '../../logger.js'
 import { nextAllowedMs } from '../../reminder-window.js'
 import { isKnownAgent } from '../agent-config.js'
 import { readBody, json } from '../http-helpers.js'
-import { loadReminderWindows } from '../reminder-sender.js'
+import { checkReminderRecipient, loadReminderWindows } from '../reminder-sender.js'
 import type { RouteContext } from './types.js'
 
 // fb79dc1f: the reminders API. POST creates one, GET lists / reads, PATCH edits
@@ -104,6 +105,9 @@ export async function tryHandleReminders(ctx: RouteContext): Promise<boolean> {
     }
     const sourceRef = optString(body.source_ref, 128)
     if (sourceRef === null) { json(res, { error: 'source_ref must be a string (at most 128 characters)' }, 400); return true }
+    // the bot writes only to a chat its owner allowed (and only when it has a Telegram token at all)
+    const rc = checkReminderRecipient(agentRaw.trim(), recipient)
+    if (!rc.ok) { json(res, { error: rc.error }, rc.status); return true }
     const allowWeekend = body.allow_weekend === true
     const sa = computeSendAfter(recipient, dueAt, allowWeekend)
     if (!sa.ok) {
@@ -138,6 +142,8 @@ export async function tryHandleReminders(ctx: RouteContext): Promise<boolean> {
     if (dueFrom === null || dueTo === null) { json(res, { error: 'due_from / due_to must be epoch seconds or an ISO time with its zone' }, 400); return true }
     const limitRaw = url.searchParams.get('limit')
     const limit = limitRaw ? Math.min(parseInt(limitRaw, 10) || 100, 500) : 100
+    // the dashboard page shows the times in the install's zone (APP_TZ, from SCHEDULER_TZ)
+    res.setHeader('X-App-Timezone', APP_TZ)
     json(res, listReminders({ status, agent_id: agent, recipient_chat_id: recipient, due_from: dueFrom, due_to: dueTo, limit }))
     return true
   }
@@ -209,6 +215,10 @@ export async function tryHandleReminders(ctx: RouteContext): Promise<boolean> {
     if (body.recipient_chat_id !== undefined) {
       const c = normChatId(body.recipient_chat_id)
       if (!c) { json(res, { error: 'recipient_chat_id must be a chat id (digits)' }, 400); return true }
+      if (c !== current.recipient_chat_id) {
+        const rc = checkReminderRecipient(current.agent_id, c)
+        if (!rc.ok) { json(res, { error: rc.error }, rc.status); return true }
+      }
       fields.recipient_chat_id = c
     }
     if (fields.due_at !== undefined || fields.allow_weekend !== undefined || fields.recipient_chat_id !== undefined) {

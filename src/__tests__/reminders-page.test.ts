@@ -67,6 +67,25 @@ describe('every reminders translation key exists in both languages', () => {
   })
 })
 
+describe('the page shows times in the install zone, in the UI language', () => {
+  const render = extractFunction(app, '_renderReminders')
+  const load = extractFunction(app, 'loadRemindersPage')
+
+  it('takes the zone from the list response (X-App-Timezone), not a hardcoded Budapest', () => {
+    expect(load).toContain("res.headers.get('X-App-Timezone')")
+    expect(render).toContain('timeZone: _remindersTz')
+    expect(render).not.toContain('Europe/Budapest')
+  })
+
+  it('the locale follows the UI language', () => {
+    expect(render).toContain("_lang === 'en' ? 'en-GB' : 'hu-HU'")
+  })
+
+  it('CONTROL: the same extraction sees the section rule call in the render', () => {
+    expect(render).toContain('reminderSection(r, nowSec)')
+  })
+})
+
 describe('the section rule', () => {
   const reminderSection = new Function('REMINDERS_DAYS', `${extractFunction(app, 'reminderSection')}; return reminderSection`)(7) as
     (r: Record<string, unknown>, nowSec: number) => string | null

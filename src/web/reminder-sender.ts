@@ -13,7 +13,7 @@
 // agent. The reminder's agent gets a copy in its inbox either way.
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
+import { APP_TZ, MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
 import { channelStateDir, readChannelToken } from '../channel-provider.js'
 import {
   claimReminder, claimReminderDigest, createAgentMessage, deferReminder, dueReminders, failStaleReminderClaims,
@@ -32,8 +32,9 @@ export const REMINDER_CLAIM_STALE_SEC = 10 * 60
 export const REMINDER_BATCH = 20
 /** The broken-config alert repeats at most this often. */
 export const REMINDER_CONFIG_ALERT_EVERY_MS = 60 * 60_000
-/** fb79dc1f (d): the daily check goes to the main agent from this Budapest hour on (07:00 Europe/Budapest: 05:00Z in summer
- *  time, 06:00Z in winter); the hour and the day are both read in Europe/Budapest, like the quiet hours and the weekend rule. */
+/** fb79dc1f (d): the daily check goes to the main agent from this local hour on, in the install's zone (APP_TZ, from
+ *  SCHEDULER_TZ): on a Budapest install 07:00 is 05:00Z in summer time and 06:00Z in winter. The hour and the day are
+ *  both read in that zone. */
 export const REMINDER_DIGEST_LOCAL_HOUR = 7
 
 export type WindowsLoad = { ok: true; config: ReminderWindowsConfig } | { ok: false; error: string }
@@ -65,13 +66,19 @@ export interface ReminderSenderDeps {
   copyToAgent: (agentId: string, text: string) => void
   /** The daily check's message to the main agent (its inbox); not an alert. */
   digestMain: (text: string) => void
+  /** The zone of the daily check and of the times in the messages; the install's APP_TZ when absent. */
+  tz?: string
 }
 
 export interface ReminderTickResult { sent: number; failed: number; deferred: number; stale: number; configError: boolean; digest: boolean }
 
-const BP = 'Europe/Budapest'
-function bpTime(sec: number): string {
-  return new Date(sec * 1000).toLocaleString('hu-HU', { timeZone: BP })
+function zoneOf(deps: ReminderSenderDeps): string {
+  return deps.tz || APP_TZ
+}
+
+/** A time in the messages (they are Hungarian text, so the hu-HU form), in the install's zone. */
+function localTime(sec: number, tz: string): string {
+  return new Date(sec * 1000).toLocaleString('hu-HU', { timeZone: tz })
 }
 
 function short(r: Reminder): string {
@@ -93,10 +100,11 @@ export async function reminderTick(deps: ReminderSenderDeps): Promise<ReminderTi
   const out: ReminderTickResult = { sent: 0, failed: 0, deferred: 0, stale: 0, configError: false, digest: false }
   const nowMs = deps.nowMs()
   const nowSec = Math.floor(nowMs / 1000)
+  const tz = zoneOf(deps)
 
   for (const r of failStaleReminderClaims(nowSec - REMINDER_CLAIM_STALE_SEC)) {
     out.stale++
-    const msg = `[EMLÉKEZTETŐ BIZONYTALAN] ${short(r)}: a küldése félbeszakadt (a foglalás ${bpTime(r.claimed_at ?? nowSec)} óta nem zárult le), `
+    const msg = `[EMLÉKEZTETŐ BIZONYTALAN] ${short(r)}: a küldése félbeszakadt (a foglalás ${localTime(r.claimed_at ?? nowSec, tz)} óta nem zárult le), `
       + `ezért 'failed' lett, és NEM megy ki újra magától: lehet, hogy kiment. Címzett chat ${r.recipient_chat_id}, ügynök ${r.agent_id}. `
       + `Ha biztosan nem ment ki: PATCH /api/reminders/${r.id} {"status":"pending"}.`
     deps.alertMain(msg)
@@ -129,7 +137,7 @@ export async function reminderTick(deps: ReminderSenderDeps): Promise<ReminderTi
       markReminderSent(r.id, Math.floor(deps.nowMs() / 1000), messageId)
       out.sent++
       logger.info({ id: r.id, agent_id: r.agent_id, messageId }, 'reminder-sender: sent')
-      deps.copyToAgent(r.agent_id, `[EMLÉKEZTETŐ KIMENT] ${short(r)}: ${bpTime(nowSec)}-kor a ${r.recipient_chat_id} chatbe `
+      deps.copyToAgent(r.agent_id, `[EMLÉKEZTETŐ KIMENT] ${short(r)}: ${localTime(nowSec, tz)}-kor a ${r.recipient_chat_id} chatbe `
         + `(Telegram message_id ${messageId ?? 'nincs'}; kérte: ${r.requester}). A szöveg:\n${r.text}`)
     } catch (err) {
       const e = errorText(err)
@@ -137,7 +145,7 @@ export async function reminderTick(deps: ReminderSenderDeps): Promise<ReminderTi
       out.failed++
       logger.warn({ id: r.id, agent_id: r.agent_id, err: e }, 'reminder-sender: send failed')
       const msg = `[EMLÉKEZTETŐ HIBA] ${short(r)} nem ment ki: ${e}. Címzett chat ${r.recipient_chat_id}, ügynök ${r.agent_id}, `
-        + `esedékes ${bpTime(r.due_at)}; kérte: ${r.requester}. A sor 'failed'; újra: PATCH /api/reminders/${r.id} {"status":"pending"}.`
+        + `esedékes ${localTime(r.due_at, tz)}; kérte: ${r.requester}. A sor 'failed'; újra: PATCH /api/reminders/${r.id} {"status":"pending"}.`
       deps.alertMain(msg)
       if (r.agent_id !== MAIN_AGENT_ID) deps.copyToAgent(r.agent_id, msg)
     }
@@ -147,36 +155,38 @@ export async function reminderTick(deps: ReminderSenderDeps): Promise<ReminderTi
 }
 
 /**
- * fb79dc1f (d): once a day from REMINDER_DIGEST_LOCAL_HOUR o'clock Budapest, the main agent gets the reminders that go TODAY (Budapest
- * day, by send moment) and the ones that did NOT go (due yesterday and failed or cancelled, or still waiting past
- * their moment). The day is claimed in the DB first, so a restart does not send it twice; an empty day sends nothing.
- * The gate is the Budapest hour of that Budapest day: a UTC-hour gate with the Budapest day let the check out at Budapest
- * midnight (22:00Z in summer, 23:00Z in winter) and claimed the day before the morning.
+ * fb79dc1f (d): once a day from REMINDER_DIGEST_LOCAL_HOUR o'clock in the install's zone, the main agent gets the
+ * reminders that go TODAY (that zone's day, by send moment) and the ones that did NOT go (due yesterday and failed or
+ * cancelled, or still waiting past their moment). The day is claimed in the DB first, so a restart does not send it
+ * twice; an empty day sends nothing. The gate is the local hour of that local day: a UTC-hour gate with the local day
+ * let the check out at local midnight (on a Budapest install 22:00Z in summer, 23:00Z in winter) and claimed the day
+ * before the morning.
  */
 export function dailyDigest(deps: ReminderSenderDeps, nowMs: number): boolean {
-  const p = localParts(nowMs, BP)
+  const tz = zoneOf(deps)
+  const p = localParts(nowMs, tz)
   if (p.h < REMINDER_DIGEST_LOCAL_HOUR) return false
   const day = `${p.y}-${String(p.mo).padStart(2, '0')}-${String(p.d).padStart(2, '0')}`
-  const startMs = zonedToUtcMs(p.y, p.mo, p.d, 0, 0, BP)
+  const startMs = zonedToUtcMs(p.y, p.mo, p.d, 0, 0, tz)
   const next = new Date(Date.UTC(p.y, p.mo - 1, p.d + 1))
   const prev = new Date(Date.UTC(p.y, p.mo - 1, p.d - 1))
-  const endMs = zonedToUtcMs(next.getUTCFullYear(), next.getUTCMonth() + 1, next.getUTCDate(), 0, 0, BP)
-  const yStartMs = zonedToUtcMs(prev.getUTCFullYear(), prev.getUTCMonth() + 1, prev.getUTCDate(), 0, 0, BP)
+  const endMs = zonedToUtcMs(next.getUTCFullYear(), next.getUTCMonth() + 1, next.getUTCDate(), 0, 0, tz)
+  const yStartMs = zonedToUtcMs(prev.getUTCFullYear(), prev.getUTCMonth() + 1, prev.getUTCDate(), 0, 0, tz)
   if (!claimReminderDigest(day)) return false
   const { today, missed } = reminderDigestRows(Math.floor(startMs / 1000), Math.floor(endMs / 1000), Math.floor(yStartMs / 1000), Math.floor(startMs / 1000))
   if (today.length === 0 && missed.length === 0) {
     logger.info({ day }, 'reminder-sender: daily check, nothing to report')
     return false
   }
-  const hhmm = (sec: number) => new Date(sec * 1000).toLocaleTimeString('hu-HU', { timeZone: BP, hour: '2-digit', minute: '2-digit' })
+  const hhmm = (sec: number) => new Date(sec * 1000).toLocaleTimeString('hu-HU', { timeZone: tz, hour: '2-digit', minute: '2-digit' })
   const cut = (t: string) => (t.length > 100 ? `${t.slice(0, 100)}...` : t).replace(/\s+/g, ' ')
-  const lines = [`[EMLÉKEZTETŐK, NAPI ELLENŐRZÉS] ${day} (Budapest)`]
+  const lines = [`[EMLÉKEZTETŐK, NAPI ELLENŐRZÉS] ${day} (${tz})`]
   lines.push(`MA KIMEGY (${today.length}):`)
   for (const r of today) lines.push(`- ${hhmm(r.send_after)} -> chat ${r.recipient_chat_id} (${r.agent_id}): ${cut(r.text)}`)
   lines.push(`NEM MENT KI (${missed.length}):`)
   for (const r of missed) {
-    const why = r.status === 'failed' ? `hiba: ${r.error ?? '?'}` : r.status === 'cancelled' ? 'visszavonva' : `vár, ${bpTime(r.send_after)} óta esedékes`
-    lines.push(`- ${short(r)} (${r.status}) esedékes ${bpTime(r.due_at)}, chat ${r.recipient_chat_id} (${r.agent_id}): ${why}`)
+    const why = r.status === 'failed' ? `hiba: ${r.error ?? '?'}` : r.status === 'cancelled' ? 'visszavonva' : `vár, ${localTime(r.send_after, tz)} óta esedékes`
+    lines.push(`- ${short(r)} (${r.status}) esedékes ${localTime(r.due_at, tz)}, chat ${r.recipient_chat_id} (${r.agent_id}): ${why}`)
   }
   lines.push('Részletek: GET /api/reminders?status=failed (vagy ?recipient=<chat id>).')
   deps.digestMain(lines.join('\n'))
@@ -189,6 +199,39 @@ export function reminderBotToken(agentId: string): string | null {
     return readChannelToken('telegram', join(PROJECT_ROOT, '.env')) || readChannelToken('telegram', join(channelStateDir('telegram'), '.env'))
   }
   return readChannelToken('telegram', join(channelStateDir('telegram', agentDir(agentId)), '.env')) || parseTelegramToken(agentId)
+}
+
+export type RecipientCheck = { ok: true } | { ok: false; status: number; error: string }
+
+/** The Telegram channel dir of the agent (its access.json and .env): the main agent's install one, a sub-agent's own. */
+function reminderChannelDir(agentId: string): string {
+  return agentId === MAIN_AGENT_ID ? channelStateDir('telegram') : channelStateDir('telegram', agentDir(agentId))
+}
+
+/**
+ * May this agent's bot send a reminder to this chat? Checked at create time and when a PATCH changes the recipient.
+ * (1) The agent must have a Telegram bot token: the sender is Telegram-only, and without a token the reminder would
+ * only fail at its moment. (2) The chat must be on that bot's own allowlist, the access.json the channel plugin gates
+ * its inbound on: a user id in allowFrom, or a group the owner added under groups. Anything else is refused, so an
+ * API caller cannot make a bot write to whoever once started it, or to a group it was merely added to. An access.json
+ * that is missing or does not parse refuses too (fail-closed).
+ */
+export function checkReminderRecipient(agentId: string, chatId: string): RecipientCheck {
+  if (!reminderBotToken(agentId)) {
+    return { ok: false, status: 400, error: `the ${agentId} agent has no Telegram bot token: reminders go out on Telegram only` }
+  }
+  let access: Record<string, unknown>
+  try {
+    const parsed = JSON.parse(readFileSync(join(reminderChannelDir(agentId), 'access.json'), 'utf-8')) as unknown
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not an object')
+    access = parsed as Record<string, unknown>
+  } catch {
+    return { ok: false, status: 403, error: `recipient_chat_id is not on the ${agentId} agent's allowlist (its access.json is missing or unreadable)` }
+  }
+  const allowFrom = Array.isArray(access.allowFrom) ? access.allowFrom.map(v => String(v)) : []
+  const groups = access.groups && typeof access.groups === 'object' && !Array.isArray(access.groups) ? Object.keys(access.groups) : []
+  if (allowFrom.includes(chatId) || groups.includes(chatId)) return { ok: true }
+  return { ok: false, status: 403, error: `recipient_chat_id is not on the ${agentId} agent's allowlist (access.json allowFrom or groups)` }
 }
 
 function postSystemMessage(to: string, text: string): void {

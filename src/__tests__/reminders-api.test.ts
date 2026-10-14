@@ -5,16 +5,20 @@
  * the reminder (503) instead of storing a moment that ignores the owner's rule.
  */
 import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest'
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import { initDatabase, getReminder, listReminders, getDb } from '../db.js'
 import type { RouteContext } from '../web/routes/types.js'
 
+// A fixed temp install root, known before the mocks are built: the bots' tokens and allowlists of the test live
+// here, never the host's real install .env or ~/.claude/channels.
+const H = vi.hoisted(() => ({ root: `${process.env['TMPDIR'] || '/tmp'}/rem-api-root-${process.pid}-${Date.now()}` }))
+
 vi.mock('../config.js', async () => {
   const actual = await vi.importActual<typeof import('../config.js')>('../config.js')
-  return { ...actual, MAIN_AGENT_ID: 'chief-test', ALLOWED_CHAT_ID: 'test-chat' }
+  return { ...actual, MAIN_AGENT_ID: 'chief-test', ALLOWED_CHAT_ID: 'test-chat', PROJECT_ROOT: H.root }
 })
 
 vi.mock('../logger.js', () => ({
@@ -41,7 +45,9 @@ function makeCtx(path: string, method: string, body?: unknown, query: Record<str
   for (const [k, v] of Object.entries(query)) url.searchParams.set(k, v)
   let status = 200
   let responseBody = ''
+  const headers: Record<string, string> = {}
   const res = {
+    setHeader: (k: string, v: string) => { headers[k] = v },
     writeHead: (code: number) => { status = code },
     end: (b?: string) => { responseBody = b || '' },
   }
@@ -49,19 +55,34 @@ function makeCtx(path: string, method: string, body?: unknown, query: Record<str
     ? Readable.from([]) as any
     : Readable.from([Buffer.from(typeof body === 'string' ? body : JSON.stringify(body))]) as any
   const ctx: RouteContext = { req, res: res as any, path, method, url, auth: { kind: 'token', agent: caller } }
-  return { ctx, getStatus: () => status, getBody: () => (responseBody ? JSON.parse(responseBody) : null) }
+  return { ctx, getStatus: () => status, getBody: () => (responseBody ? JSON.parse(responseBody) : null), headers }
 }
 
 async function call(path: string, method: string, body?: unknown, query?: Record<string, string>, caller?: string) {
   const h = makeCtx(path, method, body, query, caller)
   const handled = await tryHandleReminders(h.ctx)
-  return { handled, status: h.getStatus(), body: h.getBody() }
+  return { handled, status: h.getStatus(), body: h.getBody(), headers: h.headers }
 }
 
 let dir = ''
 const NOW = Date.parse('2026-10-07T15:00:00Z') // Wednesday 17:00 Budapest
 
+const GROUP_CHAT = '-1005550001'
+const STRANGER_CHAT = '7000000099'
+
+/** An agent's Telegram channel dir: a bot token, and the allowlist the plugin gates inbound on. */
+function channel(dirPath: string, token: string | null, access: unknown) {
+  mkdirSync(dirPath, { recursive: true })
+  if (token) writeFileSync(join(dirPath, '.env'), `TELEGRAM_BOT_TOKEN=${token}\n`)
+  if (access !== undefined) writeFileSync(join(dirPath, 'access.json'), typeof access === 'string' ? access : JSON.stringify(access))
+}
+const areaDir = () => join(H.root, 'agents', 'area-agent', '.claude', 'channels', 'telegram')
+
 beforeEach(() => {
+  rmSync(H.root, { recursive: true, force: true })
+  process.env['TELEGRAM_STATE_DIR'] = join(H.root, 'tg-state')
+  channel(join(H.root, 'tg-state'), '111:main-token', { dmPolicy: 'allowlist', allowFrom: [OWNER_CHAT, STAFF_CHAT], groups: {} })
+  channel(areaDir(), '222:area-token', { dmPolicy: 'allowlist', allowFrom: [OWNER_CHAT, STAFF_CHAT], groups: { [GROUP_CHAT]: { requireMention: true } } })
   initDatabase(':memory:')
   dir = mkdtempSync(join(tmpdir(), 'rem-api-'))
   writeFileSync(join(dir, 'w.json'), JSON.stringify(WINDOWS))
@@ -73,6 +94,8 @@ beforeEach(() => {
 afterEach(() => {
   vi.useRealTimers()
   delete process.env['REMINDER_WINDOWS_FILE_PATH']
+  delete process.env['TELEGRAM_STATE_DIR']
+  rmSync(H.root, { recursive: true, force: true })
   rmSync(dir, { recursive: true, force: true })
 })
 
@@ -226,6 +249,69 @@ describe('PATCH /api/reminders/:id', () => {
     expect((await call(`/api/reminders/${a.body.id}`, 'PATCH', { status: 'cancelled', text: 'x' })).status).toBe(400)
     expect((await call(`/api/reminders/${a.body.id}`, 'PATCH', { status: 'sent' })).status).toBe(400)
     expect((await call(`/api/reminders/${a.body.id}`, 'PATCH', {})).status).toBe(400)
+  })
+})
+
+describe("the recipient must be on the agent's own allowlist", () => {
+  it('POST: a chat not in allowFrom is refused (403) and nothing is stored', async () => {
+    const r = await call('/api/reminders', 'POST', base({ recipient_chat_id: STRANGER_CHAT }))
+    expect(r.status).toBe(403)
+    expect(r.body.error).toContain('allowlist')
+    expect(listReminders({})).toHaveLength(0)
+  })
+
+  it("POST: the allowlist is the reminder agent's own, not another bot's", async () => {
+    // the area agent's owner added the group; the main agent's did not
+    expect((await call('/api/reminders', 'POST', base({ recipient_chat_id: GROUP_CHAT, agent_id: 'area-agent' }))).status).toBe(201)
+    expect((await call('/api/reminders', 'POST', base({ recipient_chat_id: GROUP_CHAT, agent_id: 'chief-test' }))).status).toBe(403)
+    // a group the bot may be in, but that is not on its list
+    expect((await call('/api/reminders', 'POST', base({ recipient_chat_id: '-1005550099', agent_id: 'area-agent' }))).status).toBe(403)
+    expect(listReminders({})).toHaveLength(1)
+  })
+
+  it('POST: a missing or broken access.json refuses (fail-closed)', async () => {
+    rmSync(join(areaDir(), 'access.json'))
+    expect((await call('/api/reminders', 'POST', base({ agent_id: 'area-agent' }))).status).toBe(403)
+    writeFileSync(join(areaDir(), 'access.json'), '{not json')
+    expect((await call('/api/reminders', 'POST', base({ agent_id: 'area-agent' }))).status).toBe(403)
+    expect(listReminders({})).toHaveLength(0)
+  })
+
+  it('POST: an agent without a Telegram bot token is refused at create time (400), not at its moment', async () => {
+    rmSync(join(areaDir(), '.env'))
+    const r = await call('/api/reminders', 'POST', base({ agent_id: 'area-agent' }))
+    expect(r.status).toBe(400)
+    expect(r.body.error).toContain('no Telegram bot token')
+    expect(listReminders({})).toHaveLength(0)
+  })
+
+  it('PATCH: changing the recipient to a chat not on the list is refused and the row keeps its recipient', async () => {
+    const a = await call('/api/reminders', 'POST', base())
+    expect(a.status).toBe(201)
+    const p = await call(`/api/reminders/${a.body.id}`, 'PATCH', { recipient_chat_id: STRANGER_CHAT })
+    expect(p.status).toBe(403)
+    expect(getReminder(a.body.id)?.recipient_chat_id).toBe(OWNER_CHAT)
+    // CONTROL: a chat on the list goes through the same path
+    const ok = await call(`/api/reminders/${a.body.id}`, 'PATCH', { recipient_chat_id: STAFF_CHAT })
+    expect(ok.status).toBe(200)
+    expect(ok.body.recipient_chat_id).toBe(STAFF_CHAT)
+  })
+
+  it('PATCH: an edit that keeps the recipient is not re-checked; moving to a chat removed from the list is', async () => {
+    const a = await call('/api/reminders', 'POST', base())
+    const b = await call('/api/reminders', 'POST', base({ recipient_chat_id: STAFF_CHAT }))
+    channel(join(H.root, 'tg-state'), '111:main-token', { dmPolicy: 'allowlist', allowFrom: [STAFF_CHAT] })
+    expect((await call(`/api/reminders/${a.body.id}`, 'PATCH', { text: 'Uj szoveg' })).status).toBe(200)
+    expect((await call(`/api/reminders/${b.body.id}`, 'PATCH', { recipient_chat_id: OWNER_CHAT })).status).toBe(403)
+  })
+})
+
+describe('the list says the install zone', () => {
+  it('GET /api/reminders carries X-App-Timezone = APP_TZ (the page renders times in it)', async () => {
+    const { APP_TZ } = await import('../config.js')
+    const r = await call('/api/reminders', 'GET')
+    expect(r.status).toBe(200)
+    expect(r.headers['X-App-Timezone']).toBe(APP_TZ)
   })
 })
 

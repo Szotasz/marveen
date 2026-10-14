@@ -14144,6 +14144,7 @@ async function _resolveApproval(id, decision) {
 
 const REMINDERS_DAYS = 7
 let _remindersAll = []
+let _remindersTz
 const _remindersState = { recipient: '', agent: '' }
 
 document.getElementById('refreshRemindersBtn').addEventListener('click', loadRemindersPage)
@@ -14163,6 +14164,8 @@ async function loadRemindersPage() {
     const from = Math.floor(Date.now() / 1000) - REMINDERS_DAYS * 86400
     const res = await fetch(`/api/reminders?limit=500&due_from=${from}`)
     if (!res.ok) throw new Error('HTTP ' + res.status)
+    // the install's zone (SCHEDULER_TZ); the viewer's own zone when the server does not say
+    _remindersTz = res.headers.get('X-App-Timezone') || undefined
     _remindersAll = await res.json()
     _renderReminders()
   } catch (err) {
@@ -14196,7 +14199,7 @@ function _renderReminders() {
   sections.upcoming.sort((a, b) => a.send_after - b.send_after)
   sections.sent.sort((a, b) => b.sent_at - a.sent_at)
   sections.missed.sort((a, b) => b.due_at - a.due_at)
-  const fmt = (sec) => sec ? new Date(sec * 1000).toLocaleString('hu-HU', { timeZone: 'Europe/Budapest', dateStyle: 'short', timeStyle: 'short' }) : '-'
+  const fmt = (sec) => sec ? new Date(sec * 1000).toLocaleString(_lang === 'en' ? 'en-GB' : 'hu-HU', { timeZone: _remindersTz, dateStyle: 'short', timeStyle: 'short' }) : '-'
   const section = (key, timeOf) => {
     const list = sections[key]
     const groups = new Map()
