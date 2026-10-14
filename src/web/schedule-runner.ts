@@ -63,6 +63,8 @@ import {
   SCHEDULED_TASK_INLINE_MAX_CHARS,
   SCHEDULED_TASK_BODY_WARN_CHARS,
   MAX_SCHEDULED_TASK_PROMPT_LEN,
+  isOnceRunSuccess,
+  disableOnceTask,
   type ScheduledTask,
 } from './scheduled-tasks-io.js'
 import { listAgentNames, readFileOr, readAgentRemoteHost, agentDir } from './agent-config.js'
@@ -387,6 +389,38 @@ export function checkTaskDeliveryIntegrity(
   if (verdict === 'tail-lost' && !final) return null
   if (verdict == null && final) return dirs.some((d) => dirExists(d)) ? 'not-arrived' : 'unverifiable'
   return verdict
+}
+
+// Card 7d2b49b4: a once task is switched off after its first SUCCESSFUL run (isOnceRunSuccess: the run
+// closed 'done' and the transcript shows the prompt intact). The config is read fresh here, at the end of
+// the run, so a once flag removed in the meantime is respected. Bookkeeping only, like the delivery verdict
+// above it: never alters the sweep's decision, never throws into the sweep.
+// `remote` is true when the run went to a remote agent (entry.host set): no delivery verdict can exist
+// there, so a closed 'done' is the bar (see isOnceRunSuccess). The early return for a non-once task also
+// keeps the "not verified intact" warning off ordinary tasks with a damaged delivery.
+// Exported for the behaviour tests (schedule-once.test.ts); the sweep is its only production caller.
+export function settleOnceAfterRun(
+  taskName: string,
+  decision: string,
+  deliveryVerdict: DeliveryVerdict | undefined,
+  now: number,
+  remote = false,
+): void {
+  try {
+    if (!readScheduledTask(taskName)?.once) return
+    if (!isOnceRunSuccess(decision, deliveryVerdict, { remote })) {
+      logger.warn(
+        { task: taskName, decision, delivery: deliveryVerdict ?? 'unchecked' },
+        'Once-task ran but its delivery was not verified intact -- left enabled, so it stays visible',
+      )
+      return
+    }
+    if (disableOnceTask(taskName, now)) {
+      logger.info({ task: taskName, delivery: remote ? 'remote-unchecked' : deliveryVerdict }, 'Once-task switched off after its first successful run')
+    }
+  } catch (err) {
+    logger.warn({ err, task: taskName }, 'Once-task could not be switched off -- left enabled')
+  }
 }
 
 export function decideTaskTimeout(
@@ -974,6 +1008,11 @@ export function readScheduledDeliveryDefault(
   return parsed
 }
 
+/** NOTIFY_TELEGRAM_FALLBACK=0: Telegram is never a fallback (read fresh, a read error keeps the default). */
+export function readTelegramFallbackOff(): boolean {
+  try { return String(getEffectiveSettingValue('NOTIFY_TELEGRAM_FALLBACK') ?? '').trim() === '0' } catch { return false }
+}
+
 /** The provider's name in the nominative, for "a <name> hibat". */
 export function channelDisplayName(provider: ChannelProviderType): string {
   switch (provider) {
@@ -1001,8 +1040,17 @@ export function deliveryFallbackClause(
   provider: ChannelProviderType,
   isMain: boolean,
   ownerTelegramChat: string | null = normalizeChatId(configuredOwnerChatFor('telegram')),
+  telegramFallbackOff: boolean = readTelegramFallbackOff(),
 ): string {
-  if (provider === 'telegram' || !isMain || !ownerTelegramChat) return ''
+  if (provider === 'telegram' || !isMain) return ''
+  // NOTIFY_TELEGRAM_FALLBACK=0 (SLACKATALLAS1006, owner 2026-10-10: "Telegram
+  // SOHA"): the owner left Telegram, so the fallback is notify.sh, which posts
+  // with the dashboard's own Slack token and is not subject to the plugin's
+  // outbound gate that refuses a cold DM.
+  if (telegramFallbackOff) {
+    return `Ha ${channelDeliveryName(provider)} nem tudod elkuldeni (a reply tool hianyzik VAGY hibat ad, pl. "Outbound gate"), kuldd a ${join(PROJECT_ROOT, 'scripts', 'notify.sh')} "<szoveg>" paranccsal (a gazda Slack-celjara megy); Telegramra NE kuldd. Ha a notify.sh sem "(Slack)"-ot ir, a hibat ird a napi naploba, mas csatornat ne probalj. `
+  }
+  if (!ownerTelegramChat) return ''
   return `Ha ${channelDeliveryName(provider)} nem tudod elkuldeni (a reply tool hianyzik VAGY hibat ad, pl. "Outbound gate"), kuldd Telegramon (chat_id: ${ownerTelegramChat}, reply tool), es az uzenet ELSO sora nevezze meg a ${channelDisplayName(provider)} hibat (a hibauzenettel); mas cimzettet ne tippelj. `
 }
 
@@ -2563,6 +2611,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
         // still be silently swallowing prompts.
         if (decision === 'done') {
           lostRedeliveryCounts.delete(`${entry.taskName}@${entry.agentName}`)
+          settleOnceAfterRun(entry.taskName, decision, entry.deliveryVerdict, now, entry.host != null)
         }
         // The one moment the system knows how the run ended. Before 2026-08-26
         // this branch only deleted the map entry, so the knowledge died here and

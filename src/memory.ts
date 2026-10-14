@@ -10,6 +10,7 @@ import {
 } from './db.js'
 import { runAgent } from './agent.js'
 import { logger } from './logger.js'
+import { MAIN_AGENT_ID } from './config.js'
 import { wrapUntrusted, UNTRUSTED_PREAMBLE } from './prompt-safety.js'
 
 // Dedicated cwd for the daily-digest sub-agent. We can't reuse PROJECT_ROOT
@@ -100,7 +101,7 @@ export async function saveConversationTurn(
   // Episodic memories come from daily digest and session checkpoints
   if (SEMANTIC_PATTERN.test(userMsg)) {
     const content = `Felhasznalo: ${userMsg.slice(0, 500)}\nAsszisztens: ${assistantMsg.slice(0, 500)}`
-    saveMemory(chatId, content, 'semantic')
+    saveMemory(chatId, content, 'semantic', undefined, MAIN_AGENT_ID)
     logger.debug({ chatId }, 'Szemantikus emlek mentve')
   }
   // Non-semantic turns are NOT saved individually -- they go into daily digest
@@ -155,7 +156,7 @@ ${memoryLines}`
 
     const digest = text.trim()
     const today = new Date().toLocaleDateString('hu-HU')
-    saveMemory(chatId, `[Napi naplo ${today}] ${digest}`, 'episodic')
+    saveMemory(chatId, `[Napi naplo ${today}] ${digest}`, 'episodic', undefined, MAIN_AGENT_ID)
     logger.info({ chatId, digestCwd, digestConfigDir }, `Napi naplo mentve: ${today}`)
     return digest
   } catch (err) {

@@ -4,6 +4,7 @@ import { homedir, platform, tmpdir } from 'node:os'
 import { execSync } from 'node:child_process'
 import { logger } from '../../logger.js'
 import { beginRestart, endRestart } from '../restart-lock.js'
+import { restartOptsFromBody } from '../restart-wake.js'
 import { isModelProfileId, MODEL_PROFILE_IDS } from '../../model-profiles.js'
 import { MAIN_AGENT_ID, currentBotName, PROJECT_ROOT } from '../../config.js'
 import { createAgentMessage, listPendingChannelRequests, updateChannelRequestStatus, getDb, claimPendingForAgent, markMessageFailed, countNewerMessagesFromSameSender,
@@ -169,6 +170,7 @@ import { listScheduledTasks } from '../scheduled-tasks-io.js'
 import { readAgentTranscript, isTranscriptAllowed } from '../agent-transcript.js'
 import { configDirFor } from '../main-transcript-root.js'
 import { kindAllowed, FORBIDDEN_KIND } from './auth.js'
+import { isValidModelId, InvalidModelIdError } from '../../model-id.js'
 
 // Which credential kinds may read a transcript. NAMED principals only: a
 // logged-in human, or a key enrolled to that human's own device. Deliberately
@@ -715,7 +717,8 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
         { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
         { id: 'claude-fable-5', label: 'Fable 5' },
         { id: 'claude-opus-4-8[1m]', label: 'Opus 4.8 (1M kontextus)' },
-        { id: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5 (leggyorsabb)' },
+        { id: 'claude-haiku-5-5', label: 'Haiku 5.5 (legújabb Haiku, leggyorsabb)', minCli: CLAUDE_MODEL_MIN_CLI['claude-haiku-5-5'].minCli },
+        { id: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5' },
       ],
       deepseek: hasDeepseek
         ? [
@@ -1047,6 +1050,10 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const profileId = (rawProfile || 'default').trim() || 'default'
 
     if (!name) { json(res, { error: 'Name is required' }, 400); return true }
+    // SECSZIVEK1007: the model id is checked BEFORE anything is created;
+    // writeAgentModel used to be the first check, after scaffoldAgentDir, and a
+    // malformed id left a half-created agent dir behind.
+    if (!isValidModelId(model)) { json(res, { error: new InvalidModelIdError(model).message }, 400); return true }
     // PICKERCLIKAPU923: the API is a writer too, not only the picker. A fresh
     // probe, so a CLI upgraded a minute ago is not refused on a stale cache.
     const cliGate = await refuseIfCliCannotLaunch(model)
@@ -2333,9 +2340,12 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       return true
     }
     // Optional { "fresh": true } body -> no `--continue` (see /start note).
-    let restartFresh = false
-    try { restartFresh = JSON.parse((await readBody(req)).toString() || '{}').fresh === true } catch {}
-    const result = await restartAgentProcess(name, { fresh: restartFresh })
+    // RESTARTWAKE927: a --continue restart wakes the agent once it is up; a
+    // caller that wakes the agent itself can send { "wake": false } (no caller
+    // in this repository does today). See restart-wake.ts.
+    let restartBody = ''
+    try { restartBody = (await readBody(req)).toString() } catch {}
+    const result = await restartAgentProcess(name, restartOptsFromBody(restartBody))
     if (result.ok) { json(res, { ok: true }); return true }
     json(res, { error: result.error }, 400)
     return true

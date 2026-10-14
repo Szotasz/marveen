@@ -115,6 +115,7 @@ assert_eq "delivers the REAL answer text (not a generic error)" "yes" "$(body_ha
 assert_eq "clears the placeholder (deleteMessage)" "1" "$(count deleteMessage)"
 assert_eq "no generic-error edit" "0" "$(count editMessageText)"
 assert_eq "state file removed after handling" "no" "$(pend_exists "$PA")"
+assert_eq "a plain placeholder's delivery carries no topic" "no" "$(body_has message_thread_id)"
 
 # ---------------------------------------------------------------------------
 # (b) Agent UP + NO hung reply, before the backstop -> DO NOT touch it
@@ -257,6 +258,21 @@ assert_eq "no text delivery (nothing attributable)" "0" "$(count sendMessage)"
 assert_eq "internal text NOT leaked" "no" "$(body_has "BELSO_NAPLO")"
 assert_eq "falls back to generic error" "1" "$(count editMessageText)"
 assert_eq "state file removed" "no" "$(pend_exists "$PJ")"
+
+echo ""
+echo "(k) Placeholder posted in a topic (TELEGRAM_TOPICS_ENABLED): delivered into it"
+PK="$(make_case wk hung 100)"
+python3 - "$PK/SID.json" <<'PY'
+import json, os, sys
+st = os.stat(sys.argv[1])
+pend = json.load(open(sys.argv[1]))
+pend[0]["message_thread_id"] = 12
+json.dump(pend, open(sys.argv[1], "w"))
+os.utime(sys.argv[1], (st.st_atime, st.st_mtime))
+PY
+run_wd 1 1
+assert_eq "one real-answer sendMessage" "1" "$(count sendMessage)"
+assert_eq "the delivery names the topic" "yes" "$(body_has '"message_thread_id": 12')"
 
 # ---------------------------------------------------------------------------
 echo ""

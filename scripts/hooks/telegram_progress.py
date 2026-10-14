@@ -113,10 +113,14 @@ def main():
     for b in blocks:
         cid = re.search(r'\bchat_id="([^"]+)"', b)
         mid = re.search(r'\bmessage_id="([^"]+)"', b)
+        # A topic message (TELEGRAM_TOPICS_ENABLED): the placeholder goes into
+        # the same topic, and the entry remembers it for the fallback senders.
+        tid = re.search(r'\bmessage_thread_id="(\d+)"', b)
         if not cid:
             continue
         chat_id = cid.group(1)
         src_mid = mid.group(1) if mid else None
+        thread = {"message_thread_id": int(tid.group(1))} if tid else {}
         # Dedup: skip if a sibling invocation already handled this inbound msg.
         if not claim(os.path.join(sd, "progress"), sid, src_mid):
             log(sd, f"[submit] dedup skip src={src_mid}")
@@ -125,10 +129,10 @@ def main():
         # placeholder already signals receipt, so a reaction would be redundant
         # (per user preference 2026-06-07).
         try:
-            resp = api(tok, "sendMessage", {"chat_id": chat_id, "text": PLACEHOLDER, "disable_notification": True})
+            resp = api(tok, "sendMessage", {"chat_id": chat_id, "text": PLACEHOLDER, "disable_notification": True, **thread})
             pmid = resp.get("result", {}).get("message_id")
             if pmid:
-                entry = {"chat_id": chat_id, "message_id": pmid, "src_mid": src_mid}
+                entry = {"chat_id": chat_id, "message_id": pmid, "src_mid": src_mid, **thread}
                 if transcript_path:
                     entry["transcript_path"] = transcript_path
                 pending.append(entry)

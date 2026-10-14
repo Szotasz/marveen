@@ -123,7 +123,11 @@ describe('sendPromptToSession delivery-lock wiring', () => {
   const CHANNEL_MONITOR = readFileSync(join(__dirname, '../web/channel-monitor.ts'), 'utf-8')
 
   it('sendPromptToSession runs its emit span inside withSessionSendLock', () => {
-    expect(AGENT_PROCESS).toMatch(/await withSessionSendLock\(session, host, lockMode, emitToPane\)/)
+    // 71263d15 (C): the lane runs guardedEmit, which only adds the caller's emit guard (a last pane
+    // read, no keystroke) in front of emitToPane and then runs it unchanged, inside the same lane.
+    expect(AGENT_PROCESS).toMatch(/await withSessionSendLock\(session, host, lockMode, guardedEmit\)/)
+    const guarded = AGENT_PROCESS.slice(AGENT_PROCESS.indexOf('const guardedEmit = async ('))
+    expect(guarded.slice(0, guarded.indexOf('\n  }\n'))).toMatch(/return emitToPane\(\)/)
     // 'held' short-circuits to a direct emit (no self-deadlock).
     expect(AGENT_PROCESS).toMatch(/if \(lockMode === 'held'\)/)
   })

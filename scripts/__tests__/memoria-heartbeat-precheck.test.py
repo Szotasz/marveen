@@ -145,6 +145,32 @@ class DecisionTest(Base):
         self.assertEqual(out, '')
         self.assertEqual(log['reason'], 'max-silence')
 
+    def test_a_stamp_in_the_future_runs_the_round(self):
+        # The window [last, now] is empty by construction and the max-silence net
+        # cannot fire on a negative silence, so without the guard this SKIPs forever.
+        self.set_mode('live')
+        self.write_state(int(self.now + 86400))
+        self.tool(self.now - 60)
+        code, out, log = self.run_check()
+        self.assertEqual((code, out), (0, ''))
+        self.assertEqual(log['reason'], 'future-stamp')
+        self.assertFalse(log['would_skip'])
+        self.assertLess(log['silence_s'], 0)
+
+    def test_a_millisecond_stamp_runs_the_round(self):
+        self.set_mode('live')
+        self.write_state(int(self.now * 1000))
+        code, out, log = self.run_check()
+        self.assertEqual((code, out), (0, ''))
+        self.assertEqual(log['reason'], 'future-stamp')
+
+    def test_a_stamp_within_the_clock_skew_tolerance_is_judged_normally(self):
+        self.set_mode('live')
+        self.write_state(int(self.now + 60))
+        code, out, log = self.run_check()
+        self.assertEqual((code, out), (0, 'SKIP'))
+        self.assertEqual(log['reason'], 'empty-window')
+
     # --- failing open ---------------------------------------------------
 
     def test_missing_state_fails_open(self):
