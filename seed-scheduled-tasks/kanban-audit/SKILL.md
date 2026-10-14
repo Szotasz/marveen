@@ -404,7 +404,7 @@ for c in json.load(sys.stdin):
   2. **MEMORIA-API:** a `curl -X POST /api/memories` URES kimenetet adott, en tovabbmentem, es a sor
      NEM keletkezett meg. A DB-bol visszaolvasva derult ki; ujrakuldve HTTP=200, id megvan.
   **A KOZOS MAG:** mindket esetben a parancs LEFUTOTT, hibauzenet nem volt, es a kovetkezo lepesem a
-  sikert felteteleztе. A kulonbseg csak annyi, hogy az egyiket egy kesobbi kor talalta meg, a masikat
+  sikert feltetelezte. A kulonbseg csak annyi, hogy az egyiket egy kesobbi kor talalta meg, a masikat
   en, mert VELETLENUL ranezetem.
   **ELJARAS, ket olcso szokas:** (a) allapot-valtoztato hivasnal (`UPDATE`, memoria-POST, uzenet-POST,
   fajl-iras) MINDIG kerd el a bizonyitekot ugyanabban a korben -- `curl -w "HTTP=%{http_code}"`, a
