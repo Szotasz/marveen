@@ -7911,3 +7911,20 @@ body {
   color: var(--text, inherit);
 }
 .mem-search-label code { font-size: 11px; opacity: .85; }
+
+/* === Stale-card review === */
+.kanban-stale-chip { min-height: 44px; margin: 0 0 12px; padding: 7px 12px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg-card); color: var(--text); font-weight: 600; }
+.kanban-stale-chip:hover { border-color: var(--accent); color: var(--accent); }
+.kanban-stale-modal { width: min(94vw, 640px); }
+.kanban-stale-list { display: flex; flex-direction: column; gap: 10px; }
+.kanban-stale-row { min-width: 0; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-card); }
+.kanban-stale-card { display: flex; gap: 8px; min-width: 0; color: var(--text); }
+.kanban-stale-card .seq { flex: none; color: var(--text-muted); font-family: monospace; }
+.kanban-stale-card strong { overflow-wrap: anywhere; }
+.kanban-stale-row.decided { opacity: 0.6; }
+.kanban-stale-outcome { color: var(--text); font-weight: 600; }
+.kanban-stale-cap { margin: 0; color: var(--text-muted); font-size: 12px; }
+.kanban-stale-meta { margin: 6px 0 10px; color: var(--text-muted); font-size: 12px; }
+.kanban-stale-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.kanban-stale-actions button { min-height: 44px; flex: 1 1 110px; }
+@media (max-width: 420px) { .kanban-stale-actions button { flex-basis: 90px; } }

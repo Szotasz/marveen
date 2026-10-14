@@ -19,6 +19,7 @@ import {
   getDbFileSizeMb,
   getTokenPruneLag,
   getStuckKanbanCards,
+  listStaleKanbanCards, decideStaleKanbanCard, StaleKanbanDecisionError, type StaleKanbanDecision,
   type TokenPruneLag,
 } from '../../db.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
@@ -42,8 +43,13 @@ const KANBAN_READONLY_FIELDS = new Set<string>([
   // dispatched_at is a real column set by the dispatch path (markKanbanCardDispatched),
   // never by a PUT, but getKanbanCard's SELECT * returns it so the dashboard's
   // whole-card send carries it back. Accept-and-ignore, do not 400.
-  'dispatched_at',
+  'dispatched_at', 'stale_kept_at',
 ])
+
+// Every key POST /api/kanban/:id/stale-decision accepts. days is the stale
+// threshold the caller listed the card with; the decision is refused (409) if
+// the card is no longer stale by it.
+const STALE_DECISION_FIELDS = ['decision', 'actor', 'days'] as const
 
 // Every key POST /api/kanban/:id/move accepts; anything else is a 400, same
 // rule as the PUT above.
@@ -489,6 +495,58 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       json(res, { ...result, empty_reason: 'nincs megkezdett kártya' })
     } else {
       json(res, result)
+    }
+    return true
+  }
+
+  if (path === '/api/kanban/stale' && method === 'GET') {
+    const raw = url.searchParams.get('days') ?? '14'
+    const days = Number(raw)
+    if (!Number.isInteger(days) || days <= 0) { json(res, { error: 'days must be a positive integer' }, 400); return true }
+    // count=1 answers the count alone (the board's chip needs nothing else);
+    // limit=N returns the N oldest cards, while count stays the full number.
+    const countOnly = url.searchParams.get('count')
+    if (countOnly !== null && countOnly !== '1') { json(res, { error: 'count must be 1' }, 400); return true }
+    const rawLimit = url.searchParams.get('limit')
+    const limit = rawLimit === null ? null : Number(rawLimit)
+    if (limit !== null && (!Number.isInteger(limit) || limit <= 0)) { json(res, { error: 'limit must be a positive integer' }, 400); return true }
+    const cards = listStaleKanbanCards({ days })
+    if (countOnly) { json(res, { days, count: cards.length }); return true }
+    json(res, { days, count: cards.length, cards: limit === null ? cards : cards.slice(0, limit) })
+    return true
+  }
+
+  const staleDecisionMatch = path.match(/^\/api\/kanban\/([^/]+)\/stale-decision$/)
+  if (staleDecisionMatch && method === 'POST') {
+    const id = decodeURIComponent(staleDecisionMatch[1])
+    let data: unknown
+    try { data = JSON.parse((await readBody(req)).toString()) } catch { json(res, { error: 'Invalid JSON' }, 400); return true }
+    // Same body rules as /move: a JSON object with known keys only, the actor
+    // rule of the other kanban writes (a string or nothing; with nothing, a
+    // browser session's user, else anonymous), and all of it before any write.
+    if (data === null || typeof data !== 'object' || Array.isArray(data)) {
+      json(res, { error: `Body must be a JSON object. Accepted fields: ${STALE_DECISION_FIELDS.join(', ')}` }, 400)
+      return true
+    }
+    const unknownKeys = Object.keys(data).filter((k) => !(STALE_DECISION_FIELDS as readonly string[]).includes(k))
+    if (unknownKeys.length > 0) {
+      json(res, { error: `Unknown field(s): ${unknownKeys.join(', ')}. Accepted: ${STALE_DECISION_FIELDS.join(', ')}` }, 400)
+      return true
+    }
+    const { decision, actor, days } = data as { decision?: unknown; actor?: unknown; days?: unknown }
+    if (days !== undefined && (!Number.isInteger(days) || (days as number) <= 0)) {
+      json(res, { error: 'days must be a positive integer' }, 400)
+      return true
+    }
+    const who = kanbanWriteActor(actor, ctx.auth)
+    if ('error' in who) { json(res, { error: who.error }, 400); return true }
+    try {
+      json(res, decideStaleKanbanCard(id, decision as StaleKanbanDecision, who.actor, { days: days as number | undefined }))
+    } catch (err) {
+      if (err instanceof StaleKanbanDecisionError) {
+        const status = err.code === 'not_found' ? 404 : err.code === 'archived' || err.code === 'not_stale' ? 409 : 400
+        json(res, { error: err.message, code: err.code }, status)
+      } else throw err
     }
     return true
   }
