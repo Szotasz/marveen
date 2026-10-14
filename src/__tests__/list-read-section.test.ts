@@ -67,16 +67,18 @@ describe('list-read section: what it says (c4e47223)', () => {
     expect(body).toMatch(/nemleges lelet TILOS/)
   })
 
-  it('the recipe measures the curl exit code and the HTTP code separately, body to a file', () => {
-    // One file per agent, overwritten on every read: nothing piles up in /tmp and no cleanup `rm` is needed.
-    expect(body).toMatch(/-o \/tmp\/lista-agent-b\.json -w '%\{http_code\}'/)
+  it('the recipe measures the curl exit code and the HTTP code separately, body to a per-run temp file', () => {
+    // #1819 review: a fixed /tmp path collides between two reads and can follow a planted link.
+    expect(body).toMatch(/f=\$\(mktemp\); code=\$\(curl -sS -o "\$f" -w '%\{http_code\}'/)
+    expect(body).not.toMatch(/\/tmp\//)
     expect(body).toMatch(/\); rc=\$\?/)
     expect(body).toMatch(/Authorization: Bearer \$\(cat /)
+    expect(body).toMatch(/rm -f "\$f"/)
   })
 
   it('the body is read with a strict JSON parser, and counts come from it, not from grep', () => {
     expect(body).toContain('json.load(')
-    expect(body).toMatch(/ne `grep`-pel/)
+    expect(body).toMatch(/ne\s+`grep`-pel/)
   })
 
   it('names the three failure codes the recipe can show', () => {
@@ -92,28 +94,26 @@ describe('list-read section: what it says (c4e47223)', () => {
     expect(body).not.toMatch(/A lista csak akkor teljes, ha `rc=0`/)
     expect(body).toMatch(/A VÁLASZ csak akkor ép, ha `rc=0`, `http=200`/)
     expect(body).toMatch(/Az ép válasz még NEM teljes lista/)
-    expect(body).toMatch(/a lista a korlátnál áll\), nemleges lelet TILOS/)
+    expect(body).toMatch(/a lista a\s+korlátnál áll, nemleges lelet TILOS/)
   })
 
-  it('names each list endpoint\'s server-side limit (the numbers: list-read-limits.test.ts)', () => {
-    const bullet = (endpoint: string) => {
-      const start = body.indexOf(`  - \`GET ${endpoint}\``)
-      expect(start, `no bullet for ${endpoint}`).toBeGreaterThanOrEqual(0)
-      const next = body.indexOf('\n  - ', start + 1)
-      const end = next >= 0 ? next : body.indexOf('\n- ', start + 1)
-      return body.slice(start, end)
-    }
-    expect(bullet('/api/kanban')).toMatch(/korlát nélkül/)
-    expect(bullet('/api/kanban')).toMatch(/X-Total-Count/)
-    expect(bullet('/api/kanban/archived')).toMatch(/KANBAN_ARCHIVED_MAX_ROWS` beállítás \(alapérték 500,\s+legfeljebb 5000\)/)
-    expect(bullet('/api/kanban/archived')).toMatch(/`total < limit` a teljes, `total = limit` csonka lehet/)
-    // Only status=pending filters; every other value is silently ignored.
-    expect(bullet('/api/messages?agent=')).toMatch(/CSAK a `status=pending` szűr, és az a teljes függő sort adja, korlát nélkül/)
-    expect(bullet('/api/messages?agent=')).toMatch(/HATÁSTALAN/)
-    expect(bullet('/api/messages?agent=')).toMatch(/alapból 50, legfeljebb 200 sor/)
-    expect(bullet('/api/messages?agent=')).toMatch(/`before=<a kapott legkisebb id>`/)
-    expect(bullet('/api/memories')).toMatch(/alapból 50, legfeljebb 200 sor/)
-    expect(bullet('/api/memories')).toMatch(/`truncated=true`-t mond a korlátnál \(lapozás: `offset=`\)/)
+  // #1819 review: the section is written into every install, so a dated
+  // incident would read there as that install's own history.
+  it('states no dated incident: no date, no duration, no counts from one install', () => {
+    expect(body).not.toMatch(/\b20\d\d-\d\d-\d\d\b/)
+    expect(body).not.toMatch(/Jelentett eset/)
+    expect(body).not.toMatch(/perces/)
+    expect(body).not.toMatch(/\b(283|596|774)\b/)
+  })
+
+  // #1819 review: CLAUDE.md is loaded into every session; the rule plus one
+  // command stays there, the per-endpoint limits move to a docs page.
+  it('stays short and points to the docs page that carries the per-endpoint limits', () => {
+    expect(body.split('\n').length).toBeLessThanOrEqual(16)
+    expect(body).toContain('`docs/lista-olvasas.md`')
+    const page = readFileSync(join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'docs', 'lista-olvasas.md'), 'utf-8')
+    expect(page).toContain('`GET /api/kanban/archived`')
+    expect(page).not.toMatch(/\b20\d\d-\d\d-\d\d\b/)
   })
 })
 
@@ -171,14 +171,13 @@ function recipeFor(origin: string): string {
   // The section interpolates the install's own origin; the probe server stands in for it.
   const m = script.match(/(\S+)\/api\/kanban\)/)
   expect(m).not.toBeNull()
-  // ...and the body file lands in the test's own directory, not in the shared /tmp.
-  expect(script.split('/tmp/lista-agent-b.json').length - 1).toBe(2)
-  return script.replace(`${m![1]}/api/kanban`, `${origin}/api/kanban`).split('/tmp/lista-agent-b.json').join(join(tmpRoot, 'lista-agent-b.json'))
+  return script.replace(`${m![1]}/api/kanban`, `${origin}/api/kanban`)
 }
 
 function runBash(script: string, tokenDir: string): Promise<{ stdout: string; code: number | null }> {
   return new Promise((resolve) => {
-    const child = spawn('bash', ['-c', script], { cwd: tokenDir })
+    // mktemp lands under the test's own directory, not in the shared /tmp.
+    const child = spawn('bash', ['-c', script], { cwd: tokenDir, env: { ...process.env, TMPDIR: tokenDir } })
     let stdout = ''
     child.stdout.on('data', (d) => { stdout += String(d) })
     child.on('close', (code) => resolve({ stdout, code }))

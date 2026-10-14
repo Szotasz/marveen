@@ -1,9 +1,9 @@
-// c4e47223 (2), from the review: the list-read section tells every agent
-// where a list endpoint cuts on the server side, because a response the server
-// cut at its limit is still rc=0, http=200 and valid JSON. The numbers the
-// section quotes are MEASURED here on the real handlers over an in-memory DB,
-// and the section's source text is held to them: a limit that changes in a
-// route without the section changing fails this file.
+// c4e47223 (2), from the review: the list-read docs page (linked from the
+// section in every agent's CLAUDE.md) tells where a list endpoint cuts on the
+// server side, because a response the server cut at its limit is still rc=0,
+// http=200 and valid JSON. The numbers the page quotes are MEASURED here on the
+// real handlers over an in-memory DB, and the page is held to them: a limit that
+// changes in a route without the page changing fails this file.
 import { describe, it, expect, beforeAll } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
@@ -35,31 +35,22 @@ async function get(handler: (ctx: RouteContext) => Promise<boolean>, pathAndQuer
   return got
 }
 
-// The section as the source writes it (the body of buildListReadBody), not a
-// render: the render interpolates install paths, the limits are literal text.
-// The string literals are joined into one line of prose, whitespace collapsed.
+// The per-endpoint limits live in docs/lista-olvasas.md (the section links to
+// it, #1819 review); that page is held here. Its prose, whitespace collapsed.
 const here = dirname(fileURLToPath(import.meta.url))
-const scaffold = readFileSync(join(here, '..', 'web', 'agent-scaffold.ts'), 'utf-8')
-const source = scaffold.slice(
-  scaffold.indexOf('export function buildListReadBody'),
-  scaffold.indexOf('export function ensureListReadSection'),
-)
-const prose = source.split('\n')
-  .map((line) => line.trim().replace(/^'/, '').replace(/',$/, ''))
-  .join(' ')
-  .replace(/\s+/g, ' ')
+const prose = readFileSync(join(here, '..', '..', 'docs', 'lista-olvasas.md'), 'utf-8').replace(/\s+/g, ' ')
 
 // One endpoint's bullet: from "- `GET <endpoint>`" to the next bullet.
 function bullet(endpoint: string): string {
   const start = prose.indexOf(`- \`GET ${endpoint}\``)
-  expect(start, `the section has no bullet for ${endpoint}`).toBeGreaterThanOrEqual(0)
-  const next = prose.slice(start + 1).search(/ - `GET | - Ha bármelyik/)
+  expect(start, `docs/lista-olvasas.md has no bullet for ${endpoint}`).toBeGreaterThanOrEqual(0)
+  const next = prose.slice(start + 1).search(/ - `GET | ## /)
   return next >= 0 ? prose.slice(start, start + 1 + next) : prose.slice(start)
 }
 
 const N = 210 // above every per-request cap below, so a cap shows as a count short of N
 
-describe('the limits the list-read section quotes are the endpoints\' own (c4e47223)', () => {
+describe('the limits docs/lista-olvasas.md quotes are the endpoints\' own (c4e47223)', () => {
   beforeAll(() => {
     initDatabase(':memory:')
     clearMemoryCache()

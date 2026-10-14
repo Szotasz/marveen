@@ -2573,61 +2573,42 @@ export function ensureMessageCloseSection(name: string): void {
 // memory of it") is only true when the response was COMPLETE. During a dashboard
 // stop or restart the request is cut or gets no answer at all; `curl -s` says
 // nothing about it, and the head of a cut body can pass for a shorter list with a
-// line counter or a tolerant reader. Reported on this install (2026-09-14, a
-// 14-minute outage): two reads in a row counted 283, then 596 of 774 cards, with
-// HTTP 000, and a duplicate card was opened around it. The endpoint builds the
-// whole list in memory and sends it in one piece, so a cut body is never valid
-// JSON and curl exits 18 on it: the check belongs to the READER, and the reader
-// is the agent, so the rule ships as a section.
+// line counter or a tolerant reader. The endpoint builds the whole list in memory
+// and sends it in one piece, so a cut body is never valid JSON and curl exits 18
+// on it: the check belongs to the READER, and the reader is the agent, so the
+// rule ships as a section.
 //
 // A whole RESPONSE is not yet a whole LIST (c4e47223 review): the archived
 // kanban list, /api/messages and /api/memories cut on the server side without a
-// word, and /api/messages filters on status=pending only. The section names each
-// endpoint's limit; list-read-limits.test.ts measures those numbers on the real
-// handlers and holds the text to them.
+// word. The section is loaded into every session, so it carries only the rule
+// and one command (#1819 review); each endpoint's limit lives in
+// docs/lista-olvasas.md, and list-read-limits.test.ts measures those numbers on
+// the real handlers and holds the page to them. The section states no dated
+// incident: it is written into every install, where one would read as that
+// install's own history.
 const LISTREAD_BEGIN = '<!-- BEGIN GENERATED: list-read (auto-generated, do not edit by hand) -->'
 const LISTREAD_END = '<!-- END GENERATED: list-read -->'
 const LISTREAD_BLOCK_RE = new RegExp(
   `${LISTREAD_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${LISTREAD_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
 )
 
-export function buildListReadBody(name: string): string {
+export function buildListReadBody(_name: string): string {
   return [
     '## Lista-olvasás: nemleges lelet csak teljes listából',
     '',
     'Egy lista-végpontból (`GET /api/kanban`, `GET /api/messages?agent=`, `GET /api/memories`) levont NEMLEGES',
-    'állítás ("nincs ilyen lap", "0 függő üzenet", "erről nincs emlék") csak akkor igaz, ha a lista TELJES volt:',
-    'a válasz ép, ÉS a szerver sem vágta le. Egy leálló vagy újrainduló dashboard alatt a kérés félbeszakad, vagy',
-    'választ sem kap; a `curl -s` ezt nem írja ki, és egy félbeszakadt törzs eleje egy sor-számlálónak (`grep -c`)',
-    'vagy egy tűrő olvasónak rövidebb, de valódinak látszó lista lehet. Jelentett eset (2026-09-14, 14 perces',
-    'kiesés): két egymás utáni olvasás 283, majd 596 lapot számolt a 774-ből, HTTP 000 mellett, és a kiesés',
-    'körül duplikátum-lap nyílt.',
-    '',
-    '- A curl kilépési kódját és a HTTP-kódot KÜLÖN mérd, a törzset szigorú JSON-olvasóval olvasd:',
+    'állítás ("nincs ilyen lap", "0 függő üzenet", "erről nincs emlék") csak akkor igaz, ha a lista TELJES volt.',
+    'Leálló vagy újrainduló dashboard alatt a kérés félbeszakad vagy választ sem kap, a `curl -s` erről hallgat,',
+    'és egy félbeszakadt törzs eleje egy sor-számlálónak rövidebb, de valódinak látszó lista. Mérd így:',
     '```bash',
-    `code=$(curl -sS -o /tmp/lista-${name}.json -w '%{http_code}' -H "Authorization: Bearer $(cat ${tokenPath})" ${dashboardOrigin}/api/kanban); rc=$?`,
-    `echo "rc=$rc http=$code"; python3 -c "import json,sys; print(len(json.load(open(sys.argv[1]))))" /tmp/lista-${name}.json`,
+    `f=$(mktemp); code=$(curl -sS -o "$f" -w '%{http_code}' -H "Authorization: Bearer $(cat ${tokenPath})" ${dashboardOrigin}/api/kanban); rc=$?; echo "rc=$rc http=$code"; python3 -c "import json,sys; print(len(json.load(open(sys.argv[1]))))" "$f"; rm -f "$f"`,
     '```',
-    '  A VÁLASZ csak akkor ép, ha `rc=0`, `http=200`, és a `json.load` hiba nélkül fut. `rc=18` a félbeszakadt',
-    '  átvitel, `rc=7` a kapcsolat hiánya, a `000` a válasz nélküli kérés.',
-    '- Az ép válasz még NEM teljes lista: a korlátos végpont szerver-oldalon, jelzés nélkül vág. A lista csak',
-    '  akkor teljes, ha az elemszám a korlát ALATT van; a korlátnál lapozz vagy szűkíts. Végpontonként:',
-    '  - `GET /api/kanban`: a teljes, nem archivált lista, korlát nélkül (archivált lap csak `includeArchived=1`-gyel).',
-    '    Az `X-Total-Count` fejléc a válasz lapjainak száma a szűrők után: vesd össze a tömb hosszával.',
-    '  - `GET /api/kanban/archived`: a `limit` alapból a `KANBAN_ARCHIVED_MAX_ROWS` beállítás (alapérték 500,',
-    '    legfeljebb 5000); a válasz `total` és `limit` mezőt ad: `total < limit` a teljes, `total = limit` csonka lehet.',
-    '  - `GET /api/messages?agent=`: CSAK a `status=pending` szűr, és az a teljes függő sort adja, korlát nélkül.',
-    '    Más `status` (delivered, done, failed) HATÁSTALAN: a válasz az ügynök beszélgetése, a legújabbal kezdve,',
-    '    alapból 50, legfeljebb 200 sor (`limit=`), csonkolás-jelzés nélkül; a régebbi sorokat a',
-    '    `before=<a kapott legkisebb id>` adja. Nem függő üzenetről csak a JSON `status` mezőjére szűrve, a',
-    '    korlát alatti vagy végiglapozott listán mondj nemleges leletet.',
-    '  - `GET /api/memories`: alapból 50, legfeljebb 200 sor (`limit=`). Listázásnál az `X-Memory-Search` fejléc',
-    '    `truncated=true`-t mond a korlátnál (lapozás: `offset=`); keresésnél (`q=`) a `hits` = `limit` jelenti',
-    '    ugyanezt, ott szűkíts.',
-    '- Ha bármelyik feltétel hiányzik (nem ép a válasz, vagy a lista a korlátnál áll), nemleges lelet TILOS: se',
-    '  "nincs ilyen lap", se "0 függő", se új lap nyitása a "nem találtam" alapján. Várj, és olvasd újra, amíg',
-    '  ép választ kapsz; a korlátnál lapozz vagy szűkíts.',
-    '- Darabszámot a JSON elemszámából mondj, ne `grep`-pel számolt sorokból.',
+    'A VÁLASZ csak akkor ép, ha `rc=0`, `http=200`, és a `json.load` hiba nélkül fut (`rc=18` a félbeszakadt',
+    'átvitel, `rc=7` a kapcsolat hiánya, a `000` a válasz nélküli kérés). Az ép válasz még NEM teljes lista: a',
+    'korlátos végpont jelzés nélkül vág, a korlátnál lapozz vagy szűkíts. Ha nem ép a válasz, vagy a lista a',
+    'korlátnál áll, nemleges lelet TILOS; várj és olvasd újra. Darabszámot a JSON elemszámából mondj, ne',
+    '`grep`-pel számolt sorokból. A végpontonkénti korlátok és a részletek a telepítés gyökerében:',
+    '`docs/lista-olvasas.md`.',
   ].join('\n')
 }
 
