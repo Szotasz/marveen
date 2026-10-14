@@ -17,13 +17,18 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # Self-hosted gg-runner when the org variable GG_CI_RUNNER is shared with this
+    # repo; GitHub-hosted otherwise (emergency brake: delete the variable). The
+    # self-hosted minutes are not billed (gg-ci CLAUDE.md, IT-570).
+    runs-on: ${{ (github.event_name != 'schedule' && vars.GG_CI_RUNNER) || 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
-          cache: npm
+          # No GitHub cache on the persistent self-hosted runner: its ~/.npm
+          # survives between jobs, and the restore only slowed it down (IT-966).
+          cache: ${{ runner.environment == 'github-hosted' && 'npm' || '' }}
       # Full install ON PURPOSE, unlike the secret-gate's --ignore-scripts:
       # the suite exercises native bindings, and an install that skips their
       # build would fail the ABI probe instead of measuring the code.
@@ -34,13 +39,19 @@ jobs:
       # run). The stub satisfies PATH resolution only; it exits 1 LOUDLY, so if
       # any test ever actually executes claude, that run fails visibly instead
       # of silently faking success.
+      # The stub lives in a job-local directory, not /usr/local/bin: the
+      # self-hosted runner is shared and persistent, so a system-wide stub would
+      # outlive the job and shadow a real claude for every other workflow.
       - name: Stub the claude binary for PATH resolution
         run: |
-          sudo install -m 755 /dev/stdin /usr/local/bin/claude <<'EOF'
+          stub_dir="$RUNNER_TEMP/claude-stub"
+          mkdir -p "$stub_dir"
+          install -m 755 /dev/stdin "$stub_dir/claude" <<'EOF'
           #!/bin/sh
           echo "claude CI stub: tests must not execute this binary" >&2
           exit 1
           EOF
+          echo "$stub_dir" >> "$GITHUB_PATH"
       - run: npm run typecheck
       - run: npm test
       # Shell-test wiring (SEEDREFRESH826 fold-in, from the #1066 verify): a
