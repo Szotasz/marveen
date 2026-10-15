@@ -47,16 +47,16 @@ describe('measurer override and cache', () => {
 })
 
 describe('/api/models/available carries the gate', () => {
-  it('MEASURED 2.1.110: cli.version set, claudeSupport lists fable-5-1, opus-5-5 and sonnet-5-5, and the claude array is in sync with the picker', async () => {
+  it('MEASURED 2.1.110: cli.version set, claudeSupport lists fable-5-1, haiku-5-5, opus-5-5 and sonnet-5-5, and the claude array is in sync with the picker', async () => {
     process.env[CLI_VERSION_OVERRIDE_ENV] = '2.1.110'
     const { status, body } = await getModels()
     expect(status).toBe(200)
     expect((body.cli as { version: string }).version).toBe('2.1.110')
     const s = body.claudeSupport as { measured: boolean; unsupported: Array<{ id: string }> }
     expect(s.measured).toBe(true)
-    expect(s.unsupported.map((u) => u.id).sort()).toEqual(['claude-fable-5-1', 'claude-opus-5-5', 'claude-sonnet-5-5'])
+    expect(s.unsupported.map((u) => u.id).sort()).toEqual(['claude-fable-5-1', 'claude-haiku-5-5', 'claude-opus-5-5', 'claude-sonnet-5-5'])
     const ids = (body.claude as Array<{ id: string }>).map((m) => m.id)
-    for (const id of ['claude-fable-5-1', 'claude-opus-5-5[1m]', 'claude-opus-5', 'claude-sonnet-5-5', 'claude-sonnet-5']) expect(ids).toContain(id)
+    for (const id of ['claude-fable-5-1', 'claude-opus-5-5[1m]', 'claude-opus-5', 'claude-sonnet-5-5', 'claude-sonnet-5', 'claude-haiku-5-5', 'claude-haiku-4-5-20251001']) expect(ids).toContain(id)
     // Opus 5.5: ONLY the 1M variant is offered (owner decision 2026-09-23); the plain id is gone from the API too.
     expect(ids).not.toContain('claude-opus-5-5')
     // the picker markup offers exactly the same Claude ids the API lists
@@ -88,8 +88,8 @@ describe('the 1M variant is what the picker offers, and the gate applies the 2.1
     }
     process.env[CLI_VERSION_OVERRIDE_ENV] = '2.1.280'
     const { body } = await getModels()
-    // Opus 5.5 is launchable on 2.1.280; only Sonnet 5.5 (min 2.1.283) remains unsupported there
-    expect((body.claudeSupport as { unsupported: Array<{ id: string }> }).unsupported.map((u) => u.id)).toEqual(['claude-sonnet-5-5'])
+    // Opus 5.5 is launchable on 2.1.280; only Sonnet 5.5 (min 2.1.283) and Haiku 5.5 (min 2.1.284) remain unsupported there
+    expect((body.claudeSupport as { unsupported: Array<{ id: string }> }).unsupported.map((u) => u.id)).toEqual(['claude-sonnet-5-5', 'claude-haiku-5-5'])
     expect(await refuseIfCliCannotLaunch('claude-opus-5-5[1m]')).toBeNull()
   })
 })
@@ -104,6 +104,15 @@ describe('the writers are gated too (POST/PUT model)', () => {
     expect(String(r!.message)).toContain('2.1.110')
     expect(await refuseIfCliCannotLaunch('claude-fable-5-1')).not.toBeNull()
     expect(await refuseIfCliCannotLaunch('claude-opus-5')).toBeNull()
+  })
+  it('Haiku 5.5 is refused on 2.1.283 and let through on 2.1.284 (HAIKU55SELECTOR1008); Haiku 4.5 is never refused', async () => {
+    process.env[CLI_VERSION_OVERRIDE_ENV] = '2.1.283'
+    const r = await refuseIfCliCannotLaunch('claude-haiku-5-5')
+    expect(r).not.toBeNull()
+    expect(r!.minCli).toBe('2.1.284')
+    expect(await refuseIfCliCannotLaunch('claude-haiku-4-5-20251001')).toBeNull()
+    process.env[CLI_VERSION_OVERRIDE_ENV] = '2.1.284'
+    expect(await refuseIfCliCannotLaunch('claude-haiku-5-5')).toBeNull()
   })
   it('UNMEASURED refuses nothing, including the models refused above', async () => {
     process.env[CLI_VERSION_OVERRIDE_ENV] = ''

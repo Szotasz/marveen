@@ -35,7 +35,7 @@ describe('config-registry', () => {
   // Opt-in operator switches consumed as boot-time consts in src/config.ts.
   // Default must stay '0' (config.ts resolves an unset key to false), and the
   // UI must flag the restart, since the value is read once at module load.
-  it.each(['SUBAGENT_INBOX_TEE', 'SUBAGENT_TELEGRAM_WAKE_ENABLED', 'VOICE_TRANSCRIBE_INBOUND'])(
+  it.each(['SUBAGENT_INBOX_TEE', 'SUBAGENT_TELEGRAM_WAKE_ENABLED', 'VOICE_TRANSCRIBE_INBOUND', 'TELEGRAM_TOPICS_ENABLED'])(
     'registers %s as an off-by-default boolean that requires a restart',
     (key) => {
       const def = getSettingDefinition(key)

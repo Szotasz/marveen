@@ -81,12 +81,47 @@ esac
 # No target configured -> exit 2 from the helper, Telegram exactly as before.
 SEND_TELEGRAM=1
 SLACK_RC=2
+SLACK_OUT=""
+# NOTIFY_TELEGRAM_FALLBACK, read HERE too (Dani's #1854 review): the helper's
+# verdict carries it, but when the helper does not run (no node, no dist) or
+# dies without a JSON verdict, there is no verdict to obey -- and the default
+# would reach Telegram. Same layering as getEffectiveSettingValue:
+# store/config-overrides.json (what the dashboard writes) over .env.
+setting_value() {
+  _key="$1"; _v=""
+  _ov="$PROJECT_DIR/store/config-overrides.json"
+  if [ -f "$_ov" ]; then
+    _v="$(grep -oE "\"$_key\"[[:space:]]*:[[:space:]]*\"?[^\",}]*" "$_ov" | head -1 | sed -E 's/^[^:]*:[[:space:]]*"?//')"
+  fi
+  if [ -z "$_v" ]; then
+    # Parity with src/env-parse.ts: the LAST occurrence wins, CR and surrounding
+    # whitespace are dropped, one pair of surrounding quotes is removed.
+    _v="$(grep -E "^[[:space:]]*$_key=" "$ENV_FILE" | tail -1 | cut -d= -f2- | tr -d '\r' \
+      | sed -E -e 's/^[[:space:]]+//' -e 's/[[:space:]]+$//' -e 's/^"(.*)"$/\1/' -e "s/^'(.*)'\$/\1/")"
+  fi
+  printf '%s' "$_v"
+}
+TELEGRAM_FALLBACK_OFF=0
+[ "$(setting_value NOTIFY_TELEGRAM_FALLBACK)" = "0" ] && TELEGRAM_FALLBACK_OFF=1
 if command -v node >/dev/null 2>&1 && [ -f "$PROJECT_DIR/dist/slack-notify.js" ]; then
   SLACK_OUT="$(node "$SCRIPT_DIR/slack-notify.mjs" --kind owner ${SENDER:+--as "$SENDER"} -- "$MESSAGE" 2>/dev/null)"
   SLACK_RC=$?
-  case "$SLACK_OUT" in *'"telegram":"skip"'*) [ "$SLACK_RC" -eq 0 ] && SEND_TELEGRAM=0 ;; esac
-  [ "$SLACK_RC" -eq 1 ] && echo "Figyelem: a Slack-ertesites nem ment ki, Telegram tartalek: $SLACK_OUT" >&2
+  # "skip" with rc 0: Slack delivered and Telegram is not wanted beside it.
+  # "skip" with rc != 0: NOTIFY_TELEGRAM_FALLBACK=0, Telegram is never the
+  # fallback, so the run fails below instead of reaching the channel the owner left.
+  case "$SLACK_OUT" in *'"telegram":"skip"'*) SEND_TELEGRAM=0 ;; esac
+  [ "$SLACK_RC" -eq 1 ] && [ "$SEND_TELEGRAM" -eq 1 ] && [ "$TELEGRAM_FALLBACK_OFF" -eq 0 ] && echo "Figyelem: a Slack-ertesites nem ment ki, Telegram tartalek: $SLACK_OUT" >&2
 fi
+# No verdict at all (the helper did not run, or died without JSON) while the
+# Telegram fallback is off: that is a Slack miss, never a Telegram send.
+case "$SLACK_OUT" in
+  *'"telegram":'*) ;;
+  *) if [ "$TELEGRAM_FALLBACK_OFF" -eq 1 ]; then
+       SEND_TELEGRAM=0
+       [ "$SLACK_RC" -eq 0 ] && SLACK_RC=3
+       [ -n "$SLACK_OUT" ] || SLACK_OUT="(a Slack-segedfolyamat nem futott, vagy nem adott valaszt)"
+     fi ;;
+esac
 
 if [ -n "$SENDER" ] && [ "$SENDER" != "$MAIN_AGENT_ID" ]; then
   # Capitalize the first letter (bash 3.2 portable -- no ${var^}).
@@ -113,6 +148,10 @@ fi
 . "$SCRIPT_DIR/lib/send-telegram.sh"
 
 if [ "$SEND_TELEGRAM" -eq 0 ]; then
+  if [ "$SLACK_RC" -ne 0 ]; then
+    echo "Hiba: a Slack-ertesites nem ment ki, es a Telegram-tartalek ki van kapcsolva (NOTIFY_TELEGRAM_FALLBACK=0). Szolj a fo agensnek inter-agent uzenetben. Reszletek: $SLACK_OUT" >&2
+    exit 1
+  fi
   echo "Ertesites elkuldve (Slack)."
 elif [ -z "$TOKEN" ] || [ "$CHAT_OK" -eq 0 ]; then
   # Telegram is not usable on this install. Success only if Slack delivered.

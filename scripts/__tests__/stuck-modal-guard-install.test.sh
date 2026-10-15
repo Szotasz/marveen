@@ -94,6 +94,9 @@ write_installer() {  # $1 label, $2 exit code
   cat > "$MAC/install/scripts/install-stuck-modal-guard.sh" <<EOF
 #!/bin/bash
 LABEL="$1"
+# #1873: update.sh asks the installer for its label (--print-label), the way
+# the real installers answer it; that call is not an install, so not logged.
+if [ "\${1:-}" = "--print-label" ]; then echo "\$LABEL"; exit 0; fi
 echo "\$*" >> "$MAC/installer.calls"
 mkdir -p "\$HOME/Library/LaunchAgents"
 : > "\$HOME/Library/LaunchAgents/$1.plist"

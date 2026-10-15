@@ -806,6 +806,45 @@ main {
 .overview-activity-time { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
 
 /* === Kanban Board === */
+/* Ongoing tasks strip: one slim row above the board (see KANBAN_ONGOING_LABEL). */
+.kanban-ongoing[hidden] { display: none; }
+.kanban-ongoing {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  background: var(--bg-input);
+  border-radius: var(--radius);
+  border-left: 3px solid #64748b;
+}
+.kanban-ongoing-title {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.kanban-ongoing-body { display: flex; gap: 6px; flex-wrap: wrap; min-width: 0; }
+.kanban-ongoing-chip {
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--bg-card);
+  border: 1px solid var(--border, transparent);
+  border-radius: 14px;
+  padding: 3px 10px;
+  cursor: pointer;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.kanban-ongoing-chip:hover { border-color: #64748b; }
+.kanban-ongoing-seq { color: var(--text-muted); font-weight: 600; }
+
 /* Five statuses, four fixed tracks: the board always wrapped "done" onto a
  * second row of its own, at every window size. auto-fit fits as many columns
  * as can hold KANBAN_COL_MIN and collapses the rest, so the count follows the
@@ -1248,14 +1287,45 @@ main {
   position: relative;
   overflow: hidden;
 }
-.kanban-card[data-priority="urgent"] { border-left: 3px solid var(--danger); }
-.kanban-card[data-priority="high"] { border-left: 3px solid var(--accent); }
-.kanban-card[data-priority="normal"] { border-left: 3px solid transparent; }
-.kanban-card[data-priority="low"] { border-left: 3px solid var(--border); }
+/* === Priority: the WHOLE card carries the colour, not a 3px edge ===
+   On a dense board a 3px stripe is not readable at a glance.
 
-/* Card aging: left stripe overrides priority border when card is stale.
-   Colour is set as --card-aging-color via inline style by JS. */
-.kanban-card[data-aging] { border-left: 3px solid var(--card-aging-color); }
+   The tint is layered OVER --bg-card with a two-stop gradient instead of being
+   written as a background colour: --bg-card differs between the light and dark
+   themes, and a hard-coded tint would go muddy in one of them. This way the
+   same rgba sits on whichever card background is current.
+
+   The left edge stays, thicker, because card aging (below) overrides it and
+   needs somewhere visible to land. */
+.kanban-card[data-priority] {
+  --card-tint: transparent;
+  --card-edge: var(--border);
+  background: linear-gradient(var(--card-tint), var(--card-tint)), var(--bg-card);
+  border-left: 4px solid var(--card-edge);
+}
+/* Deliberately NOT four equal steps: only the top two levels should pull the
+   eye, normal is the neutral middle and low recedes. Tinting all four would
+   turn the whole board into colour and tell you nothing. */
+.kanban-card[data-priority="urgent"] { --card-tint: rgba(191, 77, 67, 0.20); --card-edge: var(--danger); }
+.kanban-card[data-priority="high"]   { --card-tint: rgba(217, 119, 87, 0.18); --card-edge: var(--accent); }
+.kanban-card[data-priority="normal"] { --card-tint: transparent;              --card-edge: var(--border); }
+.kanban-card[data-priority="low"]    { --card-tint: rgba(20, 20, 19, 0.035);  --card-edge: var(--border); }
+/* Low also steps back in contrast, not just in hue: a background tint alone is
+   too weak to read as "background work" on a dense board. */
+.kanban-card[data-priority="low"] .kanban-card-title { color: var(--text-dim); }
+
+/* Dark theme needs both a stronger tint and the opposite direction for `low`:
+   the same alpha that reads on a white card is invisible on a dark one, and a
+   dark wash on a dark card would be indistinguishable from a shadow. */
+[data-theme="dark"] .kanban-card[data-priority="urgent"] { --card-tint: rgba(191, 77, 67, 0.32); }
+[data-theme="dark"] .kanban-card[data-priority="high"]   { --card-tint: rgba(217, 119, 87, 0.28); }
+[data-theme="dark"] .kanban-card[data-priority="low"]    { --card-tint: rgba(250, 249, 245, 0.03); }
+
+/* Card aging: left stripe overrides the priority edge when the card is stale.
+   Colour is set as --card-aging-color via inline style by JS. Only the colour
+   is overridden; the width comes from the priority block above. Must stay
+   AFTER that block: both selectors have the same specificity. */
+.kanban-card[data-aging] { border-left-color: var(--card-aging-color); }
 
 /* Aging badge: hourglass + day/hour counter, top-right (left of the ⚡ action) */
 .kanban-card-aging-badge {
@@ -1617,6 +1687,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 .agents-grid[data-card-mode="activity"] .agent-card-footer,
 .agents-grid[data-card-mode="activity"] .agent-card-actions,
 .agents-grid[data-card-mode="activity"] .agent-reauth-banner,
+.agents-grid[data-card-mode="activity"] .agent-sharedenv-banner,
 .agents-grid[data-card-mode="activity"] .agent-tmux-cmds { display: none; }
 .agents-grid[data-card-mode="activity"] .agent-card-activity { display: block; margin-top: 14px; }
 /* Cards that carry no live state: the add button and federated (remote-system)
@@ -7068,6 +7139,14 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   margin: 8px 0 0;
 }
 .agent-reauth-reason { font-size: 11px; color: #ef4444; font-weight: 600; flex: 1; }
+.agent-sharedenv-banner {
+  background: color-mix(in srgb, var(--warning, #d4a52c) 12%, transparent);
+  border: 1px solid var(--warning, #d4a52c);
+  border-radius: 6px;
+  padding: 6px 10px;
+  margin: 8px 0 0;
+}
+.agent-sharedenv-text { font-size: 11px; color: var(--warning, #d4a52c); font-weight: 600; overflow-wrap: anywhere; }
 .btn-danger {
   background: #ef4444;
   color: #fff;

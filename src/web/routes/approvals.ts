@@ -3,6 +3,7 @@ import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { PROJECT_ROOT, MAIN_AGENT_ID, TELEGRAM_BOT_TOKEN } from '../../config.js'
 import {
+  consumeApproval,
   createApproval, getApproval, resolveApproval, listApprovals, expireTimedOutApprovals,
   createAgentMessage, setApprovalTelegramMessageId,
   type Approval,
@@ -51,6 +52,36 @@ export function computeTimeoutAt(category: string, timeoutSeconds: unknown, nowM
   const catMinutes = readCategoryTimeoutMinutes(category)
   if (catMinutes != null && catMinutes > 0) return now + catMinutes * 60
   return now + DEFAULT_TIMEOUT_MINUTES * 60
+}
+
+// f2c5edb0: the window inside which an approved letter may still be consumed,
+// counted from resolved_at. The SAME variable and default as the gate
+// (EMAIL_APPROVAL_WINDOW_S, 1800 s in scripts/hooks/email-approval-gate.py), so
+// the two consume paths agree on when an approval has gone stale.
+export function approvalWindowSeconds(env: NodeJS.ProcessEnv = process.env): number {
+  const v = Number.parseInt(env.EMAIL_APPROVAL_WINDOW_S ?? '', 10)
+  return Number.isFinite(v) && v > 0 ? v : 1800
+}
+
+// The consumer names the sending tool in the audit trail. Printable only (no
+// control characters, checked by code point so the source carries no escape),
+// 1-120 characters after trimming.
+export function isConsumerName(v: unknown): v is string {
+  if (typeof v !== 'string') return false
+  const t = v.trim()
+  if (t.length < 1 || t.length > 120) return false
+  for (let i = 0; i < t.length; i++) {
+    const c = t.charCodeAt(i)
+    if (c < 32 || c === 127) return false
+  }
+  return true
+}
+
+// One RFC 5322 msg-id, angle brackets included: the sender generates it BEFORE
+// the send and hands the same value to its mailer, so the approval row names the
+// letter that used it.
+export function isMessageId(v: unknown): v is string {
+  return typeof v === 'string' && v.length <= 250 && /^<[^<>\s@]+@[^<>\s@]+>$/.test(v)
 }
 
 // Owner-facing Telegram text. Pure + exported for tests. Plain text (no
@@ -225,6 +256,60 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
 
     const items = listApprovals({ agent_id, category, status, limit })
     json(res, items)
+    return true
+  }
+
+  // POST /api/approvals/:id/consume -- f2c5edb0: one-shot consumption on the
+  // SEND path. A sender the gate cannot see (a script that mails from another
+  // host) calls this right BEFORE the letter goes out and sends only on 200.
+  // 409 means do NOT send: the approval is used, unapproved, for another letter,
+  // or stale -- and a second attempt on a used approval is the double send this
+  // exists to stop.
+  const consumeMatch = path.match(/^\/api\/approvals\/([^/]+)\/consume$/)
+  if (consumeMatch && method === 'POST') {
+    let body: { content_hash?: unknown; consumer?: unknown; message_id?: unknown }
+    try {
+      body = JSON.parse((await readBody(req)).toString())
+    } catch {
+      json(res, { error: 'Invalid JSON' }, 400)
+      return true
+    }
+    const { content_hash, consumer, message_id } = body
+    if (typeof content_hash !== 'string' || !/^[0-9a-f]{64}$/.test(content_hash)) {
+      json(res, { error: 'content_hash must be the 64-char lowercase sha256 hex anchor of the letter being sent' }, 400)
+      return true
+    }
+    if (!isConsumerName(consumer)) {
+      json(res, { error: 'consumer is required: 1-120 printable characters naming the sending tool' }, 400)
+      return true
+    }
+    if (message_id !== undefined && message_id !== null && !isMessageId(message_id)) {
+      json(res, { error: 'message_id, if given, must be one RFC 5322 id like <local@domain> (max 250 chars)' }, 400)
+      return true
+    }
+    const result = consumeApproval({
+      id: consumeMatch[1],
+      contentHash: content_hash,
+      consumer: consumer.trim(),
+      messageId: typeof message_id === 'string' ? message_id : null,
+      windowSeconds: approvalWindowSeconds(),
+    })
+    if (result.ok) {
+      logger.info({ id: consumeMatch[1], consumer: consumer.trim(), ref: message_id ?? null }, 'Approval consumed by the send path')
+      json(res, { ok: true, approval: result.approval })
+      return true
+    }
+    if (result.reason === 'not_found') {
+      json(res, { ok: false, reason: 'not_found' }, 404)
+      return true
+    }
+    const a = result.approval
+    logger.warn({ id: consumeMatch[1], consumer: consumer.trim(), reason: result.reason }, 'Approval consume refused')
+    json(res, {
+      ok: false,
+      reason: result.reason,
+      approval: a ? { id: a.id, status: a.status, consumed_at: a.consumed_at, consumed_by: a.consumed_by, consumed_ref: a.consumed_ref } : null,
+    }, 409)
     return true
   }
 

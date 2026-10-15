@@ -94,7 +94,11 @@ describe('every default launch path is wired to the guard', () => {
   })
   it('worker session: the non-custom-provider path is guarded', () => {
     const src = readFileSync(join(SRC, 'web', 'agent-worker.ts'), 'utf-8')
-    expect(src).toContain("if (!fromCustomProvider) workerModel = launchableInstallDefaultSync('worker')")
+    // WORKERMODEL1773: the decision moved into resolveWorkerModel; the default
+    // path still calls the guard (resolveWorkerModel's 'default' branch, tested
+    // behaviourally in worker-model-cli-gate.test.ts).
+    expect(src).toContain("launchableDefault: () => launchableInstallDefaultSync('worker')")
+    expect(src).toContain('return { model: i.launchableDefault(), source: \'default\', unlaunchable: null }')
   })
   it('agent create without a model: guarded, not the raw default', () => {
     const src = readFileSync(join(SRC, 'web', 'routes', 'agents.ts'), 'utf-8')

@@ -107,9 +107,9 @@ function channel(body: string, attrs = 'source="plugin:telegram:telegram" chat_i
   return `<channel ${attrs}>${body}</channel>`
 }
 
-function runHook(prompt: string, apiBase = base, agent = 'marveen', args: string[] = [], extraEnv: Record<string, string> = {}): Promise<{ code: number | null; stdout: string }> {
+function runHook(prompt: string, apiBase = base, agent = 'marveen', args: string[] = [], extraEnv: Record<string, string> = {}, entry: string[] = [HOOK]): Promise<{ code: number | null; stdout: string }> {
   return new Promise((resolve) => {
-    const p = spawn('python3', [HOOK, ...args], {
+    const p = spawn('python3', [...entry, ...args], {
       env: {
         ...process.env,
         MARVEEN_INSTALL_DIR: install,
@@ -132,6 +132,11 @@ function runHook(prompt: string, apiBase = base, agent = 'marveen', args: string
 
 const sends = () => calls.filter(c => c.path === '/botbot-tok/sendMessage').map(c => c.body)
 
+// The hook run as itself, but with a Python that does not exist for the
+// deferred watcher: its Popen fails, which is the hook's "deferred spawn failed"
+// branch, with no change to the hook.
+const HOOK_WITHOUT_DEFERRED_SPAWN = ['-c', 'import runpy, sys\nsys.executable = "/nonexistent/python3"\nsys.argv = sys.argv[1:]\nrunpy.run_path(sys.argv[0], run_name="__main__")', HOOK]
+
 // FLAKYCMDLOG1006: the log is SHARED by every test in this file (one stateDir,
 // beforeAll), and a deferred write's detached watcher writes its closing
 // "deferred write answered" line AFTER it sends the reply. A test that ends on
@@ -153,6 +158,19 @@ async function waitForWatcherDone(command: string, seenBefore: number, timeoutMs
   throw new Error(`the ${command} deferred watcher did not finish within ${timeoutMs} ms`)
 }
 const dispatches = () => calls.filter(c => c.path === '/api/commands/dispatch')
+
+// A message written in a topic (TELEGRAM_TOPICS_ENABLED, plugin patch).
+const TOPIC_ATTRS = 'source="plugin:telegram:telegram" chat_id="42" message_id="7" user="owner" message_thread_id="12"'
+
+function runProgress(prompt: string, sessionId: string): Promise<number | null> {
+  return new Promise((resolve) => {
+    const p = spawn('python3', [join(ROOT, 'scripts', 'hooks', 'telegram_progress.py')], {
+      env: { ...process.env, TELEGRAM_STATE_DIR: stateDir, TELEGRAM_API_BASE: base },
+    })
+    p.on('close', c => resolve(c))
+    p.stdin.end(JSON.stringify({ prompt, session_id: sessionId }))
+  })
+}
 
 describe('marveen-commands.py', () => {
   it('a registry command: dispatched, reply sent on the main bot, turn blocked (exit 2, no stdout)', async () => {
@@ -255,6 +273,12 @@ describe('marveen-commands.py', () => {
     expect(s).toHaveLength(1)
     expect(s[0].text).toMatch(/^Nem futott: \/status, mert a dashboard nem érhető el/)
     expect(s[0].text).not.toContain('bot-tok')
+  })
+
+  it('dashboard unreachable + a command from a topic: the error reply goes back into the topic', async () => {
+    const r = await runHook(channel('/status', TOPIC_ATTRS), 'http://127.0.0.1:1')
+    expect(r.code).toBe(2)
+    expect(sends()).toEqual([{ chat_id: '42', text: expect.stringMatching(/^Nem futott: \/status, mert a dashboard nem érhető el/), message_thread_id: 12 }])
   })
 
   it('dashboard answers 500 + builtin command: error reply names the HTTP status, blocked', async () => {
@@ -360,6 +384,65 @@ describe('marveen-commands.py', () => {
     expect(calls.some(c => c.path === '/botbot-tok/deleteMessage')).toBe(false)
     expect(JSON.parse(readFileSync(join(stateDir, 'progress', 'sid-2.json'), 'utf-8'))).toEqual([{ chat_id: '42', message_id: 555, src_mid: '32' }])
     rmSync(join(stateDir, 'progress', 'sid-2.json'), { force: true })
+  })
+
+  // The payloads without a topic, pinned before the topics support went in:
+  // they must stay exactly these.
+  it('no topic: the placeholder payload and the stored entry are exactly the plain-chat ones', async () => {
+    calls = []
+    await runProgress(channel('mesélj', 'source="plugin:telegram:telegram" chat_id="42" message_id="33" user="owner"'), 'sid-3')
+    expect(calls.filter(c => c.path === '/botbot-tok/sendMessage').map(c => c.body))
+      .toEqual([{ chat_id: '42', text: '✍️ Dolgozom rajta…', disable_notification: true }])
+    expect(JSON.parse(readFileSync(join(stateDir, 'progress', 'sid-3.json'), 'utf-8'))).toEqual([{ chat_id: '42', message_id: 555, src_mid: '33' }])
+    rmSync(join(stateDir, 'progress', 'sid-3.json'), { force: true })
+  })
+
+  it('a topic message: the placeholder goes into the topic and the entry remembers it', async () => {
+    calls = []
+    await runProgress(channel('mesélj', TOPIC_ATTRS), 'sid-4')
+    expect(calls.filter(c => c.path === '/botbot-tok/sendMessage').map(c => c.body))
+      .toEqual([{ chat_id: '42', text: '✍️ Dolgozom rajta…', disable_notification: true, message_thread_id: 12 }])
+    expect(JSON.parse(readFileSync(join(stateDir, 'progress', 'sid-4.json'), 'utf-8'))).toEqual([{ chat_id: '42', message_id: 555, src_mid: '7', message_thread_id: 12 }])
+    rmSync(join(stateDir, 'progress', 'sid-4.json'), { force: true })
+  })
+
+  it('a command from a topic: the dispatch is unchanged, the answer goes back into the topic', async () => {
+    dispatchReply = () => ({ status: 200, body: { handled: true, outcome: 'ran', replies: ['minden rendben'] } })
+    const r = await runHook(channel('/status', TOPIC_ATTRS))
+    expect(r.code).toBe(2)
+    expect(dispatches()[0].body).toEqual({ text: '/status', chatId: '42', mainSession: true, deferWrites: true, forwarded: false, messageId: '7' })
+    expect(sends()).toEqual([{ chat_id: '42', text: 'minden rendben', message_thread_id: 12 }])
+  })
+
+  it('a deferred write from a topic: the watcher re-sends into the topic', async () => {
+    dispatchReply = (body) => body.deferWrites
+      ? { status: 200, body: { handled: true, outcome: 'deferred', replies: [] } }
+      : { status: 200, body: { handled: true, outcome: 'ran', replies: ['átváltva'] } }
+    const seen = watcherDoneCount('/model')
+    await runHook(channel('/model opus 5m', TOPIC_ATTRS))
+    const deadline = Date.now() + 5000
+    while (sends().length === 0 && Date.now() < deadline) await new Promise(r => setTimeout(r, 50))
+    expect(sends()).toEqual([{ chat_id: '42', text: 'átváltva', message_thread_id: 12 }])
+    await waitForWatcherDone('/model', seen)
+  })
+
+  it.each([
+    ['a plain chat: the reply as before', channel('/model opus 5m'), {}],
+    ['a topic: the reply goes back into it', channel('/model opus 5m', TOPIC_ATTRS), { message_thread_id: 12 }],
+  ])('a deferred write whose watcher cannot start, %s', async (_label, prompt, topic) => {
+    dispatchReply = () => ({ status: 200, body: { handled: true, outcome: 'deferred', replies: [] } })
+    const spawnFailures = () => hookLog().filter(l => l.includes('deferred spawn failed: FileNotFoundError')).length
+    const before = spawnFailures()
+    const r = await runHook(prompt, base, 'marveen', [], {}, HOOK_WITHOUT_DEFERRED_SPAWN)
+    expect(r.code).toBe(2)
+    expect(spawnFailures()).toBe(before + 1)
+    expect(sends()).toEqual([{ chat_id: '42', text: 'Nem futott: /model -- a késleltetett végrehajtás nem indult el. Napló: progress/commands-hook.log', ...topic }])
+  })
+
+  it('a malformed message_thread_id is ignored: the answer goes out as in a plain chat', async () => {
+    dispatchReply = () => ({ status: 200, body: { handled: true, outcome: 'ran', replies: ['ok'] } })
+    await runHook(channel('/status', 'source="plugin:telegram:telegram" chat_id="42" message_id="7" user="owner" message_thread_id="12x"'))
+    expect(sends()).toEqual([{ chat_id: '42', text: 'ok' }])
   })
 
   it('BUILTIN_NAMES (the dashboard-down fallback) matches the registry builtins', () => {

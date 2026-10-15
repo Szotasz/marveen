@@ -903,6 +903,18 @@ export function initDatabase(dbPathOverride?: string): void {
   try { db.exec('ALTER TABLE agent_messages ADD COLUMN trace_id TEXT') } catch { /* exists */ }
   try { db.exec('ALTER TABLE agent_messages ADD COLUMN span_id TEXT') } catch { /* exists */ }
   try { db.exec('ALTER TABLE agent_messages ADD COLUMN parent_span_id TEXT') } catch { /* exists */ }
+  // Card 795d1f48 (a): an URGENT row, which the router types into a BUSY pane with the existing writer (the general form
+  // of the 71263d15 STOP path). Only an in-process writer (createAgentMessage with urgent) or a POST on a device key the
+  // install lists (MESSAGE_URGENT_DEVICE_IDS, routes/messages.ts) can set it; the shared dashboard token cannot, so a 1
+  // here is authenticated by construction. 0 for every older row.
+  try { db.exec('ALTER TABLE agent_messages ADD COLUMN urgent INTEGER NOT NULL DEFAULT 0') } catch { /* exists */ }
+  // Card 71263d15 (C), 795d1f48: 1 = a STOP an authenticated writer created. A "[STOP]" row
+  // reaches a BUSY pane (message-router-window.ts isStopMessage), so the privilege cannot rest on
+  // the content prefix plus the self-declared from: the shared dashboard token lets any holder
+  // POST from:"<main agent>". Only an in-process writer (createAgentMessage with stopAuthorized)
+  // sets it; POST /api/messages never does, so a 1 here is authenticated by construction.
+  // 0 for every older row.
+  try { db.exec('ALTER TABLE agent_messages ADD COLUMN stop_authorized INTEGER NOT NULL DEFAULT 0') } catch { /* exists */ }
 
   // INVARIANT: a row that says 'delivered' must carry a delivered_at.
   //
@@ -1361,6 +1373,31 @@ export function initDatabase(dbPathOverride?: string): void {
   try { db.exec('ALTER TABLE approvals ADD COLUMN content_hash TEXT') } catch { /* already exists */ }
   try { db.exec('ALTER TABLE approvals ADD COLUMN consumed_at INTEGER') } catch { /* already exists */ }
   db.exec(`CREATE INDEX IF NOT EXISTS idx_approvals_hash ON approvals(content_hash)`)
+  // f2c5edb0: the gate only sees a send it can read in the command text, so a
+  // letter sent by a script (ssh + a mailer run on another host) never flipped
+  // consumed_at and one approved row could authorize a second send. Such a
+  // sender now consumes on its own path (POST /api/approvals/:id/consume)
+  // BEFORE the letter goes out. consumed_by names the consumer, consumed_ref
+  // the Message-Id the sender generated up front, so the row says which letter
+  // used it. Rows consumed by the gate leave both NULL.
+  try { db.exec('ALTER TABLE approvals ADD COLUMN consumed_by TEXT') } catch { /* already exists */ }
+  try { db.exec('ALTER TABLE approvals ADD COLUMN consumed_ref TEXT') } catch { /* already exists */ }
+  // Every consume call leaves a row here, the refused ones too: a second send
+  // attempt on a used approval is exactly the event worth seeing afterwards.
+  // consumed_backfill is for a one-off data fix of rows a past send never
+  // consumed; it is written by an operator script, never by the API.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS approval_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      approval_id TEXT NOT NULL,
+      event TEXT NOT NULL CHECK(event IN ('consumed','consume_refused','consumed_backfill')),
+      reason TEXT,
+      actor TEXT,
+      ref TEXT,
+      created_at INTEGER NOT NULL DEFAULT (CAST(strftime('%s','now') AS INTEGER))
+    )
+  `)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_approval_events_approval ON approval_events(approval_id, created_at)`)
 
   // --- Control-bot custom commands (CMD920 3.12) ---
   // The owner's own slash commands. DB, not a file, so a later web admin writes
@@ -1622,13 +1659,20 @@ export function saveMemory(
   chatId: string,
   content: string,
   sector: 'semantic' | 'episodic',
-  topicKey?: string
+  topicKey?: string,
+  // Owner of the row. The column default is the literal 'marveen', but every
+  // per-agent reader filters on `agent_id = ?`, so on an install whose main
+  // agent id is anything else a row that relied on the default was invisible
+  // to that agent's views and search.
+  agentId: string = MAIN_AGENT_ID
 ): void {
   const now = Math.floor(Date.now() / 1000)
   const info = db.prepare(
-    'INSERT INTO memories (chat_id, topic_key, content, sector, salience, created_at, accessed_at) VALUES (?, ?, ?, ?, 1.0, ?, ?)'
-  ).run(chatId, topicKey ?? null, content, sector, now, now)
+    'INSERT INTO memories (chat_id, topic_key, content, sector, salience, created_at, accessed_at, agent_id) VALUES (?, ?, ?, ?, 1.0, ?, ?, ?)'
+  ).run(chatId, topicKey ?? null, content, sector, now, now, agentId)
   const id = Number(info.lastInsertRowid)
+  // The row now lands in the owner's list, so a cached copy of that list is stale.
+  memoryCacheInvalidate(agentId)
 
   // Fire-and-forget embedding, same as saveAgentMemory. Without this the rows
   // written through THIS path stayed unvectorised for good: the nightly daily
@@ -2421,6 +2465,15 @@ export interface KanbanCard {
   // is woken (kanban -> agent dispatch). NULL = never dispatched; the once-only
   // guard so re-dragging a card does not re-prompt the agent.
   dispatched_at: number | null
+  // Seconds this card has spent SITTING IN in_progress, summed over every stay
+  // there (kanban_card_events), plus the open stay up to now when it is in
+  // progress right now. This is wall-clock time in the column, NOT hours of
+  // work: nobody clocks in and out, so a card left in the column overnight
+  // counts the night. undefined = the card has no event rows at all (it
+  // predates the event table, or it has never moved), which is different from
+  // 0 and must stay distinguishable -- 0 would claim a measurement we do not
+  // have. Every reader must carry the distinction into what it renders.
+  active_seconds?: number
 }
 
 // A card as referenced FROM another card (blocker links). Deliberately narrow:
@@ -2489,12 +2542,19 @@ export function listKanbanCards(
   // assignees are typically lowercase (`marveen`); an exact match found neither spelling.
   if (opts.agent) { feltetelek.push('c.assignee = ? COLLATE NOCASE'); ertekek.push(opts.agent) }
   const where = feltetelek.length ? `WHERE ${feltetelek.join(' AND ')} ` : ''
-  return db
+  const cards = db
     .prepare(`SELECT c.rowid AS seq, c.*,
                      COALESCE((SELECT MAX(e.created_at) FROM kanban_card_events e
                                WHERE e.card_id = c.id), c.created_at) AS last_status_at
               FROM kanban_cards c ${where}ORDER BY c.sort_order ASC`)
     .all(...ertekek) as KanbanCard[]
+  // In-progress dwell time per card (see sumInProgressSeconds below).
+  const active = sumInProgressSeconds(cards.map((c) => c.id))
+  for (const c of cards) {
+    const v = active.get(c.id)
+    if (v !== undefined) c.active_seconds = v
+  }
+  return cards
 }
 
 // Whether any card -- archived included -- is assigned to `name`, case-insensitively.
@@ -2502,6 +2562,59 @@ export function listKanbanCards(
 // external contributors get cards too, and they must be filterable.
 export function kanbanAssigneeExists(name: string): boolean {
   return db.prepare('SELECT 1 FROM kanban_cards WHERE assignee = ? COLLATE NOCASE LIMIT 1').get(name) !== undefined
+}
+
+// How long each card has stood in in_progress, summed over every separate stay.
+//
+// Read off kanban_card_events, which records from_status -> to_status per move.
+// A stay opens on any event whose to_status is 'in_progress' and closes on the
+// next event for that card; a card sitting in the column right now has an open
+// stay that runs to `now`.
+//
+// WHAT THIS NUMBER IS NOT. It is wall-clock time in the column, not time worked.
+// An agent that picks a card up at 09:00 and hands it back at 17:00 having spent
+// twenty minutes on it scores eight hours here. We have no per-card clock-in, so
+// this is the honest upper bound and nothing better is available today; every
+// place that shows it says so.
+//
+// Cards with no event rows return NO entry rather than 0. The event table starts
+// mid-history, so "never moved, or moved before we logged moves" and "moved, and
+// spent zero time in progress" are genuinely different, and collapsing them into
+// 0 would dress an absent measurement up as a measured zero.
+export function sumInProgressSeconds(cardIds: string[]): Map<string, number> {
+  const out = new Map<string, number>()
+  if (cardIds.length === 0) return out
+  const rows = db
+    .prepare('SELECT card_id, to_status, created_at FROM kanban_card_events ORDER BY card_id, created_at ASC, id ASC')
+    .all() as { card_id: string; to_status: string; created_at: number }[]
+  const wanted = new Set(cardIds)
+  const now = Math.floor(Date.now() / 1000)
+  let openedAt: number | null = null
+  let current = ''
+  const flush = () => {
+    // An open stay at the end of a card's event list is still running: the card
+    // is in in_progress now, so it is charged up to the present moment.
+    if (current && wanted.has(current) && openedAt !== null) {
+      out.set(current, (out.get(current) ?? 0) + Math.max(0, now - openedAt))
+    }
+    openedAt = null
+  }
+  for (const r of rows) {
+    if (r.card_id !== current) {
+      flush()
+      current = r.card_id
+      // A card seen in the event table gets an entry even if it never entered
+      // in_progress: that is a measured zero, unlike a card with no rows at all.
+      if (wanted.has(current) && !out.has(current)) out.set(current, 0)
+    }
+    if (openedAt !== null) {
+      if (wanted.has(current)) out.set(current, (out.get(current) ?? 0) + Math.max(0, r.created_at - openedAt))
+      openedAt = null
+    }
+    if (r.to_status === 'in_progress') openedAt = r.created_at
+  }
+  flush()
+  return out
 }
 
 export function getKanbanCard(id: string): KanbanCard | undefined {
@@ -2636,6 +2749,17 @@ export function createKanbanCard(card: {
     card.assignee ?? null, card.priority ?? 'normal',
     card.project ?? null, card.parent_id ?? null, card.due_date ?? null, sortOrder, now, now
   )
+  // A card BORN in a status other than 'planned' gets its opening event row
+  // here, because nothing else will ever write one for it: kanban_card_events
+  // is only appended on a MOVE, so a card created straight into in_progress had
+  // no history at all and its time-in-progress read "not measured" forever.
+  // from_status is NULL, which is the honest value -- the card came into being
+  // here, it did not move from somewhere.
+  if (status !== 'planned') {
+    db.prepare(
+      'INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at) VALUES (?, ?, ?, ?, ?)'
+    ).run(card.id, null, status, card.assignee ?? null, now)
+  }
   // Filing a new subcard is work on the thread.
   touchAncestorChain(card.parent_id, now, card.id)
 }
@@ -2661,6 +2785,18 @@ export const KANBAN_WRITABLE_FIELDS = [
 // it" could not be answered: kanban_card_events holds status transitions only,
 // and updated_at moves on any write. Status keeps its own table.
 export const KANBAN_AUDITED_FIELDS = ['due_date', 'assignee', 'priority'] as const
+
+// dispatched_at guards ONE in_progress spell (one activation -> one wake-up
+// message), it is not a permanent tombstone. The rule every status path shares
+// -- moveKanbanCard, updateKanbanCard and scripts/kartya-es-ertesites.py (whose
+// test mirrors this function): a write that leaves the card anywhere but
+// in_progress clears it, whatever the previous status was, so the next pull to
+// in_progress wakes the assignee again and a row already stuck this way heals.
+// Only clearing is shared: the wake-up itself (fireKanbanDispatch) stays on the
+// /move route, so a PUT or the script never sends one.
+export function kanbanWriteClearsDispatch(nextStatus: string | null | undefined): boolean {
+  return nextStatus !== 'in_progress'
+}
 
 export function updateKanbanCard(
   id: string,
@@ -2689,6 +2825,12 @@ export function updateKanbanCard(
       `UPDATE kanban_cards SET title=?, description=?, test_steps=?, status=?, assignee=?, priority=?, project=?, parent_id=?, due_date=?, sort_order=?, updated_at=?, archived_at=?
        WHERE id=?`
     ).run(f.title, f.description, f.test_steps, f.status, f.assignee, f.priority, f.project, f.parent_id, f.due_date, f.sort_order, f.updated_at, f.archived_at, id).changes > 0
+    // Same dispatched_at rule as moveKanbanCard (kanbanWriteClearsDispatch). Before,
+    // a card the PUT took out of in_progress kept its stamp, and the next /move to
+    // in_progress woke nobody. The PUT only clears: it never dispatches.
+    if (changed && kanbanWriteClearsDispatch(f.status)) {
+      db.prepare('UPDATE kanban_cards SET dispatched_at=NULL WHERE id=?').run(id)
+    }
     if (changed) {
       touchAncestorChain(f.parent_id, now, id)
       // Re-parenting is activity on BOTH threads: the old one lost a card, the new one gained it.
@@ -2743,21 +2885,18 @@ export function moveKanbanCard(id: string, status: KanbanCard['status'], sortOrd
   const row = db.prepare('SELECT status, parent_id FROM kanban_cards WHERE id=?').get(id) as
     { status: string; parent_id: string | null } | undefined
   const prev = row?.status
-  // dispatched_at guards ONE in_progress spell (one activation -> one wake-up
-  // message), it is not a permanent tombstone. Nothing used to clear it, so a
-  // card pulled to in_progress and put BACK burned its dispatch forever: the
-  // board showed it alive while the next pull woke nobody. Clearing it on
-  // every move that does not land in in_progress re-arms the next activation --
-  // and heals a row already stuck this way, since the clear does not depend on
-  // the previous status.
+  // dispatched_at: nothing used to clear it, so a card pulled to in_progress and
+  // put BACK burned its dispatch forever: the board showed it alive while the
+  // next pull woke nobody. The clear follows kanbanWriteClearsDispatch, the rule
+  // the whole-card PUT and the card script share.
   // ONE TRANSACTION for the move and the row it owes, as in updateKanbanCard (card f6fba9ec, X16): the UPDATE, the
   // ancestor stamps and the status event either all happen or none does, so a row insert that throws cannot leave a
   // card moved with no row saying who moved it.
   return db.transaction((): boolean => {
     const changed = db.prepare(
-      status === 'in_progress'
-        ? 'UPDATE kanban_cards SET status=?, sort_order=?, updated_at=? WHERE id=?'
-        : 'UPDATE kanban_cards SET status=?, sort_order=?, updated_at=?, dispatched_at=NULL WHERE id=?'
+      kanbanWriteClearsDispatch(status)
+        ? 'UPDATE kanban_cards SET status=?, sort_order=?, updated_at=?, dispatched_at=NULL WHERE id=?'
+        : 'UPDATE kanban_cards SET status=?, sort_order=?, updated_at=? WHERE id=?'
     ).run(status, sortOrder, now, id).changes > 0
     if (changed) touchAncestorChain(row?.parent_id, now, id)
     if (changed && prev !== undefined && prev !== status) {
@@ -3416,6 +3555,12 @@ export interface AgentMessage {
   trace_id: string | null
   span_id: string | null
   parent_span_id: string | null
+  // Card 795d1f48 (a): 1 = an authenticated urgent row (see the migration). Optional in the type only because rows built
+  // in code before the column (tests, fixtures) do not carry it; every row read from the table has it.
+  urgent?: number
+  // Card 71263d15 (C): 1 = a STOP from an authenticated writer (see the migration). Optional in the type
+  // only because rows built in code before the column (tests, fixtures) do not carry it.
+  stop_authorized?: number
 }
 
 export function createAgentMessage(
@@ -3424,11 +3569,18 @@ export function createAgentMessage(
   content: string,
   originNote?: string | null,
   traceCtx?: { trace_id: string; span_id: string; parent_span_id: string | null } | null,
+  opts?: { urgent?: boolean; stopAuthorized?: boolean },
 ): AgentMessage {
   const now = Math.floor(Date.now() / 1000)
+  // Card 795d1f48 (a): urgent only when a caller asks for it; the callers that may are the in-process writers and the
+  // listed device keys of POST /api/messages.
+  const urgent = opts?.urgent === true ? 1 : 0
+  // Card 71263d15 (C): STOP authority only when an in-process caller asks for it; POST /api/messages never does
+  // (a listed device key's STOP rides on its urgent flag instead: message-router-window.ts isStopMessage).
+  const stopAuthorized = opts?.stopAuthorized === true ? 1 : 0
   const info = db.prepare(
-    'INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at, origin_note, trace_id, span_id, parent_span_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
-  ).run(from, to, content, 'pending', now, originNote ?? null, traceCtx?.trace_id ?? null, traceCtx?.span_id ?? null, traceCtx?.parent_span_id ?? null)
+    'INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at, origin_note, trace_id, span_id, parent_span_id, urgent, stop_authorized) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+  ).run(from, to, content, 'pending', now, originNote ?? null, traceCtx?.trace_id ?? null, traceCtx?.span_id ?? null, traceCtx?.parent_span_id ?? null, urgent, stopAuthorized)
   return {
     id: Number(info.lastInsertRowid),
     from_agent: from, to_agent: to, content, status: 'pending',
@@ -3437,6 +3589,8 @@ export function createAgentMessage(
     trace_id: traceCtx?.trace_id ?? null,
     span_id: traceCtx?.span_id ?? null,
     parent_span_id: traceCtx?.parent_span_id ?? null,
+    urgent,
+    stop_authorized: stopAuthorized,
   }
 }
 
@@ -3900,7 +4054,7 @@ export function getDispatchedPendingStats(
  * The message id of the newest inbound that has no outbound after it, or null
  * when nothing is open. Same rule as hasOpenInboundQuestion, but it hands back
  * WHICH message, so a caller can ask whether the agent has already been shown
- * it (see openQuestionBlocks in the restart-gate runner).
+ * it (see openQuestionBlocks in web/open-question.ts).
  *
  * Returns '' for an open question whose row carries no message id: the caller
  * cannot match that against a marker, and the safe reading of "unknown" is
@@ -5404,6 +5558,12 @@ export interface Approval {
   requested_at: number
   resolved_at: number | null
   resolved_by: string | null
+  // f2c5edb0: who consumed the approval and with which letter; they pair with
+  // consumed_at below. Optional in the type only: a row read from the DB always
+  // carries both (NULL until consumed); hand-built literals made before these
+  // columns existed need not list them.
+  consumed_by?: string | null
+  consumed_ref?: string | null
   content_hash: string | null
   consumed_at: number | null
 }
@@ -5443,6 +5603,8 @@ export function createApproval(params: {
     requested_at: now,
     resolved_at: null,
     resolved_by: null,
+    consumed_by: null,
+    consumed_ref: null,
     content_hash: params.content_hash ?? null,
     consumed_at: null,
   }
@@ -5509,6 +5671,74 @@ export function expireTimedOutApprovals(): number {
     UPDATE approvals SET status = 'timeout', resolved_at = ?
     WHERE status = 'pending' AND timeout_at IS NOT NULL AND timeout_at <= ?
   `).run(now, now).changes
+}
+
+// f2c5edb0: why a consume was refused. Classified AFTER the write failed, so
+// the write itself never depends on a read that could go stale.
+export type ApprovalConsumeRefusal =
+  | 'not_found' | 'wrong_category' | 'already_consumed' | 'not_approved' | 'hash_mismatch' | 'expired'
+
+export interface ApprovalConsumeResult {
+  ok: boolean
+  reason?: ApprovalConsumeRefusal
+  approval?: Approval
+}
+
+// One-shot consumption of an email_send approval by the SEND path itself
+// (f2c5edb0). The single conditional UPDATE is the whole decision: only the
+// call that flips consumed_at from NULL wins, so two concurrent senders can
+// never both get a yes. The conditions mirror the gate's find_and_consume
+// (scripts/hooks/email-approval-gate.py): same category, approved, unconsumed,
+// the exact content anchor, resolved inside the time window. A row the gate
+// consumed is refused here and vice versa -- both read consumed_at IS NULL.
+export function consumeApproval(params: {
+  id: string
+  contentHash: string
+  consumer: string
+  messageId?: string | null
+  windowSeconds: number
+  nowS?: number
+}): ApprovalConsumeResult {
+  const now = params.nowS ?? Math.floor(Date.now() / 1000)
+  const ref = params.messageId ?? null
+  return db.transaction((): ApprovalConsumeResult => {
+    const changes = db.prepare(`
+      UPDATE approvals SET consumed_at = ?, consumed_by = ?, consumed_ref = ?
+       WHERE id = ? AND category = 'email_send' AND status = 'approved' AND consumed_at IS NULL
+         AND content_hash = ? AND resolved_at IS NOT NULL AND resolved_at >= ?
+    `).run(now, params.consumer, ref, params.id, params.contentHash, now - params.windowSeconds).changes
+    const event = db.prepare(`
+      INSERT INTO approval_events (approval_id, event, reason, actor, ref, created_at) VALUES (?, ?, ?, ?, ?, ?)
+    `)
+    const row = getApproval(params.id)
+    if (changes === 1) {
+      event.run(params.id, 'consumed', null, params.consumer, ref, now)
+      return { ok: true, approval: row }
+    }
+    let reason: ApprovalConsumeRefusal
+    if (!row) reason = 'not_found'
+    else if (row.category !== 'email_send') reason = 'wrong_category'
+    else if (row.consumed_at != null) reason = 'already_consumed'
+    else if (row.status !== 'approved') reason = 'not_approved'
+    else if (row.content_hash !== params.contentHash) reason = 'hash_mismatch'
+    else reason = 'expired'
+    if (row) event.run(params.id, 'consume_refused', reason, params.consumer, ref, now)
+    return { ok: false, reason, approval: row }
+  })()
+}
+
+export interface ApprovalEvent {
+  id: number
+  approval_id: string
+  event: 'consumed' | 'consume_refused' | 'consumed_backfill'
+  reason: string | null
+  actor: string | null
+  ref: string | null
+  created_at: number
+}
+
+export function listApprovalEvents(approvalId: string): ApprovalEvent[] {
+  return db.prepare('SELECT * FROM approval_events WHERE approval_id = ? ORDER BY id').all(approvalId) as ApprovalEvent[]
 }
 
 // --- OTel Distributed Tracing (card def5a189) ---

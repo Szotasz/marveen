@@ -45,7 +45,12 @@ set -uo pipefail
 
 # base dir = the parent of this script's dir (scripts/..), so it works from any CWD / any install
 BASE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PORT="${MARVEEN_WEB_PORT:-3420}"
+# Dashboard port, the doctor.sh chain: MARVEEN_WEB_PORT, then WEB_PORT from the
+# environment, then WEB_PORT from this install's .env, then 3420. An agent's tmux
+# session sets neither variable, so on an install with a non-default WEB_PORT the
+# env-only lookup sent every message to 3420 (#1869).
+PORT="${MARVEEN_WEB_PORT:-${WEB_PORT:-$(sed -n 's/^WEB_PORT=//p' "$BASE/.env" 2>/dev/null | head -1 | tr -d ' "'"'"''; true)}}"
+PORT="${PORT:-3420}"
 API_BASE="${MARVEEN_API_BASE:-http://localhost:${PORT}}"
 API_BASE="${API_BASE%/}"
 TOKEN_FILE="${MARVEEN_TOKEN_FILE:-$BASE/store/.dashboard-token}"

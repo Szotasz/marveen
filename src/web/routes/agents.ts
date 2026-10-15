@@ -4,6 +4,7 @@ import { homedir, platform, tmpdir } from 'node:os'
 import { execSync } from 'node:child_process'
 import { logger } from '../../logger.js'
 import { beginRestart, endRestart } from '../restart-lock.js'
+import { restartOptsFromBody } from '../restart-wake.js'
 import { isModelProfileId, MODEL_PROFILE_IDS } from '../../model-profiles.js'
 import { MAIN_AGENT_ID, currentBotName, PROJECT_ROOT } from '../../config.js'
 import { createAgentMessage, listPendingChannelRequests, updateChannelRequestStatus, getDb, claimPendingForAgent, markMessageFailed, countNewerMessagesFromSameSender,
@@ -118,6 +119,7 @@ import {
   capturePane,
   delay,
   resolveAgentProvider,
+  sharedEnvAuthKeysCopiedTo,
 } from '../agent-process.js'
 import { addDesiredAgent, getDesiredAgents, removeDesiredAgent } from '../agent-desired-state.js'
 import { RemoteStatusCache } from '../remote-status-cache.js'
@@ -463,6 +465,10 @@ export interface AgentSummary {
    *  drives the dashboard "reauth needed" badge + one-click /login button. */
   needsReauth: boolean
   reauthReason?: string
+  /** Auth-path env names (never values) the shared ~/.claude/settings.json
+   *  copies into this agent's isolated config dir -- drives the dashboard
+   *  warning. Empty when there is nothing to warn about. */
+  sharedEnvAuthKeys: string[]
 }
 
 interface AgentDetail extends AgentSummary {
@@ -596,6 +602,7 @@ function getAgentSummary(name: string): AgentSummary {
     contextTokens: running ? readContextTokensFromProjectDir(transcript.workingDir, transcript.configDir) : null,
     needsReauth: reauth.needsReauth,
     reauthReason: reauth.reason,
+    sharedEnvAuthKeys: sharedEnvAuthKeysCopiedTo(name),
   }
 }
 
@@ -716,7 +723,8 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
         { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' },
         { id: 'claude-fable-5', label: 'Fable 5' },
         { id: 'claude-opus-4-8[1m]', label: 'Opus 4.8 (1M kontextus)' },
-        { id: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5 (leggyorsabb)' },
+        { id: 'claude-haiku-5-5', label: 'Haiku 5.5 (legújabb Haiku, leggyorsabb)', minCli: CLAUDE_MODEL_MIN_CLI['claude-haiku-5-5'].minCli },
+        { id: 'claude-haiku-4-5-20251001', label: 'Haiku 4.5' },
       ],
       deepseek: hasDeepseek
         ? [
@@ -2338,9 +2346,12 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       return true
     }
     // Optional { "fresh": true } body -> no `--continue` (see /start note).
-    let restartFresh = false
-    try { restartFresh = JSON.parse((await readBody(req)).toString() || '{}').fresh === true } catch {}
-    const result = await restartAgentProcess(name, { fresh: restartFresh })
+    // RESTARTWAKE927: a --continue restart wakes the agent once it is up; a
+    // caller that wakes the agent itself can send { "wake": false } (no caller
+    // in this repository does today). See restart-wake.ts.
+    let restartBody = ''
+    try { restartBody = (await readBody(req)).toString() } catch {}
+    const result = await restartAgentProcess(name, restartOptsFromBody(restartBody))
     if (result.ok) { json(res, { ok: true }); return true }
     json(res, { error: result.error }, 400)
     return true
