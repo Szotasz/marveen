@@ -55,6 +55,8 @@ Két, csak hozzáírt tábla rögzíti, mi változott egy kártyán, és ki vál
 
 Mindkét írás (`PUT /api/kanban/:id` és `POST /api/kanban/:id/move`) `actor`-a szöveg vagy `null`; más típust 400-zal utasít el, mielőtt bármit írna, és az írás a soraival egy tranzakció. Az üres vagy csak szóközből álló actor hiányzónak számít: ilyenkor a dashboard-munkamenet felhasználója kerül a sorba, a tokenes hívóé névtelen (`null`) marad.
 
+A `POST /api/kanban/:id/move` opcionálisan `expected_status`-t is elfogad (compare-and-set). Ha meg van adva, a mozgatás csak akkor történik meg, ha a kártya aktuális státusza ezzel egyezik, az ellenőrzés és az írás egyetlen utasítás; különben semmi nem változik, és a válasz 409 `{error: "status_conflict", current_status, expected_status}`. Ismeretlen `expected_status` érték 400, hiányzó kártya továbbra is 404, a mező nélkül pedig a mozgatás feltétel nélküli, mint eddig.
+
 A kettő szándékosan külön tábla: a `kanban_card_events` minden olvasója (köztük a beakadt kártyák jelzése és a státusz-kor lekérdezései) az ottani sort státusz-átmenetnek veszi. A flotta-átvitel a `kanban_card_events`-et átviszi, a `kanban_card_field_events`-et nem.
 
 ### WIP-limit (folyamatban lévő kártyák korlátja) -- technikai részletek
