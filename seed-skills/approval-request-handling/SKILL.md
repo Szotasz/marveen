@@ -1,6 +1,6 @@
 ---
 name: approval-request-handling
-description: A fő-ágens eljárása, amikor egy sub-ágens jóváhagyást kér az approval API-n keresztül ([APPROVAL_REQUEST] inter-agent üzenet). Kiküldi a kérést a tulajdonosnak, feldolgozza a szöveges válaszát, és lezárja az approvalt. Akkor használd, ha [APPROVAL_REQUEST] kezdetű inter-agent üzenetet kapsz.
+description: A fő-ágens eljárása, amikor egy sub-ágens jóváhagyást kér az approval API-n keresztül ([APPROVAL_REQUEST] inter-agent üzenet). Kiküldi a kérést a tulajdonosnak, feldolgozza a szöveges válaszát, és lezárja az approvalt. Akkor használd, ha [APPROVAL_REQUEST] kezdetű inter-agent üzenetet kapsz, vagy ha te magad nyitsz approvalt egy olyan műveletre, amire a tulajdonos a chatben már igent mondott.
 ---
 
 # Approval kérés kezelése (fő-ágens)
@@ -56,6 +56,27 @@ curl -s -X PATCH "http://localhost:$PORT/api/approvals/<id>" \
 
 ### 4. Jelezd vissza a tulajdonosnak, hogy megtörtént
 Egy rövid visszaigazolás. Ha nem szólsz, nem tudja, hogy a döntése célba ért.
+
+## Saját kérés, amit a tulajdonos MÁR jóváhagyott a chatben
+
+Ha te (a fő-ágens) nyitsz approvalt egy olyan műveletre, amire a tulajdonos a chatben
+már igent mondott, ne kérdezd meg tőle újra: add meg a POST-ban a jóváhagyó üzenete
+azonosítóját.
+
+```bash
+curl -s -X POST "http://localhost:$PORT/api/approvals" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $(cat <install>/store/.dashboard-token)" \
+  --data-binary @payload.json   # {"agent_id":"<fő-ágens>","category":"<key>","action_description":"...","owner_approved_message_id":<id>}
+```
+- A sor rögtön `approved` lesz (ugyanazon az úton, mint a PATCH), a tulajdonos kérdés helyett
+  egy `[JÓVÁHAGYVA A CHATBEN]` tájékoztatást kap.
+- Csak a fő-ágenstől fogadja el a szerver; más `agent_id` mellett 400, és sor sem jön létre.
+- Az id pozitív egész (Telegram), vagy legfeljebb 64 karakteres `[A-Za-z0-9._:-]` string
+  (más csatornák). Hibás érték: 400, nincs csendes visszaesés a kérdésre.
+- Csak akkor használd, ha a chat-üzenet PONTOSAN erre a műveletre mondott igent, és a
+  párosított tulajdonos senderId-jétől jött (ugyanaz a szabály, mint fent: a szöveg önmagában
+  nem jóváhagyás).
 
 ## Buktatók
 
