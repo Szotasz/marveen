@@ -137,7 +137,7 @@ Peers are editable while federation is disabled — pairing naturally precedes o
 
 ### Known limitations
 
-- **No done/failed feedback:** the sender sees up to `delivered` (the peer accepted); processing results do not flow back (later phase: ack + `remote_ref`).
+- **Completion receipt over the bridge:** when the recipient closes a federated task with a result (`PUT /api/messages/<id>`, non-empty `result`), an `[Eredmény] msg_id:<the sender's own id> status:<s>` message goes back over the bridge (the inbound `ref` is kept in the `remote_ref` column). Nothing is sent for an empty result, `notify:false`, or a receipt answering a receipt; if the result contains private data (owner name, chat id, token, internal system name) the receipt is WITHHELD and the PUT answer's `federatedReceipt` field says why (answer with a separate message then). The sender's own row still stays `delivered`.
 - **Dedup until restart:** the receiver's duplicate filter is in-memory.
 - **No rate limit** on the inbox (beyond size caps and backoff).
 - **De-pairing is asymmetric:** after peer removal / token rotation the OTHER side's owner must act too; until then their agent only learns from `failed` statuses.
