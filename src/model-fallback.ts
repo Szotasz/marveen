@@ -78,16 +78,54 @@ const USAGE_LIMIT_BANNER_REGION_LINES = 15
 const USAGE_LIMIT_RX =
   /(usage limit reached|reached your (?:usage|weekly) limit|hit (?:your|the) (?:session|usage) limit|approaching (?:your )?(?:\w+ )?(?:usage|weekly) limit|usage limit (?:will )?reset|limit will reset at|\d+-hour limit reached|(?:weekly|session) limit reached|upgrade to increase your usage limit)/i
 
+// The exhausted-extra-usage reply. Measured on the live install: the main
+// session answered 2798 turns with exactly this synthetic API-error message
+// between 2026-09-20T02:19Z and 2026-09-21T03:59Z (transcript records with
+// isApiErrorMessage=true, error="rate_limit", apiErrorStatus=429), and
+// USAGE_LIMIT_RX matched none of them. Observed wordings, verbatim:
+//   "You're out of extra usage · resets 6am (Europe/Budapest)"            (2609)
+//   "You're out of extra usage · resets Sep 21, 6am (Europe/Budapest)"    (189)
+// The phrase itself is easy to quote in ordinary conversation (an agent
+// reporting this very bug writes it), so the match is anchored to the banner
+// SHAPE: the phrase opens its own line (after indentation and the "⎿" / "●"
+// glyph Claude Code draws before an API-error reply) and the line either ends
+// there or continues only with the "· resets ..." tail. A sentence that merely
+// mentions it mid-line, or continues past it ("..., so the heartbeat ..."),
+// does not match. Kept separate from USAGE_LIMIT_RX because it needs the
+// multiline flag, and the older alternatives must keep matching mid-line.
+const EXTRA_USAGE_EXHAUSTED_RX =
+  /^[\s⎿●>]*you(?:['’]re| are) out of extra usage[ \t]*(?:[·∙•][^\n]*)?$/im
+
 /**
  * True when the live pane shows a Claude *plan usage-limit* banner (not a
  * transient API 429). Pure + dependency-free. Restricted to the bottom region
  * so quoted text in scrollback or a reply body cannot trigger it.
  */
 export function detectsUsageLimit(pane: string): boolean {
-  if (!pane || !pane.trim()) return false
-  const lines = pane.split('\n')
-  const region = lines.slice(-USAGE_LIMIT_BANNER_REGION_LINES).join('\n')
-  return USAGE_LIMIT_RX.test(region)
+  return usageLimitBannerLine(pane) !== null
+}
+
+/**
+ * The banner line detectsUsageLimit() matched, trimmed and stripped of the
+ * leading pane glyphs (e.g. "You're out of extra usage · resets 6am
+ * (Europe/Budapest)"), or null when there is none. Lets a caller key a limit
+ * episode by its wording and read the reset tail without re-deriving the
+ * match. Same live-region restriction as detectsUsageLimit.
+ */
+export function usageLimitBannerLine(pane: string): string | null {
+  if (!pane || !pane.trim()) return null
+  const lines = pane.split('\n').slice(-USAGE_LIMIT_BANNER_REGION_LINES)
+  // Bottom-up: the newest banner is the one that describes the live state.
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i]
+    // Each regex is tested on a single line here. USAGE_LIMIT_RX has no
+    // multi-line alternative, and EXTRA_USAGE_EXHAUSTED_RX is line-anchored,
+    // so this is the same verdict the old whole-region test gave.
+    if (USAGE_LIMIT_RX.test(line) || EXTRA_USAGE_EXHAUSTED_RX.test(line)) {
+      return line.replace(/^[\s⎿●>]+/, '').trim()
+    }
+  }
+  return null
 }
 
 /**

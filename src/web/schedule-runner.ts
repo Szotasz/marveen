@@ -99,6 +99,7 @@ import { detectsFirstRunGate, detectPaneState, overfullParkedInputTail, type Pan
 import { getInjectedPrompt, matchesInjectedPrompt, type InjectedPromptRecord } from './injected-prompt-registry.js'
 import { withSessionSendLock } from './session-send-lock.js'
 import { startSleepWakeDetector, systemSleptBetween } from './sleep-wake-detector.js'
+import { decideUsageLimitGate, USAGE_LIMIT_PROBE_INTERVAL_MS, type UsageLimitEpisode } from '../usage-limit-gate.js'
 
 // How many bare-Enter attempts the post-send resubmit tries before escalating
 // to a clear + re-inject, and the hard cap after which it gives up.
@@ -1384,6 +1385,63 @@ const lastMcpMissing = new Map<string, string[]>()
 // them on purpose, the agent message is an interrupt.
 const ambiguousTargetAlerted = new Set<string>()
 
+// Per target pane (host + session), the usage-limit episode the
+// pre-injection gate is tracking. In-memory on purpose: a dashboard restart
+// forgets it, which costs at most one repeated owner notice and one extra
+// 30-minute skip window -- never a missed delivery. See usage-limit-gate.ts.
+const usageLimitEpisodes = new Map<string, UsageLimitEpisode>()
+
+// One owner notice per session per limit episode (the gate decides when). Same
+// sink and same fail-quiet rules as the other scheduler alerts: no token or no
+// owner chat is a WARN, never a throw into the fire path.
+function sendUsageLimitNotice(agentName: string, session: string, banner: string, skipUntilMs: number): void {
+  const token = resolveSchedulerAlertToken()
+  const ownerChat = token ? resolveSchedulerOwnerChat() : null
+  if (!token || !ownerChat) {
+    logger.warn({ agent: agentName, session, provider: CHANNEL_PROVIDER }, 'usage-limit notice suppressed: no channel bot token or owner chat')
+    return
+  }
+  const probeAt = new Date(skipUntilMs).toLocaleTimeString('hu-HU', { hour: '2-digit', minute: '2-digit', timeZone: APP_TZ })
+  const text = [
+    `[${BOT_NAME} scheduler] A(z) ${agentName} session kifogyott a keretből, a képernyőjén ez áll: "${banner}"`,
+    'Az ütemezett feladatokat nem küldöm bele, mert úgysem tudná lefuttatni őket: a sűrűn futó (skipIfBusy) feladatok "skipped-usage-limit" státusszal kimaradnak, a többi "usage-limited" okkal a várakozó sorba kerül, és a próba vagy a keret visszatérése után lefut.',
+    `${Math.round(USAGE_LIMIT_PROBE_INTERVAL_MS / 60_000)} percenként egy feladatot átengedek próbának (a következőt ${probeAt} után); amint a keret visszajön, a szokásos rend helyreáll.`,
+  ].join('\n')
+  ;(async () => {
+    try {
+      await sendSchedulerAlertMessage(token, ownerChat, text)
+      logger.info({ agent: agentName, session }, 'usage-limit notice sent')
+    } catch (err) {
+      logger.warn({ err, agent: agentName, session }, 'usage-limit notice delivery failed')
+    }
+  })()
+}
+
+// The pre-injection usage-limit gate for one target pane. Returns true when the
+// prompt must NOT be injected. Fail-open: a failed capture injects (and says so).
+function usageLimitHoldsInjection(task: ScheduledTask, agentName: string, session: string, host: string | null, now: number): boolean {
+  const key = `${host ?? ''}|${session}`
+  const pane = capturePane(session, host)
+  if (pane == null) {
+    logger.warn({ task: task.name, agent: agentName, session }, 'usage-limit gate: pane capture failed, injecting without the check')
+  }
+  const decision = decideUsageLimitGate({ pane, nowMs: now, episode: usageLimitEpisodes.get(key) ?? null })
+  if (decision.episode) usageLimitEpisodes.set(key, decision.episode)
+  else usageLimitEpisodes.delete(key)
+  if (decision.action === 'inject') {
+    if (decision.reason === 'probe') {
+      logger.warn({ task: task.name, agent: agentName, session }, 'usage-limit gate: banner still on screen after the skip window, letting one prompt through as a probe')
+    }
+    return false
+  }
+  logger.warn(
+    { task: task.name, agent: agentName, session, reason: decision.reason, banner: decision.banner, skipUntil: new Date(decision.skipUntilMs).toISOString() },
+    'usage-limit gate: target session shows a usage-limit banner, NOT injecting the scheduled prompt',
+  )
+  if (decision.notify) sendUsageLimitNotice(agentName, session, decision.banner, decision.skipUntilMs)
+  return true
+}
+
 function mcpMissingReason(taskName: string, agentName: string): string {
   const missing = lastMcpMissing.get(`${taskName}@${agentName}`) ?? []
   return missing.length ? `mcp-missing:${missing.join(',')}` : 'mcp-missing'
@@ -1433,7 +1491,7 @@ async function attemptFireTask(
   now: number,
   preCheckPrefix?: string,
   lateCatchUpMs?: number,
-): Promise<'fired' | 'busy' | 'missing' | 'starting' | 'error' | 'mcp-missing' | 'first-run' | 'respawning'> {
+): Promise<'fired' | 'busy' | 'missing' | 'starting' | 'error' | 'mcp-missing' | 'first-run' | 'respawning' | 'usage-limited'> {
   const { session, host } = resolveTaskTarget(task, agentName)
   // resolveTaskTarget() computes this internally but does not expose it (it
   // only returns {session, host}) -- recompute the same cheap check here
@@ -1564,6 +1622,15 @@ async function attemptFireTask(
     }
     logger.info({ task: task.name, agent: agentName, session }, 'forceSend=true, bypassing busy-state check')
   }
+
+  // Usage-limit gate. An exhausted session sits at an idle
+  // prompt, so it passes the readiness check above, and every prompt typed into
+  // it is answered "You're out of extra usage" without running: 2798 of them in
+  // 26 hours on one live install. Checked after readiness so a busy pane stays a plain
+  // 'busy', and for forceSend too -- an exhausted session cannot run a forced
+  // prompt either. Heartbeats and tasks alike; the gate lets one probe through
+  // per window, so a stale banner cannot starve the session.
+  if (usageLimitHoldsInjection(task, agentName, session, host, now)) return 'usage-limited'
 
   // MCP manifest pre-check (requires.mcp_servers, Roitman 22.5): a required
   // server with no live process under the target session defers the task with
@@ -3069,6 +3136,23 @@ export function startScheduleRunner(): NodeJS.Timeout {
           // under two minutes, so the retry lands within a tick or two; a
           // dropped tick would make the respawn itself cost a scheduled run.
           insertPendingTaskRetryIfNew(task.name, agentName, now, 'respawning')
+        } else if (result === 'usage-limited') {
+          if (current.skipIfBusy && !current.forceSend) {
+            // Short-cadence task (same rule as 'busy' above): recorded, not
+            // queued. The next tick is already on the way and evaluates the
+            // pane on its own; the gate has told the owner once. Marked as run
+            // so the catch-up window does not re-fire it.
+            scheduleLastRun.set(task.name, now)
+            persistScheduleLastRun()
+            appendTaskRun(task.name, agentName, 'skipped-usage-limit')
+          } else {
+            // Daily/weekly task: queued like 'busy'. The banner may be a STALE
+            // one (it stays on screen after the limit lifts), and the retry
+            // loop goes through the same gate, so the occurrence is delivered
+            // by the gate's next probe (or as soon as the banner is gone)
+            // instead of being lost for the day.
+            insertPendingTaskRetryIfNew(task.name, agentName, now, 'usage-limited')
+          }
         } else if (result === 'first-run') {
           // Also exempt from skipIfBusy: a session parked on a first-run
           // dialog (fresh install) never frees up between ticks the way a
