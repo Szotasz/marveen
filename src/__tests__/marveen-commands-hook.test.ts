@@ -295,6 +295,16 @@ describe('marveen-commands.py', () => {
     expect(text).toMatch(/^Claude keret-állapot:\n- 5 órás: 70% van hátra \(30% elhasználva\), megújul: [^\n]+\n\nCodex: nem mérhető \(no ~\/\.codex\/sessions rollout files found\)\.\n\nToken-könyvelés: 1$/)
   })
 
+  it('/usage: Codex never ran on this host (reason no_sessions) gets its own Hungarian line, not "nem mérhető"', async () => {
+    const text = await usageWith({
+      claude: CLAUDE_OK,
+      codex: { ok: false, source: 'authoritative', reason: 'no_sessions', error: 'no ~/.codex/sessions rollout files found' },
+    })
+    expect(text).toMatch(/\n\nCodex: ezen a gépen még nem futott, nincs mért adat\.\n\nToken-könyvelés: 1$/)
+    expect(text).not.toMatch(/nem mérhető/)
+    expect(text).not.toMatch(/rollout files found/)
+  })
+
   it('/usage: a snapshot without the codex key says so instead of dropping the block', async () => {
     const text = await usageWith({ claude: CLAUDE_OK })
     expect(text).toMatch(/\n\nCodex: nem mérhető \(a lekérdezés nem adott Codex-adatot\)\.\n\nToken-könyvelés: 1$/)

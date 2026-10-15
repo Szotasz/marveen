@@ -264,7 +264,14 @@ def collect_codex():
     try:
         files = glob.glob(os.path.expanduser("~/.codex/sessions/*/*/*/rollout-*.jsonl"))
         if not files:
-            raise FileNotFoundError("no ~/.codex/sessions rollout files found")
+            # Not a measurement failure: Codex has simply never run on this
+            # host, which is the normal case on most installs. A separate,
+            # stable field says so (reason="no_sessions"), so consumers do not
+            # have to match the English error text.
+            result["ok"] = False
+            result["reason"] = "no_sessions"
+            result["error"] = "no ~/.codex/sessions rollout files found"
+            return result
         newest = max(files, key=os.path.getmtime)
 
         rate_limits = None

@@ -980,6 +980,27 @@ class TestCodexSnapshotFreshness(unittest.TestCase):
             self.assertIsNone(result["snapshot_at"])
             self.assertIsNone(result["snapshot_age_hours"])
 
+    def test_collect_codex_without_sessions_names_reason_no_sessions(self):
+        # Codex never ran on this host (the common case): ok False, and a
+        # stable reason field the /usage reply keys on instead of the error text.
+        with patch.object(uc.glob, "glob", return_value=[]):
+            result = uc.collect_codex()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result.get("reason"), "no_sessions")
+        self.assertIn("no ~/.codex/sessions rollout files found", result.get("error", ""))
+
+    def test_collect_codex_real_failure_has_no_no_sessions_reason(self):
+        # A real failure (rollout present, no rate_limits) must not be labelled
+        # as "Codex never ran".
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "rollout-x.jsonl")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(json.dumps({"type": "event", "payload": {"rate_limits": {}}}) + "\n")
+            with patch.object(uc.glob, "glob", return_value=[path]):
+                result = uc.collect_codex()
+        self.assertFalse(result["ok"])
+        self.assertNotEqual(result.get("reason"), "no_sessions")
+
     def _snapshot(self, codex):
         return {
             "generated_at_local": "2026-09-11 14:00:00 CEST",

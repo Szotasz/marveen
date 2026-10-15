@@ -383,6 +383,10 @@ def format_codex_usage(snapshot, now=None):
     if "codex" not in snapshot:
         return "Codex: nem mérhető (a lekérdezés nem adott Codex-adatot)."
     cx = snapshot.get("codex") or {}
+    # Codex never ran on this host: not an error, so not "nem mérhető". Keyed
+    # on the collector's reason field, never on its (English) error text.
+    if cx.get("reason") == "no_sessions":
+        return "Codex: ezen a gépen még nem futott, nincs mért adat."
     if not cx.get("ok"):
         reason = cx.get("error") or cx.get("source") or "ismeretlen hiba"
         return f"Codex: nem mérhető ({reason})."
