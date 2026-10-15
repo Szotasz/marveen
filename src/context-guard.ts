@@ -701,7 +701,15 @@ export interface GuardDecision {
 // How long await-ready waits for the restarted session to accept the resume
 // prompt before giving up (the agent still comes up fine -- it just starts
 // without the injected pointer; kanban/memory hooks remain).
-export const READY_TIMEOUT_MS = 5 * 60_000
+//
+// 20 minutes, not 5: the runner sweeps every 5 minutes, so a
+// 5-minute deadline gave the fresh session exactly ONE readiness check, and a
+// session busy at that sweep lost its resume (3 of 13 restarts, 2026-09-28).
+// 20 minutes is four sweeps and stays inside PENDING_RESUME_TTL_MS (30 min),
+// the edge of the persisted obligation. A resume re-armed after a dashboard
+// restart gets that TTL edge as its deadline, so it may wait up to 10 minutes
+// longer than an uninterrupted one, but never past the TTL.
+export const READY_TIMEOUT_MS = 20 * 60_000
 
 function cooldown(nowMs: number, cfg: ContextGuardConfig, reason: string): GuardDecision {
   return {
