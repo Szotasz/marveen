@@ -137,7 +137,11 @@ Peers are editable while federation is disabled — pairing naturally precedes o
 
 ### Known limitations
 
-- **No done/failed feedback:** the sender sees up to `delivered` (the peer accepted); processing results do not flow back (later phase: ack + `remote_ref`).
+- **Completion receipt over the bridge (opt-in):** the receipt hands the close's result to ANOTHER system, so closing a task never sends it by itself. The closer asks for it in the `PUT /api/messages/<id>` body: `"federated_receipt": true`. It must be a real JSON boolean, like `notify`: the string `"true"` or `"false"` gets a 400 and the close is not applied; `null` and an absent field mean `false`. When asked for, with a non-empty `result`, an `[Eredmény] msg_id:<the sender's own id> status:<s>` message goes back over the bridge (the inbound `ref` is kept in the `remote_ref` column). For every federated close the PUT answer's `federatedReceipt` field says what happened: `queued`, or the skip reason. The sender's own row still stays `delivered`.
+  - Nothing is sent: `not-requested` (no `federated_receipt: true`), `notify-false` (`notify:false` wins over the opt-in), `empty-result`, `completion-report` (a receipt is never answered with a receipt), `federation-disabled`, `unknown-peer`.
+  - WITHHELD, not redacted (a half-redacted answer reads as a whole one): `private-data` (owner name, chat id, our own tokens, internal system names); `private-key` (a private key block); `secret-token` (keys prefixed `sk-`, `ghp_`, `github_pat_`, `xox?-`, `glpat-`, `AKIA` etc., a `Bearer` token, a JWT, a run of 32+ hex digits, a long mixed-case base64 run); `home-path` (`/home/<user>`, `/Users/<user>`, `/root`, `~/`, `C:\Users\<user>`); `email-address`; `phone-number` (international with `+` or `00`, Hungarian domestic `06`, `(NNN) NNN-NNNN`). The reason names the category, never the matched text. Answer with a separate, reviewed message then.
+  - The scrub is deterministic (regular expressions, no model) and deliberately errs towards withholding: a full 40-digit commit hash withholds the receipt too (a short hash passes).
+  - A result longer than the bridge limit is cut on a code-point boundary (never inside an emoji or a multi-byte character), and the cut says so.
 - **Dedup until restart:** the receiver's duplicate filter is in-memory.
 - **No rate limit** on the inbox (beyond size caps and backoff).
 - **De-pairing is asymmetric:** after peer removal / token rotation the OTHER side's owner must act too; until then their agent only learns from `failed` statuses.
