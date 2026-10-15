@@ -35,7 +35,7 @@ describe('schedule-runner auto-starts a stopped agent for its scheduled task', (
     // schedule-runner-main-agent-missing.test.ts) now sits ahead of this code
     // in the same block.
     const missingBlock = SRC.slice(guardIdx, guardIdx + 2800)
-    expect(missingBlock).toMatch(/startAgentProcess\(agentName\)/)
+    expect(missingBlock).toMatch(/startAgentProcess\(agentName, \{ ownsResume: true \}\)/)
     expect(missingBlock).toMatch(/return 'starting'/)
   })
 

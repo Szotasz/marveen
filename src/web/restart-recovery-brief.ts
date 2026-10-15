@@ -24,6 +24,7 @@ import { join } from 'node:path'
 import { logger } from '../logger.js'
 import { listKanbanCards } from '../db.js'
 import { agentDir } from './agent-config.js'
+import { deliverWhenReady, RESUME_DELIVERY_OPTIONS, type DeliverDeps, type DeliverOptions } from './resume-delivery.js'
 
 /** A file the agent left modified in its working directory. */
 export interface DirtyFile {
@@ -114,12 +115,6 @@ export function parseGitStatusShort(out: string, max: number): { dirty: DirtyFil
 // after a long spell can leave dozens; the brief is a pointer, not a diff.
 export const RECOVERY_BRIEF_MAX_FILES = 12
 
-// Wait before typing the brief into the fresh session. The restart paths
-// schedule modal dismissal and a plugin-unlock probe of their own; this sits
-// after both so the brief does not race a dialog or the probe's keystrokes.
-// The sender still waits for idle -- this delay is about ORDER, not hope.
-export const RECOVERY_BRIEF_DELAY_MS = 90_000
-
 /**
  * Collect what the fleet knew about an agent at restart time.
  *
@@ -159,43 +154,73 @@ export function gatherRecoveryFacts(agent: string): RecoveryFacts {
 }
 
 /** How the brief reaches the session. Injected so this module never has to
- * import the process layer that calls it. */
-export type BriefSender = (session: string, text: string) => Promise<unknown>
+ * import the process layer that calls it. `isReady` is the pane readiness gate
+ * and `send` MUST abort on a busy pane (onBusyTimeout: 'abort'): the brief is
+ * typed only into a pane that is idle at that moment. */
+export type BriefDelivery = Pick<DeliverDeps, 'isReady' | 'send' | 'now' | 'sleep'>
+
+// One brief per agent incarnation. Every successful start schedules a loop that
+// can live 20 minutes, and starts stack: a --continue start whose launch check
+// falls back to a fresh start, a double restart, a crash-loop reconcile start,
+// a stop followed by a later start. Keyed on the agent, a newer scheduling (or
+// a stop) makes every older loop withdraw at its next look, so the session is
+// briefed once, by the newest start.
+let briefGeneration = 0
+const briefTokens = new Map<string, number>()
+
+/** The agent stopped (or is being replaced): any waiting brief loop withdraws. */
+export function cancelRecoveryBrief(agent: string): void {
+  briefTokens.delete(agent)
+}
 
 /**
- * After a fresh restart, tell the new session what it was in the middle of.
+ * After a start, tell the new session what it was in the middle of.
  *
  * Fire-and-forget: scheduled, never awaited by the restart path, and every
  * failure is logged rather than raised. A restart that succeeded must not be
  * reported as failed because a courtesy message could not be typed.
+ *
+ * Timing: deliverWhenReady looks at the pane after RESUME_DELIVERY_OPTIONS
+ * .firstMs (past the identity-setup and plugin-unlock keystrokes) and then on a
+ * backoff until the pane is ready. It replaced a fixed 90 s timer that typed
+ * into whatever state the pane was in.
  */
 export function scheduleRecoveryBrief(
   agent: string,
   session: string,
-  send: BriefSender,
+  delivery: BriefDelivery,
   // Injected so a test can hand in facts instead of needing a real agent
-  // directory, a real git repo and a real database row. Without this seam the
+  // directory, a real repo and a real database row. Without this seam the
   // only reachable case is "no facts, no message", which cannot show that the
   // send path works at all.
   gather: (agent: string) => RecoveryFacts = gatherRecoveryFacts,
+  opts: DeliverOptions = RESUME_DELIVERY_OPTIONS,
 ): void {
-  setTimeout(() => {
-    void (async () => {
-      try {
-        const facts = gather(agent)
-        const brief = buildRecoveryBrief(facts)
-        if (!brief) {
-          logger.info({ agent, session }, 'recovery-brief: nothing in flight, staying quiet')
-          return
-        }
-        const res = await send(session, brief)
-        logger.info(
-          { agent, session, res, cards: facts.inProgress.length, dirty: facts.dirty.length },
-          'recovery-brief sent after restart',
-        )
-      } catch (err) {
-        logger.warn({ err, agent, session }, 'recovery-brief could not be delivered')
+  const token = ++briefGeneration
+  briefTokens.set(agent, token)
+  void (async () => {
+    let facts: RecoveryFacts | null = null
+    try {
+      // Built at SEND time, when the pane is ready, so the brief states what
+      // the fleet knows then; null (no facts) ends the delivery quietly.
+      const res = await deliverWhenReady(agent, session, () => {
+        facts = gather(agent)
+        return buildRecoveryBrief(facts)
+      }, opts, { ...delivery, stillOwed: () => briefTokens.get(agent) === token })
+      // The newest loop (or nobody, after a stop) owns the entry; a finished
+      // older one must not delete a newer token.
+      if (briefTokens.get(agent) === token) briefTokens.delete(agent)
+      const f = facts as RecoveryFacts | null
+      if (res.status === 'nothing-to-say') {
+        logger.info({ agent, session }, 'recovery-brief: nothing in flight, staying quiet')
+        return
       }
-    })()
-  }, RECOVERY_BRIEF_DELAY_MS).unref?.()
+      logger.info(
+        { agent, session, delivery: res.status, attempts: res.attempts, elapsedMs: res.elapsedMs, cards: f?.inProgress.length ?? 0, dirty: f?.dirty.length ?? 0 },
+        res.status === 'sent' ? 'recovery-brief sent after restart' : 'recovery-brief NOT delivered',
+      )
+    } catch (err) {
+      logger.warn({ err, agent, session }, 'recovery-brief could not be delivered')
+    }
+  })()
 }

@@ -505,6 +505,22 @@ describe('stale handoff (GUARDSTALEHO817)', () => {
     expect(d.nextState.handoffStaleMinutes).toBe('unknown')
   })
 
+  it('the idle-flush origin of a sequence survives a stale-refresh request', () => {
+    // A refresh overwrites handoffRequestReason, so the restart notice cannot
+    // read the origin from there. The marker rides along via ...state.
+    const idleSeq: GuardState = {
+      ...awaiting,
+      handoffRequestReason: `${IDLE_FLUSH_REASON_PREFIX} (600k tokens)`,
+      idleFlushSequence: true,
+    }
+    const refresh = decideGuard(idleSeq, inputs(staleWritten), CFG)
+    expect(refresh.reason).toContain(STALE_REFRESH_REASON_PREFIX)
+    expect(refresh.nextState.handoffRequestReason).toContain(STALE_REFRESH_REASON_PREFIX)
+    expect(refresh.nextState.idleFlushSequence).toBe(true)
+    // ...and a sequence that did not start as an idle-flush never gains it.
+    expect(decideGuard(awaiting, inputs(staleWritten), CFG).nextState.idleFlushSequence).toBeFalsy()
+  })
+
   it('asks for a refresh instead of restarting when the written handoff is stale and there is budget', () => {
     const d = decideGuard(awaiting, inputs(staleWritten), CFG)
     expect(d.action).toBe('request-handoff')
@@ -715,6 +731,7 @@ describe('decideGuard -- idle-flush tier', () => {
   it('requests a handoff when heavy, quiet and idle', () => {
     const d = decideGuard(INITIAL_GUARD_STATE, inputs({ contextTokens: HEAVY, idleMs: QUIET, paneIdle: true }), IDLE_CFG)
     expect(d.action).toBe('request-handoff')
+    expect(d.nextState.idleFlushSequence).toBe(true)
     expect(d.nextState.phase).toBe('await-handoff')
     // The reason has to carry both measurements: an operator reading the log
     // needs to see WHY this session was picked, not just that it was.
