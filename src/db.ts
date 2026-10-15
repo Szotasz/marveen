@@ -2,6 +2,7 @@ import Database from 'better-sqlite3'
 import { join } from 'node:path'
 import { existsSync, mkdirSync, readFileSync, renameSync, chmodSync, openSync, closeSync, statSync } from 'node:fs'
 import { STORE_DIR, DB_FILENAME, ALLOWED_CHAT_ID, OLLAMA_URL, APP_TZ, EMBED_URL, EMBED_MODEL, EMBED_DIMS, MAIN_AGENT_ID } from './config.js'
+import { isSearchStopword } from './memory-search-stopwords.js'
 import { getEffectiveSettingValue } from './settings-store.js'
 import { logger } from './logger.js'
 import { TOOL_TIMEOUTS } from './tool-timeouts.js'
@@ -1706,7 +1707,7 @@ export function saveMemory(
 // search terms. We also cap the number and length of tokens to bound query
 // cost (the sanitizer previously allowed an arbitrary-length prefix expansion
 // that could make a single request scan the entire index).
-export function buildFtsMatchExpression(query: string, join: 'AND' | 'OR' = 'AND'): string {
+function ftsQueryTokens(query: string): string[] {
   const MAX_TOKENS = 20
   const MAX_TOKEN_LEN = 64
   const sanitized = query
@@ -1716,15 +1717,42 @@ export function buildFtsMatchExpression(query: string, join: 'AND' | 'OR' = 'AND
     // fusing into a single unfindable token "rankcheck".
     .replace(/[^\p{L}\p{N}\s]/gu, ' ')
     .trim()
-  if (!sanitized) return ''
-  const tokens = sanitized
+  if (!sanitized) return []
+  return sanitized
     .split(/\s+/)
     .filter((t) => t.length > 0)
     .slice(0, MAX_TOKENS)
-    .map((t) => t.slice(0, MAX_TOKEN_LEN) + '*')
+    .map((t) => t.slice(0, MAX_TOKEN_LEN))
+}
+
+export function buildFtsMatchExpression(query: string, join: 'AND' | 'OR' = 'AND'): string {
+  const tokens = ftsQueryTokens(query).map((t) => t + '*')
   // A space between FTS5 terms is an implicit AND, so the default keeps the
-  // strict behaviour. 'OR' is the relaxed pass used by ftsWithOrFallback.
+  // strict behaviour. 'OR' is the plain OR join; the relaxed pass itself uses
+  // buildRelaxedFtsExpression, which also drops the filler words.
   return join === 'OR' ? tokens.join(' OR ') : tokens.join(' ')
+}
+
+/**
+ * The OR expression the relaxed pass runs: the query's
+ * tokens minus filler words and one-character tokens.
+ *
+ * Measured on the live store, 2026-09-23: `zebra a hogy nem` returned ~50 rows,
+ * none about zebras -- `a*`, `hogy*` and `nem*` prefix-match nearly every
+ * Hungarian memory. A one-character token is the same hazard in general form:
+ * `x*` is every word starting with x. A token of digits only is the same
+ * hazard again: FTS5's tokenizer splits every date in the store (`2026-09-23`
+ * -> `2026`, `09`, `23`), so `2026*` alone matches every memory that mentions
+ * this year. What is left is the query's content, and only content may rescue
+ * a query the strict pass could not answer (the strict pass still uses every
+ * token, numbers included). Empty when nothing but filler remains, and then no
+ * relaxed pass runs at all.
+ */
+export function buildRelaxedFtsExpression(query: string): string {
+  return ftsQueryTokens(query)
+    .filter((t) => t.length > 1 && !/^\p{N}+$/u.test(t) && !isSearchStopword(t))
+    .map((t) => t + '*')
+    .join(' OR ')
 }
 
 /**
@@ -1775,8 +1803,10 @@ function ftsWithOrFallback<T>(
   const rows = run(strict)
   if (rows.length > 0) return { rows, relaxed: false }
   if (!allowRelaxed) return { rows, relaxed: false }
-  const relaxedTerms = buildFtsMatchExpression(query, 'OR')
-  if (relaxedTerms === strict) return { rows, relaxed: false }
+  // Filler words never reach this pass. With only filler
+  // left there is nothing to relax to, and the honest answer is the strict one.
+  const relaxedTerms = buildRelaxedFtsExpression(query)
+  if (!relaxedTerms || relaxedTerms === strict) return { rows, relaxed: false }
   return { rows: run(relaxedTerms), relaxed: true }
 }
 
@@ -1833,9 +1863,18 @@ function withoutRank<T extends { rank: number }>(rows: T[]): Omit<T, 'rank'>[] {
   return rows.map(({ rank: _rank, ...rest }) => rest)
 }
 
-export function searchMemories(query: string, chatId: string, limit = 3, allowRelaxed = true, category?: string): Memory[] {
+export function searchMemories(
+  query: string,
+  chatId: string,
+  limit = 3,
+  allowRelaxed = true,
+  category?: string,
+  // Same label searchAgentMemories reports. Without it the no-agent branch of
+  // the endpoint said `relaxed=false` whatever this function actually did.
+  trace?: { relaxed: boolean },
+): Memory[] {
   try {
-    const { rows } = ftsWithOrFallback(query, (terms) =>
+    const { rows, relaxed } = ftsWithOrFallback(query, (terms) =>
       (category
         ? db.prepare(
             `SELECT m.*, f.rank AS rank FROM memories m
@@ -1852,6 +1891,7 @@ export function searchMemories(query: string, chatId: string, limit = 3, allowRe
              LIMIT ?`
           ).all(terms, chatId, limit * RECENCY_OVERSAMPLE)) as (Memory & { rank: number })[]
       , allowRelaxed)
+    if (trace) trace.relaxed = relaxed
     return withoutRank(reRankByRecency(rows, limit)) as Memory[]
   } catch {
     return []
@@ -4591,7 +4631,60 @@ function cosineSimilarity(a: number[], b: number[]): number {
   return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB))
 }
 
-function vectorSearch(agentId: string, queryEmbedding: number[], limit: number = 10, category?: string): Memory[] {
+/**
+ * The vector branch's floor.
+ *
+ * Without one the branch always answers with its top-N, however unrelated:
+ * measured on the live store, 2026-09-23, hybrid `q=zebra` returned 5 rows, all
+ * vector-only. An ABSOLUTE cosine floor cannot fix that on nomic-embed-text,
+ * because the model's scores sit on a query-dependent plateau. Calibrated on the
+ * live store (135 embedded rows, read-only) with 26 real queries and 29 nonsense
+ * ones:
+ *
+ *   nonsense top-1 cosine   0.382 .. 0.704   ("zebra" 0.443,
+ *                                              "XYZZY-NINCS-ILYEN-KIFEJEZES-2026" 0.704)
+ *   real target cosine      0.451 .. 0.788   ("who signs outgoing email" 0.509)
+ *
+ * The ranges overlap, so no absolute value separates them. What does is the
+ * height ABOVE the plateau, measured against the query's median similarity to
+ * the corpus:
+ *
+ *   nonsense top-1 minus median   0.042 .. 0.096
+ *   real target minus median      -0.024 .. 0.296  (15 of 26 at >= 0.104)
+ *
+ * A margin of 0.10 leaves 0 of 29 nonsense queries with any vector hit and keeps
+ * 15 of 26 real targets. Of the 11 it loses, 10 were ranked 2nd to 70th by the
+ * vector branch already; the one rank-1 loss sat at 0.077, inside the nonsense
+ * band, where no margin can keep it without letting the nonsense back in.
+ *
+ * Below VECTOR_BASELINE_MIN_ROWS scored rows a median describes nothing, so a
+ * small corpus falls back to an absolute floor just above the highest nonsense
+ * top-1 measured (0.704). That is conservative: on a small store a vector-only
+ * hit has to be a near-duplicate. Lexical hits are never subject to either.
+ */
+export const VECTOR_MIN_MARGIN = 0.10
+export const VECTOR_BASELINE_MIN_ROWS = 10
+export const VECTOR_SMALL_CORPUS_MIN_SIMILARITY = 0.72
+
+export function vectorSimilarityFloor(scores: number[]): number {
+  if (scores.length < VECTOR_BASELINE_MIN_ROWS) return VECTOR_SMALL_CORPUS_MIN_SIMILARITY
+  const sorted = [...scores].sort((a, b) => a - b)
+  const mid = Math.floor(sorted.length / 2)
+  const median = sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2
+  return median + VECTOR_MIN_MARGIN
+}
+
+interface VectorHit {
+  memory: Memory
+  similarity: number
+}
+
+function vectorSearch(
+  agentId: string,
+  queryEmbedding: number[],
+  limit: number = 10,
+  category?: string,
+): { hits: VectorHit[]; floor: number } {
   // Same push-down as searchAgentMemories: this branch scores EVERY embedded
   // row in JS, so filtering in SQL is both correct and strictly less work.
   const rows = (category
@@ -4608,18 +4701,21 @@ function vectorSearch(agentId: string, queryEmbedding: number[], limit: number =
   // neither sorts to the top nor raises -- the search quietly returns junk.
   // Drop the mismatches instead, so a half-migrated table degrades to "fewer
   // results" rather than "wrong results".
-  const scored = rows.flatMap(m => {
+  const scored = rows.flatMap((m): VectorHit[] => {
     try {
       const emb = JSON.parse(m.embedding!) as number[]
       if (emb.length !== queryEmbedding.length) return []
-      return [{ memory: m, score: cosineSimilarity(queryEmbedding, emb) }]
+      return [{ memory: m, similarity: cosineSimilarity(queryEmbedding, emb) }]
     } catch {
-      return [{ memory: m, score: 0 }]
+      return [{ memory: m, similarity: 0 }]
     }
   })
 
-  scored.sort((a, b) => b.score - a.score)
-  return scored.slice(0, limit).map(s => s.memory)
+  // The floor comes from EVERY scored row, before the cut to `limit`: the
+  // plateau is a property of the corpus, not of the top of the list.
+  const floor = vectorSimilarityFloor(scored.map(s => s.similarity))
+  scored.sort((a, b) => b.similarity - a.similarity)
+  return { hits: scored.slice(0, limit), floor }
 }
 
 /**
@@ -4631,11 +4727,26 @@ function vectorSearch(agentId: string, queryEmbedding: number[], limit: number =
  */
 export interface HybridSearchTrace {
   ftsHits: number
+  /** Vector rows that entered the fusion: above the floor, or vouched for lexically. */
   vectorHits: number
   /** The FTS branch found nothing with AND and was retried with OR. */
   ftsRelaxed: boolean
   /** Every returned row came from the vector branch alone. */
   vectorOnly: boolean
+  /** Vector-only rows dropped for scoring below the similarity floor. */
+  vectorDropped?: number
+}
+
+/**
+ * Per-row provenance on a hybrid answer, additive to Memory. The header labels
+ * the answer as a whole; this labels each row, so a caller holding one row can still tell what vouched for it.
+ */
+export type HybridSearchHit = Memory & {
+  match_kind: 'lexical' | 'vector' | 'lexical+vector'
+  /** The fused RRF score the ranking used. */
+  score: number
+  /** Cosine similarity to the query, when the vector branch scored this row. */
+  similarity?: number
 }
 
 export async function hybridSearch(
@@ -4644,7 +4755,7 @@ export async function hybridSearch(
   limit: number = 10,
   trace?: HybridSearchTrace,
   category?: string,
-): Promise<Memory[]> {
+): Promise<HybridSearchHit[]> {
   const k = 60 // RRF constant
 
   // FTS5 results
@@ -4653,16 +4764,24 @@ export async function hybridSearch(
   // endpoint: the hybrid answer fuses two rankings and already reports which
   // branch produced it, so a loose lexical hit here is labelled, not silent.
   const ftsResults = searchAgentMemories(agentId, query, limit * 2, ftsTrace, true, category)
+  const ftsIds = new Set(ftsResults.map(m => m.id))
 
-  // Vector results
+  // Vector results. A row below the floor survives only when the keyword
+  // branch found it too: lexical support is evidence of its own, and those rows
+  // keep exactly the fusion score they had before the floor existed.
   const queryEmbedding = await generateEmbedding(query)
-  const vecResults = queryEmbedding ? vectorSearch(agentId, queryEmbedding, limit * 2, category) : []
+  const vec = queryEmbedding
+    ? vectorSearch(agentId, queryEmbedding, limit * 2, category)
+    : { hits: [] as VectorHit[], floor: 0 }
+  const vecResults = vec.hits.filter(h => h.similarity >= vec.floor || ftsIds.has(h.memory.id))
+  const vectorDropped = vec.hits.length - vecResults.length
 
   if (trace) {
     trace.ftsHits = ftsResults.length
     trace.vectorHits = vecResults.length
     trace.ftsRelaxed = ftsTrace.relaxed
     trace.vectorOnly = ftsResults.length === 0 && vecResults.length > 0
+    trace.vectorDropped = vectorDropped
   }
   if (ftsResults.length === 0 && vecResults.length > 0) {
     logger.warn(
@@ -4674,19 +4793,32 @@ export async function hybridSearch(
   // Reciprocal Rank Fusion
   const scores: Map<number, number> = new Map()
   const byId: Map<number, Memory> = new Map()
+  const similarityById: Map<number, number> = new Map()
 
   ftsResults.forEach((m, rank) => {
     scores.set(m.id, (scores.get(m.id) || 0) + 1 / (k + rank + 1))
     byId.set(m.id, m)
   })
 
-  vecResults.forEach((m, rank) => {
+  vecResults.forEach((h, rank) => {
+    const m = h.memory
     scores.set(m.id, (scores.get(m.id) || 0) + 1 / (k + rank + 1))
+    similarityById.set(m.id, h.similarity)
     byId.set(m.id, m)
   })
 
   const ranked = [...scores.entries()].sort((a, b) => b[1] - a[1])
-  return ranked.slice(0, limit).map(([id]) => byId.get(id)!)
+  return ranked.slice(0, limit).map(([id, score]): HybridSearchHit => {
+    const lexical = ftsIds.has(id)
+    const similarity = similarityById.get(id)
+    const vector = similarity !== undefined
+    return {
+      ...byId.get(id)!,
+      match_kind: lexical && vector ? 'lexical+vector' : lexical ? 'lexical' : 'vector',
+      score,
+      ...(vector ? { similarity } : {}),
+    }
+  })
 }
 
 export async function backfillEmbeddings(): Promise<number> {
