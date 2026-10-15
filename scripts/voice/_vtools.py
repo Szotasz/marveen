@@ -51,9 +51,30 @@ _orig_getaddrinfo = socket.getaddrinfo
 
 
 
-def _whisper_model_name():
-    """faster-whisper model size (MARVEEN_WHISPER_MODEL, default 'small')."""
-    return (os.environ.get("MARVEEN_WHISPER_MODEL") or "small").strip()
+# Short notes get the much more accurate large-v3-turbo; long ones stay on 'small' so they
+# finish inside the 160 s STT budget (src/web/routes/voice.ts). Measured 2026-10-12 on this
+# 12-core box under load: a 45 s Hungarian note took 19 s load + 53 s with large-v3-turbo vs
+# 16 s + 24 s with 'small', and turbo fixed the word errors 'small' made on clean speech.
+WHISPER_TURBO_MAX_SEC = 75
+
+
+def _audio_seconds(path):
+    try:
+        import av
+        with av.open(path) as c:
+            return (c.duration or 0) / 1_000_000
+    except Exception:
+        return None
+
+
+def _whisper_model_name(path=None):
+    """faster-whisper model size. MARVEEN_WHISPER_MODEL wins if set; otherwise
+    large-v3-turbo for notes up to WHISPER_TURBO_MAX_SEC, 'small' for longer or unknown."""
+    env = (os.environ.get("MARVEEN_WHISPER_MODEL") or "").strip()
+    if env:
+        return env
+    sec = _audio_seconds(path) if path else None
+    return "large-v3-turbo" if sec is not None and 0 < sec <= WHISPER_TURBO_MAX_SEC else "small"
 
 def _getaddrinfo_ipv4_first(host, port, family=0, *args, **kwargs):
     results = _orig_getaddrinfo(host, port, family, *args, **kwargs)
@@ -99,10 +120,9 @@ def _whisper(path, words=False):
     # repetition-teszt a stdoutjat kapja el. A words=True ag KULON kimenet (JSON), uj hivoknak:
     # a vagas-hatar ellenorzeshez SZO-SZINTU `end` ido kell, amit a szoveges alak nem hordoz.
     from faster_whisper import WhisperModel
-    # Model size is configurable: 'medium' is noticeably better than 'small' on
-    # Hungarian accents/diacritics, at a cost in latency and memory. Default
-    # stays 'small'; set MARVEEN_WHISPER_MODEL=medium to trade speed for accuracy.
-    m = WhisperModel(_whisper_model_name(), device="cpu", compute_type="int8")
+    # Model size: large-v3-turbo for short notes, 'small' for long or unknown-length
+    # ones (see _whisper_model_name); MARVEEN_WHISPER_MODEL pins one model for all.
+    m = WhisperModel(_whisper_model_name(path), device="cpu", compute_type="int8")
     segs, _ = m.transcribe(path, language="hu", beam_size=5, condition_on_previous_text=False,
                            word_timestamps=words)
     segs = list(segs)
@@ -418,7 +438,7 @@ def canary(voice_onnx, expected_text):
                        input=expected_text.encode(), check=True,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         from faster_whisper import WhisperModel
-        m = WhisperModel(_whisper_model_name(), device="cpu", compute_type="int8")
+        m = WhisperModel(_whisper_model_name(wav), device="cpu", compute_type="int8")
         segs, _ = m.transcribe(wav, language="hu", beam_size=5, condition_on_previous_text=False)
         transcript = " ".join(s.text.strip() for s in segs).strip()
         exp_words = _normalize(expected_text).split()

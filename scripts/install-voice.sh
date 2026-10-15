@@ -108,7 +108,10 @@ _step "[3/5] Python packages (faster-whisper + piper-tts)"
 if "$DEST/venv/bin/python" -c "import faster_whisper, piper" 2>/dev/null; then
   _skip "packages already installed"
 else
-  "$DEST/venv/bin/pip" install --quiet faster-whisper piper-tts
+  # av<19: PyAV 19 dropped the metadata_errors kwarg that faster-whisper 1.2.1
+  # passes to av.open(), so every transcription failed with a TypeError
+  # (measured 2026-10-09, av 19.0.1 + faster-whisper 1.2.1).
+  "$DEST/venv/bin/pip" install --quiet faster-whisper piper-tts "av<19"
   _pass "faster-whisper + piper-tts installed"
 fi
 "$DEST/venv/bin/python" -c "import faster_whisper, piper" || _fail "package import check failed"

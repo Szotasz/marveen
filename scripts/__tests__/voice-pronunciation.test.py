@@ -48,6 +48,17 @@ os.environ.pop("MARVEEN_WHISPER_MODEL", None)
 check("whisper model default", v._whisper_model_name(), "small")
 os.environ["MARVEEN_WHISPER_MODEL"] = "medium"
 check("whisper model override", v._whisper_model_name(), "medium")
+check("whisper model override wins over a short note", v._whisper_model_name("/x.ogg"), "medium")
+os.environ.pop("MARVEEN_WHISPER_MODEL", None)
+
+# Duration-based pick: short notes get large-v3-turbo, long or unreadable ones stay on 'small'.
+_real_audio_seconds = v._audio_seconds
+for secs, want in ((45.0, "large-v3-turbo"), (75.0, "large-v3-turbo"), (75.5, "small"),
+                   (0.0, "small"), (None, "small")):
+    v._audio_seconds = lambda _p, s=secs: s
+    check(f"whisper model for {secs!r} s", v._whisper_model_name("/x.ogg"), want)
+v._audio_seconds = _real_audio_seconds
+check("unreadable file falls back to small", v._whisper_model_name("/nonexistent.ogg"), "small")
 
 print("All tests passed." if not fails else f"{fails} failed")
 sys.exit(1 if fails else 0)
