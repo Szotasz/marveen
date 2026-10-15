@@ -63,6 +63,8 @@ function inputs(overrides: Partial<GuardInputs> = {}): GuardInputs {
     contextTokens: null,
     idleMs: null,
     dailyHandoffDue: false,
+    usageLimited: false,
+    pendingResumeExpiresAtMs: null,
     ...overrides,
   }
 }

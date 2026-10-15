@@ -19,12 +19,13 @@ import { sendSystemDirective } from './system-directive.js'
 import { notifyChannel } from '../notify.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { detectPaneState, paneShowsContextSaturation, paneShowsContextSaturationHardError } from '../pane-state.js'
-import { readContextTokensFromProjectDir, readActiveModelFromProjectDir, readTranscriptMtimeFromProjectDir } from './active-model.js'
+import { readContextTokensFromProjectDir, readActiveModelFromProjectDir, readTranscriptMtimeFromProjectDir, readTranscriptTailFromProjectDir } from './active-model.js'
 import { readContextGuardConfig } from './context-guard-store.js'
 import {
   readPendingResumes,
   writePendingResumes,
   restorableResumeStates,
+  PENDING_RESUME_TTL_MS,
   type PendingResume,
   type PendingResumeMap,
 } from './context-guard-resume-store.js'
@@ -39,11 +40,15 @@ import {
   handoffStaleMinutes,
   applyDailyHandoffSkipSweep,
   DAILY_HANDOFF_REASON_PREFIX,
+  HANDOFF_RESEND_REASON_PREFIX,
   IDLE_FLUSH_REASON_PREFIX,
   INITIAL_GUARD_STATE,
   STALE_REFRESH_REASON_PREFIX,
   SATURATION_CREDIBLE_MIN_PCT,
   saturationBannerCredible,
+  usageLimitEvidenceFromTranscript,
+  usageLimitVerdict,
+  USAGE_LIMIT_MAX_PARK_MS,
   type GuardState,
   type HandoffStaleness,
   type GuardInputs,
@@ -118,9 +123,21 @@ function dropPendingResume(name: string, why: string): void {
 export function restorePendingResumes(nowMs: number): string[] {
   pendingResumes = readPendingResumes()
   const { live, expired } = restorableResumeStates(pendingResumes, nowMs)
+  let clamped = false
   for (const [name, st] of live) {
     if (!guardStates.has(name)) guardStates.set(name, st)
+    // Clamp a future restartedAtMs ONCE, here, with the same rule
+    // restorableResumeStates applied to the deadline, and persist it. Clamping
+    // per sweep instead would slide the TTL edge forward on every sweep while
+    // the clock stays behind the stamp, so the in-memory park would outlive the
+    // deadline this restore just set.
+    const entry = pendingResumes[name]
+    if (entry && entry.restartedAtMs > nowMs) {
+      pendingResumes = { ...pendingResumes, [name]: { ...entry, restartedAtMs: nowMs } }
+      clamped = true
+    }
   }
+  if (clamped && expired.length === 0) persistPendingResumes()
   if (expired.length > 0) {
     for (const name of expired) {
       logger.warn(
@@ -164,6 +181,12 @@ const remoteSkipLogged = new Set<string>()
 // ~1150 lines a day into a log nobody then reads. Same idiom as
 // remoteSkipLogged above.
 const bannerMismatchLogged = new Set<string>()
+// Usage-limit parking state per agent: 'limited' while
+// parked, or 'expired:<sinceMs>' once an episode outlived
+// USAGE_LIMIT_MAX_PARK_MS. A limited session stays limited for hours and the
+// sweep sees it every five minutes, so the log lines are emitted on the state
+// change only, like bannerMismatchLogged above.
+const usageLimitLogged = new Map<string, string>()
 
 // Per-agent observed-context high-water mark, persisted across dashboard
 // restarts. calibrateLimit alone is memoryless: the moment the guard
@@ -463,6 +486,57 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
   // wedged pane still gets the restart that is its only way out.
   const paneState = pane !== null ? detectPaneState(pane) : 'unknown'
 
+  // Usage limit: every tier parks while the session is
+  // CURRENTLY refused, and that includes await-ready -- a resume prompt typed
+  // into a limited session is lost. Decided from the transcript, never from
+  // the pane banner, which stays up long after the limit lifts (see
+  // USAGE_LIMIT_REASON_PREFIX). Cooldown decides nothing, so it reads nothing.
+  //
+  // Nor does an agent whose only armed mechanism is the saturation net, outside
+  // the two handoff phases: the net is never parked, and the idle phase has no
+  // other tier the verdict could hold back, so the tail read (up to
+  // TRANSCRIPT_TAIL_BYTES per agent per sweep) would buy nothing. The handoff
+  // phases still read it: a sequence can outlive a config change that disarmed
+  // its tier, and await-ready parks the resume for any agent.
+  const onlyNetArmed = !cfg.enabled && !cfg.idleFlushEnabled && !cfg.dailyHandoffEnabled
+  const usageCanMatter = !onlyNetArmed || state.phase === 'await-handoff' || state.phase === 'await-ready'
+  let usage: ReturnType<typeof usageLimitVerdict> | null = null
+  if (running && state.phase !== 'cooldown' && usageCanMatter) {
+    const tail = readTranscriptTailFromProjectDir(workingDirFor(name), configDirFor(name))
+    if (tail === null) {
+      // Absent or unreadable: read as "not limited", i.e. the old behaviour.
+      logger.debug({ name, phase: state.phase }, 'context-guard: transcript tail unreadable or absent -- usage-limit check sees no refusal')
+    }
+    // In await-ready only the NEW session's refusals count (see the
+    // sessionStartMs note at usageLimitVerdict).
+    const sessionStartMs = state.phase === 'await-ready' ? pendingResumes[name]?.restartedAtMs ?? null : null
+    usage = usageLimitVerdict(usageLimitEvidenceFromTranscript(tail ?? ''), nowMs, sessionStartMs)
+  }
+  if (usage !== null) {
+    const prev = usageLimitLogged.get(name)
+    if (usage.limited) {
+      if (prev !== 'limited') {
+        usageLimitLogged.set(name, 'limited')
+        logger.info(
+          { name, session, phase: state.phase, sinceMs: usage.evidence.sinceMs, resetsAtMs: usage.evidence.resetsAtMs, refusal: usage.evidence.text },
+          'context-guard: session is usage-limited (newest transcript turn refused) -- handoff, flush, daily, restart and resume parked until it lifts',
+        )
+      }
+    } else if (usage.reason === 'park-expired' && usage.evidence !== null) {
+      const key = `expired:${usage.evidence.sinceMs}`
+      if (prev !== key) {
+        usageLimitLogged.set(name, key)
+        logger.warn(
+          { name, session, phase: state.phase, sinceMs: usage.evidence.sinceMs, maxParkMs: USAGE_LIMIT_MAX_PARK_MS, refusal: usage.evidence.text },
+          'context-guard: usage-limit parking exceeded its time bound -- no longer trusting the refusal, normal guard logic resumes',
+        )
+      }
+    } else if (prev !== undefined) {
+      usageLimitLogged.delete(name)
+      logger.info({ name, session, phase: state.phase, reason: usage.reason }, 'context-guard: usage limit lifted -- normal guard logic resumes')
+    }
+  }
+
   // The pane banner and the calibrated measurement are TWO signals about one
   // fact, and this sweep is the only place that holds both. Reconciling them
   // HERE leaves decideGuard's contract intact ("paneSaturated means the pane
@@ -547,6 +621,15 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
     // open-question skip: dailyHandoffSkipSweep decides all three,
     // applyDailyHandoffSkipSweep applies the record and the skip flag.
     dailyHandoffDue: applyDailyHandoffSkipSweep(lastDailyHandoff, dailySkipped, name, cfg, running && state.phase === 'idle', localMidnightMs(nowMs), nowMs, () => dailyQuestionOpen(name), () => logger.info({ name }, 'context-guard: daily handoff skipped today -- open inbound question (the next slot fires regardless)')),
+    usageLimited: usage?.limited === true,
+    // Same edge as restorableResumeStates, so the in-memory park and the
+    // persisted obligation end together. No clamp here: restartedAtMs was
+    // clamped once when it was recorded (Date.now()) or restored
+    // (restorePendingResumes), and a per-sweep Math.min(.., nowMs) would slide
+    // the edge along with a clock that stepped backwards.
+    pendingResumeExpiresAtMs: pendingResumes[name]
+      ? pendingResumes[name].restartedAtMs + PENDING_RESUME_TTL_MS
+      : null,
   }
 
   const decision = decideGuard(state, inputs, cfg)
@@ -620,6 +703,20 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
   const pctRound = inputs.pct !== null ? Math.round(inputs.pct * 100) : null
   logger.info({ name, action: decision.action, reason: decision.reason, pct: pctRound, bannerRaw: paneSaturatedRaw, bannerTrusted: paneSaturatedTrusted, measuredPct: measuredPct !== null ? Math.round(measuredPct * 100) : null }, 'context-guard: acting')
 
+  // A re-send after a usage limit is worded exactly like the request the limit
+  // refused, so the prompt is picked by the ORIGINAL reason. decision.reason is
+  // still what the daily-slot bookkeeping above saw, so a re-sent daily request
+  // does not count as a new slot. decideGuard emits it at most once per
+  // parking episode, so this line is once per episode too.
+  const resend = decision.reason.startsWith(HANDOFF_RESEND_REASON_PREFIX)
+  const promptReason = resend ? (state.handoffRequestReason ?? '') : decision.reason
+  if (resend) {
+    logger.info(
+      { name, session, originalReason: state.handoffRequestReason ?? null, deadlineMs: decision.nextState.deadlineMs },
+      'context-guard: usage limit lifted during await-handoff with no handoff written -- re-sending the refused handoff request, timeout window restarted',
+    )
+  }
+
   try {
     switch (decision.action) {
       case 'request-handoff':
@@ -630,16 +727,16 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
         await sendSystemDirective(
           name,
           session,
-          decision.reason.startsWith(STALE_REFRESH_REASON_PREFIX)
+          promptReason.startsWith(STALE_REFRESH_REASON_PREFIX)
             // The handoff exists but went stale while we waited for an idle
             // pane; ask for a refresh, not a first write.
             ? staleRefreshHandoffPrompt(((sm) => typeof sm === 'number' ? sm : 0)(handoffStaleMinutes(inputs)), handoffPathFor(name))
-            : decision.reason.startsWith(IDLE_FLUSH_REASON_PREFIX)
+            : promptReason.startsWith(IDLE_FLUSH_REASON_PREFIX)
               // pct is null whenever the idle tier runs without the proactive
               // tiers, so the alarming percentage-based prompt would read "~0%
               // -- critical". The idle tier states the token count it measured.
               ? idleFlushHandoffPrompt(inputs.contextTokens ?? 0, cfg.idleMinutes, handoffPathFor(name))
-              : decision.reason.startsWith(DAILY_HANDOFF_REASON_PREFIX)
+              : promptReason.startsWith(DAILY_HANDOFF_REASON_PREFIX)
                 // Same trap as the idle tier: pct is null for a daily-only
                 // agent, so the percentage prompt would announce "~0% --
                 // critical" at 04:00 to a session that is perfectly healthy.
