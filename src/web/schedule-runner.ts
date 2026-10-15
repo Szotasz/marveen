@@ -834,9 +834,12 @@ export function decideCatchUp(
 // See isMissedRunReportable. About half a day: a round that comes once or twice
 // a day loses half a day or more per miss, while every short-cadence heartbeat
 // the catch-up report was muted for (15 minutes, hourly, every 4 hours) stays
-// muted exactly as before. Eleven hours rather than twelve, so that a
-// twice-a-day schedule does not drop under the line on the night the clocks go
-// forward and one of its gaps is 11 h.
+// muted exactly as before. Eleven hours rather than twelve is a defensive
+// margin: a twice-a-day gap is 11 h on the spring-forward night, but the current
+// cron-parser (5.5.0) skips that night's occurrence when iterating forward, so
+// cronMinGapMs never yields the 11 h gap and the margin is not exercised today.
+// It is kept so that a parser fix or a different zone cannot flip a twice-a-day
+// schedule back under the line. No test pins the margin; the constant check does.
 export const HEARTBEAT_MISS_REPORT_MIN_CADENCE_MS = 11 * 60 * 60_000
 
 /**

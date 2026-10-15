@@ -257,10 +257,13 @@ describe('isMissedRunReportable: muted by cadence, not by type', () => {
     }
   })
 
-  it('a twice-a-day heartbeat stays reportable across a DST change', () => {
-    // Europe/Budapest springs forward on 2027-03-28: the 21:00 -> 09:00 gap of
-    // that night is 11 h, not 12. The threshold has to sit under it, or the
-    // answer flips for the days whose sample window contains that night.
+  it('a twice-a-day heartbeat stays reportable around a DST change', () => {
+    // Europe/Budapest springs forward on 2027-03-28, and the real 21:00 -> 09:00
+    // gap of that night is 11 h. This test does NOT pin the 11 h margin: the
+    // current cron-parser skips the 2027-03-28 09:00 occurrence when iterating
+    // forward, so cronMinGapMs sees 12 h here and the test would stay green at a
+    // 12 h threshold too. It only shows that the answer does not flip around the
+    // change; the constant check below holds the value.
     const twice = { type: 'heartbeat', schedule: '0 9,21 * * *' }
     for (let d = 0; d < 10; d++) {
       expect(isMissedRunReportable(twice, Date.UTC(2027, 2, 22, 10, 0, 0) + d * 24 * HOUR)).toBe(true)
