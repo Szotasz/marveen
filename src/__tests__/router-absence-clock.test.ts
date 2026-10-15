@@ -166,6 +166,24 @@ describe('71263d15 (A): the absence clock decides, not the message age', () => {
     expect(noticesTo('orin').some((c) => String(c[2]).includes('id 401'))).toBe(true)
   })
 
+  it('both notices name where the FULL text is: GET /api/messages/<id>', async () => {
+    // The preview stops at 220 characters. A sender that wants to re-send a long
+    // handoff needs the whole text, and the GET endpoint already serves it.
+    const long = { ...row(402, 'dia', 'geri', T0), content: 'y'.repeat(800) } as AgentMessage
+    queue(long)
+    present.set('agent-dia', false)
+    await tickAt(T0)
+    await tickAt(T0 + 61 * MIN)
+    expect(failedIds()).toContain(402)
+    const toSender = noticesTo('geri')
+    expect(toSender).toHaveLength(1)
+    expect(String(toSender[0][2])).toContain('GET /api/messages/402')
+    expect(String(toSender[0][2])).toContain('[... +580 karakter]')
+    const toMain = noticesTo('orin').filter((c) => String(c[2]).includes('id 402'))
+    expect(toMain).toHaveLength(1)
+    expect(String(toMain[0][2])).toContain('GET /api/messages/402')
+  })
+
   it('(a5) three inject failures give ONE sender notice, not three', async () => {
     queue(row(501, 'eli', 'geri', T0))
     present.set('agent-eli', true); ready.set('agent-eli', true)
@@ -261,6 +279,7 @@ describe('71263d15 (A): who may get a sender notice, and what it says', () => {
     expect(text).toContain('#9')
     expect(text).toContain('befogadást')
     expect(text).toContain('[... +280 karakter]')
+    expect(text).toContain('GET /api/messages/9')
     const short = { id: 10, from_agent: 'geri', to_agent: 'dex', content: 'rovid' } as unknown as AgentMessage
     expect(formatSenderFailureNotice(short, 'ok')).not.toContain('karakter]')
   })

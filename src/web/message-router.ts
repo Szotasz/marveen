@@ -169,7 +169,7 @@ function notifyOrchestratorOfFailedHandoff(msg: AgentMessage, reason: string): v
     createAgentMessage(
       'system',
       MAIN_AGENT_ID,
-      `[handoff-failure] Inter-agent message (id ${msg.id}) ${msg.from_agent} -> ${msg.to_agent} could NOT be delivered: ${reason}. Consider re-sending or checking the target agent. Content preview: ${preview}`,
+      `[handoff-failure] Inter-agent message (id ${msg.id}) ${msg.from_agent} -> ${msg.to_agent} could NOT be delivered: ${reason}. Consider re-sending or checking the target agent (full text: GET /api/messages/${msg.id}). Content preview: ${preview}`,
     )
     logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent, reason }, 'handoff-failure surfaced to orchestrator')
   } catch (err) {
@@ -193,12 +193,16 @@ export function shouldNotifySenderOfFailure(fromAgent: string, mainAgentId: stri
   return !isChannelInboundSender(fromAgent)
 }
 
-/** The sender's notice. The preview says how much it cut, so nobody answers half a message (15060). */
+/** The sender's notice. The preview says how much it cut, so nobody answers half a message (15060).
+ *  It also names where the FULL text is (GET /api/messages/<id>): the preview stops at 220
+ *  characters, and a sender re-sending a long handoff should not have to reconstruct it from
+ *  memory or from its transcript. */
 export function formatSenderFailureNotice(msg: AgentMessage, reason: string): string {
   const content = msg.content ?? ''
   const preview = content.length > 220 ? `${content.slice(0, 220)} [... +${content.length - 220} karakter]` : content
   return `[handoff-failure] A(z) ${msg.to_agent} címre küldött üzeneted (#${msg.id}) NEM kézbesült: ${reason}. ` +
-    `A visszakapott id a befogadást igazolta, nem a kézbesítést; ha még számít, küldd újra. Tartalom eleje: ${preview}`
+    `A visszakapott id a befogadást igazolta, nem a kézbesítést; ha még számít, küldd újra ` +
+    `(a teljes szöveg: GET /api/messages/${msg.id}). Tartalom eleje: ${preview}`
 }
 
 function notifySenderOfFailedHandoff(msg: AgentMessage, reason: string): void {
