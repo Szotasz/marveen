@@ -1374,6 +1374,9 @@ _tmux_set_auth_globals
 # "evaluated in the launched shell, never in argv" rule as the $(cat) in
 # CFG_ENV above. CFG_ENV still comes AFTER it in the pane command, so a mode
 # that exports its own token keeps overriding this one, as it did with -e.
+# Scope: this removes the secret from the tmux SERVER's command line (it lives
+# as long as the server). Layer 2's `set-environment -g NAME value` still puts it
+# on a short-lived tmux CLIENT argv, which exits at once and is not the server.
 # The file is rewritten on every launch; store/ is gitignored.
 AUTH_PANE_ENV=""
 _auth_file="$INSTALL_DIR/store/.channels-pane-auth"
@@ -1384,19 +1387,50 @@ if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || [ -n "${ANTHROPIC_API_KEY:-}" ]; the
   # wider-mode file or through a symlink planted at that path (Geri, #1647
   # review: `umask 077; : >` only applies to a file it CREATES, and `>` follows
   # a symlink). mv replaces the name itself, not a symlink's target.
-  _auth_tmp="$(mktemp "$_auth_file.XXXXXX")" || _auth_tmp=""
-  if [ -n "$_auth_tmp" ]; then
-    {
-      [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && printf 'export CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$(_q "$CLAUDE_CODE_OAUTH_TOKEN")"
-      [ -n "${ANTHROPIC_API_KEY:-}" ] && printf 'export ANTHROPIC_API_KEY=%s\n' "$(_q "$ANTHROPIC_API_KEY")"
-      true
-    } > "$_auth_tmp"
-    if mv -f "$_auth_tmp" "$_auth_file"; then
+  # Every failure below is NAMED (store/channels-failures.log + stderr), never
+  # silent: without the file the pane starts with no token whenever the dashboard
+  # worker created the tmux server first, and the old `-e` path had no such
+  # failure mode. A failed or empty write is never renamed over the final name.
+  # The launch still proceeds: layer 2 (set-environment -g) is the fallback.
+  _auth_fail() {
+    local _m
+    _m="$(date '+%Y-%m-%d %H:%M:%S') channels.sh: WARN pane auth file NOT written ($1): the channels pane gets the token only through the tmux server global env"
+    echo "$_m" >> "$INSTALL_DIR/store/channels-failures.log" 2>/dev/null || true
+    echo "$_m" >&2
+  }
+  # A launch killed between mktemp and mv leaves a 0600 temp file that holds the
+  # token: sweep those before writing a new one. Only STALE ones (older than a
+  # minute): a concurrent launch may be between its own mktemp and mv right now,
+  # and sweeping its live temp file would make its next write create a fresh
+  # file (see the umask below) or rename nothing.
+  find "$(dirname "$_auth_file")" -maxdepth 1 -type f -name "$(basename "$_auth_file").??????" -mmin +1 -exec rm -f {} + 2>/dev/null || true
+  _auth_tmp="$(mktemp "$_auth_file.XXXXXX" 2>/dev/null)" || _auth_tmp=""
+  if [ -z "$_auth_tmp" ]; then
+    _auth_fail "mktemp failed"
+  else
+    # The writes run under umask 077: should the temp file vanish between mktemp
+    # and here, `>>` creates a new one, and that one must be 0600 too.
+    if (
+      umask 077
+      if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+        printf 'export CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$(_q "$CLAUDE_CODE_OAUTH_TOKEN")" >> "$_auth_tmp" || exit 1
+      fi
+      if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+        printf 'export ANTHROPIC_API_KEY=%s\n' "$(_q "$ANTHROPIC_API_KEY")" >> "$_auth_tmp" || exit 1
+      fi
+    ) 2>/dev/null; then _auth_ok=1; else _auth_ok=0; fi
+    if [ "$_auth_ok" != 1 ] || [ ! -s "$_auth_tmp" ]; then
+      _auth_fail "write failed"
+      rm -f "$_auth_tmp" 2>/dev/null || true
+    elif mv -f "$_auth_tmp" "$_auth_file"; then
       AUTH_PANE_ENV=". $(sh_single_quote "$_auth_file") && "
     else
+      _auth_fail "rename failed"
       rm -f "$_auth_tmp" 2>/dev/null || true
     fi
   fi
+  unset -f _auth_fail
+  unset _auth_ok
   unset -f _q
   unset _auth_tmp
 else
