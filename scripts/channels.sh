@@ -1527,6 +1527,171 @@ _answer_accept_dialog() {
   unset _cur _yes
 }
 
+# RENAMEREADY1010: the /rename + Enter after the startup guard below must never
+# land in a dialog. The guard answers the trust/bypass dialogs only inside its
+# 12 s window; on a slow start (MCP batch, network, the /tmp EPERM fallback's
+# fresh path) the trust dialog can paint AFTER it. The unconditional send then
+# typed "/rename <name>" into the panel and the Enter confirmed whatever option
+# held the cursor -- "No, exit" on 2.1.252+ (see TRUSTGATE901), so claude quit,
+# the supervise loop relaunched, and the same race could repeat.
+#
+# rename_pane_verdict <plain pane> <input state> prints exactly one word:
+#   dialog -- a trust/bypass accept dialog is showing (the guard's own anchors);
+#             answer it, never type into it
+#   ready  -- no dialog and the input line is provably empty (probe_pane_input_state
+#             says idle). When the probe cannot measure (no node or dist), the
+#             pre-fix readiness signal is kept: the "Listening for channel
+#             messages" banner with no dialog on screen.
+#   wait   -- anything else (busy, parked text, unknown screen, a probe that
+#             timed out)
+rename_pane_verdict() {
+  case "$1" in
+    *"Bypass Permissions mode"*"Yes, I accept"*|*"Do you trust the files in this folder?"*|*"Yes, I trust this folder"*)
+      echo dialog; return 0 ;;
+  esac
+  case "$2" in
+    idle) echo ready ;;
+    unverifiable)
+      case "$1" in
+        *"Listening for channel messages"*) echo ready ;;
+        *) echo wait ;;
+      esac ;;
+    *) echo wait ;;
+  esac
+}
+
+# probe_pane_input_state_bounded <s>: probe_pane_input_state with a hard
+# per-call time bound, for the rename wait. stdin: the coloured capture; stdout:
+# the probe's line, or "timeout" when it did not answer within <s> whole
+# seconds (default 2; wait_for_rename_ready passes the smaller of
+# CHANNELS_RENAME_PROBE_TIMEOUT and the time left to its deadline). The rename
+# wait is the first foreground caller of the probe, before the supervise loop
+# (the post-init unlock calls the probe directly, inside its own background
+# subshell, and is unchanged): a probe that never returns (a hung node, a
+# broken module) would hold the launcher with no end. macOS has no timeout(1),
+# so the probe runs as a background job and a watchdog job kills it, with its
+# node child, when the bound runs out (SIGKILL: the bound must hold even for a
+# process that ignores TERM). A probe that answers in time ends the wait at
+# once; the watchdog and its sleep are then killed, so neither outlives the
+# call. "timeout" is not "unverifiable": rename_pane_verdict reads it as not
+# ready, never as the banner fallback. /bin/sleep and /usr/bin/pgrep as in the
+# orphan reaper and the plugin probe above.
+probe_pane_input_state_bounded() {
+  _pb_limit="${1:-2}"
+  case "$_pb_limit" in ''|*[!0-9]*) _pb_limit=2 ;; esac
+  _pb_dir="$(mktemp -d "${TMPDIR:-/tmp}/channels-rename-probe.XXXXXX" 2>/dev/null)" || { echo unprobed; return 0; }
+  cat > "$_pb_dir/in"
+  probe_pane_input_state < "$_pb_dir/in" > "$_pb_dir/out" 2>/dev/null &
+  _pb_pid=$!
+  ( /bin/sleep "$_pb_limit"
+    : > "$_pb_dir/timeout"
+    kill -KILL "$_pb_pid" $(/usr/bin/pgrep -P "$_pb_pid" 2>/dev/null) ) > /dev/null 2>&1 &
+  _pb_dog=$!
+  wait "$_pb_pid" 2>/dev/null
+  { kill -KILL "$_pb_dog" $(/usr/bin/pgrep -P "$_pb_dog" 2>/dev/null); wait "$_pb_dog"; } 2>/dev/null
+  if [ -e "$_pb_dir/timeout" ]; then echo "timeout"; else head -1 "$_pb_dir/out"; fi
+  rm -rf "$_pb_dir"
+  unset _pb_limit _pb_dir _pb_pid _pb_dog
+  return 0
+}
+
+# rename_wait_limits: the rename wait's limits, read from the environment as
+# plain decimal numbers (base 10 forced, so "08" is 8 and not an octal error
+# that would abandon the whole call) with the defaults as the fallback for
+# anything else. Sets:
+#   _rr_tries    CHANNELS_RENAME_READY_TRIES, default 10
+#   _rr_sleep    CHANNELS_RENAME_READY_SLEEP, default 2; digits with an
+#                optional decimal fraction only, so the deadline below and the
+#                real sleep always read the same value
+#   _rr_unit     the interval rounded up to whole seconds
+#   _rr_pb_max   CHANNELS_RENAME_PROBE_TIMEOUT, default 2; 0 counts as
+#                malformed (a zero bound would kill every probe)
+#   _rr_deadline TRIES x (unit + 1) s, 30 s by default. The extra second per
+#                try budgets the probe and tmux calls of an ordinary try (a
+#                probe takes about 0.15 s; 10 not-ready tries measured 22.9 s),
+#                so such a wait keeps all its tries. Probes that hang or answer
+#                slower than about 1 s per try, or a dialog answered on every
+#                try (its sleep 1), can reach the deadline and lose the last
+#                tries. The old "20 s" counted only the sleeps: an ordinary
+#                10-try wait already took about 22.6 s.
+rename_wait_limits() {
+  _rr_tries="${CHANNELS_RENAME_READY_TRIES:-10}"
+  case "$_rr_tries" in ''|*[!0-9]*) _rr_tries=10 ;; esac
+  _rr_tries=$((10#$_rr_tries))
+  _rr_sleep="${CHANNELS_RENAME_READY_SLEEP:-2}"
+  case "$_rr_sleep" in ''|.*|*.|*.*.*|*[!0-9.]*) _rr_sleep=2 ;; esac
+  _rr_unit=$((10#${_rr_sleep%%.*}))
+  case "$_rr_sleep" in *.*[1-9]*) _rr_unit=$((_rr_unit + 1)) ;; esac
+  _rr_pb_max="${CHANNELS_RENAME_PROBE_TIMEOUT:-2}"
+  case "$_rr_pb_max" in ''|*[!0-9]*) _rr_pb_max=2 ;; esac
+  _rr_pb_max=$((10#$_rr_pb_max))
+  [ "$_rr_pb_max" -lt 1 ] && _rr_pb_max=2
+  _rr_deadline=$((_rr_tries * (_rr_unit + 1)))
+}
+
+# Bounded wait for a ready pane, answering an accept dialog with
+# _answer_accept_dialog on the way. Returns 0 when ready, 1 when the pane never
+# got there; RENAME_LAST_VERDICT / RENAME_LAST_STATE name the last view, and
+# RENAME_DEADLINE_HIT holds the deadline (s) when that is what ended the wait.
+# Two limits (rename_wait_limits): CHANNELS_RENAME_READY_TRIES tries,
+# CHANNELS_RENAME_READY_SLEEP s apart (default 10 x 2 s), and an overall
+# deadline of TRIES x (SLEEP + 1) s, default 30 s. Each probe gets the smaller
+# of CHANNELS_RENAME_PROBE_TIMEOUT (default 2 s) and the time left, and a sleep
+# longer than the time left is cut to it, so probes that hang cannot stretch
+# the wait past the deadline. The clock is the shell's whole-second SECONDS,
+# so the wait ends within about 1 s of the deadline (the tmux calls of a try
+# are not bounded, as before). A session that is gone or a dead pane (claude
+# exited, remain-on-exit) ends the wait at once (verdict gone/dead): START_TS
+# is already taken, so waiting out the tries would push a startup crash toward
+# the 30 s rapid-exit threshold.
+wait_for_rename_ready() {
+  rename_wait_limits
+  _rr_t0=$SECONDS
+  RENAME_DEADLINE_HIT=
+  _rr_i=0
+  while [ "$_rr_i" -lt "$_rr_tries" ]; do
+    _rr_i=$((_rr_i + 1))
+    if [ "$((_rr_deadline - (SECONDS - _rr_t0)))" -le 0 ]; then RENAME_DEADLINE_HIT=$_rr_deadline; break; fi
+    if ! $TMUX has-session -t "=$SESSION:" 2>/dev/null; then RENAME_LAST_VERDICT=gone; break; fi
+    if pane_dead_detected "$SESSION"; then RENAME_LAST_VERDICT=dead; break; fi
+    _rr_plain="$($TMUX capture-pane -t "=$SESSION:" -p 2>/dev/null || true)"
+    _rr_left=$((_rr_deadline - (SECONDS - _rr_t0)))
+    if [ "$_rr_left" -le 0 ]; then RENAME_DEADLINE_HIT=$_rr_deadline; break; fi
+    _rr_pb=$_rr_pb_max
+    [ "$_rr_pb" -gt "$_rr_left" ] && _rr_pb=$_rr_left
+    RENAME_LAST_STATE="$($TMUX capture-pane -t "=$SESSION:" -e -p 2>/dev/null | probe_pane_input_state_bounded "$_rr_pb")"
+    RENAME_LAST_VERDICT="$(rename_pane_verdict "$_rr_plain" "$RENAME_LAST_STATE")"
+    case "$RENAME_LAST_VERDICT" in
+      ready) unset _rr_tries _rr_sleep _rr_unit _rr_deadline _rr_pb_max _rr_t0 _rr_i _rr_plain _rr_left _rr_pb; return 0 ;;
+      dialog) _answer_accept_dialog "$_rr_plain" ;;
+    esac
+    # Past the deadline after a try: the deadline ended the wait only if
+    # another try would have followed; after the last try the limit did.
+    _rr_left=$((_rr_deadline - (SECONDS - _rr_t0)))
+    if [ "$_rr_left" -le 0 ]; then
+      [ "$_rr_i" -lt "$_rr_tries" ] && RENAME_DEADLINE_HIT=$_rr_deadline
+      break
+    fi
+    if [ "$_rr_unit" -gt "$_rr_left" ]; then sleep "$_rr_left"; else sleep "$_rr_sleep"; fi
+  done
+  unset _rr_tries _rr_sleep _rr_unit _rr_deadline _rr_pb_max _rr_t0 _rr_i _rr_plain _rr_left _rr_pb
+  return 1
+}
+
+# send_rename_when_ready <name> <failure log>: type "/rename <name>" + Enter
+# only into a ready pane; otherwise skip it with one logged line. A skipped
+# rename costs only the session's display name; typing into an unknown screen
+# can cost the session. Tested by lifting these functions out of this file
+# (scripts/__tests__/channels-rename-ready.test.sh).
+send_rename_when_ready() {
+  if wait_for_rename_ready; then
+    $TMUX send-keys -t "=$SESSION:" "/rename $1" Enter
+    return 0
+  fi
+  { echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: /rename SKIPPED -- pane not ready (verdict: ${RENAME_LAST_VERDICT:-?}, input: ${RENAME_LAST_STATE:-?}${RENAME_DEADLINE_HIT:+; wait deadline ${RENAME_DEADLINE_HIT} s reached}); not typing into an unknown screen (RENAMEREADY1010)" >> "$2"; } 2>/dev/null || true
+  return 1
+}
+
 _eperm_restarted=0
 for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
   sleep 1
@@ -1591,8 +1756,6 @@ unset _eperm_restarted
 # longer uses Remote Control.)
 _bot_name="${BOT_NAME:-${MAIN_AGENT_ID:-marveen}}"
 sleep 1
-$TMUX send-keys -t "=$SESSION:" "/rename ${_bot_name}" Enter
-unset _bot_name
 
 # Reset the keep-alive watchdog baseline so a session that was just restarted
 # is not immediately judged stale by the dashboard's checkMainKeepaliveStaleness
@@ -1609,6 +1772,22 @@ unset _bot_name
 mkdir -p "$INSTALL_DIR/store"
 touch "$INSTALL_DIR/store/.channel-keepalive"
 date +%s > "$INSTALL_DIR/store/.channel-last-respawn"
+
+# Rapid-failure detection: if claude exits within 30s of startup, this is
+# likely a config error (bad token, missing plugin, auth issue). We log the
+# failure and exit non-zero so the service manager's own back-off kicks in
+# instead of tight-looping and burning API tokens.
+START_TS=$(date +%s)
+
+# RENAMEREADY1010: only into a ready, dialog-free pane (see send_rename_when_ready).
+# The keep-alive baseline, the respawn stamp and START_TS above are taken first,
+# at the same point as before the gate: the bounded wait (deadline 30 s by
+# default, see rename_wait_limits) must not delay the stamp the watchdog and
+# the channel monitor use to leave a booting session alone, nor shift the
+# rapid-exit window. Everything that types into the pane (the post-init /mcp
+# unlock below) starts after it.
+send_rename_when_ready "${_bot_name}" "$INSTALL_DIR/store/channels-failures.log" || true
+unset _bot_name
 
 # POST-INIT PLUGIN UNLOCK (2026-06-01 Szabi 15:24 incident workaround):
 # Claude Code 2.1.159 + telegram-plugin 0.0.6: the `--channels` parameter
@@ -1783,12 +1962,6 @@ date +%s > "$INSTALL_DIR/store/.channel-last-respawn"
 if [ "$CHANNEL_PROVIDER" = "telegram" ]; then
   "$INSTALL_DIR/scripts/set-bot-menu.sh" &
 fi
-
-# Rapid-failure detection: if claude exits within 30s of startup, this is
-# likely a config error (bad token, missing plugin, auth issue). We log the
-# failure and exit non-zero so the service manager's own back-off kicks in
-# instead of tight-looping and burning API tokens.
-START_TS=$(date +%s)
 
 # Plugin liveness watchdog (main channels session only) -- a last-resort
 # backstop UNDER the dashboard channel-monitor, not a replacement. The monitor
