@@ -1153,11 +1153,16 @@ export function importFleet(
         db.prepare(
           `INSERT OR IGNORE INTO kanban_cards
            (id, title, description, test_steps, status, assignee, priority, project,
-            due_date, sort_order, created_at, updated_at, archived_at, parent_id, dispatched_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            due_date, sort_order, created_at, updated_at, archived_at, parent_id, dispatched_at,
+            claimed_by, claimed_at, claim_expires_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         ).run(c.id, c.title, c.description ?? null, c.test_steps ?? null, c.status, c.assignee ?? null,
           c.priority, c.project ?? null, c.due_date ?? null, c.sort_order,
-          c.created_at, c.updated_at, c.archived_at ?? null, c.parent_id ?? null, c.dispatched_at ?? null)
+          c.created_at, c.updated_at, c.archived_at ?? null, c.parent_id ?? null, c.dispatched_at ?? null,
+          // The claim lock rides along: a card someone was working on stays
+          // held on the new host until the holder releases it or its TTL ends,
+          // so a host move cannot hand the same card to a second agent.
+          c.claimed_by ?? null, c.claimed_at ?? null, c.claim_expires_at ?? null)
       }
 
       // kanban comments (idempotent: card_id + content)
