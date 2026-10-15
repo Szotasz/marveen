@@ -1608,6 +1608,15 @@ export function initDatabase(dbPathOverride?: string): void {
   // used it. Rows consumed by the gate leave both NULL.
   try { db.exec('ALTER TABLE approvals ADD COLUMN consumed_by TEXT') } catch { /* already exists */ }
   try { db.exec('ALTER TABLE approvals ADD COLUMN consumed_ref TEXT') } catch { /* already exists */ }
+  // The Telegram approve and reject buttons each carry their OWN
+  // one-time 128-bit nonce in their callback_data, so whoever learns one
+  // button's data cannot take the other decision with it. Only the sha256s are
+  // kept, so nothing that can read the DB or the API can forge a press. NULL =
+  // no button bound, or the one decision the nonces allowed has already been
+  // made (a win clears both). Never part of an approval read (see
+  // APPROVAL_PUBLIC_COLUMNS).
+  try { db.exec('ALTER TABLE approvals ADD COLUMN callback_nonce_hash_approve TEXT') } catch { /* already exists */ }
+  try { db.exec('ALTER TABLE approvals ADD COLUMN callback_nonce_hash_reject TEXT') } catch { /* already exists */ }
   // Every consume call leaves a row here, the refused ones too: a second send
   // attempt on a used approval is exactly the event worth seeing afterwards.
   // consumed_backfill is for a one-off data fix of rows a past send never
@@ -6928,26 +6937,168 @@ export function createApproval(params: {
   }
 }
 
+// Every column an approval read hands out, in table order. The
+// callback-nonce hashes are deliberately left out: they stay inside this file,
+// so no API response, list or log line built from an Approval can carry them. A
+// column added to the table later has to be listed here on purpose
+// (approvals-telegram-db.test.ts pins this list against the table).
+const APPROVAL_PUBLIC_COLUMNS = [
+  'id', 'agent_id', 'category', 'action_description', 'action_payload', 'status',
+  'timeout_at', 'telegram_message_id', 'requested_at', 'resolved_at', 'resolved_by',
+  'content_hash', 'consumed_at', 'consumed_by', 'consumed_ref',
+].join(', ')
+
 export function getApproval(id: string): Approval | undefined {
-  return db.prepare('SELECT * FROM approvals WHERE id = ?').get(id) as Approval | undefined
+  return db.prepare(`SELECT ${APPROVAL_PUBLIC_COLUMNS} FROM approvals WHERE id = ?`).get(id) as Approval | undefined
 }
+
+// An email_send action_payload is the whole letter, BCC
+// included, and GET /api/approvals hands it to every bearer holder. Nothing
+// reads it once the approval is decided (the notifier reads it at create
+// time, the /approvals command lists pending rows only, the send gates match
+// on content_hash), so it is replaced with this marker as soon as the letter
+// can no longer be sent: rejected, timed out, consumed, or approved and left
+// unconsumed past the send window. A NULL payload stays NULL, and every other
+// category keeps its payload exactly as before.
+export const CLEARED_EMAIL_PAYLOAD = '{"envelope_v":1,"cleared":true}'
+
+// True for an `envelope_v: 1` payload (the requester helper's envelope), the
+// only payload ever cleared: any other email_send payload (older requesters)
+// stays byte for byte. json_extract runs only on valid JSON (the CASE), so a
+// non-JSON payload is skipped, not an error.
+const IS_ENVELOPE_V1 = `(CASE WHEN json_valid(action_payload)
+  THEN json_extract(action_payload, '$.envelope_v') END) = 1`
+
+// SQL for the payload column of a row whose decision is `statusParam`: the
+// marker for an email_send envelope row closed by that decision, the stored
+// value otherwise. Takes two parameters: the status, the marker.
+const CLEAR_PAYLOAD_ON_CLOSE = `CASE WHEN category = 'email_send' AND ${IS_ENVELOPE_V1}
+  AND ? IN ('rejected', 'timeout') THEN ? ELSE action_payload END`
 
 export function resolveApproval(id: string, status: 'approved' | 'rejected' | 'timeout', resolvedBy: string, telegramMessageId?: number | null): boolean {
   const now = Math.floor(Date.now() / 1000)
   return db.prepare(`
     UPDATE approvals
     SET status = ?, resolved_at = ?, resolved_by = ?,
-        telegram_message_id = COALESCE(?, telegram_message_id)
+        telegram_message_id = COALESCE(?, telegram_message_id),
+        action_payload = ${CLEAR_PAYLOAD_ON_CLOSE}
     WHERE id = ? AND status = 'pending'
-  `).run(status, now, resolvedBy, telegramMessageId ?? null, id).changes > 0
+  `).run(status, now, resolvedBy, telegramMessageId ?? null, status, CLEARED_EMAIL_PAYLOAD, id).changes > 0
 }
 
 // The CREATE path stamps the owner-notification message id onto the row
 // (APPROVALVAK821): until this existed, telegram_message_id was only writable
 // through resolveApproval, so a pending request could never carry it.
+// The first stamp wins. A button press is checked against the stored
+// id, so a later stamp (a retry, a second notifier) must not move it.
 export function setApprovalTelegramMessageId(id: string, telegramMessageId: number): boolean {
-  return db.prepare('UPDATE approvals SET telegram_message_id = ? WHERE id = ?')
+  return db.prepare('UPDATE approvals SET telegram_message_id = ? WHERE id = ? AND telegram_message_id IS NULL')
     .run(telegramMessageId, id).changes > 0
+}
+
+const SHA256_HEX = /^[0-9a-f]{64}$/
+// A Telegram user id as the owner attribution carries it: a positive decimal
+// integer, no sign, no leading zero.
+const TELEGRAM_USER_ID = /^[1-9][0-9]{0,15}$/
+
+// The column that holds the nonce hash of one button. The only two names that
+// ever reach SQL text: the decision is checked to be one of the two first.
+const CALLBACK_NONCE_COLUMN = {
+  approved: 'callback_nonce_hash_approve',
+  rejected: 'callback_nonce_hash_reject',
+} as const
+
+// Binds the two button nonces (their sha256s only) to a pending
+// email_send approval, both at once and once, before the button message goes
+// out -- hence the message id must still be unset. Anything that is not a
+// sha256 hex (a raw nonce passed by mistake, say) is refused rather than
+// stored, and so are two equal hashes: each button must prove its own press.
+// Only a row a button could ever decide (it has a content anchor and a
+// deadline) is bound.
+export function setApprovalCallbackNonceHashes(id: string, hashes: { approved: string; rejected: string }): boolean {
+  const approved = hashes?.approved
+  const rejected = hashes?.rejected
+  if (typeof approved !== 'string' || !SHA256_HEX.test(approved)
+    || typeof rejected !== 'string' || !SHA256_HEX.test(rejected)
+    || approved === rejected) return false
+  return db.prepare(`
+    UPDATE approvals SET callback_nonce_hash_approve = ?, callback_nonce_hash_reject = ?
+     WHERE id = ? AND status = 'pending' AND category = 'email_send'
+       AND content_hash IS NOT NULL AND timeout_at IS NOT NULL
+       AND callback_nonce_hash_approve IS NULL AND callback_nonce_hash_reject IS NULL
+       AND telegram_message_id IS NULL
+  `).run(approved, rejected, id).changes > 0
+}
+
+// Why a Telegram button decision was refused. As with the consume
+// refusals, classified AFTER the write failed. bad_request = the arguments
+// themselves are malformed (the route validates first, so this is a backstop).
+export type ApprovalTelegramRefusal =
+  | 'bad_request' | 'not_found' | 'wrong_category' | 'already_resolved' | 'expired'
+  | 'not_bound' | 'message_mismatch' | 'bad_nonce'
+
+export interface ApprovalTelegramResult {
+  ok: boolean
+  reason?: ApprovalTelegramRefusal
+  approval?: Approval
+}
+
+// The owner's decision from a Telegram button. The single
+// conditional UPDATE is the whole decision: the row must still be pending, an
+// email_send with a content anchor, inside its deadline (checked here, the
+// sweeper may not have run yet), the stored message id must match, and the
+// nonce hash must match the one stored for THIS decision's button (the approve
+// nonce cannot reject, the reject nonce cannot approve: bad_nonce). The win
+// clears both hashes, so no press can ever decide twice; one call wins against
+// another button press, the legacy PATCH and the sweeper alike. The submitted
+// message id is only compared, never written.
+export function resolveApprovalFromTelegram(params: {
+  id: string
+  status: 'approved' | 'rejected'
+  ownerId: string
+  messageId: number
+  nonceHash: string
+  nowS?: number
+}): ApprovalTelegramResult {
+  const { id, status, ownerId, messageId, nonceHash } = params
+  if (typeof id !== 'string' || (status !== 'approved' && status !== 'rejected')
+    || typeof ownerId !== 'string' || !TELEGRAM_USER_ID.test(ownerId)
+    || !Number.isSafeInteger(messageId) || messageId <= 0
+    || typeof nonceHash !== 'string' || !SHA256_HEX.test(nonceHash)) {
+    return { ok: false, reason: 'bad_request' }
+  }
+  const now = params.nowS ?? Math.floor(Date.now() / 1000)
+  const column = CALLBACK_NONCE_COLUMN[status]
+  return db.transaction((): ApprovalTelegramResult => {
+    const changes = db.prepare(`
+      UPDATE approvals SET status = ?, resolved_at = ?, resolved_by = ?,
+             callback_nonce_hash_approve = NULL, callback_nonce_hash_reject = NULL,
+             action_payload = ${CLEAR_PAYLOAD_ON_CLOSE}
+       WHERE id = ? AND status = 'pending' AND category = 'email_send' AND content_hash IS NOT NULL
+         AND timeout_at IS NOT NULL AND timeout_at > ?
+         AND telegram_message_id = ? AND ${column} = ?
+    `).run(status, now, `owner:telegram:${ownerId}`, status, CLEARED_EMAIL_PAYLOAD, id, now, messageId, nonceHash).changes
+    const row = getApproval(id)
+    if (changes === 1) return { ok: true, approval: row }
+    let reason: ApprovalTelegramRefusal
+    if (!row) reason = 'not_found'
+    else if (row.category !== 'email_send') reason = 'wrong_category'
+    else if (row.status === 'timeout') reason = 'expired'
+    else if (row.status !== 'pending') reason = 'already_resolved'
+    else if (row.timeout_at != null && row.timeout_at <= now) reason = 'expired'
+    else if (row.content_hash == null || row.timeout_at == null || row.telegram_message_id == null
+      || !approvalHasCallbackNonce(id, column)) reason = 'not_bound'
+    else if (row.telegram_message_id !== messageId) reason = 'message_mismatch'
+    else reason = 'bad_nonce'
+    return { ok: false, reason, approval: row }
+  })()
+}
+
+// Whether the nonce of one button is bound, without ever reading the hash out
+// of SQL. `column` is one of the two CALLBACK_NONCE_COLUMN names.
+function approvalHasCallbackNonce(id: string, column: (typeof CALLBACK_NONCE_COLUMN)[keyof typeof CALLBACK_NONCE_COLUMN]): boolean {
+  const r = db.prepare(`SELECT ${column} IS NOT NULL AS bound FROM approvals WHERE id = ?`).get(id) as { bound: number } | undefined
+  return r?.bound === 1
 }
 
 export function listApprovals(opts: {
@@ -6964,7 +7115,7 @@ export function listApprovals(opts: {
   const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : ''
   const limit = Math.min(opts.limit ?? 100, 500)
   params.push(limit)
-  return db.prepare(`SELECT * FROM approvals ${where} ORDER BY requested_at DESC LIMIT ?`).all(...params) as Approval[]
+  return db.prepare(`SELECT ${APPROVAL_PUBLIC_COLUMNS} FROM approvals ${where} ORDER BY requested_at DESC LIMIT ?`).all(...params) as Approval[]
 }
 
 // Stamp trace context onto an agent_messages row that was created without one.
@@ -6986,9 +7137,31 @@ export function stampMessageTrace(
 export function expireTimedOutApprovals(): number {
   const now = Math.floor(Date.now() / 1000)
   return db.prepare(`
-    UPDATE approvals SET status = 'timeout', resolved_at = ?
+    UPDATE approvals SET status = 'timeout', resolved_at = ?,
+           action_payload = ${CLEAR_PAYLOAD_ON_CLOSE}
     WHERE status = 'pending' AND timeout_at IS NOT NULL AND timeout_at <= ?
-  `).run(now, now).changes
+  `).run(now, 'timeout', CLEARED_EMAIL_PAYLOAD, now).changes
+}
+
+// The rows the transitions above cannot clear, because
+// they close without passing through this file: a letter the PYTHON send gate
+// consumed (it writes consumed_at directly, and it is not changed here), and an
+// approved letter nobody sent inside the window. Also a spent envelope row
+// decided by code older than the marker. Only an `envelope_v: 1` payload (the
+// requester helper's envelope) is ever touched: an email_send row with any
+// other payload (older requesters) is left exactly as it is. Idempotent: a
+// cleared row is never matched again. Returns the number of rows cleared. Run
+// by the timeout sweeper.
+export function clearSpentEmailPayloads(windowSeconds: number, nowS?: number): number {
+  const now = nowS ?? Math.floor(Date.now() / 1000)
+  return db.prepare(`
+    UPDATE approvals SET action_payload = ?
+     WHERE category = 'email_send' AND action_payload IS NOT NULL AND action_payload <> ?
+       AND ${IS_ENVELOPE_V1}
+       AND (consumed_at IS NOT NULL
+         OR status IN ('rejected', 'timeout')
+         OR (status = 'approved' AND resolved_at IS NOT NULL AND resolved_at < ?))
+  `).run(CLEARED_EMAIL_PAYLOAD, CLEARED_EMAIL_PAYLOAD, now - windowSeconds).changes
 }
 
 // f2c5edb0: why a consume was refused. Classified AFTER the write failed, so
@@ -7025,10 +7198,11 @@ export function consumeApproval(params: {
   const category = params.category ?? 'email_send'
   return db.transaction((): ApprovalConsumeResult => {
     const changes = db.prepare(`
-      UPDATE approvals SET consumed_at = ?, consumed_by = ?, consumed_ref = ?
+      UPDATE approvals SET consumed_at = ?, consumed_by = ?, consumed_ref = ?,
+             action_payload = CASE WHEN ${IS_ENVELOPE_V1} THEN ? ELSE action_payload END
        WHERE id = ? AND category = ? AND status = 'approved' AND consumed_at IS NULL
          AND content_hash = ? AND resolved_at IS NOT NULL AND resolved_at >= ?
-    `).run(now, params.consumer, ref, params.id, category, params.contentHash, now - params.windowSeconds).changes
+    `).run(now, params.consumer, ref, CLEARED_EMAIL_PAYLOAD, params.id, category, params.contentHash, now - params.windowSeconds).changes
     const event = db.prepare(`
       INSERT INTO approval_events (approval_id, event, reason, actor, ref, created_at) VALUES (?, ?, ?, ?, ?, ?)
     `)
