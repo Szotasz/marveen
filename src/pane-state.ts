@@ -800,12 +800,40 @@ export function detectQuotaWall(pane: string): QuotaWall | null {
 // The tmux-visible selection marker Claude Code draws on the active option.
 const CURSOR_GLYPH = '\u276f'
 
-export type FirstRunGateKind = 'trust' | 'bypass-permissions' | 'login' | 'theme' | 'welcome' | 'mcp-trust'
+export type FirstRunGateKind = 'trust' | 'bypass-permissions' | 'login' | 'theme' | 'welcome' | 'mcp-trust' | 'dev-channels'
+
+// The development-channels warning. A worksourceChannel
+// agent is launched with `--dangerously-load-development-channels
+// server:worksource` (agent-process.ts), and Claude Code parks EVERY such
+// launch on this panel before the prompt renders -- measured in the shipped
+// 2.1.280 binary: DevChannelsDialog is mounted whenever dev channels were
+// passed, channels are enabled and the session is first-party; nothing
+// persists an acknowledgement, so it returns on every start and restart:
+//
+//   WARNING: Loading development channels
+//   --dangerously-load-development-channels is for local channel development
+//   only. ...
+//   Please use --channels to run a list of approved channels.
+//   Channels: server:worksource
+//   ❯ 1. I am using this for local development
+//     2. Exit
+//   Enter to confirm · Esc to cancel
+//
+// Both refusals QUIT the TUI in that binary: "Exit" calls exit(1) and the
+// panel's own Escape handler calls exit(0). So the generic blocking-menu
+// Escape is the wrong answer here, exactly as on the trust dialog.
+//
+// Both the heading and the option are required: the option is the functional
+// element (see TRUSTGATE901), the heading keeps a pane that merely quotes the
+// option line from being read as the panel.
+const DEV_CHANNELS_TITLE_RX = /Loading development channels/
+const DEV_CHANNELS_OPTION_RX = /I am using this for local development/
 
 // Ordered: the login picker and theme screen render UNDER the "Welcome to
 // Claude Code" banner, so the more specific matches must win before the
 // generic welcome fallback.
 const FIRST_RUN_GATES: Array<{ kind: FirstRunGateKind; rx: RegExp }> = [
+  { kind: 'dev-channels', rx: new RegExp(`^(?=[\\s\\S]*${DEV_CHANNELS_TITLE_RX.source})(?=[\\s\\S]*${DEV_CHANNELS_OPTION_RX.source})`) },
   // MCP server-approval dialog (2026-09-03, PR #1099 review). A worksource
   // agent gets its queue as a project-scope MCP server, and on the first start
   // after that server appears Claude Code parks the TUI on:
@@ -911,6 +939,25 @@ export function mcpTrustAcceptKeys(pane: string): string[] | null {
   for (let i = 0; i < Math.abs(delta); i++) keys.push(delta > 0 ? 'Down' : 'Up')
   keys.push('Enter')
   return keys
+}
+
+// Keys that confirm the development-channels warning, or null -- meaning PARK,
+// send nothing. Stricter than firstRunAcceptKeys on purpose: this returns a
+// key ONLY when the highlighted row IS "I am using this for local development"
+// and it is the one such row. It never navigates, so a reworded or reordered
+// panel whose cursor sits anywhere else (on "Exit", or on something new) gets
+// no keystroke at all: Enter there would confirm whatever is highlighted, and
+// Escape quits the TUI. Fleet rule: never a bare Enter into a dialog we have
+// not positively identified.
+export function devChannelsAcceptKeys(pane: string): string[] | null {
+  if (!pane || !pane.trim()) return null
+  if (!DEV_CHANNELS_TITLE_RX.test(pane)) return null
+  const lines = pane.split('\n')
+  const cursorLines = lines.filter(l => l.includes(CURSOR_GLYPH))
+  if (cursorLines.length !== 1) return null
+  const isTarget = (l: string) => DEV_CHANNELS_OPTION_RX.test(l) && !/\bexit\b/i.test(l)
+  if (lines.filter(isTarget).length !== 1) return null
+  return isTarget(cursorLines[0]) ? ['Enter'] : null
 }
 
 export function firstRunAcceptKeys(pane: string): string[] | null {

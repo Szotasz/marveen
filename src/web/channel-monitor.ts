@@ -12,7 +12,7 @@ import { logger } from '../logger.js'
 import { mainRelaunchSucceeded } from '../auto-restart.js'
 import { MAIN_AGENT_ID, SERVICE_ID, BOT_NAME, CHANNEL_PROVIDER, PROJECT_ROOT, RESPAWN_ENABLED } from '../config.js'
 import { launchableDistributionDefaultSync } from './default-model-guard.js'
-import { agentDir, listAgentNames, readAgentChannelProvider } from './agent-config.js'
+import { agentDir, listAgentNames, readAgentChannelProvider, readAgentRemoteHost, readAgentWorksourceChannel } from './agent-config.js'
 import { listKanbanCards } from '../db.js'
 import {
   agentHasChannel,
@@ -2351,7 +2351,23 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
     let menuTargetsWalked = 0
     let menuTargetsInMenu = 0
     let menuTargetsFirstRun = 0
-    for (const t of targets) {
+    // A worksourceChannel agent WITHOUT a chat channel is not in `targets` (no
+    // plugin to probe), yet every one of its launches parks on the
+    // development-channels warning. The post-spawn watch in
+    // scheduleIdentitySetup answers it -- but that is a timer inside the
+    // process that spawned the agent. Measured on a live install: the
+    // dashboard was restarted by its service manager 5.7s after the context
+    // guard restarted such an agent, the timer died with it, and nothing in
+    // the successor ever looked at that pane again; it sat on the dialog ~10 minutes until a
+    // human pressed Enter. So these agents join THIS pass, gate-only: they get
+    // the first-run answers (the same answerFirstRunGates) and NEVER the
+    // generic Escape below -- on that dialog Escape quits the TUI.
+    const menuTargets: Array<{ session: string; isMarveen: boolean; agentName?: string; gateOnly?: boolean }> = [...targets]
+    for (const a of listAgentNames()) {
+      if (agentHasChannel(a) || !readAgentWorksourceChannel(a) || readAgentRemoteHost(a) || !isAgentRunning(a)) continue
+      menuTargets.push({ session: agentSessionName(a), isMarveen: false, agentName: a, gateOnly: true })
+    }
+    for (const t of menuTargets) {
       const pane = capturePane(t.session)
       menuTargetsWalked++
       // First-run gates (fresh-install folder-trust / bypass acceptance /
@@ -2363,7 +2379,7 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
       // panes get the channels.sh-style dialog answers instead; only the
       // login picker is alert-only (nobody can log in on the operator's behalf).
       const firstRunGate = pane != null ? detectsFirstRunGate(pane) : null
-      const inMenu = firstRunGate != null || (pane != null && detectsBlockingMenu(pane))
+      const inMenu = firstRunGate != null || (!t.gateOnly && pane != null && detectsBlockingMenu(pane))
       if (firstRunGate != null) menuTargetsFirstRun++
       if (inMenu) menuTargetsInMenu++
       const prev = paneMenuState.get(t.session) ?? { firstSeenAt: null, lastAlertAt: null, lastErrorAt: null }
@@ -2393,8 +2409,15 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
             // nor Escape is neutral on that panel (Escape is "No, exit", and
             // Enter confirms whatever is highlighted, which in 2.1.252 is the
             // exit). A human picks; we only say so, loudly.
-            logger.warn({ session: t.session, agent: label }, 'first-run trust dialog in an unrecognised shape -- parked, NO keystrokes sent')
-            sendAlert(`🛑 A(z) ${label} session a mappa-megbízhatósági dialóguson parkol, de a panel alakját nem ismerem fel, ezért NEM nyomtam meg semmit. Se az Enter, se az Escape nem semleges rajta (az Escape a "No, exit"). Válassz kézzel: tmux attach -t ${t.session}, majd a "Yes, I trust this folder" sort jelöld ki és Enter.`)
+            logger.warn({ session: t.session, agent: label, gate: firstRunGate }, 'first-run dialog in an unrecognised shape -- parked, NO keystrokes sent')
+            if (firstRunGate === 'dev-channels') {
+              // Same rule, different panel. The highlighted
+              // row was not "I am using this for local development", so Enter
+              // would confirm something else -- and Escape quits the TUI.
+              sendAlert(`🛑 A(z) ${label} session a "Loading development channels" figyelmeztetésen parkol, de a kijelölt sor nem az "I am using this for local development", ezért NEM nyomtam meg semmit (az Escape és az Exit is kilépteti). Válassz kézzel: tmux attach -t ${t.session}`)
+            } else {
+              sendAlert(`🛑 A(z) ${label} session a mappa-megbízhatósági dialóguson parkol, de a panel alakját nem ismerem fel, ezért NEM nyomtam meg semmit. Se az Enter, se az Escape nem semleges rajta (az Escape a "No, exit"). Válassz kézzel: tmux attach -t ${t.session}, majd a "Yes, I trust this folder" sort jelöld ki és Enter.`)
+            }
           } else {
             sendRoutineAlert(`firstrun-gate:${label}`, `🧭 A(z) ${label} session a Claude Code első-indítási képernyőjén parkolt (${firstRunGate}); automatikusan továbbléptettem. A várakozó ütemezett feladatok a következő körben kézbesítődnek.`)
           }

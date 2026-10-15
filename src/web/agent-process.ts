@@ -28,6 +28,8 @@ import {
   firstRunAcceptKeys,
   stuckInputSignature,
   mcpTrustAcceptKeys,
+  devChannelsAcceptKeys,
+  detectsBlockingMenu,
   type FirstRunGateKind,
 } from '../pane-state.js'
 import { scheduleRecoveryBrief } from './restart-recovery-brief.js'
@@ -3117,7 +3119,8 @@ export async function dismissModelConsentDialogIfPresent(session: string, host: 
 }
 
 // Walk a session out of the Claude Code FIRST-RUN dialog chain (folder-trust,
-// bypass-permissions acceptance, theme picker, welcome screen), answering each
+// bypass-permissions acceptance, MCP server approval, the development-channels
+// warning, theme picker, welcome screen), answering each
 // dialog exactly the way scripts/channels.sh's startup guard does for the main
 // session: trust -> "1" Enter (Yes, proceed), bypass -> "2" Enter (Yes, I
 // accept), theme/welcome -> Enter (accept default / continue). The login
@@ -3198,6 +3201,22 @@ export async function answerFirstRunGates(
           runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), k], { timeout: 5000 })
           await delay(150)
         }
+      } else if (gate === 'dev-channels') {
+        // The development-channels warning every worksourceChannel launch
+        // parks on. Enter ONLY when the highlighted
+        // row is "I am using this for local development" -- both other exits
+        // from this panel ("Exit", Escape) quit the TUI, and a cursor anywhere
+        // else means a layout we do not model. See devChannelsAcceptKeys.
+        const keys = pane != null ? devChannelsAcceptKeys(pane) : null
+        if (keys == null) {
+          logger.warn({ session, gate },
+            'development-channels dialog: the highlighted option is not "I am using this for local development" -- parking, NO keystrokes sent')
+          return 'blocked'
+        }
+        for (const k of keys) {
+          runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), k], { timeout: 5000 })
+          await delay(150)
+        }
       } else {
         // theme / welcome: Enter accepts the highlighted default and moves on.
         runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), 'Enter'], { timeout: 5000 })
@@ -3231,6 +3250,79 @@ export function identitySlashCommands(displayName: string): string[] {
 const MODAL_DISMISS_DELAY_MS = 8000
 const IDENTITY_SEND_DELAY_MS = 5000
 
+// Post-spawn startup-gate watch. Every start door --
+// startAgentProcess (the dashboard button, the context guard's fresh restart
+// via restartAgentProcess, auto-restart, reconcile) and the remote start --
+// reaches the new session through scheduleIdentitySetup, so this is where a
+// startup dialog is answered for all of them at once.
+//
+// Measured on a live install: until this existed, NOTHING answered the
+// development-channels warning a worksourceChannel launch parks on. What got
+// every earlier start past it was an accident: the `/rename <name>` below,
+// typed ~13s after spawn, ends in Enter, and that Enter confirmed whatever the
+// dialog had highlighted. 28 of the 29 sub-agent starts in one day's
+// store/dashboard.log were followed by "Set session /rename"; the one that
+// was not -- a context-guard restart whose dashboard process was restarted
+// by its service manager 5.7s later, taking the timer with it -- sat on the
+// dialog for ~10 minutes until a human pressed Enter.
+//
+// So the dialog is answered deliberately, through the same helper the channel
+// monitor uses (answerFirstRunGates), and the /rename refuses to type into a
+// pane that shows a dialog at all.
+//
+// A bounded poll, not a single probe: the dialog chain can render after the
+// MODAL_DISMISS_DELAY_MS mark on a loaded host, and a one-shot check that
+// arrives a second early would find nothing and leave the dialog to the
+// monitor's slower sweep. The watch ends as soon as the pane is a real Claude
+// Code surface (idle/busy/typing/error), i.e. no dialog is in front of it.
+export const STARTUP_GATE_WATCH_MS = 30_000
+const STARTUP_GATE_POLL_MS = 1000
+
+export type StartupGateOutcome = 'ready' | 'cleared' | 'login' | 'blocked' | 'timeout'
+
+export async function settleStartupGates(
+  session: string,
+  host: string | null = null,
+  watchMs: number = STARTUP_GATE_WATCH_MS,
+): Promise<StartupGateOutcome> {
+  const deadline = Date.now() + watchMs
+  let answered = false
+  for (;;) {
+    const pane = capturePane(session, host)
+    if (pane != null) {
+      if (detectsFirstRunGate(pane) != null) {
+        // Keystrokes into the pane go through the per-pane send lane
+        // (PANEWRITERS910), fail-closed: a busy lane just means we look again
+        // on the next poll.
+        const releaseLane = tryAcquireSessionSendLane(session, host)
+        if (releaseLane) {
+          let res: Awaited<ReturnType<typeof answerFirstRunGates>>
+          try {
+            res = await answerFirstRunGates(session, host)
+          } finally {
+            releaseLane()
+          }
+          if (res === 'login' || res === 'blocked') return res
+          if (res === 'cleared') answered = true
+        }
+      } else if (detectPaneState(pane) !== 'unknown') {
+        return answered ? 'cleared' : 'ready'
+      }
+    }
+    if (Date.now() >= deadline) return 'timeout'
+    await delay(STARTUP_GATE_POLL_MS)
+  }
+}
+
+// The identity /rename is text followed by Enter. Typed into a dialog, the
+// text is dropped and the Enter CONFIRMS the highlighted option -- which is
+// how it used to answer the development-channels warning by accident (see
+// above). Never into a first-run gate or a blocking menu.
+export function paneRefusesIdentityCommand(pane: string | null): boolean {
+  if (pane == null) return true
+  return detectsFirstRunGate(pane) != null || detectsBlockingMenu(pane)
+}
+
 // How many times the identity send retries when the pane's send lane is held
 // by a live delivery, and how long it waits between tries. Unlike the modal
 // dismissals (skip-on-busy is harmless -- a modal that is really up keeps the
@@ -3262,6 +3354,22 @@ const IDENTITY_LANE_MAX_ATTEMPTS = 5
 export async function scheduleIdentitySetup(session: string, displayName: string, host: string | null = null): Promise<void> {
   setTimeout(() => {
     void (async () => {
+      // Startup dialogs first: nothing below may reach the
+      // pane while a dialog is in front of the prompt.
+      try {
+        const gates = await settleStartupGates(session, host)
+        if (gates === 'cleared') {
+          logger.info({ session }, 'Post-spawn: answered the startup dialog(s), prompt is up')
+        } else if (gates === 'timeout') {
+          logger.warn({ session, watchMs: STARTUP_GATE_WATCH_MS },
+            'Post-spawn: no Claude Code prompt within the startup watch; continuing (the /rename still refuses to type into a dialog)')
+        } else if (gates !== 'ready') {
+          logger.warn({ session, outcome: gates },
+            'Post-spawn: session is still behind a startup dialog -- NOT answered here (no safe key); the channel monitor sweep re-checks it')
+        }
+      } catch (err) {
+        logger.warn({ err, session }, 'Post-spawn startup-dialog watch failed')
+      }
       // Modal dismissals: fail-closed acquire, same as sendPromptToSession's
       // pre-emit dismissals. Skipping on a busy lane is safe here -- a delivery
       // holding the lane runs its OWN dismissals before emitting.
@@ -3295,6 +3403,18 @@ export async function scheduleIdentitySetup(session: string, displayName: string
               await delay(IDENTITY_LANE_RETRY_MS)
               continue
             }
+            // Looked at INSIDE the lane, right before typing, so no other
+            // writer's keystrokes can change the pane between the look and
+            // the keys.
+            if (paneRefusesIdentityCommand(capturePane(session, host))) {
+              releaseIdentityLane()
+              logger.info(
+                { session, displayName, attempt, max: IDENTITY_LANE_MAX_ATTEMPTS },
+                'Identity /rename deferred -- a dialog is in front of the prompt; never typing text+Enter into it',
+              )
+              await delay(IDENTITY_LANE_RETRY_MS)
+              continue
+            }
             try {
               for (const cmd of identitySlashCommands(displayName)) {
                 runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), cmd, 'Enter'], { timeout: 5000 })
@@ -3313,7 +3433,7 @@ export async function scheduleIdentitySetup(session: string, displayName: string
           // loudly because a skip nobody logs is not a skip.
           logger.warn(
             { session, displayName, max: IDENTITY_LANE_MAX_ATTEMPTS },
-            'Identity /rename abandoned -- pane send lane stayed busy; session keeps its default name',
+            'Identity /rename abandoned -- pane send lane stayed busy or a dialog stayed up; session keeps its default name',
           )
         })()
       }, IDENTITY_SEND_DELAY_MS)
