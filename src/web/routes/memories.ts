@@ -5,7 +5,7 @@ import {
   getMemoryById, deleteMemoryById, getMemoryVersions,
   type Memory, type MemoryRow,
 } from '../../db.js'
-import { MAIN_AGENT_ID, ALLOWED_CHAT_ID, OLLAMA_URL, MEMORY_IMPORT_CATEGORIZE_MODEL, APP_TZ } from '../../config.js'
+import { MAIN_AGENT_ID, ALLOWED_CHAT_ID, OLLAMA_URL, MEMORY_IMPORT_CATEGORIZE_MODEL, APP_TZ, MEMORY_CONTENT_FILTER_STRICT_COMMANDS } from '../../config.js'
 import { createHash } from 'crypto'
 import { logger } from '../../logger.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
@@ -89,6 +89,29 @@ const SUSPICIOUS_PATTERNS = [
   /\buj\s+(persona|szemelyiseg|szerep|karakter)(t|et|ot)?\s+(veszel|vegyel|vesz|kapsz|kapod|olts)/i,
 ]
 
+// OPTIONAL STRICT GROUP (MEMORY_CONTENT_FILTER_STRICT_COMMANDS=1, default OFF).
+// The six command-syntax patterns removed above, kept as a separate list that
+// is consulted ONLY when the install opts in. Kept out of SUSPICIOUS_PATTERNS on
+// purpose, so the default list (and the test that pins it) stays exactly the
+// injection-only decision. Why an install may opt in anyway: "stored text does
+// not execute" is true for the store, but the text is read back into an agent's
+// context, and on an install where that agent does not run the destructive gate
+// the execution-time cover named above is absent. The cost is the one measured
+// above and it is not hidden: prose that merely QUOTES one of these command
+// forms (security documentation) is rejected too. On one live install that
+// kept these six patterns: 0 hits for every one of them over 651 stored
+// memories and 234 daily-log rows, and 0 rejection lines in five weeks of
+// dashboard log, so the cost there was nil; on the corpus measured above it
+// was 11 false hits out of 2124 items.
+export const STRICT_COMMAND_PATTERNS = [
+  /\bcurl\s+(-[a-zA-Z]\s+)*https?:\/\//i,
+  /\bbash\s+-c\b/i,
+  /\beval\s*\(/i,
+  /\bexec\s*\(/i,
+  /\bimport\s+subprocess\b/i,
+  /\brm\s+-rf\b/i,
+]
+
 // MEMVERSION930: a content-derived version for optimistic concurrency. The
 // PATCH that agents use is read-modify-write (GET, prepend a dated
 // header, send the whole content back), and two agents editing the same shared
@@ -106,9 +129,12 @@ function stripDiacritics(s: string): string {
   return s.normalize('NFD').replace(/[̀-ͯ]/g, '')
 }
 
-function containsSuspiciousContent(content: string): boolean {
+// `strictCommands` defaults to the install switch; the parameter exists so the
+// test can drive both settings without re-importing the module.
+export function containsSuspiciousContent(content: string, strictCommands: boolean = MEMORY_CONTENT_FILTER_STRICT_COMMANDS): boolean {
   const plain = stripDiacritics(content)
-  return SUSPICIOUS_PATTERNS.some((pattern) => pattern.test(content) || pattern.test(plain))
+  const hit = (pattern: RegExp) => pattern.test(content) || pattern.test(plain)
+  return SUSPICIOUS_PATTERNS.some(hit) || (strictCommands && STRICT_COMMAND_PATTERNS.some(hit))
 }
 
 // --- Destructive-write guard (card 27ab6a18) -------------------------------

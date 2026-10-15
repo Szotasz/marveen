@@ -509,6 +509,18 @@ export const HEARTBEAT_AGENT_ENABLED =
 export const SUBAGENT_INBOX_TEE =
   ['1', 'true', 'yes', 'on'].includes((cfg('SUBAGENT_INBOX_TEE') ?? '').trim().toLowerCase())
 
+// Strict command-syntax group for the memory content filter (opt-in, DEFAULT OFF).
+// The filter in src/web/routes/memories.ts is injection-only by default: the six
+// command-syntax patterns (curl http(s), bash -c, eval(, exec(, import
+// subprocess, rm -rf) were removed because, measured over the fleet's real
+// items, they only ever rejected documentation. An install that reads stored
+// memories back into an agent which does NOT run the destructive gate may still
+// want them as a second line; MEMORY_CONTENT_FILTER_STRICT_COMMANDS=1 re-enables
+// exactly that group, as a 400 like the injection group. Unset keeps the
+// upstream injection-only filter unchanged.
+export const MEMORY_CONTENT_FILTER_STRICT_COMMANDS =
+  ['1', 'true', 'yes', 'on'].includes((cfg('MEMORY_CONTENT_FILTER_STRICT_COMMANDS') ?? '').trim().toLowerCase())
+
 // Sub-agent Telegram inbox wake-nudge (opt-in, DEFAULT OFF).
 // The message-router can nudge an idle sub-agent whose derived Telegram inbox
 // (<state>/inbox-pending.jsonl) has stuck inbound messages, so its drain hook

@@ -149,6 +149,7 @@ Minden dashboard-szerkeszthető beállítás egy bejegyzésként szerepel a regi
 | `DASHBOARD_PUBLIC_URL` | string | (üres) | A dashboard nyilvánosan elérhető URL-je | igen |
 | `OLLAMA_URL` | string | `http://localhost:11434` | Ollama API alap-URL | igen |
 | `MEMORY_IMPORT_CATEGORIZE_MODEL` | string | (üres) | Memória-import besoroló Ollama modellje (felülbírálás); üres = telepített `gemma4` felismerése, olyan híján minden warm | igen |
+| `MEMORY_CONTENT_FILTER_STRICT_COMMANDS` | boolean | `0` (ki) | A memória-tartalomszűrő szigorú parancs-szintaxis csoportja (curl http(s), bash -c, eval(, exec(, import subprocess, rm -rf) a memória POST/PUT/PATCH-en; ára: a parancsot csak idéző szöveg is 400-at kap | igen |
 
 **Registry -- Heartbeat modul:**
 

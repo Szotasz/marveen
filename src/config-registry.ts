@@ -322,6 +322,15 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     requiresRestart: true,
   },
   {
+    key: 'MEMORY_CONTENT_FILTER_STRICT_COMMANDS',
+    type: 'boolean',
+    default: '0',
+    description: 'A memória-tartalomszűrő szigorú parancs-szintaxis csoportja (curl http(s), bash -c, eval(, exec(, import subprocess, rm -rf). Alapértelmezés: kikapcsolva, a szűrő csak injekciós fordulatokat utasít el. Bekapcsolva ezek a minták is 400-at adnak a memória POST/PUT/PATCH-en. Ára: a parancsot csak IDÉZŐ szöveget (pl. biztonsági dokumentációt) is elutasítja. Akkor érdemes, ha a tárolt emlékeket olyan ügynök olvassa vissza, amelyen nincs bekötve a destructive-gate hook. A módosítás a dashboard újraindításakor lép életbe.',
+    module: 'system',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
     key: 'OLLAMA_URL',
     type: 'string',
     default: 'http://localhost:11434',
