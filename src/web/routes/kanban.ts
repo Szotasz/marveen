@@ -11,6 +11,9 @@ import {
   addLabelToCard, removeLabelFromCard, getLabelsForAllCards, getLabelsForCard,
   addCardBlocker, removeCardBlocker, getBlockersForCard, getBlockedByCard, getCardsUnblockedBy, getLatestDoneTransitionAt,
   getBlockersForAllCards, blockerWouldCycle, parentWouldCycle,
+  claimKanbanCard, releaseKanbanCardClaim, isKanbanClaimActive, unblockDependentsOf, getDoneEvidence,
+  KANBAN_CLAIM_DEFAULT_TTL_SEC, KANBAN_CLAIM_MIN_TTL_SEC, KANBAN_CLAIM_MAX_TTL_SEC,
+  type KanbanCard,
   listArchivedKanbanCards,
   revertIdeaFromKanban,
   getHeartbeatKanbanSummary,
@@ -54,6 +57,11 @@ const KANBAN_READONLY_FIELDS = new Set<string>([
   // never by a PUT, but getKanbanCard's SELECT * returns it so the dashboard's
   // whole-card send carries it back. Accept-and-ignore, do not 400.
   'dispatched_at',
+  // The claim lock columns ride along in GET /api/kanban (SELECT *)
+  // and so in the dashboard's whole-card PUT. They are written ONLY through
+  // /claim and /release (a PUT must not be a way around the compare-and-set),
+  // so they are accepted-and-ignored here, never written.
+  'claimed_by', 'claimed_at', 'claim_expires_at',
 ])
 
 // Every key POST /api/kanban/:id/move accepts; anything else is a 400, same
@@ -74,6 +82,7 @@ export function kanbanMoveInstructions(id: string, target: string): string {
   const moveUrl = `${base}/api/kanban/${id}/move`
   const commentUrl = `${base}/api/kanban/${id}/comments`
   const cardUrl = `${base}/api/kanban/${id}`
+  const claimUrl = `${base}/api/kanban/${id}/claim`
   // Escalation target when blocked: sub-agents hand back to the main agent
   // (their delegator), who triages and only escalates to the operator when
   // the block genuinely needs a human decision. Only the main agent itself
@@ -123,6 +132,16 @@ export function kanbanMoveInstructions(id: string, target: string): string {
     statusProbe,
     'Ha a "status:" sor már "testing" vagy "done", NE kezdj bele -- az üzenet későn ért ide, a munka már áll. Egy második nekifutás párhuzamos, két helyen karbantartott munkát szül (például egy MÁSODIK teszt-fájlt ugyanarra a vezérlőre). Ilyenkor jelezd a delegálódnak, és ne írj kódot.',
     'A "description:" sort is OLVASD EL, ne csak a státuszt: ha benne kártya-specifikus kikötés áll (pl. más záró-státusz, "nincs éles restart"), az felülírja ennek a sablonnak az alapértelmezését, lásd a 2) lépésnél.',
+    '',
+    // The status probe above answers "is the work already done?",
+    // not "is someone else doing it right now?". Two agents can both read
+    // in_progress and both start; the claim is the atomic lock that settles it.
+    'FOGLALD LE a kártyát, MIELŐTT dolgozni kezdesz (két ügynök ne dolgozzon ugyanazon):',
+    `  curl -s -X POST ${claimUrl} \\`,
+    `    ${auth} \\`,
+    `    -H 'Content-Type: application/json' \\`,
+    `    -d '{"agent":"${target}"}'`,
+    'Ha a válasz 409 ("már ... foglalja"), NE kezdj bele: más dolgozik rajta, jelezd a delegálódnak. A foglalás 2 óráig él; hosszabb munkánál ugyanezzel a hívással újítsd meg. Automatikusan elengedi a done, a waiting vagy a testing státusz, és az is, ha a kártyát másra osztod át (lent, elakadásnál): így az átvevő le tudja foglalni.',
     '',
     'A kártyát in_progress-re húzták. Amikor VÉGEZTÉL, két lépés (mindkettő a kártyára kerül, a web UI-ban látszik):',
     '',
@@ -470,6 +489,69 @@ export function parseIncludeArchived(raw: string | null): boolean | null {
   if (v === '' || v === '1' || v === 'true' || v === 'yes' || v === 'on') return true
   if (v === '0' || v === 'false' || v === 'no' || v === 'off') return false
   return null
+}
+
+// What a status change owes the caller beyond `ok`. Every field is
+// ADDITIVE and optional -- `ok: true` and the status code are unchanged, so no
+// existing caller (dashboard drag, agents' curl recipes) sees a difference
+// unless it reads the new fields.
+//   - claim_warning: the card is moved to in_progress while ANOTHER agent holds
+//     a live claim on it -- the exact double-pickup the claim lock exists to
+//     prevent. Soft: the dashboard's drag carries no actor and must keep working.
+//   - evidence_warning: closed as done without a single non-system comment since
+//     the work started (no done without evidence). Soft for
+//     the same reason; the warning names the fix.
+//   - unblocked: the waiting cards this close released back to planned.
+// Best-effort like the dispatch: the move has already happened, so a failure in
+// here is logged and swallowed rather than turned into a 500.
+export function statusChangeExtras(
+  id: string,
+  before: Pick<KanbanCard, 'status' | 'claimed_by' | 'claim_expires_at'> | undefined,
+  newStatus: unknown,
+  actor?: string | null,
+): Record<string, unknown> {
+  const extras: Record<string, unknown> = {}
+  if (!before || before.status === newStatus) return extras
+  if (newStatus === 'in_progress' && isKanbanClaimActive(before)
+      && (typeof actor !== 'string' || actor.toLowerCase() !== String(before.claimed_by).toLowerCase())) {
+    extras.claim_warning =
+      `A kártyát ${before.claimed_by} foglalja (lejár: ${new Date(before.claim_expires_at! * 1000).toISOString()}). ` +
+      'Ha nem te vagy, NE dolgozz rajta párhuzamosan: egyeztess vele, vagy várd meg, amíg elengedi.'
+  }
+  if (newStatus === 'done') {
+    try {
+      const ev = getDoneEvidence(id)
+      if (ev && ev.comments === 0) {
+        extras.evidence_warning =
+          'A kártya bizonyíték nélkül lett done: a munka kezdete óta (az utolsó in_progress-be lépés, vagy ha ott nem járt, a létrehozás óta) nincs rajta komment. ' +
+          `Írj egy eredmény-kommentet (mi lett a vége, hol a bizonyíték): POST /api/kanban/${id}/comments`
+        logger.warn({ id, actor, since: ev.since }, 'Kanban card closed as done without an evidence comment')
+      }
+    } catch (err) {
+      logger.warn({ err, id }, 'Done-evidence check failed (card move still succeeded)')
+    }
+    try {
+      const unblocked = unblockDependentsOf(id)
+      if (unblocked.length > 0) {
+        extras.unblocked = unblocked
+        logger.info({ id, unblocked: unblocked.map((c) => c.id) }, 'Kanban done released waiting dependents')
+      }
+    } catch (err) {
+      logger.warn({ err, id }, 'Dependency unblock failed (card move still succeeded)')
+    }
+  }
+  return extras
+}
+
+// Parses the optional claim TTL. undefined -> the default; anything that is not
+// a whole number of seconds inside the bounds -> null (the route answers 400
+// naming the bounds, rather than silently clamping a value the caller chose).
+export function parseClaimTtl(raw: unknown): number | null {
+  if (raw === undefined || raw === null) return KANBAN_CLAIM_DEFAULT_TTL_SEC
+  const n = typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : raw
+  if (typeof n !== 'number' || !Number.isInteger(n)) return null
+  if (n < KANBAN_CLAIM_MIN_TTL_SEC || n > KANBAN_CLAIM_MAX_TTL_SEC) return null
+  return n
 }
 
 export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
@@ -868,11 +950,11 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // PUT to in_progress clears but does not dispatch; /move remains the only
     // dispatch path (KARTYADISPATCH1010). updateKanbanCard applies the shared
     // dispatched_at clear; no fireKanbanDispatch call belongs here.
-    const statusBefore = getKanbanCard(id)?.status
+    const before = getKanbanCard(id)
     if (updateKanbanCard(id, data, who.actor)) {
       const after = getKanbanCard(id)
-      if (statusBefore !== 'done' && after?.status === 'done') notifyUnblockedCards(id, who.actor)
-      json(res, { ok: true, ...archivedNote(after) })
+      if (before?.status !== 'done' && after?.status === 'done') notifyUnblockedCards(id, who.actor)
+      json(res, { ok: true, ...archivedNote(after), ...statusChangeExtras(id, before, data.status ?? before?.status, who.actor) })
       return true
     }
     json(res, { error: 'Kártya nem található' }, 404)
@@ -926,6 +1008,87 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     return true
   }
 
+  // --- Claim lock: exactly one agent holds a card at a time ---
+  // POST /claim   {agent, ttl_seconds?} -> 200 claimed/renewed, 409 held by another
+  //                                        (body names the holder and expiry),
+  //                                        409 done/archived, 404 no such card.
+  // POST /release {agent, force?}       -> 200 (released: true|false), 409 held by another.
+  // The compare-and-set lives in claimKanbanCard (one conditional UPDATE), so two
+  // agents racing on the same card cannot both get a 200.
+  const claimMatch = path.match(/^\/api\/kanban\/([^/]+)\/(claim|release)$/)
+  if (claimMatch && method === 'POST') {
+    const id = decodeURIComponent(claimMatch[1])
+    const action = claimMatch[2]
+    const body = await readBody(req)
+    const rawBody = (body.length ? JSON.parse(body.toString()) : {}) as unknown
+    // Same rule as /move: null, an array or a scalar is a 400, not a 500 on the
+    // property read below.
+    if (rawBody === null || typeof rawBody !== 'object' || Array.isArray(rawBody)) {
+      json(res, { error: 'A törzs JSON objektum legyen, pl. {"agent":"marveen"}' }, 400)
+      return true
+    }
+    const parsed = rawBody as {
+      agent?: unknown; actor?: unknown; ttl_seconds?: unknown; force?: unknown
+    }
+    // `actor` is accepted as an alias: it is the name the /move and PUT routes
+    // already teach for the same thing (who is acting on the card).
+    const rawAgent = parsed.agent ?? parsed.actor
+    const agent = typeof rawAgent === 'string' ? rawAgent.trim() : ''
+    if (!agent || agent.length > 100) {
+      json(res, { error: 'Az "agent" mező kötelező (a foglaló ügynök neve, pl. {"agent":"marveen"})' }, 400)
+      return true
+    }
+    if (action === 'claim') {
+      const ttl = parseClaimTtl(parsed.ttl_seconds)
+      if (ttl === null) {
+        json(res, {
+          error: `A ttl_seconds érvénytelen: egész másodperc ${KANBAN_CLAIM_MIN_TTL_SEC} és ${KANBAN_CLAIM_MAX_TTL_SEC} között ` +
+                 `(alapértelmezés: ${KANBAN_CLAIM_DEFAULT_TTL_SEC}).`,
+        }, 400)
+        return true
+      }
+      const result = claimKanbanCard(id, agent, ttl)
+      if (result.ok) {
+        if (result.took_over_from) {
+          // An expired claim changing hands is the one claim event worth a
+          // durable, human-readable trace: it means an agent went silent
+          // mid-task, and the next one picked the work up.
+          try {
+            addKanbanComment(id, 'system',
+              `Lejárt foglalás átvéve: ${result.took_over_from} foglalása lejárt, a kártyát most ${agent} foglalja.`)
+          } catch (err) {
+            logger.warn({ err, id }, 'Claim takeover comment failed (claim still succeeded)')
+          }
+        }
+        logger.info({ id, agent, renewed: result.renewed, took_over_from: result.took_over_from }, 'Kanban card claimed')
+        json(res, { id, ...result })
+        return true
+      }
+      if (result.reason === 'not_found') { json(res, { error: 'Kártya nem található', reason: result.reason }, 404); return true }
+      if (result.reason === 'held') {
+        json(res, {
+          error: `A kártyát már ${result.claimed_by} foglalja (lejár: ${new Date(result.claim_expires_at! * 1000).toISOString()}). ` +
+                 'NE kezdj bele párhuzamosan.',
+          ...result,
+        }, 409)
+        return true
+      }
+      json(res, {
+        error: result.reason === 'done' ? 'A kártya már kész (done), nem foglalható' : 'A kártya archivált, nem foglalható',
+        ...result,
+      }, 409)
+      return true
+    }
+    const result = releaseKanbanCardClaim(id, agent, { force: parsed.force === true })
+    if (result.ok) { json(res, { id, ...result }); return true }
+    if (result.reason === 'not_found') { json(res, { error: 'Kártya nem található', reason: result.reason }, 404); return true }
+    json(res, {
+      error: `A foglalás nem a tiéd: ${result.claimed_by} tartja. Csak a foglaló engedheti el (vagy {"force":true} az operátortól).`,
+      ...result,
+    }, 409)
+    return true
+  }
+
   const kanbanMoveMatch = path.match(/^\/api\/kanban\/([^/]+)\/move$/)
   if (kanbanMoveMatch && method === 'POST') {
     const id = decodeURIComponent(kanbanMoveMatch[1])
@@ -955,11 +1118,12 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // The same actor rule as the PUT (card f6fba9ec, X16): before X16 a boolean actor moved the card, then the event
     // insert threw (500), and the move stayed with no row.
     const who = kanbanWriteActor(actor, ctx.auth)
+    // The pre-move row, for statusChangeExtras (claim warning, done evidence).
+    const before = getKanbanCard(id)
     if ('error' in who) {
       json(res, { error: who.error }, 400)
       return true
     }
-    const statusBeforeMove = getKanbanCard(id)?.status
     if (moveKanbanCard(id, status, sort_order ?? 0, who.actor, hasExpected ? { expectedStatus: expected_status as Parameters<typeof moveKanbanCard>[1] } : undefined)) {
       // Wake the assigned agent once when the card enters in_progress -- unless
       // that agent is the one who moved it (self-pickup needs no wake-up).
@@ -967,8 +1131,8 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       // A reorder inside the done column is not a closing: only a real
       // transition to done frees the cards waiting on this one.
       const moved = getKanbanCard(id)
-      if (statusBeforeMove !== 'done' && moved?.status === 'done') notifyUnblockedCards(id, who.actor)
-      json(res, { ok: true, ...archivedNote(moved) })
+      if (before?.status !== 'done' && moved?.status === 'done') notifyUnblockedCards(id, who.actor)
+      json(res, { ok: true, ...archivedNote(moved), ...statusChangeExtras(id, before, status, who.actor) })
       return true
     }
     // Nothing changed: a missing card stays the old 404; an existing card means
