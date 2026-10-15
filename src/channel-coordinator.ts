@@ -34,7 +34,7 @@ import { execFile } from 'node:child_process'
 import { logger } from './logger.js'
 import { isSettingOn } from './setting-flag.js'
 import { PROJECT_ROOT, MAIN_AGENT_ID, CHANNEL_PROVIDER, BOT_NAME } from './config.js'
-import { getUpdates, probeHighWater, mapUpdate, TelegramApiError } from './channel-coordinator/telegram-client.js'
+import { getUpdates, probeHighWater, mapUpdate, redactCallbackData, TelegramApiError } from './channel-coordinator/telegram-client.js'
 import { probeNativeChannelDown } from './channel-coordinator/liveness.js'
 import {
   initIngestDb,
@@ -225,7 +225,11 @@ export function buildHandoffContent(ev: {
     voiceFileId ? `attachment_kind="voice"` : '',
     voiceFileId ? `attachment_file_id="${voiceFileId}"` : '',
   ].filter(Boolean).join(' ')
-  const body = neutralizeChannelTags(ev.content || '(empty message)')
+  // mapUpdate already redacts approval-button data; this second pass covers a
+  // callback row stored before that redaction existed and replayed by
+  // reconcilePending, so a nonce never reaches agent_messages either way.
+  const text = ev.kind === 'callback_query' ? redactCallbackData(ev.content) : ev.content
+  const body = neutralizeChannelTags(text || '(empty message)')
   return `<channel ${attrs}>\n${body}\n</channel>`
 }
 
@@ -245,7 +249,7 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 // Process one getUpdates batch. For each update: normalize, dedup-insert, and
 // (if newly inserted) hand off to Marveen. Returns the highest update_id seen
 // so the caller can advance the offset AFTER the whole batch is durable.
-function processBatch(updates: { update_id: number }[]): number | null {
+export function processBatch(updates: { update_id: number }[]): number | null {
   let maxUpdateId: number | null = null
   for (const raw of updates) {
     maxUpdateId = maxUpdateId == null ? raw.update_id : Math.max(maxUpdateId, raw.update_id)

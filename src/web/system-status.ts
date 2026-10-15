@@ -12,6 +12,7 @@
 //   - the local part is cached for 60 s.
 
 import { execFile } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { existsSync, readdirSync, readFileSync, statSync, statfsSync } from 'node:fs'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
@@ -249,12 +250,54 @@ const PLUGIN_PATCHES = [
   { name: 'fwd', marker: 'MARVEEN-PATCH(elsokor922-fwd)', label: ' (továbbítás-jelölő)', fallback: 'egy továbbított parancs úgy fut, mint a begépelt' },
   { name: 'evid', marker: 'MARVEEN-PATCH(cmd920-evid)', label: ' (bejövő-napló)', fallback: 'az író parancsok (/model, /context clear, saját parancsok) nem futnak, nincs mihez ellenőrizni őket' },
   { name: 'kbd', marker: 'MARVEEN-PATCH(c67f5f34-kbd)', label: ' (válaszgombok)', fallback: 'a kérdések gomb nélkül mennek ki, a válasz betűvel jön' },
+  { name: 'apv', marker: 'MARVEEN-PATCH(apv-buttons)', label: ' (jóváhagyás-gombok)', fallback: 'a levél-jóváhagyás gombjai nem működnek, dönts a dashboardon' },
 ]
 // Switchable (TELEGRAM_TOPICS_ENABLED): expected only when the last channel
 // start ran with the switch on, which the state file records.
 const TOPICS_PLUGIN_PATCH = { name: 'topics', marker: 'MARVEEN-PATCH(tgtopics)', label: ' (témák)', fallback: 'a válasz és a gépelés-jelzés nem a témába megy, hanem a témán kívülre' }
 
-export function telegramPluginPatchStatus(stateFile = join(STORE_DIR, 'telegram-plugin-patch.json')): string {
+// The apv block is a copy of a repo module that runs next to the bot
+// token, so its marker alone is not "rendben". The block must be the module as
+// the patcher copies it now (line-leading `export ` cut), under the BEGIN label
+// of that same source, followed by the env-snapshot line, with exactly one call
+// line, and no other marked line; both lines byte for byte as
+// scripts/patch-telegram-plugin.py writes them (APV_SNAP, APV_CALL; the
+// fixture round-trip test pins the two copies together). A hand-edited or
+// stale patch is named; the next channel start replaces it.
+export const APV_PATCH_SOURCE = join(PROJECT_ROOT, 'src', 'telegram-plugin-patches', 'approval-callback.ts')
+const APV_MARKER = 'MARVEEN-PATCH(apv-buttons)'
+export const APV_SNAPSHOT_LINE = `const MARVEEN_APV_ENV_AT_LOAD = { ...process.env } // ${APV_MARKER}\n`
+export const APV_CALL_LINE = "if (data.startsWith('apv:')) { await marveenApprovalCallback(ctx, data, " +
+  '{ stateDir: STATE_DIR, readFileSync, fetch, loadAccess, env: process.env, envAtLoad: MARVEEN_APV_ENV_AT_LOAD }); ' +
+  `return } // ${APV_MARKER}\n`
+const APV_BLOCK_RE = /^\/\/ MARVEEN-PATCH\(apv-buttons\) BEGIN src-sha256:([0-9a-f]{16})\n([\s\S]*?)^\/\/ MARVEEN-PATCH\(apv-buttons\) END\n/m
+
+export function apvBlockCheck(serverText: string, sourcePath = APV_PATCH_SOURCE): 'ok' | 'differs' | 'unverifiable' {
+  let raw: Buffer
+  try {
+    raw = readFileSync(sourcePath)
+  } catch {
+    return 'unverifiable'
+  }
+  const m = APV_BLOCK_RE.exec(serverText)
+  // BEGIN, END, snapshot, call: four marked lines, no more
+  if (!m || serverText.split(APV_MARKER).length !== 5) return 'differs'
+  let expected = raw.toString('utf-8').replace(/^export /gm, '')
+  if (!expected.endsWith('\n')) expected += '\n'
+  const sha = createHash('sha256').update(raw).digest('hex').slice(0, 16)
+  if (m[1] !== sha || m[2] !== expected) return 'differs'
+  if (!serverText.startsWith(APV_SNAPSHOT_LINE, m.index + m[0].length)) return 'differs'
+  const calls = serverText.split('\n')
+    .map(line => line + '\n')
+    .filter(line => line.includes(APV_MARKER) && !line.startsWith(`// ${APV_MARKER} `) && line !== APV_SNAPSHOT_LINE)
+  if (calls.length !== 1 || calls[0].replace(/^ */, '') !== APV_CALL_LINE) return 'differs'
+  return 'ok'
+}
+
+export function telegramPluginPatchStatus(
+  stateFile = join(STORE_DIR, 'telegram-plugin-patch.json'),
+  apvSource = APV_PATCH_SOURCE,
+): string {
   if (!existsSync(stateFile)) return 'nincs adat (a csatorna-indítás még nem futtatta a patchert; nem Telegram csatorna?)'
   const state = JSON.parse(readFileSync(stateFile, 'utf-8')) as {
     root?: string
@@ -270,8 +313,15 @@ export function telegramPluginPatchStatus(stateFile = join(STORE_DIR, 'telegram-
   const expected = state.topics === 'on' ? [...PLUGIN_PATCHES, TOPICS_PLUGIN_PATCH] : PLUGIN_PATCHES
   for (const p of expected) {
     const missing: string[] = []
+    const differs: string[] = []
+    const unverifiable: string[] = []
     for (const v of versions) {
-      if (texts.get(v)!.includes(p.marker)) continue
+      if (texts.get(v)!.includes(p.marker)) {
+        const check = p.marker === APV_MARKER ? apvBlockCheck(texts.get(v)!, apvSource) : 'ok'
+        if (check === 'differs') differs.push(v)
+        if (check === 'unverifiable') unverifiable.push(v)
+        continue
+      }
       const file = state.files?.find(f => f.version === v)
       const recorded = file ? (file.patches?.[p.name] ?? file.status) : undefined
       const why = !recorded ? 'új verzió, a következő csatorna-indításkor kerül rá'
@@ -280,6 +330,12 @@ export function telegramPluginPatchStatus(stateFile = join(STORE_DIR, 'telegram-
       missing.push(`${v} (${why})`)
     }
     if (missing.length) lines.push(`HIÁNYZIK${p.label}: ${missing.join(', ')} · ${p.fallback}`)
+    if (differs.length) {
+      lines.push(`ELTÉR${p.label}: ${differs.join(', ')} (a beillesztett blokk nem egyezik a forrással: kézzel átírva vagy régi; a következő csatorna-indítás cseréli)`)
+    }
+    if (unverifiable.length) {
+      lines.push(`NEM ELLENŐRIZHETŐ${p.label}: ${unverifiable.join(', ')} (a forrásfájl nem olvasható: ${apvSource})`)
+    }
   }
   if (lines.length === 0) return `rendben (${versions.join(', ')})`
   return lines.join('; ')

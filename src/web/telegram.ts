@@ -118,14 +118,23 @@ export async function refreshMarveenBotUsername(): Promise<void> {
   } catch { /* offline; cache stays stale */ }
 }
 
-export async function sendTelegramMessage(token: string, chatId: string, text: string): Promise<number | null> {
+// An inline keyboard under a message (Bot API reply_markup). Only the shape the
+// approval buttons use: text + callback_data per button.
+export interface TelegramInlineKeyboard {
+  inline_keyboard: { text: string; callback_data: string }[][]
+}
+
+export async function sendTelegramMessage(token: string, chatId: string, text: string, replyMarkup?: TelegramInlineKeyboard): Promise<number | null> {
   // Test-run marking happens HERE too, not only in notifyChannel: this path
   // reads its token from .env FILES (schedule-runner alerts), so blanking
   // CHANNEL_TOKEN/CHANNEL_CHAT_ID in a test's environment does not stop it.
+  // Without replyMarkup the request body is byte-for-byte what it always was.
+  const payload: Record<string, unknown> = { chat_id: chatId, text: markIfTestRun(text) }
+  if (replyMarkup) payload.reply_markup = replyMarkup
   const resp = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: chatId, text: markIfTestRun(text) }),
+    body: JSON.stringify(payload),
     signal: AbortSignal.timeout(TOOL_TIMEOUTS['telegram']),
   })
   // fetch does not throw on 4xx -- a wrong chat_id or revoked token resolves
