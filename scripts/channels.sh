@@ -173,10 +173,10 @@ classify_mcp_plugin_row() {
 sh_single_quote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 
 # SECSZIVEK1007: the resolved model must have the shape of a model id (the same
-# allowlist as MODEL_ID_RE in src/model-id.ts: letters, digits, . _ : / - [ ],
+# allowlist as MODEL_ID_RE in src/model-id.ts: letters, digits, . _ : / - [ ] +,
 # 1-128 long). Any other value is named in the failure log (not echoed) and
 # left UNSET, so the launch runs the CLI default instead of a broken command.
-MODEL_ID_SHAPE='^[][A-Za-z0-9._:/-]{1,128}$'
+MODEL_ID_SHAPE='^[][A-Za-z0-9._:/+-]{1,128}$'
 resolve_main_model() {
   local _m
   _m="$(_resolve_main_model_raw)"
@@ -185,7 +185,7 @@ resolve_main_model() {
   # (model-id-shape-parity.test.ts compares the two under C).
   local LC_ALL=C
   if [ -n "$_m" ] && ! [[ "$_m" =~ $MODEL_ID_SHAPE ]]; then
-    { echo "resolve_main_model: the configured main-agent model is not a valid model id (allowed: letters, digits, . _ : / - [ ], 1-128); main-agent model left UNSET" >>"$INSTALL_DIR/store/channels-failures.log"; } 2>/dev/null || true
+    { echo "resolve_main_model: the configured main-agent model is not a valid model id (allowed: letters, digits, . _ : / - [ ] +, 1-128); main-agent model left UNSET" >>"$INSTALL_DIR/store/channels-failures.log"; } 2>/dev/null || true
     return 0
   fi
   printf '%s' "$_m"

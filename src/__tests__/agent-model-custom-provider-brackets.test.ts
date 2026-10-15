@@ -7,6 +7,12 @@
  * with e.g. `oc/mimo[1m]` -- the write 400'd and the dashboard only showed a
  * generic save error. Fixed by routing the custom-provider branch through
  * isValidModelId() too, so there is one allowlist instead of two that drift.
+ *
+ * `+` was already allowed by the old ad-hoc regex, so MODEL_ID_RE had to gain
+ * it too (it did not before this fix) -- otherwise a `+`-bearing custom-
+ * provider id (e.g. `oc/qwen2.5+`), saveable before this change, would start
+ * 400ing after it. The test below pins that no-regression alongside the new
+ * `[1m]` support.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { EventEmitter } from 'node:events'
@@ -65,8 +71,8 @@ async function putAgentModel(body: unknown): Promise<{ status: number; body: any
 }
 
 describe('PUT /api/agents/:name -- custom-provider model id uses the shared allowlist', () => {
-  it('oc/mimo[1m] and oc/deepseek[1m] save for a custom-provider agent (the 1M suffix is not special-cased away)', async () => {
-    for (const model of ['oc/mimo[1m]', 'oc/deepseek[1m]']) {
+  it('oc/mimo[1m], oc/deepseek[1m] and a +-bearing id save for a custom-provider agent (new 1M suffix support, no + regression)', async () => {
+    for (const model of ['oc/mimo[1m]', 'oc/deepseek[1m]', 'oc/qwen2.5+']) {
       const r = await putAgentModel({ customProvider: PROVIDER_ID, model })
       expect(r.status, model).toBe(200)
       expect(r.body?.ok, model).toBe(true)
