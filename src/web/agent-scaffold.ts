@@ -2567,6 +2567,77 @@ export function ensureMessageCloseSection(name: string): void {
   atomicWriteFileSync(claudeMdPath, updated)
 }
 
+// ---- List read: a negative finding only from a COMPLETE list (c4e47223) ----
+//
+// A negative claim read off a list endpoint ("no such card", "0 pending", "no
+// memory of it") is only true when the response was COMPLETE. During a dashboard
+// stop or restart the request is cut or gets no answer at all; `curl -s` says
+// nothing about it, and the head of a cut body can pass for a shorter list with a
+// line counter or a tolerant reader. The endpoint builds the whole list in memory
+// and sends it in one piece, so a cut body is never valid JSON and curl exits 18
+// on it: the check belongs to the READER, and the reader is the agent, so the
+// rule ships as a section.
+//
+// A whole RESPONSE is not yet a whole LIST (c4e47223 review): the archived
+// kanban list, /api/messages and /api/memories cut on the server side without a
+// word. The section is loaded into every session, so it carries only the rule
+// and one command (#1819 review); each endpoint's limit lives in
+// docs/lista-olvasas.md, and list-read-limits.test.ts measures those numbers on
+// the real handlers and holds the page to them. The section states no dated
+// incident: it is written into every install, where one would read as that
+// install's own history.
+const LISTREAD_BEGIN = '<!-- BEGIN GENERATED: list-read (auto-generated, do not edit by hand) -->'
+const LISTREAD_END = '<!-- END GENERATED: list-read -->'
+const LISTREAD_BLOCK_RE = new RegExp(
+  `${LISTREAD_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${LISTREAD_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
+)
+
+export function buildListReadBody(_name: string): string {
+  return [
+    '## Lista-olvasás: nemleges lelet csak teljes listából',
+    '',
+    'Egy lista-végpontból (`GET /api/kanban`, `GET /api/messages?agent=`, `GET /api/memories`) levont NEMLEGES',
+    'állítás ("nincs ilyen lap", "0 függő üzenet", "erről nincs emlék") csak akkor igaz, ha a lista TELJES volt.',
+    'Leálló vagy újrainduló dashboard alatt a kérés félbeszakad vagy választ sem kap, a `curl -s` erről hallgat,',
+    'és egy félbeszakadt törzs eleje egy sor-számlálónak rövidebb, de valódinak látszó lista. Mérd így:',
+    '```bash',
+    `f=$(mktemp); code=$(curl -sS -o "$f" -w '%{http_code}' -H "Authorization: Bearer $(cat ${tokenPath})" ${dashboardOrigin}/api/kanban); rc=$?; echo "rc=$rc http=$code"; python3 -c "import json,sys; print(len(json.load(open(sys.argv[1]))))" "$f"; rm -f "$f"`,
+    '```',
+    'A VÁLASZ csak akkor ép, ha `rc=0`, `http=200`, és a `json.load` hiba nélkül fut (`rc=18` a félbeszakadt',
+    'átvitel, `rc=7` a kapcsolat hiánya, a `000` a válasz nélküli kérés). Az ép válasz még NEM teljes lista: a',
+    'korlátos végpont jelzés nélkül vág, a korlátnál lapozz vagy szűkíts. Ha nem ép a válasz, vagy a lista a',
+    'korlátnál áll, nemleges lelet TILOS; várj és olvasd újra. Darabszámot a JSON elemszámából mondj, ne',
+    '`grep`-pel számolt sorokból. A végpontonkénti korlátok és a részletek a telepítés gyökerében:',
+    '`docs/lista-olvasas.md`.',
+  ].join('\n')
+}
+
+// Idempotently ensures the list-read block is present and current in the
+// agent's CLAUDE.md; same contract as ensureMessageCloseSection, called from
+// the same two surfaces (web.ts for the main agent, agent-process.ts for the rest).
+export function ensureListReadSection(name: string): void {
+  const claudeMdPath = name === MAIN_AGENT_ID
+    ? join(PROJECT_ROOT, 'CLAUDE.md')
+    : join(agentDir(name), 'CLAUDE.md')
+  if (!existsSync(claudeMdPath)) return
+
+  const block = `${LISTREAD_BEGIN}\n${buildListReadBody(name)}\n${LISTREAD_END}`
+
+  let existing: string
+  try {
+    existing = readFileSync(claudeMdPath, 'utf-8')
+  } catch {
+    return
+  }
+
+  const updated = LISTREAD_BLOCK_RE.test(existing)
+    ? existing.replace(LISTREAD_BLOCK_RE, block)
+    : existing.trimEnd() + '\n\n' + block + '\n'
+
+  if (updated === existing) return
+  atomicWriteFileSync(claudeMdPath, updated)
+}
+
 // Idempotently ensures the autonomy-wiring block is present and current in the
 // agent's CLAUDE.md. Called on every startAgentProcess() alongside
 // ensureFleetRosterSection() so that existing agents receive the block
