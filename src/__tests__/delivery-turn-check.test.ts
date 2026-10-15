@@ -25,8 +25,12 @@ vi.mock('../db.js', () => ({
 vi.mock('../env.js', () => ({ readEnvFile: () => ({}) }))
 // The default transcript resolver, pointed at the temp dir of each test.
 vi.mock('../web/agent-config.js', () => ({ agentDir: (n: string) => `/agents/${n}` }))
-vi.mock('../web/main-transcript-root.js', () => ({ configDirFor: () => undefined }))
-vi.mock('../web/active-model.js', () => ({ projectsDirFor: () => dir }))
+// `isolatedCfg` set = the agent has an isolated config root (its projects dir is
+// `isolatedDir`); `dir` is then the shared ~/.claude/projects/<slug> one.
+vi.mock('../web/main-transcript-root.js', () => ({ configDirFor: () => isolatedCfg }))
+vi.mock('../web/active-model.js', () => ({
+  projectsDirFor: (_wd: string, cfg?: string) => (cfg ? isolatedDir : dir),
+}))
 
 // Real fs work runs on libuv, not on the faked timers: poll with setImmediate
 // until `done` holds, bounded by REAL time (performance.now is not faked). A
@@ -75,9 +79,18 @@ const unrelated = (at = SENT + 300) =>
 
 let root: string
 let dir: string
+let isolatedDir: string
+let isolatedCfg: string | undefined
 
 function writeTranscript(name: string, lines: string[], mtimeMs = SENT + 1000) {
   const p = join(dir, name)
+  writeFileSync(p, lines.join('\n') + '\n')
+  utimesSync(p, mtimeMs / 1000, mtimeMs / 1000)
+}
+
+function writeIn(d: string, name: string, lines: string[], mtimeMs = SENT + 1000) {
+  mkdirSync(d, { recursive: true })
+  const p = join(d, name)
   writeFileSync(p, lines.join('\n') + '\n')
   utimesSync(p, mtimeMs / 1000, mtimeMs / 1000)
 }
@@ -102,6 +115,8 @@ beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), 'turncheck-'))
   dir = join(root, 'projects', '-agents-dex')
   mkdirSync(dir, { recursive: true })
+  isolatedDir = join(root, 'isolated', 'projects', '-agents-dex')
+  isolatedCfg = undefined
 })
 afterEach(() => {
   rmSync(root, { recursive: true, force: true })
@@ -291,5 +306,89 @@ describe('settings', () => {
   })
   it('the alert text has no em dash', () => {
     expect(formatUnconfirmedAlert('dex', 60, [{ id: 1, evidence: 'absent' }])).not.toMatch(/[\u2013\u2014]/)
+  })
+})
+
+// A custom-provider agent runs WITHOUT CLAUDE_CONFIG_DIR: its transcript is in
+// the shared root, while a leftover isolated projects/ (earlier Claude period)
+// still exists and holds only old files.
+describe('two candidate transcript roots (isolated + shared)', () => {
+  const STALE = SENT - 3_600_000
+  const staleIsolated = () => writeIn(isolatedDir, 'old.jsonl', [userPrompt(999, STALE)], STALE)
+
+  it('stale isolated root + fresh shared root carrying the tag -> seen', async () => {
+    staleIsolated()
+    writeTranscript('live.jsonl', [unrelated(), userPrompt(301)])
+    const m = await readTurnEvidence([isolatedDir, dir], [301], SENT)
+    expect(m?.get(301)).toBe('seen')
+  })
+
+  it('the order of the candidates does not matter', async () => {
+    staleIsolated()
+    writeTranscript('live.jsonl', [userPrompt(302)])
+    const m = await readTurnEvidence([dir, isolatedDir], [302], SENT)
+    expect(m?.get(302)).toBe('seen')
+  })
+
+  it('tag absent in both roots -> absent, and the run still alerts', async () => {
+    staleIsolated()
+    writeTranscript('live.jsonl', [unrelated()])
+    expect((await readTurnEvidence([isolatedDir, dir], [303], SENT))?.get(303)).toBe('absent')
+    const d = deps({ transcriptDir: () => [isolatedDir, dir] })
+    expect(await runDeliveryTurnCheck(req([303]), 60, 30 * 60_000, d)).toBe('alerted')
+    expect(d.notify).toHaveBeenCalledTimes(1)
+  })
+
+  it('only the isolated root is fresh (Claude OAuth agent) -> seen, shared root may be missing', async () => {
+    writeIn(isolatedDir, 'live.jsonl', [userPrompt(304)])
+    rmSync(dir, { recursive: true, force: true })
+    const m = await readTurnEvidence([isolatedDir, dir], [304], SENT)
+    expect(m?.get(304)).toBe('seen')
+  })
+
+  it('a queued_command attachment in the shared root is still recognized', async () => {
+    staleIsolated()
+    writeTranscript('live.jsonl', [attachmentOnly(305)])
+    expect((await readTurnEvidence([isolatedDir, dir], [305], SENT))?.get(305)).toBe('seen')
+  })
+
+  it('a duplicate candidate is read once and a single string still works', async () => {
+    writeTranscript('live.jsonl', [userPrompt(306)])
+    expect((await readTurnEvidence([dir, dir], [306], SENT))?.get(306)).toBe('seen')
+    expect((await readTurnEvidence(dir, [306], SENT))?.get(306)).toBe('seen')
+  })
+
+  it('neither root holds a transcript (missing / empty) -> unknown, not absent', async () => {
+    mkdirSync(isolatedDir, { recursive: true }) // exists, empty; shared dir exists, empty
+    expect(await readTurnEvidence([isolatedDir, dir], [307], SENT)).toBeNull()
+    rmSync(dir, { recursive: true, force: true })
+    expect(await readTurnEvidence([isolatedDir, dir], [307], SENT)).toBeNull()
+  })
+
+  it('default resolver: isolated config root present but stale, live prompt in the shared root -> confirmed, no alert', async () => {
+    isolatedCfg = join(root, 'isolated')
+    staleIsolated()
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const now = Date.now()
+    writeTranscript('live.jsonl', [userPrompt(308, now + 100)], now + 100)
+    process.env.DELIVERY_TURN_CHECK_GRACE_SEC = '60'
+    scheduleDeliveryTurnCheck({ toAgent: 'dex', msgIds: [308], sentAtMs: now, host: null })
+    await vi.advanceTimersByTimeAsync(61_000)
+    await settle(debugSaid('prompt seen in transcript'))
+    expect(debugSaid('prompt seen in transcript')()).toBe(true)
+    expect(mockCreateAgentMessage).not.toHaveBeenCalled()
+  })
+
+  it('default resolver: tag missing from both roots -> alert', async () => {
+    isolatedCfg = join(root, 'isolated')
+    staleIsolated()
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    const now = Date.now()
+    writeTranscript('live.jsonl', [unrelated(now + 100)], now + 100)
+    process.env.DELIVERY_TURN_CHECK_GRACE_SEC = '60'
+    scheduleDeliveryTurnCheck({ toAgent: 'dex', msgIds: [309], sentAtMs: now, host: null })
+    await vi.advanceTimersByTimeAsync(61_000)
+    await settle(() => mockCreateAgentMessage.mock.calls.length > 0)
+    expect(mockCreateAgentMessage).toHaveBeenCalledTimes(1)
   })
 })

@@ -21,9 +21,11 @@
  * Contract with the router (it must hold, the router does not wait on this):
  *   - scheduleDeliveryTurnCheck() returns at once; the check runs on an
  *     unref'd timer with async fs, and never throws into its caller.
- *   - an unreadable transcript (remote host, missing directory, no transcript
- *     file, permission error) is 'unknown': a debug line, NEVER an alert. The
- *     check must not cry wolf on an install where it cannot see.
+ *   - an unreadable transcript (remote host, no transcript file in ANY of the
+ *     candidate directories -- the agent's own config root and the shared root
+ *     --, permission error) is 'unknown': a debug line, NEVER an alert. The
+ *     check must not cry wolf on an install where it cannot see. A missing
+ *     candidate directory alone is not 'unknown' if another one has transcripts.
  *   - alerts are rate-limited per recipient and name the msg id, the
  *     recipient and the reason -- never the message content.
  */
@@ -131,36 +133,44 @@ async function readTail(path: string, maxBytes: number): Promise<string> {
 }
 
 /**
- * Evidence for each id from the transcripts in `dir`, or null when the
- * directory cannot be read or holds no transcript at all (= unknown).
- * Only files modified since the send are opened.
+ * Evidence for each id from the transcripts in `dirs` (one directory or a
+ * candidate list), or null when none of them can be read or holds a
+ * transcript at all (= unknown). Only files modified since the send are
+ * opened, across ALL candidate directories: an agent that runs without
+ * CLAUDE_CONFIG_DIR (custom provider) writes to the shared root while a stale
+ * isolated root may still exist, so reading just one of them either misses the
+ * live prompt (false alert) or the old one.
  */
 export async function readTurnEvidence(
-  dir: string,
+  dirs: string | readonly string[],
   msgIds: readonly number[],
   sinceMs: number,
   maxBytes: number = TAIL_BYTES,
 ): Promise<Map<number, TurnEvidence> | null> {
-  let files: string[]
-  try {
-    files = (await readdir(dir)).filter((f) => f.endsWith('.jsonl'))
-  } catch {
-    return null
-  }
-  if (files.length === 0) return null
   const lines: string[] = []
   let unreadable = 0
   let candidates = 0
-  for (const f of files) {
-    const path = join(dir, f)
+  let anyTranscript = false
+  for (const dir of new Set(typeof dirs === 'string' ? [dirs] : dirs)) {
+    let files: string[]
     try {
-      if ((await stat(path)).mtimeMs < sinceMs - CLOCK_SLACK_MS) continue
-      candidates++
-      for (const l of (await readTail(path, maxBytes)).split('\n')) lines.push(l)
+      files = (await readdir(dir)).filter((f) => f.endsWith('.jsonl'))
     } catch {
-      unreadable++
+      continue
+    }
+    if (files.length > 0) anyTranscript = true
+    for (const f of files) {
+      const path = join(dir, f)
+      try {
+        if ((await stat(path)).mtimeMs < sinceMs - CLOCK_SLACK_MS) continue
+        candidates++
+        for (const l of (await readTail(path, maxBytes)).split('\n')) lines.push(l)
+      } catch {
+        unreadable++
+      }
     }
   }
+  if (!anyTranscript) return null
   // Every transcript that could hold the answer failed to read: we cannot see.
   if (candidates > 0 && unreadable === candidates) return null
   const out = new Map<number, TurnEvidence>()
@@ -221,14 +231,22 @@ export interface TurnCheckRequest {
 }
 
 export interface TurnCheckDeps {
-  transcriptDir: (agent: string) => string
+  /** Candidate transcript directories; all are read (see readTurnEvidence). */
+  transcriptDir: (agent: string) => string | readonly string[]
   readEvidence: typeof readTurnEvidence
   notify: (text: string) => void
   now: () => number
 }
 
 const defaultDeps: TurnCheckDeps = {
-  transcriptDir: (agent) => projectsDirFor(agentDir(agent), configDirFor(agent)),
+  // BOTH roots: the isolated one (agents/<id>/.claude-config) and the shared
+  // ~/.claude. A custom-provider agent runs without CLAUDE_CONFIG_DIR and writes
+  // to the shared root, while the isolated projects/ left over from an earlier
+  // Claude period still makes configDirFor() point at the stale one.
+  transcriptDir: (agent) => {
+    const wd = agentDir(agent)
+    return [...new Set([projectsDirFor(wd, configDirFor(agent)), projectsDirFor(wd, undefined)])]
+  },
   readEvidence: readTurnEvidence,
   notify: (text) => { createAgentMessage('system', MAIN_AGENT_ID, text) },
   now: () => Date.now(),
