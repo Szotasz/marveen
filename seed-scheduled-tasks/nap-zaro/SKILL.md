@@ -13,14 +13,15 @@ mért 2026-09-12..16: egyetlen napon sem volt bejegyzés 12:45 után). Az inform
 el, csak az emlékek és a kanban között szóródik szét. Ez a kör naponta egyszer összegyűjti és
 egy bejegyzésben beírja.
 
-**Csendes kör: a beállított csatornára NEM küld üzenetet** -- és ezt a `task-config.json`
-`"type": "heartbeat"` értéke viszi végig. A kettőnek EGYÜTT kell állnia, mert a két forrás
-korábban minden futáson ellentmondott: `type: "task"` mellett a scheduler odafejeli a promptra,
-hogy "Az eredményt küldd el <csatorna>", `heartbeat` mellett viszont csak a `[Heartbeat: <név>]`
-tag megy ki, és a runner szándékosan nem ad operatív direktívát. A kör terméke egy
-`POST /api/daily-log` írás, nem egy üzenet, és a 3-4. lépésben nincs is jelentés-lépés, ezért a
-csendes ág a helyes. (A másik irány -- valódi esti jelentés a gazdának -- védhető, de ahhoz a
-skillbe egy jelentés-lépés is kellene, és az termék-döntés, nem dokumentáció-javítás.)
+**Csendes kör: a beállított csatornára NEM küld üzenetet, AKKOR SEM, ha a prompt elején
+kézbesítési utasítás áll** (pl. "Az eredményt küldd el <csatorna>"). A kör terméke egy
+`POST /api/daily-log` írás, nem egy üzenet, és a 3-4. lépésben nincs is jelentés-lépés.
+Ez a bekezdés szándékosan NEM hivatkozik a `task-config.json`-ra: a frissítés a két fájlt
+külön-külön cseréli, és a gazda által szerkesztett config (ütemezés, `enabled`) a régi
+`"type"` értékkel maradhat, miközben ez a fájl frissül. A csendet ezért ennek a szövegnek kell
+kimondania, függetlenül attól, mit mond a config. (A másik irány -- valódi esti jelentés a
+gazdának -- védhető, de ahhoz a skillbe egy jelentés-lépés is kellene, és az termék-döntés,
+nem dokumentáció-javítás.)
 
 ## Eljárás
 
@@ -96,25 +97,40 @@ python3 -c "
 import sqlite3, sys, datetime as dt
 since=int(sys.argv[1])
 # FIGYELEM: a task_runs.ts MILLISZEKUNDUM, a tobbi tabla idooszlopa masodperc.
-q='''SELECT name, status, COUNT(*), MAX(ts) FROM task_runs
-     WHERE ts > ?*1000 GROUP BY name, status ORDER BY name, status'''
-for name, st, n, last in sqlite3.connect('{{INSTALL_DIR}}/store/claudeclaw.db').execute(q,(since,)):
-    print('%-26s %-16s %4d  utolso %s' % (name, st, n, dt.datetime.fromtimestamp(last/1000).strftime('%H:%M')))" "$SINCE"
+# A kor SAJAT sorat kizarjuk: a 'fired' sor a kikuldeskor irodik, a prompt elott,
+# tehat mindig az ablakban van, es a kor magat is listazna.
+q='''SELECT name, status, COUNT(*), MIN(ts), MAX(ts) FROM task_runs
+     WHERE ts > ?*1000 AND name != 'nap-zaro'
+     GROUP BY name, status ORDER BY name, status'''
+hm=lambda ms: dt.datetime.fromtimestamp(ms/1000).strftime('%H:%M')
+for name, st, n, first, last in sqlite3.connect('{{INSTALL_DIR}}/store/claudeclaw.db').execute(q,(since,)):
+    print('%-26s %-16s %4d  elso %s, utolso %s' % (name, st, n, hm(first), hm(last)))" "$SINCE"
 ```
-   Ez megmutatja, MELYIK kör futott le az ablakban, akkor is, ha semmit nem írt.
-   A `status` hat értéket vehet fel, és egyik sem olvasható "elmaradt slot"-nak önmagában:
-   `fired`, `skipped`, `skipped-precheck`, `missed`, `fired_late`, `lost`. A `missed` és a
-   `fired_late` egy kiesés VÉGÉN, egyszerre keletkező visszatérés-bélyeg, és a timestampjük a
-   visszatérés ideje, nem az elmaradt sloté. **A `skipped-precheck` sorokra külön figyelj: egy
-   előszűrővel dolgozó, gyakran futó kör ELÁRASZTJA velük a kimenetet** (egy telepítésen mért
-   eset, 2026-10-12, hét órás ablak: 211 `skipped-precheck` sor egyetlen körtől, szemben 28
-   `fired` sorral egy másiktól). Ha a bejegyzés olvasható marad, ezeket összevontan említsd.
+   Ez megmutatja, MELYIK kör futott le az ablakban, akkor is, ha semmit nem írt. Egy sor
+   egy név-státusz párt összegez: az időpontjai az első és az utolsó előfordulás, a köztes
+   futások idejét nem mutatja.
+   A `status` lista NYITOTT: a runner a későbbiekben új értéket is írhat. Ismeretlen értéket ne
+   dobj el és ne találgass, hanem írd ki a nevével. Az ismert értékek két csoportba esnek:
+   - **A kört KIKÜLDTÉK (ez számít futásnak):** `fired`, `fired_late`, `fired_busy`, és
+     `sent-direct` (ágens-kör nélkül kézbesített összesítő). A kiküldés nem bizonyítja, hogy a
+     kör végig is ment: `fired_busy`-nál a prompt foglalt panelbe ment, a kézbesítés épsége
+     kérdéses, és egy kiküldés később `lost` sorral is lezárulhat.
+   - **NEM futott:** `skipped`, `skipped-precheck`, `skipped-desktop-lock`, `missed`, `error`,
+     `lost`, `lost-giveup`, `missing-retrying`.
+   Egyik sem olvasható "elmaradt slot"-nak önmagában. A `missed` és a `fired_late` egy kiesés
+   VÉGÉN, egyszerre keletkező visszatérés-bélyeg, és a timestampjük a visszatérés ideje, nem az
+   elmaradt sloté. **A `skipped-precheck` sorokra külön figyelj: egy előszűrővel dolgozó, gyakran
+   futó kör ELÁRASZTJA velük a kimenetet** (egy telepítésen mért eset, 2026-10-12, hét órás
+   ablak: 211 `skipped-precheck` sor egyetlen körtől, szemben 28 `fired` sorral egy másiktól).
+   Ha a bejegyzés olvasható marad, ezeket összevontan említsd.
 
    Ha a válasz alakja más, mint amit a szkript vár (hibaüzenet, üres lista a várt adat helyett),
    azt írd le, ne nullát: a „0 új emlék” csak akkor igaz, ha a lekérdezés sikerült.
 
 3. **Bejegyzés írása.** Ha 0 új emlék, 0 frissített emlék, 0 mozgott kártya, 0 módosított
-   skill-fájl ÉS 0 lefutott kör a `task_runs`-ban, akkor is írj egy egysoros bejegyzést
+   skill-fájl ÉS 0 lefutott kör a `task_runs`-ban (lefutott = a fenti KIKÜLDÖTT csoport; a
+   lekérdezés ennek a körnek a saját sorát már kizárja, a `skipped-precheck` és a többi NEM-futott
+   státusz itt nem számít), akkor is írj egy egysoros bejegyzést
    (`nincs új tétel az utolsó bejegyzés óta`), mert így látszik, hogy a kör lefutott, és a csend
    nem kimaradás. Egyébként témák szerint csoportosíts, ne emlékenként listázz: minden téma egy
    rövid bekezdés, időponttal, az eredménnyel, és a kártya-azonosítóval, ha van. Ne találj ki

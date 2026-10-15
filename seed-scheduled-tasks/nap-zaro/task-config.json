@@ -4,5 +4,6 @@
   "enabled": true,
   "type": "heartbeat",
   "skipIfBusy": true,
+  "catchUpMaxAgeMinutes": 180,
   "createdAt": 0
 }
