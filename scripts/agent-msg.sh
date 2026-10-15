@@ -21,6 +21,8 @@
 #   messages and is OMITTED when there is no history (unknown is not "instant").
 #   Both are absent against a server that does not return them, so the line is
 #   then exactly "OK id=<n>" as before.
+#   A stopped target: "OK id=<n> ... (queued: target not running,
+#   delivered when it starts)" -- the row is PENDING, do NOT re-send.
 #   At MARVEEN_QUEUE_WARN_AT (default 3) or more waiting, a stderr notice says so
 #   at the moment the sender decides whether to send the next one.
 #   --priority (card ad771121): "high" puts the row ahead of the recipient's normal rows; absent means
@@ -147,18 +149,20 @@ while [ "$attempt" -lt "$max" ]; do
   JSON="$(printf '%s' "$RESP" | sed '$d')"
   # An id ALONE is not delivery. The router answers 200 WITH an id even when the
   # recipient is not running, and says so in a separate `warning` field
-  # (src/web/routes/messages.ts) whose text spells out that such a message is
-  # LOST rather than queued. This helper read only the id, so it printed
-  # "OK id=..." for a message that never arrived -- the exact failure the header
-  # above says it exists to prevent, one field further in. The exit code stays 0
-  # on purpose: the row really was accepted, so this is not a send failure. It
-  # just must not be silent.
+  # (src/web/routes/messages.ts). For a stopped LOCAL target (`queued: true`)
+  # the row is PENDING and is delivered when the target starts, inside the
+  # router's abandon window; only after that window does it fail.
+  # This helper read only the id, so it printed "OK id=..." with nothing about
+  # the recipient not running -- the failure the header above says it exists to
+  # prevent, one field further in. The exit code stays 0 on purpose: the row
+  # really was accepted, so this is not a send failure. It just must not be
+  # silent, and a queued row must not be re-sent (a duplicate).
   #
   # The queue state rides in the same parse. "-" stands for an empty field so
   # `read` cannot shift the warning text into it. The delay is rounded UP to at
   # least one minute: a 20-second median printed as "~0 min" would read as
   # "instant", the same lie a NULL flattened to 0 would tell.
-  read -r ID DEPTH MINS WARN <<EOF
+  read -r ID DEPTH MINS QUEUED WARN <<EOF
 $(printf '%s' "$JSON" | python3 -c 'import sys,json,math
 try:
   d=json.load(sys.stdin)
@@ -171,7 +175,8 @@ delay=q.get("estimatedDelaySec")
 depth="-" if not isinstance(depth,int) or isinstance(depth,bool) else str(depth)
 mins="-" if not isinstance(delay,(int,float)) or isinstance(delay,bool) else str(max(1,math.ceil(delay/60)))
 w=" ".join(str(d.get("warning","")).split())
-print((d.get("id","") or "-"), depth, mins, w)' 2>/dev/null)
+qd="Q" if d.get("queued") is True else "-"
+print((d.get("id","") or "-"), depth, mins, qd, w)' 2>/dev/null)
 EOF
   [ "$ID" = "-" ] && ID=""
   [ "${DEPTH:-}" = "-" ] && DEPTH=""
@@ -181,7 +186,16 @@ EOF
     LINE="OK id=$ID"
     [ -n "${DEPTH:-}" ] && LINE="$LINE queue=$DEPTH"
     [ -n "${MINS:-}" ] && LINE="$LINE (~${MINS} min)"
-    if [ -n "${WARN:-}" ]; then
+    if [ "${QUEUED:-}" = "Q" ]; then
+      # The target is stopped, the row is PENDING and is delivered
+      # when the target starts (within the router's abandon window). Not a send
+      # failure, and NOT a reason to re-send: a re-send only duplicates it.
+      # The stdout keeps the "OK id=" prefix on purpose: callers (and the fleet
+      # docs) treat exactly that prefix as "accepted", and a new verb would read
+      # as a failure and trigger the very re-send this branch exists to stop.
+      echo "QUEUED id=$ID  NOTE: $WARN" >&2
+      echo "$LINE (queued: target not running, delivered when it starts)"
+    elif [ -n "${WARN:-}" ]; then
       echo "$LINE  WARNING: $WARN" >&2
       echo "$LINE (warning)"
     else

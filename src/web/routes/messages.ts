@@ -18,6 +18,7 @@ import { sanitizeAgentIdent } from '../../prompt-safety.js'
 import { isKnownAgent } from '../agent-config.js'
 import { MAIN_AGENT_ID, HEARTBEAT_AGENT_ID, OWNER_NAME, SYSTEM_SENDER_IDS, parseSystemSenderIds, MESSAGE_URGENT_DEVICE_IDS, parseDeviceKeyIds } from '../../config.js'
 import { isAgentRunning } from '../agent-process.js'
+import { MESSAGE_ABANDON_WINDOW_MS } from '../message-abandon.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
 import { isHeartbeatTemplateLeak, stampHeartbeatHeader } from '../heartbeat-header-stamp.js'
@@ -458,10 +459,11 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       { id: msg.id, from: msg.from_agent, to: msg.to_agent, originNote: msg.origin_note, queueDepth: queue?.queueDepth, priority: msg.priority, downgraded: decided.downgraded },
       'Agent message created',
     )
-    // A LOCAL recipient that is not running never receives this: the router
-    // retries for a while and then abandons it, and the failure notice goes to
-    // the MAIN agent, not to the sender. The caller therefore sees a plain 200
-    // and believes it delegated. Federated addresses already get an actionable
+    // A LOCAL recipient that is not running receives this only if it is
+    // started within the abandon window: the router keeps the row pending and
+    // retries, then abandons it, and the failure notice goes to the MAIN agent,
+    // not to the sender. The caller therefore sees a plain 200 and believes it
+    // delegated. Federated addresses already get an actionable
     // error at creation time (see above) -- give the local path the same
     // courtesy, as a non-breaking warning field rather than a status change, so
     // existing callers keep working.
@@ -476,13 +478,28 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     if (!storedTo.includes('/')
         && sanitizeAgentIdent(storedTo) !== sanitizeAgentIdent(MAIN_AGENT_ID)
         && !isAgentRunning(sanitizeAgentIdent(storedTo))) {
-      logger.warn({ id: msg.id, to: msg.to_agent }, 'Agent message queued for a STOPPED agent -- likely to be abandoned')
+      logger.warn({ id: msg.id, to: msg.to_agent }, 'Agent message queued for a STOPPED agent -- delivered if it starts within the abandon window')
+      // The warning must say what the router actually does: the row stays
+      // `pending`, and the router delivers it as soon as the target's session
+      // appears, for MESSAGE_ABANDON_WINDOW_MS. Only after that window is it
+      // marked failed. The earlier text claimed the message was LOST
+      // immediately; measured on a live install, the sender believed it and
+      // re-sent a duplicate handoff, while the original was in fact delivered
+      // 23 s after the target was started.
+      // abandonAt is created_at + the window. It is an estimate, not a promise:
+      // the router counts the target's CONTINUOUS absence as it observes it
+      // (shouldAbandon in message-router.ts), a clock that starts within one
+      // tick of this row for a target that has nothing else pending, earlier if
+      // older rows to the same target are already waiting, and anew after a
+      // dashboard restart.
       json(res, {
         ...msg,
         ...queueField,
         ...downgradedField,
         targetRunning: false,
-        warning: `'${msg.to_agent}' nem fut -- indítsd el (POST /api/agents/${msg.to_agent}/start), várd meg amíg feláll, és küldd újra. Egy leállított ügynöknek küldött üzenet nem várakozik, hanem elveszik.`,
+        queued: true,
+        abandonAt: msg.created_at + Math.floor(MESSAGE_ABANDON_WINDOW_MS / 1000),
+        warning: `'${msg.to_agent}' most nem fut: az üzenet SORBAN VÁR, és kézbesül, amint elindul (POST /api/agents/${msg.to_agent}/start). Ha nem indul el, az üzenet failed lesz, amint a célpont ${Math.round(MESSAGE_ABANDON_WINDOW_MS / 60000)} perce folyamatosan nem fut (ha már korábban is várt rá üzenet, ez hamarabb jöhet), és NEM kézbesül később -- ne küldd újra, amíg az id státusza pending.`,
       })
       return true
     }
