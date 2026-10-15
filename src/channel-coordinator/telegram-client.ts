@@ -94,6 +94,25 @@ function displayName(u?: RawUser): string | null {
   return full || String(u.id)
 }
 
+// Approval buttons carry `apv:<a|r>:<approval id>:<nonce>` as callback data
+// (src/web/approval-callback-data.ts). Only the native plugin may decide such
+// a press. If the coordinator stored or handed off the raw data, a still-valid
+// nonce would become readable to anyone holding the dashboard bearer token
+// (incoming_events, agent_messages). So the whole payload is replaced by a
+// fixed marker that carries neither the id nor the nonce; the press is
+// deliberately left undecided. Prefix match (not the strict format regex), so
+// a malformed or future variant is never stored verbatim either.
+export const APV_CALLBACK_REDACTED = 'apv:<redacted>'
+const APV_PREFIX_RE = /^\s*apv:/i
+
+export function isApprovalCallbackData(data: string): boolean {
+  return APV_PREFIX_RE.test(data)
+}
+
+export function redactCallbackData(data: string): string {
+  return isApprovalCallbackData(data) ? APV_CALLBACK_REDACTED : data
+}
+
 // Normalize a raw Telegram update into the flat shape the ingest layer stores.
 // Returns null for update kinds we do not handle (so the caller still advances
 // the offset past them rather than re-fetching forever).
@@ -126,6 +145,9 @@ export function mapUpdate(u: RawUpdate): NormalizedEvent | null {
   }
   if (u.callback_query) {
     const cq = u.callback_query
+    const data = cq.data ?? ''
+    const meta: Record<string, unknown> = { callback_query_id: cq.id }
+    if (isApprovalCallbackData(data)) meta['approval_callback_redacted'] = true
     return {
       update_id: u.update_id,
       kind: 'callback_query',
@@ -133,8 +155,8 @@ export function mapUpdate(u: RawUpdate): NormalizedEvent | null {
       user_id: cq.from?.id ?? null,
       username: displayName(cq.from),
       message_id: cq.message?.message_id ?? null,
-      content: cq.data ?? '',
-      meta: { callback_query_id: cq.id },
+      content: redactCallbackData(data),
+      meta,
       tg_date: cq.message?.date ?? null,
     }
   }

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { mapUpdate, getUpdates, TelegramApiError } from '../channel-coordinator/telegram-client.js'
+import { mapUpdate, getUpdates, TelegramApiError, APV_CALLBACK_REDACTED } from '../channel-coordinator/telegram-client.js'
 import {
   initIngestDb,
   insertIncomingEvent,
@@ -14,10 +14,12 @@ import {
 import {
   neutralizeChannelTags,
   buildHandoffContent,
+  processBatch,
   transientBackoffMs,
   inNative409Cooldown,
 } from '../channel-coordinator.js'
 import { decideNativeChannelDown } from '../channel-coordinator/liveness.js'
+import { logger } from '../logger.js'
 
 // ---- mapUpdate (pure normalization) -------------------------------------
 
@@ -367,3 +369,92 @@ describe('handoff content safety', () => {
   })
 })
 
+
+// ---- approval-button callback redaction ---------------------------------
+// An `apv:` press carries the approval id and a live single-use nonce. Only the
+// native plugin may decide it; the coordinator must neither store nor hand off
+// either value (incoming_events and agent_messages are readable via the API).
+
+describe('approval callback redaction', () => {
+  const APV_ID = '0123456789abcdef0123456789abcdef'
+  const APV_NONCE = 'AbCdEfGhIjKlMnOpQrStUv'
+  const apvData = `apv:a:${APV_ID}:${APV_NONCE}`
+  const cbUpdate = (update_id: number, data: string) => ({
+    update_id,
+    callback_query: {
+      id: `cbq${update_id}`,
+      data,
+      from: { id: 9, username: 'u' },
+      message: { message_id: 3, date: 1700000000, chat: { id: 99 } },
+    },
+  })
+
+  beforeEach(() => { initIngestDb(':memory:') })
+  afterEach(() => { closeIngestDb(); vi.restoreAllMocks() })
+
+  it('mapUpdate replaces apv: data with a fixed marker (approve and reject, malformed too)', () => {
+    for (const data of [apvData, `apv:r:${APV_ID}:${APV_NONCE}`, `apv:x:${APV_NONCE}`, ` APV:a:${APV_ID}`]) {
+      const ev = mapUpdate(cbUpdate(20, data))!
+      expect(ev.content).toBe(APV_CALLBACK_REDACTED)
+      expect(ev.meta['approval_callback_redacted']).toBe(true)
+      expect(ev.meta['callback_query_id']).toBe('cbq20')
+      expect(JSON.stringify(ev)).not.toContain(APV_NONCE)
+      expect(JSON.stringify(ev)).not.toContain(APV_ID)
+    }
+  })
+
+  it('processBatch: no id or nonce in the stored row, the handoff message, or the log', () => {
+    const logged: unknown[] = []
+    for (const lvl of ['info', 'warn', 'error', 'debug'] as const) {
+      vi.spyOn(logger, lvl).mockImplementation(((...args: unknown[]) => { logged.push(args) }) as never)
+    }
+    const max = processBatch([cbUpdate(400, apvData)])
+    expect(max).toBe(400)
+
+    const db = initIngestDb(':memory:')
+    const ev = db.prepare('SELECT * FROM incoming_events WHERE update_id = 400').get() as any
+    expect(ev.content).toBe(APV_CALLBACK_REDACTED)
+    const am = db.prepare('SELECT * FROM agent_messages WHERE id = ?').get(ev.agent_message_id) as any
+    expect(am.content).toContain(APV_CALLBACK_REDACTED)
+    expect(am.content).toContain('kind="callback_query"')
+    const dump = JSON.stringify([
+      db.prepare('SELECT * FROM incoming_events').all(),
+      db.prepare('SELECT * FROM agent_messages').all(),
+      logged,
+    ])
+    expect(logged.length).toBeGreaterThan(0)
+    expect(dump).not.toContain(APV_NONCE)
+    expect(dump).not.toContain(APV_ID)
+  })
+
+  it('buildHandoffContent redacts a legacy unredacted apv: row replayed by reconcile', () => {
+    const content = buildHandoffContent({
+      kind: 'callback_query', chat_id: 99, user_id: 9, username: 'u',
+      message_id: 3, content: apvData, tg_date: null,
+    })
+    expect(content).toContain(APV_CALLBACK_REDACTED)
+    expect(content).not.toContain(APV_NONCE)
+    expect(content).not.toContain(APV_ID)
+  })
+
+  it('non-apv callbacks and plain messages are unchanged', () => {
+    const ev = mapUpdate(cbUpdate(21, 'yes 12345'))!
+    expect(ev.content).toBe('yes 12345')
+    expect(ev.meta).toEqual({ callback_query_id: 'cbq21' })
+    // "apv:" not at the start is not an approval button
+    expect(mapUpdate(cbUpdate(22, 'xapv:a:1'))!.content).toBe('xapv:a:1')
+
+    processBatch([cbUpdate(401, 'perm:allow:abc')])
+    const db = initIngestDb(':memory:')
+    const row = db.prepare('SELECT * FROM incoming_events WHERE update_id = 401').get() as any
+    expect(row.content).toBe('perm:allow:abc')
+    const am = db.prepare('SELECT content FROM agent_messages WHERE id = ?').get(row.agent_message_id) as any
+    expect(am.content).toContain('perm:allow:abc')
+
+    // a user typing apv:... as a plain message is not a callback: left as is
+    const msg = buildHandoffContent({
+      kind: 'message', chat_id: 1, user_id: 2, username: 'x', message_id: 3, content: 'apv:hello', tg_date: null,
+    })
+    expect(msg).toContain('apv:hello')
+  })
+})
