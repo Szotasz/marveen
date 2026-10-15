@@ -850,6 +850,7 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   if (agentGetsDestructiveGate(name, profile)) injectDestructiveGate(existing)
   injectEgressGate(existing)
   if (agentGetsBashEgressParser(name)) injectBashEgressParser(existing)
+  if (agentGetsKillGate(name)) injectKillGate(existing)
   atomicWriteFileSync(settingsPath, JSON.stringify(existing, null, 2))
 }
 
@@ -1353,6 +1354,44 @@ export function injectBashEgressParser(existing: Record<string, unknown>): void 
   ]
 }
 
+// Which agents get the kill-gate (card 0ad8d161): every sub-agent. The MAIN agent
+// is exempt HERE only because its copy ships in the committed project settings
+// (.claude/settings.json), the same split as the outgoing-copy gate: a second copy
+// from the scaffold would duplicate it.
+//
+// Every agent, not a profile flag like the destructive gate, because what this
+// gate refuses is never anybody's judgement call: a signal to the user service
+// manager (systemd --user), to init or to every process at once, and a signal to a
+// PID the same command took from a parent-PID lookup. On 2026-10-03 one stop
+// command did the last of these: the parent of a detached launcher was the user
+// manager, and the TERM took every process of the user with it -- the whole agent
+// fleet was down for 22 minutes. The gate and scripts/safe-kill are described in
+// scripts/hooks/kill-gate.py.
+export function agentGetsKillGate(name: string): boolean {
+  return name !== MAIN_AGENT_ID
+}
+
+// Idempotently wire the kill-gate PreToolUse hook onto Bash. Same shape and dedupe
+// discipline as injectBashEgressParser: every prior kill-gate entry is dropped and
+// the canonical one re-added, so a stale matcher or path cannot survive a respawn.
+export function injectKillGate(existing: Record<string, unknown>): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'kill-gate.py'))
+  // Registration guard: a /tmp or missing path must never enter shared settings.
+  if (isUnsafeHookCommand(command)) return
+  const entry = {
+    matcher: 'Bash',
+    hooks: [{ type: 'command', command, timeout: 10 }],
+  }
+  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  hooks.PreToolUse = [
+    ...prev.filter((e) => !JSON.stringify(e).includes('kill-gate.py')),
+    entry,
+  ]
+}
+
 // Which Telegram tools carry copyable text out of the install. `reply` is the
 // send route; `edit_message` rewrites a message already on the phone and can
 // just as easily replace a working code block with a broken one.
@@ -1559,6 +1598,31 @@ export function ensureBashEgressParser(name: string): boolean {
   if (wired) return false
   if (isUnsafeHookCommand(command)) return false
   injectBashEgressParser(settings)
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
+}
+
+// Idempotent migration for the EXISTING fleet (card 0ad8d161), the same shape as
+// ensureBashEgressParser: the scaffold only rewrites a sub-agent's settings on spawn,
+// so without this the kill-gate would reach the running agents no sooner than their
+// next respawn. A settings file that is not there is not created.
+export function ensureKillGate(name: string): boolean {
+  if (!agentGetsKillGate(name)) return false
+  const settingsPath = agentSettingsPath(name)
+  if (!existsSync(settingsPath)) return false
+  let settings: Record<string, unknown> = {}
+  try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+  const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'kill-gate.py'))
+  const hooks = (settings.hooks && typeof settings.hooks === 'object')
+    ? settings.hooks as Record<string, unknown>
+    : {}
+  const ptu = Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse as unknown[] : []
+  // Wired only when the entry carries the CURRENT command under the Bash matcher.
+  const wired = ptu.some((e) => (e as { matcher?: unknown })?.matcher === 'Bash'
+    && hookCommandWired(JSON.stringify(e), command))
+  if (wired) return false
+  if (isUnsafeHookCommand(command)) return false
+  injectKillGate(settings)
   atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
   return true
 }

@@ -16,6 +16,7 @@ import {
   injectEgressGate,
   injectBashEgressParser,
   injectDestructiveGate,
+  injectKillGate,
 } from '../web/agent-scaffold.js'
 import { PROJECT_ROOT } from '../config.js'
 
@@ -165,9 +166,10 @@ describe('the builders', () => {
     injectEgressGate(s)
     injectBashEgressParser(s)
     injectDestructiveGate(s)
+    injectKillGate(s)
     const ptu = ((s.hooks as Record<string, unknown>).PreToolUse as { hooks: { command: string }[] }[])
     const commands = ptu.flatMap((e) => e.hooks.map((h) => h.command))
-    expect(commands.length).toBeGreaterThanOrEqual(5)
+    expect(commands.length).toBeGreaterThanOrEqual(6)
     for (const c of commands) {
       expect(c).toContain(GATE_FAIL_CLOSED_TAG)
       expect(c.endsWith('exit "$rc"')).toBe(true)
@@ -185,7 +187,7 @@ describe('the builders', () => {
 // command gives the SAME status and stdout as the raw interpreter call, for a set of inputs that
 // includes denials. Negative test: a syntax error appended to the gate FILE, the wrapped command rc 2.
 const NODE_GATES = ['email-send-gate.mjs', 'self-pace-gate.mjs', 'kanban-write-gate.mjs', 'digest-provenance-gate.mjs', 'hooks/egress-gate.mjs', 'hooks/bash-egress-parser.mjs']
-const PY_GATES = ['hooks/outgoing-copy-gate.py', 'hooks/destructive-gate.py', 'hooks/email-approval-gate.py']
+const PY_GATES = ['hooks/outgoing-copy-gate.py', 'hooks/destructive-gate.py', 'hooks/email-approval-gate.py', 'hooks/kill-gate.py']
 
 function inputs(root: string): string[] {
   const base = { hook_event_name: 'PreToolUse', session_id: 'hook-fail-closed-test', cwd: root }
@@ -253,8 +255,8 @@ describe('the real security gates on a disposable copy', () => {
     const settings = JSON.parse(readFileSync(join(PROJECT_ROOT, '.claude', 'settings.json'), 'utf-8'))
     const entries = (settings.hooks.PreToolUse as { matcher: string; hooks: { command: string }[] }[])
       .flatMap((e) => e.hooks.map((h) => ({ matcher: e.matcher, command: h.command })))
-    const security = entries.filter((e) => /outgoing-copy-gate\.py|email-approval-gate\.py|egress-gate\.mjs/.test(e.command))
-    expect(security.length).toBe(13)
+    const security = entries.filter((e) => /outgoing-copy-gate\.py|email-approval-gate\.py|egress-gate\.mjs|kill-gate\.py/.test(e.command))
+    expect(security.length).toBe(14)
     for (const e of security) {
       expect(e.command, e.matcher).toContain(GATE_FAIL_CLOSED_TAG)
       const rel = e.command.match(/scripts\/(hooks\/[a-z-]+\.(?:py|mjs))/)![1]
