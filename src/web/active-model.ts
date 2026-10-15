@@ -1,4 +1,4 @@
-import { closeSync, existsSync, openSync, readdirSync, readFileSync, readSync, statSync } from 'node:fs'
+import { closeSync, existsSync, fstatSync, openSync, readdirSync, readFileSync, readSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { encodeClaudeProjectDir } from '../claude-project-dir.js'
@@ -342,6 +342,51 @@ export function readTranscriptMtimeFromProjectDir(workingDir: string, configDir?
       if (newest === null || m > newest) newest = m
     }
     return newest
+  } catch { return null }
+}
+
+/** How much of the transcript's end readTranscriptTailFromProjectDir reads. */
+export const TRANSCRIPT_TAIL_BYTES = 1024 * 1024
+
+/**
+ * The last `maxBytes` of the newest transcript for a working dir (the same file
+ * readTranscriptMtimeFromProjectDir and readContextTokensFromProjectDir pick),
+ * or null when there is none. Only the tail is read: a long-lived session's
+ * jsonl runs to tens of MB, and the callers only look at its newest entries.
+ * The first line may be cut mid-entry; callers must skip lines that do not
+ * parse.
+ *
+ * A file that vanishes between readdir and stat (a session log rotated or
+ * removed mid-sweep) is skipped, not allowed to fail the whole read. Only the
+ * bytes readSync actually returned are decoded: a file that shrank after the
+ * fstat would otherwise hand back a tail padded with NUL bytes.
+ */
+export function readTranscriptTailFromProjectDir(
+  workingDir: string,
+  configDir?: string,
+  maxBytes: number = TRANSCRIPT_TAIL_BYTES,
+): string | null {
+  try {
+    const dir = projectsDirFor(workingDir, configDir)
+    if (!existsSync(dir)) return null
+    let newest: { f: string; m: number } | null = null
+    for (const f of readdirSync(dir)) {
+      if (!f.endsWith('.jsonl')) continue
+      let m: number
+      try { m = statSync(join(dir, f)).mtimeMs } catch { continue }
+      if (newest === null || m > newest.m) newest = { f, m }
+    }
+    if (newest === null) return null
+    const fd = openSync(join(dir, newest.f), 'r')
+    try {
+      const size = fstatSync(fd).size
+      const len = Math.min(size, maxBytes)
+      const buf = Buffer.alloc(len)
+      const bytesRead = readSync(fd, buf, 0, len, size - len)
+      return buf.toString('utf-8', 0, bytesRead)
+    } finally {
+      closeSync(fd)
+    }
   } catch { return null }
 }
 
