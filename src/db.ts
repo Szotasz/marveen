@@ -5275,31 +5275,49 @@ export function getTokenPruneLag(): TokenPruneLag {
   )
 }
 
+// Retention window for one of the opt-in prunes below, or null when the owner
+// has not switched it on. These four tables (conversation_log, otel_spans,
+// agent_messages, tool_call_log) keep everything by default: 0 means "keep
+// forever", and so does a value that does not parse to a positive integer
+// (an empty .env entry, a hand-edited override). Deleting history on an
+// install whose owner never asked for it is the one failure mode here that
+// cannot be undone, so anything other than a positive day count is a no-op.
+function optInRetentionDays(key: string): number | null {
+  const days = Number(getEffectiveSettingValue(key))
+  return Number.isFinite(days) && days > 0 ? days : null
+}
+
 // Prune conversation_log rows older than CONVERSATION_LOG_RETENTION_DAYS.
+// Opt-in: 0 / unset keeps everything (see optInRetentionDays).
 // `created_at` is unix SECONDS. Served by idx_convlog_created.
 export function pruneConversationLog(): number {
-  const retentionDays = Number(getEffectiveSettingValue('CONVERSATION_LOG_RETENTION_DAYS'))
+  const retentionDays = optInRetentionDays('CONVERSATION_LOG_RETENTION_DAYS')
+  if (retentionDays === null) return 0
   const cutoff = Math.floor(Date.now() / 1000) - retentionDays * 86400
   return db.prepare('DELETE FROM conversation_log WHERE created_at < ?').run(cutoff).changes
 }
 
-// Prune otel_spans older than OTEL_SPAN_RETENTION_DAYS. `start_ms` is unix
+// Prune otel_spans older than OTEL_SPAN_RETENTION_DAYS (opt-in, 0 = keep
+// forever). `start_ms` is unix
 // MILLISECONDS (unlike every other table here, which uses seconds). Spans still
 // marked 'running' are pruned too: a span that never got an end_ms within the
 // retention window is not in flight, it is a leaked row from a crashed process.
 export function pruneOtelSpans(): number {
-  const retentionDays = Number(getEffectiveSettingValue('OTEL_SPAN_RETENTION_DAYS'))
+  const retentionDays = optInRetentionDays('OTEL_SPAN_RETENTION_DAYS')
+  if (retentionDays === null) return 0
   const cutoffMs = Date.now() - retentionDays * 86400 * 1000
   return db.prepare('DELETE FROM otel_spans WHERE start_ms < ?').run(cutoffMs).changes
 }
 
-// Prune settled agent_messages older than AGENT_MESSAGE_RETENTION_DAYS.
+// Prune settled agent_messages older than AGENT_MESSAGE_RETENTION_DAYS
+// (opt-in, 0 = keep forever).
 // Deliberately limited to 'done' and 'failed': a 'pending' or 'delivered' row
 // that is still around after weeks means delivery or processing got stuck, and
 // silently deleting it would erase the only evidence of that. Stuck rows are a
 // signal, not garbage -- they stay until someone looks at them.
 export function pruneAgentMessages(): number {
-  const retentionDays = Number(getEffectiveSettingValue('AGENT_MESSAGE_RETENTION_DAYS'))
+  const retentionDays = optInRetentionDays('AGENT_MESSAGE_RETENTION_DAYS')
+  if (retentionDays === null) return 0
   const cutoff = Math.floor(Date.now() / 1000) - retentionDays * 86400
   return db
     .prepare("DELETE FROM agent_messages WHERE created_at < ? AND status IN ('done','failed')")
@@ -5307,12 +5325,14 @@ export function pruneAgentMessages(): number {
     .changes
 }
 
-// Prune tool_call_log to TOOL_CALL_LOG_RETENTION_DAYS. Thin wrapper over
+// Prune tool_call_log to TOOL_CALL_LOG_RETENTION_DAYS (opt-in, 0 = keep
+// forever). Thin wrapper over
 // pruneToolCallLog() so the daily sweep reads the configured retention instead
 // of that function's 24-hour call-site default (which the dashboard endpoint
 // still uses for an explicit manual purge).
 export function pruneToolCallLogRetention(): number {
-  const retentionDays = Number(getEffectiveSettingValue('TOOL_CALL_LOG_RETENTION_DAYS'))
+  const retentionDays = optInRetentionDays('TOOL_CALL_LOG_RETENTION_DAYS')
+  if (retentionDays === null) return 0
   const cutoff = Math.floor(Date.now() / 1000) - retentionDays * 86400
   return db.prepare('DELETE FROM tool_call_log WHERE created_at < ?').run(cutoff).changes
 }

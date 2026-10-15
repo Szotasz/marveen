@@ -1,4 +1,42 @@
-import { describe, it, expect, beforeAll, beforeEach } from 'vitest'
+import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest'
+
+// The four retention settings are opt-in (default 0 = keep forever). Most
+// cases below exercise the prunes as an owner who switched them on, so the
+// settings layer is stubbed per key: a key present in `retention` answers with
+// that value, anything else (or a deleted key) falls through to the real
+// override > .env > registry-default resolution. Stubbing beats setOverride()
+// here, which would write config-overrides.json into the real store.
+const { retention } = vi.hoisted(() => ({ retention: {} as Record<string, string | number> }))
+vi.mock('../settings-store.js', async (orig) => {
+  const actual = await orig<typeof import('../settings-store.js')>()
+  return {
+    ...actual,
+    getEffectiveSettingValue: (key: string) =>
+      key in retention ? retention[key] : actual.getEffectiveSettingValue(key),
+  }
+})
+
+const RETENTION_KEYS = [
+  'CONVERSATION_LOG_RETENTION_DAYS',
+  'OTEL_SPAN_RETENTION_DAYS',
+  'AGENT_MESSAGE_RETENTION_DAYS',
+  'TOOL_CALL_LOG_RETENTION_DAYS',
+] as const
+
+// The suggested windows the registry descriptions name.
+const SWITCHED_ON: Record<(typeof RETENTION_KEYS)[number], number> = {
+  CONVERSATION_LOG_RETENTION_DAYS: 90,
+  OTEL_SPAN_RETENTION_DAYS: 14,
+  AGENT_MESSAGE_RETENTION_DAYS: 30,
+  TOOL_CALL_LOG_RETENTION_DAYS: 30,
+}
+
+function switchRetentionOn() {
+  Object.assign(retention, SWITCHED_ON)
+}
+function clearRetentionStubs() {
+  for (const k of Object.keys(retention)) delete retention[k]
+}
 import {
   initDatabase,
   getDb,
@@ -9,6 +47,7 @@ import {
   checkpointAndCompact,
 } from '../db.js'
 import { runDecaySweep } from '../memory.js'
+import { getSettingDefinition } from '../config-registry.js'
 
 const DAY = 86400
 
@@ -18,6 +57,13 @@ beforeAll(() => {
   // happily eat production history).
   process.env.NODE_ENV = 'test'
   initDatabase(':memory:')
+})
+
+// Default for every case: the owner has switched retention on at the suggested
+// windows. The "off by default" block below clears this again.
+beforeEach(() => {
+  clearRetentionStubs()
+  switchRetentionOn()
 })
 
 const NOW = () => Math.floor(Date.now() / 1000)
@@ -177,7 +223,7 @@ describe('runDecaySweep (the daily entry point)', () => {
     )
   })
 
-  it('runs all four retention prunes: old rows go, fresh and in-flight rows stay', () => {
+  function seedOldAndFresh() {
     const now = NOW()
     const db = getDb()
     const conv = db.prepare(
@@ -209,6 +255,11 @@ describe('runDecaySweep (the daily entry point)', () => {
     )
     tool.run('tool-old', now - 45 * DAY)
     tool.run('tool-fresh', now)
+  }
+
+  it('runs all four retention prunes when switched on: old rows go, fresh and in-flight rows stay', () => {
+    seedOldAndFresh()
+    const db = getDb()
 
     runDecaySweep()
 
@@ -217,5 +268,110 @@ describe('runDecaySweep (the daily entry point)', () => {
     expect(col('SELECT span_id FROM otel_spans ORDER BY span_id')).toEqual(['span-fresh'])
     expect(col('SELECT id FROM agent_messages ORDER BY id')).toEqual([2, 3, 4])
     expect(col('SELECT session_id FROM tool_call_log ORDER BY session_id')).toEqual(['tool-fresh'])
+  })
+
+  it('deletes nothing with all four settings at their default (unset), however old the rows', () => {
+    // An install whose owner never switched retention on must keep its full
+    // history: the conversation log doubles as an audit source.
+    clearRetentionStubs()
+    seedOldAndFresh()
+    const db = getDb()
+    const yearOld = NOW() - 365 * DAY
+    db.prepare(
+      `INSERT INTO conversation_log (agent_id, chat_id, direction, message_id, text, ts, created_at)
+       VALUES ('test-agent', 'chat-1', 'in', 'conv-year', 'x', '2025-01-01T00:00:00Z', ?)`,
+    ).run(yearOld)
+    db.prepare(
+      `INSERT INTO otel_spans (trace_id, span_id, agent_id, operation, start_ms, status)
+       VALUES ('trace-1', 'span-year', 'test-agent', 'op', ?, 'ok')`,
+    ).run(yearOld * 1000)
+    db.prepare(
+      `INSERT INTO agent_messages (id, from_agent, to_agent, content, status, created_at)
+       VALUES (5, 'a', 'b', 'x', 'failed', ?)`,
+    ).run(yearOld)
+    db.prepare(
+      `INSERT INTO tool_call_log (session_id, tool_name, input_summary, success, created_at)
+       VALUES ('tool-year', 'Bash', 'x', 1, ?)`,
+    ).run(yearOld)
+
+    runDecaySweep()
+
+    const col = (sql: string) => (db.prepare(sql).all() as Array<Record<string, unknown>>).map((r) => Object.values(r)[0])
+    expect(col('SELECT message_id FROM conversation_log ORDER BY message_id')).toEqual([
+      'conv-fresh',
+      'conv-old',
+      'conv-year',
+    ])
+    expect(col('SELECT span_id FROM otel_spans ORDER BY span_id')).toEqual(['span-fresh', 'span-old', 'span-year'])
+    expect(col('SELECT id FROM agent_messages ORDER BY id')).toEqual([1, 2, 3, 4, 5])
+    expect(col('SELECT session_id FROM tool_call_log ORDER BY session_id')).toEqual([
+      'tool-fresh',
+      'tool-old',
+      'tool-year',
+    ])
+  })
+})
+
+describe('retention is off by default (0 = keep forever)', () => {
+  beforeEach(() => {
+    clearRetentionStubs()
+    getDb().exec(
+      'DELETE FROM conversation_log; DELETE FROM otel_spans; DELETE FROM agent_messages; DELETE FROM tool_call_log',
+    )
+  })
+
+  function seedYearOld() {
+    const db = getDb()
+    const yearOld = NOW() - 365 * DAY
+    db.prepare(
+      `INSERT INTO conversation_log (agent_id, chat_id, direction, message_id, text, ts, created_at)
+       VALUES ('test-agent', 'chat-1', 'in', 'conv-year', 'x', '2025-01-01T00:00:00Z', ?)`,
+    ).run(yearOld)
+    db.prepare(
+      `INSERT INTO otel_spans (trace_id, span_id, agent_id, operation, start_ms, status)
+       VALUES ('trace-1', 'span-year', 'test-agent', 'op', ?, 'ok')`,
+    ).run(yearOld * 1000)
+    db.prepare(
+      `INSERT INTO agent_messages (id, from_agent, to_agent, content, status, created_at)
+       VALUES (1, 'a', 'b', 'x', 'done', ?)`,
+    ).run(yearOld)
+    db.prepare(
+      `INSERT INTO tool_call_log (session_id, tool_name, input_summary, success, created_at)
+       VALUES ('tool-year', 'Bash', 'x', 1, ?)`,
+    ).run(yearOld)
+  }
+
+  function counts() {
+    const db = getDb()
+    const c = (t: string) => (db.prepare(`SELECT COUNT(*) c FROM ${t}`).get() as { c: number }).c
+    return [c('conversation_log'), c('otel_spans'), c('agent_messages'), c('tool_call_log')]
+  }
+
+  it('the registry default of all four settings is 0', () => {
+    for (const key of RETENTION_KEYS) expect(getSettingDefinition(key)?.default).toBe(0)
+  })
+
+  it.each([
+    ['explicit 0', 0],
+    ['an empty .env value', ''],
+    ['a value that does not parse', 'NaN'],
+  ])('every prune is a no-op with %s', (_label, value) => {
+    for (const key of RETENTION_KEYS) retention[key] = value
+    seedYearOld()
+
+    expect(pruneConversationLog()).toBe(0)
+    expect(pruneOtelSpans()).toBe(0)
+    expect(pruneAgentMessages()).toBe(0)
+    expect(pruneToolCallLogRetention()).toBe(0)
+    expect(counts()).toEqual([1, 1, 1, 1])
+  })
+
+  it('switching one table on prunes only that table', () => {
+    retention.CONVERSATION_LOG_RETENTION_DAYS = 90
+    seedYearOld()
+
+    runDecaySweep()
+
+    expect(counts()).toEqual([0, 1, 1, 1])
   })
 })
