@@ -981,6 +981,21 @@ function ownerAssigneeName() {
   return owner ? owner.name : null
 }
 
+// One key for comparing assignee names, because the two sides are written
+// differently: the owner entry carries a display name ("Balázs") while the cards
+// carry the id the agents write ("balazs"). Lowercasing alone leaves the accent,
+// so "balázs" !== "balazs" and the owner quick-filter matched nothing -- measured
+// on a board where 160 of 246 live cards were on that owner. Decomposing to NFD
+// and dropping the combining marks makes the two comparable without touching the
+// stored data, which is what the cards and the API still see.
+function assigneeKey(name) {
+  return String(name || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toLowerCase()
+}
+
 // Reflect the active state of the owner quick-toggle button (hidden when there
 // is no owner-type assignee).
 function syncOwnerFilterBtn() {
@@ -989,7 +1004,7 @@ function syncOwnerFilterBtn() {
   const owner = ownerAssigneeName()
   if (!owner) { btn.style.display = 'none'; return }
   btn.style.display = ''
-  const on = !!kanbanAssigneeFilter && kanbanAssigneeFilter.toLowerCase() === owner.toLowerCase()
+  const on = !!kanbanAssigneeFilter && assigneeKey(kanbanAssigneeFilter) === assigneeKey(owner)
   btn.style.background = on ? 'var(--accent)' : 'var(--bg)'
   btn.style.color = on ? '#081a2d' : 'var(--fg)'
   btn.setAttribute('aria-pressed', on ? 'true' : 'false')
@@ -1028,7 +1043,7 @@ function setupAssigneeFilter() {
     ownerBtn.addEventListener('click', () => {
       const owner = ownerAssigneeName()
       if (!owner) return
-      const on = kanbanAssigneeFilter.toLowerCase() === owner.toLowerCase()
+      const on = assigneeKey(kanbanAssigneeFilter) === assigneeKey(owner)
       kanbanAssigneeFilter = on ? '' : owner
       // Keep the dropdown in sync (only selectable if the owner is a known assignee).
       sel.value = kanbanAssignees.some((a) => a.name === kanbanAssigneeFilter) ? kanbanAssigneeFilter : ''
@@ -1106,8 +1121,8 @@ function kanbanCardSorter() {
 function kanbanCardMatchesBaseFilters(card) {
   if (!kanbanCardMatchesSearch(card)) return false
   if (kanbanProjectFilter && (card.project || '') !== kanbanProjectFilter) return false
-  const assigneeFilter = kanbanAssigneeFilter.toLowerCase()
-  if (assigneeFilter && String(card.assignee || '').trim().toLowerCase() !== assigneeFilter) return false
+  const assigneeFilter = assigneeKey(kanbanAssigneeFilter)
+  if (assigneeFilter && assigneeKey(card.assignee) !== assigneeFilter) return false
   return true
 }
 
