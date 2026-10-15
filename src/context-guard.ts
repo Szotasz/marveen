@@ -308,6 +308,13 @@ export interface GuardState {
    *  sent. A re-send carries a reason of its own, and the runner needs the
    *  original one to word the prompt the same way (act / idle / daily / stale). */
   handoffRequestReason?: string
+  /** await-handoff only: this sequence was started by the idle-flush tier. Set
+   *  when the sequence starts and carried by `...state` through stale-refresh
+   *  and re-send requests, which overwrite handoffRequestReason. The restart
+   *  notice reads it: by the time the restart decision is made, the
+   *  decision reason is "handoff written" and the idle-flush origin is only
+   *  here. */
+  idleFlushSequence?: boolean
 }
 
 export const INITIAL_GUARD_STATE: GuardState = {
@@ -1338,6 +1345,7 @@ function handoffRequest(
       staleRefreshCount: 0,
       handoffStaleMinutes: null,
       handoffRequestReason: reason,
+      idleFlushSequence: reason.startsWith(IDLE_FLUSH_REASON_PREFIX),
     },
   }
 }

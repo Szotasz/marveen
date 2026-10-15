@@ -159,12 +159,16 @@ afterAll(() => {
 
 describe('context-guard resume obligation across a dashboard restart', () => {
   it('re-arms await-ready on startup and delivers the resume on the first sweep', async () => {
+    // The pane is not ready yet, so only the re-armed state is visible at boot;
+    // delivery (loop or sweep) needs it to turn ready.
+    h.sessionReady = false
     writePending({ boni: { restartedAtMs: T0 - 60_000, handoffStaleMinutes: null, reason: 'pane saturated' } })
 
     const runner = await bootDashboard()
     // The load-on-startup itself: before any sweep has run.
     expect(runner.getHardGuardPhase('boni')).toBe('await-ready')
 
+    h.sessionReady = true
     await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS)
 
     expect(resumeCalls()).toHaveLength(1)
@@ -176,8 +180,10 @@ describe('context-guard resume obligation across a dashboard restart', () => {
   })
 
   it('end to end: restart in one dashboard process, resume from the next', async () => {
-    // Process 1: the saturation net restarts boni (two confirming sweeps).
+    // Process 1: the saturation net restarts boni (two confirming sweeps). The
+    // fresh pane is not ready yet, so the resume is still owed when it dies.
     h.pane = SATURATED_PANE
+    h.sessionReady = false
     const first = await bootDashboard()
     await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS + INTERVAL_MS)
     expect(h.restartAgentProcess).toHaveBeenCalledTimes(1)
@@ -190,7 +196,13 @@ describe('context-guard resume obligation across a dashboard restart', () => {
     // the whole of its timer state.)
     for (const t of timers) clearInterval(t)
     timers = []
+    // ...and so does its delivery loop (its pending sleep is a timer too).
+    // clearAllTimers drops the fake clock back to real time; put it back.
+    const now = Date.now()
+    vi.clearAllTimers()
+    vi.setSystemTime(now)
     h.pane = null
+    h.sessionReady = true
 
     // Process 2: nothing in memory, only the file.
     const second = await bootDashboard()
@@ -231,14 +243,17 @@ describe('context-guard resume obligation across a dashboard restart', () => {
 
     const runner = await bootDashboard()
     await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS)
-    expect(resumeCalls()).toHaveLength(1)
+    // The delivery loop tries again on its backoff, the sweep as the backstop.
+    expect(resumeCalls().length).toBeGreaterThan(1)
     expect(runner.getHardGuardPhase('boni')).toBe('await-ready')
     expect(readPending()).toHaveProperty('boni')
 
     h.sendOutcome = 'sent'
-    await vi.advanceTimersByTimeAsync(INTERVAL_MS)
-    expect(resumeCalls()).toHaveLength(2)
+    const before = resumeCalls().length
+    await vi.advanceTimersByTimeAsync(30_000) // the longest backoff step
+    expect(resumeCalls()).toHaveLength(before + 1)
     expect(readPending()).toEqual({})
+    expect(runner.getHardGuardPhase('boni')).toBe('cooldown')
   })
 
   it('never persists an obligation for a restart that failed', async () => {
@@ -249,6 +264,120 @@ describe('context-guard resume obligation across a dashboard restart', () => {
     expect(h.restartAgentProcess).toHaveBeenCalledTimes(1)
     expect(runner.getHardGuardPhase('boni')).toBe('idle')
     expect(existsSync(PENDING) ? readPending() : {}).toEqual({})
+  })
+})
+
+// The restart starts a delivery loop instead of waiting for the
+// next 300 s sweep.
+describe('immediate resume delivery after a guard restart', () => {
+  it('delivers ONE resume within 60 s of the restart, not 5 minutes later', async () => {
+    h.pane = SATURATED_PANE
+    await bootDashboard()
+    // Two saturated sweeps: 270 s (setTimeout) and 300 s (first interval tick).
+    await vi.advanceTimersByTimeAsync(INTERVAL_MS)
+    expect(h.restartAgentProcess).toHaveBeenCalledTimes(1)
+    // The guard owns the first prompt, so the generic recovery brief stays out.
+    expect(h.restartAgentProcess.mock.calls[0][1]).toMatchObject({ fresh: true, ownsResume: true })
+    const restartedAt = readPending().boni?.restartedAtMs
+    expect(restartedAt).toBeDefined()
+    h.pane = null
+
+    // Not at the restart instant (the identity-setup keystrokes are still
+    // landing), but well before the next sweep.
+    expect(resumeCalls()).toHaveLength(0)
+    await vi.advanceTimersByTimeAsync(25_000)
+    const calls = resumeCalls()
+    expect(calls).toHaveLength(1)
+    expect(Date.now() - restartedAt!).toBeLessThanOrEqual(60_000)
+    // 'abort': the loop never types best-effort into a busy pane.
+    expect(calls[0][4]).toMatchObject({ onBusyTimeout: 'abort' })
+    expect(readPending()).toEqual({})
+
+    // The sweeps that follow find nothing owed: still exactly one.
+    await vi.advanceTimersByTimeAsync(2 * INTERVAL_MS)
+    expect(resumeCalls()).toHaveLength(1)
+  })
+
+  it('the loop settles the obligation BEFORE it releases its send claim (no gap for a second resume)', async () => {
+    // The loop's .then runs a few microtasks after the send returns. If the
+    // claim were released first, a sweep in that gap would see no claim and a
+    // still-owed obligation in await-ready, and send a second resume. Observed
+    // at the loop's own "delivered" log line, which runs after the send (and
+    // its claim release) returned but before the .then.
+    h.pane = SATURATED_PANE
+    const runner = await bootDashboard()
+    await vi.advanceTimersByTimeAsync(INTERVAL_MS)
+    expect(h.restartAgentProcess).toHaveBeenCalledTimes(1)
+    h.pane = null
+    const { logger } = await import('../logger.js')
+    let atDelivered: { pending: Record<string, unknown>; phase: string } | null = null
+    ;(logger.info as unknown as ReturnType<typeof vi.fn>).mockImplementation((_o: unknown, msg?: unknown) => {
+      if (msg === 'resume-delivery: delivered') atDelivered = { pending: readPending(), phase: runner.getHardGuardPhase('boni') }
+    })
+    await vi.advanceTimersByTimeAsync(25_000)
+    expect(resumeCalls()).toHaveLength(1)
+    expect(atDelivered).not.toBeNull()
+    expect(atDelivered!.pending).toEqual({})
+    expect(atDelivered!.phase).toBe('cooldown')
+  })
+
+  it('backstop: with the loop dead, the sweep still delivers the resume on its own', async () => {
+    // The loop is the fast path, the sweep the safety net. After the restart
+    // every timer dies (the loop's pending sleep with them) and only the sweep
+    // is re-armed; the loop's registration is still in memory, so no new loop
+    // starts. If the sweep stopped being a backstop, nothing would deliver.
+    h.pane = SATURATED_PANE
+    const runner = await bootDashboard()
+    await vi.advanceTimersByTimeAsync(INTERVAL_MS) // restart; the loop is sleeping
+    expect(Object.keys(readPending())).toEqual(['boni'])
+    expect(resumeCalls()).toHaveLength(0)
+    h.pane = null
+
+    for (const t of timers) clearInterval(t)
+    timers = []
+    const now = Date.now()
+    vi.clearAllTimers()
+    vi.setSystemTime(now)
+    timers.push(runner.startContextGuardRunner())
+
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS)
+    expect(resumeCalls()).toHaveLength(1)
+    expect(readPending()).toEqual({})
+    expect(runner.getHardGuardPhase('boni')).toBe('cooldown')
+  })
+
+  it('sends nothing while the pane is busy, then delivers once it is ready', async () => {
+    h.sessionReady = false
+    h.pane = SATURATED_PANE
+    await bootDashboard()
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS + INTERVAL_MS)
+    h.pane = null
+    await vi.advanceTimersByTimeAsync(3 * 60_000)
+    expect(resumeCalls()).toHaveLength(0)
+    expect(readPending()).toHaveProperty('boni')
+
+    h.sessionReady = true
+    await vi.advanceTimersByTimeAsync(30_000)
+    expect(resumeCalls()).toHaveLength(1)
+    expect(readPending()).toEqual({})
+  })
+})
+
+describe('restartLossLine (pure)', () => {
+  // The through-the-runner proof is context-guard-idle-flush-restart-notice.test.ts;
+  // these pin the two branches of the wording itself.
+  it('idle-flush + worksource: the queue redelivers, do not resend', async () => {
+    const { restartLossLine } = await import('../web/context-guard-runner.js')
+    const line = restartLossLine(true, true, 30)
+    expect(line).toContain('NE kuldj ujra')
+    expect(line).toContain('ujrakezbesulnek')
+    expect(line).not.toContain('ELVESZHETTEK')
+  })
+
+  it('keeps the generic line elsewhere: not worksource, or not an idle-flush', async () => {
+    const { restartLossLine } = await import('../web/context-guard-runner.js')
+    expect(restartLossLine(true, false, 30)).toContain('ELVESZHETTEK')
+    expect(restartLossLine(false, true, 30)).toContain('ELVESZHETTEK')
   })
 })
 

@@ -129,7 +129,7 @@ describe('hidden technical workers and the saturation net', () => {
       else if (src[i] === '}' && --depth === 0) { end = i; break }
     }
     const body = src.slice(m!.index, end + 1)
-    expect(body).toContain('restartAgentProcess(name, { fresh: true })')
+    expect(body).toContain('restartAgentProcess(name, { fresh: true, ownsResume: true })')
     expect(body).not.toMatch(/restartAgentProcess\(name,\s*\{\s*fresh:\s*false/)
     expect(body).not.toMatch(/restartAgentProcess\(name\)/)
   })
