@@ -16,7 +16,7 @@ import { COORDINATOR_AGENT_ID, VOICE_CHANNEL_AGENT_ID } from '../../channel-coor
 import { SYSTEM_DIRECTIVE_SENDER } from '../system-directive.js'
 import { sanitizeAgentIdent } from '../../prompt-safety.js'
 import { isKnownAgent } from '../agent-config.js'
-import { MAIN_AGENT_ID, HEARTBEAT_AGENT_ID, OWNER_NAME, SYSTEM_SENDER_IDS, parseSystemSenderIds } from '../../config.js'
+import { MAIN_AGENT_ID, HEARTBEAT_AGENT_ID, OWNER_NAME, SYSTEM_SENDER_IDS, parseSystemSenderIds, MESSAGE_URGENT_DEVICE_IDS, parseDeviceKeyIds } from '../../config.js'
 import { isAgentRunning } from '../agent-process.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
@@ -25,6 +25,8 @@ import { verifyHeartbeatKanban, HEARTBEAT_KANBAN_WINDOW_SEC } from '../heartbeat
 import { buildFreshnessInfo, type MessageFreshness } from '../agent-message-wrap.js'
 import { parseQualifiedId, formatQualifiedId, isQualifiedId } from '../federation/address.js'
 import { getFederationConfig } from '../federation/config.js'
+import { decidePriority, parsePriorityField } from '../message-priority.js'
+import { rankedSenders } from '../../delivery-order.js'
 import type { RouteContext } from './types.js'
 
 // Should closing a message produce a reverse "[Eredmény]" notification to its sender?
@@ -56,6 +58,16 @@ export const VOICE_MAILBOX_RESULT = 'voice-channel mailbox: no session delivery;
 
 // Frozen at module load, like the config constant it derives from.
 const SYSTEM_SENDERS = parseSystemSenderIds(SYSTEM_SENDER_IDS, sanitizeAgentIdent)
+// Card 795d1f48 (a): the device keys the install lists for urgent rows (config.ts), frozen the same way.
+const URGENT_DEVICE_KEY_IDS = parseDeviceKeyIds(MESSAGE_URGENT_DEVICE_IDS)
+
+/**
+ * Card 795d1f48 (a): may this request mark a row urgent? Only a FULL device key whose id the install lists. A device
+ * key alone is not enough: the shared dashboard token (the agent API) can mint one. Exported for the unit test.
+ */
+export function mayMarkUrgent(auth: RouteContext['auth'], listedDeviceIds: ReadonlySet<number>): boolean {
+  return auth?.kind === 'device' && auth.scope === 'full' && auth.deviceId !== undefined && listedDeviceIds.has(auth.deviceId)
+}
 
 /**
  * How much of a `result` travels inside the completion notification, and what the recipient
@@ -146,10 +158,25 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/messages' && method === 'POST') {
     const body = await readBody(req)
-    const { from, to, content, origin_note } = JSON.parse(body.toString()) as
-      { from: string; to: string; content: string; origin_note?: string }
+    const { from, to, content, origin_note, priority, urgent } = JSON.parse(body.toString()) as
+      { from: string; to: string; content: string; origin_note?: string; priority?: unknown; urgent?: unknown }
     if (!from?.trim() || !to?.trim() || !content?.trim()) {
       json(res, { error: 'from, to, and content are required' }, 400)
+      return true
+    }
+    // Card 795d1f48 (a): an URGENT row is typed into a BUSY pane by the router (e.g. the save signal a key rotation
+    // sends before it restarts the agents), so a lost or an injected key could interrupt every agent. Who may ask for
+    // one: a FULL device key whose id the install lists in MESSAGE_URGENT_DEVICE_IDS (mayMarkUrgent). Not the shared
+    // dashboard token (the agent API, readable by every sub-agent), and not any device key, since that token can mint
+    // one. The in-process writers set it directly. Checked before anything is written; a non-boolean is a 400, so a
+    // typo does not silently send an ordinary row.
+    if (urgent !== undefined && typeof urgent !== 'boolean') {
+      json(res, { error: 'urgent must be a JSON boolean' }, 400)
+      return true
+    }
+    if (urgent === true && !mayMarkUrgent(ctx.auth, URGENT_DEVICE_KEY_IDS)) {
+      logger.warn({ from: from.trim(), to: to.trim(), authKind: ctx.auth?.kind ?? 'none', deviceId: ctx.auth?.deviceId }, 'Rejected /api/messages POST: urgent without a listed device key')
+      json(res, { error: 'urgent delivery requires a device key listed in MESSAGE_URGENT_DEVICE_IDS; the shared dashboard token (the agent API) cannot send an urgent row' }, 403)
       return true
     }
     // HBTEMPLATELEAK1002: a heartbeat report that still carries its template's
@@ -354,9 +381,23 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // a near-miss (the voice id plus a stray character, sanitised back to the voice id) would be stored under a
     // name the relay never reads, and lost without a sound. It gets the 400.
     const isVoiceMailbox = storedTo === VOICE_CHANNEL_AGENT_ID
-    if (!storedTo.includes('/') && !isVoiceMailbox && !isKnownAgent(sanitizeAgentIdent(storedTo))) {
+    //
+    // A SYSTEM_SENDER_IDS entry is not unknown either (card 9fc6dc3e): those
+    // ids name the neighbouring systems that talk to the fleet over this API,
+    // and the fleet answers them over the same POST (to=<system id>). Without
+    // this, every reply to such a system would get a 400 since this gate
+    // shipped. Only an id that is neither a registered agent nor a listed
+    // system is rejected.
+    // EXACT match on the stored id (review #1827), like the voice mailbox: the
+    // SYSTEM_SENDERS entries are already normalized, so a near-miss ('cort ex')
+    // that only SANITISES to a listed id would be stored under a name its
+    // system never reads. And the reserved directive sender stays closed on the
+    // recipient side too, even if an operator lists it in SYSTEM_SENDER_IDS
+    // (SYSRESERVED918 reserves it on the sender side above).
+    const isSystemRecipient = storedTo !== SYSTEM_DIRECTIVE_SENDER && SYSTEM_SENDERS.has(storedTo)
+    if (!storedTo.includes('/') && !isVoiceMailbox && !isSystemRecipient && !isKnownAgent(sanitizeAgentIdent(storedTo))) {
       logger.warn({ from: from.trim(), to: storedTo }, 'Rejected /api/messages POST to an unregistered recipient')
-      json(res, { error: `unknown recipient '${storedTo}' -- to must be a registered fleet agent id (or "<system>/<agent>" for federation)` }, 400)
+      json(res, { error: `unknown recipient '${storedTo}' -- to must be a registered fleet agent id, a SYSTEM_SENDER_IDS system id, or "<system>/<agent>" for federation` }, 400)
       return true
     }
     // Code-side enforcement of the kanban-ref convention: rewrite any
@@ -373,7 +414,27 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // Card 06f062e4: optional attributability tag, self-declared like `from`
     // itself -- capped short so it stays a label, not a second content field.
     const trimmedOriginNote = origin_note?.trim().slice(0, 120) || null
-    const msg = createAgentMessage(from.trim(), storedTo, normalizedContent, trimmedOriginNote)
+    // Card ad771121: the optional priority. Absent = "normal" (today's FIFO); an unknown value is a
+    // loud 400. Checked after every guard above, so their answers keep their precedence; the budget
+    // decision and the insert run back to back with no await between them.
+    const parsedPriority = parsePriorityField(priority)
+    if (!parsedPriority.ok) {
+      json(res, { error: parsedPriority.error }, 400)
+      return true
+    }
+    // Review point 1: the owner's own rows (and the voice channel's) already rank above a peer high by
+    // their sender (delivery-order.ts), so the per-pair budget, which exists to bound PEER highs, does not
+    // apply to them: an explicit "high" is stored as asked and never downgraded.
+    //
+    // Precedence (delivery-order.ts): STOP, urgent, system/owner, high, the rest. An urgent row is
+    // already above high by its own column, so it does not go through the per-pair budget at all
+    // and is stored with priority 0: it never spends that budget.
+    const decided = urgent === true
+      ? { priority: 0 as const, downgraded: false }
+      : rankedSenders().includes(from.trim())
+        ? { priority: parsedPriority.level === 'high' ? 1 as const : 0 as const, downgraded: false }
+        : decidePriority(parsedPriority.level, from.trim(), storedTo, Math.floor(Date.now() / 1000))
+    const msg = createAgentMessage(from.trim(), storedTo, normalizedContent, trimmedOriginNote, null, { urgent: urgent === true, priority: decided.priority })
     if (isVoiceMailbox) {
       markMessageDone(msg.id, VOICE_MAILBOX_RESULT)
       logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent }, 'Voice-channel answer stored in the mailbox (no session delivery)')
@@ -389,8 +450,12 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // below carries it, the warning ones included.
     const queue = isQualifiedId(storedTo) ? undefined : getRecipientQueueState(storedTo)
     const queueField = queue ? { queue } : {}
+    // Card ad771121: the row carries its stored priority (0 normal, 1 high); a high request over the pair's
+    // hourly budget was accepted as normal, never dropped, and the answer says so. Every success answer
+    // below carries it, like the queue.
+    const downgradedField = decided.downgraded ? { downgraded: true } : {}
     logger.info(
-      { id: msg.id, from: msg.from_agent, to: msg.to_agent, originNote: msg.origin_note, queueDepth: queue?.queueDepth },
+      { id: msg.id, from: msg.from_agent, to: msg.to_agent, originNote: msg.origin_note, queueDepth: queue?.queueDepth, priority: msg.priority, downgraded: decided.downgraded },
       'Agent message created',
     )
     // A LOCAL recipient that is not running never receives this: the router
@@ -415,6 +480,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       json(res, {
         ...msg,
         ...queueField,
+        ...downgradedField,
         targetRunning: false,
         warning: `'${msg.to_agent}' nem fut -- indítsd el (POST /api/agents/${msg.to_agent}/start), várd meg amíg feláll, és küldd újra. Egy leállított ügynöknek küldött üzenet nem várakozik, hanem elveszik.`,
       })
@@ -436,10 +502,10 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     if (homoglyphs.length > 0) {
       const warning = formatHomoglyphWarning(homoglyphs)
       logger.warn({ id: msg.id, from: msg.from_agent, to: msg.to_agent }, `agent message created with ${warning}`)
-      json(res, { ...msg, ...queueField, homoglyph_warning: warning })
+      json(res, { ...msg, ...queueField, ...downgradedField, homoglyph_warning: warning })
       return true
     }
-    json(res, { ...msg, ...queueField })
+    json(res, { ...msg, ...queueField, ...downgradedField })
     return true
   }
 

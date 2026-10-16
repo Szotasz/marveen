@@ -173,10 +173,10 @@ classify_mcp_plugin_row() {
 sh_single_quote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 
 # SECSZIVEK1007: the resolved model must have the shape of a model id (the same
-# allowlist as MODEL_ID_RE in src/model-id.ts: letters, digits, . _ : / - [ ],
+# allowlist as MODEL_ID_RE in src/model-id.ts: letters, digits, . _ : / - [ ] +,
 # 1-128 long). Any other value is named in the failure log (not echoed) and
 # left UNSET, so the launch runs the CLI default instead of a broken command.
-MODEL_ID_SHAPE='^[][A-Za-z0-9._:/-]{1,128}$'
+MODEL_ID_SHAPE='^[][A-Za-z0-9._:/+-]{1,128}$'
 resolve_main_model() {
   local _m
   _m="$(_resolve_main_model_raw)"
@@ -185,7 +185,7 @@ resolve_main_model() {
   # (model-id-shape-parity.test.ts compares the two under C).
   local LC_ALL=C
   if [ -n "$_m" ] && ! [[ "$_m" =~ $MODEL_ID_SHAPE ]]; then
-    { echo "resolve_main_model: the configured main-agent model is not a valid model id (allowed: letters, digits, . _ : / - [ ], 1-128); main-agent model left UNSET" >>"$INSTALL_DIR/store/channels-failures.log"; } 2>/dev/null || true
+    { echo "resolve_main_model: the configured main-agent model is not a valid model id (allowed: letters, digits, . _ : / - [ ] +, 1-128); main-agent model left UNSET" >>"$INSTALL_DIR/store/channels-failures.log"; } 2>/dev/null || true
     return 0
   fi
   printf '%s' "$_m"
@@ -331,6 +331,21 @@ fi
 # (fail-safe: never restart on a broken instrument).
 pane_dead_detected() {
   "$TMUX" list-panes -t "=$1:" -F '#{pane_dead}' 2>/dev/null | grep -q '^1$'
+}
+
+# #1878 (3): the exit status of a dead pane (claude's own exit code), digits only
+# -- never pane text. Empty when tmux cannot say.
+pane_dead_exit_status() {
+  _pds="$("$TMUX" list-panes -t "=$1:" -F '#{pane_dead_status}' 2>/dev/null | head -1)"
+  case "$_pds" in ''|*[!0-9]*) _pds="" ;; esac
+  printf '%s' "$_pds"
+}
+
+# #1878 (3): the rapid-exit line names WHY the wait loop ended (a fixed reason
+# category) and, for a dead pane, its exit status. It keeps the "rapid-exit
+# after" prefix the backoff counter greps for.
+rapid_exit_log_line() {
+  printf '%s rapid-exit after %ss reason=%s%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" "$2" "${3:+ pane_status=$3}"
 }
 
 # Test seam: `channels.sh --pane-dead-check <session>` prints dead|alive and
@@ -1578,7 +1593,9 @@ for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
       sleep 1
       continue
       ;;
-    *"Listening for channel messages"*)
+    # 2.1.296 dropped "channel" and the colon from the ready banner
+    # ("Listening for messages from <x>"); match both wordings.
+    *"Listening for channel messages"*|*"Listening for messages from"*)
       break
       ;;
   esac
@@ -1589,7 +1606,17 @@ unset _eperm_restarted
 # longer uses Remote Control.)
 _bot_name="${BOT_NAME:-${MAIN_AGENT_ID:-marveen}}"
 sleep 1
-$TMUX send-keys -t "=$SESSION:" "/rename ${_bot_name}" Enter
+# #1954: text and Enter go separately, and the Enter is repeated (bounded) while
+# the input box still holds the command -- a one-shot send whose Enter was lost
+# parked `/rename` in the box for an hour after a reboot. See the library.
+# If the library cannot be loaded, the old one-shot send still names the session.
+# shellcheck source=lib/main-rename.sh
+if . "$INSTALL_DIR/scripts/lib/main-rename.sh"; then
+  main_rename_send "$TMUX" "=$SESSION:" "$_bot_name" || true
+else
+  echo "$(date '+%F %T') channels.sh: scripts/lib/main-rename.sh could not be loaded -- one-shot /rename" >&2
+  $TMUX send-keys -t "=$SESSION:" "/rename ${_bot_name}" Enter
+fi
 unset _bot_name
 
 # Reset the keep-alive watchdog baseline so a session that was just restarted
@@ -1863,6 +1890,10 @@ PLUGIN_DEAD_SINCE=0
 # 2026-08-04: channels.sh logged "exiting for service-manager restart", exited 0,
 # and the unit stayed inactive/dead for the next ten minutes.
 RESTART_REQUESTED=0
+# Why the wait loop below ended (#1878 item 3): session-gone (the loop condition),
+# pane-dead, plugin-died or plugin-never-started.
+EXIT_REASON="session-gone"
+PANE_EXIT_STATUS=""
 
 # Producer-side respawn breadcrumb (SOAKRESPAWN819). The watchdog WARNs below
 # go to stderr, which under systemd lands ONLY in journald -- invisible to
@@ -1922,6 +1953,8 @@ while $TMUX has-session -t "=$SESSION:" 2>/dev/null; do
   if pane_dead_detected "$SESSION"; then
     echo "WARN: $SESSION pane is dead (claude exited, pane kept by remain-on-exit) -- exiting for service-manager restart" >&2
     respawn_log "pane-dead: claude process of $SESSION exited, pane kept by remain-on-exit -- exiting for service-manager restart"
+    EXIT_REASON="pane-dead"
+    PANE_EXIT_STATUS="$(pane_dead_exit_status "$SESSION")"
     break
   fi
 
@@ -2007,6 +2040,7 @@ while $TMUX has-session -t "=$SESSION:" 2>/dev/null; do
       echo "WARN: $CHANNEL_PROVIDER plugin dead for $((NOW - PLUGIN_DEAD_SINCE))s -- exiting for service-manager restart" >&2
       respawn_log "died-after-up: $CHANNEL_PROVIDER plugin dead for $((NOW - PLUGIN_DEAD_SINCE))s -- exiting for service-manager restart -- mcp-log tail: $(mcp_plugin_log_tail)"
       RESTART_REQUESTED=1
+      EXIT_REASON="plugin-died"
       break
     fi
   else
@@ -2021,6 +2055,7 @@ while $TMUX has-session -t "=$SESSION:" 2>/dev/null; do
       echo "WARN: $CHANNEL_PROVIDER plugin never started within ${PLUGIN_NEVER_STARTED_BUDGET}s -- exiting for service-manager restart (consecutive: $_next_streak, next budget: $(never_started_budget "$_next_streak")s)" >&2
       respawn_log "never-started: $CHANNEL_PROVIDER plugin never started within ${PLUGIN_NEVER_STARTED_BUDGET}s (consecutive: $_next_streak, next budget: $(never_started_budget "$_next_streak")s)"
       RESTART_REQUESTED=1
+      EXIT_REASON="plugin-never-started"
       break
     fi
   fi
@@ -2029,7 +2064,7 @@ done
 ELAPSED=$(( $(date +%s) - START_TS ))
 if [ "$ELAPSED" -lt 30 ]; then
   echo "WARN: channels session exited after ${ELAPSED}s (likely config error). Check logs." >&2
-  echo "$(date '+%Y-%m-%d %H:%M:%S') rapid-exit after ${ELAPSED}s" >> "$INSTALL_DIR/store/channels-failures.log"
+  rapid_exit_log_line "$ELAPSED" "$EXIT_REASON" "$PANE_EXIT_STATUS" >> "$INSTALL_DIR/store/channels-failures.log"
   # c5296a52: count the RAPID-EXIT lines, not every line in the file. The same log carries
   # WARN lines from a normal startup (isolated-config notes, failed guard POSTs): on
   # 2026-09-18 the file held 2 lines, BOTH warnings and zero rapid-exits, so the first real

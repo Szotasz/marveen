@@ -290,6 +290,20 @@ describe('Telegram plugin-patch row', () => {
     expect(telegramPluginPatchStatus(state)).toBe('HIÁNYZIK (továbbítás-jelölő): 0.0.8 (anchor-missing:inbound meta user_id) · egy továbbított parancs úgy fut, mint a begépelt')
   })
 
+  it('topics: not expected while the switch is off, measured like the others while it is on', () => {
+    const fixed = '// MARVEEN-PATCH(elsokor922-d4): x\n// MARVEEN-PATCH(elsokor922-fwd): y\n// MARVEEN-PATCH(cmd920-evid): z\n// MARVEEN-PATCH(c67f5f34-kbd): w'
+    server('0.0.7', fixed)
+    const withTopics = (topics: string, patches: Record<string, string>) =>
+      writeFileSync(state, JSON.stringify({ at: 0, root: join(dir, 'cache'), topics, files: [{ version: '0.0.7', status: 'patched', patches }] }))
+    withTopics('off', { d4: 'already', fwd: 'already', evid: 'already', kbd: 'already' })
+    expect(telegramPluginPatchStatus(state)).toBe('rendben (0.0.7)')
+    withTopics('on', { d4: 'already', fwd: 'already', evid: 'already', kbd: 'already', topics: 'anchor-missing:reply args' })
+    expect(telegramPluginPatchStatus(state)).toBe('HIÁNYZIK (témák): 0.0.7 (anchor-missing:reply args) · a válasz és a gépelés-jelzés nem a témába megy, hanem a témán kívülre')
+    server('0.0.7', fixed + '\n  x // MARVEEN-PATCH(tgtopics)')
+    withTopics('on', { d4: 'already', fwd: 'already', evid: 'already', kbd: 'already', topics: 'patched' })
+    expect(telegramPluginPatchStatus(state)).toBe('rendben (0.0.7)')
+  })
+
   it('anchor-missing / unwritable at start: one line naming the version, the reason and the fallback', () => {
     server('0.0.8', 'plugin code\n// MARVEEN-PATCH(elsokor922-fwd): y\n// MARVEEN-PATCH(cmd920-evid): z\n// MARVEEN-PATCH(c67f5f34-kbd): w')
     writeState([{ version: '0.0.8', status: 'anchor-missing:status handler' }])

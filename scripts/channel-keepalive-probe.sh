@@ -30,6 +30,22 @@ set -u
 INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 STORE="$INSTALL_DIR/store"
 KEEPALIVE_FILE="$STORE/.channel-keepalive"
+# ISSUE1891 (b): the probe's OWN stamps. store/.channel-keepalive cannot tell
+# the dashboard that this probe works: channels.sh touches it whenever it starts
+# the session and inbound traffic warms it, so the channel-monitor's loop
+# breaker could read either as "the producer is back" and let the next respawn
+# through. Two stamps, each with one meaning (content: the epoch; the monitor
+# reads the mtime):
+#   - RUN_STAMP, written HERE at the start of every run, whatever it then finds:
+#     "the job runs". The monitor uses it only to word its alert ("the job does
+#     not run" vs "it runs but does not produce").
+#   - PRODUCED_STAMP, written only next to the keepalive touch below: "the
+#     probe produced". The breaker trusts this one. A run that hangs and is
+#     killed by the self-timeout further down, or ends early, writes RUN_STAMP
+#     but not this -- the 2026-09-23 shape the breaker exists for.
+RUN_STAMP="$STORE/.channel-keepalive-probe"
+PRODUCED_STAMP="$STORE/.channel-keepalive-produced"
+date +%s > "$RUN_STAMP" 2>/dev/null || true
 LOG_TAG="channel-keepalive-probe"
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [$LOG_TAG] $*"; }
@@ -173,4 +189,5 @@ if [ -f "$KEEPALIVE_FILE" ]; then
 else
   date +%s > "$KEEPALIVE_FILE"
 fi
+date +%s > "$PRODUCED_STAMP" 2>/dev/null || true
 exit 0

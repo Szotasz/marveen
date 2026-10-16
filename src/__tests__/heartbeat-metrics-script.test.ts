@@ -223,11 +223,16 @@ describe('calendar section: measured empty vs failed query vs events', () => {
         { start: { date: '2026-09-03' }, end: { date: '2026-09-04' }, summary: 'Nevnap', attendees: 0 },
       ],
     }
-    const r = await runScript()
+    // The zone is pinned: the event time renders in the install zone, and the
+    // runner's own zone (UTC on CI) must not decide what 14:30+02:00 reads as.
+    const r = await runScript({ CLAW_TZ: 'Europe/Budapest' })
     expect(r.status).toBe(0)
     expect(r.stdout).toContain('CALENDAR_EVENTS n=2 window=2h')
     expect(r.stdout).toContain('CAL_EVENT 14:30 Ruszkovszki telepites attendees=2')
     expect(r.stdout).toContain('CAL_EVENT all-day Nevnap')
+    // ...and another install zone moves it (ISSUE1895: no fixed Europe/Budapest).
+    const ny = await runScript({ CLAW_TZ: 'America/New_York' })
+    expect(ny.stdout).toContain('CAL_EVENT 08:30 Ruszkovszki telepites attendees=2')
   })
 
   it('a failed query is an ERROR calendar: line + non-zero exit, never an empty list', async () => {

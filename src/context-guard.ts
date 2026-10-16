@@ -192,13 +192,17 @@ export const CONTEXT_LIMIT_TIERS = [200_000, 500_000, 1_000_000] as const
  *
  * Sonnet stays at 200k deliberately: this host has never observed a sonnet
  * session above 198k (sonnet-5 max 197,885 across 14 days), so 200k is the
- * evidenced effective window there. Haiku is 200k by spec. Unknown models
- * stay conservative at 200k -- calibrateLimit and the runner's persisted
- * high-water mark step the denominator up from live evidence, and
- * over-estimating would blind the proactive tiers (the 2026-07-26 failure
- * mode), while under-estimating is loud and self-correcting.
+ * evidenced effective window there. Sonnet 5.5 is the exception, measured
+ * 2026-10-12: its Claude Code status bar reports a 1M window (trinity
+ * 216k/1M, arnold 201k/1M) while the 200k guess read those sessions as
+ * 110% and ~100% and force-restarted both at ~20% real usage. Haiku 4.5 is
+ * 200k by spec. Unknown models stay conservative at 200k -- calibrateLimit
+ * and the runner's persisted high-water mark step the denominator up from
+ * live evidence, and over-estimating would blind the proactive tiers (the
+ * 2026-07-26 failure mode), while under-estimating is loud and
+ * self-correcting.
  */
-const ONE_MILLION_FAMILIES = [/fable-\d/, /mythos-\d/, /opus-4-[6-9]/, /opus-[5-9]\b/]
+const ONE_MILLION_FAMILIES = [/fable-\d/, /mythos-\d/, /opus-4-[6-9]/, /opus-[5-9]\b/, /sonnet-5-[5-9]/]
 
 export function contextLimitForModel(model: string | null | undefined): number {
   if (typeof model !== 'string') return 200_000

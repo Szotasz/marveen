@@ -3,7 +3,7 @@ import { writeMainExtraPluginsSettings } from './main-extra-plugins-settings.js'
 import { decideSkipTrace, decideMenuPassTrace, type SkipTraceState } from './monitor-trace.js'
 import { releaseOwnRespawnStamp, type OwnRespawnStamp } from './respawn-stamp-release.js'
 import { existsSync, readFileSync, statSync, writeFileSync, utimesSync } from 'node:fs'
-import { hostname, loadavg, cpus } from 'node:os'
+import { hostname, loadavg, cpus, homedir } from 'node:os'
 import { join } from 'node:path'
 import { execFileSync, spawn } from 'node:child_process'
 import { makeLazyBinResolver } from '../platform.js'
@@ -79,6 +79,7 @@ import { getDesiredAgents } from './agent-desired-state.js'
 import { startSleepWakeDetector, systemSleptBetween } from './sleep-wake-detector.js'
 import { ROOT_SANDBOX_ENV } from './root-sandbox-env.js'
 import { exactTmuxTarget } from '../tmux-target.js'
+import { beginMainRespawn } from './main-respawn-hold.js'
 
 // Lazily resolved (see makeLazyBinResolver): a module-level `resolveFromPath`
 // const throws at IMPORT time, so any environment where the binary is not
@@ -993,6 +994,31 @@ export function mainChannelStateEnv(provider: ChannelProviderType): { name: stri
   return { name: channelStateDirEnvVar(provider), dir: channelStateDir(provider) }
 }
 
+// 45b778e9: the relaunch branch of respawnMainSessionFresh, with its two effects injected so the
+// "no silent success" promise is held by BEHAVIOUR. The source-only asserts in
+// channel-monitor-respawn-session-gone.test.ts let a real mutation of the call site
+// (`if (false && !mainRelaunchSucceeded(created))`) stay green in that test and in the full suite.
+//
+// 'grace' counts as success ON PURPOSE (mainRelaunchSucceeded): a launch is already in flight.
+// Its measured limit: createMainChannelsSession() starts the grace window right after the
+// synchronous spawn(), and channels.sh runs detached, unref'd and with stdio ignored, so a launch
+// that dies early is never observed here. For at most MAIN_SESSION_CREATE_GRACE_MS such a failed
+// launch still reads as 'grace'; after the window the monitor's session-absent check calls
+// createMainChannelsSession() again. A missing script or a synchronous spawn error stays loud.
+export function relaunchGoneMainSession(
+  create: () => MainSessionCreateResult,
+  stamp: () => void,
+): MainSessionCreateResult {
+  const created = create()
+  logger.warn({ session: MAIN_CHANNELS_SESSION, created },
+    'respawnMainSessionFresh: session gone after reap, relaunched via channels.sh')
+  if (!mainRelaunchSucceeded(created)) {
+    throw new Error(`main channels session gone and relaunch failed: ${created}`)
+  }
+  stamp()
+  return created
+}
+
 // FRESH respawn of the main channels session, for hosts with no launchd.
 //
 // Exported for the scheduled auto-restart (auto-restart-runner.ts), whose macOS
@@ -1007,74 +1033,75 @@ export function mainChannelStateEnv(provider: ChannelProviderType): { name: stri
 // is called here too, so the two paths cannot drift on the parts that matter.
 export function respawnMainSessionFresh(): void {
   const provider = getProvider(getMainAgentProvider())
-  // Same rationale as the resume path: respawn-pane -k kills the parent claude
-  // but leaves grandchild pollers alive, and two pollers on one bot token race
-  // for getUpdates (409). Reap BEFORE respawning, never after.
+  // #1954: mark the respawn for the schedule-runner from the START, not the
+  // end (see main-respawn-hold.ts); the finally clears it on every exit.
+  const endRespawn = beginMainRespawn()
   try {
-    reapChannelOrphans(provider.type, PROJECT_ROOT, { tmuxPath: tmuxBin() })
-  } catch (err) {
-    logger.warn({ err }, 'respawnMainSessionFresh: pre-respawn reap failed (continuing)')
-  }
-  try {
-    reapDetachedChannelClaudes({ tmuxPath: tmuxBin() })
-  } catch (err) {
-    logger.warn({ err }, 'respawnMainSessionFresh: detached-claude reap failed (continuing)')
-  }
-  ensureSharedClaudeOnboarded()
-
-  const claudeCmd = buildMainSessionRespawnCmd({
-    claudePath: claudeBin(),
-    pluginId: provider.pluginId,
-    extraPluginIds: readExtraChannelPluginIds(),
-    extraSettingsPath: writeMainExtraPluginsSettings(PROJECT_ROOT, readExtraChannelPluginIds()),
-    channelStateEnv: mainChannelStateEnv(provider.type),
-    model: readConfiguredMainModel(),
-    // The main session always starts a new conversation -- this is the whole
-    // point of the nightly restart (drop the accumulated context).
-    continueSession: false,
-    config: resolveMainConfigDecision(),
-  })
-  // c5296a52: the two reaps above kill the pane's claude, and channels.sh starts the session
-  // WITHOUT remain-on-exit -- so the pane and the session can already be gone by the time we get
-  // here. `respawn-pane -k` then throws "can't find pane", the caller only logs it, lastRestart
-  // stays unset, and the slot stays DUE: every idle tick tries again (176 'restart failed' lines
-  // between 03:00Z and 08:01Z on 2026-09-18, one attempt every 6-7 minutes).
-  //
-  // When the session is gone we do NOT hand-roll a tmux new-session here: createMainChannelsSession()
-  // already runs channels.sh -- the same path the guard uses -- with the first-run dialog handling,
-  // the /rename and the plugin bring-up. A second, bespoke launch command is exactly how the two
-  // paths drift apart. 'grace' means a launch is already in flight and the session is booting;
-  // that is a success for our purposes (something IS coming up), not a failure to retry.
-  if (mainChannelsSessionExists()) {
-    execFileSync(tmuxBin(), ['respawn-pane', '-k', '-t', exactTmuxTarget(MAIN_CHANNELS_SESSION), claudeCmd], { timeout: 15000 })
-  } else {
-    const created = createMainChannelsSession()
-    logger.warn({ session: MAIN_CHANNELS_SESSION, created },
-      'respawnMainSessionFresh: session gone after reap, relaunched via channels.sh')
-    if (!mainRelaunchSucceeded(created)) {
-      throw new Error(`main channels session gone and relaunch failed: ${created}`)
+    // Same rationale as the resume path: respawn-pane -k kills the parent claude
+    // but leaves grandchild pollers alive, and two pollers on one bot token race
+    // for getUpdates (409). Reap BEFORE respawning, never after.
+    try {
+      reapChannelOrphans(provider.type, PROJECT_ROOT, { tmuxPath: tmuxBin() })
+    } catch (err) {
+      logger.warn({ err }, 'respawnMainSessionFresh: pre-respawn reap failed (continuing)')
     }
-    // A fresh session starts its own claude: the respawn-specific follow-ups below
-    // (identity, plugin unlock) are channels.sh's job on this path, not ours.
-    writeRespawnStamp()
-    return
-  }
-  // Stamp IMMEDIATELY after the respawn, before the scheduling follow-ups.
-  // The stamp is a coordination contract, not bookkeeping: five watchers read
-  // lastMainRespawnAt() / store/.channel-last-respawn and suppress themselves
-  // during the grace window -- including the systemd-timer channel-watchdog,
-  // a separate process that can ONLY see the file. Without it, the ~35-90s
-  // cold-boot window while plugins unlock looks to them like a dead session,
-  // and they can respawn on top of one that is still coming up.
-  writeRespawnStamp()
+    try {
+      reapDetachedChannelClaudes({ tmuxPath: tmuxBin() })
+    } catch (err) {
+      logger.warn({ err }, 'respawnMainSessionFresh: detached-claude reap failed (continuing)')
+    }
+    ensureSharedClaudeOnboarded()
 
-  logger.warn({ provider: provider.type }, 'Main session respawned FRESH (scheduled auto-restart)')
-  // The respawned claude is a brand-new process: it has neither the /rename
-  // identity nor a guaranteed-loaded channel plugin. Both follow-ups mirror the
-  // resume path; skipping them is how a restarted session comes back nameless
-  // or with the plugin stuck in `◯ disabled`.
-  void scheduleIdentitySetup(MAIN_CHANNELS_SESSION, BOT_NAME)
-  schedulePluginUnlockAfterRespawn(MAIN_CHANNELS_SESSION, provider.type)
+    const claudeCmd = buildMainSessionRespawnCmd({
+      claudePath: claudeBin(),
+      pluginId: provider.pluginId,
+      extraPluginIds: readExtraChannelPluginIds(),
+      extraSettingsPath: writeMainExtraPluginsSettings(PROJECT_ROOT, readExtraChannelPluginIds()),
+      channelStateEnv: mainChannelStateEnv(provider.type),
+      model: readConfiguredMainModel(),
+      // The main session always starts a new conversation -- this is the whole
+      // point of the nightly restart (drop the accumulated context).
+      continueSession: false,
+      config: resolveMainConfigDecision(),
+    })
+    // c5296a52: the two reaps above kill the pane's claude, and channels.sh starts the session
+    // WITHOUT remain-on-exit -- so the pane and the session can already be gone by the time we get
+    // here. `respawn-pane -k` then throws "can't find pane", the caller only logs it, lastRestart
+    // stays unset, and the slot stays DUE: every idle tick tries again (176 'restart failed' lines
+    // between 03:00Z and 08:01Z on 2026-09-18, one attempt every 6-7 minutes).
+    //
+    // When the session is gone we do NOT hand-roll a tmux new-session here: createMainChannelsSession()
+    // already runs channels.sh -- the same path the guard uses -- with the first-run dialog handling,
+    // the /rename and the plugin bring-up. A second, bespoke launch command is exactly how the two
+    // paths drift apart. 'grace' means a launch is already in flight and the session is booting;
+    // that is a success for our purposes (something IS coming up), not a failure to retry.
+    if (mainChannelsSessionExists()) {
+      execFileSync(tmuxBin(), ['respawn-pane', '-k', '-t', exactTmuxTarget(MAIN_CHANNELS_SESSION), claudeCmd], { timeout: 15000 })
+    } else {
+      // A fresh session starts its own claude: the respawn-specific follow-ups below
+      // (identity, plugin unlock) are channels.sh's job on this path, not ours.
+      relaunchGoneMainSession(createMainChannelsSession, writeRespawnStamp)
+      return
+    }
+    // Stamp IMMEDIATELY after the respawn, before the scheduling follow-ups.
+    // The stamp is a coordination contract, not bookkeeping: five watchers read
+    // lastMainRespawnAt() / store/.channel-last-respawn and suppress themselves
+    // during the grace window -- including the systemd-timer channel-watchdog,
+    // a separate process that can ONLY see the file. Without it, the ~35-90s
+    // cold-boot window while plugins unlock looks to them like a dead session,
+    // and they can respawn on top of one that is still coming up.
+    writeRespawnStamp()
+
+    logger.warn({ provider: provider.type }, 'Main session respawned FRESH (scheduled auto-restart)')
+    // The respawned claude is a brand-new process: it has neither the /rename
+    // identity nor a guaranteed-loaded channel plugin. Both follow-ups mirror the
+    // resume path; skipping them is how a restarted session comes back nameless
+    // or with the plugin stuck in `◯ disabled`.
+    void scheduleIdentitySetup(MAIN_CHANNELS_SESSION, BOT_NAME)
+    schedulePluginUnlockAfterRespawn(MAIN_CHANNELS_SESSION, provider.type)
+  } finally {
+    endRespawn()
+  }
 }
 
 // Exported so the stuck-tool-call-watcher recovers a wedged main session via
@@ -1086,6 +1113,9 @@ export function respawnMainSessionFresh(): void {
 // doom-loop that the launchctl path (channels.sh env-grep reap) never cleaned.
 export async function resumeMarveenSession(): Promise<boolean> {
   const provider = getProvider(getMainAgentProvider())
+  // #1954: mark the respawn for the schedule-runner from the START, not the
+  // end (see main-respawn-hold.ts); the finally clears it on every exit.
+  const endRespawn = beginMainRespawn()
   try {
     // Reap any orphan bun/node poller BEFORE we respawn. tmux respawn-pane -k
     // kills the parent claude process but leaves grandchild pollers running -
@@ -1190,6 +1220,8 @@ export async function resumeMarveenSession(): Promise<boolean> {
   } catch (err) {
     logger.error({ err }, 'Marveen session respawn failed')
     return false
+  } finally {
+    endRespawn()
   }
 }
 
@@ -1395,6 +1427,9 @@ export function createMainChannelsSession(): MainSessionCreateResult {
 // from the stage-3 resume (which keeps --continue) by clearing session state.
 function respawnMarveenSessionFresh(): boolean {
   const provider = getProvider(getMainAgentProvider())
+  // #1954: mark the respawn for the schedule-runner from the START, not the
+  // end (see main-respawn-hold.ts); the finally clears it on every exit.
+  const endRespawn = beginMainRespawn()
   try {
     // Same first-run-picker guard as resumeMarveenSession.
     ensureSharedClaudeOnboarded()
@@ -1445,6 +1480,8 @@ function respawnMarveenSessionFresh(): boolean {
     }
     logger.error({ err }, 'Fresh session respawn failed')
     return false
+  } finally {
+    endRespawn()
   }
 }
 
@@ -1771,26 +1808,109 @@ let marveenLastKeepaliveRespawn = 0
 // resume normal behaviour as soon as the file moves again. A dead poller is
 // real deafness and is never held back by this breaker.
 export const KEEPALIVE_USELESS_RESPAWN_LIMIT = 2
-let keepaliveUselessRespawns = 0
-let keepaliveMtimeAtLastRespawn: number | null = null
-let keepaliveLoopAlerted = false
+//
+// ISSUE1891 (b): "advanced" is the PRODUCER's own stamp, never store/.channel-keepalive.
+// The keepalive file has writers besides the producer: channels.sh touches it whenever
+// it starts the session (including the fallback below when respawn-pane cannot find
+// the pane) and refreshKeepaliveFromInbound() warms it from inbound traffic, so a
+// breaker judged by that file can be released by an event that says nothing about the
+// producer. The probe writes two stamps of its own:
+//   - .channel-keepalive-produced, ONLY next to its keepalive touch: the breaker
+//     counts and releases by this one. A run that starts and hangs (killed by the
+//     probe's own KEEPALIVEHANG923 timeout) or ends early does not write it -- the
+//     2026-09-23 shape still holds after two respawns (review of #1919).
+//   - .channel-keepalive-probe, at the start of every run: used only to word the
+//     alert, "the job does not run" vs "it runs but does not produce".
+const KEEPALIVE_PRODUCER_STAMP = join(PROJECT_ROOT, 'store', '.channel-keepalive-produced')
+const KEEPALIVE_RUN_STAMP = join(PROJECT_ROOT, 'store', '.channel-keepalive-probe')
+
+export interface KeepaliveLoopState {
+  uselessRespawns: number
+  /** The produced stamp's mtime when we last respawned (null: no stamp then). */
+  producerAtLastRespawn: number | null
+  /** The run stamp's mtime when we last respawned -- only for the alert's wording. */
+  runAtLastRespawn: number | null
+  /** Whether a keepalive respawn has happened since the last release (a baseline exists). */
+  respawned: boolean
+  alerted: boolean
+}
+export const KEEPALIVE_LOOP_INITIAL: KeepaliveLoopState = { uselessRespawns: 0, producerAtLastRespawn: null, runAtLastRespawn: null, respawned: false, alerted: false }
+let keepaliveLoop: KeepaliveLoopState = { ...KEEPALIVE_LOOP_INITIAL }
+
+/** Pure: has the producer run since our last keepalive respawn? No respawn yet = nothing to judge = yes. */
+export function keepaliveProducerAdvanced(state: KeepaliveLoopState, producerMtimeMs: number | null): boolean {
+  if (!state.respawned) return true
+  if (producerMtimeMs == null) return false
+  return state.producerAtLastRespawn == null || producerMtimeMs > state.producerAtLastRespawn
+}
+
+/** Pure: a held breaker releases only when the producer stamp moved since the last respawn. */
+export function releaseKeepaliveLoop(state: KeepaliveLoopState, producerMtimeMs: number | null): { state: KeepaliveLoopState; released: boolean } {
+  if (!state.alerted || !keepaliveProducerAdvanced(state, producerMtimeMs)) return { state, released: false }
+  return { state: { ...KEEPALIVE_LOOP_INITIAL }, released: true }
+}
 
 export type KeepaliveLoopDecision = 'respawn' | 'hold' | 'hold-and-alert'
 
-export function decideKeepaliveLoop(opts: {
-  pollerAlive: boolean
-  keepaliveMtimeMs: number | null
-  mtimeAtLastRespawn: number | null
-  uselessRespawns: number
-  alreadyAlerted: boolean
-  limit: number
-}): { decision: KeepaliveLoopDecision; uselessRespawns: number } {
-  if (!opts.pollerAlive) return { decision: 'respawn', uselessRespawns: 0 }
-  const advanced = opts.mtimeAtLastRespawn == null || opts.keepaliveMtimeMs == null
-    || opts.keepaliveMtimeMs > opts.mtimeAtLastRespawn
-  const useless = advanced ? 0 : opts.uselessRespawns + (opts.mtimeAtLastRespawn == null ? 0 : 1)
-  if (useless < opts.limit) return { decision: 'respawn', uselessRespawns: useless }
-  return { decision: opts.alreadyAlerted ? 'hold' : 'hold-and-alert', uselessRespawns: useless }
+/**
+ * Pure: the breaker's verdict on a stale keepalive that would otherwise respawn.
+ * A dead poller is real deafness and always respawns. With a live poller, a respawn
+ * after which the producer stamp did not move counts as useless; after `limit` of them
+ * hold, and alert once. On 'respawn' the returned state records the producer stamp
+ * as the next baseline.
+ */
+export function decideKeepaliveLoop(
+  state: KeepaliveLoopState,
+  obs: { pollerAlive: boolean; producerMtimeMs: number | null; runMtimeMs?: number | null },
+  limit: number = KEEPALIVE_USELESS_RESPAWN_LIMIT,
+): { decision: KeepaliveLoopDecision; state: KeepaliveLoopState } {
+  const atRespawn = (useless: number): KeepaliveLoopState => ({
+    ...state, uselessRespawns: useless, producerAtLastRespawn: obs.producerMtimeMs,
+    runAtLastRespawn: obs.runMtimeMs ?? null, respawned: true,
+  })
+  if (!obs.pollerAlive) return { decision: 'respawn', state: atRespawn(0) }
+  const useless = keepaliveProducerAdvanced(state, obs.producerMtimeMs) ? 0 : state.uselessRespawns + 1
+  if (useless < limit) return { decision: 'respawn', state: atRespawn(useless) }
+  return {
+    decision: state.alerted ? 'hold' : 'hold-and-alert',
+    state: { ...state, uselessRespawns: useless, alerted: true },
+  }
+}
+
+/**
+ * Pure, for the hold alert's wording only: did the probe job RUN since our last
+ * respawn (its run stamp moved), although it produced nothing? 'not-running' asks the
+ * operator to start the job; 'not-producing' points at its log.
+ */
+export function keepaliveHoldReason(state: KeepaliveLoopState, runMtimeMs: number | null): 'not-running' | 'not-producing' {
+  if (runMtimeMs == null) return 'not-running'
+  return state.runAtLastRespawn == null || runMtimeMs > state.runAtLastRespawn ? 'not-producing' : 'not-running'
+}
+
+/**
+ * The helper job that produces the keepalive, and the command that starts it, per
+ * platform -- what the loop-breaker alert names. macOS: the launchd job
+ * com.<SERVICE_ID>.channel-keepalive-probe, run from a terminal of the GUI login (the
+ * only place gui/<uid> exists). Linux: the user timer <SERVICE_ID>-channel-keepalive-probe.timer.
+ */
+export function keepaliveProducerRemedy(platform: string, serviceId: string, uid: number, home: string): { job: string; command: string } {
+  if (platform === 'darwin') {
+    const label = `com.${serviceId}.channel-keepalive-probe`
+    return {
+      job: `${label} (launchd)`,
+      command: `launchctl bootstrap gui/${uid} "${home}/Library/LaunchAgents/${label}.plist" 2>/dev/null; launchctl kickstart gui/${uid}/${label}`,
+    }
+  }
+  const timer = `${serviceId}-channel-keepalive-probe.timer`
+  return { job: `${timer} (systemd --user)`, command: `systemctl --user enable --now ${timer}` }
+}
+
+function readProducerStampMtime(): number | null {
+  try { return statSync(KEEPALIVE_PRODUCER_STAMP).mtimeMs } catch { return null }
+}
+
+function readRunStampMtime(): number | null {
+  try { return statSync(KEEPALIVE_RUN_STAMP).mtimeMs } catch { return null }
 }
 
 /**
@@ -1892,6 +2012,18 @@ function checkMainKeepaliveStaleness(): void {
   // judge staleness, so a busy-but-alive session is never seen as stale-deaf.
   refreshKeepaliveFromInbound()
 
+  // ISSUE1891 (b): a held loop breaker releases when -- and only when -- the
+  // PRODUCER ran again (its own stamp moved). Checked before the liveness
+  // shortcut below, so the release is seen on the first tick after the probe
+  // is back, not only on the next stale one. Said once, like the hold.
+  const producerMtimeMs = readProducerStampMtime()
+  const rel = releaseKeepaliveLoop(keepaliveLoop, producerMtimeMs)
+  keepaliveLoop = rel.state
+  if (rel.released) {
+    logger.info('Keepalive producer produced again -- loop breaker released')
+    sendAlert(`✅ A keep-alive jelző (szonda) újra termel, a fő channel figyelője visszaállt a normál működésre.`)
+  }
+
   // GROUND-TRUTH SHORTCUT (2026-06-01 21:18 incident): if the channel
   // plugin's bun poller is ALIVE under Marveen's claude pid, the channel
   // is healthy by definition -- Telegram traffic CAN reach us. A stale
@@ -1934,14 +2066,6 @@ function checkMainKeepaliveStaleness(): void {
     ageMs = null // file missing -> keep-alive not yet established
   }
   const now = Date.now()
-  const keepaliveMtimeMs = ageMs == null ? null : now - ageMs
-  if (keepaliveLoopAlerted && keepaliveMtimeAtLastRespawn != null && keepaliveMtimeMs != null
-      && keepaliveMtimeMs > keepaliveMtimeAtLastRespawn) {
-    logger.info('Keepalive advanced again -- loop breaker released')
-    keepaliveLoopAlerted = false
-    keepaliveUselessRespawns = 0
-    keepaliveMtimeAtLastRespawn = null
-  }
   // B2 fix: cross-path grace — use the later of the two respawn timestamps so
   // an inbound-probe respawn also suppresses the keepalive path for the grace window.
   const msSinceLastRespawn = lastMainRespawnAt() ? now - lastMainRespawnAt() : null
@@ -1963,20 +2087,19 @@ function checkMainKeepaliveStaleness(): void {
     return
   }
   const ageMin = Math.round((ageMs ?? 0) / 60000)
-  const loop = decideKeepaliveLoop({
-    pollerAlive,
-    keepaliveMtimeMs,
-    mtimeAtLastRespawn: keepaliveMtimeAtLastRespawn,
-    uselessRespawns: keepaliveUselessRespawns,
-    alreadyAlerted: keepaliveLoopAlerted,
-    limit: KEEPALIVE_USELESS_RESPAWN_LIMIT,
-  })
-  keepaliveUselessRespawns = loop.uselessRespawns
+  // ISSUE1891 (b): the producer's stamp, NOT the keepalive mtime, judges a respawn.
+  const runMtimeMs = readRunStampMtime()
+  const holdReason = keepaliveHoldReason(keepaliveLoop, runMtimeMs)
+  const loop = decideKeepaliveLoop(keepaliveLoop, { pollerAlive, producerMtimeMs, runMtimeMs })
+  keepaliveLoop = loop.state
   if (loop.decision !== 'respawn') {
     if (loop.decision === 'hold-and-alert') {
-      keepaliveLoopAlerted = true
-      logger.warn({ ageMs, uselessRespawns: loop.uselessRespawns }, 'Keepalive loop breaker: respawns did not advance the keepalive while the poller is alive -- holding further respawns (KEEPALIVELOOP923)')
-      sendAlert(`⚠️ A fő channel keep-alive ${ageMin} perce nem frissül, de a Telegram-poller él, és ${loop.uselessRespawns} újraindítás sem segített. További újraindítást NEM csinálok (csak a beszélgetést vinné el). Valószínűleg a jelző-forrás akadt el: nézd meg a com.marveen.channel-keepalive-probe launchd jobot és a store/channel-keepalive-probe.log-ot. Ha a jelző újra frissül, a figyelő magától visszaáll.`)
+      const fix = keepaliveProducerRemedy(process.platform, SERVICE_ID, process.getuid ? process.getuid() : 0, homedir())
+      logger.warn({ ageMs, uselessRespawns: loop.state.uselessRespawns, producerMtimeMs, runMtimeMs, holdReason }, 'Keepalive loop breaker: the keepalive producer did not produce since our respawns while the poller is alive -- holding further respawns (KEEPALIVELOOP923, ISSUE1891)')
+      const head = `⚠️ A fő channel keep-alive ${ageMin} perce nem frissül, de a Telegram-poller él, és ${loop.state.uselessRespawns} újraindítás óta a jelző (szonda) nem frissítette. További újraindítást NEM csinálok (csak a beszélgetést vinné el). A jelző: ${fix.job}.`
+      sendAlert(holdReason === 'not-running'
+        ? `${head} A job nem fut. Indítsd el: ${fix.command} (macOS-en a GUI-bejelentkezés egy terminaljából). Ha a jelző újra termel, a figyelő magától visszaáll, és szólok.`
+        : `${head} A job fut, de nem termel (elakad vagy nem találja a pollert). Nézd meg a naplóját: store/channel-keepalive-probe.log. Ha a jelző újra termel, a figyelő magától visszaáll, és szólok.`)
     }
     return
   }
@@ -1995,7 +2118,6 @@ function checkMainKeepaliveStaleness(): void {
   if (!staleDueToSleep) {
     sendRoutineAlert('keepalive-respawn', `⚠️ A fő channel keep-alive ${ageMin} perce nem frissült -- respawn-pane a ${MAIN_CHANNELS_SESSION} session-on (a beszelgetes elveszik, memoria marad).`)
   }
-  keepaliveMtimeAtLastRespawn = keepaliveMtimeMs
   if (respawnMarveenSessionFresh()) {
     marveenLastKeepaliveRespawn = now
     // Suppress the process-down handler during the respawn window (reuses the

@@ -1472,6 +1472,37 @@ main {
 }
 .card-detail-desc:empty { display: none; }
 
+/* Card 8fe51afd: the testing steps. A left border, not a box, so the block
+   reads as part of the card and not as a warning; `is-testing` is the only
+   state that raises the contrast, and the dashboard sets it only while the
+   card sits in the testing column. */
+.card-detail-test-steps {
+  margin-bottom: 20px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--border);
+  border-radius: 0 6px 6px 0;
+  background: var(--bg-hover, rgba(127, 127, 127, 0.06));
+}
+.card-detail-test-steps h4 {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.card-detail-test-steps-body {
+  margin: 0;
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.card-detail-test-steps.is-testing {
+  border-left-color: var(--accent, #7c9cff);
+}
+.card-detail-test-steps.is-testing h4 { color: var(--accent, #7c9cff); }
+
 .card-detail-labels { margin-bottom: 20px; }
 .card-detail-labels h4 {
   font-size: 12px;
@@ -1656,6 +1687,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 .agents-grid[data-card-mode="activity"] .agent-card-footer,
 .agents-grid[data-card-mode="activity"] .agent-card-actions,
 .agents-grid[data-card-mode="activity"] .agent-reauth-banner,
+.agents-grid[data-card-mode="activity"] .agent-sharedenv-banner,
 .agents-grid[data-card-mode="activity"] .agent-tmux-cmds { display: none; }
 .agents-grid[data-card-mode="activity"] .agent-card-activity { display: block; margin-top: 14px; }
 /* Cards that carry no live state: the add button and federated (remote-system)
@@ -7107,6 +7139,14 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   margin: 8px 0 0;
 }
 .agent-reauth-reason { font-size: 11px; color: #ef4444; font-weight: 600; flex: 1; }
+.agent-sharedenv-banner {
+  background: color-mix(in srgb, var(--warning, #d4a52c) 12%, transparent);
+  border: 1px solid var(--warning, #d4a52c);
+  border-radius: 6px;
+  padding: 6px 10px;
+  margin: 8px 0 0;
+}
+.agent-sharedenv-text { font-size: 11px; color: var(--warning, #d4a52c); font-weight: 600; overflow-wrap: anywhere; }
 .btn-danger {
   background: #ef4444;
   color: #fff;

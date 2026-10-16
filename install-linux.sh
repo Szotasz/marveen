@@ -57,6 +57,20 @@ else
 fi
 # end of the install-lang loader (MARVEENLANG1763)
 
+# #1874: the managed-settings.json writes below are machine-wide (org-policy layer)
+# and need root. Say what is written and why, ONCE, before the first of them asks
+# for a password. The text lives in install-lang.sh; the function stays here, so a
+# standalone run that fetched an older install-lang.sh still has it (an unknown
+# _t key just prints nothing).
+managed_settings_notice() {
+  if [ -n "${MANAGED_NOTICE_SHOWN:-}" ]; then
+    return 0
+  fi
+  MANAGED_NOTICE_SHOWN=1
+  echo -e "  ${ORANGE}i${NC} $(_t managed.notice_what)"
+  echo -e "    $(_t managed.notice_sudo)"
+}
+
 offer_claude_fallback() {
   local step="$1" err_msg="$2" line_info="${3:+:$3}"
   if ! command -v claude &>/dev/null; then
@@ -707,6 +721,7 @@ fi
 # notifications on a team/enterprise org unless managed-settings has
 # channelsEnabled:true (harmless / no-op on a personal org). Idempotent.
 if [ -f "$INSTALL_DIR/scripts/ensure-managed-channels-enabled.sh" ]; then
+  managed_settings_notice
   echo -e "  Managed-settings channel-kapu ellenorzese..."
   bash "$INSTALL_DIR/scripts/ensure-managed-channels-enabled.sh" || true
 fi
@@ -1421,6 +1436,7 @@ if [ -f "$INSTALL_DIR/templates/CLAUDE.md.template" ]; then
     -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
     -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
     -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
+    -e "s|{{TIMEZONE}}|$(. "$INSTALL_DIR/scripts/lib/install-tz.sh"; z="$(install_tz "$INSTALL_DIR")"; printf '%s' "${z:-UTC}")|g" \
     "$INSTALL_DIR/templates/CLAUDE.md.template" >"$INSTALL_DIR/CLAUDE.md"
   ok "CLAUDE.md generalva"
 else
@@ -2259,6 +2275,24 @@ if pidof systemd >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1; the
     fi
   done
   [ "$SVCFAIL" -eq 0 ] && ok "Mindket szolgaltatas fut"
+  # TIMERSTART1011: `enable` alone does not start a timer. Both timers fire on
+  # OnBootSec=90s, which on a host that has been up for a while has already
+  # passed, so without a start they stay inactive until the next reboot. The
+  # keepalive probe then never refreshes, and the channel monitor reads the
+  # stale keep-alive as a wedged session and respawns the main agent (measured
+  # on a fresh Linux install: three hard restarts in 80 minutes). One start per
+  # timer, after the services, so a timer that failed to install can take down
+  # neither the services nor the other timer, and a failed start never stops the
+  # installer; not part of SVCFAIL, since the bridge itself runs, but named with
+  # the fix.
+  for tmr in "${KEEPALIVE_UNIT}.timer" "${INBOX_OBSERVER_UNIT}.timer"; do
+    systemctl --user start "$tmr" 2>/dev/null || true
+    if systemctl --user is-active --quiet "$tmr" 2>/dev/null; then
+      ok "$tmr fut"
+    else
+      warn "$tmr nem fut -- inditsd: systemctl --user start $tmr"
+    fi
+  done
 else
   warn "systemd --user nem elerheto (WSL / konteneren / VPS user-session nelkul) -- kozvetlen inditas."
   mkdir -p "$INSTALL_DIR/store"
