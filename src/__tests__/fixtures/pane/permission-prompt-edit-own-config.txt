@@ -1,0 +1,23 @@
+  56 -old line 17 of the skill text
+  56 +new line 17 of the skill text, a little longer than the old one
+  57  unchanged line 18 of the skill text
+  58  unchanged line 19 of the skill text
+  59  unchanged line 20 of the skill text
+  60  unchanged line 21 of the skill text
+  61  unchanged line 22 of the skill text
+  62  unchanged line 23 of the skill text
+  63 -old line 24 of the skill text
+  63 +new line 24 of the skill text, a little longer than the old one
+  64  unchanged line 25 of the skill text
+  65  unchanged line 26 of the skill text
+  66  unchanged line 27 of the skill text
+  67  unchanged line 28 of the skill text
+  68  unchanged line 29 of the skill text
+  69  unchanged line 30 of the skill text
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ Do you want to make this edit to SKILL.md?
+ ❯ 1. Yes
+   2. Yes, and allow Claude to edit its own settings for this session
+   3. No
+
+ Esc to cancel · Tab to amend

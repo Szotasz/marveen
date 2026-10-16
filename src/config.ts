@@ -497,6 +497,13 @@ export const HEARTBEAT_START_HOUR = parseInt(env['HEARTBEAT_START_HOUR'] ?? '9',
 export const HEARTBEAT_AGENT_ENABLED =
   ['1', 'true', 'yes', 'on'].includes((cfg('HEARTBEAT_AGENT_ENABLED') ?? '').trim().toLowerCase())
 
+// When the monitor messages the owner about an unanswered tool-permission
+// prompt: a comma-separated list of ages ("10m,30m,1h,1d"; s/m/h/d, a bare
+// number is minutes). The last value is also the repeat period. Empty = the
+// shipped default; parsed (and a malformed value rejected whole) in
+// web/permission-prompt-alert.ts. PERMFLOOD1012.
+export const PERMISSION_ALERT_MARKS = (cfg('PERMISSION_ALERT_MARKS') ?? '').trim()
+
 // Sub-agent Telegram inbox delivery-path tee (opt-in, DEFAULT OFF).
 // When enabled, a telegram sub-agent loads the channel plugin via a per-agent
 // mcp.json wrapped in the inbound-tee (scripts/channel-inbound-tee.mjs), which

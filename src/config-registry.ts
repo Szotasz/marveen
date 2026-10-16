@@ -686,6 +686,15 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: true,
   },
+  {
+    key: 'PERMISSION_ALERT_MARKS',
+    type: 'string',
+    default: '10m,30m,1h,2h,8h,24h',
+    description: 'Mikor szóljon a figyelő egy megválaszolatlan engedélykérő dialógusról: vesszővel elválasztott időpontok a dialógus megjelenésétől számítva, például 10m,30m,1h,2h,8h,24h (s = másodperc, m = perc, h = óra, d = nap; a mértékegység nélküli szám perc). Az utolsó érték egyben az ismétlési idő is, az alapértelmezéssel tehát az első nap után naponta egy üzenet megy, amíg a kérdés áll. A 0 első értékként azonnali jelzést jelent. Értelmezhetetlen érték esetén az alapértelmezés marad érvényben, és ez a naplóba kerül. Billentyűt a figyelő ilyenkor sosem küld, csak üzen. A módosítás a dashboard újraindításakor lép életbe.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: true,
+  },
   // --- System module ---
   {
     key: 'SCHEDULER_TZ',

@@ -1,0 +1,49 @@
+● I will fix the pitfall section of the skill now.
+
+● Update(~/.claude/skills/example-skill/SKILL.md)
+
+────────────────────────────────────────────────────────────────────────────────
+ Edit file
+ ../.claude/skills/example-skill/SKILL.md
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+  40  unchanged line 1 of the skill text
+  41  unchanged line 2 of the skill text
+  42 -old line 3 of the skill text
+  42 +new line 3 of the skill text, a little longer than the old one
+  43  unchanged line 4 of the skill text
+  44  unchanged line 5 of the skill text
+  45  unchanged line 6 of the skill text
+  46  unchanged line 7 of the skill text
+  47  unchanged line 8 of the skill text
+  48  unchanged line 9 of the skill text
+  49 -old line 10 of the skill text
+  49 +new line 10 of the skill text, a little longer than the old one
+  50  unchanged line 11 of the skill text
+  51  unchanged line 12 of the skill text
+  52  unchanged line 13 of the skill text
+  53  unchanged line 14 of the skill text
+  54  unchanged line 15 of the skill text
+  55  unchanged line 16 of the skill text
+  56 -old line 17 of the skill text
+  56 +new line 17 of the skill text, a little longer than the old one
+  57  unchanged line 18 of the skill text
+  58  unchanged line 19 of the skill text
+  59  unchanged line 20 of the skill text
+  60  unchanged line 21 of the skill text
+  61  unchanged line 22 of the skill text
+  62  unchanged line 23 of the skill text
+  63 -old line 24 of the skill text
+  63 +new line 24 of the skill text, a little longer than the old one
+  64  unchanged line 25 of the skill text
+  65  unchanged line 26 of the skill text
+  66  unchanged line 27 of the skill text
+  67  unchanged line 28 of the skill text
+  68  unchanged line 29 of the skill text
+  69  unchanged line 30 of the skill text
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ Do you want to make this edit to SKILL.md?
+ ❯ 1. Yes
+   2. Yes, and allow Claude to edit its own settings for this session
+   3. No
+
+ Esc to cancel · Tab to amend

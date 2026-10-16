@@ -3895,6 +3895,19 @@ export function capturePane(session: string, host: string | null = null): string
   }
 }
 
+// capturePane plus the last `historyLines` of scrollback. For readers that need
+// something the dialog has pushed off the screen -- a permission card's header
+// sits above its diff (permission-prompt-alert.ts). NOT for state detection:
+// the detectors are written for the visible pane, and scrollback would feed
+// them footers and spinners that are no longer live.
+export function capturePaneWithHistory(session: string, historyLines = 500, host: string | null = null): string | null {
+  try {
+    return stripAllAnsi(stripSessionTitleBanner(captureTmux(host, ['capture-pane', '-t', exactTmuxTarget(session), '-e', '-p', '-S', `-${historyLines}`])))
+  } catch {
+    return null
+  }
+}
+
 // Capture a pane for STUCK-INPUT detection, with the editor's dim "ghost
 // suggestion" autocomplete removed. Captures WITH colour (`-e`) and strips the
 // SGR-2 (dim) ghost + all ANSI, so a hint shown in an empty input box is never
