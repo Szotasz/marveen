@@ -23,6 +23,7 @@ These files are managed by the dashboard and change at runtime. They are not che
 | `store/claudeclaw.db` | not directly | SQLite database -- memory, kanban, messages, token log, etc. |
 | `store/config-overrides.json` | dashboard UI | Settings-page overrides (plain values only, never contains secrets) |
 | `store/update.pid` | automatic | Update process PID file (concurrency lock) |
+| `store/extra-hooks.json` | by hand (optional) | Install-local extra hooks for every sub-agent's generated `settings.json`, after the built-in gates -- see below |
 
 ### Dashboard language
 
@@ -311,6 +312,58 @@ FROM config_change_log ORDER BY created_at DESC LIMIT 20;
 ```
 
 Autonomy levels: `1` = notify only, `2` = propose + approval required, `3` = autonomous + reports afterwards. `locked: true` means max level is 1 (cannot be raised due to hard safety rule).
+
+### extra-hooks.json Structure
+
+Optional. An install that wants one more hook in every sub-agent (an own PreToolUse gate, an
+action log) does not patch `agent-scaffold.ts`: the entry goes here, and the scaffold writes it
+into every sub-agent's generated `agents/<name>/.claude/settings.json`, on spawn and on dashboard
+start (so existing agents get it without a respawn).
+
+```json
+{
+  "entries": [
+    { "event": "PreToolUse", "matcher": "Bash", "script": "local-hooks/post-gate.py", "timeout": 120, "failClosed": true },
+    { "event": "PostToolUse", "matcher": "Bash", "script": "local-hooks/action-log.py", "failClosed": false }
+  ]
+}
+```
+
+| Field | Required | Meaning |
+|-------|----------|---------|
+| `event` | yes | `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `UserPromptSubmit`, `Stop`, `SubagentStop`, `SessionStart`, `SessionEnd`, `PreCompact` or `Notification` |
+| `matcher` | no | Claude Code matcher (regex), at most 500 characters; without it the hook runs on every call |
+| `script` | yes | Path relative to the project root, inside `local-hooks/` (gitignored), `.py`, `.mjs` or `.js`; letters, digits and `_ . / @ + -` only, no `..` |
+| `timeout` | no | Seconds, 1..600, default 10 |
+| `failClosed` | yes | `true`: the same wrapper as the built-in gates (a missing interpreter or any exit other than 0 and 2 = deny, deadline 2 s before the timeout). Allowed on `PreToolUse` only, because on `UserPromptSubmit` a crash would block every prompt. `false`: a plain call, a crash does not block |
+| `scope` | no | Only `"subagents"` (the default); any other value skips the entry |
+| `description` | no | Free text, not used by the scaffold |
+
+What an entry can NOT do: replace, remove or reorder a built-in hook (an extra is appended AFTER
+the built-in hooks of its event, and the scaffold only ever removes its own entries, the ones
+whose command starts with `: extra-hook;`); point anywhere but `<root>/local-hooks/` (symlinks
+resolved, so an agent directory cannot be linked in), under a volatile tmp directory or at a
+missing file (the same registration guard the built-in gates use); use a path or matcher that
+contains a file name of `scripts/` or `scripts/hooks/`, where the built-in gates live (the
+built-in injectors find their own entries by script name); rename a script whose name collides.
+
+Who may write it: `store/extra-hooks.json` and `local-hooks/` decide what runs in EVERY
+sub-agent's session, so the sub-agents' self-pace gate denies their writes to both (native file
+tools and Bash), exactly as for `store/egress-allowlist.json`. The writers are the operator and
+the main agent, which do not run that gate. For the same reason a script may not live in an
+agent's own directory (`agents/<name>/`), which that agent can write.
+
+Missing file, blank file or `{"entries": []}`: the generated settings are byte-identical to a
+render without this feature. Invalid JSON or the wrong shape: no extra is added; an invalid
+entry: only that entry is skipped. Both are logged at error level
+(`extra-hooks.json: invalid entries IGNORED`), and neither touches a built-in gate. Removing an
+entry from the file removes it from the agents on the next spawn or dashboard start.
+
+The main agent's hooks are the repo-shipped `.claude/settings.json`, which the scaffold never
+writes (#1305), so this file does not affect the main agent.
+
+`scripts/hook-load-watch.py` probes an extra `PreToolUse` hook for loading like the built-in ones,
+and `scripts/boot-hook-prune.py` removes it once its script is gone.
 
 ---
 
