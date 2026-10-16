@@ -68,6 +68,8 @@ const EXEMPT: Record<string, string> = {
     'shared library: the one memory-frontmatter check, imported by memory-frontmatter-gate.py (Write/Edit) and memory-frontmatter-bash-gate.py (Bash, KAPUEGYUT918); not itself a hook',
   'email_extract.py':
     'shared library imported by outgoing-copy-gate.py (and the level-2 email approval gate, EMAILKAPU901 PR2); not itself a hook',
+  'credential_lib.py':
+    'shared library: the credential detector and state, imported by credential-gate.py and scripts/credential-gate-cli.py (CREDGATE1003); not itself a hook',
   'memory-save.sh':
     'legacy: referenced only by a historical rebuild prompt, wired nowhere; kept pending a maintainer decision to remove it',
   'telegram-ack.py':
@@ -126,6 +128,8 @@ const CHECKOUT_ONLY: Record<string, string> = {
     'main-agent inbox PULL (#506): sub-agents are fed by the message router\'s tmux-push path, and draining them here too would double-deliver (docstring: "Main-agent ONLY")',
   'ledger-capture.py':
     'conversation-continuity ledger: docs/conversation-continuity.md wires the ledger trio in the PROJECT settings for the main channels session ("NOT user scope"); the sub-agent path is the clear-capture/clear-replay pair, which IS in the template',
+  'ledger-turn-failure.py':
+    'StopFailure half of the same ledger: like telegram-reply-guard.py it decides from ledger_lib.open_question_with_age, i.e. the conversation_log the main-only ledger trio writes; seeded alone it would find no open inbound and record nothing, a silent no-op',
   'ledger-outbound.py':
     'conversation-continuity ledger: same design as ledger-capture.py (docs/conversation-continuity.md, project settings only)',
   'ledger-replay.py':

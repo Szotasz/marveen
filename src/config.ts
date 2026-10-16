@@ -83,12 +83,41 @@ function isUsableCronTz(tz: string): boolean {
   }
 }
 
+// APP_TZ has a SECOND consumer: every display path formats with
+// Intl.DateTimeFormat / toLocaleString({ timeZone: APP_TZ }), and one of them
+// (heartbeat-header-stamp.ts) builds its formatter at MODULE LOAD, on the
+// dashboard's static import chain. So the probe is both consumers, each asked
+// its own question, never one standing in for the other. They do disagree:
+// under TZ='' Node 22 reports the host zone as "Etc/Unknown", which
+// cron-parser schedules against without complaint and Intl rejects with a
+// RangeError -- and a RangeError at import time means the dashboard does not
+// start at all (ISSUE1895 review).
+function isUsableAppTz(tz: string): boolean {
+  if (!isUsableCronTz(tz)) return false
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: tz })
+    return true
+  } catch {
+    return false
+  }
+}
+
+// The host zone as APP_TZ may use it: the process zone when both consumers
+// accept it, otherwise UTC (the zone Intl itself falls back to with no TZ).
+// Never a value either consumer throws on.
+export function usableHostTz(
+  raw: string = Intl.DateTimeFormat().resolvedOptions().timeZone,
+): string {
+  return isUsableAppTz(raw) ? raw : 'UTC'
+}
+
 export function resolveAppTz(
   configured: string | undefined,
   systemTz: string = Intl.DateTimeFormat().resolvedOptions().timeZone,
 ): { tz: string; configured?: string; invalid?: string } {
-  if (!configured) return { tz: systemTz }
-  if (!isUsableCronTz(configured)) return { tz: systemTz, invalid: configured }
+  const host = usableHostTz(systemTz)
+  if (!configured) return { tz: host }
+  if (!isUsableAppTz(configured)) return { tz: host, invalid: configured }
   return { tz: configured, configured }
 }
 
@@ -167,6 +196,16 @@ export const BRAND_NAME = env['BRAND_NAME'] ?? BOT_NAME
 // not change that; the token remains the actual boundary.
 export const SYSTEM_SENDER_IDS = env['SYSTEM_SENDER_IDS'] ?? ''
 
+// Card 795d1f48 (a): the enrolled device keys that may send an URGENT row over POST /api/messages (a row the router
+// types into a BUSY pane), by their numeric ids (GET /api/auth/device-keys lists them). Install-specific, so .env, and
+// empty by default: with no id, no HTTP caller may set urgent; the in-process writers are not affected. A device key
+// alone is not enough because the shared dashboard token can mint one; and the list is deliberately not in the
+// settings registry, so the dashboard's settings page does not edit it. Device key ids are AUTOINCREMENT: a revoked
+// key's id is never handed out again. Comma-separated:
+//   MESSAGE_URGENT_DEVICE_IDS=7
+// Read at module load -- a change needs a dashboard restart.
+export const MESSAGE_URGENT_DEVICE_IDS = env['MESSAGE_URGENT_DEVICE_IDS'] ?? ''
+
 // Pure parse rule for SYSTEM_SENDER_IDS, so the default (unset => empty set) is
 // provable without a live .env. Entries are normalized with the SAME function
 // the route matches on, keeping this guard symmetric with the coordinator and
@@ -178,6 +217,18 @@ export function parseSystemSenderIds(raw: string | undefined, normalize: (s: str
       .split(',')
       .map(s => normalize(s.trim()))
       .filter(Boolean)
+  )
+}
+
+// Pure parse rule for MESSAGE_URGENT_DEVICE_IDS: positive integers only. Anything else is dropped, never read
+// generously: a typo or an empty value means nobody.
+export function parseDeviceKeyIds(raw: string | undefined): Set<number> {
+  return new Set(
+    (raw ?? '')
+      .split(',')
+      .map(s => s.trim())
+      .filter(s => /^[1-9][0-9]{0,14}$/.test(s))
+      .map(Number)
   )
 }
 

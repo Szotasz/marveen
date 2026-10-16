@@ -179,6 +179,17 @@ function buildProcessLockContext(): ProcessLockContext {
         return null
       }
     },
+    processBelongsToThisInstall(pid: number): boolean {
+      // The same attribution the binary-pattern path applies in
+      // listOwnProcessesMatching: argv under PROJECT_ROOT, or cwd under it.
+      // A PID that is gone (no argv) is not ours to signal.
+      try {
+        const argv = execFileSync('/bin/ps', ['-p', String(pid), '-o', 'args='], { timeout: 2000, encoding: 'utf-8' }).trim()
+        return argv !== '' && argvBelongsToThisInstall(argv, pid)
+      } catch {
+        return false
+      }
+    },
     getProcessUid(pid: number): number | null {
       try {
         const out = execFileSync('/bin/ps', ['-p', String(pid), '-o', 'uid='], { timeout: 2000, encoding: 'utf-8' }).trim()

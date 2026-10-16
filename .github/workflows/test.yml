@@ -61,6 +61,9 @@ jobs:
       # DASHAUDITZAJ915: the dash audit's classifier is a gate instrument too --
       # same rot argument as the line above.
       - run: python3 scripts/__tests__/dash-audit-scan.test.py
+      # A turn that died on an API error while a channel message waited must leave
+      # a trace (StopFailure hook); hermetic, isolated ledger DB.
+      - run: python3 scripts/__tests__/ledger-turn-failure.test.py
       # ORSICTX912: the sentinel preCheck's SKIP is "no model turn" -- an
       # error path that said SKIP would silence the community sentinel for
       # good, so its fail-direction cases are gate instruments (hermetic:
@@ -86,6 +89,10 @@ jobs:
       # hermetic (LEDGER_DB_PATH on a throwaway DB, temp dirs).
       - run: python3 scripts/__tests__/telegram-reply-guard.test.py
       - run: python3 scripts/__tests__/ledger-replay-reply-tool.test.py
+      # CREDGATE1003: the credential gate stops a letter carrying a password;
+      # its fail-closed and never-log-the-value cases are gate instruments.
+      # Hermetic: CREDENTIAL_GATE_STORE on throwaway dirs, made-up values.
+      - run: python3 scripts/__tests__/credential-gate.test.py
       - run: bash scripts/__tests__/conversation-ledger.test.sh
       # 723bbb70 (3): the hook-load watcher is a gate instrument -- a watcher whose
       # contract only runs by hand rots like the rest of this list warns. Hermetic:

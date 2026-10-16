@@ -41,6 +41,10 @@ describe('parseQueuedChannelCommand', () => {
 
   it('a command with arguments keeps them', () => {
     expect(parseQueuedChannelCommand(queuedLine(channelPrompt('/model opus 30m')))?.text).toBe('/model opus 30m')
+    // a topic (TELEGRAM_TOPICS_ENABLED) is carried; a malformed one is not
+    const inTopic = (id: string) => channelPrompt('/board', `source="plugin:telegram:telegram" chat_id="${OWNER}" message_id="5" message_thread_id="${id}"`)
+    expect(parseQueuedChannelCommand(queuedLine(inTopic('12')))?.threadId).toBe('12')
+    expect(parseQueuedChannelCommand(queuedLine(inTopic('12x')))).not.toHaveProperty('threadId')
   })
 
   it('the enqueue line is NOT a trigger (an idle session writes it too, and the hook handles that one)', () => {
@@ -92,6 +96,16 @@ describe('midTurnTick', () => {
   })
 
   afterEach(() => rmSync(dir, { recursive: true, force: true }))
+
+  it('a command written in a topic: the answer goes back into it; a plain one is sent with two arguments, as before', async () => {
+    const calls: unknown[][] = []
+    deps.send = async (...a: unknown[]) => { calls.push(a) }
+    await midTurnTick(state, deps, true)
+    const topic = `source="plugin:telegram:telegram" chat_id="${OWNER}" message_id="374" user="${OWNER}" message_thread_id="12"`
+    appendFileSync(file, queuedLine(channelPrompt('/board', topic)) + '\n' + queuedLine(channelPrompt('/runs')) + '\n')
+    expect(await midTurnTick(state, deps)).toBe(2)
+    expect(calls).toEqual([[OWNER, 'válasz: /board', '12'], [OWNER, 'válasz: /runs']])
+  })
 
   it('boot: the existing transcript is not replayed; a later mid-turn command is answered once', async () => {
     expect(await midTurnTick(state, deps, true)).toBe(0)

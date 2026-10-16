@@ -37,7 +37,7 @@ vi.mock('../web/channel-monitor.js', () => ({
 }))
 
 const restartAgentProcess = vi.fn(
-  async (_name: string): Promise<{ ok: boolean; pid?: number; error?: string }> => ({ ok: true, pid: 123 }),
+  async (_name: string, _opts?: unknown): Promise<{ ok: boolean; pid?: number; error?: string }> => ({ ok: true, pid: 123 }),
 )
 // The continue check's inputs (8c338dc4): the explicit and the active rotated config dir, the active
 // token plan and the fleet token are set per test; the shared dir is the real path shape under the
@@ -47,7 +47,7 @@ let activeRotatedDir: string | null = null
 let activeRotatedTokenId: string | null = null
 let fleetTokenPresent = true
 vi.mock('../web/agent-process.js', () => ({
-  restartAgentProcess: (name: string) => restartAgentProcess(name),
+  restartAgentProcess: (name: string, opts?: unknown) => restartAgentProcess(name, opts),
   resolveMainAgentConfigDir: () => explicitMainDir,
   resolveMainAgentRotatedConfigDir: () => activeRotatedDir,
   resolveMainAgentRotatedTokenSecretId: () => activeRotatedTokenId,
@@ -554,7 +554,8 @@ describe('POST /api/claude-plans/rotate (PR2c)', () => {
     await tryHandleClaudePlans(ctx)
     expect(out.status).toBe(200)
     expect(out.body).toEqual({ ok: true, agentId: 'devy', activePlanId: 'team' })
-    expect(restartAgentProcess).toHaveBeenCalledWith('devy')
+    // RESTARTWAKE927: the plan switch may cut a running turn, so it asks for the wake.
+    expect(restartAgentProcess).toHaveBeenCalledWith('devy', { wake: { reason: 'plan-switch' } })
     expect(hardRestartMarveenChannels).not.toHaveBeenCalled()
 
     const state = fakeCtx('GET', '/api/claude-plans/state')

@@ -2289,6 +2289,7 @@ function openNewCardModal(status) {
   document.getElementById('cardModalTitle').textContent = t('kanban.modal.title_new')
   document.getElementById('cardTitle').value = ''
   document.getElementById('cardDesc').value = ''
+  document.getElementById('cardTestSteps').value = ''
   document.getElementById('cardPriority').value = 'normal'
   document.getElementById('cardProject').value = ''
   document.getElementById('cardDue').value = ''
@@ -2320,6 +2321,7 @@ document.getElementById('saveCardBtn').addEventListener('click', async () => {
   const data = {
     title,
     description: document.getElementById('cardDesc').value.trim() || null,
+    test_steps: document.getElementById('cardTestSteps').value.trim() || null,
     assignee: document.getElementById('cardAssignee').value || null,
     priority: document.getElementById('cardPriority').value,
     project: document.getElementById('cardProject').value.trim() || null,
@@ -2761,6 +2763,17 @@ async function showCardDetail(card) {
 
   document.getElementById('cardDetailDesc').textContent = card.description || ''
 
+  // Card 8fe51afd: the testing steps in a block of their own. Hidden when the
+  // card has none -- an empty "Tesztelési lépések" heading on every card would
+  // train the reader to skip past the one card where it is filled in. The
+  // `is-testing` mark is what makes it stand out exactly when it is due.
+  const testStepsBox = document.getElementById('cardDetailTestSteps')
+  const testStepsBody = document.getElementById('cardDetailTestStepsBody')
+  const steps = (card.test_steps || '').trim()
+  testStepsBody.textContent = steps
+  testStepsBox.hidden = !steps
+  testStepsBox.classList.toggle('is-testing', !!steps && card.status === 'testing')
+
   renderCardLabelsSection(card)
   renderCardBlockersSection(card)
 
@@ -2861,6 +2874,7 @@ async function showCardDetail(card) {
     document.getElementById('cardModalTitle').textContent = t('kanban.modal.title_edit')
     document.getElementById('cardTitle').value = card.title
     document.getElementById('cardDesc').value = card.description || ''
+    document.getElementById('cardTestSteps').value = card.test_steps || ''
     document.getElementById('cardPriority').value = card.priority
     document.getElementById('cardProject').value = card.project || ''
     document.getElementById('cardDue').value = card.due_date
@@ -4152,6 +4166,10 @@ function renderAgents() {
         <div class="agent-reauth-banner">
           <span class="agent-reauth-reason">${escapeHtml(agent.reauthReason || t('agents.reauth.reason'))}</span>
           <button class="btn-danger btn-compact agent-login-btn" data-phase="start">${t('agents.btn.login')}</button>
+        </div>` : ''}
+      ${Array.isArray(agent.sharedEnvAuthKeys) && agent.sharedEnvAuthKeys.length ? `
+        <div class="agent-sharedenv-banner" title="${escapeHtml(t('agents.sharedEnvAuth.tip'))}">
+          <span class="agent-sharedenv-text">${escapeHtml(t('agents.sharedEnvAuth.label'))}: ${escapeHtml(agent.sharedEnvAuthKeys.join(', '))}</span>
         </div>` : ''}
       <div class="agent-card-actions">
         <button class="btn-secondary btn-compact agent-conversation-btn" title="${t('agents.btn.conversation')}">
@@ -6066,7 +6084,10 @@ document.getElementById('chConnectBtn').addEventListener('click', async () => {
       throw new Error(err.error || 'Kapcsolodasi hiba')
     }
     const result = await res.json()
-    showToast(`${getProviderLabel()} sikeresen csatlakoztatva!`)
+    // #1878 (6): on the main agent the save restarts the channels session; a failed
+    // restart must not read as "connected".
+    if (result.restartError) showToast(t('agents.channel.saved_restart_failed', { provider: getProviderLabel(), cmd: result.restartCommand || '' }), 12000)
+    else showToast(`${getProviderLabel()} sikeresen csatlakoztatva!`)
     // Refresh detail
     await openAgentDetail(currentAgent.name)
     loadAgents()
@@ -9315,6 +9336,22 @@ function renderConnectors() {
 }
 
 // --- GitHub repo management ---
+// Install/update ran with npm lifecycle scripts skipped and the repo (or a
+// dependency) declares some: say so, and offer the per-repo opt-in, which
+// re-runs the update with scripts and stores the choice for later updates.
+async function offerGitHubRepoScriptsOptIn(name, skipped) {
+  if (!Array.isArray(skipped) || skipped.length === 0) return
+  const ok = confirm(t('connectors.scripts_skipped_confirm', { name: name.replace('--', '/'), list: skipped.join(', ') }))
+  if (!ok) return
+  const res = await fetch(`/api/connectors/github-repos/${encodeURIComponent(name)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ runScripts: true }),
+  })
+  const data = await res.json()
+  if (data.error) alert(data.error)
+}
+
 async function loadGitHubRepos() {
   try {
     const res = await fetch('/api/connectors/github-repos')
@@ -9336,6 +9373,7 @@ async function loadGitHubRepos() {
           const res = await fetch(`/api/connectors/github-repos/${encodeURIComponent(r.name)}`, { method: 'PATCH' })
           const data = await res.json()
           if (data.error) { alert(data.error); return }
+          await offerGitHubRepoScriptsOptIn(r.name, data.scriptsSkipped)
           loadConnectors()
         } finally { btn.disabled = false; btn.innerHTML = '&#x21bb;' }
       })
@@ -9366,6 +9404,9 @@ async function loadGitHubRepos() {
   addBtn.addEventListener('click', async () => {
     const val = input.value.trim()
     if (!val) return
+    const runScriptsBox = document.getElementById('githubRepoRunScripts')
+    const runScripts = !!(runScriptsBox && runScriptsBox.checked)
+    if (!confirm(t(runScripts ? 'connectors.install_confirm_scripts' : 'connectors.install_confirm', { url: val }))) return
     addBtn.disabled = true
     addBtn.textContent = 'Telepites...'
     status.hidden = false
@@ -9375,7 +9416,7 @@ async function loadGitHubRepos() {
       const res = await fetch('/api/connectors/github-repos', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: val }),
+        body: JSON.stringify({ url: val, runScripts }),
       })
       const data = await res.json()
       if (data.error) {
@@ -9383,6 +9424,10 @@ async function loadGitHubRepos() {
         status.textContent = data.error
         return
       }
+      // Installed, but npm install failed: keep it visible instead of reporting success.
+      // The opt-in is only offered after an install that completed.
+      if (data.installWarning) alert(t('connectors.install_warning', { msg: data.installWarning }))
+      else await offerGitHubRepoScriptsOptIn(data.repo.name, data.scriptsSkipped)
       if (data.requiredEnvVars && data.requiredEnvVars.length > 0) {
         status.className = 'github-repo-status loading'
         status.textContent = t('connectors.api_keys_needed')
@@ -10866,7 +10911,8 @@ async function loadStatus() {
         }
         const div = document.createElement('div')
         div.className = `status-incident ${inc.status}`
-        const date = new Date(inc.pubDate).toLocaleString('hu-HU', { timeZone: 'Europe/Budapest' })
+        // The viewer's local time, like every other time on the dashboard (ISSUE1895 / #1895).
+        const date = new Date(inc.pubDate).toLocaleString('hu-HU')
         div.innerHTML = `
           <div class="status-incident-header">
             <span class="status-incident-title">${escapeHtml(inc.title)}</span>
@@ -13562,7 +13608,7 @@ function wireOnboarding(step) {
         // surface the automatic channels restart (same pattern as the
         // claude-auth step) instead of silently advancing.
         if (typeof initSidebarBrand === 'function') initSidebarBrand()
-        if (d.restartError) { idBtn.disabled = false; onbMsg(t('onboarding.identity.saved_restart_failed'), true); setTimeout(refreshOnboarding, 6000); return }
+        if (d.restartError) { idBtn.disabled = false; onbMsg(t('onboarding.identity.saved_restart_failed', { cmd: d.restartCommand || '' }), true); setTimeout(refreshOnboarding, 6000); return }
         if (d.restarted) { onbMsg(t('onboarding.identity.saved_restarted')); setTimeout(refreshOnboarding, 2500); return }
         if (d.restartNeeded) { onbMsg(t('onboarding.identity.saved_restart_needed')); await refreshOnboarding(); return }
         onbMsg(t('onboarding.identity.saved'))
@@ -13585,7 +13631,7 @@ function wireOnboarding(step) {
         // unauthenticated) channels session right after the first auth save --
         // surface that, and on failure show the manual restart step instead of
         // silently advancing.
-        if (d.restartError) { authBtn.disabled = false; onbMsg(t('onboarding.step1.saved_restart_failed'), true); setTimeout(refreshOnboarding, 6000); return }
+        if (d.restartError) { authBtn.disabled = false; onbMsg(t('onboarding.step1.saved_restart_failed', { cmd: d.restartCommand || '' }), true); setTimeout(refreshOnboarding, 6000); return }
         if (d.restarted) { onbMsg(t('onboarding.step1.saved_restarted')); setTimeout(refreshOnboarding, 2500); return }
         onbMsg(d.verified ? t('onboarding.step1.saved_verified') : t('onboarding.step1.saved_unverified'))
         await refreshOnboarding()
@@ -13648,6 +13694,8 @@ function wireOnboarding(step) {
         // and on timeout stay on this step with an honest "still starting"
         // message -- the old fixed 4s opened the pairing step against a
         // booting session, which looked done-and-empty (WIZFLOW809).
+        // #1878 (6): a failed restart is said at once, not after the ~2 min wait below.
+        if (d.restartError) { botBtn.disabled = false; onbMsg(t('onboarding.step2.saved_restart_failed', { cmd: d.restartCommand || '' }), true); return }
         onbMsg(d.restarted ? t('onboarding.step2.saved_restarted') : t('onboarding.step2.saved'))
         onbMsg(t('onboarding.step2.waiting_channel'))
         const outcome = await waitForChannelLive(fetchOnboardingStatus, 3000, 40)  // ~2 min bound

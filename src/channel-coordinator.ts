@@ -23,7 +23,7 @@
 // discarding it if the native just recovered. Bias: under-deliver, since the
 // native + typing is the better UX and Telegram holds unconfirmed updates 24h.
 //
-// Lifecycle: launchd (com.marveen.channel-coordinator) with KeepAlive. SIGTERM
+// Lifecycle: launchd (com.<SERVICE_ID>.channel-coordinator, #1873) with KeepAlive. SIGTERM
 // drains, persists offset, exits cleanly.
 
 import { readFileSync, writeFileSync, existsSync, mkdirSync, unlinkSync } from 'node:fs'
@@ -32,6 +32,7 @@ import { homedir } from 'node:os'
 import { pathToFileURL } from 'node:url'
 import { execFile } from 'node:child_process'
 import { logger } from './logger.js'
+import { isSettingOn } from './setting-flag.js'
 import { PROJECT_ROOT, MAIN_AGENT_ID, CHANNEL_PROVIDER, BOT_NAME } from './config.js'
 import { getUpdates, probeHighWater, mapUpdate, TelegramApiError } from './channel-coordinator/telegram-client.js'
 import { probeNativeChannelDown } from './channel-coordinator/liveness.js'
@@ -167,10 +168,15 @@ function releaseLock(): void {
 // Best-effort Telegram alert to the owner via the existing notify.sh (which
 // uses the project's own token+chat). Used for fatal (401) only -- a 409 here
 // is the EXPECTED "native is back" signal, not an error worth alerting.
-function sendAlert(message: string): void {
+// Resolves when notify.sh has finished (or was killed at its 10 s timeout), so a
+// caller that is about to exit can wait for the alert instead of guessing.
+function sendAlert(message: string): Promise<void> {
   const script = join(PROJECT_ROOT, 'scripts', 'notify.sh')
-  execFile('/bin/bash', [script, message], { timeout: 10_000 }, (err) => {
-    if (err) logger.warn({ err }, 'channel-coordinator: notify.sh alert failed')
+  return new Promise((resolve) => {
+    execFile('/bin/bash', [script, message], { timeout: 10_000 }, (err) => {
+      if (err) logger.warn({ err }, 'channel-coordinator: notify.sh alert failed')
+      resolve()
+    })
   })
 }
 
@@ -181,6 +187,12 @@ function sendAlert(message: string): void {
 // also scrubs untrusted/trusted-peer tags, but not <channel>.)
 export function neutralizeChannelTags(text: string): string {
   return text.replace(/<\s*\/?\s*channel\b[^>]*>/gi, '[stripped-tag]')
+}
+
+// The topic of a message is part of the tag only while TELEGRAM_TOPICS_ENABLED
+// is on, as with the native plugin, whose topics patch is applied only then.
+function topicsEnabled(): boolean {
+  return isSettingOn('TELEGRAM_TOPICS_ENABLED')
 }
 
 // Mirror the native plugin's <channel ...> block so the message-router can
@@ -195,10 +207,12 @@ export function buildHandoffContent(ev: {
   content: string
   tg_date: number | null
   meta?: Record<string, unknown>
-}): string {
+}, topics: boolean = topicsEnabled()): string {
   const ts = ev.tg_date ? new Date(ev.tg_date * 1000).toISOString() : ''
   const voiceMeta = ev.meta?.voice as { file_id?: string } | undefined
   const voiceFileId = voiceMeta?.file_id ?? ''
+  const thread = ev.meta?.message_thread_id
+  const threadId = topics && Number.isSafeInteger(thread) && (thread as number) > 0 ? thread as number : null
   const attrs = [
     `source="telegram"`,
     ev.chat_id != null ? `chat_id="${ev.chat_id}"` : '',
@@ -206,6 +220,7 @@ export function buildHandoffContent(ev: {
     ev.username ? `user="${neutralizeChannelTags(ev.username).replace(/"/g, '')}"` : '',
     ev.user_id != null ? `user_id="${ev.user_id}"` : '',
     ts ? `ts="${ts}"` : '',
+    threadId != null ? `message_thread_id="${threadId}"` : '',
     ev.kind !== 'message' ? `kind="${ev.kind}"` : '',
     voiceFileId ? `attachment_kind="voice"` : '',
     voiceFileId ? `attachment_file_id="${voiceFileId}"` : '',
@@ -299,11 +314,31 @@ function reconcilePending(): void {
 
 // ---- fatal --------------------------------------------------------------
 
-async function fatalExit(err: TelegramApiError): Promise<never> {
+// #1878 (10): the fatal alert used to be fire-and-forget plus a fixed 1.5 s
+// sleep, so a notify.sh slower than that (a Slack round-trip, a Telegram retry)
+// could be cut off by the exit. Wait for it, but never longer than the cap: a
+// hung alert must not keep a dead coordinator around.
+export const FATAL_ALERT_CAP_MS = 12_000
+
+export async function alertBeforeExit(alert: () => Promise<void>, capMs: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    await Promise.race([
+      alert().catch(() => { /* the alert's own failure is already logged */ }),
+      new Promise<void>((resolve) => { timer = setTimeout(resolve, capMs) }),
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
+export async function fatalExit(err: TelegramApiError, exit: (code: number) => never = process.exit): Promise<never> {
   logger.error({ msg: err.message }, 'channel-coordinator: fatal error, exiting')
-  sendAlert(`${BOT_NAME} channel-coordinator FATAL: ${err.message}. Inbound backfill leallt amig nem javitod.`)
-  await sleep(1500) // let notify.sh fire before exit
-  process.exit(1)
+  await alertBeforeExit(
+    () => sendAlert(`${BOT_NAME} channel-coordinator FATAL: ${err.message}. Inbound backfill leallt amig nem javitod.`),
+    FATAL_ALERT_CAP_MS,
+  )
+  return exit(1)
 }
 
 // ---- main loop (IDLE <-> BACKFILLING state machine) ----------------------
