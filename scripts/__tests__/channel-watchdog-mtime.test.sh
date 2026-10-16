@@ -45,7 +45,7 @@ if ! command -v python3 >/dev/null 2>&1; then
   echo; echo "  $PASS passed, $FAIL failed"; exit 1
 fi
 
-BOX="$(mktemp -d -t portstat912)"
+BOX="$(mktemp -d "${TMPDIR:-/tmp}/portstat912.XXXXXX")"
 trap 'case "$BOX" in *portstat912*) rm -rf "$BOX" ;; esac' EXIT
 
 # --- positive control: the debug entry point exists at all -------------------
