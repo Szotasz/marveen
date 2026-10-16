@@ -35,7 +35,38 @@ CHANNEL_PLUGINS_EXTRA=telegram-reaction@marveen-telegram-reaction
 - **Side effect (measured, harmless):** `channels.sh` also adds the `CHANNEL_PLUGINS_EXTRA` ids to the `--channels`
   list, so this non-channel plugin is registered as a channel too. It neither receives nor sends messages as a channel.
 
-Turning it off: remove the id from `CHANNEL_PLUGINS_EXTRA` and restart, or set `MARVEEN_TELEGRAM_REACTION=0` (see Settings).
+**Scope.** The install is user-scope. It is recorded in the config dir the commands ran in (by default `~/.claude`).
+So it applies to **every session that uses that config dir**, not only the main agent. The `disable` line under
+**Enabling it (main agent)** keeps it off in those sessions; the main agent turns it on again through
+`CHANNEL_PLUGINS_EXTRA`. The engine itself is not touched.
+
+**Turning it off** (main agent): remove the id from `CHANNEL_PLUGINS_EXTRA` and restart, or set
+`MARVEEN_TELEGRAM_REACTION=0` (see Settings).
+
+**Removing it completely:**
+
+```bash
+claude plugin uninstall telegram-reaction@marveen-telegram-reaction --scope user
+claude plugin marketplace remove marveen-telegram-reaction
+```
+
+Then drop the id from `CHANNEL_PLUGINS_EXTRA` in `<engine>/.env` and restart the main agent. The factory placeholder
+comes back as before.
+
+## Sub-agents
+
+This PR enables the plugin for the main agent only. For a sub-agent:
+
+- The engine has no per-agent switch for this plugin. The existing one, `"stateObserver": true` in
+  `agents/<name>/agent-config.json`, exports `CLAUDE_CODE_PLUGIN_DIRS` for exactly one mod, `agent-state-observer`
+  (`src/web/state-observer.ts`). The launcher skips the main agent. There is no generic per-agent field that
+  names a plugin folder.
+- A sub-agent whose sessions use the config dir of the user-scope install described under **Scope** sees the plugin installed. Whether it
+  then loads there is **not measured**: the launcher decides which plugins a sub-agent session enables
+  (`src/web/agent-process.ts`), and we have not run the plugin in a sub-agent session.
+- Loading this plugin for a chosen sub-agent through the engine's existing per-agent route would be an engine change
+  (a field that names the plugin folder, next to the version gate). It is not part of this PR; how a mod is loaded for
+  an agent is the maintainers' decision.
 
 ## Settings (optional)
 
@@ -83,6 +114,10 @@ restart the main agent.
      its `message_thread_id` in the entry (as the factory hook writes it), so the fallback reply goes back into that topic.
   2. Only then does it write the factory hook's documented dedup marker (`progress/seen-<session>-<src_mid>.marker`).
      The factory placeholder hook therefore exits with "dedup skip" and posts no placeholder.
+  3. The classic `UserPromptSubmit` event, which runs inside `next(e)` ahead of the settings hooks, carries the
+     session's `transcript_path` (`prompt.submit` itself does not). The plugin stamps it onto the pending entries it
+     just wrote, as the factory submit hook does for its own entries. The factory watchdog finds the agent's transcript only
+     through that field.
   The factory Stop enforcement and the watchdog keep working on the pending entry. If the pending write fails, no
   marker is written, so the factory hook posts its placeholder as before.
 - **One writer, desired state.** Every message has a desired reaction: the plugin's current step, the agent's own
@@ -97,12 +132,17 @@ restart the main agent.
 
 - **Claude Code minimum:** 2.1.287 (`plugin.json` `metadata.minClaudeCodeVersion`). Below it the plugin does not
   load, and the factory placeholder stays (safe degradation).
-- **Main agent only.** Sub-agents keep the placeholder; a reaction mode for them would need an engine change.
+- **Main agent only.** Sub-agents keep the placeholder (see Sub-agents).
 - **One extra Bot API call:** 👀 always goes out before 🤔, because `prompt.submit` waits for the claim.
 - **Re-delivery after a restart:** a message re-delivered after a main-agent restart got no reaction. This was
   measured on an earlier version (0.1.0) and has not been re-measured on this one.
-- **Stuck turn with an unrecoverable reply:** only the reaction stays, with no error text. This is how the factory
-  hooks treat a pending entry without a placeholder message id.
+- **Watchdog recovery depends on the transcript path.** With the path stamped (How it works, 3), the factory watchdog
+  recovers a round the Stop hook never closed (agent died, reply tool hung): it sends the agent's real final answer as
+  a new message. The delete of a placeholder that never existed fails and is logged, which is harmless.
+  **No answer recovery for a turn that dies** when the path is missing: the event carries an empty `transcript_path`,
+  the stamp write fails, or the Claude Code build does not raise the classic event to a module. The entry then has no
+  path, and the watchdog's last resort edits a message that does not exist: the user gets only the reaction and no text.
+  A stuck turn whose reply never reaches the channel and whose transcript holds no answer ends the same way.
 - **Shared pending file:** the read-modify-write of `progress/<session>.json` is not locked against the factory hooks,
   which write it without a lock too. In a short window a concurrent write can be lost.
 - **Test guard:** with `FLEET_FORBID_LIVE=1` in the environment the plugin is inert (no Bot API call). It is a
@@ -120,6 +160,6 @@ enabled through the existing `CHANNEL_PLUGINS_EXTRA` mechanism.
 claude plugin test plugins/telegram-reaction
 ```
 
-101 tests on Claude Code 2.1.299. They include a seeded property test of the one-writer, desired-state invariant
+109 tests on Claude Code 2.1.301. They include a seeded property test of the one-writer, desired-state invariant
 (random timeouts, late answers, 500s, re-delivery, failing agent reacts). They run with the engine stand-ins of
 `claude-code/testing`: no Bot API, disk, or timer is touched.

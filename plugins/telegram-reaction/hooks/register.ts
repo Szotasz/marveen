@@ -472,6 +472,15 @@ export async function claimForFactoryHook($: EngineInterface, targets: Src[]): P
   // Only then the dedup marker: if the pending write fails, no marker is written either, so the stock hook posts its
   // placeholder and records its own pending entry (the Stop enforcement keeps working) instead of a skipped placeholder
   // with no pending entry. The read-modify-write is not locked against the stock hooks (a short window; README).
+  await writePending($, pendPath, pend)
+  for (const t of targets) await $.fs.write(`${pdir}/seen-${sid}-${t.message_id}.marker`, '')
+  // Accumulated, not replaced: two deliveries close together may both wait for their classic event, and the transcript
+  // path is the SESSION's, so either event stamps both. Capped: a classic event that never comes must not grow it.
+  claimed = claimed.concat(targets.map(t => ({ chat_id: t.chat_id, src_mid: String(t.message_id) }))).slice(-50)
+}
+
+// The atomic pending write: a tmp file renamed over the pending file.
+async function writePending($: EngineInterface, pendPath: string, pend: any[]): Promise<void> {
   const tmp = `${pendPath}.tmp-${Date.now()}-${Math.floor(Math.random() * 1e9)}`
   await $.fs.write(tmp, JSON.stringify(pend))
   const mv = await $.process.run(['/bin/mv', '-f', tmp, pendPath])
@@ -480,7 +489,31 @@ export async function claimForFactoryHook($: EngineInterface, targets: Src[]): P
     try { await $.process.run(['/bin/rm', '-f', tmp]) } catch {}
     throw new Error('pending rename failed')
   }
-  for (const t of targets) await $.fs.write(`${pdir}/seen-${sid}-${t.message_id}.marker`, '')
+}
+
+// The pending entries THIS prompt's claim wrote (the stock submit hook skips on the marker, so it never stamps them).
+// prompt.submit's input has no transcript path; the classic UserPromptSubmit input does (BaseHookInput), and that event
+// runs inside next(e) of prompt.submit, ahead of the settings hooks. stampTranscript() puts the path on those entries.
+let claimed: { chat_id: string; src_mid: string }[] = []
+
+// The stock watchdog finds the agent's transcript ONLY through the transcript_path on a pending entry. Without it a
+// round the Stop hook never closes (agent died, reply tool hung) cannot recover the agent's answer.
+export async function stampTranscript($: EngineInterface, transcriptPath: unknown): Promise<void> {
+  const mine = claimed
+  claimed = []
+  if (!mine.length || typeof transcriptPath !== 'string' || !transcriptPath) return
+  const pendPath = `${await stateDir($)}/progress/${await $.session.id()}.json`
+  let pend: any
+  try { pend = JSON.parse(await $.fs.read(pendPath)) } catch { return }
+  if (!Array.isArray(pend)) return
+  let changed = false
+  for (const p of pend) {
+    if (p && !p.transcript_path && mine.some(m => String(p.chat_id) === m.chat_id && String(p.src_mid) === m.src_mid)) {
+      p.transcript_path = transcriptPath
+      changed = true
+    }
+  }
+  if (changed) await writePending($, pendPath, pend)
 }
 
 async function readToken($: EngineInterface, dir: string): Promise<string | null> {
@@ -493,6 +526,7 @@ async function readToken($: EngineInterface, dir: string): Promise<string | null
 
 export const register: Register = on => {
   enabled = false
+  claimed = []
   token = null
   timeoutMs = FETCH_MS
   emojis = { ...DEFAULT_EMOJIS }
@@ -555,6 +589,12 @@ export const register: Register = on => {
       enabled = false
     }
     return r
+  })
+
+  // Inside next(e) of prompt.submit, ahead of the settings hooks: the input carries the session's transcript path
+  on('classic.UserPromptSubmit', async ($, e, next) => {
+    try { await stampTranscript($, (e as any).transcript_path) } catch {}
+    return next(e)
   })
 
   on('prompt.submit', async ($, e, next) => {

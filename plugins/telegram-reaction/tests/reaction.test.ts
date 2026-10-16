@@ -114,6 +114,8 @@ function engine(on: any, opts: Opts = {}) {
     order.push('engine:prompt.submit')   // here the engine runs the UserPromptSubmit settings hooks
     return { text: e.text }
   })
+  // the classic UserPromptSubmit event, beneath the mod: no settings hook answers it here
+  on('classic.UserPromptSubmit', () => ({}))
   on('turn.start', ($: any, e: { turnId: string }) => ({ turnId: e.turnId }))
   on('tool.call', ($: any, e: { tool: string; input: any }) =>
     opts.sim && /__react$/.test(e.tool) ? new Promise(r => {
@@ -755,6 +757,94 @@ test('without a topic the pending file is byte for byte the old one (no message_
   await start($)
   await submit($)
   expect(files.get(`${PROGRESS}/sess-1.json`)).toBe('[{"chat_id":"111","src_mid":"5"}]')
+})
+
+// The stock WATCHDOG (telegram_progress_watchdog.py) gets no hook event: it finds the agent's transcript only through the
+// transcript_path the stock submit hook stamps on each pending entry. The stock hook skips on the mod's marker, so the mod
+// stamps it itself: prompt.submit has no transcript path, the classic UserPromptSubmit input does (runs inside next(e) of
+// prompt.submit, ahead of the settings hooks).
+const TRANSCRIPT = '/home/u/.claude/projects/x/sess-1.jsonl'
+const classicSubmit = ($: any, transcript_path: string | undefined = TRANSCRIPT) =>
+  $.classic.UserPromptSubmit(transcript_path === undefined ? { prompt: 'hello' } : { prompt: 'hello', transcript_path })
+
+test('transcript_path: the classic UserPromptSubmit input stamps it on the pending entry the claim wrote (the watchdog finds the transcript through it)', async ($: any, on: any) => {
+  const { files } = engine(on)
+  await start($)
+  await submit($)
+  await classicSubmit($)
+  expect(JSON.parse(files.get(`${PROGRESS}/sess-1.json`)!)).toEqual([{ chat_id: '111', src_mid: '5', transcript_path: TRANSCRIPT }])
+  expect(files.get(`${PROGRESS}/seen-sess-1-5.marker`)).toBe('')   // the marker is still there: the stock hook still skips
+})
+
+test('transcript_path: a topic message keeps its message_thread_id next to the stamped path', async ($: any, on: any) => {
+  const { files } = engine(on)
+  await start($)
+  await submit($, `${topicTag(12)}\nhello\n</channel>`)
+  await classicSubmit($)
+  expect(JSON.parse(files.get(`${PROGRESS}/sess-1.json`)!)).toEqual([{ chat_id: '111', src_mid: '5', message_thread_id: 12, transcript_path: TRANSCRIPT }])
+})
+
+test('transcript_path: only the entries THIS claim wrote are stamped; a foreign entry and an already stamped one are left alone', async ($: any, on: any) => {
+  const foreign = { chat_id: '999', message_id: 7, src_mid: '3' }
+  const stamped = { chat_id: '111', src_mid: '5', transcript_path: '/other.jsonl' }
+  const { files } = engine(on, { files: { [`${PROGRESS}/sess-1.json`]: JSON.stringify([foreign, stamped]) } })
+  await start($)
+  await submit($)          // the same message is already recorded: no second entry
+  await classicSubmit($)
+  expect(JSON.parse(files.get(`${PROGRESS}/sess-1.json`)!)).toEqual([foreign, stamped])
+})
+
+test('transcript_path: a prompt that is not a Telegram delivery stamps nothing, and writes no pending file', async ($: any, on: any) => {
+  const { files, order } = engine(on)
+  await start($)
+  await submit($, `${tag()}\nx`, { kind: 'channel', server: 'plugin:slack:slack' })
+  await classicSubmit($)
+  await $.prompt.submit({ text: 'typed by the person', origin: { kind: 'user' } })
+  await classicSubmit($)
+  expect(files.has(`${PROGRESS}/sess-1.json`)).toBe(false)
+  expect(order.filter(x => x.startsWith('write:') || x.startsWith('mv:'))).toEqual([])
+})
+
+test('transcript_path: one claim is stamped once -- a later classic event of another prompt rewrites nothing', async ($: any, on: any) => {
+  const { files, order } = engine(on)
+  await start($)
+  await submit($)
+  await classicSubmit($)
+  const writes = order.filter(x => x === 'mv:progress/sess-1.json').length
+  await classicSubmit($, '/changed.jsonl')
+  expect(order.filter(x => x === 'mv:progress/sess-1.json').length).toBe(writes)
+  expect(JSON.parse(files.get(`${PROGRESS}/sess-1.json`)!)[0].transcript_path).toBe(TRANSCRIPT)
+})
+
+test('transcript_path: no local transcript (empty path) -> the entry stays as the claim wrote it', async ($: any, on: any) => {
+  const { files } = engine(on)
+  await start($)
+  await submit($)
+  await classicSubmit($, '')
+  expect(files.get(`${PROGRESS}/sess-1.json`)).toBe('[{"chat_id":"111","src_mid":"5"}]')
+})
+
+test('transcript_path: a failing stamp write blocks nothing and leaves the claimed entry intact (the Known limit then applies)', async ($: any, on: any) => {
+  let armed = false
+  const { files } = engine(on, { failWrite: p => armed && p.includes('/progress/sess-1.json') })
+  await start($)
+  await submit($)
+  armed = true
+  await classicSubmit($)
+  expect(files.get(`${PROGRESS}/sess-1.json`)).toBe('[{"chat_id":"111","src_mid":"5"}]')
+  expect(files.get(`${PROGRESS}/seen-sess-1-5.marker`)).toBe('')
+})
+
+test('transcript_path: two deliveries before the classic event are both stamped by it (the path is the session\'s)', async ($: any, on: any) => {
+  const { files } = engine(on)
+  await start($)
+  await submit($, `${tag('111', 5)}\na\n</channel>`)
+  await submit($, `${tag('111', 6)}\nb\n</channel>`)
+  await classicSubmit($)
+  expect(JSON.parse(files.get(`${PROGRESS}/sess-1.json`)!)).toEqual([
+    { chat_id: '111', src_mid: '5', transcript_path: TRANSCRIPT },
+    { chat_id: '111', src_mid: '6', transcript_path: TRANSCRIPT },
+  ])
 })
 
 test('targetsOf: message_thread_id per tag, only when present', async () => {
