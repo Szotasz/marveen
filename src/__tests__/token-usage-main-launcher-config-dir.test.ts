@@ -171,6 +171,25 @@ describe('token usage: the main agent under its launcher-resolved config dir', (
     expect(mainRow()?.totalCalls).toBe(2)
   })
 
+  it('keeps the shared root name-attributed: only the main agent\'s encoded dir is booked to it, also through a symlinked .channels-config/projects', async () => {
+    // The shared ~/.claude/projects holds everyone's work: the main agent's
+    // encoded dir next to unrelated ones (a worker's project, a /tmp session).
+    // A root that resolves to it must never be booked to the main agent whole.
+    writeTwoTurns(join(SHARED_PROJECTS, ENCODED), 'main.jsonl', 'sess-main')
+    writeTwoTurns(join(SHARED_PROJECTS, '-home-someone-worker-proj'), 'worker.jsonl', 'sess-worker')
+    writeTwoTurns(join(SHARED_PROJECTS, '-tmp'), 'tmp.jsonl', 'sess-tmp')
+    expect(mainDirs()).toEqual([join(SHARED_PROJECTS, ENCODED)])
+
+    // The same root reached as the main agent's own config dir (the live shape
+    // on installs where .channels-config/projects is a symlink to the shared root).
+    mkdirSync(CHANNELS_CONFIG, { recursive: true })
+    symlinkSync(SHARED_PROJECTS, join(CHANNELS_CONFIG, 'projects'))
+    expect(mainDirs().map((d) => realpathSync(d))).toEqual([realpathSync(join(SHARED_PROJECTS, ENCODED))])
+
+    await collectTokenUsage()
+    expect(mainRow()?.totalCalls).toBe(2)
+  })
+
   it('follows the launcher onto a rotated plan config dir (resolveMainAgentRotatedConfigDir)', async () => {
     const planA = join(FIX, 'plans', 'a')
     const planB = join(FIX, 'plans', 'b')
