@@ -4093,7 +4093,7 @@ export function capturePane(session: string, host: string | null = null): string
  */
 export function paneCurrentCommand(session: string, host: string | null = null): string | null {
   try {
-    const out = captureTmux(host, ['list-panes', '-t', session, '-F', '#{pane_current_command}'])
+    const out = captureTmux(host, ['list-panes', '-t', exactTmuxTarget(session), '-F', '#{pane_current_command}'])
     const first = out.split('\n').map(line => line.trim()).find(line => line.length > 0)
     return first ?? null
   } catch {
