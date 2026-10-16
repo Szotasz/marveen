@@ -296,4 +296,41 @@ function main(): void {
   process.exit(result.ok ? 0 : 1);
 }
 
-main();
+/**
+ * The personal-data legs live in src/security/pii-push.ts and are reached from
+ * here so there is ONE entry point for "may this leave the host":
+ *
+ *   --pushed <remote-name> <remote-url>   (pre-push hook; the ref list is on stdin)
+ *   --pii-range <rev-list args...>        (audit any history, e.g. before a repo goes public)
+ *
+ * They are NOT part of the file-content scan above: personal data is judged on the
+ * lines a push ADDS, per commit, not on whole files (see pii-gate.ts for why).
+ */
+async function personalData(mode: string, rest: string[]): Promise<never> {
+  const { runPushed, runRange } = await import('../src/security/pii-push.js');
+  const cwd = process.cwd();
+  let result;
+  if (mode === '--pushed') {
+    const stdin = await new Promise<string>((resolve) => {
+      let data = '';
+      process.stdin.setEncoding('utf8');
+      process.stdin.on('data', (c) => { data += c; });
+      process.stdin.on('end', () => resolve(data));
+    });
+    result = await runPushed({ remoteName: rest[0] ?? '', remoteUrl: rest[1] ?? '', stdin, cwd });
+  } else {
+    result = await runRange(rest, cwd);
+  }
+  if (result.report) process.stdout.write(`${result.report}\n`);
+  process.exit(result.exitCode);
+}
+
+const [, , firstArg = '', ...restArgs] = process.argv;
+if (firstArg === '--pushed' || firstArg === '--pii-range') {
+  personalData(firstArg, restArgs).catch((e: Error) => {
+    process.stdout.write(`\npii-gate: FAILED -- BLOCKING (fail-closed): ${e.message}\n`);
+    process.exit(2);
+  });
+} else {
+  main();
+}

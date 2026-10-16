@@ -52,6 +52,18 @@ exit $fail
 EOF
 chmod +x "$GUARD"
 
+# Record a pre-push.d member in pre-push.required: its name and the sha256 of the bytes just
+# written. The dispatcher refuses to run if a listed member is missing or no longer matches.
+register_pre_push_member() {
+  local name="$1" file="$2" sum
+  sum="$( (sha256sum "$file" 2>/dev/null || shasum -a 256 "$file") | cut -d' ' -f1)"
+  touch "$HOOK_DIR/pre-push.required"
+  grep -v "^${name} " "$HOOK_DIR/pre-push.required" > "$HOOK_DIR/pre-push.required.tmp" 2>/dev/null || true
+  printf '%s %s\n' "$name" "$sum" >> "$HOOK_DIR/pre-push.required.tmp"
+  mv "$HOOK_DIR/pre-push.required.tmp" "$HOOK_DIR/pre-push.required"
+}
+register_pre_push_member "10-no-force-push-protected" "$GUARD"
+
 # 2. Dispatcher pre-push: replay stdin (the ref list) to every pre-push.d/* hook.
 if [ -f "$DISPATCH" ] && ! grep -q "$MARK" "$DISPATCH" 2>/dev/null; then
   # Preserve a pre-existing, non-dispatcher pre-push by moving it under pre-push.d.
@@ -66,8 +78,41 @@ set -euo pipefail
 HOOK_DIR="\$(cd "\$(dirname "\$0")" && pwd)"
 payload="\$(cat)"
 status=0
+# The members that MUST be there (pre-push.required, one name per line, written by the
+# installers). A required member that is missing is as off as one that cannot run: deleting a
+# gate file must not make the dispatcher quietly run fewer checks.
+REQ="\$HOOK_DIR/pre-push.required"
+if [ -f "\$REQ" ]; then
+  while read -r req want; do
+    [ -n "\$req" ] || continue
+    if [ ! -e "\$HOOK_DIR/pre-push.d/\$req" ]; then
+      echo "pre-push: required member \$req is missing -- BLOCKING (a gate that was installed and is gone is a gate that is off)." >&2
+      status=1
+      continue
+    fi
+    # The recorded sha256 of the member as the installer wrote it: a member whose BYTES changed
+    # (replaced by "exit 0", edited by a script) is as off as one that is gone. Reinstalling
+    # re-records it.
+    if [ -n "\$want" ]; then
+      if command -v sha256sum >/dev/null 2>&1; then have="\$(sha256sum "\$HOOK_DIR/pre-push.d/\$req" | cut -d' ' -f1)"
+      elif command -v shasum >/dev/null 2>&1; then have="\$(shasum -a 256 "\$HOOK_DIR/pre-push.d/\$req" | cut -d' ' -f1)"
+      else have="none"; fi
+      if [ "\$have" != "\$want" ]; then
+        echo "pre-push: required member \$req does not match its recorded hash (\$have) -- BLOCKING (changed since install; reinstall to re-record)." >&2
+        status=1
+      fi
+    fi
+  done < "\$REQ"
+fi
 for h in "\$HOOK_DIR"/pre-push.d/*; do
-  [ -x "\$h" ] || continue
+  [ -e "\$h" ] || continue
+  # A member that is present but not executable is a gate that is OFF. Skipping it silently
+  # (the old behaviour) made \`chmod -x\` a one-command way to disable any push check.
+  if [ ! -x "\$h" ]; then
+    echo "pre-push: \$h is not executable -- BLOCKING (a hook that cannot run is a gate that is off)." >&2
+    status=1
+    continue
+  fi
   printf '%s\n' "\$payload" | "\$h" "\$@" || status=1
 done
 exit \$status

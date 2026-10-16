@@ -21,6 +21,7 @@ Futtatas: python3 <ezafajl>   Exit 0 = minden teszt zold.
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -675,6 +676,178 @@ with tempfile.TemporaryDirectory() as td:
     finally:
         gate.PROJECT_ROOT = _orig_root
 
+
+# --- 12. A PUSH-KAPUK KIKAPCSOLASA ES A LATHATOSAG-VALTAS (013b1bb9) ----------
+# A pre-push.d kapuk (force-guard, szemelyes-adat kapu) git hookok. Egy hook
+# kikapcsolasa a kapu kikapcsolasa: `--no-verify` es `core.hooksPath`. A git a
+# kapcsolo egyertelmu roviditeset is elfogadja (`--no-ver`), ezert azt is pin-elem.
+print()
+print("POZITIV kontroll -- a pre-push kapukat kihagyo alakok:")
+check("git push --no-verify", blocks(GPUSH + " --no-verify origin munkaag"))
+check("git push --no-verify=... nelkul, a ref utan is",
+      blocks(GPUSH + " origin munkaag --no-verify"))
+check("git push --no-veri (egyertelmu rovidites: csak a verify kezdodik igy)",
+      blocks(GPUSH + " --no-veri origin munkaag"))
+# A `--no-ver` ketertelmu (verify / verbose): a git maga elutasitja ("ambiguous option"),
+# push nem tortenik, tehat a kapunak nincs mit tiltania. Merve 2026-10-13.
+check("git push --no-ver ketertelmu: a git maga hibazik, a kapu nem tilt",
+      not blocks(GPUSH + " --no-ver origin munkaag"))
+check("git push --force-w (a --force-with-lease egyertelmu rovidites)",
+      blocks(GPUSH + " --force-w origin munkaag"))
+check("git push --del (a --delete rovidites)", blocks(GPUSH + " --del origin munkaag"))
+check("git push --mir (a --mirror rovidites)", blocks(GPUSH + " --mir origin"))
+check("git push --prune (tavoli agak torlese)", blocks(GPUSH + " --prune origin 'refs/heads/*:refs/heads/*'"))
+check("git push -fu (egybeirt rovid kapcsolo, benne -f)", blocks(GPUSH + " -fu origin munkaag"))
+check("git push -df (egybeirt, benne -d)", blocks(GPUSH + " -df origin munkaag"))
+check("git push -u (a set-upstream szabad)", not blocks(GPUSH + " -u origin munkaag"))
+check("git push -v (verbose szabad)", not blocks(GPUSH + " -v origin munkaag"))
+check("git -c core.hooksPath=... push",
+      blocks("git -c core.hooksPath=/dev/null push origin munkaag"))
+check("kisbetus core.hookspath", blocks("git -c core.hookspath=/tmp/x push origin munkaag"))
+check("git -C ut push --no-verify", blocks("git -C " + GROOT + " push --no-verify origin munkaag"))
+print("POZITIV kontroll -- a hook-kikapcsolas KULON parancsban (Sam, SULYOS 3):")
+check("git config core.hooksPath X (tartos, kulon parancs)",
+      blocks("git config core.hooksPath /tmp/empty"))
+check("git config --local core.hooksPath X && push",
+      blocks("git config --local core.hooksPath /tmp/empty && " + GPUSH + " origin munkaag"))
+check("git config --global core.hooksPath X", blocks("git config --global core.hooksPath /dev/null"))
+check("git -c core.hooksPath=X commit (a pre-commit kapu is)",
+      blocks("git -c core.hooksPath=/dev/null commit -m x"))
+check("GIT_CONFIG_KEY_0=core.hooksPath kornyezeti alak",
+      blocks("GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null git status"))
+check("git config set core.hooksPath X", blocks("git config set core.hooksPath /tmp/empty"))
+check("chmod -x a pre-push.d tagon", blocks("chmod -x .git/hooks/pre-push.d/15-personal-data-gate"))
+check("chmod abszolut uton", blocks("chmod 000 " + GROOT + "/.git/hooks/pre-push"))
+check("mv .git/hooks/pre-push", blocks("mv .git/hooks/pre-push /tmp/x"))
+check("rm a pre-push.d tagot", blocks("rm .git/hooks/pre-push.d/15-personal-data-gate"))
+check("cp felulirja a hookot", blocks("cp /tmp/empty .git/hooks/pre-push"))
+check("sed -i a hookon", blocks("sed -i 's/exit 1/exit 0/' .git/hooks/pre-push.d/15-personal-data-gate"))
+check("echo > a hook fajl", blocks("echo 'exit 0' > .git/hooks/pre-push.d/15-personal-data-gate"))
+check(">> a hook fajl", blocks("echo x >> " + GROOT + "/.git/hooks/pre-push"))
+check("tee a hook fajl", blocks("echo x | tee .git/hooks/pre-push"))
+print("POZITIV kontroll -- a hooksPath BEIRASA fajlba, es a tag torlese find/xargs-szal (Sam, 2. kor):")
+check("printf '[core] hooksPath' >> .git/config",
+      blocks("printf '[core]\\n\\thooksPath = /tmp/e\\n' >> .git/config"))
+check("echo >> .git/config abszolut uton", blocks("echo x >> " + GROOT + "/.git/config"))
+check("sed -i a .git/config-on", blocks("sed -i 's/a/b/' .git/config"))
+check("tee -a .git/config", blocks("echo x | tee -a .git/config"))
+check("cp felulirja a .git/config-ot", blocks("cp /tmp/c .git/config"))
+check("echo >> ~/.gitconfig", blocks("echo '[core]' >> ~/.gitconfig"))
+check("echo >> ~/.config/git/config", blocks("echo x >> ~/.config/git/config"))
+check("find .git/hooks -name '15-*' -delete", blocks("find .git/hooks -name '15-*' -delete"))
+check("find .git/hooks -exec rm {} ;", blocks("find .git/hooks -type f -exec rm {} ;"))
+check("ls .git/hooks | xargs rm", blocks("ls .git/hooks/pre-push.d | xargs rm"))
+print("POZITIV kontroll -- alternativ config-forras, include.path, cd utani relativ ut (Sam, 3. kor):")
+WRITE_G = "printf '[core]\\n\\thooksPath = /tmp/e\\n' > /tmp/g && "
+check("GIT_CONFIG_GLOBAL=... git push", blocks(WRITE_G + "GIT_CONFIG_GLOBAL=/tmp/g " + GPUSH + " origin munkaag"))
+check("GIT_CONFIG_SYSTEM=... git push", blocks(WRITE_G + "GIT_CONFIG_SYSTEM=/tmp/g " + GPUSH + " origin munkaag"))
+check("XDG_CONFIG_HOME=... git push", blocks("XDG_CONFIG_HOME=/tmp/x " + GPUSH + " origin munkaag"))
+check("export GIT_CONFIG_GLOBAL=...", blocks("export GIT_CONFIG_GLOBAL=/tmp/g"))
+check("HOME=... git push (a felhasznaloi gitconfig cserelve)", blocks("HOME=/tmp/x " + GPUSH + " origin munkaag"))
+check("git config include.path X (tartos, kozvetett kikapcsolas)", blocks("git config include.path /tmp/g"))
+check("git config --global include.path X", blocks("git config --global include.path /tmp/g"))
+check("git config includeIf.gitdir:/x/.path Y", blocks("git config includeIf.gitdir:/x/.path /tmp/g"))
+check("git -c include.path=X push", blocks("git -c include.path=/tmp/g push origin munkaag"))
+PROJ = "/tmp/proj-" + str(os.getpid())
+check("cd .git && printf >> config (relativ ut a cd utan)",
+      blocks_cwd("cd .git && printf '[core]\\n\\thooksPath = /tmp/e\\n' >> config", PROJ))
+check("cd .git/hooks/pre-push.d && find . -delete",
+      blocks_cwd("cd .git/hooks/pre-push.d && find . -name '15-*' -delete", PROJ))
+check("cd .git/hooks && rm pre-push (relativ ut)", blocks_cwd("cd .git/hooks && rm pre-push", PROJ))
+check("cd .git/hooks && sed -i (relativ ut)", blocks_cwd("cd .git/hooks && sed -i 's/a/b/' pre-push", PROJ))
+print("NEGATIV kontroll -- ugyanez mas konyvtarban szabad:")
+check("cd src && printf > notes.txt", not blocks_cwd("cd src && printf x > notes.txt", PROJ))
+check("cd docs && find . -name '*.md' (csak keres)", not blocks_cwd("cd docs && find . -name '*.md'", PROJ))
+check("cd .git && cat config (olvasas)", not blocks_cwd("cd .git && cat config", PROJ))
+
+print("POZITIV kontroll -- a core.hooksPath TENYLEGES erteke (a push ele):")
+_td = tempfile.mkdtemp(prefix="dgate-hp-", dir=os.path.dirname(ROOT))
+try:
+    def _git(args, cwd):
+        subprocess.run(["git"] + args, cwd=cwd, check=True, capture_output=True)
+    clean = os.path.join(_td, "clean"); os.makedirs(clean); _git(["init", "-q", "-b", "main"], clean)
+    check("tiszta repo: a push szabad", not blocks_cwd(GPUSH + " origin munkaag", clean))
+    setrepo = os.path.join(_td, "set"); os.makedirs(setrepo); _git(["init", "-q", "-b", "main"], setrepo)
+    _git(["config", "core.hooksPath", "/tmp/nowhere"], setrepo)
+    check("a repo configjaban hooksPath: BLOKK", blocks_cwd(GPUSH + " origin munkaag", setrepo))
+    check("git -C <repo> push: BLOKK", blocks_cwd("git -C " + setrepo + " push origin munkaag", clean))
+    inc = os.path.join(_td, "inc"); os.makedirs(inc); _git(["init", "-q", "-b", "main"], inc)
+    with open(os.path.join(_td, "extra.cfg"), "w") as fh:
+        fh.write("[core]\n\thooksPath = /tmp/nowhere\n")
+    _git(["config", "include.path", os.path.join(_td, "extra.cfg")], inc)
+    check("include.path-on at huzott hooksPath: BLOKK", blocks_cwd(GPUSH + " origin munkaag", inc))
+finally:
+    shutil.rmtree(_td, ignore_errors=True)
+print("NEGATIV kontroll -- olvasas es visszaallitas szabad:")
+check("git config core.hooksPath (csak olvasas, a kulcs egyedul)", not blocks("git config core.hooksPath"))
+check("git config --global core.hooksPath (olvasas)", not blocks("git config --global core.hooksPath"))
+check("git config get core.hooksPath", not blocks("git config get core.hooksPath"))
+check("git config --list | grep hooksPath", not blocks("git config --list | grep hooksPath"))
+check("find .git/hooks -name '15-*' (csak keres)", not blocks("find .git/hooks -name '15-*'"))
+check("cat .git/config", not blocks("cat .git/config"))
+check("grep hooksPath .git/config", not blocks("grep hooksPath .git/config"))
+check("git config --get core.hooksPath", not blocks("git config --get core.hooksPath"))
+check("git config --unset core.hooksPath (visszaallitas)", not blocks("git config --unset core.hooksPath"))
+check("git config user.name (mas kulcs)", not blocks("git config user.name Dev"))
+check("cat .git/hooks/pre-push", not blocks("cat .git/hooks/pre-push"))
+check("ls .git/hooks/pre-push.d", not blocks("ls -la .git/hooks/pre-push.d"))
+check("grep a hook tartalmaban", not blocks("grep -n exit .git/hooks/pre-push"))
+check("chmod mas helyen", not blocks("chmod +x scripts/my-tool.sh"))
+check("sima git commit", not blocks("git commit -m x"))
+
+print("NEGATIV kontroll -- a sima munkaag-push tovabbra is szabad:")
+check("git push origin munkaag", not blocks(GPUSH + " origin munkaag"))
+check("git push --verify (a hook BEkapcsolasa)", not blocks(GPUSH + " --verify origin munkaag"))
+check("git commit --no-verify NEM push (a pre-commit a CI-vel egyutt kapu)",
+      not blocks("git commit --no-verify -m x"))
+
+print()
+print("POZITIV kontroll -- lathatosag-valtas (gh):")
+check("gh repo edit --visibility public", blocks("gh repo edit o/r --visibility public"))
+check("gh repo edit --visibility=public", blocks("gh repo edit o/r --visibility=public"))
+check("gh repo edit --visibility internal", blocks("gh repo edit o/r --visibility internal"))
+check("gh repo edit --visibility PUBLIC (nagybetu)", blocks("gh repo edit o/r --visibility PUBLIC"))
+check("gh repo edit --visibility $V (nem eldonthetо)", blocks('gh repo edit o/r --visibility "$V"'))
+check("gh -R o/r repo edit --visibility public", blocks("gh -R o/r repo edit --visibility public"))
+check("env GH_TOKEN=x gh repo edit ... public (burkolt)",
+      blocks("env GH_TOKEN=x gh repo edit o/r --visibility public"))
+check("gh repo create --public", blocks("gh repo create nev --public"))
+check("gh repo create --internal", blocks("gh repo create nev --internal"))
+check("gh api -X PATCH repos/o/r -F private=false",
+      blocks("gh api -X PATCH repos/o/r -F private=false"))
+check("gh api --method PATCH /repos/o/r -f visibility=public",
+      blocks("gh api --method PATCH /repos/o/r -f visibility=public"))
+check("gh api repos/o/r -f private=false (modszer nelkul = POST)",
+      blocks("gh api repos/o/r -f private=false"))
+check("gh api -X PATCH repos/o/r --input body.json (torzs nem lathato)",
+      blocks("gh api -X PATCH repos/o/r --input body.json"))
+check("gh api -XPATCH repos/o/r -Fprivate=false (egybeirt rovid kapcsolok, Sam 7.)",
+      blocks("gh api -XPATCH repos/o/r -Fprivate=false"))
+check("gh api repos/o/r -Fvisibility=public (egybeirt, modszer nelkul)",
+      blocks("gh api repos/o/r -Fvisibility=public"))
+check("gh api -X=PATCH repos/o/r -f private=false", blocks("gh api -X=PATCH repos/o/r -f private=false"))
+check("gh api -XGET repos/o/r (egybeirt GET szabad)", not blocks("gh api -XGET repos/o/r"))
+check("gh api ... -F 'private=false' (idezett, szokoz nelkul)",
+      blocks("gh api -X PATCH repos/o/r -F 'private=false'"))
+print("NEGATIV kontroll -- ami nem tesz semmit nyilvanossa:")
+check("gh repo edit --visibility private (biztonsagos irany)",
+      not blocks("gh repo edit o/r --visibility private"))
+check("gh repo edit --description", not blocks("gh repo edit o/r --description x"))
+check("gh repo create --private", not blocks("gh repo create nev --private"))
+check("gh api repos/o/r (GET)", not blocks("gh api repos/o/r"))
+check("gh api repos/o/r/pulls (olvasas)", not blocks("gh api repos/o/r/pulls"))
+check("gh api -X PATCH repos/o/r -f description=x (nem lathatosag)",
+      not blocks("gh api -X PATCH repos/o/r -f description=x"))
+check("gh api -X PATCH repos/o/r/pulls/5 -f private=false (nem a repo vegpontja)",
+      not blocks("gh api -X PATCH repos/o/r/pulls/5 -f body=x"))
+check("gh pr view", not blocks("gh pr view 12"))
+print("KIMONDOTT KORLAT -- amit a kapu szandekosan nem lat:")
+# Az idezett, SZOKOZT tartalmazo karakterlanc a kapu elvei szerint adat, nem parancs
+# (ba856d56): a GraphQL-torzs ilyen. Ezt a kapu sosem fogta; a hatar ugyanaz, mint az
+# egyeb idezett szovegeknel. A gyakorlati vedelem a repo-szintu push-kapu (git hook)
+# es a hozzaferes, nem a parancs-szoveg elemzese.
+check("gh api graphql idezett torzs NEM latszik",
+      not blocks("gh api graphql -f query='mutation { x(visibility: PUBLIC) }'"))
 
 print()
 if failed:
