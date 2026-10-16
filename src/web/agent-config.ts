@@ -533,7 +533,7 @@ export function readAgentPullDelivery(name: string): boolean {
 export function writeAgentPullDelivery(name: string, enabled: boolean): void {
   const configPath = join(agentDir(name), 'agent-config.json')
   let config: Record<string, unknown> = {}
-  try { config = JSON.parse(readFileOr(configPath, '{}')) } catch {}
+  config = readJsonObjectForWrite(configPath)
   if (enabled) config.pullDelivery = true
   else delete config.pullDelivery
   atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
