@@ -197,7 +197,8 @@ function guardedTier(row: MemoryRow): boolean {
 // string, not a supported state. `shared` is deliberately NOT exempt: a shared
 // memory has an author, and eight agents read what gets written over it.
 function ownerMismatch(ctx: RouteContext, row: MemoryRow): { caller: string; owner: string } | null {
-  const caller = ctx.auth?.kind === 'token' ? ctx.auth.agent : undefined
+  // The authenticated per-agent token first, else the self-asserted X-Agent-Id claim.
+  const caller = ctx.auth?.kind === 'token' ? (ctx.auth.agent ?? ctx.auth.claimedAgent) : undefined
   if (!caller || !row.agent_id) return null
   return caller === row.agent_id ? null : { caller, owner: row.agent_id }
 }

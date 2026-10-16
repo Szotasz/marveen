@@ -23,6 +23,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const SCAFFOLD = readFileSync(join(__dirname, '..', 'web', 'agent-scaffold.ts'), 'utf-8')
 const WEB = readFileSync(join(__dirname, '..', 'web.ts'), 'utf-8')
 const AGENT_PROCESS = readFileSync(join(__dirname, '..', 'web', 'agent-process.ts'), 'utf-8')
+const AGENT_TOKENS = readFileSync(join(__dirname, '..', 'web', 'agent-tokens.ts'), 'utf-8')
 const TEMPLATES = join(__dirname, '..', '..', 'templates')
 
 const OLD = '/Users/peterszollos/klaudia'
@@ -82,6 +83,12 @@ describe('rewriteForeignProjectRoot', () => {
     const r = rewriteForeignProjectRoot(`$(cat /Users/pcha0s/claw-test-kigyo/store/.dashboard-token)`, NEW)
     expect(r.text).toBe(`$(cat ${NEW}/store/.dashboard-token)`)
     expect(r.foreignRoots).toEqual(['/Users/pcha0s/claw-test-kigyo'])
+  })
+
+  it('re-anchors the agent-msg.sh line of the sub-agent schedule section', () => {
+    const r = rewriteForeignProjectRoot(`bash ${OLD}/scripts/agent-msg.sh agent-a main "x"`, NEW)
+    expect(r.text).toBe(`bash ${NEW}/scripts/agent-msg.sh agent-a main "x"`)
+    expect(r.replaced).toBe(1)
   })
 
   it('re-anchors the recipient-ledger recipe and the skill-lint line (HOSTMOVE1003)', () => {
@@ -188,7 +195,11 @@ describe('HOSTMOVE923 wiring (source-level)', () => {
   })
 
   it('keeps the absolute token path (the relative form is the measured 401)', () => {
-    expect(SCAFFOLD).toContain("const tokenPath = join(PROJECT_ROOT, 'store', '.dashboard-token')")
+    // Resolved per agent (agent-tokens.ts): the shared store/ file for the main
+    // agent, agents/<name>/.dashboard-token for a sub-agent -- both absolute.
+    expect(SCAFFOLD).toContain('const tokenPath = dashboardTokenPathFor(name)')
+    expect(AGENT_TOKENS).toContain("return join(PROJECT_ROOT, 'store', '.dashboard-token')")
+    expect(AGENT_TOKENS).toContain("return join(PROJECT_ROOT, 'agents')")
     expect(INSTALL_ANCHORED_SUFFIXES).toContain('/store/.dashboard-token')
   })
 })
