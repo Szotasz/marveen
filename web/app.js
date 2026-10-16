@@ -12773,7 +12773,7 @@ function renderProjects() {
     const assigneeChips = (p.activeAssignees || []).length
       ? p.activeAssignees.map((name) => {
           const meta = projectAssigneeMeta(name)
-          return `<span class="kanban-card-assignee"><span class="assignee-dot ${meta.type}">${escapeHtml((meta.label[0] || '?').toUpperCase())}</span>${escapeHtml(meta.label)}</span>`
+          return `<span class="kanban-card-assignee"><span class="assignee-dot ${escapeAttr(meta.type)}">${escapeHtml((meta.label[0] || '?').toUpperCase())}</span>${escapeHtml(meta.label)}</span>`
         }).join('')
       : `<span class="kanban-card-assignee">${escapeHtml(t('projects.no_assignee'))}</span>`
 
