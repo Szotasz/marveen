@@ -114,7 +114,7 @@ describe('an unmeasurable owner check is its own state (stubbed ps)', () => {
 })
 
 function watchdogLoop(): string {
-  const start = channelsSh.indexOf('while $TMUX has-session -t "$SESSION"')
+  const start = channelsSh.indexOf('while $TMUX has-session -t "=$SESSION:"')
   expect(start).toBeGreaterThan(0)
   const end = channelsSh.indexOf('\ndone\n', start)
   expect(end).toBeGreaterThan(start)
@@ -138,7 +138,7 @@ describe('the watchdog uses the owner check (wiring)', () => {
 
   it('the pane pid is re-read every tick, before the owner check (respawn-pane gives a new pid)', () => {
     const loop = watchdogLoop()
-    const reread = loop.indexOf(`_pane_pid_now="$($TMUX list-panes -t "$SESSION" -F '#{pane_pid}'`)
+    const reread = loop.indexOf(`_pane_pid_now="$($TMUX list-panes -t "=$SESSION:" -F '#{pane_pid}'`)
     const check = loop.indexOf('bot_pid_descends_from "$_bot_pid" "$_watchdog_claude_pid"')
     expect(reread).toBeGreaterThan(0)
     expect(check).toBeGreaterThan(reread)

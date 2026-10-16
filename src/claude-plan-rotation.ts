@@ -87,6 +87,10 @@ export interface RotationCandidate {
   /** From estimateWindowFree() for the 7-day window. Absent = unknown = 100
    *  (fail open, same rule as a missing 5h observation). */
   freeSevenDayPct?: number
+  /** Unix epoch SECONDS at which the candidate's LIMITING window (the more
+   *  used of the two) resets. Absent when nothing is used (no observation, or
+   *  both windows already reset): there is no quota about to be wasted. */
+  limitingResetsAt?: number
 }
 
 /** A candidate's usable headroom: the TIGHTER of its two windows. A plan with
@@ -98,10 +102,28 @@ export function candidateHeadroom(c: RotationCandidate): number {
 }
 
 /**
+ * Enough headroom to land on: neither window already in the "near a limit"
+ * zone (IDLE_PROBE_GATE, derived from ROTATION_GATE). Only such candidates
+ * are ranked by reset time in pickRotationTarget.
+ */
+export function hasSufficientHeadroom(c: RotationCandidate): boolean {
+  return 100 - c.freeFivePct < IDLE_PROBE_GATE.fiveHourPercent
+    && 100 - (c.freeSevenDayPct ?? 100) < IDLE_PROBE_GATE.sevenDayPercent
+}
+
+/**
  * The best rotation target among candidates, excluding the currently active
- * plan. Ranked by candidateHeadroom() (min of the 5h and 7d free %). Ties
- * break on planId ascending (stable, not iteration-order dependent) so the
- * result never depends on how the caller assembled the candidate array.
+ * plan.
+ *
+ * Among candidates with sufficient headroom (hasSufficientHeadroom), the one
+ * whose limiting window resets SOONEST wins: its remaining quota is about to
+ * be reset anyway, so spending it first wastes nothing, while a later-resetting
+ * plan keeps its quota for later (owner suggestion, 2026-09-26). A candidate
+ * with no known reset (nothing used) sorts after every known one. Ties, and
+ * the case where NO candidate has sufficient headroom, fall back to the
+ * original ranking: candidateHeadroom() (min of the 5h and 7d free %), so an
+ * insufficient candidate never wins on reset time. Final tie-break on planId
+ * ascending (stable, not iteration-order dependent).
  */
 export function pickRotationTarget(
   candidates: RotationCandidate[],
@@ -109,13 +131,17 @@ export function pickRotationTarget(
 ): string | null {
   const pool = candidates.filter((c) => c.planId !== excludePlanId)
   if (pool.length === 0) return null
-  return pool.reduce((best, c) => {
-    const h = candidateHeadroom(c)
-    const bh = candidateHeadroom(best)
-    if (h > bh) return c
-    if (h === bh && c.planId < best.planId) return c
-    return best
-  }).planId
+  const sufficient = pool.filter(hasSufficientHeadroom)
+  const byHeadroom = (a: RotationCandidate, b: RotationCandidate) =>
+    candidateHeadroom(b) - candidateHeadroom(a) || (a.planId < b.planId ? -1 : a.planId > b.planId ? 1 : 0)
+  if (sufficient.length === 0) return [...pool].sort(byHeadroom)[0].planId
+  const resetKey = (c: RotationCandidate) => c.limitingResetsAt ?? Number.POSITIVE_INFINITY
+  return [...sufficient].sort((a, b) => {
+    const ra = resetKey(a)
+    const rb = resetKey(b)
+    if (ra !== rb) return ra < rb ? -1 : 1
+    return byHeadroom(a, b)
+  })[0].planId
 }
 
 export const ROTATION_GATE = {
@@ -131,6 +157,19 @@ export const ROTATION_GATE = {
    *  quota-gate.ts's nearResetMs. Applied per window: a 7d window resetting
    *  in 3 days is never "near". */
   nearResetMs: 30 * 60_000,
+} as const
+
+/**
+ * When the heartbeat probes IDLE plans live (claude-plan-rotate-check-run.ts
+ * -> refreshIdlePlans). Derived from ROTATION_GATE, a little below it, so the
+ * idle plans' numbers are refreshed in the ticks BEFORE the switch decision
+ * rather than only at the moment of it. Below both thresholds nothing is
+ * probed at all: every probe spends the probed plan's own quota, and with a
+ * healthy active plan there is no decision the fresh numbers would feed.
+ */
+export const IDLE_PROBE_GATE = {
+  fiveHourPercent: ROTATION_GATE.switchAtPercent - 10,
+  sevenDayPercent: ROTATION_GATE.switchAtSevenDayPercent - 5,
 } as const
 
 /** Last-known state of a would-be rotation target, as far as candidacy is
@@ -172,10 +211,14 @@ export function candidateFromObservation(
   const seven = observed?.windows?.seven_day
   if (effectiveUsedPct(seven, nowMs) >= ROTATION_GATE.switchAtSevenDayPercent) return null
   if (effectiveUsedPct(five, nowMs) >= 100) return null
+  const usedFive = effectiveUsedPct(five, nowMs)
+  const usedSeven = effectiveUsedPct(seven, nowMs)
+  const limiting = usedSeven >= usedFive ? seven : five
   return {
     planId,
     freeFivePct: estimateWindowFree(five, nowMs),
     freeSevenDayPct: estimateWindowFree(seven, nowMs),
+    ...(Math.max(usedFive, usedSeven) > 0 && limiting ? { limitingResetsAt: limiting.resetsAt } : {}),
   }
 }
 

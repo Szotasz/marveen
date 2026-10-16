@@ -1,3 +1,5 @@
+import { homedir } from 'node:os'
+import { expandAndValidateConfigDir } from './config-dir-path.js'
 // Single source of truth for settings the dashboard's "Beallitasok" page can
 // show and edit. Each entry describes one .env-backed config key: its type
 // (drives the input widget + validation), default, human description, the
@@ -49,8 +51,8 @@ export const DISTRIBUTION_DEFAULT_AGENT_MODEL = 'claude-opus-5-5[1m]'
 // installed Claude Code CLI is measured (claude-cli-support.ts) not to launch
 // DISTRIBUTION_DEFAULT_AGENT_MODEL. The default above reaches every existing
 // model-less install on a plain code update, and nothing else on that launch
-// path checks the CLI: an AVX-less host is pinned to CLI 2.1.110 (CLAUDE_PIN
-// in channels.sh / install-linux.sh / fix-avx.sh), DISABLE_AUTOUPDATER keeps
+// path checks the CLI: an AVX-less host is pinned to CLI 2.1.112 (CLAUDE_PIN
+// in channels.sh / install-linux.sh / fix-avx.sh; 2.1.110 before #1494), DISABLE_AUTOUPDATER keeps
 // any older CLI where it is, and on such a CLI claude-opus-5-5 answers every
 // prompt with 400 unrecognized_model -- the session comes up and goes silent.
 // This must be a model the OLDEST pinned CLI launches (a test pins that), and
@@ -74,6 +76,12 @@ export interface SettingDefinition {
   /** Inclusive bounds, only meaningful for type 'int'. */
   min?: number
   max?: number
+  /**
+   * Optional extra check for a 'string' value: returns an error message, or
+   * null when the value is acceptable. Runs on every write through
+   * validateSettingValue (SECSZIVEK1007).
+   */
+  validate?: (value: string) => string | null
 }
 
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/
@@ -305,6 +313,15 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     requiresRestart: true,
   },
   {
+    key: 'FLEET_PYTHON_VENV',
+    type: 'string',
+    default: '',
+    description: 'A flotta közös Python venv mappája, abszolút útvonal (kezdő ~ = home; relatív útvonal nem érvényes). Ha a <mappa>/bin létezik, minden ügynök indítási PATH-jának elejére kerül, így a skillek sima python3 hívása és a venv CLI-jei (markitdown stb.) a venv-ből jönnek. Nincs beállítva (alapértelmezés) vagy nem létező mappa = kikapcsolva. Az itt üresen hagyott mező NEM kapcsolja ki a .env-ben megadott értéket: kikapcsoláshoz a .env-ből kell törölni, vagy itt nem létező mappát megadni (pl. /nonexistent).',
+    module: 'system',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
     key: 'OLLAMA_URL',
     type: 'string',
     default: 'http://localhost:11434',
@@ -501,7 +518,51 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     default: 90,
     min: 7,
     max: 3650,
-    description: 'A token-használati napló (token_usage tábla) megőrzési ideje napokban. A napi sweep ennél régebbi sorokat törli, így a tábla nem nő korlátlanul. A modell-javaslat csak az utolsó 30 napot nézi, így a 90 nap minden fogyasztónak bőven elég.',
+    description: 'A token-használati napló (token_usage tábla) megőrzési ideje napokban. A napi sweep ennél régebbi sorokat törli, így a tábla nem nő korlátlanul. A modell-javaslat csak az utolsó 30 napot nézi, de a token-dashboard (from nélkül a teljes táblát olvassa) és a havi költség-ledger (bármely korábbi hónap) annyira nyúl vissza, amennyit a megőrzés enged: a csökkentése ezek előzményét is rövidíti.',
+    module: 'system',
+    secret: false,
+    requiresRestart: false,
+  },
+  {
+    key: 'CONVERSATION_LOG_RETENTION_DAYS',
+    type: 'int',
+    default: 0,
+    min: 0,
+    max: 3650,
+    description: 'A csatorna-beszélgetés napló (conversation_log tábla) megőrzési ideje napokban. 0 = örökre megőrzi (ez az alapértelmezés, a napi sweep ilyenkor semmit nem töröl). Ha bekapcsolod, a javasolt érték 90 nap: a napi digest és a heartbeat csak az utolsó napokat nézi. Figyelem: ha a naplót audit-forrásnak használod, a bekapcsolás az ennél régebbi sorokat véglegesen törli.',
+    module: 'system',
+    secret: false,
+    requiresRestart: false,
+  },
+  {
+    key: 'OTEL_SPAN_RETENTION_DAYS',
+    type: 'int',
+    default: 0,
+    min: 0,
+    max: 365,
+    description: 'A trace-telemetria (otel_spans tábla) megőrzési ideje napokban. 0 = örökre megőrzi (ez az alapértelmezés, a napi sweep ilyenkor semmit nem töröl). Ha bekapcsolod, a javasolt érték 14 nap: tisztán diagnosztikai adat, ezért rövidebb a többinél.',
+    module: 'system',
+    secret: false,
+    requiresRestart: false,
+  },
+  {
+    key: 'AGENT_MESSAGE_RETENTION_DAYS',
+    type: 'int',
+    default: 0,
+    min: 0,
+    max: 3650,
+    description: 'A lezárt (done/failed) ágensközi üzenetek (agent_messages tábla) megőrzési ideje napokban. 0 = örökre megőrzi (ez az alapértelmezés, a napi sweep ilyenkor semmit nem töröl). Ha bekapcsolod, a javasolt érték 30 nap. A pending és delivered sorok SOHA nem törlődnek koruk miatt, mert azok még kézbesítés/feldolgozás alatt állnak.',
+    module: 'system',
+    secret: false,
+    requiresRestart: false,
+  },
+  {
+    key: 'TOOL_CALL_LOG_RETENTION_DAYS',
+    type: 'int',
+    default: 0,
+    min: 0,
+    max: 365,
+    description: 'A tool-hívás napló (tool_call_log tábla) megőrzési ideje napokban. 0 = örökre megőrzi (ez az alapértelmezés, a napi sweep ilyenkor semmit nem töröl). Ha bekapcsolod, a javasolt érték 30 nap: a workflow-jelölt elemzés az utolsó napokból dolgozik.',
     module: 'system',
     secret: false,
     requiresRestart: false,
@@ -511,16 +572,125 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     key: 'MAIN_AGENT_ISOLATED_CONFIG',
     type: 'boolean',
     default: '0',
-    description: 'Bármely platformon: a fő channels-agent kapjon-e saját, izolált CLAUDE_CONFIG_DIR-t (mint a sub-agentek). Bekapcsolva a fő agent a hosszú élettartamú fleet setup-tokenből (store/.claude-oauth-token) hitelesít, nem a megosztott, önmagát frissítő session-hitelesítésből (macOS: rotálódó Keychain OAuth-session; Linux: megosztott ~/.claude/.credentials.json) -- mindkettő periodikusan lejár, és a lejárt fájl a Claude Code precedencia miatt akkor is nyer az érvényes env-tokennel szemben, ha az élő token ott van mellette (2026-07-23 kiesés). Token hiányában no-op. A módosítás a channels session újraindításakor lép életbe.',
+    description: 'Bármely platformon: a fő channels-agent kapjon-e saját, izolált CLAUDE_CONFIG_DIR-t (mint a sub-agentek). Bekapcsolva a fő agent a hosszú élettartamú fleet setup-tokenből (store/.claude-oauth-token) hitelesít, nem a megosztott, önmagát frissítő session-hitelesítésből (macOS: rotálódó Keychain OAuth-session; Linux: megosztott ~/.claude/.credentials.json) -- mindkettő periodikusan lejár. Ha a token exportálva van, a dokumentált precedencia szerint az nyer a /login session-nel szemben. A korábbi "a lejárt fájl nyer" állítás (2026-07-23) FELÜLMÉRVE 10-09 (flotta-mérés, msg 36667, issue #1805): Claude Code 2.1.294-en lejárt credentials-fájl mellett az érvényes env-token hitelesített; a Keychainben tárolt login esetét ez nem mérte. Token hiányában no-op. A módosítás a channels session újraindításakor lép életbe.',
     module: 'channels',
     secret: false,
     requiresRestart: true,
   },
   {
+    key: 'NOTIFY_SLACK_TARGET',
+    type: 'string',
+    default: '',
+    description: 'A tulajdonosnak szóló értesítések (heartbeat-összefoglaló, biztonsági és egyéb gazda-értesítések) Slack-célja: "dm" (a gazda DM-je), egy csatorna neve a store/slack-channels.json térképből, vagy egy C/G/D-vel kezdődő Slack-azonosító. Üresen (alapértelmezés) nincs Slack-küldés. A küldés a fő ágens Slack-bot tokenjével megy.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: false,
+  },
+  {
+    key: 'NOTIFY_SLACK_ALERT_TARGET',
+    type: 'string',
+    default: '',
+    description: 'Az üzemeltetési riasztások (watchdog, újraindítás, beragadt munkamenet, context-guard) Slack-célja, ugyanabban az alakban, mint a NOTIFY_SLACK_TARGET. Üresen a NOTIFY_SLACK_TARGET-et használja.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: false,
+  },
+  {
+    key: 'NOTIFY_TELEGRAM',
+    type: 'boolean',
+    default: '1',
+    description: 'Menjen-e az értesítés Telegramra is. Bekapcsolva (alapértelmezés) a Telegram-küldés változatlan, a Slack mellé kerül. Kikapcsolva, ha van Slack-cél, csak Slackre megy; ha a Slack-küldés elbukik, a Telegram tartalékként mégis kimegy, hogy semmi ne vesszen el.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: false,
+  },
+  {
+    key: 'NOTIFY_TELEGRAM_FALLBACK',
+    type: 'boolean',
+    default: '1',
+    description: 'Mehet-e Telegram TARTALÉKKÉNT, ha a Slack-értesítés nem megy ki (nincs Slack-cél, a Slack-modul nem töltődik be, vagy a küldés hibát ad). Bekapcsolva (alapértelmezés) semmi nem vész el: a Telegram átveszi. Kikapcsolva a Telegram SOHA nem kap értesítést tartalékként: a Slack-hiba hangos naplósor (a notify.sh nem nullával lép ki), és az ütemezett feladatok tartalék-utasítása is a notify.sh-t nevezi meg. A NOTIFY_TELEGRAM a "menjen-e MELLÉ" kérdés, ez a "menjen-e HELYETTE".',
+    module: 'channels',
+    secret: false,
+    requiresRestart: false,
+  },
+  {
+    key: 'SLACK_OWNER_USER_ID',
+    type: 'string',
+    default: '',
+    description: 'A gazda Slack user-azonosítója (U...), a "dm" cél ehhez nyit DM-et. Üresen a fő ágens Slack access.json-jából veszi, ha ott pontosan egy engedélyezett felhasználó áll.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: false,
+  },
+  {
+    key: 'SCHEDULED_DELIVERY_CHANNEL',
+    type: 'string',
+    default: '',
+    description: 'Hova menjen a fő ágens ütemezett feladatainak eredménye, "<csatorna>:<chat id>" alakban (csatorna: telegram, slack, discord, googlechat, teams), pl. "slack:D0123456789". Üresen (alapértelmezés) a fő ágens saját csatornája marad. Az al-ágensek feladataira nem hat, és az a feladat, amelyik saját chatet vagy "none"-t ad meg, megtartja. Ha a cél nem Telegram, és ott a küldés nem megy, a gazda Telegram-chatje (ALLOWED_CHAT_ID) a tartalék. Hibás érték esetén nincs felülírás, csak naplóbejegyzés.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: false,
+  },
+  {
     key: 'MAIN_AGENT_CONFIG_DIR',
     type: 'string',
     default: '',
+    // SECSZIVEK1007: the same path rules as an agent's claudeConfigDir and a
+    // plan's configDir (expandAndValidateConfigDir); the value reaches the
+    // channels launch command. Empty = unset, allowed.
+    validate: (v) => (v.trim() === '' || expandAndValidateConfigDir(v, homedir()) !== null
+      ? null
+      : 'Érvénytelen könyvtár: csak betű, szám és a _ . / ~ - karakterek, ".." nélkül, a ~ csak az elején (~/...).'),
     description: 'A fő channels-agent explicit CLAUDE_CONFIG_DIR-je (pl. ~/.claude-bot). Akkor kell, ha a botnak SAJÁT Claude-loginja van, külön a flottáétól: a MAIN_AGENT_ISOLATED_CONFIG erre nem alkalmas, mert az a fleet setup-tokenből hitelesít, tehát a flotta identitását adja a botnak (és token nélkül no-op). Üresen hagyva a fő agent a közös ~/.claude-ot használja (alapértelmezés). Ha a megadott könyvtár nem létezik, a beállítás no-op és figyelmeztetést logol. Elsőbbséget élvez a MAIN_AGENT_ISOLATED_CONFIG-gal szemben. A módosítás a channels session újraindításakor lép életbe.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: true,
+  },
+  // The opt-in switches below are boot-time consts in src/config.ts
+  // (cfg(): config-overrides.json > .env), so a value saved here takes effect
+  // only after the dashboard restarts. Default '0' matches config.ts, where an
+  // unset key resolves to false.
+  {
+    key: 'SUBAGENT_INBOX_TEE',
+    type: 'boolean',
+    default: '0',
+    description: 'Telegramos sub-agentek bejövő üzeneteinek lemezre tükrözése (inbound-tee). Bekapcsolva a sub-agent a csatorna-plugint egy saját mcp.json-on keresztül, a scripts/channel-inbound-tee.mjs burkolóval tölti be (--channels helyett), és minden bejövő üzenet a <state>/inbox-pending.jsonl fájlba is kerül, ahonnan a channel-inbox-drain hook a következő körbe húzza be. Ez a bejövő üzenetek tartalmát lemezre írja. A fő agentre és a nem Telegramos agentekre nem vonatkozik. Alapértelmezés: kikapcsolva (változatlan --channels út). A SUBAGENT_TELEGRAM_WAKE_ENABLED csak ezzel együtt csinál bármit. A módosítás a dashboard újraindítása után, és agentenként a sub-agent következő indításakor lép életbe.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
+    key: 'SUBAGENT_TELEGRAM_WAKE_ENABLED',
+    type: 'boolean',
+    default: '0',
+    description: 'A message-router felébreszti azt a tétlen Telegramos sub-agentet, akinek a <state>/inbox-pending.jsonl fájljában beragadt bejövő üzenet van, hogy a drain hook behúzza őket. Csak SUBAGENT_INBOX_TEE=1 mellett van hatása: anélkül nem keletkezik inbox-fájl, és a figyelő no-op. Alapértelmezés: kikapcsolva. A módosítás a dashboard újraindításakor lép életbe.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
+    key: 'WORKER_AUTOUPDATE',
+    type: 'boolean',
+    default: '0',
+    description: 'Egyetlen kijelölt Claude Code frissítő. Alapból minden indított claude DISABLE_AUTOUPDATER=1-gyel fut, hogy két session ne írja egyszerre a közös telepítést. Bekapcsolva PONTOSAN egy session, a lassú worker indul nélküle, és natív telepítésen naprakészen tartja a Claude Code-ot; a gyors worker, a channels session és a sub-agentek továbbra is rögzítve maradnak. npm-es telepítésen hatástalan (ott a channels.sh claude_ensure frissít). A futó sessionök a régi verzión maradnak, az újat a következő indításukkor veszik fel. A módosítás a dashboard újraindítása után, a lassú worker következő indításakor lép életbe.',
+    module: 'agents',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
+    key: 'VOICE_TRANSCRIBE_INBOUND',
+    type: 'boolean',
+    default: '0',
+    description: 'Telepítés-szintű alapértelmezés a bejövő hangüzenetek átiratához a text módú ügynököknél. Bekapcsolva minden olyan text módú ügynöknél helyi faster-whisper átirat készül, amelynek az agent-config.json-jában nincs voice.transcribeInbound beállítás (az ügynökönkénti érték felülírja ezt). A voice/auto módú ügynököknél az átirat ettől függetlenül mindig elkészül. Hangüzenetenként CPU-időbe kerül. Alapértelmezés: kikapcsolva. A módosítás a dashboard újraindításakor lép életbe.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
+    key: 'TELEGRAM_TOPICS_ENABLED',
+    type: 'boolean',
+    default: '0',
+    description: 'Telegram-témák: ha a bot privát chatjében témák vannak, a válasz abba a témába megy, ahonnan az üzenet jött, és a gépelés-jelzés is ott látszik. Bekapcsolva a csatorna-indítás egy kiegészítést tesz a Telegram plugin forrására (scripts/patch-telegram-plugin.py), ami a bejövő üzenet téma-azonosítóját átadja az ügynöknek, és a reply toolt témába küldésre is képessé teszi; kikapcsolva a kiegészítést leveszi, és a plugin pontosan a mai. A privát chatben a témákat a BotFather-ben kell bekapcsolni. A riasztások, a jóváhagyás-kérések és a többi rendszerüzenet ettől függetlenül téma nélkül megy ki. Alapértelmezés: kikapcsolva. A módosítás a csatorna következő indításakor lép életbe.',
     module: 'channels',
     secret: false,
     requiresRestart: true,
@@ -563,6 +733,7 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
       'claude-fable-5',
       'claude-fable-5-1',
       'claude-opus-4-8[1m]',
+      'claude-haiku-5-5',
       'claude-haiku-4-5-20251001',
     ],
   },
@@ -577,7 +748,7 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     key: 'CLAUDE_ROTATION_ENABLED',
     type: 'boolean',
     default: '0',
-    description: 'Automata Claude-kulcs rotáció: ha a fő agent aktív előfizetése kifogy, automatikusan váltson egy másik regisztrált planre. Előfeltétel: MAIN_AGENT_ISOLATED_CONFIG=1 és legalább 2 regisztrált plan a claude-plans.json-ban. A váltás a fő agent session-jének újraindításával jár.',
+    description: 'Automata Claude-kulcs rotáció: ha a fő agent aktív előfizetése kifogy, automatikusan váltson egy másik regisztrált planre. Előfeltétel: MAIN_AGENT_ISOLATED_CONFIG=1 és legalább 2 regisztrált plan a claude-plans.json-ban. A váltás a fő agent session-jének újraindításával jár. Bekapcsoláskor a 10 percenkénti rotációs heartbeat ütemezés (claude-plan-rotate-check) automatikusan létrejön, ha még nincs; a hiányzó előfeltételeket a Claude plans fül figyelmeztetése mutatja.',
     module: 'claude-plans',
     secret: false,
     requiresRestart: false,
@@ -595,16 +766,19 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: false,
   },
-  // Opt-in background refresh of IDLE plans' 5h/7d usage by the rotation
-  // heartbeat (scripts/claude-plan-rotate-check.ts -> refreshIdlePlans). Each
-  // probe is a real Messages API call that spends the probed plan's own quota,
-  // so it is off by default and independent of CLAUDE_ROTATION_ENABLED: an
-  // operator can keep the Settings bars fresh without automatic rotation.
+  // On-demand refresh of IDLE plans' 5h/7d usage by the rotation heartbeat
+  // (scripts/claude-plan-rotate-check.ts -> refreshIdlePlans). Each probe is a
+  // real Messages API call that spends the probed plan's own quota, so it only
+  // fires while the ACTIVE plan is near a limit (IDLE_PROBE_GATE in
+  // claude-plan-rotation.ts), right before the rotation decision that uses the
+  // numbers. With a healthy active plan it costs nothing, hence default ON;
+  // this key is the operator's off switch. Independent of
+  // CLAUDE_ROTATION_ENABLED.
   {
     key: 'CLAUDE_PLAN_USAGE_REFRESH',
     type: 'boolean',
-    default: '0',
-    description: 'A tétlen (épp nem használt) token-módú planek 5 órás és heti keretét a rotációs heartbeat a háttérben is lekérdezi, planenként legfeljebb 30 percenként. Minden lekérdezés egy valódi, minimális API-hívás, ami az adott plan saját keretéből fogy, ezért alapból KI. A rotációtól (CLAUDE_ROTATION_ENABLED) függetlenül bekapcsolható, ha csak a Beállítások sávjait akarod frissen tartani.',
+    default: '1',
+    description: 'Igény szerinti lekérdezés engedélyezése: a rotációs heartbeat a tétlen (épp nem használt) token-módú planek 5 órás és heti keretét CSAK akkor kérdezi le élőben, ha az aktív plan közel jár a határhoz (5 órás keret legalább 80%, vagy heti legalább 85%), közvetlenül a váltási döntés előtt, hogy az friss számokkal dolgozzon. Planenként legfeljebb 30 percenként. Minden lekérdezés egy valódi, minimális API-hívás az adott plan saját keretéből, de amíg az aktív plan rendben van, egyetlen hívás sem történik, ezért alapból BE. Kikapcsolva a tétlen planek utolsó ismert értéke marad érvényben.',
     module: 'claude-plans',
     secret: false,
     requiresRestart: false,
@@ -662,5 +836,9 @@ export function validateSettingValue(def: SettingDefinition, raw: unknown): Sett
   }
 
   // 'string'
+  if (def.validate) {
+    const err = def.validate(String(raw))
+    if (err) return { ok: false, error: err }
+  }
   return { ok: true, value: String(raw) }
 }

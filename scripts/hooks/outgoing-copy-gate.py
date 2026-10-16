@@ -87,7 +87,8 @@ _ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z_0-9]*=")
 _CMD_POSITION_KEYWORDS = frozenset(("if", "then", "else", "elif", "do", "while", "until", "{", "!"))
 _SENDER_PROG = re.compile(r"^(sendmail|msmtp|swaks)$", re.I)
 _SENDPY = re.compile(r"^send\.py$", re.I)
-_PYTHON = re.compile(r"^python3?$", re.I)
+# SUBAGENTMAILGATE1016: a version-suffixed interpreter (python3.12, python3.13t) is the same python.
+_PYTHON = re.compile(r"^python(3(\.\d+t?)?)?$", re.I)
 # A ket kapu (ez + scripts/email-send-gate.mjs) SZANDEKOSAN azonos
 # felismeres-szemantikat visel, es ezt kozos eset-lista orzi
 # (send-invocation-cases.json + konformancia-teszt): a divergencia
@@ -107,6 +108,22 @@ _CURLISH = re.compile(r"^(curl|wget|http)$", re.I)
 _CODE_SEND = re.compile(
     r"\bsmtplib\b|SMTP\s*\(|\bsendMail\s*\(|\bsendEmail\b|\bmail\.send\b", re.I
 )
+# Issue #1853 (stylnet): the support-mail sender LOADED AS A MODULE, not run by its
+# file name -- `import send`, `from send import main`, runpy, __import__/import_module,
+# or a spec built from send.py. The file-name rule below never saw these, so the call
+# went past the approval gate. Case-sensitive on purpose (Python names are), and
+# `send` must be the whole module name: `import sendgrid_x` or a "send" word in a
+# string stays out. Mirrored in email-send-gate.mjs (CODE_SEND_MODULE).
+_CODE_SEND_MODULE = re.compile(
+    r"\bimport\s+(?:[\w.]+\s*,\s*)*send\b(?![\w.])"
+    r"|\bfrom\s+send\s+import\b"
+    r"|\brunpy\b[^\n]*\bsend\b"
+    r"|\b(?:__import__|import_module)\s*\(\s*['\"]send['\"]"
+    r"|\bspec_from_file_location\b[^\n]*\bsend\.py\b"
+    # The same class on the Graph sender (src/graph-mail.ts, export sendMail): renamed on
+    # import, or reached by a string key -- the call itself then never reads `sendMail(`.
+    r"|\bsendMail\s+as\b|\[\s*['\"]sendMail['\"]\s*\]"
+)
 _CODE_EXECISH = re.compile(
     r"\bsubprocess\b|os\.system|\bpopen\b|child_process|\bexec[A-Za-z]*\s*\(|\bspawn[A-Za-z]*\s*\(",
     re.I,
@@ -115,7 +132,7 @@ _CODE_SENDER_LIT = re.compile(r"sendmail|msmtp|swaks|send\.py", re.I)
 
 
 def _code_string_sends(code: str) -> bool:
-    if _CODE_SEND.search(code):
+    if _CODE_SEND.search(code) or _CODE_SEND_MODULE.search(code):
         return True
     return bool(_CODE_EXECISH.search(code) and _CODE_SENDER_LIT.search(code))
 # Token-ELEJERE horgonyzott cel-minta: egy URL-argumentum vagy csupasz
@@ -140,8 +157,17 @@ _CURL_BODY_OPTS = {
 _SAFE_METHODS = {"GET", "HEAD"}
 
 
-def _curl_resend_verdict(rest):
+# RESENDGETTWIN1010: a httpie (`http`) metodusa POZICIONALIS (http POST URL),
+# a torzse `kulcs=ertek` / `kulcs:=json` elem -- egyiket sem ismeri az alabbi
+# curl/wget flag-olvaso, ezert a `http POST .../emails to=...` "read" lett, es a
+# kapu atengedte. A httpie-re a metodus itt nem dontheto: fail-closed.
+_HTTPIE = re.compile(r"^http$", re.I)
+
+
+def _curl_resend_verdict(prog, rest):
     """'read' | 'send' | 'unknown' -- unknown a hivo oldalon fail-closed."""
+    if _HTTPIE.match(prog):
+        return "unknown"
     method = None
     has_body = False
     get_forced = False
@@ -356,6 +382,115 @@ def _segment_is_send(toks, depth: int) -> bool:
     return any(_head_is_send(h, depth) for h in _command_heads(toks))
 
 
+# SUBAGENTMAILGATE1016: the sender was recognised only with the script as the
+# FIRST interpreter argument and the exact --to flag. The boundary and the
+# measured bypasses are written out at pythonHeadSends in email-send-gate.mjs
+# (the JS twin); send-invocation-cases.json binds the two.
+_PY_OPT_WITH_ARG = {"-X", "-W", "--check-hash-based-pycs"}
+_RECIPIENT_FLAG = re.compile(r"^--to?(=|$)")
+_UNDECIDABLE_PATH = re.compile(r"[*?[{$]")
+
+
+def _python_script_operand(rest):
+    """(script, stdin, stdin_redirect) for an interpreter's argument list."""
+    stdin_redirect = False
+    i = 0
+    while i < len(rest):
+        t = rest[i]
+        if t == "--":
+            return (rest[i + 1] if i + 1 < len(rest) else None), False, stdin_redirect
+        if t == "-":
+            return None, True, stdin_redirect
+        if re.match(r"^-[cm]", t):  # code string / module: judged elsewhere
+            return None, False, stdin_redirect
+        if t in _PY_OPT_WITH_ARG:
+            i += 2
+            continue
+        if t.startswith("<"):
+            stdin_redirect = True
+            i += 2 if t == "<" else 1
+            continue
+        if re.match(r"^\d*>", t):
+            i += 2 if re.match(r"^\d*>>?$", t) else 1
+            continue
+        if t.startswith("-") and len(t) > 1:
+            i += 1
+            continue
+        return t, False, stdin_redirect
+    return None, False, stdin_redirect
+
+
+def flatten_substitutions(cmd: str) -> str:
+    """Every unquoted command or process substitution as one undecidable word;
+    see flattenSubstitutions in email-send-gate.mjs (the JS twin)."""
+    out = []
+    q = None
+    i = 0
+    n = len(cmd)
+    while i < n:
+        ch = cmd[i]
+        if q:
+            if ch == "\\" and q == '"' and i + 1 < n:
+                out.append(ch + cmd[i + 1])
+                i += 2
+                continue
+            if ch == q:
+                q = None
+            out.append(ch)
+            i += 1
+            continue
+        if ch in ("'", '"'):
+            q = ch
+            out.append(ch)
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < n:
+            out.append(ch + cmd[i + 1])
+            i += 2
+            continue
+        opens = ch in ("$", "<", ">") and i + 1 < n and cmd[i + 1] == "("
+        if opens or ch == "`":
+            depth = 1
+            j = i + (2 if opens else 1)
+            iq = None
+            while j < n and depth > 0:
+                c = cmd[j]
+                j += 1
+                if iq:
+                    if c == iq:
+                        iq = None
+                    continue
+                if c in ("'", '"'):
+                    iq = c
+                    continue
+                if ch == "`":
+                    if c == "`":
+                        depth = 0
+                    continue
+                if c == "(":
+                    depth += 1
+                elif c == ")":
+                    depth -= 1
+            out.append(" $__SUBST__ ")
+            i = j
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _python_head_sends(rest) -> bool:
+    recipient = any(_RECIPIENT_FLAG.match(t) for t in rest)
+    script, stdin, stdin_redirect = _python_script_operand(rest)
+    if script is not None and _SENDPY.match(_basename(script)):
+        return recipient
+    if script is not None and _UNDECIDABLE_PATH.search(script):
+        return recipient or any(t != script and "$" in t for t in rest)
+    if stdin or (script is None and stdin_redirect):
+        return recipient
+    return False
+
+
 def _head_is_send(toks, depth: int) -> bool:
     if toks is None:  # the depth bound was hit on a wrapper: audit it
         return True
@@ -380,9 +515,19 @@ def _head_is_send(toks, depth: int) -> bool:
     candidates = [prog] + (
         [_basename(rest[0])] if rest and (_PYTHON.match(prog) or _NODEISH.match(prog)) else []
     )
-    if any(_SENDPY.match(c) for c in candidates) and any(
-        t == "--to" or t.startswith("--to=") for t in rest
-    ):
+    # Issue #1853: `python3 -m send` (or -m pkg.send) is the same sender run by module
+    # name; it gets the same --to rule as the file-name form.
+    if _PYTHON.match(prog):
+        for i, t in enumerate(rest):
+            if t == "-m" and i + 1 < len(rest) and rest[i + 1].rsplit(".", 1)[-1] == "send":
+                candidates.append("send.py")
+    if any(_SENDPY.match(c) for c in candidates) and any(_RECIPIENT_FLAG.match(t) for t in rest):
+        return True
+    if _PYTHON.match(prog) and _python_head_sends(rest):
+        return True
+    # an interpreter or program that cannot be resolved statically ($PY, a glob,
+    # a substitution) with a recipient flag: what runs is undecidable here
+    if _UNDECIDABLE_PATH.search(toks[0]) and any(_RECIPIENT_FLAG.match(t) for t in rest):
         return True
     # graph-mail kimeno alparanccsal (tsx/node runner utan is)
     if any(_GRAPHMAIL.match(_basename(t)) for t in toks) and "send" in rest:
@@ -393,7 +538,7 @@ def _head_is_send(toks, depth: int) -> bool:
     # fenn; a read-only GET/HEAD lekerdezes atmegy; a nem-donthato metodus
     # tovabbra is fail-closed.
     if _CURLISH.match(prog) and any(_RESEND_TARGET.match(t) for t in rest):
-        return _curl_resend_verdict(rest) != "read"
+        return _curl_resend_verdict(prog, rest) != "read"
     return False
 
 
@@ -414,7 +559,110 @@ def wrapper_depth_hit(cmd: str) -> bool:
         h is not None and _head_is_send(h, 0) for h in heads)
 
 
+# Issue #1853, the heredoc form: the segmenter drops every heredoc BODY (it is data
+# to the shell), but when the command that opens it is an interpreter
+# (`python3 - <<'PY'`, `node <<EOF`) the body IS the program, and a send in it went
+# unseen. The opening line is read up to its `<<`; when its last command word there
+# is python/node-ish, the body is judged with the -c / -e code rule. A heuristic
+# of the same naive class as the -c rule (see the boundary note above).
+# NARROWED (Geri's #1855 review, a 14-day replay: 1 real catch, 17 false): inside a heredoc
+# body the program is mostly PROSE that a script writes (an hourly report whose text held a
+# card id with SENDMAIL in it, next to `subprocess`). So the exec + sender-literal half of the
+# code rule takes the literal here only as a lowercase, QUOTED command word: a string that
+# starts with sendmail/msmtp/swaks or ends a path in send.py, as an argv item or an os.system
+# command is written. The real catch (`['python3', '.../send.py', '--to', ...]`) keeps it.
+# Development heredocs that patch or test the gates, and mention `import send` in a string,
+# still hit the module rule: that is the price of a naive rule, accepted.
+# NOT COVERED, named so nobody counts them as covered: a program the classifier never reads --
+# `python3 /tmp/x.py`, `python3 < /tmp/x.py`, `cat /tmp/x.py | python3 -`, and
+# `python3 -c "exec(open('/tmp/x.py').read())"`; also a here-string fed to an interpreter
+# (`python3 <<<'import send'`) and a CommonJS destructuring rename of the Graph sender
+# (`const { sendMail: s } = require(...)`).
+# A heredoc fed to a SHELL (`bash <<EOF`, `sh -s <<EOF`) is a shell program: its body is
+# judged with this classifier itself, one level deeper (Geri/Samu, #1855).
+# WRITTEN, THEN RUN IN THE SAME COMMAND (Samu/Geri, #1855: two of the three real gate-passing
+# sends in the sample had this shape): `cat > $S/x.py <<'EOF' ... EOF; python3 $S/x.py`. When a
+# heredoc writes a file (`cat > P <<TAG` or `cat <<TAG > P`) and the same command runs an
+# interpreter or a shell on the same path token P, the body is judged as if it had been fed to
+# that program directly. The match is by the exact token: `./x.py` and `x.py` are different. A
+# file written by one Bash call and run by ANOTHER stays out of reach (named above).
+# PIPED (Samu/Geri, #1855): `cat <<'EOF' | bash` or `| python3 -` hands the body to the
+# program through the pipe on the heredoc's opening line, and it is judged the same way.
+_HEREDOC_SENDER_ARGV = re.compile(r"""['"](?:[^'"\s]*/)?(?:sendmail|msmtp|swaks|send\.py)(?=['"\s])""")
+
+
+def _heredoc_body_sends(body: str) -> bool:
+    if _CODE_SEND.search(body) or _CODE_SEND_MODULE.search(body):
+        return True
+    return bool(_CODE_EXECISH.search(body) and _HEREDOC_SENDER_ARGV.search(body))
+
+
+_HEREDOC_SHELL = re.compile(r"(?:^|[\s;&|(])(?:\S*/)?(?:bash|sh|zsh|dash)\b[^\n<]*$", re.I)
+_HEREDOC_INTERP = re.compile(
+    r"(?:^|[\s;&|(])(?:\S*/)?(python3?(?:\.\d+)?|node|tsx|ts-node|deno|bun)\b[^\n<]*$", re.I
+)
+
+
+_HEREDOC_PIPE = re.compile(r"\|\s*(?:\S*/)?(python3?(?:\.\d+)?|node|tsx|ts-node|deno|bun|bash|sh|zsh|dash)\b", re.I)
+_HEREDOC_REDIRECT = re.compile(r"(?:^|[\s;&|(])(?:cat|tee)\b[^\n]*?(?:>>?|\btee(?:\s+-a)?)\s*(['\"]?)([^\s'\"<>;&|]+)\1")
+
+
+def _written_then_run(cmd: str, written: dict, depth: int) -> bool:
+    """A heredoc body written to a file that the same command then runs (see the note above)."""
+    if not written:
+        return False
+    try:
+        segments = _segments_tokens(cmd)
+    except ValueError:
+        return False
+    for toks in segments:
+        for head in _command_heads(toks):
+            if not head:
+                continue
+            prog = _basename(head[0])
+            args = [t for t in head[1:] if not t.startswith("-")]
+            if prog.lower() == "npx" and args:
+                args = args[1:]  # npx <runner> <file>
+            if not args or args[0] not in written:
+                continue
+            body = written[args[0]]
+            if (_PYTHON.match(prog) or _NODEISH.match(prog)) and _heredoc_body_sends(body):
+                return True
+            if _WRAPPER_SHELL.match(prog) and depth < 3 and is_send_invocation(body, _depth=depth + 1):
+                return True
+    return False
+
+
+def _heredoc_program_sends(cmd: str, depth: int = 0) -> bool:
+    written = {}
+    for m in _HEREDOC.finditer(cmd):
+        opener = cmd[cmd.rfind("\n", 0, m.start()) + 1:m.start()] + m.group(1)
+        w = _HEREDOC_REDIRECT.search(opener)
+        if w:
+            written[w.group(2)] = cmd[m.end(1) + 1:m.end() - len(m.group(2))]
+        piped = _HEREDOC_PIPE.search(m.group(1))
+        if piped:
+            pbody = cmd[m.end(1) + 1:m.end() - len(m.group(2))]
+            if _WRAPPER_SHELL.match(piped.group(1)):
+                if depth < 3 and is_send_invocation(pbody, _depth=depth + 1):
+                    return True
+            elif _heredoc_body_sends(pbody):
+                return True
+        line_start = cmd.rfind("\n", 0, m.start()) + 1
+        head = cmd[line_start:m.start()]
+        body = cmd[m.end(1) + 1:m.end() - len(m.group(2))]
+        if _HEREDOC_INTERP.search(head):
+            if _heredoc_body_sends(body):
+                return True
+        elif _HEREDOC_SHELL.search(head) and depth < 3:
+            if is_send_invocation(body, _depth=depth + 1):
+                return True
+    return _written_then_run(cmd, written, depth)
+
+
 def is_send_invocation(cmd: str, _depth: int = 0) -> bool:
+    if _heredoc_program_sends(cmd, _depth):
+        return True
     try:
         segments = _segments_tokens(cmd)
     except ValueError:
@@ -423,7 +671,17 @@ def is_send_invocation(cmd: str, _depth: int = 0) -> bool:
         # all a szovegben -- igy egy fura, de valodi kuldes nem csuszik at
         # neman, a tipikus belso parancsok viszont nem kapnak hamis pozitivot.
         return bool(_FALLBACK_LITERALS.search(cmd))
-    return any(_segment_is_send(toks, _depth) for toks in segments)
+    if any(_segment_is_send(toks, _depth) for toks in segments):
+        return True
+    # the same command with every substitution as one undecidable word
+    # (flatten_substitutions): the outer command keeps the word it would run
+    flat = flatten_substitutions(cmd)
+    if flat == cmd:
+        return False
+    try:
+        return any(_segment_is_send(toks, _depth) for toks in _segments_tokens(flat))
+    except ValueError:
+        return bool(_FALLBACK_LITERALS.search(cmd))
 
 # --- Hungarian detection (accent-insensitive markers) -----------------------
 # These fire on both the correct and the stripped spelling, so a transliterated
@@ -972,7 +1230,7 @@ def _http_channel_segment(cmd: str):
         rest = toks[1:]
         for label, target in _HTTP_CHANNEL_TARGETS:
             if any(target.match(t) for t in rest):
-                if _curl_resend_verdict(rest) == "read":
+                if _curl_resend_verdict(_basename(toks[0]), rest) == "read":
                     return None, None  # a GET of the feed: nothing is sent
                 return label, toks
     return None, None
@@ -1045,6 +1303,16 @@ def collect_channel_body(tool_input: dict, unescape_mdv2: bool) -> str:
     a literal the author wrote, not gate noise."""
     fields = ("text", "caption", "message")
     got = [str(tool_input[f]) for f in fields if tool_input.get(f)]
+    # c67f5f34: the Telegram reply tool's one-tap answer buttons (a Marveen patch
+    # of the plugin, scripts/patch-telegram-plugin.py) are outgoing text too: the
+    # tapped label is what the recipient sees and sends back. A label this gate
+    # did not read would be the silent zero above, so every label joins the body;
+    # a value that is not a list is read as it is (the loud side).
+    buttons = tool_input.get("buttons")
+    if isinstance(buttons, (list, tuple)):
+        got += [str(b) for b in buttons if str(b).strip()]
+    elif buttons:
+        got.append(str(buttons))
     joined = "\n".join(got)
     return MDV2_ESCAPE.sub(r"\1", joined) if unescape_mdv2 else joined
 

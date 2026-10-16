@@ -8,11 +8,29 @@
 # the HTTP status AND the returned message id, and RETRIES on failure. A message counts as sent only
 # when an id came back.
 #
-# Usage:  bash scripts/agent-msg.sh <from> <to> "<content>"
+# Usage:  bash scripts/agent-msg.sh [--priority high|normal] <from> <to> "<content>"
 #   content: plain text (quotes / newlines OK) -- the body is built with json.dumps (no quoting pitfalls).
 #   large / multi-line content may come from STDIN when the 3rd arg is "-":
 #     echo "<long text>" | bash scripts/agent-msg.sh <from> <to> -
-# Output: success -> "OK id=<n>"; failure -> "FAIL <reason>" + a line in store/agent-msg-failures.log, exit 1.
+# Output: success -> "OK id=<n> queue=<depth> (~<n> min)"; failure -> "FAIL <reason>"
+#         + a line in store/agent-msg-failures.log, exit 1.
+#   The queue fields come from the POST response: a message is accepted instantly
+#   but only DELIVERED into an idle gap in the recipient's pane, which on a busy
+#   agent was measured at 80+ minutes. "queue=" is the recipient's pending count
+#   including this message; "(~n min)" is the median delivery delay of its recent
+#   messages and is OMITTED when there is no history (unknown is not "instant").
+#   Both are absent against a server that does not return them, so the line is
+#   then exactly "OK id=<n>" as before.
+#   A stopped target: "OK id=<n> ... (queued: target not running,
+#   delivered when it starts)" -- the row is PENDING, do NOT re-send.
+#   At MARVEEN_QUEUE_WARN_AT (default 3) or more waiting, a stderr notice says so
+#   at the moment the sender decides whether to send the next one.
+#   --priority (card ad771121): "high" puts the row ahead of the recipient's normal rows; absent means
+#     "normal" (FIFO, the server default). Any other value fails here, before anything is sent. A sender
+#     over its hourly high budget toward that recipient gets the row accepted as normal (never dropped),
+#     and a stderr NOTICE says DOWNGRADED. The switch goes BEFORE <from>; an empty value, or the switch
+#     anywhere else (after the sender, the recipient or the content), also fails here, before anything
+#     is sent.
 #
 # LOG FORMAT, store/agent-msg-failures.log (tab-separated, one line per failure):
 #   <YYYY-MM-DD HH:MM:SS>  FAIL  from=<a>  to=<b>  url=<endpoint>  http=<code>  resp=<first 200 bytes>
@@ -26,6 +44,7 @@
 #   MARVEEN_WEB_PORT   port for the default localhost base (default 3420)
 #   MARVEEN_TOKEN_FILE bearer token file (default <repo>/store/.dashboard-token)
 #   MARVEEN_HOMOGLYPH_BIN  the checker (default <repo>/scripts/lib/homoglyph.py)
+#   MARVEEN_QUEUE_WARN_AT  queue depth that triggers the stderr notice (default 3, 0 = off)
 # MEASURED 2026-09-13: a remote agent runs this helper OUTSIDE this repo, where localhost:3420
 # does not exist -- it had to fall back to raw curl, i.e. exactly the unchecked pattern this file was
 # written to eliminate. A hardcoded base URL silently un-installs the helper for everyone not on this
@@ -34,13 +53,34 @@ set -uo pipefail
 
 # base dir = the parent of this script's dir (scripts/..), so it works from any CWD / any install
 BASE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PORT="${MARVEEN_WEB_PORT:-3420}"
+# Dashboard port, the doctor.sh chain: MARVEEN_WEB_PORT, then WEB_PORT from the
+# environment, then WEB_PORT from this install's .env, then 3420. An agent's tmux
+# session sets neither variable, so on an install with a non-default WEB_PORT the
+# env-only lookup sent every message to 3420 (#1869).
+PORT="${MARVEEN_WEB_PORT:-${WEB_PORT:-$(sed -n 's/^WEB_PORT=//p' "$BASE/.env" 2>/dev/null | head -1 | tr -d ' "'"'"''; true)}}"
+PORT="${PORT:-3420}"
 API_BASE="${MARVEEN_API_BASE:-http://localhost:${PORT}}"
 API_BASE="${API_BASE%/}"
 TOKEN_FILE="${MARVEEN_TOKEN_FILE:-$BASE/store/.dashboard-token}"
 URL="${API_BASE}/api/messages"
 LOG="$BASE/store/agent-msg-failures.log"
 
+PRIORITY=""; PRIORITY_GIVEN=0
+case "${1:-}" in
+  --priority) PRIORITY_GIVEN=1; PRIORITY="${2:-}"; if [ "$#" -ge 2 ]; then shift 2; else shift; fi ;;
+  --priority=*) PRIORITY_GIVEN=1; PRIORITY="${1#--priority=}"; shift ;;
+esac
+# Measured by the card's independent test (card ad771121): an empty value went out as normal, a switch
+# after the content was silently dropped, and one after the sender took the recipient's place. A given
+# switch must carry one of the two words, and it may stand only before <from>.
+if [ "$PRIORITY_GIVEN" = 1 ] && [ "$PRIORITY" != "high" ] && [ "$PRIORITY" != "normal" ]; then
+  echo "FAIL: --priority must be high or normal (absent = normal)"; exit 1
+fi
+for arg in "$@"; do
+  case "$arg" in
+    --priority|--priority=*) echo "FAIL: --priority goes before <from>: agent-msg.sh [--priority high|normal] <from> <to> <content>; nothing was sent"; exit 1 ;;
+  esac
+done
 FROM="${1:?from required}"; TO="${2:?to required}"; C="${3:?content required (or - for STDIN)}"
 [ "$C" = "-" ] && C="$(cat)"
 [ -r "$TOKEN_FILE" ] || { echo "FAIL: no token file at $TOKEN_FILE"; exit 1; }
@@ -96,7 +136,10 @@ else
   echo "WARN: homoglyph checker not found at $HG -- sending UNCHECKED." >&2
 fi
 
-BODY="$(FROM="$FROM" TO="$TO" C="$C" python3 -c 'import json,os; print(json.dumps({"from":os.environ["FROM"],"to":os.environ["TO"],"content":os.environ["C"]}))')"
+BODY="$(FROM="$FROM" TO="$TO" C="$C" P="$PRIORITY" python3 -c 'import json,os
+d={"from":os.environ["FROM"],"to":os.environ["TO"],"content":os.environ["C"]}
+if os.environ.get("P"): d["priority"]=os.environ["P"]
+print(json.dumps(d))')"
 
 attempt=0; max=3; CODE=""; ID=""
 while [ "$attempt" -lt "$max" ]; do
@@ -106,29 +149,77 @@ while [ "$attempt" -lt "$max" ]; do
   JSON="$(printf '%s' "$RESP" | sed '$d')"
   # An id ALONE is not delivery. The router answers 200 WITH an id even when the
   # recipient is not running, and says so in a separate `warning` field
-  # (src/web/routes/messages.ts) whose text spells out that such a message is
-  # LOST rather than queued. This helper read only the id, so it printed
-  # "OK id=..." for a message that never arrived -- the exact failure the header
-  # above says it exists to prevent, one field further in. The exit code stays 0
-  # on purpose: the row really was accepted, so this is not a send failure. It
-  # just must not be silent.
-  read -r ID WARN <<EOF
-$(printf '%s' "$JSON" | python3 -c 'import sys,json
+  # (src/web/routes/messages.ts). For a stopped LOCAL target (`queued: true`)
+  # the row is PENDING and is delivered when the target starts, inside the
+  # router's abandon window; only after that window does it fail.
+  # This helper read only the id, so it printed "OK id=..." with nothing about
+  # the recipient not running -- the failure the header above says it exists to
+  # prevent, one field further in. The exit code stays 0 on purpose: the row
+  # really was accepted, so this is not a send failure. It just must not be
+  # silent, and a queued row must not be re-sent (a duplicate).
+  #
+  # The queue state rides in the same parse. "-" stands for an empty field so
+  # `read` cannot shift the warning text into it. The delay is rounded UP to at
+  # least one minute: a 20-second median printed as "~0 min" would read as
+  # "instant", the same lie a NULL flattened to 0 would tell.
+  read -r ID DEPTH MINS QUEUED WARN <<EOF
+$(printf '%s' "$JSON" | python3 -c 'import sys,json,math
 try:
   d=json.load(sys.stdin)
   if not isinstance(d,dict): d={}
 except Exception:
   d={}
+q=d.get("queue") if isinstance(d.get("queue"),dict) else {}
+depth=q.get("queueDepth")
+delay=q.get("estimatedDelaySec")
+depth="-" if not isinstance(depth,int) or isinstance(depth,bool) else str(depth)
+mins="-" if not isinstance(delay,(int,float)) or isinstance(delay,bool) else str(max(1,math.ceil(delay/60)))
 w=" ".join(str(d.get("warning","")).split())
-print((d.get("id","") or "-"), w)' 2>/dev/null)
+qd="Q" if d.get("queued") is True else "-"
+print((d.get("id","") or "-"), depth, mins, qd, w)' 2>/dev/null)
 EOF
   [ "$ID" = "-" ] && ID=""
+  [ "${DEPTH:-}" = "-" ] && DEPTH=""
+  [ "${MINS:-}" = "-" ] && MINS=""
   if { [ "$CODE" = "200" ] || [ "$CODE" = "201" ]; } && [ -n "$ID" ]; then
-    if [ -n "${WARN:-}" ]; then
-      echo "OK id=$ID  WARNING: $WARN" >&2
-      echo "OK id=$ID (warning)"
+    # "OK id=<n>" stays the prefix: callers and docs grep for it.
+    LINE="OK id=$ID"
+    [ -n "${DEPTH:-}" ] && LINE="$LINE queue=$DEPTH"
+    [ -n "${MINS:-}" ] && LINE="$LINE (~${MINS} min)"
+    if [ "${QUEUED:-}" = "Q" ]; then
+      # The target is stopped, the row is PENDING and is delivered
+      # when the target starts (within the router's abandon window). Not a send
+      # failure, and NOT a reason to re-send: a re-send only duplicates it.
+      # The stdout keeps the "OK id=" prefix on purpose: callers (and the fleet
+      # docs) treat exactly that prefix as "accepted", and a new verb would read
+      # as a failure and trigger the very re-send this branch exists to stop.
+      echo "QUEUED id=$ID  NOTE: $WARN" >&2
+      echo "$LINE (queued: target not running, delivered when it starts)"
+    elif [ -n "${WARN:-}" ]; then
+      echo "$LINE  WARNING: $WARN" >&2
+      echo "$LINE (warning)"
     else
-      echo "OK id=$ID"
+      echo "$LINE"
+    fi
+    # Printing the number is not enough on its own: the sender has already
+    # sent by the time they read it. Say it on stderr, at the moment the next
+    # send is being decided. Not a refusal -- an urgent message must still get
+    # through.
+    WARN_AT="${MARVEEN_QUEUE_WARN_AT:-3}"
+    case "$WARN_AT" in ''|*[!0-9]*) WARN_AT=3 ;; esac
+    if [ -n "${DEPTH:-}" ] && [ "$WARN_AT" -gt 0 ] && [ "$DEPTH" -ge "$WARN_AT" ]; then
+      echo "NOTICE: $DEPTH message(s) are waiting for $TO${MINS:+, measured delay ~${MINS} min}." >&2
+      echo "  It is busy; prefer adding to an existing message or a shared card over another message." >&2
+    fi
+    # Card ad771121: a high request over the pair's hourly budget went in as normal (accepted, never
+    # dropped); the server says so with "downgraded": true, and the sender hears it here.
+    if [ "$PRIORITY" = "high" ] && printf '%s' "$JSON" | python3 -c 'import sys,json
+try:
+  d=json.load(sys.stdin)
+except Exception:
+  d={}
+sys.exit(0 if isinstance(d,dict) and d.get("downgraded") is True else 1)' 2>/dev/null; then
+      echo "NOTICE: DOWNGRADED -- the row to $TO was accepted as normal: the hourly high budget toward it is used up (MESSAGE_HIGH_PRIORITY_PER_HOUR)." >&2
     fi
     exit 0
   fi

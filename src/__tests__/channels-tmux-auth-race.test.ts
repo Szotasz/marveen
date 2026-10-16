@@ -11,7 +11,7 @@
 // dropping the wiring (not just the helper) turns the suite red (#1534 review).
 import { describe, it, expect, afterEach } from 'vitest'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, existsSync, writeFileSync, chmodSync, statSync, lstatSync, symlinkSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, existsSync, writeFileSync, chmodSync, statSync, lstatSync, symlinkSync, utimesSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -22,7 +22,12 @@ function authBlock(): string {
   const start = SH.indexOf('_tmux_set_auth_globals() {')
   const end = SH.indexOf('unset _auth_file', start)
   if (start < 0 || end < 0) throw new Error('auth block not found in channels.sh')
-  return SH.slice(start, end + 'unset _auth_file'.length)
+  // LAUNCHQUOTEREST1008: AUTH_PANE_ENV quotes the auth file with the script's
+  // own sh_single_quote, defined earlier in channels.sh; the cut-out block needs
+  // that definition too (read from the script, not copied).
+  const helper = (SH.match(/^sh_single_quote\(\) \{.*\}$/m) ?? [''])[0]
+  expect(helper, 'sh_single_quote definition in channels.sh').not.toBe('')
+  return helper + '\n' + SH.slice(start, end + 'unset _auth_file'.length)
 }
 
 const PRIMARY_LAUNCH = '$TMUX new-session -d -s "$SESSION" -c "$INSTALL_DIR"'
@@ -137,6 +142,72 @@ describe.skipIf(!HAS_TMUX)('channels.sh tmux auth (real tmux, isolated socket)',
     expect(readFileSync(target, 'utf-8')).toBe('untouched\n')
     expect(lstatSync(f).isSymbolicLink()).toBe(false)
     expect(statSync(f).mode & 0o777).toBe(0o600)
+  })
+
+  // The file write is the new failure mode (the old `-e` path had none). Each
+  // failure is NAMED, never silent, and the launch goes on.
+  it('mktemp fails: a named WARN in channels-failures.log and stderr, no AUTH_PANE_ENV, the block does not abort', () => {
+    dir = mkdtempSync(join(tmpdir(), 'tmuxauthfail-'))
+    mkdirSync(join(dir, 'store'))
+    const out = bash(`TMUX="tmux -S ${join(dir, 's')}"; INSTALL_DIR=${dir}; mktemp() { return 1; }; ${authBlock()}; echo "[\${AUTH_PANE_ENV}]"`, { CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat01-failprobe' })
+    expect(out.trim().split('\n').pop()).toBe('[]')
+    expect(readFileSync(join(dir, 'store', 'channels-failures.log'), 'utf-8')).toContain('pane auth file NOT written (mktemp failed)')
+    expect(existsSync(join(dir, 'store', '.channels-pane-auth'))).toBe(false)
+  })
+
+  it('the write fails (temp file not writable): named WARN, temp file removed, no AUTH_PANE_ENV, token never in the log', () => {
+    if (process.getuid && process.getuid() === 0) return // root ignores file modes
+    dir = mkdtempSync(join(tmpdir(), 'tmuxauthfail-'))
+    mkdirSync(join(dir, 'store'))
+    const out = bash(`TMUX="tmux -S ${join(dir, 's')}"; INSTALL_DIR=${dir}; mktemp() { local f; f="$(command mktemp "$@")" || return 1; chmod 0400 "$f"; printf '%s\\n' "$f"; }; ${authBlock()}; echo "[\${AUTH_PANE_ENV}]"`, { CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat01-failprobe' })
+    expect(out.trim().split('\n').pop()).toBe('[]')
+    const log = readFileSync(join(dir, 'store', 'channels-failures.log'), 'utf-8')
+    expect(log).toContain('pane auth file NOT written (write failed)')
+    expect(log).not.toContain('sk-ant-oat01-failprobe')
+    expect(readdirSync(join(dir, 'store')).filter((n) => n.startsWith('.channels-pane-auth'))).toEqual([])
+  })
+
+  it('a stale temp file left by a killed launch is swept', () => {
+    dir = mkdtempSync(join(tmpdir(), 'tmuxauthfile-'))
+    mkdirSync(join(dir, 'store'))
+    const stale = join(dir, 'store', '.channels-pane-auth.AbCdEf')
+    writeFileSync(stale, 'export CLAUDE_CODE_OAUTH_TOKEN=old\n')
+    const tenMinAgo = new Date(Date.now() - 10 * 60_000)
+    utimesSync(stale, tenMinAgo, tenMinAgo)
+    bash(`TMUX="tmux -S ${join(dir, 's')}"; INSTALL_DIR=${dir}; ${authBlock()}`, { CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat01-sweep' })
+    expect(existsSync(stale)).toBe(false)
+    expect(existsSync(join(dir, 'store', '.channels-pane-auth'))).toBe(true)
+  })
+
+  it('a FRESH temp file (a concurrent launch between its mktemp and mv) is left alone', () => {
+    dir = mkdtempSync(join(tmpdir(), 'tmuxauthfile-'))
+    mkdirSync(join(dir, 'store'))
+    const live = join(dir, 'store', '.channels-pane-auth.LiVeOn')
+    writeFileSync(live, 'export CLAUDE_CODE_OAUTH_TOKEN=other\n', { mode: 0o600 })
+    bash(`TMUX="tmux -S ${join(dir, 's')}"; INSTALL_DIR=${dir}; ${authBlock()}`, { CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat01-sweep' })
+    expect(existsSync(live)).toBe(true)
+    expect(existsSync(join(dir, 'store', '.channels-pane-auth'))).toBe(true)
+  })
+
+  it('a temp file that vanished before the write is re-created 0600, even under a permissive umask', () => {
+    dir = mkdtempSync(join(tmpdir(), 'tmuxauthfile-'))
+    mkdirSync(join(dir, 'store'))
+    // mktemp succeeds, then the file disappears (e.g. swept by another launch)
+    // before the write: `>>` creates a NEW file, which takes the umask.
+    const vanishingMktemp = `mktemp() { local f; f="$(command mktemp "$@")" || return 1; rm -f "$f"; printf '%s\\n' "$f"; }`
+    bash(`umask 022; ${vanishingMktemp}; TMUX="tmux -S ${join(dir, 's')}"; INSTALL_DIR=${dir}; ${authBlock()}`, { CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat01-mode' })
+    expect(statSync(join(dir, 'store', '.channels-pane-auth')).mode & 0o777).toBe(0o600)
+  })
+
+  it('a token with quotes, $, backticks and a newline round-trips through the file unchanged, and CFG_ENV (after it) still wins', () => {
+    dir = mkdtempSync(join(tmpdir(), 'tmuxauthfile-'))
+    mkdirSync(join(dir, 'store'))
+    const nasty = "a'b\"c$HOME`id`\nd"
+    const sourced = bash(`TMUX="tmux -S ${join(dir, 's')}"; INSTALL_DIR=${dir}; ${authBlock()}; . "\$INSTALL_DIR/store/.channels-pane-auth" && printf '%s' "\$CLAUDE_CODE_OAUTH_TOKEN"`, { CLAUDE_CODE_OAUTH_TOKEN: nasty })
+    expect(sourced).toBe(nasty)
+    // the pane command order: auth file first, then CFG_ENV's own export wins
+    const winner = bash(`TMUX="tmux -S ${join(dir, 's')}"; INSTALL_DIR=${dir}; ${authBlock()}; eval "\${AUTH_PANE_ENV}export CLAUDE_CODE_OAUTH_TOKEN=mode-own && printf '%s' \\"\\$CLAUDE_CODE_OAUTH_TOKEN\\""`, { CLAUDE_CODE_OAUTH_TOKEN: nasty })
+    expect(winner).toBe('mode-own')
   })
 
   // TOKENARGV929: when OUR new-session creates the tmux server, the server

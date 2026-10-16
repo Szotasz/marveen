@@ -3,6 +3,7 @@ import { encodeClaudeProjectDir } from '../claude-project-dir.js'
 import { join } from 'node:path'
 import { userInfo } from 'node:os'
 import { execFileSync } from 'node:child_process'
+import { ROOT_SANDBOX_ENV } from './root-sandbox-env.js'
 
 // SSH + tmux transport primitives.
 //
@@ -161,7 +162,8 @@ export function buildRemoteLaunchCommand(opts: {
   const path = 'export PATH="$HOME/.bun/bin:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"'
   const cont = opts.continue ? '--continue ' : ''
   // CHANSPARE925: no Agent view on remote agents either (parity with every local launch).
-  return `${path} && export CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && cd ${shQuote(opts.workdir)} && claude ${cont}--dangerously-skip-permissions --model ${shQuote(opts.model)}`
+  // ROOTRESPAWN1001: evaluated on the REMOTE host, where claude runs.
+  return `${path} && export CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && ${ROOT_SANDBOX_ENV} && cd ${shQuote(opts.workdir)} && claude ${cont}--dangerously-skip-permissions --model ${shQuote(opts.model)}`
 }
 
 /**

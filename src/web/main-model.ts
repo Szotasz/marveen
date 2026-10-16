@@ -31,7 +31,7 @@ import { atomicWriteFileSync } from './atomic-write.js'
 import { readActiveModelFromProjectDir } from './active-model.js'
 import { configDirFor } from './main-transcript-root.js'
 import { readConfiguredMainModel } from './channel-monitor.js'
-import { gatherGateInputs, sendSlashCommand, mainSessionName } from './context-restart-gate-runner.js'
+import { gatherGateInputs, sendSlashCommand, sendKey, mainSessionName } from './context-restart-gate-runner.js'
 import { capturePane } from './agent-process.js'
 import { switchVerdict, humanBusy, SWITCH_TURN_QUIET_MS, type QuietVerdict } from './session-control.js'
 import { notifyChannel } from '../notify.js'
@@ -320,6 +320,8 @@ export interface ModelDeps {
   pane: () => string | null
   /** Pause between two ack reads (the ack wait is bounded, see sendModel). */
   sleep: (ms: number) => Promise<void>
+  /** One named key into the main pane (answers the CLI's "Switch model?"). */
+  key: (key: string) => Promise<void>
   /** Arm (untilMs) or disarm (null) the one-shot hold-expiry timer. */
   scheduleExpiry: (untilMs: number | null) => void
 }
@@ -365,6 +367,7 @@ export const liveModelDeps: ModelDeps = {
     return switchVerdict(inputs, cfg)
   },
   send: (command) => sendSlashCommand(mainSessionName(), command),
+  key: (k) => sendKey(mainSessionName(), k),
   writeEnv: updateEnvFile,
   // ELSOKOR922 D-4: the runner's own messages go out on the main bot, over
   // the Bot API, without a main-session turn (no second bot any more).
@@ -378,12 +381,34 @@ export const liveModelDeps: ModelDeps = {
   scheduleExpiry: (untilMs) => scheduleHoldExpiry(untilMs),
 }
 
+// MODELCONFIRM1005: on a cached conversation the CLI does not switch at once,
+// it asks first. Measured 2026-10-05 on the live main session, after a
+// "/model set sonnet55 keep" from the owner:
+//     Switch model?
+//     Your next response will be slower and use more tokens
+//     This conversation is cached for the current model. Switching to Sonnet 5.5
+//     means the full history gets re-read on your next message.
+//     ❯ 1. Yes, switch to Sonnet 5.5
+//       2. No, go back
+// Nothing answered it, so the whole session sat in the dialog for half an hour:
+// every inbound message queued behind it and the owner's "Itt vagy?" went
+// unanswered. The owner asked for the switch, so the answer is 1 -- typed only
+// while this exact dialog is the open one (its title AND its "1. Yes, switch
+// to" option in the visible tail of the pane, not anywhere in the scrollback).
+export function modelSwitchConfirmOpen(pane: string | null): boolean {
+  if (!pane) return false
+  const tail = pane.split('\n').map((l) => l.trim()).filter((l) => l !== '').slice(-12)
+  return tail.some((l) => l === 'Switch model?') && tail.some((l) => /^(?:❯\s*)?1\.\s*Yes, switch to\b/.test(l))
+}
+
 // Send a /model and wait (bounded) for the CLI's acknowledgement. Records the
 // send so a status can say "switched since the last measured turn".
 export interface SendOutcome {
   acked: boolean
   /** The CLI refused the model (API error in the pane): the message, or '' if unreadable. */
   rejected: string | null
+  /** The "Switch model?" confirmation was open and still is after our answer: the session is wedged. */
+  confirmStuck: boolean
 }
 
 async function sendModel(modelId: string, deps: ModelDeps): Promise<SendOutcome> {
@@ -395,9 +420,18 @@ async function sendModel(modelId: string, deps: ModelDeps): Promise<SendOutcome>
   const sentAt = deps.now()
   let acked = false
   let rejected: string | null = null
+  let answered = false
+  let confirmStuck = false
   if (before !== null) {
-    for (let waited = 0; waited < ACK_WAIT_MS && !acked && rejected === null; waited += ACK_STEP_MS) {
+    let budget = ACK_WAIT_MS
+    for (let waited = 0; waited < budget && !acked && rejected === null; waited += ACK_STEP_MS) {
       await deps.sleep(ACK_STEP_MS)
+      if (!answered && modelSwitchConfirmOpen(deps.pane())) {
+        await deps.key('1')
+        answered = true
+        budget = waited + ACK_WAIT_MS // a fresh ack window after the answer
+        continue
+      }
       const after = deps.ackCount()
       const pane = deps.pane()
       const lastAck = lastModelAck(pane)
@@ -407,9 +441,16 @@ async function sendModel(modelId: string, deps: ModelDeps): Promise<SendOutcome>
         if (rej !== null && rej > rejBefore) rejected = lastRejectionMessage(pane) ?? ''
       }
     }
+    if (!acked && rejected === null) confirmStuck = modelSwitchConfirmOpen(deps.pane())
   }
   writeLastSent(deps.lastSentFile, modelId, sentAt, acked)
-  return { acked, rejected }
+  return { acked, rejected, confirmStuck }
+}
+
+// The owner-facing text when the confirmation stayed open: the session takes no
+// message until someone answers it, so the reply says how.
+function confirmStuckText(modelId: string, deps: ModelDeps): string {
+  return `Figyelem: a Claude Code megerősítést kért a váltáshoz (${shortName(modelId, deps)}, „Switch model?”), és az ablak a válaszom után is nyitva maradt. Amíg nyitva van, a fő session nem fogad üzenetet. Kézi feloldás a gépen: tmux send-keys -t ${mainSessionName()} 1`
 }
 
 // Short name for an id (opus, sonnet) from the choice list; the id when unknown.
@@ -502,6 +543,8 @@ export async function setModel(args: string[], deps: ModelDeps = liveModelDeps):
   if (choice) {
     const out = await sendModel(choice.id, deps)
     if (out.rejected !== null) return fail(rejectedText(choice.id, out.rejected))
+    // No /effort into an open dialog, no hold: the owner first has to unblock it.
+    if (out.confirmStuck) return fail(confirmStuckText(choice.id, deps))
     acked = out.acked
     lines.push(acked ? `Átváltva: ${choice.name}.` : `Elküldve: ${choice.name} (a Claude Code még nem igazolta vissza).`)
     if (effortDropped) lines.push(`A ${choice.name} nem támogat effortot, a(z) ${effortDropped} szintet nem küldtem el.`)
@@ -564,6 +607,7 @@ export async function modelBack(deps: ModelDeps = liveModelDeps): Promise<StepRe
   if (!state || state.model !== null) {
     const out = await sendModel(base, deps)
     if (out.rejected !== null) return fail(rejectedText(base, out.rejected))
+    if (out.confirmStuck) return fail(confirmStuckText(base, deps))
     const acked = out.acked
     lines.push(`${acked ? `Visszaváltva: ${shortName(base, deps)}` : `Elküldve: vissza ${shortName(base, deps)}-ra (a Claude Code még nem igazolta vissza)`}${state ? ', a tartás törölve' : ''}.`)
   }
@@ -647,7 +691,7 @@ function writeEffortSent(file: string, level: string, at: number): void {
 
 export type SweepOutcome =
   | 'none' | 'corrupt' | 'verified' | 'mismatch' | 'waiting' | 'cleared-already-base'
-  | 'blocked' | 'block-alerted' | 'reverted'
+  | 'blocked' | 'block-alerted' | 'reverted' | 'confirm-stuck'
 
 let corruptLogged = false
 
@@ -709,7 +753,17 @@ export async function sweepModelHold(nowMs: number, deps: ModelDeps = liveModelD
   }
   const parts: string[] = []
   if (s.model && s.revert_to) {
-    const acked = (await sendModel(s.revert_to, deps)).acked
+    const out = await sendModel(s.revert_to, deps)
+    if (out.confirmStuck) {
+      // Unattended revert: the dialog would wedge the session with nobody
+      // watching. Loud, and no /effort typed into the open dialog. The hold is
+      // cleared: answering the dialog completes this very revert.
+      clearHold(deps.holdFile)
+      deps.scheduleExpiry(null)
+      await deps.notify(`A tartás lejárt, a visszaváltás elakadt. ${confirmStuckText(s.revert_to, deps)}`)
+      return 'confirm-stuck'
+    }
+    const acked = out.acked
     parts.push(acked
       ? `visszaváltva ${shortName(s.model, deps)} -> ${shortName(s.revert_to, deps)}`
       : `vissza ${shortName(s.revert_to, deps)}-ra elküldve (a Claude Code még nem igazolta vissza)`)

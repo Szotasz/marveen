@@ -15,7 +15,7 @@ Különösen figyelj erre a Shell és PowerShell automatizációs szkriptek ír�
 Ezeket az adatokat környezeti változókból (.env) vagy a CI/CD pipeline secrets-kezelőjéből kell beolvasni.
 Függőségek (Dependencies) kezelése: Csak hivatalos és megbízható forrásból származó csomagokat adj a projekthez (pl. npm, PyPI). Beküldés előtt ellenőrizd a sebezhetőségeket az npm audit (vagy a használt csomagkezelő megfelelő) parancsával.
 Biztonságos Szkriptelés: A projektben található Shell és PowerShell fájlok módosításakor fokozottan ügyelj a "Command Injection" (parancsinjekció) elkerülésére. Mindig validáld és megfelelően escape-eld a felhasználói vagy külső forrásból származó bemeneteket.
-Biztonsági rések bejelentése: Ha biztonsági rést fedezel fel a projektben, kérjük, ne nyiss publikus Issue-t! Ehelyett vedd fel a kapcsolatot a karbantartókkal privát csatornán (pl. e-mailben a megadott címen), hogy a hibát még a nyilvánosságra hozatal előtt javíthassuk.
+Biztonsági rések bejelentése: Ha biztonsági rést fedezel fel a projektben, kérjük, ne nyiss publikus Issue-t! Ehelyett a GitHub privát sebezhetőség-bejelentőjét használd: a repó Security fülén a „Report a vulnerability” gomb, vagy közvetlenül https://github.com/Szotasz/marveen/security/advisories/new. A bejelentést csak a karbantartók látják, így a hibát még a nyilvánosságra hozatal előtt javíthatjuk.
 
 
 
@@ -37,4 +37,4 @@ Be especially careful when writing Shell and PowerShell automation scripts.
 This data should be read from environment variables (.env) or from the secrets manager of the CI/CD pipeline.
 Manage Dependencies: Only add packages from official and trusted sources to your project (e.g. npm, PyPI). Before submitting, check for vulnerabilities with npm audit (or the appropriate command of your package manager).
 Secure Scripting: When modifying Shell and PowerShell files in your project, take extra care to avoid "Command Injection". Always validate and properly escape user or external input.
-Report Vulnerabilities: If you discover a vulnerability in your project, please do not open a public Issue! Instead, contact the maintainers privately (e.g. by email at the address provided) so that we can fix the bug before it is made public.
+Report Vulnerabilities: If you discover a vulnerability in your project, please do not open a public Issue! Instead, use GitHub's private vulnerability reporting: the "Report a vulnerability" button on the repository's Security tab, or directly https://github.com/Szotasz/marveen/security/advisories/new. Only the maintainers can see the report, so we can fix the bug before it is made public.

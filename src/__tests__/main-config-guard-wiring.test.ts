@@ -41,7 +41,7 @@ vi.mock('../db.js', async (orig) => ({
 
 /** State the resolver reads. Only the two lookups are faked -- the verdict
  *  itself runs for real, so a wrong decision still fails here. */
-let fakeState = { isolatedConfigDir: null as string | null, fleetToken: false, isolatedDirExists: false }
+let fakeState = { isolatedConfigDir: null as string | null, fleetToken: false, isolatedDirExists: false, fleetTokenExported: false }
 vi.mock('../web/agent-process.js', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
   ensureMainAgentIsolatedConfigDir: () => fakeState.isolatedConfigDir,
@@ -59,7 +59,7 @@ beforeEach(() => {
   ROOT = mkdtempSync(join(tmpdir(), 'mcguard-'))
   require('node:fs').mkdirSync(join(ROOT, 'store'), { recursive: true })
   sent.length = 0
-  fakeState = { isolatedConfigDir: null, fleetToken: false, isolatedDirExists: false }
+  fakeState = { isolatedConfigDir: null, fleetToken: false, isolatedDirExists: false, fleetTokenExported: false }
 })
 afterEach(() => { rmSync(ROOT, { recursive: true, force: true }) })
 
@@ -68,7 +68,7 @@ describe('THE HEALTHY LAUNCH LEAVES A TRACE TOO', () => {
     // Without this line the guard's silence would mean either "all well" or
     // "never ran", and on 2026-08-04 it meant the second while looking like the
     // first for four hours.
-    fakeState = { isolatedConfigDir: '/srv/m/.channels-config', fleetToken: true, isolatedDirExists: true }
+    fakeState = { isolatedConfigDir: '/srv/m/.channels-config', fleetToken: true, isolatedDirExists: true, fleetTokenExported: true }
     const d = resolveMainConfigDecision()
     expect(d.trigger).toBeNull()
     expect(log()).toContain('isolated CLAUDE_CONFIG_DIR=/srv/m/.channels-config')
@@ -85,7 +85,7 @@ describe('THE HEALTHY LAUNCH LEAVES A TRACE TOO', () => {
 
 describe('THE REGRESSION LAUNCH BOTH LOGS AND TELLS SOMEBODY', () => {
   it('warns in the log AND messages the main agent when isolation was lost', () => {
-    fakeState = { isolatedConfigDir: null, fleetToken: true, isolatedDirExists: true }
+    fakeState = { isolatedConfigDir: null, fleetToken: true, isolatedDirExists: true, fleetTokenExported: true }
     const d = resolveMainConfigDecision()
     expect(d.trigger).toBe('isolation-lost')
     expect(log()).toContain('WARN isolation-lost')
@@ -95,17 +95,27 @@ describe('THE REGRESSION LAUNCH BOTH LOGS AND TELLS SOMEBODY', () => {
     expect(sent[0][2]).toContain('[GUARD]')
   })
 
-  it('warns for an unused fleet token as well', () => {
-    fakeState = { isolatedConfigDir: null, fleetToken: true, isolatedDirExists: false }
+  it('warns for an unused fleet token as well -- when the launch does NOT export it', () => {
+    fakeState = { isolatedConfigDir: null, fleetToken: true, isolatedDirExists: false, fleetTokenExported: false }
     expect(resolveMainConfigDecision().trigger).toBe('fleet-token-unused')
     expect(sent).toHaveLength(1)
+  })
+
+  it('does NOT message when the shared-root launch exports the fleet token (issue #1805), and the trace says so', () => {
+    // 23 measured false notices on a healthy host: the exported token outranks the /login session.
+    fakeState = { isolatedConfigDir: null, fleetToken: true, isolatedDirExists: false, fleetTokenExported: true }
+    expect(resolveMainConfigDecision().trigger).toBeNull()
+    expect(sent).toHaveLength(0)
+    // Silence must never be ambiguous (2026-08-04): the healthy line names THIS state, not a stock install.
+    expect(log()).toContain('fleet token exported as CLAUDE_CODE_OAUTH_TOKEN')
+    expect(log()).not.toContain('expected for a stock install')
   })
 
   it('a second respawn inside the cooldown still LOGS but does not message again', () => {
     // The hard restart can fire repeatedly on a wedged session. One notice per
     // attempt would bury the first -- the shape of the 2026-08-10 handoff chain.
     // The log line is not suppressed: it costs nothing and it is the series.
-    fakeState = { isolatedConfigDir: null, fleetToken: true, isolatedDirExists: true }
+    fakeState = { isolatedConfigDir: null, fleetToken: true, isolatedDirExists: true, fleetTokenExported: true }
     resolveMainConfigDecision()
     resolveMainConfigDecision()
     expect(sent).toHaveLength(1)

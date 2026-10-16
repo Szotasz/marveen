@@ -311,7 +311,7 @@ describe('launcher wiring (agent-process.ts)', () => {
     expect(ownBranch).not.toContain('FLEET_OAUTH_TOKEN_PATH')
     // Requirement 2: isolated exactly as in shared mode -- the SAME provisioning call as the fleet branch.
     const fleetBranch = FN.match(/\} else if \(hasFleetOauthToken\(\)\) \{[\s\S]*?\n {6}\} else \{/)?.[0] ?? ''
-    const isolateCall = 'const isolated = ensureIsolatedChannelConfigDir(name, hasChannel ? agentProvider : null)'
+    const isolateCall = 'const isolated = ensureIsolatedChannelConfigDir(name, hasChannel ? agentProvider : null, extraLaunch.pluginIds)'
     expect(fleetBranch).toContain(isolateCall)
     expect(ownBranch).toContain(isolateCall)
   })

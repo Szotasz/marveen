@@ -190,7 +190,7 @@ describe('isolated-config launcher wiring', () => {
     // wins over a valid CLAUDE_CODE_OAUTH_TOKEN env var, so a shared-root agent
     // 401s whenever it rotates -- the gate must not be hasChannel-only.
     expect(SRC).toMatch(/const needsFleetOauth = isClaude && authMode !== 'api' && !isOwnTeam/)
-    expect(SRC).toMatch(/\(hasChannel \|\| needsFleetOauth \|\| isOwnTeam\) && name !== MAIN_AGENT_ID/)
+    expect(SRC).toMatch(/\(hasAnyChannel \|\| needsFleetOauth \|\| isOwnTeam\) && name !== MAIN_AGENT_ID/)
   })
 
   it('own_team never exports the fleet token (OWNTEAMVAK914)', () => {
@@ -213,7 +213,7 @@ describe('isolated-config launcher wiring', () => {
     const ownTeamBranch = SRC.match(/if \(isOwnTeam\) \{[\s\S]*?\n {6}\} else if \(hasFleetOauthToken\(\)\) \{/)?.[0] ?? ''
     expect(ownTeamBranch).not.toBe('')
     expect(ownTeamBranch).not.toMatch(/CLAUDE_CODE_OAUTH_TOKEN/)
-    expect(ownTeamBranch).toMatch(/ensureIsolatedChannelConfigDir\(name, hasChannel \? agentProvider : null\)/)
+    expect(ownTeamBranch).toMatch(/ensureIsolatedChannelConfigDir\(name, hasChannel \? agentProvider : null, extraLaunch\.pluginIds\)/)
   })
 
   it('own_team isolation failure falls back LOUDLY (shared root = host credential)', () => {
@@ -221,11 +221,11 @@ describe('isolated-config launcher wiring', () => {
   })
 
   it('passes a null provider for channel-less agents so no plugin gets enabled', () => {
-    expect(SRC).toMatch(/ensureIsolatedChannelConfigDir\(name, hasChannel \? agentProvider : null\)/)
+    expect(SRC).toMatch(/ensureIsolatedChannelConfigDir\(name, hasChannel \? agentProvider : null, extraLaunch\.pluginIds\)/)
   })
 
   it('keeps the plugin-slot collision alert scoped to channel agents', () => {
-    expect(SRC).toMatch(/if \(hasChannel\) maybeAlertSharedConfigCollision\(name\)/)
+    expect(SRC).toMatch(/if \(hasAnyChannel\) maybeAlertSharedConfigCollision\(name\)/)
   })
 
   // Regression guard for the BYO/custom-provider + channel-agent 401 bug (2026-08-05).

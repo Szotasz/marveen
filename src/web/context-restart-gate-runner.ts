@@ -1,5 +1,5 @@
 import { tmuxStderr } from './tmux-stderr.js'
-import { openQuestionIgnoringCommands } from './open-question.js'
+import { ownerQuestionHolds } from './open-question.js'
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
@@ -33,6 +33,7 @@ import {
   WAKE_DELAY_MS,
   type GateInputs,
 } from '../context-restart-gate.js'
+import { exactTmuxTarget } from '../tmux-target.js'
 
 // Fleet context-restart gate: proactively send /clear to an agent session
 // before the context grows unwieldy, while holding the send lane and only
@@ -124,41 +125,9 @@ export function isInfrastructureChild(childAgeS: number, claudeAgeS: number): bo
   return false
 }
 
-/**
- * The last inbound message the ledger drain surfaced for this agent, or null.
- * The drain (scripts/hooks/ledger-live-drain.py) writes the id into
- * store/.ledger-drain-<agent> when it puts a lost inbound in front of the
- * agent; the sanitisation here mirrors its _statefile().
- */
-function drainSurfacedMessageId(ledgerAgentId: string): string | null {
-  const safe = String(ledgerAgentId).replace(/[^A-Za-z0-9_-]/g, '_')
-  try {
-    const raw = readFileSync(join(PROJECT_ROOT, 'store', `.ledger-drain-${safe}`), 'utf-8').trim()
-    return raw || null
-  } catch { return null }
-}
-
-/**
- * Does an unanswered inbound still justify holding the gate shut?
- *
- * Only until the agent has actually been SHOWN it. Before that, a /clear could
- * lose a question nobody has read; after it, the agent knows and the decision
- * to answer is its own -- and some messages rightly get no answer. Laszlo's
- * "ok" on 2026-09-04 22:24 held the gate for eight hours at 630% of the
- * threshold, and the only way out would have been to wake him at midnight with
- * a reply nobody needed (LEDGERACK905, his call: block until surfaced, no
- * arbitrary timer).
- *
- * Pure so the rule is testable without a database or a statefile.
- */
-export function openQuestionBlocks(
-  openMessageId: string | null,
-  surfacedMessageId: string | null,
-): boolean {
-  if (openMessageId === null) return false      // nothing open
-  if (openMessageId === '') return true         // open, but unidentifiable: hold
-  return openMessageId !== surfacedMessageId    // held until the drain showed it
-}
+// drainSurfacedMessageId / openQuestionBlocks live in open-question.ts, shared
+// with the context-guard's daily tier; re-exported for existing callers.
+export { openQuestionBlocks } from './open-question.js'
 
 function sessionFor(name: string): string {
   return name === MAIN_AGENT_ID ? MAIN_CHANNELS_SESSION : agentSessionName(name)
@@ -216,7 +185,7 @@ function capturePaneOrNull(session: string): string | null {
 // message now goes through the logger with the call site and the session.
 function getPanePid(session: string): number | null {
   try {
-    const raw = execFileSync(tmuxBin(), ['list-panes', '-t', session, '-F', '#{pane_pid}'],
+    const raw = execFileSync(tmuxBin(), ['list-panes', '-t', exactTmuxTarget(session), '-F', '#{pane_pid}'],
       { timeout: 3000, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] })
     const pid = parseInt(raw.split('\n')[0]?.trim() ?? '', 10)
     return Number.isFinite(pid) && pid > 0 ? pid : null
@@ -688,8 +657,7 @@ export function gatherGateInputs(name: string, nowMs: number): GateSnapshot {
   const openQuestion = (() => {
     try {
       const ledgerId = agentIdForLedger(name)
-      return openQuestionBlocks(openQuestionIgnoringCommands(ledgerId),
-                                drainSurfacedMessageId(ledgerId))
+      return ownerQuestionHolds(ledgerId)
     }
     catch { return false }
   })()
@@ -751,8 +719,22 @@ export function diagnoseAgent(name: string, nowMs: number) {
  */
 export async function sendSlashCommand(session: string, command: string): Promise<void> {
   await withSessionSendLock(session, null, 'deliver', async () => {
-    execFileSync(tmuxBin(), ['send-keys', '-t', session, '-l', command], { timeout: 5000 })
-    execFileSync(tmuxBin(), ['send-keys', '-t', session, 'Enter'], { timeout: 5000 })
+    execFileSync(tmuxBin(), ['send-keys', '-t', exactTmuxTarget(session), '-l', command], { timeout: 5000 })
+    execFileSync(tmuxBin(), ['send-keys', '-t', exactTmuxTarget(session), 'Enter'], { timeout: 5000 })
+  })
+}
+
+// One named key into the pane (tmux key name, not literal text: '1', 'Enter'),
+// on the same send lane as the slash commands. MODELCONFIRM1005: answers the
+// CLI's "Switch model?" confirmation after a /model.
+export async function sendKey(session: string, key: string): Promise<void> {
+  await withSessionSendLock(session, null, 'deliver', async () => {
+    try {
+      execFileSync(tmuxBin(), ['send-keys', '-t', exactTmuxTarget(session), key], { timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] })
+    } catch (err) {
+      logger.warn({ site: 'context-restart-gate-runner.sendKey', session, key, tmux: tmuxStderr(err) }, 'tmux key send failed')
+      throw err
+    }
   })
 }
 
@@ -761,7 +743,7 @@ export async function sendSlashCommand(session: string, command: string): Promis
 export async function sendInterrupt(session: string): Promise<void> {
   await withSessionSendLock(session, null, 'deliver', async () => {
     try {
-      execFileSync(tmuxBin(), ['send-keys', '-t', session, 'Escape'], { timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] })
+      execFileSync(tmuxBin(), ['send-keys', '-t', exactTmuxTarget(session), 'Escape'], { timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] })
     } catch (err) {
       logger.warn({ site: 'context-restart-gate-runner.sendInterrupt', session, tmux: tmuxStderr(err) }, 'tmux send-keys Escape failed')
       throw err

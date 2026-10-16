@@ -49,6 +49,19 @@ describe('resolveMainAgentConfigDir', () => {
     expect(resolveMainAgentConfigDir()).toBe(join(SANDBOX, 'home', '.claude-bot'))
   })
 
+  // SECSZIVEK1007: a value from .env never met the settings write check, and the
+  // dir reaches the channels launch command; the read applies the same path
+  // rules as an agent's claudeConfigDir. The dir EXISTS here, so existence
+  // alone (the old check) would have accepted it.
+  it('returns null for an existing dir whose path is outside the config-dir rules', () => {
+    const odd = join(SANDBOX, 'home', "it's dir")
+    mkdirSync(odd, { recursive: true })
+    SETTING = odd
+    expect(resolveMainAgentConfigDir()).toBeNull()
+    SETTING = '~/../home/.claude-bot'
+    expect(resolveMainAgentConfigDir()).toBeNull()
+  })
+
   it('returns null (not the unresolved path) when the dir does not exist', () => {
     // Falling back to the shared root is the safe failure: launching with a
     // non-existent CLAUDE_CONFIG_DIR would start the bot logged-out.

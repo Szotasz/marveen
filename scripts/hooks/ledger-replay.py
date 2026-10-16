@@ -25,6 +25,7 @@ JSON. No history -> no-op. Never breaks session start (always exit 0).
 import sys
 import os
 import json
+import re
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ledger_lib  # noqa: E402
@@ -112,7 +113,7 @@ def _snippet(text, limit):
     return s
 
 
-def _build_output(transcript, open_q, owner):
+def _build_output(transcript, open_q, owner, reply_tool=None):
     """Assemble the final SessionStart hook payload dict from the (already
     snippet-trimmed, oldest-first) transcript lines + optional open question.
 
@@ -150,8 +151,11 @@ def _build_output(transcript, open_q, owner):
         parts.append(
             f'NYITOTT KÉRDÉS (még NEM válaszoltad meg): {owner} utolsó üzenete '
             f'(chat {chat_id}, message_id {message_id}): "{snippet}". Válaszolj rá '
-            f'MOST a telegram reply tool (mcp__plugin_telegram_telegram__reply) '
-            f'meghívásával a megfelelő chat_id-re, a lenti kontextusból folytatva.'
+            + (f'MOST a {reply_tool} tool meghívásával a megfelelő chat_id-re, '
+               if reply_tool else
+               'MOST ANNAK a csatornának a reply tooljával, ahonnan jött, a megfelelő '
+               'chat_id-re, ')
+            + 'a lenti kontextusból folytatva.'
         )
         if att_file_id:
             parts.append(
@@ -187,17 +191,17 @@ def _payload_bytes(out):
     return len(json.dumps(out, ensure_ascii=False).encode("utf-8"))
 
 
-def _fit_output(transcript, open_q, owner, byte_budget):
+def _fit_output(transcript, open_q, owner, byte_budget, reply_tool=None):
     """Build the payload and keep it under `byte_budget` by dropping the OLDEST
     turn and re-measuring, iteratively (build -> measure -> trim -> repeat). The
     freshest END survives, the oldest turns fall off first. At least one turn is
     kept when any exist (its snippet is already bounded by _max_snippet, so a
     lone freshest turn still fits)."""
     transcript = list(transcript)
-    out = _build_output(transcript, open_q, owner)
+    out = _build_output(transcript, open_q, owner, reply_tool)
     while len(transcript) > 1 and _payload_bytes(out) > byte_budget:
         transcript.pop(0)
-        out = _build_output(transcript, open_q, owner)
+        out = _build_output(transcript, open_q, owner, reply_tool)
     return out
 
 
@@ -218,6 +222,22 @@ def main():
         sys.exit(0)  # nothing to replay
 
     owner = ledger_lib.owner_name()
+
+    # REPLAYTOOL924: the open-question directive named the Telegram reply tool
+    # unconditionally, so a respawned session was told to answer a DISCORD DM with
+    # the Telegram tool (measured 2026-09-24). The ledger already records the
+    # envelope source (PROVIDERVAK908); derive the tool from it, and fall back to
+    # provider-agnostic wording on a miss -- an invented tool name is worse than
+    # none, the model would call it and fail.
+    reply_tool = None
+    if open_q:
+        try:
+            src = ledger_lib.source_for(agent_id, open_q[0])
+        except Exception:
+            src = None
+        m = re.match(r"^plugin:([A-Za-z0-9_]+):([A-Za-z0-9_]+)$", src or "")
+        if m:
+            reply_tool = "mcp__plugin_{}_{}__reply".format(m.group(1), m.group(2))
 
     max_snippet = _max_snippet()
     transcript = []
@@ -243,7 +263,7 @@ def main():
     # Authoritative guard: keep the FINAL payload's real UTF-8 byte size under the
     # harness's injection cap, dropping oldest turns and re-measuring until it
     # fits (freshest END survives).
-    out = _fit_output(transcript, open_q, owner, _byte_budget())
+    out = _fit_output(transcript, open_q, owner, _byte_budget(), reply_tool)
 
     print(json.dumps(out, ensure_ascii=False))
     sys.exit(0)

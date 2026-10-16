@@ -22,8 +22,24 @@ hook adds NO new state model -- it reuses ledger_lib.open_question_with_age):
   - If this same message_id has already been blocked MAX_BLOCKS times -> allow;
     a hard backstop so a wedged model can never be trapped in an infinite loop.
   - Otherwise -> BLOCK with a directive telling the model to send the reply via
-    THIS install's channel reply tool (resolved from CHANNEL_PROVIDER; see
-    _channel_provider) with chat_id=..., before stopping.
+    the reply tool OF THE CHANNEL THE MESSAGE CAME FROM, with chat_id=...
+
+PROVIDER-AWARENESS (PROVIDERVAK908): this hook used to name
+mcp__plugin_telegram_telegram__reply unconditionally, because the ledger recorded
+WHAT arrived but not WHERE FROM. Measured 2026-09-07 it demanded a TELEGRAM reply
+for an inbound that came from the owner's DISCORD DM.
+The block itself was right -- an unanswered inbound IS owed a reply -- but the
+directive named a tool that cannot deliver it. The ledger now stores the envelope
+source, and the directive is derived from it.
+
+WHEN THE SOURCE DOES NOT NAME A TOOL (rows written before the column existed have
+source NULL; a source with a dash, like Slack's plugin:slack-channel:slack, does
+not map to a tool name character for character): the directive falls back to the
+CONFIGURED channel of this install (CHANNEL_PROVIDER, #1606, _reply_tool_name),
+which names a VERIFIED tool from _REPLY_TOOLS. Only when that names no verified
+tool either does it use provider-agnostic wording. A source that names a DIFFERENT
+provider than the configured one never borrows the configured tool: that would be
+the wrong tool, which is exactly the failure being fixed (_directive_target).
 
 Safety: any error -> allow the stop (exit 0). A guard hook must never wedge the
 session. agent_id is derived from the session cwd, so it is generic across all
@@ -157,6 +173,48 @@ def _reply_tool_name():
     return "a csatorna reply tool", provider or "csatorna"
 
 
+_SOURCE_RX = re.compile(r"^plugin:([A-Za-z0-9_]+):([A-Za-z0-9_]+)$")
+
+
+def _reply_target(source):
+    """(channel_label, reply_tool_name) for an envelope source, or (None, None).
+
+    Only a source whose segments are plain [A-Za-z0-9_] yields a tool name: the
+    MCP tool id is mcp__plugin_<provider>_<server>__reply, and a segment with a
+    dot or a dash does not map to it character-for-character. In that case the
+    caller falls back to provider-agnostic wording -- an invented tool name is
+    worse than no tool name, because the model would call it and fail.
+    """
+    m = _SOURCE_RX.match(source or "")
+    if not m:
+        return (None, None)
+    provider, server = m.group(1), m.group(2)
+    return (provider, "mcp__plugin_{}_{}__reply".format(provider, server))
+
+
+def _directive_target(source):
+    """(channel_label, reply_tool) the block directive names, or (None, None).
+
+    Order (Marveen 32905): the message's own source first (_reply_target); when it
+    names no tool, the install's configured channel (_reply_tool_name, verified
+    table) -- for a NULL source unconditionally, for an unmappable source only if
+    it is the same provider; otherwise nothing, and the caller uses agnostic wording.
+    """
+    label, tool = _reply_target(source)
+    if tool:
+        return label, tool
+    configured_tool, configured = _reply_tool_name()
+    if configured_tool not in _REPLY_TOOLS.values():
+        return (None, None)
+    if not source:
+        return configured, configured_tool
+    m = re.match(r"^plugin:([^:]+):", source)
+    src = m.group(1).strip().lower() if m else ""
+    if _PROVIDER_ALIASES.get(src, src) == configured:
+        return configured, configured_tool
+    return (None, None)
+
+
 def _statefile(agent_id):
     safe = "".join(c if (c.isalnum() or c in "-_") else "_" for c in str(agent_id))
     return os.path.join(os.path.dirname(ledger_lib.db_path()), f".tg-reply-guard-{safe}")
@@ -224,15 +282,26 @@ def main():
     if len(snippet) > 160:
         snippet = snippet[:157] + "..."
 
-    reply_tool, provider = _reply_tool_name()
-    label = provider.upper()
+    try:
+        source = ledger_lib.source_for(agent_id, chat_id)
+    except Exception:
+        source = None  # unknown -> the configured channel, else agnostic wording
+    label, tool = _directive_target(source)
+
+    if tool:
+        channel = f"{label.upper()}-ÜZENET"
+        how = f"a {tool} toolon keresztül (chat_id={chat_id})"
+        sees = f"ő csak a(z) {label} csatornát látja"
+    else:
+        channel = "CSATORNA-ÜZENET"
+        how = f"ANNAK a csatornának a reply tooljával, ahonnan jött (chat_id={chat_id})"
+        sees = "ő csak a csatornát látja, a transzkriptet nem"
 
     reason = (
-        f"⚠️ VÁLASZOLATLAN {label}-ÜZENET (chat_id={chat_id}): \"{snippet}\"\n"
-        f"A fordulót NEM zárhatod le, amíg NEM küldtél csatorna-választ a "
-        f"{reply_tool} toolon keresztül (chat_id={chat_id}). "
+        f"⚠️ VÁLASZOLATLAN {channel} (chat_id={chat_id}): \"{snippet}\"\n"
+        f"A fordulót NEM zárhatod le, amíg NEM küldtél választ {how}. "
         f"A sima szöveges (assistant text) kimenet NEM jut el a felhasználóhoz -- "
-        f"ő csak a(z) {provider} csatornát látja. Küldd el a választ a reply toollal MOST, "
+        f"{sees}. Küldd el a választ a reply toollal MOST, "
         f"utána zárhatod a fordulót."
     )
     print(json.dumps({"decision": "block", "reason": reason}))

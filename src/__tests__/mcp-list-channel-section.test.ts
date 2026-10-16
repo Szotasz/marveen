@@ -60,6 +60,29 @@ describe('mcp-list channel warning: what it says', () => {
     const lines = (body.match(/^\s+'/gm) || []).length
     expect(lines).toBeLessThanOrEqual(16)
   })
+
+  // CHILDCLAUDEPOLLER1010: the cause is not `mcp list` itself but ANY child
+  // `claude` that inherits the channel state dir and loads the plugin, whose
+  // bot.pid logic then SIGTERMs the parent's live poller. Measured 2026-10-10
+  // with three `claude -p` calls from a live sub-agent session.
+  it('extends the warning to any child `claude` (e.g. `claude -p`), not only `mcp list`', () => {
+    expect(body).toMatch(/claude -p/)
+    expect(body).toMatch(/2026-10-10/)
+  })
+
+  it('names the mechanism (shared bot.pid) and the safe way to run a child', () => {
+    expect(body).toMatch(/bot\.pid/)
+    expect(body).toMatch(/CLAUDE_CONFIG_DIR/)
+  })
+
+  // Review on #1851: unsetting TELEGRAM_STATE_DIR makes the plugin fall back to
+  // ~/.claude/channels/telegram, the main agent's state dir, so the safe recipe
+  // points it at an empty dir and names the config dir as what isolates.
+  it('says to point the state dir at an empty dir, not to unset it', () => {
+    expect(body).toMatch(/állítsd egy üres mappára/)
+    expect(body).toMatch(/NE töröld/)
+    expect(body).not.toMatch(/vedd ki a környezetéből/)
+  })
 })
 
 describe('mcp-list channel warning: where it lands', () => {
@@ -87,5 +110,17 @@ describe('mcp-list channel warning: the evidence doc', () => {
 
   it('records the before-state as a separate round, which is what makes the after meaningful', () => {
     expect(DOC).toMatch(/két külön körben|KÜLÖN körben/)
+  })
+
+  it('documents the mechanism with the verbatim log line, not a guess', () => {
+    expect(DOC).toMatch(/A mechanizmus \(mérve 2026-10-10/)
+    expect(DOC).toMatch(/replacing stale poller pid=/)
+    expect(DOC).toMatch(/bot\.pid/)
+  })
+
+  it('states which plugin version checks what, and the token precondition', () => {
+    expect(DOC).toMatch(/0\.0\.6-os plugin csak azt nézi, hogy a pid él-e/)
+    expect(DOC).toMatch(/token nélkül a `server\.ts` még a `bot\.pid` előtt kilép/)
+    expect(DOC).toMatch(/NE töröld/)
   })
 })
