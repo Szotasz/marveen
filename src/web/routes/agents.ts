@@ -117,6 +117,8 @@ import {
   agentSessionName,
   sendPromptToSession,
   capturePane,
+  captureInputBoxViews,
+  sessionExistsOnHost,
   delay,
   resolveAgentProvider,
   sharedEnvAuthKeysCopiedTo,
@@ -126,6 +128,7 @@ import { RemoteStatusCache } from '../remote-status-cache.js'
 import type { AgentRunState } from '../ssh-tmux.js'
 import { readActiveModelFromProjectDir, readContextTokensFromProjectDir } from '../active-model.js'
 import { detectPaneState, detectPermissionMode } from '../../pane-state.js'
+import { buildInputStateRows } from '../input-state.js'
 import { checkAgentPutFields, checkConfigPutFields, AGENT_PUT_WRITABLE_FIELDS } from '../agent-put-fields.js'
 import { detectReauthNeeded } from '../reauth-detect.js'
 import { readAutoRestartConfig, writeAutoRestartConfig } from '../auto-restart-store.js'
@@ -250,6 +253,9 @@ itt írhatod meg.
 // local agents fetch fresh (sub-ms tmux). See remote-status-cache.ts.
 const remoteRunStateCache = new RemoteStatusCache<AgentRunState>(5000)
 const remotePaneCache = new RemoteStatusCache<string | null>(3000)
+// the coloured two-view capture of a REMOTE agent for /api/agents/input-state (same short TTL: a sleeping remote
+// host must not freeze the dashboard for N x 8 s on a burst of requests)
+const remoteInputViewCache = new RemoteStatusCache<{ ghostless: string; withGhost: string } | null>(3000)
 
 // Resolve an agent's run state, cached for remote agents to avoid blocking on
 // ssh. `isRemote` is passed by the caller (it already read the remote config).
@@ -931,6 +937,32 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       rows.push(deriveAgentStatus(signalsFor(name, false, running, pane, runState)))
     }
 
+    jsonMaybeGzip(req, res, rows)
+    return true
+  }
+
+  // Input-box state of EVERY agent -- main, local and remote, from the agent
+  // list (never a name list) -- for the after-restart check: is anything
+  // parked unsent anywhere? Each pane is read in colour so a dim ghost
+  // suggestion is reported as 'ghost', not as an unsent prompt (a colour-less
+  // capture cannot tell them apart; 2026-10-11 an idle remote agent's ghost was
+  // taken for an "unsent prompt" this way). 'unreadable' = running but the
+  // capture failed; run 'unreachable' = a remote host that does not answer.
+  // Only the LENGTH of a parked text is reported, never the text. Read-only;
+  // one capture per running agent (ssh for a remote one) -- not for 3s polling.
+  if (path === '/api/agents/input-state' && method === 'GET') {
+    const rows = buildInputStateRows({
+      mainAgentId: MAIN_AGENT_ID,
+      mainSession: MAIN_CHANNELS_SESSION,
+      agents: withoutMainAgent(listAgentNames()),
+      remoteHostOf: (name) => readAgentRemoteHost(name),
+      runStateOf: (name, isRemote) => agentRunStateCached(name, isRemote),
+      sessionOf: (name) => agentSessionName(name),
+      capture: (session, host, name) => host && name
+        ? remoteInputViewCache.getOrRefresh(name, Date.now(), () => captureInputBoxViews(session, host), null)
+        : captureInputBoxViews(session),
+      sessionExists: (session) => sessionExistsOnHost(null, session),
+    })
     jsonMaybeGzip(req, res, rows)
     return true
   }

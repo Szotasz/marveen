@@ -698,6 +698,18 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     valueSet: ['Europe/London', 'Europe/Budapest', 'UTC', 'Europe/Dublin', 'Europe/Berlin', 'Europe/Bucharest', 'America/New_York'],
   },
   {
+    key: 'MARVEEN_REMOTE_BLIND_ALERT_MIN',
+    type: 'int',
+    default: 15,
+    min: 0,
+    max: 1440,
+    description: 'Ennyi perc után riaszt a beragadás-figyelő, ha egy TÁVOLI gépen futó ügynököt nem lát (a gép vagy az ssh nem érhető el, vagy a pane nem olvasható), és közben bejövő üzenet vár rá. 0 = ez a riasztás kikapcsolva. Üres vagy érvénytelen érték = 15 perc (a naplóban név szerint jelezve, sosem néma kikapcsolás).',
+    module: 'agents',
+    secret: false,
+    // Boot-time const in config.ts (REMOTE_BLIND_ALERT_MIN_RAW), read once by the watcher.
+    requiresRestart: true,
+  },
+  {
     key: 'AGENT_INHERITED_MCP_SERVERS',
     type: 'string',
     default: '',

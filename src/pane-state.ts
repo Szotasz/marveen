@@ -1783,6 +1783,42 @@ export function parkedInputText(pane: string): string | null {
   return flat.length > 0 ? flat : null
 }
 
+// What the live input box holds, for the all-agent input-state report (restart
+// checks, the dashboard). Classified from ONE coloured capture seen two ways:
+//   ghostless -- the dim SGR-2 "ghost suggestion" removed (captureParkedInputView
+//                semantics: what a recovery Enter would actually submit);
+//   withGhost -- every ANSI code removed but the dim text KEPT.
+// The two together tell a real parked input from a ghost suggestion. A plain
+// (colour-less) capture cannot: the ghost reads as typed text there, which is
+// how an operator check after a host restart mistook an agent's ghost
+// suggestion for an "unsent prompt" (2026-10-11) -- the agent was simply idle.
+//   paste   -- a parked `[Pasted text #N]` placeholder (parkedPasteSignature)
+//   parked  -- real text sits in the box (what an Enter would submit)
+//   busy    -- a turn is running (text in the box mid-turn waits it out: busy, not parked)
+//   ghost   -- the box holds only a dim suggestion: nothing to submit
+//   empty   -- idle, nothing in the box
+//   unknown -- the pane is not a recognisable Claude Code prompt
+// `chars` is the length of the parked (or ghost) text -- the TEXT itself is
+// never returned: a report must not echo an agent's inbox content.
+export type InputBoxState = 'empty' | 'ghost' | 'parked' | 'paste' | 'busy' | 'unknown'
+
+//
+// Order: paste FIRST (detectPaneState reads a placeholder as 'busy' by design,
+// and parkedPasteSignature already returns null under a real busy indicator),
+// then BUSY, and only then parked -- text sitting in the box during a running
+// turn is a message waiting the turn out, reported 'busy', never 'parked'.
+export function classifyInputBox(ghostless: string, withGhost: string): { state: InputBoxState; chars: number } {
+  if (parkedPasteSignature(ghostless) != null) return { state: 'paste', chars: 0 }
+  const st = detectPaneState(ghostless)
+  if (st === 'busy') return { state: 'busy', chars: 0 }
+  const real = parkedInputText(ghostless)
+  if (real != null) return { state: 'parked', chars: real.length }
+  const ghost = parkedInputText(withGhost)
+  if (ghost != null) return { state: 'ghost', chars: ghost.length }
+  if (st === 'idle' || st === 'typing') return { state: 'empty', chars: 0 }
+  return { state: 'unknown', chars: 0 }
+}
+
 // Machine-origin wrappers the delivery paths prepend to injected prompts.
 // A parked input STARTING with one of these cannot be a human's hand-typed
 // draft, so the recovery stack may act on it (clear a scheduled tick, or
