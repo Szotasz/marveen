@@ -156,3 +156,6 @@ transcripts/
 #   supabase/.temp/  -> ignores a real directory, MISSES the symlink (it shows in
 #                       `git status`, so the next CLI run commits it again)
 supabase/.temp
+
+# Install-local hook scripts named by store/extra-hooks.json (docs/config-reference.md)
+local-hooks/

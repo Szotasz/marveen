@@ -160,11 +160,15 @@ const HTTP_WRITE_RX = /(-X\s*(POST|PUT|PATCH|DELETE)|--request\s+(POST|PUT|PATCH
 // (src/egress-allowlist-baseline.ts). This gate narrows the casual route; that one
 // catches the rest after the fact.
 const ALLOWLIST_BASENAME = 'egress-allowlist.json'
+// The same rule, same message, for store/extra-hooks.json and the local-hooks/ scripts it
+// may name: the scaffold wires those into EVERY sub-agent's settings, so a sub-agent that
+// could write either would run its code in the other agents' sessions.
+const PROTECTED_BASENAMES = new Set([ALLOWLIST_BASENAME, 'extra-hooks.json'])
 // The STORE objects, not the concept: the file and its history directory, or a glob that
 // starts on the name (egress-allow*, egress-allowlist.*). A plain /egress[-_]?allow/ also
 // matched this gate's own source and test names (egress-allowlist-baseline.ts), so no
 // sub-agent could run, stage or diff them -- review on #1678.
-const ALLOWLIST_MENTION_RX = /egress[-_]?allowlist(?:\.json|\.history)|egress[-_]?allow[\w.]*[*?[]/i
+const ALLOWLIST_MENTION_RX = /egress[-_]?allowlist(?:\.json|\.history)|egress[-_]?allow[\w.]*[*?[]|extra[-_]?hooks\.json|(?:^|[\s'"=:/])local-hooks(?:\/|\s|$)/i
 const ALLOWLIST_READERS = new Set([
   'cat', 'head', 'tail', 'grep', 'egrep', 'fgrep', 'rg', 'jq', 'wc', 'ls', 'stat',
   'file', 'shasum', 'sha256sum', 'md5', 'md5sum', 'diff', 'cmp', 'echo', 'printf',
@@ -200,8 +204,10 @@ function realOrSelf(p) {
 export function fileToolTargetsAllowlist(toolInput, allowlistPath = DEFAULT_ALLOWLIST_PATH, cwd = process.cwd()) {
   const raw = String(toolInput?.file_path ?? toolInput?.notebook_path ?? '')
   if (!raw) return false
-  if (basename(raw).toLowerCase() === ALLOWLIST_BASENAME) return true
+  if (PROTECTED_BASENAMES.has(basename(raw).toLowerCase())) return true
   const abs = resolve(cwd, expandHome(raw))
+  const localHooks = realOrSelf(join(dirname(allowlistPath), '..', 'local-hooks'))
+  if (realOrSelf(abs).startsWith(localHooks + '/') || /(^|\/)local-hooks(\/|$)/.test(raw)) return true
   return realOrSelf(abs) === realOrSelf(allowlistPath)
 }
 
