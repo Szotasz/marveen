@@ -3029,7 +3029,7 @@ function buildOwnTokenAgentIdBody(name: string, tokenPath: string): string {
 const OWN_TOKEN_FOREIGN_MEMORY_RULE =
   'Ha idegen ágens emlékét írod felül, a szerver FIGYELMEZTET (`owner_mismatch` a válaszban), de nem állít meg.'
 const OWN_TOKEN_MEMORY_DELETE_RULE =
-  'A TÖRLÉS VÉGLEGES: a sorral együtt a verzióit is törli. Ha mégis törölnöd kell, előtte olvasd ki és mentsd el a sort (`GET /api/memories/<id>`).'
+  'Emléket törölni a tokeneddel nem tudsz (403, "rule":"agent-token-scope"): ha egy sort törölni kell, kérd a fő-ágenstől.'
 
 // Same five-rule idempotency contract as ensureSystemDirectiveAuthSection.
 export function ensureAgentIdHeaderSection(name: string): void {
@@ -3530,9 +3530,14 @@ export async function generateClaudeMd(name: string, description: string, model:
   // generation; dashboardTokenPathFor falls back to the shared path if not.
   const tokenPath = dashboardTokenPathFor(name)
   // Said only when the agent really has its own token: the shared token (the
-  // fallback, or AGENT_DASHBOARD_TOKENS=0) is not refused anything.
-  const scheduleEnforcedNote = tokenPath !== join(PROJECT_ROOT, 'store', '.dashboard-token')
+  // fallback, or AGENT_DASHBOARD_TOKENS=0) is not refused anything, and it has
+  // no allowlist (auth-gate.ts AGENT_TOKEN_ALLOWLIST).
+  const ownToken = tokenPath !== join(PROJECT_ROOT, 'store', '.dashboard-token')
+  const scheduleEnforcedNote = ownToken
     ? ' Ezt a szerver érvényesíti: a saját tokeneddel minden nem-GET hívás a /api/schedules alatt 403-at ad ("only the main agent writes schedules").'
+    : ''
+  const tokenScopeLine = ownToken
+    ? `Ez a SAJÁT tokened, és csak az ügynök-API-ra szól (üzenetek, kanban, memória, napi napló, jóváhagyás-kérés, ütemezések és a vault olvasása). Minden más végpontra a szerver 403-at ad ("rule":"agent-token-scope"): az ilyen kérést küldd a fő-ágensnek (${MAIN_AGENT_ID}) a /api/messages-en.\n`
     : ''
   const ownerDriveFolder = String(getEffectiveSettingValue('OWNER_DRIVE_FOLDER') || '')
   const driveDefault = ownerDriveFolder
@@ -3574,7 +3579,7 @@ A memoria 3 retegbol all (hot/warm/cold) + napi naplo.
 ### NINCS MENTAL NOTE! Ha meg kell jegyezni -> AZONNAL mentsd:
 
 Minden /api/* végpont Bearer tokenes: a token a ${tokenPath} fájlban.
-A munkakönyvtárad NEM a projekt gyökere, hanem ${join(PROJECT_ROOT, 'agents')}/AGENT_NAME, ezért a projekt fájljaira (token, scripts/) MINDIG abszolút úttal hivatkozz. Relatív úttal a fájl nem létezik: a cat üres sztringet ad, a curl üres Bearert küld, és a hívás némán 401-gyel elhal.
+${tokenScopeLine}A munkakönyvtárad NEM a projekt gyökere, hanem ${join(PROJECT_ROOT, 'agents')}/AGENT_NAME, ezért a projekt fájljaira (token, scripts/) MINDIG abszolút úttal hivatkozz. Relatív úttal a fájl nem létezik: a cat üres sztringet ad, a curl üres Bearert küld, és a hívás némán 401-gyel elhal.
 
 Memória mentés:
 curl -s -X POST ${dashboardOrigin}/api/memories -H "Content-Type: application/json" -H "Authorization: Bearer $(cat ${tokenPath})" -d '{"agent_id":"AGENT_NAME","content":"MIT","category":"CATEGORY","keywords":"kulcsszo1, kulcsszo2"}'

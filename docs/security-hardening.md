@@ -325,6 +325,15 @@ without matching any pattern.
   carries no agent and keeps every right it had.
 - A sub-agent token gets `403` on every write under `/api/schedules`
   (`rule: "schedule-writes-main-agent-only"`); reading schedules stays allowed.
+- Everything else a sub-agent token may call is an explicit allowlist
+  (`AGENT_TOKEN_ALLOWLIST` in `src/web/auth-gate.ts`): the agent API the
+  generated CLAUDE.md teaches (messages, kanban, memories, the daily log,
+  approval requests, task state, the hook endpoints, schedule and vault
+  reads). Any other gated path is `403` (`rule: "agent-token-scope"`), with a
+  message that names the main agent to ask instead. Public probes stay public.
+  This closes the routes that would undo the rule or mint an unrestricted
+  credential from the scoped one: fleet import (writes the schedule store),
+  device keys, dashboard users, bridge enrollment, terminal input.
 - On start, the agent's CLAUDE.md is rewritten from the shared token path to
   its own file, and the generated sections render the per-agent path.
 
