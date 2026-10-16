@@ -59,12 +59,15 @@ export function literalKeyArgs(session: string, text: string): string[] | null {
  * scheduled prompt reached an agent with `...+4:]print(...)` instead of
  * `...+4:];print(...)`, a SyntaxError in the very verification command the
  * prompt asked it to run. `\;` is tmux's escape for a literal `;` and survives
- * (`'abc\;'` typed `abc;`). With a backslash already in front of the `;` the
- * escaping rules get ambiguous, so that case is left alone; the chunked sender
- * avoids it by never cutting a chunk right after a `;` (see agent-process.ts).
+ * (`'abc\;'` typed `abc;`). The rule is uniform: tmux consumes exactly ONE
+ * backslash in front of a trailing `;` (measured on tmux 3.6a: n backslashes
+ * before the trailing `;` type as n-1, and none drops the `;`), so one is always
+ * added, also when the text already ends in `\;` -- `find . -exec rm {} \;`
+ * otherwise arrives without its backslash. A `;` that is not the last character
+ * is not touched.
  */
 export function protectTrailingSemicolon(text: string): string {
-  if (!text.endsWith(';') || text.endsWith('\\;')) return text
+  if (!text.endsWith(';')) return text
   return text.slice(0, -1) + '\\;'
 }
 

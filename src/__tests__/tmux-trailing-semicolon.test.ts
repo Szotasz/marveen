@@ -15,8 +15,11 @@ describe('protectTrailingSemicolon', () => {
     expect(protectTrailingSemicolon('a;b')).toBe('a;b')
     expect(protectTrailingSemicolon('')).toBe('')
   })
-  it('does not double-escape an already escaped one', () => {
-    expect(protectTrailingSemicolon('a\\;')).toBe('a\\;')
+  it('escapes a trailing semicolon that already has a backslash in front (tmux eats exactly one)', () => {
+    expect(protectTrailingSemicolon('a\\;')).toBe('a\\\\;')
+    expect(protectTrailingSemicolon('find . -exec rm {} \\;')).toBe('find . -exec rm {} \\\\;')
+    // only the LAST character counts: an inner escaped one is typed as is
+    expect(protectTrailingSemicolon('a\\;b')).toBe('a\\;b')
   })
   it('literalKeyArgs carries the protected text', () => {
     // develop's exact-match target (`=s:`) since the tmux-target change; the protection is unchanged
@@ -39,6 +42,20 @@ describe.skipIf(!tmuxOk)('real tmux: the semicolon survives the protected send',
       }
       execFileSync('/bin/sleep', ['0.3'])
       expect(tmux('capture-pane', '-p', '-t', sess).split('\n')[0]).toBe('b=t[4:];print(1);;end')
+    } finally {
+      try { tmux('kill-server') } catch { /* ignore */ }
+    }
+  })
+
+  it('an escaped trailing semicolon keeps its backslash (find -exec ... \\;)', () => {
+    const sock = `semitest2-${process.pid}`
+    const sess = 'semi'
+    const tmux = (...a: string[]) => execFileSync('tmux', ['-L', sock, ...a], { encoding: 'utf-8' })
+    tmux('new-session', '-d', '-s', sess, 'cat > /dev/null')
+    try {
+      tmux('send-keys', '-t', sess, '-l', protectTrailingSemicolon('find . -exec rm {} \\;'))
+      execFileSync('/bin/sleep', ['0.3'])
+      expect(tmux('capture-pane', '-p', '-t', sess).split('\n')[0]).toBe('find . -exec rm {} \\;')
     } finally {
       try { tmux('kill-server') } catch { /* ignore */ }
     }
