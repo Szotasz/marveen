@@ -125,7 +125,7 @@ import { addDesiredAgent, getDesiredAgents, removeDesiredAgent } from '../agent-
 import { RemoteStatusCache } from '../remote-status-cache.js'
 import type { AgentRunState } from '../ssh-tmux.js'
 import { readActiveModelFromProjectDir, readContextTokensFromProjectDir } from '../active-model.js'
-import { detectPaneState, detectPermissionMode } from '../../pane-state.js'
+import { detectPaneState, detectPermissionMode, detectBackgroundAgents } from '../../pane-state.js'
 import { checkAgentPutFields, checkConfigPutFields, AGENT_PUT_WRITABLE_FIELDS } from '../agent-put-fields.js'
 import { detectReauthNeeded } from '../reauth-detect.js'
 import { readAutoRestartConfig, writeAutoRestartConfig } from '../auto-restart-store.js'
@@ -844,7 +844,14 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const modeOf = (running: boolean, pane: string | null): string | null =>
       running && pane !== null ? detectPermissionMode(pane) : null
 
-    const entries: Array<{ name: string; isMain: boolean; running: boolean; state: string; mode: string | null; tail: string[] }> = []
+    // Background (sub-)agents listed under the footer. `state` stays the main
+    // thread's own state; the dashboard shows "sub-agents working" only when the
+    // main thread is idle and this says some are running. null = no block in the
+    // recognised shape, so nothing is claimed.
+    const bgAgentsOf = (running: boolean, pane: string | null): { total: number; running: number; queued: number } | null =>
+      running && pane !== null ? detectBackgroundAgents(pane) : null
+
+    const entries: Array<{ name: string; isMain: boolean; running: boolean; state: string; mode: string | null; bgAgents: { total: number; running: number; queued: number } | null; tail: string[] }> = []
 
     // Main agent runs in the --channels session, not agent-<name>.
     {
@@ -856,6 +863,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
         running,
         state: paneActivityLabel(running, mainPane),
         mode: modeOf(running, mainPane),
+        bgAgents: bgAgentsOf(running, mainPane),
         tail: tailOf(mainPane),
       })
     }
@@ -873,7 +881,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
           : capturePane(agentSessionName(name))
       }
       const state = runState === 'unreachable' ? 'unreachable' : paneActivityLabel(running, pane)
-      entries.push({ name, isMain: false, running, state, mode: modeOf(running, pane), tail: tailOf(pane) })
+      entries.push({ name, isMain: false, running, state, mode: modeOf(running, pane), bgAgents: bgAgentsOf(running, pane), tail: tailOf(pane) })
     }
 
     jsonMaybeGzip(req, res, entries)
