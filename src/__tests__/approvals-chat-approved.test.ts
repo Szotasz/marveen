@@ -3,9 +3,10 @@
 // still sent the owner the approval QUESTION, so the owner answered "mehet" a
 // second time -- four times in one day on a live install. The main agent can
 // now pass the owner's approving chat message id on POST: the row is born
-// approved and the owner gets an informative note instead of a question. A
-// sub-agent must never be able to self-approve this way, so the field is
-// rejected for anyone else.
+// approved and the owner gets an informative note instead of a question. The
+// field is rejected for any other declared agent_id: a sub-agent that declares
+// its own name is refused. The check rests on the self-declared agent_id, so
+// any holder of the shared token can still send the main agent's name.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { spawnSync } from 'node:child_process'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
@@ -100,7 +101,7 @@ describe('POST /api/approvals with owner_approved_message_id', () => {
     expect(getApproval(out.body.id)!.telegram_message_id).toBe(4001)
   })
 
-  it('(b) a sub-agent cannot self-approve: 400, no row, nothing sent', async () => {
+  it('(b) a sub-agent that declares its own name is refused: 400, no row, nothing sent', async () => {
     const out = await post({
       agent_id: 'agent-b',
       category: 'email_send',

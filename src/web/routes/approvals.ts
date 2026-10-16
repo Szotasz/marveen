@@ -301,9 +301,15 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     // message. Such a row is born approved and the owner is told, not asked.
     // Only the main agent: it is the one reading the owner's chat. Any other
     // requester sending the field is refused outright (not silently ignored),
-    // so a sub-agent can never self-approve and a caller relying on the field
-    // learns at once that it does not apply. Like the PATCH self-approval
-    // guard, this rests on the self-declared agent_id (shared bearer token).
+    // so a caller relying on the field learns at once that it does not apply.
+    // A sub-agent that declares its own name is refused; the check rests on
+    // the self-declared agent_id, and any holder of the shared dashboard token
+    // can send the main agent's name and get a row born approved.
+    //
+    // The server does not verify the id: it does not check that the message
+    // exists, came from the owner, is recent, or refers to this action. Any
+    // value of the right shape passes. Whether the owner approved this action
+    // in the chat is the main agent's judgement, not a server check.
     //
     // The id is the owner's approving chat message: a positive integer
     // (Telegram), or a short id string for providers whose message ids are not
