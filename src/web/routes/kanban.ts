@@ -82,7 +82,6 @@ export function kanbanMoveInstructions(id: string, target: string): string {
   const moveUrl = `${base}/api/kanban/${id}/move`
   const commentUrl = `${base}/api/kanban/${id}/comments`
   const cardUrl = `${base}/api/kanban/${id}`
-  const claimUrl = `${base}/api/kanban/${id}/claim`
   // Escalation target when blocked: sub-agents hand back to the main agent
   // (their delegator), who triages and only escalates to the operator when
   // the block genuinely needs a human decision. Only the main agent itself
@@ -132,16 +131,6 @@ export function kanbanMoveInstructions(id: string, target: string): string {
     statusProbe,
     'Ha a "status:" sor már "testing" vagy "done", NE kezdj bele -- az üzenet későn ért ide, a munka már áll. Egy második nekifutás párhuzamos, két helyen karbantartott munkát szül (például egy MÁSODIK teszt-fájlt ugyanarra a vezérlőre). Ilyenkor jelezd a delegálódnak, és ne írj kódot.',
     'A "description:" sort is OLVASD EL, ne csak a státuszt: ha benne kártya-specifikus kikötés áll (pl. más záró-státusz, "nincs éles restart"), az felülírja ennek a sablonnak az alapértelmezését, lásd a 2) lépésnél.',
-    '',
-    // The status probe above answers "is the work already done?",
-    // not "is someone else doing it right now?". Two agents can both read
-    // in_progress and both start; the claim is the atomic lock that settles it.
-    'FOGLALD LE a kártyát, MIELŐTT dolgozni kezdesz (két ügynök ne dolgozzon ugyanazon):',
-    `  curl -s -X POST ${claimUrl} \\`,
-    `    ${auth} \\`,
-    `    -H 'Content-Type: application/json' \\`,
-    `    -d '{"agent":"${target}"}'`,
-    'Ha a válasz 409 ("már ... foglalja"), NE kezdj bele: más dolgozik rajta, jelezd a delegálódnak. A foglalás 2 óráig él; hosszabb munkánál ugyanezzel a hívással újítsd meg. Automatikusan elengedi a done, a waiting vagy a testing státusz, és az is, ha a kártyát másra osztod át (lent, elakadásnál): így az átvevő le tudja foglalni.',
     '',
     'A kártyát in_progress-re húzták. Amikor VÉGEZTÉL, két lépés (mindkettő a kártyára kerül, a web UI-ban látszik):',
     '',
@@ -491,6 +480,20 @@ export function parseIncludeArchived(raw: string | null): boolean | null {
   return null
 }
 
+// The claim lock is opt-in (KANBAN_CLAIM_LOCK, default off, hot-reloaded from
+// the settings layer). Off: /claim and /release answer 404 with reason
+// 'claim_lock_disabled' and no claim_warning is added, so nothing asks an
+// agent to claim before it works. The columns and the release triggers exist
+// either way; with the lock off the routes set no claim, so the triggers have
+// nothing to clear. The unblock and the done-evidence warning do not depend on it.
+export function isKanbanClaimLockEnabled(): boolean {
+  try {
+    return ['1', 'true', 'yes', 'on'].includes(String(getEffectiveSettingValue('KANBAN_CLAIM_LOCK')).trim().toLowerCase())
+  } catch {
+    return false
+  }
+}
+
 // What a status change owes the caller beyond `ok`. Every field is
 // ADDITIVE and optional -- `ok: true` and the status code are unchanged, so no
 // existing caller (dashboard drag, agents' curl recipes) sees a difference
@@ -512,7 +515,7 @@ export function statusChangeExtras(
 ): Record<string, unknown> {
   const extras: Record<string, unknown> = {}
   if (!before || before.status === newStatus) return extras
-  if (newStatus === 'in_progress' && isKanbanClaimActive(before)
+  if (newStatus === 'in_progress' && isKanbanClaimLockEnabled() && isKanbanClaimActive(before)
       && (typeof actor !== 'string' || actor.toLowerCase() !== String(before.claimed_by).toLowerCase())) {
     extras.claim_warning =
       `A kártyát ${before.claimed_by} foglalja (lejár: ${new Date(before.claim_expires_at! * 1000).toISOString()}). ` +
@@ -1019,6 +1022,14 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   if (claimMatch && method === 'POST') {
     const id = decodeURIComponent(claimMatch[1])
     const action = claimMatch[2]
+    if (!isKanbanClaimLockEnabled()) {
+      json(res, {
+        error: 'A kártya-foglalás ki van kapcsolva ezen a telepítésen (KANBAN_CLAIM_LOCK=1 kapcsolja be). Foglalás nélkül is dolgozhatsz a kártyán.',
+        ok: false,
+        reason: 'claim_lock_disabled',
+      }, 404)
+      return true
+    }
     const body = await readBody(req)
     const rawBody = (body.length ? JSON.parse(body.toString()) : {}) as unknown
     // Same rule as /move: null, an array or a scalar is a 400, not a 500 on the
