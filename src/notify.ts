@@ -124,7 +124,7 @@ export async function notifyChannel(text: string, meta?: AlertMeta): Promise<voi
     const alertChat = normalizeChatId(ALERT_CHAT_ID)
     // sendToChat reports now, this caller does not care: drop the result so the
     // callback keeps its Promise<void> shape (slack-notify wiring contract).
-    if (alertChat) return sendToChat(alertChat, text, 'alert', meta, 'alert-chat').then(() => {})
+    if (alertChat) return sendToChat(alertChat, text, 'alert', { meta, recipient: 'alert-chat' }).then(() => {})
     return telegramOwner(text, meta)
   })
 }
@@ -193,7 +193,7 @@ async function telegramOwner(text: string, meta?: AlertMeta): Promise<void> {
     if (CHANNEL_TOKEN) signalOwnerChatMissing(text, owner.reason ?? 'ismeretlen ok')
     return
   }
-  await sendToChat(owner.chatId, text, 'owner', meta, 'owner')
+  await sendToChat(owner.chatId, text, 'owner', { meta, recipient: 'owner' })
 }
 
 // PR1655 review, ask 2: this used to return void and swallow every provider
@@ -217,10 +217,13 @@ function sendErrorStatus(err: unknown): number | null {
   return m ? Number(m[1]) : null
 }
 
-async function sendToChat(chatId: string, text: string, target: SendTarget, meta?: AlertMeta, recipient: AlertRecipient = 'owner'): Promise<ChannelSendResult> {
+// `alert` is set by the alert paths only (notifyChannel, notifyOwner): they get
+// the delivery line. sendOwnerMessage leaves it out, since its caller logs the
+// result itself and an approval message is no alert to count.
+async function sendToChat(chatId: string, text: string, target: SendTarget, alert?: { meta?: AlertMeta; recipient: AlertRecipient }): Promise<ChannelSendResult> {
   if (!CHANNEL_TOKEN) {
     logger.warn('Channel ertesites kihagyva: nincs token')
-    logAlertDelivery(meta, recipient, 'skipped')
+    if (alert) logAlertDelivery(alert.meta, alert.recipient, 'skipped')
     return { sent: false, reason: 'no-token' }
   }
 
@@ -264,7 +267,7 @@ async function sendToChat(chatId: string, text: string, target: SendTarget, meta
   }
   const failedChunks = chunks.length - delivered
   const outcome: AlertOutcome = failedChunks === 0 ? 'sent' : delivered > 0 ? 'partial' : 'failed'
-  logAlertDelivery(meta, recipient, outcome, chunks.length, failedChunks)
+  if (alert) logAlertDelivery(alert.meta, alert.recipient, outcome, chunks.length, failedChunks)
   if (delivered === 0) {
     // With one chunk the SIKERTELEN line above already says everything; the
     // summary is for a multi-chunk send. Status only, like the chunk line.

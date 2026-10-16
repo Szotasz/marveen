@@ -38,7 +38,7 @@ vi.mock('../logger.js', () => ({
 
 vi.mock('../test-run-marker.js', () => ({ markIfTestRun: (t: string) => t }))
 
-import { notifyChannel, notifyOwner } from '../notify.js'
+import { notifyChannel, notifyOwner, sendOwnerMessage } from '../notify.js'
 
 type Line = { level: 'info' | 'warn'; fields: Record<string, unknown> }
 function deliveryLines(): Line[] {
@@ -153,5 +153,18 @@ describe('alert delivery line (card 68cb6715)', () => {
       level: 'info',
       fields: { agent: 'agent-x', kind: 'permission-prompt', recipient: 'alert-chat', outcome: 'sent', chunks: 1, failedChunks: 0 },
     }])
+  })
+
+  // sendOwnerMessage (the approval's owner message) shares the send but is no
+  // alert: its caller logs the result itself, and a line here would count every
+  // approval as an alert.
+  it('sendOwnerMessage sends but leaves no delivery line, sent or failed', async () => {
+    expect(await sendOwnerMessage('approve?')).toEqual({ sent: true })
+    expect(mockSend).toHaveBeenCalledTimes(1)
+    mockSend.mockImplementation(async () => { throw new Error('Telegram API 400') })
+    expect((await sendOwnerMessage('approve?')).sent).toBe(false)
+    expect(deliveryLines()).toEqual([])
+    await notifyOwner('digest') // positive control: the alert path in the same run still logs
+    expect(deliveryLines().map((l) => l.fields.outcome)).toEqual(['failed'])
   })
 })
