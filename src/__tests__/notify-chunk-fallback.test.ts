@@ -76,10 +76,13 @@ describe('sendToChat: a failed chunk falls back to ITSELF, as plain text', () =>
     await notifyChannel('a long alert')
     expect(sentTexts()).toContain(CHUNKS[2])
     // Two warnings: this chunk by index, then the send's partial-delivery
-    // summary (#1655). Neither carries the text.
+    // summary (#1655). Neither carries the text, and neither carries the error
+    // words (NOTIFYSENDLOG930: a provider error can quote the rejected text).
     expect(mockWarn).toHaveBeenCalledTimes(2)
     const [meta, msg] = mockWarn.mock.calls[0]
-    expect(meta).toMatchObject({ chunk: 2, of: 3, err: 'network down' })
+    expect(meta).toMatchObject({ chunk: 2, chunks: 3, firstStatus: null, retryStatus: null })
+    expect(meta).not.toHaveProperty('err')
+    for (const call of mockWarn.mock.calls) expect(JSON.stringify(call)).not.toContain('network down')
     expect(mockWarn.mock.calls[1][0]).toMatchObject({ delivered: 2, chunks: 3 })
     expect(mockWarn.mock.calls[1][1]).toBe('channel send only partially delivered')
     for (const call of mockWarn.mock.calls) expect(JSON.stringify(call)).not.toContain('second')

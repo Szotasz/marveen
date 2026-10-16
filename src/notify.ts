@@ -240,17 +240,22 @@ async function sendToChat(chatId: string, text: string, target: SendTarget): Pro
         )
       } catch (err2) {
         lastError = err2
-        // Last resort failed too: say so (index only, never the text).
-        logger.warn({ err: err2 instanceof Error ? err2.message : String(err2), chunk: i + 1, of: chunks.length }, 'Channel ertesites: egy resz nem ment ki (formazva sem, sima szovegkent sem)')
+        // Last resort failed too: say so -- the role, the chunk index and the
+        // statuses only, never the text or the Bot API's error words.
+        logger.warn({ ...where, firstStatus, retryStatus: sendErrorStatus(err2) }, 'Channel ertesites SIKERTELEN')
       }
     }
   }
   if (delivered === 0) {
-    logger.warn({ err: lastError, provider: CHANNEL_PROVIDER }, 'channel send failed on every chunk')
+    // With one chunk the SIKERTELEN line above already says everything; the
+    // summary is for a multi-chunk send. Status only, like the chunk line.
+    if (chunks.length > 1) {
+      logger.warn({ provider: CHANNEL_PROVIDER, target, chunks: chunks.length, status: sendErrorStatus(lastError) }, 'channel send failed on every chunk')
+    }
     return { sent: false, reason: 'send-failed' }
   }
   if (delivered < chunks.length) {
-    logger.warn({ err: lastError, provider: CHANNEL_PROVIDER, delivered, chunks: chunks.length },
+    logger.warn({ provider: CHANNEL_PROVIDER, target, delivered, chunks: chunks.length, status: sendErrorStatus(lastError) },
       'channel send only partially delivered')
     return { sent: false, reason: 'partial' }
   }
