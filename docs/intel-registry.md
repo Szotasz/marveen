@@ -64,8 +64,8 @@ Fact-id: ha nem adsz `--id`-t, a CLI determinista azonosítót generál (`<domai
 ### Bekapcsolás
 
 1. A telepítő a két sablont a `~/.claude/scheduled-tasks/` alá seedeli (`{{INSTALL_DIR}}`, `{{MAIN_AGENT_ID}}`, `{{OWNER_NAME}}` behelyettesítéssel), **kikapcsolt** állapotban.
-2. Írd át az `intel-collector/SKILL.md` DOMAIN blokkjait a saját figyelt témáidra (a "FUTÁS VÉGE" registry-írás rész a fix kontraktus, azt hagyd meg).
-3. Kapcsold be mindkét taskot (dashboard → Ütemezés, vagy `task-config.json` → `"enabled": true`).
+2. Írd át az `intel-collector/SKILL.md` DOMAIN blokkjait a saját figyelt témáidra (a "FUTÁS VÉGE" registry-írás rész a fix kontraktus, azt hagyd meg). Kézi szerkesztés után a runner a feladatot addig nem indítja, amíg át nem nézed és újra nem regisztrálod: `node dist/web/schedule-registry-cli.js register intel-collector` (lásd `docs/scheduled-tasks.md`, "Forrás-oldali védelem").
+3. Kapcsold be mindkét taskot a dashboardon (Ütemezés) vagy a `POST /api/schedules/<név>/toggle` hívással. A `task-config.json` kézi átírása itt nem elég: a módosított fájlt a runner nem indítja, amíg újra nem regisztrálod.
 
 ### Python API
 

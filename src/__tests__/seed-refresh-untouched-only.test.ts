@@ -30,7 +30,10 @@ function sliceShellFn(src: string, name: string): string {
   return src.slice(start, end + 2)
 }
 
-const FUNCS = ['render_seed_template', 'seed_copy_is_untouched', 'refresh_untouched_seeds', 'run_seed_refresh']
+// The scheduled-task registry hooks are called from the refresh
+// loop; with no built CLI in the fixture they only print a warning.
+const FUNCS = ['render_seed_template', 'seed_copy_is_untouched', 'refresh_untouched_seeds', 'run_seed_refresh',
+  'register_seeded_schedules', 'sched_task_verified_ok', 'sched_task_all_shipped', 'register_refreshed_schedule']
   .map((n) => sliceShellFn(UPDATE, n))
   .join('\n')
 
@@ -70,7 +73,7 @@ function runRefresh(install: string, home: string): { out: string; code: number 
   const script = join(install, 'probe.sh')
   writeFileSync(script, [
     'set -u',
-    'GREEN=""; NC=""',
+    'GREEN=""; NC=""; ORANGE=""',
     `INSTALL_DIR="${install}"`,
     `HOME="${home}"`,
     'MAIN_AGENT_ID=""; BOT_NAME=""; OWNER_NAME=""; WEB_PORT=""',
@@ -268,7 +271,7 @@ describe('top-level scheduled-tasks/ refresh (SEEDREFRESH826)', () => {
     const script = join(install, 'probe-top.sh')
     writeFileSync(script, [
       'set -u',
-      'GREEN=""; NC=""',
+      'GREEN=""; NC=""; ORANGE=""',
       `INSTALL_DIR="${install}"`,
       `HOME="${home}"`,
       'MAIN_AGENT_ID="marveen"; BOT_NAME="Bot"; OWNER_NAME="Owner"; WEB_PORT="3420"',

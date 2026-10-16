@@ -1,7 +1,9 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from 'node:fs'
+import { join, isAbsolute } from 'node:path'
 import { homedir } from 'node:os'
-import { MAIN_AGENT_ID } from '../config.js'
+import { createHash } from 'node:crypto'
+import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
+import { isRepoShippedScript } from './precheck-trust.js'
 import type { ChannelProviderType } from '../channel-provider.js'
 import { logger } from '../logger.js'
 import { atomicWriteFileSync } from './atomic-write.js'
@@ -173,6 +175,27 @@ export interface ScheduledTask {
   once?: boolean
   // When the runner switched a once task off (ISO time); absent until then.
   onceDisabledAt?: string
+  // Scheduled-task registry: sha256 over the exact bytes this read
+  // parsed (SKILL.md + task-config.json), the preCheck script (see
+  // preCheckHashTarget) and every other file under the task dir
+  // (taskDirExtraParts). The runner compares it with the server-owned registry and
+  // fires only on a match. Computed from the SAME buffers the task was parsed
+  // from, so a file swapped between "hash" and "parse" cannot slip through.
+  contentHash?: string
+  // sha256 of the preCheck script bytes that went into contentHash, or
+  // PRECHECK_ABSENT; undefined when the preCheck is not hashed (none, or a
+  // repo-shipped script under <PROJECT_ROOT>/scripts/, see preCheckHashTarget). The runner runs exactly these
+  // bytes, so a script swapped after the read is not executed.
+  preCheckSha256?: string
+  // How many entries under the task dir, besides SKILL.md and task-config.json,
+  // went into contentHash (taskDirExtraParts); -1 when the dir is over the
+  // hash bounds. A writer that only wrote those two files refuses to register
+  // a dir where this is not 0 (registerScheduledTask noUnwrittenDirFiles).
+  dirFiles?: number
+  // The on-disk directory name. The registry is keyed by THIS, never by
+  // `name` (which a SKILL.md frontmatter can set to anything): a planted dir
+  // claiming another task's name must not borrow that task's registry entry.
+  dirName?: string
 }
 
 const CHANNEL_PROVIDER_VALUES: readonly ChannelProviderType[] = ['telegram', 'slack', 'discord', 'googlechat', 'teams']
@@ -223,22 +246,184 @@ export function resetOnceValueAnnouncements(): void {
   announcedNonBooleanOnce.clear()
 }
 
+function readBufferOr(path: string): Buffer | null {
+  try { return readFileSync(path) } catch { return null }
+}
+
+// Which preCheck script is part of a task's trusted content. The runner runs
+// it with bash on every tick (resolvePreCheckPath in schedule-runner.ts):
+// relative -> resolved against the task dir (an escaping `../x` too), absolute
+// -> as given, a leading {{PROJECT_ROOT}}/ or {{INSTALL_DIR}}/ -> the install
+// root (same lookahead as resolvePreCheckPath, so the two agree). The resolved
+// script is hashed wherever it points (an absolute path under a writable dir
+// such as /tmp or an agent's working dir must not be trusted by its path),
+// EXCEPT repo-shipped code under <PROJECT_ROOT>/scripts/ (isRepoShippedScript):
+// it is updated with the install, and hashing it would stop the task on every
+// update that changes the script. Returns null when the script is not hashed.
+export function preCheckHashTarget(taskDir: string, preCheck: unknown): string | null {
+  if (typeof preCheck !== 'string' || preCheck.length === 0) return null
+  const rooted = preCheck.replace(/^\{\{(PROJECT_ROOT|INSTALL_DIR)\}\}(?=\/)/, PROJECT_ROOT)
+  const resolved = isAbsolute(rooted) ? rooted : join(taskDir, rooted)
+  if (isRepoShippedScript(resolved)) return null
+  return resolved
+}
+
+// Every other entry under a task's own directory (recursively), besides the
+// top-level SKILL.md and task-config.json that readScheduledTask hashes from
+// the buffers it parses. A registered task can run or read these (a preCheck
+// that wraps another file, a `command` that runs a script kept next to the
+// task, a prompt that points the agent at a helper or at references/*.md), so
+// they are part of its trusted content: an added, removed or changed file
+// changes the hash. Sorted by relative path ('/'-separated), so the order is
+// stable. A symlink is followed and hashed by its target's bytes (a linked
+// directory is walked, once per real path, so a link loop terminates); a
+// broken link by its link text; anything that is neither a file nor a
+// directory (fifo, socket, device) by its name only, never read. Bounded: a
+// directory with more than TASK_DIR_MAX_FILES entries or TASK_DIR_MAX_BYTES of
+// content throws TaskDirTooLargeError, and the task then has no hash (it is
+// neither registered nor fired; fail-closed).
+export interface TaskDirPart { label: string; buf: Buffer | null }
+export const TASK_DIR_MAX_FILES = 500
+export const TASK_DIR_MAX_BYTES = 16 * 1024 * 1024
+export class TaskDirTooLargeError extends Error {}
+
+export function taskDirExtraParts(taskDir: string): TaskDirPart[] {
+  const parts: TaskDirPart[] = []
+  let bytes = 0
+  const seenDirs = new Set<string>()
+  const walk = (abs: string, rel: string): void => {
+    let real: string
+    try { real = realpathSync(abs) } catch { return }
+    if (seenDirs.has(real)) { parts.push({ label: `dir-loop:${rel}`, buf: null }); return }
+    seenDirs.add(real)
+    let names: string[]
+    try { names = readdirSync(abs).sort() } catch { parts.push({ label: `unreadable:${rel}`, buf: null }); return }
+    for (const name of names) {
+      const childRel = rel ? `${rel}/${name}` : name
+      if (!rel && (name === 'SKILL.md' || name === 'task-config.json')) continue
+      if (parts.length >= TASK_DIR_MAX_FILES) throw new TaskDirTooLargeError(`more than ${TASK_DIR_MAX_FILES} entries`)
+      const childAbs = join(abs, name)
+      let st: ReturnType<typeof statSync>
+      try {
+        st = statSync(childAbs)
+      } catch {
+        // A broken symlink (or an entry that vanished): hash what it is, not nothing.
+        let link: Buffer | null = null
+        try { if (lstatSync(childAbs).isSymbolicLink()) link = Buffer.from(readlinkSync(childAbs), 'utf-8') } catch { /* gone */ }
+        parts.push({ label: `broken:${childRel}`, buf: link })
+        continue
+      }
+      if (st.isDirectory()) { walk(childAbs, childRel); continue }
+      if (!st.isFile()) { parts.push({ label: `special:${childRel}`, buf: null }); continue }
+      bytes += st.size
+      if (bytes > TASK_DIR_MAX_BYTES) throw new TaskDirTooLargeError(`more than ${TASK_DIR_MAX_BYTES} bytes`)
+      let buf: Buffer | null
+      try { buf = readFileSync(childAbs) } catch { parts.push({ label: `unreadable:${childRel}`, buf: null }); continue }
+      parts.push({ label: `file:${childRel}`, buf })
+    }
+  }
+  walk(taskDir, '')
+  return parts
+}
+
+// Canonical, length-framed hash of a task's trusted files. Each part is
+// labelled and length-prefixed, and an absent file hashes differently from an
+// empty one, so no two distinct file sets can collide by concatenation (a
+// label never contains NUL, the separator after it). A task dir with no other
+// files hashes exactly as before the dir parts were added.
+export function computeScheduledTaskHash(parts: { skill: Buffer | null; config: Buffer | null; preCheck?: Buffer | null; preCheckRel?: string | null; dirParts?: TaskDirPart[] }): string {
+  const h = createHash('sha256')
+  h.update('marveen-scheduled-task-v1\n')
+  const add = (label: string, buf: Buffer | null | undefined) => {
+    if (buf == null) { h.update(`${label}\0absent\n`); return }
+    h.update(`${label}\0${buf.length}\n`)
+    h.update(buf)
+    h.update('\n')
+  }
+  add('SKILL.md', parts.skill)
+  add('task-config.json', parts.config)
+  if (parts.preCheckRel) add(`preCheck:${parts.preCheckRel}`, parts.preCheck ?? null)
+  for (const p of parts.dirParts ?? []) add(`dir:${p.label}`, p.buf)
+  return h.digest('hex')
+}
+
+// Sentinel for "the hashed preCheck script did not exist when the task was
+// read": a script that appears later is not the trusted content either.
+export const PRECHECK_ABSENT = 'absent'
+
+export function preCheckBytesSha256(buf: Buffer | null): string {
+  return buf == null ? PRECHECK_ABSENT : createHash('sha256').update(buf).digest('hex')
+}
+
+// The registry hash of a task dir given its SKILL.md and task-config.json
+// bytes; the preCheck script (if hashed) and every other file under the task
+// dir (taskDirExtraParts) are read from disk. Used by readScheduledTask, and by
+// a writer that registers the bytes it WROTE rather than whatever is on disk a
+// moment later (registerScheduledTask `written`). contentHash is undefined
+// when the task dir is over the size bounds (TaskDirTooLargeError): such a
+// task is never registered and never fired. `dirFiles` is the number of
+// entries hashed besides SKILL.md and task-config.json.
+const warnedTooLarge = new Set<string>()
+export function scheduledTaskHashFromFiles(
+  taskDir: string,
+  skillBuf: Buffer | null,
+  configBuf: Buffer | null,
+): { contentHash?: string; preCheckSha256?: string; dirFiles: number } {
+  let preCheck: unknown
+  try {
+    const parsed = JSON.parse(configBuf != null ? configBuf.toString('utf-8') : '{}')
+    if (parsed && typeof parsed === 'object') preCheck = (parsed as { preCheck?: unknown }).preCheck
+  } catch { /* unparsable config: no preCheck */ }
+  const target = preCheckHashTarget(taskDir, preCheck)
+  const preCheckBuf = target ? readBufferOr(target) : null
+  const preCheckSha256 = target ? preCheckBytesSha256(preCheckBuf) : undefined
+  let dirParts: TaskDirPart[]
+  try {
+    dirParts = taskDirExtraParts(taskDir)
+  } catch (err) {
+    if (!(err instanceof TaskDirTooLargeError)) throw err
+    if (!warnedTooLarge.has(taskDir)) {
+      warnedTooLarge.add(taskDir)
+      logger.warn({ taskDir, reason: err.message }, 'scheduled task dir is over the registry hash bounds; the task is not registered and not fired')
+    }
+    return { contentHash: undefined, preCheckSha256, dirFiles: -1 }
+  }
+  return {
+    contentHash: computeScheduledTaskHash({
+      skill: skillBuf,
+      config: configBuf,
+      // Labelled with the preCheck string as written (never empty here).
+      preCheckRel: target ? (preCheck as string) : null,
+      preCheck: preCheckBuf,
+      dirParts,
+    }),
+    preCheckSha256,
+    dirFiles: dirParts.length,
+  }
+}
+
 export function readScheduledTask(taskName: string): ScheduledTask | null {
   const dir = join(SCHEDULED_TASKS_DIR, taskName)
   const skillPath = join(dir, 'SKILL.md')
   const configPath = join(dir, 'task-config.json')
-  const hasSkill = existsSync(skillPath)
+  // Read each file ONCE as bytes: the same buffers feed both the parse and the
+  // registry hash.
+  const skillBuf = readBufferOr(skillPath)
+  const configBuf = readBufferOr(configPath)
   // command-type tasks have no SKILL.md; they are defined entirely by
   // task-config.json. Only bail if neither file exists.
-  if (!hasSkill && !existsSync(configPath)) return null
+  if (skillBuf == null && configBuf == null) return null
 
-  const skillContent = hasSkill ? readFileOr(skillPath, '') : ''
+  const skillContent = skillBuf != null ? skillBuf.toString('utf-8') : ''
   const { name, description, body } = parseSkillMdFrontmatter(skillContent)
 
   let config: { schedule?: string; agent?: string; enabled?: boolean; createdAt?: number; type?: string; skipIfBusy?: boolean; requiresDesktop?: boolean; forceSend?: boolean; targetSession?: string; description?: string; command?: string; timeoutMs?: number; failThreshold?: number; preCheck?: string; catchUpMaxAgeMinutes?: unknown; stuckAfterMinutes?: unknown; requires?: { mcp_servers?: unknown }; injectMetrics?: unknown; sendDigestDirect?: unknown; telegramChatId?: string; channelProvider?: unknown; once?: unknown; onceDisabledAt?: unknown } = {}
   try {
-    config = JSON.parse(readFileOr(configPath, '{}'))
+    config = JSON.parse(configBuf != null ? configBuf.toString('utf-8') : '{}')
   } catch { /* use defaults */ }
+  if (config === null || typeof config !== 'object') config = {}
+
+  const { contentHash, preCheckSha256, dirFiles } = scheduledTaskHashFromFiles(dir, skillBuf, configBuf)
 
   return {
     name: name || taskName,
@@ -266,6 +451,10 @@ export function readScheduledTask(taskName: string): ScheduledTask | null {
     channelProvider: parseChannelProvider(config.channelProvider),
     once: readOnceFlag(taskName, config.once),
     onceDisabledAt: typeof config.onceDisabledAt === 'string' ? config.onceDisabledAt : undefined,
+    contentHash,
+    preCheckSha256,
+    dirFiles,
+    dirName: taskName,
   }
 }
 
@@ -304,10 +493,19 @@ export function listScheduledTasks(): ScheduledTask[] {
   return tasks.sort((a, b) => b.createdAt - a.createdAt)
 }
 
+// The exact bytes a writer put into a task dir: registerScheduledTask(...,
+// written) registers THESE, so a concurrent writer between the write and the
+// registration cannot get its content trusted (the hashes differ, nothing is
+// registered). null = the writer left that file absent.
+export interface ScheduledTaskWritten {
+  skill: string | Buffer | null
+  config: string | Buffer | null
+}
+
 export function writeScheduledTask(
   taskName: string,
   data: { description?: string; prompt?: string; schedule?: string; agent?: string; enabled?: boolean; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; command?: string; timeoutMs?: number; failThreshold?: number; preCheck?: string; catchUpMaxAgeMinutes?: number; stuckAfterMinutes?: number; injectMetrics?: boolean; sendDigestDirect?: boolean; telegramChatId?: string; channelProvider?: ChannelProviderType | null; once?: boolean },
-): void {
+): ScheduledTaskWritten {
   const dir = join(SCHEDULED_TASKS_DIR, taskName)
   mkdirSync(dir, { recursive: true })
   // (Re)creating a task with this name is a deliberate act -- lift any tombstone
@@ -355,7 +553,9 @@ export function writeScheduledTask(
   if (data.once !== undefined) config.once = data.once
   if (data.description !== undefined) config.description = data.description
   if (!config.createdAt) config.createdAt = Math.floor(Date.now() / 1000)
-  atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
+  const configContent = JSON.stringify(config, null, 2)
+  atomicWriteFileSync(configPath, configContent)
+  return { skill: skillContent, config: configContent }
 }
 
 /**
