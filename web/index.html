@@ -311,6 +311,10 @@
         <button class="view-btn" id="kanbanViewArchived" style="width:auto;padding:0 12px;margin-left:12px;" data-i18n="kanban.view.archived">Archiváltak</button>
       </div>
 
+      <!-- The owner's own queue: what is waiting on the person, not on an agent.
+           Rendered by renderKanbanOwnerStrip(); hidden when there is nothing. -->
+      <div id="kanbanOwnerStrip" class="kanban-owner-strip" hidden></div>
+
       <!-- Board-specific filter row (hidden when gantt active) -->
       <div id="kanbanBoardFilters" style="margin-bottom:12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
         <label for="kanbanSearch" style="font-size:13px;color:var(--muted);white-space:nowrap;" data-i18n="kanban.filter.search_label">Keresés:</label>
