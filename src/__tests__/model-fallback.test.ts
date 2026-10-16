@@ -60,6 +60,13 @@ describe('detectsUsageLimit', () => {
     expect(detectsUsageLimit('Extra usage is enabled on this plan.')).toBe(false)
   })
 
+  it('does NOT match a mid-line quote that carries the full banner shape (the line-start anchor)', () => {
+    // Without the ^ anchor this line matches: the quoted tail is exactly the
+    // banner, "· resets ..." included, and it runs to the end of the line.
+    expect(detectsUsageLimit("● The heartbeat's answer was: You're out of extra usage · resets 6am")).toBe(false)
+    expect(detectsUsageLimit("  ⎿  Reply: You're out of extra usage")).toBe(false)
+  })
+
   it('does NOT match a transient API 429 / generic rate limit', () => {
     expect(detectsUsageLimit('  ⎿  API Error: 429 rate_limit_error: too many requests')).toBe(false)
     expect(detectsUsageLimit('  ⎿  API Error: 429 overloaded_error: server busy, retrying')).toBe(false)
