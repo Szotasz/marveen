@@ -1807,7 +1807,7 @@ window._i18n.en = {
   'projects.filter_empty':       'No project matches the current filters.',
   'projects.load_error':         'Failed to load the project overview.',
   'projects.save_error':         'Failed to save the description.',
-  'projects.no_description':     'No description yet -- click to edit.',
+  'projects.no_description':     'No description yet. Click to edit.',
   'projects.edit':               'Edit',
   'projects.save':               'Save',
   'projects.cancel':             'Cancel',

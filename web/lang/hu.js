@@ -1796,7 +1796,7 @@ window._i18n.hu = {
   'projects.filter_empty':       'A kiválasztott szűrőknek egyik projekt sem felel meg.',
   'projects.load_error':         'A projekt-áttekintés betöltése sikertelen.',
   'projects.save_error':         'A leírás mentése sikertelen.',
-  'projects.no_description':     'Még nincs leírás -- kattints a szerkesztésre.',
+  'projects.no_description':     'Még nincs leírás. Kattints a szerkesztésre.',
   'projects.edit':               'Szerkesztés',
   'projects.save':               'Mentés',
   'projects.cancel':             'Mégse',
