@@ -327,6 +327,74 @@ with tempfile.TemporaryDirectory() as td:
                        capture_output=True, text=True)
     check("the CLI passes a letter at level 3 (exit 0)", p.returncode == 0, f"rc={p.returncode} err={p.stderr!r}")
 
+# --- the outgoing-copy content checks run in the sender too ------------------
+# The copy gate hook audits only a command it recognises as a send, so the same
+# spellings that skipped the level skipped the em dash / accent / name checks
+# (measured on the base revision: a glob path and python3 -u exit 0 there).
+DASH_SEND = f"python3 {SENDER} --to a@example.com --subject 'Tárgy' --body 'Kedves Ügyfél — ez a levél.'"
+
+
+def write_rules(root, value):
+    with open(os.path.join(root, "store", "outgoing-copy-gate-rules.json"), "w", encoding="utf-8") as fh:
+        fh.write(value if isinstance(value, str) else json.dumps(value))
+
+
+with tempfile.TemporaryDirectory() as td:
+    root = make_project(os.path.join(td, "copy"), level=3)
+    write_rules(root, {"no_name_rule": True, "no_name_rule_reason": "test"})
+    for label, cmd in (
+        ("the plain call", DASH_SEND),
+        ("a glob script path", DASH_SEND.replace(SENDER, "scripts/support-mail/s?nd.py")),
+        ("python3 -u", DASH_SEND.replace("python3 ", "python3 -u ")),
+    ):
+        r = bash(root, cmd)
+        check(f"copy check: an em dash via {label} is refused by the sender", refused(r) and "KIMENO-SZOVEG" in r[2],
+              f"rc={r[0]} err={r[2][-200:]!r}")
+    r = bash(root, SEND.replace("--subject 'Tárgy'", "--subject 'Tárgy -- fontos'"))
+    check("copy check: ' -- ' in the subject is refused", refused(r) and "KIMENO-SZOVEG" in r[2], f"err={r[2][-200:]!r}")
+    r = bash(root, SEND.replace("'Kedves Ügyfél, ez a levél törzse.'", "'Koszonom a levelet, udvozlettel es tehat.'"))
+    check("copy check: missing Hungarian accents are refused", refused(r) and "KIMENO-SZOVEG" in r[2],
+          f"err={r[2][-200:]!r}")
+    check("copy check: a clean letter passes", passed(bash(root, SEND)))
+
+    write_rules(root, {"bad_name_patterns": ["Rossz Nev"], "correction": "Jó Név"})
+    name_send = SEND.replace("'Kedves Ügyfél, ez a levél törzse.'", "'Kedves Rossz Nev, ez a levél törzse.'")
+    r = bash(root, name_send)
+    check("copy check: a name rule from store/ refuses", refused(r), f"err={r[2][-200:]!r}")
+    empty = os.path.join(td, "empty-rules.json")
+    with open(empty, "w") as fh:
+        json.dump({"no_name_rule": True}, fh)
+    r = bash(root, name_send, {"OUTGOING_COPY_GATE_RULES": empty})
+    check("copy check: the hook's rules override from the environment does not reach the sender", refused(r),
+          f"rc={r[0]}")
+    write_rules(root, "{not json")
+    r = bash(root, SEND)
+    check("copy check: an INVALID name-rules file refuses", refused(r) and "ervenytelen" in r[2], f"err={r[2][-200:]!r}")
+    os.remove(os.path.join(root, "store", "outgoing-copy-gate-rules.json"))
+    r = bash(root, SEND)
+    check("copy check: a MISSING name-rules file passes with a loud warning", passed(r) and "HIANYZIK" in r[2],
+          f"rc={r[0]} err={r[2][-200:]!r}")
+
+    root = make_project(os.path.join(td, "copy-l2"), level=2)
+    write_rules(root, {"no_name_rule": True})
+    sys.path.insert(0, os.path.join(root, "scripts", "hooks"))
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("gate_for_test", os.path.join(root, "scripts", "hooks", "email-approval-gate.py"))
+    g = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(g)
+    dash_anchor = g.content_anchor({"to": ["a@example.com"], "cc": [],
+                                    "text": "Tárgy\nKedves Ügyfél — ez a levél."})
+    approve(root, dash_anchor)
+    r = bash(root, DASH_SEND)
+    check("copy check: runs BEFORE the level, so a refused letter does not consume its approval",
+          refused(r) and "KIMENO-SZOVEG" in r[2] and not consumed(root), f"err={r[2][-200:]!r}")
+
+    root = make_project(os.path.join(td, "copy-missing"), level=3)
+    os.remove(os.path.join(root, "scripts", "hooks", "outgoing-copy-gate.py"))
+    r = bash(root, SEND)
+    check("copy check: a missing copy gate module refuses (fail-closed)", refused(r) and "KIMENO-SZOVEG" in r[2],
+          f"err={r[2][-200:]!r}")
+
 print()
 if failed:
     print(f"{len(failed)} FAILED: {failed}", file=sys.stderr)

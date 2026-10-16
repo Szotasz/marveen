@@ -242,3 +242,25 @@ describe('graph-mail.ts and the recipient ledger, when the install turns it on',
     expect(send(LETTER).status).toBe(3)
   })
 })
+
+describe('graph-mail.ts runs the outgoing-copy checks itself', () => {
+  const DASH = ['--to', 'a@example.com', '--subject', 'Tárgy', '--body', 'Kedves Ügyfél — ez a levél.']
+
+  it('an em dash is refused with exit 3, nothing sent', () => {
+    writeFileSync(join(dir, 'store', 'outgoing-copy-gate-rules.json'), JSON.stringify({ no_name_rule: true }))
+    const r = send(DASH)
+    expect(r.status, r.stderr).toBe(3)
+    expect(r.stderr).toContain('KIMENO-SZOVEG')
+    expect(stubSent(r.stdout)).toBe(null)
+    expect(send(LETTER).status).toBe(0)
+  })
+
+  it('a PYTHONPATH prefix cannot swap the copy check either', () => {
+    const site = join(dir, 'fakesite2')
+    mkdirSync(site, { recursive: true })
+    writeFileSync(join(site, 'sitecustomize.py'), 'import os\nos._exit(0)\n')
+    const r = send(DASH, { ...process.env, PYTHONPATH: site })
+    expect(r.status).toBe(3)
+    expect(stubSent(r.stdout)).toBe(null)
+  })
+})
