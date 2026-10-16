@@ -16,6 +16,14 @@ or an owner CC taken from the environment reached an address the approval
 never covered. The sender sees the letter after the shell is done with it.
 
 What is checked, in this order:
+  0. the outgoing-copy CONTENT checks of the main agent's copy gate
+     (outgoing-copy-gate.py, loaded by path: the same audit(), the same
+     dictionary, the same name rules from store/outgoing-copy-gate-rules.json;
+     the hook's OUTGOING_COPY_GATE_RULES override is ignored), with the hook's
+     email-path policy: a problem or an INVALID rules file refuses, a missing
+     or empty rules file allows with a loud warning. The hook only audits a
+     command it recognises as a send, so the spellings above skipped it too.
+     First, so a refused letter never consumes its level-2 approval;
   1. the verified-recipient ledger, ONLY when the install turned it on for the
      main agent (MAIN_AGENT_RECIPIENT_LEDGER=1 in .env): every delivered
      address, the configured owner CC included, must be in
@@ -72,6 +80,51 @@ def _gate():
     return mod
 
 
+COPY_RULES_ENV = "OUTGOING_COPY_GATE_RULES"
+
+
+def _copy_gate():
+    """outgoing-copy-gate.py as a module, its name rules read from THIS
+    project's store: the hook's test-only rules override is not honoured."""
+    saved = os.environ.pop(COPY_RULES_ENV, None)
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "outgoing_copy_gate_sender_check", os.path.join(_HERE, "outgoing-copy-gate.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+    finally:
+        if saved is not None:
+            os.environ[COPY_RULES_ENV] = saved
+    return mod
+
+
+def _copy_check(text):
+    """Return a warning line or None; raise Refused when the letter may not go."""
+    try:
+        gate = _copy_gate()
+        if gate.RULES_STATE == gate.RULES_INVALID:
+            raise Refused("KIMENO-SZOVEG ELLENORZES: a NEV-SZABALY fajl LETEZIK, de ervenytelen "
+                          f"({gate._LOCAL_RULES}): nem parse-olhato JSON, rossz sema vagy hibas regex. "
+                          "Javitsd a fajlt, aztan kuldd ujra.")
+        if not str(text or "").strip():
+            raise Refused("KIMENO-SZOVEG ELLENORZES: ures level (targy + torzs), nincs mit kikuldeni.")
+        problems = gate.audit(text)
+    except Refused:
+        raise
+    except BaseException as exc:  # noqa: BLE001 -- deliberate fail-closed net
+        raise Refused(f"KIMENO-SZOVEG ELLENORZES: belso hiba ({exc!r}); fail-closed, egy "
+                      "vizsgalhatatlan level nem mehet ki.")
+    if problems:
+        raise Refused("KIMENO-SZOVEG ELLENORZES: a level nem mehet ki igy.\n"
+                      + "\n".join(f"  - {p}" for p in problems)
+                      + "\nJavitsd a szoveget es kuldd ujra.")
+    if gate.RULES_STATE in (gate.RULES_MISSING, gate.RULES_EMPTY):
+        return ("KIMENO-SZOVEG ELLENORZES: FIGYELEM, a NEV-SZABALY fajl "
+                + ("HIANYZIK" if gate.RULES_STATE == gate.RULES_MISSING else "URES")
+                + f" ({gate._LOCAL_RULES}), ez a level a nev-ellenorzes NELKUL megy.")
+    return None
+
+
 def _ledger_check(gate, letter):
     sys.path.insert(0, _HERE)
     import recipient_ledger as rl
@@ -105,8 +158,11 @@ def check(letter):
                 (send.py's owner CC), if any}"""
     if not isinstance(letter, dict) or not isinstance(letter.get("to"), list) or not letter["to"]:
         raise Refused("a level cimzettje nem olvashato ki; fail-closed")
-    gate = _gate()
     notes = []
+    warning = _copy_check(letter.get("text"))
+    if warning:
+        notes.append(warning)
+    gate = _gate()
     if gate.ledger_enabled():
         _ledger_check(gate, letter)
     level, note = gate.read_email_level()
