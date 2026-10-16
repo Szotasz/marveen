@@ -1,0 +1,255 @@
+{
+  "_comment": "Shared contract of the recipient parser: scripts/recipient-ledger.mjs parseAddresses (used by the sub-agent gate, scripts/email-send-gate.mjs). src/__tests__/email-send-gate.test.ts runs every case and requires exactly `addresses` and `unparseable`; a gate denies on any unparseable piece. The `hole` cases are the ones the previous splitter got wrong: it did not split a list element, took only the first <...> and dropped an object value, so invented@example.org was never checked against the ledger (the test replays the old splitter as the control). The `pin` cases were already denied before (the old splitter produced an unverifiable garbage string) and pin the new, explicit verdict.",
+  "cases": [
+    {
+      "name": "hole: two addresses in one list element",
+      "hole": true,
+      "input": [
+        "A <known@example.com>, B <invented@example.org>"
+      ],
+      "addresses": [
+        "known@example.com",
+        "invented@example.org"
+      ],
+      "unparseable": []
+    },
+    {
+      "name": "pin: semicolon inside a list element",
+      "input": [
+        "known@example.com; invented@example.org"
+      ],
+      "addresses": [
+        "known@example.com",
+        "invented@example.org"
+      ],
+      "unparseable": []
+    },
+    {
+      "name": "pin: semicolon in a string field",
+      "input": "known@example.com;invented@example.org",
+      "addresses": [
+        "known@example.com",
+        "invented@example.org"
+      ],
+      "unparseable": []
+    },
+    {
+      "name": "hole: an address as the display name",
+      "hole": true,
+      "input": [
+        "invented@example.org <known@example.com>"
+      ],
+      "addresses": [],
+      "unparseable": [
+        "invented@example.org <known@example.com>"
+      ]
+    },
+    {
+      "name": "hole: two bracket pairs in one piece",
+      "hole": true,
+      "input": [
+        "Known <known@example.com> <invented@example.org>"
+      ],
+      "addresses": [],
+      "unparseable": [
+        "Known <known@example.com> <invented@example.org>"
+      ]
+    },
+    {
+      "name": "pin: a header line smuggled into the value",
+      "input": [
+        "known@example.com\r\nBcc: invented@example.org"
+      ],
+      "addresses": [],
+      "unparseable": [
+        "known@example.com\r\nBcc: invented@example.org"
+      ]
+    },
+    {
+      "name": "pin: text after the bracket",
+      "input": "<known@example.com> invented",
+      "addresses": [],
+      "unparseable": [
+        "<known@example.com> invented"
+      ]
+    },
+    {
+      "name": "pin: a nested list element",
+      "input": [
+        [
+          "known@example.com",
+          "invented@example.org"
+        ]
+      ],
+      "addresses": [],
+      "unparseable": [
+        "[\"known@example.com\",\"invented@example.org\"]"
+      ]
+    },
+    {
+      "name": "hole: an object as the field value",
+      "hole": true,
+      "input": {
+        "address": "invented@example.org"
+      },
+      "addresses": [],
+      "unparseable": [
+        "{\"address\":\"invented@example.org\"}"
+      ]
+    },
+    {
+      "name": "pin: whitespace inside the address",
+      "input": "b invented@example.org",
+      "addresses": [],
+      "unparseable": [
+        "b invented@example.org"
+      ]
+    },
+    {
+      "name": "display name + case",
+      "input": "  Example <HELLO@Example.com> ",
+      "addresses": [
+        "hello@example.com"
+      ],
+      "unparseable": []
+    },
+    {
+      "name": "comma list string",
+      "input": "a@example.com, B <b@Example.com>",
+      "addresses": [
+        "a@example.com",
+        "b@example.com"
+      ],
+      "unparseable": []
+    },
+    {
+      "name": "non-address list item is skipped",
+      "input": [
+        "a@example.com",
+        "nonsense"
+      ],
+      "addresses": [
+        "a@example.com"
+      ],
+      "unparseable": []
+    },
+    {
+      "name": "quoted display name with a comma",
+      "input": "\"Doe, John\" <J@Example.com>",
+      "addresses": [
+        "j@example.com"
+      ],
+      "unparseable": []
+    },
+    {
+      "name": "two clean list items",
+      "input": [
+        "X <Y@EXAMPLE.ORG>",
+        " c@example.net "
+      ],
+      "addresses": [
+        "y@example.org",
+        "c@example.net"
+      ],
+      "unparseable": []
+    },
+    {
+      "name": "bare brackets",
+      "input": [
+        "<only@angle.invalid>"
+      ],
+      "addresses": [
+        "only@angle.invalid"
+      ],
+      "unparseable": []
+    },
+    {
+      "name": "accented display name and address",
+      "input": "Név Ékezettel <ÁRVÍZTŰRŐ@Tükör.example>",
+      "addresses": [
+        "árvíztűrő@tükör.example"
+      ],
+      "unparseable": []
+    },
+    {
+      "name": "trailing separator",
+      "input": "a@example.com,",
+      "addresses": [
+        "a@example.com"
+      ],
+      "unparseable": []
+    },
+    {
+      "name": "empty string",
+      "input": "",
+      "addresses": [],
+      "unparseable": []
+    },
+    {
+      "name": "null",
+      "input": null,
+      "addresses": [],
+      "unparseable": []
+    },
+    {
+      "name": "plain word",
+      "input": "plain",
+      "addresses": [],
+      "unparseable": []
+    },
+    {
+      "name": "boolean",
+      "input": true,
+      "addresses": [],
+      "unparseable": []
+    },
+    {
+      "name": "null list item",
+      "input": [
+        null,
+        "a@example.com"
+      ],
+      "addresses": [
+        "a@example.com"
+      ],
+      "unparseable": []
+    },
+    {
+      "name": "spaces inside the brackets",
+      "input": "A < a@example.com >",
+      "addresses": [
+        "a@example.com"
+      ],
+      "unparseable": []
+    },
+    {
+      "name": "display name equal to the address, quoted (a common client form)",
+      "input": "\"jane@example.com\" <Jane@Example.com>",
+      "addresses": [
+        "jane@example.com"
+      ],
+      "unparseable": []
+    },
+    {
+      "name": "display name equal to the address, unquoted",
+      "input": [
+        "Jane@Example.com <jane@example.com>"
+      ],
+      "addresses": [
+        "jane@example.com"
+      ],
+      "unparseable": []
+    },
+    {
+      "name": "hole: a different address quoted as the display name",
+      "hole": true,
+      "input": [
+        "\"invented@example.org\" <known@example.com>"
+      ],
+      "addresses": [],
+      "unparseable": [
+        "\"invented@example.org\" <known@example.com>"
+      ]
+    }
+  ]
+}
