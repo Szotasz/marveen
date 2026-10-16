@@ -35,6 +35,8 @@ const h = vi.hoisted(() => ({
   cfg: {} as Record<string, unknown>,
   tail: '' as string | null,
   contextTokens: null as number | null,
+  transcriptMtime: null as number | null,
+  pane: null as string | null,
   sessionReady: true,
   info: null as unknown as import('vitest').Mock<(...a: unknown[]) => void>,
   readTail: null as unknown as import('vitest').Mock<(...a: unknown[]) => string | null>,
@@ -60,9 +62,10 @@ vi.mock('../web/agent-process.js', async () => {
     agentRunState: () => 'running',
     agentSessionName: (n: string) => `agent-${n}`,
     restartAgentProcess: (...a: unknown[]) => h.restartAgentProcess(...a),
-    // No pane at all: the main agent reads as not running, and boni's pane
+    // No pane by default: the main agent reads as not running, and boni's pane
     // state is 'unknown' (neither idle nor busy), so nothing defers on it.
-    capturePane: () => null,
+    // The idle-flush test gives boni an idle pane; the main agent never has one.
+    capturePane: (session: string) => (session.startsWith('agent-') ? h.pane : null),
     isSessionReadyForPrompt: async () => h.sessionReady,
     noteSaturationBannerUntrusted: () => {},
     clearSaturationBannerOverride: () => {},
@@ -96,7 +99,7 @@ vi.mock('../web/active-model.js', async () => {
   return {
     readContextTokensFromProjectDir: () => h.contextTokens,
     readActiveModelFromProjectDir: () => null,
-    readTranscriptMtimeFromProjectDir: () => null,
+    readTranscriptMtimeFromProjectDir: () => h.transcriptMtime,
     readTranscriptTailFromProjectDir: (...a: unknown[]) => h.readTail(...a),
   }
 })
@@ -151,6 +154,8 @@ beforeEach(() => {
   h.cfg = {}
   h.tail = ''
   h.contextTokens = null
+  h.transcriptMtime = null
+  h.pane = null
   h.sessionReady = true
 })
 
@@ -209,6 +214,43 @@ describe('runner: the refused handoff request is re-sent once after the limit', 
     expect(handoffCalls()).toHaveLength(1)
     expect(resendLogs()).toHaveLength(0)
     expect(h.restartAgentProcess).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('runner: the re-send keeps the wording of a non-percentage tier', () => {
+  it('idle-flush: the refused request is re-sent with the idle-flush wording, not the percentage prompt', async () => {
+    // Idle-flush only: pct is never measured, so a re-send picked by the
+    // re-send reason instead of the original one would fall through to the
+    // percentage prompt and announce "~0% -- kritikus" to an idle session.
+    h.cfg = { idleFlushEnabled: true, idleFlushTokens: 50_000, idleMinutes: 20 }
+    h.contextTokens = 120_000
+    h.transcriptMtime = T0 - 60 * MIN // quiet for an hour
+    h.pane = [
+      '  some prior assistant output',
+      '',
+      '─'.repeat(40),
+      '❯ ',
+      '─'.repeat(40),
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+    ].join('\n')
+    const handoffRequests = () => h.sendSystemDirective.mock.calls.filter((c) => String(c[2]).includes('írj HANDOFF.md-t'))
+    await bootDashboard()
+
+    await advanceTo(4.5) // unlimited: the idle-flush request goes out
+    expect(handoffRequests()).toHaveLength(1)
+    expect(String(handoffRequests()[0][2])).toContain('Rutin karbantartás')
+
+    h.tail = LIMITED_TAIL
+    await advanceTo(10) // limited: parked
+    expect(handoffRequests()).toHaveLength(1)
+
+    h.tail = ''
+    await advanceTo(15) // limit lifted, no HANDOFF.md: the re-send
+    expect(resendLogs()).toHaveLength(1)
+    expect(handoffRequests()).toHaveLength(2)
+    expect(String(handoffRequests()[1][2])).toContain('Rutin karbantartás')
+    expect(String(handoffRequests()[1][2])).not.toContain('kritikus')
+    expect(handoffRequests()[1][2]).toBe(handoffRequests()[0][2])
   })
 })
 
