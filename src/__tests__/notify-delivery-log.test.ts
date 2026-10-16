@@ -46,6 +46,8 @@ function deliveryLines(): Line[] {
     calls.filter((c) => c[1] === 'alert delivery').map((c) => ({ level, fields: c[0] as Record<string, unknown> }))
   return [...pick('info', mockInfo.mock.calls), ...pick('warn', mockWarn.mock.calls)]
 }
+// The message of every warn call: logger.warn(fields, msg) or logger.warn(msg).
+const warnMessages = (): string[] => mockWarn.mock.calls.map((c) => String(typeof c[0] === 'string' ? c[0] : c[1]))
 
 beforeEach(() => {
   mockSend.mockReset()
@@ -74,14 +76,15 @@ describe('alert delivery line (card 68cb6715)', () => {
     expect(logged).not.toContain('the alert text')
   })
 
-  it('a send that fails on both attempts logs a warn line with outcome failed', async () => {
+  it('a send that fails on both attempts logs the line with outcome failed, beside the send\'s own warn', async () => {
     mockSend.mockImplementation(async () => { throw new Error('Telegram API 400: chat not found') })
     await notifyChannel('x', { agent: 'agent-x', kind: 'permission-prompt' })
     expect(mockSend).toHaveBeenCalledTimes(2)
     expect(deliveryLines()).toEqual([{
-      level: 'warn',
+      level: 'info',
       fields: { agent: 'agent-x', kind: 'permission-prompt', recipient: 'owner', outcome: 'failed', chunks: 1, failedChunks: 1 },
     }])
+    expect(warnMessages()).toContain('channel send failed on every chunk')
   })
 
   it('the plain-text retry that lands counts as sent', async () => {
@@ -101,9 +104,10 @@ describe('alert delivery line (card 68cb6715)', () => {
     })
     await notifyChannel('x long', { kind: 'routine' })
     expect(deliveryLines()).toEqual([{
-      level: 'warn',
+      level: 'info',
       fields: { agent: null, kind: 'routine', recipient: 'owner', outcome: 'partial', chunks: 2, failedChunks: 1 },
     }])
+    expect(warnMessages()).toContain('channel send only partially delivered')
   })
 
   it('a redirected alert names the alert-chat role', async () => {
@@ -112,14 +116,15 @@ describe('alert delivery line (card 68cb6715)', () => {
     expect(deliveryLines().map((l) => l.fields.recipient)).toEqual(['alert-chat'])
   })
 
-  it('a skipped send (no owner chat) logs a warn line with outcome skipped, and nothing is sent', async () => {
+  it('a skipped send (no owner chat) logs the line with outcome skipped, beside the skip warn, and nothing is sent', async () => {
     cfg.chatId = '0'
     await notifyChannel('x', { agent: 'agent-x', kind: 'permission-prompt' })
     expect(mockSend).not.toHaveBeenCalled()
     expect(deliveryLines()).toEqual([{
-      level: 'warn',
+      level: 'info',
       fields: { agent: 'agent-x', kind: 'permission-prompt', recipient: 'owner', outcome: 'skipped', chunks: 0, failedChunks: 0 },
     }])
+    expect(warnMessages().some((m) => m.startsWith('Channel ertesites kihagyva'))).toBe(true)
   })
 
   it('a caller without meta still gets the line, with agent and case null', async () => {

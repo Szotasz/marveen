@@ -286,6 +286,9 @@ async function sendToChat(chatId: string, text: string, target: SendTarget, meta
 // afterwards (2026-09-26: about 30 evening alerts reported, none of them in the
 // log). Who and which case come from the caller's meta when it gives one; the
 // recipient is a role, never a chat id, and the text never enters the line.
+// It is a record, so it is info whatever the outcome: every outcome other than
+// 'sent' already has its own warn line on its path (skipped, failed, partial),
+// and a second warn for the same send would only double the noise.
 function logAlertDelivery(
   meta: AlertMeta | undefined,
   recipient: AlertRecipient,
@@ -293,9 +296,7 @@ function logAlertDelivery(
   chunks = 0,
   failedChunks = 0,
 ): void {
-  const fields = { agent: meta?.agent ?? null, kind: meta?.kind ?? null, recipient, outcome, chunks, failedChunks }
-  if (outcome === 'sent') logger.info(fields, 'alert delivery')
-  else logger.warn(fields, 'alert delivery')
+  logger.info({ agent: meta?.agent ?? null, kind: meta?.kind ?? null, recipient, outcome, chunks, failedChunks }, 'alert delivery')
 }
 
 // The plain-text form of a chunk formatForTelegram produced: its own tags
