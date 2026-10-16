@@ -31,6 +31,17 @@ const mockListScheduledTasks = vi.fn(() => [] as ScheduledTask[])
 let duringPreCheck: () => void = () => {}
 let preCheckRuns = 0
 
+// Scheduled-task registry: the runner fires only registry-matched tasks and the API routes register what
+// they write. The registry gate is covered by schedule-source-registry.test.ts; here it is a passthrough.
+vi.mock('../web/schedule-registry.js', () => ({
+  filterRegisteredTasks: <T,>(tasks: T[]) => tasks,
+  backfillScheduledTaskRegistryOnce: () => ({ ran: false, registered: [] }),
+  verifyScheduledTask: () => ({ ok: true }),
+  describeVerdict: () => '',
+  registerScheduledTask: () => 'test-hash',
+  unregisterScheduledTask: () => true,
+}))
+
 vi.mock('node:child_process', async (importOriginal) => {
   const real = await importOriginal<typeof import('node:child_process')>()
   return {

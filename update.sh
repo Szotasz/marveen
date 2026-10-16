@@ -1120,6 +1120,13 @@ refresh_untouched_seeds() {
     [ -d "$d" ] || continue
     name="$(basename "$d")"
     [ -d "$target_root/$name" ] || continue     # not seeded here -> not ours to add
+    # Scheduled-task registry: for a scheduled task, the registry verdict is taken ONCE,
+    # right before the first file of the dir is rewritten (sched_pre_ok: ""
+    # = not asked yet, 1 = trusted, 0 = not trusted, u = unknown / no CLI).
+    sched_task=0
+    case "$target_root" in */scheduled-tasks) sched_task=1 ;; esac
+    sched_pre_ok=""
+    sched_dir_refreshed=0
     for f in "$d"*; do
       [ -f "$f" ] || continue
       base="$(basename "$f")"
@@ -1138,16 +1145,29 @@ refresh_untouched_seeds() {
       have="$(shasum -a 256 <"$installed" 2>/dev/null | awk '{print $1}')"
       [ "$want" = "$have" ] && continue
       if seed_copy_is_untouched "$installed" "$rel" "$mode"; then
+        if [ "$sched_task" = "1" ] && [ -z "$sched_pre_ok" ]; then
+          sched_pre_rc=0
+          sched_task_verified_ok "$name" || sched_pre_rc=$?
+          case "$sched_pre_rc" in 0) sched_pre_ok=1 ;; 1) sched_pre_ok=0 ;; *) sched_pre_ok=u ;; esac
+        fi
         if [ "$mode" = "template" ]; then
           render_seed_template <"$f" >"$installed.seedtmp" && mv "$installed.seedtmp" "$installed"
         else
           cp "$f" "$installed"
         fi
         SEED_REFRESH_UPDATED=$((SEED_REFRESH_UPDATED + 1))
+        sched_dir_refreshed=1
       else
         SEED_REFRESH_KEPT=$((SEED_REFRESH_KEPT + 1))
       fi
     done
+    # Scheduled-task registry: a refreshed scheduled task changed on disk, so its registry
+    # hash must be renewed or the runner refuses it -- but ONLY when the task is
+    # provably trusted, and right now (not at the end of the whole run), so the
+    # runner's ticks in between do not flag it as "NOT firing".
+    if [ "$sched_task" = "1" ] && [ "$sched_dir_refreshed" = "1" ]; then
+      register_refreshed_schedule "$name" "$sched_pre_ok" "$target_root/$name" "$d" "$mode"
+    fi
   done
   return 0
 }
@@ -1179,8 +1199,122 @@ run_seed_refresh() {
   if [ "$SEED_REFRESH_UPDATED" -gt 0 ]; then
     echo -e "  ${GREEN}✓${NC} Szallitott skill/feladat frissitve: ${SEED_REFRESH_UPDATED} (erintetlen masolat); megtartva: ${SEED_REFRESH_KEPT} (helyben modositott)"
   fi
+  # Scheduled-task registry: one summary line at the end, so an unattended auto-update log
+  # shows every refreshed-but-unregistered task in one place.
+  if [ -n "$(echo "${SCHED_REVIEW_NAMES:-}" | tr -d ' ')" ]; then
+    echo -e "  ${ORANGE:-}⚠${NC:-} Kezi atnezesre varo utemezett feladatok (frissitve, de NEM regisztralva):${SCHED_REVIEW_NAMES}"
+  fi
   return 0
 }
+# Scheduled-task registry: the schedule runner fires a task only if its
+# files hash-match the dashboard's registry (store/claudeclaw.db). A task dir
+# THIS script creates from the seed is entirely shipped content, so it is
+# registered here through the registry CLI of the CURRENTLY built dist (a
+# REFRESHED dir goes through register_refreshed_schedule below, which checks
+# trust first). On the very first update to a build with the guard the CLI is
+# not built yet -- that is fine: the dashboard's one-time upgrade backfill
+# registers every task on disk at its first start. Idempotent; clears the
+# pending list.
+register_seeded_schedules() {
+  _names="${SCHED_REGISTER_NAMES:-}"
+  SCHED_REGISTER_NAMES=""
+  [ -n "$(echo "$_names" | tr -d ' ')" ] || return 0
+  _cli="$INSTALL_DIR/dist/web/schedule-registry-cli.js"
+  if [ ! -f "$_cli" ] || ! command -v node >/dev/null 2>&1; then
+    echo -e "  ${ORANGE}⚠${NC} Utemezes-regisztracio kihagyva (nincs $_cli):${_names}. Az elso, registry-t tartalmazo frissitesnel ezt a dashboard egyszeri backfillje potolja; kulonben build utan: node $_cli register${_names}"
+    return 0
+  fi
+  # shellcheck disable=SC2086 # word-splitting the name list is intended
+  if node "$_cli" register --source update-sh $(printf '%s\n' $_names | sort -u) >/dev/null 2>&1; then
+    echo -e "  ${GREEN}✓${NC} Utemezett feladatok regisztralva:$(printf ' %s' $(printf '%s\n' $_names | sort -u))"
+  else
+    echo -e "  ${ORANGE}⚠${NC} Utemezes-regisztracio sikertelen:${_names} -- futtasd: node $_cli status"
+  fi
+  return 0
+}
+
+# Scheduled-task registry, seed refresh: the seed refresh rewrites a task only FILE BY
+# FILE -- a locally modified sibling (SKILL.md, task-config.json, an in-dir
+# preCheck script) is kept. Registering the whole dir afterwards would make that
+# kept file trusted, i.e. launder a plant on the next (unattended) auto-update
+# that ships a change to any other file of the task. So a refreshed task is
+# re-registered only if
+#   (a) it verified OK against the registry BEFORE the refresh (its kept files
+#       were already trusted; the refreshed ones are ours), or
+#   (b) every file now in its dir equals the CURRENT shipped content.
+# Anything else stays unregistered (the runner skips it) and is listed for
+# operator review.
+SCHED_REVIEW_NAMES=""
+
+# Registry verdict of task $1 as it is on disk NOW:
+#   0 = trusted (ok), 1 = a REAL not-ok verdict (unregistered / hash mismatch /
+#   not found), 2 = UNKNOWN: no CLI (first update to a guard build, or an
+#   unbuilt dist), no node, a CLI without `verify` (usage exit 2), or a crash.
+# A crash also exits 1 in node, so 1 counts only together with the CLI's own
+# "<verdict> <name>" line.
+sched_task_verified_ok() {
+  _sv_cli="$INSTALL_DIR/dist/web/schedule-registry-cli.js"
+  [ -f "$_sv_cli" ] || return 2
+  command -v node >/dev/null 2>&1 || return 2
+  _sv_rc=0
+  _sv_out="$(node "$_sv_cli" verify "$1" 2>/dev/null)" || _sv_rc=$?
+  [ "$_sv_rc" = "0" ] && return 0
+  # registry-error = the CLI could not read the registry: unknown, not a verdict.
+  if [ "$_sv_rc" = "1" ] && printf '%s\n' "$_sv_out" | grep -xE "[a-z-]+ $1" | grep -qv '^registry-error '; then
+    return 1
+  fi
+  return 2
+}
+
+# True (0) iff every entry of the installed task dir $1 is a regular top-level
+# file (no symlink, no subdir) byte-identical to the current shipped version of
+# the same file in the seed source dir $2 (rendered when $3 = "template"). An
+# extra file with no shipped counterpart (e.g. a planted preCheck script) fails.
+sched_task_all_shipped() {
+  _sa_dir="$1"; _sa_src="$2"; _sa_mode="${3:-verbatim}"
+  [ -d "$_sa_dir" ] || return 1
+  _sa_list="$(find "$_sa_dir" -mindepth 1 2>/dev/null)" || return 1
+  [ -n "$_sa_list" ] || return 1
+  while IFS= read -r _sa_entry; do
+    [ -n "$_sa_entry" ] || continue
+    [ "$(dirname "$_sa_entry")" = "$_sa_dir" ] || return 1
+    [ ! -L "$_sa_entry" ] && [ -f "$_sa_entry" ] || return 1
+    _sa_seed="$_sa_src/$(basename "$_sa_entry")"
+    [ -f "$_sa_seed" ] || return 1
+    if [ "$_sa_mode" = "template" ]; then
+      _sa_want="$(render_seed_template <"$_sa_seed" | shasum -a 256 | awk '{print $1}')"
+    else
+      _sa_want="$(shasum -a 256 <"$_sa_seed" | awk '{print $1}')"
+    fi
+    _sa_have="$(shasum -a 256 <"$_sa_entry" 2>/dev/null | awk '{print $1}')"
+    [ -n "$_sa_have" ] && [ "$_sa_want" = "$_sa_have" ] || return 1
+  done <<EOF_SA
+$_sa_list
+EOF_SA
+  return 0
+}
+
+# $1 task name, $2 pre-refresh verdict (1 = trusted, 0 = not trusted,
+# u = unknown), $3 installed dir, $4 seed source dir, $5 verbatim|template.
+register_refreshed_schedule() {
+  _rr_name="$1"; _rr_pre="$2"; _rr_dir="$3"; _rr_src="$4"; _rr_mode="${5:-verbatim}"
+  if [ "$_rr_pre" = "1" ] || sched_task_all_shipped "$_rr_dir" "$_rr_src" "$_rr_mode"; then
+    SCHED_REGISTER_NAMES="$_rr_name"
+    register_seeded_schedules
+    return 0
+  fi
+  SCHED_REVIEW_NAMES="${SCHED_REVIEW_NAMES:-} $_rr_name"
+  if [ "$_rr_pre" = "0" ]; then
+    echo -e "  ${ORANGE:-}⚠${NC:-} Utemezett feladat NEM regisztralva (kezi atnezes kell): $_rr_name -- a frissites elott sem volt megbizhato, es a konyvtaraban nem csak szallitott tartalom van. A runner addig kihagyja. Atnezes utan: node $INSTALL_DIR/dist/web/schedule-registry-cli.js status ; register $_rr_name"
+  else
+    # No usable CLI: on the first update to a guard build (old dist) the
+    # dashboard's one-time backfill will register AND fire this task as it is
+    # on disk, so "the runner skips it" would be false here.
+    echo -e "  ${ORANGE:-}⚠${NC:-} Utemezett feladat NEM regisztralva (kezi atnezes kell): $_rr_name -- a registry-ellenorzes nem futott (nincs vagy nem mukodik: $INSTALL_DIR/dist/web/schedule-registry-cli.js verify), a frissites elotti allapota ISMERETLEN, es a konyvtaraban nem csak szallitott tartalom van. Ha ez az elso frissites a registry-t tartalmazo buildre, a dashboard egyszeri backfillje az elso indulaskor regisztralja es a runner futtatni fogja: nezd at MOST ($_rr_dir). Kulonben build utan: node $INSTALL_DIR/dist/web/schedule-registry-cli.js status ; register $_rr_name"
+  fi
+  return 0
+}
+
 run_seed_refresh
 
 # Marketplace channel plugins (SLACKPLUGINVER1006): the official
@@ -1481,8 +1615,10 @@ if [ -d "$SEED_SCHED_DIR" ]; then
             -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
             "$f" > "$target/$(basename "$f")"
       done
+      SCHED_REGISTER_NAMES="${SCHED_REGISTER_NAMES:-} $task_name"
       if [ "$forced" = "1" ]; then SCHED_FORCED=$((SCHED_FORCED + 1)); else SCHED_NEW=$((SCHED_NEW + 1)); fi
     done
+    register_seeded_schedules
     if [ "$SCHED_NEW" -gt 0 ] || [ "$SCHED_SKIP" -gt 0 ] || [ "$SCHED_FORCED" -gt 0 ]; then
       echo -e "  ${GREEN}✓${NC} Seed scheduled tasks: ${SCHED_NEW} új, ${SCHED_FORCED} frissítve, ${SCHED_SKIP} kihagyva"
     fi
