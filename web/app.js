@@ -691,6 +691,7 @@ if (document.readyState !== 'loading') {
 const ACTIVITY_STATE_META = {
   working: { label: () => t('activity.state.working'), cls: 'act-working', tip: 'Élő állapot (a tmux pane tartalmából, 3 másodpercenként): éppen dolgozik / gondolkodik.' },
   idle: { label: () => t('activity.state.idle'), cls: 'act-idle', tip: 'Élő állapot (3 másodpercenként): fut, de épp nem csinál semmit.' },
+  dead: { label: () => t('activity.state.dead'), cls: 'act-dead', tip: 'A tmux session él, de nincs benne Claude CLI: a pane egy shell promptra esett vissza. Ez nem várakozás, ez halott ágens -- indítsd újra.' },
   // Main thread idle, background (sub-)agents running. Display-only: the API's
   // `state` stays 'idle' and this is picked by activityDisplayState.
   subagents: {

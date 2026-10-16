@@ -49,6 +49,7 @@ vi.mock('../web/agent-config.js', () => ({
   readAgentRemoteHost: () => null,
   readAgentVoiceConfig: () => ({ responseMode: 'text' }),
   readAgentWorksourceChannel: () => false,
+  readAgentPullDelivery: () => false,
   // The wrap step reads the sender's registration and channel for the area-agent label (e349287f); no test sender
   // here is a registered fleet agent.
   isKnownAgent: () => false,

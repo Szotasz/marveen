@@ -117,6 +117,7 @@ import {
   agentSessionName,
   sendPromptToSession,
   capturePane,
+  paneCurrentCommand,
   delay,
   resolveAgentProvider,
   sharedEnvAuthKeysCopiedTo,
@@ -125,7 +126,8 @@ import { addDesiredAgent, getDesiredAgents, removeDesiredAgent } from '../agent-
 import { RemoteStatusCache } from '../remote-status-cache.js'
 import type { AgentRunState } from '../ssh-tmux.js'
 import { readActiveModelFromProjectDir, readContextTokensFromProjectDir } from '../active-model.js'
-import { detectPaneState, detectPermissionMode, detectBackgroundAgents } from '../../pane-state.js'
+import { detectPermissionMode, detectBackgroundAgents } from '../../pane-state.js'
+import { activityState, type ActivityState } from '../pane-liveness.js'
 import { checkAgentPutFields, checkConfigPutFields, AGENT_PUT_WRITABLE_FIELDS } from '../agent-put-fields.js'
 import { detectReauthNeeded } from '../reauth-detect.js'
 import { readAutoRestartConfig, writeAutoRestartConfig } from '../auto-restart-store.js'
@@ -662,13 +664,18 @@ const INBOX_DRAIN_CAP = 10
 // Pane -> coarse activity label. Shared by /api/agents/activity and
 // /api/agents/status so the two surfaces can never drift into disagreeing
 // about whether the same agent is working.
-function paneActivityLabel(running: boolean, pane: string | null): string {
-  if (!running) return 'stopped'
-  if (pane === null) return 'unknown'
-  const s = detectPaneState(pane)
-  if (s === 'busy' || s === 'typing') return 'working'
-  if (s === 'idle') return 'idle'
-  return s // 'unknown' | 'error'
+//
+// A session that still exists is not an agent that still answers: when the CLI
+// exits, tmux leaves a bare shell in the pane and the old label read that as a
+// perfectly healthy 'idle'. The decision itself lives in activityState, which
+// pairs the pane text with the pane's foreground command so that corpse is
+// named 'dead'.
+//
+// paneCommand is read for LOCAL sessions only. A remote agent would need a
+// second ssh round-trip per poll; omitting it keeps the previous behaviour
+// (paneCommand null => never 'dead') rather than paying that on every tick.
+function paneActivityLabel(running: boolean, pane: string | null, paneCommand: string | null = null): ActivityState {
+  return activityState({ running, pane, paneCommand })
 }
 
 /**
@@ -857,11 +864,12 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     {
       const mainPane = capturePane(MAIN_CHANNELS_SESSION)
       const running = mainPane !== null
+      const mainPaneCommand = running ? paneCurrentCommand(MAIN_CHANNELS_SESSION) : null
       entries.push({
         name: MAIN_AGENT_ID,
         isMain: true,
         running,
-        state: paneActivityLabel(running, mainPane),
+        state: paneActivityLabel(running, mainPane, mainPaneCommand),
         mode: modeOf(running, mainPane),
         bgAgents: bgAgentsOf(running, mainPane),
         tail: tailOf(mainPane),
@@ -880,7 +888,8 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
           ? remotePaneCache.getOrRefresh(name, Date.now(), () => capturePane(agentSessionName(name), host), null)
           : capturePane(agentSessionName(name))
       }
-      const state = runState === 'unreachable' ? 'unreachable' : paneActivityLabel(running, pane)
+      const paneCommand = running && !host ? paneCurrentCommand(agentSessionName(name)) : null
+      const state = runState === 'unreachable' ? 'unreachable' : paneActivityLabel(running, pane, paneCommand)
       entries.push({ name, isMain: false, running, state, mode: modeOf(running, pane), bgAgents: bgAgentsOf(running, pane), tail: tailOf(pane) })
     }
 
@@ -907,15 +916,15 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     }
     const tools = getAgentToolActivity(AGENT_STATUS_THRESHOLDS.TOOL_DATA_WINDOW_SEC, workStart)
 
-    const signalsFor = (name: string, isMain: boolean, running: boolean, pane: string | null, runState: string): AgentStatusSignals => {
-      const paneLabel = runState === 'unreachable' ? 'unreachable' : paneActivityLabel(running, pane)
+    const signalsFor = (name: string, isMain: boolean, running: boolean, pane: string | null, runState: string, paneCommand: string | null = null): AgentStatusSignals => {
+      const paneLabel = runState === 'unreachable' ? 'unreachable' : paneActivityLabel(running, pane, paneCommand)
       const tool = tools[name]
       const msg = messages[name]
       return {
         agent: name,
         isMain,
         running,
-        paneState: paneLabel as AgentStatusSignals['paneState'],
+        paneState: paneLabel,
         // Passed through uninterpreted -- no state is derived from it. See the
         // permissionMode note in agent-status.ts for why.
         permissionMode: running && pane !== null ? detectPermissionMode(pane) : null,
@@ -934,7 +943,8 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     {
       const mainPane = capturePane(MAIN_CHANNELS_SESSION)
       const running = mainPane !== null
-      rows.push(deriveAgentStatus(signalsFor(MAIN_AGENT_ID, true, running, mainPane, running ? 'running' : 'stopped')))
+      const mainPaneCommand = running ? paneCurrentCommand(MAIN_CHANNELS_SESSION) : null
+      rows.push(deriveAgentStatus(signalsFor(MAIN_AGENT_ID, true, running, mainPane, running ? 'running' : 'stopped', mainPaneCommand)))
     }
     for (const name of withoutMainAgent(listAgentNames())) {
       const host = readAgentRemoteHost(name)
@@ -946,7 +956,8 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
           ? remotePaneCache.getOrRefresh(name, Date.now(), () => capturePane(agentSessionName(name), host), null)
           : capturePane(agentSessionName(name))
       }
-      rows.push(deriveAgentStatus(signalsFor(name, false, running, pane, runState)))
+      const paneCommand = running && !host ? paneCurrentCommand(agentSessionName(name)) : null
+      rows.push(deriveAgentStatus(signalsFor(name, false, running, pane, runState, paneCommand)))
     }
 
     jsonMaybeGzip(req, res, rows)

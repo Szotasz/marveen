@@ -368,6 +368,7 @@ window._i18n.en = {
   'agents.card.not_running':     'session not running',
   'activity.state.working':      'working',
   'activity.state.idle':         'idle',
+  'activity.state.dead':         'dead',
   'activity.state.subagents':    'sub-agents working ({n})',
   'activity.state.subagents_queued': 'sub-agents working ({n}), {q} queued',
   'activity.state.unknown':      'unknown',

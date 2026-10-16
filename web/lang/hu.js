@@ -521,6 +521,7 @@ window._i18n.hu = {
   'activity.tooltip.mode':       'Jogosultsági mód: {mode}. Ebben a módban az ágens megáll és jóváhagyásra vár, mielőtt eszközt hívna. Ha senki nem figyeli, órákig állhat úgy, hogy közben tétlennek látszik.',
   'activity.state.working':      'dolgozik',
   'activity.state.idle':         'várakozik',
+  'activity.state.dead':         'halott',
   'activity.state.subagents':    'alügynökök dolgoznak ({n})',
   'activity.state.subagents_queued': 'alügynökök dolgoznak ({n}), {q} üzenet vár',
   'activity.state.unknown':      'ismeretlen',
