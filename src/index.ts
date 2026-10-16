@@ -24,6 +24,7 @@ import { runLogRotationSweep, LOG_ROTATION_SWEEP_MS } from './web/log-rotation.j
 import { sweepScheduledRunSnapshots } from './web/scheduled-run-snapshot.js'
 import { renameSharedCredentialsIfSafe, fleetTokenBootPass } from './web/claude-credentials-guard.js'
 import { startWebServer } from './web.js'
+import { endAllDetachedGroups } from './web/detached-groups.js'
 import { logger } from './logger.js'
 import { startInviteMonitor, stopInviteMonitor } from './web/channel-invites.js'
 import { ensureDiscordChannelGroup } from './web/discord-group-bootstrap.js'
@@ -176,6 +177,17 @@ function buildProcessLockContext(): ProcessLockContext {
         return execFileSync('/bin/ps', ['-p', String(pid), '-o', 'comm='], { timeout: 2000, encoding: 'utf-8' }).trim() || null
       } catch {
         return null
+      }
+    },
+    processBelongsToThisInstall(pid: number): boolean {
+      // The same attribution the binary-pattern path applies in
+      // listOwnProcessesMatching: argv under PROJECT_ROOT, or cwd under it.
+      // A PID that is gone (no argv) is not ours to signal.
+      try {
+        const argv = execFileSync('/bin/ps', ['-p', String(pid), '-o', 'args='], { timeout: 2000, encoding: 'utf-8' }).trim()
+        return argv !== '' && argvBelongsToThisInstall(argv, pid)
+      } catch {
+        return false
       }
     },
     getProcessUid(pid: number): number | null {
@@ -414,6 +426,10 @@ const shutdown = (): void => {
   try {
     shuttingDown = true
     logger.info('Leallitas...')
+    // DETACHEDSHUTDOWN1007: the command-task and pre-check groups run DETACHED
+    // (outside our process group), so neither launchd nor our own exit ends
+    // them, and their timeout timers die with us. End them first.
+    try { endAllDetachedGroups('dashboard shutdown') } catch (err) { logger.warn({ err }, 'endAllDetachedGroups threw during shutdown') }
     if (heartbeatStarted) {
       try { stopHeartbeat() } catch (err) { logger.warn({ err }, 'stopHeartbeat threw during shutdown') }
     }
@@ -480,8 +496,8 @@ async function main(): Promise<void> {
 
   // Backfill embeddings for memories saved before Ollama was available.
   // Fire-and-forget: a missing or slow Ollama instance must not block startup.
-  backfillEmbeddings().then(count => {
-    if (count > 0) logger.info({ count }, 'Embedding backfill befejezve')
+  backfillEmbeddings().then(({ embedded, attempted, failed }) => {
+    if (embedded > 0) logger.info({ count: embedded, attempted, failed }, 'Embedding backfill befejezve')
   }).catch(err => logger.warn({ err }, 'Embedding backfill hiba (Ollama nem elerheto)'))
 
   // Memory decay (24h cycle)

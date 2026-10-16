@@ -14,7 +14,7 @@
 // absolute form and re-anchors it on every boot instead.
 
 import { describe, it, expect } from 'vitest'
-import { rewriteForeignProjectRoot, upgradeForeignRootInHookPrompts } from '../web/agent-scaffold.js'
+import { rewriteForeignProjectRoot, upgradeForeignRootInHookPrompts, INSTALL_ANCHORED_SUFFIXES } from '../web/agent-scaffold.js'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
@@ -23,6 +23,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const SCAFFOLD = readFileSync(join(__dirname, '..', 'web', 'agent-scaffold.ts'), 'utf-8')
 const WEB = readFileSync(join(__dirname, '..', 'web.ts'), 'utf-8')
 const AGENT_PROCESS = readFileSync(join(__dirname, '..', 'web', 'agent-process.ts'), 'utf-8')
+const TEMPLATES = join(__dirname, '..', '..', 'templates')
 
 const OLD = '/Users/peterszollos/klaudia'
 const NEW = '/Users/pcha0s/klaudia'
@@ -81,6 +82,34 @@ describe('rewriteForeignProjectRoot', () => {
     const r = rewriteForeignProjectRoot(`$(cat /Users/pcha0s/claw-test-kigyo/store/.dashboard-token)`, NEW)
     expect(r.text).toBe(`$(cat ${NEW}/store/.dashboard-token)`)
     expect(r.foreignRoots).toEqual(['/Users/pcha0s/claw-test-kigyo'])
+  })
+
+  it('re-anchors the recipient-ledger recipe and the skill-lint line (HOSTMOVE1003)', () => {
+    const text = [
+      `node ${OLD}/scripts/recipient-ledger.mjs add <cim> --source owner`,
+      `node ${OLD}/scripts/skill-lint.mjs <a-skill-mappája>`,
+    ].join('\n')
+    const r = rewriteForeignProjectRoot(text, NEW)
+    expect(r.text).toBe(text.replaceAll(OLD, NEW))
+    expect(r.replaced).toBe(2)
+  })
+
+  it('never treats a path INSIDE the current install as foreign (HOSTMOVE1003)', () => {
+    // The lazy prefix of <root>/agents/x/scripts/hooks/y is <root>/agents/x;
+    // without the guard it was "re-anchored" to <root>/scripts/hooks/y.
+    const text = [
+      `python3 ${NEW}/agents/kigyo/scripts/hooks/own-hook.py`,
+      `cat ${NEW}/agents/kigyo/store/.dashboard-token`,
+    ].join('\n')
+    const r = rewriteForeignProjectRoot(text, NEW)
+    expect(r.text).toBe(text)
+    expect(r.replaced).toBe(0)
+  })
+
+  it('a sibling directory whose name merely starts with the root is still foreign', () => {
+    const r = rewriteForeignProjectRoot(`$(cat ${NEW}-old/store/.dashboard-token)`, NEW)
+    expect(r.text).toBe(`$(cat ${NEW}/store/.dashboard-token)`)
+    expect(r.foreignRoots).toEqual([`${NEW}-old`])
   })
 
   it('tolerates a trailing slash on the current root', () => {
@@ -160,6 +189,47 @@ describe('HOSTMOVE923 wiring (source-level)', () => {
 
   it('keeps the absolute token path (the relative form is the measured 401)', () => {
     expect(SCAFFOLD).toContain("const tokenPath = join(PROJECT_ROOT, 'store', '.dashboard-token')")
-    expect(SCAFFOLD).toContain("'/store/.dashboard-token', '/scripts/hooks/', '/scripts/skill-index.sh'")
+    expect(INSTALL_ANCHORED_SUFFIXES).toContain('/store/.dashboard-token')
+  })
+})
+
+// HOSTMOVE1003: the suffix list was hand-kept, and two recipe paths slipped
+// past it (the recipient-ledger line the scaffold writes into every CLAUDE.md,
+// and the skill-lint line of the CLAUDE.md template), so after a move they would
+// have kept naming the old root. This pin collects every install path the
+// scaffold source and the templates write into a CLAUDE.md or a hook prompt,
+// and requires each to be re-anchorable.
+describe('every install path written into a CLAUDE.md or a hook prompt is re-anchored on a host move', () => {
+  const joinSuffix = (args: string) => '/' + [...args.matchAll(/'([^']+)'/g)].map((m) => m[1]).join('/')
+  // `${join(PROJECT_ROOT, 'a', 'b')}` interpolated straight into text
+  const direct = [...SCAFFOLD.matchAll(/\$\{join\(PROJECT_ROOT,([^)]*)\)\}/g)].map((m) => joinSuffix(m[1]))
+  // `const x = join(PROJECT_ROOT, …)` that is then interpolated as `${x}`
+  const viaConst = [...SCAFFOLD.matchAll(/^(?:export )?const (\w+) = join\(PROJECT_ROOT,([^)]*)\)/gm)]
+    .filter((m) => SCAFFOLD.includes('${' + m[1] + '}'))
+    .map((m) => joinSuffix(m[2]))
+  const placeholder = /\{\{(?:PROJECT_ROOT|INSTALL_DIR)\}\}(\/[\w.\/-]+)/g
+  const fromClaudeTemplate = [...readFileSync(join(TEMPLATES, 'CLAUDE.md.template'), 'utf-8').matchAll(placeholder)].map((m) => m[1])
+  const settingsTpl = JSON.parse(readFileSync(join(TEMPLATES, 'settings.json.template'), 'utf-8')) as { hooks?: Record<string, Array<{ hooks?: Array<{ prompt?: string }> }>> }
+  const fromPrompts = Object.values(settingsTpl.hooks ?? {}).flat().flatMap((e) => e.hooks ?? [])
+    .flatMap((h) => (typeof h.prompt === 'string' ? [...h.prompt.matchAll(placeholder)].map((m) => m[1]) : []))
+  const all = [...new Set([...direct, ...viaConst, ...fromClaudeTemplate, ...fromPrompts])].sort()
+
+  // Written, but deliberately NOT re-anchored -- with the reason.
+  const NOT_ANCHORED: Record<string, string> = {
+    '/agents': 'explanatory text in the generation prompt ("your cwd is <root>/agents/<name>"), no recipe opens it; a bare /agents/ suffix would also hit ~/.claude/agents/',
+  }
+  const covered = (suffix: string) =>
+    INSTALL_ANCHORED_SUFFIXES.some((s) => (s.endsWith('/') ? suffix.startsWith(s) : suffix === s))
+
+  it('the scanner finds the known recipe paths (not a vacuous pass)', () => {
+    expect(all).toEqual(expect.arrayContaining(['/store/.dashboard-token', '/scripts/recipient-ledger.mjs', '/scripts/skill-lint.mjs', '/scripts/skill-index.sh']))
+  })
+
+  it.each(all)('%s is covered by INSTALL_ANCHORED_SUFFIXES or exempted with a reason', (suffix) => {
+    expect(covered(suffix) || suffix in NOT_ANCHORED, `${suffix}: add it to INSTALL_ANCHORED_SUFFIXES (agent-scaffold.ts)`).toBe(true)
+  })
+
+  it('every exemption still occurs (no stale entries)', () => {
+    for (const key of Object.keys(NOT_ANCHORED)) expect(all).toContain(key)
   })
 })

@@ -19,7 +19,8 @@ describe('protectTrailingSemicolon', () => {
     expect(protectTrailingSemicolon('a\\;')).toBe('a\\;')
   })
   it('literalKeyArgs carries the protected text', () => {
-    expect(literalKeyArgs('s', 'x;')).toEqual(['send-keys', '-t', 's', '-l', '--', 'x\\;'])
+    // develop's exact-match target (`=s:`) since the tmux-target change; the protection is unchanged
+    expect(literalKeyArgs('s', 'x;')).toEqual(['send-keys', '-t', '=s:', '-l', '--', 'x\\;'])
   })
 })
 

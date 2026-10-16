@@ -4,6 +4,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { readEnvFile } from './env.js'
+import { parseLabelPalette } from './css-color.js'
 import { resolveFleetVenvDir } from './fleet-venv.js'
 import { DISTRIBUTION_DEFAULT_AGENT_MODEL } from './config-registry.js'
 import { getProviderType, getChannelToken, getChannelChatId, type ChannelProviderType } from './channel-provider.js'
@@ -83,12 +84,41 @@ function isUsableCronTz(tz: string): boolean {
   }
 }
 
+// APP_TZ has a SECOND consumer: every display path formats with
+// Intl.DateTimeFormat / toLocaleString({ timeZone: APP_TZ }), and one of them
+// (heartbeat-header-stamp.ts) builds its formatter at MODULE LOAD, on the
+// dashboard's static import chain. So the probe is both consumers, each asked
+// its own question, never one standing in for the other. They do disagree:
+// under TZ='' Node 22 reports the host zone as "Etc/Unknown", which
+// cron-parser schedules against without complaint and Intl rejects with a
+// RangeError -- and a RangeError at import time means the dashboard does not
+// start at all (ISSUE1895 review).
+function isUsableAppTz(tz: string): boolean {
+  if (!isUsableCronTz(tz)) return false
+  try {
+    new Intl.DateTimeFormat('en-US', { timeZone: tz })
+    return true
+  } catch {
+    return false
+  }
+}
+
+// The host zone as APP_TZ may use it: the process zone when both consumers
+// accept it, otherwise UTC (the zone Intl itself falls back to with no TZ).
+// Never a value either consumer throws on.
+export function usableHostTz(
+  raw: string = Intl.DateTimeFormat().resolvedOptions().timeZone,
+): string {
+  return isUsableAppTz(raw) ? raw : 'UTC'
+}
+
 export function resolveAppTz(
   configured: string | undefined,
   systemTz: string = Intl.DateTimeFormat().resolvedOptions().timeZone,
 ): { tz: string; configured?: string; invalid?: string } {
-  if (!configured) return { tz: systemTz }
-  if (!isUsableCronTz(configured)) return { tz: systemTz, invalid: configured }
+  const host = usableHostTz(systemTz)
+  if (!configured) return { tz: host }
+  if (!isUsableAppTz(configured)) return { tz: host, invalid: configured }
   return { tz: configured, configured }
 }
 
@@ -167,6 +197,16 @@ export const BRAND_NAME = env['BRAND_NAME'] ?? BOT_NAME
 // not change that; the token remains the actual boundary.
 export const SYSTEM_SENDER_IDS = env['SYSTEM_SENDER_IDS'] ?? ''
 
+// Card 795d1f48 (a): the enrolled device keys that may send an URGENT row over POST /api/messages (a row the router
+// types into a BUSY pane), by their numeric ids (GET /api/auth/device-keys lists them). Install-specific, so .env, and
+// empty by default: with no id, no HTTP caller may set urgent; the in-process writers are not affected. A device key
+// alone is not enough because the shared dashboard token can mint one; and the list is deliberately not in the
+// settings registry, so the dashboard's settings page does not edit it. Device key ids are AUTOINCREMENT: a revoked
+// key's id is never handed out again. Comma-separated:
+//   MESSAGE_URGENT_DEVICE_IDS=7
+// Read at module load -- a change needs a dashboard restart.
+export const MESSAGE_URGENT_DEVICE_IDS = env['MESSAGE_URGENT_DEVICE_IDS'] ?? ''
+
 // Pure parse rule for SYSTEM_SENDER_IDS, so the default (unset => empty set) is
 // provable without a live .env. Entries are normalized with the SAME function
 // the route matches on, keeping this guard symmetric with the coordinator and
@@ -178,6 +218,18 @@ export function parseSystemSenderIds(raw: string | undefined, normalize: (s: str
       .split(',')
       .map(s => normalize(s.trim()))
       .filter(Boolean)
+  )
+}
+
+// Pure parse rule for MESSAGE_URGENT_DEVICE_IDS: positive integers only. Anything else is dropped, never read
+// generously: a typo or an empty value means nobody.
+export function parseDeviceKeyIds(raw: string | undefined): Set<number> {
+  return new Set(
+    (raw ?? '')
+      .split(',')
+      .map(s => s.trim())
+      .filter(s => /^[1-9][0-9]{0,14}$/.test(s))
+      .map(Number)
   )
 }
 
@@ -297,6 +349,25 @@ export const WEB_PORT = parseInt(env['WEB_PORT'] ?? '3420', 10)
 
 export const WEB_HOST = env['WEB_HOST'] ?? '127.0.0.1'
 
+// How long a fired scheduled task may stay busy before the watchdog calls it
+// stuck (default 45 minutes; `stuckAfterMinutes` still overrides it per task).
+//
+// A key rather than a literal for the same reason as DEFAULT_AGENT_MODEL: this
+// number is an OPERATOR judgement, not an engineering constant. Whether "still
+// running after N minutes" means trouble depends on what the install's tasks
+// do, and an install that raises it has to keep raising it after every update
+// if the only way to say so is patching src/. That is not hypothetical -- one
+// install set 10 minutes because 5 produced false "possible hang" alerts, and
+// lost the setting to an update, silently: alerts simply got eager again.
+// .env survives updates, src/ does not.
+export const TASK_STALL_TIMEOUT_MS = (() => {
+  const parsed = parseInt(env['TASK_STALL_TIMEOUT_MS'] ?? '', 10)
+  // A malformed or absurd value must not disable the watchdog outright, so an
+  // out-of-range setting falls back to the default instead of being clamped
+  // into silence.
+  return Number.isFinite(parsed) && parsed >= 60_000 ? parsed : 2_700_000
+})()
+
 // Kanban card aging visual thresholds (hours since last update) and colours.
 // Override per-install via .env; defaults match the design spec (24/72/168h).
 export const KANBAN_AGING_WARN_H = parseInt(env['KANBAN_AGING_WARN_H'] ?? '24', 10)
@@ -376,11 +447,17 @@ export const KANBAN_SWIMLANE_SEPARATOR_COLOR = env['KANBAN_SWIMLANE_SEPARATOR_CO
 // offers these as swatches instead of a free-text colour input, so every
 // label's colour traces back to this single configurable list rather than
 // a hardcoded per-label mapping in the frontend.
-const rawKanbanLabelColors = (env['KANBAN_LABEL_COLORS'] ?? '#3b82f6,#0ea5e9,#10b981,#14b8a6,#8b5cf6,#64748b')
-  .split(',')
-  .map((c) => c.trim())
-  .filter(Boolean)
-export const KANBAN_LABEL_COLORS = rawKanbanLabelColors.length > 0 ? rawKanbanLabelColors : ['#64748b']
+// Each entry is normalized (parseLabelPalette: hex and var(--token) kept, a
+// colour name or a numeric rgb()/hsl() becomes hex): the palette reaches CSS backgrounds on the
+// dashboard, where url(...) would be an active resource. Entries that are not
+// colours are dropped and exported in KANBAN_LABEL_COLORS_REJECTED, colours
+// past the palette size bound are counted in KANBAN_LABEL_COLORS_OVERFLOW;
+// config.ts cannot own a logger (see APP_TZ_INVALID), so routes/kanban.ts
+// reports both.
+const kanbanLabelPalette = parseLabelPalette(env['KANBAN_LABEL_COLORS'] ?? '#3b82f6,#0ea5e9,#10b981,#14b8a6,#8b5cf6,#64748b')
+export const KANBAN_LABEL_COLORS = kanbanLabelPalette.colors
+export const KANBAN_LABEL_COLORS_REJECTED = kanbanLabelPalette.rejected
+export const KANBAN_LABEL_COLORS_OVERFLOW = kanbanLabelPalette.overflow
 
 export const CHANNEL_PROVIDER: ChannelProviderType = getProviderType(env['CHANNEL_PROVIDER'])
 export const CHANNEL_TOKEN = getChannelToken(CHANNEL_PROVIDER, env)
@@ -450,6 +527,17 @@ export const SUBAGENT_INBOX_TEE =
 // with SUBAGENT_TELEGRAM_WAKE_ENABLED=1 (alongside SUBAGENT_INBOX_TEE=1).
 export const SUBAGENT_TELEGRAM_WAKE_ENABLED =
   ['1', 'true', 'yes', 'on'].includes((cfg('SUBAGENT_TELEGRAM_WAKE_ENABLED') ?? '').trim().toLowerCase())
+
+// Single designated Claude Code auto-updater (opt-in, DEFAULT OFF).
+// Every launched claude gets DISABLE_AUTOUPDATER=1 so no two sessions race to
+// rewrite the one shared install. With WORKER_AUTOUPDATE=1 exactly ONE session
+// -- the slow worker -- is launched without it and keeps a NATIVE install
+// current; every other session (fast worker, channels, sub-agents) stays
+// pinned. Ignored on an npm-global install, where the boot-time claude_ensure
+// in channels.sh is the updater. Read at boot: takes effect after a dashboard
+// restart and the slow worker's next launch.
+export const WORKER_AUTOUPDATE =
+  ['1', 'true', 'yes', 'on'].includes((cfg('WORKER_AUTOUPDATE') ?? '').trim().toLowerCase())
 
 // Install-wide default for router-side speech-to-text on inbound voice notes
 // (opt-in, DEFAULT OFF). Agents in responseMode 'voice'/'auto' are always

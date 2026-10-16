@@ -72,6 +72,24 @@ def _install_dir():
     return os.path.dirname(os.path.dirname(here))
 
 
+def _install_dirs():
+    """The install dir as this file was reached AND with symlinks resolved
+    (#1878 item 11). When the install is reached through a symlink, the hook
+    command names one form and Claude Code may report cwd / transcript_path in
+    the other; comparing against a single form missed every rule and fell back
+    to the main agent. The PAYLOAD path is deliberately NOT resolved: on a fleet
+    host agents/<id>/.claude-config/projects is itself a symlink into
+    ~/.claude/projects, so resolving it would replace the authoritative
+    config-owner rule with the cwd-segment rule (wrong for a session started
+    outside its agent dir)."""
+    out = []
+    for d in (_install_dir(), os.path.realpath(_install_dir())):
+        d = d.rstrip("/")
+        if d not in out:
+            out.append(d)
+    return out
+
+
 def main_agent_id():
     v = os.environ.get("MAIN_AGENT_ID")
     if v:
@@ -148,15 +166,16 @@ def _agent_id_from_config_path(path):
     if not path or not isinstance(path, str):
         return None
     path = os.path.abspath(path.strip())
-    install = _install_dir().rstrip("/")
-    agents_root = os.path.join(install, "agents")
+    installs = _install_dirs()
     # 1. The CONFIG OWNER is authoritative: a transcript under
     #    <install>/agents/<id>/... is that agent's isolated config dir, no
     #    matter where the session's cwd wandered.
-    if path.startswith(agents_root + os.sep):
-        rel = path[len(agents_root) + 1:]
-        head = rel.split(os.sep)[0]
-        return head or None
+    for install in installs:
+        agents_root = os.path.join(install, "agents")
+        if path.startswith(agents_root + os.sep):
+            rel = path[len(agents_root) + 1:]
+            head = rel.split(os.sep)[0]
+            return head or None
     # 2. Non-isolated config roots (~/.claude and friends) key the project dir
     #    by the session's STARTING cwd, flattened: /a/b -> "-a-b". Every fleet
     #    agent's tmux session runs this way (measured 2026-08-28: the live
@@ -164,11 +183,13 @@ def _agent_id_from_config_path(path):
     #    ~/.claude/projects/-Users-marvin-ClaudeClaw-agents-samu/), so the
     #    agent id is IN the path -- mapping the whole family to the main agent
     #    would be the original bug mirrored. Parse the segment instead.
-    seg_agent = _agent_id_from_project_segment(path, install)
-    if seg_agent is not None:
-        return seg_agent
-    if path == install or path.startswith(install + os.sep):
-        return main_agent_id()
+    for install in installs:
+        seg_agent = _agent_id_from_project_segment(path, install)
+        if seg_agent is not None:
+            return seg_agent
+    for install in installs:
+        if path == install or path.startswith(install + os.sep):
+            return main_agent_id()
     home_claude = os.path.join(os.path.expanduser("~"), ".claude")
     if path == home_claude or path.startswith(home_claude + os.sep):
         return main_agent_id()
@@ -219,12 +240,13 @@ def agent_id_from_cwd(cwd):
       anywhere else in the tree    -> MAIN_AGENT_ID   (the main channels agent)
     """
     cwd = (cwd or "").rstrip("/")
-    install = _install_dir().rstrip("/")
-    agents_root = os.path.join(install, "agents")
-    if cwd.startswith(agents_root + os.sep):
-        rel = cwd[len(agents_root) + 1:]
-        return rel.split(os.sep)[0] or main_agent_id()
-    if cwd == install or cwd.startswith(install + os.sep):
+    installs = _install_dirs()
+    for install in installs:
+        agents_root = os.path.join(install, "agents")
+        if cwd.startswith(agents_root + os.sep):
+            rel = cwd[len(agents_root) + 1:]
+            return rel.split(os.sep)[0] or main_agent_id()
+    if any(cwd == install or cwd.startswith(install + os.sep) for install in installs):
         # Anywhere else INSIDE the install tree is still the main agent. Without
         # this, a session whose cwd happens to be a subdirectory (a scratch dir,
         # a build folder, ...) logs its messages under an agent id invented from

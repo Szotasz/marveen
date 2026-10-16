@@ -70,6 +70,11 @@ describe('message-close section: what it says (ACKONCLOSE927)', () => {
     expect(body).toMatch(/string 400-at kap/)
   })
 
+  it('says a second close of a closed message is a 409 that needs no retry or report', () => {
+    expect(body).toMatch(/MÁR lezárt[\s\S]{0,80}409-et ad/)
+    expect(body).toMatch(/Ez nem hiba, nem kell ismételni vagy jelenteni\./)
+  })
+
   it('the example is a PUT on the message id, with the bearer token', () => {
     expect(body).toMatch(/curl -s -X PUT \S+\/api\/messages\/<id>/)
     expect(body).toMatch(/Authorization: Bearer \$\(cat /)

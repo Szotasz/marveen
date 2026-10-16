@@ -154,6 +154,94 @@ describe('üzenet-szövegek', () => {
     expect(msg).toContain('Manuális browser /login')
   })
 
+  it('token-fájlos ügynöknél az eszkaláció a token-fájl frissítését kéri, nem /login-t', () => {
+    const msg = buildEscalationMessage('spock', 'API Error: 401', 3, true)
+    expect(msg).toContain('spock')
+    expect(msg).toContain('oauthTokenFile')
+    expect(msg).toContain('Frissítsd a token-fájlt')
+    expect(msg).toContain('felülírná a token-fájlos hitelesítést')
+    expect(msg).not.toContain('felülírná a fájlt')
+    expect(msg).not.toContain('Manuális browser /login')
+  })
+
+  it('hibás oauthTokenFile beállításnál az eszkaláció a konfig javítását kéri, nem /login-t', () => {
+    const msg = buildEscalationMessage('spock', 'API Error: 401', 3, true, true)
+    expect(msg).toContain('oauthTokenFile beállítás')
+    expect(msg).toContain('hibás vagy nem olvasható')
+    expect(msg).not.toContain('Manuális browser /login')
+    // a jól beállított token-fájlos ügynök szövege más
+    expect(buildEscalationMessage('spock', 'API Error: 401', 3, true, false)).toContain('Frissítsd a token-fájlt')
+  })
+
+  it('első-futás kapunál token-fájlos ügynöknek a riasztás újraindítást javasol, NEM manuális /login-t és NEM token-fájl frissítést', () => {
+    const msg = buildEscalationMessage('spock', 'onboarding picker', 3, true, false, true)
+    expect(msg).toContain('újraindítom az ügynököt; ha ezután is itt akad el, indítsd újra kézzel')
+    expect(msg).not.toContain('Manuális browser /login')
+    expect(msg).not.toContain('Frissítsd a token-fájlt')
+    const bad = buildEscalationMessage('spock', 'onboarding picker', 3, true, true, true)
+    expect(bad).toContain('újraindítom az ügynököt; ha ezután is itt akad el, indítsd újra kézzel')
+    expect(bad).toContain('oauthTokenFile beállítása')
+    expect(bad).not.toContain('Manuális browser /login')
+    // token-fájl nélkül az első-futás kapu szövege a régi marad
+    expect(buildEscalationMessage('spock', 'onboarding picker', 3, false, false, true)).toContain('Manuális browser /login')
+  })
+
+  it('a route-olt eszkaláció az első-futás jelzőt is átadja', () => {
+    const sent: string[] = []
+    routeEscalation({ session: 'agent-spock', label: 'spock', reason: 'sign-in screen', consecutiveDead: 3, usesOwnTokenFile: true, firstRunGate: true }, false, (m) => sent.push(m), new Map())
+    expect(sent[0]).toContain('újraindítom az ügynököt; ha ezután is itt akad el, indítsd újra kézzel')
+    expect(sent[0]).not.toContain('Manuális browser /login')
+  })
+
+  it('az összegzőben az első-futás kapus token-fájlos ügynök sora újraindítást kér, és nincs /login-sor', () => {
+    const msg = buildQuietSummaryMessage([{ ...entry('agent-spock', 'spock', 140), usesOwnTokenFile: true, firstRunGate: true }])
+    expect(msg).toContain('első indítási képernyő: újraindítom az ügynököt; ha ezután is itt akad el, indítsd újra kézzel')
+    expect(msg).not.toContain('Manuális browser /login')
+    expect(msg).not.toContain('javítsd az agent-config.json-t')
+  })
+
+  it('az összegzőben az első-futás kapus ÉS hibás beállítású ügynök sora a konfig javítását is kéri', () => {
+    const msg = buildQuietSummaryMessage([{ ...entry('agent-spock', 'spock', 140), usesOwnTokenFile: true, tokenFileInvalid: true, firstRunGate: true }])
+    expect(msg).toContain('első indítási képernyő: újraindítom az ügynököt')
+    expect(msg).toContain('hibás oauthTokenFile beállítás: javítsd az agent-config.json-t')
+    expect(msg).not.toContain('Manuális browser /login')
+  })
+
+  it('az első-futás riasztás nem kér dupla kézi újraindítást: a rendszer újraindít, kézzel csak ha ezután is elakad', () => {
+    const msg = buildEscalationMessage('spock', 'onboarding picker', 3, true, false, true)
+    expect(msg).toContain('újraindítom az ügynököt')
+    expect(msg).not.toContain('indítsd újra az ügynököt,')
+  })
+
+  it('az összegzőben a hibás beállítású ügynök sora a konfig javítását kéri', () => {
+    const msg = buildQuietSummaryMessage([{ ...entry('agent-spock', 'spock', 140), usesOwnTokenFile: true, tokenFileInvalid: true }])
+    expect(msg).toContain('hibás oauthTokenFile beállítás')
+    expect(msg).not.toContain('Manuális browser /login')
+  })
+
+  it('a route-olt eszkaláció a bejegyzés usesOwnTokenFile jelzőjét használja', () => {
+    const sent: string[] = []
+    routeEscalation({ session: 'agent-spock', label: 'spock', reason: 'API Error: 401', consecutiveDead: 3, usesOwnTokenFile: true }, false, (m) => sent.push(m), new Map())
+    routeEscalation({ session: 'agent-kirk', label: 'kirk', reason: 'API Error: 401', consecutiveDead: 3 }, false, (m) => sent.push(m), new Map())
+    expect(sent[0]).toContain('oauthTokenFile')
+    expect(sent[1]).toContain('Manuális browser /login')
+  })
+
+  it('a route-olt eszkaláció a hibás beállítás jelzőjét is átadja', () => {
+    const sent: string[] = []
+    routeEscalation({ session: 'agent-spock', label: 'spock', reason: 'API Error: 401', consecutiveDead: 3, usesOwnTokenFile: true, tokenFileInvalid: true }, false, (m) => sent.push(m), new Map())
+    expect(sent[0]).toContain('hibás vagy nem olvasható')
+  })
+
+  it('az összegzőben a token-fájlos ügynök sora a fájl frissítését kéri; ha mind ilyen, nincs /login-sor', () => {
+    const e = (usesOwnTokenFile: boolean) => ({ ...entry('agent-spock', 'spock', 140), usesOwnTokenFile })
+    const all = buildQuietSummaryMessage([e(true)])
+    expect(all).toContain('saját token-fájl')
+    expect(all).not.toContain('Manuális browser /login')
+    const mixed = buildQuietSummaryMessage([e(true), entry('agent-kirk', 'kirk', 140)])
+    expect(mixed).toContain('Manuális browser /login')
+  })
+
   it('az összegző megnevezi a sávot és agensenként a hozzávetőleges időt', () => {
     const msg = buildQuietSummaryMessage([entry('agent-spock', 'spock', 140)])
     expect(msg).toContain('23:00-06:00')

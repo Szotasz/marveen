@@ -229,12 +229,14 @@ describe('injectEmailSendGate with the thread-reply flag', () => {
     expect(innerCommand(s)).not.toContain(EMAIL_THREAD_REPLY_FLAG)
   })
 
-  it('threadReply=true appends the flag to the hook command', () => {
+  it('threadReply=true passes the flag to the gate script', () => {
     const s: Record<string, unknown> = {}
     injectEmailSendGate(s, true)
     const cmd = innerCommand(s)
-    expect(cmd).toContain('email-send-gate.mjs')
-    expect(cmd.endsWith(` ${EMAIL_THREAD_REPLY_FLAG}`)).toBe(true)
+    // 723bbb70: the flag rides inside the invocation, right after the script path -- after the command's
+    // fail-closed tail it would land on `exit` and never reach the gate.
+    expect(cmd).toContain(`email-send-gate.mjs" ${EMAIL_THREAD_REPLY_FLAG};`)
+    expect(cmd.endsWith(` ${EMAIL_THREAD_REPLY_FLAG}`)).toBe(false)
   })
 
   it('re-apply toggles cleanly in both directions (respawn regenerates)', () => {

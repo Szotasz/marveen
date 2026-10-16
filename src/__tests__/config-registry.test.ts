@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { describe, it, expect } from 'vitest'
 import { SETTINGS_REGISTRY, getSettingDefinition, listSettingModules, validateSettingValue } from '../config-registry.js'
 
@@ -30,6 +32,45 @@ describe('config-registry', () => {
     expect(mods).toContain('kanban')
   })
 
+  // Opt-in operator switches consumed as boot-time consts in src/config.ts.
+  // Default must stay '0' (config.ts resolves an unset key to false), and the
+  // UI must flag the restart, since the value is read once at module load.
+  it.each(['SUBAGENT_INBOX_TEE', 'SUBAGENT_TELEGRAM_WAKE_ENABLED', 'VOICE_TRANSCRIBE_INBOUND', 'TELEGRAM_TOPICS_ENABLED'])(
+    'registers %s as an off-by-default boolean that requires a restart',
+    (key) => {
+      const def = getSettingDefinition(key)
+      expect(def).toBeDefined()
+      expect(def!.type).toBe('boolean')
+      expect(def!.default).toBe('0')
+      expect(def!.module).toBe('channels')
+      expect(def!.secret).toBe(false)
+      expect(def!.requiresRestart).toBe(true)
+      expect(def!.description.length).toBeGreaterThan(0)
+      // the boolean validator persists canonical '1'/'0'
+      expect(validateSettingValue(def!, true)).toEqual({ ok: true, value: '1' })
+      expect(validateSettingValue(def!, 'false')).toEqual({ ok: true, value: '0' })
+    },
+  )
+
+  // The canonical '1' the Settings page writes must be a value the consumer
+  // accepts. Pin the parser in src/config.ts: if it ever stops accepting '1',
+  // a switch saved as on would silently stay off.
+  it.each(['SUBAGENT_INBOX_TEE', 'SUBAGENT_TELEGRAM_WAKE_ENABLED', 'VOICE_TRANSCRIBE_INBOUND'])(
+    'src/config.ts parses %s so that the saved "1" means on',
+    (key) => {
+      const code = readFileSync(join(process.cwd(), 'src', 'config.ts'), 'utf-8')
+      const parse = new RegExp(
+        String.raw`export const ${key} =\s*\['1', 'true', 'yes', 'on'\]\.includes\(\(cfg\('${key}'\) \?\? ''\)\.trim\(\)\.toLowerCase\(\)\)`,
+      )
+      expect(code).toMatch(parse)
+    },
+  )
+
+  it('registers each key at most once', () => {
+    const keys = SETTINGS_REGISTRY.map((s) => s.key)
+    expect(new Set(keys).size).toBe(keys.length)
+  })
+
   describe('validateSettingValue', () => {
     it('accepts a valid int within bounds', () => {
       const def = getSettingDefinition('KANBAN_WIP_PLANNED')!
@@ -55,6 +96,27 @@ describe('config-registry', () => {
     it('rejects WARN_PCT above 100', () => {
       const def = getSettingDefinition('KANBAN_WIP_WARN_PCT')!
       expect(validateSettingValue(def, 101).ok).toBe(false)
+    })
+
+    describe('opt-in table retention (0 = keep forever)', () => {
+      const keys = [
+        ['CONVERSATION_LOG_RETENTION_DAYS', 90],
+        ['OTEL_SPAN_RETENTION_DAYS', 14],
+        ['AGENT_MESSAGE_RETENTION_DAYS', 30],
+        ['TOOL_CALL_LOG_RETENTION_DAYS', 30],
+      ] as const
+
+      it.each(keys)('%s defaults to 0, accepts 0 and its suggested window, rejects negatives', (key, suggested) => {
+        const def = getSettingDefinition(key)!
+        expect(def.default).toBe(0)
+        expect(validateSettingValue(def, 0)).toEqual({ ok: true, value: 0 })
+        expect(validateSettingValue(def, '0')).toEqual({ ok: true, value: 0 })
+        expect(validateSettingValue(def, suggested)).toEqual({ ok: true, value: suggested })
+        expect(validateSettingValue(def, -1).ok).toBe(false)
+        // The dashboard shows this text; it has to explain the 0 and name the window.
+        expect(def.description).toContain('0 = örökre megőrzi')
+        expect(def.description).toContain(`${suggested} nap`)
+      })
     })
 
     it('accepts a valid hex color', () => {

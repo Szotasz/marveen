@@ -1,0 +1,6 @@
+{
+  "name": "agent-state-observer",
+  "version": "0.1.0",
+  "description": "Observe-only: writes the agent's state (working / idle / awaiting_approval / ended), its transitions and its rate-limit readings to a JSON file. Never blocks, rewrites or delays anything.",
+  "author": { "name": "Marveen" }
+}

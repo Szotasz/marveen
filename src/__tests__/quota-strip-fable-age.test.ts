@@ -22,7 +22,10 @@ describe('quota strip: Fable/Opus row carries its own age', () => {
   })
 
   it('renders that per-row age via the shared measured-ago key', () => {
-    expect(APP).toMatch(/typeof ageSecForRow === 'number'\) \{[\s\S]{0,120}overview\.quota\.measured/)
+    // QUOTAMOD1005: through quotaMeasuredText, which keeps the shared key and
+    // only says "measured just now" under a minute (no "measured now ago").
+    expect(APP).toMatch(/typeof ageSecForRow === 'number'\) \{[\s\S]{0,120}quotaMeasuredText\(ageSecForRow\)/)
+    expect(APP).toMatch(/function quotaMeasuredText\(ageSec\) \{[\s\S]{0,200}t\('overview\.quota\.measured', \{ age:/)
   })
 
   it('renders the age unconditionally, not gated on the row\'s muted state', () => {

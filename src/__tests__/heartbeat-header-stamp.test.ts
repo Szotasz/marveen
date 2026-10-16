@@ -1,5 +1,12 @@
-import { describe, it, expect } from 'vitest'
-import { stampHeartbeatHeader } from '../web/heartbeat-header-stamp.js'
+import { describe, it, expect, vi } from 'vitest'
+
+// ISSUE1895 (#1895): the header is stamped in the install zone (APP_TZ), not a
+// hardcoded Europe/Budapest. These cases pin the zone to Budapest so they read the
+// same on any runner (a CI host in UTC included); heartbeat-header-stamp-zone.test.ts
+// covers another zone.
+vi.mock('../config.js', async (orig) => ({ ...(await orig<typeof import('../config.js')>()), APP_TZ: 'Europe/Budapest' }))
+
+const { stampHeartbeatHeader } = await import('../web/heartbeat-header-stamp.js')
 
 // 2026-09-08T13:00:28Z == 15:00 in Europe/Budapest (CEST, UTC+2)
 const NOW = new Date('2026-09-08T13:00:28Z')

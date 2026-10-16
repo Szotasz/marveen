@@ -15,6 +15,8 @@ mkrepo() {
   echo s > "$t/home/.claude/skills/x/SKILL.md"; echo s > "$t/home/.claude/scheduled-tasks/y/SKILL.md"
   if command -v sqlite3 >/dev/null 2>&1; then sqlite3 "$t/store/claudeclaw.db" 'CREATE TABLE t(x);'; else echo db > "$t/store/claudeclaw.db"; fi
   cp "$SRC" "$t/scripts/backup.sh"
+  # backup.sh sources its literal archive-membership helper (card a8a92d55).
+  mkdir -p "$t/scripts/lib" && cp "$(dirname "$SRC")/lib/archive-list-has.sh" "$t/scripts/lib/"
   echo ok > "$t/store/good.txt"; echo ok > "$t/store/sub/good.txt"
   git -C "$t" init -q && git -C "$t" add -A && git -C "$t" -c user.name=t -c user.email=t@t commit -qm init
   echo "$t"

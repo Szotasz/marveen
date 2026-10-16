@@ -123,7 +123,11 @@ describe('sendPromptToSession delivery-lock wiring', () => {
   const CHANNEL_MONITOR = readFileSync(join(__dirname, '../web/channel-monitor.ts'), 'utf-8')
 
   it('sendPromptToSession runs its emit span inside withSessionSendLock', () => {
-    expect(AGENT_PROCESS).toMatch(/await withSessionSendLock\(session, host, lockMode, emitToPane\)/)
+    // 71263d15 (C): the lane runs guardedEmit, which only adds the caller's emit guard (a last pane
+    // read, no keystroke) in front of emitToPane and then runs it unchanged, inside the same lane.
+    expect(AGENT_PROCESS).toMatch(/await withSessionSendLock\(session, host, lockMode, guardedEmit\)/)
+    const guarded = AGENT_PROCESS.slice(AGENT_PROCESS.indexOf('const guardedEmit = async ('))
+    expect(guarded.slice(0, guarded.indexOf('\n  }\n'))).toMatch(/return emitToPane\(\)/)
     // 'held' short-circuits to a direct emit (no self-deadlock).
     expect(AGENT_PROCESS).toMatch(/if \(lockMode === 'held'\)/)
   })
@@ -152,7 +156,7 @@ describe('sendPromptToSession delivery-lock wiring', () => {
     // The send-keys that types the slash command must be guarded: the acquire
     // has to appear BEFORE it in the function body.
     const acquireAt = body.indexOf('releaseIdentityLane = tryAcquireSessionSendLane')
-    const sendAt = body.indexOf("runTmux(host, ['send-keys', '-t', session, cmd, 'Enter']")
+    const sendAt = body.indexOf("runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), cmd, 'Enter']")
     expect(acquireAt).toBeGreaterThanOrEqual(0)
     expect(sendAt).toBeGreaterThan(acquireAt)
     // And it must be released, or the pane's lane wedges for every later writer.

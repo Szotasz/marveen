@@ -107,9 +107,9 @@ function channel(body: string, attrs = 'source="plugin:telegram:telegram" chat_i
   return `<channel ${attrs}>${body}</channel>`
 }
 
-function runHook(prompt: string, apiBase = base, agent = 'marveen', args: string[] = [], extraEnv: Record<string, string> = {}): Promise<{ code: number | null; stdout: string }> {
+function runHook(prompt: string, apiBase = base, agent = 'marveen', args: string[] = [], extraEnv: Record<string, string> = {}, entry: string[] = [HOOK]): Promise<{ code: number | null; stdout: string }> {
   return new Promise((resolve) => {
-    const p = spawn('python3', [HOOK, ...args], {
+    const p = spawn('python3', [...entry, ...args], {
       env: {
         ...process.env,
         MARVEEN_INSTALL_DIR: install,
@@ -131,7 +131,46 @@ function runHook(prompt: string, apiBase = base, agent = 'marveen', args: string
 }
 
 const sends = () => calls.filter(c => c.path === '/botbot-tok/sendMessage').map(c => c.body)
+
+// The hook run as itself, but with a Python that does not exist for the
+// deferred watcher: its Popen fails, which is the hook's "deferred spawn failed"
+// branch, with no change to the hook.
+const HOOK_WITHOUT_DEFERRED_SPAWN = ['-c', 'import runpy, sys\nsys.executable = "/nonexistent/python3"\nsys.argv = sys.argv[1:]\nrunpy.run_path(sys.argv[0], run_name="__main__")', HOOK]
+
+// FLAKYCMDLOG1006: the log is SHARED by every test in this file (one stateDir,
+// beforeAll), and a deferred write's detached watcher writes its closing
+// "deferred write answered" line AFTER it sends the reply. A test that ends on
+// the send leaves that writer running into the next test (measured: the v1.41.0
+// release CI, and reproduced by holding the watcher's write until the next
+// test's line was in). So a deferred test waits for its own watcher to finish,
+// and a log reader looks for ITS line, never at the last one.
+const hookLog = () => {
+  try { return readFileSync(join(stateDir, 'progress', 'commands-hook.log'), 'utf-8').trim().split('\n') } catch { return [] }
+}
+const watcherDoneCount = (command: string) => hookLog().filter(l => l.includes(`${command} deferred write answered`)).length
+/** Waits until a watcher closing line for `command` beyond `seenBefore` is in the log. */
+async function waitForWatcherDone(command: string, seenBefore: number, timeoutMs = 8000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (watcherDoneCount(command) > seenBefore) return
+    await new Promise(r => setTimeout(r, 25))
+  }
+  throw new Error(`the ${command} deferred watcher did not finish within ${timeoutMs} ms`)
+}
 const dispatches = () => calls.filter(c => c.path === '/api/commands/dispatch')
+
+// A message written in a topic (TELEGRAM_TOPICS_ENABLED, plugin patch).
+const TOPIC_ATTRS = 'source="plugin:telegram:telegram" chat_id="42" message_id="7" user="owner" message_thread_id="12"'
+
+function runProgress(prompt: string, sessionId: string): Promise<number | null> {
+  return new Promise((resolve) => {
+    const p = spawn('python3', [join(ROOT, 'scripts', 'hooks', 'telegram_progress.py')], {
+      env: { ...process.env, TELEGRAM_STATE_DIR: stateDir, TELEGRAM_API_BASE: base },
+    })
+    p.on('close', c => resolve(c))
+    p.stdin.end(JSON.stringify({ prompt, session_id: sessionId }))
+  })
+}
 
 describe('marveen-commands.py', () => {
   it('a registry command: dispatched, reply sent on the main bot, turn blocked (exit 2, no stdout)', async () => {
@@ -197,10 +236,78 @@ describe('marveen-commands.py', () => {
       const r = await runHook(channel('/usage'))
       expect(r.code).toBe(2)
       const s = sends()
-      expect(s[0].text).toBe('Kvóta: nem mérhető (boom).\n\nToken-könyvelés: 789')
+      expect(s[0].text).toBe('Kvóta: nem mérhető (boom).\n\nCodex: nem mérhető (a lekérdezés nem adott Codex-adatot).\n\nToken-könyvelés: 789')
     } finally {
       writeFileSync(usageScript, original)
     }
+  })
+
+  // Codex block (card 1c079eae): usage-collect.py also reads the Codex quota,
+  // but from the last Codex rollout file, not a live call. So the reply
+  // states the reading's time, gives no percentage for a window whose reset
+  // time has passed, and names the reason when the Codex reading is missing.
+  async function usageWith(snapshot: unknown, replies = ['Token-könyvelés: 1']): Promise<string> {
+    const usageScript = join(install, 'scripts', 'usage-collect.py')
+    const original = readFileSync(usageScript, 'utf-8')
+    // The snapshot's JSON text as a Python string literal (JSON string escapes are valid Python).
+    writeFileSync(usageScript, `print(${JSON.stringify(JSON.stringify(snapshot))})\n`)
+    try {
+      dispatchReply = () => ({ status: 200, body: { handled: true, outcome: 'ran', replies } })
+      const r = await runHook(channel('/usage'))
+      expect(r.code).toBe(2)
+      const s = sends()
+      expect(s).toHaveLength(1)
+      return s[0].text as string
+    } finally {
+      writeFileSync(usageScript, original)
+    }
+  }
+  const CLAUDE_OK = { ok: true, windows: { five_hour: { used_percent: 30, resets_at: 0 } } }
+  const FUTURE = 4102444800 // 2100-01-01, never expires during the test
+
+  it('/usage: fresh Codex reading follows the Claude block, with the reading time', async () => {
+    const taken = new Date(Date.now() - 90 * 60 * 1000).toISOString() // 90 minutes ago
+    const text = await usageWith({
+      claude: CLAUDE_OK,
+      codex: { ok: true, source: 'authoritative', plan_type: 'plus', snapshot_at: taken,
+        windows: { five_hour: { used_percent: 20, resets_at: FUTURE }, weekly: { used_percent: 2.4, resets_at: FUTURE } } },
+    })
+    expect(text).toMatch(/^Claude keret-állapot:\n- 5 órás: 70% van hátra \(30% elhasználva\), megújul: [^\n]+\n\nCodex \(ChatGPT Plus\) keret-állapot \(adat: \d{4}-\d\d-\d\d \d\d:\d\d, 1 órája, a legutóbbi Codex-futásból, nem élő lekérdezés\):\n- 5 órás: 80% van hátra \(20% elhasználva\), megújul: 2100-01-01 \d\d:\d\d\n- heti: 98% van hátra \(2% elhasználva\), megújul: 2100-01-01 \d\d:\d\d\n\nToken-könyvelés: 1$/)
+  })
+
+  it('/usage: an expired Codex window shows no percentage, only when it expired', async () => {
+    const text = await usageWith({
+      claude: CLAUDE_OK,
+      codex: { ok: true, source: 'authoritative', plan_type: 'plus', snapshot_at: '2026-10-14T18:58:10.669Z',
+        windows: { five_hour: { used_percent: 2, resets_at: 1792020915 }, weekly: { used_percent: 2, resets_at: FUTURE } } },
+    })
+    expect(text).toMatch(/\n- 5 órás: nincs friss adat \(az ablak lejárt 2026-10-1[45] \d\d:\d\d-kor\)\n/)
+    expect(text).not.toMatch(/5 órás: 98%/)
+    expect(text).toMatch(/\n- heti: 98% van hátra \(2% elhasználva\)/)
+    expect(text).toMatch(/adat: 2026-10-14 \d\d:\d\d, \d+ (órája|napja)/)
+  })
+
+  it('/usage: Codex ok:false is one short reason line, the Claude block is unchanged', async () => {
+    const text = await usageWith({
+      claude: CLAUDE_OK,
+      codex: { ok: false, source: 'authoritative', error: 'no ~/.codex/sessions rollout files found' },
+    })
+    expect(text).toMatch(/^Claude keret-állapot:\n- 5 órás: 70% van hátra \(30% elhasználva\), megújul: [^\n]+\n\nCodex: nem mérhető \(no ~\/\.codex\/sessions rollout files found\)\.\n\nToken-könyvelés: 1$/)
+  })
+
+  it('/usage: Codex never ran on this host (reason no_sessions) gets its own Hungarian line, not "nem mérhető"', async () => {
+    const text = await usageWith({
+      claude: CLAUDE_OK,
+      codex: { ok: false, source: 'authoritative', reason: 'no_sessions', error: 'no ~/.codex/sessions rollout files found' },
+    })
+    expect(text).toMatch(/\n\nCodex: ezen a gépen még nem futott, nincs mért adat\.\n\nToken-könyvelés: 1$/)
+    expect(text).not.toMatch(/nem mérhető/)
+    expect(text).not.toMatch(/rollout files found/)
+  })
+
+  it('/usage: a snapshot without the codex key says so instead of dropping the block', async () => {
+    const text = await usageWith({ claude: CLAUDE_OK })
+    expect(text).toMatch(/\n\nCodex: nem mérhető \(a lekérdezés nem adott Codex-adatot\)\.\n\nToken-könyvelés: 1$/)
   })
 
   it('handled:false (a non-registry /word): exit 0, empty stdout, nothing sent', async () => {
@@ -234,6 +341,12 @@ describe('marveen-commands.py', () => {
     expect(s).toHaveLength(1)
     expect(s[0].text).toMatch(/^Nem futott: \/status, mert a dashboard nem érhető el/)
     expect(s[0].text).not.toContain('bot-tok')
+  })
+
+  it('dashboard unreachable + a command from a topic: the error reply goes back into the topic', async () => {
+    const r = await runHook(channel('/status', TOPIC_ATTRS), 'http://127.0.0.1:1')
+    expect(r.code).toBe(2)
+    expect(sends()).toEqual([{ chat_id: '42', text: expect.stringMatching(/^Nem futott: \/status, mert a dashboard nem érhető el/), message_thread_id: 12 }])
   })
 
   it('dashboard answers 500 + builtin command: error reply names the HTTP status, blocked', async () => {
@@ -274,6 +387,7 @@ describe('marveen-commands.py', () => {
     dispatchReply = (body) => body.deferWrites
       ? { status: 200, body: { handled: true, outcome: 'deferred', replies: [] } }
       : { status: 200, body: { handled: true, outcome: 'ran', replies: ['átváltva'] } }
+    const seen = watcherDoneCount('/model')
     const exitedAt = await runHook(channel('/model opus 5m')).then(r => { expect(r.code).toBe(2); return Date.now() })
     expect(sends()).toHaveLength(0)
     const deadline = Date.now() + 5000
@@ -284,6 +398,7 @@ describe('marveen-commands.py', () => {
     expect(d[0].body.deferWrites).toBe(true)
     expect(d[1].body).toEqual({ text: '/model opus 5m', chatId: '42', mainSession: true, deferWrites: false, forwarded: false, messageId: '7' })
     expect(Date.now() - exitedAt).toBeGreaterThanOrEqual(400) // the settle wait ran after the exit
+    await waitForWatcherDone('/model', seen)
   })
 
   it('the main session dispatches with mainSession:true', async () => {
@@ -337,6 +452,65 @@ describe('marveen-commands.py', () => {
     expect(calls.some(c => c.path === '/botbot-tok/deleteMessage')).toBe(false)
     expect(JSON.parse(readFileSync(join(stateDir, 'progress', 'sid-2.json'), 'utf-8'))).toEqual([{ chat_id: '42', message_id: 555, src_mid: '32' }])
     rmSync(join(stateDir, 'progress', 'sid-2.json'), { force: true })
+  })
+
+  // The payloads without a topic, pinned before the topics support went in:
+  // they must stay exactly these.
+  it('no topic: the placeholder payload and the stored entry are exactly the plain-chat ones', async () => {
+    calls = []
+    await runProgress(channel('mesélj', 'source="plugin:telegram:telegram" chat_id="42" message_id="33" user="owner"'), 'sid-3')
+    expect(calls.filter(c => c.path === '/botbot-tok/sendMessage').map(c => c.body))
+      .toEqual([{ chat_id: '42', text: '✍️ Dolgozom rajta…', disable_notification: true }])
+    expect(JSON.parse(readFileSync(join(stateDir, 'progress', 'sid-3.json'), 'utf-8'))).toEqual([{ chat_id: '42', message_id: 555, src_mid: '33' }])
+    rmSync(join(stateDir, 'progress', 'sid-3.json'), { force: true })
+  })
+
+  it('a topic message: the placeholder goes into the topic and the entry remembers it', async () => {
+    calls = []
+    await runProgress(channel('mesélj', TOPIC_ATTRS), 'sid-4')
+    expect(calls.filter(c => c.path === '/botbot-tok/sendMessage').map(c => c.body))
+      .toEqual([{ chat_id: '42', text: '✍️ Dolgozom rajta…', disable_notification: true, message_thread_id: 12 }])
+    expect(JSON.parse(readFileSync(join(stateDir, 'progress', 'sid-4.json'), 'utf-8'))).toEqual([{ chat_id: '42', message_id: 555, src_mid: '7', message_thread_id: 12 }])
+    rmSync(join(stateDir, 'progress', 'sid-4.json'), { force: true })
+  })
+
+  it('a command from a topic: the dispatch is unchanged, the answer goes back into the topic', async () => {
+    dispatchReply = () => ({ status: 200, body: { handled: true, outcome: 'ran', replies: ['minden rendben'] } })
+    const r = await runHook(channel('/status', TOPIC_ATTRS))
+    expect(r.code).toBe(2)
+    expect(dispatches()[0].body).toEqual({ text: '/status', chatId: '42', mainSession: true, deferWrites: true, forwarded: false, messageId: '7' })
+    expect(sends()).toEqual([{ chat_id: '42', text: 'minden rendben', message_thread_id: 12 }])
+  })
+
+  it('a deferred write from a topic: the watcher re-sends into the topic', async () => {
+    dispatchReply = (body) => body.deferWrites
+      ? { status: 200, body: { handled: true, outcome: 'deferred', replies: [] } }
+      : { status: 200, body: { handled: true, outcome: 'ran', replies: ['átváltva'] } }
+    const seen = watcherDoneCount('/model')
+    await runHook(channel('/model opus 5m', TOPIC_ATTRS))
+    const deadline = Date.now() + 5000
+    while (sends().length === 0 && Date.now() < deadline) await new Promise(r => setTimeout(r, 50))
+    expect(sends()).toEqual([{ chat_id: '42', text: 'átváltva', message_thread_id: 12 }])
+    await waitForWatcherDone('/model', seen)
+  })
+
+  it.each([
+    ['a plain chat: the reply as before', channel('/model opus 5m'), {}],
+    ['a topic: the reply goes back into it', channel('/model opus 5m', TOPIC_ATTRS), { message_thread_id: 12 }],
+  ])('a deferred write whose watcher cannot start, %s', async (_label, prompt, topic) => {
+    dispatchReply = () => ({ status: 200, body: { handled: true, outcome: 'deferred', replies: [] } })
+    const spawnFailures = () => hookLog().filter(l => l.includes('deferred spawn failed: FileNotFoundError')).length
+    const before = spawnFailures()
+    const r = await runHook(prompt, base, 'marveen', [], {}, HOOK_WITHOUT_DEFERRED_SPAWN)
+    expect(r.code).toBe(2)
+    expect(spawnFailures()).toBe(before + 1)
+    expect(sends()).toEqual([{ chat_id: '42', text: 'Nem futott: /model -- a késleltetett végrehajtás nem indult el. Napló: progress/commands-hook.log', ...topic }])
+  })
+
+  it('a malformed message_thread_id is ignored: the answer goes out as in a plain chat', async () => {
+    dispatchReply = () => ({ status: 200, body: { handled: true, outcome: 'ran', replies: ['ok'] } })
+    await runHook(channel('/status', 'source="plugin:telegram:telegram" chat_id="42" message_id="7" user="owner" message_thread_id="12x"'))
+    expect(sends()).toEqual([{ chat_id: '42', text: 'ok' }])
   })
 
   it('BUILTIN_NAMES (the dashboard-down fallback) matches the registry builtins', () => {
@@ -527,7 +701,7 @@ describe('marveen-commands.py reply logging (for the command harness)', () => {
   it('the answered line carries the reply text', async () => {
     dispatchReply = () => ({ status: 200, body: { handled: true, outcome: 'ran', replies: ['sor1\nsor2'] } })
     await runHook(channel('/status'))
-    const log = readFileSync(join(stateDir, 'progress', 'commands-hook.log'), 'utf-8').trim().split('\n').pop()
+    const log = hookLog().filter(l => l.includes('/status answered')).pop()
     expect(log).toMatch(/\/status answered \(ran\).* reply="sor1\\nsor2"$/)
   })
 })
@@ -575,31 +749,37 @@ describe('marveen-commands.py deferred write, slow dashboard', () => {
     dispatchReply = (b) => b.deferWrites
       ? { status: 200, body: { handled: true, outcome: 'deferred', replies: [] } }
       : { status: 200, body: { handled: true, outcome: 'ran', replies: ['kész'] }, delayMs: 1500 }
+    const seen = watcherDoneCount('/new')
     await runHook(channel('/new'), base, 'marveen', [], { MARVEEN_CMD_DEFERRED_TIMEOUT: '0.5' })
     const deadline = Date.now() + 6000
     while (sends().length === 0 && Date.now() < deadline) await new Promise(r => setTimeout(r, 50))
     expect(sends()).toEqual([{ chat_id: '42', text: '/new: elküldtem, de a dashboard 0 mp alatt sem válaszolt, lehet, hogy lefutott. Nézd meg /status-szal, mielőtt újra kiadod.' }])
+    await waitForWatcherDone('/new', seen)
   })
 
   it('a slow but answering dashboard (1.5 s) gets its reply through at the default timeout', async () => {
     dispatchReply = (b) => b.deferWrites
       ? { status: 200, body: { handled: true, outcome: 'deferred', replies: [] } }
       : { status: 200, body: { handled: true, outcome: 'ran', replies: ['kész'] }, delayMs: 1500 }
+    const seen = watcherDoneCount('/new')
     await runHook(channel('/new'))
     const deadline = Date.now() + 8000
     while (sends().length === 0 && Date.now() < deadline) await new Promise(r => setTimeout(r, 50))
     expect(sends()).toEqual([{ chat_id: '42', text: 'kész' }])
     expect(readFileSync(HOOK, 'utf-8')).toMatch(/MARVEEN_CMD_DEFERRED_TIMEOUT", "90"/)
+    await waitForWatcherDone('/new', seen)
   })
 
   it('the detached re-send is not held to the hook deadline (Claude Code no longer waits on it)', async () => {
     dispatchReply = (b) => b.deferWrites
       ? { status: 200, body: { handled: true, outcome: 'deferred', replies: [] } }
       : { status: 200, body: { handled: true, outcome: 'ran', replies: ['kész'] }, delayMs: 1500 }
+    const seen = watcherDoneCount('/new')
     await runHook(channel('/new'), base, 'marveen', [], { MARVEEN_HOOK_DEADLINE_SEC: '1' })
     const deadline = Date.now() + 8000
     while (sends().length === 0 && Date.now() < deadline) await new Promise(r => setTimeout(r, 50))
     expect(sends()).toEqual([{ chat_id: '42', text: 'kész' }])
+    await waitForWatcherDone('/new', seen)
   })
 })
 
@@ -610,8 +790,10 @@ describe('marveen-commands.py pass-through logging', () => {
     expect(r.code).toBe(0)
     expect(r.stdout).toBe('')
     expect(sends()).toEqual([])
-    const last = readFileSync(join(stateDir, 'progress', 'commands-hook.log'), 'utf-8').trim().split('\n').pop()
-    expect(last).toMatch(/\/xyzproba: not a registry command \(unknown\), passed to the model chat=42/)
+    // its own line (FLAKYCMDLOG1006): another test's detached writer may append after it
+    const own = hookLog().filter(l => l.includes('/xyzproba'))
+    expect(own).toHaveLength(1)
+    expect(own[0]).toMatch(/\/xyzproba: not a registry command \(unknown\), passed to the model chat=42/)
   })
 })
 
