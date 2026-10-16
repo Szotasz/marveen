@@ -105,10 +105,17 @@ fi
 
 # --- Step 3: Python packages ---
 _step "[3/5] Python packages (faster-whisper + piper-tts)"
-if "$DEST/venv/bin/python" -c "import faster_whisper, piper" 2>/dev/null; then
+# PyAV pin: faster-whisper 1.2.1 declares only "av>=11" (its METADATA), but it
+# calls av.open(..., metadata_errors=...), a keyword PyAV 19 removed (present in
+# av 18.1.0, gone in 19.0.x). _vtools.py no longer goes through that decoder
+# (it decodes with ffmpeg), so this pin is the second net, not the fix. The skip
+# check also requires av < 19, so an existing venv that resolved av 19 is
+# brought back under the pin on the next run instead of being skipped.
+AV_SPEC='av>=11,<19'
+if "$DEST/venv/bin/python" -c "import faster_whisper, piper, av, sys; sys.exit(int(av.__version__.split('.')[0]) >= 19)" 2>/dev/null; then
   _skip "packages already installed"
 else
-  "$DEST/venv/bin/pip" install --quiet faster-whisper piper-tts
+  "$DEST/venv/bin/pip" install --quiet faster-whisper piper-tts "$AV_SPEC"
   _pass "faster-whisper + piper-tts installed"
 fi
 "$DEST/venv/bin/python" -c "import faster_whisper, piper" || _fail "package import check failed"
