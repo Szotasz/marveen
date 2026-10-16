@@ -3027,7 +3027,7 @@ function buildOwnTokenAgentIdBody(name: string, tokenPath: string): string {
   ].join('\n')
 }
 const OWN_TOKEN_FOREIGN_MEMORY_RULE =
-  'Ha idegen ágens emlékét írod felül, a szerver FIGYELMEZTET (`owner_mismatch` a válaszban), de nem állít meg.'
+  'Idegen ágens emlékét a tokeneddel nem írhatod felül és nem adhatod át: 403 ("rule":"agent-identity-binding").'
 const OWN_TOKEN_MEMORY_DELETE_RULE =
   'Emléket törölni a tokeneddel nem tudsz (403, "rule":"agent-token-scope"): ha egy sort törölni kell, kérd a fő-ágenstől.'
 
@@ -3531,13 +3531,13 @@ export async function generateClaudeMd(name: string, description: string, model:
   const tokenPath = dashboardTokenPathFor(name)
   // Said only when the agent really has its own token: the shared token (the
   // fallback, or AGENT_DASHBOARD_TOKENS=0) is not refused anything, and it has
-  // no allowlist (auth-gate.ts AGENT_TOKEN_ALLOWLIST).
+  // no allowlist (auth-gate.ts AGENT_TOKEN_ALLOWLIST) and no identity binding.
   const ownToken = tokenPath !== join(PROJECT_ROOT, 'store', '.dashboard-token')
   const scheduleEnforcedNote = ownToken
     ? ' Ezt a szerver érvényesíti: a saját tokeneddel minden nem-GET hívás a /api/schedules alatt 403-at ad ("only the main agent writes schedules").'
     : ''
   const tokenScopeLine = ownToken
-    ? `Ez a SAJÁT tokened, és csak az ügynök-API-ra szól (üzenetek, kanban, memória, napi napló, jóváhagyás-kérés, ütemezések és a vault olvasása). Minden más végpontra a szerver 403-at ad ("rule":"agent-token-scope"): az ilyen kérést küldd a fő-ágensnek (${MAIN_AGENT_ID}) a /api/messages-en.\n`
+    ? `Ez a SAJÁT tokened, és csak az ügynök-API-ra szól (üzenetek, kanban, memória, napi napló, jóváhagyás-kérés, ütemezések és a vault olvasása). Minden más végpontra a szerver 403-at ad ("rule":"agent-token-scope"): az ilyen kérést küldd a fő-ágensnek (${MAIN_AGENT_ID}) a /api/messages-en. A tokeneddel CSAK a saját nevedben írhatsz: a from, agent_id, author, actor, updated_by mező mindig a saját neved (AGENT_NAME), memóriát csak a sajátodat módosíthatod, és üzenetet csak a neked címzettet zárhatod le; eltérés esetén 403 ("rule":"agent-identity-binding").\n`
     : ''
   const ownerDriveFolder = String(getEffectiveSettingValue('OWNER_DRIVE_FOLDER') || '')
   const driveDefault = ownerDriveFolder

@@ -7,12 +7,20 @@
 // through the real route behind the real gate: 403 for the agent token, the
 // handler still reached with the main token.
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest'
 import http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { Readable } from 'node:stream'
+
+// POST /api/messages accepts only a registered sender; the test agent lives in
+// a scratch dir, so it is registered here (every other name: the real check).
+vi.mock('../web/agent-config.js', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../web/agent-config.js')>()
+  return { ...real, isKnownAgent: (n: string) => n.startsWith('agent-') || real.isKnownAgent(n) }
+})
 
 // HOME first: scheduled-tasks-io resolves SCHEDULED_TASKS_DIR on import.
 const scratch = (() => {
@@ -22,13 +30,15 @@ const scratch = (() => {
   process.env.HOME = home
   process.env.NODE_ENV = 'test'
   delete process.env.AGENT_DASHBOARD_TOKENS
+  delete process.env.VAULT_ACL_AGENT_MODE
   return { root, home }
 })()
 
-const { initDatabase } = await import('../db.js')
+const { initDatabase, createAgentMessage, saveAgentMemory } = await import('../db.js')
 const { MAIN_AGENT_ID } = await import('../config.js')
 const { gateRequest, AGENT_TOKEN_ALLOWLIST, isAgentReadableVaultId } = await import('../web/auth-gate.js')
 const { ensureAgentToken, createAgentTokenResolver, agentTokenPath } = await import('../web/agent-tokens.js')
+const { _resetVaultAclAgentModeCacheForTest } = await import('../web/vault-acl.js')
 const { tryHandleSchedules } = await import('../web/routes/schedules.js')
 const { tryHandleMessages } = await import('../web/routes/messages.js')
 const { tryHandleKanban } = await import('../web/routes/kanban.js')
@@ -41,9 +51,19 @@ const { SCHEDULED_TASKS_DIR } = await import('../web/scheduled-tasks-io.js')
 const MAIN_TOKEN = 'f'.repeat(64)
 const AGENT = 'agent-a'
 
-function mkReq(headers: Record<string, string | undefined> = {}): http.IncomingMessage {
-  return { headers } as unknown as http.IncomingMessage
+function mkReq(headers: Record<string, string | undefined> = {}, body?: unknown): http.IncomingMessage {
+  // A real Readable, so the gate's body read (identity binding) completes.
+  const r = Readable.from(body === undefined ? [] : [Buffer.from(JSON.stringify(body))]) as unknown as http.IncomingMessage
+  ;(r as unknown as { headers: Record<string, string | undefined> }).headers = headers
+  return r
 }
+
+// A body that names the calling agent in every identity field the bindings know.
+const selfBody = (agent: string): Record<string, unknown> => ({ from: agent, agent_id: agent, author: agent, actor: agent, agent, updated_by: agent })
+// The vault reader allowlist the gate consults (store/vault-acl.json in
+// production). EMPTY here, like an install that never wrote the file: the
+// replay below must hold for exactly that install.
+const NO_VAULT_ACL = () => ({})
 
 beforeAll(() => { initDatabase(':memory:') })
 afterAll(() => { rmSync(scratch.root, { recursive: true, force: true }) })
@@ -69,7 +89,7 @@ describe('HTTP: credential laundering and store writes are closed for an agent t
       const url = new URL(req.url || '/', 'http://127.0.0.1')
       const path = url.pathname
       const method = req.method || 'GET'
-      const auth = gateRequest(req, res, url, path, method, { dashboardToken: MAIN_TOKEN, resolveAgentToken: p.resolver, mainAgentId: MAIN_AGENT_ID })
+      const auth = await gateRequest(req, res, url, path, method, { dashboardToken: MAIN_TOKEN, resolveAgentToken: p.resolver, mainAgentId: MAIN_AGENT_ID })
       if (auth === null) return
       const ctx = {
         req, res, path, method, url, fedPeer: null,
@@ -163,7 +183,7 @@ describe('HTTP: credential laundering and store writes are closed for an agent t
 
   it('the agent API itself still works over HTTP: messages, kanban, schedule reads', async () => {
     expect((await call('GET', '/api/schedules', agentTok)).status).toBe(200)
-    expect((await call('POST', '/api/messages', agentTok, { from: MAIN_AGENT_ID, to: MAIN_AGENT_ID, content: 'scope test' })).status).toBe(200)
+    expect((await call('POST', '/api/messages', agentTok, { from: AGENT, to: MAIN_AGENT_ID, content: 'scope test' })).status).toBe(200)
     const k = await call('POST', '/api/kanban', agentTok, { title: 'scope test card' })
     expect(k.status).toBe(200)
     expect((await call('GET', '/api/kanban', agentTok)).status).toBe(200)
@@ -174,7 +194,7 @@ describe('HTTP: credential laundering and store writes are closed for an agent t
 
 // Drive gateRequest with a minimal res double: the gate either writes 401/403
 // or returns the principal (the route would then run).
-function gateStatus(method: string, path: string, token: string, resolver: (t: string) => string | null): { status: number; body: Record<string, unknown> } {
+async function gateStatus(method: string, path: string, token: string, resolver: (t: string) => string | null, body?: unknown, vaultAcl: () => Record<string, string[]> = NO_VAULT_ACL): Promise<{ status: number; body: Record<string, unknown> }> {
   const out = { status: 0, body: {} as Record<string, unknown> }
   const res = {
     writeHead(code: number) { out.status = code; return res },
@@ -182,8 +202,8 @@ function gateStatus(method: string, path: string, token: string, resolver: (t: s
     setHeader() { return res },
   } as unknown as http.ServerResponse
   const url = new URL(`http://127.0.0.1${path}`)
-  const auth = gateRequest(mkReq({ authorization: `Bearer ${token}` }), res, url, url.pathname, method, {
-    dashboardToken: MAIN_TOKEN, resolveAgentToken: resolver, mainAgentId: MAIN_AGENT_ID,
+  const auth = await gateRequest(mkReq({ authorization: `Bearer ${token}` }, body), res, url, url.pathname, method, {
+    dashboardToken: MAIN_TOKEN, resolveAgentToken: resolver, mainAgentId: MAIN_AGENT_ID, vaultAcl,
   })
   if (auth !== null) out.status = 200 // passed the gate; the route decides from here
   return out
@@ -265,35 +285,50 @@ const MEASURED_SUBAGENT_CALLS: Array<{ method: string; path: string; count: numb
 describe('allowlist coverage, the taught calls and the measured replay', () => {
   let agentTok = ''
   let resolver: (t: string) => string | null = () => null
+  // A route that edits a row (message close, memory PATCH) is refused for an
+  // agent token when the row is missing or someone else's, so the samples for
+  // those routes point at rows the agent really owns, and the write calls
+  // carry a body naming the caller.
+  let ownMsg = 0
+  let ownMem = 0
+  const own = (m: string, p: string): string =>
+    m === 'PUT' && p === '/api/messages/42' ? `/api/messages/${ownMsg}`
+      : (m === 'PUT' || m === 'PATCH') && p === '/api/memories/42' ? `/api/memories/${ownMem}`
+        : p
+  const bodyFor = (m: string): unknown => (m === 'GET' || m === 'HEAD' ? undefined : selfBody(AGENT))
   beforeAll(() => {
     const p = provision(join(scratch.root, 'allow-agents'))
     agentTok = p.token
     resolver = p.resolver
+    ownMsg = createAgentMessage(MAIN_AGENT_ID, AGENT, 'own message').id
+    ownMem = saveAgentMemory(AGENT, 'own memory', 'hot').id
   })
 
-  it('every allowlist entry has a sample, and every sample passes the gate for an agent token', () => {
+  it('every allowlist entry has a sample, and every sample passes the gate for an agent token', async () => {
     for (const e of AGENT_TOKEN_ALLOWLIST) {
       const covered = ALLOWLIST_SAMPLES.some(([m, p]) => (e.methods.includes(m) || (m === 'HEAD' && e.methods.includes('GET'))) && e.pattern.test(p))
       expect(covered, `no sample for ${e.methods.join('|')} ${e.pattern}`).toBe(true)
     }
     for (const [m, p] of ALLOWLIST_SAMPLES) {
-      const r = gateStatus(m, p, agentTok, resolver)
+      const r = await gateStatus(m, own(m, p), agentTok, resolver, bodyFor(m))
       expect(r.status, `${m} ${p} -> ${JSON.stringify(r.body)}`).toBe(200)
     }
   })
 
-  it('every call the generated sub-agent instructions teach passes the gate', () => {
+  it('every call the generated sub-agent instructions teach passes the gate', async () => {
     for (const [m, p] of TAUGHT_CALLS) {
-      expect(gateStatus(m, p, agentTok, resolver).status, `${m} ${p}`).toBe(200)
+      expect((await gateStatus(m, own(m, p), agentTok, resolver, bodyFor(m))).status, `${m} ${p}`).toBe(200)
     }
   })
 
-  it('replay: of the measured sub-agent calls only the named ones become 403, each under its rule', () => {
+  it('replay: of the measured sub-agent calls only the named ones become 403, each under its rule', async () => {
     const denied: string[] = []
     let deniedCalls = 0
     for (const c of MEASURED_SUBAGENT_CALLS) {
       const concrete = c.path === '/api/vault/:id' ? '/api/vault/example-api-key' : c.path.replace(':id', '42')
-      const r = gateStatus(c.method, concrete, agentTok, resolver)
+      // every recovered body in the replay names its caller (0 mismatches), so the calls carry a self body;
+      // no store/vault-acl.json and the default vault mode (audit): the 86 vault id reads pass, audited
+      const r = await gateStatus(c.method, own(c.method, concrete), agentTok, resolver, bodyFor(c.method))
       if (r.status === 403) { denied.push(`${c.method} ${c.path} [${String(r.body.rule)}] x${c.count}`); deniedCalls += c.count } else expect(r.status, `${c.method} ${c.path}`).toBe(200)
     }
     expect(denied).toEqual([
@@ -307,7 +342,30 @@ describe('allowlist coverage, the taught calls and the measured replay', () => {
     expect(MEASURED_SUBAGENT_CALLS.reduce((n, c) => n + c.count, 0)).toBe(918)
   })
 
-  it('outside the allowlist is 403 agent-token-scope; the main token passes the same requests', () => {
+  it('replay with VAULT_ACL_AGENT_MODE=enforce and no store/vault-acl.json: the 86 vault id reads become 403 too, nothing else changes', async () => {
+    process.env.VAULT_ACL_AGENT_MODE = 'enforce'
+    _resetVaultAclAgentModeCacheForTest()
+    try {
+      const denied: string[] = []
+      for (const c of MEASURED_SUBAGENT_CALLS) {
+        const concrete = c.path === '/api/vault/:id' ? '/api/vault/example-api-key' : c.path.replace(':id', '42')
+        const r = await gateStatus(c.method, own(c.method, concrete), agentTok, resolver, bodyFor(c.method))
+        if (r.status === 403) denied.push(`${c.method} ${c.path} [${String(r.body.rule)}] x${c.count}`)
+      }
+      expect(denied).toEqual([
+        'PATCH /api/approvals/:id [agent-token-scope] x1',
+        'POST /api/schedules [schedule-writes-main-agent-only] x7',
+        'GET /api/vault/:id [agent-token-scope] x86',
+      ])
+      // listed in the file, the same read passes again
+      expect((await gateStatus('GET', '/api/vault/example-api-key', agentTok, resolver, undefined, () => ({ 'example-api-key': [AGENT] }))).status).toBe(200)
+    } finally {
+      delete process.env.VAULT_ACL_AGENT_MODE
+      _resetVaultAclAgentModeCacheForTest()
+    }
+  })
+
+  it('outside the allowlist is 403 agent-token-scope; the main token passes the same requests', async () => {
     const outside: Array<[string, string]> = [
       ['POST', '/api/fleet/import'], ['GET', '/api/fleet/export'], ['POST', '/api/auth/device-keys'], ['POST', '/api/auth/users'],
       ['POST', '/api/security/bridge-enroll'], ['POST', '/api/terminal-input'], ['POST', `/api/agents/${MAIN_AGENT_ID}/keys`],
@@ -322,11 +380,11 @@ describe('allowlist coverage, the taught calls and the measured replay', () => {
       ['GET', '/api/vault/ssh-keys/abc'], ['GET', '/api/vault/ssh-servers/1'],
     ]
     for (const [m, p] of outside) {
-      const r = gateStatus(m, p, agentTok, resolver)
+      const r = await gateStatus(m, p, agentTok, resolver)
       expect(r.status, `${m} ${p}`).toBe(403)
       expect(r.body.rule).toBe('agent-token-scope')
       expect(r.body.main_agent).toBe(MAIN_AGENT_ID)
-      expect(gateStatus(m, p, MAIN_TOKEN, resolver).status, `main ${m} ${p}`).toBe(200)
+      expect((await gateStatus(m, p, MAIN_TOKEN, resolver)).status, `main ${m} ${p}`).toBe(200)
     }
   })
 

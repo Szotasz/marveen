@@ -108,7 +108,7 @@ describe('the gate binding in web.ts', () => {
     // The 401 is written inside gateRequest() (auth-gate.ts, together with the
     // sub-agent token 403s); web.ts returns right after it when the gate answered.
     expect(GATE_SRC).toContain("res.end(JSON.stringify({ error: 'Unauthorized' }))")
-    expect(SRC).toContain('const auth: AuthResult | null = gateRequest(req, res, url, path, method, {')
+    expect(SRC).toContain('const auth: AuthResult | null = await gateRequest(req, res, url, path, method, {')
     const unauthorized = SRC.indexOf('if (auth === null) return')
     const gate = SRC.indexOf('operatorGateDecision(auth, path, () => readOperatorAccess())')
     const networkInfo = SRC.indexOf("if (path === '/api/network-info' && method === 'GET')")

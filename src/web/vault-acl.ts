@@ -17,15 +17,43 @@
 // Known limit, stated in the plan: the file is writable by the same OS user
 // every agent runs as, so an agent could list itself. F2 adds a change log and
 // a notification for that; the OS-user split (F3 prerequisite) closes it.
+//
+// F1 arrived with the per-agent dashboard tokens (agent-tokens.ts): a request
+// on a sub-agent's own token carries an AUTHENTICATED agent name, and
+// principalOf() reports it as kind 'agent', so every audit row now names the
+// reading agent and the allowlist can be filled from measured rows. The code
+// default stays 'audit', as planned: a sub-agent token's read is logged with
+// its verdict and served. VAULT_ACL_AGENT_MODE=enforce makes the dashboard
+// gate refuse an agent principal the file does not list (auth-gate.ts
+// isAgentVaultReadAllowed). The owner lanes (shared token, session, device)
+// stay audit-only in both modes.
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { STORE_DIR } from '../config.js'
+import { readEnvFile } from '../env.js'
 import { logger } from '../logger.js'
 import type { RouteContext } from './routes/types.js'
 
 export const VAULT_ACL_PATH = join(STORE_DIR, 'vault-acl.json')
 
 export type VaultAcl = Record<string, string[]>
+
+// VAULT_ACL_AGENT_MODE: 'audit' (default) or 'enforce', for AGENT principals
+// only. Read like the other rollout flags (process env first, then .env),
+// cached for a few seconds because the gate asks on every agent vault read.
+export type VaultAclAgentMode = 'enforce' | 'audit'
+let agentModeCache: { value: VaultAclAgentMode; at: number } | null = null
+export function vaultAclAgentMode(now: number = Date.now()): VaultAclAgentMode {
+  if (agentModeCache && now - agentModeCache.at < 5000) return agentModeCache.value
+  let raw = process.env.VAULT_ACL_AGENT_MODE
+  if (raw === undefined || raw.trim() === '') {
+    try { raw = readEnvFile(['VAULT_ACL_AGENT_MODE']).VAULT_ACL_AGENT_MODE } catch { raw = undefined }
+  }
+  const value: VaultAclAgentMode = String(raw ?? '').trim().toLowerCase() === 'enforce' ? 'enforce' : 'audit'
+  agentModeCache = { value, at: now }
+  return value
+}
+export function _resetVaultAclAgentModeCacheForTest(): void { agentModeCache = null }
 
 // Missing file = empty allowlist. A malformed file is ALSO an empty allowlist
 // (plus a warning), never a throw: a broken ACL must not take the vault route
@@ -51,16 +79,18 @@ export function readVaultAcl(path: string = VAULT_ACL_PATH): VaultAcl {
   return acl
 }
 
-// The principal is the NAME of who asked, never a credential. 'token' has no
-// name by design: the shared dashboard token is one credential for everyone,
-// which is the very gap this plan closes. Phase F1 adds { kind: 'agent' }.
+// The principal is the NAME of who asked, never a credential. The shared
+// dashboard token has no name by design: it is one credential for everyone.
+// A sub-agent's OWN token does (auth.agent, authenticated), and is reported as
+// the F1 { kind: 'agent' }. The self-asserted X-Agent-Id (claimedAgent) is
+// never a principal.
 export function principalOf(auth: RouteContext['auth']): { kind: string; principal: string } {
   if (!auth) return { kind: 'none', principal: 'none' }
   switch (auth.kind) {
     case 'session': return { kind: 'session', principal: auth.user ?? 'session' }
     case 'device': return { kind: 'device', principal: auth.device ?? 'device' }
     case 'federation': return { kind: 'federation', principal: auth.peer ?? 'federation' }
-    case 'token': return { kind: 'token', principal: 'token' }
+    case 'token': return auth.agent ? { kind: 'agent', principal: auth.agent } : { kind: 'token', principal: 'token' }
     default: {
       // Forward-compatible with the F1 'agent' kind without widening the union
       // here: an unknown kind carrying an `agent` name is reported as such.
@@ -96,7 +126,9 @@ export function logVaultRead(id: string, auth: RouteContext['auth'], found: bool
     kind,
     principal,
     acl: evaluateVaultRead(id, auth, acl),
-    mode: 'audit',
+    // An agent principal is checked at the gate (auth-gate.ts); in 'enforce'
+    // mode it got here only because it is listed.
+    mode: kind === 'agent' ? vaultAclAgentMode() : 'audit',
     found,
   }, 'vault: secret value read')
 }

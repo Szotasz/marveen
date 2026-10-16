@@ -20,6 +20,14 @@ import { fileURLToPath } from 'node:url'
 // HOME must be redirected BEFORE any module computes homedir() at load time
 // (scheduled-tasks-io resolves SCHEDULED_TASKS_DIR once, on import), hence the
 // dynamic imports below: only node builtins are imported statically.
+// POST /api/messages accepts only a registered sender (agents/<id>/ under the
+// project root). The test agents live in a scratch dir instead, so they are
+// registered here; every other name keeps the real check.
+vi.mock('../web/agent-config.js', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../web/agent-config.js')>()
+  return { ...real, isKnownAgent: (n: string) => n.startsWith('agent-') || real.isKnownAgent(n) }
+})
+
 const scratch = (() => {
   const root = mkdtempSync(join(tmpdir(), 'agent-tokens-'))
   const home = join(root, 'home')
@@ -396,7 +404,7 @@ describe('HTTP: the dashboard gate in front of the real routes', () => {
       const url = new URL(req.url || '/', 'http://127.0.0.1')
       const path = url.pathname
       const method = req.method || 'GET'
-      const auth = gateRequest(req, res, url, path, method, { dashboardToken: MAIN_TOKEN, resolveAgentToken, mainAgentId: MAIN_AGENT_ID })
+      const auth = await gateRequest(req, res, url, path, method, { dashboardToken: MAIN_TOKEN, resolveAgentToken, mainAgentId: MAIN_AGENT_ID })
       if (auth === null) return
       const ctx = {
         req, res, path, method, url, fedPeer: null,
@@ -469,7 +477,7 @@ describe('HTTP: the dashboard gate in front of the real routes', () => {
     const g = await call('GET', '/api/schedules', agentTok)
     expect(g.status).toBe(200)
     expect((await call('GET', '/api/schedules/summary', agentTok)).status).toBe(200)
-    const m = await call('POST', '/api/messages', agentTok, { from: MAIN_AGENT_ID, to: MAIN_AGENT_ID, content: 'agent token test' })
+    const m = await call('POST', '/api/messages', agentTok, { from: AGENT, to: MAIN_AGENT_ID, content: 'agent token test' })
     expect(m.status).toBe(200)
     expect(typeof m.json.id).toBe('number')
     const k = await call('POST', '/api/kanban', agentTok, { title: 'agent token test card' })
@@ -501,6 +509,6 @@ describe('web.ts / agent-process.ts wiring (source-level)', () => {
   })
   it('the dashboard runs gateRequest with a resolver that refuses a copy of the served main token', () => {
     expect(WEB).toContain('createAgentTokenResolver({ mainToken: DASHBOARD_TOKEN })')
-    expect(WEB).toMatch(/gateRequest\(req, res, url, path, method, \{\s*dashboardToken: DASHBOARD_TOKEN,\s*resolveAgentToken,/)
+    expect(WEB).toMatch(/await gateRequest\(req, res, url, path, method, \{\s*dashboardToken: DASHBOARD_TOKEN,\s*resolveAgentToken,/)
   })
 })

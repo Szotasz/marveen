@@ -334,6 +334,37 @@ without matching any pattern.
   This closes the routes that would undo the rule or mint an unrestricted
   credential from the scoped one: fleet import (writes the schedule store),
   device keys, dashboard users, bridge enrollment, terminal input.
+- Every identity a sub-agent request asserts must be the token's agent
+  (`AGENT_IDENTITY_BINDINGS`): `from` on a message, `agent_id` on a memory,
+  daily-log, approval, tool-log or skill-usage row (an absent `agent_id` that
+  the route would file under the main agent counts as the main agent),
+  `author` / `actor` / `agent` on kanban writes, the agent named in a
+  task-state path, and the owner of an edited memory row. Owner-lane fields
+  (`force` on a claim release, `owner_approved_message_id` on an approval) are
+  refused. A mismatch is `403` (`rule: "agent-identity-binding"`).
+- A sub-agent token closes (`PUT /api/messages/<id>`) only a still-open
+  message addressed to itself. The check is in the `UPDATE` itself
+  (`closeMessageAsRecipient`), so a request pre-armed on the next message id
+  cannot close a message created for another agent while its body is still
+  arriving. A second close of its own message is `409`; no completion report
+  is sent for a refused close.
+- Vault reads by a sub-agent token are audited WITH the agent's name: the
+  `vault-read` log row says `kind: "agent"`, `principal: "<agent>"` and the
+  verdict of `store/vault-acl.json` (`{"<secret-id>": ["<agent>", ...]}`, the
+  reader allowlist `src/web/vault-acl.ts` keeps). The default stays
+  `audit`, so an install without that file keeps working: read the rows, fill
+  the file, then set `VAULT_ACL_AGENT_MODE=enforce`. In `enforce` mode a
+  sub-agent token reads an id only when the file lists it for that id (no
+  file, no entry or an empty list: nobody). In both modes it never reads SSH
+  material or a vault sub-resource; the id listing (`GET /api/vault`, names
+  only) stays open. Owner lanes are not affected.
+- `scripts/agent-msg.sh` sends with the sender's own
+  `agents/<from>/.dashboard-token` when that file exists (an explicit
+  `MARVEEN_TOKEN_FILE` still wins), so the binding covers the fleet's send
+  helper too. Other scripts and hooks that read `store/.dashboard-token` on
+  a sub-agent's behalf (the kanban dispatch recipe, the PreCompact prompt, the
+  capture hooks) still use the shared token, which the binding does not
+  restrict.
 - On start, the agent's CLAUDE.md is rewritten from the shared token path to
   its own file, and the generated sections render the per-agent path.
 

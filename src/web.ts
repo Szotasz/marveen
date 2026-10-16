@@ -172,9 +172,10 @@ export function startWebServer(port = 3420): http.Server {
     // decides whether a missing principal is a 401 (gated /api/* + fleet
     // manifest) or a public probe (auth status/login, avatars).
     // A sub-agent's own token (agents/<name>/.dashboard-token) resolves to
-    // kind 'token' tagged with the agent; gateRequest then refuses its
-    // schedule writes with 403. The shared token is unchanged.
-    const auth: AuthResult | null = gateRequest(req, res, url, path, method, {
+    // kind 'token' tagged with the agent; gateRequest then confines it to the
+    // agent API allowlist and binds every identity the request asserts to that
+    // agent (403 otherwise). The shared token is unchanged.
+    const auth: AuthResult | null = await gateRequest(req, res, url, path, method, {
       dashboardToken: DASHBOARD_TOKEN,
       resolveAgentToken,
       mainAgentId: MAIN_AGENT_ID,

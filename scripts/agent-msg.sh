@@ -40,7 +40,8 @@
 # Env:
 #   MARVEEN_API_BASE   full base URL, e.g. https://marveen.example.com (overrides host+port)
 #   MARVEEN_WEB_PORT   port for the default localhost base (default 3420)
-#   MARVEEN_TOKEN_FILE bearer token file (default <repo>/store/.dashboard-token)
+#   MARVEEN_TOKEN_FILE bearer token file (default: the sender's own <repo>/agents/<from>/.dashboard-token
+#                      when it exists, else <repo>/store/.dashboard-token)
 #   MARVEEN_HOMOGLYPH_BIN  the checker (default <repo>/scripts/lib/homoglyph.py)
 #   MARVEEN_QUEUE_WARN_AT  queue depth that triggers the stderr notice (default 3, 0 = off)
 # MEASURED 2026-09-13: a remote agent runs this helper OUTSIDE this repo, where localhost:3420
@@ -81,6 +82,18 @@ for arg in "$@"; do
 done
 FROM="${1:?from required}"; TO="${2:?to required}"; C="${3:?content required (or - for STDIN)}"
 [ "$C" = "-" ] && C="$(cat)"
+# A sub-agent's own dashboard token (src/web/agent-tokens.ts) is preferred over
+# the shared one when it exists, so the server holds this message's `from` to
+# the token's agent. Only a plain agent name, only a regular non-symlink file of
+# token length; anything else keeps the shared token, as before. An explicit
+# MARVEEN_TOKEN_FILE still wins.
+if [ -z "${MARVEEN_TOKEN_FILE:-}" ] && [[ "$FROM" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+  OWN_TOKEN_FILE="$BASE/agents/$FROM/.dashboard-token"
+  if [ -f "$OWN_TOKEN_FILE" ] && [ ! -L "$OWN_TOKEN_FILE" ] && [ -r "$OWN_TOKEN_FILE" ] \
+     && [ "$(tr -d '[:space:]' < "$OWN_TOKEN_FILE" | wc -c)" -ge 32 ]; then
+    TOKEN_FILE="$OWN_TOKEN_FILE"
+  fi
+fi
 [ -r "$TOKEN_FILE" ] || { echo "FAIL: no token file at $TOKEN_FILE"; exit 1; }
 TOKEN="$(cat "$TOKEN_FILE")"
 
