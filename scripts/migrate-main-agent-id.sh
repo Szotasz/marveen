@@ -203,23 +203,80 @@ fi
 # scheduler routes by this name, and "marveen" now targets a non-existent
 # session on non-default installs.
 SCHED_DIR="$HOME/.claude/scheduled-tasks"
+_SCHED_CLI="$INSTALL_DIR/dist/web/schedule-registry-cli.js"
+_SCHED_CLI_OK=0
+if [ -f "$_SCHED_CLI" ] && command -v node >/dev/null 2>&1; then _SCHED_CLI_OK=1; fi
+# Scheduled-task registry: the rewrite below changes task-config.json
+# bytes, so the runner's registry hashes stop matching. Re-registering every
+# rewritten task would launder a never-registered or tampered (planted) task
+# that happens to target "marveen". So the registry verdict of each candidate
+# is recorded BEFORE the rewrite, and afterwards only a task that was trusted
+# then is re-registered; the rest is listed for operator review.
+_SCHED_PRE_OK=""
+if [ -d "$SCHED_DIR" ] && [ "$_SCHED_CLI_OK" = "1" ]; then
+  _SCHED_CANDIDATES="$(python3 - "$SCHED_DIR" <<'PYEOF'
+import sys, json, pathlib, re
+root = pathlib.Path(sys.argv[1])
+for cfg in sorted(root.glob('*/task-config.json')):
+    try:
+        data = json.loads(cfg.read_text())
+    except Exception:
+        continue
+    if isinstance(data, dict) and data.get('agent') == 'marveen' and re.fullmatch(r'[a-z0-9-]+', cfg.parent.name):
+        print(cfg.parent.name)
+PYEOF
+)"
+  for _n in $_SCHED_CANDIDATES; do
+    if node "$_SCHED_CLI" verify "$_n" >/dev/null 2>&1; then _SCHED_PRE_OK="$_SCHED_PRE_OK $_n"; fi
+  done
+fi
+_SCHED_REWRITTEN_LIST="$(mktemp)"
 if [ -d "$SCHED_DIR" ]; then
-  python3 - "$SCHED_DIR" "$NEW_SLUG" <<'PYEOF'
+  python3 - "$SCHED_DIR" "$NEW_SLUG" "$_SCHED_REWRITTEN_LIST" <<'PYEOF'
 import sys, json, pathlib
 root = pathlib.Path(sys.argv[1]); slug = sys.argv[2]
+rewritten = []
 fixed = 0
 for cfg in root.glob('*/task-config.json'):
     try:
         data = json.loads(cfg.read_text())
     except Exception:
         continue
-    if data.get('agent') == 'marveen':
+    if isinstance(data, dict) and data.get('agent') == 'marveen':
         data['agent'] = slug
         cfg.write_text(json.dumps(data, indent=2))
         fixed += 1
+        rewritten.append(cfg.parent.name)
+pathlib.Path(sys.argv[3]).write_text(''.join(n + '\n' for n in rewritten))
 if fixed:
     print(f'✓ Scheduled task configs updated ({fixed} file(s))')
 PYEOF
+fi
+_SCHED_REREGISTER=""
+_SCHED_REVIEW=""
+while IFS= read -r _n; do
+  [ -n "$_n" ] || continue
+  case "$_n" in *[!a-z0-9-]*) _SCHED_REVIEW="$_SCHED_REVIEW $_n"; continue ;; esac
+  case " $_SCHED_PRE_OK " in
+    *" $_n "*) _SCHED_REREGISTER="$_SCHED_REREGISTER $_n" ;;
+    *) _SCHED_REVIEW="$_SCHED_REVIEW $_n" ;;
+  esac
+done < "$_SCHED_REWRITTEN_LIST"
+rm -f "$_SCHED_REWRITTEN_LIST"
+if [ -n "$_SCHED_REREGISTER" ]; then
+  # shellcheck disable=SC2086 # word-splitting the name list is intended
+  node "$_SCHED_CLI" register --source migrate-agent-id $_SCHED_REREGISTER >/dev/null \
+    && echo "✓ Scheduled task registry re-registered:$_SCHED_REREGISTER" \
+    || echo "WARNING: scheduled-task registry re-registration failed; run: node $_SCHED_CLI status" >&2
+fi
+if [ -n "$_SCHED_REVIEW" ]; then
+  if [ "$_SCHED_CLI_OK" = "1" ]; then
+    echo "WARNING: rewritten scheduled tasks NOT re-registered (they were not trusted before the rewrite -- unregistered or changed on disk):$_SCHED_REVIEW" >&2
+    echo "         The runner skips them. Review their files, then: node $_SCHED_CLI register <name>" >&2
+  else
+    echo "WARNING: rewritten scheduled tasks are not re-registered (no dist/web/schedule-registry-cli.js):$_SCHED_REVIEW" >&2
+    echo "         If this install has never run a build with the scheduled-task registry, its first start registers them (one-time backfill); otherwise review them and run: node $_SCHED_CLI register <name>" >&2
+  fi
 fi
 
 if [ "$OS" = "Darwin" ]; then

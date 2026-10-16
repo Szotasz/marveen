@@ -1098,6 +1098,27 @@ export function initDatabase(dbPathOverride?: string): void {
   // the later, bigger threshold.
   try { db.exec('ALTER TABLE pending_task_retries ADD COLUMN owner_alert_sent_at INTEGER') } catch { /* already exists */ }
 
+  // Server-owned registry of scheduled tasks.
+  // The task files live in ~/.claude/scheduled-tasks, which any same-user
+  // process can write; the runner fires a task only if the sha256 of its
+  // current files matches the hash recorded here when the server (API, seeder,
+  // explicit operator CLI) last wrote/approved it. Kept in the DB on purpose,
+  // NOT next to the files: a plant in the tasks dir cannot also plant its hash.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS scheduled_task_registry (
+      name TEXT PRIMARY KEY,
+      sha256 TEXT NOT NULL,
+      source TEXT NOT NULL,
+      registered_at INTEGER NOT NULL
+    )
+  `)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS scheduled_task_registry_state (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    )
+  `)
+
   db.exec(`
     CREATE TABLE IF NOT EXISTS background_tasks (
       id TEXT PRIMARY KEY,
@@ -1620,6 +1641,49 @@ function migrateTaskRunsFromJson(): void {
 
 export function getDb(): Database.Database {
   return db
+}
+
+// --- Scheduled-task registry ---
+
+export interface ScheduledTaskRegistryRow {
+  name: string
+  sha256: string
+  source: string
+  registered_at: number
+}
+
+export function upsertScheduledTaskRegistry(name: string, sha256: string, source: string, nowSec = Math.floor(Date.now() / 1000)): void {
+  db.prepare(`
+    INSERT INTO scheduled_task_registry (name, sha256, source, registered_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(name) DO UPDATE SET sha256 = excluded.sha256, source = excluded.source, registered_at = excluded.registered_at
+  `).run(name, sha256, source, nowSec)
+}
+
+export function getScheduledTaskRegistryEntry(name: string): ScheduledTaskRegistryRow | undefined {
+  return db.prepare('SELECT name, sha256, source, registered_at FROM scheduled_task_registry WHERE name = ?')
+    .get(name) as ScheduledTaskRegistryRow | undefined
+}
+
+export function listScheduledTaskRegistry(): ScheduledTaskRegistryRow[] {
+  return db.prepare('SELECT name, sha256, source, registered_at FROM scheduled_task_registry ORDER BY name')
+    .all() as ScheduledTaskRegistryRow[]
+}
+
+export function deleteScheduledTaskRegistryEntry(name: string): boolean {
+  return db.prepare('DELETE FROM scheduled_task_registry WHERE name = ?').run(name).changes > 0
+}
+
+export function getScheduledTaskRegistryState(key: string): string | undefined {
+  const row = db.prepare('SELECT value FROM scheduled_task_registry_state WHERE key = ?').get(key) as { value: string } | undefined
+  return row?.value
+}
+
+export function setScheduledTaskRegistryState(key: string, value: string): void {
+  db.prepare(`
+    INSERT INTO scheduled_task_registry_state (key, value) VALUES (?, ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+  `).run(key, value)
 }
 
 // --- Munkamenetek ---

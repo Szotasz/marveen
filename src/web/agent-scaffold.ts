@@ -1,5 +1,6 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, readdirSync, statSync, rmSync, watchFile, unwatchFile, realpathSync } from 'node:fs'
 import { readRemovedDefaultTasks } from './scheduled-tasks-io.js'
+import { registerScheduledTask } from './schedule-registry.js'
 import { basename, join } from 'node:path'
 import { homedir } from 'node:os'
 import { PROJECT_ROOT, OWNER_NAME, MAIN_AGENT_ID, HEARTBEAT_AGENT_ID, BOT_NAME, CHANNEL_PROVIDER, WEB_PORT, OWNER_DRIVE_FOLDER, APP_TZ, DASHBOARD_PUBLIC_URL, AGENT_API_ORIGIN, STORE_DIR } from '../config.js'
@@ -2259,6 +2260,15 @@ export function ensureDefaultScheduledTasks(): void {
         }
       }
     }
+    // Scheduled-task registry: the server just wrote this task from the repo template, so
+    // it is server-written content -- register it, or the runner would refuse
+    // a shipped default on a fresh install. Best-effort: a failure leaves the
+    // task unregistered (skipped, with a warning), never crashes startup.
+    try {
+      registerScheduledTask(taskName, 'seed:dashboard')
+    } catch (err) {
+      logger.warn({ err, taskName }, 'schedule-registry: could not register seeded default task')
+    }
   }
 }
 
@@ -3683,6 +3693,7 @@ A -q legyen az ELSŐ argumentum, a token útja SZÓ SZERINT ez az abszolút út 
 Típusok: task (mindig szól az eredménnyel) vagy heartbeat (csak fontosnál szól).
 Cron formátum: perc óra nap hónap hétnapja (pl. 0 8 * * * = minden nap 8:00).
 NE írd közvetlenül az SQLite scheduled_tasks táblát - az egy régi API.
+NE szerkeszd kézzel a ~/.claude/scheduled-tasks/ fájljait: a runner csak az API-n át írt (regisztrált) feladatot indítja, egy kézzel létrehozott vagy módosított feladat NEM fut le.
 
 ## Öntanulás és Skill rendszer
 
