@@ -2,7 +2,7 @@ import { tmuxStderr } from './tmux-stderr.js'
 import { writeMainExtraPluginsSettings } from './main-extra-plugins-settings.js'
 import { decideSkipTrace, decideMenuPassTrace, type SkipTraceState } from './monitor-trace.js'
 import { releaseOwnRespawnStamp, type OwnRespawnStamp } from './respawn-stamp-release.js'
-import { existsSync, readFileSync, statSync, writeFileSync, utimesSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync, utimesSync } from 'node:fs'
 import { hostname, loadavg, cpus } from 'node:os'
 import { join } from 'node:path'
 import { execFileSync, spawn } from 'node:child_process'
@@ -10,10 +10,10 @@ import { makeLazyBinResolver } from '../platform.js'
 import { WEB_PORT } from '../config.js'
 import { logger } from '../logger.js'
 import { mainRelaunchSucceeded } from '../auto-restart.js'
-import { MAIN_AGENT_ID, SERVICE_ID, BOT_NAME, CHANNEL_PROVIDER, PROJECT_ROOT, RESPAWN_ENABLED } from '../config.js'
+import { MAIN_AGENT_ID, SERVICE_ID, BOT_NAME, CHANNEL_PROVIDER, PROJECT_ROOT, RESPAWN_ENABLED, APP_TZ, STUCK_SUBAGENT_AUTOCLEAR_AFTER_ALERTS } from '../config.js'
 import { launchableDistributionDefaultSync } from './default-model-guard.js'
-import { agentDir, listAgentNames, readAgentChannelProvider } from './agent-config.js'
-import { listKanbanCards } from '../db.js'
+import { agentDir, listAgentNames, readAgentChannelProvider, readAgentRemoteHost } from './agent-config.js'
+import { listKanbanCards, createAgentMessage } from '../db.js'
 import {
   agentHasChannel,
   agentSessionName,
@@ -51,7 +51,7 @@ import {
   stuckInputSignature, decideStuckInputRecovery, parkedChannelInput,
   parkedInputText, shouldClearTruncatedPreamble,
   parkedInputRowCount, submitLanded, decideStuckInputAction,
-  parkedScheduledTaskInput, parkedMachineOriginInput, parkedMainInputHasRemedy,
+  parkedScheduledTaskInput, parkedMachineOriginInput, parkedMainInputHasRemedy, paneTurnInFlight,
   type StuckInputState, type StuckInputThresholds, type StuckInputAction,
   type StuckInputActionFacts,
 } from '../pane-state.js'
@@ -1758,14 +1758,387 @@ export function shouldAlertStuckSubAgent(
   return nowMs - lastAlertedAt >= minIntervalMs
 }
 
-function maybeAlertStuckSubAgent(session: string, agentName: string | null, state: StuckInputState): void {
-  const last = subAgentOverdueAlertedAt.get(session) ?? 0
-  const now = Date.now()
-  if (!shouldAlertStuckSubAgent(state, MAIN_STUCK_THRESHOLDS.maxAttempts, last, now, SUBAGENT_OVERDUE_ALERT_MIN_INTERVAL_MS)) return
-  subAgentOverdueAlertedAt.set(session, now)
+/** What one sub-agent overdue-guard tick reads and writes. Injected so the
+ *  wiring -- threshold, spell counting, spell reset -- is held by tests, not
+ *  only the pure helpers it calls (#1943 review). */
+export interface SubAgentStuckTickDeps {
+  states: Map<string, StuckInputState>
+  alertedAt: Map<string, number>
+  spells: Map<string, SubAgentAlertSpell>
+  threshold: number
+  maxAttempts: number
+  now: () => number
+  sendAlert: (text: string) => void
+  autoclear: (a: AutoclearArgs) => Promise<AutoclearOutcome>
+}
+
+/** The bookkeeping after one soft-recovery round for a sub-agent session. */
+export async function handleSubAgentStuckTick(
+  session: string, agentName: string | null, next: StuckInputState, deps: SubAgentStuckTickDeps = defaultSubAgentStuckTickDeps,
+): Promise<void> {
+  if (next.parkedSig === null) {
+    // Spell ended: drop all per-session state so the map never grows and the
+    // next park starts a fresh alert window AND a fresh auto-clear count.
+    deps.states.delete(session)
+    deps.alertedAt.delete(session)
+    deps.spells.delete(session)
+    return
+  }
+  deps.states.set(session, next)
+  await maybeAlertStuckSubAgent(session, agentName, next, deps)
+}
+
+/** Where the sub-agent overdue-guard looks. Injected so the scope is held by
+ *  tests (Q046). */
+export interface SubAgentStuckScopeDeps {
+  names: () => string[]
+  running: (name: string) => boolean
+  remoteHost: (name: string) => string | null
+  session: (name: string) => string
+}
+
+const defaultSubAgentStuckScopeDeps: SubAgentStuckScopeDeps = {
+  // Lazy: a module-load read of these bindings throws under the factory
+  // mocks of agent-config / agent-process that some suites use.
+  names: () => listAgentNames(),
+  running: (name) => isAgentRunning(name),
+  remoteHost: (name) => readAgentRemoteHost(name),
+  session: (name) => agentSessionName(name),
+}
+
+/** Every running, local sub-agent session -- channel or not (Q046, owner
+ *  decision 2026-10-14). The guard used to ride the channel targets list, so
+ *  only sub-agents with their own channel (gembaecho) were covered; a parked
+ *  input wedges a channel-less agent just the same, since its work arrives by
+ *  tmux injection. Remote-host agents stay out: there is no local tmux pane to
+ *  archive and clear (stuck-input-watcher gives them a bare Enter). */
+export function localSubAgentStuckTargets(deps: SubAgentStuckScopeDeps = defaultSubAgentStuckScopeDeps): { session: string; agentName: string }[] {
+  const out: { session: string; agentName: string }[] = []
+  for (const name of deps.names()) {
+    if (name === MAIN_AGENT_ID) continue
+    if (!deps.running(name)) continue
+    if (deps.remoteHost(name) != null) continue
+    out.push({ session: deps.session(name), agentName: name })
+  }
+  return out
+}
+
+/** Drop the per-session guard state of every session no longer in scope (the
+ *  agent stopped or moved remote), so a later park starts a fresh alert window
+ *  and auto-clear count instead of inheriting a stale spell. */
+export function pruneSubAgentStuckState(live: ReadonlySet<string>, deps: Pick<SubAgentStuckTickDeps, 'states' | 'alertedAt' | 'spells'> = defaultSubAgentStuckTickDeps): void {
+  for (const m of [deps.states, deps.alertedAt, deps.spells] as Map<string, unknown>[]) {
+    for (const session of [...m.keys()]) if (!live.has(session)) m.delete(session)
+  }
+}
+
+async function maybeAlertStuckSubAgent(session: string, agentName: string | null, state: StuckInputState, deps: SubAgentStuckTickDeps): Promise<void> {
+  const last = deps.alertedAt.get(session) ?? 0
+  const now = deps.now()
+  if (!shouldAlertStuckSubAgent(state, deps.maxAttempts, last, now, SUBAGENT_OVERDUE_ALERT_MIN_INTERVAL_MS)) return
+  deps.alertedAt.set(session, now)
   const label = agentName ?? session
-  logger.error({ session, agentName, attempts: state.attempts }, 'Sub-agent stuck input survived soft recovery -- overdue-guard alert (no auto-restart)')
-  sendAlert(`⚠️ A(z) ${label} session bemenete beragadt, ${state.attempts} automatikus próbálkozás sem szabadította ki (kb. 4-4.5 perce). Kézi ellenőrzés javasolt: \`tmux attach -t ${session}\`, szükség esetén \`tmux respawn-pane -k -t ${session}\`.`)
+  const spell = countSubAgentAlert(deps.spells.get(session), state.parkedSig!)
+  deps.spells.set(session, spell)
+  logger.error({ session, agentName, attempts: state.attempts, alertsInSpell: spell.count }, 'Sub-agent stuck input survived soft recovery -- overdue-guard alert')
+  if (!shouldAutoclearStuckSubAgent(spell.count, deps.threshold)) {
+    const left = deps.threshold > 0
+      ? ` Ha így marad, a(z) ${deps.threshold}. riasztásnál a rendszer archiválja és kiüríti (Enter nélkül).`
+      : ''
+    deps.sendAlert(`⚠️ A(z) ${label} session bemenete beragadt, ${state.attempts} automatikus próbálkozás sem szabadította ki (${spell.count}. riasztás).${left} Kézi ellenőrzés: \`tmux attach -t ${session}\`.`)
+    return
+  }
+  const outcome = await deps.autoclear({
+    session, agentName, spellSig: state.parkedSig!, firstSeenAt: state.firstSeenAt, alerts: spell.count, notifyDeferred: !spell.deferNotified,
+  })
+  if (outcome.result.startsWith('deferred')) {
+    if (!autoclearDeferralIsReportable(outcome.result) || spell.deferNotified) return
+    deps.spells.set(session, { ...spell, deferNotified: true })
+  }
+  deps.sendAlert(autoclearAlertText(label, session, outcome))
+}
+
+// --- Sub-agent stuck-input AUTO-CLEAR (Q045, owner decision 2026-10-14) ---
+//
+// The alert above used to be the end of the line. On 2026-10-07..14 a sub-agent
+// (gembaecho) sat behind a parked multi-row input for seven days: the soft
+// recovery holds on a park it cannot attribute to a machine sender (GH #717 --
+// the text may be a human draft), and the alert re-fired every 15 minutes with
+// nobody acting on it.
+//
+// OPT-IN: with STUCK_SUBAGENT_AUTOCLEAR_AFTER_ALERTS set to N > 0 (default 0 =
+// off, alert-only as before), after N alerts on the SAME parked text the box is
+// emptied -- never submitted. The guarantees, each pinned by a test:
+//   - The keystroke set is exactly {C-a, C-k, Delete, C-c}. No Enter, no literal
+//     text: nothing in the box can run.
+//   - The text is ARCHIVED to store/stuck-input-cleared/ BEFORE the first key.
+//     The #717 concern is that a human draft has no re-delivery; the archive is
+//     that re-delivery. If the archive cannot be written, nothing is cleared.
+//   - C-a/C-k/Delete first (clearInputBuffer, verified): those keys cannot
+//     submit, quit the TUI or interrupt a turn. Ctrl+C only if text is still
+//     parked afterwards, re-checked before EVERY press: Ctrl+C on an empty box
+//     quits Claude Code and on a busy pane interrupts the live turn.
+//   - Fresh capture right before acting: same signature, no turn in flight
+//     (paneTurnInFlight -- a tall parked box hides the spinner from
+//     detectPaneState, so a parked signature alone is not "idle"), no
+//     dialog/menu, no attached tmux client (someone may be typing). Any miss defers to the next
+//     alert; nothing is forced.
+//   - The whole move runs inside the per-pane send lane in 'recover' mode, so
+//     it never races a live delivery into the pane.
+//   - The coordinator always hears about it: a `system` row in its message
+//     queue (in-process insert -- POST /api/messages refuses from='system', so
+//     the row cannot be forged from content), plus the Telegram alert.
+
+/** Alerts counted for the CURRENT parked text of one sub-agent session. */
+export interface SubAgentAlertSpell { sig: string; count: number; deferNotified: boolean }
+const subAgentAlertSpells: Map<string, SubAgentAlertSpell> = new Map()
+
+/** Pure: count one more alert, restarting from 1 when the parked text changed
+ *  (somebody is typing -- their draft starts a fresh window). */
+export function countSubAgentAlert(prev: SubAgentAlertSpell | undefined, sig: string): SubAgentAlertSpell {
+  if (prev == null || prev.sig !== sig) return { sig, count: 1, deferNotified: false }
+  return { ...prev, count: prev.count + 1 }
+}
+
+/** Pure: is this alert the one that clears? 0 disables the auto-clear. */
+export function shouldAutoclearStuckSubAgent(alertsInSpell: number, threshold: number): boolean {
+  return threshold > 0 && alertsInSpell >= threshold
+}
+
+export type AutoclearGuard = 'ok' | 'not-parked' | 'changed' | 'busy' | 'dialog' | 'attached'
+
+/** Pure: may the box be touched right now? `attached` null = could not be
+ *  measured, which counts as attached (fail-closed). */
+export function autoclearGuard(pane: string | null, spellSig: string, attached: boolean | null): AutoclearGuard {
+  if (pane == null) return 'not-parked'
+  const sig = stuckInputSignature(pane)
+  if (sig == null) return 'not-parked'
+  if (sig !== spellSig) return 'changed'
+  // A parked signature does NOT mean the pane is idle: a tall parked box pushes
+  // the live spinner out of detectPaneState's bottom window, so a pane that is
+  // mid-turn reads 'typing' (#1943 review). The text is then only waiting behind
+  // the turn -- clearing it would drop a message that was about to be read.
+  if (paneTurnInFlight(pane)) return 'busy'
+  if (detectsPermissionDialog(pane) || detectsBlockingMenu(pane) || detectsModelConsentDialog(pane)) return 'dialog'
+  if (attached !== false) return 'attached'
+  return 'ok'
+}
+
+/** Keys the auto-clear may ever send. The test suite pins every send against this. */
+export const AUTOCLEAR_ALLOWED_KEYS: ReadonlySet<string> = new Set(['C-a', 'C-k', 'Delete', 'C-c'])
+const AUTOCLEAR_CTRL_C_MAX = 2
+const AUTOCLEAR_CTRL_C_SETTLE_MS = 450
+export const AUTOCLEAR_EXCERPT_CHARS = 200
+
+export type AutoclearResult = 'cleared' | 'left-fragment' | 'archive-failed'
+  | 'deferred:not-parked' | 'deferred:changed' | 'deferred:busy' | 'deferred:dialog' | 'deferred:attached' | 'deferred:delivery-in-flight'
+
+export interface AutoclearOutcome {
+  result: AutoclearResult
+  via: 'clear-keys' | 'ctrl-c' | null
+  archivePath: string | null
+  excerpt: string | null
+  messageId: number | null
+}
+
+export interface AutoclearDeps {
+  capture: (session: string) => string | null
+  isAttached: (session: string) => boolean | null
+  withLock: (session: string, fn: () => Promise<void>) => Promise<{ ran: boolean }>
+  clearKeys: (session: string) => Promise<boolean>
+  sendKey: (session: string, key: string) => void
+  writeArchive: (name: string, body: string) => string
+  recordedText: (session: string, parked: string | null) => string | null
+  notify: (content: string) => number
+  now: () => number
+  sleep: (ms: number) => Promise<void>
+}
+
+/** Pure: a deferral worth telling anyone about. 'not-parked' (the spell ended
+ *  on its own), 'changed' (someone is typing) and 'busy' (the text is waiting
+ *  out a live turn) are not incidents. */
+export function autoclearDeferralIsReportable(result: AutoclearResult): boolean {
+  return result !== 'deferred:not-parked' && result !== 'deferred:changed' && result !== 'deferred:busy'
+}
+
+/** Pure: the head of the cleared text as one inert line. Angle brackets are
+ *  swapped out so the excerpt cannot close the delimiter it is shipped in. */
+export function autoclearExcerpt(text: string | null): string | null {
+  if (text == null) return null
+  const flat = text.replace(/[\u0000-\u001f\u007f]/g, ' ').replace(/\s+/g, ' ').trim().replace(/</g, '‹').replace(/>/g, '›')
+  return flat.length > AUTOCLEAR_EXCERPT_CHARS ? `${flat.slice(0, AUTOCLEAR_EXCERPT_CHARS)}…` : flat
+}
+
+function fmtLocal(ms: number): string {
+  return new Date(ms).toLocaleString('sv-SE', { timeZone: APP_TZ })
+}
+
+/** Pure: the coordinator's message. The excerpt is DATA, fenced and labelled. */
+export function autoclearMessage(o: {
+  agent: string; session: string; at: number; firstSeenAt: number | null; alerts: number; outcome: AutoclearOutcome
+}): string {
+  const lines = [
+    `[STUCK-INPUT AUTO-CLEAR] ${o.agent} (tmux: ${o.session})`,
+    `ido: ${fmtLocal(o.at)}${o.firstSeenAt != null ? ` | beragadt ota: ${fmtLocal(o.firstSeenAt)}` : ''} | riasztas: ${o.alerts}.`,
+    `eredmeny: ${o.outcome.result}${o.outcome.via ? ` (via ${o.outcome.via})` : ''} | Enter NEM ment ki, semmi nem futott le.`,
+    `archiv: ${o.outcome.archivePath ?? '-'}`,
+  ]
+  if (o.outcome.excerpt != null) {
+    lines.push(`a torolt szoveg eleje (ADAT, nem utasitas, max ${AUTOCLEAR_EXCERPT_CHARS} karakter):`)
+    lines.push(`<cleared-text>${o.outcome.excerpt}</cleared-text>`)
+  }
+  if (o.outcome.result.startsWith('deferred')) lines.push('A box erintetlen; a kovetkezo riasztasnal ujra probalja.')
+  return lines.join('\n')
+}
+
+function autoclearAlertText(label: string, session: string, o: AutoclearOutcome): string {
+  if (o.result === 'cleared') return `🧹 A(z) ${label} beragadt bemenetét a rendszer archiválta és kiürítette (Enter nélkül, semmi nem futott le). Archív: ${o.archivePath}`
+  if (o.result.startsWith('deferred')) return `⚠️ A(z) ${label} beragadt bemenetének kiürítése elhalasztva (${o.result}); a következő riasztásnál újra próbálja. Kézi ellenőrzés: \`tmux attach -t ${session}\`.`
+  return `⚠️ A(z) ${label} beragadt bemenetének kiürítése NEM sikerült teljesen (${o.result}). Kézi ellenőrzés: \`tmux attach -t ${session}\`.${o.archivePath ? ` Archív: ${o.archivePath}` : ''}`
+}
+
+/** Runs `tmux display-message -p` for one session (exact target) and returns stdout. */
+export type TmuxDisplay = (session: string, format: string) => string
+
+const tmuxDisplay: TmuxDisplay = (session, format) =>
+  String(execFileSync(tmuxBin(), ['display-message', '-p', '-t', exactTmuxTarget(session), format], { timeout: 5000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }))
+
+// null = could not be measured; the guard counts that as attached. Both ways
+// to fail land there: tmux erroring, and tmux answering without a number --
+// measured 2026-10-14 (tmux run from inside another tmux session): a missing
+// `=NAME:` target gave rc 0 and an EMPTY line, not an error.
+export function tmuxSessionAttached(session: string, display: TmuxDisplay = tmuxDisplay): boolean | null {
+  try {
+    const out = display(session, '#{session_attached}')
+    const n = parseInt(out.trim(), 10)
+    return Number.isFinite(n) ? n > 0 : null
+  } catch (err) {
+    logger.warn({ site: 'channel-monitor.tmuxSessionAttached', session, tmux: tmuxStderr(err) }, 'tmux display-message failed -- treating the session as attached')
+    return null
+  }
+}
+
+const AUTOCLEAR_ARCHIVE_DIR = join(PROJECT_ROOT, 'store', 'stuck-input-cleared')
+
+export const defaultAutoclearDeps: AutoclearDeps = {
+  capture: (s) => captureParkedInputView(s),
+  isAttached: (s) => tmuxSessionAttached(s),
+  withLock: (s, fn) => withSessionSendLock(s, null, 'recover', fn),
+  clearKeys: (s) => clearInputBuffer(s),
+  sendKey: (s, key) => {
+    try {
+      execFileSync(tmuxBin(), ['send-keys', '-t', exactTmuxTarget(s), key], { timeout: 5000, stdio: ['ignore', 'pipe', 'pipe'] })
+    } catch (err) {
+      logger.warn({ site: 'channel-monitor.autoclearSendKey', session: s, key, tmux: tmuxStderr(err) }, 'tmux key send failed')
+      throw err
+    }
+  },
+  writeArchive: (name, body) => {
+    mkdirSync(AUTOCLEAR_ARCHIVE_DIR, { recursive: true })
+    const p = join(AUTOCLEAR_ARCHIVE_DIR, name)
+    writeFileSync(p, body, { encoding: 'utf8', flag: 'wx', mode: 0o600 })
+    return p
+  },
+  recordedText: (s, parked) => {
+    const rec = getInjectedPrompt(s)
+    return matchesInjectedPrompt(parked, rec) ? rec!.text : null
+  },
+  notify: (content) => createAgentMessage('system', MAIN_AGENT_ID, content).id,
+  now: () => Date.now(),
+  sleep: delay,
+}
+
+/** Archive, then empty, the parked box of one sub-agent session. Never submits. */
+export interface AutoclearArgs {
+  session: string; agentName: string | null; spellSig: string; firstSeenAt: number | null; alerts: number; notifyDeferred: boolean
+}
+
+export async function autoclearStuckSubAgent(
+  a: AutoclearArgs,
+  deps: AutoclearDeps = defaultAutoclearDeps,
+): Promise<AutoclearOutcome> {
+  const send = (key: string): void => {
+    if (!AUTOCLEAR_ALLOWED_KEYS.has(key)) throw new Error(`auto-clear refused key ${key}`)
+    deps.sendKey(a.session, key)
+  }
+  const outcome: AutoclearOutcome = { result: 'deferred:delivery-in-flight', via: null, archivePath: null, excerpt: null, messageId: null }
+  const res = await deps.withLock(a.session, async () => {
+    const pane = deps.capture(a.session)
+    const guard = autoclearGuard(pane, a.spellSig, deps.isAttached(a.session))
+    if (guard !== 'ok') { outcome.result = `deferred:${guard}`; return }
+    const text = parkedInputText(pane!)
+    outcome.excerpt = autoclearExcerpt(text)
+    const at = deps.now()
+    const stamp = fmtLocal(at).replace(/[-: ]/g, '').replace(/^(\d{8})(\d{6})$/, '$1-$2')
+    const recorded = deps.recordedText(a.session, text)
+    const body = [
+      `agent: ${a.agentName ?? '-'}`,
+      `session: ${a.session}`,
+      `cleared_at: ${fmtLocal(at)} (${APP_TZ})`,
+      `parked_since: ${a.firstSeenAt != null ? fmtLocal(a.firstSeenAt) : '-'}`,
+      `alerts: ${a.alerts}`,
+      `source: visible input box${recorded != null ? ' + injected-prompt registry match (full text below)' : ' (no registry match: this is what the box showed)'}`,
+      ...(recorded == null ? ['complete: NOT GUARANTEED -- the TUI drops the head rows of an overfull box, so a long message may be cut; re-deliver from its sender, not from this file alone'] : []),
+      '',
+      '----- parked text (whitespace-collapsed) -----',
+      text ?? '',
+      '',
+      '----- raw pane capture -----',
+      pane!,
+      ...(recorded != null ? ['', '----- recorded injected prompt -----', recorded] : []),
+      '',
+    ].join('\n')
+    try {
+      outcome.archivePath = deps.writeArchive(`${stamp}-${(a.agentName ?? a.session).replace(/[^A-Za-z0-9._-]/g, '_')}.txt`, body)
+    } catch (err) {
+      logger.error({ err, session: a.session }, 'Stuck-input auto-clear: archive write failed -- box left untouched')
+      outcome.result = 'archive-failed'
+      return
+    }
+    outcome.via = 'clear-keys'
+    let cleared = await deps.clearKeys(a.session)
+    if (!cleared) {
+      for (let i = 0; i < AUTOCLEAR_CTRL_C_MAX; i++) {
+        const p = deps.capture(a.session)
+        // Text must still be parked (box non-empty: Ctrl+C on an empty box
+        // quits Claude Code), no turn may be in flight (Ctrl+C interrupts it --
+        // judged with paneTurnInFlight, because a parked signature alone cannot
+        // see a spinner pushed up by a tall box), and no dialog may be up.
+        if (p == null || stuckInputSignature(p) == null) break
+        if (paneTurnInFlight(p)) break
+        if (detectsPermissionDialog(p) || detectsBlockingMenu(p) || detectsModelConsentDialog(p)) break
+        outcome.via = 'ctrl-c'
+        send('C-c')
+        await deps.sleep(AUTOCLEAR_CTRL_C_SETTLE_MS)
+      }
+      const after = deps.capture(a.session)
+      cleared = after != null && stuckInputSignature(after) == null
+    }
+    outcome.result = cleared ? 'cleared' : 'left-fragment'
+  })
+  if (!res.ran) outcome.result = 'deferred:delivery-in-flight'
+  logger.warn({ session: a.session, agentName: a.agentName, result: outcome.result, via: outcome.via, archive: outcome.archivePath }, 'Stuck-input auto-clear')
+  const deferred = outcome.result.startsWith('deferred')
+  if (deferred && (!a.notifyDeferred || !autoclearDeferralIsReportable(outcome.result))) return outcome
+  try {
+    outcome.messageId = deps.notify(autoclearMessage({
+      agent: a.agentName ?? a.session, session: a.session, at: deps.now(), firstSeenAt: a.firstSeenAt, alerts: a.alerts, outcome,
+    }))
+  } catch (err) {
+    logger.error({ err, session: a.session }, 'Stuck-input auto-clear: coordinator message could not be queued')
+  }
+  return outcome
+}
+
+const defaultSubAgentStuckTickDeps: SubAgentStuckTickDeps = {
+  states: agentStuckInput,
+  alertedAt: subAgentOverdueAlertedAt,
+  spells: subAgentAlertSpells,
+  threshold: STUCK_SUBAGENT_AUTOCLEAR_AFTER_ALERTS,
+  maxAttempts: MAIN_STUCK_THRESHOLDS.maxAttempts,
+  now: () => Date.now(),
+  sendAlert: (text) => sendAlert(text),
+  autoclear: (a) => autoclearStuckSubAgent(a),
 }
 
 // --- Keep-alive staleness watchdog (deafness safety net, decision #3) ---
@@ -2470,21 +2843,16 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
     // STILL parked, the TUI is hard-wedged -- escalate to a respawn-pane (the
     // automated form of the manual `systemctl restart channels`). Rate-limited.
     maybeRestartWedgedMainChannel(mainStuckInput)
-    // Same recovery for every running sub-agent session: a parked channel
-    // message wedges a sub-agent ("nem válaszol") exactly as it would the main
-    // session. Per-session state lives in agentStuckInput; drop it once the
-    // spell ends so the map never grows unbounded.
-    for (const t of targets) {
-      if (t.isMarveen) continue
+    // Same recovery for every running local sub-agent session, channel or not
+    // (Q046): a parked input wedges a sub-agent ("nem válaszol") exactly as it
+    // would the main session. Per-session state lives in agentStuckInput; drop
+    // it once the spell ends, or the agent leaves scope, so the map never grows.
+    const stuckScope = localSubAgentStuckTargets()
+    pruneSubAgentStuckState(new Set(stuckScope.map((t) => t.session)))
+    for (const t of stuckScope) {
       const prev = agentStuckInput.get(t.session) ?? { parkedSig: null, firstSeenAt: null, lastRecoverAt: null, attempts: 0 }
       const next = await recoverStuckInputForSession(t.session, prev, MAIN_STUCK_THRESHOLDS, true)
-      if (next.parkedSig === null) {
-        agentStuckInput.delete(t.session)
-        subAgentOverdueAlertedAt.delete(t.session) // spell ended -> next wedge starts a fresh alert window
-      } else {
-        agentStuckInput.set(t.session, next)
-        maybeAlertStuckSubAgent(t.session, t.agentName ?? null, next)
-      }
+      await handleSubAgentStuckTick(t.session, t.agentName, next)
     }
 
     for (const t of targets) {
