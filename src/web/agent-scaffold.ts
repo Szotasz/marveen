@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, readd
 import { readRemovedDefaultTasks } from './scheduled-tasks-io.js'
 import { basename, join } from 'node:path'
 import { homedir } from 'node:os'
-import { PROJECT_ROOT, OWNER_NAME, MAIN_AGENT_ID, HEARTBEAT_AGENT_ID, BOT_NAME, CHANNEL_PROVIDER, WEB_PORT, OWNER_DRIVE_FOLDER, APP_TZ, DASHBOARD_PUBLIC_URL, AGENT_API_ORIGIN, STORE_DIR } from '../config.js'
+import { PROJECT_ROOT, OWNER_NAME, MAIN_AGENT_ID, HEARTBEAT_AGENT_ID, BOT_NAME, CHANNEL_PROVIDER, WEB_PORT, OWNER_DRIVE_FOLDER, APP_TZ, DASHBOARD_PUBLIC_URL, AGENT_API_ORIGIN, STORE_DIR, mainAgentRecipientLedgerEnabled } from '../config.js'
 import { channelStateDir } from '../channel-provider.js'
 import { runAgent } from '../agent.js'
 import { atomicWriteFileSync } from './atomic-write.js'
@@ -2544,8 +2544,18 @@ function buildAutonomyBody(name: string): string {
 // ledger IS a machine gate, for the main agent it is NOT. Wiring the ledger for
 // the main agent is a separate owner decision; this text only stops promising a
 // protection that is not there.
-export function buildEvidenceBody(isMainAgent = false): string {
-  const gateParagraphs: string[] = isMainAgent
+// `mainLedger`: an install that sets MAIN_AGENT_RECIPIENT_LEDGER=1 wires the
+// ledger for the main agent too (its approval gate and the project's own
+// senders check every recipient), and the paragraph then says so: the text
+// must stay true for the install it is written into.
+export function buildEvidenceBody(isMainAgent = false, mainLedger = mainAgentRecipientLedgerEnabled()): string {
+  const gateParagraphs: string[] = isMainAgent && mainLedger
+    ? [
+        'Kimenő levélnél a címzett-ledger (`store/verified-recipients.json`) **nálad is gépi kapu**: ez a telepítés bekapcsolta (`MAIN_AGENT_RECIPIENT_LEDGER=1` a `.env`-ben). A jóváhagyás-kapu minden küldés, piszkozat és Bash-küldés címzettjét a ledgerhez méri, mielőtt bármilyen jóváhagyás fogyna, és a projekt saját küldői is csak a ledgerben lévő címre kézbesítenek, a gazda-CC-re is. Amit a kapu nem lát, az a szkriptbe zárt cím: azt a szabály tartja, nem a gép.',
+        '',
+        'Ha egy cím hiányzik, a helyes lépés a **cím felvétele forrással**, nem a kapu megkerülése. Ha nem találsz forrást, a cím nincs meg: mondd meg a gazdának.',
+      ]
+    : isMainAgent
     ? [
         'Kimenő levélnél a címzett-ledger (`store/verified-recipients.json`) **nálad NEM gépi kapu**: az `email-send-gate.mjs` hook csak a sub-ügynökök settingsébe van bekötve, a tiédbe nem (mérve 2026-09-22). Ami nálad fut, az a jóváhagyás-kapu (a küldés csak a boríték -- címzett, cc, bcc, tárgy, törzs -- hash-ére adott, el nem használt jóváhagyás mellett megy át) és a magyar copy-kapu (ékezet és szöveg-QA a küldés előtt), mindkettő a `scripts/hooks/` alatt. Ezek a KÜLDÉST szigorúan kapuzzák, de a **címet nem mérik a ledgerhez**: egy rossz cím pontosan úgy megy be a jóváhagyásba, ahogy te írtad. A címforrás-szabály nálad tehát szabály, nem gép -- ne olvasd védelemnek ott, ahol nincs.',
         '',

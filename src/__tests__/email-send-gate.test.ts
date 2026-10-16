@@ -6,7 +6,7 @@ import { join } from 'node:path'
 // @ts-expect-error -- plain .mjs hook script, no types
 import { gateDecision, buildUnverifiedRecipientMsg, buildUnparseableRecipientMsg, readBrandEnv, extractAddress, threadReplyRequest } from '../../scripts/email-send-gate.mjs'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { isValidSource, normalizeAddress, splitAddresses, parseAddresses, loadLedger, isVerifiedIn } from '../../scripts/recipient-ledger.mjs'
+import { isValidSource, normalizeAddress, splitAddresses, parseAddresses, loadLedger, inspectLedger, isVerifiedIn } from '../../scripts/recipient-ledger.mjs'
 import { injectEmailSendGate, agentGetsEmailGate } from '../web/agent-scaffold.js'
 import { MAIN_AGENT_ID } from '../config.js'
 
@@ -263,6 +263,58 @@ describe('every recipient piece is parsed, and an unparseable one denies', () =>
     const out = JSON.parse(r.stdout).hookSpecificOutput
     expect(out.permissionDecision).toBe('deny')
     expect(out.permissionDecisionReason).toContain('Nem ertelmezheto cimzett')
+  })
+})
+
+// The Python twin of the ledger reader and the parser (scripts/hooks/recipient_ledger.py,
+// used by the main agent's gate and the senders' own check when the install turns the
+// ledger on for the main agent) must agree with this module on every shared case.
+describe('recipient_ledger.py gives the same verdicts as recipient-ledger.mjs', () => {
+  const HOOKS = join(__dirname, '..', '..', 'scripts', 'hooks')
+  const py = (code: string, input: unknown) => JSON.parse(spawnSync('python3', ['-c', `
+import json, sys
+sys.path.insert(0, ${JSON.stringify(HOOKS)})
+import recipient_ledger as rl
+${code}
+`], { input: JSON.stringify(input), encoding: 'utf-8', timeout: 30_000 }).stdout.trim())
+
+  it('parse_addresses == parseAddresses on every shared address case', () => {
+    const ADDR = JSON.parse(readFileSync(join(HOOKS, 'recipient-address-cases.json'), 'utf-8')) as {
+      cases: Array<{ name: string; input: unknown; addresses: string[]; unparseable: string[] }>
+    }
+    const got = py(`print(json.dumps([dict(zip(("addresses", "unparseable"), rl.parse_addresses(x))) for x in json.load(sys.stdin)]))`,
+      ADDR.cases.map((c) => c.input)) as Array<{ addresses: string[]; unparseable: string[] }>
+    const wrong = ADDR.cases
+      .map((c, i) => ({ name: c.name, js: parseAddresses(c.input), py: got[i], want: { addresses: c.addresses, unparseable: c.unparseable } }))
+      .filter((r) => JSON.stringify(r.py) !== JSON.stringify(r.want) || JSON.stringify(r.js) !== JSON.stringify(r.want))
+    expect(wrong, JSON.stringify(wrong.slice(0, 5))).toEqual([])
+  })
+
+  it('load_ledger == inspectLedger on every shared ledger file', () => {
+    const FILES = JSON.parse(readFileSync(join(HOOKS, 'recipient-ledger-file-cases.json'), 'utf-8')) as {
+      cases: Array<{ name: string; b64: string | null; ok: boolean; recipients: string[] }>
+    }
+    const dir = mkdtempSync(join(tmpdir(), 'ledger-files-'))
+    const paths = FILES.cases.map((c, i) => {
+      const p = join(dir, `case-${i}.json`)
+      if (c.b64 !== null) writeFileSync(p, Buffer.from(c.b64, 'base64'))
+      return p
+    })
+    const pyOut = py(`
+out = []
+for p in json.load(sys.stdin):
+    try:
+        out.append({"ok": True, "recipients": sorted(rl.load_ledger(p))})
+    except rl.LedgerUnreadable:
+        out.append({"ok": False, "recipients": []})
+print(json.dumps(out))`, paths) as Array<{ ok: boolean; recipients: string[] }>
+    const wrong = FILES.cases.map((c, i) => {
+      const seen = inspectLedger(paths[i])
+      const js = { ok: !!seen.ledger, recipients: seen.ledger ? Object.keys(seen.ledger.recipients).sort() : [] }
+      return { name: c.name, js, py: pyOut[i], want: { ok: c.ok, recipients: c.recipients } }
+    }).filter((r) => JSON.stringify(r.js) !== JSON.stringify(r.want) || JSON.stringify(r.py) !== JSON.stringify(r.want))
+    expect(wrong, JSON.stringify(wrong.slice(0, 5))).toEqual([])
+    expect(FILES.cases.filter((c) => !c.ok).length).toBeGreaterThanOrEqual(10)
   })
 })
 

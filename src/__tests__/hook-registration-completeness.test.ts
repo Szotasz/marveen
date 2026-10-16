@@ -68,6 +68,10 @@ const EXEMPT: Record<string, string> = {
     'shared library: the one memory-frontmatter check, imported by memory-frontmatter-gate.py (Write/Edit) and memory-frontmatter-bash-gate.py (Bash, KAPUEGYUT918); not itself a hook',
   'email_extract.py':
     'shared library imported by outgoing-copy-gate.py (and the level-2 email approval gate, EMAILKAPU901 PR2); not itself a hook',
+  'recipient_ledger.py':
+    'shared library: the Python twin of scripts/recipient-ledger.mjs, imported by email-approval-gate.py and sender_check.py when the recipient ledger is on for the main agent; not itself a hook',
+  'sender_check.py':
+    'sender-side check, run by scripts/support-mail/send.py (import) and scripts/graph-mail.ts (CLI) before they deliver; not a PreToolUse hook',
   'credential_lib.py':
     'shared library: the credential detector and state, imported by credential-gate.py and scripts/credential-gate-cli.py (CREDGATE1003); not itself a hook',
   'memory-save.sh':

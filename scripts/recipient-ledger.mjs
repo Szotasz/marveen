@@ -147,7 +147,15 @@ export function emptyLedger() {
 // not exist (ENOENT); every other failure (unreadable, not JSON, wrong shape)
 // is a present-but-unusable ledger, which a writer must never replace (see
 // addRecipient).
-export function inspectLedger(path = ledgerPath(), readFile = (p) => readFileSync(p, 'utf-8')) {
+//
+// The bytes are decoded with a FATAL UTF-8 decoder that keeps a BOM: the
+// Python twin (scripts/hooks/recipient_ledger.py) refuses both, and the two
+// readers must give the SAME verdict on the SAME file
+// (scripts/hooks/recipient-ledger-file-cases.json). readFileSync(p, 'utf-8')
+// would silently turn invalid bytes into U+FFFD and read the file anyway.
+const STRICT_UTF8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true })
+
+export function inspectLedger(path = ledgerPath(), readFile = (p) => readFileSync(p)) {
   let raw
   try {
     raw = readFile(path)
@@ -155,9 +163,15 @@ export function inspectLedger(path = ledgerPath(), readFile = (p) => readFileSyn
     if (err?.code === 'ENOENT') return { ledger: null, missing: true, reason: `the ledger does not exist (${path})` }
     return { ledger: null, missing: false, reason: `the ledger cannot be read (${path}: ${err?.message ?? err})` }
   }
+  let text
+  try {
+    text = typeof raw === 'string' ? raw : STRICT_UTF8.decode(raw)
+  } catch {
+    return { ledger: null, missing: false, reason: `the ledger is not valid UTF-8 (${path})` }
+  }
   let parsed
   try {
-    parsed = JSON.parse(raw)
+    parsed = JSON.parse(text)
   } catch (err) {
     return { ledger: null, missing: false, reason: `the ledger is not valid JSON (${path}: ${err?.message ?? err})` }
   }
@@ -176,7 +190,7 @@ export function inspectLedger(path = ledgerPath(), readFile = (p) => readFileSyn
 // Read the ledger. Returns null when it cannot be read or parsed -- the caller
 // decides what that means; the gate treats it as "nothing is verified" and
 // blocks, because a broken evidence store must not silently open the gate.
-export function loadLedger(path = ledgerPath(), readFile = (p) => readFileSync(p, 'utf-8')) {
+export function loadLedger(path = ledgerPath(), readFile = (p) => readFileSync(p)) {
   return inspectLedger(path, readFile).ledger
 }
 
