@@ -54,6 +54,7 @@ const h = vi.hoisted(() => ({
   sessionReady: true,
   restartOk: true,
   sendOutcome: 'sent' as 'sent' | 'aborted-busy' | 'skipped-locked',
+  sendThrows: false,
   sendSystemDirective: null as unknown as import('vitest').Mock<(...a: unknown[]) => Promise<string>>,
   restartAgentProcess: null as unknown as import('vitest').Mock<(...a: unknown[]) => Promise<{ ok: boolean; error?: string }>>,
 }))
@@ -75,7 +76,10 @@ vi.mock('../web/agent-process.js', async () => {
 
 vi.mock('../web/system-directive.js', async () => {
   const { vi } = await import('vitest')
-  h.sendSystemDirective = vi.fn(async () => h.sendOutcome)
+  h.sendSystemDirective = vi.fn(async () => {
+    if (h.sendThrows) throw new Error('tmux send failed')
+    return h.sendOutcome
+  })
   return { sendSystemDirective: (...a: unknown[]) => h.sendSystemDirective(...a) }
 })
 
@@ -141,6 +145,7 @@ beforeEach(() => {
   h.sessionReady = true
   h.restartOk = true
   h.sendOutcome = 'sent'
+  h.sendThrows = false
 })
 
 afterEach(() => {
@@ -238,6 +243,26 @@ describe('context-guard resume obligation across a dashboard restart', () => {
     await vi.advanceTimersByTimeAsync(INTERVAL_MS)
     expect(resumeCalls()).toHaveLength(2)
     expect(readPending()).toEqual({})
+  })
+
+  it('a resume delivery that threw is not sent again by the next dashboard process', async () => {
+    h.sendThrows = true
+    writePending({ boni: { restartedAtMs: T0, handoffStaleMinutes: null, reason: 'x' } })
+
+    await bootDashboard()
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS)
+    expect(resumeCalls()).toHaveLength(1)
+    // Part of the text may already be in the pane: the obligation is dropped.
+    expect(readPending()).toEqual({})
+
+    // A dashboard restart well within the TTL must not deliver a second copy.
+    for (const t of timers) clearInterval(t)
+    timers = []
+    h.sendThrows = false
+    const second = await bootDashboard()
+    expect(second.getHardGuardPhase('boni')).toBe('idle')
+    await vi.advanceTimersByTimeAsync(INITIAL_DELAY_MS + INTERVAL_MS)
+    expect(resumeCalls()).toHaveLength(1)
   })
 
   it('never persists an obligation for a restart that failed', async () => {
