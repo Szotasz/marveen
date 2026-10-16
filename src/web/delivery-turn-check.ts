@@ -53,7 +53,7 @@ export const TAIL_BYTES = 4 * 1024 * 1024
 // 2026-10-15: designer, 6.1 and 4.4 MiB between the prompt row and the +60s
 // mark; both prompts fell out of a fixed 4 MiB tail and raised false alerts).
 // The tail therefore grows until it reaches back past the send, capped here.
-export const TAIL_PASSES = [TAIL_BYTES, TAIL_BYTES * 8, TAIL_BYTES * 64]
+export const TAIL_PASSES = [TAIL_BYTES, TAIL_BYTES * 8, TAIL_BYTES * 16]
 
 const BLOCKED_PREFIX = 'UserPromptSubmit operation blocked by hook'
 
