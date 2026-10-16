@@ -5135,13 +5135,15 @@ document.getElementById('saveIdleFlushBtn').addEventListener('click', async () =
   // Like auto-restart, this applies to the main session too, so role === 'main'
   // is NOT skipped. The context-guard store is keyed by the same id.
   const id = currentAgent.autoRestartId || currentAgent.name
-  // Send the WHOLE config, not just the three idle fields. The endpoint
-  // normalizes the body into a complete config, so a fragment would silently
-  // reset actPct/hardPct/saturationRestart/enabled to their defaults -- saving
-  // an idle-flush preference would disarm the wedge tiers on an agent that had
-  // them on. Re-read rather than trusting the cached detail: not every path
-  // that opens this pane populates contextGuard, and an empty object here is
-  // indistinguishable from a genuinely default config.
+  // Send the WHOLE config, not just the three idle fields. The endpoint used
+  // to REPLACE the stored row with the normalized body, so a fragment reset
+  // actPct/hardPct/saturationRestart/enabled to their defaults -- saving an
+  // idle-flush preference disarmed the wedge tiers on an agent that had them
+  // on. It merges now (mergeContextGuardConfig); the full body stays because
+  // it is correct under both behaviours. Re-read rather than trusting the
+  // cached detail: not every path that opens this pane populates
+  // contextGuard, and an empty object here is indistinguishable from a
+  // genuinely default config.
   let current = {}
   try {
     const cur = await fetch(`/api/agents/${encodeURIComponent(id)}/context-guard`)

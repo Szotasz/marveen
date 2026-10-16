@@ -128,7 +128,7 @@ import { detectPaneState, detectPermissionMode } from '../../pane-state.js'
 import { checkAgentPutFields, checkConfigPutFields, AGENT_PUT_WRITABLE_FIELDS } from '../agent-put-fields.js'
 import { detectReauthNeeded } from '../reauth-detect.js'
 import { readAutoRestartConfig, writeAutoRestartConfig } from '../auto-restart-store.js'
-import { readContextGuardConfig, writeContextGuardConfig, seedContextGuardForNewAgent } from '../context-guard-store.js'
+import { readContextGuardConfig, mergeContextGuardConfig, seedContextGuardForNewAgent } from '../context-guard-store.js'
 import { getContextGuardStatus } from '../context-guard-runner.js'
 import type { AutoRestartConfig } from '../../auto-restart.js'
 import type { ContextGuardConfig } from '../../context-guard.js'
@@ -1743,8 +1743,10 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
 
   // GET/PUT /api/agents/:name/context-guard -- per-agent context-guard config
   // (kanban #81). Default-off (opt-in): a GET for an agent with no store entry
-  // returns the disabled defaults. PUT normalizes server-side like auto-restart,
-  // and like auto-restart it rejects unknown keys instead of swallowing them.
+  // returns the disabled defaults. PUT MERGES the body over the stored config
+  // (an omitted key keeps its value -- see mergeContextGuardConfig), normalizes
+  // the result, and like auto-restart rejects unknown keys instead of
+  // swallowing them. Unlike auto-restart, it no longer replaces the whole row.
   const contextGuardMatch = path.match(/^\/api\/agents\/([^/]+)\/context-guard$/)
   if (contextGuardMatch && (method === 'GET' || method === 'PUT')) {
     const name = decodeURIComponent(contextGuardMatch[1])
@@ -1762,7 +1764,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       return true
     }
     setStoreWriteActor('dashboard')
-    const saved = writeContextGuardConfig(name, data)
+    const saved = mergeContextGuardConfig(name, data)
     json(res, { ok: true, contextGuard: saved })
     return true
   }
