@@ -7,8 +7,12 @@
 // (unguarded) variant of the statement through the same harness and requires
 // MORE than one winner there, so a harness that could never observe a race
 // cannot pass for a working lock.
+//
+// The claim lock is opt-in (KANBAN_CLAIM_LOCK, default off). The suites below
+// run with it ON through the settings mock; the opt-in suite at the end runs
+// it at the registry default and pins what "off" means.
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { Readable } from 'node:stream'
 import { Worker } from 'node:worker_threads'
 import { createRequire } from 'node:module'
@@ -23,7 +27,20 @@ import {
   claimKanbanCard, releaseKanbanCardClaim, isKanbanClaimActive, unblockDependentsOf, getDoneEvidence,
   KANBAN_CLAIM_SQL, KANBAN_CLAIM_DEFAULT_TTL_SEC,
 } from '../db.js'
-import { tryHandleKanban, parseClaimTtl } from '../web/routes/kanban.js'
+import { tryHandleKanban, parseClaimTtl, isKanbanClaimLockEnabled } from '../web/routes/kanban.js'
+import { getSettingDefinition } from '../config-registry.js'
+
+// KANBAN_CLAIM_LOCK as the settings layer would resolve it; every other key
+// goes to the real store.
+const claimLock = vi.hoisted(() => ({ value: '1' as string | number }))
+vi.mock('../settings-store.js', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../settings-store.js')>()
+  return {
+    ...real,
+    getEffectiveSettingValue: (key: string) =>
+      key === 'KANBAN_CLAIM_LOCK' ? claimLock.value : real.getEffectiveSettingValue(key),
+  }
+})
 import type { RouteContext } from '../web/routes/types.js'
 
 function call(method: string, path: string, payload?: unknown): { ctx: RouteContext; out: { status: number; body: any } } {
@@ -651,5 +668,54 @@ describe('ensureKanbanClaimSchema: a failed ALTER never leaves a trigger over a 
     } finally {
       d.close()
     }
+  })
+})
+
+describe('the claim lock is opt-in (KANBAN_CLAIM_LOCK, off by default)', () => {
+  beforeEach(() => {
+    initDatabase(':memory:')
+    claimLock.value = getSettingDefinition('KANBAN_CLAIM_LOCK')!.default
+  })
+  afterEach(() => { claimLock.value = '1' })
+
+  it('is registered as an off-by-default, hot-reloaded kanban boolean', () => {
+    expect(getSettingDefinition('KANBAN_CLAIM_LOCK')).toMatchObject({
+      type: 'boolean', default: '0', module: 'kanban', secret: false, requiresRestart: false,
+    })
+    expect(isKanbanClaimLockEnabled()).toBe(false)
+    for (const on of ['1', 'true', 'on']) { claimLock.value = on; expect(isKanbanClaimLockEnabled()).toBe(true) }
+  })
+
+  it('off: /claim and /release answer 404 claim_lock_disabled and write nothing', async () => {
+    createKanbanCard({ id: 'c1', title: 'One' })
+    const c = await route('POST', '/api/kanban/c1/claim', { agent: 'cody' })
+    expect(c.status).toBe(404)
+    expect(c.body).toMatchObject({ ok: false, reason: 'claim_lock_disabled' })
+    expect(c.body.error).toContain('KANBAN_CLAIM_LOCK')
+    expect(getKanbanCard('c1')!.claimed_by).toBeNull()
+    const r = await route('POST', '/api/kanban/c1/release', { agent: 'cody', force: true })
+    expect(r.status).toBe(404)
+    expect(r.body.reason).toBe('claim_lock_disabled')
+
+    claimLock.value = '1'
+    const on = await route('POST', '/api/kanban/c1/claim', { agent: 'cody' })
+    expect(on.status).toBe(200)
+    expect(getKanbanCard('c1')!.claimed_by).toBe('cody')
+  })
+
+  it('off: work needs no claim, a leftover claim adds no claim_warning, unblock and evidence still run', async () => {
+    createKanbanCard({ id: 'a', title: 'Blocked' })
+    createKanbanCard({ id: 'b', title: 'Blocker' })
+    moveKanbanCard('a', 'waiting', 0)
+    addCardBlocker('a', 'b')
+    claimKanbanCard('b', 'cody')   // left over from a time the lock was on
+    const start = await route('POST', '/api/kanban/b/move', { status: 'in_progress', actor: 'samu' })
+    expect(start.status).toBe(200)
+    expect(start.body.claim_warning).toBeUndefined()
+    const done = await route('POST', '/api/kanban/b/move', { status: 'done', actor: 'samu' })
+    expect(done.status).toBe(200)
+    expect(done.body.evidence_warning).toContain('/api/kanban/b/comments')
+    expect(done.body.unblocked.map((u: { id: string }) => u.id)).toEqual(['a'])
+    expect(getKanbanCard('a')!.status).toBe('planned')
   })
 })

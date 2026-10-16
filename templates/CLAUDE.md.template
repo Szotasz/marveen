@@ -167,27 +167,6 @@ curl -s -X POST http://localhost:{{WEB_PORT}}/api/kanban/KARTYA_ID/move \
   -d '{"status":"in_progress"}'
 ```
 
-Kártya foglalása MIELŐTT dolgozni kezdesz rajta (két ágens ne vegye fel ugyanazt). Csak akkor
-kezdj bele, ha a válasz HTTP 200; 409 esetén más foglalja (a válasz megmondja, ki és meddig),
-ilyenkor NE dolgozz rajta párhuzamosan. A foglalás alapból 2 óráig él (`ttl_seconds`, 60 és
-86400 között); hosszabb munkánál ugyanezzel a hívással megújítod. Automatikusan elengedi a
-`done`, `waiting` vagy `testing` státusz, az archiválás, és ha a kártyát másra osztod át (így
-az átvevő le tudja foglalni):
-```bash
-curl -s -w '\nHTTP %{http_code}\n' -X POST http://localhost:{{WEB_PORT}}/api/kanban/KARTYA_ID/claim \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  -d '{"agent":"{{MAIN_AGENT_ID}}"}'
-```
-
-Foglalás elengedése, ha félbehagyod (nem `done`):
-```bash
-curl -s -X POST http://localhost:{{WEB_PORT}}/api/kanban/KARTYA_ID/release \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \
-  -d '{"agent":"{{MAIN_AGENT_ID}}"}'
-```
-
 Komment a kártyára (az eredmény ide kerül, a dashboardon ez látszik):
 ```bash
 curl -s -X POST http://localhost:{{WEB_PORT}}/api/kanban/KARTYA_ID/comments \
@@ -197,11 +176,6 @@ curl -s -X POST http://localhost:{{WEB_PORT}}/api/kanban/KARTYA_ID/comments \
 ```
 
 Archiválás: `POST /api/kanban/KARTYA_ID/archive`, üres törzzsel.
-
-`done` előtt legyen eredmény-komment a kártyán (mi lett a vége, hol a bizonyíték). Ha nincs,
-a move válaszában `evidence_warning` jön: a mozgatás sikerül, de pótold a kommentet. Ha egy
-`waiting` kártyának az így lezárt volt az utolsó nyitott blokkolója, automatikusan `planned`-be
-kerül (a válasz `unblocked` mezője listázza).
 
 Státuszok: planned, in_progress, waiting, done
 Prioritások: low, normal, high, urgent

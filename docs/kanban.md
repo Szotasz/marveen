@@ -44,7 +44,7 @@ Minden projekt-feladat kártyán fut: az orchestrator kártyaként rögzíti, on
 
 ### Foglalás (claim), feloldás, lezárási bizonyíték
 
-Két ügynök soha ne vegye fel ugyanazt a kártyát. Az `in_progress`-re húzás ezt nem garantálja (ketten is láthatják szabadnak), ezért van egy atomi foglalás:
+Az `in_progress`-re húzás nem akadályozza meg, hogy két ügynök ugyanazt a kártyát vegye fel (ketten is láthatják szabadnak). Ahol erre garancia kell, ott van egy atomi foglalás. Ez opt-in, alapból ki van kapcsolva: a `KANBAN_CLAIM_LOCK=1` kapcsolja be (`.env` vagy a Beállítások oldal, újraindítás nem kell). Kikapcsolva a `/claim` és a `/release` 404-et ad (`reason: "claim_lock_disabled"`), `claim_warning` nem jön, és semmi nem kéri, hogy az ügynök foglaljon, mielőtt dolgozik.
 
 ```
 POST /api/kanban/:id/claim    {"agent":"NEV","ttl_seconds":7200}  -- 200 foglalva/megújítva, 409 más foglalja (a válasz megnevezi, ki és meddig)
@@ -58,7 +58,7 @@ POST /api/kanban/:id/release  {"agent":"NEV"}                     -- 200 elenged
 
 Függőség-alapú feloldás: ha egy kártya a move/PUT útján `done` lesz, minden `waiting` kártya, amelynek ez volt az utolsó nyitott blokkolója (`/api/kanban/:id/blockers`), visszakerül `planned`-be, automatikus kommenttel. A válasz `unblocked` mezője listázza őket.
 
-Lezárási bizonyíték (puha kapu): ha a kártya a move/PUT útján úgy lesz `done`, hogy az utolsó `in_progress` óta nincs rajta nem-`system` komment (ha sosem volt `in_progress`, a létrehozása óta), a válasz `evidence_warning` mezőt kap. A mozgatás ettől még sikeres. Ha egy másik ügynök által foglalt kártyát húznak `in_progress`-re, a válasz `claim_warning` mezőt kap.
+Lezárási bizonyíték (puha kapu): ha a kártya a move/PUT útján úgy lesz `done`, hogy az utolsó `in_progress` óta nincs rajta nem-`system` komment (ha sosem volt `in_progress`, a létrehozása óta), a válasz `evidence_warning` mezőt kap. A mozgatás ettől még sikeres. Bekapcsolt foglalásnál, ha egy másik ügynök által foglalt kártyát húznak `in_progress`-re, a válasz `claim_warning` mezőt kap.
 
 ### Hozzáférés
 

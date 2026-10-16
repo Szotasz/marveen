@@ -44,7 +44,7 @@ Every project task runs on a card: the orchestrator records it as a card, delega
 
 ### Claim lock, unblock, done evidence
 
-Two agents must never pick up the same card. Moving a card to `in_progress` does not guarantee that (both can see it free), so there is an atomic claim:
+Moving a card to `in_progress` does not stop two agents from picking up the same card (both can see it free). For installs that want that guarantee there is an atomic claim. It is opt-in and off by default: enable it with `KANBAN_CLAIM_LOCK=1` (`.env` or the Settings page, no restart needed). While it is off, `/claim` and `/release` answer 404 with `reason: "claim_lock_disabled"`, no `claim_warning` is added, and nothing requires an agent to claim before it works.
 
 ```
 POST /api/kanban/:id/claim    {"agent":"NAME","ttl_seconds":7200}  -- 200 claimed/renewed, 409 held by another (the body names holder and expiry)
@@ -58,7 +58,7 @@ POST /api/kanban/:id/release  {"agent":"NAME"}                     -- 200 releas
 
 Dependency unblock: when a card becomes `done` through /move or PUT, every `waiting` card for which it was the last open blocker (`/api/kanban/:id/blockers`) moves back to `planned` with an automatic comment. The response's `unblocked` field lists them.
 
-Done evidence (soft gate): if a card becomes `done` through /move or PUT with no non-`system` comment since its latest move to `in_progress` (since its creation if it never went there), the response carries `evidence_warning`. The move still succeeds. Moving a card claimed by another agent to `in_progress` adds `claim_warning`.
+Done evidence (soft gate): if a card becomes `done` through /move or PUT with no non-`system` comment since its latest move to `in_progress` (since its creation if it never went there), the response carries `evidence_warning`. The move still succeeds. With the claim lock on, moving a card claimed by another agent to `in_progress` adds `claim_warning`.
 
 ### Access
 
