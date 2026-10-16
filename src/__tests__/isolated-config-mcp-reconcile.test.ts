@@ -16,6 +16,19 @@ vi.mock('../web/agent-config.js', async (orig) => {
   return { ...actual, agentDir: (name: string) => join(SANDBOX, 'agents', name) }
 })
 
+// MCPOROKLES923: a sub-agent now inherits only servers on AGENT_INHERITED_MCP_SERVERS.
+// These tests pin the gap-fill and scope-collision behaviour FOR LISTED servers, so
+// every name they use is on the list; what an UNLISTED server gets is pinned in
+// mcp-inheritance.test.ts.
+vi.mock('../settings-store.js', async (orig) => {
+  const actual = await orig<typeof import('../settings-store.js')>()
+  return {
+    ...actual,
+    getEffectiveSettingValue: (key: string) =>
+      key === 'AGENT_INHERITED_MCP_SERVERS' ? 'gmail,google-drive,cortex,extra,third' : actual.getEffectiveSettingValue(key),
+  }
+})
+
 const { ensureIsolatedChannelConfigDir } = await import('../web/agent-process.js')
 
 const AGENT = 'testagent'

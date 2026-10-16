@@ -173,6 +173,129 @@ FLEET = {'samu','zara','boni','iris','dani','geri','deeper','qwen','mira','tomi'
          'marveen'}
 COORDINATOR = 'marveen'
 GAZDA = 'szabolcs'
+
+
+# KANBANSTUCKBACKFILL924: a /api/kanban/stuck (#1531) a felelos SAJAT kommentjet munka-nyomnak
+# veszi, KIVEVE ha a sor automated=1. A tomeges/gepi ironak ezert KI KELL MONDANIA a jelet --
+# kulonben egy sopres-komment a felelos neveben "elkezdettnek" mutatja a kartyat (merve: 79+2
+# kartya csak a 08-24-i migracio es a 09-04-i sopresek miatt allt a stuck-listan).
+def _van_automated(db):
+    return any(r[1] == 'automated' for r in db.execute('PRAGMA table_info(kanban_comments)'))
+
+
+def _komment_insert(db, card_id, author, content, now, automated):
+    """EGY helyen irja a kommentet. automated=True egy #1531 elotti DB-n (nincs oszlop) NEM
+    esik le csendben: a hivo mar az iras ELOTT megtagadta (komment-mod), a gepi nyom-soroknal
+    pedig a jel ott amugy sem szamit (a szerzo 'kartya-es-ertesites', sosem a felelos)."""
+    if _van_automated(db):
+        return db.execute('INSERT INTO kanban_comments (card_id,author,content,created_at,automated)'
+                          ' VALUES (?,?,?,?,?)', (card_id, author, content, now, 1 if automated else 0))
+    return db.execute('INSERT INTO kanban_comments (card_id,author,content,created_at) VALUES (?,?,?,?)',
+                      (card_id, author, content, now))
+
+
+# ESEMENYSOROK (KARTYAEVENTS1010). A szerver minden statuszvaltasrol kanban_card_events sort,
+# a lenti mezok valtozasarol kanban_card_field_events sort ir (db.ts: moveKanbanCard /
+# updateKanbanCard, KANBAN_AUDITED_FIELDS). Ez a szkript a sort NYERS UPDATE-tel irta, es egyik
+# tablaba sem irt: merve 2026-10-10-en az eles DB-n MINDKET tabla 0 soros volt, tehat minden
+# statuszvaltas ezen az uton ment, es a "mikor, ki mozgatta" kerdesre a tabla nem tudott
+# valaszolni (a #1863 in-progress ideje nalunk emiatt minden kartyara "nincs mervet" irna).
+# A mezo-lista a db.ts KANBAN_AUDITED_FIELDS tukre; a kartya-esemenysor teszt a ketto
+# egyezeset meri, tehat ha a szerver bovul, a teszt szol, nem a hianyzo sor.
+AUDITALT_MEZOK = ('due_date', 'assignee', 'priority')
+
+
+def _tabla_van(db, nev):
+    return db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (nev,)).fetchone() is not None
+
+
+def _esemeny_tablak_kellenek(valtozik):
+    """Melyik esemeny-tabla kell ehhez a mozgatashoz (status -> kanban_card_events,
+    auditalt mezo -> kanban_card_field_events)."""
+    kell = []
+    if 'status' in valtozik:
+        kell.append('kanban_card_events')
+    if any(k in AUDITALT_MEZOK for k in valtozik):
+        kell.append('kanban_card_field_events')
+    return kell
+
+
+def _esemenysorok(db, card_id, elotte, valtozik, actor, now):
+    """A mozgatas tartozo sorai, UGYANABBAN a tranzakcioban, mint a kartya UPDATE-je (a hivo
+    commitol): vagy a mozgatas es a sora is megvan, vagy egyik sem. Ugyanaz az alak, mint a
+    szerveren: from/to statusz, actor, created_at; a mezo-ertekek SZOVEGKENT, a NULL NULL marad.
+    Visszaadja a beirt sorok (tabla, rowid, vart ertekek) listajat a fuggetlen visszaolvasashoz."""
+    irt = []
+    if 'status' in valtozik:
+        ert = (card_id, elotte['status'], valtozik['status'], actor, now)
+        cur = db.execute('INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at)'
+                         ' VALUES (?, ?, ?, ?, ?)', ert)
+        irt.append(('kanban_card_events', cur.lastrowid, ert))
+    for mezo in AUDITALT_MEZOK:
+        if mezo not in valtozik:
+            continue
+        regi = None if elotte.get(mezo) is None else str(elotte[mezo])
+        uj = None if valtozik[mezo] is None else str(valtozik[mezo])
+        if regi == uj:
+            continue
+        ert = (card_id, mezo, regi, uj, actor, now)
+        cur = db.execute('INSERT INTO kanban_card_field_events (card_id, field, old_value, new_value, actor, created_at)'
+                         ' VALUES (?, ?, ?, ?, ?, ?)', ert)
+        irt.append(('kanban_card_field_events', cur.lastrowid, ert))
+    return irt
+
+
+# DISPATCH-NULLAZAS ES SZULO-LANC (KARTYADISPATCH1010). A szerver mindket statusz-utja
+# (moveKanbanCard es a teljes-kartyas PUT, updateKanbanCard) ket dolgot tesz meg az UPDATE-tel
+# EGY tranzakcioban, amit ez a szkript nem tett:
+#  - dispatched_at: egy iras, ami utan a kartya NEM in_progress, nullazza (db.ts
+#    kanbanWriteClearsDispatch). Enelkul a szkripttel visszatett kartya megtartotta a belyeget, es
+#    a kovetkezo /move in_progress-re NEM ebresztette a felelost. A szkript CSAK nullaz, sosem
+#    ebreszt: az ebresztes egyetlen utja a /move marad.
+#  - a szulo-lanc updated_at-je (db.ts touchAncestorChain): az alkartya mozgasa a szal elete.
+#    Enelkul a szulo "allonak" latszott, mikozben az alkartyai mozogtak.
+# A ket konstans a db.ts tukre; a kartya-dispatch-lanc teszt az egyezest meri.
+DISPATCH_STATUSZ = 'in_progress'
+OS_LANC_MELYSEG = 16
+
+
+def _dispatch_nullaz(uj_status):
+    """kanbanWriteClearsDispatch tukre: az iras utani statusz NEM in_progress -> dispatched_at NULL,
+    az elozo statusztol fuggetlenul (igy egy mar beragadt sor is gyogyul)."""
+    return uj_status != DISPATCH_STATUSZ
+
+
+def _oszlop_van(db, tabla, oszlop):
+    return any(r[1] == oszlop for r in db.execute(f'PRAGMA table_info({tabla})'))
+
+
+def _os_lanc_belyeg(db, card_id, now):
+    """touchAncestorChain tukre, UGYANABBAN a tranzakcioban (a hivo commitol): a kartya szulojetol
+    felfele minden ososre updated_at=now. Kor vagy OS_LANC_MELYSEG-nel melyebb lanc: hangos
+    figyelmeztetes es megallas, mint a szerveren. Visszaadja a belyegzett (letezo) ososok listajat
+    a fuggetlen visszaolvasashoz."""
+    def szulo(kid):
+        sor = db.execute('SELECT parent_id FROM kanban_cards WHERE id=?', (kid,)).fetchone()
+        return sor[0] if sor else None
+    latott = {card_id}
+    aktualis = szulo(card_id)
+    melyseg = 0
+    belyegzett = []
+    while aktualis:
+        if aktualis in latott:
+            print(f'FIGYELEM: parent_id kor itt: {aktualis} (innen: {card_id}) -- a szulo-lanc '
+                  'belyegzese megallt.', file=sys.stderr)
+            break
+        melyseg += 1
+        if melyseg > OS_LANC_MELYSEG:
+            print(f'FIGYELEM: a szulo-lanc melyebb, mint {OS_LANC_MELYSEG} (innen: {card_id}) -- a '
+                  'belyegzes megallt.', file=sys.stderr)
+            break
+        latott.add(aktualis)
+        if db.execute('UPDATE kanban_cards SET updated_at=? WHERE id=?', (now, aktualis)).rowcount == 1:
+            belyegzett.append(aktualis)
+        aktualis = szulo(aktualis)
+    return belyegzett
 # Ismert FELELOS-nevek. NEM zart halmaz: a tablan 2026-09-06-an 40 kulonbozo felelos allt, es a
 # tobbsegi nem-flotta ertek kulso GitHub-felhasznalonev (PR-kartyak szerzoi). Ezert a nem-ismert
 # nev nem automatikusan hiba -- lasd _felelos_feloldas.
@@ -264,12 +387,17 @@ PRIORITASOK = ('low','normal','high','urgent')
 KULDOK = FLEET | {COORDINATOR}
 API = os.environ.get('KARTYA_API', 'http://localhost:3420/api/messages')
 HU = set('áéíóöőúüűÁÉÍÓÖŐÚÜŰ')
+# HOMOGLYPHMICRO924: a MICRO SIGN (U+00B5) betu-kategoriaju, de mertekegyseg-elotag
+# ("40 us"), latin betut nem alcaz -- a kimeno-szoveg kapu SCRIPT_NEUTRAL-janak parja.
+# A felso/also indexes szamjegyek itt nem kellenek: nem betuk, ez a kapu at sem nezi oket.
+SEMLEGES = {'\u00b5'}
 
 def gyanus(t):
     """Nem-magyar, nem-ASCII BETUK egy egyebkent ASCII szoban (HOMOGLIFKAPU905 D-szabalya)."""
     out = []
     for w in t.split():
-        if any(ord(c) > 127 and c not in HU and unicodedata.category(c).startswith('L') for c in w) \
+        if any(ord(c) > 127 and c not in HU and c not in SEMLEGES
+               and unicodedata.category(c).startswith('L') for c in w) \
            and any('a' <= c.lower() <= 'z' for c in w):
             out.append(' '.join(f'U+{ord(c):04X}' if ord(c) > 127 else c for c in w))
     return out
@@ -542,6 +670,13 @@ def komment_mod(a):
     if not card:
         sys.exit(f'MEGTAGADVA: a(z) {a.id} kartya NEM LETEZIK -- komment-only mod csak meglevo kartyara ir.\n'
                  f'Uj kartyahoz a letrehozo mod valo (--assignee/--title).')
+    # A JEL NEM ESHET LE CSENDBEN: egy #1531 elotti DB-n nincs automated oszlop, es ha a komment
+    # megis beirodna, a stuck-meres munka-nyomnak latna -- pont az, amit a kapcsolo megelozne.
+    # A kapu az IRAS ELOTT all, a dry-run agon is.
+    if a.automated and not _van_automated(db):
+        sys.exit('MEGTAGADVA: --automated, de ezen a DB-n (' + DB + ') a kanban_comments-ben NINCS\n'
+                 'automated oszlop (a #1531 elotti fa: a dashboard az uj koddal meg nem indult el).\n'
+                 'A komment NEM irodott be. Huzd fel a fat es inditsd ujra a dashboardot, utana futtasd ujra.')
     # ELOTTE-PILLANATKEP: enelkul a visszaolvasas nem meres, csak egy ertek felolvasasa.
     elotte = {'status': card[1], 'priority': card[3], 'title': card[4], 'assignee': card[2],
                'description': card[5]}
@@ -650,6 +785,17 @@ def komment_mod(a):
                 if v is not None}
     valtozik = {k: v for k, v in mozgatas.items() if v != elotte[k]}
     valtozatlan = {k: v for k, v in mozgatas.items() if v == elotte[k]}
+    # ESEMENYSOR-KAPU az ELSO iras (a komment) ELOTT, a dry-run agon is: egy mozgatas, aminek a
+    # sora nem irhato be, ne irjon kommentet sem. Az eles, dashboard-inicializalt DB-n mindket
+    # tabla letezik; ez a sor egy kezzel osszerakott vagy nagyon regi DB-t allit meg.
+    _hianyzo_tabla = [t for t in _esemeny_tablak_kellenek(valtozik) if not _tabla_van(db, t)]
+    # A dispatch-nullazas es a szulo-lanc (KARTYADISPATCH1010) ket oszlopot kovetel; ugyanaz a kapu.
+    _hianyzo_tabla += [f'kanban_cards.{o}' for o in ('dispatched_at', 'parent_id')
+                       if valtozik and not _oszlop_van(db, 'kanban_cards', o)]
+    if _hianyzo_tabla:
+        sys.exit('MEGTAGADVA: a mozgatas esemenysort kovetel, de ezen a DB-n (' + DB + ') nincs: '
+                 + ', '.join(_hianyzo_tabla) + '.\nSemmi nem irodott be. A dashboard initDatabase-e hozza '
+                 'letre a tablakat; inditsd el egyszer az uj fan, utana futtasd ujra.')
 
     now = int(time.time())
     fejlec = f'[{a.author} {time.strftime("%Y-%m-%d %H:%M", time.localtime(now))}, rendszerora]'
@@ -660,7 +806,8 @@ def komment_mod(a):
         # hianyzo mondat, amit a letrehozo ag mar megtanult (_token_kapu docstringje).
         terv = (', '.join(f'{k}: {str(elotte[k])[:57]} -> {str(v)[:57]}' for k, v in valtozik.items()) or 'nincs')
         print(f'DRY-RUN OK (komment-mod, DB: {DB}): kartya letezik ({card}), kapuk atmentek.\n'
-              f'  fejlec: {fejlec} | szoveg {len(text)} kar | ertesites: '
+              f'  fejlec: {fejlec} | szoveg {len(text)} kar'
+              + (' | automated=1' if a.automated else '') + ' | ertesites: '
               + (f'{len(msg)} kar -> ' + ', '.join(_ertesitendo) + ' (felado: '
                  + (a.from_agent or a.author).strip().lower() + ')' if msg else 'NINCS (komment-only)') + '\n'
               f'  mezomozgatas: {terv}'
@@ -669,17 +816,20 @@ def komment_mod(a):
             _elozmeny_figyelmeztetes(db, a, now, dry=True)
         return
 
-    cur = db.execute('INSERT INTO kanban_comments (card_id,author,content,created_at) VALUES (?,?,?,?)',
-                     (a.id, a.author, tartalom, now))
+    cur = _komment_insert(db, a.id, a.author, tartalom, now, a.automated)
     db.commit()
-    back = db.execute('SELECT id,author,length(content),created_at FROM kanban_comments WHERE rowid=?',
-                      (cur.lastrowid,)).fetchone()
+    back = db.execute('SELECT id,author,length(content),created_at'
+                      + (',automated' if _van_automated(db) else ',NULL')
+                      + ' FROM kanban_comments WHERE rowid=?', (cur.lastrowid,)).fetchone()
     if not back:
         sys.exit('HIBA: a komment nem olvashato vissza -- az iras nem tortent meg.')
     if back[3] != now:
         sys.exit(f'HIBA: a visszaolvasott created_at ({back[3]}) nem a fejlec ideje ({now}).')
+    if a.automated and back[4] != 1:
+        sys.exit(f'HIBA: --automated, de a visszaolvasott sor automated={back[4]} -- a jel NEM irodott be.')
     print(f'KOMMENT OK (visszaolvasva innen: {DB}): comment_id={back[0]} author={back[1]} '
-          f'{back[2]} kar, created_at==fejlec-ido. '
+          f'{back[2]} kar, created_at==fejlec-ido'
+          + (', automated=1 (gepi/tomeges, nem munka-nyom). ' if a.automated else '. ')
           + ('Ertesites: ugyanebben a futasban megy.' if msg else 'Ertesites: nem ment (komment-only).'))
 
 
@@ -715,11 +865,10 @@ def komment_mod(a):
             kuldott.append((mid, cimzett))
             print('UZENET OK (visszaolvasva a sorbol, felado is): ' + str(sor))
         # NYOM A KARTYAN, a MERT halmazzal: egy kesobbi olvaso lassa, kihez ert el ez a komment.
-        db.execute('INSERT INTO kanban_comments (card_id,author,content,created_at) VALUES (?,?,?,?)',
-                   (a.id, 'kartya-es-ertesites',
+        _komment_insert(db, a.id, 'kartya-es-ertesites',
                     '[kartya-es-ertesites.py] A komment es az ertesites EGY futasban keszult. '
                     + 'Ertesites: ' + ', '.join('msg ' + str(m) + ' -> ' + c for m, c in kuldott)
-                    + ' (felado: ' + frm + '). Mindket iras visszaolvasva.', now))
+                    + ' (felado: ' + frm + '). Mindket iras visszaolvasva.', now, automated=True)
         db.commit()
         print('NYOM OK: kartya-komment az ertesites utjarol (' + ', '.join(str(m) for m, _ in kuldott) + ')')
 
@@ -733,11 +882,21 @@ def komment_mod(a):
     _elozmeny_figyelmeztetes(db, a, now)
 
     sets = ', '.join(f'{k}=?' for k in valtozik)
-    cur = db.execute(f'UPDATE kanban_cards SET {sets}, updated_at=? WHERE id=?',
-                     (*valtozik.values(), now, a.id))
-    db.commit()
+    # A MOZGATO a tablan: ugyanaz a kisbetus agens-nev, amit a szerver /move-ja actor-kent kap
+    # (a dispatch-recept "actor":"<agens>"-et kuld), es amit ez a szkript feladokent hasznal.
+    actor = (a.from_agent or a.author).strip().lower()
+    # dispatched_at az UPDATE-ben, mint a /move SQL-jeben (KARTYADISPATCH1010).
+    nullaz = _dispatch_nullaz(valtozik.get('status', elotte['status']))
+    cur = db.execute(f'UPDATE kanban_cards SET {sets}, updated_at=?' + (', dispatched_at=NULL' if nullaz else '')
+                     + ' WHERE id=?', (*valtozik.values(), now, a.id))
     if cur.rowcount != 1:
+        db.rollback()
         sys.exit(f'HIBA: a mezomozgatas {cur.rowcount} sort erintett (1 helyett) -- a komment MAR BEIRT.')
+    # EGY TRANZAKCIO a mozgatasra, a szulo-lancra es a sorara (KARTYAEVENTS1010,
+    # KARTYADISPATCH1010), mint a szerveren.
+    szulok = _os_lanc_belyeg(db, a.id, now)
+    esemenyek = _esemenysorok(db, a.id, elotte, valtozik, actor, now)
+    db.commit()
     # FUGGETLEN visszaolvasas: uj SELECT, nem a cursor allitasa. A 0-talalatos UPDATE
     # es a sikeres UPDATE kulonben megkulonboztethetetlen lenne.
     utana = db.execute('SELECT status,priority,title,assignee,description FROM kanban_cards WHERE id=?', (a.id,)).fetchone()
@@ -751,6 +910,27 @@ def komment_mod(a):
         return v if len(v) <= 60 else v[:57] + '...'
     print(f'MEZOMOZGATAS OK (fuggetlenul visszaolvasva innen: {DB}): '
           + ', '.join(f'{k}: {rov(elotte[k])} -> {rov(kapott[k])}' for k in valtozik))
+    # Az esemenysorok FUGGETLEN visszaolvasasa: uj SELECT rowid szerint, a teljes sor osszevetve.
+    for tabla, rowid, vart in esemenyek:
+        oszlopok = ('card_id, from_status, to_status, actor, created_at' if tabla == 'kanban_card_events'
+                    else 'card_id, field, old_value, new_value, actor, created_at')
+        sor = db.execute(f'SELECT {oszlopok} FROM {tabla} WHERE rowid=?', (rowid,)).fetchone()
+        if sor != vart:
+            sys.exit(f'HIBA: a(z) {tabla} sor visszaolvasva {sor}, nem a beirt {vart}. A mozgatas MAR BEIRT.')
+    if esemenyek:
+        print(f'ESEMENYSOR OK (visszaolvasva): ' + ', '.join(f'{t}#{r}' for t, r, _ in esemenyek)
+              + f' | actor={actor}')
+    if nullaz:
+        d = db.execute('SELECT dispatched_at FROM kanban_cards WHERE id=?', (a.id,)).fetchone()
+        if d[0] is not None:
+            sys.exit(f'HIBA: dispatched_at visszaolvasva {d[0]}, nem NULL. A mozgatas MAR BEIRT.')
+        print(f'DISPATCH OK (visszaolvasva): dispatched_at NULL (a kartya nem in_progress; ebresztes nem ment).')
+    for os_id in szulok:
+        u = db.execute('SELECT updated_at FROM kanban_cards WHERE id=?', (os_id,)).fetchone()
+        if not u or u[0] != now:
+            sys.exit(f'HIBA: a(z) {os_id} szulo updated_at-je visszaolvasva {u}, nem {now}. A mozgatas MAR BEIRT.')
+    if szulok:
+        print('SZULO-LANC OK (visszaolvasva): ' + ' -> '.join(szulok) + ' updated_at==mozgatas ideje')
     # A MOZGATAS NYOMA A KARTYAN: a komment szovege Bonie, ez a sor a gepe. Enelkul a
     # tabla olvasoja latja az uj statuszt, de nem latja, hogy KI es MIKOR mozgatta.
     #
@@ -785,12 +965,11 @@ def komment_mod(a):
     # A '|' ejtese ugyanaz az elv, mint a sortorese: a zarosor szerkezetet a NEV nem irhatja felul.
     mozgato = ' '.join((a.author or '(ismeretlen)').replace('|', '/').split())
     zarosor = f'{_ZAROSOR_ELO}{mozgato} | mezok: {",".join(valtozik)} | ts: {now}'
-    db.execute('INSERT INTO kanban_comments (card_id,author,content,created_at) VALUES (?,?,?,?)',
-               (a.id, 'kartya-es-ertesites',
+    _komment_insert(db, a.id, 'kartya-es-ertesites',
                 '[kartya-es-ertesites.py] Mezomozgatas a fenti komment mellett ('
                 + ', '.join(teljes)
                 + f'), kerte: {a.author}. Fuggetlenul visszaolvasva.\n' + reszletes
-                + '\n' + zarosor, now))
+                + '\n' + zarosor, now, automated=True)
     db.commit()
 
 # A mezomozgatas-nyom GEPI ZAROSORA. Ket helyen hasznaljuk: iraskor a nyom vegere kerul,
@@ -882,8 +1061,16 @@ def main():
                    dest='ekezet_nelkul_szandekos',
                    help='KIMONDOTT felulbiralas, ha a komment VAGY a leiras (--desc-file, mindket agon) '
                         'szandekosan ekezet nelkuli: nyers log, kod-reszlet, surgos eset')
+    # KANBANSTUCKBACKFILL924: sopres, migracio, audit-kor -- barmi, ami SOK kartyara ugyanazt irja.
+    # Enelkul a felelos neveben irt tomeges komment a /api/kanban/stuck szemeben MUNKA-NYOM.
+    p.add_argument('--automated', action='store_true',
+                   help='komment-mod: a komment GEPI/TOMEGES (sopres, migracio, audit), NEM munka-nyom; '
+                        'a sor automated=1-et kap, es a /api/kanban/stuck nem veszi elkezdett munkanak')
     p.add_argument('--dry-run', action='store_true')
     a = p.parse_args()
+    if a.automated and not a.comment_file:
+        sys.exit('MEGTAGADVA: --automated csak komment-modban (--comment-file) ertelmes: a jel egy\n'
+                 'KOMMENT-sorra kerul, a letrehozo ag sajat nyom-sorai mar maguktol automated=1-ek.')
 
     if a.comment_file:
         # A KEVERES-KAPUT KI KELL ENGEDNI az uj mezohoz, kulonben az uj kod ELERHETETLEN, es a
@@ -1044,11 +1231,10 @@ def main():
         # felelostol JOVO uzeneteket nezi (from_agent = assignee), nem a neki cimzetteket, tehat a
         # kihagyott sor ott sem hianyzik.
         print(_gazda_figyelmeztetes(db))
-        db.execute('INSERT INTO kanban_comments (card_id,author,content,created_at) VALUES (?,?,?,?)',
-                   (a.id, 'kartya-es-ertesites',
+        _komment_insert(db, a.id, 'kartya-es-ertesites',
                     f'[kartya-es-ertesites.py] A kartya letrejott, az ertesites NEM ment ki: a felelos a '
                     f'gazda ({GAZDA}), akinek nincs agens-sessionje, az inter-agent uzenet szerkezetileg nem '
-                    f'kezbesitheto. A gazdahoz Telegramon kell szolni. A kartya visszaolvasva.', now))
+                    f'kezbesitheto. A gazdahoz Telegramon kell szolni. A kartya visszaolvasva.', now, automated=True)
         db.commit()
         print('NYOM OK: kartya-komment arrol, hogy ertesites NEM ment (gazda-cimzett)')
         return
@@ -1093,12 +1279,11 @@ def main():
     # Boni lelete (2026-09-05): a kikuldes-detektor VEGYES populaciot mer -- a kozvetlenul
     # felvett es az eszkozzel felvett kartyakat egyutt. Enelkul a jovo heti szam nem
     # valaszthato szet "az eszkoz hasznalt-e" es "kevesebb kartya keszult" kozott.
-    db.execute('INSERT INTO kanban_comments (card_id,author,content,created_at) VALUES (?,?,?,?)',
-               (a.id, 'kartya-es-ertesites',
+    _komment_insert(db, a.id, 'kartya-es-ertesites',
                 f'[kartya-es-ertesites.py] A kartya es az ertesites EGY lepesben keszult. '
                 f'Ertesites: msg {mid}, {frm} -> {cimzett}'
                 + (' (ONHUROK helyett a koordinatorhoz iranyitva).' if cimzett != who else '.')
-                + ' Mindket iras visszaolvasva.', now))
+                + ' Mindket iras visszaolvasva.', now, automated=True)
     db.commit()
     print(f'NYOM OK: kartya-komment a keszites utjarol (msg {mid})')
 

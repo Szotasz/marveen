@@ -21,6 +21,7 @@ Ezek a fájlok a dashboard által kezelt, futásidőben módosuló konfiguráci�
 | `store/schedule-last-run.json` | automatikus | Ütemezett feladatok utolsó futási időbélyege (crash-safe skip) |
 | `store/kanban-audit-state.json` | automatikus | Kanban audit utolsó futása |
 | `store/claudeclaw.db` | nem direktben | SQLite adatbázis -- memória, kanban, üzenetek, token-log, stb. |
+| `store/custom-providers.json` | dashboard UI (Beállítások > Provider-ok) | Egyéni Anthropic Messages API-kompatibilis végpontok listája -- ld. docs/custom-providers.md |
 | `store/config-overrides.json` | dashboard UI | Beállítások-oldal által mentett felülbírálatok (plain értékek, sosem tartalmaz titkokat) |
 | `store/update.pid` | automatikus | Frissítési folyamat PID fájl (concurrency lock) |
 
@@ -168,6 +169,7 @@ Minden dashboard-szerkeszthető beállítás egy bejegyzésként szerepel a regi
 | Kulcs | Típus | Alapérték | Platform | Újraindítás |
 |-------|-------|-----------|----------|-------------|
 | `MAIN_AGENT_ISOLATED_CONFIG` | boolean | `0` (ki) | csak macOS | igen |
+| `TELEGRAM_TOPICS_ENABLED` | boolean | `0` (ki) | mind | igen (csatorna-indítás) |
 
 #### `MAIN_AGENT_ISOLATED_CONFIG` -- a fő agent config-izolációja (macOS)
 
@@ -207,6 +209,56 @@ rotálódó `credentials.json`-t ehelyett a külön credentials-guard kezeli.
 **Visszaállítás.** Kapcsold KI (dashboard) vagy `MAIN_AGENT_ISOLATED_CONFIG=0`
 (`.env`), majd indítsd újra a channels sessiont -- mindhárom indítási út visszaáll
 a közös `~/.claude` viselkedésre.
+
+#### `TELEGRAM_TOPICS_ENABLED`: a válasz abba a témába megy, ahonnan az üzenet jött
+
+**Mire szolgál.** A Telegram a bot privát chatjében is enged témákat (a BotFather-ben
+kapcsolható be a botnál). Ilyenkor minden üzenet egy témában születik, de a Telegram
+plugin a téma azonosítóját nem adja tovább az ügynöknek, és a `reply` tool nem tud
+témát címezni: a válasz a témán kívülre kerül.
+
+**Mit csinál bekapcsolva.** A csatorna indításakor a `scripts/patch-telegram-plugin.py`
+(ugyanaz a script, ami a `/status`-t és a bejövő-naplót is intézi) egy kiegészítést
+tesz a plugin forrására:
+- a témából jött üzenet `<channel>` tagje `message_thread_id` attribútumot kap (csak
+  valódi téma-üzenetnél, `is_topic_message`);
+- a gépelés-jelzés a témában jelenik meg;
+- a `reply` tool új, opcionális `message_thread_id` paramétere a szöveg minden darabját
+  és minden csatolt fájlt a témába küldi; nem pozitív egész értékre hibát ad, és nem
+  küld semmit;
+- a plugin utasítása és a `telegram-reply-directive.py` hook kéri az ügynököt, hogy a
+  témát adja vissza.
+
+A Marveen saját válasz-útjai ugyanígy a témába mennek: a „Dolgozom rajta” helyőrző és
+annak tartalék-küldései (`telegram_progress*.py`), a hookból megválaszolt parancsok
+(`marveen-commands.py`, a futás közbeni parancsok is), és a tartalék-poller
+(`channel-coordinator`) átadása.
+
+Téma nélküli üzenetnél minden hívás pontosan ugyanaz, mint kikapcsolva.
+
+**Közös plugin-cache.** A kiegészítés a plugin-cache-ben lévő forrást módosítja
+(`$CLAUDE_CONFIG_DIR/plugins/cache`, ennek hiányában `~/.claude/plugins/cache`), és ebből
+tölti a Telegram plugint minden Claude Code session, amely ugyanezt a cache-t használja, a
+Marveen-en kívüliek is. Azokban is megjelenik a `reply` tool opcionális `message_thread_id`
+paramétere és a témából jött üzenet tagjének attribútuma; amíg nem adják meg a paramétert,
+a viselkedésük változatlan.
+
+**Ami nem változik.** A `chat_id` ugyanaz marad, ezért a gazda-azonosítás, a parancsok
+jogosultsága és a jóváhagyások nem érintettek. A riasztások, a jóváhagyás-kérések, az
+ütemezett feladatok eredménye és a hang-válasz továbbra is téma nélkül mennek ki.
+
+**Bekapcsolás.** Dashboard: *Beállítások → Csatornák → `TELEGRAM_TOPICS_ENABLED`*, vagy
+`.env`-ben `TELEGRAM_TOPICS_ENABLED=1`. A csatorna következő indításakor lép életbe. A
+`/status` „Telegram plugin-patch” sora bekapcsolva a kiegészítést is méri: ha hiányzik,
+`HIÁNYZIK (témák)` sor jelzi.
+
+**Visszaállítás.** Kapcsold KI, és indítsd újra a csatornát: a script leveszi a
+kiegészítést, a plugin fájlja bájtra a kiegészítés előtti.
+
+**Plugin-frissítés után.** Az új plugin-verziót a következő csatorna-indítás foltozza. Ha
+a kiegészítés horgonyai nem illeszkednek, a kiegészítés egészében kimarad (egy hangos
+sor a `store/channels-failures.log`-ban, és a `/status` is jelzi); a válaszok ilyenkor a
+témán kívülre mennek, a csatorna maga működik tovább.
 
 **API végpontok:**
 
@@ -424,6 +476,7 @@ A főbb konfigurációs változók a launchd plist-ben (`~/Library/LaunchAgents/
 | `ANTHROPIC_API_KEY` | Claude API kulcs |
 | `OWNER_NAME` | A tulajdonos neve (pl. "Jónás Gergő") |
 | `BOT_NAME` | A főágens neve (pl. "Jarvis") |
+| `VOICE_TRANSCRIBE_INBOUND` | `1` = a text módú ügynököknél is átirat készül a bejövő hangüzenetről (alapból ki; az ügynökönkénti `voice.transcribeInbound` felülírja). Lásd `voice.md` |
 
 ---
 

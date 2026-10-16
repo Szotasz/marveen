@@ -50,6 +50,60 @@ assert_contains "ExecStart points at the probe" "$LINUX" 'ExecStart=$INSTALL_DIR
 ENABLE_LINE="$(grep -n 'systemctl --user enable "\${DASH_UNIT}"' "$REPO/install-linux.sh" | head -1)"
 assert_contains "the timer is in the enable list" "$ENABLE_LINE" '${KEEPALIVE_UNIT}.timer'
 
+# TIMERSTART1011: enabled is not running. Both timers fire on OnBootSec=90s,
+# which on a host that has been up for a while has already passed, so a timer
+# that is only enabled stays inactive until the next reboot -- the same outage
+# as a missing timer (measured on a fresh Linux install: three hard restarts in
+# 80 minutes). The installer's start block is extracted and run against a
+# `systemctl` stub: `start` marks a unit active, `is-active` reads the mark.
+TSTART="$(awk '/# TIMERSTART1011:/,/^  done$/' "$REPO/install-linux.sh")"
+if [ -z "$TSTART" ]; then
+  fail "the timer start block (TIMERSTART1011) is in install-linux.sh"
+else
+  pass "the timer start block (TIMERSTART1011) is in install-linux.sh"
+  TS="$TMP/tstart"; mkdir -p "$TS/bin" "$TS/active"
+  cat > "$TS/bin/systemctl" <<STUB
+#!/bin/sh
+echo "\$*" >> "$TS/calls"
+if [ "\$2" = start ] && [ -e "$TS/failstart" ]; then exit 1; fi
+[ "\$2" = start ] && [ ! -e "$TS/inert" ] && for u in "\$@"; do case "\$u" in *.timer) touch "$TS/active/\$u";; esac; done
+if [ "\$2" = is-active ]; then for u in "\$@"; do :; done; [ -e "$TS/active/\$u" ]; exit \$?; fi
+exit 0
+STUB
+  chmod +x "$TS/bin/systemctl"
+  run_tstart() {
+    PATH="$TS/bin:/usr/bin:/bin" KEEPALIVE_UNIT=hex-channel-keepalive-probe INBOX_OBSERVER_UNIT=hex-main-inbox-observer \
+      bash -c 'ok() { echo "OK $*"; }; warn() { echo "WARN $*"; }; '"$TSTART" 2>&1
+  }
+  OUT="$(run_tstart)"
+  # one start per timer (#1903 review): a timer that cannot start does not take the other one with it
+  assert_contains "the installer STARTS the probe timer, on its own" "$(cat "$TS/calls")" \
+    "$(printf '%s\n' '--user start hex-channel-keepalive-probe.timer' '--user is-active --quiet hex-channel-keepalive-probe.timer')"
+  assert_contains "the installer STARTS the observer timer, on its own" "$(cat "$TS/calls")" \
+    "$(printf '%s\n' '--user start hex-main-inbox-observer.timer' '--user is-active --quiet hex-main-inbox-observer.timer')"
+  assert_contains "the probe timer is reported running" "$OUT" "OK hex-channel-keepalive-probe.timer fut"
+  assert_contains "the observer timer is reported running" "$OUT" "OK hex-main-inbox-observer.timer fut"
+  rm -f "$TS/active/"*; : > "$TS/calls"; touch "$TS/inert"
+  OUT="$(run_tstart)"
+  assert_contains "a timer that did not start is named with the fix command" "$OUT" \
+    "WARN hex-channel-keepalive-probe.timer nem fut -- inditsd: systemctl --user start hex-channel-keepalive-probe.timer"
+  assert_contains "the observer timer too" "$OUT" "WARN hex-main-inbox-observer.timer nem fut"
+  # #1903 review: a FAILING start (exit 1) under `set -e` and an ERR trap -- the installer's own mode -- must not
+  # stop the install: both timers are named, the block runs to its end, and SVCFAIL (the services) is untouched.
+  rm -f "$TS/active/"* "$TS/inert"; : > "$TS/calls"; touch "$TS/failstart"
+  OUT="$(PATH="$TS/bin:/usr/bin:/bin" KEEPALIVE_UNIT=hex-channel-keepalive-probe INBOX_OBSERVER_UNIT=hex-main-inbox-observer \
+    bash -c 'set -eE; trap "echo ERR-TRAP; exit 9" ERR; SVCFAIL=0; ok() { echo "OK $*"; }; warn() { echo "WARN $*"; }; '"$TSTART"'
+echo "BLOCK-END SVCFAIL=$SVCFAIL"' 2>&1; echo "rc=$?")"
+  assert_contains "a failing timer start under set -e: the probe timer is named" "$OUT" \
+    "WARN hex-channel-keepalive-probe.timer nem fut -- inditsd: systemctl --user start hex-channel-keepalive-probe.timer"
+  assert_contains "a failing timer start under set -e: the observer timer is named" "$OUT" \
+    "WARN hex-main-inbox-observer.timer nem fut -- inditsd: systemctl --user start hex-main-inbox-observer.timer"
+  assert_contains "a failing timer start under set -e: the block runs to its end, rc 0, no ERR trap" "$OUT" \
+    "$(printf '%s\n' 'BLOCK-END SVCFAIL=0' 'rc=0')"
+  assert_not_contains "a failing timer start under set -e: the ERR trap did not fire" "$OUT" "ERR-TRAP"
+  rm -f "$TS/failstart"
+fi
+
 # No Requires=/Wants= on the triggered service (the morning-timer lesson: a
 # [Unit] dependency fires the service on every activation of the timer unit).
 PROBE_TIMER_BLOCK="$(awk '/cat >"\$SYSTEMD_DIR\/\$\{KEEPALIVE_UNIT\}\.timer"/,/^EOF$/' "$REPO/install-linux.sh")"
@@ -63,8 +117,16 @@ echo
 echo "update.sh install_keepalive_probe_timer"
 
 # Pull the function out of update.sh and run it for real.
-FN="$(awk '/^install_keepalive_probe_timer\(\) \{/,/^\}$/' "$REPO/update.sh")"
-if [ -z "$FN" ]; then
+# UPDATETIMER1012: an existing timer goes through ensure_timer_running, so the
+# two helpers come along. pidof is stubbed to "no systemd" here, which keeps the
+# existing-timer branch inert and this section about writing units; starting an
+# existing timer is pinned in update-timer-start.test.sh.
+HELPERS="$(awk '/^_user_systemd_up\(\) \{/,/^\}$/' "$REPO/update.sh")
+$(awk '/^ensure_timer_running\(\) \{/,/^\}$/' "$REPO/update.sh")"
+FNBODY="$(awk '/^install_keepalive_probe_timer\(\) \{/,/^\}$/' "$REPO/update.sh")"
+FN="$HELPERS
+$FNBODY"
+if [ -z "$FNBODY" ] || ! printf '%s' "$HELPERS" | grep -q '^ensure_timer_running() {'; then
   fail "install_keepalive_probe_timer() not found in update.sh"
   echo; echo "PASS=$PASS FAIL=$FAIL"; exit 1
 fi
@@ -84,6 +146,7 @@ echo "\$*" >> "$TMP/systemctl.calls"
 exit 0
 EOF
 chmod +x "$TMP/bin/systemctl"
+printf '#!/bin/sh\nexit 1\n' > "$TMP/bin/pidof"; chmod +x "$TMP/bin/pidof"
 
 # $1: units dir. Runs the extracted function with the stub ahead of the real PATH.
 run_fn() {
@@ -137,6 +200,129 @@ UNITS2="$TMP/units2"; mkdir -p "$UNITS2"
 printf '[Service]\n' > "$UNITS2/hex-channels.service"
 run_fn "$UNITS2" >/dev/null
 assert_eq "missing probe script -> no units written" "1" "$(ls "$UNITS2" | wc -l | tr -d ' ')"
+
+# ---------------------------------------------------------------------------
+# 3. update.sh, macOS half (KEEPALIVEMAC926). The Linux migration above landed
+#    for #1313; the launchd twin only ever existed in the install-macos.sh
+#    TEMPLATE, which by definition never reaches a Mac installed before it. So
+#    every such Mac kept the bug, and the weekly update could not cure it.
+#    Measured 2026-09-26: launchctl had no com.marveen.channel-keepalive-probe
+#    and channels-failures.log showed respawns only between 22:00 and 07:00,
+#    every ~15 minutes, zero during the day.
+# ---------------------------------------------------------------------------
+echo
+echo "update.sh install_keepalive_probe_launchd"
+
+MACFN="$(awk '/^install_keepalive_probe_launchd\(\) \{/,/^\}$/' "$REPO/update.sh")"
+if [ -z "$MACFN" ]; then
+  fail "install_keepalive_probe_launchd() not found in update.sh"
+  echo; echo "PASS=$PASS FAIL=$FAIL"; exit 1
+fi
+
+assert_contains "run_unit_maintenance calls the launchd half" \
+  "$(awk '/^run_unit_maintenance\(\) \{/,/^\}$/' "$REPO/update.sh")" \
+  "install_keepalive_probe_launchd"
+
+MAC="$TMP/mac"
+mkdir -p "$MAC/install/scripts" "$MAC/home/Library/LaunchAgents" "$MAC/bin"
+
+# launchctl stub. ISSUE1891: update.sh keys on the job being LOADED
+# (`launchctl list <label>`), not on the plist existing, so the stub answers
+# `list` from $MAC/loaded/<label>; the installer stub marks a label loaded when
+# it "succeeds".
+mkdir -p "$MAC/loaded"
+cat > "$MAC/bin/launchctl" <<EOF
+#!/bin/bash
+[ "\$1" = list ] && [ -n "\${2:-}" ] && { [ -e "$MAC/loaded/\$2" ]; exit \$?; }
+exit 0
+EOF
+chmod +x "$MAC/bin/launchctl"
+
+# Installer stub: records the call, and writes the plist the way the real one
+# does, so the idempotence contract is exercised end to end.
+write_mac_installer() {
+  cat > "$MAC/install/scripts/install-channel-keepalive-probe.sh" <<EOF
+#!/bin/bash
+LABEL="$1"
+# #1873: update.sh asks the installer for its label (--print-label), the way
+# the real installers answer it; that call is not an install, so not logged.
+if [ "\${1:-}" = "--print-label" ]; then echo "\$LABEL"; exit 0; fi
+echo "\$*" >> "$MAC/installer.calls"
+mkdir -p "\$HOME/Library/LaunchAgents"
+: > "\$HOME/Library/LaunchAgents/$1.plist"
+[ "${2:-0}" = 0 ] && : > "$MAC/loaded/$1"
+exit ${2:-0}
+EOF
+  chmod +x "$MAC/install/scripts/install-channel-keepalive-probe.sh"
+}
+
+# $1: what `uname -s` should say.
+run_mac_fn() {
+  printf '#!/bin/bash\necho %s\n' "$1" > "$MAC/bin/uname"; chmod +x "$MAC/bin/uname"
+  PATH="$MAC/bin:$PATH" HOME="$MAC/home" \
+    bash -c "set -eu; INSTALL_DIR='$MAC/install'; $MACFN
+install_keepalive_probe_launchd" 2>&1
+}
+
+# 3a. Not a Mac -> the Linux path already owns this host, touch nothing.
+write_mac_installer "com.marveen.channel-keepalive-probe"
+: > "$MAC/installer.calls"
+OUT="$(run_mac_fn Linux)"
+assert_eq "non-Darwin host -> installer never called" "0" "$(wc -c < "$MAC/installer.calls" | tr -d ' ')"
+assert_eq "non-Darwin host -> prints nothing" "" "$OUT"
+
+# 3b. A Mac missing the probe: install it and say so.
+OUT="$(run_mac_fn Darwin)"
+assert_contains "installer called with --load" "$(cat "$MAC/installer.calls")" "--load"
+assert_eq "plist landed in ~/Library/LaunchAgents" "yes" \
+  "$([ -f "$MAC/home/Library/LaunchAgents/com.marveen.channel-keepalive-probe.plist" ] && echo yes || echo no)"
+assert_contains "reports what it did" "$OUT" "com.marveen.channel-keepalive-probe"
+
+# 3c. Idempotent: update.sh runs weekly, and a reload every week is not a fix.
+: > "$MAC/installer.calls"
+OUT="$(run_mac_fn Darwin)"
+assert_eq "second run calls no installer" "0" "$(wc -c < "$MAC/installer.calls" | tr -d ' ')"
+assert_eq "second run prints nothing" "" "$OUT"
+
+# 3d. Rename drift: the idempotence check must read the label FROM the
+#     installer. A hardcoded label would miss the existing plist and reload
+#     launchd on every single update -- silently, forever.
+write_mac_installer "com.renamed.keepalive-probe"
+: > "$MAC/installer.calls"
+run_mac_fn Darwin >/dev/null
+: > "$MAC/installer.calls"
+OUT="$(run_mac_fn Darwin)"
+assert_eq "renamed label is honoured on the idempotence check" "0" \
+  "$(wc -c < "$MAC/installer.calls" | tr -d ' ')"
+
+# 3e. An install predating the installer script -> do nothing rather than fail
+#     the whole update.
+rm -f "$MAC/install/scripts/install-channel-keepalive-probe.sh"
+rm -f "$MAC/home/Library/LaunchAgents/"*.plist "$MAC/loaded/"*
+: > "$MAC/installer.calls"
+OUT="$(run_mac_fn Darwin)"
+assert_eq "missing installer -> nothing written" "0" \
+  "$(ls "$MAC/home/Library/LaunchAgents" | wc -l | tr -d ' ')"
+assert_eq "missing installer -> update is not failed" "" "$OUT"
+
+# 3f. A failing installer must WARN, not pass silently.
+write_mac_installer "com.marveen.channel-keepalive-probe" 1
+rm -f "$MAC/home/Library/LaunchAgents/"*.plist "$MAC/loaded/"*
+OUT="$(run_mac_fn Darwin)"
+assert_contains "a failed install is reported, not swallowed" "$OUT" "FIGYELEM"
+assert_contains "and it carries the remedy for a GUI terminal" "$OUT" \
+  "launchctl bootstrap gui/$(id -u) \"$MAC/home/Library/LaunchAgents/com.marveen.channel-keepalive-probe.plist\" 2>/dev/null; launchctl kickstart gui/$(id -u)/com.marveen.channel-keepalive-probe"
+
+# 3g. ISSUE1891 (#1891): the plist is there but the job is NOT loaded -- a Mac
+#     without a GUI login, or a load that failed. That used to read as
+#     "installed" and return quietly forever; it must be retried (and reported).
+write_mac_installer "com.marveen.channel-keepalive-probe" 1
+rm -f "$MAC/loaded/"*
+: > "$MAC/home/Library/LaunchAgents/com.marveen.channel-keepalive-probe.plist"
+: > "$MAC/installer.calls"
+OUT="$(run_mac_fn Darwin)"
+assert_contains "plist present, job not loaded -> the installer is run again" "$(cat "$MAC/installer.calls")" "--load"
+assert_contains "and the update says it is not running" "$OUT" "NEM FUT"
 
 echo
 echo "PASS=$PASS FAIL=$FAIL"

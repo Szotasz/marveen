@@ -25,6 +25,7 @@ Closes #
 - [ ] Frissítettem a `docs/` mappát, ha a változtatás érinti a telepítést vagy az architektúrát. / Updated `docs/` if the change affects installation or architecture.
 - [ ] A kód nem tartalmaz beleégetett szenzitív adatot (API kulcs, token, személyes adat). / No hardcoded secrets (API keys, tokens, personal data).
 - [ ] Saját, beszédes nevű branch-ről nyitom (nem közvetlenül `develop`-ra). / Opened from an own, descriptively named branch (not directly on `develop`).
+- [ ] Ha a változtatás egy napló (`store/dashboard.log`) vagy CLI-kimenet sorformátumát módosítja, a Rövid leírásba tettem egy `LOG-FORMAT:` sort a régi és az új alakkal, hogy a kiadási jegyzet vigye. / If the change alters the line format of a log (`store/dashboard.log`) or of CLI output, I added a `LOG-FORMAT:` line to the Summary with the old and the new shape, so the release notes carry it.
 
 ## Titok-kapu / Secret gate
 

@@ -81,6 +81,7 @@ describe('unit maintenance runs before the up-to-date early exit', () => {
     expect(wrapper).toMatch(/repair_morning_timer "\$@"/)
     expect(wrapper).toMatch(/migrate_channels_restart "\$@"/)
     expect(wrapper).toMatch(/install_keepalive_probe_timer "\$@"/)
+    expect(wrapper).toMatch(/strip_legacy_notifier_telegram_env "\$@"/)
     expect(wrapper).toMatch(/park_morning_timer "\$@"/)
     expect(UPDATE).toMatch(/^run_unit_maintenance$/m)
   })

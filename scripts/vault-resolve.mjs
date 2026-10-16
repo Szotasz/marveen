@@ -36,6 +36,7 @@ const input = await new Promise(resolve => {
 })
 
 let malformed = 0
+let refused = 0
 let missing = 0
 for (const line of input.trim().split('\n')) {
   if (!line.trim()) continue
@@ -49,6 +50,13 @@ for (const line of input.trim().split('\n')) {
   }
   const envVar = line.slice(0, eq)
   const secretId = line.slice(eq + 1)
+  // VAULTSZELES826: SSH private keys are consumed only in-process by the SSH feature;
+  // this resolver never hands one out (same rule as isSshPrivateKeyId in vault-acl.ts).
+  if (secretId.trim().startsWith('ssh-key-')) {
+    process.stderr.write(`vault-resolve: refused, SSH private keys are not resolvable here: ${secretId}\n`)
+    refused++
+    continue
+  }
   const value = getSecret(secretId)
   if (value !== null) {
     process.stdout.write(`${envVar}=${value}\n`)
@@ -62,3 +70,4 @@ for (const line of input.trim().split('\n')) {
 
 if (malformed > 0) process.exit(2)
 if (missing > 0) process.exit(3)
+if (refused > 0) process.exit(4)

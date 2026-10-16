@@ -1,27 +1,33 @@
 import {
-  createAgentMessage, getPendingMessages, listAgentMessages,
+  createAgentMessage, getPendingMessages, listAgentMessages, getRecipientQueueState,
   getAgentConversation, getAgentConversationThreads,
   getKanbanSeqByIdPrefix,
-  markMessageDone, markMessageFailed, getAgentMessage,
+  markMessageDone, closeOpenMessage, getAgentMessage,
   closeOtelSpan,
   getPendingBacklogByAgent,
   countNewerMessagesForRows,
+  getHeartbeatKanbanLive,
   COMPLETION_REPORT_PREFIX,
   type AgentMessage,
 } from '../../db.js'
+import { detectHomoglyphs, formatHomoglyphWarning } from '../../homoglyph.js'
 import { logger } from '../../logger.js'
 import { COORDINATOR_AGENT_ID, VOICE_CHANNEL_AGENT_ID } from '../../channel-coordinator/ingest.js'
 import { SYSTEM_DIRECTIVE_SENDER } from '../system-directive.js'
 import { sanitizeAgentIdent } from '../../prompt-safety.js'
 import { isKnownAgent, readAgentPullDelivery } from '../agent-config.js'
-import { MAIN_AGENT_ID, OWNER_NAME, SYSTEM_SENDER_IDS, parseSystemSenderIds } from '../../config.js'
+import { MAIN_AGENT_ID, HEARTBEAT_AGENT_ID, OWNER_NAME, SYSTEM_SENDER_IDS, parseSystemSenderIds, MESSAGE_URGENT_DEVICE_IDS, parseDeviceKeyIds } from '../../config.js'
 import { isAgentRunning } from '../agent-process.js'
+import { MESSAGE_ABANDON_WINDOW_MS } from '../message-abandon.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
-import { stampHeartbeatHeader } from '../heartbeat-header-stamp.js'
+import { isHeartbeatTemplateLeak, stampHeartbeatHeader } from '../heartbeat-header-stamp.js'
+import { verifyHeartbeatKanban, HEARTBEAT_KANBAN_WINDOW_SEC } from '../heartbeat-kanban-verify.js'
 import { buildFreshnessInfo, type MessageFreshness } from '../agent-message-wrap.js'
-import { parseQualifiedId, formatQualifiedId } from '../federation/address.js'
+import { parseQualifiedId, formatQualifiedId, isQualifiedId } from '../federation/address.js'
 import { getFederationConfig } from '../federation/config.js'
+import { decidePriority, parsePriorityField } from '../message-priority.js'
+import { rankedSenders } from '../../delivery-order.js'
 import type { RouteContext } from './types.js'
 
 // Should closing a message produce a reverse "[Eredmény]" notification to its sender?
@@ -48,8 +54,21 @@ export function shouldNotifyDelegator(fromAgent: string, toAgent: string, conten
   return true
 }
 
+/** The result a voice-channel answer is closed with: it is read by the relay, never delivered. */
+export const VOICE_MAILBOX_RESULT = 'voice-channel mailbox: no session delivery; the voice relay reads it'
+
 // Frozen at module load, like the config constant it derives from.
 const SYSTEM_SENDERS = parseSystemSenderIds(SYSTEM_SENDER_IDS, sanitizeAgentIdent)
+// Card 795d1f48 (a): the device keys the install lists for urgent rows (config.ts), frozen the same way.
+const URGENT_DEVICE_KEY_IDS = parseDeviceKeyIds(MESSAGE_URGENT_DEVICE_IDS)
+
+/**
+ * Card 795d1f48 (a): may this request mark a row urgent? Only a FULL device key whose id the install lists. A device
+ * key alone is not enough: the shared dashboard token (the agent API) can mint one. Exported for the unit test.
+ */
+export function mayMarkUrgent(auth: RouteContext['auth'], listedDeviceIds: ReadonlySet<number>): boolean {
+  return auth?.kind === 'device' && auth.scope === 'full' && auth.deviceId !== undefined && listedDeviceIds.has(auth.deviceId)
+}
 
 /**
  * How much of a `result` travels inside the completion notification, and what the recipient
@@ -116,15 +135,81 @@ export function attachFreshness(messages: AgentMessage[]): AgentMessageWithFresh
   }))
 }
 
+// HBFABRIC1003 follow-up: a refused heartbeat digest is reported to the main
+// agent as an informational system note (no action is requested of it), at
+// most once per HEARTBEAT_REFUSAL_NOTE_GAP_MS. Exported for the test.
+export const HEARTBEAT_REFUSAL_NOTE_GAP_MS = 10 * 60 * 1000
+let lastHeartbeatRefusalNoteMs = 0
+export function resetHeartbeatRefusalNoteForTest(): void { lastHeartbeatRefusalNoteMs = 0 }
+function noteHeartbeatRefusal(problems: string[], nowMs: number = Date.now()): void {
+  if (nowMs - lastHeartbeatRefusalNoteMs < HEARTBEAT_REFUSAL_NOTE_GAP_MS) return
+  lastHeartbeatRefusalNoteMs = nowMs
+  try {
+    createAgentMessage('system', MAIN_AGENT_ID,
+      '[HB-KAPU] A heartbeat digestjét a szerver elutasította (422, HBFABRIC1003): a Kanban-sorai nem egyeztek az élő táblával, '
+      + 'ezért ebben a körben NEM érkezik digest. Eltérések: ' + problems.join('; ')
+      + '. Tájékoztatás, teendőt nem kér; ha a digest kell, a GET /api/kanban/heartbeat-summary adja az élő számokat.')
+  } catch (err) {
+    logger.warn({ err }, 'HBFABRIC1003: could not queue the heartbeat refusal note')
+  }
+}
+
 export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method, url } = ctx
 
   if (path === '/api/messages' && method === 'POST') {
     const body = await readBody(req)
-    const { from, to, content, origin_note } = JSON.parse(body.toString()) as
-      { from: string; to: string; content: string; origin_note?: string }
+    const { from, to, content, origin_note, priority, urgent } = JSON.parse(body.toString()) as
+      { from: string; to: string; content: string; origin_note?: string; priority?: unknown; urgent?: unknown }
     if (!from?.trim() || !to?.trim() || !content?.trim()) {
       json(res, { error: 'from, to, and content are required' }, 400)
+      return true
+    }
+    // Card 795d1f48 (a): an URGENT row is typed into a BUSY pane by the router (e.g. the save signal a key rotation
+    // sends before it restarts the agents), so a lost or an injected key could interrupt every agent. Who may ask for
+    // one: a FULL device key whose id the install lists in MESSAGE_URGENT_DEVICE_IDS (mayMarkUrgent). Not the shared
+    // dashboard token (the agent API, readable by every sub-agent), and not any device key, since that token can mint
+    // one. The in-process writers set it directly. Checked before anything is written; a non-boolean is a 400, so a
+    // typo does not silently send an ordinary row.
+    if (urgent !== undefined && typeof urgent !== 'boolean') {
+      json(res, { error: 'urgent must be a JSON boolean' }, 400)
+      return true
+    }
+    if (urgent === true && !mayMarkUrgent(ctx.auth, URGENT_DEVICE_KEY_IDS)) {
+      logger.warn({ from: from.trim(), to: to.trim(), authKind: ctx.auth?.kind ?? 'none', deviceId: ctx.auth?.deviceId }, 'Rejected /api/messages POST: urgent without a listed device key')
+      json(res, { error: 'urgent delivery requires a device key listed in MESSAGE_URGENT_DEVICE_IDS; the shared dashboard token (the agent API) cannot send an urgent row' }, 403)
+      return true
+    }
+    // HBTEMPLATELEAK1002: a heartbeat report that still carries its template's
+    // placeholder header is the instruction text, not a report; queued, it reads
+    // as an order in the recipient's box ("Tedd most", a curl recipe). Refuse it
+    // before anything is written, so the sender sees the error and the real
+    // report is the only one that lands.
+    if (isHeartbeatTemplateLeak(content)) {
+      logger.warn({ from: from.trim(), to: to.trim() }, 'Rejected /api/messages POST: heartbeat template placeholder header')
+      json(res, { error: 'heartbeat_template_placeholder: the header still reads "YYYY-MM-DD"; send the report with the real timestamp' }, 422)
+      return true
+    }
+    // HBFABRIC1003: a digest's Kanban lines must match the live board at send
+    // time (counts within the drift the board actually had, every listed card
+    // real and in the state its line claims). On 2026-10-03 17:00 the agent sent
+    // a card id that never existed and counts it had typed before reading its
+    // metrics block. Refused before anything is written, so the sender sees the
+    // difference and the made-up report never reaches the main agent's box.
+    const kanbanVerdict = verifyHeartbeatKanban(content, () => getHeartbeatKanbanLive(HEARTBEAT_KANBAN_WINDOW_SEC))
+    if (!kanbanVerdict.ok) {
+      logger.warn({ from: from.trim(), to: to.trim(), problems: kanbanVerdict.problems }, 'Rejected /api/messages POST: heartbeat Kanban lines do not match the live board')
+      // The heartbeat agent does not read the POST's status (its task ends at
+      // "send, stop"), so a refusal would otherwise be an hour with NO digest
+      // that only the dashboard log knows about (Geri's #1684 verify). The
+      // main agent is told instead -- server-side, not by the sender's
+      // discipline -- at most once per window, so a retrying sender cannot
+      // flood its box.
+      if (sanitizeAgentIdent(from) === HEARTBEAT_AGENT_ID) noteHeartbeatRefusal(kanbanVerdict.problems)
+      json(res, {
+        error: 'heartbeat_kanban_mismatch: the Kanban lines do not match the live board. Re-read the metrics block (GET /api/kanban/heartbeat-summary) and copy it, do not retype it.',
+        problems: kanbanVerdict.problems,
+      }, 422)
       return true
     }
     // Security: the channel-coordinator id grants channel-inbound delivery
@@ -279,6 +364,43 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'Invalid recipient: use "<system>/<agent>" (slash) for a federated address, not the "federation:x:y" source form' }, 400)
       return true
     }
+    // Unknown LOCAL recipient (UNKNOWNTO924): reject at once.
+    // Measured: a literal 'PLACEHOLDER' recipient (x3) and an '<agent>_placeholder' one
+    // were accepted with 200 and only turned 'failed' after the ~65 min retry
+    // window, so the sender believed they had been delivered. In the last 30
+    // days these were the ONLY non-agent recipients. A registered agent that is
+    // merely not running is a different case and keeps the retry path below.
+    // VOICEREPLY1005: the voice channel id is a PULL MAILBOX, not an agent. The
+    // voice relay sends the owner's dictation in as VOICE_CHANNEL_AGENT_ID, and
+    // an answer goes back to the same id; the relay reads it from the sender's
+    // conversation (GET /api/messages?agent=<sender>). No session owns it, so
+    // it must be accepted here even though it is not a registered agent -- the
+    // UNKNOWNTO924 gate below rejected every voice answer (measured 2026-10-05,
+    // 400 "unknown recipient") -- and closed at once below, so the router never
+    // tries to deliver it and raises no [handoff-failure].
+    // EXACT match on the stored id (review #1697): the row is closed at once, so
+    // a near-miss (the voice id plus a stray character, sanitised back to the voice id) would be stored under a
+    // name the relay never reads, and lost without a sound. It gets the 400.
+    const isVoiceMailbox = storedTo === VOICE_CHANNEL_AGENT_ID
+    //
+    // A SYSTEM_SENDER_IDS entry is not unknown either (card 9fc6dc3e): those
+    // ids name the neighbouring systems that talk to the fleet over this API,
+    // and the fleet answers them over the same POST (to=<system id>). Without
+    // this, every reply to such a system would get a 400 since this gate
+    // shipped. Only an id that is neither a registered agent nor a listed
+    // system is rejected.
+    // EXACT match on the stored id (review #1827), like the voice mailbox: the
+    // SYSTEM_SENDERS entries are already normalized, so a near-miss ('cort ex')
+    // that only SANITISES to a listed id would be stored under a name its
+    // system never reads. And the reserved directive sender stays closed on the
+    // recipient side too, even if an operator lists it in SYSTEM_SENDER_IDS
+    // (SYSRESERVED918 reserves it on the sender side above).
+    const isSystemRecipient = storedTo !== SYSTEM_DIRECTIVE_SENDER && SYSTEM_SENDERS.has(storedTo)
+    if (!storedTo.includes('/') && !isVoiceMailbox && !isSystemRecipient && !isKnownAgent(sanitizeAgentIdent(storedTo))) {
+      logger.warn({ from: from.trim(), to: storedTo }, 'Rejected /api/messages POST to an unregistered recipient')
+      json(res, { error: `unknown recipient '${storedTo}' -- to must be a registered fleet agent id, a SYSTEM_SENDER_IDS system id, or "<system>/<agent>" for federation` }, 400)
+      return true
+    }
     // Code-side enforcement of the kanban-ref convention: rewrite any
     // `#<hex8>` token that maps to a real kanban_cards row into its
     // human-facing `#<seq>` form before persistence, so the dashboard and
@@ -293,12 +415,55 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // Card 06f062e4: optional attributability tag, self-declared like `from`
     // itself -- capped short so it stays a label, not a second content field.
     const trimmedOriginNote = origin_note?.trim().slice(0, 120) || null
-    const msg = createAgentMessage(from.trim(), storedTo, normalizedContent, trimmedOriginNote)
-    logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent, originNote: msg.origin_note }, 'Agent message created')
-    // A LOCAL recipient that is not running never receives this: the router
-    // retries for a while and then abandons it, and the failure notice goes to
-    // the MAIN agent, not to the sender. The caller therefore sees a plain 200
-    // and believes it delegated. Federated addresses already get an actionable
+    // Card ad771121: the optional priority. Absent = "normal" (today's FIFO); an unknown value is a
+    // loud 400. Checked after every guard above, so their answers keep their precedence; the budget
+    // decision and the insert run back to back with no await between them.
+    const parsedPriority = parsePriorityField(priority)
+    if (!parsedPriority.ok) {
+      json(res, { error: parsedPriority.error }, 400)
+      return true
+    }
+    // Review point 1: the owner's own rows (and the voice channel's) already rank above a peer high by
+    // their sender (delivery-order.ts), so the per-pair budget, which exists to bound PEER highs, does not
+    // apply to them: an explicit "high" is stored as asked and never downgraded.
+    //
+    // Precedence (delivery-order.ts): STOP, urgent, system/owner, high, the rest. An urgent row is
+    // already above high by its own column, so it does not go through the per-pair budget at all
+    // and is stored with priority 0: it never spends that budget.
+    const decided = urgent === true
+      ? { priority: 0 as const, downgraded: false }
+      : rankedSenders().includes(from.trim())
+        ? { priority: parsedPriority.level === 'high' ? 1 as const : 0 as const, downgraded: false }
+        : decidePriority(parsedPriority.level, from.trim(), storedTo, Math.floor(Date.now() / 1000))
+    const msg = createAgentMessage(from.trim(), storedTo, normalizedContent, trimmedOriginNote, null, { urgent: urgent === true, priority: decided.priority })
+    if (isVoiceMailbox) {
+      markMessageDone(msg.id, VOICE_MAILBOX_RESULT)
+      logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent }, 'Voice-channel answer stored in the mailbox (no session delivery)')
+      json(res, { ...(getAgentMessage(msg.id) ?? msg), mailbox: true })
+      return true
+    }
+    // Backpressure, returned WITH the id rather than behind a second call:
+    // `{"id":N,"status":"pending"}` alone reads as "sent", and on a busy
+    // recipient it can be 80 minutes from true. See getRecipientQueueState for
+    // the measurement this came from. Federated recipients are skipped -- their
+    // queue lives on the peer, so any number we computed here would be a local
+    // artefact, and a wrong number is worse than none. Every success response
+    // below carries it, the warning ones included.
+    const queue = isQualifiedId(storedTo) ? undefined : getRecipientQueueState(storedTo)
+    const queueField = queue ? { queue } : {}
+    // Card ad771121: the row carries its stored priority (0 normal, 1 high); a high request over the pair's
+    // hourly budget was accepted as normal, never dropped, and the answer says so. Every success answer
+    // below carries it, like the queue.
+    const downgradedField = decided.downgraded ? { downgraded: true } : {}
+    logger.info(
+      { id: msg.id, from: msg.from_agent, to: msg.to_agent, originNote: msg.origin_note, queueDepth: queue?.queueDepth, priority: msg.priority, downgraded: decided.downgraded },
+      'Agent message created',
+    )
+    // A LOCAL recipient that is not running receives this only if it is
+    // started within the abandon window: the router keeps the row pending and
+    // retries, then abandons it, and the failure notice goes to the MAIN agent,
+    // not to the sender. The caller therefore sees a plain 200 and believes it
+    // delegated. Federated addresses already get an actionable
     // error at creation time (see above) -- give the local path the same
     // courtesy, as a non-breaking warning field rather than a status change, so
     // existing callers keep working.
@@ -319,15 +484,51 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
         && sanitizeAgentIdent(storedTo) !== sanitizeAgentIdent(MAIN_AGENT_ID)
         && !readAgentPullDelivery(sanitizeAgentIdent(storedTo))
         && !isAgentRunning(sanitizeAgentIdent(storedTo))) {
-      logger.warn({ id: msg.id, to: msg.to_agent }, 'Agent message queued for a STOPPED agent -- likely to be abandoned')
+      logger.warn({ id: msg.id, to: msg.to_agent }, 'Agent message queued for a STOPPED agent -- delivered if it starts within the abandon window')
+      // The warning must say what the router actually does: the row stays
+      // `pending`, and the router delivers it as soon as the target's session
+      // appears, for MESSAGE_ABANDON_WINDOW_MS. Only after that window is it
+      // marked failed. The earlier text claimed the message was LOST
+      // immediately; measured on a live install, the sender believed it and
+      // re-sent a duplicate handoff, while the original was in fact delivered
+      // 23 s after the target was started.
+      // abandonAt is created_at + the window. It is an estimate, not a promise:
+      // the router counts the target's CONTINUOUS absence as it observes it
+      // (shouldAbandon in message-router.ts), a clock that starts within one
+      // tick of this row for a target that has nothing else pending, earlier if
+      // older rows to the same target are already waiting, and anew after a
+      // dashboard restart.
       json(res, {
         ...msg,
+        ...queueField,
+        ...downgradedField,
         targetRunning: false,
-        warning: `'${msg.to_agent}' nem fut -- indítsd el (POST /api/agents/${msg.to_agent}/start), várd meg amíg feláll, és küldd újra. Egy leállított ügynöknek küldött üzenet nem várakozik, hanem elveszik.`,
+        queued: true,
+        abandonAt: msg.created_at + Math.floor(MESSAGE_ABANDON_WINDOW_MS / 1000),
+        warning: `'${msg.to_agent}' most nem fut: az üzenet SORBAN VÁR, és kézbesül, amint elindul (POST /api/agents/${msg.to_agent}/start). Ha nem indul el, az üzenet failed lesz, amint a célpont ${Math.round(MESSAGE_ABANDON_WINDOW_MS / 60000)} perce folyamatosan nem fut (ha már korábban is várt rá üzenet, ez hamarabb jöhet), és NEM kézbesül később -- ne küldd újra, amíg az id státusza pending.`,
       })
       return true
     }
-    json(res, msg)
+    // Warn-only homoglyph check -- same contract as memories/daily-log/cases.
+    //
+    // Added 2026-09-14 after a measured case. The two channels that HAD a
+    // check (kanban triggers, memories/daily-log warning field) are the
+    // low-traffic ones; this one carried 442 messages in a single day on
+    // 2026-09-11. And the damage here is not legibility: our own P1/P2/P3
+    // probes are `content LIKE` searches, so one Cyrillic letter inside a
+    // client name or an id makes every later search return zero -- the exact
+    // false-zero that cost us two wrong conclusions the same day.
+    //
+    // Warn, never block: the message is already created above, and a delivery
+    // that fails on a cosmetic check would be worse than a lookalike letter.
+    const homoglyphs = detectHomoglyphs(normalizedContent)
+    if (homoglyphs.length > 0) {
+      const warning = formatHomoglyphWarning(homoglyphs)
+      logger.warn({ id: msg.id, from: msg.from_agent, to: msg.to_agent }, `agent message created with ${warning}`)
+      json(res, { ...msg, ...queueField, ...downgradedField, homoglyph_warning: warning })
+      return true
+    }
+    json(res, { ...msg, ...queueField, ...downgradedField })
     return true
   }
 
@@ -342,7 +543,22 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
   // enough to curl on a schedule; the point is that a growing queue behind a
   // busy agent becomes visible BEFORE someone mistakes it for lost messages.
   if (path === '/api/messages/backlog' && method === 'GET') {
-    json(res, getPendingBacklogByAgent())
+    // Ugyanaz a kikotes, mint a /api/messages-en es a /api/kanban-on: ismeretlen param -> HANGOS
+    // 400, szigoru halmaz, alias nelkul. A vegpont eddig NEMAN eldobta az `agent=`-et, tehat a
+    // teljes flotta backlogjat adta vissza -- tobbet, mint amit kertek, ami a dragabb irany.
+    const KNOWN_PARAMS = new Set(['agent', 'assignee'])
+    const unknown = [...url.searchParams.keys()].filter((k) => !KNOWN_PARAMS.has(k))
+    if (unknown.length) {
+      json(res, {
+        error: 'unknown query parameter',
+        unknown,
+        known: [...KNOWN_PARAMS],
+        hint: 'a backlog szurese "agent" (vagy "assignee"); parameter nelkul a TELJES flotta jon',
+      }, 400)
+      return true
+    }
+    const agent = url.searchParams.get('agent') ?? url.searchParams.get('assignee') ?? undefined
+    json(res, getPendingBacklogByAgent(agent))
     return true
   }
 
@@ -425,9 +641,27 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       return true
     }
 
+    // Only an OPEN message is closed here (closeOpenMessage checks and writes in one
+    // UPDATE). A second close of a done/failed row is refused with 409 and changes
+    // nothing: it used to overwrite the stored result and send a second completion
+    // report in the recipient's name, also when the second caller was not the
+    // recipient. A repeated PUT after a client timeout gets the same 409; the first
+    // close already took effect.
     let ok = false
-    if (newStatus === 'done') ok = markMessageDone(id, result)
-    else if (newStatus === 'failed') ok = markMessageFailed(id, result)
+    if (newStatus === 'done' || newStatus === 'failed') {
+      ok = closeOpenMessage(id, newStatus, result)
+      if (!ok) {
+        const current = getAgentMessage(id)
+        if (current && (current.status === 'done' || current.status === 'failed')) {
+          json(res, {
+            error: 'Message already closed',
+            status: current.status,
+            hint: 'the first close already took effect; nothing was changed and no completion report was sent',
+          }, 409)
+          return true
+        }
+      }
+    }
 
     if (ok) {
       const done = getAgentMessage(id)

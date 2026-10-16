@@ -193,6 +193,12 @@ def main():
         check("mixed-script homoglyph still blocks (exit 2)", code, 2)
         check_true("homoglyph: stderr names it", "VEGYES IRASRENDSZERU" in err, err)
 
+        # 5d2. HOMOGLYPHMICRO924: unit and formula notation is not a mixed-script
+        # word (MICRO SIGN, superscript and subscript digits disguise no Latin letter).
+        units = " A mért késés 40 \u00b5s, a ház 100 m\u00b2, a doboz 5 cm\u00b3, a víz H\u2082O."
+        code, out, err = run_hook(email_payload(CLEAN_HU_OK + units), rules_file=active)
+        check("unit notation (micro sign, super/subscript digits) passes (exit 0)", code, 0)
+
         # 5e. clean, correctly-accented text with an active (matching-nothing)
         # rule and no em dash/double-hyphen/homoglyph -> passes clean.
         code, out, err = run_hook(email_payload(CLEAN_HU_OK), rules_file=active)
@@ -240,6 +246,43 @@ def main():
                    "tool_input": {"message_id": "1", "text": CLEAN_HU_OK}}
         code, out, err = run_hook(edit_ok, rules_file=active)
         check("edit_message clean passes (exit 0)", code, 0)
+
+        # --- GATEDISCORD905: the Discord reply path is audited too ----------
+        # Same audit as Telegram, with two deliberate differences: no MarkdownV2
+        # unescaping (a backslash on Discord is a literal the author typed), and
+        # the Telegram-only code-block rule must NOT fire there.
+        discord_bad = {"tool_name": "mcp__plugin_discord_discord__reply",
+                       "tool_input": {"text": CLEAN_HU_OK + " — mégis."}}
+        code, out, err = run_hook(discord_bad, rules_file=active)
+        check("discord reply with em dash blocks (exit 2)", code, 2)
+        check_true("discord block names the DISCORD channel, not Telegram",
+                   "(Discord)" in err and "(Telegram)" not in err, err)
+
+        discord_ok = {"tool_name": "mcp__plugin_discord_discord__reply",
+                      "tool_input": {"text": CLEAN_HU_OK}}
+        code, out, err = run_hook(discord_ok, rules_file=active)
+        check("discord reply clean passes (exit 0)", code, 0)
+
+        discord_edit = {"tool_name": "mcp__plugin_discord_discord__edit_message",
+                        "tool_input": {"message_id": "1", "text": CLEAN_HU_OK + " — mégis."}}
+        code, out, err = run_hook(discord_edit, rules_file=active)
+        check("discord edit_message with em dash blocks (exit 2)", code, 2)
+
+        # The code-block rule is Telegram-only. Discord renders a fenced block
+        # natively and its reply tool has no markdownv2 format value, so firing
+        # here would block a problem that does not exist. Paired with the
+        # telegram case above, which must stay red for the same input.
+        discord_fence = {"tool_name": "mcp__plugin_discord_discord__reply",
+                         "tool_input": {"text": fenced}}
+        code, out, err = run_hook(discord_fence, rules_file=active)
+        check("discord codeblock without markdownv2 passes (exit 0)", code, 0)
+
+        # A name hit still blocks on Discord: the channel branch is a new door,
+        # not a bypass.
+        discord_name = {"tool_name": "mcp__plugin_discord_discord__reply",
+                        "tool_input": {"text": CLEAN_HU_OK + " Üdvözlettel, Teszt Elek"}}
+        code, out, err = run_hook(discord_name, rules_file=active)
+        check("discord reply with a bad name blocks (exit 2)", code, 2)
 
         # --- COPYGATEENT914: HTML-ENTITAS NEM KERULHETI MEG A GONDOLATJEL-TILTAST ---
         # Marveen merese 2026-09-14, egy VALODI vevo-levelen: a hook a TAGEKET
@@ -290,6 +333,27 @@ def main():
         code, out, err = run_hook(span, rules_file=active)
         check("escape-elt SPAN-ben rejtett gondolatjel blokkol (sorrend-fog)", code, 2)
         check("...es a GONDOLATJEL indokkal", "GONDOLATJEL" in (err or ""), True)
+
+        # --- C67F5F34: A GOMBFELIRATOK IS KIMENO SZOVEG ----------------------
+        # A Telegram reply eszkoz buttons mezoje (a plugin Marveen-foltja) egy
+        # koppintassal valaszolhato gombokat tesz a kerdes ala; a felirat az, amit
+        # a cimzett lat es visszakuld. A SZOVEG SZANDEKOSAN TISZTA (teljesen
+        # ekezetes, gondolatjel nelkul), hogy a tiltas CSAK a feliratbol johessen
+        # (a COPYGATEENT914 tanulsaga: egy mas okbol is tuzelo teszt nem mer).
+        def gombos(buttons):
+            return {"tool_name": "mcp__plugin_telegram_telegram__reply",
+                    "tool_input": {"text": CLEAN_HU_OK, "buttons": buttons}}
+        code, out, err = run_hook(gombos(["A. Elfogadom", "B. Már megoldva — köszönöm"]), rules_file=active)
+        check("gondolatjel a gombfeliratban blokkol (exit 2)", code, 2)
+        check_true("...es a GONDOLATJEL indokkal", "GONDOLATJEL" in (err or ""), detail=(err or "")[:120])
+        code, out, err = run_hook(gombos("A — B"), rules_file=active)
+        check("nem lista alaku buttons is vizsgalt (exit 2)", code, 2)
+        # NEGATIV KONTROLL: tiszta feliratok atmennek, es a tiszta szoveg magaban is.
+        code, out, err = run_hook(gombos(["A. Elfogadom", "B. Már megoldva", "C. Valami más lesz a megoldás"]),
+                                  rules_file=active)
+        check("tiszta gombfeliratok atmennek (exit 0)", code, 0)
+        code, out, err = run_hook(gombos([]), rules_file=active)
+        check("ures gomblista (a billentyuzet levetele) atmegy (exit 0)", code, 0)
 
         # --- GMAILCONNECTOR914: the claude.ai Gmail connector ----------------
         # mcp__claude_ai_Gmail__send_message carries ONE underscore before Gmail,

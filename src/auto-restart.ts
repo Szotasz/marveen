@@ -220,3 +220,44 @@ export function deferralOverride(
   if (deferredSinceMs === null) return false
   return nowMs - deferredSinceMs >= capMs
 }
+
+/**
+ * c5296a52 -- BOUNDED RETRY for a restart that cannot succeed.
+ *
+ * A failed restart used to leave `lastRestart` unset, so the slot stayed due and the next idle
+ * tick tried again. On 2026-09-18 that produced 176 attempts between 03:00Z and 08:01Z: the
+ * respawn threw "can't find pane" (the reaps had taken the session), the caller logged a WARN,
+ * and the cycle repeated every 6-7 minutes for five hours.
+ *
+ * Retrying a few times is right (a transient tmux hiccup should not skip the nightly restart),
+ * retrying forever is not. After the cap the caller RELEASES the slot (stamps lastRestart) and
+ * says so out loud -- a nightly restart that never happened must not look like one that did.
+ */
+export const MAX_RESTART_ATTEMPTS = 3
+
+export type RestartFailureAction = 'retry' | 'release-and-notify'
+
+/**
+ * @param attempts     How many consecutive failures this agent has had, INCLUDING this one.
+ * @param maxAttempts  Cap; the third failure releases the slot with the default.
+ */
+export function restartFailureAction(
+  attempts: number,
+  maxAttempts: number = MAX_RESTART_ATTEMPTS,
+): RestartFailureAction {
+  return attempts < maxAttempts ? 'retry' : 'release-and-notify'
+}
+
+/**
+ * c5296a52 -- was the main session brought back, or did the relaunch fail?
+ *
+ * `createMainChannelsSession()` returns a discriminated result, and two of its four values mean
+ * "something IS coming up": 'started' (we launched channels.sh) and 'grace' (a launch is already
+ * in flight, the session is booting). Treating 'grace' as a failure would re-arm the very retry
+ * loop this card removes, on a host where the session is in fact starting.
+ */
+export function mainRelaunchSucceeded(
+  result: 'started' | 'grace' | 'script-missing' | 'spawn-failed',
+): boolean {
+  return result === 'started' || result === 'grace'
+}

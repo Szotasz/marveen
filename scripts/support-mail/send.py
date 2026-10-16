@@ -9,6 +9,7 @@ runtime (never stored/printed). --html sends the body as an HTML alternative.
 """
 import sys, os, ssl, smtplib, argparse, imaplib, time
 from email.message import EmailMessage
+from email.utils import getaddresses
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import lib
 
@@ -20,6 +21,32 @@ import lib
 # (A template-identity-hygiene teszt fogta meg az elso, hardcode-olt valtozatot --
 #  jogosan: az minden vevo telepitesen a mi cimunkre CC-zett volna.)
 OWNER_CC = lib._env("SUPPORT_OWNER_CC")
+
+
+def envelope_recipients(to, cc=None):
+    """SMTP envelope recipients from the --to and --cc values (SENDMAILLIST928).
+
+    Both flags accept a comma-separated address list. The headers keep the value
+    as given; the envelope needs one entry per address, otherwise a list goes out
+    as a single RCPT and the server rejects or misroutes it. getaddresses is used
+    instead of a plain split so a display name with a comma ("Doe, John <j@x.hu>")
+    stays one address. Order is kept, exact duplicates are dropped.
+
+    Fails loudly (ValueError) when a non-empty field yields no usable address:
+    newer Pythons' strict parser returns an empty pair for malformed input, and a
+    silently empty envelope must never reach the SMTP call."""
+    out, seen = [], set()
+    for field in (to, cc):
+        if not field or not field.strip():
+            continue
+        found = [addr.strip() for _, addr in getaddresses([field]) if "@" in addr]
+        if not found:
+            raise ValueError(f"no usable address in {field!r}")
+        for addr in found:
+            if addr.lower() not in seen:
+                seen.add(addr.lower())
+                out.append(addr)
+    return out
 
 
 def main():
@@ -67,7 +94,10 @@ def main():
     else:
         msg.set_content(body)
 
-    rcpts = [a.to] + ([a.cc] if a.cc else [])
+    try:
+        rcpts = envelope_recipients(a.to, a.cc)
+    except ValueError as e:
+        sys.exit(f"send.py: refusing to send, {e}")
     # FQDN EHLO name is REQUIRED: some SMTP providers reject EHLO with a private/bare
     # IP ([192.168.x.x]) -> "421 4.4.2 timeout exceeded". local_hostname forces a
     # proper FQDN; derive it from the mailbox domain.

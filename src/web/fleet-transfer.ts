@@ -19,12 +19,15 @@ import { PROJECT_ROOT, STORE_DIR, MAIN_AGENT_ID, BOT_NAME, BRAND_NAME, OWNER_NAM
 import { channelStateDir, type ChannelProviderType } from '../channel-provider.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { updateEnvFile } from '../env.js'
-import { AGENTS_BASE_DIR, listAgentNames } from './agent-config.js'
+import { AGENTS_BASE_DIR, listAgentNames, readJsonObjectForWrite } from './agent-config.js'
 import { safeJoin } from './sanitize.js'
+import { importedLabelColor } from '../css-color.js'
 import { SCHEDULED_TASKS_DIR } from './scheduled-tasks-io.js'
 import { getBindings } from './vault-bindings.js'
+import { resolveMasterKeyForExport } from './vault.js'
 import { getDb, backfillEmbeddings } from '../db.js'
 import { logger } from '../logger.js'
+import { isValidModelId } from '../model-id.js'
 
 // ---------------------------------------------------------------------------
 // Schema version -- bump when the JSON shape changes incompatibly.
@@ -629,24 +632,19 @@ function exportDashboardSettings(): DashboardSettingsExport {
 }
 
 function exportVault(): VaultExport | null {
-  const vaultKeyPath = join(STORE_DIR, '.vault-key')
-  const vaultKeyMigratedPath = join(STORE_DIR, '.vault-key.migrated')
   const vaultPath = join(STORE_DIR, 'vault.json')
   const bindingsPath = join(STORE_DIR, 'vault-bindings.json')
 
-  if (!existsSync(vaultKeyPath)) {
-    // macOS Keychain migration -- vault-key.migrated means key is in Keychain
-    if (existsSync(vaultKeyMigratedPath)) {
-      throw new Error(
-        'A vault kulcs macOS Keychain-be lett migrálva (.vault-key.migrated megtalálható). ' +
-        'A vault szekció exportja ebben a konfigurációban nem támogatott -- adj meg vault jelszót.'
-      )
-    }
-    return null
-  }
+  // The master key is resolved by CONTENT from whichever source holds it
+  // (.vault-key, .vault-key.migrated, Keychain), each verified against
+  // vault.json -- not inferred from which filename happens to exist. A kept
+  // .vault-key.migrated is a valid copy of the live key after a Keychain
+  // migration, so its presence must not refuse the export. Null = no key and
+  // no secret; a vault with secrets and no opening key throws VaultKeyError.
+  const vaultKey = resolveMasterKeyForExport()
+  if (!vaultKey) return null
 
   // Raw export: the entire FleetJson will be encrypted, so vault data is safe as plaintext here.
-  const vaultKey = readFileSync(vaultKeyPath, 'utf-8').trim()
   const vaultStore = safeReadJson(vaultPath)
   const entries = (vaultStore.entries as Record<string, unknown>[]) ?? []
   const bindingsStore = safeReadJson(bindingsPath)
@@ -655,6 +653,9 @@ function exportVault(): VaultExport | null {
   // Channel .env (bot tokens) are intentionally NOT exported -- see re-pair model comment in VaultExport.
   return { vaultKey, entries, bindings }
 }
+
+// Exposed for unit tests -- exercises the master-key source resolution above.
+export const _exportVaultForTest = exportVault
 
 // Encrypted export wrapper: {"enc":1,"blob":"<base64-of-encrypted-fleet-json>"}
 // The enc field signals the import side to decrypt before parsing.
@@ -763,6 +764,26 @@ function validateSchema(fleet: unknown): string[] {
 }
 
 // B1: validate all untrusted names before any file operation
+// SECSZIVEK1007: the model ids an import would write (the main agent's
+// .claude/settings.json and agent-config.json, each agent's agent-config.json
+// and settings.json) go through the same allowlist as every other model writer
+// (isValidModelId). A malformed id rejects the whole import before any write.
+function validateModels(fleet: FleetJson): string[] {
+  const errors: string[] = []
+  const check = (where: string, obj: Record<string, unknown> | undefined): void => {
+    const m = obj?.model
+    if (m === undefined || m === null || m === '') return
+    if (!isValidModelId(m)) errors.push(`Érvénytelen modell-azonosító (${where}).`)
+  }
+  check('mainAgent settings.json', fleet.mainAgent?.settings)
+  check('mainAgent agent-config.json', fleet.mainAgent?.config)
+  for (const agent of fleet.agents ?? []) {
+    check(`agent ${String(agent.name).slice(0, 60)} agent-config.json`, agent.config)
+    check(`agent ${String(agent.name).slice(0, 60)} settings.json`, agent.settings)
+  }
+  return errors
+}
+
 function validateNames(fleet: FleetJson): string[] {
   const errors: string[] = []
 
@@ -1048,6 +1069,10 @@ export function importFleet(
   if (nameErrors.length > 0) {
     return { ...EMPTY_DIFF, errors: nameErrors }
   }
+  const modelErrors = validateModels(fleet)
+  if (modelErrors.length > 0) {
+    return { ...EMPTY_DIFF, errors: modelErrors }
+  }
 
   if (!options.apply) {
     const report = buildDiffReport(fleet)
@@ -1117,8 +1142,13 @@ export function importFleet(
       for (const label of fleet.kanban?.labels ?? []) {
         const l = label as any
         if (!l.id || !l.name) { logger.warn({ id: l.id }, 'Fleet import: skipping label with missing required fields'); continue }
+        // the colour reaches CSS backgrounds on the dashboard: hex is kept as
+        // written, a colour name / numeric rgb() / hsl() becomes hex, a bare
+        // var(--token) is kept, anything else is replaced with the default
+        const imported = importedLabelColor(l.color)
+        if (imported.replaced) logger.warn({ id: l.id }, 'Fleet import: label colour is not a colour, replaced with the default')
         db.prepare('INSERT OR IGNORE INTO labels (id, name, color, created_at) VALUES (?, ?, ?, ?)')
-          .run(l.id, l.name, l.color, l.created_at)
+          .run(l.id, l.name, imported.color, l.created_at)
       }
 
       for (const card of fleet.kanban?.cards ?? []) {
@@ -1128,10 +1158,10 @@ export function importFleet(
         }
         db.prepare(
           `INSERT OR IGNORE INTO kanban_cards
-           (id, title, description, status, assignee, priority, project,
+           (id, title, description, test_steps, status, assignee, priority, project,
             due_date, sort_order, created_at, updated_at, archived_at, parent_id, dispatched_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-        ).run(c.id, c.title, c.description ?? null, c.status, c.assignee ?? null,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ).run(c.id, c.title, c.description ?? null, c.test_steps ?? null, c.status, c.assignee ?? null,
           c.priority, c.project ?? null, c.due_date ?? null, c.sort_order,
           c.created_at, c.updated_at, c.archived_at ?? null, c.parent_id ?? null, c.dispatched_at ?? null)
       }
@@ -1242,12 +1272,11 @@ export function importFleet(
     const sourceAgentId = sourceIdentity?.MAIN_AGENT_ID ?? fleet.mainAgent?.agentId
     if (sourceAgentId && typeof sourceAgentId === 'string') {
       const overridesPath = join(STORE_DIR, 'config-overrides.json')
-      let overrides: Record<string, unknown> = {}
-      try {
-        if (existsSync(overridesPath)) {
-          overrides = JSON.parse(readFileSync(overridesPath, 'utf-8')) as Record<string, unknown>
-        }
-      } catch { /* start fresh if file is corrupt */ }
+      // JSONCLOBBER926B: a corrupt config-overrides.json is refused, not
+      // replaced by the identity keys alone (it holds every dashboard setting).
+      // The throw takes the import's own failure path below: tracked writes are
+      // cleaned up and the error names the file.
+      const overrides = readJsonObjectForWrite(overridesPath)
       if (sourceIdentity && typeof sourceIdentity === 'object') {
         // Full identity takeover: iterate all keys generically (no hardcoded names)
         for (const [key, val] of Object.entries(sourceIdentity)) {

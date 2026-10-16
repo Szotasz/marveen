@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { CronExpressionParser } from 'cron-parser'
-import { resolveAppTz } from '../config.js'
+import { resolveAppTz, usableHostTz } from '../config.js'
 import { cronDueBetween } from '../web/cron.js'
 
 // Regression for the failure mode one layer below the 2026-07-13..15 outage:
@@ -49,7 +49,7 @@ describe('resolveAppTz', () => {
   it('uses the real process zone as the default second argument', () => {
     const r = resolveAppTz('Europe/Budapesst')
     expect(r.invalid).toBe('Europe/Budapesst')
-    expect(r.tz).toBe(Intl.DateTimeFormat().resolvedOptions().timeZone)
+    expect(r.tz).toBe(usableHostTz(Intl.DateTimeFormat().resolvedOptions().timeZone))
   })
 })
 
@@ -79,9 +79,12 @@ describe('the probe agrees with the consumer', () => {
   // violation would reintroduce the bug.
   it('matches cron-parser on an engine-dependent input, whichever way it goes', () => {
     const OFFSET = '+02:00'
+    // Both consumers of APP_TZ: the scheduler and every Intl display path
+    // (ISSUE1895). The guard accepts exactly what BOTH accept.
     let consumerAccepts = true
     try {
       CronExpressionParser.parse('0 0 * * *', { tz: OFFSET }).next()
+      new Intl.DateTimeFormat('en-US', { timeZone: OFFSET })
     } catch {
       consumerAccepts = false
     }

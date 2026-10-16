@@ -49,3 +49,32 @@ describe('outgoing-copy gate: the main agent covers what the scaffold covers', (
     },
   )
 })
+
+// GATEDISCORDWIRE924: the gate learned the Discord reply path (GATEDISCORD905),
+// but the detector is only half of the measurement -- the matcher is the other.
+// The hook's own unit tests call it directly, so they passed while the committed
+// settings never invoked it for a Discord tool at all. Measured 2026-09-24 with a
+// synthetic em-dash payload: fed to the hook directly, both Discord tools block
+// (exit 2); through settings.json, neither is ever routed to it. Pin the wiring,
+// not only the logic, so the two cannot drift apart again.
+const DISCORD_OUTBOUND_TOOLS = [
+  'mcp__plugin_discord_discord__reply',
+  'mcp__plugin_discord_discord__edit_message',
+]
+
+describe('outgoing-copy gate: the main agent routes the Discord send tools to it', () => {
+  it.each(DISCORD_OUTBOUND_TOOLS)(
+    'the committed main-agent settings invoke the gate for %s',
+    (tool) => {
+      const covered = copyGateMatchers().some((m) => new RegExp(m).test(tool))
+      expect(covered).toBe(true)
+    },
+  )
+
+  it('a Discord read tool is NOT routed to the gate (guards the test itself)', () => {
+    // A catch-all matcher would satisfy the assertions above for the wrong reason.
+    const covered = copyGateMatchers().some((m) =>
+      new RegExp(m).test('mcp__plugin_discord_discord__fetch_messages'))
+    expect(covered).toBe(false)
+  })
+})

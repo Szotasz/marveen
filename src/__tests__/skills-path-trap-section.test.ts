@@ -11,6 +11,9 @@ import { tmpdir } from 'node:os'
 const tmpRoot = mkdtempSync(join(tmpdir(), 'marveen-skilltrap-test-'))
 
 vi.mock('../config.js', () => ({
+  // agent-scaffold imports settings-store (MCPOROKLES923), which derives a path from
+  // STORE_DIR at import time. A never-created dir: nothing here reads the store.
+  STORE_DIR: '/nonexistent/claudeclaw-test-store',
   PROJECT_ROOT: tmpRoot,
   OWNER_NAME: 'TestOwner',
   MAIN_AGENT_ID: 'agent-a',
@@ -109,5 +112,26 @@ describe('wiring contracts', () => {
   it('the generated template names the trap inline too', () => {
     const src = readFileSync(join(__dirname, '../../src/web/agent-scaffold.ts'), 'utf-8')
     expect(src).toContain('CSAPDA: a .claude-config/skills NEM a tiéd')
+  })
+})
+
+// MEMSLUG1005 (#1700 review): the memory paragraph was held by no test, so neither
+// the old ("never yours") nor the replacement ("keyed by the cwd slug") wording was
+// pinned. Claude Code keys the auto-memory dir by the GIT ROOT, so the criterion the
+// agent is given must be the path the harness names, resolved -- never a slug the
+// agent derives from its working directory.
+describe('skills-path-trap memory paragraph', () => {
+  it('points at the harness-given path and the git-root keying, not a derived cwd slug', () => {
+    setup('agent-mem', '# Agent Mem\n')
+    ensureSkillsPathTrapSection('agent-mem')
+    const block = read('agent-mem').split(MARKER_BEGIN)[1].split(MARKER_END)[0]
+    expect(block).toContain('MEGADOTT útvonal')
+    expect(block).toContain('`readlink -f`')
+    expect(block).toContain('REPO GYÖKERE')
+    expect(block).toContain('`POST /api/memories`')
+    // The rejected rule must not come back: the cwd slug is a transcript dir on a
+    // git checkout, and writing memory there is the silent loss this block prevents.
+    expect(block).not.toMatch(/MUNKAKÖNYVTÁR\s+slugja\s+szerint\s+kulcsolt/)
+    expect(block).not.toContain('a tiéd SOHA')
   })
 })

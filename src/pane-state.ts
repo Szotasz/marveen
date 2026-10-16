@@ -77,6 +77,53 @@ export type PaneState = 'idle' | 'busy' | 'typing' | 'unknown' | 'error'
 // `← for agents` is the FleetView tail on current builds; older tails kept.
 const IDLE_FOOTER_RX = /(?:[A-Za-z][\w-]* ){1,3}on(?: \(shift\+tab to cycle\)| · [^\n]*?(?:ctrl\+t|↓ to manage|← for agents))|\? for shortcuts/
 
+// tmux clips the footer to the pane width and marks the cut with `…`, so on a
+// narrow pane the required tail arrives as `← for agen…` and IDLE_FOOTER_RX
+// cannot match: the pane reads 'unknown' and every idle-waiting consumer stalls
+// (observed 2026-08-22: the context guard force-restarted an agent 20 minutes
+// after it had written its HANDOFF.md). Two `·` separators before the cut keep
+// it UI chrome; a clipped prose line rarely carries more than one.
+//
+// KEPT OUT OF IDLE_FOOTER_RX ON PURPOSE, and only ever tested against the LAST
+// non-empty line (see idleFooterIndex). An earlier version folded it into the
+// shared regex with the `m` flag, so it matched the end of ANY line: a clipped
+// footer or a prose line ending in `…` in the scrollback above an open
+// permission prompt made the pane read idle, and delivery could type a message
+// plus Enter into the dialog with "1. Yes" preselected (#1743 review).
+const FOOTER_TRUNCATED_RX = /(?:[A-Za-z][\w-]* ){1,3}on · [^\n]*·[^\n]*…\s*$/
+
+// VAGTECHIDLE1009 (customer report, Vág-Tech, 2026-10-09; also seen on our own
+// fleet 2026-10-08): while a background shell is still running, the footer can
+// END in its count -- `⏵⏵ bypass permissions on · 1 shell` -- with none of the
+// tails IDLE_FOOTER_RX requires (`ctrl+t`, `↓ to manage`, `← for agents`). The
+// pane then read 'unknown', paneLooksIdle never became true, and every
+// readiness-gated path stopped: delivery, the auto-restart idle guard (6.5 and
+// 18.5 hours of silence at the customer). Same rule as the clipped form: the
+// mode word, `on`, then only `· N shell(s)` and an optional `· N monitor(s)`
+// to the end of the line, and ONLY on the last non-empty line, so the same
+// words quoted in a log line in the scrollback never count.
+const FOOTER_SHELL_TAIL_RX = /(?:[A-Za-z][\w-]* ){1,3}on(?: \(shift\+tab to cycle\))? · \d+ shells?(?: · \d+ monitors?)?\s*$/
+
+/**
+ * Index of the idle footer line, or -1. The full footer may sit anywhere the
+ * callers already accepted it; the tmux-clipped form and the bare background-
+ * shell tail (VAGTECHIDLE1009) count ONLY as the last
+ * non-empty line, which is where the live footer is drawn. A dialog replaces
+ * the input box and footer, so its last line is the dialog's own hint, never
+ * a clipped footer.
+ */
+function idleFooterIndex(lines: string[]): number {
+  const full = lines.findIndex(l => IDLE_FOOTER_RX.test(l))
+  if (full >= 0) return full
+  let last = lines.length - 1
+  while (last >= 0 && lines[last].trim() === '') last--
+  return last >= 0 && (FOOTER_TRUNCATED_RX.test(lines[last]) || FOOTER_SHELL_TAIL_RX.test(lines[last])) ? last : -1
+}
+
+function hasIdleFooter(lines: string[]): boolean {
+  return idleFooterIndex(lines) >= 0
+}
+
 // Positive busy signals. ANY match anywhere in the pane means the turn
 // is mid-flight, even if the footer looks idle for a frame.
 //
@@ -432,6 +479,71 @@ export function stripSessionTitleBanner(coloredPane: string): string {
   return lines.slice(0, end).join('\n')
 }
 
+// Background (sub-)agents render as a block BELOW the idle footer: blank row,
+// `  ⏺ main`, then one `  ◯ <type>  <label> <elapsed> · ↓ <n> tokens` row per
+// agent (measured 2026-10-16, Claude Code 2.1.301). The footer is no longer the
+// last line, which broke two probes that count from the bottom:
+//   - the clipped footer (FOOTER_TRUNCATED_RX) is only accepted on the LAST
+//     non-empty line, so a main thread starting a turn with an agent running
+//     read 'unknown' (the dashboard's orange "ismeretlen");
+//   - the rows pushed the spinner and `esc to interrupt` out of the bottom live
+//     windows, so a main thread mid-turn with five agents read 'idle'.
+// The block starts at an indented `⏺ main` header whose nearest non-blank line
+// above is the footer; everything from the header down is cut before the pane
+// is classified, whatever the rows look like, so a row shape we have not seen
+// cannot push a running turn back out of the live windows. COUNTING is stricter:
+// detectBackgroundAgents reports only when every row is a measured `◯` row, and
+// says nothing (null) otherwise.
+const BG_AGENT_MAIN_RX = /^\s+⏺ main\s*$/
+const BG_AGENT_ROW_RX = /^\s+◯ \S/
+// The footer's lead: the mode words + `on`, then the shift+tab hint and/or the
+// first `·` segment; or the no-mode `? for shortcuts` footer.
+const FOOTER_LEAD_RX = /(?:[A-Za-z][\w-]* ){1,3}on(?: \(shift\+tab to cycle\))?(?: · |\s*$)|\? for shortcuts/
+// The row tail is `[elapsed, tokens, "N queued"]` joined with ` · ` (read from
+// the Claude Code 2.1.301 source; empty parts are dropped). A running agent's
+// elapsed is a clock (`18m 5s`); an idle one shows a word (`waiting`, `idle`)
+// instead. In its first second the token part is not drawn yet. `N queued` is
+// the number of messages sent TO that agent that it has not picked up yet.
+const BG_AGENT_RUNNING_RX = new RegExp(String.raw`\s${TURN_ELAPSED}(?: · [↑↓] \d[\d.]*[kKmMbB]? tokens)?(?: · \d+ queued)?\s*$`)
+const BG_AGENT_QUEUED_RX = / · (\d+) queued\s*$/
+
+function splitBackgroundAgentBlock(lines: string[]): { above: string[]; rows: string[] } | null {
+  let end = lines.length
+  while (end > 0 && lines[end - 1].trim() === '') end--
+  let header = end - 1
+  while (header >= 0 && !BG_AGENT_MAIN_RX.test(lines[header])) header--
+  if (header < 1) return null
+  let k = header - 1
+  while (k >= 0 && lines[k].trim() === '') k--
+  if (k < 0 || !FOOTER_LEAD_RX.test(lines[k])) return null
+  return { above: lines.slice(0, header), rows: lines.slice(header + 1, end) }
+}
+
+/**
+ * The background-agent block under the footer, or null when the pane shows
+ * none in the recognised shape. `running` counts the rows that carry the live
+ * elapsed clock; `total` counts every row; `queued` sums the `N queued` parts
+ * (messages waiting for an agent to pick them up).
+ */
+export function detectBackgroundAgents(pane: string): { total: number; running: number; queued: number } | null {
+  if (!pane) return null
+  const block = splitBackgroundAgentBlock(pane.split('\n'))
+  if (!block || block.rows.length === 0 || !block.rows.every(r => BG_AGENT_ROW_RX.test(r))) return null
+  return {
+    total: block.rows.length,
+    running: block.rows.filter(r => BG_AGENT_RUNNING_RX.test(r)).length,
+    queued: block.rows.reduce((sum, r) => sum + Number(BG_AGENT_QUEUED_RX.exec(r)?.[1] ?? 0), 0),
+  }
+}
+
+// The subagent hint (`· /tasks to see subagents`) lengthens the busy footer so
+// that `esc to interrupt` is clipped to a prefix plus `…`, e.g. `· e…`
+// (measured 2026-10-16). Only a prefix of that exact phrase as the LAST
+// segment of the footer line counts. The bare `· e…` has to count, because that
+// is the measured clip; no idle footer segment starts with `e` (`↓ to manage`,
+// `← for agents`, `ctrl+t`, `N shells`, `N monitors`).
+const BUSY_ESC_CLIPPED_RX = /· e(?:s(?:c(?: (?:t(?:o(?: (?:i[a-z]*)?)?)?)?)?)?)?…\s*$/
+
 // Persistent Anthropic thinking-block API error. When an assistant turn
 // ends with a 400 about thinking/redacted_thinking blocks that "cannot
 // be modified", the session is wedged: every subsequent prompt re-sends
@@ -499,6 +611,7 @@ export function detectsThinkingBlockError(pane: string): boolean {
   for (let i = lines.length - 1; i >= 0; i--) {
     if (IDLE_FOOTER_RX.test(lines[i])) { footerIdx = i; break }
   }
+  if (footerIdx < 0) footerIdx = idleFooterIndex(lines)
   if (footerIdx < 0) return false
   const start = Math.max(0, footerIdx - ERROR_LIVE_TAIL_LINES)
   const tail = lines.slice(start, footerIdx)
@@ -558,8 +671,172 @@ export function detectsBlockingMenu(pane: string): boolean {
   const lines = pane.split('\n')
   const footerRegion = liveTailRegion(lines, MENU_FOOTER_REGION_LINES)
   if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return false
-  if (IDLE_FOOTER_RX.test(pane)) return false
+  if (hasIdleFooter(lines)) return false
   return MENU_NAV_RX.test(footerRegion) || MENU_ESC_RX.test(footerRegion)
+}
+
+// What the prompt is ASKING, in one line, for an alert that has to be
+// actionable without opening the pane.
+//
+// The orchestrator answered two of these by hand on 2026-09-03, and both times
+// the deciding step was reading the pane: which tool, on whose behalf, and
+// why consent is needed. Putting that line in the alert removes the step.
+//
+// Two live captures (fixtures permission-prompt-bash-grep.txt and
+// permission-prompt-compound-cd.txt) share the layout, and the REASON text
+// differs between them -- which is exactly why nothing here keys on the reason
+// wording:
+//
+//   ────────────────────────────────────────
+//    Bash command · from the general-purpose agent      <- title
+//
+//      │ cd ... && grep -n ...                          <- the command
+//      Locate the functions
+//
+//    │ <reason, one or more lines>                      <- why consent is needed
+//
+//    Do you want to proceed?
+//
+// Returns null when either piece is missing: an alert with a half-parsed
+// question is worse than an alert that just says "open the pane".
+const PERMISSION_RULE_LINE_RX = /^\s*─{8,}\s*$/
+// The question line the summary anchors on. detectsPermissionDialog (added on
+// develop by PR #1190) decides WHETHER a prompt is up; this module only has to
+// find the question again to quote it.
+const PERMISSION_SUMMARY_QUESTION_RX = /\bDo you want to (?:proceed|create|make|run)\b/i
+const PERMISSION_QUOTE_PREFIX_RX = /^\s*│\s?/
+const PERMISSION_REASON_MAX = 220
+
+export interface PermissionPromptSummary {
+  /** The tool card's header, e.g. "Bash command · from the general-purpose agent". */
+  title: string
+  /** First line of the reason Claude gives for needing consent. */
+  reason: string
+}
+
+/**
+ * Extract a one-line summary of what a permission prompt is asking.
+ *
+ * Pure + dependency-free. Only meaningful on a pane where
+ * detectsPermissionDialog() is true; returns null when the expected parts are
+ * not both present.
+ */
+export function permissionPromptSummary(pane: string): PermissionPromptSummary | null {
+  if (!pane) return null
+  const lines = pane.split('\n')
+  const questionIdx = lines.findIndex((l) => PERMISSION_SUMMARY_QUESTION_RX.test(l))
+  if (questionIdx < 0) return null
+
+  // Title: first non-empty line after the horizontal rule that opens the card.
+  let title = ''
+  const ruleIdx = lines.slice(0, questionIdx).map((l) => PERMISSION_RULE_LINE_RX.test(l)).lastIndexOf(true)
+  if (ruleIdx >= 0) {
+    for (const l of lines.slice(ruleIdx + 1, questionIdx)) {
+      const t = l.trim()
+      if (t) { title = t; break }
+    }
+  }
+
+  // Reason: the LAST quoted block before the question, rejoined into one
+  // line. Two reasons for the shape:
+  //   - last block, not first: the command echo is quoted too, and the last
+  //     block is the one that says why consent is needed rather than what
+  //     would run.
+  //   - rejoined, not first-line: the pane hard-wraps at the card width, so
+  //     the first line alone can be as useless as "grep on" (measured on the
+  //     bash-grep fixture). Rejoining recovers the sentence; the cap keeps a
+  //     long reason from flooding the alert.
+  let reason = ''
+  let end = -1
+  for (let i = questionIdx - 1; i >= 0; i--) {
+    const quoted = PERMISSION_QUOTE_PREFIX_RX.test(lines[i])
+    if (quoted && end < 0) end = i
+    else if (!quoted && end >= 0) {
+      const block = lines.slice(i + 1, end + 1).map((l) => l.replace(PERMISSION_QUOTE_PREFIX_RX, '').trim())
+      reason = block.join(' ').replace(/\s+/g, ' ').trim()
+      break
+    }
+  }
+  if (reason.length > PERMISSION_REASON_MAX) reason = reason.slice(0, PERMISSION_REASON_MAX - 1).trimEnd() + '…'
+  if (!title || !reason) return null
+  return { title, reason }
+}
+
+// Plan usage limit ("quota wall"), card 41a0c3a3. When the plan's usage limit
+// is hit, the CLI ends the turn and paints a banner BELOW the input box, with
+// the prompt itself idle. Two live captures of the same moment (two sessions on
+// one key, 2026-09-30 16:14Z; fixture quota-wall-usage-limit.txt):
+//
+//   ────────────────────────────────────────
+//   ❯
+//   ────────────────────────────────────────
+//     ⚠ Usage limit reached · limit resets 6:20pm
+//       Continuing automatically at 6:20pm · esc to cancel · /usage-credits to
+//       continue now
+//     Opus 5.5 | ctx 50% | 5h 100% | 7d 26%
+//
+// An earlier CLI (measured 2026-09-24) drew the same banner on one line:
+//   ⚠ Usage limit reached · continuing automatically at 7:40pm · esc to cancel
+//
+// Only a ⚠ line UNDER the box's bottom rule counts. The same words above the
+// box are conversation: the failed turn echoes "You've hit your session limit ·
+// resets 6:20pm" there, and an agent can quote a banner in a reply. The
+// "has reset" forms ("Usage limit reset · continuing automatically") and the
+// "approaching" warning are not a wall, and neither regex below matches them.
+const QUOTA_WALL_RX = /\busage limit reached\b|\bhit (?:your|the) (?:session|usage|weekly) limit\b|\b(?:session|weekly|\d+-hour) limit reached\b/i
+// "limit resets 6:20pm", "resets at 2am", "continuing automatically at 7:40pm":
+// the time is whatever the CLI printed, up to the next · separator or the line
+// end. A real one is short ("Sep 28, 5pm (UTC)" is 17 characters); anything
+// longer is not a time we can quote, so it reads as "the banner does not say".
+const QUOTA_WALL_RESET_RX = /\b(?:resets(?: at)?|continuing automatically at)\s+([^·\n]{1,40}?)\s*(?:·|$)/i
+const QUOTA_WALL_BANNER_MAX = 220
+
+export interface QuotaWall {
+  /** The banner as painted, its wrapped continuation lines rejoined into one line. */
+  banner: string
+  /** When the CLI says it resumes, verbatim ("6:20pm"); null when the banner does not say. */
+  resetsAt: string | null
+}
+
+/**
+ * The plan usage-limit banner under the live input box, or null.
+ *
+ * Pure + dependency-free. The reset time is kept as the CLI printed it: the
+ * clock it is in belongs to the session's host, so turning it into an instant
+ * here would be a guess.
+ */
+export function detectQuotaWall(pane: string): QuotaWall | null {
+  if (!pane || !pane.trim()) return null
+  const lines = pane.split('\n')
+  let bottomRule = -1
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (BOX_SEP_RX.test(lines[i])) { bottomRule = i; break }
+  }
+  if (bottomRule < 0) return null
+  for (let i = bottomRule + 1; i < lines.length; i++) {
+    const text = lines[i].trimStart()
+    if (!text.startsWith('⚠') || !QUOTA_WALL_RX.test(text)) continue
+    // The banner wraps at the pane width; its continuation lines are indented
+    // deeper than the ⚠ line, the status line under it is not.
+    const indent = lines[i].length - text.length
+    const parts = [text.trimEnd()]
+    for (let j = i + 1; j < lines.length; j++) {
+      const next = lines[j].trimStart()
+      if (!next || lines[j].length - next.length <= indent) break
+      parts.push(next.trimEnd())
+    }
+    // Per part, not on the rejoined line: a wrapped part ends where the next
+    // sentence starts, and only the part's own end bounds the time.
+    let resetsAt: string | null = null
+    for (const p of parts) {
+      const m = QUOTA_WALL_RESET_RX.exec(p)
+      if (m) { resetsAt = m[1].trim(); break }
+    }
+    let banner = parts.join(' ').replace(/\s+/g, ' ').trim()
+    if (banner.length > QUOTA_WALL_BANNER_MAX) banner = banner.slice(0, QUOTA_WALL_BANNER_MAX - 1).trimEnd() + '…'
+    return { banner, resetsAt }
+  }
+  return null
 }
 
 // Claude Code FIRST-RUN gates: the interactive dialogs a brand-new install
@@ -588,12 +865,40 @@ export function detectsBlockingMenu(pane: string): boolean {
 // The tmux-visible selection marker Claude Code draws on the active option.
 const CURSOR_GLYPH = '\u276f'
 
-export type FirstRunGateKind = 'trust' | 'bypass-permissions' | 'login' | 'theme' | 'welcome' | 'mcp-trust'
+export type FirstRunGateKind = 'trust' | 'bypass-permissions' | 'login' | 'theme' | 'welcome' | 'mcp-trust' | 'dev-channels'
+
+// The development-channels warning. A worksourceChannel
+// agent is launched with `--dangerously-load-development-channels
+// server:worksource` (agent-process.ts), and Claude Code parks EVERY such
+// launch on this panel before the prompt renders -- measured in the shipped
+// 2.1.280 binary: DevChannelsDialog is mounted whenever dev channels were
+// passed, channels are enabled and the session is first-party; nothing
+// persists an acknowledgement, so it returns on every start and restart:
+//
+//   WARNING: Loading development channels
+//   --dangerously-load-development-channels is for local channel development
+//   only. ...
+//   Please use --channels to run a list of approved channels.
+//   Channels: server:worksource
+//   ❯ 1. I am using this for local development
+//     2. Exit
+//   Enter to confirm · Esc to cancel
+//
+// Both refusals QUIT the TUI in that binary: "Exit" calls exit(1) and the
+// panel's own Escape handler calls exit(0). So the generic blocking-menu
+// Escape is the wrong answer here, exactly as on the trust dialog.
+//
+// Both the heading and the option are required: the option is the functional
+// element (see TRUSTGATE901), the heading keeps a pane that merely quotes the
+// option line from being read as the panel.
+const DEV_CHANNELS_TITLE_RX = /Loading development channels/
+const DEV_CHANNELS_OPTION_RX = /I am using this for local development/
 
 // Ordered: the login picker and theme screen render UNDER the "Welcome to
 // Claude Code" banner, so the more specific matches must win before the
 // generic welcome fallback.
 const FIRST_RUN_GATES: Array<{ kind: FirstRunGateKind; rx: RegExp }> = [
+  { kind: 'dev-channels', rx: new RegExp(`^(?=[\\s\\S]*${DEV_CHANNELS_TITLE_RX.source})(?=[\\s\\S]*${DEV_CHANNELS_OPTION_RX.source})`) },
   // MCP server-approval dialog (2026-09-03, PR #1099 review). A worksource
   // agent gets its queue as a project-scope MCP server, and on the first start
   // after that server appears Claude Code parks the TUI on:
@@ -701,6 +1006,25 @@ export function mcpTrustAcceptKeys(pane: string): string[] | null {
   return keys
 }
 
+// Keys that confirm the development-channels warning, or null -- meaning PARK,
+// send nothing. Stricter than firstRunAcceptKeys on purpose: this returns a
+// key ONLY when the highlighted row IS "I am using this for local development"
+// and it is the one such row. It never navigates, so a reworded or reordered
+// panel whose cursor sits anywhere else (on "Exit", or on something new) gets
+// no keystroke at all: Enter there would confirm whatever is highlighted, and
+// Escape quits the TUI. Fleet rule: never a bare Enter into a dialog we have
+// not positively identified.
+export function devChannelsAcceptKeys(pane: string): string[] | null {
+  if (!pane || !pane.trim()) return null
+  if (!DEV_CHANNELS_TITLE_RX.test(pane)) return null
+  const lines = pane.split('\n')
+  const cursorLines = lines.filter(l => l.includes(CURSOR_GLYPH))
+  if (cursorLines.length !== 1) return null
+  const isTarget = (l: string) => DEV_CHANNELS_OPTION_RX.test(l) && !/\bexit\b/i.test(l)
+  if (lines.filter(isTarget).length !== 1) return null
+  return isTarget(cursorLines[0]) ? ['Enter'] : null
+}
+
 export function firstRunAcceptKeys(pane: string): string[] | null {
   if (!pane || !pane.trim()) return null
   const lines = pane.split('\n')
@@ -743,7 +1067,7 @@ export function detectsFirstRunGate(pane: string): FirstRunGateKind | null {
   }
   const footerRegion = liveTailRegion(lines, LIVE_FOOTER_REGION_LINES)
   if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return null
-  if (IDLE_FOOTER_RX.test(pane)) return null
+  if (hasIdleFooter(lines)) return null
   for (const g of FIRST_RUN_GATES) {
     if (!g.rx.test(pane)) continue
     // The welcome banner also heads the NORMAL fresh-session layout (logo +
@@ -818,7 +1142,7 @@ export function detectsPermissionDialog(pane: string): boolean {
   }
   const footerRegion = liveTailRegion(lines, LIVE_FOOTER_REGION_LINES)
   if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return false
-  if (IDLE_FOOTER_RX.test(pane)) return false
+  if (hasIdleFooter(lines)) return false
   return PERMISSION_AMEND_RX.test(footerRegion)
     || (PERMISSION_QUESTION_RX.test(pane) && PERMISSION_YES_RX.test(pane))
 }
@@ -832,7 +1156,7 @@ export function detectsModelConsentDialog(pane: string): boolean {
   }
   const footerRegion = liveTailRegion(lines, LIVE_FOOTER_REGION_LINES)
   if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return false
-  if (IDLE_FOOTER_RX.test(pane)) return false
+  if (hasIdleFooter(lines)) return false
   return MODEL_CONSENT_TITLE_RX.test(pane)
     && MODEL_CONSENT_CONTINUE_RX.test(pane)
     && MODEL_CONSENT_CONFIRM_RX.test(footerRegion)
@@ -971,6 +1295,11 @@ export function detectPaneState(
 ): PaneState {
   if (!pane || !pane.trim()) return 'unknown'
 
+  // Classify the pane as it would look without the background-agent block, so
+  // the footer is the bottom line again for every probe below.
+  const bgBlock = splitBackgroundAgentBlock(pane.split('\n'))
+  if (bgBlock) pane = bgBlock.above.join('\n')
+
   const paneLines = pane.split('\n')
 
   // Spinner / token-counter busy signals, scoped to the live bottom region.
@@ -994,6 +1323,8 @@ export function detectPaneState(
   // an idle session as busy.
   const footerRegion = liveTailRegion(paneLines, LIVE_FOOTER_REGION_LINES)
   if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return 'busy'
+  const lastLine = footerRegion.slice(footerRegion.lastIndexOf('\n') + 1)
+  if (BUSY_ESC_CLIPPED_RX.test(lastLine) && FOOTER_TRUNCATED_RX.test(lastLine)) return 'busy'
 
   // Pending-paste placeholder check runs BEFORE the idle-footer gate. The
   // stub sits in the live input box; the footer below it is version-dependent
@@ -1006,7 +1337,7 @@ export function detectPaneState(
   // defer rather than pile a second prompt on.
   if (detectsPastePlaceholder(pane)) return 'busy'
 
-  if (!IDLE_FOOTER_RX.test(pane)) {
+  if (!hasIdleFooter(paneLines)) {
     // Footer-less fresh-session / welcome-screen: a PARKED \u276F input box still
     // means the agent has a delivered message waiting to submit. Classify it
     // 'typing' (not 'unknown') so the stuck-input recovery stack can see and
@@ -1025,7 +1356,7 @@ export function detectPaneState(
   // Scan UPWARDS from the footer so we stay inside the live box and
   // don't pick up historical ❯ lines from scrollback.
   const lines = pane.split('\n')
-  const footerIdx = lines.findIndex(l => IDLE_FOOTER_RX.test(l))
+  const footerIdx = idleFooterIndex(lines)
   if (footerIdx >= 0) {
     let bottomSep = -1
     for (let i = footerIdx - 1; i >= 0; i--) {
@@ -1126,7 +1457,7 @@ function liveInputBoxFooterless(lines: string[]): string | null {
 
 function liveInputBox(pane: string): string | null {
   const lines = pane.split('\n')
-  const footerIdx = lines.findIndex(l => IDLE_FOOTER_RX.test(l))
+  const footerIdx = idleFooterIndex(lines)
   if (footerIdx < 0) return liveInputBoxFooterless(lines)
   let bottomSep = -1
   for (let i = footerIdx - 1; i >= 0; i--) {
@@ -1240,7 +1571,7 @@ export function shouldRetrySubmit(
 
   // Without an idle footer the pane is either not Claude Code or in an
   // unknown render state. Be conservative and skip.
-  if (!IDLE_FOOTER_RX.test(pane)) return false
+  if (!hasIdleFooter(retryPaneLines)) return false
 
   const inputBox = liveInputBox(pane)
   if (inputBox == null) return false
@@ -1722,7 +2053,7 @@ export function overfullParkedInputTail(pane: string): string | null {
     if (rx.test(busyRegion)) return null
   }
   if (BUSY_ESC_TO_INTERRUPT_RX.test(liveTailRegion(lines, LIVE_FOOTER_REGION_LINES))) return null
-  const footerIdx = lines.findIndex(l => IDLE_FOOTER_RX.test(l))
+  const footerIdx = idleFooterIndex(lines)
   if (footerIdx < 0) return null
   let bottomSep = -1
   for (let i = footerIdx - 1; i >= 0; i--) {

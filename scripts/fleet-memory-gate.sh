@@ -33,7 +33,18 @@ set -uo pipefail
 MODE=""; ARG=""; DRY_RUN=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --check)   MODE="check"; ARG="${2:-}"; shift 2 ;;
+    # MEMGATEARG924: `shift 2` with only one argument left is a bash ERROR that
+    # shifts NOTHING, so `$#` never reaches 0 and this while-loop spins forever
+    # (measured: `--check` as the last argument = infinite loop). The same line
+    # also swallowed the NEXT switch: `--check --dry-run` bound ARG="--dry-run"
+    # and left DRY_RUN=0, so a run meant to be side-effect free wrote the
+    # safe-mode flag and attempted a Telegram alert. Take an agent name only if
+    # it is really there and is not itself a switch; the empty-agent case is
+    # already handled fail-open below ("--check needs an agent name").
+    --check)
+      MODE="check"
+      if [[ $# -ge 2 && "$2" != --* ]]; then ARG="$2"; shift 2; else shift; fi
+      ;;
     --verdict) MODE="verdict"; shift ;;
     --status)  MODE="status"; shift ;;
     --dry-run) DRY_RUN=1; shift ;;

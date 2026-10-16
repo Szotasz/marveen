@@ -1,4 +1,6 @@
-import { describe, it, expect, beforeAll } from 'vitest'
+import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { mkdirSync, rmSync } from 'node:fs'
+import { agentDir } from '../web/agent-config.js'
 import { EventEmitter } from 'node:events'
 import { initDatabase } from '../db.js'
 import { MAIN_AGENT_ID } from '../config.js'
@@ -56,12 +58,36 @@ describe('POST /api/messages to the main agent (MSGWARN908)', () => {
     expect(r.json.to_agent).toBe(MAIN_AGENT_ID)
   })
 
+  // A REGISTERED but stopped sub-agent (a bare agents/<id>/ dir, no tmux):
+  // since UNKNOWNTO924 an unregistered id is rejected with 400, so the stand-in
+  // must exist on disk to exercise the not-running warning.
+  const STOPPED = 'stopped-test-agent-msgwarn'
+  beforeAll(() => { mkdirSync(agentDir(STOPPED), { recursive: true }) })
+  afterAll(() => { rmSync(agentDir(STOPPED), { recursive: true, force: true }) })
+
   it('still warns for a genuinely stopped sub-agent (the gate is not loosened)', async () => {
     // No tmux in the test env, so any sub-agent id reads as stopped -- the
     // exemption must be main-only, not a blanket removal of the warning.
-    const r = await post({ from: MAIN_AGENT_ID, to: 'no-such-agent-session', content: 'ping' })
+    const r = await post({ from: MAIN_AGENT_ID, to: STOPPED, content: 'ping' })
     expect(r.statusCode).toBe(200)
     expect(r.json.targetRunning).toBe(false)
     expect(String(r.json.warning)).toContain('nem fut')
+  })
+
+  // The warning must describe what the router does -- the row is kept pending
+  // and delivered when the target starts, within the abandon window -- not
+  // claim the message is lost (measured on a live install: delivered 23 s after
+  // the start, while the sender had already re-sent a duplicate).
+  it('says the message is QUEUED, with the abandon deadline, never "elveszik"', async () => {
+    // A REGISTERED stopped agent: an unregistered id is a 400 since UNKNOWNTO924
+    // (upstream #1574), so the queue path is only reachable through STOPPED.
+    const r = await post({ from: MAIN_AGENT_ID, to: STOPPED, content: 'handoff' })
+    expect(r.statusCode).toBe(200)
+    expect(r.json.queued).toBe(true)
+    expect(r.json.status).toBe('pending')
+    expect(r.json.abandonAt).toBe(Number(r.json.created_at) + 3600)
+    expect(String(r.json.warning)).toContain('SORBAN VÁR')
+    expect(String(r.json.warning)).toContain('60 perc')
+    expect(String(r.json.warning)).not.toContain('elveszik')
   })
 })
