@@ -14,7 +14,7 @@ import {
 import { getHeartbeatKanbanSummary, getActiveScheduledTaskCount } from './db.js'
 import { getCalendarEvents, type CalendarEvent } from './google-api.js'
 import { runAgent } from './agent.js'
-import { notifyTelegram } from './notify.js'
+import { notifyOwner } from './notify.js'
 import { logger } from './logger.js'
 import { wrapUntrusted, UNTRUSTED_PREAMBLE } from './prompt-safety.js'
 import { getMainParkedState } from './web/agent-process.js'
@@ -601,7 +601,7 @@ async function executeHeartbeat(): Promise<void> {
       CLAUDE_CONFIG_DIR: HEARTBEAT_CONFIG_DIR,
     })
     if (text) {
-      await notifyTelegram(text)
+      await notifyOwner(text)
       logger.info('Heartbeat ertesites elkuldve')
     }
   } catch (err) {

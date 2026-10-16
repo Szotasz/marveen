@@ -16,13 +16,18 @@ ID="${1:-}"
 [[ "$ID" =~ ^[0-9]+$ ]] || { echo "usage: bash scripts/agent-msg-get.sh <message-id>" >&2; exit 2; }
 
 TOKEN_FILE="${ROOT}/store/.dashboard-token"
+# Dashboard port: the same chain as agent-msg.sh (MARVEEN_WEB_PORT, WEB_PORT,
+# this install's .env, 3420). It was a literal 3420 (#1869). The trailing `true` keeps
+# a missing .env from ending the script under set -e/pipefail.
+PORT="${MARVEEN_WEB_PORT:-${WEB_PORT:-$(sed -n 's/^WEB_PORT=//p' "$ROOT/.env" 2>/dev/null | head -1 | tr -d ' "'"'"''; true)}}"
+PORT="${PORT:-3420}"
 [[ -r "$TOKEN_FILE" ]] || { echo "FAIL: no dashboard token at ${TOKEN_FILE}" >&2; exit 3; }
 
 # The HTTP status is checked, not assumed: a 404 body would otherwise print as an empty message.
 OUT="$(mktemp)"; trap 'rm -f "$OUT"' EXIT
 CODE="$(curl -s -o "$OUT" -w '%{http_code}' \
   -H "Authorization: Bearer $(cat "$TOKEN_FILE")" \
-  "http://localhost:3420/api/messages/${ID}")"
+  "http://localhost:${PORT}/api/messages/${ID}")"
 if [[ "$CODE" != "200" ]]; then
   echo "FAIL: GET /api/messages/${ID} -> HTTP ${CODE}" >&2
   head -c 400 "$OUT" >&2; echo >&2

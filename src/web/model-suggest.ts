@@ -31,8 +31,11 @@ const TOP_TIER_MODEL = DISTRIBUTION_DEFAULT_AGENT_MODEL
 const TOP_TIER_LABEL = humanModelLabel(TOP_TIER_MODEL)
 
 export type ModelId =
+  | 'claude-haiku-5-5'
   | 'claude-haiku-4-5-20251001'
+  | 'claude-sonnet-5-5'
   | 'claude-sonnet-5'
+  | 'claude-opus-5-5[1m]'
   | 'claude-opus-5[1m]'
   | 'claude-opus-5'
   | 'claude-fable-5'
@@ -132,8 +135,14 @@ const MODEL_COST_PER_M: Record<string, number> = {
   // FELTETELEZES, nem meres -- ha valaki merte, irja felul es vegye ki ezt a sort.
   'claude-fable-5-1': 15,
   'claude-fable-5': 15,
+  // Sonnet 5.5: 2 USD / 1M input, a hivatalos models/overview oldalrol olvasva (2026-09-28, SONNET55SELECTOR928).
+  'claude-sonnet-5-5': 2,
   'claude-sonnet-5': 3,
   'claude-sonnet-4-6': 3,
+  // Haiku 5.5: 0.10 USD / 1M input for prompts up to 100k tokens (0.50 above), from the official
+  // pricing page (platform.claude.com/docs/en/about-claude/pricing, read 2026-10-08, HAIKU55SELECTOR1008).
+  // One number per model here, so the <=100k tier is used.
+  'claude-haiku-5-5': 0.10,
   'claude-haiku-4-5': 0.80,
 }
 

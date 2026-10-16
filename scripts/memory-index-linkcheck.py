@@ -28,6 +28,36 @@ SCOPE: the index plus the pages the index points at (the hubs). That is the set
 the cut-and-move rounds actually touch; a hub is where a line goes when it
 leaves the index, so a hub that lost its own target is the next silent hole.
 
+THE OTHER DIRECTION: A PAGE NOTHING POINTS AT (`orphans`)
+The count above walks index -> disk. The reverse walk is a different silent
+failure with the same cost: the page is written, it is correct, and no line
+leads to it, so nothing ever loads it. Measured on this install's own history:
+a one-way check was GREEN while two memories were absent from the index
+altogether -- written, saved, and never read again.
+An orphan is an `.md` file next to the index that is neither the index itself
+nor the target of any link in SCOPE. Reachability is what is measured, not
+index membership: a page the index does not name but a hub does is reachable
+(that is where a line goes when it leaves the index), and reporting it would
+turn the designed structure into a defect. The limit of that is stated rather
+than hidden: SCOPE is one hop deep, so a page reachable only from a SECOND-level
+page is reported as an orphan. Widening the walk would also widen what the
+scanner can be wrong about; one hop is the set the rounds actually touch.
+
+A `[[name]]` WIKILINK IS A POINTER TOO -- FOR REACHABILITY ONLY
+The memory convention names `[[name]]` as THE way pages link to each other, so
+a page reached only through a wikilink in SCOPE is the designed structure, not
+an orphan. Counting only `](x.md)` links reported such a page as an orphan,
+so the gate woke on the convention itself. A wikilink resolves to a page whose
+file stem OR whose frontmatter `name:` equals it (the two can differ: an
+accented filename with an unaccented `name:`), compared in NFC so a decomposed
+filename still matches.
+It is filtered exactly like a `](x.md)` link: inside a code span or a fenced
+block it is a described pattern, not a pointer. What it does NOT do:
+  * it is never a `missing` finding. A `[[name]]` with no page yet is allowed by
+    the convention -- it marks a page worth writing later, not a hole.
+  * it does not widen SCOPE. A hub is still a page the index reaches with a
+    `](x.md)` link; the one-hop limit below stays the stated limit.
+
 THE UNIT OF AN ALARM IS THE TARGET, NOT THE OCCURRENCE. Measured 2026-09-18 on
 one page: 43 occurrences, 27 distinct targets -- both numbers correct, and they
 answer different questions. A page that is missing and linked from four places
@@ -44,6 +74,7 @@ import json
 import os
 import re
 import sys
+import unicodedata
 
 FENCE = re.compile(r"^\s*(?:```+|~~~+)")
 INLINE_CODE = re.compile(r"(`+)(?:.+?)\1")
@@ -52,6 +83,9 @@ INLINE_CODE = re.compile(r"(`+)(?:.+?)\1")
 # be mistaken for the target -- the shape that produced two of the three false
 # alarms.
 LINK = re.compile(r"\]\(\s*<?([^()<>\s]+?\.md)>?(?:#[^()\s]*)?\s*\)")
+# A `[[name]]` wikilink. `[[name|label]]` and `[[name#section]]` keep the name.
+WIKILINK = re.compile(r"\[\[([^\[\]|#\n]+?)(?:[|#][^\[\]\n]*)?\]\]")
+FRONTMATTER_NAME = re.compile(r"^name:\s*(.+?)\s*$")
 # Glob/placeholder characters never appear in a real memory filename.
 IMPLAUSIBLE = set("*?{}|<>$")
 
@@ -101,6 +135,44 @@ def links_of(path):
     return found
 
 
+def wikilinks_of(path):
+    """Names of the `[[name]]` links of one file, code removed the same way
+    as for `links_of`. Unreadable file -> raises."""
+    with open(path, "r", encoding="utf-8", errors="replace") as fh:
+        text = strip_code(fh.read())
+    names = []
+    for m in WIKILINK.finditer(text):
+        name = m.group(1).strip()
+        if name.endswith(".md"):
+            name = name[: -len(".md")]
+        if name:
+            names.append(nfc(name))
+    return names
+
+
+def nfc(s):
+    return unicodedata.normalize("NFC", s)
+
+
+def frontmatter_name(path):
+    """The `name:` of a page's frontmatter, or None. A page whose head cannot
+    be read is still reachable by its stem, so this never raises."""
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as fh:
+            if fh.readline().strip() != "---":
+                return None
+            for _ in range(50):
+                line = fh.readline()
+                if not line or line.strip() == "---":
+                    return None
+                m = FRONTMATTER_NAME.match(line.rstrip("\n"))
+                if m:
+                    return nfc(m.group(1).strip("\"'"))
+    except OSError:
+        return None
+    return None
+
+
 def main(argv):
     if len(argv) < 2:
         print(json.dumps({"error": "usage: memory-index-linkcheck.py <index.md>"}))
@@ -137,6 +209,7 @@ def main(argv):
     # is one hole, and two different pages that share a basename stay two.
     holes = {}
     seen_targets = set()
+    wiki_names = set()
 
     def note(key, entry):
         if key in holes:
@@ -148,6 +221,7 @@ def main(argv):
     for path in scope:
         try:
             pairs = links_of(path)
+            wiki_names.update(wikilinks_of(path))
         except OSError:
             # One unreadable hub must not silence the whole scan; it is named
             # in the report so the number is not quietly short.
@@ -163,6 +237,31 @@ def main(argv):
                                 "line": lineno, "target": target})
 
     missing = sorted(holes.values(), key=lambda e: (e["in"], e["line"]))
+
+    # The reverse walk. `pages` is what lies next to the index, `seen_targets`
+    # is what something in SCOPE points at; the difference is what no line
+    # leads to. A directory we cannot list is NOT zero orphans -- the caller is
+    # told the scan did not run, exactly as an unreadable index is.
+    try:
+        pages = sorted(
+            os.path.normpath(os.path.join(root, name))
+            for name in os.listdir(root)
+            if name.endswith(".md") and os.path.isfile(os.path.join(root, name))
+        )
+    except OSError as exc:
+        print(json.dumps({"error": "memory directory unreadable: %s" % exc.__class__.__name__}))
+        return 2
+    # A page is reached by a wikilink when its stem OR its frontmatter `name:`
+    # is one of the names in SCOPE. Both keys of one page are tried, and every
+    # page that carries a name is reached by it (two files can share a `name:`).
+    wiki_reached = set()
+    for p in pages:
+        stem = nfc(os.path.basename(p)[: -len(".md")])
+        if stem in wiki_names or frontmatter_name(p) in wiki_names:
+            wiki_reached.add(p)
+    orphans = [p for p in pages
+               if p != index and p not in seen_targets and p not in wiki_reached]
+
     print(json.dumps({
         "files_scanned": len(scope),
         "links_checked": checked,
@@ -171,6 +270,19 @@ def main(argv):
         "missing_occurrences": sum(e["occurrences"] for e in missing),
         "missing_list": missing[:max_report],
         "truncated": len(missing) > max_report,
+        # `pages_seen` stands next to `orphans` for the same reason
+        # `links_checked` stands next to `missing`: a scanner that listed
+        # nothing also reports zero orphans, and the two cases must not read
+        # the same.
+        "pages_seen": len(pages),
+        # How many distinct `[[name]]` names SCOPE holds, and how many pages
+        # they reach. Context for `orphans`, never an alarm: an unresolved
+        # wikilink is allowed by the convention.
+        "wikilink_names": len(wiki_names),
+        "wikilink_pages_reached": len(wiki_reached),
+        "orphans": len(orphans),
+        "orphan_list": [os.path.relpath(p, root) for p in orphans[:max_report]],
+        "orphans_truncated": len(orphans) > max_report,
     }))
     return 0
 

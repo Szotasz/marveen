@@ -35,7 +35,27 @@ import { readFileSync, realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
-import { loadLedger, isVerifiedIn, splitAddresses, SOURCE_HELP } from './recipient-ledger.mjs'
+
+// HOOKDEPLOAD1008: the ledger module is a DYNAMIC import. As a static import, a
+// broken recipient-ledger.mjs (a syntax error, a conflicted merge, a missing
+// export) failed the module link before any line of this file ran: node exited
+// 1, which PreToolUse treats as NON-blocking, so EVERY call went through
+// unchecked -- the send_email deny included, which never needs the ledger.
+// Now the failure is kept, only a decision that needs the ledger hits it, and
+// that one fails closed at the entrypoint (exit 2, the reason on stderr).
+let loadLedger, isVerifiedIn, splitAddresses, SOURCE_HELP
+let LEDGER_LOAD_ERROR = null
+try {
+  ({ loadLedger, isVerifiedIn, splitAddresses, SOURCE_HELP } = await import('./recipient-ledger.mjs'))
+  const missing = Object.entries({ loadLedger, isVerifiedIn, splitAddresses })
+    .filter(([, fn]) => typeof fn !== 'function').map(([name]) => name)
+  if (missing.length) throw new Error(`missing export: ${missing.join(', ')}`)
+} catch (err) {
+  LEDGER_LOAD_ERROR = err
+  const unavailable = () => { throw new Error(`recipient-ledger.mjs did not load: ${err?.message ?? err}`) }
+  loadLedger = isVerifiedIn = splitAddresses = unavailable
+  SOURCE_HELP = '(a ledger modul nem toltheto be)'
+}
 
 // Bash command patterns that send mail. SUBGATEPOZ822 (2026-08-22): these are
 // no longer the primary trigger -- they matched CONTENT anywhere in the
@@ -91,19 +111,111 @@ const ENV_ASSIGN = /^[A-Za-z_][A-Za-z_0-9]*=/
 const CMD_POSITION_KEYWORDS = new Set(['if', 'then', 'else', 'elif', 'do', 'while', 'until', '{', '!'])
 const SENDER_PROG = /^(sendmail|msmtp|swaks)$/i
 const SENDPY = /^send\.py$/i
-const PYTHON = /^python3?$/i
+// SUBAGENTMAILGATE1016: a version-suffixed interpreter (python3.12, python3.13, and
+// the free-threaded python3.13t) is the same python; the old /^python3?$/ let it
+// through as "not an interpreter".
+const PYTHON = /^python(3(\.\d+t?)?)?$/i
 const NODEISH = /^(node|tsx|ts-node|deno|bun|npx)$/i
 const GRAPHMAIL = /^graph-mail(\.ts|\.js)?$/i
 const WRAPPER_SHELL = /^(sh|bash|zsh|dash)$/i
 const CURLISH = /^(curl|wget|http)$/i
 const RESEND_TARGET = /^(https?:\/\/)?([^/@\s]*\.)?api\.resend\.com(\/|$)/i
+// RESENDGETTWIN1010: port of the python twin's method verdict (RESENDGATE826,
+// outgoing-copy-gate.py :: _curl_resend_verdict). Until now this copy was
+// method-blind and denied a read-only GET /domains the python copy passed.
+// Strict direction kept: the method must be RECOGNIZED (explicit -X/--request/
+// --method, or an implicit POST from a body flag); an undecidable method
+// (variable, truncated flag, config file) stays a send. httpie (`http`) takes
+// its method positionally and its body as `key=value` items, none of which this
+// flag scan reads, so it is undecidable too and stays a send in both twins.
+const HTTPIE = /^http$/i
+const CURL_BODY_OPTS = new Set([
+  '-d', '--data', '--data-raw', '--data-binary', '--data-urlencode',
+  '--data-ascii', '-F', '--form', '--form-string', '--json',
+  '-T', '--upload-file',
+  // wget body flags
+  '--post-data', '--post-file', '--body-data', '--body-file',
+])
+const SAFE_METHODS = new Set(['GET', 'HEAD'])
+const ALPHA = /^\p{L}+$/u // python str.isalpha()
+
+// 'read' | 'send' | 'unknown' -- the caller treats unknown as a send.
+function curlResendVerdict(prog, rest) {
+  if (HTTPIE.test(prog)) return 'unknown'
+  let method = null
+  let hasBody = false
+  let getForced = false
+  const n = rest.length
+  for (let i = 0; i < n; i++) {
+    const t = rest[i]
+    if (t === '-X' || t === '--request' || t === '--method') {
+      if (i + 1 >= n || !ALPHA.test(rest[i + 1])) return 'unknown'
+      method = rest[i + 1].toUpperCase()
+      i++
+      continue
+    }
+    if (t.startsWith('--request=') || t.startsWith('--method=')) {
+      const m = t.split('=').slice(1).join('=')
+      if (!ALPHA.test(m)) return 'unknown'
+      method = m.toUpperCase()
+      continue
+    }
+    if (t === '-G' || t === '--get') { getForced = true; continue }
+    if (t === '-K' || t === '--config') return 'unknown' // a config file can carry a hidden method or body
+    if (CURL_BODY_OPTS.has(t) ||
+        [...CURL_BODY_OPTS].some((o) => o.startsWith('--') && t.startsWith(o + '='))) {
+      hasBody = true
+      continue
+    }
+    if (t.startsWith('-') && !t.startsWith('--') && t.length > 1) {
+      // single-dash cluster (-sS, -sX POST, -sd '{}'): the letters are bundled
+      const letters = t.slice(1)
+      if (letters.includes('X')) {
+        const after = letters.slice(letters.indexOf('X') + 1)
+        if (after) {
+          if (!ALPHA.test(after)) return 'unknown'
+          method = after.toUpperCase()
+        } else {
+          if (i + 1 >= n || !ALPHA.test(rest[i + 1])) return 'unknown'
+          method = rest[i + 1].toUpperCase()
+          i++
+        }
+      } else if (letters.includes('d') || letters.includes('F') || letters.includes('T')) {
+        hasBody = true
+      } else if (letters.includes('G')) {
+        getForced = true
+      } else if (letters.includes('K')) {
+        return 'unknown'
+      }
+    }
+  }
+  if (method !== null && !SAFE_METHODS.has(method)) return 'send'
+  // implicit POST (the default of curl -d/-F/--json/-T), or a suspicious
+  // "GET with a body" -- both are treated as a send
+  if (hasBody && !getForced) return 'send'
+  return 'read'
+}
 const CODE_SEND = /\bsmtplib\b|SMTP\s*\(|\bsendMail\s*\(|\bsendEmail\b|\bmail\.send\b/i
 // Naive-shape exec heuristic (msg 14298): process-spawn AND a known mailer
 // name together in one interpreter code string. Covers the accidental shapes;
 // see the STATED LIMIT in the header for what it deliberately does not claim.
 const CODE_EXECISH = /\bsubprocess\b|os\.system|\bpopen\b|child_process|\bexec[A-Za-z]*\s*\(|\bspawn[A-Za-z]*\s*\(/i
 const CODE_SENDER_LIT = /sendmail|msmtp|swaks|send\.py/i
-const codeStringSends = (code) => CODE_SEND.test(code) || (CODE_EXECISH.test(code) && CODE_SENDER_LIT.test(code))
+// Issue #1853 (stylnet): the support-mail sender LOADED AS A MODULE (`import send`,
+// `from send import main`, runpy, __import__/import_module, a spec built from send.py).
+// Case-sensitive on purpose; `send` must be the whole module name. Mirrors
+// _CODE_SEND_MODULE in hooks/outgoing-copy-gate.py; send-invocation-cases.json binds them.
+const CODE_SEND_MODULE = new RegExp(
+  String.raw`\bimport\s+(?:[\w.]+\s*,\s*)*send\b(?![\w.])` +
+  String.raw`|\bfrom\s+send\s+import\b` +
+  String.raw`|\brunpy\b[^\n]*\bsend\b` +
+  String.raw`|\b(?:__import__|import_module)\s*\(\s*['"]send['"]` +
+  String.raw`|\bspec_from_file_location\b[^\n]*\bsend\.py\b` +
+  // The same class on the Graph sender (export sendMail): renamed on import, or a string key.
+  String.raw`|\bsendMail\s+as\b|\[\s*['"]sendMail['"]\s*\]`,
+)
+const codeStringSends = (code) =>
+  CODE_SEND.test(code) || CODE_SEND_MODULE.test(code) || (CODE_EXECISH.test(code) && CODE_SENDER_LIT.test(code))
 
 // Unquoted newline / backtick / `$(` become segment separators; quoted text is
 // untouched (it is content). Tracks quote state by hand -- no shell involved.
@@ -216,6 +328,103 @@ function commandHeads(toksIn, d = 0) {
   return starts.flatMap((s) => commandHeads(toks.slice(s + positionals), d + 1))
 }
 
+// SUBAGENTMAILGATE1016 (measured on the sub-agent gate, 2026-10-16): the
+// support-mail sender was recognised only as `python3 <path>/send.py --to ...`,
+// that is, with the script as the FIRST argument and the exact `--to` flag. Six
+// spellings ran the same sender past this gate: an interpreter option first
+// (`python3 -u`, `python3 -X utf8`), a version-suffixed interpreter, a glob or a
+// variable as the script path (`s?nd.py`, `$P`), and the program read from
+// stdin (`python3 - --to ... < send.py`). argparse also takes `--t` for `--to`.
+// The boundary, fail-closed where the command cannot be read statically:
+//   - the script operand is found past the interpreter's own options (a
+//     separate argument for -X / -W / --check-hash-based-pycs);
+//   - a recipient flag is `--to` or any argparse abbreviation of it (`--t`),
+//     with or without `=value` (the sender's --to is required, so every
+//     delivering call carries one of these);
+//   - send.py by basename + a recipient flag: a send (as before, now from any
+//     operand position, interpreter spelling and flag spelling);
+//   - a script operand that cannot be resolved statically (glob or brace
+//     characters, or a `$` expansion) + a recipient flag or another `$` token:
+//     a send, because what runs is undecidable here;
+//   - a program read from stdin (`-`, or no script operand and a `<` redirect)
+//     + a recipient flag: a send (a heredoc-fed program is judged by its body,
+//     heredocProgramSends, as before).
+// Anything else stays allowed: `python3 -u other.py`, `python3 -c "print(1)"`,
+// `for f in *.py; do python3 $f; done`, `python3 x.py --to-date ...`.
+// Mirrors _python_head_sends in hooks/outgoing-copy-gate.py; the shared
+// send-invocation-cases.json binds the two.
+const PY_OPT_WITH_ARG = new Set(['-X', '-W', '--check-hash-based-pycs'])
+const RECIPIENT_FLAG = /^--to?(=|$)/
+const UNDECIDABLE_PATH = /[*?[{$]/
+function pythonScriptOperand(rest) {
+  let stdinRedirect = false
+  for (let i = 0; i < rest.length; i++) {
+    const t = rest[i]
+    if (t === '--') return { script: rest[i + 1] ?? null, stdin: false, stdinRedirect }
+    if (t === '-') return { script: null, stdin: true, stdinRedirect }
+    if (/^-[cm]/.test(t)) return { script: null, stdin: false, stdinRedirect } // code string / module: judged elsewhere
+    if (PY_OPT_WITH_ARG.has(t)) { i++; continue }
+    if (t.startsWith('<')) { stdinRedirect = true; if (t === '<') i++; continue }
+    if (/^\d*>/.test(t)) { if (/^\d*>>?$/.test(t)) i++; continue }
+    if (t.startsWith('-') && t.length > 1) continue
+    return { script: t, stdin: false, stdinRedirect }
+  }
+  return { script: null, stdin: false, stdinRedirect }
+}
+// A command or process substitution as a word of the command (`$(...)`, a
+// backtick pair, `<(...)`, `>(...)`), with the substitution replaced by one
+// placeholder word that carries a `$`. maskSubshellMarkers splits these into
+// their own segments, which is right for judging the INNER command, but it
+// leaves the outer one without the word: `python3 $(echo .../send.py) --to x`
+// became `python3` and `--to x`. Judged on this form as well, the word is an
+// undecidable script path (or interpreter) like a variable. Quoted text is left
+// alone: a quoted `"$(...)"` already reaches the tokenizer as a `$` word.
+export function flattenSubstitutions(cmd) {
+  let out = ''
+  let q = null
+  for (let i = 0; i < cmd.length; i++) {
+    const ch = cmd[i]
+    if (q) {
+      if (ch === '\\' && q === '"' && i + 1 < cmd.length) { out += ch + cmd[++i]; continue }
+      if (ch === q) q = null
+      out += ch
+      continue
+    }
+    if (ch === "'" || ch === '"') { q = ch; out += ch; continue }
+    if (ch === '\\' && i + 1 < cmd.length) { out += ch + cmd[++i]; continue }
+    const opens = (ch === '$' || ch === '<' || ch === '>') && cmd[i + 1] === '('
+    if (opens || ch === '`') {
+      let depth = 1
+      let j = i + (opens ? 2 : 1)
+      let iq = null
+      for (; j < cmd.length && depth > 0; j++) {
+        const c = cmd[j]
+        if (iq) { if (c === iq) iq = null; continue }
+        if (c === "'" || c === '"') { iq = c; continue }
+        if (ch === '`') { if (c === '`') depth = 0; continue }
+        if (c === '(') depth++
+        else if (c === ')') depth--
+      }
+      out += ' $__SUBST__ '
+      i = j - 1
+      continue
+    }
+    out += ch
+  }
+  return out
+}
+
+function pythonHeadSends(rest) {
+  const recipient = rest.some((t) => RECIPIENT_FLAG.test(t))
+  const { script, stdin, stdinRedirect } = pythonScriptOperand(rest)
+  if (script !== null && SENDPY.test(basename(script))) return recipient
+  if (script !== null && UNDECIDABLE_PATH.test(script)) {
+    return recipient || rest.some((t) => t !== script && t.includes('$'))
+  }
+  if (stdin || (script === null && stdinRedirect)) return recipient
+  return false
+}
+
 function segmentIsSend(toksIn, depth) {
   return commandHeads(toksIn).some((h) => headIsSend(h, depth))
 }
@@ -239,10 +448,23 @@ function headIsSend(toks, depth) {
   }
   const candidates = [prog]
   if ((PYTHON.test(prog) || NODEISH.test(prog)) && rest.length) candidates.push(basename(rest[0]))
-  if (candidates.some((c) => SENDPY.test(c)) &&
-      rest.some((t) => t === '--to' || t.startsWith('--to='))) return true
+  // Issue #1853: `python3 -m send` (or -m pkg.send) is the same sender by module name.
+  if (PYTHON.test(prog)) {
+    for (let i = 0; i < rest.length - 1; i++) {
+      if (rest[i] === '-m' && rest[i + 1].split('.').pop() === 'send') candidates.push('send.py')
+    }
+  }
+  if (candidates.some((c) => SENDPY.test(c)) && rest.some((t) => RECIPIENT_FLAG.test(t))) return true
+  if (PYTHON.test(prog) && pythonHeadSends(rest)) return true
+  // An interpreter or program that cannot be resolved statically ($PY, a glob,
+  // a substitution) with a recipient flag: what runs is undecidable here.
+  if (UNDECIDABLE_PATH.test(toks[0]) && rest.some((t) => RECIPIENT_FLAG.test(t))) return true
   if (toks.some((t) => GRAPHMAIL.test(basename(t))) && rest.includes('send')) return true
-  if (CURLISH.test(prog) && rest.some((t) => RESEND_TARGET.test(t))) return true
+  // RESENDGETTWIN1010: only an actual send (POST/PUT/..., or a body) fires; a
+  // read-only GET/HEAD passes; an undecidable method stays fail-closed.
+  if (CURLISH.test(prog) && rest.some((t) => RESEND_TARGET.test(t))) {
+    return curlResendVerdict(prog, rest) !== 'read'
+  }
   return false
 }
 
@@ -270,7 +492,77 @@ export function buildWrapperDepthMsg() {
   )
 }
 
+// Issue #1853, the heredoc form: the segmenter drops heredoc BODIES, but when the
+// command that opens one is an interpreter (`python3 - <<'PY'`, `node <<EOF`) the body
+// IS the program. Mirrors _heredoc_program_sends in hooks/outgoing-copy-gate.py.
+// NARROWED (Geri's #1855 review): inside a heredoc body the exec + sender-literal half takes
+// the literal only as a lowercase, QUOTED command word (an argv item or an os.system command),
+// so a card id like SENDMAIL... in a report's prose no longer matches. Mirrors
+// _HEREDOC_SENDER_ARGV / _heredoc_body_sends in hooks/outgoing-copy-gate.py.
+// NOT COVERED, named: a program the classifier never reads -- `python3 /tmp/x.py`,
+// `python3 < /tmp/x.py`, `cat /tmp/x.py | python3 -`, `python3 -c "exec(open('/tmp/x.py').read())"`;
+// also a here-string fed to an interpreter (`python3 <<<'import send'`) and a CommonJS
+// destructuring rename of the Graph sender (`const { sendMail: s } = require(...)`).
+// A heredoc fed to a SHELL (`bash <<EOF`) is a shell program: its body is judged with
+// isSendInvocation itself, one level deeper (Geri/Samu, #1855).
+// WRITTEN, THEN RUN IN THE SAME COMMAND (#1855): `cat > P <<TAG` / `cat <<TAG > P`, then an
+// interpreter or a shell on the same path token P: the body is judged as if fed directly.
+// Exact token match; a file run by ANOTHER Bash call stays out of reach.
+// PIPED (#1855): `cat <<'EOF' | bash` or `| python3 -` hands the body over the pipe on the
+// heredoc's opening line; it is judged the same way.
+const HEREDOC_SENDER_ARGV = /['"](?:[^'"\s]*\/)?(?:sendmail|msmtp|swaks|send\.py)(?=['"\s])/
+const heredocBodySends = (body) =>
+  CODE_SEND.test(body) || CODE_SEND_MODULE.test(body) || (CODE_EXECISH.test(body) && HEREDOC_SENDER_ARGV.test(body))
+const HEREDOC_SHELL = /(?:^|[\s;&|(])(?:\S*\/)?(?:bash|sh|zsh|dash)\b[^\n<]*$/i
+const HEREDOC_INTERP = /(?:^|[\s;&|(])(?:\S*\/)?(python3?(?:\.\d+)?|node|tsx|ts-node|deno|bun)\b[^\n<]*$/i
+const HEREDOC_PIPE = /\|\s*(?:\S*\/)?(python3?(?:\.\d+)?|node|tsx|ts-node|deno|bun|bash|sh|zsh|dash)\b/i
+const HEREDOC_REDIRECT = /(?:^|[\s;&|(])(?:cat|tee)\b[^\n]*?(?:>>?|\btee(?:\s+-a)?)\s*(['"]?)([^\s'"<>;&|]+)\1/
+function writtenThenRun(cmd, written, depth) {
+  if (!written.size) return false
+  let segments
+  try { segments = segmentsTokens(cmd) } catch { return false }
+  for (const toks of segments) {
+    for (const head of commandHeads(toks)) {
+      if (!head || !head.length) continue
+      const prog = basename(head[0])
+      let args = head.slice(1).filter((t) => !t.startsWith('-'))
+      if (prog.toLowerCase() === 'npx' && args.length) args = args.slice(1) // npx <runner> <file>
+      if (!args.length || !written.has(args[0])) continue
+      const body = written.get(args[0])
+      if ((PYTHON.test(prog) || NODEISH.test(prog)) && heredocBodySends(body)) return true
+      if (WRAPPER_SHELL.test(prog) && depth < 3 && isSendInvocation(body, depth + 1)) return true
+    }
+  }
+  return false
+}
+function heredocProgramSends(cmd, depth = 0) {
+  const written = new Map()
+  for (const m of cmd.matchAll(HEREDOC_RE)) {
+    const opener = cmd.slice(cmd.lastIndexOf('\n', m.index - 1) + 1, m.index) + m[1]
+    const w = HEREDOC_REDIRECT.exec(opener)
+    if (w) written.set(w[2], cmd.slice(m.index + m[1].length + 1, m.index + m[0].length - m[2].length))
+    const piped = HEREDOC_PIPE.exec(m[1])
+    if (piped) {
+      const pbody = cmd.slice(m.index + m[1].length + 1, m.index + m[0].length - m[2].length)
+      if (WRAPPER_SHELL.test(piped[1])) {
+        if (depth < 3 && isSendInvocation(pbody, depth + 1)) return true
+      } else if (heredocBodySends(pbody)) return true
+    }
+    const lineStart = cmd.lastIndexOf('\n', m.index - 1) + 1
+    const head = cmd.slice(lineStart, m.index)
+    const bodyStart = m.index + m[1].length + 1
+    const body = cmd.slice(bodyStart, m.index + m[0].length - m[2].length)
+    if (HEREDOC_INTERP.test(head)) {
+      if (heredocBodySends(body)) return true
+    } else if (HEREDOC_SHELL.test(head) && depth < 3) {
+      if (isSendInvocation(body, depth + 1)) return true
+    }
+  }
+  return writtenThenRun(cmd, written, depth)
+}
+
 export function isSendInvocation(cmd, depth = 0) {
+  if (heredocProgramSends(cmd, depth)) return true
   let segments
   try {
     segments = segmentsTokens(cmd)
@@ -279,7 +571,16 @@ export function isSendInvocation(cmd, depth = 0) {
     // this path the gate is exactly as strict as before -- never weaker.
     return SEND_PATTERNS.some((re) => re.test(cmd))
   }
-  return segments.some((toks) => segmentIsSend(toks, depth))
+  if (segments.some((toks) => segmentIsSend(toks, depth))) return true
+  // The same command with every substitution as one undecidable word (see
+  // flattenSubstitutions): the outer command keeps the word it would run.
+  const flat = flattenSubstitutions(cmd)
+  if (flat === cmd) return false
+  try {
+    return segmentsTokens(flat).some((toks) => segmentIsSend(toks, depth))
+  } catch {
+    return SEND_PATTERNS.some((re) => re.test(cmd))
+  }
 }
 
 // Outbound-shaped operations of the multiplexed manage_email tool. Each of
@@ -427,6 +728,18 @@ export function buildUnverifiedRecipientMsg(addresses) {
     `  node ${LEDGER_CLI} add ${first} --source <forras> --note "<honnan>"\n` +
     `  --source: ${SOURCE_HELP}\n` +
     'Ha nem talalsz forrast, a cim NINCS meg: mondd meg a gazdanak, ne kuldj levelet.'
+  )
+}
+
+// Wording for a call that needs the ledger while the ledger MODULE does not
+// load (HOOKDEPLOAD1008). It goes to stderr with exit 2, not as the JSON deny:
+// no rewrite of the call helps, the module has to be repaired, and that is the
+// main agent's job -- this gate does not run in its session.
+export function buildLedgerUnavailableMsg(err) {
+  return (
+    'EMAIL-KAPU: TILTVA. A kapu fuggosege (scripts/recipient-ledger.mjs) nem toltheto be ' +
+    `(${err?.message ?? err}) -- fail-closed: a cimzett nem ellenorizheto, ezert a hivas nem mehet at. ` +
+    'A modult a fo ugynok javitja (ez a kapu az o munkameneteben nem fut): jelezd neki.\n'
   )
 }
 
@@ -638,7 +951,17 @@ if (isInvokedDirectly()) {
   } catch {
     allow() // malformed/empty input must never break the agent's tool calls
   }
-  const { deny: shouldDeny, kind, addresses } = gateDecision(payload?.tool_name, payload?.tool_input)
+  let decision
+  try {
+    decision = gateDecision(payload?.tool_name, payload?.tool_input)
+  } catch (err) {
+    // HOOKDEPLOAD1008: the call needed the ledger, and the ledger module did
+    // not load. Anything else that throws here is not this branch's to judge.
+    if (!LEDGER_LOAD_ERROR) throw err
+    process.stderr.write(buildLedgerUnavailableMsg(LEDGER_LOAD_ERROR))
+    process.exit(2)
+  }
+  const { deny: shouldDeny, kind, addresses } = decision
   if (shouldDeny) {
     const { botName, ownerName } = readBrandEnv()
     // An address with no recorded source loses before every other branch,

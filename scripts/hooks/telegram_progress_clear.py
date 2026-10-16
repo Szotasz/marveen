@@ -82,6 +82,13 @@ def api(tok, method, payload):
         return json.loads(r.read().decode())
 
 
+def topic_of(entry):
+    """The topic the placeholder was posted into (TELEGRAM_TOPICS_ENABLED), as
+    sendMessage parameters; empty for a plain chat, so the payload stays as is."""
+    t = entry.get("message_thread_id")
+    return {"message_thread_id": t} if isinstance(t, int) and t > 0 else {}
+
+
 def last_assistant_text(transcript_path):
     """Return the last non-empty assistant text message from the JSONL transcript
     (the agent's final user-facing answer). Empty string if none / unreadable."""
@@ -175,7 +182,7 @@ def main():
             cid, mid = p.get("chat_id"), p.get("message_id")
             if answer:
                 try:
-                    api(tok, "sendMessage", {"chat_id": cid, "text": answer[:4000]})
+                    api(tok, "sendMessage", {"chat_id": cid, "text": answer[:4000], **topic_of(p)})
                 except Exception as e:
                     log(sd, f"[enforce] fallback send failed: {e}")
             try:

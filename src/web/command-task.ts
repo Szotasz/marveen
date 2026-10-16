@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process"
+import { spawn } from "node:child_process"
 import { join } from "node:path"
 import { readFileSync } from "node:fs"
 import { PROJECT_ROOT, STORE_DIR, TELEGRAM_BOT_TOKEN } from "../config.js"
@@ -8,7 +8,8 @@ import { atomicWriteFileSync } from "./atomic-write.js"
 import { logger } from "../logger.js"
 import { sendTelegramMessage } from "./telegram.js"
 import { appendTaskRun, markTaskRunCompleted } from "../db.js"
-import type { ScheduledTask } from "./scheduled-tasks-io.js"
+import { trackDetachedGroup } from "./detached-groups.js"
+import { disableOnceTask, type ScheduledTask } from "./scheduled-tasks-io.js"
 
 // command-type scheduled tasks run a raw shell command directly (no LLM
 // agent, no tmux session) and alert on Telegram after N consecutive
@@ -64,20 +65,93 @@ export function evaluateCommandResult(
   }
 }
 
-function runCommand(cmd: string, timeoutMs: number): { ok: boolean; detail: string } {
-  try {
-    const r = spawnSync("bash", ["-lc", cmd], { timeout: timeoutMs, encoding: "utf-8" })
-    if (r.error) {
-      const code = (r.error as NodeJS.ErrnoException).code
-      if (code === "ETIMEDOUT") return { ok: false, detail: `timeout ${timeoutMs}ms` }
-      return { ok: false, detail: r.error.message }
+// ASYNC on purpose -- this used to be spawnSync, and that was a whole-server
+// outage (measured 2026-09-14).
+//
+// spawnSync blocks the Node event loop for the entire command. While a command
+// task ran, the dashboard answered NOTHING: no HTTP, no /api/messages, not even
+// its own log lines. That alone would be bad; what made it a deadlock is that a
+// command can call BACK into the dashboard. A heartbeat gate script that wakes
+// an agent does exactly that (POST /api/messages, then it waits for
+// confirmation). The server was synchronously waiting for a script
+// that was waiting for the server, so the script only returned when its own
+// confirm window expired.
+//
+// The numbers: that task finished ~14s after firing until 07:00 that day, then
+// 4m22s on EVERY run afterwards -- so the dashboard was dead for four minutes
+// out of every thirty. Three agents duplicated inter-agent messages because
+// their sends timed out, their read-backs looked empty, and every copy landed
+// once the loop resumed.
+//
+// Each direction looked correct in isolation: a scheduler may wait for its
+// task, and a task may talk to the API. The defect only exists in the pair.
+//
+// CMDTASKKILL1772 (#1772): the command runs in its OWN process group
+// (detached), and the timeout ends the whole group. Killing the `bash -lc`
+// child alone left everything bash had started (a `&` job, a pipeline member,
+// a curl, a sleep) re-parented to init and running past the task's deadline --
+// the same gap the pre-check closed in #1759 (endPreCheckGroup).
+function endCommandGroup(child: ReturnType<typeof spawn>, task: string): void {
+  const pid = child.pid
+  if (pid != null) {
+    try {
+      process.kill(-pid, "SIGKILL")
+      return
+    } catch (err) {
+      // ESRCH: the group is already gone, which is the goal. Anything else is
+      // said out loud, then the direct child is still killed below.
+      if ((err as NodeJS.ErrnoException).code === "ESRCH") return
+      logger.warn({ task, error: (err as Error).message }, "command task: could not kill the command's process group, killing bash only")
     }
-    if (r.status === 0) return { ok: true, detail: "exit 0" }
-    const err = (r.stderr || "").trim().slice(0, 200)
-    return { ok: false, detail: `exit ${r.status}${err ? ": " + err : ""}` }
-  } catch (err) {
-    return { ok: false, detail: (err as Error).message }
   }
+  try { child.kill("SIGKILL") } catch { /* already gone */ }
+}
+
+function runCommand(cmd: string, timeoutMs: number, task: string): Promise<{ ok: boolean; detail: string }> {
+  return new Promise((resolve) => {
+    let child: ReturnType<typeof spawn>
+    try {
+      // detached: bash leads its own process group, so the timeout can end
+      // everything it started (endCommandGroup), not just bash.
+      child = spawn("bash", ["-lc", cmd], { detached: true })
+    } catch (err) {
+      resolve({ ok: false, detail: (err as Error).message })
+      return
+    }
+    // DETACHEDSHUTDOWN1007: the dashboard's shutdown ends this group while it
+    // runs; it leaves the registry when the run is over (exit or timeout kill).
+    const untrack = trackDetachedGroup(child.pid, `command-task:${task}`)
+    let stderr = ""
+    let settled = false
+    const done = (r: { ok: boolean; detail: string }) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      untrack()
+      resolve(r)
+    }
+    // The kill is ours now: spawn() has no `timeout` option that fires
+    // reliably across platforms, and a command that hangs must not hold a
+    // slot for ever. SIGKILL rather than SIGTERM -- a hung command is by
+    // definition not responding to a polite request.
+    const timer = setTimeout(() => {
+      endCommandGroup(child, task)
+      done({ ok: false, detail: `timeout ${timeoutMs}ms` })
+    }, timeoutMs)
+    // Drain stdout: nothing else reads it, and an undrained pipe blocks a
+    // command that prints more than the pipe buffer until our timeout kills it
+    // (spawnSync used to buffer it for us).
+    child.stdout?.resume()
+    child.stderr?.on("data", (d: Buffer) => {
+      if (stderr.length < 4000) stderr += d.toString()
+    })
+    child.on("error", (err) => done({ ok: false, detail: err.message }))
+    child.on("close", (code) => {
+      if (code === 0) { done({ ok: true, detail: "exit 0" }); return }
+      const err = stderr.trim().slice(0, 200)
+      done({ ok: false, detail: `exit ${code}${err ? ": " + err : ""}` })
+    })
+  })
 }
 
 // A shipped command task cannot hard-code the install path, and the node
@@ -90,6 +164,12 @@ export function resolveCommandPlaceholders(cmd: string, root: string = PROJECT_R
   return cmd.replace(/\{\{(PROJECT_ROOT|INSTALL_DIR)\}\}/g, () => shQuote(root))
 }
 
+// A command task that is still running must not be started again. Before the
+// async change this was impossible by construction (the loop was blocked);
+// now a 7-minute command on a 2-minute schedule would pile up copies of
+// itself, which is exactly the failure the fix is meant to remove.
+const inFlight = new Set<string>()
+
 export function runCommandTask(task: ScheduledTask, now: number): void {
   if (!task.command) {
     logger.warn({ task: task.name }, "command task has no command, skipping")
@@ -97,20 +177,47 @@ export function runCommandTask(task: ScheduledTask, now: number): void {
   }
   const timeoutMs = task.timeoutMs && task.timeoutMs > 0 ? task.timeoutMs : 10_000
   const failThreshold = task.failThreshold && task.failThreshold > 0 ? task.failThreshold : 2
+  if (inFlight.has(task.name)) {
+    logger.warn({ task: task.name }, "command task still running from a previous tick, skipping this one")
+    return
+  }
   const map = load()
-  const { ok, detail } = runCommand(resolveCommandPlaceholders(task.command), timeoutMs)
+  inFlight.add(task.name)
+  void runCommand(resolveCommandPlaceholders(task.command), timeoutMs, task.name)
+    .then(({ ok, detail }) => finish(task, now, failThreshold, map, ok, detail))
+    .catch((err) => finish(task, now, failThreshold, map, false, (err as Error).message))
+    .finally(() => inFlight.delete(task.name))
+}
+
+// Everything that used to follow the blocking call, unchanged in behaviour --
+// only in WHEN it runs. The run is closed here because these tasks are never
+// injected into a session, so the pane watchdog never sees them; without this
+// they would be the one class of run that stays open for ever.
+function finish(
+  task: ScheduledTask,
+  now: number,
+  failThreshold: number,
+  map: HealthMap,
+  ok: boolean,
+  detail: string,
+): void {
   const { next, action } = evaluateCommandResult(map[task.name], ok, failThreshold, now)
   map[task.name] = next
   persist()
-  // A command task is synchronous: by the time runCommand returns, the run IS
-  // over. Close it here rather than leaving it to the pane watchdog, which
-  // never sees these -- they are not injected into a session at all, so without
-  // this they would be the one class of run that stays open for ever.
   try {
     const runId = appendTaskRun(task.name, task.agent || "system")
     markTaskRunCompleted(runId, "done")
   } catch { /* non-fatal */ }
   logger.info({ task: task.name, ok, detail, fails: next.fails, action }, "command task ran")
+  // Card 7d2b49b4: a once command task is switched off after its first successful run (exit 0). A failed run
+  // leaves it on, so the failure alert above still has something to point at.
+  if (ok && task.once) {
+    try {
+      if (disableOnceTask(task.name, now)) logger.info({ task: task.name }, "once-task switched off after its first successful run")
+    } catch (err) {
+      logger.warn({ err, task: task.name }, "once-task could not be switched off -- left enabled")
+    }
+  }
 
   if (action === "none") return
   const ownerChat = resolveOwnerChatId()

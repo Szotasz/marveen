@@ -6,7 +6,8 @@
 //
 // WHY THIS EXISTS (PICKERCLIKAPU923, measured 2026-09-23): the dashboard's
 // model picker is a static list, and a customer install pins the CLI
-// (install-linux.sh CLAUDE_PIN="2.1.110"). On that CLI, `claude-fable-5-1`
+// (install-linux.sh CLAUDE_PIN, "2.1.110" when this was measured, "2.1.112"
+// since #1494). On 2.1.110, `claude-fable-5-1`
 // and `claude-opus-5-5` answer HTTP 400 `unrecognized_model` on the FIRST
 // prompt, while `claude-opus-5` and `claude-sonnet-5` run (positive control,
 // same box, same run). Nothing in the launch path catches this: the session
@@ -37,6 +38,14 @@ export const CLAUDE_MODEL_MIN_CLI: Readonly<Record<string, ClaudeModelCliRequire
   'claude-fable-5-1': {
     minCli: '2.1.278',
     measured: '2.1.110 -> 400 unrecognized_model (hermes, 2026-09-23); 2.1.278 and 2.1.280 -> OK (owner Mac, 2026-09-22)',
+  },
+  'claude-sonnet-5-5': {
+    minCli: '2.1.283',
+    measured: '2.1.283 -> OK (claude -p, plugin-free config, main host, 2026-09-28 21:4x); lower versions NOT measured, so they count as unsupported',
+  },
+  'claude-haiku-5-5': {
+    minCli: '2.1.284',
+    measured: '2.1.284 -> OK (claude -p --model claude-haiku-5-5 ran to stop_reason end_turn with a real answer, but printed a [claude-code:unrecognized_model] warning; two long-running agents also came up on it, main host, 2026-10-08 16:14 and ~16:25 CEST); lower versions NOT measured, so they count as unsupported',
   },
   'claude-opus-5-5': {
     minCli: '2.1.280',
@@ -79,6 +88,35 @@ export function isModelUnsupportedByCli(model: string, installedVersion: string 
   const req = CLAUDE_MODEL_MIN_CLI[baseModelId(model)]
   if (!req) return false
   return compareVersions(installedVersion, req.minCli) < 0
+}
+
+export interface DefaultModelLaunchDecision {
+  /** The model to launch. */
+  model: string
+  /** The distribution default that was replaced, or null when it launches as is. */
+  replaced: string | null
+  /** The CLI minimum of the replaced default, or null when nothing was replaced. */
+  minCli: string | null
+}
+
+/**
+ * DEFAULTCLIGUARD927: the model a MODEL-LESS launch should use. Callers pass
+ * the shipped distribution default ONLY when no operator value resolved (an
+ * explicit value is the operator's choice, and the picker already guards it).
+ * When the installed CLI is measured not to launch that default, the previous
+ * tier is used instead. Same fail-open rule as the picker gate: an unmeasured
+ * version (null) changes nothing.
+ */
+export function launchableDefaultModel(
+  distributionDefault: string,
+  fallback: string,
+  installedVersion: string | null,
+): DefaultModelLaunchDecision {
+  if (!isModelUnsupportedByCli(distributionDefault, installedVersion)) {
+    return { model: distributionDefault, replaced: null, minCli: null }
+  }
+  const req = CLAUDE_MODEL_MIN_CLI[baseModelId(distributionDefault)]
+  return { model: fallback, replaced: distributionDefault, minCli: req?.minCli ?? null }
 }
 
 export interface ClaudeSupportSummary {

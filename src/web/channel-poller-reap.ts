@@ -16,18 +16,31 @@
 //
 // Strategy: combine two identifiers.
 //   1. bot.pid (cheap, works for the supervised process).
-//   2. `ps eww -e` scan for the *_STATE_DIR=<chanDir> env-var match. This
+//   2. `ps axeww` scan for the *_STATE_DIR=<chanDir> env-var match. This
 //      catches orphans whose pid is no longer in bot.pid - any process that
 //      was started against this channel state dir is in scope, regardless
 //      of how its argv was rendered. macOS BSD ps emits each process's full
 //      environment when invoked with `e`; we grep that.
 
 import { execFileSync, execSync } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import type { ChannelProviderType } from '../channel-provider.js'
 import { channelStateDir } from '../channel-provider.js'
 import { logger } from '../logger.js'
+import { exactTmuxTarget } from '../tmux-target.js'
+import { shQuote } from './ssh-tmux.js'
+
+// The env scan MUST list processes without a controlling terminal. On macOS
+// `ps eww -e` does not: `-e` there only adds other users' processes, and the
+// BSD default still drops every tty-less one (measured 2026-10-07 on the host:
+// 255 rows vs 981 for `ps axeww`; a detached node carrying
+// TELEGRAM_STATE_DIR=<probe> was absent from the former, present in the
+// latter). An orphaned poller is exactly a tty-less process -- its tmux pane
+// is gone -- so the old form was blind to the very thing this scan exists to
+// find (card PSEWWMACOSBLIND1007). `x` adds the tty-less processes; procps on
+// Linux accepts the same BSD-style `axeww`.
+export const PS_ENV_SCAN_CMD = '/bin/ps axeww'
 
 const STATE_ENV_VAR: Record<ChannelProviderType, string> = {
   telegram: 'TELEGRAM_STATE_DIR',
@@ -37,15 +50,27 @@ const STATE_ENV_VAR: Record<ChannelProviderType, string> = {
   teams: 'TEAMS_STATE_DIR',
 }
 
-// Parse `ps eww -e` output and return every PID whose process environment
+// Parse `ps axeww` output and return every PID whose process environment
 // contains `<envVar>=<value>`. Exported for testability.
 //
-// `ps eww -e` rows on macOS look like:
+// `ps axeww` rows on macOS look like:
 //   90798 s000  S+   0:00.01 bun run --cwd ... HOME=/Users/... TELEGRAM_STATE_DIR=/path... ...
 // The match must be precise: substring `TELEGRAM_STATE_DIR=/path` against
 // `TELEGRAM_STATE_DIR=/path-elsewhere` is acceptable because the value is an
 // absolute path, but we still anchor on the env-var literal to avoid
 // matching a row that just *mentions* the path string in its argv.
+//
+// The row must ALSO carry a CLAUDE_PLUGIN_ROOT env entry (PSEWWMACOSBLIND1007,
+// Geri's review). *_STATE_DIR is inherited by everything the agent's claude
+// starts -- a background `node`/`npm` job from its Bash tool included -- and
+// with `ps axeww` those tty-less jobs are now visible on macOS too, where
+// nothing in the guards behind this scan would spare them (a JS runtime, not a
+// pane, not claude). A channel plugin poller is launched by Claude Code as a
+// plugin, so it always has CLAUDE_PLUGIN_ROOT (measured on the host: every
+// telegram and slack-channel poller does; the agent's background jobs and its
+// non-plugin MCP servers do not). The bot.pid path is unaffected.
+const PLUGIN_ROOT_ENV_RE = /(?:^|\s)CLAUDE_PLUGIN_ROOT=\S/
+
 export function parsePollerPidsFromPs(
   psOutput: string,
   envVar: string,
@@ -55,6 +80,7 @@ export function parsePollerPidsFromPs(
   const out: number[] = []
   for (const line of psOutput.split('\n')) {
     if (!line.includes(needle)) continue
+    if (!PLUGIN_ROOT_ENV_RE.test(line)) continue
     const m = line.match(/^\s*(\d+)\s/)
     if (!m) continue
     const pid = parseInt(m[1]!, 10)
@@ -63,13 +89,91 @@ export function parsePollerPidsFromPs(
   return out
 }
 
+// The scan itself is psEwwSnapshot's (below): one PS_ENV_SCAN_CMD call site for
+// this path and reapChannelOrphans, so neither can drift back to a blind form.
 function listPollerPidsByStateDir(envVar: string, chanDir: string): number[] {
+  return parsePollerPidsFromPs(psEwwSnapshot(chanDir), envVar, chanDir)
+}
+
+// ---------------------------------------------------------------------------
+// Plugin-process markers for the reap candidates (card cf075d41).
+//
+// The state-dir variable is exported by the session launcher, so every
+// descendant of the owning agent inherits it: its claude, its Bash tools,
+// builds, test runs and watchers. selectReapablePollers spares the pane, its
+// ancestors, any `claude` and every env-scan hit that is not a JS runtime, but
+// a node/npm/npx job the agent started (and detached) passes the runtime check.
+// Claude Code sets CLAUDE_PLUGIN_ROOT=<plugin cache>/<provider>/<ver> only for
+// the plugin server it spawns and that server's children; measured on a live
+// host, every real poller carried it and none of the other processes with the
+// state dir did. So an env-scan candidate needs BOTH markers, and bot.pid is
+// honoured only while it names a process with the plugin marker: the pid space
+// wraps, and a stale bot.pid can name a pid the kernel has since given to an
+// unrelated process.
+
+const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+// The CLAUDE_PLUGIN_ROOT anchor for one provider: the env literal, then the
+// provider dir segment ending on a path/version/space boundary, so `/telegram`
+// does not match a longer sibling like `/telegram-inline`.
+function pluginRootRegex(pluginRootNeedle: string): RegExp {
+  return new RegExp(`CLAUDE_PLUGIN_ROOT=\\S*${escapeRe(pluginRootNeedle)}(?:[/@ ]|$)`)
+}
+
+// The rows of ONE channel state dir: the state-dir literal `<envVar>=<chanDir>`
+// ending on whitespace or end of line (so `/x/telegram` does not also match
+// `/x/telegram-old`), and, when `rootRe` is given, that anchor too.
+function stateDirRowPids(psEwwOutput: string, envVar: string, chanDir: string, rootRe?: RegExp): number[] {
+  const dirRe = new RegExp(`(?:^|\\s)${escapeRe(envVar)}=${escapeRe(chanDir)}(?:\\s|$)`)
+  const out: number[] = []
+  for (const line of psEwwOutput.split('\n')) {
+    if (!dirRe.test(line) || (rootRe && !rootRe.test(line))) continue
+    const m = line.match(/^\s*(\d+)\s/)
+    if (!m) continue
+    const pid = parseInt(m[1]!, 10)
+    if (pid > 1) out.push(pid)
+  }
+  return out
+}
+
+/**
+ * The poller candidates of ONE channel state dir: an env-scan row counts only
+ * if it carries BOTH the state-dir literal `<envVar>=<chanDir>` (ending on
+ * whitespace or end of line, so `/x/telegram` does not also match
+ * `/x/telegram-old`) AND the provider's CLAUDE_PLUGIN_ROOT anchor.
+ * Exported for testability.
+ */
+export function parseStateDirPollerPids(
+  psEwwOutput: string,
+  envVar: string,
+  chanDir: string,
+  pluginRootNeedle: string,
+): number[] {
+  return stateDirRowPids(psEwwOutput, envVar, chanDir, pluginRootRegex(pluginRootNeedle))
+}
+
+/**
+ * Is `pid`, in the same env-scan snapshot, a plugin process of the provider
+ * (CLAUDE_PLUGIN_ROOT anchor present)? bot.pid is only trusted through this
+ * check. Exported for testability.
+ */
+export function isPluginPollerPid(psEwwOutput: string, pid: number, pluginRootNeedle: string): boolean {
+  const rootRe = pluginRootRegex(pluginRootNeedle)
+  for (const line of psEwwOutput.split('\n')) {
+    const m = line.match(/^\s*(\d+)\s/)
+    if (m && parseInt(m[1]!, 10) === pid) return rootRe.test(line)
+  }
+  return false
+}
+
+// One env-scan snapshot (PS_ENV_SCAN_CMD, so tty-less processes are listed on
+// macOS too); empty on failure (no candidate then, so nothing is reaped).
+function psEwwSnapshot(chanDir: string): string {
   try {
-    const out = execSync('/bin/ps eww -e', { timeout: 5000, encoding: 'utf-8', maxBuffer: 8 * 1024 * 1024 })
-    return parsePollerPidsFromPs(out, envVar, chanDir)
+    return execSync(PS_ENV_SCAN_CMD, { timeout: 5000, encoding: 'utf-8', maxBuffer: 8 * 1024 * 1024 })
   } catch (err) {
     logger.warn({ err, chanDir }, 'channel-poller-reap: ps scan failed')
-    return []
+    return ''
   }
 }
 
@@ -95,6 +199,16 @@ export interface ReapResult {
   // collapsed the pane before respawn-pane could run. Logged whenever non-empty
   // so a recurrence is visible instead of silently "just working".
   skippedLivePane: number[]
+  // True when the tmux server itself matched the candidate sources and was
+  // spared (TMUXSERVERREAP929). Killing it takes every agent session down.
+  skippedTmuxServer?: boolean
+  // 35ea0375: targets spared because another uid owns them, or their owner could not be read.
+  skippedOtherUid: number[]
+  skippedUnknownOwner: number[]
+  // 35ea0375: the signal outcome by kind; `reaped` holds only the pids actually killed.
+  killOutcome: KillOutcomes
+  // cf075d41: processes that carry the state dir, or sit in bot.pid, but are not plugin processes: never candidates.
+  skippedNotPlugin: number[]
 }
 
 // ---------------------------------------------------------------------------
@@ -198,23 +312,329 @@ export function collectPollerEvidence(
   )
 }
 
+// ---------------------------------------------------------------------------
+// Own-uid guard and kill outcomes (card 35ea0375).
+//
+// The process tables the reapers read are host-wide: `ps -axww` and `ps eww -e`
+// list every user's processes. A detached `claude --channels` that belongs to
+// ANOTHER user on the same host therefore passed the orphan test, its SIGTERM
+// failed with EPERM, the catch read that as "already gone", and the log said
+// "killed" for the same pids every cycle while they lived on. Two rules close it:
+//   - every kill path signals only processes owned by the dashboard's own uid
+//     (the owner of /proc/<pid>; `ps -o uid=` where there is no /proc). The rest
+//     is skipped, and the skips are ONE count per reap call, not a line per pid;
+//   - each signal's outcome is kept by kind (ok / ESRCH / EPERM / other), and a
+//     pid counts as killed only when a signal of ours reached it and it is gone
+//     or got SIGKILL. The returned and the logged `reaped` lists are those pids.
+
+const HAS_PROC = existsSync('/proc/self')
+
+/**
+ * The owner uid of a process: the owner of /proc/<pid> where /proc exists, else
+ * `ps -o uid= -p <pid>`. null when it cannot be read (the process is gone, or
+ * neither source answers); such a pid is never signalled. `useProc` is a test
+ * seam (the ps path on a host that has /proc). Exported for testability.
+ */
+export function processOwnerUid(pid: number, useProc: boolean = HAS_PROC): number | null {
+  if (useProc) {
+    try { return statSync(`/proc/${pid}`).uid } catch { return null }
+  }
+  try {
+    const out = execFileSync('/bin/ps', ['-o', 'uid=', '-p', String(pid)], { timeout: 3000, encoding: 'utf-8' }).trim()
+    return /^\d+$/.test(out) ? Number(out) : null
+  } catch { return null }
+}
+
+/** The dashboard's own uid; null where the platform has none (then nothing is signalled). */
+function dashboardUid(): number | null {
+  return typeof process.getuid === 'function' ? process.getuid() : null
+}
+
+export interface OwnerSplit {
+  // owned by the dashboard's uid: the only pids a reaper may signal
+  own: number[]
+  // owned by another uid: skipped
+  foreign: number[]
+  // the owner could not be read (gone, or no source answered): skipped
+  unknown: number[]
+}
+
+/** Pure: split candidate pids by owner against `uid` (null: nothing is ours). Exported for testability. */
+export function splitByOwner(
+  pids: number[],
+  uid: number | null,
+  ownerOf: (pid: number) => number | null = processOwnerUid,
+): OwnerSplit {
+  const split: OwnerSplit = { own: [], foreign: [], unknown: [] }
+  for (const pid of pids) {
+    const owner = uid === null ? null : ownerOf(pid)
+    if (owner === null) split.unknown.push(pid)
+    else if (owner === uid) split.own.push(pid)
+    else split.foreign.push(pid)
+  }
+  return split
+}
+
+export type SignalOutcome = 'ok' | 'ESRCH' | 'EPERM' | 'other'
+export type KillFn = (pid: number, signal: NodeJS.Signals | 0) => void
+
+const processKill: KillFn = (pid, signal) => { process.kill(pid, signal) }
+
+/**
+ * One signal and its outcome by kind: process.kill throws ESRCH for a pid that is
+ * gone and EPERM for one this user may not signal. Exported for testability.
+ */
+export function sendSignal(pid: number, signal: NodeJS.Signals | 0, kill: KillFn = processKill): SignalOutcome {
+  try {
+    kill(pid, signal)
+    return 'ok'
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code
+    return code === 'ESRCH' || code === 'EPERM' ? code : 'other'
+  }
+}
+
+export interface KillOutcomes {
+  // a signal of ours reached the pid, and it is gone or got SIGKILL
+  killed: number[]
+  // ESRCH on the first SIGTERM: it was gone before we signalled
+  alreadyGone: number[]
+  // EPERM: not ours to signal
+  permissionDenied: number[]
+  // any other failure
+  failed: number[]
+}
+
+function noKills(): KillOutcomes {
+  return { killed: [], alreadyGone: [], permissionDenied: [], failed: [] }
+}
+
+/**
+ * Test seams of the reapers (35ea0375): the owner lookup, the own uid and the signal function. cf075d41 (review): also what the
+ * reapers read from the host, so a test can hand them a fixed snapshot instead of real processes and a tmux server: `psEww` is
+ * the env-scan text (PS_ENV_SCAN_CMD), `procs` the `ps -axww` rows, `panePids` the live pane leaders (`tmux list-panes -a`; an
+ * empty set is a failed query) and `tmuxServerPid` the server's pid (null is a failed query). Unset, each reads the host as before.
+ */
+export interface ReapSeams {
+  ownerOf?: (pid: number) => number | null
+  ownUid?: number | null
+  kill?: KillFn
+  psEww?: () => string
+  procs?: () => ProcRow[]
+  panePids?: () => Set<number>
+  tmuxServerPid?: () => number | null
+}
+
+function pauseForFlush(): void {
+  try { execFileSync('/bin/sleep', ['0.3'], { timeout: 2000 }) } catch { /* ignore */ }
+}
+
+/**
+ * SIGTERM every pid, give bun/node ~300ms to flush, then SIGKILL any survivor,
+ * keeping each pid's outcome by kind. `kill` and `pause` are test seams.
+ * Exported for testability.
+ */
+export function terminatePids(pids: number[], deps: { kill?: KillFn; pause?: () => void } = {}): KillOutcomes {
+  const kill = deps.kill ?? processKill
+  const out = noKills()
+  const notKilled = (pid: number, outcome: SignalOutcome) => {
+    if (outcome === 'EPERM') out.permissionDenied.push(pid)
+    else out.failed.push(pid)
+  }
+  const termed: number[] = []
+  for (const pid of pids) {
+    const sent = sendSignal(pid, 'SIGTERM', kill)
+    if (sent === 'ok') termed.push(pid)
+    else if (sent === 'ESRCH') out.alreadyGone.push(pid)
+    else notKilled(pid, sent)
+  }
+  if (termed.length === 0) return out
+  const pause = deps.pause ?? pauseForFlush
+  pause()
+  for (const pid of termed) {
+    const probe = sendSignal(pid, 0, kill)
+    if (probe === 'ESRCH') { out.killed.push(pid); continue } // our SIGTERM ended it
+    if (probe !== 'ok') { notKilled(pid, probe); continue }
+    const sigkill = sendSignal(pid, 'SIGKILL', kill)
+    if (sigkill === 'ok' || sigkill === 'ESRCH') out.killed.push(pid) // delivered, or it died just now
+    else notKilled(pid, sigkill)
+  }
+  return out
+}
+
+/** The outcome counts by kind for a log line. */
+function outcomeByKind(o: KillOutcomes): { ok: number; ESRCH: number; EPERM: number; other: number } {
+  return { ok: o.killed.length, ESRCH: o.alreadyGone.length, EPERM: o.permissionDenied.length, other: o.failed.length }
+}
+
+/** One line per reap call for the spared owners: counts only, never a line per pid. */
+function logOwnerSkips(where: Record<string, unknown>, split: OwnerSplit): void {
+  if (split.foreign.length === 0 && split.unknown.length === 0) return
+  logger.info({ ...where, skippedOtherUid: split.foreign.length, skippedUnknownOwner: split.unknown.length },
+    'channel-poller-reap: spared processes not owned by this user (35ea0375)')
+}
+
+/** The signalled pids that were NOT killed, with the outcome by kind (warn when a signal was refused or failed). */
+function logNotKilled(where: Record<string, unknown>, o: KillOutcomes): void {
+  const notKilled = [...o.alreadyGone, ...o.permissionDenied, ...o.failed]
+  if (notKilled.length === 0) return
+  const unexpected = o.permissionDenied.length + o.failed.length > 0
+  const line = { ...where, notKilled, outcome: outcomeByKind(o) }
+  const msg = 'channel-poller-reap: signalled pid(s) not killed, outcome by kind'
+  if (unexpected) logger.warn(line, msg)
+  else logger.info(line, msg)
+}
+
 /**
  * Reap every channel-plugin poller process associated with this agent.
- * Combines bot.pid (cheap, supervised pid) with a `ps eww -e` env-var scan
+ * Combines bot.pid (cheap, supervised pid) with a `ps axeww` env-var scan
  * (catches orphans whose pid is no longer in bot.pid). SIGTERM first; after
  * a short grace period, SIGKILL any survivor. Safe to call multiple times
- * (process.kill on a missing pid is caught).
+ * (process.kill on a missing pid is caught). Signals only processes of the
+ * dashboard's own uid, and `reaped` lists only the pids actually killed (35ea0375).
  */
+// ---------------------------------------------------------------------------
+// WHO IS ACTUALLY A POLLER (2026-09-21, card ee485f5e).
+//
+// The env-var scan above answers "which processes were started against this
+// channel state dir". For years that was the same set as "which processes are
+// the plugin poller", because channels.sh launched the MAIN session withOUT
+// exporting *_STATE_DIR -- a fact the comments in this file and in
+// channel-monitor.ts still asserted. #915 changed it: channels.sh now exports
+// the var (see scripts/channels.sh, "the plugin honours *_STATE_DIR, and with
+// it exported the main session's poller does carry it"), and env vars are
+// INHERITED. So the needle now also matches:
+//   * the session's own `claude` process -- which on the main session IS the
+//     tmux pane leader, so SIGTERMing it destroys the session, and
+//   * every unrelated child that happened to inherit it, down to the watchdog's
+//     own `sleep 5` inside scripts/channels.sh.
+//
+// Measured on this host 2026-09-21 06:55 (5 matches for one channel dir):
+//   641057 claude  <- tmux pane pid of lean-chief-channels
+//   641186 bun     <- plugin launcher      }  the only real pollers
+//   641196 bun     <- bot.pid              }
+//   668857 sleep   <- child of channels.sh (the watchdog's own sleep)
+// and in the outage (03:00-06:31) the reaper killed all four of them, 40 times,
+// every attempt taking the bridge down for the next 4-6 minutes.
+//
+// So the candidate list is now a SUPERSET of the pollers and must be filtered.
+// Three independent guards, because the expensive failure is killing the
+// session and the cheap failure is leaving one orphan for the next sweep:
+//   1. pane        -- the pid IS a live tmux pane pid. Never killable here:
+//                     that is an agent session, not a poller.
+//   2. pane-ancestor -- an ancestor of a live pane (the tmux server, systemd).
+//   3. claude      -- argv[0] basename is `claude`. An agent process, whatever
+//                     its parentage; DETACHED ones are reapDetachedChannelClaudes'
+//                     job, and that function identifies them by pane attribution
+//                     instead of env/argv heuristics (see its comment).
+//   4. not-a-runtime -- argv[0] basename is not a JS runtime. A channel plugin
+//                     poller is always run by one (`bun run ...`, `node
+//                     server.ts`); a `sleep`/`git`/`npm install` that merely
+//                     inherited the env var is not. Applied to ENV-SCAN
+//                     candidates only: bot.pid is written by the plugin itself,
+//                     so a poller shipped as a compiled binary is still reaped
+//                     through that path. The gap this leaves is narrow and
+//                     named: a NON-JS orphan whose pid is no longer in bot.pid.
+//
+// The candidates reach this selection already narrowed to plugin processes
+// (cf075d41, "Plugin-process markers" above): an env-scan hit needs the
+// CLAUDE_PLUGIN_ROOT marker too, and bot.pid counts only while it names a
+// process with that marker. Guard 4 stays as a second layer for the env scan.
+//
+// The pollers themselves are descendants of the pane and are still reaped --
+// that is the whole point of reaping BEFORE a respawn (a surviving poller
+// 409-races the new one). Only the pane itself and its ancestors are spared.
+const POLLER_RUNTIMES = new Set(['bun', 'bunx', 'node', 'nodejs', 'deno', 'npm', 'npx'])
+
+function argv0Base(command: string): string {
+  const argv0 = command.trim().split(/\s+/, 1)[0] ?? ''
+  return argv0.split('/').pop() ?? ''
+}
+
+export interface PollerSelection {
+  reap: number[]
+  spared: { pid: number; reason: 'pane' | 'pane-ancestor' | 'claude' | 'not-a-runtime' | 'gone' }[]
+}
+
+/**
+ * Pure: split reap candidates into "actually a poller" and "spared, with a
+ * reason". `fromBotPid` is exempt from the runtime check (see guard 4 above).
+ * Exported for testability -- no ps, no tmux, no kill.
+ */
+export function selectReapablePollers(
+  candidates: number[],
+  procs: ProcRow[],
+  panePids: Set<number>,
+  fromBotPid: number | null,
+): PollerSelection {
+  const byPid = new Map<number, ProcRow>()
+  for (const p of procs) byPid.set(p.pid, p)
+
+  const paneAncestors = paneAncestorPids(procs, panePids)
+
+  const reap: number[] = []
+  const spared: PollerSelection['spared'] = []
+  for (const pid of candidates) {
+    const row = byPid.get(pid)
+    if (!row) { spared.push({ pid, reason: 'gone' }); continue }
+    if (panePids.has(pid)) { spared.push({ pid, reason: 'pane' }); continue }
+    if (paneAncestors.has(pid)) { spared.push({ pid, reason: 'pane-ancestor' }); continue }
+    if (argv0Base(row.command) === 'claude') { spared.push({ pid, reason: 'claude' }); continue }
+    if (pid !== fromBotPid && !POLLER_RUNTIMES.has(argv0Base(row.command))) {
+      spared.push({ pid, reason: 'not-a-runtime' }); continue
+    }
+    reap.push(pid)
+  }
+  return { reap, spared }
+}
+
+/**
+ * Pure: every ancestor of every live pane (the tmux server, a pane's parent),
+ * walked once, at most 16 hops per pane. Exported for testability.
+ */
+export function paneAncestorPids(procs: ProcRow[], panePids: Set<number>): Set<number> {
+  const byPid = new Map<number, ProcRow>()
+  for (const p of procs) byPid.set(p.pid, p)
+  const paneAncestors = new Set<number>()
+  for (const pane of panePids) {
+    let cur = byPid.get(pane)?.ppid
+    const seen = new Set<number>()
+    for (let hops = 0; hops < 16 && cur !== undefined && cur > 1; hops++) {
+      if (seen.has(cur)) break
+      seen.add(cur)
+      paneAncestors.add(cur)
+      cur = byPid.get(cur)?.ppid
+    }
+  }
+  return paneAncestors
+}
+
 export function reapChannelOrphans(
   provider: ChannelProviderType,
   agentDirPath: string,
-  opts: { tmuxPath?: string } = {},
+  opts: { tmuxPath?: string } & ReapSeams = {},
 ): ReapResult {
   const chanDir = channelStateDir(provider, agentDirPath)
   const envVar = STATE_ENV_VAR[provider]
+  const pluginRootNeedle = PLUGIN_ROOT_NEEDLE[provider]
 
-  const fromBotPid = readBotPid(chanDir)
-  const fromEnvScan = listPollerPidsByStateDir(envVar, chanDir)
+  // cf075d41: one env-scan snapshot, both sources narrowed to plugin
+  // processes (see "Plugin-process markers" above).
+  const psEww = opts.psEww ? opts.psEww() : psEwwSnapshot(chanDir)
+  const botPid = readBotPid(chanDir)
+  const fromBotPid = botPid !== null && isPluginPollerPid(psEww, botPid, pluginRootNeedle) ? botPid : null
+  const fromEnvScan = parseStateDirPollerPids(psEww, envVar, chanDir, pluginRootNeedle)
+  // The spared rows are this state dir's rows WITHOUT the plugin anchor, taken
+  // from the rows themselves: parsePollerPidsFromPs drops every row with no
+  // CLAUDE_PLUGIN_ROOT (#1746), so it cannot say what was spared.
+  const skippedNotPlugin = [...new Set([
+    ...(botPid !== null && fromBotPid === null ? [botPid] : []),
+    ...stateDirRowPids(psEww, envVar, chanDir).filter((pid) => !fromEnvScan.includes(pid) && pid !== fromBotPid),
+  ])]
+  if (skippedNotPlugin.length > 0) {
+    logger.info({ provider, chanDir, skippedNotPlugin: skippedNotPlugin.length },
+      'channel-poller-reap: spared processes that carry the state dir or sit in bot.pid but are not plugin processes (cf075d41)')
+  }
 
   // Deduplicate while preserving order so the bot.pid path is logged first.
   const candidates: number[] = []
@@ -226,64 +646,111 @@ export function reapChannelOrphans(
     }
   }
 
-  // Never kill a pid that IS a live tmux pane's own leader process right now.
-  // `export VAR=x && exec claude` makes VAR visible in claude's OWN environment
-  // too, not just a spawned poller child's -- so the env-var scan (and, for the
-  // main session, even bot.pid) can match the pane's own claude process, not
-  // just its poller. Killing that pid here -- instead of leaving it to the
-  // caller's imminent `tmux respawn-pane -k`, which is built to replace exactly
-  // that process cleanly -- races the respawn and can collapse the pane first
-  // (no remain-on-exit -> pane death takes the whole session with it). A
-  // grandchild poller (the bun/node child under it) is NOT a pane leader and
-  // stays a normal reap target, which is the whole point of reaping here rather
-  // than relying on respawn-pane -k alone.
-  //
-  // Fail-SAFE, not fail-open (Logra's review, 2026-09-19, same card 08a02137):
-  // an empty `live` set means the tmux query itself failed (a real server
-  // always has at least one pane), not "nothing is live". Treating that as
-  // "nothing to protect" would silently reproduce the exact bug this function
-  // exists to fix. So an unresolved live-pane set aborts the kill entirely,
-  // mirroring reapDetachedChannelClaudes's own fail-safe (`live.size === 0` ->
-  // reap nothing) instead of contradicting it.
-  const live = livePanePids(opts.tmuxPath ?? 'tmux')
-  const liveQueryFailed = live.size === 0
-  const all = liveQueryFailed ? [] : candidates.filter((pid) => !live.has(pid))
-  const skippedLivePane = liveQueryFailed ? [] : candidates.filter((pid) => live.has(pid))
-  if (liveQueryFailed && candidates.length > 0) {
+  // FAIL SAFE, same precedent as reapDetachedChannelClaudes below: without a
+  // process snapshot we cannot tell the poller from the pane, and the wrong
+  // guess costs the whole channel. An un-reaped orphan costs one 409-racing
+  // sweep. Refuse rather than kill blind.
+  const procs = candidates.length > 0 ? (opts.procs ? opts.procs() : snapshotProcs()) : []
+  if (candidates.length > 0 && procs.length === 0) {
+    logger.warn({ provider, chanDir, candidates }, 'channel-poller-reap: ps snapshot unavailable, skipping reap (fail-safe)')
+    return { reaped: [], source: { fromBotPid, fromEnvScan }, skippedLivePane: [], skippedOtherUid: [], skippedUnknownOwner: [], killOutcome: noKills(), skippedNotPlugin }
+  }
+  // Second fail-safe layer (upstream, Logra's review 2026-09-19, card 08a02137):
+  // an empty live-pane set means the tmux query itself failed (a real server
+  // always has at least one pane), not "nothing is live". Without it the
+  // pane / pane-ancestor guards in selectReapablePollers have nothing to match
+  // against, so refuse instead of relying on the runtime check alone.
+  const panePids = candidates.length > 0
+    ? (opts.panePids ? opts.panePids() : livePanePids(opts.tmuxPath ?? 'tmux'))
+    : new Set<number>()
+  if (candidates.length > 0 && panePids.size === 0) {
     logger.warn({ provider, chanDir, candidates },
       'channel-poller-reap: could not resolve live tmux panes, refusing to reap (fail-safe)')
+    return { reaped: [], source: { fromBotPid, fromEnvScan }, skippedLivePane: [], skippedOtherUid: [], skippedUnknownOwner: [], killOutcome: noKills(), skippedNotPlugin }
+  }
+  const selection = selectReapablePollers(candidates, procs, panePids, fromBotPid)
+  // A candidate that IS a live pane leader is the exact 08a02137 signature;
+  // surfaced separately (warn below) from the other spare reasons.
+  const skippedLivePane = selection.spared.filter((s) => s.reason === 'pane').map((s) => s.pid)
+  if (selection.spared.length > 0) {
+    logger.info({ provider, chanDir, spared: selection.spared }, 'channel-poller-reap: candidates spared (not pollers)')
   }
 
-  // SIGTERM, give bun/node ~300ms to flush, then SIGKILL stragglers.
-  for (const pid of all) {
-    try { process.kill(pid, 'SIGTERM') } catch { /* already gone */ }
+  // Never kill the tmux SERVER either (TMUXSERVERREAP929). When channels.sh
+  // creates the server itself (after a host reboot it usually does: it runs
+  // `tmux start-server` with the state-dir var already exported), the server
+  // process carries TELEGRAM_STATE_DIR in its own environment, so the env scan
+  // matches it. Killing it tears down EVERY agent's pane on the host, not just
+  // this one's poller. Measured 2026-09-28 12:47, 14:47 and 2026-09-29 04:31:
+  // the reap's `reaped` list held the server pid (the parent of every pane),
+  // the next `tmux list-panes` answered "no server running", and the whole
+  // fleet died and came back only through the service manager.
+  // Fail-safe like the live-pane guard: an unresolved server pid refuses the
+  // reap instead of guessing, because the guess is exactly the fleet kill.
+  // selectReapablePollers already spares the server through its pane-ancestor
+  // guard (the server is every pane's parent); this explicit check is the
+  // independent second layer, and it covers the one path the selection lets
+  // through: the server pid sitting in bot.pid with no resolved pane under it.
+  const serverPid = candidates.length > 0
+    ? (opts.tmuxServerPid ? opts.tmuxServerPid() : tmuxServerPid(opts.tmuxPath ?? 'tmux'))
+    : null
+  const serverQueryFailed = candidates.length > 0 && serverPid === null
+  if (serverQueryFailed) {
+    logger.warn({ provider, chanDir, candidates },
+      'channel-poller-reap: could not resolve the tmux server pid, refusing to reap (fail-safe)')
   }
-  if (all.length > 0) {
-    try { execFileSync('/bin/sleep', ['0.3'], { timeout: 2000 }) } catch { /* ignore */ }
-    for (const pid of all) {
-      try { process.kill(pid, 0) /* probe */; process.kill(pid, 'SIGKILL') } catch { /* gone */ }
-    }
+  const skippedTmuxServer = serverPid !== null && candidates.includes(serverPid) && !panePids.has(serverPid)
+  const all = serverQueryFailed ? [] : selection.reap.filter((pid) => pid !== serverPid)
+  if (skippedTmuxServer) {
+    logger.warn({ provider, chanDir, serverPid, fromBotPid, fromEnvScan },
+      'channel-poller-reap: candidate IS the tmux server, sparing it (killing it would take down every agent session)')
   }
 
-  if (all.length > 0) {
-    logger.info({ provider, chanDir, reaped: all, fromBotPid, fromEnvScan }, 'channel-poller-reap: orphans killed')
+  // 35ea0375: only this user's processes are signalled. SIGTERM, give bun/node
+  // ~300ms to flush, then SIGKILL stragglers; the outcome is kept by kind.
+  const owners = splitByOwner(all, opts.ownUid === undefined ? dashboardUid() : opts.ownUid, opts.ownerOf)
+  logOwnerSkips({ provider, chanDir }, owners)
+  const killOutcome = terminatePids(owners.own, { kill: opts.kill })
+  const reaped = killOutcome.killed
+
+  if (reaped.length > 0) {
+    logger.info({ provider, chanDir, reaped, outcome: outcomeByKind(killOutcome), fromBotPid, fromEnvScan },
+      'channel-poller-reap: orphans killed')
   }
+  logNotKilled({ provider, chanDir }, killOutcome)
   if (skippedLivePane.length > 0) {
     logger.warn({ provider, chanDir, skippedLivePane, fromBotPid, fromEnvScan },
       'channel-poller-reap: candidate IS a live pane leader, sparing it (respawn-pane will replace it)')
   }
-  return { reaped: all, source: { fromBotPid, fromEnvScan }, skippedLivePane }
+  return {
+    reaped,
+    source: { fromBotPid, fromEnvScan },
+    skippedLivePane,
+    skippedTmuxServer,
+    skippedOtherUid: owners.foreign,
+    skippedUnknownOwner: owners.unknown,
+    killOutcome,
+    skippedNotPlugin,
+  }
 }
 
 // ---------------------------------------------------------------------------
 // Detached channel CLAUDE reaper (the parent-process leak, 2026-06-03).
 //
 // reapChannelOrphans (above) kills bun/node POLLERS by env-var scan + bot.pid.
-// That works for sub-agents (their claude+poller carry TELEGRAM_STATE_DIR=<dir>)
-// but MISSES the main channels session entirely: channels.sh launches the main
-// `claude --channels` with NO *_STATE_DIR export (the plugin uses its default
-// dir), so neither the main claude nor its poller match the env needle, and the
-// plugin never writes bot.pid. When a --continue respawn (channel-monitor
+//
+// CORRECTED 2026-09-21 (card ee485f5e): the paragraph that stood here claimed
+// the env scan "MISSES the main channels session entirely", because channels.sh
+// launched the main `claude --channels` with no *_STATE_DIR export. That has
+// been false since #915 -- channels.sh exports it, the plugin writes bot.pid,
+// and the main claude and its bun poller BOTH match the needle. The claim was
+// load-bearing: it was the reason reapChannelOrphans had no pane guard, and
+// once it went stale the reaper started SIGTERMing the main session's own
+// pane leader (measured: 40 times between 03:00 and 06:31 on 2026-09-21).
+// reapChannelOrphans now filters its candidates (selectReapablePollers).
+//
+// What this function is still for: a detached `claude --channels` left behind by
+// a --continue respawn. When a --continue respawn (channel-monitor
 // respawn-pane / agent-process start) fails to tear down the prior claude, the
 // detached claude survives -- reparented to the tmux server -- and keeps a bun
 // poller hitting getUpdates on the SHARED bot token. 5 such orphans accumulated
@@ -367,6 +834,18 @@ function snapshotProcs(): ProcRow[] {
   }
 }
 
+// The tmux server's own pid, or null when it cannot be resolved.
+function tmuxServerPid(tmuxPath: string): number | null {
+  try {
+    const out = execSync(`${tmuxPath} display-message -p '#{pid}'`, { timeout: 5000, encoding: 'utf-8' })
+    const n = parseInt(out.trim().split('\n')[0] ?? '', 10)
+    return Number.isFinite(n) && n > 1 ? n : null
+  } catch (err) {
+    logger.warn({ err }, 'channel-poller-reap: tmux display-message failed')
+    return null
+  }
+}
+
 function livePanePids(tmuxPath: string): Set<number> {
   try {
     const out = execSync(`${tmuxPath} list-panes -a -F '#{pane_pid}'`, { timeout: 5000, encoding: 'utf-8' })
@@ -382,15 +861,12 @@ function livePanePids(tmuxPath: string): Set<number> {
   }
 }
 
-function killBunChildren(claudePid: number): void {
+function killBunChildren(claudePid: number, uid: number | null, seams: ReapSeams): void {
   try {
     const out = execSync(`/usr/bin/pgrep -P ${claudePid} bun`, { timeout: 3000, encoding: 'utf-8' })
-    for (const line of out.split('\n')) {
-      const pid = parseInt(line.trim(), 10)
-      if (Number.isFinite(pid) && pid > 1) {
-        try { process.kill(pid, 'SIGTERM') } catch { /* gone */ }
-      }
-    }
+    const children = out.split('\n').map((line) => parseInt(line.trim(), 10)).filter((pid) => Number.isFinite(pid) && pid > 1)
+    // 35ea0375: the same own-uid rule as for the claude itself.
+    for (const pid of splitByOwner(children, uid, seams.ownerOf).own) sendSignal(pid, 'SIGTERM', seams.kill)
   } catch { /* no bun children (pgrep exits 1) */ }
 }
 
@@ -399,34 +875,47 @@ function killBunChildren(claudePid: number): void {
  * before any (re)spawn: it spares every claude attached to a live tmux pane, so
  * it never kills the active session or a live sibling agent -- only truly
  * detached leftovers. Kills each orphan's bun poller children first, then the
- * claude (SIGTERM, ~300ms grace, SIGKILL stragglers). Returns reaped pids.
+ * claude (SIGTERM, ~300ms grace, SIGKILL stragglers). Signals only processes of
+ * the dashboard's own uid (35ea0375). Returns the pids actually killed.
  *
  * tmuxPath defaults to a bare `tmux` (resolved on PATH); callers that already
  * hold an absolute path should pass it.
  */
-export function reapDetachedChannelClaudes(opts: { channelNeedle?: string; tmuxPath?: string } = {}): number[] {
+export function reapDetachedChannelClaudes(opts: { channelNeedle?: string; tmuxPath?: string } & ReapSeams = {}): number[] {
   const tmuxPath = opts.tmuxPath ?? 'tmux'
-  const procs = snapshotProcs()
-  const live = livePanePids(tmuxPath)
+  const procs = opts.procs ? opts.procs() : snapshotProcs()
+  const live = opts.panePids ? opts.panePids() : livePanePids(tmuxPath)
   // No live panes resolved (tmux query failed) -> refuse to reap: without the
   // live set we cannot tell orphans from the active session. Fail safe.
   if (live.size === 0) {
     logger.warn('channel-poller-reap: no live panes resolved, skipping detached-claude reap (fail-safe)')
     return []
   }
-  const orphans = findOrphanChannelClaudes(procs, live, opts.channelNeedle)
-  for (const pid of orphans) {
-    killBunChildren(pid)
-    try { process.kill(pid, 'SIGTERM') } catch { /* gone */ }
+  const detached = findOrphanChannelClaudes(procs, live, opts.channelNeedle)
+  const where = { channelNeedle: opts.channelNeedle ?? '(all)' }
+  // cf075d41: the orphan test looks UP from the claude (is it or an ancestor a
+  // live pane?), so a detached `claude --channels` that sits ABOVE a live pane
+  // leader passes it. Such a claude is never signalled: the pane under it is a
+  // live session. The same pane-ancestor set as selectReapablePollers.
+  const paneAncestors = paneAncestorPids(procs, live)
+  const skippedPaneAncestor = detached.filter((pid) => paneAncestors.has(pid))
+  if (skippedPaneAncestor.length > 0) {
+    logger.warn({ skippedPaneAncestor, ...where },
+      'channel-poller-reap: detached channel claude is an ancestor of a live pane, sparing it (cf075d41)')
   }
-  if (orphans.length > 0) {
-    try { execFileSync('/bin/sleep', ['0.3'], { timeout: 2000 }) } catch { /* ignore */ }
-    for (const pid of orphans) {
-      try { process.kill(pid, 0); process.kill(pid, 'SIGKILL') } catch { /* gone */ }
-    }
-    logger.info({ reaped: orphans, channelNeedle: opts.channelNeedle ?? '(all)' }, 'channel-poller-reap: detached channel claudes killed')
+  const orphans = detached.filter((pid) => !paneAncestors.has(pid))
+  // 35ea0375: the process table is host-wide; only this user's orphans are signalled.
+  const uid = opts.ownUid === undefined ? dashboardUid() : opts.ownUid
+  const owners = splitByOwner(orphans, uid, opts.ownerOf)
+  logOwnerSkips(where, owners)
+  for (const pid of owners.own) killBunChildren(pid, uid, opts)
+  const killOutcome = terminatePids(owners.own, { kill: opts.kill })
+  if (killOutcome.killed.length > 0) {
+    logger.info({ reaped: killOutcome.killed, outcome: outcomeByKind(killOutcome), ...where },
+      'channel-poller-reap: detached channel claudes killed')
   }
-  return orphans
+  logNotKilled(where, killOutcome)
+  return killOutcome.killed
 }
 
 // ---------------------------------------------------------------------------
@@ -548,7 +1037,7 @@ export function findForeignMainPollers(
 
 function mainSessionPanePids(session: string, tmuxPath: string): Set<number> {
   try {
-    const out = execSync(`${tmuxPath} list-panes -t ${session} -F '#{pane_pid}'`, { timeout: 5000, encoding: 'utf-8' })
+    const out = execSync(`${tmuxPath} list-panes -t ${shQuote(exactTmuxTarget(session))} -F '#{pane_pid}'`, { timeout: 5000, encoding: 'utf-8' })
     const s = new Set<number>()
     for (const line of out.split('\n')) {
       const n = parseInt(line.trim(), 10)
@@ -566,41 +1055,41 @@ function mainSessionPanePids(session: string, tmuxPath: string): Set<number> {
  * above). SIGTERM -> ~300ms grace -> SIGKILL stragglers. Kills only the poller
  * process, never its owning claude (a real Agent/Task subagent may still be
  * doing legit work -- it just must not hold the main channel's poller). Returns
- * the pids killed. Fail-safe: does nothing when the main session can't be
- * resolved or the ps/tmux snapshot fails.
+ * the pids killed; signals only processes of the dashboard's own uid (35ea0375).
+ * Fail-safe: does nothing when the main session can't be resolved or the ps/tmux
+ * snapshot fails.
  */
 export function reapForeignMainPollers(opts: {
   provider: ChannelProviderType
   mainSession: string
   tmuxPath?: string
-}): number[] {
+} & ReapSeams): number[] {
   const tmuxPath = opts.tmuxPath ?? 'tmux'
   const legit = mainSessionPanePids(opts.mainSession, tmuxPath)
   if (legit.size === 0) return [] // fail-safe: cannot distinguish legit from thief
 
   let psEww: string
   try {
-    psEww = execSync('/bin/ps eww -e', { timeout: 5000, encoding: 'utf-8', maxBuffer: 8 * 1024 * 1024 })
+    psEww = execSync(PS_ENV_SCAN_CMD, { timeout: 5000, encoding: 'utf-8', maxBuffer: 8 * 1024 * 1024 })
   } catch (err) {
-    logger.warn({ err }, 'channel-poller-reap: ps eww scan failed (foreign-main reap skipped)')
+    logger.warn({ err }, 'channel-poller-reap: ps env scan failed (foreign-main reap skipped)')
     return []
   }
   const candidates = parseMainDirPollerPids(psEww, PLUGIN_ROOT_NEEDLE[opts.provider], STATE_ENV_VAR[opts.provider])
   if (candidates.length === 0) return []
 
   const foreign = findForeignMainPollers(candidates, snapshotProcs(), legit)
-  for (const pid of foreign) {
-    try { process.kill(pid, 'SIGTERM') } catch { /* gone */ }
-  }
-  if (foreign.length > 0) {
-    try { execFileSync('/bin/sleep', ['0.3'], { timeout: 2000 }) } catch { /* ignore */ }
-    for (const pid of foreign) {
-      try { process.kill(pid, 0); process.kill(pid, 'SIGKILL') } catch { /* gone */ }
-    }
+  // 35ea0375: only this user's pollers are signalled; the outcome is kept by kind.
+  const owners = splitByOwner(foreign, opts.ownUid === undefined ? dashboardUid() : opts.ownUid, opts.ownerOf)
+  const where = { provider: opts.provider, mainSession: opts.mainSession }
+  logOwnerSkips(where, owners)
+  const killOutcome = terminatePids(owners.own, { kill: opts.kill })
+  if (killOutcome.killed.length > 0) {
     logger.info(
-      { provider: opts.provider, mainSession: opts.mainSession, reaped: foreign, legit: [...legit] },
+      { ...where, reaped: killOutcome.killed, outcome: outcomeByKind(killOutcome), legit: [...legit] },
       'channel-poller-reap: foreign main-token poller(s) killed (thief contending for the main bot token)',
     )
   }
-  return foreign
+  logNotKilled(where, killOutcome)
+  return killOutcome.killed
 }

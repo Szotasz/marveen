@@ -41,7 +41,9 @@ telegram_api_call() {
   fi
 
   local response curl_exit
-  response=$(curl -sS -m 15 "https://api.telegram.org/bot${token}/${method}" "$@" 2>&1)
+  # TELEGRAM_API_BASE: test seam only (a local Bot API stub), the same variable
+  # telegram_fallback_send.py honours; unset in production.
+  response=$(curl -sS -m 15 "${TELEGRAM_API_BASE:-https://api.telegram.org}/bot${token}/${method}" "$@" 2>&1)
   curl_exit=$?
   # Never let the token reach a log/journal: redact before any echo.
   response="${response//${token}/<token>}"

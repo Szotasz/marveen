@@ -20,6 +20,7 @@ collect_bash_body / collect_mcp_body moved here VERBATIM from
 outgoing-copy-gate.py (behavior-neutral; parity proven byte-for-byte against a
 golden captured from the pre-move code -- scripts/__tests__/email-extract-parity.test.py).
 """
+import hashlib
 import json
 import os
 import re
@@ -192,6 +193,61 @@ def collect_mcp_recipients(tool_input: dict):
             norm(tool_input.get("bcc")), None)
 
 
+# --- HTML body and attachments (EMAILHTMLHORGONY929) -------------------------
+# A send.py-style command can carry the letter's HTML alternative (--html <file>)
+# and attachments (--attach <file>, repeatable). Neither is in `text` (the copy
+# gate audits the plain letter), so an anchor over to/cc/bcc/text alone let an
+# APPROVED letter go out with a different HTML body or with an added or changed
+# attachment: the owner received something other than what was approved. The
+# envelope carries their sha256 digests; the approval gate's anchor takes them
+# only when present, so every existing anchor stays byte-identical. Same
+# unreadable boundary as the body and the recipients: a shell-expanded, empty
+# or unreadable path is not approximated -- the caller denies.
+#
+# The flag is read the way argparse reads it (a tester's finding): it may be quoted
+# ("--attach") or an unambiguous prefix (--att, --ht); after "=" the value is
+# literal; after whitespace the next token is the value ONLY if it does not start
+# with "-", because argparse takes such a token as the next option. So a
+# store_true switch of the same name is not a file flag: scripts/support-mail/
+# send.py's --html ("... --html --cc x") stays a switch, and the anchor of that
+# letter is unchanged. The value is captured in a lookahead, so a token after a
+# switch (another --attach) is still seen by the next match. --html-wrap is not
+# --html (the flag must end in "=" or whitespace).
+_FILE_FLAG_RE = re.compile(
+    r"(?:^|\s)([\"']?)--(html|htm|ht|attach|attac|atta|att)\1"
+    r"(?=(=|\s+)(?:\"([^\"]*)\"|'([^']*)'|([^\s|;&<>]+)))")
+
+
+def collect_bash_attachments(cmd: str):
+    """Return (html_sha256 or None, attachments, unreadable_reason); attachments
+    is a list of {"name", "sha256", "size"} sorted by name then digest, so the
+    order of the flags on the command line does not change the anchor."""
+    html, atts = None, []
+    for m in _FILE_FLAG_RE.finditer(cmd):
+        flag = "html" if m.group(2).startswith("ht") else "attach"
+        ref = next(g for g in (m.group(4), m.group(5), m.group(6)) if g is not None)
+        if m.group(3) != "=" and ref.startswith("-"):
+            continue  # the next token is an option: a switch of this name, not a file
+        if not ref or _SHELL_SUBST.search(ref):
+            return (None, [], f"a --{flag} ures vagy shell-behelyettesitest tartalmaz ({ref[:60]}) "
+                              "-- a fajl futasidoben dol el")
+        path = os.path.expanduser(ref)
+        try:
+            with open(path, "rb") as fh:
+                data = fh.read()
+        except OSError as exc:
+            return (None, [], f"a --{flag} fajl nem olvashato ({path}: {exc})")
+        digest = hashlib.sha256(data).hexdigest()
+        if flag == "html":
+            if html is not None:
+                return (None, [], "tobb --html egy hivasban -- nem donthato el, melyik a level HTML-je")
+            html = digest
+        else:
+            atts.append({"name": os.path.basename(path), "sha256": digest, "size": len(data)})
+    atts.sort(key=lambda a: (a["name"], a["sha256"]))
+    return (html, atts, None)
+
+
 # The claude.ai Gmail connector's send-shaped tools (mcp__claude_ai_Gmail__*):
 # no "send_email" in the name, so the name-based test above never saw them.
 CONNECTOR_SEND_RE = re.compile(r"gmail__(reply|reply_all|send_message|forward)$", re.I)
@@ -201,8 +257,11 @@ def collect_email_envelope(tool_name: str, tool_input: dict):
     """PR2 entry point: one dict for the recipient+content hash anchor (to/cc/bcc/text), built from the
     SAME collectors the copy gate runs (no second extraction implementation).
     Returns {"to", "cc", "bcc", "text", "unreadable_reason"}; text is the combined
-    subject+body exactly as the copy gate audits it. The CALLER decides policy
+    subject+body exactly as the copy gate audits it. On the Bash path the dict
+    also carries "html_sha256" and "attachments" when the command names them
+    (EMAILHTMLHORGONY929). The CALLER decides policy
     (e.g. an empty recipient list on a send is itself grounds to deny)."""
+    html_sha256, attachments = None, []
     if re.search(r"send_email", tool_name or "", re.I) or CONNECTOR_SEND_RE.search(tool_name or ""):
         ti = tool_input if isinstance(tool_input, dict) else {}
         text = collect_mcp_body(ti)
@@ -220,7 +279,14 @@ def collect_email_envelope(tool_name: str, tool_input: dict):
             to, cc, bcc, reason = collect_bash_recipients(cmd)
         else:
             to, cc, bcc = [], [], []
+        if not reason:
+            html_sha256, attachments, reason = collect_bash_attachments(cmd)
     else:
         return {"to": [], "cc": [], "bcc": [], "text": "",
                 "unreadable_reason": f"nem email-kuldo tool ({tool_name!r})"}
-    return {"to": to, "cc": cc, "bcc": bcc, "text": text, "unreadable_reason": reason}
+    env = {"to": to, "cc": cc, "bcc": bcc, "text": text, "unreadable_reason": reason}
+    if html_sha256:
+        env["html_sha256"] = html_sha256
+    if attachments:
+        env["attachments"] = attachments
+    return env

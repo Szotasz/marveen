@@ -72,6 +72,40 @@ function keyOpensVault(master: Buffer): boolean {
   }
 }
 
+// Read-only master-key resolution for the fleet EXPORT. Unlike getMasterKey()
+// it never migrates, renames, writes or generates anything: it returns the
+// base64 key from the first source that actually opens vault.json, or null
+// when no source holds a key AND the vault is empty (nothing to carry over).
+//
+// The sources are tried by content, not inferred from a filename: after a
+// Keychain migration getMasterKey() renames .vault-key to .vault-key.migrated,
+// and that file is still a valid copy of the live key (it is what carries the
+// key to a new machine). A vault that holds secrets which no available key
+// opens is a loud VaultKeyError, never a silent export without the key.
+export function resolveMasterKeyForExport(): string | null {
+  const entryCount = vaultEntryCount()
+  const candidates: string[] = []
+  let keychainUnavailable = false
+  for (const path of [VAULT_KEY_PATH, VAULT_KEY_MIGRATED]) {
+    if (existsSync(path)) candidates.push(readFileSync(path, 'utf-8').trim())
+  }
+  if (isKeychainAvailable()) {
+    const read = keychainRetrieveStatus()
+    if (read.status === 'ok' && read.value) candidates.push(read.value)
+    else if (read.status === 'unavailable') keychainUnavailable = true
+  }
+  for (const key of candidates) {
+    if (key && keyOpensVault(Buffer.from(key, 'base64'))) return key
+  }
+  if (entryCount === 0) return null
+  throw new VaultKeyError(
+    `vault.json holds ${entryCount} entr(y/ies) but no available master key opens it ` +
+    `(tried store/.vault-key, store/.vault-key.migrated${isKeychainAvailable() ? ', macOS Keychain' : ''}` +
+    `${keychainUnavailable ? ' -- the Keychain did not answer, unlock it and retry' : ''}). ` +
+    'The export would drop every secret, so it is refused.'
+  )
+}
+
 function getMasterKey(): Buffer {
   const entryCount = vaultEntryCount()
 

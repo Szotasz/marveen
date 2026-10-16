@@ -2,7 +2,7 @@
 // (PICKERCLIKAPU923). Best effort and cached: a probe failure is a
 // measurement result (`version: null`), never an exception, because the
 // consumer fails OPEN on an unmeasured version.
-import { execFile } from 'node:child_process'
+import { execFile, execFileSync } from 'node:child_process'
 import { tryResolveFromPath } from '../platform.js'
 import { parseClaudeVersion } from '../claude-cli-support.js'
 
@@ -50,6 +50,32 @@ export function measureClaudeCliVersion(opts: { fresh?: boolean } = {}): Promise
       resolve(cache)
     })
   })
+}
+
+/**
+ * Synchronous twin of measureClaudeCliVersion, for the SYNC resolvers on a
+ * launch path (DEFAULTCLIGUARD927: channel-monitor's readConfiguredMainModel
+ * and the worker session start). Same override, same cache, same result shape;
+ * a probe failure is `version: null`, never an exception. It blocks for the
+ * length of one `claude --version` at most once per cache TTL.
+ */
+export function measureClaudeCliVersionSync(): ClaudeCliVersionResult {
+  const env = fromEnv()
+  if (env) return env
+  if (cache && Date.now() - cache.measuredAt < CACHE_TTL_MS) return cache
+  const bin = tryResolveFromPath('claude')
+  if (!bin) {
+    cache = { version: null, measuredAt: Date.now(), error: 'claude binary not found on PATH', source: 'probe' }
+    return cache
+  }
+  try {
+    const stdout = execFileSync(bin, ['--version'], { encoding: 'utf-8', timeout: PROBE_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'ignore'] })
+    const version = parseClaudeVersion(stdout)
+    cache = { version, measuredAt: Date.now(), error: version ? null : `unparseable output: ${String(stdout).slice(0, 60)}`, source: 'probe' }
+  } catch (err) {
+    cache = { version: null, measuredAt: Date.now(), error: `claude --version failed: ${(err as Error).message.slice(0, 120)}`, source: 'probe' }
+  }
+  return cache
 }
 
 /** Test hook: forget the cached measurement. */

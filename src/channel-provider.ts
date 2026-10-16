@@ -17,11 +17,23 @@ export interface ChannelProvider {
   readonly envKeys: string[]
   readonly stateDir: string
   readonly chatIdFormat: string
-  sendMessage(token: string, chatId: string, text: string, parseMode?: string): Promise<void>
+  /** threadId: a Telegram topic (TELEGRAM_TOPICS_ENABLED); providers without topics ignore it. */
+  sendMessage(token: string, chatId: string, text: string, parseMode?: string, threadId?: string): Promise<void>
   sendPhoto(token: string, chatId: string, photoPath: string, caption: string): Promise<void>
-  validateToken(token: string): Promise<{ ok: boolean; botName?: string; error?: string }>
+  validateToken(token: string): Promise<TokenValidation>
   formatMessage(text: string): string
   splitMessage(text: string): string[]
+}
+
+/** What validateToken reports. `scopes` and `missingScopes` are filled only by
+ *  a provider that can read the token's granted scopes (Slack); absent means
+ *  "not known", never "none missing". */
+export interface TokenValidation {
+  ok: boolean
+  botName?: string
+  error?: string
+  scopes?: string[]
+  missingScopes?: string[]
 }
 
 // -- Telegram implementation --
@@ -91,9 +103,10 @@ const telegramProvider: ChannelProvider = {
   stateDir: 'telegram',
   chatIdFormat: 'numeric (e.g. 1268077055)',
 
-  async sendMessage(token, chatId, text, parseMode) {
-    const payload: Record<string, string> = { chat_id: chatId, text }
+  async sendMessage(token, chatId, text, parseMode, threadId) {
+    const payload: Record<string, string | number> = { chat_id: chatId, text }
     if (parseMode) payload.parse_mode = parseMode
+    if (threadId) payload.message_thread_id = Number(threadId)
     const body = JSON.stringify(payload)
     await telegramHttpPost(token, 'sendMessage', body, 'application/json')
   },
@@ -293,7 +306,17 @@ const slackProvider: ChannelProvider = {
       })
       const data = await resp.json() as { ok: boolean; bot_id?: string; user?: string; error?: string }
       if (data.ok) {
-        return { ok: true, botName: data.user || data.bot_id }
+        // SLACKSCOPEJELZ1007: the granted bot scopes come back in the
+        // x-oauth-scopes header only. Reported against the manifest's list so
+        // a missing scope (im:read: the slack-channel plugin needs it to write
+        // to an allowFrom user's DM after a restart, SLACKOUTDM1007) shows up
+        // without anyone asking the owner. No header -> no claim.
+        const granted = parseSlackScopes(resp.headers.get('x-oauth-scopes'))
+        return {
+          ok: true,
+          botName: data.user || data.bot_id,
+          ...(granted ? { scopes: granted, missingScopes: missingSlackScopes(granted) } : {}),
+        }
       }
       return { ok: false, error: data.error || 'Invalid token' }
     } catch {
@@ -487,6 +510,20 @@ const SLACK_BOT_SCOPES = [
   'users:read',
 ]
 
+/** The `x-oauth-scopes` header as a list; null when the header is absent OR
+ *  empty: an empty header is "not known", not "no scope granted" (an
+ *  auth.test that succeeded always has at least one scope). */
+export function parseSlackScopes(header: string | null | undefined): string[] | null {
+  if (header == null || header.trim() === '') return null
+  return header.split(',').map(s => s.trim()).filter(Boolean)
+}
+
+/** The manifest's bot scopes the token was not granted, in manifest order. */
+export function missingSlackScopes(granted: readonly string[]): string[] {
+  const have = new Set(granted)
+  return SLACK_BOT_SCOPES.filter(s => !have.has(s))
+}
+
 const SLACK_BOT_EVENTS = [
   'app_mention',
   'message.channels',
@@ -569,8 +606,9 @@ const providers: Record<ChannelProviderType, ChannelProvider> = {
 function withTestRunMarking(provider: ChannelProvider): ChannelProvider {
   return {
     ...provider,
-    sendMessage: (token, chatId, text, parseMode) =>
-      provider.sendMessage(token, chatId, markIfTestRun(text), parseMode),
+    sendMessage: (token, chatId, text, parseMode, threadId) => threadId
+      ? provider.sendMessage(token, chatId, markIfTestRun(text), parseMode, threadId)
+      : provider.sendMessage(token, chatId, markIfTestRun(text), parseMode),
     sendPhoto: (token, chatId, photoPath, caption) =>
       provider.sendPhoto(token, chatId, photoPath, markIfTestRun(caption)),
   }

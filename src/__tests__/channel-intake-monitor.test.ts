@@ -59,6 +59,18 @@ describe('parseIntakeProbe', () => {
     expect(r.pendingUpdates).toBeNull()
   })
 
+  it('marks a malformed token (404) invalid too', () => {
+    const r = parseIntakeProbe(404, { ok: false, error_code: 404, description: 'Not Found' })
+    expect(r.tokenOk).toBe(false)
+  })
+
+  it.each([502, 500, 503, 504, 429])('does not read a Telegram %i as a rejected token', (status) => {
+    const r = parseIntakeProbe(status, { ok: false, error_code: status, description: 'Bad Gateway' })
+    expect(r.tokenOk).toBe(true)
+    expect(r.reachable).toBe(false)
+    expect(decideIntakeVerdict({ probe: r, prev: null, lastInboundAt: null, now: 0, silenceThresholdMs: 1 }).alert).toBe(false)
+  })
+
   it('reports unreachable (not token-invalid) when the HTTP call itself failed', () => {
     const r = parseIntakeProbe(0, null)
     expect(r.reachable).toBe(false)

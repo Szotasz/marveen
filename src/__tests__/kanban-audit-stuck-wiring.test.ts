@@ -25,7 +25,12 @@ describe('kanban-audit step 3 is wired to /api/kanban/stuck', () => {
   beforeEach(() => { initDatabase(':memory:') })
 
   it('step 3 calls the endpoint, and the old in_progress-only query is nowhere in the skill', () => {
-    expect(step3()).toContain('/api/kanban/stuck')
+    // The curl command itself, not just any mention: the step's heading names
+    // the endpoint too, so a bare toContain stayed green with the URL rewritten
+    // (#1531 review).
+    const curl = step3().split('\n').filter((l) => /^\s*curl\s/.test(l))
+    expect(curl).toHaveLength(1)
+    expect(curl[0]).toMatch(/"http:\/\/localhost:\$PORT\/api\/kanban\/stuck(\?[^"]*)?"/)
     expect(step3()).not.toMatch(OLD_QUERY)
     expect(SKILL).not.toMatch(/WHERE\s+k\.status\s*=\s*'in_progress'/)
   })

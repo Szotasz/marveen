@@ -89,6 +89,28 @@ describe('POST /api/messages sender guards (runtime)', () => {
     expect(r.json.from_agent).toBe(MAIN_AGENT_ID)
   })
 
+  // UNKNOWNTO924: a placeholder recipient used to get 200 and
+  // only fail an hour later.
+  it('rejects an unregistered local recipient with 400 at once', async () => {
+    const r = await post({ from: MAIN_AGENT_ID, to: 'PLACEHOLDER', content: 'placeholder' })
+    expect(r.statusCode).toBe(400)
+    expect(String(r.json.error)).toContain('unknown recipient')
+  })
+
+  // Warn, never block: a lookalike letter must come back as a warning on a
+  // 200, and clean content must not carry the field at all.
+  it('a Cyrillic lookalike in the content is accepted with a homoglyph_warning', async () => {
+    const r = await post({ from: MAIN_AGENT_ID, to: MAIN_AGENT_ID, content: 'Kafe \u0435xpress order' })
+    expect(r.statusCode).toBe(200)
+    expect(r.json.homoglyph_warning).toBeTruthy()
+  })
+
+  it('clean content carries no homoglyph_warning', async () => {
+    const r = await post({ from: MAIN_AGENT_ID, to: MAIN_AGENT_ID, content: 'plain latin text, 40 µs, H₂O' })
+    expect(r.statusCode).toBe(200)
+    expect(r.json).not.toHaveProperty('homoglyph_warning')
+  })
+
   it('rejects an empty from/to/content with 400, before any guard', async () => {
     const r = await post({ from: '', to: MAIN_AGENT_ID, content: 'x' })
     expect(r.statusCode).toBe(400)

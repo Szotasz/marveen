@@ -7,7 +7,7 @@
 // homedir()/.ssh, and one branch of bridge-enroll.test.ts hits that route with a
 // valid address before the file sets MARVEEN_SSH_DIR. One full suite run =
 // exactly one real `marveen-remote` key. 62 of them accumulated across the fleet
-// (Tecton 13, isapp06 51, pestihazak 4), and the suite was green the whole time.
+// (three installs: 13, 51 and 4), and the suite was green the whole time.
 //
 // Two halves, and they need opposite things from the environment:
 //   TEST MODE   (the first blocks) -- the guards must REFUSE the real ~/.ssh.

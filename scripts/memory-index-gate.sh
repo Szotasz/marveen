@@ -43,6 +43,15 @@
 # index mutat). Miert kulon fajl: a jelolt-szures (proza, kod-blokk, link-szoveg)
 # az, amitol ez a mero nem hazudik, es azt kulon kell tudni tesztelni.
 #
+# A NEGYEDIK MERES: A LAP, AMIRE SEMMI NEM MUTAT (2026-10-09).
+# A harmadik meres index -> lemez irányban jar. A visszafele seta ugyanaz a nema
+# kar forditva: a lap meg van irva, helyes, es nem vezet hozza sor -- tehat
+# sosem toltodik be. Ezen a telepitesen mar elsult: az egyiranyu meres ZOLD
+# volt, mikozben ket emlek egyaltalan nem szerepelt az indexben.
+# A szamot ugyanaz a scripts/memory-index-linkcheck.py adja (`orphans`), es a
+# mero az ELERHETOSEG, nem az index-tagsag: amire az index nem mutat, de egy hub
+# igen, az elerheto -- oda megy egy sor, amikor elhagyja az indexet.
+#
 # Protokoll (schedule-runner preCheck):
 #   stdout "SKIP" -> a runner NEM ebreszti az LLM-et (a meret rendben)
 #   stdout ures   -> ebresztes (vagni kell, vagy a gate maga romlott el)
@@ -128,15 +137,57 @@ esac
 #                   ag felulirta, a szamolas NULLAROL indul ujra, es enelkul ez
 #                   a restart lathatatlan (merve: egy 43 085 B-os regi pillanatkep
 #                   BOVEN a 24 408-as "maximum" folott allt).
-PREVMAX="$(jq -r '.max_seen // 0' "$STATE" 2>/dev/null)"
+# --- JSON-olvasas jq NELKUL IS (MEMIDXJQ924) ------------------------------
+# A `jq` nem minden telepitesen van fent -- a Debian-alapu kepek jellemzoen nem
+# hozzak, es ezen a gepen sincs. Puszta `2>/dev/null` mogott ez a fajl CSENDBEN
+# ures erteket kapott volna minden mezore: a futo maximum nullarol indul, az
+# oroklott idok elvesznek, a link-meres pedig "nem adott szamot" agra esik.
+# Az utobbi meg fail-safe (ebreszt), az elso ketto viszont NEM: egy elveszett
+# `max_seen` ugyanaz a nema adatvesztes, ami ellen ez a kapu keszult.
+# python3 mar ma is kotelezo fuggoseg (a hookok arra epulnek), tehat mindig van
+# tartalek olvaso. Ugyanaz a minta, ami a scripts/channels.sh-ban all a
+# settings.json model-mezojere, es ugyanabbol az okbol.
+#
+# _json_get <mezo> <alapertelmezes> [json]   -- a JSON-t a STDIN-en varja.
+# Az alapertelmezes a jq `//` szemantikajat koveti: akkor lep eletbe, ha a mezo
+# hianyzik, `null` vagy `false`. Az ures sztring NEM ilyen, azt a jq is
+# atengedi -- a fallback is.
+_json_get() {
+  if command -v jq >/dev/null 2>&1; then
+    if [ "${3:-}" = json ]; then jq -c ".${1} // ${2}" 2>/dev/null
+    else jq -r ".${1} // ${2}" 2>/dev/null; fi
+    return 0
+  fi
+  _JF="$1" _JD="$2" _JM="${3:-}" python3 -c '
+import json, os, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    d = {}
+if not isinstance(d, dict):
+    d = {}
+v = d.get(os.environ["_JF"])
+if v is None or v is False:          # a jq `//` pontosan ezekre lep
+    d_ = os.environ["_JD"]
+    print("" if d_ == "empty" else d_)
+elif isinstance(v, (dict, list)):    # `-c` es `-r` is JSON-t ad tomb/objektumra
+    print(json.dumps(v, separators=(",", ":"), ensure_ascii=False))
+elif v is True:
+    print("true")
+else:
+    print(v)
+' 2>/dev/null
+}
+
+PREVMAX="$(_json_get max_seen 0 < "$STATE")"
 case "$PREVMAX" in ''|null|*[!0-9]*) PREVMAX=0 ;; esac
 # Az orokolt idok. Ha van oroklott csucs, de ido nem allt mellette (a mezok
 # bevezetese ELOTT irt state), akkor az ido ISMERETLEN -- es ismeretlent nem
 # talalunk ki: `null` megy be, nem a mostani ora. Egy kitalalt idobelyeg
 # ugyanazt a tevedest adna vissza, csak datummal megtamogatva, ami rosszabb.
-PREVMAXAT="$(jq -r '.max_seen_at // empty' "$STATE" 2>/dev/null)"
+PREVMAXAT="$(_json_get max_seen_at empty < "$STATE")"
 case "$PREVMAXAT" in ''|null|*[!0-9]*) PREVMAXAT=null ;; esac
-PREVSINCE="$(jq -r '.since // empty' "$STATE" 2>/dev/null)"
+PREVSINCE="$(_json_get since empty < "$STATE")"
 case "$PREVSINCE" in ''|null|*[!0-9]*) PREVSINCE=null ;; esac
 NOW="$(date +%s)"
 if [ "$PREVMAX" = 0 ]; then
@@ -194,6 +245,7 @@ esac
 # FAIL-OPEN, ahogy a meret-agakon: ha nem tudjuk MEGMERNI, nem allithatjuk, hogy
 # rendben van. Az ok a state-fajlba megy, hogy az ebresztes ne legyen nema.
 MISSINGLINKS=0
+ORPHANS=0
 LINKWAKE=0
 LINKNOTE='"link_scan":"ok"'
 LINKERR=""
@@ -209,24 +261,28 @@ else
   # negykent jelentve tobb bajnak latszana, mint amennyi. (Merve 2026-09-18:
   # ugyanazon a lapon 43 elofordulas / 27 egyedi cel -- mindketto helyes szam,
   # de mas kerdesre valaszol.)
-  LCMISS="$(printf '%s' "$LCOUT" | jq -r '.missing // empty' 2>/dev/null)"
-  LCMISSOCC="$(printf '%s' "$LCOUT" | jq -r '.missing_occurrences // 0' 2>/dev/null)"
-  LCUNIQ="$(printf '%s' "$LCOUT" | jq -r '.unique_targets // 0' 2>/dev/null)"
-  LCCHECKED="$(printf '%s' "$LCOUT" | jq -r '.links_checked // empty' 2>/dev/null)"
-  LCFILES="$(printf '%s' "$LCOUT" | jq -r '.files_scanned // empty' 2>/dev/null)"
-  LCLIST="$(printf '%s' "$LCOUT" | jq -c '.missing_list // []' 2>/dev/null)"
+  LCMISS="$(printf '%s' "$LCOUT" | _json_get missing empty)"
+  LCMISSOCC="$(printf '%s' "$LCOUT" | _json_get missing_occurrences 0)"
+  LCUNIQ="$(printf '%s' "$LCOUT" | _json_get unique_targets 0)"
+  LCCHECKED="$(printf '%s' "$LCOUT" | _json_get links_checked empty)"
+  LCFILES="$(printf '%s' "$LCOUT" | _json_get files_scanned empty)"
+  LCLIST="$(printf '%s' "$LCOUT" | _json_get missing_list '[]' json)"
+  LCORPH="$(printf '%s' "$LCOUT" | _json_get orphans empty)"
+  LCPAGES="$(printf '%s' "$LCOUT" | _json_get pages_seen empty)"
+  LCORPHLIST="$(printf '%s' "$LCOUT" | _json_get orphan_list '[]' json)"
   if [ "$LCRC" != 0 ]; then
-    LINKERR="$(printf '%s' "$LCOUT" | jq -r '.error // empty' 2>/dev/null)"
+    LINKERR="$(printf '%s' "$LCOUT" | _json_get error empty)"
     [ -n "$LINKERR" ] || LINKERR="a link-ellenorzo hibaval allt le (rc=$LCRC)"
   else
     # Ures-ellenorzes ELOSZOR: hianyzo mezo es nem-szam ugyanaz a hiba, de a
     # `''*` minta MINDENRE illeszkedne, tehat a ketto kulon all.
-    if [ -z "$LCMISS" ] || [ -z "$LCCHECKED" ] || [ -z "$LCFILES" ]; then
+    if [ -z "$LCMISS" ] || [ -z "$LCCHECKED" ] || [ -z "$LCFILES" ] \
+       || [ -z "$LCORPH" ] || [ -z "$LCPAGES" ]; then
       LINKERR="a link-meres nem adott szamot"
     else
-      case "$LCMISS$LCCHECKED$LCFILES" in
+      case "$LCMISS$LCCHECKED$LCFILES$LCORPH$LCPAGES" in
         *[!0-9]*) LINKERR="a link-meres nem adott szamot" ;;
-        *) MISSINGLINKS="$LCMISS" ;;
+        *) MISSINGLINKS="$LCMISS"; ORPHANS="$LCORPH" ;;
       esac
     fi
   fi
@@ -238,9 +294,10 @@ if [ -n "$LINKERR" ]; then
   LINKNOTE="$(printf '"link_scan":"%s"' "$LINKERR")"
 else
   [ -n "$LCLIST" ] || LCLIST='[]'
+  [ -n "$LCORPHLIST" ] || LCORPHLIST='[]'
   case "$LCMISSOCC$LCUNIQ" in *[!0-9]*) LCMISSOCC=0; LCUNIQ=0 ;; esac
-  LINKNOTE="$(printf '"link_scan":"ok","link_files":%s,"links_checked":%s,"unique_targets":%s,"missing_links":%s,"missing_occurrences":%s,"missing_list":%s' \
-    "$LCFILES" "$LCCHECKED" "$LCUNIQ" "$LCMISS" "$LCMISSOCC" "$LCLIST")"
+  LINKNOTE="$(printf '"link_scan":"ok","link_files":%s,"links_checked":%s,"unique_targets":%s,"missing_links":%s,"missing_occurrences":%s,"missing_list":%s,"pages_seen":%s,"orphans":%s,"orphan_list":%s' \
+    "$LCFILES" "$LCCHECKED" "$LCUNIQ" "$LCMISS" "$LCMISSOCC" "$LCLIST" "$LCPAGES" "$LCORPH" "$LCORPHLIST")"
 fi
 
 printf '{"measured_at":%s,"size":%s,"max_seen":%s,"max_seen_at":%s,"since":%s,"warn":%s,"hard":%s,"over_hard":%s,%s,%s}\n' \
@@ -254,5 +311,9 @@ printf '{"measured_at":%s,"size":%s,"max_seen":%s,"max_seen_at":%s,"since":%s,"w
 # A logo hivatkozas ugyanaz a nema kar, mint a csonkolas: a sor all, a tudas
 # nincs mogotte. Es ha maga a meres szallt el, az sem lehet csend.
 [ "$MISSINGLINKS" -gt 0 ] 2>/dev/null && exit 0   # WAKE -- van logo hivatkozas
+# Es a visszafele seta: egy lap, amire semmi nem mutat, ugyanugy nem jut be a
+# kontextusba, mint egy levagott sor. A javitas itt NEM torles, hanem egy sor az
+# indexbe (vagy abba a hubba, ahova tartozik).
+[ "$ORPHANS" -gt 0 ] 2>/dev/null && exit 0        # WAKE -- van lap, amire semmi nem mutat
 [ "$LINKWAKE" = 1 ] && exit 0       # WAKE -- a link-meres nem futott le
 echo SKIP

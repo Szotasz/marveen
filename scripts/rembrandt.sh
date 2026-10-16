@@ -94,7 +94,7 @@ RUNNER="$OUTDIR/$PROJECT-$STAMP.sh"
 } > "$RUNNER"
 chmod +x "$RUNNER"
 
-tmux kill-session -t "$SESSION" 2>/dev/null
+tmux kill-session -t "=$SESSION:" 2>/dev/null
 tmux new-session -d -s "$SESSION" -c "$WORKDIR" "$RUNNER"
 
 echo "session: $SESSION"
@@ -102,7 +102,7 @@ echo "model:   $MODEL (effort: $EFFORT)"
 echo "output:  $OUT"
 
 if [ "$WAIT" = "--wait" ]; then
-  while tmux has-session -t "$SESSION" 2>/dev/null; do sleep 5; done
+  while tmux has-session -t "=$SESSION:" 2>/dev/null; do sleep 5; done
   echo "--- kesz ---"
   [ -f "$OUT" ] && cat "$OUT"
 fi

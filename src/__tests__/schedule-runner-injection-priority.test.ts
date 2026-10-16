@@ -76,6 +76,6 @@ describe('forceSend defers on context saturation instead of injecting', () => {
   it('the skipIfBusy drop exempts forceSend so the deferral queues a retry', () => {
     // A forceSend 'busy' comes only from the saturation deferral; dropping it
     // on skipIfBusy would recreate the silent loss the deferral exists to fix.
-    expect(SRC).toMatch(/task\.skipIfBusy && !task\.forceSend/)
+    expect(SRC).toMatch(/current\.skipIfBusy && !current\.forceSend/)
   })
 })

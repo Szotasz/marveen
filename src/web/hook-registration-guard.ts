@@ -23,8 +23,9 @@ import { atomicWriteFileSync } from './atomic-write.js'
 
 // Hook script filenames this app registers into settings.json files
 // (templates/settings.json.template, ensureAgentStalenessHook, the
-// PreToolUse gates, and the telegram-progress installer). Used to decide
-// whether a missing-file hook entry is OURS (prunable) or foreign (kept).
+// PreToolUse gates, and the telegram/slack-progress watchdog installers).
+// Used to decide whether a missing-file hook entry is OURS (prunable) or
+// foreign (kept).
 export const KNOWN_HOOK_SCRIPTS: readonly string[] = [
   'taskstate-replay.py',
   'voice-reply-directive.py',
@@ -35,12 +36,26 @@ export const KNOWN_HOOK_SCRIPTS: readonly string[] = [
   'telegram_progress.py',
   'telegram_progress_clear.py',
   'telegram_progress_watchdog.py',
+  // The Slack counterpart: the three settings hooks are repo-shipped in
+  // .claude/settings.json (#1305); the watchdog comes from
+  // scripts/install-slack-progress-hook.sh.
+  'slack_progress.py',
+  'slack_progress_clear.py',
+  'slack_progress_reply_clear.py',
+  'slack_progress_watchdog.py',
   'inbox-drain.py',
   'channel-inbox-drain.py',
   'ledger-capture.py',
+  // The Telegram sub-agent reply fix trio (telegram-subagent-reply-fix.py):
+  // without these here a stale entry survives every boot while its
+  // ledger-capture sibling is pruned (KNOWNTRIO924, review 2026-09-24).
+  'ledger-outbound.py',
+  'telegram-reply-guard.py',
+  'telegram-reply-directive.py',
   'skill-usage-capture.py',
   'tool-log-capture.py',
   'memory-frontmatter-gate.py',
+  'memory-frontmatter-bash-gate.py',
   // The /clear continuity pair: SessionEnd capture + SessionStart replay.
   'clear-capture.py',
   'clear-replay.py',

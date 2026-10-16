@@ -21,7 +21,9 @@ const ROOT = join(__dirname, '..', '..')
 const UPDATE_SH = readFileSync(join(ROOT, 'update.sh'), 'utf-8')
 
 function extractBlock(): string {
-  const start = UPDATE_SH.indexOf("BEHIND=$(git rev-list --count 'HEAD..@{u}'")
+  // Starts at the fetch that feeds the divergence counts (UPSTREAMSRC927), so the
+  // extracted text also covers WHICH ref is measured, not only what follows.
+  const start = UPDATE_SH.indexOf('DIVERGENCE_REF="FETCH_HEAD"')
   expect(start, 'diverged-history block not found in update.sh').toBeGreaterThan(-1)
   const end = UPDATE_SH.indexOf('\nif [ "${AHEAD:-0}" -gt 0 ]; then', start)
   expect(end, 'block end marker not found').toBeGreaterThan(start)
@@ -109,5 +111,96 @@ if [ "$1" = "rebase" ] || [ "$3" = "rebase" ]; then echo "REBASE_RAN"; fi`),
     expect(r.code).toBe(0)
     expect(r.out).toContain('Auto-rebase sikeres')
     expect(r.out).toContain('REACHED_END')
+  })
+})
+
+// UPSTREAMSRC927: the counts used to come from `@{u}`, a LOCAL ref that nothing in
+// the product refreshes. These cases use real git against a throwaway bare
+// "origin" whose branch has moved on since the install last fetched, so the
+// install's remote-tracking ref is stale -- the state every install is in
+// between manual fetches.
+describe('update.sh divergence guard measures the ref the pull will merge', () => {
+  const g = (cwd: string, ...args: string[]) => execFileSync('git',
+    ['-c', 'user.name=t', '-c', 'user.email=t@t', '-c', 'init.defaultBranch=develop', ...args],
+    { cwd, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] })
+  const commit = (cwd: string, msg: string) => {
+    writeFileSync(join(cwd, 'f'), msg + '\n', { flag: 'a' })
+    g(cwd, 'add', 'f'); g(cwd, 'commit', '-qm', msg)
+  }
+
+  /** origin/develop moved on after the clone; `local` adds commits on the install. */
+  function staleInstall(opts: { local: boolean, upstreamMoves: boolean }): string {
+    const dir = mkdtempSync(join(tmpdir(), 'update-divref-'))
+    g(dir, 'init', '-q', '--bare', 'origin.git')
+    g(dir, 'clone', '-q', join(dir, 'origin.git'), 'seed')
+    commit(join(dir, 'seed'), 'c1'); g(join(dir, 'seed'), 'push', '-q', 'origin', 'develop')
+    g(dir, 'clone', '-q', join(dir, 'origin.git'), 'inst')
+    mkdirSync(join(dir, 'inst', 'store'))
+    if (opts.local) commit(join(dir, 'inst'), 'local-fix')
+    if (opts.upstreamMoves) { commit(join(dir, 'seed'), 'c2'); g(join(dir, 'seed'), 'push', '-q', 'origin', 'develop') }
+    return join(dir, 'inst')
+  }
+
+  function runReal(inst: string): { code: number, out: string } {
+    const script = `
+set -u
+INSTALL_DIR="${inst}"
+CURRENT_BRANCH="develop"
+RED=''; NC=''; ORANGE=''; GREEN=''
+RESULT_MSG=""
+restore_stash_before_exit() { :; }
+${extractBlock()}
+echo "AHEAD=$AHEAD BEHIND=$BEHIND"
+echo "REACHED_END"
+`
+    try {
+      return { code: 0, out: execFileSync('/bin/bash', ['-c', script], { cwd: inst, encoding: 'utf-8', env: { ...process.env, UPDATE_AUTO_REBASE: '' } }) }
+    } catch (e) {
+      const err = e as { status?: number, stdout?: string }
+      return { code: err.status ?? -1, out: err.stdout ?? '' }
+    }
+  }
+
+  it('control: the install really is stale -- @{u} still says "not behind"', () => {
+    const inst = staleInstall({ local: true, upstreamMoves: true })
+    expect(g(inst, 'rev-list', '--count', 'HEAD..@{u}').trim()).toBe('0')
+  })
+
+  it('a divergence hidden by the stale @{u} is refused with exit 5, before the pull', () => {
+    const r = runReal(staleInstall({ local: true, upstreamMoves: true }))
+    expect(r.code).toBe(5)
+    expect(r.out).toContain('fast-forward nem lehetseges')
+    expect(r.out).not.toContain('REACHED_END')
+  })
+
+  it('a branch tracking some OTHER ref is still measured against origin/<branch>', () => {
+    // The pull names origin/<branch>; `@{u}` is whatever the branch tracks. Here it
+    // tracks a second remote frozen at the old commit, so `@{u}` says "not behind"
+    // even after the fetch has refreshed origin/develop.
+    const inst = staleInstall({ local: true, upstreamMoves: true })
+    const frozen = join(inst, '..', 'frozen.git')
+    g(join(inst, '..'), 'clone', '-q', '--bare', join(inst, '..', 'origin.git'), 'frozen.git')
+    g(join(inst, '..', 'seed'), 'push', '-q', '-f', frozen, 'HEAD~1:develop')
+    g(inst, 'remote', 'add', 'frozen', frozen); g(inst, 'fetch', '-q', 'frozen')
+    g(inst, 'branch', '-q', '-u', 'frozen/develop')
+    expect(g(inst, 'rev-parse', '--abbrev-ref', '@{u}').trim()).toBe('frozen/develop')
+    const r = runReal(inst)
+    expect(r.code).toBe(5)
+    expect(r.out).toContain('fast-forward nem lehetseges')
+  })
+
+  it('ahead only is still not a divergence', () => {
+    const r = runReal(staleInstall({ local: true, upstreamMoves: false }))
+    expect(r.code).toBe(0)
+    expect(r.out).toContain('AHEAD=1 BEHIND=0')
+  })
+
+  it('a failed fetch is said out loud and falls back to the last known origin ref', () => {
+    const inst = staleInstall({ local: true, upstreamMoves: true })
+    g(inst, 'remote', 'set-url', 'origin', join(inst, 'no-such-remote.git'))
+    const r = runReal(inst)
+    expect(r.out).toContain("a 'git fetch origin develop' elbukott")
+    expect(r.out).toContain('AHEAD=1 BEHIND=0')
+    expect(r.code).toBe(0)
   })
 })

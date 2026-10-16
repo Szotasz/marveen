@@ -13,17 +13,24 @@ Branches proven (Marveen msgs 17900/17936):
   - FAIL-CLOSED, proven separately from the happy path: missing approvals DB,
     missing/corrupt autonomy-config, unreadable letter ($VAR body), and a
     recipient that cannot be extracted all DENY (exit 2, never 1).
+  - HOOKDEPLOAD1008: a dependency that does not load (email_extract.py,
+    outgoing-copy-gate.py) or a malformed EMAIL_APPROVAL_WINDOW_S DENIES the
+    send with exit 2 (never 1), measured on a disposable copy of the hooks.
 
 Run: python3 <thisfile>   Exit 0 = all pass.
 """
 import json
 import os
 import re
+import hashlib
+import shutil
 import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import tokenize
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 HOOKS = os.path.join(os.path.dirname(HERE), "hooks")
@@ -72,12 +79,49 @@ def make_store(td, level=2, max_level=None, config="ok"):
     return store
 
 
-def run_gate(store, payload):
+def write_standing(store, value):
+    """value: a Python object dumped as JSON, or a raw string written verbatim
+    (for the corrupt-file case)."""
+    path = os.path.join(store, "email-standing-recipients.json")
+    with open(path, "w", encoding="utf-8") as fh:
+        if isinstance(value, str):
+            fh.write(value)
+        else:
+            json.dump(value, fh)
+    return path
+
+
+def make_daily_log_stub(received):
+    """A minimal /api/daily-log endpoint. Records (parsed body, Authorization)
+    so the test can assert WHAT reached the owner's log, not merely that
+    something did."""
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802 -- BaseHTTPRequestHandler's contract
+            n = int(self.headers.get("Content-Length") or 0)
+            raw = self.rfile.read(n).decode("utf-8")
+            try:
+                body = json.loads(raw)
+            except Exception:
+                body = {"_unparseable": raw}
+            received.append((body, self.headers.get("Authorization")))
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"ok":true}')
+
+        def log_message(self, *a):  # keep the test output clean
+            pass
+    return Handler
+
+
+def run_gate(store, payload, extra_env=None, gate=GATE):
     env = dict(os.environ,
                EMAIL_APPROVAL_GATE_STORE=store,
                EMAIL_APPROVAL_WINDOW_S=str(WINDOW),
                OUTGOING_COPY_GATE_RULES=os.path.join(store, "no-rules.json"))
-    proc = subprocess.run([sys.executable, GATE], input=json.dumps(payload).encode(),
+    if extra_env:
+        env.update(extra_env)
+    proc = subprocess.run([sys.executable, gate], input=json.dumps(payload).encode(),
                           capture_output=True, env=env)
     return proc.returncode, proc.stdout.decode(), proc.stderr.decode()
 
@@ -100,6 +144,23 @@ def approve(store, anchor, resolved_ago=0, status="approved", consumed=None):
         (status, resolved_ago, status, resolved_ago, anchor, consumed))
     con.commit()
     con.close()
+
+
+def activate_standing(store, addr, status="approved", resolved_ago=0):
+    """Az elesites: egy MAR LEZART email_standing_recipient sor a cimre.
+    A `resolved_ago` a sorrendhez kell (az utolso dontes nyer)."""
+    anchor = hashlib.sha256(addr.strip().lower().encode("utf-8")).hexdigest()
+    con = sqlite3.connect(os.path.join(store, "claudeclaw.db"))
+    con.execute(
+        "INSERT INTO approvals (id, agent_id, category, action_description, status,"
+        " requested_at, resolved_at, resolved_by, content_hash, consumed_at)"
+        " VALUES (hex(randomblob(6)), 'marveen', 'email_standing_recipient',"
+        f" 'Allando cimzett elesitese', ?, {NOW_S}-?-60,"
+        f" CASE WHEN ?='pending' THEN NULL ELSE {NOW_S}-? END, 'szabi', ?, NULL)",
+        (status, resolved_ago, status, resolved_ago, anchor))
+    con.commit()
+    con.close()
+    return anchor
 
 
 def anchor_from_stderr(err):
@@ -281,6 +342,119 @@ with tempfile.TemporaryDirectory() as td:
           bccless_anchor == "de87bdb699dcab419b68811bb57b6fab44b34e2fe16bff11cf90b2a5848f82ec",
           f"got {bccless_anchor}")
 
+    # --- EMAILHTMLHORGONY929: the HTML body and the attachments are in the anchor -
+    # The gap this pins closed: the anchor covered to/cc/bcc/text only, so an
+    # approved send.py letter could go out with a DIFFERENT --html file or with
+    # an added or changed --attach: the recipient got something nobody approved.
+    store = make_store(os.path.join(td, "html-bash"))
+    hdir = os.path.join(td, "html-files")
+    os.makedirs(hdir, exist_ok=True)
+    html_path = os.path.join(hdir, "level.html")
+    att_path = os.path.join(hdir, "melleklet.pdf")
+    extra_att = os.path.join(hdir, "masik.pdf")
+
+    def put(path, data):
+        with open(path, "wb") as fh:
+            fh.write(data)
+
+    def bash(command):
+        return run_gate(store, {"tool_name": "Bash", "tool_input": {"command": command}})
+
+    put(html_path, "<p>Kedves Ügyfelünk!</p>\n".encode("utf-8"))
+    put(att_path, b"%PDF-1.4 elso")
+    put(extra_att, b"%PDF-1.4 masik")
+    plain_cmd = ('python3 scripts/send.py --to "a@b.hu" --subject "Teszt tárgy" '
+                 '--body "Kedves Ügyfelünk! Törzs."')
+    html_cmd = plain_cmd + f' --html "{html_path}" --attach "{att_path}"'
+    _, _, err = bash(plain_cmd)
+    plain_anchor = anchor_from_stderr(err)
+    _, _, err = bash(html_cmd)
+    html_anchor = anchor_from_stderr(err)
+    check("html/Bash: --html and --attach change the anchor",
+          bool(plain_anchor) and bool(html_anchor) and plain_anchor != html_anchor,
+          f"plain={plain_anchor} html={html_anchor}")
+    approve(store, html_anchor)
+    put(html_path, "<p>MAS szoveg</p>\n".encode("utf-8"))
+    code, _, _ = bash(html_cmd)
+    check("html/Bash: HTML changed after the approval -> DENIED", code == 2, f"exit={code}")
+    put(html_path, "<p>Kedves Ügyfelünk!</p>\n".encode("utf-8"))
+    put(att_path, b"%PDF-1.4 masodik")
+    code, _, _ = bash(html_cmd)
+    check("html/Bash: attachment changed after the approval -> DENIED", code == 2, f"exit={code}")
+    put(att_path, b"%PDF-1.4 elso")
+    code, _, _ = bash(html_cmd + f' --attach "{extra_att}"')
+    check("html/Bash: an ADDED attachment -> DENIED", code == 2, f"exit={code}")
+    code, _, _ = bash(plain_cmd)
+    check("html/Bash: the same letter WITHOUT its HTML and attachment -> DENIED", code == 2, f"exit={code}")
+    code, _, _ = bash(html_cmd)
+    check("html/Bash: the approved letter (files as approved) sends", code == 0, f"exit={code}")
+    code, _, _ = bash(html_cmd)
+    check("html/Bash: ... and only once (one-shot)", code == 2, f"exit={code}")
+    _, _, err_a = bash(plain_cmd + f' --attach "{att_path}" --attach "{extra_att}"')
+    _, _, err_b = bash(plain_cmd + f' --attach "{extra_att}" --attach "{att_path}"')
+    check("html/Bash: the order of the --attach flags does not change the anchor",
+          anchor_from_stderr(err_a) is not None and anchor_from_stderr(err_a) == anchor_from_stderr(err_b))
+    # Each branch by its OWN reason: a shell-expanded path must be refused as
+    # such, not merely because no file carries the literal name "$LEVEL_HTML".
+    for bad, label, why in ((plain_cmd + ' --html "$LEVEL_HTML"', "shell variable", "shell-behelyettesitest"),
+                            (plain_cmd + ' --attach "$(ls *.pdf)"', "command substitution", "shell-behelyettesitest"),
+                            (plain_cmd + f' --html "{os.path.join(hdir, "nincs.html")}"', "missing file", "nem olvashato"),
+                            (plain_cmd + f' --html "{html_path}" --html "{html_path}"', "two --html", "tobb --html")):
+        code, _, err = bash(bad)
+        check(f"html/Bash fail-closed: {label} -> DENIED, not anchored",
+              code == 2 and "nem horgonyozhato" in err and why in err, f"exit={code} err={err[:160]!r}")
+    # A tester's finding: the repo's only --html is a SWITCH (scripts/support-mail/send.py, store_true). Read as
+    # argparse reads it, "--html --cc x" has no file after --html: the gate must pass that letter exactly as
+    # before (the regression: exit 2 "a --html fajl nem olvashato (--cc ...)" and no approval could cover it).
+    sm_cmd = ('python3 scripts/support-mail/send.py --to "a@b.hu" --subject "Teszt tárgy" '
+              '--body "Kedves Ügyfelünk! Törzs."')
+    _, _, err = bash(sm_cmd)
+    sm_plain_anchor = anchor_from_stderr(err)
+    for form, label in ((sm_cmd + ' --html --cc "c@d.hu"', "--html then --cc"),
+                        (sm_cmd + ' --cc "c@d.hu" --html', "--html as the last token"),
+                        (sm_cmd + ' --cc "c@d.hu" --html-wrap', "--html-wrap")):
+        _, _, err = bash(form)
+        got = anchor_from_stderr(err)
+        check(f"support-mail switch ({label}): anchored like the letter without --html, no unreadable deny",
+              got is not None and "nem horgonyozhato" not in err, f"anchor={got} err={err[:160]!r}")
+        approve(store, got)
+        code, _, err = bash(form)
+        check(f"support-mail switch ({label}): the approved letter sends", code == 0, f"exit={code} err={err[:160]!r}")
+    _, _, err = bash(sm_cmd + ' --cc "c@d.hu"')
+    check("support-mail switch: the --html switch does not change the anchor",
+          anchor_from_stderr(err) is not None and anchor_from_stderr(err) == anchor_from_stderr(bash(sm_cmd + ' --html --cc "c@d.hu"')[2]))
+    check("support-mail switch: control, a plain support-mail letter is anchored at all", bool(sm_plain_anchor))
+    # A switch before a file flag must not hide it: the attachment after a --html switch is still anchored.
+    _, _, err_1 = bash(plain_cmd + f' --html --attach "{att_path}"')
+    put(att_path, b"%PDF-1.4 csere")
+    _, _, err_2 = bash(plain_cmd + f' --html --attach "{att_path}"')
+    put(att_path, b"%PDF-1.4 elso")
+    check("switch then --attach: the attachment is still in the anchor (a changed file changes it)",
+          anchor_from_stderr(err_1) is not None and anchor_from_stderr(err_2) is not None
+          and anchor_from_stderr(err_1) != anchor_from_stderr(err_2))
+    # The low finding: a quoted flag and an argparse prefix are the same flag.
+    for form, label in ((plain_cmd + f' "--attach" "{att_path}"', "quoted --attach"),
+                        (plain_cmd + f' --att "{att_path}"', "abbreviated --att"),
+                        (plain_cmd + f' --htm "{html_path}"', "abbreviated --htm")):
+        _, _, err_a = bash(form)
+        target = html_path if "--htm" in form else att_path
+        put(target, b"csere")
+        _, _, err_b = bash(form)
+        put(html_path, "<p>Kedves Ügyfelünk!</p>\n".encode("utf-8"))
+        put(att_path, b"%PDF-1.4 elso")
+        check(f"{label}: the file is in the anchor", anchor_from_stderr(err_a) is not None
+              and anchor_from_stderr(err_a) != anchor_from_stderr(err_b) and anchor_from_stderr(err_a) != plain_anchor,
+              f"a={anchor_from_stderr(err_a)} b={anchor_from_stderr(err_b)}")
+    # With "=" the value is literal, even when it starts with "-": a file named "--cc" is unreadable -> denied.
+    code, _, err = bash(plain_cmd + ' --html=--cc')
+    check("--html=--cc: a literal value, unreadable -> DENIED", code == 2 and "nem olvashato" in err, f"exit={code} err={err[:160]!r}")
+    # Backward-compat golden: a command WITHOUT --html/--attach hashes to the
+    # old to/cc/text canon, so every open approval stays valid.
+    old_canon = json.dumps({"to": ["a@b.hu"], "cc": [], "text": "Teszt tárgy\nKedves Ügyfelünk! Törzs."},
+                           ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    check("html/golden: a plain command's anchor is the pre-change to/cc/text canon",
+          plain_anchor == hashlib.sha256(old_canon.encode("utf-8")).hexdigest(), f"got {plain_anchor}")
+
     # MANAGEOP904: manage_email is a MULTIPLEXER, not a send tool. Scoping the
     # gate on the tool NAME alone denied `operation=search` and
     # `operation=draft` at level 1 -- measured on a live install 2026-09-04,
@@ -374,6 +548,245 @@ with tempfile.TemporaryDirectory() as td:
     code, _, err = run_gate(store_c, connector("reply", messageId="msg-43", body="Kedves Ügyfelünk! Válasz."))
     check("the same approval does not cover a reply to ANOTHER message", code == 2, f"exit={code}")
 
+    # --- EMAILALLANDOCIMZETT926: allando cimzett-lista, CSAK level 2-n --------
+    # A funkcio egyetlen dolga, hogy EGY cimre jovahagyas nelkul lehessen kuldeni,
+    # ugy, hogy minden mas cimzett a regi uton maradjon. Ezert minden teszt parban
+    # all: ami atmegy a listas cimre, annak TILOS lennie egy masikra.
+    store = make_store(os.path.join(td, "sl1"), level=2)
+    write_standing(store, {"recipients": ["dani@pelda.hu"]})
+    activate_standing(store, "dani@pelda.hu")
+    code, out, err = run_gate(store, mcp_send(to="dani@pelda.hu"))
+    check("standing: a listan levo cimre level 2-n jovahagyas NELKUL mehet",
+          code == 0 and "allando cimzett" in out, f"exit={code} out={out[:120]!r}")
+    code, _, err = run_gate(store, mcp_send(to="idegen@pelda.hu"))
+    check("standing: a listan NEM szereplo cimre tovabbra is jovahagyas kell",
+          code == 2 and "NINCS jovahagyas" in err, f"exit={code}")
+
+    # A ketto egyutt a lenyeg: a lista NEM a level helyettesitoje.
+    store1 = make_store(os.path.join(td, "sl2"), level=1)
+    write_standing(store1, {"recipients": ["dani@pelda.hu"]})
+    activate_standing(store1, "dani@pelda.hu")   # TELJESEN eles cim -- a level 1 igy is tilt
+    code, _, err = run_gate(store1, mcp_send(to="dani@pelda.hu"))
+    check("standing: level 1 HARD DENY marad, a lista nem nyit hatso ajtot",
+          code == 2 and "szint 1" in err, f"exit={code} err={err[:120]!r}")
+
+    # cc/bcc: a lista egy cimzettre szol, nem egy levelre
+    code, _, err = run_gate(store, mcp_send(to="dani@pelda.hu", cc="idegen@pelda.hu"))
+    check("standing: cc-vel NEM mehet at (a lista egy cimzettre szol)",
+          code == 2, f"exit={code}")
+    payload = mcp_send(to="dani@pelda.hu")
+    payload["tool_input"]["bcc"] = ["idegen@pelda.hu"]
+    code, _, err = run_gate(store, payload)
+    check("standing: bcc-vel sem mehet at", code == 2, f"exit={code}")
+
+    # A kritikus el: az extractor NEM bontja a cimzettet, egy string tobb cimet vihet.
+    code, _, err = run_gate(store, mcp_send(to="dani@pelda.hu, idegen@pelda.hu"))
+    check("standing: vesszovel osszefuzott ket cim EGY to-mezoben sem megy at",
+          code == 2, f"exit={code}")
+    code, out, _ = run_gate(store, mcp_send(to="Nemeth Daniel <dani@pelda.hu>"))
+    check("standing: a 'Nev <cim>' alak felismerese (ugyanaz a cim)",
+          code == 0 and "allando cimzett" in out, f"exit={code}")
+    code, out, _ = run_gate(store, mcp_send(to="DANI@Pelda.HU"))
+    check("standing: a cim-egyezes kis-nagybetu fuggetlen",
+          code == 0, f"exit={code}")
+
+    # fail-closed: romlott lista nem ad jogot, DE lathatova teszi magat
+    store2 = make_store(os.path.join(td, "sl3"), level=2)
+    write_standing(store2, "{not json")
+    code, _, err = run_gate(store2, mcp_send(to="dani@pelda.hu"))
+    check("standing: romlott lista -> nincs jog (fail-closed), es a deny MEGMONDJA",
+          code == 2 and "nem olvashato" in err, f"exit={code} err={err[:160]!r}")
+    write_standing(store2, {"recipients": "dani@pelda.hu"})
+    code, _, err = run_gate(store2, mcp_send(to="dani@pelda.hu"))
+    check("standing: rossz alaku lista (string lista helyett) -> nincs jog, es lathato",
+          code == 2 and "alakja nem lista" in err, f"exit={code}")
+
+    # hianyzo fajl = a normal allapot, nem hiba: csendben a regi ut. "Extra zaj"
+    # = a lista HIBA-jegyzete (romlott/rossz alaku); annak nincs mit jeleznie,
+    # ha a fajl egyszeruen nincs.
+    store3 = make_store(os.path.join(td, "sl4"), level=2)
+    code, _, err = run_gate(store3, mcp_send(to="dani@pelda.hu"))
+    check("standing: lista-fajl nelkul minden marad a regiben, extra zaj nelkul",
+          code == 2 and "NINCS jovahagyas" in err
+          and "nem olvashato" not in err and "alakja nem lista" not in err,
+          f"exit={code}")
+
+    # --- BIRALOI KERES 1: a deny NE tanitsa meg a kiskaput -------------------
+    # A tiltas korabban SZO SZERINT leirta, hogy a cim felvehetó a
+    # email-standing-recipients.json fajlba, es onnantol jovahagyas nelkul mehet
+    # ra level. Csakhogy azt a fajlt AZ AGENS IS irja: a store/ ala ir nap mint
+    # nap. Vagyis a kapu sajat tiltasa volt a megkerules hasznalati utmutatoja.
+    # A jogot tovabbra is a gazda adja, de az UTAT a tiltas nem mondja meg.
+    code, _, err = run_gate(store3, mcp_send(to="dani@pelda.hu"))
+    check("keres1: a deny NEM nevezi meg a lista-fajlt",
+          "email-standing-recipients" not in err and ".json" not in err,
+          f"err={err[-400:]!r}")
+    check("keres1: a deny a GAZDAHOZ kuldi az agenst, nem a fajlhoz",
+          "KERD TOLE" in err and "MAGAD NE vegezd el" in err,
+          f"err={err[-400:]!r}")
+    # Kontroll: a regi, tanito mondat tenylegesen eltunt -- kulonben a ket
+    # fenti allitas akkor is zold lenne, ha csak a fajlnevet vettem volna ki.
+    check("keres1 kontroll: a 'felveheti a cimet ... fajlba' mondat nincs tobbe",
+          "felveheti a cimet" not in err, f"err={err[-400:]!r}")
+
+    # --- BIRALOI KERES 2: a jovahagyas nelkuli kuldes hagyjon nyomot ---------
+    # Ez az EGYETLEN ut, amin emberi dontes nelkul megy ki level, ezert a nyom
+    # nem mellektermek, hanem a jog feltetele.
+    store4 = make_store(os.path.join(td, "sl5"), level=2)
+    write_standing(store4, {"recipients": ["dani@pelda.hu"]})
+    activate_standing(store4, "dani@pelda.hu")
+    log_path = os.path.join(store4, "email-standing-sends.log")
+    code, out, _ = run_gate(store4, mcp_send(to="dani@pelda.hu", subject="Napi jelentes"))
+    log_text = open(log_path, encoding="utf-8").read() if os.path.exists(log_path) else ""
+    check("keres2: a listas kuldes sort ir a helyi naploba",
+          code == 0 and "dani@pelda.hu" in log_text, f"exit={code} log={log_text!r}")
+    check("keres2: a naplosor idobelyeges (offsettel, nem UTC)",
+          re.match(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}[+-]\d{4} ", log_text or "x") is not None,
+          f"log={log_text[:80]!r}")
+    check("keres2: a naplosor megmondja, hogy a gazdat NEM sikerult ertesiteni",
+          "NEM MENT KI" in log_text, f"log={log_text!r}")
+    check("keres2: a systemMessage sem allitja, hogy a gazda latta",
+          "NEM sikerult ertesiteni" in out, f"out={out[:300]!r}")
+
+    # A ket kuldes ket sor: a naplo append-only, nem felulir.
+    run_gate(store4, mcp_send(to="dani@pelda.hu", subject="Masodik"))
+    after = open(log_path, encoding="utf-8").read() if os.path.exists(log_path) else ""
+    check("keres2: a naplo append-only (ket kuldes = ket sor)",
+          len([l for l in after.splitlines() if l.strip()]) == 2, f"log={after!r}")
+
+    # Es a kritikus el: ha a nyom NEM irhato, a jog sem all.
+    store5 = make_store(os.path.join(td, "sl6"), level=2)
+    write_standing(store5, {"recipients": ["dani@pelda.hu"]})
+    activate_standing(store5, "dani@pelda.hu")
+    blocked_log = os.path.join(store5, "email-standing-sends.log")
+    os.mkdir(blocked_log)  # egy KONYVTAR ugyanazon a neven -> az append OSError
+    code, _, err = run_gate(store5, mcp_send(to="dani@pelda.hu"))
+    check("keres2: rogzithetetlen kuldes -> fail-closed TILTVA, nem csendes atengedes",
+          code == 2 and "nem rogzitheto" in err, f"exit={code} err={err[:300]!r}")
+
+    # A gazda-ertesites ELMEGY, ha a dashboard el: stub szerver a napi naplora.
+    store6 = make_store(os.path.join(td, "sl7"), level=2)
+    write_standing(store6, {"recipients": ["dani@pelda.hu"]})
+    activate_standing(store6, "dani@pelda.hu")
+    with open(os.path.join(store6, ".dashboard-token"), "w", encoding="utf-8") as fh:
+        fh.write("teszt-token")
+    received = []
+    srv = HTTPServer(("127.0.0.1", 0), make_daily_log_stub(received))
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    try:
+        code, out, _ = run_gate(store6, mcp_send(to="dani@pelda.hu", subject="Elo dashboard"),
+                                extra_env={"WEB_PORT": str(srv.server_port),
+                                           "MAIN_AGENT_ID": "teszt-agens"})
+    finally:
+        srv.shutdown()
+    check("keres2: elo dashboardnal a kuldes a GAZDA napi naplojaba kerul",
+          code == 0 and len(received) == 1, f"exit={code} received={len(received)}")
+    if received:
+        body, auth = received[0]
+        check("keres2: a napi naplo bejegyzes a fo agens neveben, Bearer tokennel megy",
+              body.get("agent_id") == "teszt-agens" and auth == "Bearer teszt-token",
+              f"body={body!r} auth={auth!r}")
+        check("keres2: a bejegyzes megnevezi a cimzettet es hogy jovahagyas NELKUL ment",
+              "dani@pelda.hu" in body.get("content", "")
+              and "JOVAHAGYAS NELKUL" in body.get("content", ""),
+              f"content={body.get('content')!r}")
+    check("keres2: es ilyenkor a systemMessage sem beszel elmaradt ertesitesrol",
+          "NEM sikerult" not in out, f"out={out[:300]!r}")
+
+    # --- BIRALOI KERES 3: a felveteltol meg nem eles a cim -----------------
+    # A lelke: a lista JAVASLAT, az elesites DONTES. Aki a fajlt irja, attol meg
+    # nem adhatja meg maganak a jogot. Ezert minden eset PARBAN all: ami atmegy
+    # az eles cimre, annak TILOS lennie ugyanarra a cimre elesites nelkul.
+    store7 = make_store(os.path.join(td, "sl8"), level=2)
+    write_standing(store7, {"recipients": ["dani@pelda.hu"]})
+    code, _, err = run_gate(store7, mcp_send(to="dani@pelda.hu"))
+    check("keres3: listan van, de NINCS elesitve -> nem megy at",
+          code == 2 and "NINCS ELESITVE" in err, f"exit={code} err={err[:200]!r}")
+    check("keres3: a deny kimondja, hogy a felvetel nem elesites",
+          "A felvetel javaslat, az elesites dontes" in err, f"err={err[:400]!r}")
+    check("keres3: a deny a GAZDA dontesehez kuldi, es tiltja az onjovahagyast",
+          "A dontes a gazdae" in err and "NE hagyd jova" in err, f"err={err[:400]!r}")
+    check("keres3: a deny megadja a cim-horgonyt, hogy az elesites KERHETO legyen",
+          "email_standing_recipient" in err and anchor_from_stderr(err) is not None,
+          f"err={err[:400]!r}")
+    # ugyanaz a store, ugyanaz a cim, EGYETLEN kulonbseg: a gazda dontese
+    activate_standing(store7, "dani@pelda.hu")
+    code, out, _ = run_gate(store7, mcp_send(to="dani@pelda.hu"))
+    check("keres3: elesites UTAN ugyanaz a level atmegy",
+          code == 0 and "allando cimzett" in out, f"exit={code} out={out[:150]!r}")
+
+    # A horgony a NORMALIZALT cimre szol: egy elesites fedi az alakvaltozatokat.
+    code, out, _ = run_gate(store7, mcp_send(to="Nemeth Daniel <DANI@Pelda.HU>"))
+    check("keres3: egy elesites fedi a 'Nev <CIM>' es a kis-nagybetus alakot is",
+          code == 0, f"exit={code}")
+
+    # Az elesites NEM egyszer-hasznalatos es NEM jar le -- kulonben csak egy
+    # level-enkenti jovahagyas lenne mas neven.
+    code2, _, _ = run_gate(store7, mcp_send(to="dani@pelda.hu", subject="Masodik level"))
+    check("keres3: az elesites NEM fogy el (masodik kuldes is atmegy)",
+          code2 == 0, f"exit={code2}")
+    store8 = make_store(os.path.join(td, "sl9"), level=2)
+    write_standing(store8, {"recipients": ["dani@pelda.hu"]})
+    activate_standing(store8, "dani@pelda.hu", resolved_ago=100000)  # >> WINDOW
+    code, _, _ = run_gate(store8, mcp_send(to="dani@pelda.hu"))
+    check("keres3: az elesites NEM jar le a level-ablakkal",
+          code == 0, f"exit={code}")
+
+    # Fuggoben levo keres MEG NEM jog.
+    store9 = make_store(os.path.join(td, "sl10"), level=2)
+    write_standing(store9, {"recipients": ["dani@pelda.hu"]})
+    activate_standing(store9, "dani@pelda.hu", status="pending")
+    code, _, err = run_gate(store9, mcp_send(to="dani@pelda.hu"))
+    check("keres3: FUGGOBEN levo elesites meg nem jog, es a deny ezt mondja",
+          code == 2 and "FUGGOBEN" in err, f"exit={code} err={err[:200]!r}")
+
+    # Visszavonas: a gazda UTOLSO dontese nyer, a fajl erintese nelkul.
+    store10 = make_store(os.path.join(td, "sl11"), level=2)
+    write_standing(store10, {"recipients": ["dani@pelda.hu"]})
+    activate_standing(store10, "dani@pelda.hu", status="approved", resolved_ago=600)
+    code, _, _ = run_gate(store10, mcp_send(to="dani@pelda.hu"))
+    check("keres3 kontroll: a regebbi jovahagyas onmagaban meg jog",
+          code == 0, f"exit={code}")
+    activate_standing(store10, "dani@pelda.hu", status="rejected", resolved_ago=0)
+    code, _, err = run_gate(store10, mcp_send(to="dani@pelda.hu"))
+    check("keres3: kesobbi elutasitas VISSZAVONJA a jogot (a fajl valtozatlan)",
+          code == 2 and "rejected" in err, f"exit={code} err={err[:200]!r}")
+
+    # Es forditva, hogy ne csak a 'barmi rossz sor tilt' legyen igaz.
+    store11 = make_store(os.path.join(td, "sl12"), level=2)
+    write_standing(store11, {"recipients": ["dani@pelda.hu"]})
+    activate_standing(store11, "dani@pelda.hu", status="rejected", resolved_ago=600)
+    activate_standing(store11, "dani@pelda.hu", status="approved", resolved_ago=0)
+    code, _, _ = run_gate(store11, mcp_send(to="dani@pelda.hu"))
+    check("keres3: ujboli jovahagyas UTAN megint jog (az utolso dontes nyer)",
+          code == 0, f"exit={code}")
+
+    # Egy MASIK cim elesitese nem elesiti ezt.
+    store12 = make_store(os.path.join(td, "sl13"), level=2)
+    write_standing(store12, {"recipients": ["dani@pelda.hu", "masik@pelda.hu"]})
+    activate_standing(store12, "masik@pelda.hu")
+    code, _, err = run_gate(store12, mcp_send(to="dani@pelda.hu"))
+    check("keres3: MAS cim elesitese nem elesiti ezt a cimet",
+          code == 2 and "NINCS ELESITVE" in err, f"exit={code}")
+    code, _, _ = run_gate(store12, mcp_send(to="masik@pelda.hu"))
+    check("keres3 kontroll: az elesitett masik cim ugyanabban a store-ban atmegy",
+          code == 0, f"exit={code}")
+
+    # Fail-closed: ha az elesites nem ellenorizheto, a jog sem all.
+    store13 = make_store(os.path.join(td, "sl14"), level=2)
+    write_standing(store13, {"recipients": ["dani@pelda.hu"]})
+    activate_standing(store13, "dani@pelda.hu")
+    os.remove(os.path.join(store13, "claudeclaw.db"))
+    code, _, err = run_gate(store13, mcp_send(to="dani@pelda.hu"))
+    check("keres3: ellenorizhetetlen elesites -> fail-closed TILTVA",
+          code == 2 and "elesitese nem ellenorizheto" in err, f"exit={code} err={err[:200]!r}")
+
+    # kontroll: a matcher tud is talalni -- kulonben a fenti tiltasok
+    # akkor is atmennenek, ha a funkcio egyaltalan nem letezne
+    code, out, _ = run_gate(store, mcp_send(to="dani@pelda.hu"))
+    check("kontroll: a pozitiv ag ugyanabban a store-ban tovabbra is atmegy",
+          code == 0, f"exit={code}")
+
     # SQLite-version portability, kept as a STATIC check on purpose. The
     # behavioural cases above only catch the bad call on a host whose sqlite is
     # older than 3.38 -- on CI (newer) they stay green while the live install
@@ -406,6 +819,171 @@ with tempfile.TemporaryDirectory() as td:
           bool(banned.search("SELECT unix" + "epoch()-60")))
     check("control: the host's own sqlite3 really executes the replacement expression",
           sqlite3.connect(":memory:").execute(f"SELECT {NOW_S}").fetchone()[0] > 1_700_000_000)
+
+# --- HOOKDEPLOAD1008: a dependency that does not load DENIES (exit 2), never exit 1 ---
+# The extractor used to be imported at MODULE level, outside the __main__ net:
+# a broken email_extract.py (a conflicted stash pop leaves exactly such a
+# marker line) made the gate exit 1, which PreToolUse treats as NON-blocking,
+# so the letter went out unchecked. Every case runs on a disposable copy of
+# scripts/hooks + scripts/lib, never on the repo's own files, and the intact
+# copy is first shown to decide exactly like the real gate: otherwise a broken
+# copy's verdict could be the copy's own fault.
+CONFLICT_LINE = "<" * 7 + " Updated upstream\n"  # assembled, so this file holds no marker line
+
+
+def copy_hook_tree(dst):
+    """The gate's disposable copy: scripts/hooks + scripts/lib under dst."""
+    skip = shutil.ignore_patterns("__pycache__")
+    shutil.copytree(HOOKS, os.path.join(dst, "scripts", "hooks"), ignore=skip)
+    shutil.copytree(os.path.join(os.path.dirname(HOOKS), "lib"),
+                    os.path.join(dst, "scripts", "lib"), ignore=skip)
+    return os.path.join(dst, "scripts", "hooks", "email-approval-gate.py")
+
+
+def break_module(gate_copy, name):
+    with open(os.path.join(os.path.dirname(gate_copy), name), "a", encoding="utf-8") as fh:
+        fh.write(CONFLICT_LINE)
+
+
+LS = {"tool_name": "Bash", "tool_input": {"command": "ls -la"}}
+BASH_SEND = {"tool_name": "Bash", "tool_input": {
+    "command": 'sendmail --to a@b.hu --subject "Bash tárgy" --body "Bash törzs."'}}
+
+with tempfile.TemporaryDirectory() as td:
+    store = make_store(os.path.join(td, "dep"), level=2)
+    intact = copy_hook_tree(os.path.join(td, "intact"))
+    for label, payload in (("MCP send", mcp_send()), ("Bash send", BASH_SEND), ("non-send Bash", LS)):
+        real, copy = run_gate(store, payload), run_gate(store, payload, gate=intact)
+        check(f"HOOKDEPLOAD1008 control: the intact copy decides like the real gate ({label})",
+              (copy[0], copy[2]) == (real[0], real[2]),
+              f"real={real[0]} copy={copy[0]} err={copy[2][:200]!r}")
+
+    broken = copy_hook_tree(os.path.join(td, "broken-extract"))
+    break_module(broken, "email_extract.py")
+    for label, payload in (("MCP send", mcp_send()), ("Bash send", BASH_SEND)):
+        code, _, err = run_gate(store, payload, gate=broken)
+        check(f"HOOKDEPLOAD1008: broken email_extract.py -> {label} DENIED, exit 2 (1 would send unchecked)",
+              code == 2 and "email_extract.py" in err and "nem toltheto be" in err,
+              f"exit={code} err={err[:200]!r}")
+    code, _, err = run_gate(store, LS, gate=broken)
+    check("HOOKDEPLOAD1008: broken email_extract.py -> a non-send Bash still passes (the extractor is not needed)",
+          code == 0, f"exit={code} err={err[:200]!r}")
+    # Levels 1 and 3 never read the letter, so they decide as before. At level
+    # 3 the send itself is still stopped by the copy gate: its guarded import
+    # turns a missing or broken extractor into a deny (the missing-module case
+    # is email-extract-parity.test.py, section 3).
+    for level, want in ((1, 2), (3, 0)):
+        code, _, err = run_gate(make_store(os.path.join(td, f"dep-l{level}"), level=level),
+                                mcp_send(), gate=broken)
+        check(f"HOOKDEPLOAD1008: broken email_extract.py -> level {level} decides as before (exit {want})",
+              code == want, f"exit={code} err={err[:200]!r}")
+
+    broken = copy_hook_tree(os.path.join(td, "broken-classifier"))
+    break_module(broken, "outgoing-copy-gate.py")
+    code, _, err = run_gate(store, LS, gate=broken)
+    check("HOOKDEPLOAD1008: broken outgoing-copy-gate.py -> Bash DENIED, exit 2, naming the file",
+          code == 2 and "outgoing-copy-gate.py" in err and "nem toltheto be" in err,
+          f"exit={code} err={err[:200]!r}")
+    real, copy = run_gate(store, mcp_send()), run_gate(store, mcp_send(), gate=broken)
+    check("HOOKDEPLOAD1008: broken outgoing-copy-gate.py -> an MCP send is decided as before (no classifier needed)",
+          (copy[0], copy[2]) == (real[0], real[2]), f"real={real[0]} copy={copy[0]} err={copy[2][:200]!r}")
+
+    bad_window = {"EMAIL_APPROVAL_WINDOW_S": "abc"}
+    code, _, err = run_gate(store, mcp_send(), extra_env=bad_window)
+    check("HOOKDEPLOAD1008: malformed EMAIL_APPROVAL_WINDOW_S -> send DENIED, exit 2, naming the variable",
+          code == 2 and "EMAIL_APPROVAL_WINDOW_S" in err, f"exit={code} err={err[:200]!r}")
+    code, _, err = run_gate(store, LS, extra_env=bad_window)
+    check("HOOKDEPLOAD1008: malformed EMAIL_APPROVAL_WINDOW_S -> a non-send Bash still passes",
+          code == 0, f"exit={code} err={err[:200]!r}")
+
+print("\nMAILCCGATE1016: the owner's copy is a gate at every level")
+OWNER = "owner@example.com"
+
+
+def owner_store(root, level, value=OWNER):
+    """A store whose install root (its parent) has a .env with MAIL_OWNER_CC."""
+    store = make_store(root, level=level)
+    if value is not None:
+        with open(os.path.join(root, ".env"), "w", encoding="utf-8") as fh:
+            fh.write(f"MAIL_OWNER_CC={value}\n")
+    return store
+
+
+with tempfile.TemporaryDirectory() as td:
+    for lvl in (2, 3):
+        store = owner_store(os.path.join(td, f"l{lvl}"), lvl)
+        code, _, err = run_gate(store, mcp_send())
+        check(f"level {lvl}: send_email without the owner in to/cc/bcc -> DENIED, naming the address",
+              code == 2 and OWNER in err and "cc" in err, f"exit={code} err={err[:200]!r}")
+    store = owner_store(os.path.join(td, "l3b"), 3)
+    code, _, err = run_gate(store, mcp_send(cc=OWNER))
+    check("level 3: the owner in cc -> allowed", code == 0, f"exit={code} err={err[:200]!r}")
+    code, _, err = run_gate(store, mcp_send(cc="Owner Name <OWNER@Example.com>"))
+    check("level 3: the owner in cc as a display-name form, other case -> allowed", code == 0, f"exit={code} err={err[:200]!r}")
+    code, _, err = run_gate(store, mcp_send(to=OWNER))
+    check("level 3: the owner as the recipient (to) -> allowed", code == 0, f"exit={code} err={err[:200]!r}")
+    bcc = mcp_send()
+    bcc["tool_input"]["bcc"] = [OWNER]
+    code, _, err = run_gate(store, bcc)
+    check("level 3: the owner in bcc -> allowed", code == 0, f"exit={code} err={err[:200]!r}")
+    code, _, err = run_gate(store, mcp_send(cc="other@example.org"))
+    check("level 3: a cc that is not the owner -> DENIED", code == 2, f"exit={code} err={err[:200]!r}")
+    code, _, err = run_gate(store, mcp_send(cc="xowner@example.com"))
+    check("level 3: an address that only CONTAINS the owner's -> DENIED", code == 2, f"exit={code} err={err[:200]!r}")
+    mixed = owner_store(os.path.join(td, "mixed"), 3, value="Owner@Example.COM")
+    code, _, err = run_gate(mixed, mcp_send(cc=OWNER))
+    check("level 3: a mixed-case MAIL_OWNER_CC still matches the owner in cc -> allowed", code == 0, f"exit={code} err={err[:200]!r}")
+    off = owner_store(os.path.join(td, "off"), 3, value=None)
+    code, _, err = run_gate(off, mcp_send())
+    check("level 3: no MAIL_OWNER_CC in the install .env -> the check is off, allowed", code == 0, f"exit={code} err={err[:200]!r}")
+    empty = owner_store(os.path.join(td, "empty"), 3, value="")
+    code, _, err = run_gate(empty, mcp_send())
+    check("level 3: MAIL_OWNER_CC empty in the install .env -> off, allowed", code == 0, f"exit={code} err={err[:200]!r}")
+    code, _, err = run_gate(store, mcp_send(), extra_env={"MAIL_OWNER_CC": ""})
+    check("an EMPTY MAIL_OWNER_CC in the process env does NOT switch the gate off (.env only)",
+          code == 2, f"exit={code} err={err[:200]!r}")
+    code, _, err = run_gate(off, mcp_send(), extra_env={"MAIL_OWNER_CC": OWNER})
+    check("a MAIL_OWNER_CC in the process env alone does not switch it on either (.env only)",
+          code == 0, f"exit={code} err={err[:200]!r}")
+    reply = {"tool_name": "mcp__claude_ai_Gmail__reply", "tool_input": {"messageId": "m1", "body": "y"}}
+    code, _, err = run_gate(store, reply)
+    check("a messageId-addressed reply (no recipient field) -> DENIED, and the message points to send_email with the owner in cc",
+          code == 2 and "send_email" in err and "messageId" in err and OWNER in err, f"exit={code} err={err[:300]!r}")
+    draft = {"tool_name": "mcp__server-gmail-autoauth-mcp__draft_email",
+             "tool_input": {"to": ["a@b.hu"], "subject": "x", "body": "y"}}
+    code, _, err = run_gate(store, draft)
+    check("a draft without the owner -> DENIED (send_draft can only be checked here)",
+          code == 2 and "piszkozat" in err, f"exit={code} err={err[:200]!r}")
+    draft["tool_input"]["cc"] = [OWNER]
+    code, _, err = run_gate(store, draft)
+    check("a draft with the owner in cc -> allowed", code == 0, f"exit={code} err={err[:200]!r}")
+    l1 = owner_store(os.path.join(td, "l1"), 1)
+    code, _, err = run_gate(l1, draft)
+    check("level 1: a draft with the owner in cc is still not a send -> allowed", code == 0, f"exit={code} err={err[:200]!r}")
+    mdraft = {"tool_name": "mcp__x__manage_email",
+              "tool_input": {"operation": "reply", "draft": True, "body": "y"}}
+    code, _, err = run_gate(store, mdraft)
+    check("manage_email reply draft without the owner -> DENIED", code == 2, f"exit={code} err={err[:200]!r}")
+    msearch = {"tool_name": "mcp__x__manage_email", "tool_input": {"operation": "search", "query": "x"}}
+    code, _, err = run_gate(store, msearch)
+    check("manage_email search -> not checked, allowed", code == 0, f"exit={code} err={err[:200]!r}")
+    upd = {"tool_name": "mcp__claude_ai_Gmail__update_draft", "tool_input": {"draftId": "d1", "body": "y"}}
+    code, _, err = run_gate(store, upd)
+    check("update_draft (only the changed fields) -> not checked, allowed", code == 0, f"exit={code} err={err[:200]!r}")
+    msend = {"tool_name": "mcp__x__manage_email",
+             "tool_input": {"operation": "send", "to": "a@b.hu", "cc": OWNER, "subject": "x", "body": "y"}}
+    code, _, err = run_gate(store, msend)
+    check("level 3: manage_email send with the owner in cc (string field) -> allowed", code == 0, f"exit={code} err={err[:200]!r}")
+    msend["tool_input"].pop("cc")
+    code, _, err = run_gate(store, msend)
+    check("level 3: manage_email send without the owner -> DENIED", code == 2, f"exit={code} err={err[:200]!r}")
+    conn = {"tool_name": "mcp__claude_ai_Gmail__send_message",
+            "tool_input": {"to": "a@b.hu, " + OWNER, "subject": "x", "body": "y"}}
+    code, _, err = run_gate(store, conn)
+    check("level 3: connector send with the owner in a comma-separated to -> allowed", code == 0, f"exit={code} err={err[:200]!r}")
+    LSX = {"tool_name": "Bash", "tool_input": {"command": "ls -la"}}
+    code, _, err = run_gate(store, LSX)
+    check("a non-send Bash -> not checked, allowed", code == 0, f"exit={code} err={err[:200]!r}")
 
 print()
 if failed:

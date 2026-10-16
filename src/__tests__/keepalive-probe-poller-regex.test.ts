@@ -28,6 +28,29 @@ function probeRuntimeRegex(): string {
 
 // Run the real grep the probe runs. Testing the ERE through a JS RegExp would
 // prove nothing about how BSD/GNU grep reads it, which is where this bug lived.
+// CHANSTATEDIR925 sibling: the probe's plugin-dir filter must come from
+// CHANNEL_PROVIDER, not the literal 'telegram'. A hardcoded provider makes the
+// probe a permanent no-op on every non-telegram install -- it never finds a
+// poller, never advances store/.channel-keepalive, and the only producer left
+// is organic inbound. Measured on a live discord install 2026-09-25: every tick
+// since setup logged "no live telegram poller". That also silently arms the
+// channel-watchdog STALE arm to respawn a quiet-but-healthy session.
+describe('the probe matches the CONFIGURED provider, not a hardcoded telegram', () => {
+  const src = readFileSync(PROBE, 'utf-8')
+
+  it('derives CHANNEL_PROVIDER from .env with a telegram fallback', () => {
+    expect(src).toMatch(/^CHANNEL_PROVIDER="\$\(grep -E '\^CHANNEL_PROVIDER='/m)
+    expect(src).toContain('CHANNEL_PROVIDER="${CHANNEL_PROVIDER:-telegram}"')
+  })
+
+  it('filters candidate pollers by the resolved provider dir', () => {
+    const pollerScan = src.split('\n').find((l) => l.includes('ps -axo pid,command'))
+    expect(pollerScan, 'poller scan line not found').toBeDefined()
+    expect(pollerScan).toContain('"/${CHANNEL_PROVIDER}/"')
+    expect(pollerScan).not.toContain("'/telegram/'")
+  })
+})
+
 function shellAccepts(cmd: string): boolean {
   const runtime = probeRuntimeRegex()
   try {

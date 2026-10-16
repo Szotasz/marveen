@@ -7,6 +7,10 @@
 # an isolated install dir, with HOME pointed at an empty directory so no bot
 # token is found and the alert is logged instead of sent to the owner.
 set -u
+
+# Hermetic (#1555 review round 1): inside an agent session the inherited
+# channel state dir points at a live access.json / bot token.
+unset TELEGRAM_STATE_DIR SLACK_STATE_DIR DISCORD_STATE_DIR GOOGLECHAT_STATE_DIR TEAMS_STATE_DIR
 INSTALL_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 BASE="$(mktemp -d)"
 trap 'rm -rf "$BASE"' EXIT
@@ -16,7 +20,28 @@ fail(){ echo "  FAIL  $*"; FAILED=1; }
 
 # Own tmux server (empty): otherwise the case would capture the real fleet's
 # panes and every result would depend on what happens to be on screen.
+#
+# #1565 item 5: TMUX_TMPDIR ALONE DOES NOT ISOLATE. While $TMUX is set --
+# and it always is, because the suite runs inside an agent's pane -- tmux takes
+# the socket from $TMUX and ignores TMUX_TMPDIR entirely. Measured 2026-09-21:
+# with TMUX_TMPDIR pointed at an empty directory, `tmux list-sessions` still
+# returned all six live fleet sessions. So every case was reading the fleet's
+# screens, and the verdict depended on what happened to be printed there at
+# that second: a pane showing "Claude usage limit reached" turns every quiet
+# case into a false alarm (measured on a separate server with planted text),
+# and can also make a positive case pass for the wrong reason. That is the
+# whole of the "red in the harness, green on its own" flake -- not the harness.
+unset TMUX TMUX_PANE
 export TMUX_TMPDIR="$BASE/tmux"; mkdir -p "$TMUX_TMPDIR"
+# And prove the isolation instead of trusting it: this comment claimed it for
+# months while it was false. An error here is FINE (no server = no panes); what
+# must never happen is tmux answering with a session name.
+if tmux list-sessions -F '#{session_name}' 2>/dev/null | grep -q .; then
+  echo "  FAIL  tmux isolation BROKEN: the cases can see live sessions:"
+  tmux list-sessions -F '#{session_name}' 2>/dev/null | sed 's/^/          /'
+  echo "        Every result below would depend on what is on those screens."
+  exit 1
+fi
 
 new_case() {
   local c="$BASE/$1"; mkdir -p "$c/scripts" "$c/store" "$c/fakehome"
@@ -25,8 +50,17 @@ new_case() {
   # is not a smaller install -- it is a BROKEN one, and the difference would
   # only show up as a silently missing send. Copy what a real install has.
   mkdir -p "$c/scripts/lib"; cp "$INSTALL_DIR/scripts/lib/send-telegram.sh" "$c/scripts/lib/"
+  # CHATID0: the owner-chat resolver, same reason -- its absence is a silently
+  # broken install, not a smaller one.
+  cp "$INSTALL_DIR/scripts/lib/owner-chat.sh" "$c/scripts/lib/"
   # MIOHEREDOC902: the measured quota path now lives in its own file.
   cp "$INSTALL_DIR/scripts/lib/quota-check.py" "$c/scripts/lib/"
+  # Same reason as send-telegram.sh above, found 2026-09-21: the monitor sources
+  # scripts/lib/content-hash.sh for the dedupe hash, and without it every tick
+  # logged "content_hash UNAVAILABLE -- dedupe disabled ... (fail-open)". The
+  # cases still passed, so the gap was invisible -- but the text-path dedupe was
+  # never actually exercised: it was switched off in every single case.
+  cp "$INSTALL_DIR/scripts/lib/content-hash.sh" "$c/scripts/lib/"
   printf 'MAIN_AGENT_ID=probe\nALLOWED_CHAT_ID=1\n' > "$c/.env"
   echo "$c"
 }
@@ -222,6 +256,36 @@ elif grep -q "quota file stale" "$C/store/limit-monitor.log" 2>/dev/null; then
 else
   fail "a stale reading was skipped without a trace"
 fi
+if grep -q "no usable written_at" "$C/store/limit-monitor.log" 2>/dev/null; then
+  fail "a genuinely old stamp was reported as unstamped"
+else
+  pass "a genuinely old stamp is still reported as an age"
+fi
+
+# A missing / null / zero / non-numeric stamp, or a file that is not an object,
+# used to become an age counted from 1970 ("stale (1790511588s)") or a
+# traceback -- indistinguishable in the log from a truly old reading, or silent
+# on stdout. Each must skip the measured path AND name the missing stamp.
+for nostamp in 'missing|{"rate_limits":{"five_hour":{"used_percentage":99,"resets_at":%d}}}' \
+               'null|{"written_at":null,"rate_limits":{"five_hour":{"used_percentage":99,"resets_at":%d}}}' \
+               'zero|{"written_at":0,"rate_limits":{"five_hour":{"used_percentage":99,"resets_at":%d}}}' \
+               'string|{"written_at":"abc","rate_limits":{"five_hour":{"used_percentage":99,"resets_at":%d}}}' \
+               'bool|{"written_at":true,"rate_limits":{"five_hour":{"used_percentage":99,"resets_at":%d}}}' \
+               'array|[%d]'; do
+  name="${nostamp%%|*}"; fmt="${nostamp#*|}"
+  C="$(new_case "quota_nostamp_$name")"
+  # shellcheck disable=SC2059
+  printf "$fmt\n" "$((now + 3600))" > "$C/store/.claude-rate-limits.json"
+  run_case "$C"
+  if alerted "$C"; then
+    fail "nostamp/$name: alerted on a reading with no usable written_at"
+  elif grep -q "quota file has no usable written_at" "$C/store/limit-monitor.log" 2>/dev/null \
+       && ! grep -q "quota file stale" "$C/store/limit-monitor.log" 2>/dev/null; then
+    pass "nostamp/$name: skipped, and logged as unstamped, not as an age"
+  else
+    fail "nostamp/$name: not logged as unstamped: $(grep -i quota "$C/store/limit-monitor.log" 2>/dev/null | tr '\n' ' ')"
+  fi
+done
 
 echo "(d) a FAILED delivery must not suppress the retry"
 # This is the case the whole honest-send contract exists for. The Bot API can
@@ -334,6 +398,63 @@ if grep -q "quota file stale" "$C/store/limit-monitor.log" 2>/dev/null; then
   pass "and it is the value actually in force (the day-old reading is stale)"
 else
   fail "an in-range value was accepted but not applied"
+fi
+
+echo "(f) CHATID0: ALLOWED_CHAT_ID=0 resolves via the owner-chat helper"
+# Portable in-place edit: BSD sed reads `-i 's/..'` as a backup suffix and
+# leaves the file unchanged (#1555 review round 1), so rewrite through a temp.
+set_placeholder_chat() {
+  sed 's/^ALLOWED_CHAT_ID=1$/ALLOWED_CHAT_ID=0/' "$1/.env" > "$1/.env.tmp" && mv "$1/.env.tmp" "$1/.env"
+}
+# Real signal, real token, but ALLOWED_CHAT_ID=0 (the installer placeholder)
+# with a paired access.json in the channel state dir -- must still send, to
+# the REAL resolved id, never to "0".
+C="$(deliver_case chatid0_paired ok)"
+set_placeholder_chat "$C"
+printf '{"allowFrom":["9999999"]}\n' > "$C/fakehome/.claude/channels/telegram/access.json"
+: > "$C/fakebin/curl.log"
+cat > "$C/fakebin/curl" <<'STUB'
+#!/bin/bash
+for a in "$@"; do
+  case "$a" in
+    chat_id=*) echo "SEEN_CHAT_ID:${a#chat_id=}" >> "$(dirname "$0")/curl.log" ;;
+  esac
+done
+printf '%s' '{"ok":true,"result":{}}'
+STUB
+chmod +x "$C/fakebin/curl"
+printf '%s\n' "You've reached your weekly limit for Opus." > "$C/store/channels.log"
+run_case "$C"
+if grep -q "SEEN_CHAT_ID:9999999" "$C/fakebin/curl.log" 2>/dev/null; then
+  pass "ALLOWED_CHAT_ID=0 + paired access.json -> alerts the real resolved id"
+else
+  fail "ALLOWED_CHAT_ID=0 + paired access.json -> expected chat_id=9999999, log: $(cat "$C/fakebin/curl.log" 2>/dev/null)"
+fi
+
+# No access.json at all -> the monitor must stay silent, not send to "0".
+C="$(new_case chatid0_no_access)"
+set_placeholder_chat "$C"
+run_case "$C"
+if grep -q "no ALLOWED_CHAT_ID in .env" "$C/store/limit-monitor.log" 2>/dev/null; then
+  pass "ALLOWED_CHAT_ID=0, no access.json -> exits quietly (no owner chat)"
+else
+  fail "ALLOWED_CHAT_ID=0, no access.json -> expected the no-owner-chat log line: $(cat "$C/store/limit-monitor.log" 2>/dev/null)"
+fi
+
+# Two paired DM entries -> the first one would be a guess, and a quota warning
+# must not reach a stranger: no send, and the log says why (review round 1).
+C="$(deliver_case chatid0_two_dm ok)"
+set_placeholder_chat "$C"
+printf '{"allowFrom":["9999999","8888888"]}\n' > "$C/fakehome/.claude/channels/telegram/access.json"
+: > "$C/fakebin/curl.log"
+printf '#!/bin/sh\necho sent >> "$(dirname "$0")/curl.log"\nprintf %%s "{\\"ok\\":true,\\"result\\":{}}"\n' > "$C/fakebin/curl"
+chmod +x "$C/fakebin/curl"
+printf '%s\n' "You've reached your weekly limit for Opus." > "$C/store/channels.log"
+run_case "$C"
+if [ ! -s "$C/fakebin/curl.log" ] && grep -q "2 DM entries" "$C/store/limit-monitor.log" 2>/dev/null; then
+  pass "ALLOWED_CHAT_ID=0 + two DM entries -> no send, reason logged"
+else
+  fail "ALLOWED_CHAT_ID=0 + two DM entries -> expected no send + reason: curl=$(cat "$C/fakebin/curl.log" 2>/dev/null) log=$(cat "$C/store/limit-monitor.log" 2>/dev/null)"
 fi
 
 echo ""
