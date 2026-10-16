@@ -5,6 +5,8 @@ import {
   classifyTelegramSendError,
   classifySendError,
   ALERT_THRESHOLD_MS,
+  OWNER_ESCALATION_EXTRA_MS,
+  OWNER_ALERT_THRESHOLD_MS,
 } from '../pending-retries.js'
 
 describe('shouldSendAlert', () => {
@@ -103,6 +105,65 @@ describe('toPendingRetryView', () => {
     expect(view.alertDue).toBe(true)
     const viewUnder = toPendingRetryView(baseRow, 1_000_100, 200)
     expect(viewUnder.alertDue).toBe(false)
+  })
+})
+
+// Two-stage escalation: stage 1 (alertDue/alert_sent_at, unchanged) now goes
+// to the main agent via inter-agent message; stage 2 (ownerAlertDue/
+// owner_alert_sent_at, new) is the direct-to-operator channel fallback,
+// gated behind a strictly larger threshold. Both reuse the SAME
+// shouldSendAlert pure function -- these tests exercise it through
+// toPendingRetryView with the owner fields, not a new decision function.
+describe('toPendingRetryView: owner escalation (stage 2)', () => {
+  const baseRow = {
+    id: 42,
+    task_name: 'morning-summary',
+    agent_name: 'main',
+    first_attempt: 1_000_000,
+    last_attempt: 1_000_500,
+    attempt_count: 5,
+    last_reason: 'busy',
+    alert_sent_at: 1_000_000 + ALERT_THRESHOLD_MS + 1, // stage 1 already fired
+    owner_alert_sent_at: null as number | null,
+  }
+
+  it('OWNER_ALERT_THRESHOLD_MS is ALERT_THRESHOLD_MS plus the extra escalation window', () => {
+    expect(OWNER_ALERT_THRESHOLD_MS).toBe(ALERT_THRESHOLD_MS + OWNER_ESCALATION_EXTRA_MS)
+  })
+
+  it('ownerAlertDue is false before the owner threshold, even though stage 1 already fired', () => {
+    const view = toPendingRetryView(baseRow, 1_000_000 + OWNER_ALERT_THRESHOLD_MS)
+    expect(view.ownerAlertDue).toBe(false)
+  })
+
+  it('ownerAlertDue becomes true once the owner threshold is exceeded', () => {
+    const view = toPendingRetryView(baseRow, 1_000_000 + OWNER_ALERT_THRESHOLD_MS + 1)
+    expect(view.ownerAlertDue).toBe(true)
+  })
+
+  it('ownerAlertDue does NOT require stage 1 to have fired -- independent, firstAttempt-keyed thresholds', () => {
+    // A failed stage-1 (main-agent) notice must never silently suppress the
+    // final owner escalation.
+    const view = toPendingRetryView(
+      { ...baseRow, alert_sent_at: null },
+      1_000_000 + OWNER_ALERT_THRESHOLD_MS + 1,
+    )
+    expect(view.ownerAlertDue).toBe(true)
+  })
+
+  it('ownerAlertDue is false once the owner alert was already sent (one-shot)', () => {
+    const view = toPendingRetryView(
+      { ...baseRow, owner_alert_sent_at: 1_000_000 + OWNER_ALERT_THRESHOLD_MS + 100 },
+      1_000_000 + 2 * OWNER_ALERT_THRESHOLD_MS,
+    )
+    expect(view.ownerAlertDue).toBe(false)
+  })
+
+  it('a row missing owner_alert_sent_at (older shape) defaults to null, not a crash', () => {
+    const { owner_alert_sent_at: _unused, ...rowWithoutOwnerCol } = baseRow
+    const view = toPendingRetryView(rowWithoutOwnerCol, 1_000_000 + OWNER_ALERT_THRESHOLD_MS + 1)
+    expect(view.ownerAlertSentAt).toBeNull()
+    expect(view.ownerAlertDue).toBe(true)
   })
 })
 

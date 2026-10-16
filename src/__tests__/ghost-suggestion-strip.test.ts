@@ -178,8 +178,16 @@ describe('isSessionReadyForPrompt wiring (dim-ghost tolerant idle)', () => {
     expect(fn).toContain('captureParkedInputView(session, host)')
     expect(fn).toMatch(/idleOrGhost\((?:first|second)\)/)
     // context-saturation is scanned on the PLAIN capture (a dim banner cannot be
-    // masked -> the refusal stays robust):
+    // masked -> the refusal stays robust), and BOTH samples go through the one
+    // predicate that also holds the banner-vs-measurement override -- dropping
+    // it on either side would silence a working agent whose mis-tagged model id
+    // made the CLI print "100% context used" at ~179k of a ~1M window, while
+    // bypassing it would re-open the gate to a genuinely wedged pane.
     expect(fn).toContain('capturePane(session, host)')
-    expect(fn).toMatch(/paneShowsContextSaturation\((?:first|second)\)/)
+    expect(fn).toMatch(/saturationRefusesDispatch\(first, session\)/)
+    expect(fn).toMatch(/saturationRefusesDispatch\(second, session\)/)
+    // The raw scan must NOT be reachable here any more: it is the shape that
+    // ignores both the override and the hard-error arm.
+    expect(fn).not.toMatch(/paneShowsContextSaturation\((?:first|second)\)/)
   })
 })

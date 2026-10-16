@@ -42,6 +42,23 @@ describe('mapUpdate', () => {
     expect(ev.tg_date).toBe(1700000000)
   })
 
+  it('mapUpdate keeps the topic of a topic message, and only of one', () => {
+    const msg = (extra: Record<string, unknown>) => mapUpdate({ update_id: 12, message: { message_id: 8, text: 'x', chat: { id: 42 }, from: { id: 42 }, ...extra } })!
+    expect(msg({ is_topic_message: true, message_thread_id: 12 }).meta['message_thread_id']).toBe(12)
+    expect(msg({ message_thread_id: 12 }).meta).not.toHaveProperty('message_thread_id')
+    expect(msg({}).meta).toEqual({})
+  })
+
+  it('buildHandoffContent shows the topic only while TELEGRAM_TOPICS_ENABLED is on; without one the tag is unchanged', () => {
+    const ev = { kind: 'message', chat_id: 42, user_id: 42, username: 'owner', message_id: 8, content: 'x', tg_date: 1700000000 }
+    const plain = buildHandoffContent(ev, true)
+    expect(buildHandoffContent(ev, false)).toBe(plain)
+    expect(buildHandoffContent({ ...ev, meta: { message_thread_id: 12 } }, false)).toBe(plain)
+    expect(buildHandoffContent({ ...ev, meta: { message_thread_id: 12 } }, true))
+      .toBe(plain.replace('ts="2023-11-14T22:13:20.000Z"', 'ts="2023-11-14T22:13:20.000Z" message_thread_id="12"'))
+    expect(buildHandoffContent({ ...ev, meta: { message_thread_id: 'x' } }, true)).toBe(plain)
+  })
+
   it('mapUpdate_handles_photo_and_caption', () => {
     const ev = mapUpdate({
       update_id: 11,

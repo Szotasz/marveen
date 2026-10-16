@@ -11,12 +11,19 @@ description: Minden körben átnézi az ELŐZŐ KÖR ÓTA történteket, menti a
 
 Nézd át, mi történt **az előző memória-kör óta**. Két dolgot csinálj:
 
-> **AZ ABLAK "AZ ELŐZŐ KÖR ÓTA", NEM FIX PERCSZÁM -- MÉRVE 2026-08-22.** A szöveg korábban két
-> helyen is fix "30 perc"-et mondott, miközben a tényleges kadencia (a `task_runs` közökből mérve)
-> 15 perc volt: a 2x-es eltérés miatt **minden kör újranézte azt az ablakot, amit az előző már
-> feldolgozott** -- ez strukturálisan duplikált memória-írást és duplikált skill-patchet hív elő,
-> mert a friss kontextus nem tudja, hogy az előző kör már lezárta. A fix percszám a konfigurált
-> kadenciával együtt avul; "az előző kör óta" nem.
+> **AZ ABLAK "AZ ELŐZŐ KÖR ÓTA", NEM FIX PERCSZÁM -- MÉRVE 2026-08-22, ÚJRAMÉRVE 2026-08-27.**
+> A szöveg korábban fix percszámot mondott, és a rögzített szám KÉTSZER is elavult. Ezért nincs
+> benne szám többé: **a fix percszám a konfigurált kadenciával együtt avul, "az előző kör óta" nem.**
+>
+> **AMIT 2026-08-27-EN MEGMERTEM, ha valaki mégis a számra kíváncsi (és ne erre építs):**
+> a `task-config.json` `*/15 * * * *`-ot mond, de a `skipIfBusy: true` miatt a hozzám ELJUTÓ
+> kadencia **30 perc**. A `task_runs` tökéletesen váltakozik: :00 skipped, :15 fired, :30 skipped,
+> :45 fired -- 24 órában 43 fired / 53 skipped, és 17 egymást követő fired-köz pontosan 1800-1803 mp.
+> A :00 és :30 slot rendszeresen ütközik az órás heartbeat-digesttel és a drain-körökkel.
+> Vagyis a KONFIGURÁLT (15) és a KÉZBESÍTETT (30) kadencia két külön szám, és a 2026-08-22-i
+> "a kadencia 15 perc" javítás a konfiguráltat mérte, nem azt, ami ideér.
+> **Következmény, amit érdemes tudni:** ez a kör soha nem fut :00-kor és :30-kor, tehát az óra
+> tetején történtek a következő (:15 vagy :45) körben jönnek fel. Ez nem hiba, csak fáziseltolás.
 > **HA MÉGIS ÁTFEDÉST LÁTSZ:** a mérce nem az idő, hanem hogy *lezártad-e már*. Ha egy munkára már
 > írtál memóriát vagy patcheltél skillt az előző körben, az KÉSZ -- ne írd meg újra más szavakkal.
 
@@ -25,7 +32,7 @@ Nézd át, mi történt **az előző memória-kör óta**. Két dolgot csinálj:
 Ha volt fontos döntés, preferencia, tanulság vagy bármi ami később hasznos, mentsd el:
 
 ```bash
-curl -s -X POST http://localhost:3420/api/memories \
+curl -s -X POST http://localhost:{{WEB_PORT}}/api/memories \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $(cat {{INSTALL_DIR}}/store/.dashboard-token)" \
   -d '{"agent_id":"SAJAT_NEVED","content":"...","category":"warm","keywords":"..."}'
@@ -75,13 +82,24 @@ Lépések:
    - ...
    EOF
    ```
-4. Index regen (mindkét szint):
+4. Linter az érintett skillen (KÖTELEZŐ, a skill-akció után):
+   ```bash
+   node {{INSTALL_DIR}}/scripts/skill-lint.mjs ~/.claude/skills/<NEV>
+   ```
+   Ha hibát jelez (nem 0 a kilépési kód): javítsd a jelzett pontot, és futtasd újra, amíg tiszta nem lesz. A szabályok (Anthropic, Skill authoring best practices): a SKILL.md törzse legfeljebb 500 sor; a 100 sornál hosszabb `references/` fájl tetején tartalomjegyzék; minden segédfájlra közvetlenül a SKILL.md mutasson; a SKILL.md linkjei létező fájlra mutassanak. A linter csak jelez; külső forrásból telepített skillt ne írj át.
+5. Index regen (mindkét szint):
    ```bash
    bash {{INSTALL_DIR}}/scripts/skill-index.sh          # globális index frissítése
    bash {{INSTALL_DIR}}/scripts/skill-index.sh "$(pwd)" # ágensspecifikus merged index frissítése
    ```
 
-**Ha kihagytad a skill akciót, pedig A/B/C valamelyike IGEN volt:** kötelezően írj `hot` tier memóriát "skip-skill: <konkrét ok>" tartalommal, hogy később lássuk miért. Ne csendben hagyd ki.
+**Ha kihagytad a skill akciót, pedig A/B/C valamelyike IGEN volt:** kötelezően hagyj nyomot `hot` tier memóriában, hogy később lássuk miért. Ne csendben hagyd ki.
+
+**A bejegyzés kulcsa a LELET, nem a kör.** Előbb keress meglévő `skip-skill:` sort UGYANARRA a leletre:
+- ha van: azt **frissítsd** (számláló + utolsó dátum), NE írj újat;
+- csak akkor írj új sort, ha ez a lelet még egyáltalán nem szerepel.
+
+Egy nyitott lelet egy sor marad, akárhány kör látja. (Mérve 2026-09-13: a kulcs a kör volt, nem a lelet, így minden kör újra beírta ugyanazt -- 35 skip-skill sor, a hot memória 64%-a, egyetlen zárt csatornára.)
 
 ## 3. Csendben maradás
 

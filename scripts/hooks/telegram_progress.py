@@ -23,9 +23,15 @@ REACTION = "✍️"                            # ✍️
 
 
 def state_dir():
+    # #915: env override, then the install-scoped dir once it holds the .env,
+    # then the legacy shared path (unmigrated installs only).
     d = os.environ.get("TELEGRAM_STATE_DIR")
     if d:
         return d
+    _root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    _inst = os.path.join(_root, ".claude", "channels", "telegram")
+    if os.path.isfile(os.path.join(_inst, ".env")):
+        return _inst
     return os.path.expanduser("~/.claude/channels/telegram")
 
 
@@ -50,7 +56,8 @@ def token(sd):
 
 
 def api(tok, method, payload):
-    url = f"https://api.telegram.org/bot{tok}/{method}"
+    base = os.environ.get("TELEGRAM_API_BASE", "https://api.telegram.org")
+    url = f"{base}/bot{tok}/{method}"
     data = json.dumps(payload).encode()
     req = urllib.request.Request(url, data=data,
                                  headers={"Content-Type": "application/json"})
@@ -106,10 +113,14 @@ def main():
     for b in blocks:
         cid = re.search(r'\bchat_id="([^"]+)"', b)
         mid = re.search(r'\bmessage_id="([^"]+)"', b)
+        # A topic message (TELEGRAM_TOPICS_ENABLED): the placeholder goes into
+        # the same topic, and the entry remembers it for the fallback senders.
+        tid = re.search(r'\bmessage_thread_id="(\d+)"', b)
         if not cid:
             continue
         chat_id = cid.group(1)
         src_mid = mid.group(1) if mid else None
+        thread = {"message_thread_id": int(tid.group(1))} if tid else {}
         # Dedup: skip if a sibling invocation already handled this inbound msg.
         if not claim(os.path.join(sd, "progress"), sid, src_mid):
             log(sd, f"[submit] dedup skip src={src_mid}")
@@ -118,10 +129,10 @@ def main():
         # placeholder already signals receipt, so a reaction would be redundant
         # (per user preference 2026-06-07).
         try:
-            resp = api(tok, "sendMessage", {"chat_id": chat_id, "text": PLACEHOLDER, "disable_notification": True})
+            resp = api(tok, "sendMessage", {"chat_id": chat_id, "text": PLACEHOLDER, "disable_notification": True, **thread})
             pmid = resp.get("result", {}).get("message_id")
             if pmid:
-                entry = {"chat_id": chat_id, "message_id": pmid}
+                entry = {"chat_id": chat_id, "message_id": pmid, "src_mid": src_mid, **thread}
                 if transcript_path:
                     entry["transcript_path"] = transcript_path
                 pending.append(entry)
@@ -140,6 +151,43 @@ def main():
             log(sd, f"[submit] stored {len(pending)} placeholder(s)")
         except Exception as e:
             log(sd, f"[submit] store failed: {e}")
+        drop_handled(sd, tok, sid, path)
+
+
+def drop_handled(sd, tok, sid, path):
+    """The other half of a handshake with marveen-commands.py. Both run as
+    parallel UserPromptSubmit hooks on the same prompt; when the command hook
+    answers a registry command itself it writes progress/cmd-<sid>-<src>.handled
+    BEFORE clearing our stored placeholder. If it cleared before we stored (the
+    race that left "Dolgozom rajta…" hanging after a /model -- ELSOKOR922 Phase
+    7 A-smoke), its marker is already there now, because we look only AFTER
+    storing: either it saw our entry, or we see its marker."""
+    try:
+        pend = json.load(open(path))
+    except Exception:
+        return
+    keep = []
+    for p in pend:
+        marker = os.path.join(sd, "progress", f"cmd-{sid}-{p.get('src_mid')}.handled")
+        if p.get("src_mid") and os.path.exists(marker):
+            try:
+                api(tok, "deleteMessage", {"chat_id": p["chat_id"], "message_id": p["message_id"]})
+                log(sd, f"[submit] command-handled, placeholder removed src={p.get('src_mid')}")
+            except Exception as e:
+                log(sd, f"[submit] command-handled delete failed: {type(e).__name__}")
+            try:
+                os.remove(marker)
+            except Exception:
+                pass
+        else:
+            keep.append(p)
+    try:
+        if keep:
+            json.dump(keep, open(path, "w"))
+        else:
+            os.remove(path)
+    except Exception:
+        pass
 
 
 if __name__ == "__main__":

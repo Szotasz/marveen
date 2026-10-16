@@ -19,9 +19,20 @@
 #   COUNTS urgent=N in_progress=N waiting=N planned=N new_hot_memories_1h=N db_size_mb=N waiting_shown=N
 #   URGENT <id> <title>            (0..n lines)
 #   WAITING <id> <title>           (0..n lines)
+#   CALENDAR_EVENTS n=N window=2h  (measured; n=0 is a MEASURED empty calendar)
+#   CAL_EVENT <HH:MM|all-day> <summary> [attendees=N]   (0..n lines)
+#   TOKEN_PRUNE state=ok|stale|empty retention_days=N lag_hours=N tolerance_hours=N
 #   SCHEDULES enabled=N
 #   TASK_RUNS_1H total=N [<status>=N ...]
 #   ERROR <section>: <reason>      (any failed measurement)
+#
+# 5E0A32B0: the calendar is measured HERE (server-side /api/heartbeat/calendar,
+# which reaches Google through the dashboard's own OAuth path), never by the
+# agent. The two calendar end-states are deliberately distinct lines:
+# CALENDAR_EVENTS n=0 means "queried, calendar free"; ERROR calendar: means
+# "could not query". A month of migrating agent-side symptoms ended in a
+# fossil (one 404 on a nonexistent endpoint copy-forwarded round after round),
+# and collapsing these two states is exactly how it stayed invisible.
 #
 # Fail-closed (the load-bearing property): a missing or null field NEVER
 # prints as 0 -- it prints an ERROR line and the exit code is non-zero.
@@ -35,16 +46,24 @@
 #                          (default: <repo root>/store, derived from this
 #                          script's own location)
 #   CLAW_DASHBOARD_ORIGIN  dashboard origin (default http://localhost:3420)
-#   CLAW_TZ                timezone for the ts= stamp (default Europe/Budapest)
+#   CLAW_TZ                timezone for the ts= stamp (default: the install zone,
+#                          SCHEDULER_TZ, else the host zone -- scripts/lib/install-tz.sh)
 
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 STORE_DIR="${CLAW_STORE_DIR:-$ROOT/store}"
 ORIGIN="${CLAW_DASHBOARD_ORIGIN:-http://localhost:3420}"
-TZNAME="${CLAW_TZ:-Europe/Budapest}"
+. "$ROOT/scripts/lib/install-tz.sh"
+TZNAME="${CLAW_TZ:-$(install_tz "$ROOT")}"
+export TZNAME
 
-echo "HB_METRICS_V1 ts=$(TZ="$TZNAME" date +'%Y-%m-%d %H:%M')"
+# An empty TZNAME must not become TZ="" -- that prints UTC; plain date is the host zone.
+if [ -n "$TZNAME" ]; then
+  echo "HB_METRICS_V1 ts=$(TZ="$TZNAME" date +'%Y-%m-%d %H:%M')"
+else
+  echo "HB_METRICS_V1 ts=$(date +'%Y-%m-%d %H:%M')"
+fi
 
 # All measurements run in ONE python3 process: no pipes, no shell variables
 # carrying JSON, and no data piped into a heredoc (the HBHEREDOC819 shape
@@ -52,7 +71,7 @@ echo "HB_METRICS_V1 ts=$(TZ="$TZNAME" date +'%Y-%m-%d %H:%M')"
 # piped data is silently lost; here the heredoc IS the program and nothing
 # is piped). python3's sqlite3 module replaces the sqlite3 CLI, which does
 # not exist on a stock Linux install (exit 127).
-STORE_DIR="$STORE_DIR" ORIGIN="$ORIGIN" python3 - <<'PY'
+STORE_DIR="$STORE_DIR" ORIGIN="$ORIGIN" TZNAME="$TZNAME" python3 - <<'PY'
 import json, os, sqlite3, sys, urllib.request
 
 store = os.environ['STORE_DIR']
@@ -103,8 +122,61 @@ if tok is not None:
                 print('URGENT', x.get('id'), x.get('title'))
             for x in d.get('waiting') or []:
                 print('WAITING', x.get('id'), x.get('title'))
+        # HBDBKUSZOB823: the prune-lag state is computed server-side too
+        # (db.ts getTokenPruneLag) -- the retention resolution is
+        # override > .env > registry default, and re-implementing that chain
+        # here would be a second source of truth. Fail-closed like the rest:
+        # a missing block is an ERROR line, never a cheerful default.
+        tp = d.get('token_prune')
+        if not isinstance(tp, dict) or tp.get('state') is None:
+            err('token_prune', 'token_prune missing from response')
+        else:
+            print('TOKEN_PRUNE state=%s retention_days=%s lag_hours=%s '
+                  'tolerance_hours=%s'
+                  % (tp['state'], tp.get('retention_days'),
+                     tp.get('lag_hours'), tp.get('tolerance_hours')))
     except Exception as e:
         err('summary', repr(e))
+
+    # Calendar (next 2h) -- measured server-side on /api/heartbeat/calendar
+    # (5E0A32B0). The endpoint answers 200 with {ok:true, events} OR
+    # {ok:false, error}: a failed query is a RESULT to relay, not an empty
+    # list. n=0 therefore always means "queried, calendar free".
+    try:
+        d = get('/api/heartbeat/calendar')
+        if d.get('ok') is True and isinstance(d.get('events'), list):
+            evs = d['events']
+            print('CALENDAR_EVENTS n=%d window=2h' % len(evs))
+            def hhmm(part):
+                # dateTime carries its own offset; render in CLAW_TZ. An
+                # all-day event has only `date`. On any parse trouble print
+                # the raw value -- wrong-looking beats silently dropped.
+                if not isinstance(part, dict):
+                    return '?'
+                if part.get('dateTime'):
+                    try:
+                        from datetime import datetime
+                        from zoneinfo import ZoneInfo
+                        dt = datetime.fromisoformat(part['dateTime'])
+                        tzname = os.environ.get('TZNAME') or ''
+                        return (dt.astimezone(ZoneInfo(tzname)) if tzname else dt.astimezone()).strftime('%H:%M')
+                    except Exception:
+                        return str(part['dateTime'])
+                if part.get('date'):
+                    return 'all-day'
+                return '?'
+            for e in evs:
+                att = e.get('attendees') or 0
+                print('CAL_EVENT %s %s%s' % (
+                    hhmm(e.get('start')),
+                    e.get('summary') or '(nincs cim)',
+                    (' attendees=%d' % att) if att else ''))
+        elif d.get('ok') is False:
+            err('calendar', str(d.get('error') or 'unknown'))
+        else:
+            err('calendar', 'unrecognized response shape: %s' % json.dumps(d)[:120])
+    except Exception as e:
+        err('calendar', repr(e))
 
     # The live schedule registry -- NOT the scheduled_tasks table, which is
     # empty on this deployment and would report 0 forever.

@@ -133,8 +133,20 @@ describe('ensure* migrations are idempotent (true, then false)', () => {
     const commands = ptuCommands(written)
     expect(commands.some((c) => c.includes('email-send-gate.mjs'))).toBe(true)
     expect(commands.some((c) => c.includes('self-pace-gate.mjs'))).toBe(true)
+    // The migration also wires the python destructive gate (card a14ea5c7), so
+    // the interpreter invariant is per-interpreter, not node-only. Both shapes
+    // guard the SAME failure: a hook whose interpreter cannot be resolved exits
+    // 127, which Claude Code treats as NON-blocking -- a gate that silently
+    // enforces nothing. Node gets an absolute quoted execPath; python3 gets an
+    // explicit probe that exits 2 (blocking) when the interpreter is missing.
     for (const cmd of commands) {
-      expect(cmd.includes(`"${HOOK_NODE_BIN}" "`)).toBe(true)
+      if (cmd.includes('.py"')) {
+        expect(cmd).toContain('command -v python3 >/dev/null 2>&1 ||')
+        expect(cmd).toContain('exit 2')
+        expect(cmd).toMatch(/python3 "\//)
+      } else {
+        expect(cmd.includes(`"${HOOK_NODE_BIN}" "`)).toBe(true)
+      }
       expect(cmd).not.toMatch(/^node /)
     }
   })

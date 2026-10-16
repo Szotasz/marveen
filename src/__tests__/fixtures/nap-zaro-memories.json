@@ -1,0 +1,14 @@
+{
+  "agent_id": "main-agent",
+  "since": 1000,
+  "memories": [
+    { "id": "m1-old-untouched", "agent_id": "main-agent", "created_at": 500, "updated_at": 500, "category": "note", "content": "old memory, never touched in the window" },
+    { "id": "m2-new", "agent_id": "main-agent", "created_at": 1500, "updated_at": 1500, "category": "note", "updated_by": "agent", "content": "brand new memory created inside the window" },
+    { "id": "m3-updated-old", "agent_id": "main-agent", "created_at": 500, "updated_at": 1600, "category": "note", "updated_by": "agent", "content": "PREFIX-SHOULD-NOT-SHOW-IN-TAIL-0123456789 this old memory got updated inside the window and the summary must show the END of the content, not the start, because agents append with read-modify-write -- padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding padding TAIL-MARKER-XYZ-END-OF-CONTENT" },
+    { "id": "m4-new-and-updated", "agent_id": "main-agent", "created_at": 1700, "updated_at": 1600, "category": "note", "updated_by": "agent", "content": "created and updated both inside the window -- must count once, among the new ones only" },
+    { "id": "m5-null-updated-at", "agent_id": "main-agent", "created_at": 500, "updated_at": null, "category": "note", "updated_by": null, "content": "old memory that was never updated -- updated_at is NULL, must not error and must not be updated" },
+    { "id": "m7-maintenance-only", "agent_id": "main-agent", "created_at": 500, "updated_at": 500, "category": "note", "updated_by": "agent", "accessed_at": 999999, "salience": 0.05, "content": "only maintenance fields changed (accessed_at, salience) -- updated_at itself was not bumped, so this must not appear anywhere" },
+    { "id": "m8-other-agent", "agent_id": "other-agent", "created_at": 1500, "updated_at": 1500, "category": "note", "content": "belongs to a different agent, must be filtered out entirely" }
+  ],
+  "kanban": []
+}

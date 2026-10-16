@@ -96,10 +96,9 @@
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
             <span class="sb-label">Ügynökök</span>
           </a>
-          <a href="#" class="sb-link" data-page="activity">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49M7.76 16.24a6 6 0 0 1 0-8.49M19.07 4.93a10 10 0 0 1 0 14.14M4.93 19.07a10 10 0 0 1 0-14.14"/></svg>
-            <span class="sb-label">Aktivitás</span>
-          </a>
+          <!-- The separate Activity page was folded into the Agents page as a
+               card-content mode (Adatlap / Aktivitás), so it no longer has its
+               own nav entry or URL. -->
           <a href="#" class="sb-link" data-page="messages">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
             <span class="sb-label">Üzenetek</span>
@@ -139,6 +138,12 @@
           <a href="#" class="sb-link" data-page="ideas">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>
             <span class="sb-label">Ötletláda</span>
+          </a>
+          <!-- VIDEOREVIEW1002: a plain link (no data-page), so it navigates in the
+               SAME tab; the Bridge denies new windows. Shown only when configured. -->
+          <a href="/video-review" class="sb-link" id="sbVideoReview" hidden>
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="5" width="15" height="14" rx="2"/><polygon points="17 9 22 6 22 18 17 15"/></svg>
+            <span class="sb-label">Videó-visszajelzés</span>
           </a>
         </div>
       </div>
@@ -253,6 +258,14 @@
 
     <!-- === Overview Page (default) === -->
     <div class="page" id="overviewPage">
+      <div class="quota-strip" id="quotaStrip" hidden>
+        <div class="quota-strip-head">
+          <span class="quota-strip-title" data-i18n="overview.quota.title">Előfizetési keret</span>
+          <span class="quota-strip-age" id="quotaStripAge"></span>
+        </div>
+        <div class="quota-bars" id="quotaBars"></div>
+        <div class="quota-strip-note" id="quotaStripNote" hidden></div>
+      </div>
       <div class="overview-stats">
         <div class="overview-stat">
           <div class="overview-stat-label" data-i18n="overview.stat.agents">Aktív ügynökök</div>
@@ -295,14 +308,20 @@
     <!-- === Kanban Page === -->
     <div class="page" id="kanbanPage" hidden>
       <!-- View switcher: board vs gantt (top, always visible) -->
-      <div style="display:flex;align-items:center;gap:6px;margin-bottom:10px;">
+      <div style="display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-bottom:10px;">
         <button class="view-btn active" id="kanbanViewBoard" style="width:auto;padding:0 12px;" data-i18n="kanban.view.board">Tábla</button>
         <button class="view-btn" id="kanbanViewGantt" style="width:auto;padding:0 12px;" data-i18n="kanban.view.gantt">Idővonal</button>
-        <button class="view-btn" id="kanbanViewArchived" style="width:auto;padding:0 12px;margin-left:auto;" data-i18n="kanban.view.archived">Archiváltak</button>
+        <span id="kanbanTotals" style="margin-left:auto;font-size:13px;color:var(--muted);white-space:nowrap;"></span>
+        <button class="view-btn" id="kanbanViewArchived" style="width:auto;padding:0 12px;margin-left:12px;" data-i18n="kanban.view.archived">Archiváltak</button>
       </div>
 
       <!-- Board-specific filter row (hidden when gantt active) -->
       <div id="kanbanBoardFilters" style="margin-bottom:12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+        <label for="kanbanSearch" style="font-size:13px;color:var(--muted);white-space:nowrap;" data-i18n="kanban.filter.search_label">Keresés:</label>
+        <input id="kanbanSearch" type="search" name="kanban-q" autocomplete="off" spellcheck="false" readonly
+               data-i18n-placeholder="kanban.filter.search_placeholder" placeholder="#295 vagy cím..."
+               style="font-size:13px;padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--fg);min-width:170px;">
+        <span id="kanbanSearchHint" style="font-size:12px;color:var(--muted);white-space:nowrap;margin-right:8px;"></span>
         <label for="kanbanProjectFilter" style="font-size:13px;color:var(--muted);white-space:nowrap;">Projekt:</label>
         <select id="kanbanProjectFilter" style="font-size:13px;padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--fg);min-width:140px;">
           <option value="">Mind</option>
@@ -312,6 +331,15 @@
           <option value="none" data-i18n="kanban.filter.group_none">Nincs</option>
           <option value="assignee" data-i18n="kanban.filter.group_assignee">Felelős szerint</option>
           <option value="priority" data-i18n="kanban.filter.group_priority">Prioritás szerint</option>
+        </select>
+        <label for="kanbanSortBy" style="font-size:13px;color:var(--muted);white-space:nowrap;margin-left:8px;" data-i18n="kanban.filter.sort_label">Rendezés:</label>
+        <select id="kanbanSortBy" style="font-size:13px;padding:4px 8px;border-radius:6px;border:1px solid var(--border);background:var(--bg);color:var(--fg);min-width:150px;">
+          <option value="manual" data-i18n="kanban.filter.sort_manual">Kézi (húzható)</option>
+          <option value="seq_asc" data-i18n="kanban.filter.sort_seq_asc">Szám szerint 1 &rarr; 9</option>
+          <option value="seq_desc" data-i18n="kanban.filter.sort_seq_desc">Szám szerint 9 &rarr; 1</option>
+          <option value="created_asc" data-i18n="kanban.filter.sort_created_asc">Legrégebbi elöl</option>
+          <option value="created_desc" data-i18n="kanban.filter.sort_created_desc">Legújabb elöl</option>
+          <option value="updated_desc" data-i18n="kanban.filter.sort_updated_desc">Utoljára módosított elöl</option>
         </select>
         <span id="kanbanColumnChipsLabel" style="font-size:13px;color:var(--muted);white-space:nowrap;margin-left:8px;" data-i18n="kanban.filter.columns_label">Oszlopok:</span>
         <div id="kanbanColumnChips" style="display:flex;gap:4px;flex-wrap:wrap;align-items:center;"></div>
@@ -327,6 +355,14 @@
           <input type="checkbox" id="ganttOverdueOnly" style="cursor:pointer;">
           <span data-i18n="kanban.gantt.filter.overdue_only">Csak lejárt/közelgő</span>
         </label>
+      </div>
+
+      <!-- Ongoing tasks ("Folyamatos" label): a slim strip above the board,
+           not a column. Hidden when there are none. -->
+      <div class="kanban-ongoing" id="kanbanOngoing" hidden>
+        <span class="kanban-ongoing-title" data-i18n="kanban.ongoing.title">Folyamatos feladatok</span>
+        <span class="kanban-col-count" id="countOngoing">0</span>
+        <div class="kanban-ongoing-body" id="kanbanOngoingBody"></div>
       </div>
 
       <div class="kanban-board" id="kanbanBoard">
@@ -408,16 +444,24 @@
             <p class="subtitle" data-i18n="agents.page_subtitle">AI csapattagok kezelése</p>
           </div>
           <div class="header-actions">
+            <!-- Three views, one row. "Kártyák" and "Aktivitás" are the SAME
+                 grid with different card bodies; only "Org chart" is a
+                 different layout. See _setAgentsView() in app.js. -->
             <div class="view-toggle" id="agentsViewToggle" role="group" aria-label="Nézet váltás">
-              <button class="btn-secondary btn-compact view-toggle-btn active" id="agentsViewGrid" data-view="grid" title="Kártyák">
+              <button class="btn-secondary btn-compact view-toggle-btn active" id="agentsViewGrid" data-view="grid" title="Kártyák" data-i18n="agents.view.cards" data-i18n-title="agents.view.cards">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
                 Kártyák
               </button>
-              <button class="btn-secondary btn-compact view-toggle-btn" id="agentsViewTree" data-view="tree" title="Org chart">
+              <button class="btn-secondary btn-compact view-toggle-btn" id="agentsViewActivity" data-view="activity" title="Aktivitás" data-i18n="agents.view.activity" data-i18n-title="agents.view.activity">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="2"/><path d="M16.24 7.76a6 6 0 0 1 0 8.49M7.76 16.24a6 6 0 0 1 0-8.49M19.07 4.93a10 10 0 0 1 0 14.14M4.93 19.07a10 10 0 0 1 0-14.14"/></svg>
+                Aktivitás
+              </button>
+              <button class="btn-secondary btn-compact view-toggle-btn" id="agentsViewTree" data-view="tree" title="Org chart" data-i18n="agents.view.org_chart" data-i18n-title="agents.view.org_chart">
                 <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="5" r="3"/><path d="M12 8v4"/><circle cx="5" cy="18" r="3"/><circle cx="19" cy="18" r="3"/><path d="M12 12l-7 6M12 12l7 6"/></svg>
                 Org chart
               </button>
             </div>
+            <span class="header-divider" aria-hidden="true"></span>
             <button class="btn-secondary btn-compact" id="exportAllAgentsBtn">Összes exportálása</button>
             <button class="btn-secondary btn-compact" id="importAgentBtn">Ügynök importálása</button>
             <input type="file" id="importAgentFile" accept=".gz,.tgz,application/gzip" hidden>
@@ -442,27 +486,15 @@
       <!-- Tree / org-chart view (merged from separate Team page) -->
       <div id="agentsTreeView" hidden>
         <div id="teamGraph" class="team-graph"></div>
-        <p style="color:var(--text-muted);font-size:12px;margin-top:16px">
+        <p id="teamHint" class="team-hint">
           A szerep és a beosztott/vezető kapcsolatok az ügynök részletek &gt; Csapat fülén szerkeszthetők.
+          Egérrel is átrendezheted: fogd meg az ügynököt és húzd rá arra, akinek ezután jelentenie kell.
         </p>
       </div>
     </div>
 
-    <!-- === Activity (live agent status) Page === -->
-    <div class="page" id="activityPage" hidden>
-      <div class="page-header">
-        <div class="page-header-row">
-          <div>
-            <h1 data-i18n="activity.page_title">Aktivitás</h1>
-            <p class="subtitle" data-i18n="activity.page_subtitle">Mit csinál épp minden ügynök: élő nézet, 3 mp-enként frissül</p>
-          </div>
-          <div class="activity-meta"><span id="activityUpdated" class="activity-updated"></span></div>
-        </div>
-      </div>
-      <div class="activity-list" id="activityList">
-        <p class="activity-empty" data-i18n="activity.loading">Betöltés…</p>
-      </div>
-    </div>
+    <!-- The Activity page lives on inside the Agents page: its per-agent live
+         status is the "Aktivitás" card mode there, same data and behaviour. -->
 
     <!-- === Tasks (Schedules) Page === -->
     <div class="page" id="tasksPage" hidden>
@@ -644,6 +676,7 @@
 
       <!-- Memory list (for hot/warm/cold/shared) -->
       <div class="mem-tier-view" id="memTierView">
+        <div class="mem-search-label" id="memSearchLabel" hidden></div>
         <div class="mem-list" id="memList"></div>
         <div class="mem-empty" id="memEmpty" hidden>
           <p data-i18n="memories.empty">Nincs emlék ebben a kategóriában</p>
@@ -754,9 +787,10 @@
         </div>
         <div class="info-box" id="connectorInfoBox" data-i18n-html="connectors.builtin.dedup_html">
           Az itt listázott MCP szerverek a te Claude Code előfizetésedben bekapcsoltak (claude.ai OAuth connectorok, marketplace pluginok, lokális konfig).
-          Minden sub-agent automatikusan látja őket, mert ugyanabban a HOME-ban fut, mint a fő session.
-          Ha egy MCP már bekapcsolva van claude.ai-n, <strong>ne vedd fel még egyszer lokálisan</strong>: duplikálódik,
-          és a Claude CLI "local wins" üzenetet ad rá. A lista a dashboard indulásakor töltődik be, explicit frissítés a "Frissítés" gombbal.
+          A claude.ai-on bekapcsolt connectorokat csak az az ügynök látja, amelyik claude.ai-fiókkal van bejelentkezve (alapbeállításban a fő ügynök).
+          A csapat-ügynökök saját tokennel futnak, ezért <strong>ők nem látják a claude.ai connectorokat</strong>: ha nekik kell egy, vedd fel itt az "Új connector" gombbal, és állítsd be a "Hozzárendelés ügynökökhöz" mezőt.
+          Amelyik ügynök a claude.ai-n át már látja, annak nem kell lokálisan is felvenni (a Claude CLI ilyenkor "local wins" üzenetet ad).
+          A lista a dashboard indulásakor töltődik be, explicit frissítés a "Frissítés" gombbal.
         </div>
       </div>
 
@@ -845,6 +879,7 @@
               <input type="text" id="githubRepoInput" class="input" placeholder="https://github.com/user/repo">
               <button class="btn-secondary btn-compact" id="githubRepoAddBtn">Telepites</button>
             </div>
+            <label style="font-size:12px;color:var(--text-muted);display:flex;align-items:center;gap:6px;margin-top:6px"><input type="checkbox" id="githubRepoRunScripts"> <span data-i18n="connectors.run_scripts_label">npm install scriptek futtatása (a repó kódja lefut ezen a gépen)</span></label>
             <div id="githubRepoStatus" class="github-repo-status" hidden></div>
           </div>
         </div>
@@ -1243,6 +1278,11 @@
             <p class="subtitle" data-i18n="ideas.page_subtitle">Fejlesztési ötletek és javaslatok</p>
           </div>
           <div style="display:flex;gap:8px;align-items:center">
+            <div id="ideaScopeFilter" style="display:flex;gap:4px">
+              <button class="btn-secondary btn-compact view-toggle-btn" data-scope="munka" data-i18n="ideas.scope.munka">Munka</button>
+              <button class="btn-secondary btn-compact view-toggle-btn" data-scope="szemelyes" data-i18n="ideas.scope.szemelyes">Személyes</button>
+              <button class="btn-secondary btn-compact view-toggle-btn" data-scope="all" data-i18n="ideas.scope.all">Mind</button>
+            </div>
             <select id="ideaCategoryFilter" class="input" style="width:160px;font-size:13px">
               <option value="" data-i18n="ideas.filter.all_categories">Összes kategória</option>
             </select>
@@ -1254,6 +1294,8 @@
               <option value="rejected" data-i18n="ideas.filter.status_rejected">Elutasítva</option>
               <option value="">Mind</option>
             </select>
+            <button class="btn-secondary btn-compact" id="ideaUploadBtn" data-i18n="ideas.upload.button">Feltöltés</button>
+            <input type="file" id="ideaUploadInput" multiple accept=".pdf,.png,.jpg,.jpeg,.gif,.webp,.txt,.md,.csv,.docx,.xlsx" style="display:none">
             <button class="btn-primary btn-compact" id="ideaNewBtn" data-i18n="ideas.btn.new">+ Új ötlet</button>
           </div>
         </div>
@@ -1270,6 +1312,9 @@
             <div class="form-group"><label class="form-label" data-i18n="ideas.modal.title_label">Cím *</label><input type="text" id="ideaTitleInput" class="input" placeholder="Rövid, egyértelmű cím" data-i18n-placeholder="ideas.modal.title_ph"></div>
             <div class="form-group"><label class="form-label" data-i18n="ideas.modal.desc_label">Leírás</label><textarea id="ideaDescInput" class="input" rows="4" placeholder="Részletes leírás..." data-i18n-placeholder="ideas.modal.desc_ph"></textarea></div>
             <div style="display:flex;gap:8px">
+              <div class="form-group" style="flex:1"><label class="form-label" data-i18n="ideas.scope.label">Terület</label>
+                <select id="ideaScopeInput" class="input"><option value="munka" data-i18n="ideas.scope.munka">Munka</option><option value="szemelyes" data-i18n="ideas.scope.szemelyes">Személyes</option></select>
+              </div>
               <div class="form-group" style="flex:1"><label class="form-label" data-i18n="ideas.modal.category_label">Kategória</label>
                 <select id="ideaCategoryInput" class="input"><option data-i18n="ideas.category.sales">Sales</option><option data-i18n="ideas.category.education">Oktatás</option><option data-i18n="ideas.category.automation">Automatizálás</option><option data-i18n="ideas.category.integration">Integráció</option><option data-i18n="ideas.category.system">Rendszer</option><option data-i18n="ideas.category.other">Egyéb</option></select>
               </div>
@@ -1328,6 +1373,21 @@
           </div>
           <div class="modal-body" style="display:flex;flex-direction:column;gap:12px;overflow-y:auto;flex:1;min-height:0">
             <div id="ideaDetailDesc" style="font-size:14px;color:var(--text);white-space:pre-wrap"></div>
+            <div style="display:flex;align-items:center;gap:8px">
+              <span id="ideaDetailScope" style="font-size:12px;color:var(--text-muted)"></span>
+              <button class="btn-secondary btn-compact" id="ideaDetailScopeMove" style="font-size:11px"></button>
+            </div>
+            <div id="ideaAttachmentsBlock" style="padding:10px;border:1px solid var(--border);border-radius:var(--radius-sm)">
+              <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px">
+                <h4 style="margin:0;font-size:13px;font-weight:600" data-i18n="ideas.detail.attach.title">Csatolmányok</h4>
+                <label class="btn-secondary btn-compact" id="ideaAttachmentUploadLabel" style="font-size:11px;cursor:pointer">
+                  <span data-i18n="ideas.detail.attach.add">Fájl hozzáadása</span>
+                  <input type="file" id="ideaAttachmentInput" multiple accept=".pdf,.png,.jpg,.jpeg,.gif,.webp,.txt,.md,.csv,.docx,.xlsx" style="display:none">
+                </label>
+              </div>
+              <div id="ideaAttachmentStatus" style="display:none;color:var(--text-muted);font-size:12px;margin-bottom:6px"></div>
+              <div id="ideaAttachmentsList"></div>
+            </div>
             <!-- Inline impact/effort scoring -->
             <div id="ideaDetailScoring" style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:8px 10px;background:var(--bg-input);border-radius:var(--radius-sm)">
               <span style="font-size:12px;font-weight:600;color:var(--text-muted)" data-i18n="ideas.scoring_label">Pontozás:</span>
@@ -1571,7 +1631,7 @@
               </div>
             </div>
             <div class="vault-field-group">
-              <label class="vault-field-label">Leírás (opcionális)</label>
+              <label class="vault-field-label" data-i18n="vault.field.desc_label">Leírás (opcionális)</label>
               <input type="text" id="sshDescInput" class="input" placeholder="pl. Produkciós webszerver">
             </div>
           </div>
@@ -1898,6 +1958,9 @@
 
       <div id="updatesDiagnose" class="updates-diagnose" hidden></div>
 
+      <!-- Claude Code CLI update offer (CLIFRISSAJANLAS923): an offer, never automatic -->
+      <div id="updatesCli" class="updates-diagnose" hidden></div>
+
       <div class="updates-commits">
         <h3 data-i18n="tokenUsage.changes_title">Változások</h3>
         <div id="updatesCommitList" class="updates-commit-list"></div>
@@ -2036,8 +2099,12 @@
           <input type="text" id="cardTitle" placeholder="Feladat megnevezése" data-i18n-placeholder="kanban.modal.title_ph">
         </div>
         <div class="form-group">
-          <label for="cardDesc" data-i18n="common.description">Leírás <span class="hint">(opcionális)</span></label>
+          <label for="cardDesc" data-i18n="common.description">Leírás <span class="hint" data-i18n="common.optional_hint">(opcionális)</span></label>
           <textarea id="cardDesc" rows="3" placeholder="Részletek, kontextus..." data-i18n-placeholder="kanban.modal.desc_ph"></textarea>
+        </div>
+        <div class="form-group">
+          <label for="cardTestSteps" data-i18n="kanban.test_steps.title">Tesztelési lépések <span class="hint" data-i18n="common.optional_hint">(opcionális)</span></label>
+          <textarea id="cardTestSteps" rows="3" placeholder="1. ...&#10;2. ..." data-i18n-placeholder="kanban.test_steps.ph"></textarea>
         </div>
         <div class="form-row">
           <div class="form-group form-half">
@@ -2056,11 +2123,11 @@
         </div>
         <div class="form-row">
           <div class="form-group form-half">
-            <label for="cardDue" data-i18n="kanban.modal.due_label">Határidő <span class="hint">(opcionális)</span></label>
+            <label for="cardDue" data-i18n="kanban.modal.due_label">Határidő <span class="hint" data-i18n="common.optional_hint">(opcionális)</span></label>
             <input type="date" id="cardDue">
           </div>
           <div class="form-group form-half">
-            <label for="cardProject" data-i18n="common.project">Projekt <span class="hint">(opcionális)</span></label>
+            <label for="cardProject" data-i18n="common.project">Projekt <span class="hint" data-i18n="common.optional_hint">(opcionális)</span></label>
             <input type="text" id="cardProject" list="projectSuggestions" placeholder="pl. Dream Engine" autocomplete="off">
             <datalist id="projectSuggestions"></datalist>
           </div>
@@ -2089,6 +2156,13 @@
           <select id="parentSelect" style="flex:1; width:100%; padding:5px 8px; border-radius:6px; border:1px solid var(--border); background:var(--bg); color:var(--text); font-size:13px" title="Szülő feladat módosítása"></select>
         </div>
         <div class="card-detail-desc" id="cardDetailDesc"></div>
+        <!-- Card 8fe51afd: the testing steps are a block of their own, not a
+             line in the description, so the tester can find them without
+             reading the thread. Hidden while the card has none. -->
+        <div class="card-detail-test-steps" id="cardDetailTestSteps" hidden>
+          <h4 data-i18n="kanban.test_steps.title">Tesztelési lépések</h4>
+          <pre class="card-detail-test-steps-body" id="cardDetailTestStepsBody"></pre>
+        </div>
         <div class="card-detail-labels">
           <h4 data-i18n="kanban.modal.labels_title">Címkék</h4>
           <div class="label-pill-list" id="cardLabelList"></div>
@@ -2102,6 +2176,19 @@
             <input type="text" id="cardLabelNewName" placeholder="Címke neve (pl. bug)" data-i18n-placeholder="kanban.label.new_ph" style="flex:1; padding:5px 8px; border-radius:6px; border:1px solid var(--border); background:var(--bg); color:var(--text); font-size:13px">
             <div class="label-color-swatches" id="cardLabelNewColors"></div>
             <button class="btn-primary btn-compact" id="cardLabelNewSaveBtn" data-i18n="common.btn.save">Mentés</button>
+          </div>
+        </div>
+        <div class="card-detail-blockers">
+          <h4 data-i18n="kanban.modal.blockers_title">Blokkolja</h4>
+          <div class="blocker-list" id="cardBlockerList"></div>
+          <div class="form-row" style="gap:8px; align-items:center; margin-top:6px">
+            <select id="cardBlockerAdd" style="flex:1; padding:5px 8px; border-radius:6px; border:1px solid var(--border); background:var(--bg); color:var(--text); font-size:13px">
+              <option value="" data-i18n="kanban.blocker.add_placeholder">-- Blokkoló kártya hozzáadása --</option>
+            </select>
+          </div>
+          <div id="cardBlockingWrap" style="display:none; margin-top:10px">
+            <h4 data-i18n="kanban.modal.blocking_title">Erre a kártyára várnak</h4>
+            <div class="blocker-list" id="cardBlockingList"></div>
           </div>
         </div>
         <div class="card-detail-comments">
@@ -2233,14 +2320,20 @@
             <select id="agentModel">
               <option value="inherit" data-i18n="agents.model.inherit">Öröklött (alapértelmezett)</option>
               <optgroup label="☁️ Claude (felhő)">
-                <option value="claude-fable-5" data-i18n="agents.model.fable5">Fable 5 (legújabb)</option>
-                <option value="claude-opus-5" data-i18n="agents.model.opus5">Opus 5 (legújabb Opus)</option>
+                <option value="claude-fable-5-1" data-i18n="agents.model.fable51">Fable 5.1 (legújabb Fable)</option>
+                <option value="claude-fable-5" data-i18n="agents.model.fable5">Fable 5</option>
+                <option value="claude-opus-5-5[1m]" data-i18n="agents.model.opus55_1m">Opus 5.5 (1M kontextus, legújabb Opus)</option>
+                <option value="claude-opus-5" data-i18n="agents.model.opus5">Opus 5</option>
                 <option value="claude-opus-4-8[1m]" data-i18n="agents.model.opus48">Opus 4.8 (1M kontextus, alapértelmezett)</option>
-                <option value="claude-sonnet-5" data-i18n="agents.model.sonnet5">Sonnet 5 (legújabb Sonnet, Opus-közeli)</option>
+                <option value="claude-sonnet-5-5" data-i18n="agents.model.sonnet55">Sonnet 5.5 (legújabb Sonnet, gyors és olcsóbb)</option>
+                <option value="claude-sonnet-5" data-i18n="agents.model.sonnet5">Sonnet 5 (Opus-közeli)</option>
                 <option value="claude-sonnet-4-6" data-i18n="agents.model.sonnet46">Sonnet 4.6 (gyors és okos)</option>
-                <option value="claude-haiku-4-5-20251001" data-i18n="agents.model.haiku45">Haiku 4.5 (leggyorsabb)</option>
+                <option value="claude-haiku-5-5" data-i18n="agents.model.haiku55">Haiku 5.5 (legújabb Haiku, leggyorsabb)</option>
+                <option value="claude-haiku-4-5-20251001" data-i18n="agents.model.haiku45">Haiku 4.5</option>
               </optgroup>
               <optgroup label="🌊 DeepSeek (alternatív)" id="agentModelDeepseekGroup">
+              </optgroup>
+              <optgroup label="🚀 MiniMax (közvetlen API)" id="agentModelMinimaxGroup" style="display:none">
               </optgroup>
               <optgroup label="🔀 OpenRouter - Auto (heti frissítésű ajánlott)" id="agentModelOpenrouterAutoGroup" style="display:none">
               </optgroup>
@@ -2248,7 +2341,14 @@
               </optgroup>
               <optgroup label="🏠 Ollama (lokális)" id="agentModelOllamaGroup" style="display:none">
               </optgroup>
+              <optgroup label="🔧 Egyéni provider" id="agentModelCustomProviderGroup" style="display:none">
+              </optgroup>
             </select>
+            <p class="model-cli-hint" id="agentModelCliHint" style="display:none;font-size:12px;color:var(--muted,#888);margin:4px 0 0"></p>
+            <div id="agentModelCustomModelRow" style="display:none;margin-top:6px">
+              <input type="text" id="agentModelCustomModelId" class="input" placeholder="Model ID (pl. claude-3-opus-20240229)" style="width:100%">
+              <small style="display:block;margin-top:4px;color:var(--text-muted);font-size:12px">Anthropic Messages API (/v1/messages) kompatibilis végpont szükséges. Tiszta OpenAI végponthoz proxy kell.</small>
+            </div>
           </div>
           <div class="form-group">
             <label for="agentProfile" data-i18n="agents.wizard.profile_label">Biztonsági profil</label>
@@ -2404,14 +2504,20 @@
             <label for="editAgentModel" data-i18n="agents.detail.model_label">Modell</label>
             <select id="editAgentModel">
               <optgroup label="☁️ Claude (felhő)">
-                <option value="claude-fable-5" data-i18n="agents.model.fable5">Fable 5 (legújabb)</option>
-                <option value="claude-opus-5" data-i18n="agents.model.opus5">Opus 5 (legújabb Opus)</option>
+                <option value="claude-fable-5-1" data-i18n="agents.model.fable51">Fable 5.1 (legújabb Fable)</option>
+                <option value="claude-fable-5" data-i18n="agents.model.fable5">Fable 5</option>
+                <option value="claude-opus-5-5[1m]" data-i18n="agents.model.opus55_1m">Opus 5.5 (1M kontextus, legújabb Opus)</option>
+                <option value="claude-opus-5" data-i18n="agents.model.opus5">Opus 5</option>
                 <option value="claude-opus-4-8[1m]" data-i18n="agents.model.opus48">Opus 4.8 (1M kontextus, alapértelmezett)</option>
-                <option value="claude-sonnet-5" data-i18n="agents.model.sonnet5">Sonnet 5 (legújabb Sonnet, Opus-közeli)</option>
+                <option value="claude-sonnet-5-5" data-i18n="agents.model.sonnet55">Sonnet 5.5 (legújabb Sonnet, gyors és olcsóbb)</option>
+                <option value="claude-sonnet-5" data-i18n="agents.model.sonnet5">Sonnet 5 (Opus-közeli)</option>
                 <option value="claude-sonnet-4-6" data-i18n="agents.model.sonnet46">Sonnet 4.6 (gyors és okos)</option>
-                <option value="claude-haiku-4-5-20251001" data-i18n="agents.model.haiku45">Haiku 4.5 (leggyorsabb)</option>
+                <option value="claude-haiku-5-5" data-i18n="agents.model.haiku55">Haiku 5.5 (legújabb Haiku, leggyorsabb)</option>
+                <option value="claude-haiku-4-5-20251001" data-i18n="agents.model.haiku45">Haiku 4.5</option>
               </optgroup>
               <optgroup label="🌊 DeepSeek (alternatív)" id="deepseekModelGroup">
+              </optgroup>
+              <optgroup label="🚀 MiniMax (közvetlen API)" id="minimaxModelGroup" style="display:none">
               </optgroup>
               <optgroup label="🔀 OpenRouter - Auto (heti frissítésű ajánlott)" id="openrouterAutoGroup" style="display:none">
               </optgroup>
@@ -2419,7 +2525,14 @@
               </optgroup>
               <optgroup label="🏠 Ollama (lokális)" id="ollamaModelGroup">
               </optgroup>
+              <optgroup label="🔧 Egyéni provider" id="editAgentModelCustomProviderGroup" style="display:none">
+              </optgroup>
             </select>
+            <p class="model-cli-hint" id="editAgentModelCliHint" style="display:none;font-size:12px;color:var(--muted,#888);margin:4px 0 0"></p>
+            <div id="editAgentModelCustomModelRow" style="display:none;margin-top:6px">
+              <input type="text" id="editAgentModelCustomModelId" class="input" placeholder="Model ID (pl. claude-3-opus-20240229)" style="width:100%">
+              <small style="display:block;margin-top:4px;color:var(--text-muted);font-size:12px">Anthropic Messages API (/v1/messages) kompatibilis végpont szükséges. Tiszta OpenAI végponthoz proxy kell.</small>
+            </div>
             <button class="btn-secondary btn-compact agent-save-section" id="saveModelBtn" data-i18n="common.btn.save">Mentés</button>
             <button class="btn-secondary btn-compact" id="modelSuggestBtn" style="margin-left:6px" data-i18n="agents.settings.model_suggest_btn">Javaslat</button>
             <button class="btn-secondary btn-compact" id="openrouterBrowseBtn" style="margin-left:6px;display:none" title="Kézi OpenRouter modellek listájának szerkesztése (pipával)">🔀 OpenRouter kézi lista</button>
@@ -2469,6 +2582,59 @@
             </small>
             <button class="btn-secondary btn-compact agent-save-section" id="saveAutoRestartBtn" style="margin-top:10px" data-i18n="common.btn.save">Mentés</button>
           </div>
+          <div class="form-group" id="contextGuardGroup">
+            <label data-i18n="agents.settings.ctx_guard_label">Kontextus-limit alapú újraindítás</label>
+            <p style="margin:4px 0 10px;font-size:12.5px;line-height:1.5;color:var(--text-muted)">
+              Token-limit alapú guard: ha az ágens kontextusa eléri a beállított küszöböt, HANDOFF.md-t ír,
+              majd friss kontextussal folytatja. A 100%-os telítettséget mindig figyeli (saturation net) és
+              automatikusan újraindítja az ágensbe ragadt pane-t.
+            </p>
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;font-size:12.5px;color:var(--text-muted)">
+              <input type="checkbox" id="cgSaturationNet" checked disabled style="cursor:default">
+              <span data-i18n="agents.settings.ctx_guard_sat_net">Saturation net: mindig aktív, 100%-os kontextusnál automatikusan újraindul (nem kapcsolható ki)</span>
+            </div>
+            <label style="display:flex;align-items:center;gap:8px;font-size:13px;margin-bottom:10px;cursor:pointer">
+              <input type="checkbox" id="cgEnabled"> <span data-i18n="agents.settings.ctx_guard_enabled">Proaktív limit-figyelő (küszöb alapú handoff)</span>
+            </label>
+            <div id="cgAdvancedWrap" hidden>
+              <div class="form-row" style="gap:10px;flex-wrap:wrap;align-items:flex-end">
+                <div class="form-group" style="flex:1;min-width:160px;margin-bottom:0">
+                  <label for="cgLimitTokens" style="font-size:12px;color:var(--text-muted)" data-i18n="agents.settings.ctx_guard_limit_tokens">Token-limit</label>
+                  <input type="number" id="cgLimitTokens" min="10000" step="10000" placeholder="modell alapértelmezése" style="width:100%">
+                </div>
+                <div class="form-group" style="margin-bottom:0">
+                  <label for="cgActPct" style="font-size:12px;color:var(--text-muted)" data-i18n="agents.settings.ctx_guard_act_pct">Handoff küszöb (%)</label>
+                  <input type="number" id="cgActPct" min="50" max="99" value="90" style="width:80px">
+                </div>
+                <div class="form-group" style="margin-bottom:0">
+                  <label for="cgHardPct" style="font-size:12px;color:var(--text-muted)" data-i18n="agents.settings.ctx_guard_hard_pct">Kényszer-újraindítás (%)</label>
+                  <input type="number" id="cgHardPct" min="50" max="99" value="97" style="width:80px">
+                </div>
+                <div class="form-group" style="margin-bottom:0">
+                  <label for="cgCooldownMinutes" style="font-size:12px;color:var(--text-muted)" data-i18n="agents.settings.ctx_guard_cooldown">Hűtési idő (perc)</label>
+                  <input type="number" id="cgCooldownMinutes" min="1" max="180" value="15" style="width:80px">
+                </div>
+              </div>
+              <details style="margin-top:10px">
+                <summary style="font-size:12px;color:var(--text-muted);cursor:pointer;user-select:none" data-i18n="agents.settings.ctx_guard_advanced">Haladó beállítások</summary>
+                <div class="form-row" style="gap:10px;flex-wrap:wrap;align-items:flex-end;margin-top:8px">
+                  <div class="form-group" style="margin-bottom:0">
+                    <label for="cgHandoffTimeout" style="font-size:12px;color:var(--text-muted)" data-i18n="agents.settings.ctx_guard_timeout">Handoff timeout (perc)</label>
+                    <input type="number" id="cgHandoffTimeout" min="1" max="120" value="20" style="width:80px">
+                  </div>
+                </div>
+                <small style="display:block;margin-top:6px;color:var(--text-muted);font-size:12px;line-height:1.5" data-i18n="agents.settings.ctx_guard_timeout_hint">
+                  Ha az ágens nem ír HANDOFF.md-t a timeout-on belül, kényszer-újraindítás következik.
+                </small>
+              </details>
+              <small id="cgValidationHint" style="display:none;margin-top:6px;color:var(--accent-warning, #f59e0b);font-size:12px" data-i18n="agents.settings.ctx_guard_pct_hint">
+                A kényszer-küszöb nem lehet kisebb a handoff-küszöbnél.
+              </small>
+            </div>
+            <div id="cgLiveStatus" style="display:none;margin-top:10px;padding:6px 10px;border-radius:6px;background:var(--surface-hover);font-size:12px;color:var(--text-muted)">
+              <span data-i18n="agents.settings.ctx_guard_status_prefix">Állapot:</span> <strong id="cgPhaseDisplay">-</strong> &middot; <span data-i18n="agents.settings.ctx_guard_status_ctx">Kontextus:</span> <strong id="cgPctDisplay">-</strong>
+            </div>
+            <button class="btn-secondary btn-compact agent-save-section" id="saveContextGuardBtn" style="margin-top:10px" data-i18n="common.btn.save">Mentés</button>
           <div class="form-group" id="idleFlushGroup">
             <label data-i18n="agents.settings.idle_flush_label">Tétlen-ürítés</label>
             <p style="margin:4px 0 10px;font-size:12.5px;line-height:1.5;color:var(--text-muted)" data-i18n="agents.settings.idle_flush_desc">
@@ -2631,6 +2797,7 @@
             <textarea id="editMcpJson" class="code-textarea" rows="8"></textarea>
             <button class="btn-secondary btn-compact agent-save-section" id="saveMcpJsonBtn" data-i18n="common.btn.save">Mentés</button>
           </div>
+        </div>
         </div>
 
         <!-- Tab: Channel -->
@@ -3107,16 +3274,16 @@
           <input type="text" id="connectorCmd" placeholder="npx -y @my/mcp-server">
         </div>
         <div class="form-group" id="connectorArgsGroup" hidden>
-          <label for="connectorArgs" data-i18n="connectors.field.args">Argumentumok <span class="hint">(opcionális)</span></label>
+          <label for="connectorArgs" data-i18n="connectors.field.args">Argumentumok <span class="hint" data-i18n="common.optional_hint">(opcionális)</span></label>
           <input type="text" id="connectorArgs" placeholder="--port 3000">
         </div>
         <div class="form-group" id="connectorEnvGroup" hidden>
-          <label data-i18n="connectors.field.env_vars">Környezeti változók <span class="hint">(opcionális)</span></label>
+          <label data-i18n="connectors.field.env_vars">Környezeti változók <span class="hint" data-i18n="common.optional_hint">(opcionális)</span></label>
           <div id="connectorEnvList"></div>
           <button type="button" class="btn-link" id="connectorEnvAddBtn" style="font-size:12px;margin-top:4px" data-i18n="connectors.field.env_add_btn">+ Változó hozzáadása</button>
         </div>
         <div class="form-group" id="connectorAssignGroup">
-          <label data-i18n="connectors.field.assign">Hozzárendelés ügynökökhöz <span class="hint">(opcionális)</span></label>
+          <label data-i18n="connectors.field.assign">Hozzárendelés ügynökökhöz <span class="hint" data-i18n="common.optional_hint">(opcionális)</span></label>
           <div id="connectorNewAssignList"></div>
         </div>
         <button class="btn-primary" id="saveConnectorBtn">

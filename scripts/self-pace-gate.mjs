@@ -28,7 +28,12 @@
 // name !== MAIN_AGENT_ID, re-applied on every spawn (respawn-safe).
 
 import { readFileSync, realpathSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { basename, dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+
+// The allowlist this install's egress-gate.mjs reads (scripts/ -> repo root -> store/).
+const DEFAULT_ALLOWLIST_PATH = join(dirname(fileURLToPath(import.meta.url)), '..', 'store', 'egress-allowlist.json')
 
 // Claude Code runtime self-pace / scheduling tools. A sub-agent has no
 // legitimate need to schedule its own future turns -- it is input-driven.
@@ -128,6 +133,71 @@ const WRITE_INTENT_RX = /(>>?|\btee\b|\bsed\b[\s\S]*\s-i|\bdd\b|\bcp\b|\bmv\b)/i
 // self-paced cron; a GET (list / pending / agents) is legit diagnostics -> allowed.
 const SCHEDULE_API_RX = /\/api\/schedules\b/i
 const HTTP_WRITE_RX = /(-X\s*(POST|PUT|PATCH|DELETE)|--request\s+(POST|PUT|PATCH|DELETE)|(^|\s)(--data\b|--data-\w+\b|-d\b))/i
+
+// THE EGRESS ALLOWLIST IS A GATE ON THE SUB-AGENT ITSELF (EGRESSSELFEDIT824).
+// store/egress-allowlist.json decides which hosts egress-gate.mjs lets through, and it
+// was a plain writable file in the sub-agent's own tree: on 2026-08-24 a nested
+// sub-agent added a domain to reach it and removed it afterwards. Its legitimate
+// writers are the MAIN agent (on the owner's go) and the owner by hand -- neither runs
+// this gate (it is wired for sub-agents only), so neither is affected.
+//
+// Native file tools: denied on the file name AND on the resolved real path, so a
+// relative path or a symlink created earlier does not walk past the name check.
+// Bash: FAIL-CLOSED. A segment that mentions the file may only be a plain READ
+// (cat/grep/jq/...), and an output redirect in it may not point at the file. An
+// interpreter (python/node/...), cp/mv/tee/sed/ln/... or anything else that names the
+// file is denied, because whether it writes cannot be read off the command string.
+//
+// What this gate CANNOT see -- a script that builds the path at runtime, a glob that
+// does not spell the name -- is written down, not hidden: the dashboard keeps a hash
+// baseline of the file and reports every change, whoever made it, by whatever route
+// (src/egress-allowlist-baseline.ts). This gate narrows the casual route; that one
+// catches the rest after the fact.
+const ALLOWLIST_BASENAME = 'egress-allowlist.json'
+// The STORE objects, not the concept: the file and its history directory, or a glob that
+// starts on the name (egress-allow*, egress-allowlist.*). A plain /egress[-_]?allow/ also
+// matched this gate's own source and test names (egress-allowlist-baseline.ts), so no
+// sub-agent could run, stage or diff them -- review on #1678.
+const ALLOWLIST_MENTION_RX = /egress[-_]?allowlist(?:\.json|\.history)|egress[-_]?allow[\w.]*[*?[]/i
+const ALLOWLIST_READERS = new Set([
+  'cat', 'head', 'tail', 'grep', 'egrep', 'fgrep', 'rg', 'jq', 'wc', 'ls', 'stat',
+  'file', 'shasum', 'sha256sum', 'md5', 'md5sum', 'diff', 'cmp', 'echo', 'printf',
+])
+// Output redirects: `>`, `>>`, `>|`, `&>`, `&>>`, `N>`. The target is the next word.
+const OUTPUT_REDIRECT_RX = /(?:&>>?|\d*>>?\|?)\s*([^\s;&|<>]+)/g
+
+export function allowlistBashSegmentAllowed(seg) {
+  const s = String(seg ?? '').trim()
+  if (!ALLOWLIST_MENTION_RX.test(s)) return true
+  const words = s.split(/\s+/)
+  let i = 0
+  while (i < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i])) i++ // leading VAR=x
+  const cmd = (words[i] ?? '').replace(/^.*\//, '')
+  if (!ALLOWLIST_READERS.has(cmd)) return false
+  for (const m of s.matchAll(OUTPUT_REDIRECT_RX)) {
+    const target = m[1]
+    if (/^&?\d+$/.test(target) || target === '/dev/null') continue // 2>&1, >/dev/null
+    if (ALLOWLIST_MENTION_RX.test(target) || /[$`]/.test(target)) return false
+  }
+  return true
+}
+
+function expandHome(p) {
+  return p.startsWith('~/') ? join(homedir(), p.slice(2)) : p
+}
+function realOrSelf(p) {
+  try { return realpathSync(p) } catch { return p }
+}
+
+// Does a native file-tool call target the allowlist? `allowlistPath` is the real file
+// this install's egress-gate reads; tests pass a tmp one.
+export function fileToolTargetsAllowlist(toolInput, allowlistPath = DEFAULT_ALLOWLIST_PATH, cwd = process.cwd()) {
+  const raw = String(toolInput?.file_path ?? toolInput?.notebook_path ?? '')
+  if (!raw) return false
+  if (basename(raw).toLowerCase() === ALLOWLIST_BASENAME) return true
+  const abs = resolve(cwd, expandHome(raw))
+  return realOrSelf(abs) === realOrSelf(allowlistPath)
+}
 
 // Split a compound command into individual simple commands, so a token in one
 // segment cannot trip a check anchored in another (e.g. `cat store && cp a b`).
@@ -291,6 +361,33 @@ export function maskInertLiterals(command) {
 // blank the out-of-band `; crontab -r` and let a real self-pace command slip.
 // ANSI-C $'...' DOES process \', so that branch keeps the \\. escape form; "..."
 // keeps it too (backslash is special inside bash double quotes).
+// Human prose in a command-argument position is DATA, not commands. The heredoc
+// fix closed one wrapper; this closes the rest of the family: a PR body, a PR
+// comment, a release note. The failure mode is identical -- a sentence like
+// "runs at the same time" reads as the `at` scheduler at a segment start, and
+// the better the prose, the likelier it contains words like at / cron /
+// schedule. Same literal-only rule as the other strippers: a double-quoted
+// value with $( or ` may substitute, so it is left alone.
+const PROSE_FLAGS = String.raw`--body|--message|--notes|--title|--subject|-b|-m|-t`
+
+export function stripProseArguments(seg) {
+  const s = String(seg ?? '')
+  // Scoped to the tools these prose flags were written for: gh, git, glab (a PR
+  // body, a PR comment, a release note). A short flag means different things to
+  // different binaries (`tar -t`, `cut -b`, `sort -t`), so blanking it on an
+  // unrelated tool would hide real data from the gate (PR #770 review, Szotasz).
+  // Same coarse command-word guard as stripGitCommitMessages just below.
+  if (!/\b(?:gh|git|glab)\b/i.test(s)) return s
+  return s.replace(
+    new RegExp(String.raw`((?:^|\s)(?:${PROSE_FLAGS})(?:\s+|=))('[^']*'|\$'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*")`, 'gi'),
+    (full, flag, arg) => {
+      const dq = arg.startsWith('"')
+      if (dq && (arg.includes('$(') || arg.includes('`'))) return full
+      return flag + (dq ? '""' : "''")
+    },
+  )
+}
+
 export function stripDataPayloads(seg) {
   return String(seg ?? '').replace(
     /((?:^|\s)(?:-d|--data(?:-(?:raw|binary|ascii|urlencode))?)(?:\s+|=))('[^']*'|\$'(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*")/gi,
@@ -312,6 +409,73 @@ export function stripDataPayloads(seg) {
 // double-quoted message that CAN command-substitute (`git commit -m "$(crontab
 // -r)"`) is left intact so SCHEDULER_RX still catches the real substitution.
 // Scoped to git commit/tag/stash so a `-m` on an unrelated binary is untouched.
+// Heredoc bodies are DATA, not commands. A worker writing a real commit message
+// through `git commit -F - <<EOF … EOF` had the turn denied because one prose
+// line happened to start with "at " -- which SCHEDULER_RX reads as the `at`
+// scheduler at a segment start. A heredoc body is data, so blank it before any
+// pattern runs. Handles <<- for tab-indented bodies.
+//
+// EXCEPT when the body can still run something. A QUOTED marker (<<'EOF' or
+// <<"EOF") is literal: the shell performs no expansion inside it, so blanking is
+// safe. An UNQUOTED marker (<<EOF) is not -- the shell expands $(...) and
+// backticks in that body at exec time, so blanking one would hide a live
+// command substitution from SCHEDULER_RX and the gate would stop seeing
+// something that really runs:
+//
+//     git commit -m "$(cat <<EOF
+//     fix
+//     $(at now)
+//     EOF
+//     )"
+//
+// This is the same rule the other strippers already apply: stripDataPayloads,
+// stripGitCommitMessages and stripProseArguments all leave a double-quoted
+// value alone when it contains `$(` or a backtick. An unquoted heredoc is the
+// same category; it was simply missing the guard. Reported on PR #770.
+// Whether the command word owning a heredoc redirect EXECUTES the body. The
+// shell-literal guard above is not enough: a quoted marker (<<'EOF') is literal
+// to the SHELL, so blanking looks safe, but `bash <<'EOF'`, `sh`, `ssh box`,
+// `python - <<'EOF'` feed the body to an interpreter that runs it -- blanking
+// would hide a live scheduler command from the gate (PR #770 review, Szotasz).
+// `git commit -F - <<'EOF'` feeds the body to git as DATA, so that stays safe to
+// blank. So: keep the body visible when its redirect owner is an interpreter or
+// remote/container executor.
+const HEREDOC_INTERPRETER_RX = /^(?:bash|sh|zsh|dash|ksh|ash|python[0-9.]*|node|nodejs|ruby|perl|php|ssh)$/
+
+function heredocOwnerRunsBody(before) {
+  // `before` is the command text up to the << redirect; the owner is the first
+  // word of the last command segment.
+  const seg = before.split(/\n|;|\|\|?|&&?|\(|\{/).pop() ?? ''
+  const tokens = seg.trim().split(/\s+/).filter(Boolean)
+  // Pass-through prefixes that do not change what runs the body.
+  while (tokens.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(tokens[0]) ||
+    ['sudo', 'env', 'nice', 'time', 'exec', 'command', 'nohup', 'stdbuf'].includes(tokens[0]))) {
+    tokens.shift()
+  }
+  if (!tokens.length) return false
+  const word = tokens[0].split('/').pop()
+  if (HEREDOC_INTERPRETER_RX.test(word)) return true
+  // docker/podman/kubectl exec run the body through a shell in the target.
+  if (['docker', 'podman', 'kubectl'].includes(word) && tokens.slice(1).includes('exec')) return true
+  return false
+}
+
+export function stripHeredocBodies(command) {
+  const cmd = String(command ?? '')
+  if (!/<<-?\s*['"]?[A-Za-z_][A-Za-z0-9_]*/.test(cmd)) return cmd
+  return cmd.replace(
+    /(<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2)([\s\S]*?)(^\s*\3\s*$)/gm,
+    (full, open, quote, _marker, body, close, offset, string) => {
+      const literal = quote === "'" || quote === '"'
+      if (!literal && (body.includes('$(') || body.includes('`'))) return full
+      // A quoted body the shell will not expand is still executed when an
+      // interpreter/remote-executor owns the redirect -- keep it visible then.
+      if (heredocOwnerRunsBody(string.slice(0, offset))) return full
+      return `${open}\n${close}`
+    },
+  )
+}
+
 export function stripGitCommitMessages(command) {
   const cmd = String(command ?? '')
   if (!/\bgit\b[\s\S]*\b(commit|tag|stash)\b/i.test(cmd)) return cmd
@@ -347,13 +511,14 @@ export function normalizeShellEvasion(seg) {
 }
 
 // Pure decision: does this tool call set up self-pace / self-injection?
-export function gateDecision(toolName, toolInput) {
+export function gateDecision(toolName, toolInput, opts = {}) {
   const name = String(toolName ?? '')
   if (SELF_PACE_TOOLS.has(name)) return { deny: true }
   // Native file tools writing the self-schedule store would bypass any Bash regex.
-  if (name === 'Write' || name === 'Edit' || name === 'NotebookEdit') {
+  if (name === 'Write' || name === 'Edit' || name === 'MultiEdit' || name === 'NotebookEdit') {
     const fp = String(toolInput?.file_path ?? toolInput?.notebook_path ?? '')
     if (SCHEDULE_STORE_RX.test(fp)) return { deny: true }
+    if (fileToolTargetsAllowlist(toolInput, opts.allowlistPath, opts.cwd)) return { deny: true, reason: 'egress-allowlist' }
   }
   if (name === 'Bash') {
     // Strip -d/--data payloads on the WHOLE command BEFORE splitting. A payload is
@@ -363,7 +528,7 @@ export function gateDecision(toolName, toolInput) {
     // it), so the URL/method args still match but the body text never does. A
     // separator OUTSIDE the payload still splits, so `curl -d '' x ; crontab -r`
     // is still caught.
-    const safeCommand = stripDataPayloads(stripGitCommitMessages(String(toolInput?.command ?? '')))
+    const safeCommand = stripProseArguments(stripDataPayloads(stripGitCommitMessages(stripHeredocBodies(String(toolInput?.command ?? '')))))
     // Per-segment so an unrelated token elsewhere in a compound command cannot
     // turn a legit read (store inspection, schedule-API GET) into a false deny.
     const naiveSegs = splitSegments(safeCommand)
@@ -382,6 +547,8 @@ export function gateDecision(toolName, toolInput) {
       if (SCHEDULE_STORE_RX.test(seg) && WRITE_INTENT_RX.test(seg)) return { deny: true }
       // dashboard schedule API: block WRITE methods only (GET list/pending is legit)
       if (SCHEDULE_API_RX.test(seg) && HTTP_WRITE_RX.test(seg)) return { deny: true }
+      // the egress allowlist: a plain read only (EGRESSSELFEDIT824)
+      if (!allowlistBashSegmentAllowed(seg)) return { deny: true, reason: 'egress-allowlist' }
     }
     // The scheduler check is the ANCHORED one -- it fires on what sits at a
     // segment START -- so it is the one a fake segment boundary can mislead, and
@@ -403,6 +570,12 @@ const GATE_MSG =
   'vagy: csak az operator (channel) vagy egy peer (inter-agent) uzenete inditson. Ha varakozol, ' +
   'maradj idle a prompt-on -- a beerkezo uzenet majd ujrainditja a turn-t. SOHA ne valaszolj ' +
   'magadnak es SOHA ne dontsd el az operator helyett egy hozza intezett kerdest.'
+
+const ALLOWLIST_GATE_MSG =
+  'Egress-engedelylista TILTOTT (governance hard-gate). Sub-agentkent NEM irhatod a ' +
+  'store/egress-allowlist.json-t: ez a kapu RAD vonatkozik. Ha egy domain kell, kerd a fo ' +
+  'agenst (inter-agent uzenet: domain + miert); o a gazda jovahagyasaval veszi fel. ' +
+  'Olvasni szabad: cat / grep / jq a fajlra (ertelmezo -- python, node -- nem).'
 
 function allow() { process.exit(0) }
 
@@ -433,7 +606,7 @@ if (isInvokedDirectly()) {
   } catch {
     allow() // malformed/empty input must never break the agent's tool calls
   }
-  const { deny: shouldDeny } = gateDecision(payload?.tool_name, payload?.tool_input)
-  if (shouldDeny) deny(GATE_MSG)
+  const { deny: shouldDeny, reason } = gateDecision(payload?.tool_name, payload?.tool_input, { cwd: payload?.cwd })
+  if (shouldDeny) deny(reason === 'egress-allowlist' ? ALLOWLIST_GATE_MSG : GATE_MSG)
   allow()
 }

@@ -1,0 +1,1 @@
+Latin-1 sor: törzs ékezettel, invalid UTF-8 bajtokkal.

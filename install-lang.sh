@@ -40,8 +40,8 @@ _t() {
     hu:prompt_login) echo "  Szeretnéd most bejelentkezni? (i/n) " ;;
     en:prompt_your_name) echo "  Your name? " ;;
     hu:prompt_your_name) echo "  Mi a neved? " ;;
-    en:prompt_channel_select_macos) echo "  Choose (1/2) [1]: " ;;
-    hu:prompt_channel_select_macos) echo "  Válassz (1/2) [1]: " ;;
+    en:prompt_channel_select_macos) echo "  Choose (1/2/3) [1]: " ;;
+    hu:prompt_channel_select_macos) echo "  Válassz (1/2/3) [1]: " ;;
     en:prompt_channel_select_linux) echo "  Choose (1/2/3) [1]: " ;;
     hu:prompt_channel_select_linux) echo "  Válassz (1/2/3) [1]: " ;;
     en:prompt_telegram_token) echo "  Telegram bot token (or leave empty, set later): " ;;
@@ -75,6 +75,8 @@ _t() {
     hu:warn_pair_missing) echo "  FIGYELEM: Telegram párosítás nem történt meg!" ;;
     en:success_installed) echo "  ✓ Marveen successfully installed!" ;;
     hu:success_installed) echo "  ✓ Marveen sikeresen telepítve!" ;;
+    en:success_installed_services_down) echo "  ! Marveen is installed, but its services are NOT running yet (see below)." ;;
+    hu:success_installed_services_down) echo "  ! Marveen telepítve, de a szolgáltatások MÉG NEM FUTNAK (lásd lent)." ;;
     # ── Tagline / wizard ─────────────────────────────────────────────
     en:tagline) echo "Your AI team, running while you sleep." ;;
     hu:tagline) echo "AI csapatod, ami fut amíg te alszol." ;;
@@ -117,12 +119,12 @@ _t() {
     hu:macos.auth_later) echo "  A telepites folytatodik. Belepheted kesobb: claude auth login" ;;
     en:macos.firstrun_done) echo "  Claude Code first-run setup done" ;;
     hu:macos.firstrun_done) echo "  Claude Code first-run beállítás kész" ;;
-    en:macos.headless_test) echo "  Headless Claude Code test..." ;;
-    hu:macos.headless_test) echo "  Headless Claude Code teszt..." ;;
-    en:macos.headless_ok) echo "  Headless Claude Code working (claude --print responded)" ;;
-    hu:macos.headless_ok) echo "  Headless Claude Code futtathato (claude --print valaszolt)" ;;
-    en:macos.headless_fail) echo "Headless Claude Code probe FAILED. Agent creation WILL fail later." ;;
-    hu:macos.headless_fail) echo "Headless Claude Code probe SIKERTELEN. Az agent-letrehozas KESOBB EL fog hasalni." ;;
+    en:macos.headless_test) echo "  Checking your terminal's Claude login (headless)..." ;;
+    hu:macos.headless_test) echo "  A terminálod Claude-bejelentkezésének ellenőrzése (headless)..." ;;
+    en:macos.headless_ok) echo "  Your terminal's Claude login works (claude --print responded)" ;;
+    hu:macos.headless_ok) echo "  A terminálod Claude-bejelentkezése működik (claude --print válaszolt)" ;;
+    en:macos.headless_fail) echo "Your terminal's Claude login did not answer (claude --print). This is NOT the agents' credential: the background services use their own, which is checked separately further down." ;;
+    hu:macos.headless_fail) echo "A terminálod Claude-bejelentkezése nem válaszolt (claude --print). Ez NEM az ügynökök hitelesítője: a háttérszolgáltatások saját kulcsát a telepítő lent külön ellenőrzi." ;;
     # ── Channel selection ─────────────────────────────────────────────
     en:macos.channel_select_hint) echo "  Which channel should your AI assistant use?" ;;
     hu:macos.channel_select_hint) echo "  Melyik csatornan kommunikaljon az AI asszisztensed?" ;;
@@ -139,6 +141,11 @@ _t() {
     hu:macos.managed_create) echo "  Managed settings létrehozása szükséges (sudo)." ;;
     en:macos.managed_created) echo "  managed-settings.json created" ;;
     hu:macos.managed_created) echo "  managed-settings.json létrehozva" ;;
+    # #1874: said BEFORE the first root step that reads or writes managed-settings.json
+    en:managed.notice_what) echo "Next, the channel switch goes into the machine-wide Claude Code settings (managed-settings.json). Without it, incoming messages stall on a company (Team/Enterprise) Claude account." ;;
+    hu:managed.notice_what) echo "Most a gépszintű Claude Code-beállításba (managed-settings.json) kerül a csatorna-engedély. Enélkül céges (Team/Enterprise) Claude-fióknál elakadnak a bejövő üzenetek." ;;
+    en:managed.notice_sudo) echo "It is a system file, so the next step may ask for this computer's password (sudo)." ;;
+    hu:managed.notice_sudo) echo "Ez rendszerfájl, ezért a következő lépés kérheti a gép jelszavát (sudo)." ;;
     # ── Agent ID / build ──────────────────────────────────────────────
     en:macos.agent_id_info) echo "  Internal agent ID: " ;;
     hu:macos.agent_id_info) echo "  Ügynök belső azonosító: " ;;
@@ -162,6 +169,8 @@ _t() {
     hu:macos.tg_channel_configured) echo "  Telegram csatorna konfigurálva" ;;
     en:macos.slack_channel_configured) echo "  Slack channel configured" ;;
     hu:macos.slack_channel_configured) echo "  Slack csatorna konfigurálva" ;;
+    en:macos.discord_channel_configured) echo "  Discord channel configured" ;;
+    hu:macos.discord_channel_configured) echo "  Discord csatorna konfigurálva" ;;
     # ── Plugin ────────────────────────────────────────────────────────
     en:macos.plugin_retry) echo "  First attempt failed, retrying..." ;;
     hu:macos.plugin_retry) echo "  Elso probalkozas sikertelen, ujraprobalok..." ;;

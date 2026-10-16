@@ -1,4 +1,4 @@
-import { watch, statSync, readdirSync } from 'node:fs'
+import { watch, statSync, lstatSync, readdirSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { STORE_DIR } from './config.js'
 import { logStoreFileEvent } from './db.js'
@@ -84,9 +84,17 @@ const recentEvents = new Map<string, number>()
 
 let watcher: ReturnType<typeof watch> | null = null
 
+// Whole-directory denylist prefixes, for trees whose filenames vary (so a
+// fixed-name SYSTEM_FILES entry can't cover them). scheduled-runs/ is the
+// SCHEDPROMPTREF917 snapshot dir: ~100 new files/day by design (one per
+// large-task fire), which would otherwise drown every real agent-created-file
+// audit row in scheduler noise.
+const SYSTEM_DIR_PREFIXES = ['scheduled-runs/']
+
 function isSystemFile(rel: string): boolean {
   const name = basename(rel)
-  return SYSTEM_FILES.has(name) || SYSTEM_RE.test(name)
+  if (SYSTEM_FILES.has(name) || SYSTEM_RE.test(name)) return true
+  return SYSTEM_DIR_PREFIXES.some(prefix => rel.startsWith(prefix))
 }
 
 export function startStoreWatcher(): void {
@@ -115,6 +123,19 @@ export function startStoreWatcher(): void {
       // If the file no longer exists it was deleted or renamed away -- not a creation.
       let fileSize: number | null = null
       try {
+        // A directory is not a created file. On Linux the recursive watcher
+        // emits 'rename' for every directory it walks while setting itself up,
+        // and scanStore() only puts FILES into knownFiles, so without this
+        // every directory under store/ was logged as a new file on every boot
+        // (measured: 26 527 rows in one start, the same path 22 times, the
+        // synchronous INSERTs blocking the event loop for ~20 s).
+        // lstat, not stat: a symlink to a directory is an entry scanStore()
+        // counts as a file, so a new one must still be logged. The delete
+        // covers a known file replaced by a directory of the same name.
+        if (lstatSync(`${STORE_DIR}/${rel}`).isDirectory()) {
+          knownFiles.delete(rel)
+          return
+        }
         const st = statSync(`${STORE_DIR}/${rel}`)
         fileSize = st.size
       } catch {
@@ -146,6 +167,16 @@ export function startStoreWatcher(): void {
       } catch (err) {
         logger.warn({ err, rel }, 'store-watcher: failed to log new file event')
       }
+    })
+    // An unreadable subdirectory (another user's sandbox dir) makes the
+    // recursive watcher emit 'error'; without a listener that is an
+    // uncaughtException and the dashboard exits. Log once per (code, path), keep going.
+    const reportedWatchErrors = new Set<string>()
+    watcher.on('error', (err: NodeJS.ErrnoException) => {
+      const key = JSON.stringify([err?.code ?? null, err?.path ?? null])
+      if (reportedWatchErrors.has(key)) return
+      reportedWatchErrors.add(key)
+      logger.warn({ code: err?.code, path: err?.path }, 'store-watcher: subdirectory not watchable, skipped')
     })
     logger.info({ dir: STORE_DIR, knownCount: knownFiles.size }, 'Store file watcher started')
   } catch (err) {

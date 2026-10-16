@@ -26,3 +26,367 @@ Override an intentional rewrite of a protected branch:
 ```bash
 ALLOW_FORCE_PUSH=1 git push ...
 ```
+
+# Outgoing code needs a reviewer-green trace (pre-push)
+
+The owner's rule: code that goes outward (a push, a force-push, an update of a PR branch) goes
+only after the reviewer agent's approval; a green test is not enough. The rule used to live in
+instruction files and nothing enforced it.
+
+`scripts/install-review-gate-hook.sh` (run by `scripts/sync-hooks.sh`, like the other
+installers) copies `scripts/git-hooks/pre-push-review-gate.py` into
+`.git/hooks/pre-push.d/30-review-gate`.
+
+**It is opt-in.** The hook is installed on every install, but it does nothing (every push
+passes, one stderr line says so) until a reviewer agent is configured. Without that, an install
+that has no such agent would have every agent push stopped for good. Set, in the environment of
+the push or as a line in `<install>/.env`:
+
+```
+REVIEW_GATE_REVIEWER=<agent id of the reviewer>      # unset = gate inactive
+REVIEW_GATE_TRACE_WORD=<word that starts the trace>  # optional, default REVIEW-GREEN
+```
+
+The `.env` lines are read the way the product's own reader does (trimmed, `#` comments, one pair
+of quotes stripped, the last occurrence wins), and a leading `export ` is accepted too: a gate
+that reads `export NAME=value` as "not set" would be silently off. A reviewer id or trace word
+with characters outside letters, digits, `-` and `_` blocks the push (a gate that is
+misconfigured fails closed). For example:
+`REVIEW_GATE_REVIEWER=<your reviewer agent>` and `REVIEW_GATE_TRACE_WORD=<your trace word>`.
+
+**It gates agent sessions only** (the owner's decision, 2026-10-11): a push that does not come
+from a Claude Code session goes through without a trace, with one line on stderr, so the
+owner's own hand push is free.
+
+**Who counts as an agent.** At least one of `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`,
+`CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_EXECPATH` is set and non-empty in the environment of the
+push. Claude Code sets them for every process its Bash tool starts and git passes the
+environment on to the hook (measured from an agent's own shell, 2026-10-11).
+`CLAUDE_CONFIG_DIR` is deliberately not a marker: it can be exported in a plain terminal to run
+`claude`. This is a "who typed it" guess from the environment, **not an identity**, and it fails
+in both directions:
+
+- An agent that unsets the markers (`env -u CLAUDECODE ...`) or pushes from a process that is
+  not a Claude Code child walks through, silently. Same class as `--no-verify`; pinned in the
+  tests as a documented limit.
+- A push the owner types *inside* a Claude Code session (the `!` prefix) carries the markers, so
+  it is gated like an agent's. The way through is the logged skip below.
+
+**What counts as the trace.** A message in the fleet mailbox that is from the reviewer agent
+(status not `failed`) and contains a line of its own, exactly:
+
+```
+<TRACE WORD> <8 to 40 hex digits of the head commit>
+```
+
+The hash binds the green to the commit being pushed, so an amend, a rebase or a further commit
+on the PR branch needs a new line. Text after the hash, a wrapped or inline mention, a prefix
+shorter than 8 digits and a row from another sender do not count. The gate reads
+`/api/messages?agent=<reviewer>` (up to 2000 of the reviewer's messages back) with the dashboard
+token.
+
+**What needs no trace:** a deletion, and a push that sends no commit the destination lacks
+(already on the target remote's tracking refs; for a destination other than `origin`, also
+already on `origin`). Anything that cannot be verified (dashboard down, token unreadable, an
+answer of an unexpected shape, a ref that does not resolve, git failing) blocks.
+
+**What it is not.** It guards against *forgetting* the rule, not against a deliberate bypass:
+the trace is self-declared (one shared bearer token writes any `from_agent`), and
+`--no-verify` on the push skips every pre-push hook without leaving a line. Do not read a pass
+as proof that the reviewer reviewed the change.
+
+**`core.hooksPath`.** If the repository's `core.hooksPath` points anywhere other than
+`.git/hooks`, git never runs this hook. The installer then refuses (non-zero exit, message on
+stderr, nothing installed) instead of printing a success line. `sync-hooks.sh` reports the
+non-zero exit and carries on.
+
+**Undo.** There is no uninstaller: remove `.git/hooks/pre-push.d/30-review-gate`. Running the
+installer again puts it back.
+
+**Earlier development version.** The installer also removes `pre-push.d/30-sam-green-gate`, the file
+an earlier development version of this gate was installed as, when it recognises it as this gate's own.
+
+**The way through, only on the owner's explicit instruction for that push:** set
+`REVIEW_GATE_SKIP=1` and `REVIEW_GATE_SKIP_REASON="<owner message id>: <why>"` in the
+environment of the push command. The reason is mandatory and the call is appended to
+`store/push-review-gate-skips.log` (who, when, remote, refs, reason); if the line cannot be
+written the push is refused.
+
+# Bash egress deny rules
+
+`scripts/hooks/egress-gate.mjs` compares a URL against the allowlist, but it is
+wired as a `PreToolUse` hook with matcher `WebFetch` **only**. Bash was never
+ungated (`outgoing-copy-gate.py` and `email-approval-gate.py` on the main agent,
+`email-send-gate.mjs` and `self-pace-gate.mjs` on sub-agents) but none of those
+gates looks at the destination host, so a shell `curl` never met the allowlist.
+The realistic threat is not a malicious agent: it is a fetched page telling an
+agent to run a `curl`, which is why the quarantine-reader exists in the first
+place.
+
+## What it does
+
+`BASH_EGRESS_DENY` in `src/web/agent-scaffold.ts` is the single source of truth
+for the EGRESS part of `permissions.deny`, and it lands in **every** agent's
+`settings.json` by three routes:
+
+- on spawn, via `writeAgentSettingsFromProfile()`,
+- on server startup, via `ensureBashEgressDeny()` (existing fleet, and the main
+  agent -- see the scope note below),
+- on scaffold, via `templates/settings.json.template` (so the next agent created
+  starts gated -- a parity test keeps the template and the constant in step).
+
+It is **not** the only list any more: since DENYARGS925 a second constant, the
+fleet deny FLOOR, feeds the same block. The two are described together in the
+next section, because the difference between them is not what they deny but how
+they REACH an agent -- and that is the part that decides what happens when one
+of them is edited.
+
+Denied: `curl` to an `https://` URL, and `wget` / `nc` / `ncat` / `telnet`
+outright. A `deny` rule is checked **before** the
+`--dangerously-skip-permissions` bypass, so it binds on permissive profiles too.
+Sanctioned tooling that speaks HTTPS on its own account (`git`, `gh`, `npm`) is
+deliberately untouched: denying it would break the release path without closing
+anything an agent could not do through it anyway.
+
+The sanctioned route for external content is unchanged: the quarantine-reader
+sub-agent, through `WebFetch`, where the domain check already runs. A host being
+on the egress allowlist does not open it to the shell.
+
+## Two lists, and why they are not one
+
+Since DENYARGS925 (2026-09-25) `permissions.deny` is fed by TWO constants in
+`src/web/agent-scaffold.ts`. Reading either one as "the" deny list is the
+mistake this section exists to prevent.
+
+| | `BASH_EGRESS_DENY` | `FLEET_BASELINE_DENY` |
+|---|---|---|
+| covers | shell URL-fetch verbs: `curl` to `https://`, `wget`, `nc`, `ncat`, `telnet` | the fleet FLOOR: key/credential dirs, `.env`, `sudo`, `rm -rf` of `$HOME` and `/`, force-push (friction only), the unsafe browser-code MCP tool |
+| sub-agent gets it | spawn + server-startup migration + scaffold template | **spawn only** (`writeAgentSettingsFromProfile`) |
+| main agent gets it | `ensureBashEgressDeny()` into its own config dir | the repo's tracked `.claude/settings.json` (the scaffold never writes the main agent, #1305) |
+| parity guarded by | `bash-egress-deny.test.ts` (template vs constant) | `fleet-baseline-deny.test.ts` (shipped file vs constant, both directions) |
+
+Two consequences follow from the row that differs, and both are deliberate:
+
+**The floor has no startup migration.** An agent that is running right now and is
+not respawned keeps whatever deny list it started with; the egress rules would be
+merged into its file at the next server start, the floor would not. The floor
+therefore takes effect at the next spawn, not at the next server restart. This is
+the honest limit, not a claim of immediate fleet-wide cover.
+
+**The floor is deliberately NOT in `templates/settings.json.template`.** Measured
+2026-09-25: after `scaffoldAgentDir()` the template-derived file carries 10 deny
+rules and **zero** of the floor's 13 -- but on the create path
+(`routes/agents.ts`) `scaffoldAgentDir()`, `writeAgentModel()`,
+`writeAgentSecurityProfile()` and `writeAgentSettingsFromProfile()` are four
+SYNCHRONOUS calls with no await and no session launch between them, and on the
+spawn path the profile write runs before the Claude Code process starts. So the
+template-only state exists on disk but no session reads it, and
+`loadProfileTemplate()` cannot throw its way around that: a missing or unparseable
+profile falls back to `default` and finally to `HARDCODED_DEFAULT_PROFILE`. The
+live fleet agrees: the leanest agent here carries 16 rules, none carries 10.
+
+If a future change adds a route that scaffolds WITHOUT writing the profile
+straight after, that reasoning expires and the floor belongs in the template too.
+The parity test names this condition so the decision can be re-measured rather
+than re-argued.
+
+## Where the main agent's copy goes
+
+The main agent's nominal settings path is the shared user root
+(`~/.claude/settings.json`) -- and that same file is the operator's own
+interactive Claude Code sessions. The owner's decision (2026-09-07) was that
+their own shell stays unrestricted while the fleet stays gated, which makes the
+shared file unusable in both directions: writing there restricts the operator,
+removing it from there un-gates the main agent, which is the one agent that
+reads untrusted web content on the owner's behalf.
+
+Measured way out: when the install gives the main agent a config dir of its own
+(`MAIN_AGENT_CONFIG_DIR`, or the provisioned isolated dir behind
+`MAIN_AGENT_ISOLATED_CONFIG`), that dir's `settings.json` is the agent's user
+scope and the operator's shell does not read it. `bashEgressDenyTargetPath()`
+sends the rules there. The separation survives restarts: the provisioner
+rebuilds that file from the shared one on every start but keeps keys the shared
+file never mentions, and `permissions` is such a key.
+
+When the main agent runs on the shared root there is no scope that covers it
+without covering the operator, so **nothing is written** and the startup log
+says so. Giving the main agent its own config dir is the fix; picking a side
+quietly is not this code's call.
+
+## The trap for whoever measures this next
+
+The two scopes do not behave the same way, and the difference is invisible until
+it misleads you (both measured 2026-09-07):
+
+- The **project scope** (`<cwd>/.claude/settings.json` and `settings.local.json`)
+  is re-read while a session runs. A rule written there fires immediately, which
+  makes it a fine live test bench: drop a narrow, unique rule in, probe it, then
+  delete the file.
+- The **user scope** (the `settings.json` in the session's `CLAUDE_CONFIG_DIR`)
+  is read when the session STARTS and is not re-read afterwards. A rule written
+  there while the session runs does nothing at all.
+
+So a probe that works perfectly on the project scope reports a confident
+"allowed" on the user scope, and the honest-looking conclusion -- "the rule does
+not work" -- is wrong. What it means is "this session has not read it yet".
+Measure a user-scope rule from a session that started AFTER the write, or after
+the next restart.
+
+The same asymmetry is why a newly written rule binds the main agent from its
+next restart rather than immediately.
+
+## Limits, stated out loud
+
+This is a deny list, not a sandbox.
+
+- **The localhost exception is why only `https://` is denied for `curl`.** The
+  rule language has no negation and `deny` always beats `allow`, so "any
+  `http://` host except localhost" cannot be expressed. A `*http://*` rule would
+  also match `http://localhost:3420/...` and mute the whole fleet (memory,
+  kanban, message queue, approvals all ride that URL).
+- Still open, by construction: plain-http external fetches, an interpreter
+  one-liner (`python3 -c`, `node -e`), and a URL hidden in a shell variable.
+  Closing those needs a Bash `PreToolUse` hook that parses the command.
+- Known collateral: an internal POST whose **double-quoted** payload quotes an
+  `https://` URL matches the `curl` rule. Single-quoted payloads do not (the
+  permission engine excludes single-quoted content). Use single quotes or
+  `-d @file` for such a call.
+
+# What the URL gate does not cover
+
+Both web controls are wired to **one tool**. `scripts/hooks/egress-gate.mjs`
+runs as a `PreToolUse` hook with matcher `WebFetch`, and `wrapUntrustedFetch()`
+(`src/prompt-safety.ts`) frames what that tool returns. Everything else that
+brings the outside world into an agent's context is outside both:
+
+- **`WebSearch`** -- result snippets are external text; no allowlist decided
+  which sites they came from, and nothing wraps them on the way in.
+- **Any MCP server that fetches** -- a browser server (playwright, chrome), a
+  docs server, an API connector. The agent's own `curl` is denied by
+  `BASH_EGRESS_DENY`, but an MCP server makes the request in its own process,
+  where neither control can see it.
+
+This is stated in a comment inside `egress-gate.mjs`. It was not stated here,
+which is the wrong place for it to be missing: the comment is read by whoever
+edits the gate, this file is read by whoever decides what to install. An
+operator adding a browser MCP server was therefore adding an ungated,
+unlabelled content path while reading that egress was covered.
+
+The fleet ships no browser by default, so a stock install is unaffected. But
+the fleet's own scaffolding expects browsers to appear (the largest profile is
+described as "filesystem + playwright + chrome"), so this is a normal
+deployment, not an exotic one.
+
+## Why a browser payload is the sharper case
+
+A fetched page cannot run code in the agent; it can only try to talk to it. A
+browser payload arrives the same way -- except the browser it arrives through
+holds live logged-in sessions, and the agent reading it has a shell, a
+filesystem and outbound channels. The realistic attack is not an exploit, it is
+a sentence: text on the page addressed to the agent rather than to the reader.
+
+The defence against that is framing, not filtering: content the agent knows is
+content cannot impersonate an instruction. `WebFetch` gets that framing from
+the wrapper. A browser payload gets none.
+
+## The opt-in envelope hook
+
+`scripts/hooks/browser-content-notice.py` is a `PostToolUse` hook that wraps
+browser / search results in an `<untrusted source="..." fetch-nonce="...">`
+envelope before the model sees them -- the same framing `wrapUntrustedFetch()`
+gives the `WebFetch` path -- scrubs forged security tags out of the payload,
+names any injection patterns it matched (forged `<untrusted>` /
+`<system-reminder>` envelopes, a pre-injected scrub sentinel, instruction
+overrides, credential targets, exfil shapes) and appends the full payload to
+`store/browser-content.log` for reading outside the model's context.
+
+It is **not registered by default** -- an install with no browser gains nothing
+from it. Operators who run a browser MCP server wire it themselves, in the
+project `settings.json` or `settings.local.json`:
+
+```json
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "mcp__playwright__browser_.*|mcp__chrome.*|WebSearch",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/browser-content-notice.py\"",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+### The shape rule, and the silent fallback behind it
+
+`hookSpecificOutput.updatedToolOutput` replaces a tool result before it reaches
+the model. It is not unconditional, and the condition is the important part
+(measured 2026-09-20, Claude Code 2.1.278):
+
+- **MCP tool**: a plain string replaced the result outright. The original never
+  reached the model.
+- **Built-in tool** (`WebSearch`): the replacement must match THAT TOOL'S
+  OUTPUT SHAPE. A string was rejected -- `expected: object` -- the harness
+  logged `... does not match WebSearch's output shape; using original output`,
+  and the raw payload reached the model unchanged.
+
+The rejection is an execution-error record, not part of the tool result, so
+**from the model's side a broken envelope is indistinguishable from a working
+one**: the content simply arrives unwrapped, as it always did.
+
+That is why the hook writes two layers on every call and never treats the
+first as sufficient:
+
+1. `updatedToolOutput` -- the envelope. Shape-preserving: a string stays a
+   string, MCP content blocks stay blocks with their original keys, a record
+   keeps every key and only its free-text leaves are wrapped. A shape it
+   cannot mirror confidently is left alone, because a rejected replacement
+   leaves the RAW payload in context -- declining is the safer failure.
+2. `additionalContext` -- the label, which cannot be shape-rejected. It states
+   that a payload arriving WITHOUT an envelope means the envelope was rejected,
+   so the absence is readable rather than invisible.
+
+The label quotes nothing back. Its own text is trusted framing, so echoing a
+matched line there would reopen the channel the hook exists to close. Pattern
+names and counts only; the payload itself goes to the log.
+
+`envelope_attempted` in the log records which shape the hook tried. It says
+"attempted", never "succeeded": the hook cannot observe the harness's decision,
+and a field that claimed success would be the most misleading line in the file.
+
+# Email approvals consumed on the send path
+
+At `email_send` level 2 an approval authorizes ONE letter: `content_hash` pins
+it to the exact envelope and `consumed_at` makes it one-shot. The gate
+(`scripts/hooks/email-approval-gate.py`) flips `consumed_at` itself, but only
+for a send it can read in the command text (an MCP mail tool, `send.py --to`,
+an inline mailer call). A tool that mails through a script on another host,
+for example `ssh <host> 'tsx send-letter.mjs'`, is invisible to it, so its
+approval stayed unconsumed and could authorize a second send.
+
+Such a tool consumes on its own path, right BEFORE the letter goes out, and
+sends only on a yes:
+
+```bash
+python3 scripts/approval-consume.py --id <approval id> --content-hash <anchor> \
+  --consumer <tool name> --message-id '<id@your.domain>' || exit 1   # 0 = send now
+```
+
+`POST /api/approvals/<id>/consume` is one conditional write (approved,
+`email_send`, unconsumed, the same anchor, inside `EMAIL_APPROVAL_WINDOW_S`,
+1800 s like the gate). Of two attempts exactly one gets 200; the other gets
+409 with a reason (`already_consumed`, `not_approved`, `hash_mismatch`,
+`expired`, `wrong_category`). The row records the consumer and the Message-Id
+the tool generated up front (`consumed_by`, `consumed_ref`), and every call,
+refused ones included, leaves a row in `approval_events`. The gate and the
+endpoint read the same `consumed_at IS NULL`, so a letter consumed by one path
+is refused by the other.
+
+A 409 means: do not send, and check the sent mailbox before deciding anything,
+because the earlier attempt may already have gone out.

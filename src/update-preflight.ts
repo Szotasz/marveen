@@ -30,12 +30,24 @@
 export interface GitRunner {
   // Current branch name. "HEAD" (or empty) signals a detached checkout.
   currentBranch(): string
-  // Number of local commits ahead of the upstream tracking ref
-  // (git rev-list --count @{u}..HEAD). >0 means the local history has
-  // diverged, so `git pull --ff-only` will refuse -- the dominant silent
-  // failure. Returns 0 when there is no upstream or the probe fails (the
-  // safe default: do not block on an uncertain count).
+  // Number of local commits ahead of origin/<branch>, the ref update.sh pulls
+  // (git rev-list --count origin/<branch>..HEAD; not @{u}, see UPSTREAMSRC927). Returns 0 when there is no upstream
+  // or the probe fails (the safe default: do not block on an uncertain
+  // count -- the branch-on-origin probe below catches the no-upstream case
+  // on its own terms).
   aheadCount(): number
+  // Number of upstream commits the local checkout is missing
+  // (git rev-list --count HEAD..origin/<branch>), same failure convention as above.
+  // Ahead ALONE is not a divergence: there is simply nothing to
+  // fast-forward to, and update.sh proceeds. Only ahead AND behind
+  // together mean the histories parted and ff-only must refuse.
+  behindCount(): number
+  // Does the branch exist on the `origin` remote? update.sh pulls
+  // origin/<branch> and exits 2 when that ref does not exist, so a
+  // local-only branch is a guaranteed-failed run. Network probe, hence
+  // three-valued: 'unknown' (offline, auth failure, timeout) must NOT
+  // block -- an uncertain probe is not evidence of a missing branch.
+  originHasBranch(branch: string): 'yes' | 'no' | 'unknown'
   // Porcelain status excluding untracked files. Non-empty = dirty tree.
   // Untracked files are excluded because the repo legitimately carries
   // ad-hoc backup files (CLAUDE.md.backup-*, SOUL.md mid-edit, etc.)
@@ -48,6 +60,7 @@ export type PreflightResult =
   | { ok: false; reason: 'dirty-tree'; message: string }
   | { ok: false; reason: 'detached-head'; message: string }
   | { ok: false; reason: 'local-commits'; message: string; ahead: number }
+  | { ok: false; reason: 'branch-not-on-origin'; message: string; branch: string }
 
 // Concurrency gate: refuse a second /api/updates/apply while the first
 // update.sh is still running. An in-memory timestamp would reset on the
@@ -82,6 +95,26 @@ export type ConcurrencyResult =
 // and intervene.
 export const MAX_PIDFILE_AGE_MS = 60 * 60 * 1000
 
+// How far in the future a pidfile's start may lie before it counts as
+// corrupt. The writer and the reader share one clock, so only a step of
+// that clock (an NTP correction) can put a real start ahead of now; five
+// minutes covers it.
+export const FUTURE_START_TOLERANCE_MS = 5 * 60 * 1000
+
+// The pidfile's start epoch in ms. update.sh writes ms (13 digits), but a
+// `date +%s%3N` that ignores the field width (uutils coreutils 0.8.0 does:
+// 19 digits, measured on a fleet host; card 48612d05) writes nanoseconds,
+// and a microsecond writer would write 16 digits. Normalise by the digit
+// count, so such a pidfile still ages out, and an update that is really
+// running under an older update.sh keeps its lock across a dashboard
+// restart mid-run. Slicing the digits keeps the value exact past 2^53.
+export function pidfileStartEpochMs(digits: string): number {
+  const d = digits.replace(/^0+(?=\d)/, '')
+  if (d.length >= 18) return Number.parseInt(d.slice(0, -6), 10)
+  if (d.length >= 15) return Number.parseInt(d.slice(0, -3), 10)
+  return Number.parseInt(d, 10)
+}
+
 // Classify the errno from the retry writeFileSync that follows a
 // stale-pidfile unlink. Only EEXIST means a parallel caller genuinely
 // raced us to the lock; any other code is a real write failure
@@ -110,12 +143,16 @@ export function checkNoConcurrentUpdate(pf: PidfileRunner): ConcurrencyResult {
   // If the optional second line is present and older than the max
   // age, treat as stale regardless of kill(pid, 0). Missing second
   // line means a legacy pidfile with no age info: fall through to
-  // the alive probe alone.
+  // the alive probe alone. The start is normalised to ms first
+  // (pidfileStartEpochMs), and a start still in the future after that
+  // cannot be a real update's: a corrupt epoch must not hold the lock
+  // forever behind a recycled pid, so it counts as stale too.
   if (match[2]) {
-    const startEpoch = Number.parseInt(match[2], 10)
+    const startEpoch = pidfileStartEpochMs(match[2])
     if (Number.isFinite(startEpoch) && startEpoch > 0) {
       const age = pf.now() - startEpoch
       if (age > MAX_PIDFILE_AGE_MS) return { ok: true }
+      if (age < -FUTURE_START_TOLERANCE_MS) return { ok: true }
     }
   }
   if (!pf.isProcessAlive(pid)) return { ok: true }
@@ -140,7 +177,30 @@ export function checkUpdatePreflight(git: GitRunner): PreflightResult {
       reason: 'detached-head',
       message:
         'Repository is in a detached-HEAD state. ' +
-        'Check out a release branch before updating, e.g.: git checkout main',
+        'Check out a release branch before updating, e.g.: git switch main || git switch -c main --track origin/main',
+    }
+  }
+
+  // update.sh guard 2: `git ls-remote --exit-code --heads origin <branch>`.
+  // A branch that exists only locally has no ref to fast-forward to, so the
+  // script exits 2 before doing anything. The dashboard spawns it detached
+  // with its output going to a log nobody is watching, answers {ok:true},
+  // and the UI shows "reloading in 30s" for a run that could never start --
+  // exactly the lie this module exists to prevent. Measured 2026-09-05 on
+  // this install: branch fix/email-gate-mcp-matcher, ls-remote exit 2,
+  // preflight ok, update.sh exit 2.
+  // Ordered to match update.sh: this check runs BEFORE the dirty-tree one
+  // there, so the operator sees the same first reason from either entry
+  // point instead of being sent to stash changes that would not have helped.
+  if (git.originHasBranch(branch) === 'no') {
+    return {
+      ok: false,
+      reason: 'branch-not-on-origin',
+      branch,
+      message:
+        `Branch '${branch}' does not exist on origin, so there is nothing to ` +
+        'pull. Updates can only run from a branch that origin also has, e.g.: ' +
+        'git switch main || git switch -c main --track origin/main',
     }
   }
 
@@ -165,23 +225,30 @@ export function checkUpdatePreflight(git: GitRunner): PreflightResult {
     }
   }
 
-  // Local commits ahead of upstream = a diverged history. `git pull --ff-only`
-  // refuses this, and because update.sh runs detached the abort is invisible
-  // (the update looks "started" then reloads to the same commit list). Catch it
-  // here with an actionable message instead of that silent death. A running
-  // agent committing to its own tracked CLAUDE.md/SOUL.md/task-config is the
-  // usual cause. The tree is clean (changes are committed), so the dirty-tree
-  // stash cannot help; reconciliation is a separate, explicit step.
+  // A DIVERGED history -- ahead AND behind together -- is what `git pull
+  // --ff-only` refuses, and because update.sh runs detached the abort is
+  // invisible (the update looks "started" then reloads to the same commit
+  // list). Catch it here with an actionable message instead of that silent
+  // death. A running agent committing to its own tracked CLAUDE.md/SOUL.md/
+  // task-config is the usual cause. The tree is clean (changes are
+  // committed), so the dirty-tree stash cannot help; reconciliation is a
+  // separate, explicit step.
+  // Ahead ALONE is deliberately NOT blocked: update.sh stopped refusing on
+  // it (the operator's checkout sat 53 ahead / 0 behind on 2026-08-30 and
+  // was locked out of its own updater), but this copy of the rule was never
+  // updated with it, so the button stayed refused where the script would
+  // have run. Both sides now use the same condition.
   const ahead = git.aheadCount()
-  if (ahead > 0) {
+  const behind = git.behindCount()
+  if (ahead > 0 && behind > 0) {
     return {
       ok: false,
       reason: 'local-commits',
       ahead,
       message:
-        `The local checkout has ${ahead} commit(s) not on the upstream, so a ` +
-        'fast-forward update is not possible. This is usually a local edit that ' +
-        'was committed. Review with: git log @{u}..HEAD',
+        `The local checkout is ${ahead} commit(s) ahead and ${behind} behind the ` +
+        'upstream (the histories have parted), so a fast-forward update is not ' +
+        'possible. Reconcile them first. Review with: git log @{u}..HEAD',
     }
   }
 

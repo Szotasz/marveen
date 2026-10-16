@@ -46,10 +46,12 @@ import {
   HEARTBEAT_CALENDAR_ACCOUNT,
   APP_TZ,
   DASHBOARD_PUBLIC_URL,
+  AGENT_API_ORIGIN,
 } from '../config.js'
 import { resolveDashboardOrigin } from './agent-scaffold.js'
 import { logger } from '../logger.js'
 import { CHANNEL_PLUGIN_IDS } from './plugin-ids.js'
+import { HB_METRICS_BLOCK_MARKER } from './heartbeat-metrics-inject.js'
 
 const HEARTBEAT_AGENT_NAME = HEARTBEAT_AGENT_ID
 const HEARTBEAT_AGENT_DIR = join(PROJECT_ROOT, 'agents', HEARTBEAT_AGENT_NAME)
@@ -77,7 +79,10 @@ const CHANNEL_PLUGIN_DISABLES = Object.fromEntries(
 const HEARTBEAT_AGENT_CONFIG = {
   model: 'claude-haiku-4-5',
   authMode: 'oauth' as const,
-  securityProfile: 'standard',
+  // Was 'standard', a profile that has never existed under templates/profiles/:
+  // every heartbeat agent silently resolved to 'default'. Named
+  // for what it already got, so the dashboard does not flag a missing profile.
+  securityProfile: 'default',
 }
 
 // Per-deployment identity threaded into the rendered CLAUDE.md. Pulled
@@ -96,13 +101,13 @@ export interface HeartbeatIdentity {
   // Dashboard origin for the inter-agent message POST, e.g.
   // http://localhost:3420.
   dashboardOrigin: string
-  // Google Calendar account to summarise, or '' to let the calendar MCP
+  // Google Calendar account to summarise (display only), or '' to let the
   // server use whatever account it is authenticated as.
   calendarAccount: string
-  // Absolute path to scripts/heartbeat-metrics.sh -- the round's single
-  // callable instrument (HBMEMBLIND819 third contract). The rendered
-  // CLAUDE.md references this path and nothing else about how the
-  // numbers are produced, so there is no command prose left to
+  // Absolute path to scripts/heartbeat-metrics.sh. Since HBMETRICSWIRE910
+  // the WORKER runs it at prompt-build time (heartbeat-metrics-inject.ts);
+  // the rendered CLAUDE.md names the path only as provenance -- the round
+  // itself is forbidden to run it, so there is no command prose left to
   // recompose.
   metricsScript: string
 }
@@ -115,7 +120,7 @@ export function currentHeartbeatIdentity(): HeartbeatIdentity {
     botName: BOT_NAME,
     mainAgentId: MAIN_AGENT_ID,
     storeDir: STORE_DIR,
-    dashboardOrigin: resolveDashboardOrigin(DASHBOARD_PUBLIC_URL, WEB_PORT),
+    dashboardOrigin: resolveDashboardOrigin(DASHBOARD_PUBLIC_URL, WEB_PORT, AGENT_API_ORIGIN),
     calendarAccount: HEARTBEAT_CALENDAR_ACCOUNT,
     metricsScript: join(PROJECT_ROOT, 'scripts', 'heartbeat-metrics.sh'),
   }
@@ -143,7 +148,7 @@ export function shouldBootHeartbeatAgent(opts: { respawnEnabled: boolean; agentE
 export function renderHeartbeatClaudeMd(id: HeartbeatIdentity): string {
   const calendarTarget = id.calendarAccount
     ? `against \`${id.calendarAccount}\``
-    : 'against your primary calendar (whatever account the calendar MCP server is authenticated as)'
+    : 'against the calendar the dashboard is configured for (HEARTBEAT_CALENDAR_ID)'
   return `# Heartbeat agent
 
 You are the **heartbeat agent** -- a dedicated, headless worker that
@@ -181,140 +186,59 @@ When you receive the heartbeat prompt:
    1h") is read against it, so an hour of drift silently moves the
    window as well as the label.
 
-1. **Collect** the four data sources:
-   - **Calendar (next 2 hours)** -- use the
-     \`mcp__server-google-calendar-mcp__list-events\` tool
-     ${calendarTarget}, timeMin=now, timeMax=now+2h.
-     Call it as a TOOL, directly. Do not try to reach an MCP server
-     from Bash, python, curl or any other subprocess: MCP tools exist
-     only in your own tool list, so a subprocess will always come back
-     empty and that emptiness says nothing about the server.
+1. **Find the measured block in THIS prompt.** Every number -- calendar,
+   kanban, tasks, memory, DB size -- arrives PRE-RENDERED in the prompt
+   itself, in a block that starts with the marker line
+   \`${HB_METRICS_BLOCK_MARKER} ts=...\`. The WORKER already ran the
+   on-disk instrument (\`${id.metricsScript}\`, every number measured
+   server-side on \`${id.dashboardOrigin}\`; the calendar ${calendarTarget})
+   at prompt-build time and rendered its output into the FINAL report
+   sections.
 
-     DEFERRED LOADING (2026-08-09, HBCALMCP808): MCP tools may arrive
-     DEFERRED -- their names appear in a system-reminder listing but
-     the schema is not loaded, and a direct call fails as if the tool
-     did not exist. That failure is NOT absence. Before concluding
-     anything, run:
+   THE BLOCK RULE (HBMETRICSWIRE910, supersedes the old sentinel rule):
+   your report's body is that block's sections, copied VERBATIM. You
+   never run the instrument, and you NEVER rebuild any of its numbers
+   with your own curl / python3 / sqlite3 / du / ls / stat / calendar
+   call -- not even a correct-looking one-liner. Measured history of
+   the alternative, four failed instruction layers on the same metric:
+   HBMEMBLIND807 (self-composed SQL, false 0), HBMEMBLIND819
+   (recomposed with wrong agent_id, 14/14 rounds false 0), 2026-08-24
+   (truncated format string, false 0), and 2026-09-10/11 (du-shaped DB
+   size 488 vs the instrument's 473.6, shipped even by a fresh-context
+   round WHILE the run-it-yourself instruction stood). The worker-side
+   injection exists because instructing this step was measured not to
+   hold; re-measuring "to be sure" is the defect, not diligence.
 
-     ToolSearch with query "select:mcp__server-google-calendar-mcp__list-events"
+   A \`muszer-hiba: ...\` line inside the block IS the measured result:
+   copy it through unchanged. The instrument and the renderer are
+   fail-closed -- a value they could not measure never appears as 0,
+   so a fabricated 0 (or any number not present in the block) is
+   always a defect in YOUR round.
 
-     and then call the tool normally. Between 2026-08-08 20:00 and
-     2026-08-09 every hourly round reported "calendar tool not
-     available" while all 13 calendar tools sat in the deferred list
-     of the very same session -- the section went empty for a day
-     because this step was missing.
-
-     You may say "calendar tool not available in this session" ONLY
-     when ToolSearch itself cannot surface the tool either -- that is
-     a different fact from a failed direct call on a deferred tool,
-     and a different fact again from a failed call (token revoked /
-     401), which only the loaded tool can produce.
-     If the call fails (token revoked / 401), record the failure
-     reason rather than the events; the main agent can act on the
-     failure.
-   - **Metrics (kanban + tasks + memory + DB size)** -- ONE fixed,
-     on-disk instrument. Run it EXACTLY as written and copy its output
-     lines VERBATIM into the report sections below; never recompose any
-     of its measurements yourself:
-
-     \`\`\`bash
-     CLAW_STORE_DIR=${id.storeDir} CLAW_DASHBOARD_ORIGIN=${id.dashboardOrigin} CLAW_TZ=${APP_TZ} bash ${id.metricsScript}
-     \`\`\`
-
-     THE SENTINEL RULE (HBMEMBLIND819): a number may enter your report
-     ONLY from an output whose FIRST line starts with the known
-     sentinel \`HB_METRICS_V1\`. Anything else -- an unknown or newer
-     sentinel (a future \`HB_METRICS_V2\` under these instructions
-     included), "No such file or directory", a shell error, empty
-     output -- is an INSTRUMENT FAILURE: put the literal first line of
-     what you got into EVERY affected section as
-     \`muszer-hiba: <line>\`. NEVER write 0 for a value the instrument
-     did not print, and NEVER rebuild these numbers with your own
-     curl / python3 / sqlite3 / du / ls / stat -- not even a
-     correct-looking one-liner. That includes the pipe+heredoc shape
-     that produced HBHEREDOC819 (\`echo "$X" | python3 << 'PY'\` loses
-     the piped data silently: the heredoc becomes python3's stdin).
-
-     If the output contains \`ERROR <section>: <reason>\` lines, copy
-     each into its section verbatim as \`muszer-hiba: ERROR ...\` and
-     use the lines that ARE present -- partial output is fine, silence
-     and substitution are not. The instrument is fail-closed: a
-     missing or null field never prints as 0, so
-     \`new hot memories (1h): nincs adat (muszer-hiba)\` is the honest
-     report and a fabricated 0 is the defect.
-
-     Why a fixed script and not a prescribed command, measured three
-     times on the SAME metric: 2026-08-07 (HBMEMBLIND807) a prose
-     bullet let the round compose its own SQL (reported 0 beside 3 hot
-     memories); the fix prescribed a ready-made query, and 2026-08-19
-     (HBMEMBLIND819) post-compact rounds reconstructed it with the
-     wrong agent_id (14/14 rounds a false 0); the next fix shipped a
-     ready-made one-liner, and 2026-08-24 22:00 a round re-composed
-     THAT with a truncated format string, so the missing field printed
-     as 0 again. A prescription you must re-copy every hour is not a
-     mechanism; a script on disk has nothing to recompose.
-
-     What the lines mean, and where each number is allowed to come from:
-     - \`COUNTS ...\` -- kanban totals plus \`counts.new_hot_memories_1h\`
-       and \`counts.db_size_mb\`, all computed server-side on
-       \`${id.dashboardOrigin}/api/kanban/heartbeat-summary\` and copied
-       through. EVERY number comes from this line and nowhere else
-       (HBKANBANDRIFT819: the URGENT/WAITING lists are capped and
-       their titles truncated BY DESIGN -- counting list items once
-       reported waiting: 12 against a real 280).
-     - \`URGENT <id> <title>\` / \`WAITING <id> <title>\` -- only
-       UNFINISHED cards, never \`done\`, \`planned\` included. If a
-       list is empty, report it as empty: do not widen the query, do
-       not fill the line with closed cards. An empty urgent list is
-       the good news, and a report nobody can trust to be empty is a
-       report nobody reads.
-     - \`SCHEDULES enabled=N\` -- the live registry
-       (\`${id.dashboardOrigin}/api/schedules\`), NOT the
-       \`scheduled_tasks\` table (empty on this deployment; a count
-       from it reports 0 forever).
-     - \`TASK_RUNS_1H ...\` -- what actually ran in the last hour.
-       \`task_runs.ts\` is in MILLISECONDS and the script bakes the
-       \`*1000\` cutoff in -- exactly the kind of trap that must never
-       be re-derived by hand.
-     HBWARN807 still holds: there is NO warnings metric here on
-     purpose. The old bullet pointed at a source that does not exist
-     (memories has no status column, the store has no such log table),
-     so the line could only ever say 'none' -- an unfalsifiable metric
-     is zero evidence wearing the costume of a check. If a warnings
-     line ever returns, it must come as a field of this instrument's
-     output, backed by a real source.
+   If the prompt contains NO \`${HB_METRICS_BLOCK_MARKER}\` marker at
+   all, that itself is the finding: send the report with
+   \`muszer-hiba: hianyzo metrika-blokk (worker-injektalas kimaradt)\`
+   as every section's only line. Do not fill in anything yourself.
 
 2. **Format** the result as a single inter-agent message:
 
    \`\`\`
    ## Heartbeat <the string step 0 measured> (${APP_TZ})
+   merve: <the ts= value from the block's marker line>
 
-   ### Calendar (next 2h)
-   - HH:MM -- <summary> (<attendees>)
-   - <or: "no upcoming events">
-   - <or: "calendar fetch failed: <reason>">
-
-   ### Kanban
-   - urgent: <N from COUNTS> (<short titles from the URGENT lines>)
-   - in_progress: <N from COUNTS>
-   - waiting: <N from COUNTS> (<short titles from the WAITING lines>)
-   - planned: <N from COUNTS>
-
-   ### Tasks
-   - enabled schedules: <N from SCHEDULES>
-   - last hour: <the TASK_RUNS_1H line, verbatim>
-
-   ### Memory / system
-   - DB size: <db_size_mb from COUNTS> MB
-   - new hot memories (1h): <new_hot_memories_1h from COUNTS>
+   <the block's sections, from "### Calendar (next 2h)" to the end,
+    VERBATIM -- no line added, dropped, reworded or renumbered>
    \`\`\`
 
-   Every line above is a MEASUREMENT of this round, never a memory of
-   an earlier one. Run the instrument again and report what it returns
-   now, even when you are sure nothing changed -- especially then.
-   A value carried over from an earlier round makes its line constant,
-   and a line that always says the same thing stops being read -- at
-   which point a real change looks exactly like the noise around it.
+   The \`merve:\` line is the reader's freshness check: it carries the
+   ts the WORKER stamped at prompt-build. If it differs from the step-0
+   clock by more than the current hour, the prompt sat parked before
+   you ran -- still report the block verbatim (it is the measurement
+   that was taken), the two timestamps side by side ARE the finding.
+   Never substitute a value remembered from an earlier round: a stale
+   value is indistinguishable from a fresh one once it is in the
+   message (5E0A32B0: a copy-forwarded failure line masked a day of
+   zero real calendar attempts).
 
 3. **Send** that string to the main agent via the dashboard API:
 

@@ -41,7 +41,13 @@ export const ACCEPTED_KEY_TYPE = 'ssh-ed25519'
 const HOSTNAME_LABEL = '[A-Za-z0-9_](?:[A-Za-z0-9_-]{0,61}[A-Za-z0-9_])?'
 const HOSTNAME_RE = new RegExp(`^${HOSTNAME_LABEL}(?:\\.${HOSTNAME_LABEL})*\\.?$`)
 
-export type HostCheck = { ok: true; host: string } | { ok: false; reason: string }
+/** Parameters interpolated into a user-facing message. Kept to strings and
+ * numbers so the same values can be handed to the dashboard's t() unchanged. */
+export type EnrollErrorParams = Record<string, string | number>
+
+export type HostCheck =
+  | { ok: true; host: string }
+  | { ok: false; reason: string; code: string; params: EnrollErrorParams }
 
 export type DashboardTokenDecision =
   | { include: false }
@@ -94,12 +100,17 @@ export function dashboardTokenDecision(
  */
 export function checkEnrollHost(raw: string, isIP: (s: string) => number): HostCheck {
   const host = raw.trim()
-  if (!host) return { ok: false, reason: 'target address is empty' }
+  if (!host) return { ok: false, reason: 'target address is empty', code: 'host_empty', params: {} }
   // Quote back at most 60 characters: enough to recognise what was typed,
   // short enough that a pasted blob does not become the whole message.
   const seen = host.length > 60 ? `${host.slice(0, 60)}...` : host
   if (host.length > 253) {
-    return { ok: false, reason: `target address is too long (${host.length} characters, maximum 253)` }
+    return {
+      ok: false,
+      reason: `target address is too long (${host.length} characters, maximum 253)`,
+      code: 'host_too_long',
+      params: { length: host.length, max: 253 },
+    }
   }
   if (isIP(host) !== 0) return { ok: true, host }
   if (host.includes('@')) {
@@ -108,13 +119,25 @@ export function checkEnrollHost(raw: string, isIP: (s: string) => number): HostC
       reason:
         `"${seen}" looks like an email address. The target address is the machine's IP address or ` +
         'hostname; with Tailscale it is the address starting with 100, not the email address of the Tailscale account.',
+      code: 'host_email',
+      params: { seen },
     }
   }
   if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(host)) {
-    return { ok: false, reason: `"${seen}" is a URL. Enter only the address, without http:// or a path.` }
+    return {
+      ok: false,
+      reason: `"${seen}" is a URL. Enter only the address, without http:// or a path.`,
+      code: 'host_url',
+      params: { seen },
+    }
   }
   if (!HOSTNAME_RE.test(host)) {
-    return { ok: false, reason: `"${seen}" is not a valid IP address or hostname.` }
+    return {
+      ok: false,
+      reason: `"${seen}" is not a valid IP address or hostname.`,
+      code: 'host_invalid',
+      params: { seen },
+    }
   }
   return { ok: true, host }
 }
@@ -130,9 +153,17 @@ export const BUNDLE_FORMAT = 'marveen-remote/1'
 /** Raised for any validation failure so the CLI can print a clear message
  * and exit non-zero without a stack trace. */
 export class RemoteEnrollError extends Error {
-  constructor(message: string) {
+  /** Stable identifier of this failure, independent of the English wording.
+   * The dashboard translates on the code and falls back to `message`, so a
+   * code without a translation degrades to English rather than to a blank. */
+  readonly code: string
+  readonly params: EnrollErrorParams
+
+  constructor(message: string, code: string, params: EnrollErrorParams = {}) {
     super(message)
     this.name = 'RemoteEnrollError'
+    this.code = code
+    this.params = params
   }
 }
 
@@ -168,32 +199,34 @@ function isCanonicalBase64(s: string): boolean {
  */
 function validateEd25519Blob(base64: string): void {
   if (!isCanonicalBase64(base64)) {
-    throw new RemoteEnrollError('key body is not valid base64')
+    throw new RemoteEnrollError('key body is not valid base64', 'key_not_base64')
   }
   const buf = Buffer.from(base64, 'base64')
   let off = 0
-  if (buf.length < 4) throw new RemoteEnrollError('key blob is too short')
+  if (buf.length < 4) throw new RemoteEnrollError('key blob is too short', 'blob_too_short')
   const typeLen = buf.readUInt32BE(off)
   off += 4
   if (typeLen !== ACCEPTED_KEY_TYPE.length || off + typeLen > buf.length) {
-    throw new RemoteEnrollError('key blob has an unexpected type field')
+    throw new RemoteEnrollError('key blob has an unexpected type field', 'blob_type_field')
   }
   const embeddedType = buf.subarray(off, off + typeLen).toString('utf8')
   off += typeLen
   if (embeddedType !== ACCEPTED_KEY_TYPE) {
     throw new RemoteEnrollError(
       `embedded key type must be ${ACCEPTED_KEY_TYPE}, found "${embeddedType}"`,
+      'blob_type_mismatch',
+      { expected: ACCEPTED_KEY_TYPE, found: embeddedType },
     )
   }
-  if (off + 4 > buf.length) throw new RemoteEnrollError('key blob is truncated')
+  if (off + 4 > buf.length) throw new RemoteEnrollError('key blob is truncated', 'blob_truncated')
   const keyLen = buf.readUInt32BE(off)
   off += 4
   // ed25519 public keys are exactly 32 bytes.
   if (keyLen !== 32) {
-    throw new RemoteEnrollError('ed25519 public key must be 32 bytes')
+    throw new RemoteEnrollError('ed25519 public key must be 32 bytes', 'key_length')
   }
   if (off + keyLen !== buf.length) {
-    throw new RemoteEnrollError('key blob has trailing or missing bytes')
+    throw new RemoteEnrollError('key blob has trailing or missing bytes', 'blob_trailing')
   }
 }
 
@@ -205,32 +238,37 @@ function validateEd25519Blob(base64: string): void {
  */
 export function validatePublicKeyLine(rawLine: string): ParsedKey {
   if (typeof rawLine !== 'string') {
-    throw new RemoteEnrollError('public key line is required')
+    throw new RemoteEnrollError('public key line is required', 'line_required')
   }
   const line = rawLine.trim()
   if (line.length === 0) {
-    throw new RemoteEnrollError('public key line is empty')
+    throw new RemoteEnrollError('public key line is empty', 'line_empty')
   }
   if (line.includes('\n') || line.includes('\r')) {
-    throw new RemoteEnrollError('public key line must be a single line')
+    throw new RemoteEnrollError('public key line must be a single line', 'line_multiline')
   }
   const fields = line.split(/\s+/)
   if (fields.length !== 3) {
     throw new RemoteEnrollError(
       'line must contain exactly three fields: type, key, comment (no options, no extra fields)',
+      'line_fields',
     )
   }
   const [keyType, base64, comment] = fields
   if (keyType !== ACCEPTED_KEY_TYPE) {
-    throw new RemoteEnrollError(`key type must be exactly ${ACCEPTED_KEY_TYPE}`)
+    throw new RemoteEnrollError(`key type must be exactly ${ACCEPTED_KEY_TYPE}`, 'key_type', {
+      expected: ACCEPTED_KEY_TYPE,
+    })
   }
   validateEd25519Blob(base64)
   if (!comment.startsWith(COMMENT_PREFIX)) {
-    throw new RemoteEnrollError(`comment must start with "${COMMENT_PREFIX}"`)
+    throw new RemoteEnrollError(`comment must start with "${COMMENT_PREFIX}"`, 'comment_prefix', {
+      prefix: COMMENT_PREFIX,
+    })
   }
   const installId = comment.slice(COMMENT_PREFIX.length)
   if (!UUID_V4.test(installId)) {
-    throw new RemoteEnrollError('comment must be marveen-remote:<uuid v4>')
+    throw new RemoteEnrollError('comment must be marveen-remote:<uuid v4>', 'comment_uuid')
   }
   return { keyType: ACCEPTED_KEY_TYPE, base64, comment, installId }
 }

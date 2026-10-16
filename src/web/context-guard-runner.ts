@@ -2,30 +2,48 @@ import { statSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
-import { hardRestartMarveenChannels, lastMainRespawnAt, MARVEEN_POST_RESPAWN_GRACE_MS } from './channel-monitor.js'
+import { hardRestartMarveenChannels, lastMainRespawnAt, MARVEEN_POST_RESPAWN_GRACE_MS, markAgentRestartPending } from './channel-monitor.js'
 import { shouldDeferForRecentRespawn } from './stuck-tool-call-watcher.js'
-import { listAgentNames, listAllAgentNames, agentDir, readAgentModel, readAgentClaudeConfigDir, readAgentRemoteHost } from './agent-config.js'
+import { listAgentNames, listAllAgentNames, agentDir, readAgentModel, readAgentRemoteHost } from './agent-config.js'
+import { configDirFor } from './main-transcript-root.js'
 import {
   agentRunState,
   agentSessionName,
   restartAgentProcess,
   capturePane,
-  sendPromptToSession,
   isSessionReadyForPrompt,
+  noteSaturationBannerUntrusted,
+  clearSaturationBannerOverride,
 } from './agent-process.js'
+import { sendSystemDirective } from './system-directive.js'
+import { notifyChannel } from '../notify.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
-import { detectPaneState, paneShowsContextSaturation } from '../pane-state.js'
+import { detectPaneState, paneShowsContextSaturation, paneShowsContextSaturationHardError } from '../pane-state.js'
 import { readContextTokensFromProjectDir, readActiveModelFromProjectDir, readTranscriptMtimeFromProjectDir } from './active-model.js'
 import { readContextGuardConfig } from './context-guard-store.js'
+import {
+  readPendingResumes,
+  writePendingResumes,
+  restorableResumeStates,
+  type PendingResume,
+  type PendingResumeMap,
+} from './context-guard-resume-store.js'
+import { localMidnightMs } from '../auto-restart.js'
+import { ownerQuestionHolds } from './open-question.js'
+import { recordRescueFailure, clearRescueFailures } from './rescue-failure-tracker.js'
 import { createAgentMessage } from '../db.js'
 import {
   decideGuard,
   contextLimitForModel,
   calibrateLimit,
   handoffStaleMinutes,
+  applyDailyHandoffSkipSweep,
+  DAILY_HANDOFF_REASON_PREFIX,
   IDLE_FLUSH_REASON_PREFIX,
   INITIAL_GUARD_STATE,
   STALE_REFRESH_REASON_PREFIX,
+  SATURATION_CREDIBLE_MIN_PCT,
+  saturationBannerCredible,
   type GuardState,
   type HandoffStaleness,
   type GuardInputs,
@@ -46,11 +64,106 @@ import {
 const INITIAL_DELAY_MS = 270_000
 const INTERVAL_MS = 300_000
 
+// How long the dispatch gate honours one sweep's "this banner is not
+// credible" verdict. Expressed in SWEEPS, not minutes, so it cannot silently
+// drift under the refresh rate if INTERVAL_MS ever changes: the entry has to
+// outlive one missed or slow sweep, AND it has to lapse on its own if this
+// runner stops (webOnly mode, guard disabled, crash) so the gate falls back to
+// today's "refuse and wait for the rescue" rather than staying open.
+const SATURATION_OVERRIDE_TTL_MS = 3 * INTERVAL_MS
+
 // agent name -> guard state. In-memory: a dashboard restart re-arms every
 // agent at 'idle', which is safe -- the worst case is a repeated handoff
 // request, and cooldown prevents restart loops within a run.
+//
+// ONE exception: 'await-ready' is NOT safe to lose. It is the
+// only record that a fresh session is still owed its resume prompt, and
+// nothing else will ever send it -- the agent just sits at an empty prompt.
+// That obligation is mirrored to store/context-guard-pending-resume.json
+// (context-guard-resume-store.ts) and re-armed by restorePendingResumes() when
+// the runner starts.
 const guardStates = new Map<string, GuardState>()
+
+// Write-through mirror of the persisted resume obligations. Held in memory so
+// the per-sweep "drop if present" checks cost no I/O; the file is written only
+// when an entry is actually added or removed.
+let pendingResumes: PendingResumeMap = {}
+
+function persistPendingResumes(): void {
+  try { writePendingResumes(pendingResumes) }
+  catch (err) { logger.warn({ err }, 'context-guard: pending-resume persist failed') }
+}
+
+function recordPendingResume(name: string, entry: PendingResume): void {
+  pendingResumes = { ...pendingResumes, [name]: entry }
+  persistPendingResumes()
+}
+
+function dropPendingResume(name: string, why: string): void {
+  if (!(name in pendingResumes)) return
+  const { [name]: _dropped, ...rest } = pendingResumes
+  pendingResumes = rest
+  persistPendingResumes()
+  logger.info({ name, why }, 'context-guard: pending resume cleared')
+}
+
+/**
+ * Re-arm every resume obligation a previous dashboard process left behind.
+ * Live entries (younger than PENDING_RESUME_TTL_MS) put the agent back in
+ * 'await-ready', so the first sweep delivers the resume prompt exactly as the
+ * old process would have; expired ones are dropped with a WARN, because a
+ * resume that never arrived is a fact the operator should be able to find.
+ * Returns the re-armed agent names. Exported for the regression test.
+ */
+export function restorePendingResumes(nowMs: number): string[] {
+  pendingResumes = readPendingResumes()
+  const { live, expired } = restorableResumeStates(pendingResumes, nowMs)
+  for (const [name, st] of live) {
+    if (!guardStates.has(name)) guardStates.set(name, st)
+  }
+  if (expired.length > 0) {
+    for (const name of expired) {
+      logger.warn(
+        { name, restartedAtMs: pendingResumes[name]?.restartedAtMs, reason: pendingResumes[name]?.reason },
+        'context-guard: pending resume EXPIRED across a dashboard restart -- the fresh session never got its resume prompt',
+      )
+      const { [name]: _expired, ...rest } = pendingResumes
+      pendingResumes = rest
+    }
+    persistPendingResumes()
+  }
+  if (live.size > 0) {
+    logger.info({ agents: [...live.keys()] }, 'context-guard: re-armed pending resume(s) from a previous dashboard run')
+  }
+  return [...live.keys()]
+}
+
+// agent name -> when the daily-handoff tier last fired (ms). Seeded on first
+// sight WITHOUT firing, so a slot that already passed before the dashboard
+// started does not trigger a handoff cycle at boot -- the same seed rule, for
+// the same reason, as the nightly auto-restart's lastRestart map. In-memory
+// like that one: a dashboard restart re-seeds and at worst skips one slot,
+// which is the safe direction (a missed daily handoff costs one day of
+// context; a spurious one ends a live conversation).
+const lastDailyHandoff = new Map<string, number>()
+// Agents whose last due daily slot was skipped for an open inbound question;
+// their next due slot fires regardless (see dailyHandoffSkipSweep). In-memory
+// like lastDailyHandoff: a dashboard restart forgets it, which can allow one
+// more skip in a row.
+const dailySkipped = new Set<string>()
+
+/** Does the owner's open question hold this agent back (the /clear gate's rule)? undefined = unreadable. */
+function dailyQuestionOpen(name: string): boolean | undefined {
+  try { return ownerQuestionHolds(name) }
+  catch { return undefined }
+}
 const remoteSkipLogged = new Set<string>()
+// Agents currently in the banner-vs-measurement mismatch state. The
+// condition holds on EVERY sweep while a mis-tagged agent keeps running, so
+// the WARN below is emitted on the state CHANGE only -- per-sweep it would be
+// ~1150 lines a day into a log nobody then reads. Same idiom as
+// remoteSkipLogged above.
+const bannerMismatchLogged = new Set<string>()
 
 // Per-agent observed-context high-water mark, persisted across dashboard
 // restarts. calibrateLimit alone is memoryless: the moment the guard
@@ -134,6 +247,27 @@ export function idleFlushHandoffPrompt(tokens: number, idleMinutes: number, hand
 }
 
 /**
+ * Handoff request for the daily tier.
+ *
+ * A fourth wording, for the same reason the idle tier needed a third: this
+ * agent's context is not critical (the act tier would have fired) and not
+ * expensive (the idle tier would have), so both of those texts would state
+ * something untrue about its session. What IS true is the only thing this
+ * prompt claims: the scheduled restart is about to happen, and whatever is
+ * not written down will not survive it.
+ */
+export function dailyHandoffPrompt(atTime: string, handoffPath: string): string {
+  return (
+    `[CONTEXT-GUARD] Ütemezett napi újraindítás (${atTime}), nem vészhelyzet és nem hiba. ` +
+    `A sessionöd hamarosan friss kontextussal indul újra, és ami nincs leírva, az nem éli túl. ` +
+    `EGYETLEN dolgod ebben a körben: írj HANDOFF.md-t a /handoff skill struktúrája szerint ide: ${handoffPath} ` +
+    `(Goal / Current Progress / What Worked / What Didn't Work / Next Steps, konkrét fájl-útvonalakkal és kanban kártya-azonosítókkal). ` +
+    `Ha nincs félbehagyott feladatod, írd bele hogy nincs -- az is teljes értékű válasz. ` +
+    `Utána ÁLLJ MEG; a rendszer újraindít és a HANDOFF.md-ből folytatod.`
+  )
+}
+
+/**
  * A handoff refresh request: the agent DID write a handoff, then kept working,
  * so the artifact no longer covers the session. Distinct wording from both
  * other requests -- "write a handoff" would read as a bug ("I already did"),
@@ -178,6 +312,18 @@ export function resumePrompt(
     base + source +
     `Utána ellenőrizd a kanban tábládat (in_progress kártyák, assignee=${name}) és a hot memóriáidat, ` +
     `és FOLYTASD a megkezdett munkát magadtól. Ne kezdd elölről ami a handoff szerint már kész. ` +
+    // ORSICTX912: msg 23670 was delivered SEVEN SECONDS after the guard kill
+    // started, into the dying session -- the queue marked it delivered, the
+    // fresh session had no reason to look, and completed_at is unused (0/37
+    // measured), so the loss is invisible from the queue. The re-read must
+    // ride in the resume prompt (the fresh session's only context), and the
+    // ack-to-sender is the OBSERVABLE trace: without it, verifying this very
+    // instruction would run into the same blindness it exists to fix.
+    `RESTART-ABLAK: az előző session utolsó ~15 percében kézbesített inter-agent üzenet elveszhetett. ` +
+    `Olvasd vissza a saját sorodat erre az ablakra (GET /api/messages?agent=${name}, created_at szerint szűrve), ` +
+    `és minden ott talált, még el nem intézett kérést kezelj újként. KÖTELEZŐ MEGFIGYELHETŐ NYOM: minden ` +
+    `visszaolvasott tételről küldj rövid nyugtát a feladónak ("[RESTART-ABLAK] <id> felvéve a friss sessionben"), ` +
+    `akkor is, ha nincs belőle teendő -- e nélkül a visszaolvasás a sorból láthatatlan. ` +
     // RESPAWNZAJ822/PRODFAAG822: a fresh session acting on a resume goal is
     // exactly the actor that branch-switched and committed on the live prod
     // tree (2026-08-22 10:10, PR #1036 duplicate). The constraint must ride in
@@ -195,12 +341,8 @@ export function resumePrompt(
   )
 }
 
-function configDirFor(name: string): string | undefined {
-  return name === MAIN_AGENT_ID ? undefined : (readAgentClaudeConfigDir(name) ?? undefined)
-}
-
 /** Raw observed context size (tokens) for the idle-flush tier's absolute threshold. */
-function measureContextTokens(name: string): number | null {
+export function measureContextTokens(name: string): number | null {
   const tokens = readContextTokensFromProjectDir(workingDirFor(name), configDirFor(name))
   return tokens !== null && tokens > 0 ? tokens : null
 }
@@ -211,13 +353,13 @@ function measureContextTokens(name: string): number | null {
  * a clock change) is treated as "just now" rather than as a large idle time --
  * a wrong clock must not be able to trigger a flush.
  */
-function measureIdleMs(name: string, nowMs: number): number | null {
+export function measureIdleMs(name: string, nowMs: number): number | null {
   const mtime = readTranscriptMtimeFromProjectDir(workingDirFor(name), configDirFor(name))
   if (mtime === null) return null
   return Math.max(0, nowMs - mtime)
 }
 
-function measurePct(name: string, cfgLimit: number | null): number | null {
+export function measurePct(name: string, cfgLimit: number | null): number | null {
   const workingDir = workingDirFor(name)
   const configDir = configDirFor(name)
   const tokens = readContextTokensFromProjectDir(workingDir, configDir)
@@ -227,7 +369,10 @@ function measurePct(name: string, cfgLimit: number | null): number | null {
     limit = cfgLimit
   } else {
     const model = (name === MAIN_AGENT_ID
-      ? readActiveModelFromProjectDir(PROJECT_ROOT)
+      // Same root as the token read above: the model decides the context LIMIT,
+      // so a model read from a stale root produces a wrong pct from a right
+      // token count -- and pct is what the handoff threshold compares.
+      ? readActiveModelFromProjectDir(PROJECT_ROOT, undefined, configDirFor(name))
       : readAgentModel(name)) ?? ''
     // Calibrate against the persisted per-(agent, model) maximum, not just
     // the live reading: a fresh post-restart session must not un-learn a
@@ -256,7 +401,19 @@ async function performRestart(name: string): Promise<void> {
     const res = hardRestartMarveenChannels()
     if (!res.ok) throw new Error(res.error ?? 'main channels hard restart failed')
   } else {
-    await restartAgentProcess(name, { fresh: true })
+    // DANICTXHUROK906: claim the reconcile grace window BEFORE the stop, so
+    // reconcileDesiredAgents() does not see the agent "down" mid-restart and
+    // re-launch it non-fresh (--continue), which would defeat the whole point
+    // of a context-guard restart -- dropping the saturated context.
+    markAgentRestartPending(name)
+    // The result was discarded here until 2026-09-01. startAgentProcess has an
+    // early "Agent is already running" return, and a supervisor that started
+    // the agent inside our stop window (restart-lock.ts) trips it -- so the
+    // rescue reported success while the pane still held the saturated session
+    // it was supposed to drop. Measured twice on levente, 2026-08-31 19:10 and
+    // 19:41; the second restart WAS the first one's unnoticed failure.
+    const res = await restartAgentProcess(name, { fresh: true })
+    if (!res.ok) throw new Error(res.error ?? 'agent restart failed')
   }
 }
 
@@ -264,11 +421,19 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
   const cfg = readContextGuardConfig(name)
   const state = guardStates.get(name) ?? INITIAL_GUARD_STATE
 
-  // Fully disarmed only when BOTH the proactive tiers and the always-on
-  // saturation net are off; the net alone keeps the sweep alive so a
-  // 100%-context pane (which dispatch refuses to prompt) still gets rescued.
-  if (!cfg.enabled && !cfg.saturationRestart && !cfg.idleFlushEnabled) {
+  // Fully disarmed only when EVERY tier and the always-on saturation net are
+  // off; the net alone keeps the sweep alive so a 100%-context pane (which
+  // dispatch refuses to prompt) still gets rescued.
+  //
+  // Every tier that can act has to appear in this list. This is the THIRD
+  // copy of the same condition (decideGuard's short-circuit and its
+  // await-handoff stand-down are the other two), and the daily tier was
+  // missing from exactly this one: an operator who turned the saturation net
+  // off and the daily tier on would have been skipped here, before
+  // decideGuard ever saw the agent, with no log line to say so.
+  if (!cfg.enabled && !cfg.saturationRestart && !cfg.idleFlushEnabled && !cfg.dailyHandoffEnabled) {
     guardStates.delete(name)
+    dropPendingResume(name, 'guard disabled')
     return
   }
 
@@ -297,17 +462,78 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
   // (error banner, modal, unknown surface) is treated as NOT busy, so a
   // wedged pane still gets the restart that is its only way out.
   const paneState = pane !== null ? detectPaneState(pane) : 'unknown'
+
+  // The pane banner and the calibrated measurement are TWO signals about one
+  // fact, and this sweep is the only place that holds both. Reconciling them
+  // HERE leaves decideGuard's contract intact ("paneSaturated means the pane
+  // really is saturated") and lets all three consumers of the signal -- the net
+  // below, agent-process.ts's dispatch gate and schedule-runner.ts's forceSend
+  // deferral -- act on ONE verdict.
+  const paneSaturatedRaw = pane !== null ? paneShowsContextSaturation(pane) : false
+  // Only a PERCENTAGE claim can be contradicted by a measurement; an
+  // error-shaped banner is painted after a turn actually failed at the real
+  // limit and is final (see saturationBannerCredible). So the error case needs
+  // no probe at all -- which also keeps the promise above this function: the
+  // transcript probe is paid for only where a decision can use it. That matters
+  // beyond CPU here, because measurePct persists a per-agent high-water mark to
+  // store/context-guard-highwater.json; with cfg.enabled false and no banner up
+  // we write exactly as little as before this change.
+  const bannerIsHardError = pane !== null && paneShowsContextSaturationHardError(pane)
+  const needCredibilityProbe = paneSaturatedRaw && !bannerIsHardError
+  const measuredPct = running && needPct && (cfg.enabled || needCredibilityProbe)
+    ? measurePct(name, cfg.limitTokens)
+    : null
+  const paneSaturatedTrusted = saturationBannerCredible(paneSaturatedRaw, bannerIsHardError, measuredPct)
+  if (paneSaturatedRaw && !paneSaturatedTrusted) {
+    noteSaturationBannerUntrusted(session, nowMs + SATURATION_OVERRIDE_TTL_MS)
+    if (!bannerMismatchLogged.has(name)) {
+      bannerMismatchLogged.add(name)
+      logger.warn(
+        {
+          name,
+          session,
+          pct: measuredPct !== null ? Math.round(measuredPct * 100) : null,
+          thresholdPct: Math.round(SATURATION_CREDIBLE_MIN_PCT * 100),
+          limitTokens: cfg.limitTokens,
+          // The actionable field: this is what says WHAT to fix. Same branch as
+          // measurePct's, and it only runs on this rare state change.
+          model: (name === MAIN_AGENT_ID
+            ? readActiveModelFromProjectDir(PROJECT_ROOT, undefined, configDirFor(name))
+            : readAgentModel(name)) ?? null,
+        },
+        // Fleet-side checks should match on the fields above (name, model, pct,
+        // thresholdPct), never on this wording: the message is prose and may be
+        // reworded, the fields are the contract.
+        'context-guard: pane claims context saturation but the measured context contradicts it -- NOT restarting, and dispatch may keep prompting. Usual cause: the agent model id reaches the CLI without the `[1m]` marker, so the CLI sizes its status line to 200k.',
+      )
+    }
+  } else if (pane !== null) {
+    // Only a sweep that actually LOOKED at the pane may revoke the override.
+    // paneSaturatedRaw is also false when we never captured (the await-ready and
+    // cooldown phases leave pane === null), and "we did not look" is not
+    // evidence that the banner is gone. The TTL still expires it fail-closed.
+    clearSaturationBannerOverride(session)
+    if (bannerMismatchLogged.delete(name)) {
+      logger.info({ name, session }, 'context-guard: banner and measurement agree again -- the saturation net is live for this agent')
+    }
+  }
+
   const inputs: GuardInputs = {
     nowMs,
     running,
-    // The saturation net decides from the pane alone; only the proactive
-    // tiers need the (transcript-reading) pct probe.
-    pct: running && needPct && cfg.enabled ? measurePct(name, cfg.limitTokens) : null,
+    // The proactive tiers own this field, and it stays gated on cfg.enabled
+    // exactly as before: the await-handoff `pct >= hardPct` arm and the
+    // stale-refresh condition are NOT behind cfg.enabled, so populating it for
+    // an unconfigured agent would arm tiers that are quiet there today. The
+    // credibility check above therefore reads measuredPct directly.
+    pct: cfg.enabled ? measuredPct : null,
     paneIdle: paneState === 'idle',
     paneBusy: paneState === 'busy',
     sessionReady,
     handoffMtime: needPct ? handoffMtime(name) : null,
-    paneSaturated: pane !== null ? paneShowsContextSaturation(pane) : false,
+    // Already reconciled with the measurement above, so decideGuard itself
+    // needs no change and every existing net regression test still applies.
+    paneSaturated: paneSaturatedTrusted,
     // Context-size probe, paid for only when the idle-flush tier is armed.
     // Note the condition is cfg.idleFlushEnabled, NOT cfg.enabled: the two
     // tiers are independently switchable, so an agent running the idle tier
@@ -317,9 +543,23 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
     // (handoffStaleMinutes) needs the transcript mtime on every decision path
     // that can restart, and the probe is a single stat().
     idleMs: running && needPct ? measureIdleMs(name, nowMs) : null,
+    // Seed-on-first-ARMED-sight, forget-while-disarmed on every sweep, and the
+    // open-question skip: dailyHandoffSkipSweep decides all three,
+    // applyDailyHandoffSkipSweep applies the record and the skip flag.
+    dailyHandoffDue: applyDailyHandoffSkipSweep(lastDailyHandoff, dailySkipped, name, cfg, running && state.phase === 'idle', localMidnightMs(nowMs), nowMs, () => dailyQuestionOpen(name), () => logger.info({ name }, 'context-guard: daily handoff skipped today -- open inbound question (the next slot fires regardless)')),
   }
 
   const decision = decideGuard(state, inputs, cfg)
+
+  // Mark the slot served at DECISION time, not after the prompt lands. If the
+  // directive fails to send, the machine is already in await-handoff and its
+  // timeout force-restarts the agent anyway -- the slot really was consumed.
+  // Marking it later would let a send failure re-fire the tier every sweep
+  // until midnight.
+  if (decision.reason.startsWith(DAILY_HANDOFF_REASON_PREFIX)) {
+    lastDailyHandoff.set(name, nowMs)
+    dailySkipped.delete(name)
+  }
 
   // Post-respawn grace for the main session. Making the Linux restart path work
   // (above) also makes it repeatable: measured on 2026-07-26, the saturation net
@@ -356,6 +596,11 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
   }
 
   guardStates.set(name, decision.nextState)
+  // Leaving await-ready WITHOUT delivering (ready timeout, guard disabled
+  // mid-wait) ends the obligation too; delivery clears it in inject-resume.
+  if (state.phase === 'await-ready' && decision.nextState.phase !== 'await-ready' && decision.action !== 'inject-resume') {
+    dropPendingResume(name, decision.reason)
+  }
   if (decision.action === 'none') {
     // Idle-flush non-decisions carry the measurement that blocked them
     // ("quiet for only 4m of 20m"), which is the only way to see the tier
@@ -373,12 +618,17 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
   }
 
   const pctRound = inputs.pct !== null ? Math.round(inputs.pct * 100) : null
-  logger.info({ name, action: decision.action, reason: decision.reason, pct: pctRound }, 'context-guard: acting')
+  logger.info({ name, action: decision.action, reason: decision.reason, pct: pctRound, bannerRaw: paneSaturatedRaw, bannerTrusted: paneSaturatedTrusted, measuredPct: measuredPct !== null ? Math.round(measuredPct * 100) : null }, 'context-guard: acting')
 
   try {
     switch (decision.action) {
       case 'request-handoff':
-        await sendPromptToSession(
+        // GUARDHITELES903: through the authenticated-directive primitive, not
+        // bare sendPromptToSession -- this text asks the agent to drop work
+        // and STOP, which without a queue anchor is indistinguishable from a
+        // prompt injection (measured 2026-09-03: Boni correctly refused it).
+        await sendSystemDirective(
+          name,
           session,
           decision.reason.startsWith(STALE_REFRESH_REASON_PREFIX)
             // The handoff exists but went stale while we waited for an idle
@@ -389,7 +639,12 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
               // tiers, so the alarming percentage-based prompt would read "~0%
               // -- critical". The idle tier states the token count it measured.
               ? idleFlushHandoffPrompt(inputs.contextTokens ?? 0, cfg.idleMinutes, handoffPathFor(name))
-              : handoffPrompt(pctRound ?? 0, handoffPathFor(name)),
+              : decision.reason.startsWith(DAILY_HANDOFF_REASON_PREFIX)
+                // Same trap as the idle tier: pct is null for a daily-only
+                // agent, so the percentage prompt would announce "~0% --
+                // critical" at 04:00 to a session that is perfectly healthy.
+                ? dailyHandoffPrompt(cfg.dailyHandoffTime ?? '', handoffPathFor(name))
+                : handoffPrompt(pctRound ?? 0, handoffPathFor(name)),
         )
         break
       case 'restart': {
@@ -409,7 +664,72 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
         } catch (err) {
           logger.warn({ err, name }, 'context-guard: pre-restart pane snapshot failed')
         }
-        await performRestart(name)
+        try {
+          await performRestart(name)
+          // The streak is over: only a rescue that actually ran clears it.
+          clearRescueFailures(name)
+          // Persisted only AFTER the restart succeeded, so a
+          // failed rescue (rolled back below) never leaves an obligation that
+          // would send "continue from your handoff" into the OLD pane.
+          recordPendingResume(name, {
+            restartedAtMs: Date.now(),
+            handoffStaleMinutes: decision.nextState.handoffStaleMinutes,
+            reason: decision.reason,
+          })
+        } catch (err) {
+          // guardStates was advanced to the post-restart phase BEFORE this
+          // switch, so a failed rescue would otherwise be filed as a completed
+          // one: the guard would wait for a session it never started, inject a
+          // resume prompt into the old saturated pane, and then sit out its
+          // cooldown. Roll the state back so the next sweep re-measures and
+          // retries, and never claim the restart on the message queue.
+          guardStates.set(name, INITIAL_GUARD_STATE)
+          const { count, alert: shouldAlert } = recordRescueFailure(name, nowMs)
+          logger.error({ err, name, reason: decision.reason, consecutiveFailures: count }, 'context-guard: rescue restart FAILED -- state rolled back for retry')
+          // Honest and silent is still silent. A saturated pane cannot be
+          // prompted (dispatch refuses it), so an agent whose rescue keeps
+          // failing is unreachable, and the only thing that knows is this log
+          // line. Escalate on the third consecutive failure, then hourly.
+          if (shouldAlert) {
+            try {
+              // The alert sink must never be the patient's own inbox. For the
+              // MAIN agent a queue message would be addressed to the very agent
+              // whose rescue keeps failing -- main-agent delivery is pull-based,
+              // and a saturated main does not pull, so the alert would sit
+              // "pending" exactly when it matters (measured 2026-09-08: main
+              // saturated twice that day). Route the main-agent case to the
+              // operator notification channel instead.
+              if (name === MAIN_AGENT_ID) {
+                await notifyChannel(
+                  `[CONTEXT-GUARD] ${count}. EGYMAST KOVETO bukott mentes a FO-AGENSNEL (${name}). ` +
+                  `Ok: ${decision.reason}` + (pctRound !== null ? ` (kontextus ~${pctRound}%)` : '') +
+                  `. Utolso hiba: ${err instanceof Error ? err.message : String(err)}. ` +
+                  'A guard kb. 10 percenkent ujraprobalja; ez a riasztas orankent ismetlodik, amig tart.',
+                )
+              } else {
+              const msg = createAgentMessage(
+                name,
+                MAIN_AGENT_ID,
+                `[CONTEXT-GUARD] ${count}. EGYMAST KOVETO bukott mentes a(z) "${name}" agensnel. ` +
+                `Ok: ${decision.reason}` + (pctRound !== null ? ` (kontextus ~${pctRound}%)` : '') +
+                `. Utolso hiba: ${err instanceof Error ? err.message : String(err)}. ` +
+                'A szaturalt pane-t NEM lehet prompttal elerni (a dispatch visszautasitja), tehat ' +
+                'ez az agens addig elerhetetlen, amig a restart nem sikerul. A guard kb. 10 percenkent ' +
+                'ujraprobalja magatol, es ez a riasztas orankent ismetlodik, amig tart. Amit nezz meg: ' +
+                `fut-e a tmux session (agent-${name}), mit mutat a store/context-guard-last-pane-${name}.txt, ` +
+                "es a dashboard.log 'rescue restart FAILED' / 'lost the start race' sorai.",
+                'context-guard rescue failure alert',
+              )
+              if (!msg?.id) throw new Error('createAgentMessage returned no id')
+              }
+            } catch (alertErr) {
+              // The alert is the last channel out of a silent failure; losing it
+              // without a trace would restore exactly the silence it exists for.
+              logger.error({ err: alertErr, name, consecutiveFailures: count }, 'context-guard: FAILED TO RAISE the rescue-failure alert')
+            }
+          }
+          break
+        }
         try {
           createAgentMessage(
             name,
@@ -441,10 +761,30 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
         const hadHandoff = inputs.handoffMtime !== null || handoffMtime(name) !== null
         // Staleness was measured at RESTART time and rode here in the state;
         // measuring now would be meaningless (the old session is gone).
-        await sendPromptToSession(
-          session,
-          resumePrompt(name, handoffPathFor(name), hadHandoff, state.handoffStaleMinutes),
-        )
+        // GUARDHITELES903: anchored like the handoff request -- the resume
+        // prompt steers a fresh session's entire first turn.
+        let outcome: Awaited<ReturnType<typeof sendSystemDirective>>
+        try {
+          outcome = await sendSystemDirective(
+            name,
+            session,
+            resumePrompt(name, handoffPathFor(name), hadHandoff, state.handoffStaleMinutes),
+          )
+        } catch (err) {
+          // Not retried: a throw from the tmux layer can come after part of
+          // the text already landed, and a second copy is worse than none.
+          dropPendingResume(name, 'resume delivery threw')
+          throw err
+        }
+        if (outcome === 'sent') {
+          dropPendingResume(name, 'resume delivered')
+        } else {
+          // Nothing was injected ('aborted-busy' / 'skipped-locked'): keep
+          // the obligation and stay in await-ready, so the next sweep retries
+          // until the phase deadline instead of silently cooling down.
+          guardStates.set(name, state)
+          logger.warn({ name, outcome }, 'context-guard: resume prompt NOT injected -- retrying on the next sweep')
+        }
         break
       }
     }
@@ -460,19 +800,35 @@ export function getContextGuardStatus(): Array<{
   pct: number | null
   enabled: boolean
   saturationRestart: boolean
+  cooldownUntilMs?: number
 }> {
   const names = [MAIN_AGENT_ID, ...listAgentNames()]
   return names.map((name) => {
+    const state = guardStates.get(name)
     const cfg = readContextGuardConfig(name)
     const remote = name !== MAIN_AGENT_ID && !!readAgentRemoteHost(name)
     return {
       agent: name,
-      phase: guardStates.get(name)?.phase ?? 'idle',
+      phase: state?.phase ?? 'idle',
       pct: cfg.enabled && !remote ? measurePct(name, cfg.limitTokens) : null,
       enabled: cfg.enabled,
       saturationRestart: cfg.saturationRestart,
+      ...cooldownStatusExtra(state),
     }
   })
+}
+
+/** CGBADGE908: in cooldown the UI shows the REMAINING TIME, because that is
+ * what the word promises -- the badge used to append the context pct instead,
+ * and "cooldown 19%" read as a cooldown position. The field is sent ONLY in
+ * the cooldown phase so no consumer mistakes a stale timestamp for a live
+ * timer. Exported so the test pins both branches. */
+export function cooldownStatusExtra(
+  state: { phase: string; cooldownUntilMs: number } | undefined,
+): { cooldownUntilMs?: number } {
+  return state?.phase === 'cooldown' && state.cooldownUntilMs > 0
+    ? { cooldownUntilMs: state.cooldownUntilMs }
+    : {}
 }
 
 /**
@@ -513,6 +869,11 @@ export function getHardGuardPhase(name: string): string {
 }
 
 export function startContextGuardRunner(): NodeJS.Timeout {
+  // Before the first sweep can run, so an agent restarted by the
+  // previous dashboard process is not re-armed at 'idle' and left without its
+  // resume prompt.
+  try { restorePendingResumes(Date.now()) }
+  catch (err) { logger.warn({ err }, 'context-guard: pending-resume restore failed') }
   let tickRunning = false
   async function sweep() {
     // Re-entrancy guard: checkAgent's 'restart' action now awaits a real

@@ -12,7 +12,6 @@ Description=Marveen app-crash notifier for %i
 [Service]
 Type=oneshot
 ExecStart=/path/to/marveen/scripts/unit-fail-notify.sh %i
-Environment=TELEGRAM_ENV=/home/USER/.claude/channels/telegram/.env
 Environment=PATH=/home/USER/.local/bin:/usr/local/bin:/usr/bin:/bin
 Environment=HOME=/home/USER
 Environment=TZ=Europe/Budapest

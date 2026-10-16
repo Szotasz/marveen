@@ -61,6 +61,45 @@ describe('resolveDashboardOrigin', () => {
   it('accepts a non-default port in the public URL', () => {
     expect(resolveDashboardOrigin('https://example.com:8443', 3420)).toBe('https://example.com:8443')
   })
+
+  // --- AGENT_API_ORIGIN precedence -------------------------------------------
+  // The agent-side origin answers a different question than the public URL:
+  // "where does an AGENT reach the API from where it runs" vs "where does the
+  // BROWSER reach the dashboard". On a single-host install behind NAT these
+  // differ -- measured 2026-09-03: the public name was reachable from a phone
+  // but not from the host itself (hairpin), so every generated curl example
+  // pointed at a dead address.
+
+  it('REGRESSION GUARD: an empty agent origin changes nothing (old behaviour)', () => {
+    // This is the test that protects existing k3s/distributed installs: with
+    // the key unset, the resolver must behave exactly as before the key existed.
+    expect(resolveDashboardOrigin('https://marveen.example.com', 3420, '')).toBe('https://marveen.example.com')
+    expect(resolveDashboardOrigin('', 3420, '')).toBe('http://localhost:3420')
+  })
+
+  it('the agent origin wins over the public URL when both are set', () => {
+    expect(resolveDashboardOrigin('https://marveen.example.com', 3420, 'http://localhost:3420'))
+      .toBe('http://localhost:3420')
+  })
+
+  it('the agent origin wins even with no public URL', () => {
+    expect(resolveDashboardOrigin('', 3420, 'http://dashboard.internal:3420'))
+      .toBe('http://dashboard.internal:3420')
+  })
+
+  it('strips a trailing slash from the agent origin too', () => {
+    expect(resolveDashboardOrigin('', 3420, 'http://localhost:3420/')).toBe('http://localhost:3420')
+  })
+
+  it('supports an internal service name (k8s-style) as the agent origin', () => {
+    expect(resolveDashboardOrigin('https://marveen.example.com', 3420, 'http://marveen-dashboard.default.svc:3420'))
+      .toBe('http://marveen-dashboard.default.svc:3420')
+  })
+
+  it('defaults the third argument, so two-argument callers keep working', () => {
+    // Existing call sites and tests pass two arguments; that must stay valid.
+    expect(resolveDashboardOrigin('https://marveen.example.com', 3420)).toBe('https://marveen.example.com')
+  })
 })
 
 // ---------------------------------------------------------------------------
@@ -95,6 +134,26 @@ describe('generateClaudeMd prompt: no hardcoded localhost:3420', () => {
     expect(fnBody).toContain('${dashboardOrigin}/api/daily-log')
   })
 
+  // GH #944: the curl examples always used the absolute ${tokenPath}, but the
+  // prose line above them named the token by its project-relative path. Agents
+  // copy prose as readily as code, and a sub-agent's working directory is
+  // agents/<name>/, where store/.dashboard-token does not exist. `cat` on a
+  // missing file yields an empty string, so curl sends "Authorization: Bearer "
+  // and the call 401s with nothing logged on the agent side. Two agents hit it
+  // independently on 2026-08-09.
+  it('never names the token by a project-relative path in the prompt body', () => {
+    expect(fnBody).not.toContain('store/.dashboard-token')
+  })
+
+  it('names the token by the absolute tokenPath in the prose, not only in the curl examples', () => {
+    expect(fnBody).toContain('a token a ${tokenPath} fájlban')
+  })
+
+  it('states the working-directory rule that makes the absolute path necessary', () => {
+    expect(fnBody).toContain('A munkakönyvtárad NEM a projekt gyökere')
+    expect(fnBody).toContain('MINDIG abszolút úttal hivatkozz')
+  })
+
   it('references dashboardOrigin in the schedules API curl example', () => {
     expect(fnBody).toContain('${dashboardOrigin}/api/schedules')
   })
@@ -103,11 +162,16 @@ describe('generateClaudeMd prompt: no hardcoded localhost:3420', () => {
     expect(fnBody).toContain('${dashboardOrigin}/api/messages')
   })
 
-  it('defines dashboardOrigin using resolveDashboardOrigin', () => {
+  it('defines dashboardOrigin using resolveDashboardOrigin, passing AGENT_API_ORIGIN', () => {
     // Ensures the fallback logic lives in one place (resolveDashboardOrigin),
     // not as an ad-hoc inline expression that could diverge from the heartbeat
-    // scaffold.
-    expect(src).toContain('resolveDashboardOrigin(DASHBOARD_PUBLIC_URL, WEB_PORT)')
+    // scaffold. The third argument is what lets an operator state the
+    // agent-side answer when it differs from the browser-side public URL.
+    expect(src).toContain('resolveDashboardOrigin(DASHBOARD_PUBLIC_URL, WEB_PORT, AGENT_API_ORIGIN)')
+  })
+
+  it('imports AGENT_API_ORIGIN from config', () => {
+    expect(src).toMatch(/import\s*{[^}]*\bAGENT_API_ORIGIN\b[^}]*}\s*from\s*'\.\.\/config\.js'/)
   })
 })
 
@@ -166,7 +230,7 @@ describe('currentHeartbeatIdentity: delegates to resolveDashboardOrigin', () => 
     expect(fnStart).toBeGreaterThan(0)
     const fnEnd = src.indexOf('\n}', fnStart)
     const fnBody = src.slice(fnStart, fnEnd)
-    expect(fnBody).toContain('resolveDashboardOrigin(DASHBOARD_PUBLIC_URL, WEB_PORT)')
+    expect(fnBody).toContain('resolveDashboardOrigin(DASHBOARD_PUBLIC_URL, WEB_PORT, AGENT_API_ORIGIN)')
   })
 
   it('does not hardcode localhost:PORT as a string literal in currentHeartbeatIdentity', () => {

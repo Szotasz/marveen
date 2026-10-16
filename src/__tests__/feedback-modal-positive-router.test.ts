@@ -43,6 +43,10 @@ vi.mock('../db.js', () => ({
     if (toAgent) return []
     return mockGetPendingMessages()
   },
+  // The router re-reads the row's status immediately before sending (the tick
+  // works from a snapshot taken at its start). Pending here keeps these
+  // fixtures on the delivery path they were written to measure.
+  getMessageStatus: (..._a: unknown[]) => 'pending',
   markMessageDelivered: (...a: unknown[]) => mockMarkDelivered(...a),
   markMessageFailed: (...a: unknown[]) => mockMarkFailed(...a),
   markMessageDone: (..._a: unknown[]) => true,
@@ -50,6 +54,14 @@ vi.mock('../db.js', () => ({
   stampMessageTrace: (..._a: unknown[]) => false,
   upsertOtelSpan: (..._a: unknown[]) => undefined,
   closeOtelSpan: (..._a: unknown[]) => false,
+  // Forward-compatible: this mock declares an EXPLICIT export list, so any db
+  // helper a future router path calls has to appear here or the module resolves
+  // it as undefined and the tick dies silently -- the delivery simply never
+  // happens and the assertion reads as "spy called 0 times".
+  // Added ahead of #1104 (superseded-message marking), whose router path calls
+  // this helper. Nothing reads the value until that lands; until then it is an
+  // unused key, which is why this is safe to ship on its own.
+  countNewerMessagesFromSameSender: (..._a: unknown[]) => 0,
 }))
 
 vi.mock('../web/voice-directive.js', () => ({
@@ -60,7 +72,14 @@ vi.mock('../web/agent-config.js', () => ({
   readAgentRemoteHost: () => null,
   readAgentVoiceConfig: () => ({ responseMode: 'text' }),
   isKnownAgent: () => true,
+  // The wrap step reads the sender's channel for the area-agent label (e349287f); no sender here owns one.
+  readAgentChannelProvider: () => null,
   agentDir: () => '/tmp/none-agentdir',
+  // These cases are about the KEYBOARD path (modal cleared -> prompt delivered),
+  // so the agent under test is deliberately NOT a worksource agent: a queue
+  // agent skips the readiness gate entirely, which would stop this file from
+  // measuring the refusal branch it exists to pin.
+  readAgentWorksourceChannel: () => false,
 }))
 
 vi.mock('../web/agent-process.js', () => ({

@@ -19,7 +19,15 @@ import sys, os, json, urllib.request
 
 
 def state_dir():
-    return os.environ.get("TELEGRAM_STATE_DIR") or os.path.expanduser("~/.claude/channels/telegram")
+    # #915: env override, then install-scoped once migrated, then legacy shared.
+    d = os.environ.get("TELEGRAM_STATE_DIR")
+    if d:
+        return d
+    _root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    _inst = os.path.join(_root, ".claude", "channels", "telegram")
+    if os.path.isfile(os.path.join(_inst, ".env")):
+        return _inst
+    return os.path.expanduser("~/.claude/channels/telegram")
 
 
 def token(sd):

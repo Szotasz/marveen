@@ -78,7 +78,37 @@ describe('clearStaleParkedInput uses the sequence instead of the old C-u cascade
   // characters across successive scheduled ticks until nothing could submit.
   it('clearInputBuffer also drives the sequence, so a pre-flight clear cannot silently no-op', () => {
     const fn = AGENT_PROCESS.slice(AGENT_PROCESS.indexOf('export async function clearInputBuffer'))
-    const body = fn.slice(0, fn.indexOf('\n}'))
+    const body = fn.slice(0, fn.indexOf('\n}\n'))
     expect(body).toContain('parkedClearSequence')
+  })
+
+  // 2026-09-04 incident: driving the right key sequence is not enough if nobody
+  // checks the box afterwards. The clear-scheduled path fired, left a truncated
+  // fragment behind, and that leftover read as a human draft on every later
+  // restart decision -- the session sat wedged 25.4h. The clear must therefore
+  // VERIFY emptiness, retry, and report failure to its caller.
+  it('clearInputBuffer verifies the box is empty, retries, and returns the outcome', () => {
+    const fn = AGENT_PROCESS.slice(AGENT_PROCESS.indexOf('export async function clearInputBuffer'))
+    const body = fn.slice(0, fn.indexOf('\n}\n'))
+    // re-reads the pane after sending the keys
+    expect(body).toContain('stuckInputSignature')
+    // bounded retry rather than a single fire-and-forget pass
+    expect(body).toContain('CLEAR_INPUT_MAX_ATTEMPTS')
+    // the caller can tell a clean clear from a leftover
+    expect(body).toContain('return true')
+    expect(body).toContain('return false')
+  })
+
+  it('the signature is boolean, so callers are able to branch on a failed clear', () => {
+    expect(AGENT_PROCESS).toContain('export async function clearInputBuffer(session: string, host: string | null = null): Promise<boolean>')
+  })
+
+  // Both clear-only recovery actions must surface a failed clear; a silent
+  // "cleared" log for a box that still holds text is what hid the 09-03 wedge.
+  it('both clear-only recovery paths log when the box did not empty', () => {
+    const monitor = readFileSync(new URL('../web/channel-monitor.ts', import.meta.url), 'utf8')
+    const preamble = monitor.slice(monitor.indexOf("case 'clear-preamble'"), monitor.indexOf("case 'enter'"))
+    expect(preamble).toContain('left text in the box')
+    expect(preamble).toContain('left a fragment in the box')
   })
 })

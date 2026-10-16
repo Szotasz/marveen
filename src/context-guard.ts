@@ -20,6 +20,13 @@
 // This module is dependency-free (no clock, tmux, or fs) so the state machine
 // is unit-testable. The I/O lives in src/web/context-guard-runner.ts.
 
+// The daily-handoff tier reuses the auto-restart module's PURE due-helpers
+// (parseHHMM / dailyDueAtMs / restartDue) rather than restating the schedule
+// arithmetic: two copies of "is this daily slot due" would be two places to
+// get a midnight boundary wrong. Those helpers touch no clock or fs, so the
+// dependency-free property above still holds.
+import { parseHHMM, dailyDueAtMs, restartDue } from './auto-restart.js'
+
 export interface ContextGuardConfig {
   /** Master toggle for the PROACTIVE tiers (actPct handoff / hardPct restart).
    *  Default FALSE: opt-in per agent. (The original rationale -- avoiding a
@@ -57,6 +64,17 @@ export interface ContextGuardConfig {
   idleFlushTokens: number
   /** How long the session must have been quiet before the idle tier acts. */
   idleMinutes: number
+  /** Daily-handoff tier: at a fixed wall-clock time, hand the session off and
+   *  restart it -- the scheduled counterpart of the three context-driven
+   *  tiers. Independent of `enabled` and default FALSE, like the idle tier:
+   *  it answers a third question (is this session a DAY old), and turning it
+   *  on ends a conversation on a timetable rather than on a measurement. */
+  dailyHandoffEnabled: boolean
+  /** Local wall-clock time (HH:MM) the daily tier fires at; null = unset.
+   *  Unset is NOT a silent no-op for the operator: dailyHandoffArmed() is
+   *  false, so the auto-restart runner keeps its own nightly restart instead
+   *  of standing aside for a tier that can never fire. */
+  dailyHandoffTime: string | null
 }
 
 export const DEFAULT_CONTEXT_GUARD: ContextGuardConfig = {
@@ -106,6 +124,12 @@ export const DEFAULT_CONTEXT_GUARD: ContextGuardConfig = {
   // "quieter than this is not a working turn" boundary rather than a second
   // invented figure.
   idleMinutes: 20,
+  dailyHandoffEnabled: false,
+  // No default time. A default here would be a schedule nobody chose, and the
+  // arming predicate treats null as "not armed", so an operator who enables
+  // the tier without naming a time keeps the old nightly restart rather than
+  // losing it to a tier that never fires.
+  dailyHandoffTime: null,
 }
 
 /** Coerce arbitrary parsed JSON into a safe, fully-populated config. */
@@ -139,6 +163,11 @@ export function normalizeContextGuardConfig(raw: unknown): ContextGuardConfig {
     idleFlushEnabled: o.idleFlushEnabled === true, // default-off (opt-in), like `enabled`
     idleFlushTokens,
     idleMinutes: mins(o.idleMinutes, DEFAULT_CONTEXT_GUARD.idleMinutes),
+    dailyHandoffEnabled: o.dailyHandoffEnabled === true, // default-off (opt-in), like the other tiers
+    // Same shape as normalizeAutoRestartConfig's dailyTime: a value that does
+    // not parse as HH:MM becomes null rather than being carried through, so a
+    // typo disarms the tier instead of scheduling it at an unreadable time.
+    dailyHandoffTime: parseHHMM(o.dailyHandoffTime) !== null ? (o.dailyHandoffTime as string).trim() : null,
   }
 }
 
@@ -163,19 +192,34 @@ export const CONTEXT_LIMIT_TIERS = [200_000, 500_000, 1_000_000] as const
  *
  * Sonnet stays at 200k deliberately: this host has never observed a sonnet
  * session above 198k (sonnet-5 max 197,885 across 14 days), so 200k is the
- * evidenced effective window there. Haiku is 200k by spec. Unknown models
- * stay conservative at 200k -- calibrateLimit and the runner's persisted
- * high-water mark step the denominator up from live evidence, and
- * over-estimating would blind the proactive tiers (the 2026-07-26 failure
- * mode), while under-estimating is loud and self-correcting.
+ * evidenced effective window there. Sonnet 5.5 is the exception, measured
+ * 2026-10-12: its Claude Code status bar reports a 1M window (trinity
+ * 216k/1M, arnold 201k/1M) while the 200k guess read those sessions as
+ * 110% and ~100% and force-restarted both at ~20% real usage. Haiku 4.5 is
+ * 200k by spec. Unknown models stay conservative at 200k -- calibrateLimit
+ * and the runner's persisted high-water mark step the denominator up from
+ * live evidence, and over-estimating would blind the proactive tiers (the
+ * 2026-07-26 failure mode), while under-estimating is loud and
+ * self-correcting.
  */
-const ONE_MILLION_FAMILIES = [/fable-\d/, /mythos-\d/, /opus-4-[6-9]/, /opus-[5-9]\b/]
+const ONE_MILLION_FAMILIES = [/fable-\d/, /mythos-\d/, /opus-4-[6-9]/, /opus-[5-9]\b/, /sonnet-5-[5-9]/]
 
 export function contextLimitForModel(model: string | null | undefined): number {
   if (typeof model !== 'string') return 200_000
   const m = model.toLowerCase()
   if (m.includes('[1m]')) return 1_000_000
   if (ONE_MILLION_FAMILIES.some(rx => rx.test(m))) return 1_000_000
+  // minimax-m3 is a special case, NOT a general "trust the vendor" precedent
+  // (see deepseek-v4-pro below, which stays 200_000 on live measurement).
+  // MiniMax's own /anthropic compat endpoint misreports 200K in its model
+  // metadata instead of M3's real 1M (MiniMax-AI/MiniMax-M2.7#46) -- but
+  // agent-process.ts's resolveProviderEnv forces
+  // CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000 for every minimax- launch, which a
+  // live restart confirmed actually works (pane went from "199k left" to
+  // "999k left"). This 1M and that env var override are a pair: dropping the
+  // override without reverting this would under-restart against a window the
+  // CLI no longer has.
+  if (m.startsWith('minimax-')) return 1_000_000
   return 200_000
 }
 
@@ -242,6 +286,11 @@ export interface GuardState {
   cooldownUntilMs: number
   /** Consecutive idle-phase sweeps that saw a saturated pane (debounce). */
   saturatedStreak: number
+  /** Stale-handoff refreshes already requested in THIS await-handoff sequence.
+   *  Bounded by MAX_STALE_REFRESHES: without a bound the refresh loop cannot
+   *  converge for an agent whose own scheduled task fires more often than the
+   *  staleness slack, and it runs to the handoff timeout every time. */
+  staleRefreshCount: number
   /** Set at restart time when HANDOFF.md predates the agent's last transcript
    *  activity by more than the slack: ~minutes of work the handoff does NOT
    *  cover. Carried into await-ready so the resume prompt can say so -- a
@@ -257,6 +306,7 @@ export const INITIAL_GUARD_STATE: GuardState = {
   deadlineMs: 0,
   cooldownUntilMs: 0,
   saturatedStreak: 0,
+  staleRefreshCount: 0,
   handoffStaleMinutes: null,
 }
 
@@ -266,6 +316,72 @@ export const INITIAL_GUARD_STATE: GuardState = {
  *  a scrollback quote scrolling through the footer region, a mid-render
  *  frame -- clears by the next sweep. */
 export const SATURATION_CONFIRM_SWEEPS = 2
+
+/**
+ * Below this MEASURED context fraction a PERCENTAGE-shaped saturation banner is
+ * not believable.
+ *
+ * The banner is a CLAIM the CLI computes with its OWN denominator; pct is a
+ * MEASUREMENT from the transcript over contextLimitForModel's denominator (the
+ * 1M families plus the runner's persisted high-water mark). When a model id
+ * reaches the CLI WITHOUT the [1m] marker the CLI sizes its status line to 200k
+ * and prints "100% context used" at ~179k, while the session keeps working --
+ * 998 856 tokens observed in one session on this host. Believing the claim
+ * there executes a WORKING agent mid-turn: 318 numeric "pane saturated" hard
+ * restarts over nine days across four agents, measured context min 18 / median
+ * 19 / max 43 percent, not one above 90.
+ *
+ * 0.5 sits in the EMPTY BAND between the measured false positives (max 0.43)
+ * and any believable genuine saturation: per the CALIBRATION_OVERSHOOT_TOLERANCE
+ * note, 11 sessions that the CLI itself flagged "100% context used" measured
+ * 0.89-1.07. The margin is deliberately asymmetric towards safety (16% of
+ * headroom towards the false readings, 78% towards the genuine ones): when in
+ * doubt we believe the banner. A standalone constant, NOT derived from
+ * cfg.actPct -- lowering actPct must never widen the band in which the net
+ * stands down.
+ */
+export const SATURATION_CREDIBLE_MIN_PCT = 0.5
+
+/**
+ * Does the measurement support the pane's saturation banner?
+ *
+ * `bannerIsHardError` is what keeps this safe, and it is why the parameter is
+ * required rather than defaulted. Only the PERCENTAGE-shaped banners ("100%
+ * context used", "Context low (N% remaining)") take their truth from the CLI's
+ * status-line denominator and can therefore be wrong. The error-shaped ones
+ * ("Context limit reached", "context ... full", "auto-compact required") are
+ * painted only after a turn ACTUALLY failed at the real limit -- in CLI 2.1.205
+ * "Context limit reached" renders in color:"error" off the API's own "input
+ * length and max_tokens exceed context limit" -- so no denominator is involved
+ * and nothing measured here may overrule them. Overruling one would stand the
+ * net down on a genuinely wedged pane AND open the dispatch gate to it, turning
+ * a ~10 minute rescue into silent message loss. See
+ * paneShowsContextSaturationHardError in pane-state.ts.
+ *
+ * `pct === null` (unreadable transcript) => TRUE: there is no evidence against
+ * the banner, and that is the case the net was originally built for (samu,
+ * 2026-07-18). Only a real measurement may overrule a real banner.
+ *
+ * There is deliberately NO time-based valve for the mirror-image failure (a
+ * denominator wrong UPWARDS, e.g. [1m] pinned on a genuinely 200k model),
+ * because that case self-corrects through bannerIsHardError: the gate is open
+ * for such a session, so the next dispatched prompt starts a turn, the turn
+ * fails at the real limit, the CLI paints "Context limit reached", and the
+ * following sweep restarts it. An idle-time valve was written and then removed:
+ * idleMs cannot tell a wedged session from a merely quiet one, so it would hard
+ * restart every healthy personal assistant that goes silent overnight -- which
+ * is the exact failure this function exists to remove.
+ */
+export function saturationBannerCredible(
+  paneSaturated: boolean,
+  bannerIsHardError: boolean,
+  pct: number | null,
+): boolean {
+  if (!paneSaturated) return false
+  if (bannerIsHardError) return true
+  if (pct === null) return true
+  return pct >= SATURATION_CREDIBLE_MIN_PCT
+}
 
 export interface GuardInputs {
   nowMs: number
@@ -296,6 +412,11 @@ export interface GuardInputs {
    *  writes nothing while it runs -- so it is only ever read together with
    *  paneIdle. See readTranscriptMtimeFromProjectDir. */
   idleMs: number | null
+  /** The configured daily slot has come round and has not been served yet.
+   *  Computed by the runner with dailyHandoffDue(), which needs a local
+   *  midnight and the last-served stamp -- neither of which belongs in this
+   *  clock-free module's decision function. */
+  dailyHandoffDue: boolean
 }
 
 /**
@@ -319,11 +440,226 @@ export const IDLE_FLUSH_REASON_PREFIX = 'idle-flush'
  */
 export const STALE_REFRESH_REASON_PREFIX = 'stale-handoff-refresh'
 
+/**
+ * Reason prefix for the scheduled daily handoff. A fourth wording again: this
+ * agent's session is neither near its limit nor expensive nor finished, it is
+ * simply a day old, and telling it otherwise would be false. The runner
+ * matches this constant to pick the prompt.
+ */
+export const DAILY_HANDOFF_REASON_PREFIX = 'daily-handoff'
+
+/**
+ * Whether the daily tier can actually fire for this config.
+ *
+ * ONE predicate, two readers: the tier itself, and the auto-restart runner
+ * deciding whether to stand aside. They must never disagree -- an auto-restart
+ * that stands down for a tier that cannot fire silently removes the nightly
+ * restart, which is strictly worse than the state this whole change is fixing.
+ * "Enabled" is therefore not enough: an unparseable or absent time disarms it.
+ */
+export function dailyHandoffArmed(cfg: ContextGuardConfig): boolean {
+  return cfg.dailyHandoffEnabled && parseHHMM(cfg.dailyHandoffTime) !== null
+}
+
+/**
+ * Is the configured daily slot due and unserved?
+ *
+ * `lastRunMs` is the last time this tier fired for the agent (null = never /
+ * not yet seeded). The comparison is delegated to restartDue, the same
+ * predicate the nightly auto-restart uses, so "due" means exactly what it
+ * already means elsewhere in the fleet: past the slot, and not already served
+ * for that slot.
+ */
+export function dailyHandoffDue(
+  cfg: ContextGuardConfig,
+  localMidnightMs: number,
+  lastRunMs: number | null,
+  nowMs: number,
+): boolean {
+  if (!dailyHandoffArmed(cfg)) return false
+  const mins = parseHHMM(cfg.dailyHandoffTime)
+  if (mins === null) return false
+  return restartDue(lastRunMs, nowMs, dailyDueAtMs(localMidnightMs, mins))
+}
+
+/**
+ * One sweep's step of the daily tier's "last served" record, for one agent.
+ *
+ * The record is seeded on first sight so that a guard process starting after
+ * today's slot does not fire it at once. But the seed must be taken while the
+ * tier is ARMED: seeded while disarmed, the record holds the moment the
+ * dashboard process first saw the agent (say 02:05), and arming the tier later
+ * the same day (say 12:53, slot 03:00) finds "last served 02:05, before today's
+ * slot, slot passed" -- due, and it fires on the very next sweep. Measured on
+ * a live fleet 2026-09-29: armed 12:53, four agents handed off at 12:56.
+ *
+ * So a disarmed tier forgets the record, and the first armed sight seeds it.
+ * Arming after today's slot then waits for tomorrow; arming before it fires at
+ * the slot, as configured.
+ *
+ * Returns whether the slot is due now, and the record to keep (undefined =
+ * forget it).
+ */
+export function dailyHandoffStep(
+  cfg: ContextGuardConfig,
+  lastRunMs: number | undefined,
+  localMidnightMs: number,
+  nowMs: number,
+): { due: boolean; record: number | undefined } {
+  if (!dailyHandoffArmed(cfg)) return { due: false, record: undefined }
+  if (lastRunMs === undefined) return { due: false, record: nowMs }
+  return { due: dailyHandoffDue(cfg, localMidnightMs, lastRunMs, nowMs), record: lastRunMs }
+}
+
+/**
+ * One sweep of the daily-tier bookkeeping for one agent, as the runner applies it.
+ *
+ * The order is the point. A disarmed tier forgets the record on EVERY sweep, before
+ * the eligibility gate: an agent that was never idle while the tier was off would
+ * otherwise keep its old armed record, and arming the tier after the slot would
+ * fire at once. Seeding and firing stay behind the gate (`eligible`: the agent is
+ * running and idle), where an ineligible sweep keeps the record untouched.
+ *
+ * Returns whether the slot is due on this sweep, and the record to keep
+ * (undefined = forget it).
+ */
+export function dailyHandoffSweep(
+  cfg: ContextGuardConfig,
+  lastRunMs: number | undefined,
+  eligible: boolean,
+  localMidnightMs: number,
+  nowMs: number,
+): { due: boolean; record: number | undefined } {
+  if (!dailyHandoffArmed(cfg)) return { due: false, record: undefined }
+  if (!eligible) return { due: false, record: lastRunMs }
+  return dailyHandoffStep(cfg, lastRunMs, localMidnightMs, nowMs)
+}
+
+/**
+ * dailyHandoffSweep applied to the runner's record map: an `undefined` record
+ * deletes the agent's entry, anything else replaces it. Returns whether the slot
+ * is due on this sweep.
+ *
+ * It exists so the runner's call is one expression with nowhere to put an early
+ * return: a gate in front of the sweep (`if (!running) return false`) is exactly
+ * the bug the sweep's order fixes -- the forget waits behind the idle gate again.
+ */
+export function applyDailyHandoffSweep(
+  records: Map<string, number>,
+  name: string,
+  cfg: ContextGuardConfig,
+  eligible: boolean,
+  localMidnightMs: number,
+  nowMs: number,
+): boolean {
+  const sweep = dailyHandoffSweep(cfg, records.get(name), eligible, localMidnightMs, nowMs)
+  if (sweep.record === undefined) records.delete(name)
+  else records.set(name, sweep.record)
+  return sweep.due
+}
+
+/**
+ * dailyHandoffSweep plus the open-question skip, for one agent.
+ *
+ * Why: the daily tier ends in a fresh restart, and an owner message the agent
+ * has not yet been shown or answered would be lost to it: the fresh session
+ * starts from a handoff note, not from the pending exchange. The nightly auto-restart already holds back for
+ * an open question (its own raw ledger check), but it stands aside whenever
+ * this tier is armed.
+ *
+ * The rule is deliberately small. When the slot is due and the owner has an
+ * open question, today's slot is skipped: recorded as served, so it is due
+ * again at its usual time tomorrow. The next due slot fires regardless if the
+ * previous one was skipped. So the tier only ever fires when it would have
+ * fired without this rule (never at an unusual hour, never into the exchange
+ * it waited for), and an open question costs at most one handoff in a row,
+ * whatever the owner's pattern. "Open" is the /clear gate's rule
+ * (ownerQuestionHolds: unanswered and not yet surfaced to the agent by the
+ * ledger drain). A failed ledger read counts as no question.
+ *
+ * The skip flag survives until a slot is actually served (the runner clears it
+ * when the daily reason wins the decision), so a forced slot pre-empted by a
+ * higher-ranked tier is still forced on the next sweep. Eligibility, seeding
+ * and the disarmed forget are dailyHandoffSweep's; a disarmed tier also forgets
+ * the flag. `readQuestionOpen` is called only on a due, eligible sweep that is
+ * not already forced, so ordinary sweeps read no ledger.
+ */
+export function dailyHandoffSkipSweep(
+  cfg: ContextGuardConfig,
+  lastRunMs: number | undefined,
+  skippedLast: boolean,
+  eligible: boolean,
+  localMidnightMs: number,
+  nowMs: number,
+  readQuestionOpen: () => boolean | undefined,
+): { due: boolean; record: number | undefined; skippedLast: boolean; skippedNow: boolean } {
+  const sweep = dailyHandoffSweep(cfg, lastRunMs, eligible, localMidnightMs, nowMs)
+  if (!dailyHandoffArmed(cfg)) return { due: false, record: sweep.record, skippedLast: false, skippedNow: false }
+  if (!sweep.due || skippedLast) return { ...sweep, skippedLast, skippedNow: false }
+  if (readQuestionOpen() === true) return { due: false, record: nowMs, skippedLast: true, skippedNow: true }
+  return { ...sweep, skippedLast: false, skippedNow: false }
+}
+
+/**
+ * dailyHandoffSkipSweep applied to the runner's record map and skip set, the
+ * way applyDailyHandoffSweep applies the sweep. Returns whether the slot is
+ * due; calls `onSkip` when this sweep skipped it.
+ */
+export function applyDailyHandoffSkipSweep(
+  records: Map<string, number>,
+  skipped: Set<string>,
+  name: string,
+  cfg: ContextGuardConfig,
+  eligible: boolean,
+  localMidnightMs: number,
+  nowMs: number,
+  readQuestionOpen: () => boolean | undefined,
+  onSkip: () => void,
+): boolean {
+  const r = dailyHandoffSkipSweep(cfg, records.get(name), skipped.has(name), eligible, localMidnightMs, nowMs, readQuestionOpen)
+  if (r.record === undefined) records.delete(name)
+  else records.set(name, r.record)
+  if (r.skippedLast) skipped.add(name)
+  else skipped.delete(name)
+  if (r.skippedNow) onSkip()
+  return r.due
+}
+
 /** Slack between HANDOFF.md's mtime and the last transcript activity before
  *  the handoff counts as stale. The handoff-writing turn itself touches the
  *  transcript slightly AFTER the file write (tool result + closing reply), so
  *  a zero-slack comparison would flag every handoff as stale. */
 export const STALE_HANDOFF_SLACK_MS = 3 * 60_000
+
+/**
+ * How many stale-handoff refreshes one await-handoff sequence may ask for.
+ *
+ * Why a bound exists at all (measured 2026-09-20, cortex-ugypasztor): staleness
+ * is `last pane activity - handoff mtime`, so it measures WHEN the last activity
+ * was, not WHAT it was. An agent whose own scheduled task fires every 5 minutes
+ * is woken between every pair of guard sweeps, which puts fresh activity ~4
+ * minutes after each handoff write -- above the 3-minute slack, every single
+ * time. The refresh condition is then structurally always true and the loop
+ * cannot converge: the agent answered all four requests, and each answer was
+ * invalidated by its own next poll before the guard looked again. It ran to the
+ * 20-minute timeout and force-restarted at 94% (from 90%).
+ *
+ * Raising or lowering handoffTimeoutMinutes does not fix that -- it only moves
+ * the ceiling on a loop that never terminates on its own. Control group from the
+ * same night: two agents whose fastest task fires every 10 and ~14 minutes entered
+ * same phase and left it in 10 minutes with ONE refresh each.
+ *
+ * One refresh still covers the case the refresh was built for (2026-08-17: a
+ * merge-gate verdict landed in the 20 minutes after a handoff write). After
+ * that we ship the handoff we have -- never silently: restartDecision carries
+ * handoffStaleMinutes into await-ready, and the resume prompt spells out how
+ * many minutes the handoff does not cover.
+ *
+ * Deliberately a constant, not a config key. The measured failure is structural,
+ * not a tuning mistake, and a new knob would invite exactly the tuning that does
+ * not help.
+ */
+export const MAX_STALE_REFRESHES = 1
 
 /** Freshness verdict for HANDOFF.md at decision time: minutes of uncovered
  *  work, 'unknown', or null (= fresh enough / no artifact to judge). */
@@ -365,7 +701,15 @@ export interface GuardDecision {
 // How long await-ready waits for the restarted session to accept the resume
 // prompt before giving up (the agent still comes up fine -- it just starts
 // without the injected pointer; kanban/memory hooks remain).
-export const READY_TIMEOUT_MS = 5 * 60_000
+//
+// 20 minutes, not 5: the runner sweeps every 5 minutes, so a
+// 5-minute deadline gave the fresh session exactly ONE readiness check, and a
+// session busy at that sweep lost its resume (3 of 13 restarts, 2026-09-28).
+// 20 minutes is four sweeps and stays inside PENDING_RESUME_TTL_MS (30 min),
+// the edge of the persisted obligation. A resume re-armed after a dashboard
+// restart gets that TTL edge as its deadline, so it may wait up to 10 minutes
+// longer than an uninterrupted one, but never past the TTL.
+export const READY_TIMEOUT_MS = 20 * 60_000
 
 function cooldown(nowMs: number, cfg: ContextGuardConfig, reason: string): GuardDecision {
   return {
@@ -377,6 +721,7 @@ function cooldown(nowMs: number, cfg: ContextGuardConfig, reason: string): Guard
       deadlineMs: 0,
       cooldownUntilMs: nowMs + cfg.cooldownMinutes * 60_000,
       saturatedStreak: 0,
+      staleRefreshCount: 0,
       handoffStaleMinutes: null,
     },
   }
@@ -394,6 +739,7 @@ function restartDecision(nowMs: number, reason: string, staleMinutes: HandoffSta
       deadlineMs: nowMs + READY_TIMEOUT_MS,
       cooldownUntilMs: 0,
       saturatedStreak: 0,
+      staleRefreshCount: 0,
       handoffStaleMinutes: staleMinutes,
     },
   }
@@ -412,7 +758,7 @@ export function decideGuard(
   const none = (reason: string, next: GuardState = state): GuardDecision =>
     ({ action: 'none', reason, nextState: next })
 
-  if (!cfg.enabled && !cfg.saturationRestart && !cfg.idleFlushEnabled) {
+  if (!cfg.enabled && !cfg.saturationRestart && !cfg.idleFlushEnabled && !cfg.dailyHandoffEnabled) {
     return none('disabled', INITIAL_GUARD_STATE)
   }
 
@@ -452,14 +798,34 @@ export function decideGuard(
         const flush = decideIdleFlush(nowMs, inputs, cfg, cleared, none)
         if (flush) return flush
       }
+      // Daily tier, ranked LAST. The three tiers above answer measured
+      // questions -- is this session about to break, is it expensive, is it
+      // finished -- and any of them is a better reason to state than "it is
+      // 04:00". This one exists for the sessions none of them ever reach: an
+      // agent below every threshold still carries a day of context into a
+      // nightly fresh restart that would otherwise drop it on the floor.
+      //
+      // Deliberately NOT gated on paneIdle. Unlike the idle tier, which only
+      // wants finished sessions, this one has a slot to keep: a busy agent
+      // gets the request and answers it after its turn, and await-handoff
+      // already refuses to cut a live turn.
+      if (cfg.dailyHandoffEnabled && inputs.dailyHandoffDue) {
+        return handoffRequest(
+          nowMs, inputs, cfg,
+          `${DAILY_HANDOFF_REASON_PREFIX} (scheduled ${cfg.dailyHandoffTime})`,
+        )
+      }
       if (!cfg.enabled) return none('proactive guard disabled (saturation net armed)', cleared)
       if (inputs.pct === null) return none('context unmeasurable', cleared)
       return none('below threshold', cleared)
     }
 
     case 'await-handoff': {
-      if (!cfg.enabled && !cfg.idleFlushEnabled) {
+      if (!cfg.enabled && !cfg.idleFlushEnabled && !cfg.dailyHandoffEnabled) {
         // Operator disabled the proactive guard mid-sequence; stand down.
+        // Every tier that can ENTER this phase has to appear here: omitting
+        // one would stand the sequence down on the sweep after it started,
+        // for an agent whose only armed tier is the missing one.
         return cooldown(nowMs, cfg, 'guard disabled during await-handoff')
       }
       if (!inputs.running) {
@@ -482,7 +848,13 @@ export function decideGuard(
         // idle pane (2026-08-17: 20 minutes of work, including a merge-gate
         // verdict, happened after the write). Existence is not freshness.
         const staleMin = handoffStaleMinutes(inputs)
-        if (typeof staleMin === 'number' && nowMs < state.deadlineMs && !(inputs.pct !== null && inputs.pct >= cfg.hardPct)) {
+        const refreshBudgetLeft = state.staleRefreshCount < MAX_STALE_REFRESHES
+        if (
+          typeof staleMin === 'number' &&
+          refreshBudgetLeft &&
+          nowMs < state.deadlineMs &&
+          !(inputs.pct !== null && inputs.pct >= cfg.hardPct)
+        ) {
           // There is still budget before the deadline and the context is not
           // yet at the hard threshold: ask for a refresh instead of shipping
           // a handoff that misses the last N minutes. Advancing the recorded
@@ -492,12 +864,23 @@ export function decideGuard(
           return {
             action: 'request-handoff',
             reason: `${STALE_REFRESH_REASON_PREFIX}: handoff written but ~${staleMin}m of work happened after it -- requesting refresh`,
-            nextState: { ...state, handoffMtimeAtRequest: inputs.handoffMtime },
+            nextState: {
+              ...state,
+              handoffMtimeAtRequest: inputs.handoffMtime,
+              staleRefreshCount: state.staleRefreshCount + 1,
+            },
           }
         }
+        // Refresh budget spent (or never applicable): ship what we have. Saying
+        // the budget is spent out loud matters -- the previous behaviour looked
+        // identical in the log to "the agent never answered", which is the
+        // opposite diagnosis.
         return restartDecision(
           nowMs,
-          typeof staleMin === 'number' ? `handoff written but STALE (~${staleMin}m of work after it)` : 'handoff written',
+          typeof staleMin === 'number'
+            ? `handoff written but STALE (~${staleMin}m of work after it)` +
+              (refreshBudgetLeft ? '' : ` -- ${state.staleRefreshCount} refresh(es) already requested, accepting as-is`)
+            : 'handoff written',
           staleMin,
         )
       }
@@ -532,6 +915,7 @@ export function decideGuard(
             deadlineMs: 0,
             cooldownUntilMs: nowMs + cfg.cooldownMinutes * 60_000,
             saturatedStreak: 0,
+            staleRefreshCount: 0,
             handoffStaleMinutes: null,
           },
         }
@@ -656,6 +1040,8 @@ function handoffRequest(
       deadlineMs: nowMs + cfg.handoffTimeoutMinutes * 60_000,
       cooldownUntilMs: 0,
       saturatedStreak: 0,
+      // A NEW sequence starts with a fresh refresh budget.
+      staleRefreshCount: 0,
       handoffStaleMinutes: null,
     },
   }

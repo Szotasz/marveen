@@ -53,6 +53,14 @@ describe('auto-update seed task', () => {
     expect(config.command).toContain('nohup')
   })
 
+  it('strips NODE_ENV before launching update.sh (AUTOUPDNODEENV905)', () => {
+    // With NODE_ENV=production in the agent environment npm defaults to
+    // omit=dev inside update.sh, pruning tsc and locking the install into a
+    // fail-and-rollback loop the fix itself cannot escape. The env scrub at
+    // the caller is what reaches installs still running an OLD update.sh.
+    expect(config.command).toContain('env -u NODE_ENV bash')
+  })
+
   it('uses install-dir placeholders, never a hardcoded absolute path', () => {
     expect(config.command).toContain('{{INSTALL_DIR}}')
     expect(config.command).not.toMatch(/\/Users\/|\/home\//)

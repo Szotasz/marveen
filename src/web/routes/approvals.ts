@@ -1,8 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
-import { PROJECT_ROOT, MAIN_AGENT_ID, TELEGRAM_BOT_TOKEN } from '../../config.js'
+import { PROJECT_ROOT, MAIN_AGENT_ID, TELEGRAM_BOT_TOKEN, CHANNEL_PROVIDER, APP_TZ } from '../../config.js'
 import {
+  consumeApproval,
   createApproval, getApproval, resolveApproval, listApprovals, expireTimedOutApprovals,
   createAgentMessage, setApprovalTelegramMessageId,
   type Approval,
@@ -10,6 +11,7 @@ import {
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import { resolveOwnerChatId } from '../../owner-chat.js'
+import { sendOwnerMessage } from '../../notify.js'
 import { sendTelegramMessage } from '../telegram.js'
 import type { RouteContext } from './types.js'
 
@@ -53,11 +55,41 @@ export function computeTimeoutAt(category: string, timeoutSeconds: unknown, nowM
   return now + DEFAULT_TIMEOUT_MINUTES * 60
 }
 
+// f2c5edb0: the window inside which an approved letter may still be consumed,
+// counted from resolved_at. The SAME variable and default as the gate
+// (EMAIL_APPROVAL_WINDOW_S, 1800 s in scripts/hooks/email-approval-gate.py), so
+// the two consume paths agree on when an approval has gone stale.
+export function approvalWindowSeconds(env: NodeJS.ProcessEnv = process.env): number {
+  const v = Number.parseInt(env.EMAIL_APPROVAL_WINDOW_S ?? '', 10)
+  return Number.isFinite(v) && v > 0 ? v : 1800
+}
+
+// The consumer names the sending tool in the audit trail. Printable only (no
+// control characters, checked by code point so the source carries no escape),
+// 1-120 characters after trimming.
+export function isConsumerName(v: unknown): v is string {
+  if (typeof v !== 'string') return false
+  const t = v.trim()
+  if (t.length < 1 || t.length > 120) return false
+  for (let i = 0; i < t.length; i++) {
+    const c = t.charCodeAt(i)
+    if (c < 32 || c === 127) return false
+  }
+  return true
+}
+
+// One RFC 5322 msg-id, angle brackets included: the sender generates it BEFORE
+// the send and hands the same value to its mailer, so the approval row names the
+// letter that used it.
+export function isMessageId(v: unknown): v is string {
+  return typeof v === 'string' && v.length <= 250 && /^<[^<>\s@]+@[^<>\s@]+>$/.test(v)
+}
+
 // Owner-facing Telegram text. Pure + exported for tests. Plain text (no
 // markdown escaping concerns), proper accents: this is outgoing copy.
 export function buildOwnerApprovalText(approval: Approval): string {
   const expires = approval.timeout_at
-    ? new Date(approval.timeout_at * 1000).toLocaleString('hu-HU', { timeZone: 'Europe/Budapest' })
+    ? new Date(approval.timeout_at * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ })
     : 'nincs'
   return [
     `[JÓVÁHAGYÁS KELL] ${approval.agent_id} | ${approval.category}`,
@@ -99,25 +131,66 @@ function fallbackInBand(approval: Approval, reason: string): void {
 // undelivered approval is exactly the closed loop this fixes.
 function notifyOwner(approval: Approval): void {
   void (async () => {
-    if (!TELEGRAM_BOT_TOKEN) {
-      logger.warn({ approvalId: approval.id }, 'approval owner notification suppressed: no TELEGRAM_BOT_TOKEN')
+    // APPROVALVAK821 fixed this path so the request reaches the OWNER and not
+    // only the main agent's queue -- but the fix went out Telegram-only, so on
+    // any install that speaks another provider the old silence came straight
+    // back. Measured on a Discord install 2026-09-26: every approval request
+    // logged `owner notification suppressed: no TELEGRAM_BOT_TOKEN`, the owner
+    // was told nothing, and the only notification went to the main agent, i.e.
+    // to the very agent whose request it was. An approval gate whose owner
+    // never hears about it is not a gate.
+    //
+    // The Telegram branch is kept for Telegram installs ONLY because it also
+    // records the message id (setApprovalTelegramMessageId); every other
+    // provider goes through sendOwnerMessage, which resolves provider, token
+    // and owner chat the same way every other owner message does.
+    if (CHANNEL_PROVIDER === 'telegram' && TELEGRAM_BOT_TOKEN) {
+      const ownerChat = resolveOwnerChatId()
+      if (!ownerChat) {
+        logger.warn({ approvalId: approval.id }, 'approval owner notification suppressed: no owner chat')
+        fallbackInBand(approval, 'no-owner-chat')
+        return
+      }
+      try {
+        const messageId = await sendTelegramMessage(TELEGRAM_BOT_TOKEN, ownerChat, buildOwnerApprovalText(approval))
+        if (messageId != null) setApprovalTelegramMessageId(approval.id, messageId)
+        logger.info({ approvalId: approval.id, messageId }, 'approval owner notification sent')
+      } catch (err) {
+        logger.warn({ err, approvalId: approval.id }, 'approval owner notification FAILED -- the request is only visible on the dashboard')
+        fallbackInBand(approval, 'send-failed')
+      }
+      return
+    }
+
+    // sendOwnerMessage REPORTS whether it went out (PR1655 review, ask 2). The
+    // funnel it wraps swallows every provider exception, so a `catch` here
+    // would be unreachable and a failed Discord send would be recorded as a
+    // delivered notification. The result is read instead.
+    // The literals below are deliberate, not a computed reason string: the
+    // delivery contract test (approvals-delivery.test.ts) reads this function's
+    // SOURCE and requires every failure path to name its fallback explicitly.
+    // That test exists so a refactor cannot quietly drop a fallback -- and it
+    // caught exactly that when this branch first used a template string.
+    const r = await sendOwnerMessage(buildOwnerApprovalText(approval))
+    if (r.sent) {
+      logger.info({ approvalId: approval.id, provider: CHANNEL_PROVIDER }, 'approval owner notification sent')
+      return
+    }
+    if (r.reason === 'no-token') {
+      logger.warn({ approvalId: approval.id, provider: CHANNEL_PROVIDER },
+        'approval owner notification suppressed: no channel token')
       fallbackInBand(approval, 'no-token')
       return
     }
-    const ownerChat = resolveOwnerChatId()
-    if (!ownerChat) {
-      logger.warn({ approvalId: approval.id }, 'approval owner notification suppressed: no owner chat')
+    if (r.reason === 'no-owner-chat') {
+      logger.warn({ approvalId: approval.id, provider: CHANNEL_PROVIDER },
+        'approval owner notification suppressed: no owner chat')
       fallbackInBand(approval, 'no-owner-chat')
       return
     }
-    try {
-      const messageId = await sendTelegramMessage(TELEGRAM_BOT_TOKEN, ownerChat, buildOwnerApprovalText(approval))
-      if (messageId != null) setApprovalTelegramMessageId(approval.id, messageId)
-      logger.info({ approvalId: approval.id, messageId }, 'approval owner notification sent')
-    } catch (err) {
-      logger.warn({ err, approvalId: approval.id }, 'approval owner notification FAILED -- the request is only visible on the dashboard')
-      fallbackInBand(approval, 'send-failed')
-    }
+    logger.warn({ approvalId: approval.id, provider: CHANNEL_PROVIDER, reason: r.reason },
+      'approval owner notification FAILED -- the request is only visible on the dashboard')
+    fallbackInBand(approval, 'send-failed')
   })()
 }
 
@@ -162,7 +235,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
 
   // POST /api/approvals -- create new approval request
   if (path === '/api/approvals' && method === 'POST') {
-    let body: { agent_id?: unknown; category?: unknown; action_description?: unknown; action_payload?: unknown; timeout_seconds?: unknown }
+    let body: { agent_id?: unknown; category?: unknown; action_description?: unknown; action_payload?: unknown; timeout_seconds?: unknown; content_hash?: unknown }
     try {
       body = JSON.parse((await readBody(req)).toString())
     } catch {
@@ -170,7 +243,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       return true
     }
 
-    const { agent_id, category, action_description, action_payload, timeout_seconds } = body
+    const { agent_id, category, action_description, action_payload, timeout_seconds, content_hash } = body
     if (typeof agent_id !== 'string' || !agent_id.trim()) {
       json(res, { error: 'agent_id is required' }, 400)
       return true
@@ -187,6 +260,14 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'action_payload must be a string (JSON) if provided' }, 400)
       return true
     }
+    // EMAILKAPU901 PR2: the email-approval-gate hook hands the requesting
+    // agent this exact sha256 anchor (to+cc+subject+body); a malformed value
+    // could never match the gate's recomputation, so reject it loudly here
+    // instead of storing a row that silently authorizes nothing.
+    if (content_hash !== undefined && (typeof content_hash !== 'string' || !/^[0-9a-f]{64}$/.test(content_hash))) {
+      json(res, { error: 'content_hash must be a 64-char lowercase sha256 hex string if provided' }, 400)
+      return true
+    }
 
     const id = randomUUID()
     const timeout_at = computeTimeoutAt(category, timeout_seconds)
@@ -197,6 +278,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       action_description: action_description.trim(),
       action_payload: typeof action_payload === 'string' ? action_payload : null,
       timeout_at,
+      content_hash: typeof content_hash === 'string' ? content_hash : null,
     })
 
     notifyOwner(approval)
@@ -216,6 +298,60 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
 
     const items = listApprovals({ agent_id, category, status, limit })
     json(res, items)
+    return true
+  }
+
+  // POST /api/approvals/:id/consume -- f2c5edb0: one-shot consumption on the
+  // SEND path. A sender the gate cannot see (a script that mails from another
+  // host) calls this right BEFORE the letter goes out and sends only on 200.
+  // 409 means do NOT send: the approval is used, unapproved, for another letter,
+  // or stale -- and a second attempt on a used approval is the double send this
+  // exists to stop.
+  const consumeMatch = path.match(/^\/api\/approvals\/([^/]+)\/consume$/)
+  if (consumeMatch && method === 'POST') {
+    let body: { content_hash?: unknown; consumer?: unknown; message_id?: unknown }
+    try {
+      body = JSON.parse((await readBody(req)).toString())
+    } catch {
+      json(res, { error: 'Invalid JSON' }, 400)
+      return true
+    }
+    const { content_hash, consumer, message_id } = body
+    if (typeof content_hash !== 'string' || !/^[0-9a-f]{64}$/.test(content_hash)) {
+      json(res, { error: 'content_hash must be the 64-char lowercase sha256 hex anchor of the letter being sent' }, 400)
+      return true
+    }
+    if (!isConsumerName(consumer)) {
+      json(res, { error: 'consumer is required: 1-120 printable characters naming the sending tool' }, 400)
+      return true
+    }
+    if (message_id !== undefined && message_id !== null && !isMessageId(message_id)) {
+      json(res, { error: 'message_id, if given, must be one RFC 5322 id like <local@domain> (max 250 chars)' }, 400)
+      return true
+    }
+    const result = consumeApproval({
+      id: consumeMatch[1],
+      contentHash: content_hash,
+      consumer: consumer.trim(),
+      messageId: typeof message_id === 'string' ? message_id : null,
+      windowSeconds: approvalWindowSeconds(),
+    })
+    if (result.ok) {
+      logger.info({ id: consumeMatch[1], consumer: consumer.trim(), ref: message_id ?? null }, 'Approval consumed by the send path')
+      json(res, { ok: true, approval: result.approval })
+      return true
+    }
+    if (result.reason === 'not_found') {
+      json(res, { ok: false, reason: 'not_found' }, 404)
+      return true
+    }
+    const a = result.approval
+    logger.warn({ id: consumeMatch[1], consumer: consumer.trim(), reason: result.reason }, 'Approval consume refused')
+    json(res, {
+      ok: false,
+      reason: result.reason,
+      approval: a ? { id: a.id, status: a.status, consumed_at: a.consumed_at, consumed_by: a.consumed_by, consumed_ref: a.consumed_ref } : null,
+    }, 409)
     return true
   }
 

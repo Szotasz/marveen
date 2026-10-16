@@ -16,6 +16,19 @@ vi.mock('../web/agent-config.js', async (orig) => {
   return { ...actual, agentDir: (name: string) => join(SANDBOX, 'agents', name) }
 })
 
+// MCPOROKLES923: a sub-agent now inherits only servers on AGENT_INHERITED_MCP_SERVERS.
+// These tests pin the gap-fill and scope-collision behaviour FOR LISTED servers, so
+// every name they use is on the list; what an UNLISTED server gets is pinned in
+// mcp-inheritance.test.ts.
+vi.mock('../settings-store.js', async (orig) => {
+  const actual = await orig<typeof import('../settings-store.js')>()
+  return {
+    ...actual,
+    getEffectiveSettingValue: (key: string) =>
+      key === 'AGENT_INHERITED_MCP_SERVERS' ? 'gmail,google-drive,cortex,extra,third' : actual.getEffectiveSettingValue(key),
+  }
+})
+
 const { ensureIsolatedChannelConfigDir } = await import('../web/agent-process.js')
 
 const AGENT = 'testagent'
@@ -149,6 +162,67 @@ describe('isolated config dir: mcpServers reconcile', () => {
     // 0600 rather than whatever the umask happens to be on the host.
     ensureIsolatedChannelConfigDir(AGENT, 'telegram')
     expect(statSync(isolatedDotClaude()).mode & 0o777).toBe(0o600)
+  })
+
+  it('never shadows a server the agent defines in its own project-scope .mcp.json', () => {
+    // The agent owns `cortex` at project scope, with ITS token.
+    writeFileSync(
+      join(SANDBOX, 'agents', AGENT, '.mcp.json'),
+      JSON.stringify({ mcpServers: { cortex: { url: 'https://cortex.example/mcp', headers: { Authorization: 'Bearer agent-own-token' } } } }),
+    )
+    // The router's shared config carries the SAME name with a DIFFERENT token.
+    writeShared({
+      gmail: { command: 'npx', args: ['gmail-mcp'] },
+      cortex: { url: 'https://cortex.example/mcp', headers: { Authorization: 'Bearer router-token' } },
+    })
+
+    ensureIsolatedChannelConfigDir(AGENT, 'telegram')
+
+    // `cortex` must NOT land in the isolated (local-scope) config: local wins
+    // over project, so copying it would replace the agent's own credential with
+    // the router's and kill the whole server for that agent.
+    expect(servers().cortex).toBeUndefined()
+    // The genuine gap is still filled -- the fix must not disable #834.
+    expect(servers().gmail).toEqual({ command: 'npx', args: ['gmail-mcp'] })
+  })
+
+  it('skips the collision on the RECONCILE path too, not only on first seed', () => {
+    // Provision first WITHOUT any project-scope servers: the dir now exists,
+    // so every later call takes the reconcile (gap-fill) branch -- the exact
+    // branch the measured 12-hour outage came from (startup write-back).
+    ensureIsolatedChannelConfigDir(AGENT, 'telegram')
+    expect(Object.keys(servers())).toEqual(['gmail'])
+
+    // The agent then defines `cortex` at project scope with its own token,
+    // and the router's shared config later grows a same-named entry.
+    writeFileSync(
+      join(SANDBOX, 'agents', AGENT, '.mcp.json'),
+      JSON.stringify({ mcpServers: { cortex: { url: 'https://cortex.example/mcp', headers: { Authorization: 'Bearer agent-own-token' } } } }),
+    )
+    writeShared({
+      gmail: { command: 'npx', args: ['gmail-mcp'] },
+      cortex: { url: 'https://cortex.example/mcp', headers: { Authorization: 'Bearer router-token' } },
+      'google-drive': { command: 'npx', args: ['gdrive-mcp'] },
+    })
+
+    ensureIsolatedChannelConfigDir(AGENT, 'telegram')
+
+    // The genuine gap arrives, the collision does not.
+    expect(servers().cortex).toBeUndefined()
+    expect(Object.keys(servers()).sort()).toEqual(['gmail', 'google-drive'])
+  })
+
+  it('still gap-fills when the agent has no readable .mcp.json', () => {
+    // No .mcp.json at all: nothing can collide, so every shared server is a gap.
+    writeShared({ gmail: { command: 'npx', args: ['gmail-mcp'] }, extra: { command: 'x' } })
+    ensureIsolatedChannelConfigDir(AGENT, 'telegram')
+    expect(Object.keys(servers()).sort()).toEqual(['extra', 'gmail'])
+
+    // An unparseable one must behave the same way, not block the roll-out.
+    writeFileSync(join(SANDBOX, 'agents', AGENT, '.mcp.json'), '{ this is not json')
+    writeShared({ gmail: { command: 'npx', args: ['gmail-mcp'] }, extra: { command: 'x' }, third: { command: 'y' } })
+    ensureIsolatedChannelConfigDir(AGENT, 'telegram')
+    expect(Object.keys(servers()).sort()).toEqual(['extra', 'gmail', 'third'])
   })
 
   it('leaves no staging file behind (atomic write)', () => {

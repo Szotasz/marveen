@@ -65,6 +65,17 @@ describe("channel-monitor: self-healing vanished main session", () => {
     expect(fn).toContain("writeRespawnStamp()")
   })
 
+  it("respawnMarveenSessionFresh falls back to a full recreate when the pane is gone", () => {
+    // respawn-pane -k fails with 'can't find pane' if the session vanished
+    // entirely; the hard-restart escalation must then recreate the session via
+    // createMainChannelsSession() instead of dead-ending (root-caused 2026-08-06:
+    // respawn-pane looped on 'can't find pane' for hours while the session was
+    // absent, and the main channel stayed down).
+    const fn = sliceFn("respawnMarveenSessionFresh")
+    expect(fn).toContain("can't find pane")
+    expect(fn).toContain("createMainChannelsSession()")
+  })
+
   it("resumeMarveenSession writes the shared respawn stamp (2026-06-08 self-defer fix)", () => {
     // Without this stamp the stuck-tool-call-watcher cannot defer its own
     // self-respawn during the post-respawn grace, because lastMainRespawnAt()

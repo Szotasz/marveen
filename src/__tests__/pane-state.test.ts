@@ -4,6 +4,7 @@ import {
   detectPermissionMode,
   detectsThinkingBlockError,
   detectsBlockingMenu,
+  detectsPermissionDialog,
   detectsPastePlaceholder,
   isReadyForPrompt,
   shouldRetrySubmit,
@@ -18,6 +19,10 @@ import {
   parkedInputRowCount,
   submitLanded,
   paneShowsContextSaturation,
+  paneShowsContextSaturationHardError,
+  mcpTrustAcceptKeys,
+  detectsFirstRunGate,
+  detectsModelConsentDialog,
 } from '../pane-state.js'
 
 // Realistic pane fixtures modelled on actual `tmux capture-pane -p`
@@ -493,30 +498,27 @@ describe('detectPaneState', () => {
     expect(detectPaneState(IDLE_BACKGROUND_ONE_SHELL_HIDDEN)).toBe('idle')
   })
 
-  it('does NOT classify a truncated "· N shell" prefix as idle', () => {
-    // Defense in depth: the shells-variant requires either the
-    // "· N shells · ctrl+t" marker or the "· N shells · ↓ to manage"
-    // marker, not just the bare "· N shell(s)" prefix. Two reasons we
-    // pin this down with an explicit negative test:
-    //   1. A malformed or partially rendered footer (terminal
-    //      corruption, mid-render frame) must classify as 'unknown'
-    //      so we do not deliver a prompt into a pane that is not
-    //      really ready.
-    //   2. The "bypass permissions on · 1 shell" substring could
-    //      appear in scrollback as quoted log output or an echoed
-    //      message, and the regex must not be tricked into treating
-    //      that as a live footer.
-    // The fixture is deliberately minimal: no other idle markers
-    // (no "(shift+tab to cycle)", no "? for shortcuts") so the
-    // assertion isolates the truncated-shells path specifically.
-    const truncated = [
+  it('a bare "· N shell" tail is idle ONLY as the live (last) footer line (VAGTECHIDLE1009 reversed #61)', () => {
+    // #61 (2026-05) pinned the bare "bypass permissions on · 1 shell" footer as
+    // 'unknown', for two reasons: (1) it could be a mid-render frame, and (2)
+    // the substring could be quoted in scrollback. A customer's 35 captures
+    // (Vág-Tech, 2026-10-09) and our own fleet (2026-10-08) showed that this
+    // bare tail is the STABLE idle footer while a background shell runs, for
+    // hours, so reading it as 'unknown' stopped delivery and the auto-restart
+    // idle guard. Reason (2) is kept: the tail counts only on the last non-empty
+    // line, and the scrollback case is pinned in the VAGTECHIDLE1009 block.
+    // Reason (1) is a known residual: one capture cannot tell a mid-render
+    // frame from the stable footer.
+    const bare = [
       '',
       SEP,
       '❯ ',
       SEP,
       '  ⏵⏵ bypass permissions on · 1 shell',
     ].join('\n')
-    expect(detectPaneState(truncated)).toBe('unknown')
+    expect(detectPaneState(bare)).toBe('idle')
+    const quotedAbove = ['  ⏵⏵ bypass permissions on · 1 shell', '', SEP, '❯ ', SEP, '  some status line'].join('\n')
+    expect(detectPaneState(quotedAbove)).toBe('unknown')
   })
 
   it('detects busy when "esc to interrupt" footer marker is present', () => {
@@ -611,6 +613,14 @@ describe('detectPaneState', () => {
     // "Accomplishing… (Ns · ↓ N tokens)" frame lingered well above the idle
     // input box. The token-counter scan is region-scoped, so a counter that
     // has scrolled out of the live bottom region must not pin the pane busy.
+    //
+    // NOTE (2026-09-06): this fixture's counter is MINUTE-shaped ("3m 8s"), a
+    // shape the counter regex could not match until the TURN_ELAPSED fix. Until
+    // then the test passed for the wrong reason -- no region scoping required,
+    // because nothing matched anywhere -- which is why a mutation that widened
+    // the busy scan to the whole pane left the whole suite green. It is a real
+    // scope test only from this commit on; the sibling test below pins the
+    // other side of the same boundary.
     const staleCounter = [
       '✶ Accomplishing… (3m 8s · ↓ 9.3k tokens)',
       '⏺ Done: rebuilt and restarted the dashboard.',
@@ -1839,6 +1849,142 @@ describe('detectsBlockingMenu', () => {
   })
 })
 
+describe('detectsPermissionDialog', () => {
+  // Captured live from the bond session on 2026-09-05 with
+  // `tmux capture-pane -p`. The session runs with
+  // --dangerously-skip-permissions, yet this prompt still appeared: the edit
+  // targets a file under ~/.claude/, i.e. Claude Code's OWN configuration,
+  // which the flag deliberately does not cover. Option 2's wording is the
+  // giveaway. An identical edit to a path outside the project but outside
+  // ~/.claude/ produced NO dialog, so "outside the project" is not the trigger.
+  const PERMISSION_DIALOG = [
+    ' ../../home/marveen/.claude/bond-teszt.txt',
+    '╌'.repeat(100),
+    ' 1 -proba',
+    ' 1 +modositva',
+    '╌'.repeat(100),
+    ' Do you want to make this edit to bond-teszt.txt?',
+    ' ❯ 1. Yes',
+    '   2. Yes, and allow Claude to edit its own settings for this session',
+    '   3. No',
+    '',
+    ' Esc to cancel · Tab to amend',
+  ].join('\n')
+
+  // A command-permission prompt: no "Tab to amend" in the footer, so only the
+  // question+Yes shape identifies it.
+  const BASH_PERMISSION_DIALOG = [
+    ' Bash command',
+    '   rm -rf ./build',
+    '   Remove the build directory',
+    '',
+    ' Do you want to proceed?',
+    ' ❯ 1. Yes',
+    "   2. Yes, and don't ask again for rm commands in /home/marveen/marveen",
+    '   3. No, and tell Claude what to do differently (esc)',
+    '',
+    ' Esc to cancel',
+  ].join('\n')
+
+  // A genuine wedged modal: Escape here IS the right recovery and must stay.
+  const GENUINE_MENU = [
+    '   Manage MCP servers',
+    '   5 servers',
+    '',
+    '   ❯ claude.ai Canva · ✔ connected · 39 tools',
+    '',
+    '   ↑/↓ to navigate · Enter to confirm · Esc to cancel',
+  ].join('\n')
+
+  // The usage-credit consent dialog, answered by its own branch. It offers
+  // "1. Continue with ...", never "1. Yes", so the two must not overlap.
+  const CONSENT_DIALOG = [
+    '  Fable 5 now uses usage credits',
+    '  Fable 5 runs on usage credits, purchased separately from your plan.',
+    '    1. Continue with Fable 5',
+    '  ❯ 2. Switch to Sonnet 5 and continue',
+    '  Enter to confirm · Esc to cancel',
+  ].join('\n')
+
+  it('detects the live edit-permission prompt', () => {
+    expect(detectsPermissionDialog(PERMISSION_DIALOG)).toBe(true)
+  })
+
+  it('detects a command-permission prompt with no "Tab to amend" footer', () => {
+    expect(detectsPermissionDialog(BASH_PERMISSION_DIALOG)).toBe(true)
+  })
+
+  // PERMDENY905 regression anchor. The permission prompt ALSO satisfies the
+  // generic stuck-menu detector, because its footer says "Esc to cancel" --
+  // that shadowing is the entire bug. The menu-recovery branch sent Escape
+  // here, and on this dialog Escape is NO, so the watchdog silently denied the
+  // agent's own requests ~45s after they appeared while the operator believed
+  // they had approved them. If this assertion ever fails because
+  // detectsBlockingMenu stopped matching, the ordering guard in
+  // channel-monitor.ts has become redundant rather than wrong.
+  it('is also matched by detectsBlockingMenu (this is why the guard exists)', () => {
+    expect(detectsBlockingMenu(PERMISSION_DIALOG)).toBe(true)
+    expect(detectsBlockingMenu(BASH_PERMISSION_DIALOG)).toBe(true)
+  })
+
+  it('leaves a genuine blocking menu to the Escape recovery', () => {
+    expect(detectsPermissionDialog(GENUINE_MENU)).toBe(false)
+    expect(detectsBlockingMenu(GENUINE_MENU)).toBe(true)
+  })
+
+  it('does not claim the model-consent dialog', () => {
+    expect(detectsPermissionDialog(CONSENT_DIALOG)).toBe(false)
+  })
+
+  it('is false for a normal idle prompt (bypass/strict)', () => {
+    expect(detectsPermissionDialog(IDLE_BYPASS)).toBe(false)
+    expect(detectsPermissionDialog(IDLE_STRICT)).toBe(false)
+  })
+
+  it('is false for a busy turn even if it renders esc-to-interrupt', () => {
+    expect(detectsPermissionDialog(BUSY_FULL_FOOTER)).toBe(false)
+    expect(detectsPermissionDialog(BUSY_TOKENS_ONLY)).toBe(false)
+  })
+
+  // The alert-spam case: the operator answered Yes, the turn is running, and
+  // the answered question is still in scrollback. Re-alerting here would fire
+  // on every dialog the operator has already dealt with.
+  it('is false once the prompt has been answered and the turn is running', () => {
+    const answered = [
+      ' Do you want to make this edit to bond-teszt.txt?',
+      ' ❯ 1. Yes',
+      '   3. No',
+      '',
+      '✢ Combobulating… (12s · ↓ 340 tokens)',
+      '',
+      SEP,
+      '❯ ',
+      SEP,
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt',
+    ].join('\n')
+    expect(detectsPermissionDialog(answered)).toBe(false)
+  })
+
+  // Prose quoting the dialog above a live prompt must not read as one.
+  it('does not trigger on a reply that merely quotes the dialog', () => {
+    const quoted = [
+      '  A dialogus igy nez ki: "Do you want to make this edit to x.txt?"',
+      '  1. Yes / 2. ... / 3. No -- ezek a valaszthato opciok.',
+      '',
+      SEP,
+      '❯ ',
+      SEP,
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+    ].join('\n')
+    expect(detectsPermissionDialog(quoted)).toBe(false)
+  })
+
+  it('is false for an empty pane', () => {
+    expect(detectsPermissionDialog('')).toBe(false)
+    expect(detectsPermissionDialog('   \n  ')).toBe(false)
+  })
+})
+
 describe('detectsPastePlaceholder', () => {
   it('detects the `[Pasted text #N +X chars]` stub', () => {
     expect(detectsPastePlaceholder(PENDING_PASTE)).toBe(true)
@@ -2094,6 +2240,127 @@ describe('paneShowsContextSaturation', () => {
     expect(paneShowsContextSaturation('')).toBe(false)
     expect(paneShowsContextSaturation('   \n  ')).toBe(false)
   })
+
+  // The OTHER phrasing. Claude Code prints "N% context used" only while
+  // auto-compact is ENABLED; with it off the same footer slot renders
+  // `Context low (N% remaining)` in red and the "used" wording never appears
+  // (read out of the shipped CLI 2.1.247: the two strings are the two arms of
+  // one ternary). A pane sitting there is just as unreachable, so the net has
+  // to know the second wording too.
+  const lowFooter = (banner: string) => [
+    '  some prior assistant output',
+    '',
+    '✻ Cooked for 3m 7s',
+    `                                                              ${banner}`,
+    SEP,
+    '❯ ',
+    SEP,
+    '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+  ].join('\n')
+
+  it('detects the auto-compact-off wording at exhaustion', () => {
+    expect(paneShowsContextSaturation(lowFooter('Context low (0% remaining) · Run /compact to compact & continue'))).toBe(true)
+    expect(paneShowsContextSaturation(lowFooter('Context low (1% remaining)'))).toBe(true)
+    expect(paneShowsContextSaturation(lowFooter('Context low (2% remaining)'))).toBe(true)
+  })
+
+  it('does NOT treat a merely-low context as saturation', () => {
+    // The banner starts well above the danger zone and the net's response is a
+    // FRESH RESTART. Matching the whole low band would restart working agents.
+    for (const pct of [3, 5, 9, 12, 30]) {
+      expect(paneShowsContextSaturation(lowFooter(`Context low (${pct}% remaining)`))).toBe(false)
+    }
+  })
+
+  it('the low-context wording is still tail-scoped like the rest', () => {
+    const quoted = [
+      '  Note: the guard should also match "Context low (0% remaining)".',
+      ...Array.from({ length: 10 }, () => '  more scrollback padding'),
+      SEP,
+      '❯ ',
+      SEP,
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+    ].join('\n')
+    expect(paneShowsContextSaturation(quoted)).toBe(false)
+  })
+})
+
+// Two shapes of banner reach the predicate, and only one of them can be WRONG.
+//
+// A percentage claim ("100% context used", "Context low (N% remaining)") is
+// computed by the CLI from its own denominator, which is sized from the model
+// id it was launched with -- a 1M model whose id arrives without the [1m]
+// marker gets a 200k status line and prints the banner at ~179k while the
+// session keeps working. A caller holding an independent measurement can, and
+// on 2026-09-15 had to, disprove that.
+//
+// An error-shaped banner cannot be disproved by anything: the CLI paints it
+// only after a turn ACTUALLY failed at the real limit (CLI 2.1.205 renders
+// "Context limit reached" with color:"error", driven by the API's own "input
+// length and max_tokens exceed context limit"). Splitting them here is what
+// lets the context-guard overrule the first without ever touching the second.
+describe('paneShowsContextSaturationHardError', () => {
+  const footer = (banner: string) => [
+    '  some prior assistant output',
+    '',
+    banner,
+    SEP,
+    '❯ ',
+    SEP,
+    '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+  ].join('\n')
+
+  const HARD_ERRORS = [
+    'Context limit reached · use /compact or /clear to continue',
+    'Context window full',
+    'context is full',
+    'Auto-compact required',
+    'autocompact required',
+  ]
+  const PCT_CLAIMS = [
+    '                                                              100% context used',
+    'Context low (0% remaining) · Run /compact to compact & continue',
+    'Context low (2% remaining)',
+  ]
+
+  it('is true for every error-shaped banner', () => {
+    for (const b of HARD_ERRORS) {
+      expect(paneShowsContextSaturationHardError(footer(b))).toBe(true)
+    }
+  })
+
+  it('is FALSE for the percentage-shaped banners -- the ones a measurement may overrule', () => {
+    for (const b of PCT_CLAIMS) {
+      expect(paneShowsContextSaturationHardError(footer(b))).toBe(false)
+    }
+  })
+
+  it('the union predicate still matches BOTH classes (the split did not narrow it)', () => {
+    // paneShowsContextSaturation's own behaviour must be byte-identical after
+    // the regex was rebuilt from two sources: every alternative still fires.
+    for (const b of HARD_ERRORS.concat(PCT_CLAIMS)) {
+      expect(paneShowsContextSaturation(footer(b))).toBe(true)
+    }
+  })
+
+  it('is tail-scoped and empty-safe like the union predicate', () => {
+    const quoted = [
+      '  Postmortem: the pane said "Context limit reached" at 09:14.',
+      ...Array.from({ length: 10 }, () => '  more scrollback padding'),
+      SEP,
+      '❯ ',
+      SEP,
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+    ].join('\n')
+    expect(paneShowsContextSaturationHardError(quoted)).toBe(false)
+    expect(paneShowsContextSaturationHardError('')).toBe(false)
+    expect(paneShowsContextSaturationHardError('   \n  ')).toBe(false)
+  })
+
+  it('is false on ordinary panes', () => {
+    expect(paneShowsContextSaturationHardError(IDLE_BYPASS)).toBe(false)
+    expect(paneShowsContextSaturationHardError(BUSY_FULL_FOOTER)).toBe(false)
+  })
 })
 
 describe('parkedPasteSignature (stuck [Pasted text #N] recovery)', () => {
@@ -2166,5 +2433,300 @@ describe('parkedPasteSignature (stuck [Pasted text #N] recovery)', () => {
     ].join('\n')
     expect(stuckInputSignature(auraShape)).toBeNull()
     expect(parkedPasteSignature(auraShape)).not.toBeNull()
+  })
+})
+
+// ---------------------------------------------------------------------------
+// PANESPINPERC906 -- a turn longer than a minute must still read as busy.
+//
+// Claude Code stops rendering a flat second count at 60s and switches to
+// "1m 16s". Both busy regexes required `\d+s` directly after the paren, so
+// from the 60th second of every turn the spinner/token-counter signal went
+// silent and only the footer's `esc to interrupt` was left. That footer is
+// exactly the signal these patterns exist to backstop: between a submit and
+// the next spinner frame it is briefly absent, and a scheduler tick landing
+// in that window reads 'idle' and injects a prompt into a working pane.
+//
+// The minute-form fixture below is a verbatim capture from a live fleet pane
+// (marveen-channels, 2026-09-06 17:31), not a retyped lookalike.
+// ---------------------------------------------------------------------------
+describe('detectPaneState: minute- and hour-shaped turn durations', () => {
+  const liveTurn = (statusLine: string) =>
+    [
+      '⏺ Reading the router source to find the delivery loop.',
+      '',
+      statusLine,
+      SEP,
+      '❯ ',
+      SEP,
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+    ].join('\n')
+
+  it('reads a minute-shaped token counter as busy (verbatim live capture)', () => {
+    expect(detectPaneState(liveTurn('✻ (1m 16s · ↓ 4.0k tokens)'))).toBe('busy')
+  })
+
+  it('reads a minute-shaped labelled spinner frame as busy', () => {
+    expect(detectPaneState(liveTurn('✢ Combobulating… (2m 0s · ↓ 9.3k tokens)'))).toBe('busy')
+  })
+
+  it('reads an hour-shaped counter as busy', () => {
+    // Defensive, not measured: no fleet turn ran an hour. Pinned so the shape
+    // is a decision in the code rather than an accident of the regex.
+    expect(detectPaneState(liveTurn('✻ (1h 4m 2s · ↓ 210k tokens)'))).toBe('busy')
+  })
+
+  it('still reads the seconds-only shape as busy', () => {
+    // The widened pattern must not lose the shape it already covered.
+    expect(detectPaneState(liveTurn('✻ (52s · ↓ 2.6k tokens)'))).toBe('busy')
+  })
+
+  it('does NOT read a minute-shaped duration without the ↓-tokens tail as busy', () => {
+    // Prose control. "Thinking… (2m 3s)" can appear in reply text; the `· ↓N`
+    // chrome tail is what separates a rendered spinner from quoted prose, and
+    // widening the duration must not weaken that.
+    expect(detectPaneState(liveTurn('  Thinking… (2m 3s) about the schema'))).toBe('idle')
+  })
+
+  it('does NOT read a minute-shaped counter above the live region as busy', () => {
+    // The other side of the boundary pinned by the 2026-06-30 stale-counter
+    // test: same minute shape, but scrolled out of BUSY_LIVE_REGION_LINES.
+    // Together the two tests make the busy-scan SCOPE measurable -- widening
+    // the scan to the whole pane now turns this red instead of staying green.
+    const stale = [
+      '✻ Accomplishing… (1m 16s · ↓ 4.0k tokens)',
+      '⏺ Done: restarted the dashboard.',
+      '⏺ Verified the endpoints.',
+      '⏺ Trailing scrollback line one.',
+      '⏺ Trailing scrollback line two.',
+      '⏺ Trailing scrollback line three.',
+      '⏺ Trailing scrollback line four.',
+      '⏺ Trailing scrollback line five.',
+      '',
+      SEP,
+      '❯ ',
+      SEP,
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
+    ].join('\n')
+    expect(detectPaneState(stale)).toBe('idle')
+  })
+
+  it('blocks a prompt to a pane in a minute-long turn', () => {
+    // The verdict is what the scheduler acts on: isReadyForPrompt is the call
+    // site that decides whether a prompt gets injected.
+    expect(isReadyForPrompt(liveTurn('✻ (1m 16s · ↓ 4.0k tokens)'))).toBe(false)
+  })
+})
+
+// MCP server-approval dialog (2026-09-03, PR #1099 review). The reviewer
+// measured this pane in a real tmux session: detectPaneState read 'unknown',
+// detectsFirstRunGate returned null, detectsBlockingMenu was false -- nothing
+// answered it and nothing alerted, while the router kept queueing work.
+describe('detectsFirstRunGate / mcpTrustAcceptKeys: the MCP approval dialog', () => {
+  const MCP_PANE = [
+    '',
+    'New MCP server found in this project: worksource',
+    'MCP servers may execute code or access system resources. All tool calls require approval.',
+    '',
+    '❯ 1. Use this MCP server',
+    '  2. Use this and all future MCP servers in this project',
+    '  3. Continue without using this MCP server',
+    '',
+    'Enter to confirm · Esc to cancel',
+  ].join('\n')
+
+  it('classifies it as a first-run gate instead of returning null', () => {
+    expect(detectsFirstRunGate(MCP_PANE)).toBe('mcp-trust')
+  })
+
+  it('selects THIS server with cursor-relative keys, never by number', () => {
+    // Cursor already on option 1 -> confirm without moving.
+    expect(mcpTrustAcceptKeys(MCP_PANE)).toEqual(['Enter'])
+  })
+
+  it('walks UP to option 1 when the cursor starts on the refusal', () => {
+    const onRefusal = MCP_PANE
+      .replace('❯ 1. Use this MCP server', '  1. Use this MCP server')
+      .replace('  3. Continue without', '❯ 3. Continue without')
+    expect(mcpTrustAcceptKeys(onRefusal)).toEqual(['Up', 'Up', 'Enter'])
+  })
+
+  it('never targets "all future MCP servers" -- that pre-approves unseen servers', () => {
+    const keys = mcpTrustAcceptKeys(MCP_PANE)
+    // From option 1, a single Down would land on the "all future" row.
+    expect(keys).not.toContain('Down')
+  })
+
+  it('parks (null) when no unambiguous "use this server" row exists', () => {
+    const reworded = MCP_PANE.replace('❯ 1. Use this MCP server', '❯ 1. Approve the server')
+    expect(mcpTrustAcceptKeys(reworded)).toBeNull()
+  })
+
+  it('a busy pane quoting the dialog is never the dialog', () => {
+    const quoted = `New MCP server found in this project: worksource\n  1. Use this MCP server\n\n✻ Thinking… (esc to interrupt)`
+    expect(detectsFirstRunGate(quoted)).toBeNull()
+  })
+})
+
+describe('truncated idle footer (tmux width clipping)', () => {
+  // tmux clips the footer to the pane width and marks the cut with `…`, so on
+  // a narrow pane the `← for agents` tail never arrives whole. Before the fix
+  // this read 'unknown' and every idle-waiting consumer stalled on it.
+  const CLIPPED_FOOTER = '  ⏵⏵ bypass permissions on · install gh for PR status · 3 shells · ← for agen…'
+  const IDLE_TRUNCATED_TAIL = modeFooter(CLIPPED_FOOTER)
+  const IDLE_TRUNCATED_EARLIER = modeFooter('  ⏵⏵ bypass permissions on · install gh for PR status · 3 sh…')
+  const TRUNCATED_SINGLE_SEP = modeFooter('  ez egy mondat ami valamin dolgozik on · es itt megszakad…')
+  // A prose line that happens to carry the footer shape and end in `…`.
+  const PROSE_CLIPPED = '  the reviewer turned it on · then off · and then it was cut…'
+
+  it('reads a footer clipped mid-tail as idle', () => {
+    expect(detectPaneState(IDLE_TRUNCATED_TAIL)).toBe('idle')
+    expect(isReadyForPrompt(IDLE_TRUNCATED_TAIL)).toBe(true)
+  })
+
+  it('reads a footer clipped one segment earlier as idle', () => {
+    expect(detectPaneState(IDLE_TRUNCATED_EARLIER)).toBe('idle')
+  })
+
+  it('reads idle when blank rows follow the clipped footer', () => {
+    expect(detectPaneState(IDLE_TRUNCATED_TAIL + '\n\n\n')).toBe('idle')
+  })
+
+  it('refuses a clipped line carrying only one separator', () => {
+    expect(detectPaneState(TRUNCATED_SINGLE_SEP)).toBe('unknown')
+  })
+
+  it('does not let the truncation rule override a busy spinner', () => {
+    const busy = IDLE_TRUNCATED_TAIL + '\n✻ Accomplishing… (3m 8s · ↓ 9.3k tokens · esc to interrupt)'
+    expect(detectPaneState(busy)).toBe('busy')
+  })
+
+  it('does not count a clipped footer that is not the last line', () => {
+    const above = [CLIPPED_FOOTER, '', SEP, '❯ ', SEP, '  some status line'].join('\n')
+    expect(detectPaneState(above)).toBe('unknown')
+  })
+
+  // #1743 review: with the rule applied to the whole pane, a clipped footer
+  // or `…` prose in the scrollback ABOVE an open dialog made the pane read idle,
+  // and delivery could type a message plus Enter into a prompt with "1. Yes"
+  // preselected. Each fixture is a real dialog with such a line on top.
+  const PERMISSION_DIALOG = [
+    ' Bash command',
+    '   rm -rf ./build',
+    '   Remove the build directory',
+    '',
+    ' Do you want to proceed?',
+    ' ❯ 1. Yes',
+    "   2. Yes, and don't ask again for rm commands in /home/marveen/marveen",
+    '   3. No, and tell Claude what to do differently (esc)',
+    '',
+    ' Esc to cancel',
+  ].join('\n')
+  const EDIT_PERMISSION_DIALOG = [
+    ' ../../home/marveen/.claude/bond-teszt.txt',
+    ' Do you want to make this edit to bond-teszt.txt?',
+    ' ❯ 1. Yes',
+    '   2. Yes, and allow Claude to edit its own settings for this session',
+    '   3. No',
+    '',
+    ' Esc to cancel · Tab to amend',
+  ].join('\n')
+  const MENU = [
+    '   Manage MCP servers',
+    '   ❯ claude.ai Canva · ✔ connected · 39 tools',
+    '',
+    '   ↑/↓ to navigate · Enter to confirm · Esc to cancel',
+  ].join('\n')
+  const CONSENT = [
+    '  Fable 5 now uses usage credits',
+    '    1. Continue with Fable 5',
+    '  ❯ 2. Switch to Sonnet 5 and continue',
+    '  Enter to confirm · Esc to cancel',
+  ].join('\n')
+
+  for (const [name, line] of [['clipped footer', CLIPPED_FOOTER], ['clipped prose', PROSE_CLIPPED]] as const) {
+    it(`a ${name} above a command-permission prompt does not hide it`, () => {
+      const pane = line + '\n' + PERMISSION_DIALOG
+      expect(detectPaneState(pane)).not.toBe('idle')
+      expect(isReadyForPrompt(pane)).toBe(false)
+      expect(detectsPermissionDialog(pane)).toBe(true)
+      expect(detectsBlockingMenu(pane)).toBe(true)
+    })
+
+    it(`a ${name} above an edit-permission prompt does not hide it`, () => {
+      const pane = line + '\n' + EDIT_PERMISSION_DIALOG
+      expect(isReadyForPrompt(pane)).toBe(false)
+      expect(detectsPermissionDialog(pane)).toBe(true)
+    })
+
+    it(`a ${name} above a blocking menu does not hide it`, () => {
+      const pane = line + '\n' + MENU
+      expect(isReadyForPrompt(pane)).toBe(false)
+      expect(detectsBlockingMenu(pane)).toBe(true)
+    })
+
+    it(`a ${name} above the usage-credit consent dialog does not hide it`, () => {
+      const pane = line + '\n' + CONSENT
+      expect(isReadyForPrompt(pane)).toBe(false)
+      expect(detectsModelConsentDialog(pane)).toBe(true)
+    })
+  }
+})
+
+describe('idle footer that ends in a background-shell count (VAGTECHIDLE1009)', () => {
+  // Customer report (Vág-Tech, 2026-10-09), seen on our own fleet the evening
+  // before: while a background shell is still running the footer can end in its
+  // count and nothing else. Before the fix this read 'unknown', paneLooksIdle
+  // never became true, and delivery plus the auto-restart idle guard stalled
+  // (6.5 and 18.5 hours of silence, 5570 dropped deliveries at the customer).
+  const SHELL_TAIL = '  ⏵⏵ bypass permissions on · 1 shell'
+  const IDLE_SHELL_TAIL = modeFooter(SHELL_TAIL)
+  const IDLE_SHELLS_TAIL = modeFooter('  ⏵⏵ bypass permissions on · 2 shells')
+  const IDLE_SHELL_MONITOR_TAIL = modeFooter('  ⏵⏵ accept edits on · 3 shells · 1 monitor')
+
+  it('reads a footer that ends in "· 1 shell" as idle', () => {
+    expect(detectPaneState(IDLE_SHELL_TAIL)).toBe('idle')
+    expect(isReadyForPrompt(IDLE_SHELL_TAIL)).toBe(true)
+  })
+
+  it('reads the plural and the shells-plus-monitor tail as idle', () => {
+    expect(detectPaneState(IDLE_SHELLS_TAIL)).toBe('idle')
+    expect(detectPaneState(IDLE_SHELL_MONITOR_TAIL)).toBe('idle')
+  })
+
+  it('reads idle when blank rows follow the footer', () => {
+    expect(detectPaneState(IDLE_SHELL_TAIL + '\n\n\n')).toBe('idle')
+  })
+
+  it('does not let the shell-tail rule override a busy spinner', () => {
+    const busy = IDLE_SHELL_TAIL + '\n✻ Accomplishing… (3m 8s · ↓ 9.3k tokens · esc to interrupt)'
+    expect(detectPaneState(busy)).toBe('busy')
+  })
+
+  it('does not count the shell tail when it is not the last line (a log line in the scrollback)', () => {
+    const above = ['2026-07-29 log: bypass permissions on · 1 shell', '', SEP, '❯ ', SEP, '  some status line'].join('\n')
+    expect(detectPaneState(above)).toBe('unknown')
+  })
+
+  it('refuses a line that only looks like it (no count, or text after the count)', () => {
+    expect(detectPaneState(modeFooter('  ⏵⏵ bypass permissions on · shell'))).toBe('unknown')
+    expect(detectPaneState(modeFooter('  the toggle was turned on · 1 shell later it broke'))).toBe('unknown')
+  })
+
+  it('a shell-tail line above a command-permission prompt does not hide the prompt', () => {
+    const pane = [
+      SHELL_TAIL,
+      ' Bash command',
+      '   rm -rf ./build',
+      '   Remove the build directory',
+      '',
+      ' Do you want to proceed?',
+      ' ❯ 1. Yes',
+      '   2. No, and tell Claude what to do differently (esc)',
+      '',
+      ' Esc to cancel',
+    ].join('\n')
+    expect(isReadyForPrompt(pane)).toBe(false)
+    expect(detectsPermissionDialog(pane)).toBe(true)
   })
 })

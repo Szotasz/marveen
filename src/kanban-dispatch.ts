@@ -50,19 +50,44 @@ function canonicalAgentId(
   return opts.agentNames.find((n) => n.toLowerCase() === lower) ?? null
 }
 
+/** Why no message went out -- the caller must tell 'nobody to wake' apart from
+ *  'somebody to wake, unreachable'. Only 'session-down' is a fault: the card is
+ *  in_progress for a real fleet agent that was never told. */
+export type DispatchSkipReason = 'not-dispatchable' | 'self-move' | 'session-down'
+
+export interface DispatchDecision {
+  /** Who to wake, or null when no message goes out. */
+  target: string | null
+  /** Set exactly when target is null. */
+  reason?: DispatchSkipReason
+  /** The resolved agent id when the session is down -- for the alert text. */
+  unreachable?: string
+}
+
+export function resolveKanbanDispatch(
+  assignee: string | null | undefined,
+  opts: DispatchResolveOpts,
+): DispatchDecision {
+  const target = canonicalAgentId(assignee, opts)
+  // Empty, unknown, or the human owner: nobody is expected to be woken.
+  if (!target) return { target: null, reason: 'not-dispatchable' }
+
+  // Self-move: the agent that moved the card is the one we would wake.
+  const mover = canonicalAgentId(opts.actor, opts)
+  if (mover && mover === target) return { target: null, reason: 'self-move' }
+
+  // The main agent always has a session; a sub-agent is dispatched only if its
+  // session is running. A down session used to be a SILENT no-op -- the card
+  // sat in in_progress with nobody working it and nothing said so.
+  if (target === opts.mainAgentId) return { target }
+  if (opts.isRunning(target)) return { target }
+  return { target: null, reason: 'session-down', unreachable: target }
+}
+
+/** Target-only view, kept for callers that only need "who, if anyone". */
 export function resolveKanbanDispatchTarget(
   assignee: string | null | undefined,
   opts: DispatchResolveOpts,
 ): string | null {
-  const target = canonicalAgentId(assignee, opts)
-  if (!target) return null
-
-  // Self-move: the agent that moved the card is the one we would wake.
-  const mover = canonicalAgentId(opts.actor, opts)
-  if (mover && mover === target) return null
-
-  // The main agent always has a session; a sub-agent is dispatched only if its
-  // session is running (otherwise the card just stays in in_progress).
-  if (target === opts.mainAgentId) return target
-  return opts.isRunning(target) ? target : null
+  return resolveKanbanDispatch(assignee, opts).target
 }

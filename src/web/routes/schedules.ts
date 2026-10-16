@@ -12,10 +12,10 @@ import { isValidCronShape } from '../cron.js'
 import { readBody, json, RequestBodyTooLargeError } from '../http-helpers.js'
 import { sanitizeScheduleName, safeJoin } from '../sanitize.js'
 import { listAgentNames } from '../agent-config.js'
-import { readFileOr } from '../agent-config.js'
+import { readFileOr, readJsonObjectForWrite } from '../agent-config.js'
 import {
   SCHEDULED_TASKS_DIR, MAX_SCHEDULED_TASK_PROMPT_LEN,
-  listScheduledTasks, writeScheduledTask,
+  listScheduledTasks, writeScheduledTask, markDefaultTaskRemoved,
 } from '../scheduled-tasks-io.js'
 import { runScheduledTaskNow } from '../schedule-runner.js'
 import type { RouteContext } from './types.js'
@@ -33,6 +33,18 @@ function resolveScheduleDir(rawName: string): { name: string; dir: string } | nu
   try {
     return { name, dir: safeJoin(SCHEDULED_TASKS_DIR, name) }
   } catch { return null }
+}
+
+// HBSCHEDSZAM903: the hourly heartbeat digest's "enabled schedules" figure was
+// the ONE number the agent computed itself (counting enabled:true in the raw
+// /api/schedules array), and it drifted to a 13x error (376 reported vs 29
+// real). Serve the counts pre-computed so the digest copies a number instead
+// of deriving one. Pure and exported so the counting rule is unit-testable.
+export function summarizeScheduledTasks(tasks: Array<{ enabled?: boolean }>): { total: number; enabled: number; disabled: number } {
+  // The same rule the toggle route uses: a task is enabled unless enabled is
+  // explicitly false (absent field = enabled).
+  const enabled = tasks.filter(t => t.enabled !== false).length
+  return { total: tasks.length, enabled, disabled: tasks.length - enabled }
 }
 
 export async function tryHandleSchedules(ctx: RouteContext): Promise<boolean> {
@@ -114,6 +126,11 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     return true
   }
 
+  if (path === '/api/schedules/summary' && method === 'GET') {
+    json(res, summarizeScheduledTasks(listScheduledTasks()))
+    return true
+  }
+
   if (path === '/api/schedules' && method === 'POST') {
     let body: Buffer
     try {
@@ -126,7 +143,7 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
       throw err
     }
     const data = JSON.parse(body.toString()) as {
-      name: string; description: string; prompt: string; schedule: string; agent?: string; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string
+      name: string; description: string; prompt: string; schedule: string; agent?: string; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; once?: boolean
     }
     const name = sanitizeScheduleName(data.name || '')
     if (!name) { json(res, { error: 'Name is required' }, 400); return true }
@@ -139,6 +156,7 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     }
     if (!data.schedule?.trim()) { json(res, { error: 'Schedule is required' }, 400); return true }
     if (!isValidCronShape(data.schedule)) { json(res, { error: 'Invalid cron expression' }, 400); return true }
+    if (data.once !== undefined && typeof data.once !== 'boolean') { json(res, { error: 'once must be true or false' }, 400); return true }
 
     const dir = join(SCHEDULED_TASKS_DIR, name)
     if (existsSync(dir)) { json(res, { error: 'Schedule already exists' }, 409); return true }
@@ -153,8 +171,9 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
       skipIfBusy: data.skipIfBusy === true,
       forceSend: data.forceSend === true,
       targetSession: data.targetSession || undefined,
+      once: data.once,
     })
-    logger.info({ name, schedule: data.schedule }, 'Scheduled task created')
+    logger.info({ name, schedule: data.schedule, once: data.once === true }, 'Scheduled task created')
     json(res, { ok: true, name })
     return true
   }
@@ -177,7 +196,11 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
       throw err
     }
     const data = JSON.parse(body.toString()) as {
-      description?: string; prompt?: string; schedule?: string; agent?: string; enabled?: boolean; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string
+      description?: string; prompt?: string; schedule?: string; agent?: string; enabled?: boolean; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; once?: boolean
+    }
+    if (data.once !== undefined && typeof data.once !== 'boolean') {
+      json(res, { error: 'once must be true or false' }, 400)
+      return true
     }
     if (data.prompt !== undefined && data.prompt.length > MAX_SCHEDULED_TASK_PROMPT_LEN) {
       json(res, {
@@ -201,6 +224,10 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     const { name, dir } = resolved
     if (!existsSync(dir)) { json(res, { error: 'Schedule not found' }, 404); return true }
     rmSync(dir, { recursive: true, force: true })
+    // #796: remember the removal so a shipped default is not re-seeded on the
+    // next restart/update. Harmless for a user-authored task (the seeders only
+    // ever revisit shipped names); a later re-create with this name clears it.
+    markDefaultTaskRemoved(name)
     logger.info({ name }, 'Scheduled task deleted')
     json(res, { ok: true })
     return true
@@ -215,7 +242,8 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
 
     const configPath = join(dir, 'task-config.json')
     let config: Record<string, unknown> = {}
-    try { config = JSON.parse(readFileOr(configPath, '{}')) } catch { /* use empty */ }
+    // JSONCLOBBER926: a corrupt task-config.json is refused, not reset to {enabled}.
+    config = readJsonObjectForWrite(configPath)
     const newEnabled = !(config.enabled !== false)
     config.enabled = newEnabled
     atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))

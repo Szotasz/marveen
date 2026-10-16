@@ -64,6 +64,30 @@ export function json(res: http.ServerResponse, data: unknown, status = 200): voi
   res.end(JSON.stringify(data))
 }
 
+/**
+ * 405 for a path this server routes, but not for this method.
+ *
+ * The distinction is the whole point: a bare 404 is byte-identical whether the
+ * PATH is unknown or the RESOURCE is missing, so a caller cannot tell which of
+ * the two to fix. The Allow header names the methods that do work, which is
+ * the answer the caller was actually looking for, and the body repeats it for
+ * anyone reading a log rather than headers.
+ */
+export function methodNotAllowed(res: http.ServerResponse, method: string, allowed: readonly string[]): void {
+  const allow = allowed.join(', ')
+  res.writeHead(405, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Cache-Control': 'private, no-store',
+    Allow: allow,
+  })
+  res.end(JSON.stringify({
+    error: `Method ${method} not allowed here. Allowed: ${allow}.`,
+    // Said explicitly because the ambiguity this replaces cost real debugging
+    // time: the method is what failed, so the resource says nothing yet.
+    hint: 'The method is the problem, not the id in the path.',
+  }))
+}
+
 // Compression only pays for itself on text formats above ~1KB; images are
 // already compressed and tiny payloads cost more in CPU than they save.
 const GZIP_EXTENSIONS = new Set(['.html', '.css', '.js', '.json', '.svg'])

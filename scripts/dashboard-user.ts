@@ -20,14 +20,14 @@
 //
 // Passwords are read interactively (twice, muted)
 // or from stdin with --password-stdin for automation. No new dependencies:
-// node:readline for the prompt, the app's own db + password-hash modules.
+// node:readline for the prompt (src/hidden-prompt.ts), the app's own db + password-hash modules.
 
-import { createInterface } from 'node:readline'
 import { initDatabase, getDb, createDashboardUser, getDashboardUser, listDashboardUsers, deleteDashboardUser, updateDashboardUserPassword, logConfigChange } from '../src/db.js'
 import { hashPassword, assertPasswordPolicy, PasswordPolicyError } from '../src/web/password-hash.js'
 import { revokeAllForUser } from '../src/web/auth-sessions.js'
 import { securityReset } from '../src/web/security-reset.js'
 import { notifySecurityEvent } from '../src/notify.js'
+import { promptHidden } from '../src/hidden-prompt.js'
 
 function usage(): never {
   process.stderr.write(
@@ -48,27 +48,6 @@ function readStdin(): Promise<string> {
     process.stdin.setEncoding('utf-8')
     process.stdin.on('data', (c) => (data += c))
     process.stdin.on('end', () => resolve(data.replace(/\n$/, '')))
-  })
-}
-
-// Muted interactive prompt: echo is suppressed so the password is not shown.
-function promptHidden(question: string): Promise<string> {
-  return new Promise((resolve) => {
-    const rl = createInterface({ input: process.stdin, output: process.stdout, terminal: true })
-    const out = process.stdout as NodeJS.WriteStream & { _writeToOutput?: (s: string) => void }
-    process.stdout.write(question)
-    let first = true
-    out._writeToOutput = (str: string) => {
-      // Let the first write (the question echo) through, mute keystrokes after.
-      if (first) { first = false; process.stdout.write(str); return }
-      // Print nothing for typed characters; keep newlines so Enter works.
-      if (str.includes('\n')) process.stdout.write('\n')
-    }
-    rl.question('', (answer) => {
-      out._writeToOutput = undefined
-      rl.close()
-      resolve(answer)
-    })
   })
 }
 

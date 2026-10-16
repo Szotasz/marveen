@@ -1,0 +1,122 @@
+{
+  "source": "original-gate.py",
+  "bash": {
+    "inline-body-subject": {
+      "cmd_template": "send.py --to a@b.hu --subject \"Teszt tárgy ékezettel\" --body \"Kedves Ügyfelünk! Ez a törzs.\"",
+      "text": "Teszt tárgy ékezettel\nKedves Ügyfelünk! Ez a törzs.",
+      "reason": null
+    },
+    "inline-single-quotes": {
+      "cmd_template": "send.py --subject 'Egy tárgy' --body 'Törzs aposztróffal'",
+      "text": "Egy tárgy\nTörzs aposztróffal",
+      "reason": null
+    },
+    "inline-unquoted-token": {
+      "cmd_template": "send.py --body Egyszavas --subject Targy",
+      "text": "Egyszavas\nTargy",
+      "reason": null
+    },
+    "redirect-abs-file": {
+      "cmd_template": "sendmail a@b.hu --subject \"Fájlból jövő törzs\" < {BODY_FILE}",
+      "text": "Fájlból jövő törzs\nKedves Ugyfelunk!\n\nEz a torzs-fixture EKEZETTEL: árvíztűrő tükörfúrógép.\nMasodik bekezdes, hogy tobb soros legyen.\n",
+      "reason": null
+    },
+    "redirect-invalid-utf8": {
+      "cmd_template": "sendmail a@b.hu < {BODY_FILE_LATIN1}",
+      "text": "Latin-1 sor: t�rzs �kezettel, invalid UTF-8 bajtokkal.\n",
+      "reason": null
+    },
+    "subst-dollar-paren": {
+      "cmd_template": "send.py --body \"$(cat /tmp/level.txt)\" --subject \"Utána jövő tárgy\"",
+      "text": "",
+      "reason": "a --body shell-behelyettesitest tartalmaz, amit a hook nem old fel ($(cat /tmp/level.txt)...) -- igy a parancs szoveget vizsgalnam, nem a levelet"
+    },
+    "subst-backtick": {
+      "cmd_template": "send.py --body \"`cat /tmp/x.txt`\"",
+      "text": "",
+      "reason": "a --body shell-behelyettesitest tartalmaz, amit a hook nem old fel (`cat /tmp/x.txt`...) -- igy a parancs szoveget vizsgalnam, nem a levelet"
+    },
+    "subst-var": {
+      "cmd_template": "send.py --body \"$BODY_VAR\" --subject \"Tárgy\"",
+      "text": "",
+      "reason": "a --body shell-behelyettesitest tartalmaz, amit a hook nem old fel ($BODY_VAR...) -- igy a parancs szoveget vizsgalnam, nem a levelet"
+    },
+    "subst-var-braced": {
+      "cmd_template": "send.py --body \"${BODY_VAR}\"",
+      "text": "",
+      "reason": "a --body shell-behelyettesitest tartalmaz, amit a hook nem old fel (${BODY_VAR}...) -- igy a parancs szoveget vizsgalnam, nem a levelet"
+    },
+    "heredoc-inline": {
+      "cmd_template": "sendmail a@b.hu <<'EOF'\nHeredoc törzs első sor.\nMásodik sor.\nEOF",
+      "text": "Heredoc törzs első sor.\nMásodik sor.",
+      "reason": null
+    },
+    "redirect-unresolvable-var-path": {
+      "cmd_template": "sendmail a@b.hu < $NOPE_VAR_EMAILKAPU901/body.txt",
+      "text": "",
+      "reason": "a torzs egy fel nem oldhato utvonalrol jon ($NOPE_VAR_EMAILKAPU901/body.txt)"
+    },
+    "redirect-missing-file": {
+      "cmd_template": "sendmail a@b.hu < /nonexistent-emailkapu901/body.txt",
+      "text": "",
+      "reason": "a torzs-fajl nem olvashato (/nonexistent-emailkapu901/body.txt: [Errno 2] No such file or directory: '/nonexistent-emailkapu901/body.txt')"
+    },
+    "pipe-into-send": {
+      "cmd_template": "cat /tmp/x.txt | python3 send.py --to a@b.hu",
+      "text": "",
+      "reason": "a torzs egy pipe-bol jon, a hook nem latja"
+    },
+    "no-body-flags-no-pipe": {
+      "cmd_template": "send.py --to a@b.hu",
+      "text": "",
+      "reason": null
+    }
+  },
+  "mcp": {
+    "mcp-body-subject": {
+      "tool_input": {
+        "to": [
+          "a@b.hu"
+        ],
+        "subject": "MCP tárgy",
+        "body": "MCP törzs ékezettel: űrhajó."
+      },
+      "text": "MCP törzs ékezettel: űrhajó.\nMCP tárgy"
+    },
+    "mcp-html-message-content": {
+      "tool_input": {
+        "html": "<p>HTML törzs</p>",
+        "message": "Üzenet mező",
+        "content": "Content mező"
+      },
+      "text": "<p>HTML törzs</p>\nÜzenet mező\nContent mező"
+    },
+    "mcp-htmlbody-text": {
+      "tool_input": {
+        "htmlBody": "<b>b</b>",
+        "text": "Sima szöveg"
+      },
+      "text": "Sima szöveg\n<b>b</b>"
+    },
+    "mcp-empty-fields": {
+      "tool_input": {
+        "to": [
+          "a@b.hu"
+        ],
+        "body": "",
+        "subject": null
+      },
+      "text": ""
+    },
+    "mcp-non-string-body": {
+      "tool_input": {
+        "body": 42,
+        "subject": [
+          "lista",
+          "elem"
+        ]
+      },
+      "text": "42\n['lista', 'elem']"
+    }
+  }
+}

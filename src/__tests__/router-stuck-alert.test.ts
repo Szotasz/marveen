@@ -12,8 +12,10 @@
 // these tests pin it.
 
 import { describe, it, expect } from 'vitest'
-import { formatStuckSessionAlert, shouldEscalateStuckSession } from '../web/message-router.js'
-import { detectPaneState } from '../pane-state.js'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+import { BUSY_TRANSCRIPT_EXEMPT_CAP_MS, formatStuckSessionAlert, quotaWallEscalation, shouldEscalateStuckSession, type QuotaWallAlertRecord } from '../web/message-router.js'
+import { detectPaneState, detectQuotaWall } from '../pane-state.js'
 
 const MAIN = 'marveen'
 
@@ -77,6 +79,103 @@ describe('formatStuckSessionAlert: silent stall becomes a main-agent alert', () 
   })
 })
 
+// Card 41a0c3a3: the alert says WHICH of the four pane classes it saw --
+// permission prompt, plan usage limit, busy, anything else -- so the diagnosis
+// does not start from a guess. The wall comes from the live capture, read by
+// the real detectors, not from a hand-made object.
+const WALL_PANE = readFileSync(join(__dirname, 'fixtures/pane/quota-wall-usage-limit.txt'), 'utf8')
+const WALL = detectQuotaWall(WALL_PANE)
+const ASK = { title: 'Bash command', reason: 'Dangerous rm operation on possibly-empty variable path' }
+
+describe('formatStuckSessionAlert: one class per pane state (card 41a0c3a3)', () => {
+  it('quota wall: names the limit and the reset time, and does not advise a restart', () => {
+    expect(WALL).not.toBeNull()
+    const alert = formatStuckSessionAlert('tester', MAIN, 'agent-tester', 12 * MIN, 3, detectPaneState(WALL_PANE), false, null, WALL)!
+    expect(alert).toContain('[session-stuck]')
+    expect(alert).toContain('PLAN USAGE LIMIT')
+    expect(alert).toContain('resumes by itself at 6:20pm')
+    expect(alert).toContain('Usage limit reached · limit resets 6:20pm')
+    expect(alert).toContain('a restart on the same key does not lift the limit')
+    expect(alert).not.toContain('restart the agent if it is wedged')
+  })
+
+  it('quota wall without a printed time says so instead of inventing one', () => {
+    const alert = formatStuckSessionAlert('tester', MAIN, 'agent-tester', 12 * MIN, 1, 'idle', false, null, { banner: '⚠ Usage limit reached', resetsAt: null })!
+    expect(alert).toContain('The banner does not say when it resets')
+    expect(alert).not.toContain('resumes by itself at')
+  })
+
+  it('the four classes produce four different texts', () => {
+    const permission = formatStuckSessionAlert('a', MAIN, 's', 12 * MIN, 1, 'unknown', true, ASK)!
+    const wall = formatStuckSessionAlert('a', MAIN, 's', 12 * MIN, 1, 'idle', false, null, WALL)!
+    const busy = formatStuckSessionAlert('a', MAIN, 's', 31 * MIN, 1, 'busy')!
+    const other = formatStuckSessionAlert('a', MAIN, 's', 12 * MIN, 1, 'unknown')!
+    expect(permission).toContain('TOOL-PERMISSION PROMPT')
+    expect(permission).toContain('It asks: Bash command -- Dangerous rm operation')
+    expect(wall).toContain('PLAN USAGE LIMIT')
+    expect(busy).toContain('BUSY')
+    expect(other).toContain('restart the agent if it is wedged')
+    expect(new Set([permission, wall, busy, other]).size).toBe(4)
+  })
+
+  it('a permission prompt outranks a wall banner, and a busy pane outranks it too', () => {
+    // A prompt needs an answer from a person whatever else is on the pane; a
+    // spinner means the session is working, which the wall text would misdescribe.
+    expect(formatStuckSessionAlert('a', MAIN, 's', 12 * MIN, 1, 'unknown', true, ASK, WALL)).toContain('TOOL-PERMISSION PROMPT')
+    expect(formatStuckSessionAlert('a', MAIN, 's', 31 * MIN, 1, 'busy', false, null, WALL)).toContain('BUSY')
+  })
+})
+
+describe('quotaWallEscalation: one alert per wall, today\'s cadence for everything else', () => {
+  const T0 = Date.UTC(2026, 8, 30, 16, 14, 0)
+
+  // Replays the router's cadence: an escalation check every 11 minutes (the
+  // 10 min window plus the tick), the record kept exactly as the router keeps it.
+  function replay(wallAt: (t: number) => typeof WALL, minutes: number, opts: { permission?: boolean; paneState?: 'idle' | 'busy' } = {}): number[] {
+    let prev: QuotaWallAlertRecord | undefined
+    const alerts: number[] = []
+    for (let m = 0; m <= minutes; m += 11) {
+      const now = T0 + m * MIN
+      const step = quotaWallEscalation(wallAt(now), opts.permission ?? false, opts.paneState ?? 'idle', prev, now)
+      if (step.kind === 'alert') { prev = { key: step.key, at: now }; alerts.push(m) }
+      if (step.kind === 'none') alerts.push(m) // not the wall rule: today's alert at every escalation
+    }
+    return alerts
+  }
+
+  it('the same wall is alerted once, not every escalation window, until it has lasted 5 h', () => {
+    const alerts = replay(() => WALL, 6 * 60)
+    expect(alerts[0]).toBe(0)
+    // Nothing in between: the next one only after the 5 h silence.
+    expect(alerts.filter((m) => m < 300)).toEqual([0])
+    expect(alerts.length).toBe(2)
+    expect(alerts[1]).toBeGreaterThanOrEqual(300)
+  })
+
+  it('never more than one wall alert in any 30 minutes, even when the banner changes', () => {
+    // A banner whose printed time changes on every check: the worst case for a key-based rule.
+    let n = 0
+    const alerts = replay(() => ({ banner: '⚠ Usage limit reached', resetsAt: `${(n++ % 12) + 1}pm` }), 6 * 60)
+    for (let i = 1; i < alerts.length; i++) expect(alerts[i] - alerts[i - 1]).toBeGreaterThanOrEqual(30)
+  })
+
+  it('a new wall (another reset time) after 30 min is alerted', () => {
+    const prev: QuotaWallAlertRecord = { key: '6:20pm', at: T0 }
+    const next = { banner: '⚠ Usage limit reached · limit resets 11:40pm', resetsAt: '11:40pm' }
+    expect(quotaWallEscalation(next, false, 'idle', prev, T0 + 20 * MIN).kind).toBe('silent')
+    expect(quotaWallEscalation(next, false, 'idle', prev, T0 + 31 * MIN)).toEqual({ kind: 'alert', key: '11:40pm' })
+  })
+
+  it('a permission prompt keeps today\'s cadence: every escalation alerts, wall banner or not', () => {
+    expect(replay(() => WALL, 60, { permission: true })).toEqual([0, 11, 22, 33, 44, 55])
+  })
+
+  it('a busy pane and a pane without a wall are not touched by the rule', () => {
+    expect(quotaWallEscalation(WALL, false, 'busy', undefined, T0)).toEqual({ kind: 'none' })
+    expect(quotaWallEscalation(null, false, 'idle', { key: '6:20pm', at: T0 }, T0 + MIN)).toEqual({ kind: 'none' })
+  })
+})
+
 // A session mid-turn is not ready for a prompt for the same reason a wedged one
 // is not, so the queue side alone cannot tell them apart. On 2026-07-31 that
 // cost three false alarms in one day, each one a main-agent diagnosis round
@@ -125,5 +224,95 @@ describe('shouldEscalateStuckSession: a busy pane is work, not a stall', () => {
       '  ⏵⏵ bypass permissions on (shift+tab to cycle)',
     ].join('\n')
     expect(shouldEscalateStuckSession(detectPaneState(quoted), 11 * MIN)).toBe(true)
+  })
+})
+
+// ROUTERSTUCK1012 (MODSPROBA1004): 2026-10-05..10-11, 14 busy-STUCK alerts on
+// the trial agents and all 14 false -- pane and mode busy, the transcript
+// moving within 0-5 minutes. Past the busy watchdog the transcript decides.
+describe('shouldEscalateStuckSession: past the busy watchdog, the transcript decides (ROUTERSTUCK1012)', () => {
+  const NOW = Date.UTC(2026, 9, 12, 9, 0, 0)
+
+  it('the measured shape: busy pane past 30 min, transcript moved 0-5 min ago -> no alert', () => {
+    for (const agoMin of [0, 1, 3, 5]) {
+      expect(shouldEscalateStuckSession(detectPaneState(BUSY_PANE), 31 * MIN, NOW - agoMin * MIN, NOW)).toBe(false)
+    }
+    // Two hours busy, still moving: still no alert.
+    expect(shouldEscalateStuckSession(detectPaneState(BUSY_PANE), 120 * MIN, NOW - 2 * MIN, NOW)).toBe(false)
+  })
+
+  it('a real wedge still alerts: busy past 30 min, transcript quiet past the fresh window', () => {
+    expect(shouldEscalateStuckSession(detectPaneState(BUSY_PANE), 31 * MIN, NOW - 25 * MIN, NOW)).toBe(true)
+  })
+
+  it('the window sits above the 10 min foreground tool ceiling: a call pending up to 15 min is fresh', () => {
+    // A Bash call can run to its 10 min ceiling with its tool_use as the newest
+    // entry (measured max 9.9 min); the window must not end at that edge.
+    expect(shouldEscalateStuckSession(detectPaneState(BUSY_PANE), 31 * MIN, NOW - 10 * MIN, NOW)).toBe(false)
+    expect(shouldEscalateStuckSession(detectPaneState(BUSY_PANE), 31 * MIN, NOW - 15 * MIN, NOW)).toBe(false)
+    expect(shouldEscalateStuckSession(detectPaneState(BUSY_PANE), 31 * MIN, NOW - 15 * MIN - 1, NOW)).toBe(true)
+  })
+
+  it('an unreadable or missing transcript (null) is today\'s rule: busy past 30 min alerts', () => {
+    expect(shouldEscalateStuckSession(detectPaneState(BUSY_PANE), 31 * MIN, null, NOW)).toBe(true)
+    expect(shouldEscalateStuckSession(detectPaneState(BUSY_PANE), 29 * MIN, null, NOW)).toBe(false)
+  })
+
+  it('only the busy branch reads it: a not-busy or unreadable pane alerts on time, fresh transcript or not', () => {
+    expect(shouldEscalateStuckSession(detectPaneState(IDLE_PANE), 11 * MIN, NOW - MIN, NOW)).toBe(true)
+    expect(shouldEscalateStuckSession(null, 11 * MIN, NOW - MIN, NOW)).toBe(true)
+  })
+
+  it('a fresh transcript never makes a busy pane alert before the watchdog', () => {
+    expect(shouldEscalateStuckSession(detectPaneState(BUSY_PANE), 29 * MIN, NOW - 60 * MIN, NOW)).toBe(false)
+  })
+})
+
+// ROUTERSTUCK1012, review of #1914: the transcript exemption has a ceiling. A
+// session that keeps writing (a model loop, a tool call refused by a hook again
+// and again) produces progress entries forever; without a ceiling it would
+// never alert while its queue grows.
+describe('shouldEscalateStuckSession: the transcript exemption ends at a 2 h ceiling (ROUTERSTUCK1012)', () => {
+  const NOW = Date.UTC(2026, 9, 13, 20, 0, 0)
+
+  it('the ceiling is 2 hours', () => {
+    expect(BUSY_TRANSCRIPT_EXEMPT_CAP_MS).toBe(120 * MIN)
+  })
+
+  it('a live loop (busy, transcript moving a minute ago) is exempt up to 2 h and alerts past it', () => {
+    expect(shouldEscalateStuckSession(detectPaneState(BUSY_PANE), 120 * MIN, NOW - MIN, NOW)).toBe(false)
+    expect(shouldEscalateStuckSession(detectPaneState(BUSY_PANE), 120 * MIN + 1, NOW - MIN, NOW)).toBe(true)
+    expect(shouldEscalateStuckSession(detectPaneState(BUSY_PANE), 240 * MIN, NOW, NOW)).toBe(true)
+  })
+
+  it('without an exemption the parent\'s 30 min rule is unchanged: quiet or unreadable transcript alerts past 30 min, never before', () => {
+    for (const p of [null, NOW - 25 * MIN]) {
+      expect(shouldEscalateStuckSession(detectPaneState(BUSY_PANE), 30 * MIN, p, NOW)).toBe(false)
+      expect(shouldEscalateStuckSession(detectPaneState(BUSY_PANE), 31 * MIN, p, NOW)).toBe(true)
+    }
+  })
+
+  it('the alert past the ceiling says the transcript is still moving, and when it last moved', () => {
+    const text = formatStuckSessionAlert('looper', 'orin', 'agent-looper', 125 * MIN, 3, 'busy', false, null, null, 2 * MIN) ?? ''
+    expect(text).toContain("Agent 'looper' (tmux agent-looper) has been BUSY for 125 min with 3 pending message(s) queued")
+    expect(text).toContain('its transcript is still MOVING (last progress 2 min ago)')
+    expect(text).toContain('a loop that keeps writing')
+    expect(text).toContain('at most once every 2 h')
+    expect(text).toContain('Do NOT restart on this alert alone')
+  })
+
+  it('below the ceiling the 15 min progress window is unchanged', () => {
+    for (const stuck of [31, 90, 120]) {
+      expect(shouldEscalateStuckSession(detectPaneState(BUSY_PANE), stuck * MIN, NOW - 15 * MIN, NOW)).toBe(false)
+      expect(shouldEscalateStuckSession(detectPaneState(BUSY_PANE), stuck * MIN, NOW - 15 * MIN - 1, NOW)).toBe(true)
+    }
+  })
+
+  it('a quiet or unknown transcript keeps the plain busy alert', () => {
+    for (const ago of [null, 25 * MIN]) {
+      const text = formatStuckSessionAlert('wedge', 'orin', 'agent-wedge', 31 * MIN, 1, 'busy', false, null, null, ago)
+      expect(text).toContain('has been BUSY (actively working, spinner up) for 31 min')
+      expect(text).not.toContain('MOVING')
+    }
   })
 })

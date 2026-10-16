@@ -15,7 +15,14 @@ MAIN_AGENT_ID="${MAIN_AGENT_ID:-marveen}"
 # N2: sanitize — strip any character that is not alphanumeric, underscore, or hyphen.
 MAIN_AGENT_ID="${MAIN_AGENT_ID//[^a-zA-Z0-9_-]/}"
 SESSION="${MAIN_AGENT_ID}-channels"
-BOT_PID_FILE="$HOME/.claude/channels/telegram/bot.pid"
+# #915: main channel state is install-scoped once migrated; the legacy shared
+# path only serves unmigrated installs.
+TG_CHAN_DIR="${TELEGRAM_STATE_DIR:-}"
+if [ -z "$TG_CHAN_DIR" ]; then
+  TG_CHAN_DIR="$INSTALL_DIR/.claude/channels/telegram"
+  [ -f "$TG_CHAN_DIR/.env" ] || TG_CHAN_DIR="$HOME/.claude/channels/telegram"
+fi
+BOT_PID_FILE="$TG_CHAN_DIR/bot.pid"
 
 fail=0
 note() { echo "  $1"; }
@@ -32,7 +39,7 @@ note() { echo "  $1"; }
 #
 # The pane of $SESSION is the only authoritative source. tmux runs the claude as
 # the pane process directly, but tolerate a wrapper shell by walking descendants.
-PANE_PID="$(tmux list-panes -t "$SESSION" -F '#{pane_pid}' 2>/dev/null | head -1)"
+PANE_PID="$(tmux list-panes -t "=$SESSION:" -F '#{pane_pid}' 2>/dev/null | head -1)"
 CLAUDE_PID=""
 if [ -n "$PANE_PID" ]; then
   case "$(ps -p "$PANE_PID" -o args= 2>/dev/null)" in
@@ -65,7 +72,7 @@ echo "verify-channels-health: session=$SESSION"
 # "bun server.ts" process.  Every PID checked is a descendant of the
 # pane PID — never a global match — so Dia's or Ernő's bun processes
 # on the same host are not accidentally matched.
-PANE_PID="$(tmux list-panes -t "$SESSION" -F '#{pane_pid}' 2>/dev/null | head -1)"
+PANE_PID="$(tmux list-panes -t "=$SESSION:" -F '#{pane_pid}' 2>/dev/null | head -1)"
 if [ -z "$PANE_PID" ]; then
   note "(a) FAIL: tmux session $SESSION not found"; fail=1
 else

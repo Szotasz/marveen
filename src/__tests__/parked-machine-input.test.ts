@@ -99,6 +99,22 @@ const PARKED_HUMAN_DRAFT_ABOUT_SCHEDULING = [
 
 const IDLE = ['', SEP, '❯ ', SEP, FOOTER].join('\n')
 
+// SCHEDPROMPTREF917 (spec test 8): the reference variant adds body-file/
+// body-sha256/body-chars attributes but the tag still opens with
+// `<scheduled-task ` (space), which `^<scheduled-task[\s>]` already matches --
+// this fixture locks that in against a future regex tightening.
+const PARKED_SCHEDULED_REFERENCE = [
+  '',
+  SEP,
+  '❯ <scheduled-task source="scheduled-task:kanban-audit"',
+  '  body-file="/opt/marveen/store/scheduled-runs/20260917-080000-kanban-audit-a3f9.md"',
+  '  body-sha256="deadbeef" body-chars="48745"> A feladat teljes szovege a',
+  '  body-file fajlban van. Olvasd be TELJESEN (Read), es azt hajtsd vegre.',
+  '  </scheduled-task>',
+  SEP,
+  FOOTER,
+].join('\n')
+
 describe('parkedScheduledTaskInput', () => {
   it('detects a parked scheduler wrapper block', () => {
     expect(parkedScheduledTaskInput(PARKED_SCHEDULED_MULTIROW)).toBe(true)
@@ -106,6 +122,11 @@ describe('parkedScheduledTaskInput', () => {
 
   it('detects a bare parked <scheduled-task> block', () => {
     expect(parkedScheduledTaskInput(PARKED_BARE_SCHEDULED_TAG)).toBe(true)
+  })
+
+  it('detects a parked reference-variant block (body-file/body-sha256/body-chars attrs)', () => {
+    expect(parkedScheduledTaskInput(PARKED_SCHEDULED_REFERENCE)).toBe(true)
+    expect(parkedMachineOriginInput(PARKED_SCHEDULED_REFERENCE)).toBe(true)
   })
 
   it('ignores an inter-agent message (not a scheduled tick)', () => {
@@ -176,5 +197,43 @@ describe('parkedMainInputHasRemedy', () => {
     // This is the fact that decides between a self-healing clear and a
     // permanently mute channel.
     expect(parkedMainInputHasRemedy(PARKED_SCHEDULED_FRONT_TRUNCATED)).toBe(true)
+  })
+
+  // Measured 2026-08-25: the main channel hard-restarted twice for a parked
+  // scheduled-task tick whose visible fragment held NEITHER end of the
+  // wrapper -- no opening "SCHEDULED TASK NOTICE" / "<scheduled-task" line
+  // (scrolled out, same as the FRONT-TRUNCATED case above) AND no closing
+  // "</scheduled-task>" tag or any other MACHINE_ORIGIN_TRUNCATED_MARKERS
+  // phrase either -- a pure MIDDLE fragment of the task's own instruction
+  // text. Every static, regex-based heuristic misses it by construction:
+  // there is no boilerplate left anywhere in the visible box to anchor on.
+  // Only the injected-prompt registry (the sender's own record of what it
+  // typed) can prove this is a known, safely-clearable machine injection.
+  const PARKED_SCHEDULED_MIDDLE_FRAGMENT = [
+    '',
+    SEP,
+    '❯ agent-progi -p 2>/dev/null | tail -15` (és ugyanezt agent-okoska-ra is).',
+    '  Ha a kimenetben "session limit" szerepel, várj 5 percet és próbáld újra.',
+    SEP,
+    FOOTER,
+  ].join('\n')
+
+  it('BUG: a pure middle fragment (no marker survives) reads as no-remedy without registry evidence', () => {
+    expect(parkedMachineOriginInput(PARKED_SCHEDULED_MIDDLE_FRAGMENT)).toBe(false)
+    expect(parkedScheduledTaskInput(PARKED_SCHEDULED_MIDDLE_FRAGMENT)).toBe(false)
+    expect(parkedMainInputHasRemedy(PARKED_SCHEDULED_MIDDLE_FRAGMENT)).toBe(false)
+  })
+
+  it('FIX: the same middle fragment gets a remedy once the caller passes a registry match', () => {
+    expect(parkedMainInputHasRemedy(PARKED_SCHEDULED_MIDDLE_FRAGMENT, true)).toBe(true)
+  })
+
+  it('the recordedMatch parameter defaults to false, preserving every call site above unmodified', () => {
+    // No explicit assertion beyond the suite already passing above: every
+    // existing call in this describe block omits the second argument and
+    // must keep its pre-existing result.
+    expect(parkedMainInputHasRemedy(PARKED_SCHEDULED_MIDDLE_FRAGMENT)).toBe(
+      parkedMainInputHasRemedy(PARKED_SCHEDULED_MIDDLE_FRAGMENT, false),
+    )
   })
 })

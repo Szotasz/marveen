@@ -1,5 +1,45 @@
 #!/usr/bin/env python3
-"""PostToolUse hook: log every tool call to /api/tool-log for the activity dashboard."""
+"""PostToolUse + PostToolUseFailure hook: log every tool call to /api/tool-log
+for the activity dashboard.
+
+TWO EVENTS, ONE SCRIPT (TOOLLOGVAKSIKER921, measured 2026-09-21 on Claude Code
+2.1.278): a tool call that FAILS does not fire PostToolUse at all. It fires
+PostToolUseFailure, whose payload carries an `error` string and `is_interrupt`
+and has NO `tool_response`. A hook registered under PostToolUse alone therefore
+never sees a failure -- it is not that failures were logged as success=1, they
+were not logged at all (2948/2948 rows success=1 in the whole history, while
+two exit-1 calls from the same session had no row). The `success` column is
+derived from `hook_event_name` first: PostToolUseFailure -> 0. The older
+`tool_response.is_error` check is kept as a second signal for tool families
+that report an error inside a successful PostToolUse payload; a plain Bash
+success payload has only stdout/stderr/interrupted/isImage/noOutputExpected.
+
+REGISTRATION IS PER-AGENT, WITH ONE EXCEPTION THAT IS NOT A LEAK TO FIX BY
+MOVING FILES. This hook is shipped in templates/settings.json.template, which
+ensureAgentHooks merges into the file agentSettingsPath(name) returns. For a
+sub-agent that is the agent's OWN settings.json
+(agents/<name>/.claude/settings.json). For MAIN_AGENT_ID that function returns
+~/.claude/settings.json (agent-scaffold.ts), and web.ts starts the scaffold
+loop with the main agent -- so on the owner's machine this entry DOES sit in
+the global settings file, and every Claude Code session started there loads it,
+including the owner's own sessions. That is the current, measured behaviour:
+skill-usage-capture.py already rides the same PostToolUse path in that same
+file. Do not read the per-agent placement as a filter on who gets logged.
+
+What the per-agent placement does buy is scope on OTHER machines and for
+sub-agents: a session that never loads a given agent's settings.json never
+reaches this hook under that agent's name. If the owner's own sessions must be
+kept out of tool_call_log, the filter belongs IN this hook (identity is already
+resolved below, so the check is cheap) and needs a test -- moving the entry
+between settings files will not do it, because the main agent's settings file
+IS the global one.
+
+Identity comes from ledger_lib.agent_id_from_payload (LEDGERCWD828 / #1100):
+the session transcript path first, then MARVEEN_AGENT_ID, then cwd. The
+transcript path is fixed when the session starts, so an agent that later cds
+into another repo (devy working in molyo) still logs under its own name --
+measured 2026-08-29, both branches.
+"""
 import sys
 import os
 import json
@@ -40,14 +80,53 @@ def _dashboard_token() -> str:
 
 
 # Patterns that could reveal secrets if stored verbatim.
+#
+# TOOLLOGREDACT924: the first version let 4 measured shapes through (Boni, #1533
+# review, on formatted fabricated secrets): a QUOTED value (`KEY="sbp_..."`, the
+# PATSZIVARGAS912 shape), a SPACE-separated flag (`--token sbp_...`), a JWT after
+# a `*_KEY=` name the generic key list did not know, and `Authorization: Basic`.
+# Same review, same pattern set asked of the TS twin (#1533, tool-input-preview):
+# quoted values, spaced flags, any `*KEY` / `*TOKEN` / `*SECRET` / `*PASSWORD`
+# name, a bare JWT, the sbp_ / gho_ / ghs_ / ghu_ / ghr_ / github_pat_ prefixes,
+# Basic auth, and credentials embedded in a URL. A value that is a shell
+# variable (`$X`, `${X}`, `$(...)`) is a reference, not a secret, and is kept so
+# the log stays readable. `-p X` is deliberately NOT a flag here: `mkdir -p`,
+# `ssh -p 22`, `psql -p 5432` would all be redacted for nothing.
+# Group 1, when present, is kept (the label); the rest of the match is replaced.
 _SECRET_PATTERNS = [
-    # Bearer / Authorization headers
-    re.compile(r'(?i)(bearer\s+)[A-Za-z0-9+/=_\-\.]{8,}'),
-    # Generic key=value / key: value pairs
-    re.compile(r'(?i)((?:token|secret|password|api[_\-]?key|apikey|auth|credential)\s*[=:]\s*)[^\s,\'";&|]{6,}'),
-    # GitHub/Anthropic/OpenAI style tokens
-    re.compile(r'\b(ghp_|sk-|sk-ant-|xoxb-|xoxp-)[A-Za-z0-9_\-]{10,}'),
-    # Raw hex blobs ≥ 32 chars (likely hashed secrets) -- no capture group, full match replaced
+    # Bearer / Basic authorization values
+    re.compile(r'(?i)(\b(?:bearer|basic)\s+)[A-Za-z0-9+/=_\-\.]{8,}'),
+    # Credentials embedded in a URL: scheme://user:pass@host and scheme://token@host.
+    # TOOLLOGURLSCHEME924 (Boni, #1533 review): the scheme used to be https? only,
+    # so postgres(ql)://, redis://, amqp://, mongodb(+srv):// passwords went through
+    # on both sides. Any RFC 3986 scheme now. Two more shapes measured leaking in
+    # the same round: an EMPTY user (redis://:pass@host, the usual redis form), and
+    # an unencoded @ inside the password -- the password runs to the LAST @ before
+    # the host, not the first. A $ reference in either the user or the password
+    # position is kept (a reference, not a secret).
+    re.compile(r'(?i)(\b[a-z][a-z0-9+.\-]*://)(?!\$)[^/\s:@]*:(?!\$)[^/\s]+(?=@[^/\s@]*(?:[/\s?#]|$))'),
+    re.compile(r'(?i)(\b[a-z][a-z0-9+.\-]*://)[A-Za-z0-9_\-]{20,}(?=@)'),
+    # Spaced or = flags: --token X, --password 'X', --api-key=X ...
+    re.compile(r'(?i)(--(?:token|password|passwd|api-key|apikey|access-token|auth-token|secret)(?:\s+|=)[\'"]?)(?!\$)[^\s\'"]{6,}'),
+    # key=value / key: value, the value quoted or not, the key any name ending in
+    # a secret word (SERVICE_ROLE_KEY=, GITHUB_TOKEN=, "password": ...)
+    re.compile(r'(?i)(\b\w*(?:token|secret|passw(?:or)?d|api[_\-]?key|apikey|auth|credential|_key)[\'"]?\s*[=:]\s*[\'"]?)(?!\$)[^\s,\'";&|]{6,}'),
+    # Known token prefixes (the prefix is kept as the label). Stripe keys are
+    # underscore-separated (sk_live_ / rk_live_ / whsec_), unlike the sk- family.
+    re.compile(r'\b(ghp_|gho_|ghs_|ghu_|ghr_|github_pat_|sbp_|sk-ant-|sk-|xoxb-|xoxp-|xapp-|sk_live_|sk_test_|rk_live_|rk_test_|whsec_)[A-Za-z0-9_\-]{10,}'),
+    # Telegram bot token (<bot id>:<secret>), bare or inside an api.telegram.org URL
+    re.compile(r'(\b(?:bot)?\d{6,12}:)[A-Za-z0-9_\-]{30,}'),
+    # AWS access key id
+    re.compile(r'\b(AKIA|ASIA)[A-Z0-9]{16}\b'),
+    # A password given inline to a tool that takes it as -p: sshpass -p X,
+    # mysql/mysqldump/mariadb -pX. A bare `mysql -p` (prompt) has no value to hide.
+    # sshpass: a quoted password may contain spaces, so a quoted value is
+    # taken WHOLE; a double-quoted or bare $ reference stays (Samu, #1536).
+    re.compile(r'(\bsshpass\s+-p\s*)(?:\'[^\']*\'|"(?!\$)[^"]*"|(?!\$)[^\s\'"]+)'),
+    re.compile(r'(\b(?:mysql|mysqldump|mariadb)\b[^|;&\n]*?\s-p[\'"]?)(?!\$)[^\s\'"]{4,}'),
+    # A JWT anywhere (header.payload.signature)
+    re.compile(r'\beyJ[\w\-]{8,}\.eyJ[\w\-]{8,}\.[\w\-]{8,}'),
+    # Raw hex blobs >= 32 chars (likely hashed secrets) -- no capture group, full match replaced
     re.compile(r'\b[0-9a-fA-F]{32,}\b'),
 ]
 
@@ -80,6 +159,18 @@ def _input_summary(tool_input: dict, tool_name: str) -> str:
     return ''
 
 
+def _success_from_payload(payload: dict) -> bool:
+    """False for a PostToolUseFailure event, or for a PostToolUse payload whose
+    tool_response carries is_error; True otherwise. The event name is the
+    primary signal -- a failed Bash call never reaches PostToolUse."""
+    if payload.get('hook_event_name') == 'PostToolUseFailure':
+        return False
+    tr = payload.get('tool_response')
+    if isinstance(tr, dict) and tr.get('is_error'):
+        return False
+    return True
+
+
 def main():
     try:
         payload = json.load(sys.stdin)
@@ -97,7 +188,7 @@ def main():
     duration_ms = payload.get('duration_ms')
     if not isinstance(duration_ms, int):
         duration_ms = None
-    success = not bool(payload.get('tool_response', {}).get('is_error') if isinstance(payload.get('tool_response'), dict) else False)
+    success = _success_from_payload(payload)
 
     if not session_id or not tool_name:
         sys.exit(0)

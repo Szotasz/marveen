@@ -28,6 +28,14 @@ jobs:
       # the suite exercises native bindings, and an install that skips their
       # build would fail the ABI probe instead of measuring the code.
       - run: npm ci
+      # #1565 item 4: the channel-image-resize tests build a REAL >500KB JPEG
+      # with ffmpeg (a Buffer.alloc fixture let the hook claim a resize it never
+      # did). ffmpeg is an installer dependency (install-linux.sh), so the
+      # runner must have it too -- a missing binary is a real failure there,
+      # not a reason to skip. ubuntu-latest does not ship it (measured: run
+      # 36302092314, spawnSync ffmpeg ENOENT).
+      - name: Install ffmpeg for the resize hook's tests
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
       # The suite resolves the `claude` binary at module load (resolveFromPath
       # throws when it is absent) -- without this stub 17 suites fail at
       # COLLECTION, before a single test runs (measured on the first ubuntu
@@ -47,3 +55,47 @@ jobs:
       # regression guard that only runs manually rots exactly like a one-shot
       # seed. Runs natively here (ubuntu = the Linux branch it asserts).
       - run: bash scripts/__tests__/stop-start-system-unit.test.sh
+      # TASKEGRESSDRIFT913: the egress-drift scan is a gate instrument; a guard that
+      # only runs by hand rots (the #1316 class), so its tests run here too.
+      - run: python3 scripts/__tests__/egress-drift-scan.test.py
+      # DASHAUDITZAJ915: the dash audit's classifier is a gate instrument too --
+      # same rot argument as the line above.
+      - run: python3 scripts/__tests__/dash-audit-scan.test.py
+      # A turn that died on an API error while a channel message waited must leave
+      # a trace (StopFailure hook); hermetic, isolated ledger DB.
+      - run: python3 scripts/__tests__/ledger-turn-failure.test.py
+      # ORSICTX912: the sentinel preCheck's SKIP is "no model turn" -- an
+      # error path that said SKIP would silence the community sentinel for
+      # good, so its fail-direction cases are gate instruments (hermetic:
+      # stubbed vault/supabase, throwaway dirs).
+      - run: python3 scripts/__tests__/mio-orszem-precheck.test.py
+      # MEMLINKAUDIT915: the audit's own footer calls UNRESOLVED the repair
+      # queue, so an over-report sends someone to rewrite working links. The
+      # over-report GROWS with every consolidation round, which is why this
+      # runs here and not by hand. Hermetic: throwaway fixture dir.
+      - run: python3 scripts/__tests__/memory-link-audit.test.py
+      # MORNTIMERPARK914: the #1313 contract tests shipped without CI wiring,
+      # so "CI green" said nothing about them -- the exact rot the comment
+      # above warns about. All three are hermetic (stubs on PATH / CLAUDE_BIN,
+      # throwaway dirs); the stamp-gate test never reaches the claude stub
+      # above because the briefing script takes its binary from CLAUDE_BIN.
+      - run: bash scripts/__tests__/keepalive-probe-install.test.sh
+      - run: bash scripts/__tests__/morning-stamp-gate.test.sh
+      - run: bash scripts/__tests__/morning-timer-park.test.sh
+      - run: bash scripts/__tests__/userbot-arming-gate.test.sh
+      - run: bash scripts/__tests__/supabase-q-token-hiding.test.sh
+      # REPLAYTOOL924: the reply-tool naming in the ledger hooks had tests that
+      # only ran by hand, so a green PR said nothing about them. All three are
+      # hermetic (LEDGER_DB_PATH on a throwaway DB, temp dirs).
+      - run: python3 scripts/__tests__/telegram-reply-guard.test.py
+      - run: python3 scripts/__tests__/ledger-replay-reply-tool.test.py
+      # CREDGATE1003: the credential gate stops a letter carrying a password;
+      # its fail-closed and never-log-the-value cases are gate instruments.
+      # Hermetic: CREDENTIAL_GATE_STORE on throwaway dirs, made-up values.
+      - run: python3 scripts/__tests__/credential-gate.test.py
+      - run: bash scripts/__tests__/conversation-ledger.test.sh
+      # 723bbb70 (3): the hook-load watcher is a gate instrument -- a watcher whose
+      # contract only runs by hand rots like the rest of this list warns. Hermetic:
+      # a throwaway install root, stand-in python and node gates, a local stub for
+      # the alert POST.
+      - run: python3 scripts/__tests__/hook-load-watch.test.py

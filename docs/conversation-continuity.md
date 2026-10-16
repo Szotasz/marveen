@@ -44,7 +44,9 @@ agent behaviour (which can fail or restart).
    message can also be lost in an **already-running** session (a mid-session
    deafness gap): capture still records it, yet the live session never sees it
    until the next respawn. `scripts/hooks/ledger-live-drain.py` (run every ~2 min
-   by the `ledger-live-drain` scheduled task in the live session) re-surfaces the
+   by the `ledger-live-drain` scheduled task in the live session; its scheduler
+   `preCheck`, `ledger-live-drain-precheck.sh`, runs the drain in a non-recording
+   `--precheck` mode first, so an empty tick costs no model turn) re-surfaces the
    still-unanswered inbound — `OPEN_QUESTION chat_id=… message_id=…\n<text>` on
    stdout — so the running agent answers it without waiting for a respawn. Two
    safety rails: a **grace window** (`GRACE_SECONDS = 60` — never fight an in-flight
@@ -86,6 +88,9 @@ self-scope by cwd, so they are safe even if inherited. Merge this `hooks` object
       { "matcher": "mcp__plugin_telegram_telegram__reply", "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/ledger-outbound.py\"", "timeout": 15 } ] },
       { "matcher": "mcp__plugin_discord_discord__reply", "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/ledger-outbound.py\"", "timeout": 15 } ] }
     ],
+    "StopFailure": [
+      { "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/ledger-turn-failure.py\"", "timeout": 10 } ] }
+    ],
     "SessionStart": [
       { "matcher": "startup|resume|clear", "hooks": [ { "type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/hooks/ledger-replay.py\"", "timeout": 15 } ] }
     ]
@@ -96,6 +101,17 @@ self-scope by cwd, so they are safe even if inherited. Merge this `hooks` object
 - `UserPromptSubmit` takes no matcher (fires on every prompt).
 - **One `PostToolUse` entry per installed channel plugin.** Drop the discord line if
   that plugin is not installed; add a line for any other channel plugin you run.
+
+## A turn that died while a message waited
+
+The trio records that a message arrived and that a reply went out; it does not see a
+turn that ENDED IN AN API ERROR (e.g. "Prompt is too long" right after the inbound).
+Claude Code fires `StopFailure` instead of `Stop` on such a turn, so the Stop-side
+reply guard never runs either. `scripts/hooks/ledger-turn-failure.py` on `StopFailure`
+appends one line to `store/ledger-turn-failures.jsonl` (agent, chat, message_id,
+`error`, `error_details`) when the newest inbound has no later reply. With
+`LEDGER_TURN_FAILURE_NOTIFY=1` (environment or `.env`) it also runs `scripts/notify.sh`
+once per message, outside the session that failed. Off by default.
 
 ## Provider coverage — the silent failure to avoid
 
@@ -138,5 +154,55 @@ no `jq`). Take effect on the next session start after the settings change.
   open-question / answered-no-block / idempotency / multi-agent scope / live-drain
   grace + dedup + answered / edges) against the real hooks, isolated via
   `LEDGER_DB_PATH` + `LEDGER_OWNER_CHAT`.
+- `python3 scripts/__tests__/ledger-turn-failure.test.py` -- the StopFailure trace
+  (row for an open inbound, none for an answered one, one notification per message).
 - `npx vitest run src/__tests__/conversation-ledger-schema.test.ts` — schema-drift
   guard (db.ts migration == ledger_lib.py).
+
+## The `/clear` path (every agent, not just the channel ones)
+
+The ledger above carries a **channel** conversation across a respawn. A `/clear`
+is a different event with a different blast radius: it wipes the session in
+place, and it used to be unprotected at **both** ends.
+
+- **Nothing saved before it.** The `PreCompact` agent-hook (memory save, skill
+  reflection, task-state) is wired to the *compact* path. A `/clear` does not
+  fire `PreCompact`, so nothing wrote a record.
+- **Nothing restored after it.** The harness restarts the session with
+  `source=clear`, but the sub-agent `SessionStart` hook was registered on
+  `compact|resume` and `REPLAY_SOURCES` in `agent-taskstate.ts` excluded
+  `clear`, so the task-state replay stayed silent. `ledger-replay.py` handles
+  `clear`, but it is wired in the **repo's project settings** only (the main
+  agent) and a sub-agent's `conversation_log` is empty anyway unless its channel
+  turns are being captured.
+
+That gap also sat under the **context-restart gate**, which sends `/clear`
+itself and then nudges the fresh session to read the restored blocks.
+
+The pair that closes it:
+
+| Hook | Event | Fires on | Does |
+| --- | --- | --- | --- |
+| `scripts/hooks/clear-capture.py` | `SessionEnd` | `reason == "clear"` | Extracts the owner's last prompts + the agent's last reply from the session transcript and writes `store/agent-clearstate/<agent>.json` |
+| `scripts/hooks/clear-replay.py` | `SessionStart` | `source == "clear"` | Injects that record as `additionalContext`, then deletes it (single replay) |
+
+Notes that matter when touching this:
+
+- **`SessionEnd` is registered without a matcher on purpose.** The script filters
+  on `reason` itself, so the wiring stays correct regardless of what the harness
+  matches `SessionEnd` groups against. The reasons the harness emits are
+  `clear`, `resume`, `logout`, `prompt_input_exit`, `other`.
+- **Agent resolution is stricter than the ledger's.** The main agent's hooks live
+  in the user-global `~/.claude/settings.json`, so they fire for the owner's own
+  Claude Code sessions in unrelated repositories too. `clearstate_lib.agent_id_from_cwd()`
+  returns `None` for a cwd outside the install instead of falling back to the
+  main agent, so an unrelated `/clear` elsewhere on the machine cannot write a
+  record the real main agent then reads back as its own.
+- **The injected block is deliberately non-directive.** A `/clear` can be a
+  deliberate fresh start as easily as a gate-driven restart, and the hook cannot
+  tell them apart. The block states what the previous thread was; the next
+  prompt (the owner's, or the gate's wake nudge) decides what to do with it.
+- **A matcher-only template change does not reach existing agents by itself.**
+  `ensureAgentHooks()` dedupes on the exact command string, so the group is
+  considered present and its stale matcher survives. `syncHookMatchers()` in
+  `agent-scaffold.ts` is what carries a widened matcher onto the fleet.

@@ -37,6 +37,20 @@ INSTALL_STEP="init"
 # shellcheck source=install-lang.sh
 source "$(dirname "$0")/install-lang.sh"
 
+# #1874: the managed-settings.json writes below are machine-wide (org-policy layer)
+# and need root. Say what is written and why, ONCE, before the first of them asks
+# for a password. The text lives in install-lang.sh; the function stays here, so a
+# standalone run that fetched an older install-lang.sh still has it (an unknown
+# _t key just prints nothing).
+managed_settings_notice() {
+  if [ -n "${MANAGED_NOTICE_SHOWN:-}" ]; then
+    return 0
+  fi
+  MANAGED_NOTICE_SHOWN=1
+  echo -e "  ${ORANGE}i${NC} $(_t managed.notice_what)"
+  echo -e "    $(_t managed.notice_sudo)"
+}
+
 # Error-translation layer (NPMPERM1 kor): minden stderr egy log-fajlba is
 # megy, hogy hibanal a trap ne csak sorszamot mondjon, hanem le tudja
 # forditani az upstream hibat (explain_install_error, install-lang.sh).
@@ -370,11 +384,16 @@ else
   fi
 fi
 
-# Pre-flight headless probe — Issue #179.
+# Pre-flight headless probe (Issue #179, scope corrected by #1872).
 # `claude auth login` may exit 0 even when the resulting token is unusable for
-# headless queries (browser flow interrupted, stale cached state, etc.). The
-# agent-create flow runs `claude --print` under the hood; surface the failure
-# here while the user is still at the install prompt.
+# headless queries (browser flow interrupted, stale cached state, etc.). This
+# probe runs with the OPERATOR's environment and Keychain only, so it checks the
+# login of the terminal the user is sitting at (what the pairing step's
+# `claude` uses) -- NOT the agents' credential. The launchd units read .env and
+# store/.claude-oauth-token, the token entered above is not even saved yet, and
+# the fail-closed service-auth gate further down probes exactly that path. So a
+# failure here must not predict that agent creation will fail: it did, falsely,
+# on every token-based install over SSH (#1872).
 echo ""
 echo -e "  ${DIM}$(_t macos.headless_test)${NC}"
 # The exit status here used to be `head`'s, not claude's: `VAR=$(cmd | head)`
@@ -392,8 +411,8 @@ if [ "$CLAUDE_PROBE_EXIT" -eq 0 ] && [ -n "$CLAUDE_PROBE_OUT" ]; then
 else
   warn "$(_t macos.headless_fail)"
   echo -e "    ${DIM}Kimenet: ${CLAUDE_PROBE_OUT:-<ures>}${NC}"
-  echo -e "    ${DIM}Tipikus okok: nincs ervenyes auth, halozati problema, regi claude CLI.${NC}"
-  echo -e "    ${DIM}Javitas: \`claude --version\` -> \`claude /login\` (vagy ANTHROPIC_API_KEY/CLAUDE_CODE_OAUTH_TOKEN beallitas) -> \`claude --print \"ping\"\` ujra.${NC}"
+  echo -e "    ${DIM}Tipikus okok: ebben a terminálban nincs Claude-bejelentkezés (pl. SSH-n át), hálózati probléma, régi claude CLI.${NC}"
+  echo -e "    ${DIM}Javítás, ha ebből a terminálból használod a claude-ot (pl. a párosításhoz): \`claude /login\` -> \`claude --print \"ping\"\` újra.${NC}"
 fi
 
 INSTALL_STEP="personal-info"
@@ -412,11 +431,14 @@ echo -e "${BOLD}$(_t section_4_macos)${NC}"
 echo -e "${DIM}$(_t macos.channel_select_hint)${NC}"
 echo -e "  ${BOLD}1.${NC} $(_t macos.channel_option_1)"
 echo -e "  ${BOLD}2.${NC} Slack"
+echo -e "  ${BOLD}3.${NC} Discord"
 echo ""
 read -rp "$(_t prompt_channel_select_macos)" PROVIDER_CHOICE
 PROVIDER_CHOICE=${PROVIDER_CHOICE:-1}
 if [ "$PROVIDER_CHOICE" = "2" ]; then
   CHANNEL_PROVIDER="slack"
+elif [ "$PROVIDER_CHOICE" = "3" ]; then
+  CHANNEL_PROVIDER="discord"
 else
   CHANNEL_PROVIDER="telegram"
 fi
@@ -462,6 +484,9 @@ probe_telegram_token() {
 BOT_TOKEN=""
 SLACK_BOT_TOKEN=""
 SLACK_APP_TOKEN=""
+DISCORD_BOT_TOKEN=""
+DISCORD_CHANNEL_ID=""
+OPERATOR_DISCORD_USER_ID=""
 
 if [ "$CHANNEL_PROVIDER" = "telegram" ]; then
   echo ""
@@ -473,6 +498,80 @@ if [ "$CHANNEL_PROVIDER" = "telegram" ]; then
   echo ""
   read -rp "$(_t prompt_telegram_token)" BOT_TOKEN
   probe_telegram_token "$BOT_TOKEN"
+elif [ "$CHANNEL_PROVIDER" = "discord" ]; then
+  echo ""
+  echo -e "${DIM}  Az AI asszisztensed Discordon kommunikal veled.${NC}"
+  echo -e "${DIM}  1. Hozz letre egy alkalmazast: discord.com/developers/applications${NC}"
+  echo -e "${DIM}  2. Bot fulon: Add Bot, majd masold ki a Tokent${NC}"
+  echo -e "${DIM}  3. Privileged Gateway Intents: kapcsold be a MESSAGE CONTENT INTENT-et${NC}"
+  echo -e "${DIM}  4. OAuth2 > URL Generator: bot scope, majd hivd meg a szerveredre${NC}"
+  echo -e "${DIM}  5. Masold ki a csatorna ID-jet (Developer Mode > jobb klikk > Copy Channel ID)${NC}"
+  echo -e "${DIM}  6. Sajat (operator) user ID: jobb klikk a nevedre > Copy User ID${NC}"
+  echo ""
+  read -rp "$(_t prompt_discord_bot_token)" DISCORD_BOT_TOKEN
+  read -rp "$(_t prompt_discord_channel_id)" DISCORD_CHANNEL_ID
+  echo ""
+  echo -e "${DIM}  Az operator user ID-re a parositashoz kell: amikor egy uj felhasznalo${NC}"
+  echo -e "${DIM}  DM-et ir a botnak, a bot ezen az ID-n ertesit teged jovahagyasert.${NC}"
+  read -rp "$(_t prompt_discord_user_id)" OPERATOR_DISCORD_USER_ID
+
+  # A previously written managed allowlist (a slack/teams install writes one)
+  # BLOCKS every channel plugin missing from it -- measured on the fleet host:
+  # /Library/Application Support/ClaudeCode/managed-settings.json lists
+  # slack-channel + telegram + teams, no discord, so a discord plugin on such a
+  # machine goes silently mute. A fresh telegram-only install never creates the
+  # file and the official-marketplace plugin runs fine without it, so we only
+  # MERGE when the file already exists -- never create it here.
+  MANAGED_FILE="/Library/Application Support/ClaudeCode/managed-settings.json"
+  if [ -f "$MANAGED_FILE" ]; then
+    managed_settings_notice
+    HAS_DISCORD=$(sudo python3 -c "
+import json, sys
+try:
+  d = json.load(open('$MANAGED_FILE'))
+  have = {(p.get('plugin'),p.get('marketplace')) for p in d.get('allowedChannelPlugins', [])}
+  sys.exit(0 if ('discord','claude-plugins-official') in have else 1)
+except: sys.exit(1)
+" 2>/dev/null && echo "yes" || echo "no")
+    if [ "$HAS_DISCORD" = "no" ]; then
+      echo -e "  ${ORANGE}⚠${NC} $(_t macos.managed_update)"
+      # Safe JSON merge (same shape as ensure-managed-channels-enabled.sh):
+      # tmp file + copymode + os.replace, so no interruption can leave a
+      # truncated managed-settings behind. And an org-policy file is NEVER
+      # rebuilt from scratch: on a parse failure we say so and leave it
+      # untouched -- a {} fallback would silently drop the OTHER channels'
+      # allowlist entries, muting them host-wide.
+      if sudo python3 - "$MANAGED_FILE" <<'DISCORDMERGEPY'
+import json, os, shutil, sys
+p = sys.argv[1]
+try:
+    d = json.load(open(p))
+except Exception as e:
+    print(f"managed-settings parse failed, NOT writing: {e}", file=sys.stderr)
+    sys.exit(1)
+if not isinstance(d, dict):
+    print("managed-settings root is not an object, NOT writing", file=sys.stderr)
+    sys.exit(1)
+plugins = d.get('allowedChannelPlugins', [])
+entry = {'plugin': 'discord', 'marketplace': 'claude-plugins-official'}
+if entry not in plugins:
+    plugins.append(entry)
+d['allowedChannelPlugins'] = plugins
+tmp = p + '.tmp'
+with open(tmp, 'w') as f:
+    f.write(json.dumps(d, indent=2) + "\n")
+shutil.copymode(p, tmp)
+os.replace(tmp, p)
+DISCORDMERGEPY
+      then
+        echo -e "  ${GREEN}✓${NC} Discord engedelyezve a managed-settings allowlistben"
+      else
+        echo -e "  ${RED}✗${NC} A managed-settings.json nem volt biztonsagosan frissitheto -- a fajl ERINTETLEN maradt."
+        echo -e "  ${DIM}Kezi potlas (root): add az allowedChannelPlugins tombhoz:${NC}"
+        echo -e "  ${DIM}  {\"plugin\":\"discord\",\"marketplace\":\"claude-plugins-official\"}${NC}"
+      fi
+    fi
+  fi
 else
   echo ""
   echo -e "${DIM}  Az AI asszisztensed Slack-en kommunikal veled.${NC}"
@@ -495,8 +594,10 @@ else
   SLACK_ENTRY='{"plugin":"slack-channel","marketplace":"marveen-marketplace"}'
   TELEGRAM_ENTRY='{"plugin":"telegram","marketplace":"claude-plugins-official"}'
   TEAMS_ENTRY='{"plugin":"teams","marketplace":"marveen-marketplace"}'
-  REQUIRED_JSON="{\"allowedChannelPlugins\":[$SLACK_ENTRY,$TELEGRAM_ENTRY,$TEAMS_ENTRY]}"
+  DISCORD_ENTRY='{"plugin":"discord","marketplace":"claude-plugins-official"}'
+  REQUIRED_JSON="{\"allowedChannelPlugins\":[$SLACK_ENTRY,$TELEGRAM_ENTRY,$TEAMS_ENTRY,$DISCORD_ENTRY]}"
 
+  managed_settings_notice
   if [ -f "$MANAGED_FILE" ]; then
     # Gate on ALL required plugins being present (not just slack) -- otherwise an
     # install that already has slack/telegram but not teams skips the merge and
@@ -505,7 +606,7 @@ else
     # at install time, so no manual managed-settings edit is needed later.
     HAS_ALL=$(sudo python3 -c "
 import json, sys
-required = [('slack-channel','marveen-marketplace'),('telegram','claude-plugins-official'),('teams','marveen-marketplace')]
+required = [('slack-channel','marveen-marketplace'),('telegram','claude-plugins-official'),('teams','marveen-marketplace'),('discord','claude-plugins-official')]
 try:
   d = json.load(open('$MANAGED_FILE'))
   plugins = d.get('allowedChannelPlugins', [])
@@ -515,28 +616,83 @@ except: sys.exit(1)
 " 2>/dev/null && echo "yes" || echo "no")
     if [ "$HAS_ALL" = "no" ]; then
       echo -e "  ${ORANGE}⚠${NC} $(_t macos.managed_update)"
-      echo "$REQUIRED_JSON" | sudo python3 -c "
-import json, sys
-new = json.loads(sys.stdin.read())
+      # Safe JSON merge (same shape as the Discord branch / #1306): tmp file +
+      # copymode + os.replace, so no interruption can leave a truncated
+      # managed-settings behind. And an org-policy file is NEVER rebuilt from
+      # scratch: on a parse failure we say so and leave it untouched -- the old
+      # empty-object fallback silently dropped every OTHER managed key
+      # (channelsEnabled, other allowlists) host-wide. The old shape also
+      # piped through `sudo tee`, which TRUNCATES the file even when the merge
+      # process fails -- a failed merge left an EMPTY org-policy file behind.
+      if sudo python3 - "$MANAGED_FILE" <<'SLACKMERGEPY'
+import json, os, shutil, sys
+p = sys.argv[1]
+required = [
+    {'plugin': 'slack-channel', 'marketplace': 'marveen-marketplace'},
+    {'plugin': 'telegram', 'marketplace': 'claude-plugins-official'},
+    {'plugin': 'teams', 'marketplace': 'marveen-marketplace'},
+    {'plugin': 'discord', 'marketplace': 'claude-plugins-official'},
+]
 try:
-  with open('$MANAGED_FILE') as f: existing = json.load(f)
-except: existing = {}
-plugins = existing.get('allowedChannelPlugins', [])
-for entry in new['allowedChannelPlugins']:
-  if not any(p.get('plugin')==entry['plugin'] and p.get('marketplace')==entry['marketplace'] for p in plugins):
-    plugins.append(entry)
-existing['allowedChannelPlugins'] = plugins
-print(json.dumps(existing, indent=2))
-" | sudo tee "$MANAGED_FILE" > /dev/null
-      echo -e "  ${GREEN}✓${NC} $(_t macos.managed_updated)"
+    d = json.load(open(p))
+except Exception as e:
+    print(f"managed-settings parse failed, NOT writing: {e}", file=sys.stderr)
+    sys.exit(1)
+if not isinstance(d, dict):
+    print("managed-settings root is not an object, NOT writing", file=sys.stderr)
+    sys.exit(1)
+plugins = d.get('allowedChannelPlugins', [])
+for entry in required:
+    if not any(p2.get('plugin') == entry['plugin'] and p2.get('marketplace') == entry['marketplace'] for p2 in plugins):
+        plugins.append(entry)
+d['allowedChannelPlugins'] = plugins
+tmp = p + '.tmp'
+with open(tmp, 'w') as f:
+    f.write(json.dumps(d, indent=2) + "\n")
+shutil.copymode(p, tmp)
+os.replace(tmp, p)
+SLACKMERGEPY
+      then
+        echo -e "  ${GREEN}✓${NC} $(_t macos.managed_updated)"
+      else
+        echo -e "  ${RED}✗${NC} A managed-settings.json nem volt biztonsagosan frissitheto -- a fajl ERINTETLEN maradt."
+        echo -e "  ${DIM}Kezi potlas (root): add az allowedChannelPlugins tombhoz a hianyzo bejegyzeseket:${NC}"
+        echo -e "  ${DIM}  $REQUIRED_JSON${NC}"
+      fi
     else
       echo -e "  ${GREEN}✓${NC} $(_t macos.managed_has_slack)"
     fi
   else
     echo -e "  ${ORANGE}⚠${NC} $(_t macos.managed_create)"
     sudo mkdir -p "$MANAGED_DIR"
-    echo "$REQUIRED_JSON" | python3 -c "import json,sys; print(json.dumps(json.loads(sys.stdin.read()),indent=2))" | sudo tee "$MANAGED_FILE" > /dev/null
-    echo -e "  ${GREEN}✓${NC} $(_t macos.managed_created)"
+    # Fresh file: still tmp + os.replace, so an interrupted install can never
+    # leave a truncated/empty org-policy file that a later run would then
+    # refuse to touch (the merge above declines unparseable files by design).
+    if sudo python3 - "$MANAGED_FILE" <<'SLACKCREATEPY'
+import json, os, sys
+p = sys.argv[1]
+required = [
+    {'plugin': 'slack-channel', 'marketplace': 'marveen-marketplace'},
+    {'plugin': 'telegram', 'marketplace': 'claude-plugins-official'},
+    {'plugin': 'teams', 'marketplace': 'marveen-marketplace'},
+    {'plugin': 'discord', 'marketplace': 'claude-plugins-official'},
+]
+tmp = p + '.tmp'
+with open(tmp, 'w') as f:
+    f.write(json.dumps({'allowedChannelPlugins': required}, indent=2) + "\n")
+# A fresh tmp inherits the caller's umask; under `umask 077` that leaves a
+# root-owned 0600 policy the unprivileged session cannot read, so the channel
+# policy silently never takes effect (the exact trap documented in
+# scripts/ensure-managed-channels-enabled.sh) -- pin the world-readable mode.
+os.chmod(tmp, 0o644)
+os.replace(tmp, p)
+SLACKCREATEPY
+    then
+      echo -e "  ${GREEN}✓${NC} $(_t macos.managed_created)"
+    else
+      echo -e "  ${RED}✗${NC} A managed-settings.json letrehozasa nem sikerult -- kezi potlas (root):"
+      echo -e "  ${DIM}  echo '$REQUIRED_JSON' > \"$MANAGED_FILE\"${NC}"
+    fi
   fi
 fi
 
@@ -547,6 +703,7 @@ fi
 # no-op on a personal org). Idempotent + preserves existing managed keys.
 CHANNELS_GATE_STATE="manual"
 if [ -f "$INSTALL_DIR/scripts/ensure-managed-channels-enabled.sh" ]; then
+  managed_settings_notice
   echo -e "  Managed-settings channel-kapu ellenorzese..."
   # ORGGATESILENT806: the gate script must never fail the install (exit 0 on
   # every path -- a personal org is a legitimate no-op), but its OUTCOME must
@@ -685,7 +842,12 @@ echo -e "${BOLD}$(_t section_6_macos)${NC}"
 env_merge_key() {
   # env_merge_key KEY VALUE -- drop any existing KEY= line, append KEY=VALUE.
   _emk_tmp="$INSTALL_DIR/.env.tmp.$$"
-  grep -v "^$1=" "$INSTALL_DIR/.env" > "$_emk_tmp" 2>/dev/null || true
+  # ENVTMPMODE925: the tmp holds the WHOLE .env (bot token, API keys) until the
+  # mv below, so it is created 0600 from its first byte -- at the umask default
+  # it was world-readable for that window (the VAULTMODE818 pattern). The rm
+  # matters too: a leftover tmp of the same name would keep its old mode.
+  rm -f "$_emk_tmp"
+  (umask 077; grep -v "^$1=" "$INSTALL_DIR/.env" > "$_emk_tmp" 2>/dev/null) || true
   printf '%s=%s\n' "$1" "$2" >> "$_emk_tmp"
   mv "$_emk_tmp" "$INSTALL_DIR/.env"
   chmod 600 "$INSTALL_DIR/.env"
@@ -705,6 +867,26 @@ env_set_if_absent() {
   if grep -q "^$1=" "$INSTALL_DIR/.env" 2>/dev/null; then return 0; fi
   env_merge_key "$1" "$2"
 }
+env_add_list_entry() {
+  # env_add_list_entry KEY ENTRY -- make sure ENTRY is in the comma list KEY,
+  # keeping every entry already there. Read the way the server reads it: the
+  # LAST KEY= line wins (src/env-parse.ts), one pair of surrounding quotes is
+  # dropped, and each entry is compared after the server's normalisation
+  # (parseSystemSenderIds: split on commas, trim; sanitizeAgentIdent: keep
+  # [A-Za-z0-9_-]). Present -> no write; absent -> appended, as ONE KEY= line.
+  _eal_cur="$(grep "^$1=" "$INSTALL_DIR/.env" 2>/dev/null | tail -1 | cut -d= -f2- | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+  case "$_eal_cur" in
+    \"*\") _eal_cur="${_eal_cur#\"}"; _eal_cur="${_eal_cur%\"}" ;;
+    \'*\') _eal_cur="${_eal_cur#\'}"; _eal_cur="${_eal_cur%\'}" ;;
+  esac
+  _eal_cur="$(printf '%s' "$_eal_cur" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+  _eal_saved_ifs="$IFS"; IFS=','
+  for _eal_e in $_eal_cur; do
+    if [ "$(printf '%s' "$_eal_e" | tr -dc 'A-Za-z0-9_-')" = "$2" ]; then IFS="$_eal_saved_ifs"; return 0; fi
+  done
+  IFS="$_eal_saved_ifs"
+  if [ -n "$(printf '%s' "$_eal_cur" | tr -d ', ')" ]; then env_merge_key "$1" "$_eal_cur,$2"; else env_merge_key "$1" "$2"; fi
+}
 (umask 077 && touch "$INSTALL_DIR/.env")
 chmod 600 "$INSTALL_DIR/.env"
 [ -s "$INSTALL_DIR/.env" ] || printf '# Main agent konfiguracio\n' >> "$INSTALL_DIR/.env"
@@ -715,6 +897,19 @@ env_merge_key BRAND_NAME "${BRAND_NAME}"
 env_merge_key MAIN_AGENT_ID "${MAIN_AGENT_ID}"
 env_merge_key SERVICE_ID "${SERVICE_ID}"
 env_merge_key WEB_PORT "${WEB_PORT:-3420}"
+# The fleet's own guards alert under their OWN names: the prod-tree guard
+# (scripts/install-prod-tree-guard-hook.sh) and the channels.sh shared-root
+# guard. The message route accepts a sender only if it is a registered agent,
+# the owner, or listed in SYSTEM_SENDER_IDS, so without these entries each
+# guard falls back to sending as MAIN_AGENT_ID, i.e. the supervisory system
+# writes under the main agent's name. Appended to what the operator listed,
+# never replacing it; an entry already there is not written twice.
+# KNOWN LIMIT: the server reads the list once, at start-up (src/config.ts). A
+# fresh install starts it after this; a RE-RUN over a running install does not
+# restart it, so until the next dashboard restart a guard that reads the new
+# line sends under its own name to a server that does not know it yet.
+env_add_list_entry SYSTEM_SENDER_IDS prod-tree-guard
+env_add_list_entry SYSTEM_SENDER_IDS channels-sh-guard
 if [ "$CHANNEL_PROVIDER" = "telegram" ]; then
   env_keep_or_set TELEGRAM_BOT_TOKEN "${BOT_TOKEN}"
   # Never demote a paired install: CHAT_ID=0 means pairing was skipped THIS
@@ -723,6 +918,10 @@ if [ "$CHANNEL_PROVIDER" = "telegram" ]; then
   if [ "${CHAT_ID}" != "0" ] || [ -z "$_existing_chat" ]; then
     env_merge_key ALLOWED_CHAT_ID "${CHAT_ID}"
   fi
+elif [ "$CHANNEL_PROVIDER" = "discord" ]; then
+  env_keep_or_set DISCORD_BOT_TOKEN "${DISCORD_BOT_TOKEN}"
+  env_keep_or_set DISCORD_CHANNEL_ID "${DISCORD_CHANNEL_ID}"
+  env_keep_or_set OPERATOR_DISCORD_USER_ID "${OPERATOR_DISCORD_USER_ID}"
 else
   env_keep_or_set SLACK_BOT_TOKEN "${SLACK_BOT_TOKEN}"
   env_keep_or_set SLACK_APP_TOKEN "${SLACK_APP_TOKEN}"
@@ -832,6 +1031,7 @@ if [ -f "$INSTALL_DIR/templates/CLAUDE.md.template" ]; then
       -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
       -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
       -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
+      -e "s|{{TIMEZONE}}|$(. "$INSTALL_DIR/scripts/lib/install-tz.sh"; z="$(install_tz "$INSTALL_DIR")"; printf '%s' "${z:-UTC}")|g" \
       "$INSTALL_DIR/templates/CLAUDE.md.template" > "$INSTALL_DIR/CLAUDE.md"
   echo -e "  ${GREEN}✓${NC} $(_t macos.claude_md_generated)"
 else
@@ -911,6 +1111,22 @@ SLACKENVEOF
 }
 ACCESSEOF
   echo -e "  ${GREEN}✓${NC} $(_t macos.slack_channel_configured)"
+elif [ "$CHANNEL_PROVIDER" = "discord" ] && [ -n "$DISCORD_BOT_TOKEN" ]; then
+  (umask 077 && cat > "$CHANNEL_DIR/.env" << DISCORDENVEOF
+DISCORD_BOT_TOKEN=$DISCORD_BOT_TOKEN
+DISCORD_CHANNEL_ID=$DISCORD_CHANNEL_ID
+DISCORDENVEOF
+  )
+  chmod 600 "$CHANNEL_DIR/.env"
+  cat > "$CHANNEL_DIR/access.json" << ACCESSEOF
+{
+  "dmPolicy": "pairing",
+  "allowFrom": [],
+  "channels": {},
+  "pending": {}
+}
+ACCESSEOF
+  echo -e "  ${GREEN}✓${NC} $(_t macos.discord_channel_configured)"
 fi
 
 # Install channel plugin
@@ -918,6 +1134,10 @@ if [ "$CHANNEL_PROVIDER" = "telegram" ]; then
   PLUGIN_MARKETPLACE="anthropics/claude-plugins-official"
   PLUGIN_ID="telegram@claude-plugins-official"
   PLUGIN_SHORT="telegram"
+elif [ "$CHANNEL_PROVIDER" = "discord" ]; then
+  PLUGIN_MARKETPLACE="anthropics/claude-plugins-official"
+  PLUGIN_ID="discord@claude-plugins-official"
+  PLUGIN_SHORT="discord"
 else
   PLUGIN_MARKETPLACE="Szotasz/marveen-marketplace"
   PLUGIN_ID="slack-channel@marveen-marketplace"
@@ -1319,11 +1539,32 @@ echo -e "  ${GREEN}✓${NC} $(_t macos.launchagents_created)"
 # both entry points behave identically.
 . "$INSTALL_DIR/scripts/launchd-unit.sh"
 
+# REMEDYCMD807: the remedy for a unit that is not running. A function because
+# the closing summary repeats it word for word (#1871): whoever reads only the
+# end of the run must get the same commands as the mid-run block.
+print_services_remedy() {
+  echo -e "    ${BOLD}Javítás most:${NC}"
+  # kickstart alone cannot start a unit that was never REGISTERED in the gui
+  # domain -- and that is exactly the state this fires in most often (an
+  # SSH-driven install cannot bootstrap into gui/$UID; measured live, rc=5 EIO).
+  # The remedy the user runs from a GUI terminal must be state-agnostic:
+  # bootstrap first (registers + RunAtLoad-starts; errors harmlessly if already
+  # registered), then kickstart (covers the registered-but-dead state).
+  echo -e "    ${BLUE}launchctl bootstrap gui/$(id -u) \"\$HOME/Library/LaunchAgents/${DASHBOARD_PLIST}.plist\" 2>/dev/null; launchctl kickstart -p gui/$(id -u)/${DASHBOARD_PLIST}${NC}"
+  echo -e "    ${BLUE}launchctl bootstrap gui/$(id -u) \"\$HOME/Library/LaunchAgents/${CHANNELS_PLIST}.plist\" 2>/dev/null; launchctl kickstart -p gui/$(id -u)/${CHANNELS_PLIST}${NC}"
+  echo -e "    ${DIM}Ellenőrzés: launchctl print gui/$(id -u)/${CHANNELS_PLIST} | grep -E 'state|pid'${NC}"
+}
+
+# #1871: the outcome is kept, like INSTALL_AUTH_STATE / CHANNELS_GATE_STATE, so
+# the closing banner and the exit status can tell the truth about it.
+SERVICES_STATE="unknown"
 DASHBOARD_PID="$(start_launchd_unit "$DASHBOARD_PLIST")"
 CHANNELS_PID="$(start_launchd_unit "$CHANNELS_PLIST")"
 if [ -n "$DASHBOARD_PID" ] && [ -n "$CHANNELS_PID" ]; then
+  SERVICES_STATE="ok"
   echo -e "  ${GREEN}✓${NC} Szolgaltatasok elinditva (dashboard pid $DASHBOARD_PID, channels pid $CHANNELS_PID)"
 else
+  SERVICES_STATE="down"
   # "nem igazolt", not "nem indultak el": this branch fires when EITHER pid is
   # missing, so the plural claim was false whenever one unit came up. It also
   # says only what was measured -- the verification did not succeed -- instead of
@@ -1345,25 +1586,86 @@ else
   # return value is ever inspected. "Loaded but not started" was a diagnosis
   # nobody measured -- the same defect as the banner above it.
   echo -e "    ${DIM}A unit-fajlok a helyukon vannak, de futo folyamatot nem talaltunk.${NC}"
-  echo -e "    ${BOLD}Javitas most:${NC}"
-  # REMEDYCMD807: kickstart alone cannot start a unit that was never REGISTERED
-  # in the gui domain -- and that is exactly the state this branch fires in most
-  # often (an SSH-driven install cannot bootstrap into gui/$UID; measured live,
-  # rc=5 EIO). The remedy the user runs from a GUI terminal must be
-  # state-agnostic: bootstrap first (registers + RunAtLoad-starts; errors
-  # harmlessly if already registered), then kickstart (covers the
-  # registered-but-dead state).
-  echo -e "    ${BLUE}launchctl bootstrap gui/$(id -u) \"\$HOME/Library/LaunchAgents/${DASHBOARD_PLIST}.plist\" 2>/dev/null; launchctl kickstart -p gui/$(id -u)/${DASHBOARD_PLIST}${NC}"
-  echo -e "    ${BLUE}launchctl bootstrap gui/$(id -u) \"\$HOME/Library/LaunchAgents/${CHANNELS_PLIST}.plist\" 2>/dev/null; launchctl kickstart -p gui/$(id -u)/${CHANNELS_PLIST}${NC}"
-  echo -e "    ${DIM}Ellenorzes: launchctl print gui/$(id -u)/${CHANNELS_PLIST} | grep -E 'state|pid'${NC}"
+  print_services_remedy
+fi
+
+# ISSUE1891 (#1891): the three helper jobs below are verified by their own
+# installers now (registered in gui/<uid> AND run once). One that is not running
+# is collected here, warned about with its remedy, and repeated in the closing
+# summary -- before #1891 each helper printed "Loaded" after a bare
+# `launchctl load` and this file threw the output away, so on a Mac without a
+# GUI login nothing ever said that the keep-alive probe was not running. The
+# install's exit status is unchanged by a helper (the bot itself answers).
+HELPERS_DOWN=""
+note_helper_down() {
+  HELPERS_DOWN="${HELPERS_DOWN}${HELPERS_DOWN:+ }$1"
+  _nh_label="$("$INSTALL_DIR/scripts/$1.sh" --print-label 2>/dev/null | head -1)"
+  echo -e "    ${DIM}Javitas (a GUI-bejelentkezes egy terminaljabol):${NC}"
+  print_periodic_unit_remedy "$HOME/Library/LaunchAgents/${_nh_label}.plist" "$_nh_label"
+}
+
+# Idle-path keepalive probe (launchd twin of the Linux systemd timer). Without
+# it the ONLY producer of store/.channel-keepalive freshness is organic inbound
+# traffic, so a quiet night looks exactly like a wedged session: the file ages
+# past the dashboard's 45-minute liveness ceiling and channel-monitor respawns a
+# healthy main agent (its conversation lost), which kills the channel plugin,
+# which trips the channels watchdog into a second restart. Measured on a live
+# Linux install the night of 2026-09-12/13: 13 restarts, one every ~50 minutes.
+# The probe never fakes liveness -- it proves the session, its claude pid and a
+# descending poller are alive before touching the file -- so a genuinely dead
+# channel still ages out and still gets recovered.
+#
+# The dedicated installer script already exists and is idempotent; --load starts
+# it immediately. Non-fatal: a failed keepalive probe must not fail the install.
+if [ -x "$INSTALL_DIR/scripts/install-channel-keepalive-probe.sh" ]; then
+  if "$INSTALL_DIR/scripts/install-channel-keepalive-probe.sh" --load >/dev/null 2>&1; then
+    ok "Keepalive-szonda telepitve (3 percenkent, hamis respawn ellen)"
+  else
+    warn "A keepalive-szonda NEM FUT (telepites vagy elso futas nem igazolt) -- nelkule a figyelo 45 perc csend utan ujrainditja az ep fo sessiont"
+    note_helper_down install-channel-keepalive-probe
+  fi
+fi
+
+# Stuck-modal guard, the launchd counterpart of the systemd unit template. A
+# modal left open in the main session (a /mcp dialog after a full disk, the
+# CLI's "Switch model?" after a /model -- measured 2026-10-05, half an hour of
+# queued Telegram messages) blocks every inbound message, and on macOS nothing
+# even noticed it. Installed in its default mode, log-only: detection and a
+# log line; recovery stays opt-in (STUCK_MODAL_MODE=alert|act in .env, see
+# docs/disk-modal-guards.md). Non-fatal, like the probe above.
+if [ -x "$INSTALL_DIR/scripts/install-stuck-modal-guard.sh" ]; then
+  if "$INSTALL_DIR/scripts/install-stuck-modal-guard.sh" --load >/dev/null 2>&1; then
+    ok "Beragadt-ablak or telepitve (percenkent; alapbol csak naploz, beavatkozni a STUCK_MODAL_MODE=act kapcsoloval fog)"
+  else
+    warn "A beragadt-ablak or NEM FUT (telepites vagy elso futas nem igazolt)"
+    note_helper_down install-stuck-modal-guard
+  fi
+fi
+
+# Main-agent inbox observer, installed the same way and for the same reason: a
+# probe nobody schedules is not a probe. Every delivery path except the main
+# agent's queue is watched by something, and the one in-process reader of that
+# queue lives inside the dashboard -- so when the dashboard is down or wedged,
+# the watcher is down with it and mail to the main agent sits pending unseen.
+# The observer runs from launchd instead, on its own 5-minute schedule, and
+# alerts over the direct Bot API rather than /api/*, which dies with the same
+# process. Idempotent, --load starts it at once, and non-fatal: a failed
+# observer install must not fail the whole installation.
+if [ -x "$INSTALL_DIR/scripts/install-main-inbox-observer.sh" ]; then
+  if "$INSTALL_DIR/scripts/install-main-inbox-observer.sh" --load >/dev/null 2>&1; then
+    ok "Fo-agens inbox-figyelo telepitve (5 percenkent, a dashboard folyamaton KIVUL)"
+  else
+    warn "Az inbox-figyelo NEM FUT (telepites vagy elso futas nem igazolt)"
+    note_helper_down install-main-inbox-observer
+  fi
 fi
 
 # Verify channel plugin is working
 sleep 3
 echo ""
 echo -e "${BOLD}$(_t section_checks)${NC}"
-if [ "$CHANNEL_PROVIDER" = "telegram" ] && ! command -v bun &>/dev/null; then
-  echo -e "  ${RED}✗${NC} Bun nem talalhato. A Telegram plugin nem fog mukodni."
+if { [ "$CHANNEL_PROVIDER" = "telegram" ] || [ "$CHANNEL_PROVIDER" = "discord" ]; } && ! command -v bun &>/dev/null; then
+  echo -e "  ${RED}✗${NC} Bun nem talalhato. A ${CHANNEL_PROVIDER} plugin nem fog mukodni."
   echo -e "  ${BOLD}Javitas:${NC} curl -fsSL https://bun.sh/install | bash"
   echo -e "  ${DIM}Utana: source ~/.zshrc && ./scripts/start.sh${NC}"
 fi
@@ -1377,6 +1679,16 @@ else
 fi
 
 # Channel pairing flow (Telegram only; Slack uses OAuth / App install)
+# INSTPAIRPATH930: the access.json the pairing must read AND write. channels.sh moves the
+# shared $HOME/.claude/channels/<provider> dir into the install on its first start (#915,
+# scripts/channels.sh MAIN_CHAN_DIR), and the plugin writes the pending code there, so the
+# install-scoped file wins; the legacy path is only the fallback for a bridge that has not
+# migrated yet. Resolved AFTER the code is typed in, when the bot has already answered.
+_pairing_access_file() {
+  local scoped="$INSTALL_DIR/.claude/channels/$CHANNEL_PROVIDER/access.json"
+  if [ -f "$scoped" ]; then echo "$scoped"; else echo "$CHANNEL_DIR/access.json"; fi
+}
+
 if [ "$CHANNEL_PROVIDER" = "telegram" ] && [ -n "$BOT_TOKEN" ]; then
   echo ""
   echo -e "${BOLD}$(_t macos.tg_pairing_title)${NC}"
@@ -1388,7 +1700,7 @@ if [ "$CHANNEL_PROVIDER" = "telegram" ] && [ -n "$BOT_TOKEN" ]; then
   echo ""
   read -rp "$(_t prompt_pair_code)" PAIR_CODE
   if [ -n "$PAIR_CODE" ]; then
-    ACCESS_FILE="$CHANNEL_DIR/access.json"
+    ACCESS_FILE="$(_pairing_access_file)"
     if [ -f "$ACCESS_FILE" ]; then
       # Get the chat ID from the pending pairing in access.json
       PENDING_CHAT_ID=$(PAIR_CODE="$PAIR_CODE" python3 -c "
@@ -1426,6 +1738,10 @@ with open('$ACCESS_FILE', 'w') as f:
         echo -e "  ${ORANGE}A kod nem talalhato az access.json-ban.${NC}"
         echo -e "  ${DIM}Probald kesobb a terminalban: claude, majd /telegram:access pair $PAIR_CODE${NC}"
       fi
+    else
+      # INSTPAIRPATH930: a missing file used to skip the pairing in silence.
+      warn "access.json nem talalhato: $ACCESS_FILE"
+      echo -e "  ${DIM}Bizonyosodj meg rola, hogy a bot futott amikor uzeneteket kuldtel neki.${NC}"
     fi
   else
     echo -e "  ${DIM}$(_t macos.pairing_later)${NC}"
@@ -1467,7 +1783,12 @@ fi
 echo ""
 echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo ""
-echo -e "${BOLD}${GREEN}$(_t success_installed)${NC}"
+# #1871: "successfully installed" only when the services were seen running.
+if [ "${SERVICES_STATE:-unknown}" = "down" ]; then
+  echo -e "${BOLD}${ORANGE}$(_t success_installed_services_down)${NC}"
+else
+  echo -e "${BOLD}${GREEN}$(_t success_installed)${NC}"
+fi
 echo ""
 
 # Read dashboard token for access URL
@@ -1511,4 +1832,40 @@ if [ "${INSTALL_AUTH_STATE:-UNKNOWN}" != "OK" ]; then
   fi
   echo -e "  ${BOLD}  Javitas: ${BLUE}bash \"$INSTALL_DIR/scripts/auth.sh\"${NC}${BOLD} majd ${BLUE}bash \"$INSTALL_DIR/scripts/channels.sh\" restart${NC}"
   echo ""
+fi
+
+# ISSUE1891 (#1891): a helper job that is not running is repeated at the end as
+# well, with its remedy, for whoever reads only the end of the run.
+if [ -n "${HELPERS_DOWN:-}" ]; then
+  echo ""
+  echo -e "  ${ORANGE}! SEGED-JOBOK, AMELYEK NEM FUTNAK:${NC}"
+  for _h in $HELPERS_DOWN; do
+    _hl="$("$INSTALL_DIR/scripts/$_h.sh" --print-label 2>/dev/null | head -1)"
+    echo -e "    ${DIM}  - ${_hl}: nem fut${NC}"
+  done
+  echo -e "    A launchd ezeket csak egy GUI-bejelentkezesen belul futtatja. Javitas, a GUI-bejelentkezes egy terminaljabol:"
+  for _h in $HELPERS_DOWN; do
+    _hl="$("$INSTALL_DIR/scripts/$_h.sh" --print-label 2>/dev/null | head -1)"
+    print_periodic_unit_remedy "$HOME/Library/LaunchAgents/${_hl}.plist" "$_hl"
+  done
+fi
+
+# #1871: the services' state is repeated LAST too, with the same remedy, and a
+# run whose main units are not running does not exit 0 -- so a scripted install
+# can tell (scripts/start.sh already exits 1 in the same situation). 3, not 1:
+# 1 is what fail() and the ERR trap use for a build that aborted.
+# EXCEPT in the machine progress mode (MARVEEN_JSON_PROGRESS=1, the Bridge
+# installer): its derived script appends the final emit_result AFTER this line,
+# so an exit here would turn a finished install into "the install stopped
+# before finishing" on the customer's screen.
+if [ "${SERVICES_STATE:-unknown}" = "down" ]; then
+  echo ""
+  echo -e "  ${RED}✗ A SZOLGÁLTATÁSOK NEM FUTNAK:${NC}"
+  if [ -z "${DASHBOARD_PID:-}" ]; then echo -e "    ${DIM}  - ${DASHBOARD_PLIST}: nem fut${NC}"; fi
+  if [ -z "${CHANNELS_PID:-}" ]; then echo -e "    ${DIM}  - ${CHANNELS_PLIST}: nem fut${NC}"; fi
+  print_services_remedy
+  echo ""
+  if [ "${MARVEEN_JSON_PROGRESS:-0}" != "1" ]; then
+    exit 3
+  fi
 fi

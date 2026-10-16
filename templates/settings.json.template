@@ -3,6 +3,20 @@
     "telegram@claude-plugins-official": true
   },
   "effortLevel": "high",
+  "permissions": {
+    "deny": [
+      "Bash(curl *https://*)",
+      "Bash(*/curl *https://*)",
+      "Bash(wget *)",
+      "Bash(*/wget *)",
+      "Bash(nc *)",
+      "Bash(*/nc *)",
+      "Bash(ncat *)",
+      "Bash(*/ncat *)",
+      "Bash(telnet *)",
+      "Bash(*/telnet *)"
+    ]
+  },
   "hooks": {
     "PreCompact": [
       {
@@ -18,11 +32,32 @@
     ],
     "SessionStart": [
       {
-        "matcher": "compact|resume",
+        "matcher": "compact|resume|clear",
         "hooks": [
           {
             "type": "command",
             "command": "python3 {{PROJECT_ROOT}}/scripts/hooks/taskstate-replay.py",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "matcher": "clear",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 {{PROJECT_ROOT}}/scripts/hooks/clear-replay.py",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 {{PROJECT_ROOT}}/scripts/hooks/clear-capture.py",
             "timeout": 15
           }
         ]
@@ -35,6 +70,68 @@
           {
             "type": "command",
             "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/skill-usage-capture.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/skill-usage-capture.py; exit 0'",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/tool-log-capture.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/tool-log-capture.py; exit 0'",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "telegram.*reply",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/telegram_progress_reply_clear.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/telegram_progress_reply_clear.py; exit 0'",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "matcher": "slack.*reply",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/slack_progress_reply_clear.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/slack_progress_reply_clear.py; exit 0'",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/memory-frontmatter-bash-gate.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/memory-frontmatter-bash-gate.py; exit 0'",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/tool-log-capture.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/tool-log-capture.py; exit 0'",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/memory-frontmatter-bash-gate.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/memory-frontmatter-bash-gate.py; exit 0'",
             "timeout": 10
           }
         ]
@@ -55,6 +152,11 @@
           },
           {
             "type": "command",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/memory-lookup-nudge.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/memory-lookup-nudge.py; exit 0'",
+            "timeout": 3
+          },
+          {
+            "type": "command",
             "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/channel-inbox-drain.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/channel-inbox-drain.py; exit 0'",
             "timeout": 5
           },
@@ -62,6 +164,83 @@
             "type": "command",
             "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/voice-reply-directive.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/voice-reply-directive.py; exit 0'",
             "timeout": 60
+          },
+          {
+            "type": "command",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/telegram-reply-directive.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/telegram-reply-directive.py; exit 0'",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/marveen-commands.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/marveen-commands.py; exit 0'",
+            "timeout": 45
+          }
+          ,{
+            "type": "command",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/telegram_progress.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/telegram_progress.py; exit 0'",
+            "timeout": 15
+          }
+          ,{
+            "type": "command",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/slack_progress.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/slack_progress.py; exit 0'",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Read",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/channel-image-resize.sh ] && exec bash {{PROJECT_ROOT}}/scripts/hooks/channel-image-resize.sh; exit 0'",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/memory-frontmatter-gate.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/memory-frontmatter-gate.py; exit 0'",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/memory-frontmatter-bash-gate.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/memory-frontmatter-bash-gate.py; exit 0'",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/telegram_progress_clear.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/telegram_progress_clear.py; exit 0'",
+            "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/slack_progress_clear.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/slack_progress_clear.py; exit 0'",
+            "timeout": 15
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c '[ -f {{PROJECT_ROOT}}/scripts/hooks/marveen-commands.py ] && exec python3 {{PROJECT_ROOT}}/scripts/hooks/marveen-commands.py --stop; exit 0'",
+            "timeout": 10
           }
         ]
       }

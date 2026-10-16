@@ -62,11 +62,18 @@ class TestFmtReset(unittest.TestCase):
         _, rel = uc.fmt_reset(ts)
         self.assertEqual(rel, "now")
 
-    def test_local_string_has_budapest_offset_marker(self):
+    def test_local_string_has_the_zone_abbreviation(self):
+        # The zone is pinned here: LOCAL_TZ is the install zone, so the runner's
+        # own zone (UTC on CI) must not decide the marker.
+        from zoneinfo import ZoneInfo
         ts = _future_ts(days=1)
-        local_str, _ = uc.fmt_reset(ts)
-        # e.g. "2026-07-23 14:45 CEST" -- must contain a plausible tz abbrev
+        with patch.object(uc, "LOCAL_TZ", ZoneInfo("Europe/Budapest")):
+            local_str, _ = uc.fmt_reset(ts)
+        # e.g. "2026-07-23 14:45 CEST"
         self.assertRegex(local_str, r"CES?T$")
+        with patch.object(uc, "LOCAL_TZ", ZoneInfo("America/New_York")):
+            local_str, _ = uc.fmt_reset(ts)
+        self.assertRegex(local_str, r"E[DS]T$")
 
 
 class TestParseIsoToEpoch(unittest.TestCase):
@@ -87,6 +94,14 @@ class TestParseIsoToEpoch(unittest.TestCase):
         epoch = uc._parse_iso_to_epoch("2026-07-22T16:29:59.627285+00:00")
         expected = datetime(2026, 7, 22, 16, 29, 59, 627285, tzinfo=timezone.utc).timestamp()
         self.assertAlmostEqual(epoch, expected, delta=0.001)
+
+    def test_z_suffix_parses(self):
+        # USAGE401DIAG910: Codex event timestamps end in 'Z'; fromisoformat
+        # rejects that on Python < 3.11, so the parser normalises it.
+        epoch = uc._parse_iso_to_epoch("2026-04-26T12:03:04.051Z")
+        self.assertIsNotNone(epoch)
+        # 2026-04-26T12:03:04Z == the same instant as +00:00
+        self.assertAlmostEqual(epoch, uc._parse_iso_to_epoch("2026-04-26T12:03:04.051+00:00"), places=3)
 
     def test_iso_without_offset_assumes_utc(self):
         epoch = uc._parse_iso_to_epoch("2026-07-22T16:29:59")
@@ -233,6 +248,19 @@ class TestCollectClaudeAuthoritative(unittest.TestCase):
         self.assertEqual(err_kind, "permanent")
         self.assertIn("403", err)
 
+    def test_401_returns_permanent_kind(self):
+        # USAGE401DIAG910: 401 (expired/invalid token) must NOT be transient --
+        # a transient classification serves the stale authoritative cache and
+        # hides that the token needs refreshing. It was misclassified before.
+        http_err = urllib.error.HTTPError("https://api.anthropic.com/api/oauth/usage", 401, "Unauthorized", {}, None)
+        with patch.object(uc, "_read_claude_token", return_value=("fake-token", "test")), \
+             patch.object(uc, "_claude_cli_version", return_value="1.2.3"), \
+             patch("urllib.request.urlopen", side_effect=http_err):
+            windows, err, err_kind = uc._collect_claude_authoritative()
+        self.assertIsNone(windows)
+        self.assertEqual(err_kind, "permanent")
+        self.assertIn("401", err)
+
     def test_429_returns_transient_kind(self):
         http_err = urllib.error.HTTPError("https://api.anthropic.com/api/oauth/usage", 429, "Too Many Requests", {}, None)
         with patch.object(uc, "_read_claude_token", return_value=("fake-token", "test")), \
@@ -360,6 +388,28 @@ class TestCollectClaudeCacheFallback(unittest.TestCase):
             self.assertEqual(result["windows"], cached_windows)
             self.assertIn("cache_age_minutes", result)
             self.assertLess(result["cache_age_minutes"], 10)
+
+    def test_401_with_fresh_cache_still_falls_back_to_estimate(self):
+        # USAGE401DIAG910, the load-bearing case: even with a FRESH cache, a 401
+        # must NOT be served from it (that would report the last good numbers as
+        # current and mask the expired token). It goes to the estimate instead.
+        with tempfile.TemporaryDirectory() as tmp:
+            latest_path = os.path.join(tmp, "usage-latest.json")
+            fresh_ts = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+            self._write_latest(latest_path, "authoritative", {"five_hour": {"used_percent": 11.0, "resets_at": 1234.0}}, fresh_ts)
+
+            http_err = urllib.error.HTTPError("url", 401, "Unauthorized", {}, None)
+            with patch.object(uc, "LATEST_PATH", latest_path), \
+                 patch.object(uc, "_read_claude_token", return_value=("fake-token", "test")), \
+                 patch.object(uc, "_claude_cli_version", return_value="1.2.3"), \
+                 patch("urllib.request.urlopen", side_effect=http_err), \
+                 patch.object(uc, "_collect_claude_estimate", return_value={"seven_day_est_tokens": 42}) as mock_estimate:
+                result = uc.collect_claude()
+
+            mock_estimate.assert_called_once()
+            self.assertEqual(result["source"], "estimate")
+            self.assertNotEqual(result["source"], "authoritative_cached")
+            self.assertIn("401", result.get("auth_error", ""))
 
     def test_429_with_stale_cache_falls_back_to_estimate(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -823,8 +873,13 @@ class TestClaudeTokenSources(unittest.TestCase):
 
     def test_keychain_beats_env_file(self):
         """The .env token answers 403, so it must never win over the keychain."""
+        # `exists` must NOT be True for the credentials path: expanduser is real,
+        # so a blanket True opens the machine's own ~/.claude/.credentials.json
+        # and assertEqual prints its token on failure (a real-token leak on any
+        # host that HAS the file). Say the intent instead: credentials absent,
+        # env present -- keychain still wins over env.
         with patch.object(uc.sys, "platform", "darwin"), \
-             patch.object(uc.os.path, "exists", return_value=True), \
+             patch.object(uc.os.path, "exists", side_effect=lambda p: p == self._tmp.name), \
              patch.object(uc, "ENV_PATH", self._tmp.name), \
              patch.object(uc.subprocess, "run", return_value=self._security_ok()):
             token, source = uc._read_claude_token()
@@ -876,6 +931,141 @@ class TestClaudeTokenSources(unittest.TestCase):
              patch.object(uc.os.path, "exists", return_value=False):
             self.assertEqual(uc._read_claude_token(), (None, None))
 
+
+class TestCodexSnapshotFreshness(unittest.TestCase):
+    """USAGE401DIAG910 (c): the Codex numbers come from a rollout file on disk,
+    which can be hours or months old. collect_codex() must capture the event's
+    timestamp, and render_summary() must show the numbers WITH their age -- or
+    say the freshness is unknown -- so no % is read as current when it is not."""
+
+    def _rollout(self, tmp, ts):
+        path = os.path.join(tmp, "rollout-x.jsonl")
+        event = {"type": "event", "payload": {"rate_limits": {
+            "plan_type": "pro",
+            "primary": {"used_percent": 12.5, "window_minutes": 10080, "resets_at": 1234.0},
+        }}}
+        if ts is not None:
+            event["timestamp"] = ts
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(json.dumps(event) + "\n")
+        return path
+
+    def test_collect_codex_captures_snapshot_at_and_age(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            ts = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat().replace("+00:00", "Z")
+            path = self._rollout(tmp, ts)
+            with patch.object(uc.glob, "glob", return_value=[path]):
+                result = uc.collect_codex()
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["snapshot_at"], ts)
+            self.assertIsNotNone(result["snapshot_age_hours"])
+            self.assertAlmostEqual(result["snapshot_age_hours"], 3.0, delta=0.2)
+
+    def test_collect_codex_no_rate_limits_fails_closed_with_named_state(self):
+        # Regression guard (Marveen review of #1287): the edit that added the
+        # timestamp capture must NOT drop the "no rate_limits entries" raise.
+        # An empty/absent rate_limits payload must fail closed (ok False) with a
+        # message that NAMES THE STATE ("rate_limits") -- so a later round sees
+        # "look at the rollout file", not a bare Python AttributeError.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "rollout-x.jsonl")
+            with open(path, "w", encoding="utf-8") as f:
+                # a line that mentions rate_limits (so the scan enters the branch)
+                # but whose payload rate_limits is empty -> rate_limits stays None
+                f.write(json.dumps({"type": "event", "payload": {"rate_limits": {}}}) + "\n")
+            with patch.object(uc.glob, "glob", return_value=[path]):
+                result = uc.collect_codex()
+            self.assertFalse(result["ok"])
+            self.assertIn("rate_limits", result.get("error", ""))
+
+    def test_collect_codex_no_timestamp_leaves_snapshot_at_none(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._rollout(tmp, None)
+            with patch.object(uc.glob, "glob", return_value=[path]):
+                result = uc.collect_codex()
+            self.assertTrue(result["ok"])
+            self.assertIsNone(result["snapshot_at"])
+            self.assertIsNone(result["snapshot_age_hours"])
+
+    def test_collect_codex_without_sessions_names_reason_no_sessions(self):
+        # Codex never ran on this host (the common case): ok False, and a
+        # stable reason field the /usage reply keys on instead of the error text.
+        with patch.object(uc.glob, "glob", return_value=[]):
+            result = uc.collect_codex()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result.get("reason"), "no_sessions")
+        self.assertIn("no ~/.codex/sessions rollout files found", result.get("error", ""))
+
+    def test_collect_codex_real_failure_has_no_no_sessions_reason(self):
+        # A real failure (rollout present, no rate_limits) must not be labelled
+        # as "Codex never ran".
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "rollout-x.jsonl")
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(json.dumps({"type": "event", "payload": {"rate_limits": {}}}) + "\n")
+            with patch.object(uc.glob, "glob", return_value=[path]):
+                result = uc.collect_codex()
+        self.assertFalse(result["ok"])
+        self.assertNotEqual(result.get("reason"), "no_sessions")
+
+    def _snapshot(self, codex):
+        return {
+            "generated_at_local": "2026-09-11 14:00:00 CEST",
+            "codex": codex,
+            "claude": {"ok": True, "source": "estimate", "files_scanned": 0},
+        }
+
+    def test_render_shows_stale_marker_for_old_snapshot(self):
+        codex = {"ok": True, "source": "authoritative", "plan_type": "pro",
+                 "windows": {"weekly": {"used_percent": 12.5, "window_minutes": 10080, "resets_at": 1234.0}},
+                 "snapshot_at": "2026-04-26T12:03:04.051Z", "snapshot_age_hours": 24 * 138.0}
+        out = uc.render_summary(self._snapshot(codex))
+        self.assertIn("snapshot:", out)
+        self.assertIn("[STALE]", out)
+        self.assertIn("days old", out)
+
+    def test_render_says_freshness_unknown_without_timestamp(self):
+        codex = {"ok": True, "source": "authoritative", "plan_type": "pro",
+                 "windows": {"weekly": {"used_percent": 12.5, "window_minutes": 10080, "resets_at": 1234.0}},
+                 "snapshot_at": None, "snapshot_age_hours": None}
+        out = uc.render_summary(self._snapshot(codex))
+        self.assertIn("freshness unknown", out)
+
+    def test_render_fresh_snapshot_has_no_stale_marker(self):
+        codex = {"ok": True, "source": "authoritative", "plan_type": "pro",
+                 "windows": {"weekly": {"used_percent": 12.5, "window_minutes": 10080, "resets_at": 1234.0}},
+                 "snapshot_at": "2026-09-11T12:00:00Z", "snapshot_age_hours": 2.0}
+        out = uc.render_summary(self._snapshot(codex))
+        self.assertIn("snapshot:", out)
+        self.assertNotIn("[STALE]", out)
+        self.assertIn("h old", out)
+
+
+
+class TestInstallZone(unittest.TestCase):
+    """ISSUE1895 (#1895): reset stamps follow the install zone, not a fixed Europe/Budapest."""
+
+    def test_explicit_marveen_tz_wins(self):
+        with patch.dict(os.environ, {"MARVEEN_TZ": "Europe/London"}):
+            self.assertEqual(str(uc._local_tz()), "Europe/London")
+
+    def test_scheduler_tz_from_the_overrides_file(self):
+        with tempfile.TemporaryDirectory() as d, patch.object(uc, "STORE_DIR", d), patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("MARVEEN_TZ", None)
+            with open(os.path.join(d, "config-overrides.json"), "w") as f:
+                json.dump({"SCHEDULER_TZ": "America/New_York"}, f)
+            self.assertEqual(str(uc._local_tz()), "America/New_York")
+
+    def test_host_fallback_is_a_named_zone_not_a_fixed_offset(self):
+        # A fixed offset (datetime.now().astimezone().tzinfo) renders a reset on the
+        # other side of a DST switch one hour off; a ZoneInfo keeps the rules.
+        from zoneinfo import ZoneInfo
+        with tempfile.TemporaryDirectory() as d, patch.object(uc, "STORE_DIR", d), patch.object(uc, "ENV_PATH", os.path.join(d, ".env")):
+            env = {k: v for k, v in os.environ.items() if k not in ("MARVEEN_TZ", "TZ")}
+            with patch.dict(os.environ, env, clear=True):
+                if "/zoneinfo/" not in os.path.realpath("/etc/localtime"):
+                    self.skipTest("host has no named zone to fall back to")
+                self.assertIsInstance(uc._local_tz(), ZoneInfo)
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

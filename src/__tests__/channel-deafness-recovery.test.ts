@@ -9,12 +9,31 @@ import {
   shouldEscalateAfterResume,
   POST_RESUME_GUARD_DELAY_MS,
 } from '../web/channel-monitor.js'
+// The respawn builder now demands a MainConfigDecision, and the production
+// factory REPORTS as it resolves. These cases are about the command STRING, so
+// they use the reporting-free factory on purpose -- and that use is exactly what
+// main-config-guard-wiring.test.ts forbids in production modules.
+import { mainConfigDecisionForTest } from '../web/main-config-decision.js'
 
 // CONTRACT: the respawn command MUST carry the .bun/bin PATH export -- without
 // it the respawned bun telegram bridge can't be located and the session comes
 // up channel-less. Lock it so a future refactor can't silently drop it.
 describe('buildMainSessionRespawnCmd', () => {
-  const base = { claudePath: '/usr/local/bin/claude', pluginId: 'telegram@claude-plugins-official', model: "claude-opus-4-8[1m]" }
+  const base = { claudePath: '/usr/local/bin/claude', pluginId: 'telegram@claude-plugins-official', model: "claude-opus-4-8[1m]", config: mainConfigDecisionForTest(), channelStateEnv: { name: 'TELEGRAM_STATE_DIR', dir: '/opt/marveen/.claude/channels/telegram' } }
+
+  // #915 regression: without the *_STATE_DIR export the plugin falls back to
+  // ~/.claude/channels/<provider>/, finds no .env and exits -- the respawned
+  // session comes up channel-deaf (2026-09-24, twice in one evening).
+  it('exports the channel state dir before launching claude', () => {
+    const cmd = buildMainSessionRespawnCmd({ ...base, continueSession: false })
+    expect(cmd).toContain("export TELEGRAM_STATE_DIR='/opt/marveen/.claude/channels/telegram'")
+    expect(cmd.indexOf('TELEGRAM_STATE_DIR')).toBeLessThan(cmd.indexOf(base.claudePath))
+  })
+
+  it('single-quote-escapes the state dir so a path cannot break out of the export', () => {
+    const cmd = buildMainSessionRespawnCmd({ ...base, continueSession: false, channelStateEnv: { name: 'TELEGRAM_STATE_DIR', dir: "/x'; touch PWNED #" } })
+    expect(cmd).not.toContain("'/x'; touch")
+  })
 
   it('always exports a PATH that includes $HOME/.bun/bin', () => {
     const cmd = buildMainSessionRespawnCmd({ ...base, continueSession: false })
@@ -57,13 +76,13 @@ describe('buildMainSessionRespawnCmd', () => {
   // session -- it silently fell back to ~/.claude/.credentials.json. The
   // fleetToken leg closes that: token export WITHOUT a config-dir override.
   it('exports the fleet token (no CLAUDE_CONFIG_DIR) when fleetToken is set and isolation is off', () => {
-    const cmd = buildMainSessionRespawnCmd({ ...base, continueSession: false, fleetToken: true })
+    const cmd = buildMainSessionRespawnCmd({ ...base, continueSession: false, config: mainConfigDecisionForTest({ fleetToken: true }) })
     expect(cmd).toContain('export CLAUDE_CODE_OAUTH_TOKEN="$(cat ')
     expect(cmd).not.toContain('CLAUDE_CONFIG_DIR')
   })
 
   it('exports BOTH the isolated config dir and the token when isolation is on (unchanged macOS contract)', () => {
-    const cmd = buildMainSessionRespawnCmd({ ...base, continueSession: false, isolatedConfigDir: '/tmp/iso', fleetToken: true })
+    const cmd = buildMainSessionRespawnCmd({ ...base, continueSession: false, config: mainConfigDecisionForTest({ isolatedConfigDir: '/tmp/iso', fleetToken: true }) })
     expect(cmd).toContain("export CLAUDE_CONFIG_DIR='/tmp/iso'")
     expect(cmd).toContain('export CLAUDE_CODE_OAUTH_TOKEN="$(cat ')
   })
@@ -72,6 +91,64 @@ describe('buildMainSessionRespawnCmd', () => {
     const cmd = buildMainSessionRespawnCmd({ ...base, continueSession: false })
     expect(cmd).not.toContain('CLAUDE_CODE_OAUTH_TOKEN')
     expect(cmd).not.toContain('CLAUDE_CONFIG_DIR')
+  })
+
+  // CLAUDEPLANWATCHDOG912: an own-credential dir (explicit MAIN_AGENT_CONFIG_DIR,
+  // or a rotated claude-plans entry) carries its OWN .credentials.json. Injecting
+  // the fleet token on top of it authenticates as the flotta instead of that
+  // login -- exactly the bug that silently undid a live plan rotation on the
+  // next watchdog respawn (observed 2026-09-12, solarforce-ai host).
+  it('exports ONLY the config dir, no fleet token, when the dir carries its own credentials (rotated/explicit)', () => {
+    const cmd = buildMainSessionRespawnCmd({
+      ...base,
+      continueSession: false,
+      config: mainConfigDecisionForTest({ isolatedConfigDir: '/home/solarforce/.claude-second', ownCredentials: true, fleetToken: true }),
+    })
+    expect(cmd).toContain("export CLAUDE_CONFIG_DIR='/home/solarforce/.claude-second'")
+    expect(cmd).not.toContain('CLAUDE_CODE_OAUTH_TOKEN')
+  })
+
+  // Token-mode rotated plan: the generic isolated dir, but the PLAN's own
+  // vault-stored token (resolved at launch via resolve-plan-token-env.mjs)
+  // instead of the flotta's. Never the plaintext token itself in the command
+  // string -- only the vault reference id, resolved inside the launched shell.
+  it('exports the config dir plus a vault-resolved PLAN token when tokenSecretId is set', () => {
+    const cmd = buildMainSessionRespawnCmd({
+      ...base,
+      continueSession: false,
+      config: mainConfigDecisionForTest({
+        isolatedConfigDir: '/srv/m/.channels-config',
+        ownCredentials: false,
+        tokenSecretId: 'claude-plan-token-marketing',
+        fleetToken: true,
+      }),
+    })
+    expect(cmd).toContain("export CLAUDE_CONFIG_DIR='/srv/m/.channels-config'")
+    expect(cmd).toContain('resolve-plan-token-env.mjs')
+    expect(cmd).toContain("'claude-plan-token-marketing'")
+    expect(cmd).toContain('CLAUDE_CODE_OAUTH_TOKEN')
+  })
+
+  // PR #1304 review (c): a missing plan secret must not launch with an empty
+  // token. The command carries the fleet-token path too, now, as the
+  // resolver's fallback argument -- and gates the launch on the resolver's
+  // own exit status via a bare `_plan_token=$(...)` assignment, so a resolver
+  // failure (neither the plan secret nor the fleet token available) stops the
+  // `&&` chain before `claude` ever runs.
+  it('token-mode also passes the fleet-token path (as the resolver\'s fallback arg) and gates the launch on its exit status', () => {
+    const cmd = buildMainSessionRespawnCmd({
+      ...base,
+      continueSession: false,
+      config: mainConfigDecisionForTest({
+        isolatedConfigDir: '/srv/m/.channels-config',
+        ownCredentials: false,
+        tokenSecretId: 'claude-plan-token-marketing',
+        fleetToken: true,
+      }),
+    })
+    expect(cmd).toContain('.claude-oauth-token')
+    expect(cmd).toContain('channels-failures.log')
+    expect(cmd).toMatch(/_plan_token="\$\(node '[^']*resolve-plan-token-env\.mjs'[^)]*\)" && export CLAUDE_CODE_OAUTH_TOKEN="\$_plan_token"/)
   })
 })
 

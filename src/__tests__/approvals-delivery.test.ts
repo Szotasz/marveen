@@ -40,6 +40,8 @@ function approval(over: Partial<Approval> = {}): Approval {
     requested_at: Math.floor(NOW_MS / 1000),
     resolved_at: null,
     resolved_by: null,
+    content_hash: null,
+    consumed_at: null,
     ...over,
   }
 }

@@ -31,8 +31,7 @@ import { WEB_PORT } from '../../config.js'
 import { validateBridgeServicePorts, extractServicePorts, COMMENT_PREFIX, ACCEPTED_KEY_TYPE } from '../../remote-enroll-core.js'
 import { updateEnrolledServicePorts } from '../../remote-enroll-fs.js'
 import { getDeviceKey } from '../auth-device-keys.js'
-import { sshDirOverride } from '../bridge-enroll.js'
-import { homedir } from 'node:os'
+import { sshDirOverride, resolveSshDir as resolveSshDirShared, isSshDirGuardError } from '../../ssh-dir.js'
 import { join } from 'node:path'
 import { readFileSync } from 'node:fs'
 import type { RouteContext } from './types.js'
@@ -40,13 +39,16 @@ import type { RouteContext } from './types.js'
 const BODY_MAX_BYTES = 8 * 1024
 const PATH = '/api/bridge/service-ports'
 
+/** Same shared resolver as the enroll path (ENROLL813). This function used to be
+ * a byte-identical COPY of the one in bridge-enroll.ts -- which is how two
+ * resolvers and a seam-less CLI could drift apart unnoticed. Test-run with no
+ * MARVEEN_SSH_DIR throws rather than silently returning the real ~/.ssh, so a
+ * future route-level test here cannot rewrite or delete the operator's keys the
+ * way the enroll route's test added them. */
 function resolveSshDir(): string {
-  const override = sshDirOverride()
-  if (override) {
-    logger.warn({ sshDir: override }, 'MARVEEN_SSH_DIR override active for service-port update (test seam; must be unset in production)')
-    return override
-  }
-  return join(homedir(), '.ssh')
+  return resolveSshDirShared((sshDir) => {
+    logger.warn({ sshDir }, 'MARVEEN_SSH_DIR override active for service-port update (test seam; must be unset in production)')
+  })
 }
 
 /** The caller's install scope, or null with the response already written. */
@@ -83,7 +85,20 @@ function resolveInstallId(ctx: RouteContext, explicit: string | undefined): stri
   return null
 }
 
-/** Current service ports straight from authorized_keys (the ground truth). */
+/**
+ * Current service ports straight from authorized_keys (the ground truth).
+ *
+ * Throws on a FAULT; answers found:false only for the one condition that really
+ * means "this device is not paired". Those used to be the same thing, and that
+ * was a silent failure (ENROLL813): the catch below swallowed EVERYTHING, and
+ * resolveSshDir() can now throw a guard refusal. A swallowed guard would have
+ * been reported to the Bridge as 404 "No enrollment found for this install id"
+ * -- the system asserting the device is unpaired when in fact it never managed
+ * to look. The owner would go re-pair a device that was already paired.
+ *
+ * Unchanged for the ordinary case: ENOENT (no authorized_keys at all) still
+ * means not enrolled, silently, exactly as before.
+ */
 function readCurrentPorts(installId: string): { found: boolean; ports: number[] } {
   try {
     const content = readFileSync(join(resolveSshDir(), 'authorized_keys'), 'utf8')
@@ -94,7 +109,20 @@ function readCurrentPorts(installId: string): { found: boolean; ports: number[] 
         return { found: true, ports: extractServicePorts(fields[0], WEB_PORT) }
       }
     }
-  } catch {
+  } catch (err) {
+    // A guard refusal is never "not enrolled" -- let it out, so the caller can
+    // answer with a fault instead of a lie about the pairing state.
+    if (isSshDirGuardError(err)) throw err
+    if ((err as NodeJS.ErrnoException | null)?.code !== 'ENOENT') {
+      // Unreadable for some OTHER reason (EACCES, EISDIR, a bad mount). The
+      // ANSWER stays what it has always been, deliberately -- changing it here
+      // would change behaviour for a case this patch did not measure -- but it
+      // no longer happens in silence.
+      logger.error(
+        { err, installId },
+        'authorized_keys unreadable -- answering as not enrolled (unchanged), but this is a FAULT, not a missing pairing',
+      )
+    }
     /* missing file = not enrolled */
   }
   return { found: false, ports: [] }
@@ -107,7 +135,23 @@ export async function tryHandleBridgeServicePorts(ctx: RouteContext): Promise<bo
   if (method === 'GET') {
     const installId = resolveInstallId(ctx, url.searchParams.get('install_id') || undefined)
     if (installId === null) return true
-    const current = readCurrentPorts(installId)
+    let current: { found: boolean; ports: number[] }
+    try {
+      current = readCurrentPorts(installId)
+    } catch (err) {
+      // Distinguishable on the wire (ENROLL813): a 500 with a code, never the
+      // 404 below. "Not paired" and "could not check" must not look alike.
+      logger.error({ err, installId }, 'bridge service-port read failed')
+      json(
+        res,
+        // Lowercase on the wire, like every other code this server emits
+        // (enroll_failed, host_empty, ...); SSH_DIR_GUARD_CODE is the Error
+        // object's marker, not the HTTP one.
+        { error: 'Service-port read failed', code: isSshDirGuardError(err) ? 'enroll813' : 'read_failed' },
+        500,
+      )
+      return true
+    }
     if (!current.found) {
       json(res, { error: 'No enrollment found for this install id' }, 404)
       return true
@@ -216,7 +260,9 @@ export async function tryHandleBridgeServicePorts(ctx: RouteContext): Promise<bo
     })
   } catch (err) {
     logger.error({ err, installId }, 'bridge service-port update failed')
-    json(res, { error: 'Update failed' }, 500)
+    // Same reason as the GET path: name the guard in the response, not only in
+    // a log nobody is reading mid-incident.
+    json(res, { error: 'Update failed', code: isSshDirGuardError(err) ? 'enroll813' : 'update_failed' }, 500)
   }
   return true
 }

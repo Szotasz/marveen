@@ -282,8 +282,11 @@ describe('install-macos.sh -- launchd units must be verified, not assumed', () =
     const before = tail.slice(0, banner!.index)
     expect(before).toMatch(new RegExp(`${FN}\\s`))
     expect(before).toMatch(/if \[ -n "\$DASHBOARD_PID" \] && \[ -n "\$CHANNELS_PID" \]/)
-    // and there must be a loud else-branch for the failure the operator hit
-    expect(tail.slice(banner!.index)).toMatch(/launchctl kickstart/)
+    // and there must be a loud else-branch for the failure the operator hit. The
+    // remedy lines live in print_services_remedy since #1871 (the closing summary
+    // repeats them), so: the branch calls it, and the function carries kickstart.
+    expect(tail.slice(banner!.index)).toMatch(/\n\s+print_services_remedy\n/)
+    expect(MACOS).toMatch(/print_services_remedy\(\) \{[\s\S]*?launchctl kickstart[\s\S]*?\n\}/)
   })
 
   // scripts/start.sh carried the identical defect: measured live on 26.5.1 it
@@ -323,7 +326,9 @@ describe('install-macos.sh -- the not-started remedy must work on an UNREGISTERE
   // kickstart-only remedy is guaranteed dead advice in the most common state.
   // The printed remedy must be state-agnostic: bootstrap the plist first, then
   // kickstart the label.
-  const remedy = MACOS.slice(MACOS.indexOf('Javitas most'))
+  // anchored on the remedy function itself (#1871): the first 'Javitas most' in the
+  // file is the AUTH gate's, and the accented line no longer matches that spelling
+  const remedy = MACOS.slice(MACOS.indexOf('print_services_remedy() {'))
 
   it('bootstraps the plist before kickstarting, for both units', () => {
     for (const unit of ['DASHBOARD_PLIST', 'CHANNELS_PLIST']) {

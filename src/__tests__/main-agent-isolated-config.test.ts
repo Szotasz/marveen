@@ -41,7 +41,7 @@ vi.mock('../config.js', async (orig) => {
   return { ...actual, PROJECT_ROOT: PROJECT, STORE_DIR: STORE }
 })
 
-const { ensureMainAgentIsolatedConfigDir } = await import('../web/agent-process.js')
+const { ensureMainAgentIsolatedConfigDir, ensureMainAgentIsolatedConfigDirForRotatedToken } = await import('../web/agent-process.js')
 
 beforeEach(() => {
   rmSync(PROJECT, { recursive: true, force: true })
@@ -105,6 +105,26 @@ describe('ensureMainAgentIsolatedConfigDir', () => {
     expect(after.model).toBe('agent-only-model')
   })
 
+  // The Bash egress deny (BASH_EGRESS_DENY) is written into THIS file rather
+  // than the shared root, so the operator's own shell stays out of it while the
+  // main agent stays in. That only holds if a permissions block survives the
+  // rewrite this function performs on every start -- and it survives only
+  // because the shared file never mentions `permissions`. Asserted on the real
+  // provisioner, not inferred from the merge code, so the guarantee the egress
+  // change rests on is executed rather than believed.
+  it('keeps a permissions block the shared file never mentions (Bash egress deny target)', () => {
+    const dir = ensureMainAgentIsolatedConfigDir(undefined, 'linux')!
+    const own = join(dir, 'settings.json')
+    writeFileSync(own, JSON.stringify({
+      permissions: { deny: ['Bash(curl *https://*)', 'Bash(wget *)'] },
+    }, null, 2) + '\n')
+
+    ensureMainAgentIsolatedConfigDir(undefined, 'linux')
+
+    const after = JSON.parse(readFileSync(own, 'utf-8')) as Record<string, unknown>
+    expect((after.permissions as { deny: string[] }).deny).toEqual(['Bash(curl *https://*)', 'Bash(wget *)'])
+  })
+
   it('lets the shared file win for every key it DOES define', () => {
     writeFileSync(join(HOME, '.claude', 'settings.json'), JSON.stringify({ model: 'shared-model' }))
     const dir = ensureMainAgentIsolatedConfigDir(undefined, 'linux')!
@@ -116,5 +136,27 @@ describe('ensureMainAgentIsolatedConfigDir', () => {
     const after = JSON.parse(readFileSync(own, 'utf-8')) as Record<string, unknown>
     expect(after.model).toBe('shared-model')   // shared wins on conflict
     expect(after.statusLine).toBe('keep-me')   // target-only key still survives
+  })
+})
+
+// Token-mode rotation (2026-09-12): the SAME generic dir, but for a plan that
+// supplies its own CLAUDE_CODE_OAUTH_TOKEN instead of the fleet's. The one
+// behavioral difference from ensureMainAgentIsolatedConfigDir: no fleet-token
+// gate, since a token-mode plan makes the flotta token irrelevant.
+describe('ensureMainAgentIsolatedConfigDirForRotatedToken', () => {
+  it('provisions the SAME dir as ensureMainAgentIsolatedConfigDir when a fleet token exists', () => {
+    expect(ensureMainAgentIsolatedConfigDirForRotatedToken()).toBe(join(PROJECT, '.channels-config'))
+  })
+
+  it('provisions it even with NO fleet token -- the plan brings its own', () => {
+    rmSync(TOKEN_PATH, { force: true })
+    const dir = ensureMainAgentIsolatedConfigDirForRotatedToken()
+    expect(dir).toBe(join(PROJECT, '.channels-config'))
+    expect(existsSync(dir!)).toBe(true)
+  })
+
+  it('still returns null when MAIN_AGENT_ISOLATED_CONFIG is off', () => {
+    SETTING = '0'
+    expect(ensureMainAgentIsolatedConfigDirForRotatedToken()).toBeNull()
   })
 })

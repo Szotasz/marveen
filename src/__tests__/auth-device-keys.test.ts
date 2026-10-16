@@ -128,6 +128,7 @@ describe('mint + storage discipline', () => {
       lastUsedAt: null,
       expiresAt: null,
       installId: null,
+      scope: 'full',
     })
   })
 })
@@ -136,7 +137,7 @@ describe('gate integration (Bearer + SSE lanes)', () => {
   it('a minted key authenticates as kind device on the Bearer lane', () => {
     const minted = createDeviceKey('bridge')
     const r = resolveAuth(mkReq({ authorization: `Bearer ${minted.key}` }), mkUrl('/api/memories'), '/api/memories', 'GET', TOKEN)
-    expect(r).toEqual({ kind: 'device', device: 'bridge', deviceId: minted.id })
+    expect(r).toEqual({ kind: 'device', device: 'bridge', deviceId: minted.id, scope: 'full' })
   })
   it('the dashboard token still wins precedence (checked first)', () => {
     createDeviceKey('bridge')
@@ -147,7 +148,7 @@ describe('gate integration (Bearer + SSE lanes)', () => {
     const minted = createDeviceKey('phone')
     const path = '/api/agents/zara/pane/stream'
     const r = resolveAuth(mkReq(), mkUrl(path, `?token=${minted.key}`), path, 'GET', TOKEN)
-    expect(r).toEqual({ kind: 'device', device: 'phone', deviceId: minted.id })
+    expect(r).toEqual({ kind: 'device', device: 'phone', deviceId: minted.id, scope: 'full' })
   })
   it('a device key is NOT honored via ?token= on a non-SSE path', () => {
     const minted = createDeviceKey('phone')
@@ -165,7 +166,7 @@ describe('restart survival', () => {
   it('resolves a key from the DB after the in-memory cache is dropped', () => {
     const minted = createDeviceKey('bridge')
     _clearDeviceKeyCacheForTest()
-    expect(resolveDeviceKey(minted.key)).toEqual({ id: minted.id, name: 'bridge' })
+    expect(resolveDeviceKey(minted.key)).toEqual({ id: minted.id, name: 'bridge', scope: 'full' })
   })
   it('tracks last_used on resolve', () => {
     const minted = createDeviceKey('bridge')

@@ -206,6 +206,33 @@ describe('pruneStaleHookEntries', () => {
     expect(removed).toHaveLength(1)
   })
 
+  // KNOWNTRIO924 pin: the Telegram reply-fix trio must count as OURS, so a
+  // sub-agent settings entry in the unexpanded "$CLAUDE_PROJECT_DIR/..." form
+  // (a literal path that never exists on disk) is pruned, while an absolute
+  // path to an existing file is kept. Dropping the trio from
+  // KNOWN_HOOK_SCRIPTS turns the first case into a "foreign" entry and fails this.
+  it('prunes the reply-fix trio in the $CLAUDE_PROJECT_DIR form and keeps it with an existing absolute path', () => {
+    const stale = 'python3 "$CLAUDE_PROJECT_DIR/scripts/hooks/telegram-reply-guard.py"'
+    const live = 'python3 /opt/app/scripts/hooks/telegram-reply-guard.py'
+    const settings = {
+      hooks: {
+        UserPromptSubmit: [{ hooks: [{ type: 'command', command: stale, timeout: 10 }] }],
+        PreToolUse: [{ matcher: 'mcp__.*reply', hooks: [{ type: 'command', command: live, timeout: 10 }] }],
+      },
+    }
+    const { changed, removed } = pruneStaleHookEntries(settings, {
+      fileExists: (path) => path === '/opt/app/scripts/hooks/telegram-reply-guard.py',
+    })
+    expect(changed).toBe(true)
+    expect(removed).toEqual([stale])
+    const hooks = settings.hooks as Record<string, unknown>
+    expect(hooks.UserPromptSubmit).toBeUndefined()
+    expect(hooks.PreToolUse).toEqual([{ matcher: 'mcp__.*reply', hooks: [{ type: 'command', command: live, timeout: 10 }] }])
+    for (const name of ['ledger-outbound.py', 'telegram-reply-guard.py', 'telegram-reply-directive.py']) {
+      expect(KNOWN_HOOK_SCRIPTS).toContain(name)
+    }
+  })
+
   it('is a no-op on settings without a hooks block', () => {
     const settings: Record<string, unknown> = { permissions: { allow: [] } }
     const { changed, removed } = pruneStaleHookEntries(settings, { fileExists: () => false })

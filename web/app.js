@@ -360,9 +360,6 @@ function switchPage(pageId) {
   openSidebarGroupForPage(pageId)
   // Kanban needs full-width layout (overrides main's max-width: 1200px)
   document.querySelector('main').classList.toggle('kanban-active', pageId === 'kanban')
-  // Activity page runs a live poll; stop it whenever we navigate away.
-  if (pageId !== 'activity') stopActivityPoll()
-  if (pageId === 'activity') startActivityPoll()
   // Agents page tints each Terminal button green while that agent is working;
   // same 3s poll + source as Activity. Stop it when we leave the page.
   if (pageId !== 'agents') stopAgentsBusyPoll()
@@ -432,7 +429,9 @@ const SIDEBAR_GROUPS_LS_KEY = 'marveen.sidebarGroups'
 // into their group containers per this map, so regrouping a page (say, moving
 // naplo under system) or relabeling a group is a one-line change right here.
 const SIDEBAR_GROUPS = [
-  { key: 'team',        labelKey: 'nav.group.team',        pages: ['agents', 'activity', 'messages', 'tasks', 'bgTasks'] },
+  // 'activity' is gone: the live per-agent status is now the Agents page's
+  // "Aktivitás" card mode, so it has no page, no nav entry and no URL.
+  { key: 'team',        labelKey: 'nav.group.team',        pages: ['agents', 'messages', 'tasks', 'bgTasks'] },
   { key: 'knowledge',   labelKey: 'nav.group.knowledge',   pages: ['memories', 'skills', 'research', 'ideas'] },
   { key: 'stats',       labelKey: 'nav.group.stats',       pages: ['costs', 'tokenUsage'] },
   { key: 'system',      labelKey: 'nav.group.system',      pages: ['status', 'naplo', 'updates', 'settings', 'vault'] },
@@ -445,14 +444,14 @@ SIDEBAR_GROUPS.forEach((def) => def.pages.forEach((p) => { PAGE_SIDEBAR_GROUP[p]
 // Re-parent the 23 static links to match the map. Moving an existing DOM node
 // does not invalidate the navLinks refs captured by querySelectorAll at boot.
 SIDEBAR_GROUPS.forEach((def) => {
-  const group = document.querySelector(`.sb-group[data-group="${def.key}"]`)
+  const group = document.querySelector(`.sb-group[data-group="${CSS.escape(String(def.key))}"]`)
   if (!group) return
   const label = group.querySelector('.sb-group-label')
   if (label) label.dataset.i18n = def.labelKey
   const items = group.querySelector('.sb-group-items')
   if (!items) return
   def.pages.forEach((p) => {
-    const link = document.querySelector(`.sb-link[data-page="${p}"]`)
+    const link = document.querySelector(`.sb-link[data-page="${CSS.escape(String(p))}"]`)
     if (link) items.appendChild(link)
   })
 })
@@ -537,7 +536,6 @@ const STATIC_I18N_MAP = {
 // Page id -> { title key, subtitle key (or null) }
 const PAGE_HEADER_I18N = {
   agentsPage:     { title: 'agents.page_title',     sub: 'agents.page_subtitle' },
-  activityPage:   { title: 'activity.page_title',   sub: 'activity.page_subtitle' },
   tasksPage:      { title: 'tasks.page_title',       sub: 'tasks.page_subtitle' },
   skillsPage:     { title: 'skills.page_title',      sub: 'skills.page_subtitle' },
   memoriesPage:   { title: 'memories.page_title',    sub: 'memories.page_subtitle' },
@@ -590,8 +588,10 @@ function renderStaticI18n() {
   // Messages empty state
   const chatEmpty = document.querySelector('.chat-thread-empty p')
   if (chatEmpty) chatEmpty.textContent = t('messages.select_agent')
-  // Team hint
-  const teamHint = document.querySelector('#teamPage > p')
+  // Team hint. Lives under the Agents page org-chart view since the separate
+  // Team page was merged in; the old '#teamPage > p' selector matched nothing
+  // and left the hint stuck on its hard-coded Hungarian.
+  const teamHint = document.getElementById('teamHint')
   if (teamHint) teamHint.textContent = t('team.hint')
 
   // Overview stat labels (siblings of statAgents, statTasks, statMemories, statSkills)
@@ -640,7 +640,10 @@ function renderStaticI18n() {
       const nodes = [...el.childNodes]
       for (let i = nodes.length - 1; i >= 0; i--) {
         if (nodes[i].nodeType === 3 && nodes[i].textContent.trim()) {
-          nodes[i].textContent = ' ' + val
+          // Keep the node's trailing whitespace: it separates the label text from a
+          // following inline child such as the "(optional)" hint.
+          const trailing = nodes[i].textContent.match(/\s*$/)[0]
+          nodes[i].textContent = ' ' + val + trailing
           break
         }
       }
@@ -657,7 +660,7 @@ function renderStaticI18n() {
   })
   // Elements whose translation contains inline markup (strong/code/a): set innerHTML.
   document.querySelectorAll('[data-i18n-html]').forEach(el => {
-    el.innerHTML = t(el.dataset.i18nHtml)
+    el.innerHTML = tHtml(el.dataset.i18nHtml)
   })
   // #updatesSubtitle opts out of the [data-i18n] sweep (renderUpdatesVersion owns
   // it). Re-apply from the cached status so a language switch re-localizes its
@@ -682,14 +685,32 @@ if (document.readyState !== 'loading') {
 // === Activity (live agent status) ===
 // ============================================================
 
-let activityTimer = null
-
+// The Activity page is gone -- its live per-agent status is the Agents page's
+// "Aktivitás" card mode (see renderAgentCardActivity). This table is the shared
+// vocabulary: the same states, labels, colours and tooltips as before.
 const ACTIVITY_STATE_META = {
   working: { label: () => t('activity.state.working'), cls: 'act-working', tip: 'Élő állapot (a tmux pane tartalmából, 3 másodpercenként): éppen dolgozik / gondolkodik.' },
   idle: { label: () => t('activity.state.idle'), cls: 'act-idle', tip: 'Élő állapot (3 másodpercenként): fut, de épp nem csinál semmit.' },
+  // Main thread idle, background (sub-)agents running. Display-only: the API's
+  // `state` stays 'idle' and this is picked by activityDisplayState.
+  subagents: {
+    label: (entry) => entry.bgAgents.queued > 0
+      ? t('activity.state.subagents_queued', { n: entry.bgAgents.running, q: entry.bgAgents.queued })
+      : t('activity.state.subagents', { n: entry.bgAgents.running }),
+    cls: 'act-subagents',
+    tip: 'Élő állapot (3 másodpercenként): a fő szál tétlen, de a háttér-alügynökei dolgoznak. A "vár" az alügynököknek küldött, még fel nem vett üzenetek száma.',
+  },
   unknown: { label: () => t('activity.state.unknown'), cls: 'act-unknown', tip: 'Élő állapot: nem sikerült megállapítani a session pane tartalmából.' },
   error: { label: () => t('activity.state.error'), cls: 'act-error', tip: 'Élő állapot: hiba látszik az ágens session paneljén.' },
   stopped: { label: () => t('activity.state.stopped'), cls: 'act-stopped', tip: 'Élő állapot: az ágens session nem fut.' },
+}
+
+// The state an entry is SHOWN in. The main thread working always wins; only an
+// idle main thread with running background agents reads as 'subagents'. An
+// entry without a recognised agent block (bgAgents null) keeps its own state.
+function activityDisplayState(entry) {
+  if (entry && entry.state === 'idle' && entry.bgAgents && entry.bgAgents.running > 0) return 'subagents'
+  return entry ? entry.state : 'unknown'
 }
 
 // === Kanban auto-refresh ===
@@ -716,87 +737,38 @@ document.addEventListener('visibilitychange', () => {
   }
 })
 
-function startActivityPoll() {
-  loadActivity()
-  if (activityTimer) clearInterval(activityTimer)
-  activityTimer = setInterval(loadActivity, 3000)
-}
+// Permission-mode chip. Shown for every mode EXCEPT the ones that let the agent
+// work on its own -- inverted on purpose: an unfamiliar mode is exactly the one
+// worth surfacing, so a future Claude Code mode shows up here instead of hiding
+// behind a list nobody remembered to extend. Without this an agent parked in an
+// ask-first mode renders as plain 'idle', which is how one sat unusable for
+// hours on 2026-07-27.
+const AUTONOMOUS_MODES = ['bypass permissions', 'accept edits', 'auto mode']
 
-function stopActivityPoll() {
-  if (activityTimer) {
-    clearInterval(activityTimer)
-    activityTimer = null
-  }
+// The live status body of one agent card in "Aktivitás" mode: the state badge,
+// the permission-mode chip and the last few lines of the agent's pane. Same
+// markup the Activity page used, minus the name row -- the card already carries
+// the avatar, name and description above it.
+function agentActivityBodyHtml(entry) {
+  const metaRaw = ACTIVITY_STATE_META[activityDisplayState(entry)] || ACTIVITY_STATE_META.unknown
+  const label = typeof metaRaw.label === 'function' ? metaRaw.label(entry) : metaRaw.label
+  const tail = (entry.tail || []).map((l) => escapeHtml(l)).join('\n')
+  const modeChip = entry.mode && !AUTONOMOUS_MODES.includes(entry.mode)
+    ? '<span class="act-mode-badge" title="' + escapeHtml(t('activity.tooltip.mode', { mode: entry.mode })) + '">' + escapeHtml(entry.mode) + '</span>'
+    : ''
+  const termIcon = entry.running
+    ? '<svg class="act-term-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>'
+    : ''
+  return (
+    '<div class="agent-act-head">' +
+      '<span class="activity-badge ' + metaRaw.cls + '" title="' + escapeHtml(metaRaw.tip || '') + '">' + (entry.state === 'working' ? '<span class="act-orb" aria-hidden="true"></span>' : '') + escapeHtml(label) + '</span>' +
+      '<span class="agent-act-head-right">' + modeChip + termIcon + '</span>' +
+    '</div>' +
+    (tail
+      ? '<pre class="activity-tail">' + tail + '</pre>'
+      : '<p class="activity-tail-empty">' + (entry.running ? t('agents.card.no_output') : t('agents.card.not_running')) + '</p>')
+  )
 }
-
-async function loadActivity() {
-  try {
-    const res = await fetch('/api/agents/activity')
-    if (!res.ok) throw new Error('HTTP ' + res.status)
-    const entries = await res.json()
-    renderActivity(entries)
-    const upd = document.getElementById('activityUpdated')
-    if (upd) upd.textContent = t('activity.updated', { time: new Date().toLocaleTimeString('hu-HU') })
-  } catch (e) {
-    const list = document.getElementById('activityList')
-    if (list) list.innerHTML = '<p class="activity-empty">' + t('activity.error_load') + ': ' + escapeHtml(String(e.message || e)) + '</p>'
-  }
-}
-
-function renderActivity(entries) {
-  const list = document.getElementById('activityList')
-  if (!list) return
-  if (!Array.isArray(entries) || entries.length === 0) {
-    list.innerHTML = '<p class="activity-empty">' + t('activity.empty') + '</p>'
-    return
-  }
-  list.innerHTML = entries.map((a) => {
-    const metaRaw = ACTIVITY_STATE_META[a.state] || ACTIVITY_STATE_META.unknown
-    const meta = { ...metaRaw, label: typeof metaRaw.label === 'function' ? metaRaw.label() : metaRaw.label }
-    const tail = (a.tail || []).map((l) => escapeHtml(l)).join('\n')
-    const mainBadge = a.isMain ? '<span class="act-main-badge">' + t('activity.badge.main') + '</span>' : ''
-    // Permission-mode chip. Shown for every mode EXCEPT the ones that let the
-    // agent work on its own -- inverted on purpose: an unfamiliar mode is
-    // exactly the one worth surfacing, so a future Claude Code mode shows up
-    // here instead of hiding behind a list nobody remembered to extend.
-    // Without this an agent parked in an ask-first mode renders as plain
-    // 'idle', which is how one sat unusable for hours on 2026-07-27.
-    const AUTONOMOUS_MODES = ['bypass permissions', 'accept edits', 'auto mode']
-    const modeChip = a.mode && !AUTONOMOUS_MODES.includes(a.mode)
-      ? '<span class="act-mode-badge" title="' + escapeHtml(t('activity.tooltip.mode', { mode: a.mode })) + '">' + escapeHtml(a.mode) + '</span>'
-      : ''
-    const canOpen = !!a.running
-    const termIcon = canOpen
-      ? '<svg class="act-term-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" title="' + t('activity.tooltip.terminal') + '"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>'
-      : ''
-    return (
-      '<div class="activity-card ' + meta.cls + (canOpen ? ' act-clickable' : '') + '" data-agent="' + escapeHtml(a.name) + '">' +
-        '<div class="activity-card-head">' +
-          '<span class="activity-name">' + escapeHtml(a.name) + mainBadge + '</span>' +
-          '<span style="display:flex;align-items:center;gap:8px">' +
-            modeChip +
-            termIcon +
-            '<span class="activity-badge ' + meta.cls + '" title="' + escapeHtml(meta.tip || '') + '">' + (a.state === 'working' ? '<span class="act-orb" aria-hidden="true"></span>' : '') + meta.label + '</span>' +
-          '</span>' +
-        '</div>' +
-        (tail
-          ? '<pre class="activity-tail">' + tail + '</pre>'
-          : '<p class="activity-tail-empty">' + (a.running ? 'nincs friss kimenet' : 'a session nem fut') + '</p>') +
-      '</div>'
-    )
-  }).join('')
-}
-
-// Event delegation: clicking a running activity-card opens the terminal modal
-;(() => {
-  const actList = document.getElementById('activityList')
-  if (actList) {
-    actList.addEventListener('click', (e) => {
-      const card = e.target.closest('.activity-card.act-clickable[data-agent]')
-      if (card) openTerminalModal(card.dataset.agent)
-    })
-  }
-})()
 
 
 // ============================================================
@@ -827,6 +799,20 @@ let kanbanAssigneeFilter = ''
 // fully user-controlled via the toolbar dropdown.
 let kanbanGroupBy = 'none'
 let kanbanGroupByInitialized = false
+// Free-text / card-number search box in the board toolbar. A query of the form
+// "295" or "#295" matches the card SEQUENCE NUMBER exactly (that is the number
+// the board prints on every card and the one people actually use); anything
+// else is a case-insensitive substring match on the title. Deliberately NOT
+// persisted: a filter that survives a reload and hides most of the board is a
+// trap, and this one is typed in a second.
+let kanbanSearchQuery = ''
+// Card order inside a column: 'manual' (sort_order, i.e. the drag order --
+// the default and the only one where drag & drop makes sense) | 'seq_asc' |
+// 'seq_desc' | 'created_asc' | 'created_desc' | 'updated_desc'. Persisted in
+// localStorage.
+let kanbanSortBy = 'manual'
+// Every value the sort dropdown offers besides 'manual'.
+const KANBAN_SORTS = ['seq_asc', 'seq_desc', 'created_asc', 'created_desc', 'updated_desc']
 // Which swimlane keys (assignee name or priority value) are collapsed. Lives
 // for the page session only -- intentionally not persisted across reloads.
 const kanbanCollapsedLanes = new Set()
@@ -892,6 +878,12 @@ async function loadKanban() {
         const storedHiddenCols = JSON.parse(localStorage.getItem('marveen.kanbanHiddenColumns') || '[]')
         if (Array.isArray(storedHiddenCols)) kanbanHiddenColumns = new Set(storedHiddenCols)
       } catch { /* ignore malformed storage */ }
+      const storedSort = localStorage.getItem('marveen.kanbanSortBy')
+      if (KANBAN_SORTS.includes(storedSort)) {
+        kanbanSortBy = storedSort
+        const sortSel = document.getElementById('kanbanSortBy')
+        if (sortSel) sortSel.value = storedSort
+      }
     }
     const [cardsRes, assigneesRes, projectsRes, labelsRes] = await Promise.all([
       fetch('/api/kanban'),
@@ -915,6 +907,34 @@ async function loadKanban() {
 document.getElementById('kanbanGroupBy').addEventListener('change', (e) => {
   kanbanGroupBy = e.target.value
   localStorage.setItem('marveen.kanbanGroupBy', kanbanGroupBy)
+  renderKanban()
+})
+
+document.getElementById('kanbanSortBy')?.addEventListener('change', (e) => {
+  kanbanSortBy = e.target.value
+  localStorage.setItem('marveen.kanbanSortBy', kanbanSortBy)
+  renderKanban()
+})
+
+// 'input' rather than 'change' so the board narrows while typing -- with a few
+// hundred cards the whole render is a few milliseconds, so no debounce is
+// needed. Escape clears, because a search box you cannot empty in one key is
+// the reason filters get left on by accident.
+// The browser's password manager ignores autocomplete="off" and drops the saved
+// dashboard login name into the first text box on the page, which is this one.
+// It never fills a readonly field, so the box stays readonly until the user
+// reaches for it.
+for (const ev of ['pointerdown', 'focus']) {
+  document.getElementById('kanbanSearch')?.addEventListener(ev, (e) => e.target.removeAttribute('readonly'))
+}
+document.getElementById('kanbanSearch')?.addEventListener('input', (e) => {
+  kanbanSearchQuery = e.target.value
+  renderKanban()
+})
+document.getElementById('kanbanSearch')?.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return
+  e.target.value = ''
+  kanbanSearchQuery = ''
   renderKanban()
 })
 
@@ -979,6 +999,21 @@ function ownerAssigneeName() {
   return owner ? owner.name : null
 }
 
+// One key for comparing assignee names, because the two sides are written
+// differently: the owner entry carries a display name ("Balázs") while the cards
+// carry the id the agents write ("balazs"). Lowercasing alone leaves the accent,
+// so "balázs" !== "balazs" and the owner quick-filter matched nothing -- measured
+// on a board where 160 of 246 live cards were on that owner. Decomposing to NFD
+// and dropping the combining marks makes the two comparable without touching the
+// stored data, which is what the cards and the API still see.
+function assigneeKey(name) {
+  return String(name || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toLowerCase()
+}
+
 // Reflect the active state of the owner quick-toggle button (hidden when there
 // is no owner-type assignee).
 function syncOwnerFilterBtn() {
@@ -987,7 +1022,7 @@ function syncOwnerFilterBtn() {
   const owner = ownerAssigneeName()
   if (!owner) { btn.style.display = 'none'; return }
   btn.style.display = ''
-  const on = !!kanbanAssigneeFilter && kanbanAssigneeFilter.toLowerCase() === owner.toLowerCase()
+  const on = !!kanbanAssigneeFilter && assigneeKey(kanbanAssigneeFilter) === assigneeKey(owner)
   btn.style.background = on ? 'var(--accent)' : 'var(--bg)'
   btn.style.color = on ? '#081a2d' : 'var(--fg)'
   btn.setAttribute('aria-pressed', on ? 'true' : 'false')
@@ -1026,7 +1061,7 @@ function setupAssigneeFilter() {
     ownerBtn.addEventListener('click', () => {
       const owner = ownerAssigneeName()
       if (!owner) return
-      const on = kanbanAssigneeFilter.toLowerCase() === owner.toLowerCase()
+      const on = assigneeKey(kanbanAssigneeFilter) === assigneeKey(owner)
       kanbanAssigneeFilter = on ? '' : owner
       // Keep the dropdown in sync (only selectable if the owner is a known assignee).
       sel.value = kanbanAssignees.some((a) => a.name === kanbanAssigneeFilter) ? kanbanAssigneeFilter : ''
@@ -1056,15 +1091,56 @@ function setupAssigneeFilter() {
   syncOwnerFilterBtn()
 }
 
+// Does the card match the toolbar search box? Two modes, decided by the shape
+// of the query, so one field serves both needs:
+//   "295" / "#295"  -> exact card-number (seq) match, nothing else
+//   anything else   -> case-insensitive substring of the title
+// The number mode is exact on purpose: "29" must not drag in 129 and 295 when
+// the point of typing a number is to land on one card.
+function kanbanCardMatchesSearch(card) {
+  const q = kanbanSearchQuery.trim()
+  if (!q) return true
+  const num = q.match(/^#?(\d+)$/)
+  if (num) return card.seq != null && Number(card.seq) === Number(num[1])
+  return String(card.title || '').toLowerCase().includes(q.toLowerCase())
+}
+
+// Comparator for the cards inside one column, per the sort dropdown. Cards
+// without a seq (there should be none, but the field is nullable) sort last in
+// both directions rather than jumping to the top on a NaN comparison.
+function kanbanCardSorter() {
+  if (kanbanSortBy === 'seq_asc') {
+    return (a, b) => (a.seq ?? Infinity) - (b.seq ?? Infinity)
+  }
+  if (kanbanSortBy === 'seq_desc') {
+    return (a, b) => (b.seq ?? -Infinity) - (a.seq ?? -Infinity)
+  }
+  // Timestamps: a missing one sorts last in both directions, same rule as seq.
+  // The seq breaks ties, so cards created in the same second keep a stable order.
+  const ts = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null)
+  const byTime = (field, dir) => (a, b) => {
+    const x = ts(a[field]), y = ts(b[field])
+    if (x === null && y === null) return (a.seq ?? 0) - (b.seq ?? 0)
+    if (x === null) return 1
+    if (y === null) return -1
+    return dir * (x - y) || dir * ((a.seq ?? 0) - (b.seq ?? 0))
+  }
+  if (kanbanSortBy === 'created_asc') return byTime('created_at', 1)
+  if (kanbanSortBy === 'created_desc') return byTime('created_at', -1)
+  if (kanbanSortBy === 'updated_desc') return byTime('updated_at', -1)
+  return (a, b) => a.sort_order - b.sort_order
+}
+
 // Project + assignee + label filters, independent of the priority quick-filter
 // Project + assignee filters only -- the baseline the label quick-filter
 // chip counts are computed against, independent of which labels are
 // currently active, so a chip's count stays meaningful whether it's the one
 // being toggled or not.
 function kanbanCardMatchesBaseFilters(card) {
+  if (!kanbanCardMatchesSearch(card)) return false
   if (kanbanProjectFilter && (card.project || '') !== kanbanProjectFilter) return false
-  const assigneeFilter = kanbanAssigneeFilter.toLowerCase()
-  if (assigneeFilter && String(card.assignee || '').trim().toLowerCase() !== assigneeFilter) return false
+  const assigneeFilter = assigneeKey(kanbanAssigneeFilter)
+  if (assigneeFilter && assigneeKey(card.assignee) !== assigneeFilter) return false
   return true
 }
 
@@ -1111,7 +1187,7 @@ function renderKanbanQuickFilters() {
     const chip = document.createElement('span')
     chip.className = 'kanban-quick-filter-chip' + (active ? ' active' : '')
     chip.dataset.labelId = label.id
-    chip.style.setProperty('--chip-color', label.color)
+    chip.style.setProperty('--chip-color', safeCssColor(label.color, '#64748b'))
     chip.innerHTML = `#${escapeHtml(label.name)} <span class="kanban-quick-filter-count">${count}</span>${active ? '<span class="kanban-quick-filter-clear">&times;</span>' : ''}`
     chip.addEventListener('click', () => toggleKanbanLabelFilter(label.id))
     row.appendChild(chip)
@@ -1125,11 +1201,84 @@ function renderKanbanQuickFilters() {
   }
 }
 
+function renderKanbanTotals(visibleCardIds) {
+  const el = document.getElementById('kanbanTotals')
+  if (!el) return
+  const open = kanbanCards.filter((c) => c.status !== 'done').length
+  let txt = t('kanban.totals', { open, all: kanbanCards.length })
+  if (visibleCardIds && visibleCardIds.size !== kanbanCards.length) {
+    txt += ' ' + t('kanban.totals_filtered', { n: visibleCardIds.size })
+  }
+  el.textContent = txt
+}
+
+// One line next to the search box saying what the query actually found. Two
+// cases deserve their own words, because in both of them the board legitimately
+// shows nothing and the reason is not the query:
+//   - every match sits in a column the user hid (the chips above)
+//   - no match at all, which for a card number usually means it is archived,
+//     and the archived view is a separate tab that this search does not reach
+function renderKanbanSearchHint() {
+  const hintEl = document.getElementById('kanbanSearchHint')
+  if (!hintEl) return
+  if (!kanbanSearchQuery.trim()) { hintEl.textContent = ''; return }
+  const matches = kanbanCards.filter((c) => kanbanCardMatchesSearch(c))
+  // An ongoing card stays visible in the strip even when its status column is hidden.
+  const hiddenCount = matches.filter((c) => kanbanHiddenColumns.has(c.status) && !kanbanIsOngoing(c)).length
+  if (matches.length === 0) {
+    hintEl.textContent = t('kanban.filter.search_none')
+  } else if (hiddenCount === matches.length) {
+    hintEl.textContent = t('kanban.filter.search_all_hidden', { n: matches.length })
+  } else if (hiddenCount > 0) {
+    hintEl.textContent = t('kanban.filter.search_some_hidden', { n: matches.length, h: hiddenCount })
+  } else {
+    hintEl.textContent = t('kanban.filter.search_hits', { n: matches.length })
+  }
+}
+
+// Ongoing tasks: open cards labelled "Folyamatos" are standing duties (a weekly
+// check, a long-running watch), not work heading for "done". In the In progress
+// column they read as if they were about to finish, so they are pulled out of
+// their status column into a slim strip above the board. The card keeps its
+// real status, which can still be changed from its detail view; the strip is
+// not a drop target and nothing is ever posted with a virtual status.
+// The label is matched by name, case-insensitively: "Folyamatos" (the Hungarian
+// name the fleet uses) or "Ongoing".
+const KANBAN_ONGOING_LABELS = ['folyamatos', 'ongoing']
+
+function kanbanIsOngoing(card) {
+  return card.status !== 'done' && (card.labels || []).some((l) =>
+    l && typeof l.name === 'string' && KANBAN_ONGOING_LABELS.includes(l.name.trim().toLowerCase()))
+}
+
+function renderKanbanOngoing(cards) {
+  const strip = document.getElementById('kanbanOngoing')
+  const body = document.getElementById('kanbanOngoingBody')
+  if (!strip || !body) return
+  document.getElementById('countOngoing').textContent = cards.length
+  strip.hidden = cards.length === 0
+  body.innerHTML = ''
+  for (const card of cards.slice().sort((a, b) => (a.seq || 0) - (b.seq || 0))) {
+    const chip = document.createElement('button')
+    chip.type = 'button'
+    chip.className = 'kanban-ongoing-chip'
+    const seq = document.createElement('span')
+    seq.className = 'kanban-ongoing-seq'
+    seq.textContent = card.seq ? '#' + card.seq : ''
+    chip.appendChild(seq)
+    chip.appendChild(document.createTextNode(' ' + (card.title || '')))
+    chip.title = card.title || ''
+    chip.addEventListener('click', () => showCardDetail(card))
+    body.appendChild(chip)
+  }
+}
+
 function renderKanban() {
   const cardById = new Map(kanbanCards.map(c => [c.id, c]))
 
   renderKanbanColumnChips()
   renderKanbanQuickFilters()
+  renderKanbanSearchHint()
 
   // Determine which top-level cards are visible under current filters.
   const visibleCardIds = new Set()
@@ -1138,6 +1287,8 @@ function renderKanban() {
     if (!kanbanCardMatchesLabelFilter(card)) continue
     visibleCardIds.add(card.id)
   }
+
+  renderKanbanTotals(visibleCardIds)
 
   // A subtask is "embedded" when its parent is visible AND both share the same
   // column. Embedded subtasks are hidden as standalone cards and rendered
@@ -1152,11 +1303,14 @@ function renderKanban() {
   }
 
   const grouped = { planned: [], in_progress: [], waiting: [], testing: [], done: [] }
+  const ongoing = []
   for (const card of kanbanCards) {
     if (embeddedSubtaskIds.has(card.id)) continue
     if (!visibleCardIds.has(card.id)) continue
+    if (kanbanIsOngoing(card)) { ongoing.push(card); continue }
     if (grouped[card.status]) grouped[card.status].push(card)
   }
+  renderKanbanOngoing(ongoing)
 
   // Update counts (embedded subtasks don't count as separate cards)
   document.getElementById('countPlanned').textContent = grouped.planned.length
@@ -1172,21 +1326,21 @@ function renderKanban() {
     swimlaneBoard.hidden = true
     flatBoard.hidden = false
     for (const [status, cards] of Object.entries(grouped)) {
-      const col = document.querySelector(`#kanbanBoard .kanban-col-body[data-status="${status}"]`)
+      const col = document.querySelector(`#kanbanBoard .kanban-col-body[data-status="${CSS.escape(String(status))}"]`)
       col.innerHTML = ''
-      cards.sort((a, b) => a.sort_order - b.sort_order)
+      cards.sort(kanbanCardSorter())
 
       for (const card of cards) {
         const embeddedChildren = kanbanCards
           .filter(c => c.parent_id === card.id && embeddedSubtaskIds.has(c.id))
-          .sort((a, b) => a.sort_order - b.sort_order)
+          .sort(kanbanCardSorter())
         col.appendChild(createCardEl(card, embeddedChildren))
       }
     }
     // Hide/show flat-board columns based on visibility set
     const allColsHidden = KANBAN_STATUS_DEFS.every(d => kanbanHiddenColumns.has(d.status))
     for (const def of KANBAN_STATUS_DEFS) {
-      const colEl = flatBoard.querySelector(`.kanban-col[data-status="${def.status}"]`)
+      const colEl = flatBoard.querySelector(`.kanban-col[data-status="${CSS.escape(String(def.status))}"]`)
       if (colEl) colEl.hidden = kanbanHiddenColumns.has(def.status)
     }
     // "All columns hidden" hint
@@ -1281,7 +1435,7 @@ function renderSwimlaneBoard(grouped, embeddedSubtaskIds) {
     const lane = document.createElement('div')
     lane.className = 'kanban-swimlane' + (collapsed ? ' collapsed' : '')
     lane.dataset.group = key
-    if (separatorColor) lane.style.borderBottomColor = separatorColor
+    if (separatorColor) lane.style.borderBottomColor = safeCssColor(separatorColor)
 
     const header = document.createElement('div')
     header.className = 'kanban-swimlane-header'
@@ -1314,11 +1468,11 @@ function renderSwimlaneBoard(grouped, embeddedSubtaskIds) {
       colBody.className = 'kanban-col-body kanban-swimlane-col-body'
       colBody.dataset.status = def.status
 
-      const cards = laneCardsByStatus[def.status].sort((a, b) => a.sort_order - b.sort_order)
+      const cards = laneCardsByStatus[def.status].sort(kanbanCardSorter())
       for (const card of cards) {
         const embeddedChildren = kanbanCards
           .filter(c => c.parent_id === card.id && embeddedSubtaskIds.has(c.id))
-          .sort((a, b) => a.sort_order - b.sort_order)
+          .sort(kanbanCardSorter())
         colBody.appendChild(createCardEl(card, embeddedChildren))
       }
       wireKanbanColumnDnD(colBody)
@@ -1373,8 +1527,8 @@ function updateWipBadges(grouped) {
       state = 'ok'; color = cfg.okColor
     }
     el.dataset.wip = state
-    el.style.color = color
-    el.style.borderColor = color
+    el.style.color = safeCssColor(color)
+    el.style.borderColor = safeCssColor(color)
   }
 }
 
@@ -1403,7 +1557,11 @@ function createCardEl(card, embeddedChildren = []) {
   el.className = 'kanban-card'
   el.dataset.id = card.id
   el.dataset.priority = card.priority
-  el.draggable = true
+  // Drag & drop rewrites sort_order, which is what 'manual' order shows. Under
+  // a seq sort the drop would be accepted and then have no visible effect --
+  // a move that looks like it failed. So the card is simply not draggable
+  // there; the touch path reads the same flag.
+  el.draggable = kanbanSortBy === 'manual'
 
   // Assignee chip. Match the card's assignee against the known list
   // case-insensitively (a card stored as "gorcsevivan" must still match the
@@ -1444,7 +1602,7 @@ function createCardEl(card, embeddedChildren = []) {
     const shown = card.labels.slice(0, 3)
     const overflow = card.labels.length - shown.length
     const pills = shown.map((l) =>
-      `<span class="kanban-card-label-pill" data-label-id="${escapeHtml(l.id)}" style="--label-color:${escapeHtml(l.color)}" title="${t('kanban.label.filter_tooltip', { name: escapeHtml(l.name) })}">#${escapeHtml(l.name)}</span>`
+      `<span class="kanban-card-label-pill" data-label-id="${escapeHtml(l.id)}" style="--label-color:${escapeHtml(safeCssColor(l.color, '#64748b'))}" title="${t('kanban.label.filter_tooltip', { name: escapeHtml(l.name) })}">#${escapeHtml(l.name)}</span>`
     ).join('')
     const overflowHtml = overflow > 0
       ? `<span class="kanban-card-label-pill kanban-card-label-overflow" title="${t('kanban.label.overflow_tooltip', { n: overflow })}">+${overflow}</span>`
@@ -1456,12 +1614,28 @@ function createCardEl(card, embeddedChildren = []) {
     ? `<span class="kanban-card-seq" style="font-family:monospace;font-size:11px;color:var(--muted);margin-right:5px">#${card.seq}</span>`
     : ''
 
+  // Blocked marker: only counts blockers that are not done yet. A card whose
+  // blockers have all closed is not blocked any more, and a badge that stayed
+  // put would be exactly the kind of lie the board is supposed to prevent.
+  const openBlockers = Array.isArray(card.blockers)
+    ? card.blockers.filter((b) => b.status !== 'done')
+    : []
+  const blockedHtml = openBlockers.length > 0
+    ? `<span class="kanban-card-blocked" title="${escapeHtml(t('kanban.blocker.card_tooltip', { n: openBlockers.length }))}">${t('kanban.blocker.card_badge')}${openBlockers.length > 1 ? ' ' + openBlockers.length : ''}</span>`
+    : ''
+
   // Card aging: left stripe + top-right badge based on hours since last update.
   // Skipped for done cards. Config thresholds and colours come from window._marveen.kanbanAging.
   let agingBadgeHtml = ''
   const agingCfg = window._marveen?.kanbanAging
-  if (agingCfg && card.updated_at && card.status !== 'done') {
-    const hoursOld = (Date.now() / 1000 - card.updated_at) / 3600
+  // Age from the last STATUS CHANGE, not from updated_at. A comment sets
+  // updated_at (see addKanbanComment in src/db.ts), so a card that has not
+  // moved in weeks used to look fresh as soon as anyone wrote on it -- and the
+  // main agent writes on cards more than anyone. Falls back to updated_at only
+  // if the API is older than this field.
+  const agingBasis = card.last_status_at ?? card.updated_at
+  if (agingCfg && agingBasis && card.status !== 'done') {
+    const hoursOld = (Date.now() / 1000 - agingBasis) / 3600
     let agingLevel = null
     let agingColor = null
     if (hoursOld >= agingCfg.criticalH) {
@@ -1474,10 +1648,10 @@ function createCardEl(card, embeddedChildren = []) {
     if (agingLevel) {
       const days = Math.floor(hoursOld / 24)
       const ageLabel = days >= 1 ? `${days}d` : `${Math.floor(hoursOld)}h`
-      const exact = new Date(card.updated_at * 1000).toLocaleString('hu-HU')
-      agingBadgeHtml = `<span class="kanban-card-aging-badge kanban-card-aging-${agingLevel}" style="color:${agingColor}" title="${t('kanban.aging.tooltip', { exact })}">⏳ ${ageLabel}</span>`
+      const exact = new Date(agingBasis * 1000).toLocaleString('hu-HU')
+      agingBadgeHtml = `<span class="kanban-card-aging-badge kanban-card-aging-${agingLevel}" style="color:${escapeHtml(safeCssColor(agingColor))}" title="${t('kanban.aging.tooltip', { exact })}">⏳ ${ageLabel}</span>`
       el.dataset.aging = agingLevel
-      el.style.setProperty('--card-aging-color', agingColor)
+      el.style.setProperty('--card-aging-color', safeCssColor(agingColor))
     }
   }
 
@@ -1499,7 +1673,7 @@ function createCardEl(card, embeddedChildren = []) {
   el.innerHTML = `
     ${projectHtml}
     <div class="kanban-card-title">${seqHtml}${escapeHtml(card.title)}</div>
-    <div class="kanban-card-footer">${assigneeHtml}${dueHtml}</div>
+    <div class="kanban-card-footer">${assigneeHtml}${dueHtml}${blockedHtml}</div>
     ${labelsHtml}
     <div class="kanban-card-actions">
       <button class="card-breakdown-btn" title="${t('kanban.btn.breakdown')}" aria-label="${t('kanban.btn.breakdown')}">⚡</button>
@@ -1750,7 +1924,7 @@ async function kanbanTouchEnd(e) {
   if (chip) {
     // Dropped on the status bar: no position information, so append.
     newStatus = chip.dataset.status
-    sortOrder = document.querySelectorAll(`.kanban-col-body[data-status="${newStatus}"] .kanban-card`).length
+    sortOrder = document.querySelectorAll(`.kanban-col-body[data-status="${CSS.escape(String(newStatus))}"] .kanban-card`).length
   } else if (col) {
     newStatus = col.dataset.status
     const after = getDragAfterElement(col, p.clientY)
@@ -1778,6 +1952,7 @@ async function kanbanTouchEnd(e) {
 function wireKanbanCardTouchDnD(el, card) {
   el.addEventListener('touchstart', (e) => {
     if (e.touches.length !== 1) return
+    if (!el.draggable) return
     const p = e.touches[0]
     endTouchDrag()
     touchDrag = {
@@ -1823,6 +1998,7 @@ function openNewCardModal(status) {
   document.getElementById('cardModalTitle').textContent = t('kanban.modal.title_new')
   document.getElementById('cardTitle').value = ''
   document.getElementById('cardDesc').value = ''
+  document.getElementById('cardTestSteps').value = ''
   document.getElementById('cardPriority').value = 'normal'
   document.getElementById('cardProject').value = ''
   document.getElementById('cardDue').value = ''
@@ -1854,6 +2030,7 @@ document.getElementById('saveCardBtn').addEventListener('click', async () => {
   const data = {
     title,
     description: document.getElementById('cardDesc').value.trim() || null,
+    test_steps: document.getElementById('cardTestSteps').value.trim() || null,
     assignee: document.getElementById('cardAssignee').value || null,
     priority: document.getElementById('cardPriority').value,
     project: document.getElementById('cardProject').value.trim() || null,
@@ -1913,7 +2090,7 @@ async function renderCardLabelsSection(card) {
   for (const label of attached) {
     const pill = document.createElement('span')
     pill.className = 'label-pill'
-    pill.style.setProperty('--label-color', label.color)
+    pill.style.setProperty('--label-color', safeCssColor(label.color, '#64748b'))
     pill.innerHTML = `#${escapeHtml(label.name)} <button class="label-pill-remove" title="${t('kanban.label.remove_btn')}" aria-label="${t('kanban.label.remove_btn')}">&times;</button>`
     pill.querySelector('.label-pill-remove').addEventListener('click', async () => {
       try {
@@ -1959,7 +2136,7 @@ async function renderCardLabelsSection(card) {
   palette.forEach((color, i) => {
     const sw = document.createElement('span')
     sw.className = 'label-color-swatch' + (i === 0 ? ' selected' : '')
-    sw.style.background = color
+    sw.style.backgroundColor = safeCssColor(color)
     sw.addEventListener('click', () => {
       selectedColor = color
       newColorsEl.querySelectorAll('.label-color-swatch').forEach((s) => s.classList.remove('selected'))
@@ -1990,7 +2167,137 @@ async function renderCardLabelsSection(card) {
   }
 }
 
+// === Card blockers (in the detail modal) ===
+// Renders both directions from one GET: what this card waits on, and what waits
+// on it. The reverse list is read-only on purpose -- a block is removed from the
+// card that carries it, so there is exactly one place to clear each link.
+async function renderCardBlockersSection(card) {
+  const listEl = document.getElementById('cardBlockerList')
+  const addSelect = document.getElementById('cardBlockerAdd')
+  const blockingWrap = document.getElementById('cardBlockingWrap')
+  const blockingListEl = document.getElementById('cardBlockingList')
+  if (!listEl || !addSelect) return
+
+  let blockers = []
+  let blocking = []
+  try {
+    const data = await (await fetch(`/api/kanban/${encodeURIComponent(card.id)}/blockers`)).json()
+    blockers = Array.isArray(data.blockers) ? data.blockers : []
+    blocking = Array.isArray(data.blocking) ? data.blocking : []
+  } catch { /* leave empty -- the lists just stay blank */ }
+
+  // A blocker whose card is done no longer holds anything up. It stays listed
+  // (the link is history worth seeing) but reads as cleared, so a glance at the
+  // list answers "am I still waiting?" without opening each card.
+  const isCleared = (ref) => ref.status === 'done'
+
+  const refRow = (ref, removable) => {
+    const row = document.createElement('div')
+    row.className = 'blocker-row' + (isCleared(ref) ? ' blocker-cleared' : '')
+    const seq = ref.seq != null ? `#${ref.seq} ` : ''
+    const link = document.createElement('button')
+    link.className = 'blocker-link'
+    link.type = 'button'
+    link.textContent = `${seq}${ref.title}`
+    link.title = t('kanban.blocker.open_hint')
+    link.addEventListener('click', () => {
+      const target = kanbanCards.find((c) => c.id === ref.id)
+      if (target) showCardDetail(target)
+      else showToast(t('kanban.toast.blocker_not_on_board'))
+    })
+    row.appendChild(link)
+    const state = document.createElement('span')
+    state.className = 'blocker-state'
+    state.textContent = t(`kanban.status.${ref.status}`)
+    row.appendChild(state)
+    if (removable) {
+      const rm = document.createElement('button')
+      rm.className = 'blocker-remove'
+      rm.type = 'button'
+      rm.innerHTML = '&times;'
+      rm.title = t('kanban.blocker.remove_btn')
+      rm.setAttribute('aria-label', t('kanban.blocker.remove_btn'))
+      rm.addEventListener('click', async () => {
+        try {
+          await fetch(`/api/kanban/${encodeURIComponent(card.id)}/blockers/${encodeURIComponent(ref.id)}`, { method: 'DELETE' })
+          renderCardBlockersSection(card)
+          loadKanban()
+        } catch { showToast(t('kanban.toast.blocker_remove_error')) }
+      })
+      row.appendChild(rm)
+    }
+    return row
+  }
+
+  listEl.innerHTML = ''
+  if (blockers.length === 0) {
+    const empty = document.createElement('div')
+    empty.className = 'blocker-empty'
+    empty.textContent = t('kanban.blocker.none')
+    listEl.appendChild(empty)
+  } else {
+    for (const ref of blockers) listEl.appendChild(refRow(ref, true))
+  }
+
+  blockingListEl.innerHTML = ''
+  blockingWrap.style.display = blocking.length > 0 ? '' : 'none'
+  for (const ref of blocking) blockingListEl.appendChild(refRow(ref, false))
+
+  // Candidates: every other open card on the board that is not already linked.
+  // Cards this one blocks are excluded too -- adding one would close a cycle,
+  // and the server refuses it; offering it in the list would only produce an error.
+  const attachedIds = new Set(blockers.map((b) => b.id))
+  const blockingIds = new Set(blocking.map((b) => b.id))
+  addSelect.innerHTML = `<option value="">-- ${t('kanban.blocker.add_placeholder_short')} --</option>`
+  for (const other of kanbanCards) {
+    if (other.id === card.id || attachedIds.has(other.id) || blockingIds.has(other.id)) continue
+    if (other.status === 'done') continue
+    const opt = document.createElement('option')
+    opt.value = other.id
+    opt.textContent = (other.seq != null ? `#${other.seq} ` : '') + other.title.slice(0, 70)
+    addSelect.appendChild(opt)
+  }
+  addSelect.onchange = async () => {
+    const blockerId = addSelect.value
+    if (!blockerId) return
+    try {
+      const r = await fetch(`/api/kanban/${encodeURIComponent(card.id)}/blockers`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ blockerId }),
+      })
+      if (!r.ok) {
+        // The server's message names the actual reason (cycle, missing card);
+        // surfacing it beats a generic failure the operator has to guess at.
+        const err = await r.json().catch(() => ({}))
+        showToast(err.error || t('kanban.toast.blocker_add_error'))
+        addSelect.value = ''
+        return
+      }
+      renderCardBlockersSection(card)
+      loadKanban()
+    } catch { showToast(t('kanban.toast.blocker_add_error')) }
+  }
+}
+
 // === Card detail ===
+// Card.active_seconds -> human text for the card detail panel.
+//
+// undefined means the card has no status-change history at all, which is NOT
+// the same as zero and must not render as "0m" -- the event table starts
+// mid-history, so an old card that never moved since would otherwise claim a
+// measured zero it has not got.
+function formatActiveTime(sec) {
+  if (sec === undefined || sec === null) return null
+  const s = Math.max(0, Math.floor(sec))
+  const d = Math.floor(s / 86400)
+  const h = Math.floor((s % 86400) / 3600)
+  const m = Math.floor((s % 3600) / 60)
+  if (s === 0) return t('kanban.active.zero')
+  if (d >= 1) return t('kanban.active.d_h', { d, h })
+  if (h >= 1) return t('kanban.active.h_m', { h, m })
+  return t('kanban.active.m', { m })
+}
+
 async function showCardDetail(card) {
   // Running number (#N) in the title bar, plus the stable hex id in the meta.
   const seqPrefix = card.seq != null ? `#${card.seq} ` : ''
@@ -2015,11 +2322,11 @@ async function showCardDetail(card) {
     </div>
     <div class="meta-item">
       <span class="meta-label">${t('kanban.meta.status')}</span>
-      <span class="meta-value meta-value-editable" id="metaStatusValue" data-card-id="${card.id}" title="${t('kanban.meta.edit_tooltip')}">${statusLabels[card.status] || card.status}</span>
+      <span class="meta-value meta-value-editable" id="metaStatusValue" data-card-id="${escapeHtml(card.id)}" title="${t('kanban.meta.edit_tooltip')}">${escapeHtml(statusLabels[card.status] || card.status)}</span>
     </div>
     <div class="meta-item">
       <span class="meta-label">${t('kanban.meta.assignee')}</span>
-      <span class="meta-value meta-value-editable" id="metaAssigneeValue" data-card-id="${card.id}" title="${t('kanban.meta.edit_tooltip')}">${escapeHtml(assigneeDisplay)}</span>
+      <span class="meta-value meta-value-editable" id="metaAssigneeValue" data-card-id="${escapeHtml(card.id)}" title="${t('kanban.meta.edit_tooltip')}">${escapeHtml(assigneeDisplay)}</span>
     </div>
     <div class="meta-item">
       <span class="meta-label">${t('kanban.meta.priority')}</span>
@@ -2032,6 +2339,10 @@ async function showCardDetail(card) {
     <div class="meta-item">
       <span class="meta-label">${t('kanban.meta.deadline')}</span>
       <span class="meta-value">${card.due_date ? new Date(card.due_date * 1000).toLocaleDateString(_lang === 'en' ? 'en-US' : 'hu-HU') : t('kanban.meta.none')}</span>
+    </div>
+    <div class="meta-item">
+      <span class="meta-label">${t('kanban.meta.active')}</span>
+      <span class="meta-value" title="${escapeHtml(formatActiveTime(card.active_seconds) ? t('kanban.active.tooltip') : t('kanban.active.tooltip_none'))}">${escapeHtml(formatActiveTime(card.active_seconds) ?? t('kanban.active.none'))}</span>
     </div>
   `
 
@@ -2134,7 +2445,19 @@ async function showCardDetail(card) {
 
   document.getElementById('cardDetailDesc').textContent = card.description || ''
 
+  // Card 8fe51afd: the testing steps in a block of their own. Hidden when the
+  // card has none -- an empty "Tesztelési lépések" heading on every card would
+  // train the reader to skip past the one card where it is filled in. The
+  // `is-testing` mark is what makes it stand out exactly when it is due.
+  const testStepsBox = document.getElementById('cardDetailTestSteps')
+  const testStepsBody = document.getElementById('cardDetailTestStepsBody')
+  const steps = (card.test_steps || '').trim()
+  testStepsBody.textContent = steps
+  testStepsBox.hidden = !steps
+  testStepsBox.classList.toggle('is-testing', !!steps && card.status === 'testing')
+
   renderCardLabelsSection(card)
+  renderCardBlockersSection(card)
 
   // #115: Parent meta row — dropdown replaces the old read-only display; shown only when editable
   const parentMetaItem = document.getElementById('parentMetaItem')
@@ -2233,6 +2556,7 @@ async function showCardDetail(card) {
     document.getElementById('cardModalTitle').textContent = t('kanban.modal.title_edit')
     document.getElementById('cardTitle').value = card.title
     document.getElementById('cardDesc').value = card.description || ''
+    document.getElementById('cardTestSteps').value = card.test_steps || ''
     document.getElementById('cardPriority').value = card.priority
     document.getElementById('cardProject').value = card.project || ''
     document.getElementById('cardDue').value = card.due_date
@@ -2314,8 +2638,8 @@ async function showCardDetail(card) {
         div.style.cssText = 'cursor:pointer; display:flex; justify-content:space-between; align-items:center; gap:8px'
         const info = document.createElement('div')
         info.style.flex = '1'
-        info.innerHTML = `<div><strong>${escapeHtml(ch.title)}</strong> <span style="color:var(--text-muted)">[${statusLabelsShort[ch.status] || ch.status}]</span></div>
-          <div style="font-size:0.85em;color:var(--text-muted)">${ch.assignee ? escapeHtml(ch.assignee) : ''}${ch.description ? ' -- ' + escapeHtml(ch.description).slice(0, 80) : ''}</div>`
+        info.innerHTML = `<div><strong>${escapeHtml(ch.title)}</strong> <span style="color:var(--text-muted)">[${escapeHtml(statusLabelsShort[ch.status] || ch.status)}]</span></div>
+          <div style="font-size:0.85em;color:var(--text-muted)">${ch.assignee ? escapeHtml(ch.assignee) : ''}${ch.description ? ' -- ' + escSnippet(ch.description, 80) : ''}</div>`
         info.onclick = () => { closeModal(cardDetailOverlay); showCardDetail(ch) }
         div.appendChild(info)
         if (canDeleteChild) {
@@ -2373,7 +2697,7 @@ async function showCardDetail(card) {
 }
 
 async function triggerBreakdown(card) {
-  const btn = document.querySelector(`.kanban-card[data-id="${card.id}"] .card-breakdown-btn`)
+  const btn = document.querySelector(`.kanban-card[data-id="${CSS.escape(String(card.id))}"] .card-breakdown-btn`)
   if (btn) { btn.disabled = true; btn.textContent = '...' }
   try {
     const res = await fetch(`/api/kanban/${encodeURIComponent(card.id)}/breakdown`, { method: 'POST' })
@@ -2391,7 +2715,7 @@ async function triggerBreakdown(card) {
 }
 
 function showBreakdownModal(subtasks, parentCard) {
-  document.getElementById('breakdownProvider').textContent = t('kanban.breakdown.parent_label', { title: escapeHtml(parentCard.title) })
+  document.getElementById('breakdownProvider').textContent = t('kanban.breakdown.parent_label', { title: parentCard.title })
   const list = document.getElementById('breakdownList')
   list.innerHTML = ''
 
@@ -2419,7 +2743,7 @@ function showBreakdownModal(subtasks, parentCard) {
           <option value="">-- nincs --</option>
           ${assigneeOptions}
         </select>
-        <span class="priority-badge priority-${st.priority}">${priorityLabels[st.priority] || st.priority}</span>
+        <span class="priority-badge priority-${escapeHtml(st.priority)}">${escapeHtml(priorityLabels[st.priority] || st.priority)}</span>
       </div>
     `
     // Set assignee select value after insert
@@ -2504,6 +2828,11 @@ const AVATARS = [
 let selectedAvatar = null
 let selectedAvatarFile = null // custom upload chosen in the create wizard (deferred until the agent exists)
 let agents = []
+// Agent name -> measured context-window fraction (0..1), from /api/context-guard.
+// Refreshed alongside the agent list (loadAgents), not on its own poll timer --
+// the underlying measurement reads each agent's transcript from disk, so it is
+// only worth paying for when the Agents page is actually being (re)drawn.
+let contextGuardPct = {}
 let currentAgent = null
 // API-safe agent id for the currently open detail modal. Sub-agents key off
 // their name; the main agent's detail object carries name:'marveen' for legacy
@@ -2628,7 +2957,23 @@ function populateProfileSelect(selectEl, descEl, selected) {
       if (p.id === selected) opt.selected = true
       selectEl.appendChild(opt)
     }
+    // A REQUESTED PROFILE THAT DOES NOT EXIST. No option
+    // matched, so the select used to show the FIRST profile, and the agent in
+    // fact ran under `default` (the server's silent fallback). The requested
+    // name is shown as it is, marked, with the consequence in the description.
+    const missing = selected && !profiles.some(p => p.id === selected) ? selected : null
+    if (missing) {
+      const opt = document.createElement('option')
+      opt.value = missing
+      opt.textContent = `⚠ ${missing} (${t('agents.profile_missing_option')})`
+      opt.selected = true
+      selectEl.prepend(opt)
+    }
     const updateDesc = () => {
+      if (missing && selectEl.value === missing) {
+        descEl.textContent = t('agents.profile_missing_desc', { id: missing })
+        return
+      }
       const p = profiles.find(x => x.id === selectEl.value)
       descEl.textContent = p ? p.description : ''
     }
@@ -2897,13 +3242,23 @@ async function loadAgents() {
     // The federation status fetch is deliberately failure-proof (.catch ->
     // null): it must NEVER take down the Agents page -- including on an
     // older backend where the route 404s.
-    const [agentsRes, marveenRes, fedStatus] = await Promise.all([
+    const [agentsRes, marveenRes, fedStatus, ctxGuard] = await Promise.all([
       fetch('/api/agents'),
       fetch('/api/marveen'),
       fetch('/api/federation/status').then((r) => (r.ok ? r.json() : null)).catch(() => null),
+      // Same failure-proofing as federation status above: an older backend or a
+      // transient error here must not take down the whole Agents page over a
+      // badge.
+      fetch('/api/context-guard').then((r) => (r.ok ? r.json() : null)).catch(() => null),
     ])
     agents = await agentsRes.json()
     if (fedStatus && Array.isArray(fedStatus.peers)) federatedPeerStatus = fedStatus.peers
+    contextGuardPct = {}
+    if (ctxGuard && Array.isArray(ctxGuard.agents)) {
+      for (const g of ctxGuard.agents) {
+        if (typeof g.pct === 'number' && isFinite(g.pct)) contextGuardPct[g.agent] = g.pct
+      }
+    }
     if (marveenRes.ok) {
       window._marveen = await marveenRes.json()
       // A backend CHANNEL_PROVIDER-éhez igazitsuk a kliens-default-ot,
@@ -2927,6 +3282,24 @@ function formatContextTokens(n) {
   if (n < 1000) return `${n} token`
   const k = n / 1000
   return `≈${k < 10 ? k.toFixed(1) : Math.round(k)}k token`
+}
+
+// Small "context window used" badge for an Agents-grid card, sourced from
+// contextGuardPct (populated in loadAgents from /api/context-guard -- the
+// same measurement the context-guard runner itself acts on, so this reads
+// the identical number a [CONTEXT-GUARD] restart would fire on, not a
+// second, potentially-drifting calculation).
+// Empty string when there is nothing to show (guard disabled, agent not
+// running, or the measurement genuinely failed) -- no badge is better than a
+// misleading "0%".
+function contextPctBadgeHtml(agentName) {
+  const pct = contextGuardPct[agentName]
+  if (typeof pct !== 'number' || !isFinite(pct) || pct < 0) return ''
+  const pctRound = Math.round(pct * 100)
+  // Mirrors context-guard's own default tiers (actPct 0.90, hardPct 0.97):
+  // green under act, amber from act to hard, red at/over hard.
+  const tier = pct >= 0.97 ? 'danger' : pct >= 0.90 ? 'warning' : 'ok'
+  return `<span class="agent-ctx-badge ${tier}" title="${escapeHtml(t('agents.context_tip', { pct: pctRound }))}">${pctRound}%</span>`
 }
 
 // Populate the auto-restart controls + context display from an agent payload.
@@ -2966,6 +3339,167 @@ function setupAutoRestartUI(agent) {
     schedKind.dataset.wired = '1'
   }
 }
+
+// ---- context-guard UI -------------------------------------------------------
+
+const CG_PHASE_LABELS = {
+  idle: 'idle',
+  'await-handoff': 'handoff',
+  'await-ready': 'restarting',
+  cooldown: 'cooldown',
+}
+
+// One-sentence tooltips for the phase badge (CGBADGE908) -- the context badge
+// already had one (agents.context_tip), the phase badge had none, and the
+// owner had to ask what "cooldown" meant.
+const CG_PHASE_TIPS = {
+  'await-handoff': 'agents.guard_phase_tip_handoff',
+  'await-ready': 'agents.guard_phase_tip_restarting',
+  cooldown: 'agents.guard_phase_tip_cooldown',
+}
+
+async function setupContextGuardUI(agentName) {
+  const cgEnabled = document.getElementById('cgEnabled')
+  const cgAdvancedWrap = document.getElementById('cgAdvancedWrap')
+  if (!cgEnabled || !cgAdvancedWrap) return
+
+  if (cgEnabled.dataset.wired !== '1') {
+    cgEnabled.addEventListener('change', () => {
+      cgAdvancedWrap.hidden = !cgEnabled.checked
+    })
+    cgEnabled.dataset.wired = '1'
+  }
+
+  const cgActPct = document.getElementById('cgActPct')
+  const cgHardPct = document.getElementById('cgHardPct')
+  const cgValidationHint = document.getElementById('cgValidationHint')
+  const validatePcts = () => {
+    const invalid = Number(cgHardPct.value) < Number(cgActPct.value)
+    if (cgValidationHint) cgValidationHint.style.display = invalid ? '' : 'none'
+  }
+  if (cgActPct && cgActPct.dataset.cgwired !== '1') {
+    cgActPct.addEventListener('input', validatePcts)
+    cgHardPct.addEventListener('input', validatePcts)
+    cgActPct.dataset.cgwired = '1'
+  }
+
+  try {
+    const r = await fetch(`/api/agents/${encodeURIComponent(agentName)}/context-guard`)
+    if (!r.ok) return
+    const body = await r.json()
+    const cfg = body.contextGuard || {}
+    cgEnabled.checked = cfg.enabled === true
+    cgAdvancedWrap.hidden = !cgEnabled.checked
+    const cgLimitTokens = document.getElementById('cgLimitTokens')
+    if (cgLimitTokens) cgLimitTokens.value = cfg.limitTokens ? String(cfg.limitTokens) : ''
+    if (cgActPct) cgActPct.value = cfg.actPct != null ? Math.round(cfg.actPct * 100) : 90
+    if (cgHardPct) cgHardPct.value = cfg.hardPct != null ? Math.round(cfg.hardPct * 100) : 97
+    const cgCooldownMinutes = document.getElementById('cgCooldownMinutes')
+    if (cgCooldownMinutes) cgCooldownMinutes.value = cfg.cooldownMinutes ?? 15
+    const cgHandoffTimeout = document.getElementById('cgHandoffTimeout')
+    if (cgHandoffTimeout) cgHandoffTimeout.value = cfg.handoffTimeoutMinutes ?? 20
+  } catch { /* silent */ }
+
+  updateContextGuardLiveStatus(agentName)
+}
+
+function updateContextGuardLiveStatus(agentName) {
+  const liveEl = document.getElementById('cgLiveStatus')
+  const phaseEl = document.getElementById('cgPhaseDisplay')
+  const pctEl = document.getElementById('cgPctDisplay')
+  if (!liveEl || !phaseEl || !pctEl) return
+  fetch('/api/context-guard')
+    .then(r => r.ok ? r.json() : null)
+    .then(body => {
+      if (!body || !Array.isArray(body.agents)) return
+      const entry = body.agents.find(a => a.agent === agentName)
+      if (!entry) return
+      liveEl.style.display = ''
+      phaseEl.textContent = CG_PHASE_LABELS[entry.phase] || entry.phase || '-'
+      pctEl.textContent = typeof entry.pct === 'number' ? Math.round(entry.pct * 100) + '%' : '-'
+    })
+    .catch(() => {})
+}
+
+;(function startContextGuardPoll() {
+  function poll() {
+    fetch('/api/context-guard')
+      .then(r => r.ok ? r.json() : null)
+      .then(body => {
+        if (!body || !Array.isArray(body.agents)) return
+        body.agents.forEach(entry => {
+          const card = document.querySelector(`.agent-card[data-name="${CSS.escape(entry.agent)}"]`)
+          if (!card) return
+          let badge = card.querySelector('.ctx-guard-badge')
+          const active = entry.phase && entry.phase !== 'idle'
+          if (!active) { if (badge) badge.remove(); return }
+          if (!badge) {
+            badge = document.createElement('span')
+            badge.className = 'ctx-guard-badge'
+            badge.style.cssText = 'font-size:10px;padding:1px 5px;border-radius:10px;background:var(--accent-warning,#f59e0b);color:#000;margin-left:4px;font-weight:600'
+            const footer = card.querySelector('.agent-card-footer')
+            if (footer) footer.appendChild(badge)
+          }
+          // CGBADGE908: the phase badge never appends the context pct -- the
+          // card already has its own context badge, and "cooldown 19%" read as
+          // a cooldown position while 19 was the context fill measured at a
+          // different poll instant (so the same number appeared twice on one
+          // card with two values). In cooldown the number is what the word
+          // promises: the remaining time.
+          let cgLabel = CG_PHASE_LABELS[entry.phase] || entry.phase
+          if (entry.phase === 'cooldown' && typeof entry.cooldownUntilMs === 'number') {
+            const minLeft = Math.max(0, Math.ceil((entry.cooldownUntilMs - Date.now()) / 60000))
+            cgLabel += ` ${minLeft}m`
+          }
+          badge.textContent = cgLabel
+          const cgTipKey = CG_PHASE_TIPS[entry.phase]
+          badge.title = cgTipKey ? t(cgTipKey) : ''
+        })
+        if (currentAgent && document.getElementById('cgLiveStatus')) {
+          updateContextGuardLiveStatus(currentAgent.autoRestartId || currentAgent.name)
+        }
+      })
+      .catch(() => {})
+  }
+  setInterval(poll, 30_000)
+})()
+
+document.getElementById('saveContextGuardBtn').addEventListener('click', async () => {
+  if (!currentAgent) return
+  const id = currentAgent.autoRestartId || currentAgent.name
+  const cgEnabled = document.getElementById('cgEnabled')
+  const cgActPct = document.getElementById('cgActPct')
+  const cgHardPct = document.getElementById('cgHardPct')
+  const cgCooldownMinutes = document.getElementById('cgCooldownMinutes')
+  const cgHandoffTimeout = document.getElementById('cgHandoffTimeout')
+  const cgLimitTokensEl = document.getElementById('cgLimitTokens')
+
+  const actPct = Number(cgActPct.value) / 100
+  const hardPct = Number(cgHardPct.value) / 100
+  if (hardPct < actPct) {
+    showToast(t('agents.settings.ctx_guard_pct_hint'))
+    return
+  }
+
+  const limitTokensRaw = cgLimitTokensEl ? cgLimitTokensEl.value.trim() : ''
+  const cfg = {
+    enabled: cgEnabled.checked,
+    actPct,
+    hardPct,
+    cooldownMinutes: Number(cgCooldownMinutes.value) || 15,
+    handoffTimeoutMinutes: Number(cgHandoffTimeout.value) || 20,
+    limitTokens: limitTokensRaw ? Number(limitTokensRaw) : null,
+  }
+  try {
+    const res = await fetch(`/api/agents/${encodeURIComponent(id)}/context-guard`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(cfg),
+    })
+    if (!res.ok) throw new Error()
+    showToast(t('agents.toast.ctx_guard_saved'))
+  } catch { showToast(t('common.error_save')) }
+})
 
 // Populate the idle-flush controls from an agent payload. Same source as
 // setupAutoRestartUI (the agent detail carries contextGuard alongside
@@ -3025,6 +3559,7 @@ async function openMarveenDetail() {
   // Reuse the agent detail modal for Marveen
   currentAgent = { ...m, name: mainAgentId(), claudeMd: '', soulMd: '', mcpJson: '', skills: [] }
   setupAutoRestartUI(currentAgent)
+  setupContextGuardUI(agentApiName())
   setupIdleFlushUI(currentAgent)
 
   const displayName = m.name || 'Marveen'
@@ -3242,6 +3777,7 @@ function renderAgents() {
       </div>
       <div class="agent-card-footer">
         <span class="agent-model-badge ${escapeHtml(mainModelClass)}">${escapeHtml(mainModelLabel)}</span>
+        ${contextPctBadgeHtml(mainAgentId())}
         <span class="process-indicator" title="${t('agents.marveen_process_tip')}"><span class="process-dot running"></span>${t('agents.status.running')}</span>
         <span class="tg-status" title="${t('agents.marveen_channel_tip')}"><span class="tg-dot connected"></span>${t('agents.status.online')}</span>
       </div>
@@ -3255,6 +3791,7 @@ function renderAgents() {
           Terminal
         </button>
       </div>
+      <div class="agent-card-activity"></div>
     `
     mCard.querySelector('.agent-terminal-btn')?.addEventListener('click', (e) => {
       e.stopPropagation(); openTerminalModal(mainAgentId())
@@ -3262,18 +3799,23 @@ function renderAgents() {
     mCard.querySelector('.agent-conversation-btn')?.addEventListener('click', (e) => {
       e.stopPropagation(); openConversationModal(mainAgentId(), t('agents.marveen_boss'))
     })
-    mCard.addEventListener('click', () => openMarveenDetail())
+    mCard.addEventListener('click', () => onAgentCardClick(mainAgentId(), openMarveenDetail))
     agentsGrid.insertBefore(mCard, addBtn)
   }
 
   for (const agent of agents) {
+    // Skip the main agent — it is already rendered as the dedicated Marveen
+    // card above (window._marveen block). Without this guard a second card
+    // appears once the agents/atlas/ config directory is created.
+    if (agent.name === mainAgentId()) continue
+
     // agent.name is the sanitized id (API/filesystem); displayName keeps the
     // original accented/cased input the user typed.
     const label = agent.displayName || agent.name
     const card = document.createElement('div')
     card.className = 'agent-card'
     card.dataset.name = agent.name
-    const initial = label.charAt(0).toUpperCase()
+    const initial = escapeHtml(label.charAt(0).toUpperCase())
     const gradientClass = getAvatarGradient(agent.name)
     const avatarHtml = (agent.hasImage || agent.hasAvatar)
       ? `<img src="/api/agents/${encodeURIComponent(agent.name)}/avatar${avatarBust()}" alt="${escapeHtml(label)}">`
@@ -3298,6 +3840,7 @@ function renderAgents() {
       </div>
       <div class="agent-card-footer">
         <span class="agent-model-badge ${escapeHtml(modelClass)}">${escapeHtml(modelLabel)}</span>
+        ${contextPctBadgeHtml(agent.name)}
         <span class="process-indicator" title="${escapeHtml(processTip(isRunning))}"><span class="process-dot ${runDotClass}"></span>${runLabel}</span>
         <span class="tg-status" title="${escapeHtml(channelTip(chConnected))}"><span class="tg-dot ${chDotClass}"></span>${chLabel}</span>
       </div>
@@ -3305,6 +3848,10 @@ function renderAgents() {
         <div class="agent-reauth-banner">
           <span class="agent-reauth-reason">${escapeHtml(agent.reauthReason || t('agents.reauth.reason'))}</span>
           <button class="btn-danger btn-compact agent-login-btn" data-phase="start">${t('agents.btn.login')}</button>
+        </div>` : ''}
+      ${Array.isArray(agent.sharedEnvAuthKeys) && agent.sharedEnvAuthKeys.length ? `
+        <div class="agent-sharedenv-banner" title="${escapeHtml(t('agents.sharedEnvAuth.tip'))}">
+          <span class="agent-sharedenv-text">${escapeHtml(t('agents.sharedEnvAuth.label'))}: ${escapeHtml(agent.sharedEnvAuthKeys.join(', '))}</span>
         </div>` : ''}
       <div class="agent-card-actions">
         <button class="btn-secondary btn-compact agent-conversation-btn" title="${t('agents.btn.conversation')}">
@@ -3316,6 +3863,7 @@ function renderAgents() {
           Terminal
         </button>
       </div>
+      <div class="agent-card-activity"></div>
     `
     // Login button handler (start → confirm flow)
     card.querySelectorAll('.agent-login-btn').forEach(btn => {
@@ -3329,7 +3877,7 @@ function renderAgents() {
     card.querySelector('.agent-conversation-btn')?.addEventListener('click', (e) => {
       e.stopPropagation(); openConversationModal(agent.name, label)
     })
-    card.addEventListener('click', () => openAgentDetail(agent.name))
+    card.addEventListener('click', () => onAgentCardClick(agent.name, () => openAgentDetail(agent.name)))
     // Only running agents have a live session to look at, so only they get the
     // copy-the-tmux-command buttons.
     if (isRunning) attachTmuxCopyButtons(card, agent)
@@ -3350,6 +3898,14 @@ function renderAgents() {
 // endpoint. The main (Marveen) card matches on mainAgentId(); sub-agent cards
 // match on their data-name.
 let agentsBusyTimer = null
+// Last known 'working' ids from the poll below. Shared with the org chart so a
+// re-render (which rebuilds every node) keeps the active border instead of
+// blinking it off until the next 3s tick.
+let _workingAgentIds = new Set()
+// Ids whose tmux session is up. Decides whether an "Aktivitás"-mode card opens
+// the terminal on click, the same rule the Activity page used (a stopped agent
+// has no session to look at, so its card was not clickable).
+let _liveAgentIds = new Set()
 function startAgentsBusyPoll() {
   refreshAgentTerminalBusy()
   if (agentsBusyTimer) clearInterval(agentsBusyTimer)
@@ -3359,7 +3915,6 @@ function stopAgentsBusyPoll() {
   if (agentsBusyTimer) { clearInterval(agentsBusyTimer); agentsBusyTimer = null }
 }
 async function refreshAgentTerminalBusy() {
-  if (!agentsGrid) return
   let entries
   try {
     const res = await fetch('/api/agents/activity')
@@ -3367,15 +3922,39 @@ async function refreshAgentTerminalBusy() {
     entries = await res.json()
   } catch { return }
   if (!Array.isArray(entries)) return
-  const stateByName = new Map(entries.map((e) => [e.name, e.state]))
+  const byName = new Map(entries.filter((e) => e && e.name).map((e) => [e.name, e]))
+  _workingAgentIds = new Set(entries.filter((e) => e && e.state === 'working').map((e) => e.name))
+  _liveAgentIds = new Set(entries.filter((e) => e && e.running).map((e) => e.name))
   const mainId = mainAgentId()
-  agentsGrid.querySelectorAll('.agent-card:not(.add-card)').forEach((card) => {
-    const btn = card.querySelector('.agent-terminal-btn')
-    if (!btn) return
-    const id = card.classList.contains('marveen-card') ? mainId : card.dataset.name
-    const working = !!id && stateByName.get(id) === 'working'
-    btn.classList.toggle('agent-terminal-btn--busy', working)
-  })
+  if (agentsGrid) {
+    agentsGrid.querySelectorAll('.agent-card:not(.add-card):not(.federated-agent-card)').forEach((card) => {
+      const id = card.classList.contains('marveen-card') ? mainId : card.dataset.name
+      const entry = id ? byName.get(id) : null
+      const working = !!entry && entry.state === 'working'
+      const btn = card.querySelector('.agent-terminal-btn')
+      if (btn) btn.classList.toggle('agent-terminal-btn--busy', working)
+      // "Aktivitás" card mode: the live body plus the state colour and the
+      // clickable affordance. Written on every tick regardless of the current
+      // mode, so switching modes shows the current state instead of a blank
+      // card waiting for the next poll.
+      const body = card.querySelector('.agent-card-activity')
+      if (body) body.innerHTML = entry ? agentActivityBodyHtml(entry) : ''
+      const stateCls = entry ? (ACTIVITY_STATE_META[activityDisplayState(entry)] || ACTIVITY_STATE_META.unknown).cls : 'act-unknown'
+      for (const meta of Object.values(ACTIVITY_STATE_META)) card.classList.remove(meta.cls)
+      card.classList.add(stateCls)
+      card.classList.toggle('agent-card-act-clickable', !!entry && !!entry.running)
+    })
+  }
+  // Org-chart view: same signal, painted as the node's border. Toggled in place
+  // rather than re-rendering, so an in-progress drag survives the tick.
+  // Scoped to #teamGraph on purpose -- the overview's mini graph is a snapshot
+  // and has no poll keeping it honest.
+  const treeGraph = document.getElementById('teamGraph')
+  if (treeGraph) {
+    treeGraph.querySelectorAll('.team-node[data-agent-id]').forEach((el) => {
+      el.classList.toggle('team-node-active', _workingAgentIds.has(el.dataset.agentId))
+    })
+  }
 }
 
 // Federated (remote-system) agents from the manifest-poller cache. Kept in a
@@ -3414,7 +3993,7 @@ function renderFederatedAgentCards(agentsGrid, addBtn) {
       <div class="agent-card-top">
         <div class="agent-avatar ${gradientClass}">${escapeHtml(fa.displayName.charAt(0).toUpperCase())}</div>
         <div class="agent-card-info">
-          <div class="agent-name">${escapeHtml(fa.displayName)} <span class="federated-badge">${t('federation.badge', { peer: fa.peer })}</span></div>
+          <div class="agent-name">${escapeHtml(fa.displayName)} <span class="federated-badge">${t('federation.badge', { peer: escapeHtml(fa.peer) })}</span></div>
           <div class="agent-desc">${escapeHtml(fa.qualified)}</div>
         </div>
       </div>
@@ -3460,7 +4039,7 @@ async function openAgentDetail(agentName) {
   document.getElementById('agentDetailTitle').textContent = detailLabel
 
   // Overview tab
-  const initial = detailLabel.charAt(0).toUpperCase()
+  const initial = escapeHtml(detailLabel.charAt(0).toUpperCase())
   const gradientClass = getAvatarGradient(currentAgent.name)
   const avatar = document.getElementById('agentDetailAvatar')
   avatar.className = 'detail-avatar ' + gradientClass
@@ -3475,25 +4054,47 @@ async function openAgentDetail(agentName) {
   const chConnected = agentIsConnected(currentAgent)
   document.getElementById('agentDetailChStatus').innerHTML = `<span class="tg-status"><span class="tg-dot ${chConnected ? 'connected' : 'disconnected'}"></span>${chConnected ? t('agents.channel.connected') : t('agents.channel.disconnected')}</span>`
 
-  // Settings tab - load Ollama + DeepSeek models then set value
+  // Settings tab - load Ollama + DeepSeek + custom-provider models then set value
   loadAvailableModels()
   loadOllamaModels().then(() => {
     const sel = document.getElementById('editAgentModel')
     const mv = currentAgent.activeModel || currentAgent.model || 'claude-opus-4-8[1m]'
+    const customProviderId = currentAgent.customProvider || null
     // The model <select> is one shared element reused per agent. A manual
-    // OpenRouter id (or openrouter-auto:tier) may not be among the static/auto
-    // options, so setting .value would silently show nothing. Inject THIS
-    // agent's model as a selectable option (cleaning any stale injected ones
-    // first) so every agent always displays its own model, per-agent.
+    // OpenRouter id (or openrouter-auto:tier, or custom model) may not be
+    // among the static/auto options, so setting .value would silently show
+    // nothing. Inject THIS agent's model as a selectable option (cleaning any
+    // stale injected ones first) so every agent always displays its own model.
     Array.from(sel.querySelectorAll('option.dynamic-model-opt')).forEach(o => o.remove())
-    if (!Array.from(sel.options).some(o => o.value === mv)) {
-      const opt = document.createElement('option')
-      opt.value = mv
-      opt.className = 'dynamic-model-opt'
-      opt.textContent = mv.startsWith('openrouter-auto:') ? `🔀 ${mv}` : `🔀 ${mv}`
-      sel.appendChild(opt)
+    if (customProviderId) {
+      // Custom provider: select value is "custom:<providerId>"; model-id in the text input.
+      const cpVal = `custom:${customProviderId}`
+      if (!Array.from(sel.options).some(o => o.value === cpVal)) {
+        const opt = document.createElement('option')
+        opt.value = cpVal
+        opt.className = 'dynamic-model-opt'
+        opt.textContent = `🔧 ${customProviderId}`
+        sel.appendChild(opt)
+      }
+      sel.value = cpVal
+      const modelInput = document.getElementById('editAgentModelCustomModelId')
+      if (modelInput) modelInput.value = mv
+    } else {
+      if (!Array.from(sel.options).some(o => o.value === mv)) {
+        const opt = document.createElement('option')
+        opt.value = mv
+        opt.className = 'dynamic-model-opt'
+        opt.textContent = mv.startsWith('openrouter-auto:') ? `🔀 ${mv}` : `🔀 ${mv}`
+        sel.appendChild(opt)
+      }
+      sel.value = mv
     }
-    sel.value = mv
+    // PICKERCLIKAPU923: re-apply the CLI gate AFTER the value is set, so the
+    // agent's current model is never the disabled option regardless of which
+    // of the two async loads finished first (measured in Chromium: a value set
+    // onto a disabled option still reads back, but the order must not matter).
+    if (lastAvailableModelsData) applyClaudeCliGate(lastAvailableModelsData)
+    updateCustomModelIdRow(sel)
   })
   populateProfileSelect(
     document.getElementById('editAgentProfile'),
@@ -3520,6 +4121,7 @@ async function openAgentDetail(agentName) {
 
   // Auto-restart settings + live context size
   setupAutoRestartUI(currentAgent)
+  setupContextGuardUI(currentAgent.autoRestartId || currentAgent.name)
   setupIdleFlushUI(currentAgent)
 
   // Telegram tab
@@ -3981,11 +4583,60 @@ async function loadOllamaModels() {
 // panel. Backend gates the list behind a vault entry, so an empty array
 // here means the operator has not configured an API key yet -- in that
 // case we hide the optgroup and surface a hint pointing to the Vault page.
+// PICKERCLIKAPU923: the INSTALLED Claude Code CLI decides which Claude ids
+// are launchable (a customer install pins 2.1.110, where claude-fable-5-1 and
+// claude-opus-5-5 answer 400 on the first prompt and the agent goes silently
+// deaf). Two branches, both deliberate:
+//   measured   -> unsupported options are disabled and labelled; the option
+//                 that is an agent's CURRENT model is never disabled, so the
+//                 edit panel keeps showing the real value and a save does not
+//                 silently rewrite it (#751 lesson).
+//   unmeasured -> nothing is filtered (a customer who can pick no model is
+//                 worse off than today) and a visible hint says so.
+let lastAvailableModelsData = null
+function applyClaudeCliGate(data) {
+  if (data) lastAvailableModelsData = data
+  const support = data && data.claudeSupport ? data.claudeSupport : null
+  const cli = data && data.cli ? data.cli : null
+  const selects = [document.getElementById('agentModel'), document.getElementById('editAgentModel')]
+  const hints = [document.getElementById('agentModelCliHint'), document.getElementById('editAgentModelCliHint')]
+  const base = (id) => String(id || '').replace(/\[[^\]]*\]$/, '')
+  const unsupported = new Map()
+  if (support && support.measured && Array.isArray(support.unsupported)) {
+    for (const u of support.unsupported) unsupported.set(u.id, u.minCli)
+  }
+  selects.forEach((sel, i) => {
+    if (!sel) return
+    const hint = hints[i]
+    if (!support || !support.measured) {
+      // Unmeasured: restore any earlier gating, show the hint, filter nothing.
+      Array.from(sel.options).forEach((opt) => {
+        if (opt.dataset.cliGated === '1') { opt.disabled = false; opt.textContent = opt.dataset.cliLabel || opt.textContent; delete opt.dataset.cliGated }
+      })
+      if (hint) { hint.textContent = t('agents.model.cliUnmeasured').replace('{err}', (cli && cli.error) || '?'); hint.style.display = '' }
+      return
+    }
+    if (hint) hint.style.display = 'none'
+    const current = sel.value
+    Array.from(sel.options).forEach((opt) => {
+      if (!String(opt.value).startsWith('claude-')) return
+      const minCli = unsupported.get(base(opt.value))
+      if (opt.dataset.cliGated === '1') { opt.disabled = false; opt.textContent = opt.dataset.cliLabel || opt.textContent; delete opt.dataset.cliGated }
+      if (!minCli) return
+      if (!opt.dataset.cliLabel) opt.dataset.cliLabel = opt.textContent
+      opt.dataset.cliGated = '1'
+      opt.textContent = opt.dataset.cliLabel + ' (' + t('agents.model.cliUnsupported').replace('{v}', support.installedVersion).replace('{min}', minCli) + ')'
+      opt.disabled = opt.value !== current
+    })
+  })
+}
+
 async function loadAvailableModels() {
   try {
     const res = await fetch('/api/models/available')
     if (!res.ok) return
     const data = await res.json()
+    applyClaudeCliGate(data)
     const deepseekModels = Array.isArray(data.deepseek) ? data.deepseek : []
     const editGroup = document.getElementById('deepseekModelGroup')
     const wizardGroup = document.getElementById('agentModelDeepseekGroup')
@@ -4006,6 +4657,27 @@ async function loadAvailableModels() {
       }
     }
     if (hint) hint.style.display = deepseekModels.length === 0 ? 'block' : 'none'
+
+    // MiniMax: direct Anthropic-compatible API (no OpenRouter markup), gated
+    // behind MINIMAX_API_KEY same as DeepSeek. Empty array -> hide the group.
+    const minimaxModels = Array.isArray(data.minimax) ? data.minimax : []
+    const editMinimaxGroup = document.getElementById('minimaxModelGroup')
+    const wizardMinimaxGroup = document.getElementById('agentModelMinimaxGroup')
+    for (const group of [editMinimaxGroup, wizardMinimaxGroup]) {
+      if (!group) continue
+      group.innerHTML = ''
+      if (minimaxModels.length === 0) {
+        group.style.display = 'none'
+        continue
+      }
+      group.style.display = ''
+      for (const m of minimaxModels) {
+        const opt = document.createElement('option')
+        opt.value = m.id
+        opt.textContent = m.label
+        group.appendChild(opt)
+      }
+    }
 
     // OpenRouter: two optgroups per select (Auto = weekly-fresh tier
     // recommendation, value `openrouter-auto:<tier>`; Manual = the 2 concrete
@@ -4057,7 +4729,35 @@ async function loadAvailableModels() {
     )
     const orBtn = document.getElementById('openrouterBrowseBtn')
     if (orBtn) orBtn.style.display = (data.openrouterConfigured && isMainAgent) ? '' : 'none'
+
+    // Custom providers: one <option value="custom:<id>"> per defined provider.
+    const customProviders = Array.isArray(data.customProviders) ? data.customProviders : []
+    const cpGroupIds = ['editAgentModelCustomProviderGroup', 'agentModelCustomProviderGroup']
+    for (const gid of cpGroupIds) {
+      const g = document.getElementById(gid)
+      if (!g) continue
+      g.innerHTML = ''
+      if (customProviders.length === 0) { g.style.display = 'none'; continue }
+      g.style.display = ''
+      for (const p of customProviders) {
+        const opt = document.createElement('option')
+        opt.value = `custom:${p.id}`
+        opt.textContent = `🔧 ${p.label}`
+        g.appendChild(opt)
+      }
+    }
+    updateCustomModelIdRow(document.getElementById('editAgentModel'))
+    updateCustomModelIdRow(document.getElementById('agentModel'))
   } catch { /* dashboard not available */ }
+}
+
+function updateCustomModelIdRow(selectEl) {
+  if (!selectEl) return
+  const isEdit = selectEl.id === 'editAgentModel'
+  const rowId = isEdit ? 'editAgentModelCustomModelRow' : 'agentModelCustomModelRow'
+  const row = document.getElementById(rowId)
+  if (!row) return
+  row.style.display = (selectEl.value || '').startsWith('custom:') ? '' : 'none'
 }
 
 // --- OpenRouter manual-list curation (tick models into the shared dropdown) ---
@@ -4250,15 +4950,24 @@ function startModelRestartPolling(name, expectedModel, triggeredAt) {
   }, 2000)
 }
 
+document.getElementById('editAgentModel').addEventListener('change', () => {
+  updateCustomModelIdRow(document.getElementById('editAgentModel'))
+})
+
 document.getElementById('saveModelBtn').addEventListener('click', async () => {
   if (!currentAgent || currentAgent.role === 'main') return
-  const newModel = document.getElementById('editAgentModel').value
+  const selectVal = document.getElementById('editAgentModel').value
+  const isCustom = selectVal.startsWith('custom:')
+  const customProviderId = isCustom ? selectVal.slice('custom:'.length) : null
+  const newModel = isCustom
+    ? (document.getElementById('editAgentModelCustomModelId').value.trim() || selectVal)
+    : selectVal
   const name = currentAgent.name
   try {
     const res = await fetch(`/api/agents/${encodeURIComponent(name)}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: newModel }),
+      body: JSON.stringify({ model: newModel, customProvider: customProviderId }),
     })
     if (!res.ok) throw new Error()
     currentAgent.model = newModel
@@ -4272,7 +4981,9 @@ document.getElementById('saveModelBtn').addEventListener('click', async () => {
     if (!restartRes.ok) {
       document.getElementById('agentDetailModelRestarting').hidden = true
       if (currentAgent) updateProcessControl(currentAgent)
-      showToast(t('agents.restart_failed'))
+      // RESTARTSTOPPED1005: a deliberately stopped agent is not restarted; the
+      // model is saved and applies at its next start -- not a failure.
+      showToast(t(restartRes.status === 409 ? 'agents.toast.model_saved_stopped' : 'agents.restart_failed'))
       return
     }
     startModelRestartPolling(name, newModel, triggeredAt)
@@ -4320,13 +5031,13 @@ document.getElementById('analyzeAllModelsBtn').addEventListener('click', async (
       html += '<ul style="margin:0 0 10px;padding-left:18px">'
       for (const r of changes) {
         const safeReason = r.reason.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
-        html += `<li style="margin-bottom:6px"><strong>${r.agent}</strong>: ${r.currentModel} &rarr; ${r.suggestedModel}`
+        html += `<li style="margin-bottom:6px"><strong>${escapeHtml(r.agent)}</strong>: ${escapeHtml(r.currentModel)} &rarr; ${escapeHtml(r.suggestedModel)}`
         html += ` <details style="display:inline-block;vertical-align:top;margin-left:4px"><summary style="cursor:pointer;font-size:11px;color:var(--text-muted)">${t('agents.model.details')}</summary>`
         html += `<pre style="white-space:pre-wrap;font-size:11px;margin:4px 0 0;background:var(--surface);padding:6px 8px;border-radius:4px;color:var(--text-muted)">${safeReason}</pre></details></li>`
       }
       html += '</ul>'
       if (ok.length > 0) {
-        html += `<p style="color:var(--text-muted);margin:0;font-size:12px">${t('agents.model.ok_agents', { list: ok.map(r => r.agent).join(', ') })}</p>`
+        html += `<p style="color:var(--text-muted);margin:0;font-size:12px">${t('agents.model.ok_agents', { list: escapeHtml(ok.map(r => r.agent).join(', ')) })}</p>`
       }
       html += `<button class="btn-secondary btn-compact" id="createModelChangeCardsBtn" style="margin-top:10px">${t('agents.model.create_cards_btn')}</button>`
     }
@@ -4456,7 +5167,6 @@ document.getElementById('saveAutoRestartBtn').addEventListener('click', async ()
     mode: document.getElementById('arMode').value === 'fresh' ? 'fresh' : 'continue',
     dailyTime: schedKind === 'daily' ? document.getElementById('arDailyTime').value : null,
     intervalHours: schedKind === 'interval' ? Number(document.getElementById('arIntervalHours').value) : null,
-    handoff: false,
   }
   try {
     const res = await fetch(`/api/agents/${encodeURIComponent(id)}/auto-restart`, {
@@ -4532,9 +5242,9 @@ async function loadVoiceConfig(agentName) {
     if (!r.ok) return
     const cfg = await r.json()
     voiceModelSel.innerHTML = (cfg.availableVoices || []).map(v =>
-      `<option value="${v}"${v === cfg.voiceModel ? ' selected' : ''}>${v}</option>`
+      `<option value="${escapeHtml(v)}"${v === cfg.voiceModel ? ' selected' : ''}>${escapeHtml(v)}</option>`
     ).join('')
-    const modeInput = document.querySelector(`input[name="voiceResponseMode"][value="${cfg.responseMode || 'text'}"]`)
+    const modeInput = document.querySelector(`input[name="voiceResponseMode"][value="${CSS.escape(String(cfg.responseMode || 'text'))}"]`)
     if (modeInput) modeInput.checked = true
   } catch { /* silent */ }
 }
@@ -4760,7 +5470,7 @@ document.getElementById('authFlowInitBtn').addEventListener('click', async () =>
     const data = await res.json()
     if (data.ok && data.authUrl) {
       const urlEl = document.getElementById('authFlowUrl')
-      urlEl.href = data.authUrl
+      urlEl.href = safeHref(data.authUrl) || '#'
       urlEl.textContent = data.authUrl
       resultDiv.hidden = false
     } else {
@@ -4915,7 +5625,7 @@ function updateProviderUI() {
 
   if (isTg) {
     if (title) title.textContent = t('channel.setup.tg_title')
-    if (steps) steps.innerHTML = t('channel.setup.tg_steps')
+    if (steps) steps.innerHTML = tHtml('channel.setup.tg_steps')
     if (label) label.textContent = 'Bot API Token'
     if (input) input.placeholder = '123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11'
     if (slackGroup) slackGroup.hidden = true
@@ -4925,7 +5635,7 @@ function updateProviderUI() {
     if (pairingInfo) pairingInfo.textContent = t('channel.setup.tg_pairing')
   } else if (currentChannelProvider === 'discord') {
     if (title) title.textContent = t('channel.setup.discord_title')
-    if (steps) steps.innerHTML = t('channel.setup.discord_steps')
+    if (steps) steps.innerHTML = tHtml('channel.setup.discord_steps')
     if (label) label.textContent = 'Bot Token'
     if (input) input.placeholder = 'MTIzNDU2Nzg5MDEyMzQ1Njc4OQ...'
     if (slackGroup) slackGroup.hidden = true
@@ -4935,7 +5645,7 @@ function updateProviderUI() {
     if (pairingInfo) pairingInfo.textContent = t('channel.setup.discord_pairing')
   } else if (currentChannelProvider === 'teams') {
     if (title) title.textContent = t('channel.setup.teams_title')
-    if (steps) steps.innerHTML = t('channel.setup.teams_steps')
+    if (steps) steps.innerHTML = tHtml('channel.setup.teams_steps')
     if (slackGroup) slackGroup.hidden = true
     if (manifestBtnGroup) manifestBtnGroup.hidden = true
     if (smokeTestBtn) smokeTestBtn.hidden = true
@@ -4945,7 +5655,7 @@ function updateProviderUI() {
     if (pairingInfo) pairingInfo.textContent = t('channel.setup.teams_pairing')
   } else {
     if (title) title.textContent = t('channel.setup.slack_title')
-    if (steps) steps.innerHTML = t('channel.setup.slack_steps')
+    if (steps) steps.innerHTML = tHtml('channel.setup.slack_steps')
     if (label) label.textContent = 'Bot Token (xoxb-...)'
     if (input) input.placeholder = 'xoxb-...'
     if (slackGroup) slackGroup.hidden = false
@@ -5056,7 +5766,10 @@ document.getElementById('chConnectBtn').addEventListener('click', async () => {
       throw new Error(err.error || 'Kapcsolodasi hiba')
     }
     const result = await res.json()
-    showToast(`${getProviderLabel()} sikeresen csatlakoztatva!`)
+    // #1878 (6): on the main agent the save restarts the channels session; a failed
+    // restart must not read as "connected".
+    if (result.restartError) showToast(t('agents.channel.saved_restart_failed', { provider: getProviderLabel(), cmd: result.restartCommand || '' }), 12000)
+    else showToast(`${getProviderLabel()} sikeresen csatlakoztatva!`)
     // Refresh detail
     await openAgentDetail(currentAgent.name)
     loadAgents()
@@ -5074,7 +5787,20 @@ document.getElementById('chTestBtn').addEventListener('click', async () => {
   try {
     const res = await fetch(`${channelApiBase()}/test`, { method: 'POST' })
     if (!res.ok) throw new Error()
-    showToast('Kapcsolat rendben!')
+    const data = await res.json().catch(() => ({}))
+    // SLACKSCOPEJELZ1007: a Slack token that lacks a manifest scope works, but
+    // part of the plugin silently does not (im:read: writing to the owner's DM
+    // after a restart). Say so instead of "all right".
+    const missing = Array.isArray(data.missingScopes) ? data.missingScopes : []
+    if (missing.length > 0) {
+      // showToast's 2nd argument is the DURATION (ms). Long enough to read
+      // a sentence that names scopes and what to do.
+      const msg = t('channel.toast.missing_scopes', { scopes: missing.join(', ') })
+        + (missing.includes('im:read') ? ' ' + t('channel.toast.missing_scopes_imread') : '')
+      showToast(msg, 12000)
+    } else {
+      showToast('Kapcsolat rendben!')
+    }
   } catch {
     showToast(t('channel.toast.smoke_failed'))
   }
@@ -5093,10 +5819,10 @@ document.getElementById('chReconnectBtn').addEventListener('click', async () => 
       showToast('Channel-MCP reconnect sikeres')
       document.getElementById('chDisconnectedNotice').hidden = true
     } else {
-      showToast(data.message || 'Reconnect sikertelen', true)
+      showToast(data.message || 'Reconnect sikertelen', 8000)
     }
   } catch {
-    showToast('Reconnect hiba', true)
+    showToast('Reconnect hiba', 8000)
   } finally {
     btn.disabled = false
     btn.textContent = origText
@@ -5113,12 +5839,12 @@ document.getElementById('chSmokeTestBtn').addEventListener('click', async () => 
     const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent)}/channels/slack/smoke-test`, { method: 'POST' })
     const data = await res.json()
     if (!res.ok) {
-      showToast(data.error || 'Smoke-test sikertelen', true)
+      showToast(data.error || 'Smoke-test sikertelen', 8000)
       return
     }
     showSmokeTestResult(data.output || 'OK')
   } catch {
-    showToast('Smoke-test hiba', true)
+    showToast('Smoke-test hiba', 8000)
   } finally {
     btn.disabled = false
     btn.textContent = origText
@@ -5276,8 +6002,8 @@ async function refreshInvites() {
       const status = inv.used
         ? `<span class="tg-allowed-kind" style="background:rgba(180,180,180,0.15); color:var(--text-muted);">${t('channel.invite.used_badge')}</span>`
         : `<span class="tg-allowed-kind tg-allowed-kind-group">${t('channel.invite.active_badge', { min: expiresIn })}</span>`
-      const linkHtml = inv.deepLink
-        ? `<a href="${escapeHtml(inv.deepLink)}" target="_blank" class="tg-allowed-id" style="text-decoration:underline;">${escapeHtml(inv.deepLink)}</a>`
+      const linkHtml = safeHref(inv.deepLink)
+        ? `<a href="${escapeHtml(safeHref(inv.deepLink))}" target="_blank" class="tg-allowed-id" style="text-decoration:underline;">${escapeHtml(inv.deepLink)}</a>`
         : `<span class="tg-allowed-id">${t('channel.invite.no_username')}</span>`
       item.innerHTML = `
         <div class="tg-allowed-meta" style="flex-wrap:wrap; gap:6px;">
@@ -5378,7 +6104,7 @@ async function refreshChannelRequests() {
     for (const req of items) {
       const item = document.createElement('div')
       item.className = 'tg-allowed-item'
-      const name = req.channel_name ? escapeHtml(req.channel_name) : req.channel_id
+      const name = escapeHtml(req.channel_name || req.channel_id)
       const ts = new Date(req.requested_at * 1000).toLocaleString('hu-HU')
       const userId = req.user_id ? `<span class="tg-allowed-id">user: ${escapeHtml(req.user_id)}</span>` : ''
       item.innerHTML = `
@@ -5405,8 +6131,8 @@ let _approveReqId = null
 function openApproveModal(id, channelName, userId) {
   _approveReqId = id
   const desc = document.getElementById('chApproveModalDesc')
-  const userNote = userId ? t('channel.approve.requester', { user: escapeHtml(userId) }) : ''
-  desc.textContent = t('channel.approve.desc', { channel: escapeHtml(channelName), requester: userNote })
+  const userNote = userId ? t('channel.approve.requester', { user: userId }) : ''
+  desc.textContent = t('channel.approve.desc', { channel: channelName, requester: userNote })
   document.getElementById('chApproveRequireMention').checked = true
   document.getElementById('chApproveAllowFromAll').checked = false
   document.getElementById('chApproveModalOverlay').hidden = false
@@ -5429,7 +6155,7 @@ async function submitApproveModal() {
     })
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Hiba')
     document.getElementById('chApproveModalOverlay').hidden = true
-    const item = document.querySelector(`[data-req-id="${id}"]`)
+    const item = document.querySelector(`[data-req-id="${CSS.escape(String(id))}"]`)
     if (item) item.remove()
     showToast(t('channel.toast.approved'))
     refreshChannelRequests()
@@ -6058,7 +6784,7 @@ function makeScheduleRow(task) {
         </div>
         <div class="schedule-meta">
           <span class="schedule-cron">${escapeHtml(task.schedule)}</span>
-          <span>${describeCron(task.schedule)}</span>
+          <span>${escapeHtml(describeCron(task.schedule))}</span>
           <span class="schedule-agent-name">${escapeHtml(agent.label || agent.name)}</span>
         </div>
       </div>
@@ -6438,7 +7164,7 @@ function openEditSchedule(task) {
 
     // Set agent
     const agentSel = document.getElementById('scheduleAgent')
-    if (agentSel.querySelector(`option[value="${task.agent}"]`)) {
+    if (agentSel.querySelector(`option[value="${CSS.escape(String(task.agent))}"]`)) {
       agentSel.value = task.agent
     }
 
@@ -6637,8 +7363,8 @@ async function loadMemAgents() {
     sel.innerHTML = `<option value="">${t('memories.agent_all')}</option>`
     memSel.innerHTML = ''
     for (const a of agents) {
-      sel.innerHTML += `<option value="${a.name}">${a.label}</option>`
-      memSel.innerHTML += `<option value="${a.name}">${a.label}</option>`
+      sel.innerHTML += `<option value="${escapeHtml(a.name)}">${escapeHtml(a.label)}</option>`
+      memSel.innerHTML += `<option value="${escapeHtml(a.name)}">${escapeHtml(a.label)}</option>`
     }
   } catch {}
 }
@@ -6749,7 +7475,7 @@ async function loadMemStats() {
     memStats.innerHTML = `
       <div class="stat-card"><div class="stat-value">${stats.total}</div><div class="stat-label">${t('memories.stat.total')}</div></div>
       ${Object.entries(stats.byTier || {}).map(([tier, count]) =>
-        `<div class="stat-card"><div class="stat-value" style="color:${tierColors[tier] || 'var(--accent)'}">${count}</div><div class="stat-label">${tierLabels[tier] || tier}</div></div>`
+        `<div class="stat-card"><div class="stat-value" style="color:${tierColors[tier] || 'var(--accent)'}">${count}</div><div class="stat-label">${escapeHtml(tierLabels[tier] || tier)}</div></div>`
       ).join('')}
       <div class="stat-card"><div class="stat-value">${embCount}</div><div class="stat-label">${t('memories.stat.vectors_pct', { pct: embPct })}</div></div>
       <button class="btn-secondary btn-compact" id="memBackfillBtn" style="margin-left:auto;font-size:11px;padding:6px 12px;align-self:center">${t('memories.stat.vectors_btn')}</button>
@@ -6760,7 +7486,9 @@ async function loadMemStats() {
       try {
         const r = await fetch('/api/memories/backfill', { method: 'POST' })
         const data = await r.json()
-        showToast(t('memories.toast.vector_count', { count: data.count }))
+        // ok:false = pending memories but the embedding backend answered none
+        if (data.ok === false) showToast(t('memories.toast.vector_error'))
+        else showToast(t('memories.toast.vector_count', { count: data.embedded ?? data.count }))
         loadMemStats()
       } catch { showToast(t('memories.toast.vector_error')) }
     })
@@ -6786,10 +7514,41 @@ async function loadMemories() {
   try {
     const res = await fetch(`/api/memories?${params}`)
     const memories = await res.json()
+    // MEMKERESVAK917: the search is deliberately forgiving. When no row matches
+    // the query as asked, the endpoint drops those terms and answers with what
+    // the leftover filler words pulled in -- a body that looks exactly like a
+    // real hit. The difference rides the X-Memory-Search header, and reading it
+    // with res.json() alone threw it away, so a viewer saw fifty rescued rows
+    // as fifty hits. The header is only set on a search (q), not on listing.
+    renderMemSearchLabel(q ? res.headers.get('X-Memory-Search') : null)
     renderMemories(memories)
   } catch (err) {
     console.error('Memória betöltés hiba:', err)
   }
+}
+
+// Shown ONLY when the answer is a rescue. A banner on every search would be
+// noise the eye learns to skip, which is the same failure in a new costume.
+// Both header shapes are handled: the fts branch sends `strict=..; relaxed=..;
+// hits=..`, the hybrid branch (the dashboard default) sends `fts=..; vector=..;
+// relaxed=..; vector-only=..`.
+function renderMemSearchLabel(header) {
+  const el = document.getElementById('memSearchLabel')
+  if (!el) return
+  if (!header || !/relaxed=true/.test(header)) {
+    el.hidden = true
+    el.textContent = ''
+    return
+  }
+  el.hidden = false
+  el.textContent = ''
+  const strong = document.createElement('strong')
+  strong.textContent = t('memories.relaxed.title')
+  const body = document.createElement('div')
+  body.textContent = t('memories.relaxed.body')
+  const raw = document.createElement('code')
+  raw.textContent = header
+  el.append(strong, body, raw)
 }
 
 function renderMemories(memories) {
@@ -6801,7 +7560,7 @@ function renderMemories(memories) {
     item.className = 'mem-item'
 
     const tier = mem.tier || mem.category || 'warm'
-    const tierBadge = tierLabels[tier] || tier
+    const tierBadge = escapeHtml(tierLabels[tier] || tier)
     const badgeClass = 'badge-' + tier
     const shortContent = mem.content.length > 120 ? mem.content.slice(0, 120) + '...' : mem.content
     const agentLabel = mem.agent_id || mainAgentId()
@@ -7402,7 +8161,7 @@ function showGraphPanel(node) {
   const created = node.mem.created_label || ''
   panel.innerHTML = `
     <div class="graph-panel-header">
-      <span class="badge badge-${node.tier}">${tierLabelsMap[node.tier] || node.tier}</span>
+      <span class="badge badge-${escapeHtml(node.tier)}">${escapeHtml(tierLabelsMap[node.tier] || node.tier)}</span>
       <span class="graph-panel-agent">${escapeHtml(node.agent)}</span>
       <button class="graph-panel-close" id="graphPanelCloseBtn">&times;</button>
     </div>
@@ -7798,20 +8557,20 @@ function renderCatalog() {
     const authHint = item.authType === 'oauth' && item.authNote ? `<span class="catalog-auth-hint">${escapeHtml(item.authNote)}</span>` : ''
     card.innerHTML = `
       <div class="catalog-card-header">
-        <div class="catalog-card-icon">${item.icon || '?'}</div>
+        <div class="catalog-card-icon">${escapeHtml(item.icon || '?')}</div>
         <div class="catalog-card-info">
           <div class="catalog-card-name">
             ${escapeHtml(item.name)}
-            <span class="catalog-card-type ${item.type}">${item.type}</span>
-            ${item.infoUrl ? `<a href="${escapeHtml(item.infoUrl)}" target="_blank" rel="noopener" class="catalog-card-link" title="${t('connectors.tooltip.docs')}" onclick="event.stopPropagation()">&#x2197;</a>` : ''}
+            <span class="catalog-card-type ${escapeHtml(item.type)}">${escapeHtml(item.type)}</span>
+            ${safeHref(item.infoUrl, { relative: true }) ? `<a href="${escapeHtml(safeHref(item.infoUrl, { relative: true }))}" target="_blank" rel="noopener" class="catalog-card-link" title="${t('connectors.tooltip.docs')}" onclick="event.stopPropagation()">&#x2197;</a>` : ''}
           </div>
           <div class="catalog-card-desc">${escapeHtml(item.description)}</div>
         </div>
       </div>
       <div class="catalog-card-footer">
         ${item.installed
-          ? `<span class="catalog-install-btn installed" title="${item.configMatch ? t('connectors.tooltip.installed_mcp') : t('connectors.tooltip.installed_src', { src: escapeHtml(item.installedSource || '') })}">Telepítve &#10003;${item.configMatch ? ' (.mcp.json)' : item.installedSource === 'claude.ai' ? ' (claude.ai)' : item.installedSource === 'plugin' ? ' (plugin)' : ''}</span>${(item.installedSource === 'claude.ai' || item.configMatch) ? '' : `<a class="catalog-uninstall-link" data-id="${item.id}">Eltávolítás</a>`}`
-          : `<button class="catalog-install-btn install" data-id="${item.id}">${t('connectors.catalog.install_btn')}</button>${authHint}`
+          ? `<span class="catalog-install-btn installed" title="${item.configMatch ? t('connectors.tooltip.installed_mcp') : t('connectors.tooltip.installed_src', { src: escapeHtml(item.installedSource || '') })}">Telepítve &#10003;${item.configMatch ? ' (.mcp.json)' : item.installedSource === 'claude.ai' ? ' (claude.ai)' : item.installedSource === 'plugin' ? ' (plugin)' : ''}</span>${(item.installedSource === 'claude.ai' || item.configMatch) ? '' : `<a class="catalog-uninstall-link" data-id="${escapeHtml(item.id)}">Eltávolítás</a>`}`
+          : `<button class="catalog-install-btn install" data-id="${escapeHtml(item.id)}">${t('connectors.catalog.install_btn')}</button>${authHint}`
         }
       </div>
     `
@@ -8023,13 +8782,13 @@ const BUILTIN_MCPS = [
     name: 'computer-use',
     label: 'Computer Use',
     desc: () => t('connectors.builtin.computer_use'),
-    get detailHtml() { return t('connectors.builtin.computer_use_html') },
+    get detailHtml() { return tHtml('connectors.builtin.computer_use_html') },
   },
   {
     name: 'chrome',
     label: 'Claude in Chrome',
     desc: () => t('connectors.builtin.chrome'),
-    get detailHtml() { return t('connectors.builtin.chrome_html') },
+    get detailHtml() { return tHtml('connectors.builtin.chrome_html') },
   },
 ]
 
@@ -8038,9 +8797,9 @@ function openBuiltinDetail(item) {
   if (!overlay) return
   document.getElementById('builtinDetailTitle').textContent = item.label
   document.getElementById('builtinDetailDesc').textContent = typeof item.desc === 'function' ? item.desc() : item.desc
-  // Static strings only. Never interpolate user or server input here
-  // without passing it through escapeHtml first -- detailHtml is a
-  // raw HTML sink.
+  // detailHtml is a raw HTML sink: it comes from tHtml(), which escapes the
+  // {brand} token (.env BRAND_NAME / BOT_NAME) and every param. Never build it
+  // from plain t() or from unescaped user or server input.
   document.getElementById('builtinDetailBody').innerHTML = item.detailHtml
   openModal(overlay)
   // Move focus into the dialog so keyboard users land inside the new
@@ -8100,7 +8859,7 @@ function renderConnectors() {
   if (connectors.length > 0 && !connectorCacheWarming && connectorCacheError && hasClaudeAiEntries) {
     const banner = document.createElement('div')
     banner.className = 'connector-stale-banner'
-    banner.innerHTML = t('connectors.stale_banner', { msg: escapeHtml(connectorCacheError) })
+    banner.innerHTML = tHtml('connectors.stale_banner', { msg: connectorCacheError })
     connectorGrid.appendChild(banner)
   }
   if (connectors.length === 0 && !BUILTIN_MCPS.length) {
@@ -8261,6 +9020,22 @@ function renderConnectors() {
 }
 
 // --- GitHub repo management ---
+// Install/update ran with npm lifecycle scripts skipped and the repo (or a
+// dependency) declares some: say so, and offer the per-repo opt-in, which
+// re-runs the update with scripts and stores the choice for later updates.
+async function offerGitHubRepoScriptsOptIn(name, skipped) {
+  if (!Array.isArray(skipped) || skipped.length === 0) return
+  const ok = confirm(t('connectors.scripts_skipped_confirm', { name: name.replace('--', '/'), list: skipped.join(', ') }))
+  if (!ok) return
+  const res = await fetch(`/api/connectors/github-repos/${encodeURIComponent(name)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ runScripts: true }),
+  })
+  const data = await res.json()
+  if (data.error) alert(data.error)
+}
+
 async function loadGitHubRepos() {
   try {
     const res = await fetch('/api/connectors/github-repos')
@@ -8282,6 +9057,7 @@ async function loadGitHubRepos() {
           const res = await fetch(`/api/connectors/github-repos/${encodeURIComponent(r.name)}`, { method: 'PATCH' })
           const data = await res.json()
           if (data.error) { alert(data.error); return }
+          await offerGitHubRepoScriptsOptIn(r.name, data.scriptsSkipped)
           loadConnectors()
         } finally { btn.disabled = false; btn.innerHTML = '&#x21bb;' }
       })
@@ -8312,6 +9088,9 @@ async function loadGitHubRepos() {
   addBtn.addEventListener('click', async () => {
     const val = input.value.trim()
     if (!val) return
+    const runScriptsBox = document.getElementById('githubRepoRunScripts')
+    const runScripts = !!(runScriptsBox && runScriptsBox.checked)
+    if (!confirm(t(runScripts ? 'connectors.install_confirm_scripts' : 'connectors.install_confirm', { url: val }))) return
     addBtn.disabled = true
     addBtn.textContent = 'Telepites...'
     status.hidden = false
@@ -8321,7 +9100,7 @@ async function loadGitHubRepos() {
       const res = await fetch('/api/connectors/github-repos', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: val }),
+        body: JSON.stringify({ url: val, runScripts }),
       })
       const data = await res.json()
       if (data.error) {
@@ -8329,6 +9108,10 @@ async function loadGitHubRepos() {
         status.textContent = data.error
         return
       }
+      // Installed, but npm install failed: keep it visible instead of reporting success.
+      // The opt-in is only offered after an install that completed.
+      if (data.installWarning) alert(t('connectors.install_warning', { msg: data.installWarning }))
+      else await offerGitHubRepoScriptsOptIn(data.repo.name, data.scriptsSkipped)
       if (data.requiredEnvVars && data.requiredEnvVars.length > 0) {
         status.className = 'github-repo-status loading'
         status.textContent = t('connectors.api_keys_needed')
@@ -8572,7 +9355,7 @@ function _sshKeyBadge(status) {
     missing: '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>',
     expired: '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>',
   }
-  return `<span class="ssh-key-badge ${status}">${icons[status] || ''} ${labels[status] || status}</span>`
+  return `<span class="ssh-key-badge ${escapeHtml(status)}">${icons[status] || ''} ${escapeHtml(labels[status] || status)}</span>`
 }
 
 function _sshKeyAssignSelect(s) {
@@ -9377,7 +10160,8 @@ function renderVaultGrid(secrets) {
 
     const grouped = new Map()
     for (const f of actionable) {
-      const key = `${f.serverName}|${f.envVar}`
+      // JSON tuple: server names and env keys are free text and may contain '|'.
+      const key = JSON.stringify([f.serverName, f.envVar])
       if (!grouped.has(key)) grouped.set(key, { ...f, allTargets: [] })
       grouped.get(key).allTargets.push({ mcpFilePath: f.mcpFilePath, serverName: f.serverName })
     }
@@ -9415,9 +10199,10 @@ function renderVaultGrid(secrets) {
       const cb = row.querySelector('input[type="checkbox"]')
       if (!cb?.checked) continue
       const key = cb.getAttribute('data-key')
-      const [serverName, envVar] = key.split('|')
+      let serverName, envVar
+      try { [serverName, envVar] = JSON.parse(key) } catch { continue }
       const vaultIdInput = row.querySelector('.vault-scan-vault-id')
-      const vaultId = vaultIdInput?.value?.trim() || key
+      const vaultId = vaultIdInput?.value?.trim() || `${serverName}|${envVar}`
 
       const matchingFindings = allFindings.filter(
         f => f.serverName === serverName && f.envVar === envVar && !f.alreadyInVault,
@@ -9528,10 +10313,12 @@ async function openConnectorDetail(connector) {
     const statusLabels = { connected: t('connectors.status.connected'), needs_auth: t('connectors.status.needs_auth'), failed: t('connectors.status.failed'), unknown: t('connectors.status.unknown') }
     const statusColors = { connected: 'var(--success)', needs_auth: 'var(--accent)', failed: 'var(--danger)', unknown: 'var(--text-muted)' }
 
+    // Every field here can come from an agent's, a project's or an external
+    // .mcp.json (routes/connectors.ts), so each one is escaped -- the env KEYS too.
     document.getElementById('connectorDetailInfo').innerHTML = `
       <div class="connector-detail-row">
         <span class="meta-label">Statusz</span>
-        <span class="meta-value" style="color:${statusColors[detail.status] || ''}">${statusLabels[detail.status] || detail.status}</span>
+        <span class="meta-value" style="color:${statusColors[detail.status] || ''}">${escapeHtml(statusLabels[detail.status] || detail.status || '')}</span>
       </div>
       <div class="connector-detail-row">
         <span class="meta-label">Hatokor</span>
@@ -9539,7 +10326,7 @@ async function openConnectorDetail(connector) {
       </div>
       ${detail.type ? `<div class="connector-detail-row"><span class="meta-label">Tipus</span><span class="meta-value">${escapeHtml(detail.type)}</span></div>` : ''}
       ${detail.command ? `<div class="connector-detail-row"><span class="meta-label">Parancs</span><span class="meta-value" style="font-family:monospace;font-size:12px">${escapeHtml(detail.command)} ${escapeHtml(detail.args || '')}</span></div>` : ''}
-      ${Object.keys(detail.env || {}).length ? `<div class="connector-detail-row"><span class="meta-label">Env</span><span class="meta-value" style="font-family:monospace;font-size:11px">${Object.entries(detail.env).map(([k,v]) => `${k}=${v}`).join(', ')}</span></div>` : ''}
+      ${Object.keys(detail.env || {}).length ? `<div class="connector-detail-row"><span class="meta-label">Env</span><span class="meta-value" style="font-family:monospace;font-size:11px">${Object.entries(detail.env).map(([k,v]) => `${escapeHtml(k)}=${escapeHtml(String(v))}`).join(', ')}</span></div>` : ''}
     `
   } catch {
     document.getElementById('connectorDetailInfo').innerHTML = `<p>${t('connectors.detail_error')}</p>`
@@ -9577,8 +10364,8 @@ async function openConnectorDetail(connector) {
       const item = document.createElement('div')
       item.className = 'connector-agent-item'
       item.innerHTML = `
-        <input type="checkbox" id="assign-${agent.name}" value="${agent.name}" ${isAssigned ? 'checked' : ''}>
-        <label for="assign-${agent.name}">${escapeHtml(agent.label || agent.name)}</label>
+        <input type="checkbox" id="assign-${escapeHtml(agent.name)}" value="${escapeHtml(agent.name)}" ${isAssigned ? 'checked' : ''}>
+        <label for="assign-${escapeHtml(agent.name)}">${escapeHtml(agent.label || agent.name)}</label>
       `
       listEl.appendChild(item)
     }
@@ -9648,8 +10435,8 @@ async function loadNewConnectorAgents() {
       const item = document.createElement('div')
       item.className = 'connector-agent-item'
       item.innerHTML = `
-        <input type="checkbox" id="new-assign-${agent.name}" value="${agent.name}">
-        <label for="new-assign-${agent.name}">${escapeHtml(agent.label || agent.name)}</label>
+        <input type="checkbox" id="new-assign-${escapeHtml(agent.name)}" value="${escapeHtml(agent.name)}">
+        <label for="new-assign-${escapeHtml(agent.name)}">${escapeHtml(agent.label || agent.name)}</label>
       `
       list.appendChild(item)
     }
@@ -9739,6 +10526,250 @@ function escapeHtml(str) {
   return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;')
 }
 
+// A value passed as a string argument of an inline handler
+// (onclick="fn(${jsArg(id)})"). escapeHtml alone is NOT enough there: the
+// HTML parser decodes &#39; back to ' before the handler's JavaScript is
+// parsed, so a quote in the value would end the JS string. JSON.stringify
+// makes it a JS string literal; escapeHtml then keeps it inside the attribute.
+function jsArg(v) {
+  return escapeHtml(JSON.stringify(String(v ?? '')))
+}
+
+// A shortened text for HTML: cut the RAW text, then escape it, and add the
+// ellipsis by the raw length. Escaping first and slicing after could split an
+// entity (&quot; -> &q) and would count entity bytes as visible characters.
+function escSnippet(raw, max) {
+  const s = String(raw ?? '')
+  return escapeHtml(s.slice(0, max)) + (s.length > max ? '…' : '')
+}
+
+// The one gate for a URL from data (a catalogue file, the API, CLI output, a
+// markdown doc) before it becomes an href. escapeHtml stops an attribute
+// breakout but not the scheme: only http(s) and mailto pass, or -- with
+// { relative: true } -- a scheme-less relative or fragment link. The URL
+// parser drops control characters and spaces, and a leading // or /\ means
+// another host, so the check judges the URL the same way. Returns the URL
+// unchanged when it passes, '' otherwise. HTML-encode the result in markup.
+function safeHref(raw, { relative = false } = {}) {
+  const s = String(raw ?? '')
+  const u = s.replace(/[\x00-\x20\x7f]/g, '')
+  if (!u) return ''
+  const scheme = /^[a-z][a-z0-9+.-]*:/i.exec(u)
+  if (scheme) return /^(https?|mailto):$/i.test(scheme[0]) ? s : ''
+  return relative && !/^[\\/][\\/]/.test(u) ? s : ''
+}
+
+// The dashboard's mirror of src/css-color.ts normalizeCssColor -- the same
+// colour table, regexes and arithmetic; both are checked against the same
+// vectors (src/__tests__/fixtures/css-color-vectors.json) and the table is
+// compared entry by entry, so the server and the page apply ONE policy:
+// hex kept, a CSS colour name or a strictly numeric rgb()/rgba()/hsl()/hsla()
+// becomes hex, anything else (url(), declarations, words, bad hex) is null.
+const CSS_NAMED_COLORS = {
+  aliceblue: '#f0f8ff', antiquewhite: '#faebd7', aqua: '#00ffff', aquamarine: '#7fffd4', azure: '#f0ffff',
+  beige: '#f5f5dc', bisque: '#ffe4c4', black: '#000000', blanchedalmond: '#ffebcd', blue: '#0000ff',
+  blueviolet: '#8a2be2', brown: '#a52a2a', burlywood: '#deb887', cadetblue: '#5f9ea0', chartreuse: '#7fff00',
+  chocolate: '#d2691e', coral: '#ff7f50', cornflowerblue: '#6495ed', cornsilk: '#fff8dc', crimson: '#dc143c',
+  cyan: '#00ffff', darkblue: '#00008b', darkcyan: '#008b8b', darkgoldenrod: '#b8860b', darkgray: '#a9a9a9',
+  darkgreen: '#006400', darkgrey: '#a9a9a9', darkkhaki: '#bdb76b', darkmagenta: '#8b008b', darkolivegreen: '#556b2f',
+  darkorange: '#ff8c00', darkorchid: '#9932cc', darkred: '#8b0000', darksalmon: '#e9967a', darkseagreen: '#8fbc8f',
+  darkslateblue: '#483d8b', darkslategray: '#2f4f4f', darkslategrey: '#2f4f4f', darkturquoise: '#00ced1', darkviolet: '#9400d3',
+  deeppink: '#ff1493', deepskyblue: '#00bfff', dimgray: '#696969', dimgrey: '#696969', dodgerblue: '#1e90ff',
+  firebrick: '#b22222', floralwhite: '#fffaf0', forestgreen: '#228b22', fuchsia: '#ff00ff', gainsboro: '#dcdcdc',
+  ghostwhite: '#f8f8ff', gold: '#ffd700', goldenrod: '#daa520', gray: '#808080', green: '#008000',
+  greenyellow: '#adff2f', grey: '#808080', honeydew: '#f0fff0', hotpink: '#ff69b4', indianred: '#cd5c5c',
+  indigo: '#4b0082', ivory: '#fffff0', khaki: '#f0e68c', lavender: '#e6e6fa', lavenderblush: '#fff0f5',
+  lawngreen: '#7cfc00', lemonchiffon: '#fffacd', lightblue: '#add8e6', lightcoral: '#f08080', lightcyan: '#e0ffff',
+  lightgoldenrodyellow: '#fafad2', lightgray: '#d3d3d3', lightgreen: '#90ee90', lightgrey: '#d3d3d3', lightpink: '#ffb6c1',
+  lightsalmon: '#ffa07a', lightseagreen: '#20b2aa', lightskyblue: '#87cefa', lightslategray: '#778899', lightslategrey: '#778899',
+  lightsteelblue: '#b0c4de', lightyellow: '#ffffe0', lime: '#00ff00', limegreen: '#32cd32', linen: '#faf0e6',
+  magenta: '#ff00ff', maroon: '#800000', mediumaquamarine: '#66cdaa', mediumblue: '#0000cd', mediumorchid: '#ba55d3',
+  mediumpurple: '#9370db', mediumseagreen: '#3cb371', mediumslateblue: '#7b68ee', mediumspringgreen: '#00fa9a', mediumturquoise: '#48d1cc',
+  mediumvioletred: '#c71585', midnightblue: '#191970', mintcream: '#f5fffa', mistyrose: '#ffe4e1', moccasin: '#ffe4b5',
+  navajowhite: '#ffdead', navy: '#000080', oldlace: '#fdf5e6', olive: '#808000', olivedrab: '#6b8e23',
+  orange: '#ffa500', orangered: '#ff4500', orchid: '#da70d6', palegoldenrod: '#eee8aa', palegreen: '#98fb98',
+  paleturquoise: '#afeeee', palevioletred: '#db7093', papayawhip: '#ffefd5', peachpuff: '#ffdab9', peru: '#cd853f',
+  pink: '#ffc0cb', plum: '#dda0dd', powderblue: '#b0e0e6', purple: '#800080', rebeccapurple: '#663399',
+  red: '#ff0000', rosybrown: '#bc8f8f', royalblue: '#4169e1', saddlebrown: '#8b4513', salmon: '#fa8072',
+  sandybrown: '#f4a460', seagreen: '#2e8b57', seashell: '#fff5ee', sienna: '#a0522d', silver: '#c0c0c0',
+  skyblue: '#87ceeb', slateblue: '#6a5acd', slategray: '#708090', slategrey: '#708090', snow: '#fffafa',
+  springgreen: '#00ff7f', steelblue: '#4682b4', tan: '#d2b48c', teal: '#008080', thistle: '#d8bfd8',
+  tomato: '#ff6347', turquoise: '#40e0d0', violet: '#ee82ee', wheat: '#f5deb3', white: '#ffffff',
+  whitesmoke: '#f5f5f5', yellow: '#ffff00', yellowgreen: '#9acd32', transparent: '#00000000',
+}
+
+const CSS_HEX_COLOR = /^#(?:[0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/i
+// CSS <number>: optional sign, digits with an optional fraction or a leading
+// dot, optional exponent (1e2, -1, .5, +3.25E-1); nothing else
+const CSS_NUMBER = /^[+-]?(?:\d*\.\d+|\d+)(?:e[+-]?\d+)?$/i
+const CSS_HUE_UNIT = { deg: 1, grad: 0.9, rad: 180 / Math.PI, turn: 360 }
+
+const CSS_HUE_UNITS = ['grad', 'turn', 'deg', 'rad']
+// Input budget, as on the server: a resource bound
+// well above any real spelling (a full-precision JS number serialization is
+// ~85 characters); a longer value is not a colour, decided before parsing.
+const MAX_CSS_COLOR_LENGTH = 256
+
+function isCssWs(ch) {
+  return ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r' || ch === '\f'
+}
+
+// Trim and split are plain character scans, one pass each, no regex (the
+// regex trim was quadratic on a long internal whitespace run)
+function cssTrim(s) {
+  let i = 0
+  let j = s.length
+  while (i < j && isCssWs(s[i])) i++
+  while (j > i && isCssWs(s[j - 1])) j--
+  return s.slice(i, j)
+}
+
+// the tokens of a TRIMMED string separated by runs of CSS whitespace
+function cssSplitWs(s) {
+  const out = []
+  let i = 0
+  while (i < s.length) {
+    let j = i
+    while (j < s.length && !isCssWs(s[j])) j++
+    out.push(s.slice(i, j))
+    while (j < s.length && isCssWs(s[j])) j++
+    i = j
+  }
+  return out
+}
+
+function cssHex2(n) {
+  // + 1e-7: a half-way channel that float arithmetic left at 127.4999999
+  // rounds up like the browser's 127.5 does
+  return Math.round(Math.min(255, Math.max(0, n)) + 1e-7).toString(16).padStart(2, '0')
+}
+
+function cssToHex(r, g, b, a) {
+  const rgb = `#${cssHex2(r)}${cssHex2(g)}${cssHex2(b)}`
+  return a >= 1 ? rgb : rgb + cssHex2(Math.max(0, a) * 255)
+}
+
+// a token: a number (pct=false) or a percentage (pct=true), else null
+function cssNum(token) {
+  const pct = token.endsWith('%')
+  const t = pct ? token.slice(0, -1) : token
+  if (!CSS_NUMBER.test(t)) return null
+  const n = Number(t)
+  return Number.isNaN(n) ? null : { n, pct }
+}
+
+// alpha: a number or a percentage, clamped to 0..1
+function cssAlpha(token) {
+  const v = cssNum(token)
+  if (!v) return null
+  const a = v.pct ? v.n / 100 : v.n
+  return Math.min(1, Math.max(0, a))
+}
+
+// hue: a number (degrees) or a number with deg / grad / rad / turn
+// (the unit is matched ASCII case-insensitively; 'grad' is tried before 'rad')
+function cssHue(token) {
+  const unit = CSS_HUE_UNITS.find((u) => token.slice(-u.length).replace(/[A-Z]/g, (c) => c.toLowerCase()) === u)
+  const v = cssNum(unit ? token.slice(0, -unit.length) : token)
+  if (!v || v.pct) return null
+  const deg = v.n * (unit ? CSS_HUE_UNIT[unit] : 1)
+  return Number.isFinite(deg) ? ((deg % 360) + 360) % 360 : null
+}
+
+function cssHslToRgb(hue, s, l) {
+  const h = hue / 360
+  const sat = Math.min(1, Math.max(0, s / 100))
+  const lig = Math.min(1, Math.max(0, l / 100))
+  if (sat === 0) return [lig * 255, lig * 255, lig * 255]
+  const q = lig < 0.5 ? lig * (1 + sat) : lig + sat - lig * sat
+  const p = 2 * lig - q
+  const ch = (t) => {
+    if (t < 0) t += 1
+    if (t > 1) t -= 1
+    if (t < 1 / 6) return p + (q - p) * 6 * t
+    if (t < 1 / 2) return q
+    if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6
+    return p
+  }
+  return [ch(h + 1 / 3) * 255, ch(h) * 255, ch(h - 1 / 3) * 255]
+}
+
+// rgb()/rgba()/hsl()/hsla() with numeric arguments (CSS Color 4):
+// - legacy comma syntax: 3 values (+ alpha); rgb channels all numbers or all
+//   percentages; hsl saturation / lightness must be percentages
+// - modern space syntax: 3 values (+ "/ alpha"); rgb channels may mix numbers
+//   and percentages; hsl saturation / lightness numbers or percentages
+// Numbers may carry a sign, a leading dot or an exponent; channels clamp to
+// 0..255, alpha to 0..1, saturation / lightness to 0..100. No nested
+// function, keyword (none, calc, var) or anything else is accepted.
+function cssColorFunction(c) {
+  const m = /^(rgba?|hsla?)\(([^()]*)\)$/i.exec(c)
+  if (!m) return null
+  const fn = m[1].toLowerCase()
+  const body = cssTrim(m[2])
+  let parts
+  let alphaToken
+  const legacy = body.includes(',')
+  if (legacy) {
+    parts = body.split(',').map(cssTrim)
+    if (parts.length === 4) alphaToken = parts.pop()
+  } else {
+    const slash = body.split('/')
+    if (slash.length > 2) return null
+    if (slash.length === 2) alphaToken = cssTrim(slash[1])
+    parts = cssSplitWs(cssTrim(slash[0]))
+  }
+  if (parts.length !== 3) return null
+  const a = alphaToken === undefined ? 1 : cssAlpha(alphaToken)
+  if (a === null) return null
+  if (fn.startsWith('rgb')) {
+    const ch = parts.map(cssNum)
+    if (ch.some((v) => v === null)) return null
+    if (legacy && !(ch.every((v) => v.pct) || ch.every((v) => !v.pct))) return null
+    const [r, g, b] = ch.map((v) => (v.pct ? (v.n * 255) / 100 : v.n))
+    return cssToHex(r, g, b, a)
+  }
+  const hue = cssHue(parts[0])
+  const s = cssNum(parts[1])
+  const l = cssNum(parts[2])
+  if (hue === null || !s || !l) return null
+  if (legacy && !(s.pct && l.pct)) return null
+  const [r, g, b] = cssHslToRgb(hue, s.n, l.n)
+  return cssToHex(r, g, b, a)
+}
+
+function normalizeCssColor(value) {
+  if (typeof value !== 'string' || value.length > MAX_CSS_COLOR_LENGTH) return null
+  const c = cssTrim(value)
+  if (CSS_HEX_COLOR.test(c)) return c
+  const named = /^[a-z]+$/i.test(c) && Object.prototype.hasOwnProperty.call(CSS_NAMED_COLORS, c.toLowerCase()) ? CSS_NAMED_COLORS[c.toLowerCase()] : undefined
+  if (named) return named
+  return cssColorFunction(c)
+}
+
+// A colour from data (settings files, label records) before it lands in a
+// style: escapeHtml keeps it inside the attribute, but a ';' or url(...) would
+// still add CSS declarations or fetch a resource. A colour normalizeCssColor
+// accepts comes back as hex; a var(--token) passes as is; anything else
+// becomes the fallback.
+function safeCssColor(v, fallback = '') {
+  const n = normalizeCssColor(v)
+  if (n) return n
+  const c = String(v ?? '').trim()
+  return /^var\(--[a-z0-9-]+\)$/i.test(c) ? c : fallback
+}
+
+// t() for a translation that is itself HTML (the *_html keys, data-i18n-html):
+// the template is trusted markup, but every substituted value -- the brand
+// tokens, which come from .env BRAND_NAME / BOT_NAME, and the caller's params
+// -- is text, so each one is HTML-escaped. Plain t() stays raw for its
+// textContent / confirm / toast callers.
+function tHtml(key, params = {}) {
+  const enc = {}
+  for (const [k, v] of Object.entries({ ...window._brandTokens, ...params })) enc[k] = v == null ? v : escapeHtml(String(v))
+  return t(key, enc)
+}
+
 // ============================================================
 // === Status ===
 // ============================================================
@@ -9812,11 +10843,12 @@ async function loadStatus() {
         }
         const div = document.createElement('div')
         div.className = `status-incident ${inc.status}`
-        const date = new Date(inc.pubDate).toLocaleString('hu-HU', { timeZone: 'Europe/Budapest' })
+        // The viewer's local time, like every other time on the dashboard (ISSUE1895 / #1895).
+        const date = new Date(inc.pubDate).toLocaleString('hu-HU')
         div.innerHTML = `
           <div class="status-incident-header">
             <span class="status-incident-title">${escapeHtml(inc.title)}</span>
-            <span class="status-incident-badge ${inc.status}">${(typeof statusLabels[inc.status] === 'function' ? statusLabels[inc.status]() : statusLabels[inc.status]) || inc.status}</span>
+            <span class="status-incident-badge ${escapeHtml(inc.status)}">${escapeHtml((typeof statusLabels[inc.status] === 'function' ? statusLabels[inc.status]() : statusLabels[inc.status]) || inc.status)}</span>
           </div>
           <div class="status-incident-desc">${escapeHtml(inc.description.slice(0, 300))}</div>
           <div class="status-incident-date">${date}</div>
@@ -9884,7 +10916,7 @@ async function loadCosts() {
       </table></div>`
     }
 
-    html += `<p style="${mutedStyle};margin-top:16px">${t('costs.token_usage_note')} (${(s.token_usage?.calls ?? 0)} ${t('costs.calls')}, ${(s.token_usage?.input_tokens ?? 0) + (s.token_usage?.output_tokens ?? 0)} tokens)</p>`
+    html += `<p style="${mutedStyle};margin-top:16px">${t('costs.token_usage_note')} (${Number(s.token_usage?.calls ?? 0)} ${t('costs.calls')}, ${Number(s.token_usage?.input_tokens ?? 0) + Number(s.token_usage?.output_tokens ?? 0)} tokens)</p>`
 
     el.innerHTML = html
   } catch (err) {
@@ -10863,9 +11895,12 @@ async function loadTeamGraph() {
     const res = await fetch('/api/team/graph')
     if (!res.ok) throw new Error('HTTP ' + res.status)
     const data = await res.json()
-    renderTeamGraph(container, data, { editable: true })
+    // Seed the active border from the last poll so it is right on first paint,
+    // then let the 3s agents-page poll keep it current.
+    renderTeamGraph(container, data, { editable: true, activeIds: _workingAgentIds })
+    if (agentsBusyTimer) refreshAgentTerminalBusy()
   } catch (err) {
-    container.innerHTML = `<div class="team-empty">${t('team.error', { msg: err.message || err })}</div>`
+    container.innerHTML = `<div class="team-empty">${t('team.error', { msg: escapeHtml(String(err.message || err)) })}</div>`
   }
 }
 
@@ -10896,6 +11931,7 @@ async function saveTeamReportsTo(childId, parentId, ctx) {
 
 function renderTeamGraph(container, data, opts = {}) {
   const editable = !!opts.editable
+  const activeIds = opts.activeIds instanceof Set ? opts.activeIds : new Set()
   const { nodes, edges, mainAgentId } = data
   container.innerHTML = ''
   const byId = new Map(nodes.map(n => [n.id, n]))
@@ -10928,7 +11964,15 @@ function renderTeamGraph(container, data, opts = {}) {
     if (node.role === 'main') div.classList.add('main')
     else if (node.role === 'leader') div.classList.add('leader')
     const roleLabel = node.role === 'main' ? t('team.role.main') : (node.role === 'leader' ? t('team.role.leader') : t('team.role.member'))
-    const running = node.running ? t('team.running') : t('team.stopped')
+    // Same pulsing dot the agent cards use, instead of the '●' that used to be
+    // baked into the translation -- a static glyph read as "stopped" next to a
+    // card whose dot was breathing.
+    const runLabel = node.running ? t('team.running') : t('team.stopped')
+    const runDotClass = node.running ? 'running' : 'stopped'
+    // Marked by refreshTeamGraphActivity() from /api/agents/activity, so the
+    // node carries its id for the class toggle that runs without a re-render.
+    div.dataset.agentId = node.id
+    if (activeIds.has(node.id)) div.classList.add('team-node-active')
     const avatarUrl = node.id === mainAgentId
       ? `/api/marveen/avatar${avatarBust()}`
       : `/api/agents/${encodeURIComponent(node.id)}/avatar${avatarBust()}`
@@ -10936,7 +11980,7 @@ function renderTeamGraph(container, data, opts = {}) {
       <div class="team-node-avatar"><img src="${avatarUrl}" alt="${escapeHtml(node.label || node.id)}" onerror="this.style.display='none'"></div>
       <div class="team-node-name">${escapeHtml(node.label || node.id)}</div>
       <div class="team-node-meta">${escapeHtml(roleLabel)}</div>
-      <div class="team-node-meta">${running}</div>
+      <div class="team-node-meta team-node-status"><span class="process-dot ${runDotClass}"></span>${escapeHtml(runLabel)}</div>
     `
     if (node.id !== mainAgentId) {
       div.addEventListener('click', () => openAgentDetail(node.id))
@@ -11045,30 +12089,49 @@ function renderTeamGraph(container, data, opts = {}) {
   }
 }
 
-// === Agents page: grid / org-chart view toggle ===
+// === Agents page: view toggle (cards / activity / org chart) ===
+// Three views, but only TWO layouts: 'grid' and 'activity' are the same card
+// grid with different card bodies ('grid' is the original card -- model badge,
+// run + channel status, actions; 'activity' replaces everything below the
+// avatar/name/description with the live pane status that used to be its own
+// Activity page), and 'tree' is the org chart. The card body follows from the
+// view, so the CSS keeps its data-card-mode hook without a second piece of
+// state to keep in sync.
 // Persists the chosen view for the session so navigating away and back keeps
 // the last selection. Defaults to 'grid'.
 let _agentsActiveView = 'grid'
 
-function _setAgentsView(view) {
-  _agentsActiveView = view
-  const gridView = document.getElementById('agentsGridView')
-  const treeView = document.getElementById('agentsTreeView')
-  const gridBtn  = document.getElementById('agentsViewGrid')
-  const treeBtn  = document.getElementById('agentsViewTree')
-  if (!gridView || !treeView) return
-  const showGrid = view === 'grid'
-  gridView.hidden = !showGrid
-  treeView.hidden = showGrid
-  if (gridBtn) gridBtn.classList.toggle('active', showGrid)
-  if (treeBtn) treeBtn.classList.toggle('active', !showGrid)
-  if (!showGrid) loadTeamGraph()
+// A card click means "open this agent" in card view and "look at what it is
+// doing" in activity view -- the same split the Activity page had, where only a
+// running agent's card was clickable.
+function onAgentCardClick(id, openDetail) {
+  if (_agentsActiveView === 'activity') {
+    if (id && _liveAgentIds.has(id)) openTerminalModal(id)
+    return
+  }
+  openDetail()
 }
 
-const _agentsViewGridBtn = document.getElementById('agentsViewGrid')
-const _agentsViewTreeBtn = document.getElementById('agentsViewTree')
-if (_agentsViewGridBtn) _agentsViewGridBtn.addEventListener('click', () => _setAgentsView('grid'))
-if (_agentsViewTreeBtn) _agentsViewTreeBtn.addEventListener('click', () => _setAgentsView('tree'))
+function _setAgentsView(view) {
+  _agentsActiveView = view === 'activity' || view === 'tree' ? view : 'grid'
+  const gridView = document.getElementById('agentsGridView')
+  const treeView = document.getElementById('agentsTreeView')
+  if (!gridView || !treeView) return
+  const showTree = _agentsActiveView === 'tree'
+  gridView.hidden = showTree
+  treeView.hidden = !showTree
+  if (agentsGrid) agentsGrid.dataset.cardMode = _agentsActiveView === 'activity' ? 'activity' : 'profile'
+  for (const btn of document.querySelectorAll('#agentsViewToggle [data-view]')) {
+    btn.classList.toggle('active', btn.dataset.view === _agentsActiveView)
+  }
+  // Repaint immediately rather than waiting up to 3s for the next tick.
+  if (!showTree && agentsBusyTimer) refreshAgentTerminalBusy()
+  if (showTree) loadTeamGraph()
+}
+
+for (const btn of document.querySelectorAll('#agentsViewToggle [data-view]')) {
+  btn.addEventListener('click', () => _setAgentsView(btn.dataset.view))
+}
 
 // === Team: inter-agent message log + compose ===
 // View the /api/messages queue and let the operator send a message to an agent
@@ -11101,7 +12164,7 @@ const chatAgentHasAvatar = new Map() // name -> true|false
 let chatSelectedAgent = null
 
 function chatMonogramEl(agentName, size) {
-  const letter = agentName.charAt(0).toUpperCase()
+  const letter = escapeHtml(agentName.charAt(0).toUpperCase())
   const colors = ['#d97757','#00C2A8','#818cf8','#22c55e','#f59e0b','#ec4899']
   const color = colors[agentName.split('').reduce((a,c)=>a+c.charCodeAt(0),0) % colors.length]
   return `<div class="chat-avatar chat-avatar-mono" style="width:${size}px;height:${size}px;background:${color};font-size:${Math.round(size*0.4)}px">${letter}</div>`
@@ -11320,7 +12383,7 @@ async function loadChatThread(agentName) {
     <div class="chat-thread-header">
       ${chatAvatarHtml(agentName, 32)}
       <span class="chat-thread-title">${escapeHtml(threadDisplayName)}</span>
-      <button class="btn-secondary btn-compact" style="margin-left:auto" onclick="loadChatThread('${escapeHtml(agentName)}')">
+      <button class="btn-secondary btn-compact" style="margin-left:auto" onclick="loadChatThread(${jsArg(agentName)})">
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
       </button>
     </div>
@@ -11793,6 +12856,175 @@ document.getElementById('projectsGrid')?.addEventListener('click', async (e) => 
   }
 })
 
+// Forward-looking duration, reusing the same abbreviations formatRelative uses
+// so the strip does not invent a second time vocabulary.
+function formatDurationShort(sec) {
+  if (sec < 60) return t('common.time.min_abbr', { n: 1 })
+  const min = Math.floor(sec / 60)
+  if (min < 60) return t('common.time.min_abbr', { n: min })
+  const hr = Math.floor(min / 60)
+  if (hr < 24) return t('common.time.hour_abbr', { h: hr })
+  return t('common.time.day_abbr', { n: Math.floor(hr / 24) })
+}
+
+// Same thresholds as the status line's rl_pct(): >=80 danger, >=60 caution.
+// The dashboard palette has no yellow token, so the accent stands in for it.
+function quotaLevelClass(pct) {
+  if (pct >= 80) return 'danger'
+  if (pct >= 60) return 'warn'
+  return ''
+}
+
+// Weekly quota row: 7 day segments, day names underneath and a "now" marker.
+// The window is NOT a calendar week: it runs resetsAt-7d -> resetsAt
+// (measured 2026-09-29: Monday 09:00 CEST for both the previous and the
+// current window), so the labels and the marker are derived from resetsAt,
+// never from "Monday". Each segment is labelled with the weekday it STARTS
+// on. Returns null when there is no usable current window -- the row then
+// keeps the plain bar instead of drawing a week it cannot place.
+// timeZone is for tests only; the dashboard uses the viewer's local time.
+function weekSegments(resetsAt, nowSec, lang, timeZone) {
+  const WEEK = 7 * 86400
+  if (typeof resetsAt !== 'number' || !Number.isFinite(resetsAt)) return null
+  if (typeof nowSec !== 'number' || !Number.isFinite(nowSec)) return null
+  const start = resetsAt - WEEK
+  if (resetsAt <= nowSec || nowSec < start) return null
+  const locale = lang === 'en' ? 'en-US' : 'hu-HU'
+  const starts = Array.from({ length: 7 }, (_, i) => start + i * 86400)
+  const name = (weekday) => starts.map((sec) => {
+    const s = new Date(sec * 1000).toLocaleDateString(locale, { weekday, timeZone })
+    return s.charAt(0).toUpperCase() + s.slice(1)
+  })
+  // Three widths, chosen by the CSS container query on .quota-bar-days, never
+  // by an ellipsis (a portrait phone showed "Hé… Ke… Sz… … Sz…": two
+  // indistinguishable "Sz…"). hu short = H K Sze Cs P Szo V. hu has no safe
+  // one-letter form (Szerda/Szombat both "Sz"), so hu has NO narrow tier:
+  // narrowLabels is null and the day-name row hides below that width (the
+  // separators and the now marker still show where the days are). Its short
+  // forms need ~140 px and ran together ("SzeCs") on a 390 px phone.
+  // en narrow = M T W T F S S.
+  const short = name('short')
+  return {
+    starts,
+    labels: name('long'),
+    shortLabels: short,
+    narrowLabels: lang === 'en' ? name('narrow') : null,
+    nowPct: ((nowSec - start) / WEEK) * 100,
+  }
+}
+
+// Render the subscription quota strip from /api/overview's `quota` block.
+//
+// The rule this follows: a quota reading is only worth showing while it is
+// fresh, and an absent strip must never look like a healthy one. So a missing
+// file still renders the strip -- with one quiet line saying why there is no
+// data -- and a stale or already-reset reading keeps its numbers but drops the
+// colour, because a green bar from six hours ago reassures exactly as much as
+// a green bar from six seconds ago.
+// "measured N ago" -- except for a reading under a minute old, where the
+// relative formatter says "now" and the sentence would read "measured now ago".
+function quotaMeasuredText(ageSec) {
+  if (ageSec < 60) return t('overview.quota.measured_now')
+  return t('overview.quota.measured', { age: formatRelative(Date.now() - ageSec * 1000) })
+}
+
+function renderQuotaStrip(q, fable) {
+  const strip = document.getElementById('quotaStrip')
+  const bars = document.getElementById('quotaBars')
+  const note = document.getElementById('quotaStripNote')
+  const age = document.getElementById('quotaStripAge')
+  if (!strip || !bars || !note || !age) return
+  strip.hidden = false
+  bars.innerHTML = ''
+  note.hidden = true
+  note.className = 'quota-strip-note'
+  age.textContent = ''
+
+  if (!q || q.status === 'missing') {
+    const reason = q && q.reason ? q.reason : 'no-file'
+    note.textContent = t('overview.quota.none.' + reason.replace(/-/g, '_'))
+    note.hidden = false
+    return
+  }
+
+  const stale = q.status === 'stale'
+  const nowSec = Math.floor(Date.now() / 1000)
+  const windows = [
+    ['overview.quota.five_hour', q.fiveHour, stale, null],
+    ['overview.quota.seven_day', q.sevenDay, stale, null],
+  ]
+  // Fable/Opus comes from a different collector with its own freshness --
+  // muted independently of the statusLine-sourced `stale` above. Silently
+  // omitted (like any other null window here) when there's simply no
+  // reading yet -- non-tiered accounts never get one.
+  if (fable && fable.window) {
+    windows.push(['overview.quota.fable', fable.window, fable.status !== 'ok', fable.ageSec])
+  }
+  for (const [labelKey, w, muted0, ageSecForRow] of windows) {
+    if (!w) continue
+    const pct = Math.max(0, Math.min(100, Math.round(w.usedPercentage)))
+    const muted = muted0 || w.expired
+    const row = document.createElement('div')
+    row.className = 'quota-bar' + (muted ? ' muted' : '')
+    let tail = ''
+    if (w.expired) {
+      tail = ' · ' + t('overview.quota.expired')
+    } else if (typeof w.resetsAt === 'number' && w.resetsAt > nowSec) {
+      tail = ' · ' + t('overview.quota.resets_in', { d: formatDurationShort(w.resetsAt - nowSec) })
+    }
+    // This row's own collector age travels with it: the shared age line
+    // below (q.ageSec) only covers the statusLine source, so it says nothing
+    // about a row fed by a different collector -- without this a muted row
+    // reads as "might be old" with no way to tell minutes from days.
+    if (typeof ageSecForRow === 'number') {
+      tail += ' · ' + quotaMeasuredText(ageSecForRow)
+    }
+    // QUOTAMOD1005: with the mod source each window names its own agent -- the
+    // 5-hour and the weekly reading may come from different sessions.
+    if (q.source === 'mod' && w.sourceAgent) {
+      tail += ' · ' + w.sourceAgent
+    }
+    const week = labelKey === 'overview.quota.seven_day' && !w.expired
+      ? weekSegments(w.resetsAt, nowSec, window._lang)
+      : null
+    const trackHtml = `<div class="quota-bar-track${week ? ' week' : ''}"><div class="quota-bar-fill ${muted ? '' : quotaLevelClass(pct)}" style="width:${pct}%"></div></div>`
+    row.innerHTML = `
+      <div class="quota-bar-label">${escapeHtml(t(labelKey))}</div>
+      ${week ? `<div class="quota-bar-col">
+        ${trackHtml}
+        <div class="quota-bar-now" style="left:${week.nowPct.toFixed(2)}%"></div>
+        <div class="quota-bar-days${week.narrowLabels ? '' : ' no-narrow'}">${week.labels.map((d, i) => `<span><span class="day-full">${escapeHtml(d)}</span><span class="day-short">${escapeHtml(week.shortLabels[i])}</span>${week.narrowLabels ? `<span class="day-narrow">${escapeHtml(week.narrowLabels[i])}</span>` : ''}</span>`).join('')}</div>
+      </div>` : trackHtml}
+      <div class="quota-bar-value">${pct}%<span class="quota-bar-reset">${escapeHtml(tail)}</span></div>
+    `
+    bars.appendChild(row)
+  }
+
+  if (typeof q.ageSec === 'number') {
+    age.textContent = quotaMeasuredText(q.ageSec)
+  }
+  // QUOTAMOD1005: say where the numbers come from -- the statusLine block, or
+  // the observer mod on a named agent (whose session's last API answer it is).
+  if (q.source === 'mod') {
+    const agents = Array.isArray(q.sourceAgents) ? q.sourceAgents : []
+    const label = agents.length === 1
+      ? t('overview.quota.source_mod', { agent: agents[0] })
+      : t('overview.quota.source_mod_many', { n: agents.length })
+    age.textContent += (age.textContent ? ' · ' : '') + label
+  } else if (q.source === 'statusline') {
+    age.textContent += (age.textContent ? ' · ' : '') + t('overview.quota.source_statusline')
+  }
+  if (stale) {
+    // The warning names the source it is about: the status line, or the
+    // observed sessions (whose numbers are their last API answer).
+    note.textContent = q.source === 'mod'
+      ? t(typeof q.ageSec === 'number' ? 'overview.quota.stale_mod' : 'overview.quota.stale_mod_unknown')
+      : t('overview.quota.stale')
+    note.className = 'quota-strip-note warn'
+    note.hidden = false
+  }
+}
+
 async function loadOverview() {
   try {
     const res = await fetch('/api/overview')
@@ -11808,6 +13040,7 @@ async function loadOverview() {
     document.getElementById('statMemoriesSub').textContent = `${t('overview.stat.sub.memories')} · ${d.memories.categories} category`
     document.getElementById('statSkills').textContent = d.skills.count
     document.getElementById('statSkillsSub').textContent = d.skills.today > 0 ? t('overview.stat.skills_today', { n: d.skills.today }) : ''
+    renderQuotaStrip(d.quota, d.quotaFable)
     // Team: reuse the hierarchy graph renderer so the overview card shows
     // exactly what the Csapat page does (avatars + reports-to tree).
     try {
@@ -11927,7 +13160,16 @@ function renderUpdatesBadge(status) {
 // Dev machines follow develop on purpose; one dismissal silences the banner
 // for them while the Updates-page notice stays as the quiet ground truth.
 const BRANCH_DRIFT_DISMISS_PREFIX = 'marveen.branch-drift-dismissed.'
-const BRANCH_HEAL_COMMAND = 'git checkout main && bash update.sh'
+// The heal command has to work in BOTH states, and `git checkout main` works in
+// neither of them reliably here: with two remotes that both carry main (origin
+// and a fork) git cannot infer the branch to follow and exits 128, and
+// `checkout -b main --track origin/main` only works the FIRST time -- run it
+// again on an install that already has a local main and it exits 128 with
+// "a branch named 'main' already exists". Measured 2026-09-25 in an isolated
+// two-remote repo, git 2.53.0. `switch` then `switch -c` covers both, and the
+// `(A || B) && C` precedence is what keeps update.sh from running when neither
+// switch succeeded.
+const BRANCH_HEAL_COMMAND = 'git switch main || git switch -c main --track origin/main && bash update.sh'
 
 function branchDriftDismissed(branch) {
   try { return localStorage.getItem(BRANCH_DRIFT_DISMISS_PREFIX + branch) === '1' } catch { return false }
@@ -12038,7 +13280,7 @@ async function loadUpdates() {
       applyBtn.hidden = true
     } else if (data.behind === 0) {
       summary.className = 'updates-summary up-to-date'
-      summary.innerHTML = `<strong>${t('updates.up_to_date_html')}</strong>. ${t('updates.no_changes')}`
+      summary.innerHTML = `<strong>${tHtml('updates.up_to_date_html')}</strong>. ${t('updates.no_changes')}`
       applyBtn.hidden = true
     } else {
       summary.className = 'updates-summary behind'
@@ -12092,6 +13334,76 @@ async function loadUpdates() {
     applyBtn.hidden = true
   }
   renderDiagnoseOffer()
+  renderCliUpdateOffer()
+}
+
+// Claude Code CLI update OFFER (CLIFRISSAJANLAS923). Reads /api/updates/cli:
+// installed vs offered target (latest, or the AVX-safe pin on an AVX-less
+// host), a button that only POSTs the exact offered target, and the note that
+// running sessions keep the old binary until their next start.
+let _cliUpdatePoll = null
+async function renderCliUpdateOffer(fresh) {
+  const box = document.getElementById('updatesCli')
+  if (!box) return
+  let d
+  try { d = await (await fetch('/api/updates/cli' + (fresh ? '?fresh=1' : ''))).json() } catch { box.hidden = true; return }
+  const esc = escapeHtmlUpdates
+  const lines = []
+  lines.push(`<strong>${esc(t('updates.cli.title'))}</strong>`)
+  lines.push(`<p>${esc(t('updates.cli.installed', { v: d.installed || t('updates.cli.unmeasured') }))}`
+    + (d.avxLess
+      ? ` · ${esc(t('updates.cli.avx_target', { v: d.avxSafePin || '—' }))}`
+      : ` · ${esc(t('updates.cli.latest', { v: d.latest || (d.latestError ? t('updates.cli.unknown') : '…') }))}`)
+    + `</p>`)
+  if (d.avxLess) lines.push(`<p class="muted">${esc(t('updates.cli.avx_note'))}</p>`)
+  const job = d.job || {}
+  if (job.running) {
+    lines.push(`<p><span class="spinner"></span> ${esc(t('updates.cli.running', { v: (job.result && job.result.target) || d.target || '' }))}</p>`)
+  } else if (job.result && job.result.status === 'done' && job.result.installedAfter === d.installed) {
+    lines.push(`<p class="updates-cli-done">${esc(t('updates.cli.done', { v: job.result.installedAfter || '' }))}</p>`)
+    lines.push(`<p class="muted">${esc(t('updates.cli.sessions_note'))}</p>`)
+  } else if (job.result && job.result.status === 'failed' && !d.offer) {
+    lines.push(`<p class="updates-cli-failed">${esc(t('updates.cli.failed', { msg: job.result.message || '' }))}</p>`)
+  }
+  if (d.offer && !job.running) {
+    lines.push(`<p>${esc(t('updates.cli.offer', { v: d.target }))}</p>`)
+    lines.push(`<p class="muted">${esc(t('updates.cli.sessions_note'))}</p>`)
+    lines.push(`<button class="btn-secondary btn-compact" id="updatesCliBtn">${esc(t('updates.cli.btn', { v: d.target }))}</button>`)
+    if (d.manualCommand) lines.push(`<p class="muted">${esc(t('updates.cli.manual'))} <code>${esc(d.manualCommand)}</code></p>`)
+  } else if (!d.offer && !job.running && d.installed && (d.avxLess ? d.avxSafePin : d.latest)) {
+    if (!(job.result && job.result.status === 'done' && job.result.installedAfter === d.installed)) lines.push(`<p class="muted">${esc(t('updates.cli.up_to_date'))}</p>`)
+  }
+  box.hidden = false
+  box.className = 'updates-diagnose updates-cli'
+  box.innerHTML = lines.join('')
+  const btn = document.getElementById('updatesCliBtn')
+  if (btn) btn.addEventListener('click', () => applyCliUpdate(d.target))
+  if (job.running) {
+    if (!_cliUpdatePoll) _cliUpdatePoll = setTimeout(() => { _cliUpdatePoll = null; renderCliUpdateOffer(true) }, 5000)
+  }
+}
+
+async function applyCliUpdate(target) {
+  if (!target) return
+  if (!confirm(t('updates.cli.confirm', { v: target }))) return
+  const btn = document.getElementById('updatesCliBtn')
+  if (btn) btn.disabled = true
+  try {
+    const res = await fetch('/api/updates/cli/apply', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ target }),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) {
+      if (btn) btn.disabled = false
+      showToast(t('updates.cli.failed', { msg: data.error || ('HTTP ' + res.status) }))
+      return
+    }
+    showToast(t('updates.cli.started', { v: target }))
+    renderCliUpdateOffer(true)
+  } catch (err) {
+    if (btn) btn.disabled = false
+    showToast(t('updates.cli.failed', { msg: err.message || err }))
+  }
 }
 
 // Post-rollback diagnosis offer (PR-D). Reads /api/updates/status: if the last
@@ -12419,7 +13731,7 @@ function wireOnboarding(step) {
         // surface the automatic channels restart (same pattern as the
         // claude-auth step) instead of silently advancing.
         if (typeof initSidebarBrand === 'function') initSidebarBrand()
-        if (d.restartError) { idBtn.disabled = false; onbMsg(t('onboarding.identity.saved_restart_failed'), true); setTimeout(refreshOnboarding, 6000); return }
+        if (d.restartError) { idBtn.disabled = false; onbMsg(t('onboarding.identity.saved_restart_failed', { cmd: d.restartCommand || '' }), true); setTimeout(refreshOnboarding, 6000); return }
         if (d.restarted) { onbMsg(t('onboarding.identity.saved_restarted')); setTimeout(refreshOnboarding, 2500); return }
         if (d.restartNeeded) { onbMsg(t('onboarding.identity.saved_restart_needed')); await refreshOnboarding(); return }
         onbMsg(t('onboarding.identity.saved'))
@@ -12442,7 +13754,7 @@ function wireOnboarding(step) {
         // unauthenticated) channels session right after the first auth save --
         // surface that, and on failure show the manual restart step instead of
         // silently advancing.
-        if (d.restartError) { authBtn.disabled = false; onbMsg(t('onboarding.step1.saved_restart_failed'), true); setTimeout(refreshOnboarding, 6000); return }
+        if (d.restartError) { authBtn.disabled = false; onbMsg(t('onboarding.step1.saved_restart_failed', { cmd: d.restartCommand || '' }), true); setTimeout(refreshOnboarding, 6000); return }
         if (d.restarted) { onbMsg(t('onboarding.step1.saved_restarted')); setTimeout(refreshOnboarding, 2500); return }
         onbMsg(d.verified ? t('onboarding.step1.saved_verified') : t('onboarding.step1.saved_unverified'))
         await refreshOnboarding()
@@ -12505,6 +13817,8 @@ function wireOnboarding(step) {
         // and on timeout stay on this step with an honest "still starting"
         // message -- the old fixed 4s opened the pairing step against a
         // booting session, which looked done-and-empty (WIZFLOW809).
+        // #1878 (6): a failed restart is said at once, not after the ~2 min wait below.
+        if (d.restartError) { botBtn.disabled = false; onbMsg(t('onboarding.step2.saved_restart_failed', { cmd: d.restartCommand || '' }), true); return }
         onbMsg(d.restarted ? t('onboarding.step2.saved_restarted') : t('onboarding.step2.saved'))
         onbMsg(t('onboarding.step2.waiting_channel'))
         const outcome = await waitForChannelLive(fetchOnboardingStatus, 3000, 40)  // ~2 min bound
@@ -12890,9 +14204,9 @@ function renderRecallTimeline(el, data) {
 
 function esc(s) {
   if (!s) return ''
-  const d = document.createElement('div')
-  d.textContent = String(s)
-  return d.innerHTML
+  // Quote-safe like escapeHtml: esc() output also lands in attributes
+  // (data-cat, style), where a bare " would break out of the attribute.
+  return escapeHtml(String(s))
 }
 
 // ============================================================
@@ -12979,26 +14293,26 @@ async function loadBgTasks() {
       return
     }
 
-    list.innerHTML = tasks.map(t => {
+    list.innerHTML = tasks.map(task => {
       const statusColors = { running: '#f59e0b', done: '#22c55e', failed: '#ef4444', timeout: '#6b7280' }
       const statusLabels = { running: () => t('bgTasks.status.running'), done: () => t('bgTasks.status.done'), failed: () => t('bgTasks.status.failed'), timeout: () => t('bgTasks.status.timeout') }
-      const color = statusColors[t.status] || '#6b7280'
-      const labelRaw = statusLabels[t.status]; const label = labelRaw ? (typeof labelRaw === 'function' ? labelRaw() : labelRaw) : t.status
-      const output = t.output ? `<pre style="margin-top:8px;padding:8px;background:var(--bg);border-radius:6px;font-size:12px;max-height:200px;overflow:auto;white-space:pre-wrap;">${esc(t.output.slice(-2000))}</pre>` : ''
+      const color = statusColors[task.status] || '#6b7280'
+      const labelRaw = statusLabels[task.status]; const label = labelRaw ? (typeof labelRaw === 'function' ? labelRaw() : labelRaw) : task.status
+      const output = task.output ? `<pre style="margin-top:8px;padding:8px;background:var(--bg);border-radius:6px;font-size:12px;max-height:200px;overflow:auto;white-space:pre-wrap;">${esc(task.output.slice(-2000))}</pre>` : ''
       return `<div style="margin-bottom:12px;padding:12px 16px;border-radius:8px;background:var(--surface);border:1px solid var(--border);border-left:3px solid ${color};">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
           <div style="display:flex;gap:8px;align-items:center;">
-            <span style="font-weight:600;font-size:13px;">${esc(t.id)}</span>
-            <span class="badge" style="font-size:11px;background:${color};color:#fff;padding:2px 8px;border-radius:12px;">${label}</span>
-            <span class="badge" style="font-size:11px;background:var(--primary);color:#fff;padding:2px 8px;border-radius:12px;">${esc(t.agent_id)}</span>
+            <span style="font-weight:600;font-size:13px;">${esc(task.id)}</span>
+            <span class="badge" style="font-size:11px;background:${color};color:#fff;padding:2px 8px;border-radius:12px;">${escapeHtml(label)}</span>
+            <span class="badge" style="font-size:11px;background:var(--primary);color:#fff;padding:2px 8px;border-radius:12px;">${esc(task.agent_id)}</span>
           </div>
           <div style="display:flex;gap:8px;align-items:center;">
-            <span style="font-size:12px;color:var(--text-muted)">${esc(t.started_label)}</span>
-            ${t.status === 'running' ? `<button class="btn btn-sm" onclick="viewBgTask('${esc(t.id)}')" style="font-size:11px;padding:2px 8px;">${t('bgTasks.output_btn')}</button><button class="btn btn-sm" onclick="cancelBgTask('${esc(t.id)}')" style="font-size:11px;padding:2px 8px;color:var(--danger)">${t('bgTasks.stop_btn')}</button>` : ''}
+            <span style="font-size:12px;color:var(--text-muted)">${esc(task.started_label)}</span>
+            ${task.status === 'running' ? `<button class="btn btn-sm" onclick="viewBgTask(${jsArg(task.id)})" style="font-size:11px;padding:2px 8px;">${t('bgTasks.output_btn')}</button><button class="btn btn-sm" onclick="cancelBgTask(${jsArg(task.id)})" style="font-size:11px;padding:2px 8px;color:var(--danger)">${t('bgTasks.stop_btn')}</button>` : ''}
           </div>
         </div>
-        <div style="font-size:13px;color:var(--text-primary);margin-bottom:4px;">${esc(t.prompt)}</div>
-        ${t.finished_label ? `<div style="font-size:12px;color:var(--text-muted);">${t('bgTasks.finished_label')} ${esc(t.finished_label)}</div>` : ''}
+        <div style="font-size:13px;color:var(--text-primary);margin-bottom:4px;">${esc(task.prompt)}</div>
+        ${task.finished_label ? `<div style="font-size:12px;color:var(--text-muted);">${t('bgTasks.finished_label')} ${esc(task.finished_label)}</div>` : ''}
         ${output}
       </div>`
     }).join('')
@@ -13280,7 +14594,7 @@ function _renderApprovalsTable() {
 function _approvalBadge(status) {
   const colors = { pending: 'var(--warning)', approved: 'var(--success)', rejected: 'var(--danger)', timeout: 'var(--text-muted)' }
   const color = colors[status] || 'var(--text-muted)'
-  return `<span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;background:color-mix(in srgb,${color} 15%,transparent);color:${color}">${t('approvals.status.' + status) || status}</span>`
+  return `<span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;background:color-mix(in srgb,${color} 15%,transparent);color:${color}">${escapeHtml(t('approvals.status.' + status) || status)}</span>`
 }
 
 function _updateCountdowns() {
@@ -13356,7 +14670,7 @@ window.addEventListener('beforeunload', (e) => {
 // entry never requires a frontend change just to render a sane heading.
 function settingsModuleLabel(mod) {
   const key = `settings.module.${mod}`
-  const known = { kanban: true, system: true, heartbeat: true, audit: true, ideabox: true, channels: true, security: true, autonomy: true }
+  const known = { kanban: true, system: true, heartbeat: true, audit: true, ideabox: true, channels: true, security: true, autonomy: true, 'claude-plans': true }
   return known[mod] ? t(key) : (mod.charAt(0).toUpperCase() + mod.slice(1))
 }
 
@@ -13420,6 +14734,7 @@ async function renderAuthCard() {
   if (status.method === 'token' || status.method === 'session') {
     renderDeviceKeysSection(body)
     renderBridgeEnrollSection(body)
+    renderOperatorAccessSection(body)
   }
 }
 
@@ -13451,6 +14766,21 @@ function renderBridgeEnrollSection(body) {
   document.getElementById('authBridgeEnrollBtn').addEventListener('click', bridgeEnrollFromUi)
 }
 
+// The pairing endpoint answers with a stable `code` beside its English
+// `error` sentence. Translate on the code, never on the sentence: the wording
+// is free to change, the code is the contract. An unknown code falls back to
+// the server's own sentence rather than to a blank line or a raw key, so a
+// server error added later degrades to English instead of disappearing.
+function bridgeEnrollErrorText(data) {
+  const code = data && typeof data.code === 'string' ? data.code : ''
+  if (code) {
+    const key = `auth.bridge.err.${code}`
+    const translated = t(key, (data && data.params) || {})
+    if (translated !== key) return translated
+  }
+  return (data && data.error) || t('auth.card.err_generic')
+}
+
 async function bridgeEnrollFromUi() {
   const msg = document.getElementById('authBridgeMsg')
   const out = document.getElementById('authBridgeBundle')
@@ -13470,7 +14800,7 @@ async function bridgeEnrollFromUi() {
       body: JSON.stringify(hostOverride ? { key_line: keyLine, name, host: hostOverride } : { key_line: keyLine, name }),
     })
     const data = await r.json().catch(() => ({}))
-    if (!r.ok) { msg.classList.add('err'); msg.textContent = data.error || t('auth.card.err_generic'); return }
+    if (!r.ok) { msg.classList.add('err'); msg.textContent = bridgeEnrollErrorText(data); return }
     msg.classList.add('ok')
     msg.textContent = (data.action === 'replaced' ? t('auth.bridge.repaired') : t('auth.bridge.paired')) +
       (data.warnings && data.warnings.length ? ` (${data.warnings.join('; ')})` : '')
@@ -13532,6 +14862,7 @@ async function refreshDeviceKeyList() {
       const lastUsed = k.lastUsedAt ? new Date(k.lastUsedAt * 1000).toLocaleString() : t('auth.devices.never_used')
       const expires = k.expiresAt ? ` &middot; ${t('auth.devices.expires', { date: new Date(k.expiresAt * 1000).toLocaleDateString() })}` : ''
       const bridge = k.installId ? ` <span class="auth-device-bridge-badge">${t('auth.devices.bridge_badge')}</span>` : ''
+        + (k.scope === 'operator' ? ` <span class="auth-device-bridge-badge">${t('auth.operator.badge')}</span>` : '')
       return `<div class="auth-session-row auth-device-row" data-key-id="${k.id}">` +
         `<span class="auth-device-name">${escapeHtml(k.name)}${bridge}</span>` +
         `<span class="auth-device-meta">${created} &middot; ${t('auth.devices.last_used', { date: lastUsed })}${expires}</span>` +
@@ -13595,6 +14926,115 @@ async function mintDeviceKey() {
         await navigator.clipboard.writeText(data.key)
         document.getElementById('authDevCopyBtn').textContent = t('auth.devices.copied')
       } catch { document.getElementById('authDevMintedKey').select() }
+    })
+    refreshDeviceKeyList()
+  } catch { msg.classList.add('err'); msg.textContent = t('auth.login.err_network') }
+}
+
+// === IT operator access (DASHOPERATOR1005) ===
+// The owner decides what an IT operator may do: one switch per capability,
+// all OFF by default, and the whole surface OFF until "enabled". An operator
+// key reaches /operator and /api/operator/* only (the server enforces it), and
+// it always expires.
+
+const OPERATOR_CAPS = ['agentControl', 'mainAgentRestart', 'update', 'vaultWrite', 'vaultOverwrite', 'paneView', 'commands']
+const OPERATOR_CMDS = ['login', 'mcp']
+
+function renderOperatorAccessSection(body) {
+  const wrap = document.createElement('div')
+  wrap.className = 'auth-device-keys'
+  wrap.id = 'authOperatorAccess'
+  wrap.innerHTML =
+    `<div class="auth-sessions-title">${t('auth.operator.title')}</div>` +
+    `<p class="auth-muted">${t('auth.operator.desc')}</p>` +
+    `<label class="auth-operator-switch"><input type="checkbox" id="opAccEnabled"> <strong>${t('auth.operator.enabled')}</strong></label>` +
+    `<div id="opAccCaps">` +
+      OPERATOR_CAPS.map((c) => `<label class="auth-operator-switch"><input type="checkbox" data-op-cap="${escapeHtml(c)}"> ${escapeHtml(t('auth.operator.cap.' + c))}</label>`).join('') +
+      `<div class="auth-muted" style="margin-left:1.5em">` +
+        OPERATOR_CMDS.map((c) => `<label class="auth-operator-switch"><input type="checkbox" data-op-cmd="${escapeHtml(c)}"> /${escapeHtml(c)}</label>`).join(' ') +
+      `</div>` +
+    `</div>` +
+    `<div class="auth-form-msg" id="opAccMsg"></div>` +
+    `<div class="auth-form auth-device-mint">` +
+      `<input id="opKeyName" type="text" autocapitalize="off" spellcheck="false" maxlength="64" placeholder="${t('auth.operator.name_placeholder')}">` +
+      `<input id="opKeyExpiry" type="number" min="1" max="365" placeholder="${t('auth.operator.expiry_placeholder')}">` +
+      `<button class="btn-secondary" id="opKeyMintBtn">${t('auth.operator.mint')}</button>` +
+      `<div class="auth-form-msg" id="opKeyMsg"></div>` +
+      `<div id="opKeyMinted" hidden></div>` +
+    `</div>`
+  body.appendChild(wrap)
+  wrap.querySelectorAll('input[type=checkbox]').forEach((cb) => cb.addEventListener('change', saveOperatorAccess))
+  document.getElementById('opKeyMintBtn').addEventListener('click', mintOperatorKey)
+  loadOperatorAccess()
+}
+
+function applyOperatorAccess(a) {
+  document.getElementById('opAccEnabled').checked = !!a.enabled
+  for (const c of OPERATOR_CAPS) document.querySelector(`[data-op-cap="${CSS.escape(String(c))}"]`).checked = !!(a.capabilities && a.capabilities[c])
+  for (const c of OPERATOR_CMDS) document.querySelector(`[data-op-cmd="${CSS.escape(String(c))}"]`).checked = (a.commands || []).includes(c)
+  document.getElementById('opAccCaps').style.opacity = a.enabled ? '1' : '0.5'
+}
+
+async function loadOperatorAccess() {
+  try {
+    const r = await fetch('/api/operator-access')
+    if (r.ok) applyOperatorAccess(await r.json())
+  } catch { /* the section stays at its unchecked defaults */ }
+}
+
+async function saveOperatorAccess(ev) {
+  const msg = document.getElementById('opAccMsg')
+  msg.className = 'auth-form-msg'
+  // Turning on the pane view shows the operator the conversation itself: ask first.
+  if (ev && ev.target && ev.target.dataset.opCap === 'paneView' && ev.target.checked && !confirm(t('auth.operator.pane_warning'))) {
+    ev.target.checked = false
+    return
+  }
+  const next = {
+    enabled: document.getElementById('opAccEnabled').checked,
+    capabilities: Object.fromEntries(OPERATOR_CAPS.map((c) => [c, document.querySelector(`[data-op-cap="${CSS.escape(String(c))}"]`).checked])),
+    commands: OPERATOR_CMDS.filter((c) => document.querySelector(`[data-op-cmd="${CSS.escape(String(c))}"]`).checked),
+  }
+  try {
+    const r = await fetch('/api/operator-access', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(next) })
+    if (!r.ok) throw new Error(String(r.status))
+    applyOperatorAccess(await r.json())
+    msg.classList.add('ok'); msg.textContent = t('auth.operator.saved')
+  } catch {
+    msg.classList.add('err'); msg.textContent = t('auth.card.err_generic')
+    loadOperatorAccess()
+  }
+}
+
+async function mintOperatorKey() {
+  const msg = document.getElementById('opKeyMsg')
+  const minted = document.getElementById('opKeyMinted')
+  const name = (document.getElementById('opKeyName').value || '').trim()
+  const expiryRaw = document.getElementById('opKeyExpiry').value
+  msg.className = 'auth-form-msg'
+  minted.hidden = true
+  if (!name) { msg.classList.add('err'); msg.textContent = t('auth.devices.err_name'); return }
+  const payload = { name, scope: 'operator' }
+  if (expiryRaw) payload.expires_in_days = Number(expiryRaw)
+  try {
+    const r = await fetch('/api/auth/device-keys', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+    const data = await r.json().catch(() => ({}))
+    if (!r.ok) { msg.classList.add('err'); msg.textContent = data.error || t('auth.card.err_generic'); return }
+    document.getElementById('opKeyName').value = ''
+    document.getElementById('opKeyExpiry').value = ''
+    const url = `${location.origin}/operator`
+    minted.hidden = false
+    minted.innerHTML =
+      `<p class="auth-muted">${t('auth.operator.minted_hint', { date: new Date(data.expires_at * 1000).toLocaleDateString(), url: escapeHtml(url) })}</p>` +
+      `<div class="auth-form auth-device-minted-row">` +
+        `<input id="opKeyMintedVal" type="text" readonly value="${escapeHtml(data.key)}" onclick="this.select()">` +
+        `<button class="btn-secondary btn-compact" id="opKeyCopyBtn">${t('auth.devices.copy')}</button>` +
+      `</div>`
+    document.getElementById('opKeyCopyBtn').addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(data.key)
+        document.getElementById('opKeyCopyBtn').textContent = t('auth.devices.copied')
+      } catch { document.getElementById('opKeyMintedVal').select() }
     })
     refreshDeviceKeyList()
   } catch { msg.classList.add('err'); msg.textContent = t('auth.login.err_network') }
@@ -13782,7 +15222,13 @@ async function loadSettings() {
     const securityDefs = byModule.get('security') ?? []
     byModule.delete('security')
 
-    const allModules = [...byModule.keys(), 'security', 'autonomy']
+    // module:'claude-plans' is just the CLAUDE_ROTATION_ENABLED toggle (PR2b)
+    // -- it renders below the plan-list widget in the synthetic Claude Plans
+    // tab, same pattern as securityDefs above.
+    const claudePlansDefs = byModule.get('claude-plans') ?? []
+    byModule.delete('claude-plans')
+
+    const allModules = [...byModule.keys(), 'security', 'autonomy', 'claude-plans']
     const savedTab = localStorage.getItem(SETTINGS_ACTIVE_TAB_KEY) || allModules[0]
     const activeTab = allModules.includes(savedTab) ? savedTab : allModules[0]
 
@@ -13889,6 +15335,71 @@ async function loadSettings() {
         renderAutonomyContent(grid, footer)
       }
     }
+
+    // Claude Plans tab (PR2b): synthetic like autonomy/security -- a hand-built
+    // plan-list + add-form widget, with the CLAUDE_ROTATION_ENABLED toggle
+    // (claudePlansDefs) appended below it exactly like security appends its
+    // registry keys after the auth card.
+    {
+      const mod = 'claude-plans'
+      const btn = document.createElement('button')
+      btn.className = 'tab-btn' + (mod === activeTab ? ' active' : '')
+      btn.dataset.tab = mod
+      btn.textContent = settingsModuleLabel(mod)
+      btn.addEventListener('click', () => activateSettingsTab(mod))
+      tabNav.appendChild(btn)
+
+      const panel = document.createElement('div')
+      panel.className = 'tab-panel'
+      panel.id = `settings-panel-${mod}`
+      panel.hidden = mod !== activeTab
+
+      const body = document.createElement('div')
+      body.className = 'settings-group'
+      body.id = 'claudePlansBody'
+      panel.appendChild(body)
+
+      if (claudePlansDefs.length) {
+        const group = document.createElement('div')
+        group.className = 'settings-group'
+        for (const def of claudePlansDefs) {
+          group.appendChild(buildSettingRow(def))
+        }
+        panel.appendChild(group)
+      }
+
+      tabPanels.appendChild(panel)
+
+      if (mod === activeTab) {
+        renderClaudePlansPanel(body)
+      }
+    }
+
+    // Providers tab (synthetic, owner-only feature for custom Anthropic-compatible endpoints)
+    {
+      const mod = 'providers'
+      const btn = document.createElement('button')
+      btn.className = 'tab-btn' + (mod === activeTab ? ' active' : '')
+      btn.dataset.tab = mod
+      btn.textContent = 'Provider-ok'
+      btn.addEventListener('click', () => activateSettingsTab(mod))
+      tabNav.appendChild(btn)
+
+      const panel = document.createElement('div')
+      panel.className = 'tab-panel'
+      panel.id = `settings-panel-${mod}`
+      panel.hidden = mod !== activeTab
+
+      const container = document.createElement('div')
+      container.id = 'settingsProvidersContainer'
+      panel.appendChild(container)
+
+      tabPanels.appendChild(panel)
+
+      if (mod === activeTab) {
+        renderProvidersContent(container)
+      }
+    }
   } catch (err) {
     tabPanels.innerHTML = `<p style="padding:24px;color:var(--danger)">${t('settings.error')}</p>`
   }
@@ -13908,6 +15419,679 @@ function activateSettingsTab(mod) {
     const footer = document.getElementById('settingsAutonomyUpdatedAt')
     if (grid && !grid.innerHTML.trim()) renderAutonomyContent(grid, footer)
   }
+  if (mod === 'claude-plans') {
+    const body = document.getElementById('claudePlansBody')
+    if (body && !body.innerHTML.trim()) renderClaudePlansPanel(body)
+  }
+  if (mod === 'providers') {
+    const container = document.getElementById('settingsProvidersContainer')
+    if (container && !container.innerHTML.trim()) renderProvidersContent(container)
+  }
+}
+
+// Claude Plans tab (PR2b): plan-list + add-form widget over
+// store/claude-plans.json, plus GET /api/claude-plans/state for the
+// active-plan / last-known-usage badges. The "active" dot reflects the MAIN
+// agent's entry in activePlanByAgent (PR2c, design decision #1: the state is
+// per-agent, but this tab only shows the one that also drives the dashboard
+// header). Each non-active, channels-allowed plan has a "switch to this
+// plan" button (switchToClaudePlan -> POST /api/claude-plans/rotate): the
+// manual path, and the first assignment the rotation heartbeat needs before
+// it can decide anything. Automatic rotation is the heartbeat's job.
+async function renderClaudePlansPanel(body) {
+  body.innerHTML = `
+    <p style="color:var(--text-muted);font-size:13px;margin:0 0 16px">${t('settings.claude_plans.intro')}</p>
+    <div id="claudePlansReadiness" class="claude-plans-readiness-banner" role="alert" hidden></div>
+    <div id="claudePlansList"></div>
+    <div class="claude-plans-add-form">
+      <div class="claude-plans-form-title" id="cpFormTitle">${t('settings.claude_plans.form.title_add')}</div>
+      <div class="form-row">
+        <div class="form-group" style="flex:1">
+          <label>${t('settings.claude_plans.form.id')}</label>
+          <input class="input" id="cpFormId" placeholder="personal-2" autocomplete="off">
+        </div>
+        <div class="form-group" style="flex:1">
+          <label>${t('settings.claude_plans.form.label')}</label>
+          <input class="input" id="cpFormLabel" placeholder="Second Pro" autocomplete="off">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="form-group" style="flex:1">
+          <label>${t('settings.claude_plans.form.mode')}</label>
+          <select class="input" id="cpFormMode">
+            <option value="token">${t('settings.claude_plans.form.mode_token')}</option>
+            <option value="configDir">${t('settings.claude_plans.form.mode_config_dir')}</option>
+          </select>
+        </div>
+        <div class="form-group" style="flex:1">
+          <label>${t('settings.claude_plans.form.type')}</label>
+          <select class="input" id="cpFormType">
+            <option value="personal">${t('settings.claude_plans.form.type_personal')}</option>
+            <option value="team">${t('settings.claude_plans.form.type_team')}</option>
+          </select>
+        </div>
+      </div>
+      <div class="form-group" id="cpFormTokenGroup">
+        <label for="cpFormToken">${t('settings.claude_plans.form.token')}</label>
+        <input class="input" id="cpFormToken" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-oat01-…">
+        <div class="claude-plans-form-hint" id="cpFormTokenHint">${t('settings.claude_plans.form.token_hint')}</div>
+      </div>
+      <div class="form-group" id="cpFormConfigDirGroup" hidden>
+        <label for="cpFormConfigDir">${t('settings.claude_plans.form.config_dir')}</label>
+        <input class="input" id="cpFormConfigDir" placeholder="~/.claude-second" autocomplete="off">
+      </div>
+      <label class="claude-plans-checkbox-row">
+        <input type="checkbox" id="cpFormChannelsAllowed" checked>
+        <span>${t('settings.claude_plans.form.channels_allowed')}</span>
+      </label>
+      <div id="cpFormError" class="settings-row-error" hidden></div>
+      <div class="claude-plans-form-actions">
+        <button class="btn-secondary btn-compact" id="cpFormAddBtn">${t('settings.claude_plans.form.add_btn')}</button>
+        <button class="btn-secondary btn-compact" id="cpFormCancelBtn" hidden>${t('common.btn.cancel')}</button>
+      </div>
+    </div>
+  `
+
+  document.getElementById('cpFormMode').addEventListener('change', () => syncClaudePlanFormMode())
+  document.getElementById('cpFormAddBtn').addEventListener('click', () => saveClaudePlan())
+  document.getElementById('cpFormCancelBtn').addEventListener('click', () => resetClaudePlanForm())
+  for (const id of ['cpFormId', 'cpFormLabel', 'cpFormConfigDir', 'cpFormToken']) {
+    document.getElementById(id).addEventListener('keydown', (e) => { if (e.key === 'Enter') saveClaudePlan() })
+  }
+  claudePlanFormEditing = null
+  syncClaudePlanFormMode()
+
+  await loadClaudePlansList()
+}
+
+// The plan being edited in the form (the GET /api/claude-plans object), or
+// null while the form is in "add" mode. Only the plan's public shape is kept
+// here -- the raw token is never returned by the API and never pre-filled.
+let claudePlanFormEditing = null
+
+// Pure: form fields (+ the plan being edited, if any) -> the POST/PUT body,
+// or an i18n error key. Contract of src/web/routes/claude-plans.ts:
+//   - config-dir mode sends `configDir`;
+//   - token mode sends the raw `token` (moved into the vault server-side as
+//     claude-plan-token-<id>, never written to disk or echoed back);
+//   - token mode on EDIT with the token field left empty keeps the stored
+//     token by sending the plan's own `tokenSecretId` instead (the PUT
+//     replaces the whole plan, and a body with neither configDir nor
+//     token/tokenSecretId is rejected);
+//   - never both `token` and `configDir` (the route 400s that as ambiguous).
+function buildClaudePlanRequestBody(fields, editing) {
+  const id = editing ? editing.id : String(fields.id || '').trim()
+  const label = String(fields.label || '').trim()
+  const body = { id, label, planType: fields.planType, channelsAllowed: !!fields.channelsAllowed }
+  if (!id || !label) return { error: 'settings.claude_plans.form.error_required' }
+  if (fields.mode === 'token') {
+    const token = String(fields.token || '').trim()
+    if (token) {
+      body.token = token
+    } else if (editing && editing.tokenSecretId) {
+      body.tokenSecretId = editing.tokenSecretId
+    } else {
+      return { error: 'settings.claude_plans.form.error_token_required' }
+    }
+  } else {
+    const configDir = String(fields.configDir || '').trim()
+    if (!configDir) return { error: 'settings.claude_plans.form.error_config_dir_required' }
+    body.configDir = configDir
+  }
+  return { body, sendsNewToken: typeof body.token === 'string' }
+}
+
+function syncClaudePlanFormMode() {
+  const mode = document.getElementById('cpFormMode')?.value
+  const tokenGroup = document.getElementById('cpFormTokenGroup')
+  const dirGroup = document.getElementById('cpFormConfigDirGroup')
+  if (!tokenGroup || !dirGroup) return
+  tokenGroup.hidden = mode !== 'token'
+  dirGroup.hidden = mode === 'token'
+  const hasStoredToken = !!claudePlanFormEditing?.tokenSecretId
+  const hint = document.getElementById('cpFormTokenHint')
+  if (hint) {
+    hint.textContent = t(hasStoredToken
+      ? 'settings.claude_plans.form.token_keep_hint'
+      : 'settings.claude_plans.form.token_hint')
+  }
+  // A stored token reads as masked dots, not as an example value to type.
+  const tokenEl = document.getElementById('cpFormToken')
+  if (tokenEl) tokenEl.placeholder = hasStoredToken ? '••••••••••••' : 'sk-ant-oat01-…'
+}
+
+function resetClaudePlanForm() {
+  claudePlanFormEditing = null
+  const idEl = document.getElementById('cpFormId')
+  if (!idEl) return
+  idEl.value = ''
+  idEl.disabled = false
+  document.getElementById('cpFormLabel').value = ''
+  document.getElementById('cpFormConfigDir').value = ''
+  document.getElementById('cpFormToken').value = ''
+  document.getElementById('cpFormMode').value = 'token'
+  document.getElementById('cpFormType').value = 'personal'
+  document.getElementById('cpFormChannelsAllowed').checked = true
+  document.getElementById('cpFormTitle').textContent = t('settings.claude_plans.form.title_add')
+  document.getElementById('cpFormAddBtn').textContent = t('settings.claude_plans.form.add_btn')
+  document.getElementById('cpFormCancelBtn').hidden = true
+  document.getElementById('cpFormError').hidden = true
+  syncClaudePlanFormMode()
+}
+
+function editClaudePlan(plan) {
+  claudePlanFormEditing = plan
+  const idEl = document.getElementById('cpFormId')
+  if (!idEl) return
+  idEl.value = plan.id
+  idEl.disabled = true
+  document.getElementById('cpFormLabel').value = plan.label
+  document.getElementById('cpFormMode').value = plan.tokenSecretId ? 'token' : 'configDir'
+  document.getElementById('cpFormConfigDir').value = plan.configDir || ''
+  // Never pre-filled: the API does not return the token, and an empty field
+  // on save means "keep the stored one" (buildClaudePlanRequestBody).
+  document.getElementById('cpFormToken').value = ''
+  document.getElementById('cpFormType').value = plan.planType === 'team' ? 'team' : 'personal'
+  document.getElementById('cpFormChannelsAllowed').checked = !!plan.channelsAllowed
+  document.getElementById('cpFormTitle').textContent = t('settings.claude_plans.form.title_edit', { id: plan.id })
+  document.getElementById('cpFormAddBtn').textContent = t('common.btn.save')
+  document.getElementById('cpFormCancelBtn').hidden = false
+  document.getElementById('cpFormError').hidden = true
+  syncClaudePlanFormMode()
+  document.getElementById('cpFormLabel').focus()
+  document.querySelector('.claude-plans-add-form')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+}
+
+async function saveClaudePlan() {
+  const errEl = document.getElementById('cpFormError')
+  errEl.hidden = true
+  const editing = claudePlanFormEditing
+  const built = buildClaudePlanRequestBody({
+    id: document.getElementById('cpFormId').value,
+    label: document.getElementById('cpFormLabel').value,
+    mode: document.getElementById('cpFormMode').value,
+    configDir: document.getElementById('cpFormConfigDir').value,
+    token: document.getElementById('cpFormToken').value,
+    planType: document.getElementById('cpFormType').value,
+    channelsAllowed: document.getElementById('cpFormChannelsAllowed').checked,
+  }, editing)
+  if (built.error) {
+    errEl.textContent = t(built.error)
+    errEl.hidden = false
+    return
+  }
+
+  const url = editing ? `/api/claude-plans/${encodeURIComponent(editing.id)}` : '/api/claude-plans'
+  try {
+    const res = await fetch(url, {
+      method: editing ? 'PUT' : 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(built.body),
+    })
+    let data = null
+    try { data = await res.json() } catch { /* non-JSON error body */ }
+    if (!res.ok) {
+      errEl.textContent = (data && data.error) || t('settings.claude_plans.form.error_generic')
+      errEl.hidden = false
+      return
+    }
+    // The raw token leaves the DOM as soon as the server has it.
+    document.getElementById('cpFormToken').value = ''
+    const savedId = (data && data.id) || built.body.id
+    resetClaudePlanForm()
+    await loadClaudePlansList()
+    // A freshly pasted token: measure it right away, so the row shows its
+    // real 5h/7d usage (or "token rejected") instead of "not checked yet".
+    if (built.sendsNewToken && data && data.tokenSecretId) {
+      const btn = document.querySelector(`.claude-plan-row[data-plan-id="${CSS.escape(savedId)}"] .claude-plan-check-btn`)
+      if (btn) await probeClaudePlan(savedId, btn)
+    }
+  } catch {
+    errEl.textContent = t('settings.claude_plans.form.error_generic')
+    errEl.hidden = false
+  }
+}
+
+// POST /api/claude-plans/rotate for the main agent (agentId defaults to it
+// server-side). Restarts the main agent's session, hence the confirm.
+async function switchToClaudePlan(plan) {
+  if (!confirm(t('settings.claude_plans.confirm_switch', { label: plan.label }))) return
+  try {
+    const res = await fetch('/api/claude-plans/rotate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ targetPlanId: plan.id }),
+    })
+    let data = null
+    try { data = await res.json() } catch { /* non-JSON error body */ }
+    if (!res.ok) {
+      showToast((data && data.error) || t('settings.claude_plans.switch_error'), 'error')
+    } else {
+      showToast(t('settings.claude_plans.switch_done', { label: plan.label }))
+    }
+  } catch {
+    showToast(t('settings.claude_plans.switch_error'), 'error')
+  }
+  await loadClaudePlansList()
+}
+
+async function deleteClaudePlan(id) {
+  if (!confirm(t('settings.claude_plans.confirm_delete', { id }))) return
+  await fetch(`/api/claude-plans/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  if (claudePlanFormEditing?.id === id) resetClaudePlanForm()
+  await loadClaudePlansList()
+}
+
+// Live usage per plan (piece 1 of multi-key rotation): the 5h / 7d windows
+// last recorded for this plan -- by the rotation heartbeat while the plan is
+// active, or by a live probe (POST /api/claude-plans/:id/probe, "Check now")
+// while it is idle. A window whose reset has already passed is shown muted
+// with "window already reset", same rule as the overview quota strip: an old
+// number must not look like a current one.
+function claudePlanWindowLevel(w, nowSec) {
+  if (!w || typeof w.usedPercent !== 'number') return null
+  if (typeof w.resetsAt === 'number' && w.resetsAt <= nowSec) return 'ok'
+  if (w.usedPercent >= 100 || w.status === 'rejected') return 'exhausted'
+  if (w.usedPercent >= 80) return 'warn'
+  return 'ok'
+}
+
+function claudePlanUsageLevel(observed) {
+  const windows = observed?.windows || {}
+  const nowSec = Math.floor(Date.now() / 1000)
+  const levels = [windows.five_hour, windows.seven_day].map((w) => claudePlanWindowLevel(w, nowSec)).filter(Boolean)
+  if (!levels.length) return null
+  if (levels.includes('exhausted')) return 'exhausted'
+  if (levels.includes('warn')) return 'warn'
+  return 'ok'
+}
+
+function renderClaudePlanUsage(plan, observed) {
+  const wrap = document.createElement('div')
+  wrap.className = 'claude-plan-usage'
+  const nowSec = Math.floor(Date.now() / 1000)
+  const windows = observed?.windows || {}
+
+  const bars = document.createElement('div')
+  bars.className = 'quota-bars'
+  for (const [labelKey, w] of [['overview.quota.five_hour', windows.five_hour], ['overview.quota.seven_day', windows.seven_day]]) {
+    if (!w || typeof w.usedPercent !== 'number') continue
+    const pct = Math.max(0, Math.min(100, Math.round(w.usedPercent)))
+    const expired = typeof w.resetsAt === 'number' && w.resetsAt <= nowSec
+    const lvl = claudePlanWindowLevel(w, nowSec)
+    const fillClass = expired ? '' : (lvl === 'exhausted' ? 'danger' : lvl === 'warn' ? 'warn' : '')
+    let tail = ''
+    if (expired) {
+      tail = ' · ' + t('overview.quota.expired')
+    } else if (typeof w.resetsAt === 'number') {
+      const at = new Date(w.resetsAt * 1000).toLocaleString(_lang === 'en' ? 'en-US' : 'hu-HU', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+      tail = ' · ' + t('settings.claude_plans.resets', { d: formatDurationShort(w.resetsAt - nowSec), at })
+    }
+    const row = document.createElement('div')
+    row.className = 'quota-bar' + (expired ? ' muted' : '')
+    row.innerHTML = `
+      <div class="quota-bar-label">${escapeHtml(t(labelKey))}</div>
+      <div class="quota-bar-track"><div class="quota-bar-fill ${fillClass}" style="width:${pct}%"></div></div>
+      <div class="quota-bar-value">${pct}%<span class="quota-bar-reset">${escapeHtml(tail)}</span></div>
+    `
+    bars.appendChild(row)
+  }
+  if (bars.children.length) wrap.appendChild(bars)
+
+  const foot = document.createElement('div')
+  foot.className = 'claude-plan-usage-foot'
+  const info = document.createElement('span')
+  const checkedAt = Math.max(observed?.observedAt || 0, observed?.lastProbe?.at || 0)
+  const parts = []
+  if (checkedAt > 0) {
+    parts.push(t('settings.claude_plans.checked', { age: formatPendingAge(Date.now() - checkedAt) }))
+  } else {
+    parts.push(t('settings.claude_plans.never_checked'))
+  }
+  const lp = observed?.lastProbe
+  if (lp && !lp.ok && lp.error !== 'rate_limited') {
+    parts.push(t('settings.claude_plans.probe_error.' + (lp.error || 'http_error'), { status: lp.httpStatus ?? '' }))
+    info.className = 'claude-plan-usage-error'
+  }
+  info.textContent = parts.join(' · ')
+  foot.appendChild(info)
+
+  const btn = document.createElement('button')
+  btn.className = 'btn-secondary btn-compact claude-plan-check-btn'
+  btn.textContent = t('settings.claude_plans.check_now')
+  if (!plan.tokenSecretId) {
+    btn.disabled = true
+    btn.title = t('settings.claude_plans.check_needs_token')
+  } else {
+    btn.addEventListener('click', () => probeClaudePlan(plan.id, btn))
+  }
+  foot.appendChild(btn)
+  wrap.appendChild(foot)
+  return wrap
+}
+
+async function probeClaudePlan(id, btn) {
+  const original = btn.textContent
+  btn.disabled = true
+  btn.textContent = t('settings.claude_plans.checking')
+  try {
+    const res = await fetch(`/api/claude-plans/${encodeURIComponent(id)}/probe`, { method: 'POST' })
+    if (!res.ok) {
+      let data = null
+      try { data = await res.json() } catch { /* non-JSON error body */ }
+      // A 502 is an upstream verdict (e.g. token rejected) already recorded in
+      // the state side-car; the reloaded row shows it. Anything else (404/409/
+      // 422) is not recorded, so surface it here.
+      // A 429 is the per-plan probe throttle: the reloaded row already shows
+      // the last measurement, so just say why nothing new happened.
+      if (res.status === 429) showToast(t('settings.claude_plans.probe_throttled'))
+      else if (res.status !== 502) showToast((data && data.error) || t('settings.claude_plans.probe_failed'))
+    }
+  } catch {
+    showToast(t('settings.claude_plans.probe_failed'))
+  }
+  btn.textContent = original
+  await loadClaudePlansList()
+}
+
+// Pure: GET /api/claude-plans/readiness -> the banner's lines, or null when
+// no banner belongs on screen. Shown only while rotation is ON but something
+// keeps it inert (with rotation off there is nothing to warn about: the
+// toggle itself says so). Known codes get the localized text; an unknown one
+// falls back to the server's own Hungarian message rather than vanishing.
+function claudePlansReadinessLines(readiness) {
+  if (!readiness || readiness.ready) return null
+  const codes = Array.isArray(readiness.blockers) ? readiness.blockers : []
+  if (!codes.length || codes.includes('rotation_disabled')) return null
+  const details = Array.isArray(readiness.details) ? readiness.details : []
+  return codes.map((code) => {
+    const key = 'settings.claude_plans.readiness.' + code
+    const text = t(key)
+    if (text !== key) return text
+    const d = details.find((x) => x && x.code === code)
+    return (d && d.message) || code
+  })
+}
+
+async function loadClaudePlansReadiness() {
+  const el = document.getElementById('claudePlansReadiness')
+  if (!el) return
+  let lines = null
+  try {
+    const res = await fetch('/api/claude-plans/readiness')
+    if (res.ok) lines = claudePlansReadinessLines(await res.json())
+  } catch { /* banner is advisory: no answer, no banner */ }
+  if (!lines) {
+    el.hidden = true
+    el.innerHTML = ''
+    return
+  }
+  el.innerHTML = `<div class="claude-plans-readiness-title">${escapeHtml(t('settings.claude_plans.readiness.title'))}</div>`
+    + `<ul>${lines.map((l) => `<li>${escapeHtml(l)}</li>`).join('')}</ul>`
+  el.hidden = false
+}
+
+async function loadClaudePlansList() {
+  const list = document.getElementById('claudePlansList')
+  if (!list) return
+  // Plan count and channelsAllowed feed the readiness report, so it is
+  // refreshed together with the list (add/edit/delete all end up here).
+  loadClaudePlansReadiness()
+  list.innerHTML = `<p style="color:var(--text-muted);font-size:13px">${t('common.loading')}</p>`
+  try {
+    const [plansRes, stateRes] = await Promise.all([
+      fetch('/api/claude-plans'),
+      fetch('/api/claude-plans/state'),
+    ])
+    const plans = plansRes.ok ? await plansRes.json() : []
+    const state = stateRes.ok ? await stateRes.json() : { activePlanByAgent: {}, plans: {} }
+
+    if (!plans.length) {
+      list.innerHTML = `<p style="color:var(--text-muted);font-size:13px">${t('settings.claude_plans.empty')}</p>`
+      return
+    }
+
+    list.innerHTML = ''
+    for (const plan of plans) {
+      const observed = state.plans?.[plan.id]
+      const level = claudePlanUsageLevel(observed)
+      const isActive = state.activePlanByAgent?.[mainAgentId()] === plan.id
+
+      const row = document.createElement('div')
+      row.className = 'claude-plan-row'
+      row.dataset.planId = plan.id
+
+      const main = document.createElement('div')
+      main.style.flex = '1'
+      const mainLine = document.createElement('div')
+      mainLine.className = 'claude-plan-row-main'
+      mainLine.innerHTML = `
+        ${isActive ? `<span class="claude-plan-active-dot" title="${t('settings.claude_plans.active')}"></span>` : ''}
+        <strong>${escapeHtml(plan.label)}</strong>
+        <span class="claude-plan-badge">${plan.planType === 'team' ? t('settings.claude_plans.form.type_team') : t('settings.claude_plans.form.type_personal')}</span>
+        ${!plan.channelsAllowed ? `<span class="claude-plan-badge claude-plan-badge-muted">${t('settings.claude_plans.no_channels')}</span>` : ''}
+        ${level ? `<span class="claude-plan-badge claude-plan-status-${level}">${t('settings.claude_plans.status.' + level)}</span>` : ''}
+      `
+      main.appendChild(mainLine)
+
+      const meta = document.createElement('div')
+      meta.className = 'claude-plan-row-meta'
+      meta.textContent = `${plan.id} · ${plan.tokenSecretId ? t('settings.claude_plans.token_mode') : plan.configDir}`
+      main.appendChild(meta)
+
+      main.appendChild(renderClaudePlanUsage(plan, observed))
+
+      row.appendChild(main)
+
+      const actions = document.createElement('div')
+      actions.className = 'claude-plan-actions'
+      const editBtn = document.createElement('button')
+      editBtn.className = 'claude-plan-edit'
+      editBtn.title = t('common.btn.edit')
+      editBtn.setAttribute('aria-label', t('common.btn.edit'))
+      editBtn.textContent = '✎'
+      editBtn.addEventListener('click', () => editClaudePlan(plan))
+      actions.appendChild(editBtn)
+
+      // Manual switch (also the first assignment the rotation heartbeat
+      // needs before it can decide anything, see readiness no_active_plan).
+      // Only for a plan that may run the channel and is not already active.
+      if (plan.channelsAllowed && !isActive) {
+        const switchBtn = document.createElement('button')
+        switchBtn.className = 'btn-secondary btn-compact claude-plan-switch-btn'
+        switchBtn.textContent = t('settings.claude_plans.switch_btn')
+        switchBtn.title = t('settings.claude_plans.switch_btn')
+        switchBtn.addEventListener('click', () => switchToClaudePlan(plan))
+        actions.appendChild(switchBtn)
+      }
+
+      const delBtn = document.createElement('button')
+      delBtn.className = 'claude-plan-delete'
+      delBtn.title = t('common.btn.delete')
+      delBtn.textContent = '×'
+      delBtn.addEventListener('click', () => deleteClaudePlan(plan.id))
+      actions.appendChild(delBtn)
+      row.appendChild(actions)
+
+      list.appendChild(row)
+    }
+  } catch {
+    list.innerHTML = `<p style="color:var(--danger);font-size:13px">${t('settings.error')}</p>`
+  }
+}
+
+
+async function renderProvidersContent(container) {
+  container.innerHTML = '<p style="padding:16px;color:var(--text-muted);font-size:13px">Betöltés...</p>'
+  try {
+    const res = await fetch('/api/custom-providers')
+    if (!res.ok) throw new Error('fetch failed')
+    const { providers } = await res.json()
+    buildProvidersUI(container, providers)
+  } catch {
+    container.innerHTML = '<p style="padding:16px;color:var(--danger);font-size:13px">Hiba a provider lista betöltésekor.</p>'
+  }
+}
+
+function buildProvidersUI(container, providers) {
+  container.innerHTML = ''
+
+  const notice = document.createElement('p')
+  notice.style.cssText = 'font-size:12.5px;color:var(--text-muted);padding:12px 0 8px;line-height:1.5'
+  notice.textContent = 'Egyéni Anthropic Messages API (/v1/messages) kompatibilis végpontok. Tiszta OpenAI végponthoz proxy szükséges.'
+  container.appendChild(notice)
+
+  if (providers.length > 0) {
+    const tableWrap = document.createElement('div')
+    tableWrap.style.cssText = 'overflow-x:auto;margin-bottom:16px'
+    const table = document.createElement('table')
+    table.style.cssText = 'width:100%;min-width:520px;border-collapse:collapse;font-size:13px'
+    table.innerHTML = `<thead><tr style="border-bottom:1px solid var(--border)">
+      <th style="text-align:left;padding:6px 8px">Név</th>
+      <th style="text-align:left;padding:6px 8px">Base URL</th>
+      <th style="text-align:left;padding:6px 8px">Auth</th>
+      <th style="text-align:left;padding:6px 8px">Vault kulcs</th>
+      <th style="padding:6px 8px"></th>
+    </tr></thead><tbody id="customProvidersTableBody"></tbody>`
+    tableWrap.appendChild(table)
+    container.appendChild(tableWrap)
+    const tbody = table.querySelector('#customProvidersTableBody')
+    for (const p of providers) {
+      const tr = document.createElement('tr')
+      tr.style.borderBottom = '1px solid var(--border)'
+      tr.innerHTML = `
+        <td style="padding:6px 8px;font-weight:500">${escapeHtml(p.label)}</td>
+        <td style="padding:6px 8px;font-family:monospace;font-size:12px;word-break:break-all">${escapeHtml(p.baseUrl)}</td>
+        <td style="padding:6px 8px">${escapeHtml(p.authHeader)}</td>
+        <td style="padding:6px 8px;font-family:monospace;font-size:12px">${p.vaultKey ? escapeHtml(p.vaultKey) : '<em style="color:var(--text-muted)">nincs</em>'}</td>
+        <td style="padding:6px 8px;text-align:right;white-space:nowrap">
+          <button class="btn-secondary btn-compact" data-provider-edit="${escapeHtml(p.id)}" style="margin-right:4px">Szerkesztés</button>
+          <button class="btn-secondary btn-compact" style="color:var(--danger)" data-provider-delete="${escapeHtml(p.id)}">Törlés</button>
+        </td>`
+      tbody.appendChild(tr)
+    }
+    tbody.querySelectorAll('[data-provider-edit]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const id = btn.dataset.providerEdit
+        const p = providers.find(x => x.id === id)
+        if (p) openAddProviderModal(container, p)
+      })
+    })
+    tbody.querySelectorAll('[data-provider-delete]').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const id = btn.dataset.providerDelete
+        if (!confirm(`Biztosan törlöd a(z) "${id}" providert?`)) return
+        try {
+          const r = await fetch(`/api/custom-providers/${encodeURIComponent(id)}`, { method: 'DELETE' })
+          if (!r.ok) throw new Error()
+          renderProvidersContent(container)
+          loadAvailableModels()
+        } catch { alert('Hiba a törléskor.') }
+      })
+    })
+  } else {
+    const empty = document.createElement('p')
+    empty.style.cssText = 'color:var(--text-muted);font-size:13px;padding:8px 0 16px'
+    empty.textContent = 'Nincs egyéni provider konfigurálva.'
+    container.appendChild(empty)
+  }
+
+  const addBtn = document.createElement('button')
+  addBtn.className = 'btn-primary btn-compact'
+  addBtn.textContent = '+ Új provider'
+  addBtn.addEventListener('click', () => openAddProviderModal(container))
+  container.appendChild(addBtn)
+}
+
+function openAddProviderModal(container, editProvider = null) {
+  const existing = document.getElementById('addProviderModal')
+  if (existing) existing.remove()
+
+  const isEdit = editProvider !== null
+  const v = (field) => isEdit ? escapeHtml(editProvider[field] || '') : ''
+
+  const overlay = document.createElement('div')
+  overlay.id = 'addProviderModal'
+  overlay.className = 'modal-overlay active'
+  overlay.innerHTML = `
+    <div class="modal" style="max-width:480px">
+      <div class="modal-header">
+        <h2>${isEdit ? 'Provider szerkesztése' : 'Új egyéni provider'}</h2>
+        <button class="modal-close" id="addProviderModalClose">&times;</button>
+      </div>
+      <div class="modal-body" style="display:flex;flex-direction:column;gap:12px">
+        <div class="form-group">
+          <label class="form-label">Megjelenő név *</label>
+          <input type="text" id="cpLabel" class="input" placeholder="pl. DeepSeek (saját kulcs)" value="${v('label')}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Provider azonosító (belső név) * <small style="color:var(--text-muted)">(csak a-z 0-9 _ -)</small></label>
+          <input type="text" id="cpId" class="input" placeholder="pl. my-deepseek" value="${v('id')}"${isEdit ? ' readonly style="opacity:0.6;cursor:not-allowed"' : ''}>
+          <small style="display:block;margin-top:4px;color:var(--text-muted);font-size:12px">Ez a provider belső neve, nem a modellazonosító. A modellt az ágens szerkesztőjében adod meg.</small>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Base URL * <small style="color:var(--text-muted)">(https:// vagy http://localhost)</small></label>
+          <input type="text" id="cpBaseUrl" class="input" placeholder="https://api.deepseek.com/anthropic" value="${v('baseUrl')}">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Auth header *</label>
+          <select id="cpAuthHeader" class="input">
+            <option value="x-api-key"${isEdit && editProvider.authHeader === 'x-api-key' ? ' selected' : ''}>x-api-key (ANTHROPIC_API_KEY)</option>
+            <option value="Bearer"${isEdit && editProvider.authHeader === 'Bearer' ? ' selected' : ''}>Bearer (ANTHROPIC_AUTH_TOKEN)</option>
+            <option value="none"${isEdit && editProvider.authHeader === 'none' ? ' selected' : ''}>none (Ollama-szerű, token nélkül)</option>
+          </select>
+        </div>
+        <div class="form-group" id="cpVaultKeyGroup"${isEdit && editProvider.authHeader === 'none' ? ' style="display:none"' : ''}>
+          <label class="form-label">Vault kulcs neve *</label>
+          <input type="text" id="cpVaultKey" class="input" placeholder="pl. my-deepseek-api-key" value="${v('vaultKey')}">
+          <small style="display:block;margin-top:4px;color:var(--text-muted);font-size:12px">A kulcs értékét a Vault tabon veheted fel.</small>
+        </div>
+        <p style="font-size:12px;color:var(--text-muted);background:var(--surface-hover);padding:10px;border-radius:6px;line-height:1.5">
+          Csak Anthropic Messages API (/v1/messages) kompatibilis végpont működik. Tiszta OpenAI végponthoz (pl. /v1/chat/completions) fordítóproxy szükséges, az most nem támogatott.
+        </p>
+        <div style="display:flex;gap:8px;justify-content:flex-end">
+          <button class="btn-secondary" id="addProviderCancelBtn">Mégsem</button>
+          <button class="btn-primary" id="addProviderSaveBtn">Mentés</button>
+        </div>
+      </div>
+    </div>`
+  document.body.appendChild(overlay)
+
+  const closeModal = () => overlay.remove()
+  overlay.querySelector('#addProviderModalClose').addEventListener('click', closeModal)
+  overlay.querySelector('#addProviderCancelBtn').addEventListener('click', closeModal)
+
+  overlay.querySelector('#cpAuthHeader').addEventListener('change', (e) => {
+    const vkGroup = overlay.querySelector('#cpVaultKeyGroup')
+    vkGroup.style.display = e.target.value === 'none' ? 'none' : ''
+  })
+
+  overlay.querySelector('#addProviderSaveBtn').addEventListener('click', async () => {
+    const id = overlay.querySelector('#cpId').value.trim()
+    const label = overlay.querySelector('#cpLabel').value.trim()
+    const baseUrl = overlay.querySelector('#cpBaseUrl').value.trim()
+    const authHeader = overlay.querySelector('#cpAuthHeader').value
+    const vaultKey = authHeader !== 'none' ? overlay.querySelector('#cpVaultKey').value.trim() : null
+    if (!id || !label || !baseUrl || (authHeader !== 'none' && !vaultKey)) {
+      alert('Töltsd ki az összes kötelező mezőt.')
+      return
+    }
+    try {
+      const r = await fetch('/api/custom-providers', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, label, baseUrl, authHeader, vaultKey }),
+      })
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}))
+        alert(err.error || 'Hiba a mentéskor.')
+        return
+      }
+      overlay.remove()
+      renderProvidersContent(container)
+      loadAvailableModels()
+    } catch { alert('Hiba a mentéskor.') }
+  })
 }
 
 function buildSettingRow(def) {
@@ -14039,6 +16223,9 @@ async function saveAllSettings() {
   updateSettingsSaveBar()
 
   if (btn) { btn.disabled = false; btn.textContent = t('settings.btn.save') }
+  // The rotation toggle lives on the Claude plans tab and changes its
+  // readiness banner (and turning it on seeds the heartbeat task server-side).
+  loadClaudePlansReadiness()
   if (errors.length) {
     showToast(t('settings.toast.partial_error'), 'error')
   } else {
@@ -14049,7 +16236,7 @@ async function saveAllSettings() {
 function resetAllSettings() {
   for (const [key, { input, originalValue }] of settingsDirty) {
     input.value = originalValue
-    const errorEl = document.querySelector(`[data-setting-key="${key}"]`)?.closest('.settings-row')?.querySelector('.settings-row-error')
+    const errorEl = document.querySelector(`[data-setting-key="${CSS.escape(String(key))}"]`)?.closest('.settings-row')?.querySelector('.settings-row-error')
     if (errorEl) errorEl.textContent = ''
   }
   settingsDirty.clear()
@@ -14200,11 +16387,18 @@ const TU_MODEL_PRICING = {
   'claude-opus-4-6':     { in: 5.0,   out: 25.0,  cw: 6.25,  cr: 0.50 },
   // Opus 4.0 / 4.1 -- the last generation still on the old Opus pricing.
   'claude-opus-4':       { in: 15.0,  out: 75.0,  cw: 18.75, cr: 1.50 },
+  // Sonnet 5.5: 2 / 10, from the official models overview (2026-09-28).
+  'claude-sonnet-5-5':   { in: 2.0,   out: 10.0,  cw: 2.50,  cr: 0.20 },
   'claude-sonnet-5':     TU_SONNET5_PRICE,
   'claude-sonnet-4-6':   { in: 3.0,   out: 15.0,  cw: 3.75,  cr: 0.30 },
   'claude-sonnet-4-5':   { in: 3.0,   out: 15.0,  cw: 3.75,  cr: 0.30 },
   'claude-fable-5':      { in: 10.0,  out: 50.0,  cw: 12.50, cr: 1.00 },
   'claude-mythos-5':     { in: 10.0,  out: 50.0,  cw: 12.50, cr: 1.00 },
+  // Haiku 5.5, from the official pricing page (2026-10-08): prompts up to 100k
+  // tokens 0.10 / 0.50 (5m cache write 0.125, hit 0.01); prompts over 100k
+  // tokens 0.50 / 2.50. This table holds one price per model, so the <=100k
+  // tier is used and spend on >100k prompts is understated.
+  'claude-haiku-5-5':    { in: 0.10,  out: 0.50,  cw: 0.125, cr: 0.01 },
   'claude-haiku-4-5':    { in: 1.0,   out: 5.0,   cw: 1.25,  cr: 0.10 },
   default:               { in: 3.0,   out: 15.0,  cw: 3.75,  cr: 0.30 },
 }
@@ -14245,8 +16439,63 @@ const TU_MODEL_COLORS = ['#6366f1','#06b6d4','#f59e0b','#22c55e','#ef4444','#8b5
 
 function tuGetModelColor(idx) { return TU_MODEL_COLORS[idx % TU_MODEL_COLORS.length] }
 
+// Agents missing from TU_COLORS used to share the '#64748b' fallback, so on a
+// fleet whose agent names are not in the map every agent except the main one
+// rendered in the same grey and the stacked timeline could not show who used
+// what. Unlisted agents now get a distinct colour from this palette.
+//
+// The palette is disjoint from EVERY TU_COLORS value and from the chart's own
+// line colours, not only from the listed agents present in the current load:
+// the summary depends on the selected period, so a listed agent can appear
+// after a period switch, and a palette colour it shares would then belong to
+// two agents at once (review on #1646: 'geri' got #f59e0b on 1h, 'codi' showed
+// up with the same colour on 7d).
+const TU_RESERVED_COLORS = [
+  '#06b6d4', // 5h window line
+  '#8b5cf6', // weekly window line
+  '#3b82f6', // 5h reset marker
+  '#f59e0b', // day marker
+  '#ef4444', // week marker
+  '#64748b', // legacy grey fallback
+]
+const TU_EXTRA_PALETTE = [
+  '#f97316', '#84cc16', '#0ea5e9', '#d946ef', '#14b8a6', '#eab308',
+  '#78716c', '#be123c', '#a16207', '#15803d', '#1d4ed8', '#c2410c',
+  '#4d7c0f', '#7f1d1d', '#fb7185', '#92400e',
+]
+const tuAssignedColors = {}
+let tuGeneratedCount = 0
+
+// Past the palette, a generated hue instead of the grey: golden-angle steps
+// keep consecutive agents far apart on the wheel. Returned as an hsl() string,
+// which canvas and CSS both accept and which never equals a hex palette entry.
+function tuGeneratedColor(n) {
+  return `hsl(${Math.round((n * 137.508 + 20) % 360)}, 62%, 46%)`
+}
+
+// Called with the agent list of each summary load. Assignment is alphabetical
+// over the agents not yet coloured, so the same fleet gets the same colours on
+// every page load, and an agent keeps its colour for the life of the page even
+// if a later filter hides the others.
+function tuAssignColors(agents) {
+  const used = new Set([
+    ...Object.values(TU_COLORS),
+    ...TU_RESERVED_COLORS,
+    ...Object.values(tuAssignedColors),
+  ])
+  const pending = [...new Set(agents)]
+    .filter((a) => !TU_COLORS[a] && !tuAssignedColors[a])
+    .sort()
+  for (const a of pending) {
+    const free = TU_EXTRA_PALETTE.find((c) => !used.has(c))
+    const colour = free || tuGeneratedColor(tuGeneratedCount++)
+    tuAssignedColors[a] = colour
+    used.add(colour)
+  }
+}
+
 function tuGetColor(agent) {
-  return TU_COLORS[agent] || '#64748b'
+  return TU_COLORS[agent] || tuAssignedColors[agent] || '#64748b'
 }
 
 function tuMcpServerFromTool(toolName) {
@@ -14298,6 +16547,7 @@ async function loadTokenUsage() {
     const bTotal = (b.totalInput || 0) + (b.totalCacheRead || 0) + (b.totalCacheCreation || 0)
     return bTotal - aTotal
   })
+  tuAssignColors(summary.map((s) => s.agent))
   renderTuSummary(summary)
 
   const agentSelect = document.getElementById('tuAgent')
@@ -14738,7 +16988,7 @@ function renderTuTimeline(data, filterAgent) {
       let html = `<div style="font-weight:600;margin-bottom:4px">${tuFormatLocalShort(hit.bucket)}${isPeak ? ` <span style="color:#ef4444;font-size:10px">${t('tokenUsage.chart.peak')}</span>` : ''}</div>`
       let total = 0
       for (const seg of hit.segments) {
-        html += `<div><span style="color:${tuGetColor(seg.agent)}">&#9632;</span> ${seg.agent}: ${tuFormatTokens(seg.val)}</div>`
+        html += `<div><span style="color:${tuGetColor(seg.agent)}">&#9632;</span> ${escapeHtml(seg.agent)}: ${tuFormatTokens(seg.val)}</div>`
         total += seg.val
       }
       if (hit.segments.length > 1) html += `<div style="border-top:1px solid rgba(255,255,255,0.2);margin-top:4px;padding-top:4px;font-weight:600">${t('tokenUsage.total')} ${tuFormatTokens(total)}</div>`
@@ -15132,6 +17382,13 @@ let ideasAll = []
 let ideasPromoteId = null
 let ideaEditId = null
 let ideaDetailId = null
+const IDEA_SCOPE_STORAGE_KEY = 'ideas-scope-filter'
+let ideaScope = (() => {
+  try {
+    const saved = localStorage.getItem(IDEA_SCOPE_STORAGE_KEY)
+    return ['munka', 'szemelyes', 'all'].includes(saved) ? saved : 'munka'
+  } catch { return 'munka' }
+})()
 const STATUS_COLORS = { new: 'var(--accent)', reviewed: '#f59e0b', kanban: '#22c55e', rejected: '#ef4444' }
 const STATUS_LABELS = { new: () => t('ideas.status.new'), reviewed: () => t('ideas.status.reviewed'), kanban: () => t('ideas.status.kanban'), rejected: () => t('ideas.status.rejected') }
 
@@ -15144,6 +17401,7 @@ async function loadIdeasPage() {
   // first promote the "Kanbanban" box showed 0 with the item hidden, which read
   // as data loss on the first live promote (2026-08-20).
   if (categoryFilter) params.set('category', categoryFilter)
+  if (ideaScope !== 'all') params.set('scope', ideaScope)
   const [ideasRes, catsRes] = await Promise.all([fetch('/api/ideas?' + params), fetch('/api/ideas/categories')])
   ideasAll = await ideasRes.json()
   if (statusFilter === 'active') ideas = ideasAll.filter(i => i.status === 'new' || i.status === 'reviewed')
@@ -15157,7 +17415,48 @@ async function loadIdeasPage() {
   }
   renderIdeasStats()
   renderIdeasList()
+  document.querySelectorAll('#ideaScopeFilter [data-scope]').forEach(button => button.classList.toggle('active', button.dataset.scope === ideaScope))
 }
+
+document.getElementById('ideaUploadInput')?.addEventListener('change', async (event) => {
+  const input = event.target
+  const files = Array.from(input.files || [])
+  const button = document.getElementById('ideaUploadBtn')
+  let uploaded = 0
+  const failures = []
+  input.disabled = true
+  button.disabled = true
+  try {
+    for (const file of files) {
+      button.textContent = t('ideas.upload.uploading', { name: file.name })
+      const form = new FormData()
+      form.append('file', file)
+      form.append('scope', ideaScope === 'all' ? 'munka' : ideaScope)
+      try {
+        const res = await fetch('/api/ideas/upload', { method: 'POST', body: form })
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}))
+          throw new Error(data.error || t('ideas.upload.error'))
+        }
+        uploaded++
+      } catch (err) {
+        failures.push(`${file.name}: ${err.message || t('ideas.upload.error')}`)
+      }
+    }
+    if (files.length) {
+      const summary = t('ideas.upload.summary', { uploaded, failed: failures.length })
+      showToast(failures.length ? `${summary} (${failures.join('; ')})` : summary, failures.length ? 'error' : undefined)
+      await loadIdeasPage()
+    }
+  } finally {
+    input.value = ''
+    input.disabled = false
+    button.disabled = false
+    button.textContent = t('ideas.upload.button')
+  }
+})
+
+document.getElementById('ideaUploadBtn')?.addEventListener('click', () => document.getElementById('ideaUploadInput')?.click())
 
 function renderIdeasStats() {
   const counts = { new: 0, reviewed: 0, kanban: 0, rejected: 0 }
@@ -15192,7 +17491,7 @@ function ideaScoreBadge(idea) {
   if (!idea.impact || !idea.effort) return ''
   const score = idea.impact - idea.effort
   const color = score > 0 ? '#22c55e' : score < 0 ? '#ef4444' : 'var(--text-muted)'
-  return `<span style="font-size:11px;color:${color};border:1px solid ${color};border-radius:4px;padding:2px 5px" title="Impact ${idea.impact} - Effort ${idea.effort}">I${idea.impact}·E${idea.effort}</span>`
+  return `<span style="font-size:11px;color:${color};border:1px solid ${color};border-radius:4px;padding:2px 5px" title="Impact ${escapeHtml(idea.impact)} - Effort ${escapeHtml(idea.effort)}">I${escapeHtml(idea.impact)}·E${escapeHtml(idea.effort)}</span>`
 }
 
 function renderIdeaCard(idea) {
@@ -15204,20 +17503,20 @@ function renderIdeaCard(idea) {
     <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px">
       <div style="flex:1;min-width:0">
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-          <span class="idea-title-link" style="font-weight:600;font-size:14px;cursor:pointer" onclick="openIdeaDetail('${idea.id}')">${escapeHtml(idea.title)}</span>
-          <span style="font-size:11px;color:${statusColor};padding:2px 6px;border:1px solid ${statusColor};border-radius:4px">${statusLabel}</span>
+          <span class="idea-title-link" style="font-weight:600;font-size:14px;cursor:pointer" onclick="openIdeaDetail(${jsArg(idea.id)})">${escapeHtml(idea.title)}</span>
+          <span style="font-size:11px;color:${statusColor};padding:2px 6px;border:1px solid ${statusColor};border-radius:4px">${escapeHtml(statusLabel)}</span>
           ${ideaScoreBadge(idea)}
           ${staleBadge}
         </div>
         ${desc}
       </div>
       <div style="display:flex;gap:4px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end">
-        ${idea.status !== 'reviewed' && idea.status !== 'kanban' ? `<button class="btn-secondary btn-compact" onclick="setIdeaStatus('${idea.id}','reviewed')" style="font-size:11px">${t('ideas.btn.reviewed')}</button>` : ''}
-        ${idea.status !== 'rejected' ? `<button class="btn-secondary btn-compact" onclick="setIdeaStatus('${idea.id}','rejected')" style="font-size:11px;color:#ef4444">${t('ideas.btn.rejected')}</button>` : ''}
-        ${idea.status === 'reviewed' || idea.status === 'rejected' ? `<button class="btn-secondary btn-compact" onclick="setIdeaStatus('${idea.id}','new')" style="font-size:11px">${t('ideas.btn.reopen')}</button>` : ''}
-        <button class="btn-secondary btn-compact" onclick="openIdeaEdit('${idea.id}')" style="font-size:11px">${t('ideas.btn.edit')}</button>
-        ${idea.status !== 'kanban' && idea.status !== 'rejected' ? `<button class="btn-primary btn-compact" onclick="openIdeaBreakdown('${idea.id}')" style="font-size:11px">${t('ideas.btn.kanban_ai')}</button>` : ''}
-        <button class="btn-secondary btn-compact" onclick="deleteIdeaItem('${idea.id}')" style="font-size:11px;color:#ef4444">${t('ideas.btn.delete')}</button>
+        ${idea.status !== 'reviewed' && idea.status !== 'kanban' ? `<button class="btn-secondary btn-compact" onclick="setIdeaStatus(${jsArg(idea.id)},'reviewed')" style="font-size:11px">${t('ideas.btn.reviewed')}</button>` : ''}
+        ${idea.status !== 'rejected' ? `<button class="btn-secondary btn-compact" onclick="setIdeaStatus(${jsArg(idea.id)},'rejected')" style="font-size:11px;color:#ef4444">${t('ideas.btn.rejected')}</button>` : ''}
+        ${idea.status === 'reviewed' || idea.status === 'rejected' ? `<button class="btn-secondary btn-compact" onclick="setIdeaStatus(${jsArg(idea.id)},'new')" style="font-size:11px">${t('ideas.btn.reopen')}</button>` : ''}
+        <button class="btn-secondary btn-compact" onclick="openIdeaEdit(${jsArg(idea.id)})" style="font-size:11px">${t('ideas.btn.edit')}</button>
+        ${idea.status !== 'kanban' && idea.status !== 'rejected' ? `<button class="btn-primary btn-compact" onclick="openIdeaBreakdown(${jsArg(idea.id)})" style="font-size:11px">${t('ideas.btn.kanban_ai')}</button>` : ''}
+        <button class="btn-secondary btn-compact" onclick="deleteIdeaItem(${jsArg(idea.id)})" style="font-size:11px;color:#ef4444">${t('ideas.btn.delete')}</button>
       </div>
     </div>
   </div>`
@@ -15225,7 +17524,7 @@ function renderIdeaCard(idea) {
 
 function applyIdeaModalI18n() {
   const labels = document.querySelectorAll('#ideaModalOverlay .form-label')
-  const keys = ['ideas.modal.title_label', 'ideas.modal.desc_label', 'ideas.modal.category_label', 'ideas.modal.impact_label', 'ideas.modal.effort_label']
+  const keys = ['ideas.modal.title_label', 'ideas.modal.desc_label', 'ideas.scope.label', 'ideas.modal.category_label', 'ideas.modal.impact_label', 'ideas.modal.effort_label']
   labels.forEach((el, i) => { if (keys[i]) el.textContent = t(keys[i]) })
   const saveBtn = document.getElementById('ideaModalSave')
   const cancelBtn = document.getElementById('ideaModalCancel')
@@ -15238,6 +17537,7 @@ function openIdeaNew() {
   document.getElementById('ideaModalTitle').textContent = t('ideas.modal.title_new')
   document.getElementById('ideaTitleInput').value = ''
   document.getElementById('ideaDescInput').value = ''
+  document.getElementById('ideaScopeInput').value = ideaScope === 'all' ? 'munka' : ideaScope
   applyIdeaModalI18n()
   openModal(document.getElementById('ideaModalOverlay'))
 }
@@ -15250,6 +17550,7 @@ function openIdeaEdit(id) {
   document.getElementById('ideaTitleInput').value = idea.title
   document.getElementById('ideaDescInput').value = idea.description || ''
   document.getElementById('ideaCategoryInput').value = idea.category
+  document.getElementById('ideaScopeInput').value = idea.scope
   document.getElementById('ideaImpactInput').value = idea.impact ?? ''
   document.getElementById('ideaEffortInput').value = idea.effort ?? ''
   openModal(document.getElementById('ideaModalOverlay'))
@@ -15264,6 +17565,7 @@ async function saveIdea() {
     title,
     description: document.getElementById('ideaDescInput').value.trim() || undefined,
     category: document.getElementById('ideaCategoryInput').value,
+    scope: document.getElementById('ideaScopeInput').value,
     source: 'manual',
     impact: impactRaw ? parseInt(impactRaw) : null,
     effort: effortRaw ? parseInt(effortRaw) : null,
@@ -15293,13 +17595,90 @@ async function openIdeaDetail(id) {
   document.getElementById('ideaDetailTitle').textContent = idea.title
   document.getElementById('ideaDetailMeta').textContent = `${idea.category} · ${statusLabel}`
   document.getElementById('ideaDetailDesc').textContent = idea.description || t('ideas.no_description')
+  const otherScope = idea.scope === 'munka' ? 'szemelyes' : 'munka'
+  document.getElementById('ideaDetailScope').textContent = t('ideas.scope.current', { scope: t(`ideas.scope.${idea.scope}`) })
+  document.getElementById('ideaDetailScopeMove').textContent = t('ideas.scope.move', { scope: t(`ideas.scope.${otherScope}`) })
+  document.getElementById('ideaDetailScopeMove').dataset.scope = otherScope
   document.getElementById('ideaDetailImpact').value = idea.impact ?? ''
   document.getElementById('ideaDetailEffort').value = idea.effort ?? ''
   updateDetailScoreChip()
   document.getElementById('ideaCommentsList').innerHTML = ''
+  document.getElementById('ideaAttachmentsList').innerHTML = ''
+  document.getElementById('ideaAttachmentStatus').style.display = 'none'
   document.getElementById('ideaCommentContent').value = ''
   openModal(document.getElementById('ideaDetailOverlay'))
-  await loadIdeaComments(id)
+  await Promise.all([loadIdeaComments(id), loadIdeaAttachments(id)])
+}
+
+function formatIdeaAttachmentSize(bytes) {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+async function loadIdeaAttachments(id) {
+  const list = document.getElementById('ideaAttachmentsList')
+  try {
+    const res = await fetch(`/api/ideas/${encodeURIComponent(id)}/attachments`)
+    if (!res.ok) throw new Error('HTTP ' + res.status)
+    const data = await res.json()
+    if (!data.attachments || !data.attachments.length) {
+      list.innerHTML = `<div style="color:var(--text-muted);font-size:12px;padding:3px 0">${t('ideas.detail.attach.empty')}</div>`
+      return
+    }
+    list.innerHTML = data.attachments.map(a => `
+      <div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-top:1px solid var(--border)">
+        <div style="flex:1;min-width:0">
+          <div style="font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${escapeHtml(a.filename)}">${escapeHtml(a.filename)}</div>
+          <div style="font-size:11px;color:var(--text-muted)">${formatIdeaAttachmentSize(a.size)}${a.has_text ? ` · <span title="${t('ideas.detail.attach.has_text')}" style="color:var(--success)">✓ ${t('ideas.detail.attach.text_marker')}</span>` : ''}</div>
+        </div>
+        <a class="btn-secondary btn-compact" style="font-size:11px;text-decoration:none" href="/api/ideas/attachments/${encodeURIComponent(a.id)}/download">${t('ideas.detail.attach.download')}</a>
+        <button class="btn-secondary btn-compact" style="font-size:11px;color:var(--danger)" onclick="deleteIdeaAttachmentItem(${jsArg(encodeURIComponent(a.id))})">${t('ideas.detail.attach.delete')}</button>
+      </div>`).join('')
+  } catch {
+    list.innerHTML = `<div style="color:var(--danger);font-size:12px">${t('ideas.detail.attach.load_error')}</div>`
+  }
+}
+
+document.getElementById('ideaAttachmentInput')?.addEventListener('change', async (event) => {
+  if (!ideaDetailId) return
+  const input = event.target
+  const files = Array.from(input.files || [])
+  const label = document.getElementById('ideaAttachmentUploadLabel')
+  const status = document.getElementById('ideaAttachmentStatus')
+  input.disabled = true
+  label.style.opacity = '0.6'
+  status.style.display = ''
+  try {
+    for (const file of files) {
+      status.textContent = t('ideas.detail.attach.uploading', { name: file.name })
+      const form = new FormData()
+      form.append('file', file)
+      const res = await fetch(`/api/ideas/${encodeURIComponent(ideaDetailId)}/attachments`, { method: 'POST', body: form })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.error || t('ideas.detail.attach.upload_error'))
+      }
+    }
+    if (files.length) showToast(t('ideas.detail.attach.uploaded'))
+    await loadIdeaAttachments(ideaDetailId)
+  } catch (err) {
+    showToast(err.message || t('ideas.detail.attach.upload_error'), 'error')
+  } finally {
+    input.value = ''
+    input.disabled = false
+    label.style.opacity = ''
+    status.style.display = 'none'
+  }
+})
+
+async function deleteIdeaAttachmentItem(encodedId) {
+  if (!confirm(t('ideas.detail.attach.confirm_delete'))) return
+  try {
+    const res = await fetch(`/api/ideas/attachments/${encodedId}`, { method: 'DELETE' })
+    if (!res.ok) throw new Error('HTTP ' + res.status)
+    if (ideaDetailId) await loadIdeaAttachments(ideaDetailId)
+  } catch { showToast(t('ideas.detail.attach.delete_error'), 'error') }
 }
 
 function updateDetailScoreChip() {
@@ -15388,6 +17767,18 @@ document.getElementById('ideaDetailEditBtn')?.addEventListener('click', () => {
   closeModal(document.getElementById('ideaDetailOverlay'))
   openIdeaEdit(ideaDetailId)
 })
+document.getElementById('ideaDetailScopeMove')?.addEventListener('click', async (event) => {
+  if (!ideaDetailId) return
+  const scope = event.currentTarget.dataset.scope
+  try {
+    const res = await fetch(`/api/ideas/${encodeURIComponent(ideaDetailId)}`, {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ scope }),
+    })
+    if (!res.ok) throw new Error('HTTP ' + res.status)
+    closeModal(document.getElementById('ideaDetailOverlay'))
+    await loadIdeasPage()
+  } catch { showToast(t('ideas.scope.move_error'), 'error') }
+})
 
 function openIdeaPromote(id) {
   ideasPromoteId = id
@@ -15451,6 +17842,13 @@ document.getElementById('ideaPromoteDetail')?.addEventListener('click', () => pr
 document.getElementById('ideaPromotePlan')?.addEventListener('click', () => promoteIdea('plan'))
 document.getElementById('ideaStatusFilter')?.addEventListener('change', loadIdeasPage)
 document.getElementById('ideaCategoryFilter')?.addEventListener('change', loadIdeasPage)
+document.getElementById('ideaScopeFilter')?.addEventListener('click', (event) => {
+  const button = event.target.closest('[data-scope]')
+  if (!button) return
+  ideaScope = button.dataset.scope
+  try { localStorage.setItem(IDEA_SCOPE_STORAGE_KEY, ideaScope) } catch { /* storage blocked */ }
+  loadIdeasPage()
+})
 
 
 // === Agent reauth login flow ===
@@ -16118,8 +18516,17 @@ function mdInline(text) {
   s = s.replace(/`([^`]+)`/g, (m, c) => '<code>' + c + '</code>')
   s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
   s = s.replace(/\*([^*]+)\*/g, '<em>$1</em>')
-  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, txt, url) =>
-    '<a href="' + escapeAttr(url) + '" target="_blank" rel="noopener noreferrer">' + txt + '</a>')
+  // Only a link safeHref() accepts (http(s), mailto, or scheme-less relative)
+  // becomes an anchor; anything else stays its text.
+  // url is a piece of the escaped text (and may hold the <em>/<strong>/<code>
+  // tags inserted above): turn it back into the raw URL, judge that, and
+  // encode it once for the attribute.
+  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, txt, url) => {
+    const raw = url.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&')
+    return safeHref(raw, { relative: true })
+      ? '<a href="' + escapeHtml(safeHref(raw, { relative: true })) + '" target="_blank" rel="noopener noreferrer">' + txt + '</a>'
+      : txt
+  })
   return s
 }
 
@@ -16427,11 +18834,11 @@ async function openResearchDoc(agent, name) {
     let labelsHtml = ''
     if (Array.isArray(card.labels) && card.labels.length > 0) {
       const pills = card.labels
-        .map(l => `<span class="kanban-card-label-pill" style="--label-color:${esc(l.color)}">#${esc(l.name)}</span>`)
+        .map(l => `<span class="kanban-card-label-pill" style="--label-color:${escapeHtml(safeCssColor(l.color, '#64748b'))}">#${esc(l.name)}</span>`)
         .join('')
       labelsHtml = `<div class="kanban-card-labels">${pills}</div>`
     }
-    const prioPill = `<span class="archived-prio-pill" style="--prio-color:${prioColor}">${prioLabel}</span>`
+    const prioPill = `<span class="archived-prio-pill" style="--prio-color:${prioColor}">${escapeHtml(prioLabel)}</span>`
     return `<div class="kanban-card archived-card" data-id="${esc(card.id)}" data-priority="${esc(card.priority)}">
       ${projectHtml}
       <div class="kanban-card-title">${seqHtml}${esc(card.title)}</div>
@@ -16453,9 +18860,9 @@ async function openResearchDoc(agent, name) {
     const idLabel = (card.seq != null ? `#${card.seq} · ` : '') + card.id
     meta.innerHTML = `
       <div class="meta-item"><span class="meta-label">${t('kanban.meta.id')}</span><span class="meta-value" style="font-family:monospace">${esc(idLabel)}</span></div>
-      <div class="meta-item"><span class="meta-label">${t('kanban.meta.status')}</span><span class="meta-value">${STATUS_LABELS[card.status]?.() ?? card.status}</span></div>
+      <div class="meta-item"><span class="meta-label">${t('kanban.meta.status')}</span><span class="meta-value">${escapeHtml(STATUS_LABELS[card.status]?.() ?? card.status)}</span></div>
       <div class="meta-item"><span class="meta-label">${t('kanban.meta.assignee')}</span><span class="meta-value">${card.assignee ? esc(card.assignee) : t('kanban.meta.none')}</span></div>
-      <div class="meta-item"><span class="meta-label">${t('kanban.meta.priority')}</span><span class="meta-value">${PRIORITY_LABELS[card.priority]?.() ?? card.priority}</span></div>
+      <div class="meta-item"><span class="meta-label">${t('kanban.meta.priority')}</span><span class="meta-value">${escapeHtml(PRIORITY_LABELS[card.priority]?.() ?? card.priority)}</span></div>
       <div class="meta-item"><span class="meta-label">${t('kanban.meta.project')}</span><span class="meta-value">${card.project ? esc(card.project) : t('kanban.meta.none')}</span></div>
       <div class="meta-item"><span class="meta-label">${t('archived.meta.archived_at')}</span><span class="meta-value">${fmtDate(card.archived_at)}</span></div>
     `
@@ -16463,7 +18870,7 @@ async function openResearchDoc(agent, name) {
     const labelsBox = document.getElementById('archivedDetailLabels')
     if (Array.isArray(card.labels) && card.labels.length > 0) {
       labelsBox.innerHTML = card.labels
-        .map(l => `<span class="kanban-card-label-pill" style="--label-color:${esc(l.color)}">#${esc(l.name)}</span>`)
+        .map(l => `<span class="kanban-card-label-pill" style="--label-color:${escapeHtml(safeCssColor(l.color, '#64748b'))}">#${esc(l.name)}</span>`)
         .join('')
       labelsWrap.style.display = ''
     } else {
@@ -16591,7 +18998,7 @@ async function openResearchDoc(agent, name) {
         })
       })
     } catch (err) {
-      list.innerHTML = '<p class="naplo-empty error">' + t('common.error_network', {msg: err.message}) + '</p>'
+      list.innerHTML = '<p class="naplo-empty error">' + t('common.error_network', {msg: escapeHtml(String(err.message))}) + '</p>'
     }
   }
 
@@ -16633,7 +19040,7 @@ async function openResearchDoc(agent, name) {
   function renderEntry(e) {
     const sourceColor = SOURCE_COLORS[e.source] || '#6b7280'
     const sourceLabelRaw = SOURCE_LABELS[e.source]; const sourceLabel = sourceLabelRaw ? (typeof sourceLabelRaw === 'function' ? sourceLabelRaw() : sourceLabelRaw) : e.source
-    const badge = `<span class="naplo-badge" style="background:${sourceColor}">${sourceLabel}</span>`
+    const badge = `<span class="naplo-badge" style="background:${sourceColor}">${escapeHtml(sourceLabel)}</span>`
     const ts = `<span class="naplo-ts">${fmtTs(e.created_at)}</span>`
     let detail = ''
     if (e.source === 'config') {
@@ -16653,10 +19060,9 @@ async function openResearchDoc(agent, name) {
     } else if (e.source === 'diary') {
       const entryColor = DIARY_ENTRY_COLORS[e.entry_type] || '#6b7280'
       const entryLabelRaw = DIARY_ENTRY_LABELS[e.entry_type]; const entryLabel = entryLabelRaw ? (typeof entryLabelRaw === 'function' ? entryLabelRaw() : entryLabelRaw) : e.entry_type
-      const entryBadge = `<span class="naplo-badge" style="background:${entryColor};font-size:10px">${entryLabel}</span>`
+      const entryBadge = `<span class="naplo-badge" style="background:${entryColor};font-size:10px">${escapeHtml(entryLabel)}</span>`
       const agentStr = e.agent_id ? ` <span class="naplo-actor">${esc(e.agent_id)}</span>` : ''
-      let contentSnippet = esc(e.content || '').replace(/\n/g, ' ').slice(0, 200)
-      if ((e.content || '').length > 200) contentSnippet += '…'
+      const contentSnippet = escSnippet((e.content || '').replace(/\n/g, ' '), 200)
       const keywordsStr = e.keywords ? `<div class="naplo-note" style="margin-top:2px">Kulcsszavak: ${esc(e.keywords)}</div>` : ''
       const catStr = e.category ? ` <span class="naplo-event-type">${esc(e.category)}</span>` : ''
       detail = `${entryBadge}${catStr}${agentStr}<div class="naplo-diary-content">${contentSnippet}</div>${keywordsStr}`
@@ -16692,7 +19098,7 @@ async function openResearchDoc(agent, name) {
       if (entries.length === 0) { timeline.innerHTML = `<p class="naplo-empty">${t('naplo.empty')}</p>`; return }
       timeline.innerHTML = entries.map(renderEntry).join('')
     } catch (err) {
-      timeline.innerHTML = `<p class="naplo-empty error">${t('naplo.error', { msg: err.message })}</p>`
+      timeline.innerHTML = `<p class="naplo-empty error">${t('naplo.error', { msg: escapeHtml(String(err.message)) })}</p>`
     }
   }
 
@@ -17062,4 +19468,19 @@ async function openResearchDoc(agent, name) {
 
   window._initGanttViewSwitcher = initGanttViewSwitcher
   window.renderGantt = renderGantt
+  // A direct #kanban load routes (switchPage) earlier in this file, before the
+  // initializer above exists, so that first call skipped it and the Board /
+  // Timeline / Archived buttons stayed dead. Catch up if the board is showing.
+  if (document.getElementById('kanbanPage')?.hidden === false) initGanttViewSwitcher()
 })()
+
+// VIDEOREVIEW1002: reveal the sidebar link to the review page only when the
+// install has a video root configured. Failure-proof like the other optional
+// badges: an older backend (404) or an error just leaves the link hidden.
+fetch('/api/video-review/config')
+  .then((r) => (r.ok ? r.json() : null))
+  .then((cfg) => {
+    const link = document.getElementById('sbVideoReview')
+    if (link && cfg && cfg.enabled) link.hidden = false
+  })
+  .catch(() => {})

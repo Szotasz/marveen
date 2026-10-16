@@ -61,10 +61,23 @@ describe('ensureIsolatedChannelConfigDir', () => {
     expect(cfg).toBe(join(SANDBOX, 'agents', 'testagent', '.claude-config'))
   })
 
-  it('symlinks shared transcripts so --continue stays shared', () => {
+  // UPDATED 2026-08-18: `projects` is no longer symlinked, and that is the whole
+  // point of the change. That directory holds each session's transcript AND the
+  // auto-memory store, and the memory store is keyed by PROJECT ROOT rather than
+  // by cwd -- so a shared link gave every agent on the install ONE memory store,
+  // the main agent's. Measured on this install: an agent's note landed in the
+  // MAIN agent's MEMORY.md, and a second agent saw a memory written by the main
+  // agent appear in its own index minutes later. Live and bidirectional, not just
+  // shared history.
+  //
+  // It could not be fixed on disk either: the provisioner runs on EVERY spawn and,
+  // finding a real directory where it expected a symlink, deleted it and re-linked.
+  // A manual split survived seconds. Leaving the path alone is the fix.
+  it('does NOT provision projects at all, so each agent keeps its own memory store', () => {
     const cfg = ensureIsolatedChannelConfigDir('testagent', 'telegram')!
-    expect(lstatSync(join(cfg, 'projects')).isSymbolicLink()).toBe(true)
-    expect(readlinkSync(join(cfg, 'projects'))).toBe(join(SANDBOX, 'home', '.claude', 'projects'))
+    expect(existsSync(join(cfg, 'projects'))).toBe(false)
+    // The shared root's own transcripts must be left untouched by provisioning.
+    expect(existsSync(join(SANDBOX, 'home', '.claude', 'projects'))).toBe(true)
   })
 
   it('does NOT symlink or copy .credentials.json (auth via CLAUDE_CODE_OAUTH_TOKEN env)', () => {
@@ -92,7 +105,7 @@ describe('ensureIsolatedChannelConfigDir', () => {
     expect(s.enabledPlugins[TG]).toBe(true)
     expect(s.enabledPlugins[SL]).toBe(false)
     expect(s.enabledPlugins[DI]).toBe(false)
-    expect(s.hooks).toEqual({ Stop: [] }) // shared non-plugin settings preserved
+    expect(s.hooks).toBeUndefined() // #1305: hooks never ride the clone (see isolated-config-hook-strip)
   })
 
   it('a slack agent enables ONLY slack in its isolated settings', () => {
@@ -121,14 +134,16 @@ describe('ensureIsolatedChannelConfigDir', () => {
     expect(s.enabledPlugins[TG]).toBe(false)
     expect(s.enabledPlugins[SL]).toBe(false)
     expect(s.enabledPlugins[DI]).toBe(false)
-    expect(s.hooks).toEqual({ Stop: [] }) // shared non-plugin settings preserved
+    expect(s.hooks).toBeUndefined() // #1305: hooks never ride the clone (see isolated-config-hook-strip)
   })
 
   it('channel-less provisioning still carries NO .credentials.json', () => {
     const cfg = ensureIsolatedChannelConfigDir('testagent', null)!
     expect(existsSync(join(cfg, '.credentials.json'))).toBe(false)
-    // and the auth-independent parts are intact
-    expect(lstatSync(join(cfg, 'projects')).isSymbolicLink()).toBe(true)
+    // and the auth-independent parts are intact: settings.json is written, and
+    // projects is deliberately absent (see the memory-store note above).
+    expect(existsSync(join(cfg, 'settings.json'))).toBe(true)
+    expect(existsSync(join(cfg, 'projects'))).toBe(false)
   })
 
   it('is idempotent: a second call leaves a valid isolated dir', () => {
@@ -174,15 +189,77 @@ describe('isolated-config launcher wiring', () => {
     // The shared root's rotating credential (macOS Keychain /.credentials.json)
     // wins over a valid CLAUDE_CODE_OAUTH_TOKEN env var, so a shared-root agent
     // 401s whenever it rotates -- the gate must not be hasChannel-only.
-    expect(SRC).toMatch(/const needsFleetOauth = isClaude && authMode !== 'api'/)
-    expect(SRC).toMatch(/\(hasChannel \|\| needsFleetOauth\) && name !== MAIN_AGENT_ID/)
+    expect(SRC).toMatch(/const needsFleetOauth = isClaude && authMode !== 'api' && !isOwnTeam/)
+    expect(SRC).toMatch(/\(hasAnyChannel \|\| needsFleetOauth \|\| isOwnTeam\) && name !== MAIN_AGENT_ID/)
+  })
+
+  it('own_team never exports the fleet token (OWNTEAMVAK914)', () => {
+    // Both export sites must exclude own_team: the shared-home pre-export and
+    // the isolation branch. A fleet-token fallback would silently put the
+    // agent back on the shared identity whenever its own credential expires --
+    // exactly what the operator opted out of by picking own_team.
+    //
+    // own_team exclusion is folded into needsFleetOauth (BYOCUSTFOAUTH805:
+    // `isClaude && authMode !== 'api' && !isOwnTeam`) rather than spelled out
+    // as a separate `!isOwnTeam` at the export site -- the same guard also has
+    // to exclude BYO/custom-endpoint agents (Ollama/DeepSeek/OpenRouter/custom),
+    // and one shared boolean keeps both exclusions from drifting apart.
+    expect(SRC).toMatch(/const isOwnTeam = isClaude && authMode === 'own_team'/)
+    expect(SRC).toMatch(/const needsFleetOauth = isClaude && authMode !== 'api' && !isOwnTeam/)
+    expect(SRC).toMatch(/!claudeConfigDir && hasFleetOauthToken\(\) && needsFleetOauth/)
+    // The own_team isolation branch comes BEFORE the hasFleetOauthToken() gate
+    // (isolation must not require the fleet token for own_team) and contains
+    // no token export.
+    const ownTeamBranch = SRC.match(/if \(isOwnTeam\) \{[\s\S]*?\n {6}\} else if \(hasFleetOauthToken\(\)\) \{/)?.[0] ?? ''
+    expect(ownTeamBranch).not.toBe('')
+    expect(ownTeamBranch).not.toMatch(/CLAUDE_CODE_OAUTH_TOKEN/)
+    expect(ownTeamBranch).toMatch(/ensureIsolatedChannelConfigDir\(name, hasChannel \? agentProvider : null, extraLaunch\.pluginIds\)/)
+  })
+
+  it('own_team isolation failure falls back LOUDLY (shared root = host credential)', () => {
+    expect(SRC).toMatch(/own_team auth: isolated config dir provisioning failed/)
   })
 
   it('passes a null provider for channel-less agents so no plugin gets enabled', () => {
-    expect(SRC).toMatch(/ensureIsolatedChannelConfigDir\(name, hasChannel \? agentProvider : null\)/)
+    expect(SRC).toMatch(/ensureIsolatedChannelConfigDir\(name, hasChannel \? agentProvider : null, extraLaunch\.pluginIds\)/)
   })
 
   it('keeps the plugin-slot collision alert scoped to channel agents', () => {
-    expect(SRC).toMatch(/if \(hasChannel\) maybeAlertSharedConfigCollision\(name\)/)
+    expect(SRC).toMatch(/if \(hasAnyChannel\) maybeAlertSharedConfigCollision\(name\)/)
+  })
+
+  // Regression guard for the BYO/custom-provider + channel-agent 401 bug (2026-08-05).
+  // A BYO-endpoint agent (Ollama, DeepSeek, OpenRouter, generic custom) must NEVER
+  // receive CLAUDE_CODE_OAUTH_TOKEN in its env -- the Claude CLI forwards it to the
+  // third-party endpoint instead of the ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN
+  // the provider expects, resulting in a 401.  The CLAUDE_CONFIG_DIR isolation for
+  // channel agents is unrelated and must be preserved regardless of provider type.
+
+  it('shared-home token export is gated on needsFleetOauth so BYO/custom agents are never given the OAuth token', () => {
+    // The shared-home fallback block must export CLAUDE_CODE_OAUTH_TOKEN only when
+    // needsFleetOauth is true (i.e. isClaude && authMode !== 'api').
+    expect(SRC).toMatch(/hasFleetOauthToken\(\) && needsFleetOauth/)
+  })
+
+  it('channel-isolation token export is wrapped in if(needsFleetOauth): BYO channel agents keep CLAUDE_CONFIG_DIR but no OAuth token', () => {
+    // The oauthTokenEnv assignment inside the channel-isolation block must be
+    // wrapped in an if(needsFleetOauth) guard so BYO channel agents (hasChannel=true
+    // but isClaude=false) get the isolated CLAUDE_CONFIG_DIR for plugin-slot
+    // separation without the Claude OAuth token being forwarded to their provider.
+    expect(SRC).toMatch(/if \(needsFleetOauth\)\s*\{[^}]*CLAUDE_CODE_OAUTH_TOKEN/)
+  })
+
+  // Regression guard for the inherited-token layer of the BYO 401 bug (2026-08-05).
+  // The tmux server carries CLAUDE_CODE_OAUTH_TOKEN in its own env;
+  // every new agent pane inherits it regardless of whether the launch command exports
+  // it.  Not exporting is not enough: the token must be actively unset at launch for
+  // BYO/custom-endpoint agents so the CLI forwards ANTHROPIC_API_KEY to the provider
+  // instead.
+
+  it('launch command actively unsets CLAUDE_CODE_OAUTH_TOKEN for BYO agents (inherited tmux-server env)', () => {
+    // byoUnsetEnv must be defined and wired into the cmd string so the inherited
+    // token is removed before exec for non-Claude-OAuth agents.
+    expect(SRC).toMatch(/const byoUnsetEnv = !needsFleetOauth \? 'unset CLAUDE_CODE_OAUTH_TOKEN && ' : ''/)
+    expect(SRC).toMatch(/\$\{byoUnsetEnv\}/)
   })
 })

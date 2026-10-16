@@ -1,7 +1,9 @@
 import { mkdirSync } from 'node:fs'
+import { encodeClaudeProjectDir } from '../claude-project-dir.js'
 import { join } from 'node:path'
 import { userInfo } from 'node:os'
 import { execFileSync } from 'node:child_process'
+import { ROOT_SANDBOX_ENV } from './root-sandbox-env.js'
 
 // SSH + tmux transport primitives.
 //
@@ -75,7 +77,19 @@ export function buildTmuxInvocation(
   localTmuxBin: string,
   tmuxArgs: string[],
   remoteTmuxBin = 'tmux',
+  runAsUser: string | null = null,
 ): TmuxInvocation {
+  // Local agent that owns its own OS user: run tmux AS that user. tmux rejects a
+  // cross-user connection even when the socket's permissions allow it (measured
+  // 2026-08-19), so this is the only route that works. `-n` fails loudly instead
+  // of waiting for a password nobody can type; the sudoers rule grants this one
+  // binary for this one target user and nothing else.
+  //
+  // A remote (ssh) agent already runs as whoever the ssh login is, so host wins
+  // and runAsUser is not applied there -- the two are alternatives, not layers.
+  if (host == null && runAsUser) {
+    return { file: 'sudo', args: ['-n', '-u', runAsUser, localTmuxBin, ...tmuxArgs] }
+  }
   if (host == null) return { file: localTmuxBin, args: tmuxArgs }
   // remoteTmuxBin is a trusted constant ('tmux'); only the args carry data, so
   // only the args are quoted. The whole thing is a single argv element for ssh.
@@ -147,7 +161,9 @@ export function buildRemoteLaunchCommand(opts: {
 }): string {
   const path = 'export PATH="$HOME/.bun/bin:$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"'
   const cont = opts.continue ? '--continue ' : ''
-  return `${path} && cd ${shQuote(opts.workdir)} && claude ${cont}--dangerously-skip-permissions --model ${shQuote(opts.model)}`
+  // CHANSPARE925: no Agent view on remote agents either (parity with every local launch).
+  // ROOTRESPAWN1001: evaluated on the REMOTE host, where claude runs.
+  return `${path} && export CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && ${ROOT_SANDBOX_ENV} && cd ${shQuote(opts.workdir)} && claude ${cont}--dangerously-skip-permissions --model ${shQuote(opts.model)}`
 }
 
 /**
@@ -161,7 +177,7 @@ export function buildRemoteLaunchCommand(opts: {
  * exists, silently dropping --continue on every remote launch.)
  */
 export function buildContinueProbeCommand(absWorkdir: string): string {
-  const encoded = absWorkdir.replace(/\//g, '-')
+  const encoded = encodeClaudeProjectDir(absWorkdir)
   return 'test -d "$HOME/.claude/projects/"' + shQuote(encoded)
 }
 

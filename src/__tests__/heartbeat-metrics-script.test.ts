@@ -11,7 +11,7 @@
 //      (The prose side is fail-safe too -- sentinel rule -- but that only
 //      makes the breakage visible, not impossible.)
 
-import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest'
 import { execFile, spawnSync } from 'node:child_process'
 import { createServer, type Server } from 'node:http'
 import { accessSync, constants, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
@@ -26,6 +26,10 @@ const TOKEN = 'test-token-abc'
 // Mutable fixtures the server serves; individual tests reshape them.
 let summaryBody: unknown
 let schedulesBody: unknown
+// Calendar default: measured-empty. Tests that probe the calendar reshape it;
+// the beforeEach below restores the default so pollution cannot leak forward.
+let calendarBody: unknown = { ok: true, events: [] }
+beforeEach(() => { calendarBody = { ok: true, events: [] } })
 let server: Server
 let origin: string
 let storeDir: string
@@ -39,6 +43,11 @@ const FULL_SUMMARY = () => ({
     new_hot_memories_1h: 0,
     db_size_mb: 166.6,
   },
+  // HBDBKUSZOB823: the prune verdict rides in the same payload, computed
+  // server-side like every other number here (the retention resolution is
+  // override > .env > registry default -- re-deriving it in the script would
+  // be a second source of truth).
+  token_prune: { state: 'ok', retention_days: 90, lag_hours: 0.27, tolerance_hours: 48 },
   waiting_shown: 8,
   urgent: [{ id: 'CARD1', title: 'first urgent' }],
   waiting: [{ id: 'CARD2', title: 'a waiting card' }],
@@ -100,6 +109,7 @@ con.commit()
     const body =
       req.url === '/api/kanban/heartbeat-summary' ? summaryBody
       : req.url === '/api/schedules' ? schedulesBody
+      : req.url === '/api/heartbeat/calendar' ? calendarBody
       : undefined
     if (body === undefined) {
       res.writeHead(404).end('{}')
@@ -128,14 +138,15 @@ describe('path binding (a rename must fail in CI, not at 22:00 on the host)', ()
     expect(src).toMatch(/'scripts',\s*'heartbeat-metrics\.sh'/)
   })
 
-  it('script and scaffold agree on the sentinel version', () => {
-    // The reporter accepts ONLY the known sentinel; if the script ever
-    // bumps to V2, the prose must move in the same commit or every round
-    // reads as instrument failure.
+  it('script and the worker-side renderer agree on the sentinel version', () => {
+    // The consumer moved from the prose to heartbeat-metrics-inject.ts
+    // (HBMETRICSWIRE910); the invariant is unchanged: if the script ever
+    // bumps to V2, the renderer must move in the same commit or every round
+    // carries an instrument-failure block.
     const script = readFileSync(SCRIPT, 'utf8')
-    const scaffold = readFileSync(join(REPO_ROOT, 'src', 'web', 'heartbeat-agent-scaffold.ts'), 'utf8')
+    const inject = readFileSync(join(REPO_ROOT, 'src', 'web', 'heartbeat-metrics-inject.ts'), 'utf8')
     expect(script).toContain('echo "HB_METRICS_V1 ')
-    expect(scaffold).toContain('HB_METRICS_V1')
+    expect(inject).toContain("HB_METRICS_SENTINEL = 'HB_METRICS_V1'")
   })
 })
 
@@ -152,8 +163,40 @@ describe('positive control: full fixture', () => {
     )
     expect(r.stdout).toContain('URGENT CARD1 first urgent')
     expect(r.stdout).toContain('WAITING CARD2 a waiting card')
+    expect(r.stdout).toContain('CALENDAR_EVENTS n=0 window=2h')
     expect(r.stdout).toContain('SCHEDULES enabled=2')
+    expect(r.stdout).toContain('TOKEN_PRUNE state=ok retention_days=90 lag_hours=0.27 tolerance_hours=48')
     expect(r.stdout).not.toContain('ERROR')
+  })
+
+  it('carries a stale prune verdict through verbatim (HBDBKUSZOB823)', async () => {
+    const body = FULL_SUMMARY() as Record<string, unknown>
+    body.token_prune = { state: 'stale', retention_days: 90, lag_hours: 61.2, tolerance_hours: 48 }
+    summaryBody = body
+    schedulesBody = []
+    const r = await runScript()
+    expect(r.stdout).toContain('TOKEN_PRUNE state=stale retention_days=90 lag_hours=61.2 tolerance_hours=48')
+    // The instrument REPORTS the state; it is not the alarm's judge. A stale
+    // prune is a finding for the reader, not a broken measurement, so the
+    // exit code stays 0 -- conflating the two would make every stale round
+    // look like an instrument failure.
+    expect(r.status).toBe(0)
+  })
+
+  it('FAIL-CLOSED: a payload without token_prune is an ERROR and a non-zero exit', async () => {
+    // The realistic shape: an older dashboard paired with this script. The
+    // health line must never quietly disappear -- that is precisely how the
+    // threshold it replaces stayed invisible for weeks.
+    const body = FULL_SUMMARY() as Record<string, unknown>
+    delete body.token_prune
+    summaryBody = body
+    schedulesBody = []
+    const r = await runScript()
+    expect(r.stdout).toContain('ERROR token_prune: token_prune missing from response')
+    expect(r.stdout).not.toContain('TOKEN_PRUNE state=')
+    expect(r.status).not.toBe(0)
+    // NEGATIVE CONTROL on the blast radius: the other sections still measure.
+    expect(r.stdout).toContain('COUNTS urgent=2')
   })
 
   it('counts only the millisecond rows inside the hour (the *1000 cutoff, behaviourally)', async () => {
@@ -163,6 +206,54 @@ describe('positive control: full fixture', () => {
     // 2 recent ms rows in; the 2h-old ms row and the seconds-unit row out.
     // A seconds-cutoff regression reports total=4 here.
     expect(r.stdout).toContain('TASK_RUNS_1H total=2 fired=2')
+  })
+})
+
+// 5E0A32B0: the calendar's two end-states must stay two DIFFERENT lines --
+// collapsing "queried, calendar free" and "could not query" into one look is
+// exactly what let a fossil failure line pass as a fresh measurement.
+describe('calendar section: measured empty vs failed query vs events', () => {
+  it('renders timed and all-day events with a count line', async () => {
+    summaryBody = FULL_SUMMARY()
+    schedulesBody = []
+    calendarBody = {
+      ok: true,
+      events: [
+        { start: { dateTime: '2026-09-03T14:30:00+02:00' }, end: { dateTime: '2026-09-03T15:00:00+02:00' }, summary: 'Ruszkovszki telepites', attendees: 2 },
+        { start: { date: '2026-09-03' }, end: { date: '2026-09-04' }, summary: 'Nevnap', attendees: 0 },
+      ],
+    }
+    // The zone is pinned: the event time renders in the install zone, and the
+    // runner's own zone (UTC on CI) must not decide what 14:30+02:00 reads as.
+    const r = await runScript({ CLAW_TZ: 'Europe/Budapest' })
+    expect(r.status).toBe(0)
+    expect(r.stdout).toContain('CALENDAR_EVENTS n=2 window=2h')
+    expect(r.stdout).toContain('CAL_EVENT 14:30 Ruszkovszki telepites attendees=2')
+    expect(r.stdout).toContain('CAL_EVENT all-day Nevnap')
+    // ...and another install zone moves it (ISSUE1895: no fixed Europe/Budapest).
+    const ny = await runScript({ CLAW_TZ: 'America/New_York' })
+    expect(ny.stdout).toContain('CAL_EVENT 08:30 Ruszkovszki telepites attendees=2')
+  })
+
+  it('a failed query is an ERROR calendar: line + non-zero exit, never an empty list', async () => {
+    summaryBody = FULL_SUMMARY()
+    schedulesBody = [{ enabled: true }]
+    calendarBody = { ok: false, error: 'Token refresh failed: 400' }
+    const r = await runScript()
+    expect(r.status).not.toBe(0)
+    expect(r.stdout).toContain('ERROR calendar: Token refresh failed: 400')
+    expect(r.stdout).not.toContain('CALENDAR_EVENTS')
+    // Partial output stays usable: the unaffected sections still print.
+    expect(r.stdout).toContain('SCHEDULES enabled=1')
+  })
+
+  it('an unrecognized response shape is an instrument failure, not a quiet skip', async () => {
+    summaryBody = FULL_SUMMARY()
+    schedulesBody = []
+    calendarBody = { something: 'else' }
+    const r = await runScript()
+    expect(r.status).not.toBe(0)
+    expect(r.stdout).toContain('ERROR calendar: unrecognized response shape')
   })
 })
 

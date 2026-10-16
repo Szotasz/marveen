@@ -1,16 +1,20 @@
 import { execFile } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID, PROJECT_ROOT, RESPAWN_ENABLED, APP_TZ } from '../config.js'
 import { resolveFromPath } from '../platform.js'
-import { listAgentNames } from './agent-config.js'
+import { agentConfigRoot, listAgentNames } from './agent-config.js'
+import { resolveOauthTokenFileSetting } from './agent-oauth-token-file.js'
 import { isAgentRunning, capturePane, startAgentProcess } from './agent-process.js'
+import { isRestartInFlight } from './restart-lock.js'
 import { quarantineFleetTokenIfDead } from './claude-credentials-guard.js'
 import { resolveAgentSession } from './channel-mcp-reconnect.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { detectReauthNeeded } from './reauth-detect.js'
 import { loginSequence, literalKeyArgs, specialKeyArgs } from './tmux-keys.js'
 import { withSessionSendLock } from './session-send-lock.js'
+import { exactTmuxTarget } from '../tmux-target.js'
 
 // Autonomous re-auth healer (Adam stability-fix #1, scoped 2026-06-03).
 //
@@ -68,6 +72,14 @@ export interface ReauthHealerInput {
    * restart -- startAgentProcess re-seeds hasCompletedOnboarding.
    */
   isFirstRunGate?: boolean
+  /**
+   * The agent authenticates from its own setup-token file (agent-config.json
+   * "oauthTokenFile"). Its /login screen would RE-POINT the session's
+   * credential away from that file -- the file is the source of truth, so an
+   * interactive /login is never the fix. The heal is a token refresh: a fresh
+   * process re-reads the (presumably still valid) file.
+   */
+  usesOwnTokenFile?: boolean
   prev: ReauthHealerState
   nowMs: number
 }
@@ -78,6 +90,8 @@ export interface ReauthHealerThresholds {
 }
 
 export interface ReauthHealerDecision {
+  /** The raw threshold+cooldown firing, before the sendKeys/escalate gates. */
+  fireNow: boolean
   sendKeys: boolean   // best-effort autonomous /login (sub-agents only)
   restartAgent: boolean // first-run-gate heal: restart the sub-agent (re-seeds the onboarding flag)
   restartMain: boolean // GAP 1 landed: a dead-token main respawn now legitimately fixes it (main only)
@@ -95,11 +109,11 @@ export const NO_REAUTH_STATE: ReauthHealerState = { consecutiveDead: 0, lastActi
  * into the session every tick) and never fires for the main agent.
  */
 export function decideReauthAction(input: ReauthHealerInput, t: ReauthHealerThresholds): ReauthHealerDecision {
-  const { isDeadToken, sessionAlive, isMain, canInteractiveLogin, isFirstRunGate, prev, nowMs } = input
+  const { isDeadToken, sessionAlive, isMain, canInteractiveLogin, isFirstRunGate, usesOwnTokenFile, prev, nowMs } = input
 
   // Clean / not-applicable: end the spell, allow a fresh alert next time.
   if (!isDeadToken || !sessionAlive) {
-    return { sendKeys: false, restartAgent: false, restartMain: false, escalate: false, next: NO_REAUTH_STATE }
+    return { fireNow: false, sendKeys: false, restartAgent: false, restartMain: false, escalate: false, next: NO_REAUTH_STATE }
   }
 
   const consecutiveDead = prev.consecutiveDead + 1
@@ -112,8 +126,10 @@ export function decideReauthAction(input: ReauthHealerInput, t: ReauthHealerThre
     // that can complete the browser step. On headless it would amplify the
     // cascade (rotates the shared token), so suppress it and escalate-only.
     // NEVER on the first-run gate: a /login there advances the picker into a
-    // browser OAuth flow on a valid credential.
-    sendKeys: fireNow && !isMain && canInteractiveLogin && isFirstRunGate !== true,
+    // browser OAuth flow on a valid credential. NEVER for an agent that
+    // authenticates from its own setup-token file: /login would replace the
+    // session's credential with a new interactive one, overriding the file.
+    sendKeys: fireNow && !isMain && canInteractiveLogin && isFirstRunGate !== true && usesOwnTokenFile !== true,
     // First-run gate on a sub-agent: a restart heals it (startAgentProcess runs
     // ensureSharedClaudeOnboarded first). Works headless -- no browser step.
     restartAgent: fireNow && !isMain && isFirstRunGate === true,
@@ -129,6 +145,11 @@ export function decideReauthAction(input: ReauthHealerInput, t: ReauthHealerThre
     // existing monitored respawn paths, which already re-seed onboarding).
     restartMain: fireNow && isMain && isFirstRunGate !== true,
     escalate: fireNow,
+    // Exposed for the caller's own branches: sendKeys is already the AND of
+    // fireNow with its own gates, so fireNow alone is what the log line below
+    // needs to distinguish "suppressed because of the token file" from
+    // "suppressed by another gate".
+    fireNow,
     next: {
       consecutiveDead,
       lastActionAtMs: fireNow ? nowMs : prev.lastActionAtMs,
@@ -203,27 +224,46 @@ export interface QuietSuppressedEntry {
   label: string
   reason: string
   consecutiveDead: number
+  /** The agent declares an oauthTokenFile: the owner must fix or refresh that file, not /login. */
+  usesOwnTokenFile?: boolean
+  /** ...and the setting is present but unusable (broken JSON, rejected value): the config itself needs a human. */
+  tokenFileInvalid?: boolean
+  /** ...and the session sits on the first-run gate: the heal there is a restart, not a token refresh and not a /login. */
+  firstRunGate?: boolean
 }
 
 const quietSuppressed = new Map<string, QuietSuppressedEntry>()
 
-export function buildEscalationMessage(label: string, reason: string, consecutiveDead: number): string {
+export function buildEscalationMessage(label: string, reason: string, consecutiveDead: number, usesOwnTokenFile = false, tokenFileInvalid = false, firstRunGate = false): string {
   // Dynamic duration: consecutiveDead probes at PROBE_INTERVAL_MS each. On a
   // re-alert (after the 30min cooldown, still dead) this grows past the initial
   // ~9min, so a hardcoded value would lie -- compute it from the probe count.
   const approxMin = Math.round((consecutiveDead * PROBE_INTERVAL_MS) / 60_000)
-  return `🔐 A(z) ${label} ágens halott OAuth tokent jelez (${reason}) több mint ~${approxMin} perce. Manuális browser /login kell a dashboardon (az ügynök kártyáján a "Bejelentkezés" gomb), automatikusan nem gyógyítható.`
+  const head = `🔐 A(z) ${label} ágens halott OAuth tokent jelez (${reason}) több mint ~${approxMin} perce.`
+  // An agent with its own oauthTokenFile: a /login would replace the credential the file provides.
+  // First-run gate on a token-file agent: the restart the healer starts is the heal. No token refresh, no manual /login.
+  if (usesOwnTokenFile && firstRunGate) {
+    return `${head} Az ügynök az első indítási képernyőn akadt el, nem a token halt meg: újraindítom az ügynököt; ha ezután is itt akad el, indítsd újra kézzel.${tokenFileInvalid ? ' Az agent-config.json oauthTokenFile beállítása emellett hibás vagy nem olvasható: javítsd.' : ''}`
+  }
+  if (usesOwnTokenFile && tokenFileInvalid) {
+    return `${head} Az ügynök agent-config.json fájljában az oauthTokenFile beállítás jelen van, de hibás vagy nem olvasható: ellenőrizd és javítsd a fájlt. Automatikus /login nem megy, mert felülírná a token-fájlos hitelesítést.`
+  }
+  if (usesOwnTokenFile) {
+    return `${head} Az ügynök a saját token-fájljából (oauthTokenFile) hitelesít: a /login felülírná a token-fájlos hitelesítést. Frissítsd a token-fájlt, majd indítsd újra az ügynököt.`
+  }
+  return `${head} Manuális browser /login kell a dashboardon (az ügynök kártyáján a "Bejelentkezés" gomb), automatikusan nem gyógyítható.`
 }
 
 export function buildQuietSummaryMessage(entries: QuietSuppressedEntry[]): string {
   const lines = entries.map((e) => {
     const approxMin = Math.round((e.consecutiveDead * PROBE_INTERVAL_MS) / 60_000)
-    return `• ${e.label}: ${e.reason} (~${approxMin} perce)`
+    return `• ${e.label}: ${e.reason} (~${approxMin} perce)${e.usesOwnTokenFile ? (e.firstRunGate ? `, első indítási képernyő: újraindítom az ügynököt; ha ezután is itt akad el, indítsd újra kézzel${e.tokenFileInvalid ? '; hibás oauthTokenFile beállítás: javítsd az agent-config.json-t' : ''}` : e.tokenFileInvalid ? ', hibás oauthTokenFile beállítás: javítsd az agent-config.json-t' : ', saját token-fájl: frissítsd a fájlt és indítsd újra') : ''}`
   })
+  const needsLogin = entries.some((e) => !e.usesOwnTokenFile)
   return [
     `🔐 Reggeli token-összegzés: az éjszakai csendes sáv (${QUIET_START_HOUR}:00-0${QUIET_END_HOUR}:00) alatt elnyomott riasztások. MOST IS halott tokent jelez:`,
     ...lines,
-    'Manuális browser /login kell a dashboardon (az ügynök kártyáján a "Bejelentkezés" gomb).',
+    ...(needsLogin ? ['Manuális browser /login kell a dashboardon (az ügynök kártyáján a "Bejelentkezés" gomb).'] : []),
   ].join('\n')
 }
 
@@ -243,7 +283,7 @@ export function routeEscalation(
     logger.warn({ label: entry.label, session: entry.session, reason: entry.reason }, 'reauth-healer: dead token escalation suppressed (quiet hours), queued for morning summary')
     return
   }
-  notify(buildEscalationMessage(entry.label, entry.reason, entry.consecutiveDead))
+  notify(buildEscalationMessage(entry.label, entry.reason, entry.consecutiveDead, entry.usesOwnTokenFile === true, entry.tokenFileInvalid === true, entry.firstRunGate === true))
 }
 
 /**
@@ -275,7 +315,123 @@ function sendNotify(msg: string): void {
   })
 }
 
-function checkSession(label: string, session: string, isMain: boolean, quiet: boolean): void {
+export type TokenFileState = 'unset' | 'set' | 'invalid'
+
+/**
+ * The state of the agent's "oauthTokenFile" setting in its agent-config.json:
+ * 'unset'   -- the agent has no config file (ENOENT), no such agent (a name that cannot be an agent directory),
+ *              or the file does not declare the field: the unchanged /login path;
+ * 'set'     -- a usable path;
+ * 'invalid' -- FAIL-CLOSED: the field is present but broken or rejected, OR the config exists but cannot be
+ *              read or resolved (permission denied, a directory in its place, a resolver error). The
+ *              healer cannot tell that the agent does NOT use a token file, so it must not /login it.
+ */
+export function agentTokenFileState(agentName: string): TokenFileState {
+  // The NAME check is separate: a name that cannot be an agent directory (empty, ".", "..", a path separator, NUL)
+  // is no agent at all, so there is nothing to protect -> 'unset'. Any OTHER failure below is fail-closed 'invalid'.
+  if (isUnsafeAgentName(agentName)) return 'unset'
+  let root: string
+  try {
+    root = agentConfigRoot(agentName)
+  } catch {
+    return 'invalid' // ANY failure of the path helper -- an ENOENT thrown there is not "the agent has no config"
+  }
+  let raw: string
+  try {
+    raw = readFileSync(join(root, 'agent-config.json'), 'utf-8')
+  } catch (err) {
+    // ENOENT of the config FILE itself: the agent has no config. Everything else (permission denied, a directory in its
+    // place) is a config that exists or may exist but cannot be read.
+    return (err as NodeJS.ErrnoException)?.code === 'ENOENT' ? 'unset' : 'invalid'
+  }
+  try {
+    return resolveOauthTokenFileSetting(raw).state
+  } catch {
+    return 'invalid'
+  }
+}
+
+function isUnsafeAgentName(name: string): boolean {
+  return name === '' || name === '.' || name === '..' || /[\\/\0]/.test(name) || name.split(/[\\/]/).includes('..')
+}
+
+/**
+ * FAIL-CLOSED: true whenever the agent DECLARES an oauthTokenFile ('set' or 'invalid'). A /login
+ * would replace the file-backed credential, so a present-but-unusable setting is a human's call, not
+ * the healer's: no /login, the escalation says the config is broken.
+ */
+export function agentUsesOwnTokenFile(agentName: string): boolean {
+  return tokenFileSignals(agentTokenFileState(agentName)).usesOwnTokenFile
+}
+
+/** The two flags checkSession feeds the decision and the escalation from the config state (fail-closed on 'invalid'). */
+export function tokenFileSignals(state: TokenFileState): { usesOwnTokenFile: boolean; tokenFileInvalid: boolean } {
+  return { usesOwnTokenFile: state !== 'unset', tokenFileInvalid: state === 'invalid' }
+}
+
+/**
+ * What the owner ALERT may say about the token file. The signals pass through; on the first-run gate the alert
+ * additionally carries firstRunGate, because the heal there is a restart: the text then says "restart", never
+ * "refresh the token file" and never "manual /login" (the /login block in the decision is unchanged).
+ */
+export function escalationTokenFileHint(
+  signals: { usesOwnTokenFile: boolean; tokenFileInvalid: boolean },
+  isFirstRunGate: boolean,
+): { usesOwnTokenFile: boolean; tokenFileInvalid: boolean; firstRunGate: boolean } {
+  return { ...signals, firstRunGate: signals.usesOwnTokenFile && isFirstRunGate }
+}
+
+export interface SessionEvalInput {
+  label: string
+  isMain: boolean
+  isDeadToken: boolean
+  sessionAlive: boolean
+  canInteractiveLogin: boolean
+  isFirstRunGate: boolean
+  prev: ReauthHealerState
+  nowMs: number
+}
+
+/**
+ * The whole per-session chain in ONE exported function (checkSession calls it): the agent label -> the config state
+ * -> the two flags -> the decision -> the alert hint. Exported so a wrong label or a dropped call at the call site is
+ * visible to a test, not only to the type checker.
+ */
+export function evaluateSession(input: SessionEvalInput, t: ReauthHealerThresholds) {
+  const tokenFileState: TokenFileState = input.isMain ? 'unset' : agentTokenFileState(input.label)
+  const signals = tokenFileSignals(tokenFileState)
+  const decision = decideReauthAction(
+    {
+      isDeadToken: input.isDeadToken,
+      sessionAlive: input.sessionAlive,
+      isMain: input.isMain,
+      canInteractiveLogin: input.canInteractiveLogin,
+      isFirstRunGate: input.isFirstRunGate,
+      usesOwnTokenFile: signals.usesOwnTokenFile,
+      prev: input.prev,
+      nowMs: input.nowMs,
+    },
+    t,
+  )
+  return { decision, tokenFileState, ...signals, escalationHint: escalationTokenFileHint(signals, input.isFirstRunGate) }
+}
+
+/**
+ * Whether the "token refresh needed. /login skipped" line is due: the decision
+ * fired, this is a sub-agent with its own token file, and it is NOT the
+ * first-run gate (there the heal is a restart, not a token refresh, so the line
+ * would name the wrong cause).
+ */
+export function logsTokenFileSkip(
+  decision: { fireNow: boolean },
+  isMain: boolean,
+  usesOwnTokenFile: boolean,
+  isFirstRunGate: boolean,
+): boolean {
+  return decision.fireNow && !isMain && usesOwnTokenFile === true && !isFirstRunGate
+}
+
+export function checkSession(label: string, session: string, isMain: boolean, quiet: boolean): void {
   const pane = capturePane(session)
   const sessionAlive = pane != null
   const reauth = detectReauthNeeded(pane)
@@ -283,8 +439,13 @@ function checkSession(label: string, session: string, isMain: boolean, quiet: bo
   // The reasons produced by the two first-run-gate markers in reauth-detect.
   const isFirstRunGate = /onboarding picker|sign-in screen/i.test(reauth.reason ?? '')
 
-  const decision = decideReauthAction(
-    { isDeadToken: reauth.needsReauth, sessionAlive, isMain, canInteractiveLogin: hostCanInteractiveLogin(), isFirstRunGate, prev, nowMs: Date.now() },
+  // Per-agent setup-token file (agent-config.json "oauthTokenFile"): an agent
+  // that authenticates from its own file is NOT /login-able -- the file is the
+  // credential. A missing/unreadable agent-config.json resolves to 'unset', so
+  // an agent without the field is byte-identical to before.
+  // The main agent is never /login-healed here (isMain gates every branch), so evaluateSession skips the disk read for it.
+  const { decision, tokenFileState, usesOwnTokenFile, escalationHint } = evaluateSession(
+    { label, isMain, isDeadToken: reauth.needsReauth, sessionAlive, canInteractiveLogin: hostCanInteractiveLogin(), isFirstRunGate, prev, nowMs: Date.now() },
     { threshold: DEAD_PROBE_THRESHOLD, cooldownMs: ESCALATION_COOLDOWN_MS },
   )
 
@@ -300,6 +461,18 @@ function checkSession(label: string, session: string, isMain: boolean, quiet: bo
   if (decision.sendKeys) {
     logger.warn({ label, session }, 'reauth-healer: confirmed dead token on live sub-agent -- best-effort /login send-keys')
     void sendBestEffortLogin(session)
+  } else if (logsTokenFileSkip(decision, isMain, usesOwnTokenFile, isFirstRunGate)) {
+    // /login was suppressed because this agent authenticates from its own
+    // setup-token file -- an interactive /login would override the file-backed
+    // credential. The state is "token refresh needed", not "login": refresh the
+    // file (or a fresh process re-reads it). Fires whenever the decision fired
+    // but /login was not sent for this reason (covers headless hosts too, where
+    // canInteractiveLogin is also false).
+    if (tokenFileState === 'invalid') {
+      logger.warn({ label, session }, 'reauth-healer: oauthTokenFile setting is present but unusable. /login skipped (it would override the file-backed credential); the owner must fix agent-config.json')
+    } else {
+      logger.info({ label, session }, 'reauth-healer: token refresh needed. /login skipped for token-file agent (would override its oauthTokenFile)')
+    }
   }
   if (decision.restartAgent) {
     logger.warn({ label, session, reason: reauth.reason }, 'reauth-healer: first-run gate on live sub-agent -- restarting it (re-seeds hasCompletedOnboarding)')
@@ -308,7 +481,7 @@ function checkSession(label: string, session: string, isMain: boolean, quiet: bo
   if (decision.escalate) {
     logger.error({ label, session, reason: reauth.reason, quiet }, 'reauth-healer: dead OAuth token on live session -- escalating to owner')
     routeEscalation(
-      { session, label, reason: reauth.reason ?? 'auth failure', consecutiveDead: decision.next.consecutiveDead },
+      { session, label, reason: reauth.reason ?? 'auth failure', consecutiveDead: decision.next.consecutiveDead, ...escalationHint },
       quiet,
       sendNotify,
     )
@@ -352,8 +525,14 @@ function checkSession(label: string, session: string, isMain: boolean, quiet: bo
 // startAgentProcess runs ensureSharedClaudeOnboarded before the fresh claude
 // starts, so the relaunch comes up past the gate.
 async function restartFirstRunGatedAgent(name: string, session: string): Promise<void> {
+  // A managed restart already owns this agent; killing its session from here
+  // would tear down the replacement mid-boot (see restart-lock.ts).
+  if (isRestartInFlight(name)) {
+    logger.info({ name }, 'reauth-healer: managed restart in flight -- skipping first-run-gate relaunch')
+    return
+  }
   await new Promise<void>((resolve) => {
-    execFile(TMUX, ['kill-session', '-t', session], { timeout: 5000 }, () => resolve())
+    execFile(TMUX, ['kill-session', '-t', exactTmuxTarget(session)], { timeout: 5000 }, () => resolve())
   })
   await sleep(1000)
   try {

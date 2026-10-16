@@ -24,12 +24,13 @@ import { join } from 'node:path'
 const ROOT = join(__dirname, '..', '..')
 const LINUX = readFileSync(join(ROOT, 'install-linux.sh'), 'utf-8')
 
-/** Pull the `if command -v ollama ... fi` block (defs + call) out of the script. */
+/** Pull the ollama service+pull block (defs + call) out of the script. */
 function ollamaBlock(src: string): string {
-  // The second `if command -v ollama` opens the service+pull block (the first is
-  // the install-or-skip block just above); slice from there to its labelled fi.
-  const firstIdx = src.indexOf('if command -v ollama &>/dev/null; then')
-  const start = src.indexOf('if command -v ollama &>/dev/null; then', firstIdx + 1)
+  // Since OLLAMAURL901 the service+pull guard also accepts a reachable API, so
+  // it no longer reads `command -v ollama` alone -- a remote or containerised
+  // Ollama has no local binary but still needs the model. That `|| curl` is
+  // what distinguishes it from the install-or-skip guard above.
+  const start = src.indexOf('if command -v ollama &>/dev/null || curl')
   const end = src.indexOf('fi  # command -v ollama')
   if (start < 0 || end < 0 || end <= start) throw new Error('ollama block not found')
   return src.slice(start, end + 'fi  # command -v ollama'.length)
@@ -66,6 +67,9 @@ function runOllamaBlock(opts: { apiUp: boolean; pullBody?: string }): { code: nu
     'warn() { echo "warn: $*"; }',
     '_t() { echo "$1"; }',
     'sudo() { return 0; }',       // service enable is best-effort; never real here
+    // The block reads OLLAMA_API (resolved from OLLAMA_URL further up the
+    // installer); the historical default is what these cases describe.
+    'OLLAMA_API=http://localhost:11434',
     'seq() { command seq "$@"; }',
     'sleep() { return 0; }',      // no real waiting in the test
     // ollama is PRESENT (binary installed) -- the exact BC100 shape.

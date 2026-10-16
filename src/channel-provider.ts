@@ -1,7 +1,8 @@
 import https from 'node:https'
 import { readFileSync, existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { homedir } from 'node:os'
+import { fileURLToPath } from 'node:url'
 import { logger } from './logger.js'
 import { formatForTelegram, splitMessage } from './format.js'
 import { markIfTestRun } from './test-run-marker.js'
@@ -16,11 +17,23 @@ export interface ChannelProvider {
   readonly envKeys: string[]
   readonly stateDir: string
   readonly chatIdFormat: string
-  sendMessage(token: string, chatId: string, text: string, parseMode?: string): Promise<void>
+  /** threadId: a Telegram topic (TELEGRAM_TOPICS_ENABLED); providers without topics ignore it. */
+  sendMessage(token: string, chatId: string, text: string, parseMode?: string, threadId?: string): Promise<void>
   sendPhoto(token: string, chatId: string, photoPath: string, caption: string): Promise<void>
-  validateToken(token: string): Promise<{ ok: boolean; botName?: string; error?: string }>
+  validateToken(token: string): Promise<TokenValidation>
   formatMessage(text: string): string
   splitMessage(text: string): string[]
+}
+
+/** What validateToken reports. `scopes` and `missingScopes` are filled only by
+ *  a provider that can read the token's granted scopes (Slack); absent means
+ *  "not known", never "none missing". */
+export interface TokenValidation {
+  ok: boolean
+  botName?: string
+  error?: string
+  scopes?: string[]
+  missingScopes?: string[]
 }
 
 // -- Telegram implementation --
@@ -90,9 +103,10 @@ const telegramProvider: ChannelProvider = {
   stateDir: 'telegram',
   chatIdFormat: 'numeric (e.g. 1268077055)',
 
-  async sendMessage(token, chatId, text, parseMode) {
-    const payload: Record<string, string> = { chat_id: chatId, text }
+  async sendMessage(token, chatId, text, parseMode, threadId) {
+    const payload: Record<string, string | number> = { chat_id: chatId, text }
     if (parseMode) payload.parse_mode = parseMode
+    if (threadId) payload.message_thread_id = Number(threadId)
     const body = JSON.stringify(payload)
     await telegramHttpPost(token, 'sendMessage', body, 'application/json')
   },
@@ -292,7 +306,17 @@ const slackProvider: ChannelProvider = {
       })
       const data = await resp.json() as { ok: boolean; bot_id?: string; user?: string; error?: string }
       if (data.ok) {
-        return { ok: true, botName: data.user || data.bot_id }
+        // SLACKSCOPEJELZ1007: the granted bot scopes come back in the
+        // x-oauth-scopes header only. Reported against the manifest's list so
+        // a missing scope (im:read: the slack-channel plugin needs it to write
+        // to an allowFrom user's DM after a restart, SLACKOUTDM1007) shows up
+        // without anyone asking the owner. No header -> no claim.
+        const granted = parseSlackScopes(resp.headers.get('x-oauth-scopes'))
+        return {
+          ok: true,
+          botName: data.user || data.bot_id,
+          ...(granted ? { scopes: granted, missingScopes: missingSlackScopes(granted) } : {}),
+        }
       }
       return { ok: false, error: data.error || 'Invalid token' }
     } catch {
@@ -486,6 +510,20 @@ const SLACK_BOT_SCOPES = [
   'users:read',
 ]
 
+/** The `x-oauth-scopes` header as a list; null when the header is absent OR
+ *  empty: an empty header is "not known", not "no scope granted" (an
+ *  auth.test that succeeded always has at least one scope). */
+export function parseSlackScopes(header: string | null | undefined): string[] | null {
+  if (header == null || header.trim() === '') return null
+  return header.split(',').map(s => s.trim()).filter(Boolean)
+}
+
+/** The manifest's bot scopes the token was not granted, in manifest order. */
+export function missingSlackScopes(granted: readonly string[]): string[] {
+  const have = new Set(granted)
+  return SLACK_BOT_SCOPES.filter(s => !have.has(s))
+}
+
 const SLACK_BOT_EVENTS = [
   'app_mention',
   'message.channels',
@@ -568,8 +606,9 @@ const providers: Record<ChannelProviderType, ChannelProvider> = {
 function withTestRunMarking(provider: ChannelProvider): ChannelProvider {
   return {
     ...provider,
-    sendMessage: (token, chatId, text, parseMode) =>
-      provider.sendMessage(token, chatId, markIfTestRun(text), parseMode),
+    sendMessage: (token, chatId, text, parseMode, threadId) => threadId
+      ? provider.sendMessage(token, chatId, markIfTestRun(text), parseMode, threadId)
+      : provider.sendMessage(token, chatId, markIfTestRun(text), parseMode),
     sendPhoto: (token, chatId, photoPath, caption) =>
       provider.sendPhoto(token, chatId, photoPath, markIfTestRun(caption)),
   }
@@ -587,25 +626,118 @@ export function getProvider(type: ChannelProviderType): ChannelProvider {
   return markedProviders[type]
 }
 
+const KNOWN_PROVIDER_TYPES: readonly ChannelProviderType[] = ['telegram', 'slack', 'discord', 'googlechat', 'teams']
+
+export interface ProviderTypeResolution {
+  /** The provider that will actually be used. */
+  type: ChannelProviderType
+  /** The configured value, trimmed. Empty string when nothing was configured. */
+  raw: string
+  /**
+   * A value WAS configured, and it is not one this build knows. The caller gets
+   * `telegram` regardless, which is why this flag has to travel with it.
+   */
+  unrecognised: boolean
+}
+
+/**
+ * Resolve a configured channel-provider name, and say whether it was understood.
+ *
+ * Pure, so the substitution can be tested without touching a log. The falling
+ * back itself is deliberate and stays: a build that refuses to start on an
+ * unknown provider name would turn a typo into an outage. What is not
+ * acceptable is doing it in silence, which is what GH #846 walked into.
+ *
+ * The reporter set `CHANNEL_PROVIDER=none` believing it meant "no channel", and
+ * filed a crash against the respawn path. There is no `none` provider: the value
+ * resolved to `telegram`, so their main session came up on a channel plugin they
+ * had deliberately not configured. A typo (`telegran`, `Slack`) lands in exactly
+ * the same place. The original report is the loud version of this; the silent
+ * substitution is the one that is harder to notice and therefore worse.
+ */
+export function resolveProviderType(envValue: string | undefined): ProviderTypeResolution {
+  const raw = (envValue ?? '').trim()
+  const known = KNOWN_PROVIDER_TYPES.find((t) => t === raw)
+  if (known) return { type: known, raw, unrecognised: false }
+  return { type: 'telegram', raw, unrecognised: raw.length > 0 }
+}
+
+// Say it once per distinct bad value, not once per call: getProviderType is
+// called on every isolated-config provision, and a warning that repeats becomes
+// a warning nobody reads.
+const announcedProviderValues = new Set<string>()
+
 export function getProviderType(envValue: string | undefined): ChannelProviderType {
-  if (envValue === 'slack') return 'slack'
-  if (envValue === 'discord') return 'discord'
-  if (envValue === 'googlechat') return 'googlechat'
-  if (envValue === 'teams') return 'teams'
-  return 'telegram'
+  const resolved = resolveProviderType(envValue)
+  if (resolved.unrecognised && !announcedProviderValues.has(resolved.raw)) {
+    announcedProviderValues.add(resolved.raw)
+    logger.warn(
+      { configured: resolved.raw, using: resolved.type, known: KNOWN_PROVIDER_TYPES },
+      `Unknown channel provider "${resolved.raw}" -- falling back to "${resolved.type}". This is NOT what was configured: ` +
+        `the session will come up on the ${resolved.type} plugin. There is no "none" provider; a channel-less agent is not a supported configuration today.`,
+    )
+  }
+  return resolved.type
+}
+
+/** Test seam: the announce-once memory is process-wide by design. */
+export function resetProviderTypeAnnouncements(): void {
+  announcedProviderValues.clear()
+}
+
+// Compiled location is dist/channel-provider.js, so '..' is the install root --
+// the same convention config.ts uses for PROJECT_ROOT. Computed locally because
+// config.ts imports this module (importing it back would be circular).
+const INSTALL_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..')
+
+/** TELEGRAM_STATE_DIR / SLACK_STATE_DIR / ... -- the env var the channel plugin
+ *  itself honours. channels.sh exports it into the main session so the plugin,
+ *  its hooks and this server all agree on one directory. */
+export function channelStateDirEnvVar(provider: ChannelProviderType): string {
+  return `${provider.toUpperCase()}_STATE_DIR`
+}
+
+// Main-agent channel state resolution (#915). The shared ~/.claude/channels/
+// default meant ANY other Claude Code session on the host loaded the same bot
+// token and silently took the bot over. The main agent's state is therefore
+// install-scoped (<install>/.claude/channels/<provider>), the way sub-agents'
+// always was. Order:
+//   1. <PROVIDER>_STATE_DIR env override -- the value the plugin itself runs
+//      with, so when set it is authoritative for every reader in this process.
+//   2. legacy ~/.claude/channels/<provider>, but ONLY while it still holds the
+//      .env and the install-scoped dir does not -- i.e. an install whose
+//      channels.sh has not migrated yet. Readers must keep working against the
+//      still-running legacy poller during that window.
+//   3. install-scoped -- the default for migrated AND fresh installs, so a
+//      first onboarding writes the token here and no shared-path copy is ever
+//      born.
+/** The ordering logic alone, pure so the contract is unit-testable without
+ *  touching the real home directory. */
+export function resolveMainChannelStateDir(opts: {
+  envOverride: string | undefined
+  installScoped: string
+  legacy: string
+  hasEnvFile: (dir: string) => boolean
+}): string {
+  if (opts.envOverride) return opts.envOverride
+  if (opts.hasEnvFile(opts.legacy) && !opts.hasEnvFile(opts.installScoped)) return opts.legacy
+  return opts.installScoped
 }
 
 export function channelStateDir(provider: ChannelProviderType, agentDir?: string): string {
-  const base = agentDir
-    ? join(agentDir, '.claude', 'channels')
-    : join(homedir(), '.claude', 'channels')
   const subdir =
     provider === 'slack' ? 'slack'
     : provider === 'discord' ? 'discord'
     : provider === 'googlechat' ? 'googlechat'
     : provider === 'teams' ? 'teams'
     : 'telegram'
-  return join(base, subdir)
+  if (agentDir) return join(agentDir, '.claude', 'channels', subdir)
+  return resolveMainChannelStateDir({
+    envOverride: process.env[channelStateDirEnvVar(provider)],
+    installScoped: join(INSTALL_ROOT, '.claude', 'channels', subdir),
+    legacy: join(homedir(), '.claude', 'channels', subdir),
+    hasEnvFile: (dir) => existsSync(join(dir, '.env')),
+  })
 }
 
 export function readChannelToken(provider: ChannelProviderType, envFilePath: string): string | null {

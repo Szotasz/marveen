@@ -46,6 +46,23 @@ export function normalizeForMatch(text: string): string {
 }
 
 /**
+ * Drop whitespace entirely, for the substring identity test only.
+ *
+ * Collapsing is not enough: a terminal wraps at a fixed column, so it can break
+ * INSIDE a word. The scrape then reads "...the categ ory field..." where the
+ * source has "category", and collapsing leaves a space the original never had,
+ * so `includes` fails on text that IS ours. Removing whitespace on both sides
+ * makes the comparison blind to where the wrap fell.
+ *
+ * This does not loosen the guard against clearing a human draft: the fragment
+ * still has to appear verbatim, character for character, inside something this
+ * process injected into that same pane within the retention window.
+ */
+export function squashForMatch(text: string): string {
+  return text.replace(/\s+/g, '')
+}
+
+/**
  * Remember what was typed into a pane. Called from the single choke point every
  * machine delivery goes through, so scheduled ticks, inter-agent messages and
  * context-guard prompts are all covered, not just the router.
@@ -86,16 +103,18 @@ export function getInjectedPrompt(session: string, now: number = Date.now()): In
  *
  * The scrape may be missing its head (overfull box) or its tail (narrow pane),
  * so a substring test in either direction is the honest check; an equality test
- * would reject exactly the case this exists for.
+ * would reject exactly the case this exists for. It may also be broken MID-WORD
+ * by the wrap, which is why the comparison runs on the whitespace-free form.
  */
 export function matchesInjectedPrompt(parked: string | null, record: InjectedPromptRecord | null): boolean {
   if (parked == null || record == null) return false
-  const a = normalizeForMatch(parked)
-  const b = normalizeForMatch(record.text)
+  const a = squashForMatch(parked)
+  const b = squashForMatch(record.text)
   if (a.length === 0 || b.length === 0) return false
   // A very short fragment is not evidence: "the" appears in every message. The
   // floor is well under the shortest real inter-agent frame (the security
-  // preamble alone is ~700 chars) but high enough to exclude noise.
+  // preamble alone is ~700 chars) but high enough to exclude noise. Counted on
+  // the whitespace-free form, so it is 24 real characters, not 24 columns.
   if (a.length < 24) return false
   return b.includes(a) || a.includes(b)
 }

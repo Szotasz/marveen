@@ -189,6 +189,48 @@ describe('isPublicFetchHost', () => {
     }
   })
 
+  /* The same bypass in a different IP encoding. The wildcard-DNS services
+     resolve all of these, so a decimal-only parser is not a narrower guard,
+     it is an incomplete one. Measured against the shipped function. */
+  it('rejects the alternative encodings of the same inward address', () => {
+    for (const bad of [
+      '2130706433.nip.io',        // 127.0.0.1 packed into one decimal
+      '7f000001.nip.io',          // the same, hex
+      '0x7f000001.nip.io',        // the same, 0x-prefixed
+      '017700000001.nip.io',      // the same, octal
+      '3232235777.nip.io',        // 192.168.1.1 packed
+      '2852039166.nip.io',        // 169.254.169.254, the metadata endpoint
+      '0177.0.0.1.nip.io',        // octal first octet
+      '012.0.0.1.nip.io',         // octal 10.0.0.1
+      '0x7f.0.0.1.nip.io',        // hex first octet
+    ]) {
+      expect(isPublicFetchHost(bad)).toBe(false)
+    }
+  })
+
+  /* sslip.io writes IPv6 with dashes, which is neither a dotted quad nor a
+     dash quad, so both existing checks walked straight past it. */
+  it('rejects the dashed IPv6 form of loopback and private ranges', () => {
+    for (const bad of ['0--1.sslip.io', '--1.sslip.io', 'fe80--1.sslip.io', 'fc00--1.sslip.io']) {
+      expect(isPublicFetchHost(bad)).toBe(false)
+    }
+  })
+
+  /* The bound on the packed form exists for these: a numeric label that does
+     not encode four octets stays an ordinary label, and a public address in
+     any encoding stays public. */
+  it('leaves public names alone in every encoding', () => {
+    for (const good of [
+      '123.example.com',
+      '134744072.nip.io',   // 8.8.8.8 packed: public, so it stays reachable
+      'deadbeef.example.com',
+      '2001-db8--1.sslip.io',
+      'abc-def.example.com',
+    ]) {
+      expect(isPublicFetchHost(good)).toBe(true)
+    }
+  })
+
   it('rejects in-cluster service names', () => {
     for (const bad of ['kubernetes.default.svc', 'api.prod.svc', 'db.svc.cluster.local', 'redis.ns.cluster']) {
       expect(isPublicFetchHost(bad)).toBe(false)

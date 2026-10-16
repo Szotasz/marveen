@@ -22,8 +22,12 @@ import {
   markPendingTaskRetryAlert,
   clearPendingTaskRetryAlert,
   createAgentMessage,
+  getAgentMessage,
   getDispatchedPendingStats,
+  closeMessagesWithoutDelivery,
   COMPLETION_REPORT_PREFIX,
+  GATE_ALERT_ORIGIN_NOTE,
+  CLOSED_WITHOUT_DELIVERY_PREFIX,
 } from '../db.js'
 import { DB_FILENAME } from '../config.js'
 
@@ -78,6 +82,59 @@ describe('memories', () => {
 
   it('leepulesi soprest vegrehajt hiba nelkul', () => {
     expect(() => decayMemories()).not.toThrow()
+  })
+
+  // Regresszio: a saveMemory sokaig csak INSERT-elt, embedding nelkul, ezert az
+  // ezen az uton irt sorok (pl. az ejszakai "[Napi naplo ...]" digest) tartosan
+  // vektorizalatlanul maradtak es kiestek a szemantikus keresesbol. A
+  // saveAgentMemory-hoz hasonloan itt is fire-and-forget embed fut; a teszt azt
+  // rogziti, hogy a hivas elinditja az embed-agat es nem dobja el a sort akkor
+  // sem, ha az embedding szolgaltatas (Ollama) nem elerheto.
+  it('saveMemory nem hasal el, ha nincs Ollama', async () => {
+    expect(() => saveMemory('mem-chat-embed', '[Napi naplo teszt] digest', 'episodic')).not.toThrow()
+    const mems = getMemoriesForChat('mem-chat-embed')
+    expect(mems.length).toBeGreaterThan(0)
+    expect(mems[0].content).toBe('[Napi naplo teszt] digest')
+    // a fire-and-forget agnak egy tick alatt sem szabad unhandled rejectiont dobnia
+    await new Promise(r => setTimeout(r, 50))
+  })
+
+  // A fenti eset csak azt allitja, hogy a beszuras tulel egy halott Ollamat.
+  // Az NEM esik el tole, ha az embed-blokk teljesen hianyzik -- pontosan ezert
+  // maradhatott eszrevetlen, hogy a saveMemory evekig embedding nelkul INSERT-elt.
+  // Ez a teszt a MEGELOZEST rogziti: elerheto embedding-szolgaltatas mellett a
+  // saveMemory-val irt sor NEM maradhat NULL embeddinggel. Ha valaki kiveszi a
+  // fire-and-forget blokkot, ez a teszt bukik.
+  it('saveMemory vektorizalja a sort, ha az embedding-szolgaltatas valaszol', async () => {
+    const vector = Array.from({ length: 8 }, (_, i) => i / 10)
+    const realFetch = globalThis.fetch
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ embedding: vector }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      })) as typeof globalThis.fetch
+
+    try {
+      saveMemory('mem-chat-embed-ok', '[Napi naplo teszt] vektorizalando', 'episodic')
+      const id = getMemoriesForChat('mem-chat-embed-ok')[0].id
+
+      // Az embed-ag fire-and-forget, ezert nem szinkron assert kell, hanem
+      // idokorlatos varakozas. Szinkron ellenorzes vagy hibasan bukna, vagy
+      // veletlenszeruen menne at.
+      const db = getDb()
+      const read = () => (db.prepare('SELECT embedding FROM memories WHERE id = ?')
+        .get(id) as { embedding: string | null }).embedding
+      const deadline = Date.now() + 2000
+      while (read() === null && Date.now() < deadline) {
+        await new Promise(r => setTimeout(r, 20))
+      }
+
+      const stored = read()
+      expect(stored).not.toBeNull()
+      expect(JSON.parse(stored!)).toEqual(vector)
+    } finally {
+      globalThis.fetch = realFetch
+    }
   })
 })
 
@@ -331,6 +388,32 @@ describe('getDispatchedPendingStats -- self-addressed messages', () => {
     expect(s.hasStale).toBe(false)
   })
 
+  it('ignores the restart gate\'s own persistent-block alert (GATESELFBLOCK922)', () => {
+    // The self-feeding loop, measured 2026-09-22/23: the gate's alert used to
+    // be written FROM the blocked agent TO the main agent, so for a SUB-agent
+    // it landed inside the very set it complains about. Every alert the block
+    // produced raised by one the number that caused the block, and the cadence
+    // closed the window to the second (alert every 2h, cutoff 2h, the old one
+    // falling out 3 SECONDS before the new one fell in). The main agent was
+    // immune only by accident: its alert is self-addressed, which the
+    // to_agent != from_agent rule already dropped.
+    createAgentMessage('gatetest-sub', 'gatetest-main',
+      '[CONTEXT-RESTART-GATE-RIASZTAS] blocked 120 perce', GATE_ALERT_ORIGIN_NOTE)
+    const s = getDispatchedPendingStats('gatetest-sub', Date.now(), TWO_HOURS)
+    expect(s.count).toBe(0)
+    expect(s.hasStale).toBe(false)
+  })
+
+  it('still counts real work when a gate alert is also pending (the exclusion stays narrow)', () => {
+    // The exclusion must not become "ignore pending outbound". A genuinely open
+    // report SHOULD hold a restart back; that is what the signal is for.
+    createAgentMessage('gatetest-both', 'gatetest-main',
+      '[CONTEXT-RESTART-GATE-RIASZTAS] blocked', GATE_ALERT_ORIGIN_NOTE)
+    createAgentMessage('gatetest-both', 'gatetest-peer', 'real delegation')
+    const s = getDispatchedPendingStats('gatetest-both', Date.now(), TWO_HOURS)
+    expect(s.count).toBe(1)
+  })
+
   it('a self-message does not mask real dispatched work', () => {
     createAgentMessage('gatetest-mix', 'gatetest-mix', 'note to self')
     createAgentMessage('gatetest-mix', 'gatetest-other', 'real delegation')
@@ -412,5 +495,79 @@ describe('getDispatchedPendingStats -- a lezaro visszajelzes nem dispatcholt mun
     expect(getDispatchedPendingStats('stat-a', NOW, CUTOFF).count)
       .toBe(getDispatchedPendingStats('stat-a', NOW, CUTOFF).count)
     expect(getDispatchedPendingStats('stat-c', NOW, CUTOFF).count).toBe(1)
+  })
+})
+
+// GATEREPORTDIR924. A sub-agent's message to the MAIN agent is a REPORT, not
+// dispatched work, and it was the bulk of this number: measured on all 14
+// pending-outbound persistent-block alerts, the 7 raised by sub-agents held not
+// one delegation, while the 7 raised by the main agent did. The rule is
+// directional on purpose -- see the asymmetry argument in db.ts. `main` is a
+// parameter here so the assertions do not depend on this install's .env.
+describe('getDispatchedPendingStats -- a sub-agens jelentese nem kiadott munka', () => {
+  const NOW = Date.now()
+  const CUTOFF = 2 * 60 * 60 * 1000
+  const MAIN = 'dirtest-main'
+
+  it('POZITIV KONTROLL: a muszer lat sort, mielott barmi kiesne', () => {
+    createAgentMessage('dirtest-sub', 'dirtest-peer', 'csinald meg X-et')
+    expect(getDispatchedPendingStats('dirtest-sub', NOW, CUTOFF, MAIN).count).toBe(1)
+  })
+
+  it('a sub-agens -> fo agens sor NEM szamit (ez bukik a javitas elott)', () => {
+    createAgentMessage('dirtest-rep', MAIN, 'KESZ: a meres megvan, itt az eredmeny')
+    expect(getDispatchedPendingStats('dirtest-rep', NOW, CUTOFF, MAIN).count).toBe(0)
+  })
+
+  it('...meg akkor sem, ha engedelyt ker: a felhivas is felfele megy', () => {
+    createAgentMessage('dirtest-esc', MAIN, '[FELHIVAS] permission_change: vidd Laci ele')
+    expect(getDispatchedPendingStats('dirtest-esc', NOW, CUTOFF, MAIN).count).toBe(0)
+  })
+
+  it('a FO AGENS -> sub sora TOVABBRA IS szamit (a vedelem megmarad)', () => {
+    createAgentMessage(MAIN, 'dirtest-sub2', 'Most rajtad a sor: RENDERELD LE')
+    expect(getDispatchedPendingStats(MAIN, NOW, CUTOFF, MAIN).count).toBe(1)
+  })
+
+  it('a sub -> sub sor is szamit: a kizaras CSAK a felfele iranyra szol', () => {
+    createAgentMessage('dirtest-x', 'dirtest-y', 'kerlek mérd meg a kontrasztot')
+    expect(getDispatchedPendingStats('dirtest-x', NOW, CUTOFF, MAIN).count).toBe(1)
+  })
+
+  it('a felfele sor nem takarja el a valodi kiadott munkat ugyanattol a kuldotol', () => {
+    createAgentMessage('dirtest-mix', MAIN, 'KESZ: jelentes')
+    createAgentMessage('dirtest-mix', 'dirtest-peer2', 'valodi delegalas')
+    expect(getDispatchedPendingStats('dirtest-mix', NOW, CUTOFF, MAIN).count).toBe(1)
+  })
+})
+
+// A closed-without-delivery row is DEAD: it was closed precisely because it
+// will never be delivered, so nothing can ever come back and clear it. Measured
+// 2026-09-24 the live queue held ZERO such rows, which is why this test builds
+// one itself: a zero-scope filter is not a checkable claim, and a year from now
+// nobody would know whether it ever worked.
+describe('getDispatchedPendingStats -- a sosem kezbesitett sor halott', () => {
+  const NOW = Date.now()
+  const CUTOFF = 2 * 60 * 60 * 1000
+  const MAIN = 'deadtest-main'
+
+  it('POZITIV KONTROLL: ugyanaz a sor a jelolo NELKUL szamit', () => {
+    createAgentMessage('deadtest-a', 'deadtest-b', 'valodi kiadott munka')
+    expect(getDispatchedPendingStats('deadtest-a', NOW, CUTOFF, MAIN).count).toBe(1)
+  })
+
+  it('a closed-without-delivery sor kiesik', () => {
+    const m = createAgentMessage('deadtest-c', 'deadtest-b', 'ezt sosem kezbesitjuk')
+    expect(getDispatchedPendingStats('deadtest-c', NOW, CUTOFF, MAIN).count).toBe(1)
+    const closed = closeMessagesWithoutDelivery([m.id], 'agens letiltva')
+    expect(closed).toBe(1)
+    expect(getDispatchedPendingStats('deadtest-c', NOW, CUTOFF, MAIN).count).toBe(0)
+  })
+
+  it('az iro es az olvaso ugyanazt a jelolot hasznalja', () => {
+    const m = createAgentMessage('deadtest-d', 'deadtest-b', 'masik sor')
+    closeMessagesWithoutDelivery([m.id], 'ok')
+    const row = getAgentMessage(m.id)
+    expect(row?.result ?? '').toContain(CLOSED_WITHOUT_DELIVERY_PREFIX)
   })
 })
