@@ -1740,17 +1740,20 @@ export function buildFtsMatchExpression(query: string, join: 'AND' | 'OR' = 'AND
  * Measured on the live store, 2026-09-23: `zebra a hogy nem` returned ~50 rows,
  * none about zebras -- `a*`, `hogy*` and `nem*` prefix-match nearly every
  * Hungarian memory. A one-character token is the same hazard in general form:
- * `x*` is every word starting with x. A token of digits only is the same
- * hazard again: FTS5's tokenizer splits every date in the store (`2026-09-23`
- * -> `2026`, `09`, `23`), so `2026*` alone matches every memory that mentions
- * this year. What is left is the query's content, and only content may rescue
- * a query the strict pass could not answer (the strict pass still uses every
- * token, numbers included). Empty when nothing but filler remains, and then no
- * relaxed pass runs at all.
+ * `x*` is every word starting with x. What is left is the query's content, and
+ * only content may rescue a query the strict pass could not answer. Empty when
+ * nothing but filler remains, and then no relaxed pass runs at all.
+ *
+ * A token of digits only (of two or more characters) IS content and stays:
+ * searching by an amount or an ID is common (`mennyi 5000` must find the
+ * "napi limit 5000" row). The cost is known: FTS5 splits every date
+ * (`2026-09-23` -> `2026`, `09`, `23`), so a year in an otherwise unmatched
+ * query rescues every memory dated that year. Those rows come back labelled
+ * relaxed, and strict=1 still answers only on a real match.
  */
 export function buildRelaxedFtsExpression(query: string): string {
   return ftsQueryTokens(query)
-    .filter((t) => t.length > 1 && !/^\p{N}+$/u.test(t) && !isSearchStopword(t))
+    .filter((t) => t.length > 1 && !isSearchStopword(t))
     .map((t) => t + '*')
     .join(' OR ')
 }
@@ -4661,17 +4664,54 @@ function cosineSimilarity(a: number[], b: number[]): number {
  * small corpus falls back to an absolute floor just above the highest nonsense
  * top-1 measured (0.704). That is conservative: on a small store a vector-only
  * hit has to be a near-duplicate. Lexical hits are never subject to either.
+ * The row count is the number of rows scored for THIS query, i.e. after the
+ * agent and category filter, so a small tier (e.g. hot) on a large store also
+ * takes the absolute floor. That is intended: the median is computed over the
+ * same filtered rows, and on a handful of rows it describes nothing either.
+ *
+ * The three values below are the DEFAULTS. They were calibrated on one store
+ * and one embedding model (nomic-embed-text), and EMBED_MODEL is a setting, so
+ * each one can be overridden (config-overrides.json > .env > default):
+ * MEMORY_VECTOR_MIN_MARGIN, MEMORY_VECTOR_BASELINE_MIN_ROWS and
+ * MEMORY_VECTOR_SMALL_CORPUS_MIN_SIMILARITY. An unset, unparsable or
+ * out-of-range value falls back to the default.
  */
 export const VECTOR_MIN_MARGIN = 0.10
 export const VECTOR_BASELINE_MIN_ROWS = 10
 export const VECTOR_SMALL_CORPUS_MIN_SIMILARITY = 0.72
 
-export function vectorSimilarityFloor(scores: number[]): number {
-  if (scores.length < VECTOR_BASELINE_MIN_ROWS) return VECTOR_SMALL_CORPUS_MIN_SIMILARITY
+export interface VectorFloorParams {
+  minMargin: number
+  baselineMinRows: number
+  smallCorpusMinSimilarity: number
+}
+
+function numericSetting(key: string, fallback: number, valid: (n: number) => boolean): number {
+  try {
+    const raw = String(getEffectiveSettingValue(key) ?? '').trim()
+    if (raw === '') return fallback
+    const n = Number(raw)
+    return Number.isFinite(n) && valid(n) ? n : fallback
+  } catch {
+    return fallback
+  }
+}
+
+/** The floor's thresholds as configured right now (read per search, no restart needed). */
+export function vectorFloorParams(): VectorFloorParams {
+  return {
+    minMargin: numericSetting('MEMORY_VECTOR_MIN_MARGIN', VECTOR_MIN_MARGIN, (n) => n >= 0 && n <= 1),
+    baselineMinRows: numericSetting('MEMORY_VECTOR_BASELINE_MIN_ROWS', VECTOR_BASELINE_MIN_ROWS, (n) => Number.isInteger(n) && n >= 1),
+    smallCorpusMinSimilarity: numericSetting('MEMORY_VECTOR_SMALL_CORPUS_MIN_SIMILARITY', VECTOR_SMALL_CORPUS_MIN_SIMILARITY, (n) => n >= 0 && n <= 1),
+  }
+}
+
+export function vectorSimilarityFloor(scores: number[], params: VectorFloorParams = vectorFloorParams()): number {
+  if (scores.length < params.baselineMinRows) return params.smallCorpusMinSimilarity
   const sorted = [...scores].sort((a, b) => a - b)
   const mid = Math.floor(sorted.length / 2)
   const median = sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2
-  return median + VECTOR_MIN_MARGIN
+  return median + params.minMargin
 }
 
 interface VectorHit {
@@ -4767,8 +4807,10 @@ export async function hybridSearch(
   const ftsIds = new Set(ftsResults.map(m => m.id))
 
   // Vector results. A row below the floor survives only when the keyword
-  // branch found it too: lexical support is evidence of its own, and those rows
-  // keep exactly the fusion score they had before the floor existed.
+  // branch found it too: lexical support is evidence of its own. Its fusion
+  // score is NOT the one it had before the floor existed: the vector rank below
+  // is computed on the already filtered list, so a kept row moves up past the
+  // dropped ones and its RRF term grows accordingly.
   const queryEmbedding = await generateEmbedding(query)
   const vec = queryEmbedding
     ? vectorSearch(agentId, queryEmbedding, limit * 2, category)

@@ -19,11 +19,26 @@
 // match stands clearly above that plateau.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { Readable } from 'node:stream'
+
+// The floor's thresholds are settings. Only the three keys this file sets are
+// intercepted; every other key resolves through the real settings store.
+const settingValues = vi.hoisted(() => ({} as Record<string, string>))
+vi.mock('../settings-store.js', async (orig) => {
+  const actual = await orig<typeof import('../settings-store.js')>()
+  return {
+    ...actual,
+    getEffectiveSettingValue: (key: string) =>
+      key in settingValues ? settingValues[key] : actual.getEffectiveSettingValue(key),
+  }
+})
+
 import {
-  initDatabase, getDb, hybridSearch, searchAgentMemories, clearMemoryCache,
-  buildRelaxedFtsExpression, vectorSimilarityFloor,
+  initDatabase, getDb, hybridSearch, searchAgentMemories, searchMemories, clearMemoryCache,
+  buildRelaxedFtsExpression, vectorSimilarityFloor, vectorFloorParams,
   VECTOR_MIN_MARGIN, VECTOR_BASELINE_MIN_ROWS, VECTOR_SMALL_CORPUS_MIN_SIMILARITY,
 } from '../db.js'
+import { ALLOWED_CHAT_ID } from '../config.js'
+import { getSettingDefinition } from '../config-registry.js'
 import type { HybridSearchTrace } from '../db.js'
 import { isSearchStopword } from '../memory-search-stopwords.js'
 import { tryHandleMemories } from '../web/routes/memories.js'
@@ -111,7 +126,10 @@ beforeEach(() => {
   seed()
   stubEmbeddings()
 })
-afterEach(() => vi.unstubAllGlobals())
+afterEach(() => {
+  vi.unstubAllGlobals()
+  for (const k of Object.keys(settingValues)) delete settingValues[k]
+})
 
 describe('problem 1: the vector branch has a floor', () => {
   it('a nonsense query returns no rows in hybrid mode', async () => {
@@ -163,6 +181,46 @@ describe('the floor itself', () => {
   it('falls back to the absolute floor when the corpus is too small for a median to mean anything', () => {
     expect(vectorSimilarityFloor([0.9, 0.2])).toBe(VECTOR_SMALL_CORPUS_MIN_SIMILARITY)
   })
+
+  it('its three thresholds are settings, with the calibrated values as defaults', () => {
+    expect(vectorFloorParams()).toEqual({
+      minMargin: VECTOR_MIN_MARGIN,
+      baselineMinRows: VECTOR_BASELINE_MIN_ROWS,
+      smallCorpusMinSimilarity: VECTOR_SMALL_CORPUS_MIN_SIMILARITY,
+    })
+    // The registry defaults are the same numbers, so the Settings page shows what runs.
+    expect(Number(getSettingDefinition('MEMORY_VECTOR_MIN_MARGIN')!.default)).toBe(VECTOR_MIN_MARGIN)
+    expect(Number(getSettingDefinition('MEMORY_VECTOR_BASELINE_MIN_ROWS')!.default)).toBe(VECTOR_BASELINE_MIN_ROWS)
+    expect(Number(getSettingDefinition('MEMORY_VECTOR_SMALL_CORPUS_MIN_SIMILARITY')!.default)).toBe(VECTOR_SMALL_CORPUS_MIN_SIMILARITY)
+
+    settingValues.MEMORY_VECTOR_MIN_MARGIN = '0.25'
+    settingValues.MEMORY_VECTOR_BASELINE_MIN_ROWS = '3'
+    settingValues.MEMORY_VECTOR_SMALL_CORPUS_MIN_SIMILARITY = '0.9'
+    expect(vectorFloorParams()).toEqual({ minMargin: 0.25, baselineMinRows: 3, smallCorpusMinSimilarity: 0.9 })
+    expect(vectorSimilarityFloor([0.5, 0.6, 0.7])).toBeCloseTo(0.6 + 0.25, 10)
+    expect(vectorSimilarityFloor([0.5, 0.6])).toBe(0.9)
+
+    // Unparsable or out of range: the default, never NaN.
+    settingValues.MEMORY_VECTOR_MIN_MARGIN = 'abc'
+    settingValues.MEMORY_VECTOR_BASELINE_MIN_ROWS = '0'
+    settingValues.MEMORY_VECTOR_SMALL_CORPUS_MIN_SIMILARITY = '1.5'
+    expect(vectorFloorParams()).toEqual({
+      minMargin: VECTOR_MIN_MARGIN,
+      baselineMinRows: VECTOR_BASELINE_MIN_ROWS,
+      smallCorpusMinSimilarity: VECTOR_SMALL_CORPUS_MIN_SIMILARITY,
+    })
+  })
+
+  it('hybrid search uses the configured margin', async () => {
+    // The PDF row sits at 1.0 against a 0.64 plateau: kept at the default
+    // margin (floor 0.74), dropped when the margin is raised past 0.36.
+    const query = 'document text extraction tool'
+    expect((await hybridSearch('prec', query, 5)).some(h => h.content.includes('PDF-olvaso'))).toBe(true)
+    settingValues.MEMORY_VECTOR_MIN_MARGIN = '0.4'
+    const trace: HybridSearchTrace = { ftsHits: 0, vectorHits: 0, ftsRelaxed: false, vectorOnly: false }
+    expect(await hybridSearch('prec', query, 5, trace)).toEqual([])
+    expect(trace.vectorDropped).toBeGreaterThan(0)
+  })
 })
 
 describe('problem 2: filler words alone never produce relaxed hits', () => {
@@ -180,10 +238,19 @@ describe('problem 2: filler words alone never produce relaxed hits', () => {
     expect(searchAgentMemories('prec', 'zebra a hogy nem', 50, trace)).toEqual([])
   })
 
-  it('a nonsense query with a year in it finds nothing, even when the store is full of dates', () => {
-    // On a real store nearly every memory carries a date; FTS5 indexes
-    // `2026-09-23` as `2026`, `09`, `23`. Without the digit rule the relaxed
-    // pass ran `xyzzy* OR kifejezes* OR 2026*` and returned all of these.
+  it('a number is content: "mennyi 5000" finds the row that holds 5000 through the relaxed pass', () => {
+    // "mennyi" is a stopword, so the strict pass fails and only the number is
+    // left to relax to. Searching by an amount or an ID must keep working.
+    const trace = { relaxed: false }
+    const hits = searchAgentMemories('prec', 'mennyi 5000', 50, trace)
+    expect(trace.relaxed).toBe(true)
+    expect(hits.map(h => h.content)).toEqual(['A napi limit 5000 keres, ez mert adat, nem becsles'])
+  })
+
+  it('the known cost of keeping numbers: a year rescues dated rows, labelled relaxed', () => {
+    // FTS5 indexes `2026-09-23` as `2026`, `09`, `23`, so the year in an
+    // otherwise unmatched query matches every row dated that year. The rows are
+    // labelled relaxed, and the strict pass still returns nothing.
     const db = getDb()
     const now = Math.floor(Date.now() / 1000)
     const insert = db.prepare(
@@ -191,7 +258,10 @@ describe('problem 2: filler words alone never produce relaxed hits', () => {
        VALUES ('0', ?, 'semantic', 1.0, ?, ?, 'prec', 'warm', ?, NULL)`,
     )
     for (let i = 1; i <= 6; i++) insert.run(`Meres 2026-09-2${i}: a heti riport elkeszult`, now, now, 'riport')
-    expect(searchAgentMemories('prec', 'XYZZY-NINCS-ILYEN-KIFEJEZES-2026', 50, { relaxed: false })).toEqual([])
+    const trace = { relaxed: false }
+    expect(searchAgentMemories('prec', 'XYZZY-NINCS-ILYEN-KIFEJEZES-2026', 50, trace)).toHaveLength(6)
+    expect(trace.relaxed).toBe(true)
+    expect(searchAgentMemories('prec', 'XYZZY-NINCS-ILYEN-KIFEJEZES-2026', 50, undefined, false)).toEqual([])
   })
 
   it('a query made only of filler words gets no relaxed pass at all', () => {
@@ -255,9 +325,10 @@ describe('the relaxed expression', () => {
     expect(buildRelaxedFtsExpression('x y kanban')).toBe('kanban*')
   })
 
-  it('drops digit-only tokens: the tokenizer splits every date, so `2026*` matches every dated memory', () => {
-    expect(buildRelaxedFtsExpression('XYZZY-NINCS-ILYEN-KIFEJEZES-2026')).toBe('xyzzy* OR kifejezes*')
-    expect(buildRelaxedFtsExpression('2026 09 23')).toBe('')
+  it('keeps digit-only tokens of two or more characters: an amount or an ID is content', () => {
+    expect(buildRelaxedFtsExpression('mennyi 5000')).toBe('5000*')
+    expect(buildRelaxedFtsExpression('XYZZY-NINCS-ILYEN-KIFEJEZES-2026')).toBe('xyzzy* OR kifejezes* OR 2026*')
+    expect(buildRelaxedFtsExpression('2026 09 23 7')).toBe('2026* OR 09* OR 23*')
   })
 
   it('is empty when nothing but filler is left, so no relaxed pass runs at all', () => {
@@ -269,5 +340,35 @@ describe('the relaxed expression', () => {
     expect(isSearchStopword('miért')).toBe(true)
     expect(isSearchStopword('MIERT')).toBe(true)
     expect(isSearchStopword('kanban')).toBe(false)
+  })
+})
+
+// The no-agent branch (GET /api/memories?q=... without agent) searches by chat
+// through searchMemories, and its X-Memory-Search label comes from the trace
+// searchMemories fills in.
+describe('the no-agent search says which pass ran', () => {
+  beforeEach(() => {
+    const now = Math.floor(Date.now() / 1000)
+    getDb().prepare(
+      `INSERT INTO memories (chat_id, content, sector, salience, created_at, accessed_at, category, keywords)
+       VALUES (?, ?, 'semantic', 1.0, ?, ?, 'warm', ?)`,
+    ).run(ALLOWED_CHAT_ID, 'A felmondasi ido harom honap, a szerzodes szerint', now, now, 'felmondas')
+  })
+
+  it('searchMemories writes trace.relaxed for both passes', () => {
+    const relaxed = { relaxed: false }
+    expect(searchMemories('meddig tart a felmondasi ido', ALLOWED_CHAT_ID, 50, true, undefined, relaxed).length).toBeGreaterThan(0)
+    expect(relaxed.relaxed).toBe(true)
+    const strict = { relaxed: true }
+    expect(searchMemories('felmondasi', ALLOWED_CHAT_ID, 50, true, undefined, strict).length).toBeGreaterThan(0)
+    expect(strict.relaxed).toBe(false)
+  })
+
+  it('the endpoint labels a relaxed no-agent answer relaxed=true', async () => {
+    const { ctx, out } = fakeCtx(`/api/memories?q=${encodeURIComponent('meddig tart a felmondasi ido')}`)
+    await tryHandleMemories(ctx)
+    expect(out.body.length).toBeGreaterThan(0)
+    expect(out.body.every((m: any) => m.match_kind === 'relaxed')).toBe(true)
+    expect(out.headers['x-memory-search']).toContain('relaxed=true')
   })
 })

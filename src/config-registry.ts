@@ -86,6 +86,14 @@ export interface SettingDefinition {
 
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/
 
+// A '' (use the default) or a number in [0, 1], e.g. a cosine-similarity threshold.
+function validUnitFraction(v: string): string | null {
+  const t = v.trim()
+  if (t === '') return null
+  const n = Number(t)
+  return Number.isFinite(n) && n >= 0 && n <= 1 ? null : '0 és 1 közötti szám szükséges (pl. 0.1).'
+}
+
 export const SETTINGS_REGISTRY: SettingDefinition[] = [
   {
     key: 'KANBAN_WIP_PLANNED',
@@ -367,6 +375,37 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     module: 'system',
     secret: false,
     requiresRestart: true,
+  },
+  {
+    key: 'MEMORY_VECTOR_MIN_MARGIN',
+    type: 'string',
+    default: '0.1',
+    description: 'Memória-keresés (hybrid), a vektor-ág küszöbe: egy csak vektor alapján talált emlék akkor marad a válaszban, ha a hasonlósága legalább ennyivel a lekérdezés medián-hasonlósága fölött van. 0 és 1 közötti szám, üres = 0.1. A 0.1 a nomic-embed-text modellen kalibrált érték; más EMBED_MODEL-nél újra kell mérni.',
+    module: 'system',
+    secret: false,
+    requiresRestart: false,
+    validate: (v) => validUnitFraction(v),
+  },
+  {
+    key: 'MEMORY_VECTOR_BASELINE_MIN_ROWS',
+    type: 'int',
+    default: 10,
+    min: 1,
+    max: 100000,
+    description: 'Memória-keresés (hybrid): ennyi pontozott emlék alatt (az ágens- és tier-szűrés UTÁN számolva) a medián helyett az abszolút küszöb (MEMORY_VECTOR_SMALL_CORPUS_MIN_SIMILARITY) érvényes.',
+    module: 'system',
+    secret: false,
+    requiresRestart: false,
+  },
+  {
+    key: 'MEMORY_VECTOR_SMALL_CORPUS_MIN_SIMILARITY',
+    type: 'string',
+    default: '0.72',
+    description: 'Memória-keresés (hybrid), kis korpusz: a csak vektor alapján talált emlék minimális koszinusz-hasonlósága, ha kevesebb emlék van, mint a MEMORY_VECTOR_BASELINE_MIN_ROWS. 0 és 1 közötti szám, üres = 0.72. A nomic-embed-text modellen kalibrált érték; más EMBED_MODEL-nél újra kell mérni.',
+    module: 'system',
+    secret: false,
+    requiresRestart: false,
+    validate: (v) => validUnitFraction(v),
   },
   {
     key: 'MEMORY_IMPORT_CATEGORIZE_MODEL',
