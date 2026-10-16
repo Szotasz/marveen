@@ -81,7 +81,22 @@ _pass "ffmpeg + libopus OK"
 # --- Step 2: Python venv ---
 _step "[2/5] Python venv"
 mkdir -p "$DEST/voices"
-if [[ ! -d "$DEST/venv" ]]; then
+# The gate measures a WORKING venv, not a directory. An interrupted or partial
+# earlier run can leave a few-kilobyte venv stub behind, whose bin/ holds the
+# python symlinks but no pip at all. `-d` is true for such a stub, so every
+# re-run SKIPs this step and step 3 dies on
+# `venv/bin/pip: No such file or directory` -- and retrying never helps, because
+# each attempt takes the same SKIP. bin/python is not a usable probe either; the
+# stub has it. bin/pip is what step 3 actually calls, so that is what decides.
+# A stub found here is rebuilt rather than merely reported, since re-running
+# cannot otherwise recover the install.
+if [[ ! -x "$DEST/venv/bin/pip" ]]; then
+  if [[ -d "$DEST/venv" ]]; then
+    echo "    Unusable venv at $DEST/venv (no bin/pip) -- rebuilding"
+    # Scope: this removes the venv only. The sibling $DEST/voices holds the
+    # downloaded TTS models and must survive.
+    rm -rf "$DEST/venv"
+  fi
   python3 -m venv "$DEST/venv"
   _pass "venv created at $DEST/venv"
 else
@@ -90,13 +105,25 @@ fi
 
 # --- Step 3: Python packages ---
 _step "[3/5] Python packages (faster-whisper + piper-tts)"
+# PyAV 19 dropped the metadata_errors kwarg of av.open(), which faster-whisper
+# 1.2.1 passes on every transcribe: the import check still succeeds, and STT
+# then dies with "open() got an unexpected keyword argument 'metadata_errors'".
+AV_PIN="av<19"
 if "$DEST/venv/bin/python" -c "import faster_whisper, piper" 2>/dev/null; then
   _skip "packages already installed"
 else
-  "$DEST/venv/bin/pip" install --quiet faster-whisper piper-tts
+  "$DEST/venv/bin/pip" install --quiet faster-whisper piper-tts "$AV_PIN"
   _pass "faster-whisper + piper-tts installed"
 fi
 "$DEST/venv/bin/python" -c "import faster_whisper, piper" || _fail "package import check failed"
+# Enforced on the skip path too, so an existing venv that already pulled av 19
+# gets repaired by a re-run.
+if ! "$DEST/venv/bin/python" -c "import av, sys; sys.exit(int(av.__version__.split('.')[0]) >= 19)" 2>/dev/null; then
+  "$DEST/venv/bin/pip" install --quiet "$AV_PIN"
+fi
+"$DEST/venv/bin/python" -c "import av, sys; sys.exit(int(av.__version__.split('.')[0]) >= 19)" \
+  || _fail "PyAV >= 19 is incompatible with faster-whisper (av.open metadata_errors)"
+_pass "PyAV pinned below 19"
 
 # --- Step 4: Hungarian voice models ---
 _step "[4/5] Hungarian TTS voice models"
@@ -135,8 +162,10 @@ cp "$VOICE_SRC/_vtools.py" "$DEST/_vtools.py"
 cp "$VOICE_SRC/stt.sh"     "$DEST/stt.sh"
 cp "$VOICE_SRC/tts.sh"     "$DEST/tts.sh"
 cp "$VOICE_SRC/canary.sh"  "$DEST/canary.sh"
+# The pronunciation lexicon is read next to _vtools.py (the installed copy).
+cp "$VOICE_SRC/pronunciation-hu.json" "$DEST/pronunciation-hu.json"
 chmod +x "$DEST/stt.sh" "$DEST/tts.sh" "$DEST/_vtools.py"
-_pass "stt.sh, tts.sh, _vtools.py deployed"
+_pass "stt.sh, tts.sh, _vtools.py, pronunciation-hu.json deployed"
 
 # --- Done ---
 echo ""

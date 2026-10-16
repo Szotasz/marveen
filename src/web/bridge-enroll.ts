@@ -23,8 +23,8 @@
 
 import { readFileSync } from 'node:fs'
 import { execFile } from 'node:child_process'
-import { homedir, hostname, userInfo, networkInterfaces } from 'node:os'
-import { join } from 'node:path'
+import { hostname, userInfo, networkInterfaces } from 'node:os'
+import { resolveSshDir as resolveSshDirShared, sshDirOverride } from '../ssh-dir.js'
 import { logger } from '../logger.js'
 import { WEB_PORT } from '../config.js'
 import {
@@ -75,23 +75,21 @@ export interface BridgeEnrollOutcome {
   bundle: string
 }
 
-/** MARVEEN_SSH_DIR is a test seam for isolated e2e instances (a scratch
- * server must never write the real ~/.ssh). It lives in a production code
- * path, so if it ever leaks into a real environment (inherited env, copied
- * .env, launchd plist) enrollment would silently write elsewhere and pairing
- * would "succeed but not work". Every use is therefore loudly logged and
- * flagged into the audit row (see sshDirOverride() callers). */
-export function sshDirOverride(): string | null {
-  return process.env.MARVEEN_SSH_DIR || null
-}
+// The seam and the resolution rule now live in ONE module (src/ssh-dir.ts,
+// ENROLL813). This file used to own the canonical copy -- which
+// bridge-service-ports.ts had duplicated byte-for-byte and the CLI had not.
+// Re-exported here so the three existing importers (security.ts,
+// bridge-service-ports.ts, auth.ts) keep reading the seam where they always did.
+export { sshDirOverride }
 
+/** Shared resolver plus this module's own loud notice. Under a test runner with
+ * no MARVEEN_SSH_DIR this THROWS instead of returning the real ~/.ssh: the
+ * enroll route calls bridgeEnroll() WITHOUT deps, so a silent fallback here is
+ * exactly how a green test enrolled real keys for weeks (ENROLL813). */
 function resolveSshDir(): string {
-  const override = sshDirOverride()
-  if (override) {
-    logger.warn({ sshDir: override }, 'MARVEEN_SSH_DIR override active -- authorized_keys writes are redirected (test seam; must be unset in production)')
-    return override
-  }
-  return join(homedir(), '.ssh')
+  return resolveSshDirShared((sshDir) => {
+    logger.warn({ sshDir }, 'MARVEEN_SSH_DIR override active -- authorized_keys writes are redirected (test seam; must be unset in production)')
+  })
 }
 
 export function defaultBridgeEnrollDeps(): BridgeEnrollDeps {

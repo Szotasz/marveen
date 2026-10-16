@@ -88,7 +88,7 @@ describe('every run that opens also closes', () => {
   })
 
   it('a restart cannot leave rows open for ever', () => {
-    expect(RUNNER_SRC).toMatch(/reconcileOpenTaskRuns\(TASK_FIRE_MAX_TRACK_MS\)/)
+    expect(RUNNER_SRC).toMatch(/reconcileOpenTaskRuns\(\)/)
     expect(DB_SRC).toMatch(/outcome = 'interrupted'/)
     // 'interrupted', not 'done': after a restart we genuinely do not know.
     expect(DB_SRC).not.toMatch(/outcome = 'done'\s*\n\s*WHERE completed_at IS NULL/)
@@ -118,5 +118,24 @@ describe('history exposes the ending, so a finished run stops looking stuck', ()
     expect(DB_SRC).toMatch(/completed_at: number \| null/)
     expect(DB_SRC).toMatch(/outcome: string \| null/)
     expect(DB_SRC).toMatch(/duration_ms: completedAt != null \? completedAt - row\.ts : null/)
+  })
+})
+
+// SCHEDLOST915: terminal marker rows (lost, lost-giveup, skipped, missed, error)
+// were inserted with completed_at NULL and read as open runs for ever -- 1127
+// 'lost' rows on the reference install, none ever closed.
+describe('terminal marker rows are closed at insert', () => {
+  it('only a dispatch status opens a run', () => {
+    expect(DB_SRC).toMatch(/OPEN_TASK_RUN_STATUSES: ReadonlySet<string> = new Set\(\['fired', 'fired_late', 'fired_busy'\]\)/)
+    expect(DB_SRC).toMatch(/const completedAt = OPEN_TASK_RUN_STATUSES\.has\(status\) \? null : now/)
+    expect(DB_SRC).toMatch(/INSERT INTO task_runs \(name, agent, ts, status, completed_at\) VALUES \(\?, \?, \?, \?, \?\)/)
+  })
+
+  it('backfills the historical marker rows with the same rule the reconcile uses', () => {
+    // The list is the same in all three places on purpose (the Set, this
+    // backfill and the reconcile); AUDITBORITEKVESZ918 added 'fired_busy' to
+    // each, and a drift between them is what these assertions catch.
+    expect(DB_SRC).toMatch(/UPDATE task_runs SET completed_at = ts\s+WHERE completed_at IS NULL AND status NOT IN \('fired', 'fired_late', 'fired_busy'\)/)
+    expect(DB_SRC).toMatch(/status IN \('fired', 'fired_late', 'fired_busy'\)/)
   })
 })

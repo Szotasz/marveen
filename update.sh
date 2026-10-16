@@ -42,10 +42,13 @@ write_result() {
 
 retry() {
   local tries="$1" pause="$2"; shift 2
-  local i=1
+  local i=1 rc=0
   while true; do
-    if "$@"; then return 0; fi
-    if [ "$i" -ge "$tries" ]; then return 1; fi
+    rc=0; "$@" || rc=$?
+    if [ "$rc" -eq 0 ]; then return 0; fi
+    # UPDOOMNPMCI926: return the LAST attempt's exit code, not a flat 1 -- a
+    # caller that must tell an OOM kill (137) from a lockfile error needs it.
+    if [ "$i" -ge "$tries" ]; then return "$rc"; fi
     echo -e "  ${DIM}retry $i/$tries...${NC}"; sleep "$pause"; pause=$(( pause * 2 )); i=$(( i + 1 ))
   done
 }
@@ -125,14 +128,14 @@ resolve_service_node_dir() {
       done
     fi
     [ -z "$exe" ] && [ -r "/proc/$pid/exe" ] && exe="$(readlink -f "/proc/$pid/exe" 2>/dev/null)"
-    if [ -n "$exe" ] && [ -x "$exe" ]; then dirname "$exe"; return 0; fi
+    if [ -n "$exe" ] && [ -x "$exe" ]; then printf '%s\texe\n' "$(dirname "$exe")"; return 0; fi
   fi
   local want=""
   [ -f "$INSTALL_DIR/.nvmrc" ] && want="$(tr -d ' \n' < "$INSTALL_DIR/.nvmrc")"
   if [ -n "$want" ] && [ -s "$HOME/.nvm/nvm.sh" ]; then
     local cand
     cand="$(ls -d "$HOME"/.nvm/versions/node/v"$want"* 2>/dev/null | sort -V | tail -n1)"
-    [ -n "$cand" ] && [ -x "$cand/bin/node" ] && { echo "$cand/bin"; return 0; }
+    [ -n "$cand" ] && [ -x "$cand/bin/node" ] && { printf '%s\tnvmrc\n' "$cand/bin"; return 0; }
   fi
   # Homebrew keg-only node@N. Without this, a Mac that installs node via brew
   # (no ~/.nvm at all) has no way to reach the pinned major while the service
@@ -140,15 +143,36 @@ resolve_service_node_dir() {
   if [ -n "$want" ]; then
     local brew_dir
     for brew_dir in /opt/homebrew/opt/node@"$want"/bin /usr/local/opt/node@"$want"/bin; do
-      [ -x "$brew_dir/node" ] && { echo "$brew_dir"; return 0; }
+      [ -x "$brew_dir/node" ] && { printf '%s\tbrew\n' "$brew_dir"; return 0; }
     done
   fi
   return 1
 }
-NODE_PIN_DIR="$(resolve_service_node_dir || true)"
+# The resolver returns "<dir>\t<source>". The source decides what we may CLAIM
+# (NODEPINMAC921, 2026-09-21, external report + own re-measure): on macOS the
+# exe detection routinely comes back empty (ps -o comm= gives a bare "node",
+# /proc does not exist, lsof can be unavailable), so the pin falls back to
+# .nvmrc -- and this block used to print "matches the running dashboard"
+# regardless. That sentence was not measured in the fallback branches. The
+# reporter lost 16 hours of scheduler time to it: better-sqlite3 was built
+# for the .nvmrc node while launchd started the service with another major.
+# The pin itself is unchanged; only the false confirmation goes.
+_node_pin="$(resolve_service_node_dir || true)"
+NODE_PIN_DIR="${_node_pin%%$'\t'*}"
+NODE_PIN_SOURCE="${_node_pin#*$'\t'}"
+[ "$NODE_PIN_SOURCE" = "$_node_pin" ] && NODE_PIN_SOURCE=""
 if [ -n "$NODE_PIN_DIR" ] && [ -x "$NODE_PIN_DIR/node" ]; then
   export PATH="$NODE_PIN_DIR:$PATH"
-  echo -e "  ${DIM}Node pin: $(node -v) (matches the running dashboard, better-sqlite3 ABI)${NC}"
+  case "$NODE_PIN_SOURCE" in
+    exe)
+      echo -e "  ${DIM}Node pin: $(node -v) (matches the running dashboard, better-sqlite3 ABI)${NC}" ;;
+    nvmrc)
+      echo -e "  ${DIM}Node pin: $(node -v) (from .nvmrc via nvm -- the running dashboard's node exe could NOT be detected, so this is not a measured match; if the service unit starts a different node major, better-sqlite3 will not load)${NC}" ;;
+    brew)
+      echo -e "  ${DIM}Node pin: $(node -v) (from Homebrew node@$(tr -d ' \n' < "$INSTALL_DIR/.nvmrc" 2>/dev/null) -- the running dashboard's node exe could NOT be detected, so this is not a measured match; if the service unit starts a different node major, better-sqlite3 will not load)${NC}" ;;
+    *)
+      echo -e "  ${DIM}Node pin: $(node -v) (source unknown -- not a measured match with the running dashboard)${NC}" ;;
+  esac
 fi
 
 # Pidfile gate. The dashboard's /api/updates/apply creates
@@ -171,19 +195,28 @@ UPDATE_PIDFILE_TMP="$UPDATE_PIDFILE.$$.tmp"
 # leaked; leave the dashboard's pidfile alone so the lock does not
 # disappear on a write error.
 trap 'rc=$?; write_result "$rc"; rm -f "$UPDATE_PIDFILE_TMP"' EXIT
+# Wall-clock epoch in ms for the pidfile's second line. date +%s%3N is
+# GNU-only: on BSD (macOS) %3N is no conversion at all, and uutils
+# coreutils (the Rust date, 0.8.0) ignores the width and prints the full
+# nanoseconds, 19 digits, which checkNoConcurrentUpdate read as a start
+# far in the future, so a stale pidfile never aged out (card 48612d05).
+# Only an exactly 13-digit value is taken as ms (good until the year
+# 2286); anything else falls back to seconds * 1000. One-second
+# granularity is plenty for an hour-level age cutoff, and the fallback
+# never prints an empty line, which the helper would read as a legacy
+# pidfile without age info (alive-probe only, no age cutoff).
+update_pidfile_epoch_ms() {
+  local ms
+  ms=$(date +%s%3N 2>/dev/null) || ms=""
+  if [[ "$ms" =~ ^[0-9]{13}$ ]]; then
+    printf '%s\n' "$ms"
+  else
+    printf '%s\n' "$(( $(date +%s) * 1000 ))"
+  fi
+}
 {
   echo "$$"
-  # Portable wall-clock epoch in ms. date +%s%3N is GNU-only; on BSD
-  # (macOS) we fall back to seconds * 1000. One-second granularity is
-  # plenty for an hour-level age cutoff.
-  # Require one-or-more digits; `*` would accept an empty line and
-  # write "<pid>\n\n", which the helper would read as a legacy pidfile
-  # without age info (alive-probe only, no age cutoff).
-  if date +%s%3N 2>/dev/null | grep -q '^[0-9][0-9]*$'; then
-    date +%s%3N
-  else
-    echo $(( $(date +%s) * 1000 ))
-  fi
+  update_pidfile_epoch_ms
 } > "$UPDATE_PIDFILE_TMP"
 mv "$UPDATE_PIDFILE_TMP" "$UPDATE_PIDFILE"
 # Only after mv succeeds do we own the lock; extend the trap to remove
@@ -246,8 +279,59 @@ if [ "$CURRENT_BRANCH" = "HEAD" ] || [ -z "$CURRENT_BRANCH" ]; then
   else
     echo -e "${RED}HIBA:${NC} A repo detached-HEAD állapotban van."
   fi
-  echo "       Allj at egy release branchre, majd indithatod ujra a frissitest, pl.:"
-  echo "         git checkout main"
+  # SHALLOWGUARD921: a `git checkout main` tanacs egy SHALLOW, tagre allitott
+  # klonon biztosan elbukik, es ez a Docker image-bol telepitett peldany alap-
+  # allapota. Merve 2026-09-21 egy eldobhato `git clone --depth 1 --branch v1.37.0`
+  # klonon: `.git/shallow` letezik, egyetlen ref van (`refs/tags/v1.37.0`), nulla
+  # remote-tracking ag, es a `git checkout main` `error: pathspec 'main' did not
+  # match any file(s) known to git`-tel all meg (exit 1).
+  #
+  # ES A `git fetch --unshallow origin` ONMAGABAN NEM ELEG (ugyanott merve): a
+  # klon fetch-refspec-je `+refs/tags/<tag>:refs/tags/<tag>`, tehat az unshallow
+  # csak TAGEKET hoz, ag-refet nem, es a checkout UTANA IS elbukik (exit 1). A
+  # refspec kiterjesztese nelkul nincs honnan elojonnie az agnak.
+  #
+  # A merve mukodo sorrend (exit 0, ag=main, shallow=false a vegen):
+  #   git remote set-branches origin <ag> && git fetch --unshallow origin && git checkout <ag>
+  #
+  # AMIT A FELHASZNALO TUDJON (a #1438 review-lelete): a `set-branches`
+  # LECSERELI a fetch-refspecet, nem HOZZAFUZ -- a klon eredeti
+  # `+refs/tags/<tag>:refs/tags/<tag>` sora kiesik. Az update-utra artalmatlan
+  # (az ag-refbol dolgozik), de ez a parancs maradando config-valtozas.
+  #
+  # BRANCHHEAL925 (2026-09-25, #1566): the advice below is no longer the bare
+  # `git checkout main`. On an install with two remotes that both carry main
+  # (origin plus a fork) that form exits 128 -- git cannot infer which to
+  # follow -- and `checkout -b main --track origin/main` works exactly ONCE,
+  # failing on every install that has healed before. `git switch main ||
+  # git switch -c main --track origin/main` covers both states, and it is the
+  # same command the dashboard hands the user (web/app.js BRANCH_HEAL_COMMAND).
+  # The SHALLOW limitation above is unchanged by that: with no branch refs
+  # there is nothing for either form to switch TO, which is why the fetch
+  # steps still come first here.
+  if [ "$(git rev-parse --is-shallow-repository 2>/dev/null)" = "true" ] || [ -f .git/shallow ]; then
+    if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
+      echo "       This is a SHALLOW clone with no branch refs, so no switch to main can work here yet."
+      echo "       Fetch the release branch first, then switch to it:"
+    else
+      echo "       Ez egy SHALLOW klon, ag-ref nelkul, tehat main-re valtani itt meg semmivel nem lehet."
+      echo "       Eloszor hozd le a release branchet, es csak utana valts ra:"
+    fi
+    echo "         git remote set-branches origin main"
+    echo "         git fetch --unshallow origin"
+    echo "         git switch main || git switch -c main --track origin/main"
+  else
+    # NYELV-AG (UPDATEENHU921, 2026-09-21). Korabban ez a ket sor EN nyelven is
+    # MAGYARUL ment, mikozben a folotte allo HIBA/ERROR fejlec helyesen valtott.
+    # A #1438-ban szandekosan maradt igy, mert a kartya a regresszio-merest a
+    # valtozatlan HU alakra kotte ki; a HU szoveg itt BAJTRA ugyanaz maradt.
+    if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
+      echo "       Switch to a release branch, then you can start the update again, e.g.:"
+    else
+      echo "       Allj at egy release branchre, majd indithatod ujra a frissitest, pl.:"
+    fi
+    echo "         git switch main || git switch -c main --track origin/main"
+  fi
   exit 2
 fi
 # The branch must exist on origin, otherwise 'git pull' below cannot find a
@@ -259,9 +343,18 @@ if ! git ls-remote --exit-code --heads origin "$CURRENT_BRANCH" >/dev/null 2>&1;
   else
     echo -e "${RED}HIBA:${NC} A '${CURRENT_BRANCH}' branch nem létezik az origin-on."
   fi
-  echo "       Csak az origin-on is meglevo (kovetett) branchrol lehet frissiteni."
-  echo "       Allj at egy release branchre, pl.:"
-  echo "         git checkout main"
+  # UGYANAZ A LELET, A TESTVER-KAPUN (UPDATEENHU921): a fenti ERROR/HIBA fejlec
+  # nyelvfuggo volt, az alatta allo ket sor nem. Ugyanabban a kepernyoben all,
+  # mint a Guard 1 uzenete, ezert a ketto EGYUTT valt nyelvet -- egy felig javitott
+  # kepernyo rosszabb, mint egy egyseges magyar.
+  if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
+    echo "       You can only update from a branch that also exists on origin (a tracked branch)."
+    echo "       Switch to a release branch, e.g.:"
+  else
+    echo "       Csak az origin-on is meglevo (kovetett) branchrol lehet frissiteni."
+    echo "       Allj at egy release branchre, pl.:"
+  fi
+  echo "         git switch main || git switch -c main --track origin/main"
   exit 2
 fi
 
@@ -328,6 +421,57 @@ restore_stash_before_exit() {
   fi
 }
 
+# UPDOOMNPMCI926: `npm ci` failed after the pull. npm ci deletes node_modules
+# before installing, so the tree is on the NEW commit with a half-installed
+# dependency set; the running dashboard still has the old code in memory, but
+# its next start (or any fresh node process) would load from the broken tree.
+# The old path only printed a fixed "package-lock.json out of sync" line and
+# exited 1 with no rollback, so the report said "failed" while the tree sat on
+# the new commit. Measured on a 3.8 GB, swapless host: the OOM killer ended
+# npm ci three times in 33 s (exit 137), and the message blamed the lockfile.
+# Now: name the cause from the exit code, roll back exactly like the build
+# failure below (old commit, its dependencies, its build), and report what
+# actually happened -- including a rollback whose own npm ci failed too.
+npm_ci_failed() {
+  local rc="$1"
+  if [ "$rc" -eq 137 ]; then
+    if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
+      echo -e "${RED}ERROR:${NC} npm ci was killed (exit 137, SIGKILL) -- most likely the machine ran out of memory."
+      echo -e "  Check with: dmesg | grep -i 'killed process'  (the lockfile is not the cause)"
+    else
+      echo -e "${RED}HIBA:${NC} az npm ci-t a rendszer leállította (137-es kilépési kód, SIGKILL), valószínűleg elfogyott a memória."
+      echo -e "  Ellenőrzés: dmesg | grep -i 'killed process'  (nem a package-lock.json a hiba)"
+    fi
+  else
+    if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
+      echo -e "${RED}ERROR:${NC} npm ci failed (exit code ${rc}). Details: npm ci"
+    else
+      echo -e "${RED}HIBA:${NC} az npm ci sikertelen (kilépési kód: ${rc}). Részletek: npm ci"
+    fi
+  fi
+  echo -e "  Visszaallitas a korabbi verziora (${OLD_VERSION})..."
+  local deps_ok=0
+  if [ -n "$OLD_VERSION_FULL" ]; then
+    git reset --hard "$OLD_VERSION_FULL" >/dev/null 2>&1 || true
+    if npm ci --silent --include=dev 2>/dev/null; then deps_ok=1; fi
+    npm rebuild better-sqlite3 --silent 2>/dev/null || true
+    npm run build --silent 2>/dev/null || true
+    [ -d "$INSTALL_DIR/dist" ] && echo "$OLD_VERSION_FULL" > "$BUILT_COMMIT_FILE"
+  fi
+  local cause="a függőségek telepítése elbukott (kilépési kód: ${rc})"
+  [ "$rc" -eq 137 ] && cause="a függőségek telepítését a rendszer leállította (137, valószínűleg memóriahiány)"
+  if [ "$deps_ok" = "1" ]; then
+    RESULT_STATUS="rolled-back"
+    RESULT_MSG="A frissítés közben ${cause}; a rendszer visszaállt a korábbi működő verzióra (${OLD_VERSION}). A frissítés nem ment ki."
+  else
+    RESULT_STATUS="failed"
+    RESULT_MSG="A frissítés közben ${cause}, és a visszaállítás függőség-telepítése sem sikerült: a kód a korábbi verzión (${OLD_VERSION}) áll, de a node_modules hiányos lehet. Kézi beavatkozás kell: npm ci --include=dev, majd npm run build."
+    echo -e "${RED}HIBA:${NC} a visszaallitas npm ci-je is elbukott; a node_modules hianyos lehet. Kezi beavatkozas kell: npm ci --include=dev && npm run build"
+  fi
+  restore_stash_before_exit
+  exit 6
+}
+
 # Save current version
 OLD_VERSION=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
 
@@ -343,15 +487,67 @@ OLD_VERSION_FULL=$(git rev-parse HEAD 2>/dev/null || echo "")
 # checkout sat 53 commits ahead / 0 behind on 2026-08-30, having just merged
 # upstream, and the updater still would not run -- no build, no migration, no
 # restart, on a tree that was in fact current. Only ahead AND behind together
-# mean the histories have parted and a human has to reconcile them.
+# mean the histories have parted, and reconciling them is a human's call by
+# DEFAULT -- see the UPDATE_AUTO_REBASE block below, which is off unless the
+# operator of this install turns it on.
 RESULT_PHASE="pull"
-AHEAD=$(git rev-list --count '@{u}..HEAD' 2>/dev/null || echo 0)
-BEHIND=$(git rev-list --count 'HEAD..@{u}' 2>/dev/null || echo 0)
+# DIVERGENCE-REF (UPSTREAMSRC927): measure the ref the pull below will merge,
+# fetched NOW -- not `@{u}`. Two ways `@{u}` answered a different question:
+#   - it is only as fresh as the last fetch, and nothing in the product fetches
+#     on a schedule. With local commits and new upstream commits, the stale ref
+#     said "ahead 1, behind 0", this guard let it through, and `pull --ff-only`
+#     then died with a generic message; the UPDATE_AUTO_REBASE=1 path below,
+#     built for exactly that case, never started (measured on a throwaway repo).
+#   - it is whatever the branch tracks, while the pull names origin/<branch>.
+# `git fetch origin <branch>` is the first half of that pull, and FETCH_HEAD is
+# precisely what its merge would take. A failed fetch is said out loud and the
+# guard falls back to the last known origin ref; the pull then reports the
+# network failure itself.
+DIVERGENCE_REF="FETCH_HEAD"
+if ! git fetch --quiet origin "$CURRENT_BRANCH" 2>>"$INSTALL_DIR/store/update.log"; then
+  DIVERGENCE_REF="origin/${CURRENT_BRANCH}"
+  echo -e "  ${ORANGE}Figyelem:${NC} a 'git fetch origin ${CURRENT_BRANCH}' elbukott; az elteres-ellenorzes az utolso ismert ${DIVERGENCE_REF} refet meri, ami elavult lehet."
+fi
+AHEAD=$(git rev-list --count "${DIVERGENCE_REF}..HEAD" 2>/dev/null || echo 0)
+BEHIND=$(git rev-list --count "HEAD..${DIVERGENCE_REF}" 2>/dev/null || echo 0)
 if [ "${AHEAD:-0}" -gt 0 ] && [ "${BEHIND:-0}" -gt 0 ]; then
-  RESULT_MSG="A helyi checkout ${AHEAD} committal elore es ${BEHIND} committal hatra van az upstreamhez kepest (szetvalt elozmeny); a fast-forward frissites nem lehetseges. Nezd meg: git log @{u}..HEAD"
-  echo -e "${RED}HIBA:${NC} a helyi checkout ${AHEAD} committal elore es ${BEHIND} committal hatra van (szetvalt elozmeny); fast-forward nem lehetseges. Nezd: git log @{u}..HEAD"
-  restore_stash_before_exit
-  exit 5
+  # Diverged history: ahead AND behind. #1112 made this refuse ON PURPOSE -- a
+  # human has to reconcile it -- and that stays the DEFAULT here. What this adds
+  # is an explicit opt-in for installs whose operator has already decided that
+  # replaying local commits is the right call for their box (fleet operators who
+  # commit fixes locally and rarely push hit this on every update; "the Update
+  # button does nothing" is the dominant report). Rewriting someone else's
+  # history without their say-so is not a default we are willing to ship, so the
+  # switch is off unless UPDATE_AUTO_REBASE=1 is set.
+  if [ "${UPDATE_AUTO_REBASE:-0}" = "1" ]; then
+    echo -e "  ${ORANGE}↻${NC} A helyi checkout ${AHEAD} committal elore es ${BEHIND} committal hatra van; UPDATE_AUTO_REBASE=1, auto-rebase origin/${CURRENT_BRANCH}-re..."
+    # A FAILED fetch must NOT fall through to the rebase: rebasing onto a stale
+    # origin ref does not error, it just quietly does something other than what
+    # the operator asked for. Bail out to the same loud refusal as a conflict.
+    if ! git fetch origin "$CURRENT_BRANCH" --quiet 2>>"$INSTALL_DIR/store/update.log"; then
+      RESULT_MSG="Auto-rebase megszakitva: a 'git fetch origin ${CURRENT_BRANCH}' elbukott, igy csak egy ELAVULT origin-refre lehetne rebase-elni. Nezd: store/update.log"
+      echo -e "${RED}HIBA:${NC} a fetch elbukott, az auto-rebase kimarad (elavult origin-refre nem rebase-elunk)."
+      bash "$INSTALL_DIR/scripts/notify.sh" "🔴 Dashboard update: a fetch elbukott, az auto-rebase kimaradt. Reszletek: store/update.log" >/dev/null 2>&1 || true
+      restore_stash_before_exit
+      exit 5
+    fi
+    if git -c core.editor=true rebase "origin/${CURRENT_BRANCH}" >>"$INSTALL_DIR/store/update.log" 2>&1; then
+      echo -e "  ${GREEN}✓${NC} Auto-rebase sikeres (${AHEAD} helyi commit ujrajatszva a friss upstreamre)."
+      RESULT_MSG="Auto-rebase: ${AHEAD} helyi commit ujrajatszva origin/${CURRENT_BRANCH}-re."
+    else
+      git rebase --abort 2>/dev/null || true
+      RESULT_MSG="A helyi checkout ${AHEAD} committal elore es ${BEHIND} committal hatra van, es az auto-rebase KONFLIKTUSBA utkozott -- kezi (szemantikus) rebase kell. Nezd: git log @{u}..HEAD"
+      echo -e "${RED}HIBA:${NC} auto-rebase konfliktus, kezi feloldas kell (git log @{u}..HEAD)."
+      bash "$INSTALL_DIR/scripts/notify.sh" "🔴 Dashboard update: ${AHEAD} helyi commit utkozik az upstreammel, az auto-rebase konfliktusba futott. Kezi szemantikus rebase kell. Reszletek: store/update.log" >/dev/null 2>&1 || true
+      restore_stash_before_exit
+      exit 5
+    fi
+  else
+    RESULT_MSG="A helyi checkout ${AHEAD} committal elore es ${BEHIND} committal hatra van az upstreamhez kepest (szetvalt elozmeny); a fast-forward frissites nem lehetseges. Nezd meg: git log @{u}..HEAD (vagy UPDATE_AUTO_REBASE=1 az automatikus ujrajatszashoz)"
+    echo -e "${RED}HIBA:${NC} a helyi checkout ${AHEAD} committal elore es ${BEHIND} committal hatra van (szetvalt elozmeny); fast-forward nem lehetseges. Nezd: git log @{u}..HEAD"
+    restore_stash_before_exit
+    exit 5
+  fi
 fi
 if [ "${AHEAD:-0}" -gt 0 ]; then
   echo -e "  ${ORANGE}Megjegyzes:${NC} a helyi checkout ${AHEAD} committal elore van, lemaradas nincs -- a letoltes nem hoz ujat, a frissites folytatodik."
@@ -446,9 +642,403 @@ migrate_channels_restart() {
   return 0
 }
 
+# UPDATETIMER1012 (#1902 follow-up): a timer whose unit file already exists is
+# not necessarily RUNNING. `enable` alone does not start a timer, and both of
+# ours fire on OnBootSec, which on a host that has been up for a while has
+# already passed -- so an install whose installer only enabled them (#1902)
+# keeps them inactive until the next reboot, the keepalive probe never refreshes,
+# and the channel monitor hard-restarts the main agent. The two repairs below
+# skipped every existing timer file, so the update never cured that host.
+# This starts such a timer, with no unit rewrite:
+#   - no systemd, or no user session (WSL, a container, a VPS without linger):
+#     nothing, the same guard the installer uses;
+#   - already active: nothing;
+#   - masked: nothing -- that is the operator's explicit "never run this";
+#   - otherwise `enable --now`, and if that fails, one line with the command
+#     that fixes it. Never fatal: update.sh runs under `set -e`, and a timer that
+#     cannot start must not stop the update (every call here is guarded).
+# One call per timer, so a broken unit cannot take the other one with it.
+_user_systemd_up() {
+  pidof systemd >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1
+}
+ensure_timer_running() {
+  local timer="$1" state
+  _user_systemd_up || return 0
+  systemctl --user is-active --quiet "$timer" 2>/dev/null && return 0
+  state="$(systemctl --user is-enabled "$timer" 2>/dev/null || true)"
+  # masked-runtime too (`systemctl mask --runtime`, until the next reboot): the
+  # same "never run this", so no start and no warning that would ask the
+  # operator to undo their own mask (review of #1915).
+  case "$state" in
+    masked|masked-runtime) return 0 ;;
+  esac
+  if systemctl --user enable --now "$timer" >/dev/null 2>&1; then
+    echo -e "  Inaktiv timer elinditva: $timer"
+  else
+    echo -e "  FIGYELEM: $timer nem fut, es nem indult el -- inditsd kezzel: systemctl --user enable --now $timer"
+  fi
+  return 0
+}
+
+# Idle-path keepalive probe installation (Linux only). The repo has shipped
+# scripts/channel-keepalive-probe.sh and placeholder units under scripts/systemd/
+# for a while, but nothing ever installed them, so on every existing host the ONLY
+# producer of store/.channel-keepalive freshness was organic inbound traffic.
+# A quiet night then looks exactly like a wedged session: the file ages past the
+# dashboard's 45-minute liveness ceiling, channel-monitor respawn-panes a healthy
+# main agent (conversation lost, no --continue), that kills the telegram plugin,
+# and channels.sh's dead-plugin watchdog exits 181s later for a second, whole-unit
+# restart. Measured on a live install the night of 2026-09-12/13: 13 restarts, one
+# every ~50 minutes, from midnight until the owner woke up.
+#
+# The installer template fix reaches new installs only -- this is what lands it on
+# the machines that have the bug today. Idempotent: it writes nothing once the
+# timer unit exists (it then only starts the timer if it is not running, see
+# ensure_timer_running). The probe itself never fakes liveness (it proves the session,
+# its claude pid and a descending telegram poller are alive before touching), so a
+# genuinely dead channel still ages out and still gets recovered.
+install_keepalive_probe_timer() {
+  units_dir="${1:-$HOME/.config/systemd/user}"
+  [ -d "$units_dir" ] || return 0
+  [ -x "$INSTALL_DIR/scripts/channel-keepalive-probe.sh" ] || return 0
+  command -v systemctl >/dev/null 2>&1 || return 0
+  # Derive the install's service id from the unit that certainly exists rather
+  # than re-deriving it from .env: the units are what we are extending, and a
+  # renamed agent whose old units are still on disk must get the timer next to
+  # THOSE, not next to a name nothing else uses.
+  for chan_unit in "$units_dir/"*-channels.service; do
+    [ -f "$chan_unit" ] || continue
+    _svc_id="$(basename "$chan_unit" -channels.service)"
+    _ka_unit="${_svc_id}-channel-keepalive-probe"
+    # An existing timer is not rewritten, but it is started if it is not running.
+    if [ -f "$units_dir/${_ka_unit}.timer" ]; then
+      ensure_timer_running "${_ka_unit}.timer"
+      continue
+    fi
+    # BOT_NAME is only assigned further down this script, so read it here
+    # instead of inheriting an empty one into the unit Description.
+    _bot_name="$(sed -n 's/^BOT_NAME=//p' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | tr -d '"')"
+    [ -n "$_bot_name" ] || _bot_name="Marveen"
+    _tz_line="# no explicit TZ detected; inheriting host default"
+    _tz="$(timedatectl show -p Timezone --value 2>/dev/null || cat /etc/timezone 2>/dev/null || true)"
+    [ -n "$_tz" ] && [ "$_tz" != "UTC" ] && _tz_line="Environment=TZ=$_tz"
+    cat >"$units_dir/${_ka_unit}.service" <<EOF
+[Unit]
+Description=${_bot_name} token-free idle-path channel keepalive probe
+
+[Service]
+Type=oneshot
+WorkingDirectory=$INSTALL_DIR
+ExecStart=$INSTALL_DIR/scripts/channel-keepalive-probe.sh
+Environment=PATH=$HOME/.local/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=$HOME
+${_tz_line}
+StandardOutput=append:$INSTALL_DIR/store/channel-keepalive-probe.log
+StandardError=append:$INSTALL_DIR/store/channel-keepalive-probe.log
+EOF
+    # No Requires=/Wants= on the triggered service -- see repair_morning_timer
+    # above for what that costs.
+    cat >"$units_dir/${_ka_unit}.timer" <<EOF
+[Unit]
+Description=${_bot_name} channel keepalive probe every 3 minutes
+
+[Timer]
+OnBootSec=90s
+OnUnitActiveSec=3min
+AccuracySec=20s
+
+[Install]
+WantedBy=timers.target
+EOF
+    systemctl --user daemon-reload 2>/dev/null || true
+    if systemctl --user enable --now "${_ka_unit}.timer" >/dev/null 2>&1; then
+      echo -e "  Keepalive-szonda telepitve (3 percenkent, hamis respawn ellen): ${_ka_unit}.timer"
+    else
+      echo -e "  FIGYELEM: ${_ka_unit}.timer unit megirva, de az engedelyezese nem sikerult -- inditsd kezzel: systemctl --user enable --now ${_ka_unit}.timer"
+    fi
+  done
+  return 0
+}
+
+# macOS twin of install_keepalive_probe_timer (KEEPALIVEMAC926). The Linux half
+# landed with #1313 and install-macos.sh got the launchd unit the same day, but
+# the template only reaches NEW installs -- and update.sh, the one thing that
+# runs weekly on the machines that already have the bug, had no Darwin branch at
+# all, so every Mac installed before 2026-09-14 still has no probe.
+# Measured on this install 2026-09-26 05:07: launchctl had no
+# com.marveen.channel-keepalive-probe, and store/channels-failures.log shows
+# main-agent respawns ONLY between 22:00 and 07:00 (19 that night, one every
+# ~15 minutes, zero between 07:00 and 22:00) -- the same quiet-night-reads-as-a-
+# wedge loop the Linux comment above describes. The respawn never clears the
+# condition that triggers it (nothing refreshes the file afterwards either), so
+# it repeats until the owner's first morning message warms the file.
+# Idempotent: once the job is loaded this writes nothing and prints nothing. The
+# label is read from the installer so a rename there cannot silently turn this
+# into a weekly reload.
+install_keepalive_probe_launchd() {
+  [ "$(uname -s 2>/dev/null)" = "Darwin" ] || return 0
+  _ka_installer="$INSTALL_DIR/scripts/install-channel-keepalive-probe.sh"
+  [ -x "$_ka_installer" ] || return 0
+  command -v launchctl >/dev/null 2>&1 || return 0
+  # #1873: the installer resolves its own com.<SERVICE_ID>.* label.
+  _ka_label="$("$_ka_installer" --print-label 2>/dev/null | head -1)"
+  [ -n "$_ka_label" ] || _ka_label="com.marveen.channel-keepalive-probe"
+  # ISSUE1891 (#1891): keyed on the job being LOADED, not on the plist existing
+  # (the stuck-modal guard below learned this in #1694): a plist whose job never
+  # ran -- a Mac without a GUI login, a failed load -- used to make this return
+  # quietly forever, while the dashboard kept respawning a healthy idle session.
+  if launchctl list "$_ka_label" >/dev/null 2>&1; then
+    return 0
+  fi
+  if "$_ka_installer" --load >/dev/null 2>&1; then
+    echo -e "  Keepalive-szonda telepitve (3 percenkent, hamis respawn ellen): ${_ka_label}"
+  else
+    echo -e "  FIGYELEM: a keepalive-szonda NEM FUT (${_ka_label}) -- a launchd csak GUI-bejelentkezesen belul futtatja. Javitas, a GUI-bejelentkezes egy terminaljabol: launchctl bootstrap gui/$(id -u) \"$HOME/Library/LaunchAgents/${_ka_label}.plist\" 2>/dev/null; launchctl kickstart gui/$(id -u)/${_ka_label}"
+  fi
+  return 0
+}
+
+# The stuck-modal guard's launchd twin on Macs that are already installed
+# (MODELCONFIRM1005), the same way and for the same reason as the probe above:
+# install-macos.sh only reaches NEW installs. Measured 2026-10-05 on the Mac
+# mini: the CLI's "Switch model?" dialog held the main session for half an hour
+# and launchctl had no job of any modal guard. The guard's default mode is
+# log-only (STUCK_MODAL_MODE, see stuck-modal-guard.sh): it detects and logs,
+# recovery is opt-in. #1694 review:
+#   - keyed on the job being LOADED, not on the plist existing: a plist left by
+#     a failed `launchctl load` is retried (and reported) on every run instead of
+#     going quiet forever;
+#   - STUCK_MODAL_MODE=off in .env is the opt-out, and it survives updates: no
+#     install, no load.
+# Idempotent: with the job loaded this writes nothing and prints nothing; the
+# label is read from the installer.
+install_stuck_modal_guard_launchd() {
+  [ "$(uname -s 2>/dev/null)" = "Darwin" ] || return 0
+  _sm_installer="$INSTALL_DIR/scripts/install-stuck-modal-guard.sh"
+  [ -x "$_sm_installer" ] || return 0
+  command -v launchctl >/dev/null 2>&1 || return 0
+  _sm_mode="$(grep -E '^STUCK_MODAL_MODE=' "$INSTALL_DIR/.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"'"'"'\r ' | tr '[:upper:]' '[:lower:]')"
+  [ "$_sm_mode" = "off" ] && return 0
+  # #1873: the installer resolves its own com.<SERVICE_ID>.* label.
+  _sm_label="$("$_sm_installer" --print-label 2>/dev/null | head -1)"
+  [ -n "$_sm_label" ] || _sm_label="com.marveen.stuck-modal-guard"
+  if launchctl list "$_sm_label" >/dev/null 2>&1; then
+    return 0
+  fi
+  if "$_sm_installer" --load >/dev/null 2>&1; then
+    echo -e "  Beragadt-ablak or telepitve (percenkent; alapbol csak naploz, STUCK_MODAL_MODE): ${_sm_label}"
+  else
+    echo -e "  FIGYELEM: a beragadt-ablak or NEM FUT (${_sm_label}) -- a launchd csak GUI-bejelentkezesen belul futtatja. Javitas, a GUI-bejelentkezes egy terminaljabol: launchctl bootstrap gui/$(id -u) \"$HOME/Library/LaunchAgents/${_sm_label}.plist\" 2>/dev/null; launchctl kickstart gui/$(id -u)/${_sm_label}"
+  fi
+  return 0
+}
+
+# Morning-timer parking (MORNTIMERPARK914 -- the missing half of the locked
+# MORNCONS1 decision, 2026-07-27). The #1313 installer change stops ENABLING
+# the 07:27 morning timer on NEW installs, but every already-installed Linux
+# host still fires it daily: a paid headless `claude -p` run whose config root
+# carries no channel allowlist, so its reply tool rejects the owner's chat_id
+# and the run refuses itself -- burning money and delivering nothing. On a host
+# whose headless config DOES carry an allowlist it is worse: a second briefing
+# 3 minutes before the runner-task one.
+#
+# Two MORNCONS1 conditions, both enforced here:
+#   1. The runner-side task must be PROVABLY present and enabled on THIS host
+#      before the timer stops -- otherwise the operator loses their briefing on
+#      the very morning after the update. The gate reads the LIVE task config
+#      (seeded by ensureDefaultScheduledTasks() on every dashboard start), not
+#      the repo copy; a host where the operator deleted the task (#796
+#      tombstone) keeps its timer and says so loudly.
+#   2. Noisy in the update log, silent toward the user: every branch below
+#      prints to update.sh's own output only -- nothing here can reach Telegram.
+#
+# ONE-SHOT migration, not a standing rule: #1313 documents manual re-enable
+# (`systemctl --user enable --now <id>-morning.timer`) as the supported
+# operator path, and an unconditional park would fight that operator on every
+# update check. The marker below records that the migration ran once; after
+# that, an enabled timer is treated as a deliberate choice and left alone.
+park_morning_timer() {
+  units_dir="${1:-$HOME/.config/systemd/user}"
+  marker="$INSTALL_DIR/store/.morning-timer-parked"
+  [ -f "$marker" ] && return 0
+  [ -d "$units_dir" ] || return 0
+  command -v systemctl >/dev/null 2>&1 || return 0
+  task_cfg="$HOME/.claude/scheduled-tasks/reggeli-napindito/task-config.json"
+  _park_blocked=0
+  _parked_units=""
+  for morn_timer in "$units_dir/"*-morning.timer; do
+    [ -f "$morn_timer" ] || continue
+    _mt_unit="$(basename "$morn_timer")"
+    _mt_state="$(systemctl --user is-enabled "$_mt_unit" 2>/dev/null || true)"
+    [ "$_mt_state" = "enabled" ] || continue
+    if [ ! -f "$task_cfg" ] || ! grep -q '"enabled"[[:space:]]*:[[:space:]]*true' "$task_cfg" 2>/dev/null; then
+      # MORNCONS1 condition 1: without the runner task this timer is the only
+      # briefing path -- do NOT park it, do NOT write the marker (retry on the
+      # next update check, once the dashboard has seeded the task).
+      echo -e "  FIGYELEM: ${_mt_unit} engedelyezve marad -- a reggeli-napindito runner-task nincs jelen/engedelyezve ezen a hoston, es a timer az egyetlen napindito-ut (MORNCONS1 kapu)."
+      _park_blocked=1
+      continue
+    fi
+    if systemctl --user disable --now "$_mt_unit" >/dev/null 2>&1; then
+      echo -e "  Reggeli 07:27 timer leallitva -- a napinditot a 07:30-as runner-task viszi az elo csatorna-munkamenetbol (MORNCONS1): ${_mt_unit}"
+      echo -e "  ${DIM:-}Visszakapcsolas, ha megis a timer-ut kell: systemctl --user enable --now ${_mt_unit}${NC:-}"
+      _parked_units="$_parked_units $_mt_unit"
+    else
+      echo -e "  FIGYELEM: ${_mt_unit} disable nem sikerult -- kezzel: systemctl --user disable --now ${_mt_unit}"
+      _park_blocked=1
+    fi
+  done
+  # Settle the migration only when nothing was left behind: a blocked or
+  # failed park must retry on the next run instead of being recorded as done.
+  if [ "$_park_blocked" = "0" ]; then
+    echo "parked_at=$(date +%FT%T%z) units:${_parked_units:- none-needed}" > "$marker" 2>/dev/null || true
+  fi
+  return 0
+}
+
+# Main-agent inbox observer, for hosts that already exist. The installers wire
+# it on a fresh install; without this, every machine installed before it stays
+# exactly as it was -- the script present, nothing running it -- which is the
+# defect the observer itself is about, one level up.
+#
+# Two platforms, two mechanisms, and BOTH are needed here: on Linux the unit
+# pair below, on macOS the launchd installer (which refuses to run anywhere
+# else). Idempotent on both: the Linux half writes nothing once the timer unit
+# exists, the launchd half rewrites the same plist byte for byte.
+install_main_inbox_observer_unit() {
+  [ -x "$INSTALL_DIR/scripts/main-inbox-observer.sh" ] || return 0
+  if [ "$(uname -s)" = "Darwin" ]; then
+    [ -x "$INSTALL_DIR/scripts/install-main-inbox-observer.sh" ] || return 0
+    if "$INSTALL_DIR/scripts/install-main-inbox-observer.sh" --load >/dev/null 2>&1; then
+      echo -e "  Fo-agens inbox-figyelo telepitve (5 percenkent, launchd)"
+    else
+      _io_l="$("$INSTALL_DIR/scripts/install-main-inbox-observer.sh" --print-label 2>/dev/null | head -1)"
+      echo -e "  FIGYELEM: az inbox-figyelo NEM FUT (${_io_l}) -- a launchd csak GUI-bejelentkezesen belul futtatja. Javitas, a GUI-bejelentkezes egy terminaljabol: launchctl bootstrap gui/$(id -u) \"$HOME/Library/LaunchAgents/${_io_l}.plist\" 2>/dev/null; launchctl kickstart gui/$(id -u)/${_io_l}"
+    fi
+    return 0
+  fi
+  units_dir="${1:-$HOME/.config/systemd/user}"
+  [ -d "$units_dir" ] || return 0
+  command -v systemctl >/dev/null 2>&1 || return 0
+  # Same service-id derivation as the keepalive timer above, and for the same
+  # reason: extend the units that actually exist on this host.
+  for chan_unit in "$units_dir/"*-channels.service; do
+    [ -f "$chan_unit" ] || continue
+    _svc_id="$(basename "$chan_unit" -channels.service)"
+    _io_unit="${_svc_id}-main-inbox-observer"
+    if [ -f "$units_dir/${_io_unit}.timer" ]; then
+      ensure_timer_running "${_io_unit}.timer"
+      continue
+    fi
+    _bot_name="$(sed -n 's/^BOT_NAME=//p' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | tr -d '"')"
+    [ -n "$_bot_name" ] || _bot_name="Marveen"
+    _tz_line="# no explicit TZ detected; inheriting host default"
+    _tz="$(timedatectl show -p Timezone --value 2>/dev/null || cat /etc/timezone 2>/dev/null || true)"
+    [ -n "$_tz" ] && [ "$_tz" != "UTC" ] && _tz_line="Environment=TZ=$_tz"
+    cat >"$units_dir/${_io_unit}.service" <<EOF
+[Unit]
+Description=${_bot_name} out-of-process observer of the main agent's inbox queue
+
+[Service]
+Type=oneshot
+WorkingDirectory=$INSTALL_DIR
+ExecStart=$INSTALL_DIR/scripts/main-inbox-observer.sh
+Environment=PATH=$HOME/.local/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=$HOME
+${_tz_line}
+StandardOutput=append:$INSTALL_DIR/store/main-inbox-observer.log
+StandardError=append:$INSTALL_DIR/store/main-inbox-observer.log
+EOF
+    # Not bound to the dashboard unit on purpose: "the dashboard is down" is one
+    # of the states being observed, so the timer must outlive it.
+    cat >"$units_dir/${_io_unit}.timer" <<EOF
+[Unit]
+Description=${_bot_name} main-agent inbox observer every 5 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target
+EOF
+    systemctl --user daemon-reload 2>/dev/null || true
+    if systemctl --user enable --now "${_io_unit}.timer" >/dev/null 2>&1; then
+      echo -e "  Fo-agens inbox-figyelo telepitve (5 percenkent, a dashboard folyamaton kivul): ${_io_unit}.timer"
+    else
+      echo -e "  FIGYELEM: ${_io_unit}.timer unit megirva, de az engedelyezese nem sikerult -- inditsd kezzel: systemctl --user enable --now ${_io_unit}.timer"
+    fi
+  done
+  return 0
+}
+
+# UPDUNITTGENV930: #1450 took `Environment=TELEGRAM_ENV=<home>/.claude/channels/telegram/.env`
+# out of the two notifier units install-linux.sh writes (<slug>-host-watchdog.service and
+# <slug>-notify@.service), but only for NEW installs: an existing host keeps the line,
+# and on a MIGRATED install (install-scoped channel dir) it points at the empty legacy
+# path and overrides the notifier's own resolution, so the failure notifier never sends.
+# Only that exact legacy value goes (<the unit's own HOME>/.claude/channels/telegram/.env):
+# an operator's deliberate TELEGRAM_ENV pointing anywhere else stays. On an
+# unmigrated install removing it is harmless, the notifier falls back to the same path.
+strip_legacy_notifier_telegram_env() {
+  units_dir="${1:-$HOME/.config/systemd/user}"
+  [ -d "$units_dir" ] || return 0
+  _patched=0
+  for _unit in "$units_dir/"*-host-watchdog.service "$units_dir/"*-notify@.service; do
+    [ -f "$_unit" ] || continue
+    # The legacy value is the SHARED dir under the unit's own HOME: the installer writes
+    # both lines from the same $HOME, and the shipped template carried both as the same
+    # /home/<user> placeholder, so one form covers both. Matched as whole
+    # fixed strings: the install-scoped <install>/.claude/channels/telegram/.env, the
+    # correct path on a migrated install, must never match.
+    _uhome="$(sed -n 's/^Environment=HOME=//p' "$_unit" | head -1)"
+    [ -n "$_uhome" ] || _uhome="$HOME"
+    _legacy1="Environment=TELEGRAM_ENV=${_uhome}/.claude/channels/telegram/.env"
+    if grep -qxF -e "$_legacy1" "$_unit"; then
+      if grep -vxF -e "$_legacy1" "$_unit" >"${_unit}.marveen-new" 2>/dev/null \
+         && cat "${_unit}.marveen-new" >"$_unit" 2>/dev/null; then
+        rm -f "${_unit}.marveen-new"
+        _patched=1
+        echo -e "  Hiba-ertesito unit javitva (regi TELEGRAM_ENV sor ki): $(basename "$_unit")"
+      else
+        rm -f "${_unit}.marveen-new"
+        echo -e "  FIGYELEM: a hiba-ertesito unit nem volt irhato: $_unit"
+      fi
+    fi
+  done
+  if [ "$_patched" = "1" ]; then
+    systemctl --user daemon-reload 2>/dev/null || true
+  fi
+  return 0
+}
+
+# Shell rc secret scrub (Linux only, SECSZIVEKKIADAS1008). Installers before
+# #1785 wrote the Claude token / API key as `export ...=` lines into ~/.bashrc
+# and ~/.zshrc; nothing on the update path removed them, and a re-run of the
+# installer never reached its own cleanup on an install that already has auth.
+# The functions live in scripts/lib/rc-secrets.sh (identical to the installer's
+# copy, kept equal by a test). Idempotent: no export line, no change. Like every
+# repair here it lands on the update.sh run AFTER the one that pulls it (no
+# re-exec). A failure never stops the update: it is reported, and retried next run.
+scrub_rc_secrets() {
+  [ "$(uname -s 2>/dev/null)" = "Linux" ] || return 0
+  [ -f "$INSTALL_DIR/scripts/lib/rc-secrets.sh" ] || return 0
+  ( . "$INSTALL_DIR/scripts/lib/rc-secrets.sh" && scrub_secret_exports_from_rc ) \
+    || echo -e "  ${ORANGE}FIGYELEM:${NC} a shell rc fajlok titok-takaritasa nem sikerult, a kovetkezo frissites ujraprobalja."
+  return 0
+}
+
 run_unit_maintenance() {
   repair_morning_timer "$@"
   migrate_channels_restart "$@"
+  install_keepalive_probe_timer "$@"
+  install_keepalive_probe_launchd "$@"
+  install_stuck_modal_guard_launchd "$@"
+  install_main_inbox_observer_unit "$@"
+  strip_legacy_notifier_telegram_env "$@"
+  park_morning_timer "$@"
+  scrub_rc_secrets
   return 0
 }
 run_unit_maintenance
@@ -593,6 +1183,16 @@ run_seed_refresh() {
 }
 run_seed_refresh
 
+# Marketplace channel plugins (SLACKPLUGINVER1006): the official
+# `claude plugin update`, on every config dir that already has the plugin.
+# Here, before the "already up to date" exit, so a plugin release also reaches
+# an install whose marveen code did not move; the new version is loaded at the
+# next channel start (the restart below, or the next natural one). Outside any
+# channel session, never installs, never fatal: scripts/lib/channel-plugin-refresh.sh.
+if [ -f "$INSTALL_DIR/scripts/lib/channel-plugin-refresh.sh" ]; then
+  ( . "$INSTALL_DIR/scripts/lib/channel-plugin-refresh.sh" && refresh_channel_plugins "$INSTALL_DIR" "$HOME" ) || true
+fi
+
 if [ "$OLD_VERSION" = "$NEW_VERSION" ]; then
   # Already on the latest commit -- but "no new commits" does NOT guarantee the
   # compiled dist/ matches the source. A prior update can pull new source and
@@ -671,10 +1271,10 @@ if git diff "$OLD_VERSION" "$NEW_VERSION" --name-only | grep -qE "^package(-lock
   # TypeScript compiler and makes the build below fail -> rollback -> the same
   # failure next run, forever (the rollback also reverts the freshly pulled
   # update.sh, so a fix can never arrive through this path on its own).
-  if ! retry 3 3 npm ci --silent --include=dev; then
-    echo -e "  HIBA: npm ci sikertelen. Valoszinuleg a package-lock.json nincs szinkronban."
-    echo -e "  Reszletekert futtasd: npm ci"
-    exit 1
+  NPM_CI_RC=0
+  retry 3 3 npm ci --silent --include=dev || NPM_CI_RC=$?
+  if [ "$NPM_CI_RC" -ne 0 ]; then
+    npm_ci_failed "$NPM_CI_RC"
   fi
   # Security posture check, NOT a hard gate. npm audit queries the
   # registry and can fail for reasons entirely outside the operator's
@@ -926,6 +1526,7 @@ if [ "$RESEED_FLEET" = "1" ] || [ "$REGEN_CLAUDEMD" = "1" ]; then
         -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
         -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
         -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
+        -e "s|{{TIMEZONE}}|$(. "$INSTALL_DIR/scripts/lib/install-tz.sh"; z="$(install_tz "$INSTALL_DIR")"; printf '%s' "${z:-UTC}")|g" \
         "$INSTALL_DIR/templates/CLAUDE.md.template" > "$CLAUDE_MD"
     echo -e "  ${GREEN}✓${NC} CLAUDE.md újrarenderelve a sablonból (előző verzió mentve: CLAUDE.md.backup-*)"
   elif [ -f "$CLAUDE_MD" ]; then
@@ -992,7 +1593,13 @@ fi
 SLACK_REF_FILE="$INSTALL_DIR/store/marveen-marketplace-slack-channel-ref.txt"
 MARKETPLACE_PLUGIN_DIR="$HOME/.claude/plugins/cache/marveen-marketplace/slack-channel"
 if [ -d "$MARKETPLACE_PLUGIN_DIR" ]; then
-  CURRENT_REF="$(ls "$MARKETPLACE_PLUGIN_DIR" 2>/dev/null | head -1)"
+  # The registry's installPath (and commit) is the version in use; the dir
+  # listing alone keeps returning the oldest version dir (SLACKPLUGINVER1006B).
+  CURRENT_REF="$( . "$INSTALL_DIR/scripts/lib/channel-plugin-refresh.sh" 2>/dev/null \
+    && channel_plugin_current_ref "$HOME/.claude" "slack-channel@marveen-marketplace" )" || true
+  if [ -z "$CURRENT_REF" ]; then
+    CURRENT_REF="$(ls "$MARKETPLACE_PLUGIN_DIR" 2>/dev/null | head -1)"
+  fi
   LAST_REF="$(cat "$SLACK_REF_FILE" 2>/dev/null || true)"
   if [ -n "$CURRENT_REF" ] && [ "$CURRENT_REF" != "$LAST_REF" ]; then
     echo -e "  Slack channel plugin ref valtozott: ${LAST_REF:-ismeretlen} -> $CURRENT_REF"
@@ -1135,8 +1742,46 @@ _health() { local i=0; while [ "$i" -lt 20 ]; do
   sleep 1; i=$(( i + 1 )); done; return 1; }
 _restart() { "$INSTALL_DIR/scripts/stop.sh"; "$INSTALL_DIR/scripts/start.sh"; }
 
+# ZAKARFELUGY921: THE PORT ANSWERING IS NOT PROOF THAT THE SERVICES ARE UNDER
+# THEIR UNITS. That is exactly how the reported install looked for two days: the
+# dashboard answered, the channel answered, and both units were `inactive`, so
+# Restart= and OnFailure= no longer applied to anything. _health cannot see this
+# -- it only asks the port. This check asks systemd instead, and it reports
+# rather than fails: a unit drift is not fixed by a rollback, so turning it into
+# a failed update would swap a silent problem for a destructive one.
+# The SLUG is derived the same way start.sh/stop.sh derive it.
+_unit_drift() {
+  command -v systemctl >/dev/null 2>&1 || return 0
+  pidof systemd >/dev/null 2>&1 || return 0
+  local slug drift="" u scope=""
+  slug="$(grep -E '^MAIN_AGENT_ID=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
+  slug="${slug:-marveen}"
+  if systemctl cat "${slug}-dashboard.service" >/dev/null 2>&1; then scope=""
+  elif systemctl --user cat "${slug}-dashboard.service" >/dev/null 2>&1; then scope="--user"
+  else return 0
+  fi
+  for u in "${slug}-dashboard" "${slug}-channels"; do
+    # Only enabled units are a promise; a deliberately disabled one is not drift.
+    systemctl $scope is-enabled --quiet "$u" 2>/dev/null || continue
+    systemctl $scope is-active --quiet "$u" 2>/dev/null || drift="${drift} ${u}"
+  done
+  [ -n "$drift" ] && printf '%s' "${drift# }"
+  return 0
+}
+
 _restart
-if _health; then _finish success restart 0 ""; fi
+UNIT_DRIFT="$(_unit_drift)"
+if [ -n "$UNIT_DRIFT" ]; then
+  echo "FIGYELEM: enabled, de NEM active unit(ok) a restart utan: ${UNIT_DRIFT}" >&2
+  echo "          A szolgaltatas valaszolhat a portjan, de a unitjan KIVUL fut:" >&2
+  echo "          a Restart= es az OnFailure= ilyenkor NEM vonatkozik ra." >&2
+fi
+if _health; then
+  if [ -n "$UNIT_DRIFT" ]; then
+    _finish success restart 0 "A frissites lement es a dashboard valaszol, DE enabled unit(ok) nem active: ${UNIT_DRIFT}. A szolgaltatas a unitjan kivul fut, tehat a Restart=/OnFailure= felugyelet nem ervenyes ra."
+  fi
+  _finish success restart 0 ""
+fi
 
 # Restart did not bring the dashboard back -> auto-rollback to the pre-update
 # commit (safe: ff-only ancestor, no force-push, no local-change discard) and
@@ -1169,22 +1814,43 @@ FINALIZE_LAUNCHED=1
 # dashboard-triggered run leaves it unset -> silent (the UI polls the status).
 FINALIZE_ARGS=("$INSTALL_DIR" "$OLD_VERSION_FULL" "$OLD_VERSION" "${WEB_PORT:-3420}" "$RESULT_FILE" "$BUILT_COMMIT_FILE" "$NEW_VERSION" "${NODE_PIN_DIR:-}" "${MARVEEN_UPDATE_NOTIFY:-0}")
 XDG_RUN="${XDG_RUNTIME_DIR:-/run/user/$(id -u 2>/dev/null)}"
+# ZAKARFELUGY921 (external report, 2026-09-21): the finalizer used to leave no
+# trace at all, so a run that died mid-restart looked identical to one that
+# never started. Every branch below writes here now.
+FINALIZE_LOG="$INSTALL_DIR/store/update-finalize.log"
 if command -v systemd-run >/dev/null 2>&1 && [ -d "$XDG_RUN" ]; then
   # Linux/systemd: the finalizer runs inside a transient scope whose OWN cgroup
   # is separate from the dashboard cgroup, so it survives stop.sh tearing that
-  # cgroup down (which reaps update.sh). Cgroup separation -- not foreground/bg
-  # -- is what guarantees survival, so we background it and return promptly; if
-  # scope creation fails, fall back to a plain detached setsid run.
-  XDG_RUNTIME_DIR="$XDG_RUN" systemd-run --user --scope --collect --quiet \
+  # cgroup down (which reaps update.sh).
+  #
+  # THE CGROUP IS NECESSARY BUT NOT SUFFICIENT, and this comment used to claim
+  # otherwise (ZAKARFELUGY921). `--scope` does NOT detach the controlling
+  # terminal: the finalizer inherited the calling tmux pane's pty, and stop.sh
+  # ends with `tmux kill-session`, which destroys that very pty. The hangup then
+  # killed the finalizer AFTER stop.sh returned and BEFORE start.sh ran, so the
+  # services came back outside their units -- Restart= and OnFailure= silently
+  # stopped applying.
+  #
+  # MEASURED on Ubuntu 24.04 / systemd 255, A/B in one pty session, with a
+  # no-systemd-run child as the positive control: after the hangup the plain
+  # child and the bare `systemd-run --scope` child were both gone (heartbeat
+  # frozen), while the `setsid systemd-run --scope` child kept running. The
+  # setsid child still sits in its own transient scope cgroup, so detaching the
+  # terminal costs nothing that the cgroup gave us.
+  #
+  # setsid is NOT hoisted out of this branch on purpose: macOS has no setsid at
+  # all (measured), and this branch only runs where systemd-run exists.
+  XDG_RUNTIME_DIR="$XDG_RUN" setsid systemd-run --user --scope --collect --quiet \
     bash "$FINALIZE_SCRIPT" "${FINALIZE_ARGS[@]}" \
-    || setsid bash "$FINALIZE_SCRIPT" "${FINALIZE_ARGS[@]}" < /dev/null > /dev/null 2>&1 &
+    < /dev/null >> "$FINALIZE_LOG" 2>&1 \
+    || setsid bash "$FINALIZE_SCRIPT" "${FINALIZE_ARGS[@]}" < /dev/null >> "$FINALIZE_LOG" 2>&1 &
 elif command -v setsid >/dev/null 2>&1; then
   # macOS/launchd or no user-systemd: no cgroup self-kill. Detach in the
   # background so a parent signal during restart cannot abort the health/
   # rollback sequence and update.sh returns promptly.
-  setsid bash "$FINALIZE_SCRIPT" "${FINALIZE_ARGS[@]}" < /dev/null > /dev/null 2>&1 &
+  setsid bash "$FINALIZE_SCRIPT" "${FINALIZE_ARGS[@]}" < /dev/null >> "$FINALIZE_LOG" 2>&1 &
 else
-  bash "$FINALIZE_SCRIPT" "${FINALIZE_ARGS[@]}" < /dev/null > /dev/null 2>&1 &
+  bash "$FINALIZE_SCRIPT" "${FINALIZE_ARGS[@]}" < /dev/null >> "$FINALIZE_LOG" 2>&1 &
 fi
 
 echo ""

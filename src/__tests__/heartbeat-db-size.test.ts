@@ -41,12 +41,12 @@ describe('the endpoint serves the number under counts.* (truncation-safe surface
   const empty = { urgent: [], in_progress: [], waiting: [] }
 
   it('db_size_mb rides in counts, inside the first 200 bytes', () => {
-    const json = JSON.stringify(buildHeartbeatSummaryResponse(empty, 0, 0, 159.7))
+    const json = JSON.stringify(buildHeartbeatSummaryResponse(empty, 0, 0, 159.7, { state: 'ok', retention_days: 90, tolerance_hours: 48, lag_hours: 0.27, oldest_age_days: 90.01 }))
     expect(json.slice(0, 200)).toContain('"db_size_mb":159.7')
   })
 
   it('null passes through as null -- the builder must not coerce "unknown" into a calm-looking 0', () => {
-    const r = buildHeartbeatSummaryResponse(empty, 0, 0, null)
+    const r = buildHeartbeatSummaryResponse(empty, 0, 0, null, { state: 'ok', retention_days: 90, tolerance_hours: 48, lag_hours: 0.27, oldest_age_days: 90.01 })
     expect(r.counts.db_size_mb).toBeNull()
     expect(JSON.stringify(r)).toContain('"db_size_mb":null')
   })

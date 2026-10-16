@@ -1,0 +1,9 @@
+{
+  "schedule": "47 21 * * *",
+  "agent": "{{MAIN_AGENT_ID}}",
+  "enabled": true,
+  "type": "heartbeat",
+  "skipIfBusy": true,
+  "catchUpMaxAgeMinutes": 180,
+  "createdAt": 0
+}

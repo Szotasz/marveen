@@ -37,9 +37,13 @@ curl -s -X POST http://localhost:{{WEB_PORT}}/api/memories/backfill -H "Authoriz
 #   a created_at/accessed_at INTEGER, a strftime('%s',...) viszont TEXT-et ad,
 #   és SQLite-ban az `integer < text` MINDIG IGAZ (típus-sorrend: INTEGER < TEXT).
 #   CAST nélkül ez a lekérdezés AZ ÖSSZES hot memóriát visszaadja, a mai aktívakat is.
-#   Az accessed_at ráadásul NULL is lehet -> COALESCE kell, különben a sor kiesik.
 #   Kétszer okozott kárt: 2026-07-30 (148 sor cold-ba, köztük aznapiak) és 2026-07-31 (35 sor).
-sqlite3 {{INSTALL_DIR}}/store/claudeclaw.db "SELECT id, content, accessed_at FROM memories WHERE category='hot' AND COALESCE(accessed_at, created_at) < CAST(strftime('%s', 'now', '-7 days') AS INTEGER)"
+#   A KOR dönt, nem az olvasottság (DREAMHOTKOR916): az accessed_at-et a memória-kereső
+#   és a heartbeat minden olvasáskor frissíti, ezért a gyakran olvasott sorok sosem öregedtek
+#   ki, a hot réteg nem ürült (2026-09-16: 57 hot sorból 38 ilyen). Az updated_at a tartalom-
+#   vagy kategória-váltáskor frissül (memories_touch trigger), NULL is lehet -> COALESCE a
+#   created_at-re, ami sosem NULL. Így a ma átírt régi sor sem esik ki.
+sqlite3 {{INSTALL_DIR}}/store/claudeclaw.db "SELECT id, content, created_at, updated_at FROM memories WHERE category='hot' AND COALESCE(updated_at, created_at) < CAST(strftime('%s', 'now', '-7 days') AS INTEGER)"
 ```
 
 **A TÖMEGES UPDATE ELŐTT KÖTELEZŐ:** először futtasd le a fenti `SELECT`-et, nézd meg a
@@ -101,8 +105,16 @@ Limitáció: ha az utolsó 7 napban már volt ajánlás, skip-eld. A mérvadó f
 tesszük hivatalossá, akkor a bucket végén ÍRNI is kell (`date -u +%F > .external-ops-last-run`),
 különben marad a DREAM.md archívum.
 
-Output (max 1 ajánlás): repo URL + 1 mondat indok hogy MIÉRT releváns {{OWNER_NAME}}nak (figyelembe véve: AI tartalomgyártás, magyar piac, fejlesztési flotta menedzsment, marketing).
+**Fokozatos autonómia:** ha találtál egy releváns external opportunity-t, OLVASD KI az
+`external_skill_adoption` kategóriát a `{{INSTALL_DIR}}/store/autonomy-config.json` fájlból.
+Ha a config vagy a kategória hiányzik, kezeld `level 1`-ként (fail closed).
 
+- **Level 1: csak jelez:** kizárólag a repo URL-t és a relevancia indokát írd a DREAM.md-be. NE módosíts skillt.
+- **Level 2: javasol + jóváhagyás:** a DREAM.md-ben adj konkrét, helyi skill-adaptációs tervet (melyik skill create/patch, mi változna), de NE írj skill-fájlt. A reggeli napindító ezt a tulajdonos elé viszi; csak későbbi tulajdonosi döntés után hajtható végre.
+
+Az `external_skill_adoption` kategória legmagasabb engedélyezett szintje 2. A Dream Engine külső opportunity alapján nem hoz létre és nem módosít skill-fájlt önállóan. A tényleges adaptációhoz tulajdonosi döntés szükséges.
+
+Output (max 1 opportunity): repo URL + relevancia + `mode=report|propose`.
 ### Bucket 5 — 🛠 Skill-flotta health (csak NEM-pinned skillek)
 
 ```bash

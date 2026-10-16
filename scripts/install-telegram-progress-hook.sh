@@ -1,26 +1,33 @@
 #!/bin/bash
-# Install the Telegram "working…" progress indicator: hooks + a standalone
-# watchdog (sentry). Plugin-independent — needs no changes to the official
-# telegram plugin, so it survives plugin updates.
+# Install the Telegram progress-indicator WATCHDOG (sentry) daemon.
 #
-# What you get:
-#   - inbound Telegram message  -> a "✍️ Dolgozom rajta…" placeholder appears
-#   - the agent sends a reply   -> the placeholder is deleted the instant the
-#                                  answer goes out (PostToolUse), Stop as fallback
-#   - the turn never finishes    -> a watchdog rewrites the placeholder into a
-#     (crash/wedged/agent down)    clear error, so the user always gets either an
-#                                  answer or an explicit failure
+# Since #1305 (ISSUE1305HOOKSCOPE) this installer no longer touches
+# ~/.claude/settings.json and no longer copies hook files into ~/.claude/hooks:
+# writing fleet hooks into the user-global settings made them fire in the
+# owner's own, unrelated Claude Code sessions. The three settings hooks
+# (UserPromptSubmit -> telegram_progress.py, PostToolUse(telegram.*reply) ->
+# telegram_progress_reply_clear.py, Stop -> telegram_progress_clear.py) are
+# repo-shipped in the tracked <repo>/.claude/settings.json (project scope,
+# $CLAUDE_PROJECT_DIR form) -- nothing to install for them.
 #
-# What it does:
-#   1. Copies the 4 hook scripts to ~/.claude/hooks/
-#   2. Patches ~/.claude/settings.json idempotently:
-#        UserPromptSubmit -> telegram_progress.py
-#        PostToolUse(telegram.*reply) -> telegram_progress_reply_clear.py
-#        Stop -> telegram_progress_clear.py
-#   3. Installs the watchdog as a launchd agent (macOS) or systemd
-#      service+timer (Linux), running ~every 60s.
+# What REMAINS here is the piece that is not a Claude Code hook at all:
+#   telegram_progress_watchdog.py as a launchd agent (macOS) or systemd user
+#   service+timer (Linux), running ~every 60s straight from the repo checkout
+#   (no ~/.claude/hooks copy, so the daemon can never drift from the repo).
+#   The watchdog is the only layer that can speak when the agent itself is
+#   down: it rewrites an orphaned "Dolgozom rajta…" placeholder into a clear
+#   error.
+#
+# Provider gate: sync-hooks.sh runs EVERY install-*-hook.sh on every update, so
+# an installer whose provider is not the active CHANNEL_PROVIDER retires ITSELF
+# and exits before writing any unit -- see the gate block below. Either retire
+# (its own in the gate, the other provider's before an install) is reported
+# when it fails and becomes the exit code: a cleanup that did not happen is
+# never silent.
 #
 # Idempotent: safe to re-run (e.g. from sync-hooks.sh on every update).
+# Cleanup of the old ~/.claude/hooks copies and stale user-global settings
+# entries belongs to the global-prune round, not here.
 #
 # Usage:
 #   bash ~/ClaudeClaw/scripts/install-telegram-progress-hook.sh
@@ -28,8 +35,6 @@
 set -euo pipefail
 
 SRC_DIR="$(cd "$(dirname "$0")" && pwd)/hooks"
-DEST_DIR="$HOME/.claude/hooks"
-SETTINGS="$HOME/.claude/settings.json"
 
 # The watchdog unit/label name keys off SERVICE_ID, matching install-linux.sh's
 # ${SERVICE_ID}-dashboard/-channels units and the macOS com.${SERVICE_ID}.*
@@ -40,10 +45,14 @@ INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 # Sourcing executes the file: an unquoted value with spaces (e.g. OWNER_NAME=Foo Bar)
 # causes bash to run the trailing word as a command; a $(...) value runs arbitrary code.
 # This function uses grep + pure string manipulation -- no eval, no subshell execution.
+# MARVEEN_ENV_FILE is set only by the tests (scripts/__tests__/*progress-hook*),
+# which hand the installer a temp .env this way; when unset, the install's own
+# .env is read as before.
 read_env() {
-  [ -f "$INSTALL_DIR/.env" ] || return 0
+  local f="${MARVEEN_ENV_FILE:-$INSTALL_DIR/.env}"
+  [ -f "$f" ] || return 0
   local v
-  v="$(grep -E "^${1}=" "$INSTALL_DIR/.env" | tail -1)" || return 0
+  v="$(grep -E "^${1}=" "$f" | tail -1)" || return 0
   v="${v#*=}"
   case "$v" in
     '"'*) v="${v#\"}"; v="${v%\"}" ;;
@@ -57,112 +66,72 @@ BOT_NAME="$(read_env BOT_NAME)"
 SERVICE_ID="${SERVICE_ID:-${MAIN_AGENT_ID_ENV:-marveen}}"
 BOT_NAME="${BOT_NAME:-Marveen}"
 
-SUBMIT_HOOK="$DEST_DIR/telegram_progress.py"
-STOP_HOOK="$DEST_DIR/telegram_progress_clear.py"
-REPLY_HOOK="$DEST_DIR/telegram_progress_reply_clear.py"
-WATCHDOG="$DEST_DIR/telegram_progress_watchdog.py"
-# Agent-invoked CLI (not a settings.json hook): the Bot API fallback sender that
-# clears the placeholder on manual delivery so the Stop hook never re-sends.
-FALLBACK_SEND="$DEST_DIR/telegram_fallback_send.py"
-
-for f in telegram_progress.py telegram_progress_clear.py \
-         telegram_progress_reply_clear.py telegram_progress_watchdog.py \
-         telegram_fallback_send.py; do
-  if [ ! -f "$SRC_DIR/$f" ]; then
-    echo "❌ Source hook not found: $SRC_DIR/$f" >&2
-    exit 1
+# Run the retire script for one provider and SAY SO when it fails; returns the
+# script's exit code. It used to be called with an unconditional "|| true",
+# which is how a retire script that the macOS /bin/bash (3.2) could not even
+# parse went unnoticed: its error vanished, the cleanup never happened, and
+# nothing reported either. A failure is still not allowed to abort this
+# installer half-way -- but it is never silent, and it reaches the exit code.
+retire_provider() {
+  local rc=0
+  bash "$INSTALL_DIR/scripts/retire-progress-watchdog.sh" "$1" || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    echo "⚠ retire-progress-watchdog.sh $1 FAILED (exit $rc) -- the $1 progress plumbing is NOT retired." >&2
+    echo "  Fix the error above, then re-run: bash $INSTALL_DIR/scripts/retire-progress-watchdog.sh $1" >&2
   fi
-done
+  return "$rc"
+}
 
-mkdir -p "$DEST_DIR"
-cp "$SRC_DIR/telegram_progress.py"             "$SUBMIT_HOOK"
-cp "$SRC_DIR/telegram_progress_clear.py"       "$STOP_HOOK"
-cp "$SRC_DIR/telegram_progress_reply_clear.py" "$REPLY_HOOK"
-cp "$SRC_DIR/telegram_progress_watchdog.py"    "$WATCHDOG"
-cp "$SRC_DIR/telegram_fallback_send.py"        "$FALLBACK_SEND"
-chmod +x "$SUBMIT_HOOK" "$STOP_HOOK" "$REPLY_HOOK" "$WATCHDOG" "$FALLBACK_SEND"
-echo "✓ Hooks installed in $DEST_DIR"
-
-if [ ! -f "$SETTINGS" ]; then
-  echo '{"hooks":{}}' > "$SETTINGS"
+# --- Provider gate (order-independent) --------------------------------------
+# sync-hooks.sh runs EVERY install-*-hook.sh on every update, in glob order
+# (slack first, telegram last). Each installer used to write its own watchdog
+# unit unconditionally and only the cross-retire below was guarded, so a Slack
+# install ended every update with BOTH providers live: the Telegram installer
+# re-enabled its timer right after this script had retired it (its retire of
+# slack was refused by the active-provider guard). Exactly one provider's
+# progress machinery may be live -- the one in CHANNEL_PROVIDER -- so an
+# installer whose provider is not the active one retires ITSELF and stops here,
+# before writing any unit. Resolution mirrors src/channel-provider.ts: exact
+# known value, anything else (empty, "none", typo) means telegram.
+ACTIVE_PROVIDER="$(read_env CHANNEL_PROVIDER | tr -d ' \t\r')"
+case "$ACTIVE_PROVIDER" in
+  telegram|slack|discord|googlechat|teams) ;;
+  *) ACTIVE_PROVIDER="telegram" ;;
+esac
+if [ "$ACTIVE_PROVIDER" != "telegram" ]; then
+  echo "⊙ CHANNEL_PROVIDER=$ACTIVE_PROVIDER -- Telegram progress indicator not installed; retiring any leftover Telegram plumbing"
+  # The retire IS this branch's whole job, so its failure is this installer's
+  # failure: sync-hooks.sh reports a non-zero installer and carries on.
+  RETIRE_RC=0
+  retire_provider telegram || RETIRE_RC=$?
+  exit "$RETIRE_RC"
 fi
 
-# Resolve an absolute python3 for both the hooks and the daemon unit.
+# The daemon runs the repo copy directly -- no drift-prone ~/.claude/hooks copy.
+WATCHDOG="$SRC_DIR/telegram_progress_watchdog.py"
+
+if [ ! -f "$WATCHDOG" ]; then
+  echo "❌ Watchdog source not found: $WATCHDOG" >&2
+  exit 1
+fi
+
+# Resolve an absolute python3 for the daemon unit.
 PY="$(command -v python3 || true)"
 if [ -z "$PY" ]; then
   echo "❌ python3 not found in PATH" >&2
   exit 1
 fi
 
-# --- Patch settings.json idempotently --------------------------------------
-"$PY" - "$SETTINGS" "$PY" "$SUBMIT_HOOK" "$STOP_HOOK" "$REPLY_HOOK" <<'PYEOF'
-import json, sys
-
-settings_path, py, submit_hook, stop_hook, reply_hook = sys.argv[1:6]
-with open(settings_path) as f:
-    cfg = json.load(f)
-hooks = cfg.setdefault('hooks', {})
-
-def cmd(path):
-    return f"{py} {path}"
-
-def has_command(group_list, command, matcher=None):
-    for g in group_list:
-        if matcher is not None and g.get('matcher') != matcher:
-            continue
-        for h in g.get('hooks', []):
-            if h.get('command') == command:
-                return True
-    return False
-
-def find_group(group_list, matcher):
-    for g in group_list:
-        if g.get('matcher') == matcher:
-            return g
-    return None
-
-changed = False
-
-# UserPromptSubmit (no matcher) -> placeholder
-ups = hooks.setdefault('UserPromptSubmit', [])
-if not has_command(ups, cmd(submit_hook)):
-    grp = next((g for g in ups if 'matcher' not in g), None)
-    if grp is None:
-        grp = {'hooks': []}
-        ups.append(grp)
-    grp.setdefault('hooks', []).append(
-        {'type': 'command', 'command': cmd(submit_hook), 'timeout': 15})
-    changed = True
-
-# Stop (no matcher) -> clear fallback
-stop = hooks.setdefault('Stop', [])
-if not has_command(stop, cmd(stop_hook)):
-    grp = next((g for g in stop if 'matcher' not in g), None)
-    if grp is None:
-        grp = {'hooks': []}
-        stop.append(grp)
-    grp.setdefault('hooks', []).append(
-        {'type': 'command', 'command': cmd(stop_hook), 'timeout': 15})
-    changed = True
-
-# PostToolUse(matcher="telegram.*reply") -> clear on reply
-post = hooks.setdefault('PostToolUse', [])
-if not has_command(post, cmd(reply_hook), matcher='telegram.*reply'):
-    grp = find_group(post, 'telegram.*reply')
-    if grp is None:
-        grp = {'matcher': 'telegram.*reply', 'hooks': []}
-        post.append(grp)
-    grp.setdefault('hooks', []).append(
-        {'type': 'command', 'command': cmd(reply_hook), 'timeout': 15})
-    changed = True
-
-if changed:
-    with open(settings_path, 'w') as f:
-        json.dump(cfg, f, indent=2, ensure_ascii=False)
-    print("✓ settings.json hooks patched (UserPromptSubmit / PostToolUse / Stop)")
-else:
-    print("⊙ settings.json already has the progress hooks — skipping")
-PYEOF
+# --- Retire the other provider's progress plumbing -------------------------
+# Installing Telegram does not automatically unwire Slack: after a migration
+# both hook sets stayed in settings.json and BOTH watchdog timers kept firing,
+# the dead one scanning state dirs that no longer existed 1440x/day. Exactly
+# one provider's progress machinery should be live -- the one in
+# CHANNEL_PROVIDER. Never fatal: a failure here must not block the install --
+# the active provider's watchdog matters more than the dead one's cleanup. It
+# is reported on the spot and again at the end, where it becomes the exit code.
+RETIRE_RC=0
+retire_provider slack || RETIRE_RC=$?
 
 # --- Install the watchdog daemon -------------------------------------------
 OS="$(uname -s)"
@@ -185,10 +154,16 @@ if [ "$OS" = "Darwin" ]; then
         <string>$WATCHDOG</string>
     </array>
     <!-- launchd's default PATH is minimal; the watchdog shells out to tmux. -->
+    <!-- MARVEEN_ROOT: launchd passes no shell env to a job, so the watchdog
+         cannot see the operator's environment. It self-locates from its own
+         path when run from the repo copy (see telegram_progress_watchdog.py),
+         but this makes the install root explicit as a belt (TGWDOGVAK913). -->
     <key>EnvironmentVariables</key>
     <dict>
         <key>PATH</key>
         <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>MARVEEN_ROOT</key>
+        <string>$INSTALL_DIR</string>
     </dict>
     <key>StartInterval</key>
     <integer>60</integer>
@@ -203,7 +178,7 @@ if [ "$OS" = "Darwin" ]; then
 PLISTEOF
   launchctl unload "$PLIST" 2>/dev/null || true
   launchctl load "$PLIST" 2>/dev/null || true
-  echo "✓ Watchdog installed (launchd: $LABEL, every 60s)"
+  echo "✓ Watchdog installed (launchd: $LABEL, every 60s, running $WATCHDOG)"
 else
   # Linux: systemd user service + timer
   UNIT_DIR="$HOME/.config/systemd/user"
@@ -215,6 +190,10 @@ Description=${BOT_NAME} Telegram progress-indicator watchdog (sentry)
 
 [Service]
 Type=oneshot
+# MARVEEN_ROOT belt (TGWDOGVAK913): the watchdog self-locates from its own path
+# when run from the repo copy, but a systemd job gets no shell env either, so
+# make the install root explicit here too.
+Environment=MARVEEN_ROOT=$INSTALL_DIR
 ExecStart=$PY $WATCHDOG
 UNITEOF
   cat > "$UNIT_DIR/$SVC.timer" <<TIMEREOF
@@ -233,7 +212,7 @@ TIMEREOF
   if pidof systemd >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1; then
     systemctl --user daemon-reload
     systemctl --user enable --now "$SVC.timer" 2>/dev/null || true
-    echo "✓ Watchdog installed (systemd timer: $SVC.timer, every 60s)"
+    echo "✓ Watchdog installed (systemd timer: $SVC.timer, every 60s, running $WATCHDOG)"
   else
     echo "⚠ systemd --user not available — units written to $UNIT_DIR"
     echo "  Enable later: systemctl --user enable --now $SVC.timer"
@@ -241,5 +220,12 @@ TIMEREOF
 fi
 
 echo ""
-echo "Done. Telegram turns now show a 'Dolgozom rajta…' placeholder that clears"
-echo "on reply, and a watchdog turns any stuck turn into a clear error."
+echo "Done. The settings hooks are repo-shipped (.claude/settings.json, project"
+echo "scope); the watchdog daemon turns any stuck Telegram turn into a clear error."
+
+if [ "$RETIRE_RC" -ne 0 ]; then
+  echo "" >&2
+  echo "⚠ The Telegram watchdog IS installed, but retiring the Slack plumbing failed (exit $RETIRE_RC, see above):" >&2
+  echo "  both providers' progress machinery may be live until that retire succeeds." >&2
+  exit "$RETIRE_RC"
+fi

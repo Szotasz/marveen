@@ -1,0 +1,11 @@
+{
+  "schedule": "*/15 * * * *",
+  "agent": "marveen",
+  "enabled": false,
+  "type": "command",
+  "command": "python3 {{PROJECT_ROOT}}/scripts/usage-collect.py",
+  "timeoutMs": 30000,
+  "failThreshold": 3,
+  "description": "Kvóta-pillanatkép frissítése (usage-collect.py) az overview Fable-sávjához és a schedule-runner kvóta-gate-jéhez",
+  "createdAt": 1790237418
+}

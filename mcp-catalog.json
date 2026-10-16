@@ -14,7 +14,9 @@
     "env": {},
     "authType": "oauth",
     "authNote": "Első használatkor a böngészőben kell bejelentkezni a Google fiókba",
-    "infoUrl": "https://github.com/piotr-agier/google-drive-mcp"
+    "infoUrl": "https://github.com/piotr-agier/google-drive-mcp",
+    "verifiedAt": "2026-09-19",
+    "verifiedNote": "AZONOSSAG ellenorizve (nem csak letezes): npm view @piotr-agier/google-drive-mcp -> repository.url = github.com/piotr-agier/google-drive-mcp, EGYEZIK az infoUrl-lel; homepage ugyanaz; maintainer piotr-agier <piotr.agier@gmail.com>; v2.10.0; telepiteskor futo script NINCS."
   },
   {
     "id": "gmail",
@@ -26,14 +28,14 @@
     "command": "npx",
     "args": [
       "-y",
-      "gmail-mcp-server"
+      "@artymclabin/gmail-mcp"
     ],
     "env": {},
     "authType": "oauth",
     "authNote": "Google Cloud OAuth kliens kell hozzá (client ID + secret). UGYANAZ az OAuth-app használható a Naptár összekötőhöz is.",
     "infoUrl": "https://github.com/ArtyMcLabin/Gmail-MCP-Server",
-    "verifiedAt": "2026-08-27",
-    "verifiedNote": "npm-csomag ellenőrizve: gmail-mcp-server v1.0.30 létezik."
+    "verifiedAt": "2026-09-18",
+    "verifiedNote": "Azonossag ellenorizve (nem csak letezes): npm view @artymclabin/gmail-mcp -> repository.url = github.com/ArtyMcLabin/Gmail-MCP-Server, egyezik az infoUrl-lel; maintainer artymclabin; v1.2.3, 2026-07-10; nincs postinstall. KORABBAN a bejegyzes a gmail-mcp-server csomagra mutatott, ami MAS: nincs repository.url, nincs homepage, maintainer uhbarp-ayis, utolso frissites 2025-09-29, es van benne postinstall (node install.js). A regi verifiedNote csak a LETEZEST igazolta, az AZONOSSAGOT nem."
   },
   {
     "id": "gmail-v2",
@@ -69,8 +71,8 @@
     "authType": "oauth",
     "authNote": "Google Cloud OAuth kliens kell hozzá (client ID + secret). UGYANAZ az OAuth-app használható a Gmail összekötőhöz is, tehát elég egyszer regisztrálni.",
     "infoUrl": "https://github.com/nspady/google-calendar-mcp",
-    "verifiedAt": "2026-08-27",
-    "verifiedNote": "A korábbi remote bejegyzés (https://gcal.mcp.claude.com/mcp) HALOTT volt: a host DNS-ben nem oldható fel (ENOTFOUND), a telepítés mégis sikeresnek látszott. Lecserélve ellenőrzött npm-csomagra: @cocal/google-calendar-mcp v2.6.2, utolsó frissítés 2026-06-01."
+    "verifiedAt": "2026-09-19",
+    "verifiedNote": "A korábbi remote bejegyzés (https://gcal.mcp.claude.com/mcp) HALOTT volt: a host DNS-ben nem oldható fel (ENOTFOUND), a telepítés mégis sikeresnek látszott. Lecserélve ellenőrzött npm-csomagra: @cocal/google-calendar-mcp v2.6.2, utolsó frissítés 2026-06-01. | AZONOSSAG ellenorizve 2026-09-19 (nem csak letezes): npm view @cocal/google-calendar-mcp -> repository.url = github.com/nspady/google-calendar-mcp, EGYEZIK az infoUrl-lel; homepage ugyanaz; maintainer nat0st <nspady@gmail.com>; v2.6.3; telepiteskor futo script NINCS."
   },
   {
     "id": "notion",
@@ -199,17 +201,18 @@
     "type": "local",
     "category": "ai",
     "icon": "🔊",
-    "command": "npx",
+    "command": "uvx",
     "args": [
-      "-y",
       "elevenlabs-mcp"
     ],
     "env": {
       "ELEVENLABS_API_KEY": ""
     },
     "authType": "apikey",
-    "authNote": "API kulcs: https://elevenlabs.io - Settings -> API Keys",
-    "infoUrl": "https://github.com/elevenlabs/elevenlabs-mcp"
+    "authNote": "API kulcs: https://elevenlabs.io - Settings -> API Keys. ELOFELTETEL: ez a szerver Python-alapu, a futtatasahoz `uv` kell (https://docs.astral.sh/uv/). A Marveen telepitoje NEM telepiti fel; ha hianyzik, a connector inditasa \"uvx: command not found\" hibaval all meg.",
+    "infoUrl": "https://github.com/elevenlabs/elevenlabs-mcp",
+    "verifiedAt": "2026-09-19",
+    "verifiedNote": "JAVITVA: a korabbi `npx -y elevenlabs-mcp` NEM LETEZO csomagra mutatott. npm view elevenlabs-mcp -> E404, \"Unpublished on 2026-03-08\" (pozitiv kontroll: a tobbi katalogus-csomagra ugyanez a hivas ad adatot). Tehat minden ElevenLabs-telepites elbukott, es egy scope nelkuli, visszavont nev allt egy `npx -y` mogott. A HIVATALOS terjesztes PyPI, nem npm: elevenlabs-mcp 0.12.2 (pip3 index versions, pozitiv es negativ kontrollal). AZONOSSAG a wheel METADATA-jabol, helyben kiolvasva (letoltes --only-binary, tehat kodfuttatas nelkul): Author-email mind @elevenlabs.io (Jacek Duszenko, Paul Asjes, Louis Jordan, Luke Harries), license \"Copyright (c) 2025 Eleven Labs Inc.\", entry point elevenlabs-mcp = elevenlabs_mcp.server:main. Egyezik az infoUrl szerinti elevenlabs/elevenlabs-mcp repoval. Telepiteskor futo script NINCS: a wheel telepitese nem futtat kodot, ellentetben egy npm postinstall-lal. Npm-oldalon nincs hivatalos alternativa: @elevenlabs/mcp, @elevenlabs/elevenlabs-mcp, @elevenlabs/mcp-server, elevenlabs-mcp-server mind E404, es az @elevenlabs scope letezik ugyan (cli, client, react, types), de MCP-szervert nem tartalmaz."
   },
   {
     "id": "fireflies",
@@ -227,7 +230,9 @@
     "env": {},
     "authType": "oauth",
     "authNote": "Első használatkor OAuth bejelentkezés (Google/Microsoft fiók) a böngészőben",
-    "infoUrl": "https://fireflies.ai/blog/fireflies-mcp-server/"
+    "infoUrl": "https://fireflies.ai/blog/fireflies-mcp-server/",
+    "verifiedAt": "2026-09-19",
+    "verifiedNote": "FIGYELEM, ez a bejegyzes MAS ALAKU: a csomag egy GENERIKUS proxy, nem a Fireflies sajat kiadasa. npm view mcp-remote -> repository.url = github.com/punkpeye/mcp-remote, maintainer punkpeye <frank@glama.ai>, v0.14.2, telepiteskor futo script NINCS. Az infoUrl viszont a fireflies.ai blogja, tehat a szokasos \"repository egyezik az infoUrl-lel\" osszehasonlitas ITT NEM ERTELMEZHETO. Amit a bejegyzes valojaban azonosit, az a TAVOLI VEGPONT (https://api.fireflies.ai/mcp), a csomag csak a proxy hozza."
   },
   {
     "id": "playwright",

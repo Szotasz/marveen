@@ -43,6 +43,10 @@ vi.mock('../db.js', () => ({
     if (toAgent) return []
     return mockGetPendingMessages()
   },
+  // The router re-reads the row's status immediately before sending (the tick
+  // works from a snapshot taken at its start). Pending here keeps these
+  // fixtures on the delivery path they were written to measure.
+  getMessageStatus: (..._a: unknown[]) => 'pending',
   markMessageDelivered: (...a: unknown[]) => mockMarkDelivered(...a),
   markMessageFailed: (...a: unknown[]) => mockMarkFailed(...a),
   markMessageDone: (..._a: unknown[]) => true,
@@ -68,6 +72,8 @@ vi.mock('../web/agent-config.js', () => ({
   readAgentRemoteHost: () => null,
   readAgentVoiceConfig: () => ({ responseMode: 'text' }),
   isKnownAgent: () => true,
+  // The wrap step reads the sender's channel for the area-agent label (e349287f); no sender here owns one.
+  readAgentChannelProvider: () => null,
   agentDir: () => '/tmp/none-agentdir',
   // These cases are about the KEYBOARD path (modal cleared -> prompt delivered),
   // so the agent under test is deliberately NOT a worksource agent: a queue

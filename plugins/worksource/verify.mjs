@@ -72,14 +72,34 @@ try {
   check('exposes work_complete', (tools.result?.tools ?? []).some((t) => t.name === 'work_complete'))
 
   // The actual thing: a file in pending/ must become a channel notification.
+  //
+  // The meta below is deliberately the ROUTER's real shape, not a tidy one:
+  // `message_id` a NUMBER and `parent_span_id` null. The earlier version of this
+  // check passed a string-only meta, which is why it stayed green for three
+  // weeks while every routed item in production was being rejected -- the client
+  // validates meta as Record<string, string>, and the resulting ZodError is
+  // thrown uncaught inside its notification handler, dropping the whole STDIO
+  // connection. A test that can only be fed valid input cannot refute anything.
   writeFileSync(
     join(root, 'pending', 'job-1.json'),
-    JSON.stringify({ content: 'Route review 7970: Google Workspace storage at 96%.', meta: { review_id: '7970' } }),
+    JSON.stringify({
+      content: 'Route review 7970: Google Workspace storage at 96%.',
+      meta: { review_id: '7970', message_id: 274, parent_span_id: null },
+    }),
   )
   const note = await waitFor((m) => m.method === 'notifications/claude/channel', 'channel notification')
   check('a queued file arrives as a channel notification', note.params?.content?.includes('7970'))
   check('the work_id travels with it', note.params?.meta?.work_id === 'job-1', `got ${note.params?.meta?.work_id}`)
   check('caller-supplied meta survives', note.params?.meta?.review_id === '7970')
+  const metaEntries = Object.entries(note.params?.meta ?? {})
+  const nonString = metaEntries.filter(([, v]) => typeof v !== 'string')
+  check(
+    'every meta value is a string, as the client schema demands',
+    metaEntries.length > 0 && nonString.length === 0,
+    nonString.length > 0 ? `non-string: ${nonString.map(([k, v]) => `${k}=${typeof v}`).join(', ')}` : '',
+  )
+  check('a numeric message_id is carried through as text', note.params?.meta?.message_id === '274')
+  check('a null meta value is dropped, not sent as "null"', !('parent_span_id' in (note.params?.meta ?? {})))
   check('the item is in flight, not still pending', existsSync(join(root, 'active', 'job-1.json')))
 
   // PR #1099 review, condition 1: the queue is a directory, so an item's ORIGIN

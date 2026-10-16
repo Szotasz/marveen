@@ -1,6 +1,12 @@
 import { describe, it, expect } from 'vitest'
+import { spawnSync } from 'node:child_process'
+import { appendFileSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { gateDecision } from '../../scripts/email-send-gate.mjs'
+import { gateDecision, buildUnverifiedRecipientMsg, readBrandEnv } from '../../scripts/email-send-gate.mjs'
+// @ts-expect-error -- plain .mjs hook script, no types
+import { isValidSource, normalizeAddress, splitAddresses, loadLedger, isVerifiedIn } from '../../scripts/recipient-ledger.mjs'
 import { injectEmailSendGate, agentGetsEmailGate } from '../web/agent-scaffold.js'
 import { MAIN_AGENT_ID } from '../config.js'
 
@@ -10,6 +16,22 @@ describe('gateDecision', () => {
     expect(gateDecision('mcp__server-gmail-autoauth-mcp__send_email', {}).deny).toBe(true)
     // a differently-named gmail server in a customer install is still gated
     expect(gateDecision('mcp__some_other_gmail__send_email', {}).deny).toBe(true)
+  })
+
+  // GMAILCONNECTOR914: the claude.ai Gmail connector has no send_email at all
+  // (send_message / reply / forward), and a sub-agent could send through it
+  // with no gate. The reads and the drafts stay open, the three sends close,
+  // and the kind is NOT 'send_email' so the thread-reply narrowing (which
+  // reads send_email-shaped fields) never applies to a connector call.
+  it('blocks the claude.ai Gmail connector send-shaped tools, keeps its reads and drafts', () => {
+    for (const tool of ['send_message', 'reply', 'forward']) {
+      const verdict = gateDecision(`mcp__claude_ai_Gmail__${tool}`, { messageId: 'm1', body: 'x' })
+      expect(verdict.deny, tool).toBe(true)
+      expect(verdict.kind, tool).toBe('connector-send')
+    }
+    for (const tool of ['search_threads', 'get_message', 'get_thread', 'create_draft', 'update_draft', 'label_message']) {
+      expect(gateDecision(`mcp__claude_ai_Gmail__${tool}`, {}).deny, tool).toBe(false)
+    }
   })
 
   it('allows email READ/draft tools (only sending is gated)', () => {
@@ -90,6 +112,109 @@ describe('gateDecision', () => {
   })
 })
 
+// The verified-recipient gate (2026-08-14, support@connectors.hu bounce): an
+// address that no source ever produced must not reach a To/Cc/Bcc field, not
+// even in a draft -- the owner presses send on what we typed.
+describe('unverified recipients', () => {
+  // ledger stand-in: only these two addresses have a recorded source
+  const known = new Set(['hello@connectors.hu', 'owner@example.com'])
+  const isVerified = (a: string) => known.has(a)
+  const call = (input: Record<string, unknown>, name = 'mcp__google-workspace__manage_email') =>
+    gateDecision(name, input, isVerified)
+
+  it('blocks the exact call that bounced: a guessed support@ address', () => {
+    const d = call({ operation: 'send', draft: true, to: 'support@connectors.hu' })
+    expect(d.deny).toBe(true)
+    expect(d.kind).toBe('unverified-recipient')
+    expect(d.addresses).toEqual(['support@connectors.hu'])
+  })
+
+  it('allows the same letter once the address has a source in the ledger', () => {
+    expect(call({ operation: 'send', draft: true, to: 'hello@connectors.hu' }).deny).toBe(false)
+  })
+
+  it('checks cc and bcc, not just to', () => {
+    expect(call({ operation: 'send', draft: true, to: 'hello@connectors.hu', cc: 'info@x.hu' }).kind)
+      .toBe('unverified-recipient')
+    expect(call({ operation: 'send', draft: true, to: 'hello@connectors.hu', bcc: 'info@x.hu' }).kind)
+      .toBe('unverified-recipient')
+  })
+
+  it('reports every unknown address in a comma-separated list, deduped', () => {
+    const d = call({ operation: 'send', draft: true, to: 'a@x.hu, hello@connectors.hu, b@x.hu', cc: 'a@x.hu' })
+    expect(d.addresses).toEqual(['a@x.hu', 'b@x.hu'])
+  })
+
+  it('ignores the display name and the case of the address', () => {
+    expect(call({ operation: 'send', draft: true, to: 'Connectors <HELLO@Connectors.hu>' }).deny).toBe(false)
+  })
+
+  it('leaves thread-addressed replies alone (we did not choose the recipient)', () => {
+    expect(call({ operation: 'reply', draft: true, messageId: 'abc', body: 'x' }).deny).toBe(false)
+    expect(call({ operation: 'replyAll', draft: true, messageId: 'abc', body: 'x' }).deny).toBe(false)
+  })
+
+  it('does not touch read-shaped calls', () => {
+    expect(call({ operation: 'search', query: 'from:support@connectors.hu' }).deny).toBe(false)
+  })
+
+  it('covers the draft-creating MCP tools (array recipient form)', () => {
+    expect(call({ to: ['support@connectors.hu'] }, 'mcp__claude_ai_Gmail__create_draft').kind)
+      .toBe('unverified-recipient')
+    expect(call({ to: ['hello@connectors.hu'] }, 'mcp__claude_ai_Gmail__create_draft').deny).toBe(false)
+    expect(call({ to: ['support@connectors.hu'] }, 'mcp__claude_ai_Gmail__update_draft').kind)
+      .toBe('unverified-recipient')
+  })
+
+  it('runs the address check before the draft rule, so the send path names the real problem', () => {
+    // no draft flag AND an unknown address: the address is the actionable half
+    expect(call({ operation: 'send', to: 'support@connectors.hu' }).kind).toBe('unverified-recipient')
+    // known address, no draft flag -> the original draft-kapu still applies
+    expect(call({ operation: 'send', to: 'hello@connectors.hu' }).kind).toBe('draft-required')
+  })
+
+  it('blocks everything when the ledger cannot be read (fail closed)', () => {
+    const noLedger = () => false
+    expect(gateDecision('mcp__google-workspace__manage_email',
+      { operation: 'send', draft: true, to: 'hello@connectors.hu' }, noLedger).deny).toBe(true)
+  })
+
+  it('names the address and the fix in the deny message', () => {
+    const msg = buildUnverifiedRecipientMsg(['support@connectors.hu'])
+    expect(msg).toContain('support@connectors.hu')
+    expect(msg).toContain('recipient-ledger.mjs add support@connectors.hu')
+  })
+})
+
+// The ledger behind the gate: what counts as a source, and what does not.
+describe('recipient ledger', () => {
+  it('accepts only re-openable evidence kinds as a source', () => {
+    expect(isValidSource('mail:19fff4eb1a7d3ba9')).toBe(true)
+    expect(isValidSource('site:https://connectors.hu/')).toBe(true)
+    expect(isValidSource('owner')).toBe(true)
+    expect(isValidSource('order:2347')).toBe(true)
+    // a claim is not a source
+    expect(isValidSource('megneztem')).toBe(false)
+    expect(isValidSource('biztos vagyok benne')).toBe(false)
+    expect(isValidSource('')).toBe(false)
+    expect(isValidSource('site:connectors.hu')).toBe(false) // no scheme -> not a page we can re-open
+  })
+
+  it('normalizes addresses the way the gate compares them', () => {
+    expect(normalizeAddress('  Connectors <HELLO@Connectors.hu> ')).toBe('hello@connectors.hu')
+    expect(splitAddresses('a@x.hu, B <b@X.hu>')).toEqual(['a@x.hu', 'b@x.hu'])
+    expect(splitAddresses(['a@x.hu', 'nonsense'])).toEqual(['a@x.hu'])
+  })
+
+  it('treats a missing or corrupt ledger as "nothing is verified"', () => {
+    const boom = () => { throw new Error('ENOENT') }
+    expect(loadLedger('/nope.json', boom)).toBe(null)
+    expect(loadLedger('/nope.json', () => 'not json')).toBe(null)
+    expect(loadLedger('/nope.json', () => '{"version":1}')).toBe(null) // no recipients map
+    expect(isVerifiedIn(null, 'a@x.hu')).toBe(false)
+  })
+})
+
 // The main-exempt guard: every sub-agent is gated, the main agent never is.
 // Mirrors security-profile-resolution.test.ts -- pure, keyed on the configured
 // MAIN_AGENT_ID (not a hardcoded name), so a customer install exempts its own owner.
@@ -112,7 +237,7 @@ describe('injectEmailSendGate', () => {
     injectEmailSendGate(s)
     const hooks = (s.hooks as Record<string, unknown>).PreToolUse as Array<Record<string, unknown>>
     expect(hooks).toHaveLength(1)
-    expect(hooks[0].matcher).toBe('Bash|.*send_email.*|.*manage_email.*')
+    expect(hooks[0].matcher).toBe('Bash|.*send_email.*|.*manage_email.*|.*[Gg]mail.*__.*|.*draft_email.*')
     const inner = (hooks[0].hooks as Array<{ command: string }>)[0]
     expect(inner.command).toContain('email-send-gate.mjs')
   })
@@ -160,5 +285,85 @@ describe('injectEmailSendGate', () => {
     expect(pre).toHaveLength(2)
     expect(pre.some((e) => JSON.stringify(e).includes('email-send-gate.mjs'))).toBe(true)
     expect(pre.some((e) => e.matcher === 'WebFetch')).toBe(true)
+  })
+})
+
+// HOOKDEPLOAD1008: a recipient-ledger.mjs that does not load. As a static
+// import it failed the module link, node exited 1, and PreToolUse reads 1 as
+// NON-blocking: every call went through, the send_email deny included. Run on
+// a disposable copy of the two files, never on the repo's own; the intact copy
+// is first shown to decide like the real hook, so a broken copy's verdict is
+// the broken module's and not the copy's.
+describe('a recipient-ledger module that does not load (HOOKDEPLOAD1008)', () => {
+  const SCRIPTS = join(__dirname, '..', '..', 'scripts')
+  // The real path: node resolves the main module's own path (import.meta.url) through symlinks, and the hook names the
+  // ledger CLI by it; on a symlinked temp dir (macOS: /var/folders -> /private/var/folders) the copy's `dir` must be the
+  // same string, or the <scripts> replacement below misses and the control differs from the real hook (#1818 review).
+  const TMP = realpathSync(mkdtempSync(join(tmpdir(), 'email-send-gate-dep-')))
+  // The deny wording carries the install's brand names from its .env; the copy
+  // gets the same two values (and nothing else from that file).
+  const { botName, ownerName } = readBrandEnv()
+  const copyGate = (name: string, mutate?: (ledgerPath: string) => void) => {
+    const dir = join(TMP, name, 'scripts')
+    mkdirSync(dir, { recursive: true })
+    for (const f of ['email-send-gate.mjs', 'recipient-ledger.mjs']) copyFileSync(join(SCRIPTS, f), join(dir, f))
+    writeFileSync(join(TMP, name, '.env'), `BOT_NAME=${botName}\nOWNER_NAME=${ownerName}\n`)
+    mutate?.(join(dir, 'recipient-ledger.mjs'))
+    return dir
+  }
+  const run = (dir: string, payload: unknown) => {
+    const r = spawnSync(process.execPath, [join(dir, 'email-send-gate.mjs')], {
+      input: JSON.stringify(payload), encoding: 'utf-8', timeout: 15_000,
+    })
+    // the unverified-recipient wording names the ledger CLI by its absolute path
+    return { status: r.status, stdout: r.stdout.split(dir).join('<scripts>'), stderr: r.stderr }
+  }
+  const denied = (stdout: string) => JSON.parse(stdout).hookSpecificOutput.permissionDecision === 'deny'
+
+  const RCPT = 'nobody@example.invalid' // on no ledger, so the verdict never hangs on a real store
+  const CALLS: Record<string, unknown> = {
+    'send_email': { tool_name: 'mcp__x__send_email', tool_input: { to: [RCPT], subject: 's', body: 'b' } },
+    'draft with a recipient': { tool_name: 'mcp__x__draft_email', tool_input: { to: [RCPT] } },
+    'manage_email send with a recipient': { tool_name: 'mcp__gw__manage_email', tool_input: { operation: 'send', to: RCPT, draft: true } },
+    'manage_email send without a recipient': { tool_name: 'mcp__gw__manage_email', tool_input: { operation: 'reply', messageId: 'm1' } },
+    'non-send Bash': { tool_name: 'Bash', tool_input: { command: 'ls -la' } },
+    'Bash send': { tool_name: 'Bash', tool_input: { command: 'sendmail a@b.hu' } },
+  }
+  const intact = copyGate('intact')
+  const broken = copyGate('broken', (p) => appendFileSync(p, '<'.repeat(7) + ' Updated upstream\n'))
+  const renamed = copyGate('renamed', (p) => writeFileSync(p,
+    readFileSync(p, 'utf-8').replace('export function splitAddresses(', 'export function splitAddressesRenamed(')))
+
+  it('control: the intact copy decides every call exactly like the real hook', () => {
+    for (const [label, call] of Object.entries(CALLS)) {
+      expect(run(intact, call), label).toEqual(run(SCRIPTS, call))
+    }
+  })
+
+  it('a call that needs the ledger is DENIED with exit 2, naming the module (1 would let it through)', () => {
+    for (const label of ['draft with a recipient', 'manage_email send with a recipient']) {
+      const r = run(broken, CALLS[label])
+      expect(r.status, label).toBe(2)
+      expect(r.stderr, label).toContain('scripts/recipient-ledger.mjs')
+      expect(r.stderr, label).toContain('nem toltheto be')
+      expect(r.stderr, label).toContain('fo ugynok')
+    }
+  })
+
+  it('a missing export is a load failure too', () => {
+    const r = run(renamed, CALLS['draft with a recipient'])
+    expect(r.status).toBe(2)
+    expect(r.stderr).toContain('missing export: splitAddresses')
+  })
+
+  it('a call that does not need the ledger is decided as before', () => {
+    for (const label of ['send_email', 'manage_email send without a recipient', 'Bash send']) {
+      const r = run(broken, CALLS[label])
+      expect(r.status, label).toBe(0)
+      expect(denied(r.stdout), label).toBe(true)
+      expect(r, label).toEqual(run(SCRIPTS, CALLS[label]))
+    }
+    const r = run(broken, CALLS['non-send Bash'])
+    expect(r).toEqual({ status: 0, stdout: '', stderr: '' })
   })
 })

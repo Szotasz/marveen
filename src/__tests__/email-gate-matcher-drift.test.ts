@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { EMAIL_GATE_MATCHER } from '../web/agent-scaffold.js'
+// @ts-expect-error -- plain .mjs hook script, no types
+import { gateDecision } from '../../scripts/email-send-gate.mjs'
 
 // EMAILGATEDRIFT902: the repo exports ONE canonical email-gate matcher
 // (EMAIL_GATE_MATCHER, agent-scaffold.ts) and the sub-agent scaffold uses it
@@ -51,5 +53,38 @@ describe('main-agent email hook matchers cover the canonical EMAIL_GATE_MATCHER'
     expect(CANONICAL).toContain('.*manage_email.*')
     expect(CANONICAL).toContain('.*send_email.*')
     expect(CANONICAL).toContain('Bash')
+  })
+
+  it('the canonical matcher reaches draft_email on the Gmail MCP the fleet runs (MATCHERGMAILSEG920)', () => {
+    // The gate's DRAFT_TOOL_RE has always covered draft_email, but a hook that
+    // never FIRES cannot deny anything: the old `.*[Gg]mail__.*` needed the
+    // literal segment `gmail__`, and this server's segment is
+    // `gmail-autoauth-mcp__`. The regression this pins is the whole chain --
+    // matcher fires AND the gate denies -- not just the regex.
+    const full = new RegExp(`^(${EMAIL_GATE_MATCHER})$`)
+    const tool = 'mcp__server-gmail-autoauth-mcp__draft_email'
+    expect(full.test(tool), 'matcher must fire for the tool the fleet actually has').toBe(true)
+    const verified = (a: string) => a === 'known@vlbbtab.com'
+    expect(gateDecision(tool, { to: 'invented@example.com' }, verified).deny).toBe(true)
+    expect(gateDecision(tool, { to: 'known@vlbbtab.com' }, verified).deny).toBe(false)
+    // A name-keyed matcher goes blind on the next new server name, so the draft
+    // surface is pinned by the OPERATION too: a server with no gmail in its name.
+    expect(full.test('mcp__whatever_mail_server__draft_email')).toBe(true)
+    // Read tools on the same server stay out of the deny path (the hook may
+    // fire for them; the gate is what decides, and it must say no-deny).
+    expect(gateDecision('mcp__server-gmail-autoauth-mcp__read_email', {}, verified).deny).toBe(false)
+  })
+
+  it('the canonical matcher reaches the claude.ai Gmail connector (GMAILCONNECTOR914)', () => {
+    // Full-match regex against the qualified tool name, as the harness does.
+    // The connector's segment is claude_ai_Gmail (one underscore before Gmail),
+    // which neither .*send_email.* nor .*manage_email.* ever matched.
+    const full = new RegExp(`^(${EMAIL_GATE_MATCHER})$`)
+    for (const tool of ['send_message', 'reply', 'forward', 'create_draft', 'update_draft']) {
+      expect(full.test(`mcp__claude_ai_Gmail__${tool}`), tool).toBe(true)
+    }
+    expect(full.test('mcp__gmail__send_email')).toBe(true)
+    expect(full.test('mcp__plugin_telegram_telegram__reply')).toBe(false)
+    expect(full.test('Read')).toBe(false)
   })
 })

@@ -14,10 +14,24 @@ import { readBody, json, serveFile } from '../http-helpers.js'
 import { MAIN_CHANNELS_SESSION } from '../main-agent.js'
 import { readActiveModelFromProjectDir, readContextTokensFromProjectDir } from '../active-model.js'
 import { readAutoRestartConfig } from '../auto-restart-store.js'
+import { configDirFor } from '../main-transcript-root.js'
 import type { RouteContext } from './types.js'
+import { logger } from '../../logger.js'
+import { reportNonColourSetting } from '../../css-color.js'
+
+// A colour setting as served to the dashboard; one that is not a CSS colour
+// is logged (once per value) -- the dashboard shows its default for it.
+function colourSetting(key: string): unknown {
+  return reportNonColourSetting(key, getEffectiveSettingValue(key), (ctx, msg) => logger.warn(ctx, msg))
+}
 
 function getActiveMarveenModel(): string {
-  return readActiveModelFromProjectDir(PROJECT_ROOT) ?? 'unknown'
+  // configDirFor, not the host default: when the channels session runs on its
+  // own CLAUDE_CONFIG_DIR, the default root holds a pre-migration transcript
+  // that still parses, so the card would show a model the session stopped
+  // using. Display, not a decision -- but a wrong number here is what makes
+  // someone trust the wrong root elsewhere.
+  return readActiveModelFromProjectDir(PROJECT_ROOT, undefined, configDirFor(MAIN_AGENT_ID)) ?? 'unknown'
 }
 
 // Pure identity-core of the /api/marveen payload: the brand-relevant fields the
@@ -83,7 +97,7 @@ export async function tryHandleMarveen(ctx: RouteContext, webDir: string): Promi
       // orchestrator id (autoRestartId, part of idCore) so the UI PUTs to the
       // right store entry.
       autoRestart: readAutoRestartConfig(MAIN_AGENT_ID),
-      contextTokens: readContextTokensFromProjectDir(PROJECT_ROOT),
+      contextTokens: readContextTokensFromProjectDir(PROJECT_ROOT, configDirFor(MAIN_AGENT_ID)),
       hasTelegram: tg.hasTelegram,
       hasDiscord: dc.hasDiscord,
       hasSlack: sl.hasSlack,
@@ -104,9 +118,9 @@ export async function tryHandleMarveen(ctx: RouteContext, webDir: string): Promi
         warnH: getEffectiveSettingValue('KANBAN_AGING_WARN_H'),
         cautionH: getEffectiveSettingValue('KANBAN_AGING_CAUTION_H'),
         criticalH: getEffectiveSettingValue('KANBAN_AGING_CRITICAL_H'),
-        warnColor: getEffectiveSettingValue('KANBAN_AGING_WARN_COLOR'),
-        cautionColor: getEffectiveSettingValue('KANBAN_AGING_CAUTION_COLOR'),
-        criticalColor: getEffectiveSettingValue('KANBAN_AGING_CRITICAL_COLOR'),
+        warnColor: colourSetting('KANBAN_AGING_WARN_COLOR'),
+        cautionColor: colourSetting('KANBAN_AGING_CAUTION_COLOR'),
+        criticalColor: colourSetting('KANBAN_AGING_CRITICAL_COLOR'),
       },
       // Resolved through the settings overrides layer (override > .env >
       // registry default) instead of the boot-time config.ts constants, so a
@@ -121,14 +135,14 @@ export async function tryHandleMarveen(ctx: RouteContext, webDir: string): Promi
           done: getEffectiveSettingValue('KANBAN_WIP_DONE'),
         },
         warnPct: getEffectiveSettingValue('KANBAN_WIP_WARN_PCT'),
-        okColor: getEffectiveSettingValue('KANBAN_WIP_OK_COLOR'),
-        warnColor: getEffectiveSettingValue('KANBAN_WIP_WARN_COLOR'),
-        fullColor: getEffectiveSettingValue('KANBAN_WIP_FULL_COLOR'),
-        overColor: getEffectiveSettingValue('KANBAN_WIP_OVER_COLOR'),
+        okColor: colourSetting('KANBAN_WIP_OK_COLOR'),
+        warnColor: colourSetting('KANBAN_WIP_WARN_COLOR'),
+        fullColor: colourSetting('KANBAN_WIP_FULL_COLOR'),
+        overColor: colourSetting('KANBAN_WIP_OVER_COLOR'),
       },
       kanbanSwimlanes: {
         defaultGroup: getEffectiveSettingValue('KANBAN_SWIMLANE_DEFAULT_GROUP'),
-        separatorColor: getEffectiveSettingValue('KANBAN_SWIMLANE_SEPARATOR_COLOR') || null,
+        separatorColor: colourSetting('KANBAN_SWIMLANE_SEPARATOR_COLOR') || null,
       },
       kanbanLabels: {
         colors: KANBAN_LABEL_COLORS,

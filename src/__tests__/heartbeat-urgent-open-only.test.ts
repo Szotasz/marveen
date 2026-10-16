@@ -162,6 +162,7 @@ describe('the heartbeat AGENT is handed the rendered block, not a filter to re-a
       'HB_METRICS_V1 ts=2026-09-11 12:00',
       'COUNTS urgent=0 in_progress=0 waiting=0 planned=3 new_hot_memories_1h=0 db_size_mb=100 waiting_shown=0',
       'CALENDAR_EVENTS n=0 window=2h',
+      'TOKEN_PRUNE state=ok retention_days=90 lag_hours=0.27 tolerance_hours=48',
       'SCHEDULES enabled=1',
       'TASK_RUNS_1H total=0',
     ].join('\n'))

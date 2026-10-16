@@ -70,8 +70,12 @@ def _agent_id(cwd):
             return parts[i + 1]
     # Fallback: if cwd is the project root itself (main agent session),
     # use MAIN_AGENT_ID so voice config and state_dir resolve correctly.
-    project_root = os.path.normpath(_project_root())
-    if os.path.normpath(cwd) == project_root:
+    # Both forms of the root (#1878 item 12): reached through a symlink, this
+    # file names one and the session's cwd may be the other, and a single-form
+    # compare skipped the directive for the main agent.
+    root = _project_root()
+    roots = {os.path.normpath(root), os.path.normpath(os.path.realpath(root))}
+    if os.path.normpath(cwd) in roots:
         return _main_agent_id()
     return None
 
@@ -121,7 +125,16 @@ def main():
     try:
         req = urllib.request.Request(url)
         req.add_header("Authorization", "Bearer " + token)
-        with urllib.request.urlopen(req, timeout=55) as r:
+        # 170 s sits in the middle of a strictly increasing chain, innermost first:
+        #   voice.ts STT_TIMEOUT_MS 160 s  <  this urlopen 170 s
+        #                                  <  hook `timeout` in settings.json 180 s
+        # The shortest wins. If this one were the smallest, the socket would give
+        # up before the server's own budget and the caller would see a bare
+        # connection error instead of the server's transcript=null -- the same
+        # "vanished with no reason" failure this change exists to remove.
+        # At the previous 55 s every voice note over ~2 min was dropped with no
+        # error anywhere (measured 2026-09-18).
+        with urllib.request.urlopen(req, timeout=170) as r:
             data = json.load(r)
     except Exception:
         sys.exit(0)  # dashboard unavailable -- fail-safe, no injection

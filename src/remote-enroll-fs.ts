@@ -16,9 +16,71 @@ import {
   statSync,
   existsSync,
   chmodSync,
+  realpathSync,
 } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { mergeAuthorizedKeys, removeAuthorizedKey, rewriteServicePorts, type MergeAction } from './remote-enroll-core.js'
+import { isTestRun } from './test-run-marker.js'
+import { realSshDir, describeTestRunSignal, SshDirGuardError } from './ssh-dir.js'
+
+/**
+ * ENROLL813 CHOKEPOINT -- the last line, and the only one every writer shares.
+ *
+ * All three exported writers below take `sshDir` as a PARAMETER, so whether the
+ * real ~/.ssh gets touched is decided by the caller. That is the right shape,
+ * but it means a single caller that forgets the seam can mutate the operator's
+ * authorized_keys -- and one did: `POST /api/security/bridge-enroll` calls
+ * bridgeEnroll() without deps, so the route's default resolver used
+ * homedir()/.ssh, and a plain suite run enrolled a REAL key on every pass. The
+ * test stayed GREEN throughout, because its only assertion
+ * (`not.toMatch(/Invalid host/)`) is satisfied by a SUCCESSFUL enrollment too.
+ * 62 keys accumulated across the fleet before anyone looked (cleaned 2026-09-15).
+ *
+ * The check is deliberately narrow on BOTH axes, so it cannot misfire:
+ *   - only under a test runner (VITEST / NODE_ENV=test -- see test-run-marker.ts,
+ *     the one definition of that question in this repo), and
+ *   - only when the target IS the real ~/.ssh. A scratch directory always passes,
+ *     which is every legitimate test.
+ * So the guard has no production behaviour to get wrong; what it forbids is the
+ * one combination that is always a mistake.
+ *
+ * Why here and not only in the resolvers: this is the single funnel that both
+ * the HTTP routes and the CLI pass through. A guard in a resolver protects the
+ * callers that USE that resolver; a guard here protects the file.
+ */
+function assertSafeSshDir(sshDir: string, operation: string): void {
+  if (!isTestRun()) return
+  if (!isRealSshDir(sshDir)) return
+  throw new SshDirGuardError(
+    `ENROLL813: refusing to ${operation} the REAL ${realSshDir()}/${AUTH_KEYS_NAME} ` +
+      `from a test run (${describeTestRunSignal()}). Pass a scratch sshDir (the suite ` +
+      'sets MARVEEN_SSH_DIR per worker in src/__tests__/setup/default-ssh-dir-seam.ts). ' +
+      'This guard exists because a route test silently enrolled real keys for weeks.',
+  )
+}
+
+/** Path identity, not string equality: ~/.ssh may be reached through a symlink
+ * or a non-normalised path. realpath when it exists, resolve() otherwise (a
+ * to-be-created scratch dir must not be mistaken for the real one). */
+function isRealSshDir(sshDir: string): boolean {
+  return canonical(sshDir) === canonical(realSshDir())
+}
+
+/** SCOPE, stated on purpose (ENROLL813): this compares the DIRECTORY, not the
+ * target file. If some scratch directory's `authorized_keys` were itself a
+ * symlink to the operator's real one, the two directories would differ, the
+ * guard would pass, and the write would still land in the real file. Not
+ * reachable from the suite -- every test directory comes from mkdtemp and
+ * nothing creates such a link -- and canonicalising the FILE instead would mean
+ * realpath-ing a path that usually does not exist yet on the enroll path. A
+ * chosen boundary, not an oversight; widen it here if that ever stops holding. */
+function canonical(p: string): string {
+  try {
+    return realpathSync(p)
+  } catch {
+    return resolve(p)
+  }
+}
 
 const SSH_DIR_MODE = 0o700
 const AUTH_KEYS_MODE = 0o600
@@ -154,6 +216,7 @@ export async function enrollAuthorizedKey(opts: EnrollOptions): Promise<EnrollRe
     staleLockMs = 15000,
     sleep = defaultSleep,
   } = opts
+  assertSafeSshDir(sshDir, 'enroll a key into')
   const warnings: string[] = []
   const authPath = join(sshDir, AUTH_KEYS_NAME)
   const lockPath = join(sshDir, LOCK_NAME)
@@ -246,6 +309,7 @@ export async function updateEnrolledServicePorts(
     staleLockMs = 15000,
     sleep = defaultSleep,
   } = opts
+  assertSafeSshDir(sshDir, 'rewrite service ports in')
   const authPath = join(sshDir, AUTH_KEYS_NAME)
   const lockPath = join(sshDir, LOCK_NAME)
 
@@ -292,6 +356,7 @@ export async function removeEnrolledKey(opts: RemoveEnrolledOptions): Promise<Re
     staleLockMs = 15000,
     sleep = defaultSleep,
   } = opts
+  assertSafeSshDir(sshDir, 'remove a key from')
   const authPath = join(sshDir, AUTH_KEYS_NAME)
   const lockPath = join(sshDir, LOCK_NAME)
 

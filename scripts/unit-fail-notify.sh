@@ -25,6 +25,27 @@ ENV_FILE="${TELEGRAM_ENV:-$TG_CHAN_DIR/.env}"
 # deliberately NO hardcoded fallback (a hardcoded id would make every downstream
 # install send its alerts to that one private chat via its own bot token).
 CHAT_ID="${MARVEEN_ALERT_CHAT_ID:-}"
+# ZAKARFELUGY921 (kulso bejelentes, 2026-09-21): a MARVEEN_ALERT_CHAT_ID-t SEMMI
+# nem allitotta be -- se unit-sablon, se az install-linux.sh (merve: 0 elofordulas
+# mindkettoben) --, tehat ervenyes tokennel SEM ment ki semmi. Beegetni tilos, es a
+# unitba irni sem lehet: a telepito a unitokat a PAROSITAS ELOTT irja ki, amikor a
+# CHAT_ID meg a "0" placeholder (install-linux.sh:812, es a docs/channels.md ki is
+# mondja ezt a sorrend-fuggest). Ezert FUTASIDOBEN oldjuk fel, ugyanazzal az alakkal,
+# amit a scripts/fleet-memory-gate.sh mar hasznal: az access.json elso engedelyezett
+# kuldoje -- ugyanaz a lista, amit a plugin befele is betartat, tehat a feloldott id
+# kezbesitheto. Ures marad -> a kuldes kimarad es a hiany NEVESITVE naplozodik.
+ACCESS_JSON="${TELEGRAM_ACCESS:-$TG_CHAN_DIR/access.json}"
+if [[ -z "$CHAT_ID" && -f "$ACCESS_JSON" ]] && command -v python3 >/dev/null 2>&1; then
+  CHAT_ID="$(python3 -c 'import json,sys
+try:
+  a=json.load(open(sys.argv[1]));v=a.get("allowFrom") or []
+  print(v[0] if v else "")
+except Exception: print("")' "$ACCESS_JSON" 2>/dev/null)"
+fi
+# EGYETLEN ELTERES a fleet-memory-gate meglevo alakjatol, es szandekos: a "0" a
+# telepito placeholder-e, nem chat (install-linux.sh:812). Ott ez a sor nincs meg;
+# ha a gyakorlatban kell neki is, kulon korben megy at, nem mellekhatasként.
+[ "$CHAT_ID" = "0" ] && CHAT_ID=""
 
 now_local="$(date '+%Y-%m-%d %H:%M:%S %Z' 2>/dev/null || echo now)"
 msg="Marveen app-crash: a(z) ${UNIT} unit FAILED állapotba került (${now_local}).

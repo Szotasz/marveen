@@ -7,8 +7,10 @@
 # dynamically imports and delegates to).
 # Run: bash scripts/__tests__/channels-auth-probe.test.sh
 #
-# Requires a built dist/ (npm run build) -- the probe dynamically imports
-# dist/web/reauth-detect.js, exactly like reauth-healer.ts's own detection path.
+# Needs a built dist/ -- the probe dynamically imports dist/web/reauth-detect.js,
+# exactly like reauth-healer.ts's own detection path. Builds it on demand below
+# if missing, so a fresh checkout (or CI, which never runs `npm run build`
+# before `npm test`) does not need a human to build first.
 
 set -u
 
@@ -20,9 +22,22 @@ INSTALL_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 PROBE="$INSTALL_DIR/scripts/channels-auth-probe.mjs"
 NODE_BIN="$(command -v node)"
 
+# A silent SKIP+exit 0 here reads as a pass in CI without a single case
+# actually running -- the `test` workflow runs `npm test` with no prior
+# `npm run build`, so dist/ never exists there (measured on PR #1369,
+# channels-custom-provider.test.sh had the identical bug -- see c22bfe5).
+# Build it on demand instead, and fail only if the build itself fails or
+# the file is still missing afterward.
 if [ ! -f "$INSTALL_DIR/dist/web/reauth-detect.js" ]; then
-  echo "SKIP: dist/web/reauth-detect.js not built -- run 'npm run build' first"
-  exit 0
+  echo "dist/web/reauth-detect.js not built -- building now (npm run build)..." >&2
+  if ! ( cd "$INSTALL_DIR" && npm run build ) >&2; then
+    echo "FAIL: npm run build failed" >&2
+    exit 1
+  fi
+  if [ ! -f "$INSTALL_DIR/dist/web/reauth-detect.js" ]; then
+    echo "FAIL: dist/web/reauth-detect.js still missing after npm run build" >&2
+    exit 1
+  fi
 fi
 
 run_probe() {

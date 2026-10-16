@@ -16,12 +16,15 @@ import { PROJECT_ROOT, STORE_DIR, PID_FILENAME, WEB_PORT, MAIN_AGENT_ID, RESPAWN
 import { resolveOwnerChatId } from './owner-chat.js'
 import { initDatabase, backfillEmbeddings } from './db.js'
 import { runDecaySweep, runDailyDigest } from './memory.js'
+import { DECAY_SWEEP_INTERVAL_MS } from './db.js'
 import { initHeartbeat, stopHeartbeat, ensureHeartbeatWorkerHidden } from './heartbeat.js'
 import { ensureHeartbeatAgent, shouldBootHeartbeatAgent, HEARTBEAT_AGENT_NAME } from './web/heartbeat-agent-scaffold.js'
 import { startAgentProcess } from './web/agent-process.js'
 import { runLogRotationSweep, LOG_ROTATION_SWEEP_MS } from './web/log-rotation.js'
+import { sweepScheduledRunSnapshots } from './web/scheduled-run-snapshot.js'
 import { renameSharedCredentialsIfSafe, fleetTokenBootPass } from './web/claude-credentials-guard.js'
 import { startWebServer } from './web.js'
+import { endAllDetachedGroups } from './web/detached-groups.js'
 import { logger } from './logger.js'
 import { startInviteMonitor, stopInviteMonitor } from './web/channel-invites.js'
 import { ensureDiscordChannelGroup } from './web/discord-group-bootstrap.js'
@@ -174,6 +177,17 @@ function buildProcessLockContext(): ProcessLockContext {
         return execFileSync('/bin/ps', ['-p', String(pid), '-o', 'comm='], { timeout: 2000, encoding: 'utf-8' }).trim() || null
       } catch {
         return null
+      }
+    },
+    processBelongsToThisInstall(pid: number): boolean {
+      // The same attribution the binary-pattern path applies in
+      // listOwnProcessesMatching: argv under PROJECT_ROOT, or cwd under it.
+      // A PID that is gone (no argv) is not ours to signal.
+      try {
+        const argv = execFileSync('/bin/ps', ['-p', String(pid), '-o', 'args='], { timeout: 2000, encoding: 'utf-8' }).trim()
+        return argv !== '' && argvBelongsToThisInstall(argv, pid)
+      } catch {
+        return false
       }
     },
     getProcessUid(pid: number): number | null {
@@ -401,6 +415,7 @@ let decayInterval: NodeJS.Timeout | null = null
 let digestTimer: NodeJS.Timeout | null = null
 let digestInterval: NodeJS.Timeout | null = null
 let logRotationInterval: NodeJS.Timeout | null = null
+let scheduledRunSnapshotSweepInterval: NodeJS.Timeout | null = null
 let heartbeatStarted = false
 let webServer: HttpServer | null = null
 let shuttingDown = false
@@ -411,6 +426,10 @@ const shutdown = (): void => {
   try {
     shuttingDown = true
     logger.info('Leallitas...')
+    // DETACHEDSHUTDOWN1007: the command-task and pre-check groups run DETACHED
+    // (outside our process group), so neither launchd nor our own exit ends
+    // them, and their timeout timers die with us. End them first.
+    try { endAllDetachedGroups('dashboard shutdown') } catch (err) { logger.warn({ err }, 'endAllDetachedGroups threw during shutdown') }
     if (heartbeatStarted) {
       try { stopHeartbeat() } catch (err) { logger.warn({ err }, 'stopHeartbeat threw during shutdown') }
     }
@@ -421,6 +440,7 @@ const shutdown = (): void => {
     if (digestTimer) clearTimeout(digestTimer)
     if (digestInterval) clearInterval(digestInterval)
     if (logRotationInterval) clearInterval(logRotationInterval)
+    if (scheduledRunSnapshotSweepInterval) clearInterval(scheduledRunSnapshotSweepInterval)
 
     const hardKill = setTimeout(() => {
       logger.warn({ timeoutMs: SHUTDOWN_HARD_KILL_MS }, 'Graceful shutdown timeout, hard exit')
@@ -476,13 +496,13 @@ async function main(): Promise<void> {
 
   // Backfill embeddings for memories saved before Ollama was available.
   // Fire-and-forget: a missing or slow Ollama instance must not block startup.
-  backfillEmbeddings().then(count => {
-    if (count > 0) logger.info({ count }, 'Embedding backfill befejezve')
+  backfillEmbeddings().then(({ embedded, attempted, failed }) => {
+    if (embedded > 0) logger.info({ count: embedded, attempted, failed }, 'Embedding backfill befejezve')
   }).catch(err => logger.warn({ err }, 'Embedding backfill hiba (Ollama nem elerheto)'))
 
   // Memory decay (24h cycle)
   runDecaySweep()
-  decayInterval = setInterval(runDecaySweep, 24 * 60 * 60 * 1000)
+  decayInterval = setInterval(runDecaySweep, DECAY_SWEEP_INTERVAL_MS)
   logger.info('Memoria leepulesi ciklus beallitva (24 oras)')
 
   // Log rotation (LOGROTATE910): copytruncate on the launcher-redirected
@@ -490,6 +510,12 @@ async function main(): Promise<void> {
   // platform gets it without launchd/systemd/cron wiring.
   runLogRotationSweep()
   logRotationInterval = setInterval(runLogRotationSweep, LOG_ROTATION_SWEEP_MS)
+
+  // Scheduled-task run snapshot retention (SCHEDPROMPTREF917): same hourly
+  // cadence as log rotation, 7-day age cutoff with a per-task floor of the
+  // most recent 20 (see scheduled-run-snapshot.ts).
+  sweepScheduledRunSnapshots()
+  scheduledRunSnapshotSweepInterval = setInterval(() => sweepScheduledRunSnapshots(), LOG_ROTATION_SWEEP_MS)
 
   // Daily digest at 23:00. Timer handles kept so shutdown can drop them.
   function scheduleDailyDigest() {

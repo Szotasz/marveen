@@ -16,6 +16,26 @@ INSTALL_DIR="$(cd "$(dirname "$0")/../.." && pwd)"
 CLI="$INSTALL_DIR/scripts/intel_db.py"
 export INTEL_DB="$TMPDIR_BASE/intel.db"
 
+# ---------------------------------------------------------------------------
+# DB oracle: python3 stdlib, NOT the sqlite3 CLI (#1565 item 8)
+# ---------------------------------------------------------------------------
+# Seven of the eight cases look INTO the database to check what the CLI under
+# test wrote. That oracle used to be the `sqlite3` binary, which install-linux.sh
+# does not install (it is not in the dependency list) -- so on such a box the suite
+# died at the second case with exit 127 under `set -e`, and the red came from a
+# packaging decision, not from intel_db.py. python3 is a hard dependency of the
+# installer and its stdlib sqlite3 module reads the very same file; the fleet's
+# own code (intel_db.py, ledger_lib.py, memoria_heartbeat_gate.py) already uses
+# it. This is an ORACLE swap: not one assertion below changed.
+#
+# The oracle itself lives in lib/sqlite-oracle.sh (7ac77433), shared with the
+# other suites that had the same missing-binary failure. These three names stay
+# so the cases below read exactly as they did.
+. "$INSTALL_DIR/scripts/__tests__/lib/sqlite-oracle.sh"
+db_query() { oracle_query "$INTEL_DB" "$1"; }
+db_tables() { oracle_tables "$INTEL_DB"; }
+db_exec() { oracle_exec "$INTEL_DB" "$1"; }
+
 echo "intel_db tests"
 echo "=============="
 
@@ -28,7 +48,7 @@ if echo "$OUT" | grep -q "OK"; then
 else
   fail "no-arg run output unexpected: $OUT"
 fi
-TABLES=$(sqlite3 "$INTEL_DB" ".tables")
+TABLES=$(db_tables)
 for t in known_facts_registry watchlist decision_log active_focus; do
   if echo "$TABLES" | grep -q "$t"; then
     pass "table $t exists"
@@ -59,8 +79,8 @@ fi
 echo ""
 echo "Test 4: repeat sighting is an update"
 ID2=$(python3 "$CLI" add-fact --title "T1b" --domain market --source "src" --tier 2 --content "price moved 5%" --status evolving)
-COUNT=$(sqlite3 "$INTEL_DB" "SELECT COUNT(*) FROM known_facts_registry")
-STATUS=$(sqlite3 "$INTEL_DB" "SELECT status FROM known_facts_registry WHERE id='$ID1'")
+COUNT=$(db_query "SELECT COUNT(*) FROM known_facts_registry")
+STATUS=$(db_query "SELECT status FROM known_facts_registry WHERE id='$ID1'")
 if [ "$ID1" = "$ID2" ] && [ "$COUNT" = "1" ] && [ "$STATUS" = "evolving" ]; then
   pass "same content upserted in place (1 row, status=evolving)"
 else
@@ -71,7 +91,7 @@ fi
 echo ""
 echo "Test 5: duplicate content under another id is a no-op"
 OUT=$(python3 "$CLI" add-fact --id other-id --title "T1c" --domain market --source "src" --tier 2 --content "price moved 5%")
-COUNT=$(sqlite3 "$INTEL_DB" "SELECT COUNT(*) FROM known_facts_registry")
+COUNT=$(db_query "SELECT COUNT(*) FROM known_facts_registry")
 if echo "$OUT" | grep -q "DUPLICATE" && [ "$COUNT" = "1" ]; then
   pass "DUPLICATE reported, still 1 row, exit 0"
 else
@@ -85,7 +105,7 @@ python3 "$CLI" add-watch --title "raw material price" --domain market --directio
 python3 "$CLI" add-focus --topic "Q3 sourcing" --mode deep --days 30 > /dev/null
 python3 "$CLI" log-decision --recommendation "hold" --reasoning "band intact" > /dev/null
 for t in watchlist active_focus decision_log; do
-  N=$(sqlite3 "$INTEL_DB" "SELECT COUNT(*) FROM $t")
+  N=$(db_query "SELECT COUNT(*) FROM $t")
   if [ "$N" = "1" ]; then
     pass "$t has 1 row"
   else
@@ -113,8 +133,8 @@ done
 # --- Test 8: expired focus and closed facts drop out of dump ---
 echo ""
 echo "Test 8: lifecycle filtering"
-sqlite3 "$INTEL_DB" "UPDATE known_facts_registry SET status='closed' WHERE id='$ID1'"
-sqlite3 "$INTEL_DB" "UPDATE active_focus SET expires_at=1"
+db_exec "UPDATE known_facts_registry SET status='closed' WHERE id='$ID1'"
+db_exec "UPDATE active_focus SET expires_at=1"
 OUT=$(python3 "$CLI" dump)
 if echo "$OUT" | python3 -c "
 import json,sys

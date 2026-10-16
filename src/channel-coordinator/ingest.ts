@@ -22,6 +22,20 @@ import { STORE_DIR, DB_FILENAME, MAIN_AGENT_ID } from '../config.js'
 
 export const COORDINATOR_AGENT_ID = 'telegram-coordinator'
 
+// Voice channel (HANGCSATORNA918, owner request 2026-09-18). The owner dictates
+// into an external voice assistant, which POSTs the transcript to /api/messages.
+// Before this id existed the relay wrote as the MAIN AGENT, so the message
+// arrived looking like the main agent talking to itself -- no receiving agent
+// could tell it apart from internal fleet traffic.
+//
+// Unlike COORDINATOR_AGENT_ID this id IS a legitimate /api/messages writer (the
+// relay is out-of-process), so the route cannot blanket-403 it. The guard is
+// the AUTH LANE instead: a 'hanna' POST is accepted only from an enrolled
+// DEVICE KEY, never from the shared dashboard token that every sub-agent can
+// read. See routes/messages.ts -- without that pairing, adding this id to
+// CHANNEL_COORDINATOR_AGENTS would let any token holder forge an owner message.
+export const VOICE_CHANNEL_AGENT_ID = 'hanna'
+
 let db: Database.Database | null = null
 
 export function initIngestDb(dbPath = join(STORE_DIR, DB_FILENAME)): Database.Database {

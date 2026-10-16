@@ -21,6 +21,7 @@
 #   WAITING <id> <title>           (0..n lines)
 #   CALENDAR_EVENTS n=N window=2h  (measured; n=0 is a MEASURED empty calendar)
 #   CAL_EVENT <HH:MM|all-day> <summary> [attendees=N]   (0..n lines)
+#   TOKEN_PRUNE state=ok|stale|empty retention_days=N lag_hours=N tolerance_hours=N
 #   SCHEDULES enabled=N
 #   TASK_RUNS_1H total=N [<status>=N ...]
 #   ERROR <section>: <reason>      (any failed measurement)
@@ -45,16 +46,24 @@
 #                          (default: <repo root>/store, derived from this
 #                          script's own location)
 #   CLAW_DASHBOARD_ORIGIN  dashboard origin (default http://localhost:3420)
-#   CLAW_TZ                timezone for the ts= stamp (default Europe/Budapest)
+#   CLAW_TZ                timezone for the ts= stamp (default: the install zone,
+#                          SCHEDULER_TZ, else the host zone -- scripts/lib/install-tz.sh)
 
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 STORE_DIR="${CLAW_STORE_DIR:-$ROOT/store}"
 ORIGIN="${CLAW_DASHBOARD_ORIGIN:-http://localhost:3420}"
-TZNAME="${CLAW_TZ:-Europe/Budapest}"
+. "$ROOT/scripts/lib/install-tz.sh"
+TZNAME="${CLAW_TZ:-$(install_tz "$ROOT")}"
+export TZNAME
 
-echo "HB_METRICS_V1 ts=$(TZ="$TZNAME" date +'%Y-%m-%d %H:%M')"
+# An empty TZNAME must not become TZ="" -- that prints UTC; plain date is the host zone.
+if [ -n "$TZNAME" ]; then
+  echo "HB_METRICS_V1 ts=$(TZ="$TZNAME" date +'%Y-%m-%d %H:%M')"
+else
+  echo "HB_METRICS_V1 ts=$(date +'%Y-%m-%d %H:%M')"
+fi
 
 # All measurements run in ONE python3 process: no pipes, no shell variables
 # carrying JSON, and no data piped into a heredoc (the HBHEREDOC819 shape
@@ -113,6 +122,19 @@ if tok is not None:
                 print('URGENT', x.get('id'), x.get('title'))
             for x in d.get('waiting') or []:
                 print('WAITING', x.get('id'), x.get('title'))
+        # HBDBKUSZOB823: the prune-lag state is computed server-side too
+        # (db.ts getTokenPruneLag) -- the retention resolution is
+        # override > .env > registry default, and re-implementing that chain
+        # here would be a second source of truth. Fail-closed like the rest:
+        # a missing block is an ERROR line, never a cheerful default.
+        tp = d.get('token_prune')
+        if not isinstance(tp, dict) or tp.get('state') is None:
+            err('token_prune', 'token_prune missing from response')
+        else:
+            print('TOKEN_PRUNE state=%s retention_days=%s lag_hours=%s '
+                  'tolerance_hours=%s'
+                  % (tp['state'], tp.get('retention_days'),
+                     tp.get('lag_hours'), tp.get('tolerance_hours')))
     except Exception as e:
         err('summary', repr(e))
 
@@ -136,7 +158,8 @@ if tok is not None:
                         from datetime import datetime
                         from zoneinfo import ZoneInfo
                         dt = datetime.fromisoformat(part['dateTime'])
-                        return dt.astimezone(ZoneInfo(os.environ.get('TZNAME', 'Europe/Budapest'))).strftime('%H:%M')
+                        tzname = os.environ.get('TZNAME') or ''
+                        return (dt.astimezone(ZoneInfo(tzname)) if tzname else dt.astimezone()).strftime('%H:%M')
                     except Exception:
                         return str(part['dateTime'])
                 if part.get('date'):

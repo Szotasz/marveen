@@ -1,0 +1,14 @@
+[Unit]
+Description=Run the Marveen main-agent inbox observer every 5 minutes
+
+[Timer]
+# Deliberately NOT bound to the dashboard unit: the stalled-queue case this
+# observes includes "the dashboard is down", so the timer must survive it.
+# Six ticks fit inside the 30-minute stall threshold, so one missed tick can
+# never push the alert past the window.
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

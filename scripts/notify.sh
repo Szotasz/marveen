@@ -12,21 +12,31 @@ if [ ! -f "$ENV_FILE" ]; then
 fi
 
 TOKEN=$(grep '^TELEGRAM_BOT_TOKEN=' "$ENV_FILE" | cut -d= -f2-)
-CHAT_ID=$(grep '^ALLOWED_CHAT_ID=' "$ENV_FILE" | cut -d= -f2-)
 MAIN_AGENT_ID=$(grep '^MAIN_AGENT_ID=' "$ENV_FILE" | head -1 | cut -d= -f2-)
 MAIN_AGENT_ID="${MAIN_AGENT_ID:-marveen}"
 
-if [ -z "$TOKEN" ]; then
-  echo "Hiba: TELEGRAM_BOT_TOKEN nincs beallitva"
-  exit 1
-fi
-
-# CHATID0: "0" is the installer placeholder, not a chat. Without this the
-# FALLBACK channel fails exactly where it is needed most -- it fires when the
-# plugin is down, and on a placeholder install it would post to chat_id=0.
-if [ -z "$CHAT_ID" ] || [ "$CHAT_ID" = "0" ]; then
-  echo "Hiba: ALLOWED_CHAT_ID nincs beallitva"
-  exit 1
+# A missing Telegram token or owner chat is NOT fatal here any more: on a
+# Slack-only install (no TELEGRAM_BOT_TOKEN) the Slack branch below is the
+# only channel, and an early exit would drop every notification before it
+# was ever tried. The Telegram prerequisites are checked where Telegram is
+# actually used, after the Slack attempt.
+# CHATID0: resolve_owner_chat_id, not a raw ALLOWED_CHAT_ID read -- "0" is the
+# installer placeholder, not a chat, and neither empty nor falsy. Without this
+# the FALLBACK channel fails exactly where it is needed most -- it fires when
+# the plugin is down, and on a placeholder install it would post to chat_id=0.
+# The access.json fallback still applies here: a paired channel survives even
+# while the plugin process itself is down, because it reads the same file the
+# plugin wrote, not the plugin's live state. It is the MAIN install's file
+# even when a sub-agent runs this script with its own TELEGRAM_STATE_DIR
+# (the lib ignores that variable), and only a single paired DM entry counts.
+. "$SCRIPT_DIR/lib/owner-chat.sh"
+# The resolver's reason line goes to stderr as is (not captured: any stderr
+# noise on the success path would otherwise become part of the chat id).
+CHAT_OK=1
+if [ -n "$TOKEN" ]; then
+  CHAT_ID="$(resolve_owner_chat_id "$ENV_FILE")" || CHAT_OK=0
+else
+  CHAT_ID=""
 fi
 
 MESSAGE="$1"
@@ -64,6 +74,55 @@ case "$SESS" in
     ;;
 esac
 
+# SLACKATALLAS1006: Slack first, when NOTIFY_SLACK_TARGET is set (settings or
+# .env). The sender's own Slack bot posts; the helper falls back to the main
+# bot with the sender's name. Telegram still goes out unless NOTIFY_TELEGRAM=0
+# AND the Slack send succeeded -- a Slack failure never loses the message.
+# No target configured -> exit 2 from the helper, Telegram exactly as before.
+SEND_TELEGRAM=1
+SLACK_RC=2
+SLACK_OUT=""
+# NOTIFY_TELEGRAM_FALLBACK, read HERE too (Dani's #1854 review): the helper's
+# verdict carries it, but when the helper does not run (no node, no dist) or
+# dies without a JSON verdict, there is no verdict to obey -- and the default
+# would reach Telegram. Same layering as getEffectiveSettingValue:
+# store/config-overrides.json (what the dashboard writes) over .env.
+setting_value() {
+  _key="$1"; _v=""
+  _ov="$PROJECT_DIR/store/config-overrides.json"
+  if [ -f "$_ov" ]; then
+    _v="$(grep -oE "\"$_key\"[[:space:]]*:[[:space:]]*\"?[^\",}]*" "$_ov" | head -1 | sed -E 's/^[^:]*:[[:space:]]*"?//')"
+  fi
+  if [ -z "$_v" ]; then
+    # Parity with src/env-parse.ts: the LAST occurrence wins, CR and surrounding
+    # whitespace are dropped, one pair of surrounding quotes is removed.
+    _v="$(grep -E "^[[:space:]]*$_key=" "$ENV_FILE" | tail -1 | cut -d= -f2- | tr -d '\r' \
+      | sed -E -e 's/^[[:space:]]+//' -e 's/[[:space:]]+$//' -e 's/^"(.*)"$/\1/' -e "s/^'(.*)'\$/\1/")"
+  fi
+  printf '%s' "$_v"
+}
+TELEGRAM_FALLBACK_OFF=0
+[ "$(setting_value NOTIFY_TELEGRAM_FALLBACK)" = "0" ] && TELEGRAM_FALLBACK_OFF=1
+if command -v node >/dev/null 2>&1 && [ -f "$PROJECT_DIR/dist/slack-notify.js" ]; then
+  SLACK_OUT="$(node "$SCRIPT_DIR/slack-notify.mjs" --kind owner ${SENDER:+--as "$SENDER"} -- "$MESSAGE" 2>/dev/null)"
+  SLACK_RC=$?
+  # "skip" with rc 0: Slack delivered and Telegram is not wanted beside it.
+  # "skip" with rc != 0: NOTIFY_TELEGRAM_FALLBACK=0, Telegram is never the
+  # fallback, so the run fails below instead of reaching the channel the owner left.
+  case "$SLACK_OUT" in *'"telegram":"skip"'*) SEND_TELEGRAM=0 ;; esac
+  [ "$SLACK_RC" -eq 1 ] && [ "$SEND_TELEGRAM" -eq 1 ] && [ "$TELEGRAM_FALLBACK_OFF" -eq 0 ] && echo "Figyelem: a Slack-ertesites nem ment ki, Telegram tartalek: $SLACK_OUT" >&2
+fi
+# No verdict at all (the helper did not run, or died without JSON) while the
+# Telegram fallback is off: that is a Slack miss, never a Telegram send.
+case "$SLACK_OUT" in
+  *'"telegram":'*) ;;
+  *) if [ "$TELEGRAM_FALLBACK_OFF" -eq 1 ]; then
+       SEND_TELEGRAM=0
+       [ "$SLACK_RC" -eq 0 ] && SLACK_RC=3
+       [ -n "$SLACK_OUT" ] || SLACK_OUT="(a Slack-segedfolyamat nem futott, vagy nem adott valaszt)"
+     fi ;;
+esac
+
 if [ -n "$SENDER" ] && [ "$SENDER" != "$MAIN_AGENT_ID" ]; then
   # Capitalize the first letter (bash 3.2 portable -- no ${var^}).
   _first=$(printf '%s' "${SENDER%"${SENDER#?}"}" | tr '[:lower:]' '[:upper:]')
@@ -88,7 +147,24 @@ fi
 # truth (NOTIFYVAKSWEEP826) -- this script consumes it, it no longer inlines it.
 . "$SCRIPT_DIR/lib/send-telegram.sh"
 
-if send_telegram_message "$TOKEN" "$CHAT_ID" "$MESSAGE" --data-urlencode "parse_mode=HTML"; then
+if [ "$SEND_TELEGRAM" -eq 0 ]; then
+  if [ "$SLACK_RC" -ne 0 ]; then
+    echo "Hiba: a Slack-ertesites nem ment ki, es a Telegram-tartalek ki van kapcsolva (NOTIFY_TELEGRAM_FALLBACK=0). Szolj a fo agensnek inter-agent uzenetben. Reszletek: $SLACK_OUT" >&2
+    exit 1
+  fi
+  echo "Ertesites elkuldve (Slack)."
+elif [ -z "$TOKEN" ] || [ "$CHAT_OK" -eq 0 ]; then
+  # Telegram is not usable on this install. Success only if Slack delivered.
+  if [ "$SLACK_RC" -eq 0 ]; then
+    echo "Ertesites elkuldve (Slack; Telegram nincs beallitva)."
+  elif [ -z "$TOKEN" ]; then
+    echo "Hiba: TELEGRAM_BOT_TOKEN nincs beallitva, es Slack-ertesites sem ment ki"
+    exit 1
+  else
+    echo "Hiba: ALLOWED_CHAT_ID nincs beallitva (az ok a fenti sorban), es Slack-ertesites sem ment ki"
+    exit 1
+  fi
+elif send_telegram_message "$TOKEN" "$CHAT_ID" "$MESSAGE" --data-urlencode "parse_mode=HTML"; then
   echo "Ertesites elkuldve."
 else
   echo "Hiba: ertesites kuldese sikertelen (reszletek fent)." >&2

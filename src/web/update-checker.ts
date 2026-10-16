@@ -114,7 +114,9 @@ export function remoteIsOwnOrigin(remote: string, root: string = PROJECT_ROOT): 
 }
 
 // Does `branch` exist on the `origin` remote? Answered from the local
-// remote-tracking refs, which the periodic fetch keeps current, so this costs
+// remote-tracking refs. NOTE (UPSTREAMSRC927): nothing in the product fetches on
+// a schedule -- these refs are as fresh as the last manual fetch or update.sh
+// run, so a branch pushed since then is not seen yet. This still costs
 // no network call and stays truthful offline. Absent ref -> treat as absent
 // branch: the fallback (the remote's default branch) is always answerable,
 // while a wrong branch name is a silent 422.

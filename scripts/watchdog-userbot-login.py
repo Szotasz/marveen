@@ -7,10 +7,58 @@ Two steps (the SMS/Telegram login code comes from the operator interactively):
 
 Creds: store/.watchdog-userbot.json (api_id, api_hash). Phone is passed/loaded.
 Final authorized session string is written to store/.watchdog-userbot.session (mode 600).
+
+ARMING PRECONDITION (HBTAILVAK914) -- read before running `signin`:
+creating the session file ARMS the deafness-respawn path. That path used to be
+built on a transcript reader that was measurably blind (see below); it now
+reads back to the pending probe. The script still asks for explicit
+confirmation, so arming stays a deliberate operator step.
 """
 import asyncio, json, os, sys
 from telethon import TelegramClient
 from telethon.sessions import StringSession
+
+# HBTAILVAK914 (2026-09-14, measured twice, independently): the deafness check
+# used to read only the last 256KB of the newest main-session transcript.
+# Between two inbound messages the session appends MBs, so on the MAIN root the
+# window held no ingestion line for ~82% of the time (time-weighted), median
+# inter-message append 284KB. An ARMED prober would have turned that blindness
+# into false "deaf" verdicts. The deafness check now reads each transcript back
+# to the pending probe (1 MB steps, at most 32 MB per file; when that limit is
+# hit it holds instead of respawning; see backscanStart in
+# src/web/inbound-probe.ts), which closes that blindness for the deafness
+# verdict. The confirmation is kept so that arming stays a deliberate step;
+# drop it once the maintainers agree the precondition is met.
+TAIL_BLIND_WARNING = """
+================================================================================
+  FIGYELEM -- ELESITES (HBTAILVAK914)
+
+  A session-fajl letrehozasa ELESITI a deafness-respawn agat. Korabban ez a
+  transcript 256KB-os tail-ablakara epult, ami a fo munkameneten az ido
+  ~82%-aban VAK volt (merve 2026-09-14), es elesitett proberrel HAMIS "deaf"
+  iteletet adott volna. A suketseg-ellenorzes most a fuggo probaig
+  visszaolvassa a transcriptet (1 MB-os lepesekben, fajlonkent legfeljebb
+  32 MB; ha ezt eleri, nem indit ujra).
+
+  Elesites elott a prober-fiokot allowlistelni kell (/telegram:access).
+================================================================================
+"""
+
+def confirm_arming_precondition():
+    print(TAIL_BLIND_WARNING, file=sys.stderr)
+    if os.environ.get("HBTAILVAK914_ACK") == "1":
+        print("HBTAILVAK914_ACK=1 -- precondition acknowledged via env.", file=sys.stderr)
+        return
+    # prompt on stderr: stdout carries the protocol lines (CODE_REQUEST_SENT,
+    # SIGNED_IN) that callers may parse.
+    print("A HBTAILVAK914 elofeltetel teljesult, elesitem a probert (ird be: ELESITEM): ", file=sys.stderr, end="", flush=True)
+    try:
+        answer = input()
+    except EOFError:
+        answer = ""
+    if answer.strip() != "ELESITEM":
+        print("Megszakitva: a session-fajl NEM jott letre (HBTAILVAK914 elofeltetel).", file=sys.stderr)
+        sys.exit(2)
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 CREDS = os.path.join(ROOT, "store", ".watchdog-userbot.json")
@@ -62,6 +110,9 @@ def main():
     if cmd == "request":
         asyncio.get_event_loop().run_until_complete(do_request(api_id, api_hash))
     elif cmd == "signin":
+        # signin is the step that persists the session file, i.e. the arming
+        # act -- the gate sits here, not on `request`.
+        confirm_arming_precondition()
         code = sys.argv[2]
         password = sys.argv[3] if len(sys.argv) > 3 else None
         asyncio.get_event_loop().run_until_complete(do_signin(api_id, api_hash, code, password))

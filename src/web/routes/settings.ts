@@ -4,6 +4,7 @@ import { SETTINGS_REGISTRY, validateSettingValue } from '../../config-registry.j
 import { getEffectiveSettingValue, setOverride } from '../../settings-store.js'
 import { logConfigChange } from '../../db.js'
 import { setStoreWriteActor } from '../../store-watcher.js'
+import { syncRotationHeartbeatTask } from '../claude-rotation-heartbeat.js'
 import type { RouteContext } from './types.js'
 
 export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
@@ -71,6 +72,19 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
 
       logConfigChange(key, oldValue, validation.value!, resolvedActor)
       logger.info({ key, oldValue, newValue: validation.value }, 'Setting updated')
+
+      // The rotation switch also wires its heartbeat, in both directions: on
+      // creates or re-enables it (otherwise the switch is inert, measured
+      // 2026-09-26), off disables it (otherwise a leftover task keeps ticking,
+      // PR #1602 review). See syncRotationHeartbeatTask.
+      if (key === 'CLAUDE_ROTATION_ENABLED') {
+        try {
+          const synced = syncRotationHeartbeatTask()
+          if (synced !== 'unchanged' && synced !== 'rotation-off') logger.info({ task: 'claude-plan-rotate-check', result: synced }, 'Claude rotation heartbeat task synced')
+        } catch (err) {
+          logger.warn({ err }, 'Claude rotation heartbeat task sync failed')
+        }
+      }
       json(res, { ok: true, key, value: validation.value, requiresRestart: def.requiresRestart })
     } catch (err) {
       logger.error({ err }, 'Failed to update setting')

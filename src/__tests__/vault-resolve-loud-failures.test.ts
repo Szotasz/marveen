@@ -50,7 +50,7 @@ beforeAll(() => {
   // else returns null. The value is a fixture string, not vault content.
   writeFileSync(
     join(ROOT, 'dist', 'web', 'vault.js'),
-    `export function getSecret(id) { return id === 'KNOWN-LABEL' ? '${SECRET_VALUE}' : null }\n`,
+    `export function getSecret(id) { return id === 'KNOWN-LABEL' || id === 'ssh-key-abc123' ? '${SECRET_VALUE}' : null }\n`,
   )
 })
 
@@ -101,5 +101,20 @@ describe('vault-resolve: the three worlds are distinguishable', () => {
     const r = await run('\nPAT=KNOWN-LABEL\n\n')
     expect(r.code).toBe(0)
     expect(r.stderr).toBe('')
+  })
+})
+
+describe('vault-resolve: an SSH private key is never resolved (VAULTSZELES826)', () => {
+  it('world 4 -- ssh-key id: exit 4, nothing on stdout, the refusal named on stderr, no value anywhere', async () => {
+    const r = await run('DEPLOY=ssh-key-abc123\n')
+    expect(r.code).toBe(4)
+    expect(r.stdout).toBe('')
+    expect(r.stderr).toContain('refused, SSH private keys are not resolvable here: ssh-key-abc123')
+    expect(r.stderr).not.toContain(SECRET_VALUE)
+  })
+  it('a mixed batch still resolves the ordinary line and refuses the ssh-key line', async () => {
+    const r = await run('PAT=KNOWN-LABEL\nDEPLOY=ssh-key-abc123\n')
+    expect(r.code).toBe(4)
+    expect(r.stdout).toBe(`PAT=${SECRET_VALUE}\n`)
   })
 })

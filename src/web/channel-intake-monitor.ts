@@ -27,13 +27,14 @@
  */
 
 import { existsSync, readFileSync } from 'node:fs'
+import { encodeClaudeProjectDir } from '../claude-project-dir.js'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID } from '../config.js'
 import { agentDir, listAgentNames } from './agent-config.js'
 import { isAgentRunning } from './agent-process.js'
-import { readLastIngestionTimestamp } from './inbound-probe.js'
+import { readLastIngestionTimestamp, readLastIngestionTimestampAcross, mainTranscriptDirs } from './inbound-probe.js'
 import { sendRoutineAlert } from './routine-alert.js'
 
 const MINUTE_MS = 60 * 1000
@@ -96,6 +97,8 @@ interface TelegramWebhookInfoBody {
   }
 }
 
+const TOKEN_REJECTED_STATUSES = new Set([401, 404])
+
 /**
  * Turn one getWebhookInfo response into a probe reading.
  *
@@ -108,6 +111,13 @@ export function parseIntakeProbe(status: number, body: unknown): IntakeProbe {
     return { reachable: false, tokenOk: true, pendingUpdates: null, webhookUrl: null, lastErrorMessage: null }
   }
   const parsed = (body ?? {}) as TelegramWebhookInfoBody
+  // Only 401/404 mean Telegram refused THIS token (revoked / malformed). A 5xx
+  // ("Bad Gateway") or 429 is Telegram's own hiccup and says nothing about the
+  // token: reading it as token-invalid paged the owner nightly around 03:11
+  // about bots whose getMe answered 200 a minute later (INTAKE5XX1008).
+  if (status !== 200 && !TOKEN_REJECTED_STATUSES.has(status)) {
+    return { reachable: false, tokenOk: true, pendingUpdates: null, webhookUrl: null, lastErrorMessage: parsed.description ?? null }
+  }
   if (status !== 200 || parsed.ok !== true || !parsed.result) {
     return {
       reachable: true,
@@ -219,10 +229,28 @@ function readTelegramToken(agentName: string): string | null {
   }
 }
 
-/** Transcript dir Claude Code uses for a cwd: every '/' replaced with '-'. */
+/** Transcript dir Claude Code uses for a cwd under the shared root (encoder: src/claude-project-dir.ts). */
 export function transcriptDirFor(agentName: string, projectRoot: string): string {
   const cwd = agentName === MAIN_AGENT_ID ? projectRoot : agentDir(agentName)
-  return join(process.env['HOME'] ?? homedir(), '.claude', 'projects', cwd.replace(/\//g, '-'))
+  return join(process.env['HOME'] ?? homedir(), '.claude', 'projects', encodeClaudeProjectDir(cwd))
+}
+
+// Same CONFIG-DIR BLIND SPOT the keepalive watchdog hit (see mainTranscriptDirs
+// in inbound-probe.ts): an agent running with an isolated CLAUDE_CONFIG_DIR
+// writes its transcript under THAT root, not the shared ~/.claude, so reading
+// only the shared path reports "no inbound ever" for a perfectly busy agent.
+// Both the main agent (<PROJECT_ROOT>/.channels-config) and every sub-agent
+// (<agentDir>/.claude-config) can be isolated, so probe each candidate root and
+// let the newest ingestion win.
+export function transcriptDirsFor(agentName: string, projectRoot: string): string[] {
+  if (agentName === MAIN_AGENT_ID) return mainTranscriptDirs()
+  const cwd = agentDir(agentName)
+  const encoded = encodeClaudeProjectDir(cwd)
+  const roots = [
+    join(process.env['HOME'] ?? homedir(), '.claude'),
+    join(cwd, '.claude-config'),
+  ]
+  return [...new Set(roots.map(r => join(r, 'projects', encoded)))]
 }
 
 async function probeIntake(token: string): Promise<IntakeProbe> {
@@ -248,7 +276,7 @@ async function checkAgentIntake(agentName: string, projectRoot: string): Promise
 
   const probe = await probeIntake(token)
   const now = Date.now()
-  const lastInboundAt = readLastIngestionTimestamp(transcriptDirFor(agentName, projectRoot))
+  const lastInboundAt = readLastIngestionTimestampAcross(transcriptDirsFor(agentName, projectRoot))
   const decision = decideIntakeVerdict({
     probe,
     prev: lastObservation.get(agentName) ?? null,

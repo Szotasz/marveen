@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import { classifyPersona, suggestForAgent , humanModelLabel } from '../web/model-suggest.js'
+import {
+  classifyPersona, suggestForAgent, humanModelLabel,
+  CONTEXT_PER_CALL_HIGH, CONTEXT_PER_CALL_MEDIUM,
+} from '../web/model-suggest.js'
 import { DISTRIBUTION_DEFAULT_AGENT_MODEL } from '../config-registry.js'
 
 describe('classifyPersona', () => {
@@ -59,9 +62,9 @@ describe('suggestForAgent -- base (no signals)', () => {
 
   it('normalises [1m] suffix for comparison', () => {
     const text = 'IT architekt. Komplex elosztott rendszerterv, mikroszolgáltatás, stratégiai döntések.'
-    // Plain opus-5 vs the suggested opus-5[1m]: same family after normalize(),
+    // Plain opus-5-5 vs the suggested opus-5-5[1m]: same family after normalize(),
     // so no change is advised -- the suffix alone must not trigger churn.
-    const result = suggestForAgent('rick', 'claude-opus-5', text)
+    const result = suggestForAgent('rick', 'claude-opus-5-5', text)
     expect(result.changeAdvised).toBe(false)
   })
 
@@ -76,17 +79,17 @@ describe('suggestForAgent -- base (no signals)', () => {
 describe('suggestForAgent -- AgentSignals thresholds', () => {
   const neutralPersona = 'Általános asszisztens vagy.'
 
-  it('tokenAvgInputPerCall > 10K alone adds 1 opus signal point (below threshold without persona hits)', () => {
+  it('contextAvgPerCall above the HIGH threshold alone adds 1 opus signal point (below threshold without persona hits)', () => {
     // 1 signal hit alone is not enough to push to Opus (need >=2 total)
     const result = suggestForAgent('x', 'claude-sonnet-5', neutralPersona, 0, {
-      tokenAvgInputPerCall: 15_000,
+      contextAvgPerCall: CONTEXT_PER_CALL_HIGH + 50_000,
     })
     expect(result.suggestedModel).toBe('claude-sonnet-5')
   })
 
-  it('tokenAvgInputPerCall > 10K + mcpServerCount >= 4 pushes to Opus (2 signal hits)', () => {
+  it('contextAvgPerCall above HIGH + mcpServerCount >= 4 pushes to Opus (2 signal hits)', () => {
     const result = suggestForAgent('x', 'claude-sonnet-5', neutralPersona, 0, {
-      tokenAvgInputPerCall: 15_000,
+      contextAvgPerCall: CONTEXT_PER_CALL_HIGH + 50_000,
       mcpServerCount: 5,
     })
     expect(result.suggestedModel).toBe(DISTRIBUTION_DEFAULT_AGENT_MODEL)
@@ -151,9 +154,9 @@ describe('suggestForAgent -- AgentSignals thresholds', () => {
     expect(result.suggestedModel).toBe('claude-sonnet-5')
   })
 
-  it('tokenAvgInputPerCall at threshold boundary (exactly 10K) does not trigger', () => {
+  it('contextAvgPerCall exactly at the HIGH threshold does not trigger (strictly greater)', () => {
     const result = suggestForAgent('x', 'claude-sonnet-5', neutralPersona, 0, {
-      tokenAvgInputPerCall: 10_000,
+      contextAvgPerCall: CONTEXT_PER_CALL_HIGH,
     })
     expect(result.suggestedModel).toBe('claude-sonnet-5')
   })
@@ -163,7 +166,7 @@ describe('suggestForAgent -- reason structure (6 sections)', () => {
   it('reason contains all 6 sections when signals provided', () => {
     const text = 'IT architekt. Komplex elosztott rendszerterv, mikroszolgáltatás, stratégiai döntések.'
     const result = suggestForAgent('rick', 'claude-sonnet-5', text, 0, {
-      tokenAvgInputPerCall: 12_000,
+      contextAvgPerCall: CONTEXT_PER_CALL_HIGH + 50_000,
       kanbanOpenCount: 3,
       kanbanUrgentCount: 2,
       scheduledFreqPerDay: 2,
@@ -187,7 +190,7 @@ describe('suggestForAgent -- reason structure (6 sections)', () => {
 
   it('reason section 6 confirms full coverage when all signals present', () => {
     const result = suggestForAgent('x', 'claude-sonnet-5', 'Általános.', 0, {
-      tokenAvgInputPerCall: 5_000,
+      contextAvgPerCall: 5_000,
       kanbanOpenCount: 1,
       kanbanUrgentCount: 0,
       scheduledFreqPerDay: 3,
@@ -203,7 +206,7 @@ describe('suggestForAgent -- reason structure (6 sections)', () => {
       kanbanOpenCount: 0,
       kanbanUrgentCount: 0,
       mcpServerCount: 1,
-      tokenAvgInputPerCall: 500,
+      contextAvgPerCall: 500,
     })
     expect(result.suggestedModel).toBe('claude-haiku-4-5-20251001')
     expect(result.reason).toMatch(/olcsóbb/)
@@ -214,9 +217,19 @@ describe('suggestForAgent -- reason structure (6 sections)', () => {
 // suggester kept recommending claude-opus-4-8[1m] (measured on the live
 // endpoint before the fix: 8 of 10 agents were suggested 4.8, 7 of them with
 // changeAdvised, 5 of those running Opus 5; after: 0 of 10).
+// MODELSUGGEST923 (measured 2026-09-26): the same drift recurred one tier up.
+// OPUS55SELECTOR922 (#1492, 2026-09-23) added claude-opus-5-5[1m] to the
+// picker's valueSet but never bumped DISTRIBUTION_DEFAULT_AGENT_MODEL, so
+// this suite's own "locks to" pin below was still asserting the OLD ceiling
+// (claude-opus-5[1m]) while the picker already offered the newer tier
+// (claude-opus-5-5[1m]) -- live effect: the advisor told 5 of 5 fleet agents
+// to move to the older tier, including two agents already correctly running
+// 5.5. Bumped the constant in
+// config-registry.ts; this pin now locks to the new value so the NEXT tier
+// bump fails here too, on purpose, instead of shipping silently.
 describe('MODELSUGGEST807 -- top tier is the shipped distribution default', () => {
-  it('the constant this suite locks to is Opus 5 (1M) today', () => {
-    expect(DISTRIBUTION_DEFAULT_AGENT_MODEL).toBe('claude-opus-5[1m]')
+  it('the constant this suite locks to is Opus 5.5 (1M) today', () => {
+    expect(DISTRIBUTION_DEFAULT_AGENT_MODEL).toBe('claude-opus-5-5[1m]')
   })
 
   it('an agent already ON the distribution default is never advised to change tier upward', () => {
@@ -269,4 +282,65 @@ describe('GATECTX910 -- contextTokens reads resolve the real transcript location
       expect(call).toContain('transcript.workingDir, transcript.configDir')
     }
   })
+})
+
+// MODELSUGGESTCACHE917. Two halves of one defect, pinned separately because
+// fixing either alone leaves the signal useless.
+//
+// (1) The route fed this field SUM(input_tokens), the UNCACHED remainder. A
+//     long-lived session serves nearly its whole context from the prompt
+//     cache, so the remainder is a rounding error: measured on a live install
+//     2026-09-17, 2.9 tokens/call over 30 days (17,325 calls) against a true
+//     354,271 -- and the main agent was advised to downgrade to Sonnet, the
+//     opposite of what the module's own threshold means.
+// (2) Correcting the sum without raising the 10K threshold would swap a signal
+//     that never fires for one that always fires: every Claude Code session
+//     starts above 10K. An always-on signal carries as much information as an
+//     always-off one, which is why the boundary test below sits at the OLD
+//     threshold and expects NO hit.
+describe('suggestForAgent -- per-call context signal (MODELSUGGESTCACHE917)', () => {
+  const neutralPersona = 'Általános asszisztens vagy.'
+
+  it('a context that would have tripped the old 10K threshold is no longer a large-context hit', () => {
+    // 12K: above the retired threshold, far below a grown session. Two signal
+    // hits are needed for Opus; if this still counted, kanbanUrgentCount alone
+    // would carry an agent over.
+    const result = suggestForAgent('x', 'claude-sonnet-5', neutralPersona, 0, {
+      contextAvgPerCall: 12_000,
+      kanbanUrgentCount: 3,
+    })
+    expect(result.suggestedModel).toBe('claude-sonnet-5')
+    expect(result.reason).not.toMatch(/nagy átlagos kontextus/)
+  })
+
+  it('a genuinely large per-call context is a hit, and reaches Opus with one more signal', () => {
+    const result = suggestForAgent('x', 'claude-sonnet-5', neutralPersona, 0, {
+      contextAvgPerCall: 354_271,   // the measured live value
+      kanbanUrgentCount: 3,
+    })
+    expect(result.suggestedModel).toBe(DISTRIBUTION_DEFAULT_AGENT_MODEL)
+    expect(result.reason).toMatch(/nagy átlagos kontextus/)
+  })
+
+  it('the thresholds stay ordered and anchored, so a fresh session is not already "közepes"', () => {
+    expect(CONTEXT_PER_CALL_MEDIUM).toBeLessThan(CONTEXT_PER_CALL_HIGH)
+    // 49,483 = measured startup context of a fresh main session (2026-09-17).
+    expect(49_483).toBeLessThanOrEqual(CONTEXT_PER_CALL_MEDIUM)
+  })
+
+  // Second blind spot in the same endpoint, same family: a real number counted
+  // over the wrong set. archived_at IS NULL alone counts DONE cards as open,
+  // because a done card is archived only by the 7-day sweep. Measured on the
+  // live install 2026-09-17: 14 open / 6 urgent reported, 8 / 2 actual.
+  // kanbanUrgentCount >= 2 is an Opus signal, so the inflated count feeds the
+  // verdict directly.
+  // The two route-level checks that used to live here read routes/agents.ts and
+  // matched it as text. They caught a reverted change, but not a wrong value:
+  // MEASURED on 6d278ea3, a mutation that kept `totalCacheRead` and
+  // `totalCacheCreation` in place and divided by `totalCalls * 1000` left all 35
+  // tests green -- the same class of defect the PR fixed. Both signals now live
+  // in web/model-suggest-signals.ts and are asserted on what they RETURN, with
+  // the kanban filter run against a real table. See
+  // __tests__/model-suggest-signals.test.ts (MODELJELTESZT917).
+
 })

@@ -30,7 +30,18 @@
 
 set -euo pipefail
 
+# The archive carries live secrets (store/.claude-oauth-token, .dashboard-token,
+# the vault master key next to vault.json, every channel .env). It must be
+# born 0600 -- not chmod-ed afterwards, because a crash between tar and chmod
+# would leave a world-readable copy (BACKUPTITOK915: measured 0644 on the
+# owner host under the default umask 022). umask 077 covers the archive, the
+# backups/ dir, the staging dir and every temp file this script creates.
+umask 077
+
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Literal membership test for the archive verification below (card a8a92d55).
+# shellcheck source=lib/archive-list-has.sh
+. "${REPO_ROOT}/scripts/lib/archive-list-has.sh"
 # Overridable so a test can build a throwaway archive without touching the
 # real backup directory (and its retention sweep).
 BACKUP_DIR="${BACKUP_DIR:-${REPO_ROOT}/backups}"
@@ -53,7 +64,16 @@ fi
 REPOLIST="$(mktemp -t claudeclaw-repo.XXXXXX)"
 HOMELIST="$(mktemp -t claudeclaw-home.XXXXXX)"
 MANIFEST="$(mktemp -t claudeclaw-manifest.XXXXXX)"
-STAGE="$(mktemp -d -t claudeclaw-stage.XXXXXX)"
+# The staging tree lives next to the archives, NOT in $TMPDIR. macOS runs
+# com.apple.bsd.dirhelper daily at 03:35 (StartCalendarInterval) with
+# CLEAN_FILES_OLDER_THAN_DAYS=3: it deletes $TMPDIR files whose atime is older
+# than three days. `cp -p` below preserves the SOURCE atime, so every file that
+# is rarely read (an agent's CLAUDE.md, a channel .env, the dashboard token, a
+# small side database) arrives in the stage already "three days old" and can be
+# swept between the copy and the tar. The archive is still written, the
+# verification below then reports the holes, and the nightly job fails.
+# BACKUP_DIR is not a sweep target, and the EXIT trap still removes the stage.
+STAGE="$(mktemp -d "${BACKUP_DIR}/.stage.XXXXXX")"
 BUNDLE=""
 trap 'rm -f "${REPOLIST}" "${HOMELIST}" "${MANIFEST}"; [[ -n "${BUNDLE}" ]] && rm -f "${BUNDLE}"; rm -rf "${STAGE}"' EXIT
 
@@ -79,7 +99,15 @@ add_if() {
 #     profile and generated PDFs: 3.2 GB, all re-downloadable or reproducible
 #   *.log, *.out, *.pid       -- runtime noise, worthless in a restore
 # What remains is ~4 MB next to the DB, so the archive stays small.
-STORE_SKIP=" whisper health cowork venv-garmin venv-pdf dhl-chrome-profile fedex-labels fedex-vam archery-basis "
+#   backups                   -- store/backups holds OTHER machines' tarballs (two 2026-07-13
+#     hermes dumps, 701 MB): a backup inside the backup, and not this host's state
+#   darwin-relay              -- relay.log (87 MB): a log, not state; nothing restores from it
+#   scheduled-runs            -- SCHEDPROMPTREF917 fire-time snapshots, ~100 files/day,
+#     7-day retention on disk already (scheduled-run-snapshot.ts); regenerated on every
+#     large-task fire, so a restore losing yesterday's costs nothing
+#   (measured 2026-09-16: these two were 788 MB of a 948 MB archive; excluding them
+#    leaves ~150 MB. STORE_SKIP does not delete anything -- the files stay on disk.)
+STORE_SKIP=" whisper health cowork venv-garmin venv-pdf dhl-chrome-profile fedex-labels fedex-vam archery-basis backups darwin-relay scheduled-runs "
 if [[ -d store ]]; then
   while IFS= read -r _entry; do
     _name="$(basename "${_entry}")"
@@ -198,6 +226,7 @@ fi
 # `cp -pR` preserves modes so the 0600 token files stay private.
 cp "${MANIFEST}" "${STAGE}/MANIFEST.txt"
 
+STAGE_FAILS=0
 stage_group() {  # stage_group <listfile> <base> <group>
   local list="$1" base="$2" group="$3" rel parent
   [[ -s "${list}" ]] || return 0
@@ -205,7 +234,17 @@ stage_group() {  # stage_group <listfile> <base> <group>
     [[ -z "${rel}" ]] && continue
     parent="$(dirname "${rel}")"
     mkdir -p "${STAGE}/${group}/${parent}"
-    cp -pR "${base}/${rel}" "${STAGE}/${group}/${parent}/"
+    # BACKUPALERT925: one unreadable file (e.g. a root-owned 0600 leftover) used
+    # to abort the whole run under `set -e`, so no archive was written at all.
+    # Skip it loudly instead; the manifest still names it, so the verification
+    # below reports it as MISSING and the run fails with exit 6 and an alert.
+    if ! cp -pR "${base}/${rel}" "${STAGE}/${group}/${parent}/"; then
+      # A directory entry can be PARTIALLY copied (one unreadable file inside):
+      # the manifest names the directory, which did get in, so verification
+      # alone would pass. Count every staging failure and fail the run on it.
+      STAGE_FAILS=$((STAGE_FAILS + 1))
+      echo "backup: WARN could not fully stage ${group}/${rel} -- the run will fail (exit 6)" >&2
+    fi
   done < "${list}"
 }
 
@@ -249,8 +288,9 @@ while IFS= read -r want; do
   case "${want}" in repo/*|home/*) ;; *) continue ;; esac
   # A directory entry is listed once in the manifest and expands to many paths
   # in the archive, so match on the prefix, and anchor it so "store/x" cannot
-  # be satisfied by "store/xyz".
-  if ! grep -qE "^${want}(/|$)" "${ARCHIVE_LIST}"; then
+  # be satisfied by "store/xyz". LITERALLY (card a8a92d55): as a regex, a route
+  # dir like `[id]` never matched itself and failed a complete backup.
+  if ! archive_list_has "${ARCHIVE_LIST}" "${want}"; then
     echo "backup: MISSING from the archive: ${want}" >&2
     missing=$((missing + 1))
   fi
@@ -260,7 +300,7 @@ done < <(sed -e 's/  *(.*)$//' "${MANIFEST}")
 # the memory directories and the local-commit bundle on 2026-09-04, the
 # credential-carrying store/ files by the whitelist that preceded it.
 for marker in "repo/store/claudeclaw.db" "home/.claude/skills" "home/.claude/scheduled-tasks"; do
-  grep -qE "^${marker}(/|$)" "${ARCHIVE_LIST}" || {
+  archive_list_has "${ARCHIVE_LIST}" "${marker}" || {
     echo "backup: MISSING load-bearing item: ${marker}" >&2
     missing=$((missing + 1))
   }
@@ -274,6 +314,11 @@ if ( cd "${HOME}" && find .claude/projects -maxdepth 2 -type d -name memory -pri
   }
 fi
 
+if [[ "${STAGE_FAILS}" -gt 0 ]]; then
+  echo "backup: FAILED staging -- ${STAGE_FAILS} entr(y/ies) could not be copied completely (see WARN lines above)." >&2
+  missing=$((missing + STAGE_FAILS))
+fi
+
 if [[ "${missing}" -gt 0 ]]; then
   echo "backup: FAILED verification -- ${missing} item(s) named in the manifest are not in ${ARCHIVE}." >&2
   echo "backup: the archive is kept for inspection, but do NOT treat it as a good copy." >&2
@@ -283,10 +328,20 @@ if [[ "${missing}" -gt 0 ]]; then
   # queue, where it survives the agent being asleep at 04:30 and gets read on
   # the next turn. Best-effort: a messaging problem must not change the exit
   # code or mask the real failure.
+  # To the install's own main agent: MAIN_AGENT_ID as resolved near the top of
+  # this script (from .env the way the app reads it: last definition wins,
+  # quotes stripped, default "marveen"), never a fixed name -- an id that does
+  # not exist on this install makes the alert go nowhere (card a8a92d55). Do not
+  # re-read .env here: a second, simpler parse took the FIRST definition, kept
+  # the quotes, and without `|| true` aborted the script under pipefail on an
+  # install with no MAIN_AGENT_ID line (card a95cada0).
   if [[ -x "${REPO_ROOT}/scripts/agent-msg.sh" ]]; then
-    bash "${REPO_ROOT}/scripts/agent-msg.sh" halpali halpali \
+    # BACKUPALERT925: the recipient used to be a literal agent name from the
+    # author's machine, so on any other fleet the alert went nowhere and the
+    # swallowed error hid that too. Address this install's main agent.
+    bash "${REPO_ROOT}/scripts/agent-msg.sh" "${MAIN_AGENT_ID}" "${MAIN_AGENT_ID}" \
       "[MENTES] A napi mentes ellenorzese ELBUKOTT ${STAMP}-kor: ${missing} tetel hianyzik az archivumbol (reszletek: logs/backup.log). Az archivum NEM tekintheto jo masolatnak." \
-      >/dev/null 2>&1 || true
+      >/dev/null 2>&1 || echo "backup: WARN could not queue the failure alert for ${MAIN_AGENT_ID}" >&2
   fi
   exit 6
 fi

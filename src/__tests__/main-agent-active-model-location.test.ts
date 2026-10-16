@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
+import { encodeClaudeProjectDir } from '../claude-project-dir.js'
 import { mkdtempSync, mkdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -41,7 +42,10 @@ describe('resolveTranscriptLocation', () => {
     // name observed on a live install.
     const loc = resolveTranscriptLocation(MAIN_AGENT_ID)
     const dir = projectsDirFor(loc.workingDir, loc.configDir)
-    expect(dir).toContain(PROJECT_ROOT.replace(/[/.]/g, '-'))
+    // Measured rule (src/claude-project-dir.ts): every char outside
+    // [a-zA-Z0-9-] becomes '-'. On this PROJECT_ROOT it equals the old
+    // '/'+'.' rule; the shared encoder is what the session actually writes.
+    expect(dir).toContain(encodeClaudeProjectDir(PROJECT_ROOT))
   })
 })
 

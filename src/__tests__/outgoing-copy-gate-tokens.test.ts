@@ -87,3 +87,34 @@ describe('outgoing-copy gate tokenization: a suffix attached to a number is not 
     expect(probs[0]).toContain('a dokumentum es a melleklet')
   })
 })
+
+// COPYGATEEKEZETVAK915 (2026-09-15): the same prose-vs-identifier class, now on
+// a FILENAME. `Mail.app-ot` is a dotted product name carrying a hyphenated
+// Hungarian suffix. The TECHNICAL mask cut out `Mail.app` and left `-ot` behind,
+// which the tokenizer read as the standalone word `ot` (-> öt) and BLOCKED the
+// morning briefing. The Chrome-ot rule above does not reach it: that branch wants
+// letters only before the hyphen, and a dot is not a letter. The fix keeps the
+// suffix with the token it belongs to, so `.app`/`.sh`/`.json`/`.md` names can be
+// declined in Hungarian -- which is how the owner has to type them on the machine.
+describe('outgoing-copy gate tokenization: a Hungarian suffix on a dotted filename is not prose (COPYGATEEKEZETVAK915)', () => {
+  it('the real blocked sentence passes: a product name with a dot plus a hyphenated suffix', () => {
+    expect(auditAccent('Ha elindítod a Mail.app-ot, akkor a következő napindító újra valódi adatot ad, és nem kell azzal foglalkozni, hogy a levelek hol vannak, mert az index magától frissül.')).toEqual([])
+  })
+
+  it('script and config filenames decline the same way', () => {
+    expect(auditAccent('A update.sh-t és a config.json-ban levő beállítást is megnéztem, és nem kell hozzányúlni, mert az a rész rendben van.')).toEqual([])
+  })
+
+  it('a real accent error next to the filename is still caught -- the mask must not swallow the sentence', () => {
+    const probs = auditAccent('A config.json-ban van a video beállítás, és nem kell hozzányúlni, mert az a rész rendben van, csak a többi vár még rám.')
+    expect(probs.length).toBe(1)
+    expect(probs[0]).toContain('video -> videó')
+  })
+
+  it('a standalone "ot" in the same sentence as a filename is still caught (no whitelist widening)', () => {
+    const probs = auditAccent('A Mail.app-ot megnéztem, de kérlek küldj át ot darabot, mert az a rész rendben van, csak a többi vár még rám.')
+    expect(probs.length).toBe(1)
+    expect(probs[0]).toContain('ot -> öt')
+    expect(probs[0]).toContain('küldj át ot darabot')
+  })
+})

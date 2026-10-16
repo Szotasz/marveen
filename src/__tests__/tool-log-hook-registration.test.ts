@@ -57,6 +57,23 @@ describe('tool-log-capture registration', () => {
     expect(entries.filter((e) => (e.hooks ?? []).some((h) => (h.command ?? '').includes('tool-log-capture.py')))).toHaveLength(1)
   })
 
+  it('also registers the hook under PostToolUseFailure, with the same wrapper and matcher', () => {
+    // Measured 2026-09-21 (Claude Code 2.1.278): a failing tool call fires
+    // PostToolUseFailure and NOT PostToolUse. With the hook under PostToolUse
+    // alone, failures were never logged at all, so tool_call_log.success was
+    // 1 on every one of its 2948 rows -- a metric that structurally could not
+    // turn red (TOOLLOGVAKSIKER921).
+    const cmds = commandsOf('PostToolUseFailure')
+    const cmd = cmds.find((c) => c.includes('tool-log-capture.py'))
+    expect(cmd).toBeDefined()
+    expect(cmd).toMatch(/^bash -c '\[ -f [^']*tool-log-capture\.py \] && exec python3 /)
+    expect(cmd).toMatch(/; exit 0'$/)
+    const entry = (tpl.hooks?.PostToolUseFailure ?? []).find((e) =>
+      (e.hooks ?? []).some((h) => (h.command ?? '').includes('tool-log-capture.py')),
+    )!
+    expect(entry.matcher).toBe('*')
+  })
+
   it('is a known hook script, so the stale-entry pruner may clean it up', () => {
     expect(KNOWN_HOOK_SCRIPTS).toContain('tool-log-capture.py')
   })

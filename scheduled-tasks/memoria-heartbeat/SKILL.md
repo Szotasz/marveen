@@ -32,7 +32,7 @@ Nézd át, mi történt **az előző memória-kör óta**. Két dolgot csinálj:
 Ha volt fontos döntés, preferencia, tanulság vagy bármi ami később hasznos, mentsd el:
 
 ```bash
-curl -s -X POST http://localhost:3420/api/memories \
+curl -s -X POST http://localhost:{{WEB_PORT}}/api/memories \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $(cat {{INSTALL_DIR}}/store/.dashboard-token)" \
   -d '{"agent_id":"SAJAT_NEVED","content":"...","category":"warm","keywords":"..."}'
@@ -82,13 +82,24 @@ Lépések:
    - ...
    EOF
    ```
-4. Index regen (mindkét szint):
+4. Linter az érintett skillen (KÖTELEZŐ, a skill-akció után):
+   ```bash
+   node {{INSTALL_DIR}}/scripts/skill-lint.mjs ~/.claude/skills/<NEV>
+   ```
+   Ha hibát jelez (nem 0 a kilépési kód): javítsd a jelzett pontot, és futtasd újra, amíg tiszta nem lesz. A szabályok (Anthropic, Skill authoring best practices): a SKILL.md törzse legfeljebb 500 sor; a 100 sornál hosszabb `references/` fájl tetején tartalomjegyzék; minden segédfájlra közvetlenül a SKILL.md mutasson; a SKILL.md linkjei létező fájlra mutassanak. A linter csak jelez; külső forrásból telepített skillt ne írj át.
+5. Index regen (mindkét szint):
    ```bash
    bash {{INSTALL_DIR}}/scripts/skill-index.sh          # globális index frissítése
    bash {{INSTALL_DIR}}/scripts/skill-index.sh "$(pwd)" # ágensspecifikus merged index frissítése
    ```
 
-**Ha kihagytad a skill akciót, pedig A/B/C valamelyike IGEN volt:** kötelezően írj `hot` tier memóriát "skip-skill: <konkrét ok>" tartalommal, hogy később lássuk miért. Ne csendben hagyd ki.
+**Ha kihagytad a skill akciót, pedig A/B/C valamelyike IGEN volt:** kötelezően hagyj nyomot `hot` tier memóriában, hogy később lássuk miért. Ne csendben hagyd ki.
+
+**A bejegyzés kulcsa a LELET, nem a kör.** Előbb keress meglévő `skip-skill:` sort UGYANARRA a leletre:
+- ha van: azt **frissítsd** (számláló + utolsó dátum), NE írj újat;
+- csak akkor írj új sort, ha ez a lelet még egyáltalán nem szerepel.
+
+Egy nyitott lelet egy sor marad, akárhány kör látja. (Mérve 2026-09-13: a kulcs a kör volt, nem a lelet, így minden kör újra beírta ugyanazt -- 35 skip-skill sor, a hot memória 64%-a, egyetlen zárt csatornára.)
 
 ## 3. Csendben maradás
 
