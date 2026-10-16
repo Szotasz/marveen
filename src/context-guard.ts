@@ -298,6 +298,23 @@ export interface GuardState {
    *  questions (2026-08-17: a merge-gate verdict on a payment PR was missing
    *  from a 20-minute-old handoff presented as current). */
   handoffStaleMinutes: HandoffStaleness
+  /** await-handoff only: a usage limit parked this sequence after the last
+   *  handoff request went out, so that request was answered by the limit and
+   *  never read. The first unlimited sweep re-sends it once (see
+   *  HANDOFF_RESEND_REASON_PREFIX) and clears this. Optional so every state
+   *  literal that never enters await-handoff reads as "not parked". */
+  handoffParkedByLimit?: boolean
+  /** await-handoff only: the reason of the handoff request this sequence last
+   *  sent. A re-send carries a reason of its own, and the runner needs the
+   *  original one to word the prompt the same way (act / idle / daily / stale). */
+  handoffRequestReason?: string
+  /** await-handoff only: this sequence was started by the idle-flush tier. Set
+   *  when the sequence starts and carried by `...state` through stale-refresh
+   *  and re-send requests, which overwrite handoffRequestReason. The restart
+   *  notice reads it: by the time the restart decision is made, the
+   *  decision reason is "handoff written" and the idle-flush origin is only
+   *  here. */
+  idleFlushSequence?: boolean
 }
 
 export const INITIAL_GUARD_STATE: GuardState = {
@@ -417,6 +434,226 @@ export interface GuardInputs {
    *  midnight and the last-served stamp -- neither of which belongs in this
    *  clock-free module's decision function. */
   dailyHandoffDue: boolean
+  /** The session is CURRENTLY blocked by a plan usage limit, as decided by
+   *  usageLimitVerdict() from the session transcript -- NOT the pane banner,
+   *  which outlives the limit (see USAGE_LIMIT_REASON_PREFIX). */
+  usageLimited: boolean
+  /** When the persisted resume obligation for this agent expires (ms):
+   *  restartedAtMs + PENDING_RESUME_TTL_MS, the edge restorableResumeStates
+   *  applies after a dashboard restart. null = no obligation on record. Only
+   *  read by the await-ready usage-limit park, which must never outlive it. */
+  pendingResumeExpiresAtMs: number | null
+}
+
+/**
+ * Reason prefix for every non-action taken because the session is blocked by a
+ * plan usage limit.
+ *
+ * Measured 2026-09-27 ~21:00 on three live agent panes: the footer read
+ * "⚠ Usage limit reached · continuing automatically at 6am · esc to cancel"
+ * over an empty prompt, with the agent idle. To the idle-flush tier such a
+ * session is "heavy and quiet", so it would ask for a handoff the agent has no
+ * quota to write, force-restart it after handoffTimeoutMinutes, and type the
+ * resume prompt into a session that is still limited: the working context is
+ * thrown away and the resume is answered by the limit, i.e. lost as well. The
+ * act tier and the daily tier would do the same, and the hard tier would
+ * restart straight into the limit. None of them can achieve anything until the
+ * limit lifts, and a limited session is not growing its context either, so the
+ * guard parks: no new handoff request, no restart, no resume injection, with
+ * the running deadlines pushed out so the wait does not count against the
+ * agent. When the limit lifts, the normal logic resumes on the next sweep.
+ *
+ * WHY NOT THE BANNER. Measured the same evening: that footer stays on screen
+ * after the limit has lifted. one agent answered a message in ~10 s with
+ * the banner still up, and two other agents worked for ~2 hours under it. A
+ * banner-only signal would park every tier indefinitely on exactly the agents
+ * the idle tier exists for. The transcript is what records whether the
+ * session's last turn was refused; see usageLimitEvidenceFromTranscript.
+ *
+ * The saturation net is deliberately NOT parked. "Context limit reached" is a
+ * different condition (a turn failed at the real context window) and a
+ * saturated pane never recovers by waiting, limit or no limit; it keeps
+ * outranking this.
+ */
+export const USAGE_LIMIT_REASON_PREFIX = 'usage-limited'
+
+/**
+ * Safety bound on one parking episode, measured from the first refused turn of
+ * the episode. The transcript cannot see a limit lift early (measured
+ * 2026-09-27: a weekly-limit refusal at 06:30Z carried resetsAt = the next day
+ * 04:00Z, yet the agent worked normally from 18:32Z), so an idle agent that is
+ * not prompted again would stay parked until resetsAt -- up to a week for a
+ * weekly limit. Past this bound the guard stops trusting the evidence and
+ * falls back to normal behaviour (the runner logs a WARN). 12 h spans a
+ * 5-hour window with a wide margin and is short enough that a stuck verdict
+ * costs at most half a day of flushes.
+ */
+export const USAGE_LIMIT_MAX_PARK_MS = 12 * 60 * 60_000
+
+/**
+ * Reason prefix for the one-time re-send of a handoff request after a usage
+ * limit lifted.
+ *
+ * A request sent into a session that then turns out to be limited is answered
+ * by the limit and never read. The await-handoff park keeps the timeout from
+ * firing meanwhile, but when the limit lifts nothing would ask again: the agent
+ * does not know a handoff is owed, and the guard just waits out the timeout and
+ * force-restarts without one. So the first unlimited sweep that still finds no
+ * handoff re-sends the request, once per parking episode, and the timeout
+ * window starts over from that moment. The runner words the re-send exactly as
+ * the original (GuardState.handoffRequestReason) and never counts it as a new
+ * daily slot, which is why it has a prefix of its own.
+ */
+export const HANDOFF_RESEND_REASON_PREFIX = 'handoff-resend-after-usage-limit'
+
+/** What the transcript says about the session's current usage-limit episode. */
+export interface UsageLimitEvidence {
+  /** Timestamp (ms) of the FIRST refused turn since the last successful one. */
+  sinceMs: number
+  /** Timestamp (ms) of the newest refused turn. */
+  lastErrorMs: number
+  /** quotaLimits.resetsAt of the newest refusal (ms), when the CLI recorded it. */
+  resetsAtMs: number | null
+  /** The refusal text of the newest refused turn, for the log. */
+  text: string
+}
+
+// Fallback for entries WITHOUT quotaLimits (older CLI) only: the refusal
+// wordings actually observed on one install, anchored at the start of the text,
+// which is where the CLI puts them. Deliberately NOT the pane-banner detector
+// (detectsUsageLimit) or a bare "usage limit" arm: the CLI 2.1.280 writes
+// its transient subscriber 429 as "API Error: Server is temporarily limiting
+// requests (not your usage limit) · ...", and any loose wording match reads
+// that negation as a limit (found in review).
+const QUOTA_REFUSAL_TEXT_RX = /^\s*you(?:'|\u2019)(?:ve hit your (?:\w+ )?limit\b|re out of extra usage\b)/i
+// Never a refusal, whatever else the text says.
+const TRANSIENT_LIMIT_TEXT_RX = /not your usage limit|temporarily limiting/i
+
+function entryText(message: unknown): string {
+  const content = (message && typeof message === 'object') ? (message as { content?: unknown }).content : undefined
+  if (typeof content === 'string') return content
+  if (!Array.isArray(content)) return ''
+  return content
+    .map((c) => (c && typeof c === 'object' && typeof (c as { text?: unknown }).text === 'string') ? (c as { text: string }).text : '')
+    .join(' ')
+    .trim()
+}
+
+/**
+ * Is this transcript entry a turn the API refused for a plan usage limit?
+ *
+ * Measured shape (CLI 2.1.280, a worksource agent, 2026-09-27T06:30:11Z), fields
+ * that matter: type "assistant", isApiErrorMessage true, error "rate_limit",
+ * apiErrorStatus 429, message.model "<synthetic>", message.content[0].text
+ * "You've hit your weekly limit · resets 6am (Europe/Budapest)", quotaLimits
+ * { status: "rejected", resetsAt: <unix s>, rateLimitType: "seven_day", ... }.
+ * The older CLI 2.1.110 wrote the same error/status pair with the text
+ * "You're out of extra usage · resets 6am (Europe/Budapest)" and no
+ * quotaLimits. Across every transcript on that install (2026-09-27) all 2838
+ * rate_limit/429 refusals have one of those two wordings.
+ *
+ * Structured fields outrank wording, in this order:
+ *   1. The error class must be rate_limit / 429.
+ *   2. apiErrorIsTransient === true is never a limit. The CLI sets it on its
+ *      transient subscriber 429 ("Server is temporarily limiting requests (not
+ *      your usage limit)"), which frees itself on the next request.
+ *   3. quotaLimits present: decided ONLY by quotaLimits.status === "rejected".
+ *   4. No quotaLimits (older CLI): only the positive refusal wordings observed
+ *      on that install, never a negated or transient one.
+ * "Prompt is too long" (error invalid_request) is the context-window refusal,
+ * not this; it never matches.
+ */
+export function isUsageLimitRefusal(entry: unknown): boolean {
+  if (!entry || typeof entry !== 'object') return false
+  const e = entry as Record<string, unknown>
+  if (e.type !== 'assistant' || e.isApiErrorMessage !== true) return false
+  if (e.error !== 'rate_limit' && e.apiErrorStatus !== 429) return false
+  if (e.apiErrorIsTransient === true) return false
+  const q = e.quotaLimits
+  if (q !== undefined && q !== null) {
+    return typeof q === 'object' && (q as { status?: unknown }).status === 'rejected'
+  }
+  const text = entryText(e.message)
+  if (TRANSIENT_LIMIT_TEXT_RX.test(text)) return false
+  return QUOTA_REFUSAL_TEXT_RX.test(text)
+}
+
+/**
+ * Usage-limit evidence from the tail of the session transcript (JSONL text),
+ * or null when the session is not currently refused.
+ *
+ * The rule: the NEWEST assistant entry must be a usage-limit refusal. Any
+ * successful assistant turn after a refusal means the limit has lifted, banner
+ * or no banner. Walking back from there, the episode runs until the last
+ * successful turn; other API errors inside it (overloaded, 5xx) neither end nor
+ * start it. Sidechain entries are ignored, and a malformed or partial first
+ * line (the tail may start mid-line) is skipped.
+ */
+export function usageLimitEvidenceFromTranscript(tail: string): UsageLimitEvidence | null {
+  const lines = tail.split('\n')
+  let newest: { ts: number; resetsAtMs: number | null; text: string } | null = null
+  let sinceMs: number | null = null
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i].trim()
+    if (!line) continue
+    let entry: Record<string, unknown>
+    try { entry = JSON.parse(line) } catch { continue }
+    if (!entry || typeof entry !== 'object' || entry.type !== 'assistant' || entry.isSidechain === true) continue
+    if (isUsageLimitRefusal(entry)) {
+      const ts = typeof entry.timestamp === 'string' ? Date.parse(entry.timestamp) : NaN
+      if (!Number.isFinite(ts)) continue
+      if (newest === null) {
+        const q = entry.quotaLimits as { resetsAt?: unknown } | undefined
+        const resetsAt = q && typeof q.resetsAt === 'number' && Number.isFinite(q.resetsAt) ? q.resetsAt * 1000 : null
+        newest = { ts, resetsAtMs: resetsAt, text: entryText(entry.message) }
+      }
+      sinceMs = ts
+      continue
+    }
+    if (entry.isApiErrorMessage === true) {
+      // Another API error. Before any refusal was seen it is the newest
+      // assistant entry, and that is not a usage limit.
+      if (newest === null) return null
+      continue
+    }
+    // A successful turn: the episode (if any) started after it.
+    break
+  }
+  if (newest === null || sinceMs === null) return null
+  return { sinceMs, lastErrorMs: newest.ts, resetsAtMs: newest.resetsAtMs, text: newest.text }
+}
+
+export type UsageLimitVerdict =
+  | { limited: true; evidence: UsageLimitEvidence }
+  | { limited: false; reason: 'no-refusal' | 'reset-passed' | 'park-expired' | 'before-restart'; evidence: UsageLimitEvidence | null }
+
+/**
+ * Is the session blocked by a usage limit right now? Evidence alone is not
+ * enough: once the recorded resetsAt has passed the limit is over by the CLI's
+ * own word, and an episode older than USAGE_LIMIT_MAX_PARK_MS is no longer
+ * trusted (the runner WARNs on that transition).
+ *
+ * `sessionStartMs` (await-ready only: the restart time of the owed resume): a
+ * refusal recorded BEFORE it belongs to the session the restart replaced. The
+ * transcript reader picks the newest jsonl, and a fresh session writes its own
+ * file only at its first entry (measured once: ~16 s after the spawn, at the
+ * identity /rename; a session without one presumably writes nothing until its
+ * first prompt, not measured), so until then the newest file is the dead
+ * session's, where no successful turn can ever end the episode. Only the new
+ * session's own refusal parks its resume.
+ */
+export function usageLimitVerdict(evidence: UsageLimitEvidence | null, nowMs: number, sessionStartMs: number | null = null): UsageLimitVerdict {
+  if (evidence === null) return { limited: false, reason: 'no-refusal', evidence }
+  if (sessionStartMs !== null && evidence.lastErrorMs < sessionStartMs) {
+    return { limited: false, reason: 'before-restart', evidence }
+  }
+  if (evidence.resetsAtMs !== null && nowMs >= evidence.resetsAtMs) {
+    return { limited: false, reason: 'reset-passed', evidence }
+  }
+  if (nowMs - evidence.sinceMs >= USAGE_LIMIT_MAX_PARK_MS) {
+    return { limited: false, reason: 'park-expired', evidence }
+  }
+  return { limited: true, evidence }
 }
 
 /**
@@ -701,7 +938,15 @@ export interface GuardDecision {
 // How long await-ready waits for the restarted session to accept the resume
 // prompt before giving up (the agent still comes up fine -- it just starts
 // without the injected pointer; kanban/memory hooks remain).
-export const READY_TIMEOUT_MS = 5 * 60_000
+//
+// 20 minutes, not 5: the runner sweeps every 5 minutes, so a
+// 5-minute deadline gave the fresh session exactly ONE readiness check, and a
+// session busy at that sweep lost its resume (3 of 13 restarts, 2026-09-28).
+// 20 minutes is four sweeps and stays inside PENDING_RESUME_TTL_MS (30 min),
+// the edge of the persisted obligation. A resume re-armed after a dashboard
+// restart gets that TTL edge as its deadline, so it may wait up to 10 minutes
+// longer than an uninterrupted one, but never past the TTL.
+export const READY_TIMEOUT_MS = 20 * 60_000
 
 function cooldown(nowMs: number, cfg: ContextGuardConfig, reason: string): GuardDecision {
   return {
@@ -777,6 +1022,13 @@ export function decideGuard(
         return none('pane saturated, awaiting confirmation sweep', { ...state, saturatedStreak: streak })
       }
       const cleared = state.saturatedStreak > 0 ? { ...state, saturatedStreak: 0 } : state
+      // Usage limit: below the saturation net, above every other tier. None of
+      // them can get a handoff written or a resume read while the limit holds
+      // (see USAGE_LIMIT_REASON_PREFIX). A due daily slot is NOT consumed by
+      // this non-decision, so it fires once the limit lifts.
+      if (inputs.usageLimited) {
+        return none(`${USAGE_LIMIT_REASON_PREFIX}: session blocked by a usage limit -- no handoff, flush or restart until it lifts`, cleared)
+      }
       if (cfg.enabled && inputs.pct !== null) {
         const wedgeTier = decideWedgeTiers(nowMs, inputs, cfg, cleared, none)
         if (wedgeTier) return wedgeTier
@@ -831,9 +1083,44 @@ export function decideGuard(
         // act-threshold pct already corroborates a near-full context).
         return restartDecision(nowMs, 'pane saturated during await-handoff', handoffStaleMinutes(inputs))
       }
+      if (inputs.usageLimited) {
+        // The agent cannot write (or finish writing) the handoff without
+        // quota, and neither the timeout nor the hard threshold may restart it
+        // meanwhile: the fresh session would be just as limited and the resume
+        // prompt would be lost. Park the deadline so the agent gets its full
+        // handoff window once the limit lifts. A handoff already on disk is
+        // not shipped either -- it would lead straight into a limited
+        // await-ready -- it is picked up by the first unlimited sweep.
+        return none(
+          `${USAGE_LIMIT_REASON_PREFIX}: during await-handoff -- deadline parked`,
+          {
+            ...state,
+            deadlineMs: Math.max(state.deadlineMs, nowMs + cfg.handoffTimeoutMinutes * 60_000),
+            handoffParkedByLimit: true,
+          },
+        )
+      }
       const handoffWritten =
         inputs.handoffMtime !== null &&
         (state.handoffMtimeAtRequest === null || inputs.handoffMtime > state.handoffMtimeAtRequest)
+      if (state.handoffParkedByLimit) {
+        // First sweep after a limit episode. The flag is consumed here either
+        // way, so the re-send happens at most once per episode.
+        const unparked: GuardState = { ...state, handoffParkedByLimit: false }
+        const atHard = inputs.pct !== null && inputs.pct >= cfg.hardPct
+        if (!handoffWritten && !atHard) {
+          // The request went into a limited session and was never read: ask
+          // again, and give the agent a full timeout window from now. At the
+          // hard threshold there is no waiting to restart, so the normal logic
+          // below restarts instead.
+          return {
+            action: 'request-handoff',
+            reason: `${HANDOFF_RESEND_REASON_PREFIX}: limit lifted with no handoff written -- re-sending (${state.handoffRequestReason ?? 'original reason unknown'})`,
+            nextState: { ...unparked, deadlineMs: nowMs + cfg.handoffTimeoutMinutes * 60_000 },
+          }
+        }
+        return decideGuard(unparked, inputs, cfg)
+      }
       if (handoffWritten && inputs.paneIdle) {
         // mtime-advanced is necessary but NOT sufficient: the agent may have
         // written the handoff and then kept working while we waited for an
@@ -853,13 +1140,15 @@ export function decideGuard(
           // mtime makes the NEXT write count as fresh; the deadline is left
           // alone, so an agent that keeps working through refresh requests
           // still restarts on time (with the staleness said out loud).
+          const reason = `${STALE_REFRESH_REASON_PREFIX}: handoff written but ~${staleMin}m of work happened after it -- requesting refresh`
           return {
             action: 'request-handoff',
-            reason: `${STALE_REFRESH_REASON_PREFIX}: handoff written but ~${staleMin}m of work happened after it -- requesting refresh`,
+            reason,
             nextState: {
               ...state,
               handoffMtimeAtRequest: inputs.handoffMtime,
               staleRefreshCount: state.staleRefreshCount + 1,
+              handoffRequestReason: reason,
             },
           }
         }
@@ -897,6 +1186,26 @@ export function decideGuard(
     }
 
     case 'await-ready': {
+      const resumeEdge = inputs.pendingResumeExpiresAtMs
+      if (inputs.running && inputs.usageLimited && resumeEdge !== null && nowMs < resumeEdge) {
+        // A resume prompt typed into a limited session is answered by the
+        // limit and never read. Hold the obligation, and keep the ready
+        // deadline ahead of us so the wait cannot expire it; delivery happens
+        // on the first sweep after the limit lifts.
+        //
+        // BOUNDED by the persisted obligation's TTL edge (restartedAtMs +
+        // PENDING_RESUME_TTL_MS). The on-disk copy expires there, so a park
+        // past it would hold in memory a resume that a dashboard restart
+        // drops, and the two paths would disagree. The TTL's own rationale
+        // applies too: no "continue from your handoff" hours after the
+        // restart. Past the edge (or with no obligation on record) the park
+        // ends and the pre-change behaviour runs: inject when ready, give up
+        // at the ready deadline.
+        return none(
+          `${USAGE_LIMIT_REASON_PREFIX}: resume injection parked`,
+          { ...state, deadlineMs: Math.min(resumeEdge, Math.max(state.deadlineMs, nowMs + READY_TIMEOUT_MS)) },
+        )
+      }
       if (inputs.running && inputs.sessionReady) {
         return {
           action: 'inject-resume',
@@ -1035,6 +1344,8 @@ function handoffRequest(
       // A NEW sequence starts with a fresh refresh budget.
       staleRefreshCount: 0,
       handoffStaleMinutes: null,
+      handoffRequestReason: reason,
+      idleFlushSequence: reason.startsWith(IDLE_FLUSH_REASON_PREFIX),
     },
   }
 }

@@ -134,7 +134,7 @@ describe('restart-lock wiring (pinned at the source)', () => {
     const body = fnBody(src('agent-process.ts'), 'restartAgentProcess')
     expect(body).toContain('beginRestart(name)')
     expect(body).toContain('stopAgentProcess(name)')
-    expect(body).toContain('startAgentProcess(name, opts)')
+    expect(body).toContain('startAgentProcess(name, willWake ? { ...opts, ownsResume: true } : opts)')
     // The release must be unconditional: a leaked slot silently disables every
     // liveness-driven auto-start for that agent for the life of the process.
     expect(body).toMatch(/finally\s*\{\s*endRestart\(name\)/)
@@ -184,11 +184,13 @@ describe('context-guard: a failed rescue is not filed as a completed one', () =>
 
   it('performRestart still asks for FRESH and now checks the result', () => {
     const body = fnBody(runner, 'performRestart')
-    expect(body).toContain('restartAgentProcess(name, { fresh: true })')
+    // ownsResume: the guard delivers its own resume, so the
+    // generic recovery brief stays out. Still FRESH.
+    expect(body).toContain('restartAgentProcess(name, { fresh: true, ownsResume: true })')
     // The result was discarded before RESTARTRACE901; a discarded result is how
     // "Agent is already running" became a silent success.
     expect(body).toMatch(/if\s*\(!res\.ok\)\s*throw/)
-    expect(body).not.toMatch(/^\s*await restartAgentProcess\(name, \{ fresh: true \}\)\s*$/m)
+    expect(body).not.toMatch(/^\s*await restartAgentProcess\(name, \{ fresh: true, ownsResume: true \}\)\s*$/m)
   })
 
   it('the restart action rolls the guard state back when the rescue fails', () => {
