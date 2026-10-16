@@ -22,6 +22,11 @@ WorkingDirectory=/path/to/marveen
 # ABI before starting. Prevents the "Could not locate the bindings file"
 # crash-loop after an npm install / Node upgrade (root-caused 2026-07-03).
 ExecStartPre=/path/to/marveen/scripts/ensure-native-modules.sh
+# Reapply the local Telegram reply-to patch (upstream issue #929 workaround) so a
+# channel (re)start immediately after a plugin update runs the patched server.ts,
+# instead of waiting up to a watchdog tick. Idempotent + best-effort: the leading
+# '-' means a patch failure never blocks the channel bridge from starting.
+ExecStartPre=-/path/to/marveen/scripts/patch-telegram-reply-to.mjs
 ExecStart=/path/to/marveen/scripts/channels.sh
 # P1 FIX: always (not on-failure). channels.sh exits 0 when the tmux session
 # dies normally, which on-failure did NOT restart -> the bridge was dead for
