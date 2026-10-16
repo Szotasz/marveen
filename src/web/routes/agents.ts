@@ -127,7 +127,7 @@ import { RemoteStatusCache } from '../remote-status-cache.js'
 import type { AgentRunState } from '../ssh-tmux.js'
 import { readActiveModelFromProjectDir, readContextTokensFromProjectDir } from '../active-model.js'
 import { detectPermissionMode, detectBackgroundAgents } from '../../pane-state.js'
-import { activityState } from '../pane-liveness.js'
+import { activityState, type ActivityState } from '../pane-liveness.js'
 import { checkAgentPutFields, checkConfigPutFields, AGENT_PUT_WRITABLE_FIELDS } from '../agent-put-fields.js'
 import { detectReauthNeeded } from '../reauth-detect.js'
 import { readAutoRestartConfig, writeAutoRestartConfig } from '../auto-restart-store.js'
@@ -674,7 +674,7 @@ const INBOX_DRAIN_CAP = 10
 // paneCommand is read for LOCAL sessions only. A remote agent would need a
 // second ssh round-trip per poll; omitting it keeps the previous behaviour
 // (paneCommand null => never 'dead') rather than paying that on every tick.
-function paneActivityLabel(running: boolean, pane: string | null, paneCommand: string | null = null): string {
+function paneActivityLabel(running: boolean, pane: string | null, paneCommand: string | null = null): ActivityState {
   return activityState({ running, pane, paneCommand })
 }
 
@@ -924,7 +924,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
         agent: name,
         isMain,
         running,
-        paneState: paneLabel as AgentStatusSignals['paneState'],
+        paneState: paneLabel,
         // Passed through uninterpreted -- no state is derived from it. See the
         // permissionMode note in agent-status.ts for why.
         permissionMode: running && pane !== null ? detectPermissionMode(pane) : null,
