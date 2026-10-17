@@ -8,7 +8,8 @@
 // user exists.
 //
 // Precedence (first match wins):
-//   1. Authorization: Bearer <dashboard token>   -> { kind: 'token', agent? }
+//   1. Authorization: Bearer <dashboard token>   -> { kind: 'token', claimedAgent? }
+//   1b. Authorization: Bearer <sub-agent token>  -> { kind: 'token', agent }
 //   2. Authorization: Bearer <device key>        -> { kind: 'device', device, deviceId }
 //   3. SSE pane-stream ?token=<dashboard token>   -> { kind: 'token' }  (path-scoped)
 //   4. SSE pane-stream ?token=<device key>        -> { kind: 'device' } (path-scoped)
@@ -19,6 +20,21 @@
 // requiresAuth() is the separate "is this path gated at all" predicate: public
 // probes (auth status, login, avatars) return false; everything under /api/ and
 // the fleet manifest return true.
+//
+// Two different agent names ride on the 'token' kind, and they must never be
+// confused:
+//   - claimedAgent: the SELF-ASSERTED X-Agent-Id header on the shared token
+//     (see resolveAgentClaim). Advisory: routes may warn and attribute with it,
+//     never authorize or restrict.
+//   - agent: AUTHENTICATED, set only when the Authorization bearer was a
+//     sub-agent's own token (agents/<name>/.dashboard-token, see
+//     agent-tokens.ts for the threat model; never on the SSE ?token= lane, a
+//     sub-agent has no business reading a pane stream). gateRequest()
+//     restricts this principal (agentScopeDenial). A
+//     per-agent token ignores the X-Agent-Id header: the token already names
+//     the caller, and a typed header must not override it.
+// The shared token (no `agent`) is the main/admin principal and is
+// byte-identical to before.
 
 import type http from 'node:http'
 import { checkBearerToken } from './dashboard-auth.js'
@@ -28,9 +44,11 @@ import { resolveDeviceKey, type DeviceKeyScope } from './auth-device-keys.js'
 import { OPERATOR_COOKIE_NAME, resolveOperatorSession } from './operator-sessions.js'
 import { sanitizeAgentIdent } from '../prompt-safety.js'
 import { isKnownAgent } from './agent-config.js'
+import { agentTokensEnabled, type AgentTokenResolver } from './agent-tokens.js'
+import { logger } from '../logger.js'
 
 export type AuthResult =
-  | { kind: 'token'; agent?: string }
+  | { kind: 'token'; agent?: string; claimedAgent?: string }
   | { kind: 'device'; device: string; deviceId: number; scope: DeviceKeyScope }
   | { kind: 'federation'; peer: string }
   | { kind: 'session'; user: string }
@@ -73,6 +91,12 @@ export function parseCookies(header: string | undefined): Record<string, string>
 // agent's row. An accident tells the truth about its own name, which is exactly
 // what this header captures. Real enforcement needs OS-level separation
 // (one UNIX user per agent); see docs/agens-azonositas-api.md.
+//
+// A sub-agent now also gets its own token (option B of that document, see
+// agent-tokens.ts). It does not change the paragraph above: that token is not
+// forgery-proof either. What it adds is a server-side place for the policies a
+// hook cannot enforce on every client. The claim stays what it was for every
+// caller on the SHARED token, and lands in `claimedAgent`, never in `agent`.
 //
 // Validation mirrors the `from` check on POST /api/messages: the claim must
 // name a registered fleet agent, otherwise it is DROPPED. Never a 403 -- the
@@ -121,18 +145,43 @@ export function requiresAuth(path: string, method: string): boolean {
   return path.startsWith('/api/')
 }
 
+// A matched per-agent token. With AGENT_DASHBOARD_TOKENS off (the rollback
+// switch) it still authenticates -- a running agent must not start getting
+// 401 -- but as the plain shared-token principal, i.e. the rights every agent
+// had before per-agent tokens existed.
+function agentTokenPrincipal(agent: string): AuthResult {
+  return agentTokensEnabled() ? { kind: 'token', agent } : { kind: 'token' }
+}
+
 export function resolveAuth(
   req: http.IncomingMessage,
   url: URL,
   path: string,
   method: string,
   dashboardToken: string,
+  resolveAgentToken?: AgentTokenResolver,
 ): AuthResult {
   // 1. Bearer header -- unchanged, highest precedence. The optional agent claim
   //    rides along: it never affects WHETHER the request is authenticated, only
   //    what the routes can say about who asked.
   if (checkBearerToken(req.headers.authorization, dashboardToken)) {
-    return { kind: 'token', agent: resolveAgentClaim(req) }
+    // The claim is SELF-ASSERTED (one shared token, anyone can type the header):
+    // it lands in claimedAgent, never in `agent`. `agent` is reserved for the
+    // AUTHENTICATED per-agent token below, because the scope/binding gates
+    // restrict by it -- a typed header must neither restrict the main lane nor
+    // stand in for a credential.
+    const claimedAgent = resolveAgentClaim(req)
+    return claimedAgent ? { kind: 'token', claimedAgent } : { kind: 'token' }
+  }
+
+  // 1b. A sub-agent's own token (agents/<name>/.dashboard-token). Only after
+  //     the shared token failed, so the main lane stays byte-identical.
+  if (resolveAgentToken) {
+    const m = /^Bearer\s+(.+)$/.exec(req.headers.authorization ?? '')
+    if (m) {
+      const agent = resolveAgentToken(m[1]!.trim())
+      if (agent) return agentTokenPrincipal(agent)
+    }
   }
 
   // 2. Bearer device key. Runs only after the dashboard token failed to match,
@@ -179,4 +228,91 @@ export function resolveAuth(
   }
 
   return { kind: 'none' }
+}
+
+// ---- Sub-agent scope ---------------------------------------------------------
+
+// Every method except GET/HEAD on /api/schedules or anything below it counts as
+// a schedule write: create (POST), update (PUT/PATCH), delete (DELETE), and the
+// POST side-effects (toggle, run-now, pending-retry cancel, the LLM
+// expand-* helpers the schedule editor uses). Fail-closed on purpose: a new
+// write route added under /api/schedules later is covered without touching
+// this list. Matched on a decoded, lower-cased, slash-collapsed copy so no
+// spelling variant slips past (the router itself is exact-match, so such
+// variants 404 anyway -- this is belt and braces).
+export function isScheduleWrite(path: string, method: string): boolean {
+  const m = method.toUpperCase()
+  if (m === 'GET' || m === 'HEAD' || m === 'OPTIONS') return false
+  let p = path
+  try { p = decodeURIComponent(path) } catch { /* keep raw */ }
+  p = p.toLowerCase().replace(/\/{2,}/g, '/')
+  return p === '/api/schedules' || p.startsWith('/api/schedules/')
+}
+
+export function scheduleWriteDeniedMessage(mainAgentId: string): string {
+  return `only the main agent writes schedules; send the request to ${mainAgentId} via /api/messages`
+}
+
+/**
+ * The per-principal scope check that runs right after authentication.
+ * Returns null when the request may proceed, or the 403 to send. Only a
+ * sub-agent token (kind 'token' WITH an agent tag) is ever restricted; the
+ * shared/main token, browser sessions, device keys and federation peers are
+ * untouched. The rule is the one scripts/self-pace-gate.mjs already applies to
+ * a sub-agent's shell commands, now enforced where every client lands.
+ */
+export function agentScopeDenial(
+  auth: AuthResult,
+  path: string,
+  method: string,
+  mainAgentId: string,
+): { status: 403; body: { error: string; rule: string; agent: string; main_agent: string } } | null {
+  if (auth.kind !== 'token' || !auth.agent) return null
+  if (!isScheduleWrite(path, method)) return null
+  return {
+    status: 403,
+    body: {
+      error: scheduleWriteDeniedMessage(mainAgentId),
+      rule: 'schedule-writes-main-agent-only',
+      agent: auth.agent,
+      main_agent: mainAgentId,
+    },
+  }
+}
+
+/**
+ * The whole request gate as web.ts runs it: resolve the principal, answer 401
+ * for a gated path with no principal (unchanged behaviour), then apply the
+ * sub-agent scope (403). Returns the principal when the request may proceed,
+ * or null once a response has been written. Extracted so the HTTP-level test
+ * drives the exact code path the dashboard runs.
+ */
+export function gateRequest(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  url: URL,
+  path: string,
+  method: string,
+  opts: { dashboardToken: string; resolveAgentToken?: AgentTokenResolver; mainAgentId: string },
+): AuthResult | null {
+  const auth = resolveAuth(req, url, path, method, opts.dashboardToken, opts.resolveAgentToken)
+  if (requiresAuth(path, method) && auth.kind === 'none') {
+    if (isFederationWireEndpoint(path, method)) {
+      // 401s are otherwise silent; federation-endpoint auth failures are the
+      // brute-force surface -- make them visible (round-2 scoped-token gate).
+      logger.warn({ path, method }, 'federation: rejected wire-endpoint auth')
+    }
+    res.writeHead(401, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify({ error: 'Unauthorized' }))
+    return null
+  }
+  const denial = agentScopeDenial(auth, path, method, opts.mainAgentId)
+  if (denial) {
+    // The agent NAME is logged, never the token.
+    logger.warn({ agent: denial.body.agent, method, path }, 'agent token: sub-agent schedule write refused (403)')
+    res.writeHead(denial.status, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify(denial.body))
+    return null
+  }
+  return auth
 }

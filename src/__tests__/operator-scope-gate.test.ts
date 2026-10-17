@@ -103,8 +103,13 @@ describe('operatorGateDecision over every enumerated /api path', () => {
 
 describe('the gate binding in web.ts', () => {
   const SRC = readFileSync(join(__dirname, '../web.ts'), 'utf-8')
+  const GATE_SRC = readFileSync(join(__dirname, '../web/auth-gate.ts'), 'utf-8')
   it('runs after the 401 check and before ANY handler (network-info and the route chain)', () => {
-    const unauthorized = SRC.indexOf("res.end(JSON.stringify({ error: 'Unauthorized' }))")
+    // The 401 is written inside gateRequest() (auth-gate.ts, together with the
+    // sub-agent token 403s); web.ts returns right after it when the gate answered.
+    expect(GATE_SRC).toContain("res.end(JSON.stringify({ error: 'Unauthorized' }))")
+    expect(SRC).toContain('const auth: AuthResult | null = gateRequest(req, res, url, path, method, {')
+    const unauthorized = SRC.indexOf('if (auth === null) return')
     const gate = SRC.indexOf('operatorGateDecision(auth, path, () => readOperatorAccess())')
     const networkInfo = SRC.indexOf("if (path === '/api/network-info' && method === 'GET')")
     const firstHandler = SRC.indexOf('if (await tryHandleAuth(routeCtx)) return')

@@ -390,3 +390,56 @@ is refused by the other.
 
 A 409 means: do not send, and check the sent mailbox before deciding anything,
 because the earlier attempt may already have gone out.
+
+# Per-agent dashboard tokens
+
+Every agent used to call the dashboard API with the one shared bearer token in
+`store/.dashboard-token`, so the server could not tell a sub-agent from the
+main agent. A rule such as "a sub-agent does not write schedules" was enforced
+only by `scripts/self-pace-gate.mjs`, a PreToolUse hook that reads the shell
+command: it denies a `curl -X POST .../api/schedules`, but a python `urllib`
+POST, a `node -e "fetch(...)"` call or a script file reaches the same endpoint
+without matching any pattern.
+
+## What it does
+
+- Each sub-agent gets its own random token in `agents/<name>/.dashboard-token`
+  (32 bytes hex, mode 0600), created on scaffold and checked on every agent
+  start. The main agent keeps `store/.dashboard-token`, unchanged.
+- The server maps the token to the agent (`auth.agent`). The shared token
+  carries no agent and keeps every right it had.
+- A sub-agent token gets `403` on every write under `/api/schedules`
+  (`rule: "schedule-writes-main-agent-only"`); reading schedules stays allowed.
+- On start, the agent's CLAUDE.md is rewritten from the shared token path to
+  its own file, and the generated sections render the per-agent path.
+
+The token file is accepted only as a regular file holding at least 32
+URL-safe characters. A symlink, an empty or truncated file, a copy of the main
+token, or a value that another agent's file also holds (an agent directory
+copied with `cp -r`) is never accepted; the next agent start replaces it with a
+fresh token. A per-agent token is accepted in the `Authorization` header only,
+not on the pane-stream `?token=` lane. The comparison is timing-safe over SHA-256 digests, and tokens are never
+logged (a refusal logs the agent name, the method and the path).
+
+## Threat model
+
+All agents run as the same OS user as the dashboard, so a determined agent can
+read `store/.dashboard-token` and present it. This is not forgery-proof (see
+`docs/agens-azonositas-api.md`); it puts the policy where every client lands,
+for the agent that "finds another way" around a hook, not for one that steals
+credentials. The `X-Agent-Id` header keeps its meaning on the shared token: a
+self-asserted, advisory name (`claimedAgent`), never used to authorize.
+
+## Switching it off
+
+`AGENT_DASHBOARD_TOKENS=0` turns the feature off (`false`, `no` and `off` work
+too). In `.env` it is read again within a few seconds, no restart needed; in
+the dashboard's process environment it wins over `.env` and takes a restart:
+
+- a per-agent token still authenticates, but as the shared-token principal,
+  so a running agent keeps working with the rights it had before;
+- nothing new is provisioned, and on the next agent start its CLAUDE.md points
+  back at `store/.dashboard-token`.
+
+After every sub-agent has restarted, the `agents/*/.dashboard-token` files can
+be deleted. An install with no per-agent token file behaves exactly as before.
