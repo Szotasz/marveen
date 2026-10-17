@@ -716,7 +716,14 @@ unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN
 # scrub the env var before any tmux command runs.
 unset TMUX
 
-export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin"
+# NATIVECLAUDEFIRST1011 (#1896): $HOME/.local/bin leads, so `command -v claude`
+# below picks the install user's native launcher (~/.local/bin/claude) over a
+# Homebrew/npm copy in /opt/homebrew/bin -- the order the dashboard's launchd
+# PATH and platform.ts KNOWN_BIN_DIRS already use. With /opt/homebrew/bin first,
+# a Mac that also had an older shared claude there ran the main session on that
+# one while the sub-agents ran the native build, and claude_is_native looked at
+# the wrong binary. Every other directory keeps its relative order.
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin"
 
 # FLEETVENV923: the fleet Python venv's bin/ goes FIRST, when it is set and
 # exists, so the main session's `python3` (and markitdown & co.) come from the
@@ -933,12 +940,51 @@ claude_relink_native() {
   command -v claude >/dev/null 2>&1
 }
 
+# NATIVEBEHIND1011 (#1901 review): a host that once ran the native installer and
+# then went back to npm keeps an intact ~/.local/bin/claude -> versions/<old>.
+# With ~/.local/bin first on the PATH, that older build now wins, and because
+# claude_is_native is true the update path is skipped. The #1613 evidence that
+# npm was the live install -- the update stamp newer than the build -- is
+# named here with both versions, so the owner sees that the CLI went backwards
+# and why. Only a log line: the session still starts. The npm version is read
+# from package.json, never by running a second binary at boot.
+# Once per build (#1901 re-review): the line is written once for a given native
+# build and npm copy, not on every start; a new native build or a new npm copy
+# names it again. Without npm on the PATH the npm half of the advice is moot, so
+# only `claude install stable` is suggested.
+claude_native_behind_npm_note() {
+  local b t ver npm_root npm_ver="" npm_state fix key
+  local seen="$INSTALL_DIR/store/.claude-native-behind-warned"
+  b="$(command -v claude 2>/dev/null)" || return 0
+  t="$(claude_realpath "$b")" || return 0
+  [ -n "$t" ] && [ -e "$CLAUDE_UPDATE_STAMP" ] && [ "$CLAUDE_UPDATE_STAMP" -nt "$t" ] || return 0
+  ver="$(basename "$t")"
+  if command -v npm >/dev/null 2>&1; then
+    npm_root="$(npm root -g 2>/dev/null)"
+    if [ -n "$npm_root" ] && [ -f "$npm_root/@anthropic-ai/claude-code/package.json" ]; then
+      npm_ver="$(sed -n 's/^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+        "$npm_root/@anthropic-ai/claude-code/package.json" | head -1)"
+    fi
+    npm_state="${npm_ver:-unknown}"
+    fix="\`claude install stable\` to bring the native build forward, or remove ~/.local/bin/claude to stay on npm"
+  else
+    npm_state="unknown (npm not found)"
+    fix="\`claude install stable\` to bring the native build forward"
+  fi
+  key="$t $npm_state"
+  [ "$(cat "$seen" 2>/dev/null)" = "$key" ] && return 0
+  if { echo "$(date '+%Y-%m-%d %H:%M:%S') channels.sh: WARN the native claude launcher wins and runs build ${ver} ($t), but the npm update stamp is newer than that build -- npm was the live install (npm copy: ${npm_state}). The main session now runs the OLDER native build and the update path is skipped. Fix: ${fix}." >> "$INSTALL_DIR/store/channels-failures.log"; } 2>/dev/null; then
+    { printf '%s\n' "$key" > "$seen"; } 2>/dev/null || true
+  fi
+}
+
 if ! command -v claude >/dev/null 2>&1; then
   if ! claude_relink_native; then
     claude_install "binary missing -- self-heal"
   fi
 elif claude_is_native; then
   echo "$(date '+%F %T') claude update SKIPPED: native install, npm path disabled" >&2
+  claude_native_behind_npm_note
 elif [ "$AVX_LESS" = "0" ] && [ -z "$(find "$CLAUDE_UPDATE_STAMP" -mtime -1 2>/dev/null)" ]; then
   # AVX-less hosts are excluded on purpose: their claude is pinned, and
   # "keep it current" is exactly what breaks them.

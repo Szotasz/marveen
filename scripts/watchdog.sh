@@ -97,7 +97,9 @@ if [ "${1:-}" = "--check-scaffolded" ]; then
 fi
 
 
-export PATH="/opt/homebrew/bin:$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
+# NATIVECLAUDEFIRST1011 (#1896): $HOME/.local/bin first, as in channels.sh -- the
+# sub-agent restart below resolves claude by name (CLAUDE_BIN) under this PATH.
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin:$PATH"
 . "$INSTALL_DIR/scripts/fleet-venv-prefix.sh" 2>/dev/null || fleet_venv_prefix() { :; }
 
 TOKEN=""
@@ -237,7 +239,7 @@ for AGENT_DIR in "$INSTALL_DIR/agents"/*/; do
   # watchdog restart must not hand the agent a different python3 (#1626 review).
   FLEET_VENV_PREFIX="$(fleet_venv_prefix "$INSTALL_DIR" "$LOG")"
 
-  CMD="${ISO_ENV}export PATH=\"${FLEET_VENV_PREFIX}/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin:\$PATH\" && unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN && export CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && export ${STATE_ENV_VAR}=\"$CHAN_DIR\" && cd \"$AGENT_DIR\" && ${CLAUDE_BIN} --dangerously-skip-permissions --model '$MODEL' --channels plugin:${AGENT_PROVIDER}@claude-plugins-official"
+  CMD="${ISO_ENV}export PATH=\"${FLEET_VENV_PREFIX}\$HOME/.local/bin:/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin:\$PATH\" && unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN && export CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && export ${STATE_ENV_VAR}=\"$CHAN_DIR\" && cd \"$AGENT_DIR\" && ${CLAUDE_BIN} --dangerously-skip-permissions --model '$MODEL' --channels plugin:${AGENT_PROVIDER}@claude-plugins-official"
 
   tmux new-session -d -s "$SESSION_NAME" "$CMD" 2>/dev/null
   sleep 2

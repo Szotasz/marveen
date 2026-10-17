@@ -217,7 +217,11 @@ run_guard() {
   # session); assigning the binary path to it corrupts server-socket detection.
   local MODE; MODE="$(resolve_mode)"
   [ "$MODE" = off ] && return 0
-  TMUX_BIN="$(command -v tmux)"; CLAUDE="$(command -v claude)"
+  # NATIVECLAUDEFIRST1011 (#1896): the native launcher first for the claude the
+  # respawn runs. An already installed Mac keeps its launchd plist (update.sh
+  # does not rewrite a loaded job), whose PATH puts /opt/homebrew/bin first.
+  TMUX_BIN="$(command -v tmux)"
+  CLAUDE="$HOME/.local/bin/claude"; [ -x "$CLAUDE" ] || CLAUDE="$(command -v claude)"
   if [ -z "$TMUX_BIN" ]; then log "tmux not on PATH; cannot act"; return 0; fi
 
   # Ensure the state dir exists BEFORE any stamp/lock write. Without it, a cold
@@ -405,7 +409,8 @@ run_guard() {
   # session -- a respawn must not hand it a different python3 (#1626 review).
   . "$INSTALL_DIR/scripts/fleet-venv-prefix.sh" 2>/dev/null || fleet_venv_prefix() { :; }
   local FLEET_VENV_PREFIX; FLEET_VENV_PREFIX="$(fleet_venv_prefix "$INSTALL_DIR" "$STORE/channels-failures.log")"
-  local RESPAWN_CMD="export PATH=\"${FLEET_VENV_PREFIX}/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin\" && export CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && ${CFG_ENV}$CLAUDE_Q --dangerously-skip-permissions ${MODEL_FLAG}--channels $PLUGIN_Q"
+  # NATIVECLAUDEFIRST1011: the same order as the channels.sh boot PATH (#1896).
+  local RESPAWN_CMD="export PATH=\"${FLEET_VENV_PREFIX}\$HOME/.local/bin:/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin\" && export CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && ${CFG_ENV}$CLAUDE_Q --dangerously-skip-permissions ${MODEL_FLAG}--channels $PLUGIN_Q"
 
   log "stuck modal not cleared by Escape -- respawn-pane $SESSION (respawn #$((count+1)))"
   # G: alert ONLY after the respawn-pane actually succeeds, so a failed respawn
