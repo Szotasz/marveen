@@ -1557,7 +1557,11 @@ main {
 }
 .card-detail-test-steps.is-testing h4 { color: var(--accent, #7c9cff); }
 
+/* Card 0f21864e (#568): tokens per card, same heading style as the labels. */
+.card-detail-tokens { margin-bottom: 20px; }
+.card-detail-tokens-body { font-size: 13px; color: var(--text); display: grid; gap: 2px; }
 .card-detail-labels { margin-bottom: 20px; }
+.card-detail-tokens h4,
 .card-detail-labels h4 {
   font-size: 12px;
   font-weight: 600;
