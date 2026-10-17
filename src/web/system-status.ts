@@ -250,11 +250,15 @@ const PLUGIN_PATCHES = [
   { name: 'evid', marker: 'MARVEEN-PATCH(cmd920-evid)', label: ' (bejövő-napló)', fallback: 'az író parancsok (/model, /context clear, saját parancsok) nem futnak, nincs mihez ellenőrizni őket' },
   { name: 'kbd', marker: 'MARVEEN-PATCH(c67f5f34-kbd)', label: ' (válaszgombok)', fallback: 'a kérdések gomb nélkül mennek ki, a válasz betűvel jön' },
 ]
+// Switchable (TELEGRAM_TOPICS_ENABLED): expected only when the last channel
+// start ran with the switch on, which the state file records.
+const TOPICS_PLUGIN_PATCH = { name: 'topics', marker: 'MARVEEN-PATCH(tgtopics)', label: ' (témák)', fallback: 'a válasz és a gépelés-jelzés nem a témába megy, hanem a témán kívülre' }
 
 export function telegramPluginPatchStatus(stateFile = join(STORE_DIR, 'telegram-plugin-patch.json')): string {
   if (!existsSync(stateFile)) return 'nincs adat (a csatorna-indítás még nem futtatta a patchert; nem Telegram csatorna?)'
   const state = JSON.parse(readFileSync(stateFile, 'utf-8')) as {
     root?: string
+    topics?: string
     files?: Array<{ version: string; status: string; patches?: Record<string, string> }>
   }
   if (!state.root) return notMeasurable('az állapotfájlban nincs cache-útvonal')
@@ -263,7 +267,8 @@ export function telegramPluginPatchStatus(stateFile = join(STORE_DIR, 'telegram-
   if (versions.length === 0) return `nincs Telegram plugin a cache-ben (${state.root})`
   const texts = new Map(versions.map(v => [v, readFileSync(join(base, v, 'server.ts'), 'utf-8')]))
   const lines: string[] = []
-  for (const p of PLUGIN_PATCHES) {
+  const expected = state.topics === 'on' ? [...PLUGIN_PATCHES, TOPICS_PLUGIN_PATCH] : PLUGIN_PATCHES
+  for (const p of expected) {
     const missing: string[] = []
     for (const v of versions) {
       if (texts.get(v)!.includes(p.marker)) continue

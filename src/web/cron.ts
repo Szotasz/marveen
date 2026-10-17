@@ -1,5 +1,5 @@
 import { CronExpressionParser } from 'cron-parser'
-import { APP_TZ, SCHEDULER_TZ_CONFIGURED } from '../config.js'
+import { APP_TZ, SCHEDULER_TZ_CONFIGURED, usableHostTz } from '../config.js'
 
 // All scheduled-task cron expressions (SKILL.md/task-config.json, the
 // dashboard schedule editor) are authored in the operator's own wall-clock
@@ -63,7 +63,9 @@ export function effectiveCronTz(): { tz: string; source: CronTzSource } {
   return resolveCronTz(
     SCHEDULER_TZ_CONFIGURED,
     process.env,
-    Intl.DateTimeFormat().resolvedOptions().timeZone,
+    // The host zone APP_TZ actually uses (UTC when the raw one is unusable),
+    // so the startup report names the zone in effect, not one config.ts refused.
+    usableHostTz(),
   )
 }
 
@@ -124,6 +126,29 @@ export function cronPrevOccurrence(cron: string, fromMs: number, toMs: number, t
     const expr = CronExpressionParser.parse(cron, { tz, currentDate: new Date(toMs + 1) })
     const prev = expr.prev().getTime()
     return prev > fromMs ? prev : null
+  } catch {
+    return null
+  }
+}
+
+// The tightest gap between consecutive occurrences of a schedule, sampled over
+// the next `samples` occurrences after `fromMs`: "how soon can the next one
+// come at best". The minimum, not the next gap, because a schedule like
+// `0 8,12,16,20 * * *` alternates 4 h and 12 h gaps and an answer that depends
+// on the time of day would make every consumer flap. null when the expression
+// does not parse or yields fewer than two occurrences.
+export function cronMinGapMs(cron: string, fromMs: number, samples: number = 8, tz: string = CRON_TZ): number | null {
+  try {
+    const expr = CronExpressionParser.parse(cron, { tz, currentDate: new Date(fromMs) })
+    let prev = expr.next().getTime()
+    let min: number | null = null
+    for (let i = 1; i < Math.max(2, samples); i++) {
+      const next = expr.next().getTime()
+      const gap = next - prev
+      if (gap > 0 && (min == null || gap < min)) min = gap
+      prev = next
+    }
+    return min
   } catch {
     return null
   }

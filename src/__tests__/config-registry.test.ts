@@ -35,7 +35,7 @@ describe('config-registry', () => {
   // Opt-in operator switches consumed as boot-time consts in src/config.ts.
   // Default must stay '0' (config.ts resolves an unset key to false), and the
   // UI must flag the restart, since the value is read once at module load.
-  it.each(['SUBAGENT_INBOX_TEE', 'SUBAGENT_TELEGRAM_WAKE_ENABLED', 'VOICE_TRANSCRIBE_INBOUND'])(
+  it.each(['SUBAGENT_INBOX_TEE', 'SUBAGENT_TELEGRAM_WAKE_ENABLED', 'VOICE_TRANSCRIBE_INBOUND', 'TELEGRAM_TOPICS_ENABLED'])(
     'registers %s as an off-by-default boolean that requires a restart',
     (key) => {
       const def = getSettingDefinition(key)
@@ -96,6 +96,27 @@ describe('config-registry', () => {
     it('rejects WARN_PCT above 100', () => {
       const def = getSettingDefinition('KANBAN_WIP_WARN_PCT')!
       expect(validateSettingValue(def, 101).ok).toBe(false)
+    })
+
+    describe('opt-in table retention (0 = keep forever)', () => {
+      const keys = [
+        ['CONVERSATION_LOG_RETENTION_DAYS', 90],
+        ['OTEL_SPAN_RETENTION_DAYS', 14],
+        ['AGENT_MESSAGE_RETENTION_DAYS', 30],
+        ['TOOL_CALL_LOG_RETENTION_DAYS', 30],
+      ] as const
+
+      it.each(keys)('%s defaults to 0, accepts 0 and its suggested window, rejects negatives', (key, suggested) => {
+        const def = getSettingDefinition(key)!
+        expect(def.default).toBe(0)
+        expect(validateSettingValue(def, 0)).toEqual({ ok: true, value: 0 })
+        expect(validateSettingValue(def, '0')).toEqual({ ok: true, value: 0 })
+        expect(validateSettingValue(def, suggested)).toEqual({ ok: true, value: suggested })
+        expect(validateSettingValue(def, -1).ok).toBe(false)
+        // The dashboard shows this text; it has to explain the 0 and name the window.
+        expect(def.description).toContain('0 = örökre megőrzi')
+        expect(def.description).toContain(`${suggested} nap`)
+      })
     })
 
     it('accepts a valid hex color', () => {

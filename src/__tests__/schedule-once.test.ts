@@ -62,6 +62,11 @@ describe('isOnceRunSuccess: a run closed done AND delivered intact, nothing else
   it('done + intact is a success', () => {
     expect(io.isOnceRunSuccess('done', 'intact')).toBe(true)
   })
+  it('done + intact-queued is a success too: whole, handed over inside a running turn (card c8a6c2cc)', () => {
+    expect(io.isOnceRunSuccess('done', 'intact-queued')).toBe(true)
+    expect(io.isOnceRunSuccess('abandoned', 'intact-queued')).toBe(false)
+    expect(io.isOnceRunSuccess('lost', 'intact-queued')).toBe(false)
+  })
   it('done with a damaged, unverifiable or missing verdict is not', () => {
     for (const v of ['head-lost', 'tail-lost', 'split', 'spliced', 'paste-wrapped', 'not-arrived', 'unverifiable', undefined, null]) {
       expect(io.isOnceRunSuccess('done', v as never)).toBe(false)

@@ -11,6 +11,7 @@ import {
   UNTRUSTED_PREAMBLE,
   TRUSTED_PEER_PREAMBLE,
   CHANNEL_INBOUND_PREAMBLE,
+  voiceChannelInboundPreamble,
   sanitizeAgentIdent,
   sanitizeOriginNote,
 } from '../prompt-safety.js'
@@ -183,7 +184,12 @@ export function wrapAgentMessageForDelivery(
     // The <channel> block IS the message, framed like the native plugin inbound.
     // No freshness annotation: these are user messages, not sender-superseded
     // inter-agent instructions.
-    return { wrapped: wrapChannelInbound(content), prefix: `${CHANNEL_INBOUND_PREAMBLE}\n` }
+    // HANGPREAMBLE1013: the voice channel replies through its pull mailbox, not
+    // a channel reply tool, so it gets its own preamble naming that route.
+    const preamble = safeFrom === VOICE_CHANNEL_AGENT_ID
+      ? voiceChannelInboundPreamble(VOICE_CHANNEL_AGENT_ID)
+      : CHANNEL_INBOUND_PREAMBLE
+    return { wrapped: wrapChannelInbound(content), prefix: `${preamble}\n` }
   }
   const idSuffix = msgId != null ? `, msg_id:${msgId}` : ''
   // Freshness/supersession heads-up appended AFTER the closing bracket of the

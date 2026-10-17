@@ -25,6 +25,7 @@ SQLite (`store/`): `kanban_cards` (id, title, status, project, priority, assigne
 
 - **Státuszok:** `planned`, `in_progress`, `waiting`, `testing`, `done`
 - **Prioritások:** `low`, `normal`, `high`, `urgent`
+- **`test_steps`:** a tesztelő számozott, rövid lépései. Külön mező, nem a `description` egy bekezdése, mert a kettő más kérdésre válaszol: a leírás az, hogy MI a feladat, ez pedig az, hogy hogyan ellenőrizhető. A `POST`/`PUT` ugyanúgy írja, mint a többi mezőt, a dashboard a kártya-részletekben külön blokkban mutatja, és `testing` státuszban kiemeli.
 
 ### Automatikus bontás
 
@@ -53,6 +54,8 @@ Két, csak hozzáírt tábla rögzíti, mi változott egy kártyán, és ki vál
 - `kanban_card_field_events`: a `due_date`, az `assignee` vagy a `priority` valódi változásánként egy sor a `PUT /api/kanban/:id` útján (`field`, `old_value`, `new_value`, szövegként; `null`, ha a mező üres volt vagy üres lett). A változatlanul visszaküldött érték nem ír sort. Olvasása: `GET /api/kanban/:id/field-events`.
 
 Mindkét írás (`PUT /api/kanban/:id` és `POST /api/kanban/:id/move`) `actor`-a szöveg vagy `null`; más típust 400-zal utasít el, mielőtt bármit írna, és az írás a soraival egy tranzakció. Az üres vagy csak szóközből álló actor hiányzónak számít: ilyenkor a dashboard-munkamenet felhasználója kerül a sorba, a tokenes hívóé névtelen (`null`) marad.
+
+A `POST /api/kanban/:id/move` opcionálisan `expected_status`-t is elfogad (compare-and-set). Ha meg van adva, a mozgatás csak akkor történik meg, ha a kártya aktuális státusza ezzel egyezik, az ellenőrzés és az írás egyetlen utasítás; különben semmi nem változik, és a válasz 409 `{error: "status_conflict", current_status, expected_status}`. Ismeretlen `expected_status` érték 400, hiányzó kártya továbbra is 404, a mező nélkül pedig a mozgatás feltétel nélküli, mint eddig.
 
 A kettő szándékosan külön tábla: a `kanban_card_events` minden olvasója (köztük a beakadt kártyák jelzése és a státusz-kor lekérdezései) az ottani sort státusz-átmenetnek veszi. A flotta-átvitel a `kanban_card_events`-et átviszi, a `kanban_card_field_events`-et nem.
 

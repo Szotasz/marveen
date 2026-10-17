@@ -910,6 +910,131 @@
       "name": "#1855 control: a cat heredoc without a pipe that mentions send.py --to",
       "cmd": "cat <<'EOF'\npython3 scripts/support-mail/send.py --to a@example.invalid\nEOF",
       "expected": false
+    },
+    {
+      "name": "SUBAGENTMAILGATE1016: an interpreter option before the sender (-u)",
+      "cmd": "python3 -u scripts/support-mail/send.py --to a@example.com --subject T --body B",
+      "expected": true
+    },
+    {
+      "name": "SUBAGENTMAILGATE1016: an interpreter option with its own argument before the sender (-X utf8)",
+      "cmd": "python3 -X utf8 scripts/support-mail/send.py --to a@example.com --subject T --body B",
+      "expected": true
+    },
+    {
+      "name": "SUBAGENTMAILGATE1016: a version-suffixed interpreter",
+      "cmd": "python3.13 scripts/support-mail/send.py --to a@example.com --subject T --body B",
+      "expected": true
+    },
+    {
+      "name": "SUBAGENTMAILGATE1016: a glob as the script path, with a recipient flag",
+      "cmd": "python3 scripts/support-mail/s?nd.py --to a@example.com --subject T --body B",
+      "expected": true
+    },
+    {
+      "name": "SUBAGENTMAILGATE1016: a variable as the script path, with a recipient flag",
+      "cmd": "P=scripts/support-mail/send.py; python3 $P --to a@example.com --subject T --body B",
+      "expected": true
+    },
+    {
+      "name": "SUBAGENTMAILGATE1016: the sender read as a program from stdin",
+      "cmd": "cd scripts/support-mail && python3 - --to a@example.com --subject T --body B < send.py",
+      "expected": true
+    },
+    {
+      "name": "SUBAGENTMAILGATE1016: an argparse abbreviation of --to",
+      "cmd": "python3 scripts/support-mail/send.py --t a@example.com --subject T --body B",
+      "expected": true
+    },
+    {
+      "name": "SUBAGENTMAILGATE1016: a variable script path with variable arguments",
+      "cmd": "python3 $SENDER $ARGS",
+      "expected": true
+    },
+    {
+      "name": "SUBAGENTMAILGATE1016 control: an interpreter option before another script",
+      "cmd": "python3 -u scripts/other.py --verbose",
+      "expected": false
+    },
+    {
+      "name": "SUBAGENTMAILGATE1016 control: -X before another script with a --top flag",
+      "cmd": "python3 -X utf8 scripts/tool.py --top 5",
+      "expected": false
+    },
+    {
+      "name": "SUBAGENTMAILGATE1016 control: a glob loop over scripts without recipient flags",
+      "cmd": "for f in *.py; do python3 $f; done",
+      "expected": false
+    },
+    {
+      "name": "SUBAGENTMAILGATE1016 control: a --to-date flag is not a recipient flag",
+      "cmd": "python3 scripts/x.py --to-date 2026-10-16",
+      "expected": false
+    },
+    {
+      "name": "SUBAGENTMAILGATE1016 control: a version-suffixed interpreter running pytest",
+      "cmd": "python3.13 -m pytest -q",
+      "expected": false
+    },
+    {
+      "name": "SUBAGENTMAILGATE1016 control: the sender's help",
+      "cmd": "python3 scripts/support-mail/send.py --help",
+      "expected": false
+    },
+    {
+      "name": "SUBAGENTMAILGATE1016 control: a stdin program without a recipient flag",
+      "cmd": "python3 - < scripts/report.py",
+      "expected": false
+    },
+    {
+      "name": "SUBAGENTMAILGATE1016: the sender run directly with an argparse abbreviation of --to",
+      "cmd": "./scripts/support-mail/send.py --t a@example.com --subject T --body B",
+      "expected": true
+    },
+    {
+      "name": "SUBAGENTMAILGATE1016: a command substitution as the script path",
+      "cmd": "python3 $(echo scripts/support-mail/send.py) --to a@example.com --subject T --body B",
+      "expected": true
+    },
+    {
+      "name": "SUBAGENTMAILGATE1016: a backtick substitution as the script path",
+      "cmd": "python3 `echo scripts/support-mail/send.py` --to a@example.com --subject T --body B",
+      "expected": true
+    },
+    {
+      "name": "SUBAGENTMAILGATE1016: a process substitution as the program",
+      "cmd": "python3 <(cat scripts/support-mail/send.py) --to a@example.com --subject T --body B",
+      "expected": true
+    },
+    {
+      "name": "SUBAGENTMAILGATE1016: a variable as the interpreter",
+      "cmd": "$PY scripts/support-mail/send.py --to a@example.com --subject T --body B",
+      "expected": true
+    },
+    {
+      "name": "SUBAGENTMAILGATE1016: a variable interpreter set in the same command",
+      "cmd": "PY=python3; $PY scripts/support-mail/send.py --to a@example.com --subject T --body B",
+      "expected": true
+    },
+    {
+      "name": "SUBAGENTMAILGATE1016: the free-threaded interpreter name",
+      "cmd": "python3.13t scripts/support-mail/send.py --to a@example.com --subject T --body B",
+      "expected": true
+    },
+    {
+      "name": "SUBAGENTMAILGATE1016 control: a substitution as a plain argument",
+      "cmd": "python3 scripts/x.py --date $(date +%F)",
+      "expected": false
+    },
+    {
+      "name": "SUBAGENTMAILGATE1016 control: a process substitution program without a recipient flag",
+      "cmd": "python3 <(echo 'print(1)')",
+      "expected": false
+    },
+    {
+      "name": "SUBAGENTMAILGATE1016 control: a variable command without a recipient flag",
+      "cmd": "$EDITOR notes.md",
+      "expected": false
     }
   ]
 }

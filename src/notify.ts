@@ -72,6 +72,32 @@ export async function deliverWithSlack(
   if (!r.ok || setting('NOTIFY_TELEGRAM') !== '0') await telegram()
 }
 
+/** What a channel send did, for callers that must react to a miss. */
+export interface ChannelSendResult {
+  sent: boolean
+  /** Why nothing (or not everything) went out. Absent when `sent` is true. */
+  reason?: 'no-token' | 'no-owner-chat' | 'send-failed' | 'partial'
+}
+
+/**
+ * Owner-facing send that REPORTS whether it went out, for the one caller that
+ * cannot treat a miss as a delivery -- an approval request nobody sees is not
+ * a gate. It resolves the owner chat like telegramOwner() below and sends on
+ * the configured channel provider. Unlike notifyOwner() below it does NOT go
+ * through deliverWithSlack, so a NOTIFY_SLACK_TARGET is not honoured here:
+ * the result has to describe the one send it made.
+ */
+export async function sendOwnerMessage(text: string): Promise<ChannelSendResult> {
+  const owner = resolveAlertOwnerChat(undefined, CHANNEL_CHAT_ID, CHANNEL_PROVIDER)
+  if (!CHANNEL_TOKEN || !owner.chatId) {
+    const reason = !CHANNEL_TOKEN ? 'nincs token' : `nincs tulajdonos-chat (${owner.reason})`
+    logger.warn(`Channel ertesites kihagyva: ${reason}`)
+    if (CHANNEL_TOKEN) signalOwnerChatMissing(text, owner.reason ?? 'ismeretlen ok')
+    return { sent: false, reason: !CHANNEL_TOKEN ? 'no-token' : 'no-owner-chat' }
+  }
+  return sendToChat(owner.chatId, text, 'owner')
+}
+
 // True when operational alerts go to a chat other than the owner's. Callers
 // must then leave owner/partner conversation content (e.g. a preview of a
 // parked input line) out of the alert text.
@@ -84,7 +110,9 @@ export function alertIsRedirected(): boolean {
 export async function notifyChannel(text: string): Promise<void> {
   return deliverWithSlack('alert', text, () => {
     const alertChat = normalizeChatId(ALERT_CHAT_ID)
-    if (alertChat) return sendToChat(alertChat, text)
+    // sendToChat reports now, this caller does not care: drop the result so the
+    // callback keeps its Promise<void> shape (slack-notify wiring contract).
+    if (alertChat) return sendToChat(alertChat, text, 'alert').then(() => {})
     return telegramOwner(text)
   })
 }
@@ -150,13 +178,34 @@ async function telegramOwner(text: string): Promise<void> {
     if (CHANNEL_TOKEN) signalOwnerChatMissing(text, owner.reason ?? 'ismeretlen ok')
     return
   }
-  return sendToChat(owner.chatId, text)
+  await sendToChat(owner.chatId, text, 'owner')
 }
 
-async function sendToChat(chatId: string, text: string): Promise<void> {
+// PR1655 review, ask 2: this used to return void and swallow every provider
+// exception, so a caller could not tell a delivered notification from a dead
+// one. It reports now; every existing caller ignores the value, so nothing
+// else changes shape.
+// NOTIFYSENDLOG930 -- every send leaves one line in the channel log: the
+// outcome, the HTTP status of the answer and the id the Bot API gave the new
+// message. Before this, the catches below swallowed every outcome, so neither
+// a delivered nor a lost alert could be told from store/dashboard.log. The
+// line names the target by its role, never the raw chat id, and carries no
+// token and no text: a Bot API error description can quote the text it
+// rejected, so on failure only the status is kept.
+type SendTarget = 'owner' | 'alert'
+
+/** The HTTP status in a provider send error ("Telegram API 403: ...",
+ *  "Discord API 404: ...", "Slack API HTTP 500"), or null when the send never
+ *  got an HTTP answer (timeout, network) or the answer carried no code. */
+function sendErrorStatus(err: unknown): number | null {
+  const m = /(?:Telegram API|Discord API|Slack API HTTP) (\d{3})\b/.exec(err instanceof Error ? err.message : String(err))
+  return m ? Number(m[1]) : null
+}
+
+async function sendToChat(chatId: string, text: string, target: SendTarget): Promise<ChannelSendResult> {
   if (!CHANNEL_TOKEN) {
     logger.warn('Channel ertesites kihagyva: nincs token')
-    return
+    return { sent: false, reason: 'no-token' }
   }
 
   // Marked here at the funnel, NOT at call sites -- a new caller must not be
@@ -166,16 +215,62 @@ async function sendToChat(chatId: string, text: string): Promise<void> {
   const formatted = provider.formatMessage(outbound)
   const chunks = provider.splitMessage(formatted)
 
-  for (const chunk of chunks) {
+  let delivered = 0
+  let lastError: unknown
+  const parseMode = CHANNEL_PROVIDER === 'telegram' ? 'HTML' : undefined
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk = chunks[i]
+    const where = { provider: CHANNEL_PROVIDER, target, chunk: i + 1, chunks: chunks.length }
     try {
-      const parseMode = CHANNEL_PROVIDER === 'telegram' ? 'HTML' : undefined
-      await provider.sendMessage(CHANNEL_TOKEN, chatId, chunk, parseMode)
-    } catch {
+      const receipt = await provider.sendMessage(CHANNEL_TOKEN, chatId, chunk, parseMode)
+      delivered++
+      logger.info({ ...where, status: receipt?.status ?? null, messageId: receipt?.messageId ?? null }, 'Channel ertesites elkuldve')
+    } catch (err) {
+      lastError = err
+      const firstStatus = sendErrorStatus(err)
+      // #1878 (9): the fallback is THIS chunk without formatting. It used to be
+      // outbound.slice(0, 4096), so a failure on chunk N sent the start of the
+      // whole message again and chunk N was never delivered.
       try {
-        await provider.sendMessage(CHANNEL_TOKEN, chatId, outbound.slice(0, 4096))
-      } catch { /* last resort, give up */ }
+        const receipt = await provider.sendMessage(CHANNEL_TOKEN, chatId, parseMode === 'HTML' ? telegramHtmlToPlain(chunk) : chunk)
+        delivered++
+        logger.info(
+          { ...where, status: receipt?.status ?? null, messageId: receipt?.messageId ?? null, plainTextRetry: true, firstStatus },
+          'Channel ertesites elkuldve',
+        )
+      } catch (err2) {
+        lastError = err2
+        // Last resort failed too: say so -- the role, the chunk index and the
+        // statuses only, never the text or the Bot API's error words.
+        logger.warn({ ...where, firstStatus, retryStatus: sendErrorStatus(err2) }, 'Channel ertesites SIKERTELEN')
+      }
     }
   }
+  if (delivered === 0) {
+    // With one chunk the SIKERTELEN line above already says everything; the
+    // summary is for a multi-chunk send. Status only, like the chunk line.
+    if (chunks.length > 1) {
+      logger.warn({ provider: CHANNEL_PROVIDER, target, chunks: chunks.length, status: sendErrorStatus(lastError) }, 'channel send failed on every chunk')
+    }
+    return { sent: false, reason: 'send-failed' }
+  }
+  if (delivered < chunks.length) {
+    logger.warn({ provider: CHANNEL_PROVIDER, target, delivered, chunks: chunks.length, status: sendErrorStatus(lastError) },
+      'channel send only partially delivered')
+    return { sent: false, reason: 'partial' }
+  }
+  return { sent: true }
+}
+
+// The plain-text form of a chunk formatForTelegram produced: its own tags
+// dropped (only those, so a literal "<5 perc>" in the text survives) and the
+// three entities its escapeHtml writes turned back into characters.
+export function telegramHtmlToPlain(html: string): string {
+  return html
+    .replace(/<\/?(?:b|i|s|code|pre)>|<code class="language-[^"]*">|<a href="[^"]*">|<\/a>/g, '')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&')
 }
 
 // Backward-compatible alias
