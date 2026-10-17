@@ -7,6 +7,9 @@ import {
   setSession,
   clearSession,
   saveMemory,
+  saveAgentMemory,
+  updateMemory,
+  findAgentMemoryByKeywords,
   recentMemories,
   decayMemories,
   getMemoriesForChat,
@@ -135,6 +138,23 @@ describe('memories', () => {
     } finally {
       globalThis.fetch = realFetch
     }
+  })
+})
+
+describe('findAgentMemoryByKeywords (75c3d163 (a): one morning-batch row per key)', () => {
+  it('finds the newest row of the agent with EXACTLY these keywords in the category, and nothing else', () => {
+    const k = 'reggeli-koteg-hang, chat:100200300, reggel:2026-07-16'
+    expect(findAgentMemoryByKeywords('kotegteszt', 'hot', k)).toBeUndefined()
+    const elso = saveAgentMemory('kotegteszt', 'ELSO', 'hot', k).id
+    const masodik = saveAgentMemory('kotegteszt', 'MASODIK', 'hot', k).id
+    saveAgentMemory('kotegteszt', 'MAS KULCS', 'hot', k + 'x')
+    saveAgentMemory('kotegteszt', 'MAS KATEGORIA', 'warm', k)
+    saveAgentMemory('mas-ugynok', 'MAS UGYNOK', 'hot', k)
+    expect(masodik).toBeGreaterThan(elso)
+    expect(findAgentMemoryByKeywords('kotegteszt', 'hot', k)).toEqual({ id: masodik, content: 'MASODIK' })
+    expect(findAgentMemoryByKeywords('kotegteszt', 'hot', 'reggeli-koteg-hang')).toBeUndefined() // no prefix match
+    expect(updateMemory(masodik, 'MASODIK, BOVITVE')).toBe(true)
+    expect(findAgentMemoryByKeywords('kotegteszt', 'hot', k)).toEqual({ id: masodik, content: 'MASODIK, BOVITVE' })
   })
 })
 
