@@ -1,6 +1,10 @@
 import { describe, it, expect, afterAll } from 'vitest'
 // @ts-expect-error -- plain .mjs hook script, no types
 import { gateDecision as selfPaceDecision, stripDataPayloads, stripGitCommitMessages, stripHeredocBodies, stripProseArguments } from '../../scripts/self-pace-gate.mjs'
+// newer exports read through the namespace, so this file still loads (and its
+// cases fail one by one) against a gate that does not have them yet
+// @ts-expect-error -- plain .mjs hook script, no types
+import * as selfPaceGateModule from '../../scripts/self-pace-gate.mjs'
 // @ts-expect-error -- plain .mjs hook script, no types
 import { bashViolation, isExactInstall } from '../../scripts/readonly-repo-gate.mjs'
 import {
@@ -13,7 +17,7 @@ import {
 import { MAIN_AGENT_ID } from '../config.js'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { mkdtempSync, mkdirSync, symlinkSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, symlinkSync, rmSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 
 // --- self-pace-gate: blocks the agent from scheduling its own future turns ---
@@ -93,8 +97,10 @@ describe('self-pace-gate gateDecision', () => {
     expect(selfPaceDecision('Bash', { command: 'curl -X POST http://localhost:3420/api/schedules -d @x.json' }).deny).toBe(true)
   })
   it('ALLOWS a GET read of the schedule API (F2 -- diagnostics, not self-pace)', () => {
-    expect(selfPaceDecision('Bash', { command: 'curl http://localhost:3420/api/schedules' }).deny).toBe(false)
-    expect(selfPaceDecision('Bash', { command: 'curl http://localhost:3420/api/schedules/pending' }).deny).toBe(false)
+    // -q first: without it curl reads ~/.curlrc, which can turn the GET into a
+    // write, so the bare form is no longer provably a read
+    expect(selfPaceDecision('Bash', { command: 'curl -q http://localhost:3420/api/schedules' }).deny).toBe(false)
+    expect(selfPaceDecision('Bash', { command: 'curl -q http://localhost:3420/api/schedules/pending' }).deny).toBe(false)
   })
   it('denies writing the schedule store via the native Write/Edit tool (F5)', () => {
     expect(selfPaceDecision('Write', { file_path: '/home/agent/.claude/scheduled_tasks.json', content: '{}' }).deny).toBe(true)
@@ -303,9 +309,9 @@ describe('self-pace-gate compound-command false-positives', () => {
     expect(selfPaceDecision('Bash', { command: 'grep poll scheduled_tasks.json; mv a.log b.log' }).deny).toBe(false)
   })
   it('ALLOWS a schedule-API GET with an unrelated -d flag in another segment', () => {
-    expect(selfPaceDecision('Bash', { command: 'curl http://localhost:3420/api/schedules && date -d yesterday' }).deny).toBe(false)
-    expect(selfPaceDecision('Bash', { command: 'curl http://localhost:3420/api/schedules | grep -d' }).deny).toBe(false)
-    expect(selfPaceDecision('Bash', { command: 'ls -d */ && curl http://localhost:3420/api/schedules' }).deny).toBe(false)
+    expect(selfPaceDecision('Bash', { command: 'curl -q http://localhost:3420/api/schedules && date -d yesterday' }).deny).toBe(false)
+    expect(selfPaceDecision('Bash', { command: 'curl -q http://localhost:3420/api/schedules | grep -d' }).deny).toBe(false)
+    expect(selfPaceDecision('Bash', { command: 'ls -d */ && curl -q http://localhost:3420/api/schedules' }).deny).toBe(false)
   })
   it('ALLOWS "batch"/"crontab" as a word in a script name or commit message', () => {
     expect(selfPaceDecision('Bash', { command: 'npm run batch:migrate' }).deny).toBe(false)
@@ -527,6 +533,498 @@ describe('self-pace-gate: quoted prose cannot fake a command position', () => {
   it('fails CLOSED on an UNQUOTED heredoc tag whose body substitutes', () => {
     // <<PY (no quotes) expands the body, so its contents are not inert.
     expect(selfPaceDecision('Bash', { command: 'cat <<PY\n$(crontab -r)\nPY' }).deny).toBe(true)
+  })
+})
+
+// --- the dashboard schedule surface, for EVERY client ---
+//
+// Measured on a live install: a sub-agent created four schedules with a python
+// urllib POST, 4x HTTP 200. The old check only knew curl's spelling of a write
+// (-X POST / -d / --data). The fix is not a longer list of spellings: any
+// command that references the schedule API or its store is denied unless every
+// segment carrying the reference is provably unable to write it.
+// A disposable project root with the token files form (a) may read in a header:
+// the shared <root>/store/.dashboard-token and per-agent <root>/agents/<name>/
+// .dashboard-token files (agent-c's carries a CR/LF request-smuggling payload).
+const GATE_ROOT = mkdtempSync(join(tmpdir(), 'selfpace-root-'))
+mkdirSync(join(GATE_ROOT, 'store'), { recursive: true })
+for (const a of ['agent-a', 'agent-b', 'agent-c']) mkdirSync(join(GATE_ROOT, 'agents', a), { recursive: true })
+writeFileSync(join(GATE_ROOT, 'store', '.dashboard-token'), 'example-token_0123.~+/=\n')
+writeFileSync(join(GATE_ROOT, 'agents', 'agent-a', '.dashboard-token'), 'agent-a-token\n')
+writeFileSync(join(GATE_ROOT, 'agents', 'agent-b', '.dashboard-token'), 'agent-b-token\n')
+writeFileSync(join(GATE_ROOT, 'agents', 'agent-c', '.dashboard-token'), 'x\r\n\r\nPOST /api/schedules HTTP/1.1\r\nHost: localhost\r\n')
+afterAll(() => rmSync(GATE_ROOT, { recursive: true, force: true }))
+const GATE_OPTS = { projectRoot: GATE_ROOT, selfAgent: 'agent-a' }
+const deny = (command: string, opts: Record<string, unknown> = GATE_OPTS) => selfPaceDecision('Bash', { command }, opts).deny
+// the shared token file, absolute: the file form (a) accepts in a header
+const TOKEN_PATH = join(GATE_ROOT, 'store', '.dashboard-token')
+const TOKEN_H = `-H "Authorization: Bearer $(cat ${TOKEN_PATH})"`
+const tokenHeader = (path: string) => `-H "Authorization: Bearer $(cat ${path})"`
+
+describe('self-pace-gate: schedule API writes through any HTTP client', () => {
+  it('denies the measured python urllib POST (heredoc form)', () => {
+    expect(deny([
+      `python3 - <<${Q}PY${Q}`,
+      'import json, urllib.request',
+      `tok = open(${Q}/srv/app/store/.dashboard-token${Q}).read().strip()`,
+      `req = urllib.request.Request(${Q}http://localhost:3420/api/schedules${Q}, data=json.dumps({${Q}name${Q}: ${Q}x${Q}, ${Q}schedule${Q}: ${Q}0 9 * * *${Q}}).encode(), headers={${Q}Authorization${Q}: ${Q}Bearer ${Q} + tok}, method=${Q}POST${Q})`,
+      'print(urllib.request.urlopen(req).status)',
+      'PY',
+    ].join('\n'))).toBe(true)
+  })
+  it('denies python requests', () => {
+    expect(deny(`python3 -c "import requests; requests.post('http://127.0.0.1:3420/api/schedules', json={'name':'x'})"`)).toBe(true)
+  })
+  it('denies node fetch', () => {
+    expect(deny(`node -e "fetch('http://[::1]:3420/api/schedules',{method:'POST',body:JSON.stringify({name:'x'})})"`)).toBe(true)
+  })
+  it('denies wget --post-data', () => {
+    expect(deny(`wget -qO- --post-data='{"name":"x"}' http://0.0.0.0:3420/api/schedules`)).toBe(true)
+  })
+  it('denies httpie', () => {
+    expect(deny(`http POST localhost:3420/api/schedules name=x schedule='*/5 * * * *'`)).toBe(true)
+  })
+  it('denies a variable host (the path is the reference, not the host)', () => {
+    expect(deny(`python3 -c "import os,urllib.request as u; h=os.environ['DASH_HOST']; u.urlopen(u.Request(f'http://{h}/api/schedules', data=b'{}'))"`)).toBe(true)
+    expect(deny(`curl -X POST "http://$HOST:$PORT/api/schedules" --data-binary @x.json`)).toBe(true)
+  })
+  it('denies perl, nc, bash -c, and a pipe into an interpreter', () => {
+    expect(deny(`perl -MHTTP::Tiny -e 'HTTP::Tiny->new->post("http://localhost:3420/api/schedules")'`)).toBe(true)
+    expect(deny(`printf 'POST /api/schedules HTTP/1.1\\r\\n\\r\\n' | nc localhost 3420`)).toBe(true)
+    expect(deny(`bash -c "curl -X POST localhost:3420/api/schedules -d x"`)).toBe(true)
+    expect(deny(`cat <<${Q}EOF${Q} | python3\nimport urllib.request as u\nu.urlopen(u.Request('http://localhost:3420/api/schedules', data=b'{}'))\nEOF`)).toBe(true)
+  })
+  it('denies spellings the shell or the interpreter resolves: quotes, concatenation, escapes, dot segments', () => {
+    expect(deny(`python3 -c "import urllib.request as u; u.urlopen(u.Request('http://localhost:3420/api/' + 'schedules', data=b'{}'))"`)).toBe(true)
+    expect(deny(`python3 -c "import urllib.request as u; u.urlopen(u.Request('http://localhost:3420/api/\\x73chedules', data=b'{}'))"`)).toBe(true)
+    expect(deny(`node -e "fetch('http://localhost:3420/api/sch'+'edules',{method:'POST'})"`)).toBe(true)
+    expect(deny(`curl -X POST http://localhost:3420/api/%2e/schedules -d x`)).toBe(true)
+  })
+  it('STILL denies a curl POST', () => {
+    expect(deny(`curl -s -X POST http://localhost:3420/api/schedules ${TOKEN_H} -d '{"name":"x"}'`)).toBe(true)
+  })
+  it('ALLOWS the plain curl GET, with the token header, and with a pipe consumer', () => {
+    expect(deny(`curl -q -s ${TOKEN_H} http://localhost:3420/api/schedules`)).toBe(false)
+    expect(deny(`curl -q -s ${TOKEN_H} "http://localhost:$PORT/api/schedules/pending"`)).toBe(false)
+    expect(deny(`curl -q -s ${TOKEN_H} http://localhost:3420/api/schedules | python3 -c "import json,sys; print(len(json.load(sys.stdin)))"`)).toBe(false)
+  })
+  it('does NOT accept a "GET" that is not provably one', () => {
+    // the scheme comes from a variable -> gopher:// would write raw bytes
+    expect(deny(`curl -q -s "$D/api/schedules"`)).toBe(true)
+    expect(deny(`curl -q -s gopher://localhost:3420/_POST%20/api/schedules`)).toBe(true)
+    // unquoted substitution word-splits into -X POST -d ...
+    expect(deny(`curl -q -s -H $(cat /tmp/args) http://localhost:3420/api/schedules`)).toBe(true)
+    // a CR/LF header smuggles a second, pipelined request (curl sends it verbatim)
+    expect(deny(`curl -q -s -H $'X: a\\r\\n\\r\\nPOST /api/schedules HTTP/1.1' http://localhost:3420/api/schedules`)).toBe(true)
+    expect(deny(`curl -q -s -H "X: $V" http://localhost:3420/api/schedules`)).toBe(true)
+    // the "payload" is really the URL: -H swallowed the -d
+    expect(deny(`curl -X POST -H -d 'http://localhost:3420/api/schedules' --data x`)).toBe(true)
+    // a separator INSIDE a quoted argv string is not a real command boundary
+    expect(deny(`python3 -c 'import sys,urllib.request as u; u.urlopen(u.Request(sys.argv[1], data=b"{}"))' 'a;curl -s http://localhost:3420/api/schedules;b'`)).toBe(true)
+  })
+  it('ALLOWS the reference when it is only message data (curl -d body, heredoc @-, git -m, agent-msg.sh)', () => {
+    expect(deny(`curl -s -X POST http://localhost:3420/api/messages ${TOKEN_H} --data-binary @- <<${Q}JSON${Q}\n{"from":"agent-a","to":"agent-b","content":"wanted POST /api/schedules"}\nJSON`)).toBe(false)
+    expect(deny(`git commit -m "$(cat <<${Q}EOF${Q}\nfix: /api/schedules gate\n\nsee ~/.claude/scheduled-tasks\nEOF\n)"`)).toBe(false)
+    expect(deny(`bash scripts/agent-msg.sh agent-a agent-b "cannot create /api/schedules entries"`)).toBe(false)
+  })
+  it('ALLOWS read-only file commands that mention the path', () => {
+    expect(deny(`grep -rn "/api/schedules" src/web | head -20`)).toBe(false)
+  })
+})
+
+describe('self-pace-gate: the scheduled-tasks store', () => {
+  it('denies Bash writes into the store: cp, redirect, tee, python open, a glob', () => {
+    expect(deny(`cp /tmp/t.json ~/.claude/scheduled-tasks/x/task-config.json`)).toBe(true)
+    expect(deny(`mkdir -p ~/.claude/scheduled-tasks/x && echo '{}' > ~/.claude/scheduled-tasks/x/task-config.json`)).toBe(true)
+    expect(deny(`echo hi | tee ~/.claude/scheduled-tasks/x/SKILL.md`)).toBe(true)
+    expect(deny(`python3 -c "open('/home/agent/.claude/scheduled-tasks/x/SKILL.md','w').write('x')"`)).toBe(true)
+    expect(deny(`cp x.json ~/.claude/sched*/x/`)).toBe(true)
+    expect(deny(`curl -s -o ~/.claude/scheduled-tasks/x/SKILL.md http://example.com/x`)).toBe(true)
+  })
+  it('denies a read whose output is piped into an interpreter', () => {
+    expect(deny(`cat ~/.claude/scheduled-tasks/x/SKILL.md |\npython3 -c 'x'`)).toBe(true)
+  })
+  it('denies the native Write / Edit / NotebookEdit tools on the store', () => {
+    expect(selfPaceDecision('Write', { file_path: '/home/agent/.claude/scheduled-tasks/x/SKILL.md', content: 'x' }).deny).toBe(true)
+    expect(selfPaceDecision('Edit', { file_path: '/srv/app/.channels-config/scheduled-tasks/x/task-config.json' }).deny).toBe(true)
+    expect(selfPaceDecision('NotebookEdit', { notebook_path: '/home/agent/.claude/scheduled-tasks/x/n.ipynb' }).deny).toBe(true)
+  })
+  // Shapes from a replay of real sub-agent tool calls: the store path travels
+  // in a VARIABLE or in the WORKING DIRECTORY, not in the segment that writes.
+  // The first is a measured SKILL.md append by a sub-agent.
+  it('denies a write through a variable or a cd that holds the store path', () => {
+    expect(deny(`F=~/.claude/scheduled-tasks/x/SKILL.md; cat >> $F <<${Q}EOF${Q}\nmore\nEOF`)).toBe(true)
+    expect(deny(`cd ~/.claude/scheduled-tasks && echo x > a/SKILL.md`)).toBe(true)
+    expect(deny(`cd ~/.claude/scheduled-tasks/x && sed -i 's/a/b/' SKILL.md`)).toBe(true)
+    expect(deny(`for f in ~/.claude/scheduled-tasks/*/SKILL.md; do echo x >> $f; done`)).toBe(true)
+  })
+  it('ALLOWS reads through a variable and a loop (no cd into the store)', () => {
+    expect(deny(`D=~/.claude/scheduled-tasks/x; ls $D 2>/dev/null && cat $D/task-config.json`)).toBe(false)
+    expect(deny(`for t in a b; do sed -n '1,60p' ~/.claude/scheduled-tasks/$t/SKILL.md; done`)).toBe(false)
+    // reading the store from the repo root, by absolute path, is fine
+    expect(deny(`cd /srv/app && cat ~/.claude/scheduled-tasks/x/task-config.json`)).toBe(false)
+  })
+  it('ALLOWS a literal note that mentions the API written to an unrelated file', () => {
+    expect(deny(`echo '- /api/schedules write is forbidden for sub-agents' >> MEMORY.md; cat MEMORY.md`)).toBe(false)
+  })
+  it('ALLOWS reads, and source files that only share the name', () => {
+    expect(deny(`ls ~/.claude/scheduled-tasks/`)).toBe(false)
+    expect(deny(`cat ~/.claude/scheduled-tasks/*/task-config.json 2>/dev/null | grep agent`)).toBe(false)
+    expect(deny(`sed -n 1,40p src/web/scheduled-tasks-io.ts`)).toBe(false)
+    expect(selfPaceDecision('Write', { file_path: '/home/x/src/web/scheduled-tasks-io.ts', content: 'x' }).deny).toBe(false)
+  })
+})
+
+// --- review holes in a first draft of the check. Each case below was allowed
+// (or crashed the gate open) there. ---
+describe('self-pace-gate schedule surface: parser holes', () => {
+  // 1) A zero-word segment (only redirects / a bare heredoc) made words[0]
+  // throw. A throwing gate exits 1, which PreToolUse does NOT block: the whole
+  // command ran, and every pre-existing denial after it was skipped too.
+  it('a redirect-only or bare-heredoc segment denies instead of crashing', () => {
+    expect(deny(`< /api/schedules; tmux send-keys -t x 'hi' Enter`)).toBe(true)
+    expect(deny(`cd ~/.claude/scheduled-tasks; >/dev/null; python3 -c 'open("x/SKILL.md","w")'`)).toBe(true)
+    expect(deny(`<<${Q}E${Q}\n/api/schedules\nE\npython3 -c "print(1)"`)).toBe(true)
+  })
+
+  // 2) -w %output{file} / %output{>>file} writes a file (curl >= 8.3.0; 8.5.0
+  // measured), and a GET without -q first reads ~/.curlrc.
+  it('form (a) refuses -w/--write-out, and requires -q as the first argument', () => {
+    expect(deny(`curl -q -s -w '%output{>>/home/agent/.claude/scheduled-tasks/x/SKILL.md}new' http://localhost:3420/api/schedules`)).toBe(true)
+    expect(deny(`curl -q -s --write-out '%output{/tmp/x}' http://localhost:3420/api/schedules`)).toBe(true)
+    expect(deny(`curl -s http://localhost:3420/api/schedules`)).toBe(true)
+    expect(deny(`curl -s -q http://localhost:3420/api/schedules`)).toBe(true) // -q only counts first
+    expect(deny(`curl -q -s localhost:3420/api/schedules`)).toBe(true) // no literal scheme
+  })
+
+  // 3) Brace expansion and curl URL globbing spell the path without spelling it.
+  it('brace expansion and bracket globs count as a reference', () => {
+    expect(deny(`curl -s -X POST http://localhost:3420/api/sch{e,}dules -d x`)).toBe(true)
+    expect(deny(`wget -qO- --post-data=x http://localhost:3420/api/sch[e]dules`)).toBe(true)
+    expect(deny(`python3 -c "import sys,urllib.request as u; u.urlopen(u.Request(sys.argv[1], data=b'{}'))" http://localhost:3420/api/{schedules,x}`)).toBe(true)
+    expect(deny(`cp /tmp/e ~/.claude/sch{e,}duled-tasks/x/SKILL.md`)).toBe(true)
+    // curl globs {a,b} / [x-y] in a URL even inside quotes
+    expect(deny(`curl -X POST "http://localhost:3420/api/sch{e,}dules" -d x`)).toBe(true)
+    expect(deny(`cp /tmp/e ~/.claude/{a,b,c,d,e,f,g,h,i,j}{a,b,c,d,e,f,g,h,i,j}{a,b,c,d,e,f,g,h,i,j}{a,b,s}cheduled-tasks/x`)).toBe(true)
+  })
+
+  // 4) A cd into the store denies the whole command (a flat rule instead of
+  // an in-store substitution check).
+  it('a cd into the store, with anything after it, denies', () => {
+    expect(deny(`cd ~/.claude/scheduled-tasks && cat a $(cp /tmp/e x/SKILL.md)`)).toBe(true)
+    expect(deny('cd ~/.claude/scheduled-tasks && cat a `cp /tmp/e x/SKILL.md`')).toBe(true)
+  })
+
+  // 5) Globs outside a literal .claude/ prefix.
+  it('globs in any path segment are matched against the store name', () => {
+    expect(deny(`cp /tmp/e ~/.c*/sch*/x/SKILL.md`)).toBe(true)
+    expect(deny(`cp /tmp/e /srv/app/.channels-config/sched*/x/SKILL.md`)).toBe(true)
+    expect(deny(`cp /tmp/e ~/.claude-config/sched*/x/SKILL.md`)).toBe(true)
+    expect(deny(`cd ~/.claude && cd sched* && echo x > y/SKILL.md`)).toBe(true)
+    expect(deny(`cd ~/.claude && cp /tmp/e s*/x/SKILL.md`)).toBe(true)
+  })
+
+  // 6) Any file named .dashboard-token could carry a CR/LF header payload; only
+  // the shared token file, by its literal absolute path, is trusted as a header
+  // value (per-agent files: see the token-file suite below).
+  it('the token-header exception is pinned to the absolute token path', () => {
+    expect(deny(`curl -q -s -H "Authorization: Bearer $(cat /tmp/.dashboard-token)" http://localhost:3420/api/schedules`)).toBe(true)
+    expect(deny(`curl -q -s ${TOKEN_H} http://localhost:3420/api/schedules`)).toBe(false)
+  })
+
+  it('does NOT over-fire on ordinary globs, braces and dict literals', () => {
+    expect(deny(`ls src/*/ && cp a b`)).toBe(false)
+    expect(deny(`cp src/*.ts /tmp/`)).toBe(false)
+    expect(deny(`python3 -c "d={'a':1,'b':2}; print(d)"`)).toBe(false)
+    expect(deny(`ls ~/.claude/* | head`)).toBe(false) // a read under the parent stays a read
+    // replay shapes: a quoted grep regex, a bare */* loop, a regex in a heredoc body
+    expect(deny(`grep -o 'https\\?://[^ )]*' f.md | sort -u; cp a b`)).toBe(false)
+    expect(deny(`for f in */*; do cp "$f" /tmp/; done`)).toBe(false)
+    expect(deny(`python3 - <<${Q}PY${Q}\nimport re; print(re.findall(r'[a-z]*', 'x'))\nPY`)).toBe(false)
+  })
+})
+
+// The hook ENTRY must fail closed on any error or hang: exit 1 and a harness
+// timeout are both non-blocking in PreToolUse. The fault is injected INSIDE the
+// decision with a --import preload that makes RegExp.prototype.test throw or
+// spin on a marker; SELF_PACE_GATE_SRC_MJS points the run at another gate file,
+// which is how a control run shows these FAIL on the previous gate.
+describe('self-pace-gate hook entry: an internal error or hang denies, never exits 1', () => {
+  const SRC = process.env.SELF_PACE_GATE_SRC_MJS ?? join(__dirname, '..', '..', 'scripts', 'self-pace-gate.mjs')
+  const PRELOAD = [
+    'const orig = RegExp.prototype.test',
+    'RegExp.prototype.test = function (s) {',
+    "  const t = String(s)",
+    "  if (t.includes('FAULT_INJECT_THROW')) throw new Error('injected fault')",
+    "  if (t.includes('FAULT_INJECT_HANG')) { for (;;) {} }",
+    '  return orig.call(this, s)',
+    '}',
+  ].join('\n')
+  const run = (command: string) => {
+    const dir = mkdtempSync(join(tmpdir(), 'selfpace-fault-'))
+    try {
+      const preload = join(dir, 'fault.mjs')
+      writeFileSync(preload, PRELOAD)
+      return spawnSync(process.execPath, ['--import', preload, SRC], {
+        input: JSON.stringify({ tool_name: 'Bash', tool_input: { command } }),
+        encoding: 'utf-8',
+        timeout: 8_000,
+        env: { ...process.env, SELF_PACE_GATE_DEADLINE_MS: '300' },
+      })
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+  const denied = (r: ReturnType<typeof run>) => r.status === 0
+    && JSON.parse(r.stdout || '{}')?.hookSpecificOutput?.permissionDecision === 'deny'
+
+  it('a thrown error inside the decision is a DENY', () => {
+    const r = run('echo FAULT_INJECT_THROW')
+    expect(r.status, r.stderr.slice(-300)).not.toBe(1)
+    expect(denied(r), `status=${r.status} stdout=${r.stdout} stderr=${r.stderr.slice(-300)}`).toBe(true)
+  })
+  it('a decision that never returns is a DENY within the deadline', () => {
+    const r = run('echo FAULT_INJECT_HANG')
+    expect(denied(r), `status=${r.status} signal=${r.signal} stdout=${r.stdout}`).toBe(true)
+  })
+  it('control: the same preload leaves an ordinary command allowed', () => {
+    const r = run('ls -la')
+    expect(r.status).toBe(0)
+    expect(r.stdout).toBe('')
+  })
+  it('gateDecision itself returns deny on a throw (in-process callers)', () => {
+    const bomb = { get command(): string { throw new Error('boom') } }
+    expect(selfPaceDecision('Bash', bomb).deny).toBe(true)
+  })
+})
+
+// --- bypasses of a cwd/shadow-modelling draft. The fix replaced the modelling
+// with flat, fail-closed invariants. ---
+describe('self-pace-gate schedule surface: flat invariants', () => {
+  // A shell function or alias shadowing an allowed read-only / GET name.
+  it('denies a function or alias that shadows an allowed command', () => {
+    expect(deny(`ls() { cp "$@"; }; ls /tmp/e ~/.claude/scheduled-tasks/x/SKILL.md`)).toBe(true)
+    expect(deny(`cat() { cp /tmp/e "$1"; }; cat ~/.claude/scheduled-tasks/x/SKILL.md`)).toBe(true)
+    expect(deny(`function ls { cp "$@"; }; ls /tmp/e ~/.claude/scheduled-tasks/x/SKILL.md`)).toBe(true)
+    expect(deny(`curl() { python3 -c 'x' "$2"; }; curl -q http://localhost:3420/api/schedules`)).toBe(true)
+    expect(deny(`alias ls=cp; ls /tmp/e ~/.claude/scheduled-tasks/x/SKILL.md`)).toBe(true)
+    expect(deny(`command cp /tmp/e ~/.claude/scheduled-tasks/x/SKILL.md`)).toBe(true)
+    expect(deny(`exec cp /tmp/e ~/.claude/scheduled-tasks/x/SKILL.md`)).toBe(true)
+    expect(deny(`builtin cd ~/.claude/scheduled-tasks`)).toBe(true)
+  })
+
+  // Trust a command only by a bare name or an exact system-binary path.
+  it('denies a command given by a non-system path (basename spoof)', () => {
+    expect(deny(`/tmp/cat ~/.claude/scheduled-tasks/x/SKILL.md`)).toBe(true)
+    expect(deny(`./curl -q http://localhost:3420/api/schedules`)).toBe(true)
+    expect(deny(`/tmp/curl -q -s http://localhost:3420/api/schedules`)).toBe(true)
+    // an exact system path stays trusted
+    expect(deny(`/usr/bin/curl -q -s http://localhost:3420/api/schedules`)).toBe(false)
+    expect(deny(`/bin/cat ~/.claude/scheduled-tasks/x/SKILL.md`)).toBe(false)
+  })
+
+  // Any cd/pushd/popd whose argument references the store denies the whole
+  // command -- no cwd state machine, so cd -/OLDPWD/failed-cd/popd cannot lose it.
+  it('denies any cd/pushd/popd into the store, and the return-to-store shapes', () => {
+    expect(deny(`cd ~/.claude/scheduled-tasks`)).toBe(true)
+    expect(deny(`cd ~/.claude/scheduled-tasks/x && cd /tmp && cd - && cp /tmp/e SKILL.md`)).toBe(true)
+    expect(deny(`cd ~/.claude/scheduled-tasks/x; cd /nonexistent; echo x > SKILL.md`)).toBe(true)
+    expect(deny(`pushd ~/.claude/scheduled-tasks; pushd /tmp; popd; echo x > a/b`)).toBe(true)
+    expect(deny(`cd "$OLDPWD/.claude/scheduled-tasks" && echo x > a`)).toBe(true)
+    // a cd to somewhere else, reading the store by an explicit path, is fine
+    expect(deny(`cd /tmp && cat ~/.claude/scheduled-tasks/x/task-config.json`)).toBe(false)
+  })
+
+  // The token marker is a per-run NUL nonce, not the literal ${DASHBOARD_TOKEN},
+  // so an agent cannot forge it with a real shell expansion (CR/LF smuggling).
+  it('denies a ${DASHBOARD_TOKEN}-style expansion in a header, even self-assigned', () => {
+    expect(deny(`DASHBOARD_TOKEN=$'x\r\n\r\nPOST /api/schedules HTTP/1.1'; curl -q -s -H "X: \${DASHBOARD_TOKEN}" http://localhost:3420/api/schedules`)).toBe(true)
+    expect(deny(`curl -q -s -H "X: \${DASHBOARD_TOKEN}" http://localhost:3420/api/schedules`)).toBe(true)
+    expect(deny(`curl -q -s -H "X: $(printf 'a\r\nb')" http://localhost:3420/api/schedules`)).toBe(true)
+  })
+
+  it('does NOT over-fire: the shadow words as arguments, a plain read', () => {
+    expect(deny(`grep command ~/.claude/scheduled-tasks/x/SKILL.md`)).toBe(false)
+    expect(deny(`ls ~/.claude/scheduled-tasks/`)).toBe(false)
+  })
+})
+
+// --- three more holes in the flat-invariant draft. Each case below was
+// ALLOWED there. ---
+describe('self-pace-gate schedule surface: subshells, variable writers, path normalisation', () => {
+  // 1) A definition opening a subshell/group is not at a segment start, so the
+  // segment-start test missed it; the shadowed `ls` then passed as form (b).
+  it('denies a function/alias definition at any command position (subshell, group)', () => {
+    expect(deny(`(ls(){ cp /tmp/x "$1"; }; ls ~/.claude/scheduled-tasks/a/SKILL.md; )`)).toBe(true)
+    expect(deny(`(ls(){ cp /tmp/x "$1"; }\nls ~/.claude/scheduled-tasks/a/SKILL.md\n)`)).toBe(true)
+    expect(deny(`(alias ls=cp\nls /tmp/x ~/.claude/scheduled-tasks/a/SKILL.md\n)`)).toBe(true)
+  })
+
+  // 2) Builtins that assign a variable without a NAME=value word escape the
+  // taint tracking; once the command references the surface they deny (flat).
+  it('denies printf -v, read, mapfile and a nameref next to a surface reference', () => {
+    expect(deny(`printf -v D %s ~/.claude/scheduled-tasks; mkdir -p "$D/x"; cp /tmp/s "$D/x/SKILL.md"`)).toBe(true)
+    expect(deny(`ls -d ~/.claude/scheduled-tasks > /tmp/l; read D < /tmp/l; cp /tmp/s "$D/x/SKILL.md"`)).toBe(true)
+    expect(deny(`ls -d ~/.claude/scheduled-tasks > /tmp/l; mapfile -t A < /tmp/l; cp /tmp/s "\${A[0]}/x/SKILL.md"`)).toBe(true)
+    expect(deny(`ls -d ~/.claude/scheduled-tasks > /tmp/l; while read f; do cp /tmp/s "$f/x"; done < /tmp/l`)).toBe(true)
+    expect(deny(`declare -n R=X; X=~/.claude/scheduled-tasks; cp /tmp/s "$R/x"`)).toBe(true)
+  })
+
+  // 3) An empty or dot segment hid the store parent from a short glob.
+  it('normalises // /./ and .. before reading a glob segment', () => {
+    expect(deny(`cd ~/.claude//sc* && cp /tmp/s x/SKILL.md`)).toBe(true)
+    expect(deny(`cp /tmp/s ~/.claude/./sc*/x/SKILL.md`)).toBe(true)
+    expect(deny(`cp /tmp/s ~/.claude/foo/../sc*/x/SKILL.md`)).toBe(true)
+  })
+
+  it('does NOT over-fire: the words as arguments or prose, readlink, a plain read', () => {
+    expect(deny(`grep -rn "readonly" ~/.claude/scheduled-tasks/x/SKILL.md`)).toBe(false)
+    expect(deny(`readlink -f ~/.claude/scheduled-tasks`)).toBe(false)
+    expect(deny(`cat ~/.claude/scheduled-tasks/*/task-config.json 2>/dev/null | grep agent`)).toBe(false)
+    expect(deny(`git commit -m "$(cat <<${Q}EOF${Q}\nfix: read the /api/schedules docs; command() in prose\nEOF\n)"`)).toBe(false)
+  })
+})
+
+describe('self-pace-gate schedule surface: more clients, the environment, prose carriers', () => {
+  it('denies store writes by any file tool, and wrappers that run a write', () => {
+    expect(deny(`mkdir -p ~/.claude/scheduled-tasks/x`)).toBe(true)
+    expect(deny(`rm -rf ~/.claude/scheduled-tasks/x`)).toBe(true)
+    expect(deny(`ln -s /tmp/x ~/.claude/scheduled-tasks/x`)).toBe(true)
+    expect(deny(`rsync -a /tmp/x/ ~/.claude/scheduled-tasks/x/`)).toBe(true)
+    expect(deny(`tee -a ~/.claude/scheduled-tasks/x/SKILL.md < /tmp/x`)).toBe(true)
+    expect(deny(`eval "cp /tmp/x ~/.claude/scheduled-tasks/x/SKILL.md"`)).toBe(true)
+    expect(deny(`cat <<${Q}EOF${Q} | bash\ncurl -X POST localhost:3420/api/schedules -d x\nEOF`)).toBe(true)
+  })
+  // A program reads its environment without spelling $NAME on the command
+  // line, so a tainted variable must not be exported (os.environ / process.env).
+  it('denies a reference that is exported into a program environment', () => {
+    expect(deny(`export U=http://localhost:3420/api/schedules; python3 -c "import os,urllib.request as u; u.urlopen(u.Request(os.environ['U'], data=b'{}'))"`)).toBe(true)
+    expect(deny(`U=http://localhost:3420/api/schedules; export U; node x.js`)).toBe(true)
+    expect(deny(`set -a; U=http://localhost:3420/api/schedules; node -e 'fetch(process.env.U, {method: "POST"})'`)).toBe(true)
+    expect(deny(`declare -x D=~/.claude/scheduled-tasks/x; python3 w.py`)).toBe(true)
+    // a variable that stays in the shell and only feeds read-only commands is fine
+    expect(deny(`set -euo pipefail; D=~/.claude/scheduled-tasks/x; ls $D`)).toBe(false)
+    expect(deny(`export PATH=/usr/bin:$PATH; ls ~/.claude/scheduled-tasks`)).toBe(false)
+  })
+  // Same scope as stripProseArguments: a PR body / comment / release note is prose.
+  it('ALLOWS gh/glab prose that mentions the surface, never gh api', () => {
+    expect(deny(`gh pr create --title t --body 'this blocks /api/schedules writes'`)).toBe(false)
+    expect(deny(`gh pr comment 1 --body="see ~/.claude/scheduled-tasks"`)).toBe(false)
+    expect(deny(`gh pr create --body-file - <<${Q}EOF${Q}\nPOST /api/schedules is denied\nEOF`)).toBe(false)
+    expect(deny(`gh api -X POST /api/schedules -f name=x`)).toBe(true)
+    expect(deny(`gh pr create --body x http://localhost:3420/api/schedules`)).toBe(true)
+    expect(deny(`gh pr create --body "$(curl -X POST localhost:3420/api/schedules -d x)"`)).toBe(true)
+  })
+  it('does NOT touch commands that never mention the surface', () => {
+    for (const c of ['ls -la', 'git status', 'npm test', 'curl -s http://localhost:3420/api/kanban',
+      `curl -s -X POST http://localhost:3420/api/messages -d '{"content":"hi"}'`, 'cat docs/scheduled-tasks.md']) {
+      expect(deny(c), c).toBe(false)
+    }
+  })
+})
+
+// --- the registry tool, the database file, token files, heredoc-to-script ---
+describe('self-pace-gate schedule surface: registry tool, database, token files, heredoc scripts', () => {
+  // The registry operator tool opens the database directly, so a task planted
+  // in the store and registered through it never passes the dashboard routes.
+  it('denies the registry tool except its read-only subcommands, in every runner form', () => {
+    for (const c of [
+      'node dist/web/schedule-registry-cli.js register --all',
+      'node /srv/app/dist/web/schedule-registry-cli.js register task-a',
+      'node dist/web/schedule-registry-cli.js unregister task-a',
+      'node dist/web/schedule-registry-cli.js',
+      'node dist/web/schedule-registry-cli.js register --source x --all',
+      'npx tsx src/web/schedule-registry-cli.ts register --all',
+      'npx --no-install tsx src/web/schedule-registry-cli.ts register --all',
+      'tsx src/web/schedule-registry-cli.ts register --all',
+      `node "dist/web/schedule-registry-cli.js" register --all`,
+      `node 'dist/web/schedule-'registry-cli.js register --all`,
+      'C=dist/web/schedule-registry-cli.js; node $C register --all',
+      'node dist/web/schedule-reg*-cli.js register --all',
+      `node -e "import('./dist/web/schedule-registry.js').then((m) => m.registerAllScheduledTasks())"`,
+      'cd dist/web && node schedule-registry-cli.js register --all',
+      'node --import x dist/web/schedule-registry-cli.js status',
+      `git -c alias.x="!node dist/web/schedule-registry-cli.js register --all" x`,
+    ]) expect(deny(c), c).toBe(true)
+    for (const c of [
+      'node dist/web/schedule-registry-cli.js status',
+      'node dist/web/schedule-registry-cli.js verify task-a task-b',
+      'npx tsx src/web/schedule-registry-cli.ts status | head -20',
+      'cat src/web/schedule-registry-cli.ts',
+      'git diff -- src/web/schedule-registry-cli.ts',
+      'npx vitest run src/__tests__/schedule-registry-shell-paths.test.ts',
+    ]) expect(deny(c), c).toBe(false)
+  })
+
+  it('denies file-level writes to the database file and SQL writes on schedule tables', () => {
+    for (const c of [
+      'cp /tmp/x.db store/claudeclaw.db',
+      'echo x > store/claudeclaw.db-wal',
+      'tee store/claudeclaw.db-shm < /tmp/x',
+      `sqlite3 store/claudeclaw.db ".restore /tmp/x.db"`,
+      `sqlite3 store/claudeclaw.db "INSERT INTO scheduled_task_registry VALUES (1)"`,
+      `python3 -c "import sqlite3; sqlite3.connect('store/claudeclaw.db').execute('UPDATE scheduled_tasks SET enabled=1')"`,
+      `sqlite3 /tmp/a.db "ATTACH 'store/claudeclaw.db' AS m; DELETE FROM m.scheduled_task_registry"`,
+    ]) expect(deny(c), c).toBe(true)
+    // reads of the database stay allowed (a worker reads the board this way)
+    for (const c of [
+      `sqlite3 store/claudeclaw.db "SELECT id, status FROM kanban_cards" | while read l; do echo "$l"; done`,
+      `python3 -c "import sqlite3; print(sqlite3.connect('store/claudeclaw.db').execute('select 1').fetchall())"`,
+      'ls -la store/claudeclaw.db',
+      `grep -n "INSERT INTO scheduled_tasks" src/db.ts`,
+    ]) expect(deny(c), c).toBe(false)
+  })
+
+  // A sub-agent runs in agents/<name>/: a RELATIVE store/.dashboard-token there
+  // is a file it can create itself, with a CR/LF in it, and curl sends a header
+  // value verbatim -- a second, pipelined POST rides inside the allowed GET.
+  it('accepts only the literal absolute token path, never a relative or ~/$HOME one', () => {
+    const get = (h: string) => `curl -q -s ${h} http://localhost:3420/api/schedules`
+    expect(deny(get(TOKEN_H))).toBe(false)
+    for (const p of ['store/.dashboard-token', './store/.dashboard-token', '~/app/store/.dashboard-token', '$HOME/app/store/.dashboard-token']) {
+      expect(deny(get(tokenHeader(p))), p).toBe(true)
+    }
+  })
+  it('the token file content must look like a token (a CR/LF payload, a missing file: deny)', () => {
+    const ok = (selfPaceGateModule as Record<string, unknown>).tokenFileContentOk as (p: string) => boolean
+    expect(ok(TOKEN_PATH)).toBe(true)
+    expect(ok(join(GATE_ROOT, 'agents', 'agent-c', '.dashboard-token'))).toBe(false)
+    expect(ok(join(GATE_ROOT, 'no-such-file'))).toBe(false)
+    const crlf = join(GATE_ROOT, 'agents', 'agent-c', '.dashboard-token')
+    expect(deny(`curl -q -s ${tokenHeader(crlf)} http://localhost:3420/api/schedules`, { projectRoot: GATE_ROOT, selfAgent: 'agent-c' })).toBe(true)
+  })
+  it('a token file rewritten in the same command is refused', () => {
+    expect(deny(`echo x > ${TOKEN_PATH}; curl -q -s ${TOKEN_H} http://localhost:3420/api/schedules`)).toBe(true)
+    expect(deny(`cp /tmp/t ${TOKEN_PATH} && curl -q -s ${TOKEN_H} http://localhost:3420/api/schedules`)).toBe(true)
+  })
+  // Per-agent token files: the calling agent's own, never another agent's.
+  it('accepts the calling agent own per-agent token file, not another agent one', () => {
+    const own = join(GATE_ROOT, 'agents', 'agent-a', '.dashboard-token')
+    const other = join(GATE_ROOT, 'agents', 'agent-b', '.dashboard-token')
+    const get = (p: string) => `curl -q -s ${tokenHeader(p)} http://localhost:3420/api/schedules`
+    expect(deny(get(own))).toBe(false)
+    expect(deny(get(other))).toBe(true)
+    // no calling agent known: only the shared file
+    expect(deny(get(own), { projectRoot: GATE_ROOT })).toBe(true)
+    const derive = (selfPaceGateModule as Record<string, unknown>).selfAgentFromProjectDir as (d: string | undefined, r: string) => string | undefined
+    expect(derive(join(GATE_ROOT, 'agents', 'agent-a'), GATE_ROOT)).toBe('agent-a')
+    expect(derive(join(GATE_ROOT, 'agents', 'agent-a', 'sub'), GATE_ROOT)).toBe(undefined)
+    expect(derive(GATE_ROOT, GATE_ROOT)).toBe(undefined)
+    expect(derive('/elsewhere/agents/agent-a', GATE_ROOT)).toBe(undefined)
+    expect(derive(undefined, GATE_ROOT)).toBe(undefined)
+  })
+
+  // A heredoc that carries a reference, written to a file and run afterwards.
+  it('denies a heredoc or here-string carrying a reference that is redirected to a file', () => {
+    for (const c of [
+      `cat <<${Q}X${Q} > /tmp/s.sh\ncurl -X POST localhost:3420/api/schedules -d x\nX\nbash /tmp/s.sh`,
+      `cat > /tmp/f <<${Q}X${Q}\ncurl -X POST localhost:3420/api/schedules -d x\nX\nsh /tmp/f`,
+      `grep -h . <<${Q}X${Q} > /tmp/s.py\nimport urllib.request as u; u.urlopen(u.Request("http://localhost:3420/api/schedules", data=b"{}"))\nX\npython3 /tmp/s.py`,
+      `grep -h . <<<${Q}curl -X POST localhost:3420/api/schedules -d x${Q} > /tmp/s.sh; bash /tmp/s.sh`,
+    ]) expect(deny(c), c).toBe(true)
+    // the same heredoc fed to a message or commit, with no file redirect, is data
+    expect(deny(`curl -s -X POST http://localhost:3420/api/messages --data-binary @- <<${Q}J${Q}\n{"content":"wanted POST /api/schedules"}\nJ`)).toBe(false)
+    expect(deny(`git commit -F - <<${Q}EOF${Q}\nfix /api/schedules docs\nEOF`)).toBe(false)
   })
 })
 
