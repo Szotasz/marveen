@@ -2325,7 +2325,10 @@ export function decayMemories(): void {
   db.prepare('UPDATE memories SET salience = MAX(salience * 0.995, 0.01) WHERE created_at < ?').run(oneWeekAgo)
 }
 
-export function getMemoriesForChat(chatId: string, limit = 10, offset = 0, category?: string, range?: TsRange): Memory[] {
+// staleBefore (card ca046c9a, #570): only rows whose LAST WRITE
+// (updated_at, or created_at when it was never updated) is older than this
+// unix time -- the "hot for a week and nobody touched it" view.
+export function getMemoriesForChat(chatId: string, limit = 10, offset = 0, category?: string, range?: TsRange, staleBefore?: number): Memory[] {
   // id DESC tie-break (#947): accessed_at has 1-second granularity, so a bulk
   // import leaves hundreds of rows sharing one value; without a stable
   // secondary sort SQLite may order the ties differently between queries, and
@@ -2337,11 +2340,13 @@ export function getMemoriesForChat(chatId: string, limit = 10, offset = 0, categ
   // 2026-10-17 on the owner store, the dashboard Hot tab (no agent filter,
   // limit 50) showed 6 of 115 hot memories.
   //
-  // The date range (card f90928e3) goes into the query for the same reason.
+  // The date range (card f90928e3) and the stale cut-off (card ca046c9a) go
+  // into the query for the same reason.
   const dt = tsClause('created_at', range)
+  const stale = staleBefore !== undefined ? ' AND COALESCE(updated_at, created_at) < ?' : ''
   return db
-    .prepare(`SELECT * FROM memories WHERE chat_id = ?${category ? ' AND category = ?' : ''} AND retracted_at IS NULL${dt.sql} ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?`)
-    .all(chatId, ...(category ? [category] : []), ...dt.params, limit, offset) as Memory[]
+    .prepare(`SELECT * FROM memories WHERE chat_id = ?${category ? ' AND category = ?' : ''} AND retracted_at IS NULL${dt.sql}${stale} ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?`)
+    .all(chatId, ...(category ? [category] : []), ...dt.params, ...(staleBefore !== undefined ? [staleBefore] : []), limit, offset) as Memory[]
 }
 
 // --- In-process memory cache (TTL-based) ---
@@ -2449,20 +2454,22 @@ function scheduleEmbedding(id: number, content: string, keywords: string | undef
 // accessed memories" instead of "the N most recent <category> memories", so an
 // older-but-still-active memory would drop out of the list with no truncation
 // signal -- invisible to the caller, and worst right after a restart.
-export function getAgentMemories(agentId: string, limit: number = 20, category?: string, offset: number = 0, range?: TsRange): Memory[] {
+export function getAgentMemories(agentId: string, limit: number = 20, category?: string, offset: number = 0, range?: TsRange, staleBefore?: number): Memory[] {
   // offset is part of the cache key (#947): without it page 2 would be served
   // page 1's cached rows for up to MEMORY_CACHE_TTL_MS. id DESC tie-break for
   // the same reason getMemoriesForChat has one -- accessed_at ties are common
   // after a bulk import and make LIMIT/OFFSET non-total without it. The date
-  // range (card f90928e3) is part of the key for the same reason, and goes
-  // into the query ahead of the LIMIT, never after it.
-  const key = `${agentId}:${limit}:${category ?? ''}:${offset}${range ? `:${range.fromTs}-${range.toTs}` : ''}`
+  // range (card f90928e3) and the stale cut-off (card ca046c9a) are part of
+  // the key for the same reason, and go into the query ahead of the LIMIT,
+  // never after it.
+  const key = `${agentId}:${limit}:${category ?? ''}:${offset}${range ? `:${range.fromTs}-${range.toTs}` : ''}:${staleBefore ?? ''}`
   const cached = memoryCacheGet(key)
   if (cached) return cached
   const dt = tsClause('created_at', range)
+  const stale = staleBefore !== undefined ? ' AND COALESCE(updated_at, created_at) < ?' : ''
   const result = db.prepare(
-    `SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared')${category ? ' AND category = ?' : ''} AND retracted_at IS NULL${dt.sql} ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?`
-  ).all(agentId, ...(category ? [category] : []), ...dt.params, limit, offset) as Memory[]
+    `SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared')${category ? ' AND category = ?' : ''} AND retracted_at IS NULL${dt.sql}${stale} ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?`
+  ).all(agentId, ...(category ? [category] : []), ...dt.params, ...(staleBefore !== undefined ? [staleBefore] : []), limit, offset) as Memory[]
   memoryCacheSet(key, result)
   return result
 }
@@ -2510,7 +2517,9 @@ export function searchAgentMemories(
   }
 }
 
-export function getMemoryStats(): { total: number; byAgent: Record<string, number>; byTier: Record<string, number>; withEmbedding: number } {
+export const HOT_STALE_DAYS = 7
+
+export function getMemoryStats(): { total: number; byAgent: Record<string, number>; byTier: Record<string, number>; withEmbedding: number; staleHot: number; staleHotDays: number } {
   const total = (db.prepare('SELECT COUNT(*) as c FROM memories').get() as {c:number}).c
   const withEmbedding = (db.prepare('SELECT COUNT(*) as c FROM memories WHERE embedding IS NOT NULL').get() as {c:number}).c
   const agentRows = db.prepare('SELECT agent_id, COUNT(*) as c FROM memories GROUP BY agent_id').all() as {agent_id:string, c:number}[]
@@ -2519,7 +2528,12 @@ export function getMemoryStats(): { total: number; byAgent: Record<string, numbe
   const byTier: Record<string, number> = {}
   for (const r of agentRows) byAgent[r.agent_id] = r.c
   for (const r of tierRows) byTier[r.category] = r.c
-  return { total, byAgent, byTier, withEmbedding }
+  // Card ca046c9a (#570): hot rows with no write for HOT_STALE_DAYS. Nothing
+  // moves a hot memory down on its own, so the count is the to-do list.
+  const staleHot = (db.prepare(
+    "SELECT COUNT(*) as c FROM memories WHERE category = 'hot' AND COALESCE(updated_at, created_at) < ?"
+  ).get(Math.floor(Date.now() / 1000) - HOT_STALE_DAYS * 86400) as {c:number}).c
+  return { total, byAgent, byTier, withEmbedding, staleHot, staleHotDays: HOT_STALE_DAYS }
 }
 
 /** One stored memory row, as the destructive-write paths need to see it. */
