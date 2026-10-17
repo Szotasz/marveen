@@ -8004,3 +8004,29 @@ body {
   color: var(--text, inherit);
 }
 .mem-search-label code { font-size: 11px; opacity: .85; }
+
+/* === Team notes ("Jegyzetek") === */
+.notes-form { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 0 0 16px; }
+.notes-form .input { min-width: 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-card); color: var(--text); font-size: 14px; font-family: inherit; }
+.notes-form .input:focus { outline: none; border-color: var(--accent); }
+.notes-form-content { flex: 1 1 280px; }
+.notes-table-wrap { margin-bottom: 16px; }
+.notes-table td { vertical-align: top; }
+.notes-content { white-space: pre-wrap; word-break: break-word; }
+.notes-assignee { font-weight: 600; white-space: nowrap; }
+.notes-muted { color: var(--text-muted, #888); font-size: 0.9em; overflow-wrap: anywhere; }
+.notes-actions { text-align: right; white-space: nowrap; }
+.notes-empty { text-align: center; color: var(--text-muted, #888); padding: 16px; }
+.notes-row-overdue td { background: var(--danger-soft); }
+.notes-row-today td { background: var(--accent-soft); }
+.notes-due-tag { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 8px; font-size: 0.8em; font-weight: 600; background: var(--danger); color: #fff; }
+.notes-row-today .notes-due-tag { background: var(--accent); }
+.notes-deleted > summary { cursor: pointer; color: var(--text-muted, #888); margin-bottom: 8px; }
+@media (max-width: 768px) {
+  .notes-table thead { display: none; }
+  .notes-table tr { display: block; padding: 8px 0; border-bottom: 1px solid var(--border, #333); }
+  .notes-table td { display: block; border: none; padding: 2px 8px; }
+  .notes-table td[data-label]::before { content: attr(data-label) ": "; color: var(--text-muted, #888); font-size: 0.85em; }
+  .notes-actions { text-align: left; }
+  .notes-assignee { white-space: normal; overflow-wrap: anywhere; }
+}
