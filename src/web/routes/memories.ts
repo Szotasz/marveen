@@ -11,7 +11,7 @@ import { logger } from '../../logger.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
 import { detectHomoglyphs, formatHomoglyphWarning } from '../../homoglyph.js'
 import type { HybridSearchTrace } from '../../db.js'
-import { getMemorySupersessions } from '../../memory-supersede.js'
+import { getMemorySupersessions, demoteSupersededRows } from '../../memory-supersede.js'
 import type { RouteContext } from './types.js'
 
 // Canonical memory categories. Kept in sync with the DB CHECK constraint in
@@ -264,6 +264,8 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       data.keywords || undefined,
       true
     )
+    // #571: a full "FELULIRJA <id>" moves the replaced hot/warm row to cold.
+    const demoted = demoteSupersededRows(result.id, data.content)
     // Warn-only homoglyph check (GATEHOMOGLIFSWEEP816): the save above already
     // happened -- legitimate Cyrillic/Greek content (quotes, foreign records)
     // must never be lost, so the finding rides the response instead of a 4xx.
@@ -271,10 +273,10 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     if (homoglyphs.length > 0) {
       const warning = formatHomoglyphWarning(homoglyphs)
       logger.warn({ agent: data.agent_id, memoryId: result.id }, `memory saved with ${warning}`)
-      json(res, { ok: true, id: result.id, homoglyph_warning: warning })
+      json(res, { ok: true, id: result.id, homoglyph_warning: warning, ...(demoted.length ? { demoted } : {}) })
       return true
     }
-    json(res, { ok: true, id: result.id })
+    json(res, { ok: true, id: result.id, ...(demoted.length ? { demoted } : {}) })
     return true
   }
 
@@ -735,7 +737,10 @@ Respond ONLY with JSON, nothing else:
     // which the if_version flow reads back.
     if (updateMemory(id, effectiveContent, newCategory, agent_id, keywords, updated_by)) {
       const version = memoryVersion(effectiveContent)
-      json(res, mismatch ? { ok: true, version, owner_mismatch: ownerMismatchPayload(id, mismatch) } : { ok: true, version })
+      // #571: an edit that ADDS a full "FELULIRJA <id>" demotes like a new row.
+      const demoted = effectiveContent !== before.content ? demoteSupersededRows(id, effectiveContent) : []
+      const extra = demoted.length ? { demoted } : {}
+      json(res, mismatch ? { ok: true, version, owner_mismatch: ownerMismatchPayload(id, mismatch), ...extra } : { ok: true, version, ...extra })
       return true
     }
     json(res, { error: 'Memory not found' }, 404)
