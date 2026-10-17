@@ -11,6 +11,7 @@ import { logger } from '../../logger.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
 import { detectHomoglyphs, formatHomoglyphWarning } from '../../homoglyph.js'
 import type { HybridSearchTrace } from '../../db.js'
+import { getMemorySupersessions, demoteSupersededRows } from '../../memory-supersede.js'
 import type { RouteContext } from './types.js'
 
 // Canonical memory categories. Kept in sync with the DB CHECK constraint in
@@ -263,6 +264,8 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       data.keywords || undefined,
       true
     )
+    // #571: a full "FELULIRJA <id>" moves the replaced hot/warm row to cold.
+    const demoted = demoteSupersededRows(result.id, data.content)
     // Warn-only homoglyph check (GATEHOMOGLIFSWEEP816): the save above already
     // happened -- legitimate Cyrillic/Greek content (quotes, foreign records)
     // must never be lost, so the finding rides the response instead of a 4xx.
@@ -270,10 +273,10 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     if (homoglyphs.length > 0) {
       const warning = formatHomoglyphWarning(homoglyphs)
       logger.warn({ agent: data.agent_id, memoryId: result.id }, `memory saved with ${warning}`)
-      json(res, { ok: true, id: result.id, homoglyph_warning: warning })
+      json(res, { ok: true, id: result.id, homoglyph_warning: warning, ...(demoted.length ? { demoted } : {}) })
       return true
     }
-    json(res, { ok: true, id: result.id })
+    json(res, { ok: true, id: result.id, ...(demoted.length ? { demoted } : {}) })
     return true
   }
 
@@ -303,6 +306,35 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     // SQL OFFSET would page over a DIFFERENT ranking than page 1 returned.
     // Reject the combination loudly instead of dropping offset silently --
     // silently dropping the parameter is the class of bug #947 is about.
+    // stale_days (card ca046c9a, #570): listing-only, like offset -- a
+    // relevance-ranked search filtered by age would page over a different set.
+    const staleRaw = url.searchParams.get('stale_days')
+    let staleBefore: number | undefined
+    if (staleRaw !== null) {
+      const staleDays = Number(staleRaw)
+      if (!Number.isFinite(staleDays) || staleDays <= 0) {
+        json(res, { error: 'invalid stale_days: must be a positive number' }, 400)
+        return true
+      }
+      if (q) {
+        json(res, { error: 'stale_days is not supported together with q (listing only)' }, 400)
+        return true
+      }
+      staleBefore = Math.floor(Date.now() / 1000) - Math.round(staleDays * 86400)
+    }
+    // superseded=hide (card f9242cd3, #571): leave out rows a newer memory
+    // replaces in full. Listing only, like stale_days.
+    const supersededParam = url.searchParams.get('superseded')
+    if (supersededParam !== null && supersededParam !== 'hide' && supersededParam !== 'show') {
+      json(res, { error: 'invalid superseded: must be hide or show' }, 400)
+      return true
+    }
+    if (supersededParam === 'hide' && q) {
+      json(res, { error: 'superseded=hide is not supported together with q (listing only)' }, 400)
+      return true
+    }
+    const supersessions = getMemorySupersessions()
+    const excludeIds = supersededParam === 'hide' ? [...supersessions.supersededBy.keys()] : undefined
     if (offset > 0 && q) {
       json(res, { error: 'offset is not supported together with q (search results are relevance-ranked, not a stable page order)' }, 400)
       return true
@@ -344,9 +376,9 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       }
     } else if (agentId) {
       // Category goes into the query, not a post-filter: see getAgentMemories.
-      results = getAgentMemories(agentId, limit, tier || undefined, offset)
+      results = getAgentMemories(agentId, limit, tier || undefined, offset, staleBefore, excludeIds)
     } else {
-      results = getMemoriesForChat(ALLOWED_CHAT_ID, limit, offset)
+      results = getMemoriesForChat(ALLOWED_CHAT_ID, limit, offset, { category: tier || undefined, staleBefore, excludeIds })
     }
 
     // Kept as a backstop, not as the mechanism. Since MEMKERESVAK917 every
@@ -365,6 +397,10 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     const formatted = results.map(m => ({
       ...m,
       embedding: undefined,
+      // #571: the chain, both directions. supersedes lists full AND partial
+      // references; superseded_by is only ever a FULL replacement.
+      supersedes: supersessions.refs.get(m.id) ?? [],
+      superseded_by: supersessions.supersededBy.get(m.id) ?? null,
       created_label: new Date(m.created_at * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ }),
       accessed_label: new Date(m.accessed_at * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ }),
     }))
@@ -550,7 +586,17 @@ Respond ONLY with JSON, nothing else:
   }
 
   if (path === '/api/memories/stats' && method === 'GET') {
-    json(res, getMemoryStats())
+    // #571: how many fully replaced rows each tier holds (all agents), so the
+    // tab can say how many it is hiding.
+    const ids = [...getMemorySupersessions().supersededBy.keys()]
+    const supersededByTier: Record<string, number> = {}
+    if (ids.length) {
+      const rows = getDb()
+        .prepare('SELECT category, COUNT(*) AS c FROM memories WHERE id IN (SELECT value FROM json_each(?)) GROUP BY category')
+        .all(JSON.stringify(ids)) as { category: string; c: number }[]
+      for (const r of rows) supersededByTier[r.category] = r.c
+    }
+    json(res, { ...getMemoryStats(), supersededByTier })
     return true
   }
 
@@ -691,7 +737,10 @@ Respond ONLY with JSON, nothing else:
     // which the if_version flow reads back.
     if (updateMemory(id, effectiveContent, newCategory, agent_id, keywords, updated_by)) {
       const version = memoryVersion(effectiveContent)
-      json(res, mismatch ? { ok: true, version, owner_mismatch: ownerMismatchPayload(id, mismatch) } : { ok: true, version })
+      // #571: an edit that ADDS a full "FELULIRJA <id>" demotes like a new row.
+      const demoted = effectiveContent !== before.content ? demoteSupersededRows(id, effectiveContent) : []
+      const extra = demoted.length ? { demoted } : {}
+      json(res, mismatch ? { ok: true, version, owner_mismatch: ownerMismatchPayload(id, mismatch), ...extra } : { ok: true, version, ...extra })
       return true
     }
     json(res, { error: 'Memory not found' }, 404)
