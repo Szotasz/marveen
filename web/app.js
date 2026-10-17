@@ -7671,6 +7671,20 @@ function renderMemSearchLabel(header) {
   el.append(strong, body, raw)
 }
 
+// #571: the chain chips of one memory card. Every interpolation is a
+// Number() or an escapeHtml(t(...)), so the HTML is safe by construction.
+function memChainChipsHtml(supersedes, supersededBy) {
+  let html = ''
+  for (const r of supersedes) {
+    const key = r.partial ? 'memories.chain.supersedes_part' : 'memories.chain.supersedes'
+    html += `<button type="button" class="mem-chain-chip${r.partial ? ' partial' : ''}" data-ref-id="${Number(r.id)}">${escapeHtml(t(key, { id: Number(r.id) }))}</button>`
+  }
+  if (supersededBy) {
+    html += `<button type="button" class="mem-chain-chip replaced" data-ref-id="${Number(supersededBy)}">${escapeHtml(t('memories.chain.superseded_by', { id: Number(supersededBy) }))}</button>`
+  }
+  return html
+}
+
 function renderMemories(memories) {
   memList.innerHTML = ''
   memEmpty.hidden = memories.length > 0
@@ -7693,10 +7707,7 @@ function renderMemories(memories) {
     const moveTargets = []
     if (isStaleHot) moveTargets.push('warm', 'cold')
     else if (supersededBy && tier !== 'cold') moveTargets.push('cold')
-    const chainChips = [
-      ...supersedes.map(r => `<button type="button" class="mem-chain-chip${r.partial ? ' partial' : ''}" data-ref-id="${Number(r.id)}">${escapeHtml(t(r.partial ? 'memories.chain.supersedes_part' : 'memories.chain.supersedes', { id: Number(r.id) }))}</button>`),
-      ...(supersededBy ? [`<button type="button" class="mem-chain-chip replaced" data-ref-id="${Number(supersededBy)}">${escapeHtml(t('memories.chain.superseded_by', { id: Number(supersededBy) }))}</button>`] : []),
-    ].join('')
+    const chainChips = memChainChipsHtml(supersedes, supersededBy)
 
     // Build keywords HTML
     let keywordsHtml = ''
@@ -7720,7 +7731,7 @@ function renderMemories(memories) {
       <div class="mem-content-full">${escapeHtml(mem.content)}</div>
       ${keywordsHtml}
       <div class="mem-item-footer">
-        ${moveTargets.map(tg => `<button class="btn-secondary mem-move-btn" data-move-tier="${tg}" style="padding:6px 14px; font-size:12px;">${escapeHtml(t(tg === 'warm' ? 'memories.stale.to_warm' : 'memories.stale.to_cold'))}</button>`).join('')}
+        ${moveTargets.map(tg => `<button class="btn-secondary mem-move-btn" data-move-tier="${escapeHtml(tg)}" style="padding:6px 14px; font-size:12px;">${escapeHtml(t(tg === 'warm' ? 'memories.stale.to_warm' : 'memories.stale.to_cold'))}</button>`).join('')}
         <button class="btn-secondary" data-edit-memid="${mem.id}" style="padding:6px 14px; font-size:12px;">${t('common.btn.edit')}</button>
         <button class="btn-danger" data-memid="${mem.id}" style="padding:6px 14px; font-size:12px;">${t('common.btn.delete')}</button>
       </div>
