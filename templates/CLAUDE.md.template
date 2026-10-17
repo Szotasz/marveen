@@ -267,7 +267,7 @@ Te egy önfejlesztő ágens vagy. A munkád során tanulsz, és újrafelhasznál
 
 ### Skill-ek helye
 - Globális: `~/.claude/skills/` (minden ágens számára elérhető)
-- Egyéni: a te munkakönyvtárad `.claude/skills/` mappája
+- Egyéni: a főágensnek NINCS privát hely, a munkakönyvtára maga a projekt-gyökér, és annak `.claude/skills/` mappáját a sub-ágensek is látják. Hova írj és mit mérj előbb: lásd lent a "Skill-útvonal csapda" szakaszt
 
 ### Automatikus skill generálás
 Komplex feladatok után (5+ tool hívás, hiba utáni recovery, user korrekció, többlépéses workflow) automatikusan hozz létre SKILL.md fájlt:
