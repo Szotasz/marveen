@@ -65,7 +65,7 @@ function render(groupBy: 'assignee' | 'priority', cards: Card[], nickname = '') 
     slice('function escapeHtml(str)', '\n}\n') + '\n}\n' +
       slice('const KANBAN_STATUS_DEFS', '\n// Which swimlane a card belongs to') +
       slice('function kanbanSwimlaneKeyFor(card)', '\n}\n') + '\n}\n' +
-      slice('function kanbanHideFromLanes(card)', '\n// Map column status keys') +
+      slice('function kanbanIsOwnerOpen(card)', '\n// Map column status keys') +
       '\nglobalThis.run = (g) => renderSwimlaneBoard(g, new Set())',
     ctx,
   )

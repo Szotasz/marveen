@@ -74,7 +74,7 @@ function setup(owner: string | null, cards: unknown[], assignees: unknown[] = []
   vm.createContext(ctx)
   vm.runInContext(
     slice(APP_JS, 'const KANBAN_OWNER_QUEUE_LABEL', 'function renderKanban()') +
-      slice(APP_JS, 'function kanbanHideFromLanes(card)', 'function renderSwimlaneBoard(') +
+      slice(APP_JS, 'function kanbanIsOwnerOpen(card)', 'function renderSwimlaneBoard(') +
       'globalThis.onStrip = kanbanIsOnOwnerStrip; globalThis.hide = kanbanHideFromLanes; globalThis.render = renderKanbanOwnerStrip',
     ctx,
   )
