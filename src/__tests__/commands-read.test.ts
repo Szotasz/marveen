@@ -79,7 +79,7 @@ describe('/approvals (CMD920 test 19)', () => {
   })
 
   it('recipients: missing or non-JSON payload is said out loud', () => {
-    const base = { id: 'x', agent_id: 'a', category: 'c', action_description: 'd', status: 'pending', timeout_at: null, telegram_message_id: null, requested_at: 0, resolved_at: null, resolved_by: null, content_hash: null, consumed_at: null } as const
+    const base = { id: 'x', agent_id: 'a', category: 'c', action_description: 'd', status: 'pending', timeout_at: null, telegram_message_id: null, requested_at: 0, resolved_at: null, resolved_by: null, content_hash: null, consumed_at: null, owner_go_ref: null } as const
     expect(approvalRecipients({ ...base, action_payload: null })).toMatch(/nincs payload/)
     expect(approvalRecipients({ ...base, action_payload: 'nem json' })).toMatch(/nem JSON/)
     expect(approvalRecipients({ ...base, action_payload: '{"text":"x"}' })).toMatch(/nincs to\/cc/)

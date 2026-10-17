@@ -42,6 +42,7 @@ function approval(over: Partial<Approval> = {}): Approval {
     resolved_by: null,
     content_hash: null,
     consumed_at: null,
+    owner_go_ref: null,
     ...over,
   }
 }
