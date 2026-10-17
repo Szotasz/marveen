@@ -1917,6 +1917,9 @@ export function decayMemories(): void {
 export interface MemoryListFilter {
   category?: string
   staleBefore?: number
+  // Card f9242cd3 (#571): rows replaced in full by a newer one, left out of
+  // the listing (in SQL, ahead of the LIMIT, for the same reason as category).
+  excludeIds?: number[]
 }
 
 export function getMemoriesForChat(chatId: string, limit = 10, offset = 0, filter: MemoryListFilter = {}): Memory[] {
@@ -1934,6 +1937,7 @@ export function getMemoriesForChat(chatId: string, limit = 10, offset = 0, filte
   const args: (string | number)[] = [chatId]
   if (filter.category) { where.push('category = ?'); args.push(filter.category) }
   if (filter.staleBefore !== undefined) { where.push('COALESCE(updated_at, created_at) < ?'); args.push(filter.staleBefore) }
+  if (filter.excludeIds?.length) { where.push('id NOT IN (SELECT value FROM json_each(?))'); args.push(JSON.stringify(filter.excludeIds)) }
   return db
     .prepare(`SELECT * FROM memories WHERE ${where.join(' AND ')} ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?`)
     .all(...args, limit, offset) as Memory[]
@@ -2023,22 +2027,26 @@ export function saveAgentMemory(
 // accessed memories" instead of "the N most recent <category> memories", so an
 // older-but-still-active memory would drop out of the list with no truncation
 // signal -- invisible to the caller, and worst right after a restart.
-export function getAgentMemories(agentId: string, limit: number = 20, category?: string, offset: number = 0, staleBefore?: number): Memory[] {
+export function getAgentMemories(agentId: string, limit: number = 20, category?: string, offset: number = 0, staleBefore?: number, excludeIds?: number[]): Memory[] {
   // offset is part of the cache key (#947): without it page 2 would be served
   // page 1's cached rows for up to MEMORY_CACHE_TTL_MS. id DESC tie-break for
   // the same reason getMemoriesForChat has one -- accessed_at ties are common
   // after a bulk import and make LIMIT/OFFSET non-total without it.
+  // Not cached with an exclusion: the excluded set changes when ANY agent
+  // writes a superseding row, and only the writer's own keys are evicted.
+  const useCache = !excludeIds?.length
   const key = `${agentId}:${limit}:${category ?? ''}:${offset}:${staleBefore ?? ''}`
-  const cached = memoryCacheGet(key)
+  const cached = useCache ? memoryCacheGet(key) : undefined
   if (cached) return cached
   const where = ["(agent_id = ? OR category = 'shared')"]
   const args: (string | number)[] = [agentId]
   if (category) { where.push('category = ?'); args.push(category) }
   if (staleBefore !== undefined) { where.push('COALESCE(updated_at, created_at) < ?'); args.push(staleBefore) }
+  if (excludeIds?.length) { where.push('id NOT IN (SELECT value FROM json_each(?))'); args.push(JSON.stringify(excludeIds)) }
   const result = db.prepare(
     `SELECT * FROM memories WHERE ${where.join(' AND ')} ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?`
   ).all(...args, limit, offset) as Memory[]
-  memoryCacheSet(key, result)
+  if (useCache) memoryCacheSet(key, result)
   return result
 }
 

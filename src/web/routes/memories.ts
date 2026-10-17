@@ -11,6 +11,7 @@ import { logger } from '../../logger.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
 import { detectHomoglyphs, formatHomoglyphWarning } from '../../homoglyph.js'
 import type { HybridSearchTrace } from '../../db.js'
+import { getMemorySupersessions } from '../../memory-supersede.js'
 import type { RouteContext } from './types.js'
 
 // Canonical memory categories. Kept in sync with the DB CHECK constraint in
@@ -319,6 +320,19 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       }
       staleBefore = Math.floor(Date.now() / 1000) - Math.round(staleDays * 86400)
     }
+    // superseded=hide (card f9242cd3, #571): leave out rows a newer memory
+    // replaces in full. Listing only, like stale_days.
+    const supersededParam = url.searchParams.get('superseded')
+    if (supersededParam !== null && supersededParam !== 'hide' && supersededParam !== 'show') {
+      json(res, { error: 'invalid superseded: must be hide or show' }, 400)
+      return true
+    }
+    if (supersededParam === 'hide' && q) {
+      json(res, { error: 'superseded=hide is not supported together with q (listing only)' }, 400)
+      return true
+    }
+    const supersessions = getMemorySupersessions()
+    const excludeIds = supersededParam === 'hide' ? [...supersessions.supersededBy.keys()] : undefined
     if (offset > 0 && q) {
       json(res, { error: 'offset is not supported together with q (search results are relevance-ranked, not a stable page order)' }, 400)
       return true
@@ -360,9 +374,9 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       }
     } else if (agentId) {
       // Category goes into the query, not a post-filter: see getAgentMemories.
-      results = getAgentMemories(agentId, limit, tier || undefined, offset, staleBefore)
+      results = getAgentMemories(agentId, limit, tier || undefined, offset, staleBefore, excludeIds)
     } else {
-      results = getMemoriesForChat(ALLOWED_CHAT_ID, limit, offset, { category: tier || undefined, staleBefore })
+      results = getMemoriesForChat(ALLOWED_CHAT_ID, limit, offset, { category: tier || undefined, staleBefore, excludeIds })
     }
 
     // Kept as a backstop, not as the mechanism. Since MEMKERESVAK917 every
@@ -381,6 +395,10 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     const formatted = results.map(m => ({
       ...m,
       embedding: undefined,
+      // #571: the chain, both directions. supersedes lists full AND partial
+      // references; superseded_by is only ever a FULL replacement.
+      supersedes: supersessions.refs.get(m.id) ?? [],
+      superseded_by: supersessions.supersededBy.get(m.id) ?? null,
       created_label: new Date(m.created_at * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ }),
       accessed_label: new Date(m.accessed_at * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ }),
     }))
@@ -566,7 +584,17 @@ Respond ONLY with JSON, nothing else:
   }
 
   if (path === '/api/memories/stats' && method === 'GET') {
-    json(res, getMemoryStats())
+    // #571: how many fully replaced rows each tier holds (all agents), so the
+    // tab can say how many it is hiding.
+    const ids = [...getMemorySupersessions().supersededBy.keys()]
+    const supersededByTier: Record<string, number> = {}
+    if (ids.length) {
+      const rows = getDb()
+        .prepare('SELECT category, COUNT(*) AS c FROM memories WHERE id IN (SELECT value FROM json_each(?)) GROUP BY category')
+        .all(JSON.stringify(ids)) as { category: string; c: number }[]
+      for (const r of rows) supersededByTier[r.category] = r.c
+    }
+    json(res, { ...getMemoryStats(), supersededByTier })
     return true
   }
 
