@@ -8068,6 +8068,17 @@ body {
   overflow-wrap: anywhere;
 }
 .mem-ref-preview-head { font-weight: 600; margin-bottom: 4px; opacity: .8; }
+.mem-use-badge {
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 10px;
+  color: var(--text-secondary, #888);
+  border: 1px solid rgba(128, 128, 128, 0.35);
+}
+.mem-use-badge.none {
+  opacity: 0.6;
+  font-style: italic;
+}
 .mem-stale-badge {
   font-size: 11px;
   padding: 1px 7px;

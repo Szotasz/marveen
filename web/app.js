@@ -7532,6 +7532,22 @@ async function toggleMemRefPreview(item, refId) {
   }
 }
 
+// #573: when the server began logging real uses (0 = nothing logged yet).
+let memUseSince = 0
+
+// The "used" chip: last real use by an agent (read by id, a top search hit
+// that matched as asked, a partial FELULIRJA reference), or that there is none
+// since logging began. Not the write age and not accessed_at.
+function memUseChip(mem) {
+  const since = memUseSince ? new Date(memUseSince * 1000).toLocaleDateString('hu-HU') : ''
+  if (!mem.last_used_at) {
+    return `<span class="mem-use-badge none" title="${escapeHtml(t('memories.use.none_title', { since: since || '-' }))}">${escapeHtml(t('memories.use.none'))}</span>`
+  }
+  const days = Math.floor((Date.now() / 1000 - Number(mem.last_used_at)) / 86400)
+  const label = days <= 0 ? t('memories.use.today', { count: mem.use_count }) : t('memories.use.days', { days, count: mem.use_count })
+  return `<span class="mem-use-badge" title="${escapeHtml(t('memories.use.title', { since: since || '-' }))}">${escapeHtml(label)}</span>`
+}
+
 function memLastWrite(mem) {
   return Number(mem.updated_at || mem.created_at || 0)
 }
@@ -7639,6 +7655,7 @@ async function loadMemories() {
     // with res.json() alone threw it away, so a viewer saw fifty rescued rows
     // as fifty hits. The header is only set on a search (q), not on listing.
     renderMemSearchLabel(q ? res.headers.get('X-Memory-Search') : null)
+    memUseSince = Number(res.headers.get('X-Memory-Use-Since')) || 0
     renderMemStaleBanner()
     renderMemSupersededBar()
     renderMemories(memories)
@@ -7770,6 +7787,7 @@ function renderMemories(memories) {
         <span class="mem-agent-badge">${escapeHtml(agentLabel)}</span>
         <span class="mem-date">${escapeHtml(mem.created_label || '')}</span>
         ${typeof mem.salience === 'number' ? `<span class="mem-salience" title="Relevancia ertek">S: ${mem.salience.toFixed(2)}</span>` : ''}
+        ${memUseChip(mem)}
         ${isStaleHot ? `<span class="mem-stale-badge" title="${escapeHtml(t('memories.stale.age_title'))}">${escapeHtml(t('memories.stale.age', { days: ageDays }))}</span>` : ''}
       </div>
       ${chainChips ? `<div class="mem-chain">${chainChips}</div><div class="mem-ref-preview" hidden></div>` : ''}

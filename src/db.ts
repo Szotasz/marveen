@@ -527,6 +527,24 @@ export function initDatabase(dbPathOverride?: string): void {
     )
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_versions_mid ON memory_versions(memory_id, superseded_at)`)
+  // Card a9dfb378 (#573): a real "was it used" signal. accessed_at cannot be
+  // it: every search hit stamps it, relaxed near-misses included, so on the
+  // owner store (measured 2026-10-17) 658 of 703 cold rows and all 115 hot
+  // rows read "accessed within 30 days". This table logs only the events that
+  // mean an agent actually reached for the row: a read by id, a top hit of a
+  // search that matched as asked, a partial FELULIRJA reference from another
+  // row. A separate table rather than a column: no UPDATE on memories, so the
+  // FTS-sync and updated_at triggers never fire for a use.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS memory_uses (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      memory_id INTEGER NOT NULL,
+      used_at INTEGER NOT NULL,
+      kind TEXT NOT NULL CHECK(kind IN ('read','search','reference')),
+      agent_id TEXT
+    )
+  `)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_uses_mid ON memory_uses(memory_id, used_at)`)
 
   // Daily logs table
   db.exec(`
@@ -1852,9 +1870,9 @@ function withoutRank<T extends { rank: number }>(rows: T[]): Omit<T, 'rank'>[] {
   return rows.map(({ rank: _rank, ...rest }) => rest)
 }
 
-export function searchMemories(query: string, chatId: string, limit = 3, allowRelaxed = true, category?: string): Memory[] {
+export function searchMemories(query: string, chatId: string, limit = 3, allowRelaxed = true, category?: string, trace?: { relaxed: boolean }): Memory[] {
   try {
-    const { rows } = ftsWithOrFallback(query, (terms) =>
+    const { rows, relaxed } = ftsWithOrFallback(query, (terms) =>
       (category
         ? db.prepare(
             `SELECT m.*, f.rank AS rank FROM memories m
@@ -1871,6 +1889,7 @@ export function searchMemories(query: string, chatId: string, limit = 3, allowRe
              LIMIT ?`
           ).all(terms, chatId, limit * RECENCY_OVERSAMPLE)) as (Memory & { rank: number })[]
       , allowRelaxed)
+    if (trace) trace.relaxed = relaxed
     return withoutRank(reRankByRecency(rows, limit)) as Memory[]
   } catch {
     return []
@@ -1901,6 +1920,59 @@ export function touchMemoriesAccessed(ids: number[]): void {
   const now = Math.floor(Date.now() / 1000)
   const placeholders = ids.map(() => '?').join(',')
   db.prepare(`UPDATE memories SET accessed_at = ? WHERE id IN (${placeholders})`).run(now, ...ids)
+}
+
+export type MemoryUseKind = 'read' | 'search' | 'reference'
+
+// The same agent reaching for the same row the same way within this window is
+// one use, not several: a hook that re-runs one search every turn would
+// otherwise turn use_count into a poll counter.
+const MEMORY_USE_DEDUP_SECONDS = 600
+
+/** Card a9dfb378 (#573): log real uses (see the memory_uses table). Ids that
+ *  no longer exist are skipped. Returns how many rows were logged. */
+export function recordMemoryUse(ids: number[], kind: MemoryUseKind, agentId?: string | null): number {
+  if (ids.length === 0) return 0
+  const now = Math.floor(Date.now() / 1000)
+  const agent = agentId || null
+  const ins = db.prepare(
+    `INSERT INTO memory_uses (memory_id, used_at, kind, agent_id)
+     SELECT ?, ?, ?, ?
+     WHERE EXISTS (SELECT 1 FROM memories WHERE id = ?)
+       AND NOT EXISTS (SELECT 1 FROM memory_uses
+                       WHERE memory_id = ? AND kind = ? AND agent_id IS ? AND used_at > ?)`,
+  )
+  let n = 0
+  db.transaction(() => {
+    for (const id of new Set(ids)) {
+      n += ins.run(id, now, kind, agent, id, id, kind, agent, now - MEMORY_USE_DEDUP_SECONDS).changes
+    }
+  })()
+  return n
+}
+
+export interface MemoryUseSummary { last_used_at: number; use_count: number }
+
+/** Last use and use count per id, for the ids given. An id with no logged use
+ *  is absent from the map. */
+export function getMemoryUseSummaries(ids: number[]): Map<number, MemoryUseSummary> {
+  const out = new Map<number, MemoryUseSummary>()
+  if (ids.length === 0) return out
+  const stmt = db.prepare(
+    `SELECT memory_id, MAX(used_at) AS last_used_at, COUNT(*) AS use_count
+     FROM memory_uses WHERE memory_id IN (SELECT value FROM json_each(?)) GROUP BY memory_id`,
+  )
+  for (const r of stmt.all(JSON.stringify([...new Set(ids)])) as { memory_id: number; last_used_at: number; use_count: number }[]) {
+    out.set(r.memory_id, { last_used_at: r.last_used_at, use_count: r.use_count })
+  }
+  return out
+}
+
+/** When use logging began on this store: the first logged use, or null. The
+ *  UI needs it to say "no use since <date>" instead of a bare "never". */
+export function getMemoryUseTrackingStart(): number | null {
+  const r = db.prepare('SELECT MIN(used_at) AS t FROM memory_uses').get() as { t: number | null }
+  return r.t ?? null
 }
 
 export function decayMemories(): void {
@@ -2173,6 +2245,7 @@ export function deleteMemoryById(id: number): boolean {
   if (!before) return false
   db.transaction(() => {
     db.prepare('DELETE FROM memory_versions WHERE memory_id = ?').run(id)
+    db.prepare('DELETE FROM memory_uses WHERE memory_id = ?').run(id)
     db.prepare('DELETE FROM memories WHERE id = ?').run(id)
   })()
   // A shared row is listed for every agent, so evicting one owner is not enough.
