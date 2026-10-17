@@ -1200,6 +1200,10 @@ export function initDatabase(dbPathOverride?: string): void {
   try { db.exec('ALTER TABLE agent_messages ADD COLUMN remote_ref TEXT') } catch { /* exists */ }
   try { db.exec('ALTER TABLE agent_messages ADD COLUMN requeued_at INTEGER') } catch { /* exists */ }
   try { db.exec('ALTER TABLE agent_messages ADD COLUMN requeue_skipped_at INTEGER') } catch { /* exists */ }
+  // UNBLOCKS925: the one named case besides STOP/urgent that may reach a busy pane. NULL for every older row and for
+  // every row whose sender did not ask; the only stored value is 'unblocks' (src/web/unblocks-interrupt.ts). Unlike
+  // urgent, the flag is the main agent's own explicit field on POST /api/messages, never inferred from the text.
+  try { db.exec('ALTER TABLE agent_messages ADD COLUMN affects_current_work TEXT') } catch { /* exists */ }
 
   // INVARIANT: a row that says 'delivered' must carry a delivered_at.
   //
@@ -4829,6 +4833,9 @@ export interface AgentMessage {
   // The SENDER's own id for a federated inbound row (the bridge's `ref`), so a completion
   // receipt can name the message the peer knows. Null for local rows and older federated ones.
   remote_ref?: string | null
+  // UNBLOCKS925: 'unblocks' when the main agent flagged the row as releasing a blocker of the recipient's current
+  // work; null or absent otherwise. Optional in the type for the same reason as urgent.
+  affects_current_work?: string | null
 }
 
 export function createAgentMessage(
@@ -4837,7 +4844,7 @@ export function createAgentMessage(
   content: string,
   originNote?: string | null,
   traceCtx?: { trace_id: string; span_id: string; parent_span_id: string | null } | null,
-  opts?: { urgent?: boolean; stopAuthorized?: boolean; priority?: 0 | 1; remoteRef?: string | null },
+  opts?: { urgent?: boolean; stopAuthorized?: boolean; priority?: 0 | 1; remoteRef?: string | null; affectsCurrentWork?: string | null },
 ): AgentMessage {
   const now = Math.floor(Date.now() / 1000)
   // Card 795d1f48 (a): urgent only when a caller asks for it; the callers that may are the in-process writers and the
@@ -4850,9 +4857,10 @@ export function createAgentMessage(
   // per-pair budget, decidePriority). An urgent row is above high by its own column; the route stores it 0.
   const priority: 0 | 1 = opts?.priority === 1 ? 1 : 0
   const remoteRef = opts?.remoteRef ?? null
+  const affectsCurrentWork = opts?.affectsCurrentWork ?? null
   const info = db.prepare(
-    'INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at, origin_note, trace_id, span_id, parent_span_id, urgent, stop_authorized, priority, remote_ref) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-  ).run(from, to, content, 'pending', now, originNote ?? null, traceCtx?.trace_id ?? null, traceCtx?.span_id ?? null, traceCtx?.parent_span_id ?? null, urgent, stopAuthorized, priority, remoteRef)
+    'INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at, origin_note, trace_id, span_id, parent_span_id, urgent, stop_authorized, priority, remote_ref, affects_current_work) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+  ).run(from, to, content, 'pending', now, originNote ?? null, traceCtx?.trace_id ?? null, traceCtx?.span_id ?? null, traceCtx?.parent_span_id ?? null, urgent, stopAuthorized, priority, remoteRef, affectsCurrentWork)
   return {
     id: Number(info.lastInsertRowid),
     from_agent: from, to_agent: to, content, status: 'pending',
@@ -4865,6 +4873,7 @@ export function createAgentMessage(
     stop_authorized: stopAuthorized,
     priority,
     remote_ref: remoteRef,
+    affects_current_work: affectsCurrentWork,
   }
 }
 
