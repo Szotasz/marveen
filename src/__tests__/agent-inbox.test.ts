@@ -100,7 +100,8 @@ describe('agent-inbox.sh --all and a dashboard that does not answer (71263d15 K6
     const src = readFileSync(new URL('../../scripts/agent-inbox.sh', import.meta.url), 'utf-8')
     expect(src).toContain('http://localhost:3420/api/messages')
     const dir = mkdtempSync(join(tmpdir(), 'inbox-nodash-'))
-    mkdirSync(join(dir, 'scripts')); mkdirSync(join(dir, 'store'))
+    mkdirSync(join(dir, 'scripts')); mkdirSync(join(dir, 'scripts', 'lib')); mkdirSync(join(dir, 'store'))
+    writeFileSync(join(dir, 'scripts', 'lib', 'curl-tok.sh'), readFileSync(new URL('../../scripts/lib/curl-tok.sh', import.meta.url), 'utf-8'), 'utf-8')
     writeFileSync(join(dir, 'scripts', 'agent-inbox.sh'), src.replaceAll('http://localhost:3420', 'http://127.0.0.1:1'), 'utf-8')
     writeFileSync(join(dir, 'store', '.dashboard-token'), 'kitalalt-token', 'utf-8')
     const r = spawnSync('bash', [join(dir, 'scripts', 'agent-inbox.sh'), 'olvaso'], { encoding: 'utf-8' })
@@ -120,7 +121,8 @@ describe('agent-inbox.sh --all and a dashboard that does not answer (71263d15 K6
     const port = (server.address() as AddressInfo).port
     const src = readFileSync(new URL('../../scripts/agent-inbox.sh', import.meta.url), 'utf-8')
     const dir = mkdtempSync(join(tmpdir(), 'inbox-all-'))
-    mkdirSync(join(dir, 'scripts')); mkdirSync(join(dir, 'store'))
+    mkdirSync(join(dir, 'scripts')); mkdirSync(join(dir, 'scripts', 'lib')); mkdirSync(join(dir, 'store'))
+    writeFileSync(join(dir, 'scripts', 'lib', 'curl-tok.sh'), readFileSync(new URL('../../scripts/lib/curl-tok.sh', import.meta.url), 'utf-8'), 'utf-8')
     writeFileSync(join(dir, 'scripts', 'agent-inbox.sh'), src.replaceAll('http://localhost:3420', `http://127.0.0.1:${port}`), 'utf-8')
     writeFileSync(join(dir, 'store', '.dashboard-token'), 'kitalalt-token', 'utf-8')
     // Asynchronous: the server answers from this same process.
