@@ -8004,3 +8004,25 @@ body {
   color: var(--text, inherit);
 }
 .mem-search-label code { font-size: 11px; opacity: .85; }
+
+/* Card ca046c9a (#570): hot memories with no write for N days. */
+.mem-stale-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 0 0 10px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  border: 1px solid #dc3c3c;
+  background: rgba(220, 60, 60, 0.06);
+}
+.mem-stale-banner button { margin-left: auto; }
+.mem-stale-badge {
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 10px;
+  color: #dc3c3c;
+  border: 1px solid rgba(220, 60, 60, 0.45);
+}
