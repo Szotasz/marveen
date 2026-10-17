@@ -4114,6 +4114,26 @@ export function markMessageDone(id: number, result?: string): boolean {
   return db.prepare("UPDATE agent_messages SET status = 'done', result = ?, completed_at = ?, delivered_at = COALESCE(delivered_at, ?) WHERE id = ?").run(result ?? null, now, now, id).changes > 0
 }
 
+// The close a SUB-AGENT token may perform, enforced in the write itself. One
+// statement, so nothing can slip between a check and the update: the row
+// changes only when it is addressed to `recipient` AND still open (not done
+// or failed, the same rule closeOpenMessage applies to every caller since
+// #2011). An update WHERE id=? alone would leave a window after a check done
+// earlier (by the gate, or before a client-timed body arrives): a PUT
+// pre-armed on the NEXT id would close another agent's message the moment it
+// is created, and send a forged completion report in the recipient's name.
+// Returns false when 0 rows changed; the caller then creates NO completion
+// report. The main-token path uses closeOpenMessage.
+export function closeMessageAsRecipient(id: number, recipient: string, status: 'done' | 'failed', result?: string): boolean {
+  const now = Math.floor(Date.now() / 1000)
+  return db.prepare(
+    `UPDATE agent_messages
+        SET status = ?, result = ?, completed_at = ?,
+            delivered_at = CASE WHEN ? = 'done' THEN COALESCE(delivered_at, ?) ELSE delivered_at END
+      WHERE id = ? AND to_agent = ? AND status NOT IN ('done', 'failed')`,
+  ).run(status, result ?? null, now, status, now, id, recipient).changes > 0
+}
+
 export function markMessageFailed(id: number, error?: string): boolean {
   const now = Math.floor(Date.now() / 1000)
   return db.prepare("UPDATE agent_messages SET status = 'failed', result = ?, completed_at = ? WHERE id = ?").run(error ?? null, now, id).changes > 0
