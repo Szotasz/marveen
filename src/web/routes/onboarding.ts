@@ -8,7 +8,7 @@ import { resolveFromPath } from '../../platform.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
 import { channelStateDir, readChannelToken } from '../../channel-provider.js'
 import { sessionExistsOnHost } from '../agent-process.js'
-import { MAIN_CHANNELS_SESSION } from '../main-agent.js'
+import { channelsRestartCommand, MAIN_CHANNELS_SESSION } from '../main-agent.js'
 import { getClaudePidForSession, hasChannelPluginAlive } from '../../channel-coordinator/liveness.js'
 import {
   hardRestartMarveenChannels,
@@ -369,7 +369,7 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
       ok: true,
       botNameUpdated: true,
       restarted,
-      ...(restartError ? { restartError } : {}),
+      ...(restartError ? { restartError, restartCommand: channelsRestartCommand() } : {}),
       ...(restartNeeded ? { restartNeeded } : {}),
     })
     return true
@@ -446,7 +446,7 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
       else logger.error({ error: restartError }, 'onboarding: channels restart after first auth FAILED')
     }
     logger.info({ verified, restarted, mode: token ? 'oauth' : 'apikey' }, 'onboarding: Claude auth stored')
-    json(res, restartError ? { ok: true, verified, restarted, restartError } : { ok: true, verified, restarted })
+    json(res, restartError ? { ok: true, verified, restarted, restartError, restartCommand: channelsRestartCommand() } : { ok: true, verified, restarted })
     return true
   }
 

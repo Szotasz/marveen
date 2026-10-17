@@ -73,4 +73,21 @@ describe('POST /api/messages to the main agent (MSGWARN908)', () => {
     expect(r.json.targetRunning).toBe(false)
     expect(String(r.json.warning)).toContain('nem fut')
   })
+
+  // The warning must describe what the router does -- the row is kept pending
+  // and delivered when the target starts, within the abandon window -- not
+  // claim the message is lost (measured on a live install: delivered 23 s after
+  // the start, while the sender had already re-sent a duplicate).
+  it('says the message is QUEUED, with the abandon deadline, never "elveszik"', async () => {
+    // A REGISTERED stopped agent: an unregistered id is a 400 since UNKNOWNTO924
+    // (upstream #1574), so the queue path is only reachable through STOPPED.
+    const r = await post({ from: MAIN_AGENT_ID, to: STOPPED, content: 'handoff' })
+    expect(r.statusCode).toBe(200)
+    expect(r.json.queued).toBe(true)
+    expect(r.json.status).toBe('pending')
+    expect(r.json.abandonAt).toBe(Number(r.json.created_at) + 3600)
+    expect(String(r.json.warning)).toContain('SORBAN VÁR')
+    expect(String(r.json.warning)).toContain('60 perc')
+    expect(String(r.json.warning)).not.toContain('elveszik')
+  })
 })

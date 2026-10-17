@@ -2,7 +2,7 @@ import {
   createAgentMessage, getPendingMessages, listAgentMessages, getRecipientQueueState,
   getAgentConversation, getAgentConversationThreads,
   getKanbanSeqByIdPrefix,
-  markMessageDone, markMessageFailed, getAgentMessage,
+  markMessageDone, closeOpenMessage, getAgentMessage,
   closeOtelSpan,
   getPendingBacklogByAgent,
   countNewerMessagesForRows,
@@ -15,9 +15,10 @@ import { logger } from '../../logger.js'
 import { COORDINATOR_AGENT_ID, VOICE_CHANNEL_AGENT_ID } from '../../channel-coordinator/ingest.js'
 import { SYSTEM_DIRECTIVE_SENDER } from '../system-directive.js'
 import { sanitizeAgentIdent } from '../../prompt-safety.js'
-import { isKnownAgent } from '../agent-config.js'
+import { isKnownAgent, readAgentPullDelivery } from '../agent-config.js'
 import { MAIN_AGENT_ID, HEARTBEAT_AGENT_ID, OWNER_NAME, SYSTEM_SENDER_IDS, parseSystemSenderIds, MESSAGE_URGENT_DEVICE_IDS, parseDeviceKeyIds } from '../../config.js'
 import { isAgentRunning } from '../agent-process.js'
+import { MESSAGE_ABANDON_WINDOW_MS } from '../message-abandon.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
 import { isHeartbeatTemplateLeak, stampHeartbeatHeader } from '../heartbeat-header-stamp.js'
@@ -25,6 +26,8 @@ import { verifyHeartbeatKanban, HEARTBEAT_KANBAN_WINDOW_SEC } from '../heartbeat
 import { buildFreshnessInfo, type MessageFreshness } from '../agent-message-wrap.js'
 import { parseQualifiedId, formatQualifiedId, isQualifiedId } from '../federation/address.js'
 import { getFederationConfig } from '../federation/config.js'
+import { decidePriority, parsePriorityField } from '../message-priority.js'
+import { rankedSenders } from '../../delivery-order.js'
 import type { RouteContext } from './types.js'
 
 // Should closing a message produce a reverse "[Eredmény]" notification to its sender?
@@ -156,8 +159,8 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/messages' && method === 'POST') {
     const body = await readBody(req)
-    const { from, to, content, origin_note, urgent } = JSON.parse(body.toString()) as
-      { from: string; to: string; content: string; origin_note?: string; urgent?: unknown }
+    const { from, to, content, origin_note, priority, urgent } = JSON.parse(body.toString()) as
+      { from: string; to: string; content: string; origin_note?: string; priority?: unknown; urgent?: unknown }
     if (!from?.trim() || !to?.trim() || !content?.trim()) {
       json(res, { error: 'from, to, and content are required' }, 400)
       return true
@@ -412,7 +415,27 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // Card 06f062e4: optional attributability tag, self-declared like `from`
     // itself -- capped short so it stays a label, not a second content field.
     const trimmedOriginNote = origin_note?.trim().slice(0, 120) || null
-    const msg = createAgentMessage(from.trim(), storedTo, normalizedContent, trimmedOriginNote, null, { urgent: urgent === true })
+    // Card ad771121: the optional priority. Absent = "normal" (today's FIFO); an unknown value is a
+    // loud 400. Checked after every guard above, so their answers keep their precedence; the budget
+    // decision and the insert run back to back with no await between them.
+    const parsedPriority = parsePriorityField(priority)
+    if (!parsedPriority.ok) {
+      json(res, { error: parsedPriority.error }, 400)
+      return true
+    }
+    // Review point 1: the owner's own rows (and the voice channel's) already rank above a peer high by
+    // their sender (delivery-order.ts), so the per-pair budget, which exists to bound PEER highs, does not
+    // apply to them: an explicit "high" is stored as asked and never downgraded.
+    //
+    // Precedence (delivery-order.ts): STOP, urgent, system/owner, high, the rest. An urgent row is
+    // already above high by its own column, so it does not go through the per-pair budget at all
+    // and is stored with priority 0: it never spends that budget.
+    const decided = urgent === true
+      ? { priority: 0 as const, downgraded: false }
+      : rankedSenders().includes(from.trim())
+        ? { priority: parsedPriority.level === 'high' ? 1 as const : 0 as const, downgraded: false }
+        : decidePriority(parsedPriority.level, from.trim(), storedTo, Math.floor(Date.now() / 1000))
+    const msg = createAgentMessage(from.trim(), storedTo, normalizedContent, trimmedOriginNote, null, { urgent: urgent === true, priority: decided.priority })
     if (isVoiceMailbox) {
       markMessageDone(msg.id, VOICE_MAILBOX_RESULT)
       logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent }, 'Voice-channel answer stored in the mailbox (no session delivery)')
@@ -428,14 +451,19 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // below carries it, the warning ones included.
     const queue = isQualifiedId(storedTo) ? undefined : getRecipientQueueState(storedTo)
     const queueField = queue ? { queue } : {}
+    // Card ad771121: the row carries its stored priority (0 normal, 1 high); a high request over the pair's
+    // hourly budget was accepted as normal, never dropped, and the answer says so. Every success answer
+    // below carries it, like the queue.
+    const downgradedField = decided.downgraded ? { downgraded: true } : {}
     logger.info(
-      { id: msg.id, from: msg.from_agent, to: msg.to_agent, originNote: msg.origin_note, queueDepth: queue?.queueDepth },
+      { id: msg.id, from: msg.from_agent, to: msg.to_agent, originNote: msg.origin_note, queueDepth: queue?.queueDepth, priority: msg.priority, downgraded: decided.downgraded },
       'Agent message created',
     )
-    // A LOCAL recipient that is not running never receives this: the router
-    // retries for a while and then abandons it, and the failure notice goes to
-    // the MAIN agent, not to the sender. The caller therefore sees a plain 200
-    // and believes it delegated. Federated addresses already get an actionable
+    // A LOCAL recipient that is not running receives this only if it is
+    // started within the abandon window: the router keeps the row pending and
+    // retries, then abandons it, and the failure notice goes to the MAIN agent,
+    // not to the sender. The caller therefore sees a plain 200 and believes it
+    // delegated. Federated addresses already get an actionable
     // error at creation time (see above) -- give the local path the same
     // courtesy, as a non-breaking warning field rather than a status change, so
     // existing callers keep working.
@@ -447,15 +475,37 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // and on 2026-09-08 the false "not running" state reached the owner as a
     // system-down report. The worst reaction it invites -- starting a second
     // main instance -- is exactly what the pull model must never see.
+    // A PULL-delivery agent is exempt for the same reason: it runs on its own
+    // machine and claims its rows over the API, so isAgentRunning() (a local
+    // `agent-<name>` tmux probe) says stopped forever, and the router never
+    // abandons its messages. Telling the sender the row "elveszik" would be
+    // false, and the suggested fix (start the agent here) is not even possible.
     if (!storedTo.includes('/')
         && sanitizeAgentIdent(storedTo) !== sanitizeAgentIdent(MAIN_AGENT_ID)
+        && !readAgentPullDelivery(sanitizeAgentIdent(storedTo))
         && !isAgentRunning(sanitizeAgentIdent(storedTo))) {
-      logger.warn({ id: msg.id, to: msg.to_agent }, 'Agent message queued for a STOPPED agent -- likely to be abandoned')
+      logger.warn({ id: msg.id, to: msg.to_agent }, 'Agent message queued for a STOPPED agent -- delivered if it starts within the abandon window')
+      // The warning must say what the router actually does: the row stays
+      // `pending`, and the router delivers it as soon as the target's session
+      // appears, for MESSAGE_ABANDON_WINDOW_MS. Only after that window is it
+      // marked failed. The earlier text claimed the message was LOST
+      // immediately; measured on a live install, the sender believed it and
+      // re-sent a duplicate handoff, while the original was in fact delivered
+      // 23 s after the target was started.
+      // abandonAt is created_at + the window. It is an estimate, not a promise:
+      // the router counts the target's CONTINUOUS absence as it observes it
+      // (shouldAbandon in message-router.ts), a clock that starts within one
+      // tick of this row for a target that has nothing else pending, earlier if
+      // older rows to the same target are already waiting, and anew after a
+      // dashboard restart.
       json(res, {
         ...msg,
         ...queueField,
+        ...downgradedField,
         targetRunning: false,
-        warning: `'${msg.to_agent}' nem fut -- indítsd el (POST /api/agents/${msg.to_agent}/start), várd meg amíg feláll, és küldd újra. Egy leállított ügynöknek küldött üzenet nem várakozik, hanem elveszik.`,
+        queued: true,
+        abandonAt: msg.created_at + Math.floor(MESSAGE_ABANDON_WINDOW_MS / 1000),
+        warning: `'${msg.to_agent}' most nem fut: az üzenet SORBAN VÁR, és kézbesül, amint elindul (POST /api/agents/${msg.to_agent}/start). Ha nem indul el, az üzenet failed lesz, amint a célpont ${Math.round(MESSAGE_ABANDON_WINDOW_MS / 60000)} perce folyamatosan nem fut (ha már korábban is várt rá üzenet, ez hamarabb jöhet), és NEM kézbesül később -- ne küldd újra, amíg az id státusza pending.`,
       })
       return true
     }
@@ -475,10 +525,10 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     if (homoglyphs.length > 0) {
       const warning = formatHomoglyphWarning(homoglyphs)
       logger.warn({ id: msg.id, from: msg.from_agent, to: msg.to_agent }, `agent message created with ${warning}`)
-      json(res, { ...msg, ...queueField, homoglyph_warning: warning })
+      json(res, { ...msg, ...queueField, ...downgradedField, homoglyph_warning: warning })
       return true
     }
-    json(res, { ...msg, ...queueField })
+    json(res, { ...msg, ...queueField, ...downgradedField })
     return true
   }
 
@@ -591,9 +641,27 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       return true
     }
 
+    // Only an OPEN message is closed here (closeOpenMessage checks and writes in one
+    // UPDATE). A second close of a done/failed row is refused with 409 and changes
+    // nothing: it used to overwrite the stored result and send a second completion
+    // report in the recipient's name, also when the second caller was not the
+    // recipient. A repeated PUT after a client timeout gets the same 409; the first
+    // close already took effect.
     let ok = false
-    if (newStatus === 'done') ok = markMessageDone(id, result)
-    else if (newStatus === 'failed') ok = markMessageFailed(id, result)
+    if (newStatus === 'done' || newStatus === 'failed') {
+      ok = closeOpenMessage(id, newStatus, result)
+      if (!ok) {
+        const current = getAgentMessage(id)
+        if (current && (current.status === 'done' || current.status === 'failed')) {
+          json(res, {
+            error: 'Message already closed',
+            status: current.status,
+            hint: 'the first close already took effect; nothing was changed and no completion report was sent',
+          }, 409)
+          return true
+        }
+      }
+    }
 
     if (ok) {
       const done = getAgentMessage(id)

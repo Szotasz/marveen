@@ -27,9 +27,17 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from memory_frontmatter_lib import (  # noqa: E402  (the shared check, KAPUEGYUT918)
-    _subset_check, is_memory_file, parse_frontmatter, split_frontmatter, tartalom_hiba,
-)
+# HOOKDEPLOAD1008: guarded. Unguarded, a broken memory_frontmatter_lib.py failed
+# at module load, before main(), with exit 1 -- the one code this gate promises
+# never to return. A check that cannot load is no verdict on the write, so the
+# gate allows it and says why on stderr, as it does for its internal errors.
+try:
+    from memory_frontmatter_lib import (  # noqa: E402  (the shared check, KAPUEGYUT918)
+        _subset_check, is_memory_file, parse_frontmatter, split_frontmatter, tartalom_hiba,
+    )
+    _LIB_ERR = None
+except Exception as _lib_exc:  # noqa: BLE001 -- SyntaxError, ImportError, anything
+    _LIB_ERR = repr(_lib_exc)
 
 
 def _read_stdin():
@@ -93,6 +101,10 @@ def main():
         sys.exit(0)
     tool_name = payload.get('tool_name')
     if tool_name not in ('Write', 'Edit', 'MultiEdit'):
+        sys.exit(0)
+    if _LIB_ERR:
+        sys.stderr.write('memory-frontmatter-gate: a kapu fuggosege (scripts/hooks/memory_frontmatter_lib.py) '
+                         f'nem toltheto be ({_LIB_ERR}), a kapu ATENGED\n')
         sys.exit(0)
     try:
         reason = verdict(tool_name, payload.get('tool_input'))

@@ -175,7 +175,10 @@ describe('onParkedState: the record dies only when the box is OBSERVED empty', (
 // suite green.
 describe('the call sites actually use the decisions', () => {
   const __dirname = dirname(fileURLToPath(import.meta.url))
+  // Block and full-line comments stripped, so a commented-out call cannot satisfy a pin.
   const src = readFileSync(join(__dirname, '..', 'web', 'channel-monitor.ts'), 'utf-8')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/^[ \t]*\/\/.*$/gm, '')
 
   function sliceFn(name: string): string {
     const start = src.indexOf('function ' + name)

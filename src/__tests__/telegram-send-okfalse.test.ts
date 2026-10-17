@@ -51,10 +51,10 @@ describe('telegramProvider.sendMessage reads the body it used to discard', () =>
     cb(fakeResponse(statusCode, body))
   }
 
-  it('HTTP 200 + ok:true resolves', async () => {
+  it('HTTP 200 + ok:true resolves with the status and the message id (NOTIFYSENDLOG930)', async () => {
     const pending = getProvider('telegram').sendMessage('tok', '1', 'hi')
     respond(200, '{"ok":true,"result":{"message_id":7}}')
-    await expect(pending).resolves.toBeUndefined()
+    await expect(pending).resolves.toEqual({ status: 200, messageId: '7' })
   })
 
   it('HTTP 200 + ok:false REJECTS with the error_code in classifiable shape', async () => {
@@ -72,7 +72,7 @@ describe('telegramProvider.sendMessage reads the body it used to discard', () =>
   it('a malformed body on HTTP 200 stays a success (the message may be delivered)', async () => {
     const pending = getProvider('telegram').sendMessage('tok', '1', 'hi')
     respond(200, 'not json at all')
-    await expect(pending).resolves.toBeUndefined()
+    await expect(pending).resolves.toEqual({ status: 200, messageId: undefined })
   })
 
   it('a non-200 now carries the body in the error, not just the status', async () => {

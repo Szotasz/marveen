@@ -141,6 +141,11 @@ _t() {
     hu:macos.managed_create) echo "  Managed settings létrehozása szükséges (sudo)." ;;
     en:macos.managed_created) echo "  managed-settings.json created" ;;
     hu:macos.managed_created) echo "  managed-settings.json létrehozva" ;;
+    # #1874: said BEFORE the first root step that reads or writes managed-settings.json
+    en:managed.notice_what) echo "Next, the channel switch goes into the machine-wide Claude Code settings (managed-settings.json). Without it, incoming messages stall on a company (Team/Enterprise) Claude account." ;;
+    hu:managed.notice_what) echo "Most a gépszintű Claude Code-beállításba (managed-settings.json) kerül a csatorna-engedély. Enélkül céges (Team/Enterprise) Claude-fióknál elakadnak a bejövő üzenetek." ;;
+    en:managed.notice_sudo) echo "It is a system file, so the next step may ask for this computer's password (sudo)." ;;
+    hu:managed.notice_sudo) echo "Ez rendszerfájl, ezért a következő lépés kérheti a gép jelszavát (sudo)." ;;
     # ── Agent ID / build ──────────────────────────────────────────────
     en:macos.agent_id_info) echo "  Internal agent ID: " ;;
     hu:macos.agent_id_info) echo "  Ügynök belső azonosító: " ;;

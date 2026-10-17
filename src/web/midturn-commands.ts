@@ -41,6 +41,8 @@ export interface MidTurnCommand {
   forwarded: boolean
   /** The transcript line's own timestamp: the dedup key when there is no message id. */
   ts: string | null
+  /** The topic the command was written in (TELEGRAM_TOPICS_ENABLED); absent in a plain chat. */
+  threadId?: string
 }
 
 function attr(attrs: string, name: string): string | null {
@@ -68,7 +70,11 @@ export function parseQueuedChannelCommand(line: string): MidTurnCommand | null {
   const chatId = attr(attrs, 'chat_id')
   if (!chatId) return null
   const ts = (entry as { timestamp?: unknown }).timestamp
-  return { chatId, messageId: attr(attrs, 'message_id'), text: body, forwarded: attr(attrs, 'forwarded') === '1', ts: typeof ts === 'string' ? ts : null }
+  const threadId = attr(attrs, 'message_thread_id')
+  return {
+    chatId, messageId: attr(attrs, 'message_id'), text: body, forwarded: attr(attrs, 'forwarded') === '1', ts: typeof ts === 'string' ? ts : null,
+    ...(threadId && /^\d+$/.test(threadId) ? { threadId } : {}),
+  }
 }
 
 export interface TailState {
@@ -148,7 +154,7 @@ export interface MidTurnDeps {
   transcriptDir: () => string
   ownerChatId: () => string | null
   dispatch: typeof dispatchForChat
-  send: (chatId: string, text: string) => Promise<void>
+  send: (chatId: string, text: string, threadId?: string) => Promise<void>
   now: () => number
   sleep?: (ms: number) => Promise<void>
 }
@@ -159,11 +165,11 @@ const SEND_RETRY_MS = 1500
 // Measured on the test bot (2026-09-23 15:00): one `connect ETIMEDOUT` to
 // api.telegram.org and the /runs answer was gone, silently. A reply the
 // command already produced is worth two more tries.
-async function sendWithRetry(deps: MidTurnDeps, chatId: string, text: string): Promise<void> {
+async function sendWithRetry(deps: MidTurnDeps, chatId: string, text: string, threadId?: string): Promise<void> {
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>(r => setTimeout(r, ms)))
   for (let attempt = 1; ; attempt++) {
     try {
-      await deps.send(chatId, text)
+      await (threadId ? deps.send(chatId, text, threadId) : deps.send(chatId, text))
       return
     } catch (err) {
       if (attempt >= SEND_ATTEMPTS) throw err
@@ -200,7 +206,7 @@ export async function midTurnTick(state: TailState, deps: MidTurnDeps, firstRun 
         logger.info({ text: cmd.text, outcome: result.outcome }, 'midturn-commands: not ours, left to the model')
         continue
       }
-      for (const r of result.replies) if (r) await sendWithRetry(deps, cmd.chatId, r)
+      for (const r of result.replies) if (r) await sendWithRetry(deps, cmd.chatId, r, cmd.threadId)
       handled++
       logger.info(
         { text: cmd.text, outcome: result.outcome, messageId: cmd.messageId, reply: result.replies.join('\n---\n').slice(0, 2000) },
@@ -219,15 +225,18 @@ function chunks(text: string): string[] {
   return out.length ? out : ['']
 }
 
-const liveDeps: MidTurnDeps = {
+// Exported for its test (midturn-commands-live-send.test.ts); the watcher below is its only user.
+export const liveDeps: MidTurnDeps = {
   transcriptDir: () => projectsDirFor(PROJECT_ROOT, configDirFor(MAIN_AGENT_ID)),
   ownerChatId: () => resolveOwnerChatId(),
   dispatch: dispatchForChat,
   // Plain text, like the hook: a command reply is not HTML-formatted.
-  send: async (chatId, text) => {
+  send: async (chatId, text, threadId) => {
     if (!CHANNEL_TOKEN) throw new Error('no channel token')
     const provider = getProvider(CHANNEL_PROVIDER)
-    for (const c of chunks(markIfTestRun(text))) await provider.sendMessage(CHANNEL_TOKEN, chatId, c)
+    for (const c of chunks(markIfTestRun(text))) {
+      await (threadId ? provider.sendMessage(CHANNEL_TOKEN, chatId, c, undefined, threadId) : provider.sendMessage(CHANNEL_TOKEN, chatId, c))
+    }
   },
   now: () => Date.now(),
 }

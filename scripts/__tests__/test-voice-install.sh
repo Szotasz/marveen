@@ -5,9 +5,14 @@
 # influence the result. Host-side: docker must be available.
 #
 # Usage:
-#   ./scripts/__tests__/test-voice-install.sh           # runs Docker test
+#   WITH_DOCKER=1 ./scripts/__tests__/test-voice-install.sh   # runs Docker test
 #   SKIP_DOCKER=1 INSTALL_DIR=/tmp/voice-test-xxx \
-#     ./scripts/__tests__/test-voice-install.sh         # in-container self-test
+#     ./scripts/__tests__/test-voice-install.sh               # in-container self-test
+#
+# Both modes are explicit (#1878 item 4). With neither set it only prints this
+# usage: the Docker mode removes and starts a container, and the self-test mode
+# runs install-voice.sh, which installs system packages -- neither belongs to a
+# plain local run. The self-test mode also refuses to run outside a container.
 #
 # Exit code: 0 = all PASS, 1 = at least one FAIL.
 
@@ -25,7 +30,18 @@ _section() { echo ""; echo "--- $* ---"; }
 # ============================================================
 CONTAINER_NAME="${VOICE_TEST_CONTAINER:-marveen-voice-test}"
 
+if [[ "${SKIP_DOCKER:-}" != "1" && "${WITH_DOCKER:-}" != "1" ]]; then
+  sed -n '2,/^# Exit code/p' "$0" | sed 's/^# \{0,1\}//'
+  echo "Nothing run: set WITH_DOCKER=1 for the Docker test." >&2
+  exit 2
+fi
+
 if [[ "${SKIP_DOCKER:-}" != "1" ]]; then
+  # `docker rm -f` below must only ever hit a container this script owns.
+  case "$CONTAINER_NAME" in
+    marveen-voice-test|marveen-voice-test-*) ;;
+    *) echo "Refusing: VOICE_TEST_CONTAINER must be marveen-voice-test or start with marveen-voice-test- (got '$CONTAINER_NAME')." >&2; exit 2 ;;
+  esac
   # Remove any leftover container from a previous run
   docker rm -f "$CONTAINER_NAME" 2>/dev/null || true
 
@@ -66,7 +82,16 @@ fi
 # ============================================================
 # IN-CONTAINER SELF-TEST MODE (SKIP_DOCKER=1)
 # ============================================================
+# install-voice.sh installs system packages: only inside the throwaway container.
+if [[ ! -f /.dockerenv && "${ALLOW_HOST_INSTALL:-}" != "1" ]]; then
+  echo "Refusing: SKIP_DOCKER=1 is the in-container mode and this is not a container (/.dockerenv missing). Set ALLOW_HOST_INSTALL=1 only on a disposable machine." >&2
+  exit 2
+fi
 DEST="${INSTALL_DIR:-/tmp/voice-test}"
+# The installer under test. Overridable so the guard test can point it at a stub:
+# a version of this script without the container check (a bisect, a revert, a
+# mutant) must not be able to run the real installer on the test host.
+VOICE_INSTALLER="${VOICE_INSTALLER:-/marveen/scripts/install-voice.sh}"
 echo "==> Voice install acceptance test"
 echo "    INSTALL_DIR=$DEST"
 echo "    $(uname -a)"
@@ -82,7 +107,7 @@ command -v ffmpeg &>/dev/null                      && _fail "ffmpeg pre-installe
 
 # Run installer
 _section "Running installer"
-INSTALL_DIR="$DEST" bash /marveen/scripts/install-voice.sh
+INSTALL_DIR="$DEST" bash "$VOICE_INSTALLER"
 echo "    installer exited $?"
 
 # C1: venv + package import
@@ -237,7 +262,7 @@ fi
 
 # C7: Idempotence -- re-run installer, nothing breaks
 _section "C7: Idempotence (re-run)"
-INSTALL_DIR="$DEST" bash /marveen/scripts/install-voice.sh 2>&1 | grep -E "SKIP|PASS|complete" | head -10
+INSTALL_DIR="$DEST" bash "$VOICE_INSTALLER" 2>&1 | grep -E "SKIP|PASS|complete" | head -10
 "$DEST/venv/bin/python" -c "import faster_whisper, piper" \
   && _pass "packages still importable after re-run" \
   || _fail "packages broken after re-run"

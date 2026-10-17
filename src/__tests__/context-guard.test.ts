@@ -90,6 +90,14 @@ describe('contextLimitForModel / calibrateLimit', () => {
     // Sonnet stays 200k: never observed above 198k on this host. Haiku 200k
     // by spec; unknown models stay conservative (calibration steps them up).
     expect(contextLimitForModel('claude-sonnet-5')).toBe(200_000)
+    // Sonnet 5.5 runs a 1M window (status bar 216k/1M, 2026-10-12): the 200k
+    // guess restarted it at ~20% real usage.
+    expect(contextLimitForModel('claude-sonnet-5-5')).toBe(1_000_000)
+    // Non-bare forms (Bedrock IDs), so the pattern cannot narrow to the bare id unnoticed.
+    expect(contextLimitForModel('anthropic.claude-sonnet-5-5')).toBe(1_000_000)
+    expect(contextLimitForModel('anthropic.claude-sonnet-5-5-v1:0')).toBe(1_000_000)
+    // The generic [1m] branch for a model outside the 1M families.
+    expect(contextLimitForModel('claude-sonnet-4-6[1m]')).toBe(1_000_000)
     expect(contextLimitForModel('claude-haiku-4-5')).toBe(200_000)
     expect(contextLimitForModel('claude-opus-4-5')).toBe(200_000)
     expect(contextLimitForModel('deepseek-v4-pro')).toBe(200_000)
@@ -397,6 +405,46 @@ describe('decideGuard: await-handoff', () => {
     expect(d.action).toBe('none')
     expect(d.nextState.phase).toBe('cooldown')
     expect(d.nextState.cooldownUntilMs).toBe(NOW + CFG.cooldownMinutes * 60_000)
+  })
+})
+
+// The runner sweeps every 5 minutes (INTERVAL_MS = 300_000 in
+// src/web/context-guard-runner.ts), and with a 5-minute ready deadline the
+// fresh session got exactly ONE readiness check. Measured 2026-09-28: 3 of 13
+// restarts lost the resume ("ready timeout") because the new session was busy
+// at that single sweep. The deadline must leave several sweeps of room.
+describe('decideGuard: await-ready survives busy sweeps', () => {
+  const TICK = 5 * 60_000 // the runner's sweep interval
+  const t0 = NOW
+  const busy = { running: true, sessionReady: false, paneIdle: false, paneBusy: true }
+
+  it('busy at t0+5 and t0+10, ready at t0+15 -> the resume is injected', () => {
+    const awaiting: GuardState = {
+      ...INITIAL_GUARD_STATE,
+      phase: 'await-handoff',
+      handoffMtimeAtRequest: 100,
+      deadlineMs: t0 + 60_000,
+    }
+    // The restart itself, through the real decision path.
+    const restart = decideGuard(awaiting, inputs({ nowMs: t0, handoffMtime: 200, paneIdle: true }), CFG)
+    expect(restart.action).toBe('restart')
+    expect(restart.nextState.phase).toBe('await-ready')
+
+    const tick1 = decideGuard(restart.nextState, inputs({ nowMs: t0 + TICK, ...busy }), CFG)
+    expect(tick1.action).toBe('none')
+    expect(tick1.nextState.phase).toBe('await-ready')
+
+    const tick2 = decideGuard(tick1.nextState, inputs({ nowMs: t0 + 2 * TICK, ...busy }), CFG)
+    expect(tick2.action).toBe('none')
+    expect(tick2.nextState.phase).toBe('await-ready')
+
+    const tick3 = decideGuard(tick2.nextState, inputs({ nowMs: t0 + 3 * TICK, sessionReady: true }), CFG)
+    expect(tick3.action).toBe('inject-resume')
+    expect(tick3.reason).not.toMatch(/ready timeout/)
+  })
+
+  it('the ready window spans more than one sweep', () => {
+    expect(READY_TIMEOUT_MS).toBeGreaterThanOrEqual(3 * TICK)
   })
 })
 

@@ -1,6 +1,10 @@
 import { describe, it, expect } from 'vitest'
+import { spawnSync } from 'node:child_process'
+import { appendFileSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { gateDecision, buildUnverifiedRecipientMsg } from '../../scripts/email-send-gate.mjs'
+import { gateDecision, buildUnverifiedRecipientMsg, readBrandEnv } from '../../scripts/email-send-gate.mjs'
 // @ts-expect-error -- plain .mjs hook script, no types
 import { isValidSource, normalizeAddress, splitAddresses, loadLedger, isVerifiedIn } from '../../scripts/recipient-ledger.mjs'
 import { injectEmailSendGate, agentGetsEmailGate } from '../web/agent-scaffold.js'
@@ -281,5 +285,85 @@ describe('injectEmailSendGate', () => {
     expect(pre).toHaveLength(2)
     expect(pre.some((e) => JSON.stringify(e).includes('email-send-gate.mjs'))).toBe(true)
     expect(pre.some((e) => e.matcher === 'WebFetch')).toBe(true)
+  })
+})
+
+// HOOKDEPLOAD1008: a recipient-ledger.mjs that does not load. As a static
+// import it failed the module link, node exited 1, and PreToolUse reads 1 as
+// NON-blocking: every call went through, the send_email deny included. Run on
+// a disposable copy of the two files, never on the repo's own; the intact copy
+// is first shown to decide like the real hook, so a broken copy's verdict is
+// the broken module's and not the copy's.
+describe('a recipient-ledger module that does not load (HOOKDEPLOAD1008)', () => {
+  const SCRIPTS = join(__dirname, '..', '..', 'scripts')
+  // The real path: node resolves the main module's own path (import.meta.url) through symlinks, and the hook names the
+  // ledger CLI by it; on a symlinked temp dir (macOS: /var/folders -> /private/var/folders) the copy's `dir` must be the
+  // same string, or the <scripts> replacement below misses and the control differs from the real hook (#1818 review).
+  const TMP = realpathSync(mkdtempSync(join(tmpdir(), 'email-send-gate-dep-')))
+  // The deny wording carries the install's brand names from its .env; the copy
+  // gets the same two values (and nothing else from that file).
+  const { botName, ownerName } = readBrandEnv()
+  const copyGate = (name: string, mutate?: (ledgerPath: string) => void) => {
+    const dir = join(TMP, name, 'scripts')
+    mkdirSync(dir, { recursive: true })
+    for (const f of ['email-send-gate.mjs', 'recipient-ledger.mjs']) copyFileSync(join(SCRIPTS, f), join(dir, f))
+    writeFileSync(join(TMP, name, '.env'), `BOT_NAME=${botName}\nOWNER_NAME=${ownerName}\n`)
+    mutate?.(join(dir, 'recipient-ledger.mjs'))
+    return dir
+  }
+  const run = (dir: string, payload: unknown) => {
+    const r = spawnSync(process.execPath, [join(dir, 'email-send-gate.mjs')], {
+      input: JSON.stringify(payload), encoding: 'utf-8', timeout: 15_000,
+    })
+    // the unverified-recipient wording names the ledger CLI by its absolute path
+    return { status: r.status, stdout: r.stdout.split(dir).join('<scripts>'), stderr: r.stderr }
+  }
+  const denied = (stdout: string) => JSON.parse(stdout).hookSpecificOutput.permissionDecision === 'deny'
+
+  const RCPT = 'nobody@example.invalid' // on no ledger, so the verdict never hangs on a real store
+  const CALLS: Record<string, unknown> = {
+    'send_email': { tool_name: 'mcp__x__send_email', tool_input: { to: [RCPT], subject: 's', body: 'b' } },
+    'draft with a recipient': { tool_name: 'mcp__x__draft_email', tool_input: { to: [RCPT] } },
+    'manage_email send with a recipient': { tool_name: 'mcp__gw__manage_email', tool_input: { operation: 'send', to: RCPT, draft: true } },
+    'manage_email send without a recipient': { tool_name: 'mcp__gw__manage_email', tool_input: { operation: 'reply', messageId: 'm1' } },
+    'non-send Bash': { tool_name: 'Bash', tool_input: { command: 'ls -la' } },
+    'Bash send': { tool_name: 'Bash', tool_input: { command: 'sendmail a@b.hu' } },
+  }
+  const intact = copyGate('intact')
+  const broken = copyGate('broken', (p) => appendFileSync(p, '<'.repeat(7) + ' Updated upstream\n'))
+  const renamed = copyGate('renamed', (p) => writeFileSync(p,
+    readFileSync(p, 'utf-8').replace('export function splitAddresses(', 'export function splitAddressesRenamed(')))
+
+  it('control: the intact copy decides every call exactly like the real hook', () => {
+    for (const [label, call] of Object.entries(CALLS)) {
+      expect(run(intact, call), label).toEqual(run(SCRIPTS, call))
+    }
+  })
+
+  it('a call that needs the ledger is DENIED with exit 2, naming the module (1 would let it through)', () => {
+    for (const label of ['draft with a recipient', 'manage_email send with a recipient']) {
+      const r = run(broken, CALLS[label])
+      expect(r.status, label).toBe(2)
+      expect(r.stderr, label).toContain('scripts/recipient-ledger.mjs')
+      expect(r.stderr, label).toContain('nem toltheto be')
+      expect(r.stderr, label).toContain('fo ugynok')
+    }
+  })
+
+  it('a missing export is a load failure too', () => {
+    const r = run(renamed, CALLS['draft with a recipient'])
+    expect(r.status).toBe(2)
+    expect(r.stderr).toContain('missing export: splitAddresses')
+  })
+
+  it('a call that does not need the ledger is decided as before', () => {
+    for (const label of ['send_email', 'manage_email send without a recipient', 'Bash send']) {
+      const r = run(broken, CALLS[label])
+      expect(r.status, label).toBe(0)
+      expect(denied(r.stdout), label).toBe(true)
+      expect(r, label).toEqual(run(SCRIPTS, CALLS[label]))
+    }
+    const r = run(broken, CALLS['non-send Bash'])
+    expect(r).toEqual({ status: 0, stdout: '', stderr: '' })
   })
 })

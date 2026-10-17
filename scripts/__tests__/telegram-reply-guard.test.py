@@ -373,6 +373,56 @@ def main():
     check("capture -> guard names discord tool",
           DC_TOOL in run_hook(db)[1], True)
 
+    # 7. A reply SENT between an inbound's arrival and its (later) ledger write
+    #    -> ALLOW. Replays 2026-09-11: "hahó" arrived 08:40:21Z, the reply went
+    #    out 08:41:19Z, the inbound row was only written at 08:41:20Z.
+    now = int(time.time())
+    db = fresh_db()
+    lib = load_lib(db)
+    lib.log_outbound(AGENT, "8695313113", "itt vagyok")
+    lib.log_inbound(AGENT, "8695313113", "1184", "hahó",
+                    time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(now - 60)))
+    con = lib.connect()
+    con.execute("UPDATE conversation_log SET created_at=? WHERE direction='out'", (now - 2,))
+    con.commit(); con.close()
+    d, _r, _ = run_hook(db)
+    check("reply sent before the inbound was logged allows", d, None)
+
+    # 8. A question that ARRIVED after the last reply is still open -> BLOCK.
+    db = fresh_db()
+    lib = load_lib(db)
+    lib.log_outbound(AGENT, "8695313113", "korabbi valasz")
+    con = lib.connect()
+    con.execute("UPDATE conversation_log SET created_at=? WHERE direction='out'", (now - 120,))
+    con.commit(); con.close()
+    lib.log_inbound(AGENT, "8695313113", "1190", "uj kerdes?",
+                    time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(now - 60)))
+    d, _r, _ = run_hook(db)
+    check("question arriving after the last reply blocks", d, "block")
+
+    # 9. An inbound whose ts is skewed far into the PAST does not make an older,
+    #    unrelated reply count as answering it -> BLOCK. The arrival is clamped
+    #    to at most MAX_PROCESSING_LAG before the ledger write.
+    db = fresh_db()
+    lib = load_lib(db)
+    lib.log_outbound(AGENT, "8695313113", "egy oras valasz")
+    con = lib.connect()
+    con.execute("UPDATE conversation_log SET created_at=? WHERE direction='out'", (now - 3600,))
+    con.commit(); con.close()
+    lib.log_inbound(AGENT, "8695313113", "1195", "uj kerdes, regi idobelyeggel?",
+                    time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(now - 30 * 86400)))
+    d, _r, _ = run_hook(db)
+    check("a ts skewed into the past does not widen the answered-window", d, "block")
+
+    # 10. The clamp itself: both bounds, and the fallback.
+    lib = load_lib(fresh_db())
+    lag = lib.MAX_PROCESSING_LAG
+    iso = lambda t: time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime(t))
+    check("arrival: normal lag kept", lib._arrival_epoch(iso(now - 59), now), now - 59)
+    check("arrival: future ts cut at the write time", lib._arrival_epoch(iso(now + 3600), now), now)
+    check("arrival: past ts cut at the processing lag", lib._arrival_epoch(iso(now - 30 * 86400), now), now - lag)
+    check("arrival: unparseable ts falls back to the write time", lib._arrival_epoch("not a time", now), now)
+
     if FAILS:
         print(f"\n{len(FAILS)} FAILED: {FAILS}", file=sys.stderr)
         sys.exit(1)

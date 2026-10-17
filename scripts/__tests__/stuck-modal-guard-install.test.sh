@@ -57,8 +57,12 @@ fi
 FIRST="$(cat "$PLIST")"
 PATH="$TMP/bin:$PATH" HOME="$TMP/home" bash "$INSTALLER" >/dev/null 2>&1
 assert_eq "a second run writes the same plist" "$FIRST" "$(cat "$PLIST")"
-PATH="$TMP/bin:$PATH" HOME="$TMP/home" bash "$INSTALLER" --load >/dev/null 2>&1
-assert_contains "--load loads it" "$(cat "$TMP/launchctl.calls")" "load $PLIST"
+# ISSUE1891: --load registers the job in the GUI domain and verifies it ran
+# (start_launchd_periodic_unit); the verified/not-running outcomes are pinned
+# in helper-launchd-verified-start.test.sh. This stub never reports a run, so
+# the installer exits 3 here -- what is checked is that it registered.
+PATH="$TMP/bin:$PATH" HOME="$TMP/home" LAUNCHD_START_TRIES=1 bash "$INSTALLER" --load >/dev/null 2>&1
+assert_contains "--load registers it in the GUI domain" "$(cat "$TMP/launchctl.calls")" "bootstrap gui/$(id -u) $PLIST"
 
 # ---------------------------------------------------------------------------
 echo

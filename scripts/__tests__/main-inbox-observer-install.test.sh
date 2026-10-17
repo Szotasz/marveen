@@ -41,7 +41,7 @@ assert_contains "runs the observer installer" "$MACOS" 'scripts/install-main-inb
 assert_contains "guards on the installer being present" "$MACOS" '[ -x "$INSTALL_DIR/scripts/install-main-inbox-observer.sh" ]'
 # Non-fatal, like the keepalive probe next to it: a failed observer install must
 # not take the whole installation down with it.
-assert_contains "a failure warns instead of aborting" "$MACOS" 'inbox-figyelo telepitese nem sikerult'
+assert_contains "a failure warns instead of aborting" "$MACOS" 'Az inbox-figyelo NEM FUT'
 echo ""
 
 # ---------------------------------------------------------------------------
@@ -75,8 +75,16 @@ echo ""
 # ---------------------------------------------------------------------------
 echo "update.sh install_main_inbox_observer_unit"
 
-FN="$(awk '/^install_main_inbox_observer_unit\(\) \{/,/^\}$/' "$REPO/update.sh")"
-if [ -z "$FN" ]; then
+# UPDATETIMER1012: an existing timer goes through ensure_timer_running, so the
+# two helpers come along. pidof is stubbed to "no systemd" here, which keeps the
+# existing-timer branch inert and this section about writing units; starting an
+# existing timer is pinned in update-timer-start.test.sh.
+HELPERS="$(awk '/^_user_systemd_up\(\) \{/,/^\}$/' "$REPO/update.sh")
+$(awk '/^ensure_timer_running\(\) \{/,/^\}$/' "$REPO/update.sh")"
+FNBODY="$(awk '/^install_main_inbox_observer_unit\(\) \{/,/^\}$/' "$REPO/update.sh")"
+FN="$HELPERS
+$FNBODY"
+if [ -z "$FNBODY" ] || ! printf '%s' "$HELPERS" | grep -q '^ensure_timer_running() {'; then
   fail "install_main_inbox_observer_unit() not found in update.sh"
   echo; echo "PASS=$PASS FAIL=$FAIL"; exit 1
 fi
@@ -95,6 +103,7 @@ echo "\$*" >> "$TMP/systemctl.calls"
 exit 0
 EOF
 chmod +x "$TMP/bin/systemctl"
+printf '#!/bin/sh\nexit 1\n' > "$TMP/bin/pidof"; chmod +x "$TMP/bin/pidof"
 
 # uname stub: the function branches on it, so the platform under test is chosen
 # here instead of by whatever machine happens to run the suite.
