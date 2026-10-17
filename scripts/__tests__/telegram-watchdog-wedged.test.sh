@@ -275,6 +275,185 @@ assert_eq "one real-answer sendMessage" "1" "$(count sendMessage)"
 assert_eq "the delivery names the topic" "yes" "$(body_has '"message_thread_id": 12')"
 
 # ---------------------------------------------------------------------------
+# c9be04f8: the 15-min backstop must not fire on an agent that is up and still
+# WRITING the marker's round (a long round of many tool calls: the Stop hook
+# clears the marker only at the round's end). Measured 2026-10-13 12:29Z: the
+# owner's waiting note became the error text mid-round. A real wedge
+# (no new transcript line for WEDGED_SEC) and the hung-reply branch still fire.
+# layout = writing   -> prompt at -age, a line every 120 s up to -30 s (open, active)
+# layout = silent    -> prompt at -age, its last line 1000 s ago (open, quiet)
+# layout = hunglive  -> prompt at -age, a reply tool_use with no result at -30 s
+# layout = ended     -> the marker's round answered, then a LATER prompt whose
+#                       round keeps writing up to -20 s (the marker's round ended)
+# layout = skillmeta -> writing, plus the lines the harness writes INSIDE a turn (c9be04f8): a
+#                       skill load (isMeta, no origin) at +12 s and at the 34th minute, a <system-reminder> (isMeta
+#                       string) in between; the real transcript shape the tester measured (a 57-min round)
+# layout = compactmid -> writing, plus a compaction summary (isCompactSummary) at +900 s
+# layout = peerlater -> the marker's round answered, then a LATER round started by a message from another
+#                       session (isMeta WITH an origin) that keeps writing up to -20 s
+# layout = skillsilent -> a skill load inside the round, then no new line for 1000 s (a real wedge)
+make_live_case() { # name layout age_seconds
+    local name="$1" layout="$2" age="$3"
+    local pdir="$TMP/root/agents/$name/.claude/channels/telegram/progress"
+    local sdir="$TMP/root/agents/$name/.claude/channels/telegram"
+    mkdir -p "$pdir"
+    printf 'TELEGRAM_BOT_TOKEN=TESTTOKEN\n' > "$sdir/.env"
+    local tr="$sdir/transcript.jsonl"
+    python3 - "$tr" "$layout" "$age" <<'PY'
+import datetime, json, sys, time
+tr, layout, age = sys.argv[1], sys.argv[2], int(sys.argv[3])
+now = time.time()
+def iso(t):
+    return datetime.datetime.fromtimestamp(t, datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z')
+def prompt(t, text):
+    return {"type": "user", "timestamp": iso(t), "message": {"role": "user", "content": text}}
+def say(t, blocks):
+    return {"type": "assistant", "timestamp": iso(t), "message": {"role": "assistant", "content": blocks}}
+def result(t, tid):
+    return {"type": "user", "timestamp": iso(t),
+            "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tid}]}}
+# The harness's own lines, in the shapes of a real transcript (2026-10-13): a skill load is an isMeta user line with a
+# text block and the Skill call's id; a reminder an isMeta string; neither has an origin. A message from another
+# session is isMeta WITH an origin; a compaction summary carries isCompactSummary.
+def skill(t):
+    return {"type": "user", "isMeta": True, "sourceToolUseID": "tuK1", "timestamp": iso(t),
+            "message": {"role": "user", "content": [{"type": "text", "text": "Base directory for this skill: /x/skills/proba"}]}}
+def reminder(t):
+    return {"type": "user", "isMeta": True, "timestamp": iso(t),
+            "message": {"role": "user", "content": "<system-reminder> proba emlekezteto </system-reminder>"}}
+def compact(t):
+    return {"type": "user", "isCompactSummary": True, "isVisibleInTranscriptOnly": True, "timestamp": iso(t),
+            "message": {"role": "user", "content": "This session is being continued from a previous conversation that ran out of context."}}
+def peer(t):
+    return {"type": "user", "isMeta": True, "origin": {"kind": "peer"}, "timestamp": iso(t),
+            "message": {"role": "user", "content": "Another Claude session sent a message: proba"}}
+ev = [prompt(now - age, "csatorna-kerdes")]
+if layout == "writing":
+    t, i = now - age + 60, 0
+    while t < now - 30:
+        ev.append(say(t, [{"type": "tool_use", "id": f"tuW{i}", "name": "Bash"}]))
+        ev.append(result(t + 5, f"tuW{i}"))
+        t, i = t + 120, i + 1
+    ev.append(say(now - 30, [{"type": "text", "text": "KOZBENSO_SZOVEG meg dolgozom"}]))
+elif layout == "silent":
+    ev.append(say(now - 1100, [{"type": "text", "text": "VALODI_T1_VALASZ a csatornanak"},
+                                {"type": "tool_use", "id": "tuS1", "name": "Bash"}]))
+    ev.append(result(now - 1000, "tuS1"))
+elif layout == "hunglive":
+    ev.append(say(now - 30, [{"type": "text", "text": "VALODI_T1_VALASZ a csatornanak"},
+                              {"type": "tool_use", "id": "tuR1", "name": "mcp__plugin_telegram_telegram__reply"}]))
+elif layout == "ended":
+    ev.append(say(now - age + 50, [{"type": "text", "text": "VALODI_T1_VALASZ a csatornanak"}]))
+    ev.append(prompt(now - 600, "belso scheduled kor"))
+    t = now - 590
+    while t < now - 20:
+        ev.append(say(t, [{"type": "text", "text": "BELSO_NAPLO kesobbi kor"}]))
+        t += 60
+elif layout in ("skillmeta", "compactmid"):
+    t, i = now - age + 60, 0
+    while t < now - 30:
+        ev.append(say(t, [{"type": "tool_use", "id": f"tuW{i}", "name": "Bash"}]))
+        ev.append(result(t + 5, f"tuW{i}"))
+        t, i = t + 120, i + 1
+    if layout == "skillmeta":
+        ev.append(skill(now - age + 12))
+        ev.append(reminder(now - age + 1200))
+        ev.append(skill(now - age + 2040))
+    else:
+        ev.append(compact(now - age + 900))
+    ev.append(say(now - 30, [{"type": "text", "text": "KOZBENSO_SZOVEG meg dolgozom"}]))
+elif layout == "peerlater":
+    ev.append(say(now - age + 50, [{"type": "text", "text": "VALODI_T1_VALASZ a csatornanak"}]))
+    ev.append(peer(now - 600))
+    t = now - 590
+    while t < now - 20:
+        ev.append(say(t, [{"type": "text", "text": "BELSO_NAPLO kesobbi kor"}]))
+        t += 60
+elif layout == "skillsilent":
+    ev.append(say(now - age + 100, [{"type": "text", "text": "VALODI_T1_VALASZ a csatornanak"},
+                                     {"type": "tool_use", "id": "tuK1", "name": "Skill"}]))
+    ev.append(skill(now - age + 200))
+    ev.append(result(now - 1000, "tuK1"))
+with open(tr, "w") as f:
+    for e in ev:
+        f.write(json.dumps(e) + "\n")
+PY
+    printf '[{"chat_id":"%s","message_id":555,"transcript_path":"%s"}]\n' "$CHAT" "$tr" \
+        > "$pdir/SID.json"
+    python3 - "$pdir/SID.json" "$age" <<'PY'
+import os, sys, time
+os.utime(sys.argv[1], (time.time()-int(sys.argv[2]),)*2)
+PY
+    echo "$pdir"
+}
+
+echo ""
+echo "(k) c9be04f8: a 30-min round still writing is NOT fired by the backstop"
+PK="$(make_live_case wk writing 1800)"
+run_wd 1 1
+assert_eq "no delivery while the round is writing" "0" "$(count sendMessage)"
+assert_eq "no error edit while the round is writing" "0" "$(count editMessageText)"
+assert_eq "placeholder kept (the round is alive)" "yes" "$(pend_exists "$PK")"
+
+echo ""
+echo "(l) c9be04f8: an open round with no new line for >15 min still fires"
+PL="$(make_live_case wl silent 1200)"
+run_wd 1 1
+assert_eq "backstop fires: one delivery" "1" "$(count sendMessage)"
+assert_eq "delivers the round's own text" "yes" "$(body_has "VALODI_T1_VALASZ")"
+assert_eq "state file removed" "no" "$(pend_exists "$PL")"
+
+echo ""
+echo "(m) c9be04f8: the hung-reply branch is unchanged by recent activity"
+PM="$(make_live_case wm hunglive 100)"
+run_wd 1 1
+assert_eq "fires fast on the hung reply" "1" "$(count sendMessage)"
+assert_eq "delivers the real answer" "yes" "$(body_has "VALODI_T1_VALASZ")"
+assert_eq "state file removed" "no" "$(pend_exists "$PM")"
+
+echo ""
+echo "(n) c9be04f8: a LATER round's activity does not hold an ended round's backstop"
+PN="$(make_live_case wn ended 1200)"
+run_wd 1 1
+assert_eq "backstop fires: one delivery" "1" "$(count sendMessage)"
+assert_eq "delivers the marker round's own text" "yes" "$(body_has "VALODI_T1_VALASZ")"
+assert_eq "the later round's text NOT sent" "no" "$(body_has "BELSO_NAPLO")"
+assert_eq "state file removed" "no" "$(pend_exists "$PN")"
+
+echo ""
+echo "(o) c9be04f8: skill loads and a reminder inside a 57-min round still writing do NOT fire the backstop"
+PO="$(make_live_case wo skillmeta 3420)"
+run_wd 1 1
+assert_eq "no delivery while the round is writing" "0" "$(count sendMessage)"
+assert_eq "no error edit while the round is writing" "0" "$(count editMessageText)"
+assert_eq "placeholder kept (the round is alive)" "yes" "$(pend_exists "$PO")"
+
+echo ""
+echo "(p) c9be04f8: a compaction summary inside a round still writing does NOT fire the backstop"
+PP="$(make_live_case wp compactmid 1800)"
+run_wd 1 1
+assert_eq "no delivery while the round is writing" "0" "$(count sendMessage)"
+assert_eq "no error edit while the round is writing" "0" "$(count editMessageText)"
+assert_eq "placeholder kept (the round is alive)" "yes" "$(pend_exists "$PP")"
+
+echo ""
+echo "(q) c9be04f8: a LATER round started by another session's message (isMeta with an origin) does not hold the backstop"
+PQ="$(make_live_case wq peerlater 1200)"
+run_wd 1 1
+assert_eq "backstop fires: one delivery" "1" "$(count sendMessage)"
+assert_eq "delivers the marker round's own text" "yes" "$(body_has "VALODI_T1_VALASZ")"
+assert_eq "the later round's text NOT sent" "no" "$(body_has "BELSO_NAPLO")"
+assert_eq "state file removed" "no" "$(pend_exists "$PQ")"
+
+echo ""
+echo "(r) c9be04f8: a skill load inside a round, then no new line for >15 min, still fires"
+PR="$(make_live_case wr skillsilent 1500)"
+run_wd 1 1
+assert_eq "backstop fires: one delivery" "1" "$(count sendMessage)"
+assert_eq "delivers the round's own text" "yes" "$(body_has "VALODI_T1_VALASZ")"
+assert_eq "state file removed" "no" "$(pend_exists "$PR")"
+
+# ---------------------------------------------------------------------------
 echo ""
 echo "=============================="
 TOTAL=$((PASS + FAIL))
