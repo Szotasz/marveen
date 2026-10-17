@@ -84,3 +84,91 @@ def mixed_script_words(text: str):
                 bad_name = "UNKNOWN"
             out.append((word, bad, f"{bad_name} (U+{ord(bad):04X})"))
     return out
+
+
+# LONEFOREIGN893 (kartya #893, merve 2026-10-09). A fenti szabaly SZANDEKOSAN
+# atengedi a tisztan nem-latin szot, mert az idegen nyelvu idezet legitim. Egy
+# eset viszont atcsuszott rajta: 2026-10-09-en egy magyar Telegram-uzenetben a
+# "majus" helyett az orosz "май" allt. A szo tisztan cirill, tehat a
+# vegyes-iras szabaly -- helyesen -- nem talalt rajta semmit, es a mondat
+# ("az is май-junius kozott") magyarul olvasva ERTELMES maradt. Ez ugyanaz a
+# kar, mint a homoglifa: a szoveg jonak latszik, es egy ELGEPELT szo megy ki az
+# ugyfel fele.
+#
+# A KULONBSEG, AMIT MERNI LEHET: az idezet TOBB nem-latin szobol all vagy
+# idezojelben van, az elgepeles viszont EGY, magaban allo szo egy egyebkent
+# latin mondatban. Ezert a szabaly nem a szo irasrendszeret nezi, hanem a
+# KORNYEZETET.
+#
+# HAROM FELTETEL EGYUTT, es mindharom azert all itt, hogy egy legitim szoveg ne
+# bukjon el:
+#   1. a szoveg tulnyomoan latin (legalabb LATIN_KUSZOB latin szo) -- enelkul egy
+#      tisztan orosz uzenet minden szava talalat lenne;
+#   2. a nem-latin szo MAGABAN all (az elotte es utana allo szo latin), tehat nem
+#      egy idegen mondat resze;
+#   3. a szo legalabb HOSSZ_KUSZOB karakter -- az egy betus gorog es cirill jel
+#      (π, Δ, т) szimbolum, nem szo, es a #1541 ota kimondottan atmehet.
+# Plusz az idezojelben allo szot kihagyjuk: az idezet akkor is idezet, ha egy szo.
+LATIN_KUSZOB = 3
+HOSSZ_KUSZOB = 2
+
+# AZ IDEZOJELEK, amiken belul a nem-latin szo idezetnek szamit. A magyar also
+# idezojel (U+201E) es a felso (U+201D) mellett a sima ASCII " es a francia
+# «» is itt van, mert a flotta szovegeiben mind a harom elofordul.
+IDEZOJEL_NYITO = "\u201e\"\u00ab"
+IDEZOJEL_ZARO = "\u201d\"\u00bb"
+
+
+def _idezetben(text: str, kezdet: int) -> bool:
+    """Idezojelen BELUL all-e a `kezdet` poziciojú szo.
+
+    A merce egyszeru es szandekosan az: hany nyito idezojel all elotte, amihez
+    nem jott zaro. Nem teljes nyelvtani elemzes -- egy kapu-feltetelnek nem is
+    kell az --, de a "..." es a „...” parokat helyesen kezeli.
+    """
+    nyitva = False
+    for ch in text[:kezdet]:
+        if ch in IDEZOJEL_NYITO and not nyitva:
+            nyitva = True
+        elif ch in IDEZOJEL_ZARO and nyitva:
+            nyitva = False
+    return nyitva
+
+
+def isolated_foreign_words(text: str):
+    """[(szo, irasrendszer, "NAME (U+XXXX)"), ...] a MAGANYOS nem-latin szavakra.
+
+    Egy idegen nyelvu idezet (tobb egymast koveto nem-latin szo, vagy
+    idezojelben allo szoveg) NEM talalat. Lasd a fenti indoklast.
+    """
+    szavak = []
+    for m in UWORD.finditer(text):
+        szo = m.group(0)
+        irasok = {char_script(ch) for ch in szo} - {"NEUTRAL", "UNKNOWN"}
+        if not irasok:
+            continue
+        # A vegyes szo a MASIK szabaly dolga; itt csak az EGY irasrendszeru szo szamit.
+        egy_iras = irasok.pop() if len(irasok) == 1 else None
+        szavak.append((m.start(), szo, egy_iras))
+
+    out = []
+    for i, (kezdet, szo, iras) in enumerate(szavak):
+        if iras is None or iras == "LATIN":
+            continue
+        if len(szo) < HOSSZ_KUSZOB:
+            continue
+        if sum(1 for _, _, x in szavak if x == "LATIN") < LATIN_KUSZOB:
+            continue
+        elozo = szavak[i - 1][2] if i > 0 else None
+        kovetkezo = szavak[i + 1][2] if i + 1 < len(szavak) else None
+        # EGY SZIGET: az elotte es utana allo szo is latin (vagy nincs ott szo).
+        if elozo not in (None, "LATIN") or kovetkezo not in (None, "LATIN"):
+            continue
+        if _idezetben(text, kezdet):
+            continue
+        try:
+            nev = unicodedata.name(szo[0])
+        except ValueError:
+            nev = "UNKNOWN"
+        out.append((szo, iras, f"{nev} (U+{ord(szo[0]):04X})"))
+    return out
