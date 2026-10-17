@@ -1502,7 +1502,7 @@ function renderKanbanTeamView() {
     head.innerHTML = `<span class="kanban-team-avatar ${escapeHtml(meta.avatarClass)}">${escapeHtml(meta.avatarChar || '')}</span>` +
       `<span class="kanban-team-name">${escapeHtml(meta.label)}</span>` +
       (meta.nickname ? `<span class="kanban-nickname">${escapeHtml(meta.nickname)}</span>` : '') +
-      `<span class="kanban-team-open">${t('kanban.team.open_n', { n: cards.length })}</span>`
+      `<span class="kanban-team-open">${escapeHtml(t('kanban.team.open_n', { n: cards.length }))}</span>`
     kanbanDecorateAvatar(head.querySelector('.kanban-team-avatar'), key)
     row.appendChild(head)
 
@@ -1539,7 +1539,7 @@ function renderKanbanTeamView() {
         const activeTxt = c.status === 'in_progress' ? formatActiveTime(c.active_seconds, 'short') : null
         const rightTxt = activeTxt ?? ageTxt
         const rightTip = activeTxt ? t('kanban.active.tooltip') : t('kanban.team.moved_tooltip')
-        item.innerHTML = `<span class="seq">#${c.seq ?? '?'}</span><span class="title">${escapeHtml(c.title)}</span>` +
+        item.innerHTML = `<span class="seq">#${escapeHtml(String(c.seq ?? '?'))}</span><span class="title">${escapeHtml(c.title)}</span>` +
           `<span class="age" title="${escapeHtml(rightTip)}">${escapeHtml(rightTxt)}</span>`
         item.tabIndex = 0
         item.setAttribute('role', 'button')
