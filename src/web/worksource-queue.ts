@@ -22,7 +22,7 @@
  *   <root>/done/<id>.json      acknowledged, with the agent's result attached
  */
 
-import { existsSync, mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { atomicWriteFileSync } from './atomic-write.js'
@@ -100,4 +100,37 @@ export function enqueueWorksourceItem(
   meta?: Record<string, unknown>,
 ): boolean {
   return enqueueWorksourceItemAt(worksourceRootFor(agent), id, content, meta)
+}
+
+/**
+ * Liveness file the reader (server.mjs) rewrites while it is pumping.
+ *
+ * #560: a worksource agent whose server never started (its MCP entry disabled)
+ * still has a live tmux session, so the router's old evidence -- "session exists
+ * and is not parked on a dialog" -- passed, items piled up in pending/, and every
+ * row read 'delivered'. The heartbeat is the positive evidence that a reader is
+ * actually draining the queue.
+ */
+export const WORKSOURCE_HEARTBEAT_FILE = 'serving.json'
+
+/** A reader that has not touched the file for this long is treated as gone. */
+export const WORKSOURCE_HEARTBEAT_STALE_MS = 90_000
+
+/** Age of the heartbeat under `root` in ms, or null when there is none. */
+export function worksourceHeartbeatAgeMsAt(root: string, now: number = Date.now()): number | null {
+  try {
+    return Math.max(0, now - statSync(join(root, WORKSOURCE_HEARTBEAT_FILE)).mtimeMs)
+  } catch {
+    return null
+  }
+}
+
+/** True only when a reader has written its heartbeat recently enough. */
+export function worksourceReaderAliveAt(root: string, now: number = Date.now()): boolean {
+  const age = worksourceHeartbeatAgeMsAt(root, now)
+  return age != null && age <= WORKSOURCE_HEARTBEAT_STALE_MS
+}
+
+export function worksourceReaderAlive(agent: string, now: number = Date.now()): boolean {
+  return worksourceReaderAliveAt(worksourceRootFor(agent), now)
 }

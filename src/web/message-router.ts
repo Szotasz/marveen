@@ -26,7 +26,7 @@ import { agentDir, readAgentRemoteHost, readAgentVoiceConfig, readAgentWorksourc
 import { projectsDirFor } from './active-model.js'
 import { resolveAgentConfigDirForRead } from './claude-plans.js'
 import { readTranscriptProgressAt } from './transcript-progress.js'
-import { enqueueWorksourceItem, worksourceItemId } from './worksource-queue.js'
+import { enqueueWorksourceItem, worksourceItemId, worksourceReaderAlive } from './worksource-queue.js'
 import {
   agentSessionName,
   isSessionReadyForPrompt,
@@ -963,10 +963,21 @@ export async function runMessageRouterTick(): Promise<void> {
       const parkedGate = usesWorksource && sessionExists
         ? detectsFirstRunGate(capturePane(session, host) ?? '')
         : null
-      const worksourceServing = usesWorksource && sessionExists && parkedGate == null
+      //
+      // #560 (2026-10-17): that was still too weak. A session can exist with no
+      // reader at all -- the worksource MCP server disabled for the whole fleet
+      // by one settings line -- and then items piled up in pending/ while every
+      // row read 'delivered'. On a local host the reader's own heartbeat file is
+      // now required as well; without it the row takes the KEYBOARD path below,
+      // so the message still arrives. A remote host's queue is not on this disk,
+      // so there the old evidence stands.
+      const readerAlive = usesWorksource && host == null
+        ? worksourceReaderAlive(msg.to_agent, now)
+        : true
+      const worksourceServing = usesWorksource && sessionExists && parkedGate == null && readerAlive
       if (usesWorksource && !worksourceServing) {
-        logger.warn({ id: msg.id, to: msg.to_agent, session, sessionExists, parkedGate },
-          'worksource agent is not serving its queue (session absent or parked on a startup dialog) -- keeping the tmux stall gates armed')
+        logger.warn({ id: msg.id, to: msg.to_agent, session, sessionExists, parkedGate, readerAlive },
+          'worksource agent is not serving its queue (session absent, parked on a startup dialog, or no reader heartbeat) -- falling back to the tmux path')
       }
 
       const absentForMs = continuousAbsenceMs(msg.to_agent, sessionExists, now)
@@ -1242,7 +1253,7 @@ export async function runMessageRouterTick(): Promise<void> {
         const turnCheckIds: number[] = []
         // Inline preamble so a fresh session (post hard-restart) doesn't miss
         // the context that explains the tag semantics.
-        if (usesWorksource) {
+        if (worksourceServing) {
           // Hand it to the queue instead of the keyboard. The reader turns the
           // file into a real turn and takes an acknowledgment back.
           //
