@@ -223,13 +223,18 @@ check "7 egyetlen indito sem dobja el a kimenetet (/dev/null)" \
 # A GENERALT FINALIZERT FUTTATJUK, NEM A FORRASAT OLVASSUK. A puszta `grep _unit_drift`
 # gyenge volt: a HIVAS kivetele (a fuggvenyt a helyen hagyva) MEGSEM pirosodott.
 F="$SANDBOX/fin"; mkdir -p "$F/store" "$F/scripts" "$F/bin"
-python3 - "$ROOT/update.sh" "$F/finalize.sh" <<'EXTRACT'
+# A finalizert UGY generaljuk, ahogy az update.sh: a generalo blokkja fut, a ket auto-stash
+# fuggvennyel, amit a finalizer ertek szerint visz (c68d90eb), nem a heredoc-torzset vagjuk ki.
+python3 - "$ROOT/update.sh" "$F/gen.sh" <<'EXTRACT'
 import sys
 src = open(sys.argv[1], encoding='utf-8').read()
-i = src.index("cat > \"$FINALIZE_SCRIPT\" <<'FINALIZE_EOF'")
-j = src.index("\nFINALIZE_EOF\n", i)
-open(sys.argv[2], 'w', encoding='utf-8').write(src[i:j].split('\n', 1)[1] + '\n')
+fa = src.index("autostash_undeletable_paths() {")
+fb = src.index("\nSTASHED_AUTO=0", fa)
+ga = src.index('FINALIZE_SCRIPT="$INSTALL_DIR/store/update-finalize.sh"')
+gb = src.index('chmod +x "$FINALIZE_SCRIPT"', ga)
+open(sys.argv[2], 'w', encoding='utf-8').write(src[fa:fb] + '\n' + src[ga:gb])
 EXTRACT
+bash -c 'set -e; INSTALL_DIR="$1"; . "$2"' _ "$F" "$F/gen.sh" && mv "$F/store/update-finalize.sh" "$F/finalize.sh"
 printf 'MAIN_AGENT_ID=teszt\n' > "$F/.env"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$F/scripts/stop.sh"
 printf '#!/usr/bin/env bash\nexit 0\n' > "$F/scripts/start.sh"
