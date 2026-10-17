@@ -309,6 +309,10 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     }
 
     let results: Memory[]
+    // Per-row provenance for the keyword branches:
+    // 'strict' (the AND pass), 'relaxed' (the OR pass), 'substring' (the LIKE
+    // fallback). Hybrid rows carry their own match_kind from hybridSearch.
+    let keywordMatchKind: 'strict' | 'relaxed' | 'substring' | undefined
     // GH #1025: a hybrid answer built entirely by the vector branch looks the
     // same as one with lexical support. The trace rides the response so the
     // caller can tell them apart.
@@ -323,7 +327,9 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       results = await hybridSearch(agentId || MAIN_AGENT_ID, q, limit, hybridTrace, searchCategory)
     } else if (q && agentId) {
       results = searchAgentMemories(agentId, q, limit, searchTrace, !strictOnly, searchCategory)
+      keywordMatchKind = searchTrace.relaxed ? 'relaxed' : 'strict'
       if (results.length === 0) {
+        keywordMatchKind = 'substring'
         // Substring fallback. It is NOT a second relaxation: LIKE %q% still
         // requires the query to appear literally, so a query that matches
         // nothing still returns nothing.
@@ -335,8 +341,10 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
               .all(agentId, `%${q}%`, `%${q}%`, limit)) as Memory[]
       }
     } else if (q) {
-      results = searchMemories(q, ALLOWED_CHAT_ID, limit, !strictOnly, searchCategory)
+      results = searchMemories(q, ALLOWED_CHAT_ID, limit, !strictOnly, searchCategory, searchTrace)
+      keywordMatchKind = searchTrace.relaxed ? 'relaxed' : 'strict'
       if (results.length === 0) {
+        keywordMatchKind = 'substring'
         const db2 = getDb()
         results = (searchCategory
           ? db2.prepare('SELECT * FROM memories WHERE content LIKE ? AND category = ? ORDER BY accessed_at DESC LIMIT ?').all(`%${q}%`, searchCategory, limit)
@@ -365,6 +373,7 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
 
     const formatted = results.map(m => ({
       ...m,
+      ...(keywordMatchKind ? { match_kind: keywordMatchKind } : {}),
       embedding: undefined,
       created_label: new Date(m.created_at * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ }),
       accessed_label: new Date(m.accessed_at * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ }),
@@ -375,7 +384,10 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       res.setHeader(
         'X-Memory-Search',
         `fts=${hybridTrace.ftsHits}; vector=${hybridTrace.vectorHits};` +
-          ` relaxed=${hybridTrace.ftsRelaxed}; vector-only=${hybridTrace.vectorOnly}`,
+          ` relaxed=${hybridTrace.ftsRelaxed}; vector-only=${hybridTrace.vectorOnly};` +
+          // Appended, not inserted: a caller matching the earlier fields keeps
+          // working. Vector-only rows dropped below the similarity floor.
+          ` vector-dropped=${hybridTrace.vectorDropped ?? 0}`,
       )
     } else if (q) {
       // The label the endpoint owed its callers. `relaxed=true` means no row
