@@ -346,7 +346,8 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       // Category goes into the query, not a post-filter: see getAgentMemories.
       results = getAgentMemories(agentId, limit, tier || undefined, offset)
     } else {
-      results = getMemoriesForChat(ALLOWED_CHAT_ID, limit, offset)
+      // Category goes into the query here too, not a post-filter: see getMemoriesForChat.
+      results = getMemoriesForChat(ALLOWED_CHAT_ID, limit, offset, tier || undefined)
     }
 
     // Kept as a backstop, not as the mechanism. Since MEMKERESVAK917 every
