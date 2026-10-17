@@ -250,7 +250,87 @@ def collect_bash_attachments(cmd: str):
 
 # The claude.ai Gmail connector's send-shaped tools (mcp__claude_ai_Gmail__*):
 # no "send_email" in the name, so the name-based test above never saw them.
+# Kept for importers; the gates classify with classify_mail_tool below, which
+# matches every name this pattern matches.
 CONNECTOR_SEND_RE = re.compile(r"gmail__(reply|reply_all|send_message|forward)$", re.I)
+
+
+# --- tool-name classification -------------------------------------------------
+# ONE classifier for the main agent's mail gates (email-approval-gate.py,
+# outgoing-copy-gate.py, credential-gate.py) and, as a JS twin, for the
+# sub-agent gate (scripts/email-send-gate.mjs classifyMailTool). Both copies
+# are bound by the shared case list scripts/hooks/mail-tool-name-cases.json,
+# which src/__tests__/email-gate-matcher-drift.test.ts runs through both.
+#
+# Why the base-name SUFFIX: vendor/gmail-mcp-fork prepends its tool prefix
+# (--tool-prefix / GMAIL_MCP_TOOL_PREFIX) to every tool name VERBATIM, with no
+# separator guaranteed ("v2_", "v2", "work-", ...). The patterns the gates
+# carried described what stands BEFORE the base name (`gmail__reply_all$`,
+# `(^|__)draft_email$`, `(^|__)manage_email$`), so every prefixed name slipped
+# past them: mcp__gmail__v2_reply_all was not a send for any gate, and
+# mcp__gmail__v2_draft_email skipped the sub-agent recipient ledger. A verbatim
+# prefix leaves exactly one invariant intact, that the base name is the END of
+# the tool name, so the test is endswith(base) and nothing is assumed about
+# what precedes it. The same holds for the server segment: reply_all and
+# send_draft are sends on a server of any name (the vendored server registered
+# as server-gmail-autoauth-mcp never matched `gmail__reply_all$`).
+#
+# The classifier covers every name the patterns it replaces matched:
+#   - send_email and the three draft names keep the SUBSTRING match the
+#     widest of the old gates used;
+#   - manage_email is the suffix: a prefixed mcp__x__v2_manage_email is the
+#     multiplexer, a look-alike such as manage_emails_bulk is not (the
+#     sub-agent gate's pinned rule). The approval gate, whose scope always
+#     matched the substring, keeps that on top (its scope_kind);
+#   - `gmail__(reply|reply_all|send_message|forward)$` implies "gmail" in the
+#     name plus the suffix, which is what the connector test checks;
+#   - the generic words send_message / reply / forward count only with "gmail"
+#     somewhere in the qualified name, because the Telegram plugin's tool is
+#     `..._telegram__reply` and the mail gates must never fire on it;
+#   - send_gmail_message / draft_gmail_message (the Google Workspace MCP's
+#     Gmail send and draft tools) carry neither "send_email" nor a known
+#     draft name, so they are matched by name (substring) as send_email and
+#     draft kinds;
+#   - send_draft is NEW: it sends an existing draft by draftId and no gate knew
+#     it. The vendored server ships it next to draft_email, so a sub-agent
+#     could draft (ledger-checked) and then send the draft with no gate at all.
+# A read tool whose name happens to END in a send-shaped base is classified as
+# a send: that false positive fails closed, the direction a mail gate may err
+# in. lowercase + endswith/in, no regex, so the two copies cannot drift on
+# `$`-before-newline semantics.
+_CONNECTOR_GENERIC_SUFFIXES = ("send_message", "reply", "forward")
+_DRAFT_NAMES = ("draft_email", "create_draft", "update_draft", "draft_gmail_message")
+
+# Kinds (the same vocabulary as classifyMailTool in email-send-gate.mjs):
+#   "send_email"     address-carrying direct send (to/cc/bcc fields)
+#   "connector_send" reply_all, or a Gmail send_message / reply / forward
+#                    (often addressed by messageId)
+#   "send_draft"     sends an existing draft by draftId: no envelope visible
+#   "manage_email"   the multiplexer: the operation decides
+#   "draft"          writes a draft (draft_email / create_draft / update_draft)
+#   None             not an outbound mail tool (reads, search, labels, delete)
+MAIL_TOOL_KINDS = ("send_email", "connector_send", "send_draft", "manage_email", "draft")
+
+
+def classify_mail_tool(tool_name):
+    """Classify a (possibly prefixed, qualified) tool name. Strictest kind
+    first, so a name that fits two kinds lands in the one that gates harder."""
+    n = str(tool_name or "").lower()
+    if not n or n == "bash":
+        return None
+    if "send_email" in n or "send_gmail_message" in n:
+        return "send_email"
+    if n.endswith("reply_all"):
+        return "connector_send"
+    if "gmail" in n and n.endswith(_CONNECTOR_GENERIC_SUFFIXES):
+        return "connector_send"
+    if n.endswith("send_draft"):
+        return "send_draft"
+    if n.endswith("manage_email"):
+        return "manage_email"
+    if any(d in n for d in _DRAFT_NAMES):
+        return "draft"
+    return None
 
 
 def collect_email_envelope(tool_name: str, tool_input: dict):
@@ -262,7 +342,8 @@ def collect_email_envelope(tool_name: str, tool_input: dict):
     (EMAILHTMLHORGONY929). The CALLER decides policy
     (e.g. an empty recipient list on a send is itself grounds to deny)."""
     html_sha256, attachments = None, []
-    if re.search(r"send_email", tool_name or "", re.I) or CONNECTOR_SEND_RE.search(tool_name or ""):
+    # A prefixed name (mcp__gmail__v2_reply_all) is extracted like the bare one.
+    if classify_mail_tool(tool_name) in ("send_email", "connector_send"):
         ti = tool_input if isinstance(tool_input, dict) else {}
         text = collect_mcp_body(ti)
         to, cc, bcc, reason = collect_mcp_recipients(ti)

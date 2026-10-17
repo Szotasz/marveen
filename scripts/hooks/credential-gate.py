@@ -43,10 +43,15 @@ import sys
 _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _HERE)
 import credential_lib as cl  # noqa: E402
-from email_extract import (collect_email_envelope, collect_mcp_body,  # noqa: E402
-                           collect_mcp_recipients)
+from email_extract import (classify_mail_tool, collect_email_envelope,  # noqa: E402
+                           collect_mcp_body, collect_mcp_recipients)
 
-_SEND_TOOL = re.compile(r"send_email|gmail__(reply|reply_all|send_message|forward)$", re.I)
+# Send-shaped names come from the shared suffix classifier: the pattern that
+# stood here (`send_email|gmail__(reply|reply_all|send_message|forward)$`)
+# missed a prefixed tool name (mcp__gmail__v2_reply_all) and reply_all on a
+# server whose segment is not exactly "gmail", so such a letter was out of
+# scope. The classifier matches every name the old pattern matched.
+_SEND_KINDS = ("send_email", "connector_send")
 _LETTER_TOOL = re.compile(r"manage_email|draft", re.I)
 ALIAS_CATEGORY = "credential_alias"
 CLI = "python3 scripts/credential-gate-cli.py"
@@ -77,7 +82,7 @@ def letter_of(tool: str, tool_input: dict):
         if not is_send_invocation(cmd):
             return None, False
         return collect_email_envelope(tool, tool_input), True
-    if _SEND_TOOL.search(tool):
+    if classify_mail_tool(tool) in _SEND_KINDS:
         return collect_email_envelope(tool, tool_input), True
     if _LETTER_TOOL.search(tool):
         text = collect_mcp_body(tool_input)

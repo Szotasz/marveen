@@ -365,12 +365,22 @@ and a field that claimed success would be the most misleading line in the file.
 At `email_send` level 2 an approval authorizes ONE letter: `content_hash` pins
 it to the exact envelope and `consumed_at` makes it one-shot. The gate
 (`scripts/hooks/email-approval-gate.py`) flips `consumed_at` itself, but only
-for a send it can read in the command text (an MCP mail tool, `send.py --to`,
-an inline mailer call). A tool that mails through a script on another host,
+for a send it can read in the command text (an MCP mail tool, an inline mailer
+call). A tool that mails through a script on another host,
 for example `ssh <host> 'tsx send-letter.mjs'`, is invisible to it, so its
 approval stayed unconsumed and could authorize a second send.
 
-Such a tool consumes on its own path, right BEFORE the letter goes out, and
+This project's own senders (`scripts/support-mail/send.py`,
+`scripts/graph-mail.ts`) do the same without the endpoint: they run
+`scripts/hooks/sender_check.py` on the envelope they are about to deliver,
+which consumes the approval of THAT envelope with the gate's own one-shot
+update (and applies the standing-recipient list and level 1 / 3 the same
+way). The gate therefore does not consume for them: a literal call of one of
+them passes the hook at level 2, any other spelling of them is denied without
+consuming and without an anchor, and the sender's refusal prints the anchor
+to approve.
+
+Any other tool consumes on its own path, right BEFORE the letter goes out, and
 sends only on a yes:
 
 ```bash
