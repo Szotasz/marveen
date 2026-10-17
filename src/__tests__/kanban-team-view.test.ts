@@ -66,7 +66,10 @@ function render(cards: Card[], lang: 'en' | 'hu' = 'en', opts: { assignees?: Ass
     kanbanCards: cards,
     kanbanAssignees: opts.assignees ?? DEFAULT_ASSIGNEES,
     kanbanGroupBy: opts.groupBy ?? 'assignee',
-    kanbanHideFromLanes: (c: Card) => c.assignee === 'owner',
+    kanbanIsOwnerOpen: (c: Card) => c.assignee === 'owner' && c.status !== 'done',
+    // The lane predicate depends on the board grouping; the team view is about
+    // people whatever the grouping, so it must not consult it (review of #1860).
+    kanbanHideFromLanes: () => { throw new Error('team view must use kanbanIsOwnerOpen') },
     // The team view must never go through the lane meta: grouped by priority
     // it returns the raw key. A stub that throws proves it is not called.
     kanbanSwimlaneMeta: () => { throw new Error('team view must use kanbanPersonMeta') },
@@ -119,6 +122,18 @@ describe('renderKanbanTeamView', () => {
     expect(rows[0].cls).toBe('kanban-team-row')
     expect(rows[1].cls).toBe('kanban-team-row idle')
     expect(rows[1].head).toContain('3 open')
+  })
+
+  it('a card title with markup reaches the row as text', () => {
+    const evil = '<img src=x onerror="alert(1)">'
+    const { rows } = render([
+      card('e1', 1, 'ada', 'in_progress', 'normal', { title: evil }),
+      card('e2', 2, 'ada', 'planned', 'high', { title: evil }),
+    ])
+    for (const html of [...rows[0].now, ...rows[0].next]) {
+      expect(html).not.toContain('<img')
+      expect(html).toContain('&lt;img src=x onerror=&quot;alert(1)&quot;&gt;')
+    }
   })
 
   it('fills "now" from in_progress and "next" from planned cards, most urgent first, then by card number', () => {

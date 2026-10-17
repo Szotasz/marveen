@@ -50,7 +50,7 @@ class FakeEl {
   }
 }
 
-function setup(owner: string | null, cards: unknown[], assignees: unknown[] = []) {
+function setup(owner: string | null, cards: unknown[], assignees: unknown[] = [], groupBy = 'assignee') {
   const strip = new FakeEl()
   const store = new Map<string, string>()
   const opened: unknown[] = []
@@ -65,6 +65,7 @@ function setup(owner: string | null, cards: unknown[], assignees: unknown[] = []
     ownerAssigneeName: () => owner,
     kanbanCards: cards,
     kanbanAssignees: assignees,
+    kanbanGroupBy: groupBy,
     KANBAN_PRIORITY_ORDER: ['urgent', 'high', 'normal', 'low'],
     kanbanDecorateAvatar: (_el: unknown, key: string) => decorated.push(key),
     // The strip draws people through kanbanPersonMeta, never the grouping-aware
@@ -75,7 +76,7 @@ function setup(owner: string | null, cards: unknown[], assignees: unknown[] = []
   vm.createContext(ctx)
   vm.runInContext(
     slice(APP_JS, 'const KANBAN_OWNER_QUEUE_LABEL', 'function renderKanban()') +
-      slice(APP_JS, 'function kanbanHideFromLanes(card)', 'function renderSwimlaneBoard(') +
+      slice(APP_JS, 'function kanbanIsOwnerOpen(card)', 'function renderSwimlaneBoard(') +
       'globalThis.onStrip = kanbanIsOnOwnerStrip; globalThis.hide = kanbanHideFromLanes; globalThis.render = renderKanbanOwnerStrip',
     ctx,
   )
@@ -121,6 +122,12 @@ describe('kanbanHideFromLanes', () => {
   it('hides nothing when the install has no owner name', () => {
     const { hide } = setup(null, [])
     expect(hide({ status: 'planned', assignee: 'Jane Doe' })).toBe(false)
+  })
+  it('hides nothing when the lanes are priorities or the board is flat: only an assignee lane is the owner\'s', () => {
+    for (const groupBy of ['priority', 'none']) {
+      const { hide } = setup('Jane Doe', [], [], groupBy)
+      expect(hide({ status: 'planned', assignee: 'Jane Doe', priority: 'urgent' })).toBe(false)
+    }
   })
 })
 

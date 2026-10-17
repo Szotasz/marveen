@@ -1403,7 +1403,7 @@ function renderKanbanTeamView() {
   host.innerHTML = ''
 
   // The owner's own queue is the strip above the board, not a row here, so
-  // the same card does not show twice. See kanbanHideFromLanes.
+  // the same card does not show twice. See kanbanIsOwnerOpen: whatever the board grouping, this view is about people.
   const keyOf = (c) => {
     const raw = c.assignee ? String(c.assignee).trim() : ''
     if (!raw) return '__unassigned__'
@@ -1420,9 +1420,9 @@ function renderKanbanTeamView() {
   const byId = new Map(kanbanCards.map((c) => [c.id, c]))
   const embedded = (c) => {
     const p = c.parent_id ? byId.get(c.parent_id) : null
-    return !!p && p.status === c.status && keyOf(p) === keyOf(c) && !kanbanHideFromLanes(p) && !kanbanIsOngoing(p)
+    return !!p && p.status === c.status && keyOf(p) === keyOf(c) && !kanbanIsOwnerOpen(p) && !kanbanIsOngoing(p)
   }
-  const open = kanbanCards.filter((c) => c.status !== 'done' && !kanbanHideFromLanes(c) && !embedded(c) && !kanbanIsOngoing(c))
+  const open = kanbanCards.filter((c) => c.status !== 'done' && !kanbanIsOwnerOpen(c) && !embedded(c) && !kanbanIsOngoing(c))
   const byPerson = new Map()
   for (const c of open) {
     const k = keyOf(c)
@@ -1736,11 +1736,21 @@ function kanbanDecorateAvatar(spanEl, key) {
 // The "Rád vár" label does NOT hide a card here, on purpose: a labelled agent
 // card shows in the strip AND in its agent's lane, because the lane is where
 // that agent's whole queue is read. Only the owner's cards live in one place.
-function kanbanHideFromLanes(card) {
+//
+// Only when the lanes ARE people (group by assignee). Grouped by priority, a
+// lane is a priority, not the owner's lane: hiding there would drop the
+// owner's most urgent card from the one view built to rank urgency (review of
+// #1860). Whether a card is the owner's open card at all is kanbanIsOwnerOpen,
+// for views that are about people whatever the board grouping.
+function kanbanIsOwnerOpen(card) {
   if (card.status === 'done') return false
   const owner = ownerAssigneeName()
   if (!owner) return false
   return String(card.assignee || '').trim().toLowerCase() === owner.toLowerCase()
+}
+
+function kanbanHideFromLanes(card) {
+  return kanbanGroupBy === 'assignee' && kanbanIsOwnerOpen(card)
 }
 
 function renderSwimlaneBoard(grouped, embeddedSubtaskIds) {

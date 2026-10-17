@@ -8088,6 +8088,10 @@ body {
 .kanban-team-row.idle { border-left-color: var(--border); }
 .kanban-team-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
 .kanban-team-name { font-weight: 600; font-size: 14px; color: var(--text); min-width: 0; overflow-wrap: anywhere; }
+/* The name keeps its width at 390 px; a long nickname gives way and truncates
+   instead of squeezing a short name into two-letter lines (review of #1897). */
+.kanban-team-head .kanban-team-name { flex-shrink: 0; max-width: 60%; }
+.kanban-team-head .kanban-nickname { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .kanban-team-open { margin-left: auto; font-size: 12px; color: var(--text-muted); }
 .kanban-team-body { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 @media (max-width: 820px) { .kanban-team-body { grid-template-columns: 1fr; } }
