@@ -160,3 +160,12 @@ minden más gyerek-`claude` hívásra: leválasztott környezettel (lásd fent) 
 
 Ha mégis megtörtént: indítsd újra a session-t. A plugin a session indulásával jön vissza; a
 csatorna-eszközök ezzel együtt válnak újra elérhetővé.
+
+## Ugyanez a hatás `claude -p`-vel (mérve 2026-09-22)
+
+Nem csak a `claude mcp list`: egy `claude -p --model <id> "..."` próbahívás a csatornát birtokló
+sessionből ugyanígy leválasztotta a telegram plugin szerverét (a 20:02Z-s reply még kiment, a
+következő hívásnál a szerver "disconnected", a reply/react/edit eszközök eltűntek). A parancs
+kimenete rendben volt (a modell válaszolt), rc=0, tehát itt sem jelez semmi. Modell-azonosítót
+vagy CLI-viselkedést tehát NEM a saját sessionből kell próbálni, hanem egy külön tmux-ablakból
+vagy egy alügynöktől kérve. Helyreállítás ugyanaz: session-újraindítás.
