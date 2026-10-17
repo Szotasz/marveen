@@ -7685,6 +7685,52 @@ function memChainChipsHtml(supersedes, supersededBy) {
   return html
 }
 
+// Card 3ddb2b1d (#572): a short title line instead of the first 120 characters.
+// Measured 2026-10-17 on a copy of the owner store (1377 rows): the first
+// sentence or "HEADER:" segment of the first line is the title; median 58,
+// 90th percentile 87 characters. A leading "FELULIRJA <id>:" is dropped (the
+// chain chip says it). When the first segment is only a date, time or status
+// word ("2026-10-03 16:02", "LEZARVA 2026-09-09 03:3x") the next segment is
+// added, otherwise the title would say nothing.
+const MEM_TITLE_MAX = 90
+// The marker ends at the first '.' or ':' FOLLOWED BY A SPACE, so a time inside
+// it ("FELULIRJA a 20:35-os allapotot.") does not end it early.
+const MEM_TITLE_PREFIX = /^\s*(?:fel[uü]l[ií]rja\b[^\n]{0,40}?[:.](?=\s)\s*|aktu[aá]lis[,:]?\s*)/i
+const MEM_TITLE_SPLIT = /(?<=.{12})(?:[.:;!?](?=\s)| -- | — )/
+const MEM_TITLE_NOISE = /\d{4}-\d{2}-\d{2}|\d{1,2}:\d{2}(?::\d{2})?x?|\d{1,2}:\dx|\b(?:BST|GMT|UTC)\b|\b(?:lez[aá]rva|friss[ií]tve|aktu[aá]lis|[aá]llapot|k[eé]sz|nyitott|sz[aá]l)\b|[~()[\],.\-:]/gi
+
+function memTitleParts(content) {
+  const body = String(content || '').replace(MEM_TITLE_PREFIX, '')
+  const nl = body.indexOf('\n')
+  const line = (nl >= 0 ? body.slice(0, nl) : body).trim()
+  const lead = body.length - body.trimStart().length
+  let head = line
+  let consumed = line.length
+  const m = MEM_TITLE_SPLIT.exec(line)
+  if (m) {
+    head = line.slice(0, m.index)
+    consumed = m.index + m[0].length
+    if (head.replace(MEM_TITLE_NOISE, '').replace(/\s+/g, '').length < 10) {
+      const restLine = line.slice(consumed)
+      const m2 = MEM_TITLE_SPLIT.exec(restLine.trimStart())
+      const skip = restLine.length - restLine.trimStart().length
+      const next = m2 ? restLine.trimStart().slice(0, m2.index) : restLine.trimStart()
+      head = `${head}: ${next}`
+      consumed += skip + (m2 ? m2.index + m2[0].length : next.length)
+    }
+  }
+  let title = head.trim().replace(/[.:;]+$/, '')
+  if (title.length > MEM_TITLE_MAX) {
+    const cut = title.slice(0, MEM_TITLE_MAX)
+    const sp = cut.lastIndexOf(' ')
+    title = (sp > MEM_TITLE_MAX * 0.55 ? cut.slice(0, sp) : cut).replace(/[\s,;(-]+$/, '') + '…'
+    // A clipped title has not said all of its segment: the snippet repeats it.
+    consumed = 0
+  }
+  const rest = body.slice(lead + consumed).replace(/^[\s.:;!?—-]+/, '').replace(/\s+/g, ' ').trim()
+  return { title: title || String(content || '').slice(0, MEM_TITLE_MAX), rest }
+}
+
 function renderMemories(memories) {
   memList.innerHTML = ''
   memEmpty.hidden = memories.length > 0
@@ -7696,7 +7742,7 @@ function renderMemories(memories) {
     const tier = mem.tier || mem.category || 'warm'
     const tierBadge = escapeHtml(tierLabels[tier] || tier)
     const badgeClass = 'badge-' + tier
-    const shortContent = mem.content.length > 120 ? mem.content.slice(0, 120) + '...' : mem.content
+    const { title: memTitle, rest: memRest } = memTitleParts(mem.content)
     const agentLabel = mem.agent_id || mainAgentId()
     const ageDays = Math.floor((Date.now() / 1000 - memLastWrite(mem)) / 86400)
     const isStaleHot = tier === 'hot' && memLastWrite(mem) > 0 && ageDays >= memStaleInfo.days
@@ -7727,7 +7773,8 @@ function renderMemories(memories) {
         ${isStaleHot ? `<span class="mem-stale-badge" title="${escapeHtml(t('memories.stale.age_title'))}">${escapeHtml(t('memories.stale.age', { days: ageDays }))}</span>` : ''}
       </div>
       ${chainChips ? `<div class="mem-chain">${chainChips}</div><div class="mem-ref-preview" hidden></div>` : ''}
-      <div class="mem-content-short">${escapeHtml(shortContent)}</div>
+      <div class="mem-title">${escapeHtml(memTitle)}</div>
+      ${memRest ? `<div class="mem-content-short">${escapeHtml(memRest)}</div>` : ''}
       <div class="mem-content-full">${escapeHtml(mem.content)}</div>
       ${keywordsHtml}
       <div class="mem-item-footer">

@@ -3532,6 +3532,15 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   color: var(--text-secondary);
   line-height: 1.5;
 }
+/* Card 3ddb2b1d (#572): the title line above the one-line snippet. */
+.mem-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.4;
+  margin-bottom: 2px;
+  overflow-wrap: anywhere;
+}
 .mem-content-short {
   white-space: nowrap;
   overflow: hidden;
