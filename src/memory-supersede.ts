@@ -9,7 +9,7 @@
 // ("a 876-os emleket ket ponton", "1120 allapot-reszet", "... 2. pontjat").
 // A partial reference is a link, never a replacement: hiding or demoting the
 // older row would lose the parts that still stand.
-import { getDb } from './db.js'
+import { getDb, updateMemory } from './db.js'
 
 export interface SupersedeRef {
   id: number
@@ -17,8 +17,9 @@ export interface SupersedeRef {
 }
 
 // keyword, optional article, optional '#', the id. The id must not run on into
-// a time or a decimal ("FELULIRJA a 20:35-os allapotot" names a time, not row 20).
-const REF_RX = /fel[uü]l[ií]rja\s+(?:az?\s+)?#?(\d{1,7})(?![\d:.,])(\S*)([^\n]{0,60})/gi
+// a time or a decimal ("FELULIRJA a 20:35-os allapotot" names a time, not row 20);
+// a colon that ends the marker ("FELULIRJA 1345: ...") is fine.
+const REF_RX = /fel[uü]l[ií]rja\s+(?:az?\s+)?#?(\d{1,7})(?!\d)(?![:.,]\d)(\S*)([^\n]{0,60})/gi
 // Words that make the reference partial when they follow the id closely.
 const PARTIAL_RX = /pont|r[eé]sz|szakasz|bekezd/i
 
@@ -66,4 +67,24 @@ export function getMemorySupersessions(): Supersessions {
     }
   }
   return { supersededBy, refs }
+}
+
+// Card f9242cd3 (#571), the owner's idea b) as written (tg 7982): "the
+// replaced old row goes to cold by itself". Done at WRITE time, for the rows
+// this memory replaces IN FULL, and only from hot or warm: a shared row stays
+// shared (moving it to cold would take it away from every other agent, a
+// different decision), a partial reference never moves anything. The move
+// goes through updateMemory, so the pre-image is versioned and the caches are
+// evicted like any other tier change; updated_by names the replacing row.
+export function demoteSupersededRows(newId: number, content: string): number[] {
+  const db = getDb()
+  const moved: number[] = []
+  for (const ref of parseSupersedeRefs(newId, content)) {
+    if (ref.partial) continue
+    const row = db.prepare('SELECT id, content, category FROM memories WHERE id = ?').get(ref.id) as
+      { id: number; content: string; category: string } | undefined
+    if (!row || (row.category !== 'hot' && row.category !== 'warm')) continue
+    if (updateMemory(row.id, row.content, 'cold', undefined, undefined, `supersede:${newId}`)) moved.push(row.id)
+  }
+  return moved
 }

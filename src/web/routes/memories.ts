@@ -938,7 +938,10 @@ Respond ONLY with JSON, nothing else:
     // which the if_version flow reads back.
     if (updateMemory(id, effectiveContent, newCategory, agent_id, keywords, updated_by)) {
       const version = memoryVersion(effectiveContent)
-      json(res, mismatch ? { ok: true, version, owner_mismatch: ownerMismatchPayload(id, mismatch) } : { ok: true, version })
+      // #571: an edit that ADDS a full "FELULIRJA <id>" demotes like a new row.
+      const demoted = effectiveContent !== before.content ? demoteSupersededRows(id, effectiveContent) : []
+      const extra = demoted.length ? { demoted } : {}
+      json(res, mismatch ? { ok: true, version, owner_mismatch: ownerMismatchPayload(id, mismatch), ...extra } : { ok: true, version, ...extra })
       return true
     }
     json(res, { error: 'Memory not found' }, 404)
