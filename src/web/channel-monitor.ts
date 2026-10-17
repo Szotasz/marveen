@@ -51,7 +51,7 @@ import {
   stuckInputSignature, decideStuckInputRecovery, parkedChannelInput,
   parkedInputText, shouldClearTruncatedPreamble,
   parkedInputRowCount, submitLanded, decideStuckInputAction,
-  parkedScheduledTaskInput, parkedMachineOriginInput, parkedMainInputHasRemedy,
+  parkedScheduledTaskInput, parkedMachineOriginInput, parkedMainInputHasRemedy, paneTurnInFlight,
   type StuckInputState, type StuckInputThresholds, type StuckInputAction,
   type StuckInputActionFacts,
 } from '../pane-state.js'
@@ -602,7 +602,11 @@ export async function recoverStuckInputForSession(
   // (phantom prompt-injection). See captureParkedInputView / stripGhostSuggestion.
   const pane = captureParkedInputView(session)
   const sig = pane != null ? stuckInputSignature(pane) : null
-  const decision = decideStuckInputRecovery(sig, prev, Date.now(), thresholds)
+  // A parked box tall enough to push the live spinner out of detectPaneState's
+  // window reads 'typing' on a WORKING pane. Hold instead of typing into a live
+  // turn, and spend no attempt -- see paneTurnInFlight.
+  const turnInFlight = sig != null && pane != null && paneTurnInFlight(pane)
+  const decision = decideStuckInputRecovery(sig, prev, Date.now(), thresholds, { turnInFlight })
   if (decision.recover && pane != null) {
     const attempt = decision.next.attempts
     const block = parkedChannelInput(pane)
@@ -1941,6 +1945,10 @@ function maybeRestartWedgedMainChannel(state: StuckInputState): void {
 // discarding real work. The alert gives a human (or a future, explicitly
 // approved level-2 change) the chance to decide per incident.
 export const SUBAGENT_OVERDUE_ALERT_MIN_INTERVAL_MS = 15 * 60 * 1000
+// Parked text waiting behind a live turn is not alerted -- until the wait
+// passes this cap. The same 30 minutes the message router gives a busy target
+// before it escalates (BUSY_STUCK_ESCALATE_MS).
+export const SUBAGENT_OVERDUE_BUSY_CAP_MS = 30 * 60 * 1000
 const subAgentOverdueAlertedAt: Map<string, number> = new Map()
 
 /**
@@ -1954,23 +1962,67 @@ const subAgentOverdueAlertedAt: Map<string, number> = new Map()
  * @param lastAlertedAt Epoch ms of the last alert for this session, or 0 if never.
  * @param nowMs       Current time (injected so tests don't depend on the clock).
  * @param minIntervalMs Minimum gap between alerts for the same session.
+ * @param turnInFlight  The pane is working (paneTurnInFlight): suppress unless the wait passed busyCapMs.
+ * @param busyCapMs     How long parked text may wait behind a live turn before it is alerted anyway.
  */
 export function shouldAlertStuckSubAgent(
   state: StuckInputState, maxAttempts: number, lastAlertedAt: number, nowMs: number, minIntervalMs: number,
+  turnInFlight = false, busyCapMs = SUBAGENT_OVERDUE_BUSY_CAP_MS,
 ): boolean {
   if (state.parkedSig === null) return false
-  if (state.attempts < maxAttempts) return false
-  return nowMs - lastAlertedAt >= minIntervalMs
+  if (nowMs - lastAlertedAt < minIntervalMs) return false
+  // Parked behind a live turn: waiting, not wedged -- the budget is not even
+  // being spent (decideStuckInputRecovery holds). Only a wait past the cap is
+  // worth a human's attention: a turn that long, or a frozen tool call, which
+  // no sub-agent watchdog covers.
+  if (turnInFlight) return state.firstSeenAt !== null && nowMs - state.firstSeenAt >= busyCapMs
+  return state.attempts >= maxAttempts
+}
+
+/**
+ * The overdue-guard alert text. Pure, exported for unit testing.
+ *
+ * It states what is known -- how long the text has been parked, and whether
+ * the agent is working -- not a count of "automatic attempts": a spell whose
+ * every tick was a 'hold' spends its budget without a single keystroke
+ * (measured 2026-09-10/11 on agent-cortex-router: 59 of 63 alerts followed
+ * four holds). It sends the reader to LOOK first, and names the managed
+ * restart rather than `tmux respawn-pane -k`, which discards the delegated
+ * task in progress.
+ */
+export function subAgentOverdueAlertText(o: {
+  label: string; session: string; agentName: string | null; parkedMs: number; turnInFlight: boolean
+}): string {
+  const minutes = Math.max(1, Math.round(o.parkedMs / 60_000))
+  const look = `\`tmux attach -t ${o.session}\` (kilépés: Ctrl-b d)`
+  const restart = o.agentName != null
+    ? `a dashboardos újraindítás (\`POST /api/agents/${o.agentName}/restart\`)`
+    : 'a dashboardos újraindítás'
+  if (o.turnInFlight) {
+    return `⚠️ A(z) ${o.label} bemenetén kb. ${minutes} perce vár egy üzenet, miközben az ügynök egyfolytában dolgozik: lehet egy nagyon hosszú feladat, vagy egy megakadt eszközhívás. Nézd meg: ${look}. Ha a spinner ideje nő, dolgozik, hagyd; ha áll, ${restart} a kíméletes út.`
+  }
+  return `⚠️ A(z) ${o.label} bemenetén kb. ${minutes} perce parkol egy be nem küldött üzenet, és az automatikus helyreállítás nem tudta beküldeni. Előbb nézd meg, dolgozik-e az ügynök: ${look}. Ha dolgozik, várj; ha tényleg áll, ${restart} a kíméletes út. A \`tmux respawn-pane -k\` kerülendő: eldobja a folyamatban lévő delegált feladatot.`
 }
 
 function maybeAlertStuckSubAgent(session: string, agentName: string | null, state: StuckInputState): void {
   const last = subAgentOverdueAlertedAt.get(session) ?? 0
   const now = Date.now()
-  if (!shouldAlertStuckSubAgent(state, MAIN_STUCK_THRESHOLDS.maxAttempts, last, now, SUBAGENT_OVERDUE_ALERT_MIN_INTERVAL_MS)) return
+  // Cheap checks first: an unparked or rate-limited session costs no capture.
+  if (state.parkedSig === null || now - last < SUBAGENT_OVERDUE_ALERT_MIN_INTERVAL_MS) return
+  // Read fresh at alert time, with the box-height-proof busy check (a tall
+  // parked box hides the spinner from detectPaneState -- see paneTurnInFlight).
+  const pane = capturePane(session)
+  const turnInFlight = pane != null && paneTurnInFlight(pane)
+  if (!shouldAlertStuckSubAgent(state, MAIN_STUCK_THRESHOLDS.maxAttempts, last, now, SUBAGENT_OVERDUE_ALERT_MIN_INTERVAL_MS, turnInFlight)) return
   subAgentOverdueAlertedAt.set(session, now)
-  const label = agentName ?? session
-  logger.error({ session, agentName, attempts: state.attempts }, 'Sub-agent stuck input survived soft recovery -- overdue-guard alert (no auto-restart)')
-  sendAlert(`⚠️ A(z) ${label} session bemenete beragadt, ${state.attempts} automatikus próbálkozás sem szabadította ki (kb. 4-4.5 perce). Kézi ellenőrzés javasolt: \`tmux attach -t ${session}\`, szükség esetén \`tmux respawn-pane -k -t ${session}\`.`)
+  const parkedMs = state.firstSeenAt !== null ? now - state.firstSeenAt : 0
+  logger.error(
+    { session, agentName, attempts: state.attempts, turnInFlight, parkedMs },
+    turnInFlight
+      ? 'Sub-agent input parked behind a live turn past the busy cap -- overdue-guard alert (no auto-restart)'
+      : 'Sub-agent stuck input survived soft recovery -- overdue-guard alert (no auto-restart)',
+  )
+  sendAlert(subAgentOverdueAlertText({ label: agentName ?? session, session, agentName, parkedMs, turnInFlight }))
 }
 
 // --- Keep-alive staleness watchdog (deafness safety net, decision #3) ---

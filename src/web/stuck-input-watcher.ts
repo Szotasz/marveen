@@ -10,6 +10,7 @@ import {
   parkedPasteSignature,
   decideStuckInputRecovery,
   detectPaneState,
+  paneTurnInFlight,
   type PaneState,
   type StuckInputState,
   type StuckInputThresholds,
@@ -243,7 +244,9 @@ async function checkLocalSession(label: string, session: string, alertOnGiveUp: 
       // exactly this (the agent's own outbound messages bracketed every
       // alert). Recovery attempts above are untouched; only the alert gates.
       const pane = capturePane(session)
-      const paneState = pane != null ? detectPaneState(pane) : null
+      // paneTurnInFlight first: a tall parked box pushes the live spinner out
+      // of detectPaneState's window, and a working pane reads 'typing'.
+      const paneState: PaneState | null = pane == null ? null : paneTurnInFlight(pane) ? 'busy' : detectPaneState(pane)
       if (shouldAlertParkedGiveUp({
         attempts: next.attempts,
         maxAttempts: LOCAL_FAST_THRESHOLDS.maxAttempts,
