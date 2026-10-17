@@ -179,6 +179,7 @@ const QUARANTINE_DENY_HOSTS = new Set([
   '[::]',
   '[::1]',
   'metadata.google.internal',
+  'metadata',
   'instance-data',
 ])
 
@@ -209,6 +210,13 @@ function isPrivateIPv6(host) {
   // IPv4-mapped (::ffff:10.0.0.1) -- reuse the v4 rules on the tail.
   const tail = h.split(':').pop() ?? ''
   if (tail.includes('.')) return isPrivateIPv4(tail)
+  // be27524d: the URL parser writes the mapped form in hex ([::ffff:127.0.0.1] -> [::ffff:7f00:1]),
+  // so the dotted-tail check above never sees it; decode the two hex groups back to IPv4.
+  const mapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(h)
+  if (mapped) {
+    const [hi, lo] = [parseInt(mapped[1], 16), parseInt(mapped[2], 16)]
+    return isPrivateIPv4([hi >> 8, hi & 255, lo >> 8, lo & 255].join('.'))
+  }
   return false
 }
 
@@ -224,10 +232,17 @@ export function isQuarantineDenied(url) {
     return true // unparseable -> deny
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return true
-  const host = parsed.hostname.toLowerCase()
+  // be27524d: one trailing dot is the same name to the resolver ("localhost." is
+  // localhost), so the lists below see the name without it.
+  const host = parsed.hostname.toLowerCase().replace(/\.$/, '')
   if (!host) return true
   if (QUARANTINE_DENY_HOSTS.has(host)) return true
   if (QUARANTINE_DENY_SUFFIXES.some((s) => host.endsWith(s))) return true
+  // be27524d: a dotless name is never a public site. The resolver turns it into an
+  // internal one: a machine's own name is a loopback address via /etc/hosts, any other bare machine
+  // name resolves through the tailnet search domain, and "metadata" is the cloud metadata short
+  // name. IPv6 literals ("[::1]", public ones too) carry no dot but have their own rule below.
+  if (!host.includes('.') && !host.includes(':')) return true
   if (isPrivateIPv4(host)) return true
   if (isPrivateIPv6(host)) return true
   return false
