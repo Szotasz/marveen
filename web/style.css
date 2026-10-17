@@ -6486,6 +6486,63 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 /* === Settings page === */
 .settings-group { margin-bottom: 28px; }
 .settings-group:last-child { margin-bottom: 0; }
+.settings-reset-confirm p {
+  margin: 0 0 14px;
+  font-size: 14px;
+  line-height: 1.5;
+}
+.settings-reset-confirm-keys {
+  list-style: none;
+  margin: 0 0 20px;
+  padding: 4px 14px;
+  max-height: 40vh;
+  overflow-y: auto;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 13px;
+}
+.settings-reset-confirm-keys li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+.settings-reset-confirm-keys li:last-child { border-bottom: none; }
+.settings-reset-confirm-key {
+  font-family: var(--font-mono, monospace);
+  font-weight: 600;
+}
+.settings-reset-confirm-change {
+  font-family: var(--font-mono, monospace);
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+.settings-reset-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: stretch;
+  gap: 8px;
+}
+/* .btn-primary is a full-width block by default; here the confirm button must
+   not outweigh Cancel, which is the safe choice and holds the focus. */
+.settings-reset-confirm-actions .btn-primary,
+.settings-reset-confirm-actions .btn-secondary {
+  width: auto;
+  min-width: 120px;
+  /* Same box for both: .btn-primary alone carries a top margin, a larger
+     padding and font, which left the two buttons on different baselines. */
+  margin: 0;
+  padding: 10px 20px;
+  font-size: 14px;
+}
+.settings-group-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin: 0 0 10px;
+}
 .settings-group-title {
   font-size: 13px;
   font-weight: 600;

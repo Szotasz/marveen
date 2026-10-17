@@ -61,6 +61,8 @@ Ha el szeretnéd hagyni a Beállítások oldalt (másik menüpontra kattintasz, 
 
 Egyes beállítások mellett "Újraindítást igényel" feliratú badge látható -- ha ilyen értéket módosítasz (pl. `DASHBOARD_PUBLIC_URL`, `OLLAMA_URL`, `HEARTBEAT_AGENT_ENABLED`), a változás csak a szerver következő újraindítása után lép életbe. A kanban és heartbeat időablak-beállítások (pl. `KANBAN_WIP_*`, `KANBAN_AGING_*`, `HEARTBEAT_START_HOUR`) azonnal hatnak, újraindítás nélkül.
 
+Az oldalon elmentett érték felülírásként a `store/config-overrides.json`-be kerül. A felülírt sor mellett "felülírva" jelzés és egy **Alapértelmezés** gomb látszik: a gomb megerősítést kér, amelyben kulcsonként látszik a mostani érték, a visszaállás utáni érték és annak forrása (ugyanezt mutatja a fülenkénti **Mind alapértelmezés** gomb is), majd törli a felülírást, és az érték visszaáll az `.env`-ben megadottra, vagy ha ott nincs, a registry alapértékére. Ugyanez API-n: `DELETE /api/settings/<KULCS>`; a `GET /api/settings` soronként megmondja a forrást (`override` / `env` / `default`), és azt is, mivé válna az érték a felülírás nélkül (`resetValue`, `resetSource`).
+
 **Mit állíthatsz be?**
 
 A beállítások három modulba vannak csoportosítva:

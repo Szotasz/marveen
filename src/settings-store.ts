@@ -107,6 +107,18 @@ export function getEffectiveSettingSource(key: string): { value: string | number
   return { value: def.default, source: 'default' }
 }
 
+// What would answer for this key WITHOUT its override: .env, then the registry
+// default. This is what a reset turns the value into, and the page shows it
+// before the reset happens (review of #1908: a confirmation that lists only key
+// names cannot show that a reset switches a notification back on).
+export function getSettingFallback(key: string): { value: string | number; source: Exclude<SettingSource, 'override'> } {
+  const def = getSettingDefinition(key)
+  if (!def) throw new Error(`Unknown setting key: ${key}`)
+  const envValue = readEnvFile([key])[key]
+  if (envValue !== undefined) return { value: coerce(def, envValue), source: 'env' }
+  return { value: def.default, source: 'default' }
+}
+
 export function getEffectiveSettingValue(key: string): string | number {
   return getEffectiveSettingSource(key).value
 }
@@ -134,6 +146,42 @@ export function setOverride(key: string, rawValue: unknown): SetOverrideResult {
   atomicWriteFileSync(OVERRIDES_PATH, JSON.stringify(next, null, 2))
   cache = next
   return { ok: true }
+}
+
+export interface ClearOverrideResult {
+  ok: boolean
+  /** false when there was no override to remove (the call is idempotent). */
+  removed: boolean
+  error?: string
+}
+
+// The inverse of setOverride: drops the key from config-overrides.json, so the
+// value falls back to the next layer (.env, then the registry default). Before
+// this existed an override could only be replaced, never removed -- so a value
+// saved once kept shadowing the registry default for good, including a default
+// a later release changed, and the only way back was editing the file by hand.
+// Same atomic write as setOverride; an unreadable overrides file is refused
+// rather than rewritten, because "read as empty" plus a write would silently
+// drop every other key in it.
+export function clearOverride(key: string): ClearOverrideResult {
+  const def = getSettingDefinition(key)
+  if (!def) return { ok: false, removed: false, error: `Ismeretlen kulcs: ${key}` }
+
+  ensureWatching()
+  const file = readOverridesFile()
+  if (file.state === 'unreadable') {
+    return { ok: false, removed: false, error: `A config-overrides.json nem olvasható (${file.cause ?? 'ismeretlen ok'}), ezért nem írom felül.` }
+  }
+  if (!(key in file.values)) {
+    cache = file.values
+    return { ok: true, removed: false }
+  }
+  const next = { ...file.values }
+  delete next[key]
+  mkdirSync(STORE_DIR, { recursive: true })
+  atomicWriteFileSync(OVERRIDES_PATH, JSON.stringify(next, null, 2))
+  cache = next
+  return { ok: true, removed: true }
 }
 
 // Test-only escape hatch: forces the in-memory cache back to whatever is
