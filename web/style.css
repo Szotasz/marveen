@@ -8019,6 +8019,8 @@ body {
   background: rgba(220, 60, 60, 0.06);
 }
 .mem-stale-banner button { margin-left: auto; }
+/* display:flex above would beat the hidden attribute: an empty red strip on every other tab. */
+.mem-stale-banner[hidden] { display: none; }
 .mem-stale-badge {
   font-size: 11px;
   padding: 1px 7px;
