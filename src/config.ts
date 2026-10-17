@@ -260,6 +260,16 @@ export function currentOwnerName(): string {
   return o || OWNER_NAME
 }
 
+// MAIN_AGENT_RECIPIENT_LEDGER=1 in .env: the verified-recipient ledger applies
+// to the main agent too -- its approval gate and the project's own senders
+// check every recipient against store/verified-recipients.json. Off by default.
+// Read per call from .env only (never process.env), the way the Python side
+// reads it, so the generated CLAUDE.md text and the gate cannot disagree.
+export function mainAgentRecipientLedgerEnabled(): boolean {
+  const v = (readEnvFile(['MAIN_AGENT_RECIPIENT_LEDGER'])['MAIN_AGENT_RECIPIENT_LEDGER'] ?? '').trim().toLowerCase()
+  return ['1', 'true', 'yes', 'on'].includes(v)
+}
+
 // Pure derivation of the OS service id from a brand slug and the agent id:
 // the brand slug names the service units when it differs from the agent id,
 // otherwise the agent id is used. Mirrors the installer's SERVICE_ID choice so

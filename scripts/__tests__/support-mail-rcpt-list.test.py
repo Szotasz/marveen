@@ -14,7 +14,7 @@ Two layers are tested, because each can be wrong on its own:
 
 Run:  python3 scripts/__tests__/support-mail-rcpt-list.test.py
 """
-import io, os, sys, contextlib
+import atexit, io, json, os, shutil, sys, contextlib, tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(os.path.dirname(HERE))
@@ -30,6 +30,16 @@ os.environ.update({
 sys.path.insert(0, SUPPORT)
 import send  # noqa: E402
 import lib   # noqa: E402
+
+# send.py reads the owner CC from .env only (an environment value is ignored, it
+# could be injected in front of any send), and it runs the sender-side checks
+# (scripts/hooks/sender_check.py) itself: point both at hermetic values, level 3.
+send.OWNER_CC = 'owner@example.test'
+_STORE = tempfile.mkdtemp(prefix='rcpt-list-store-')
+atexit.register(shutil.rmtree, _STORE, True)
+with open(os.path.join(_STORE, 'autonomy-config.json'), 'w') as _fh:
+    json.dump({'version': 1, 'categories': [{'key': 'email_send', 'level': 3}]}, _fh)
+send.sender_check.STORE = _STORE
 
 
 def check(name, cond, detail=''):

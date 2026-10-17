@@ -43,17 +43,17 @@ import { homedir } from 'node:os'
 // unchecked -- the send_email deny included, which never needs the ledger.
 // Now the failure is kept, only a decision that needs the ledger hits it, and
 // that one fails closed at the entrypoint (exit 2, the reason on stderr).
-let loadLedger, isVerifiedIn, splitAddresses, SOURCE_HELP
+let loadLedger, isVerifiedIn, splitAddresses, parseAddresses, SOURCE_HELP
 let LEDGER_LOAD_ERROR = null
 try {
-  ({ loadLedger, isVerifiedIn, splitAddresses, SOURCE_HELP } = await import('./recipient-ledger.mjs'))
-  const missing = Object.entries({ loadLedger, isVerifiedIn, splitAddresses })
+  ({ loadLedger, isVerifiedIn, splitAddresses, parseAddresses, SOURCE_HELP } = await import('./recipient-ledger.mjs'))
+  const missing = Object.entries({ loadLedger, isVerifiedIn, splitAddresses, parseAddresses })
     .filter(([, fn]) => typeof fn !== 'function').map(([name]) => name)
   if (missing.length) throw new Error(`missing export: ${missing.join(', ')}`)
 } catch (err) {
   LEDGER_LOAD_ERROR = err
   const unavailable = () => { throw new Error(`recipient-ledger.mjs did not load: ${err?.message ?? err}`) }
-  loadLedger = isVerifiedIn = splitAddresses = unavailable
+  loadLedger = isVerifiedIn = splitAddresses = parseAddresses = unavailable
   SOURCE_HELP = '(a ledger modul nem toltheto be)'
 }
 
@@ -587,11 +587,40 @@ export function isSendInvocation(cmd, depth = 0) {
 // these sends for real unless the call explicitly asks for a draft.
 const MANAGE_EMAIL_SEND_OPS = new Set(['send', 'reply', 'replyall', 'forward'])
 
-// Draft-creating MCP tools. Drafting is allowed (that is the whole point of the
-// draft-required rule), but the ADDRESS in a draft still has to be verified:
-// the owner presses send on what we typed, so an invented address reaches the
-// outside world through a draft just as surely as through a send.
-const DRAFT_TOOL_RE = /(^|__)(create_draft|draft_email|update_draft)$/i
+// --- tool-name classification ------------------------------------------------
+// JS twin of email_extract.classify_mail_tool (scripts/hooks/email_extract.py,
+// the main agent's gates). Both are bound by the shared case list
+// scripts/hooks/mail-tool-name-cases.json, which
+// src/__tests__/email-gate-matcher-drift.test.ts runs through BOTH copies; the
+// full rationale is at the python twin.
+//
+// Classified by the base-name SUFFIX, never by what precedes it:
+// vendor/gmail-mcp-fork prepends its tool prefix to every tool name verbatim
+// (v2_, v2, work-, ...), so `(^|__)draft_email$`, `(^|__)manage_email$` and
+// `gmail__reply_all$` missed every prefixed form: a prefixed draft skipped the
+// recipient ledger, and a prefixed (or non-"gmail"-server) reply_all was no
+// send at all. send_draft is a send this gate never knew. The classifier is a
+// superset of the patterns this gate carried: send_email and the draft names
+// keep a substring match, manage_email is the suffix (a look-alike such as
+// manage_emails_bulk stays out); the generic connector words count only with
+// "gmail" in the qualified name (the Telegram tool is `..._telegram__reply`).
+// Kinds: 'send_email' | 'connector_send' | 'send_draft' | 'manage_email' |
+// 'draft' | null (reads, search, labels, delete: not outbound).
+const CONNECTOR_GENERIC_SUFFIXES = ['send_message', 'reply', 'forward']
+const DRAFT_NAMES = ['draft_email', 'create_draft', 'update_draft', 'draft_gmail_message']
+
+export function classifyMailTool(toolName) {
+  const n = String(toolName ?? '').toLowerCase()
+  if (!n || n === 'bash') return null
+  // send_gmail_message: the Google Workspace MCP's Gmail send tool
+  if (n.includes('send_email') || n.includes('send_gmail_message')) return 'send_email'
+  if (n.endsWith('reply_all')) return 'connector_send'
+  if (n.includes('gmail') && CONNECTOR_GENERIC_SUFFIXES.some((b) => n.endsWith(b))) return 'connector_send'
+  if (n.endsWith('send_draft')) return 'send_draft'
+  if (n.endsWith('manage_email')) return 'manage_email'
+  if (DRAFT_NAMES.some((d) => n.includes(d))) return 'draft'
+  return null
+}
 
 // RECOVERYPATH920: the recovery command in the deny message used to be the
 // relative `node scripts/recipient-ledger.mjs`. Sub-agents run with cwd
@@ -615,8 +644,25 @@ export function unverifiedRecipients(toolInput, isVerified) {
   for (const field of RECIPIENT_FIELDS) {
     const value = toolInput?.[field]
     if (value === undefined || value === null || value === '') continue
-    for (const addr of splitAddresses(value)) {
+    for (const addr of parseAddresses(value).addresses) {
       if (!isVerified(addr) && !out.includes(addr)) out.push(addr)
+    }
+  }
+  return out
+}
+
+// Every recipient piece of this call that is not exactly ONE address
+// (recipient-ledger.mjs parseAddresses): two addresses in one array item, an
+// address in the display name, two <...> pairs, an object value. The ledger
+// cannot vouch for what it cannot read as one address, and the mail tool may
+// still deliver to it, so the gate denies on any such piece.
+export function unparseableRecipients(toolInput) {
+  const out = []
+  for (const field of RECIPIENT_FIELDS) {
+    const value = toolInput?.[field]
+    if (value === undefined || value === null || value === '') continue
+    for (const piece of parseAddresses(value).unparseable) {
+      if (!out.includes(piece)) out.push(piece)
     }
   }
   return out
@@ -655,7 +701,8 @@ export function gateDecision(toolName, toolInput, isVerified = null) {
   // against the file would refuse a legitimately sourced reply. The ledger
   // guards the paths where an address can be typed from memory: drafting and
   // manage_email.
-  if (/send_email/i.test(name)) return { deny: true, kind: 'send_email' }
+  const mailKind = classifyMailTool(name)
+  if (mailKind === 'send_email') return { deny: true, kind: 'send_email' }
   // The claude.ai Gmail connector (mcp__claude_ai_Gmail__*) has no send_email:
   // its sends are send_message / reply / forward. Drafts stay allowed and the
   // reads are not sends, only the three send-shaped tools are denied
@@ -664,9 +711,20 @@ export function gateDecision(toolName, toolInput, isVerified = null) {
   // Kind is NOT 'send_email' on purpose: the thread-reply narrowing at the
   // entrypoint reads send_email-shaped fields (threadId/to), which a connector
   // reply does not carry, so the connector stays fully gated for every agent.
-  if (/gmail__(reply|reply_all|send_message|forward)$/i.test(name)) return { deny: true, kind: 'connector-send' }
-  // Drafting is allowed, but only to an address with a recorded source.
-  if (DRAFT_TOOL_RE.test(name)) {
+  // reply_all is a send on a server of any name, and a tool prefix does not
+  // hide any of the four (classifyMailTool).
+  if (mailKind === 'connector_send') return { deny: true, kind: 'connector-send' }
+  // send_draft sends an existing draft by draftId: a send like any other, and
+  // one whose recipients this gate cannot even see. Sub-agents may not send,
+  // so it gets the governance deny, with no narrowing.
+  if (mailKind === 'send_draft') return { deny: true, kind: 'send-draft' }
+  // Draft-creating MCP tools. Drafting is allowed (that is the whole point of
+  // the draft-required rule), but the ADDRESS in a draft still has to be
+  // verified: the owner presses send on what we typed, so an invented address
+  // reaches the outside world through a draft just as surely as through a send.
+  if (mailKind === 'draft') {
+    const unparseable = unparseableRecipients(toolInput)
+    if (unparseable.length) return { deny: true, kind: 'unparseable-recipient', addresses: unparseable }
     const bad = unverifiedRecipients(toolInput, verify)
     if (bad.length) return { deny: true, kind: 'unverified-recipient', addresses: bad }
     return { deny: false }
@@ -677,11 +735,13 @@ export function gateDecision(toolName, toolInput, isVerified = null) {
   // draft-only-email safety policy, which blocks drafting too: that policy keys
   // on ctx.operation alone and never looks at draft:true, so with it enabled the
   // mailbox is effectively read-only (verified live, 2026-08-10).
-  if (/(^|__)manage_email$/i.test(name)) {
+  if (mailKind === 'manage_email') {
     const op = String(toolInput?.operation ?? '').toLowerCase()
     if (!MANAGE_EMAIL_SEND_OPS.has(op)) return { deny: false }
     // The address check runs before the draft rule, so it applies to the send
     // AND to the draft the deny message would send us back to write.
+    const unparseable = unparseableRecipients(toolInput)
+    if (unparseable.length) return { deny: true, kind: 'unparseable-recipient', addresses: unparseable }
     const bad = unverifiedRecipients(toolInput, verify)
     if (bad.length) return { deny: true, kind: 'unverified-recipient', addresses: bad }
     // Fail safe: only an explicit draft request passes. A missing/ambiguous
@@ -728,6 +788,19 @@ export function buildUnverifiedRecipientMsg(addresses) {
     `  node ${LEDGER_CLI} add ${first} --source <forras> --note "<honnan>"\n` +
     `  --source: ${SOURCE_HELP}\n` +
     'Ha nem talalsz forrast, a cim NINCS meg: mondd meg a gazdanak, ne kuldj levelet.'
+  )
+}
+
+// Deny wording for a recipient piece that is not exactly one address. The fix
+// is on the caller's side: one clean address per item.
+export function buildUnparseableRecipientMsg(pieces) {
+  return (
+    `Nem ertelmezheto cimzett: ${pieces.join(' | ')}. ` +
+    'A cimzett-mezo minden eleme (vesszovel vagy pontosvesszovel elvalasztva) ' +
+    'pontosan EGY cim legyen: "cim@pelda.hu" vagy "Nev <cim@pelda.hu>". ' +
+    'Ket cim egy elemben, cim a megjelenitett nevben vagy tobb <...> ' +
+    'nem ellenorizheto a cimzett-ledgerrel, ezert a kapu tilt (fail-closed). ' +
+    'Ird at a mezot tiszta cimekre, aztan kuldd ujra.'
   )
 }
 
@@ -806,6 +879,18 @@ const ADDR_TOKEN = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi
 // the membership check).
 export function extractAddress(raw) {
   const s = String(raw ?? '').trim()
+  // More than one '@' is ONE clean address only when the display name IS the
+  // bracketed address ("jane@example.com" <jane@example.com>, a common client
+  // form). "invented@example.org <known@example.com>" would otherwise pass the
+  // trailing-bracket test as known@example.com, with a second address in the
+  // display name the membership check never looked at.
+  if ((s.match(/@/g) ?? []).length > 1) {
+    const m = s.match(/^([^<>]*)<([^<>]+)>$/)
+    if (!m) return ''
+    const display = m[1].trim().replace(/^"(.*)"$/, '$1').trim()
+    if (display.toLowerCase() !== m[2].trim().toLowerCase()) return ''
+  }
+
   const angle = s.match(/<([^<>]+)>$/)
   const cand = (angle ? angle[1] : s).trim()
   return /^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$/i.test(cand) ? cand.toLowerCase() : ''
@@ -967,6 +1052,7 @@ if (isInvokedDirectly()) {
     // An address with no recorded source loses before every other branch,
     // including the thread-reply narrowing below: a verified thread cannot
     // vouch for an unsourced recipient.
+    if (kind === 'unparseable-recipient') deny(buildUnparseableRecipientMsg(addresses ?? []))
     if (kind === 'unverified-recipient') deny(buildUnverifiedRecipientMsg(addresses ?? []))
     if (kind === 'draft-required') deny(buildDraftOnlyMsg(ownerName))
     if (kind === 'wrapper-depth') deny(buildWrapperDepthMsg())
