@@ -1568,13 +1568,17 @@ function kanbanDecorateAvatar(spanEl, key) {
 // Only when the lanes ARE people (group by assignee). Grouped by priority, a
 // lane is a priority, not the owner's lane: hiding there would drop the
 // owner's most urgent card from the one view built to rank urgency (review of
-// #1860).
-function kanbanHideFromLanes(card) {
-  if (kanbanGroupBy !== 'assignee') return false
+// #1860). Whether a card is the owner's open card at all is kanbanIsOwnerOpen,
+// for views that are about people whatever the board grouping.
+function kanbanIsOwnerOpen(card) {
   if (card.status === 'done') return false
   const owner = ownerAssigneeName()
   if (!owner) return false
   return String(card.assignee || '').trim().toLowerCase() === owner.toLowerCase()
+}
+
+function kanbanHideFromLanes(card) {
+  return kanbanGroupBy === 'assignee' && kanbanIsOwnerOpen(card)
 }
 
 function renderSwimlaneBoard(grouped, embeddedSubtaskIds) {
