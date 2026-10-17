@@ -1609,7 +1609,13 @@ function kanbanDecorateAvatar(spanEl, key) {
 // The "Rád vár" label does NOT hide a card here, on purpose: a labelled agent
 // card shows in the strip AND in its agent's lane, because the lane is where
 // that agent's whole queue is read. Only the owner's cards live in one place.
+//
+// Only when the lanes ARE people (group by assignee). Grouped by priority, a
+// lane is a priority, not the owner's lane: hiding there would drop the
+// owner's most urgent card from the one view built to rank urgency (review of
+// #1860).
 function kanbanHideFromLanes(card) {
+  if (kanbanGroupBy !== 'assignee') return false
   if (card.status === 'done') return false
   const owner = ownerAssigneeName()
   if (!owner) return false
