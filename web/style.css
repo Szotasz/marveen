@@ -3532,6 +3532,15 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   color: var(--text-secondary);
   line-height: 1.5;
 }
+/* Card 3ddb2b1d (#572): the title line above the one-line snippet. */
+.mem-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.4;
+  margin-bottom: 2px;
+  overflow-wrap: anywhere;
+}
 .mem-content-short {
   white-space: nowrap;
   overflow: hidden;
@@ -8004,3 +8013,76 @@ body {
   color: var(--text, inherit);
 }
 .mem-search-label code { font-size: 11px; opacity: .85; }
+
+/* Card ca046c9a (#570): hot memories with no write for N days. */
+.mem-stale-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 0 0 10px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  border: 1px solid #dc3c3c;
+  background: rgba(220, 60, 60, 0.06);
+}
+.mem-stale-banner button { margin-left: auto; }
+/* display:flex above would beat the hidden attribute: an empty red strip on every other tab. */
+.mem-stale-banner[hidden] { display: none; }
+/* Card f9242cd3 (#571): the FELULIRJA chain. */
+.mem-superseded-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 0 0 10px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  border: 1px dashed var(--border, rgba(127, 127, 127, 0.4));
+}
+.mem-superseded-bar button { margin-left: auto; }
+.mem-superseded-bar[hidden] { display: none; }
+.mem-chain { display: flex; flex-wrap: wrap; gap: 6px; margin: 2px 0 6px; }
+.mem-chain-chip {
+  font: inherit;
+  font-size: 11px;
+  padding: 1px 8px;
+  border-radius: 10px;
+  cursor: pointer;
+  background: transparent;
+  color: #6a9bcc;
+  border: 1px solid rgba(106, 155, 204, 0.5);
+}
+.mem-chain-chip.partial { border-style: dashed; }
+.mem-chain-chip.replaced { color: #b07a1e; border-color: rgba(176, 122, 30, 0.5); }
+.mem-ref-preview {
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  border-left: 3px solid rgba(106, 155, 204, 0.6);
+  background: rgba(106, 155, 204, 0.06);
+  border-radius: 4px;
+  font-size: 12px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.mem-ref-preview-head { font-weight: 600; margin-bottom: 4px; opacity: .8; }
+.mem-use-badge {
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 10px;
+  color: var(--text-secondary, #888);
+  border: 1px solid rgba(128, 128, 128, 0.35);
+}
+.mem-use-badge.none {
+  opacity: 0.6;
+  font-style: italic;
+}
+.mem-stale-badge {
+  font-size: 11px;
+  padding: 1px 7px;
+  border-radius: 10px;
+  color: #dc3c3c;
+  border: 1px solid rgba(220, 60, 60, 0.45);
+}

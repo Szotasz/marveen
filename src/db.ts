@@ -527,6 +527,24 @@ export function initDatabase(dbPathOverride?: string): void {
     )
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_versions_mid ON memory_versions(memory_id, superseded_at)`)
+  // Card a9dfb378 (#573): a real "was it used" signal. accessed_at cannot be
+  // it: every search hit stamps it, relaxed near-misses included, so on the
+  // owner store (measured 2026-10-17) 658 of 703 cold rows and all 115 hot
+  // rows read "accessed within 30 days". This table logs only the events that
+  // mean an agent actually reached for the row: a read by id, a top hit of a
+  // search that matched as asked, a partial FELULIRJA reference from another
+  // row. A separate table rather than a column: no UPDATE on memories, so the
+  // FTS-sync and updated_at triggers never fire for a use.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS memory_uses (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      memory_id INTEGER NOT NULL,
+      used_at INTEGER NOT NULL,
+      kind TEXT NOT NULL CHECK(kind IN ('read','search','reference')),
+      agent_id TEXT
+    )
+  `)
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_uses_mid ON memory_uses(memory_id, used_at)`)
 
   // Daily logs table
   db.exec(`
@@ -1852,9 +1870,9 @@ function withoutRank<T extends { rank: number }>(rows: T[]): Omit<T, 'rank'>[] {
   return rows.map(({ rank: _rank, ...rest }) => rest)
 }
 
-export function searchMemories(query: string, chatId: string, limit = 3, allowRelaxed = true, category?: string): Memory[] {
+export function searchMemories(query: string, chatId: string, limit = 3, allowRelaxed = true, category?: string, trace?: { relaxed: boolean }): Memory[] {
   try {
-    const { rows } = ftsWithOrFallback(query, (terms) =>
+    const { rows, relaxed } = ftsWithOrFallback(query, (terms) =>
       (category
         ? db.prepare(
             `SELECT m.*, f.rank AS rank FROM memories m
@@ -1871,6 +1889,7 @@ export function searchMemories(query: string, chatId: string, limit = 3, allowRe
              LIMIT ?`
           ).all(terms, chatId, limit * RECENCY_OVERSAMPLE)) as (Memory & { rank: number })[]
       , allowRelaxed)
+    if (trace) trace.relaxed = relaxed
     return withoutRank(reRankByRecency(rows, limit)) as Memory[]
   } catch {
     return []
@@ -1903,6 +1922,59 @@ export function touchMemoriesAccessed(ids: number[]): void {
   db.prepare(`UPDATE memories SET accessed_at = ? WHERE id IN (${placeholders})`).run(now, ...ids)
 }
 
+export type MemoryUseKind = 'read' | 'search' | 'reference'
+
+// The same agent reaching for the same row the same way within this window is
+// one use, not several: a hook that re-runs one search every turn would
+// otherwise turn use_count into a poll counter.
+const MEMORY_USE_DEDUP_SECONDS = 600
+
+/** Card a9dfb378 (#573): log real uses (see the memory_uses table). Ids that
+ *  no longer exist are skipped. Returns how many rows were logged. */
+export function recordMemoryUse(ids: number[], kind: MemoryUseKind, agentId?: string | null): number {
+  if (ids.length === 0) return 0
+  const now = Math.floor(Date.now() / 1000)
+  const agent = agentId || null
+  const ins = db.prepare(
+    `INSERT INTO memory_uses (memory_id, used_at, kind, agent_id)
+     SELECT ?, ?, ?, ?
+     WHERE EXISTS (SELECT 1 FROM memories WHERE id = ?)
+       AND NOT EXISTS (SELECT 1 FROM memory_uses
+                       WHERE memory_id = ? AND kind = ? AND agent_id IS ? AND used_at > ?)`,
+  )
+  let n = 0
+  db.transaction(() => {
+    for (const id of new Set(ids)) {
+      n += ins.run(id, now, kind, agent, id, id, kind, agent, now - MEMORY_USE_DEDUP_SECONDS).changes
+    }
+  })()
+  return n
+}
+
+export interface MemoryUseSummary { last_used_at: number; use_count: number }
+
+/** Last use and use count per id, for the ids given. An id with no logged use
+ *  is absent from the map. */
+export function getMemoryUseSummaries(ids: number[]): Map<number, MemoryUseSummary> {
+  const out = new Map<number, MemoryUseSummary>()
+  if (ids.length === 0) return out
+  const stmt = db.prepare(
+    `SELECT memory_id, MAX(used_at) AS last_used_at, COUNT(*) AS use_count
+     FROM memory_uses WHERE memory_id IN (SELECT value FROM json_each(?)) GROUP BY memory_id`,
+  )
+  for (const r of stmt.all(JSON.stringify([...new Set(ids)])) as { memory_id: number; last_used_at: number; use_count: number }[]) {
+    out.set(r.memory_id, { last_used_at: r.last_used_at, use_count: r.use_count })
+  }
+  return out
+}
+
+/** When use logging began on this store: the first logged use, or null. The
+ *  UI needs it to say "no use since <date>" instead of a bare "never". */
+export function getMemoryUseTrackingStart(): number | null {
+  const r = db.prepare('SELECT MIN(used_at) AS t FROM memory_uses').get() as { t: number | null }
+  return r.t ?? null
+}
+
 export function decayMemories(): void {
   const oneWeekAgo = Math.floor(Date.now() / 1000) - 7 * 86400
   // Gentler decay: 0.5% per day, only for memories older than 1 week
@@ -1910,15 +1982,37 @@ export function decayMemories(): void {
   db.prepare('UPDATE memories SET salience = MAX(salience * 0.995, 0.01) WHERE created_at < ?').run(oneWeekAgo)
 }
 
-export function getMemoriesForChat(chatId: string, limit = 10, offset = 0): Memory[] {
+// Listing filters shared by getMemoriesForChat and getAgentMemories.
+// staleBefore (card ca046c9a, #570): only rows whose LAST WRITE
+// (updated_at, or created_at when it was never updated) is older than this
+// unix time -- the "hot for a week and nobody touched it" view.
+export interface MemoryListFilter {
+  category?: string
+  staleBefore?: number
+  // Card f9242cd3 (#571): rows replaced in full by a newer one, left out of
+  // the listing (in SQL, ahead of the LIMIT, for the same reason as category).
+  excludeIds?: number[]
+}
+
+export function getMemoriesForChat(chatId: string, limit = 10, offset = 0, filter: MemoryListFilter = {}): Memory[] {
   // id DESC tie-break (#947): accessed_at has 1-second granularity, so a bulk
   // import leaves hundreds of rows sharing one value; without a stable
   // secondary sort SQLite may order the ties differently between queries, and
   // LIMIT/OFFSET over them can repeat a row on one page and never return
   // another. id is the unique insertion order, so it makes paging total.
+  //
+  // The category goes INTO the query (card ca046c9a). It used to be a
+  // post-filter in the route, applied after this function had already cut to
+  // `limit`: measured 2026-10-17 on the owner store, the dashboard Hot tab
+  // (no agent filter, limit 50) showed 6 of 115 hot memories.
+  const where = ['chat_id = ?']
+  const args: (string | number)[] = [chatId]
+  if (filter.category) { where.push('category = ?'); args.push(filter.category) }
+  if (filter.staleBefore !== undefined) { where.push('COALESCE(updated_at, created_at) < ?'); args.push(filter.staleBefore) }
+  if (filter.excludeIds?.length) { where.push('id NOT IN (SELECT value FROM json_each(?))'); args.push(JSON.stringify(filter.excludeIds)) }
   return db
-    .prepare('SELECT * FROM memories WHERE chat_id = ? ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?')
-    .all(chatId, limit, offset) as Memory[]
+    .prepare(`SELECT * FROM memories WHERE ${where.join(' AND ')} ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?`)
+    .all(...args, limit, offset) as Memory[]
 }
 
 // --- In-process memory cache (TTL-based) ---
@@ -2005,22 +2099,26 @@ export function saveAgentMemory(
 // accessed memories" instead of "the N most recent <category> memories", so an
 // older-but-still-active memory would drop out of the list with no truncation
 // signal -- invisible to the caller, and worst right after a restart.
-export function getAgentMemories(agentId: string, limit: number = 20, category?: string, offset: number = 0): Memory[] {
+export function getAgentMemories(agentId: string, limit: number = 20, category?: string, offset: number = 0, staleBefore?: number, excludeIds?: number[]): Memory[] {
   // offset is part of the cache key (#947): without it page 2 would be served
   // page 1's cached rows for up to MEMORY_CACHE_TTL_MS. id DESC tie-break for
   // the same reason getMemoriesForChat has one -- accessed_at ties are common
   // after a bulk import and make LIMIT/OFFSET non-total without it.
-  const key = `${agentId}:${limit}:${category ?? ''}:${offset}`
-  const cached = memoryCacheGet(key)
+  // Not cached with an exclusion: the excluded set changes when ANY agent
+  // writes a superseding row, and only the writer's own keys are evicted.
+  const useCache = !excludeIds?.length
+  const key = `${agentId}:${limit}:${category ?? ''}:${offset}:${staleBefore ?? ''}`
+  const cached = useCache ? memoryCacheGet(key) : undefined
   if (cached) return cached
-  const result = (category
-    ? db.prepare(
-        "SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND category = ? ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?"
-      ).all(agentId, category, limit, offset)
-    : db.prepare(
-        "SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?"
-      ).all(agentId, limit, offset)) as Memory[]
-  memoryCacheSet(key, result)
+  const where = ["(agent_id = ? OR category = 'shared')"]
+  const args: (string | number)[] = [agentId]
+  if (category) { where.push('category = ?'); args.push(category) }
+  if (staleBefore !== undefined) { where.push('COALESCE(updated_at, created_at) < ?'); args.push(staleBefore) }
+  if (excludeIds?.length) { where.push('id NOT IN (SELECT value FROM json_each(?))'); args.push(JSON.stringify(excludeIds)) }
+  const result = db.prepare(
+    `SELECT * FROM memories WHERE ${where.join(' AND ')} ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?`
+  ).all(...args, limit, offset) as Memory[]
+  if (useCache) memoryCacheSet(key, result)
   return result
 }
 
@@ -2071,7 +2169,9 @@ export function searchAgentMemories(
   }
 }
 
-export function getMemoryStats(): { total: number; byAgent: Record<string, number>; byTier: Record<string, number>; withEmbedding: number } {
+export const HOT_STALE_DAYS = 7
+
+export function getMemoryStats(): { total: number; byAgent: Record<string, number>; byTier: Record<string, number>; withEmbedding: number; staleHot: number; staleHotDays: number } {
   const total = (db.prepare('SELECT COUNT(*) as c FROM memories').get() as {c:number}).c
   const withEmbedding = (db.prepare('SELECT COUNT(*) as c FROM memories WHERE embedding IS NOT NULL').get() as {c:number}).c
   const agentRows = db.prepare('SELECT agent_id, COUNT(*) as c FROM memories GROUP BY agent_id').all() as {agent_id:string, c:number}[]
@@ -2080,7 +2180,12 @@ export function getMemoryStats(): { total: number; byAgent: Record<string, numbe
   const byTier: Record<string, number> = {}
   for (const r of agentRows) byAgent[r.agent_id] = r.c
   for (const r of tierRows) byTier[r.category] = r.c
-  return { total, byAgent, byTier, withEmbedding }
+  // Card ca046c9a (#570): hot rows with no write for HOT_STALE_DAYS. Nothing
+  // moves a hot memory down on its own, so the count is the to-do list.
+  const staleHot = (db.prepare(
+    "SELECT COUNT(*) as c FROM memories WHERE category = 'hot' AND COALESCE(updated_at, created_at) < ?"
+  ).get(Math.floor(Date.now() / 1000) - HOT_STALE_DAYS * 86400) as {c:number}).c
+  return { total, byAgent, byTier, withEmbedding, staleHot, staleHotDays: HOT_STALE_DAYS }
 }
 
 /** One stored memory row, as the destructive-write paths need to see it. */
@@ -2140,6 +2245,7 @@ export function deleteMemoryById(id: number): boolean {
   if (!before) return false
   db.transaction(() => {
     db.prepare('DELETE FROM memory_versions WHERE memory_id = ?').run(id)
+    db.prepare('DELETE FROM memory_uses WHERE memory_id = ?').run(id)
     db.prepare('DELETE FROM memories WHERE id = ?').run(id)
   })()
   // A shared row is listed for every agent, so evicting one owner is not enough.

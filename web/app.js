@@ -7467,12 +7467,141 @@ document.getElementById('saveMemBtn').addEventListener('click', async () => {
   }
 })
 
+// Card ca046c9a (#570): nothing moves a hot memory down on its own, so hot rows
+// pile up. The stats endpoint counts the ones with no write for staleHotDays;
+// the Hot tab shows that count and lets the viewer list only those.
+let memStaleInfo = { count: 0, days: 7 }
+let memStaleOnly = false
+// Card f9242cd3 (#571): rows a newer memory replaces in full ("FELULIRJA <id>")
+// are left out of the listing unless the viewer asks for them.
+let memSupersededByTier = {}
+let memShowSuperseded = false
+
+function renderMemSupersededBar() {
+  const el = document.getElementById('memSupersededBar')
+  if (!el) return
+  const q = memSearchInput.value.trim()
+  const count = memSupersededByTier[currentMemTier] || 0
+  if (q || count === 0) {
+    el.hidden = true
+    el.textContent = ''
+    return
+  }
+  el.hidden = false
+  el.textContent = ''
+  const text = document.createElement('span')
+  text.textContent = memShowSuperseded
+    ? t('memories.chain.bar_shown', { count })
+    : t('memories.chain.bar_hidden', { count })
+  const btn = document.createElement('button')
+  btn.className = 'btn-secondary btn-compact'
+  btn.id = 'memSupersededToggle'
+  btn.textContent = memShowSuperseded ? t('memories.chain.hide') : t('memories.chain.show')
+  btn.addEventListener('click', () => {
+    memShowSuperseded = !memShowSuperseded
+    loadMemories()
+  })
+  el.append(text, btn)
+}
+
+// Inline preview of a referenced memory under the chip row, toggled per id.
+async function toggleMemRefPreview(item, refId) {
+  const box = item.querySelector('.mem-ref-preview')
+  if (!box) return
+  if (!box.hidden && box.dataset.refId === String(refId)) {
+    box.hidden = true
+    return
+  }
+  box.hidden = false
+  box.dataset.refId = String(refId)
+  box.textContent = t('memories.chain.loading')
+  try {
+    const res = await fetch(`/api/memories/${refId}`)
+    if (!res.ok) throw new Error(String(res.status))
+    const m = await res.json()
+    box.textContent = ''
+    const head = document.createElement('div')
+    head.className = 'mem-ref-preview-head'
+    head.textContent = `#${m.id} · ${tierLabels[m.category] || m.category} · ${m.agent_id || ''}`
+    const body = document.createElement('div')
+    body.className = 'mem-ref-preview-body'
+    body.textContent = m.content
+    box.append(head, body)
+  } catch {
+    box.textContent = t('memories.chain.not_found', { id: refId })
+  }
+}
+
+// #573: when the server began logging real uses (0 = nothing logged yet).
+let memUseSince = 0
+
+// The "used" chip: last real use by an agent (read by id, a top search hit
+// that matched as asked, a partial FELULIRJA reference), or that there is none
+// since logging began. Not the write age and not accessed_at.
+function memUseChip(mem) {
+  const since = memUseSince ? new Date(memUseSince * 1000).toLocaleDateString('hu-HU') : ''
+  if (!mem.last_used_at) {
+    return `<span class="mem-use-badge none" title="${escapeHtml(t('memories.use.none_title', { since: since || '-' }))}">${escapeHtml(t('memories.use.none'))}</span>`
+  }
+  const days = Math.floor((Date.now() / 1000 - Number(mem.last_used_at)) / 86400)
+  const label = days <= 0 ? t('memories.use.today', { count: mem.use_count }) : t('memories.use.days', { days, count: mem.use_count })
+  return `<span class="mem-use-badge" title="${escapeHtml(t('memories.use.title', { since: since || '-' }))}">${escapeHtml(label)}</span>`
+}
+
+function memLastWrite(mem) {
+  return Number(mem.updated_at || mem.created_at || 0)
+}
+
+function renderMemStaleBanner() {
+  const el = document.getElementById('memStaleBanner')
+  if (!el) return
+  const q = memSearchInput.value.trim()
+  if (currentMemTier !== 'hot' || q || (memStaleInfo.count === 0 && !memStaleOnly)) {
+    el.hidden = true
+    el.textContent = ''
+    return
+  }
+  el.hidden = false
+  el.textContent = ''
+  const text = document.createElement('span')
+  text.textContent = t('memories.stale.banner', { count: memStaleInfo.count, days: memStaleInfo.days })
+  const btn = document.createElement('button')
+  btn.className = 'btn-secondary btn-compact'
+  btn.id = 'memStaleToggle'
+  btn.textContent = memStaleOnly ? t('memories.stale.show_all') : t('memories.stale.only_stale')
+  btn.addEventListener('click', () => {
+    memStaleOnly = !memStaleOnly
+    loadMemories()
+  })
+  el.append(text, btn)
+}
+
+async function moveMemTier(mem, tier) {
+  try {
+    const res = await fetch(`/api/memories/${mem.id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tier, updated_by: 'dashboard' }),
+    })
+    if (!res.ok) throw new Error(String(res.status))
+    showToast(t('memories.stale.moved', { tier: tierLabels[tier] || tier }))
+    loadMemories()
+    loadMemStats()
+  } catch {
+    showToast(t('common.error_save'))
+  }
+}
+
 async function loadMemStats() {
   try {
     const res = await fetch('/api/memories/stats')
     const stats = await res.json()
     const embCount = stats.withEmbedding || 0
     const embPct = stats.total > 0 ? Math.round(embCount / stats.total * 100) : 0
+    memStaleInfo = { count: stats.staleHot || 0, days: stats.staleHotDays || 7 }
+    memSupersededByTier = stats.supersededByTier || {}
+    renderMemStaleBanner()
+    renderMemSupersededBar()
     memStats.innerHTML = `
       <div class="stat-card"><div class="stat-value">${stats.total}</div><div class="stat-label">${t('memories.stat.total')}</div></div>
       ${Object.entries(stats.byTier || {}).map(([tier, count]) =>
@@ -7510,6 +7639,10 @@ async function loadMemories() {
   }
   if (agent) params.set('agent', agent)
   if (currentMemTier) params.set('tier', currentMemTier)
+  // stale_days is listing-only on the server (400 with q), so a search wins.
+  if (currentMemTier === 'hot' && memStaleOnly && !q) params.set('stale_days', String(memStaleInfo.days))
+  // superseded=hide is listing-only on the server too (400 with q).
+  if (!q && !memShowSuperseded) params.set('superseded', 'hide')
   params.set('limit', '50')
 
   try {
@@ -7522,6 +7655,9 @@ async function loadMemories() {
     // with res.json() alone threw it away, so a viewer saw fifty rescued rows
     // as fifty hits. The header is only set on a search (q), not on listing.
     renderMemSearchLabel(q ? res.headers.get('X-Memory-Search') : null)
+    memUseSince = Number(res.headers.get('X-Memory-Use-Since')) || 0
+    renderMemStaleBanner()
+    renderMemSupersededBar()
     renderMemories(memories)
   } catch (err) {
     console.error('Memória betöltés hiba:', err)
@@ -7552,6 +7688,66 @@ function renderMemSearchLabel(header) {
   el.append(strong, body, raw)
 }
 
+// #571: the chain chips of one memory card. Every interpolation is a
+// Number() or an escapeHtml(t(...)), so the HTML is safe by construction.
+function memChainChipsHtml(supersedes, supersededBy) {
+  let html = ''
+  for (const r of supersedes) {
+    const key = r.partial ? 'memories.chain.supersedes_part' : 'memories.chain.supersedes'
+    html += `<button type="button" class="mem-chain-chip${r.partial ? ' partial' : ''}" data-ref-id="${Number(r.id)}">${escapeHtml(t(key, { id: Number(r.id) }))}</button>`
+  }
+  if (supersededBy) {
+    html += `<button type="button" class="mem-chain-chip replaced" data-ref-id="${Number(supersededBy)}">${escapeHtml(t('memories.chain.superseded_by', { id: Number(supersededBy) }))}</button>`
+  }
+  return html
+}
+
+// Card 3ddb2b1d (#572): a short title line instead of the first 120 characters.
+// Measured 2026-10-17 on a copy of the owner store (1377 rows): the first
+// sentence or "HEADER:" segment of the first line is the title; median 58,
+// 90th percentile 87 characters. A leading "FELULIRJA <id>:" is dropped (the
+// chain chip says it). When the first segment is only a date, time or status
+// word ("2026-10-03 16:02", "LEZARVA 2026-09-09 03:3x") the next segment is
+// added, otherwise the title would say nothing.
+const MEM_TITLE_MAX = 90
+// The marker ends at the first '.' or ':' FOLLOWED BY A SPACE, so a time inside
+// it ("FELULIRJA a 20:35-os allapotot.") does not end it early.
+const MEM_TITLE_PREFIX = /^\s*(?:fel[uü]l[ií]rja\b[^\n]{0,40}?[:.](?=\s)\s*|aktu[aá]lis[,:]?\s*)/i
+const MEM_TITLE_SPLIT = /(?<=.{12})(?:[.:;!?](?=\s)| -- | — )/
+const MEM_TITLE_NOISE = /\d{4}-\d{2}-\d{2}|\d{1,2}:\d{2}(?::\d{2})?x?|\d{1,2}:\dx|\b(?:BST|GMT|UTC)\b|\b(?:lez[aá]rva|friss[ií]tve|aktu[aá]lis|[aá]llapot|k[eé]sz|nyitott|sz[aá]l)\b|[~()[\],.\-:]/gi
+
+function memTitleParts(content) {
+  const body = String(content || '').replace(MEM_TITLE_PREFIX, '')
+  const nl = body.indexOf('\n')
+  const line = (nl >= 0 ? body.slice(0, nl) : body).trim()
+  const lead = body.length - body.trimStart().length
+  let head = line
+  let consumed = line.length
+  const m = MEM_TITLE_SPLIT.exec(line)
+  if (m) {
+    head = line.slice(0, m.index)
+    consumed = m.index + m[0].length
+    if (head.replace(MEM_TITLE_NOISE, '').replace(/\s+/g, '').length < 10) {
+      const restLine = line.slice(consumed)
+      const m2 = MEM_TITLE_SPLIT.exec(restLine.trimStart())
+      const skip = restLine.length - restLine.trimStart().length
+      const next = m2 ? restLine.trimStart().slice(0, m2.index) : restLine.trimStart()
+      head = `${head}: ${next}`
+      consumed += skip + (m2 ? m2.index + m2[0].length : next.length)
+    }
+  }
+  let title = head.trim().replace(/[.:;]+$/, '')
+  if (title.length > MEM_TITLE_MAX) {
+    const cut = title.slice(0, MEM_TITLE_MAX)
+    const sp = cut.lastIndexOf(' ')
+    title = (sp > MEM_TITLE_MAX * 0.55 ? cut.slice(0, sp) : cut).replace(/[\s,;(-]+$/, '') + '…'
+    // A clipped title has not said all of its segment: the snippet repeats it.
+    consumed = 0
+  }
+  const rest = body.slice(lead + consumed).replace(/^[\s.:;!?—-]+/, '').replace(/\s+/g, ' ').trim()
+  return { title: title || String(content || '').slice(0, MEM_TITLE_MAX), rest }
+}
+
 function renderMemories(memories) {
   memList.innerHTML = ''
   memEmpty.hidden = memories.length > 0
@@ -7563,8 +7759,18 @@ function renderMemories(memories) {
     const tier = mem.tier || mem.category || 'warm'
     const tierBadge = escapeHtml(tierLabels[tier] || tier)
     const badgeClass = 'badge-' + tier
-    const shortContent = mem.content.length > 120 ? mem.content.slice(0, 120) + '...' : mem.content
+    const { title: memTitle, rest: memRest } = memTitleParts(mem.content)
     const agentLabel = mem.agent_id || mainAgentId()
+    const ageDays = Math.floor((Date.now() / 1000 - memLastWrite(mem)) / 86400)
+    const isStaleHot = tier === 'hot' && memLastWrite(mem) > 0 && ageDays >= memStaleInfo.days
+    const supersedes = Array.isArray(mem.supersedes) ? mem.supersedes : []
+    const supersededBy = mem.superseded_by || null
+    // Move targets: a stale hot row may go to warm or cold; a fully replaced
+    // row that is not cold yet gets the cold button.
+    const moveTargets = []
+    if (isStaleHot) moveTargets.push('warm', 'cold')
+    else if (supersededBy && tier !== 'cold') moveTargets.push('cold')
+    const chainChips = memChainChipsHtml(supersedes, supersededBy)
 
     // Build keywords HTML
     let keywordsHtml = ''
@@ -7581,11 +7787,16 @@ function renderMemories(memories) {
         <span class="mem-agent-badge">${escapeHtml(agentLabel)}</span>
         <span class="mem-date">${escapeHtml(mem.created_label || '')}</span>
         ${typeof mem.salience === 'number' ? `<span class="mem-salience" title="Relevancia ertek">S: ${mem.salience.toFixed(2)}</span>` : ''}
+        ${memUseChip(mem)}
+        ${isStaleHot ? `<span class="mem-stale-badge" title="${escapeHtml(t('memories.stale.age_title'))}">${escapeHtml(t('memories.stale.age', { days: ageDays }))}</span>` : ''}
       </div>
-      <div class="mem-content-short">${escapeHtml(shortContent)}</div>
+      ${chainChips ? `<div class="mem-chain">${chainChips}</div><div class="mem-ref-preview" hidden></div>` : ''}
+      <div class="mem-title">${escapeHtml(memTitle)}</div>
+      ${memRest ? `<div class="mem-content-short">${escapeHtml(memRest)}</div>` : ''}
       <div class="mem-content-full">${escapeHtml(mem.content)}</div>
       ${keywordsHtml}
       <div class="mem-item-footer">
+        ${moveTargets.map(tg => `<button class="btn-secondary mem-move-btn" data-move-tier="${escapeHtml(tg)}" style="padding:6px 14px; font-size:12px;">${escapeHtml(t(tg === 'warm' ? 'memories.stale.to_warm' : 'memories.stale.to_cold'))}</button>`).join('')}
         <button class="btn-secondary" data-edit-memid="${mem.id}" style="padding:6px 14px; font-size:12px;">${t('common.btn.edit')}</button>
         <button class="btn-danger" data-memid="${mem.id}" style="padding:6px 14px; font-size:12px;">${t('common.btn.delete')}</button>
       </div>
@@ -7593,9 +7804,23 @@ function renderMemories(memories) {
 
     // Toggle expand
     item.addEventListener('click', (e) => {
-      if (e.target.closest('.btn-danger') || e.target.closest('.btn-secondary')) return
+      if (e.target.closest('.btn-danger') || e.target.closest('.btn-secondary') || e.target.closest('.mem-chain') || e.target.closest('.mem-ref-preview')) return
       item.classList.toggle('expanded')
     })
+
+    for (const chip of item.querySelectorAll('[data-ref-id]')) {
+      chip.addEventListener('click', (e) => {
+        e.stopPropagation()
+        toggleMemRefPreview(item, chip.dataset.refId)
+      })
+    }
+
+    for (const b of item.querySelectorAll('[data-move-tier]')) {
+      b.addEventListener('click', (e) => {
+        e.stopPropagation()
+        moveMemTier(mem, b.dataset.moveTier)
+      })
+    }
 
     // Edit
     const editBtn = item.querySelector('[data-edit-memid]')
