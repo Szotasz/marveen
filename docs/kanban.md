@@ -42,6 +42,24 @@ SQLite (`store/`): `kanban_cards` (id, title, status, project, priority, assigne
 
 Minden projekt-feladat kártyán fut: az orchestrator kártyaként rögzíti, onnan delegálja a felelős ügynöknek (`assignee`), aki ott státuszol és kommentál vissza. A meta-feladatok (pl. maga az audit) nem kerülnek kártyára.
 
+### Foglalás (claim), feloldás, lezárási bizonyíték
+
+Az `in_progress`-re húzás nem akadályozza meg, hogy két ügynök ugyanazt a kártyát vegye fel (ketten is láthatják szabadnak). Ahol erre garancia kell, ott van egy atomi foglalás. Ez opt-in, alapból ki van kapcsolva: a `KANBAN_CLAIM_LOCK=1` kapcsolja be (`.env` vagy a Beállítások oldal, újraindítás nem kell). Kikapcsolva a `/claim` és a `/release` 404-et ad (`reason: "claim_lock_disabled"`), `claim_warning` nem jön, és semmi nem kéri, hogy az ügynök foglaljon, mielőtt dolgozik.
+
+```
+POST /api/kanban/:id/claim    {"agent":"NEV","ttl_seconds":7200}  -- 200 foglalva/megújítva, 409 más foglalja (a válasz megnevezi, ki és meddig)
+POST /api/kanban/:id/release  {"agent":"NEV"}                     -- 200 elengedve (released: true|false), 409 ha más tartja; {"force":true} operátori felülírás
+```
+
+- A foglalás egyetlen feltételes UPDATE (compare-and-set), így párhuzamos kérésekből pontosan egy nyer.
+- Lejárat: alapból 2 óra (`ttl_seconds`: 60 és 86400 között). A lejárt foglalást bárki átveheti; az átvételről rendszer-komment kerül a kártyára. Ugyanaz az ügynök újra foglalva megújítja.
+- Bármely úton (API, drag, nyers SQL) elengedi a foglalást (trigger): a `done`, az archiválás, a `waiting`-be vagy `testing`-be lépés, és ha az `assignee` a foglalótól eltérő névre változik (átadás). Az `in_progress`-en belüli mozgás és a megújítás megtartja.
+- A `GET /api/kanban` kártyáin látszik: `claimed_by`, `claimed_at`, `claim_expires_at`. Ezeket PUT nem írja.
+
+Függőség-alapú feloldás: ha egy kártya a move/PUT útján `done` lesz, minden `waiting` kártya, amelynek ez volt az utolsó nyitott blokkolója (`/api/kanban/:id/blockers`), visszakerül `planned`-be, automatikus kommenttel. A válasz `unblocked` mezője listázza őket.
+
+Lezárási bizonyíték (puha kapu): ha a kártya a move/PUT útján úgy lesz `done`, hogy az utolsó `in_progress` óta nincs rajta nem-`system` komment (ha sosem volt `in_progress`, a létrehozása óta), a válasz `evidence_warning` mezőt kap. A mozgatás ettől még sikeres. Bekapcsolt foglalásnál, ha egy másik ügynök által foglalt kártyát húznak `in_progress`-re, a válasz `claim_warning` mezőt kap.
+
 ### Hozzáférés
 
 Közvetlen SQLite, vagy a dashboard kanban-felülete. A kártya-állapot minden ügynök kontextusába automatikusan bekerül.

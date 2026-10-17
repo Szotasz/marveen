@@ -38,6 +38,82 @@ function tightenDbPermissions(dbPath: string): void {
   }
 }
 
+// The claim lock's schema -- three columns on kanban_cards and the
+// triggers that release a claim. Exported (and handed the connection) so the
+// failure path can be tested on a handle whose ALTER fails.
+//
+// Columns: NULL claimed_by = unclaimed; a claim whose claim_expires_at is in the
+// past is treated as unclaimed by every reader and writer (TTL, so a crashed
+// agent cannot hold a card forever). Each column is added only when PRAGMA
+// table_info says it is missing (the conversation_log pattern), so the ALTER
+// never fails "normally" and a REAL failure (disk, lock, corrupt schema) is not
+// mistaken for "already exists": it is logged at error level. The triggers
+// reference NEW.claimed_by, so they are created ONLY when all three columns are
+// present -- a trigger over a missing column would break every later status
+// UPDATE on the board, a far worse outcome than a claim API that answers 500.
+//
+// Triggers (every writer: API, dashboard drag, raw SQL). A claim is released when
+//   - the card is done or archived (the work is over);
+//   - the card moves INTO waiting or testing (the documented handoff: a blocked
+//     agent reassigns the card and sets waiting; a review close sets testing --
+//     the next agent must be able to claim it, not get 409 for up to the TTL);
+//   - the assignee actually changes to someone other than the holder (a
+//     handoff by reassignment).
+// Kept on: in_progress <-> in_progress, renewals, sort reorders, and a whole-card
+// PUT that echoes the same assignee/status back. The inner UPDATEs touch only
+// the claim columns, so they cannot re-fire these or the updated_at triggers.
+export const KANBAN_CLAIM_COLUMNS = ['claimed_by TEXT', 'claimed_at INTEGER', 'claim_expires_at INTEGER'] as const
+
+export function ensureKanbanClaimSchema(d: Database.Database): boolean {
+  const present = () => new Set(
+    (d.prepare('PRAGMA table_info(kanban_cards)').all() as { name: string }[]).map((c) => c.name),
+  )
+  const have = present()
+  for (const col of KANBAN_CLAIM_COLUMNS) {
+    const name = col.split(' ')[0]
+    if (have.has(name)) continue
+    try {
+      d.exec(`ALTER TABLE kanban_cards ADD COLUMN ${col}`)
+    } catch (err) {
+      logger.error({ err, column: name }, 'kanban_cards claim-column migration FAILED -- claim lock disabled')
+    }
+  }
+  const after = present()
+  const missing = KANBAN_CLAIM_COLUMNS.map((c) => c.split(' ')[0]).filter((n) => !after.has(n))
+  if (missing.length > 0) {
+    logger.error({ missing }, 'kanban_cards claim columns missing -- claim release triggers NOT created')
+    return false
+  }
+  const clear = 'UPDATE kanban_cards SET claimed_by = NULL, claimed_at = NULL, claim_expires_at = NULL WHERE id = NEW.id;'
+  // DROP + CREATE (not IF NOT EXISTS alone) so a changed definition reaches a DB
+  // that already carries an older one.
+  d.exec('DROP TRIGGER IF EXISTS kanban_cards_claim_clears_on_status')
+  d.exec(`
+    CREATE TRIGGER kanban_cards_claim_clears_on_status
+    AFTER UPDATE OF status, archived_at ON kanban_cards
+    FOR EACH ROW WHEN NEW.claimed_by IS NOT NULL AND (
+      NEW.status = 'done'
+      OR NEW.archived_at IS NOT NULL
+      OR (NEW.status != OLD.status AND NEW.status IN ('waiting', 'testing'))
+    )
+    BEGIN
+      ${clear}
+    END
+  `)
+  d.exec('DROP TRIGGER IF EXISTS kanban_cards_claim_clears_on_reassign')
+  d.exec(`
+    CREATE TRIGGER kanban_cards_claim_clears_on_reassign
+    AFTER UPDATE OF assignee ON kanban_cards
+    FOR EACH ROW WHEN NEW.claimed_by IS NOT NULL
+      AND lower(COALESCE(NEW.assignee, '')) != lower(COALESCE(OLD.assignee, ''))
+      AND lower(COALESCE(NEW.assignee, '')) != lower(NEW.claimed_by)
+    BEGIN
+      ${clear}
+    END
+  `)
+  return true
+}
+
 // dbPathOverride is for tests: pass ':memory:' (or a temp file path) to open an
 // isolated database instead of the real store/claudeclaw.db. ':memory:' has no
 // path to chmod, so the file-precreate (openSync 'wx') and tightenDbPermissions
@@ -259,6 +335,10 @@ export function initDatabase(dbPathOverride?: string): void {
   } catch {
     // column already exists
   }
+  // Claim lock columns + release triggers. Run AFTER the
+  // 'testing' table rebuild above on purpose: that rebuild copies an explicit
+  // column list, so a column added before it would be dropped on an old DB.
+  ensureKanbanClaimSchema(db)
   // Migration: add agent_id, category, auto_generated columns to memories
   try {
     db.exec("ALTER TABLE memories ADD COLUMN agent_id TEXT NOT NULL DEFAULT 'marveen'")
@@ -2506,6 +2586,13 @@ export interface KanbanCard {
   // 0 and must stay distinguishable -- 0 would claim a measurement we do not
   // have. Every reader must carry the distinction into what it renders.
   active_seconds?: number
+  // Claim lock. Written ONLY by claimKanbanCard /
+  // releaseKanbanCardClaim (and cleared by the release triggers in ensureKanbanClaimSchema); a claim whose
+  // claim_expires_at <= now is expired and counts as no claim. Optional in the
+  // type because rows built by hand in tests and older call sites omit them.
+  claimed_by?: string | null
+  claimed_at?: number | null
+  claim_expires_at?: number | null
 }
 
 // A card as referenced FROM another card (blocker links). Deliberately narrow:
@@ -3423,6 +3510,231 @@ export function getBlockersForAllCards(): Map<string, KanbanCardRef[]> {
     else map.set(card_id, [ref])
   }
   return map
+}
+
+// === Card claim lock ===
+// Two fleet agents must never both pick up the same card. Moving a card to
+// in_progress cannot guarantee that: two agents can each read "planned" and
+// each move it. A claim is the lock: exactly one agent holds a card at a time,
+// until it releases it, the card is closed or handed over (see the triggers in
+// ensureKanbanClaimSchema), or the TTL runs out.
+//
+// The TTL exists for the crash case: an agent whose session dies mid-task
+// cannot release, and without an expiry its card would stay locked forever.
+// The holder renews by claiming again (same agent = renewal, not a conflict).
+
+export const KANBAN_CLAIM_DEFAULT_TTL_SEC = 2 * 3600
+export const KANBAN_CLAIM_MIN_TTL_SEC = 60
+export const KANBAN_CLAIM_MAX_TTL_SEC = 24 * 3600
+
+// The compare-and-set. ONE conditional UPDATE, so the "is it free?" check and
+// the write are a single atomic step inside SQLite: two concurrent claimers,
+// even on separate connections or processes, cannot both see the card free and
+// both write -- the second UPDATE re-evaluates the WHERE against the first
+// one's committed row and matches nothing. Exported so the concurrency test can
+// race this exact statement from several connections.
+//
+// SQLite evaluates every SET expression against the OLD row, so the CASE sees
+// the previous holder: a renewal by the same agent keeps the original
+// claimed_at (when the work started), a fresh or taken-over claim restamps it.
+export const KANBAN_CLAIM_SQL = `
+  UPDATE kanban_cards
+     SET claimed_at = CASE
+                        WHEN claimed_by = @agent COLLATE NOCASE AND claim_expires_at > @now THEN claimed_at
+                        ELSE @now
+                      END,
+         claimed_by = @agent,
+         claim_expires_at = @expires
+   WHERE id = @id
+     AND archived_at IS NULL
+     AND status != 'done'
+     AND (claimed_by IS NULL
+          OR claimed_by = @agent COLLATE NOCASE
+          OR claim_expires_at IS NULL
+          OR claim_expires_at <= @now)`
+
+export interface KanbanClaimState {
+  claimed_by: string | null
+  claimed_at: number | null
+  claim_expires_at: number | null
+}
+
+export type KanbanClaimResult =
+  | (KanbanClaimState & { ok: true; renewed: boolean; took_over_from: string | null })
+  | (Partial<KanbanClaimState> & { ok: false; reason: 'not_found' | 'archived' | 'done' | 'held' })
+
+export type KanbanReleaseResult =
+  | { ok: true; released: boolean; previous: string | null }
+  | (Partial<KanbanClaimState> & { ok: false; reason: 'not_found' | 'held' })
+
+type ClaimRow = KanbanClaimState & { status: string; archived_at: number | null }
+
+function readClaimRow(id: string): ClaimRow | undefined {
+  return db.prepare(
+    'SELECT status, archived_at, claimed_by, claimed_at, claim_expires_at FROM kanban_cards WHERE id = ?'
+  ).get(id) as ClaimRow | undefined
+}
+
+function sameAgent(a: string | null | undefined, b: string | null | undefined): boolean {
+  return !!a && !!b && a.toLowerCase() === b.toLowerCase()
+}
+
+// A claim counts only while it is unexpired. Every reader goes through this so
+// "is this card held?" has one answer everywhere.
+export function isKanbanClaimActive(
+  card: Partial<KanbanClaimState> | undefined,
+  now: number = Math.floor(Date.now() / 1000),
+): boolean {
+  return !!card?.claimed_by && typeof card.claim_expires_at === 'number' && card.claim_expires_at > now
+}
+
+export function claimKanbanCard(
+  id: string,
+  agent: string,
+  ttlSec: number = KANBAN_CLAIM_DEFAULT_TTL_SEC,
+  now: number = Math.floor(Date.now() / 1000),
+): KanbanClaimResult {
+  // IMMEDIATE: take the write lock before the diagnostic read, so the
+  // before/after rows reported to the caller describe THIS claim and not a
+  // neighbour's interleaved write. Correctness does not depend on it -- the
+  // UPDATE is a compare-and-set on its own -- only the report does.
+  return db.transaction((): KanbanClaimResult => {
+    const before = readClaimRow(id)
+    if (!before) return { ok: false, reason: 'not_found' }
+    const changed = db.prepare(KANBAN_CLAIM_SQL).run({ id, agent, now, expires: now + ttlSec }).changes > 0
+    if (!changed) {
+      if (before.archived_at !== null) return { ok: false, reason: 'archived' }
+      if (before.status === 'done') return { ok: false, reason: 'done' }
+      return {
+        ok: false, reason: 'held',
+        claimed_by: before.claimed_by, claimed_at: before.claimed_at, claim_expires_at: before.claim_expires_at,
+      }
+    }
+    const after = readClaimRow(id)!
+    const wasActive = isKanbanClaimActive(before, now)
+    return {
+      ok: true,
+      claimed_by: after.claimed_by,
+      claimed_at: after.claimed_at,
+      claim_expires_at: after.claim_expires_at,
+      renewed: wasActive && sameAgent(before.claimed_by, agent),
+      // Only an EXPIRED foreign claim can be taken over (an active one fails
+      // the WHERE); naming it lets the route leave a trace on the card.
+      took_over_from: before.claimed_by && !sameAgent(before.claimed_by, agent) ? before.claimed_by : null,
+    }
+  }).immediate()
+}
+
+// Release by the holder. An expired claim may be cleared by anyone (it no
+// longer holds anything); `force` is the operator's override for a live claim
+// held by an agent that is not coming back.
+export function releaseKanbanCardClaim(
+  id: string,
+  agent: string,
+  opts: { force?: boolean } = {},
+  now: number = Math.floor(Date.now() / 1000),
+): KanbanReleaseResult {
+  return db.transaction((): KanbanReleaseResult => {
+    const before = readClaimRow(id)
+    if (!before) return { ok: false, reason: 'not_found' }
+    const changed = db.prepare(`
+      UPDATE kanban_cards SET claimed_by = NULL, claimed_at = NULL, claim_expires_at = NULL
+       WHERE id = @id
+         AND claimed_by IS NOT NULL
+         AND (@force = 1
+              OR claimed_by = @agent COLLATE NOCASE
+              OR claim_expires_at IS NULL
+              OR claim_expires_at <= @now)
+    `).run({ id, agent, now, force: opts.force ? 1 : 0 }).changes > 0
+    if (changed) return { ok: true, released: true, previous: before.claimed_by }
+    if (!before.claimed_by) return { ok: true, released: false, previous: null }
+    return {
+      ok: false, reason: 'held',
+      claimed_by: before.claimed_by, claimed_at: before.claimed_at, claim_expires_at: before.claim_expires_at,
+    }
+  }).immediate()
+}
+
+// === Dependency unblock ===
+// When a card reaches done, every card that was waiting ONLY on finished work
+// goes back to planned, with a comment saying why. Deliberately narrow:
+//   - only `waiting` cards move: a planned card is already pickable, and an
+//     in_progress one is someone's live work the board must not reshuffle;
+//   - only when EVERY blocker is done: a card that still waits on something
+//     else stays where it is (a partial clear is not an unblock);
+//   - an archived-but-unfinished blocker still blocks, same rule as
+//     getBlockersForCard.
+// The blocker links are kept: they are history, and the board already renders
+// a done blocker as cleared.
+export interface KanbanUnblocked {
+  id: string
+  seq?: number
+  title: string
+}
+
+export function unblockDependentsOf(doneCardId: string, actor = 'kanban-unblock'): KanbanUnblocked[] {
+  const blocker = getKanbanCard(doneCardId)
+  if (!blocker || blocker.status !== 'done') return []
+  const candidates = db.prepare(`
+    SELECT c.id, c.rowid AS seq, c.title
+      FROM kanban_card_blockers b
+      JOIN kanban_cards c ON c.id = b.card_id
+     WHERE b.blocker_id = ? AND c.status = 'waiting' AND c.archived_at IS NULL
+  `).all(doneCardId) as KanbanUnblocked[]
+  const openBlockers = db.prepare(`
+    SELECT COUNT(*) AS n
+      FROM kanban_card_blockers b
+      JOIN kanban_cards c ON c.id = b.blocker_id
+     WHERE b.card_id = ? AND c.status != 'done'
+  `)
+  const unblocked: KanbanUnblocked[] = []
+  for (const card of candidates) {
+    if ((openBlockers.get(card.id) as { n: number }).n > 0) continue
+    db.transaction(() => {
+      const maxResult = db.prepare(
+        "SELECT MAX(sort_order) as m FROM kanban_cards WHERE status = 'planned' AND archived_at IS NULL"
+      ).get() as { m: number | null }
+      moveKanbanCard(card.id, 'planned', (maxResult.m ?? 0) + 100, actor)
+      const ref = blocker.seq ? `#${blocker.seq}` : doneCardId
+      // Entering waiting released any claim, but a card can be claimed WHILE
+      // waiting (someone reserving it for when it clears). That claim is kept --
+      // it was taken on purpose -- so the comment must not call the card free.
+      const now = Math.floor(Date.now() / 1000)
+      const held = getKanbanCard(card.id)
+      const pickup = held && isKanbanClaimActive(held, now)
+        ? `a kártyát ${held.claimed_by} foglalja (lejár: ${new Date(held.claim_expires_at! * 1000).toISOString()}).`
+        : 'a kártya felvehető.'
+      addKanbanComment(
+        card.id,
+        'system',
+        `Automatikus feloldás: a blokkoló kártya (${ref} "${blocker.title.slice(0, 120)}") elkészült, ` +
+        `más nyitott blokkoló nincs. Státusz: waiting -> planned, ${pickup}`,
+      )
+    })()
+    unblocked.push(card)
+  }
+  return unblocked
+}
+
+// === Done evidence ("no done without evidence") ===
+// Minimal, measurable form of the rule: a card closing as done should carry at
+// least one human/agent comment written since the work started (its latest
+// move to in_progress; its creation if it never went through in_progress).
+// Comments by `system` are machine notes (dispatch failures, auto-unblock) and
+// do not count as evidence. SOFT by design: the caller reports a warning, the
+// move itself is never refused -- no existing agent or the dashboard drag
+// breaks on it.
+export function getDoneEvidence(cardId: string): { since: number; comments: number } | undefined {
+  const card = getKanbanCard(cardId)
+  if (!card) return undefined
+  const started = db.prepare(
+    "SELECT MAX(created_at) AS t FROM kanban_card_events WHERE card_id = ? AND to_status = 'in_progress'"
+  ).get(cardId) as { t: number | null }
+  const since = started.t ?? card.created_at
+  const row = db.prepare(
+    "SELECT COUNT(*) AS n FROM kanban_comments WHERE card_id = ? AND created_at >= ? AND author != 'system'"
+  ).get(cardId, since) as { n: number }
+  return { since, comments: row.n }
 }
 
 // --- Heartbeat helpers ---
