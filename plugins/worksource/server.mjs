@@ -302,8 +302,26 @@ function startPumping() {
   started = true
   log('client initialized, starting delivery')
   requeueStale()
-  setInterval(() => { requeueStale(); deliverOne() }, POLL_MS).unref?.()
+  writeHeartbeat()
+  setInterval(() => { requeueStale(); deliverOne(); writeHeartbeat() }, POLL_MS).unref?.()
   deliverOne()
+}
+
+// Liveness for the message router (#560): it only treats this agent's queue as
+// served while this file is fresh (WORKSOURCE_HEARTBEAT_STALE_MS in
+// src/web/worksource-queue.ts). Without it the router falls back to typing,
+// because a session can be up with this server never started.
+let lastHeartbeat = 0
+function writeHeartbeat() {
+  const now = Date.now()
+  if (now - lastHeartbeat < 15000) return
+  lastHeartbeat = now
+  try {
+    mkdirSync(ROOT, { recursive: true })
+    writeFileSync(join(ROOT, 'serving.json'), JSON.stringify({ agent: AGENT, pid: process.pid, ts: now }))
+  } catch (err) {
+    log(`heartbeat write failed: ${err?.message ?? err}`)
+  }
 }
 
 mcp.oninitialized = startPumping
