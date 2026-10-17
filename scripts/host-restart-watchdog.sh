@@ -22,6 +22,18 @@ set -uo pipefail
 
 STATE_DIR="${MARVEEN_STORE:-$HOME/marveen/store}"
 STATE_FILE="$STATE_DIR/.last-btime"
+
+# File mtime in epoch seconds, portably: GNU stat (Linux) first, BSD stat
+# (macOS) as the fallback. GNU-only `stat -c %Y` is an illegal option on macOS;
+# behind `|| echo 0` that silently read every stamp as epoch 0. Prints 0 when
+# the file is missing/unreadable or the result is not a plain integer.
+file_mtime() {
+  local m
+  m="$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null)" || m=0
+  case "$m" in (''|*[!0-9]*) m=0;; esac
+  printf '%s\n' "$m"
+}
+
 INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 # #915: main channel state is install-scoped once migrated; the legacy shared
 # path only serves unmigrated installs.
@@ -106,7 +118,7 @@ boot_local="$(date -d "@$btime" '+%Y-%m-%d %H:%M:%S %Z' 2>/dev/null || echo "@$b
 last_alive=0
 if compgen -G "$STATE_DIR/*.log" >/dev/null 2>&1; then
   for f in "$STATE_DIR"/*.log; do
-    m="$(stat -c '%Y' "$f" 2>/dev/null || echo 0)"
+    m="$(file_mtime "$f")"
     if (( m < btime && m > last_alive )); then last_alive="$m"; fi
   done
 fi
