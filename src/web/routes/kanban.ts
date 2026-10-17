@@ -53,11 +53,29 @@ const KANBAN_READONLY_FIELDS = new Set<string>([
   // never by a PUT, but getKanbanCard's SELECT * returns it so the dashboard's
   // whole-card send carries it back. Accept-and-ignore, do not 400.
   'dispatched_at',
+  // done_evidence is written only by a move to done (see the /move route);
+  // a whole-card PUT carries it back and must not 400 on it.
+  'done_evidence',
 ])
 
 // Every key POST /api/kanban/:id/move accepts; anything else is a 400, same
 // rule as the PUT above.
-const KANBAN_MOVE_FIELDS = ['status', 'sort_order', 'actor', 'expected_status'] as const
+const KANBAN_MOVE_FIELDS = ['status', 'sort_order', 'actor', 'expected_status', 'evidence'] as const
+
+// Evidence on done (one human, many agents). The owner cannot re-check every
+// card a fleet of agents closes, so an AGENT may only close a card by saying
+// what it checked: a test run, a PR link, a file read back, a measured number.
+// A move to done by an agent without it lands in testing instead, and the
+// answer says why -- the work is kept, it just waits for a look. A human
+// (browser session, or a token caller naming no agent) closes as before.
+export const KANBAN_EVIDENCE_MAX_CHARS = 2000
+
+export function isAgentActor(actor: string | undefined): boolean {
+  if (!actor) return false
+  const a = actor.trim().toLowerCase()
+  if (a === MAIN_AGENT_ID.toLowerCase()) return true
+  return listAgentNames().some((n) => n.toLowerCase() === a)
+}
 
 // A headless agent cannot "drag" a card to done, so the dispatch hands it the
 // exact curl commands to (1) post a short, human-readable result summary as a
@@ -131,11 +149,11 @@ export function kanbanMoveInstructions(id: string, target: string): string {
     `    -H 'Content-Type: application/json' \\`,
     `    -d '{"author":"${target}","content":"AZ EREDMENY ROVIDEN"}'`,
     '',
-    '2) Állítsd a kártyát done-ra:',
+    '2) Állítsd a kártyát done-ra, és az "evidence" mezőbe írd, MIVEL ellenőrizted (teszt eredménye, PR link, visszaolvasott fájl, mért szám). Bizonyíték nélkül a kártya "testing"-be kerül, nem done-ba:',
     `  curl -s -X POST ${moveUrl} \\`,
     `    ${auth} \\`,
     `    -H 'Content-Type: application/json' \\`,
-    `    -d '{"status":"done","actor":"${target}"}'`,
+    `    -d '{"status":"done","actor":"${target}","evidence":"MIVEL ELLENORIZTED"}'`,
     '',
     // `done` is right for almost every card, so this template keeps it as the
     // default -- but not for every board PROGRAM. A program can give its cards
@@ -768,10 +786,30 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
         return true
       }
     }
+    // Evidence on done: the PUT carries no evidence field, so an agent closing a
+    // card through it would skip the rule. A card the agent puts to done here
+    // goes to testing instead -- unless it is already done (a whole-card PUT of
+    // an unrelated edit round-trips status:'done' and must not reopen it).
+    let putNeedsEvidence = false
+    if (data.status === 'done' && isAgentActor(who.actor) && getKanbanCard(id)?.status !== 'done') {
+      data.status = 'testing'
+      putNeedsEvidence = true
+    }
     // PUT to in_progress clears but does not dispatch; /move remains the only
     // dispatch path (KARTYADISPATCH1010). updateKanbanCard applies the shared
     // dispatched_at clear; no fireKanbanDispatch call belongs here.
-    if (updateKanbanCard(id, data, who.actor)) { json(res, { ok: true, ...archivedNote(getKanbanCard(id)) }); return true }
+    if (updateKanbanCard(id, data, who.actor)) {
+      json(res, {
+        ok: true,
+        ...(putNeedsEvidence ? {
+          status: 'testing',
+          evidence_required: true,
+          note: 'An agent closes a card only through POST /api/kanban/:id/move with "evidence". The card was moved to testing, not done.',
+        } : {}),
+        ...archivedNote(getKanbanCard(id)),
+      })
+      return true
+    }
     json(res, { error: 'Kártya nem található' }, 404)
     return true
   }
@@ -801,7 +839,15 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       json(res, { error: `Unknown field(s): ${unknownMoveKeys.join(', ')}. Accepted: ${KANBAN_MOVE_FIELDS.join(', ')}` }, 400)
       return true
     }
-    const { status, sort_order, actor, expected_status } = moveBody as { status: Parameters<typeof moveKanbanCard>[1]; sort_order?: number; actor?: unknown; expected_status?: unknown }
+    const { status, sort_order, actor, expected_status, evidence } = moveBody as { status: Parameters<typeof moveKanbanCard>[1]; sort_order?: number; actor?: unknown; expected_status?: unknown; evidence?: unknown }
+    if (evidence !== undefined && evidence !== null && typeof evidence !== 'string') {
+      json(res, { error: 'evidence must be a string or null' }, 400)
+      return true
+    }
+    if (typeof evidence === 'string' && evidence.length > KANBAN_EVIDENCE_MAX_CHARS) {
+      json(res, { error: `evidence is longer than ${KANBAN_EVIDENCE_MAX_CHARS} characters` }, 400)
+      return true
+    }
     // Optional compare-and-set guard. Absent (undefined/null) keeps the old
     // unconditional move. Present, it must name a real status: an unknown value
     // could never match, and a 409 would wrongly suggest someone else moved it.
@@ -817,11 +863,26 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       json(res, { error: who.error }, 400)
       return true
     }
-    if (moveKanbanCard(id, status, sort_order ?? 0, who.actor, hasExpected ? { expectedStatus: expected_status as Parameters<typeof moveKanbanCard>[1] } : undefined)) {
+    const hasEvidence = typeof evidence === 'string' && evidence.trim() !== ''
+    const needsEvidence = status === 'done' && !hasEvidence && isAgentActor(who.actor)
+    const effectiveStatus: Parameters<typeof moveKanbanCard>[1] = needsEvidence ? 'testing' : status
+    const moveOpts = {
+      ...(hasExpected ? { expectedStatus: expected_status as Parameters<typeof moveKanbanCard>[1] } : {}),
+      ...(hasEvidence ? { evidence: evidence as string } : {}),
+    }
+    if (moveKanbanCard(id, effectiveStatus, sort_order ?? 0, who.actor, moveOpts)) {
       // Wake the assigned agent once when the card enters in_progress -- unless
       // that agent is the one who moved it (self-pickup needs no wake-up).
-      if (status === 'in_progress') fireKanbanDispatch(id, who.actor)
-      json(res, { ok: true, ...archivedNote(getKanbanCard(id)) })
+      if (effectiveStatus === 'in_progress') fireKanbanDispatch(id, who.actor)
+      json(res, {
+        ok: true,
+        ...(needsEvidence ? {
+          status: 'testing',
+          evidence_required: true,
+          note: 'An agent closes a card only with "evidence" (what it checked: test run, PR link, file read back). Without it the card was moved to testing, not done. Move it to done again with "evidence" set.',
+        } : {}),
+        ...archivedNote(getKanbanCard(id)),
+      })
       return true
     }
     // Nothing changed: a missing card stays the old 404; an existing card means

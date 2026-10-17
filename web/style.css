@@ -7989,6 +7989,17 @@ body {
   border: 1px solid color-mix(in srgb, #f59e0b 45%, transparent);
 }
 
+/* Evidence on done: the closing agent said what it checked. */
+.kanban-card-evidence {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-size: 11px;
+  color: #15803d;
+  border: 1px solid color-mix(in srgb, #16a34a 40%, transparent);
+}
+
 /* MEMKERESVAK917: the memory search is forgiving -- when nothing matches the
    query as asked it answers with the rescued near-misses, and in the LIST those
    are indistinguishable from real hits. The endpoint says which it was in the

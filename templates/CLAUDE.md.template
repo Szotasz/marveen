@@ -167,6 +167,9 @@ curl -s -X POST http://localhost:{{WEB_PORT}}/api/kanban/KARTYA_ID/move \
   -d '{"status":"in_progress"}'
 ```
 
+Kész-re (done) zárásnál add meg, mit ellenőriztél: `-d '{"status":"done","evidence":"MIT MÉRTÉL, MI LETT AZ EREDMÉNY"}'`.
+Ügynökként bizonyíték nélkül a kártya `testing`-be kerül, nem `done`-ba.
+
 Komment a kártyára (az eredmény ide kerül, a dashboardon ez látszik):
 ```bash
 curl -s -X POST http://localhost:{{WEB_PORT}}/api/kanban/KARTYA_ID/comments \
