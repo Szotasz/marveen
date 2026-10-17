@@ -1966,10 +1966,17 @@ function createCardEl(card, embeddedChildren = []) {
     embeddedHtml = `<div class="kanban-embedded-subtasks">${items}</div>`
   }
 
+  // Evidence on done: what the closing agent said it checked. Shown only on
+  // done cards that carry it; the full text is in the tooltip and the detail.
+  const evidence = card.status === 'done' && typeof card.done_evidence === 'string' ? card.done_evidence.trim() : ''
+  const evidenceHtml = evidence
+    ? `<span class="kanban-card-evidence" title="${escapeAttr(t('kanban.evidence.tooltip', { text: evidence }))}">${escapeHtml(t('kanban.evidence.badge'))}</span>`
+    : ''
+
   el.innerHTML = `
     ${projectHtml}
     <div class="kanban-card-title">${seqHtml}${escapeHtml(card.title)}</div>
-    <div class="kanban-card-footer">${assigneeHtml}${kanbanAgentLiveBadge(card)}${dueHtml}${blockedHtml}</div>
+    <div class="kanban-card-footer">${assigneeHtml}${kanbanAgentLiveBadge(card)}${dueHtml}${blockedHtml}${evidenceHtml}</div>
     ${labelsHtml}
     <div class="kanban-card-actions">
       <button class="card-breakdown-btn" title="${t('kanban.btn.breakdown')}" aria-label="${t('kanban.btn.breakdown')}">⚡</button>
@@ -2844,6 +2851,12 @@ async function showCardDetail(card) {
   testStepsBody.textContent = steps
   testStepsBox.hidden = !steps
   testStepsBox.classList.toggle('is-testing', !!steps && card.status === 'testing')
+  const evidenceBox = document.getElementById('cardDetailEvidence')
+  if (evidenceBox) {
+    const ev = typeof card.done_evidence === 'string' ? card.done_evidence.trim() : ''
+    document.getElementById('cardDetailEvidenceBody').textContent = ev
+    evidenceBox.hidden = !ev
+  }
 
   renderCardLabelsSection(card)
   renderCardBlockersSection(card)

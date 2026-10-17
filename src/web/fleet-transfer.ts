@@ -1259,8 +1259,8 @@ export function importFleet(
           `INSERT OR IGNORE INTO kanban_cards
            (id, title, description, test_steps, status, assignee, priority, project,
             due_date, start_date, sort_order, created_at, updated_at, archived_at, parent_id, dispatched_at,
-            claimed_by, claimed_at, claim_expires_at, version)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            claimed_by, claimed_at, claim_expires_at, version, done_evidence)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         ).run(c.id, c.title, c.description ?? null, c.test_steps ?? null, c.status, c.assignee ?? null,
           c.priority, c.project ?? null, c.due_date ?? null, c.start_date ?? null, c.sort_order,
           c.created_at, c.updated_at, c.archived_at ?? null, c.parent_id ?? null, c.dispatched_at ?? null,
@@ -1271,7 +1271,8 @@ export function importFleet(
           // The row version rides along too, so a copy read before the move is still
           // checked against the same number after it. An export from an install
           // without the column has none: the NOT NULL column starts at 0.
-          Number.isSafeInteger(c.version) && c.version >= 0 ? c.version : 0)
+          Number.isSafeInteger(c.version) && c.version >= 0 ? c.version : 0,
+          c.done_evidence ?? null)
       }
 
       // kanban comments (idempotent: card_id + content)

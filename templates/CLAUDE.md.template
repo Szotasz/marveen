@@ -172,6 +172,8 @@ státuszra), küldd mellé az `"expected_status":"in_progress"` mezőt is: a moz
 ha a kártya MÉG abban a státuszban van. HTTP 409 (`status_conflict`, a `current_status` mutatja,
 hol tart most) azt jelenti, hogy a kártya közben továbblépett: NE mozgasd újra feltétel nélkül,
 és NE dolgozz rajta tovább.
+Kész-re (done) zárásnál add meg, mit ellenőriztél: `-d '{"status":"done","evidence":"MIT MÉRTÉL, MI LETT AZ EREDMÉNY"}'`.
+Ügynökként bizonyíték nélkül a kártya `testing`-be kerül, nem `done`-ba.
 
 Komment a kártyára (az eredmény ide kerül, a dashboardon ez látszik):
 ```bash

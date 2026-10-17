@@ -384,6 +384,14 @@ export function initDatabase(dbPathOverride?: string): void {
   // 'testing' table rebuild above on purpose: that rebuild copies an explicit
   // column list, so a column added before it would be dropped on an old DB.
   ensureKanbanClaimSchema(db)
+  // Migration: done_evidence -- what an agent says it checked when it closed
+  // the card (test run, PR link, file read back). Same placement rule as
+  // test_steps above: after the testing-status rebuild.
+  try {
+    db.exec('ALTER TABLE kanban_cards ADD COLUMN done_evidence TEXT')
+  } catch {
+    // column already exists
+  }
   // Migration: add agent_id, category, auto_generated columns to memories
   try {
     db.exec("ALTER TABLE memories ADD COLUMN agent_id TEXT NOT NULL DEFAULT 'marveen'")
@@ -2978,6 +2986,9 @@ export interface KanbanCard {
   // description is what the task IS, this is how to check it is done. Written
   // into comments before, where the current version was unfindable.
   test_steps: string | null
+  // What the closing agent says it checked (test run, PR link, file read back,
+  // measured number). Set only by a move to done that carries it; never by PUT.
+  done_evidence?: string | null
   status: 'planned' | 'in_progress' | 'waiting' | 'testing' | 'done'
   assignee: string | null
   priority: 'low' | 'normal' | 'high' | 'urgent'
@@ -3533,6 +3544,9 @@ export interface MoveKanbanCardOptions {
   // call returns false. Without it the move is unconditional (last writer
   // wins), exactly as before.
   expectedStatus?: KanbanCard['status']
+  // Stored in done_evidence with the move, in the same statement. Only
+  // honoured when the move goes to done; a move elsewhere leaves it alone.
+  evidence?: string
 }
 
 export function moveKanbanCard(
@@ -3566,13 +3580,18 @@ export function moveKanbanCard(
   // ancestor stamps and the status event either all happen or none does, so a row insert that throws cannot leave a
   // card moved with no row saying who moved it.
   const expected = opts?.expectedStatus
-  const setClause = kanbanWriteClearsDispatch(status)
+  const evidence = status === 'done' && typeof opts?.evidence === 'string' && opts.evidence.trim() !== ''
+    ? opts.evidence.trim()
+    : undefined
+  const baseSet = kanbanWriteClearsDispatch(status)
     ? 'SET status=?, sort_order=?, updated_at=?, dispatched_at=NULL'
     : 'SET status=?, sort_order=?, updated_at=?'
+  const setClause = evidence !== undefined ? `${baseSet}, done_evidence=?` : baseSet
+  const setArgs: (string | number)[] = evidence !== undefined ? [status, sortOrder, now, evidence] : [status, sortOrder, now]
   return db.transaction((): boolean => {
     const changed = (expected === undefined
-      ? db.prepare(`UPDATE kanban_cards ${setClause} WHERE id=?`).run(status, sortOrder, now, id)
-      : db.prepare(`UPDATE kanban_cards ${setClause} WHERE id=? AND status=?`).run(status, sortOrder, now, id, expected)
+      ? db.prepare(`UPDATE kanban_cards ${setClause} WHERE id=?`).run(...setArgs, id)
+      : db.prepare(`UPDATE kanban_cards ${setClause} WHERE id=? AND status=?`).run(...setArgs, id, expected)
     ).changes > 0
     if (changed) touchAncestorChain(row?.parent_id, now, id)
     // With the guard, a successful UPDATE proves the status WAS `expected` at

@@ -8166,6 +8166,17 @@ body {
 .kanban-agent-live-warn { color: #b45309; }
 .kanban-agent-live-bad { color: #b91c1c; font-weight: 600; }
 .kanban-card[data-agent-live="bad"] { box-shadow: inset 3px 0 0 #dc2626; }
+/* Evidence on done: the closing agent said what it checked. Neutral colour on
+   purpose: the agent writes this itself, so the chip must not read as a check. */
+.kanban-card-evidence {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+  border: 1px solid color-mix(in srgb, currentColor 35%, transparent);
+}
 
 /* MEMKERESVAK917: the memory search is forgiving -- when nothing matches the
    query as asked it answers with the rescued near-misses, and in the LIST those
