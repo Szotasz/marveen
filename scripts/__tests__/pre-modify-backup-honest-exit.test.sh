@@ -123,12 +123,30 @@ assert_contains "the manifest records NOSUM rather than a blank column" "$(manif
 #    binary takes the very same branch.
 # ---------------------------------------------------------------------------
 echo ""
-echo "(3) sqlite3 fails -> the db is still captured, and the run says how"
+echo "(3) sqlite3 fails -> python3's backup API takes the consistent snapshot instead"
 SHIM="$TMP/bin-badsqlite"; mkdir -p "$SHIM"
 printf '#!/bin/sh\necho "sqlite3: shim failure" >&2\nexit 1\n' > "$SHIM/sqlite3"
 chmod +x "$SHIM/sqlite3"
 rm -rf "$FAKE/store/backups"
 OUT="$(PATH="$SHIM:$PATH" bash "$FAKE/scripts/pre-modify-backup.sh" nosqlite 2>&1)"; RC=$?
+SNAP="$(ls -1dt "$FAKE/store/backups"/*/ 2>/dev/null | head -1)"
+assert_eq "exit 0" "0" "$RC"
+ROWS="$(oracle_query "${SNAP}claudeclaw.db" "SELECT count(*) FROM t" 2>/dev/null)"
+assert_eq "the snapshot holds a readable copy of the db (row count)" "1" "$ROWS"
+# Card 252ab361 (a): python3 IS an install dependency and its sqlite3 backup API
+# takes the same consistent snapshot the CLI's .backup does, so a missing or
+# failing CLI no longer means a raw, possibly torn copy.
+assert_contains "the run says the snapshot is consistent, through python3" "$OUT" "consistent snapshot ok (python3"
+assert_contains "and the closing line names that db mode" "$OUT" "db: python3 sqlite3 backup"
+assert_not_contains "no raw copy was needed" "$OUT" "no sqlite3 snapshot"
+
+echo ""
+echo "(3b) sqlite3 AND python3 fail -> the raw copy is the last resort, and the run says so"
+printf '#!/bin/sh\necho "python3: shim failure" >&2\nexit 1\n' > "$SHIM/python3"
+chmod +x "$SHIM/python3"
+rm -rf "$FAKE/store/backups"
+OUT="$(PATH="$SHIM:$PATH" bash "$FAKE/scripts/pre-modify-backup.sh" nopython 2>&1)"; RC=$?
+rm -f "$SHIM/python3"
 SNAP="$(ls -1dt "$FAKE/store/backups"/*/ 2>/dev/null | head -1)"
 assert_eq "exit 0: a raw copy IS a recoverable snapshot" "0" "$RC"
 ROWS="$(oracle_query "${SNAP}claudeclaw.db" "SELECT count(*) FROM t" 2>/dev/null)"
