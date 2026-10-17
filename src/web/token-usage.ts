@@ -11,8 +11,36 @@ import { listAgentNames } from './agent-config.js'
 import { resolveAgentConfigDirForRead } from './claude-plans.js'
 import { mainConfigRoots } from './inbound-probe.js'
 import { toolInputPreview } from './tool-input-preview.js'
+import { resolveMainAgentRotatedConfigDir } from './agent-process.js'
 
 const PROJECTS_DIR = join(homedir(), '.claude', 'projects')
+
+function realOrSelf(p: string): string {
+  try { return realpathSync(p) } catch { return p }
+}
+
+// Every config root the main agent may have written a transcript under: the
+// probe's candidate list (shared ~/.claude, .channels-config, an operator-set
+// MAIN_AGENT_CONFIG_DIR) plus the one launcher resolution that list does not
+// carry -- a rotated plan dir. scripts/main-agent-isolated-config.mjs launches
+// the main agent there (explicit > rotated > isolated), and from that moment
+// its transcripts land in <plan.configDir>/projects, which no candidate above
+// names. The launcher's own resolver is called rather than re-reading the plan
+// files here: it carries the gates (isolation on, 2+ plans, an active entry)
+// that decide whether the launcher uses the dir at all.
+// A union, not a precedence pick: the roots the agent has LEFT still hold real
+// history, and the candidates that are not in use simply have no directory.
+//
+// `pooled` marks the rotated plan dir. A plan comes from a pool that sub-agents
+// can be assigned too (activePlanByAgent), so its projects/ is NOT the main
+// agent's alone: it is name-attributed, like the shared root, never booked whole.
+function mainAgentTranscriptRoots(): Array<{ root: string; pooled: boolean }> {
+  const roots = mainConfigRoots().map((root) => ({ root, pooled: false }))
+  let rotated: string | null = null
+  try { rotated = resolveMainAgentRotatedConfigDir() } catch { rotated = null }
+  if (rotated && !roots.some((r) => r.root === rotated)) roots.push({ root: rotated, pooled: true })
+  return roots
+}
 
 // The main agent's transcripts live under the directory Claude Code derives
 // from PROJECT_ROOT, regardless of what the agent calls itself. The encoder is
@@ -42,9 +70,14 @@ interface AgentTranscriptSource {
 // fixture. Production callers pass nothing.
 export function discoverAgentSources(projectRootOverride?: string): AgentTranscriptSource[] {
   const sources: AgentTranscriptSource[] = []
-  if (!existsSync(PROJECTS_DIR)) return sources
   const mainDirName = encodeClaudeProjectDir(PROJECT_ROOT)
-  for (const entry of readdirSync(PROJECTS_DIR)) {
+  // A missing shared root skips THIS loop only. It used to return from the
+  // whole function, so an install whose agents all run on isolated config dirs
+  // -- the main agent included, which then never creates ~/.claude/projects --
+  // reported nothing at all, never reaching the isolated loops below.
+  let sharedEntries: string[] = []
+  try { sharedEntries = readdirSync(PROJECTS_DIR) } catch { /* no shared root on this install */ }
+  for (const entry of sharedEntries) {
     const full = join(PROJECTS_DIR, entry)
     let stat
     try { stat = statSync(full) } catch { continue }
@@ -149,19 +182,41 @@ export function discoverAgentSources(projectRootOverride?: string): AgentTranscr
   // the shared root resolves to the same path and is skipped), and the UNIQUE
   // INDEX plus the ON CONFLICT ... DO UPDATE upsert at the insert site absorbs
   // any overlap the cursor table misses (backfill-only, see the note above).
-  const seenMainDirs = new Set<string>()
-  for (const s of sources) {
-    if (s.agent !== MAIN_AGENT_ID) continue
-    try { seenMainDirs.add(realpathSync(s.projectDir)) } catch { seenMainDirs.add(s.projectDir) }
-  }
-  for (const root of mainConfigRoots()) {
-    const candidate = join(root, 'projects', mainDirName)
-    if (!existsSync(candidate)) continue
-    let real: string
-    try { real = realpathSync(candidate) } catch { real = candidate }
-    if (seenMainDirs.has(real)) continue
-    seenMainDirs.add(real)
-    sources.push({ agent: MAIN_AGENT_ID, projectDir: candidate })
+  //
+  // The list of roots also follows the launcher onto a rotated plan dir
+  // (mainAgentTranscriptRoots), and a root that is the main agent's OWN --
+  // i.e. whose projects/ is not the shared one and not a pooled plan dir -- is
+  // booked to it WHOLE, every project dir in it, by the same owner rule the
+  // sub-agent loop applies (this picks up e.g. .channels-config/projects/-tmp, a
+  // session the main agent ran from /tmp). The shared root and a pooled plan
+  // dir stay name-attributed: there the encoded dir name is the
+  // only thing that says whose work a directory is.
+  //
+  // The realpath set covers EVERY source already booked, to any agent, so a
+  // directory reached through two roots (a symlinked MAIN_AGENT_CONFIG_DIR, a
+  // .channels-config/projects that points back at the shared root) is parsed
+  // once. The upsert would hide a second parse in the row counts -- identical
+  // rows collapse -- but not in the work, and not in the per-file cursors.
+  const claimed = new Set<string>(sources.map((s) => realOrSelf(s.projectDir)))
+  for (const { root, pooled } of mainAgentTranscriptRoots()) {
+    const projects = join(root, 'projects')
+    if (!existsSync(projects)) continue
+    let entries: string[]
+    if (pooled || resolvesToSharedProjectsRoot(projects)) {
+      entries = [mainDirName]
+    } else {
+      try { entries = readdirSync(projects) } catch { continue }
+    }
+    for (const entry of entries) {
+      const candidate = join(projects, entry)
+      let stat
+      try { stat = statSync(candidate) } catch { continue }
+      if (!stat.isDirectory()) continue
+      const real = realOrSelf(candidate)
+      if (claimed.has(real)) continue
+      claimed.add(real)
+      sources.push({ agent: MAIN_AGENT_ID, projectDir: candidate })
+    }
   }
 
   return sources
