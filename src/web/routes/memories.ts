@@ -15,6 +15,7 @@ import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
 import { detectHomoglyphs, formatHomoglyphWarning } from '../../homoglyph.js'
 import type { HybridSearchTrace } from '../../db.js'
 import { resolveDateFilter } from '../../date-range.js'
+import { getMemorySupersessions } from '../../memory-supersede.js'
 import type { RouteContext } from './types.js'
 import { findDuplicateMemories, DEDUP_RECENT_LIMIT, type DedupCandidate } from '../memory-dedup.js'
 
@@ -482,6 +483,19 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       }
       staleBefore = Math.floor(Date.now() / 1000) - Math.round(staleDays * 86400)
     }
+    // superseded=hide (card f9242cd3, #571): leave out rows a newer memory
+    // replaces in full. Listing only, like stale_days.
+    const supersededParam = url.searchParams.get('superseded')
+    if (supersededParam !== null && supersededParam !== 'hide' && supersededParam !== 'show') {
+      json(res, { error: 'invalid superseded: must be hide or show' }, 400)
+      return true
+    }
+    if (supersededParam === 'hide' && q) {
+      json(res, { error: 'superseded=hide is not supported together with q (listing only)' }, 400)
+      return true
+    }
+    const supersessions = getMemorySupersessions()
+    const excludeIds = supersededParam === 'hide' ? [...supersessions.supersededBy.keys()] : undefined
 
     // Card f90928e3: date= / since= / until= narrow the search to a created_at
     // window. An unknown expression is a 400 with the accepted forms: a filter
@@ -551,11 +565,11 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
           .all(pattern, pattern, ...(searchCategory ? [searchCategory] : []), ...(tsRange ? [tsRange.fromTs, tsRange.toTs] : []), limit) as Memory[]
       }
     } else if (agentId) {
-      // Category, date window and stale cut-off go into the query, not a post-filter: see getAgentMemories.
-      results = getAgentMemories(agentId, limit, tier || undefined, offset, tsRange, staleBefore)
+      // Category, date window, stale cut-off and the superseded exclusion go into the query, not a post-filter: see getAgentMemories.
+      results = getAgentMemories(agentId, limit, tier || undefined, offset, tsRange, staleBefore, excludeIds)
     } else {
       // Category goes into the query here too, not a post-filter: see getMemoriesForChat.
-      results = getMemoriesForChat(ALLOWED_CHAT_ID, limit, offset, tier || undefined, tsRange, staleBefore)
+      results = getMemoriesForChat(ALLOWED_CHAT_ID, limit, offset, tier || undefined, tsRange, staleBefore, excludeIds)
     }
 
     // Kept as a backstop, not as the mechanism. Since MEMKERESVAK917 every
@@ -575,6 +589,10 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       ...m,
       ...(keywordMatchKind ? { match_kind: keywordMatchKind } : {}),
       embedding: undefined,
+      // #571: the chain, both directions. supersedes lists full AND partial
+      // references; superseded_by is only ever a FULL replacement.
+      supersedes: supersessions.refs.get(m.id) ?? [],
+      superseded_by: supersessions.supersededBy.get(m.id) ?? null,
       created_label: new Date(m.created_at * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ }),
       accessed_label: new Date(m.accessed_at * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ }),
     }))
@@ -769,7 +787,17 @@ Respond ONLY with JSON, nothing else:
   }
 
   if (path === '/api/memories/stats' && method === 'GET') {
-    json(res, getMemoryStats())
+    // #571: how many fully replaced rows each tier holds (all agents), so the
+    // tab can say how many it is hiding.
+    const ids = [...getMemorySupersessions().supersededBy.keys()]
+    const supersededByTier: Record<string, number> = {}
+    if (ids.length) {
+      const rows = getDb()
+        .prepare('SELECT category, COUNT(*) AS c FROM memories WHERE id IN (SELECT value FROM json_each(?)) GROUP BY category')
+        .all(JSON.stringify(ids)) as { category: string; c: number }[]
+      for (const r of rows) supersededByTier[r.category] = r.c
+    }
+    json(res, { ...getMemoryStats(), supersededByTier })
     return true
   }
 
