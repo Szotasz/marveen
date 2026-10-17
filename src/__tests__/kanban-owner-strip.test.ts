@@ -50,7 +50,7 @@ class FakeEl {
   }
 }
 
-function setup(owner: string | null, cards: unknown[], assignees: unknown[] = []) {
+function setup(owner: string | null, cards: unknown[], assignees: unknown[] = [], groupBy = 'assignee') {
   const strip = new FakeEl()
   const store = new Map<string, string>()
   const opened: unknown[] = []
@@ -65,6 +65,7 @@ function setup(owner: string | null, cards: unknown[], assignees: unknown[] = []
     ownerAssigneeName: () => owner,
     kanbanCards: cards,
     kanbanAssignees: assignees,
+    kanbanGroupBy: groupBy,
     KANBAN_PRIORITY_ORDER: ['urgent', 'high', 'normal', 'low'],
     kanbanDecorateAvatar: (_el: unknown, key: string) => decorated.push(key),
     kanbanSwimlaneMeta: (key: string) => ({ nickname: key === owner ? 'Grand Designer' : '' }),
@@ -119,6 +120,12 @@ describe('kanbanHideFromLanes', () => {
   it('hides nothing when the install has no owner name', () => {
     const { hide } = setup(null, [])
     expect(hide({ status: 'planned', assignee: 'Jane Doe' })).toBe(false)
+  })
+  it('hides nothing when the lanes are priorities or the board is flat: only an assignee lane is the owner\'s', () => {
+    for (const groupBy of ['priority', 'none']) {
+      const { hide } = setup('Jane Doe', [], [], groupBy)
+      expect(hide({ status: 'planned', assignee: 'Jane Doe', priority: 'urgent' })).toBe(false)
+    }
   })
 })
 
