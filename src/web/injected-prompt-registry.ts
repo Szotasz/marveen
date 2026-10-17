@@ -117,6 +117,17 @@ export function matchesInjectedPrompt(parked: string | null, record: InjectedPro
   // this pane within the retention window is. Without this, a short machine
   // command -- the identity `/rename <name>` (20 chars squashed) -- can never
   // match its own record and a parked one is held forever.
+  //
+  // INTENDED SCOPE -- wider than `/rename`: the exception applies to EVERY
+  // record, so it also covers the dashboard operator commands that go through
+  // sendPromptToSession and are recorded the same way -- `/login` and `/mcp`
+  // (OPERATOR_COMMAND_TEXT in routes/operator.ts, and the `/login` in
+  // routes/agents.ts). Before RENAMEPARK1014 a parked `/login` or `/mcp` was
+  // held (both are under the floor); now it matches its record and the watcher
+  // presses Enter on it. That is deliberate: the operator asked for exactly that
+  // command, in that pane, within the retention window. It does widen the GH
+  // #717 gate for those exact texts, so identity-rename-recorded.test.ts pins
+  // the operator case too -- narrowing or widening this must break a test.
   if (a === b) return true
   // A very short fragment is not evidence: "the" appears in every message. The
   // floor is well under the shortest real inter-agent frame (the security

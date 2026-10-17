@@ -85,6 +85,18 @@ describe('identity /rename is recorded so a parked one is recoverable (RENAMEPAR
     expect(matchesInjectedPrompt('/rename Lean Publisher', null)).toBe(false)
   })
 
+  // Review of #1948 (2026-10-15): the exception is not `/rename`-only. The
+  // dashboard operator commands `/login` and `/mcp` are recorded by
+  // sendPromptToSession too, and are far under the floor. A parked one now
+  // matches its own record (the watcher submits it) -- intended, and pinned
+  // here so a later change cannot narrow or widen it silently.
+  it('a short operator command (/login, /mcp) matches its own record, and only its own', () => {
+    expect(matchesInjectedPrompt('/login', { text: '/login', at: 0 })).toBe(true)
+    expect(matchesInjectedPrompt('/mcp', { text: '/mcp', at: 0 })).toBe(true)
+    expect(matchesInjectedPrompt('/mcp', { text: '/login', at: 0 })).toBe(false)
+    expect(matchesInjectedPrompt('/login', null)).toBe(false)
+  })
+
   // Source contract, same reason as the IDENTLANE910 tests in
   // session-send-lock.test.ts: the send sits on fire-and-forget timers against
   // a live tmux pane, so it is not driven end to end in CI. What is checkable is
