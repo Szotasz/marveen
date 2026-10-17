@@ -3,8 +3,23 @@
 # Requires OPENAI_API_KEY and/or GEMINI_API_KEY stored in the vault.
 # If a key is missing the reviewer is silently skipped.
 #
-# Usage: ./scripts/pre-pr-review.sh [base-ref]
+# Usage: ./scripts/pre-pr-review.sh [--worktree] [base-ref]
 #   base-ref defaults to upstream/main
+#   --worktree reviews the uncommitted working tree instead (`git diff HEAD`:
+#     staged and unstaged changes to tracked files; untracked files are not
+#     sent). Use it when the change is not committed yet, e.g. a local patch
+#     set applied on top of a release: with a base-ref such a tree reviews as
+#     "no diff" and exits 0, which looks like a pass.
+#
+# Environment (all optional):
+#   PREPR_OPENAI_MODEL   OpenAI model id            (default gpt-4o)
+#   PREPR_GEMINI_MODEL   Gemini model id            (default gemini-2.0-flash)
+#   PREPR_REVIEWERS      comma list of reviewers    (default openai,gemini)
+#   PREPR_STRICT=1       a reviewer that is enabled but skipped (no key), that
+#                        fails, or that answers with empty content makes the
+#                        run exit non-zero. Without it a skipped reviewer is
+#                        reported and the run still exits 0 (the historical,
+#                        optional behaviour).
 #
 # What leaves this machine is the diff, so the diff is checked first:
 #   - no secret in argv or URL: every credential travels in a 0600 header
@@ -23,8 +38,17 @@
 
 set -euo pipefail
 
+WORKTREE=0
+if [ "${1:-}" = "--worktree" ]; then
+  WORKTREE=1
+  shift
+fi
 BASE="${1:-upstream/main}"
 INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+MODEL_OPENAI="${PREPR_OPENAI_MODEL:-gpt-4o}"
+MODEL_GEMINI="${PREPR_GEMINI_MODEL:-gemini-2.0-flash}"
+REVIEWERS="${PREPR_REVIEWERS:-openai,gemini}"
+STRICT="${PREPR_STRICT:-0}"
 TOKEN_FILE="$INSTALL_DIR/store/.dashboard-token"
 MAX_DIFF_BYTES=204800
 CURL_LIMITS=(--connect-timeout 10 --max-time 120)
@@ -51,16 +75,23 @@ API="http://localhost:${WEB_PORT}/api/vault"
 
 # Pinned output format: user config (color.ui=always, diff.external,
 # textconv, noprefix, relative) must not change what is scanned and sent.
-git diff --no-color --no-ext-diff --no-textconv --no-relative \
-  --src-prefix=a/ --dst-prefix=b/ "$BASE"...HEAD > "$WORK/diff"
+if [ "$WORKTREE" = 1 ]; then
+  RANGE_LABEL="the working tree (git diff HEAD)"
+  git diff --no-color --no-ext-diff --no-textconv --no-relative \
+    --src-prefix=a/ --dst-prefix=b/ HEAD > "$WORK/diff"
+else
+  RANGE_LABEL="$BASE"
+  git diff --no-color --no-ext-diff --no-textconv --no-relative \
+    --src-prefix=a/ --dst-prefix=b/ "$BASE"...HEAD > "$WORK/diff"
+fi
 if [ ! -s "$WORK/diff" ]; then
-  echo "[pre-pr-review] No diff found against $BASE, nothing to review."
+  echo "[pre-pr-review] No diff found against $RANGE_LABEL, nothing to review."
   exit 0
 fi
 
 DIFF_BYTES="$(wc -c < "$WORK/diff" | tr -d ' ')"
 if [ "$DIFF_BYTES" -gt "$MAX_DIFF_BYTES" ]; then
-  echo "[pre-pr-review] Diff against $BASE is $DIFF_BYTES bytes, above the $MAX_DIFF_BYTES byte limit." >&2
+  echo "[pre-pr-review] Diff against $RANGE_LABEL is $DIFF_BYTES bytes, above the $MAX_DIFF_BYTES byte limit." >&2
   echo "[pre-pr-review] Refusing to send a truncated diff; nothing was sent. Review a smaller range." >&2
   exit 1
 fi
@@ -81,13 +112,24 @@ if [ ! -x "$TSX" ] || [ ! -f "$INSTALL_DIR/scripts/pre-pr-review-scan.ts" ] \
   exit 1
 fi
 if ! "$TSX" "$INSTALL_DIR/scripts/pre-pr-review-scan.ts" "$WORK/diff" > "$WORK/scan.out" 2>&1; then
-  echo "[pre-pr-review] Possible secret in the diff against $BASE; nothing was sent:" >&2
+  echo "[pre-pr-review] Possible secret in the diff against $RANGE_LABEL; nothing was sent:" >&2
   sed 's/^/  /' "$WORK/scan.out" >&2
   echo "[pre-pr-review] The matched text is not printed. Remove the value (or the file) and rerun." >&2
   exit 1
 fi
-if ! "$TSX" "$INSTALL_DIR/scripts/secret-gate.ts" --range "$BASE...HEAD" > "$WORK/gate.out" 2>&1; then
-  echo "[pre-pr-review] scripts/secret-gate.ts did not clear $BASE...HEAD; nothing was sent:" >&2
+# The repo gate knows two modes: --range (committed head tree) and --staged
+# (the index). The working tree has no range, so --worktree runs the gate on
+# the index and relies on the diff scanner above for the unstaged part: the
+# scanner saw every line that leaves.
+if [ "$WORKTREE" = 1 ]; then
+  GATE_ARGS=(--staged)
+  GATE_LABEL="the index (--staged)"
+else
+  GATE_ARGS=(--range "$BASE...HEAD")
+  GATE_LABEL="$BASE...HEAD"
+fi
+if ! "$TSX" "$INSTALL_DIR/scripts/secret-gate.ts" "${GATE_ARGS[@]}" > "$WORK/gate.out" 2>&1; then
+  echo "[pre-pr-review] scripts/secret-gate.ts did not clear $GATE_LABEL; nothing was sent:" >&2
   sed 's/^/  /' "$WORK/gate.out" >&2
   exit 1
 fi
@@ -136,14 +178,17 @@ PY
 }
 
 # Request bodies: built by python from the diff file, written to 0600 files.
-python3 -I - "$WORK/diff" "$WORK/openai.json" "$WORK/gemini.json" <<'PY'
+# `max_completion_tokens` replaces the deprecated `max_tokens`: the newer
+# reasoning models reject the old name, and the new one counts reasoning
+# tokens too, so the cap means the same thing on every model.
+python3 -I - "$WORK/diff" "$WORK/openai.json" "$WORK/gemini.json" "$MODEL_OPENAI" <<'PY'
 import json, os, sys
-diff_path, openai_out, gemini_out = sys.argv[1:4]
+diff_path, openai_out, gemini_out, model_openai = sys.argv[1:5]
 diff = open(diff_path, encoding='utf-8', errors='replace').read()
 prompt = ('You are a senior software engineer reviewing a pull request. Review the following git diff '
           'for correctness, security, and code quality. Be concise and specific. List any real issues found.'
           f'\n\nDiff:\n```\n{diff}\n```')
-for path, body in ((openai_out, {'model': 'gpt-4o', 'messages': [{'role': 'user', 'content': prompt}], 'max_tokens': 1000}),
+for path, body in ((openai_out, {'model': model_openai, 'messages': [{'role': 'user', 'content': prompt}], 'max_completion_tokens': 1000}),
                    (gemini_out, {'contents': [{'parts': [{'text': prompt}]}]})):
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, 'w') as fh:
@@ -166,11 +211,35 @@ review() {
        return 1 ;;
   esac
   # Control characters (ESC, CR, C1) are stripped: the reply is untrusted text
-  # and must not drive the terminal. Newline and tab stay.
-  if ! python3 -I -c "import json,re,sys; d=json.load(open(sys.argv[1], encoding='utf-8')); print(re.sub(r'[\x00-\x08\x0b-\x1f\x7f-\x9f]', '', str($expr)))" \
-      "$WORK/resp.json" 2>/dev/null; then
+  # and must not drive the terminal. Newline and tab stay. An empty or null
+  # content is a failure, not a review: `str(None)` would otherwise print the
+  # word None and the run would look green.
+  python3 -I -c "import json,re,sys; d=json.load(open(sys.argv[1], encoding='utf-8')); v=$expr; t='' if v is None else str(v); sys.exit(3) if not t.strip() else print(re.sub(r'[\x00-\x08\x0b-\x1f\x7f-\x9f]', '', t))" \
+      "$WORK/resp.json" 2>/dev/null
+  local prc=$?
+  if [ "$prc" -eq 3 ]; then
+    echo "[pre-pr-review] $label answered HTTP $code with empty content (no review text)." >&2
+    return 1
+  elif [ "$prc" -ne 0 ]; then
     echo "[pre-pr-review] $label answered HTTP $code with an unexpected shape (response body not shown)." >&2
     return 1
+  fi
+}
+
+# wants <reviewer>: is the reviewer on the PREPR_REVIEWERS list?
+wants() {
+  case ",$REVIEWERS," in
+    *",$1,"*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# skipped <label> <reason>: a reviewer that did not run. Under PREPR_STRICT=1
+# this is a failure (a mandatory gate that silently skips is not a gate).
+skipped() {
+  echo "[pre-pr-review] $1 review skipped: $2"
+  if [ "$STRICT" = 1 ]; then
+    FAILED=1
   fi
 }
 
@@ -182,25 +251,31 @@ fi
 FAILED=0
 
 # --- ChatGPT ---
-if vault_header OPENAI_API_KEY "$WORK/openai.hdr" Authorization 'Bearer '; then
+if ! wants openai; then
+  echo "[pre-pr-review] ChatGPT review disabled by PREPR_REVIEWERS."
+elif vault_header OPENAI_API_KEY "$WORK/openai.hdr" Authorization 'Bearer '; then
   echo ""
   echo "=== ChatGPT Review ==="
+  echo "[pre-pr-review] model: $MODEL_OPENAI"
   review ChatGPT https://api.openai.com/v1/chat/completions \
     "$WORK/openai.hdr" "$WORK/openai.json" "d['choices'][0]['message']['content']" || FAILED=1
   rm -f "$WORK/openai.hdr"
 else
-  echo "[pre-pr-review] OPENAI_API_KEY not set in vault — ChatGPT review skipped."
+  skipped ChatGPT "OPENAI_API_KEY not set in vault."
 fi
 
 # --- Gemini ---
-if vault_header GEMINI_API_KEY "$WORK/gemini.hdr" x-goog-api-key ''; then
+if ! wants gemini; then
+  echo "[pre-pr-review] Gemini review disabled by PREPR_REVIEWERS."
+elif vault_header GEMINI_API_KEY "$WORK/gemini.hdr" x-goog-api-key ''; then
   echo ""
   echo "=== Gemini Review ==="
-  review Gemini https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent \
+  echo "[pre-pr-review] model: $MODEL_GEMINI"
+  review Gemini "https://generativelanguage.googleapis.com/v1beta/models/${MODEL_GEMINI}:generateContent" \
     "$WORK/gemini.hdr" "$WORK/gemini.json" "d['candidates'][0]['content']['parts'][0]['text']" || FAILED=1
   rm -f "$WORK/gemini.hdr"
 else
-  echo "[pre-pr-review] GEMINI_API_KEY not set in vault — Gemini review skipped."
+  skipped Gemini "GEMINI_API_KEY not set in vault."
 fi
 
 exit "$FAILED"
