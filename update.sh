@@ -421,6 +421,80 @@ restore_stash_before_exit() {
   fi
 }
 
+# STASHPOPGUARD1013: an auto-stash whose pop CONFLICTS must stop the update
+# instead of riding along with it. On a conflict `git stash pop` keeps the stash
+# entry but leaves the conflicted files on disk WITH conflict markers, and the
+# run used to go on, restart the services and report success. Scripts, JSON
+# settings and hook files are read at runtime, not compiled, so a marker in any
+# of them breaks that file silently. Measured on a fleet install (1.37 -> 1.42,
+# 30 conflicted files): scripts/channels.sh exited on a syntax error, so the
+# channel bridge stopped; .claude/settings.json no longer parsed, so no hook
+# loaded at all; and the hook scripts themselves failed to parse. The
+# dashboard showed a successful update.
+#
+# stash_pop_probe <commit>: rehearse the pop on a throwaway detached worktree of
+# <commit>, so the real tree is never touched. rc 0 = the pop would be clean,
+# 1 = it would conflict (STASH_PROBE_FILES names the files), 2 = the rehearsal
+# itself could not run. Untracked files are rehearsed too: if the new commit
+# tracks a path where the operator has an untracked file, the real pop refuses.
+stash_pop_probe() {
+  local target="$1" wt out rc=0
+  STASH_PROBE_FILES=""
+  wt="$(mktemp -d "${TMPDIR:-/tmp}/marveen-stash-probe.XXXXXX" 2>/dev/null)" || return 2
+  if ! git -c core.hooksPath=/dev/null worktree add --detach "$wt" "$target" >/dev/null 2>&1; then
+    rm -rf "$wt"
+    git worktree prune >/dev/null 2>&1 || true
+    return 2
+  fi
+  if ! out="$(git -C "$wt" -c core.hooksPath=/dev/null stash apply "stash@{0}" 2>&1)"; then
+    rc=1
+    STASH_PROBE_FILES="$( { git -C "$wt" diff --name-only --diff-filter=U 2>/dev/null; printf '%s\n' "$out" | sed -n 's/ already exists, no checkout$//p'; } | sed '/^$/d' | sort -u | head -n 20 | tr '\n' ' ')"
+  fi
+  git worktree remove --force "$wt" >/dev/null 2>&1 || rm -rf "$wt"
+  git worktree prune >/dev/null 2>&1 || true
+  return "$rc"
+}
+
+# stash_conflict_rollback: the late pop (after the build, just before the
+# restart) conflicted anyway. The probe rehearses on a pristine checkout, so it
+# cannot see a tracked file rewritten between the pull and the pop. Do what a
+# failed build does: back to the pre-update commit, rebuild that, and pop the
+# local changes onto the commit they were stashed from, where they apply
+# cleanly by construction. No service is restarted onto conflict markers.
+stash_conflict_rollback() {
+  # The conflicted pop kept the stash entry; this also clears the unmerged index.
+  git reset --hard "$OLD_VERSION_FULL" >/dev/null 2>&1 || true
+  # The pop may already have written the stashed untracked files back, and the
+  # re-pop below refuses ("already exists") while they are there. Remove only
+  # byte-identical copies: the stash still holds every one of them.
+  if git rev-parse -q --verify "stash@{0}^3" >/dev/null 2>&1; then
+    local entry meta path
+    while IFS= read -r -d '' entry; do
+      meta="${entry%%$'\t'*}"
+      path="${entry#*$'\t'}"
+      if [ -f "$path" ] && [ "$(git hash-object -- "$path" 2>/dev/null)" = "${meta##* }" ]; then
+        rm -f -- "$path"
+      fi
+    done < <(git ls-tree -r -z "stash@{0}^3")
+  fi
+  # SKIP_BUILD (an up-to-date reseed run): OLD == NEW and dist is already the
+  # old commit's, so there is nothing to rebuild.
+  if [ "${SKIP_BUILD:-0}" != "1" ]; then
+    if git diff --name-only "$OLD_VERSION_FULL" "$NEW_VERSION_FULL" 2>/dev/null | grep -qE "^package(-lock)?\.json$"; then
+      npm ci --silent --include=dev 2>/dev/null || true
+    fi
+    npm rebuild better-sqlite3 --silent 2>/dev/null || true
+    npm run build --silent 2>/dev/null || true
+    [ -d "$INSTALL_DIR/dist" ] && echo "$OLD_VERSION_FULL" > "$BUILT_COMMIT_FILE"
+  fi
+  restore_stash_before_exit
+  # Same gap the normal restore closes: the build above compiled the old commit
+  # without the local files the pop has just put back.
+  if [ "$STASHED_AUTO" = "0" ] && [ "${SKIP_BUILD:-0}" != "1" ]; then
+    npm run build --silent 2>/dev/null || true
+  fi
+}
+
 # UPDOOMNPMCI926: `npm ci` failed after the pull. npm ci deletes node_modules
 # before installing, so the tree is on the NEW commit with a half-installed
 # dependency set; the running dashboard still has the old code in memory, but
@@ -551,6 +625,43 @@ if [ "${AHEAD:-0}" -gt 0 ] && [ "${BEHIND:-0}" -gt 0 ]; then
 fi
 if [ "${AHEAD:-0}" -gt 0 ]; then
   echo -e "  ${ORANGE}Megjegyzes:${NC} a helyi checkout ${AHEAD} committal elore van, lemaradas nincs -- a letoltes nem hoz ujat, a frissites folytatodik."
+fi
+
+# STASHPOPGUARD1013 (preflight): with an auto-stash on top, rehearse its pop on
+# the commit this run will land on, BEFORE the pull. A conflict stops the update
+# here with the tree as it was: nothing pulled, built or restarted, and the local
+# changes popped back onto the commit they were stashed from.
+if [ "$STASHED_AUTO" = "1" ]; then
+  STASH_BASE="$(git rev-parse -q --verify "stash@{0}^1" 2>/dev/null || echo "")"
+  PROBE_TARGET="$(git rev-parse HEAD)"
+  if git merge-base --is-ancestor HEAD "$DIVERGENCE_REF" 2>/dev/null; then
+    PROBE_TARGET="$(git rev-parse "$DIVERGENCE_REF")"
+  fi
+  if [ "$PROBE_TARGET" != "$STASH_BASE" ]; then
+    echo -e "  Auto-stash utkozes-proba (${PROBE_TARGET:0:7})..."
+    PROBE_RC=0
+    stash_pop_probe "$PROBE_TARGET" || PROBE_RC=$?
+    if [ "$PROBE_RC" -ne 0 ]; then
+      RESULT_PHASE="stash-preflight"
+      # The opt-in auto-rebase above may already have moved HEAD. Its commits
+      # stay reachable from OLD_VERSION_FULL, and the stash applies there.
+      if [ -n "$OLD_VERSION_FULL" ] && [ "$(git rev-parse HEAD)" != "$OLD_VERSION_FULL" ]; then
+        git reset --hard "$OLD_VERSION_FULL" >/dev/null 2>&1 || true
+      fi
+      restore_stash_before_exit
+      if [ "$PROBE_RC" -eq 1 ]; then
+        RESULT_MSG="A helyi valtozasok utkoznenek az uj verzioval (${STASH_PROBE_FILES:-a proba nem nevezte meg a fajlokat}); a frissites NEM indult el, a rendszer valtozatlan. Elobb a helyi valtozasokat kell az uj verziora atvinni (vagy commitolni), utana lehet frissiteni."
+      else
+        RESULT_MSG="Az auto-stash utkozes-probaja nem futott le (ideiglenes worktree); a frissites biztonsagbol NEM indult el, a rendszer valtozatlan. Nezd: git worktree list; df -h"
+      fi
+      if [ "$STASHED_AUTO" = "1" ]; then
+        RESULT_MSG="$RESULT_MSG FIGYELEM: a helyi valtozasok a 'git stash list'-ben maradtak."
+      fi
+      echo -e "${RED}HIBA:${NC} ${RESULT_MSG}"
+      bash "$INSTALL_DIR/scripts/notify.sh" "🔴 Dashboard update: NEM indult el. ${RESULT_MSG}" >/dev/null 2>&1 || true
+      exit 5
+    fi
+  fi
 fi
 
 # Pull latest, NON-fatal under set -e so a diverged/network failure is reported.
@@ -1642,10 +1753,11 @@ if command -v tmux >/dev/null 2>&1; then
 fi
 
 # Restore auto-stashed local changes before restarting services.
-# A stash conflict here typically means the upstream rebase touched
-# the same lines the operator had locally; we drop and warn rather
-# than block the restart, but the entry stays in `git stash list`
-# until the operator deals with it.
+# A stash conflict here no longer rides along into the restart
+# (STASHPOPGUARD1013): the preflight before the pull already refuses a stash
+# that would conflict, and if this pop conflicts anyway, the run rolls back to
+# the pre-update commit with the local changes and does NOT restart. A
+# conflicted pop leaves markers in runtime files (scripts, settings, hooks).
 #
 # Incident (2026-07-12): the build above (SKIP_BUILD branch aside) compiles
 # whatever is on disk AT THAT POINT -- the pulled commit WITHOUT the
@@ -1676,12 +1788,21 @@ if [ "$STASHED_AUTO" = "1" ]; then
       fi
     fi
   else
+    UNMERGED_FILES="$(git diff --name-only --diff-filter=U 2>/dev/null | head -n 20 | tr '\n' ' ')"
     if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
-      echo -e "${RED}WARNING:${NC} Auto-stash pop had conflicts; the stash remains in 'git stash list'."
+      echo -e "${RED}ERROR:${NC} Auto-stash pop had conflicts; rolling back to ${OLD_VERSION} without a restart."
     else
-      echo -e "${RED}FIGYELEM:${NC} Auto-stash pop konfliktusos; a stash benne marad a 'git stash list'-ben."
+      echo -e "${RED}HIBA:${NC} Az auto-stash visszaallitasa utkozott; visszaallas a korabbi verziora (${OLD_VERSION}), ujrainditas nelkul."
     fi
-    echo -e "          Manualisan kezeld: git stash list / git stash apply / git stash drop"
+    RESULT_PHASE="stash-restore"
+    stash_conflict_rollback
+    RESULT_STATUS="rolled-back"
+    RESULT_MSG="A helyi valtozasok visszaallitasa utkozott az uj verzioval (${UNMERGED_FILES:-ismeretlen fajlok}); a rendszer a korabbi verzion maradt (${OLD_VERSION}), ujrainditas nem tortent. A frissites nem ment ki: elobb a helyi valtozasokat kell az uj verziora atvinni."
+    if [ "$STASHED_AUTO" = "1" ]; then
+      RESULT_MSG="$RESULT_MSG FIGYELEM: a helyi valtozasok a 'git stash list'-ben maradtak, kezzel kell visszaallitani."
+    fi
+    bash "$INSTALL_DIR/scripts/notify.sh" "🔴 Dashboard update: visszaallas. ${RESULT_MSG}" >/dev/null 2>&1 || true
+    exit 6
   fi
 fi
 
