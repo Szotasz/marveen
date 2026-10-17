@@ -3353,6 +3353,66 @@ export function ensureMessageCloseSection(name: string): void {
   atomicWriteFileSync(claudeMdPath, updated)
 }
 
+// ---- Long background work: checkpoint and resume (BGCHECKPOINT1008) ----
+//
+// A key wall (the fleet key rotation) and an agent restart (context guard, key
+// rotation) stop a running background sub-agent and a run_in_background
+// command; the main conversation continues with --continue, the background
+// work does not, and whatever it had not written down is lost. Measured on one
+// install (2026-10-08): one wall stopped three long background sub-agents
+// (19-40 minutes, 279k-376k tokens each), all restarted from scratch. The rule
+// ships as a section because the reader is the agent at the moment it starts
+// long background work: save the partial result to a file about every ten
+// minutes, resume from it after the restart, and note on the card where it is.
+const BGCHECKPOINT_BEGIN = '<!-- BEGIN GENERATED: background-checkpoint (auto-generated, do not edit by hand) -->'
+const BGCHECKPOINT_END = '<!-- END GENERATED: background-checkpoint -->'
+const BGCHECKPOINT_BLOCK_RE = new RegExp(
+  `${BGCHECKPOINT_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${BGCHECKPOINT_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
+)
+
+export function buildBackgroundCheckpointBody(): string {
+  return [
+    '## Hosszú háttér-munka: menet közbeni mentés, folytatás a mentett részből',
+    '',
+    'A kulcsfal (kulcsváltás) és az újraindulás (context-guard, kulcsváltás) a futó háttér-alügynököt és a háttérben',
+    'futó parancsot leállítja: a fő beszélgetés folytatódik, a háttér-munka nem, és ami nincs fájlban, elvész.',
+    '',
+    '- Ha egy háttér-alügynök vagy háttér-futás várhatóan 15 percnél tovább dolgozik, kb. 10 percenként mentse a',
+    '  részeredményt fájlba, a munkakönyvtárad alatt (a scratchpad session-hez kötött /tmp-mappa: új session, például a',
+    '  context-guard friss indítása, vagy gép-újraindulás után nincs meg). A háttér-alügynök briefjébe ezt írd bele, a',
+    '  fájl útjával együtt.',
+    '- Újraindulás vagy kulcsfal után ELŐBB a mentett részt olvasd be, és onnan folytasd, ne elölről.',
+    '- A lapra (vagy a HANDOFF.md-be) egy sor: hol a mentett rész (út), és mi a következő lépés.',
+  ].join('\n')
+}
+
+// Idempotently ensures the background-checkpoint block is present and current
+// in the agent's CLAUDE.md; same contract as ensureMessageCloseSection, called
+// from the same two surfaces (web.ts for the main agent, agent-process.ts for
+// the rest), so an agent carries it from its next start on.
+export function ensureBackgroundCheckpointSection(name: string): void {
+  const claudeMdPath = name === MAIN_AGENT_ID
+    ? join(PROJECT_ROOT, 'CLAUDE.md')
+    : join(agentDir(name), 'CLAUDE.md')
+  if (!existsSync(claudeMdPath)) return
+
+  const block = `${BGCHECKPOINT_BEGIN}\n${buildBackgroundCheckpointBody()}\n${BGCHECKPOINT_END}`
+
+  let existing: string
+  try {
+    existing = readFileSync(claudeMdPath, 'utf-8')
+  } catch {
+    return
+  }
+
+  const updated = BGCHECKPOINT_BLOCK_RE.test(existing)
+    ? existing.replace(BGCHECKPOINT_BLOCK_RE, block)
+    : existing.trimEnd() + '\n\n' + block + '\n'
+
+  if (updated === existing) return
+  atomicWriteFileSync(claudeMdPath, updated)
+}
+
 // Idempotently ensures the autonomy-wiring block is present and current in the
 // agent's CLAUDE.md. Called on every startAgentProcess() alongside
 // ensureFleetRosterSection() so that existing agents receive the block
