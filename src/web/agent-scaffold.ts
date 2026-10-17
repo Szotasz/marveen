@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, readdirSync, statSync, rmSync, watchFile, unwatchFile } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, readdirSync, statSync, rmSync, watchFile, unwatchFile, realpathSync } from 'node:fs'
 import { readRemovedDefaultTasks } from './scheduled-tasks-io.js'
 import { basename, join } from 'node:path'
 import { homedir } from 'node:os'
@@ -55,7 +55,37 @@ const tokenPath = join(PROJECT_ROOT, 'store', '.dashboard-token')
 // the gate silently never enforces (atlas incident, 2026-07-30). process.execPath
 // is the absolute binary of the node running this server, which by definition
 // exists on the host that spawns the agents. Exported for unit tests.
-export const HOOK_NODE_BIN = process.execPath
+//
+// One exception (issue #2036): on a Homebrew install execPath is the
+// version-pinned Cellar path, which `brew upgrade` deletes -- even on a patch
+// bump -- and every gate then blocks until the dashboard is restarted. Brew
+// keeps a stable `<prefix>/opt/<formula>` symlink that survives upgrades, so
+// when execPath is a Cellar node AND that symlink resolves to the very same
+// binary, the symlink is burnt in instead. Anything else (nvm, the official
+// installer, a symlink pointing elsewhere) keeps execPath unchanged, so the
+// nvm protection above and the missing-interpreter guard below still hold.
+// Trade-off: with the unversioned `node` formula the opt symlink follows a
+// major bump, so after `brew upgrade node` the gates run on the new major
+// until the next restart (node@N formulas stay on their major). That is still
+// node >= the engines floor, and better than every gate blocking.
+const BREW_CELLAR_NODE_RE = /^(.+)\/Cellar\/([^/]+)\/[^/]+\/bin\/node$/
+
+export function resolveHookNodeBin(
+  execPath: string,
+  fs: { existsSync: (p: string) => boolean; realpathSync: (p: string) => string } = { existsSync, realpathSync },
+): string {
+  const m = BREW_CELLAR_NODE_RE.exec(execPath)
+  if (!m) return execPath
+  const stable = `${m[1]}/opt/${m[2]}/bin/node`
+  try {
+    if (fs.existsSync(stable) && fs.realpathSync(stable) === fs.realpathSync(execPath)) return stable
+  } catch {
+    // An unreadable link is no better than the pinned path; keep execPath.
+  }
+  return execPath
+}
+
+export const HOOK_NODE_BIN = resolveHookNodeBin(process.execPath)
 
 // The ONE way a gate hook command is assembled. Both halves are quoted:
 // process.execPath with a space in it (native Windows `C:\Program Files`, a
@@ -66,16 +96,15 @@ export const HOOK_NODE_BIN = process.execPath
 export function hookCommand(scriptPath: string, args: readonly string[] = [], hookTimeoutSec = 10): string {
   // The interpreter is checked before it is used, and a missing one BLOCKS.
   //
-  // HOOK_NODE_BIN is process.execPath, which on a brew install is the
-  // version-pinned real path (/opt/homebrew/Cellar/node@22/<version>/bin/node),
-  // not the stable /opt/homebrew/bin/node symlink the launchd plist starts.
-  // A `brew upgrade node@22` moves that directory, the burnt-in path goes
-  // dangling, the hook exits 127 -- and 127 is exactly the non-blocking status
+  // HOOK_NODE_BIN can still go dangling: an nvm version is removed, a node is
+  // replaced by hand, or a brew opt symlink cannot be confirmed and the
+  // version-pinned Cellar path is kept (see resolveHookNodeBin). A dangling
+  // path makes the hook exit 127 -- and 127 is exactly the non-blocking status
   // this whole file exists to stop, so the gate would go quiet again on a
   // different route (measured: the pinned path fails with 127 after a version
   // bump, the stable symlink survives).
   //
-  // Burning the symlink instead is NOT the fix: nvm installs have no such
+  // A stable symlink alone is NOT the general fix: nvm installs have no such
   // stable path outside the launchd PATH, which is the original defect. Making
   // the failure loud is install-manager agnostic and covers any future move.
   //
