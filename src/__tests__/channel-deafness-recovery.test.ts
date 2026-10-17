@@ -105,7 +105,10 @@ describe('buildMainSessionRespawnCmd', () => {
       config: mainConfigDecisionForTest({ isolatedConfigDir: '/home/solarforce/.claude-second', ownCredentials: true, fleetToken: true }),
     })
     expect(cmd).toContain("export CLAUDE_CONFIG_DIR='/home/solarforce/.claude-second'")
-    expect(cmd).not.toContain('CLAUDE_CODE_OAUTH_TOKEN')
+    // Never EXPORTED -- and (MAINOWNLOGIN1008) actively unset, so a token the
+    // tmux server's global env hands the pane cannot beat the dir's own login.
+    expect(cmd).not.toContain('export CLAUDE_CODE_OAUTH_TOKEN')
+    expect(cmd).toContain('unset CLAUDE_CODE_OAUTH_TOKEN')
   })
 
   // Token-mode rotated plan: the generic isolated dir, but the PLAN's own
