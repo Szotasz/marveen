@@ -587,6 +587,15 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     requiresRestart: true,
   },
   {
+    key: 'BASH_EGRESS_HOST_ALLOW',
+    type: 'boolean',
+    default: '0',
+    description: 'Bash-letöltés hoszt szerint (curl https:// és wget). Kikapcsolva (alapértelmezés) a "Bash(curl *https://*)" és "Bash(wget *)" deny-szabályok minden ágensen tiltják ezt a két parancsot, hoszttól függetlenül; a store/egress-vendor-hosts.json listája rájuk nem hat, mert a deny minden engedélyt felülír. Bekapcsolva ez a négy deny-sor lekerül azokról az ágensekről, amelyeken a bash-egress-parser hook fut (a fő ágensen ehhez a dashboard a projekt .claude/settings.local.json fájljába --main-scope bejegyzést tesz, kikapcsoláskor kiveszi; a követett .claude/settings.json egyik állásban sem változik), és a hook dönt: localhost, helyi hálózat és a vendor-listán szereplő hoszt átmegy, minden más tiltva marad. A rövidített kapcsolót a hook úgy oldja fel, ahogy a curl és a wget; tiltva marad az ismeretlen vagy kétértelmű kapcsoló, a wget -e (néhány ártalmatlan beállítás kivételével), a konfigfájlból olvasott cél (curl -K, wget -i/--config), a proxy- vagy rc-változó (https_proxy, WGETRC, CURL_HOME, HOME) megadása a parancsban, és a futásidőben kiszámított cél (változóból, fájlból vagy $(...)-ből jövő hoszt, pl. a vaultból kiolvasott URL): a hosztnak szó szerint a parancsban kell állnia. MARADÉK KOCKÁZAT: egy korábbi hívással megírt ~/.wgetrc vagy ~/.curlrc proxyt vagy további URL-t adhat minden curl/wget futásnak, ezt a hook nem látja; és az átirányítás (a wget alapból, a curl -L-lel követi) a vendor-hosztról más hosztra is vihet. A gazda saját Claude-sessionje egyik állásban sem korlátozott. Az nc/ncat/telnet tiltás mindkét állásban marad. A módosítás a dashboard újraindításakor és az ágensek következő indításakor lép életbe.',
+    module: 'system',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
     key: 'NOTIFY_SLACK_TARGET',
     type: 'string',
     default: '',

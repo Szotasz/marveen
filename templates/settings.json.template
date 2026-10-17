@@ -5,10 +5,6 @@
   "effortLevel": "high",
   "permissions": {
     "deny": [
-      "Bash(curl *https://*)",
-      "Bash(*/curl *https://*)",
-      "Bash(wget *)",
-      "Bash(*/wget *)",
       "Bash(nc *)",
       "Bash(*/nc *)",
       "Bash(ncat *)",
