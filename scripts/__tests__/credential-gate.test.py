@@ -316,6 +316,13 @@ def test_scope_and_drafts():
     check("a manage_email search (no letter body) passes", r.returncode == 0, r.stderr)
     r = gate(store, "mcp__claude_ai_Gmail__reply", {"messageId": "m-1", "body": LETTER})
     check("a connector reply is anchored to its messageId and denied", r.returncode == 2, r.stderr)
+    # A tool prefix (the vendored Gmail MCP prepends one verbatim) or a server
+    # whose segment is not exactly "gmail" left reply_all out of scope: the
+    # credential went out unread.
+    for name in ("mcp__gmail__v2_reply_all", "mcp__server-gmail-autoauth-mcp__reply_all",
+                 "mcp__claude_ai_Gmail__work-reply"):
+        r = gate(store, name, {"messageId": "m-2", "body": LETTER})
+        check(f"{name} with a credential is in scope and denied", r.returncode == 2, r.stderr)
     check("a Bash call that is not a send passes", gate(store, "Bash", {"command": "ls -la"}).returncode == 0)
     check("a tool that cannot carry a letter passes", gate(store, "Read", {"file_path": "/x"}).returncode == 0)
     r = gate(store, "mcp__mail__create_draft", {"subject": "x", "body": LETTER})

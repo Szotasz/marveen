@@ -820,6 +820,60 @@ with tempfile.TemporaryDirectory() as td:
     check("control: the host's own sqlite3 really executes the replacement expression",
           sqlite3.connect(":memory:").execute(f"SELECT {NOW_S}").fetchone()[0] > 1_700_000_000)
 
+# --- tool names: a prefix or another server name does not move a send out of scope ---
+# The vendored Gmail MCP prepends its tool prefix verbatim (mcp__gmail__v2_reply_all),
+# and the same server is often registered under another name
+# (mcp__server-gmail-autoauth-mcp__reply_all). The scope regex this gate carried,
+# `send_email|manage_email|gmail__(reply|reply_all|send_message|forward)$`, saw none
+# of those, and send_draft not at all: each exited 0 even at level 1.
+SEND_DRAFT = {"tool_name": "mcp__gmail__send_draft", "tool_input": {"draftId": "r-1"}}
+PREFIXED_SENDS = (
+    ("mcp__gmail__v2_reply_all", {"messageId": "m-1", "body": "Kedves Ügyfelünk! Válasz."}),
+    ("mcp__server-gmail-autoauth-mcp__reply_all", {"messageId": "m-1", "body": "Kedves Ügyfelünk! Válasz."}),
+    ("mcp__claude_ai_Gmail__work-send_message", {"to": ["a@b.hu"], "body": "Kedves Ügyfelünk! Törzs."}),
+    ("mcp__gmail__v2_send_email", {"to": ["a@b.hu"], "subject": "Tárgy", "body": "Kedves Ügyfelünk! Törzs."}),
+    ("mcp__google-workspace__v2_manage_email", {"operation": "send", "to": ["a@b.hu"], "body": "Törzs."}),
+    ("mcp__google_workspace__send_gmail_message", {"to": "a@b.hu", "subject": "Tárgy", "body": "Törzs."}),
+)
+with tempfile.TemporaryDirectory() as td:
+    store = make_store(os.path.join(td, "n1"), level=1)
+    code, _, err = run_gate(store, SEND_DRAFT)
+    check("level 1: send_draft DENIED", code == 2 and "szint 1" in err, f"exit={code}")
+    for name, ti in PREFIXED_SENDS:
+        code, _, err = run_gate(store, {"tool_name": name, "tool_input": ti})
+        check(f"level 1: {name} DENIED", code == 2 and "szint 1" in err, f"exit={code} err={err[:120]!r}")
+    for name in ("mcp__gmail__v2_draft_email", "mcp__gmail__work-update_draft", "mcp__workmail__create_draft",
+                 "mcp__gmail__v2_read_email", "mcp__gmail__v2_search_emails"):
+        code, _, err = run_gate(store, {"tool_name": name, "tool_input": {"to": ["a@b.hu"], "body": "x"}})
+        check(f"level 1: {name} (draft or read) still passes", code == 0, f"exit={code} err={err[:120]!r}")
+    code, _, err = run_gate(store, {"tool_name": "mcp__google-workspace__manage_emails_bulk",
+                                    "tool_input": {"operation": "send", "to": ["a@b.hu"], "body": "x"}})
+    check("level 1: a manage_email look-alike stays in this gate's scope (substring, judged by operation)",
+          code == 2 and "szint 1" in err, f"exit={code}")
+    code, _, _ = run_gate(store, {"tool_name": "mcp__plugin_telegram_telegram__reply",
+                                  "tool_input": {"chat_id": "1", "text": "x"}})
+    check("level 1: the Telegram reply tool is not a mail send", code == 0, f"exit={code}")
+
+    store = make_store(os.path.join(td, "n2"), level=2)
+    code, _, err = run_gate(store, SEND_DRAFT)
+    check("level 2: send_draft DENIED, pointing to send_email with the full envelope",
+          code == 2 and "send_draft nem horgonyozhato" in err and "send_email" in err,
+          f"exit={code} err={err[:160]!r}")
+    reply = {"tool_name": "mcp__gmail__v2_reply_all",
+             "tool_input": {"messageId": "m-7", "body": "Kedves Ügyfelünk! Válasz."}}
+    code, _, err = run_gate(store, reply)
+    anchor = anchor_from_stderr(err)
+    check("level 2: a prefixed reply_all is anchored like the bare one (deny + anchor)",
+          code == 2 and anchor is not None and "messageId:m-7" in err, f"exit={code} err={err[:160]!r}")
+    approve(store, anchor)
+    code, out, _ = run_gate(store, reply)
+    check("level 2: the approved prefixed reply_all goes out once", code == 0 and "felhasznalva" in out,
+          f"exit={code}")
+
+    store = make_store(os.path.join(td, "n3"), level=3)
+    code, _, _ = run_gate(store, SEND_DRAFT)
+    check("level 3: send_draft allowed", code == 0, f"exit={code}")
+
 # --- HOOKDEPLOAD1008: a dependency that does not load DENIES (exit 2), never exit 1 ---
 # The extractor used to be imported at MODULE level, outside the __main__ net:
 # a broken email_extract.py (a conflicted stash pop leaves exactly such a
@@ -984,6 +1038,39 @@ with tempfile.TemporaryDirectory() as td:
     LSX = {"tool_name": "Bash", "tool_input": {"command": "ls -la"}}
     code, _, err = run_gate(store, LSX)
     check("a non-send Bash -> not checked, allowed", code == 0, f"exit={code} err={err[:200]!r}")
+    # Scope through the shared classifier (#1995): prefixed and off-server names
+    # are in the owner-CC check, send_draft and update_draft are not.
+    for name in ("mcp__gmail__v2_send_email", "mcp__server-gmail-autoauth-mcp__reply_all",
+                 "mcp__gmail__v2_reply_all", "mcp__workspace__send_gmail_message"):
+        code, _, err = run_gate(store, {"tool_name": name,
+                                        "tool_input": {"to": ["a@b.hu"], "subject": "x", "body": "y"}})
+        check(f"level 3: {name} without the owner -> DENIED", code == 2 and OWNER in err,
+              f"exit={code} err={err[:200]!r}")
+    for name in ("mcp__gmail__v2_draft_email", "mcp__workspace__draft_gmail_message"):
+        code, _, err = run_gate(store, {"tool_name": name,
+                                        "tool_input": {"to": ["a@b.hu"], "subject": "x", "body": "y"}})
+        check(f"{name} without the owner -> DENIED as a draft", code == 2 and "piszkozat" in err,
+              f"exit={code} err={err[:200]!r}")
+    for name in ("mcp__gmail__send_draft", "mcp__gmail__v2_update_draft"):
+        code, _, err = run_gate(store, {"tool_name": name, "tool_input": {"draftId": "d1"}})
+        check(f"level 3: {name} (no envelope) -> not owner-CC checked, allowed", code == 0,
+              f"exit={code} err={err[:200]!r}")
+
+    # The classifier lives in email_extract.py too: a broken extractor must not
+    # change what levels 1 and 3 decide for a name-classified tool either.
+    broken = copy_hook_tree(os.path.join(td, "broken-extract-names"))
+    break_module(broken, "email_extract.py")
+    for level, payload, want in ((1, SEND_DRAFT, 2), (3, SEND_DRAFT, 0),
+                                 (1, {"tool_name": "mcp__gmail__v2_reply_all", "tool_input": {"messageId": "m"}}, 2),
+                                 (1, {"tool_name": "mcp__gmail__read_email", "tool_input": {"messageId": "m"}}, 0),
+                                 (1, {"tool_name": "mcp__x__manage_email", "tool_input": {"operation": "search"}}, 0)):
+        code, _, err = run_gate(make_store(os.path.join(td, f"dn-{level}-{want}-{payload['tool_name']}"), level=level),
+                                payload, gate=broken)
+        check(f"broken email_extract.py -> {payload['tool_name']} at level {level} exits {want}",
+              code == want, f"exit={code} err={err[:200]!r}")
+    code, _, err = run_gate(make_store(os.path.join(td, "dn-2"), level=2), SEND_DRAFT, gate=broken)
+    check("broken email_extract.py -> send_draft at level 2 DENIED, naming the module",
+          code == 2 and "email_extract.py" in err, f"exit={code} err={err[:200]!r}")
 
 print()
 if failed:

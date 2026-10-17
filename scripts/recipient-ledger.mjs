@@ -14,7 +14,7 @@
 // it proves an agent NAMED A SOURCE before using the address, and it keeps that
 // claim readable for the owner. That is the failure this gate is aimed at.
 
-import { readFileSync, writeFileSync, mkdirSync, realpathSync, chmodSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdirSync, realpathSync, chmodSync, renameSync, rmSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 
@@ -59,30 +59,125 @@ export function normalizeAddress(raw) {
   return (angled ? angled[1] : s).trim().toLowerCase()
 }
 
-// Split a recipient field into addresses. Handles the comma-separated string
-// form (google-workspace manage_email) and the array form (Gmail MCP tools).
+// Parse a recipient field into the addresses a mail tool will deliver to,
+// plus every piece the parser cannot vouch for.
+//
+// The splitter that stood here comma-split only a STRING field, never an array
+// item, and normalizeAddress takes only the first <...>: to: ["A
+// <known@example.com>, B <invented@example.org>"] was checked as
+// known@example.com alone, while Gmail joins the array into one To header and
+// delivers to both; "Known <known@example.com> <invented@example.org>" likewise. Now EVERY item (string field or array element) is
+// split on , and ; (the separators a To/Cc/Bcc header and the manage_email
+// string form use), and each piece must parse as exactly one address:
+//   - no '@' at all: carries no deliverable address (a display-name fragment
+//     such as the '"Doe' of '"Doe, John" <j@example.com>', or an empty piece), skipped;
+//   - more than one '@': ambiguous (two addresses, an address in the display
+//     name, a header continuation) -> unparseable, with ONE exception: a
+//     display name that IS the bracketed address ("jane@x.com" <jane@x.com>,
+//     quoted or not, compared case-insensitively), the form many mail
+//     clients write when there is no real name;
+//   - '<' or '>' anywhere: only "display <addr>" with ONE bracket pair at the
+//     end parses, and the '@' must sit inside the brackets;
+//   - the address itself must be free of whitespace, quotes, brackets and
+//     separators.
+// A non-scalar array item (nested array / object) or an object field value is
+// unparseable: its string form differs between tools. A gate DENIES on any
+// unparseable piece (email-send-gate.mjs unparseableRecipients). Whitespace is
+// spelled out as ASCII, so this cannot drift from a Python twin on exotic
+// Unicode spaces.
+const ADDR_SEPARATOR = /[,;]/
+const ADDR_TRIM = /^[ \t\r\n\f\v]+|[ \t\r\n\f\v]+$/g
+const ANGLE_FORM = /^([^<>]*)<([^<>]*)>$/
+const BARE_ADDRESS = /^[^ \t\r\n\f\v"<>()[\]\\,;:@]+@[^ \t\r\n\f\v"<>()[\]\\,;:@]+$/
+
+function parseAddressPiece(piece) {
+  const ats = (piece.match(/@/g) ?? []).length
+  let addr = piece
+  if (/[<>]/.test(piece)) {
+    const m = piece.match(ANGLE_FORM)
+    if (!m) return null
+    addr = m[2].replace(ADDR_TRIM, '')
+    if (ats > 1) {
+      // the display name must BE the address: anything else hides a second one
+      const display = m[1].replace(ADDR_TRIM, '').replace(/^"(.*)"$/, '$1').replace(ADDR_TRIM, '')
+      if (display.toLowerCase() !== addr.toLowerCase()) return null
+    }
+  } else if (ats > 1) {
+    return null
+  }
+  return BARE_ADDRESS.test(addr) ? addr.toLowerCase() : null
+}
+
+export function parseAddresses(value) {
+  const addresses = []
+  const unparseable = []
+  if (value === undefined || value === null) return { addresses, unparseable }
+  const items = Array.isArray(value) ? value : [value]
+  for (const item of items) {
+    if (item === undefined || item === null) continue
+    if (typeof item === 'object') {
+      unparseable.push(JSON.stringify(item))
+      continue
+    }
+    for (const raw of String(item).split(ADDR_SEPARATOR)) {
+      const piece = raw.replace(ADDR_TRIM, '')
+      if (!piece.includes('@')) continue
+      const addr = parseAddressPiece(piece)
+      if (addr === null) unparseable.push(piece)
+      else addresses.push(addr)
+    }
+  }
+  return { addresses, unparseable }
+}
+
+// Split a recipient field into addresses: the comma-separated string form
+// (google-workspace manage_email) and the array form (Gmail MCP tools). It
+// DROPS what it cannot parse, so it is not a gate primitive on its own: a gate
+// reads parseAddresses(...).unparseable and denies on it.
 export function splitAddresses(value) {
-  const items = Array.isArray(value) ? value : String(value ?? '').split(',')
-  return items.map(normalizeAddress).filter((a) => a.includes('@'))
+  return parseAddresses(value).addresses
 }
 
 export function emptyLedger() {
   return { version: LEDGER_VERSION, recipients: {} }
 }
 
+// Read the ledger, with the verdict spelled out: { ledger } when usable, else
+// { ledger: null, missing, reason }. `missing` is true ONLY when the file does
+// not exist (ENOENT); every other failure (unreadable, not JSON, wrong shape)
+// is a present-but-unusable ledger, which a writer must never replace (see
+// addRecipient).
+export function inspectLedger(path = ledgerPath(), readFile = (p) => readFileSync(p, 'utf-8')) {
+  let raw
+  try {
+    raw = readFile(path)
+  } catch (err) {
+    if (err?.code === 'ENOENT') return { ledger: null, missing: true, reason: `the ledger does not exist (${path})` }
+    return { ledger: null, missing: false, reason: `the ledger cannot be read (${path}: ${err?.message ?? err})` }
+  }
+  let parsed
+  try {
+    parsed = JSON.parse(raw)
+  } catch (err) {
+    return { ledger: null, missing: false, reason: `the ledger is not valid JSON (${path}: ${err?.message ?? err})` }
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { ledger: null, missing: false, reason: `the ledger is not a JSON object (${path})` }
+  }
+  const recipients = parsed.recipients
+  // An array is an object to typeof, but an address written into it as a key
+  // vanishes on the next JSON.stringify: a recipients ARRAY is unusable too.
+  if (!recipients || typeof recipients !== 'object' || Array.isArray(recipients)) {
+    return { ledger: null, missing: false, reason: `the ledger has no recipients map (${path})` }
+  }
+  return { ledger: { version: parsed.version ?? LEDGER_VERSION, recipients }, missing: false, reason: null }
+}
+
 // Read the ledger. Returns null when it cannot be read or parsed -- the caller
 // decides what that means; the gate treats it as "nothing is verified" and
 // blocks, because a broken evidence store must not silently open the gate.
 export function loadLedger(path = ledgerPath(), readFile = (p) => readFileSync(p, 'utf-8')) {
-  try {
-    const parsed = JSON.parse(readFile(path))
-    if (!parsed || typeof parsed !== 'object') return null
-    const recipients = parsed.recipients
-    if (!recipients || typeof recipients !== 'object') return null
-    return { version: parsed.version ?? LEDGER_VERSION, recipients }
-  } catch {
-    return null
-  }
+  return inspectLedger(path, readFile).ledger
 }
 
 // Pure lookup over an already-loaded ledger.
@@ -97,7 +192,17 @@ export function addRecipient(address, source, note, path = ledgerPath()) {
   if (!isValidSource(source)) {
     throw new Error(`invalid --source "${source}". Accepted: ${SOURCE_HELP}`)
   }
-  const ledger = loadLedger(path) ?? emptyLedger()
+  // A fresh ledger ONLY when the file is absent. A present but unusable file
+  // (a truncated write, a conflicted merge, a hand edit gone wrong) used to be
+  // replaced by an empty ledger plus this one entry, silently deleting every
+  // verified recipient. Now the write is refused and the file is left
+  // byte-identical: fix or restore it first.
+  const seen = inspectLedger(path)
+  if (!seen.ledger && !seen.missing) {
+    throw new Error(`refusing to overwrite the existing ledger, it is not usable: ${seen.reason}. ` +
+      'Repair it by hand or restore it from a backup, then add again (overwriting it would drop every verified recipient).')
+  }
+  const ledger = seen.ledger ?? emptyLedger()
   ledger.recipients[addr] = {
     source: String(source).trim(),
     note: String(note ?? '').trim(),
@@ -107,12 +212,21 @@ export function addRecipient(address, source, note, path = ledgerPath()) {
   // LEDGERMODE920: the ledger is a list of real customer addresses and it
   // lands in a 0755 store/, so the default 0644 made it world-readable to
   // every local account. 0600 keeps it to the owner the gate runs as.
-  writeFileSync(path, `${JSON.stringify(ledger, null, 2)}\n`, { mode: 0o600 })
-  // mode: on writeFileSync only applies when the file is CREATED -- an
-  // install that already has a 0644 ledger would keep it forever. chmod
-  // the existing file too, and do not fail the write if the fs says no
-  // (a mounted or foreign-owned store/ must not block adding an address).
-  try { chmodSync(path, 0o600) } catch { /* mode is best effort, the write is not */ }
+  // Written to a temp file in the same directory and renamed over the ledger:
+  // a write cut short (a full disk, a killed process) leaves the old ledger
+  // in place instead of a truncated one, which every gate would then refuse.
+  const tmp = `${path}.tmp-${process.pid}-${Date.now()}`
+  try {
+    writeFileSync(tmp, `${JSON.stringify(ledger, null, 2)}\n`, { mode: 0o600 })
+    // mode: on writeFileSync only applies when the file is CREATED; the temp
+    // file always is, and chmod covers a umask that narrowed it further or a
+    // filesystem that ignores it. Best effort: the write itself is not.
+    try { chmodSync(tmp, 0o600) } catch { /* mode is best effort, the write is not */ }
+    renameSync(tmp, path)
+  } catch (err) {
+    try { rmSync(tmp, { force: true }) } catch { /* nothing to clean */ }
+    throw err
+  }
   return ledger.recipients[addr]
 }
 
@@ -155,6 +269,11 @@ if (isInvokedDirectly()) {
   const { positional, flags } = parseArgs(process.argv.slice(2))
   const [cmd, arg] = positional
   try {
+    if (cmd === 'check' || cmd === 'list') {
+      // An unusable ledger is named, not shown as "(empty)" / "NOT VERIFIED".
+      const seen = inspectLedger()
+      if (!seen.ledger && !seen.missing) throw new Error(`the ledger is not usable: ${seen.reason}`)
+    }
     if (cmd === 'add') {
       const entry = addRecipient(arg, flags.source, flags.note)
       process.stdout.write(`added ${normalizeAddress(arg)} (source: ${entry.source})\n`)

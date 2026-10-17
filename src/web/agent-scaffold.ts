@@ -913,8 +913,26 @@ export function hasThreadReplyCapability(name: string, capabilities: string[]): 
 // keeps the draft surface reachable even under a server name with no gmail in
 // it at all -- a name-keyed matcher goes blind on the next new name, so the
 // draft surface is pinned by the OPERATION too, not only by the server.
+// The gates classify a tool by its base-name SUFFIX on a server of any name
+// (email_extract.classify_mail_tool / classifyMailTool), but a hook that never
+// FIRES checks nothing, and `.*[Gg]mail.*__.*` needs "gmail" in the SERVER
+// segment: a mail MCP registered under any other name exposed send_draft /
+// update_draft / create_draft / reply_all (and the Google Workspace MCP's
+// send_gmail_message / draft_gmail_message) with no hook at all. So every base
+// the classifiers treat as a send or a draft is its own alternative. The three
+// generic connector words (send_message / reply / forward) stay tied to
+// "gmail" -- in the classifiers AND here -- because the Telegram plugin's tool
+// is `..._telegram__reply`, and the email gates must never fire on it. The
+// `[Gg][Mm][Aa][Ii][Ll].*<word>` form is case-insensitive like the
+// classifiers' lowercased test, and it also reaches a "gmail" that sits in a
+// tool PREFIX (mcp__mail__gmail_reply), which `[Gg]mail.*__` cannot. Kept a
+// FLAT alternation (no inner `|`): the drift test splits it on '|'.
+// Binding: email-gate-matcher-drift.test.ts asserts this matcher fires for
+// every name either classifier gates, and never for the Telegram tools.
 export const EMAIL_GATE_MATCHER =
   'Bash|.*send_email.*|.*manage_email.*|.*[Gg]mail.*__.*|.*draft_email.*'
+  + '|.*send_draft.*|.*update_draft.*|.*create_draft.*|.*reply_all.*|.*send_gmail_message.*|.*draft_gmail_message.*'
+  + '|.*[Gg][Mm][Aa][Ii][Ll].*send_message.*|.*[Gg][Mm][Aa][Ii][Ll].*reply.*|.*[Gg][Mm][Aa][Ii][Ll].*forward.*'
 
 // Does an existing PreToolUse array carry an email-gate entry whose matcher is
 // NOT the current one? Pure + exported: this is the predicate that lets

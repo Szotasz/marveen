@@ -1155,7 +1155,7 @@ def accentless_evidence(words):
 # calls these) fail-open as designed.
 try:
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from email_extract import collect_bash_body, collect_mcp_body  # noqa: E402
+    from email_extract import collect_bash_body, collect_mcp_body, classify_mail_tool  # noqa: E402
 except Exception as _extract_exc:  # noqa: BLE001 -- deliberate fail-closed stub
     _EXTRACT_ERR = repr(_extract_exc)
 
@@ -1164,6 +1164,19 @@ except Exception as _extract_exc:  # noqa: BLE001 -- deliberate fail-closed stub
 
     def collect_mcp_body(tool_input: dict):
         return ""
+
+    def classify_mail_tool(tool_name):
+        # Without the shared classifier nothing can be classified precisely.
+        # Crude SUPERSET instead: every outbound name holds one of these words,
+        # so each lands on the unreadable (fail-closed) branch of main();
+        # manage_email keeps its operation test, and plain reads (search /
+        # read / list) still pass.
+        n = str(tool_name or "").lower()
+        if n == "bash":
+            return None
+        if "manage_email" in n:
+            return "manage_email"
+        return "draft" if re.search(r"send|draft|reply|forward", n) else None
 
 
 # --- Telegram reply (GATETG816) ---------------------------------------------
@@ -1493,13 +1506,23 @@ MANAGE_EMAIL_OUTBOUND_OPS = {"send", "reply", "replyall", "forward"}
 # GMAILCONNECTOR914: the server segment is NOT always exactly "gmail" -- the
 # claude.ai connector is mcp__claude_ai_Gmail__send_message, one underscore
 # before Gmail, and `(^|__)gmail__` never matched it, so its sends fell through
-# to sys.exit(0) with no audit (measured 2026-08-30, 2026-09-08). Anything
-# ending in "gmail__<send-shaped tool>" is a send now, whatever the prefix.
+# to sys.exit(0) with no audit (measured 2026-08-30, 2026-09-08).
+# The names are now classified by the shared suffix classifier
+# (email_extract.classify_mail_tool), a superset of the pattern that stood here:
+# a tool prefix (mcp__gmail__v2_reply_all) or a server without "gmail__" right
+# before the base (mcp__server-gmail-autoauth-mcp__reply_all) no longer moves a
+# send out of the audit. EMAIL_TOOL_RE stays for importers only.
 EMAIL_TOOL_RE = re.compile(
     r"(send_email|create_draft|draft_email|update_draft"
     r"|gmail__(reply|reply_all|send_message|forward)$)",
     re.I,
 )
+# The kinds whose payload carries OUR text and is audited here. send_draft is
+# deliberately NOT one of them: it carries only a draftId, so there is no text
+# of ours in the call (the draft's text was audited when it was written), and
+# an empty payload would turn every send_draft into a permanent fail-closed
+# deny, overruling the approval gate's level decision for it.
+_AUDITED_MAIL_KINDS = ("send_email", "connector_send", "draft")
 
 
 # --- Inter-agent messages: HOMOGLYPH-ONLY (INTERAGENTHOMOGLIF923) -----------
@@ -1695,8 +1718,7 @@ def main():
     if not isinstance(tool_input, dict):
         shape = type(tool_input).__name__
         gated = (re.search(r"telegram.*__reply$", tool, re.I)
-                 or re.search(r"(^|__)manage_email$", tool, re.I)
-                 or EMAIL_TOOL_RE.search(tool)
+                 or classify_mail_tool(tool) is not None
                  or tool == "Bash")
         if not gated:
             sys.exit(0)  # not a send: the net must never widen the gate
@@ -1733,7 +1755,8 @@ def main():
     # while the same text was blocked on the Telegram path. Same class as the
     # email-send-gate's MANAGEOP904 fix: a multiplexer cannot be classified by
     # its name, only by the operation it was asked to perform.
-    if re.search(r"(^|__)manage_email$", tool, re.I):
+    mail_kind = classify_mail_tool(tool)
+    if mail_kind == "manage_email":
         op = str(tool_input.get("operation") or tool_input.get("action") or "").strip().lower()
         if op not in MANAGE_EMAIL_OUTBOUND_OPS:
             sys.exit(0)  # search/read/labels/trash...: no outgoing text of ours
@@ -1743,7 +1766,7 @@ def main():
         if op == "forward" and not str(tool_input.get("body") or "").strip():
             sys.exit(0)
         text, unreadable = collect_mcp_body(tool_input), None
-    elif EMAIL_TOOL_RE.search(tool):
+    elif mail_kind in _AUDITED_MAIL_KINDS:
         text, unreadable = collect_mcp_body(tool_input), None
     elif tool == "Bash":
         cmd = str(tool_input.get("command") or "")
