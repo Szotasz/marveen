@@ -886,6 +886,11 @@ async function loadKanban() {
         if (sortSel) sortSel.value = storedSort
       }
     }
+    // Best effort and in parallel: the board must still load when the status
+    // endpoint is slow or fails; it just shows no live markers then.
+    const agentStatusP = fetch('/api/agents/status')
+      .then((r) => (r.ok ? r.json() : []))
+      .catch(() => [])
     const [cardsRes, assigneesRes, projectsRes, labelsRes] = await Promise.all([
       fetch('/api/kanban'),
       fetch('/api/kanban/assignees'),
@@ -896,6 +901,7 @@ async function loadKanban() {
     kanbanAssignees = await assigneesRes.json()
     kanbanProjects = await projectsRes.json()
     kanbanAllLabels = await labelsRes.json()
+    setKanbanAgentStatus(await agentStatusP)
     populateProjectFilter()
     populateProjectSuggestions()
     setupAssigneeFilter()
@@ -1553,6 +1559,66 @@ function updateSubtaskBadges(embeddedSubtaskIds) {
   }
 }
 
+// Live agent state on the card (one human, many agents). An in_progress card
+// says an agent CLAIMED the work; it does not say the agent is still on it --
+// a stopped or stuck agent's card looks exactly like a moving one. The state is
+// already derived per agent by /api/agents/status (src/web/agent-status.ts), so
+// the board borrows that instead of guessing anything from the card itself.
+// The state belongs to the AGENT, not to the card: an agent holding two cards
+// in progress shows the same marker on both. 'unknown' renders nothing --
+// saying nothing beats asserting a state nobody measured.
+let kanbanAgentStatus = new Map()
+
+const KANBAN_AGENT_LIVE_LEVEL = {
+  working: 'ok',
+  idle: 'idle',
+  stalled: 'warn',
+  dead: 'bad',
+  stopped: 'bad',
+  unreachable: 'bad',
+}
+
+function setKanbanAgentStatus(rows) {
+  kanbanAgentStatus = new Map()
+  if (!Array.isArray(rows)) return
+  for (const r of rows) {
+    if (r && typeof r.agent === 'string') kanbanAgentStatus.set(r.agent.trim().toLowerCase(), r)
+  }
+}
+
+// An agent with several cards in progress is busy on at most one of them. When
+// the status names a DIFFERENT card as the agent's current work, 'working' and
+// 'stalled' would be false on this one, so it says where the agent is instead,
+// in grey. Stopped/dead/unreachable are true for every card the agent holds.
+function kanbanAgentLiveLevel(card) {
+  if (card.status !== 'in_progress' || !card.assignee) return null
+  const row = kanbanAgentStatus.get(String(card.assignee).trim().toLowerCase())
+  if (!row) return null
+  const level = KANBAN_AGENT_LIVE_LEVEL[row.state]
+  if (!level) return null
+  const otherCardId = row.work && row.work.kind === 'card' && row.work.cardId && row.work.cardId !== card.id
+    ? row.work.cardId
+    : null
+  if (otherCardId && (row.state === 'working' || row.state === 'stalled')) {
+    return { level: 'idle', row, elsewhere: kanbanCards.find((c) => c.id === otherCardId) || null }
+  }
+  return { level, row, elsewhere: null }
+}
+
+function kanbanAgentLiveBadge(card) {
+  const live = kanbanAgentLiveLevel(card)
+  if (!live) return ''
+  const { level, row, elsewhere } = live
+  const label = elsewhere
+    ? t('kanban.agent_live.elsewhere', { seq: elsewhere.seq != null ? '#' + elsewhere.seq : '' })
+    : t('kanban.agent_live.' + row.state)
+  let tip = t('kanban.agent_live.tooltip', { state: label })
+  if (typeof row.lastSignalAgeSec === 'number') {
+    tip += ' · ' + t('kanban.agent_live.last_signal', { age: formatDurationShort(row.lastSignalAgeSec) })
+  }
+  return `<span class="kanban-card-agent-live kanban-agent-live-${escapeAttr(level)}" data-agent-state="${escapeAttr(row.state)}" title="${escapeAttr(tip)}"><span class="kanban-agent-live-dot"></span>${escapeHtml(label)}</span>`
+}
+
 function createCardEl(card, embeddedChildren = []) {
   const el = document.createElement('div')
   el.className = 'kanban-card'
@@ -1563,6 +1629,8 @@ function createCardEl(card, embeddedChildren = []) {
   // a move that looks like it failed. So the card is simply not draggable
   // there; the touch path reads the same flag.
   el.draggable = kanbanSortBy === 'manual'
+  const agentLive = kanbanAgentLiveLevel(card)
+  if (agentLive) el.dataset.agentLive = agentLive.level
 
   // Assignee chip. Match the card's assignee against the known list
   // case-insensitively (a card stored as "gorcsevivan" must still match the
@@ -1674,7 +1742,7 @@ function createCardEl(card, embeddedChildren = []) {
   el.innerHTML = `
     ${projectHtml}
     <div class="kanban-card-title">${seqHtml}${escapeHtml(card.title)}</div>
-    <div class="kanban-card-footer">${assigneeHtml}${dueHtml}${blockedHtml}</div>
+    <div class="kanban-card-footer">${assigneeHtml}${kanbanAgentLiveBadge(card)}${dueHtml}${blockedHtml}</div>
     ${labelsHtml}
     <div class="kanban-card-actions">
       <button class="card-breakdown-btn" title="${t('kanban.btn.breakdown')}" aria-label="${t('kanban.btn.breakdown')}">⚡</button>
