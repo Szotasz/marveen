@@ -105,7 +105,11 @@ describe('buildMainSessionRespawnCmd', () => {
       config: mainConfigDecisionForTest({ isolatedConfigDir: '/home/solarforce/.claude-second', ownCredentials: true, fleetToken: true }),
     })
     expect(cmd).toContain("export CLAUDE_CONFIG_DIR='/home/solarforce/.claude-second'")
-    expect(cmd).not.toContain('CLAUDE_CODE_OAUTH_TOKEN')
+    expect(cmd).not.toContain('export CLAUDE_CODE_OAUTH_TOKEN')
+    expect(cmd).not.toContain('.claude-oauth-token')
+    // The pane inherits the tmux global env, which carries the fleet token: it
+    // must be dropped, or it outranks the dir's own login (2026-10-16).
+    expect(cmd).toContain('unset CLAUDE_CODE_OAUTH_TOKEN')
   })
 
   // Token-mode rotated plan: the generic isolated dir, but the PLAN's own
