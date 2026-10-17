@@ -99,6 +99,21 @@ export function buildOwnerApprovalText(approval: Approval): string {
   ].join('\n')
 }
 
+// The informative variant, for a row the owner already approved in the chat
+// before it was filed. Pure + exported for tests. It must NOT read as a
+// question -- the owner answering "mehet" a second time to a done deal is
+// exactly the noise this replaces -- but it keeps the action visible in the
+// owner's chat.
+export function buildOwnerChatApprovedText(approval: Approval, ownerMessageId: number | string): string {
+  return [
+    `[JÓVÁHAGYVA A CHATBEN] ${approval.agent_id} | ${approval.category}`,
+    approval.action_description,
+    `Jóváhagyás: a chat-üzeneted (üzenet-azonosító: ${ownerMessageId})`,
+    `Nincs további teendőd, ez csak tájékoztatás.`,
+    `Napló: Dashboard -> Jóváhagyások (id: ${approval.id})`,
+  ].join('\n')
+}
+
 // When the owner send is suppressed or fails AND the requester is the main
 // agent, there is no in-band signal left at all: the leg-2 short-circuit
 // below skips the main-agent message unconditionally. The old self-notify was
@@ -129,7 +144,19 @@ function fallbackInBand(approval: Approval, reason: string): void {
 // must not wait on the Telegram round-trip, and a failed send must not fail
 // the request -- but it must be LOUD in the logs, because a silently
 // undelivered approval is exactly the closed loop this fixes.
-function notifyOwner(approval: Approval): void {
+//
+// With `chatApprovedMessageId` set, the row is already approved (the owner said
+// yes in that chat message) and the owner gets the informative note instead of
+// the question. Two things differ on that path: the note's own message id is
+// NOT stamped (telegram_message_id already names the owner's approving
+// message), and a failed note does NOT fall back in-band -- the only requester
+// allowed on this path is the main agent, which already knows the action is
+// approved; an [APPROVAL_REQUEST] marker would mislead it.
+function notifyOwner(approval: Approval, chatApprovedMessageId: number | string | null = null): void {
+  const informative = chatApprovedMessageId != null
+  const text = informative
+    ? buildOwnerChatApprovedText(approval, chatApprovedMessageId)
+    : buildOwnerApprovalText(approval)
   void (async () => {
     // APPROVALVAK821 fixed this path so the request reaches the OWNER and not
     // only the main agent's queue -- but the fix went out Telegram-only, so on
@@ -147,17 +174,17 @@ function notifyOwner(approval: Approval): void {
     if (CHANNEL_PROVIDER === 'telegram' && TELEGRAM_BOT_TOKEN) {
       const ownerChat = resolveOwnerChatId()
       if (!ownerChat) {
-        logger.warn({ approvalId: approval.id }, 'approval owner notification suppressed: no owner chat')
-        fallbackInBand(approval, 'no-owner-chat')
+        logger.warn({ approvalId: approval.id, informative }, 'approval owner notification suppressed: no owner chat')
+        if (!informative) fallbackInBand(approval, 'no-owner-chat')
         return
       }
       try {
-        const messageId = await sendTelegramMessage(TELEGRAM_BOT_TOKEN, ownerChat, buildOwnerApprovalText(approval))
-        if (messageId != null) setApprovalTelegramMessageId(approval.id, messageId)
-        logger.info({ approvalId: approval.id, messageId }, 'approval owner notification sent')
+        const messageId = await sendTelegramMessage(TELEGRAM_BOT_TOKEN, ownerChat, text)
+        if (!informative && messageId != null) setApprovalTelegramMessageId(approval.id, messageId)
+        logger.info({ approvalId: approval.id, messageId, informative }, 'approval owner notification sent')
       } catch (err) {
-        logger.warn({ err, approvalId: approval.id }, 'approval owner notification FAILED -- the request is only visible on the dashboard')
-        fallbackInBand(approval, 'send-failed')
+        logger.warn({ err, approvalId: approval.id, informative }, 'approval owner notification FAILED -- the request is only visible on the dashboard')
+        if (!informative) fallbackInBand(approval, 'send-failed')
       }
       return
     }
@@ -171,26 +198,26 @@ function notifyOwner(approval: Approval): void {
     // SOURCE and requires every failure path to name its fallback explicitly.
     // That test exists so a refactor cannot quietly drop a fallback -- and it
     // caught exactly that when this branch first used a template string.
-    const r = await sendOwnerMessage(buildOwnerApprovalText(approval))
+    const r = await sendOwnerMessage(text)
     if (r.sent) {
-      logger.info({ approvalId: approval.id, provider: CHANNEL_PROVIDER }, 'approval owner notification sent')
+      logger.info({ approvalId: approval.id, provider: CHANNEL_PROVIDER, informative }, 'approval owner notification sent')
       return
     }
     if (r.reason === 'no-token') {
-      logger.warn({ approvalId: approval.id, provider: CHANNEL_PROVIDER },
+      logger.warn({ approvalId: approval.id, provider: CHANNEL_PROVIDER, informative },
         'approval owner notification suppressed: no channel token')
-      fallbackInBand(approval, 'no-token')
+      if (!informative) fallbackInBand(approval, 'no-token')
       return
     }
     if (r.reason === 'no-owner-chat') {
-      logger.warn({ approvalId: approval.id, provider: CHANNEL_PROVIDER },
+      logger.warn({ approvalId: approval.id, provider: CHANNEL_PROVIDER, informative },
         'approval owner notification suppressed: no owner chat')
-      fallbackInBand(approval, 'no-owner-chat')
+      if (!informative) fallbackInBand(approval, 'no-owner-chat')
       return
     }
-    logger.warn({ approvalId: approval.id, provider: CHANNEL_PROVIDER, reason: r.reason },
+    logger.warn({ approvalId: approval.id, provider: CHANNEL_PROVIDER, reason: r.reason, informative },
       'approval owner notification FAILED -- the request is only visible on the dashboard')
-    fallbackInBand(approval, 'send-failed')
+    if (!informative) fallbackInBand(approval, 'send-failed')
   })()
 }
 
@@ -235,7 +262,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
 
   // POST /api/approvals -- create new approval request
   if (path === '/api/approvals' && method === 'POST') {
-    let body: { agent_id?: unknown; category?: unknown; action_description?: unknown; action_payload?: unknown; timeout_seconds?: unknown; content_hash?: unknown }
+    let body: { agent_id?: unknown; category?: unknown; action_description?: unknown; action_payload?: unknown; timeout_seconds?: unknown; content_hash?: unknown; owner_approved_message_id?: unknown }
     try {
       body = JSON.parse((await readBody(req)).toString())
     } catch {
@@ -243,7 +270,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       return true
     }
 
-    const { agent_id, category, action_description, action_payload, timeout_seconds, content_hash } = body
+    const { agent_id, category, action_description, action_payload, timeout_seconds, content_hash, owner_approved_message_id } = body
     if (typeof agent_id !== 'string' || !agent_id.trim()) {
       json(res, { error: 'agent_id is required' }, 400)
       return true
@@ -269,9 +296,44 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       return true
     }
 
+    // The main agent may file an approval for an action the
+    // owner ALREADY approved in the chat, naming the owner's approving
+    // message. Such a row is born approved and the owner is told, not asked.
+    // Only the main agent: it is the one reading the owner's chat. Any other
+    // requester sending the field is refused outright (not silently ignored),
+    // so a caller relying on the field learns at once that it does not apply.
+    // A sub-agent that declares its own name is refused; the check rests on
+    // the self-declared agent_id, and any holder of the shared dashboard token
+    // can send the main agent's name and get a row born approved.
+    //
+    // The server does not verify the id: it does not check that the message
+    // exists, came from the owner, is recent, or refers to this action. Any
+    // value of the right shape passes. Whether the owner approved this action
+    // in the chat is the main agent's judgement, not a server check.
+    //
+    // The id is the owner's approving chat message: a positive integer
+    // (Telegram), or a short id string for providers whose message ids are not
+    // safe integers (a Slack ts, a Discord snowflake). Only an integer id is
+    // stored in the row's telegram_message_id column (INTEGER, the same column
+    // PATCH writes); a string id is kept in the owner note and the log line.
+    let chatApprovedMessageId: number | string | null = null
+    if (owner_approved_message_id !== undefined && owner_approved_message_id !== null) {
+      if (agent_id.trim() !== MAIN_AGENT_ID) {
+        json(res, { error: 'owner_approved_message_id is only accepted from the main agent; a requesting agent cannot pre-approve its own request' }, 400)
+        return true
+      }
+      const okInt = typeof owner_approved_message_id === 'number' && Number.isSafeInteger(owner_approved_message_id) && owner_approved_message_id > 0
+      const okStr = typeof owner_approved_message_id === 'string' && /^[A-Za-z0-9._:-]{1,64}$/.test(owner_approved_message_id)
+      if (!okInt && !okStr) {
+        json(res, { error: 'owner_approved_message_id must be the owner\'s approving chat message id (a positive integer, or an id string of 1-64 [A-Za-z0-9._:-] characters) if provided' }, 400)
+        return true
+      }
+      chatApprovedMessageId = owner_approved_message_id as number | string
+    }
+
     const id = randomUUID()
     const timeout_at = computeTimeoutAt(category, timeout_seconds)
-    const approval = createApproval({
+    let approval = createApproval({
       id,
       agent_id: agent_id.trim(),
       category: category.trim(),
@@ -280,10 +342,17 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       timeout_at,
       content_hash: typeof content_hash === 'string' ? content_hash : null,
     })
+    if (chatApprovedMessageId != null) {
+      // Same resolve path as PATCH, so the row is indistinguishable from a
+      // PATCH-approved one for every reader (e.g. the email-approval-gate).
+      resolveApproval(id, 'approved', `${CHANNEL_PROVIDER}_text`,
+        typeof chatApprovedMessageId === 'number' ? chatApprovedMessageId : null)
+      approval = getApproval(id) ?? approval
+    }
 
-    notifyOwner(approval)
+    notifyOwner(approval, chatApprovedMessageId)
     notifyMainAgent(approval)
-    logger.info({ id, agent_id, category }, 'Approval request created')
+    logger.info({ id, agent_id, category, chatApprovedMessageId }, chatApprovedMessageId != null ? 'Approval created as already approved in chat' : 'Approval request created')
     json(res, approval, 201)
     return true
   }
