@@ -2098,7 +2098,10 @@ export async function runScheduledTaskNow(
     // busy session both get a queued retry that lands once the session is
     // ready. We deliberately do NOT consult skipIfBusy here -- that flag trims
     // redundant cron ticks, but an explicit run-now must not be dropped.
-    if (result === 'starting' || result === 'busy' || result === 'mcp-missing' || result === 'first-run' || result === 'respawning') {
+    // 'usage-limited' is queued the same way: the retry loop goes through the
+    // same usage-limit gate, so it is delivered by the gate's next probe or as
+    // soon as the banner is gone.
+    if (result === 'starting' || result === 'busy' || result === 'mcp-missing' || result === 'first-run' || result === 'respawning' || result === 'usage-limited') {
       const reason = result === 'mcp-missing' ? mcpMissingReason(task.name, agentName) : result
       insertPendingTaskRetryIfNew(task.name, agentName, now, reason)
     }

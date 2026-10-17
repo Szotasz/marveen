@@ -50,12 +50,35 @@ vi.mock('../web/atomic-write.js', () => ({
   atomicWriteFileSync: vi.fn(),
 }))
 
+// A small in-memory pending_task_retries table, so a queued run-now retry is
+// picked up by the runner's own retry loop on a later tick.
+type RetryRow = {
+  id: number; task_name: string; agent_name: string; first_attempt: number; last_attempt: number
+  attempt_count: number; last_reason: string | null; alert_sent_at: number | null; owner_alert_sent_at: number | null
+}
+let retryRows: RetryRow[] = []
 vi.mock('../db.js', () => ({
   appendTaskRun: (...a: unknown[]) => mockAppendTaskRun(...a),
-  listPendingTaskRetries: () => [],
-  deletePendingTaskRetry: vi.fn(),
-  updatePendingTaskRetry: vi.fn(() => true),
-  insertPendingTaskRetryIfNew: vi.fn(),
+  listPendingTaskRetries: () => retryRows.map(r => ({ ...r })),
+  deletePendingTaskRetry: vi.fn((task: string, agent: string) => {
+    const before = retryRows.length
+    retryRows = retryRows.filter(r => !(r.task_name === task && r.agent_name === agent))
+    return retryRows.length < before
+  }),
+  updatePendingTaskRetry: vi.fn((task: string, agent: string, now: number, reason: string) => {
+    const row = retryRows.find(r => r.task_name === task && r.agent_name === agent)
+    if (!row) return false
+    Object.assign(row, { last_attempt: now, attempt_count: row.attempt_count + 1, last_reason: reason })
+    return true
+  }),
+  insertPendingTaskRetryIfNew: vi.fn((task: string, agent: string, now: number, reason: string) => {
+    if (retryRows.some(r => r.task_name === task && r.agent_name === agent)) return false
+    retryRows.push({
+      id: retryRows.length + 1, task_name: task, agent_name: agent, first_attempt: now, last_attempt: now,
+      attempt_count: 1, last_reason: reason, alert_sent_at: null, owner_alert_sent_at: null,
+    })
+    return true
+  }),
   markPendingTaskRetryAlert: vi.fn(() => false),
   clearPendingTaskRetryAlert: vi.fn(),
   markScheduledTaskKanbanWaiting: vi.fn(),
@@ -138,6 +161,7 @@ describe('scheduler usage-limit gate (attemptFireTask)', () => {
     captureCalls = 0
     gateCaptures = 1
     gatePane = null
+    retryRows = []
   })
 
   afterEach(() => {
@@ -221,5 +245,42 @@ describe('scheduler usage-limit gate (attemptFireTask)', () => {
     expect(mockSendPrompt).not.toHaveBeenCalled()
     expect(db.insertPendingTaskRetryIfNew).toHaveBeenCalledWith('ul-daily', 'limitagent', expect.any(Number), 'usage-limited')
     expect(mockAppendTaskRun).not.toHaveBeenCalledWith('ul-daily', 'limitagent', 'skipped-usage-limit')
+  })
+  it('a run-now into a usage-limited pane queues a retry; the retry goes through the same gate and is delivered once the banner is gone', async () => {
+    // An explicit run-now must not be dropped: queued like 'busy', not just reported.
+    vi.resetModules()
+    const db = await import('../db.js')
+    const t = task({ name: 'ul-run-now', type: 'task' })
+    mockListScheduledTasks.mockReturnValue([t])
+    const runner = await import('../web/schedule-runner.js')
+
+    gatePane = LIMITED_PANE
+    const res = await runner.runScheduledTaskNow(t.name)
+    expect(res.result).toBe('limitagent: usage-limited')
+    expect(mockSendPrompt).not.toHaveBeenCalled()
+    expect(db.insertPendingTaskRetryIfNew).toHaveBeenCalledWith('ul-run-now', 'limitagent', expect.any(Number), 'usage-limited')
+    expect(retryRows.map(r => r.task_name)).toEqual(['ul-run-now'])
+
+    // First retry tick, banner still on screen: the same gate holds it back
+    // and the row stays queued.
+    captureCalls = 0
+    mockWarn.mockClear()
+    const stop = runner.startScheduleRunner()
+    try {
+      await vi.advanceTimersByTimeAsync(6_000)
+      expect(mockSendPrompt).not.toHaveBeenCalled()
+      expect(gateWarned()).toBe(true)
+      expect(db.updatePendingTaskRetry).toHaveBeenCalledWith('ul-run-now', 'limitagent', expect.any(Number), 'usage-limited')
+      expect(retryRows).toHaveLength(1)
+
+      // Banner gone: the next tick delivers the queued run-now and clears the row.
+      captureCalls = 0
+      gatePane = CLEAN_PANE
+      await vi.advanceTimersByTimeAsync(runner.SCHEDULE_TICK_MS)
+      expect(mockSendPrompt).toHaveBeenCalledTimes(1)
+      expect(retryRows).toHaveLength(0)
+    } finally {
+      clearInterval(stop)
+    }
   })
 })
