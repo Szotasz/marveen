@@ -357,6 +357,17 @@
         </label>
       </div>
 
+      <!-- Card ed3c8caf (#569): per-agent summary: closed in the last 24 hours,
+           stuck now, and what waits on the owner. Collapsed by default; the open
+           state is remembered per browser. Hidden while there is nothing. -->
+      <details class="kanban-summary" id="kanbanSummary" hidden>
+        <summary class="kanban-summary-head">
+          <span class="kanban-ongoing-title" data-i18n="kanban.summary.title">Összefoglaló</span>
+          <span class="kanban-summary-totals" id="kanbanSummaryTotals"></span>
+        </summary>
+        <div class="kanban-summary-body" id="kanbanSummaryBody"></div>
+      </details>
+
       <!-- Ongoing tasks ("Folyamatos" label): a slim strip above the board,
            not a column. Hidden when there are none. -->
       <div class="kanban-ongoing" id="kanbanOngoing" hidden>
