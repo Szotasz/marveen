@@ -32,10 +32,28 @@
 // A real wedge satisfies BOTH. A real slow-but-progressing tool-call fails
 // the second (counter keeps incrementing) so we never act.
 //
-// Scope: MAIN channels session only. Sub-agents are managed by Marveen
-// inter-agent; their tool-call freezes are not user-facing in the same way
-// and the respawn path (stopAgentProcess + startAgentProcess) is different.
-// Extend if a sub-agent case ever materialises.
+// Scope, main session: detect AND recover (respawn-pane), as above.
+//
+// Scope, sub-agents (SUBWAIT925, card c3f8f062): detect and ALERT only, never
+// recover, never a keystroke. The case materialised on 2026-09-23: a sub-agent
+// in a strict permission profile sat on an approval dialog (a held cross-session
+// message) for hours, and nothing told the owner -- this watcher was main-only,
+// the channel-monitor's menu pass only walks channel-owning agents and does not
+// recognise that dialog, and the router's session-stuck alert needs QUEUED
+// inter-agent messages, which a cross-session send never leaves behind. Every
+// running sub-agent is now swept for two WAITING shapes:
+//   - a held peer message: on every sub-agent;
+//   - a tool-permission prompt: only on sub-agents WITHOUT a channel. For a
+//     channel-owning agent the channel-monitor's menu pass already alerts the
+//     owner on that prompt (45 s confirm, 5 min dedup), so alerting here too
+//     sent two messages for one prompt (#1596 review, point 1).
+// A waiting prompt is a QUESTION, not a wedge: the alert says who is waiting
+// and what it asks, and never sends a keystroke (Escape would answer "no").
+// A stagnant tool-call counter on a sub-agent is deliberately NOT watched here:
+// without the main path's transcript-freshness and CPU guards it reads a
+// residual "Worked for Ns" summary above a working turn as a wedge (#1596
+// review, point 2). That half follows separately, with a per-agent
+// transcript-mtime guard.
 
 import { execFileSync } from 'node:child_process'
 import { logger } from '../logger.js'
@@ -44,10 +62,11 @@ import { resolveFromPath } from '../platform.js'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { PROJECT_ROOT, STORE_DIR } from '../config.js'
-import { capturePane } from './agent-process.js'
+import { capturePane, isAgentRunning, agentSessionName, agentHasChannel } from './agent-process.js'
+import { listAgentNames, readAgentRemoteHost } from './agent-config.js'
 import { readTranscriptMtimeAcrossConfigDirs } from './active-model.js'
 import { mainConfigRoots } from './inbound-probe.js'
-import { MAIN_CHANNELS_SESSION } from './main-agent.js'
+import { MAIN_CHANNELS_SESSION, withoutMainAgent } from './main-agent.js'
 import { resumeMarveenSession, sendAlert, lastMainRespawnAt, MARVEEN_POST_RESPAWN_GRACE_MS } from './channel-monitor.js'
 import { sendRoutineAlert } from './routine-alert.js'
 import {
@@ -56,8 +75,15 @@ import {
   detectPaneState,
   parkedChannelInput,
   parkedMachineOriginInput,
+  detectsPermissionDialog,
+  detectsHeldPeerMessage,
+  permissionPromptSummary,
+  decidePaneErrorAlert,
   type StuckToolCallState,
   type StuckToolCallThresholds,
+  type PaneErrorAlertState,
+  type PaneErrorAlertThresholds,
+  type PermissionPromptSummary,
 } from '../pane-state.js'
 import { exactTmuxTarget } from '../tmux-target.js'
 
@@ -490,12 +516,131 @@ async function checkSession(label: string, session: string): Promise<void> {
   }
 }
 
+// ---- sub-agents: alert-only (SUBWAIT925, card c3f8f062) ---------------------
+
+export type AgentWaitKind = 'permission' | 'peer-message'
+
+// Pure: which waiting shape, if any, the pane shows. The tool-permission card
+// is checked first because it is the more specific shape (question + Yes/No);
+// the held-peer-message dialog is the 2026-09-23 incident shape.
+export function classifyAgentWait(pane: string | null): AgentWaitKind | null {
+  if (pane == null) return null
+  if (detectsPermissionDialog(pane)) return 'permission'
+  if (detectsHeldPeerMessage(pane)) return 'peer-message'
+  return null
+}
+
+// A prompt answered within a few minutes is the strict profile's normal
+// rhythm, not an incident; the confirm window keeps those quiet. A prompt
+// still open after it is exactly what the owner asked to hear about. The
+// dedup window re-reports a prompt that is STILL open (with the routine-alert
+// count), and the clear window rides out a flapping capture.
+export const AGENT_WAIT_THRESHOLDS: PaneErrorAlertThresholds = {
+  confirmMs: 3 * 60 * 1000,
+  dedupMs: 30 * 60 * 1000,
+  clearMs: 2 * 60 * 1000,
+}
+
+export function formatAgentWaitAlert(
+  agent: string,
+  session: string,
+  kind: AgentWaitKind,
+  waitingMs: number,
+  ask: PermissionPromptSummary | null,
+): string {
+  const min = Math.max(1, Math.round(waitingMs / 60000))
+  if (kind === 'peer-message') {
+    return `⏸️ A(z) ${agent} ágens ${min} perce egy másik sessionből érkezett üzenet jóváhagyására vár. Nem hiba: a session él, csak egy igen/nem kérdés áll a bemenet előtt, és azt csak ember válaszolhatja meg. Nem nyomtam meg semmit (az Escape ott elutasítást jelentene). Döntsd el: tmux attach -t ${session}`
+  }
+  const what = ask ? ` Amit kér: ${ask.title}: ${ask.reason}.` : ''
+  return `⏸️ A(z) ${agent} ágens ${min} perce egy tool-engedélykérésre vár.${what} Nem hiba: a session él, egy igen/nem kérdés áll a bemenet előtt, és azt csak ember válaszolhatja meg. Nem nyomtam meg semmit (az Escape ott NEM-et jelentene). Döntsd el: tmux attach -t ${session}`
+}
+
+export interface SubAgentSweepDeps {
+  listAgents: () => string[]
+  isRunning: (agent: string) => boolean
+  /** The agent owns a channel: its permission prompts are the channel-monitor's to report. */
+  hasChannel: (agent: string) => boolean
+  capture: (agent: string, session: string) => string | null
+  now: () => number
+  alertWait: (agent: string, session: string, kind: AgentWaitKind, waitingMs: number, ask: PermissionPromptSummary | null) => void
+  waitThresholds?: PaneErrorAlertThresholds
+}
+
+// Per-agent waiting-spell state.
+const agentWaitState = new Map<string, PaneErrorAlertState>()
+
+export function resetSubAgentWatchState(): void {
+  agentWaitState.clear()
+}
+
+// One sweep over every running sub-agent. Pure apart from the injected deps,
+// so the tests drive it with canned panes and a fake clock. Never throws for
+// one agent's sake: a capture failure on one session must not skip the rest.
+export function sweepSubAgents(deps: SubAgentSweepDeps): void {
+  const waitThresholds = deps.waitThresholds ?? AGENT_WAIT_THRESHOLDS
+  let agents: string[]
+  try {
+    agents = withoutMainAgent(deps.listAgents())
+  } catch (err) {
+    logger.debug({ err }, 'stuck-tool-call-watcher: sub-agent list failed')
+    return
+  }
+  const seen = new Set<string>()
+  for (const agent of agents) {
+    try {
+      if (!deps.isRunning(agent)) continue
+      seen.add(agent)
+      const session = agentSessionName(agent)
+      const pane = deps.capture(agent, session)
+      const now = deps.now()
+
+      // Waiting on a person (permission prompt / held peer message). A
+      // permission prompt on a channel-owning agent is the channel-monitor's
+      // (one owner per state, #1596 review point 1).
+      let kind = classifyAgentWait(pane)
+      if (kind === 'permission' && deps.hasChannel(agent)) kind = null
+      const prevWait = agentWaitState.get(agent) ?? { firstSeenAt: null, lastAlertAt: null, lastErrorAt: null }
+      const wait = decidePaneErrorAlert(kind != null, prevWait, now, waitThresholds)
+      if (wait.next.firstSeenAt === null) agentWaitState.delete(agent)
+      else agentWaitState.set(agent, wait.next)
+      if (wait.alert && kind != null) {
+        const ask = kind === 'permission' && pane != null ? permissionPromptSummary(pane) : null
+        logger.warn({ agent, session, kind, waitingMs: now - (wait.next.firstSeenAt ?? now) }, 'stuck-tool-call-watcher: sub-agent is waiting on a person (no keystrokes sent) -- alerting')
+        deps.alertWait(agent, session, kind, now - (wait.next.firstSeenAt ?? now), ask)
+      }
+    } catch (err) {
+      logger.debug({ err, agent }, 'stuck-tool-call-watcher: sub-agent check error')
+    }
+  }
+  // Forget agents that stopped, so a restart begins with a clean spell.
+  for (const key of [...agentWaitState.keys()]) {
+    if (!seen.has(key)) agentWaitState.delete(key)
+  }
+}
+
+const LIVE_SUB_AGENT_DEPS: SubAgentSweepDeps = {
+  listAgents: listAgentNames,
+  isRunning: isAgentRunning,
+  hasChannel: agentHasChannel,
+  capture: (agent, session) => capturePane(session, readAgentRemoteHost(agent)),
+  now: () => Date.now(),
+  alertWait: (agent, session, kind, waitingMs, ask) => {
+    sendRoutineAlert(`agent-wait:${agent}`, formatAgentWaitAlert(agent, session, kind, waitingMs, ask))
+  },
+}
+
 export function startStuckToolCallWatcher(): NodeJS.Timeout {
   async function sweep() {
     try {
       await checkSession('main', MAIN_CHANNELS_SESSION)
     } catch (err) {
       logger.debug({ err }, 'stuck-tool-call-watcher: main session check error')
+    }
+    try {
+      sweepSubAgents(LIVE_SUB_AGENT_DEPS)
+    } catch (err) {
+      logger.debug({ err }, 'stuck-tool-call-watcher: sub-agent sweep error')
     }
   }
   setTimeout(() => { void sweep() }, INITIAL_DELAY_MS)

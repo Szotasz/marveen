@@ -672,6 +672,12 @@ export function detectsBlockingMenu(pane: string): boolean {
   const footerRegion = liveTailRegion(lines, MENU_FOOTER_REGION_LINES)
   if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return false
   if (hasIdleFooter(lines)) return false
+  // A held cross-session message is a QUESTION for a person, not a stray
+  // modal: Escape there is not a neutral "back" -- it may decline the message
+  // and tell the sender so (the dialog's Deny: "drop it and tell the sender it
+  // was declined"). Never treat it as a menu to pop; the sub-agent sweep
+  // (stuck-tool-call-watcher.ts) alerts the owner instead (#1596 review).
+  if (detectsHeldPeerMessage(pane)) return false
   return MENU_NAV_RX.test(footerRegion) || MENU_ESC_RX.test(footerRegion)
 }
 
@@ -1145,6 +1151,38 @@ export function detectsPermissionDialog(pane: string): boolean {
   if (hasIdleFooter(lines)) return false
   return PERMISSION_AMEND_RX.test(footerRegion)
     || (PERMISSION_QUESTION_RX.test(pane) && PERMISSION_YES_RX.test(pane))
+}
+
+// PEERHOLD925 (card c3f8f062): a cross-session (peer) message that the
+// receiving session holds for its user's approval renders its OWN dialog, not
+// the tool-permission card: no "Do you want to proceed?", no "Tab to amend".
+// Measured on 2026-09-23 on this install: kigyo's session sat on one for hours
+// with no alert -- detectsPermissionDialog does not match it, and the router's
+// session-stuck path only fires when inter-agent messages are QUEUED for the
+// session, which a cross-session send never is.
+//
+// The anchor is the dialog's rendered TITLE, "Held message from another
+// session" (#1596 review: `title:"Held message from another session"` in the
+// Claude Code 2.1.282 binary; still there in 2.1.296). The dialog's other
+// strings are deliberately not anchors: "Another Claude session sent a message"
+// also opens the model-facing wrapper of a DELIVERED peer message, and "A
+// message from another session needs your approval" is the notification text of
+// that state, not necessarily on screen. Same guards as detectsPermissionDialog:
+// a busy pane is never a dialog, and a visible idle footer means the prompt is
+// live and the title is merely quoted.
+const HELD_PEER_MESSAGE_RX = /Held message from another session/
+
+export function detectsHeldPeerMessage(pane: string): boolean {
+  if (!pane || !pane.trim()) return false
+  const lines = pane.split('\n')
+  const busyRegion = lines.slice(-BUSY_LIVE_REGION_LINES).join('\n')
+  for (const rx of BUSY_INDICATORS) {
+    if (rx.test(busyRegion)) return false
+  }
+  const footerRegion = liveTailRegion(lines, LIVE_FOOTER_REGION_LINES)
+  if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return false
+  if (IDLE_FOOTER_RX.test(pane)) return false
+  return HELD_PEER_MESSAGE_RX.test(pane)
 }
 
 export function detectsModelConsentDialog(pane: string): boolean {
