@@ -31,7 +31,12 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-LABEL="com.marveen.channel-keepalive-probe"
+# #1873: com.<SERVICE_ID>.channel-keepalive-probe, not a fixed com.marveen.channel-keepalive-probe -- two installs
+# under one user must not share (and overwrite) one helper job.
+. "$SCRIPT_DIR/launchd-label.sh"
+LABEL="$(helper_launchd_label "$PROJECT_DIR" channel-keepalive-probe)"
+# update.sh asks the installer for the label instead of grepping a fixed one.
+if [ "${1:-}" = "--print-label" ]; then printf '%s\n' "$LABEL"; exit 0; fi
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 PROBE="$PROJECT_DIR/scripts/channel-keepalive-probe.sh"
 
@@ -44,6 +49,21 @@ if [ ! -f "$PROBE" ]; then
 fi
 
 mkdir -p "$HOME/Library/LaunchAgents"
+# ISSUE1895 (#1895): the job's TZ is the install zone, written only when the
+# operator pinned one (SCHEDULER_TZ); otherwise no TZ key, so the job follows the
+# OS zone like the main dashboard/channels units. It used to be a hardcoded
+# Europe/Budapest, so on any other install its log stamps ran off the dashboard's.
+. "$SCRIPT_DIR/lib/install-tz.sh"
+PINNED_TZ="$(install_tz_pinned "$PROJECT_DIR")"
+TZ_XML=""
+if [ -n "$PINNED_TZ" ]; then
+  # Leading newline: it is appended to the line above, so an unpinned plist
+  # has no blank line where the key would be.
+  TZ_XML="
+    <key>TZ</key>
+    <string>$PINNED_TZ</string>"
+fi
+retire_legacy_helper_label "$PROJECT_DIR" channel-keepalive-probe "$LABEL" "$HOME/Library/LaunchAgents"
 cat > "$PLIST" <<PLIST_EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -73,9 +93,7 @@ cat > "$PLIST" <<PLIST_EOF
     <key>HOME</key>
     <string>$HOME</string>
     <key>USER</key>
-    <string>$(id -un)</string>
-    <key>TZ</key>
-    <string>Europe/Budapest</string>
+    <string>$(id -un)</string>$TZ_XML
   </dict>
 </dict>
 </plist>
@@ -83,8 +101,14 @@ PLIST_EOF
 echo "Wrote launchd unit: $PLIST"
 
 if [ "$LOAD" = "1" ]; then
-  launchctl unload "$PLIST" 2>/dev/null || true
-  launchctl load "$PLIST"
+  # ISSUE1891 (#1891): registered AND run once, verified -- not a bare load.
+  . "$SCRIPT_DIR/launchd-unit.sh"
+  RUNS="$(start_launchd_periodic_unit "$PLIST" "$LABEL")"
+  if [ -z "$RUNS" ]; then
+    echo "NOT RUNNING: $LABEL is installed but did not run. launchd runs these jobs only inside a GUI login session (an install over SSH has none). From a terminal of the GUI login:" >&2
+    print_periodic_unit_remedy "$PLIST" "$LABEL" >&2
+    exit 3
+  fi
   echo "Loaded $LABEL (every 180s + at load). It only ever TOUCHES store/.channel-keepalive after proving the telegram poller alive from the process tree -- a dead native is never masked."
 else
   echo "Installed but NOT loaded. To start: launchctl load $PLIST"

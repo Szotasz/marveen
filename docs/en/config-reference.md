@@ -148,6 +148,7 @@ Every dashboard-editable setting is a registry entry with the following fields:
 | `DASHBOARD_PUBLIC_URL` | string | (empty) | Publicly accessible URL of the dashboard | yes |
 | `OLLAMA_URL` | string | `http://localhost:11434` | Ollama API base URL | yes |
 | `MEMORY_IMPORT_CATEGORIZE_MODEL` | string | (empty) | Ollama model that tiers memories on import (override); empty = auto-detect an installed `gemma4`, else all warm | yes |
+| `MEMORY_CONTENT_FILTER_STRICT_COMMANDS` | boolean | `0` (off) | Strict command-syntax group of the memory content filter (curl http(s), bash -c, eval(, exec(, import subprocess, rm -rf) on memory POST/PUT/PATCH; cost: prose that only quotes a command form is a 400 too | yes |
 
 **Registry -- Heartbeat module:**
 
@@ -168,6 +169,7 @@ Every dashboard-editable setting is a registry entry with the following fields:
 | Key | Type | Default | Platform | Restart |
 |-----|------|---------|----------|---------|
 | `MAIN_AGENT_ISOLATED_CONFIG` | boolean | `0` (off) | macOS only | yes |
+| `TELEGRAM_TOPICS_ENABLED` | boolean | `0` (off) | all | yes (channel start) |
 
 #### `MAIN_AGENT_ISOLATED_CONFIG` -- main-agent config isolation (macOS)
 
@@ -207,6 +209,55 @@ in `.env`. The change takes effect on the next channels-session restart (the
 **Reverting.** Turn it OFF (dashboard) or set `MAIN_AGENT_ISOLATED_CONFIG=0` (`.env`),
 then restart the channels session -- all three launch paths fall back to the shared
 `~/.claude` behaviour.
+
+#### `TELEGRAM_TOPICS_ENABLED`: the answer goes to the topic the message came from
+
+**What it is for.** Telegram allows topics in a bot's private chat as well (switched on
+for the bot in BotFather). Every message is then written in a topic, but the Telegram
+plugin does not pass the topic id on to the agent, and its `reply` tool cannot address
+a topic: the answer lands outside the topic.
+
+**What it does when on.** At channel start `scripts/patch-telegram-plugin.py` (the same
+script that handles `/status` and the inbound evidence) adds a patch to the plugin source:
+- the `<channel>` tag of a topic message carries a `message_thread_id` attribute (only
+  for a real topic message, `is_topic_message`);
+- the typing indicator shows in the topic;
+- the new, optional `message_thread_id` parameter of the `reply` tool sends every text
+  chunk and every attached file into the topic; a value that is not a positive integer
+  is an error, and nothing is sent;
+- the plugin's instructions and the `telegram-reply-directive.py` hook ask the agent to
+  pass the topic back.
+
+Marveen's own answer paths follow the same topic: the "Dolgozom rajta" placeholder and
+its fallback senders (`telegram_progress*.py`), the commands the hook answers
+(`marveen-commands.py`, mid-turn commands included), and the fallback poller's handoff
+(`channel-coordinator`).
+
+For a message without a topic every call is exactly what it is with the switch off.
+
+**Shared plugin cache.** The patch changes the plugin source in the plugin cache
+(`$CLAUDE_CONFIG_DIR/plugins/cache`, else `~/.claude/plugins/cache`), and every Claude Code
+session that uses the same cache loads the Telegram plugin from there, sessions outside
+Marveen included. They see the optional `message_thread_id` parameter of the `reply` tool
+and the attribute on a topic message's tag as well; as long as they do not pass the
+parameter, they behave as before.
+
+**What does not change.** The `chat_id` stays the same, so owner identification, command
+permissions and approvals are not affected. Alerts, approval requests, scheduled task
+results and the voice reply still go out without a topic.
+
+**Enabling.** Dashboard: *Settings → Channels → `TELEGRAM_TOPICS_ENABLED`*, or
+`TELEGRAM_TOPICS_ENABLED=1` in `.env`. It takes effect at the next channel start. While
+it is on, the "Telegram plugin-patch" row of `/status` measures the patch as well: a
+missing one shows as a `HIÁNYZIK (témák)` line.
+
+**Reverting.** Turn it OFF and restart the channel: the script takes the patch out, and
+the plugin file is byte for byte what it was before the patch.
+
+**After a plugin update.** The next channel start patches the new plugin version. If the
+anchors of the patch do not match, the whole patch is left out (one loud line in
+`store/channels-failures.log`, and `/status` says so); answers then land outside the
+topic, and the channel itself keeps working.
 
 **API endpoints:**
 

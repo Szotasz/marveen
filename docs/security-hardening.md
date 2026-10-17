@@ -27,6 +27,91 @@ Override an intentional rewrite of a protected branch:
 ALLOW_FORCE_PUSH=1 git push ...
 ```
 
+# Outgoing code needs a reviewer-green trace (pre-push)
+
+The owner's rule: code that goes outward (a push, a force-push, an update of a PR branch) goes
+only after the reviewer agent's approval; a green test is not enough. The rule used to live in
+instruction files and nothing enforced it.
+
+`scripts/install-review-gate-hook.sh` (run by `scripts/sync-hooks.sh`, like the other
+installers) copies `scripts/git-hooks/pre-push-review-gate.py` into
+`.git/hooks/pre-push.d/30-review-gate`.
+
+**It is opt-in.** The hook is installed on every install, but it does nothing (every push
+passes, one stderr line says so) until a reviewer agent is configured. Without that, an install
+that has no such agent would have every agent push stopped for good. Set, in the environment of
+the push or as a line in `<install>/.env`:
+
+```
+REVIEW_GATE_REVIEWER=<agent id of the reviewer>      # unset = gate inactive
+REVIEW_GATE_TRACE_WORD=<word that starts the trace>  # optional, default REVIEW-GREEN
+```
+
+The `.env` lines are read the way the product's own reader does (trimmed, `#` comments, one pair
+of quotes stripped, the last occurrence wins), and a leading `export ` is accepted too: a gate
+that reads `export NAME=value` as "not set" would be silently off. A reviewer id or trace word
+with characters outside letters, digits, `-` and `_` blocks the push (a gate that is
+misconfigured fails closed). For example:
+`REVIEW_GATE_REVIEWER=<your reviewer agent>` and `REVIEW_GATE_TRACE_WORD=<your trace word>`.
+
+**It gates agent sessions only** (the owner's decision, 2026-10-11): a push that does not come
+from a Claude Code session goes through without a trace, with one line on stderr, so the
+owner's own hand push is free.
+
+**Who counts as an agent.** At least one of `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`,
+`CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_EXECPATH` is set and non-empty in the environment of the
+push. Claude Code sets them for every process its Bash tool starts and git passes the
+environment on to the hook (measured from an agent's own shell, 2026-10-11).
+`CLAUDE_CONFIG_DIR` is deliberately not a marker: it can be exported in a plain terminal to run
+`claude`. This is a "who typed it" guess from the environment, **not an identity**, and it fails
+in both directions:
+
+- An agent that unsets the markers (`env -u CLAUDECODE ...`) or pushes from a process that is
+  not a Claude Code child walks through, silently. Same class as `--no-verify`; pinned in the
+  tests as a documented limit.
+- A push the owner types *inside* a Claude Code session (the `!` prefix) carries the markers, so
+  it is gated like an agent's. The way through is the logged skip below.
+
+**What counts as the trace.** A message in the fleet mailbox that is from the reviewer agent
+(status not `failed`) and contains a line of its own, exactly:
+
+```
+<TRACE WORD> <8 to 40 hex digits of the head commit>
+```
+
+The hash binds the green to the commit being pushed, so an amend, a rebase or a further commit
+on the PR branch needs a new line. Text after the hash, a wrapped or inline mention, a prefix
+shorter than 8 digits and a row from another sender do not count. The gate reads
+`/api/messages?agent=<reviewer>` (up to 2000 of the reviewer's messages back) with the dashboard
+token.
+
+**What needs no trace:** a deletion, and a push that sends no commit the destination lacks
+(already on the target remote's tracking refs; for a destination other than `origin`, also
+already on `origin`). Anything that cannot be verified (dashboard down, token unreadable, an
+answer of an unexpected shape, a ref that does not resolve, git failing) blocks.
+
+**What it is not.** It guards against *forgetting* the rule, not against a deliberate bypass:
+the trace is self-declared (one shared bearer token writes any `from_agent`), and
+`--no-verify` on the push skips every pre-push hook without leaving a line. Do not read a pass
+as proof that the reviewer reviewed the change.
+
+**`core.hooksPath`.** If the repository's `core.hooksPath` points anywhere other than
+`.git/hooks`, git never runs this hook. The installer then refuses (non-zero exit, message on
+stderr, nothing installed) instead of printing a success line. `sync-hooks.sh` reports the
+non-zero exit and carries on.
+
+**Undo.** There is no uninstaller: remove `.git/hooks/pre-push.d/30-review-gate`. Running the
+installer again puts it back.
+
+**Earlier development version.** The installer also removes `pre-push.d/30-sam-green-gate`, the file
+an earlier development version of this gate was installed as, when it recognises it as this gate's own.
+
+**The way through, only on the owner's explicit instruction for that push:** set
+`REVIEW_GATE_SKIP=1` and `REVIEW_GATE_SKIP_REASON="<owner message id>: <why>"` in the
+environment of the push command. The reason is mandatory and the call is appended to
+`store/push-review-gate-skips.log` (who, when, remote, refs, reason); if the line cannot be
+written the push is refused.
+
 # Bash egress deny rules
 
 `scripts/hooks/egress-gate.mjs` compares a URL against the allowlist, but it is

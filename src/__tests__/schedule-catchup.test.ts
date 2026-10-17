@@ -10,8 +10,10 @@ import {
   computeCatchUpStart,
   decideCatchUp,
   decideCatchUpSummaryDelivery,
+  HEARTBEAT_MISS_REPORT_MIN_CADENCE_MS,
+  isMissedRunReportable,
 } from '../web/schedule-runner.js'
-import { cronDueBetween, cronPrevOccurrence } from '../web/cron.js'
+import { cronDueBetween, cronMinGapMs, cronPrevOccurrence } from '../web/cron.js'
 
 // 2026-07-29 incident: the host died at dawn and came back mid-afternoon. The
 // scan window on start was a flat `now - 30 min`, so every occurrence missed
@@ -184,12 +186,13 @@ describe('the runner wires the policy in', () => {
   // missed one is not operator-actionable. Reporting it turned a routine
   // 15-minute heartbeat into ~25 Telegram alerts a day. The miss must still be
   // recorded (WARN log + task_runs); only the push notification is dropped.
-  it('never reports a missed heartbeat, only real tasks', () => {
-    expect(SRC).toMatch(/caughtUpThisTick\.filter\(e => e\.type !== 'heartbeat'\)/)
-    expect(SRC).toMatch(/staleThisTick\.filter\(e => e\.type !== 'heartbeat'\)/)
-    // The entries must carry the type, or the filter above silently keeps everything.
-    expect(SRC).toMatch(/caughtUpThisTick\.push\(\{ task: task\.name, ageMs, type: task\.type \}\)/)
-    expect(SRC).toMatch(/staleThisTick\.push\(\{ task: task\.name, ageMs, type: task\.type \}\)/)
+  it('filters the report through the cadence rule, not a bare type check', () => {
+    expect(SRC).toMatch(/caughtUpThisTick\.filter\(e => isMissedRunReportable\(e, now\)\)/)
+    expect(SRC).toMatch(/staleThisTick\.filter\(e => isMissedRunReportable\(e, now\)\)/)
+    // The rule needs the schedule on the entry, or every heartbeat reads as
+    // "no schedule" and the daily ones stay muted.
+    expect(SRC).toMatch(/staleThisTick\.push\(\{ task: task\.name, ageMs, type: task\.type, schedule: task\.schedule \}\)/)
+    expect(SRC).toMatch(/caughtUpThisTick\.push\(\{ task: task\.name, ageMs, type: task\.type, schedule: task\.schedule \}\)/)
     // The miss itself is still recorded -- the fix mutes the alert, not the bookkeeping.
     expect(SRC).toMatch(/appendTaskRun\(task\.name, agentName, 'missed'\)/)
   })
@@ -212,5 +215,87 @@ describe('the runner wires the policy in', () => {
     expect(logFn).not.toMatch(/sendSchedulerAlertMessage|resolveSchedulerAlertToken/)
     const sendFn = SRC.slice(SRC.indexOf('function sendCatchUpSummary'), SRC.indexOf('\nexport type CatchUpSummaryDelivery'))
     expect(sendFn).toMatch(/sendSchedulerAlertMessage\(token, ownerChat, text\)/)
+  })
+})
+
+// The mute for missed heartbeats was written for a 15-minute round ("the next
+// occurrence is minutes away"), but it was keyed on the TYPE. A heartbeat that
+// runs once a day is a day away from its next run, and with the 30-minute
+// heartbeat staleness budget its miss was neither caught up nor mentioned.
+describe('isMissedRunReportable: muted by cadence, not by type', () => {
+  // A fixed instant so the sampled occurrences do not depend on the wall clock.
+  const NOW = Date.UTC(2026, 9, 12, 10, 0, 0)
+
+  it('everything that is not a heartbeat is reported, as before', () => {
+    expect(isMissedRunReportable({ type: 'task', schedule: '*/5 * * * *' }, NOW)).toBe(true)
+    expect(isMissedRunReportable({ type: 'command', schedule: '0 4 * * 3' }, NOW)).toBe(true)
+    expect(isMissedRunReportable({ type: 'dream-engine', schedule: '7 2 * * *' }, NOW)).toBe(true)
+    expect(isMissedRunReportable({ schedule: '0 7 * * *' }, NOW)).toBe(true)
+  })
+
+  it.each([
+    ['every 2 minutes', '*/2 * * * *'],
+    ['every 15 minutes (the round the mute was added for)', '*/15 * * * *'],
+    ['hourly', '0 * * * *'],
+    ['four times a day, with a 12 h night gap', '0 8,12,16,20 * * *'],
+  ])('a short-cadence heartbeat stays muted: %s', (_name, schedule) => {
+    expect(isMissedRunReportable({ type: 'heartbeat', schedule }, NOW)).toBe(false)
+  })
+
+  it.each([
+    ['twice a day', '0 9,21 * * *'],
+    ['once a day', '47 21 * * *'],
+    ['weekly', '0 9 * * 1'],
+  ])('a heartbeat that comes at most twice a day is reported: %s', (_name, schedule) => {
+    expect(isMissedRunReportable({ type: 'heartbeat', schedule }, NOW)).toBe(true)
+  })
+
+  it('the answer does not flap with the time of day on an uneven schedule', () => {
+    const uneven = { type: 'heartbeat', schedule: '0 8,12,16,20 * * *' }
+    for (let h = 0; h < 24; h++) {
+      expect(isMissedRunReportable(uneven, NOW + h * HOUR)).toBe(false)
+    }
+  })
+
+  it('a twice-a-day heartbeat stays reportable around a DST change', () => {
+    // Europe/Budapest springs forward on 2027-03-28, and the real 21:00 -> 09:00
+    // gap of that night is 11 h. This test does NOT pin the 11 h margin: the
+    // current cron-parser skips the 2027-03-28 09:00 occurrence when iterating
+    // forward, so cronMinGapMs sees 12 h here and the test would stay green at a
+    // 12 h threshold too. It only shows that the answer does not flip around the
+    // change; the constant check below holds the value.
+    const twice = { type: 'heartbeat', schedule: '0 9,21 * * *' }
+    for (let d = 0; d < 10; d++) {
+      expect(isMissedRunReportable(twice, Date.UTC(2027, 2, 22, 10, 0, 0) + d * 24 * HOUR)).toBe(true)
+    }
+  })
+
+  it('a heartbeat without a readable schedule keeps the old behaviour', () => {
+    expect(isMissedRunReportable({ type: 'heartbeat' }, NOW)).toBe(false)
+    expect(isMissedRunReportable({ type: 'heartbeat', schedule: 'not a cron' }, NOW)).toBe(false)
+  })
+
+  it('the threshold is about half a day (with DST slack), and it is a parameter', () => {
+    expect(HEARTBEAT_MISS_REPORT_MIN_CADENCE_MS).toBe(11 * HOUR)
+    expect(isMissedRunReportable({ type: 'heartbeat', schedule: '0 * * * *' }, NOW, 30 * MIN)).toBe(true)
+  })
+})
+
+describe('cronMinGapMs: the tightest gap of a schedule', () => {
+  const NOW = Date.UTC(2026, 9, 12, 10, 0, 0)
+
+  it('a regular schedule gives its period', () => {
+    expect(cronMinGapMs('*/15 * * * *', NOW)).toBe(15 * MIN)
+    expect(cronMinGapMs('47 21 * * *', NOW)).toBe(24 * HOUR)
+  })
+
+  it('an uneven schedule gives the SHORTEST gap, whatever the time of day', () => {
+    for (let h = 0; h < 24; h++) {
+      expect(cronMinGapMs('0 8,12,16,20 * * *', NOW + h * HOUR)).toBe(4 * HOUR)
+    }
+  })
+
+  it('an unparseable expression is null, not a throw', () => {
+    expect(cronMinGapMs('not a cron', NOW)).toBeNull()
   })
 })

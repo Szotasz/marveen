@@ -4,7 +4,7 @@ import {
   listKanbanCards, kanbanAssigneeExists, createKanbanCard, updateKanbanCard, KANBAN_WRITABLE_FIELDS, KANBAN_CREATE_FIELDS,
   deleteKanbanCard, moveKanbanCard, archiveKanbanCard, unarchiveKanbanCard,
   getKanbanComments, addKanbanComment, getKanbanCardEvents, getKanbanCardFieldEvents, listKanbanProjects,
-  getKanbanCard, getChildCards, getDb,
+  getKanbanCard, getChildCards, getDb, KANBAN_STATUSES,
   createAgentMessage, markKanbanCardDispatched,
   getKanbanSeqByIdPrefix,
   listLabels, getLabel, createLabel, updateLabel, deleteLabel,
@@ -22,16 +22,26 @@ import {
   type TokenPruneLag,
 } from '../../db.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
-import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, STORE_DIR, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS, DB_FILENAME } from '../../config.js'
+import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, STORE_DIR, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS, KANBAN_LABEL_COLORS_REJECTED, KANBAN_LABEL_COLORS_OVERFLOW, DB_FILENAME } from '../../config.js'
 import { listAgentNames, readAgentDisplayName } from '../agent-config.js'
 import { nicknameFor } from '../team-nicknames.js'
 import { isAgentRunning } from '../agent-process.js'
 import { resolveKanbanDispatch } from '../../kanban-dispatch.js'
 import { generateBreakdown } from '../llm-breakdown.js'
 import { logger } from '../../logger.js'
+import { MAX_LABEL_PALETTE_ENTRIES, resolveLabelColor } from '../../css-color.js'
 import { readBody, json, jsonMaybeGzip, methodNotAllowed } from '../http-helpers.js'
 import { getEffectiveSettingValue } from '../../settings-store.js'
 import type { RouteContext } from './types.js'
+
+// KANBAN_LABEL_COLORS entries that are not colours were dropped by config.ts
+// (which cannot log); say so once, when the kanban routes load.
+if (KANBAN_LABEL_COLORS_REJECTED.length > 0) {
+  logger.warn({ rejected: KANBAN_LABEL_COLORS_REJECTED.length }, 'KANBAN_LABEL_COLORS: entries that are not a colour (hex, CSS colour name, numeric rgb()/hsl(), var(--token)) were dropped from the label palette')
+}
+if (KANBAN_LABEL_COLORS_OVERFLOW > 0) {
+  logger.warn({ dropped: KANBAN_LABEL_COLORS_OVERFLOW, kept: KANBAN_LABEL_COLORS.length }, `KANBAN_LABEL_COLORS: the label palette is too large; the entries past the size limit (${MAX_LABEL_PALETTE_ENTRIES} distinct colours) were dropped`)
+}
 
 // #1023: keys a PUT /api/kanban/:id body may carry WITHOUT being a writable
 // column -- the read-only card fields and the GET-embedded arrays the dashboard
@@ -48,7 +58,7 @@ const KANBAN_READONLY_FIELDS = new Set<string>([
 
 // Every key POST /api/kanban/:id/move accepts; anything else is a 400, same
 // rule as the PUT above.
-const KANBAN_MOVE_FIELDS = ['status', 'sort_order', 'actor'] as const
+const KANBAN_MOVE_FIELDS = ['status', 'sort_order', 'actor', 'expected_status'] as const
 
 // A headless agent cannot "drag" a card to done, so the dispatch hands it the
 // exact curl commands to (1) post a short, human-readable result summary as a
@@ -345,7 +355,16 @@ export function buildHeartbeatSummaryResponse(
 // The methods the single-card path actually serves. One source, so the Allow
 // header can never drift from the branches above it -- advertising a method
 // that is not routed would send the caller one step further into the same fog.
-const KANBAN_CARD_METHODS = ['PUT', 'DELETE'] as const
+// 2dd78397: GET is served now (one card, archived ones included).
+const KANBAN_CARD_METHODS = ['GET', 'PUT', 'DELETE'] as const
+
+// 2dd78397: a write that lands on an ARCHIVED card used to answer exactly like one on a live card,
+// so the writer never learned that nobody reads the card any more. The write still happens (a 409
+// would break every existing caller that closes or comments after archiving); the successful
+// response says it, additively. On a live card the response is unchanged: no field at all.
+function archivedNote(card: { archived_at: number | null } | undefined): { archived?: true } {
+  return card && card.archived_at != null ? { archived: true } : {}
+}
 
 /**
  * Parse the `includeArchived` query parameter.
@@ -506,7 +525,9 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // Colour is validated against the configured palette (KANBAN_LABEL_COLORS)
     // rather than accepted as free-text, so every label's colour traces back
     // to the single configurable source instead of an arbitrary per-request value.
-    const resolvedColor = color && KANBAN_LABEL_COLORS.includes(color) ? color : KANBAN_LABEL_COLORS[0]
+    // (compared normalized: a palette written as `red` matches a request for red)
+    const { color: resolvedColor, replaced } = resolveLabelColor(color, KANBAN_LABEL_COLORS)
+    if (replaced && color !== undefined) logger.warn({ path }, 'Kanban label POST: colour not in the palette, the first palette colour was used')
     const id = randomUUID().slice(0, 8)
     const label = createLabel({ id, name: name.trim(), color: resolvedColor })
     json(res, label)
@@ -524,7 +545,12 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       fields.name = name.trim()
     }
     if (color !== undefined) {
-      fields.color = KANBAN_LABEL_COLORS.includes(color) ? color : KANBAN_LABEL_COLORS[0]
+      // a client sending a legacy label's current colour back keeps it
+      const existing = getLabel(id)
+      const resolved = resolveLabelColor(color, KANBAN_LABEL_COLORS, existing?.color)
+      // (an unknown id gets a 404 below, not a log line)
+      if (resolved.replaced && existing) logger.warn({ id }, 'Kanban label PUT: colour not in the palette and not the label\'s own, the first palette colour was used')
+      fields.color = resolved.color
     }
     if (updateLabel(id, fields)) { json(res, { ok: true }); return true }
     json(res, { error: 'Címke nem található' }, 404)
@@ -751,7 +777,10 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
         return true
       }
     }
-    if (updateKanbanCard(id, data, who.actor)) { json(res, { ok: true }); return true }
+    // PUT to in_progress clears but does not dispatch; /move remains the only
+    // dispatch path (KARTYADISPATCH1010). updateKanbanCard applies the shared
+    // dispatched_at clear; no fireKanbanDispatch call belongs here.
+    if (updateKanbanCard(id, data, who.actor)) { json(res, { ok: true, ...archivedNote(getKanbanCard(id)) }); return true }
     json(res, { error: 'Kártya nem található' }, 404)
     return true
   }
@@ -781,7 +810,15 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       json(res, { error: `Unknown field(s): ${unknownMoveKeys.join(', ')}. Accepted: ${KANBAN_MOVE_FIELDS.join(', ')}` }, 400)
       return true
     }
-    const { status, sort_order, actor } = moveBody as { status: Parameters<typeof moveKanbanCard>[1]; sort_order?: number; actor?: unknown }
+    const { status, sort_order, actor, expected_status } = moveBody as { status: Parameters<typeof moveKanbanCard>[1]; sort_order?: number; actor?: unknown; expected_status?: unknown }
+    // Optional compare-and-set guard. Absent (undefined/null) keeps the old
+    // unconditional move. Present, it must name a real status: an unknown value
+    // could never match, and a 409 would wrongly suggest someone else moved it.
+    const hasExpected = expected_status !== undefined && expected_status !== null
+    if (hasExpected && !(KANBAN_STATUSES as readonly string[]).includes(expected_status as string)) {
+      json(res, { error: `Invalid expected_status. Accepted: ${KANBAN_STATUSES.join(', ')}` }, 400)
+      return true
+    }
     // The same actor rule as the PUT (card f6fba9ec, X16): before X16 a boolean actor moved the card, then the event
     // insert threw (500), and the move stayed with no row.
     const who = kanbanWriteActor(actor, ctx.auth)
@@ -789,11 +826,18 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       json(res, { error: who.error }, 400)
       return true
     }
-    if (moveKanbanCard(id, status, sort_order ?? 0, who.actor)) {
+    if (moveKanbanCard(id, status, sort_order ?? 0, who.actor, hasExpected ? { expectedStatus: expected_status as Parameters<typeof moveKanbanCard>[1] } : undefined)) {
       // Wake the assigned agent once when the card enters in_progress -- unless
       // that agent is the one who moved it (self-pickup needs no wake-up).
       if (status === 'in_progress') fireKanbanDispatch(id, who.actor)
-      json(res, { ok: true })
+      json(res, { ok: true, ...archivedNote(getKanbanCard(id)) })
+      return true
+    }
+    // Nothing changed: a missing card stays the old 404; an existing card means
+    // the guard did not hold, so tell the caller what the status actually is.
+    const current = hasExpected ? getKanbanCard(id) : undefined
+    if (current) {
+      json(res, { error: 'status_conflict', current_status: current.status, expected_status }, 409)
       return true
     }
     json(res, { error: 'Kártya nem található' }, 404)
@@ -875,9 +919,10 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const normalizedContent = normalizeKanbanRefs(content, getKanbanSeqByIdPrefix)
     // `automated: true`: a bulk/machine writer marks its own comment, so the
     // stuck detector never reads it as a work-trace (KANBANSTUCKURES916).
-    json(res, automated === true
+    const comment = automated === true
       ? addKanbanComment(cardId, author, normalizedContent, { automated: true })
-      : addKanbanComment(cardId, author, normalizedContent))
+      : addKanbanComment(cardId, author, normalizedContent)
+    json(res, { ...comment, ...archivedNote(card) })
     return true
   }
 
@@ -957,6 +1002,18 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   if (childrenMatch && method === 'GET') {
     const parentId = decodeURIComponent(childrenMatch[1])
     json(res, getChildCards(parentId))
+    return true
+  }
+
+  // 2dd78397: ONE card by id, archived ones included (the list GET leaves those out), with its
+  // description. Here, after every fixed single-segment path (/api/kanban/archived and the rest),
+  // for the same reason as the 405 below: placed earlier, "archived" would be read as a card id.
+  const singleCardGetMatch = path.match(/^\/api\/kanban\/([^/]+)$/)
+  if (singleCardGetMatch && method === 'GET') {
+    const id = decodeURIComponent(singleCardGetMatch[1])
+    const card = getKanbanCard(id)
+    if (!card) { json(res, { error: `Kártya nem található: ${id}` }, 404); return true }
+    json(res, card)
     return true
   }
 

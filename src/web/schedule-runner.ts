@@ -54,7 +54,7 @@ import {
   wrapScheduledTaskByReference,
 } from '../prompt-safety.js'
 import { writeScheduledRunSnapshot, isScheduledRunReference } from './scheduled-run-snapshot.js'
-import { cronPrevOccurrence, effectiveCronTz } from './cron.js'
+import { cronMinGapMs, cronPrevOccurrence, effectiveCronTz } from './cron.js'
 import {
   listScheduledTasks,
   readScheduledTask,
@@ -63,12 +63,14 @@ import {
   SCHEDULED_TASK_INLINE_MAX_CHARS,
   SCHEDULED_TASK_BODY_WARN_CHARS,
   MAX_SCHEDULED_TASK_PROMPT_LEN,
+  isOnceRunSuccess,
+  disableOnceTask,
   type ScheduledTask,
 } from './scheduled-tasks-io.js'
 import { listAgentNames, readFileOr, readAgentRemoteHost, agentDir } from './agent-config.js'
 import { resolveAgentConfigDirForRead } from './claude-plans.js'
 import { readTranscriptMtimeAcrossConfigDirs, projectsDirFor } from './active-model.js'
-import { classifyDelivery, readUserPromptsSince, type DeliveryVerdict } from './delivery-integrity.js'
+import { classifyDelivery, readUserPromptsSince, type DeliveryVerdict, type ReceivedPrompt } from './delivery-integrity.js'
 import { paneOneLine } from './pane-text.js'
 import { mainConfigRoots } from './inbound-probe.js'
 import { channelStateDir, getProvider, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
@@ -87,6 +89,7 @@ import {
   saturationRefusesDispatch,
 } from './agent-process.js'
 import { isRestartInFlight } from './restart-lock.js'
+import { mainRespawnHold } from './main-respawn-hold.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { runCommandTask } from './command-task.js'
 import { trackDetachedGroup } from './detached-groups.js'
@@ -373,7 +376,7 @@ export type TaskTimeoutDecision = 'done' | 'abandoned' | 'alert' | 'escalate' | 
 export function checkTaskDeliveryIntegrity(
   entry: Pick<TaskInflightEntry, 'sentText' | 'typedAt' | 'deliveryVerdict' | 'workingDir' | 'configDirs'>,
   final: boolean,
-  read: (dirs: readonly string[], sinceMs: number) => string[] = readUserPromptsSince,
+  read: (dirs: readonly string[], sinceMs: number) => ReadonlyArray<string | ReceivedPrompt> = readUserPromptsSince,
   dirExists: (dir: string) => boolean = existsSync,
 ): DeliveryVerdict | null {
   if (entry.sentText == null || entry.typedAt == null || entry.deliveryVerdict != null) return null
@@ -387,6 +390,38 @@ export function checkTaskDeliveryIntegrity(
   if (verdict === 'tail-lost' && !final) return null
   if (verdict == null && final) return dirs.some((d) => dirExists(d)) ? 'not-arrived' : 'unverifiable'
   return verdict
+}
+
+// Card 7d2b49b4: a once task is switched off after its first SUCCESSFUL run (isOnceRunSuccess: the run
+// closed 'done' and the transcript shows the prompt intact). The config is read fresh here, at the end of
+// the run, so a once flag removed in the meantime is respected. Bookkeeping only, like the delivery verdict
+// above it: never alters the sweep's decision, never throws into the sweep.
+// `remote` is true when the run went to a remote agent (entry.host set): no delivery verdict can exist
+// there, so a closed 'done' is the bar (see isOnceRunSuccess). The early return for a non-once task also
+// keeps the "not verified intact" warning off ordinary tasks with a damaged delivery.
+// Exported for the behaviour tests (schedule-once.test.ts); the sweep is its only production caller.
+export function settleOnceAfterRun(
+  taskName: string,
+  decision: string,
+  deliveryVerdict: DeliveryVerdict | undefined,
+  now: number,
+  remote = false,
+): void {
+  try {
+    if (!readScheduledTask(taskName)?.once) return
+    if (!isOnceRunSuccess(decision, deliveryVerdict, { remote })) {
+      logger.warn(
+        { task: taskName, decision, delivery: deliveryVerdict ?? 'unchecked' },
+        'Once-task ran but its delivery was not verified intact -- left enabled, so it stays visible',
+      )
+      return
+    }
+    if (disableOnceTask(taskName, now)) {
+      logger.info({ task: taskName, delivery: remote ? 'remote-unchecked' : deliveryVerdict }, 'Once-task switched off after its first successful run')
+    }
+  } catch (err) {
+    logger.warn({ err, task: taskName }, 'Once-task could not be switched off -- left enabled')
+  }
 }
 
 export function decideTaskTimeout(
@@ -794,6 +829,44 @@ export function decideCatchUp(
 ): CatchUpDecision {
   if (ageMs <= lateThresholdMs) return 'on-time'
   return ageMs <= catchUpMaxAgeMs(task) ? 'catch-up' : 'stale'
+}
+
+// A heartbeat that runs at most this often is not "self-healing" when it misses.
+// See isMissedRunReportable. About half a day: a round that comes once or twice
+// a day loses half a day or more per miss, while every short-cadence heartbeat
+// the catch-up report was muted for (15 minutes, hourly, every 4 hours) stays
+// muted exactly as before. Eleven hours rather than twelve is a defensive
+// margin: a twice-a-day gap is 11 h on the spring-forward night, but the current
+// cron-parser (5.5.0) skips that night's occurrence when iterating forward, so
+// cronMinGapMs never yields the 11 h gap and the margin is not exercised today.
+// It is kept so that a parser fix or a different zone cannot flip a twice-a-day
+// schedule back under the line. No test pins the margin; the constant check does.
+export const HEARTBEAT_MISS_REPORT_MIN_CADENCE_MS = 11 * 60 * 60_000
+
+/**
+ * Pure: does a caught-up or stale occurrence belong in the operator's catch-up
+ * report?
+ *
+ * Everything that is not a heartbeat does, as before. A heartbeat used to be
+ * dropped by TYPE, with the reason "the next occurrence is minutes away". That
+ * reason is a claim about CADENCE, and it is false for a heartbeat that runs
+ * once a day: there the next occurrence is a day away, and with the 30-minute
+ * heartbeat staleness budget a miss is neither caught up nor mentioned. So the
+ * rule now reads the schedule: a heartbeat stays out of the report only while
+ * its tightest gap between occurrences is under the threshold.
+ *
+ * An entry without a readable schedule keeps the old behaviour (not reported):
+ * guessing "report" would bring back the alert storm the mute was added for.
+ */
+export function isMissedRunReportable(
+  entry: { type?: string; schedule?: string },
+  nowMs: number,
+  minCadenceMs: number = HEARTBEAT_MISS_REPORT_MIN_CADENCE_MS,
+): boolean {
+  if (entry.type !== 'heartbeat') return true
+  if (!entry.schedule) return false
+  const gap = cronMinGapMs(entry.schedule, nowMs)
+  return gap != null && gap >= minCadenceMs
 }
 
 /** Pure: where the first post-start scan window begins. */
@@ -1398,7 +1471,7 @@ async function attemptFireTask(
   now: number,
   preCheckPrefix?: string,
   lateCatchUpMs?: number,
-): Promise<'fired' | 'busy' | 'missing' | 'starting' | 'error' | 'mcp-missing' | 'first-run'> {
+): Promise<'fired' | 'busy' | 'missing' | 'starting' | 'error' | 'mcp-missing' | 'first-run' | 'respawning'> {
   const { session, host } = resolveTaskTarget(task, agentName)
   // resolveTaskTarget() computes this internally but does not expose it (it
   // only returns {session, host}) -- recompute the same cheap check here
@@ -1448,6 +1521,21 @@ async function attemptFireTask(
     }
     logger.info({ task: task.name, agent: agentName, session }, 'Schedule target session missing, auto-started agent; will deliver on retry')
     return 'starting'
+  }
+
+  // #1954: the main session is being respawned in-process (or has just been),
+  // so the pane is either the old claude about to be replaced or a new one
+  // still booting, and a prompt typed now loses its head (measured 2026-10-11
+  // 16:40 and 18:45: fired 1.5 s after the recovery started, 'head-lost').
+  // Readiness cannot see this, so ask the respawn mark. Applies to forceSend
+  // too: its contract is to land, and a damaged delivery does not land. The
+  // caller queues the retry and never drops it on skipIfBusy.
+  if (session === MAIN_CHANNELS_SESSION) {
+    const respawnHold = mainRespawnHold(now)
+    if (respawnHold) {
+      logger.warn({ task: task.name, agent: agentName, session, respawnHold }, 'Schedule target is the main session and it is respawning, will retry')
+      return 'respawning'
+    }
   }
 
   // When forceSend is true, skip the busy-state check entirely and inject
@@ -1981,7 +2069,7 @@ export async function runScheduledTaskNow(
     // busy session both get a queued retry that lands once the session is
     // ready. We deliberately do NOT consult skipIfBusy here -- that flag trims
     // redundant cron ticks, but an explicit run-now must not be dropped.
-    if (result === 'starting' || result === 'busy' || result === 'mcp-missing' || result === 'first-run') {
+    if (result === 'starting' || result === 'busy' || result === 'mcp-missing' || result === 'first-run' || result === 'respawning') {
       const reason = result === 'mcp-missing' ? mcpMissingReason(task.name, agentName) : result
       insertPendingTaskRetryIfNew(task.name, agentName, now, reason)
     }
@@ -2040,8 +2128,8 @@ function resolveSchedulerOwnerChat(): string | null {
 // message is plain text (no markdown) as it always has been, so no formatMessage
 // pass is applied; getProvider throws on a non-2xx / ok:false response so the
 // callers' try/catch + classifySendError paths work for every provider.
-function sendSchedulerAlertMessage(token: string, chatId: string, text: string): Promise<void> {
-  return getProvider(CHANNEL_PROVIDER).sendMessage(token, chatId, text)
+async function sendSchedulerAlertMessage(token: string, chatId: string, text: string): Promise<void> {
+  await getProvider(CHANNEL_PROVIDER).sendMessage(token, chatId, text)
 }
 
 // One line about what the scheduler missed while it was down: which tasks it
@@ -2512,8 +2600,8 @@ export function startScheduleRunner(): NodeJS.Timeout {
     const fromMs = lastCheckMs
     // Catch-up bookkeeping for this tick's one-line report (see below). Empty
     // on every normal tick, so the operator only ever hears about real gaps.
-    const caughtUpThisTick: Array<{ task: string; ageMs: number; type?: string }> = []
-    const staleThisTick: Array<{ task: string; ageMs: number; type?: string }> = []
+    const caughtUpThisTick: Array<{ task: string; ageMs: number; type?: string; schedule?: string }> = []
+    const staleThisTick: Array<{ task: string; ageMs: number; type?: string; schedule?: string }> = []
 
     // Post-fire timeout watchdog sweep: check every tracked in-flight injection
     // to see if the target session is still busy. If so past TASK_FIRE_TIMEOUT_MS,
@@ -2560,7 +2648,13 @@ export function startScheduleRunner(): NodeJS.Timeout {
             logger.warn({ err, task: entry.taskName, runId: entry.runId }, 'Failed to record task-run delivery verdict')
           }
         }
-        if (verdict !== 'intact') {
+        if (verdict === 'intact-queued') {
+          // Whole, not damaged: the pane was busy, so the agent got it inside the running turn (card c8a6c2cc).
+          logger.info(
+            { task: entry.taskName, agent: entry.agentName, session: entry.session, runId: entry.runId, delivery: verdict },
+            'Scheduled prompt arrived whole but queued -- the pane was busy, the agent received it inside the running turn',
+          )
+        } else if (verdict !== 'intact') {
           logger.warn(
             { task: entry.taskName, agent: entry.agentName, session: entry.session, runId: entry.runId, delivery: verdict },
             'Scheduled prompt did NOT arrive as typed -- the session transcript shows a damaged delivery',
@@ -2577,6 +2671,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
         // still be silently swallowing prompts.
         if (decision === 'done') {
           lostRedeliveryCounts.delete(`${entry.taskName}@${entry.agentName}`)
+          settleOnceAfterRun(entry.taskName, decision, entry.deliveryVerdict, now, entry.host != null)
         }
         // The one moment the system knows how the run ended. Before 2026-08-26
         // this branch only deleted the map entry, so the knowledge died here and
@@ -2818,7 +2913,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
           { task: task.name, ageMinutes: Math.round(ageMs / 60000), maxAgeMinutes: catchUpMaxAgeMs(task) / 60000 },
           'Scheduled occurrence missed while the scheduler was down and is too stale to catch up -- recording as missed',
         )
-        staleThisTick.push({ task: task.name, ageMs, type: task.type })
+        staleThisTick.push({ task: task.name, ageMs, type: task.type, schedule: task.schedule })
         const missedTargets = task.agent === 'all'
           ? [MAIN_AGENT_ID, ...listAgentNames().filter(a => isAgentRunning(a))]
           : [task.agent || MAIN_AGENT_ID]
@@ -2826,7 +2921,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
         continue
       }
       const lateCatchUpMs = decision === 'catch-up' ? ageMs : undefined
-      if (lateCatchUpMs != null) caughtUpThisTick.push({ task: task.name, ageMs, type: task.type })
+      if (lateCatchUpMs != null) caughtUpThisTick.push({ task: task.name, ageMs, type: task.type, schedule: task.schedule })
 
       // type='command' tasks run a raw shell command directly -- no LLM, no
       // tmux, no target agent. They self-manage failure streaks + Telegram
@@ -3007,6 +3102,11 @@ export function startScheduleRunner(): NodeJS.Timeout {
           // pre-check exists to eliminate. The retry row keeps the task alive
           // until the server returns, and the alert names the dead server.
           insertPendingTaskRetryIfNew(task.name, agentName, now, mcpMissingReason(task.name, agentName))
+        } else if (result === 'respawning') {
+          // #1954: exempt from skipIfBusy like 'first-run'. The hold lasts
+          // under two minutes, so the retry lands within a tick or two; a
+          // dropped tick would make the respawn itself cost a scheduled run.
+          insertPendingTaskRetryIfNew(task.name, agentName, now, 'respawning')
         } else if (result === 'first-run') {
           // Also exempt from skipIfBusy: a session parked on a first-run
           // dialog (fresh install) never frees up between ticks the way a
@@ -3021,14 +3121,16 @@ export function startScheduleRunner(): NodeJS.Timeout {
     // Tell the operator, in one line, what the gap cost. Only fires when this
     // tick actually caught something up or declared something too stale, which
     // in steady state is never.
-    // Heartbeats are excluded from the report on purpose. A heartbeat is
-    // self-healing -- the next occurrence is minutes away -- so a missed one
-    // is not operator-actionable, and reporting it turned a routine 15-minute
-    // heartbeat into ~25 Telegram alerts a day (2026-08-24, owner asked twice
-    // for it to stop). The miss is still WARN-logged and recorded in
-    // task_runs, so nothing is silently lost; it just isn't pushed at a human.
-    const caughtUpReportable = caughtUpThisTick.filter(e => e.type !== 'heartbeat')
-    const staleReportable = staleThisTick.filter(e => e.type !== 'heartbeat')
+    // Short-cadence heartbeats are excluded from the report on purpose. Such a
+    // heartbeat is self-healing -- the next occurrence is minutes away -- so a
+    // missed one is not operator-actionable, and reporting it turned a routine
+    // 15-minute heartbeat into ~25 Telegram alerts a day (2026-08-24, owner
+    // asked twice for it to stop). The miss is still WARN-logged and recorded
+    // in task_runs, so nothing is silently lost; it just isn't pushed at a human.
+    // The exclusion is by CADENCE, not by type (isMissedRunReportable): a
+    // heartbeat that runs once a day is not minutes away from its next run.
+    const caughtUpReportable = caughtUpThisTick.filter(e => isMissedRunReportable(e, now))
+    const staleReportable = staleThisTick.filter(e => isMissedRunReportable(e, now))
     if (caughtUpReportable.length || staleReportable.length) {
       // SLEEP GUARD, narrowed on review (#1153, 2026-09-03): only a gap the
       // machine SLEPT through is operator-caused downtime worth muting. A gap

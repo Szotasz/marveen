@@ -1,4 +1,5 @@
 import { tmuxStderr } from './tmux-stderr.js'
+import { protectTrailingSemicolon } from './tmux-keys.js'
 import { ownerQuestionHolds } from './open-question.js'
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
@@ -719,7 +720,7 @@ export function diagnoseAgent(name: string, nowMs: number) {
  */
 export async function sendSlashCommand(session: string, command: string): Promise<void> {
   await withSessionSendLock(session, null, 'deliver', async () => {
-    execFileSync(tmuxBin(), ['send-keys', '-t', exactTmuxTarget(session), '-l', command], { timeout: 5000 })
+    execFileSync(tmuxBin(), ['send-keys', '-t', exactTmuxTarget(session), '-l', protectTrailingSemicolon(command)], { timeout: 5000 })
     execFileSync(tmuxBin(), ['send-keys', '-t', exactTmuxTarget(session), 'Enter'], { timeout: 5000 })
   })
 }

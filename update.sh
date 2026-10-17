@@ -642,6 +642,44 @@ migrate_channels_restart() {
   return 0
 }
 
+# UPDATETIMER1012 (#1902 follow-up): a timer whose unit file already exists is
+# not necessarily RUNNING. `enable` alone does not start a timer, and both of
+# ours fire on OnBootSec, which on a host that has been up for a while has
+# already passed -- so an install whose installer only enabled them (#1902)
+# keeps them inactive until the next reboot, the keepalive probe never refreshes,
+# and the channel monitor hard-restarts the main agent. The two repairs below
+# skipped every existing timer file, so the update never cured that host.
+# This starts such a timer, with no unit rewrite:
+#   - no systemd, or no user session (WSL, a container, a VPS without linger):
+#     nothing, the same guard the installer uses;
+#   - already active: nothing;
+#   - masked: nothing -- that is the operator's explicit "never run this";
+#   - otherwise `enable --now`, and if that fails, one line with the command
+#     that fixes it. Never fatal: update.sh runs under `set -e`, and a timer that
+#     cannot start must not stop the update (every call here is guarded).
+# One call per timer, so a broken unit cannot take the other one with it.
+_user_systemd_up() {
+  pidof systemd >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1
+}
+ensure_timer_running() {
+  local timer="$1" state
+  _user_systemd_up || return 0
+  systemctl --user is-active --quiet "$timer" 2>/dev/null && return 0
+  state="$(systemctl --user is-enabled "$timer" 2>/dev/null || true)"
+  # masked-runtime too (`systemctl mask --runtime`, until the next reboot): the
+  # same "never run this", so no start and no warning that would ask the
+  # operator to undo their own mask (review of #1915).
+  case "$state" in
+    masked|masked-runtime) return 0 ;;
+  esac
+  if systemctl --user enable --now "$timer" >/dev/null 2>&1; then
+    echo -e "  Inaktiv timer elinditva: $timer"
+  else
+    echo -e "  FIGYELEM: $timer nem fut, es nem indult el -- inditsd kezzel: systemctl --user enable --now $timer"
+  fi
+  return 0
+}
+
 # Idle-path keepalive probe installation (Linux only). The repo has shipped
 # scripts/channel-keepalive-probe.sh and placeholder units under scripts/systemd/
 # for a while, but nothing ever installed them, so on every existing host the ONLY
@@ -655,7 +693,8 @@ migrate_channels_restart() {
 #
 # The installer template fix reaches new installs only -- this is what lands it on
 # the machines that have the bug today. Idempotent: it writes nothing once the
-# timer unit exists. The probe itself never fakes liveness (it proves the session,
+# timer unit exists (it then only starts the timer if it is not running, see
+# ensure_timer_running). The probe itself never fakes liveness (it proves the session,
 # its claude pid and a descending telegram poller are alive before touching), so a
 # genuinely dead channel still ages out and still gets recovered.
 install_keepalive_probe_timer() {
@@ -671,7 +710,11 @@ install_keepalive_probe_timer() {
     [ -f "$chan_unit" ] || continue
     _svc_id="$(basename "$chan_unit" -channels.service)"
     _ka_unit="${_svc_id}-channel-keepalive-probe"
-    [ -f "$units_dir/${_ka_unit}.timer" ] && continue
+    # An existing timer is not rewritten, but it is started if it is not running.
+    if [ -f "$units_dir/${_ka_unit}.timer" ]; then
+      ensure_timer_running "${_ka_unit}.timer"
+      continue
+    fi
     # BOT_NAME is only assigned further down this script, so read it here
     # instead of inheriting an empty one into the unit Description.
     _bot_name="$(sed -n 's/^BOT_NAME=//p' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | tr -d '"')"
@@ -729,7 +772,7 @@ EOF
 # wedge loop the Linux comment above describes. The respawn never clears the
 # condition that triggers it (nothing refreshes the file afterwards either), so
 # it repeats until the owner's first morning message warms the file.
-# Idempotent: once the plist exists this writes nothing and prints nothing. The
+# Idempotent: once the job is loaded this writes nothing and prints nothing. The
 # label is read from the installer so a rename there cannot silently turn this
 # into a weekly reload.
 install_keepalive_probe_launchd() {
@@ -737,15 +780,20 @@ install_keepalive_probe_launchd() {
   _ka_installer="$INSTALL_DIR/scripts/install-channel-keepalive-probe.sh"
   [ -x "$_ka_installer" ] || return 0
   command -v launchctl >/dev/null 2>&1 || return 0
-  _ka_label="$(sed -n 's/^LABEL="\(.*\)"$/\1/p' "$_ka_installer" | head -1)"
+  # #1873: the installer resolves its own com.<SERVICE_ID>.* label.
+  _ka_label="$("$_ka_installer" --print-label 2>/dev/null | head -1)"
   [ -n "$_ka_label" ] || _ka_label="com.marveen.channel-keepalive-probe"
-  if [ -f "$HOME/Library/LaunchAgents/${_ka_label}.plist" ]; then
+  # ISSUE1891 (#1891): keyed on the job being LOADED, not on the plist existing
+  # (the stuck-modal guard below learned this in #1694): a plist whose job never
+  # ran -- a Mac without a GUI login, a failed load -- used to make this return
+  # quietly forever, while the dashboard kept respawning a healthy idle session.
+  if launchctl list "$_ka_label" >/dev/null 2>&1; then
     return 0
   fi
   if "$_ka_installer" --load >/dev/null 2>&1; then
     echo -e "  Keepalive-szonda telepitve (3 percenkent, hamis respawn ellen): ${_ka_label}"
   else
-    echo -e "  FIGYELEM: a keepalive-szonda telepitese nem sikerult -- inditsd kezzel: scripts/install-channel-keepalive-probe.sh --load"
+    echo -e "  FIGYELEM: a keepalive-szonda NEM FUT (${_ka_label}) -- a launchd csak GUI-bejelentkezesen belul futtatja. Javitas, a GUI-bejelentkezes egy terminaljabol: launchctl bootstrap gui/$(id -u) \"$HOME/Library/LaunchAgents/${_ka_label}.plist\" 2>/dev/null; launchctl kickstart gui/$(id -u)/${_ka_label}"
   fi
   return 0
 }
@@ -771,7 +819,8 @@ install_stuck_modal_guard_launchd() {
   command -v launchctl >/dev/null 2>&1 || return 0
   _sm_mode="$(grep -E '^STUCK_MODAL_MODE=' "$INSTALL_DIR/.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"'"'"'\r ' | tr '[:upper:]' '[:lower:]')"
   [ "$_sm_mode" = "off" ] && return 0
-  _sm_label="$(sed -n 's/^LABEL="\(.*\)"$/\1/p' "$_sm_installer" | head -1)"
+  # #1873: the installer resolves its own com.<SERVICE_ID>.* label.
+  _sm_label="$("$_sm_installer" --print-label 2>/dev/null | head -1)"
   [ -n "$_sm_label" ] || _sm_label="com.marveen.stuck-modal-guard"
   if launchctl list "$_sm_label" >/dev/null 2>&1; then
     return 0
@@ -779,7 +828,7 @@ install_stuck_modal_guard_launchd() {
   if "$_sm_installer" --load >/dev/null 2>&1; then
     echo -e "  Beragadt-ablak or telepitve (percenkent; alapbol csak naploz, STUCK_MODAL_MODE): ${_sm_label}"
   else
-    echo -e "  FIGYELEM: a beragadt-ablak or telepitese nem sikerult -- inditsd kezzel: scripts/install-stuck-modal-guard.sh --load"
+    echo -e "  FIGYELEM: a beragadt-ablak or NEM FUT (${_sm_label}) -- a launchd csak GUI-bejelentkezesen belul futtatja. Javitas, a GUI-bejelentkezes egy terminaljabol: launchctl bootstrap gui/$(id -u) \"$HOME/Library/LaunchAgents/${_sm_label}.plist\" 2>/dev/null; launchctl kickstart gui/$(id -u)/${_sm_label}"
   fi
   return 0
 }
@@ -863,7 +912,8 @@ install_main_inbox_observer_unit() {
     if "$INSTALL_DIR/scripts/install-main-inbox-observer.sh" --load >/dev/null 2>&1; then
       echo -e "  Fo-agens inbox-figyelo telepitve (5 percenkent, launchd)"
     else
-      echo -e "  FIGYELEM: az inbox-figyelo telepitese nem sikerult -- kezzel: scripts/install-main-inbox-observer.sh --load"
+      _io_l="$("$INSTALL_DIR/scripts/install-main-inbox-observer.sh" --print-label 2>/dev/null | head -1)"
+      echo -e "  FIGYELEM: az inbox-figyelo NEM FUT (${_io_l}) -- a launchd csak GUI-bejelentkezesen belul futtatja. Javitas, a GUI-bejelentkezes egy terminaljabol: launchctl bootstrap gui/$(id -u) \"$HOME/Library/LaunchAgents/${_io_l}.plist\" 2>/dev/null; launchctl kickstart gui/$(id -u)/${_io_l}"
     fi
     return 0
   fi
@@ -876,7 +926,10 @@ install_main_inbox_observer_unit() {
     [ -f "$chan_unit" ] || continue
     _svc_id="$(basename "$chan_unit" -channels.service)"
     _io_unit="${_svc_id}-main-inbox-observer"
-    [ -f "$units_dir/${_io_unit}.timer" ] && continue
+    if [ -f "$units_dir/${_io_unit}.timer" ]; then
+      ensure_timer_running "${_io_unit}.timer"
+      continue
+    fi
     _bot_name="$(sed -n 's/^BOT_NAME=//p' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | tr -d '"')"
     [ -n "$_bot_name" ] || _bot_name="Marveen"
     _tz_line="# no explicit TZ detected; inheriting host default"
@@ -1129,6 +1182,16 @@ run_seed_refresh() {
   return 0
 }
 run_seed_refresh
+
+# Marketplace channel plugins (SLACKPLUGINVER1006): the official
+# `claude plugin update`, on every config dir that already has the plugin.
+# Here, before the "already up to date" exit, so a plugin release also reaches
+# an install whose marveen code did not move; the new version is loaded at the
+# next channel start (the restart below, or the next natural one). Outside any
+# channel session, never installs, never fatal: scripts/lib/channel-plugin-refresh.sh.
+if [ -f "$INSTALL_DIR/scripts/lib/channel-plugin-refresh.sh" ]; then
+  ( . "$INSTALL_DIR/scripts/lib/channel-plugin-refresh.sh" && refresh_channel_plugins "$INSTALL_DIR" "$HOME" ) || true
+fi
 
 if [ "$OLD_VERSION" = "$NEW_VERSION" ]; then
   # Already on the latest commit -- but "no new commits" does NOT guarantee the
@@ -1463,6 +1526,7 @@ if [ "$RESEED_FLEET" = "1" ] || [ "$REGEN_CLAUDEMD" = "1" ]; then
         -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
         -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
         -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
+        -e "s|{{TIMEZONE}}|$(. "$INSTALL_DIR/scripts/lib/install-tz.sh"; z="$(install_tz "$INSTALL_DIR")"; printf '%s' "${z:-UTC}")|g" \
         "$INSTALL_DIR/templates/CLAUDE.md.template" > "$CLAUDE_MD"
     echo -e "  ${GREEN}✓${NC} CLAUDE.md újrarenderelve a sablonból (előző verzió mentve: CLAUDE.md.backup-*)"
   elif [ -f "$CLAUDE_MD" ]; then
@@ -1529,7 +1593,13 @@ fi
 SLACK_REF_FILE="$INSTALL_DIR/store/marveen-marketplace-slack-channel-ref.txt"
 MARKETPLACE_PLUGIN_DIR="$HOME/.claude/plugins/cache/marveen-marketplace/slack-channel"
 if [ -d "$MARKETPLACE_PLUGIN_DIR" ]; then
-  CURRENT_REF="$(ls "$MARKETPLACE_PLUGIN_DIR" 2>/dev/null | head -1)"
+  # The registry's installPath (and commit) is the version in use; the dir
+  # listing alone keeps returning the oldest version dir (SLACKPLUGINVER1006B).
+  CURRENT_REF="$( . "$INSTALL_DIR/scripts/lib/channel-plugin-refresh.sh" 2>/dev/null \
+    && channel_plugin_current_ref "$HOME/.claude" "slack-channel@marveen-marketplace" )" || true
+  if [ -z "$CURRENT_REF" ]; then
+    CURRENT_REF="$(ls "$MARKETPLACE_PLUGIN_DIR" 2>/dev/null | head -1)"
+  fi
   LAST_REF="$(cat "$SLACK_REF_FILE" 2>/dev/null || true)"
   if [ -n "$CURRENT_REF" ] && [ "$CURRENT_REF" != "$LAST_REF" ]; then
     echo -e "  Slack channel plugin ref valtozott: ${LAST_REF:-ismeretlen} -> $CURRENT_REF"

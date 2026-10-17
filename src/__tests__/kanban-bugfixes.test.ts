@@ -157,6 +157,19 @@ describe('web: static fixes', () => {
     expect(bareLabels).toEqual([])
   })
 
+  it('the data-i18n sweep keeps the space between a label and its inline hint', () => {
+    const sweep = web('app.js')
+    const at = sweep.indexOf("document.querySelectorAll('[data-i18n]').forEach(el => {")
+    const body = sweep.slice(at, sweep.indexOf('\n  })\n', at))
+    // Run the real rewrite on a stand-in for <label>Leírás <span class="hint">..</span></label>
+    const text = { nodeType: 3, textContent: 'Leírás ' }
+    const span = { nodeType: 1, textContent: '(optional)' }
+    const el = { dataset: { i18n: 'common.description' }, children: [span], childNodes: [text, span] }
+    const run = new Function('document', 't', body + '\n  })')
+    run({ querySelectorAll: () => [el] }, () => 'Description')
+    expect(text.textContent + span.textContent).toBe(' Description (optional)')
+  })
+
   it('common.optional_hint exists in both languages', () => {
     expect(web('lang/en.js')).toMatch(/'common\.optional_hint':\s*'\(optional\)'/)
     expect(web('lang/hu.js')).toMatch(/'common\.optional_hint':\s*'\(opcionális\)'/)

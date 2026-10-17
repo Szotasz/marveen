@@ -6,10 +6,16 @@ import {
   decayMemories as dbDecay,
   pruneAuditLogs,
   pruneTokenUsage,
+  pruneConversationLog,
+  pruneOtelSpans,
+  pruneAgentMessages,
+  pruneToolCallLogRetention,
+  checkpointAndCompact,
   getMemoriesForChat,
 } from './db.js'
 import { runAgent } from './agent.js'
 import { logger } from './logger.js'
+import { MAIN_AGENT_ID } from './config.js'
 import { wrapUntrusted, UNTRUSTED_PREAMBLE } from './prompt-safety.js'
 
 // Dedicated cwd for the daily-digest sub-agent. We can't reuse PROJECT_ROOT
@@ -100,7 +106,7 @@ export async function saveConversationTurn(
   // Episodic memories come from daily digest and session checkpoints
   if (SEMANTIC_PATTERN.test(userMsg)) {
     const content = `Felhasznalo: ${userMsg.slice(0, 500)}\nAsszisztens: ${assistantMsg.slice(0, 500)}`
-    saveMemory(chatId, content, 'semantic')
+    saveMemory(chatId, content, 'semantic', undefined, MAIN_AGENT_ID)
     logger.debug({ chatId }, 'Szemantikus emlek mentve')
   }
   // Non-semantic turns are NOT saved individually -- they go into daily digest
@@ -110,7 +116,26 @@ export function runDecaySweep(): void {
   dbDecay()
   pruneAuditLogs()
   const tokenRowsPruned = pruneTokenUsage()
-  logger.info({ tokenRowsPruned }, 'Memoria leepulesi sopres vegrehajtva')
+  const convRowsPruned = pruneConversationLog()
+  const spanRowsPruned = pruneOtelSpans()
+  const agentMsgRowsPruned = pruneAgentMessages()
+  const toolCallRowsPruned = pruneToolCallLogRetention()
+  // Compaction runs last: the deletes above are what create the free pages and
+  // WAL frames it reclaims.
+  const compact = checkpointAndCompact()
+  logger.info(
+    {
+      tokenRowsPruned,
+      convRowsPruned,
+      spanRowsPruned,
+      agentMsgRowsPruned,
+      toolCallRowsPruned,
+      walFramesLeft: compact.walFramesLeft,
+      checkpointBusy: compact.checkpointBusy,
+      vacuumed: compact.vacuumed,
+    },
+    'Memoria leepulesi sopres vegrehajtva',
+  )
 }
 
 // --- Daily digest ---
@@ -155,7 +180,7 @@ ${memoryLines}`
 
     const digest = text.trim()
     const today = new Date().toLocaleDateString('hu-HU')
-    saveMemory(chatId, `[Napi naplo ${today}] ${digest}`, 'episodic')
+    saveMemory(chatId, `[Napi naplo ${today}] ${digest}`, 'episodic', undefined, MAIN_AGENT_ID)
     logger.info({ chatId, digestCwd, digestConfigDir }, `Napi naplo mentve: ${today}`)
     return digest
   } catch (err) {

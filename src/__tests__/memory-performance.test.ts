@@ -117,13 +117,13 @@ describe('getAgentMemories in-process cache', () => {
 // 3. Embedding backfill
 // ---------------------------------------------------------------------------
 describe('backfillEmbeddings', () => {
-  it('returns 0 when all memories already have embeddings or Ollama is unreachable', async () => {
+  it('accounts for every pending row whether or not Ollama is reachable', async () => {
     // In the test environment Ollama is not running; the function must
     // complete gracefully and return 0 (no memories without embeddings
     // that it could successfully embed).
-    const count = await backfillEmbeddings()
-    expect(typeof count).toBe('number')
-    expect(count).toBeGreaterThanOrEqual(0)
+    const { attempted, embedded, failed } = await backfillEmbeddings()
+    expect(embedded).toBeGreaterThanOrEqual(0)
+    expect(embedded + failed).toBe(attempted)
   })
 
   it('processes rows without embeddings and updates them when Ollama responds', async () => {

@@ -25,6 +25,7 @@ SQLite (`store/`): `kanban_cards` (id, title, status, project, priority, assigne
 
 - **Statuses:** `planned`, `in_progress`, `waiting`, `testing`, `done`
 - **Priorities:** `low`, `normal`, `high`, `urgent`
+- **`test_steps`:** the tester's numbered, short steps. A field of its own rather than a paragraph of `description`, because the two answer different questions: the description is what the task IS, this is how to check it is done. `POST`/`PUT` write it like any other field, the dashboard shows it as its own block on the card detail, and marks it while the card is in `testing`.
 
 ### Automatic breakdown
 
@@ -53,6 +54,8 @@ Two append-only tables record what changed on a card, and who changed it (the `a
 - `kanban_card_field_events`: one row per real change of `due_date`, `assignee` or `priority` through `PUT /api/kanban/:id` (`field`, `old_value`, `new_value`, as text; `null` when the field was or became empty). A value sent back unchanged writes no row. Read it with `GET /api/kanban/:id/field-events`.
 
 The `actor` of both writes (`PUT /api/kanban/:id` and `POST /api/kanban/:id/move`) is a string or `null`; any other type is refused with 400 before anything is written, and the write and its rows are one transaction. An empty or blank actor counts as none: then a dashboard session's user is recorded, and a token caller's row stays anonymous (`null`).
+
+`POST /api/kanban/:id/move` also takes an optional `expected_status` (compare-and-set). When it is given, the move happens only if the card's current status equals it, checked and written in one statement; otherwise nothing changes and the answer is 409 `{error: "status_conflict", current_status, expected_status}`. An unknown `expected_status` value is a 400, a missing card is still a 404, and without the field the move is unconditional, as before.
 
 The two are kept apart on purpose: every reader of `kanban_card_events` (the stuck-card detector and the status-age queries among them) takes a row there as a status transition. A fleet transfer carries `kanban_card_events`, but not `kanban_card_field_events`.
 

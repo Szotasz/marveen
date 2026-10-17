@@ -164,6 +164,20 @@ describe('renderKanbanSearchHint', () => {
     api.hint()
     expect(hint.textContent).toBe('kanban.filter.search_none')
   })
+  it('does not count an ongoing card as hidden: it stays visible in the strip', () => {
+    const { api, hint } = setup()
+    api.setCards([
+      { seq: 1, title: 'weekly check', status: 'in_progress', labels: [{ name: 'Folyamatos' }] },
+      { seq: 2, title: 'weekly report', status: 'in_progress' },
+    ])
+    api.hide('in_progress')
+    api.setQuery('weekly check')
+    api.hint()
+    expect(hint.textContent).toBe('kanban.filter.search_hits {"n":1}')
+    api.setQuery('weekly')
+    api.hint()
+    expect(hint.textContent).toBe('kanban.filter.search_some_hidden {"n":2,"h":1}')
+  })
 })
 
 describe('wiring', () => {

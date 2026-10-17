@@ -28,10 +28,13 @@ import {
   firstRunAcceptKeys,
   stuckInputSignature,
   mcpTrustAcceptKeys,
+  devChannelsAcceptKeys,
+  detectsBlockingMenu,
   type FirstRunGateKind,
 } from '../pane-state.js'
 import { scheduleRecoveryBrief } from './restart-recovery-brief.js'
 import { beginRestart, endRestart } from './restart-lock.js'
+import { cancelRestartWake, scheduleRestartWake, type RestartWakeRequest } from './restart-wake.js'
 import { agentDir, listAgentNames, readAgentModel, resolveAgentModelDetailed, readAgentClaudeConfigDir, readAgentClaudePlan, readAgentChannelProvider, readAgentAuthMode, readAgentDisplayName, readAgentRemoteConfig, readAgentRemoteHost, readAgentRunAsUser, readAgentMemoryIsolation, readAgentStateObserver, readAgentWorksourceChannel, readAgentCustomProvider, readAgentExtraChannels, readFileOr, readJsonObjectForWrite } from './agent-config.js'
 import { buildExtraChannelLaunch, enableExtraPlugins } from './agent-extra-channels.js'
 import { probeExtraPluginsInTree, combineLiveness } from './extra-channel-liveness.js'
@@ -947,6 +950,66 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
 }
 
+// Env names that decide WHICH account or endpoint Claude Code talks to. The
+// isolated provisioning copies the shared ~/.claude/settings.json `env` into
+// every isolated settings.json, and that copy stays on purpose: some installs
+// route the fleet through it deliberately (an API key or a compatible
+// endpoint). What must not happen is that it does so SILENTLY: one of these
+// names in the shared file moves every isolated agent off its own setup-token
+// onto that key or endpoint (billing, quota), and nothing on the agent says so.
+export const SHARED_ENV_AUTH_KEYS: readonly string[] = [
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_AUTH_TOKEN',
+  'ANTHROPIC_BASE_URL',
+  'CLAUDE_CODE_OAUTH_TOKEN',
+]
+
+/** The auth-path names an `env` block carries, in SHARED_ENV_AUTH_KEYS order.
+ *  Names only: the values are never read into the result. Own properties only,
+ *  so a prototype name can never count as present. */
+export function authKeysInEnv(env: unknown): string[] {
+  if (!isPlainObject(env)) return []
+  return SHARED_ENV_AUTH_KEYS.filter((k) => Object.prototype.hasOwnProperty.call(env, k))
+}
+
+function readSharedSettingsEnv(): unknown {
+  try {
+    return (JSON.parse(readFileSync(join(homedir(), '.claude', 'settings.json'), 'utf-8')) as { env?: unknown }).env
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Dashboard side of the start-time warning: the auth-path names the shared env
+ * copies into this agent's isolated config dir, or [] when the agent does not
+ * run on one. Read from the files, not from a start-time record, so the
+ * warning survives a dashboard restart and clears itself once the shared file
+ * no longer carries the name. An agent on a configured config dir or plan is
+ * not provisioned from the shared file, so it never gets the warning.
+ */
+export function sharedEnvAuthKeysCopiedTo(name: string): string[] {
+  let cfg: string | null
+  if (name === MAIN_AGENT_ID) {
+    if (resolveMainAgentConfigDir()) return []
+    cfg = mainAgentConfigDirIfSeparate()
+  } else {
+    if (resolveAgentConfigDir(name).configDir) return []
+    cfg = join(agentDir(name), '.claude-config')
+  }
+  if (!cfg) return []
+  const shared = authKeysInEnv(readSharedSettingsEnv())
+  if (!shared.length) return []
+  let own: unknown
+  try {
+    own = (JSON.parse(readFileSync(join(cfg, 'settings.json'), 'utf-8')) as { env?: unknown }).env
+  } catch {
+    return []
+  }
+  const present = new Set(authKeysInEnv(own))
+  return shared.filter((k) => present.has(k))
+}
+
 function provisionIsolatedConfigDir(
   cfg: string,
   cwd: string,
@@ -1010,6 +1073,15 @@ function provisionIsolatedConfigDir(
     // PROVENANCE-KAPU blocks per prompt) and made the global file look load-
     // bearing when it was not.
     delete settings.hooks
+    // The shared env reaches this agent as is (the shared file wins for every
+    // name it defines), so an auth-path name in it changes which account or
+    // endpoint this agent runs on. Said out loud on every start, names only:
+    // a settings.json may hold secrets, so values never land in the log.
+    const copiedAuthKeys = authKeysInEnv(settings.env)
+    if (copiedAuthKeys.length) {
+      logger.warn({ name, path: sharedSettings, keys: copiedAuthKeys },
+        'isolated-config: the shared settings env carries auth keys into this agent; it may run on that key or endpoint instead of its own token')
+    }
     const scopedPlugins = scopeChannelPlugins(
       providerType,
       settings.enabledPlugins as Record<string, boolean> | undefined,
@@ -1235,6 +1307,57 @@ export function ensureSharedClaudeOnboarded(dotClaudePath: string = join(homedir
   }
 }
 
+// #1904: the git toplevel that contains `dir`, or null when there is none
+// (not a repo, git missing, timeout, any error): the caller then stamps what it
+// stamped before. Runs git directly (no shell), bounded, with the inherited
+// GIT_DIR / GIT_WORK_TREE dropped so a hook-time env cannot point it at another
+// repo. `run` is the seam for tests.
+export function gitToplevelFor(
+  dir: string,
+  run: (dir: string) => string = (d) => {
+    const env = { ...process.env }
+    delete env.GIT_DIR
+    delete env.GIT_WORK_TREE
+    return execFileSync('git', ['-C', d, 'rev-parse', '--show-toplevel'], {
+      timeout: 3000, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'], env,
+    })
+  },
+): string | null {
+  try {
+    const out = run(dir).trim()
+    return out ? out : null
+  } catch {
+    return null
+  }
+}
+
+// #1904 (review of #1911): the key to stamp beside an agent dir, or null. It is
+// the install root, resolved, and only when the install root IS a git toplevel
+// (a git-checkout install). A tarball install, even one under a home that is a
+// git repo, gets null: git would answer with the home, which is not ours. git
+// prints the toplevel resolved (symlinks followed, measured), so it is compared
+// with realpath(PROJECT_ROOT); a GIT_WORK_TREE or GIT_DIR that leaked through
+// answers another path and simply does not match. Looked up ONCE per process
+// and root: the lookup is a synchronous git call, and per agent start it held
+// the dashboard's event loop for tens of ms, up to the 3 s timeout on a hung git.
+const installRootTrustCache = new Map<string, string | null>()
+export function installRootTrustKey(
+  root: string = PROJECT_ROOT,
+  lookup: (dir: string) => string | null = gitToplevelFor,
+): string | null {
+  const cached = installRootTrustCache.get(root)
+  if (cached !== undefined) return cached
+  let key: string | null = null
+  try {
+    const real = realpathSync(root)
+    key = lookup(root) === real ? real : null
+  } catch {
+    key = null
+  }
+  installRootTrustCache.set(root, key)
+  return key
+}
+
 // Pre-accept the PER-PROJECT first-run consent for an agent's working dir in
 // the config root the session will boot from. Claude Code keys the "Do you
 // trust the files in this folder?" dialog on projects[<cwd>].hasTrustDialogAccepted
@@ -1250,7 +1373,22 @@ export function ensureSharedClaudeOnboarded(dotClaudePath: string = join(homedir
 // symlinked homes) since Claude Code keys trust by the resolved path. Write is
 // atomic and only performed on actual change, so a live Claude Code process
 // racing us never sees a torn file and an already-stamped launch is a no-op.
-export function stampProjectTrustForDir(dotClaudePath: string, projectDir: string): boolean {
+//
+// #1904: on a git-checkout install it also stamps the INSTALL ROOT. Claude Code
+// decides whether to honour a project's .claude/settings.json permissions.allow
+// by the trust of the git root, not of the cwd: with only agents/<name> stamped
+// it prints "Ignoring N permissions.allow entries ... this workspace has not
+// been trusted", so a strict-profile (dontAsk) agent lost its whole allow-list
+// and could only read. Only the install root is ever added (installRootTrustKey),
+// never the git root of the agent dir itself: that can lie outside the install
+// (a tarball install under a dotfiles-repo home, an agents/<name> symlinked into
+// another repository), and stamping it would accept a foreign directory's
+// settings hooks and .mcp.json without the trust question (review of #1911).
+export function stampProjectTrustForDir(
+  dotClaudePath: string,
+  projectDir: string,
+  toplevel: string | null = installRootTrustKey(),
+): boolean {
   try {
     let data: Record<string, unknown> = {}
     if (existsSync(dotClaudePath)) {
@@ -1258,6 +1396,7 @@ export function stampProjectTrustForDir(dotClaudePath: string, projectDir: strin
     }
     const dirs = new Set<string>([projectDir])
     try { dirs.add(realpathSync(projectDir)) } catch { /* dir may not resolve yet */ }
+    if (toplevel) dirs.add(toplevel)
     const projects: Record<string, unknown> =
       (data.projects && typeof data.projects === 'object' && !Array.isArray(data.projects))
         ? data.projects as Record<string, unknown>
@@ -1283,7 +1422,7 @@ export function stampProjectTrustForDir(dotClaudePath: string, projectDir: strin
     if (!changed) return false
     data.projects = projects
     atomicWriteFileSync(dotClaudePath, JSON.stringify(data, null, 2) + '\n', { mode: 0o600 })
-    logger.info({ dotClaudePath, projectDir }, 'project-trust: stamped folder-trust consent for agent dir')
+    logger.info({ dotClaudePath, projectDir, toplevel }, 'project-trust: stamped folder-trust consent for agent dir')
     return true
   } catch (err) {
     // Unparseable/unwritable file: leave it to Claude Code (same policy as
@@ -2752,7 +2891,8 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
             try { runTmux(null, ['send-keys', '-t', exactTmuxTarget(session), 'Enter'], { timeout: 4000 }) } catch { /* ignore */ }
           }
         }
-        if (/Listening for channel messages/.test(pane)) return
+        // 2.1.296 renamed the banner to "Listening for messages from <x>".
+        if (/Listening for (?:channel )?messages from/.test(pane)) return
         setTimeout(checkEperm, 1000)
       }
       setTimeout(checkEperm, 1500)
@@ -2855,7 +2995,10 @@ export function getAgentProcessInfo(name: string): { running: boolean; session?:
   }
 }
 
-export async function restartAgentProcess(name: string, opts: { fresh?: boolean } = {}): Promise<{ ok: boolean; pid?: number; error?: string }> {
+export async function restartAgentProcess(
+  name: string,
+  opts: { fresh?: boolean; wake?: RestartWakeRequest } = {},
+): Promise<{ ok: boolean; pid?: number; error?: string }> {
   // Hold the restart slot across BOTH halves. stopAgentProcess waits ~2s for
   // tmux to tear the session down, and for that window isAgentRunning() already
   // says false -- every liveness-driven supervisor (channel-monitor reconcile,
@@ -2868,6 +3011,10 @@ export async function restartAgentProcess(name: string, opts: { fresh?: boolean 
     return { ok: false, error: 'A restart is already in flight for this agent' }
   }
   try {
+    // RESTARTWAKE927: a fresh restart brings its own directive (the context
+    // guard's resume prompt); a wake still owed by an earlier --continue
+    // restart must not land in that session as a second instruction.
+    if (opts.fresh) cancelRestartWake(name)
     if (isAgentRunning(name)) {
       const stopResult = await stopAgentProcess(name)
       if (!stopResult.ok) return { ok: false, error: stopResult.error || 'Failed to stop running agent before restart' }
@@ -2883,6 +3030,9 @@ export async function restartAgentProcess(name: string, opts: { fresh?: boolean 
         'Restart lost the start race -- another supervisor started this agent inside the stop window',
       )
     }
+    // RESTARTWAKE927: only a caller that asked for it, only a --continue
+    // restart, only one that really started this session (see restart-wake.ts).
+    if (started.ok && !opts.fresh && opts.wake) scheduleRestartWake(name, agentSessionName(name), opts.wake.reason)
     return started
   } finally {
     endRestart(name)
@@ -3036,7 +3186,8 @@ export async function dismissModelConsentDialogIfPresent(session: string, host: 
 }
 
 // Walk a session out of the Claude Code FIRST-RUN dialog chain (folder-trust,
-// bypass-permissions acceptance, theme picker, welcome screen), answering each
+// bypass-permissions acceptance, MCP server approval, the development-channels
+// warning, theme picker, welcome screen), answering each
 // dialog exactly the way scripts/channels.sh's startup guard does for the main
 // session: trust -> "1" Enter (Yes, proceed), bypass -> "2" Enter (Yes, I
 // accept), theme/welcome -> Enter (accept default / continue). The login
@@ -3117,6 +3268,22 @@ export async function answerFirstRunGates(
           runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), k], { timeout: 5000 })
           await delay(150)
         }
+      } else if (gate === 'dev-channels') {
+        // The development-channels warning every worksourceChannel launch
+        // parks on. Enter ONLY when the highlighted
+        // row is "I am using this for local development" -- both other exits
+        // from this panel ("Exit", Escape) quit the TUI, and a cursor anywhere
+        // else means a layout we do not model. See devChannelsAcceptKeys.
+        const keys = pane != null ? devChannelsAcceptKeys(pane) : null
+        if (keys == null) {
+          logger.warn({ session, gate },
+            'development-channels dialog: the highlighted option is not "I am using this for local development" -- parking, NO keystrokes sent')
+          return 'blocked'
+        }
+        for (const k of keys) {
+          runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), k], { timeout: 5000 })
+          await delay(150)
+        }
       } else {
         // theme / welcome: Enter accepts the highlighted default and moves on.
         runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), 'Enter'], { timeout: 5000 })
@@ -3150,6 +3317,79 @@ export function identitySlashCommands(displayName: string): string[] {
 const MODAL_DISMISS_DELAY_MS = 8000
 const IDENTITY_SEND_DELAY_MS = 5000
 
+// Post-spawn startup-gate watch. Every start door --
+// startAgentProcess (the dashboard button, the context guard's fresh restart
+// via restartAgentProcess, auto-restart, reconcile) and the remote start --
+// reaches the new session through scheduleIdentitySetup, so this is where a
+// startup dialog is answered for all of them at once.
+//
+// Measured on a live install: until this existed, NOTHING answered the
+// development-channels warning a worksourceChannel launch parks on. What got
+// every earlier start past it was an accident: the `/rename <name>` below,
+// typed ~13s after spawn, ends in Enter, and that Enter confirmed whatever the
+// dialog had highlighted. 28 of the 29 sub-agent starts in one day's
+// store/dashboard.log were followed by "Set session /rename"; the one that
+// was not -- a context-guard restart whose dashboard process was restarted
+// by its service manager 5.7s later, taking the timer with it -- sat on the
+// dialog for ~10 minutes until a human pressed Enter.
+//
+// So the dialog is answered deliberately, through the same helper the channel
+// monitor uses (answerFirstRunGates), and the /rename refuses to type into a
+// pane that shows a dialog at all.
+//
+// A bounded poll, not a single probe: the dialog chain can render after the
+// MODAL_DISMISS_DELAY_MS mark on a loaded host, and a one-shot check that
+// arrives a second early would find nothing and leave the dialog to the
+// monitor's slower sweep. The watch ends as soon as the pane is a real Claude
+// Code surface (idle/busy/typing/error), i.e. no dialog is in front of it.
+export const STARTUP_GATE_WATCH_MS = 30_000
+const STARTUP_GATE_POLL_MS = 1000
+
+export type StartupGateOutcome = 'ready' | 'cleared' | 'login' | 'blocked' | 'timeout'
+
+export async function settleStartupGates(
+  session: string,
+  host: string | null = null,
+  watchMs: number = STARTUP_GATE_WATCH_MS,
+): Promise<StartupGateOutcome> {
+  const deadline = Date.now() + watchMs
+  let answered = false
+  for (;;) {
+    const pane = capturePane(session, host)
+    if (pane != null) {
+      if (detectsFirstRunGate(pane) != null) {
+        // Keystrokes into the pane go through the per-pane send lane
+        // (PANEWRITERS910), fail-closed: a busy lane just means we look again
+        // on the next poll.
+        const releaseLane = tryAcquireSessionSendLane(session, host)
+        if (releaseLane) {
+          let res: Awaited<ReturnType<typeof answerFirstRunGates>>
+          try {
+            res = await answerFirstRunGates(session, host)
+          } finally {
+            releaseLane()
+          }
+          if (res === 'login' || res === 'blocked') return res
+          if (res === 'cleared') answered = true
+        }
+      } else if (detectPaneState(pane) !== 'unknown') {
+        return answered ? 'cleared' : 'ready'
+      }
+    }
+    if (Date.now() >= deadline) return 'timeout'
+    await delay(STARTUP_GATE_POLL_MS)
+  }
+}
+
+// The identity /rename is text followed by Enter. Typed into a dialog, the
+// text is dropped and the Enter CONFIRMS the highlighted option -- which is
+// how it used to answer the development-channels warning by accident (see
+// above). Never into a first-run gate or a blocking menu.
+export function paneRefusesIdentityCommand(pane: string | null): boolean {
+  if (pane == null) return true
+  return detectsFirstRunGate(pane) != null || detectsBlockingMenu(pane)
+}
+
 // How many times the identity send retries when the pane's send lane is held
 // by a live delivery, and how long it waits between tries. Unlike the modal
 // dismissals (skip-on-busy is harmless -- a modal that is really up keeps the
@@ -3181,6 +3421,22 @@ const IDENTITY_LANE_MAX_ATTEMPTS = 5
 export async function scheduleIdentitySetup(session: string, displayName: string, host: string | null = null): Promise<void> {
   setTimeout(() => {
     void (async () => {
+      // Startup dialogs first: nothing below may reach the
+      // pane while a dialog is in front of the prompt.
+      try {
+        const gates = await settleStartupGates(session, host)
+        if (gates === 'cleared') {
+          logger.info({ session }, 'Post-spawn: answered the startup dialog(s), prompt is up')
+        } else if (gates === 'timeout') {
+          logger.warn({ session, watchMs: STARTUP_GATE_WATCH_MS },
+            'Post-spawn: no Claude Code prompt within the startup watch; continuing (the /rename still refuses to type into a dialog)')
+        } else if (gates !== 'ready') {
+          logger.warn({ session, outcome: gates },
+            'Post-spawn: session is still behind a startup dialog -- NOT answered here (no safe key); the channel monitor sweep re-checks it')
+        }
+      } catch (err) {
+        logger.warn({ err, session }, 'Post-spawn startup-dialog watch failed')
+      }
       // Modal dismissals: fail-closed acquire, same as sendPromptToSession's
       // pre-emit dismissals. Skipping on a busy lane is safe here -- a delivery
       // holding the lane runs its OWN dismissals before emitting.
@@ -3214,6 +3470,18 @@ export async function scheduleIdentitySetup(session: string, displayName: string
               await delay(IDENTITY_LANE_RETRY_MS)
               continue
             }
+            // Looked at INSIDE the lane, right before typing, so no other
+            // writer's keystrokes can change the pane between the look and
+            // the keys.
+            if (paneRefusesIdentityCommand(capturePane(session, host))) {
+              releaseIdentityLane()
+              logger.info(
+                { session, displayName, attempt, max: IDENTITY_LANE_MAX_ATTEMPTS },
+                'Identity /rename deferred -- a dialog is in front of the prompt; never typing text+Enter into it',
+              )
+              await delay(IDENTITY_LANE_RETRY_MS)
+              continue
+            }
             try {
               for (const cmd of identitySlashCommands(displayName)) {
                 runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), cmd, 'Enter'], { timeout: 5000 })
@@ -3232,7 +3500,7 @@ export async function scheduleIdentitySetup(session: string, displayName: string
           // loudly because a skip nobody logs is not a skip.
           logger.warn(
             { session, displayName, max: IDENTITY_LANE_MAX_ATTEMPTS },
-            'Identity /rename abandoned -- pane send lane stayed busy; session keeps its default name',
+            'Identity /rename abandoned -- pane send lane stayed busy or a dialog stayed up; session keeps its default name',
           )
         })()
       }, IDENTITY_SEND_DELAY_MS)
@@ -3460,12 +3728,31 @@ export function computeTmuxChunk(
 // still reports stuck, send up to SUBMIT_RETRY_MAX_ATTEMPTS extra
 // Enters. The retry budget bounds the loop so a pathologically stuck
 // pane gives up rather than spinning.
+export interface SendPromptOpts {
+  waitForIdle?: boolean
+  onBusyTimeout?: 'send' | 'abort'
+  idleTimeoutMs?: number
+  lockMode?: SendLockMode
+  onBusySend?: () => void
+  onEmitStart?: () => void
+}
+/** Card 71263d15 (C): returns a reason to send nothing (see emitToPane), or null to go ahead. */
+export type SendEmitGuard = (pane: string | null) => string | null
+
+// Two signatures so only a caller that passes an emitGuard has to handle 'aborted-guard'. The
+// plain one is LAST on purpose: Parameters<>/ReturnType<> (system-directive.ts) read the last one.
+export function sendPromptToSession(
+  session: string, text: string, host: string | null, opts: SendPromptOpts & { emitGuard: SendEmitGuard },
+): Promise<'sent' | 'aborted-busy' | 'skipped-locked' | 'aborted-guard'>
+export function sendPromptToSession(
+  session: string, text: string, host?: string | null, opts?: SendPromptOpts,
+): Promise<'sent' | 'aborted-busy' | 'skipped-locked'>
 export async function sendPromptToSession(
   session: string,
   text: string,
   host: string | null = null,
-  opts: { waitForIdle?: boolean; onBusyTimeout?: 'send' | 'abort'; idleTimeoutMs?: number; lockMode?: SendLockMode; onBusySend?: () => void; onEmitStart?: () => void } = {},
-): Promise<'sent' | 'aborted-busy' | 'skipped-locked'> {
+  opts: { waitForIdle?: boolean; onBusyTimeout?: 'send' | 'abort'; idleTimeoutMs?: number; lockMode?: SendLockMode; onBusySend?: () => void; onEmitStart?: () => void } & { emitGuard?: SendEmitGuard } = {},
+): Promise<'sent' | 'aborted-busy' | 'skipped-locked' | 'aborted-guard'> {
   const lockMode: SendLockMode = opts.lockMode ?? 'deliver'
   // PANEWRITERS805: the three modal dismissals are probe+act keystroke writers
   // that ran BEFORE the lane lock -- so they could press Escape/Enter into a
@@ -3641,6 +3928,16 @@ export async function sendPromptToSession(
   for (let attempt = 0; ; attempt++) {
     await delay(SUBMIT_RETRY_POLL_MS)
     const pane = capturePane(session, host)
+    // Card 71263d15 (C): a guarded send presses no follow-up key into a pane that has
+    // turned into a prompt since the text went in (a retry Enter would answer it).
+    if (opts.emitGuard) {
+      let reason: string | null = null
+      try { reason = opts.emitGuard(pane) } catch { reason = 'emit guard threw' }
+      if (reason) {
+        logger.warn({ session, attempt, reason }, 'sendPromptToSession: emit guard refused the pane after the send; no follow-up keys')
+        break
+      }
+    }
     const action = decideSubmitFollowup(pane, payloadHint, attempt, SUBMIT_RETRY_MAX_ATTEMPTS)
     if (action === 'done') break
     if (action === 'give-up') {
@@ -3675,15 +3972,39 @@ export async function sendPromptToSession(
     return 'sent'
   }
 
+  const guardedEmit = async (): Promise<'sent' | 'aborted-guard'> => {
+    // Card 71263d15 (C): the caller's last look at the pane, taken INSIDE the lane right
+    // before the first keystroke. The router's STOP path passes one: a STOP skips the idle
+    // wait, so between its pane check and this point a running turn can open a permission
+    // prompt, and text + Enter typed into that prompt answers it (measured live on Claude
+    // Code 2.1.294: the pending command ran and the text was lost). A non-null answer sends
+    // NOTHING -- no text, no Escape (an Escape would deny the pending call) -- and returns
+    // 'aborted-guard' so the caller keeps its row.
+    if (opts.emitGuard) {
+      let reason: string | null = null
+      try {
+        reason = opts.emitGuard(capturePane(session, host))
+      } catch (err) {
+        reason = `emit guard threw: ${String(err).slice(0, 120)}`
+      }
+      if (reason) {
+        logger.warn({ session, reason }, 'sendPromptToSession: emit guard refused the pane; no keystrokes sent')
+        return 'aborted-guard'
+      }
+    }
+    return emitToPane()
+  }
+
   // 'held': the caller already owns this pane's lane (e.g. the stuck-input
   // recovery clears + re-injects as ONE recover-mode critical section). Re-
   // acquiring the same lane here would deadlock against ourselves, so emit
   // directly.
   if (lockMode === 'held') {
-    return emitToPane()
+    return guardedEmit()
   }
 
-  const lockResult = await withSessionSendLock(session, host, lockMode, emitToPane)
+  const lockResult = await withSessionSendLock(session, host, lockMode, guardedEmit)
+  if (lockResult.ran && lockResult.value === 'aborted-guard') return 'aborted-guard'
   if (!lockResult.ran) {
     // recover mode + lane busy: a delivery is mid-flight into this pane. Do NOT
     // race it (we would clear or submit the wrong buffer). Skip this round and
@@ -3756,6 +4077,25 @@ export function capturePane(session: string, host: string | null = null): string
     // (a banner otherwise pins detectPaneState 'unknown', blocking scheduler +
     // inter-agent delivery). See stripSessionTitleBanner.
     return stripAllAnsi(stripSessionTitleBanner(captureTmux(host, ['capture-pane', '-t', exactTmuxTarget(session), '-e', '-p'])))
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Foreground command of a session's first pane (`claude.exe` on a healthy agent,
+ * the shell name once the CLI has exited). Feeds classifyPaneLiveness so the
+ * dashboard can tell a dead session from an idle one -- `tmux list-sessions`
+ * cannot, it lists the leftover shell exactly like a live agent.
+ *
+ * Returns null on any failure: an unreadable pane must degrade to "unknown",
+ * never to a false death sentence.
+ */
+export function paneCurrentCommand(session: string, host: string | null = null): string | null {
+  try {
+    const out = captureTmux(host, ['list-panes', '-t', exactTmuxTarget(session), '-F', '#{pane_current_command}'])
+    const first = out.split('\n').map(line => line.trim()).find(line => line.length > 0)
+    return first ?? null
   } catch {
     return null
   }

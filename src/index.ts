@@ -179,6 +179,17 @@ function buildProcessLockContext(): ProcessLockContext {
         return null
       }
     },
+    processBelongsToThisInstall(pid: number): boolean {
+      // The same attribution the binary-pattern path applies in
+      // listOwnProcessesMatching: argv under PROJECT_ROOT, or cwd under it.
+      // A PID that is gone (no argv) is not ours to signal.
+      try {
+        const argv = execFileSync('/bin/ps', ['-p', String(pid), '-o', 'args='], { timeout: 2000, encoding: 'utf-8' }).trim()
+        return argv !== '' && argvBelongsToThisInstall(argv, pid)
+      } catch {
+        return false
+      }
+    },
     getProcessUid(pid: number): number | null {
       try {
         const out = execFileSync('/bin/ps', ['-p', String(pid), '-o', 'uid='], { timeout: 2000, encoding: 'utf-8' }).trim()
@@ -485,8 +496,8 @@ async function main(): Promise<void> {
 
   // Backfill embeddings for memories saved before Ollama was available.
   // Fire-and-forget: a missing or slow Ollama instance must not block startup.
-  backfillEmbeddings().then(count => {
-    if (count > 0) logger.info({ count }, 'Embedding backfill befejezve')
+  backfillEmbeddings().then(({ embedded, attempted, failed }) => {
+    if (embedded > 0) logger.info({ count: embedded, attempted, failed }, 'Embedding backfill befejezve')
   }).catch(err => logger.warn({ err }, 'Embedding backfill hiba (Ollama nem elerheto)'))
 
   // Memory decay (24h cycle)

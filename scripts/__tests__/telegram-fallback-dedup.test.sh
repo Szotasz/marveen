@@ -153,6 +153,7 @@ assert_eq "control: pend still has the chat" "yes" "$(pend_has_chat "$SD_C")"
 run_stop "$SD_C" true >/dev/null   # enforce fallback branch (stop_hook_active)
 assert_eq "control: enforce re-delivers the answer (the duplicate)" "1" "$(count sendMessage)"
 assert_eq "control: enforce cleared the placeholder afterwards" "no" "$(pend_has_chat "$SD_C")"
+assert_eq "control: a plain placeholder's re-delivery carries no topic" "0" "$(grep -c message_thread_id "$REQLOG")"
 
 # ---------------------------------------------------------------------------
 # (d) Helper delivery FAILURE -> exit 2, nothing cleared (caller escalates)
@@ -168,6 +169,19 @@ OUT_D="$(TELEGRAM_API_BASE="$DEAD_BASE" TELEGRAM_STATE_DIR="$SD_D" \
 RC_D=$?
 assert_eq "helper exits 2 when Bot API is unreachable" "2" "$RC_D"
 assert_eq "failed send does NOT clear the placeholder" "yes" "$(pend_has_chat "$SD_D")"
+
+# ---------------------------------------------------------------------------
+# (e) A placeholder posted in a topic (TELEGRAM_TOPICS_ENABLED): the enforce
+#     re-delivery goes into the same topic.
+# ---------------------------------------------------------------------------
+echo ""
+echo "(e) Topic placeholder: the re-delivery lands in the topic"
+SD_E="$TMP/e"; make_state "$SD_E"
+printf '[{"chat_id": "%s", "message_id": 555, "message_thread_id": 12}]\n' "$CHAT" > "$SD_E/progress/$SID.json"
+: > "$REQLOG"
+run_stop "$SD_E" true >/dev/null
+assert_eq "topic: one re-delivery" "1" "$(count sendMessage)"
+assert_eq "topic: the re-delivery names the topic" "1" "$(grep -c '^sendMessage .*"message_thread_id": 12' "$REQLOG")"
 
 # ---------------------------------------------------------------------------
 echo ""
