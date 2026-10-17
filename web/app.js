@@ -16923,6 +16923,10 @@ async function loadNotesAssignees() {
 }
 
 async function loadNotesPage() {
+  // The author (kanbanMoveActor) and the assignee list (mainAgentId) both read
+  // window._marveen, which only some pages fill: resolve it first, or a
+  // token-authenticated first add/delete goes out without a name and gets a 400.
+  await ensureMarveenLoaded()
   wireNotesPage()
   if (!notesAssigneesLoaded) loadNotesAssignees()
   // A language switch since the options were drawn: relabel them in place.
@@ -16984,6 +16988,7 @@ function wireNotesPage() {
     const dueEl = document.getElementById('notesDue')
     const content = (contentEl?.value || '').trim()
     if (!content) { contentEl?.focus(); return }
+    await ensureMarveenLoaded()
     // The author is the owner from the page config, as for the board's moves
     // (kanbanMoveActor). A login session or device key overrides it on the
     // server with the name of whoever is actually signed in.
@@ -17011,6 +17016,7 @@ function wireNotesPage() {
     const reason = window.prompt(t('notes.prompt.reason'), '')
     if (reason === null) return // cancelled
     btn.disabled = true
+    await ensureMarveenLoaded()
     try {
       const r = await fetch(`/api/notes/${encodeURIComponent(btn.dataset.noteDone)}`, {
         method: 'DELETE',
