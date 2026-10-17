@@ -3676,7 +3676,7 @@ async function discardPlaceholderBuffer(session: string, host: string | null = n
     for (let i = 0; i < PLACEHOLDER_DISCARD_MAX; i++) {
       const pane = capturePane(session, host)
       if (pane == null) {
-        logger.warn({ session, presses }, 'discardPlaceholderBuffer: pane capture failed; no Ctrl-C pressed')
+        logger.warn({ session, presses }, 'discardPlaceholderBuffer: pane capture failed; stopping (presses so far in the field)')
         return { outcome: 'failed', lastPane }
       }
       lastPane = pane
@@ -3685,7 +3685,7 @@ async function discardPlaceholderBuffer(session: string, host: string | null = n
       // would quit the TUI.
       if (where == null) return { outcome: 'cleared', lastPane }
       if (where === 'tail') {
-        logger.warn({ session, presses, where }, 'discardPlaceholderBuffer: placeholder only in the fallback tail, not in the input box; no Ctrl-C')
+        logger.warn({ session, presses, where }, 'discardPlaceholderBuffer: placeholder only in the fallback tail, not in the input box; stopping (presses so far in the field)')
         // After a press the box was already touched, so the payload must go again ('failed').
         return { outcome: presses === 0 ? 'refused' : 'failed', lastPane }
       }

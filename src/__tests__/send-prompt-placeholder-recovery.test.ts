@@ -187,7 +187,7 @@ describe('Ctrl-C only on a placeholder confirmed in the input box (71263d15 a3)'
     await expect(sendPromptToSession(SESSION, SHORT, null, { waitForIdle: false })).resolves.toBe('sent')
     expect(h.s.ctrlC).toBe(0)
     expect(typed(SHORT)).toBe(1)
-    expect(logged(warn, 'discardPlaceholderBuffer: placeholder only in the fallback tail, not in the input box; no Ctrl-C')).toHaveLength(1)
+    expect(logged(warn, 'discardPlaceholderBuffer: placeholder only in the fallback tail, not in the input box; stopping (presses so far in the field)')).toHaveLength(1)
   }, 20_000)
 
   it('⛔ an unreadable pane at the clear: no blind Ctrl-C', async () => {
