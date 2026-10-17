@@ -110,6 +110,17 @@ function listPollerPidsByStateDir(envVar: string, chanDir: string): number[] {
 // honoured only while it names a process with the plugin marker: the pid space
 // wraps, and a stale bot.pid can name a pid the kernel has since given to an
 // unrelated process.
+//
+// The plugin marker alone does not cover one recycled-pid shape: the pid now
+// belongs to ANOTHER agent's live poller of the same provider (same plugin
+// root, so the marker matches). The launchers export the state-dir variable
+// for the sessions they start (the sub-agent fence points every provider at
+// the agent's own dir), so that poller carries `<envVar>=<its own dir>`, and
+// the plugin writes bot.pid into the dir that variable names (its built-in
+// default only when the variable is unset). A bot.pid holder whose state-dir
+// value is some other dir is therefore never this agent's poller:
+// selectReapablePollers spares it ('other-state-dir'). A holder with no
+// state-dir value at all (a plugin on its default dir) is judged as before.
 
 const escapeRe = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 
@@ -123,8 +134,12 @@ function pluginRootRegex(pluginRootNeedle: string): RegExp {
 // The rows of ONE channel state dir: the state-dir literal `<envVar>=<chanDir>`
 // ending on whitespace or end of line (so `/x/telegram` does not also match
 // `/x/telegram-old`), and, when `rootRe` is given, that anchor too.
+function stateDirLiteralRe(envVar: string, chanDir: string): RegExp {
+  return new RegExp(`(?:^|\\s)${escapeRe(envVar)}=${escapeRe(chanDir)}(?:\\s|$)`)
+}
+
 function stateDirRowPids(psEwwOutput: string, envVar: string, chanDir: string, rootRe?: RegExp): number[] {
-  const dirRe = new RegExp(`(?:^|\\s)${escapeRe(envVar)}=${escapeRe(chanDir)}(?:\\s|$)`)
+  const dirRe = stateDirLiteralRe(envVar, chanDir)
   const out: number[] = []
   for (const line of psEwwOutput.split('\n')) {
     if (!dirRe.test(line) || (rootRe && !rootRe.test(line))) continue
@@ -150,6 +165,27 @@ export function parseStateDirPollerPids(
   pluginRootNeedle: string,
 ): number[] {
   return stateDirRowPids(psEwwOutput, envVar, chanDir, pluginRootRegex(pluginRootNeedle))
+}
+
+/**
+ * Does `pid`, in the same env-scan snapshot, carry `<envVar>=` but NOT the
+ * anchored literal `<envVar>=<chanDir>`? Then it runs for another state dir
+ * (see "Plugin-process markers" above). "Own" is decided by the same anchored
+ * match the env scan uses (stateDirLiteralRe), not by reading the value up to
+ * the first whitespace: a state dir with a space in its path (an install under
+ * `/Users/a/My Projects/...`) is found by the env scan, so it must be own here
+ * too, or every own orphan would be spared and never reaped. false when the pid
+ * is not in the snapshot or carries no such variable. Exported for testability.
+ */
+export function carriesOtherStateDir(psEwwOutput: string, pid: number, envVar: string, chanDir: string): boolean {
+  const ownRe = stateDirLiteralRe(envVar, chanDir)
+  const varRe = new RegExp(`(?:^|\\s)${escapeRe(envVar)}=`)
+  for (const line of psEwwOutput.split('\n')) {
+    const m = line.match(/^\s*(\d+)\s/)
+    if (!m || parseInt(m[1]!, 10) !== pid) continue
+    return varRe.test(line) && !ownRe.test(line)
+  }
+  return false
 }
 
 /**
@@ -518,7 +554,7 @@ function logNotKilled(where: Record<string, unknown>, o: KillOutcomes): void {
 // every attempt taking the bridge down for the next 4-6 minutes.
 //
 // So the candidate list is now a SUPERSET of the pollers and must be filtered.
-// Three independent guards, because the expensive failure is killing the
+// Independent guards, because the expensive failure is killing the
 // session and the cheap failure is leaving one orphan for the next sweep:
 //   1. pane        -- the pid IS a live tmux pane pid. Never killable here:
 //                     that is an agent session, not a poller.
@@ -535,6 +571,12 @@ function logNotKilled(where: Record<string, unknown>, o: KillOutcomes): void {
 //                     so a poller shipped as a compiled binary is still reaped
 //                     through that path. The gap this leaves is narrow and
 //                     named: a NON-JS orphan whose pid is no longer in bot.pid.
+//   5. other-state-dir -- the candidate carries this provider's state-dir
+//                     variable with ANOTHER dir as its value. Only a bot.pid
+//                     holder can be one (env-scan hits carry this dir by
+//                     construction): a recycled pid that now belongs to another
+//                     agent's live poller of the same provider. Killing it takes
+//                     that agent's channel down; see "Plugin-process markers".
 //
 // The candidates reach this selection already narrowed to plugin processes
 // (cf075d41, "Plugin-process markers" above): an env-scan hit needs the
@@ -553,19 +595,21 @@ function argv0Base(command: string): string {
 
 export interface PollerSelection {
   reap: number[]
-  spared: { pid: number; reason: 'pane' | 'pane-ancestor' | 'claude' | 'not-a-runtime' | 'gone' }[]
+  spared: { pid: number; reason: 'pane' | 'pane-ancestor' | 'claude' | 'not-a-runtime' | 'other-state-dir' | 'gone' }[]
 }
 
 /**
  * Pure: split reap candidates into "actually a poller" and "spared, with a
  * reason". `fromBotPid` is exempt from the runtime check (see guard 4 above).
- * Exported for testability -- no ps, no tmux, no kill.
+ * `otherStateDir` holds the candidates that carry another state dir (guard 5;
+ * carriesOtherStateDir). Exported for testability -- no ps, no tmux, no kill.
  */
 export function selectReapablePollers(
   candidates: number[],
   procs: ProcRow[],
   panePids: Set<number>,
   fromBotPid: number | null,
+  otherStateDir: Set<number> = new Set(),
 ): PollerSelection {
   const byPid = new Map<number, ProcRow>()
   for (const p of procs) byPid.set(p.pid, p)
@@ -580,6 +624,7 @@ export function selectReapablePollers(
     if (panePids.has(pid)) { spared.push({ pid, reason: 'pane' }); continue }
     if (paneAncestors.has(pid)) { spared.push({ pid, reason: 'pane-ancestor' }); continue }
     if (argv0Base(row.command) === 'claude') { spared.push({ pid, reason: 'claude' }); continue }
+    if (otherStateDir.has(pid)) { spared.push({ pid, reason: 'other-state-dir' }); continue }
     if (pid !== fromBotPid && !POLLER_RUNTIMES.has(argv0Base(row.command))) {
       spared.push({ pid, reason: 'not-a-runtime' }); continue
     }
@@ -668,7 +713,8 @@ export function reapChannelOrphans(
       'channel-poller-reap: could not resolve live tmux panes, refusing to reap (fail-safe)')
     return { reaped: [], source: { fromBotPid, fromEnvScan }, skippedLivePane: [], skippedOtherUid: [], skippedUnknownOwner: [], killOutcome: noKills(), skippedNotPlugin }
   }
-  const selection = selectReapablePollers(candidates, procs, panePids, fromBotPid)
+  const otherStateDir = new Set(candidates.filter((pid) => carriesOtherStateDir(psEww, pid, envVar, chanDir)))
+  const selection = selectReapablePollers(candidates, procs, panePids, fromBotPid, otherStateDir)
   // A candidate that IS a live pane leader is the exact 08a02137 signature;
   // surfaced separately (warn below) from the other spare reasons.
   const skippedLivePane = selection.spared.filter((s) => s.reason === 'pane').map((s) => s.pid)
