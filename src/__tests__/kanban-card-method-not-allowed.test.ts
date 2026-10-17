@@ -71,7 +71,10 @@ describe('unrouted methods on the single-card path answer 405, not a bare 404', 
   // 2dd78397: GET IS routed on this path now (one card, archived ones included; the detailed
   // tests are in kanban-archived-writes.test.ts). Here only its effect on this file's rule: GET
   // is no longer an unrouted method, so it answers 200, and the Allow header names it.
-  it('GET is routed now: it answers the card, not 405', async () => {
+  // Card 12b0f698: the single-card read exists now (it used to answer 405 here,
+  // while the list's 400 hint already pointed callers at it), so GET is in the
+  // Allow header and answers 200 for a card that exists.
+  it('GET reads the card (200), and GET is in the Allow header of the 405s', async () => {
     const { ctx, out } = fakeCtx(`/api/kanban/${CARD}`, 'GET')
     expect(await tryHandleKanban(ctx)).toBe(true)
     expect(out.status).toBe(200)

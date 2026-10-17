@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import {
@@ -16,7 +17,7 @@ import { readFileOr, readJsonObjectForWrite } from '../agent-config.js'
 import {
   SCHEDULED_TASKS_DIR, MAX_SCHEDULED_TASK_PROMPT_LEN,
   listScheduledTasks, writeScheduledTask, markDefaultTaskRemoved, readScheduledTask,
-  type ScheduledTaskWritten,
+  type ScheduledTaskWritten, type ScheduledTask,
 } from '../scheduled-tasks-io.js'
 import {
   registerScheduledTask, unregisterScheduledTask, verifyScheduledTask, describeVerdict,
@@ -87,6 +88,13 @@ function registerAfterWrite(
   }
   json(res, { error: 'Schedule written but NOT registered; the runner will not fire it until it is re-saved or re-registered' }, 500)
   return false
+}
+
+// The list form of a task: everything but the prompt, which is replaced by its length and
+// sha256 (card 12b0f698).
+export function withoutPrompt(task: ScheduledTask): Omit<ScheduledTask, 'prompt'> & { promptLength: number; promptSha256: string } {
+  const { prompt, ...rest } = task
+  return { ...rest, promptLength: prompt.length, promptSha256: createHash('sha256').update(prompt).digest('hex') }
 }
 
 export async function tryHandleSchedules(ctx: RouteContext): Promise<boolean> {
@@ -163,13 +171,24 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     return true
   }
 
+  // Card 12b0f698: the list leaves the prompts out unless asked (?include=prompt). About
+  // 2338 tasks travel on every read, and most readers want a name, a cron or a flag; the
+  // prompt's length and sha256 stay, so a changed prompt is still visible. The dashboard's
+  // schedule editor asks for the prompts (web/app.js loadSchedules).
   if (path === '/api/schedules' && method === 'GET') {
+    const include = ctx.url.searchParams.get('include')
+    if (include !== null && include !== 'prompt') {
+      json(res, { error: 'unknown include', include, accepted: ['prompt'] }, 400)
+      return true
+    }
     // `registry`: 'ok' when the runner would fire the task, else the reason it
     // will not ('unregistered', 'hash-mismatch', 'no-hash', 'registry-error'),
-    // so an operator sees a skipped task without reading the log.
+    // so an operator sees a skipped task without reading the log. Verified on
+    // the full task, before the list form drops the prompt.
     json(res, listScheduledTasks().map(t => {
       const v = verifyScheduledTask(t)
-      return { ...t, registry: v.ok ? 'ok' : v.reason }
+      const registry = v.ok ? 'ok' : v.reason
+      return include === 'prompt' ? { ...t, registry } : { ...withoutPrompt(t), registry }
     }))
     return true
   }

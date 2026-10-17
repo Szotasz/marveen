@@ -7129,7 +7129,9 @@ async function loadScheduleAgents() {
 async function loadSchedules() {
   try {
     const [schedulesRes] = await Promise.all([
-      fetch('/api/schedules'),
+      // include=prompt: the edit form fills its prompt from this list (openEditSchedule),
+      // and the list leaves prompts out by default (card 12b0f698).
+      fetch('/api/schedules?include=prompt'),
       loadScheduleAgents(),
     ])
     schedules = await schedulesRes.json()

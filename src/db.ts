@@ -3086,7 +3086,7 @@ export function sweepArchivedKanbanCards(): number {
 // measuring the watcher, not the work. Falls back to created_at for cards
 // that have never moved (no event rows), which is the honest age for those.
 export function listKanbanCards(
-  opts: { includeArchived?: boolean; agent?: string } = {},
+  opts: { includeArchived?: boolean; agent?: string; statuses?: readonly string[]; ids?: readonly string[] } = {},
 ): KanbanCard[] {
   // A szures SZERVER-oldalon tortenik, mert a hivo nem tudja ellenorizni, hogy megtortent-e.
   // A defektus, amit ez javit: az `agent=` parametert a vegpont NEMAN eldobta, tehat egy
@@ -3098,6 +3098,16 @@ export function listKanbanCards(
   // COLLATE NOCASE: configured names are capitalised (BOT_NAME=Marveen) while stored
   // assignees are typically lowercase (`marveen`); an exact match found neither spelling.
   if (opts.agent) { feltetelek.push('c.assignee = ? COLLATE NOCASE'); ertekek.push(opts.agent) }
+  // Card 12b0f698: the status and id filters run in SQL, so a narrow read never builds the
+  // whole board. An empty list is a caller's "match nothing", never "no filter".
+  if (opts.statuses) {
+    feltetelek.push(opts.statuses.length ? `c.status IN (${opts.statuses.map(() => '?').join(', ')})` : '0')
+    ertekek.push(...opts.statuses)
+  }
+  if (opts.ids) {
+    feltetelek.push(opts.ids.length ? `c.id IN (${opts.ids.map(() => '?').join(', ')})` : '0')
+    ertekek.push(...opts.ids)
+  }
   const where = feltetelek.length ? `WHERE ${feltetelek.join(' AND ')} ` : ''
   const cards = db
     .prepare(`SELECT c.rowid AS seq, c.*,

@@ -479,6 +479,59 @@ export function buildHeartbeatSummaryResponse(
 // 2dd78397: GET is served now (one card, archived ones included).
 const KANBAN_CARD_METHODS = ['GET', 'PUT', 'DELETE'] as const
 
+// Card 12b0f698: the status values the kanban_cards CHECK constraint accepts (db.ts),
+// testing included: a filter narrower than the column would hide those cards.
+export const KANBAN_STATUS_VALUES = ['planned', 'in_progress', 'testing', 'waiting', 'done'] as const
+
+// Card 12b0f698: an `ids=` list longer than this is refused; a caller that needs more
+// cards than that is better served by the list itself.
+const KANBAN_IDS_MAX = 500
+
+// The keys a list element carries, in its own order: the list query's seq, the table's
+// columns (read from the schema, so a new column is selectable the day it is added), the
+// computed last_status_at, and the two arrays the route embeds.
+function kanbanListFieldNames(): string[] {
+  const columns = (getDb().prepare("SELECT name FROM pragma_table_info('kanban_cards')").all() as { name: string }[])
+    .map((row) => row.name)
+  return ['seq', ...columns, 'last_status_at', 'labels', 'blockers']
+}
+
+// One comma list from a query parameter (repeats joined): trimmed, empties and repeats
+// dropped. null when the parameter is absent; [] when it is present but says nothing, which
+// the callers refuse rather than read as "no filter".
+function csvParam(params: URLSearchParams, key: string): string[] | null {
+  if (!params.has(key)) return null
+  const values: string[] = []
+  for (const raw of params.getAll(key)) {
+    for (const part of raw.split(',')) {
+      const value = part.trim()
+      if (value && !values.includes(value)) values.push(value)
+    }
+  }
+  return values
+}
+
+// `fields=` for the list and the single-card read: the requested keys, or a 400 body naming
+// the accepted ones. `id` is always kept, so a narrowed row can still be told apart.
+function parseFieldsParam(params: URLSearchParams): { fields: Set<string> | null } | { error: Record<string, unknown> } {
+  const requested = csvParam(params, 'fields')
+  if (requested === null) return { fields: null }
+  const accepted = kanbanListFieldNames()
+  const unknown = requested.filter((field) => !accepted.includes(field))
+  if (!requested.length || unknown.length) {
+    return { error: { error: requested.length ? 'unknown field' : 'empty fields', unknown, accepted, hint: 'az id mindig benne van' } }
+  }
+  return { fields: new Set(requested) }
+}
+
+function pickFields(row: Record<string, unknown>, fields: ReadonlySet<string>): Record<string, unknown> {
+  const picked: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(row)) {
+    if (key === 'id' || fields.has(key)) picked[key] = value
+  }
+  return picked
+}
+
 // 2dd78397: a write that lands on an ARCHIVED card used to answer exactly like one on a live card,
 // so the writer never learned that nobody reads the card any more. The write still happens (a 409
 // would break every existing caller that closes or comments after archiving); the successful
@@ -600,15 +653,15 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // visszajelzest, ezert probaltak tovabb.
     // ⛔ SZIGORU halmaz, ALIAS NELKUL (sajat telepitesunkon hozott ugyvezetoi dontes): egy
     // alias eletben tartana a talalgatast; a hibauzenetbol viszont megtanulhato a helyes nev.
-    const KNOWN_PARAMS = new Set(['agent', 'assignee', 'includeArchived'])
+    const KNOWN_PARAMS = new Set(['agent', 'assignee', 'includeArchived', 'status', 'ids', 'fields'])
     const unknown = [...ctx.url.searchParams.keys()].filter((k) => !KNOWN_PARAMS.has(k))
     if (unknown.length) {
       json(res, {
         error: 'unknown query parameter',
         unknown,
         known: [...KNOWN_PARAMS],
-        hint: 'a lapok szurese "agent" (vagy "assignee"); EGY lapot a /api/kanban/<id> utvonal ad, '
-            + 'nem a ?id= parameter',
+        hint: 'a lapok szurese "agent" (vagy "assignee"), "status", "ids", a mezoke "fields"; '
+            + 'EGY lapot a /api/kanban/<id> utvonal ad, nem a ?id= parameter',
       }, 400)
       return true
     }
@@ -651,17 +704,45 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
         return true
       }
     }
-    const labelsByCard = getLabelsForAllCards()
+    // Card 12b0f698: status, ids and fields narrow the answer (about 79 whole-board reads, 18.7 MB,
+    // held the dashboard after one night start). Without them the response is the one this
+    // route always gave, byte for byte: the board UI and the fleet's readers depend on it.
+    const statuses = csvParam(ctx.url.searchParams, 'status')
+    if (statuses !== null) {
+      const invalid = statuses.filter((s) => !(KANBAN_STATUS_VALUES as readonly string[]).includes(s))
+      if (!statuses.length || invalid.length) {
+        json(res, { error: statuses.length ? 'unknown status' : 'empty status', invalid, accepted: [...KANBAN_STATUS_VALUES] }, 400)
+        return true
+      }
+    }
+    const ids = csvParam(ctx.url.searchParams, 'ids')
+    if (ids !== null && (!ids.length || ids.length > KANBAN_IDS_MAX)) {
+      json(res, {
+        error: ids.length ? `too many ids (${ids.length}, max ${KANBAN_IDS_MAX})` : 'empty ids',
+        hint: 'teljes azonositok vesszovel elvalasztva; a rovid (prefix) alak nem illeszkedik',
+      }, 400)
+      return true
+    }
+    const fieldsParse = parseFieldsParam(ctx.url.searchParams)
+    if ('error' in fieldsParse) {
+      json(res, fieldsParse.error, 400)
+      return true
+    }
+    const { fields } = fieldsParse
+    // A narrowed read that leaves out labels or blockers does not build their map.
+    const labelsByCard = !fields || fields.has('labels') ? getLabelsForAllCards() : new Map()
     // Blockers ride along in the same round trip as labels: the board needs
     // them to mark a blocked card, and a per-card fetch would be an N+1 on
     // every poll.
-    const blockersByCard = getBlockersForAllCards()
-    const cards = listKanbanCards({ includeArchived, agent }).map((card) => ({
+    const blockersByCard = !fields || fields.has('blockers') ? getBlockersForAllCards() : new Map()
+    const cards = listKanbanCards({
+      includeArchived, agent, ...(statuses ? { statuses } : {}), ...(ids ? { ids } : {}),
+    }).map((card) => ({
       ...card,
       labels: labelsByCard.get(card.id) ?? [],
       blockers: blockersByCard.get(card.id) ?? [],
     }))
-    jsonMaybeGzip(req, res, cards)
+    jsonMaybeGzip(req, res, fields ? cards.map((card) => pickFields(card, fields)) : cards)
     return true
   }
 
@@ -1444,15 +1525,36 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     return true
   }
 
-  // 2dd78397: ONE card by id, archived ones included (the list GET leaves those out), with its
-  // description. Here, after every fixed single-segment path (/api/kanban/archived and the rest),
-  // for the same reason as the 405 below: placed earlier, "archived" would be read as a card id.
-  const singleCardGetMatch = path.match(/^\/api\/kanban\/([^/]+)$/)
-  if (singleCardGetMatch && method === 'GET') {
-    const id = decodeURIComponent(singleCardGetMatch[1])
-    const card = getKanbanCard(id)
-    if (!card) { json(res, { error: `Kártya nem található: ${id}` }, 404); return true }
-    json(res, card)
+  // Card 12b0f698: one card, in the list element's own shape (seq, the columns,
+  // last_status_at, labels, blockers), archived or not; comments have their own
+  // route. The list's 400 hint has long pointed callers here while this answered
+  // 405, so they fetched the whole board instead. Down here for the same reason
+  // as the 405 below: the fixed one-segment paths (/api/kanban/archived,
+  // /stuck, /labels, ...) have already had their turn.
+  if (kanbanCardMatch && method === 'GET') {
+    const id = decodeURIComponent(kanbanCardMatch[1])
+    const unknown = [...url.searchParams.keys()].filter((k) => k !== 'fields')
+    if (unknown.length) {
+      json(res, {
+        error: 'unknown query parameter',
+        unknown,
+        known: ['fields'],
+        hint: 'egy lap: legfeljebb ?fields=; tobb lap: GET /api/kanban?ids=<id1>,<id2>',
+      }, 400)
+      return true
+    }
+    const fieldsParse = parseFieldsParam(url.searchParams)
+    if ('error' in fieldsParse) {
+      json(res, fieldsParse.error, 400)
+      return true
+    }
+    const [card] = listKanbanCards({ includeArchived: true, ids: [id] })
+    if (!card) {
+      json(res, { error: `Kártya nem található: ${id}. Teljes azonosító kell, a rövidített (prefix) alak nem működik.` }, 404)
+      return true
+    }
+    const element = { ...card, labels: getLabelsForCard(id), blockers: getBlockersForCard(id) }
+    json(res, fieldsParse.fields ? pickFields(element, fieldsParse.fields) : element)
     return true
   }
 
