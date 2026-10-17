@@ -2,6 +2,7 @@ import {
   saveAgentMemory, getAgentMemories, searchAgentMemories, getMemoryStats, updateMemory,
   hybridSearch, backfillEmbeddings, backfillNeedsWarning,
   searchMemories, getMemoriesForChat, getDb, touchMemoriesAccessed,
+  recordMemoryUse, getMemoryUseSummaries, getMemoryUseTrackingStart,
   getMemoryById, deleteMemoryById, getMemoryVersions, consumeApproval, escapeLike,
   retractMemory, saveAgentMemorySuperseding,
   type Memory, type MemoryRow, type Approval,
@@ -15,7 +16,7 @@ import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
 import { detectHomoglyphs, formatHomoglyphWarning } from '../../homoglyph.js'
 import type { HybridSearchTrace } from '../../db.js'
 import { resolveDateFilter } from '../../date-range.js'
-import { getMemorySupersessions } from '../../memory-supersede.js'
+import { getMemorySupersessions, parseSupersedeRefs } from '../../memory-supersede.js'
 import type { RouteContext } from './types.js'
 import { findDuplicateMemories, DEDUP_RECENT_LIMIT, type DedupCandidate } from '../memory-dedup.js'
 
@@ -292,6 +293,29 @@ function ownerMismatchPayload(id: number, m: { caller: string; owner: string }) 
   }
 }
 
+// Card a9dfb378 (#573): only an agent's call is a USE. Agents call with the
+// dashboard token; the owner browsing the memory page (session cookie, or the
+// chain preview fetching a row by id) is looking, not using, and must not make
+// a row look alive. The caller name is the self-reported X-Agent-Id.
+function agentCaller(ctx: RouteContext): { agent: string | null } | null {
+  return ctx.auth?.kind === 'token' ? { agent: ctx.auth.agent ?? null } : null
+}
+
+// A search returns up to `limit` rows; only the first few are what the caller
+// plausibly read. Counting all fifty would make one broad query "use" half
+// the store.
+const SEARCH_USE_TOP = 3
+
+/** The rows a memory text references in PART ("FELULIRJA 876 2. pontjat"):
+ *  the writer read them to write this, and they still stand. A full
+ *  replacement is not a use of the old row; it retires it. */
+function recordReferenceUses(ctx: RouteContext, selfId: number, content: string): void {
+  const caller = agentCaller(ctx)
+  if (!caller) return
+  const ids = parseSupersedeRefs(selfId, content).filter(r => r.partial).map(r => r.id)
+  if (ids.length) recordMemoryUse(ids, 'reference', caller.agent)
+}
+
 export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method, url } = ctx
 
@@ -386,6 +410,7 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     if (replacing && replacing.superseded.length > 0) {
       logger.info({ id: replacing.id, agent: replacingAuthor, superseded: replacing.superseded }, 'memory saved, superseding (retracted) older ones')
     }
+    recordReferenceUses(ctx, result.id, data.content)
     // Warn-only homoglyph check (GATEHOMOGLIFSWEEP816): the save above already
     // happened -- legitimate Cyrillic/Greek content (quotes, foreign records)
     // must never be lost, so the finding rides the response instead of a 4xx.
@@ -571,6 +596,18 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     // refresh accessed_at -- otherwise every poll would keep everything "fresh"
     // and defeat staleness detection.
     if (q && results.length) touchMemoriesAccessed(results.map(m => m.id))
+    // #573: the real-use log is stricter. A relaxed answer (no row matched as
+    // asked) or a vector-only one is a near-miss the caller may well discard,
+    // so it is not a use; of a real match, only the top rows count.
+    const searchCaller = agentCaller(ctx)
+    const matchedAsAsked = mode === 'hybrid'
+      ? !hybridTrace.ftsRelaxed && !hybridTrace.vectorOnly
+      : !searchTrace.relaxed
+    if (q && results.length && searchCaller && matchedAsAsked) {
+      recordMemoryUse(results.slice(0, SEARCH_USE_TOP).map(m => m.id), 'search', searchCaller.agent)
+    }
+    const uses = getMemoryUseSummaries(results.map(m => m.id))
+    res.setHeader('X-Memory-Use-Since', String(getMemoryUseTrackingStart() ?? ''))
 
     const supersessions = getMemorySupersessions()
     const formatted = results.map(m => ({
@@ -584,6 +621,9 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       // not be overwritten here.
       chain_refs: supersessions.refs.get(m.id) ?? [],
       chain_replaced_by: supersessions.supersededBy.get(m.id) ?? null,
+      // #573: null = no logged use (since X-Memory-Use-Since).
+      last_used_at: uses.get(m.id)?.last_used_at ?? null,
+      use_count: uses.get(m.id)?.use_count ?? 0,
       created_label: new Date(m.created_at * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ }),
       accessed_label: new Date(m.accessed_at * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ }),
     }))
@@ -812,6 +852,12 @@ Respond ONLY with JSON, nothing else:
       .prepare('SELECT id, agent_id, category, content, keywords, created_at, accessed_at, updated_at, updated_by, retracted_at, supersedes FROM memories WHERE id = ?')
       .get(id) as Record<string, unknown> | undefined
     if (!row) { json(res, { error: 'Memory not found' }, 404); return true }
+    // #573: following a pointer by id is the clearest use there is.
+    const reader = agentCaller(ctx)
+    if (reader) recordMemoryUse([id], 'read', reader.agent)
+    const use = getMemoryUseSummaries([id]).get(id)
+    row.last_used_at = use?.last_used_at ?? null
+    row.use_count = use?.use_count ?? 0
     // PR #1357: `length` lets a caller see the size before a guarded write.
     json(res, { ...row, version: memoryVersion(row.content as string), length: String(row.content ?? '').length })
     return true
@@ -919,6 +965,7 @@ Respond ONLY with JSON, nothing else:
     // which the if_version flow reads back.
     if (updateMemory(id, effectiveContent, newCategory, agent_id, keywords, updated_by)) {
       const version = memoryVersion(effectiveContent)
+      if (effectiveContent !== before.content) recordReferenceUses(ctx, id, effectiveContent)
       json(res, mismatch ? { ok: true, version, owner_mismatch: ownerMismatchPayload(id, mismatch) } : { ok: true, version })
       return true
     }
