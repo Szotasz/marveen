@@ -3956,8 +3956,12 @@ export async function sendPromptToSession(
       try {
         await sendChunks()
       } catch (err) {
+        // Card 71263d15 (a1): the pane can be gone by now ("can't find pane" in all three
+        // measured replay failures, 2026-10-06..10-08). Returning 'sent' made the router log
+        // the row delivered and lose it; the throw takes the caller's existing error branch
+        // instead (the router keeps the row pending, retries, and fails it loudly at the limit).
         logger.warn({ err, session, attempt }, 'Clear-and-resend chunk replay failed')
-        break
+        throw err
       }
       continue
     }
