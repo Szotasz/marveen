@@ -1433,6 +1433,62 @@ export function stampProjectTrustForDir(
   }
 }
 
+// Pre-answer Claude Code's "allow external imports" dialog for the install dir
+// with the verdict its default "No" writes (card 9b419139). The ROOT CLAUDE.md
+// (PROJECT_ROOT) is an ancestor of every agents/<name> dir, so each sub-agent
+// loads it, and an @import in it that points outside agents/<name> is an
+// EXTERNAL include for that agent. Claude Code keys the two flags on the
+// project path the import belongs to (the install dir, the git root the agent
+// dir sits in), NOT on the agent cwd -- measured 2026-09-28 on the fleet's
+// .claude.json files. With WarningShown unset the first session after such an
+// import parks on the dialog, and a message typed into the pane meanwhile is
+// lost (measured 2026-09-28). A running session rewrites its
+// .claude.json from memory and would clobber an on-disk edit, so this runs at
+// SPAWN, like stampProjectTrustForDir.
+//
+// Writes only where WarningShown is not already true, so an explicit earlier
+// choice (an operator's "Yes") is kept. The caller passes an isolated
+// per-agent config root only: the shared ~/.claude.json is also the main
+// agent's, and the main agent (channels.sh, cwd = PROJECT_ROOT) needs its
+// import.
+export function stampExternalIncludesDeclined(dotClaudePath: string, projectDir: string): boolean {
+  try {
+    let data: Record<string, unknown> = {}
+    if (existsSync(dotClaudePath)) {
+      data = JSON.parse(readFileSync(dotClaudePath, 'utf-8')) as Record<string, unknown>
+    }
+    const dirs = new Set<string>([projectDir])
+    try { dirs.add(realpathSync(projectDir)) } catch { /* dir may not resolve yet */ }
+    const projects: Record<string, unknown> =
+      (data.projects && typeof data.projects === 'object' && !Array.isArray(data.projects))
+        ? data.projects as Record<string, unknown>
+        : {}
+    let changed = false
+    for (const dir of dirs) {
+      const base = (projects[dir] && typeof projects[dir] === 'object')
+        ? projects[dir] as Record<string, unknown>
+        : {}
+      if (base.hasClaudeMdExternalIncludesWarningShown === true) continue
+      projects[dir] = {
+        ...base,
+        hasClaudeMdExternalIncludesWarningShown: true,
+        hasClaudeMdExternalIncludesApproved: false,
+      }
+      changed = true
+    }
+    if (!changed) return false
+    data.projects = projects
+    atomicWriteFileSync(dotClaudePath, JSON.stringify(data, null, 2) + '\n', { mode: 0o600 })
+    logger.info({ dotClaudePath, projectDir }, 'external-includes: stamped the declined verdict for the install dir')
+    return true
+  } catch (err) {
+    // Same policy as stampProjectTrustForDir: leave an unparseable/unwritable
+    // file to Claude Code; the dialog then shows once and "No" persists.
+    logger.warn({ err, dotClaudePath, projectDir }, 'external-includes: could not stamp (a fresh session may park on the allow-external-imports dialog)')
+    return false
+  }
+}
+
 // Pre-approve a custom ANTHROPIC_API_KEY in a config root's .claude.json so
 // Claude Code's "Detected a custom API key" TUI prompt never renders in
 // --channels (non-interactive) mode.
@@ -2614,6 +2670,12 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
       claudeConfigDir ? join(claudeConfigDir, '.claude.json') : join(homedir(), '.claude.json'),
       dir,
     )
+    // Isolated config root only: pre-answer the "allow external imports"
+    // dialog for the install dir (the root CLAUDE.md's @import is external for
+    // agents/<name>) with the default "No" -- see stampExternalIncludesDeclined.
+    if (claudeConfigDir) {
+      stampExternalIncludesDeclined(join(claudeConfigDir, '.claude.json'), PROJECT_ROOT)
+    }
     // Same target file: pre-acknowledge the Fable usage-credit consent so the
     // model-switch dialog (default: Sonnet) never renders -- see
     // stampFableOverageConsent for the drift root-cause chain.
