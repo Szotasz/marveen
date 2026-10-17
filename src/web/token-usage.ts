@@ -697,3 +697,152 @@ export function correlateWithKanban(): void {
     }
   }
 }
+
+// === Tokens per card (card 0f21864e, #568) ===
+//
+// What a card cost: the assignee agent's token rows while the card was
+// in_progress. The windows come from kanban_card_events (to_status
+// 'in_progress' opens one, the next move out of it closes it; an open window
+// runs until `now`), not from updated_at, which any comment or subcard write
+// bumps.
+//
+// The honest limit: an agent that has two cards in_progress at once spends ONE
+// stream of tokens, and nothing in the transcript says which card a call was
+// for. The total is therefore an upper bound, and `overlappingCards` says how
+// many other cards of the same agent were in_progress during the windows. No
+// split is invented.
+
+export interface CardWindow { from: number; to: number }
+
+export interface CardStatusEvent { from_status: string | null; to_status: string; created_at: number }
+
+/** in_progress windows from a card's status events (oldest first). Pure. */
+export function inProgressWindows(events: CardStatusEvent[], now: number): CardWindow[] {
+  const windows: CardWindow[] = []
+  let openedAt: number | null = null
+  for (const ev of events) {
+    if (ev.to_status === 'in_progress') {
+      if (openedAt === null) openedAt = ev.created_at
+    } else if (openedAt !== null) {
+      windows.push({ from: openedAt, to: ev.created_at })
+      openedAt = null
+    }
+  }
+  if (openedAt !== null) windows.push({ from: openedAt, to: now })
+  return windows
+}
+
+export interface CardTokenModelRow {
+  model: string | null
+  calls: number
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens: number
+  cacheCreationTokens: number
+}
+
+export interface CardTokenUsage {
+  /** The token_usage agent the assignee resolved to, or null (human, unassigned). */
+  agent: string | null
+  windows: CardWindow[]
+  totalCalls: number
+  /** input + output + cache read + cache creation. */
+  totalTokens: number
+  outputTokens: number
+  /** input + cache creation: what was newly read in, as opposed to re-read from cache. */
+  freshInputTokens: number
+  cacheReadTokens: number
+  perModel: CardTokenModelRow[]
+  /** Other cards of the same agent that were in_progress at some point of the windows. */
+  overlappingCards: number
+  /** Latest collected token row of this agent: rows after it are not in the sum yet. */
+  dataUntil: number | null
+}
+
+/** Map a card assignee onto the token_usage agent name (lowercase id). */
+export function tokenAgentForAssignee(
+  assignee: string | null | undefined,
+  opts: { botName: string; mainAgentId: string },
+): string | null {
+  const a = (assignee ?? '').trim().toLowerCase()
+  if (!a) return null
+  if (a === opts.botName.toLowerCase()) return opts.mainAgentId.toLowerCase()
+  return a
+}
+
+export function getCardTokenUsage(
+  cardId: string,
+  opts: { botName: string; mainAgentId: string; now?: number },
+): CardTokenUsage | null {
+  const db = getDb()
+  const card = db.prepare('SELECT id, assignee FROM kanban_cards WHERE id = ?').get(cardId) as
+    { id: string; assignee: string | null } | undefined
+  if (!card) return null
+  const now = opts.now ?? Math.floor(Date.now() / 1000)
+  const agent = tokenAgentForAssignee(card.assignee, opts)
+  const eventsStmt = db.prepare(
+    'SELECT from_status, to_status, created_at FROM kanban_card_events WHERE card_id = ? ORDER BY created_at ASC, id ASC',
+  )
+  const windows = inProgressWindows(eventsStmt.all(cardId) as CardStatusEvent[], now)
+  const empty: CardTokenUsage = {
+    agent, windows, totalCalls: 0, totalTokens: 0, outputTokens: 0, freshInputTokens: 0, cacheReadTokens: 0, perModel: [], overlappingCards: 0, dataUntil: null,
+  }
+  if (!agent) return empty
+  const until = db.prepare('SELECT MAX(timestamp) AS ts FROM token_usage WHERE agent = ?').get(agent) as { ts: number | null }
+  empty.dataUntil = until.ts ?? null
+  if (windows.length === 0) return empty
+
+  const byModel = new Map<string, CardTokenModelRow>()
+  const sumStmt = db.prepare(`
+    SELECT model, COUNT(*) AS calls,
+      COALESCE(SUM(input_tokens), 0) AS inputTokens,
+      COALESCE(SUM(output_tokens), 0) AS outputTokens,
+      COALESCE(SUM(cache_read_tokens), 0) AS cacheReadTokens,
+      COALESCE(SUM(cache_creation_tokens), 0) AS cacheCreationTokens
+    FROM token_usage
+    WHERE agent = ? AND timestamp >= ? AND timestamp < ?
+    GROUP BY model
+  `)
+  for (const w of windows) {
+    for (const r of sumStmt.all(agent, w.from, w.to) as CardTokenModelRow[]) {
+      const key = r.model ?? ''
+      const acc = byModel.get(key)
+      if (!acc) { byModel.set(key, { ...r }); continue }
+      acc.calls += r.calls
+      acc.inputTokens += r.inputTokens
+      acc.outputTokens += r.outputTokens
+      acc.cacheReadTokens += r.cacheReadTokens
+      acc.cacheCreationTokens += r.cacheCreationTokens
+    }
+  }
+  // A model row with no tokens at all (the transcript's '<synthetic>' entries) is noise here.
+  const perModel = [...byModel.values()]
+    .filter((r) => r.inputTokens + r.outputTokens + r.cacheReadTokens + r.cacheCreationTokens > 0)
+    .sort((a, b) => b.outputTokens - a.outputTokens)
+  const totalCalls = perModel.reduce((s, r) => s + r.calls, 0)
+  const outputTokens = perModel.reduce((s, r) => s + r.outputTokens, 0)
+  const freshInputTokens = perModel.reduce((s, r) => s + r.inputTokens + r.cacheCreationTokens, 0)
+  const cacheReadTokens = perModel.reduce((s, r) => s + r.cacheReadTokens, 0)
+  const totalTokens = perModel.reduce(
+    (s, r) => s + r.inputTokens + r.outputTokens + r.cacheReadTokens + r.cacheCreationTokens, 0)
+
+  // Overlap: the agent's other cards and their own in_progress windows.
+  const names = [agent]
+  if (agent === opts.mainAgentId.toLowerCase()) names.push(opts.botName.toLowerCase())
+  const others = db.prepare(`
+    SELECT DISTINCT e.card_id AS id FROM kanban_card_events e
+    JOIN kanban_cards c ON c.id = e.card_id
+    WHERE e.card_id <> ? AND lower(c.assignee) IN (${names.map(() => '?').join(',')})
+      AND (e.to_status = 'in_progress' OR e.from_status = 'in_progress')
+  `).all(cardId, ...names) as { id: string }[]
+  let overlappingCards = 0
+  for (const o of others) {
+    const ow = inProgressWindows(eventsStmt.all(o.id) as CardStatusEvent[], now)
+    if (ow.some((x) => windows.some((w) => x.from < w.to && w.from < x.to))) overlappingCards++
+  }
+
+  return {
+    agent, windows, totalCalls, totalTokens, outputTokens, freshInputTokens, cacheReadTokens, perModel,
+    overlappingCards, dataUntil: empty.dataUntil,
+  }
+}

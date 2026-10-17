@@ -27,6 +27,7 @@ import { listAgentNames, readAgentDisplayName } from '../agent-config.js'
 import { isAgentRunning } from '../agent-process.js'
 import { resolveKanbanDispatch } from '../../kanban-dispatch.js'
 import { generateBreakdown } from '../llm-breakdown.js'
+import { getCardTokenUsage } from '../token-usage.js'
 import { logger } from '../../logger.js'
 import { MAX_LABEL_PALETTE_ENTRIES, resolveLabelColor } from '../../css-color.js'
 import { readBody, json, jsonMaybeGzip, methodNotAllowed } from '../http-helpers.js'
@@ -600,6 +601,15 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     const labelId = decodeURIComponent(cardLabelDeleteMatch[2])
     if (removeLabelFromCard(cardId, labelId)) { json(res, { ok: true }); return true }
     json(res, { error: 'A kártyán nincs ilyen címke' }, 404)
+    return true
+  }
+
+  // --- Tokens per card (card 0f21864e, #568): what the assignee spent while it was in_progress ---
+  const cardTokensMatch = path.match(/^\/api\/kanban\/([^/]+)\/tokens$/)
+  if (cardTokensMatch && method === 'GET') {
+    const usage = getCardTokenUsage(decodeURIComponent(cardTokensMatch[1]), { botName: BOT_NAME, mainAgentId: MAIN_AGENT_ID })
+    if (!usage) { json(res, { error: 'Kártya nem található' }, 404); return true }
+    json(res, usage)
     return true
   }
 
