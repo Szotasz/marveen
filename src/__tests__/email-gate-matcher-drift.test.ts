@@ -1,9 +1,10 @@
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
 import { EMAIL_GATE_MATCHER } from '../web/agent-scaffold.js'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { gateDecision } from '../../scripts/email-send-gate.mjs'
+import { gateDecision, classifyMailTool } from '../../scripts/email-send-gate.mjs'
 
 // EMAILGATEDRIFT902: the repo exports ONE canonical email-gate matcher
 // (EMAIL_GATE_MATCHER, agent-scaffold.ts) and the sub-agent scaffold uses it
@@ -86,5 +87,227 @@ describe('main-agent email hook matchers cover the canonical EMAIL_GATE_MATCHER'
     expect(full.test('mcp__gmail__send_email')).toBe(true)
     expect(full.test('mcp__plugin_telegram_telegram__reply')).toBe(false)
     expect(full.test('Read')).toBe(false)
+  })
+})
+
+// --- tool-name classification is by SUFFIX, identically in Python and JS -----
+// vendor/gmail-mcp-fork prepends its tool prefix to every tool name verbatim,
+// so a classifier that models what stands BEFORE the base name misses the
+// next prefix shape. The classifiers key on the base-name suffix; this block
+// binds the Python copy (email_extract.py, the main agent's gates) and the JS
+// copy (email-send-gate.mjs, sub-agents) to one shared case list, fuzzes
+// prefixes nobody listed, and checks the hook matcher reaches every gated name.
+type Kind = string | null
+const NAME_CASES = JSON.parse(
+  readFileSync(join(ROOT, 'scripts', 'hooks', 'mail-tool-name-cases.json'), 'utf-8'),
+) as {
+  servers: string[]
+  prefixes: string[]
+  bases: Record<string, { kind: Kind; needs_gmail?: boolean }>
+  matcher_must_not_fire: string[]
+  cases: Array<{ name: string; expected: Kind; matcher_exempt?: string }>
+}
+
+function expectedFor(server: string, prefix: string, base: string): Kind {
+  const b = NAME_CASES.bases[base]
+  if (b.needs_gmail && !(server + prefix).toLowerCase().includes('gmail')) return null
+  return b.kind
+}
+
+// Deterministic PRNG (mulberry32): the fuzz must be reproducible.
+function rng(seed: number) {
+  let a = seed >>> 0
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0
+    let t = a
+    t = Math.imul(t ^ (t >>> 15), t | 1)
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61)
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296
+  }
+}
+const FUZZ_CHARSET = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-.'
+function fuzzPrefixes(n: number, seed = 927): string[] {
+  const r = rng(seed)
+  const out: string[] = []
+  for (let i = 0; i < n; i++) {
+    const len = Math.floor(r() * 13)
+    let p = ''
+    for (let j = 0; j < len; j++) p += FUZZ_CHARSET[Math.floor(r() * FUZZ_CHARSET.length)]
+    out.push(p)
+  }
+  return out
+}
+
+const EXTRACT_PY = join(ROOT, 'scripts', 'hooks', 'email_extract.py')
+
+function pyClassify(names: string[]): Kind[] {
+  const out = execFileSync('python3', ['-c', `
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("email_extract", ${JSON.stringify(EXTRACT_PY)})
+m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+print(json.dumps([m.classify_mail_tool(n) for n in json.load(sys.stdin)]))
+`], { encoding: 'utf-8', input: JSON.stringify(names) })
+  return JSON.parse(out.trim())
+}
+
+const APPROVAL_GATE_PY = join(ROOT, 'scripts', 'hooks', 'email-approval-gate.py')
+function pyScopeKind(names: string[]): Kind[] {
+  const out = execFileSync('python3', ['-c', `
+import importlib.util, json, sys
+spec = importlib.util.spec_from_file_location("gate", ${JSON.stringify(APPROVAL_GATE_PY)})
+g = importlib.util.module_from_spec(spec); spec.loader.exec_module(g)
+print(json.dumps([g.scope_kind(n) for n in json.load(sys.stdin)]))
+`], { encoding: 'utf-8', input: JSON.stringify(names) })
+  return JSON.parse(out.trim())
+}
+
+describe('mail-tool names are classified by suffix, identically in Python and JS', () => {
+  const matrix: Array<{ name: string; expected: Kind }> = []
+  for (const server of NAME_CASES.servers) {
+    for (const prefix of NAME_CASES.prefixes) {
+      for (const base of Object.keys(NAME_CASES.bases)) {
+        matrix.push({ name: server + prefix + base, expected: expectedFor(server, prefix, base) })
+      }
+    }
+  }
+  const all = [...matrix, ...NAME_CASES.cases]
+  const py = pyClassify(all.map((c) => c.name))
+  const fuzz: Array<{ name: string; expected: Kind }> = []
+  for (const prefix of fuzzPrefixes(400)) {
+    for (const base of Object.keys(NAME_CASES.bases)) {
+      for (const server of ['mcp__gmail__', 'mcp__workmail__']) {
+        fuzz.push({ name: server + prefix + base, expected: expectedFor(server, prefix, base) })
+      }
+    }
+  }
+
+  it('the shared matrix + hand cases: both copies return the expected kind', () => {
+    const wrong = all
+      .map((c, i) => ({ ...c, js: classifyMailTool(c.name) as Kind, py: py[i] }))
+      .filter((c) => c.js !== c.expected || c.py !== c.expected)
+    expect(wrong, JSON.stringify(wrong.slice(0, 10))).toEqual([])
+  })
+
+  it('the case list is non-trivial in both directions and names the required prefixes', () => {
+    expect(all.length).toBeGreaterThan(1000)
+    expect(all.some((c) => c.expected === null)).toBe(true)
+    for (const k of ['send_email', 'connector_send', 'send_draft', 'draft', 'manage_email']) {
+      expect(all.some((c) => c.expected === k), k).toBe(true)
+    }
+    for (const p of ['v2_', 'v2', 'work-', 'shared_inbox_', 'v-2_']) {
+      expect(NAME_CASES.prefixes, p).toContain(p)
+    }
+  })
+
+  it('fuzzed random prefixes (seeded) never change the verdict, in either copy', () => {
+    const pyFuzz = pyClassify(fuzz.map((c) => c.name))
+    const wrong = fuzz
+      .map((c, i) => ({ ...c, js: classifyMailTool(c.name) as Kind, py: pyFuzz[i] }))
+      .filter((c) => c.js !== c.expected || c.py !== c.expected)
+    expect(wrong, JSON.stringify(wrong.slice(0, 10))).toEqual([])
+  })
+
+  it('control: the name patterns the gates carried before FAIL this contract', () => {
+    // Proves the matrix discriminates: the anchored patterns miss prefixed names.
+    const oldDraft = (n: string): Kind => (/(^|__)(create_draft|draft_email|update_draft)$/i.test(n) ? 'draft' : null)
+    const oldConnector = (n: string): Kind => (/gmail__(reply|reply_all|send_message|forward)$/i.test(n) ? 'connector_send' : null)
+    expect(matrix.filter((c) => c.expected === 'draft').some((c) => oldDraft(c.name) !== c.expected)).toBe(true)
+    expect(matrix.filter((c) => c.expected === 'connector_send').some((c) => oldConnector(c.name) !== c.expected)).toBe(true)
+    expect(matrix.some((c) => c.expected === 'send_draft')).toBe(true)
+  })
+
+  it('never narrower: every name an old gate pattern matched is still in scope for that gate', () => {
+    // The patterns each gate carried before the classifier, verbatim. A name
+    // one of them matched must still land in a kind that gate acts on.
+    const corpus = [...all, ...fuzz].map((c) => c.name)
+    const pyAll = pyClassify(corpus)
+    const pyApproval = pyScopeKind(corpus)
+    const legacy: Array<[string, RegExp, Kind[]]> = [
+      // email-approval-gate.py _SEND_TOOL: in scope = levelled
+      // (judged by the gate's own scope_kind below, which keeps its substring manage_email)
+      ['approval gate', /send_email|manage_email|gmail__(reply|reply_all|send_message|forward)$/i, ['send_email', 'connector_send', 'send_draft', 'manage_email']],
+      // email-send-gate.mjs: send_email deny, connector deny, drafts ledger-checked, manage_email by op
+      ['sub-agent gate send', /send_email/i, ['send_email']],
+      ['sub-agent gate connector', /gmail__(reply|reply_all|send_message|forward)$/i, ['send_email', 'connector_send']],
+      ['sub-agent gate draft', /(^|__)(create_draft|draft_email|update_draft)$/i, ['send_email', 'connector_send', 'send_draft', 'manage_email', 'draft']],
+      ['sub-agent gate manage_email', /(^|__)manage_email$/i, ['manage_email']],
+      // outgoing-copy-gate.py EMAIL_TOOL_RE: audited
+      ['copy gate', /(send_email|create_draft|draft_email|update_draft|gmail__(reply|reply_all|send_message|forward)$)/i, ['send_email', 'connector_send', 'draft']],
+      ['copy gate manage_email', /(^|__)manage_email$/i, ['manage_email']],
+      // credential-gate.py _SEND_TOOL: read as a letter through the envelope
+      ['credential gate', /send_email|gmail__(reply|reply_all|send_message|forward)$/i, ['send_email', 'connector_send']],
+    ]
+    const narrowed: string[] = []
+    for (const [gate, re, kinds] of legacy) {
+      corpus.forEach((name, i) => {
+        if (!re.test(name)) return
+        if (gate === 'approval gate') {
+          if (!kinds.includes(pyApproval[i])) narrowed.push(`${gate}: ${name} -> py ${pyApproval[i]}`)
+          return
+        }
+        const js = classifyMailTool(name) as Kind
+        if (!kinds.includes(js) || !kinds.includes(pyAll[i])) narrowed.push(`${gate}: ${name} -> js ${js} / py ${pyAll[i]}`)
+      })
+    }
+    expect(narrowed.slice(0, 10)).toEqual([])
+  })
+
+  // The hook only runs when the matcher fires, so the matcher must be a
+  // superset of what the classifiers gate, on EVERY server name, not only on
+  // one that carries "gmail".
+  const outbound = [
+    ...matrix,
+    ...NAME_CASES.cases.filter((c) => !c.matcher_exempt),
+    ...fuzzPrefixes(200, 4242).flatMap((p) => Object.keys(NAME_CASES.bases).flatMap((b) =>
+      ['mcp__gmail__', 'mcp__workmail__', 'mcp__GMAIL__'].map((s) => ({ name: s + p + b, expected: expectedFor(s, p, b) })))),
+  ].filter((c) => c.expected !== null)
+
+  it('the email-gate matcher fires for every name either classifier gates, on any server', () => {
+    const full = new RegExp(`^(?:${EMAIL_GATE_MATCHER})$`)
+    expect(outbound.length).toBeGreaterThan(1000)
+    // the class this closes: gated names on a server with no "gmail" in it
+    expect(outbound.some((c) => c.name.startsWith('mcp__workmail__') && c.expected === 'send_draft')).toBe(true)
+    expect(outbound.filter((c) => !full.test(c.name)).map((c) => c.name)).toEqual([])
+    // ...and so do the MAIN agent's committed settings, for both email hooks.
+    for (const script of EMAIL_HOOKS) {
+      const alts = matcherAlternativesFor(script).map((a) => new RegExp(`^(?:${a})$`))
+      const missed = outbound.filter((c) => !alts.some((re) => re.test(c.name))).map((c) => c.name)
+      expect(missed, script).toEqual([])
+    }
+  })
+
+  it('the email-gate matcher NEVER fires on the Telegram tools (or other non-mail tools)', () => {
+    const full = new RegExp(`^(?:${EMAIL_GATE_MATCHER})$`)
+    const approvalAlts = matcherAlternativesFor('email-approval-gate.py').map((a) => new RegExp(`^(?:${a})$`))
+    expect(NAME_CASES.matcher_must_not_fire).toContain('mcp__plugin_telegram_telegram__reply')
+    for (const name of NAME_CASES.matcher_must_not_fire) {
+      expect(full.test(name), `EMAIL_GATE_MATCHER fires on ${name}`).toBe(false)
+      expect(approvalAlts.some((re) => re.test(name)), `email-approval-gate.py fires on ${name}`).toBe(false)
+      // belt and braces: even a hook that did fire classifies them as not-mail
+      expect(classifyMailTool(name), name).toBe(null)
+      expect(gateDecision(name, { text: 'x', to: ['invented@example.com'] }, () => false).deny, name).toBe(false)
+    }
+  })
+
+  it('control: the previous matcher misses a send_draft on a server without "gmail" in its name', () => {
+    const pre = new RegExp('^(?:Bash|.*send_email.*|.*manage_email.*|.*[Gg]mail.*__.*|.*draft_email.*)$')
+    expect(pre.test('mcp__workmail__v2_send_draft')).toBe(false)
+    expect(new RegExp(`^(?:${EMAIL_GATE_MATCHER})$`).test('mcp__workmail__v2_send_draft')).toBe(true)
+  })
+
+  it('sub-agent gate: every prefixed send / send_draft is denied, drafts are ledger-checked, reads pass', () => {
+    const verified = (a: string) => a === 'known@example.com'
+    for (const c of all) {
+      if (c.name === 'Bash') continue
+      const d = gateDecision(c.name, { to: ['invented@example.com'], operation: 'send' }, verified)
+      expect(d.deny, c.name).toBe(c.expected !== null)
+      if (c.expected === 'draft') {
+        expect(d.kind, c.name).toBe('unverified-recipient')
+        expect(gateDecision(c.name, { to: ['known@example.com'] }, verified).deny, c.name).toBe(false)
+      }
+      if (c.expected === 'send_draft') {
+        expect(gateDecision(c.name, { draftId: 'r-1' }, verified).deny, c.name).toBe(true)
+      }
+    }
   })
 })
