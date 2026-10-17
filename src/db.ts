@@ -3425,6 +3425,100 @@ export function getBlockersForAllCards(): Map<string, KanbanCardRef[]> {
   return map
 }
 
+// --- Board summary (card ed3c8caf, #569) ---
+// "What happened on the board" per agent, for the morning look: what each agent
+// closed in the window, which of its cards are stuck (the getStuckKanbanCards
+// measurement, not a second definition), and what waits on the owner. Agent
+// names are lowercased and the bot name folds into the main agent id, so
+// "Marveen" and "marveen" are one row. done_evidence is read only when the
+// column exists (it arrives with #566), so this works on either schema.
+
+export interface BoardSummaryCardRef {
+  id: string
+  seq?: number
+  title: string
+}
+
+export interface BoardSummaryAgent {
+  agent: string
+  closed: Array<BoardSummaryCardRef & { closed_at: number; evidence: string | null }>
+  stuck: Array<BoardSummaryCardRef & { status: KanbanCard['status']; idle_days: number }>
+}
+
+export interface BoardSummary {
+  since: number
+  agents: BoardSummaryAgent[]
+  owner_waiting: { count: number; cards: BoardSummaryCardRef[] }
+}
+
+export const BOARD_SUMMARY_OWNER_CAP = 10
+
+export function getBoardSummary(opts: {
+  since: number
+  ownerName: string
+  botName: string
+  mainAgentId: string
+}): BoardSummary {
+  const fold = (name: string | null | undefined): string | null => {
+    const n = (name ?? '').trim().toLowerCase()
+    if (!n) return null
+    return n === opts.botName.toLowerCase() ? opts.mainAgentId.toLowerCase() : n
+  }
+  const owner = opts.ownerName.trim().toLowerCase()
+  const hasEvidence = (db.prepare('PRAGMA table_info(kanban_cards)').all() as Array<{ name: string }>)
+    .some((c) => c.name === 'done_evidence')
+  // The closing event, not the card's current status: a card closed and then
+  // reopened in the window still shows who closed it and when. Only a real
+  // transition counts: a card BORN done (createKanbanCard writes its opening
+  // row with from_status NULL) is a record, not work closed. A card closed
+  // twice in the window is listed once, at its latest close.
+  const closedRows = db.prepare(`
+    SELECT c.id, c.rowid AS seq, c.title, c.assignee, e.actor, e.created_at AS closed_at
+           ${hasEvidence ? ', c.done_evidence AS evidence' : ', NULL AS evidence'}
+    FROM kanban_card_events e
+    JOIN kanban_cards c ON c.id = e.card_id
+    WHERE e.to_status = 'done' AND e.from_status IS NOT NULL AND e.created_at >= ?
+    ORDER BY e.created_at ASC
+  `).all(opts.since) as Array<BoardSummaryCardRef & {
+    assignee: string | null; actor: string | null; closed_at: number; evidence: string | null
+  }>
+
+  const byAgent = new Map<string, BoardSummaryAgent>()
+  const row = (agent: string): BoardSummaryAgent => {
+    let r = byAgent.get(agent)
+    if (!r) { r = { agent, closed: [], stuck: [] }; byAgent.set(agent, r) }
+    return r
+  }
+  const latestClose = new Map<string, (typeof closedRows)[number]>()
+  for (const r of closedRows) latestClose.set(r.id, r)
+  for (const r of latestClose.values()) {
+    // Who closed it: the actor when it names somebody, else the assignee.
+    const agent = fold(r.actor) ?? fold(r.assignee)
+    if (!agent || agent === owner) continue
+    row(agent).closed.push({ id: r.id, seq: r.seq, title: r.title, closed_at: r.closed_at, evidence: r.evidence })
+  }
+  const stuck = getStuckKanbanCards({ plannedDays: 7, activeDays: 3, creatorCommentWindowSec: 600 }).stuck
+  for (const s of stuck) {
+    const agent = fold(s.assignee)
+    if (!agent || agent === owner) continue
+    row(agent).stuck.push({ id: s.id, seq: s.seq, title: s.title, status: s.status, idle_days: s.idle_days })
+  }
+
+  const ownerRows = db.prepare(`
+    SELECT id, rowid AS seq, title FROM kanban_cards
+    WHERE archived_at IS NULL AND status = 'waiting' AND lower(trim(assignee)) = ?
+    ORDER BY updated_at DESC
+  `).all(owner) as BoardSummaryCardRef[]
+
+  const agents = [...byAgent.values()].sort((a, b) =>
+    (b.closed.length + b.stuck.length) - (a.closed.length + a.stuck.length) || a.agent.localeCompare(b.agent))
+  return {
+    since: opts.since,
+    agents,
+    owner_waiting: { count: ownerRows.length, cards: ownerRows.slice(0, BOARD_SUMMARY_OWNER_CAP) },
+  }
+}
+
 // --- Heartbeat helpers ---
 
 export interface HeartbeatKanbanSummary {

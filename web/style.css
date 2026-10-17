@@ -860,6 +860,35 @@ main {
 .overview-activity-time { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
 
 /* === Kanban Board === */
+/* Board summary strip (card ed3c8caf, #569): same look as the ongoing strip. */
+.kanban-summary[hidden] { display: none; }
+.kanban-summary {
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  background: var(--bg-input);
+  border-radius: var(--radius);
+  border-left: 3px solid #3b82f6;
+}
+.kanban-summary-head { display: flex; align-items: center; gap: 10px; cursor: pointer; flex-wrap: wrap; }
+.kanban-summary-totals { font-size: 13px; color: var(--text-muted); }
+.kanban-summary-body { display: grid; gap: 6px; margin-top: 8px; }
+.kanban-summary-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-width: 0; }
+.kanban-summary-who { font-size: 13px; font-weight: 600; color: var(--text); min-width: 90px; }
+.kanban-summary-kind { font-size: 12px; color: var(--text-muted); margin-left: 4px; }
+.kanban-summary-kind-stuck { color: #d97706; }
+.kanban-summary-more { font-size: 12px; color: var(--text-muted); }
+.kanban-summary-chip {
+  font: inherit;
+  font-size: 12px;
+  color: var(--text);
+  background: var(--bg-card);
+  border: 1px solid var(--border, transparent);
+  border-radius: 12px;
+  padding: 2px 8px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.kanban-summary-chip:hover { border-color: #3b82f6; }
 /* Ongoing tasks strip: one slim row above the board (see KANBAN_ONGOING_LABEL). */
 .kanban-ongoing[hidden] { display: none; }
 .kanban-ongoing {
