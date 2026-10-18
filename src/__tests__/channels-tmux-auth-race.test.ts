@@ -261,6 +261,35 @@ describe.skipIf(!HAS_TMUX)('channels.sh tmux auth (real tmux, isolated socket)',
   })
 })
 
+// The start-server call runs after the state-dir export. Under
+// `set -g exit-empty off` the server it forks survives and would carry the main
+// session's state dir in its environ and global env. Runs the REAL line cut out
+// of channels.sh against an isolated socket with such a config.
+const START_SERVER_LINES = SH.split('\n').filter(l => /^(?!\s*#).*\$TMUX start-server/.test(l))
+
+describe.skipIf(!HAS_TMUX)('channels.sh start-server leaves the state-dir var out of the server (real tmux)', () => {
+  it('with exit-empty off, the server and a later session do not inherit the main state dir', () => {
+    expect(START_SERVER_LINES).toHaveLength(1)
+    dir = mkdtempSync(join(tmpdir(), 'tmuxss-'))
+    sock = join(dir, 's')
+    const conf = join(dir, 'tmux.conf')
+    writeFileSync(conf, 'set -g exit-empty off\n')
+    const out = join(dir, 'pane-env')
+    bash(`
+      TMUX="tmux -S ${sock} -f ${conf}"
+      STATE_ENV_VAR=TELEGRAM_STATE_DIR
+      export TELEGRAM_STATE_DIR=/main/chan
+      ${START_SERVER_LINES[0]}
+      env -u TELEGRAM_STATE_DIR tmux -S ${sock} new-session -d -s worker "printenv TELEGRAM_STATE_DIR > ${out}.tmp; echo rc=\\$? >> ${out}.tmp; mv ${out}.tmp ${out}; sleep 30"
+    `)
+    for (let i = 0; i < 100 && !existsSync(out); i++) execFileSync('sleep', ['0.1'])
+    expect(readFileSync(out, 'utf-8')).not.toContain('/main/chan')
+    const pid = execFileSync('tmux', ['-S', sock, 'display', '-p', '#{pid}'], { encoding: 'utf-8' }).trim()
+    expect(readFileSync(`/proc/${pid}/environ`, 'utf-8').split('\0')).not.toContain('TELEGRAM_STATE_DIR=/main/chan')
+    expect(spawnSync('tmux', ['-S', sock, 'show-environment', '-g', 'TELEGRAM_STATE_DIR'], { encoding: 'utf-8' }).stdout).not.toContain('/main/chan')
+  })
+})
+
 describe('channels.sh tmux auth wiring (source pin)', () => {
   const launches = SH.split('\n').filter(l => /^\s*(env -u "\$STATE_ENV_VAR" )?\$TMUX new-session -d -s "\$SESSION"/.test(l))
 
@@ -285,6 +314,12 @@ describe('channels.sh tmux auth wiring (source pin)', () => {
     expect(launches).toHaveLength(2)
     for (const l of launches) expect(l.trim().startsWith('env -u "$STATE_ENV_VAR" $TMUX new-session')).toBe(true)
     expect(SH).toContain('$TMUX set-environment -g -u "$STATE_ENV_VAR"')
+  })
+
+  it('the start-server call strips the state-dir var as well', () => {
+    expect(START_SERVER_LINES).toHaveLength(1)
+    expect(START_SERVER_LINES[0].trim().startsWith('env -u "$STATE_ENV_VAR" $TMUX start-server')).toBe(true)
+    expect(SH.indexOf('env -u "$STATE_ENV_VAR" $TMUX start-server')).toBeGreaterThan(SH.indexOf('export "$STATE_ENV_VAR"="$MAIN_CHAN_DIR"'))
   })
 
   it('the auth globals are set again right after the primary new-session', () => {

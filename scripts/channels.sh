@@ -1392,7 +1392,14 @@ _tmux_set_auth_globals() {
   # on this.
   $TMUX set-environment -g DISABLE_AUTOUPDATER 1 2>/dev/null || true
 }
-$TMUX start-server 2>/dev/null || true
+# start-server, too, runs without the state-dir var exported above (same rule
+# as TMUXSERVERREAP929 for new-session). With exit-empty on (the default) the
+# server it forks exits at once, but under `set -g exit-empty off` (a user
+# tmux.conf) it LIVES, carrying <PROVIDER>_STATE_DIR in its own environ and
+# global env: every session created before the -g -u below inherits the main
+# session's channel dir, and the server process itself matches the reap's env
+# needle for its whole life (measured with tmux 3.4 on an isolated socket).
+env -u "$STATE_ENV_VAR" $TMUX start-server 2>/dev/null || true
 _tmux_set_auth_globals
 
 # Layer 1 of CHANNELSAUTHRACE923, WITHOUT the secret in any argv (TOKENARGV929).
