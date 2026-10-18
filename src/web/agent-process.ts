@@ -1446,40 +1446,41 @@ export function stampProjectTrustForDir(
 // .claude.json from memory and would clobber an on-disk edit, so this runs at
 // SPAWN, like stampProjectTrustForDir.
 //
-// Writes only where WarningShown is not already true, so an explicit earlier
-// choice (an operator's "Yes") is kept. The caller passes an isolated
-// per-agent config root only: the shared ~/.claude.json is also the main
-// agent's, and the main agent (channels.sh, cwd = PROJECT_ROOT) needs its
-// import.
+// Claude Code reads the entry under the REALPATH of the git root it starts in:
+// launched from a symlinked dir (and from a subdir of it), `claude mcp add
+// --scope local` wrote projects[<realpath of the git root>], never the
+// symlink spelling (measured 2026-10-18, Claude Code 2.1.302, Linux). So the
+// stamp goes on the realpath key only; the given path is one spelling of it.
+// An explicit earlier choice under EITHER spelling (an operator's "Yes", or the
+// dialog's own answer) is kept: nothing is stamped and the file is not
+// rewritten. On macOS the tmp dir itself is a symlink (/var -> /private/var).
+// The caller passes an isolated per-agent config root only: the shared
+// ~/.claude.json is also the main agent's, and the main agent (channels.sh,
+// cwd = PROJECT_ROOT) needs its import.
 export function stampExternalIncludesDeclined(dotClaudePath: string, projectDir: string): boolean {
   try {
     let data: Record<string, unknown> = {}
     if (existsSync(dotClaudePath)) {
       data = JSON.parse(readFileSync(dotClaudePath, 'utf-8')) as Record<string, unknown>
     }
-    const dirs = new Set<string>([projectDir])
-    try { dirs.add(realpathSync(projectDir)) } catch { /* dir may not resolve yet */ }
+    let readKey = projectDir
+    try { readKey = realpathSync(projectDir) } catch { /* dir may not resolve yet: the given path */ }
     const projects: Record<string, unknown> =
       (data.projects && typeof data.projects === 'object' && !Array.isArray(data.projects))
         ? data.projects as Record<string, unknown>
         : {}
-    let changed = false
-    for (const dir of dirs) {
-      const base = (projects[dir] && typeof projects[dir] === 'object')
-        ? projects[dir] as Record<string, unknown>
-        : {}
-      if (base.hasClaudeMdExternalIncludesWarningShown === true) continue
-      projects[dir] = {
-        ...base,
-        hasClaudeMdExternalIncludesWarningShown: true,
-        hasClaudeMdExternalIncludesApproved: false,
-      }
-      changed = true
+    const entry = (key: string): Record<string, unknown> =>
+      (projects[key] && typeof projects[key] === 'object') ? projects[key] as Record<string, unknown> : {}
+    if (entry(projectDir).hasClaudeMdExternalIncludesWarningShown === true) return false
+    if (entry(readKey).hasClaudeMdExternalIncludesWarningShown === true) return false
+    projects[readKey] = {
+      ...entry(readKey),
+      hasClaudeMdExternalIncludesWarningShown: true,
+      hasClaudeMdExternalIncludesApproved: false,
     }
-    if (!changed) return false
     data.projects = projects
     atomicWriteFileSync(dotClaudePath, JSON.stringify(data, null, 2) + '\n', { mode: 0o600 })
-    logger.info({ dotClaudePath, projectDir }, 'external-includes: stamped the declined verdict for the install dir')
+    logger.info({ dotClaudePath, projectDir, key: readKey }, 'external-includes: stamped the declined verdict for the install dir')
     return true
   } catch (err) {
     // Same policy as stampProjectTrustForDir: leave an unparseable/unwritable
