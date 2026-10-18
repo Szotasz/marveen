@@ -1064,7 +1064,14 @@ if [ -n "$_node_bin" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
       # token, and an env CLAUDE_CODE_OAUTH_TOKEN wins over the dir's own
       # login. The setup-token is inference-only, so the claude.ai connectors
       # (user:mcp_servers) never loaded (measured 2026-10-16). Unset it here.
-      CFG_ENV="export CLAUDE_CONFIG_DIR=$(sh_single_quote "$_cfg_dir") && unset CLAUDE_CODE_OAUTH_TOKEN && "
+      # The same two places carry ANTHROPIC_API_KEY when .env has one (the
+      # auth file and `set-environment -g` below), and it ranks above both the
+      # OAuth token and a /login credential (Claude Code docs, "Authentication
+      # precedence"); with it active the claude.ai connectors do not load either,
+      # and an interactive session first asks to approve the key. This dir
+      # authenticates with its own login only, so the key goes as well.
+      # A custom provider still gets its key: CUSTOM_PROVIDER_ENV comes after.
+      CFG_ENV="export CLAUDE_CONFIG_DIR=$(sh_single_quote "$_cfg_dir") && unset CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY && "
     elif [ "$_cfg_mode" = "token" ]; then
       # Token-mode rotated plan: same credential-less dir as `isolated`, but
       # export THAT plan's vault-stored token instead of the flotta's.

@@ -142,6 +142,10 @@ describe('launcher wiring', () => {
     // carry the fleet token; it must be dropped, or it outranks the dir's own
     // login and hides the claude.ai connectors (measured 2026-10-16).
     expect(branch?.[1]).toMatch(/unset CLAUDE_CODE_OAUTH_TOKEN/)
+    // APIKEYUNSET1018: the auth file and the tmux global env carry ANTHROPIC_API_KEY
+    // too when .env has one, and it outranks the dir's own login as well.
+    expect(branch?.[1]).toMatch(/unset CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY/)
+    expect(branch?.[1]).not.toMatch(/export ANTHROPIC_API_KEY/)
   })
 
   it('channels.sh exports the PLAN token (via resolve-plan-token-env.mjs), not the raw fleet token, for a token-mode rotated dir', () => {

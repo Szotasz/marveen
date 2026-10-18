@@ -294,3 +294,34 @@ describe('channels.sh tmux auth wiring (source pin)', () => {
     expect(after[0].trim()).toBe('_tmux_set_auth_globals')
   })
 })
+
+// APIKEYUNSET1018: an own-login dir (explicit / rotated) authenticates with its
+// OWN login only. The auth file carries ANTHROPIC_API_KEY as well as the fleet
+// token when .env has one, and the pane sources it BEFORE CFG_ENV, so the
+// own-login CFG_ENV must drop both. Runs the shipped lines, not a copy: the auth
+// block and the own-login CFG_ENV assignment, in the pane command's order.
+// No tmux is needed: the block only defines _tmux_set_auth_globals.
+describe('own-login CFG_ENV drops every credential the auth file sourced (APIKEYUNSET1018)', () => {
+  const OWN_LOGIN_CFG = (SH.match(/^\s*CFG_ENV="export CLAUDE_CONFIG_DIR=\$\(sh_single_quote "\$_cfg_dir"\) && unset [^"\n]*"$/m) ?? [''])[0].trim()
+  const PROBE = `printf '[%s|%s|%s]' "\${CLAUDE_CODE_OAUTH_TOKEN-unset}" "\${ANTHROPIC_API_KEY-unset}" "\${CLAUDE_CONFIG_DIR-unset}"`
+  const CREDS = { CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat01-ownloginprobe', ANTHROPIC_API_KEY: 'sk-ant-api03-ownloginprobe' }
+
+  it('the own-login CFG_ENV line is found in channels.sh', () => {
+    expect(OWN_LOGIN_CFG).not.toBe('')
+  })
+
+  it('CONTROL: the auth file alone hands the pane both the fleet token and the API key', () => {
+    dir = mkdtempSync(join(tmpdir(), 'ownlogin-'))
+    mkdirSync(join(dir, 'store'))
+    const out = bash(`TMUX="tmux -S ${join(dir, 's')}"; INSTALL_DIR=${dir}; ${authBlock()}; eval "\${AUTH_PANE_ENV}${PROBE.replace(/"/g, '\\"').replace(/\$/g, '\\$')}"`, CREDS)
+    expect(out).toBe(`[${CREDS.CLAUDE_CODE_OAUTH_TOKEN}|${CREDS.ANTHROPIC_API_KEY}|unset]`)
+  })
+
+  it('auth file, then the own-login CFG_ENV: no fleet token, no API key, only the dir', () => {
+    dir = mkdtempSync(join(tmpdir(), 'ownlogin-'))
+    mkdirSync(join(dir, 'store'))
+    mkdirSync(join(dir, 'own-cfg'))
+    const out = bash(`TMUX="tmux -S ${join(dir, 's')}"; INSTALL_DIR=${dir}; ${authBlock()}; _cfg_dir=${join(dir, 'own-cfg')}; ${OWN_LOGIN_CFG}; eval "\${AUTH_PANE_ENV}\${CFG_ENV}${PROBE.replace(/"/g, '\\"').replace(/\$/g, '\\$')}"`, CREDS)
+    expect(out).toBe(`[unset|unset|${join(dir, 'own-cfg')}]`)
+  })
+})

@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest'
+import { execFileSync } from 'node:child_process'
 import {
   buildMainSessionRespawnCmd,
   shouldRespawnForStaleKeepalive,
@@ -110,6 +111,28 @@ describe('buildMainSessionRespawnCmd', () => {
     // The pane inherits the tmux global env, which carries the fleet token: it
     // must be dropped, or it outranks the dir's own login (2026-10-16).
     expect(cmd).toContain('unset CLAUDE_CODE_OAUTH_TOKEN')
+    // APIKEYUNSET1018: channels.sh also puts ANTHROPIC_API_KEY in the tmux
+    // global env, and it outranks a /login credential too.
+    expect(cmd).not.toContain('export ANTHROPIC_API_KEY')
+  })
+
+  // APIKEYUNSET1018: run the built command, with the claude binary swapped for a
+  // probe, under an env that carries both credentials the way the tmux global env
+  // does. The own-login dir must start with neither; the fleet-token dir keeps its own.
+  it('the own-login respawn really starts claude without the fleet token or an API key (executed)', () => {
+    const probe = `sh -c 'printf "[%s|%s|%s]" "\${CLAUDE_CODE_OAUTH_TOKEN-unset}" "\${ANTHROPIC_API_KEY-unset}" "\${CLAUDE_CONFIG_DIR-unset}"; exit 0' probe`
+    const env = { PATH: process.env.PATH ?? '', HOME: process.env.HOME ?? '', CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat01-respawnprobe', ANTHROPIC_API_KEY: 'sk-ant-api03-respawnprobe' }
+    const own = buildMainSessionRespawnCmd({
+      ...base,
+      claudePath: probe,
+      continueSession: false,
+      config: mainConfigDecisionForTest({ isolatedConfigDir: '/tmp/own-login-dir', ownCredentials: true, fleetToken: true }),
+    })
+    expect(execFileSync('sh', ['-c', own], { encoding: 'utf-8', env })).toBe('[unset|unset|/tmp/own-login-dir]')
+    // CONTROL: the same env reaches claude untouched on the shared-config path,
+    // so the unset above is what removed them, not the probe.
+    const shared = buildMainSessionRespawnCmd({ ...base, claudePath: probe, continueSession: false, config: mainConfigDecisionForTest() })
+    expect(execFileSync('sh', ['-c', shared], { encoding: 'utf-8', env })).toBe('[sk-ant-oat01-respawnprobe|sk-ant-api03-respawnprobe|unset]')
   })
 
   // Token-mode rotated plan: the generic isolated dir, but the PLAN's own

@@ -1137,8 +1137,11 @@ export function buildMainSessionRespawnCmd(opts: {
           // The pane inherits the tmux global env, which carries the fleet
           // token, and an env token outranks the dir's own login (the
           // inference-only setup-token hid the claude.ai connectors,
-          // measured 2026-10-16) -- so drop it explicitly.
-          ? [`&& export CLAUDE_CONFIG_DIR='${opts.config.isolatedConfigDir}' && unset CLAUDE_CODE_OAUTH_TOKEN`]
+          // measured 2026-10-16) -- so drop it explicitly. channels.sh also puts
+          // ANTHROPIC_API_KEY in the tmux global env when .env has one, and that
+          // outranks a /login credential as well (Claude Code docs, "Authentication
+          // precedence"): this dir authenticates with its own login only.
+          ? [`&& export CLAUDE_CONFIG_DIR='${opts.config.isolatedConfigDir}' && unset CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY`]
           : opts.config.tokenSecretId
             ? [`&& export CLAUDE_CONFIG_DIR='${opts.config.isolatedConfigDir}' && _plan_token="$(node '${RESOLVE_PLAN_TOKEN_PATH}' '${opts.config.tokenSecretId}' '${FLEET_OAUTH_TOKEN_PATH}' '${CHANNELS_FAILURES_LOG_PATH}')" && export CLAUDE_CODE_OAUTH_TOKEN="$_plan_token"`]
             : [`&& export CLAUDE_CONFIG_DIR='${opts.config.isolatedConfigDir}' && export CLAUDE_CODE_OAUTH_TOKEN="$(cat '${FLEET_OAUTH_TOKEN_PATH}')"`])
