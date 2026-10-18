@@ -59,7 +59,13 @@ log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [$LOG_TAG] $*"; }
 # (02:19-13:32). A run takes well under a second; kill it long before the next
 # interval so a hang costs one tick, not a night.
 PROBE_TIMEOUT_S="${PROBE_TIMEOUT_S:-60}"
-( sleep "$PROBE_TIMEOUT_S"
+# The kill is gated on the sleep FINISHING (FLAKEKEEPALIVE1016): the EXIT trap
+# below kills this sleep first and the watchdog second, and a watchdog that gets
+# the CPU between the two used to carry on to the kill -- the probe then died of
+# its own SIGTERM at the end of a normal run (exit 143) and logged a false
+# "exceeded" WARN. Measured with the gap widened to 0.3 s: 20/20 runs died that
+# way; on CI it failed keepalive-loop-breaker.test.ts in 0.6 s, status null.
+( sleep "$PROBE_TIMEOUT_S" || exit 0
   log "WARN probe run exceeded ${PROBE_TIMEOUT_S}s -- killing it so launchd can start the next one (KEEPALIVEHANG923)"
   kill -TERM $$ 2>/dev/null ) 2>/dev/null &
 PROBE_WATCHDOG_PID=$!

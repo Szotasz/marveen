@@ -244,13 +244,35 @@ describe('scripts/channel-keepalive-probe.sh: a run stamp on every run, a produc
     }
   }, 20_000)
 
+  it('FLAKEKEEPALIVE1016: a normal run does not die of its own watchdog when the watchdog gets the CPU inside the EXIT trap', () => {
+    // The EXIT trap kills the watchdog's sleep, then the watchdog. A pkill that
+    // lingers 0.3 s after signalling hands the watchdog that gap on purpose --
+    // the scheduling CI produced at random. Before the fix every such run ended
+    // in the probe's own SIGTERM (status null) and a false "exceeded" WARN.
+    const { dir, run } = install('[ "$1" = has-session ] && exit 1; exit 1')
+    try {
+      writeFileSync(join(dir, 'bin', 'pkill'), '#!/bin/sh\n/usr/bin/pkill "$@"; rc=$?; sleep 0.3; exit $rc\n')
+      chmodSync(join(dir, 'bin', 'pkill'), 0o755)
+      for (let i = 0; i < 3; i++) expect(run()).toBe(0)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }, 20_000)
+
   it('a run that finds a live poller under the pane: keepalive touched and BOTH stamps written', async () => {
     const dir0 = mkdtempSync(join(tmpdir(), 'ka-poller-'))
     mkdirSync(join(dir0, 'telegram'))
     writeFileSync(join(dir0, 'telegram', 'poller.js'), 'setTimeout(() => {}, 30000)\n')
     // The "pane": a bash whose child is a node process with /telegram/ in its command line.
     const pane = spawn('/bin/bash', ['-c', `${process.execPath} ${join(dir0, 'telegram', 'poller.js')}; true`], { stdio: 'ignore' })
-    await new Promise((r) => setTimeout(r, 500))
+    // Wait until the poller child really exists under the pane (a fixed 500 ms
+    // was a bet on CI scheduling), up to 10 s.
+    for (let i = 0; i < 100; i++) {
+      let kids = ''
+      try { kids = execFileSync('/usr/bin/pgrep', ['-P', String(pane.pid)], { encoding: 'utf-8' }) } catch { /* none yet */ }
+      if (kids.trim()) break
+      await new Promise((r) => setTimeout(r, 100))
+    }
     const { dir, run } = install(`case "$1" in has-session) exit 0 ;; list-panes) echo ${pane.pid}; exit 0 ;; esac; exit 1`)
     try {
       expect(run()).toBe(0)
