@@ -1859,14 +1859,14 @@ export function searchMemories(query: string, chatId: string, limit = 3, allowRe
         ? db.prepare(
             `SELECT m.*, f.rank AS rank FROM memories m
              JOIN memories_fts f ON m.id = f.rowid
-             WHERE f.content MATCH ? AND m.chat_id = ? AND m.category = ?
+             WHERE f.memories_fts MATCH ? AND m.chat_id = ? AND m.category = ?
              ORDER BY rank
              LIMIT ?`
           ).all(terms, chatId, category, limit * RECENCY_OVERSAMPLE)
         : db.prepare(
             `SELECT m.*, f.rank AS rank FROM memories m
              JOIN memories_fts f ON m.id = f.rowid
-             WHERE f.content MATCH ? AND m.chat_id = ?
+             WHERE f.memories_fts MATCH ? AND m.chat_id = ?
              ORDER BY rank
              LIMIT ?`
           ).all(terms, chatId, limit * RECENCY_OVERSAMPLE)) as (Memory & { rank: number })[]

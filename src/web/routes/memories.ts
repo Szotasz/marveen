@@ -339,8 +339,16 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       if (results.length === 0) {
         const db2 = getDb()
         results = (searchCategory
-          ? db2.prepare('SELECT * FROM memories WHERE content LIKE ? AND category = ? ORDER BY accessed_at DESC LIMIT ?').all(`%${q}%`, searchCategory, limit)
-          : db2.prepare('SELECT * FROM memories WHERE content LIKE ? ORDER BY accessed_at DESC LIMIT ?').all(`%${q}%`, limit)) as Memory[]
+          // MEMKWSEARCH1018: keywords joins the fallback here, as it already
+          // does on the agent-scoped branch above. Without it the two paths
+          // disagree about what a memory IS: fts5 indexes content AND keywords
+          // (see the memories_fts migration), the agent branch searches both,
+          // and this one searched content alone -- so a row findable with
+          // ?agent= was invisible without it, with a header that says
+          // relaxed=false. A zero that looks like a real answer is the whole
+          // cost of this bug, which is why the fix is the parity, not a new mode.
+          ? db2.prepare('SELECT * FROM memories WHERE (content LIKE ? OR keywords LIKE ?) AND category = ? ORDER BY accessed_at DESC LIMIT ?').all(`%${q}%`, `%${q}%`, searchCategory, limit)
+          : db2.prepare('SELECT * FROM memories WHERE (content LIKE ? OR keywords LIKE ?) ORDER BY accessed_at DESC LIMIT ?').all(`%${q}%`, `%${q}%`, limit)) as Memory[]
       }
     } else if (agentId) {
       // Category goes into the query, not a post-filter: see getAgentMemories.
