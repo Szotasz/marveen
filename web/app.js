@@ -14749,7 +14749,7 @@ function _renderReminders() {
     }
     const body = list.length
       ? [...groups.entries()].map(([chat, items]) =>
-        `<tr><td colspan="6" style="font-size:12px;font-weight:600;background:color-mix(in srgb, var(--text-muted) 8%, transparent)">${escapeHtml(t('reminders.recipient', { chat }))} (${items.length})</td></tr>` +
+        `<tr><td colspan="6" style="font-size:12px;font-weight:600;background:color-mix(in srgb, var(--text-muted) 8%, transparent)">${escapeHtml(t('reminders.recipient', { chat }))} (${escapeHtml(items.length)})</td></tr>` +
         items.map(r => {
           const act = r.status === 'pending'
             ? `<button class="btn-danger btn-compact reminders-act" data-id="${escapeAttr(r.id)}" data-act="cancelled" style="font-size:11px">${t('reminders.btn.cancel')}</button>`
@@ -14770,7 +14770,7 @@ function _renderReminders() {
           </tr>`
         }).join('')).join('')
       : `<tr><td colspan="6" style="color:var(--text-muted);padding:16px;text-align:center">${t('reminders.empty')}</td></tr>`
-    return `<h3 style="margin:18px 0 8px">${t('reminders.section.' + key)} (${list.length})</h3>
+    return `<h3 style="margin:18px 0 8px">${escapeHtml(t('reminders.section.' + key))} (${escapeHtml(list.length)})</h3>
       <div class="ssh-table-wrap"><table class="ssh-table"><thead><tr>
         <th>${t('reminders.col.time')}</th><th>${t('reminders.col.agent')}</th><th>${t('reminders.col.requester')}</th>
         <th>${t('reminders.col.text')}</th><th>${t('reminders.col.status')}</th><th>${t('reminders.col.actions')}</th>
@@ -14784,9 +14784,12 @@ function _renderReminders() {
 }
 
 function _reminderBadge(status) {
-  const colors = { pending: 'var(--warning)', sending: 'var(--warning)', sent: 'var(--success)', failed: 'var(--danger)', cancelled: 'var(--text-muted)' }
-  const color = colors[status] || 'var(--text-muted)'
-  return `<span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;background:color-mix(in srgb,${color} 15%,transparent);color:${color}">${t('reminders.status.' + status) || status}</span>`
+  // literals only, so the style attribute below takes no data (the app-js-html-sinks guard)
+  const color = status === 'sent' ? 'var(--success)'
+    : status === 'failed' ? 'var(--danger)'
+    : status === 'pending' || status === 'sending' ? 'var(--warning)'
+    : 'var(--text-muted)'
+  return `<span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;background:color-mix(in srgb,${color} 15%,transparent);color:${color}">${escapeHtml(t('reminders.status.' + status) || status)}</span>`
 }
 
 async function _reminderAction(id, status) {
