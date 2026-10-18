@@ -92,7 +92,7 @@ Ez a rendszer össze van kötve más, azonos keretrendszerű példányokkal. A t
 
 \`\`\`bash
 curl -s -X POST http://localhost:${id.webPort}/api/messages \\
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \\
+  -K <(printf 'header = "Authorization: Bearer %s"\\n' "$(cat store/.dashboard-token)") \\
   -H 'Content-Type: application/json' \\
   -d '{"from":"${id.mainAgentId}","to":"<rendszer>/<ügynök>","content":"..."}'
 \`\`\`
@@ -138,7 +138,7 @@ as \`<system>/<agent>\` through the USUAL message API — for example:
 
 \`\`\`bash
 curl -s -X POST http://localhost:${id.webPort}/api/messages \\
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \\
+  -K <(printf 'header = "Authorization: Bearer %s"\\n' "$(cat store/.dashboard-token)") \\
   -H 'Content-Type: application/json' \\
   -d '{"from":"${id.mainAgentId}","to":"<system>/<agent>","content":"..."}'
 \`\`\`
@@ -208,7 +208,7 @@ tmux-os ügynök / a Főnök" szabály alól:
 
 \`\`\`bash
 curl -s -X POST http://localhost:${id.webPort}/api/messages \\
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \\
+  -K <(printf 'header = "Authorization: Bearer %s"\\n' "$(cat store/.dashboard-token)") \\
   -H 'Content-Type: application/json' \\
   -d '{"from":"<sajat-neved>","to":"<rendszer>/<ügynök>","content":"..."}'
 \`\`\`
@@ -234,7 +234,7 @@ agents / the boss" rule:
 
 \`\`\`bash
 curl -s -X POST http://localhost:${id.webPort}/api/messages \\
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \\
+  -K <(printf 'header = "Authorization: Bearer %s"\\n' "$(cat store/.dashboard-token)") \\
   -H 'Content-Type: application/json' \\
   -d '{"from":"<your-own-id>","to":"<system>/<agent>","content":"..."}'
 \`\`\`

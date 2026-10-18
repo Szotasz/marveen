@@ -63,7 +63,7 @@ Ez a Claude-plan rotáció heartbeatje. A \`claude-plan-rotate-check:\` kezdetű
 \`\`\`bash
 curl -s -w '\\nHTTP %{http_code}\\n' -X POST http://localhost:${webPort}/api/claude-plans/rotate \\
   -H "Content-Type: application/json" \\
-  -H "Authorization: Bearer $(cat ${projectRoot}/store/.dashboard-token)" \\
+  -K <(printf 'header = "Authorization: Bearer %s"\\n' "$(cat ${projectRoot}/store/.dashboard-token)") \\
   --data-binary @- <<'JSON'
 {"targetPlanId":"<PLAN_ID>"}
 JSON

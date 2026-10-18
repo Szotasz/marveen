@@ -77,7 +77,7 @@ describe('message-close section: what it says (ACKONCLOSE927)', () => {
 
   it('the example is a PUT on the message id, with the bearer token', () => {
     expect(body).toMatch(/curl -s -X PUT \S+\/api\/messages\/<id>/)
-    expect(body).toMatch(/Authorization: Bearer \$\(cat /)
+    expect(body).toMatch(/-K <\(printf 'header = "Authorization: Bearer %s"\\n' "\$\(cat /)
   })
 })
 

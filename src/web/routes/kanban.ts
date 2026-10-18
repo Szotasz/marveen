@@ -70,7 +70,7 @@ const KANBAN_MOVE_FIELDS = ['status', 'sort_order', 'actor', 'expected_status'] 
 export function kanbanMoveInstructions(id: string, target: string): string {
   const tokenPath = join(STORE_DIR, '.dashboard-token')
   const base = `http://${WEB_HOST}:${WEB_PORT}`
-  const auth = `-H "Authorization: Bearer $(cat ${tokenPath})"`
+  const auth = `-K <(printf 'header = "Authorization: Bearer %s"\\n' "$(cat ${tokenPath})")`
   const moveUrl = `${base}/api/kanban/${id}/move`
   const commentUrl = `${base}/api/kanban/${id}/comments`
   const cardUrl = `${base}/api/kanban/${id}`
