@@ -27,6 +27,16 @@
 
 set -u
 
+# KEYCHAIN ISOLATION (card 31a6e54d): the vault setup steps below import
+# dist/web/vault.js, which on macOS keeps its master key in the LIVE Keychain
+# item (com.marveen.vault / master-key) and may write it with
+# `add-generic-password -U`. This is not a vitest worker, so mark the process
+# tree as a test explicitly: keychain.ts then runs the file-key path (as on a
+# Linux runner) and refuses the live item before spawning `security`. It must
+# be this variable, not NODE_ENV=test -- case 12 runs with NODE_ENV=production.
+export MARVEEN_KEYCHAIN_TEST_GUARD=1
+unset MARVEEN_KEYCHAIN_SERVICE
+
 PASS=0; FAIL=0
 pass() { PASS=$((PASS + 1)); echo "  PASS: $1"; }
 fail() { FAIL=$((FAIL + 1)); echo "  FAIL: $1 -- expected: $2, got: $3"; }
@@ -256,6 +266,16 @@ then
 else
   fail "Bearer happy-path: vault setup" "setSecret succeeded" "node setup failed"
   fail "Bearer happy-path: byte-exact stdout" "(skipped)" "(vault setup failed)"
+fi
+
+# --- keychain isolation (card 31a6e54d) ---
+# The vault setup above must have taken the FILE-key path inside the hermetic
+# store. On macOS without MARVEEN_KEYCHAIN_TEST_GUARD the key would go to the
+# login Keychain instead, and this file would be missing.
+if [ -s "$root/store/.vault-key" ]; then
+  pass "vault setup used the hermetic file key, not the Keychain"
+else
+  fail "vault setup used the hermetic file key, not the Keychain" "$root/store/.vault-key present" "missing"
 fi
 
 # --- elavult dist: az agent-process.js megvan, de launchSecretRef EXPORT nelkul ---
