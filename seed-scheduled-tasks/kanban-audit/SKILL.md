@@ -85,7 +85,7 @@ for r in sqlite3.connect('{{INSTALL_DIR}}/store/claudeclaw.db').execute('''<IDE 
    Az alabbi blokkok az SQL-t dokumentaljak; a `sqlite3 db "..."` alak a peldakban a LOGIKAT
    mutatja, a futtatas a fenti python3-wrapperrel megy.
 
-4b. **WAITING-KOR ELLENORZES** (2026-07-27-tol, a teljes szoveg a referenciafajlban): `references/kanban-audit-step4b-waiting.md`.
+4b. **WAITING-KOR ELLENORZES** (2026-07-27-tol, a teljes szoveg a referenciafajlban): `~/.claude/scheduled-tasks/kanban-audit/references/kanban-audit-step4b-waiting.md`.
    **KOTELEZO beolvasni a 4. lepes vegrehajtasakor** -- az SQL-ek es a dontesi szabalyok (ATLEPO/UJ BELEPO) ott vannak, nem hagyhatok ki.
 
 4c. **KIKULDES-DETEKTOR A FRISS KARTYAKRA (2026-08-24-tol, AUDITKIKULD823 -- ez eddig HIANYZOTT,
@@ -260,7 +260,7 @@ for c in json.load(sys.stdin):
 
 ## Buktatók
 
-A buktatók részletes listája: `references/kanban-audit-buktatok.md`.
+A buktatók részletes listája: `~/.claude/scheduled-tasks/kanban-audit/references/kanban-audit-buktatok.md`.
 
 ## Ellenőrzés
 - A state-fájl frissült a futás végén.
