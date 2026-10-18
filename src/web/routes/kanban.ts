@@ -19,6 +19,7 @@ import {
   getDbFileSizeMb,
   getTokenPruneLag,
   getStuckKanbanCards,
+  getBoardSummary,
   type TokenPruneLag,
 } from '../../db.js'
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
@@ -492,6 +493,19 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   // See getStuckKanbanCards in db.ts for the "started"/"last_activity"
   // definitions. `examined: 0` gets its own `empty_reason` -- the skill's
   // job is to report "could not measure" instead of a reassuring false zero.
+  // Card ed3c8caf (#569): per-agent board summary for the morning look.
+  // hours (default 24, max 168) sets how far back "closed" reaches.
+  if (path === '/api/kanban/summary' && method === 'GET') {
+    const hours = Number(url.searchParams.get('hours') ?? '24')
+    if (!Number.isFinite(hours) || hours <= 0 || hours > 168) {
+      json(res, { error: 'invalid hours: must be a number in (0, 168]' }, 400)
+      return true
+    }
+    const since = Math.floor(Date.now() / 1000) - Math.round(hours * 3600)
+    json(res, getBoardSummary({ since, ownerName: OWNER_NAME, botName: BOT_NAME, mainAgentId: MAIN_AGENT_ID }))
+    return true
+  }
+
   if (path === '/api/kanban/stuck' && method === 'GET') {
     const plannedDaysRaw = url.searchParams.get('planned_days') ?? '7'
     const activeDaysRaw = url.searchParams.get('active_days') ?? '3'

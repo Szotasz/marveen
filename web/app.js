@@ -900,8 +900,96 @@ async function loadKanban() {
     populateProjectSuggestions()
     setupAssigneeFilter()
     renderKanban()
+    renderKanbanSummary()
   } catch (err) {
     console.error('Kanban betöltés hiba:', err)
+  }
+}
+
+// Card ed3c8caf (#569): the per-agent board summary strip. Best-effort: a
+// failed fetch leaves the strip hidden, the board itself is unaffected.
+async function renderKanbanSummary() {
+  const box = document.getElementById('kanbanSummary')
+  const body = document.getElementById('kanbanSummaryBody')
+  const totals = document.getElementById('kanbanSummaryTotals')
+  if (!box || !body || !totals) return
+  let data
+  try {
+    const r = await fetch('/api/kanban/summary?hours=24')
+    if (!r.ok) return
+    data = await r.json()
+  } catch { return }
+  const agents = Array.isArray(data?.agents) ? data.agents : []
+  const ownerWaiting = data?.owner_waiting || { count: 0, cards: [] }
+  const closed = agents.reduce((n, a) => n + a.closed.length, 0)
+  const stuck = agents.reduce((n, a) => n + a.stuck.length, 0)
+  box.hidden = closed + stuck + ownerWaiting.count === 0
+  totals.textContent = t('kanban.summary.totals', { closed, stuck, owner: ownerWaiting.count })
+  body.innerHTML = ''
+
+  const cardChip = (ref, extra) => {
+    const chip = document.createElement('button')
+    chip.type = 'button'
+    chip.className = 'kanban-summary-chip'
+    chip.textContent = (ref.seq ? '#' + ref.seq : '') + (extra ? ' ' + extra : '')
+    chip.title = ref.title || ''
+    chip.addEventListener('click', () => {
+      const target = kanbanCards.find((c) => c.id === ref.id)
+      if (target) showCardDetail(target)
+      else showToast(t('kanban.toast.blocker_not_on_board'))
+    })
+    return chip
+  }
+  const line = (label, chips) => {
+    const row = document.createElement('div')
+    row.className = 'kanban-summary-row'
+    const who = document.createElement('span')
+    who.className = 'kanban-summary-who'
+    who.textContent = label
+    row.appendChild(who)
+    for (const c of chips) row.appendChild(c)
+    body.appendChild(row)
+  }
+  if (ownerWaiting.count > 0) {
+    const chips = ownerWaiting.cards.map((c) => cardChip(c))
+    if (ownerWaiting.count > ownerWaiting.cards.length) {
+      const more = document.createElement('span')
+      more.className = 'kanban-summary-more'
+      more.textContent = t('kanban.summary.more', { n: ownerWaiting.count - ownerWaiting.cards.length })
+      chips.push(more)
+    }
+    line(t('kanban.summary.owner'), chips)
+  }
+  for (const a of agents) {
+    const chips = []
+    if (a.closed.length) {
+      const lab = document.createElement('span')
+      lab.className = 'kanban-summary-kind'
+      lab.textContent = t('kanban.summary.closed')
+      chips.push(lab)
+      for (const c of a.closed) {
+        const chip = cardChip(c, c.evidence ? '✓' : '')
+        if (c.evidence) chip.title = `${c.title}\n${t('kanban.summary.evidence')}: ${c.evidence}`
+        chips.push(chip)
+      }
+    }
+    if (a.stuck.length) {
+      const lab = document.createElement('span')
+      lab.className = 'kanban-summary-kind kanban-summary-kind-stuck'
+      lab.textContent = t('kanban.summary.stuck')
+      chips.push(lab)
+      for (const c of a.stuck) chips.push(cardChip(c, t('kanban.summary.idle_days', { n: c.idle_days })))
+    }
+    line(a.agent, chips)
+  }
+  try {
+    box.open = localStorage.getItem('marveen.kanbanSummaryOpen') === '1'
+  } catch { /* storage blocked: stays collapsed */ }
+  if (!box.dataset.wired) {
+    box.dataset.wired = '1'
+    box.addEventListener('toggle', () => {
+      try { localStorage.setItem('marveen.kanbanSummaryOpen', box.open ? '1' : '0') } catch { /* ignore */ }
+    })
   }
 }
 
