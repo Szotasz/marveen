@@ -12,12 +12,21 @@
 //
 // Enumerating them here would rot the same way, so the list is discovered from
 // disk: a new scripts/__tests__/*.test.sh is in CI the moment it is written.
-// The four suites with their own dedicated wrapper run twice; that is the cheap
+// The suites with their own dedicated wrapper run twice; that is the cheap
 // direction of the trade, because deleting a wrapper must not silently retire a
 // suite.
+//
+// Except where the second run is not cheap: the email approval gate suite
+// (EMAILKAPU901 PR2: the three level branches, one-shot + window approvals,
+// the four-field anchor, every fail-closed branch) spawns the real hook once
+// per case, and the spawn is the production entry point, so it stays. Its
+// dedicated wrapper ran the identical command a second time, under a tighter
+// budget, and in a full run the two copies ran concurrently in two workers,
+// each loading the host for the other. That wrapper is gone; this runner is the
+// suite's one CI entry, with the 300 s budget below.
 import { describe, it, expect } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { readdirSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { SKIP_REASON, hasSkipReason, suiteOutcome } from './setup/suite-outcome.js'
 
@@ -32,6 +41,17 @@ const SUITES = readdirSync(DIR)
 describe('scripts/__tests__ suites', () => {
   it('finds the suites on disk (a rename must not silently empty this run)', () => {
     expect(SUITES.length).toBeGreaterThan(20)
+  })
+
+  // The email gate suite must stay reachable from here (it has no other CI
+  // entry now) and must not be re-run by a second wrapper.
+  it('runs the email approval gate suite here, and no other test file re-runs it', () => {
+    expect(SUITES).toContain('email-approval-gate.test.py')
+    const SRC_TESTS = join(ROOT, 'src', '__tests__')
+    const rerunners = readdirSync(SRC_TESTS)
+      .filter((f) => f.endsWith('.ts') && f !== 'script-tests-runner.test.ts')
+      .filter((f) => readFileSync(join(SRC_TESTS, f), 'utf-8').includes("'email-approval-gate.test.py'"))
+    expect(rerunners).toEqual([])
   })
 
   // it.for, not it.each: the case function gets the test context, and ctx.skip() makes the
