@@ -1110,6 +1110,35 @@ seed_copy_is_untouched() {
   return 1
 }
 
+# Render one shipped file the way the seeder would write it ($1 = source, $2 = mode).
+render_seed_file() {
+  if [ "$2" = "template" ]; then render_seed_template <"$1"; else cat "$1"; fi
+}
+
+# Refresh ONE installed copy of a shipped file if it is provably untouched.
+# $1 = source file, $2 = installed path, $3 = repo-relative path, $4 = mode.
+refresh_one_seed_file() {
+  f="$1"; installed="$2"; rel="$3"; mode="$4"
+  # Already identical to what we would write -> not an update. Without this
+  # the run is not idempotent: it would rewrite the same bytes and report a
+  # refresh on every single update, which is exactly the kind of constant
+  # signal that stops being read.
+  want="$(render_seed_file "$f" "$mode" | shasum -a 256 | awk '{print $1}')"
+  have="$(shasum -a 256 <"$installed" 2>/dev/null | awk '{print $1}')"
+  [ "$want" = "$have" ] && return 0
+  if seed_copy_is_untouched "$installed" "$rel" "$mode"; then
+    if [ "$mode" = "template" ]; then
+      render_seed_template <"$f" >"$installed.seedtmp" && mv "$installed.seedtmp" "$installed"
+    else
+      cp "$f" "$installed"
+    fi
+    SEED_REFRESH_UPDATED=$((SEED_REFRESH_UPDATED + 1))
+  else
+    SEED_REFRESH_KEPT=$((SEED_REFRESH_KEPT + 1))
+  fi
+  return 0
+}
+
 # Refresh one seeded directory tree. $1 = repo source dir (relative), $2 = target
 # root, $3 = verbatim|template.
 refresh_untouched_seeds() {
@@ -1125,27 +1154,31 @@ refresh_untouched_seeds() {
       base="$(basename "$f")"
       installed="$target_root/$name/$base"
       [ -f "$installed" ] || continue           # never add files to an existing dir
-      rel="$src_rel/$name/$base"
-      # Already identical to what we would write -> not an update. Without this
-      # the run is not idempotent: it would rewrite the same bytes and report a
-      # refresh on every single update, which is exactly the kind of constant
-      # signal that stops being read.
-      if [ "$mode" = "template" ]; then
-        want="$(render_seed_template <"$f" | shasum -a 256 | awk '{print $1}')"
-      else
-        want="$(shasum -a 256 <"$f" | awk '{print $1}')"
-      fi
-      have="$(shasum -a 256 <"$installed" 2>/dev/null | awk '{print $1}')"
-      [ "$want" = "$have" ] && continue
-      if seed_copy_is_untouched "$installed" "$rel" "$mode"; then
-        if [ "$mode" = "template" ]; then
-          render_seed_template <"$f" >"$installed.seedtmp" && mv "$installed.seedtmp" "$installed"
-        else
-          cp "$f" "$installed"
-        fi
+      refresh_one_seed_file "$f" "$installed" "$src_rel/$name/$base" "$mode"
+    done
+    # SEEDREFDIR1018: the references/ subdir a SKILL.md points at. An existing
+    # copy follows the same untouched-only rule. A MISSING one is the single
+    # exception to "never add files": it is added only when the installed
+    # SKILL.md is now byte-identical to the shipped one -- that copy runs our
+    # text, and our text points at the file. A locally edited SKILL.md is the
+    # operator's, so its directory gets nothing added.
+    [ -d "${d}references" ] || continue
+    skill_current=0
+    if [ -f "${d}SKILL.md" ] && [ -f "$target_root/$name/SKILL.md" ]; then
+      want="$(render_seed_file "${d}SKILL.md" "$mode" | shasum -a 256 | awk '{print $1}')"
+      have="$(shasum -a 256 <"$target_root/$name/SKILL.md" | awk '{print $1}')"
+      [ "$want" = "$have" ] && skill_current=1
+    fi
+    for f in "${d}references/"*; do
+      [ -f "$f" ] || continue
+      base="$(basename "$f")"
+      installed="$target_root/$name/references/$base"
+      if [ -f "$installed" ]; then
+        refresh_one_seed_file "$f" "$installed" "$src_rel/$name/references/$base" "$mode"
+      elif [ "$skill_current" = "1" ]; then
+        mkdir -p "$target_root/$name/references"
+        render_seed_file "$f" "$mode" >"$installed.seedtmp" && mv "$installed.seedtmp" "$installed"
         SEED_REFRESH_UPDATED=$((SEED_REFRESH_UPDATED + 1))
-      else
-        SEED_REFRESH_KEPT=$((SEED_REFRESH_KEPT + 1))
       fi
     done
   done
@@ -1467,19 +1500,24 @@ if [ -d "$SEED_SCHED_DIR" ]; then
         fi
       fi
       mkdir -p "$target"
-      for f in "$tpl"*; do
-        [ -f "$f" ] || continue
-        # {{WEB_PORT}} belongs here too: install-linux.sh substitutes it in both
-        # of its seeding loops, and a task seeded by THIS path used to keep the
-        # literal placeholder in its URLs. Same placeholder set on both paths,
-        # or a template silently means different things depending on which
-        # script created the copy.
-        sed -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
-            -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
-            -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
-            -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
-            -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
-            "$f" > "$target/$(basename "$f")"
+      # SEEDREFDIR1018: the references/ subdir ships too (see install-linux.sh).
+      for sub in "" "references/"; do
+        [ -z "$sub" ] || [ -d "$tpl$sub" ] || continue
+        mkdir -p "$target/$sub"
+        for f in "$tpl$sub"*; do
+          [ -f "$f" ] || continue
+          # {{WEB_PORT}} belongs here too: install-linux.sh substitutes it in both
+          # of its seeding loops, and a task seeded by THIS path used to keep the
+          # literal placeholder in its URLs. Same placeholder set on both paths,
+          # or a template silently means different things depending on which
+          # script created the copy.
+          sed -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
+              -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
+              -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
+              -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
+              -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
+              "$f" > "$target/$sub$(basename "$f")"
+        done
       done
       if [ "$forced" = "1" ]; then SCHED_FORCED=$((SCHED_FORCED + 1)); else SCHED_NEW=$((SCHED_NEW + 1)); fi
     done
