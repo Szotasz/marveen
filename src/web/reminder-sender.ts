@@ -137,7 +137,7 @@ export async function reminderTick(deps: ReminderSenderDeps): Promise<ReminderTi
     if (!claimReminder(r.id, nowSec)) continue
     try {
       // the create-time gate does not see a chat taken off the bot's allowlist since (or a row from before the gate):
-      // it gets nothing, and the row fails with the reason like any other failure (fb79dc1f, teszter-2 108204)
+      // it gets nothing, and the row fails with the reason like any other failure
       const recipient = deps.recipientCheck(r.agent_id, r.recipient_chat_id)
       if (!recipient.ok) throw new Error(`not_allowlisted: ${recipient.error}`)
       const messageId = await deps.send(r.agent_id, r.recipient_chat_id, r.text)

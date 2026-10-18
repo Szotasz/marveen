@@ -4,7 +4,7 @@
  * route that is never asked, would make every reminder silently wait forever.
  * The sender must not start in WEB_ONLY (a staging copy never sends), and the
  * shutdown clears its interval like the other runners. The live sender runs the
- * real allowlist gate at the moment of sending (teszter-2 108204), not a stub.
+ * real allowlist gate at the moment of sending, not a stub.
  */
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
