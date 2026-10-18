@@ -91,6 +91,7 @@ import {
 } from '../channel-invites.js'
 import { hardRestartMarveenChannels } from '../channel-monitor.js'
 import { channelsRestartCommand, isMainChannelsAgent, MAIN_CHANNELS_SESSION, withoutMainAgent } from '../main-agent.js'
+import { gateManualRestart, MANUAL_RESTART_FORCE_HINT, wantsForceRestart } from '../manual-restart-gate.js'
 import {
   getProvider,
   channelStateDir,
@@ -1757,8 +1758,11 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
 
   // PUT /api/agents/:name/auto-restart -- set the per-agent auto-restart config.
   // Accepts the main orchestrator id too (auto-restart applies to it as well).
-  // The body is normalized server-side, so a partial/garbled VALUE is coerced
-  // to a safe config rather than rejected. An unknown KEY is a different story:
+  // The body is MERGED over the stored config -- an omitted key keeps its
+  // value, and a valid dailyTime or intervalHours sent alone clears the other
+  // half of the schedule (see writeAutoRestartConfig) -- and the result is
+  // normalized server-side, so a partial/garbled VALUE is coerced to a safe
+  // config rather than rejected. An unknown KEY is a different story:
   // normalization never looks at it, so it would vanish behind a 200 -- those
   // are rejected loudly (see checkConfigPutFields).
   const autoRestartMatch = path.match(/^\/api\/agents\/([^/]+)\/auto-restart$/)
@@ -2351,6 +2355,13 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     // `/remote-control` (needs a full-scope login token the agent lacks). Mirror
     // the precedent in the channels-config handler above. Sub-agents unchanged.
     if (isMainChannelsAgent(name)) {
+      // A kezi restart nem vagja el a futo turnt. Beragadt fo-agensnel csak explicit {"force": true} atlepi a kaput.
+      const force = wantsForceRestart(await readBody(req))
+      if (force) logger.warn({ route: '/api/agents/:name/restart' }, 'manual main restart forced past the pane gate')
+      if (!force) {
+        const gate = await gateManualRestart(MAIN_CHANNELS_SESSION)
+        if (!gate.allow) { json(res, { error: 'restart-blocked', reason: gate.reason, hint: MANUAL_RESTART_FORCE_HINT }, 409); return true }
+      }
       const r = hardRestartMarveenChannels()
       if (r.ok) { json(res, { ok: true }); return true }
       json(res, { error: r.error || 'Restart failed' }, 500)

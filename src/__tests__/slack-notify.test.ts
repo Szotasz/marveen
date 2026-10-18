@@ -181,7 +181,7 @@ describe('wiring', () => {
   const NOTIFY = readFileSync(join(ROOT, 'src', 'notify.ts'), 'utf-8')
   const SH = readFileSync(join(ROOT, 'scripts', 'notify.sh'), 'utf-8')
   it('notifyOwner and notifyChannel both go through deliverWithSlack (one funnel, no double Slack)', () => {
-    expect(NOTIFY).toContain("return deliverWithSlack('owner', text, () => telegramOwner(text))")
+    expect(NOTIFY).toContain("return deliverWithSlack('owner', text, () => telegramOwner(text, meta))")
     expect(NOTIFY).toContain("return deliverWithSlack('alert', text, () => {")
     // The alert path must NOT call notifyOwner (that would post to Slack twice).
     const alert = NOTIFY.slice(NOTIFY.indexOf('export async function notifyChannel'), NOTIFY.indexOf('export async function notifyOwner'))

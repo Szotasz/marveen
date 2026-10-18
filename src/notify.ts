@@ -98,6 +98,18 @@ export async function sendOwnerMessage(text: string): Promise<ChannelSendResult>
   return sendToChat(owner.chatId, text, 'owner')
 }
 
+// Card 68cb6715: what a caller may say about an alert, for its delivery log
+// line (see logAlertDelivery). Never the text, never a chat id.
+export interface AlertMeta {
+  /** The agent the alert is about, when there is one. */
+  agent?: string | null
+  /** Which case raised it, e.g. 'permission-prompt'. */
+  kind: string
+}
+
+type AlertRecipient = 'owner' | 'alert-chat'
+type AlertOutcome = 'sent' | 'partial' | 'failed' | 'skipped'
+
 // True when operational alerts go to a chat other than the owner's. Callers
 // must then leave owner/partner conversation content (e.g. a preview of a
 // parked input line) out of the alert text.
@@ -107,13 +119,13 @@ export function alertIsRedirected(): boolean {
 
 // Operational alert (watchdogs, restarts, stuck sessions). Goes to
 // ALERT_CHAT_ID when it is set, otherwise to the owner chat.
-export async function notifyChannel(text: string): Promise<void> {
+export async function notifyChannel(text: string, meta?: AlertMeta): Promise<void> {
   return deliverWithSlack('alert', text, () => {
     const alertChat = normalizeChatId(ALERT_CHAT_ID)
     // sendToChat reports now, this caller does not care: drop the result so the
     // callback keeps its Promise<void> shape (slack-notify wiring contract).
-    if (alertChat) return sendToChat(alertChat, text, 'alert').then(() => {})
-    return telegramOwner(text)
+    if (alertChat) return sendToChat(alertChat, text, 'alert', { meta, recipient: 'alert-chat' }).then(() => {})
+    return telegramOwner(text, meta)
   })
 }
 
@@ -151,11 +163,11 @@ function signalOwnerChatMissing(text: string, reason: string): void {
 
 // Owner-facing content (heartbeat digest, security events): always the owner
 // chat, never rerouted by ALERT_CHAT_ID.
-export async function notifyOwner(text: string): Promise<void> {
-  return deliverWithSlack('owner', text, () => telegramOwner(text))
+export async function notifyOwner(text: string, meta?: AlertMeta): Promise<void> {
+  return deliverWithSlack('owner', text, () => telegramOwner(text, meta))
 }
 
-async function telegramOwner(text: string): Promise<void> {
+async function telegramOwner(text: string, meta?: AlertMeta): Promise<void> {
   // CHATID0 -- resolveAlertOwnerChat, not a truthiness test on the raw .env
   // value. The installer writes ALLOWED_CHAT_ID=0 as its placeholder, and "0"
   // is neither empty nor falsy, so a plain truthiness/normalizeChatId-only
@@ -170,6 +182,9 @@ async function telegramOwner(text: string): Promise<void> {
   // and with several entries the alert is not sent (a guess would reach a
   // stranger). The reason is logged, so a skipped alert is visible.
   const owner = resolveAlertOwnerChat(undefined, CHANNEL_CHAT_ID, CHANNEL_PROVIDER)
+  // The skipped send gets its delivery line here, ahead of the branch below,
+  // which stays as it is (card 3ed09d25 extends that branch).
+  if (!CHANNEL_TOKEN || !owner.chatId) logAlertDelivery(meta, 'owner', 'skipped')
   if (!CHANNEL_TOKEN || !owner.chatId) {
     const reason = !CHANNEL_TOKEN ? 'nincs token' : `nincs tulajdonos-chat (${owner.reason})`
     logger.warn(`Channel ertesites kihagyva: ${reason}`)
@@ -178,7 +193,7 @@ async function telegramOwner(text: string): Promise<void> {
     if (CHANNEL_TOKEN) signalOwnerChatMissing(text, owner.reason ?? 'ismeretlen ok')
     return
   }
-  await sendToChat(owner.chatId, text, 'owner')
+  await sendToChat(owner.chatId, text, 'owner', { meta, recipient: 'owner' })
 }
 
 // PR1655 review, ask 2: this used to return void and swallow every provider
@@ -202,9 +217,13 @@ function sendErrorStatus(err: unknown): number | null {
   return m ? Number(m[1]) : null
 }
 
-async function sendToChat(chatId: string, text: string, target: SendTarget): Promise<ChannelSendResult> {
+// `alert` is set by the alert paths only (notifyChannel, notifyOwner): they get
+// the delivery line. sendOwnerMessage leaves it out, since its caller logs the
+// result itself and an approval message is no alert to count.
+async function sendToChat(chatId: string, text: string, target: SendTarget, alert?: { meta?: AlertMeta; recipient: AlertRecipient }): Promise<ChannelSendResult> {
   if (!CHANNEL_TOKEN) {
     logger.warn('Channel ertesites kihagyva: nincs token')
+    if (alert) logAlertDelivery(alert.meta, alert.recipient, 'skipped')
     return { sent: false, reason: 'no-token' }
   }
 
@@ -246,6 +265,9 @@ async function sendToChat(chatId: string, text: string, target: SendTarget): Pro
       }
     }
   }
+  const failedChunks = chunks.length - delivered
+  const outcome: AlertOutcome = failedChunks === 0 ? 'sent' : delivered > 0 ? 'partial' : 'failed'
+  if (alert) logAlertDelivery(alert.meta, alert.recipient, outcome, chunks.length, failedChunks)
   if (delivered === 0) {
     // With one chunk the SIKERTELEN line above already says everything; the
     // summary is for a multi-chunk send. Status only, like the chunk line.
@@ -260,6 +282,24 @@ async function sendToChat(chatId: string, text: string, target: SendTarget): Pro
     return { sent: false, reason: 'partial' }
   }
   return { sent: true }
+}
+
+// Card 68cb6715: every alert send leaves one line -- sent, partly sent, failed
+// or skipped -- so "which alerts did the owner get last night" is measurable
+// afterwards (2026-09-26: about 30 evening alerts reported, none of them in the
+// log). Who and which case come from the caller's meta when it gives one; the
+// recipient is a role, never a chat id, and the text never enters the line.
+// It is a record, so it is info whatever the outcome: every outcome other than
+// 'sent' already has its own warn line on its path (skipped, failed, partial),
+// and a second warn for the same send would only double the noise.
+function logAlertDelivery(
+  meta: AlertMeta | undefined,
+  recipient: AlertRecipient,
+  outcome: AlertOutcome,
+  chunks = 0,
+  failedChunks = 0,
+): void {
+  logger.info({ agent: meta?.agent ?? null, kind: meta?.kind ?? null, recipient, outcome, chunks, failedChunks }, 'alert delivery')
 }
 
 // The plain-text form of a chunk formatForTelegram produced: its own tags

@@ -284,7 +284,7 @@ const PASTE_REGION_FALLBACK_LINES = 8
 // destructive Ctrl-C + resend on a perfectly healthy session. Scoping to
 // the box (same discipline as BUSY_ESC_TO_INTERRUPT_RX / the footer checks)
 // confines the match to where a genuine parked stub actually lives.
-function pastePlaceholderRegion(pane: string): string {
+function pastePlaceholderRegion(pane: string): { where: PastePlaceholderWhere; text: string } {
   const lines = pane.split('\n')
   let bottomSep = -1
   for (let i = lines.length - 1; i >= 0; i--) {
@@ -295,9 +295,21 @@ function pastePlaceholderRegion(pane: string): string {
     for (let i = bottomSep - 1; i >= 0; i--) {
       if (BOX_SEP_RX.test(lines[i])) { topSep = i; break }
     }
-    if (topSep >= 0) return lines.slice(topSep + 1, bottomSep).join('\n')
+    if (topSep >= 0) return { where: 'box', text: lines.slice(topSep + 1, bottomSep).join('\n') }
   }
-  return lines.slice(-PASTE_REGION_FALLBACK_LINES).join('\n')
+  return { where: 'tail', text: lines.slice(-PASTE_REGION_FALLBACK_LINES).join('\n') }
+}
+
+// Card 71263d15 (a3): WHERE the stub was found. 'box' is a placeholder confirmed in the live input
+// box (between the two separators); 'tail' is the fallback match on the last lines when the box
+// separators are not on screen, and nothing there proves the input box holds it. The difference
+// matters to the Ctrl-C that clears a placeholder: on an EMPTY box that key quits the TUI.
+export type PastePlaceholderWhere = 'box' | 'tail'
+
+export function pastePlaceholderLocation(pane: string | null): PastePlaceholderWhere | null {
+  if (!pane) return null
+  const region = pastePlaceholderRegion(pane)
+  return PENDING_PASTE_RX.test(region.text) ? region.where : null
 }
 
 // A placeholder pane is identified by the `[Pasted text #N]` stub IN THE LIVE
@@ -312,8 +324,7 @@ function pastePlaceholderRegion(pane: string): string {
 // dependency-free so callers (detectPaneState, shouldRetrySubmit, the recovery
 // decision) share ONE definition instead of re-inlining the regex.
 export function detectsPastePlaceholder(pane: string): boolean {
-  if (!pane) return false
-  return PENDING_PASTE_RX.test(pastePlaceholderRegion(pane))
+  return pastePlaceholderLocation(pane) != null
 }
 
 // Input-box separator lines are made of U+2500 BOX DRAWINGS LIGHT
@@ -1837,7 +1848,7 @@ export function parkedPasteSignature(pane: string): string | null {
   const footerRegion = liveTailRegion(lines, LIVE_FOOTER_REGION_LINES)
   if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return null
   if (!detectsPastePlaceholder(pane)) return null
-  const sig = pastePlaceholderRegion(pane).replace(/\s+/g, ' ').trim()
+  const sig = pastePlaceholderRegion(pane).text.replace(/\s+/g, ' ').trim()
   return sig.length > 0 ? sig : null
 }
 

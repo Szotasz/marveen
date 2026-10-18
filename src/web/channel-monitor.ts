@@ -13,7 +13,7 @@ import { mainRelaunchSucceeded } from '../auto-restart.js'
 import { MAIN_AGENT_ID, SERVICE_ID, BOT_NAME, CHANNEL_PROVIDER, PROJECT_ROOT, RESPAWN_ENABLED } from '../config.js'
 import { launchableDistributionDefaultSync } from './default-model-guard.js'
 import { agentDir, listAgentNames, readAgentChannelProvider, readAgentRemoteHost, readAgentWorksourceChannel } from './agent-config.js'
-import { listKanbanCards } from '../db.js'
+import { listKanbanCards, createAgentMessage } from '../db.js'
 import {
   agentHasChannel,
   agentSessionName,
@@ -48,6 +48,7 @@ import { schedulePluginUnlockAfterRespawn, wasPluginConfirmedAbsent, clearPlugin
 import { getInjectedPrompt, matchesInjectedPrompt } from './injected-prompt-registry.js'
 import {
   detectPaneState, idleConsideringDimGhost, detectQuotaWall, decidePaneErrorAlert, detectsBlockingMenu, detectsPermissionDialog, detectsFirstRunGate, detectsModelConsentDialog, type PaneErrorAlertState, type PaneState,
+  permissionPromptSummary,
   stuckInputSignature, decideStuckInputRecovery, parkedChannelInput,
   parkedInputText, shouldClearTruncatedPreamble,
   parkedInputRowCount, submitLanded, decideStuckInputAction,
@@ -57,7 +58,8 @@ import {
 } from '../pane-state.js'
 import { MAIN_CHANNELS_SESSION, MAIN_CHANNELS_PLIST } from './main-agent.js'
 import { recordChannelEvent } from './channel-event-log.js'
-import { notifyChannel } from '../notify.js'
+import { notifyChannel, type AlertMeta } from '../notify.js'
+import { escalatePermissionPrompt, type PermPromptEscalationState } from './permission-prompt-escalation.js'
 import { sendRoutineAlert } from './routine-alert.js'
 import { getProvider, channelStateDir, channelStateDirEnvVar, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
 import { attemptChannelMcpReconnect } from './channel-mcp-reconnect.js'
@@ -853,6 +855,10 @@ const paneMenuState: Map<string, PaneErrorAlertState> = new Map()
 const MENU_RECOVER_CONFIRM_MS = 45_000
 const MENU_RECOVER_DEDUP_MS = 5 * 60 * 1000
 const MENU_RECOVER_CLEAR_MS = 2 * 60 * 1000
+// Card 68cb6715: per session, which tool-permission prompt the main agent was
+// told about and when (permission-prompt-escalation.ts). Dropped together with
+// the paneMenuState entry, so a prompt answered in between never escalates.
+const permPromptState: Map<string, PermPromptEscalationState> = new Map()
 
 export type MarveenRecoveryStage = 'soft' | 'save' | 'resume' | 'hard' | 'gave_up'
 interface MarveenDownState {
@@ -1134,7 +1140,11 @@ export function buildMainSessionRespawnCmd(opts: {
     // unauthenticated session).
     ...(opts.config.isolatedConfigDir
       ? (opts.config.ownCredentials
-          ? [`&& export CLAUDE_CONFIG_DIR='${opts.config.isolatedConfigDir}'`]
+          // The pane inherits the tmux global env, which carries the fleet
+          // token, and an env token outranks the dir's own login (the
+          // inference-only setup-token hid the claude.ai connectors,
+          // measured 2026-10-16) -- so drop it explicitly.
+          ? [`&& export CLAUDE_CONFIG_DIR='${opts.config.isolatedConfigDir}' && unset CLAUDE_CODE_OAUTH_TOKEN`]
           : opts.config.tokenSecretId
             ? [`&& export CLAUDE_CONFIG_DIR='${opts.config.isolatedConfigDir}' && _plan_token="$(node '${RESOLVE_PLAN_TOKEN_PATH}' '${opts.config.tokenSecretId}' '${FLEET_OAUTH_TOKEN_PATH}' '${CHANNELS_FAILURES_LOG_PATH}')" && export CLAUDE_CODE_OAUTH_TOKEN="$_plan_token"`]
             : [`&& export CLAUDE_CONFIG_DIR='${opts.config.isolatedConfigDir}' && export CLAUDE_CODE_OAUTH_TOKEN="$(cat '${FLEET_OAUTH_TOKEN_PATH}')"`])
@@ -2332,8 +2342,8 @@ function checkMainKeepaliveStaleness(): void {
   }
 }
 
-export function sendAlert(text: string): void {
-  notifyChannel(text).catch(() => {})
+export function sendAlert(text: string, meta?: AlertMeta): void {
+  notifyChannel(text, meta).catch(() => {})
 }
 
 async function handleMarveenDown(): Promise<void> {
@@ -2686,6 +2696,7 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
       })
       if (decision.next.firstSeenAt === null) {
         paneMenuState.delete(t.session)
+        permPromptState.delete(t.session)
       } else {
         paneMenuState.set(t.session, decision.next)
       }
@@ -2738,8 +2749,21 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
             // requests ~45s after they appeared, while the operator believed
             // they had approved them. Same rule as the unrecognised trust dialog
             // above: no keystroke is neutral, so send none and say so, loudly.
-            logger.warn({ session: t.session, agent: label }, 'Blocking "menu" is a tool-permission prompt -- a human decides, NO keystrokes sent')
-            sendAlert(`🔐 A(z) ${label} session egy engedélykérésen vár, és NEM nyomtam meg semmit: ott az Escape NEM-et jelentene. Döntsd el te: tmux attach -t ${t.session}`)
+            // Card 68cb6715: the main agent hears first (an inter-agent message,
+            // Escape only), the owner after PERM_PROMPT_OWNER_AFTER_MS if the same
+            // prompt still stands; the main agent's own prompt goes to the owner.
+            const escalation = escalatePermissionPrompt(permPromptState, {
+              session: t.session,
+              label,
+              isMainAgent: t.isMarveen,
+              ask: permissionPromptSummary(paneNow),
+              now: Date.now(),
+              ownerText: `🔐 A(z) ${label} session egy engedélykérésen vár, és NEM nyomtam meg semmit: ott az Escape NEM-et jelentene. Döntsd el te: tmux attach -t ${t.session}`,
+            }, {
+              messageMainAgent: (text) => { createAgentMessage('system', MAIN_AGENT_ID, text) },
+              alertOwner: (text, meta) => sendAlert(text, meta),
+            })
+            logger.warn({ session: t.session, agent: label, escalation }, 'Blocking "menu" is a tool-permission prompt -- a human decides, NO keystrokes sent')
           } else {
             logger.warn({ session: t.session, agent: label }, 'Session parked in a blocking interactive menu -- sending Escape to recover')
             try {

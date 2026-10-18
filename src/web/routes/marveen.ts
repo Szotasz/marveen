@@ -8,6 +8,7 @@ import {
 import { getEffectiveSettingValue } from '../../settings-store.js'
 import { readMarveenTelegramConfig, readMarveenDiscordConfig, readMarveenSlackConfig, readMarveenGooglechatConfig, readMarveenTeamsConfig, sendMarveenAvatarChange } from '../telegram.js'
 import { hardRestartMarveenChannels } from '../channel-monitor.js'
+import { gateManualRestart, MANUAL_RESTART_FORCE_HINT, wantsForceRestart } from '../manual-restart-gate.js'
 import { readFileOr } from '../agent-config.js'
 import { parseMultipart } from '../multipart.js'
 import { readBody, json, serveFile } from '../http-helpers.js'
@@ -161,6 +162,13 @@ export async function tryHandleMarveen(ctx: RouteContext, webDir: string): Promi
   }
 
   if (path === '/api/marveen/restart' && method === 'POST') {
+    // A kezi restart nem vagja el a futo turnt. Beragadt fo-agensnel csak explicit {"force": true} atlepi a kaput.
+    const force = wantsForceRestart(await readBody(req))
+    if (force) logger.warn({ route: '/api/marveen/restart' }, 'manual main restart forced past the pane gate')
+    if (!force) {
+      const gate = await gateManualRestart(MAIN_CHANNELS_SESSION)
+      if (!gate.allow) { json(res, { error: 'restart-blocked', reason: gate.reason, hint: MANUAL_RESTART_FORCE_HINT }, 409); return true }
+    }
     const result = hardRestartMarveenChannels()
     if (!result.ok) { json(res, { error: result.error || 'Restart failed' }, 500); return true }
     json(res, { ok: true })

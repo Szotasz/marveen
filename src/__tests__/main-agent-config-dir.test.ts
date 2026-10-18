@@ -135,8 +135,13 @@ describe('launcher wiring', () => {
     // just the plan's own, not the flotta's) is not swept into this capture.
     const branch = CHANNELS.match(/if \[ "\$_cfg_mode" = "explicit" \] \|\| \[ "\$_cfg_mode" = "rotated" \]; then\n([\s\S]*?)\n\s*(?:elif|else)/)
     expect(branch).not.toBeNull()
-    expect(branch?.[1]).not.toMatch(/CLAUDE_CODE_OAUTH_TOKEN/)
+    expect(branch?.[1]).not.toMatch(/export CLAUDE_CODE_OAUTH_TOKEN/)
+    expect(branch?.[1]).not.toMatch(/\.claude-oauth-token/)
     expect(branch?.[1]).toMatch(/CLAUDE_CONFIG_DIR/)
+    // AUTH_PANE_ENV (sourced before CFG_ENV) and the tmux global env already
+    // carry the fleet token; it must be dropped, or it outranks the dir's own
+    // login and hides the claude.ai connectors (measured 2026-10-16).
+    expect(branch?.[1]).toMatch(/unset CLAUDE_CODE_OAUTH_TOKEN/)
   })
 
   it('channels.sh exports the PLAN token (via resolve-plan-token-env.mjs), not the raw fleet token, for a token-mode rotated dir', () => {

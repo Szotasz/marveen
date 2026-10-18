@@ -48,6 +48,8 @@ import { resetPeerBackoff } from '../federation/bridge.js'
 import { getFederationStatus, refreshFederationStatus, resetFederationPollerCache } from '../federation/poller.js'
 import { ensureFederationClaudeMdSection } from '../federation/onboarding.js'
 import { hardRestartMarveenChannels } from '../channel-monitor.js'
+import { gateManualRestart, MANUAL_RESTART_FORCE_HINT, wantsForceRestart } from '../manual-restart-gate.js'
+import { MAIN_CHANNELS_SESSION } from '../main-agent.js'
 import type { RouteContext } from './types.js'
 
 export const FEDERATION_VERSION = 1
@@ -451,6 +453,14 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
   // not be loaded on the Federation page, which would 404 the generic
   // /api/agents/:name/restart path). Dashboard-token only (not a wire endpoint).
   if (path === '/api/federation/apply' && method === 'POST') {
+    // FEDAPPLYGATE1018: the apply is a manual main restart too, so it takes the same gate as
+    // /api/marveen/restart: a busy or unreadable pane refuses (409), an explicit {"force": true} cuts the turn.
+    const force = wantsForceRestart(await readBody(ctx.req))
+    if (force) logger.warn({ route: '/api/federation/apply' }, 'manual main restart forced past the pane gate')
+    if (!force) {
+      const gate = await gateManualRestart(MAIN_CHANNELS_SESSION)
+      if (!gate.allow) { json(res, { error: 'restart-blocked', reason: gate.reason, hint: MANUAL_RESTART_FORCE_HINT }, 409); return true }
+    }
     const r = hardRestartMarveenChannels()
     if (r.ok) { json(res, { ok: true }); return true }
     json(res, { error: r.error || 'Restart failed' }, 500)

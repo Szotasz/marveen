@@ -11,6 +11,7 @@ import {
   decideSubmitFollowup,
   shouldClearTruncatedPreamble,
   detectsPastePlaceholder,
+  pastePlaceholderLocation,
   detectPaneState,
   parkedInputText,
   parkedInputRowCount,
@@ -3626,6 +3627,25 @@ const PLACEHOLDER_DISCARD_MAX = 3
 // Settle window after a Ctrl-C so the next capture reflects the cleared box.
 const PLACEHOLDER_DISCARD_SETTLE_MS = 450
 
+// Card 71263d15 (a2): the pane's process as tmux reports it ("<pane_pid> <pane_current_command>"),
+// or null when the pane cannot be read (a pane whose process exited is gone: no remain-on-exit).
+function paneProcessOf(session: string, host: string | null): string | null {
+  try {
+    return captureTmux(host, ['display-message', '-p', '-t', exactTmuxTarget(session), '#{pane_pid} #{pane_current_command}'], { timeout: 5000 }).trim() || null
+  } catch {
+    return null
+  }
+}
+
+// The last lines of a capture for a failure log line: the input box and what sat above it,
+// capped so one log entry stays small.
+const PANE_TAIL_LOG_LINES = 14
+const PANE_TAIL_LOG_CHARS = 1500
+function paneTail(pane: string | null): string | null {
+  if (pane == null) return null
+  return pane.split('\n').slice(-PANE_TAIL_LOG_LINES).join('\n').slice(-PANE_TAIL_LOG_CHARS)
+}
+
 // Discard a `[Pasted text #N]` placeholder (or the verbatim text it expands
 // into) from the input box with Ctrl-C, then confirm the box no longer holds
 // the placeholder. Ctrl-U is deliberately NOT used: it is proven NOT to clear
@@ -3633,27 +3653,65 @@ const PLACEHOLDER_DISCARD_SETTLE_MS = 450
 // row the cursor sits on. Ctrl-C is the only key that reliably empties the box.
 //
 // SAFETY: Ctrl-C on an EMPTY Claude Code box quits the TUI, and on a BUSY pane
-// it interrupts the live turn. This helper must therefore only ever be called
-// when a placeholder is CONFIRMED present (box non-empty, not busy) -- which
-// detectsPastePlaceholder guarantees at the call site. We re-check before each
-// press and stop the instant the placeholder is gone, so we never press Ctrl-C
-// into an already-empty box. Returns true if the placeholder was cleared.
-async function discardPlaceholderBuffer(session: string, host: string | null = null): Promise<boolean> {
-  for (let i = 0; i < PLACEHOLDER_DISCARD_MAX; i++) {
-    const pane = capturePane(session, host)
-    // Stop pressing once the stub is gone -- a further Ctrl-C on an empty box
-    // would quit the TUI.
-    if (pane != null && !detectsPastePlaceholder(pane)) return true
-    try {
-      runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), 'C-c'], { timeout: 5000 })
-    } catch (err) {
-      logger.warn({ err, session }, 'discardPlaceholderBuffer: Ctrl-C send failed')
-      return false
+// it interrupts the live turn. A key is therefore pressed only on a placeholder
+// CONFIRMED in the input box (pastePlaceholderLocation 'box'), re-checked before
+// each press, and the presses stop the instant the placeholder is gone.
+// Card 71263d15 (a3): a stub that only the 8-line fallback tail finds (the box
+// separators are not on screen) is not confirmed, and an unreadable pane is not
+// either; both used to get the Ctrl-C anyway. Measured on the router log
+// (2026-09-23 -> 2026-10-11): every pane that died after a clear had taken all
+// three presses alive. Outcomes: 'cleared'; 'failed' (pressed, or unreadable,
+// and the placeholder is not proven gone: the caller re-sends as before);
+// 'refused' (nothing pressed, the stub is not in the box: the caller stops).
+// (a2): each press logs where the stub was, and the pane process is logged
+// before the first press and after the last one; when it changed or vanished,
+// the last screen the clear saw goes with it.
+type PlaceholderDiscard = { outcome: 'cleared' | 'failed' | 'refused'; lastPane: string | null }
+
+async function discardPlaceholderBuffer(session: string, host: string | null = null): Promise<PlaceholderDiscard> {
+  const before = paneProcessOf(session, host)
+  let lastPane: string | null = null
+  let presses = 0
+  try {
+    for (let i = 0; i < PLACEHOLDER_DISCARD_MAX; i++) {
+      const pane = capturePane(session, host)
+      if (pane == null) {
+        logger.warn({ session, presses }, 'discardPlaceholderBuffer: pane capture failed; stopping (presses so far in the field)')
+        return { outcome: 'failed', lastPane }
+      }
+      lastPane = pane
+      const where = pastePlaceholderLocation(pane)
+      // Stop pressing once the stub is gone -- a further Ctrl-C on an empty box
+      // would quit the TUI.
+      if (where == null) return { outcome: 'cleared', lastPane }
+      if (where === 'tail') {
+        logger.warn({ session, presses, where }, 'discardPlaceholderBuffer: placeholder only in the fallback tail, not in the input box; stopping (presses so far in the field)')
+        // After a press the box was already touched, so the payload must go again ('failed').
+        return { outcome: presses === 0 ? 'refused' : 'failed', lastPane }
+      }
+      logger.info({ session, press: presses + 1, where, paneProcess: before }, 'discardPlaceholderBuffer: Ctrl-C on a placeholder in the input box')
+      try {
+        runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), 'C-c'], { timeout: 5000 })
+      } catch (err) {
+        logger.warn({ err, session }, 'discardPlaceholderBuffer: Ctrl-C send failed')
+        return { outcome: 'failed', lastPane }
+      }
+      presses++
+      await delay(PLACEHOLDER_DISCARD_SETTLE_MS)
     }
-    await delay(PLACEHOLDER_DISCARD_SETTLE_MS)
+    const finalPane = capturePane(session, host)
+    if (finalPane != null) lastPane = finalPane
+    return { outcome: finalPane != null && pastePlaceholderLocation(finalPane) == null ? 'cleared' : 'failed', lastPane }
+  } finally {
+    if (presses > 0) {
+      const after = paneProcessOf(session, host)
+      if (after === before) {
+        logger.info({ session, presses, paneProcessBefore: before, paneProcessAfter: after }, 'discardPlaceholderBuffer: pane process after Ctrl-C')
+      } else {
+        logger.warn({ session, presses, paneProcessBefore: before, paneProcessAfter: after, lastScreen: paneTail(lastPane) }, 'discardPlaceholderBuffer: pane process after Ctrl-C')
+      }
+    }
   }
-  const finalPane = capturePane(session, host)
-  return finalPane != null && !detectsPastePlaceholder(finalPane)
 }
 
 // Cap on how many extra characters a single chunk boundary may absorb while
@@ -3945,19 +4003,30 @@ export async function sendPromptToSession(
       break
     }
     if (action === 'clear-and-resend') {
-      // Placeholder confirmed in the pane (box non-empty, not busy), so the
-      // Ctrl-C in discardPlaceholderBuffer is safe. Clear it, then replay the
-      // chunk stream. The loop re-samples on the next iteration and will keep
-      // recovering (or give up at the budget) if the resend itself parks.
+      // A placeholder is detected in the pane. discardPlaceholderBuffer presses
+      // Ctrl-C only when it is confirmed in the input box; then the chunk
+      // stream is replayed. The loop re-samples on the next iteration and will
+      // keep recovering (or give up at the budget) if the resend itself parks.
       logger.info({ session, attempt }, 'sendPromptToSession: paste placeholder detected; clearing and re-sending')
-      if (!(await discardPlaceholderBuffer(session, host))) {
+      const discard = await discardPlaceholderBuffer(session, host)
+      if (discard.outcome === 'refused') {
+        // Card 71263d15 (a3): nothing was pressed, so nothing is re-sent either: typing the
+        // payload again into a box nobody confirmed would duplicate it. Stop like 'give-up'.
+        logger.warn({ session, attempt }, 'sendPromptToSession: paste placeholder seen outside the input box; not cleared, not re-sent')
+        break
+      }
+      if (discard.outcome === 'failed') {
         logger.warn({ session, attempt }, 'sendPromptToSession: failed to clear paste placeholder before resend')
       }
       try {
         await sendChunks()
       } catch (err) {
-        logger.warn({ err, session, attempt }, 'Clear-and-resend chunk replay failed')
-        break
+        // Card 71263d15 (a1): the pane can be gone by now ("can't find pane" in all three
+        // measured replay failures, 2026-10-06..10-08). Returning 'sent' made the router log
+        // the row delivered and lose it; the throw takes the caller's existing error branch
+        // instead (the router keeps the row pending, retries, and fails it loudly at the limit).
+        logger.warn({ err, session, attempt, lastScreen: paneTail(discard.lastPane) }, 'Clear-and-resend chunk replay failed')
+        throw err
       }
       continue
     }
