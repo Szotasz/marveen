@@ -84,7 +84,8 @@ describe('alert delivery line (card 68cb6715)', () => {
       level: 'info',
       fields: { agent: 'agent-x', kind: 'permission-prompt', recipient: 'owner', outcome: 'failed', chunks: 1, failedChunks: 1 },
     }])
-    expect(warnMessages()).toContain('channel send failed on every chunk')
+    // A one-chunk send's own warn is the chunk line (NOTIFYSENDLOG930); the every-chunk summary is for multi-chunk sends.
+    expect(warnMessages()).toContain('Channel ertesites SIKERTELEN')
   })
 
   it('the plain-text retry that lands counts as sent', async () => {
