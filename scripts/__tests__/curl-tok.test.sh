@@ -47,8 +47,8 @@ echo "2) helper: a token eljut a szerverhez, es a ps argv-ban nincs ott futas ko
 ( curl_tok "$TOK" -s "http://127.0.0.1:$PORT/x" >/dev/null ) &
 CT=$!
 sleep 1.5
-if ps -ww -o args= | grep -v grep | grep -q -F 'curl -K -'; then ok "a curl fut a proba alatt (kontroll-pozicio)"; else bad "a curl nem futott a proba alatt -- a ps-ellenorzes nem ervenyes"; fi
-if ps -ww -o args= | grep -F -- "$TOK" | grep -v grep >/dev/null; then bad "a token MEGJELENT a ps argv-ben"; else ok "a token NINCS a ps argv-ben"; fi
+if ps -A -ww -o args= | grep -v grep | grep -q -F 'curl -K -'; then ok "a curl fut a proba alatt (kontroll-pozicio)"; else bad "a curl nem futott a proba alatt -- a ps-ellenorzes nem ervenyes"; fi
+if ps -A -ww -o args= | grep -F -- "$TOK" | grep -v grep >/dev/null; then bad "a token MEGJELENT a ps argv-ben"; else ok "a token NINCS a ps argv-ben"; fi
 wait "$CT"
 if [ "$(cat "$HDR")" = "Bearer $TOK" ]; then ok "a szerver a helyes Authorization fejlecet kapta"; else bad "a szerver fejléce hibas: $(cat "$HDR")"; fi
 
@@ -56,7 +56,7 @@ echo "3) kontroll: az argv-alaku hivas ps-ben LATSZIK (a proba diszkriminal)"
 ( curl -s -H "Authorization: Bearer $TOK" "http://127.0.0.1:$PORT/x" >/dev/null ) &
 CK=$!
 sleep 1.5
-if ps -ww -o args= | grep -F -- "$TOK" | grep -v grep >/dev/null; then ok "kontroll: a token lathato az argv-ben (a proba ler)"; else bad "kontroll: a proba NEM latja az argv-alaku tokent -- vak"; fi
+if ps -A -ww -o args= | grep -F -- "$TOK" | grep -v grep >/dev/null; then ok "kontroll: a token lathato az argv-ben (a proba ler)"; else bad "kontroll: a proba NEM latja az argv-alaku tokent -- vak"; fi
 wait "$CK"
 
 echo "4) helper: idezojel a tokenben -> rc 2, nincs kuldes"
