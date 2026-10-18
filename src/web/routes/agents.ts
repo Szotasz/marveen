@@ -1716,8 +1716,11 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
 
   // PUT /api/agents/:name/auto-restart -- set the per-agent auto-restart config.
   // Accepts the main orchestrator id too (auto-restart applies to it as well).
-  // The body is normalized server-side, so a partial/garbled VALUE is coerced
-  // to a safe config rather than rejected. An unknown KEY is a different story:
+  // The body is MERGED over the stored config -- an omitted key keeps its
+  // value, and a valid dailyTime or intervalHours sent alone clears the other
+  // half of the schedule (see writeAutoRestartConfig) -- and the result is
+  // normalized server-side, so a partial/garbled VALUE is coerced to a safe
+  // config rather than rejected. An unknown KEY is a different story:
   // normalization never looks at it, so it would vanish behind a 200 -- those
   // are rejected loudly (see checkConfigPutFields).
   const autoRestartMatch = path.match(/^\/api\/agents\/([^/]+)\/auto-restart$/)
