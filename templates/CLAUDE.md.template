@@ -167,6 +167,12 @@ curl -s -X POST http://localhost:{{WEB_PORT}}/api/kanban/KARTYA_ID/move \
   -d '{"status":"in_progress"}'
 ```
 
+Ha tudod, honnan mozgatod (egy kiosztott, `in_progress` kártya lezárása `done`/`waiting`/`testing`
+státuszra), küldd mellé az `"expected_status":"in_progress"` mezőt is: a mozgatás csak akkor lép,
+ha a kártya MÉG abban a státuszban van. HTTP 409 (`status_conflict`, a `current_status` mutatja,
+hol tart most) azt jelenti, hogy a kártya közben továbblépett: NE mozgasd újra feltétel nélkül,
+és NE dolgozz rajta tovább.
+
 Komment a kártyára (az eredmény ide kerül, a dashboardon ez látszik):
 ```bash
 curl -s -X POST http://localhost:{{WEB_PORT}}/api/kanban/KARTYA_ID/comments \

@@ -47,7 +47,7 @@ vi.mock('../web/agent-process.js', async (importOriginal) => ({
 import {
   initDatabase, createKanbanCard, getKanbanCard, getKanbanCardEvents, moveKanbanCard,
 } from '../db.js'
-import { tryHandleKanban } from '../web/routes/kanban.js'
+import { tryHandleKanban, kanbanMoveInstructions } from '../web/routes/kanban.js'
 
 interface MoveResult { status: number; body: Record<string, unknown> }
 
@@ -155,5 +155,46 @@ describe('moveKanbanCard expectedStatus (db layer)', () => {
 
     expect(moveKanbanCard('d-2', 'waiting', 3, 'orin', { expectedStatus: 'planned' })).toBe(true)
     expect(getKanbanCard('d-2')).toMatchObject({ status: 'waiting', sort_order: 3 })
+  })
+})
+
+// The dispatch message is what an assigned agent actually runs to close its
+// card, so the guard only helps if the recipe sends it. These tests take the
+// done payload exactly as the dispatch hands it over and send it to the real
+// route.
+describe('dispatch recipe sends expected_status on the close', () => {
+  const donePayload = (): Record<string, unknown> => {
+    const out = kanbanMoveInstructions('t-1', 'dex')
+    const line = out.split('\n').find((l) => l.includes(`-d '{"status":"done"`))
+    expect(line).toBeDefined()
+    return JSON.parse(line!.slice(line!.indexOf("'") + 1, line!.lastIndexOf("'"))) as Record<string, unknown>
+  }
+
+  it('a late close does not move a card that has moved on (409, unchanged)', async () => {
+    createKanbanCard({ id: 't-1', title: 'Moved on', assignee: 'dex' })
+    moveKanbanCard('t-1', 'testing', 0, 'orin')
+
+    const r = await move('t-1', donePayload())
+
+    expect(r.status).toBe(409)
+    expect(r.body).toMatchObject({ error: 'status_conflict', current_status: 'testing' })
+    expect(getKanbanCard('t-1')?.status).toBe('testing')
+  })
+
+  it('the same payload closes a card that is still in_progress', async () => {
+    createKanbanCard({ id: 't-1', title: 'Still mine', assignee: 'dex' })
+    moveKanbanCard('t-1', 'in_progress', 0, 'dex')
+
+    const r = await move('t-1', donePayload())
+
+    expect(r.status).toBe(200)
+    expect(getKanbanCard('t-1')?.status).toBe('done')
+  })
+
+  it('tells the reader what a 409 means and to guard the waiting move too', () => {
+    const out = kanbanMoveInstructions('t-1', 'dex')
+    expect(out).toContain('HTTP 409')
+    expect(out).toContain('status_conflict')
+    expect(out).toMatch(/waiting.*"expected_status":"in_progress"/)
   })
 })

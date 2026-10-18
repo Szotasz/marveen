@@ -133,10 +133,19 @@ export function kanbanMoveInstructions(id: string, target: string): string {
     `    -d '{"author":"${target}","content":"AZ EREDMENY ROVIDEN"}'`,
     '',
     '2) Állítsd a kártyát done-ra:',
-    `  curl -s -X POST ${moveUrl} \\`,
+    `  curl -s -w '\\nHTTP %{http_code}\\n' -X POST ${moveUrl} \\`,
     `    ${auth} \\`,
     `    -H 'Content-Type: application/json' \\`,
-    `    -d '{"status":"done","actor":"${target}"}'`,
+    `    -d '{"status":"done","actor":"${target}","expected_status":"in_progress"}'`,
+    // The close used to be unconditional, so a dispatch read a round late (see
+    // the pre-flight comment above) could still drag a card that had moved on
+    // (reviewed to testing, closed by someone else, put back to planned) to
+    // done, and the board answered 200. The status probe narrows that window
+    // but cannot close it: the card can move between the probe and the close.
+    // expected_status makes the close a compare-and-set (one UPDATE ... WHERE
+    // status=?), so a card that is no longer in_progress is left alone and the
+    // reader gets a 409 saying where it is now.
+    'Az "expected_status":"in_progress" mező feltételessé teszi a mozgatást: csak akkor lép, ha a kártya MÉG in_progress. Ha a válasz HTTP 409 ("status_conflict", a "current_status" mező mutatja, hol tart most), a kártya közben továbblépett: NE mozgasd újra feltétel nélkül, NE dolgozz rajta tovább, hanem jelezd a delegálódnak. Ugyanez a mező kell a lenti waiting- és a záró-státusz-hívásba is.',
     '',
     // `done` is right for almost every card, so this template keeps it as the
     // default -- but not for every board PROGRAM. A program can give its cards
@@ -146,7 +155,7 @@ export function kanbanMoveInstructions(id: string, target: string): string {
     // deciding which one wins, or (worse) quietly follows this template and the
     // work closes unreviewed. One sentence fixes it; swapping the default
     // globally would break the close everywhere else.
-    'Ha a KÁRTYA SZÖVEGE más záró-státuszt ír elő (például `testing`, hogy a delegálód átnézze a munkát), AZ az irányadó: a kártya program-specifikus szabálya erősebb ennél a sablonnál. Ilyenkor a fenti hívásban a "done" helyére azt a státuszt írd, az "actor" mezőt ugyanúgy küldve. Ha a kártya nem ír elő mást, a "done" az alapértelmezés.',
+    'Ha a KÁRTYA SZÖVEGE más záró-státuszt ír elő (például `testing`, hogy a delegálód átnézze a munkát), AZ az irányadó: a kártya program-specifikus szabálya erősebb ennél a sablonnál. Ilyenkor a fenti hívásban a "done" helyére azt a státuszt írd, az "actor" és az "expected_status":"in_progress" mezőt ugyanúgy küldve. Ha a kártya nem ír elő mást, a "done" az alapértelmezés.',
     '',
     // The "actor" field is not decoration: it is what tells the board WHO moved
     // the card. Without it a self-pickup (agent -> in_progress on its own card)
@@ -165,7 +174,7 @@ export function kanbanMoveInstructions(id: string, target: string): string {
     `       ${auth} \\`,
     `       -H 'Content-Type: application/json' \\`,
     `       -d '{"assignee":"${escalateTo}"}'`,
-    `  c) Csak EZUTÁN állítsd a kártyát status="waiting"-re (a fenti move-hívással, "waiting" értékkel "done" helyett).`,
+    `  c) Csak EZUTÁN állítsd a kártyát status="waiting"-re (a fenti move-hívással, "waiting" értékkel "done" helyett, az "expected_status":"in_progress" mezővel együtt; 409-nél ugyanaz a teendő, mint fent).`,
     isMainAgent
       ? `Ez azért kritikus, mert ${OWNER_NAME} nem tudja kitalálni a dashboardon hogy egy nála maradt/rossz-assignee-jű, homályos kártya rá vár -- explicit átadás + explicit kérdés nélkül a felelősség-váltás elvész.`
       : `FONTOS: ${OWNER_NAME}-hez (az operátorhoz) EGYENESEN NE told át a kártyát, még ha a blokk végül tőle igényel is döntést -- ${MAIN_AGENT_ID} a delegálód, ő triázsol és ő dönti el, hogy tovább kell-e ${OWNER_NAME}-hez eszkalálnia. Ez azért kritikus, mert ${MAIN_AGENT_ID} nem tudja kitalálni a dashboardon hogy egy nála maradt/rossz-assignee-jű kártya rá vár -- explicit átadás + explicit kérdés nélkül a felelősség-váltás elvész.`,
