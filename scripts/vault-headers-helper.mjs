@@ -19,6 +19,16 @@ import { fileURLToPath } from 'node:url'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const projectRoot = join(__dirname, '..')
 
+// stdout IS the contract here (the JSON object): nothing else may reach it. The vault module's logger writes to
+// stdout, and on macOS without a GUI session (a LaunchDaemon) its Keychain migration fails on every call and logs a
+// warning -- which used to corrupt the headers JSON. This process only READS secrets, so it silences the logger and
+// leaves the migration to the dashboard process. Both must be set BEFORE the module is imported.
+// NOTE: this OVERRIDES an operator-set LOG_LEVEL for this short-lived process on purpose (stdout is the contract). Failures stay
+// visible on STDERR (the lines this script writes itself) and in the exit code; to debug the vault module, run it from a REPL or the
+// dashboard process, not through this script.
+process.env.LOG_LEVEL = 'silent'
+process.env.MARVEEN_VAULT_NO_KEYCHAIN_MIGRATION = '1'
+
 // Same pattern as vault-resolve.mjs: import the compiled vault module.
 const { getSecret } = await import(join(projectRoot, 'dist', 'web', 'vault.js'))
 

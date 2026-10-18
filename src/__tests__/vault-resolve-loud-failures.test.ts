@@ -50,7 +50,13 @@ beforeAll(() => {
   // else returns null. The value is a fixture string, not vault content.
   writeFileSync(
     join(ROOT, 'dist', 'web', 'vault.js'),
-    `export function getSecret(id) { return id === 'KNOWN-LABEL' || id === 'ssh-key-abc123' ? '${SECRET_VALUE}' : null }\n`,
+    `// the real logger reads LOG_LEVEL when its module is IMPORTED, so the stub decides at import time too
+const noisy = process.env.LOG_LEVEL !== 'silent'
+export function getSecret(id) {
+  if (noisy) process.stdout.write('{"level":40,"msg":"Keychain migration failed, keeping file-based key"}\\n')
+  if (process.env.MARVEEN_VAULT_NO_KEYCHAIN_MIGRATION !== '1') process.stderr.write('KEYCHAIN-MIGRATION-ATTEMPT\\n')
+  return id === 'KNOWN-LABEL' || id === 'ssh-key-abc123' ? '${SECRET_VALUE}' : null
+}\n`,
   )
 })
 
@@ -116,5 +122,16 @@ describe('vault-resolve: an SSH private key is never resolved (VAULTSZELES826)',
     const r = await run('PAT=KNOWN-LABEL\nDEPLOY=ssh-key-abc123\n')
     expect(r.code).toBe(4)
     expect(r.stdout).toBe(`PAT=${SECRET_VALUE}\n`)
+  })
+})
+
+// Stdout carries the ENV_VAR=value lines and nothing else; the vault module's Keychain-migration warning
+// must not end up in an environment variable.
+describe('vault-resolve: stdout is only the ENV_VAR=value lines', () => {
+  it('no logger noise on stdout, and the Keychain migration is not attempted', async () => {
+    const r = await run('PAT=KNOWN-LABEL\n')
+    expect(r.code).toBe(0)
+    expect(r.stdout).toBe(`PAT=${SECRET_VALUE}\n`)
+    expect(r.stderr).toBe('')
   })
 })

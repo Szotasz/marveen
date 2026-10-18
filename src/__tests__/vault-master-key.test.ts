@@ -112,6 +112,97 @@ describe('VAULTUJKULCS822: fail-closed master key handling', () => {
     expect(keychainMock.storeCalls).toHaveLength(1)
   })
 
+  // MARVEEN_VAULT_NO_KEYCHAIN_MIGRATION=1: the headersHelper / resolver scripts only READ secrets; on macOS without a GUI
+  // session the migration's `security` call times out on every call and its warning corrupts their stdout.
+  describe('MARVEEN_VAULT_NO_KEYCHAIN_MIGRATION=1: a read-only consumer never touches the Keychain', () => {
+    const withSwitch = async <T,>(value: string | undefined, fn: () => Promise<T>): Promise<T> => {
+      const old = process.env.MARVEEN_VAULT_NO_KEYCHAIN_MIGRATION
+      if (value === undefined) delete process.env.MARVEEN_VAULT_NO_KEYCHAIN_MIGRATION
+      else process.env.MARVEEN_VAULT_NO_KEYCHAIN_MIGRATION = value
+      try { return await fn() } finally {
+        if (old === undefined) delete process.env.MARVEEN_VAULT_NO_KEYCHAIN_MIGRATION
+        else process.env.MARVEEN_VAULT_NO_KEYCHAIN_MIGRATION = old
+      }
+    }
+
+    it('the file key is used as is: the secret opens, no keychainStore call, .vault-key stays, nothing renamed', async () => {
+      await seedVaultWithSecret()
+      keychainMock.available = true
+      await withSwitch('1', async () => {
+        const v = await freshVault()
+        expect(v.getSecret('probe')).toBe('probe-value-42')
+        expect(v.getSecret('probe')).toBe('probe-value-42') // and again: still no migration attempt
+      })
+      expect(keychainMock.storeCalls).toHaveLength(0)
+      expect(existsSync(keyPath)).toBe(true)
+      expect(existsSync(migratedPath)).toBe(false)
+    })
+
+    it('control: without the switch the same setup migrates the key to the Keychain', async () => {
+      await seedVaultWithSecret()
+      keychainMock.available = true
+      await withSwitch(undefined, async () => {
+        const v = await freshVault()
+        expect(v.getSecret('probe')).toBe('probe-value-42')
+      })
+      expect(keychainMock.storeCalls).toHaveLength(1)
+      expect(existsSync(keyPath)).toBe(false)
+      expect(existsSync(migratedPath)).toBe(true)
+    })
+
+    it('only the value 1 turns it on (0 and empty keep the migration)', async () => {
+      for (const value of ['0', '']) {
+        resetStore()
+        await seedVaultWithSecret()
+        keychainMock.available = true
+        await withSwitch(value, async () => {
+          const v = await freshVault()
+          expect(v.getSecret('probe')).toBe('probe-value-42')
+        })
+        expect(keychainMock.storeCalls, JSON.stringify(value)).toHaveLength(1)
+      }
+    })
+
+    // The switch only closes the FILE-key migration branch. A vault whose key already lives ONLY in the Keychain (migrated, no
+    // .vault-key) is read through the Keychain as before: that is KNOWN and recorded here, not hidden.
+    it('KNOWN LIMIT (current behaviour recorded): migrated state, no key file -> the Keychain is READ even with the switch on', async () => {
+      await seedVaultWithSecret()
+      const keyB64 = readFileSync(keyPath, 'utf-8').trim()
+      rmSync(keyPath)
+      keychainMock.available = true
+      keychainMock.readResult = { status: 'ok', value: keyB64 }
+      await withSwitch('1', async () => {
+        const v = await freshVault()
+        expect(v.getSecret('probe')).toBe('probe-value-42')
+      })
+      expect(keychainMock.storeCalls).toHaveLength(0)   // read only, never written
+    })
+
+    it('KNOWN LIMIT: migrated state with an unanswering Keychain fails LOUD (VaultKeyError), it does not print or generate a key', async () => {
+      await seedVaultWithSecret()
+      rmSync(keyPath)
+      keychainMock.available = true
+      keychainMock.readResult = { status: 'unavailable', value: null }
+      await withSwitch('1', async () => {
+        const v = await freshVault()
+        expect(() => v.getSecret('probe')).toThrowError(/Keychain did not answer/)
+      })
+      expect(keychainMock.storeCalls).toHaveLength(0)
+      expect(existsSync(keyPath)).toBe(false)           // no replacement key was generated
+    })
+
+    it('a wrong file key still fails closed with the switch on', async () => {
+      await seedVaultWithSecret()
+      writeFileSync(keyPath, Buffer.from('x'.repeat(64)).toString('base64') + '\n')
+      keychainMock.available = true
+      await withSwitch('1', async () => {
+        const v = await freshVault()
+        expect(() => v.getSecret('probe')).toThrowError(/does not decrypt vault.json/)
+      })
+      expect(keychainMock.storeCalls).toHaveLength(0)
+    })
+  })
+
   it('BOGUS .vault-key + existing entries -> refuses to use/migrate; .migrated is NOT clobbered', async () => {
     await seedVaultWithSecret()
     // The real key is "safe" in .migrated (the 2026-08-22 layout)...

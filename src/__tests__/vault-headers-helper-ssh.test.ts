@@ -24,8 +24,16 @@ beforeAll(() => {
   mkdirSync(join(ROOT, 'scripts'), { recursive: true })
   mkdirSync(join(ROOT, 'dist', 'web'), { recursive: true })
   copyFileSync(join(process.cwd(), 'scripts', 'vault-headers-helper.mjs'), join(ROOT, 'scripts', 'vault-headers-helper.mjs'))
+  // The stub behaves like the real vault module on macOS without a GUI session: unless the helper silenced the logger
+  // it logs a Keychain-migration warning to STDOUT, and unless it switched the migration off it "tries" it (a line on stderr).
   writeFileSync(join(ROOT, 'dist', 'web', 'vault.js'),
-    `export function getSecret(id) { return id === 'KNOWN' || id === 'ssh-key-abc123' ? '${VALUE}' : null }\n`)
+    `// the real logger reads LOG_LEVEL when its module is IMPORTED, so the stub decides at import time too
+const noisy = process.env.LOG_LEVEL !== 'silent'
+export function getSecret(id) {
+  if (noisy) process.stdout.write('{"level":40,"msg":"Keychain migration failed, keeping file-based key"}\\n')
+  if (process.env.MARVEEN_VAULT_NO_KEYCHAIN_MIGRATION !== '1') process.stderr.write('KEYCHAIN-MIGRATION-ATTEMPT\\n')
+  return id === 'KNOWN' || id === 'ssh-key-abc123' ? '${VALUE}' : null
+}\n`)
 })
 afterAll(() => { rmSync(ROOT, { recursive: true, force: true }) })
 
@@ -44,5 +52,25 @@ describe('vault-headers-helper: an SSH private key is never sent as a header', (
   it('control: an ordinary secret still becomes the header', async () => {
     const r = await run(['Authorization=Bearer:::KNOWN'])
     expect(JSON.parse(r.stdout)).toEqual({ Authorization: `Bearer ${VALUE}` })
+  })
+})
+
+// The headersHelper stdout is the JSON object and nothing else. The vault module's Keychain-migration warning
+// (a LaunchDaemon has no GUI session, so `security` times out on every call) used to be printed in front of it.
+describe('vault-headers-helper: stdout is only the headers JSON', () => {
+  it('the logger noise does not reach stdout: the output parses as the JSON object', async () => {
+    const r = await run(['Authorization=Bearer:::KNOWN'])
+    expect(r.code).toBe(0)
+    expect(JSON.parse(r.stdout)).toEqual({ Authorization: `Bearer ${VALUE}` })
+    expect(r.stdout.trim().split('\n')).toHaveLength(1)
+  })
+  it('the helper does not attempt the Keychain migration (a read-only consumer)', async () => {
+    const r = await run(['Authorization=Bearer:::KNOWN', 'X-Api-Key=KNOWN'])
+    expect(r.stderr).not.toContain('KEYCHAIN-MIGRATION-ATTEMPT')
+  })
+  it('a missing secret still gives a clean stdout (the not-found line stays on stderr)', async () => {
+    const r = await run(['X-Missing=NOPE'])
+    expect(JSON.parse(r.stdout)).toEqual({})
+    expect(r.stderr).toContain('not found')
   })
 })
