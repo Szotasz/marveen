@@ -1170,27 +1170,31 @@ refresh_untouched_seeds() {
       have="$(shasum -a 256 <"$target_root/$name/SKILL.md" | awk '{print $1}')"
       [ "$want" = "$have" ] && skill_current=1
     fi
-    for sd in "$d"*/; do
-      [ -d "$sd" ] || continue
-      sub="$(basename "$sd")"
-      [ "$subdirs" = "all" ] || [ "$sub" = "references" ] || continue
-      for f in "$sd"*; do
-        [ -f "$f" ] || continue
-        base="$(basename "$f")"
-        installed="$target_root/$name/$sub/$base"
-        if [ -f "$installed" ]; then
-          refresh_one_seed_file "$f" "$installed" "$src_rel/$name/$sub/$base" "$mode"
-        elif [ "$skill_current" = "1" ]; then
-          mkdir -p "$target_root/$name/$sub"
-          if [ "$mode" = "template" ]; then
-            render_seed_template <"$f" >"$installed.seedtmp" && mv "$installed.seedtmp" "$installed"
-          else
-            cp -p "$f" "$installed"   # verbatim keeps the mode bits (a skill's scripts)
-          fi
-          SEED_REFRESH_UPDATED=$((SEED_REFRESH_UPDATED + 1))
+    # Subdir files: the TRACKED ones only, the same set the seed loops copy
+    # (an untracked or ignored file can be a secret; SEEDSKILLSUB1018). Read
+    # into a variable first: the loop body must update the counters in THIS
+    # shell, not in a pipeline subshell.
+    tracked="$(git -C "$d" ls-files 2>/dev/null)"
+    while IFS= read -r rel; do
+      case "$rel" in */*) ;; *) continue ;; esac
+      [ "$subdirs" = "all" ] || case "$rel" in references/*) ;; *) continue ;; esac
+      f="$d$rel"
+      [ -f "$f" ] || continue
+      installed="$target_root/$name/$rel"
+      if [ -f "$installed" ]; then
+        refresh_one_seed_file "$f" "$installed" "$src_rel/$name/$rel" "$mode"
+      elif [ "$skill_current" = "1" ]; then
+        mkdir -p "$(dirname "$installed")"
+        if [ "$mode" = "template" ]; then
+          render_seed_template <"$f" >"$installed.seedtmp" && mv "$installed.seedtmp" "$installed"
+        else
+          cp -p "$f" "$installed"   # verbatim keeps the mode bits (a skill's scripts)
         fi
-      done
-    done
+        SEED_REFRESH_UPDATED=$((SEED_REFRESH_UPDATED + 1))
+      fi
+    done <<EOF_TRACKED
+$tracked
+EOF_TRACKED
   done
   return 0
 }
@@ -1468,9 +1472,14 @@ if [ -d "$SEED_SKILLS_DIR" ]; then
     done
     # SEEDSKILLSUB1018: a skill's subdirs (scripts/, references/, ...) ship too,
     # verbatim and with their mode bits; its SKILL.md points into them.
-    for sd in "$skill_dir"*/; do
-      [ -d "$sd" ] || continue
-      cp -Rp "${sd%/}" "$target/"
+    # Only the files git TRACKS: a whole-dir copy also carried untracked and
+    # ignored files, and fleet-helper's own scripts/.gitignore names exactly
+    # those as secrets/personal data (mail_rules.json, .dashboard-token).
+    # Outside a git checkout nothing below the top level is copied.
+    git -C "$skill_dir" ls-files -z 2>/dev/null | while IFS= read -r -d '' rel; do
+      case "$rel" in */*) ;; *) continue ;; esac   # top-level files: the loop above
+      mkdir -p "$target/$(dirname "$rel")"
+      cp -p "$skill_dir$rel" "$target/$rel"
     done
     if [ "$forced" = "1" ]; then SEED_FORCED=$((SEED_FORCED + 1)); else SEED_NEW=$((SEED_NEW + 1)); fi
   done
