@@ -41,6 +41,7 @@ import { buildExtraChannelLaunch, enableExtraPlugins } from './agent-extra-chann
 import { probeExtraPluginsInTree, combineLiveness } from './extra-channel-liveness.js'
 import { loadCustomProvider, type CustomProviderDef } from './custom-providers.js'
 import { decideOwnOauthToken, ownOauthTokenExport, ownOauthLaunchVerdict } from './agent-oauth-token-file.js'
+import { inheritedAuthUnset } from './inherited-auth-unset.js'
 import { worksourceRootFor } from './worksource-queue.js'
 import { resolveAgentConfigDir, readClaudePlans, getClaudePlan } from './claude-plans.js'
 import { readClaudePlansState } from './claude-plans-state.js'
@@ -2477,6 +2478,8 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
       )
     }
     let claudeConfigDir = planResolution.configDir
+    // Operator-configured, before any auto-isolation below (BYOSUBUNSET1018).
+    const configuredConfigDir = claudeConfigDir !== null
     let oauthTokenEnv = ''
     // authMode 'own_team' (OWNTEAMVAK914): the operator explicitly opted this
     // agent OUT of the fleet credential -- it authenticates from its OWN
@@ -2690,8 +2693,11 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     // over ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN, so the inherited token would
     // reach the custom endpoint -> 401, even after the explicit export was removed.
     // An active `unset` at launch strips the inherited value before exec.
-    // Claude-OAuth agents (needsFleetOauth=true) must keep the token intact.
-    const byoUnsetEnv = !needsFleetOauth ? 'unset CLAUDE_CODE_OAUTH_TOKEN && ' : ''
+    // Fleet Claude-OAuth agents keep the token intact. An agent with its own
+    // credential (own_team, a configured config dir, its own token file) also
+    // drops an inherited ANTHROPIC_API_KEY, which outranks every OAuth path
+    // (BYOSUBUNSET1018, inherited-auth-unset.ts).
+    const byoUnsetEnv = inheritedAuthUnset({ needsFleetOauth, isOwnTeam, configuredConfigDir, ownTokenFile: ownTokenFile !== null })
     // Slack plugin is third-party; its "not on approved allowlist" check is
     // bypassed via `allowedChannelPlugins` in /Library/Application Support/ClaudeCode/managed-settings.json.
     const auditLogEnv = agentProvider === 'slack' ? ` && export SLACK_AUDIT_LOG="${agentChannelDir}/audit.jsonl"` : ''
