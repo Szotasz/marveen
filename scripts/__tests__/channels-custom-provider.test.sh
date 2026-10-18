@@ -300,8 +300,11 @@ fi
 
 # --- keychain isolation (card 31a6e54d) ---
 # The vault setup above must have taken the FILE-key path inside the hermetic
-# store. On macOS without MARVEEN_KEYCHAIN_TEST_GUARD the key would go to the
-# login Keychain instead, and this file would be missing.
+# store. This case is green because of the keychain.js STUB written near the top
+# of this file (isKeychainAvailable() is false), not because of
+# MARVEEN_KEYCHAIN_TEST_GUARD; the flag is only a backup layer behind the stub.
+# Without both, the key would go to the login Keychain on macOS and this file
+# would be missing.
 if [ -s "$root/store/.vault-key" ]; then
   pass "vault setup used the hermetic file key, not the Keychain"
 else

@@ -90,6 +90,23 @@ describe('keychain spawn guard (global vitest setup)', () => {
     expectRefused(() => spawnSync('cd', ['/', '&&', fake, '-q', 'find-generic-password'], { env, shell: true }))
   })
 
+  // Same rule: only the fake, by full path, is ever named.
+  it('shell forms with a QUOTED binary are refused ("path/security" ..., \'path/security\' ...)', () => {
+    expectRefused(() => execSync(`"${fake}" find-generic-password -s com.marveen.vault -w`, { env }))
+    expectRefused(() => execSync(`'${fake}' -q find-generic-password -s com.marveen.vault -w`, { env }))
+    expectRefused(() => exec(`cd / && "${fake}" delete-generic-password -s com.marveen.vault`, { env }))
+    expectRefused(() => execFileSync('/bin/sh', ['-c', `"${fake}" add-generic-password -U -s com.marveen.vault -w x`], { env }))
+    expectRefused(() => spawnSync(`'${fake}' find-generic-password -s com.marveen.vault`, { env, shell: true }))
+  })
+
+  it('a plain argv that merely mentions a QUOTED security sub-command is still data', () => {
+    execFileSync(join(dir, 'not-security'), ['commit', '-m', 'docs: "security" add-generic-password note'], { env })
+    expect(existsSync(marker)).toBe(true)
+    rmSync(marker, { force: true })
+    execFileSync(join(dir, 'not-security'), ['commit', '-m', `docs: "${fake}" find-generic-password note`], { env })
+    expect(existsSync(marker)).toBe(true)
+  })
+
   it('a plain argv that merely MENTIONS a security sub-command is data, not refused', () => {
     // not-security touches the marker: it really ran, nothing was refused.
     execFileSync(join(dir, 'not-security'), ['commit', '-m', 'docs: security add-generic-password note'], { env })
@@ -102,6 +119,8 @@ describe('keychain spawn guard (global vitest setup)', () => {
   it('the shell pattern itself: options allowed, a bare word or a flag-only call is not a sub-command', () => {
     expect(SECURITY_IN_SHELL.test('security -q find-generic-password')).toBe(true)
     expect(SECURITY_IN_SHELL.test('x=1; /usr/bin/security -i -v delete-generic-password')).toBe(true)
+    expect(SECURITY_IN_SHELL.test('"/usr/bin/security" find-generic-password')).toBe(true)
+    expect(SECURITY_IN_SHELL.test("'security' -q delete-generic-password")).toBe(true)
     expect(SECURITY_IN_SHELL.test('echo security review')).toBe(false)
     expect(SECURITY_IN_SHELL.test('docker --security-opt seccomp')).toBe(false)
   })

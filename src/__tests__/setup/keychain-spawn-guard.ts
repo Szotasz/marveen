@@ -19,7 +19,7 @@
 // Mechanics: the builtin's CJS exports object is patched and then
 // syncBuiltinESMExports() pushes the patched functions into the ESM named
 // bindings, so `import { execFileSync } from 'node:child_process'` sees them.
-// Self-test: keychain-test-isolation.test.ts.
+// Self-test: keychain-spawn-guard.test.ts.
 import { createRequire, syncBuiltinESMExports } from 'node:module'
 import { basename } from 'node:path'
 import { promisify } from 'node:util'
@@ -31,11 +31,12 @@ const STATE = Symbol.for('marveen.31a6e54d.keychainSpawnGuard')
 
 // A `security` sub-command inside a SHELL string, options before it included:
 // "security find-generic-password", "security -q find-generic-password",
-// "cd / && /usr/bin/security -i delete-generic-password". Only ever applied to
+// "cd / && /usr/bin/security -i delete-generic-password", and the quoted binary
+// forms ("/usr/bin/security" find-generic-password, 'security' ...). Only ever applied to
 // text a shell will parse (see judgeFileCall/judgeCommandCall): a plain argv
 // such as `git commit -m "... security add-generic-password ..."` is data, not
 // a command, and must not be refused.
-export const SECURITY_IN_SHELL = /(^|[\s;&|(`'"/])security(\s+-\S+)*\s+[a-z]+(-[a-z]+)+/
+export const SECURITY_IN_SHELL = /(^|[\s;&|(`'"/])security['"]?(\s+-\S+)*\s+[a-z]+(-[a-z]+)+/
 
 const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh'])
 
@@ -83,7 +84,8 @@ function judgeFileCall(file: unknown, rest: unknown[]): void {
 // command-string forms: exec, execSync (always run by a shell).
 function judgeCommandCall(command: unknown): void {
   if (typeof command !== 'string') return
-  if (isSecurityFile(command.trim().split(/\s+/)[0]) || SECURITY_IN_SHELL.test(command)) refuse('via a shell command')
+  const first = command.trim().split(/\s+/)[0].replace(/^['"]+|['"]+$/g, '')
+  if (isSecurityFile(first) || SECURITY_IN_SHELL.test(command)) refuse('via a shell command')
 }
 
 type Fn = ((...a: unknown[]) => unknown) & { [promisify.custom]?: (...a: unknown[]) => unknown }

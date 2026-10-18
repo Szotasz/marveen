@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest'
 import { existsSync, readFileSync, rmSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { execFileSync } from 'node:child_process'
@@ -32,6 +32,8 @@ const ENV_KEYS = ['VITEST', 'NODE_ENV', 'MARVEEN_KEYCHAIN_SERVICE', 'MARVEEN_KEY
 let savedEnv: Record<string, string | undefined> = {}
 
 const exec = vi.mocked(execFileSync)
+
+afterAll(() => rmSync(h.tmpRoot, { recursive: true, force: true }))
 
 async function freshKeychain() {
   vi.resetModules()
