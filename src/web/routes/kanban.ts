@@ -9,7 +9,7 @@ import {
   getKanbanSeqByIdPrefix,
   listLabels, getLabel, createLabel, updateLabel, deleteLabel,
   addLabelToCard, removeLabelFromCard, getLabelsForAllCards, getLabelsForCard,
-  addCardBlocker, removeCardBlocker, getBlockersForCard, getBlockedByCard, getCardsUnblockedBy,
+  addCardBlocker, removeCardBlocker, getBlockersForCard, getBlockedByCard, getCardsUnblockedBy, getLatestDoneTransitionAt,
   getBlockersForAllCards, blockerWouldCycle, parentWouldCycle,
   listArchivedKanbanCards,
   revertIdeaFromKanban,
@@ -299,25 +299,35 @@ function reportUndeliveredDispatch(id: string, unreachable: string): void {
 // anyone); the assignee reads them from the board.
 //
 // Best-effort: runs after the move already succeeded, so it never throws.
-function notifyUnblockedCards(blockerId: string, actor?: string | null): void {
+//
+// Once per closing (PR2027SCRIPTNOTIFY1018): a freed card that already carries
+// this blocker's system comment from the current done transition on is skipped.
+// The /move and the PUT call this once per transition anyway; the dedupe is for
+// the second entry point, POST /api/kanban/:id/notify-unblocked, which the card
+// script calls after its own DB move and which a caller may repeat.
+function notifyUnblockedCards(blockerId: string, actor?: string | null): { freed: string[]; alreadyNotified: string[] } {
+  const result = { freed: [] as string[], alreadyNotified: [] as string[] }
   let freed: ReturnType<typeof getCardsUnblockedBy>
   try {
     freed = getCardsUnblockedBy(blockerId)
   } catch (err) {
     logger.warn({ err, blockerId }, 'Unblock lookup failed (card move still succeeded)')
-    return
+    return result
   }
-  if (freed.length === 0) return
+  if (freed.length === 0) return result
   const blocker = getKanbanCard(blockerId)
   const blockerRef = blocker?.seq ? `#${blocker.seq}` : `(${blockerId})`
+  const commentText = `A(z) ${blockerRef} kártya kész lett, és ez volt az utolsó, amire ez a kártya várt. Folytatható.`
+  const closedAt = getLatestDoneTransitionAt(blockerId) ?? 0
   for (const card of freed) {
     const cardRef = card.seq ? `#${card.seq}` : `(${card.id})`
+    if (getKanbanComments(card.id).some((c) => c.author === 'system' && c.content === commentText && c.created_at >= closedAt)) {
+      result.alreadyNotified.push(card.id)
+      continue
+    }
+    result.freed.push(card.id)
     try {
-      addKanbanComment(
-        card.id,
-        'system',
-        `A(z) ${blockerRef} kártya kész lett, és ez volt az utolsó, amire ez a kártya várt. Folytatható.`,
-      )
+      addKanbanComment(card.id, 'system', commentText)
     } catch (err) {
       logger.warn({ err, id: card.id }, 'Unblock card comment failed')
     }
@@ -351,6 +361,7 @@ function notifyUnblockedCards(blockerId: string, actor?: string | null): void {
       logger.warn({ err, id: card.id, blockerId }, 'Kanban unblock notice failed (card move still succeeded)')
     }
   }
+  return result
 }
 
 // HBKANBANDRIFT819: the heartbeat-summary payload, shaped so that TRUNCATED
@@ -864,6 +875,45 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     revertIdeaFromKanban(id)
     if (deleteKanbanCard(id)) { json(res, { ok: true }); return true }
     json(res, { error: 'Kártya nem található' }, 404)
+    return true
+  }
+
+  // PR2027SCRIPTNOTIFY1018: the unblock notice for a card closed OUTSIDE this
+  // route. The card script (scripts/kartya-es-ertesites.py) moves cards in the DB
+  // directly, so the /move and PUT hooks above never see its closings -- measured
+  // on the fleet's board: 127 of 127 transitions to done came through it. The
+  // script calls this right after its move, and the rules stay here, in one place.
+  // Only a card that IS done is accepted; a repeated call does not notify twice.
+  const unblockNotifyMatch = path.match(/^\/api\/kanban\/([^/]+)\/notify-unblocked$/)
+  if (unblockNotifyMatch && method === 'POST') {
+    const id = decodeURIComponent(unblockNotifyMatch[1])
+    const raw = (await readBody(req)).toString().trim()
+    let parsed: unknown = {}
+    if (raw !== '') {
+      try { parsed = JSON.parse(raw) } catch { json(res, { error: 'Body must be JSON' }, 400); return true }
+    }
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      json(res, { error: 'Body must be a JSON object. Accepted fields: actor' }, 400)
+      return true
+    }
+    const unknownKeys = Object.keys(parsed).filter((k) => k !== 'actor')
+    if (unknownKeys.length > 0) {
+      json(res, { error: `Unknown field(s): ${unknownKeys.join(', ')}. Accepted: actor` }, 400)
+      return true
+    }
+    const who = kanbanWriteActor((parsed as { actor?: unknown }).actor, ctx.auth)
+    if ('error' in who) {
+      json(res, { error: who.error }, 400)
+      return true
+    }
+    const card = getKanbanCard(id)
+    if (!card) { json(res, { error: 'Kártya nem található' }, 404); return true }
+    if (card.status !== 'done') {
+      json(res, { error: 'card_not_done', current_status: card.status }, 409)
+      return true
+    }
+    const result = notifyUnblockedCards(id, who.actor)
+    json(res, { ok: true, freed: result.freed, already_notified: result.alreadyNotified })
     return true
   }
 

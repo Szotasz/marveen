@@ -38,7 +38,7 @@ vi.mock('../web/agent-process.js', async (importOriginal) => ({
 }))
 
 import {
-  initDatabase, createKanbanCard, addCardBlocker, getKanbanComments, getCardsUnblockedBy, archiveKanbanCard,
+  initDatabase, getDb, createKanbanCard, addCardBlocker, getKanbanComments, getCardsUnblockedBy, archiveKanbanCard,
 } from '../db.js'
 import { tryHandleKanban } from '../web/routes/kanban.js'
 
@@ -156,5 +156,104 @@ describe('kanban unblock notification', () => {
     await move('blk-a', 'waiting')
     expect(unblockMessages()).toHaveLength(0)
     expect(systemComments('wait-b')).toHaveLength(0)
+  })
+})
+
+// PR2027SCRIPTNOTIFY1018: the card script moves cards in the DB directly, so the
+// /move and PUT hooks never see its closings. It calls this endpoint after its
+// move; the rules are the same function, and a repeat does not notify twice.
+describe('POST /api/kanban/:id/notify-unblocked (the card script closing path)', () => {
+  // What the script does: UPDATE the status and write the event row itself.
+  function scriptClose(id: string, from: string, at: number) {
+    getDb().prepare('UPDATE kanban_cards SET status = ?, updated_at = ? WHERE id = ?').run('done', at, id)
+    getDb().prepare('INSERT INTO kanban_card_events (card_id, from_status, to_status, actor, created_at) VALUES (?, ?, ?, ?, ?)')
+      .run(id, from, 'done', 'zara', at)
+  }
+  async function notify(id: string, body: unknown = { actor: 'zara' }): Promise<{ status: number; body: any }> {
+    const req = Readable.from([Buffer.from(body === undefined ? '' : JSON.stringify(body))]) as unknown as http.IncomingMessage
+    const out = { status: 200, body: null as any }
+    const res = {
+      writeHead: vi.fn((s: number) => { out.status = s }),
+      end: vi.fn((chunk?: string) => { if (chunk) out.body = JSON.parse(chunk) }),
+      setHeader: vi.fn(),
+    } as unknown as http.ServerResponse
+    const path = `/api/kanban/${id}/notify-unblocked`
+    expect(await tryHandleKanban({ req, res, path, method: 'POST', url: new URL(`http://localhost${path}`) } as never)).toBe(true)
+    return out
+  }
+
+  it('a script closing frees the waiting card through the endpoint: one message, one comment', async () => {
+    scriptClose('blk-a', 'in_progress', Math.floor(Date.now() / 1000))
+    expect(unblockMessages()).toHaveLength(0) // the DB move alone tells nobody: the gap this closes
+    const r = await notify('blk-a')
+    expect(r.status).toBe(200)
+    expect(r.body).toEqual({ ok: true, freed: ['wait-b'], already_notified: [] })
+    const msgs = unblockMessages()
+    expect(msgs).toHaveLength(1)
+    expect(msgs[0][1]).toBe('dex')
+    expect(systemComments('wait-b')).toHaveLength(1)
+  })
+
+  it('a repeated call does not notify twice', async () => {
+    scriptClose('blk-a', 'in_progress', Math.floor(Date.now() / 1000))
+    await notify('blk-a')
+    mockCreateAgentMessage.mockClear()
+    const r = await notify('blk-a')
+    expect(r.body).toEqual({ ok: true, freed: [], already_notified: ['wait-b'] })
+    expect(unblockMessages()).toHaveLength(0)
+    expect(systemComments('wait-b')).toHaveLength(1)
+  })
+
+  it('a /move closing followed by the endpoint does not notify twice', async () => {
+    await move('blk-a', 'done')
+    mockCreateAgentMessage.mockClear()
+    const r = await notify('blk-a')
+    expect(r.body.already_notified).toEqual(['wait-b'])
+    expect(unblockMessages()).toHaveLength(0)
+  })
+
+  it('a later closing (reopened, closed again) notifies again', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      vi.setSystemTime(new Date(1_800_000_000_000))
+      scriptClose('blk-a', 'in_progress', 1_800_000_000)
+      await notify('blk-a')
+      // The waiting card got blocked again by the reopened card, then that closed again later.
+      getDb().prepare('UPDATE kanban_cards SET status = ? WHERE id = ?').run('in_progress', 'blk-a')
+      vi.setSystemTime(new Date(1_800_000_600_000))
+      scriptClose('blk-a', 'in_progress', 1_800_000_600)
+      mockCreateAgentMessage.mockClear()
+      const r = await notify('blk-a')
+      expect(r.body.freed).toEqual(['wait-b'])
+      expect(unblockMessages()).toHaveLength(1)
+      expect(systemComments('wait-b')).toHaveLength(2)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('the closing agent is not told about its own waiting card', async () => {
+    scriptClose('blk-a', 'in_progress', Math.floor(Date.now() / 1000))
+    await notify('blk-a', { actor: 'dex' })
+    expect(unblockMessages()).toHaveLength(0)
+    expect(systemComments('wait-b')).toHaveLength(1)
+  })
+
+  it('refuses a card that is not done (409), an unknown card (404) and a bad body (400), notifying nobody', async () => {
+    expect(await notify('blk-a')).toMatchObject({ status: 409, body: { error: 'card_not_done', current_status: 'in_progress' } })
+    expect((await notify('nope')).status).toBe(404)
+    scriptClose('blk-a', 'in_progress', Math.floor(Date.now() / 1000))
+    expect((await notify('blk-a', { actor: 'zara', extra: 1 })).status).toBe(400)
+    expect((await notify('blk-a', { actor: true })).status).toBe(400)
+    expect((await notify('blk-a', [1])).status).toBe(400)
+    expect(unblockMessages()).toHaveLength(0)
+    expect(systemComments('wait-b')).toHaveLength(0)
+  })
+
+  it('an empty body is accepted (no actor)', async () => {
+    scriptClose('blk-a', 'in_progress', Math.floor(Date.now() / 1000))
+    const r = await notify('blk-a', undefined)
+    expect(r.status).toBe(200)
+    expect(unblockMessages()).toHaveLength(1)
   })
 })
