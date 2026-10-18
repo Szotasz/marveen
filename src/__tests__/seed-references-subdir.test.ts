@@ -117,7 +117,8 @@ describe('a fresh seed ships the references/ subdir, rendered (SEEDREFDIR1018)',
   })
 })
 
-const FUNCS = ['render_seed_template', 'seed_copy_is_untouched', 'render_seed_file', 'refresh_one_seed_file', 'refresh_untouched_seeds']
+// Sliced per call, so a missing helper fails the refresh tests, not the file.
+const funcs = () => ['render_seed_template', 'seed_copy_is_untouched', 'render_seed_file', 'refresh_one_seed_file', 'refresh_untouched_seeds']
   .map((n) => sliceShellFn(UPDATE, n))
   .join('\n')
 
@@ -154,7 +155,7 @@ function runRefresh(f: ReturnType<typeof makeRefreshFixture>): string {
     `INSTALL_DIR="${f.install}"`,
     'MAIN_AGENT_ID=marveen; BOT_NAME=""; OWNER_NAME=""; WEB_PORT=3420',
     'SEED_REFRESH_UPDATED=0; SEED_REFRESH_KEPT=0',
-    FUNCS,
+    funcs(),
     `refresh_untouched_seeds "seed-scheduled-tasks" "${join(f.base, 'home', 'scheduled-tasks')}" "template"`,
     'echo "updated=$SEED_REFRESH_UPDATED kept=$SEED_REFRESH_KEPT"',
   ].join('\n') + '\n', join(f.base, 'probe.sh')).trim()
