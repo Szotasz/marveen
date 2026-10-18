@@ -105,6 +105,20 @@ describe('keychain.ts: the live item is off limits in a test process', () => {
     expect(exec).not.toHaveBeenCalled()
   })
 
+  it.each(['COM.MARVEEN.VAULT', 'Com.Marveen.Vault'])(
+    'the live name in another case (%s) is refused too: Keychain case-sensitivity is not relied on',
+    async (name) => {
+      process.env.MARVEEN_KEYCHAIN_SERVICE = name
+      const k = await freshKeychain()
+      expect(k.keychainService()).toBe(name)
+      expect(k.isKeychainAvailable()).toBe(false)
+      expect(() => k.keychainStore('v')).toThrow(k.KeychainTestGuardError)
+      expect(() => k.keychainRetrieveStatus()).toThrow(k.KeychainTestGuardError)
+      expect(() => k.keychainDelete()).toThrow(k.KeychainTestGuardError)
+      expect(exec).not.toHaveBeenCalled()
+    },
+  )
+
   it('a blank override falls back to the default name (and stays guarded)', async () => {
     process.env.MARVEEN_KEYCHAIN_SERVICE = '   '
     const k = await freshKeychain()

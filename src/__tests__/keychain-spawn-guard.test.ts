@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 import { exec, execFile, execFileSync, execSync, spawn, spawnSync } from 'node:child_process'
-import { KEYCHAIN_GUARD_CODE } from './setup/keychain-spawn-guard.js'
+import { KEYCHAIN_GUARD_CODE, SECURITY_IN_SHELL } from './setup/keychain-spawn-guard.js'
 
 // Self-test for the global spawn guard (src/__tests__/setup/keychain-spawn-guard.ts,
 // card 31a6e54d). It uses the REAL node:child_process -- the same named ESM
@@ -77,6 +77,33 @@ describe('keychain spawn guard (global vitest setup)', () => {
     expectRefused(() => exec('cd / && security delete-generic-password -s com.marveen.vault', { env }))
     expectRefused(() => execFileSync('/bin/sh', ['-c', 'security add-generic-password -U -s com.marveen.vault -a master-key -w x'], { env }))
     expectRefused(() => spawnSync('security add-generic-password -U -s com.marveen.vault', { env, shell: true }))
+  })
+
+  // The fake is named by its full path here, so even a regressed guard could
+  // only reach the fake, never a `security` found on some other PATH entry.
+  it('shell forms with options BEFORE the sub-command are refused (security -q / -i ...)', () => {
+    expectRefused(() => execSync(`${fake} -q find-generic-password -s com.marveen.vault -w`, { env }))
+    expectRefused(() => exec(`cd / && ${fake} -i delete-generic-password -s com.marveen.vault`, { env }))
+    expectRefused(() => execFileSync('/bin/sh', ['-c', `${fake} -q add-generic-password -U -s com.marveen.vault -w x`], { env }))
+    expectRefused(() => execFileSync('/bin/sh', ['-ec', `true; ${fake} -q -v find-generic-password -s x`], { env }))
+    expectRefused(() => spawnSync(`${fake} -q find-generic-password -s com.marveen.vault`, { env, shell: true }))
+    expectRefused(() => spawnSync('cd', ['/', '&&', fake, '-q', 'find-generic-password'], { env, shell: true }))
+  })
+
+  it('a plain argv that merely MENTIONS a security sub-command is data, not refused', () => {
+    // not-security touches the marker: it really ran, nothing was refused.
+    execFileSync(join(dir, 'not-security'), ['commit', '-m', 'docs: security add-generic-password note'], { env })
+    expect(existsSync(marker)).toBe(true)
+    rmSync(marker, { force: true })
+    spawnSync(join(dir, 'not-security'), ['-c', 'security -q find-generic-password'], { env })
+    expect(existsSync(marker)).toBe(true)
+  })
+
+  it('the shell pattern itself: options allowed, a bare word or a flag-only call is not a sub-command', () => {
+    expect(SECURITY_IN_SHELL.test('security -q find-generic-password')).toBe(true)
+    expect(SECURITY_IN_SHELL.test('x=1; /usr/bin/security -i -v delete-generic-password')).toBe(true)
+    expect(SECURITY_IN_SHELL.test('echo security review')).toBe(false)
+    expect(SECURITY_IN_SHELL.test('docker --security-opt seccomp')).toBe(false)
   })
 
   it('the promisified execFile keeps its { stdout, stderr } shape and is guarded too', async () => {

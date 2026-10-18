@@ -34,6 +34,7 @@ set -u
 # tree as a test explicitly: keychain.ts then runs the file-key path (as on a
 # Linux runner) and refuses the live item before spawning `security`. It must
 # be this variable, not NODE_ENV=test -- case 12 runs with NODE_ENV=production.
+# The flag only helps a fresh dist; the stale-dist case is handled after the copy.
 export MARVEEN_KEYCHAIN_TEST_GUARD=1
 unset MARVEEN_KEYCHAIN_SERVICE
 
@@ -71,6 +72,35 @@ trap 'rm -rf "$root"' EXIT
 
 # Copy dist/ and the helper script.
 cp -r "$INSTALL_DIR/dist" "$root/dist"
+
+# KEYCHAIN ISOLATION, second and third layer (card 31a6e54d). The build check
+# above only asks whether dist/ EXISTS, so a dist built before the keychain.ts
+# test guard is copied as is -- and then the env flag above protects nothing:
+# the stale keychain.js runs /usr/bin/security against the live item. Belt: a
+# copied keychain.js without the guard is a hard failure, before any node step.
+# Braces: the copy is replaced by a stub anyway (as in
+# channels-interactive-key-guard.test.sh), so the vault takes the file-key path
+# in $root/store whatever the build looks like. Both, because each alone has
+# one way to regress silently.
+if ! grep -q 'KeychainTestGuardError' "$root/dist/web/keychain.js" 2>/dev/null; then
+  echo "FAIL: dist/web/keychain.js predates the keychain test guard (card 31a6e54d) -- run npm run build; no node step was run" >&2
+  exit 1
+fi
+cat > "$root/dist/web/keychain.js" <<'STUB'
+// Test stub (channels-custom-provider.test.sh): the host Keychain is never asked.
+export const DEFAULT_KEYCHAIN_SERVICE = 'com.marveen.vault'
+export const KEYCHAIN_SERVICE_ENV = 'MARVEEN_KEYCHAIN_SERVICE'
+export const KEYCHAIN_TEST_GUARD_ENV = 'MARVEEN_KEYCHAIN_TEST_GUARD'
+export class KeychainTestGuardError extends Error {}
+export function isKeychainTestRuntime() { return true }
+export function keychainService() { return 'com.marveen.vault' }
+export function isKeychainAvailable() { return false }
+export function keychainRetrieveStatus() { return { status: 'unavailable', value: null } }
+export function keychainRetrieve() { return null }
+export function keychainStore() { throw new Error('test: keychain stubbed') }
+export function keychainDelete() { return false }
+STUB
+
 mkdir -p "$root/scripts"
 cp "$REAL_HELPER" "$root/scripts/main-agent-custom-provider.mjs"
 

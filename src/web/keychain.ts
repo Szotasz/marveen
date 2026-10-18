@@ -55,12 +55,19 @@ export function keychainService(): string {
   return name
 }
 
+// Keychain service-name matching case-sensitivity is unmeasured, so in a test
+// process any spelling of the live name (COM.MARVEEN.VAULT, ...) counts as the
+// live item. Production compares nothing here: it always uses the name as given.
+function isLiveService(service: string): boolean {
+  return service.toLowerCase() === DEFAULT_KEYCHAIN_SERVICE
+}
+
 // The single choke point every `security` call goes through. In a test process
 // the live item is off limits, whatever the test meant to do (card 31a6e54d: a
 // full-suite run outside the sandbox could otherwise overwrite the live vault
 // master key via `add-generic-password -U`).
 function assertKeychainTargetAllowed(service: string): void {
-  if (isKeychainTestRuntime() && service === DEFAULT_KEYCHAIN_SERVICE) {
+  if (isKeychainTestRuntime() && isLiveService(service)) {
     throw new KeychainTestGuardError(
       `test process tried to reach the LIVE Keychain item (${DEFAULT_KEYCHAIN_SERVICE}) -- refused before spawning security. ` +
       `Mock ../web/keychain.js, or set ${KEYCHAIN_SERVICE_ENV} to a test-only name.`,
@@ -76,7 +83,7 @@ export function isKeychainAvailable(): boolean {
   // A test process addressing the live name runs the file-key path instead,
   // exactly as on a non-darwin CI runner: the suite never touches the Keychain.
   if (platform() !== 'darwin') return false
-  return !(isKeychainTestRuntime() && keychainService() === DEFAULT_KEYCHAIN_SERVICE)
+  return !(isKeychainTestRuntime() && isLiveService(keychainService()))
 }
 
 export type KeychainReadStatus = 'ok' | 'empty' | 'unavailable'

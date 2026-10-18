@@ -29,8 +29,15 @@ const cp = require('node:child_process') as Record<string, unknown>
 
 const STATE = Symbol.for('marveen.31a6e54d.keychainSpawnGuard')
 
-// A `security` subcommand inside a shell string, e.g. "security find-generic-password".
-const SECURITY_IN_SHELL = /(^|[\s;&|(`'"/])security\s+[a-z]+(-[a-z]+)+/
+// A `security` sub-command inside a SHELL string, options before it included:
+// "security find-generic-password", "security -q find-generic-password",
+// "cd / && /usr/bin/security -i delete-generic-password". Only ever applied to
+// text a shell will parse (see judgeFileCall/judgeCommandCall): a plain argv
+// such as `git commit -m "... security add-generic-password ..."` is data, not
+// a command, and must not be refused.
+export const SECURITY_IN_SHELL = /(^|[\s;&|(`'"/])security(\s+-\S+)*\s+[a-z]+(-[a-z]+)+/
+
+const SHELLS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh'])
 
 export const KEYCHAIN_GUARD_CODE = 'EKEYCHAINGUARD'
 
@@ -51,18 +58,32 @@ function argvText(args: unknown[]): string {
   return args.filter((a): a is string => typeof a === 'string').join(' ')
 }
 
+// `sh -c "..."`, `bash -lc "..."`: a -c anywhere in a short-option cluster.
+function hasCommandFlag(argv: unknown[]): boolean {
+  return argv.some((a) => typeof a === 'string' && /^-[a-zA-Z]*c[a-zA-Z]*$/.test(a))
+}
+
 // file + argv forms: execFile, execFileSync, spawn, spawnSync.
 function judgeFileCall(file: unknown, rest: unknown[]): void {
   const argv = Array.isArray(rest[0]) ? (rest[0] as unknown[]) : []
+  const opts = (Array.isArray(rest[0]) ? rest[1] : rest[0]) as { shell?: unknown } | undefined
   if (isSecurityFile(file)) refuse(String(file))
-  // `sh -c "security ..."`, spawn(cmd, { shell: true }) and the like.
-  if (SECURITY_IN_SHELL.test([typeof file === 'string' ? file : '', argvText(argv)].join(' '))) refuse('via a shell')
+  const fileText = typeof file === 'string' ? file : ''
+  // spawn(cmd, args, { shell: true }): node hands `cmd args` to /bin/sh.
+  if (opts && typeof opts === 'object' && opts.shell) {
+    if (SECURITY_IN_SHELL.test([fileText, argvText(argv)].join(' '))) refuse('via shell:true')
+    return
+  }
+  // execFile('/bin/sh', ['-c', 'security ...']): the argv IS a shell script.
+  if (SHELLS.has(basename(fileText.trim())) && hasCommandFlag(argv) && SECURITY_IN_SHELL.test(argvText(argv))) {
+    refuse('via a shell -c')
+  }
 }
 
-// command-string forms: exec, execSync.
+// command-string forms: exec, execSync (always run by a shell).
 function judgeCommandCall(command: unknown): void {
   if (typeof command !== 'string') return
-  if (isSecurityFile(command.split(/\s+/)[0]) || SECURITY_IN_SHELL.test(command)) refuse('via a shell command')
+  if (isSecurityFile(command.trim().split(/\s+/)[0]) || SECURITY_IN_SHELL.test(command)) refuse('via a shell command')
 }
 
 type Fn = ((...a: unknown[]) => unknown) & { [promisify.custom]?: (...a: unknown[]) => unknown }
