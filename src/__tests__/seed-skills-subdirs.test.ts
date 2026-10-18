@@ -47,6 +47,13 @@ function runSkillLoop(src: string, seedDir: string, skillsDir: string, file: str
   execFileSync('bash', [file], { encoding: 'utf-8' })
 }
 
+/** git init + commit everything currently under dir (the seed tree as shipped). */
+function trackAll(dir: string): void {
+  for (const a of [['init', '-q'], ['config', 'user.email', 'test@example.invalid'], ['config', 'user.name', 'test'], ['add', '-A'], ['commit', '-q', '-m', 'seed']]) {
+    execFileSync('git', ['-C', dir, ...a], { stdio: 'pipe' })
+  }
+}
+
 const LOOPS: Array<[string, string]> = [
   ['install-linux.sh', LINUX],
   ['install-macos.sh', MACOS],
@@ -55,15 +62,20 @@ const LOOPS: Array<[string, string]> = [
 
 describe('a fresh skill seed ships the skill subdirs (SEEDSKILLSUB1018)', () => {
   for (const [label, src] of LOOPS) {
-    it(`${label}: scripts/ arrives verbatim, mode bits and dotfiles included`, () => {
+    it(`${label}: the TRACKED scripts/ files arrive verbatim with their mode bits; untracked and ignored ones do not`, () => {
       const base = mkdtempSync(join(tmpdir(), 'seedskill-'))
       try {
         const skill = join(base, 'seed', 'demo')
-        mkdirSync(join(skill, 'scripts'), { recursive: true })
+        mkdirSync(join(skill, 'scripts', '__pycache__'), { recursive: true })
         writeFileSync(join(skill, 'SKILL.md'), 'run scripts/tool.py {{MAIN_AGENT_ID}}\n')
         writeFileSync(join(skill, 'scripts', 'tool.py'), 'print("{{MAIN_AGENT_ID}}")\n')
         chmodSync(join(skill, 'scripts', 'tool.py'), 0o755)
-        writeFileSync(join(skill, 'scripts', '.gitignore'), 'local.json\n')
+        writeFileSync(join(skill, 'scripts', '.gitignore'), 'mail_rules.json\n__pycache__/\n')
+        trackAll(join(base, 'seed'))
+        // After the commit: a dirty checkout's secrets, ignored and untracked.
+        writeFileSync(join(skill, 'scripts', 'mail_rules.json'), '{"secret":"x"}\n')
+        writeFileSync(join(skill, 'scripts', '__pycache__', 'tool.cpython-312.pyc'), 'x')
+        writeFileSync(join(skill, 'scripts', 'notes-untracked.txt'), 'local\n')
         const skills = join(base, 'skills')
         mkdirSync(skills)
         runSkillLoop(src, join(base, 'seed'), skills, join(base, 'probe.sh'))
@@ -73,6 +85,9 @@ describe('a fresh skill seed ships the skill subdirs (SEEDSKILLSUB1018)', () => 
         expect(statSync(tool).mode & 0o777).toBe(0o755)
         expect(existsSync(join(skills, 'demo', 'scripts', '.gitignore'))).toBe(true)
         expect(existsSync(join(skills, 'demo', 'scripts', 'scripts'))).toBe(false) // no nesting
+        expect(existsSync(join(skills, 'demo', 'scripts', 'mail_rules.json'))).toBe(false)
+        expect(existsSync(join(skills, 'demo', 'scripts', '__pycache__'))).toBe(false)
+        expect(existsSync(join(skills, 'demo', 'scripts', 'notes-untracked.txt'))).toBe(false)
       } finally {
         rmSync(base, { recursive: true, force: true })
       }
@@ -149,6 +164,25 @@ describe('the update refresh brings a skill subdir to an existing install (SEEDS
       const tool = join(f.live, 'scripts', 'tool.py')
       expect(readFileSync(tool, 'utf-8')).toBe('print(1)\n')
       expect(statSync(tool).mode & 0o777).toBe(0o755)
+    } finally {
+      rmSync(f.base, { recursive: true, force: true })
+    }
+  })
+
+  it('the refresh adds TRACKED subdir files only: an untracked or ignored file in the install never reaches the target', () => {
+    const f = makeFixture()
+    try {
+      const scripts = join(f.install, 'seed-skills', 'demo', 'scripts')
+      writeFileSync(join(scripts, '.gitignore'), 'mail_rules.json\n')
+      git(f.install, ['add', '-A']); git(f.install, ['commit', '-q', '-m', 'v3'])
+      writeFileSync(join(scripts, 'mail_rules.json'), '{"secret":"x"}\n')   // ignored
+      writeFileSync(join(scripts, 'stray.py'), 'print(2)\n')                // untracked
+      writeFileSync(join(f.live, 'SKILL.md'), 'v1 inline\n')
+      runRefresh(f)
+      expect(existsSync(join(f.live, 'scripts', 'tool.py'))).toBe(true)
+      expect(existsSync(join(f.live, 'scripts', '.gitignore'))).toBe(true)   // tracked dotfile: same set as the install
+      expect(existsSync(join(f.live, 'scripts', 'mail_rules.json'))).toBe(false)
+      expect(existsSync(join(f.live, 'scripts', 'stray.py'))).toBe(false)
     } finally {
       rmSync(f.base, { recursive: true, force: true })
     }
