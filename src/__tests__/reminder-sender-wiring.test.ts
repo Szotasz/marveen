@@ -3,13 +3,15 @@
  * dashboard (src/web.ts): a module that is imported but never started, or a
  * route that is never asked, would make every reminder silently wait forever.
  * The sender must not start in WEB_ONLY (a staging copy never sends), and the
- * shutdown clears its interval like the other runners.
+ * shutdown clears its interval like the other runners. The live sender runs the
+ * real allowlist gate at the moment of sending (teszter-2 108204), not a stub.
  */
 import { describe, it, expect } from 'vitest'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const webTs = readFileSync(join(__dirname, '..', 'web.ts'), 'utf-8')
+const senderTs = readFileSync(join(__dirname, '..', 'web', 'reminder-sender.ts'), 'utf-8')
 
 describe('src/web.ts wiring of the reminders', () => {
   it('imports the route and the sender', () => {
@@ -24,6 +26,14 @@ describe('src/web.ts wiring of the reminders', () => {
   it('starts the sender only outside WEB_ONLY, and clears it on shutdown', () => {
     expect(webTs).toMatch(/const reminderSenderInterval = webOnly \? undefined : startReminderSender\(\)/)
     expect(webTs).toMatch(/if \(reminderSenderInterval\) clearInterval\(reminderSenderInterval\)/)
+  })
+
+  it('the live sender deps pass the real allowlist gate (checkReminderRecipient) for the send-time check', () => {
+    const start = senderTs.indexOf('const liveDeps: ReminderSenderDeps = {')
+    expect(start).toBeGreaterThan(-1)
+    const live = senderTs.slice(start, senderTs.indexOf('\n}\n', start))
+    expect(live).toContain('send: liveReminderSend,')
+    expect(live).toContain('recipientCheck: checkReminderRecipient,')
   })
 
   it('CONTROL: the same search sees a neighbour runner (the file is the real one)', () => {

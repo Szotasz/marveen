@@ -2,7 +2,8 @@
  * fb79dc1f: the reminder sender (src/web/reminder-sender.ts). One tick sends the
  * due reminders on the agent's bot, at most once, inside the recipient's window;
  * success is 'sent' + the Telegram message id and a copy to the agent; a failure
- * is 'failed' + an alert to the main agent; a claim a crash left behind becomes
+ * is 'failed' + an alert to the main agent; a chat taken off the bot's allowlist
+ * since the reminder was made gets nothing (failed, not_allowlisted); a claim a crash left behind becomes
  * 'failed' and is never sent again; a broken windows config sends nothing. The
  * Bot API is mocked (an injected send, and fetch for the live send path).
  */
@@ -23,7 +24,8 @@ vi.mock('../logger.js', () => ({
 }))
 
 const { initDatabase, createReminder, getReminder, getDb, claimReminder, setReminderStatusByHand } = await import('../db.js')
-const { reminderTick, dailyDigest, liveReminderSend, reminderBotToken, _resetReminderSenderForTest, REMINDER_CLAIM_STALE_SEC } = await import('../web/reminder-sender.js')
+const { reminderTick, dailyDigest, liveReminderSend, reminderBotToken, checkReminderRecipient, _resetReminderSenderForTest, REMINDER_CLAIM_STALE_SEC } = await import('../web/reminder-sender.js')
+const { logger } = await import('../logger.js')
 import type { ReminderSenderDeps, WindowsLoad } from '../web/reminder-sender.js'
 import type { ReminderWindowsConfig } from '../reminder-window.js'
 
@@ -56,6 +58,8 @@ function deps(over: Partial<ReminderSenderDeps> = {}) {
     alertMain: (t) => { calls.alerts.push(t) },
     copyToAgent: (a, t) => { calls.copies.push([a, t]) },
     digestMain: (t) => { calls.digests.push(t) },
+    // the allowlist gate is measured in its own cases below; elsewhere every chat may be written to
+    recipientCheck: () => ({ ok: true }),
     // the install's zone (APP_TZ in production); pinned so the suite does not depend on the host's zone
     tz: 'Europe/Budapest',
     ...over,
@@ -117,6 +121,45 @@ describe('reminderTick', () => {
     // failed is final: no retry by itself
     await reminderTick(d)
     expect(getReminder(r.id)!.attempts).toBe(1)
+  })
+
+  it('a chat taken off the allowlist since the reminder was made: nothing is sent to it, the row fails with the reason, a log line and the alert', async () => {
+    const gone = reminder()
+    const stays = reminder({ recipient_chat_id: OWNER_CHAT })
+    const { d, calls } = deps({
+      recipientCheck: (agent, chat) => chat === STAFF_CHAT
+        ? { ok: false, status: 403, error: `recipient_chat_id is not on the ${agent} agent's allowlist (access.json allowFrom or groups)` }
+        : { ok: true },
+    })
+    const out = await reminderTick(d)
+    expect(out).toMatchObject({ sent: 1, failed: 1 })
+    // the control: the chat still on the list gets its reminder in the same tick
+    expect(calls.send).toEqual([['area-agent', OWNER_CHAT, getReminder(stays.id)!.text]])
+    const row = getReminder(gone.id)!
+    expect(row.status).toBe('failed')
+    expect(row.error).toMatch(/^not_allowlisted: recipient_chat_id is not on the area-agent agent's allowlist/)
+    expect(vi.mocked(logger.warn)).toHaveBeenCalledWith(expect.objectContaining({ id: gone.id, err: expect.stringMatching(/^not_allowlisted: /) }), 'reminder-sender: send failed')
+    expect(calls.alerts).toHaveLength(1)
+    expect(calls.alerts[0]).toContain('[EMLÉKEZTETŐ HIBA]')
+    expect(calls.alerts[0]).toContain('not_allowlisted')
+    // failed is final: the next tick does not send it either
+    await reminderTick(d)
+    expect(calls.send).toHaveLength(1)
+  })
+
+  it('the real gate at send time: made while the chat was on the bot\'s access.json, taken off before its moment: not sent', async () => {
+    const dir = join(H.root, 'agents', 'area-agent', '.claude', 'channels', 'telegram')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, '.env'), 'TELEGRAM_BOT_TOKEN=222:area-token\n')
+    writeFileSync(join(dir, 'access.json'), JSON.stringify({ dmPolicy: 'allowlist', allowFrom: [STAFF_CHAT], groups: {} }))
+    expect(checkReminderRecipient('area-agent', STAFF_CHAT)).toEqual({ ok: true })
+    const r = reminder()
+    writeFileSync(join(dir, 'access.json'), JSON.stringify({ dmPolicy: 'allowlist', allowFrom: [], groups: {} }))
+    const { d, calls } = deps({ recipientCheck: checkReminderRecipient })
+    const out = await reminderTick(d)
+    expect(out).toMatchObject({ sent: 0, failed: 1 })
+    expect(calls.send).toEqual([])
+    expect(getReminder(r.id)!.error).toMatch(/^not_allowlisted: /)
   })
 
   it("the main agent's own failed reminder gets ONE message (the alert), not two", async () => {

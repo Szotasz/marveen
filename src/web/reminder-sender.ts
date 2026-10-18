@@ -8,7 +8,8 @@
 // broken config sends nothing and alerts the main agent); (3) each due reminder
 // is checked against its window once more (the config may have changed since
 // it was planned) and moved if the moment is not allowed; (4) it is claimed
-// ('pending' -> 'sending', at most once), sent, and marked 'sent' with the
+// ('pending' -> 'sending', at most once), its chat is checked against the bot's
+// allowlist once more (a chat taken off it since gets nothing), sent, and marked 'sent' with the
 // Telegram message id, or 'failed' with the error and an alert to the main
 // agent. The reminder's agent gets a copy in its inbox either way.
 import { existsSync, readFileSync } from 'node:fs'
@@ -66,6 +67,8 @@ export interface ReminderSenderDeps {
   copyToAgent: (agentId: string, text: string) => void
   /** The daily check's message to the main agent (its inbox); not an alert. */
   digestMain: (text: string) => void
+  /** May the agent's bot send to this chat (checkReminderRecipient in production)? Run once more at the moment of sending. */
+  recipientCheck: (agentId: string, chatId: string) => RecipientCheck
   /** The zone of the daily check and of the times in the messages; the install's APP_TZ when absent. */
   tz?: string
 }
@@ -133,6 +136,10 @@ export async function reminderTick(deps: ReminderSenderDeps): Promise<ReminderTi
     }
     if (!claimReminder(r.id, nowSec)) continue
     try {
+      // the create-time gate does not see a chat taken off the bot's allowlist since (or a row from before the gate):
+      // it gets nothing, and the row fails with the reason like any other failure (fb79dc1f, teszter-2 108204)
+      const recipient = deps.recipientCheck(r.agent_id, r.recipient_chat_id)
+      if (!recipient.ok) throw new Error(`not_allowlisted: ${recipient.error}`)
       const messageId = await deps.send(r.agent_id, r.recipient_chat_id, r.text)
       markReminderSent(r.id, Math.floor(deps.nowMs() / 1000), messageId)
       out.sent++
@@ -256,6 +263,7 @@ const liveDeps: ReminderSenderDeps = {
   alertMain: (text) => postSystemMessage(MAIN_AGENT_ID, text),
   copyToAgent: (agentId, text) => postSystemMessage(agentId, text),
   digestMain: (text) => postSystemMessage(MAIN_AGENT_ID, text),
+  recipientCheck: checkReminderRecipient,
 }
 
 export function startReminderSender(deps: ReminderSenderDeps = liveDeps): NodeJS.Timeout {
