@@ -173,10 +173,10 @@ classify_mcp_plugin_row() {
 sh_single_quote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 
 # SECSZIVEK1007: the resolved model must have the shape of a model id (the same
-# allowlist as MODEL_ID_RE in src/model-id.ts: letters, digits, . _ : / - [ ],
+# allowlist as MODEL_ID_RE in src/model-id.ts: letters, digits, . _ : / - [ ] +,
 # 1-128 long). Any other value is named in the failure log (not echoed) and
 # left UNSET, so the launch runs the CLI default instead of a broken command.
-MODEL_ID_SHAPE='^[][A-Za-z0-9._:/-]{1,128}$'
+MODEL_ID_SHAPE='^[][A-Za-z0-9._:/+-]{1,128}$'
 resolve_main_model() {
   local _m
   _m="$(_resolve_main_model_raw)"
@@ -185,7 +185,7 @@ resolve_main_model() {
   # (model-id-shape-parity.test.ts compares the two under C).
   local LC_ALL=C
   if [ -n "$_m" ] && ! [[ "$_m" =~ $MODEL_ID_SHAPE ]]; then
-    { echo "resolve_main_model: the configured main-agent model is not a valid model id (allowed: letters, digits, . _ : / - [ ], 1-128); main-agent model left UNSET" >>"$INSTALL_DIR/store/channels-failures.log"; } 2>/dev/null || true
+    { echo "resolve_main_model: the configured main-agent model is not a valid model id (allowed: letters, digits, . _ : / - [ ] +, 1-128); main-agent model left UNSET" >>"$INSTALL_DIR/store/channels-failures.log"; } 2>/dev/null || true
     return 0
   fi
   printf '%s' "$_m"
@@ -331,6 +331,21 @@ fi
 # (fail-safe: never restart on a broken instrument).
 pane_dead_detected() {
   "$TMUX" list-panes -t "=$1:" -F '#{pane_dead}' 2>/dev/null | grep -q '^1$'
+}
+
+# #1878 (3): the exit status of a dead pane (claude's own exit code), digits only
+# -- never pane text. Empty when tmux cannot say.
+pane_dead_exit_status() {
+  _pds="$("$TMUX" list-panes -t "=$1:" -F '#{pane_dead_status}' 2>/dev/null | head -1)"
+  case "$_pds" in ''|*[!0-9]*) _pds="" ;; esac
+  printf '%s' "$_pds"
+}
+
+# #1878 (3): the rapid-exit line names WHY the wait loop ended (a fixed reason
+# category) and, for a dead pane, its exit status. It keeps the "rapid-exit
+# after" prefix the backoff counter greps for.
+rapid_exit_log_line() {
+  printf '%s rapid-exit after %ss reason=%s%s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" "$2" "${3:+ pane_status=$3}"
 }
 
 # Test seam: `channels.sh --pane-dead-check <session>` prints dead|alive and
@@ -1357,8 +1372,12 @@ _tmux_set_auth_globals() {
   # Same for the auto-updater kill switch. A plain `export` above only reaches
   # sessions that inherit THIS shell, i.e. only when channels.sh happened to
   # create the tmux server first; the dashboard's worker sessions often win that
-  # race. -g makes launch order irrelevant, which matters here because it takes
-  # exactly two self-updating sessions to wipe the shared global install.
+  # race. -g covers every session created AFTER this line, which matters here
+  # because it takes exactly two self-updating sessions to wipe the shared
+  # global install. It does NOT reach a session that already exists: after a
+  # reboot the worker sessions usually predate it, so agent-worker.ts sets the
+  # variable in its own launch line (WORKERAUTOUPDATE1011) instead of relying
+  # on this.
   $TMUX set-environment -g DISABLE_AUTOUPDATER 1 2>/dev/null || true
 }
 $TMUX start-server 2>/dev/null || true
@@ -1374,6 +1393,9 @@ _tmux_set_auth_globals
 # "evaluated in the launched shell, never in argv" rule as the $(cat) in
 # CFG_ENV above. CFG_ENV still comes AFTER it in the pane command, so a mode
 # that exports its own token keeps overriding this one, as it did with -e.
+# Scope: this removes the secret from the tmux SERVER's command line (it lives
+# as long as the server). Layer 2's `set-environment -g NAME value` still puts it
+# on a short-lived tmux CLIENT argv, which exits at once and is not the server.
 # The file is rewritten on every launch; store/ is gitignored.
 AUTH_PANE_ENV=""
 _auth_file="$INSTALL_DIR/store/.channels-pane-auth"
@@ -1384,19 +1406,50 @@ if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] || [ -n "${ANTHROPIC_API_KEY:-}" ]; the
   # wider-mode file or through a symlink planted at that path (Geri, #1647
   # review: `umask 077; : >` only applies to a file it CREATES, and `>` follows
   # a symlink). mv replaces the name itself, not a symlink's target.
-  _auth_tmp="$(mktemp "$_auth_file.XXXXXX")" || _auth_tmp=""
-  if [ -n "$_auth_tmp" ]; then
-    {
-      [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && printf 'export CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$(_q "$CLAUDE_CODE_OAUTH_TOKEN")"
-      [ -n "${ANTHROPIC_API_KEY:-}" ] && printf 'export ANTHROPIC_API_KEY=%s\n' "$(_q "$ANTHROPIC_API_KEY")"
-      true
-    } > "$_auth_tmp"
-    if mv -f "$_auth_tmp" "$_auth_file"; then
+  # Every failure below is NAMED (store/channels-failures.log + stderr), never
+  # silent: without the file the pane starts with no token whenever the dashboard
+  # worker created the tmux server first, and the old `-e` path had no such
+  # failure mode. A failed or empty write is never renamed over the final name.
+  # The launch still proceeds: layer 2 (set-environment -g) is the fallback.
+  _auth_fail() {
+    local _m
+    _m="$(date '+%Y-%m-%d %H:%M:%S') channels.sh: WARN pane auth file NOT written ($1): the channels pane gets the token only through the tmux server global env"
+    echo "$_m" >> "$INSTALL_DIR/store/channels-failures.log" 2>/dev/null || true
+    echo "$_m" >&2
+  }
+  # A launch killed between mktemp and mv leaves a 0600 temp file that holds the
+  # token: sweep those before writing a new one. Only STALE ones (older than a
+  # minute): a concurrent launch may be between its own mktemp and mv right now,
+  # and sweeping its live temp file would make its next write create a fresh
+  # file (see the umask below) or rename nothing.
+  find "$(dirname "$_auth_file")" -maxdepth 1 -type f -name "$(basename "$_auth_file").??????" -mmin +1 -exec rm -f {} + 2>/dev/null || true
+  _auth_tmp="$(mktemp "$_auth_file.XXXXXX" 2>/dev/null)" || _auth_tmp=""
+  if [ -z "$_auth_tmp" ]; then
+    _auth_fail "mktemp failed"
+  else
+    # The writes run under umask 077: should the temp file vanish between mktemp
+    # and here, `>>` creates a new one, and that one must be 0600 too.
+    if (
+      umask 077
+      if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+        printf 'export CLAUDE_CODE_OAUTH_TOKEN=%s\n' "$(_q "$CLAUDE_CODE_OAUTH_TOKEN")" >> "$_auth_tmp" || exit 1
+      fi
+      if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+        printf 'export ANTHROPIC_API_KEY=%s\n' "$(_q "$ANTHROPIC_API_KEY")" >> "$_auth_tmp" || exit 1
+      fi
+    ) 2>/dev/null; then _auth_ok=1; else _auth_ok=0; fi
+    if [ "$_auth_ok" != 1 ] || [ ! -s "$_auth_tmp" ]; then
+      _auth_fail "write failed"
+      rm -f "$_auth_tmp" 2>/dev/null || true
+    elif mv -f "$_auth_tmp" "$_auth_file"; then
       AUTH_PANE_ENV=". $(sh_single_quote "$_auth_file") && "
     else
+      _auth_fail "rename failed"
       rm -f "$_auth_tmp" 2>/dev/null || true
     fi
   fi
+  unset -f _auth_fail
+  unset _auth_ok
   unset -f _q
   unset _auth_tmp
 else
@@ -1578,7 +1631,9 @@ for i in 1 2 3 4 5 6 7 8 9 10 11 12; do
       sleep 1
       continue
       ;;
-    *"Listening for channel messages"*)
+    # 2.1.296 dropped "channel" and the colon from the ready banner
+    # ("Listening for messages from <x>"); match both wordings.
+    *"Listening for channel messages"*|*"Listening for messages from"*)
       break
       ;;
   esac
@@ -1589,7 +1644,17 @@ unset _eperm_restarted
 # longer uses Remote Control.)
 _bot_name="${BOT_NAME:-${MAIN_AGENT_ID:-marveen}}"
 sleep 1
-$TMUX send-keys -t "=$SESSION:" "/rename ${_bot_name}" Enter
+# #1954: text and Enter go separately, and the Enter is repeated (bounded) while
+# the input box still holds the command -- a one-shot send whose Enter was lost
+# parked `/rename` in the box for an hour after a reboot. See the library.
+# If the library cannot be loaded, the old one-shot send still names the session.
+# shellcheck source=lib/main-rename.sh
+if . "$INSTALL_DIR/scripts/lib/main-rename.sh"; then
+  main_rename_send "$TMUX" "=$SESSION:" "$_bot_name" || true
+else
+  echo "$(date '+%F %T') channels.sh: scripts/lib/main-rename.sh could not be loaded -- one-shot /rename" >&2
+  $TMUX send-keys -t "=$SESSION:" "/rename ${_bot_name}" Enter
+fi
 unset _bot_name
 
 # Reset the keep-alive watchdog baseline so a session that was just restarted
@@ -1863,6 +1928,10 @@ PLUGIN_DEAD_SINCE=0
 # 2026-08-04: channels.sh logged "exiting for service-manager restart", exited 0,
 # and the unit stayed inactive/dead for the next ten minutes.
 RESTART_REQUESTED=0
+# Why the wait loop below ended (#1878 item 3): session-gone (the loop condition),
+# pane-dead, plugin-died or plugin-never-started.
+EXIT_REASON="session-gone"
+PANE_EXIT_STATUS=""
 
 # Producer-side respawn breadcrumb (SOAKRESPAWN819). The watchdog WARNs below
 # go to stderr, which under systemd lands ONLY in journald -- invisible to
@@ -1922,6 +1991,8 @@ while $TMUX has-session -t "=$SESSION:" 2>/dev/null; do
   if pane_dead_detected "$SESSION"; then
     echo "WARN: $SESSION pane is dead (claude exited, pane kept by remain-on-exit) -- exiting for service-manager restart" >&2
     respawn_log "pane-dead: claude process of $SESSION exited, pane kept by remain-on-exit -- exiting for service-manager restart"
+    EXIT_REASON="pane-dead"
+    PANE_EXIT_STATUS="$(pane_dead_exit_status "$SESSION")"
     break
   fi
 
@@ -2007,6 +2078,7 @@ while $TMUX has-session -t "=$SESSION:" 2>/dev/null; do
       echo "WARN: $CHANNEL_PROVIDER plugin dead for $((NOW - PLUGIN_DEAD_SINCE))s -- exiting for service-manager restart" >&2
       respawn_log "died-after-up: $CHANNEL_PROVIDER plugin dead for $((NOW - PLUGIN_DEAD_SINCE))s -- exiting for service-manager restart -- mcp-log tail: $(mcp_plugin_log_tail)"
       RESTART_REQUESTED=1
+      EXIT_REASON="plugin-died"
       break
     fi
   else
@@ -2021,6 +2093,7 @@ while $TMUX has-session -t "=$SESSION:" 2>/dev/null; do
       echo "WARN: $CHANNEL_PROVIDER plugin never started within ${PLUGIN_NEVER_STARTED_BUDGET}s -- exiting for service-manager restart (consecutive: $_next_streak, next budget: $(never_started_budget "$_next_streak")s)" >&2
       respawn_log "never-started: $CHANNEL_PROVIDER plugin never started within ${PLUGIN_NEVER_STARTED_BUDGET}s (consecutive: $_next_streak, next budget: $(never_started_budget "$_next_streak")s)"
       RESTART_REQUESTED=1
+      EXIT_REASON="plugin-never-started"
       break
     fi
   fi
@@ -2029,7 +2102,7 @@ done
 ELAPSED=$(( $(date +%s) - START_TS ))
 if [ "$ELAPSED" -lt 30 ]; then
   echo "WARN: channels session exited after ${ELAPSED}s (likely config error). Check logs." >&2
-  echo "$(date '+%Y-%m-%d %H:%M:%S') rapid-exit after ${ELAPSED}s" >> "$INSTALL_DIR/store/channels-failures.log"
+  rapid_exit_log_line "$ELAPSED" "$EXIT_REASON" "$PANE_EXIT_STATUS" >> "$INSTALL_DIR/store/channels-failures.log"
   # c5296a52: count the RAPID-EXIT lines, not every line in the file. The same log carries
   # WARN lines from a normal startup (isolated-config notes, failed guard POSTs): on
   # 2026-09-18 the file held 2 lines, BOTH warnings and zero rapid-exits, so the first real

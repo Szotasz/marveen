@@ -30,6 +30,22 @@ set -u
 INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 STORE="$INSTALL_DIR/store"
 KEEPALIVE_FILE="$STORE/.channel-keepalive"
+# ISSUE1891 (b): the probe's OWN stamps. store/.channel-keepalive cannot tell
+# the dashboard that this probe works: channels.sh touches it whenever it starts
+# the session and inbound traffic warms it, so the channel-monitor's loop
+# breaker could read either as "the producer is back" and let the next respawn
+# through. Two stamps, each with one meaning (content: the epoch; the monitor
+# reads the mtime):
+#   - RUN_STAMP, written HERE at the start of every run, whatever it then finds:
+#     "the job runs". The monitor uses it only to word its alert ("the job does
+#     not run" vs "it runs but does not produce").
+#   - PRODUCED_STAMP, written only next to the keepalive touch below: "the
+#     probe produced". The breaker trusts this one. A run that hangs and is
+#     killed by the self-timeout further down, or ends early, writes RUN_STAMP
+#     but not this -- the 2026-09-23 shape the breaker exists for.
+RUN_STAMP="$STORE/.channel-keepalive-probe"
+PRODUCED_STAMP="$STORE/.channel-keepalive-produced"
+date +%s > "$RUN_STAMP" 2>/dev/null || true
 LOG_TAG="channel-keepalive-probe"
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [$LOG_TAG] $*"; }
@@ -53,22 +69,31 @@ disown "$PROBE_WATCHDOG_PID" 2>/dev/null
 # On a normal exit, stop the watchdog AND its sleep child.
 trap 'pkill -P "$PROBE_WATCHDOG_PID" 2>/dev/null; kill "$PROBE_WATCHDOG_PID" 2>/dev/null' EXIT
 
-# Whether a dedicated channel-watchdog recovery owner is actually installed on
-# THIS host. The probe declines to recover a dead pipe on purpose -- but only a
-# real, installed watchdog legitimately "owns recovery". The systemd
-# channel-watchdog timer has NO launchd twin, so on macOS it is simply absent
-# (CHANWDOG818): claiming an owner that isn't there turns a genuine outage into
-# silence. Fail loud instead when nothing owns recovery.
-channel_watchdog_installed() {
+# Whether a dedicated recovery owner is actually installed on THIS host. The
+# probe declines to recover a dead pipe on purpose -- but only a real, installed
+# unit legitimately "owns recovery". The systemd channel-watchdog timer has NO
+# launchd twin, so on macOS it is simply absent (CHANWDOG818): claiming an owner
+# that isn't there turns a genuine outage into silence. Fail loud instead when
+# nothing owns recovery.
+#
+# More than one unit can hold that role. channel-outage-alarm is the macOS
+# launchd owner (180s timer, one restart per outage plus a direct Bot API alert
+# to the owner); recognising only the systemd name made the probe log a FALSE
+# "no recovery unit" WARN on a host that in fact had one. The label is matched
+# anchored at end of line -- launchctl prints it last -- so a longer name that
+# merely starts with an accepted one cannot pass as a match.
+recovery_owner_installed() {
   if [ "$(uname -s)" = "Darwin" ]; then
-    launchctl list 2>/dev/null | grep -q 'com\.marveen\.channel-watchdog'
+    launchctl list 2>/dev/null \
+      | grep -qE '(com\.marveen\.channel-watchdog|com\.marveen\.channel-outage-alarm)$'
   else
     # The systemd units on a renamed install are agent-prefixed
     # (<agent>-channel-watchdog.timer, the way <agent>-channels.service is);
     # only a stock install has the bare name. Checking the bare name alone
     # reported "no recovery unit installed" on every renamed host that HAD one.
     systemctl --user is-enabled "${MAIN_AGENT_ID}-channel-watchdog.timer" >/dev/null 2>&1 ||
-      systemctl --user is-enabled channel-watchdog.timer >/dev/null 2>&1
+      systemctl --user is-enabled channel-watchdog.timer >/dev/null 2>&1 ||
+      systemctl --user is-enabled channel-outage-alarm.timer >/dev/null 2>&1
   fi
 }
 
@@ -159,10 +184,10 @@ done < <(ps -axo pid,command 2>/dev/null | grep -E "$RUNTIME_TOKEN_RX" | grep -F
 if [ "$alive" -ne 1 ]; then
   # Do NOT advance the keepalive: a dead pipe must stay visibly stale so a real
   # recovery owner can act. But only claim an owner that actually exists here.
-  if channel_watchdog_installed; then
-    log "no live $CHANNEL_PROVIDER poller under $SESSION (pane $pane_pid) -- pipe may be down; not touching (channel-watchdog owns recovery)"
+  if recovery_owner_installed; then
+    log "no live $CHANNEL_PROVIDER poller under $SESSION (pane $pane_pid) -- pipe may be down; not touching (an installed recovery unit owns it)"
   else
-    log "WARN no live $CHANNEL_PROVIDER poller under $SESSION (pane $pane_pid) -- pipe may be down AND no channel-watchdog recovery unit is installed on this host (CHANWDOG818); automatic recovery relies only on process-death KeepAlive + the dashboard channel-monitor, so a FROZEN session while the dashboard is also down is NOT auto-recovered"
+    log "WARN no live $CHANNEL_PROVIDER poller under $SESSION (pane $pane_pid) -- pipe may be down AND no recovery unit (channel-watchdog / channel-outage-alarm) is installed on this host (CHANWDOG818); automatic recovery relies only on process-death KeepAlive + the dashboard channel-monitor, so a FROZEN session while the dashboard is also down is NOT auto-recovered"
   fi
   exit 0
 fi
@@ -173,4 +198,5 @@ if [ -f "$KEEPALIVE_FILE" ]; then
 else
   date +%s > "$KEEPALIVE_FILE"
 fi
+date +%s > "$PRODUCED_STAMP" 2>/dev/null || true
 exit 0

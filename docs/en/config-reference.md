@@ -23,6 +23,7 @@ These files are managed by the dashboard and change at runtime. They are not che
 | `store/claudeclaw.db` | not directly | SQLite database -- memory, kanban, messages, token log, etc. |
 | `store/config-overrides.json` | dashboard UI | Settings-page overrides (plain values only, never contains secrets) |
 | `store/update.pid` | automatic | Update process PID file (concurrency lock) |
+| `store/telegram-topics.json` | `/topic new <name>` (Telegram) | The named topics of the main chat: `{ "chatId", "topics": { "<name>": <message_thread_id> } }` (0600); written only while `TELEGRAM_TOPICS_ENABLED` is on |
 
 ### Dashboard language
 
@@ -148,6 +149,7 @@ Every dashboard-editable setting is a registry entry with the following fields:
 | `DASHBOARD_PUBLIC_URL` | string | (empty) | Publicly accessible URL of the dashboard | yes |
 | `OLLAMA_URL` | string | `http://localhost:11434` | Ollama API base URL | yes |
 | `MEMORY_IMPORT_CATEGORIZE_MODEL` | string | (empty) | Ollama model that tiers memories on import (override); empty = auto-detect an installed `gemma4`, else all warm | yes |
+| `MEMORY_CONTENT_FILTER_STRICT_COMMANDS` | boolean | `0` (off) | Strict command-syntax group of the memory content filter (curl http(s), bash -c, eval(, exec(, import subprocess, rm -rf) on memory POST/PUT/PATCH; cost: prose that only quotes a command form is a 400 too | yes |
 
 **Registry -- Heartbeat module:**
 
@@ -242,8 +244,39 @@ and the attribute on a topic message's tag as well; as long as they do not pass 
 parameter, they behave as before.
 
 **What does not change.** The `chat_id` stays the same, so owner identification, command
-permissions and approvals are not affected. Alerts, approval requests, scheduled task
-results and the voice reply still go out without a topic.
+permissions and approvals are not affected. Alerts, approval requests and the voice reply
+still go out without a topic; a scheduled task's result goes to a topic only when the task
+asks for it (below).
+
+**Named topics (`/topic`).** While the switch is on, `/topic` appears in `/help` and in the
+bot menu, in three forms: `/topic` lists the named topics, `/topic new <name>` (a write command,
+main chat only) opens a new topic with the Bot API's `createForumTopic` and stores its name
+with the returned `message_thread_id` in `store/telegram-topics.json`. This is needed
+because with user-created topics switched off in BotFather only the bot can open a topic,
+and because only the Bot API hands out the id. A name that already exists opens no new
+topic. On an error the command does not retry: a timed-out call may still have opened the
+topic, and the answer says so. `/topic remove <name>` (a write) forgets a name: it removes
+the local row only, not the Telegram topic. It is needed after a topic is deleted by hand in
+Telegram; otherwise the stale row keeps the name from being opened again, and a scheduled
+task pointing at it sends into a topic that no longer exists. The file also records the chat its topics belong to; if the
+main chat changes, the old topics are dropped on the next write and are never used before
+that. With the switch off `/topic` does not exist (the dashboard decides at start), so
+`/help`, the menu and command handling are what they are today.
+
+**Scheduled task result into a topic (`telegramTopic`).** In a task's `task-config.json`,
+`"telegramTopic": "<name>"` names a topic opened with `/topic new`. The runner turns the name
+into the topic's id from `store/telegram-topics.json` and writes `message_thread_id` next to
+the `chat_id` in the task's delivery instruction, so the agent gets the number and never
+guesses it from the name. It works only for the main agent's tasks delivered on Telegram:
+named topics exist only in the main bot's chat, and a topic id is valid only in the chat of
+the bot that opened it. If the name is not found, the task belongs to a sub-agent, or it
+delivers on another channel, the result goes to the chat without a topic and a warning in
+the log says why. With the switch off the runner does not look at the field, and the
+instruction is letter for letter what it is today.
+
+**Muting.** In a chat with topics, Telegram mutes per topic: a muted topic sends no
+notification even while the rest of the chat does. If an answer "did not arrive", check
+whether its topic is muted first.
 
 **Enabling.** Dashboard: *Settings → Channels → `TELEGRAM_TOPICS_ENABLED`*, or
 `TELEGRAM_TOPICS_ENABLED=1` in `.env`. It takes effect at the next channel start. While

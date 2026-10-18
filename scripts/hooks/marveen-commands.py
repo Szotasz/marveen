@@ -68,6 +68,7 @@ import json
 import select
 import subprocess
 import time
+from datetime import datetime, timezone
 import urllib.error
 import urllib.request
 
@@ -306,7 +307,13 @@ def fmt_reset(ts):
         return "ismeretlen"
 
 
-def format_usage(snapshot):
+def format_usage(snapshot, now=None):
+    # The Claude part is unchanged; the Codex block always follows it, so a
+    # missing or failed Codex reading is stated, never silently dropped.
+    return f"{format_claude_usage(snapshot)}\n\n{format_codex_usage(snapshot, now)}"
+
+
+def format_claude_usage(snapshot):
     # ELSOKOR922 D-4 fix-forward: a 403/hianyzo-token eset (a konteneres
     # telepitesen mert eset: "HTTP 403 (env_file token)") korabban csendben
     # esett vissza becslesre, es ha a becsleshez sem volt adat, a valasz
@@ -331,6 +338,91 @@ def format_usage(snapshot):
     if len(lines) == 1:
         reason = c.get("auth_error") or "nincs autoritatív adat, csak becslés lenne, de az sem elérhető"
         return f"Kvóta: nem mérhető ({reason})."
+    return "\n".join(lines)
+
+
+CODEX_WINDOW_LABELS = [
+    ("five_hour", "5 órás"),
+    ("weekly", "heti"),
+]
+
+CODEX_PLAN_NAMES = {"plus": "ChatGPT Plus", "pro": "ChatGPT Pro", "team": "ChatGPT Team",
+                    "business": "ChatGPT Business", "enterprise": "ChatGPT Enterprise",
+                    "edu": "ChatGPT Edu", "free": "ChatGPT Free"}
+
+
+def parse_iso_epoch(value):
+    # Codex rollout events carry e.g. "2026-10-14T18:58:10.669Z"; Python < 3.11
+    # fromisoformat rejects the trailing Z.
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    except Exception:
+        return None
+
+
+def fmt_age(seconds):
+    minutes = max(0, int(seconds // 60))
+    if minutes < 60:
+        return f"{minutes} perce"
+    hours = minutes // 60
+    if hours < 48:
+        return f"{hours} órája"
+    return f"{hours // 24} napja"
+
+
+def format_codex_usage(snapshot, now=None):
+    # The Codex numbers are NOT a live query: usage-collect.py reads the last
+    # rate_limits event of the newest Codex rollout file (the last Codex
+    # run). So the reading's time is always shown, and a window whose reset
+    # time has already passed gets no percentage at all: that number belongs
+    # to a window that no longer exists.
+    now = time.time() if now is None else now
+    if "codex" not in snapshot:
+        return "Codex: nem mérhető (a lekérdezés nem adott Codex-adatot)."
+    cx = snapshot.get("codex") or {}
+    # Codex never ran on this host: not an error, so not "nem mérhető". Keyed
+    # on the collector's reason field, never on its (English) error text.
+    if cx.get("reason") == "no_sessions":
+        return "Codex: ezen a gépen még nem futott, nincs mért adat."
+    if not cx.get("ok"):
+        reason = cx.get("error") or cx.get("source") or "ismeretlen hiba"
+        return f"Codex: nem mérhető ({reason})."
+    plan = cx.get("plan_type")
+    title = f"Codex ({CODEX_PLAN_NAMES.get(plan, f'ChatGPT {plan}')}) keret-állapot" if plan else "Codex keret-állapot"
+    taken = parse_iso_epoch(cx.get("snapshot_at")) if cx.get("snapshot_at") else None
+    if taken is None and cx.get("source_file"):
+        try:
+            taken = os.path.getmtime(cx["source_file"])
+        except OSError:
+            taken = None
+    if taken is None:
+        when = "az adat ideje ismeretlen"
+    else:
+        when = f"adat: {fmt_reset(taken)}, {fmt_age(now - taken)}"
+    lines = [f"{title} ({when}, a legutóbbi Codex-futásból, nem élő lekérdezés):"]
+    windows = cx.get("windows") or {}
+    for key, label in CODEX_WINDOW_LABELS:
+        win = windows.get(key)
+        if not win or win.get("used_percent") is None:
+            continue
+        resets = win.get("resets_at")
+        try:
+            expired = resets is not None and float(resets) <= now
+        except (TypeError, ValueError):
+            expired = False
+        if expired:
+            lines.append(f"- {label}: nincs friss adat (az ablak lejárt {fmt_reset(resets)}-kor)")
+            continue
+        used = win["used_percent"]
+        lines.append(
+            f"- {label}: {100 - used:.0f}% van hátra ({used:.0f}% elhasználva), "
+            f"megújul: {fmt_reset(resets)}"
+        )
+    if len(lines) == 1:
+        return "Codex: nem mérhető (a naplóban nincs 5 órás vagy heti ablak-adat)."
     return "\n".join(lines)
 
 

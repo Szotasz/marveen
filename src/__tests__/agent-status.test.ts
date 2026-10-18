@@ -181,6 +181,16 @@ describe('deriveAgentStatus: run state wins over everything', () => {
     expect(deriveAgentStatus(signals({ paneState: 'unreachable' })).state).toBe('unreachable')
   })
 
+  it('a session that fell back to a shell prompt stays dead, not unknown', () => {
+    // /api/agents/activity already says 'dead' for this pane; /api/agents/status
+    // used to drop it into the closing else and report 'unknown'.
+    expect(deriveAgentStatus(signals({ paneState: 'dead' })).state).toBe('dead')
+  })
+
+  it('a stopped session is stopped even if the last pane read said dead', () => {
+    expect(deriveAgentStatus(signals({ running: false, paneState: 'dead' })).state).toBe('stopped')
+  })
+
   it('an unreadable pane is unknown, not idle', () => {
     expect(deriveAgentStatus(signals({ paneState: 'unknown' })).state).toBe('unknown')
   })

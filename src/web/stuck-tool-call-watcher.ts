@@ -229,6 +229,173 @@ function sampleMainClaudeCpuPercent(session: string): number | null {
   }
 }
 
+// STUCKCHILD1016: a long FOREGROUND tool call is not a wedge. The CPU guard above looks at the
+// pane-leader claude ONLY. While a Bash/python child runs for minutes the TUI counter freezes and
+// claude itself idles at ~1-2% CPU, i.e. it matches the wedge profile exactly. Measured on a
+// production install: tag=baked seconds=20 stagnantPolls=7 cpuPercent=1.8 -> respawn-pane, while a
+// python harness was working. The genuine wedge (a hung MCP/stdio reply) has NO tool child doing
+// work. So before recovery, look at the pane-leader's descendants: a non-shell descendant that is
+// running, or that burned CPU during the last polls, means a tool call is alive -> not a wedge.
+//
+// Which children count: only processes UNDER a shell child of the pane leader. The Bash tool runs
+// every command as `<shell> -c ...` directly under claude, so a tool call's work is always in a
+// shell's subtree. The leader's other direct children (an MCP/channel plugin, caffeinate, node MCP
+// servers) stay alive -- and sometimes busy -- in a REAL wedge and must not mask it. Residual risk:
+// an MCP server that is itself launched through a shell would count; the hard cap bounds that.
+//
+// Hard cap: the deferral is never endless. Once the counter has been stagnant for
+// MAX_CHILD_DEFER_MS, recovery proceeds regardless of child activity (the old path, still behind
+// the STUCKFREEZE819 transcript gate). 15 min is well above a normal long foreground tool call
+// (test suites, builds: 5-10 min) and short enough that a frozen TUI whose "tool child" never ends
+// is restored within a quarter of an hour.
+//
+// Fail-open for recovery: a failed sample (tmux/ps error, unusable pane pid) NEVER refreshes the
+// last-activity stamp (a broken poll cannot keep a deferral alive) and zeroes the CPU baseline (a CPU
+// jump across the gap is not read as fresh activity). A persistent failure lets the activity window,
+// and in the end the hard cap, run out.
+//
+// Stated limit: a tool child that only sleeps (no CPU, state S, e.g. a bare `sleep 600`) is not
+// detected as active.
+export interface ProcSample { pid: number; ppid: number; state: string; cpuMs: number; comm: string }
+
+const SHELL_NAMES = new Set(['sh', 'bash', 'zsh', 'dash', 'fish', 'ksh', 'csh', 'tcsh'])
+export const CHILD_ACTIVE_CPU_DELTA_MS = 1000
+export const CHILD_ACTIVITY_WINDOW_MS = 90_000
+export const MAX_CHILD_DEFER_MS = 15 * 60_000
+
+// Pure: has the stagnation lasted so long that child activity may no longer defer recovery?
+// stagnantSince null (no stagnation recorded) -> false.
+export function childDeferExpired(stagnantSince: number | null, nowMs: number, maxMs = MAX_CHILD_DEFER_MS): boolean {
+  return stagnantSince !== null && nowMs - stagnantSince >= maxMs
+}
+
+// Pure: `ps cputime` -> ms. Formats: [[dd-]hh:]mm:ss[.ff] (macOS mm:ss.ff, Linux hh:mm:ss).
+export function parsePsCpuTimeMs(raw: string): number | null {
+  const m = raw.trim().match(/^(?:(\d+)-)?(?:(\d+):)?(\d+):(\d+(?:\.\d+)?)$/)
+  if (!m) return null
+  const [, d, h, mi, s] = m
+  return (((Number(d ?? 0) * 24 + Number(h ?? 0)) * 60 + Number(mi)) * 60 + Number(s)) * 1000
+}
+
+// Pure: parse `ps -axww -o pid=,ppid=,stat=,cputime=,comm=` (comm last: it may hold spaces).
+export function parseProcSnapshot(out: string): ProcSample[] {
+  const rows: ProcSample[] = []
+  for (const line of out.split('\n')) {
+    const m = line.match(/^\s*(\d+)\s+(\d+)\s+(\S+)\s+(\S+)\s+(.+?)\s*$/)
+    if (!m) continue
+    const cpuMs = parsePsCpuTimeMs(m[4]!)
+    if (cpuMs === null) continue
+    rows.push({ pid: Number(m[1]), ppid: Number(m[2]), state: m[3]!, cpuMs, comm: m[5]! })
+  }
+  return rows
+}
+
+function commBase(comm: string): string {
+  return comm.split('/').pop()!.replace(/^-/, '').trim()
+}
+
+function isShellComm(comm: string): boolean {
+  return SHELL_NAMES.has(commBase(comm))
+}
+
+// Pure: the process the tool-call subtree hangs under. Normally the pane pid IS the claude process.
+// If a session's pane pid is a shell or a wrapper script, the claude process is its non-shell child
+// (preferring one named `claude`, else the single non-shell child); with none identifiable the
+// result is null (the guard cannot scope the subtree and stays inactive -- the caller warns once).
+export function resolveToolRoot(procs: ProcSample[], panePid: number): { root: number | null; viaShell: boolean } {
+  const self = procs.find(p => p.pid === panePid)
+  if (!self) return { root: null, viaShell: false }
+  if (!isShellComm(self.comm)) return { root: panePid, viaShell: false }
+  const kids = procs.filter(p => p.ppid === panePid && !isShellComm(p.comm))
+  const claude = kids.find(k => commBase(k.comm) === 'claude') ?? (kids.length === 1 ? kids[0] : undefined)
+  return { root: claude ? claude.pid : null, viaShell: true }
+}
+
+// Pure: non-shell processes in the subtrees of the SHELL children of rootPid (root, its non-shell
+// direct children and their subtrees excluded).
+export function toolDescendants(procs: ProcSample[], rootPid: number): ProcSample[] {
+  const kids = new Map<number, ProcSample[]>()
+  for (const p of procs) {
+    const l = kids.get(p.ppid) ?? []
+    l.push(p)
+    kids.set(p.ppid, l)
+  }
+  const out: ProcSample[] = []
+  const seen = new Set<number>([rootPid])
+  const stack: number[] = []
+  for (const c of kids.get(rootPid) ?? []) {
+    if (isShellComm(c.comm)) { seen.add(c.pid); stack.push(c.pid) }
+  }
+  while (stack.length) {
+    for (const c of kids.get(stack.pop()!) ?? []) {
+      if (seen.has(c.pid)) continue
+      seen.add(c.pid)
+      stack.push(c.pid)
+      if (!isShellComm(c.comm)) out.push(c)
+    }
+  }
+  return out
+}
+
+export interface ChildActivity { cpuMs: Map<number, number> | null; lastActiveAt: number | null }
+
+// Pure: fold one snapshot into the tracker. A descendant is ACTIVE when it is in the running state,
+// or its cumulative CPU grew by >= CHILD_ACTIVE_CPU_DELTA_MS since the previous poll (a pid first
+// seen after a baseline exists counts its whole CPU time: it was spawned within the last poll). The
+// first poll of a spell has no baseline, so only the running state counts there.
+export function observeToolChildren(
+  prev: ChildActivity,
+  procs: ProcSample[],
+  rootPid: number,
+  nowMs: number,
+): ChildActivity {
+  const kids = toolDescendants(procs, rootPid)
+  const cpuMs = new Map<number, number>(kids.map(k => [k.pid, k.cpuMs]))
+  const active = kids.some(k =>
+    k.state.startsWith('R') ||
+    (prev.cpuMs !== null && k.cpuMs - (prev.cpuMs.get(k.pid) ?? 0) >= CHILD_ACTIVE_CPU_DELTA_MS),
+  )
+  return { cpuMs, lastActiveAt: active ? nowMs : prev.lastActiveAt }
+}
+
+// Pure: is a tool call alive (activity seen within the window)?
+export function toolChildRecentlyActive(a: ChildActivity | undefined, nowMs: number): boolean {
+  return a?.lastActiveAt != null && nowMs - a.lastActiveAt < CHILD_ACTIVITY_WINDOW_MS
+}
+
+const toolChildState = new Map<string, ChildActivity>()
+const shellLeaderWarned = new Set<string>()
+
+// Snapshot the pane-leader's process tree and fold it into the session's tracker (see the fail-open
+// note above: any failure keeps lastActiveAt and zeroes the baseline).
+function sampleToolChildren(session: string, nowMs: number): void {
+  const prev = toolChildState.get(session) ?? { cpuMs: null, lastActiveAt: null }
+  try {
+    const panePid = execFileSync(TMUX, ['list-panes', '-t', exactTmuxTarget(session), '-F', '#{pane_pid}'], { timeout: 3000, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] })
+      .split('\n')[0]?.trim()
+    if (!panePid || !/^\d+$/.test(panePid)) throw new Error('no pane pid')
+    const out = execFileSync('/bin/ps', ['-axww', '-o', 'pid=,ppid=,stat=,cputime=,comm='], { timeout: 5000, encoding: 'utf-8', maxBuffer: 8 * 1024 * 1024 })
+    const procs = parseProcSnapshot(out)
+    const { root, viaShell } = resolveToolRoot(procs, Number(panePid))
+    if (root === null) {
+      if (!shellLeaderWarned.has(session)) {
+        shellLeaderWarned.add(session)
+        logger.warn({ session, panePid }, 'stuck-tool-call-watcher: the pane leader is a shell/wrapper with no identifiable claude child -- tool-child deferral is inactive for this session')
+      }
+      toolChildState.set(session, { cpuMs: null, lastActiveAt: prev.lastActiveAt })
+      return
+    }
+    if (viaShell && !shellLeaderWarned.has(session)) {
+      shellLeaderWarned.add(session)
+      logger.info({ session, panePid, claudePid: root }, 'stuck-tool-call-watcher: the pane leader is a shell/wrapper -- tool children are scoped under its claude child')
+    }
+    toolChildState.set(session, observeToolChildren(prev, procs, root, nowMs))
+  } catch (err) {
+    logger.warn({ site: 'stuck-tool-call-watcher.sampleToolChildren', session, tmux: tmuxStderr(err) }, 'tmux list-panes / ps failed')
+    toolChildState.set(session, { cpuMs: null, lastActiveAt: prev.lastActiveAt })
+  }
+}
+
 // Defaults chosen against the 2026-06-02 incident profile.
 //   - freezeSeconds = 180: long enough that a real slow Anthropic call
 //     (multi-thousand-token thinking + tool result) doesn't trip it. The
@@ -312,6 +479,13 @@ async function checkSession(label: string, session: string): Promise<void> {
     watchState.delete(session)
   } else {
     watchState.set(session, next)
+  }
+  // STUCKCHILD1016: watch the pane-leader's tool children for as long as the counter is stagnant, so
+  // the CPU baseline exists when the verdict fires.
+  if (next.tag !== null && next.stagnantPolls >= 1) {
+    sampleToolChildren(session, Date.now())
+  } else {
+    toolChildState.delete(session)
   }
 
   if (recover) {
@@ -404,6 +578,25 @@ async function checkSession(label: string, session: string): Promise<void> {
         'stuck-tool-call-watcher: counter stagnant but claude is CPU-active (not the idle wedge profile) -- deferring recovery',
       )
       return
+    }
+    // STUCKCHILD1016: a live tool child (running, or CPU burned within the last polls) means a long
+    // foreground tool call, not the stdio wedge -- the pane leader's own ~2% CPU says nothing about it.
+    // Bounded by MAX_CHILD_DEFER_MS from the start of the stagnation. The deferral resets `attempts`:
+    // the state stored above already counts this verdict, so without the reset the first deferral would
+    // hold the spell for good and a real wedge arriving after the tool call ended would never recover.
+    if (toolChildRecentlyActive(toolChildState.get(session), Date.now())) {
+      if (!childDeferExpired(next.stagnantSince, Date.now())) {
+        logger.info(
+          { label, session, cpuPercent, seconds: next.lastSeconds, stagnantPolls: next.stagnantPolls },
+          'stuck-tool-call-watcher: counter stagnant but a tool child process is active (long foreground tool call, not a wedge) -- deferring recovery',
+        )
+        watchState.set(session, { ...next, attempts: 0 })
+        return
+      }
+      logger.warn(
+        { label, session, stagnantMs: Date.now() - (next.stagnantSince ?? Date.now()), maxChildDeferMs: MAX_CHILD_DEFER_MS, seconds: next.lastSeconds },
+        'stuck-tool-call-watcher: tool child still active but the counter has been frozen past the hard cap -- proceeding with recovery',
+      )
     }
     // STUCKFREEZE819: last-instant validity re-check at the kill boundary.
     // Every earlier guard sampled state at VERDICT time; this one samples at

@@ -11,16 +11,18 @@ import {
   markPendingFederatedFailed,
   setMessageResult,
   createAgentMessage,
+  lastMessageFromAgentAt,
   countNewerMessagesFromSameSender,
   stampMessageTrace,
   upsertOtelSpan,
   type AgentMessage,
 } from '../db.js'
+import { compareDeliveryOrder, deliveryRank } from '../delivery-order.js'
 import { isQualifiedId } from './federation/address.js'
 import { sendFederatedMessage } from './federation/bridge.js'
 import { getFederationConfig, abandonWindowMsForPeer } from './federation/config.js'
 import { scheduleDeliveryTurnCheck } from './delivery-turn-check.js'
-import { agentDir, readAgentRemoteHost, readAgentVoiceConfig, readAgentWorksourceChannel, type AgentVoiceConfig } from './agent-config.js'
+import { agentDir, readAgentRemoteHost, readAgentVoiceConfig, readAgentWorksourceChannel, readAgentPullDelivery, type AgentVoiceConfig } from './agent-config.js'
 import { projectsDirFor } from './active-model.js'
 import { resolveAgentConfigDirForRead } from './claude-plans.js'
 import { readTranscriptProgressAt } from './transcript-progress.js'
@@ -41,11 +43,7 @@ import { composeBatchInjection, batchInjectCapFor } from './batch-inject.js'
 import { maybeWakeSubAgentsForTelegram } from './telegram-inbox-wake.js'
 import { isStopMessage, isUrgentDelivery, selectTickWindow } from './message-router-window.js'
 
-// A message that cannot be delivered within this window (target session never
-// exists / stays busy) is marked failed so it stops clogging the pending
-// queue and we stop re-scanning it forever. Matches the scheduled-task retry
-// window so a long turn that ate one also eats the other.
-const MESSAGE_ABANDON_WINDOW_MS = 60 * 60 * 1000
+import { MESSAGE_ABANDON_WINDOW_MS } from './message-abandon.js'
 // How long a message must have waited before the stale-parked-input janitor is
 // allowed to clear the receiver's input box. Long enough that a brief, genuine
 // "agent parked a draft it is about to submit" never gets clobbered; short
@@ -54,6 +52,9 @@ const JANITOR_PARKED_MIN_AGE_MS = 45 * 1000
 // Log "skipping, target not ready" at most once per message id so a busy
 // receiver over many 5s ticks does not spam the log.
 const routerLoggedMisses: Set<number> = new Set()
+// Message ids whose pull-delivery staleness warning already went out, so a row
+// that legitimately waits for days warns ONCE instead of every 5s tick.
+const pullStaleNotified: Set<number> = new Set()
 // Per-message consecutive tmux-inject-failure counter. A send that THROWS
 // (send-keys hit the pane at a bad instant -- e.g. the receiver was mid-turn /
 // momentarily un-ready despite passing the readiness check) used to instant-
@@ -168,11 +169,30 @@ function notifyOrchestratorOfFailedHandoff(msg: AgentMessage, reason: string): v
     createAgentMessage(
       'system',
       MAIN_AGENT_ID,
-      `[handoff-failure] Inter-agent message (id ${msg.id}) ${msg.from_agent} -> ${msg.to_agent} could NOT be delivered: ${reason}. Consider re-sending or checking the target agent. Content preview: ${preview}`,
+      `[handoff-failure] Inter-agent message (id ${msg.id}) ${msg.from_agent} -> ${msg.to_agent} could NOT be delivered: ${reason}. Consider re-sending or checking the target agent (full text: GET /api/messages/${msg.id}). Content preview: ${preview}`,
     )
     logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent, reason }, 'handoff-failure surfaced to orchestrator')
   } catch (err) {
     logger.warn({ err, id: msg.id }, 'Failed to enqueue handoff-failure notification')
+  }
+}
+// A pull agent's queue is NOT a failure, so this notice deliberately does not
+// say "could not be delivered" and the row is left pending and claimable. It
+// reports the one thing the queue cannot show by itself: the agent has not
+// been heard from since the message was written, so nobody may be polling.
+function notifyOrchestratorOfPullStale(msg: AgentMessage, ageMs: number): void {
+  try {
+    if (msg.to_agent === MAIN_AGENT_ID) return
+    const hours = Math.round(ageMs / 3600000)
+    const preview = (msg.content ?? '').slice(0, 220)
+    createAgentMessage(
+      'system',
+      MAIN_AGENT_ID,
+      `[pull-stale] Message id ${msg.id} (${msg.from_agent} -> ${msg.to_agent}) has been waiting ${hours}h in the pull queue and '${msg.to_agent}' has sent no message of its own since the row was created. It is still PENDING and will be delivered the moment the agent polls -- check whether the agent is running and polling. (Nothing here can observe a READ: the agent may well be alive and writing memories or logs. The silence measured is outgoing messages only.) Content preview: ${preview}`,
+    )
+    logger.info({ id: msg.id, to: msg.to_agent, ageMs }, 'pull-stale surfaced to orchestrator')
+  } catch (err) {
+    logger.warn({ err, id: msg.id }, 'Failed to enqueue pull-stale notification')
   }
 }
 
@@ -192,12 +212,16 @@ export function shouldNotifySenderOfFailure(fromAgent: string, mainAgentId: stri
   return !isChannelInboundSender(fromAgent)
 }
 
-/** The sender's notice. The preview says how much it cut, so nobody answers half a message (15060). */
+/** The sender's notice. The preview says how much it cut, so nobody answers half a message (15060).
+ *  It also names where the FULL text is (GET /api/messages/<id>): the preview stops at 220
+ *  characters, and a sender re-sending a long handoff should not have to reconstruct it from
+ *  memory or from its transcript. */
 export function formatSenderFailureNotice(msg: AgentMessage, reason: string): string {
   const content = msg.content ?? ''
   const preview = content.length > 220 ? `${content.slice(0, 220)} [... +${content.length - 220} karakter]` : content
   return `[handoff-failure] A(z) ${msg.to_agent} címre küldött üzeneted (#${msg.id}) NEM kézbesült: ${reason}. ` +
-    `A visszakapott id a befogadást igazolta, nem a kézbesítést; ha még számít, küldd újra. Tartalom eleje: ${preview}`
+    `A visszakapott id a befogadást igazolta, nem a kézbesítést; ha még számít, küldd újra ` +
+    `(a teljes szöveg: GET /api/messages/${msg.id}). Tartalom eleje: ${preview}`
 }
 
 function notifySenderOfFailedHandoff(msg: AgentMessage, reason: string): void {
@@ -514,6 +538,36 @@ export function shouldAbandon(sessionExists: boolean, absentForMs: number, windo
   return !sessionExists && absentForMs > windowMs
 }
 
+// A pull agent's row is never abandoned, so the queue can grow silently if the
+// agent stops polling -- exactly the invented-success shape the worksource
+// carve-out was reviewed for (PR #1099). The honest answer is not to close the
+// row (that would hide it again, which is the bug this fixes) but to SAY SO:
+// warn the orchestrator once per message when the row is old AND the agent has
+// shown no API activity since it was written. Silence from the agent is the
+// signal; the row stays pending and deliverable the moment it polls.
+export const PULL_STALE_WARN_MS = 6 * 60 * 60 * 1000
+
+/**
+ * Pure decision: should a pending message to a PULL-delivery agent raise the
+ * staleness warning?
+ *
+ * @param ageMs        How long the message has been pending (ms).
+ * @param createdMs    When the message was created (epoch ms).
+ * @param lastSeenMs   Last API activity from the target agent (epoch ms), or null.
+ * @param windowMs     Age past which an unseen message is considered stale.
+ */
+export function shouldWarnPullStale(
+  ageMs: number,
+  createdMs: number,
+  lastSeenMs: number | null,
+  windowMs: number,
+): boolean {
+  if (ageMs <= windowMs) return false
+  // Activity AFTER the message was written means the agent is polling and has
+  // had the row in front of it; that is its business, not a delivery fault.
+  return lastSeenMs == null || lastSeenMs <= createdMs
+}
+
 // ---- Distributed trace context (card def5a189) ------------------------------
 // In-memory map of the last trace context delivered TO each agent. When the
 // agent subsequently sends a new message (no explicit trace_id), the router
@@ -662,6 +716,9 @@ function batchDeliverBacklog(agent: string, agentPending: AgentMessage[], now: n
   const old: typeof agentPending = []
   const recent: typeof agentPending = []
   for (const m of agentPending) {
+    // Card ad771121: a row above normal is never folded into the summary; it is delivered on its own,
+    // first. That is a STOP, an urgent row, a system or owner row (review point 1), or a granted high.
+    if (deliveryRank(m) > 0) { recent.push(m); continue }
     const age = now - m.created_at * 1000
     if (age > RECONNECT_BATCH_AGE_MS) {
       old.push(m)
@@ -722,7 +779,9 @@ export async function runMessageRouterTick(): Promise<void> {
     // pattern. The window is chosen FAIRLY across recipients (selectTickWindow,
     // card fc5748f5): the globally oldest rows of busy recipients used to fill it
     // and starve every other recipient, idle ones included. Each recipient's own
-    // rows stay oldest first.
+    // rows stay in delivery order (card ad771121: high first, then oldest first);
+    // when more recipients wait than the window holds, a high row also brings its
+    // recipient in first (see selectTickWindow).
     //
     // Federated (slash-qualified) recipients are split out FIRST: they must
     // never reach the local path (agentSessionName / readAgentRemoteHost would
@@ -741,7 +800,10 @@ export async function runMessageRouterTick(): Promise<void> {
     // main loop can reuse them instead of re-calling sessionExistsOnHost.
     const receiversInTick = new Set<string>()
     for (const m of pending) {
-      if (m.to_agent !== MAIN_AGENT_ID) receiversInTick.add(m.to_agent)
+      // Pull-delivery receivers are excluded on purpose: they have no session
+      // here, so probing for one would only feed the absent/stuck trackers a
+      // permanent "absent" and invite a reconnect batch that can never fire.
+      if (m.to_agent !== MAIN_AGENT_ID && !readAgentPullDelivery(m.to_agent)) receiversInTick.add(m.to_agent)
     }
     const absentNow = new Set<string>()
     const presentNow = new Set<string>()
@@ -773,7 +835,9 @@ export async function runMessageRouterTick(): Promise<void> {
         // Check if this agent qualifies for backlog batching.
         const agentPending = getPendingMessages(agent)
         if (agentPending.length > RECONNECT_BATCH_THRESHOLD) {
-          const oldestAge = now - agentPending[0].created_at * 1000
+          // Card ad771121: the list is in delivery order (high first), so its head is not
+          // necessarily the oldest row; the age is the oldest row's, as before.
+          const oldestAge = now - Math.min(...agentPending.map((m) => m.created_at)) * 1000
           if (oldestAge > RECONNECT_BATCH_AGE_MS) {
             logger.warn({ agent, pendingCount: agentPending.length, oldestAgeMs: oldestAge },
               'message-router: reconnect-backlog batch — summarizing old messages')
@@ -846,6 +910,25 @@ export async function runMessageRouterTick(): Promise<void> {
       // abort-on-busy send, stale-spell escalation, owner alert, hourly budget),
       // so the router simply leaves the row for the PULL path to claim.
       if (isMainAgent) continue
+
+      // PULL-delivery agents (own machine, own scoped token, no session here)
+      // skip the whole tmux path BEFORE any session lookup: there is nothing to
+      // look up, and the abandon gate below would flip the row to `failed`,
+      // which removes it from the `status=pending` inbox the agent polls. The
+      // row waits here until the agent claims it.
+      if (readAgentPullDelivery(msg.to_agent)) {
+        if (!pullStaleNotified.has(msg.id)) {
+          const lastSeen = lastMessageFromAgentAt(msg.to_agent)
+          if (shouldWarnPullStale(ageMs, msg.created_at * 1000, lastSeen == null ? null : lastSeen * 1000, PULL_STALE_WARN_MS)) {
+            pullStaleNotified.add(msg.id)
+            logger.warn({ id: msg.id, from: msg.from_agent, to: msg.to_agent, ageMs, lastSeen },
+              'pull-delivery agent has not polled since this message was written')
+            notifyOrchestratorOfPullStale(msg, ageMs)
+          }
+        }
+        continue
+      }
+
       // Use cached session data from the pre-pass (one sessionExistsOnHost call
       // per unique receiver per tick). Fall back to a direct call for agents not
       // in the pending set (shouldn't happen, but safe).
@@ -1340,7 +1423,9 @@ function collectBatchMates(
   for (let i = start; i < pending.length; i++) {
     const m = pending[i]
     if (m.to_agent !== head.to_agent) continue
-    if (m.id <= head.id) continue                 // ascending only
+    // After the head in the DELIVERY order only (card ad771121): a high head is newer than the normal
+    // rows that follow it, so the old id comparison would have left them out of its batch.
+    if (compareDeliveryOrder(m, head) <= 0) continue
     if (batchedMsgIdsThisTick.has(m.id)) continue
     const cls = classifyAgentMessage(m.from_agent, m.to_agent)
     if (!cls || cls.category === 'channel-inbound' || cls.category === 'federated') continue

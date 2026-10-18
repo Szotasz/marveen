@@ -105,6 +105,8 @@
     msg('op-agents-msg', label + ': ' + name + '…')
     const r = await api('POST', path)
     if (r.ok) msg('op-agents-msg', label + ': ' + name + ' kész.', 'ok')
+    // OPERRESTART409_1018: a refused main restart carries a readable message; the raw code is no help here.
+    else if (r.status === 409 && r.data && r.data.error === 'restart-blocked' && r.data.message) msg('op-agents-msg', r.data.message, 'err')
     else msg('op-agents-msg', label + ' sikertelen (' + name + '): ' + ((r.data && r.data.error) || r.status), 'err')
     setTimeout(refresh, 1500)
   }

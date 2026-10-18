@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { execFileSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync, symlinkSync, rmSync, readdirSync } from 'node:fs'
+import { execFileSync, spawnSync } from 'node:child_process'
+import { appendFileSync, copyFileSync, mkdtempSync, writeFileSync, mkdirSync, readFileSync, existsSync, symlinkSync, rmSync, readdirSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -177,5 +177,61 @@ describe('memory-frontmatter-bash-gate: the hook\'s own errors never block the c
     rmSync(MEM, { recursive: true, force: true })
     expect(run('PreToolUse', 'x', 'toolu_nomem').code).toBe(0)
     expect(run('PostToolUse', 'x', 'toolu_nomem').code).toBe(0)
+  })
+})
+
+// HOOKDEPLOAD1008: the shared check used to be imported at module load, so a
+// broken memory_frontmatter_lib.py made the hook exit 1 on every Bash call,
+// the code it promises never to return. On a disposable copy (the intact copy
+// shown first to judge like the real hook), a lib that does not load is the
+// hook's own error: exit 0, the reason on stderr and one log line per event.
+describe('memory-frontmatter-bash-gate: a memory_frontmatter_lib.py that does not load (HOOKDEPLOAD1008)', () => {
+  const copyHook = (name: string, broken: boolean) => {
+    const dir = join(S, 'hook-copy', name)
+    mkdirSync(dir, { recursive: true })
+    for (const f of ['memory-frontmatter-bash-gate.py', 'memory_frontmatter_lib.py', 'hook_errlog.py']) {
+      copyFileSync(join(ROOT, 'scripts', 'hooks', f), join(dir, f))
+    }
+    if (broken) appendFileSync(join(dir, 'memory_frontmatter_lib.py'), '<'.repeat(7) + ' Updated upstream\n')
+    return join(dir, 'memory-frontmatter-bash-gate.py')
+  }
+  // spawnSync, not run(): stderr is needed on exit 0 too.
+  const spawn = (hook: string, event: string, command: string, id: string, extra: Record<string, unknown> = {}) => {
+    const payload = { hook_event_name: event, tool_name: 'Bash', tool_use_id: id, tool_input: { command }, cwd: CWD, transcript_path: TRANSCRIPT, ...extra }
+    const r = spawnSync('python3', [hook], {
+      input: JSON.stringify(payload), encoding: 'utf-8', timeout: 15_000,
+      env: { ...process.env, CLAUDE_CONFIG_DIR: CONFIG, MEMFM_BASH_STATE_DIR: STATE, HOOK_ERRLOG_PATH: ERRLOG },
+    })
+    return { code: r.status, stderr: r.stderr }
+  }
+  const brokenWrite = (hook: string, id: string) => {
+    const cmd = `cat > ${MEM}/feedback_new.md`
+    writeFileSync(join(MEM, 'feedback_new.md'), GOOD)
+    const pre = spawn(hook, 'PreToolUse', cmd, id)
+    writeFileSync(join(MEM, 'feedback_new.md'), BROKEN)
+    return { pre, post: spawn(hook, 'PostToolUse', cmd, id) }
+  }
+
+  it('control: the intact copy judges a broken named write like the real hook (exit 2)', () => {
+    const real = brokenWrite(join(ROOT, 'scripts', 'hooks', 'memory-frontmatter-bash-gate.py'), 'toolu_real')
+    const copy = brokenWrite(copyHook('intact', false), 'toolu_copy')
+    expect(copy).toEqual(real)
+    expect(copy.post.code).toBe(2)
+  })
+
+  it('a lib that does not load -> exit 0 on both events (never 1), the lib named on stderr and in the log', () => {
+    const { pre, post } = brokenWrite(copyHook('broken', true), 'toolu_broken')
+    for (const r of [pre, post]) {
+      expect(r.code).toBe(0)
+      expect(r.stderr).toContain('scripts/hooks/memory_frontmatter_lib.py')
+      expect(r.stderr).toContain('nem toltheto be')
+    }
+    expect(errlog().match(/memory_frontmatter_lib\.py\) nem toltheto be/g)).toHaveLength(2)
+  })
+
+  it('a non-Bash tool stays silent', () => {
+    const r = spawn(copyHook('broken2', true), 'PostToolUse', 'x', 'toolu_w', { tool_name: 'Write' })
+    expect(r).toEqual({ code: 0, stderr: '' })
+    expect(errlog()).toBe('')
   })
 })

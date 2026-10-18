@@ -168,10 +168,15 @@ function releaseLock(): void {
 // Best-effort Telegram alert to the owner via the existing notify.sh (which
 // uses the project's own token+chat). Used for fatal (401) only -- a 409 here
 // is the EXPECTED "native is back" signal, not an error worth alerting.
-function sendAlert(message: string): void {
+// Resolves when notify.sh has finished (or was killed at its 10 s timeout), so a
+// caller that is about to exit can wait for the alert instead of guessing.
+function sendAlert(message: string): Promise<void> {
   const script = join(PROJECT_ROOT, 'scripts', 'notify.sh')
-  execFile('/bin/bash', [script, message], { timeout: 10_000 }, (err) => {
-    if (err) logger.warn({ err }, 'channel-coordinator: notify.sh alert failed')
+  return new Promise((resolve) => {
+    execFile('/bin/bash', [script, message], { timeout: 10_000 }, (err) => {
+      if (err) logger.warn({ err }, 'channel-coordinator: notify.sh alert failed')
+      resolve()
+    })
   })
 }
 
@@ -309,11 +314,31 @@ function reconcilePending(): void {
 
 // ---- fatal --------------------------------------------------------------
 
-async function fatalExit(err: TelegramApiError): Promise<never> {
+// #1878 (10): the fatal alert used to be fire-and-forget plus a fixed 1.5 s
+// sleep, so a notify.sh slower than that (a Slack round-trip, a Telegram retry)
+// could be cut off by the exit. Wait for it, but never longer than the cap: a
+// hung alert must not keep a dead coordinator around.
+export const FATAL_ALERT_CAP_MS = 12_000
+
+export async function alertBeforeExit(alert: () => Promise<void>, capMs: number): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    await Promise.race([
+      alert().catch(() => { /* the alert's own failure is already logged */ }),
+      new Promise<void>((resolve) => { timer = setTimeout(resolve, capMs) }),
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
+export async function fatalExit(err: TelegramApiError, exit: (code: number) => never = process.exit): Promise<never> {
   logger.error({ msg: err.message }, 'channel-coordinator: fatal error, exiting')
-  sendAlert(`${BOT_NAME} channel-coordinator FATAL: ${err.message}. Inbound backfill leallt amig nem javitod.`)
-  await sleep(1500) // let notify.sh fire before exit
-  process.exit(1)
+  await alertBeforeExit(
+    () => sendAlert(`${BOT_NAME} channel-coordinator FATAL: ${err.message}. Inbound backfill leallt amig nem javitod.`),
+    FATAL_ALERT_CAP_MS,
+  )
+  return exit(1)
 }
 
 // ---- main loop (IDLE <-> BACKFILLING state machine) ----------------------

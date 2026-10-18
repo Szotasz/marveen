@@ -21,6 +21,7 @@ import { atomicWriteFileSync } from './atomic-write.js'
 import { updateEnvFile } from '../env.js'
 import { AGENTS_BASE_DIR, listAgentNames, readJsonObjectForWrite } from './agent-config.js'
 import { safeJoin } from './sanitize.js'
+import { importedLabelColor } from '../css-color.js'
 import { SCHEDULED_TASKS_DIR } from './scheduled-tasks-io.js'
 import { getBindings } from './vault-bindings.js'
 import { resolveMasterKeyForExport } from './vault.js'
@@ -1141,8 +1142,13 @@ export function importFleet(
       for (const label of fleet.kanban?.labels ?? []) {
         const l = label as any
         if (!l.id || !l.name) { logger.warn({ id: l.id }, 'Fleet import: skipping label with missing required fields'); continue }
+        // the colour reaches CSS backgrounds on the dashboard: hex is kept as
+        // written, a colour name / numeric rgb() / hsl() becomes hex, a bare
+        // var(--token) is kept, anything else is replaced with the default
+        const imported = importedLabelColor(l.color)
+        if (imported.replaced) logger.warn({ id: l.id }, 'Fleet import: label colour is not a colour, replaced with the default')
         db.prepare('INSERT OR IGNORE INTO labels (id, name, color, created_at) VALUES (?, ?, ?, ?)')
-          .run(l.id, l.name, l.color, l.created_at)
+          .run(l.id, l.name, imported.color, l.created_at)
       }
 
       for (const card of fleet.kanban?.cards ?? []) {
@@ -1152,10 +1158,10 @@ export function importFleet(
         }
         db.prepare(
           `INSERT OR IGNORE INTO kanban_cards
-           (id, title, description, status, assignee, priority, project,
+           (id, title, description, test_steps, status, assignee, priority, project,
             due_date, sort_order, created_at, updated_at, archived_at, parent_id, dispatched_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-        ).run(c.id, c.title, c.description ?? null, c.status, c.assignee ?? null,
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ).run(c.id, c.title, c.description ?? null, c.test_steps ?? null, c.status, c.assignee ?? null,
           c.priority, c.project ?? null, c.due_date ?? null, c.sort_order,
           c.created_at, c.updated_at, c.archived_at ?? null, c.parent_id ?? null, c.dispatched_at ?? null)
       }

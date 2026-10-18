@@ -479,6 +479,71 @@ export function stripSessionTitleBanner(coloredPane: string): string {
   return lines.slice(0, end).join('\n')
 }
 
+// Background (sub-)agents render as a block BELOW the idle footer: blank row,
+// `  ⏺ main`, then one `  ◯ <type>  <label> <elapsed> · ↓ <n> tokens` row per
+// agent (measured 2026-10-16, Claude Code 2.1.301). The footer is no longer the
+// last line, which broke two probes that count from the bottom:
+//   - the clipped footer (FOOTER_TRUNCATED_RX) is only accepted on the LAST
+//     non-empty line, so a main thread starting a turn with an agent running
+//     read 'unknown' (the dashboard's orange "ismeretlen");
+//   - the rows pushed the spinner and `esc to interrupt` out of the bottom live
+//     windows, so a main thread mid-turn with five agents read 'idle'.
+// The block starts at an indented `⏺ main` header whose nearest non-blank line
+// above is the footer; everything from the header down is cut before the pane
+// is classified, whatever the rows look like, so a row shape we have not seen
+// cannot push a running turn back out of the live windows. COUNTING is stricter:
+// detectBackgroundAgents reports only when every row is a measured `◯` row, and
+// says nothing (null) otherwise.
+const BG_AGENT_MAIN_RX = /^\s+⏺ main\s*$/
+const BG_AGENT_ROW_RX = /^\s+◯ \S/
+// The footer's lead: the mode words + `on`, then the shift+tab hint and/or the
+// first `·` segment; or the no-mode `? for shortcuts` footer.
+const FOOTER_LEAD_RX = /(?:[A-Za-z][\w-]* ){1,3}on(?: \(shift\+tab to cycle\))?(?: · |\s*$)|\? for shortcuts/
+// The row tail is `[elapsed, tokens, "N queued"]` joined with ` · ` (read from
+// the Claude Code 2.1.301 source; empty parts are dropped). A running agent's
+// elapsed is a clock (`18m 5s`); an idle one shows a word (`waiting`, `idle`)
+// instead. In its first second the token part is not drawn yet. `N queued` is
+// the number of messages sent TO that agent that it has not picked up yet.
+const BG_AGENT_RUNNING_RX = new RegExp(String.raw`\s${TURN_ELAPSED}(?: · [↑↓] \d[\d.]*[kKmMbB]? tokens)?(?: · \d+ queued)?\s*$`)
+const BG_AGENT_QUEUED_RX = / · (\d+) queued\s*$/
+
+function splitBackgroundAgentBlock(lines: string[]): { above: string[]; rows: string[] } | null {
+  let end = lines.length
+  while (end > 0 && lines[end - 1].trim() === '') end--
+  let header = end - 1
+  while (header >= 0 && !BG_AGENT_MAIN_RX.test(lines[header])) header--
+  if (header < 1) return null
+  let k = header - 1
+  while (k >= 0 && lines[k].trim() === '') k--
+  if (k < 0 || !FOOTER_LEAD_RX.test(lines[k])) return null
+  return { above: lines.slice(0, header), rows: lines.slice(header + 1, end) }
+}
+
+/**
+ * The background-agent block under the footer, or null when the pane shows
+ * none in the recognised shape. `running` counts the rows that carry the live
+ * elapsed clock; `total` counts every row; `queued` sums the `N queued` parts
+ * (messages waiting for an agent to pick them up).
+ */
+export function detectBackgroundAgents(pane: string): { total: number; running: number; queued: number } | null {
+  if (!pane) return null
+  const block = splitBackgroundAgentBlock(pane.split('\n'))
+  if (!block || block.rows.length === 0 || !block.rows.every(r => BG_AGENT_ROW_RX.test(r))) return null
+  return {
+    total: block.rows.length,
+    running: block.rows.filter(r => BG_AGENT_RUNNING_RX.test(r)).length,
+    queued: block.rows.reduce((sum, r) => sum + Number(BG_AGENT_QUEUED_RX.exec(r)?.[1] ?? 0), 0),
+  }
+}
+
+// The subagent hint (`· /tasks to see subagents`) lengthens the busy footer so
+// that `esc to interrupt` is clipped to a prefix plus `…`, e.g. `· e…`
+// (measured 2026-10-16). Only a prefix of that exact phrase as the LAST
+// segment of the footer line counts. The bare `· e…` has to count, because that
+// is the measured clip; no idle footer segment starts with `e` (`↓ to manage`,
+// `← for agents`, `ctrl+t`, `N shells`, `N monitors`).
+const BUSY_ESC_CLIPPED_RX = /· e(?:s(?:c(?: (?:t(?:o(?: (?:i[a-z]*)?)?)?)?)?)?)?…\s*$/
+
 // Persistent Anthropic thinking-block API error. When an assistant turn
 // ends with a 400 about thinking/redacted_thinking blocks that "cannot
 // be modified", the session is wedged: every subsequent prompt re-sends
@@ -800,12 +865,40 @@ export function detectQuotaWall(pane: string): QuotaWall | null {
 // The tmux-visible selection marker Claude Code draws on the active option.
 const CURSOR_GLYPH = '\u276f'
 
-export type FirstRunGateKind = 'trust' | 'bypass-permissions' | 'login' | 'theme' | 'welcome' | 'mcp-trust'
+export type FirstRunGateKind = 'trust' | 'bypass-permissions' | 'login' | 'theme' | 'welcome' | 'mcp-trust' | 'dev-channels'
+
+// The development-channels warning. A worksourceChannel
+// agent is launched with `--dangerously-load-development-channels
+// server:worksource` (agent-process.ts), and Claude Code parks EVERY such
+// launch on this panel before the prompt renders -- measured in the shipped
+// 2.1.280 binary: DevChannelsDialog is mounted whenever dev channels were
+// passed, channels are enabled and the session is first-party; nothing
+// persists an acknowledgement, so it returns on every start and restart:
+//
+//   WARNING: Loading development channels
+//   --dangerously-load-development-channels is for local channel development
+//   only. ...
+//   Please use --channels to run a list of approved channels.
+//   Channels: server:worksource
+//   ❯ 1. I am using this for local development
+//     2. Exit
+//   Enter to confirm · Esc to cancel
+//
+// Both refusals QUIT the TUI in that binary: "Exit" calls exit(1) and the
+// panel's own Escape handler calls exit(0). So the generic blocking-menu
+// Escape is the wrong answer here, exactly as on the trust dialog.
+//
+// Both the heading and the option are required: the option is the functional
+// element (see TRUSTGATE901), the heading keeps a pane that merely quotes the
+// option line from being read as the panel.
+const DEV_CHANNELS_TITLE_RX = /Loading development channels/
+const DEV_CHANNELS_OPTION_RX = /I am using this for local development/
 
 // Ordered: the login picker and theme screen render UNDER the "Welcome to
 // Claude Code" banner, so the more specific matches must win before the
 // generic welcome fallback.
 const FIRST_RUN_GATES: Array<{ kind: FirstRunGateKind; rx: RegExp }> = [
+  { kind: 'dev-channels', rx: new RegExp(`^(?=[\\s\\S]*${DEV_CHANNELS_TITLE_RX.source})(?=[\\s\\S]*${DEV_CHANNELS_OPTION_RX.source})`) },
   // MCP server-approval dialog (2026-09-03, PR #1099 review). A worksource
   // agent gets its queue as a project-scope MCP server, and on the first start
   // after that server appears Claude Code parks the TUI on:
@@ -911,6 +1004,25 @@ export function mcpTrustAcceptKeys(pane: string): string[] | null {
   for (let i = 0; i < Math.abs(delta); i++) keys.push(delta > 0 ? 'Down' : 'Up')
   keys.push('Enter')
   return keys
+}
+
+// Keys that confirm the development-channels warning, or null -- meaning PARK,
+// send nothing. Stricter than firstRunAcceptKeys on purpose: this returns a
+// key ONLY when the highlighted row IS "I am using this for local development"
+// and it is the one such row. It never navigates, so a reworded or reordered
+// panel whose cursor sits anywhere else (on "Exit", or on something new) gets
+// no keystroke at all: Enter there would confirm whatever is highlighted, and
+// Escape quits the TUI. Fleet rule: never a bare Enter into a dialog we have
+// not positively identified.
+export function devChannelsAcceptKeys(pane: string): string[] | null {
+  if (!pane || !pane.trim()) return null
+  if (!DEV_CHANNELS_TITLE_RX.test(pane)) return null
+  const lines = pane.split('\n')
+  const cursorLines = lines.filter(l => l.includes(CURSOR_GLYPH))
+  if (cursorLines.length !== 1) return null
+  const isTarget = (l: string) => DEV_CHANNELS_OPTION_RX.test(l) && !/\bexit\b/i.test(l)
+  if (lines.filter(isTarget).length !== 1) return null
+  return isTarget(cursorLines[0]) ? ['Enter'] : null
 }
 
 export function firstRunAcceptKeys(pane: string): string[] | null {
@@ -1183,6 +1295,11 @@ export function detectPaneState(
 ): PaneState {
   if (!pane || !pane.trim()) return 'unknown'
 
+  // Classify the pane as it would look without the background-agent block, so
+  // the footer is the bottom line again for every probe below.
+  const bgBlock = splitBackgroundAgentBlock(pane.split('\n'))
+  if (bgBlock) pane = bgBlock.above.join('\n')
+
   const paneLines = pane.split('\n')
 
   // Spinner / token-counter busy signals, scoped to the live bottom region.
@@ -1206,6 +1323,8 @@ export function detectPaneState(
   // an idle session as busy.
   const footerRegion = liveTailRegion(paneLines, LIVE_FOOTER_REGION_LINES)
   if (BUSY_ESC_TO_INTERRUPT_RX.test(footerRegion)) return 'busy'
+  const lastLine = footerRegion.slice(footerRegion.lastIndexOf('\n') + 1)
+  if (BUSY_ESC_CLIPPED_RX.test(lastLine) && FOOTER_TRUNCATED_RX.test(lastLine)) return 'busy'
 
   // Pending-paste placeholder check runs BEFORE the idle-footer gate. The
   // stub sits in the live input box; the footer below it is version-dependent

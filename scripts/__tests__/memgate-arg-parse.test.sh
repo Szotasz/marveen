@@ -51,17 +51,38 @@ printf 'MemTotal:       16000000 kB\nMemAvailable:     400000 kB\n' > "$SANDBOX/
 
 SAFE_FLAG="$SANDBOX/store/.fleet-safe-mode"
 
+# with_timeout <secs> <cmd...> -- GNU `timeout` semantics (exit 124 when the
+# limit kills the command), portable to macOS, which ships no `timeout`
+# (measured: `env: timeout: No such file or directory`, 6 of 9 cases failed for
+# that reason alone). Order: GNU timeout, Homebrew gtimeout, then a perl fork +
+# alarm, which every macOS and Linux base system has.
+with_timeout() {
+  local secs="$1"; shift
+  if command -v timeout >/dev/null 2>&1; then timeout "$secs" "$@"; return $?; fi
+  if command -v gtimeout >/dev/null 2>&1; then gtimeout "$secs" "$@"; return $?; fi
+  perl -e '
+    my $s = shift @ARGV;
+    my $pid = fork();
+    die "fork: $!" unless defined $pid;
+    if ($pid == 0) { exec @ARGV or exit 127; }
+    local $SIG{ALRM} = sub { kill "KILL", $pid; waitpid($pid, 0); exit 124; };
+    alarm $s;
+    waitpid($pid, 0);
+    exit($? & 127 ? 128 + ($? & 127) : $? >> 8);
+  ' "$secs" "$@"
+}
+
 # run_gate <timeout-sec> <args...>  -> exit code in RC, stdout+stderr in OUT
 run_gate() {
   local secs="$1"; shift
   rm -f "$SAFE_FLAG" "$SANDBOX/store/.fleet-memgate-alert"
-  OUT="$(env PATH="$SANDBOX/bin:$PATH" \
+  OUT="$(with_timeout "$secs" env PATH="$SANDBOX/bin:$PATH" \
       MEMGATE_PROC_MEMINFO="$SANDBOX/meminfo" \
       MARVEEN_STORE="$SANDBOX/store" \
       MARVEEN_ALERT_CHAT_ID="111" \
       MARVEEN_CORE_AGENTS="__no_core__" \
       MARVEEN_MEM_GATE_OBSERVE=0 \
-      timeout "$secs" bash "$GATE" "$@" 2>&1)"
+      bash "$GATE" "$@" 2>&1)"
   RC=$?
 }
 

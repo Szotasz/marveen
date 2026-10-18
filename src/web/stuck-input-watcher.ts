@@ -15,6 +15,20 @@ import {
   type StuckInputThresholds,
 } from '../pane-state.js'
 
+/**
+ * The owner alert for an input recovery gave up on. A sub-agent restarts through its own route. The MAIN
+ * agent's manual restart is gated (manual-restart-gate.ts): a parked input reads as a non-idle pane, so a
+ * plain POST answers 409 there. The alert names the paths that work: the dashboard button, which asks
+ * before it forces, or an explicit force.
+ */
+export function parkedGiveUpAlertText(label: string, isMain: boolean): string {
+  const head = `⚠️ A(z) ${label} agens bemenete beragadt és az auto-recovery (Enter + clear/re-inject) nem szabadította ki.`
+  if (isMain) {
+    return `${head} Valószínűleg kézi restart kell: a dashboardon a restart gomb (foglalt panelnél rákérdez, és megerősítés után kényszerítve indít), vagy POST /api/marveen/restart {"force": true}. A kényszerített restart megszakítja a futó kört.`
+  }
+  return `${head} Valószínűleg kézi restart kell: POST /api/agents/${label}/restart vagy a dashboardon.`
+}
+
 // RIASZTASZAJ819: the owner alert for a parked-past-max-attempts sub-agent
 // fired three times in one afternoon at an agent that was WORKING the whole
 // time (its outbound messages bracket every alert timestamp). Parked input at
@@ -252,7 +266,7 @@ async function checkLocalSession(label: string, session: string, alertOnGiveUp: 
       })) {
         alertedSpells.add(session)
         logger.warn({ label, session, paneState }, 'stuck-input-watcher: sub-agent input still parked after max recovery attempts at a non-busy pane, alerting for manual restart')
-        sendAlert(`⚠️ A(z) ${label} agens bemenete beragadt és az auto-recovery (Enter + clear/re-inject) nem szabadította ki. Valószínűleg kézi restart kell: POST /api/agents/${label}/restart vagy a dashboardon.`)
+        sendAlert(parkedGiveUpAlertText(label, session === MAIN_CHANNELS_SESSION))
       } else if (paneState === 'busy' && prev.attempts < LOCAL_FAST_THRESHOLDS.maxAttempts) {
         // Once per spell, at the crossing tick: say WHY no alert went out, so
         // a real wedge investigation finds the suppression instead of a hole.

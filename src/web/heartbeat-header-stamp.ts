@@ -12,18 +12,21 @@
 // its original (historical) label; any first-line match is by definition a
 // digest being published now, so "now" is the only truthful value.
 
+import { APP_TZ } from '../config.js'
+
 const HEADER_RE = /^## Heartbeat \d{4}-\d{2}-\d{2} \d{2}:\d{2}/
 
-// sv-SE gives `YYYY-MM-DD HH:mm` directly; the digest header is Budapest-local.
-const BUDAPEST_STAMP = new Intl.DateTimeFormat('sv-SE', {
-  timeZone: 'Europe/Budapest',
+// sv-SE gives `YYYY-MM-DD HH:mm` directly; the digest header is in the install
+// zone (APP_TZ, ISSUE1895 / #1895), the zone the heartbeat is scheduled in.
+const HEADER_STAMP = new Intl.DateTimeFormat('sv-SE', {
+  timeZone: APP_TZ,
   year: 'numeric', month: '2-digit', day: '2-digit',
   hour: '2-digit', minute: '2-digit',
 })
 
 export function stampHeartbeatHeader(content: string, now: Date = new Date()): string {
   if (!content.startsWith('## Heartbeat ')) return content
-  return content.replace(HEADER_RE, `## Heartbeat ${BUDAPEST_STAMP.format(now)}`)
+  return content.replace(HEADER_RE, `## Heartbeat ${HEADER_STAMP.format(now)}`)
 }
 
 // HBTEMPLATELEAK1002 (measured 2026-10-02, messages 33179 and 33211): the

@@ -496,8 +496,8 @@ async function main(): Promise<void> {
 
   // Backfill embeddings for memories saved before Ollama was available.
   // Fire-and-forget: a missing or slow Ollama instance must not block startup.
-  backfillEmbeddings().then(count => {
-    if (count > 0) logger.info({ count }, 'Embedding backfill befejezve')
+  backfillEmbeddings().then(({ embedded, attempted, failed }) => {
+    if (embedded > 0) logger.info({ count: embedded, attempted, failed }, 'Embedding backfill befejezve')
   }).catch(err => logger.warn({ err }, 'Embedding backfill hiba (Ollama nem elerheto)'))
 
   // Memory decay (24h cycle)

@@ -45,11 +45,19 @@ export interface ProfileTemplate {
   // a live agent stays a deliberate, separate act.
   destructiveGate?: boolean
   thinChiefHandoff?: boolean
+  // CREDGATE1003: the credential gate (scripts/hooks/credential-gate.py) on the
+  // agent's letter tools. Same posture as destructiveGate: absent == off, no
+  // shipped template sets it, and switching it off is not a teardown.
+  credentialGate?: boolean
 }
 
 /** Absent or non-true == off. Keeps the default in ONE place. */
 export function profileWantsDestructiveGate(p: ProfileTemplate | null | undefined): boolean {
   return p?.destructiveGate === true
+}
+
+export function profileWantsCredentialGate(p: ProfileTemplate | null | undefined): boolean {
+  return p?.credentialGate === true
 }
 
 export function profileWantsThinChiefHandoff(p: ProfileTemplate | null | undefined): boolean {
