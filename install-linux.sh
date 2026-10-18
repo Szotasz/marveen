@@ -1687,6 +1687,12 @@ if [ -d "$SEED_SKILLS_DIR" ]; then
       [ -f "$f" ] || continue
       cp "$f" "$target/$(basename "$f")"
     done
+    # SEEDSKILLSUB1018: a skill's subdirs (scripts/, references/, ...) ship too,
+    # verbatim and with their mode bits; its SKILL.md points into them.
+    for sd in "$skill_dir"*/; do
+      [ -d "$sd" ] || continue
+      cp -Rp "${sd%/}" "$target/"
+    done
     SEED_NEW=$((SEED_NEW + 1))
   done
   if [ "$SEED_NEW" -gt 0 ] || [ "$SEED_SKIP" -gt 0 ]; then
