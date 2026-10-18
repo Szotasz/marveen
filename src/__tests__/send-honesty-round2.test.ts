@@ -27,6 +27,8 @@ function stageTree(scriptNames: string[]): { bin: string } {
   for (const s of scriptNames) cpSync(join(ROOT, 'scripts', s), join(scripts, s))
   cpSync(join(ROOT, 'scripts', 'lib', 'send-telegram.sh'), join(scripts, 'lib', 'send-telegram.sh'))
   cpSync(join(ROOT, 'scripts', 'lib', 'owner-chat.sh'), join(scripts, 'lib', 'owner-chat.sh'))
+  // the three alert scripts resolve their recipients through this one copy (b2e9c0c1)
+  cpSync(join(ROOT, 'scripts', 'lib', 'alert-recipients.sh'), join(scripts, 'lib', 'alert-recipients.sh'))
   const bin = join(stage, 'bin')
   mkdirSync(bin, { recursive: true })
   writeFileSync(join(bin, 'curl'),

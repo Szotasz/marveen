@@ -46,6 +46,10 @@ mk_install() {  # mk_install <access.json tartalom>
   mkdir -p "$d/scripts/lib" "$d/.claude/channels/telegram" "$d/home/.claude/channels/telegram"
   cp "$ROOT/scripts/unit-fail-notify.sh" "$d/scripts/"
   cp "$ROOT/scripts/lib/send-telegram.sh" "$d/scripts/lib/"
+  cp "$ROOT/scripts/lib/alert-recipients.sh" "$d/scripts/lib/"
+  cp "$ROOT/scripts/lib/owner-chat.sh" "$d/scripts/lib/"
+  # the install .env with the installer's placeholder (CHATID0): the owner-chat fallback then reads access.json
+  printf 'ALLOWED_CHAT_ID=0\n' > "$d/.env"
   printf 'TELEGRAM_BOT_TOKEN=123456:TESZT-TOKEN\n' > "$d/.claude/channels/telegram/.env"
   printf '%s' "$acc" > "$d/.claude/channels/telegram/access.json"
 }
