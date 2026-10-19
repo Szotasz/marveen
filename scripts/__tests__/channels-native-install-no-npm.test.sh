@@ -59,21 +59,44 @@ if [ -z "$BLOCK" ]; then
   exit 1
 fi
 
+# The block runs on a PATH of the stub dir, the fake HOME's launcher dir and the
+# system bin dirs. A REAL claude in /usr/bin or /bin (an npm-global install
+# links it there: /usr/bin/claude -> ../lib/node_modules/@anthropic-ai/claude-code/cli.js)
+# makes every "claude is missing" case see a claude, take the daily-check
+# branch, and go red for the host, not for channels.sh. So the system dirs are
+# mirrored as symlinks with `claude` left out: every other tool is the real one.
+SYSBIN="$(mktemp -d)"
+trap 'rm -rf "$SYSBIN"' EXIT
+for d in /usr/bin /bin; do
+  for f in "$d"/*; do
+    n="${f##*/}"
+    [ "$n" = claude ] && continue
+    [ -e "$SYSBIN/$n" ] || ln -s "$f" "$SYSBIN/$n"
+  done
+done
+if PATH="$SYSBIN" command -v claude >/dev/null 2>&1; then
+  echo "FAIL: the sandbox PATH still resolves a claude ($(PATH="$SYSBIN" command -v claude))"
+  exit 1
+fi
+BASH_BIN="$(command -v bash)"
+
 # run_block <root> <system-path>: one start of the install/update block on that host
+# (<system-path> is $SYSBIN, or the no-npm mirror below; never /usr/bin:/bin, see above)
 run_block() {
   HOME="$1/home" \
   PATH="$1/stub:$1/home/.local/bin:$2" \
   INSTALL_DIR="$1/install" CLAUDE_PKG="@anthropic-ai/claude-code" AVX_LESS=0 \
-  bash -c "$BLOCK
+  "$BASH_BIN" -c "$BLOCK
 wait" 2>&1 >/dev/null
 }
 
 # run_case <setup-fn> [<between-fn>]  -> sets NPM_CALLS, LINK_TARGET, ERR, FAILLOG, WARNS in the caller
 # With a <between-fn> the block runs TWICE on the same host (a second start), the fn changing the host in
 # between. A setup that touches <root>/no-npm gets a system PATH without npm (every /usr/bin and /bin
-# entry linked, except npm/npx), so the case does not depend on whether the test host has npm.
+# entry linked, except npm/npx and claude), so the case does not depend on whether the test host has npm
+# or a claude in the system dirs.
 run_case() {
-  local setup="$1" between="${2:-}" root sysp="/usr/bin:/bin" f n
+  local setup="$1" between="${2:-}" root sysp="$SYSBIN" f n
   root="$(mktemp -d)"
   mkdir -p "$root/home" "$root/stub" "$root/install/store"
   mkdir -p "$root/npmroot"
@@ -92,7 +115,7 @@ EOF
     mkdir -p "$sysp"
     for f in /usr/bin/* /bin/*; do
       n="${f##*/}"
-      case "$n" in npm|npx) continue ;; esac
+      case "$n" in npm|npx|claude) continue ;; esac
       [ -e "$sysp/$n" ] || ln -s "$f" "$sysp/$n"
     done
   fi
