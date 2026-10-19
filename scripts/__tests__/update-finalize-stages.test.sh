@@ -9,7 +9,8 @@
 # stop/start/curl/systemctl, and pin:
 #   1. the order of the stage= lines on the success path;
 #   2. the order on the rollback path (the dashboard never answers);
-#   3. a TERM delivered during the restart prints the trap line naming that stage.
+#   3. a TERM delivered during the restart prints the trap line naming that stage,
+#      and (the trap is non-fatal on purpose) the finalizer still writes the verdict.
 #
 # Run:  bash scripts/__tests__/update-finalize-stages.test.sh
 set -uo pipefail
@@ -84,6 +85,9 @@ check "3 TERM during the restart prints the trap line with stage=restart" \
   "$(grep -q '^\[finalize\] SIGNAL caught in stage=restart ' <<<"$out" && echo 0 || echo 1)" "$(grep SIGNAL <<<"$out")"
 check "3 the trap line comes after stage=restart and before stage=unit-drift" \
   "$(awk '/^\[finalize\] stage=restart /{r=NR} /SIGNAL caught/{s=NR} /^\[finalize\] stage=unit-drift /{u=NR} END{if (r && s>r && u>s) exit 0; exit 1}' <<<"$out" && echo 0 || echo 1)"
+
+check "3 the finalizer survives the TERM and still writes the success verdict" \
+  "$(grep -q '"status":"success"' "$F/store/res.json" 2>/dev/null && echo 0 || echo 1)"
 
 echo
 if [ "$FAILS" -gt 0 ]; then echo "$FAILS FAILED of $N" >&2; exit 1; fi

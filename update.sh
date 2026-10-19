@@ -1718,8 +1718,13 @@ cd "$INSTALL_DIR" 2>/dev/null || true
 # FINSTAGE930: the verdict has gone missing on installs where the finalizer
 # reaches the restart and then simply is not there any more, so nothing told
 # "died" apart from "never got to _write". These stage marks cost two echoes
-# and turn the next occurrence into a location. The trap covers every
-# catchable death; a SIGKILL leaves the last stage= line as the marker.
+# and turn the next occurrence into a location.
+# The trap is deliberately NON-FATAL: a TERM/HUP/INT is logged with the stage
+# and the finalizer carries on, so a stray reaper TERM no longer costs the
+# verdict (measured: one still arrives in the field, source unknown). This
+# includes the rollback branch, git reset --hard included. The flip side: a
+# deliberate stop of a running finalizer needs SIGKILL, which leaves the last
+# stage= line as the marker.
 STAGE="boot"
 _stage() { STAGE="$1"; echo "[finalize] stage=$1 $(date '+%H:%M:%S')" >&2; }
 trap 'echo "[finalize] SIGNAL caught in stage=${STAGE} $(date +%H:%M:%S)" >&2' TERM HUP INT
