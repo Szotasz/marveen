@@ -5,6 +5,7 @@ import { isAgentRunning, captureParkedInputView, sendEnterToSession, capturePane
 import { resolveAgentSession } from './channel-mcp-reconnect.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { recoverStuckInputForSession, sendAlert } from './channel-monitor.js'
+import { createAgentMessage } from '../db.js'
 import {
   stuckInputSignature,
   parkedPasteSignature,
@@ -28,6 +29,11 @@ export function parkedGiveUpAlertText(label: string, isMain: boolean): string {
     return `${head} Valószínűleg kézi restart kell: a dashboardon a restart gomb (foglalt panelnél rákérdez, és megerősítés után kényszerítve indít), vagy POST /api/marveen/restart {"force": true}. A kényszerített restart megszakítja a futó kört.`
   }
   return `${head} Valószínűleg kézi restart kell: POST /api/agents/${label}/restart vagy a dashboardon.`
+}
+
+/** The main-agent notice for a sub-agent whose parked input the recovery gave up on. */
+export function parkedGiveUpOrchestratorText(label: string, session: string): string {
+  return `[stuck-input] Agent '${label}' (tmux ${session}) still has parked input after the auto-recovery (Enter + clear/re-inject) at a non-busy pane. Check the pane: if the parked text is ours, press Enter; if the session is wedged, restart it (POST /api/agents/${label}/restart). Escalate to the owner only if it cannot be fixed.`
 }
 
 // RIASZTASZAJ819: the owner alert for a parked-past-max-attempts sub-agent
@@ -267,7 +273,16 @@ async function checkLocalSession(label: string, session: string, alertOnGiveUp: 
       })) {
         alertedSpells.add(session)
         logger.warn({ label, session, paneState }, 'stuck-input-watcher: sub-agent input still parked after max recovery attempts at a non-busy pane, alerting for manual restart')
-        sendAlert(parkedGiveUpAlertText(label, session === MAIN_CHANNELS_SESSION))
+        if (session === MAIN_CHANNELS_SESSION) {
+          sendAlert(parkedGiveUpAlertText(label, true))
+        } else {
+          // A parked sub-agent goes to the main agent, not the owner's channel:
+          // the main agent can read the pane and press Enter or restart, which
+          // is everything the owner could do (and owners asked not to be paged
+          // for it). The main session itself still alerts the owner -- nobody
+          // else can act on it.
+          createAgentMessage('system', MAIN_AGENT_ID, parkedGiveUpOrchestratorText(label, session))
+        }
       } else if (paneState === 'busy' && prev.attempts < LOCAL_FAST_THRESHOLDS.maxAttempts) {
         // Once per spell, at the crossing tick: say WHY no alert went out, so
         // a real wedge investigation finds the suppression instead of a hole.

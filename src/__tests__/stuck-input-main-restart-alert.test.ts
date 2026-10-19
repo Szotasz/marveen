@@ -6,7 +6,7 @@
  */
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
-import { parkedGiveUpAlertText } from '../web/stuck-input-watcher.js'
+import { parkedGiveUpAlertText, parkedGiveUpOrchestratorText } from '../web/stuck-input-watcher.js'
 
 describe('parkedGiveUpAlertText', () => {
   it('main agent: the dashboard button or an explicit force, and it says the force cuts the turn', () => {
@@ -23,9 +23,16 @@ describe('parkedGiveUpAlertText', () => {
     expect(s).not.toContain('force')
   })
 
+  it('sub-agent give-up goes to the main agent with its restart route', () => {
+    const s = parkedGiveUpOrchestratorText('samu', 'agent-samu')
+    expect(s).toContain("Agent 'samu' (tmux agent-samu)")
+    expect(s).toContain('POST /api/agents/samu/restart')
+  })
+
   it('the watcher passes whether the session is the main channels session', () => {
     const src = readFileSync(new URL('../web/stuck-input-watcher.ts', import.meta.url), 'utf-8')
-    expect(src).toContain('sendAlert(parkedGiveUpAlertText(label, session === MAIN_CHANNELS_SESSION))')
+    expect(src).toContain('sendAlert(parkedGiveUpAlertText(label, true))')
+    expect(src).toContain("createAgentMessage('system', MAIN_AGENT_ID, parkedGiveUpOrchestratorText(label, session))")
     expect(src).not.toMatch(/sendAlert\(`[^`]*\/api\/agents\/\$\{label\}\/restart/)
   })
 })

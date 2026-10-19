@@ -71,10 +71,10 @@ describe('wiring: the owner alert goes through the gate, recovery does not', () 
   it('checkLocalSession exists and its alert is gated by shouldAlertParkedGiveUp', () => {
     expect(start).toBeGreaterThanOrEqual(0)
     expect(fnBody).toMatch(/shouldAlertParkedGiveUp\(/)
-    // The sendAlert call must be INSIDE the gated branch: no sendAlert may
+    // The alert (sendAlert / createAgentMessage) must be INSIDE the gated branch: none may
     // appear in the body before the gate call.
     const gateIdx = fnBody.indexOf('shouldAlertParkedGiveUp(')
-    const alertIdx = fnBody.indexOf('sendAlert(')
+    const alertIdx = Math.min(...['sendAlert(', 'createAgentMessage('].map(n => fnBody.indexOf(n)).filter(i => i >= 0))
     expect(alertIdx).toBeGreaterThan(gateIdx)
   })
 

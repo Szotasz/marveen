@@ -131,6 +131,13 @@ describe('matchesInjectedPrompt (the safety gate)', () => {
     expect(matchesInjectedPrompt('the content', rec)).toBe(false)
   })
 
+  it('ACCEPTS an exact match of a short line we typed (post-spawn /rename)', () => {
+    recordInjectedPrompt('agent-margot', '/rename Margot', 1_000)
+    const rec = getInjectedPrompt('agent-margot', 1_000)
+    expect(matchesInjectedPrompt('/rename Margot', rec)).toBe(true)
+    expect(matchesInjectedPrompt('/rename Mar', rec)).toBe(false)
+  })
+
   it('REFUSES when there is no record at all', () => {
     expect(matchesInjectedPrompt(HEAD_LOST_SCRAPE, null)).toBe(false)
   })
