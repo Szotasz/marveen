@@ -461,11 +461,15 @@ describe('dependency unblock on done', () => {
     expect(second.status).toBe(200)
     expect(second.body.unblocked.map((u: { id: string }) => u.id)).toEqual(['a'])
     expect(getKanbanCard('a')!.status).toBe('planned')
+    // Two system notes land on the freed card: this unblock's own, and the
+    // hand-off notice from notifyUnblockedCards (#2027). Exactly one of each.
     const comments = getKanbanComments('a')
-    expect(comments).toHaveLength(1)
-    expect(comments[0].author).toBe('system')
-    expect(comments[0].content).toContain('Second blocker')
-    expect(comments[0].content).toContain('waiting -> planned')
+    expect(comments).toHaveLength(2)
+    expect(comments.every((c) => c.author === 'system')).toBe(true)
+    const unblockNotes = comments.filter((c) => c.content.includes('waiting -> planned'))
+    expect(unblockNotes).toHaveLength(1)
+    expect(unblockNotes[0].content).toContain('Second blocker')
+    expect(comments.filter((c) => c.content.includes('Folytatható'))).toHaveLength(1)
   })
 
   it('leaves planned and in_progress dependents alone, and an unfinished archived blocker still blocks', () => {
