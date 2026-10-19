@@ -1071,6 +1071,12 @@ with tempfile.TemporaryDirectory() as td:
     code, _, err = run_gate(make_store(os.path.join(td, "dn-2"), level=2), SEND_DRAFT, gate=broken)
     check("broken email_extract.py -> send_draft at level 2 DENIED, naming the module",
           code == 2 and "email_extract.py" in err, f"exit={code} err={err[:200]!r}")
+    # With the classifier gone every tool is "unclassified", and owner_cc_scope
+    # falls back to the #2012 send regex: a send must stay owner-checked, or a
+    # broken extractor would switch the owner-CC check off at level 3.
+    code, _, err = run_gate(owner_store(os.path.join(td, "dn-owner-3"), 3), mcp_send(), gate=broken)
+    check("broken email_extract.py -> level 3 send_email without the owner DENIED, naming the owner",
+          code == 2 and OWNER in err, f"exit={code} err={err[:200]!r}")
 
 print()
 if failed:
