@@ -265,6 +265,9 @@ describe.skipIf(!HAS_TMUX)('channels.sh tmux auth (real tmux, isolated socket)',
 // `set -g exit-empty off` the server it forks survives and would carry the main
 // session's state dir in its environ and global env. Runs the REAL line cut out
 // of channels.sh against an isolated socket with such a config.
+// The server's environment is read with `ps eww`, which works on Linux and
+// macOS (macOS has no /proc). A marker exported next to the state dir must show
+// up there, so the negative check cannot pass on a ps that prints no env.
 const START_SERVER_LINES = SH.split('\n').filter(l => /^(?!\s*#).*\$TMUX start-server/.test(l))
 
 describe.skipIf(!HAS_TMUX)('channels.sh start-server leaves the state-dir var out of the server (real tmux)', () => {
@@ -279,13 +282,16 @@ describe.skipIf(!HAS_TMUX)('channels.sh start-server leaves the state-dir var ou
       TMUX="tmux -S ${sock} -f ${conf}"
       STATE_ENV_VAR=TELEGRAM_STATE_DIR
       export TELEGRAM_STATE_DIR=/main/chan
+      export TMUXSS_MARKER=present
       ${START_SERVER_LINES[0]}
       env -u TELEGRAM_STATE_DIR tmux -S ${sock} new-session -d -s worker "printenv TELEGRAM_STATE_DIR > ${out}.tmp; echo rc=\\$? >> ${out}.tmp; mv ${out}.tmp ${out}; sleep 30"
     `)
     for (let i = 0; i < 100 && !existsSync(out); i++) execFileSync('sleep', ['0.1'])
     expect(readFileSync(out, 'utf-8')).not.toContain('/main/chan')
     const pid = execFileSync('tmux', ['-S', sock, 'display', '-p', '#{pid}'], { encoding: 'utf-8' }).trim()
-    expect(readFileSync(`/proc/${pid}/environ`, 'utf-8').split('\0')).not.toContain('TELEGRAM_STATE_DIR=/main/chan')
+    const serverEnv = execFileSync('ps', ['eww', '-p', pid], { encoding: 'utf-8' })
+    expect(serverEnv).toContain('TMUXSS_MARKER=present')
+    expect(serverEnv).not.toContain('TELEGRAM_STATE_DIR=/main/chan')
     expect(spawnSync('tmux', ['-S', sock, 'show-environment', '-g', 'TELEGRAM_STATE_DIR'], { encoding: 'utf-8' }).stdout).not.toContain('/main/chan')
   })
 })
