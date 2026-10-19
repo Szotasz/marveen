@@ -55,6 +55,8 @@ const h = vi.hoisted(() => ({
   restartOk: true,
   sendOutcome: 'sent' as 'sent' | 'aborted-busy' | 'skipped-locked',
   sendThrows: false,
+  // When set, the send waits on it: holds a send open, as the per-pane lane does.
+  sendGate: null as Promise<void> | null,
   sendSystemDirective: null as unknown as import('vitest').Mock<(...a: unknown[]) => Promise<string>>,
   restartAgentProcess: null as unknown as import('vitest').Mock<(...a: unknown[]) => Promise<{ ok: boolean; error?: string }>>,
 }))
@@ -77,6 +79,7 @@ vi.mock('../web/agent-process.js', async () => {
 vi.mock('../web/system-directive.js', async () => {
   const { vi } = await import('vitest')
   h.sendSystemDirective = vi.fn(async () => {
+    if (h.sendGate) await h.sendGate
     if (h.sendThrows) throw new Error('tmux send failed')
     return h.sendOutcome
   })
@@ -147,6 +150,7 @@ beforeEach(() => {
   h.restartOk = true
   h.sendOutcome = 'sent'
   h.sendThrows = false
+  h.sendGate = null
 })
 
 afterEach(() => {
@@ -344,6 +348,37 @@ describe('immediate resume delivery after a guard restart', () => {
     expect(atDelivered).not.toBeNull()
     expect(atDelivered!.pending).toEqual({})
     expect(atDelivered!.phase).toBe('cooldown')
+  })
+
+  it('a sweep tick while the loop\'s send is in flight sends nothing (the sweep honours the claim)', async () => {
+    // The other half of "one prompt per restart": the loop's send is async and
+    // goes through the per-pane send lane, so it can stay open across a sweep
+    // tick. In await-ready the sweep would send its own resume; the loop's
+    // claim is the only thing that stops it.
+    h.pane = SATURATED_PANE
+    const runner = await bootDashboard()
+    await vi.advanceTimersByTimeAsync(INTERVAL_MS)
+    expect(h.restartAgentProcess).toHaveBeenCalledTimes(1)
+    h.pane = null
+
+    let releaseSend!: () => void
+    h.sendGate = new Promise<void>((resolve) => { releaseSend = resolve })
+    await vi.advanceTimersByTimeAsync(25_000)
+    expect(resumeCalls()).toHaveLength(1) // the loop's send, held open
+    expect(runner.getHardGuardPhase('boni')).toBe('await-ready')
+    expect(readPending()).toHaveProperty('boni')
+
+    // One sweep tick while the send is still open.
+    await vi.advanceTimersByTimeAsync(INTERVAL_MS)
+    expect(resumeCalls()).toHaveLength(1)
+
+    h.sendGate = null
+    releaseSend()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(readPending()).toEqual({})
+    expect(runner.getHardGuardPhase('boni')).toBe('cooldown')
+    await vi.advanceTimersByTimeAsync(2 * INTERVAL_MS)
+    expect(resumeCalls()).toHaveLength(1)
   })
 
   it('backstop: with the loop dead, the sweep still delivers the resume on its own', async () => {
