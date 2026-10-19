@@ -6,18 +6,22 @@ import type { EngineInterface, Register } from 'claude-code'
 //
 //   👀  received        prompt.submit from the Telegram channel
 //   🤔  working         turn.start, or the first tool call that is not the reply
-//   ✍️  writing         the Telegram `reply` tool is about to run; it STAYS while
-//                       the turn goes on (more tool calls, more replies)
+//   ✍️  writing         the Telegram `reply` tool is about to run
+//   👨‍💻  after           the `reply` tool SUCCEEDED -- the answer is out, the turn is
+//                       still running; it STAYS while the turn goes on (more tool
+//                       calls, more replies)
 //   (cleared)           the turn completed -- not the first reply: an agent often
 //                       answers in several messages, and the user reads the
 //                       reaction as "still working" until the turn is over
 //
-// The reaction only ever moves forward (👀 -> 🤔 -> ✍️); it never flips back.
+// The reaction only ever moves forward (👀 -> 🤔 -> ✍️ -> 👨‍💻); it never flips back.
+// The `after` step is switched off with MARVEEN_TELEGRAM_REACTION_EMOJIS='after=': then the 0.3.2 behaviour is
+// unchanged to the call (✍️ stays to the turn end; the step does not even move the pending stage).
 //
 // Each step's emoji can be changed or the step skipped:
-// MARVEEN_TELEGRAM_REACTION_EMOJIS='received=👀,working=🤔,writing=✍️' -- a step left out keeps its default; an empty
+// MARVEEN_TELEGRAM_REACTION_EMOJIS='received=👀,working=🤔,writing=✍️,after=👨‍💻' -- a step left out keeps its default; an empty
 // value ('working=') skips the step: no change at that point (the previous reaction stays; at the first step: none
-// yet). All three empty turns the mod off (the cleanup still runs). An unknown step, a malformed item or an emoji
+// yet). The first three empty turn the mod off (the cleanup still runs; `after` alone does not keep it on). An unknown step, a malformed item or an emoji
 // Telegram does not accept as a reaction is a loud warning in the session transcript ($.ui.log), and that step keeps
 // its default. Read at session start: a change needs a restart of the main agent.
 //
@@ -50,10 +54,12 @@ import type { EngineInterface, Register } from 'claude-code'
 // never stored, logged or shown.
 
 // The steps of a turn, in their only order (the rank is the STEP's, not the emoji's: two steps may share an emoji).
-export const STEPS = ['received', 'working', 'writing'] as const
+export const STEPS = ['received', 'working', 'writing', 'after'] as const
 export type Step = (typeof STEPS)[number]
-const RANK: Record<Step, number> = { received: 0, working: 1, writing: 2 }
-export const DEFAULT_EMOJIS: Readonly<Record<Step, string>> = { received: '👀', working: '🤔', writing: '✍️' }
+const RANK: Record<Step, number> = { received: 0, working: 1, writing: 2, after: 3 }
+export const DEFAULT_EMOJIS: Readonly<Record<Step, string>> = { received: '👀', working: '🤔', writing: '✍️', after: '👨‍💻' }
+// the steps of the 0.3.2 ladder: all of them empty turns the mod off (the `after` step alone never keeps it on)
+const LADDER_032 = ['received', 'working', 'writing'] as const
 // The Bot API ReactionTypeEmoji whitelist, as the telegram plugin 0.0.7's own dependency types it (@grammyjs/types
 // 3.25.0, message.d.ts, read 2026-10-12). Compared without the variation selector U+FE0F: the default ✍️ carries it,
 // the list does not, and Telegram takes both.
@@ -93,7 +99,7 @@ export function emojisFrom(value: unknown): { emojis: Record<Step, string>; warn
     const name = item.slice(0, eq).trim()
     const emoji = item.slice(eq + 1).trim()
     if (!(STEPS as readonly string[]).includes(name)) {
-      warnings.push(`unknown step "${cut(name)}" (received, working, writing) -- ignored`)
+      warnings.push(`unknown step "${cut(name)}" (received, working, writing, after) -- ignored`)
       continue
     }
     const step = name as Step
@@ -343,6 +349,7 @@ function record(t: { chat_id: string; message_id: number }): Rec {
 }
 
 function stage($: EngineInterface, t: { chat_id: string; message_id: number }, step: Step): void {
+  if (step === 'after' && !emojis.after) return         // the step is off: nothing changes, not even the pending stage (0.3.2 to the call)
   const k = key(t)
   if (records.get(k)?.agent) return                     // the agent took the message over: no stages again (a re-delivery)
   const cur = pending.get(k)
@@ -581,8 +588,8 @@ export const register: Register = on => {
         for (const t of left) if (t && typeof t.chat_id === 'string' && Number.isFinite(t.message_id)) retryLater(t, null)
       }
       retryClears($)
-      // all three steps skipped = off; the cleanup above still ran
-      enabled = on_ && STEPS.some(s => emojis[s] !== '')
+      // the first three steps skipped = off (`after` alone does not keep it on); the cleanup above still ran
+      enabled = on_ && LADDER_032.some(s => emojis[s] !== '')
       // the warnings LAST and not awaited: an op that never returns must not hold back the cleanup or the switch
       for (const w of warnings) void Promise.resolve().then(() => $.ui.log(`telegram-reaction: ${w}`)).catch(() => {})
     } catch {
@@ -642,11 +649,16 @@ export const register: Register = on => {
         }
       }
     } catch {}
-    // The reply is not the end of the turn: the reaction stays (✍️) until
+    // The reply is not the end of the turn: the reaction stays (✍️, after a successful reply 👨‍💻) until
     // turn.complete clears it. A session that dies after a reply but before the
     // turn end leaves it in the store; the next session start clears it.
     const r = await next(e)
     try {
+      // the reply SUCCEEDED -- the answer is out while the turn still runs: the reply's own chat moves to `after`
+      // (forward only; a failed reply stays at ✍️; an agent-owned message is left alone by stage())
+      if (replyTo !== null && toolSucceeded(r)) {
+        for (const t of [...pending.values()]) if (t.chat_id === replyTo) stage($, t, 'after')
+      }
       const rec = handOver !== null ? records.get(handOver) : undefined
       if (!rec && handOver !== null && toolSucceeded(r)) {
         // A message the mod does not (or no longer) track: the agent's reaction is on it now (its react

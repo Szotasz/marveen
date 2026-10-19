@@ -3,10 +3,16 @@
 The main agent shows the progress of a Telegram turn as a **reaction on the user's own message** instead of the
 separate placeholder message:
 
-👀 received → 🤔 working → ✍️ writing → cleared at the turn end
+👀 received → 🤔 working → ✍️ writing → 👨‍💻 after (the reply is out, the turn still runs) → cleared at the turn end
 
 No new message is posted. There is no notification, nothing is read aloud during another conversation, and the chat
 does not fill up with status lines.
+
+The last step (**after**, 0.3.3) appears once the Telegram `reply` tool has succeeded, i.e. the answer is out, but the
+turn is still running (the agent may still write to memory, update a card or call more tools). The reaction then no
+longer looks like "nothing is happening" after the reply; it is cleared at the turn end. A failed reply does not move it:
+✍️ stays until the turn end. With several reply messages the 👨‍💻 stays; it never steps back to ✍️.
+`after=` (empty) switches the step off: then ✍️ stays to the turn end, with the same Bot API calls as in 0.3.2.
 
 It is a Claude Code plugin (`plugins/telegram-reaction`) that runs next to the **unchanged** engine. No engine code
 and no factory hook is modified. It is **off by default**: nothing changes until you enable it for the main agent.
@@ -76,7 +82,7 @@ restart the main agent.
 | key | effect |
 |---|---|
 | `MARVEEN_TELEGRAM_REACTION` | `0` turns the plugin off; unset or `1` = on wherever the plugin is loaded |
-| `MARVEEN_TELEGRAM_REACTION_EMOJIS` | `received=👀,working=🤔,writing=✍️`. A step left out keeps its default; an empty value (`working=`) skips that step; all three empty = off |
+| `MARVEEN_TELEGRAM_REACTION_EMOJIS` | `received=👀,working=🤔,writing=✍️,after=👨‍💻`. A step left out keeps its default; an empty value (`working=`) skips that step; the first three empty = off (`after` alone does not keep the plugin on); `after=` (empty) = the 0.3.2 behaviour |
 | `MARVEEN_TELEGRAM_REACTION_KEEP_AGENT` | `1` keeps the agent's own reaction (see The agent's own reaction); default `0` |
 | `MARVEEN_TELEGRAM_REACTION_FETCH_MS` | Bot API call timeout, 100..8000 ms, default 8000 |
 

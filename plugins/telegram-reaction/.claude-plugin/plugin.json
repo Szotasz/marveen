@@ -1,7 +1,7 @@
 {
   "name": "telegram-reaction",
-  "version": "0.3.2",
-  "description": "Opt-in (on where the plugin is enabled; MARVEEN_TELEGRAM_REACTION=0 turns it off): shows the progress of a Telegram turn as a reaction on the user's own message (👀 received -> 🤔 working -> ✍️ writing -> cleared at the turn end) instead of the placeholder message. Each step's emoji can be changed or the step skipped: MARVEEN_TELEGRAM_REACTION_EMOJIS='received=👀,working=🤔,writing=✍️' (all three empty = off). The agent's own reaction is cleared at the turn end too unless MARVEEN_TELEGRAM_REACTION_KEEP_AGENT=1. The factory placeholder hook is kept off through its own dedup marker; the factory hooks themselves are not changed. Never blocks or rewrites anything. See docs/telegram-reaction.md.",
+  "version": "0.3.3",
+  "description": "Opt-in (on where the plugin is enabled; MARVEEN_TELEGRAM_REACTION=0 turns it off): shows the progress of a Telegram turn as a reaction on the user's own message (👀 received -> 🤔 working -> ✍️ writing -> 👨‍💻 after (the reply is out, the turn still runs) -> cleared at the turn end) instead of the placeholder message. Each step's emoji can be changed or the step skipped: MARVEEN_TELEGRAM_REACTION_EMOJIS='received=👀,working=🤔,writing=✍️,after=👨‍💻' (the first three empty = off; 'after=' empty = the 0.3.2 behaviour). The agent's own reaction is cleared at the turn end too unless MARVEEN_TELEGRAM_REACTION_KEEP_AGENT=1. The factory placeholder hook is kept off through its own dedup marker; the factory hooks themselves are not changed. Never blocks or rewrites anything. See docs/telegram-reaction.md.",
   "author": {
     "name": "Marveen"
   },

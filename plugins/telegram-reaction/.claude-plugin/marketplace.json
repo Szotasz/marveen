@@ -8,7 +8,7 @@
     {
       "name": "telegram-reaction",
       "source": "./",
-      "description": "Telegram turn progress as a reaction on the user's message (👀 -> 🤔 -> ✍️ -> cleared) instead of the placeholder message."
+      "description": "Telegram turn progress as a reaction on the user's message (👀 -> 🤔 -> ✍️ -> 👨‍💻 -> cleared) instead of the placeholder message."
     }
   ]
 }

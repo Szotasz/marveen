@@ -17,6 +17,9 @@ type Opts = {
   replyResult?: Record<string, unknown>
   /** The react tool's result. */
   reactResult?: Record<string, unknown>
+  /** The 0.3.3 `after` step is ON as configured. Without it the engine forces `after=` (empty) onto the emoji
+   *  setting, so every 0.3.2 test below keeps running UNCHANGED against the step-off path (the bit-identity of `after=`). */
+  after?: boolean
   /** Every Bot API call hangs forever. */
   hang?: boolean
   /** The Nth (1-based) Bot API call answers only after this many ms. */
@@ -35,6 +38,14 @@ type Opts = {
     hangs?: (n: number) => boolean; reactMs?: () => number; reactOk?: () => boolean; reactLandedFail?: () => boolean }
 }
 
+/** The emoji setting with the `after` step switched off (a shell-style quoted value keeps its quotes around the items). */
+function legacyEmojis(v: string | undefined): string {
+  let t = (v ?? '').trim()
+  const q = t.length >= 2 && (t[0] === "'" || t[0] === '"') && t[t.length - 1] === t[0]
+  if (q) t = t.slice(1, -1).trim()
+  return (t ? t + ',' : '') + 'after='
+}
+
 function engine(on: any, opts: Opts = {}) {
   // The 0.2.x tests keep the agent's own emoji (KEEP_AGENT=1); the 0.3.0 default (cleared) is tested apart
   const env = opts.env ?? { MARVEEN_TELEGRAM_REACTION: '1', TELEGRAM_STATE_DIR: STATE_DIR, MARVEEN_TELEGRAM_REACTION_KEEP_AGENT: '1' }
@@ -50,7 +61,9 @@ function engine(on: any, opts: Opts = {}) {
     logs.push(typeof e?.text === 'string' ? e.text : JSON.stringify(e))
     return { value: undefined }
   })
-  on('env.get', ($: any, e: { name: string }) => ({ value: env[e.name] }))
+  on('env.get', ($: any, e: { name: string }) => ({
+    value: e.name === 'MARVEEN_TELEGRAM_REACTION_EMOJIS' && !opts.after ? legacyEmojis(env[e.name]) : env[e.name],
+  }))
   on('session.id', () => ({ value: 'sess-1' }))
   on('fs.read', ($: any, e: { path: string }) => {
     if (e.path === `${STATE_DIR}/.env`) return { value: `TELEGRAM_BOT_TOKEN=${TOKEN}\n` }
@@ -1004,24 +1017,24 @@ test('emojisFrom: defaults, per-step change, skip, and loud fallback for a bad i
   for (const v of [undefined, null, '', '   ', 7]) {
     expect(emojisFrom(v)).toEqual({ emojis: { ...DEFAULT_EMOJIS }, warnings: [] })
   }
-  expect(emojisFrom('received=🔥, working=👍 ,writing=🎉').emojis).toEqual({ received: '🔥', working: '👍', writing: '🎉' })
-  expect(emojisFrom('working=🔥')).toEqual({ emojis: { received: '👀', working: '🔥', writing: '✍️' }, warnings: [] })
-  expect(emojisFrom('working=,').emojis).toEqual({ received: '👀', working: '', writing: '✍️' })
+  expect(emojisFrom('received=🔥, working=👍 ,writing=🎉').emojis).toEqual({ received: '🔥', working: '👍', writing: '🎉', after: '👨‍💻' })
+  expect(emojisFrom('working=🔥')).toEqual({ emojis: { received: '👀', working: '🔥', writing: '✍️', after: '👨‍💻' }, warnings: [] })
+  expect(emojisFrom('working=,').emojis).toEqual({ received: '👀', working: '', writing: '✍️', after: '👨‍💻' })
   // an emoji Telegram does not take: that step keeps its default, with a warning naming it
   const bad = emojisFrom('writing=🦖,received=🔥')
-  expect(bad.emojis).toEqual({ received: '🔥', working: '🤔', writing: '✍️' })
+  expect(bad.emojis).toEqual({ received: '🔥', working: '🤔', writing: '✍️', after: '👨‍💻' })
   expect(bad.warnings.length).toBe(1)
   expect(bad.warnings[0]).toContain('writing=🦖')
   // unknown step, malformed item: ignored with a warning, the rest applies
   const odd = emojisFrom('foo=🔥,nonsense,=👍,working=🎉')
-  expect(odd.emojis).toEqual({ received: '👀', working: '🎉', writing: '✍️' })
+  expect(odd.emojis).toEqual({ received: '👀', working: '🎉', writing: '✍️', after: '👨‍💻' })
   expect(odd.warnings.length).toBe(3)
   // the variation selector does not matter; a non-default is sent in the Bot API list's form, a default keeps its own
   expect(emojisFrom('writing=✍').emojis.writing).toBe('✍️')
   expect(emojisFrom('received=❤\uFE0F').emojis.received).toBe('❤')
   // a shell-style quoted value: the outer quotes go
-  expect(emojisFrom("'working=🔥'")).toEqual({ emojis: { received: '👀', working: '🔥', writing: '✍️' }, warnings: [] })
-  expect(emojisFrom('"received=,writing=🎉"').emojis).toEqual({ received: '', working: '🤔', writing: '🎉' })
+  expect(emojisFrom("'working=🔥'")).toEqual({ emojis: { received: '👀', working: '🔥', writing: '✍️', after: '👨‍💻' }, warnings: [] })
+  expect(emojisFrom('"received=,writing=🎉"').emojis).toEqual({ received: '', working: '🤔', writing: '🎉', after: '👨‍💻' })
   // given twice: the last counts, with a warning
   const twice = emojisFrom('working=🔥,working=👍')
   expect(twice.emojis.working).toBe('👍')
@@ -1310,4 +1323,135 @@ test('emojisFrom corner cases -- ZWJ, skin tone, JSON shape, a very long item, a
   expect(long.emojis.working).toBe('🤔'); expect(long.warnings.length).toBe(1)
   expect(emojisFrom('working=   ').emojis.working).toBe('')                          // blank = skipped
   expect(emojisFrom('writing=👀').emojis.writing).toBe('👀')                           // another step's default: fine
+})
+
+// ── 0.3.3: the 4th step -- 👨‍💻 once the reply is OUT, cleared at the turn end ──
+// Every test above runs with the `after` step OFF (the engine forces `after=`), i.e. the whole 0.3.2 suite is the proof that an
+// empty `after` leaves the behaviour as it was. The tests below switch the step on (`after: true`) and set the config themselves.
+const AFTER_ENV = { TELEGRAM_STATE_DIR: STATE_DIR, MARVEEN_TELEGRAM_REACTION_KEEP_AGENT: '1' }
+const AFTER = '👨‍💻'
+
+test('emojisFrom: `after` defaults to 👨‍💻, can be changed or emptied, a bad value falls back loudly', () => {
+  expect(DEFAULT_EMOJIS.after).toBe(AFTER)
+  expect(emojisFrom(undefined).emojis.after).toBe(AFTER)
+  expect(emojisFrom('after=🔥').emojis.after).toBe('🔥')
+  expect(emojisFrom('after=').emojis.after).toBe('')
+  expect(emojisFrom('after=').warnings).toEqual([])
+  const bad = emojisFrom('after=🦖')
+  expect(bad.emojis.after).toBe(AFTER)
+  expect(bad.warnings.length).toBe(1)
+  expect(bad.warnings[0]).toContain('after=🦖')
+  // the unknown-step warning names the new step
+  expect(emojisFrom('later=🔥').warnings[0]).toContain('after')
+})
+
+test('after step: the full ladder with the new step: 👀 -> 🤔 -> ✍️ -> (reply out) 👨‍💻 -> cleared at the turn end', async ($: any, on: any) => {
+  const { calls } = engine(on, { after: true, env: AFTER_ENV })
+  await start($)
+  await submit($)
+  await settle()
+  await turn($)
+  await settle()
+  await tool($)
+  await settle()
+  await reply($)
+  await settle()
+  expect(ladder(calls)).toEqual(['👀', '🤔', '✍️', AFTER])   // the turn is still running: no clear yet
+  await done($)
+  await settle()
+  expect(ladder(calls)).toEqual(['👀', '🤔', '✍️', AFTER, ''])
+  expect(calls.every(c => c.body.chat_id === '111' && c.body.message_id === 5)).toBe(true)
+})
+
+test('after step: a FAILED reply never reaches 👨‍💻 -- the message stays at ✍️ to the turn end', async ($: any, on: any) => {
+  const { calls } = engine(on, { after: true, env: AFTER_ENV, replyResult: { result: { isError: true } } })
+  await start($)
+  await submit($)
+  await settle()
+  await turn($)
+  await settle()
+  await reply($)
+  await settle()
+  expect(ladder(calls)).toEqual(['👀', '🤔', '✍️'])
+  await done($)
+  await settle()
+  expect(ladder(calls)).toEqual(['👀', '🤔', '✍️', ''])
+})
+
+test('after step: a turn that answers in several messages keeps 👨‍💻 to the end -- the second reply does not step it back to ✍️', async ($: any, on: any) => {
+  const { calls } = engine(on, { after: true, env: AFTER_ENV })
+  await start($); await submit($); await settle()
+  await turn($); await settle()
+  await reply($, '111', 'r1'); await settle()
+  await tool($); await settle()
+  await reply($, '111', 'r2'); await settle()
+  await tool($); await settle()
+  expect(ladder(calls)).toEqual(['👀', '🤔', '✍️', AFTER])
+  await done($); await settle()
+  expect(ladder(calls)).toEqual(['👀', '🤔', '✍️', AFTER, ''])
+})
+
+test('after step: a reply moves only its own chat to 👨‍💻', async ($: any, on: any) => {
+  const { calls } = engine(on, { after: true, env: AFTER_ENV })
+  await start($)
+  await submit($, `${tag('111', 5)}\nhello\n</channel>\n${tag('222', 6)}\nhi\n</channel>`)
+  await settle()
+  await reply($, '222'); await settle()
+  expect(calls.filter(c => c.body.reaction[0]?.emoji === AFTER).map(c => c.body.chat_id)).toEqual(['222'])
+  await done($); await settle()
+  // both are cleared at the turn end
+  expect(calls.filter(c => c.body.reaction.length === 0).map(c => c.body.chat_id).sort()).toEqual(['111', '222'])
+})
+
+test('after step: `after=` (empty) is the 0.3.2 behaviour to the call -- exactly these Bot API calls, nothing else', async ($: any, on: any) => {
+  const { calls, logs } = engine(on, { after: true, env: { ...AFTER_ENV, MARVEEN_TELEGRAM_REACTION_EMOJIS: 'after=' } })
+  await fullTurn($)
+  const body = (emoji: string) => ({ chat_id: '111', message_id: 5, reaction: emoji ? [{ type: 'emoji', emoji }] : [] })
+  expect(calls.map(c => c.body)).toEqual([body('👀'), body('🤔'), body('✍️'), body('')])
+  expect(calls.every(c => c.url === `https://api.telegram.org/bot${TOKEN}/setMessageReaction`)).toBe(true)
+  expect(logs).toEqual([])
+})
+
+test('after step: a custom `after` emoji is used (after=🔥)', async ($: any, on: any) => {
+  const { calls } = engine(on, { after: true, env: { ...AFTER_ENV, MARVEEN_TELEGRAM_REACTION_EMOJIS: 'after=🔥' } })
+  await fullTurn($)
+  expect(ladder(calls)).toEqual(['👀', '🤔', '✍️', '🔥', ''])
+})
+
+test('after step: a bad `after` value is a loud warning and the default 👨‍💻 applies', async ($: any, on: any) => {
+  const { calls, logs } = engine(on, { after: true, env: { ...AFTER_ENV, MARVEEN_TELEGRAM_REACTION_EMOJIS: 'after=🦖' } })
+  await fullTurn($)
+  expect(ladder(calls)).toEqual(['👀', '🤔', '✍️', AFTER, ''])
+  expect(logs.length).toBe(1)
+  expect(logs[0]).toContain('after=🦖')
+})
+
+test('after step: the three original steps empty still turn the mod off -- `after` alone does not keep it on', async ($: any, on: any) => {
+  const { calls } = engine(on, { after: true, env: { ...AFTER_ENV, MARVEEN_TELEGRAM_REACTION_EMOJIS: 'received=,working=,writing=' } })
+  await fullTurn($)
+  expect(ladder(calls)).toEqual([])
+})
+
+test('after step: after 👨‍💻 the agent\'s own reaction still takes the message over (KEEP_AGENT): its emoji is the last word, no clear of ours', async ($: any, on: any) => {
+  const { calls } = engine(on, { after: true, env: AFTER_ENV })
+  await start($); await submit($); await settle()
+  await reply($); await settle()
+  await tool($, 'mcp__plugin_telegram_telegram__react', { chat_id: '111', message_id: 5, emoji: '👍' })
+  await done($); await settle()
+  expect(ladder(calls)).toEqual(['👀', '✍️', AFTER, '👍'])
+})
+
+test('after step: a skipped `writing` step does not block `after` -- 👀 stays until the reply is out, then 👨‍💻', async ($: any, on: any) => {
+  const { calls } = engine(on, { after: true, env: { ...AFTER_ENV, MARVEEN_TELEGRAM_REACTION_EMOJIS: 'working=,writing=' } })
+  await fullTurn($)
+  expect(ladder(calls)).toEqual(['👀', AFTER, ''])
+})
+
+test('after step: the store keeps the `after` step too, so a session that dies after the reply leaves a clearable entry', async ($: any, on: any) => {
+  const { store } = engine(on, { after: true, env: AFTER_ENV })
+  await start($); await submit($); await settle()
+  await reply($); await settle()
+  expect(store.get(`pending@${STATE_DIR}`)).toEqual([{ chat_id: '111', message_id: 5, stage: 'after' }])
+  await done($); await settle()
+  expect(store.get(`pending@${STATE_DIR}`)).toEqual([])
 })
