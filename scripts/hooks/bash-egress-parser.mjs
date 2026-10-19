@@ -28,7 +28,8 @@
 //   6. a command line given to a shell as a string (`bash -c '...'`, `sh -lc "..."`, `eval '...'`,
 //      `trap '...' SIG`) gets the whole analysis, like a heredoc fed to a shell (4.). A shell that
 //      reads its program from a substitution (`bash <(...)`, `bash < <(...)`) denies, like one
-//      reading it from a pipe (8.).
+//      reading it from a pipe (8.), and so does one whose program file is a descriptor (/dev/stdin,
+//      /dev/fd/N, /proc/PID/fd/N) unless a heredoc / here-string on it was judged (#1931 review 6).
 //   7. (#1931 delta review 5529333917) a SHELL FUNCTION defined in the command: each call is judged
 //      as the function body with the call's arguments in $1..$9 (like `sh -c`); a function that would
 //      deny and is named anywhere but a plain call (eval, trap, export -f) denies;
@@ -42,7 +43,8 @@
 //      an alias whose value names curl / wget denies (#1931 delta review 5572280679).
 //  10. a subshell paren needs no space: `(curl URL)` is read as `curl URL`.
 // The command word is found past assignments, shell keywords and the PREFIX_WORDS commands with
-// their own options (timeout, stdbuf, nice, nohup, env, sudo, command, exec, time), on every path.
+// their own options (timeout, stdbuf, nice, nohup, env, sudo, command, exec, time, builtin), on every
+// path.
 // FALSE-POSITIVE POLICY. A body that uses a network primitive is denied for ANY external URL in it,
 // even when the call goes to localhost and the URL is only payload or a comment: the one-liner rule,
 // applied to heredoc bodies. ONE relaxation, from the maintainers' decision on #1669 (2026-10-06): a
@@ -262,7 +264,9 @@ function pythonUsesNetwork(text) {
 // because `for p in a b; do curl ...` splits at `;` into a span that starts with `do`, and without
 // them a curl inside a loop or an if/then body was never looked at.
 export const PREFIX_WORDS = new Set(['env', 'sudo', 'command', 'exec', 'time', 'nohup', 'nice',
-  'timeout', 'stdbuf', 'do', 'then', 'else', 'elif', '{', '(', '!', 'if', 'while', 'until', 'setsid', 'busybox', 'toybox'])
+  'timeout', 'stdbuf', 'do', 'then', 'else', 'elif', '{', '(', '!', 'if', 'while', 'until', 'setsid', 'busybox', 'toybox',
+  // `builtin NAME` runs the shell builtin NAME: `builtin eval '...'` is eval (#1931 review 6).
+  'builtin'])
 // A prefix COMMAND (not a keyword) may carry its own options before the real command word:
 // `timeout -k 5 30 cmd`, `stdbuf -oL cmd`, `nice -n 5 cmd`, `env -u X A=1 cmd`, `sudo -u u cmd`.
 // Every word starting with `-` is skipped; the options listed here also consume the next word.
@@ -1267,6 +1271,8 @@ export function launchedFetch(cmd, args) {
   }
   return null
 }
+const FD_PATH = /^(?:\/dev\/(?:stdin|fd\/[^/\s]+)|\/proc\/[^/\s]+\/fd\/[^/\s]+)$/
+const STDIN_PATH = /^(?:\/dev\/(?:stdin|fd\/0)|\/proc\/[^/\s]+\/fd\/0)$/
 // The substitution a shell in span [a, b) reads its program from -- its first operand, or the target
 // of a `<` redirection -- as its source text (`<(...)`), or null. Read on the masked words with their
 // offsets, against the lifted substitutions' ranges.
@@ -1276,19 +1282,23 @@ function shellProgramFromSubstitution(masked, a, b, { innerAts, innerEnds }) {
     const n = innerAts.findIndex((p, x) => p < t.e && innerEnds[x] > t.s)
     return n === -1 ? null : `<(...) / $(...) at ${innerAts[n]}`
   }
-  let k = commandIndex(toks.map((t) => t.w)) + 1
-  for (; k < toks.length; k++) {
+  // Every input redirection is read, not only those before the operand: `bash /dev/fd/3 3< <(...)`
+  // reads its program through fd 3 (#1931 review 6).
+  let operandSeen = false
+  for (let k = commandIndex(toks.map((t) => t.w)) + 1; k < toks.length; k++) {
     const w = toks[k].w
     const redir = /^\d*(<>|<|>>?|&>>?)(&?)(.*)$/.exec(w)
     if (redir) {
       const target = redir[3] !== '' ? toks[k] : toks[++k]
-      if (redir[1] === '<' && target && subst(target)) return subst(target)
+      if ((redir[1] === '<' || redir[1] === '<>') && target && subst(target)) return subst(target)
       continue
     }
+    if (operandSeen) continue
     if (w === '-o' || w === '+o' || w === '-O' || w === '+O') { k++; continue }
     if ((w.startsWith('-') || w.startsWith('+')) && w !== '-' && w !== '--') continue
     if (w === '--' || w === '-') continue
-    return subst(toks[k])
+    operandSeen = true
+    if (subst(toks[k])) return subst(toks[k])
   }
   return null
 }
@@ -1513,6 +1523,14 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
         if (SHELL.test(cmd) && shellCommandCall(cmd, text) === null) {
           const src = shellProgramFromSubstitution(masked, a, b, lifted)
           if (src) return { deny: true, reason: 'shell-substitution', hosts: [`<${cmd} runs the output of ${src}>`] }
+          // A program FILE that is a file descriptor (/dev/stdin, /dev/fd/N, /proc/PID/fd/N) is whatever
+          // the redirections, a pipe or an earlier `exec 3< <(...)` opened (#1931 review 6): it cannot
+          // be read here, so it denies. Only stdin with a heredoc / here-string on this command was
+          // judged above (feeds) and passes on.
+          const fdArg = args.find((w) => FD_PATH.test(w))
+          if (fdArg && !(STDIN_PATH.test(fdArg) && feeds.some((f) => f.at >= a && f.at <= b))) {
+            return { deny: true, reason: 'shell-fd-program', hosts: [`<${cmd} reads its program from ${fdArg}>`] }
+          }
         }
         // A shell that reads its program from stdin (no -c string, no script file) runs whatever the
         // pipe or redirection hands it: `echo 'curl URL' | sh`. A heredoc / here-string feed is judged

