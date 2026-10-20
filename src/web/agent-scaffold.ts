@@ -16,6 +16,7 @@ import { loadProfileTemplate, profileWantsCredentialGate, profileWantsDestructiv
 import { resolveAgentSecurityProfile } from './agent-team.js'
 import { sanitizeCapabilityTag, CAPABILITY_TAG_MAX_PER_AGENT } from '../prompt-safety.js'
 import { TMP_ROOT_PREFIXES as _TMP_PREFIXES } from './tmp-root-prefixes.js'
+import { EXTRA_HOOKS_FILE, applyExtraHookEntries, extraHooksDigest, loadExtraHookEntries, type ExtraHookDeps } from './extra-hook-entries.js'
 
 // Resolve the base URL agents should use to reach the dashboard API.
 //
@@ -799,7 +800,9 @@ export function enforceStrictPermissionMode(
   return true
 }
 
-export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemplate): void {
+// `extraHooksPath` is a test seam (the install-local extras file); production
+// callers pass nothing and get store/extra-hooks.json.
+export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemplate, extraHooksPath?: string): void {
   const agentRoot = agentDir(name)
   const settingsDir = join(agentRoot, '.claude')
   const settingsPath = join(settingsDir, 'settings.json')
@@ -887,7 +890,86 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   injectEgressGate(existing)
   if (agentGetsBashEgressParser(name)) injectBashEgressParser(existing)
   if (name !== MAIN_AGENT_ID) injectWebSearchEnvelope(existing)
+  // Install-local extras LAST, so they land after every built-in gate.
+  injectExtraHookEntries(name, existing, extraHooksPath)
   atomicWriteFileSync(settingsPath, JSON.stringify(existing, null, 2))
+}
+
+// Install-local extra hook entries (store/extra-hooks.json), see
+// extra-hook-entries.ts. The commands are built by the SAME builders and the
+// same registration guard as the built-in gates.
+export function extraHooksConfigPath(): string {
+  return join(STORE_DIR, EXTRA_HOOKS_FILE)
+}
+
+function extraHookDeps(): ExtraHookDeps {
+  return {
+    projectRoot: PROJECT_ROOT,
+    shippedScriptsDir: join(PROJECT_ROOT, 'scripts'),
+    nodeBin: HOOK_NODE_BIN,
+    nodeGateCommand: (p, t) => hookCommand(p, [], t),
+    pythonGateCommand: (p, t) => pythonHookCommand(p, [], t),
+    isUnsafe: isUnsafeHookCommand,
+  }
+}
+
+// One error line per distinct problem set, not one per agent and boot.
+const _loggedExtraHookProblems = new Set<string>()
+
+// The fingerprint line (review #2001): the self-pace gate stops a sub-agent
+// command that spells extra-hooks.json or local-hooks/, not one that builds the
+// path at run time (see extra-hook-entries.ts, "Trust"). So every sync logs the
+// sha256 of the file and of each script it names, once per distinct content
+// and process: the first sync after a start always logs, a later one only when
+// something changed. An unexpected change then shows up in dashboard.log, the
+// way the egress allowlist's baseline reports its file. No file, no line.
+let _lastExtraHooksDigest = ''
+export function logExtraHooksDigest(path = extraHooksConfigPath()): void {
+  const digest = extraHooksDigest(path, PROJECT_ROOT)
+  if (!digest) { _lastExtraHooksDigest = ''; return }
+  const key = `${path}\n${JSON.stringify(digest)}`
+  if (key === _lastExtraHooksDigest) return
+  _lastExtraHooksDigest = key
+  logger.info({ path, sha256: digest.sha256, scripts: digest.scripts },
+    'extra-hooks.json: sha256 of the file and of each script it names (a change nobody made on purpose is a write to check)')
+}
+
+// Append the extras to a sub-agent's settings object (after removing the ones
+// an earlier pass wrote). Never the main agent. Any failure here leaves the
+// built-in hooks exactly as the injectors above wrote them.
+export function injectExtraHookEntries(name: string, existing: Record<string, unknown>, path = extraHooksConfigPath()): boolean {
+  if (name === MAIN_AGENT_ID) return false
+  try {
+    logExtraHooksDigest(path)
+    const { entries, errors } = loadExtraHookEntries(path, extraHookDeps())
+    if (errors.length) {
+      const key = `${path}\n${errors.join('\n')}`
+      if (!_loggedExtraHookProblems.has(key)) {
+        _loggedExtraHookProblems.add(key)
+        logger.error({ path, errors, applied: entries.length },
+          'extra-hooks.json: invalid entries IGNORED (built-in hooks unaffected)')
+      }
+    }
+    return applyExtraHookEntries(existing, entries)
+  } catch (err) {
+    logger.error({ err, path }, 'extra-hooks.json: could not be applied, extras IGNORED (built-in hooks unaffected)')
+    return false
+  }
+}
+
+// Startup migration twin: brings the extras of an EXISTING sub-agent in line
+// with the file (added, changed or removed) without waiting for a respawn. A
+// settings file that is not there is not created. Returns true if written.
+export function ensureExtraHookEntries(name: string, path = extraHooksConfigPath()): boolean {
+  if (refuseMainAgentHookWrite(name, 'ensureExtraHookEntries')) return false
+  const settingsPath = agentSettingsPath(name)
+  if (!existsSync(settingsPath)) return false
+  let settings: Record<string, unknown>
+  try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+  if (!settings || typeof settings !== 'object' || Array.isArray(settings)) return false
+  if (!injectExtraHookEntries(name, settings, path)) return false
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
 }
 
 // Which agents are subject to the email-send hard-gate: every agent EXCEPT the

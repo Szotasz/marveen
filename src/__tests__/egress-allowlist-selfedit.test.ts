@@ -51,6 +51,27 @@ describe('gate: native file tools on the allowlist', () => {
   })
 })
 
+describe('gate: native file tools on the allowlist, any case (review #2001, round 3)', () => {
+  it.each([
+    ['Write', 'store/EGRESS-ALLOWLIST.JSON'],
+    ['Edit', 'store/Egress-Allowlist.json'],
+    ['Write', 'STORE/egress-allowlist.json'],
+    ['Edit', 'Store/Egress-allowlist.JSON'],
+  ])('%s %s is denied, relative and absolute', (tool, rel) => {
+    expect(decide(tool, { file_path: rel, content: '{}' })).toEqual({ deny: true, reason: 'egress-allowlist' })
+    expect(decide(tool, { file_path: join(root, rel), content: '{}' })).toEqual({ deny: true, reason: 'egress-allowlist' })
+  })
+  it('a dangling symlink to a not-yet-existing allowlist is read at its target', () => {
+    unlinkSync(allowlist)
+    symlinkSync(allowlist, join(root, 'innocent.json'))
+    expect(decide('Write', { file_path: join(root, 'innocent.json'), content: '{}' }).deny).toBe(true)
+  })
+  it('POSITIVE CONTROL: other files in store/, in any case, are not affected', () => {
+    expect(decide('Write', { file_path: join(store, 'Other.JSON'), content: '{}' }).deny).toBe(false)
+    expect(decide('Edit', { file_path: join(store, 'egress-allowlist.json.bak') }).deny).toBe(false)
+  })
+})
+
 describe('gate: Bash is fail-closed on the allowlist', () => {
   const denied = [
     "echo '{}' > store/egress-allowlist.json",

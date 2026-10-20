@@ -29,7 +29,7 @@
 // writeAgentSettingsFromProfile() (agent-scaffold.ts), guarded by
 // name !== MAIN_AGENT_ID, re-applied on every spawn (respawn-safe).
 
-import { readFileSync, realpathSync } from 'node:fs'
+import { lstatSync, readFileSync, readlinkSync, realpathSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 import { homedir } from 'node:os'
 import { basename, dirname, join, relative, resolve, sep } from 'node:path'
@@ -154,17 +154,51 @@ const HTTP_WRITE_RX = /(-X\s*(POST|PUT|PATCH|DELETE)|--request\s+(POST|PUT|PATCH
 // interpreter (python/node/...), cp/mv/tee/sed/ln/... or anything else that names the
 // file is denied, because whether it writes cannot be read off the command string.
 //
-// What this gate CANNOT see -- a script that builds the path at runtime, a glob that
-// does not spell the name -- is written down, not hidden: the dashboard keeps a hash
-// baseline of the file and reports every change, whoever made it, by whatever route
-// (src/egress-allowlist-baseline.ts). This gate narrows the casual route; that one
-// catches the rest after the fact.
+// The same rule, same message, for store/extra-hooks.json and the local-hooks/ scripts it
+// may name: the scaffold wires those into EVERY sub-agent's settings, so a sub-agent that
+// could write either would run its code in the other agents' sessions.
+//
+// WHAT "MENTIONS" MEANS (EXTRAHOOKSGATE1020, review #2001). The Bash check is a text
+// check, so it holds only for a command that SPELLS a protected name. "Spells" covers
+// (protectedMention):
+//   - the plain name, and the name after the shell's quote, backslash and $IFS removal,
+//     after \xHH / \uHHHH / octal / %HH decoding and after literal string concatenation
+//     in any language (lo''cal-hooks, ext""ra-hooks.json, 'extra-'+'hooks.json'), the
+//     same spellings the schedule surface reads (scheduleSurfaceVariants);
+//   - a variable assigned a literal in the same command ($D-hooks after D=local);
+//   - a glob or brace word, or a word with an expansion this check cannot resolve (read
+//     as `*`), that can match a protected name with at least three of its own literal
+//     characters (*-hooks, ext*-hooks.json, $X-hooks), or that can match it at all
+//     right under the real project root (local-hooks) or the real store dir (the json
+//     files) -- the parent resolved through symlinks, relative to the hook's cwd and to
+//     any literal cd earlier in the command (with the cwd AT the root or the store dir,
+//     a word that starts with an unresolved expansion is read relative to it too);
+//   - a program that names the files it creates itself (cp/mv/ln/install/rsync/tar/
+//     unzip/cpio/patch, DIR_WRITERS) given the project root or the store dir itself as
+//     an argument: the name it creates there is not in the command.
+//
+// WHAT IT DOES NOT COVER, and cannot from a command's text: a name the command never
+// spells -- built at run time (chr(), base64, a `$(...)` that prints it, os.path.join of
+// computed pieces), held in a script file the agent wrote in an earlier call or with the
+// native Write tool and then runs, or written by a program not on that list (an
+// interpreter, git apply / checkout, a build tool) into a directory under the root it
+// picks itself. A sub-agent that WANTS to write one of these files can, because every
+// agent runs as the same OS user: the files are in the same trust domain as every
+// agent's own settings.json. This gate stops the casual and the spelled-out route. What
+// it misses is made visible after the fact: the dashboard keeps a hash baseline of the
+// egress allowlist and reports every change (src/egress-allowlist-baseline.ts), and it
+// logs the sha256 of store/extra-hooks.json and of every script it names whenever it
+// syncs the extras (logExtraHooksDigest in agent-scaffold.ts).
 const ALLOWLIST_BASENAME = 'egress-allowlist.json'
+const PROTECTED_BASENAMES = new Set([ALLOWLIST_BASENAME, 'extra-hooks.json'])
 // The STORE objects, not the concept: the file and its history directory, or a glob that
 // starts on the name (egress-allow*, egress-allowlist.*). A plain /egress[-_]?allow/ also
 // matched this gate's own source and test names (egress-allowlist-baseline.ts), so no
 // sub-agent could run, stage or diff them -- review on #1678.
-const ALLOWLIST_MENTION_RX = /egress[-_]?allowlist(?:\.json|\.history)|egress[-_]?allow[\w.]*[*?[]/i
+// local-hooks as a whole path segment or word: not part of a longer name
+// (my-local-hooks, local-hooks.md), but after any separator a language puts between
+// pieces (`,` `(` `[` `+`), as in os.path.join(root, 'local-hooks', 'a.py').
+const ALLOWLIST_MENTION_RX = /egress[-_]?allowlist(?:\.json|\.history)|egress[-_]?allow[\w.]*[*?[]|extra[-_]?hooks\.json|(?<![\w.-])local-hooks(?![\w.-])/i
 const ALLOWLIST_READERS = new Set([
   'cat', 'head', 'tail', 'grep', 'egrep', 'fgrep', 'rg', 'jq', 'wc', 'ls', 'stat',
   'file', 'shasum', 'sha256sum', 'md5', 'md5sum', 'diff', 'cmp', 'echo', 'printf',
@@ -172,9 +206,11 @@ const ALLOWLIST_READERS = new Set([
 // Output redirects: `>`, `>>`, `>|`, `&>`, `&>>`, `N>`. The target is the next word.
 const OUTPUT_REDIRECT_RX = /(?:&>>?|\d*>>?\|?)\s*([^\s;&|<>]+)/g
 
-export function allowlistBashSegmentAllowed(seg) {
+// `ctx` (optional): what protectedMention needs beyond the segment's own text, see
+// protectedContext. Without it only the spelling variants are read.
+export function allowlistBashSegmentAllowed(seg, ctx) {
   const s = String(seg ?? '').trim()
-  if (!ALLOWLIST_MENTION_RX.test(s)) return true
+  if (!protectedMention(s, ctx)) return true
   const words = s.split(/\s+/)
   let i = 0
   while (i < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i])) i++ // leading VAR=x
@@ -183,26 +219,201 @@ export function allowlistBashSegmentAllowed(seg) {
   for (const m of s.matchAll(OUTPUT_REDIRECT_RX)) {
     const target = m[1]
     if (/^&?\d+$/.test(target) || target === '/dev/null') continue // 2>&1, >/dev/null
-    if (ALLOWLIST_MENTION_RX.test(target) || /[$`]/.test(target)) return false
+    if (protectedMention(target, ctx) || /[$`]/.test(target)) return false
   }
   return true
+}
+
+// The protected names a glob, brace or unresolved word is matched against.
+const PROTECTED_GLOB_TARGETS = ['egress-allowlist.json', 'egress-allowlist.history', 'extra-hooks.json', 'local-hooks']
+const PROTECTED_FILE_SUFFIX_RX = /\.(?:json|history)$/i
+// An expansion this check does not resolve: it stands for any text (`*`).
+const UNRESOLVED_EXPANSION_RX = /\$\{[^}]*\}|\$\([^()]*\)|`[^`]*`|\$[A-Za-z_]\w*|\$[0-9@*#?$!-]/g
+const UNRESOLVED = '\u0003'
+const MAX_ASSIGNMENT_VARIANTS = 8
+
+// The context of one Bash command for protectedMention: the variables it assigns a
+// literal to (NAME -> every literal value it gets), the real project root and store dir
+// (from the allowlist path, so tests can pass a temp root), and the working directory
+// the hook reports (payload cwd), which literal cd segments then move.
+export function protectedContext(segs, allowlistPath = DEFAULT_ALLOWLIST_PATH, cwd = null) {
+  const assigns = new Map()
+  for (const seg of segs) {
+    const words = shellWords(seg)
+    if (!words || !words.length) continue
+    const rest = DECLARE_WORDS.has(words[0].value) ? words.slice(1).filter((w) => !/^-\w+$/.test(w.value)) : words
+    for (const w of rest) {
+      const m = ASSIGN_RX.exec(w.value)
+      if (!m) break // only the leading NAME=value words of a segment assign
+      const v = w.value.slice(m[0].length)
+      if (w.dollar || /[$`\u0000]/.test(v)) continue // not a literal: stays an unresolved expansion
+      const list = assigns.get(m[1]) ?? []
+      if (!list.includes(v)) list.push(v)
+      assigns.set(m[1], list)
+    }
+  }
+  const store = dirname(allowlistPath)
+  // root/store are compared as pathKey()s (real, on-disk case, lower-cased): see realDeep.
+  return { assigns, root: pathKey(resolve(store, '..')), store: pathKey(store), cwd: cwd ? resolve(String(cwd)) : null }
+}
+
+// The working directory after one segment: a literal `cd DIR` / `pushd DIR` moves it,
+// any other cd (no argument is $HOME, `cd -`, an expansion) makes it unknown.
+export function cwdAfterSegment(seg, ctx) {
+  if (!ctx) return
+  const words = shellWords(String(seg ?? '').trim())
+  if (!words || !words.length) return
+  const name = words[0].value
+  if (name !== 'cd' && name !== 'pushd' && name !== 'popd') return
+  const arg = words.slice(1).find((w) => !/^-[LPe@]+$/.test(w.value))
+  if (name === 'popd' || !arg || arg.dollar || /[$`*?[]/.test(arg.value) || arg.value === '-') { ctx.cwd = null; return }
+  const target = expandHome(arg.value)
+  ctx.cwd = target.startsWith('/') ? resolve(target) : (ctx.cwd ? resolve(ctx.cwd, target) : null)
+}
+
+function substituteAssignments(text, assigns) {
+  const used = [...(assigns?.keys() ?? [])].filter((n) => new RegExp(`\\$\\{?${n}(?!\\w)`).test(text))
+  if (!used.length) return [text]
+  const most = Math.min(MAX_ASSIGNMENT_VARIANTS, Math.max(...used.map((n) => assigns.get(n).length)))
+  // the text as written stays in: a name that is ALSO assigned a non-literal keeps its
+  // unresolved reading (`*`)
+  const out = [text]
+  for (let k = 0; k < most; k++) {
+    out.push(text.replace(/\$\{([A-Za-z_]\w*)\}|\$([A-Za-z_]\w*)/g, (m, a, b) => {
+      const list = assigns.get(a ?? b)
+      return list ? list[Math.min(k, list.length - 1)] : m
+    }))
+  }
+  return out
+}
+
+// Does this text spell a protected name? See "WHAT MENTIONS MEANS" above.
+export function protectedMention(text, ctx) {
+  // $'...' and $"..." are quotes too; $HOME is the one variable the hook can resolve
+  const src = String(text ?? '').replace(/\$(?=['"])/g, '').replace(/\$\{HOME\}|\$HOME(?!\w)/g, homedir())
+  for (const t of substituteAssignments(src, ctx?.assigns)) {
+    if (scheduleSurfaceVariants(t).some((v) => ALLOWLIST_MENTION_RX.test(v))) return true
+    // implicit or `+` concatenation glued, every other quote kept as a word break:
+    // ['root', 'local-hoo' 'ks'] -> root , local-hooks (scheduleSurfaceVariants'
+    // joined form also glues across the comma, and loses the boundary before the name)
+    const glued = decodeEscapes(t).replace(/(['"`])\s*(?:\+\s*)?(['"`])/g, '').replace(/[\\'"`]/g, ' ')
+    if (ALLOWLIST_MENTION_RX.test(glued)) return true
+    if (protectedPatternWord(t, ctx)) return true
+  }
+  return false
+}
+
+// Programs that create files under a DIRECTORY argument with names of their own (the
+// source's name, an archive's or a patch's content). Pointed at the project root or the
+// store dir itself, the name they create is not in the command, so the command is read
+// as a mention.
+const DIR_WRITERS = new Set(['cp', 'mv', 'ln', 'install', 'rsync', 'tar', 'bsdtar', 'gtar', 'unzip', 'cpio', 'patch', 'ditto', '7z', '7za'])
+
+// A glob, brace or unresolved word that can expand onto a protected name.
+function protectedPatternWord(text, ctx) {
+  const src = String(text).replace(/\\\r?\n/g, '').replace(/\$\{IFS\}|\$IFS\b/g, '')
+  // An unresolved expansion is read as any text. One that STARTS a word may be an
+  // absolute path, so that word has no known parent directory.
+  const words = src.replace(UNRESOLVED_EXPANSION_RX, UNRESOLVED).replace(/[\\'"]/g, '').split(/[\s;&|<>()]+/).filter(Boolean)
+  const cwdReal = ctx?.cwd ? pathKey(ctx.cwd) : null
+  const cwdProtected = !!cwdReal && (cwdReal === ctx.root || cwdReal === ctx.store)
+  const cmd = (words.find((w) => !/^[A-Za-z_]\w*=/.test(w)) ?? '').replace(/^.*\//, '')
+  if (ctx && DIR_WRITERS.has(cmd)) {
+    for (const w of words) {
+      const v = w.replace(/^--?[\w-]+=/, '').replace(/^-[A-Za-z](?=[/~.])/, '')
+      if (!v || v.startsWith('-') || v.includes(UNRESOLVED) || /[*?[{]/.test(v)) continue
+      const abs = v.startsWith('/') || v === '~' || v.startsWith('~/') ? expandHome(v === '~' ? '~/' : v) : (ctx.cwd ? join(ctx.cwd, v) : null)
+      if (!abs) continue
+      const real = pathKey(resolve(abs))
+      if (real === ctx.root || real === ctx.store) return true
+    }
+  }
+  for (const raw of words) {
+    // A word that STARTS with an unresolved expansion may be absolute: no known parent,
+    // unless the cwd itself is the root or the store dir (then a relative reading counts).
+    const unknownStart = raw.startsWith(UNRESOLVED) && !cwdProtected
+    const word = raw.replaceAll(UNRESOLVED, '*')
+    if (!/[*?[{]/.test(word)) continue
+    const exps = /[{}]/.test(word) ? expandBraces(word, BRACE_EXPANSION_CAP) : [word]
+    if (!exps) return true // too many expansions to prove harmless: fail closed
+    for (const e of exps) {
+      if (ALLOWLIST_MENTION_RX.test(` ${e}`)) return true
+      if (!/[*?[]/.test(e)) continue
+      const home = e === '~' || e.startsWith('~/')
+      const abs = unknownStart ? null
+        : e.startsWith('/') || home ? expandHome(home && e === '~' ? '~/' : e) : (ctx?.cwd ? join(ctx.cwd, e) : null)
+      const segs = normalizePathSegments(abs ?? e)
+      for (let i = 0; i < segs.length; i++) {
+        const seg = segs[i]
+        if (!/[*?[]/.test(seg)) continue
+        const above = segs.slice(0, i)
+        const parent = abs && i > 0 && !above.some((x) => /[*?[]/.test(x)) ? pathKey(above.join('/') || '/') : null
+        const literal = seg.replace(/\[[^\]]*\]|[*?]/g, '')
+        for (const target of PROTECTED_GLOB_TARGETS) {
+          if (!globMatchesName(seg, target)) continue
+          const isFile = PROTECTED_FILE_SUFFIX_RX.test(target)
+          if (parent && ctx && parent === (isFile ? ctx.store : ctx.root)) return true
+          const stem = (isFile ? literal.replace(PROTECTED_FILE_SUFFIX_RX, '') : literal).replace(/^[.]+|[.]+$/g, '')
+          if (stem.length >= 3) return true
+        }
+      }
+    }
+  }
+  return false
 }
 
 function expandHome(p) {
   return p.startsWith('~/') ? join(homedir(), p.slice(2)) : p
 }
-function realOrSelf(p) {
-  try { return realpathSync(p) } catch { return p }
+
+// The real path of `p` even when it does not exist yet (a Write creates it): the deepest
+// EXISTING ancestor resolved with realpathSync.native, the rest appended as given. The
+// native call returns the on-disk case, so on a case-insensitive volume (macOS APFS
+// default) LOCAL-HOOKS/a.py comes back as local-hooks/a.py; the JS realpathSync keeps the
+// case it was given, and a missing file has no real path at all (review #2001). A
+// dangling symlink is followed to where a write through it would land.
+function realDeep(p) {
+  const tail = []
+  let cur = p
+  for (let hops = 0; ; ) {
+    try {
+      const real = realpathSync.native(cur)
+      return tail.length ? join(real, ...tail.reverse()) : real
+    } catch {
+      try {
+        if (hops < 40 && lstatSync(cur).isSymbolicLink()) {
+          hops++
+          cur = resolve(dirname(cur), readlinkSync(cur))
+          continue
+        }
+      } catch { /* missing: walk up */ }
+      const up = dirname(cur)
+      if (up === cur) return p
+      tail.push(basename(cur))
+      cur = up
+    }
+  }
+}
+// The form every protected-path comparison uses, in the file-tool AND the Bash branch.
+function pathKey(p) {
+  return realDeep(p).toLowerCase()
 }
 
-// Does a native file-tool call target the allowlist? `allowlistPath` is the real file
-// this install's egress-gate reads; tests pass a tmp one.
+// Does a native file-tool call target the allowlist, store/extra-hooks.json or a script
+// under local-hooks/? `allowlistPath` is the real file this install's egress-gate reads;
+// tests pass a tmp one. EVERY comparison here is case-insensitive: the filesystem may be
+// (review #2001), and on a case-sensitive one the extra denial is a differently-cased
+// name a sub-agent has no business writing either.
 export function fileToolTargetsAllowlist(toolInput, allowlistPath = DEFAULT_ALLOWLIST_PATH, cwd = process.cwd()) {
   const raw = String(toolInput?.file_path ?? toolInput?.notebook_path ?? '')
   if (!raw) return false
-  if (basename(raw).toLowerCase() === ALLOWLIST_BASENAME) return true
-  const abs = resolve(cwd, expandHome(raw))
-  return realOrSelf(abs) === realOrSelf(allowlistPath)
+  if (PROTECTED_BASENAMES.has(basename(raw).toLowerCase())) return true
+  if (/(^|\/)local-hooks(\/|$)/i.test(raw)) return true
+  const real = pathKey(resolve(cwd, expandHome(raw)))
+  if (PROTECTED_BASENAMES.has(basename(real))) return true
+  const localHooks = pathKey(join(dirname(allowlistPath), '..', 'local-hooks'))
+  if (real === localHooks || real.startsWith(localHooks + '/')) return true
+  return real === pathKey(allowlistPath)
 }
 
 // Split a compound command into individual simple commands, so a token in one
@@ -1659,6 +1870,7 @@ function decide(toolName, toolInput, opts = {}) {
     // Per-segment so an unrelated token elsewhere in a compound command cannot
     // turn a legit read (store inspection, schedule-API GET) into a false deny.
     const naiveSegs = splitSegments(safeCommand)
+    const protectedCtx = protectedContext(naiveSegs, opts.allowlistPath, opts.cwd)
     for (const seg of naiveSegs) {
       // Match the self-pace bash patterns against the shell-normalised segment so a
       // `\/loop` / `$IFS/loop` evasion (which bash resolves to `/loop` at exec) is
@@ -1675,7 +1887,8 @@ function decide(toolName, toolInput, opts = {}) {
       // dashboard schedule API: block WRITE methods only (GET list/pending is legit)
       if (SCHEDULE_API_RX.test(seg) && HTTP_WRITE_RX.test(seg)) return { deny: true }
       // the egress allowlist: a plain read only (EGRESSSELFEDIT824)
-      if (!allowlistBashSegmentAllowed(seg)) return { deny: true, reason: 'egress-allowlist' }
+      if (!allowlistBashSegmentAllowed(seg, protectedCtx)) return { deny: true, reason: 'egress-allowlist' }
+      cwdAfterSegment(seg, protectedCtx)
     }
     // The scheduler check is the ANCHORED one -- it fires on what sits at a
     // segment START -- so it is the one a fake segment boundary can mislead, and
@@ -1712,6 +1925,8 @@ const ALLOWLIST_GATE_MSG =
   'Egress-engedelylista TILTOTT (governance hard-gate). Sub-agentkent NEM irhatod a ' +
   'store/egress-allowlist.json-t: ez a kapu RAD vonatkozik. Ha egy domain kell, kerd a fo ' +
   'agenst (inter-agent uzenet: domain + miert); o a gazda jovahagyasaval veszi fel. ' +
+  'Ugyanigy NEM irhatod a store/extra-hooks.json-t es a local-hooks/ alatti szkripteket (minden ' +
+  'sub-agens hookjai): ha kell egy, kerd a fo agenst. ' +
   'Olvasni szabad: cat / grep / jq a fajlra (ertelmezo -- python, node -- nem).'
 
 function allow() { process.exit(0) }
