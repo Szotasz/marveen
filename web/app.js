@@ -13014,13 +13014,19 @@ function quotaLevelClass(pct) {
   return ''
 }
 
-// Weekly quota row: 7 day segments, day names underneath and a "now" marker.
-// The window is NOT a calendar week: it runs resetsAt-7d -> resetsAt
-// (measured 2026-09-29: Monday 09:00 CEST for both the previous and the
-// current window), so the labels and the marker are derived from resetsAt,
-// never from "Monday". Each segment is labelled with the weekday it STARTS
-// on. Returns null when there is no usable current window -- the row then
-// keeps the plain bar instead of drawing a week it cannot place.
+// Weekly quota row: one segment per CALENDAR day, day names underneath and a
+// "now" marker. The window is NOT a calendar week: it runs resetsAt-7d ->
+// resetsAt and the reset is rarely at midnight (measured: Monday 09:00 CEST
+// on 2026-09-29, Friday 22:00 CEST on 2026-10-20). Equal 24 h segments
+// labelled by their start day were therefore up to a day off: with a Friday
+// 22:00 reset the "Friday" segment was 22 h of Saturday, and Tuesday morning
+// sat in "Monday" (Guido, 2026-10-20). So the segment boundaries are the
+// local midnights inside the window: a partial first and last day around 6
+// whole ones (8 segments, or 7 when the reset is at midnight), each labelled
+// with the day it covers. A segment shorter than half a day keeps its width
+// but no label (renderQuotaStrip), as a 2 h sliver has no room for one.
+// Returns null when there is no usable current window -- the row then keeps
+// the plain bar instead of drawing a week it cannot place.
 // timeZone is for tests only; the dashboard uses the viewer's local time.
 function weekSegments(resetsAt, nowSec, lang, timeZone) {
   const WEEK = 7 * 86400
@@ -13029,7 +13035,29 @@ function weekSegments(resetsAt, nowSec, lang, timeZone) {
   const start = resetsAt - WEEK
   if (resetsAt <= nowSec || nowSec < start) return null
   const locale = lang === 'en' ? 'en-US' : 'hu-HU'
-  const starts = Array.from({ length: 7 }, (_, i) => start + i * 86400)
+  const fmt = new Intl.DateTimeFormat('en-US', { timeZone, hourCycle: 'h23',
+    year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric' })
+  const parts = (sec) => {
+    const p = {}
+    for (const x of fmt.formatToParts(new Date(sec * 1000))) p[x.type] = Number(x.value)
+    return p
+  }
+  // UTC offset in seconds at an instant; the next local midnight is found by
+  // correcting the wall-clock midnight with it twice, so a 23 h or 25 h DST
+  // day still ends at its real midnight.
+  const offsetAt = (sec) => {
+    const p = parts(sec)
+    return Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second) / 1000 - sec
+  }
+  const midnightAfter = (sec) => {
+    const p = parts(sec)
+    const wall = Date.UTC(p.year, p.month - 1, p.day + 1) / 1000
+    return wall - offsetAt(wall - offsetAt(wall))
+  }
+  const bounds = [start]
+  for (let m = midnightAfter(start); m < resetsAt && bounds.length < 9; m = midnightAfter(m)) bounds.push(m)
+  bounds.push(resetsAt)
+  const starts = bounds.slice(0, -1)
   const name = (weekday) => starts.map((sec) => {
     const s = new Date(sec * 1000).toLocaleDateString(locale, { weekday, timeZone })
     return s.charAt(0).toUpperCase() + s.slice(1)
@@ -13045,6 +13073,7 @@ function weekSegments(resetsAt, nowSec, lang, timeZone) {
   const short = name('short')
   return {
     starts,
+    widths: starts.map((sec, i) => ((bounds[i + 1] - sec) / WEEK) * 100),
     labels: name('long'),
     shortLabels: short,
     narrowLabels: lang === 'en' ? name('narrow') : null,
@@ -13126,13 +13155,23 @@ function renderQuotaStrip(q, fable) {
     const week = labelKey === 'overview.quota.seven_day' && !w.expired
       ? weekSegments(w.resetsAt, nowSec, window._lang)
       : null
-    const trackHtml = `<div class="quota-bar-track${week ? ' week' : ''}"><div class="quota-bar-fill ${muted ? '' : quotaLevelClass(pct)}" style="width:${pct}%"></div></div>`
+    // Day separators sit on the inner boundaries; a segment under half a day
+    // (100/14 %) keeps its column but gets no label.
+    let seps = ''
+    if (week) {
+      let left = 0
+      for (const w of week.widths.slice(0, -1)) {
+        left += w
+        seps += `<div class="quota-bar-sep" style="left:${left.toFixed(2)}%"></div>`
+      }
+    }
+    const trackHtml = `<div class="quota-bar-track${week ? ' week' : ''}"><div class="quota-bar-fill ${muted ? '' : quotaLevelClass(pct)}" style="width:${pct}%"></div>${seps}</div>`
     row.innerHTML = `
       <div class="quota-bar-label">${escapeHtml(t(labelKey))}</div>
       ${week ? `<div class="quota-bar-col">
         ${trackHtml}
         <div class="quota-bar-now" style="left:${week.nowPct.toFixed(2)}%"></div>
-        <div class="quota-bar-days${week.narrowLabels ? '' : ' no-narrow'}">${week.labels.map((d, i) => `<span><span class="day-full">${escapeHtml(d)}</span><span class="day-short">${escapeHtml(week.shortLabels[i])}</span>${week.narrowLabels ? `<span class="day-narrow">${escapeHtml(week.narrowLabels[i])}</span>` : ''}</span>`).join('')}</div>
+        <div class="quota-bar-days${week.narrowLabels ? '' : ' no-narrow'}" style="grid-template-columns:${week.widths.map((w) => w.toFixed(3) + 'fr').join(' ')}">${week.labels.map((d, i) => week.widths[i] < 100 / 14 ? '<span></span>' : `<span><span class="day-full">${escapeHtml(d)}</span><span class="day-short">${escapeHtml(week.shortLabels[i])}</span>${week.narrowLabels ? `<span class="day-narrow">${escapeHtml(week.narrowLabels[i])}</span>` : ''}</span>`).join('')}</div>
       </div>` : trackHtml}
       <div class="quota-bar-value">${pct}%<span class="quota-bar-reset">${escapeHtml(tail)}</span></div>
     `
