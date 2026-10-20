@@ -65,7 +65,11 @@ index_skills_dir() {
     fi
 
     local desc
-    desc=$(grep -m1 "^description:" "$skill_md" 2>/dev/null | sed 's/^description: *//' | tr -d '"' | tr -d "'" | cut -c1-120)
+    # `cut -c` is byte-oriented in GNU coreutils even under a UTF-8 locale, so
+    # a 120-byte cut lands mid-character on accented text and writes a broken
+    # byte into the index every agent reads. python3 counts characters.
+    desc=$(grep -m1 "^description:" "$skill_md" 2>/dev/null | sed 's/^description: *//' | tr -d '"' | tr -d "'" \
+      | python3 -c 'import sys; sys.stdout.write(sys.stdin.read().rstrip(chr(10))[:120])')
     if [ -z "$desc" ]; then
       desc="(nincs leírás)"
     fi

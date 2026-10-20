@@ -82,6 +82,13 @@ def api(tok, method, payload):
         return json.loads(r.read().decode())
 
 
+def topic_of(entry):
+    """The topic the placeholder was posted into (TELEGRAM_TOPICS_ENABLED), as
+    sendMessage parameters; empty for a plain chat, so the payload stays as is."""
+    t = entry.get("message_thread_id")
+    return {"message_thread_id": t} if isinstance(t, int) and t > 0 else {}
+
+
 def last_assistant_text(transcript_path):
     """Return the last non-empty assistant text message from the JSONL transcript
     (the agent's final user-facing answer). Empty string if none / unreadable."""
@@ -171,11 +178,20 @@ def main():
     answer = last_assistant_text(transcript)
     tok = token(sd)
     if tok:
+        # One pending entry per inbound MESSAGE, not per chat: a batched delivery
+        # (several messages from one chat in one turn) leaves several entries for
+        # the same chat. The answer goes to each chat (and topic) ONCE; every
+        # placeholder is still deleted (FALLBACKEGYSZER1019). A failed send does
+        # not count as sent, so the next entry of that chat retries it.
+        sent = set()
         for p in pend:
             cid, mid = p.get("chat_id"), p.get("message_id")
-            if answer:
+            topic = topic_of(p)
+            dest = (str(cid), topic.get("message_thread_id"))
+            if answer and dest not in sent:
                 try:
-                    api(tok, "sendMessage", {"chat_id": cid, "text": answer[:4000]})
+                    api(tok, "sendMessage", {"chat_id": cid, "text": answer[:4000], **topic})
+                    sent.add(dest)
                 except Exception as e:
                     log(sd, f"[enforce] fallback send failed: {e}")
             try:

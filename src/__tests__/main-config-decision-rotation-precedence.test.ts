@@ -51,6 +51,7 @@ vi.mock('../web/agent-process.js', async (orig) => ({
     isolatedConfigDir: dir,
     fleetToken: true,
     isolatedDirExists: true,
+    fleetTokenExported: true,
   }),
 }))
 

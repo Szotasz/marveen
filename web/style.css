@@ -606,6 +606,63 @@ main {
   background: var(--bg-input);
   overflow: hidden;
 }
+/* Weekly row: 7 equal day segments over the fill (separators drawn in the
+   card colour, so they read as gaps), day names underneath, and a thin
+   "now" marker. The fill is USAGE, the marker is TIME: usage right of the
+   marker means the week is being spent faster than it passes. */
+.quota-bar-col { position: relative; min-width: 0; }
+.quota-bar-track.week { position: relative; }
+.quota-bar-track.week::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(to right,
+    transparent 0, transparent calc(100% / 7 - 2px),
+    var(--bg-card) calc(100% / 7 - 2px), var(--bg-card) calc(100% / 7));
+  pointer-events: none;
+}
+.quota-bar-now {
+  position: absolute;
+  top: -3px;
+  width: 2px;
+  height: 12px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background: var(--text);
+  pointer-events: none;
+}
+/* Day names switch by the width of the label row itself (container query),
+   not by an ellipsis: full names need ~58 px per day (longest: "Wednesday",
+   measured at 10 px in DejaVu Sans, wider than the system UI fonts), so
+   below 7 x ~62 px = 440 px the short forms (H K Sze Cs P Szo V /
+   Mon..Sun, <= 22 px) take over, and below 180 px English drops to
+   M T W T F S S. Hungarian has no unambiguous one-letter form, so there
+   (.no-narrow) the day names hide below 180 px; the separators and the now
+   marker on the track still mark the days. */
+.quota-bar-days {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  margin-top: 3px;
+  font-size: 10px;
+  color: var(--text-muted);
+  container-type: inline-size;
+  container-name: quota-days;
+}
+.quota-bar-days > span {
+  text-align: center;
+  white-space: nowrap;
+}
+.quota-bar-days .day-short,
+.quota-bar-days .day-narrow { display: none; }
+@container quota-days (max-width: 440px) {
+  .quota-bar-days .day-full { display: none; }
+  .quota-bar-days .day-short { display: inline; }
+}
+@container quota-days (max-width: 180px) {
+  .quota-bar-days .day-short { display: none; }
+  .quota-bar-days .day-narrow { display: inline; }
+  .quota-bar-days.no-narrow > span { display: none; }
+}
 .quota-bar-fill {
   height: 100%;
   border-radius: 3px;
@@ -661,6 +718,60 @@ main {
 }
 @media (max-width: 1000px) {
   .overview-grid { grid-template-columns: 1fr; }
+}
+
+/* === Projects overview === */
+.projects-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 14px;
+}
+.project-card-progress {
+  height: 6px;
+  border-radius: 3px;
+  background: var(--border);
+  overflow: hidden;
+  margin: 10px 0;
+}
+.project-card-progress-fill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 3px;
+  transition: width var(--transition);
+}
+.project-card-desc {
+  font-size: 13px;
+  color: var(--text-muted);
+  min-height: 1.4em;
+  margin: 8px 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.project-card-desc-edit {
+  width: 100%;
+  min-height: 56px;
+  font-size: 13px;
+  font-family: inherit;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+  resize: vertical;
+  box-sizing: border-box;
+}
+.project-card-assignees {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.project-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 12px;
+  font-size: 11px;
+  color: var(--text-muted);
 }
 .overview-card {
   padding: 20px;
@@ -749,6 +860,45 @@ main {
 .overview-activity-time { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
 
 /* === Kanban Board === */
+/* Ongoing tasks strip: one slim row above the board (see KANBAN_ONGOING_LABEL). */
+.kanban-ongoing[hidden] { display: none; }
+.kanban-ongoing {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  margin-bottom: 12px;
+  background: var(--bg-input);
+  border-radius: var(--radius);
+  border-left: 3px solid #64748b;
+}
+.kanban-ongoing-title {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.kanban-ongoing-body { display: flex; gap: 6px; flex-wrap: wrap; min-width: 0; }
+.kanban-ongoing-chip {
+  font: inherit;
+  font-size: 13px;
+  color: var(--text);
+  background: var(--bg-card);
+  border: 1px solid var(--border, transparent);
+  border-radius: 14px;
+  padding: 3px 10px;
+  cursor: pointer;
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.kanban-ongoing-chip:hover { border-color: #64748b; }
+.kanban-ongoing-seq { color: var(--text-muted); font-weight: 600; }
+
 /* Five statuses, four fixed tracks: the board always wrapped "done" onto a
  * second row of its own, at every window size. auto-fit fits as many columns
  * as can hold KANBAN_COL_MIN and collapses the rest, so the count follows the
@@ -1191,14 +1341,45 @@ main {
   position: relative;
   overflow: hidden;
 }
-.kanban-card[data-priority="urgent"] { border-left: 3px solid var(--danger); }
-.kanban-card[data-priority="high"] { border-left: 3px solid var(--accent); }
-.kanban-card[data-priority="normal"] { border-left: 3px solid transparent; }
-.kanban-card[data-priority="low"] { border-left: 3px solid var(--border); }
+/* === Priority: the WHOLE card carries the colour, not a 3px edge ===
+   On a dense board a 3px stripe is not readable at a glance.
 
-/* Card aging: left stripe overrides priority border when card is stale.
-   Colour is set as --card-aging-color via inline style by JS. */
-.kanban-card[data-aging] { border-left: 3px solid var(--card-aging-color); }
+   The tint is layered OVER --bg-card with a two-stop gradient instead of being
+   written as a background colour: --bg-card differs between the light and dark
+   themes, and a hard-coded tint would go muddy in one of them. This way the
+   same rgba sits on whichever card background is current.
+
+   The left edge stays, thicker, because card aging (below) overrides it and
+   needs somewhere visible to land. */
+.kanban-card[data-priority] {
+  --card-tint: transparent;
+  --card-edge: var(--border);
+  background: linear-gradient(var(--card-tint), var(--card-tint)), var(--bg-card);
+  border-left: 4px solid var(--card-edge);
+}
+/* Deliberately NOT four equal steps: only the top two levels should pull the
+   eye, normal is the neutral middle and low recedes. Tinting all four would
+   turn the whole board into colour and tell you nothing. */
+.kanban-card[data-priority="urgent"] { --card-tint: rgba(191, 77, 67, 0.20); --card-edge: var(--danger); }
+.kanban-card[data-priority="high"]   { --card-tint: rgba(217, 119, 87, 0.18); --card-edge: var(--accent); }
+.kanban-card[data-priority="normal"] { --card-tint: transparent;              --card-edge: var(--border); }
+.kanban-card[data-priority="low"]    { --card-tint: rgba(20, 20, 19, 0.035);  --card-edge: var(--border); }
+/* Low also steps back in contrast, not just in hue: a background tint alone is
+   too weak to read as "background work" on a dense board. */
+.kanban-card[data-priority="low"] .kanban-card-title { color: var(--text-dim); }
+
+/* Dark theme needs both a stronger tint and the opposite direction for `low`:
+   the same alpha that reads on a white card is invisible on a dark one, and a
+   dark wash on a dark card would be indistinguishable from a shadow. */
+[data-theme="dark"] .kanban-card[data-priority="urgent"] { --card-tint: rgba(191, 77, 67, 0.32); }
+[data-theme="dark"] .kanban-card[data-priority="high"]   { --card-tint: rgba(217, 119, 87, 0.28); }
+[data-theme="dark"] .kanban-card[data-priority="low"]    { --card-tint: rgba(250, 249, 245, 0.03); }
+
+/* Card aging: left stripe overrides the priority edge when the card is stale.
+   Colour is set as --card-aging-color via inline style by JS. Only the colour
+   is overridden; the width comes from the priority block above. Must stay
+   AFTER that block: both selectors have the same specificity. */
+.kanban-card[data-aging] { border-left-color: var(--card-aging-color); }
 
 /* Aging badge: hourglass + day/hour counter, top-right (left of the ⚡ action) */
 .kanban-card-aging-badge {
@@ -1345,7 +1526,42 @@ main {
 }
 .card-detail-desc:empty { display: none; }
 
+/* Card 8fe51afd: the testing steps. A left border, not a box, so the block
+   reads as part of the card and not as a warning; `is-testing` is the only
+   state that raises the contrast, and the dashboard sets it only while the
+   card sits in the testing column. */
+.card-detail-test-steps {
+  margin-bottom: 20px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--border);
+  border-radius: 0 6px 6px 0;
+  background: var(--bg-hover, rgba(127, 127, 127, 0.06));
+}
+.card-detail-test-steps h4 {
+  margin: 0 0 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.card-detail-test-steps-body {
+  margin: 0;
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.card-detail-test-steps.is-testing {
+  border-left-color: var(--accent, #7c9cff);
+}
+.card-detail-test-steps.is-testing h4 { color: var(--accent, #7c9cff); }
+
+/* Card 0f21864e (#568): tokens per card, same heading style as the labels. */
+.card-detail-tokens { margin-bottom: 20px; }
+.card-detail-tokens-body { font-size: 13px; color: var(--text); display: grid; gap: 2px; }
 .card-detail-labels { margin-bottom: 20px; }
+.card-detail-tokens h4,
 .card-detail-labels h4 {
   font-size: 12px;
   font-weight: 600;
@@ -1529,6 +1745,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 .agents-grid[data-card-mode="activity"] .agent-card-footer,
 .agents-grid[data-card-mode="activity"] .agent-card-actions,
 .agents-grid[data-card-mode="activity"] .agent-reauth-banner,
+.agents-grid[data-card-mode="activity"] .agent-sharedenv-banner,
 .agents-grid[data-card-mode="activity"] .agent-tmux-cmds { display: none; }
 .agents-grid[data-card-mode="activity"] .agent-card-activity { display: block; margin-top: 14px; }
 /* Cards that carry no live state: the add button and federated (remote-system)
@@ -1542,7 +1759,11 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 .agents-grid[data-card-mode="activity"] .agent-card { border-left-width: 4px; }
 .agents-grid[data-card-mode="activity"] .agent-card.act-working { border-left-color: #22c55e; }
 .agents-grid[data-card-mode="activity"] .agent-card.act-idle    { border-left-color: #9ca3af; }
+/* Main thread idle, sub-agents working: a different green (teal, dashed) so it
+   never reads as the main thread's own solid green. */
+.agents-grid[data-card-mode="activity"] .agent-card.act-subagents { border-left-color: #14b8a6; border-left-style: dashed; }
 .agents-grid[data-card-mode="activity"] .agent-card.act-error   { border-left-color: #ef4444; }
+.agents-grid[data-card-mode="activity"] .agent-card.act-dead    { border-left-color: #b91c1c; }
 .agents-grid[data-card-mode="activity"] .agent-card.act-unknown { border-left-color: #eab308; }
 .agents-grid[data-card-mode="activity"] .agent-card.act-stopped { border-left-color: #6b7280; opacity: 0.7; }
 /* A stopped agent has no session to open, so its card is not clickable -- same
@@ -2948,6 +3169,21 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   color: var(--text);
 }
 .approvals-pending-banner[hidden] { display: none; }
+
+/* Settings -> Claude plans: rotation is on but something keeps it inert.
+   Same warning token set as .approvals-pending-banner. */
+.claude-plans-readiness-banner {
+  padding: 10px 14px;
+  margin-bottom: 14px;
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--warning, #d4a52c) 12%, transparent);
+  border: 1px solid var(--warning, #d4a52c);
+  font-size: 13px;
+  color: var(--text);
+}
+.claude-plans-readiness-banner[hidden] { display: none; }
+.claude-plans-readiness-banner ul { margin: 6px 0 0; padding-left: 18px; }
+.claude-plans-readiness-title { font-weight: 600; }
 
 /* Wizard step 3: the agent was created but its personality is a placeholder.
    Warning tone, not danger: nothing failed for the operator to undo, the agent
@@ -6254,6 +6490,63 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 /* === Settings page === */
 .settings-group { margin-bottom: 28px; }
 .settings-group:last-child { margin-bottom: 0; }
+.settings-reset-confirm p {
+  margin: 0 0 14px;
+  font-size: 14px;
+  line-height: 1.5;
+}
+.settings-reset-confirm-keys {
+  list-style: none;
+  margin: 0 0 20px;
+  padding: 4px 14px;
+  max-height: 40vh;
+  overflow-y: auto;
+  background: var(--bg-input);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font-size: 13px;
+}
+.settings-reset-confirm-keys li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+}
+.settings-reset-confirm-keys li:last-child { border-bottom: none; }
+.settings-reset-confirm-key {
+  font-family: var(--font-mono, monospace);
+  font-weight: 600;
+}
+.settings-reset-confirm-change {
+  font-family: var(--font-mono, monospace);
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+.settings-reset-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: stretch;
+  gap: 8px;
+}
+/* .btn-primary is a full-width block by default; here the confirm button must
+   not outweigh Cancel, which is the safe choice and holds the focus. */
+.settings-reset-confirm-actions .btn-primary,
+.settings-reset-confirm-actions .btn-secondary {
+  width: auto;
+  min-width: 120px;
+  /* Same box for both: .btn-primary alone carries a top margin, a larger
+     padding and font, which left the two buttons on different baselines. */
+  margin: 0;
+  padding: 10px 20px;
+  font-size: 14px;
+}
+.settings-group-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin: 0 0 10px;
+}
 .settings-group-title {
   font-size: 13px;
   font-weight: 600;
@@ -6449,6 +6742,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   padding: 2px 6px;
 }
 .claude-plan-edit:hover { color: var(--text); }
+.claude-plan-switch-btn { margin-right: 4px; white-space: nowrap; }
 
 /* === connectors.hu cross-promo banner === */
 .cxhu-banner {
@@ -6697,7 +6991,9 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 }
 .activity-card.act-working { border-left-color: #22c55e; }
 .activity-card.act-idle    { border-left-color: #9ca3af; }
+.activity-card.act-subagents { border-left-color: #14b8a6; border-left-style: dashed; }
 .activity-card.act-error   { border-left-color: #ef4444; }
+.activity-card.act-dead    { border-left-color: #b91c1c; }
 .activity-card.act-unknown { border-left-color: #eab308; }
 .activity-card.act-stopped { border-left-color: #6b7280; opacity: 0.7; }
 .activity-card.act-clickable { cursor: pointer; transition: background 0.15s, box-shadow 0.15s; }
@@ -6723,7 +7019,9 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   animation: badge-breathe 2s ease-in-out infinite;
 }
 .activity-badge.act-idle    { background: rgba(156,163,175,0.18); color: #6b7280; }
+.activity-badge.act-subagents { background: rgba(20,184,166,0.15); color: #0d9488; }
 .activity-badge.act-error   { background: rgba(239,68,68,0.15); color: #dc2626; }
+.activity-badge.act-dead    { background: rgba(185,28,28,0.18); color: #b91c1c; font-weight: 600; }
 .activity-badge.act-unknown { background: rgba(234,179,8,0.18); color: #ca8a04; }
 .activity-badge.act-stopped { background: rgba(107,114,128,0.15); color: #6b7280; }
 
@@ -6964,6 +7262,14 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   margin: 8px 0 0;
 }
 .agent-reauth-reason { font-size: 11px; color: #ef4444; font-weight: 600; flex: 1; }
+.agent-sharedenv-banner {
+  background: color-mix(in srgb, var(--warning, #d4a52c) 12%, transparent);
+  border: 1px solid var(--warning, #d4a52c);
+  border-radius: 6px;
+  padding: 6px 10px;
+  margin: 8px 0 0;
+}
+.agent-sharedenv-text { font-size: 11px; color: var(--warning, #d4a52c); font-weight: 600; overflow-wrap: anywhere; }
 .btn-danger {
   background: #ef4444;
   color: #fff;
@@ -7744,6 +8050,24 @@ body {
   border: 1px solid color-mix(in srgb, #f59e0b 45%, transparent);
 }
 
+/* Live agent state on an in_progress card. The colour is the AGENT's state, not
+   the card's: green working, yellow possibly stuck, red stopped/dead, grey idle. */
+.kanban-card-agent-live {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 1px 6px;
+  border-radius: 8px;
+  font-size: 11px;
+  color: var(--text-muted);
+  border: 1px solid color-mix(in srgb, currentColor 35%, transparent);
+}
+.kanban-agent-live-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.kanban-agent-live-ok { color: #15803d; }
+.kanban-agent-live-warn { color: #b45309; }
+.kanban-agent-live-bad { color: #b91c1c; font-weight: 600; }
+.kanban-card[data-agent-live="bad"] { box-shadow: inset 3px 0 0 #dc2626; }
+
 /* MEMKERESVAK917: the memory search is forgiving -- when nothing matches the
    query as asked it answers with the rescued near-misses, and in the LIST those
    are indistinguishable from real hits. The endpoint says which it was in the
@@ -7759,3 +8083,29 @@ body {
   color: var(--text, inherit);
 }
 .mem-search-label code { font-size: 11px; opacity: .85; }
+
+/* === Team notes ("Jegyzetek") === */
+.notes-form { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 0 0 16px; }
+.notes-form .input { min-width: 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-card); color: var(--text); font-size: 14px; font-family: inherit; }
+.notes-form .input:focus { outline: none; border-color: var(--accent); }
+.notes-form-content { flex: 1 1 280px; }
+.notes-table-wrap { margin-bottom: 16px; }
+.notes-table td { vertical-align: top; }
+.notes-content { white-space: pre-wrap; word-break: break-word; }
+.notes-assignee { font-weight: 600; white-space: nowrap; }
+.notes-muted { color: var(--text-muted, #888); font-size: 0.9em; overflow-wrap: anywhere; }
+.notes-actions { text-align: right; white-space: nowrap; }
+.notes-empty { text-align: center; color: var(--text-muted, #888); padding: 16px; }
+.notes-row-overdue td { background: var(--danger-soft); }
+.notes-row-today td { background: var(--accent-soft); }
+.notes-due-tag { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 8px; font-size: 0.8em; font-weight: 600; background: var(--danger); color: #fff; }
+.notes-row-today .notes-due-tag { background: var(--accent); }
+.notes-deleted > summary { cursor: pointer; color: var(--text-muted, #888); margin-bottom: 8px; }
+@media (max-width: 768px) {
+  .notes-table thead { display: none; }
+  .notes-table tr { display: block; padding: 8px 0; border-bottom: 1px solid var(--border, #333); }
+  .notes-table td { display: block; border: none; padding: 2px 8px; }
+  .notes-table td[data-label]::before { content: attr(data-label) ": "; color: var(--text-muted, #888); font-size: 0.85em; }
+  .notes-actions { text-align: left; }
+  .notes-assignee { white-space: normal; overflow-wrap: anywhere; }
+}

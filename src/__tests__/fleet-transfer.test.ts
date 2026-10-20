@@ -47,12 +47,15 @@ describe('encrypt/decrypt round-trip', () => {
 // importFleet: encrypted wrapper detection (with mocked FS / DB)
 // ---------------------------------------------------------------------------
 
+// Every statement the import runs, with its bound values, so a test can check
+// which columns a fixed-list INSERT carries.
+const dbRuns = vi.hoisted(() => [] as { sql: string; args: unknown[] }[])
 vi.mock('../db.js', () => ({
   getDb: () => ({
-    prepare: () => ({
+    prepare: (sql: string) => ({
       all: () => [],
       get: () => null,
-      run: () => ({ changes: 0 }),
+      run: (...args: unknown[]) => { dbRuns.push({ sql, args }); return { changes: 0 } },
     }),
     transaction: (fn: Function) => fn,
   }),
@@ -383,5 +386,67 @@ describe('importFleet: avatarExt traversal rejected', () => {
     expect('dryRun' in result).toBe(true)
     const errors = (result as any).errors as string[]
     expect(errors.some(e => e.includes('avatarExt') && e.includes('testbot'))).toBe(true)
+  })
+})
+
+// SECSZIVEK1007: an import writes the main agent's .claude/settings.json and
+// every agent's agent-config.json / settings.json verbatim; their model ids go
+// through the same allowlist as every other model writer, before any write.
+describe('importFleet: model ids are validated before any write', () => {
+  const fleetWith = (patch: Record<string, unknown>): string => JSON.stringify({ ...JSON.parse(MINIMAL_FLEET), ...patch })
+  const mainAgent = (settings: Record<string, unknown>, config: Record<string, unknown> = {}) => ({
+    mainAgent: { claudeMd: '', soulMd: '', config, mcp: {}, settings, channelsAccess: {} },
+  })
+  const agent = (config: Record<string, unknown>, settings: Record<string, unknown> = {}) => ({
+    agents: [{ name: 'alpha', config, claudeMd: '', soulMd: '', mcp: {}, settings, channelsAccess: {}, agentSkills: [] }],
+  })
+
+  it('a malformed model in the main settings.json rejects the import, and nothing is written', async () => {
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    const { atomicWriteFileSync } = await import('../web/atomic-write.js')
+    vi.mocked(atomicWriteFileSync).mockClear()
+    const r = importFleet(fleetWith(mainAgent({ model: "it's model" })), { apply: true }) as { errors: string[] }
+    expect(r.errors.join(' ')).toContain('Érvénytelen modell-azonosító (mainAgent settings.json)')
+    expect(atomicWriteFileSync).not.toHaveBeenCalled()
+  })
+
+  it('a malformed model in an agent-config.json rejects the import', async () => {
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    const r = importFleet(fleetWith(agent({ model: 'a b' })), { apply: false }) as { errors: string[] }
+    expect(r.errors.join(' ')).toContain('Érvénytelen modell-azonosító (agent alpha agent-config.json)')
+  })
+
+  it('valid ids and absent models raise no model error', async () => {
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    const r = importFleet(fleetWith({ ...mainAgent({ model: 'claude-opus-5-5[1m]' }), ...agent({ model: 'openrouter/qwen/qwen3:free' }) }), { apply: false }) as { errors?: string[] }
+    expect((r.errors ?? []).join(' ')).not.toContain('modell-azonosító')
+    const r2 = importFleet(fleetWith(agent({})), { apply: false }) as { errors?: string[] }
+    expect((r2.errors ?? []).join(' ')).not.toContain('modell-azonosító')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Kanban cards: every exported column the board relies on survives the import
+// ---------------------------------------------------------------------------
+
+describe('importFleet: kanban card columns', () => {
+  // The export is SELECT *, the import a fixed column list: a column missing
+  // from that list is exported and then silently dropped on the new machine.
+  it('a card keeps its start_date', async () => {
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    const card = {
+      id: 'c1', title: 'Card', status: 'planned', priority: 'normal', sort_order: 0,
+      created_at: 1, updated_at: 1, due_date: 1790000000, start_date: 1789000000,
+    }
+    const fleet = JSON.parse(MINIMAL_FLEET)
+    fleet.kanban.cards = [card]
+    dbRuns.length = 0
+    importFleet(JSON.stringify(fleet), { apply: true })
+    const insert = dbRuns.find((r) => /INTO kanban_cards/.test(r.sql))
+    expect(insert).toBeDefined()
+    const cols = insert!.sql.slice(insert!.sql.indexOf('(') + 1, insert!.sql.indexOf(')')).split(',').map((c) => c.trim())
+    const row = Object.fromEntries(cols.map((c, i) => [c, insert!.args[i]]))
+    expect(row.start_date).toBe(1789000000)
+    expect(row.due_date).toBe(1790000000)
   })
 })

@@ -72,12 +72,15 @@ vi.mock('../web/agent-config.js', () => ({
   readAgentRemoteHost: () => null,
   readAgentVoiceConfig: () => ({ responseMode: 'text' }),
   isKnownAgent: () => true,
+  // The wrap step reads the sender's channel for the area-agent label (e349287f); no sender here owns one.
+  readAgentChannelProvider: () => null,
   agentDir: () => '/tmp/none-agentdir',
   // These cases are about the KEYBOARD path (modal cleared -> prompt delivered),
   // so the agent under test is deliberately NOT a worksource agent: a queue
   // agent skips the readiness gate entirely, which would stop this file from
   // measuring the refusal branch it exists to pin.
   readAgentWorksourceChannel: () => false,
+  readAgentPullDelivery: () => false,
 }))
 
 vi.mock('../web/agent-process.js', () => ({

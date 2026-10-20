@@ -49,6 +49,19 @@ describe('resolveMainAgentConfigDir', () => {
     expect(resolveMainAgentConfigDir()).toBe(join(SANDBOX, 'home', '.claude-bot'))
   })
 
+  // SECSZIVEK1007: a value from .env never met the settings write check, and the
+  // dir reaches the channels launch command; the read applies the same path
+  // rules as an agent's claudeConfigDir. The dir EXISTS here, so existence
+  // alone (the old check) would have accepted it.
+  it('returns null for an existing dir whose path is outside the config-dir rules', () => {
+    const odd = join(SANDBOX, 'home', "it's dir")
+    mkdirSync(odd, { recursive: true })
+    SETTING = odd
+    expect(resolveMainAgentConfigDir()).toBeNull()
+    SETTING = '~/../home/.claude-bot'
+    expect(resolveMainAgentConfigDir()).toBeNull()
+  })
+
   it('returns null (not the unresolved path) when the dir does not exist', () => {
     // Falling back to the shared root is the safe failure: launching with a
     // non-existent CLAUDE_CONFIG_DIR would start the bot logged-out.
@@ -122,8 +135,17 @@ describe('launcher wiring', () => {
     // just the plan's own, not the flotta's) is not swept into this capture.
     const branch = CHANNELS.match(/if \[ "\$_cfg_mode" = "explicit" \] \|\| \[ "\$_cfg_mode" = "rotated" \]; then\n([\s\S]*?)\n\s*(?:elif|else)/)
     expect(branch).not.toBeNull()
-    expect(branch?.[1]).not.toMatch(/CLAUDE_CODE_OAUTH_TOKEN/)
+    expect(branch?.[1]).not.toMatch(/export CLAUDE_CODE_OAUTH_TOKEN/)
+    expect(branch?.[1]).not.toMatch(/\.claude-oauth-token/)
     expect(branch?.[1]).toMatch(/CLAUDE_CONFIG_DIR/)
+    // AUTH_PANE_ENV (sourced before CFG_ENV) and the tmux global env already
+    // carry the fleet token; it must be dropped, or it outranks the dir's own
+    // login and hides the claude.ai connectors (measured 2026-10-16).
+    expect(branch?.[1]).toMatch(/unset CLAUDE_CODE_OAUTH_TOKEN/)
+    // APIKEYUNSET1018: the auth file and the tmux global env carry ANTHROPIC_API_KEY
+    // too when .env has one, and it outranks the dir's own login as well.
+    expect(branch?.[1]).toMatch(/unset CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_API_KEY/)
+    expect(branch?.[1]).not.toMatch(/export ANTHROPIC_API_KEY/)
   })
 
   it('channels.sh exports the PLAN token (via resolve-plan-token-env.mjs), not the raw fleet token, for a token-mode rotated dir', () => {

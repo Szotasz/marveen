@@ -41,7 +41,9 @@ describe('install-linux.sh on WSL', () => {
   // code -- and wrote it into ~/.bashrc and .env as the token.
   it('shape-checks the OAuth token before it is written anywhere', () => {
     const prompt = linux.indexOf('read -p "  OAuth token: "')
-    const rcWrite = linux.indexOf("set_export_in_rc 'CLAUDE_CODE_OAUTH_TOKEN'")
+    // SECSZIVEK1007: the token no longer goes into an rc file; its first write
+    // is the .env line for the services.
+    const rcWrite = linux.indexOf('CLAUDE_AUTH_ENV_LINE="CLAUDE_CODE_OAUTH_TOKEN=${OAUTH_TOKEN_INPUT}"')
     const check = linux.indexOf("grep -Eq '^sk-ant-oat01-", prompt)
     expect(prompt).toBeGreaterThan(0)
     expect(check).toBeGreaterThan(prompt)
@@ -64,25 +66,8 @@ describe('install-linux.sh on WSL', () => {
     expect(run('\n')).toBe('')
   })
 
-  // ensure_in_rc skipped the rc when the marker was already present, so a stale
-  // or bad token line survived every re-run with the correct token.
-  it('set_export_in_rc replaces a stale token line instead of keeping it', () => {
-    const start = linux.indexOf('set_export_in_rc() {')
-    const end = linux.indexOf('\n}\n', start) + 3
-    const fn = linux.slice(start, end)
-    const home = mkdtempSync(join(tmpdir(), 'rc-'))
-    try {
-      writeFileSync(join(home, '.bashrc'), 'alias ll=ls\nexport CLAUDE_CODE_OAUTH_TOKEN="abc#bad"\nexport CLAUDE_CODE_OAUTH_TOKEN=""\n')
-      const out = execFileSync(
-        'bash',
-        ['-c', `warn(){ :; }\n${fn}\nset_export_in_rc CLAUDE_CODE_OAUTH_TOKEN 'export CLAUDE_CODE_OAUTH_TOKEN="sk-ant-oat01-good"'\ncat "$HOME/.bashrc"`],
-        { encoding: 'utf-8', env: { ...process.env, HOME: home } },
-      )
-      expect(out).toBe('alias ll=ls\nexport CLAUDE_CODE_OAUTH_TOKEN="sk-ant-oat01-good"\n')
-    } finally {
-      rmSync(home, { recursive: true, force: true })
-    }
-  })
+  // SECSZIVEK1007: set_export_in_rc (which wrote the token into ~/.bashrc) is
+  // gone; installer-no-secret-in-rc.test.ts covers the cleanup that replaced it.
 
   // WSLg exports DISPLAY, which made Enter mean "skip sign-in" on every WSL box.
   it('treats WSL as headless for the auth default', () => {

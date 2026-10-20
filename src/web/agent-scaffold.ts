@@ -1,6 +1,6 @@
-import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, readdirSync, statSync, rmSync, watchFile, unwatchFile } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, readdirSync, statSync, rmSync, watchFile, unwatchFile, realpathSync } from 'node:fs'
 import { readRemovedDefaultTasks } from './scheduled-tasks-io.js'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { homedir } from 'node:os'
 import { PROJECT_ROOT, OWNER_NAME, MAIN_AGENT_ID, HEARTBEAT_AGENT_ID, BOT_NAME, CHANNEL_PROVIDER, WEB_PORT, OWNER_DRIVE_FOLDER, APP_TZ, DASHBOARD_PUBLIC_URL, AGENT_API_ORIGIN, STORE_DIR } from '../config.js'
 import { channelStateDir } from '../channel-provider.js'
@@ -10,7 +10,7 @@ import { findDuplicateJsonKeys } from './json-dup-keys.js'
 import { logger } from '../logger.js'
 import { filterInheritableMcpServers, readInheritableMcpServerNames, logNotInherited } from './mcp-inheritance.js'
 import { agentDir, agentConfigRoot, listAgentNames, readAgentCapabilities, readAgentToolDeny } from './agent-config.js'
-import { loadProfileTemplate, profileWantsDestructiveGate, resolveProfilePlaceholders,
+import { loadProfileTemplate, profileWantsCredentialGate, profileWantsDestructiveGate, resolveProfilePlaceholders,
   type ProfileTemplate } from './profiles.js'
 import { resolveAgentSecurityProfile } from './agent-team.js'
 import { sanitizeCapabilityTag, CAPABILITY_TAG_MAX_PER_AGENT } from '../prompt-safety.js'
@@ -55,7 +55,37 @@ const tokenPath = join(PROJECT_ROOT, 'store', '.dashboard-token')
 // the gate silently never enforces (atlas incident, 2026-07-30). process.execPath
 // is the absolute binary of the node running this server, which by definition
 // exists on the host that spawns the agents. Exported for unit tests.
-export const HOOK_NODE_BIN = process.execPath
+//
+// One exception (issue #2036): on a Homebrew install execPath is the
+// version-pinned Cellar path, which `brew upgrade` deletes -- even on a patch
+// bump -- and every gate then blocks until the dashboard is restarted. Brew
+// keeps a stable `<prefix>/opt/<formula>` symlink that survives upgrades, so
+// when execPath is a Cellar node AND that symlink resolves to the very same
+// binary, the symlink is burnt in instead. Anything else (nvm, the official
+// installer, a symlink pointing elsewhere) keeps execPath unchanged, so the
+// nvm protection above and the missing-interpreter guard below still hold.
+// Trade-off: with the unversioned `node` formula the opt symlink follows a
+// major bump, so after `brew upgrade node` the gates run on the new major
+// until the next restart (node@N formulas stay on their major). That is still
+// node >= the engines floor, and better than every gate blocking.
+const BREW_CELLAR_NODE_RE = /^(.+)\/Cellar\/([^/]+)\/[^/]+\/bin\/node$/
+
+export function resolveHookNodeBin(
+  execPath: string,
+  fs: { existsSync: (p: string) => boolean; realpathSync: (p: string) => string } = { existsSync, realpathSync },
+): string {
+  const m = BREW_CELLAR_NODE_RE.exec(execPath)
+  if (!m) return execPath
+  const stable = `${m[1]}/opt/${m[2]}/bin/node`
+  try {
+    if (fs.existsSync(stable) && fs.realpathSync(stable) === fs.realpathSync(execPath)) return stable
+  } catch {
+    // An unreadable link is no better than the pinned path; keep execPath.
+  }
+  return execPath
+}
+
+export const HOOK_NODE_BIN = resolveHookNodeBin(process.execPath)
 
 // The ONE way a gate hook command is assembled. Both halves are quoted:
 // process.execPath with a space in it (native Windows `C:\Program Files`, a
@@ -63,19 +93,18 @@ export const HOOK_NODE_BIN = process.execPath
 // space -- exit 127, silently non-enforcing, the exact failure this file
 // exists to close. A single builder also keeps the injectors and every
 // wired-already comparison byte-identical, so they cannot drift.
-export function hookCommand(scriptPath: string): string {
+export function hookCommand(scriptPath: string, args: readonly string[] = [], hookTimeoutSec = 10): string {
   // The interpreter is checked before it is used, and a missing one BLOCKS.
   //
-  // HOOK_NODE_BIN is process.execPath, which on a brew install is the
-  // version-pinned real path (/opt/homebrew/Cellar/node@22/<version>/bin/node),
-  // not the stable /opt/homebrew/bin/node symlink the launchd plist starts.
-  // A `brew upgrade node@22` moves that directory, the burnt-in path goes
-  // dangling, the hook exits 127 -- and 127 is exactly the non-blocking status
+  // HOOK_NODE_BIN can still go dangling: an nvm version is removed, a node is
+  // replaced by hand, or a brew opt symlink cannot be confirmed and the
+  // version-pinned Cellar path is kept (see resolveHookNodeBin). A dangling
+  // path makes the hook exit 127 -- and 127 is exactly the non-blocking status
   // this whole file exists to stop, so the gate would go quiet again on a
   // different route (measured: the pinned path fails with 127 after a version
   // bump, the stable symlink survives).
   //
-  // Burning the symlink instead is NOT the fix: nvm installs have no such
+  // A stable symlink alone is NOT the general fix: nvm installs have no such
   // stable path outside the launchd PATH, which is the original defect. Making
   // the failure loud is install-manager agnostic and covers any future move.
   //
@@ -85,7 +114,8 @@ export function hookCommand(scriptPath: string): string {
   // the ensure* migrations, which rewrite the path. A blocking gate with no
   // stated way out is worse than a loud error.
   const miss = `governance-kapu: a hook interpretere nem talalhato (${HOOK_NODE_BIN}). A kapu ezert BLOKKOL. Javitas: inditsd ujra a dashboardot, az ujrairja a hook-utakat.`
-  return `test -x "${HOOK_NODE_BIN}" || { echo "${miss}" >&2; exit 2; }; "${HOOK_NODE_BIN}" "${scriptPath}"`
+  const invocation = gateInvocation(`"${HOOK_NODE_BIN}"`, scriptPath, args)
+  return `test -x "${HOOK_NODE_BIN}" || { echo "${miss}" >&2; exit 2; }; ${failClosedGateRun(invocation, basename(scriptPath), hookTimeoutSec)}`
 }
 
 // The python twin of hookCommand(). The outgoing-copy-gate is a .py script, so
@@ -97,9 +127,53 @@ export function hookCommand(scriptPath: string): string {
 // is the 127 exit, because Claude Code treats 127 as NON-blocking and lets the
 // tool call through -- a gate that silently stops enforcing. So the interpreter
 // is probed first and a miss exits 2, which blocks.
-export function pythonHookCommand(scriptPath: string): string {
+export function pythonHookCommand(scriptPath: string, args: readonly string[] = [], hookTimeoutSec = 10): string {
   const miss = 'governance-kapu: a hook interpretere nem talalhato (python3 nincs a PATH-on). A kapu ezert BLOKKOL. Javitas: telepitsd a python3-at, vagy inditsd ujra a dashboardot.'
-  return `command -v python3 >/dev/null 2>&1 || { echo "${miss}" >&2; exit 2; }; python3 "${scriptPath}"`
+  const invocation = gateInvocation('python3', scriptPath, args)
+  return `command -v python3 >/dev/null 2>&1 || { echo "${miss}" >&2; exit 2; }; ${failClosedGateRun(invocation, basename(scriptPath), hookTimeoutSec)}`
+}
+
+// Card 723bbb70: the gate command's exit status is made FAIL-CLOSED here, in one place for every gate
+// the builders above assemble. Claude Code blocks a tool call only on exit 2 (or a deny on stdout with
+// exit 0); any other status is a NON-blocking error and the call goes through. A gate that is itself
+// broken therefore let everything pass: a SyntaxError in the gate file or in one of its imports exits 1
+// in both node and python, a missing script exits 1 (2 for python3), a signal exits 128+n (measured on
+// the eight security hooks, af12a1d3 73814: a syntax error in the gate FILE gave rc 1 on every one).
+// The tail keeps 0 and 2 as they are and turns every other status into 2, with the reason on stderr
+// after whatever the interpreter itself printed; the gate's stdout (a deny JSON on exit 0) is untouched.
+//
+// The deadline: where the host has coreutils `timeout`, the gate runs under it, two seconds inside the
+// hook's own timeout, so a hung gate ends here with 124 (or 137 after the one-second kill grace) and
+// blocks, instead of being cut off by Claude Code's timeout, whose outcome this wrapper does not
+// control. Without `timeout` (a stock macOS) the gate runs as before and only that one case stays with
+// Claude Code. The `test -x` / `command -v` interpreter probe before it is unchanged and still blocks
+// with its own message.
+export const GATE_FAIL_CLOSED_TAG = 'governance-kapu (fail-closed)'
+
+/** The gate's deadline inside a hook whose timeout is `hookTimeoutSec`: two seconds earlier, at least one. */
+export function gateDeadlineSec(hookTimeoutSec: number): number {
+  return Math.max(1, Math.floor(hookTimeoutSec) - 2)
+}
+
+// Extra arguments ride inside the invocation, never after the whole command: appended after the
+// fail-closed tail they would land on `exit` instead of the gate (the email gate's thread-reply flag).
+// Only plain flag characters are accepted, so nothing needs shell quoting.
+function gateInvocation(interpreter: string, scriptPath: string, args: readonly string[]): string {
+  for (const a of args) {
+    if (!/^[A-Za-z0-9_=.:-]+$/.test(a)) throw new Error(`hook argument needs no quoting, got: ${a}`)
+  }
+  return [interpreter, `"${scriptPath}"`, ...args].join(' ')
+}
+
+/**
+ * The run-and-map tail of a gate command (exported for tests and for the main agent's hand-written
+ * project settings, which carry the same shape around a $CLAUDE_PROJECT_DIR path).
+ */
+export function failClosedGateRun(invocation: string, label: string, hookTimeoutSec: number): string {
+  if (!/^[A-Za-z0-9_.-]+$/.test(label)) throw new Error(`gate label must be a plain file name, got: ${label}`)
+  const t = gateDeadlineSec(hookTimeoutSec)
+  const fail = `${GATE_FAIL_CLOSED_TAG}: ${label}: a kapu nem 0-val vagy 2-vel lepett ki (rc=$rc: betoltesi hiba, hianyzo fajl, jel vagy idotullepes). A hivas ezert TILTVA. Javitas: a kapu fajlja vagy egy fuggosege hibas, a hibauzenet fent.`
+  return `if command -v timeout >/dev/null 2>&1; then timeout -k 1 ${t} ${invocation}; else ${invocation}; fi; rc=$?; [ "$rc" = 0 ] || [ "$rc" = 2 ] || { echo "${fail}" >&2; exit 2; }; exit "$rc"`
 }
 
 // Wired-already predicate for the ensure* migrations: is `command` present in
@@ -121,6 +195,8 @@ export interface TemplateIdentity {
   botName: string
   ownerName: string
   webPort: number | string
+  /** IANA zone for {{TIMEZONE}}; the install zone (APP_TZ) when omitted. */
+  timeZone?: string
 }
 
 // Pure substitution of the identity placeholders into a template body. Kept in
@@ -136,6 +212,8 @@ export function substituteTemplatePlaceholders(content: string, id: TemplateIden
     .replaceAll('{{BOT_NAME}}', id.botName)
     .replaceAll('{{OWNER_NAME}}', id.ownerName)
     .replaceAll('{{WEB_PORT}}', String(id.webPort))
+    // ISSUE1895 (#1895): the install zone, not a hardcoded Europe/Budapest.
+    .replaceAll('{{TIMEZONE}}', id.timeZone ?? APP_TZ)
 }
 
 export function resolveTemplatePlaceholders(content: string): string {
@@ -690,6 +768,36 @@ export function absolutizeFileRule(rule: string): string {
   return rule
 }
 
+// #1837 (opontop): a strict profile's allow-list is its whole value, but Claude
+// Code evaluates bypassPermissions BEFORE the allow-list, so a strict agent that
+// comes up in bypass mode can touch anything its deny-list does not name. The
+// mode can arrive from the operator's own ~/.claude/settings.json
+// (provisionIsolatedConfigDir copies it into the agent's isolated config dir),
+// and nothing pinned it. This pins permissions.defaultMode to 'dontAsk' for a
+// strict profile: per the documented modes (code.claude.com/docs/en/permissions)
+// dontAsk "auto-denies every call that would otherwise prompt", while allow-
+// listed tools still run -- exactly the strict contract. 'default' is NOT
+// enough: it prompts on an unmatched call, and a sub-agent runs in tmux with no
+// one to answer, so it would hang on the prompt (Dani, #1844 review). Only an
+// operator-chosen 'plan' is left alone. Applied in BOTH places a strict agent's
+// mode can come from: the project settings written here and the isolated
+// user-level copy (project settings outrank user settings anyway).
+// Returns whether it changed anything. Pure: unit-tested directly.
+export function enforceStrictPermissionMode(
+  settings: Record<string, unknown>,
+  permissionMode: string | undefined,
+): boolean {
+  if (permissionMode !== 'strict') return false
+  const raw = settings.permissions
+  const perms = (raw && typeof raw === 'object' && !Array.isArray(raw)
+    ? raw
+    : (settings.permissions = {})) as Record<string, unknown>
+  const current = perms.defaultMode
+  if (current === 'dontAsk' || current === 'plan') return false
+  perms.defaultMode = 'dontAsk'
+  return true
+}
+
 export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemplate): void {
   const agentRoot = agentDir(name)
   const settingsDir = join(agentRoot, '.claude')
@@ -748,6 +856,7 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
     deny: denyList,
     ...(extraDirs.length ? { additionalDirectories: extraDirs } : {}),
   }
+  enforceStrictPermissionMode(existing, profile.permissionMode)
   // Governance hard-gates: every sub-agent (NOT the main agent) gets PreToolUse
   // hooks. Re-applied on every spawn (this function regenerates settings.json),
   // so they survive respawns. (a) email-send block -- outbound email routes
@@ -771,7 +880,9 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
     injectDigestProvenanceGate(existing)
   }
   if (agentGetsTelegramCopyGate(name)) injectTelegramCopyGate(existing)
+  if (agentGetsChildClaudeGuard(name)) injectChildClaudeGuard(existing)
   if (agentGetsDestructiveGate(name, profile)) injectDestructiveGate(existing)
+  if (agentGetsCredentialGate(name, profile)) injectCredentialGate(existing)
   injectEgressGate(existing)
   if (agentGetsBashEgressParser(name)) injectBashEgressParser(existing)
   atomicWriteFileSync(settingsPath, JSON.stringify(existing, null, 2))
@@ -831,8 +942,26 @@ export function hasThreadReplyCapability(name: string, capabilities: string[]): 
 // keeps the draft surface reachable even under a server name with no gmail in
 // it at all -- a name-keyed matcher goes blind on the next new name, so the
 // draft surface is pinned by the OPERATION too, not only by the server.
+// The gates classify a tool by its base-name SUFFIX on a server of any name
+// (email_extract.classify_mail_tool / classifyMailTool), but a hook that never
+// FIRES checks nothing, and `.*[Gg]mail.*__.*` needs "gmail" in the SERVER
+// segment: a mail MCP registered under any other name exposed send_draft /
+// update_draft / create_draft / reply_all (and the Google Workspace MCP's
+// send_gmail_message / draft_gmail_message) with no hook at all. So every base
+// the classifiers treat as a send or a draft is its own alternative. The three
+// generic connector words (send_message / reply / forward) stay tied to
+// "gmail" -- in the classifiers AND here -- because the Telegram plugin's tool
+// is `..._telegram__reply`, and the email gates must never fire on it. The
+// `[Gg][Mm][Aa][Ii][Ll].*<word>` form is case-insensitive like the
+// classifiers' lowercased test, and it also reaches a "gmail" that sits in a
+// tool PREFIX (mcp__mail__gmail_reply), which `[Gg]mail.*__` cannot. Kept a
+// FLAT alternation (no inner `|`): the drift test splits it on '|'.
+// Binding: email-gate-matcher-drift.test.ts asserts this matcher fires for
+// every name either classifier gates, and never for the Telegram tools.
 export const EMAIL_GATE_MATCHER =
   'Bash|.*send_email.*|.*manage_email.*|.*[Gg]mail.*__.*|.*draft_email.*'
+  + '|.*send_draft.*|.*update_draft.*|.*create_draft.*|.*reply_all.*|.*send_gmail_message.*|.*draft_gmail_message.*'
+  + '|.*[Gg][Mm][Aa][Ii][Ll].*send_message.*|.*[Gg][Mm][Aa][Ii][Ll].*reply.*|.*[Gg][Mm][Aa][Ii][Ll].*forward.*'
 
 // Does an existing PreToolUse array carry an email-gate entry whose matcher is
 // NOT the current one? Pure + exported: this is the predicate that lets
@@ -882,7 +1011,7 @@ export function injectEmailSendGate(existing: Record<string, unknown>, threadRep
   // in the same regenerated-on-every-spawn settings.json as the gate itself:
   // revoking the capability removes the flag at the next spawn, and a manual
   // settings edit can neither grant nor keep it.
-  const command = threadReply ? `${base} ${EMAIL_THREAD_REPLY_FLAG}` : base
+  const command = threadReply ? hookCommand(join(PROJECT_ROOT, 'scripts', 'email-send-gate.mjs'), [EMAIL_THREAD_REPLY_FLAG]) : base
   const entry = {
     matcher: EMAIL_GATE_MATCHER,
     hooks: [{ type: 'command', command, timeout: 10 }],
@@ -1361,6 +1490,71 @@ export function agentGetsDestructiveGate(name: string, profile?: ProfileTemplate
   return profileWantsDestructiveGate(p)
 }
 
+// CHILDCLAUDEPOLLER1010. Which agents get the child-claude channel guard: every
+// sub-agent. A child `claude` started from a channel-owning session's Bash
+// inherits TELEGRAM_STATE_DIR / CLAUDE_CONFIG_DIR, loads the channel plugin,
+// and the plugin's bot.pid logic SIGTERMs the PARENT's live poller -- measured
+// 2026-10-10 with three `claude -p` calls from a live sub-agent, see
+// docs/mcp-list-channel-plugin.md. The guard itself acts only where the
+// Telegram state dir the CHILD's plugin would use holds a bot token, so a plain
+// child of a sub-agent without a bot is never blocked; only a child redirected
+// at a token-bearing state dir (an unset or overridden TELEGRAM_STATE_DIR,
+// env -i) is. The main agent is left to its
+// committed project settings, as with the outgoing-copy gate: its settings are
+// the shared ~/.claude config, which every interactive Claude session on the
+// machine reads, so wiring a deny hook there is the operator's call. The
+// guard resolves the state dir the way the plugin does (including the
+// ~/.claude/channels/telegram fallback), so it works there if wired.
+export const CHILD_CLAUDE_GUARD_SCRIPT = 'child-claude-channel-guard.mjs'
+
+export function agentGetsChildClaudeGuard(name: string): boolean {
+  return name !== MAIN_AGENT_ID
+}
+
+// Same dedupe discipline as injectDestructiveGate: drop every prior entry that
+// carries this script (whatever its matcher) and re-add the canonical one, so a
+// stale matcher can never leave a guard that silently never fires.
+export function injectChildClaudeGuard(existing: Record<string, unknown>): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const command = hookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', CHILD_CLAUDE_GUARD_SCRIPT))
+  // Registration guard: a /tmp or missing path must never enter shared settings.
+  if (isUnsafeHookCommand(command)) return
+  const entry = {
+    matcher: 'Bash',
+    hooks: [{ type: 'command', command, timeout: 10 }],
+  }
+  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  hooks.PreToolUse = [
+    ...prev.filter((e) => !JSON.stringify(e).includes(CHILD_CLAUDE_GUARD_SCRIPT)),
+    entry,
+  ]
+}
+
+// Idempotent migration for the EXISTING fleet: the scaffold only rewrites a
+// sub-agent's settings on spawn, so without this the guard would reach the
+// running agents no sooner than their next respawn. A settings file that is not
+// there is not created. Returns true if written.
+export function ensureChildClaudeGuard(name: string): boolean {
+  if (!agentGetsChildClaudeGuard(name)) return false
+  const settingsPath = agentSettingsPath(name)
+  if (!existsSync(settingsPath)) return false
+  let settings: Record<string, unknown> = {}
+  try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+  const command = hookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', CHILD_CLAUDE_GUARD_SCRIPT))
+  const hooks = (settings.hooks && typeof settings.hooks === 'object')
+    ? settings.hooks as Record<string, unknown>
+    : {}
+  const ptu = Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse : []
+  const wiredHere = ptu.some((e) => JSON.stringify(e).includes(CHILD_CLAUDE_GUARD_SCRIPT)
+    && (e as { matcher?: unknown })?.matcher === 'Bash')
+  if (wiredHere && hookCommandWired(JSON.stringify(ptu), command)) return false
+  injectChildClaudeGuard(settings)
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
+}
+
 // Idempotently wire the destructive-gate PreToolUse hook.
 //
 // WHY THIS LIVES IN CODE AND NOT IN settings.json (card a14ea5c7): the gate was
@@ -1395,6 +1589,42 @@ export function injectDestructiveGate(existing: Record<string, unknown>): void {
   // would rewrite the file at every boot without ever converging.
   hooks.PreToolUse = [
     ...prev.filter((e) => !JSON.stringify(e).includes('destructive-gate.py')),
+    entry,
+  ]
+}
+
+// CREDGATE1003: the credential gate on a sub-agent's letter tools. Opt-in per
+// security profile (`"credentialGate": true`), default OFF, the same posture as
+// the destructive gate: whether a letter may carry a password is the
+// operator's policy, so a fresh install wires nothing until someone decides.
+// Off renders a settings.json byte-identical to an install without this code;
+// off does not tear down an entry an agent already has. The main agent is
+// never wired here: its settings are not rendered by this scaffold, so it gets
+// the hook through the install's own settings (see docs/credential-gate.md).
+export function agentGetsCredentialGate(name: string, profile?: ProfileTemplate): boolean {
+  if (name === MAIN_AGENT_ID) return false
+  const p = profile ?? loadProfileTemplate(resolveAgentSecurityProfile(name))
+  return profileWantsCredentialGate(p)
+}
+
+// Idempotently wire the credential gate, on the SAME matcher as the email-send
+// gate: every surface that can carry a letter (Bash sends, send/manage/draft
+// MCP tools, the Gmail connector). The hook itself exits 0 on anything that is
+// not a letter, so the wide matcher costs a no-op, not a deny.
+export function injectCredentialGate(existing: Record<string, unknown>): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'credential-gate.py'))
+  // Registration guard: a /tmp or missing path must never enter shared settings.
+  if (isUnsafeHookCommand(command)) return
+  const entry = {
+    matcher: EMAIL_GATE_MATCHER,
+    hooks: [{ type: 'command', command, timeout: 10 }],
+  }
+  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  hooks.PreToolUse = [
+    ...prev.filter((e) => !JSON.stringify(e).includes('credential-gate.py')),
     entry,
   ]
 }
@@ -1674,13 +1904,38 @@ export function quarantineReaderDomains(storeDir = STORE_DIR): string[] {
   }
 }
 
+// e708d096 (be27524d (1)): the reader's posture, read the way the
+// egress-gate hook reads it (scripts/hooks/egress-gate.mjs): ONLY the literal
+// string "denylist" is the open posture; any other value, a missing file or
+// malformed JSON is the default allowlist posture. The rendered posture block
+// follows this, so the prompt never states an open posture the hook does not run.
+export type QuarantineReaderPosture = 'allowlist' | 'denylist'
+
+export function quarantineReaderPosture(storeDir = STORE_DIR): QuarantineReaderPosture {
+  try {
+    const raw = JSON.parse(readFileSync(join(storeDir, 'egress-allowlist.json'), 'utf-8'))
+    return raw?.quarantine_reader_posture === 'denylist' ? 'denylist' : 'allowlist'
+  } catch {
+    return 'allowlist'
+  }
+}
+
 // Render the reader definition: the template's shipped feeds, plus the domains
-// the owner allowed on this install. Pure, so the tests drive the same string
-// the deploy writes.
+// the owner allowed on this install, plus (e708d096) the install's posture.
+// Pure, so the tests drive the same string the deploy writes.
 //
 // Marker-delimited so a re-render replaces the previous block instead of
 // stacking copies, and so a reader can see which lines are per-install.
-export function renderQuarantineReader(template: string, domains: string[]): string {
+export function renderQuarantineReader(
+  template: string,
+  domains: string[],
+  posture: QuarantineReaderPosture = 'allowlist',
+): string {
+  return renderPostureBlock(renderDomainBlock(template, domains), posture)
+}
+
+// The per-install domain block (the whole render before e708d096).
+function renderDomainBlock(template: string, domains: string[]): string {
   const BEGIN = '<!-- BEGIN PER-INSTALL DOMAINS (from store/egress-allowlist.json) -->'
   const END = '<!-- END PER-INSTALL DOMAINS -->'
   // Strip a previous block by literal position, NOT with a regex: the markers
@@ -1719,6 +1974,51 @@ export function renderQuarantineReader(template: string, domains: string[]): str
   return `${stripped.slice(0, at)}\n${block}${stripped.slice(at)}`
 }
 
+// e708d096: the per-install POSTURE block. In the open (denylist) posture the
+// reader's prompt refused an unfamiliar host unless the CALLER said the install
+// runs the open posture (the template's "The open posture" section); a
+// sub-agent's caller does not know the posture (only the main agent imports the
+// owner rule), so its reader refused without ever fetching (measured on a live install).
+// The render states the posture as a per-install fact, which the template takes
+// as the caller's statement; the hook still enforces the real posture on every
+// call. Placed at the end of the open posture section, before the next ##
+// heading (at the end of the text when the template has no such section), and
+// marker-delimited like the domain block: a re-render replaces it, and the
+// allowlist posture removes it, leaving the template bytes as they were.
+const POSTURE_BEGIN = '<!-- BEGIN PER-INSTALL POSTURE (from store/egress-allowlist.json) -->'
+const POSTURE_END = '<!-- END PER-INSTALL POSTURE -->'
+const POSTURE_TEXT = [
+  '**This install runs the open posture.** The operator set `"quarantine_reader_posture": "denylist"`',
+  'in `store/egress-allowlist.json` (read when this definition was rendered). This counts as the',
+  'caller stating the open posture: attempt the fetch of a public `http`/`https` URL even when the',
+  'caller does not mention the posture. The hook still enforces the real posture on every call, and',
+  'the always-refused list below applies in every posture.',
+].join('\n')
+
+function renderPostureBlock(text: string, posture: QuarantineReaderPosture): string {
+  // Strip a previous block, with the blank line the insertion added after it,
+  // by literal position (no regex over the markers, as in the domain block).
+  let out = text
+  const b = out.indexOf(POSTURE_BEGIN)
+  if (b >= 0) {
+    const e = out.indexOf(POSTURE_END, b)
+    if (e > b) {
+      let end = e + POSTURE_END.length
+      if (out.startsWith('\n\n', end)) end += 2
+      out = out.slice(0, b) + out.slice(end)
+    }
+  }
+  if (posture !== 'denylist') return out
+  const heading = /^##\s+The open posture\b.*$/m.exec(out)
+  let at = out.length
+  if (heading) {
+    const sectionStart = (heading.index ?? 0) + heading[0].length
+    const next = /^##\s+/m.exec(out.slice(sectionStart))
+    if (next) at = sectionStart + (next.index ?? 0)
+  }
+  return `${out.slice(0, at)}${POSTURE_BEGIN}\n${POSTURE_TEXT}\n${POSTURE_END}\n\n${out.slice(at)}`
+}
+
 // Idempotent migration: ensure a sub-agent's email-send + self-pace gate hook
 // commands use the absolute node binary (HOOK_NODE_BIN). Legacy entries wrote a
 // bare `node`, which is missing from the non-interactive hook PATH on nvm
@@ -1755,7 +2055,9 @@ export function ensureGovernanceGateCommands(name: string, profile?: ProfileTemp
   // match a qualified MCP tool name. The second one is why the wiring check
   // alone is not enough -- it would report the gate healthy forever.
   const threadReply = hasThreadReplyCapability(name, readAgentCapabilities(name))
-  const emailCmdExpected = threadReply ? `${emailCmd} ${EMAIL_THREAD_REPLY_FLAG}` : emailCmd
+  const emailCmdExpected = threadReply
+    ? hookCommand(join(PROJECT_ROOT, 'scripts', 'email-send-gate.mjs'), [EMAIL_THREAD_REPLY_FLAG])
+    : emailCmd
   const needEmail = agentGetsEmailGate(name)
     && (!hookCommandWired(ptuJson, emailCmdExpected)
       || emailGateMatcherStale(ptu)
@@ -1772,12 +2074,18 @@ export function ensureGovernanceGateCommands(name: string, profile?: ProfileTemp
   })
   const needDestructive = agentGetsDestructiveGate(name, profile)
     && (!hookCommandWired(ptuJson, destructiveCmd) || destructiveStale)
-  if (!needEmail && !needPace && !needDestructive) return false
+  const credentialCmd = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'credential-gate.py'))
+  const credentialStale = ptu.some((e) => JSON.stringify(e).includes('credential-gate.py')
+    && (e as { matcher?: unknown })?.matcher !== EMAIL_GATE_MATCHER)
+  const needCredential = agentGetsCredentialGate(name, profile)
+    && (!hookCommandWired(ptuJson, credentialCmd) || credentialStale)
+  if (!needEmail && !needPace && !needDestructive && !needCredential) return false
   // The injectors dedupe by script basename, so a stale bare-`node` entry is
   // replaced in place rather than accumulated.
   if (needEmail) injectEmailSendGate(settings, threadReply)
   if (needPace) injectSelfPaceGate(settings)
   if (needDestructive) injectDestructiveGate(settings)
+  if (needCredential) injectCredentialGate(settings)
   atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
   return true
 }
@@ -1824,7 +2132,11 @@ export function ensureQuarantineReader(
   const destPath = join(destDir, 'quarantine-reader.md')
   let rendered: string
   try {
-    rendered = renderQuarantineReader(readFileSync(tplPath, 'utf-8'), quarantineReaderDomains(paths?.storeDir))
+    rendered = renderQuarantineReader(
+      readFileSync(tplPath, 'utf-8'),
+      quarantineReaderDomains(paths?.storeDir),
+      quarantineReaderPosture(paths?.storeDir),
+    )
   } catch {
     return false
   }
@@ -2063,16 +2375,20 @@ const MCPLIST_BLOCK_RE = new RegExp(
  */
 function buildMcpListChannelBody(): string {
   return [
-    '## `claude mcp list` egy csatornát birtokló ügynökben',
+    '## `claude mcp list` és gyerek-`claude` egy csatornát birtokló ügynökben',
     '',
     'Ha ez az ügynök csatornát birtokol (Telegram/Discord/Slack), a saját sessionjében NE futtasd',
-    'a `claude mcp list`-et: mérve 2026-09-21-én, a parancs leállítja ennek a sessionnek a',
-    'csatorna-plugin szerverét, és a csatorna-eszközök (reply, react, edit_message,',
-    'download_attachment) elérhetetlenné válnak. A parancs kimenete közben `Connected`-et ír, és',
-    '0-val tér vissza, tehát a hibát semmi nem jelzi. Más sessionök nem sérülnek, a többi',
-    'MCP-szerver életben marad, és a session újraindítása visszahozza a plugint.',
-    'Máshol a parancs hasznos diagnosztika: a korlát a csatornát birtokló session, nem a parancs.',
-    'A BEJÖVŐ üzenetek sorsát nem mértük (külső bejelentés); a részletes mérés:',
+    'a `claude mcp list`-et, és ne indíts gyerek-`claude`-ot (pl. `claude -p`) az örökölt',
+    'környezettel: mérve 2026-09-21-én és 2026-10-10-én, a gyerek betölti a csatorna-plugint, az a',
+    'közös `bot.pid` alapján leállítja ennek a sessionnek a pollerét, és a csatorna-eszközök',
+    '(reply, react, edit_message, download_attachment) elérhetetlenné válnak. A parancs kimenete',
+    'közben `Connected`-et ír, és 0-val tér vissza, tehát a hibát semmi nem jelzi. Más sessionök',
+    'nem sérülnek, és a session újraindítása visszahozza a plugint. Ha mégis kell gyerek-`claude`:',
+    'adj neki saját, plugin nélküli `CLAUDE_CONFIG_DIR`-t (ez választja le), a `TELEGRAM_STATE_DIR`-t',
+    'pedig állítsd egy üres mappára. NE töröld: a plugin ekkor a fő ügynök `~/.claude/channels/telegram`',
+    'mappájára esik vissza, és a fő bot pollerét lövi le. Máshol a parancs hasznos diagnosztika:',
+    'a korlát a csatornát birtokló session, nem a parancs. A BEJÖVŐ üzenetek sorsát nem mértük',
+    'általánosan (egy esetben az újraindítás után megérkezett); a részletes mérés:',
     '`docs/mcp-list-channel-plugin.md`.',
   ].join('\n')
 }
@@ -2382,6 +2698,8 @@ export function buildMessageCloseBody(): string {
     '```',
     'A `notify` csak valódi JSON boolean lehet: a `"false"` string 400-at kap, és ilyenkor a lezárás sem',
     'történik meg. A `system` feladójú üzenet lezárása eleve nem küld nyugtát.',
+    'Egy MÁR lezárt (done/failed) üzenet újabb lezárása 409-et ad (`Message already closed`): az első',
+    'lezárás érvényes, semmi nem változott, nyugta nem ment. Ez nem hiba, nem kell ismételni vagy jelenteni.',
   ].join('\n')
 }
 
@@ -2508,44 +2826,138 @@ export function ensureProjectRootInClaudeMd(name: string): boolean {
   return true
 }
 
-// SKILLUTCSAPDA822: the near-identical `.claude-config/skills` path IS the
-// shared global directory (a symlink to ~/.claude/skills, single-copy
-// distribution -- deliberate, see skills-symlink-single-copy), and the
-// skill-run base directory even DISPLAYS that path. An agent writing "its
-// own" skill there writes to the whole fleet, and nothing says so. Measured
-// 2026-08-22: five third-party marketing skills landed in the shared dir and
-// only luck caught them. The symlink stays; the fix is naming the trap in
-// every agent's CLAUDE.md, idempotently, on every respawn.
+// SKILLUTCSAPDA822: the isolated config root's `skills` entry IS the shared
+// global directory (a symlink to ~/.claude/skills, single-copy distribution --
+// deliberate, see skills-symlink-single-copy), and the skill-run base directory
+// even DISPLAYS that path. An agent writing "its own" skill there writes to the
+// whole fleet, and nothing says so. Measured 2026-08-22: five third-party
+// marketing skills landed in the shared dir and only luck caught them. The
+// symlink stays; the fix is naming the trap in every agent's CLAUDE.md,
+// idempotently, on every respawn.
+//
+// SKILLGYOKERLATSZIK923: the body used to be ONE text for everybody, and it was
+// wrong for the main agent in the direction that matters. It said "your own,
+// private skill goes in your working directory's .claude/skills" -- true for a
+// sub-agent, whose cwd is agents/<name>, but the MAIN agent's cwd IS the project
+// root, and every sub-agent's cwd sits UNDER it. That directory is therefore
+// their ancestor: the main agent's "private" skills are visible to the whole
+// fleet. Measured 2026-09-23 -- the main agent told a sub-agent a new skill was
+// private, the sub-agent measured it and showed he was already reading it. So
+// the body is per-agent: the same three locations, described from the reader's
+// own position.
+//
+// Upstream review of #1563: the measurement above assumed an isolated root. On a DEFAULT install
+// (MAIN_AGENT_ISOLATED_CONFIG=0, the flag is tied to the fleet OAuth token) the main agent runs on the
+// shared ~/.claude, CLAUDE_CONFIG_DIR is empty, and `ls -ld "$CLAUDE_CONFIG_DIR/skills"` becomes
+// `ls -ld /skills`. So the body says what an empty variable means and the command falls back to
+// ~/.claude. The five-vantage-point measurement below was taken on an isolated install.
+// SKILLGYOKERNEV925: the body no longer NAMES the isolated config root either --
+// it asks the reader to MEASURE it (`echo "$CLAUDE_CONFIG_DIR"`). Measured
+// 2026-09-25 from five vantage points: EVERY agent has an isolated root whose
+// `skills` entry is a symlink to ~/.claude/skills (53 skills). Only the NAME
+// differs -- sub-agents get agents/<name>/.claude-config, the main agent gets
+// <PROJECT_ROOT>/.channels-config. Naming one path teaches a false
+// generalisation in both directions, and both were actually made: from "my
+// .claude-config does not exist" one agent concluded the install has none (false
+// for four agents out of five), and a body that calls `.claude-config` THE trap
+// invites the reverse -- that a differently named root is safe. The name is the
+// per-agent part; the symlink is the invariant, so the body pins the measurement,
+// not the name.
 const SKILLS_TRAP_BEGIN = '<!-- BEGIN GENERATED: skills-path-trap (auto-generated, do not edit by hand) -->'
 const SKILLS_TRAP_END = '<!-- END GENERATED: skills-path-trap -->'
 const SKILLS_TRAP_BLOCK_RE = new RegExp(
   `${SKILLS_TRAP_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${SKILLS_TRAP_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
 )
 
-function buildSkillsPathTrapBody(): string {
-  return [
+function buildSkillsPathTrapBody(name: string): string {
+  const isMain = name === MAIN_AGENT_ID
+  const shared = [
     '## Skill-útvonal csapda (KÖTELEZŐ elolvasni skill-írás előtt)',
     '',
-    'A `.claude-config/skills` NEM a saját mappád: symlink a globális',
-    '`~/.claude/skills`-re, tehát ami oda kerül, az a TELJES flottánál megjelenik',
-    '-- akkor is, ha a skill-futtatás base directory-ja ezt az utat mutatja.',
-    'A saját, csak neked szóló vagy kipróbálatlan külső skill a munkakönyvtárad',
-    '`.claude/skills/` mappájába megy. A globálisba írás tudatos, flotta-szintű',
-    'döntés legyen, ne alapértelmezés.',
+    'HÁROM hely van, nem kettő, és a különbség nem az, hogy melyik "globális",',
+    'hanem hogy KI LÁTJA. Mielőtt skillt írsz vagy mozgatsz, MÉRD MEG, melyik',
+    'config-gyökérből futsz:',
     '',
+    '```bash',
+    'echo "${CLAUDE_CONFIG_DIR:-$HOME/.claude}"; ls -ld "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills"',
+    '```',
+    '',
+    'Ha a `$CLAUDE_CONFIG_DIR` ÜRES (alapértelmezett telepítés, ahol a fő ágens',
+    'izolált config-gyökér nélkül, a megosztott `~/.claude`-on fut), a gyökered',
+    'maga a `~/.claude`, és annak `skills` mappája a globális: a lenti 1. pont,',
+    'symlink nélkül. Izolált módban a gyökér NEVE ágensenként MÁS (a sub-ágenseké',
+    '`agents/<név>/.claude-config`, a fő ágensé `<projekt-gyökér>/.channels-config`),',
+    'ezért a NÉVRE emlékezni félrevezet, mindkét irányban: abból, hogy egy út NÁLAD',
+    'nem létezik, semmi nem következik a flotta többi tagjára, és attól, hogy a',
+    'gyökeredet másképp hívják, még nem a tiéd, ami benne van. A viselkedés',
+    'mindenhol UGYANAZ, és pont ezt mutatja meg a fenti `ls -ld`: izolált',
+    'módban a `$CLAUDE_CONFIG_DIR/skills` SYMLINK a globálisra, tehát az 1. pont,',
+    'más néven; üres változónál maga a `~/.claude/skills` az.',
+    '',
+    '1. `~/.claude/skills` -- a globális. MINDEN ágens látja. Ide írni tudatos,',
+    '   flotta-szintű döntés legyen, ne alapértelmezés. A skill-futtatás base',
+    '   directory-ja a saját config-gyökeredet MUTATHATJA -- attól még a flottáé.',
+  ]
+  const perAgent = isMain
+    ? [
+        '2. A PROJEKT-GYÖKÉR `.claude/skills` mappája. **EZ NEKED NEM PRIVÁT.**',
+        '   A munkakönyvtárad MAGA a projekt gyökere, a sub-ágenseké pedig',
+        '   (`agents/<név>`) ezen BELÜL van, tehát ez a mappa az ŐSÜK: amit ide',
+        '   írsz, az megjelenik a listájukban. Láthatóságban úgy viselkedik,',
+        '   mint a globális.',
+        '3. `agents/<név>/.claude/skills` -- egy SUB-ÁGENS saját mappája. Csak övé.',
+        '   NEKED NINCS ilyen: az `agents/<sajat-neved>` mappa nem létezik, és egy',
+        '   ott létrehozott mappa a te munkakönyvtárad GYEREKE lenne, nem az őse,',
+        '   tehát te magad sem látnád.',
+        '',
+        'KÖVETKEZMÉNY: ezen a telepítésen NINCS olyan hely, ahova a fő ágens',
+        'csak-magának írhat skillt. Ne feltételezd, hogy privát -- 2026-09-23-án',
+        'ez a feltételezés dőlt meg, és nem magától: egy sub-ágens mérte meg.',
+      ]
+    : [
+        '2. A PROJEKT-GYÖKÉR `.claude/skills` mappája. A munkakönyvtárad EZEN BELÜL',
+        '   van, tehát ez a mappa az ŐSÖD: az itt álló skilleket LÁTOD, akkor is,',
+        '   ha nem te írtad és nem neked szólnak. Ide te NE írj: ez a fő ágens',
+        '   területe, és amit ide tennél, azt a többi ágens is látná.',
+        '3. A saját `.claude/skills` mappád a munkakönyvtáradban',
+        '   (`agents/<a-te-neved>/.claude/skills`). EZ az egyetlen, ami tényleg',
+        '   csak a tiéd. A saját, csak neked szóló vagy kipróbálatlan külső skill',
+        '   ide megy.',
+      ]
+  const memory = [
     // 2026-09-07: a leanarchivist a saját tanulságát a
     // `.claude-config/projects/-home-istvan-marveen/memory/MEMORY.md`-be akarta
     // írni. Megmérve: `projects -> ~/.claude/projects`, tehát az a fájl a Lean
     // Chief memóriája. A skills symlink nem az egyetlen ilyen út; a szabály
     // általános, ezért itt, ugyanabban a blokkban kap helyet.
-    'Ugyanez a csapda a MEMÓRIÁRA is áll (2026-09-07-én megmérve, leanarchivist):',
-    'a `.claude-config/projects` szintén symlink a `~/.claude/projects`-re, tehát a',
-    '`.claude-config/projects/.../memory/MEMORY.md` NEM a te memóriád, hanem a Lean',
-    'Chiefé -- az ő session-je tölti be, a tiéd soha. A te memóriád a dashboard API,',
-    '`agent_id`-vel címezve (`POST /api/memories`). Általános szabály: a `.claude`',
-    'vagy `.claude-config` alatti útvonal soha nem a sajátod, akkor sem, ha a',
-    'munkakönyvtáradban látszik. Írás előtt nézd meg, hova mutat: `ls -la`.',
-  ].join('\n')
+    //
+    // 2026-10-05 HATÓKÖR-JAVÍTÁS, a review (#1700) és két mérés alapján: a Claude
+    // Code az auto-memória könyvtárát a GIT-REPÓ GYÖKERE szerint kulcsolja, nem a
+    // munkakönyvtár szerint. Mérve CC 2.1.289-en (macOS) és 2.1.284-en (Linux),
+    // eldobható mappákkal: git-checkouton belül saját repó nélkül
+    // `<config>/projects/<gyökér-slug>/memory`, saját (stub) `.git`-tel
+    // `<config>/projects/<...-agents-<név>>/memory`. Stub nélkül a `-agents-<név>`
+    // slug csak transcript-könyvtár. Hogy egy ügynök memóriája KÖZÖS-e a fő
+    // ágensével, azt a git-gyökér ÉS az dönti el, hogy a `projects` könyvtára közös-e
+    // (symlink a `~/.claude/projects`-re). A 2026-09-07-i eset (`-home-istvan-marveen`)
+    // is ez volt: a telepítés gyökér-slugja, vagyis a közös könyvtár. Ezért a
+    // kritérium a rendszerprompt által MEGADOTT, feloldott útvonal, nem egy
+    // levezetett slug -- a munkakönyvtár-szabály git-checkouton épp a megelőzni
+    // kívánt néma veszteséget okozná, csak a másik oldalon.
+    'Ugyanez a csapda a MEMÓRIÁRA is áll: a `.claude-config/projects` lehet symlink',
+    'a `~/.claude/projects`-re. Hogy melyik memória-könyvtár a tiéd, azt NE a',
+    'munkakönyvtárad nevéből vezesd le: a mérvadó a rendszerprompt memória-szakaszában',
+    'MEGADOTT útvonal, `readlink -f`-fel feloldva. Git-checkout telepítésen (alapeset)',
+    'a Claude Code ezt a REPO GYÖKERE szerint kulcsolja: ha a feloldott útvonal a',
+    '`~/.claude/projects/` alatti, a telepítés gyökerének slugjával kulcsolt könyvtár,',
+    'akkor az a fő ágensé, és ami oda kerül, azt a fő ágens és minden ugyanezt kapó',
+    'ügynök session-je betölti. A tiéd, ha a feloldott útvonal a saját',
+    '`.claude-config`-od valódi könyvtárában van, vagy a saját mappád slugja szerepel',
+    'benne (saját stub git-repó vagy git nélküli telepítés). A saját, csak rád',
+    'tartozó emlék helye ettől függetlenül a dashboard API (`POST /api/memories`,',
+    '`agent_id`-vel).',
+  ]
+  return [...shared, ...perAgent, '', ...memory].join('\n')
 }
 
 // Same five-rule idempotency contract as ensureFleetRosterSection /
@@ -2557,7 +2969,7 @@ export function ensureSkillsPathTrapSection(name: string): void {
     : join(agentDir(name), 'CLAUDE.md')
   if (!existsSync(claudeMdPath)) return
 
-  const block = `${SKILLS_TRAP_BEGIN}\n${buildSkillsPathTrapBody()}\n${SKILLS_TRAP_END}`
+  const block = `${SKILLS_TRAP_BEGIN}\n${buildSkillsPathTrapBody(name)}\n${SKILLS_TRAP_END}`
 
   let existing: string
   try {
@@ -2659,7 +3071,12 @@ const AGENT_ID_HEADER_BLOCK_RE = new RegExp(
   `${AGENT_ID_HEADER_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${AGENT_ID_HEADER_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
 )
 
-function buildAgentIdHeaderBody(name: string): string {
+// VERZIOTORLES1009: the last paragraph used to promise that a DELETE also keeps
+// the previous content as a version. deleteMemoryById (src/db.ts) removes the
+// versions with the row on purpose (#1357), so that promise was false, and a
+// customer deleted 84 rows trusting it. agent-id-header-delete-truth.test.ts
+// ties this text to that behaviour.
+export function buildAgentIdHeaderBody(name: string): string {
   return [
     '## Ki hívta az API-t: az `X-Agent-Id` fejléc',
     '',
@@ -2679,8 +3096,10 @@ function buildAgentIdHeaderBody(name: string): string {
     'hitelesítés. A fejléc nélkül a hívás ugyanúgy sikerül, és ha idegen emléket írsz,',
     'a szerver FIGYELMEZTET (`owner_mismatch` a válaszban), de NEM állít meg. Tehát a',
     'fejléc nem véd meg attól, hogy rossz sort írj -- csak láthatóvá teszi. A tényleges',
-    'védelem a verziózás: minden felülírás és törlés előtt eltárolódik az előző tartalom',
-    '(`GET /api/memories/<id>/versions`).',
+    'védelem a verziózás, de CSAK FELÜLÍRÁSNÁL: minden felülírás előtt eltárolódik az',
+    'előző tartalom (`GET /api/memories/<id>/versions`). A TÖRLÉS viszont VÉGLEGES: a sorral',
+    'együtt a verzióit is törli, így utána semmiből nem állítható vissza. Ha mégis törölnöd kell,',
+    'előtte olvasd ki és mentsd el a sort (`GET /api/memories/<id>`).',
   ].join('\n')
 }
 
@@ -3302,7 +3721,7 @@ MINDIG az install időzónáját használd: **${APP_TZ}** (a teljes telepítés 
 - **Channel message \`ts\`**: UTC-ben jön (postfix \`Z\`), átkonvertálni ${APP_TZ}-re
 - **Google Calendar list_events \`dateTime\`**: már lokál ISO 8601 offszettel, OK
 - **SQLite \`unixepoch()\`**: UTC, humán-megjelenítéshez \`localtime\` modifier kell
-- **Cron expressions** (scheduled-tasks + fleet-timer): a scheduler ${APP_TZ} időben értelmezi (SCHEDULER_TZ); a fleet-timer \`once --at\` = ${APP_TZ} fali óra
+- **Cron expressions** (scheduled-tasks): a scheduler ${APP_TZ} időben értelmezi (SCHEDULER_TZ). Egy dátumos cron (pl. \`0 5 22 9 *\`) évente ismétlődik; egyszeri futáshoz a task-config \`"once": true\` mezője kell: az első sikeres futás után a runner maga kapcsolja ki
 
 Heartbeat-eknél és minden időpontot kezelő feladatnál kötelező: \`date\` Bash parancs az elemzés ELŐTT.
 

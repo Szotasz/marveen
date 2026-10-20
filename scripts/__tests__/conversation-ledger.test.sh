@@ -14,6 +14,14 @@
 
 set -e
 
+# Every case derives the agent from the payload or the cwd, but ledger_lib
+# resolves MARVEEN_AGENT_ID BEFORE the cwd. An agent session exports it, so the
+# suite run from inside one (e.g. a scheduled sync that types into an agent's
+# pane) attributed every cwd-derived row to that agent and failed 7 cases
+# (measured: 53/60 with MARVEEN_AGENT_ID=kigyo, 60/60 without). Same reasoning
+# as pinning MAIN_AGENT_ID and OWNER_NAME in run_hook below.
+unset MARVEEN_AGENT_ID
+
 PASS=0
 FAIL=0
 TMPDIR_BASE=$(mktemp -d)

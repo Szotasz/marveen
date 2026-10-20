@@ -76,6 +76,8 @@ interface RawMessage {
   photo?: unknown[]
   document?: { file_id: string; file_name?: string }
   voice?: { file_id: string }
+  message_thread_id?: number
+  is_topic_message?: boolean
 }
 
 interface RawUser {
@@ -107,6 +109,9 @@ export function mapUpdate(u: RawUpdate): NormalizedEvent | null {
     if (Array.isArray(msg.photo) && msg.photo.length > 0) meta['has_photo'] = true
     if (msg.document) meta['document'] = { file_id: msg.document.file_id, file_name: msg.document.file_name }
     if (msg.voice) meta['voice'] = { file_id: msg.voice.file_id }
+    // A topic of a private chat or forum; the handoff shows it only while
+    // TELEGRAM_TOPICS_ENABLED is on (buildHandoffContent).
+    if (msg.is_topic_message && msg.message_thread_id != null) meta['message_thread_id'] = msg.message_thread_id
     return {
       update_id: u.update_id,
       kind,

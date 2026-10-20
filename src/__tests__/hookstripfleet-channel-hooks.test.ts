@@ -26,6 +26,34 @@ const CHANNEL_HOOKS = [
   'channel-image-resize.sh',
 ]
 
+// A REAL, decodable JPEG, big enough to cross the hook's own 524288-byte gate.
+// Neither half of that sentence is decoration, and both were measured:
+//   * Until 2026-09-21 this fixture was Buffer.alloc(600 * 1024, 0x20) named
+//     photo.jpg. That is not an image. ffmpeg exits 69 on it, and since #1565
+//     item 4 the resizer reports a failure it cannot do anything about
+//     LOUDLY: exit 1, empty stdout. So the case was exercising the hook's
+//     ERROR path while claiming to measure its work path, and execFileSync
+//     threw before a single assertion ran.
+//   * A clean testsrc2 at this size compresses to ~332KB -- UNDER the gate.
+//     The case would then have gone green having measured nothing at all, the
+//     exact trap scripts/__tests__/channel-image-resize.test.sh fell into
+//     first. The noise filter is what carries it over the threshold.
+// Same recipe as that shell suite, deliberately: one fixture, one place to fix.
+// ffmpeg is an installer dependency, so a missing binary is a real failure
+// here, not a reason to skip -- without it the hook itself could not work
+// either, and a skipped case is indistinguishable from a passing one.
+function buildBigJpeg(dest: string): number {
+  execFileSync('ffmpeg', [
+    '-y', '-loglevel', 'error', '-f', 'lavfi', '-i', 'testsrc2=s=2400x2400:d=1',
+    '-frames:v', '1', '-vf', 'noise=alls=60:allf=t+u', '-q:v', '1', dest,
+  ])
+  const size = statSync(dest).size
+  if (size <= 524288) {
+    throw new Error(`fixture is ${size}B, at or below the hook's own 524288B gate -- it would measure nothing`)
+  }
+  return size
+}
+
 function hookBasenames(hooks: unknown): Set<string> {
   const out = new Set<string>()
   for (const arr of Object.values((hooks ?? {}) as Record<string, unknown>)) {
@@ -151,13 +179,19 @@ describe('HOOKSTRIPFLEET913: the four channel hooks survive the #1307 strip', ()
       const inbox = join(tmp, 'channels', 'telegram', 'inbox')
       mkdirSync(inbox, { recursive: true })
       const img = join(inbox, 'photo.jpg')
-      writeFileSync(img, Buffer.alloc(600 * 1024, 0x20)) // 600KB, >500KB gate
+      const sizeBefore = buildBigJpeg(img)
       const event = JSON.stringify({ tool_name: 'Read', tool_input: { file_path: img } })
       const out = execFileSync('bash', [join(PROJECT_ROOT, 'scripts', 'hooks', 'channel-image-resize.sh')], {
         input: event, encoding: 'utf-8',
       })
       // Effect 1: the original is copied aside (context-protection contract).
       expect(existsSync(join(inbox, 'original', 'photo.jpg')), 'original preserved').toBe(true)
+      // Effect 1b: the in-place file actually SHRANK. Without this the case
+      // passes on a hook that only copies the original aside and leaves the
+      // context-bound bytes untouched -- and the copy already happens before
+      // the resize, so it survives a resizer failure. Measured on the old
+      // fixture: the copy was there while the resize had failed with rc=69.
+      expect(statSync(img).size, 'the context-bound file was resized down').toBeLessThan(sizeBefore)
       // Effect 2: the agent is told, via additionalContext, where the full-res is.
       const parsed = JSON.parse(out) as { hookSpecificOutput?: { additionalContext?: string } }
       expect(parsed.hookSpecificOutput?.additionalContext ?? '').toContain('original')

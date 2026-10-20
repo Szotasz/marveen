@@ -61,6 +61,40 @@ AUTH_DEAD_THRESHOLD_TICKS=3     # consecutive dead-token ticks (~15min @ 5min/ti
 
 log() { echo "$(date '+%Y-%m-%d %H:%M:%S') [$LOG_TAG] $*"; }
 
+# PORTSTAT912: mtime in epoch seconds, portable across BSD (macOS) and GNU
+# (Linux) stat. `stat -c %Y` is GNU-only: on macOS it exits 1 with "illegal
+# option -- c", the old `|| echo 0` fallback turned that into mtime=0, and a
+# BRAND NEW keepalive file then measured as infinitely old. STALE was therefore
+# true on every single tick, so installing this watchdog on a Mac would not have
+# protected the main agent -- it would have respawned its channels pane every
+# 5 minutes up to MAX_CONSECUTIVE. The same zero also defeats the respawn-grace
+# gate below, which is the brake meant to stop exactly that storm, so the two
+# failures compound instead of cancelling.
+#
+# Both guards are needed, not just the exit code: under GNU stat `-f` is a
+# valid but DIFFERENT option (file-system status), so a wrong-platform call can
+# print something that is not an mtime. A value is only accepted if the command
+# succeeded AND the output is all digits; 0 is returned only when neither form
+# yielded one, which keeps the historical "unknown means act" behaviour.
+file_mtime() {
+  local _f="$1" _m=""
+  _m=$(stat -f %m "$_f" 2>/dev/null) || _m=""
+  case "$_m" in (''|*[!0-9]*) _m="";; esac
+  if [ -z "$_m" ]; then
+    _m=$(stat -c %Y "$_f" 2>/dev/null) || _m=""
+    case "$_m" in (''|*[!0-9]*) _m="";; esac
+  fi
+  printf '%s\n' "${_m:-0}"
+}
+
+# Debug entry point for the regression test: print one file's resolved mtime and
+# exit before any session lookup, .env read or tmux call, so the helper can be
+# measured on a host where the watchdog itself cannot run.
+if [ "${1:-}" = "--file-mtime" ]; then
+  file_mtime "${2:-}"
+  exit 0
+fi
+
 # --- resolve the channels session + provider (launch-order / rename independent) ---
 MAIN_AGENT_ID="$(grep -E '^MAIN_AGENT_ID=' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | cut -d= -f2-)"
 MAIN_AGENT_ID="${MAIN_AGENT_ID:-marveen}"
@@ -85,6 +119,11 @@ for _p in $CHANNEL_PLUGINS_EXTRA; do
   [ -n "$_p" ] && EXTRA_CHANNELS="$EXTRA_CHANNELS plugin:$_p"
 done
 unset _p
+# SLACKDMVESZT1006: same --settings file as channels.sh, or the respawn comes
+# back with the extras disabled by the project scope.
+. "$INSTALL_DIR/scripts/main-extra-plugins-settings.sh"
+# shellcheck disable=SC2086 # word-split on purpose: space-separated plugin ids
+EXTRA_SETTINGS_FLAG="$(main_extra_settings_flag "$INSTALL_DIR" $CHANNEL_PLUGINS_EXTRA)"
 
 # NB: use TMUX_BIN, not TMUX -- the latter is tmux's own env var (socket,pid,
 # session); assigning the binary path to it corrupts server-socket detection.
@@ -98,7 +137,7 @@ fi
 now=$(date +%s)
 
 # --- gate 1: the channels session must EXIST (bridge "running") ---
-if ! "$TMUX_BIN" has-session -t "$SESSION" 2>/dev/null; then
+if ! "$TMUX_BIN" has-session -t "=$SESSION:" 2>/dev/null; then
   log "session $SESSION not present -- systemd ${MAIN_AGENT_ID}-channels.service owns (re)start; watchdog no-op"
   exit 0
 fi
@@ -113,7 +152,7 @@ if [ ! -f "$KEEPALIVE_FILE" ]; then
   # keepalive probe itself was never configured.
   log "no keepalive file yet ($KEEPALIVE_FILE) -- keep-alive task not established, STALE=false"
 else
-  ka_mtime=$(stat -c %Y "$KEEPALIVE_FILE" 2>/dev/null || echo 0)
+  ka_mtime=$(file_mtime "$KEEPALIVE_FILE")
   age=$(( now - ka_mtime ))
   [ "$age" -ge "$STALE_SECONDS" ] && STALE=true
 fi
@@ -124,7 +163,7 @@ auth_count=$(cat "$AUTH_DEAD_COUNT_FILE" 2>/dev/null || echo 0)
 case "$auth_count" in (*[!0-9]*|'') auth_count=0;; esac
 NODE_BIN="$(command -v node || true)"
 if [ -n "$NODE_BIN" ] && [ -f "$INSTALL_DIR/dist/web/reauth-detect.js" ]; then
-  probe_out="$("$TMUX_BIN" capture-pane -p -t "$SESSION" 2>/dev/null | "$NODE_BIN" "$INSTALL_DIR/scripts/channels-auth-probe.mjs" 2>/dev/null)"
+  probe_out="$("$TMUX_BIN" capture-pane -p -t "=$SESSION:" 2>/dev/null | "$NODE_BIN" "$INSTALL_DIR/scripts/channels-auth-probe.mjs" 2>/dev/null)"
   probe_exit=$?
   if [ "$probe_exit" -eq 1 ]; then
     auth_count=$(( auth_count + 1 ))
@@ -150,7 +189,7 @@ fi
 
 # --- gate 4: respawn grace (shared with the dashboard watchdog) ---
 if [ -f "$RESPAWN_STAMP" ]; then
-  last=$(stat -c %Y "$RESPAWN_STAMP" 2>/dev/null || echo 0)
+  last=$(file_mtime "$RESPAWN_STAMP")
   if [ $(( now - last )) -lt "$GRACE_SECONDS" ]; then
     log "problem detected (STALE=$STALE AUTHDEAD=$AUTHDEAD) but within respawn grace -- deferring"
     exit 0
@@ -172,9 +211,16 @@ fi
 # the shipped settings.json stopped pinning a model (#924), this path started
 # building a flag-less respawn. One resolver exists and the launch path already
 # uses it; ask IT instead of maintaining another copy.
+# SECSZIVEK1007: a value as ONE single-quoted shell word, the bash twin of
+# shSingleQuote (src/web/agent-process.ts): a quote in the value becomes '\'',
+# so nothing in it can end the word. Used for every value inlined into a
+# command string that a later shell (tmux respawn) parses again. The same
+# definition lives in channels.sh, channel-watchdog.sh and stuck-modal-guard.sh
+# (a test keeps the three byte-identical).
+sh_single_quote() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 MAIN_MODEL="$(bash "$INSTALL_DIR/scripts/channels.sh" --resolve-main-model 2>/dev/null | head -1)"
 MODEL_FLAG=""
-[ -n "$MAIN_MODEL" ] && MODEL_FLAG="--model '$MAIN_MODEL' "
+[ -n "$MAIN_MODEL" ] && MODEL_FLAG="--model $(sh_single_quote "$MAIN_MODEL") "
 
 # Main-agent isolated-config parity (PLAN.md GAP 1 completeness fix): without
 # this, a watchdog-triggered respawn would silently drop the main agent OUT of
@@ -207,15 +253,15 @@ if [ -n "$NODE_BIN" ] && [ -f "$INSTALL_DIR/dist/web/agent-process.js" ]; then
   fi
   if [ -n "$_cfg_line" ] && [ -d "$_cfg_dir" ]; then
     if [ "$_cfg_mode" = "explicit" ] || [ "$_cfg_mode" = "rotated" ]; then
-      CFG_ENV="export CLAUDE_CONFIG_DIR='$_cfg_dir' && "
+      CFG_ENV="export CLAUDE_CONFIG_DIR=$(sh_single_quote "$_cfg_dir") && "
     elif [ "$_cfg_mode" = "token" ]; then
       # Token-mode rotated plan -- same credential-less dir as `isolated`, but
       # export THAT plan's vault-stored token. See channels.sh's identical
       # branch, including the fleet-token fallback and the loud-failure gate
       # (PR #1304 review (c)) via the bare `_plan_token=$(...)` assignment.
-      CFG_ENV="export CLAUDE_CONFIG_DIR='$_cfg_dir' && _plan_token=\"\$(\"$NODE_BIN\" '$INSTALL_DIR/scripts/resolve-plan-token-env.mjs' '$_cfg_token_secret' '$INSTALL_DIR/store/.claude-oauth-token' '$INSTALL_DIR/store/channels-failures.log')\" && export CLAUDE_CODE_OAUTH_TOKEN=\"\$_plan_token\" && "
+      CFG_ENV="export CLAUDE_CONFIG_DIR=$(sh_single_quote "$_cfg_dir") && _plan_token=\"\$($(sh_single_quote "$NODE_BIN") $(sh_single_quote "$INSTALL_DIR/scripts/resolve-plan-token-env.mjs") $(sh_single_quote "$_cfg_token_secret") $(sh_single_quote "$INSTALL_DIR/store/.claude-oauth-token") $(sh_single_quote "$INSTALL_DIR/store/channels-failures.log"))\" && export CLAUDE_CODE_OAUTH_TOKEN=\"\$_plan_token\" && "
     else
-      CFG_ENV="export CLAUDE_CONFIG_DIR='$_cfg_dir' && export CLAUDE_CODE_OAUTH_TOKEN=\"\$(cat '$INSTALL_DIR/store/.claude-oauth-token')\" && "
+      CFG_ENV="export CLAUDE_CONFIG_DIR=$(sh_single_quote "$_cfg_dir") && export CLAUDE_CODE_OAUTH_TOKEN=\"\$(cat $(sh_single_quote "$INSTALL_DIR/store/.claude-oauth-token"))\" && "
     fi
     log "main-agent $_cfg_mode CLAUDE_CONFIG_DIR=$_cfg_dir"
   fi
@@ -238,12 +284,13 @@ case "$CHANNEL_PROVIDER" in
 esac
 MAIN_CHAN_DIR="$INSTALL_DIR/.claude/channels/$CHANNEL_PROVIDER"
 STATE_DIR_ENV=""
-[ -f "$MAIN_CHAN_DIR/.env" ] && STATE_DIR_ENV="export ${STATE_ENV_VAR}='${MAIN_CHAN_DIR}' && "
+[ -f "$MAIN_CHAN_DIR/.env" ] && STATE_DIR_ENV="export ${STATE_ENV_VAR}=$(sh_single_quote "$MAIN_CHAN_DIR") && "
 # FLEETVENV923: the fleet venv's bin/ first, exactly as channels.sh boots the
 # session -- a respawn must not hand it a different python3 (#1626 review).
 . "$INSTALL_DIR/scripts/fleet-venv-prefix.sh" 2>/dev/null || fleet_venv_prefix() { :; }
 FLEET_VENV_PREFIX="$(fleet_venv_prefix "$INSTALL_DIR" "$STORE/channels-failures.log")"
-RESPAWN_CMD="export PATH=\"${FLEET_VENV_PREFIX}/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:\$HOME/.local/bin:/usr/local/bin:/usr/bin:/bin\" && export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && ${STATE_DIR_ENV}${CFG_ENV}$CLAUDE --dangerously-skip-permissions ${MODEL_FLAG}--channels plugin:${CHANNEL_PROVIDER}@claude-plugins-official${EXTRA_CHANNELS}"
+# NATIVECLAUDEFIRST1011: the same order as the channels.sh boot PATH (#1896).
+RESPAWN_CMD="export PATH=\"${FLEET_VENV_PREFIX}\$HOME/.local/bin:/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin\" && export CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=false CLAUDE_CODE_DISABLE_FEEDBACK_SURVEY=1 CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && ${STATE_DIR_ENV}${CFG_ENV}$CLAUDE --dangerously-skip-permissions${EXTRA_SETTINGS_FLAG} ${MODEL_FLAG}--channels plugin:${CHANNEL_PROVIDER}@claude-plugins-official${EXTRA_CHANNELS}"
 
 reason="keepalive stale ${age}s"
 [ "$STALE" != true ] && reason=""
@@ -252,7 +299,7 @@ if [ "$AUTHDEAD" = true ]; then
 fi
 
 log "$reason and session up -- respawn-pane $SESSION (respawn #$((count+1)))"
-if "$TMUX_BIN" respawn-pane -k -t "$SESSION" "$RESPAWN_CMD" 2>/dev/null; then
+if "$TMUX_BIN" respawn-pane -k -t "=$SESSION:" "$RESPAWN_CMD" 2>/dev/null; then
   date +%s > "$RESPAWN_STAMP"
   echo $(( count + 1 )) > "$RESPAWN_COUNT_FILE"
   rm -f "$AUTH_DEAD_COUNT_FILE" 2>/dev/null || true

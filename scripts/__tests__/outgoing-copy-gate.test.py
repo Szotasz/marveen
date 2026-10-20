@@ -334,6 +334,27 @@ def main():
         check("escape-elt SPAN-ben rejtett gondolatjel blokkol (sorrend-fog)", code, 2)
         check("...es a GONDOLATJEL indokkal", "GONDOLATJEL" in (err or ""), True)
 
+        # --- C67F5F34: A GOMBFELIRATOK IS KIMENO SZOVEG ----------------------
+        # A Telegram reply eszkoz buttons mezoje (a plugin Marveen-foltja) egy
+        # koppintassal valaszolhato gombokat tesz a kerdes ala; a felirat az, amit
+        # a cimzett lat es visszakuld. A SZOVEG SZANDEKOSAN TISZTA (teljesen
+        # ekezetes, gondolatjel nelkul), hogy a tiltas CSAK a feliratbol johessen
+        # (a COPYGATEENT914 tanulsaga: egy mas okbol is tuzelo teszt nem mer).
+        def gombos(buttons):
+            return {"tool_name": "mcp__plugin_telegram_telegram__reply",
+                    "tool_input": {"text": CLEAN_HU_OK, "buttons": buttons}}
+        code, out, err = run_hook(gombos(["A. Elfogadom", "B. Már megoldva — köszönöm"]), rules_file=active)
+        check("gondolatjel a gombfeliratban blokkol (exit 2)", code, 2)
+        check_true("...es a GONDOLATJEL indokkal", "GONDOLATJEL" in (err or ""), detail=(err or "")[:120])
+        code, out, err = run_hook(gombos("A — B"), rules_file=active)
+        check("nem lista alaku buttons is vizsgalt (exit 2)", code, 2)
+        # NEGATIV KONTROLL: tiszta feliratok atmennek, es a tiszta szoveg magaban is.
+        code, out, err = run_hook(gombos(["A. Elfogadom", "B. Már megoldva", "C. Valami más lesz a megoldás"]),
+                                  rules_file=active)
+        check("tiszta gombfeliratok atmennek (exit 0)", code, 0)
+        code, out, err = run_hook(gombos([]), rules_file=active)
+        check("ures gomblista (a billentyuzet levetele) atmegy (exit 0)", code, 0)
+
         # --- GMAILCONNECTOR914: the claude.ai Gmail connector ----------------
         # mcp__claude_ai_Gmail__send_message carries ONE underscore before Gmail,
         # so the old (^|__)gmail__ alternative never matched and the send fell
@@ -359,6 +380,57 @@ def main():
             code, out, err = run_hook({"tool_name": f"mcp__claude_ai_Gmail__{tool}", "tool_input": {"q": "x — y"}},
                                       rules_file=active)
             check(f"connector {tool} is a read: passes untouched (exit 0)", code, 0)
+
+        # --- tool names are classified by SUFFIX ----------------------------
+        # vendor/gmail-mcp-fork prepends its tool prefix verbatim, so
+        # mcp__gmail__v2_reply_all / ...work-send_message must be audited
+        # exactly like the bare name. EMAIL_TOOL_RE's `gmail__(reply|...)$`
+        # missed every prefixed connector name, and reply_all on a server whose
+        # segment is not exactly "gmail" too, so their text went out unaudited.
+        dash = CLEAN_HU_OK + " — mégis."
+        for pre in ("", "v2_", "v2", "work-", "shared_inbox_", "v-2_"):
+            for base in ("send_email", "reply_all", "send_message", "reply", "forward",
+                         "draft_email", "create_draft", "update_draft"):
+                name = f"mcp__gmail__{pre}{base}"
+                code, out, err = run_hook({"tool_name": name, "tool_input": {
+                    "to": ["a@b.hu"], "messageId": "m1", "subject": "Teszt", "body": dash}},
+                    rules_file=active)
+                check(f"prefix {pre!r}: {base} with em dash is audited and blocks (exit 2)", code, 2)
+                code, out, err = run_hook({"tool_name": name, "tool_input": {
+                    "to": ["a@b.hu"], "messageId": "m1", "subject": "Teszt", "body": CLEAN_HU_OK}},
+                    rules_file=active)
+                check(f"prefix {pre!r}: {base} clean passes (exit 0)", code, 0)
+            code, out, err = run_hook({"tool_name": f"mcp__google-workspace__{pre}manage_email",
+                                       "tool_input": {"operation": "send", "to": "a@b.hu", "body": dash}},
+                                      rules_file=active)
+            check(f"prefix {pre!r}: manage_email send with em dash blocks (exit 2)", code, 2)
+            # send_draft carries only a draftId: nothing of ours to audit, and
+            # whether it may be SENT is the approval gate's level decision; the
+            # copy gate must not turn the empty payload into a hard deny.
+            code, out, err = run_hook({"tool_name": f"mcp__gmail__{pre}send_draft",
+                                       "tool_input": {"draftId": "r-1"}}, rules_file=active)
+            check(f"prefix {pre!r}: send_draft (draftId only) is not a copy-audit target (exit 0)", code, 0)
+            for base in ("search_emails", "read_email", "delete_draft", "list_drafts", "get_thread"):
+                code, out, err = run_hook({"tool_name": f"mcp__gmail__{pre}{base}",
+                                           "tool_input": {"query": "x — y", "body": dash}},
+                                          rules_file=active)
+                check(f"prefix {pre!r}: {base} is a read: passes untouched (exit 0)", code, 0)
+        for name in ("mcp__server-gmail-autoauth-mcp__reply_all", "mcp__workmail__v2_reply_all",
+                     "mcp__google_workspace__send_gmail_message", "mcp__google_workspace__draft_gmail_message"):
+            code, out, err = run_hook({"tool_name": name, "tool_input": {"messageId": "m1", "body": dash}},
+                                      rules_file=active)
+            check(f"{name} (no 'gmail__' before the base) is audited and blocks (exit 2)", code, 2)
+        for name in ("mcp__gmail__v2_forwarding_settings", "mcp__gmail__v2_send_drafts_list",
+                     "mcp__workmail__v2_forward", "mcp__plugin_discord_discord__v2_reply",
+                     "mcp__google-workspace__manage_emails_bulk"):
+            code, out, err = run_hook({"tool_name": name, "tool_input": {"operation": "send", "body": dash}},
+                                      rules_file=active)
+            check(f"look-alike {name} is not an outbound mail tool (exit 0)", code, 0)
+        # A non-dict tool_input on a PREFIXED send is still fail-closed (the
+        # non-dict net used the old regexes too).
+        code, out, err = run_hook({"tool_name": "mcp__gmail__v2_reply_all", "tool_input": 42},
+                                  rules_file=active)
+        check("prefixed reply_all with a non-dict tool_input blocks (exit 2)", code, 2)
 
     if FAILS:
         print(f"\n{len(FAILS)} FAILED: {FAILS}", file=sys.stderr)

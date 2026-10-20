@@ -10,6 +10,16 @@ import { TOOL_TIMEOUTS } from './tool-timeouts.js'
 
 export type ChannelProviderType = 'telegram' | 'slack' | 'discord' | 'googlechat' | 'teams'
 
+/**
+ * What a successful send can tell about itself: the HTTP status of the answer
+ * and the id the service gave the new message, when it gives one. Never the
+ * chat or the text -- the channel log (notify.ts) records exactly this.
+ */
+export interface SendReceipt {
+  status: number
+  messageId?: string
+}
+
 export interface ChannelProvider {
   readonly type: ChannelProviderType
   readonly pluginId: string
@@ -17,11 +27,23 @@ export interface ChannelProvider {
   readonly envKeys: string[]
   readonly stateDir: string
   readonly chatIdFormat: string
-  sendMessage(token: string, chatId: string, text: string, parseMode?: string): Promise<void>
+  /** threadId: a Telegram topic (TELEGRAM_TOPICS_ENABLED); providers without topics ignore it. */
+  sendMessage(token: string, chatId: string, text: string, parseMode?: string, threadId?: string): Promise<SendReceipt | void>
   sendPhoto(token: string, chatId: string, photoPath: string, caption: string): Promise<void>
-  validateToken(token: string): Promise<{ ok: boolean; botName?: string; error?: string }>
+  validateToken(token: string): Promise<TokenValidation>
   formatMessage(text: string): string
   splitMessage(text: string): string[]
+}
+
+/** What validateToken reports. `scopes` and `missingScopes` are filled only by
+ *  a provider that can read the token's granted scopes (Slack); absent means
+ *  "not known", never "none missing". */
+export interface TokenValidation {
+  ok: boolean
+  botName?: string
+  error?: string
+  scopes?: string[]
+  missingScopes?: string[]
 }
 
 // -- Telegram implementation --
@@ -31,7 +53,8 @@ export interface ChannelProvider {
 // error, so a socket that never answers would pin the stamp forever and
 // silence that alert for good. A timeout turns the hang into an error the
 // callers already classify as transient (no HTTP status) and retry next tick.
-function telegramHttpPost(token: string, method: string, body: string, contentType: string): Promise<void> {
+// Resolves with the Bot API's `result` (undefined when the body is not JSON).
+function telegramHttpPostResult(token: string, method: string, body: string, contentType: string): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const req = https.request(
       `https://api.telegram.org/bot${token}/${method}`,
@@ -52,12 +75,13 @@ function telegramHttpPost(token: string, method: string, body: string, contentTy
         res.on('data', (chunk: Buffer) => { chunks.push(chunk) })
         res.on('end', () => {
           const responseBody = Buffer.concat(chunks).toString('utf-8')
+          let result: unknown
           if (res.statusCode !== 200) {
             reject(new Error(`Telegram API ${res.statusCode}: ${responseBody.slice(0, 200)}`))
             return
           }
           try {
-            const parsed = JSON.parse(responseBody) as { ok?: boolean; error_code?: number; description?: string }
+            const parsed = JSON.parse(responseBody) as { ok?: boolean; error_code?: number; description?: string; result?: unknown }
             if (parsed.ok === false) {
               // Carry the body's error_code in the "Telegram API <code>" shape so
               // classifySendError sorts it transient/permanent like an HTTP status;
@@ -66,11 +90,12 @@ function telegramHttpPost(token: string, method: string, body: string, contentTy
               reject(new Error(`Telegram API${code}: ok:false ${String(parsed.description ?? '').slice(0, 200)}`))
               return
             }
+            result = parsed.result
           } catch {
             // A malformed body on HTTP 200 is not a send failure; the message
             // may well be delivered. Same tolerance as sendTelegramMessage.
           }
-          resolve()
+          resolve(result)
         })
         res.on('error', reject)
       }
@@ -83,6 +108,23 @@ function telegramHttpPost(token: string, method: string, body: string, contentTy
   })
 }
 
+// sendMessage's receipt: the message id when the Bot API returned a numeric one.
+async function telegramHttpPost(token: string, method: string, body: string, contentType: string): Promise<SendReceipt> {
+  const result = await telegramHttpPostResult(token, method, body, contentType)
+  const messageId = (result as { message_id?: unknown } | undefined)?.message_id
+  return { status: 200, messageId: typeof messageId === 'number' ? String(messageId) : undefined }
+}
+
+/** Opens a topic in a chat (a private chat needs topics switched on in BotFather); returns its message_thread_id. */
+export async function createTelegramForumTopic(token: string, chatId: string, name: string): Promise<number> {
+  const result = await telegramHttpPostResult(token, 'createForumTopic', JSON.stringify({ chat_id: chatId, name }), 'application/json')
+  const threadId = (result as { message_thread_id?: unknown } | undefined)?.message_thread_id
+  if (typeof threadId !== 'number' || !Number.isInteger(threadId) || threadId <= 0) {
+    throw new Error('Telegram API: createForumTopic returned no message_thread_id')
+  }
+  return threadId
+}
+
 const telegramProvider: ChannelProvider = {
   type: 'telegram',
   pluginId: 'telegram@claude-plugins-official',
@@ -91,11 +133,12 @@ const telegramProvider: ChannelProvider = {
   stateDir: 'telegram',
   chatIdFormat: 'numeric (e.g. 1268077055)',
 
-  async sendMessage(token, chatId, text, parseMode) {
-    const payload: Record<string, string> = { chat_id: chatId, text }
+  async sendMessage(token, chatId, text, parseMode, threadId) {
+    const payload: Record<string, string | number> = { chat_id: chatId, text }
     if (parseMode) payload.parse_mode = parseMode
+    if (threadId) payload.message_thread_id = Number(threadId)
     const body = JSON.stringify(payload)
-    await telegramHttpPost(token, 'sendMessage', body, 'application/json')
+    return telegramHttpPost(token, 'sendMessage', body, 'application/json')
   },
 
   async sendPhoto(token, chatId, photoPath, caption) {
@@ -293,7 +336,17 @@ const slackProvider: ChannelProvider = {
       })
       const data = await resp.json() as { ok: boolean; bot_id?: string; user?: string; error?: string }
       if (data.ok) {
-        return { ok: true, botName: data.user || data.bot_id }
+        // SLACKSCOPEJELZ1007: the granted bot scopes come back in the
+        // x-oauth-scopes header only. Reported against the manifest's list so
+        // a missing scope (im:read: the slack-channel plugin needs it to write
+        // to an allowFrom user's DM after a restart, SLACKOUTDM1007) shows up
+        // without anyone asking the owner. No header -> no claim.
+        const granted = parseSlackScopes(resp.headers.get('x-oauth-scopes'))
+        return {
+          ok: true,
+          botName: data.user || data.bot_id,
+          ...(granted ? { scopes: granted, missingScopes: missingSlackScopes(granted) } : {}),
+        }
       }
       return { ok: false, error: data.error || 'Invalid token' }
     } catch {
@@ -487,6 +540,20 @@ const SLACK_BOT_SCOPES = [
   'users:read',
 ]
 
+/** The `x-oauth-scopes` header as a list; null when the header is absent OR
+ *  empty: an empty header is "not known", not "no scope granted" (an
+ *  auth.test that succeeded always has at least one scope). */
+export function parseSlackScopes(header: string | null | undefined): string[] | null {
+  if (header == null || header.trim() === '') return null
+  return header.split(',').map(s => s.trim()).filter(Boolean)
+}
+
+/** The manifest's bot scopes the token was not granted, in manifest order. */
+export function missingSlackScopes(granted: readonly string[]): string[] {
+  const have = new Set(granted)
+  return SLACK_BOT_SCOPES.filter(s => !have.has(s))
+}
+
 const SLACK_BOT_EVENTS = [
   'app_mention',
   'message.channels',
@@ -569,8 +636,9 @@ const providers: Record<ChannelProviderType, ChannelProvider> = {
 function withTestRunMarking(provider: ChannelProvider): ChannelProvider {
   return {
     ...provider,
-    sendMessage: (token, chatId, text, parseMode) =>
-      provider.sendMessage(token, chatId, markIfTestRun(text), parseMode),
+    sendMessage: (token, chatId, text, parseMode, threadId) => threadId
+      ? provider.sendMessage(token, chatId, markIfTestRun(text), parseMode, threadId)
+      : provider.sendMessage(token, chatId, markIfTestRun(text), parseMode),
     sendPhoto: (token, chatId, photoPath, caption) =>
       provider.sendPhoto(token, chatId, photoPath, markIfTestRun(caption)),
   }

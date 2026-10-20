@@ -42,7 +42,19 @@ const INSTALLERS = [
     guard: join('.git', 'hooks', 'pre-commit.d', '10-secret-gate'),
     dispatcher: join('.git', 'hooks', 'pre-commit'),
   },
+  {
+    script: 'install-review-gate-hook.sh',
+    guard: join('.git', 'hooks', 'pre-push.d', '30-review-gate'),
+    dispatcher: join('.git', 'hooks', 'pre-push'),
+  },
 ] as const
+
+/** Files an installer needs next to it besides itself (it copies the hook from the repo and
+ *  borrows the git-guard installer for the dispatcher). */
+const COMPANIONS = [
+  join('scripts', 'install-git-guard-hook.sh'),
+  join('scripts', 'git-hooks', 'pre-push-review-gate.py'),
+]
 
 const stage = mkdtempSync(join(tmpdir(), 'hookcwd-'))
 afterAll(() => rmSync(stage, { recursive: true, force: true }))
@@ -57,7 +69,15 @@ function makeRepo(label: string, script?: string): string {
   writeFileSync(join(repo, 'x.txt'), 'x')
   execFileSync('git', ['-C', repo, 'add', '.'])
   execFileSync('git', ['-C', repo, '-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'init'])
-  if (script) cpSync(join(ROOT, 'scripts', script), join(repo, 'scripts', script))
+  if (script) {
+    cpSync(join(ROOT, 'scripts', script), join(repo, 'scripts', script))
+    if (script === 'install-review-gate-hook.sh') {
+      for (const f of COMPANIONS) {
+        mkdirSync(join(repo, f, '..'), { recursive: true })
+        cpSync(join(ROOT, f), join(repo, f))
+      }
+    }
+  }
   writeFileSync(join(repo, 'store', '.dashboard-token'), 'test-token\n')
   return repo
 }

@@ -24,7 +24,52 @@ warn() { echo -e "  ${ORANGE}!${NC} $*"; }
 INSTALL_STEP="init"
 
 # shellcheck source=install-lang.sh
-source "$(dirname "$0")/install-lang.sh"
+# MARVEENLANG1763: the README's one-liner (curl ... install-linux.sh -o install.sh &&
+# bash install.sh) and the Windows/WSL wrapper (/tmp/marveen-install.sh) run this
+# script ON ITS OWN, before the repo is cloned, so install-lang.sh is not next to it.
+# Next to it (a checkout, the Bridge) -> sourced from there, exactly as before.
+# Missing -> fetched from the same ref the repo is cloned from below (MARVEEN_REF,
+# default main), checked (non-empty, defines _t), sourced from a mktemp file.
+# Unreachable -> a plain bilingual stop with the manual way, before any install step.
+MARVEEN_REF="${MARVEEN_REF:-main}"
+if [ -f "$(dirname "$0")/install-lang.sh" ]; then
+  source "$(dirname "$0")/install-lang.sh"
+else
+  _lang_url="${MARVEEN_RAW_BASE:-https://raw.githubusercontent.com/Szotasz/marveen}/${MARVEEN_REF}/install-lang.sh"
+  _lang_tmp="$(mktemp "${TMPDIR:-/tmp}/marveen-install-lang.XXXXXX")"
+  _lang_ok=0
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$_lang_url" -o "$_lang_tmp" 2>/dev/null && _lang_ok=1
+  elif command -v wget >/dev/null 2>&1; then
+    wget -qO "$_lang_tmp" "$_lang_url" 2>/dev/null && _lang_ok=1
+  fi
+  if [ "$_lang_ok" = "1" ] && [ -s "$_lang_tmp" ] && grep -q '^_t() {' "$_lang_tmp"; then
+    source "$_lang_tmp"
+    rm -f "$_lang_tmp"
+  else
+    rm -f "$_lang_tmp"
+    echo "Hiba: a telepito nyelvi fajlja (install-lang.sh) nem toltheto le: $_lang_url" >&2
+    echo "Error: the installer's language file (install-lang.sh) could not be downloaded: $_lang_url" >&2
+    echo "  Kezzel / manually: git clone --branch ${MARVEEN_REF} https://github.com/Szotasz/marveen.git ~/marveen && bash ~/marveen/install-linux.sh" >&2
+    exit 1
+  fi
+  unset _lang_url _lang_tmp _lang_ok
+fi
+# end of the install-lang loader (MARVEENLANG1763)
+
+# #1874: the managed-settings.json writes below are machine-wide (org-policy layer)
+# and need root. Say what is written and why, ONCE, before the first of them asks
+# for a password. The text lives in install-lang.sh; the function stays here, so a
+# standalone run that fetched an older install-lang.sh still has it (an unknown
+# _t key just prints nothing).
+managed_settings_notice() {
+  if [ -n "${MANAGED_NOTICE_SHOWN:-}" ]; then
+    return 0
+  fi
+  MANAGED_NOTICE_SHOWN=1
+  echo -e "  ${ORANGE}i${NC} $(_t managed.notice_what)"
+  echo -e "    $(_t managed.notice_sudo)"
+}
 
 offer_claude_fallback() {
   local step="$1" err_msg="$2" line_info="${3:+:$3}"
@@ -98,22 +143,62 @@ ensure_in_rc() {
   done
 }
 
-# Like ensure_in_rc, but REPLACES an existing `export <VAR>=` line instead of
-# keeping it. For credentials ensure_in_rc was wrong: once a bad or old token
-# line was in ~/.bashrc, a re-run with the correct token skipped the rc ("marker
-# already there"), so every interactive shell kept exporting the stale value.
-set_export_in_rc() {
-  local var="$1" line="$2"
+# SECSZIVEK1007: secrets belong in the 0600 install files, not in shell
+# startup files. The services never read an rc file: they use <install>/.env
+# and <install>/store/.claude-oauth-token, both 0600 (see
+# service_auth_present). A re-run removes the credential export lines from the
+# rc files and says so. The rewrite keeps the rc file's inode and permissions
+# (cat back, not mv), and `|| true` because grep -v exits 1 when every line is
+# filtered out.
+remove_secret_export_from_rc() {
+  local var="$1" rc
   for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
     [ -f "$rc" ] || continue
-    # Portable (BSD/macOS sed has no `sed -i` without a suffix argument).
-    # Rewrite in place via cat so the rc file keeps its inode and permissions;
-    # `|| true` because grep -v exits 1 when every line is filtered out.
+    grep -Eq "^[[:space:]]*export[[:space:]]+${var}=" "$rc" 2>/dev/null || continue
     { grep -Ev "^[[:space:]]*export[[:space:]]+${var}=" "$rc" || true; } >"$rc.tmp" \
       && cat "$rc.tmp" >"$rc" && rm -f "$rc.tmp"
-    printf '%s\n' "$line" >>"$rc"
-    warn "RC frissitve ($(basename "$rc")): export ${var}=..."
+    warn "$(basename "$rc"): a korabbi ${var} export-sor torolve (titok nem kerul shell rc fajlba)"
   done
+}
+
+# Interactive convenience without the secret in the rc: one line that READS the
+# value from a 0600 install file at shell start, and exports it only when it is
+# there. The file path is single-quoted for the shell ('\'' for a quote in it).
+# Usage: ensure_secret_reader_in_rc VAR FILE KIND   (KIND: file = whole file, env = VAR= line of a .env)
+ensure_secret_reader_in_rc() {
+  local var="$1" file="$2" kind="$3" q marker line
+  q="'$(printf '%s' "$file" | sed "s/'/'\\\\''/g")'"
+  marker="# marveen: ${var} from the install's 0600 file"
+  if [ "$kind" = "env" ]; then
+    line="${marker}"$'\n'"_mv=\"\$(grep -m1 '^${var}=' ${q} 2>/dev/null | cut -d= -f2-)\"; [ -n \"\$_mv\" ] && export ${var}=\"\$_mv\"; unset _mv"
+  else
+    line="${marker}"$'\n'"[ -s ${q} ] && export ${var}=\"\$(cat ${q})\""
+  fi
+  ensure_in_rc "$marker" "$line"
+}
+
+# SECSZIVEKKIADAS1008: the same scrub for an install that already carries auth
+# (a re-run never reaches the prompt above). scripts/lib/rc-secrets.sh holds
+# the identical copy update.sh uses; update-rc-secret-scrub.test.ts keeps them equal.
+rc_has_secret_export() {
+  local rc
+  for rc in "$HOME/.bashrc" "$HOME/.zshrc"; do
+    [ -f "$rc" ] || continue
+    grep -Eq "^[[:space:]]*export[[:space:]]+${1}=" "$rc" 2>/dev/null && return 0
+  done
+  return 1
+}
+
+scrub_secret_exports_from_rc() {
+  if rc_has_secret_export ANTHROPIC_API_KEY; then
+    remove_secret_export_from_rc ANTHROPIC_API_KEY
+    ensure_secret_reader_in_rc ANTHROPIC_API_KEY "$INSTALL_DIR/.env" env
+  fi
+  if rc_has_secret_export CLAUDE_CODE_OAUTH_TOKEN; then
+    remove_secret_export_from_rc CLAUDE_CODE_OAUTH_TOKEN
+    ensure_secret_reader_in_rc CLAUDE_CODE_OAUTH_TOKEN "$INSTALL_DIR/store/.claude-oauth-token" file
+  fi
+  return 0
 }
 
 # Tobbsoros blokkot ad az rc fajlokhoz ha a <marker> meg nem szerepel bennuk.
@@ -502,8 +587,9 @@ if [ ! -f "$INSTALL_DIR/package.json" ]; then
     echo -e "  Repo klonozasa -> ${TARGET_DIR} ..."
     # A repo default branch-e a develop, de a publikus telepito main-rol fut
     # (a Windows/WSL wrapper is main-rol fetcheli a scriptet) -> pineljuk a main-t.
-    git clone --depth 1 --branch main https://github.com/Szotasz/marveen.git "$TARGET_DIR" \
-      || fail "git clone sikertelen: https://github.com/Szotasz/marveen.git (main branch)"
+    # MARVEENLANG1763: the same ref the language file came from (default main).
+    git clone --depth 1 --branch "$MARVEEN_REF" https://github.com/Szotasz/marveen.git "$TARGET_DIR" \
+      || fail "git clone sikertelen: https://github.com/Szotasz/marveen.git (${MARVEEN_REF} branch)"
     ok "Repo klonozva: $TARGET_DIR"
   fi
   echo -e "  Telepito ujrainditasa a checkoutbol..."
@@ -565,12 +651,18 @@ _shelve_broken_claude() {
   hash -r
 }
 
-# Pinned Node-based fallback for AVX-less hosts. @2.1.110 is the LAST version
+# Pinned Node-based fallback for AVX-less hosts. @2.1.112 is the LAST version
 # that ships bin=cli.js (a `#!/usr/bin/env node` entrypoint) running without
-# AVX -- 2.1.120+ bundles only the Bun ELF binary, so DO NOT use latest here.
-# Unlike the old 2.0.76 pin, 2.1.110 also understands `--channels`, which
-# channels.sh requires to boot the bot. Verified on the AVX-less pilot VPS.
-CLAUDE_PIN="2.1.110"
+# AVX -- from 2.1.113 on every published version ships bin=bin/claude.exe with
+# a postinstall that downloads the Bun ELF binary, so DO NOT use latest here.
+# Measured 2026-09-23 on the AVX-less pilot VPS (QEMU Virtual CPU 2.5+, 0 avx
+# flags) with a REAL `claude -p ... --output-format json` probe, not
+# `--version` (which still exits 0 on some Bun builds there): 2.1.110/111/112
+# answer, 2.1.113/150/170 SIGILL ("CPU lacks AVX support"), 2.1.200/240/260/280
+# spin silently for 120 s. 2.1.112 understands `--channels` (same parser
+# as 2.1.110), which channels.sh requires to boot the bot. Keep in sync with
+# scripts/channels.sh and scripts/fix-avx.sh (a test pins the three together).
+CLAUDE_PIN="2.1.112"
 
 if _claude_runs; then
   ok "claude mar telepitve es fut: $(claude --version 2>/dev/null || echo 'ok')"
@@ -629,6 +721,7 @@ fi
 # notifications on a team/enterprise org unless managed-settings has
 # channelsEnabled:true (harmless / no-op on a personal org). Idempotent.
 if [ -f "$INSTALL_DIR/scripts/ensure-managed-channels-enabled.sh" ]; then
+  managed_settings_notice
   echo -e "  Managed-settings channel-kapu ellenorzese..."
   bash "$INSTALL_DIR/scripts/ensure-managed-channels-enabled.sh" || true
 fi
@@ -707,6 +800,7 @@ fi
 # first -- the correct user behaviour triggered the bug.
 if service_auth_present; then
   ok "A telepites mar hordoz auth kulcsot (.env / store/.claude-oauth-token)"
+  scrub_secret_exports_from_rc
 else
   if claude auth status &>/dev/null; then
     echo -e "  ${ORANGE}A terminalod be van jelentkezve, de a SZOLGALTATASOK ehhez nem ferenek hozza.${NC}"
@@ -745,7 +839,8 @@ else
     read -p "  ANTHROPIC_API_KEY (sk-ant-...): " ANTHROPIC_API_KEY_INPUT
     if [ -n "$ANTHROPIC_API_KEY_INPUT" ]; then
       export ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY_INPUT"
-      set_export_in_rc 'ANTHROPIC_API_KEY' "export ANTHROPIC_API_KEY=\"$ANTHROPIC_API_KEY_INPUT\""
+      remove_secret_export_from_rc ANTHROPIC_API_KEY
+      ensure_secret_reader_in_rc ANTHROPIC_API_KEY "$INSTALL_DIR/.env" env
       CLAUDE_AUTH_ENV_LINE="ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY_INPUT}"
       ok "ANTHROPIC_API_KEY beallitva"
     else
@@ -764,7 +859,7 @@ else
     echo ""
     # Shape-check BEFORE the value is written anywhere. Without it any paste was
     # accepted -- typically the one-time code the browser shows during
-    # `claude setup-token` -- and landed in ~/.bashrc and .env as if it were the
+    # `claude setup-token` -- and landed in .env as if it were the
     # token; the services then failed to authenticate with no hint why. Same
     # pattern the store/.claude-oauth-token write below already gates on.
     OAUTH_TOKEN_INPUT=""
@@ -784,7 +879,8 @@ else
     unset _tok _try
     if [ -n "$OAUTH_TOKEN_INPUT" ]; then
       export CLAUDE_CODE_OAUTH_TOKEN="$OAUTH_TOKEN_INPUT"
-      set_export_in_rc 'CLAUDE_CODE_OAUTH_TOKEN' "export CLAUDE_CODE_OAUTH_TOKEN=\"$OAUTH_TOKEN_INPUT\""
+      remove_secret_export_from_rc CLAUDE_CODE_OAUTH_TOKEN
+      ensure_secret_reader_in_rc CLAUDE_CODE_OAUTH_TOKEN "$INSTALL_DIR/store/.claude-oauth-token" file
       CLAUDE_AUTH_ENV_LINE="CLAUDE_CODE_OAUTH_TOKEN=${OAUTH_TOKEN_INPUT}"
       # Ellenorzes
       if claude auth status &>/dev/null; then
@@ -1340,6 +1436,7 @@ if [ -f "$INSTALL_DIR/templates/CLAUDE.md.template" ]; then
     -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
     -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
     -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
+    -e "s|{{TIMEZONE}}|$(. "$INSTALL_DIR/scripts/lib/install-tz.sh"; z="$(install_tz "$INSTALL_DIR")"; printf '%s' "${z:-UTC}")|g" \
     "$INSTALL_DIR/templates/CLAUDE.md.template" >"$INSTALL_DIR/CLAUDE.md"
   ok "CLAUDE.md generalva"
 else
@@ -1372,14 +1469,21 @@ if [ -d "$SCHED_TPL_DIR" ]; then
       continue
     fi
     mkdir -p "$target"
-    for f in "$tpl"*; do
-      [ -f "$f" ] || continue
-      sed -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
-          -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
-          -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
-          -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
-          -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
-          "$f" > "$target/$(basename "$f")"
+    # SEEDREFDIR1018: a task may keep part of its text in a references/
+    # subdir that its SKILL.md points at; it ships with the same templating,
+    # or the pointer lands on a file that does not exist.
+    for sub in "" "references/"; do
+      [ -z "$sub" ] || [ -d "$tpl$sub" ] || continue
+      mkdir -p "$target/$sub"
+      for f in "$tpl$sub"*; do
+        [ -f "$f" ] || continue
+        sed -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
+            -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
+            -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
+            -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
+            -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
+            "$f" > "$target/$sub$(basename "$f")"
+      done
     done
     ok "Utemezett feladat scaffoldolva: $task_name"
   done
@@ -1410,14 +1514,21 @@ if [ -d "$SEED_SCHED_DIR" ]; then
       continue
     fi
     mkdir -p "$target"
-    for f in "$tpl"*; do
-      [ -f "$f" ] || continue
-      sed -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
-          -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
-          -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
-          -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
-          -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
-          "$f" > "$target/$(basename "$f")"
+    # SEEDREFDIR1018: a task may keep part of its text in a references/
+    # subdir that its SKILL.md points at; it ships with the same templating,
+    # or the pointer lands on a file that does not exist.
+    for sub in "" "references/"; do
+      [ -z "$sub" ] || [ -d "$tpl$sub" ] || continue
+      mkdir -p "$target/$sub"
+      for f in "$tpl$sub"*; do
+        [ -f "$f" ] || continue
+        sed -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
+            -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
+            -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
+            -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
+            -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
+            "$f" > "$target/$sub$(basename "$f")"
+      done
     done
     SCHED_NEW=$((SCHED_NEW + 1))
   done
@@ -1575,6 +1686,17 @@ if [ -d "$SEED_SKILLS_DIR" ]; then
     for f in "$skill_dir"*; do
       [ -f "$f" ] || continue
       cp "$f" "$target/$(basename "$f")"
+    done
+    # SEEDSKILLSUB1018: a skill's subdirs (scripts/, references/, ...) ship too,
+    # verbatim and with their mode bits; its SKILL.md points into them.
+    # Only the files git TRACKS: a whole-dir copy also carried untracked and
+    # ignored files, and fleet-helper's own scripts/.gitignore names exactly
+    # those as secrets/personal data (mail_rules.json, .dashboard-token).
+    # Outside a git checkout nothing below the top level is copied.
+    git -C "$skill_dir" ls-files -z 2>/dev/null | while IFS= read -r -d '' rel; do
+      case "$rel" in */*) ;; *) continue ;; esac   # top-level files: the loop above
+      mkdir -p "$target/$(dirname "$rel")"
+      cp -p "$skill_dir$rel" "$target/$rel"
     done
     SEED_NEW=$((SEED_NEW + 1))
   done
@@ -2178,6 +2300,24 @@ if pidof systemd >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1; the
     fi
   done
   [ "$SVCFAIL" -eq 0 ] && ok "Mindket szolgaltatas fut"
+  # TIMERSTART1011: `enable` alone does not start a timer. Both timers fire on
+  # OnBootSec=90s, which on a host that has been up for a while has already
+  # passed, so without a start they stay inactive until the next reboot. The
+  # keepalive probe then never refreshes, and the channel monitor reads the
+  # stale keep-alive as a wedged session and respawns the main agent (measured
+  # on a fresh Linux install: three hard restarts in 80 minutes). One start per
+  # timer, after the services, so a timer that failed to install can take down
+  # neither the services nor the other timer, and a failed start never stops the
+  # installer; not part of SVCFAIL, since the bridge itself runs, but named with
+  # the fix.
+  for tmr in "${KEEPALIVE_UNIT}.timer" "${INBOX_OBSERVER_UNIT}.timer"; do
+    systemctl --user start "$tmr" 2>/dev/null || true
+    if systemctl --user is-active --quiet "$tmr" 2>/dev/null; then
+      ok "$tmr fut"
+    else
+      warn "$tmr nem fut -- inditsd: systemctl --user start $tmr"
+    fi
+  done
 else
   warn "systemd --user nem elerheto (WSL / konteneren / VPS user-session nelkul) -- kozvetlen inditas."
   mkdir -p "$INSTALL_DIR/store"

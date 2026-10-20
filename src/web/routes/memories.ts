@@ -1,11 +1,11 @@
 import {
   saveAgentMemory, getAgentMemories, searchAgentMemories, getMemoryStats, updateMemory,
-  hybridSearch, backfillEmbeddings,
+  hybridSearch, backfillEmbeddings, backfillNeedsWarning,
   searchMemories, getMemoriesForChat, getDb, touchMemoriesAccessed,
   getMemoryById, deleteMemoryById, getMemoryVersions,
   type Memory, type MemoryRow,
 } from '../../db.js'
-import { MAIN_AGENT_ID, ALLOWED_CHAT_ID, OLLAMA_URL, MEMORY_IMPORT_CATEGORIZE_MODEL, APP_TZ } from '../../config.js'
+import { MAIN_AGENT_ID, ALLOWED_CHAT_ID, OLLAMA_URL, MEMORY_IMPORT_CATEGORIZE_MODEL, APP_TZ, MEMORY_CONTENT_FILTER_STRICT_COMMANDS } from '../../config.js'
 import { createHash } from 'crypto'
 import { logger } from '../../logger.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
@@ -89,6 +89,29 @@ const SUSPICIOUS_PATTERNS = [
   /\buj\s+(persona|szemelyiseg|szerep|karakter)(t|et|ot)?\s+(veszel|vegyel|vesz|kapsz|kapod|olts)/i,
 ]
 
+// OPTIONAL STRICT GROUP (MEMORY_CONTENT_FILTER_STRICT_COMMANDS=1, default OFF).
+// The six command-syntax patterns removed above, kept as a separate list that
+// is consulted ONLY when the install opts in. Kept out of SUSPICIOUS_PATTERNS on
+// purpose, so the default list (and the test that pins it) stays exactly the
+// injection-only decision. Why an install may opt in anyway: "stored text does
+// not execute" is true for the store, but the text is read back into an agent's
+// context, and on an install where that agent does not run the destructive gate
+// the execution-time cover named above is absent. The cost is the one measured
+// above and it is not hidden: prose that merely QUOTES one of these command
+// forms (security documentation) is rejected too. On one live install that
+// kept these six patterns: 0 hits for every one of them over 651 stored
+// memories and 234 daily-log rows, and 0 rejection lines in five weeks of
+// dashboard log, so the cost there was nil; on the corpus measured above it
+// was 11 false hits out of 2124 items.
+export const STRICT_COMMAND_PATTERNS = [
+  /\bcurl\s+(-[a-zA-Z]\s+)*https?:\/\//i,
+  /\bbash\s+-c\b/i,
+  /\beval\s*\(/i,
+  /\bexec\s*\(/i,
+  /\bimport\s+subprocess\b/i,
+  /\brm\s+-rf\b/i,
+]
+
 // MEMVERSION930: a content-derived version for optimistic concurrency. The
 // PATCH that agents use is read-modify-write (GET, prepend a dated
 // header, send the whole content back), and two agents editing the same shared
@@ -106,9 +129,12 @@ function stripDiacritics(s: string): string {
   return s.normalize('NFD').replace(/[̀-ͯ]/g, '')
 }
 
-function containsSuspiciousContent(content: string): boolean {
+// `strictCommands` defaults to the install switch; the parameter exists so the
+// test can drive both settings without re-importing the module.
+export function containsSuspiciousContent(content: string, strictCommands: boolean = MEMORY_CONTENT_FILTER_STRICT_COMMANDS): boolean {
   const plain = stripDiacritics(content)
-  return SUSPICIOUS_PATTERNS.some((pattern) => pattern.test(content) || pattern.test(plain))
+  const hit = (pattern: RegExp) => pattern.test(content) || pattern.test(plain)
+  return SUSPICIOUS_PATTERNS.some(hit) || (strictCommands && STRICT_COMMAND_PATTERNS.some(hit))
 }
 
 // --- Destructive-write guard (card 27ab6a18) -------------------------------
@@ -283,6 +309,10 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     }
 
     let results: Memory[]
+    // Per-row provenance for the keyword branches:
+    // 'strict' (the AND pass), 'relaxed' (the OR pass), 'substring' (the LIKE
+    // fallback). Hybrid rows carry their own match_kind from hybridSearch.
+    let keywordMatchKind: 'strict' | 'relaxed' | 'substring' | undefined
     // GH #1025: a hybrid answer built entirely by the vector branch looks the
     // same as one with lexical support. The trace rides the response so the
     // caller can tell them apart.
@@ -297,7 +327,9 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       results = await hybridSearch(agentId || MAIN_AGENT_ID, q, limit, hybridTrace, searchCategory)
     } else if (q && agentId) {
       results = searchAgentMemories(agentId, q, limit, searchTrace, !strictOnly, searchCategory)
+      keywordMatchKind = searchTrace.relaxed ? 'relaxed' : 'strict'
       if (results.length === 0) {
+        keywordMatchKind = 'substring'
         // Substring fallback. It is NOT a second relaxation: LIKE %q% still
         // requires the query to appear literally, so a query that matches
         // nothing still returns nothing.
@@ -309,18 +341,29 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
               .all(agentId, `%${q}%`, `%${q}%`, limit)) as Memory[]
       }
     } else if (q) {
-      results = searchMemories(q, ALLOWED_CHAT_ID, limit, !strictOnly, searchCategory)
+      results = searchMemories(q, ALLOWED_CHAT_ID, limit, !strictOnly, searchCategory, searchTrace)
+      keywordMatchKind = searchTrace.relaxed ? 'relaxed' : 'strict'
       if (results.length === 0) {
+        keywordMatchKind = 'substring'
         const db2 = getDb()
         results = (searchCategory
-          ? db2.prepare('SELECT * FROM memories WHERE content LIKE ? AND category = ? ORDER BY accessed_at DESC LIMIT ?').all(`%${q}%`, searchCategory, limit)
-          : db2.prepare('SELECT * FROM memories WHERE content LIKE ? ORDER BY accessed_at DESC LIMIT ?').all(`%${q}%`, limit)) as Memory[]
+          // MEMKWSEARCH1018: keywords joins the fallback here, as it already
+          // does on the agent-scoped branch above. Without it the two paths
+          // disagree about what a memory IS: fts5 indexes content AND keywords
+          // (see the memories_fts migration), the agent branch searches both,
+          // and this one searched content alone -- so a row findable with
+          // ?agent= was invisible without it, with a header that says
+          // relaxed=false. A zero that looks like a real answer is the whole
+          // cost of this bug, which is why the fix is the parity, not a new mode.
+          ? db2.prepare('SELECT * FROM memories WHERE (content LIKE ? OR keywords LIKE ?) AND category = ? ORDER BY accessed_at DESC LIMIT ?').all(`%${q}%`, `%${q}%`, searchCategory, limit)
+          : db2.prepare('SELECT * FROM memories WHERE (content LIKE ? OR keywords LIKE ?) ORDER BY accessed_at DESC LIMIT ?').all(`%${q}%`, `%${q}%`, limit)) as Memory[]
       }
     } else if (agentId) {
       // Category goes into the query, not a post-filter: see getAgentMemories.
       results = getAgentMemories(agentId, limit, tier || undefined, offset)
     } else {
-      results = getMemoriesForChat(ALLOWED_CHAT_ID, limit, offset)
+      // Category goes into the query here too, not a post-filter: see getMemoriesForChat.
+      results = getMemoriesForChat(ALLOWED_CHAT_ID, limit, offset, tier || undefined)
     }
 
     // Kept as a backstop, not as the mechanism. Since MEMKERESVAK917 every
@@ -338,6 +381,7 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
 
     const formatted = results.map(m => ({
       ...m,
+      ...(keywordMatchKind ? { match_kind: keywordMatchKind } : {}),
       embedding: undefined,
       created_label: new Date(m.created_at * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ }),
       accessed_label: new Date(m.accessed_at * 1000).toLocaleString('hu-HU', { timeZone: APP_TZ }),
@@ -348,7 +392,10 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       res.setHeader(
         'X-Memory-Search',
         `fts=${hybridTrace.ftsHits}; vector=${hybridTrace.vectorHits};` +
-          ` relaxed=${hybridTrace.ftsRelaxed}; vector-only=${hybridTrace.vectorOnly}`,
+          ` relaxed=${hybridTrace.ftsRelaxed}; vector-only=${hybridTrace.vectorOnly};` +
+          // Appended, not inserted: a caller matching the earlier fields keeps
+          // working. Vector-only rows dropped below the similarity floor.
+          ` vector-dropped=${hybridTrace.vectorDropped ?? 0}`,
       )
     } else if (q) {
       // The label the endpoint owed its callers. `relaxed=true` means no row
@@ -508,8 +555,14 @@ Respond ONLY with JSON, nothing else:
 
   if (path === '/api/memories/backfill' && method === 'POST') {
     try {
-      const count = await backfillEmbeddings()
-      json(res, { ok: true, count })
+      const { attempted, embedded, failed } = await backfillEmbeddings()
+      // BACKFILLZERO (card 370f34c0): pending rows with zero embedded is an
+      // embedding-backend outage, not "nothing to do". Report it as an
+      // upstream failure (502, same convention as claude-plans/connectors)
+      // so it can no longer look identical to an empty backlog. `count`
+      // stays as an alias of `embedded` for older callers.
+      const ok = !backfillNeedsWarning(attempted, embedded)
+      json(res, { ok, attempted, embedded, failed, count: embedded }, ok ? 200 : 502)
     } catch (err) {
       logger.error({ err }, 'Backfill failed')
       json(res, { error: 'Backfill failed' }, 500)

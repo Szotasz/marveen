@@ -24,6 +24,7 @@ Ezek a fájlok a dashboard által kezelt, futásidőben módosuló konfiguráci�
 | `store/custom-providers.json` | dashboard UI (Beállítások > Provider-ok) | Egyéni Anthropic Messages API-kompatibilis végpontok listája -- ld. docs/custom-providers.md |
 | `store/config-overrides.json` | dashboard UI | Beállítások-oldal által mentett felülbírálatok (plain értékek, sosem tartalmaz titkokat) |
 | `store/update.pid` | automatikus | Frissítési folyamat PID fájl (concurrency lock) |
+| `store/telegram-topics.json` | `/topic new <név>` (Telegram) | A fő chat elnevezett témái: `{ "chatId", "topics": { "<név>": <message_thread_id> } }` (0600); csak `TELEGRAM_TOPICS_ENABLED` mellett íródik |
 
 ### A dashboard nyelve
 
@@ -60,6 +61,8 @@ Ha el szeretnéd hagyni a Beállítások oldalt (másik menüpontra kattintasz, 
 **Mikor kell újraindítás?**
 
 Egyes beállítások mellett "Újraindítást igényel" feliratú badge látható -- ha ilyen értéket módosítasz (pl. `DASHBOARD_PUBLIC_URL`, `OLLAMA_URL`, `HEARTBEAT_AGENT_ENABLED`), a változás csak a szerver következő újraindítása után lép életbe. A kanban és heartbeat időablak-beállítások (pl. `KANBAN_WIP_*`, `KANBAN_AGING_*`, `HEARTBEAT_START_HOUR`) azonnal hatnak, újraindítás nélkül.
+
+Az oldalon elmentett érték felülírásként a `store/config-overrides.json`-be kerül. A felülírt sor mellett "felülírva" jelzés és egy **Alapértelmezés** gomb látszik: a gomb megerősítést kér, amelyben kulcsonként látszik a mostani érték, a visszaállás utáni érték és annak forrása (ugyanezt mutatja a fülenkénti **Mind alapértelmezés** gomb is), majd törli a felülírást, és az érték visszaáll az `.env`-ben megadottra, vagy ha ott nincs, a registry alapértékére. Ugyanez API-n: `DELETE /api/settings/<KULCS>`; a `GET /api/settings` soronként megmondja a forrást (`override` / `env` / `default`), és azt is, mivé válna az érték a felülírás nélkül (`resetValue`, `resetSource`).
 
 **Mit állíthatsz be?**
 
@@ -149,6 +152,7 @@ Minden dashboard-szerkeszthető beállítás egy bejegyzésként szerepel a regi
 | `DASHBOARD_PUBLIC_URL` | string | (üres) | A dashboard nyilvánosan elérhető URL-je | igen |
 | `OLLAMA_URL` | string | `http://localhost:11434` | Ollama API alap-URL | igen |
 | `MEMORY_IMPORT_CATEGORIZE_MODEL` | string | (üres) | Memória-import besoroló Ollama modellje (felülbírálás); üres = telepített `gemma4` felismerése, olyan híján minden warm | igen |
+| `MEMORY_CONTENT_FILTER_STRICT_COMMANDS` | boolean | `0` (ki) | A memória-tartalomszűrő szigorú parancs-szintaxis csoportja (curl http(s), bash -c, eval(, exec(, import subprocess, rm -rf) a memória POST/PUT/PATCH-en; ára: a parancsot csak idéző szöveg is 400-at kap | igen |
 
 **Registry -- Heartbeat modul:**
 
@@ -169,6 +173,7 @@ Minden dashboard-szerkeszthető beállítás egy bejegyzésként szerepel a regi
 | Kulcs | Típus | Alapérték | Platform | Újraindítás |
 |-------|-------|-----------|----------|-------------|
 | `MAIN_AGENT_ISOLATED_CONFIG` | boolean | `0` (ki) | csak macOS | igen |
+| `TELEGRAM_TOPICS_ENABLED` | boolean | `0` (ki) | mind | igen (csatorna-indítás) |
 
 #### `MAIN_AGENT_ISOLATED_CONFIG` -- a fő agent config-izolációja (macOS)
 
@@ -208,6 +213,87 @@ rotálódó `credentials.json`-t ehelyett a külön credentials-guard kezeli.
 **Visszaállítás.** Kapcsold KI (dashboard) vagy `MAIN_AGENT_ISOLATED_CONFIG=0`
 (`.env`), majd indítsd újra a channels sessiont -- mindhárom indítási út visszaáll
 a közös `~/.claude` viselkedésre.
+
+#### `TELEGRAM_TOPICS_ENABLED`: a válasz abba a témába megy, ahonnan az üzenet jött
+
+**Mire szolgál.** A Telegram a bot privát chatjében is enged témákat (a BotFather-ben
+kapcsolható be a botnál). Ilyenkor minden üzenet egy témában születik, de a Telegram
+plugin a téma azonosítóját nem adja tovább az ügynöknek, és a `reply` tool nem tud
+témát címezni: a válasz a témán kívülre kerül.
+
+**Mit csinál bekapcsolva.** A csatorna indításakor a `scripts/patch-telegram-plugin.py`
+(ugyanaz a script, ami a `/status`-t és a bejövő-naplót is intézi) egy kiegészítést
+tesz a plugin forrására:
+- a témából jött üzenet `<channel>` tagje `message_thread_id` attribútumot kap (csak
+  valódi téma-üzenetnél, `is_topic_message`);
+- a gépelés-jelzés a témában jelenik meg;
+- a `reply` tool új, opcionális `message_thread_id` paramétere a szöveg minden darabját
+  és minden csatolt fájlt a témába küldi; nem pozitív egész értékre hibát ad, és nem
+  küld semmit;
+- a plugin utasítása és a `telegram-reply-directive.py` hook kéri az ügynököt, hogy a
+  témát adja vissza.
+
+A Marveen saját válasz-útjai ugyanígy a témába mennek: a „Dolgozom rajta” helyőrző és
+annak tartalék-küldései (`telegram_progress*.py`), a hookból megválaszolt parancsok
+(`marveen-commands.py`, a futás közbeni parancsok is), és a tartalék-poller
+(`channel-coordinator`) átadása.
+
+Téma nélküli üzenetnél minden hívás pontosan ugyanaz, mint kikapcsolva.
+
+**Közös plugin-cache.** A kiegészítés a plugin-cache-ben lévő forrást módosítja
+(`$CLAUDE_CONFIG_DIR/plugins/cache`, ennek hiányában `~/.claude/plugins/cache`), és ebből
+tölti a Telegram plugint minden Claude Code session, amely ugyanezt a cache-t használja, a
+Marveen-en kívüliek is. Azokban is megjelenik a `reply` tool opcionális `message_thread_id`
+paramétere és a témából jött üzenet tagjének attribútuma; amíg nem adják meg a paramétert,
+a viselkedésük változatlan.
+
+**Ami nem változik.** A `chat_id` ugyanaz marad, ezért a gazda-azonosítás, a parancsok
+jogosultsága és a jóváhagyások nem érintettek. A riasztások, a jóváhagyás-kérések és a
+hang-válasz továbbra is téma nélkül mennek ki; az ütemezett feladat eredménye csak akkor
+megy témába, ha a feladat kéri (lent).
+
+**Elnevezett témák (`/topic`).** Bekapcsolva a `/topic` megjelenik a `/help`-ben és a bot
+menüjében, három alakban: a `/topic` felsorolja az elnevezett témákat, a `/topic new <név>` (író parancs,
+csak a fő chatből) a Bot API `createForumTopic` hívásával új témát nyit, és a nevét a
+kapott `message_thread_id`-vel a `store/telegram-topics.json`-ba menti. Erre azért van
+szükség, mert ha a BotFather-ben a felhasználói témanyitás ki van kapcsolva, témát csak a
+bot nyithat, és mert az azonosítót csak a Bot API adja ki. Egy már meglévő név nem nyit
+új témát. Hibánál a parancs nem próbálkozik újra: egy időtúllépéses hívás a témát ettől
+még megnyithatta, a válasz ezt meg is mondja. A `/topic remove <név>` (író) elfelejti a
+nevet: csak a helyi sort törli, a Telegram-témát nem. Ha egy témát a Telegramban kézzel
+törölnek, ez kell utána, különben az elavult sor miatt a név nem nyitható újra, és egy rá
+mutató ütemezett feladat a már nem létező témába küld. A fájl annak a chatnek az azonosítóját is
+tárolja, amelyikhez a témák tartoznak; ha a fő chat megváltozik, a régi témák a következő
+íráskor elvesznek, és addig sem kerülnek elő. Kikapcsolva a `/topic` nem létezik (a
+dashboard indításkor dönt róla), így a `/help`, a menü és a parancs-kezelés a mai.
+
+**Ütemezett feladat eredménye témába (`telegramTopic`).** A feladat `task-config.json`-jában
+a `"telegramTopic": "<név>"` egy `/topic new`-val elnevezett témát jelöl. A futtató a nevet
+a `store/telegram-topics.json` alapján a téma azonosítójára fordítja, és a feladat
+utasításába a `chat_id` mellé `message_thread_id`-t is ír; az ügynök így a számot kapja,
+nem a névből találgat. Csak a fő ügynök Telegramon kézbesített feladatainál működik, mert
+elnevezett téma csak a fő bot chatjében van, és egy téma-azonosító csak annak a botnak a
+chatjében érvényes, amelyik a témát nyitotta. Ha a név nem található, a feladat egy
+sub-ágensé, vagy nem Telegramon kézbesít, az eredmény téma nélkül megy a chatbe, és a
+naplóban egy figyelmeztetés jelzi, miért. Kikapcsolt kapcsolónál a mezőt a futtató nem
+nézi, az utasítás betűre a mai.
+
+**Némítás.** Témás chatben a Telegram témánként némít: egy némított témából nem jön
+értesítés, akkor sem, ha a chat többi része szól. Ha egy válasz „nem jött meg”, előbb a
+téma némítását érdemes megnézni.
+
+**Bekapcsolás.** Dashboard: *Beállítások → Csatornák → `TELEGRAM_TOPICS_ENABLED`*, vagy
+`.env`-ben `TELEGRAM_TOPICS_ENABLED=1`. A csatorna következő indításakor lép életbe. A
+`/status` „Telegram plugin-patch” sora bekapcsolva a kiegészítést is méri: ha hiányzik,
+`HIÁNYZIK (témák)` sor jelzi.
+
+**Visszaállítás.** Kapcsold KI, és indítsd újra a csatornát: a script leveszi a
+kiegészítést, a plugin fájlja bájtra a kiegészítés előtti.
+
+**Plugin-frissítés után.** Az új plugin-verziót a következő csatorna-indítás foltozza. Ha
+a kiegészítés horgonyai nem illeszkednek, a kiegészítés egészében kimarad (egy hangos
+sor a `store/channels-failures.log`-ban, és a `/status` is jelzi); a válaszok ilyenkor a
+témán kívülre mennek, a csatorna maga működik tovább.
 
 **API végpontok:**
 
@@ -426,6 +512,7 @@ A főbb konfigurációs változók a launchd plist-ben (`~/Library/LaunchAgents/
 | `OWNER_NAME` | A tulajdonos neve (pl. "Jónás Gergő") |
 | `BOT_NAME` | A főágens neve (pl. "Jarvis") |
 | `VOICE_TRANSCRIBE_INBOUND` | `1` = a text módú ügynököknél is átirat készül a bejövő hangüzenetről (alapból ki; az ügynökönkénti `voice.transcribeInbound` felülírja). Lásd `voice.md` |
+| `PERMISSION_ALERT_MARKS` | Mikor szóljon a figyelő egy megválaszolatlan engedélykérő dialógusról: vesszővel elválasztott időpontok a dialógus megjelenésétől (alapból `15m,30m,1h,2h,8h,24h`; egy al-ügynök kérdéséről a fő ügynök azonnal üzenetet kap, a gazda az első időponttól; `s`/`m`/`h`/`d`, a puszta szám perc). Az utolsó érték egyben az ismétlési idő; a `0` első értékként azonnali jelzés. Értelmezhetetlen értéknél az alapértelmezés marad, naplózva |
 
 ---
 

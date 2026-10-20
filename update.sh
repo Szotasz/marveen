@@ -195,19 +195,28 @@ UPDATE_PIDFILE_TMP="$UPDATE_PIDFILE.$$.tmp"
 # leaked; leave the dashboard's pidfile alone so the lock does not
 # disappear on a write error.
 trap 'rc=$?; write_result "$rc"; rm -f "$UPDATE_PIDFILE_TMP"' EXIT
+# Wall-clock epoch in ms for the pidfile's second line. date +%s%3N is
+# GNU-only: on BSD (macOS) %3N is no conversion at all, and uutils
+# coreutils (the Rust date, 0.8.0) ignores the width and prints the full
+# nanoseconds, 19 digits, which checkNoConcurrentUpdate read as a start
+# far in the future, so a stale pidfile never aged out (card 48612d05).
+# Only an exactly 13-digit value is taken as ms (good until the year
+# 2286); anything else falls back to seconds * 1000. One-second
+# granularity is plenty for an hour-level age cutoff, and the fallback
+# never prints an empty line, which the helper would read as a legacy
+# pidfile without age info (alive-probe only, no age cutoff).
+update_pidfile_epoch_ms() {
+  local ms
+  ms=$(date +%s%3N 2>/dev/null) || ms=""
+  if [[ "$ms" =~ ^[0-9]{13}$ ]]; then
+    printf '%s\n' "$ms"
+  else
+    printf '%s\n' "$(( $(date +%s) * 1000 ))"
+  fi
+}
 {
   echo "$$"
-  # Portable wall-clock epoch in ms. date +%s%3N is GNU-only; on BSD
-  # (macOS) we fall back to seconds * 1000. One-second granularity is
-  # plenty for an hour-level age cutoff.
-  # Require one-or-more digits; `*` would accept an empty line and
-  # write "<pid>\n\n", which the helper would read as a legacy pidfile
-  # without age info (alive-probe only, no age cutoff).
-  if date +%s%3N 2>/dev/null | grep -q '^[0-9][0-9]*$'; then
-    date +%s%3N
-  else
-    echo $(( $(date +%s) * 1000 ))
-  fi
+  update_pidfile_epoch_ms
 } > "$UPDATE_PIDFILE_TMP"
 mv "$UPDATE_PIDFILE_TMP" "$UPDATE_PIDFILE"
 # Only after mv succeeds do we own the lock; extend the trap to remove
@@ -633,6 +642,44 @@ migrate_channels_restart() {
   return 0
 }
 
+# UPDATETIMER1012 (#1902 follow-up): a timer whose unit file already exists is
+# not necessarily RUNNING. `enable` alone does not start a timer, and both of
+# ours fire on OnBootSec, which on a host that has been up for a while has
+# already passed -- so an install whose installer only enabled them (#1902)
+# keeps them inactive until the next reboot, the keepalive probe never refreshes,
+# and the channel monitor hard-restarts the main agent. The two repairs below
+# skipped every existing timer file, so the update never cured that host.
+# This starts such a timer, with no unit rewrite:
+#   - no systemd, or no user session (WSL, a container, a VPS without linger):
+#     nothing, the same guard the installer uses;
+#   - already active: nothing;
+#   - masked: nothing -- that is the operator's explicit "never run this";
+#   - otherwise `enable --now`, and if that fails, one line with the command
+#     that fixes it. Never fatal: update.sh runs under `set -e`, and a timer that
+#     cannot start must not stop the update (every call here is guarded).
+# One call per timer, so a broken unit cannot take the other one with it.
+_user_systemd_up() {
+  pidof systemd >/dev/null 2>&1 && systemctl --user status >/dev/null 2>&1
+}
+ensure_timer_running() {
+  local timer="$1" state
+  _user_systemd_up || return 0
+  systemctl --user is-active --quiet "$timer" 2>/dev/null && return 0
+  state="$(systemctl --user is-enabled "$timer" 2>/dev/null || true)"
+  # masked-runtime too (`systemctl mask --runtime`, until the next reboot): the
+  # same "never run this", so no start and no warning that would ask the
+  # operator to undo their own mask (review of #1915).
+  case "$state" in
+    masked|masked-runtime) return 0 ;;
+  esac
+  if systemctl --user enable --now "$timer" >/dev/null 2>&1; then
+    echo -e "  Inaktiv timer elinditva: $timer"
+  else
+    echo -e "  FIGYELEM: $timer nem fut, es nem indult el -- inditsd kezzel: systemctl --user enable --now $timer"
+  fi
+  return 0
+}
+
 # Idle-path keepalive probe installation (Linux only). The repo has shipped
 # scripts/channel-keepalive-probe.sh and placeholder units under scripts/systemd/
 # for a while, but nothing ever installed them, so on every existing host the ONLY
@@ -646,7 +693,8 @@ migrate_channels_restart() {
 #
 # The installer template fix reaches new installs only -- this is what lands it on
 # the machines that have the bug today. Idempotent: it writes nothing once the
-# timer unit exists. The probe itself never fakes liveness (it proves the session,
+# timer unit exists (it then only starts the timer if it is not running, see
+# ensure_timer_running). The probe itself never fakes liveness (it proves the session,
 # its claude pid and a descending telegram poller are alive before touching), so a
 # genuinely dead channel still ages out and still gets recovered.
 install_keepalive_probe_timer() {
@@ -662,7 +710,11 @@ install_keepalive_probe_timer() {
     [ -f "$chan_unit" ] || continue
     _svc_id="$(basename "$chan_unit" -channels.service)"
     _ka_unit="${_svc_id}-channel-keepalive-probe"
-    [ -f "$units_dir/${_ka_unit}.timer" ] && continue
+    # An existing timer is not rewritten, but it is started if it is not running.
+    if [ -f "$units_dir/${_ka_unit}.timer" ]; then
+      ensure_timer_running "${_ka_unit}.timer"
+      continue
+    fi
     # BOT_NAME is only assigned further down this script, so read it here
     # instead of inheriting an empty one into the unit Description.
     _bot_name="$(sed -n 's/^BOT_NAME=//p' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | tr -d '"')"
@@ -720,7 +772,7 @@ EOF
 # wedge loop the Linux comment above describes. The respawn never clears the
 # condition that triggers it (nothing refreshes the file afterwards either), so
 # it repeats until the owner's first morning message warms the file.
-# Idempotent: once the plist exists this writes nothing and prints nothing. The
+# Idempotent: once the job is loaded this writes nothing and prints nothing. The
 # label is read from the installer so a rename there cannot silently turn this
 # into a weekly reload.
 install_keepalive_probe_launchd() {
@@ -728,15 +780,55 @@ install_keepalive_probe_launchd() {
   _ka_installer="$INSTALL_DIR/scripts/install-channel-keepalive-probe.sh"
   [ -x "$_ka_installer" ] || return 0
   command -v launchctl >/dev/null 2>&1 || return 0
-  _ka_label="$(sed -n 's/^LABEL="\(.*\)"$/\1/p' "$_ka_installer" | head -1)"
+  # #1873: the installer resolves its own com.<SERVICE_ID>.* label.
+  _ka_label="$("$_ka_installer" --print-label 2>/dev/null | head -1)"
   [ -n "$_ka_label" ] || _ka_label="com.marveen.channel-keepalive-probe"
-  if [ -f "$HOME/Library/LaunchAgents/${_ka_label}.plist" ]; then
+  # ISSUE1891 (#1891): keyed on the job being LOADED, not on the plist existing
+  # (the stuck-modal guard below learned this in #1694): a plist whose job never
+  # ran -- a Mac without a GUI login, a failed load -- used to make this return
+  # quietly forever, while the dashboard kept respawning a healthy idle session.
+  if launchctl list "$_ka_label" >/dev/null 2>&1; then
     return 0
   fi
   if "$_ka_installer" --load >/dev/null 2>&1; then
     echo -e "  Keepalive-szonda telepitve (3 percenkent, hamis respawn ellen): ${_ka_label}"
   else
-    echo -e "  FIGYELEM: a keepalive-szonda telepitese nem sikerult -- inditsd kezzel: scripts/install-channel-keepalive-probe.sh --load"
+    echo -e "  FIGYELEM: a keepalive-szonda NEM FUT (${_ka_label}) -- a launchd csak GUI-bejelentkezesen belul futtatja. Javitas, a GUI-bejelentkezes egy terminaljabol: launchctl bootstrap gui/$(id -u) \"$HOME/Library/LaunchAgents/${_ka_label}.plist\" 2>/dev/null; launchctl kickstart gui/$(id -u)/${_ka_label}"
+  fi
+  return 0
+}
+
+# The stuck-modal guard's launchd twin on Macs that are already installed
+# (MODELCONFIRM1005), the same way and for the same reason as the probe above:
+# install-macos.sh only reaches NEW installs. Measured 2026-10-05 on the Mac
+# mini: the CLI's "Switch model?" dialog held the main session for half an hour
+# and launchctl had no job of any modal guard. The guard's default mode is
+# log-only (STUCK_MODAL_MODE, see stuck-modal-guard.sh): it detects and logs,
+# recovery is opt-in. #1694 review:
+#   - keyed on the job being LOADED, not on the plist existing: a plist left by
+#     a failed `launchctl load` is retried (and reported) on every run instead of
+#     going quiet forever;
+#   - STUCK_MODAL_MODE=off in .env is the opt-out, and it survives updates: no
+#     install, no load.
+# Idempotent: with the job loaded this writes nothing and prints nothing; the
+# label is read from the installer.
+install_stuck_modal_guard_launchd() {
+  [ "$(uname -s 2>/dev/null)" = "Darwin" ] || return 0
+  _sm_installer="$INSTALL_DIR/scripts/install-stuck-modal-guard.sh"
+  [ -x "$_sm_installer" ] || return 0
+  command -v launchctl >/dev/null 2>&1 || return 0
+  _sm_mode="$(grep -E '^STUCK_MODAL_MODE=' "$INSTALL_DIR/.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d '"'"'"'\r ' | tr '[:upper:]' '[:lower:]')"
+  [ "$_sm_mode" = "off" ] && return 0
+  # #1873: the installer resolves its own com.<SERVICE_ID>.* label.
+  _sm_label="$("$_sm_installer" --print-label 2>/dev/null | head -1)"
+  [ -n "$_sm_label" ] || _sm_label="com.marveen.stuck-modal-guard"
+  if launchctl list "$_sm_label" >/dev/null 2>&1; then
+    return 0
+  fi
+  if "$_sm_installer" --load >/dev/null 2>&1; then
+    echo -e "  Beragadt-ablak or telepitve (percenkent; alapbol csak naploz, STUCK_MODAL_MODE): ${_sm_label}"
+  else
+    echo -e "  FIGYELEM: a beragadt-ablak or NEM FUT (${_sm_label}) -- a launchd csak GUI-bejelentkezesen belul futtatja. Javitas, a GUI-bejelentkezes egy terminaljabol: launchctl bootstrap gui/$(id -u) \"$HOME/Library/LaunchAgents/${_sm_label}.plist\" 2>/dev/null; launchctl kickstart gui/$(id -u)/${_sm_label}"
   fi
   return 0
 }
@@ -820,7 +912,8 @@ install_main_inbox_observer_unit() {
     if "$INSTALL_DIR/scripts/install-main-inbox-observer.sh" --load >/dev/null 2>&1; then
       echo -e "  Fo-agens inbox-figyelo telepitve (5 percenkent, launchd)"
     else
-      echo -e "  FIGYELEM: az inbox-figyelo telepitese nem sikerult -- kezzel: scripts/install-main-inbox-observer.sh --load"
+      _io_l="$("$INSTALL_DIR/scripts/install-main-inbox-observer.sh" --print-label 2>/dev/null | head -1)"
+      echo -e "  FIGYELEM: az inbox-figyelo NEM FUT (${_io_l}) -- a launchd csak GUI-bejelentkezesen belul futtatja. Javitas, a GUI-bejelentkezes egy terminaljabol: launchctl bootstrap gui/$(id -u) \"$HOME/Library/LaunchAgents/${_io_l}.plist\" 2>/dev/null; launchctl kickstart gui/$(id -u)/${_io_l}"
     fi
     return 0
   fi
@@ -833,7 +926,10 @@ install_main_inbox_observer_unit() {
     [ -f "$chan_unit" ] || continue
     _svc_id="$(basename "$chan_unit" -channels.service)"
     _io_unit="${_svc_id}-main-inbox-observer"
-    [ -f "$units_dir/${_io_unit}.timer" ] && continue
+    if [ -f "$units_dir/${_io_unit}.timer" ]; then
+      ensure_timer_running "${_io_unit}.timer"
+      continue
+    fi
     _bot_name="$(sed -n 's/^BOT_NAME=//p' "$INSTALL_DIR/.env" 2>/dev/null | head -1 | tr -d '"')"
     [ -n "$_bot_name" ] || _bot_name="Marveen"
     _tz_line="# no explicit TZ detected; inheriting host default"
@@ -917,14 +1013,32 @@ strip_legacy_notifier_telegram_env() {
   return 0
 }
 
+# Shell rc secret scrub (Linux only, SECSZIVEKKIADAS1008). Installers before
+# #1785 wrote the Claude token / API key as `export ...=` lines into ~/.bashrc
+# and ~/.zshrc; nothing on the update path removed them, and a re-run of the
+# installer never reached its own cleanup on an install that already has auth.
+# The functions live in scripts/lib/rc-secrets.sh (identical to the installer's
+# copy, kept equal by a test). Idempotent: no export line, no change. Like every
+# repair here it lands on the update.sh run AFTER the one that pulls it (no
+# re-exec). A failure never stops the update: it is reported, and retried next run.
+scrub_rc_secrets() {
+  [ "$(uname -s 2>/dev/null)" = "Linux" ] || return 0
+  [ -f "$INSTALL_DIR/scripts/lib/rc-secrets.sh" ] || return 0
+  ( . "$INSTALL_DIR/scripts/lib/rc-secrets.sh" && scrub_secret_exports_from_rc ) \
+    || echo -e "  ${ORANGE}FIGYELEM:${NC} a shell rc fajlok titok-takaritasa nem sikerult, a kovetkezo frissites ujraprobalja."
+  return 0
+}
+
 run_unit_maintenance() {
   repair_morning_timer "$@"
   migrate_channels_restart "$@"
   install_keepalive_probe_timer "$@"
   install_keepalive_probe_launchd "$@"
+  install_stuck_modal_guard_launchd "$@"
   install_main_inbox_observer_unit "$@"
   strip_legacy_notifier_telegram_env "$@"
   park_morning_timer "$@"
+  scrub_rc_secrets
   return 0
 }
 run_unit_maintenance
@@ -996,10 +1110,41 @@ seed_copy_is_untouched() {
   return 1
 }
 
+# Render one shipped file the way the seeder would write it ($1 = source, $2 = mode).
+render_seed_file() {
+  if [ "$2" = "template" ]; then render_seed_template <"$1"; else cat "$1"; fi
+}
+
+# Refresh ONE installed copy of a shipped file if it is provably untouched.
+# $1 = source file, $2 = installed path, $3 = repo-relative path, $4 = mode.
+refresh_one_seed_file() {
+  f="$1"; installed="$2"; rel="$3"; mode="$4"
+  # Already identical to what we would write -> not an update. Without this
+  # the run is not idempotent: it would rewrite the same bytes and report a
+  # refresh on every single update, which is exactly the kind of constant
+  # signal that stops being read.
+  want="$(render_seed_file "$f" "$mode" | shasum -a 256 | awk '{print $1}')"
+  have="$(shasum -a 256 <"$installed" 2>/dev/null | awk '{print $1}')"
+  [ "$want" = "$have" ] && return 0
+  if seed_copy_is_untouched "$installed" "$rel" "$mode"; then
+    if [ "$mode" = "template" ]; then
+      render_seed_template <"$f" >"$installed.seedtmp" && mv "$installed.seedtmp" "$installed"
+    else
+      cp "$f" "$installed"
+    fi
+    SEED_REFRESH_UPDATED=$((SEED_REFRESH_UPDATED + 1))
+  else
+    SEED_REFRESH_KEPT=$((SEED_REFRESH_KEPT + 1))
+  fi
+  return 0
+}
+
 # Refresh one seeded directory tree. $1 = repo source dir (relative), $2 = target
-# root, $3 = verbatim|template.
+# root, $3 = verbatim|template, $4 = which subdirs ship: "references" (a task's
+# references/ only, the default) or "all" (every subdir: a skill's scripts/,
+# references/, ...; SEEDSKILLSUB1018).
 refresh_untouched_seeds() {
-  src_rel="$1"; target_root="$2"; mode="${3:-verbatim}"
+  src_rel="$1"; target_root="$2"; mode="${3:-verbatim}"; subdirs="${4:-references}"
   [ -d "$INSTALL_DIR/$src_rel" ] || return 0
   [ -d "$target_root" ] || return 0
   for d in "$INSTALL_DIR/$src_rel"/*/; do
@@ -1011,29 +1156,45 @@ refresh_untouched_seeds() {
       base="$(basename "$f")"
       installed="$target_root/$name/$base"
       [ -f "$installed" ] || continue           # never add files to an existing dir
-      rel="$src_rel/$name/$base"
-      # Already identical to what we would write -> not an update. Without this
-      # the run is not idempotent: it would rewrite the same bytes and report a
-      # refresh on every single update, which is exactly the kind of constant
-      # signal that stops being read.
-      if [ "$mode" = "template" ]; then
-        want="$(render_seed_template <"$f" | shasum -a 256 | awk '{print $1}')"
-      else
-        want="$(shasum -a 256 <"$f" | awk '{print $1}')"
-      fi
-      have="$(shasum -a 256 <"$installed" 2>/dev/null | awk '{print $1}')"
-      [ "$want" = "$have" ] && continue
-      if seed_copy_is_untouched "$installed" "$rel" "$mode"; then
+      refresh_one_seed_file "$f" "$installed" "$src_rel/$name/$base" "$mode"
+    done
+    # SEEDREFDIR1018: the references/ subdir a SKILL.md points at. An existing
+    # copy follows the same untouched-only rule. A MISSING one is the single
+    # exception to "never add files": it is added only when the installed
+    # SKILL.md is now byte-identical to the shipped one -- that copy runs our
+    # text, and our text points at the file. A locally edited SKILL.md is the
+    # operator's, so its directory gets nothing added.
+    skill_current=0
+    if [ -f "${d}SKILL.md" ] && [ -f "$target_root/$name/SKILL.md" ]; then
+      want="$(render_seed_file "${d}SKILL.md" "$mode" | shasum -a 256 | awk '{print $1}')"
+      have="$(shasum -a 256 <"$target_root/$name/SKILL.md" | awk '{print $1}')"
+      [ "$want" = "$have" ] && skill_current=1
+    fi
+    # Subdir files: the TRACKED ones only, the same set the seed loops copy
+    # (an untracked or ignored file can be a secret; SEEDSKILLSUB1018). Read
+    # into a variable first: the loop body must update the counters in THIS
+    # shell, not in a pipeline subshell.
+    tracked="$(git -C "$d" ls-files 2>/dev/null)"
+    while IFS= read -r rel; do
+      case "$rel" in */*) ;; *) continue ;; esac
+      [ "$subdirs" = "all" ] || case "$rel" in references/*) ;; *) continue ;; esac
+      f="$d$rel"
+      [ -f "$f" ] || continue
+      installed="$target_root/$name/$rel"
+      if [ -f "$installed" ]; then
+        refresh_one_seed_file "$f" "$installed" "$src_rel/$name/$rel" "$mode"
+      elif [ "$skill_current" = "1" ]; then
+        mkdir -p "$(dirname "$installed")"
         if [ "$mode" = "template" ]; then
           render_seed_template <"$f" >"$installed.seedtmp" && mv "$installed.seedtmp" "$installed"
         else
-          cp "$f" "$installed"
+          cp -p "$f" "$installed"   # verbatim keeps the mode bits (a skill's scripts)
         fi
         SEED_REFRESH_UPDATED=$((SEED_REFRESH_UPDATED + 1))
-      else
-        SEED_REFRESH_KEPT=$((SEED_REFRESH_KEPT + 1))
       fi
-    done
+    done <<EOF_TRACKED
+$tracked
+EOF_TRACKED
   done
   return 0
 }
@@ -1052,7 +1213,7 @@ run_seed_refresh() {
     OWNER_NAME="${OWNER_NAME:-$(sed -n 's/^OWNER_NAME=//p' "$INSTALL_DIR/.env" | head -1 | tr -d '"')}"
     WEB_PORT="${WEB_PORT:-$(sed -n 's/^WEB_PORT=//p' "$INSTALL_DIR/.env" | head -1 | tr -d '"')}"
   fi
-  refresh_untouched_seeds "seed-skills" "$HOME/.claude/skills" "verbatim"
+  refresh_untouched_seeds "seed-skills" "$HOME/.claude/skills" "verbatim" "all"
   if [ -n "${MAIN_AGENT_ID:-}" ]; then
     refresh_untouched_seeds "seed-scheduled-tasks" "$HOME/.claude/scheduled-tasks" "template"
     # SEEDREFRESH826: the TOP-LEVEL scheduled-tasks/ dir (dream-engine,
@@ -1068,6 +1229,16 @@ run_seed_refresh() {
   return 0
 }
 run_seed_refresh
+
+# Marketplace channel plugins (SLACKPLUGINVER1006): the official
+# `claude plugin update`, on every config dir that already has the plugin.
+# Here, before the "already up to date" exit, so a plugin release also reaches
+# an install whose marveen code did not move; the new version is loaded at the
+# next channel start (the restart below, or the next natural one). Outside any
+# channel session, never installs, never fatal: scripts/lib/channel-plugin-refresh.sh.
+if [ -f "$INSTALL_DIR/scripts/lib/channel-plugin-refresh.sh" ]; then
+  ( . "$INSTALL_DIR/scripts/lib/channel-plugin-refresh.sh" && refresh_channel_plugins "$INSTALL_DIR" "$HOME" ) || true
+fi
 
 if [ "$OLD_VERSION" = "$NEW_VERSION" ]; then
   # Already on the latest commit -- but "no new commits" does NOT guarantee the
@@ -1299,6 +1470,17 @@ if [ -d "$SEED_SKILLS_DIR" ]; then
       [ -f "$f" ] || continue
       cp "$f" "$target/$(basename "$f")"
     done
+    # SEEDSKILLSUB1018: a skill's subdirs (scripts/, references/, ...) ship too,
+    # verbatim and with their mode bits; its SKILL.md points into them.
+    # Only the files git TRACKS: a whole-dir copy also carried untracked and
+    # ignored files, and fleet-helper's own scripts/.gitignore names exactly
+    # those as secrets/personal data (mail_rules.json, .dashboard-token).
+    # Outside a git checkout nothing below the top level is copied.
+    git -C "$skill_dir" ls-files -z 2>/dev/null | while IFS= read -r -d '' rel; do
+      case "$rel" in */*) ;; *) continue ;; esac   # top-level files: the loop above
+      mkdir -p "$target/$(dirname "$rel")"
+      cp -p "$skill_dir$rel" "$target/$rel"
+    done
     if [ "$forced" = "1" ]; then SEED_FORCED=$((SEED_FORCED + 1)); else SEED_NEW=$((SEED_NEW + 1)); fi
   done
   if [ "$SEED_NEW" -gt 0 ] || [ "$SEED_SKIP" -gt 0 ] || [ "$SEED_FORCED" -gt 0 ]; then
@@ -1343,19 +1525,24 @@ if [ -d "$SEED_SCHED_DIR" ]; then
         fi
       fi
       mkdir -p "$target"
-      for f in "$tpl"*; do
-        [ -f "$f" ] || continue
-        # {{WEB_PORT}} belongs here too: install-linux.sh substitutes it in both
-        # of its seeding loops, and a task seeded by THIS path used to keep the
-        # literal placeholder in its URLs. Same placeholder set on both paths,
-        # or a template silently means different things depending on which
-        # script created the copy.
-        sed -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
-            -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
-            -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
-            -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
-            -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
-            "$f" > "$target/$(basename "$f")"
+      # SEEDREFDIR1018: the references/ subdir ships too (see install-linux.sh).
+      for sub in "" "references/"; do
+        [ -z "$sub" ] || [ -d "$tpl$sub" ] || continue
+        mkdir -p "$target/$sub"
+        for f in "$tpl$sub"*; do
+          [ -f "$f" ] || continue
+          # {{WEB_PORT}} belongs here too: install-linux.sh substitutes it in both
+          # of its seeding loops, and a task seeded by THIS path used to keep the
+          # literal placeholder in its URLs. Same placeholder set on both paths,
+          # or a template silently means different things depending on which
+          # script created the copy.
+          sed -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
+              -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
+              -e "s/{{OWNER_NAME}}/$OWNER_NAME/g" \
+              -e "s|{{INSTALL_DIR}}|$INSTALL_DIR|g" \
+              -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
+              "$f" > "$target/$sub$(basename "$f")"
+        done
       done
       if [ "$forced" = "1" ]; then SCHED_FORCED=$((SCHED_FORCED + 1)); else SCHED_NEW=$((SCHED_NEW + 1)); fi
     done
@@ -1402,6 +1589,7 @@ if [ "$RESEED_FLEET" = "1" ] || [ "$REGEN_CLAUDEMD" = "1" ]; then
         -e "s/{{BOT_NAME}}/$BOT_NAME/g" \
         -e "s/{{MAIN_AGENT_ID}}/$MAIN_AGENT_ID/g" \
         -e "s/{{WEB_PORT}}/${WEB_PORT:-3420}/g" \
+        -e "s|{{TIMEZONE}}|$(. "$INSTALL_DIR/scripts/lib/install-tz.sh"; z="$(install_tz "$INSTALL_DIR")"; printf '%s' "${z:-UTC}")|g" \
         "$INSTALL_DIR/templates/CLAUDE.md.template" > "$CLAUDE_MD"
     echo -e "  ${GREEN}✓${NC} CLAUDE.md újrarenderelve a sablonból (előző verzió mentve: CLAUDE.md.backup-*)"
   elif [ -f "$CLAUDE_MD" ]; then
@@ -1468,7 +1656,13 @@ fi
 SLACK_REF_FILE="$INSTALL_DIR/store/marveen-marketplace-slack-channel-ref.txt"
 MARKETPLACE_PLUGIN_DIR="$HOME/.claude/plugins/cache/marveen-marketplace/slack-channel"
 if [ -d "$MARKETPLACE_PLUGIN_DIR" ]; then
-  CURRENT_REF="$(ls "$MARKETPLACE_PLUGIN_DIR" 2>/dev/null | head -1)"
+  # The registry's installPath (and commit) is the version in use; the dir
+  # listing alone keeps returning the oldest version dir (SLACKPLUGINVER1006B).
+  CURRENT_REF="$( . "$INSTALL_DIR/scripts/lib/channel-plugin-refresh.sh" 2>/dev/null \
+    && channel_plugin_current_ref "$HOME/.claude" "slack-channel@marveen-marketplace" )" || true
+  if [ -z "$CURRENT_REF" ]; then
+    CURRENT_REF="$(ls "$MARKETPLACE_PLUGIN_DIR" 2>/dev/null | head -1)"
+  fi
   LAST_REF="$(cat "$SLACK_REF_FILE" 2>/dev/null || true)"
   if [ -n "$CURRENT_REF" ] && [ "$CURRENT_REF" != "$LAST_REF" ]; then
     echo -e "  Slack channel plugin ref valtozott: ${LAST_REF:-ismeretlen} -> $CURRENT_REF"
@@ -1584,6 +1778,20 @@ RESULT_FILE="$5"; BUILT="$6"; NEW_SHORT="$7"; NODE_PIN_DIR="$8"; NOTIFY="${9:-0}
 [ -n "$NODE_PIN_DIR" ] && export PATH="$NODE_PIN_DIR:$PATH"
 cd "$INSTALL_DIR" 2>/dev/null || true
 
+# FINSTAGE930: the verdict has gone missing on installs where the finalizer
+# reaches the restart and then simply is not there any more, so nothing told
+# "died" apart from "never got to _write". These stage marks cost two echoes
+# and turn the next occurrence into a location.
+# The trap is deliberately NON-FATAL: a TERM/HUP/INT is logged with the stage
+# and the finalizer carries on, so a stray reaper TERM no longer costs the
+# verdict (measured: one still arrives in the field, source unknown). This
+# includes the rollback branch, git reset --hard included. The flip side: a
+# deliberate stop of a running finalizer needs SIGKILL, which leaves the last
+# stage= line as the marker.
+STAGE="boot"
+_stage() { STAGE="$1"; echo "[finalize] stage=$1 $(date '+%H:%M:%S')" >&2; }
+trap 'echo "[finalize] SIGNAL caught in stage=${STAGE} $(date +%H:%M:%S)" >&2' TERM HUP INT
+
 _esc() { printf '%s' "$1" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))' 2>/dev/null || printf '"%s"' "$1"; }
 _write() { # status phase code message
   printf '{"status":%s,"phase":%s,"code":%s,"old":%s,"new":%s,"message":%s,"ts":%s}\n' \
@@ -1638,14 +1846,18 @@ _unit_drift() {
   return 0
 }
 
+_stage restart
 _restart
+_stage unit-drift
 UNIT_DRIFT="$(_unit_drift)"
 if [ -n "$UNIT_DRIFT" ]; then
   echo "FIGYELEM: enabled, de NEM active unit(ok) a restart utan: ${UNIT_DRIFT}" >&2
   echo "          A szolgaltatas valaszolhat a portjan, de a unitjan KIVUL fut:" >&2
   echo "          a Restart= es az OnFailure= ilyenkor NEM vonatkozik ra." >&2
 fi
+_stage health
 if _health; then
+  _stage write-verdict
   if [ -n "$UNIT_DRIFT" ]; then
     _finish success restart 0 "A frissites lement es a dashboard valaszol, DE enabled unit(ok) nem active: ${UNIT_DRIFT}. A szolgaltatas a unitjan kivul fut, tehat a Restart=/OnFailure= felugyelet nem ervenyes ra."
   fi
@@ -1655,6 +1867,7 @@ fi
 # Restart did not bring the dashboard back -> auto-rollback to the pre-update
 # commit (safe: ff-only ancestor, no force-push, no local-change discard) and
 # restart that, so the box ends on a WORKING old version.
+_stage rollback
 if [ -n "$OLD_FULL" ]; then
   git reset --hard "$OLD_FULL" >/dev/null 2>&1 || true
   # --include=dev: same reason as the main npm ci (AUTOUPDNODEENV905) -- under

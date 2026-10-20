@@ -23,6 +23,15 @@ vi.mock('node:os', async () => {
   return { ...actual, homedir: () => HOME }
 })
 
+// The main agent's config roots (mainConfigRoots) read process.env.HOME before
+// homedir(). In production the two are the same value; with only homedir()
+// mocked, the REAL ~/.claude became a main-agent root distinct from the
+// fixture's shared root, and a root of the main agent's own is booked to it
+// whole -- the developer's own transcripts leaked into
+// this test. Pointing HOME at the fixture keeps the two in agreement.
+const ORIGINAL_HOME = process.env.HOME
+process.env.HOME = HOME
+
 vi.mock('../config.js', async () => {
   const actual = await vi.importActual<typeof import('../config.js')>('../config.js')
   return { ...actual, MAIN_AGENT_ID: 'marveen', PROJECT_ROOT }
@@ -52,6 +61,7 @@ describe('discoverAgentSources with a symlinked isolated projects dir', () => {
   })
 
   afterAll(() => {
+    process.env.HOME = ORIGINAL_HOME
     rmSync(FIXTURE, { recursive: true, force: true })
   })
 

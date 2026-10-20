@@ -46,6 +46,14 @@ export interface ContinueDecisionInput {
   useMcpJsonForChannel: boolean
   /** Measured installed Claude Code version, null when unmeasured. */
   installedCli: string | null
+  /**
+   * Co-listen providers loaded next to the primary (AGENTEXTRACH1006). With a
+   * channel-having primary they ride its decision (and the post-launch verify
+   * covers them). With NO primary channel they are the only plugins loaded,
+   * so the measured gates are evaluated on THEM: a slack-only agent must not
+   * resume where a slack-primary one would not (Dani, #1710 review).
+   */
+  extraProviders?: readonly string[]
 }
 
 export interface ContinueDecision { useContinue: boolean; reason: string }
@@ -54,9 +62,14 @@ export interface ContinueDecision { useContinue: boolean; reason: string }
 export function decideContinueFlag(i: ContinueDecisionInput): ContinueDecision {
   if (!i.hasPriorSession) return { useContinue: false, reason: 'no prior session to continue' }
   if (i.fresh) return { useContinue: false, reason: 'fresh launch requested' }
-  if (!i.hasChannel) return { useContinue: true, reason: 'channel-less agent keeps its context' }
+  const extras = i.extraProviders ?? []
+  if (!i.hasChannel && extras.length === 0) return { useContinue: true, reason: 'channel-less agent keeps its context' }
   if (i.isMainAgent) return { useContinue: false, reason: 'main agent lifecycle is service-managed; not in scope' }
-  if (i.provider !== 'telegram') return { useContinue: false, reason: `provider '${i.provider}' not measured; only telegram was (CONTRESUME922)` }
+  // The plugin(s) the gates are about: the primary when it has a channel,
+  // otherwise the extras, which are then the only plugins this launch loads.
+  const gated = i.hasChannel ? [i.provider] : extras
+  const unmeasured = gated.find(p => p !== 'telegram')
+  if (unmeasured !== undefined) return { useContinue: false, reason: `provider '${unmeasured}' not measured; only telegram was (CONTRESUME922)` }
   if (i.useMcpJsonForChannel) return { useContinue: false, reason: 'mcp.json+tee channel path not measured' }
   if (i.usesLaunchSecret) return { useContinue: false, reason: 'launch reads an ephemeral launch-secret (provider/API key); a resume starts without it (measured 401)' }
   if (!i.fleetTokenLaunch) return { useContinue: false, reason: 'launch is not on the fleet OAuth token path (the measured auth path)' }

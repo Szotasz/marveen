@@ -366,6 +366,7 @@ function switchPage(pageId) {
   // Kanban auto-refresh: start on enter, stop on leave.
   if (pageId !== 'kanban') stopKanbanRefresh()
   if (pageId === 'overview') loadOverview()
+  if (pageId === 'projects') loadProjects()
   if (pageId === 'kanban') { if (typeof _initGanttViewSwitcher === 'function') _initGanttViewSwitcher(); loadKanban(); startKanbanRefresh() }
   if (pageId === 'tasks') loadSchedules()
   if (pageId === 'agents') { loadAgents().then(() => _setAgentsView(_agentsActiveView || 'grid')); startAgentsBusyPoll() }
@@ -387,6 +388,7 @@ function switchPage(pageId) {
   if (pageId === 'tokenUsage') loadTokenUsage()
   if (pageId === 'costs') loadCosts()
   if (pageId === 'ideas') loadIdeasPage()
+  if (pageId === 'notes') loadNotesPage()
   if (pageId === 'archived') loadArchivedPage()
   if (pageId === 'naplo') loadNaplo()
   if (pageId === 'federation') loadFederationPage()
@@ -443,14 +445,14 @@ SIDEBAR_GROUPS.forEach((def) => def.pages.forEach((p) => { PAGE_SIDEBAR_GROUP[p]
 // Re-parent the 23 static links to match the map. Moving an existing DOM node
 // does not invalidate the navLinks refs captured by querySelectorAll at boot.
 SIDEBAR_GROUPS.forEach((def) => {
-  const group = document.querySelector(`.sb-group[data-group="${def.key}"]`)
+  const group = document.querySelector(`.sb-group[data-group="${CSS.escape(String(def.key))}"]`)
   if (!group) return
   const label = group.querySelector('.sb-group-label')
   if (label) label.dataset.i18n = def.labelKey
   const items = group.querySelector('.sb-group-items')
   if (!items) return
   def.pages.forEach((p) => {
-    const link = document.querySelector(`.sb-link[data-page="${p}"]`)
+    const link = document.querySelector(`.sb-link[data-page="${CSS.escape(String(p))}"]`)
     if (link) items.appendChild(link)
   })
 })
@@ -511,7 +513,7 @@ const NAV_I18N = {
   approvals: 'nav.approvals',
   docs: 'nav.docs', research: 'nav.research', status: 'nav.status',
   settings: 'nav.settings', vault: 'nav.vault', tokenUsage: 'nav.tokenUsage',
-  ideas: 'nav.ideas', federation: 'nav.federation', updates: 'nav.updates', costs: 'nav.costs',
+  ideas: 'nav.ideas', notes: 'nav.notes', federation: 'nav.federation', updates: 'nav.updates', costs: 'nav.costs',
 }
 
 function renderNav() {
@@ -639,7 +641,10 @@ function renderStaticI18n() {
       const nodes = [...el.childNodes]
       for (let i = nodes.length - 1; i >= 0; i--) {
         if (nodes[i].nodeType === 3 && nodes[i].textContent.trim()) {
-          nodes[i].textContent = ' ' + val
+          // Keep the node's trailing whitespace: it separates the label text from a
+          // following inline child such as the "(optional)" hint.
+          const trailing = nodes[i].textContent.match(/\s*$/)[0]
+          nodes[i].textContent = ' ' + val + trailing
           break
         }
       }
@@ -656,7 +661,7 @@ function renderStaticI18n() {
   })
   // Elements whose translation contains inline markup (strong/code/a): set innerHTML.
   document.querySelectorAll('[data-i18n-html]').forEach(el => {
-    el.innerHTML = t(el.dataset.i18nHtml)
+    el.innerHTML = tHtml(el.dataset.i18nHtml)
   })
   // #updatesSubtitle opts out of the [data-i18n] sweep (renderUpdatesVersion owns
   // it). Re-apply from the cached status so a language switch re-localizes its
@@ -687,9 +692,27 @@ if (document.readyState !== 'loading') {
 const ACTIVITY_STATE_META = {
   working: { label: () => t('activity.state.working'), cls: 'act-working', tip: 'Élő állapot (a tmux pane tartalmából, 3 másodpercenként): éppen dolgozik / gondolkodik.' },
   idle: { label: () => t('activity.state.idle'), cls: 'act-idle', tip: 'Élő állapot (3 másodpercenként): fut, de épp nem csinál semmit.' },
+  dead: { label: () => t('activity.state.dead'), cls: 'act-dead', tip: 'A tmux session él, de nincs benne Claude CLI: a pane egy shell promptra esett vissza. Ez nem várakozás, ez halott ágens -- indítsd újra.' },
+  // Main thread idle, background (sub-)agents running. Display-only: the API's
+  // `state` stays 'idle' and this is picked by activityDisplayState.
+  subagents: {
+    label: (entry) => entry.bgAgents.queued > 0
+      ? t('activity.state.subagents_queued', { n: entry.bgAgents.running, q: entry.bgAgents.queued })
+      : t('activity.state.subagents', { n: entry.bgAgents.running }),
+    cls: 'act-subagents',
+    tip: 'Élő állapot (3 másodpercenként): a fő szál tétlen, de a háttér-alügynökei dolgoznak. A "vár" az alügynököknek küldött, még fel nem vett üzenetek száma.',
+  },
   unknown: { label: () => t('activity.state.unknown'), cls: 'act-unknown', tip: 'Élő állapot: nem sikerült megállapítani a session pane tartalmából.' },
   error: { label: () => t('activity.state.error'), cls: 'act-error', tip: 'Élő állapot: hiba látszik az ágens session paneljén.' },
   stopped: { label: () => t('activity.state.stopped'), cls: 'act-stopped', tip: 'Élő állapot: az ágens session nem fut.' },
+}
+
+// The state an entry is SHOWN in. The main thread working always wins; only an
+// idle main thread with running background agents reads as 'subagents'. An
+// entry without a recognised agent block (bgAgents null) keeps its own state.
+function activityDisplayState(entry) {
+  if (entry && entry.state === 'idle' && entry.bgAgents && entry.bgAgents.running > 0) return 'subagents'
+  return entry ? entry.state : 'unknown'
 }
 
 // === Kanban auto-refresh ===
@@ -729,8 +752,8 @@ const AUTONOMOUS_MODES = ['bypass permissions', 'accept edits', 'auto mode']
 // markup the Activity page used, minus the name row -- the card already carries
 // the avatar, name and description above it.
 function agentActivityBodyHtml(entry) {
-  const metaRaw = ACTIVITY_STATE_META[entry.state] || ACTIVITY_STATE_META.unknown
-  const label = typeof metaRaw.label === 'function' ? metaRaw.label() : metaRaw.label
+  const metaRaw = ACTIVITY_STATE_META[activityDisplayState(entry)] || ACTIVITY_STATE_META.unknown
+  const label = typeof metaRaw.label === 'function' ? metaRaw.label(entry) : metaRaw.label
   const tail = (entry.tail || []).map((l) => escapeHtml(l)).join('\n')
   const modeChip = entry.mode && !AUTONOMOUS_MODES.includes(entry.mode)
     ? '<span class="act-mode-badge" title="' + escapeHtml(t('activity.tooltip.mode', { mode: entry.mode })) + '">' + escapeHtml(entry.mode) + '</span>'
@@ -778,6 +801,20 @@ let kanbanAssigneeFilter = ''
 // fully user-controlled via the toolbar dropdown.
 let kanbanGroupBy = 'none'
 let kanbanGroupByInitialized = false
+// Free-text / card-number search box in the board toolbar. A query of the form
+// "295" or "#295" matches the card SEQUENCE NUMBER exactly (that is the number
+// the board prints on every card and the one people actually use); anything
+// else is a case-insensitive substring match on the title. Deliberately NOT
+// persisted: a filter that survives a reload and hides most of the board is a
+// trap, and this one is typed in a second.
+let kanbanSearchQuery = ''
+// Card order inside a column: 'manual' (sort_order, i.e. the drag order --
+// the default and the only one where drag & drop makes sense) | 'seq_asc' |
+// 'seq_desc' | 'created_asc' | 'created_desc' | 'updated_desc'. Persisted in
+// localStorage.
+let kanbanSortBy = 'manual'
+// Every value the sort dropdown offers besides 'manual'.
+const KANBAN_SORTS = ['seq_asc', 'seq_desc', 'created_asc', 'created_desc', 'updated_desc']
 // Which swimlane keys (assignee name or priority value) are collapsed. Lives
 // for the page session only -- intentionally not persisted across reloads.
 const kanbanCollapsedLanes = new Set()
@@ -843,7 +880,18 @@ async function loadKanban() {
         const storedHiddenCols = JSON.parse(localStorage.getItem('marveen.kanbanHiddenColumns') || '[]')
         if (Array.isArray(storedHiddenCols)) kanbanHiddenColumns = new Set(storedHiddenCols)
       } catch { /* ignore malformed storage */ }
+      const storedSort = localStorage.getItem('marveen.kanbanSortBy')
+      if (KANBAN_SORTS.includes(storedSort)) {
+        kanbanSortBy = storedSort
+        const sortSel = document.getElementById('kanbanSortBy')
+        if (sortSel) sortSel.value = storedSort
+      }
     }
+    // Best effort and in parallel: the board must still load when the status
+    // endpoint is slow or fails; it just shows no live markers then.
+    const agentStatusP = fetch('/api/agents/status')
+      .then((r) => (r.ok ? r.json() : []))
+      .catch(() => [])
     const [cardsRes, assigneesRes, projectsRes, labelsRes] = await Promise.all([
       fetch('/api/kanban'),
       fetch('/api/kanban/assignees'),
@@ -854,6 +902,7 @@ async function loadKanban() {
     kanbanAssignees = await assigneesRes.json()
     kanbanProjects = await projectsRes.json()
     kanbanAllLabels = await labelsRes.json()
+    setKanbanAgentStatus(await agentStatusP)
     populateProjectFilter()
     populateProjectSuggestions()
     setupAssigneeFilter()
@@ -866,6 +915,34 @@ async function loadKanban() {
 document.getElementById('kanbanGroupBy').addEventListener('change', (e) => {
   kanbanGroupBy = e.target.value
   localStorage.setItem('marveen.kanbanGroupBy', kanbanGroupBy)
+  renderKanban()
+})
+
+document.getElementById('kanbanSortBy')?.addEventListener('change', (e) => {
+  kanbanSortBy = e.target.value
+  localStorage.setItem('marveen.kanbanSortBy', kanbanSortBy)
+  renderKanban()
+})
+
+// 'input' rather than 'change' so the board narrows while typing -- with a few
+// hundred cards the whole render is a few milliseconds, so no debounce is
+// needed. Escape clears, because a search box you cannot empty in one key is
+// the reason filters get left on by accident.
+// The browser's password manager ignores autocomplete="off" and drops the saved
+// dashboard login name into the first text box on the page, which is this one.
+// It never fills a readonly field, so the box stays readonly until the user
+// reaches for it.
+for (const ev of ['pointerdown', 'focus']) {
+  document.getElementById('kanbanSearch')?.addEventListener(ev, (e) => e.target.removeAttribute('readonly'))
+}
+document.getElementById('kanbanSearch')?.addEventListener('input', (e) => {
+  kanbanSearchQuery = e.target.value
+  renderKanban()
+})
+document.getElementById('kanbanSearch')?.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return
+  e.target.value = ''
+  kanbanSearchQuery = ''
   renderKanban()
 })
 
@@ -930,6 +1007,21 @@ function ownerAssigneeName() {
   return owner ? owner.name : null
 }
 
+// One key for comparing assignee names, because the two sides are written
+// differently: the owner entry carries a display name ("Balázs") while the cards
+// carry the id the agents write ("balazs"). Lowercasing alone leaves the accent,
+// so "balázs" !== "balazs" and the owner quick-filter matched nothing -- measured
+// on a board where 160 of 246 live cards were on that owner. Decomposing to NFD
+// and dropping the combining marks makes the two comparable without touching the
+// stored data, which is what the cards and the API still see.
+function assigneeKey(name) {
+  return String(name || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim()
+    .toLowerCase()
+}
+
 // Reflect the active state of the owner quick-toggle button (hidden when there
 // is no owner-type assignee).
 function syncOwnerFilterBtn() {
@@ -938,7 +1030,7 @@ function syncOwnerFilterBtn() {
   const owner = ownerAssigneeName()
   if (!owner) { btn.style.display = 'none'; return }
   btn.style.display = ''
-  const on = !!kanbanAssigneeFilter && kanbanAssigneeFilter.toLowerCase() === owner.toLowerCase()
+  const on = !!kanbanAssigneeFilter && assigneeKey(kanbanAssigneeFilter) === assigneeKey(owner)
   btn.style.background = on ? 'var(--accent)' : 'var(--bg)'
   btn.style.color = on ? '#081a2d' : 'var(--fg)'
   btn.setAttribute('aria-pressed', on ? 'true' : 'false')
@@ -977,7 +1069,7 @@ function setupAssigneeFilter() {
     ownerBtn.addEventListener('click', () => {
       const owner = ownerAssigneeName()
       if (!owner) return
-      const on = kanbanAssigneeFilter.toLowerCase() === owner.toLowerCase()
+      const on = assigneeKey(kanbanAssigneeFilter) === assigneeKey(owner)
       kanbanAssigneeFilter = on ? '' : owner
       // Keep the dropdown in sync (only selectable if the owner is a known assignee).
       sel.value = kanbanAssignees.some((a) => a.name === kanbanAssigneeFilter) ? kanbanAssigneeFilter : ''
@@ -1007,15 +1099,56 @@ function setupAssigneeFilter() {
   syncOwnerFilterBtn()
 }
 
+// Does the card match the toolbar search box? Two modes, decided by the shape
+// of the query, so one field serves both needs:
+//   "295" / "#295"  -> exact card-number (seq) match, nothing else
+//   anything else   -> case-insensitive substring of the title
+// The number mode is exact on purpose: "29" must not drag in 129 and 295 when
+// the point of typing a number is to land on one card.
+function kanbanCardMatchesSearch(card) {
+  const q = kanbanSearchQuery.trim()
+  if (!q) return true
+  const num = q.match(/^#?(\d+)$/)
+  if (num) return card.seq != null && Number(card.seq) === Number(num[1])
+  return String(card.title || '').toLowerCase().includes(q.toLowerCase())
+}
+
+// Comparator for the cards inside one column, per the sort dropdown. Cards
+// without a seq (there should be none, but the field is nullable) sort last in
+// both directions rather than jumping to the top on a NaN comparison.
+function kanbanCardSorter() {
+  if (kanbanSortBy === 'seq_asc') {
+    return (a, b) => (a.seq ?? Infinity) - (b.seq ?? Infinity)
+  }
+  if (kanbanSortBy === 'seq_desc') {
+    return (a, b) => (b.seq ?? -Infinity) - (a.seq ?? -Infinity)
+  }
+  // Timestamps: a missing one sorts last in both directions, same rule as seq.
+  // The seq breaks ties, so cards created in the same second keep a stable order.
+  const ts = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null)
+  const byTime = (field, dir) => (a, b) => {
+    const x = ts(a[field]), y = ts(b[field])
+    if (x === null && y === null) return (a.seq ?? 0) - (b.seq ?? 0)
+    if (x === null) return 1
+    if (y === null) return -1
+    return dir * (x - y) || dir * ((a.seq ?? 0) - (b.seq ?? 0))
+  }
+  if (kanbanSortBy === 'created_asc') return byTime('created_at', 1)
+  if (kanbanSortBy === 'created_desc') return byTime('created_at', -1)
+  if (kanbanSortBy === 'updated_desc') return byTime('updated_at', -1)
+  return (a, b) => a.sort_order - b.sort_order
+}
+
 // Project + assignee + label filters, independent of the priority quick-filter
 // Project + assignee filters only -- the baseline the label quick-filter
 // chip counts are computed against, independent of which labels are
 // currently active, so a chip's count stays meaningful whether it's the one
 // being toggled or not.
 function kanbanCardMatchesBaseFilters(card) {
+  if (!kanbanCardMatchesSearch(card)) return false
   if (kanbanProjectFilter && (card.project || '') !== kanbanProjectFilter) return false
-  const assigneeFilter = kanbanAssigneeFilter.toLowerCase()
-  if (assigneeFilter && String(card.assignee || '').trim().toLowerCase() !== assigneeFilter) return false
+  const assigneeFilter = assigneeKey(kanbanAssigneeFilter)
+  if (assigneeFilter && assigneeKey(card.assignee) !== assigneeFilter) return false
   return true
 }
 
@@ -1062,7 +1195,7 @@ function renderKanbanQuickFilters() {
     const chip = document.createElement('span')
     chip.className = 'kanban-quick-filter-chip' + (active ? ' active' : '')
     chip.dataset.labelId = label.id
-    chip.style.setProperty('--chip-color', label.color)
+    chip.style.setProperty('--chip-color', safeCssColor(label.color, '#64748b'))
     chip.innerHTML = `#${escapeHtml(label.name)} <span class="kanban-quick-filter-count">${count}</span>${active ? '<span class="kanban-quick-filter-clear">&times;</span>' : ''}`
     chip.addEventListener('click', () => toggleKanbanLabelFilter(label.id))
     row.appendChild(chip)
@@ -1076,11 +1209,84 @@ function renderKanbanQuickFilters() {
   }
 }
 
+function renderKanbanTotals(visibleCardIds) {
+  const el = document.getElementById('kanbanTotals')
+  if (!el) return
+  const open = kanbanCards.filter((c) => c.status !== 'done').length
+  let txt = t('kanban.totals', { open, all: kanbanCards.length })
+  if (visibleCardIds && visibleCardIds.size !== kanbanCards.length) {
+    txt += ' ' + t('kanban.totals_filtered', { n: visibleCardIds.size })
+  }
+  el.textContent = txt
+}
+
+// One line next to the search box saying what the query actually found. Two
+// cases deserve their own words, because in both of them the board legitimately
+// shows nothing and the reason is not the query:
+//   - every match sits in a column the user hid (the chips above)
+//   - no match at all, which for a card number usually means it is archived,
+//     and the archived view is a separate tab that this search does not reach
+function renderKanbanSearchHint() {
+  const hintEl = document.getElementById('kanbanSearchHint')
+  if (!hintEl) return
+  if (!kanbanSearchQuery.trim()) { hintEl.textContent = ''; return }
+  const matches = kanbanCards.filter((c) => kanbanCardMatchesSearch(c))
+  // An ongoing card stays visible in the strip even when its status column is hidden.
+  const hiddenCount = matches.filter((c) => kanbanHiddenColumns.has(c.status) && !kanbanIsOngoing(c)).length
+  if (matches.length === 0) {
+    hintEl.textContent = t('kanban.filter.search_none')
+  } else if (hiddenCount === matches.length) {
+    hintEl.textContent = t('kanban.filter.search_all_hidden', { n: matches.length })
+  } else if (hiddenCount > 0) {
+    hintEl.textContent = t('kanban.filter.search_some_hidden', { n: matches.length, h: hiddenCount })
+  } else {
+    hintEl.textContent = t('kanban.filter.search_hits', { n: matches.length })
+  }
+}
+
+// Ongoing tasks: open cards labelled "Folyamatos" are standing duties (a weekly
+// check, a long-running watch), not work heading for "done". In the In progress
+// column they read as if they were about to finish, so they are pulled out of
+// their status column into a slim strip above the board. The card keeps its
+// real status, which can still be changed from its detail view; the strip is
+// not a drop target and nothing is ever posted with a virtual status.
+// The label is matched by name, case-insensitively: "Folyamatos" (the Hungarian
+// name the fleet uses) or "Ongoing".
+const KANBAN_ONGOING_LABELS = ['folyamatos', 'ongoing']
+
+function kanbanIsOngoing(card) {
+  return card.status !== 'done' && (card.labels || []).some((l) =>
+    l && typeof l.name === 'string' && KANBAN_ONGOING_LABELS.includes(l.name.trim().toLowerCase()))
+}
+
+function renderKanbanOngoing(cards) {
+  const strip = document.getElementById('kanbanOngoing')
+  const body = document.getElementById('kanbanOngoingBody')
+  if (!strip || !body) return
+  document.getElementById('countOngoing').textContent = cards.length
+  strip.hidden = cards.length === 0
+  body.innerHTML = ''
+  for (const card of cards.slice().sort((a, b) => (a.seq || 0) - (b.seq || 0))) {
+    const chip = document.createElement('button')
+    chip.type = 'button'
+    chip.className = 'kanban-ongoing-chip'
+    const seq = document.createElement('span')
+    seq.className = 'kanban-ongoing-seq'
+    seq.textContent = card.seq ? '#' + card.seq : ''
+    chip.appendChild(seq)
+    chip.appendChild(document.createTextNode(' ' + (card.title || '')))
+    chip.title = card.title || ''
+    chip.addEventListener('click', () => showCardDetail(card))
+    body.appendChild(chip)
+  }
+}
+
 function renderKanban() {
   const cardById = new Map(kanbanCards.map(c => [c.id, c]))
 
   renderKanbanColumnChips()
   renderKanbanQuickFilters()
+  renderKanbanSearchHint()
 
   // Determine which top-level cards are visible under current filters.
   const visibleCardIds = new Set()
@@ -1089,6 +1295,8 @@ function renderKanban() {
     if (!kanbanCardMatchesLabelFilter(card)) continue
     visibleCardIds.add(card.id)
   }
+
+  renderKanbanTotals(visibleCardIds)
 
   // A subtask is "embedded" when its parent is visible AND both share the same
   // column. Embedded subtasks are hidden as standalone cards and rendered
@@ -1103,11 +1311,14 @@ function renderKanban() {
   }
 
   const grouped = { planned: [], in_progress: [], waiting: [], testing: [], done: [] }
+  const ongoing = []
   for (const card of kanbanCards) {
     if (embeddedSubtaskIds.has(card.id)) continue
     if (!visibleCardIds.has(card.id)) continue
+    if (kanbanIsOngoing(card)) { ongoing.push(card); continue }
     if (grouped[card.status]) grouped[card.status].push(card)
   }
+  renderKanbanOngoing(ongoing)
 
   // Update counts (embedded subtasks don't count as separate cards)
   document.getElementById('countPlanned').textContent = grouped.planned.length
@@ -1123,21 +1334,21 @@ function renderKanban() {
     swimlaneBoard.hidden = true
     flatBoard.hidden = false
     for (const [status, cards] of Object.entries(grouped)) {
-      const col = document.querySelector(`#kanbanBoard .kanban-col-body[data-status="${status}"]`)
+      const col = document.querySelector(`#kanbanBoard .kanban-col-body[data-status="${CSS.escape(String(status))}"]`)
       col.innerHTML = ''
-      cards.sort((a, b) => a.sort_order - b.sort_order)
+      cards.sort(kanbanCardSorter())
 
       for (const card of cards) {
         const embeddedChildren = kanbanCards
           .filter(c => c.parent_id === card.id && embeddedSubtaskIds.has(c.id))
-          .sort((a, b) => a.sort_order - b.sort_order)
+          .sort(kanbanCardSorter())
         col.appendChild(createCardEl(card, embeddedChildren))
       }
     }
     // Hide/show flat-board columns based on visibility set
     const allColsHidden = KANBAN_STATUS_DEFS.every(d => kanbanHiddenColumns.has(d.status))
     for (const def of KANBAN_STATUS_DEFS) {
-      const colEl = flatBoard.querySelector(`.kanban-col[data-status="${def.status}"]`)
+      const colEl = flatBoard.querySelector(`.kanban-col[data-status="${CSS.escape(String(def.status))}"]`)
       if (colEl) colEl.hidden = kanbanHiddenColumns.has(def.status)
     }
     // "All columns hidden" hint
@@ -1232,7 +1443,7 @@ function renderSwimlaneBoard(grouped, embeddedSubtaskIds) {
     const lane = document.createElement('div')
     lane.className = 'kanban-swimlane' + (collapsed ? ' collapsed' : '')
     lane.dataset.group = key
-    if (separatorColor) lane.style.borderBottomColor = separatorColor
+    if (separatorColor) lane.style.borderBottomColor = safeCssColor(separatorColor)
 
     const header = document.createElement('div')
     header.className = 'kanban-swimlane-header'
@@ -1265,11 +1476,11 @@ function renderSwimlaneBoard(grouped, embeddedSubtaskIds) {
       colBody.className = 'kanban-col-body kanban-swimlane-col-body'
       colBody.dataset.status = def.status
 
-      const cards = laneCardsByStatus[def.status].sort((a, b) => a.sort_order - b.sort_order)
+      const cards = laneCardsByStatus[def.status].sort(kanbanCardSorter())
       for (const card of cards) {
         const embeddedChildren = kanbanCards
           .filter(c => c.parent_id === card.id && embeddedSubtaskIds.has(c.id))
-          .sort((a, b) => a.sort_order - b.sort_order)
+          .sort(kanbanCardSorter())
         colBody.appendChild(createCardEl(card, embeddedChildren))
       }
       wireKanbanColumnDnD(colBody)
@@ -1324,8 +1535,8 @@ function updateWipBadges(grouped) {
       state = 'ok'; color = cfg.okColor
     }
     el.dataset.wip = state
-    el.style.color = color
-    el.style.borderColor = color
+    el.style.color = safeCssColor(color)
+    el.style.borderColor = safeCssColor(color)
   }
 }
 
@@ -1349,12 +1560,78 @@ function updateSubtaskBadges(embeddedSubtaskIds) {
   }
 }
 
+// Live agent state on the card (one human, many agents). An in_progress card
+// says an agent CLAIMED the work; it does not say the agent is still on it --
+// a stopped or stuck agent's card looks exactly like a moving one. The state is
+// already derived per agent by /api/agents/status (src/web/agent-status.ts), so
+// the board borrows that instead of guessing anything from the card itself.
+// The state belongs to the AGENT, not to the card: an agent holding two cards
+// in progress shows the same marker on both. 'unknown' renders nothing --
+// saying nothing beats asserting a state nobody measured.
+let kanbanAgentStatus = new Map()
+
+const KANBAN_AGENT_LIVE_LEVEL = {
+  working: 'ok',
+  idle: 'idle',
+  stalled: 'warn',
+  dead: 'bad',
+  stopped: 'bad',
+  unreachable: 'bad',
+}
+
+function setKanbanAgentStatus(rows) {
+  kanbanAgentStatus = new Map()
+  if (!Array.isArray(rows)) return
+  for (const r of rows) {
+    if (r && typeof r.agent === 'string') kanbanAgentStatus.set(r.agent.trim().toLowerCase(), r)
+  }
+}
+
+// An agent with several cards in progress is busy on at most one of them. When
+// the status names a DIFFERENT card as the agent's current work, 'working' and
+// 'stalled' would be false on this one, so it says where the agent is instead,
+// in grey. Stopped/dead/unreachable are true for every card the agent holds.
+function kanbanAgentLiveLevel(card) {
+  if (card.status !== 'in_progress' || !card.assignee) return null
+  const row = kanbanAgentStatus.get(String(card.assignee).trim().toLowerCase())
+  if (!row) return null
+  const level = KANBAN_AGENT_LIVE_LEVEL[row.state]
+  if (!level) return null
+  const otherCardId = row.work && row.work.kind === 'card' && row.work.cardId && row.work.cardId !== card.id
+    ? row.work.cardId
+    : null
+  if (otherCardId && (row.state === 'working' || row.state === 'stalled')) {
+    return { level: 'idle', row, elsewhere: kanbanCards.find((c) => c.id === otherCardId) || null }
+  }
+  return { level, row, elsewhere: null }
+}
+
+function kanbanAgentLiveBadge(card) {
+  const live = kanbanAgentLiveLevel(card)
+  if (!live) return ''
+  const { level, row, elsewhere } = live
+  const label = elsewhere
+    ? t('kanban.agent_live.elsewhere', { seq: elsewhere.seq != null ? '#' + elsewhere.seq : '' })
+    : t('kanban.agent_live.' + row.state)
+  let tip = t('kanban.agent_live.tooltip', { state: label })
+  if (typeof row.lastSignalAgeSec === 'number') {
+    tip += ' · ' + t('kanban.agent_live.last_signal', { age: formatDurationShort(row.lastSignalAgeSec) })
+  }
+  return `<span class="kanban-card-agent-live kanban-agent-live-${escapeAttr(level)}" data-agent-state="${escapeAttr(row.state)}" title="${escapeAttr(tip)}"><span class="kanban-agent-live-dot"></span>${escapeHtml(label)}</span>`
+}
+
 function createCardEl(card, embeddedChildren = []) {
   const el = document.createElement('div')
   el.className = 'kanban-card'
   el.dataset.id = card.id
   el.dataset.priority = card.priority
-  el.draggable = true
+  // Drag & drop rewrites sort_order, which is what 'manual' order shows. Under
+  // a seq sort the drop would be accepted and then have no visible effect --
+  // a move that looks like it failed. So the card is simply not draggable
+  // there; the touch path reads the same flag.
+  el.draggable = kanbanSortBy === 'manual'
+  const agentLive = kanbanAgentLiveLevel(card)
+  if (agentLive) el.dataset.agentLive = agentLive.level
 
   // Assignee chip. Match the card's assignee against the known list
   // case-insensitively (a card stored as "gorcsevivan" must still match the
@@ -1395,7 +1672,7 @@ function createCardEl(card, embeddedChildren = []) {
     const shown = card.labels.slice(0, 3)
     const overflow = card.labels.length - shown.length
     const pills = shown.map((l) =>
-      `<span class="kanban-card-label-pill" data-label-id="${escapeHtml(l.id)}" style="--label-color:${escapeHtml(l.color)}" title="${t('kanban.label.filter_tooltip', { name: escapeHtml(l.name) })}">#${escapeHtml(l.name)}</span>`
+      `<span class="kanban-card-label-pill" data-label-id="${escapeHtml(l.id)}" style="--label-color:${escapeHtml(safeCssColor(l.color, '#64748b'))}" title="${t('kanban.label.filter_tooltip', { name: escapeHtml(l.name) })}">#${escapeHtml(l.name)}</span>`
     ).join('')
     const overflowHtml = overflow > 0
       ? `<span class="kanban-card-label-pill kanban-card-label-overflow" title="${t('kanban.label.overflow_tooltip', { n: overflow })}">+${overflow}</span>`
@@ -1442,9 +1719,9 @@ function createCardEl(card, embeddedChildren = []) {
       const days = Math.floor(hoursOld / 24)
       const ageLabel = days >= 1 ? `${days}d` : `${Math.floor(hoursOld)}h`
       const exact = new Date(agingBasis * 1000).toLocaleString('hu-HU')
-      agingBadgeHtml = `<span class="kanban-card-aging-badge kanban-card-aging-${agingLevel}" style="color:${agingColor}" title="${t('kanban.aging.tooltip', { exact })}">⏳ ${ageLabel}</span>`
+      agingBadgeHtml = `<span class="kanban-card-aging-badge kanban-card-aging-${agingLevel}" style="color:${escapeHtml(safeCssColor(agingColor))}" title="${t('kanban.aging.tooltip', { exact })}">⏳ ${ageLabel}</span>`
       el.dataset.aging = agingLevel
-      el.style.setProperty('--card-aging-color', agingColor)
+      el.style.setProperty('--card-aging-color', safeCssColor(agingColor))
     }
   }
 
@@ -1466,7 +1743,7 @@ function createCardEl(card, embeddedChildren = []) {
   el.innerHTML = `
     ${projectHtml}
     <div class="kanban-card-title">${seqHtml}${escapeHtml(card.title)}</div>
-    <div class="kanban-card-footer">${assigneeHtml}${dueHtml}${blockedHtml}</div>
+    <div class="kanban-card-footer">${assigneeHtml}${kanbanAgentLiveBadge(card)}${dueHtml}${blockedHtml}</div>
     ${labelsHtml}
     <div class="kanban-card-actions">
       <button class="card-breakdown-btn" title="${t('kanban.btn.breakdown')}" aria-label="${t('kanban.btn.breakdown')}">⚡</button>
@@ -1717,7 +1994,7 @@ async function kanbanTouchEnd(e) {
   if (chip) {
     // Dropped on the status bar: no position information, so append.
     newStatus = chip.dataset.status
-    sortOrder = document.querySelectorAll(`.kanban-col-body[data-status="${newStatus}"] .kanban-card`).length
+    sortOrder = document.querySelectorAll(`.kanban-col-body[data-status="${CSS.escape(String(newStatus))}"] .kanban-card`).length
   } else if (col) {
     newStatus = col.dataset.status
     const after = getDragAfterElement(col, p.clientY)
@@ -1745,6 +2022,7 @@ async function kanbanTouchEnd(e) {
 function wireKanbanCardTouchDnD(el, card) {
   el.addEventListener('touchstart', (e) => {
     if (e.touches.length !== 1) return
+    if (!el.draggable) return
     const p = e.touches[0]
     endTouchDrag()
     touchDrag = {
@@ -1790,9 +2068,11 @@ function openNewCardModal(status) {
   document.getElementById('cardModalTitle').textContent = t('kanban.modal.title_new')
   document.getElementById('cardTitle').value = ''
   document.getElementById('cardDesc').value = ''
+  document.getElementById('cardTestSteps').value = ''
   document.getElementById('cardPriority').value = 'normal'
   document.getElementById('cardProject').value = ''
   document.getElementById('cardDue').value = ''
+  document.getElementById('cardStart').value = ''
   document.getElementById('cardEditId').value = ''
   document.getElementById('cardEditStatus').value = status || 'planned'
   populateAssigneeSelect('cardAssignee')
@@ -1821,11 +2101,15 @@ document.getElementById('saveCardBtn').addEventListener('click', async () => {
   const data = {
     title,
     description: document.getElementById('cardDesc').value.trim() || null,
+    test_steps: document.getElementById('cardTestSteps').value.trim() || null,
     assignee: document.getElementById('cardAssignee').value || null,
     priority: document.getElementById('cardPriority').value,
     project: document.getElementById('cardProject').value.trim() || null,
     due_date: document.getElementById('cardDue').value
       ? Math.floor(new Date(document.getElementById('cardDue').value).getTime() / 1000)
+      : null,
+    start_date: document.getElementById('cardStart').value
+      ? Math.floor(new Date(document.getElementById('cardStart').value).getTime() / 1000)
       : null,
   }
 
@@ -1880,7 +2164,7 @@ async function renderCardLabelsSection(card) {
   for (const label of attached) {
     const pill = document.createElement('span')
     pill.className = 'label-pill'
-    pill.style.setProperty('--label-color', label.color)
+    pill.style.setProperty('--label-color', safeCssColor(label.color, '#64748b'))
     pill.innerHTML = `#${escapeHtml(label.name)} <button class="label-pill-remove" title="${t('kanban.label.remove_btn')}" aria-label="${t('kanban.label.remove_btn')}">&times;</button>`
     pill.querySelector('.label-pill-remove').addEventListener('click', async () => {
       try {
@@ -1926,7 +2210,7 @@ async function renderCardLabelsSection(card) {
   palette.forEach((color, i) => {
     const sw = document.createElement('span')
     sw.className = 'label-color-swatch' + (i === 0 ? ' selected' : '')
-    sw.style.background = color
+    sw.style.backgroundColor = safeCssColor(color)
     sw.addEventListener('click', () => {
       selectedColor = color
       newColorsEl.querySelectorAll('.label-color-swatch').forEach((s) => s.classList.remove('selected'))
@@ -1961,6 +2245,58 @@ async function renderCardLabelsSection(card) {
 // Renders both directions from one GET: what this card waits on, and what waits
 // on it. The reverse list is read-only on purpose -- a block is removed from the
 // card that carries it, so there is exactly one place to clear each link.
+// Card 0f21864e (#568): the assignee's token use while this card was
+// in_progress. The number is an upper bound when the agent had other cards
+// in_progress at the same time, and the text says so instead of splitting it.
+function formatTokenCount(n) {
+  if (n >= 1e6) return (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + 'M'
+  if (n >= 1e3) return Math.round(n / 1e3) + 'k'
+  return String(n)
+}
+
+async function renderCardTokensSection(card) {
+  const box = document.getElementById('cardDetailTokens')
+  const body = document.getElementById('cardDetailTokensBody')
+  if (!box || !body) return
+  box.hidden = true
+  body.textContent = ''
+  let data
+  try {
+    const r = await fetch(`/api/kanban/${encodeURIComponent(card.id)}/tokens`)
+    if (!r.ok) return
+    data = await r.json()
+  } catch { return }
+  if (!data || !data.agent || !Array.isArray(data.windows) || data.windows.length === 0) return
+  const lines = []
+  if (data.totalCalls === 0) {
+    lines.push(t('kanban.tokens.none'))
+  } else {
+    // Cache reads dominate the raw sum (96-98% on 4 live cards), so the
+    // headline names the three kinds instead of one big number.
+    lines.push(t('kanban.tokens.total', {
+      output: formatTokenCount(data.outputTokens),
+      fresh: formatTokenCount(data.freshInputTokens),
+      cached: formatTokenCount(data.cacheReadTokens),
+      calls: data.totalCalls,
+    }))
+    for (const m of data.perModel) {
+      lines.push(`${m.model || '?'}: ${t('kanban.tokens.model_line', { output: formatTokenCount(m.outputTokens), calls: m.calls })}`)
+    }
+  }
+  if (data.overlappingCards > 0) lines.push(t('kanban.tokens.overlap', { n: data.overlappingCards }))
+  const lastTo = data.windows[data.windows.length - 1].to
+  if (data.dataUntil && data.dataUntil < lastTo) {
+    lines.push(t('kanban.tokens.data_until', { time: new Date(data.dataUntil * 1000).toLocaleString() }))
+  }
+  for (const line of lines) {
+    const div = document.createElement('div')
+    div.textContent = line
+    body.appendChild(div)
+  }
+  box.title = t('kanban.tokens.tooltip', { agent: data.agent })
+  box.hidden = false
+}
+
 async function renderCardBlockersSection(card) {
   const listEl = document.getElementById('cardBlockerList')
   const addSelect = document.getElementById('cardBlockerAdd')
@@ -2070,6 +2406,24 @@ async function renderCardBlockersSection(card) {
 }
 
 // === Card detail ===
+// Card.active_seconds -> human text for the card detail panel.
+//
+// undefined means the card has no status-change history at all, which is NOT
+// the same as zero and must not render as "0m" -- the event table starts
+// mid-history, so an old card that never moved since would otherwise claim a
+// measured zero it has not got.
+function formatActiveTime(sec) {
+  if (sec === undefined || sec === null) return null
+  const s = Math.max(0, Math.floor(sec))
+  const d = Math.floor(s / 86400)
+  const h = Math.floor((s % 86400) / 3600)
+  const m = Math.floor((s % 3600) / 60)
+  if (s === 0) return t('kanban.active.zero')
+  if (d >= 1) return t('kanban.active.d_h', { d, h })
+  if (h >= 1) return t('kanban.active.h_m', { h, m })
+  return t('kanban.active.m', { m })
+}
+
 async function showCardDetail(card) {
   // Running number (#N) in the title bar, plus the stable hex id in the meta.
   const seqPrefix = card.seq != null ? `#${card.seq} ` : ''
@@ -2094,11 +2448,11 @@ async function showCardDetail(card) {
     </div>
     <div class="meta-item">
       <span class="meta-label">${t('kanban.meta.status')}</span>
-      <span class="meta-value meta-value-editable" id="metaStatusValue" data-card-id="${card.id}" title="${t('kanban.meta.edit_tooltip')}">${statusLabels[card.status] || card.status}</span>
+      <span class="meta-value meta-value-editable" id="metaStatusValue" data-card-id="${escapeHtml(card.id)}" title="${t('kanban.meta.edit_tooltip')}">${escapeHtml(statusLabels[card.status] || card.status)}</span>
     </div>
     <div class="meta-item">
       <span class="meta-label">${t('kanban.meta.assignee')}</span>
-      <span class="meta-value meta-value-editable" id="metaAssigneeValue" data-card-id="${card.id}" title="${t('kanban.meta.edit_tooltip')}">${escapeHtml(assigneeDisplay)}</span>
+      <span class="meta-value meta-value-editable" id="metaAssigneeValue" data-card-id="${escapeHtml(card.id)}" title="${t('kanban.meta.edit_tooltip')}">${escapeHtml(assigneeDisplay)}</span>
     </div>
     <div class="meta-item">
       <span class="meta-label">${t('kanban.meta.priority')}</span>
@@ -2109,8 +2463,16 @@ async function showCardDetail(card) {
       <span class="meta-value">${card.project ? escapeHtml(card.project) : t('kanban.meta.none')}</span>
     </div>
     <div class="meta-item">
+      <span class="meta-label">${t('kanban.meta.start')}</span>
+      <span class="meta-value">${card.start_date ? new Date(card.start_date * 1000).toLocaleDateString(_lang === 'en' ? 'en-US' : 'hu-HU') : t('kanban.meta.none')}</span>
+    </div>
+    <div class="meta-item">
       <span class="meta-label">${t('kanban.meta.deadline')}</span>
       <span class="meta-value">${card.due_date ? new Date(card.due_date * 1000).toLocaleDateString(_lang === 'en' ? 'en-US' : 'hu-HU') : t('kanban.meta.none')}</span>
+    </div>
+    <div class="meta-item">
+      <span class="meta-label">${t('kanban.meta.active')}</span>
+      <span class="meta-value" title="${escapeHtml(formatActiveTime(card.active_seconds) ? t('kanban.active.tooltip') : t('kanban.active.tooltip_none'))}">${escapeHtml(formatActiveTime(card.active_seconds) ?? t('kanban.active.none'))}</span>
     </div>
   `
 
@@ -2213,8 +2575,20 @@ async function showCardDetail(card) {
 
   document.getElementById('cardDetailDesc').textContent = card.description || ''
 
+  // Card 8fe51afd: the testing steps in a block of their own. Hidden when the
+  // card has none -- an empty "Tesztelési lépések" heading on every card would
+  // train the reader to skip past the one card where it is filled in. The
+  // `is-testing` mark is what makes it stand out exactly when it is due.
+  const testStepsBox = document.getElementById('cardDetailTestSteps')
+  const testStepsBody = document.getElementById('cardDetailTestStepsBody')
+  const steps = (card.test_steps || '').trim()
+  testStepsBody.textContent = steps
+  testStepsBox.hidden = !steps
+  testStepsBox.classList.toggle('is-testing', !!steps && card.status === 'testing')
+
   renderCardLabelsSection(card)
   renderCardBlockersSection(card)
+  renderCardTokensSection(card)
 
   // #115: Parent meta row — dropdown replaces the old read-only display; shown only when editable
   const parentMetaItem = document.getElementById('parentMetaItem')
@@ -2313,10 +2687,14 @@ async function showCardDetail(card) {
     document.getElementById('cardModalTitle').textContent = t('kanban.modal.title_edit')
     document.getElementById('cardTitle').value = card.title
     document.getElementById('cardDesc').value = card.description || ''
+    document.getElementById('cardTestSteps').value = card.test_steps || ''
     document.getElementById('cardPriority').value = card.priority
     document.getElementById('cardProject').value = card.project || ''
     document.getElementById('cardDue').value = card.due_date
       ? new Date(card.due_date * 1000).toISOString().split('T')[0]
+      : ''
+    document.getElementById('cardStart').value = card.start_date
+      ? new Date(card.start_date * 1000).toISOString().split('T')[0]
       : ''
     document.getElementById('cardEditId').value = card.id
     document.getElementById('cardEditStatus').value = card.status
@@ -2394,8 +2772,8 @@ async function showCardDetail(card) {
         div.style.cssText = 'cursor:pointer; display:flex; justify-content:space-between; align-items:center; gap:8px'
         const info = document.createElement('div')
         info.style.flex = '1'
-        info.innerHTML = `<div><strong>${escapeHtml(ch.title)}</strong> <span style="color:var(--text-muted)">[${statusLabelsShort[ch.status] || ch.status}]</span></div>
-          <div style="font-size:0.85em;color:var(--text-muted)">${ch.assignee ? escapeHtml(ch.assignee) : ''}${ch.description ? ' -- ' + escapeHtml(ch.description).slice(0, 80) : ''}</div>`
+        info.innerHTML = `<div><strong>${escapeHtml(ch.title)}</strong> <span style="color:var(--text-muted)">[${escapeHtml(statusLabelsShort[ch.status] || ch.status)}]</span></div>
+          <div style="font-size:0.85em;color:var(--text-muted)">${ch.assignee ? escapeHtml(ch.assignee) : ''}${ch.description ? ' -- ' + escSnippet(ch.description, 80) : ''}</div>`
         info.onclick = () => { closeModal(cardDetailOverlay); showCardDetail(ch) }
         div.appendChild(info)
         if (canDeleteChild) {
@@ -2453,7 +2831,7 @@ async function showCardDetail(card) {
 }
 
 async function triggerBreakdown(card) {
-  const btn = document.querySelector(`.kanban-card[data-id="${card.id}"] .card-breakdown-btn`)
+  const btn = document.querySelector(`.kanban-card[data-id="${CSS.escape(String(card.id))}"] .card-breakdown-btn`)
   if (btn) { btn.disabled = true; btn.textContent = '...' }
   try {
     const res = await fetch(`/api/kanban/${encodeURIComponent(card.id)}/breakdown`, { method: 'POST' })
@@ -2471,7 +2849,7 @@ async function triggerBreakdown(card) {
 }
 
 function showBreakdownModal(subtasks, parentCard) {
-  document.getElementById('breakdownProvider').textContent = t('kanban.breakdown.parent_label', { title: escapeHtml(parentCard.title) })
+  document.getElementById('breakdownProvider').textContent = t('kanban.breakdown.parent_label', { title: parentCard.title })
   const list = document.getElementById('breakdownList')
   list.innerHTML = ''
 
@@ -2499,7 +2877,7 @@ function showBreakdownModal(subtasks, parentCard) {
           <option value="">-- nincs --</option>
           ${assigneeOptions}
         </select>
-        <span class="priority-badge priority-${st.priority}">${priorityLabels[st.priority] || st.priority}</span>
+        <span class="priority-badge priority-${escapeHtml(st.priority)}">${escapeHtml(priorityLabels[st.priority] || st.priority)}</span>
       </div>
     `
     // Set assignee select value after insert
@@ -3571,7 +3949,7 @@ function renderAgents() {
     const card = document.createElement('div')
     card.className = 'agent-card'
     card.dataset.name = agent.name
-    const initial = label.charAt(0).toUpperCase()
+    const initial = escapeHtml(label.charAt(0).toUpperCase())
     const gradientClass = getAvatarGradient(agent.name)
     const avatarHtml = (agent.hasImage || agent.hasAvatar)
       ? `<img src="/api/agents/${encodeURIComponent(agent.name)}/avatar${avatarBust()}" alt="${escapeHtml(label)}">`
@@ -3604,6 +3982,10 @@ function renderAgents() {
         <div class="agent-reauth-banner">
           <span class="agent-reauth-reason">${escapeHtml(agent.reauthReason || t('agents.reauth.reason'))}</span>
           <button class="btn-danger btn-compact agent-login-btn" data-phase="start">${t('agents.btn.login')}</button>
+        </div>` : ''}
+      ${Array.isArray(agent.sharedEnvAuthKeys) && agent.sharedEnvAuthKeys.length ? `
+        <div class="agent-sharedenv-banner" title="${escapeHtml(t('agents.sharedEnvAuth.tip'))}">
+          <span class="agent-sharedenv-text">${escapeHtml(t('agents.sharedEnvAuth.label'))}: ${escapeHtml(agent.sharedEnvAuthKeys.join(', '))}</span>
         </div>` : ''}
       <div class="agent-card-actions">
         <button class="btn-secondary btn-compact agent-conversation-btn" title="${t('agents.btn.conversation')}">
@@ -3691,7 +4073,7 @@ async function refreshAgentTerminalBusy() {
       // card waiting for the next poll.
       const body = card.querySelector('.agent-card-activity')
       if (body) body.innerHTML = entry ? agentActivityBodyHtml(entry) : ''
-      const stateCls = entry ? (ACTIVITY_STATE_META[entry.state] || ACTIVITY_STATE_META.unknown).cls : 'act-unknown'
+      const stateCls = entry ? (ACTIVITY_STATE_META[activityDisplayState(entry)] || ACTIVITY_STATE_META.unknown).cls : 'act-unknown'
       for (const meta of Object.values(ACTIVITY_STATE_META)) card.classList.remove(meta.cls)
       card.classList.add(stateCls)
       card.classList.toggle('agent-card-act-clickable', !!entry && !!entry.running)
@@ -3745,7 +4127,7 @@ function renderFederatedAgentCards(agentsGrid, addBtn) {
       <div class="agent-card-top">
         <div class="agent-avatar ${gradientClass}">${escapeHtml(fa.displayName.charAt(0).toUpperCase())}</div>
         <div class="agent-card-info">
-          <div class="agent-name">${escapeHtml(fa.displayName)} <span class="federated-badge">${t('federation.badge', { peer: fa.peer })}</span></div>
+          <div class="agent-name">${escapeHtml(fa.displayName)} <span class="federated-badge">${t('federation.badge', { peer: escapeHtml(fa.peer) })}</span></div>
           <div class="agent-desc">${escapeHtml(fa.qualified)}</div>
         </div>
       </div>
@@ -3791,7 +4173,7 @@ async function openAgentDetail(agentName) {
   document.getElementById('agentDetailTitle').textContent = detailLabel
 
   // Overview tab
-  const initial = detailLabel.charAt(0).toUpperCase()
+  const initial = escapeHtml(detailLabel.charAt(0).toUpperCase())
   const gradientClass = getAvatarGradient(currentAgent.name)
   const avatar = document.getElementById('agentDetailAvatar')
   avatar.className = 'detail-avatar ' + gradientClass
@@ -4176,12 +4558,29 @@ function updateProcessControl(agent) {
   }
 }
 
+// RESTARTFORCEUI1018: the server refuses a manual main restart while the pane is busy or unreadable (409
+// restart-blocked, manual-restart-gate.ts), so a click never cuts a running turn by accident. A stuck main
+// agent can read busy for good, so the refusal is not the end: a second confirm sends an explicit force.
+function postMarveenRestart(force) {
+  return force
+    ? fetch('/api/marveen/restart', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ force: true }) })
+    : fetch('/api/marveen/restart', { method: 'POST' })
+}
+
 document.getElementById('marveenRestartBtn').addEventListener('click', async () => {
   if (!confirm(t('agents.confirm.hard_restart'))) return
   const btn = document.getElementById('marveenRestartBtn')
   btn.disabled = true
   try {
-    const res = await fetch('/api/marveen/restart', { method: 'POST' })
+    let res = await postMarveenRestart(false)
+    if (res.status === 409) {
+      const blocked = await res.clone().json().catch(() => ({}))
+      if (blocked.error === 'restart-blocked') {
+        const key = blocked.reason === 'busy' ? 'agents.confirm.force_restart_busy' : 'agents.confirm.force_restart_unreadable'
+        if (!confirm(t(key))) { showToast(t('agents.toast.restart_not_forced')); return }
+        res = await postMarveenRestart(true)
+      }
+    }
     if (!res.ok) {
       const err = await res.json().catch(() => ({}))
       throw new Error(err.error || t('agents.toast.restart_failed'))
@@ -4733,7 +5132,9 @@ document.getElementById('saveModelBtn').addEventListener('click', async () => {
     if (!restartRes.ok) {
       document.getElementById('agentDetailModelRestarting').hidden = true
       if (currentAgent) updateProcessControl(currentAgent)
-      showToast(t('agents.restart_failed'))
+      // RESTARTSTOPPED1005: a deliberately stopped agent is not restarted; the
+      // model is saved and applies at its next start -- not a failure.
+      showToast(t(restartRes.status === 409 ? 'agents.toast.model_saved_stopped' : 'agents.restart_failed'))
       return
     }
     startModelRestartPolling(name, newModel, triggeredAt)
@@ -4781,13 +5182,13 @@ document.getElementById('analyzeAllModelsBtn').addEventListener('click', async (
       html += '<ul style="margin:0 0 10px;padding-left:18px">'
       for (const r of changes) {
         const safeReason = r.reason.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
-        html += `<li style="margin-bottom:6px"><strong>${r.agent}</strong>: ${r.currentModel} &rarr; ${r.suggestedModel}`
+        html += `<li style="margin-bottom:6px"><strong>${escapeHtml(r.agent)}</strong>: ${escapeHtml(r.currentModel)} &rarr; ${escapeHtml(r.suggestedModel)}`
         html += ` <details style="display:inline-block;vertical-align:top;margin-left:4px"><summary style="cursor:pointer;font-size:11px;color:var(--text-muted)">${t('agents.model.details')}</summary>`
         html += `<pre style="white-space:pre-wrap;font-size:11px;margin:4px 0 0;background:var(--surface);padding:6px 8px;border-radius:4px;color:var(--text-muted)">${safeReason}</pre></details></li>`
       }
       html += '</ul>'
       if (ok.length > 0) {
-        html += `<p style="color:var(--text-muted);margin:0;font-size:12px">${t('agents.model.ok_agents', { list: ok.map(r => r.agent).join(', ') })}</p>`
+        html += `<p style="color:var(--text-muted);margin:0;font-size:12px">${t('agents.model.ok_agents', { list: escapeHtml(ok.map(r => r.agent).join(', ')) })}</p>`
       }
       html += `<button class="btn-secondary btn-compact" id="createModelChangeCardsBtn" style="margin-top:10px">${t('agents.model.create_cards_btn')}</button>`
     }
@@ -4936,13 +5337,15 @@ document.getElementById('saveIdleFlushBtn').addEventListener('click', async () =
   // Like auto-restart, this applies to the main session too, so role === 'main'
   // is NOT skipped. The context-guard store is keyed by the same id.
   const id = currentAgent.autoRestartId || currentAgent.name
-  // Send the WHOLE config, not just the three idle fields. The endpoint
-  // normalizes the body into a complete config, so a fragment would silently
-  // reset actPct/hardPct/saturationRestart/enabled to their defaults -- saving
-  // an idle-flush preference would disarm the wedge tiers on an agent that had
-  // them on. Re-read rather than trusting the cached detail: not every path
-  // that opens this pane populates contextGuard, and an empty object here is
-  // indistinguishable from a genuinely default config.
+  // Send the WHOLE config, not just the three idle fields. The endpoint used
+  // to REPLACE the stored row with the normalized body, so a fragment reset
+  // actPct/hardPct/saturationRestart/enabled to their defaults -- saving an
+  // idle-flush preference disarmed the wedge tiers on an agent that had them
+  // on. It merges now (mergeContextGuardConfig); the full body stays because
+  // it is correct under both behaviours. Re-read rather than trusting the
+  // cached detail: not every path that opens this pane populates
+  // contextGuard, and an empty object here is indistinguishable from a
+  // genuinely default config.
   let current = {}
   try {
     const cur = await fetch(`/api/agents/${encodeURIComponent(id)}/context-guard`)
@@ -4992,9 +5395,9 @@ async function loadVoiceConfig(agentName) {
     if (!r.ok) return
     const cfg = await r.json()
     voiceModelSel.innerHTML = (cfg.availableVoices || []).map(v =>
-      `<option value="${v}"${v === cfg.voiceModel ? ' selected' : ''}>${v}</option>`
+      `<option value="${escapeHtml(v)}"${v === cfg.voiceModel ? ' selected' : ''}>${escapeHtml(v)}</option>`
     ).join('')
-    const modeInput = document.querySelector(`input[name="voiceResponseMode"][value="${cfg.responseMode || 'text'}"]`)
+    const modeInput = document.querySelector(`input[name="voiceResponseMode"][value="${CSS.escape(String(cfg.responseMode || 'text'))}"]`)
     if (modeInput) modeInput.checked = true
   } catch { /* silent */ }
 }
@@ -5220,7 +5623,7 @@ document.getElementById('authFlowInitBtn').addEventListener('click', async () =>
     const data = await res.json()
     if (data.ok && data.authUrl) {
       const urlEl = document.getElementById('authFlowUrl')
-      urlEl.href = data.authUrl
+      urlEl.href = safeHref(data.authUrl) || '#'
       urlEl.textContent = data.authUrl
       resultDiv.hidden = false
     } else {
@@ -5375,7 +5778,7 @@ function updateProviderUI() {
 
   if (isTg) {
     if (title) title.textContent = t('channel.setup.tg_title')
-    if (steps) steps.innerHTML = t('channel.setup.tg_steps')
+    if (steps) steps.innerHTML = tHtml('channel.setup.tg_steps')
     if (label) label.textContent = 'Bot API Token'
     if (input) input.placeholder = '123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11'
     if (slackGroup) slackGroup.hidden = true
@@ -5385,7 +5788,7 @@ function updateProviderUI() {
     if (pairingInfo) pairingInfo.textContent = t('channel.setup.tg_pairing')
   } else if (currentChannelProvider === 'discord') {
     if (title) title.textContent = t('channel.setup.discord_title')
-    if (steps) steps.innerHTML = t('channel.setup.discord_steps')
+    if (steps) steps.innerHTML = tHtml('channel.setup.discord_steps')
     if (label) label.textContent = 'Bot Token'
     if (input) input.placeholder = 'MTIzNDU2Nzg5MDEyMzQ1Njc4OQ...'
     if (slackGroup) slackGroup.hidden = true
@@ -5395,7 +5798,7 @@ function updateProviderUI() {
     if (pairingInfo) pairingInfo.textContent = t('channel.setup.discord_pairing')
   } else if (currentChannelProvider === 'teams') {
     if (title) title.textContent = t('channel.setup.teams_title')
-    if (steps) steps.innerHTML = t('channel.setup.teams_steps')
+    if (steps) steps.innerHTML = tHtml('channel.setup.teams_steps')
     if (slackGroup) slackGroup.hidden = true
     if (manifestBtnGroup) manifestBtnGroup.hidden = true
     if (smokeTestBtn) smokeTestBtn.hidden = true
@@ -5405,7 +5808,7 @@ function updateProviderUI() {
     if (pairingInfo) pairingInfo.textContent = t('channel.setup.teams_pairing')
   } else {
     if (title) title.textContent = t('channel.setup.slack_title')
-    if (steps) steps.innerHTML = t('channel.setup.slack_steps')
+    if (steps) steps.innerHTML = tHtml('channel.setup.slack_steps')
     if (label) label.textContent = 'Bot Token (xoxb-...)'
     if (input) input.placeholder = 'xoxb-...'
     if (slackGroup) slackGroup.hidden = false
@@ -5516,7 +5919,10 @@ document.getElementById('chConnectBtn').addEventListener('click', async () => {
       throw new Error(err.error || 'Kapcsolodasi hiba')
     }
     const result = await res.json()
-    showToast(`${getProviderLabel()} sikeresen csatlakoztatva!`)
+    // #1878 (6): on the main agent the save restarts the channels session; a failed
+    // restart must not read as "connected".
+    if (result.restartError) showToast(t('agents.channel.saved_restart_failed', { provider: getProviderLabel(), cmd: result.restartCommand || '' }), 12000)
+    else showToast(`${getProviderLabel()} sikeresen csatlakoztatva!`)
     // Refresh detail
     await openAgentDetail(currentAgent.name)
     loadAgents()
@@ -5534,7 +5940,20 @@ document.getElementById('chTestBtn').addEventListener('click', async () => {
   try {
     const res = await fetch(`${channelApiBase()}/test`, { method: 'POST' })
     if (!res.ok) throw new Error()
-    showToast('Kapcsolat rendben!')
+    const data = await res.json().catch(() => ({}))
+    // SLACKSCOPEJELZ1007: a Slack token that lacks a manifest scope works, but
+    // part of the plugin silently does not (im:read: writing to the owner's DM
+    // after a restart). Say so instead of "all right".
+    const missing = Array.isArray(data.missingScopes) ? data.missingScopes : []
+    if (missing.length > 0) {
+      // showToast's 2nd argument is the DURATION (ms). Long enough to read
+      // a sentence that names scopes and what to do.
+      const msg = t('channel.toast.missing_scopes', { scopes: missing.join(', ') })
+        + (missing.includes('im:read') ? ' ' + t('channel.toast.missing_scopes_imread') : '')
+      showToast(msg, 12000)
+    } else {
+      showToast('Kapcsolat rendben!')
+    }
   } catch {
     showToast(t('channel.toast.smoke_failed'))
   }
@@ -5553,10 +5972,10 @@ document.getElementById('chReconnectBtn').addEventListener('click', async () => 
       showToast('Channel-MCP reconnect sikeres')
       document.getElementById('chDisconnectedNotice').hidden = true
     } else {
-      showToast(data.message || 'Reconnect sikertelen', true)
+      showToast(data.message || 'Reconnect sikertelen', 8000)
     }
   } catch {
-    showToast('Reconnect hiba', true)
+    showToast('Reconnect hiba', 8000)
   } finally {
     btn.disabled = false
     btn.textContent = origText
@@ -5573,12 +5992,12 @@ document.getElementById('chSmokeTestBtn').addEventListener('click', async () => 
     const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent)}/channels/slack/smoke-test`, { method: 'POST' })
     const data = await res.json()
     if (!res.ok) {
-      showToast(data.error || 'Smoke-test sikertelen', true)
+      showToast(data.error || 'Smoke-test sikertelen', 8000)
       return
     }
     showSmokeTestResult(data.output || 'OK')
   } catch {
-    showToast('Smoke-test hiba', true)
+    showToast('Smoke-test hiba', 8000)
   } finally {
     btn.disabled = false
     btn.textContent = origText
@@ -5736,8 +6155,8 @@ async function refreshInvites() {
       const status = inv.used
         ? `<span class="tg-allowed-kind" style="background:rgba(180,180,180,0.15); color:var(--text-muted);">${t('channel.invite.used_badge')}</span>`
         : `<span class="tg-allowed-kind tg-allowed-kind-group">${t('channel.invite.active_badge', { min: expiresIn })}</span>`
-      const linkHtml = inv.deepLink
-        ? `<a href="${escapeHtml(inv.deepLink)}" target="_blank" class="tg-allowed-id" style="text-decoration:underline;">${escapeHtml(inv.deepLink)}</a>`
+      const linkHtml = safeHref(inv.deepLink)
+        ? `<a href="${escapeHtml(safeHref(inv.deepLink))}" target="_blank" class="tg-allowed-id" style="text-decoration:underline;">${escapeHtml(inv.deepLink)}</a>`
         : `<span class="tg-allowed-id">${t('channel.invite.no_username')}</span>`
       item.innerHTML = `
         <div class="tg-allowed-meta" style="flex-wrap:wrap; gap:6px;">
@@ -5838,7 +6257,7 @@ async function refreshChannelRequests() {
     for (const req of items) {
       const item = document.createElement('div')
       item.className = 'tg-allowed-item'
-      const name = req.channel_name ? escapeHtml(req.channel_name) : req.channel_id
+      const name = escapeHtml(req.channel_name || req.channel_id)
       const ts = new Date(req.requested_at * 1000).toLocaleString('hu-HU')
       const userId = req.user_id ? `<span class="tg-allowed-id">user: ${escapeHtml(req.user_id)}</span>` : ''
       item.innerHTML = `
@@ -5865,8 +6284,8 @@ let _approveReqId = null
 function openApproveModal(id, channelName, userId) {
   _approveReqId = id
   const desc = document.getElementById('chApproveModalDesc')
-  const userNote = userId ? t('channel.approve.requester', { user: escapeHtml(userId) }) : ''
-  desc.textContent = t('channel.approve.desc', { channel: escapeHtml(channelName), requester: userNote })
+  const userNote = userId ? t('channel.approve.requester', { user: userId }) : ''
+  desc.textContent = t('channel.approve.desc', { channel: channelName, requester: userNote })
   document.getElementById('chApproveRequireMention').checked = true
   document.getElementById('chApproveAllowFromAll').checked = false
   document.getElementById('chApproveModalOverlay').hidden = false
@@ -5889,7 +6308,7 @@ async function submitApproveModal() {
     })
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || 'Hiba')
     document.getElementById('chApproveModalOverlay').hidden = true
-    const item = document.querySelector(`[data-req-id="${id}"]`)
+    const item = document.querySelector(`[data-req-id="${CSS.escape(String(id))}"]`)
     if (item) item.remove()
     showToast(t('channel.toast.approved'))
     refreshChannelRequests()
@@ -6518,7 +6937,7 @@ function makeScheduleRow(task) {
         </div>
         <div class="schedule-meta">
           <span class="schedule-cron">${escapeHtml(task.schedule)}</span>
-          <span>${describeCron(task.schedule)}</span>
+          <span>${escapeHtml(describeCron(task.schedule))}</span>
           <span class="schedule-agent-name">${escapeHtml(agent.label || agent.name)}</span>
         </div>
       </div>
@@ -6898,7 +7317,7 @@ function openEditSchedule(task) {
 
     // Set agent
     const agentSel = document.getElementById('scheduleAgent')
-    if (agentSel.querySelector(`option[value="${task.agent}"]`)) {
+    if (agentSel.querySelector(`option[value="${CSS.escape(String(task.agent))}"]`)) {
       agentSel.value = task.agent
     }
 
@@ -7097,8 +7516,8 @@ async function loadMemAgents() {
     sel.innerHTML = `<option value="">${t('memories.agent_all')}</option>`
     memSel.innerHTML = ''
     for (const a of agents) {
-      sel.innerHTML += `<option value="${a.name}">${a.label}</option>`
-      memSel.innerHTML += `<option value="${a.name}">${a.label}</option>`
+      sel.innerHTML += `<option value="${escapeHtml(a.name)}">${escapeHtml(a.label)}</option>`
+      memSel.innerHTML += `<option value="${escapeHtml(a.name)}">${escapeHtml(a.label)}</option>`
     }
   } catch {}
 }
@@ -7209,7 +7628,7 @@ async function loadMemStats() {
     memStats.innerHTML = `
       <div class="stat-card"><div class="stat-value">${stats.total}</div><div class="stat-label">${t('memories.stat.total')}</div></div>
       ${Object.entries(stats.byTier || {}).map(([tier, count]) =>
-        `<div class="stat-card"><div class="stat-value" style="color:${tierColors[tier] || 'var(--accent)'}">${count}</div><div class="stat-label">${tierLabels[tier] || tier}</div></div>`
+        `<div class="stat-card"><div class="stat-value" style="color:${tierColors[tier] || 'var(--accent)'}">${count}</div><div class="stat-label">${escapeHtml(tierLabels[tier] || tier)}</div></div>`
       ).join('')}
       <div class="stat-card"><div class="stat-value">${embCount}</div><div class="stat-label">${t('memories.stat.vectors_pct', { pct: embPct })}</div></div>
       <button class="btn-secondary btn-compact" id="memBackfillBtn" style="margin-left:auto;font-size:11px;padding:6px 12px;align-self:center">${t('memories.stat.vectors_btn')}</button>
@@ -7220,7 +7639,9 @@ async function loadMemStats() {
       try {
         const r = await fetch('/api/memories/backfill', { method: 'POST' })
         const data = await r.json()
-        showToast(t('memories.toast.vector_count', { count: data.count }))
+        // ok:false = pending memories but the embedding backend answered none
+        if (data.ok === false) showToast(t('memories.toast.vector_error'))
+        else showToast(t('memories.toast.vector_count', { count: data.embedded ?? data.count }))
         loadMemStats()
       } catch { showToast(t('memories.toast.vector_error')) }
     })
@@ -7292,7 +7713,7 @@ function renderMemories(memories) {
     item.className = 'mem-item'
 
     const tier = mem.tier || mem.category || 'warm'
-    const tierBadge = tierLabels[tier] || tier
+    const tierBadge = escapeHtml(tierLabels[tier] || tier)
     const badgeClass = 'badge-' + tier
     const shortContent = mem.content.length > 120 ? mem.content.slice(0, 120) + '...' : mem.content
     const agentLabel = mem.agent_id || mainAgentId()
@@ -7893,7 +8314,7 @@ function showGraphPanel(node) {
   const created = node.mem.created_label || ''
   panel.innerHTML = `
     <div class="graph-panel-header">
-      <span class="badge badge-${node.tier}">${tierLabelsMap[node.tier] || node.tier}</span>
+      <span class="badge badge-${escapeHtml(node.tier)}">${escapeHtml(tierLabelsMap[node.tier] || node.tier)}</span>
       <span class="graph-panel-agent">${escapeHtml(node.agent)}</span>
       <button class="graph-panel-close" id="graphPanelCloseBtn">&times;</button>
     </div>
@@ -8289,20 +8710,20 @@ function renderCatalog() {
     const authHint = item.authType === 'oauth' && item.authNote ? `<span class="catalog-auth-hint">${escapeHtml(item.authNote)}</span>` : ''
     card.innerHTML = `
       <div class="catalog-card-header">
-        <div class="catalog-card-icon">${item.icon || '?'}</div>
+        <div class="catalog-card-icon">${escapeHtml(item.icon || '?')}</div>
         <div class="catalog-card-info">
           <div class="catalog-card-name">
             ${escapeHtml(item.name)}
-            <span class="catalog-card-type ${item.type}">${item.type}</span>
-            ${item.infoUrl ? `<a href="${escapeHtml(item.infoUrl)}" target="_blank" rel="noopener" class="catalog-card-link" title="${t('connectors.tooltip.docs')}" onclick="event.stopPropagation()">&#x2197;</a>` : ''}
+            <span class="catalog-card-type ${escapeHtml(item.type)}">${escapeHtml(item.type)}</span>
+            ${safeHref(item.infoUrl, { relative: true }) ? `<a href="${escapeHtml(safeHref(item.infoUrl, { relative: true }))}" target="_blank" rel="noopener" class="catalog-card-link" title="${t('connectors.tooltip.docs')}" onclick="event.stopPropagation()">&#x2197;</a>` : ''}
           </div>
           <div class="catalog-card-desc">${escapeHtml(item.description)}</div>
         </div>
       </div>
       <div class="catalog-card-footer">
         ${item.installed
-          ? `<span class="catalog-install-btn installed" title="${item.configMatch ? t('connectors.tooltip.installed_mcp') : t('connectors.tooltip.installed_src', { src: escapeHtml(item.installedSource || '') })}">Telepítve &#10003;${item.configMatch ? ' (.mcp.json)' : item.installedSource === 'claude.ai' ? ' (claude.ai)' : item.installedSource === 'plugin' ? ' (plugin)' : ''}</span>${(item.installedSource === 'claude.ai' || item.configMatch) ? '' : `<a class="catalog-uninstall-link" data-id="${item.id}">Eltávolítás</a>`}`
-          : `<button class="catalog-install-btn install" data-id="${item.id}">${t('connectors.catalog.install_btn')}</button>${authHint}`
+          ? `<span class="catalog-install-btn installed" title="${item.configMatch ? t('connectors.tooltip.installed_mcp') : t('connectors.tooltip.installed_src', { src: escapeHtml(item.installedSource || '') })}">Telepítve &#10003;${item.configMatch ? ' (.mcp.json)' : item.installedSource === 'claude.ai' ? ' (claude.ai)' : item.installedSource === 'plugin' ? ' (plugin)' : ''}</span>${(item.installedSource === 'claude.ai' || item.configMatch) ? '' : `<a class="catalog-uninstall-link" data-id="${escapeHtml(item.id)}">Eltávolítás</a>`}`
+          : `<button class="catalog-install-btn install" data-id="${escapeHtml(item.id)}">${t('connectors.catalog.install_btn')}</button>${authHint}`
         }
       </div>
     `
@@ -8514,13 +8935,13 @@ const BUILTIN_MCPS = [
     name: 'computer-use',
     label: 'Computer Use',
     desc: () => t('connectors.builtin.computer_use'),
-    get detailHtml() { return t('connectors.builtin.computer_use_html') },
+    get detailHtml() { return tHtml('connectors.builtin.computer_use_html') },
   },
   {
     name: 'chrome',
     label: 'Claude in Chrome',
     desc: () => t('connectors.builtin.chrome'),
-    get detailHtml() { return t('connectors.builtin.chrome_html') },
+    get detailHtml() { return tHtml('connectors.builtin.chrome_html') },
   },
 ]
 
@@ -8529,9 +8950,9 @@ function openBuiltinDetail(item) {
   if (!overlay) return
   document.getElementById('builtinDetailTitle').textContent = item.label
   document.getElementById('builtinDetailDesc').textContent = typeof item.desc === 'function' ? item.desc() : item.desc
-  // Static strings only. Never interpolate user or server input here
-  // without passing it through escapeHtml first -- detailHtml is a
-  // raw HTML sink.
+  // detailHtml is a raw HTML sink: it comes from tHtml(), which escapes the
+  // {brand} token (.env BRAND_NAME / BOT_NAME) and every param. Never build it
+  // from plain t() or from unescaped user or server input.
   document.getElementById('builtinDetailBody').innerHTML = item.detailHtml
   openModal(overlay)
   // Move focus into the dialog so keyboard users land inside the new
@@ -8591,7 +9012,7 @@ function renderConnectors() {
   if (connectors.length > 0 && !connectorCacheWarming && connectorCacheError && hasClaudeAiEntries) {
     const banner = document.createElement('div')
     banner.className = 'connector-stale-banner'
-    banner.innerHTML = t('connectors.stale_banner', { msg: escapeHtml(connectorCacheError) })
+    banner.innerHTML = tHtml('connectors.stale_banner', { msg: connectorCacheError })
     connectorGrid.appendChild(banner)
   }
   if (connectors.length === 0 && !BUILTIN_MCPS.length) {
@@ -8752,6 +9173,22 @@ function renderConnectors() {
 }
 
 // --- GitHub repo management ---
+// Install/update ran with npm lifecycle scripts skipped and the repo (or a
+// dependency) declares some: say so, and offer the per-repo opt-in, which
+// re-runs the update with scripts and stores the choice for later updates.
+async function offerGitHubRepoScriptsOptIn(name, skipped) {
+  if (!Array.isArray(skipped) || skipped.length === 0) return
+  const ok = confirm(t('connectors.scripts_skipped_confirm', { name: name.replace('--', '/'), list: skipped.join(', ') }))
+  if (!ok) return
+  const res = await fetch(`/api/connectors/github-repos/${encodeURIComponent(name)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ runScripts: true }),
+  })
+  const data = await res.json()
+  if (data.error) alert(data.error)
+}
+
 async function loadGitHubRepos() {
   try {
     const res = await fetch('/api/connectors/github-repos')
@@ -8773,6 +9210,7 @@ async function loadGitHubRepos() {
           const res = await fetch(`/api/connectors/github-repos/${encodeURIComponent(r.name)}`, { method: 'PATCH' })
           const data = await res.json()
           if (data.error) { alert(data.error); return }
+          await offerGitHubRepoScriptsOptIn(r.name, data.scriptsSkipped)
           loadConnectors()
         } finally { btn.disabled = false; btn.innerHTML = '&#x21bb;' }
       })
@@ -8803,6 +9241,9 @@ async function loadGitHubRepos() {
   addBtn.addEventListener('click', async () => {
     const val = input.value.trim()
     if (!val) return
+    const runScriptsBox = document.getElementById('githubRepoRunScripts')
+    const runScripts = !!(runScriptsBox && runScriptsBox.checked)
+    if (!confirm(t(runScripts ? 'connectors.install_confirm_scripts' : 'connectors.install_confirm', { url: val }))) return
     addBtn.disabled = true
     addBtn.textContent = 'Telepites...'
     status.hidden = false
@@ -8812,7 +9253,7 @@ async function loadGitHubRepos() {
       const res = await fetch('/api/connectors/github-repos', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: val }),
+        body: JSON.stringify({ url: val, runScripts }),
       })
       const data = await res.json()
       if (data.error) {
@@ -8820,6 +9261,10 @@ async function loadGitHubRepos() {
         status.textContent = data.error
         return
       }
+      // Installed, but npm install failed: keep it visible instead of reporting success.
+      // The opt-in is only offered after an install that completed.
+      if (data.installWarning) alert(t('connectors.install_warning', { msg: data.installWarning }))
+      else await offerGitHubRepoScriptsOptIn(data.repo.name, data.scriptsSkipped)
       if (data.requiredEnvVars && data.requiredEnvVars.length > 0) {
         status.className = 'github-repo-status loading'
         status.textContent = t('connectors.api_keys_needed')
@@ -9063,7 +9508,7 @@ function _sshKeyBadge(status) {
     missing: '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>',
     expired: '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>',
   }
-  return `<span class="ssh-key-badge ${status}">${icons[status] || ''} ${labels[status] || status}</span>`
+  return `<span class="ssh-key-badge ${escapeHtml(status)}">${icons[status] || ''} ${escapeHtml(labels[status] || status)}</span>`
 }
 
 function _sshKeyAssignSelect(s) {
@@ -9868,7 +10313,8 @@ function renderVaultGrid(secrets) {
 
     const grouped = new Map()
     for (const f of actionable) {
-      const key = `${f.serverName}|${f.envVar}`
+      // JSON tuple: server names and env keys are free text and may contain '|'.
+      const key = JSON.stringify([f.serverName, f.envVar])
       if (!grouped.has(key)) grouped.set(key, { ...f, allTargets: [] })
       grouped.get(key).allTargets.push({ mcpFilePath: f.mcpFilePath, serverName: f.serverName })
     }
@@ -9906,9 +10352,10 @@ function renderVaultGrid(secrets) {
       const cb = row.querySelector('input[type="checkbox"]')
       if (!cb?.checked) continue
       const key = cb.getAttribute('data-key')
-      const [serverName, envVar] = key.split('|')
+      let serverName, envVar
+      try { [serverName, envVar] = JSON.parse(key) } catch { continue }
       const vaultIdInput = row.querySelector('.vault-scan-vault-id')
-      const vaultId = vaultIdInput?.value?.trim() || key
+      const vaultId = vaultIdInput?.value?.trim() || `${serverName}|${envVar}`
 
       const matchingFindings = allFindings.filter(
         f => f.serverName === serverName && f.envVar === envVar && !f.alreadyInVault,
@@ -10019,10 +10466,12 @@ async function openConnectorDetail(connector) {
     const statusLabels = { connected: t('connectors.status.connected'), needs_auth: t('connectors.status.needs_auth'), failed: t('connectors.status.failed'), unknown: t('connectors.status.unknown') }
     const statusColors = { connected: 'var(--success)', needs_auth: 'var(--accent)', failed: 'var(--danger)', unknown: 'var(--text-muted)' }
 
+    // Every field here can come from an agent's, a project's or an external
+    // .mcp.json (routes/connectors.ts), so each one is escaped -- the env KEYS too.
     document.getElementById('connectorDetailInfo').innerHTML = `
       <div class="connector-detail-row">
         <span class="meta-label">Statusz</span>
-        <span class="meta-value" style="color:${statusColors[detail.status] || ''}">${statusLabels[detail.status] || detail.status}</span>
+        <span class="meta-value" style="color:${statusColors[detail.status] || ''}">${escapeHtml(statusLabels[detail.status] || detail.status || '')}</span>
       </div>
       <div class="connector-detail-row">
         <span class="meta-label">Hatokor</span>
@@ -10030,7 +10479,7 @@ async function openConnectorDetail(connector) {
       </div>
       ${detail.type ? `<div class="connector-detail-row"><span class="meta-label">Tipus</span><span class="meta-value">${escapeHtml(detail.type)}</span></div>` : ''}
       ${detail.command ? `<div class="connector-detail-row"><span class="meta-label">Parancs</span><span class="meta-value" style="font-family:monospace;font-size:12px">${escapeHtml(detail.command)} ${escapeHtml(detail.args || '')}</span></div>` : ''}
-      ${Object.keys(detail.env || {}).length ? `<div class="connector-detail-row"><span class="meta-label">Env</span><span class="meta-value" style="font-family:monospace;font-size:11px">${Object.entries(detail.env).map(([k,v]) => `${k}=${v}`).join(', ')}</span></div>` : ''}
+      ${Object.keys(detail.env || {}).length ? `<div class="connector-detail-row"><span class="meta-label">Env</span><span class="meta-value" style="font-family:monospace;font-size:11px">${Object.entries(detail.env).map(([k,v]) => `${escapeHtml(k)}=${escapeHtml(String(v))}`).join(', ')}</span></div>` : ''}
     `
   } catch {
     document.getElementById('connectorDetailInfo').innerHTML = `<p>${t('connectors.detail_error')}</p>`
@@ -10068,8 +10517,8 @@ async function openConnectorDetail(connector) {
       const item = document.createElement('div')
       item.className = 'connector-agent-item'
       item.innerHTML = `
-        <input type="checkbox" id="assign-${agent.name}" value="${agent.name}" ${isAssigned ? 'checked' : ''}>
-        <label for="assign-${agent.name}">${escapeHtml(agent.label || agent.name)}</label>
+        <input type="checkbox" id="assign-${escapeHtml(agent.name)}" value="${escapeHtml(agent.name)}" ${isAssigned ? 'checked' : ''}>
+        <label for="assign-${escapeHtml(agent.name)}">${escapeHtml(agent.label || agent.name)}</label>
       `
       listEl.appendChild(item)
     }
@@ -10139,8 +10588,8 @@ async function loadNewConnectorAgents() {
       const item = document.createElement('div')
       item.className = 'connector-agent-item'
       item.innerHTML = `
-        <input type="checkbox" id="new-assign-${agent.name}" value="${agent.name}">
-        <label for="new-assign-${agent.name}">${escapeHtml(agent.label || agent.name)}</label>
+        <input type="checkbox" id="new-assign-${escapeHtml(agent.name)}" value="${escapeHtml(agent.name)}">
+        <label for="new-assign-${escapeHtml(agent.name)}">${escapeHtml(agent.label || agent.name)}</label>
       `
       list.appendChild(item)
     }
@@ -10230,6 +10679,250 @@ function escapeHtml(str) {
   return d.innerHTML.replace(/"/g, '&quot;').replace(/'/g, '&#39;')
 }
 
+// A value passed as a string argument of an inline handler
+// (onclick="fn(${jsArg(id)})"). escapeHtml alone is NOT enough there: the
+// HTML parser decodes &#39; back to ' before the handler's JavaScript is
+// parsed, so a quote in the value would end the JS string. JSON.stringify
+// makes it a JS string literal; escapeHtml then keeps it inside the attribute.
+function jsArg(v) {
+  return escapeHtml(JSON.stringify(String(v ?? '')))
+}
+
+// A shortened text for HTML: cut the RAW text, then escape it, and add the
+// ellipsis by the raw length. Escaping first and slicing after could split an
+// entity (&quot; -> &q) and would count entity bytes as visible characters.
+function escSnippet(raw, max) {
+  const s = String(raw ?? '')
+  return escapeHtml(s.slice(0, max)) + (s.length > max ? '…' : '')
+}
+
+// The one gate for a URL from data (a catalogue file, the API, CLI output, a
+// markdown doc) before it becomes an href. escapeHtml stops an attribute
+// breakout but not the scheme: only http(s) and mailto pass, or -- with
+// { relative: true } -- a scheme-less relative or fragment link. The URL
+// parser drops control characters and spaces, and a leading // or /\ means
+// another host, so the check judges the URL the same way. Returns the URL
+// unchanged when it passes, '' otherwise. HTML-encode the result in markup.
+function safeHref(raw, { relative = false } = {}) {
+  const s = String(raw ?? '')
+  const u = s.replace(/[\x00-\x20\x7f]/g, '')
+  if (!u) return ''
+  const scheme = /^[a-z][a-z0-9+.-]*:/i.exec(u)
+  if (scheme) return /^(https?|mailto):$/i.test(scheme[0]) ? s : ''
+  return relative && !/^[\\/][\\/]/.test(u) ? s : ''
+}
+
+// The dashboard's mirror of src/css-color.ts normalizeCssColor -- the same
+// colour table, regexes and arithmetic; both are checked against the same
+// vectors (src/__tests__/fixtures/css-color-vectors.json) and the table is
+// compared entry by entry, so the server and the page apply ONE policy:
+// hex kept, a CSS colour name or a strictly numeric rgb()/rgba()/hsl()/hsla()
+// becomes hex, anything else (url(), declarations, words, bad hex) is null.
+const CSS_NAMED_COLORS = {
+  aliceblue: '#f0f8ff', antiquewhite: '#faebd7', aqua: '#00ffff', aquamarine: '#7fffd4', azure: '#f0ffff',
+  beige: '#f5f5dc', bisque: '#ffe4c4', black: '#000000', blanchedalmond: '#ffebcd', blue: '#0000ff',
+  blueviolet: '#8a2be2', brown: '#a52a2a', burlywood: '#deb887', cadetblue: '#5f9ea0', chartreuse: '#7fff00',
+  chocolate: '#d2691e', coral: '#ff7f50', cornflowerblue: '#6495ed', cornsilk: '#fff8dc', crimson: '#dc143c',
+  cyan: '#00ffff', darkblue: '#00008b', darkcyan: '#008b8b', darkgoldenrod: '#b8860b', darkgray: '#a9a9a9',
+  darkgreen: '#006400', darkgrey: '#a9a9a9', darkkhaki: '#bdb76b', darkmagenta: '#8b008b', darkolivegreen: '#556b2f',
+  darkorange: '#ff8c00', darkorchid: '#9932cc', darkred: '#8b0000', darksalmon: '#e9967a', darkseagreen: '#8fbc8f',
+  darkslateblue: '#483d8b', darkslategray: '#2f4f4f', darkslategrey: '#2f4f4f', darkturquoise: '#00ced1', darkviolet: '#9400d3',
+  deeppink: '#ff1493', deepskyblue: '#00bfff', dimgray: '#696969', dimgrey: '#696969', dodgerblue: '#1e90ff',
+  firebrick: '#b22222', floralwhite: '#fffaf0', forestgreen: '#228b22', fuchsia: '#ff00ff', gainsboro: '#dcdcdc',
+  ghostwhite: '#f8f8ff', gold: '#ffd700', goldenrod: '#daa520', gray: '#808080', green: '#008000',
+  greenyellow: '#adff2f', grey: '#808080', honeydew: '#f0fff0', hotpink: '#ff69b4', indianred: '#cd5c5c',
+  indigo: '#4b0082', ivory: '#fffff0', khaki: '#f0e68c', lavender: '#e6e6fa', lavenderblush: '#fff0f5',
+  lawngreen: '#7cfc00', lemonchiffon: '#fffacd', lightblue: '#add8e6', lightcoral: '#f08080', lightcyan: '#e0ffff',
+  lightgoldenrodyellow: '#fafad2', lightgray: '#d3d3d3', lightgreen: '#90ee90', lightgrey: '#d3d3d3', lightpink: '#ffb6c1',
+  lightsalmon: '#ffa07a', lightseagreen: '#20b2aa', lightskyblue: '#87cefa', lightslategray: '#778899', lightslategrey: '#778899',
+  lightsteelblue: '#b0c4de', lightyellow: '#ffffe0', lime: '#00ff00', limegreen: '#32cd32', linen: '#faf0e6',
+  magenta: '#ff00ff', maroon: '#800000', mediumaquamarine: '#66cdaa', mediumblue: '#0000cd', mediumorchid: '#ba55d3',
+  mediumpurple: '#9370db', mediumseagreen: '#3cb371', mediumslateblue: '#7b68ee', mediumspringgreen: '#00fa9a', mediumturquoise: '#48d1cc',
+  mediumvioletred: '#c71585', midnightblue: '#191970', mintcream: '#f5fffa', mistyrose: '#ffe4e1', moccasin: '#ffe4b5',
+  navajowhite: '#ffdead', navy: '#000080', oldlace: '#fdf5e6', olive: '#808000', olivedrab: '#6b8e23',
+  orange: '#ffa500', orangered: '#ff4500', orchid: '#da70d6', palegoldenrod: '#eee8aa', palegreen: '#98fb98',
+  paleturquoise: '#afeeee', palevioletred: '#db7093', papayawhip: '#ffefd5', peachpuff: '#ffdab9', peru: '#cd853f',
+  pink: '#ffc0cb', plum: '#dda0dd', powderblue: '#b0e0e6', purple: '#800080', rebeccapurple: '#663399',
+  red: '#ff0000', rosybrown: '#bc8f8f', royalblue: '#4169e1', saddlebrown: '#8b4513', salmon: '#fa8072',
+  sandybrown: '#f4a460', seagreen: '#2e8b57', seashell: '#fff5ee', sienna: '#a0522d', silver: '#c0c0c0',
+  skyblue: '#87ceeb', slateblue: '#6a5acd', slategray: '#708090', slategrey: '#708090', snow: '#fffafa',
+  springgreen: '#00ff7f', steelblue: '#4682b4', tan: '#d2b48c', teal: '#008080', thistle: '#d8bfd8',
+  tomato: '#ff6347', turquoise: '#40e0d0', violet: '#ee82ee', wheat: '#f5deb3', white: '#ffffff',
+  whitesmoke: '#f5f5f5', yellow: '#ffff00', yellowgreen: '#9acd32', transparent: '#00000000',
+}
+
+const CSS_HEX_COLOR = /^#(?:[0-9a-f]{3}|[0-9a-f]{4}|[0-9a-f]{6}|[0-9a-f]{8})$/i
+// CSS <number>: optional sign, digits with an optional fraction or a leading
+// dot, optional exponent (1e2, -1, .5, +3.25E-1); nothing else
+const CSS_NUMBER = /^[+-]?(?:\d*\.\d+|\d+)(?:e[+-]?\d+)?$/i
+const CSS_HUE_UNIT = { deg: 1, grad: 0.9, rad: 180 / Math.PI, turn: 360 }
+
+const CSS_HUE_UNITS = ['grad', 'turn', 'deg', 'rad']
+// Input budget, as on the server: a resource bound
+// well above any real spelling (a full-precision JS number serialization is
+// ~85 characters); a longer value is not a colour, decided before parsing.
+const MAX_CSS_COLOR_LENGTH = 256
+
+function isCssWs(ch) {
+  return ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r' || ch === '\f'
+}
+
+// Trim and split are plain character scans, one pass each, no regex (the
+// regex trim was quadratic on a long internal whitespace run)
+function cssTrim(s) {
+  let i = 0
+  let j = s.length
+  while (i < j && isCssWs(s[i])) i++
+  while (j > i && isCssWs(s[j - 1])) j--
+  return s.slice(i, j)
+}
+
+// the tokens of a TRIMMED string separated by runs of CSS whitespace
+function cssSplitWs(s) {
+  const out = []
+  let i = 0
+  while (i < s.length) {
+    let j = i
+    while (j < s.length && !isCssWs(s[j])) j++
+    out.push(s.slice(i, j))
+    while (j < s.length && isCssWs(s[j])) j++
+    i = j
+  }
+  return out
+}
+
+function cssHex2(n) {
+  // + 1e-7: a half-way channel that float arithmetic left at 127.4999999
+  // rounds up like the browser's 127.5 does
+  return Math.round(Math.min(255, Math.max(0, n)) + 1e-7).toString(16).padStart(2, '0')
+}
+
+function cssToHex(r, g, b, a) {
+  const rgb = `#${cssHex2(r)}${cssHex2(g)}${cssHex2(b)}`
+  return a >= 1 ? rgb : rgb + cssHex2(Math.max(0, a) * 255)
+}
+
+// a token: a number (pct=false) or a percentage (pct=true), else null
+function cssNum(token) {
+  const pct = token.endsWith('%')
+  const t = pct ? token.slice(0, -1) : token
+  if (!CSS_NUMBER.test(t)) return null
+  const n = Number(t)
+  return Number.isNaN(n) ? null : { n, pct }
+}
+
+// alpha: a number or a percentage, clamped to 0..1
+function cssAlpha(token) {
+  const v = cssNum(token)
+  if (!v) return null
+  const a = v.pct ? v.n / 100 : v.n
+  return Math.min(1, Math.max(0, a))
+}
+
+// hue: a number (degrees) or a number with deg / grad / rad / turn
+// (the unit is matched ASCII case-insensitively; 'grad' is tried before 'rad')
+function cssHue(token) {
+  const unit = CSS_HUE_UNITS.find((u) => token.slice(-u.length).replace(/[A-Z]/g, (c) => c.toLowerCase()) === u)
+  const v = cssNum(unit ? token.slice(0, -unit.length) : token)
+  if (!v || v.pct) return null
+  const deg = v.n * (unit ? CSS_HUE_UNIT[unit] : 1)
+  return Number.isFinite(deg) ? ((deg % 360) + 360) % 360 : null
+}
+
+function cssHslToRgb(hue, s, l) {
+  const h = hue / 360
+  const sat = Math.min(1, Math.max(0, s / 100))
+  const lig = Math.min(1, Math.max(0, l / 100))
+  if (sat === 0) return [lig * 255, lig * 255, lig * 255]
+  const q = lig < 0.5 ? lig * (1 + sat) : lig + sat - lig * sat
+  const p = 2 * lig - q
+  const ch = (t) => {
+    if (t < 0) t += 1
+    if (t > 1) t -= 1
+    if (t < 1 / 6) return p + (q - p) * 6 * t
+    if (t < 1 / 2) return q
+    if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6
+    return p
+  }
+  return [ch(h + 1 / 3) * 255, ch(h) * 255, ch(h - 1 / 3) * 255]
+}
+
+// rgb()/rgba()/hsl()/hsla() with numeric arguments (CSS Color 4):
+// - legacy comma syntax: 3 values (+ alpha); rgb channels all numbers or all
+//   percentages; hsl saturation / lightness must be percentages
+// - modern space syntax: 3 values (+ "/ alpha"); rgb channels may mix numbers
+//   and percentages; hsl saturation / lightness numbers or percentages
+// Numbers may carry a sign, a leading dot or an exponent; channels clamp to
+// 0..255, alpha to 0..1, saturation / lightness to 0..100. No nested
+// function, keyword (none, calc, var) or anything else is accepted.
+function cssColorFunction(c) {
+  const m = /^(rgba?|hsla?)\(([^()]*)\)$/i.exec(c)
+  if (!m) return null
+  const fn = m[1].toLowerCase()
+  const body = cssTrim(m[2])
+  let parts
+  let alphaToken
+  const legacy = body.includes(',')
+  if (legacy) {
+    parts = body.split(',').map(cssTrim)
+    if (parts.length === 4) alphaToken = parts.pop()
+  } else {
+    const slash = body.split('/')
+    if (slash.length > 2) return null
+    if (slash.length === 2) alphaToken = cssTrim(slash[1])
+    parts = cssSplitWs(cssTrim(slash[0]))
+  }
+  if (parts.length !== 3) return null
+  const a = alphaToken === undefined ? 1 : cssAlpha(alphaToken)
+  if (a === null) return null
+  if (fn.startsWith('rgb')) {
+    const ch = parts.map(cssNum)
+    if (ch.some((v) => v === null)) return null
+    if (legacy && !(ch.every((v) => v.pct) || ch.every((v) => !v.pct))) return null
+    const [r, g, b] = ch.map((v) => (v.pct ? (v.n * 255) / 100 : v.n))
+    return cssToHex(r, g, b, a)
+  }
+  const hue = cssHue(parts[0])
+  const s = cssNum(parts[1])
+  const l = cssNum(parts[2])
+  if (hue === null || !s || !l) return null
+  if (legacy && !(s.pct && l.pct)) return null
+  const [r, g, b] = cssHslToRgb(hue, s.n, l.n)
+  return cssToHex(r, g, b, a)
+}
+
+function normalizeCssColor(value) {
+  if (typeof value !== 'string' || value.length > MAX_CSS_COLOR_LENGTH) return null
+  const c = cssTrim(value)
+  if (CSS_HEX_COLOR.test(c)) return c
+  const named = /^[a-z]+$/i.test(c) && Object.prototype.hasOwnProperty.call(CSS_NAMED_COLORS, c.toLowerCase()) ? CSS_NAMED_COLORS[c.toLowerCase()] : undefined
+  if (named) return named
+  return cssColorFunction(c)
+}
+
+// A colour from data (settings files, label records) before it lands in a
+// style: escapeHtml keeps it inside the attribute, but a ';' or url(...) would
+// still add CSS declarations or fetch a resource. A colour normalizeCssColor
+// accepts comes back as hex; a var(--token) passes as is; anything else
+// becomes the fallback.
+function safeCssColor(v, fallback = '') {
+  const n = normalizeCssColor(v)
+  if (n) return n
+  const c = String(v ?? '').trim()
+  return /^var\(--[a-z0-9-]+\)$/i.test(c) ? c : fallback
+}
+
+// t() for a translation that is itself HTML (the *_html keys, data-i18n-html):
+// the template is trusted markup, but every substituted value -- the brand
+// tokens, which come from .env BRAND_NAME / BOT_NAME, and the caller's params
+// -- is text, so each one is HTML-escaped. Plain t() stays raw for its
+// textContent / confirm / toast callers.
+function tHtml(key, params = {}) {
+  const enc = {}
+  for (const [k, v] of Object.entries({ ...window._brandTokens, ...params })) enc[k] = v == null ? v : escapeHtml(String(v))
+  return t(key, enc)
+}
+
 // ============================================================
 // === Status ===
 // ============================================================
@@ -10303,11 +10996,12 @@ async function loadStatus() {
         }
         const div = document.createElement('div')
         div.className = `status-incident ${inc.status}`
-        const date = new Date(inc.pubDate).toLocaleString('hu-HU', { timeZone: 'Europe/Budapest' })
+        // The viewer's local time, like every other time on the dashboard (ISSUE1895 / #1895).
+        const date = new Date(inc.pubDate).toLocaleString('hu-HU')
         div.innerHTML = `
           <div class="status-incident-header">
             <span class="status-incident-title">${escapeHtml(inc.title)}</span>
-            <span class="status-incident-badge ${inc.status}">${(typeof statusLabels[inc.status] === 'function' ? statusLabels[inc.status]() : statusLabels[inc.status]) || inc.status}</span>
+            <span class="status-incident-badge ${escapeHtml(inc.status)}">${escapeHtml((typeof statusLabels[inc.status] === 'function' ? statusLabels[inc.status]() : statusLabels[inc.status]) || inc.status)}</span>
           </div>
           <div class="status-incident-desc">${escapeHtml(inc.description.slice(0, 300))}</div>
           <div class="status-incident-date">${date}</div>
@@ -10375,7 +11069,7 @@ async function loadCosts() {
       </table></div>`
     }
 
-    html += `<p style="${mutedStyle};margin-top:16px">${t('costs.token_usage_note')} (${(s.token_usage?.calls ?? 0)} ${t('costs.calls')}, ${(s.token_usage?.input_tokens ?? 0) + (s.token_usage?.output_tokens ?? 0)} tokens)</p>`
+    html += `<p style="${mutedStyle};margin-top:16px">${t('costs.token_usage_note')} (${Number(s.token_usage?.calls ?? 0)} ${t('costs.calls')}, ${Number(s.token_usage?.input_tokens ?? 0) + Number(s.token_usage?.output_tokens ?? 0)} tokens)</p>`
 
     el.innerHTML = html
   } catch (err) {
@@ -11359,7 +12053,7 @@ async function loadTeamGraph() {
     renderTeamGraph(container, data, { editable: true, activeIds: _workingAgentIds })
     if (agentsBusyTimer) refreshAgentTerminalBusy()
   } catch (err) {
-    container.innerHTML = `<div class="team-empty">${t('team.error', { msg: err.message || err })}</div>`
+    container.innerHTML = `<div class="team-empty">${t('team.error', { msg: escapeHtml(String(err.message || err)) })}</div>`
   }
 }
 
@@ -11623,7 +12317,7 @@ const chatAgentHasAvatar = new Map() // name -> true|false
 let chatSelectedAgent = null
 
 function chatMonogramEl(agentName, size) {
-  const letter = agentName.charAt(0).toUpperCase()
+  const letter = escapeHtml(agentName.charAt(0).toUpperCase())
   const colors = ['#d97757','#00C2A8','#818cf8','#22c55e','#f59e0b','#ec4899']
   const color = colors[agentName.split('').reduce((a,c)=>a+c.charCodeAt(0),0) % colors.length]
   return `<div class="chat-avatar chat-avatar-mono" style="width:${size}px;height:${size}px;background:${color};font-size:${Math.round(size*0.4)}px">${letter}</div>`
@@ -11842,7 +12536,7 @@ async function loadChatThread(agentName) {
     <div class="chat-thread-header">
       ${chatAvatarHtml(agentName, 32)}
       <span class="chat-thread-title">${escapeHtml(threadDisplayName)}</span>
-      <button class="btn-secondary btn-compact" style="margin-left:auto" onclick="loadChatThread('${escapeHtml(agentName)}')">
+      <button class="btn-secondary btn-compact" style="margin-left:auto" onclick="loadChatThread(${jsArg(agentName)})">
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
       </button>
     </div>
@@ -12124,6 +12818,197 @@ function formatRelative(ts) {
   return t('common.time.day_abbr', { n: day })
 }
 
+// === Projects overview page ===
+// Human-readable, project-grouped summary of the kanban board. Everything
+// except the free-text description is computed server-side straight from
+// kanban_cards (GET /api/kanban-projects/summary) -- this page never derives
+// card counts/status locally, so it can never disagree with the Kanban board
+// itself. Fetches its own assignee list rather than depending on
+// kanbanAssignees (populated by loadKanban()) so the page works correctly
+// even if the user opens Projects before ever visiting Kanban.
+let _projectsAssignees = []
+// Last fetched summaries, kept so the status filter toggles below can
+// re-render instantly without a round trip -- the summary endpoint already
+// carries everything the filter needs (cardTotal/cardDone), so this is a
+// pure client-side filter, no new API.
+let _projectsLastSummaries = []
+let projectsShowDone = true
+let projectsShowInProgress = true
+
+// A project's overall state, derived the same way the card-count badge is:
+// "done" once every one of its (non-archived) cards is done, and only once
+// it has at least one card -- a project with zero live cards never reaches
+// here anyway (listKanbanProjectSummaries excludes it), but cardTotal===0
+// is guarded regardless so a future zero-card summary can't misreport as done.
+function projectOverallStatus(p) {
+  return p.cardTotal > 0 && p.cardDone === p.cardTotal ? 'done' : 'in_progress'
+}
+
+async function loadProjects() {
+  const grid = document.getElementById('projectsGrid')
+  const empty = document.getElementById('projectsEmpty')
+  if (!grid) return
+  try {
+    const [summaryRes, assigneesRes] = await Promise.all([
+      fetch('/api/kanban-projects/summary'),
+      fetch('/api/kanban/assignees'),
+    ])
+    if (!summaryRes.ok) throw new Error('HTTP ' + summaryRes.status)
+    _projectsLastSummaries = await summaryRes.json()
+    _projectsAssignees = assigneesRes.ok ? await assigneesRes.json() : []
+    renderProjects()
+  } catch (err) {
+    console.error('loadProjects failed:', err)
+    grid.innerHTML = ''
+    if (empty) { empty.hidden = false; empty.textContent = t('projects.load_error') }
+  }
+}
+
+function setProjectsFilterBtn(btnId, active) {
+  const btn = document.getElementById(btnId)
+  if (btn) btn.classList.toggle('active', active)
+}
+
+document.getElementById('projectsFilterDone')?.addEventListener('click', () => {
+  projectsShowDone = !projectsShowDone
+  setProjectsFilterBtn('projectsFilterDone', projectsShowDone)
+  renderProjects()
+})
+document.getElementById('projectsFilterInProgress')?.addEventListener('click', () => {
+  projectsShowInProgress = !projectsShowInProgress
+  setProjectsFilterBtn('projectsFilterInProgress', projectsShowInProgress)
+  renderProjects()
+})
+
+// Case-insensitive match against the assignee list (mirrors
+// kanbanSwimlaneKeyFor's own resolution rule) so display names/avatar colors
+// are consistent with how the Kanban board itself labels the same assignee.
+// An assignee id with no match (e.g. one that predates the current agent
+// roster) falls back to the raw id with the neutral "unknown" dot color --
+// same fallback the Kanban board uses, not a worse one.
+function projectAssigneeMeta(rawName) {
+  const raw = String(rawName || '').trim()
+  const match = _projectsAssignees.find((a) => a.name.toLowerCase() === raw.toLowerCase())
+  return match
+    ? { label: match.displayName || match.name, type: match.type }
+    : { label: raw, type: 'unknown' }
+}
+
+function renderProjects() {
+  const grid = document.getElementById('projectsGrid')
+  const empty = document.getElementById('projectsEmpty')
+  if (!grid) return
+  grid.innerHTML = ''
+  const all = Array.isArray(_projectsLastSummaries) ? _projectsLastSummaries : []
+  if (all.length === 0) {
+    if (empty) { empty.hidden = false; empty.textContent = t('projects.empty') }
+    return
+  }
+  const summaries = all.filter((p) => {
+    const status = projectOverallStatus(p)
+    if (status === 'done') return projectsShowDone
+    return projectsShowInProgress
+  })
+  if (summaries.length === 0) {
+    // Projects exist, but the current filter combination hides all of
+    // them -- a different message from "no project at all", so the user
+    // does not read this as an empty board.
+    if (empty) { empty.hidden = false; empty.textContent = t('projects.filter_empty') }
+    return
+  }
+  if (empty) empty.hidden = true
+
+  for (const p of summaries) {
+    const pct = p.cardTotal > 0 ? Math.round((p.cardDone / p.cardTotal) * 100) : 0
+    const activity = p.lastActivityAt
+      ? t('projects.last_activity', { when: formatRelative(p.lastActivityAt * 1000) })
+      : t('projects.no_activity')
+    const assigneeChips = (p.activeAssignees || []).length
+      ? p.activeAssignees.map((name) => {
+          const meta = projectAssigneeMeta(name)
+          return `<span class="kanban-card-assignee"><span class="assignee-dot ${escapeAttr(meta.type)}">${escapeHtml((meta.label[0] || '?').toUpperCase())}</span>${escapeHtml(meta.label)}</span>`
+        }).join('')
+      : `<span class="kanban-card-assignee">${escapeHtml(t('projects.no_assignee'))}</span>`
+
+    const card = document.createElement('div')
+    card.className = 'overview-card'
+    card.dataset.project = p.project
+    card.innerHTML = `
+      <div class="overview-card-head">
+        <h3>${escapeHtml(p.project)}</h3>
+        <span class="overview-card-meta">${escapeHtml(t('projects.cards_done', { done: p.cardDone, total: p.cardTotal }))}</span>
+      </div>
+      <div class="project-card-progress"><div class="project-card-progress-fill" style="width:${pct}%"></div></div>
+      <div class="project-card-desc" data-role="desc-view" data-raw="${escapeHtml(p.description || '')}">${p.description ? escapeHtml(p.description) : `<em>${escapeHtml(t('projects.no_description'))}</em>`}</div>
+      <textarea class="project-card-desc-edit" data-role="desc-edit" hidden>${escapeHtml(p.description || '')}</textarea>
+      <div data-role="desc-actions" style="display:flex;gap:6px;margin:6px 0">
+        <button class="btn-secondary btn-compact" data-act="edit">${escapeHtml(t('projects.edit'))}</button>
+        <button class="btn-primary btn-compact" data-act="save" hidden>${escapeHtml(t('projects.save'))}</button>
+        <button class="btn-secondary btn-compact" data-act="cancel" hidden>${escapeHtml(t('projects.cancel'))}</button>
+      </div>
+      <div class="project-card-assignees">${assigneeChips}</div>
+      <div class="project-card-foot">
+        <span>${escapeHtml(activity)}</span>
+        <a href="#" data-act="view-kanban">${escapeHtml(t('projects.view_in_kanban'))}</a>
+      </div>
+    `
+    grid.appendChild(card)
+  }
+}
+
+// Delegated click handler (one listener for the whole grid, not one per
+// card): the grid is fully re-rendered on every loadProjects() call, so
+// per-card listeners would leak on each refresh. data-act encodes which
+// button was pressed; data-project on the ancestor card carries the key.
+document.getElementById('projectsGrid')?.addEventListener('click', async (e) => {
+  const card = e.target.closest('.overview-card[data-project]')
+  if (!card) return
+  const project = card.dataset.project
+  const view = card.querySelector('[data-role="desc-view"]')
+  const editArea = card.querySelector('[data-role="desc-edit"]')
+  const [editBtn, saveBtn, cancelBtn] = card.querySelectorAll('[data-role="desc-actions"] button')
+
+  if (e.target.closest('[data-act="edit"]')) {
+    view.hidden = true; editArea.hidden = false
+    editBtn.hidden = true; saveBtn.hidden = false; cancelBtn.hidden = false
+    editArea.focus()
+    return
+  }
+  if (e.target.closest('[data-act="cancel"]')) {
+    editArea.value = view.dataset.raw ?? editArea.value
+    view.hidden = false; editArea.hidden = true
+    editBtn.hidden = false; saveBtn.hidden = true; cancelBtn.hidden = true
+    return
+  }
+  if (e.target.closest('[data-act="save"]')) {
+    const text = editArea.value
+    try {
+      const res = await fetch(`/api/kanban-projects/${encodeURIComponent(project)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ description: text }),
+      })
+      if (!res.ok) throw new Error('HTTP ' + res.status)
+      view.innerHTML = text.trim() ? escapeHtml(text.trim()) : `<em>${escapeHtml(t('projects.no_description'))}</em>`
+      view.dataset.raw = text.trim()
+      view.hidden = false; editArea.hidden = true
+      editBtn.hidden = false; saveBtn.hidden = true; cancelBtn.hidden = true
+      showToast(t('common.saved'))
+    } catch (err) {
+      console.error('save project description failed:', err)
+      showToast(t('projects.save_error'))
+    }
+    return
+  }
+  if (e.target.closest('[data-act="view-kanban"]')) {
+    e.preventDefault()
+    kanbanProjectFilter = project
+    const sel = document.getElementById('kanbanProjectFilter')
+    if (sel) sel.value = project
+    switchPage('kanban')
+  }
+})
+
 // Forward-looking duration, reusing the same abbreviations formatRelative uses
 // so the strip does not invent a second time vocabulary.
 function formatDurationShort(sec) {
@@ -12141,6 +13026,44 @@ function quotaLevelClass(pct) {
   if (pct >= 80) return 'danger'
   if (pct >= 60) return 'warn'
   return ''
+}
+
+// Weekly quota row: 7 day segments, day names underneath and a "now" marker.
+// The window is NOT a calendar week: it runs resetsAt-7d -> resetsAt
+// (measured 2026-09-29: Monday 09:00 CEST for both the previous and the
+// current window), so the labels and the marker are derived from resetsAt,
+// never from "Monday". Each segment is labelled with the weekday it STARTS
+// on. Returns null when there is no usable current window -- the row then
+// keeps the plain bar instead of drawing a week it cannot place.
+// timeZone is for tests only; the dashboard uses the viewer's local time.
+function weekSegments(resetsAt, nowSec, lang, timeZone) {
+  const WEEK = 7 * 86400
+  if (typeof resetsAt !== 'number' || !Number.isFinite(resetsAt)) return null
+  if (typeof nowSec !== 'number' || !Number.isFinite(nowSec)) return null
+  const start = resetsAt - WEEK
+  if (resetsAt <= nowSec || nowSec < start) return null
+  const locale = lang === 'en' ? 'en-US' : 'hu-HU'
+  const starts = Array.from({ length: 7 }, (_, i) => start + i * 86400)
+  const name = (weekday) => starts.map((sec) => {
+    const s = new Date(sec * 1000).toLocaleDateString(locale, { weekday, timeZone })
+    return s.charAt(0).toUpperCase() + s.slice(1)
+  })
+  // Three widths, chosen by the CSS container query on .quota-bar-days, never
+  // by an ellipsis (a portrait phone showed "Hé… Ke… Sz… … Sz…": two
+  // indistinguishable "Sz…"). hu short = H K Sze Cs P Szo V. hu has no safe
+  // one-letter form (Szerda/Szombat both "Sz"), so hu has NO narrow tier:
+  // narrowLabels is null and the day-name row hides below that width (the
+  // separators and the now marker still show where the days are). Its short
+  // forms need ~140 px and ran together ("SzeCs") on a 390 px phone.
+  // en narrow = M T W T F S S.
+  const short = name('short')
+  return {
+    starts,
+    labels: name('long'),
+    shortLabels: short,
+    narrowLabels: lang === 'en' ? name('narrow') : null,
+    nowPct: ((nowSec - start) / WEEK) * 100,
+  }
 }
 
 // Render the subscription quota strip from /api/overview's `quota` block.
@@ -12214,9 +13137,17 @@ function renderQuotaStrip(q, fable) {
     if (q.source === 'mod' && w.sourceAgent) {
       tail += ' · ' + w.sourceAgent
     }
+    const week = labelKey === 'overview.quota.seven_day' && !w.expired
+      ? weekSegments(w.resetsAt, nowSec, window._lang)
+      : null
+    const trackHtml = `<div class="quota-bar-track${week ? ' week' : ''}"><div class="quota-bar-fill ${muted ? '' : quotaLevelClass(pct)}" style="width:${pct}%"></div></div>`
     row.innerHTML = `
       <div class="quota-bar-label">${escapeHtml(t(labelKey))}</div>
-      <div class="quota-bar-track"><div class="quota-bar-fill ${muted ? '' : quotaLevelClass(pct)}" style="width:${pct}%"></div></div>
+      ${week ? `<div class="quota-bar-col">
+        ${trackHtml}
+        <div class="quota-bar-now" style="left:${week.nowPct.toFixed(2)}%"></div>
+        <div class="quota-bar-days${week.narrowLabels ? '' : ' no-narrow'}">${week.labels.map((d, i) => `<span><span class="day-full">${escapeHtml(d)}</span><span class="day-short">${escapeHtml(week.shortLabels[i])}</span>${week.narrowLabels ? `<span class="day-narrow">${escapeHtml(week.narrowLabels[i])}</span>` : ''}</span>`).join('')}</div>
+      </div>` : trackHtml}
       <div class="quota-bar-value">${pct}%<span class="quota-bar-reset">${escapeHtml(tail)}</span></div>
     `
     bars.appendChild(row)
@@ -12502,7 +13433,7 @@ async function loadUpdates() {
       applyBtn.hidden = true
     } else if (data.behind === 0) {
       summary.className = 'updates-summary up-to-date'
-      summary.innerHTML = `<strong>${t('updates.up_to_date_html')}</strong>. ${t('updates.no_changes')}`
+      summary.innerHTML = `<strong>${tHtml('updates.up_to_date_html')}</strong>. ${t('updates.no_changes')}`
       applyBtn.hidden = true
     } else {
       summary.className = 'updates-summary behind'
@@ -12953,7 +13884,7 @@ function wireOnboarding(step) {
         // surface the automatic channels restart (same pattern as the
         // claude-auth step) instead of silently advancing.
         if (typeof initSidebarBrand === 'function') initSidebarBrand()
-        if (d.restartError) { idBtn.disabled = false; onbMsg(t('onboarding.identity.saved_restart_failed'), true); setTimeout(refreshOnboarding, 6000); return }
+        if (d.restartError) { idBtn.disabled = false; onbMsg(t('onboarding.identity.saved_restart_failed', { cmd: d.restartCommand || '' }), true); setTimeout(refreshOnboarding, 6000); return }
         if (d.restarted) { onbMsg(t('onboarding.identity.saved_restarted')); setTimeout(refreshOnboarding, 2500); return }
         if (d.restartNeeded) { onbMsg(t('onboarding.identity.saved_restart_needed')); await refreshOnboarding(); return }
         onbMsg(t('onboarding.identity.saved'))
@@ -12976,7 +13907,7 @@ function wireOnboarding(step) {
         // unauthenticated) channels session right after the first auth save --
         // surface that, and on failure show the manual restart step instead of
         // silently advancing.
-        if (d.restartError) { authBtn.disabled = false; onbMsg(t('onboarding.step1.saved_restart_failed'), true); setTimeout(refreshOnboarding, 6000); return }
+        if (d.restartError) { authBtn.disabled = false; onbMsg(t('onboarding.step1.saved_restart_failed', { cmd: d.restartCommand || '' }), true); setTimeout(refreshOnboarding, 6000); return }
         if (d.restarted) { onbMsg(t('onboarding.step1.saved_restarted')); setTimeout(refreshOnboarding, 2500); return }
         onbMsg(d.verified ? t('onboarding.step1.saved_verified') : t('onboarding.step1.saved_unverified'))
         await refreshOnboarding()
@@ -13039,6 +13970,8 @@ function wireOnboarding(step) {
         // and on timeout stay on this step with an honest "still starting"
         // message -- the old fixed 4s opened the pairing step against a
         // booting session, which looked done-and-empty (WIZFLOW809).
+        // #1878 (6): a failed restart is said at once, not after the ~2 min wait below.
+        if (d.restartError) { botBtn.disabled = false; onbMsg(t('onboarding.step2.saved_restart_failed', { cmd: d.restartCommand || '' }), true); return }
         onbMsg(d.restarted ? t('onboarding.step2.saved_restarted') : t('onboarding.step2.saved'))
         onbMsg(t('onboarding.step2.waiting_channel'))
         const outcome = await waitForChannelLive(fetchOnboardingStatus, 3000, 40)  // ~2 min bound
@@ -13424,9 +14357,9 @@ function renderRecallTimeline(el, data) {
 
 function esc(s) {
   if (!s) return ''
-  const d = document.createElement('div')
-  d.textContent = String(s)
-  return d.innerHTML
+  // Quote-safe like escapeHtml: esc() output also lands in attributes
+  // (data-cat, style), where a bare " would break out of the attribute.
+  return escapeHtml(String(s))
 }
 
 // ============================================================
@@ -13513,26 +14446,26 @@ async function loadBgTasks() {
       return
     }
 
-    list.innerHTML = tasks.map(t => {
+    list.innerHTML = tasks.map(task => {
       const statusColors = { running: '#f59e0b', done: '#22c55e', failed: '#ef4444', timeout: '#6b7280' }
       const statusLabels = { running: () => t('bgTasks.status.running'), done: () => t('bgTasks.status.done'), failed: () => t('bgTasks.status.failed'), timeout: () => t('bgTasks.status.timeout') }
-      const color = statusColors[t.status] || '#6b7280'
-      const labelRaw = statusLabels[t.status]; const label = labelRaw ? (typeof labelRaw === 'function' ? labelRaw() : labelRaw) : t.status
-      const output = t.output ? `<pre style="margin-top:8px;padding:8px;background:var(--bg);border-radius:6px;font-size:12px;max-height:200px;overflow:auto;white-space:pre-wrap;">${esc(t.output.slice(-2000))}</pre>` : ''
+      const color = statusColors[task.status] || '#6b7280'
+      const labelRaw = statusLabels[task.status]; const label = labelRaw ? (typeof labelRaw === 'function' ? labelRaw() : labelRaw) : task.status
+      const output = task.output ? `<pre style="margin-top:8px;padding:8px;background:var(--bg);border-radius:6px;font-size:12px;max-height:200px;overflow:auto;white-space:pre-wrap;">${esc(task.output.slice(-2000))}</pre>` : ''
       return `<div style="margin-bottom:12px;padding:12px 16px;border-radius:8px;background:var(--surface);border:1px solid var(--border);border-left:3px solid ${color};">
         <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;">
           <div style="display:flex;gap:8px;align-items:center;">
-            <span style="font-weight:600;font-size:13px;">${esc(t.id)}</span>
-            <span class="badge" style="font-size:11px;background:${color};color:#fff;padding:2px 8px;border-radius:12px;">${label}</span>
-            <span class="badge" style="font-size:11px;background:var(--primary);color:#fff;padding:2px 8px;border-radius:12px;">${esc(t.agent_id)}</span>
+            <span style="font-weight:600;font-size:13px;">${esc(task.id)}</span>
+            <span class="badge" style="font-size:11px;background:${color};color:#fff;padding:2px 8px;border-radius:12px;">${escapeHtml(label)}</span>
+            <span class="badge" style="font-size:11px;background:var(--primary);color:#fff;padding:2px 8px;border-radius:12px;">${esc(task.agent_id)}</span>
           </div>
           <div style="display:flex;gap:8px;align-items:center;">
-            <span style="font-size:12px;color:var(--text-muted)">${esc(t.started_label)}</span>
-            ${t.status === 'running' ? `<button class="btn btn-sm" onclick="viewBgTask('${esc(t.id)}')" style="font-size:11px;padding:2px 8px;">${t('bgTasks.output_btn')}</button><button class="btn btn-sm" onclick="cancelBgTask('${esc(t.id)}')" style="font-size:11px;padding:2px 8px;color:var(--danger)">${t('bgTasks.stop_btn')}</button>` : ''}
+            <span style="font-size:12px;color:var(--text-muted)">${esc(task.started_label)}</span>
+            ${task.status === 'running' ? `<button class="btn btn-sm" onclick="viewBgTask(${jsArg(task.id)})" style="font-size:11px;padding:2px 8px;">${t('bgTasks.output_btn')}</button><button class="btn btn-sm" onclick="cancelBgTask(${jsArg(task.id)})" style="font-size:11px;padding:2px 8px;color:var(--danger)">${t('bgTasks.stop_btn')}</button>` : ''}
           </div>
         </div>
-        <div style="font-size:13px;color:var(--text-primary);margin-bottom:4px;">${esc(t.prompt)}</div>
-        ${t.finished_label ? `<div style="font-size:12px;color:var(--text-muted);">${t('bgTasks.finished_label')} ${esc(t.finished_label)}</div>` : ''}
+        <div style="font-size:13px;color:var(--text-primary);margin-bottom:4px;">${esc(task.prompt)}</div>
+        ${task.finished_label ? `<div style="font-size:12px;color:var(--text-muted);">${t('bgTasks.finished_label')} ${esc(task.finished_label)}</div>` : ''}
         ${output}
       </div>`
     }).join('')
@@ -13814,7 +14747,7 @@ function _renderApprovalsTable() {
 function _approvalBadge(status) {
   const colors = { pending: 'var(--warning)', approved: 'var(--success)', rejected: 'var(--danger)', timeout: 'var(--text-muted)' }
   const color = colors[status] || 'var(--text-muted)'
-  return `<span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;background:color-mix(in srgb,${color} 15%,transparent);color:${color}">${t('approvals.status.' + status) || status}</span>`
+  return `<span style="display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;background:color-mix(in srgb,${color} 15%,transparent);color:${color}">${escapeHtml(t('approvals.status.' + status) || status)}</span>`
 }
 
 function _updateCountdowns() {
@@ -13954,6 +14887,7 @@ async function renderAuthCard() {
   if (status.method === 'token' || status.method === 'session') {
     renderDeviceKeysSection(body)
     renderBridgeEnrollSection(body)
+    renderOperatorAccessSection(body)
   }
 }
 
@@ -14081,6 +15015,7 @@ async function refreshDeviceKeyList() {
       const lastUsed = k.lastUsedAt ? new Date(k.lastUsedAt * 1000).toLocaleString() : t('auth.devices.never_used')
       const expires = k.expiresAt ? ` &middot; ${t('auth.devices.expires', { date: new Date(k.expiresAt * 1000).toLocaleDateString() })}` : ''
       const bridge = k.installId ? ` <span class="auth-device-bridge-badge">${t('auth.devices.bridge_badge')}</span>` : ''
+        + (k.scope === 'operator' ? ` <span class="auth-device-bridge-badge">${t('auth.operator.badge')}</span>` : '')
       return `<div class="auth-session-row auth-device-row" data-key-id="${k.id}">` +
         `<span class="auth-device-name">${escapeHtml(k.name)}${bridge}</span>` +
         `<span class="auth-device-meta">${created} &middot; ${t('auth.devices.last_used', { date: lastUsed })}${expires}</span>` +
@@ -14144,6 +15079,115 @@ async function mintDeviceKey() {
         await navigator.clipboard.writeText(data.key)
         document.getElementById('authDevCopyBtn').textContent = t('auth.devices.copied')
       } catch { document.getElementById('authDevMintedKey').select() }
+    })
+    refreshDeviceKeyList()
+  } catch { msg.classList.add('err'); msg.textContent = t('auth.login.err_network') }
+}
+
+// === IT operator access (DASHOPERATOR1005) ===
+// The owner decides what an IT operator may do: one switch per capability,
+// all OFF by default, and the whole surface OFF until "enabled". An operator
+// key reaches /operator and /api/operator/* only (the server enforces it), and
+// it always expires.
+
+const OPERATOR_CAPS = ['agentControl', 'mainAgentRestart', 'update', 'vaultWrite', 'vaultOverwrite', 'paneView', 'commands']
+const OPERATOR_CMDS = ['login', 'mcp']
+
+function renderOperatorAccessSection(body) {
+  const wrap = document.createElement('div')
+  wrap.className = 'auth-device-keys'
+  wrap.id = 'authOperatorAccess'
+  wrap.innerHTML =
+    `<div class="auth-sessions-title">${t('auth.operator.title')}</div>` +
+    `<p class="auth-muted">${t('auth.operator.desc')}</p>` +
+    `<label class="auth-operator-switch"><input type="checkbox" id="opAccEnabled"> <strong>${t('auth.operator.enabled')}</strong></label>` +
+    `<div id="opAccCaps">` +
+      OPERATOR_CAPS.map((c) => `<label class="auth-operator-switch"><input type="checkbox" data-op-cap="${escapeHtml(c)}"> ${escapeHtml(t('auth.operator.cap.' + c))}</label>`).join('') +
+      `<div class="auth-muted" style="margin-left:1.5em">` +
+        OPERATOR_CMDS.map((c) => `<label class="auth-operator-switch"><input type="checkbox" data-op-cmd="${escapeHtml(c)}"> /${escapeHtml(c)}</label>`).join(' ') +
+      `</div>` +
+    `</div>` +
+    `<div class="auth-form-msg" id="opAccMsg"></div>` +
+    `<div class="auth-form auth-device-mint">` +
+      `<input id="opKeyName" type="text" autocapitalize="off" spellcheck="false" maxlength="64" placeholder="${t('auth.operator.name_placeholder')}">` +
+      `<input id="opKeyExpiry" type="number" min="1" max="365" placeholder="${t('auth.operator.expiry_placeholder')}">` +
+      `<button class="btn-secondary" id="opKeyMintBtn">${t('auth.operator.mint')}</button>` +
+      `<div class="auth-form-msg" id="opKeyMsg"></div>` +
+      `<div id="opKeyMinted" hidden></div>` +
+    `</div>`
+  body.appendChild(wrap)
+  wrap.querySelectorAll('input[type=checkbox]').forEach((cb) => cb.addEventListener('change', saveOperatorAccess))
+  document.getElementById('opKeyMintBtn').addEventListener('click', mintOperatorKey)
+  loadOperatorAccess()
+}
+
+function applyOperatorAccess(a) {
+  document.getElementById('opAccEnabled').checked = !!a.enabled
+  for (const c of OPERATOR_CAPS) document.querySelector(`[data-op-cap="${CSS.escape(String(c))}"]`).checked = !!(a.capabilities && a.capabilities[c])
+  for (const c of OPERATOR_CMDS) document.querySelector(`[data-op-cmd="${CSS.escape(String(c))}"]`).checked = (a.commands || []).includes(c)
+  document.getElementById('opAccCaps').style.opacity = a.enabled ? '1' : '0.5'
+}
+
+async function loadOperatorAccess() {
+  try {
+    const r = await fetch('/api/operator-access')
+    if (r.ok) applyOperatorAccess(await r.json())
+  } catch { /* the section stays at its unchecked defaults */ }
+}
+
+async function saveOperatorAccess(ev) {
+  const msg = document.getElementById('opAccMsg')
+  msg.className = 'auth-form-msg'
+  // Turning on the pane view shows the operator the conversation itself: ask first.
+  if (ev && ev.target && ev.target.dataset.opCap === 'paneView' && ev.target.checked && !confirm(t('auth.operator.pane_warning'))) {
+    ev.target.checked = false
+    return
+  }
+  const next = {
+    enabled: document.getElementById('opAccEnabled').checked,
+    capabilities: Object.fromEntries(OPERATOR_CAPS.map((c) => [c, document.querySelector(`[data-op-cap="${CSS.escape(String(c))}"]`).checked])),
+    commands: OPERATOR_CMDS.filter((c) => document.querySelector(`[data-op-cmd="${CSS.escape(String(c))}"]`).checked),
+  }
+  try {
+    const r = await fetch('/api/operator-access', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(next) })
+    if (!r.ok) throw new Error(String(r.status))
+    applyOperatorAccess(await r.json())
+    msg.classList.add('ok'); msg.textContent = t('auth.operator.saved')
+  } catch {
+    msg.classList.add('err'); msg.textContent = t('auth.card.err_generic')
+    loadOperatorAccess()
+  }
+}
+
+async function mintOperatorKey() {
+  const msg = document.getElementById('opKeyMsg')
+  const minted = document.getElementById('opKeyMinted')
+  const name = (document.getElementById('opKeyName').value || '').trim()
+  const expiryRaw = document.getElementById('opKeyExpiry').value
+  msg.className = 'auth-form-msg'
+  minted.hidden = true
+  if (!name) { msg.classList.add('err'); msg.textContent = t('auth.devices.err_name'); return }
+  const payload = { name, scope: 'operator' }
+  if (expiryRaw) payload.expires_in_days = Number(expiryRaw)
+  try {
+    const r = await fetch('/api/auth/device-keys', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+    const data = await r.json().catch(() => ({}))
+    if (!r.ok) { msg.classList.add('err'); msg.textContent = data.error || t('auth.card.err_generic'); return }
+    document.getElementById('opKeyName').value = ''
+    document.getElementById('opKeyExpiry').value = ''
+    const url = `${location.origin}/operator`
+    minted.hidden = false
+    minted.innerHTML =
+      `<p class="auth-muted">${t('auth.operator.minted_hint', { date: new Date(data.expires_at * 1000).toLocaleDateString(), url: escapeHtml(url) })}</p>` +
+      `<div class="auth-form auth-device-minted-row">` +
+        `<input id="opKeyMintedVal" type="text" readonly value="${escapeHtml(data.key)}" onclick="this.select()">` +
+        `<button class="btn-secondary btn-compact" id="opKeyCopyBtn">${t('auth.devices.copy')}</button>` +
+      `</div>`
+    document.getElementById('opKeyCopyBtn').addEventListener('click', async () => {
+      try {
+        await navigator.clipboard.writeText(data.key)
+        document.getElementById('opKeyCopyBtn').textContent = t('auth.devices.copied')
+      } catch { document.getElementById('opKeyMintedVal').select() }
     })
     refreshDeviceKeyList()
   } catch { msg.classList.add('err'); msg.textContent = t('auth.login.err_network') }
@@ -14360,6 +15404,7 @@ async function loadSettings() {
       for (const def of defs) {
         group.appendChild(buildSettingRow(def))
       }
+      buildSettingsGroupReset(group)
       panel.appendChild(group)
       tabPanels.appendChild(panel)
     }
@@ -14393,6 +15438,7 @@ async function loadSettings() {
         for (const def of securityDefs) {
           group.appendChild(buildSettingRow(def))
         }
+        buildSettingsGroupReset(group)
         panel.appendChild(group)
       }
       tabPanels.appendChild(panel)
@@ -14474,6 +15520,7 @@ async function loadSettings() {
         for (const def of claudePlansDefs) {
           group.appendChild(buildSettingRow(def))
         }
+        buildSettingsGroupReset(group)
         panel.appendChild(group)
       }
 
@@ -14543,13 +15590,14 @@ function activateSettingsTab(mod) {
 // active-plan / last-known-usage badges. The "active" dot reflects the MAIN
 // agent's entry in activePlanByAgent (PR2c, design decision #1: the state is
 // per-agent, but this tab only shows the one that also drives the dashboard
-// header). There is still no manual rotate button here: this tab lets the
-// operator view and hand-edit the registry, the same way it already lets
-// them for store/claude-plans.json by hand; actual rotation is triggered by
-// the heartbeat script or POST /api/claude-plans/rotate directly.
+// header). Each non-active, channels-allowed plan has a "switch to this
+// plan" button (switchToClaudePlan -> POST /api/claude-plans/rotate): the
+// manual path, and the first assignment the rotation heartbeat needs before
+// it can decide anything. Automatic rotation is the heartbeat's job.
 async function renderClaudePlansPanel(body) {
   body.innerHTML = `
     <p style="color:var(--text-muted);font-size:13px;margin:0 0 16px">${t('settings.claude_plans.intro')}</p>
+    <div id="claudePlansReadiness" class="claude-plans-readiness-banner" role="alert" hidden></div>
     <div id="claudePlansList"></div>
     <div class="claude-plans-add-form">
       <div class="claude-plans-form-title" id="cpFormTitle">${t('settings.claude_plans.form.title_add')}</div>
@@ -14760,6 +15808,29 @@ async function saveClaudePlan() {
   }
 }
 
+// POST /api/claude-plans/rotate for the main agent (agentId defaults to it
+// server-side). Restarts the main agent's session, hence the confirm.
+async function switchToClaudePlan(plan) {
+  if (!confirm(t('settings.claude_plans.confirm_switch', { label: plan.label }))) return
+  try {
+    const res = await fetch('/api/claude-plans/rotate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ targetPlanId: plan.id }),
+    })
+    let data = null
+    try { data = await res.json() } catch { /* non-JSON error body */ }
+    if (!res.ok) {
+      showToast((data && data.error) || t('settings.claude_plans.switch_error'), 'error')
+    } else {
+      showToast(t('settings.claude_plans.switch_done', { label: plan.label }))
+    }
+  } catch {
+    showToast(t('settings.claude_plans.switch_error'), 'error')
+  }
+  await loadClaudePlansList()
+}
+
 async function deleteClaudePlan(id) {
   if (!confirm(t('settings.claude_plans.confirm_delete', { id }))) return
   await fetch(`/api/claude-plans/${encodeURIComponent(id)}`, { method: 'DELETE' })
@@ -14879,9 +15950,49 @@ async function probeClaudePlan(id, btn) {
   await loadClaudePlansList()
 }
 
+// Pure: GET /api/claude-plans/readiness -> the banner's lines, or null when
+// no banner belongs on screen. Shown only while rotation is ON but something
+// keeps it inert (with rotation off there is nothing to warn about: the
+// toggle itself says so). Known codes get the localized text; an unknown one
+// falls back to the server's own Hungarian message rather than vanishing.
+function claudePlansReadinessLines(readiness) {
+  if (!readiness || readiness.ready) return null
+  const codes = Array.isArray(readiness.blockers) ? readiness.blockers : []
+  if (!codes.length || codes.includes('rotation_disabled')) return null
+  const details = Array.isArray(readiness.details) ? readiness.details : []
+  return codes.map((code) => {
+    const key = 'settings.claude_plans.readiness.' + code
+    const text = t(key)
+    if (text !== key) return text
+    const d = details.find((x) => x && x.code === code)
+    return (d && d.message) || code
+  })
+}
+
+async function loadClaudePlansReadiness() {
+  const el = document.getElementById('claudePlansReadiness')
+  if (!el) return
+  let lines = null
+  try {
+    const res = await fetch('/api/claude-plans/readiness')
+    if (res.ok) lines = claudePlansReadinessLines(await res.json())
+  } catch { /* banner is advisory: no answer, no banner */ }
+  if (!lines) {
+    el.hidden = true
+    el.innerHTML = ''
+    return
+  }
+  el.innerHTML = `<div class="claude-plans-readiness-title">${escapeHtml(t('settings.claude_plans.readiness.title'))}</div>`
+    + `<ul>${lines.map((l) => `<li>${escapeHtml(l)}</li>`).join('')}</ul>`
+  el.hidden = false
+}
+
 async function loadClaudePlansList() {
   const list = document.getElementById('claudePlansList')
   if (!list) return
+  // Plan count and channelsAllowed feed the readiness report, so it is
+  // refreshed together with the list (add/edit/delete all end up here).
+  loadClaudePlansReadiness()
   list.innerHTML = `<p style="color:var(--text-muted);font-size:13px">${t('common.loading')}</p>`
   try {
     const [plansRes, stateRes] = await Promise.all([
@@ -14937,6 +16048,18 @@ async function loadClaudePlansList() {
       editBtn.textContent = '✎'
       editBtn.addEventListener('click', () => editClaudePlan(plan))
       actions.appendChild(editBtn)
+
+      // Manual switch (also the first assignment the rotation heartbeat
+      // needs before it can decide anything, see readiness no_active_plan).
+      // Only for a plan that may run the channel and is not already active.
+      if (plan.channelsAllowed && !isActive) {
+        const switchBtn = document.createElement('button')
+        switchBtn.className = 'btn-secondary btn-compact claude-plan-switch-btn'
+        switchBtn.textContent = t('settings.claude_plans.switch_btn')
+        switchBtn.title = t('settings.claude_plans.switch_btn')
+        switchBtn.addEventListener('click', () => switchToClaudePlan(plan))
+        actions.appendChild(switchBtn)
+      }
 
       const delBtn = document.createElement('button')
       delBtn.className = 'claude-plan-delete'
@@ -15159,6 +16282,7 @@ function buildSettingRow(def) {
   }
   if (def.type === 'color') metaParts.push(t('settings.meta.format') + ': #rrggbb')
   metaParts.push(t('settings.meta.default') + ': ' + def.default)
+  if (def.source === 'override') metaParts.push(t('settings.meta.overridden'))
   meta.textContent = metaParts.join(' · ')
   info.appendChild(meta)
 
@@ -15214,8 +16338,221 @@ function buildSettingRow(def) {
   valueInput.addEventListener('input', () => markSettingDirty(def.key, valueInput, originalValue, def.type, errorEl))
   valueInput.addEventListener('change', () => markSettingDirty(def.key, valueInput, originalValue, def.type, errorEl))
 
+  // A value saved from this page is an override (config-overrides.json), and
+  // until now it could only be replaced, never removed. The button drops the
+  // override; the row is rebuilt from the answer so the input, the dirty
+  // tracking and the button itself all reflect the layer that answers now.
+  if (def.source === 'override') {
+    const resetBtn = document.createElement('button')
+    resetBtn.type = 'button'
+    resetBtn.className = 'btn-secondary btn-compact settings-reset-default-btn'
+    resetBtn.textContent = t('settings.btn.reset_default')
+    const preview = settingResetPreview(def)
+    resetBtn.title = t('settings.btn.reset_default_title') + ' ' + formatSettingValue(preview.from) + ' \u2192 ' + formatSettingValue(preview.to) + ' (' + preview.source + ')'
+    resetBtn.addEventListener('click', () => resetSettingToDefault(def, row, resetBtn, errorEl))
+    editor.insertBefore(resetBtn, errorEl)
+  }
+
+  row._settingDef = def
   row.appendChild(editor)
   return row
+}
+
+// Removes one saved override and rebuilds its row from the answer. Shared by
+// the row button and the per-tab button; reports instead of toasting so the
+// caller decides what to tell the operator.
+async function removeSettingOverride(row) {
+  const def = row._settingDef
+  const errorEl = row.querySelector('.settings-row-error')
+  if (errorEl) errorEl.textContent = ''
+  try {
+    const res = await fetch('/api/settings/' + encodeURIComponent(def.key), { method: 'DELETE' })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) {
+      if (errorEl) errorEl.textContent = data.error || 'Hiba'
+      return { ok: false }
+    }
+    settingsDirty.delete(def.key)
+    row.replaceWith(buildSettingRow({ ...def, value: data.value, source: data.source, resetValue: data.value, resetSource: data.source }))
+    return { ok: true, source: data.source, requiresRestart: !!data.requiresRestart }
+  } catch {
+    if (errorEl) errorEl.textContent = 'Kapcsolati hiba'
+    return { ok: false }
+  }
+}
+
+async function resetSettingToDefault(def, row, btn, errorEl) {
+  // One row is confirmed the same way as a tab: the button used to reset at
+  // once, and the first sign of a wrong click could be a notification on the
+  // wrong channel.
+  if (!(await confirmSettingsReset([settingResetPreview(def)]))) return
+  btn.disabled = true
+  const group = row.closest('.settings-group')
+  const result = await removeSettingOverride(row)
+  if (!result.ok) {
+    btn.disabled = false
+    return
+  }
+  refreshSettingsGroupReset(group)
+  updateSettingsSaveBar()
+  loadClaudePlansReadiness()
+  const base = result.source === 'env' ? t('settings.toast.reset_env') : t('settings.toast.reset_default')
+  showToast(result.requiresRestart ? base + ' ' + t('settings.toast.reset_restart_suffix') : base)
+}
+
+// One button per tab: every overridden row of this group back to its default.
+// It changes several values at once, so it is confirmed, and the question
+// lists the keys -- the operator approves a named set, not "everything here".
+function overriddenSettingRows(group) {
+  return [...group.querySelectorAll('.settings-row')].filter((r) => r._settingDef && r._settingDef.source === 'override')
+}
+
+function buildSettingsGroupReset(group) {
+  const bar = document.createElement('div')
+  bar.className = 'settings-group-actions'
+  const btn = document.createElement('button')
+  btn.type = 'button'
+  btn.className = 'btn-secondary btn-compact settings-reset-tab-btn'
+  btn.addEventListener('click', () => resetSettingsGroupToDefault(group))
+  bar.appendChild(btn)
+  group.prepend(bar)
+  refreshSettingsGroupReset(group)
+}
+
+function refreshSettingsGroupReset(group) {
+  const btn = group ? group.querySelector('.settings-reset-tab-btn') : null
+  if (!btn) return
+  const count = overriddenSettingRows(group).length
+  btn.disabled = count === 0
+  btn.textContent = count === 0 ? t('settings.btn.reset_tab') : t('settings.btn.reset_tab') + ' (' + count + ')'
+  btn.title = count === 0 ? t('settings.btn.reset_tab_none') : t('settings.btn.reset_tab_title')
+}
+
+// What a row turns into when its override is removed, as the page knows it
+// from GET /api/settings: the value that answers without the override, and the
+// layer it comes from (.env or the registry default).
+function settingResetPreview(def) {
+  return {
+    key: def.key,
+    from: String(def.value),
+    to: String(def.resetValue !== undefined ? def.resetValue : def.default),
+    source: def.resetSource === 'env' ? t('settings.source.env') : t('settings.source.default'),
+    requiresRestart: !!def.requiresRestart,
+  }
+}
+
+function formatSettingValue(value) {
+  return value === '' ? t('settings.value.empty') : value
+}
+
+// The confirmation for a reset, per row and per tab, in the app's own modal
+// (the native confirm() carries the host name as its title and cannot show a
+// list as a list). An override is often a deliberate choice, and removing one
+// can switch a safety setting back (notifications on again, isolation off), so
+// the dialog shows for every key what the value is now, what it becomes and
+// where that comes from -- the owner approves a change, not a list of names.
+// Resolves true only on the explicit confirm button; Escape, the close button,
+// the backdrop and Cancel all resolve false, and Cancel has the focus, so
+// Enter on a freshly opened dialog changes nothing.
+function confirmSettingsReset(items) {
+  return new Promise((resolve) => {
+    const overlay = document.createElement('div')
+    overlay.className = 'modal-overlay active'
+    overlay.setAttribute('role', 'dialog')
+    overlay.setAttribute('aria-modal', 'true')
+
+    const modal = document.createElement('div')
+    modal.className = 'modal modal-wide'
+
+    const header = document.createElement('div')
+    header.className = 'modal-header'
+    const title = document.createElement('h2')
+    title.textContent = t('settings.confirm.reset_tab_title')
+    const closeBtn = document.createElement('button')
+    closeBtn.type = 'button'
+    closeBtn.className = 'modal-close'
+    closeBtn.textContent = '\u00d7'
+    header.append(title, closeBtn)
+
+    const body = document.createElement('div')
+    body.className = 'modal-body settings-reset-confirm'
+    const message = document.createElement('p')
+    message.textContent = t('settings.confirm.reset_tab')
+    const list = document.createElement('ul')
+    list.className = 'settings-reset-confirm-keys'
+    for (const item of items) {
+      const li = document.createElement('li')
+      const key = document.createElement('span')
+      key.className = 'settings-reset-confirm-key'
+      key.textContent = item.key
+      const change = document.createElement('span')
+      change.className = 'settings-reset-confirm-change'
+      change.textContent = formatSettingValue(item.from) + ' \u2192 ' + formatSettingValue(item.to) + ' (' + item.source + ')'
+      li.append(key, change)
+      if (item.requiresRestart) {
+        const restart = document.createElement('span')
+        restart.className = 'settings-restart-badge'
+        restart.textContent = t('settings.restart_badge')
+        li.appendChild(restart)
+      }
+      list.appendChild(li)
+    }
+    const actions = document.createElement('div')
+    actions.className = 'settings-reset-confirm-actions'
+    const cancelBtn = document.createElement('button')
+    cancelBtn.type = 'button'
+    cancelBtn.className = 'btn-secondary'
+    cancelBtn.textContent = t('common.cancel')
+    const okBtn = document.createElement('button')
+    okBtn.type = 'button'
+    okBtn.className = 'btn-primary'
+    okBtn.textContent = t('settings.confirm.reset_tab_ok')
+    actions.append(cancelBtn, okBtn)
+    body.append(message, list, actions)
+
+    modal.append(header, body)
+    overlay.appendChild(modal)
+
+    const finish = (answer) => {
+      document.removeEventListener('keydown', onKey)
+      overlay.remove()
+      resolve(answer)
+    }
+    const onKey = (e) => { if (e.key === 'Escape') finish(false) }
+    document.addEventListener('keydown', onKey)
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) finish(false) })
+    closeBtn.addEventListener('click', () => finish(false))
+    cancelBtn.addEventListener('click', () => finish(false))
+    okBtn.addEventListener('click', () => finish(true))
+
+    document.body.appendChild(overlay)
+    cancelBtn.focus()
+  })
+}
+
+async function resetSettingsGroupToDefault(group) {
+  const rows = overriddenSettingRows(group)
+  if (rows.length === 0) return
+  if (!(await confirmSettingsReset(rows.map((r) => settingResetPreview(r._settingDef))))) return
+
+  const btn = group.querySelector('.settings-reset-tab-btn')
+  if (btn) btn.disabled = true
+  let failed = 0
+  let needsRestart = false
+  for (const row of rows) {
+    const result = await removeSettingOverride(row)
+    if (!result.ok) failed++
+    else if (result.requiresRestart) needsRestart = true
+  }
+  refreshSettingsGroupReset(group)
+  updateSettingsSaveBar()
+  loadClaudePlansReadiness()
+  if (failed) {
+    showToast(t('settings.toast.reset_tab_partial'), 6000)
+  } else {
+    const base = t('settings.toast.reset_tab')
+    showToast(needsRestart ? base + ' ' + t('settings.toast.reset_restart_suffix') : base)
+  }
 }
 
 async function saveAllSettings() {
@@ -15242,6 +16579,14 @@ async function saveAllSettings() {
       } else {
         input.dataset.originalValue = String(raw)
         if (data.requiresRestart) needsRestart = true
+        // The saved value is an override now: rebuild the row so it offers
+        // "reset to default" without a page reload.
+        const savedRow = input.closest('.settings-row')
+        if (savedRow && savedRow._settingDef) {
+          const rebuilt = buildSettingRow({ ...savedRow._settingDef, value: data.value ?? raw, source: 'override' })
+          savedRow.replaceWith(rebuilt)
+          refreshSettingsGroupReset(rebuilt.closest('.settings-group'))
+        }
       }
     } catch {
       errorEl.textContent = 'Kapcsolati hiba'
@@ -15256,6 +16601,9 @@ async function saveAllSettings() {
   updateSettingsSaveBar()
 
   if (btn) { btn.disabled = false; btn.textContent = t('settings.btn.save') }
+  // The rotation toggle lives on the Claude plans tab and changes its
+  // readiness banner (and turning it on seeds the heartbeat task server-side).
+  loadClaudePlansReadiness()
   if (errors.length) {
     showToast(t('settings.toast.partial_error'), 'error')
   } else {
@@ -15266,7 +16614,7 @@ async function saveAllSettings() {
 function resetAllSettings() {
   for (const [key, { input, originalValue }] of settingsDirty) {
     input.value = originalValue
-    const errorEl = document.querySelector(`[data-setting-key="${key}"]`)?.closest('.settings-row')?.querySelector('.settings-row-error')
+    const errorEl = document.querySelector(`[data-setting-key="${CSS.escape(String(key))}"]`)?.closest('.settings-row')?.querySelector('.settings-row-error')
     if (errorEl) errorEl.textContent = ''
   }
   settingsDirty.clear()
@@ -15424,6 +16772,11 @@ const TU_MODEL_PRICING = {
   'claude-sonnet-4-5':   { in: 3.0,   out: 15.0,  cw: 3.75,  cr: 0.30 },
   'claude-fable-5':      { in: 10.0,  out: 50.0,  cw: 12.50, cr: 1.00 },
   'claude-mythos-5':     { in: 10.0,  out: 50.0,  cw: 12.50, cr: 1.00 },
+  // Haiku 5.5, from the official pricing page (2026-10-08): prompts up to 100k
+  // tokens 0.10 / 0.50 (5m cache write 0.125, hit 0.01); prompts over 100k
+  // tokens 0.50 / 2.50. This table holds one price per model, so the <=100k
+  // tier is used and spend on >100k prompts is understated.
+  'claude-haiku-5-5':    { in: 0.10,  out: 0.50,  cw: 0.125, cr: 0.01 },
   'claude-haiku-4-5':    { in: 1.0,   out: 5.0,   cw: 1.25,  cr: 0.10 },
   default:               { in: 3.0,   out: 15.0,  cw: 3.75,  cr: 0.30 },
 }
@@ -16013,7 +17366,7 @@ function renderTuTimeline(data, filterAgent) {
       let html = `<div style="font-weight:600;margin-bottom:4px">${tuFormatLocalShort(hit.bucket)}${isPeak ? ` <span style="color:#ef4444;font-size:10px">${t('tokenUsage.chart.peak')}</span>` : ''}</div>`
       let total = 0
       for (const seg of hit.segments) {
-        html += `<div><span style="color:${tuGetColor(seg.agent)}">&#9632;</span> ${seg.agent}: ${tuFormatTokens(seg.val)}</div>`
+        html += `<div><span style="color:${tuGetColor(seg.agent)}">&#9632;</span> ${escapeHtml(seg.agent)}: ${tuFormatTokens(seg.val)}</div>`
         total += seg.val
       }
       if (hit.segments.length > 1) html += `<div style="border-top:1px solid rgba(255,255,255,0.2);margin-top:4px;padding-top:4px;font-weight:600">${t('tokenUsage.total')} ${tuFormatTokens(total)}</div>`
@@ -16417,6 +17770,169 @@ let ideaScope = (() => {
 const STATUS_COLORS = { new: 'var(--accent)', reviewed: '#f59e0b', kanban: '#22c55e', rejected: '#ef4444' }
 const STATUS_LABELS = { new: () => t('ideas.status.new'), reviewed: () => t('ideas.status.reviewed'), kanban: () => t('ideas.status.kanban'), rejected: () => t('ideas.status.rejected') }
 
+// ============================================================
+// === Team notes ("Jegyzetek") ===
+// ============================================================
+// The team's small follow-ups, kept off the kanban board. Rows come from
+// /api/notes (active, sorted by due date) and ?include_deleted=1 for the
+// last-7-days deleted section. Deletion is soft on the server.
+
+let notesAssigneesLoaded = false
+
+function notesLocalToday() {
+  // The viewer's local date (the browser's timezone), not UTC.
+  const d = new Date()
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+}
+
+function notesFmtTs(unix) {
+  if (!unix) return ''
+  const locale = (window._lang || 'hu') === 'en' ? 'en-GB' : 'hu-HU'
+  return new Date(unix * 1000).toLocaleString(locale, { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' })
+}
+
+function notesAssigneeLabel(name) {
+  if (name === 'mindenki') return t('notes.assignee.mindenki')
+  if (name === 'gazda') return t('notes.assignee.gazda')
+  return name
+}
+
+async function loadNotesAssignees() {
+  const sel = document.getElementById('notesAssignee')
+  if (!sel) return
+  let names = []
+  let loaded = false
+  try {
+    const r = await fetch('/api/agents')
+    if (r.ok) {
+      const list = await r.json()
+      if (Array.isArray(list)) { names = list.map((a) => a && a.name).filter(Boolean); loaded = true }
+    }
+  } catch { /* the fixed entries below are enough to keep the form usable */ }
+  // Stored assignees are lower-case (the server lower-cases them too).
+  const main = mainAgentId().toLowerCase()
+  const fixed = ['mindenki', 'gazda', main]
+  const all = [...fixed, ...[...new Set(names.map((n) => String(n).toLowerCase()))].filter((n) => !fixed.includes(n)).sort()]
+  const prev = sel.value
+  sel.innerHTML = all.map((n) => `<option value="${escapeHtml(n)}">${escapeHtml(notesAssigneeLabel(n))}</option>`).join('')
+  if (prev && all.includes(prev)) sel.value = prev
+  // Only a real agent list counts as loaded: after a failed request the next
+  // visit tries again instead of keeping the fallback list for the session.
+  notesAssigneesLoaded = loaded
+}
+
+async function loadNotesPage() {
+  // The author (kanbanMoveActor) and the assignee list (mainAgentId) both read
+  // window._marveen, which only some pages fill: resolve it first, or a
+  // token-authenticated first add/delete goes out without a name and gets a 400.
+  await ensureMarveenLoaded()
+  wireNotesPage()
+  if (!notesAssigneesLoaded) loadNotesAssignees()
+  // A language switch since the options were drawn: relabel them in place.
+  document.querySelectorAll('#notesAssignee option').forEach((o) => { o.textContent = notesAssigneeLabel(o.value) })
+  const tbody = document.getElementById('notesTbody')
+  const delTbody = document.getElementById('notesDeletedTbody')
+  let rows = []
+  try {
+    const r = await fetch('/api/notes?include_deleted=1')
+    if (!r.ok) throw new Error(`HTTP ${r.status}`)
+    rows = await r.json()
+  } catch (err) {
+    if (tbody) tbody.innerHTML = `<tr><td colspan="5" class="notes-empty">${escapeHtml(t('notes.load_error', { msg: String(err.message || err) }))}</td></tr>`
+    return
+  }
+  const active = rows.filter((n) => n.deleted_at == null)
+  const deleted = rows.filter((n) => n.deleted_at != null).sort((a, b) => b.deleted_at - a.deleted_at)
+  const today = notesLocalToday()
+
+  if (tbody) {
+    tbody.innerHTML = active.length ? active.map((n) => {
+      const overdue = n.due_date && n.due_date < today
+      const dueToday = n.due_date === today
+      const cls = overdue ? 'notes-row-overdue' : dueToday ? 'notes-row-today' : ''
+      const dueLabel = n.due_date
+        ? escapeHtml(n.due_date) + (overdue ? ` <span class="notes-due-tag">${escapeHtml(t('notes.overdue'))}</span>` : dueToday ? ` <span class="notes-due-tag">${escapeHtml(t('notes.today'))}</span>` : '')
+        : '<span class="notes-muted">-</span>'
+      return `<tr class="${cls}">
+        <td data-label="${escapeHtml(t('notes.col.assignee'))}" class="notes-assignee">${escapeHtml(notesAssigneeLabel(n.assignee))}</td>
+        <td data-label="${escapeHtml(t('notes.col.content'))}" class="notes-content">${escapeHtml(n.content)}</td>
+        <td data-label="${escapeHtml(t('notes.col.created'))}" class="notes-muted">${escapeHtml(notesFmtTs(n.created_at))} · ${escapeHtml(n.created_by)}</td>
+        <td data-label="${escapeHtml(t('notes.col.due'))}">${dueLabel}</td>
+        <td class="notes-actions"><button class="btn-secondary btn-compact" data-note-done="${escapeHtml(n.id)}">${escapeHtml(t('notes.btn.done'))}</button></td>
+      </tr>`
+    }).join('') : `<tr><td colspan="5" class="notes-empty">${escapeHtml(t('notes.empty'))}</td></tr>`
+  }
+
+  if (delTbody) {
+    delTbody.innerHTML = deleted.length ? deleted.map((n) => `<tr>
+        <td data-label="${escapeHtml(t('notes.col.assignee'))}">${escapeHtml(notesAssigneeLabel(n.assignee))}</td>
+        <td data-label="${escapeHtml(t('notes.col.content'))}" class="notes-content">${escapeHtml(n.content)}</td>
+        <td data-label="${escapeHtml(t('notes.deleted.col_when'))}" class="notes-muted">${escapeHtml(notesFmtTs(n.deleted_at))}</td>
+        <td data-label="${escapeHtml(t('notes.deleted.col_by'))}">${escapeHtml(n.deleted_by || '')}</td>
+        <td data-label="${escapeHtml(t('notes.deleted.col_reason'))}" class="notes-muted">${escapeHtml(n.delete_reason || '-')}</td>
+      </tr>`).join('') : `<tr><td colspan="5" class="notes-empty">${escapeHtml(t('notes.deleted.empty'))}</td></tr>`
+  }
+  const summary = document.querySelector('#notesDeleted > summary')
+  if (summary) summary.textContent = t('notes.deleted.title_n', { n: deleted.length })
+}
+
+let notesPageWired = false
+function wireNotesPage() {
+  if (notesPageWired) return
+  notesPageWired = true
+  document.getElementById('notesForm')?.addEventListener('submit', async (e) => {
+    e.preventDefault()
+    const assignee = document.getElementById('notesAssignee')?.value || ''
+    const contentEl = document.getElementById('notesContent')
+    const dueEl = document.getElementById('notesDue')
+    const content = (contentEl?.value || '').trim()
+    if (!content) { contentEl?.focus(); return }
+    await ensureMarveenLoaded()
+    // The author is the owner from the page config, as for the board's moves
+    // (kanbanMoveActor). A login session or device key overrides it on the
+    // server with the name of whoever is actually signed in.
+    const body = { assignee, content, created_by: kanbanMoveActor() }
+    if (dueEl?.value) body.due_date = dueEl.value
+    const btn = document.getElementById('notesAddBtn')
+    if (btn) btn.disabled = true
+    try {
+      const r = await fetch('/api/notes', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+      const data = await r.json().catch(() => ({}))
+      if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`)
+      if (contentEl) contentEl.value = ''
+      if (dueEl) dueEl.value = ''
+      showToast(t('notes.toast.added'))
+      loadNotesPage()
+    } catch (err) {
+      showToast(t('notes.toast.error', { msg: String(err.message || err) }))
+    } finally {
+      if (btn) btn.disabled = false
+    }
+  })
+  document.getElementById('notesTbody')?.addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-note-done]')
+    if (!btn) return
+    const reason = window.prompt(t('notes.prompt.reason'), '')
+    if (reason === null) return // cancelled
+    btn.disabled = true
+    await ensureMarveenLoaded()
+    try {
+      const r = await fetch(`/api/notes/${encodeURIComponent(btn.dataset.noteDone)}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ by: kanbanMoveActor(), reason: reason.trim() || null }),
+      })
+      const data = await r.json().catch(() => ({}))
+      if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`)
+      showToast(t('notes.toast.deleted'))
+      loadNotesPage()
+    } catch (err) {
+      btn.disabled = false
+      showToast(t('notes.toast.error', { msg: String(err.message || err) }))
+    }
+  })
+}
+
 async function loadIdeasPage() {
   const statusFilter = document.getElementById('ideaStatusFilter')?.value ?? 'active'
   const categoryFilter = document.getElementById('ideaCategoryFilter')?.value || ''
@@ -16516,7 +18032,7 @@ function ideaScoreBadge(idea) {
   if (!idea.impact || !idea.effort) return ''
   const score = idea.impact - idea.effort
   const color = score > 0 ? '#22c55e' : score < 0 ? '#ef4444' : 'var(--text-muted)'
-  return `<span style="font-size:11px;color:${color};border:1px solid ${color};border-radius:4px;padding:2px 5px" title="Impact ${idea.impact} - Effort ${idea.effort}">I${idea.impact}·E${idea.effort}</span>`
+  return `<span style="font-size:11px;color:${color};border:1px solid ${color};border-radius:4px;padding:2px 5px" title="Impact ${escapeHtml(idea.impact)} - Effort ${escapeHtml(idea.effort)}">I${escapeHtml(idea.impact)}·E${escapeHtml(idea.effort)}</span>`
 }
 
 function renderIdeaCard(idea) {
@@ -16528,20 +18044,20 @@ function renderIdeaCard(idea) {
     <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px">
       <div style="flex:1;min-width:0">
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
-          <span class="idea-title-link" style="font-weight:600;font-size:14px;cursor:pointer" onclick="openIdeaDetail('${idea.id}')">${escapeHtml(idea.title)}</span>
-          <span style="font-size:11px;color:${statusColor};padding:2px 6px;border:1px solid ${statusColor};border-radius:4px">${statusLabel}</span>
+          <span class="idea-title-link" style="font-weight:600;font-size:14px;cursor:pointer" onclick="openIdeaDetail(${jsArg(idea.id)})">${escapeHtml(idea.title)}</span>
+          <span style="font-size:11px;color:${statusColor};padding:2px 6px;border:1px solid ${statusColor};border-radius:4px">${escapeHtml(statusLabel)}</span>
           ${ideaScoreBadge(idea)}
           ${staleBadge}
         </div>
         ${desc}
       </div>
       <div style="display:flex;gap:4px;flex-shrink:0;flex-wrap:wrap;justify-content:flex-end">
-        ${idea.status !== 'reviewed' && idea.status !== 'kanban' ? `<button class="btn-secondary btn-compact" onclick="setIdeaStatus('${idea.id}','reviewed')" style="font-size:11px">${t('ideas.btn.reviewed')}</button>` : ''}
-        ${idea.status !== 'rejected' ? `<button class="btn-secondary btn-compact" onclick="setIdeaStatus('${idea.id}','rejected')" style="font-size:11px;color:#ef4444">${t('ideas.btn.rejected')}</button>` : ''}
-        ${idea.status === 'reviewed' || idea.status === 'rejected' ? `<button class="btn-secondary btn-compact" onclick="setIdeaStatus('${idea.id}','new')" style="font-size:11px">${t('ideas.btn.reopen')}</button>` : ''}
-        <button class="btn-secondary btn-compact" onclick="openIdeaEdit('${idea.id}')" style="font-size:11px">${t('ideas.btn.edit')}</button>
-        ${idea.status !== 'kanban' && idea.status !== 'rejected' ? `<button class="btn-primary btn-compact" onclick="openIdeaBreakdown('${idea.id}')" style="font-size:11px">${t('ideas.btn.kanban_ai')}</button>` : ''}
-        <button class="btn-secondary btn-compact" onclick="deleteIdeaItem('${idea.id}')" style="font-size:11px;color:#ef4444">${t('ideas.btn.delete')}</button>
+        ${idea.status !== 'reviewed' && idea.status !== 'kanban' ? `<button class="btn-secondary btn-compact" onclick="setIdeaStatus(${jsArg(idea.id)},'reviewed')" style="font-size:11px">${t('ideas.btn.reviewed')}</button>` : ''}
+        ${idea.status !== 'rejected' ? `<button class="btn-secondary btn-compact" onclick="setIdeaStatus(${jsArg(idea.id)},'rejected')" style="font-size:11px;color:#ef4444">${t('ideas.btn.rejected')}</button>` : ''}
+        ${idea.status === 'reviewed' || idea.status === 'rejected' ? `<button class="btn-secondary btn-compact" onclick="setIdeaStatus(${jsArg(idea.id)},'new')" style="font-size:11px">${t('ideas.btn.reopen')}</button>` : ''}
+        <button class="btn-secondary btn-compact" onclick="openIdeaEdit(${jsArg(idea.id)})" style="font-size:11px">${t('ideas.btn.edit')}</button>
+        ${idea.status !== 'kanban' && idea.status !== 'rejected' ? `<button class="btn-primary btn-compact" onclick="openIdeaBreakdown(${jsArg(idea.id)})" style="font-size:11px">${t('ideas.btn.kanban_ai')}</button>` : ''}
+        <button class="btn-secondary btn-compact" onclick="deleteIdeaItem(${jsArg(idea.id)})" style="font-size:11px;color:#ef4444">${t('ideas.btn.delete')}</button>
       </div>
     </div>
   </div>`
@@ -16658,7 +18174,7 @@ async function loadIdeaAttachments(id) {
           <div style="font-size:11px;color:var(--text-muted)">${formatIdeaAttachmentSize(a.size)}${a.has_text ? ` · <span title="${t('ideas.detail.attach.has_text')}" style="color:var(--success)">✓ ${t('ideas.detail.attach.text_marker')}</span>` : ''}</div>
         </div>
         <a class="btn-secondary btn-compact" style="font-size:11px;text-decoration:none" href="/api/ideas/attachments/${encodeURIComponent(a.id)}/download">${t('ideas.detail.attach.download')}</a>
-        <button class="btn-secondary btn-compact" style="font-size:11px;color:var(--danger)" onclick="deleteIdeaAttachmentItem('${encodeURIComponent(a.id)}')">${t('ideas.detail.attach.delete')}</button>
+        <button class="btn-secondary btn-compact" style="font-size:11px;color:var(--danger)" onclick="deleteIdeaAttachmentItem(${jsArg(encodeURIComponent(a.id))})">${t('ideas.detail.attach.delete')}</button>
       </div>`).join('')
   } catch {
     list.innerHTML = `<div style="color:var(--danger);font-size:12px">${t('ideas.detail.attach.load_error')}</div>`
@@ -17412,10 +18928,19 @@ async function fedApplyToMainAgent() {
     // so the client does not depend on window._marveen being loaded (the
     // Federation page does not populate it -> the old /api/agents/:name path
     // 404'd when it fell back to the 'marveen' default).
-    const res = await fetch('/api/federation/apply', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+    // FEDAPPLYGATE1018: the apply restarts the main agent, so the server's busy gate applies; a refusal
+    // asks a second time, like the main restart button, and only then sends an explicit force.
+    const apply = (force) => fetch('/api/federation/apply', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: force ? JSON.stringify({ force: true }) : '{}',
     })
-    const data = await res.json().catch(() => ({}))
+    let res = await apply(false)
+    let data = await res.json().catch(() => ({}))
+    if (res.status === 409 && data.error === 'restart-blocked') {
+      const key = data.reason === 'busy' ? 'agents.confirm.force_restart_busy' : 'agents.confirm.force_restart_unreadable'
+      if (!confirm(t(key))) { showToast(t('agents.toast.restart_not_forced')); return }
+      res = await apply(true)
+      data = await res.json().catch(() => ({}))
+    }
     if (!res.ok) { showToast(t('federation.toast.error', { msg: data.error || ('HTTP ' + res.status) })); return }
     showToast(t('federation.toast.applied'))
   } catch (err) { showToast(t('federation.toast.error', { msg: String(err.message || err) })) }
@@ -17541,8 +19066,17 @@ function mdInline(text) {
   s = s.replace(/`([^`]+)`/g, (m, c) => '<code>' + c + '</code>')
   s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
   s = s.replace(/\*([^*]+)\*/g, '<em>$1</em>')
-  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, txt, url) =>
-    '<a href="' + escapeAttr(url) + '" target="_blank" rel="noopener noreferrer">' + txt + '</a>')
+  // Only a link safeHref() accepts (http(s), mailto, or scheme-less relative)
+  // becomes an anchor; anything else stays its text.
+  // url is a piece of the escaped text (and may hold the <em>/<strong>/<code>
+  // tags inserted above): turn it back into the raw URL, judge that, and
+  // encode it once for the attribute.
+  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, txt, url) => {
+    const raw = url.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&amp;/g, '&')
+    return safeHref(raw, { relative: true })
+      ? '<a href="' + escapeHtml(safeHref(raw, { relative: true })) + '" target="_blank" rel="noopener noreferrer">' + txt + '</a>'
+      : txt
+  })
   return s
 }
 
@@ -17850,11 +19384,11 @@ async function openResearchDoc(agent, name) {
     let labelsHtml = ''
     if (Array.isArray(card.labels) && card.labels.length > 0) {
       const pills = card.labels
-        .map(l => `<span class="kanban-card-label-pill" style="--label-color:${esc(l.color)}">#${esc(l.name)}</span>`)
+        .map(l => `<span class="kanban-card-label-pill" style="--label-color:${escapeHtml(safeCssColor(l.color, '#64748b'))}">#${esc(l.name)}</span>`)
         .join('')
       labelsHtml = `<div class="kanban-card-labels">${pills}</div>`
     }
-    const prioPill = `<span class="archived-prio-pill" style="--prio-color:${prioColor}">${prioLabel}</span>`
+    const prioPill = `<span class="archived-prio-pill" style="--prio-color:${prioColor}">${escapeHtml(prioLabel)}</span>`
     return `<div class="kanban-card archived-card" data-id="${esc(card.id)}" data-priority="${esc(card.priority)}">
       ${projectHtml}
       <div class="kanban-card-title">${seqHtml}${esc(card.title)}</div>
@@ -17876,9 +19410,9 @@ async function openResearchDoc(agent, name) {
     const idLabel = (card.seq != null ? `#${card.seq} · ` : '') + card.id
     meta.innerHTML = `
       <div class="meta-item"><span class="meta-label">${t('kanban.meta.id')}</span><span class="meta-value" style="font-family:monospace">${esc(idLabel)}</span></div>
-      <div class="meta-item"><span class="meta-label">${t('kanban.meta.status')}</span><span class="meta-value">${STATUS_LABELS[card.status]?.() ?? card.status}</span></div>
+      <div class="meta-item"><span class="meta-label">${t('kanban.meta.status')}</span><span class="meta-value">${escapeHtml(STATUS_LABELS[card.status]?.() ?? card.status)}</span></div>
       <div class="meta-item"><span class="meta-label">${t('kanban.meta.assignee')}</span><span class="meta-value">${card.assignee ? esc(card.assignee) : t('kanban.meta.none')}</span></div>
-      <div class="meta-item"><span class="meta-label">${t('kanban.meta.priority')}</span><span class="meta-value">${PRIORITY_LABELS[card.priority]?.() ?? card.priority}</span></div>
+      <div class="meta-item"><span class="meta-label">${t('kanban.meta.priority')}</span><span class="meta-value">${escapeHtml(PRIORITY_LABELS[card.priority]?.() ?? card.priority)}</span></div>
       <div class="meta-item"><span class="meta-label">${t('kanban.meta.project')}</span><span class="meta-value">${card.project ? esc(card.project) : t('kanban.meta.none')}</span></div>
       <div class="meta-item"><span class="meta-label">${t('archived.meta.archived_at')}</span><span class="meta-value">${fmtDate(card.archived_at)}</span></div>
     `
@@ -17886,7 +19420,7 @@ async function openResearchDoc(agent, name) {
     const labelsBox = document.getElementById('archivedDetailLabels')
     if (Array.isArray(card.labels) && card.labels.length > 0) {
       labelsBox.innerHTML = card.labels
-        .map(l => `<span class="kanban-card-label-pill" style="--label-color:${esc(l.color)}">#${esc(l.name)}</span>`)
+        .map(l => `<span class="kanban-card-label-pill" style="--label-color:${escapeHtml(safeCssColor(l.color, '#64748b'))}">#${esc(l.name)}</span>`)
         .join('')
       labelsWrap.style.display = ''
     } else {
@@ -18014,7 +19548,7 @@ async function openResearchDoc(agent, name) {
         })
       })
     } catch (err) {
-      list.innerHTML = '<p class="naplo-empty error">' + t('common.error_network', {msg: err.message}) + '</p>'
+      list.innerHTML = '<p class="naplo-empty error">' + t('common.error_network', {msg: escapeHtml(String(err.message))}) + '</p>'
     }
   }
 
@@ -18056,7 +19590,7 @@ async function openResearchDoc(agent, name) {
   function renderEntry(e) {
     const sourceColor = SOURCE_COLORS[e.source] || '#6b7280'
     const sourceLabelRaw = SOURCE_LABELS[e.source]; const sourceLabel = sourceLabelRaw ? (typeof sourceLabelRaw === 'function' ? sourceLabelRaw() : sourceLabelRaw) : e.source
-    const badge = `<span class="naplo-badge" style="background:${sourceColor}">${sourceLabel}</span>`
+    const badge = `<span class="naplo-badge" style="background:${sourceColor}">${escapeHtml(sourceLabel)}</span>`
     const ts = `<span class="naplo-ts">${fmtTs(e.created_at)}</span>`
     let detail = ''
     if (e.source === 'config') {
@@ -18076,10 +19610,9 @@ async function openResearchDoc(agent, name) {
     } else if (e.source === 'diary') {
       const entryColor = DIARY_ENTRY_COLORS[e.entry_type] || '#6b7280'
       const entryLabelRaw = DIARY_ENTRY_LABELS[e.entry_type]; const entryLabel = entryLabelRaw ? (typeof entryLabelRaw === 'function' ? entryLabelRaw() : entryLabelRaw) : e.entry_type
-      const entryBadge = `<span class="naplo-badge" style="background:${entryColor};font-size:10px">${entryLabel}</span>`
+      const entryBadge = `<span class="naplo-badge" style="background:${entryColor};font-size:10px">${escapeHtml(entryLabel)}</span>`
       const agentStr = e.agent_id ? ` <span class="naplo-actor">${esc(e.agent_id)}</span>` : ''
-      let contentSnippet = esc(e.content || '').replace(/\n/g, ' ').slice(0, 200)
-      if ((e.content || '').length > 200) contentSnippet += '…'
+      const contentSnippet = escSnippet((e.content || '').replace(/\n/g, ' '), 200)
       const keywordsStr = e.keywords ? `<div class="naplo-note" style="margin-top:2px">Kulcsszavak: ${esc(e.keywords)}</div>` : ''
       const catStr = e.category ? ` <span class="naplo-event-type">${esc(e.category)}</span>` : ''
       detail = `${entryBadge}${catStr}${agentStr}<div class="naplo-diary-content">${contentSnippet}</div>${keywordsStr}`
@@ -18115,7 +19648,7 @@ async function openResearchDoc(agent, name) {
       if (entries.length === 0) { timeline.innerHTML = `<p class="naplo-empty">${t('naplo.empty')}</p>`; return }
       timeline.innerHTML = entries.map(renderEntry).join('')
     } catch (err) {
-      timeline.innerHTML = `<p class="naplo-empty error">${t('naplo.error', { msg: err.message })}</p>`
+      timeline.innerHTML = `<p class="naplo-empty error">${t('naplo.error', { msg: escapeHtml(String(err.message)) })}</p>`
     }
   }
 
@@ -18239,7 +19772,7 @@ async function openResearchDoc(agent, name) {
 
     // Exclude cards whose entire bar lies outside the window
     cards = cards.filter(c => {
-      const barStart = c.created_at ? c.created_at * 1000 : rangeStart.getTime()
+      const barStart = c.start_date ? c.start_date * 1000 : c.created_at ? c.created_at * 1000 : rangeStart.getTime()
       const barEnd   = c.due_date * 1000
       return barEnd >= rangeStart && barStart <= rangeEnd
     })
@@ -18302,7 +19835,7 @@ async function openResearchDoc(agent, name) {
 
       // Card rows
       for (const card of projCards) {
-        const barStartMs = card.created_at ? card.created_at * 1000 : rangeStart.getTime()
+        const barStartMs = card.start_date ? card.start_date * 1000 : card.created_at ? card.created_at * 1000 : rangeStart.getTime()
         const barEndMs   = card.due_date * 1000
         const isOverdue  = card.status !== 'done' && barEndMs < nowMs
 
@@ -18485,6 +20018,10 @@ async function openResearchDoc(agent, name) {
 
   window._initGanttViewSwitcher = initGanttViewSwitcher
   window.renderGantt = renderGantt
+  // A direct #kanban load routes (switchPage) earlier in this file, before the
+  // initializer above exists, so that first call skipped it and the Board /
+  // Timeline / Archived buttons stayed dead. Catch up if the board is showing.
+  if (document.getElementById('kanbanPage')?.hidden === false) initGanttViewSwitcher()
 })()
 
 // VIDEOREVIEW1002: reveal the sidebar link to the review page only when the

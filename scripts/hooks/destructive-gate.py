@@ -560,9 +560,12 @@ def _rm_allowed(toks, argstart, cwd):
     eldonteni, hova mutat -- ez utobbi nem szigor, hanem a kapu egyetlen tisztesseges
     valasza arra, amit nem lat at.
     """
-    if _live_install(PROJECT_ROOT):
-        return False, ('ez ELES telepites gyokere (%s), itt a munkakonyvtar alatti '
-                       'torles nem szabad -- lasd _live_install()' % PROJECT_ROOT)
+    # The live-install check runs LAST, not first: the verdict is identical (a live
+    # root never allows rm), but the REASON must name what actually stops this
+    # command. Checked first, it reported "deletion UNDER the working dir" for a
+    # target OUTSIDE the root too (measured 2026-10-07, card 67433099: an rm in the
+    # session scratchpad under /tmp was blamed on the live root, which sent the
+    # diagnosis the wrong way).
     paths, skip = [], 0
     for tok, quoted_space in toks[argstart:]:
         if skip:
@@ -594,6 +597,9 @@ def _rm_allowed(toks, argstart, cwd):
             if all(fnmatch.fnmatch(prot_seg, rel_seg)
                    for rel_seg, prot_seg in zip(rel[:n], prot[:n])):
                 return False, 'vedett utvonal a munkakonyvtaron belul: %s' % '/'.join(prot)
+    if _live_install(PROJECT_ROOT):
+        return False, ('ez ELES telepites gyokere (%s), itt a munkakonyvtar alatti '
+                       'torles nem szabad -- lasd _live_install()' % PROJECT_ROOT)
     return True, ''
 
 
@@ -884,9 +890,12 @@ def check_bash(cmd, _depth=0, cwd=None):
             if base == 'rm':
                 ok, why = _rm_allowed(toks, argstart, cwd)
                 if not ok:
-                    if _live_install(PROJECT_ROOT):
+                    if _live_install(PROJECT_ROOT) and why.startswith('ez ELES'):
                         extra = ('Ez ELES telepites gyokere (%s): itt a torles nem a '
                                  'munkakonyvtar-szabaly ala esik.' % PROJECT_ROOT)
+                    elif _live_install(PROJECT_ROOT):
+                        extra = ('Raadasul ez ELES telepites gyokere (%s): itt a '
+                                 'munkakonyvtar ALATTI torles sem engedett.' % PROJECT_ROOT)
                     else:
                         extra = ('A munkakonyvtar (%s) ALATTI torles alapbol szabad; ezen '
                                  'kivul, illetve a vedett utvonalakon (%s) nem.'

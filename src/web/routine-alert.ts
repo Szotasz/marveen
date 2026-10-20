@@ -60,7 +60,9 @@ export function sendRoutineAlert(
     return false
   }
   states.set(key, { lastSentAt: now, suppressed: 0 })
-  notifyChannel(text + routineAlertSuffix(decision.repeats, cooldownMs)).catch(() => {})
+  // The key names the recovery (and the agent, per call site): it is the case
+  // on the delivery log line (card 68cb6715).
+  notifyChannel(text + routineAlertSuffix(decision.repeats, cooldownMs), { kind: key }).catch(() => {})
   return true
 }
 

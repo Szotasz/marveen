@@ -51,6 +51,33 @@ export function writeContextGuardConfig(name: string, cfg: unknown): ContextGuar
 }
 
 /**
+ * Apply a PUT body to one agent's config: MERGE it over the stored config, so
+ * a key the caller leaves out keeps its current value, then normalize.
+ *
+ * The endpoint used to REPLACE the row with the normalized body, and
+ * normalize() fills every omitted key with its default -- `enabled` included,
+ * which is false (opt-in). So `{"limitTokens": 600000}` answered 200 {ok:true}
+ * while switching the guard OFF, and the dashboard's own guard panel, which
+ * sends 6 of the 12 fields, reset the idle-flush and daily-handoff tiers of
+ * every agent it saved. An endpoint that refuses an unknown key loudly (see
+ * checkConfigPutFields) but defaults a missing one silently looks strict
+ * exactly where it is not.
+ *
+ * An explicit null is a value, not an omission: `{"limitTokens": null}` still
+ * clears the override. An agent with no row merges over the disabled default,
+ * so a partial PUT never arms a guard that nobody enabled.
+ */
+export function mergeContextGuardConfig(name: string, patch: unknown): ContextGuardConfig {
+  const raw = readRaw()
+  const current = name in raw ? normalizeContextGuardConfig(raw[name]) : { ...DEFAULT_CONTEXT_GUARD }
+  const fields = (patch && typeof patch === 'object' && !Array.isArray(patch)) ? patch as Record<string, unknown> : {}
+  const merged = normalizeContextGuardConfig({ ...current, ...fields })
+  raw[name] = merged
+  atomicWriteFileSync(STORE_PATH, JSON.stringify(raw, null, 2))
+  return merged
+}
+
+/**
  * Arm the context guard for an agent that has JUST been created.
  *
  * A new agent must come up with the guard ON (fleet policy, 2026-09-08). The

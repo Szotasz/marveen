@@ -176,8 +176,10 @@ describe('chooseQuotaSnapshot', () => {
 describe('the wiring', () => {
   it('the overview route feeds the strip from the chooser over both sources', () => {
     const SRC = readFileSync(join(__dirname, '../web/routes/overview.ts'), 'utf-8')
-    expect(SRC).toMatch(/const quota = chooseQuotaSnapshot\(\s*readQuotaSnapshot\(/)
+    // DASHOPERATOR1005: the read lives in readFleetQuota, shared with the operator status.
+    expect(SRC).toMatch(/return chooseQuotaSnapshot\(\s*readQuotaSnapshot\(/)
     expect(SRC).toMatch(/readModQuotaSnapshot\(STATE_OBSERVER_STATE_DIR, nowSec, maxAgeSec\)/)
+    expect(SRC).toMatch(/const quota = readFleetQuota\(Math\.floor\(Date\.now\(\) \/ 1000\)\)/)
   })
 
   it('the strip uses the source-aware stale text, the per-window agent and the "just now" wording', () => {

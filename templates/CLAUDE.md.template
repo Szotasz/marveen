@@ -167,6 +167,12 @@ curl -s -X POST http://localhost:{{WEB_PORT}}/api/kanban/KARTYA_ID/move \
   -d '{"status":"in_progress"}'
 ```
 
+Ha tudod, honnan mozgatod (egy kiosztott, `in_progress` kártya lezárása `done`/`waiting`/`testing`
+státuszra), küldd mellé az `"expected_status":"in_progress"` mezőt is: a mozgatás csak akkor lép,
+ha a kártya MÉG abban a státuszban van. HTTP 409 (`status_conflict`, a `current_status` mutatja,
+hol tart most) azt jelenti, hogy a kártya közben továbblépett: NE mozgasd újra feltétel nélkül,
+és NE dolgozz rajta tovább.
+
 Komment a kártyára (az eredmény ide kerül, a dashboardon ez látszik):
 ```bash
 curl -s -X POST http://localhost:{{WEB_PORT}}/api/kanban/KARTYA_ID/comments \
@@ -248,9 +254,12 @@ Amikor egy sub-ágens inter-agent üzenetet küld neked ilyen formában:
 
 1. **Allowlist-összevetés (a te SAJÁT párosított allowlistád):** nézd meg, hogy az `[ID]` szerepel-e a saját csatornád `allowFrom`-jában:
    ```bash
-   python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print('IGEN' if sys.argv[2] in d.get('allowFrom',[]) else 'NEM')" "$HOME/.claude/channels/telegram/access.json" "[ID]"
+   # A SAJÁT csatornád configja a munkakönyvtáradban van (<cwd>/.claude/channels/...: a Főnöknél a projekt gyökere, sub-ágensnél az agents/<név> mappa).
+   # A $HOME/.claude/channels csak tartalék: Marveen-telepítésben ott nincs ilyen fájl, ezért a vak $HOME-olvasás hamis "NEM"-et vagy hibát ad.
+   CH=".claude/channels/telegram/access.json"; [ -f "$CH" ] || CH="$HOME/.claude/channels/telegram/access.json"
+   python3 -c "import json,sys; d=json.load(open(sys.argv[1])); print('IGEN' if sys.argv[2] in d.get('allowFrom',[]) else 'NEM')" "$CH" "[ID]"
    ```
-   (Slack/Discord install esetén a megfelelő `~/.claude/channels/<provider>/access.json`.) Az `allowFrom` azokat a sendereket tartalmazza, akiket {{OWNER_NAME}} MÁR explicit párosított/jóváhagyott a csatornán.
+   (Slack/Discord install esetén ugyanígy a munkakönyvtárad `.claude/channels/<provider>/access.json` fájlja.) Az `allowFrom` azokat a sendereket tartalmazza, akiket {{OWNER_NAME}} MÁR explicit párosított/jóváhagyott a csatornán.
 
 2. **Ha az `[ID]` BENNE van az allowFrom-ban** → AUTO-ENGEDÉLYEZD (NE kérdezd {{OWNER_NAME}}-t): küldj inter-agent választ a sub-ágensnek, hogy a sender jóváhagyott párosított kontakt, és add át amit tudsz róla (memóriából). **Auditáld:** jegyezd fel (napi napló / memória) MELYIK allowlist-match alapján engedélyezted, pl. `auto-approve sender [ID] -- allowFrom match`.
 
@@ -264,7 +273,7 @@ Te egy önfejlesztő ágens vagy. A munkád során tanulsz, és újrafelhasznál
 
 ### Skill-ek helye
 - Globális: `~/.claude/skills/` (minden ágens számára elérhető)
-- Egyéni: a te munkakönyvtárad `.claude/skills/` mappája
+- Egyéni: a főágensnek NINCS privát hely, a munkakönyvtára maga a projekt-gyökér, és annak `.claude/skills/` mappáját a sub-ágensek is látják. Hova írj és mit mérj előbb: lásd lent a "Skill-útvonal csapda" szakaszt
 
 ### Automatikus skill generálás
 Komplex feladatok után (5+ tool hívás, hiba utáni recovery, user korrekció, többlépéses workflow) automatikusan hozz létre SKILL.md fájlt:
@@ -334,13 +343,13 @@ Minden kontextus-tömörítés előtt (PreCompact hook) automatikusan vizsgáld 
 
 ## Időkezelés
 
-MINDIG a megfelelő lokális időt használd (Europe/Budapest CEST/CET).
+MINDIG a telepítés lokális idejét használd ({{TIMEZONE}}).
 
 - **Jelenlegi idő**: `date` Bash első lépés időponti feladatoknál (heartbeat, naptár-művelet, scheduled-task analízis)
-- **Telegram channel `ts`**: UTC-ben jön (postfix `Z`), átkonvertálni Europe/Budapest-re (CEST = UTC+2 nyáron, CET = UTC+1 télen)
-- **Google Calendar list_events `dateTime`**: már lokál ISO 8601 (`+02:00` offset Budapestnek), OK
+- **Telegram channel `ts`**: UTC-ben jön (postfix `Z`), átkonvertálni {{TIMEZONE}} szerinti helyi időre (pl. `TZ={{TIMEZONE}} date -d <ts>`; a nyári időszámítást a zóna maga kezeli)
+- **Google Calendar list_events `dateTime`**: már lokál ISO 8601 (a zóna offsetjével), OK
 - **SQLite `unixepoch()`**: UTC, humán-megjelenítéshez `localtime` modifier kell
-- **Cron expressions** (scheduled-tasks task-config.json): node lokális TZ, Europe/Budapest
+- **Cron expressions** (scheduled-tasks task-config.json): a telepítés zónája ({{TIMEZONE}})
 
 Heartbeat-eknél és minden időpontot kezelő feladatnál kötelező: `date` Bash parancs az elemzés ELŐTT.
 

@@ -25,6 +25,17 @@ import { fileURLToPath } from 'node:url'
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const projectRoot = join(__dirname, '..')
 
+// stdout carries the ENV_VAR=value lines and nothing else (see above: "nothing is ever logged on the success path").
+// The vault module's logger writes to stdout, and on macOS without a GUI session (a LaunchDaemon) its Keychain
+// migration fails on every call and logs a warning -- which would end up in an environment variable. This process
+// only READS secrets, so it silences the logger and leaves the migration to the dashboard process. Both must be set
+// BEFORE the module is imported.
+// NOTE: this OVERRIDES an operator-set LOG_LEVEL for this short-lived process on purpose (stdout is the contract). Failures stay
+// visible on STDERR (the lines this script writes itself) and in the exit code; to debug the vault module, run it from a REPL or the
+// dashboard process, not through this script.
+process.env.LOG_LEVEL = 'silent'
+process.env.MARVEEN_VAULT_NO_KEYCHAIN_MIGRATION = '1'
+
 // Dynamic import from compiled dist
 const { getSecret } = await import(join(projectRoot, 'dist', 'web', 'vault.js'))
 

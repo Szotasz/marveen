@@ -43,9 +43,10 @@ describe('schedule-runner wiring', () => {
   })
 
   it('gates before the pre-check, so a deferred task never spawns its script', () => {
-    expect(RUNNER_SRC.indexOf("if (quota.action === 'defer')")).toBeLessThan(
-      RUNNER_SRC.indexOf('const cronPc = runPreCheck(task)'),
-    )
+    // CRONPRECHECKSYNC1007: the cron loop awaits the async form now.
+    const preCheckIdx = RUNNER_SRC.indexOf('const cronPc = await runPreCheckAsync(task)')
+    expect(preCheckIdx).toBeGreaterThan(0)
+    expect(RUNNER_SRC.indexOf("if (quota.action === 'defer')")).toBeLessThan(preCheckIdx)
   })
 })
 

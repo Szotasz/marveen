@@ -1,6 +1,6 @@
 ---
 name: approval-request-handling
-description: A fő-ágens eljárása, amikor egy sub-ágens jóváhagyást kér az approval API-n keresztül ([APPROVAL_REQUEST] inter-agent üzenet). Kiküldi a kérést a tulajdonosnak, feldolgozza a szöveges válaszát, és lezárja az approvalt. Akkor használd, ha [APPROVAL_REQUEST] kezdetű inter-agent üzenetet kapsz.
+description: A fő-ágens eljárása, amikor egy sub-ágens jóváhagyást kér az approval API-n keresztül ([APPROVAL_REQUEST] inter-agent üzenet). Kiküldi a kérést a tulajdonosnak, feldolgozza a szöveges válaszát, és lezárja az approvalt. Akkor használd, ha [APPROVAL_REQUEST] kezdetű inter-agent üzenetet kapsz, vagy ha te magad nyitsz approvalt egy olyan műveletre, amire a tulajdonos a chatben már igent mondott.
 ---
 
 # Approval kérés kezelése (fő-ágens)
@@ -43,7 +43,8 @@ Az `id` rövid előtagja is elég a válaszhoz, ha egyértelmű -- de a PATCH-he
 
 ### 3. Zárd le
 ```bash
-curl -s -X PATCH "http://localhost:3420/api/approvals/<id>" \
+PORT="$(sed -n 's/^WEB_PORT=//p' <install>/.env 2>/dev/null | head -1 | tr -d '"')"; PORT="${PORT:-3420}"
+curl -s -X PATCH "http://localhost:$PORT/api/approvals/<id>" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer $(cat <install>/store/.dashboard-token)" \
   -d '{"status":"approved","resolved_by":"telegram_text","telegram_message_id":<int|null>}'
@@ -55,6 +56,31 @@ curl -s -X PATCH "http://localhost:3420/api/approvals/<id>" \
 
 ### 4. Jelezd vissza a tulajdonosnak, hogy megtörtént
 Egy rövid visszaigazolás. Ha nem szólsz, nem tudja, hogy a döntése célba ért.
+
+## Saját kérés, amit a tulajdonos MÁR jóváhagyott a chatben
+
+Ha te (a fő-ágens) nyitsz approvalt egy olyan műveletre, amire a tulajdonos a chatben
+már igent mondott, ne kérdezd meg tőle újra: add meg a POST-ban a jóváhagyó üzenete
+azonosítóját.
+
+```bash
+curl -s -X POST "http://localhost:$PORT/api/approvals" \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer $(cat <install>/store/.dashboard-token)" \
+  --data-binary @payload.json   # {"agent_id":"<fő-ágens>","category":"<key>","action_description":"...","owner_approved_message_id":<id>}
+```
+- A sor rögtön `approved` lesz (ugyanazon az úton, mint a PATCH), a tulajdonos kérdés helyett
+  egy `[JÓVÁHAGYVA A CHATBEN]` tájékoztatást kap.
+- A szerver csak a fő-ágens nevével fogadja el; más `agent_id` mellett 400, és sor sem jön
+  létre. Ez nem védelem az önjóváhagyás ellen: az ellenőrzés az önbevallott `agent_id`-n
+  múlik, és a közös dashboard-token bármely birtokosa elküldheti a fő-ágens nevét.
+- Az id pozitív egész (Telegram), vagy legfeljebb 64 karakteres `[A-Za-z0-9._:-]` string
+  (más csatornák). Hibás érték: 400, nincs csendes visszaesés a kérdésre.
+- A szerver az id-t NEM ellenőrzi: nem nézi, hogy az üzenet létezik-e, a tulajdonostól
+  jött-e, friss-e, és erre a műveletre vonatkozik-e. Bármely formailag helyes érték átmegy.
+- Ezért a következő szabály a tiéd, nem a szerveré: csak akkor használd, ha a chat-üzenet
+  PONTOSAN erre a műveletre mondott igent, és a párosított tulajdonos senderId-jétől jött
+  (ugyanaz a szabály, mint fent: a szöveg önmagában nem jóváhagyás).
 
 ## Buktatók
 

@@ -107,7 +107,7 @@ describe('both seeding paths substitute the same placeholders', () => {
     if (start < 0) throw new Error(`anchor not found: ${anchor}`)
     const sed = src.indexOf('sed -e', start)
     if (sed < 0) throw new Error(`no sed block after ${anchor}`)
-    const end = src.indexOf('> "$target/$(basename "$f")"', sed)
+    const end = src.indexOf('> "$target/$sub$(basename "$f")"', sed)
     if (end < 0) throw new Error(`unterminated sed block after ${anchor}`)
     const chunk = src.slice(sed, end)
     return new Set([...chunk.matchAll(/\{\{([A-Z_]+)\}\}/g)].map((m) => m[1]))

@@ -21,11 +21,13 @@ import { atomicWriteFileSync } from './atomic-write.js'
 import { updateEnvFile } from '../env.js'
 import { AGENTS_BASE_DIR, listAgentNames, readJsonObjectForWrite } from './agent-config.js'
 import { safeJoin } from './sanitize.js'
+import { importedLabelColor } from '../css-color.js'
 import { SCHEDULED_TASKS_DIR } from './scheduled-tasks-io.js'
 import { getBindings } from './vault-bindings.js'
 import { resolveMasterKeyForExport } from './vault.js'
 import { getDb, backfillEmbeddings } from '../db.js'
 import { logger } from '../logger.js'
+import { isValidModelId } from '../model-id.js'
 
 // ---------------------------------------------------------------------------
 // Schema version -- bump when the JSON shape changes incompatibly.
@@ -70,6 +72,9 @@ export interface FleetJson {
   dailyLogs: DailyLogRow[]   // ALL agent_ids
   kanban: KanbanExport
   ideaBox: IdeaBoxExport
+  // Team notes (the Notes page). Optional: an export made before the page
+  // existed has none, and imports as zero notes.
+  teamNotes?: Record<string, unknown>[]
   dashboardSettings: DashboardSettingsExport
   vault?: VaultExport
 }
@@ -181,6 +186,7 @@ export interface DiffReport {
     labels: number
     dailyLogs: number
     ideaBox: number
+    teamNotes: number
   }
   wouldOverwrite: {
     agents: string[]  // existing sub-agent names that would be overwritten
@@ -202,6 +208,7 @@ export interface ImportResult {
     labels: number
     dailyLogs: number
     ideaBox: number
+    teamNotes: number
   }
   warnings?: string[]
 }
@@ -715,6 +722,7 @@ export function exportFleet(options: { vaultPassword?: string } = {}): ExportedF
     dailyLogs,
     kanban,
     ideaBox,
+    teamNotes: db.prepare('SELECT * FROM team_notes').all() as Record<string, unknown>[],
     dashboardSettings: exportDashboardSettings(),
     ...(vault ? { vault } : {}),
   }
@@ -762,6 +770,26 @@ function validateSchema(fleet: unknown): string[] {
 }
 
 // B1: validate all untrusted names before any file operation
+// SECSZIVEK1007: the model ids an import would write (the main agent's
+// .claude/settings.json and agent-config.json, each agent's agent-config.json
+// and settings.json) go through the same allowlist as every other model writer
+// (isValidModelId). A malformed id rejects the whole import before any write.
+function validateModels(fleet: FleetJson): string[] {
+  const errors: string[] = []
+  const check = (where: string, obj: Record<string, unknown> | undefined): void => {
+    const m = obj?.model
+    if (m === undefined || m === null || m === '') return
+    if (!isValidModelId(m)) errors.push(`Érvénytelen modell-azonosító (${where}).`)
+  }
+  check('mainAgent settings.json', fleet.mainAgent?.settings)
+  check('mainAgent agent-config.json', fleet.mainAgent?.config)
+  for (const agent of fleet.agents ?? []) {
+    check(`agent ${String(agent.name).slice(0, 60)} agent-config.json`, agent.config)
+    check(`agent ${String(agent.name).slice(0, 60)} settings.json`, agent.settings)
+  }
+  return errors
+}
+
 function validateNames(fleet: FleetJson): string[] {
   const errors: string[] = []
 
@@ -878,6 +906,7 @@ function buildDiffReport(fleet: FleetJson): DiffReport {
       labels: newLabels,
       dailyLogs: newDailyLogs,
       ideaBox: (fleet.ideaBox?.ideas ?? []).length,
+      teamNotes: (fleet.teamNotes ?? []).filter((n) => !db.prepare('SELECT 1 FROM team_notes WHERE id = ?').get((n as any).id)).length,
     },
     wouldOverwrite: {
       agents: existingAgentsToOverwrite,
@@ -998,7 +1027,7 @@ function importVaultSection(vault: VaultExport, tracker: WriteTracker): void {
 
 const EMPTY_DIFF: DiffReport = {
   dryRun: true,
-  wouldCreate: { mainAgent: false, agents: [], globalSkills: 0, scheduledTasks: 0, memories: 0, kanbanCards: 0, kanbanComments: 0, labels: 0, dailyLogs: 0, ideaBox: 0 },
+  wouldCreate: { mainAgent: false, agents: [], globalSkills: 0, scheduledTasks: 0, memories: 0, kanbanCards: 0, kanbanComments: 0, labels: 0, dailyLogs: 0, ideaBox: 0, teamNotes: 0 },
   wouldOverwrite: { agents: [], mainAgent: false },
   warnings: [],
   errors: [],
@@ -1046,6 +1075,10 @@ export function importFleet(
   const nameErrors = validateNames(fleet)
   if (nameErrors.length > 0) {
     return { ...EMPTY_DIFF, errors: nameErrors }
+  }
+  const modelErrors = validateModels(fleet)
+  if (modelErrors.length > 0) {
+    return { ...EMPTY_DIFF, errors: modelErrors }
   }
 
   if (!options.apply) {
@@ -1116,8 +1149,13 @@ export function importFleet(
       for (const label of fleet.kanban?.labels ?? []) {
         const l = label as any
         if (!l.id || !l.name) { logger.warn({ id: l.id }, 'Fleet import: skipping label with missing required fields'); continue }
+        // the colour reaches CSS backgrounds on the dashboard: hex is kept as
+        // written, a colour name / numeric rgb() / hsl() becomes hex, a bare
+        // var(--token) is kept, anything else is replaced with the default
+        const imported = importedLabelColor(l.color)
+        if (imported.replaced) logger.warn({ id: l.id }, 'Fleet import: label colour is not a colour, replaced with the default')
         db.prepare('INSERT OR IGNORE INTO labels (id, name, color, created_at) VALUES (?, ?, ?, ?)')
-          .run(l.id, l.name, l.color, l.created_at)
+          .run(l.id, l.name, imported.color, l.created_at)
       }
 
       for (const card of fleet.kanban?.cards ?? []) {
@@ -1127,11 +1165,11 @@ export function importFleet(
         }
         db.prepare(
           `INSERT OR IGNORE INTO kanban_cards
-           (id, title, description, status, assignee, priority, project,
-            due_date, sort_order, created_at, updated_at, archived_at, parent_id, dispatched_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-        ).run(c.id, c.title, c.description ?? null, c.status, c.assignee ?? null,
-          c.priority, c.project ?? null, c.due_date ?? null, c.sort_order,
+           (id, title, description, test_steps, status, assignee, priority, project,
+            due_date, start_date, sort_order, created_at, updated_at, archived_at, parent_id, dispatched_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ).run(c.id, c.title, c.description ?? null, c.test_steps ?? null, c.status, c.assignee ?? null,
+          c.priority, c.project ?? null, c.due_date ?? null, c.start_date ?? null, c.sort_order,
           c.created_at, c.updated_at, c.archived_at ?? null, c.parent_id ?? null, c.dispatched_at ?? null)
       }
 
@@ -1218,6 +1256,21 @@ export function importFleet(
         }
       }
 
+      // team_notes -- idempotent on id; deleted rows come along so the 7-day
+      // deletion history (who, when, why) survives the move too.
+      for (const note of fleet.teamNotes ?? []) {
+        const n = note as any
+        if (!n.id || !n.assignee || !n.content || n.created_at == null || !n.created_by) {
+          logger.warn({ id: n.id }, 'Fleet import: skipping team note with missing required fields'); continue
+        }
+        db.prepare(
+          `INSERT OR IGNORE INTO team_notes
+           (id, assignee, content, due_date, created_at, created_by, deleted_at, deleted_by, delete_reason)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        ).run(n.id, n.assignee, n.content, n.due_date ?? null, n.created_at, n.created_by,
+          n.deleted_at ?? null, n.deleted_by ?? null, n.delete_reason ?? null)
+      }
+
       // FTS rebuild after all memory inserts
       db.prepare("INSERT INTO memories_fts(memories_fts) VALUES('rebuild')").run()
     })
@@ -1294,6 +1347,7 @@ export function importFleet(
         labels: (fleet.kanban?.labels ?? []).length,
         dailyLogs: (fleet.dailyLogs ?? []).length,
         ideaBox: (fleet.ideaBox?.ideas ?? []).length,
+        teamNotes: (fleet.teamNotes ?? []).length,
       },
       ...(applyWarnings.length > 0 ? { warnings: applyWarnings } : {}),
     }

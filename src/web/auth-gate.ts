@@ -24,13 +24,14 @@ import type http from 'node:http'
 import { checkBearerToken } from './dashboard-auth.js'
 import { identifyFederationCaller } from './federation/config.js'
 import { resolveSession } from './auth-sessions.js'
-import { resolveDeviceKey } from './auth-device-keys.js'
+import { resolveDeviceKey, type DeviceKeyScope } from './auth-device-keys.js'
+import { OPERATOR_COOKIE_NAME, resolveOperatorSession } from './operator-sessions.js'
 import { sanitizeAgentIdent } from '../prompt-safety.js'
 import { isKnownAgent } from './agent-config.js'
 
 export type AuthResult =
   | { kind: 'token'; agent?: string }
-  | { kind: 'device'; device: string; deviceId: number }
+  | { kind: 'device'; device: string; deviceId: number; scope: DeviceKeyScope }
   | { kind: 'federation'; peer: string }
   | { kind: 'session'; user: string }
   | { kind: 'none' }
@@ -108,6 +109,9 @@ export function isFederationWireEndpoint(path: string, method: string): boolean 
 export function requiresAuth(path: string, method: string): boolean {
   if (path === '/api/auth/status' && method === 'GET') return false
   if (path === '/api/auth/login' && method === 'POST') return false
+  // DASHOPERATOR1005: the operator page signs in with its key here, before any
+  // cookie exists. The handler checks the key, the scope and the owner switch.
+  if (path === '/api/operator/login' && method === 'POST') return false
   if (method === 'GET' && (path === '/api/marveen/avatar' || /^\/api\/agents\/[^/]+\/avatar$/.test(path))) return false
   if (path === '/.well-known/fleetq' && method === 'GET') return true
   // VIDEOREVIEW1002: <video src> cannot send a bearer header. The stream is
@@ -138,7 +142,7 @@ export function resolveAuth(
   const bearerMatch = /^Bearer\s+(.+)$/.exec(req.headers.authorization ?? '')
   if (bearerMatch) {
     const dk = resolveDeviceKey(bearerMatch[1]!.trim())
-    if (dk) return { kind: 'device', device: dk.name, deviceId: dk.id }
+    if (dk) return { kind: 'device', device: dk.name, deviceId: dk.id, scope: dk.scope }
   }
 
   // 3. SSE pane stream ?token= (EventSource cannot set an Authorization header):
@@ -148,7 +152,7 @@ export function resolveAuth(
     const qtoken = url.searchParams.get('token') ?? ''
     if (checkBearerToken(`Bearer ${qtoken}`, dashboardToken)) return { kind: 'token' }
     const dk = resolveDeviceKey(qtoken)
-    if (dk) return { kind: 'device', device: dk.name, deviceId: dk.id }
+    if (dk) return { kind: 'device', device: dk.name, deviceId: dk.id, scope: dk.scope }
   }
 
   // 4. Scoped per-peer federation tokens: valid ONLY on the two wire endpoints,
@@ -163,6 +167,15 @@ export function resolveAuth(
   if (cookieValue) {
     const session = resolveSession(cookieValue)
     if (session) return { kind: 'session', user: session.username }
+  }
+
+  // 6. Operator browser session (DASHOPERATOR1005). Resolves to the operator
+  //    key it was minted from, so the operator gate fences it exactly like the
+  //    key itself; last, so an owner session in the same browser always wins.
+  const operatorCookie = parseCookies(req.headers.cookie)[OPERATOR_COOKIE_NAME]
+  if (operatorCookie) {
+    const op = resolveOperatorSession(operatorCookie)
+    if (op) return { kind: 'device', device: op.device, deviceId: op.deviceId, scope: 'operator' }
   }
 
   return { kind: 'none' }

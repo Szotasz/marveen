@@ -16,6 +16,15 @@ The `email_send.level` in store/autonomy-config.json becomes a real switch:
               re-sent to a different recipient -- hence every recipient field, bcc included (msg 17936, EMAILBCCHORGONY903).
   level 3  -> allow (autonomous; the outgoing-copy-gate still audits copy).
 
+Tool scope comes from the shared name classifier
+(email_extract.classify_mail_tool), which keys on the base-name suffix, so a
+tool prefix (mcp__gmail__v2_reply_all) or a server of any name
+(mcp__server-gmail-autoauth-mcp__reply_all) is in scope like the bare name.
+send_draft carries only a draftId, so no envelope can be anchored: level 1
+deny, level 2 deny with a pointer to send_email with the full envelope (which
+the anchor CAN pin), level 3 allow. A draft tool puts nothing on the wire and
+stays out of scope.
+
 At level 2 there is ONE narrow bypass, the standing recipient list
 (store/email-standing-recipients.json, EMAILALLANDOCIMZETT926): a letter whose
 sole recipient is on that list, with no cc and no bcc, is allowed without an
@@ -57,6 +66,12 @@ Anchor semantics (Marveen msg 17900, 5+1 conditions):
 
 Exit codes (PreToolUse contract): 0 = allow, 2 = block. A crash must never
 exit 1 (non-blocking) -- the __main__ net converts it to 2 on send paths.
+The net only covers main(), so only the standard library loads at module
+level (HOOKDEPLOAD1008): the two repo dependencies, email_extract.py and
+outgoing-copy-gate.py, are loaded where they are first needed, and a load
+failure is a deny that names the file. A syntax error in THIS file, or a
+broken interpreter, still exits 1 before any of it runs; only the hook
+command that starts the file can catch that.
 EVERY malformed input (unparseable stdin included) blocks: unlike the copy
 gate, which audits and stays alive on harness faults, this gate authorizes,
 so "cannot decide" is always a deny.
@@ -82,16 +97,33 @@ CONFIG_PATH = os.path.join(STORE_DIR, "autonomy-config.json")
 # what raising the level to 3 would do, because the level knows nothing about
 # who the letter goes to.
 STANDING_PATH = os.path.join(STORE_DIR, "email-standing-recipients.json")
-# ~30 minutes from approval (resolved_at) to send; env override is for tests.
-WINDOW_S = int(os.environ.get("EMAIL_APPROVAL_WINDOW_S", "1800"))
 
-sys.path.insert(0, _HERE)
-from email_extract import collect_email_envelope  # noqa: E402
+
+def _window_from_env():
+    """(seconds, error). HOOKDEPLOAD1008: a non-integer override used to
+    raise at module load, before the __main__ net: exit 1, which PreToolUse
+    treats as NON-blocking. The error is kept here, and the send path denies
+    with it."""
+    raw = os.environ.get("EMAIL_APPROVAL_WINDOW_S", "1800")
+    try:
+        return int(raw), None
+    except ValueError:
+        return None, f"EMAIL_APPROVAL_WINDOW_S={raw!r} nem egesz szam"
+
+
+# ~30 minutes from approval (resolved_at) to send; env override is for tests.
+WINDOW_S, _WINDOW_ERR = _window_from_env()
 
 # GMAILCONNECTOR914: the claude.ai Gmail connector's send-shaped tools carry
 # neither word (mcp__claude_ai_Gmail__send_message / reply / forward), so the
 # gate exited 0 on them and an unapproved connector send was never denied.
-_SEND_TOOL = re.compile(r"send_email|manage_email|gmail__(reply|reply_all|send_message|forward)$", re.I)
+# The scope test is now the shared classifier (email_extract.classify_mail_tool),
+# which also reaches prefixed names and send_draft. It lives in email_extract.py,
+# which loads lazily (HOOKDEPLOAD1008), so a name that cannot be any mail kind is
+# let through BEFORE the load: every name the classifier can put in scope holds
+# one of these words, so this is a superset of it, and a read-only call never
+# needs the module (classify_tool below).
+_MAYBE_MAIL_TOOL = re.compile(r"send|reply|forward|draft|manage_email", re.I)
 
 # manage_email is a MULTIPLEXER, not a send tool: the same MCP tool searches the
 # mailbox, reads a thread, writes a draft AND sends. Scoping this gate on the
@@ -106,7 +138,6 @@ _SEND_TOOL = re.compile(r"send_email|manage_email|gmail__(reply|reply_all|send_m
 # passes, drafts included (MANAGEDRAFT905). Fail-closed on doubt: a missing or
 # unreadable operation counts as a send, because that is the case where we
 # cannot prove it is not one. `send_email` needs no such test -- it only sends.
-_MULTIPLEX_TOOL = re.compile(r"manage_email", re.I)
 _MANAGE_EMAIL_SEND_OPS = {"send", "reply", "reply_all", "replyall", "forward"}
 
 
@@ -120,6 +151,96 @@ def _is_explicit_draft(tool_input: dict) -> bool:
     fuzzier ("True", "yes", 1) stays a send: fail-closed."""
     draft = tool_input.get("draft")
     return draft is True or draft == "true"
+
+
+# MAILCCGATE1016: the owner wants a copy of every letter the main agent sends.
+# The rule lived only in memory; measured over four days, at least six letters
+# left through send_email without it, and the owner noticed. So it is a gate
+# now, and it runs at EVERY email_send level (the owner's CC is not an approval
+# question). The address comes from MAIL_OWNER_CC in the install .env only (see
+# owner_cc_address); unset or empty means the check is off, so a fresh install
+# is unchanged. A draft is checked too: send_draft carries only a draft id, so the
+# letter it sends can only be checked where the draft is written. An update of
+# an existing draft is not checked: it may carry only the changed fields, and a
+# missing cc there would be a false deny.
+_DRAFT_TOOL = re.compile(r"draft_email|create_draft|draft_gmail_message", re.I)
+_ADDR = re.compile(r"[^\s<>,;:\"'()\[\]]+@[^\s<>,;:\"'()\[\]]+")
+
+
+def owner_cc_address() -> str:
+    """MAIL_OWNER_CC from the install .env ONLY, lowercased, or '' when the
+    check is off. Never from the process environment: an empty value that ends
+    up in the launch environment would switch the gate off with no trace (the
+    mail senders read their recipient settings from .env only for the same
+    reason). The .env is the one next to the store this gate uses, i.e. the
+    install root in production, and the test's own root when a test points
+    EMAIL_APPROVAL_GATE_STORE at a temporary store."""
+    try:
+        with open(os.path.join(os.path.dirname(STORE_DIR), ".env"), encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith("MAIL_OWNER_CC="):
+                    return line.split("=", 1)[1].strip().strip("'\"").lower()
+    except OSError:  # no .env: the check is off, as on a fresh install
+        pass
+    return ""
+
+
+def owner_cc_missing(tool_input: dict, owner: str) -> bool:
+    """True when the owner's address is in none of the call's to / cc / bcc
+    fields. Read straight from the MCP input, not through email_extract: that
+    collector only reads send_email-shaped tools, and a draft or a manage_email
+    call would come back with no recipients at all."""
+    found = set()
+    for field in ("to", "cc", "bcc"):
+        v = tool_input.get(field)
+        for raw in (v if isinstance(v, (list, tuple)) else [v]):
+            if raw:
+                found.update(a.lower().rstrip(".") for a in _ADDR.findall(str(raw)))
+    return owner not in found
+
+
+# The pre-classifier send-name test, kept ONLY for owner_cc_scope when the
+# extractor does not load (classify_tool -> "unclassified"), so a broken
+# email_extract.py cannot switch the owner-CC check off at level 3.
+_OWNER_CC_SEND_FALLBACK = re.compile(r"send_email|gmail__(reply|reply_all|send_message|forward)$", re.I)
+
+
+def owner_cc_scope(tool: str, kind, tool_input: dict):
+    """(is_mcp_draft, is_mcp_send) for the MAILCCGATE1016 check, from the
+    shared classifier's kind. A draft is a draft-writing tool other than
+    update_draft (an update may carry only the changed fields) or an explicit
+    manage_email draft; a send is every address-carrying or connector send and
+    a manage_email send. send_draft is neither: it carries only a draft id, and
+    its letter was checked where the draft was written."""
+    if kind == "unclassified":
+        return bool(_DRAFT_TOOL.search(tool)), bool(_OWNER_CC_SEND_FALLBACK.search(tool))
+    is_draft = (kind == "draft" and bool(_DRAFT_TOOL.search(tool))) or (
+        kind == "manage_email" and _is_explicit_draft(tool_input))
+    is_send = kind in ("send_email", "connector_send") or (
+        kind == "manage_email" and manage_email_is_send(tool_input))
+    return is_draft, is_send
+
+
+def owner_cc_gate(tool_input: dict, is_draft_only: bool) -> None:
+    """Deny (exit 2) when MAIL_OWNER_CC is set and the owner is in none of the
+    call's to / cc / bcc. Returns normally when the check is off or passes."""
+    owner = owner_cc_address()
+    if not owner or not owner_cc_missing(tool_input, owner):
+        return
+    what = "piszkozat" if is_draft_only else "level"
+    no_fields = not any(tool_input.get(f) for f in ("to", "cc", "bcc"))
+    if no_fields and tool_input.get("messageId"):
+        # A messageId-addressed reply/forward has no recipient field at
+        # all, so "put the owner in cc" cannot be followed there.
+        how = (f"Ez a hivas az eredeti uzenetre valaszol (messageId), cimzett-mezo "
+               f"nelkul, igy a cc nem adhato hozza. Valaszolj send_email-lel: "
+               f"threadId / inReplyTo + a teljes boritek (to, subject, body), "
+               f"a cc-ben {owner}.")
+    else:
+        how = f"Tedd a cc-be ({owner}), aztan kuldd ujra."
+    deny(f"A gazda masolata hianyzik: a {what} cimzettjei kozott (to, cc, bcc) "
+         f"nincs ott a(z) {owner} cim.\n{how}\nA gazda minden kimeno "
+         "levelrol masolatot ker (MAIL_OWNER_CC az install .env-jeben).")
 
 
 def manage_email_is_send(tool_input: dict) -> bool:
@@ -148,12 +269,25 @@ def manage_email_is_send(tool_input: dict) -> bool:
 def _load_is_send_invocation():
     """Import is_send_invocation from outgoing-copy-gate.py (dashed filename,
     so importlib by path). Single implementation: the same classifier that
-    decides what the copy gate audits decides what this gate levels."""
-    spec = importlib.util.spec_from_file_location(
-        "outgoing_copy_gate", os.path.join(_HERE, "outgoing-copy-gate.py"))
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod.is_send_invocation
+    decides what the copy gate audits decides what this gate levels.
+
+    HOOKDEPLOAD1008: a load failure here was already a deny (the __main__ net), but
+    its message told the agent to make the CALL checkable, and no rewrite of a
+    command helps when the classifier itself does not load. Without it no Bash
+    call can be told apart from a send, so every one is refused until the
+    module loads again; the deny names the file to repair."""
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "outgoing_copy_gate", os.path.join(_HERE, "outgoing-copy-gate.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod.is_send_invocation
+    except Exception as exc:  # noqa: BLE001 -- SyntaxError, missing file, anything: fail-closed
+        deny("A kapu fuggosege (scripts/hooks/outgoing-copy-gate.py) nem toltheto be "
+             f"({exc!r}) -- fail-closed: nem dontheto el, hogy egy Bash-hivas levelet "
+             "kuld-e, ezert minden Bash-hivas tiltva, amig a modul nem javul. A javitas "
+             "fajl-szerkeszto eszkozzel mehet: ez a kapu csak a Bash- es a levelezo "
+             "eszkozokon fut.")
 
 
 def read_email_level():
@@ -402,10 +536,19 @@ def content_anchor(env: dict) -> str:
         stay valid for the letters they approved. There is no ambiguity to
         exploit: the extractor decides bcc deterministically, and any
         non-empty bcc changes the hash -- fail-closed in the only direction
-        that matters."""
+        that matters.
+
+    EMAILHTMLHORGONY929: the HTML body's and the attachments' sha256 join the
+    canon the same way, ONLY when present: an approved letter re-sent with a
+    different HTML or an added/changed attachment has another anchor, and a
+    plain letter's anchor is unchanged."""
     fields = {"to": env["to"], "cc": env["cc"], "text": env["text"]}
     if env.get("bcc"):
         fields["bcc"] = env["bcc"]
+    if env.get("html_sha256"):
+        fields["html_sha256"] = env["html_sha256"]
+    if env.get("attachments"):
+        fields["attachments"] = env["attachments"]
     canon = json.dumps(fields, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canon.encode("utf-8")).hexdigest()
 
@@ -465,11 +608,63 @@ def deny(msg: str):
     sys.exit(2)
 
 
+def _load_email_extract():
+    """The extractor module, loaded where the gate first needs it
+    (HOOKDEPLOAD1008). A module-level import of a broken email_extract.py (a
+    syntax error, a conflicted merge) raised before the __main__ net: exit 1,
+    which PreToolUse treats as NON-blocking, so the letter went out UNCHECKED.
+    Here any load failure is a deny with the reason, and a call that is not a
+    send never needs the module."""
+    try:
+        sys.path.insert(0, _HERE)
+        import email_extract
+        email_extract.collect_email_envelope  # noqa: B018 -- a stub without it is a load failure
+        email_extract.classify_mail_tool  # noqa: B018
+    except Exception as exc:  # noqa: BLE001 -- SyntaxError, ImportError, anything: fail-closed
+        deny(f"A kapu fuggosege (scripts/hooks/email_extract.py) nem toltheto be ({exc!r}) "
+             "-- fail-closed: a level nem mehet ki, amig a modul nem javul.")
+    return email_extract
+
+
+def _load_collect_email_envelope():
+    return _load_email_extract().collect_email_envelope
+
+
+def classify_tool(tool: str):
+    """The tool's mail kind (email_extract.classify_mail_tool), or
+    "unclassified" when the extractor does not load. Levels 1 and 3 never read
+    the letter, so a broken extractor must not change their decision
+    (HOOKDEPLOAD1008): such a call is treated as a SEND -- level 1 denies,
+    level 3 allows as before, and level 2 meets the extractor's own load deny.
+    A manage_email call keeps its operation test, as before the classifier."""
+    try:
+        sys.path.insert(0, _HERE)
+        import email_extract
+        return email_extract.classify_mail_tool(tool)
+    except Exception:  # noqa: BLE001 -- the level-2 path names the load failure
+        return "manage_email" if "manage_email" in tool.lower() else "unclassified"
+
+
+def scope_kind(tool: str):
+    """The kind this gate acts on: the shared classifier, plus the substring
+    `manage_email` this gate's scope always matched (a look-alike such as
+    manage_emails_bulk stays in scope here, judged by its operation)."""
+    kind = classify_tool(tool)
+    if kind is None and "manage_email" in tool.lower():
+        return "manage_email"
+    return kind
+
+
 def summarize(env: dict) -> str:
     to = ", ".join(env["to"]) or "(nincs)"
     cc = ", ".join(env["cc"]) or "-"
     head = env["text"].replace("\n", " ")[:120]
-    return f"Cimzett: {to} | CC: {cc} | Szoveg eleje: {head}"
+    extra = ""
+    if env.get("html_sha256"):
+        extra += f" | HTML sha256: {env['html_sha256'][:16]}"
+    if env.get("attachments"):
+        extra += " | Csatolmany: " + ", ".join(f"{a['name']} ({a['sha256'][:16]})" for a in env["attachments"])
+    return f"Cimzett: {to} | CC: {cc} | Szoveg eleje: {head}{extra}"
 
 
 def main():
@@ -489,17 +684,28 @@ def main():
     tool_input = payload.get("tool_input")
     tool_input = tool_input if isinstance(tool_input, dict) else {}
 
-    if _SEND_TOOL.search(tool):
-        # A multiplexer tool is in scope only when the call is a send; a search,
-        # a read or a draft is not what email_send levels.
-        if _MULTIPLEX_TOOL.search(tool) and not manage_email_is_send(tool_input):
-            sys.exit(0)
-    elif tool == "Bash":
+    kind = None
+    if tool == "Bash":
         cmd = str(tool_input.get("command") or "")
         if not _load_is_send_invocation()(cmd):
             sys.exit(0)
     else:
-        sys.exit(0)
+        if not _MAYBE_MAIL_TOOL.search(tool):
+            sys.exit(0)  # no mail kind is possible: the extractor is not needed
+        kind = scope_kind(tool)
+        # MAILCCGATE1016: the owner-CC check, before the level (it applies at
+        # every level) and for drafts too. MCP tools only: the Bash senders
+        # carry their own owner-CC default (scripts/support-mail/send.py,
+        # SUPPORT_OWNER_CC).
+        is_mcp_draft, is_mcp_send = owner_cc_scope(tool, kind, tool_input)
+        if is_mcp_draft or is_mcp_send:
+            owner_cc_gate(tool_input, is_mcp_draft and not is_mcp_send)
+        if kind is None or kind == "draft":
+            sys.exit(0)  # reads, labels, drafts: nothing goes on the wire
+        # A multiplexer tool is in scope only when the call is a send; a search,
+        # a read or a draft is not what email_send levels.
+        if kind == "manage_email" and not manage_email_is_send(tool_input):
+            sys.exit(0)
 
     level, note = read_email_level()
     prefix = f"({note})\n" if note else ""
@@ -510,9 +716,22 @@ def main():
              "Az email_send autonomia-szint 1 (csak jelez): a kuldes tiltott.\n"
              "Jelezd a gazdanak inter-agent uzenettel vagy a dashboardon; a szint "
              "emelese a store/autonomy-config.json-ban a gazda dontese.")
+    if kind == "send_draft":
+        # The call carries only a draftId: the gate sees neither the recipient
+        # nor the text, so there is nothing an approval could be anchored to.
+        deny(prefix +
+             "email_send level 2 (CHECK-BEFORE-SEND): a send_draft nem horgonyozhato. "
+             "A hivas csak egy draftId-t visz, a piszkozat cimzettjet es szoveget a kapu "
+             "nem latja, igy nincs mihez jovahagyast kotni.\n"
+             "Kuldd a levelet send_email-lel, TELJES boritekkal (to + cc + bcc + subject + "
+             "body, ugyanaz, ami a piszkozatban van): arra a kapu kiadja a tartalom-horgonyt, "
+             "azzal kerj jovahagyast, es a jovahagyas utan ugyanaz a hivas atmegy.")
 
     # level 2: CHECK-BEFORE-SEND
-    env = collect_email_envelope(tool, tool_input)
+    if _WINDOW_ERR:
+        deny(prefix + f"A kapu beallitasa hibas ({_WINDOW_ERR}) -- fail-closed, "
+             "a level nem mehet ki.")
+    env = _load_collect_email_envelope()(tool, tool_input)
     if env["unreadable_reason"]:
         deny(prefix +
              f"A level nem horgonyozhato: {env['unreadable_reason']}.\n"
