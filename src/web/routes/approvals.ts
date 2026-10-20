@@ -666,8 +666,10 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       approval = getApproval(id) ?? approval
     }
 
-    // A row born approved in the chat (owner_approved_message_id) gets the informative note; a GO-cited main-agent
-    // email_send that is still pending is silenced and listed in the daily digest; every other request asks the owner.
+    // A row born approved in the chat (owner_approved_message_id) gets the informative note; if it also cites a GO
+    // (a main-agent email_send), it keeps its owner_go_ref and so is listed in the next daily digest too, as approved.
+    // A GO-cited main-agent email_send that is still pending is silenced and listed in the daily digest; every other
+    // request asks the owner.
     if (chatApprovedMessageId != null) {
       notifyOwner(approval, chatApprovedMessageId)
     } else if (ownerGoCoversRequest(approval)) {

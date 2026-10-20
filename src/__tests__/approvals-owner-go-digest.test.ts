@@ -295,6 +295,28 @@ describe('bc7c1e9d (b): immediate pings and the daily digest, end to end', () =>
     expect(telegram.sends.at(-1)!.text).toContain('GO: mintamari-tg-2')
   })
 
+  it('#1726: a request with both fields (chat-approved AND GO-cited) gets the chat note at once, and the next digest lists it as approved', async () => {
+    at('2026-09-23T11:05:00Z')
+    const res = await post({
+      agent_id: 'agent-main', category: 'email_send', owner_go_ref: 'tesztelek-tg-101', owner_approved_message_id: 4001, content_hash: 'a'.repeat(64),
+    })
+    expect(res.status).toBe(201)
+    expect(res.body.status).toBe('approved')
+    expect(res.body.owner_go_ref).toBe('tesztelek-tg-101')
+    expect(telegram.sends).toHaveLength(1)
+    const note = telegram.sends[0].text.split('\n')
+    expect(note[0]).toBe('[JÓVÁHAGYVA A CHATBEN] agent-main | email_send')
+    expect(note).toContain('Jóváhagyás: a chat-üzeneted (üzenet-azonosító: 4001)')
+    expect(telegram.sends[0].text).not.toContain('JÓVÁHAGYÁS KELL')
+
+    expect(await sendOwnerGoDigestIfDue(Date.parse('2026-09-24T05:01:00Z'))).toBe('telegram')
+    expect(telegram.sends).toHaveLength(2)
+    const digest = telegram.sends[1].text
+    expect(digest.split('\n')[0]).toBe('[NAPI ÖSSZESÍTŐ] 2026-09-23: a fő ügynök 1 email-jóváhagyási kérése meglévő tulajdonosi GO-ra hivatkozott')
+    expect(digest).toContain('13:05 | agent-main | email_send | boríték aaaaaaaaaaaa | GO: tesztelek-tg-101 | jóváhagyva')
+    expect(digest).not.toContain('ajánlat')
+  })
+
   it('without an owner chat the digest goes in-band to the main agent and the day is settled', async () => {
     at('2026-09-23T11:05:00Z')
     await post({ agent_id: 'agent-main', category: 'email_send', owner_go_ref: 'peldapal-tg-9', content_hash: 'a'.repeat(64) })
