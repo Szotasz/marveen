@@ -390,3 +390,30 @@ is refused by the other.
 
 A 409 means: do not send, and check the sent mailbox before deciding anything,
 because the earlier attempt may already have gone out.
+
+# Sub-agent mail gate: sender scripts under any name
+
+`scripts/email-send-gate.mjs` (sub-agents only) denies every Bash send it
+recognises. `isSendInvocation` recognises a Python sender only by the name
+`send.py`, so a self-written SMTP script under any other name
+(`python3 helden_send.py --to x@y < body.txt`) was no send for it.
+
+`gateDecision` therefore also runs `scriptRunSends` on the Bash path
+(SCRIPTSENDGATE1020). A script run by an interpreter (python, node, tsx, bun,
+deno) or directly through its shebang is a send when:
+
+- an e-mail address follows `--to`, `--cc` or `--bcc` (a Telegram chat id after
+  `--to` is not an address), or
+- the script file, resolved against the hook payload `cwd` and read up to
+  1 MiB, uses an SMTP library: `smtplib`, `aiosmtplib`, `yagmail`, or
+  `nodemailer` for a node script.
+
+The check is deliberately not part of `isSendInvocation`. That function is the
+contract shared with the main agent's Python gates (`send-invocation-cases.json`),
+and the main agent's `email_send` approval gate keeps its current reach.
+Known limits:
+
+- A script started after `cd dir &&` is resolved against the session cwd, not
+  `dir`.
+- A missing file is judged on its arguments alone.
+- Code assembled at runtime is not seen.
