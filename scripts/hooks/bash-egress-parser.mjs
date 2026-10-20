@@ -113,7 +113,7 @@
 // Fail-open on unparseable input or an internal error (logged): a crashed gate must not silence the
 // fleet. EXCEPT a command naming curl or wget, which denies on either (with the switch on this hook is
 // their only gate), and a nesting too deep to read, which denies. Every DENY is appended to the block log.
-import { readFileSync, appendFileSync, realpathSync, mkdirSync } from 'node:fs'
+import { readFileSync, appendFileSync, realpathSync, mkdirSync, lstatSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
@@ -1384,21 +1384,32 @@ function isTokenRead(sub, relOk) {
   const m = CAT_TOKEN.exec(sub)
   if (!m) return false
   const p = unquoteWord(m[1])
-  if (p.startsWith('/')) return tokenPaths().has(p)
+  if (p.startsWith('/')) return tokenPaths().has(p) && tokenFileOk(p)
   if (!relOk || hookCwd === null || p.split('/').includes('..')) return false
-  return tokenPaths().has(resolve(hookCwd, p))
+  const abs = resolve(hookCwd, p)
+  return tokenPaths().has(abs) && tokenFileOk(abs)
+}
+// The token as the dashboard writes it (randomBytes(32).toString('hex')): a regular file, not a
+// symlink, hex only. An earlier, separate command that rewrote it -- a newline and a `url =` line in
+// it, or a link to a file of its own -- is seen here (#1931 review 10).
+function tokenFileOk(p) {
+  try {
+    const st = lstatSync(p)
+    return st.isFile() && st.size <= 4096 && /^[0-9a-f]+\n?$/.test(readFileSync(p, 'utf-8'))
+  } catch { return false }
 }
 // `NAME=$(cat <path>)` (quoted or not) as a command of its own, assigned once, before `srcAt`, and
 // NAME written nowhere else bare (no read, for, export, printf -v, unset, a second assignment).
+// Returns the start of the assignment's span, or -1.
 function isTokenVar(name, norm, masked, srcAt, relOk) {
   const bare = [...norm.matchAll(new RegExp(String.raw`(?<![\w\${])${name}(?!\w)`, 'g'))]
-  if (bare.length !== 1) return false
+  if (bare.length !== 1) return -1
   const at = bare[0].index
-  if (at >= srcAt || masked.slice(at, at + name.length + 1) !== `${name}=`) return false
+  if (at >= srcAt || masked.slice(at, at + name.length + 1) !== `${name}=`) return -1
   const span = spans(masked).find(([s, e]) => at >= s && at < e)
-  if (!span || norm.slice(span[0], at).trim() !== '') return false
+  if (!span || norm.slice(span[0], at).trim() !== '') return -1
   const m = new RegExp(String.raw`^${name}=("?)(\$\(cat[ \t]+(?:${TOKEN_PATH_WORD})\))\1$`).exec(norm.slice(at, span[1]).trim())
-  return m !== null && isTokenRead(m[2], relOk)
+  return m !== null && isTokenRead(m[2], relOk) ? span[0] : -1
 }
 // What printf writes for FMT with each %s standing for one argument, or null when FMT holds anything
 // but %s, %%, \n, \\ and \" (an octal, hex or \r escape could hide a line break).
@@ -1422,10 +1433,11 @@ function renderPrintfFormat(fmt, nArgs) {
 }
 const CONFIG_HEADER_LINE = /^[ \t]*(-{0,2})([A-Za-z][\w-]*)(?:[ \t]*[=:][ \t]*|[ \t]+)"(?:[^"\\]|\\.)*"[ \t]*$/
 const PRINTF_ARG = new RegExp(String.raw`[ \t]+"(\$\(cat[ \t]+${TOKEN_PATH_WORD}\)|\$[A-Za-z_]\w*|\$\{[A-Za-z_]\w*\})"`, 'y')
+// null, or { reads: the "$(cat <token>)" arguments, assigns: the starts of the NAME=$(cat ...) spans }.
 function printfHeaderConfig(src, srcAt, norm, masked) {
   const t = src.trim()
   const m = /^printf[ \t]+'([^']*)'/.exec(t)
-  if (!m) return false
+  if (!m) return null
   const args = []
   let pos = m[0].length
   for (;;) {
@@ -1434,19 +1446,49 @@ function printfHeaderConfig(src, srcAt, norm, masked) {
     if (!x) break
     args.push(x[1]); pos = PRINTF_ARG.lastIndex
   }
-  if (t.slice(pos).trim() !== '') return false
-  const relOk = !/(?:^|[\s;&|(!{])(?:cd|pushd|popd)(?=[\s;&|)]|$)/.test(masked)
+  if (t.slice(pos).trim() !== '') return null
+  const relOk = noDirChange(masked)
+  let reads = 0; const assigns = new Set()
   for (const arg of args) {
     const v = /^\$(?:([A-Za-z_]\w*)|\{([A-Za-z_]\w*)\})$/.exec(arg)
-    if (!(isTokenRead(arg, relOk) || (v && isTokenVar(v[1] ?? v[2], norm, masked, srcAt, relOk)))) return false
+    if (isTokenRead(arg, relOk)) { reads++; continue }
+    const at = v ? isTokenVar(v[1] ?? v[2], norm, masked, srcAt, relOk) : -1
+    if (at === -1) return null
+    assigns.add(at)
   }
   const out = renderPrintfFormat(m[1], args.length)
-  if (out === null) return false
+  if (out === null) return null
   const lines = out.split('\n').filter((l) => l.trim() !== '')
-  return lines.length > 0 && lines.every((l) => {
+  const ok = lines.length > 0 && lines.every((l) => {
     const h = CONFIG_HEADER_LINE.exec(l)
     return h !== null && (h[1] === '-' ? h[2] === 'H' : h[2] === 'header')
   })
+  return ok ? { reads, assigns } : null
+}
+const noDirChange = (masked) => !/(?:^|[\s;&|(!{])(?:cd|pushd|popd)(?=[\s;&|)]|$)/.test(masked)
+// The command is the recipe and nothing else (#1931 review 10): the same command could rewrite the
+// token before printf reads it (`... > <token>; printf ...`, `cp`, `ln -sf`), and a name check
+// alone misses a name it builds (`"$D/.dash""board-token"`, `${F}board-token`). So every command
+// in it is the printf, the curl, a NAME=$(cat <token>) assignment, or a stage of curl's own
+// pipeline; every substitution is a token read or the -K one; and the token's name appears only in
+// those reads. A pipeline stage starts together with printf, so it can only race the read; what it
+// writes later is caught by tokenFileOk on the next command.
+function onlyTheRecipe(cfg, { norm, masked, lifted, all, k, src, kSubst }) {
+  const sep = (x) => masked.slice(all[x][1], all[x + 1][0])
+  for (let j = 0; j < all.length; j++) {
+    const [s, e] = all[j]
+    if (j === k || j === src || masked.slice(s, e).trim() === '' || cfg.assigns.has(s)) continue
+    if (lifted.bodies.some(([s0, e0]) => s >= s0 && s < e0)) continue
+    for (let x = Math.min(j, k); x < Math.max(j, k); x++) if (sep(x) !== '|') return false
+  }
+  const relOk = noDirChange(masked)
+  let reads = kSubst === -1 ? 0 : cfg.reads
+  for (let n = 0; n < lifted.inners.length; n++) {
+    if (n === kSubst) continue
+    if (!isTokenRead(`$(${lifted.inners[n].trim()})`, relOk)) return false
+    reads++
+  }
+  return (norm.replace(/['"\\]/g, '').match(/dashboard-token/g) ?? []).length === reads
 }
 function curlConfigFromPrintf(configs, { norm, masked, orig, a, b, lifted, feeds, funcs }) {
   if (configs.length !== 1) return false
@@ -1462,13 +1504,17 @@ function curlConfigFromPrintf(configs, { norm, masked, orig, a, b, lifted, feeds
     const k = all.findIndex(([s, e]) => s === a && e === b)
     if (k < 1 || masked.slice(all[k - 1][1], a) !== '|') return false
     const [ps, pe] = all[k - 1]
-    return printfHeaderConfig(norm.slice(ps, pe), ps, norm, masked)
+    const cfg = printfHeaderConfig(norm.slice(ps, pe), ps, norm, masked)
+    return cfg !== null && onlyTheRecipe(cfg, { norm, masked, lifted, all, k, src: k - 1, kSubst: -1 })
   }
   // `-K <(printf ...)`: the value is the one process substitution in this curl, whole.
   if (!/^\$+$/.test(v)) return false
   const subs = lifted.innerAts.map((p, n) => n).filter((n) => lifted.innerAts[n] >= a && lifted.innerAts[n] < b && norm.startsWith('<(', lifted.innerAts[n]))
   if (subs.length !== 1 || lifted.innerEnds[subs[0]] - lifted.innerAts[subs[0]] !== v.length) return false
-  return printfHeaderConfig(lifted.inners[subs[0]], lifted.innerAts[subs[0]], norm, masked)
+  const cfg = printfHeaderConfig(lifted.inners[subs[0]], lifted.innerAts[subs[0]], norm, masked)
+  const all = spans(masked)
+  const k = all.findIndex(([s, e]) => s === a && e === b)
+  return cfg !== null && k !== -1 && onlyTheRecipe(cfg, { norm, masked, lifted, all, k, src: -1, kSubst: subs[0] })
 }
 // Function bodies are judged per call, and a body calling other functions fans out: identical
 // readings are judged once per top-level command, and past FUNCTION_BUDGET judgements the command
