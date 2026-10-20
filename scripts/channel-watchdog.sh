@@ -54,6 +54,17 @@ RESPAWN_COUNT_FILE="$STORE/.channel-watchdog-respawns"
 AUTH_DEAD_COUNT_FILE="$STORE/.channel-watchdog-auth-dead-count"
 LOG_TAG="channel-watchdog"
 
+# File mtime in epoch seconds, portably: GNU stat (Linux) first, BSD stat
+# (macOS) as the fallback. GNU-only `stat -c %Y` is an illegal option on macOS;
+# behind `|| echo 0` that silently read every stamp as epoch 0. Prints 0 when
+# the file is missing/unreadable or the result is not a plain integer.
+file_mtime() {
+  local m
+  m="$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null)" || m=0
+  case "$m" in (''|*[!0-9]*) m=0;; esac
+  printf '%s\n' "$m"
+}
+
 STALE_SECONDS=$(( 15 * 60 ))    # keepalive older than this => wedged/deaf
 GRACE_SECONDS=$(( 15 * 60 ))    # don't respawn again within this window
 MAX_CONSECUTIVE=3               # after this many respawns w/o recovery, back off + alert
