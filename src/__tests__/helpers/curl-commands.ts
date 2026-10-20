@@ -118,7 +118,9 @@ export function fillPlaceholders(cmd: string, scratchDir?: string): string {
   const filled = cmd.replace(/<[A-Za-zÁÉÍÓÖŐÚÜŰáéíóöőúüű_-]+>/g, 'x').replace(/KULCSSZÓ/g, 'KULCSSZO')
   // The examples write the response headers to /tmp/mem-fejlec*.txt, the same path a live agent uses between its
   // curl -D and its grep: running them here must not touch that file, so the scratch dir stands in for /tmp.
-  return scratchDir ? filled.replace(/\/tmp\//g, `${scratchDir}/`) : filled
+  // Only the header dump file: the test's own root may itself live under /tmp (Linux), and a blanket /tmp/ rewrite
+  // would move the token path out from under the command.
+  return scratchDir ? filled.replace(/\/tmp\/(mem-fejlec)/g, `${scratchDir}/$1`) : filled
 }
 
 /** Ban list for the argv form, in every spelling the RO listed (and the escaped-JSON one). */
