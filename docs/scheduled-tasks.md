@@ -195,6 +195,8 @@ A prompt injektálás előtt egy "untrusted" preamble kerül eléje, hogy az ese
 
 A dashboard Bearer tokennel védett (token: `store/.dashboard-token`).
 
+Ütemezést a fő-ágens ír. Egy sub-agent a saját tokenjével (`agents/<név>/.dashboard-token`) olvashat, de minden írásra (`POST`, `PUT`, `PATCH`, `DELETE` a `/api/schedules` alatt) 403-at kap (`"rule": "schedule-writes-main-agent-only"`); az ütemezés-kérést inter-agent üzenetben küldi a fő-ágensnek. Lásd `docs/security-hardening.md`, "Per-agent dashboard tokens".
+
 ```bash
 TOKEN=$(cat /Users/jonasgergo/Documents/marveen/store/.dashboard-token)
 ```

@@ -156,3 +156,23 @@ Tervezési döntések, amelyek a kódolás közben dőltek el:
   (`src/db.ts:264`), tehát minden sornak van tulajdonosa; a `!row.agent_id`
   ellenőrzés üres sztringre véd, nem támogatott állapotra. Ezt teszt rögzíti,
   nem komment.
+
+## 8. B) opció a sub-agentekre: per-ágens token
+
+A második ok megjött: a "sub-agent nem ír ütemezést" szabályt csak a
+`scripts/self-pace-gate.mjs` hook őrizte, és az a parancssort olvassa, ezért
+egy python `urllib` vagy `node fetch` POST a `/api/schedules`-re átmegy rajta
+(mérve: a hook `gateDecision`-je ezekre `deny: false`, a curl alakra `true`).
+
+- Minden sub-agent saját tokent kap: `agents/<név>/.dashboard-token` (0600), a
+  `src/web/agent-tokens.ts` hozza létre és oldja fel. A fő-ágens tokenje marad.
+- A hitelesített név `ctx.auth.agent`. Az `X-Agent-Id` önbevallott neve ezért
+  átkerült `ctx.auth.claimedAgent`-be: a kettő soha nem keveredhet, mert a
+  kapu az `agent` alapján korlátoz, egy begépelt fejléc alapján nem szabad.
+  Az `owner_mismatch` figyelmeztetés előbb az `agent`-et, aztán a
+  `claimedAgent`-et nézi.
+- A 3. pont következtetése változatlan: ugyanaz az OS-felhasználó olvassa a
+  fő-tokent, tehát ez sem hamisítás-biztos. A szerver-oldali szabály a szokásos
+  utat zárja le, nem a szándékos megkerülést.
+- Kikapcsolás: `AGENT_DASHBOARD_TOKENS=0`. Részletek:
+  `docs/security-hardening.md`, "Per-agent dashboard tokens".

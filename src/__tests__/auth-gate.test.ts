@@ -166,12 +166,12 @@ describe('self-asserted caller id (X-Agent-Id, card 29c8cf33)', () => {
 
   it('a registered agent id is carried through', () => {
     const r = resolve({ ...bearer, 'x-agent-id': MAIN_AGENT_ID })
-    expect(r).toEqual({ kind: 'token', agent: MAIN_AGENT_ID })
+    expect(r).toEqual({ kind: 'token', claimedAgent: MAIN_AGENT_ID })
   })
 
   it('surrounding whitespace is tolerated (a shell variable with a newline)', () => {
     const r = resolve({ ...bearer, 'x-agent-id': `  ${MAIN_AGENT_ID}\n` })
-    expect(r).toEqual({ kind: 'token', agent: MAIN_AGENT_ID })
+    expect(r).toEqual({ kind: 'token', claimedAgent: MAIN_AGENT_ID })
   })
 
   it('an UNREGISTERED name is dropped, and the request stays authenticated', () => {
@@ -194,7 +194,20 @@ describe('self-asserted caller id (X-Agent-Id, card 29c8cf33)', () => {
   it('a duplicated header takes the first value, not the joined array', () => {
     const req = { headers: { ...bearer, 'x-agent-id': [MAIN_AGENT_ID, 'other'] } } as unknown as http.IncomingMessage
     const r = resolveAuth(req, mkUrl('/api/memories/1'), '/api/memories/1', 'PUT', TOKEN)
-    expect(r).toEqual({ kind: 'token', agent: MAIN_AGENT_ID })
+    expect(r).toEqual({ kind: 'token', claimedAgent: MAIN_AGENT_ID })
+  })
+
+  it('the claim never lands in `agent` (the authenticated lane), and a per-agent token ignores it', () => {
+    // `agent` is what the sub-agent scope restricts by; a typed header must
+    // not restrict the shared-token lane, and must not override a real token.
+    const shared = resolve({ ...bearer, 'x-agent-id': MAIN_AGENT_ID })
+    expect((shared as { agent?: string }).agent).toBeUndefined()
+    const sub = resolveAuth(
+      mkReq({ authorization: 'Bearer sub-token', 'x-agent-id': MAIN_AGENT_ID }),
+      mkUrl('/api/memories/1'), '/api/memories/1', 'PUT', TOKEN,
+      (t: string) => (t === 'sub-token' ? 'agent-a' : null),
+    )
+    expect(sub).toEqual({ kind: 'token', agent: 'agent-a' })
   })
 
   it('THE CONTRACT: the claim authenticates nothing -- a bad bearer stays unauthenticated', () => {
