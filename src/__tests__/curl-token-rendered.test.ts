@@ -159,7 +159,7 @@ describe('rendered generator output: every curl command is well-formed AND works
 
         if (src.needs === 'jq' && !jqAvailable) continue
         const before: SeenRequest[] = stub.seen.slice()
-        const cmd = (src.prelude ? src.prelude + '\n' : '') + fillPlaceholders(raw)
+        const cmd = (src.prelude ? src.prelude + '\n' : '') + fillPlaceholders(raw, st.root)
         const r = await runCommand(cmd, src.cwd ?? st.proj, st.root)
         expect(r.code, `${name}: ${raw.split('\n')[0].slice(0, 160)}\n${r.out.slice(0, 400)}`).toBe(0)
         const fresh = stub.seen.slice(before.length)

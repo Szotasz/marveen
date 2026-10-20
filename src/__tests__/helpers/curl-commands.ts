@@ -112,10 +112,13 @@ export function runCommand(cmd: string, cwd: string, home: string): Promise<{ co
 }
 
 /** Placeholders like <id>, <N>, <PLAN_ID>, <rendszer> stand for values the agent fills in. */
-export function fillPlaceholders(cmd: string): string {
+export function fillPlaceholders(cmd: string, scratchDir?: string): string {
   // KULCSSZÓ is the search-word placeholder in the memory-search example; a raw accent in a query string is
   // an HTTP 400 (the documented trap), so the agent's own replacement is what makes the request valid.
-  return cmd.replace(/<[A-Za-zÁÉÍÓÖŐÚÜŰáéíóöőúüű_-]+>/g, 'x').replace(/KULCSSZÓ/g, 'KULCSSZO')
+  const filled = cmd.replace(/<[A-Za-zÁÉÍÓÖŐÚÜŰáéíóöőúüű_-]+>/g, 'x').replace(/KULCSSZÓ/g, 'KULCSSZO')
+  // The examples write the response headers to /tmp/mem-fejlec*.txt, the same path a live agent uses between its
+  // curl -D and its grep: running them here must not touch that file, so the scratch dir stands in for /tmp.
+  return scratchDir ? filled.replace(/\/tmp\//g, `${scratchDir}/`) : filled
 }
 
 /** Ban list for the argv form, in every spelling the RO listed (and the escaped-JSON one). */

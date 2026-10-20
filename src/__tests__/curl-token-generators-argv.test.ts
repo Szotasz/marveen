@@ -72,6 +72,29 @@ describe('generated curl commands keep the dashboard token off argv', () => {
     })
   }
 
+  // The path inside $(cat <path>) must be quoted wherever it carries a variable part. This is the static
+  // net for the emitters the rendered test cannot reach (the generateClaudeMd prompt text, the other
+  // provenance-gate entry points): putting the bare variable back turns exactly one of these red.
+  const UNQUOTED_CAT: Array<[RegExp, string]> = [
+    [/\$\(cat \$\{(?!tokenArg\}|shQuote\()/, 'TypeScript: $(cat ${...}) must be ${tokenArg} or ${shQuote(...)}'],
+    [/\$\(cat \{(?!shlex\.quote\()/, 'Python: $(cat {...}) must be {shlex.quote(...)}'],
+    [/\$\(cat \{\{/, 'template: $(cat {{...}}) must be inside single quotes'],
+    [/\$\(cat \$[A-Za-z_]/, 'shell variable path in $(cat $VAR) must be quoted'],
+  ]
+  for (const rel of GENERATORS) {
+    it(`${rel}: no unquoted variable path inside $(cat ...)`, () => {
+      const src = read(rel)
+      for (const [re, why] of UNQUOTED_CAT) expect(src, `${rel}: ${why}`).not.toMatch(re)
+    })
+  }
+
+  it('the quoting net itself flags the bare forms (positive control)', () => {
+    const bare = ['$(cat ${tokenPath})', '$(cat {token})', '$(cat {{PROJECT_ROOT}}/store/.dashboard-token)', '$(cat $TOKEN_FILE)']
+    for (const sample of bare) expect(UNQUOTED_CAT.some(([re]) => re.test(sample)), sample).toBe(true)
+    const fine = ['$(cat ${tokenArg})', '$(cat ${shQuote(tokenPath)})', '$(cat {shlex.quote(token)})', "$(cat '{{PROJECT_ROOT}}/store/.dashboard-token')", '$(cat store/.dashboard-token)']
+    for (const sample of fine) expect(UNQUOTED_CAT.some(([re]) => re.test(sample)), sample).toBe(false)
+  })
+
   it('the four stdin-body curls (voice tts, rotation heartbeat, autonomy Level 1, sender ping) keep -K <(...)', () => {
     expect(read('src/web/voice-directive.ts')).toContain('-K <(printf')
     expect(read('src/web/claude-rotation-heartbeat.ts')).toContain('-K <(printf')
