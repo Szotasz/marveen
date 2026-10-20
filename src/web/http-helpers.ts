@@ -31,11 +31,27 @@ export class RequestBodyTooLargeError extends Error {
   }
 }
 
+// The auth gate reads the body ONCE, before the route, when it has to check
+// the identity a sub-agent token asserts in it (from, agent_id, author, ...;
+// auth-gate.ts AGENT_IDENTITY_BINDINGS). The stream is then drained, so the
+// gate stashes the bytes here and readBody() hands them to the route
+// unchanged. Without a stash readBody behaves exactly as before.
+const PRE_READ_BODY = Symbol.for('marveen.preReadBody')
+
+export function stashPreReadBody(req: http.IncomingMessage, body: Buffer): void {
+  (req as unknown as Record<symbol, Buffer>)[PRE_READ_BODY] = body
+}
+
 export function readBody(
   req: http.IncomingMessage,
   opts: { maxBytes?: number } = {},
 ): Promise<Buffer> {
   const maxBytes = opts.maxBytes ?? DEFAULT_READ_BODY_MAX_BYTES
+  const pre = (req as unknown as Record<symbol, Buffer | undefined>)[PRE_READ_BODY]
+  if (pre !== undefined) {
+    // The route's own cap still applies to a body the gate already buffered.
+    return pre.length > maxBytes ? Promise.reject(new RequestBodyTooLargeError(maxBytes)) : Promise.resolve(pre)
+  }
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = []
     let total = 0
@@ -48,8 +64,14 @@ export function readBody(
       }
       chunks.push(c)
     })
-    req.on('end', () => resolve(Buffer.concat(chunks)))
+    let ended = false
+    req.on('end', () => { ended = true; resolve(Buffer.concat(chunks)) })
     req.on('error', reject)
+    // A client that disconnects mid-body may emit neither 'end' nor 'error';
+    // without these the promise (and the gate awaiting it) would hang.
+    const closedEarly = () => { if (!ended) reject(new Error('request closed before the body ended')) }
+    req.on('aborted', closedEarly)
+    req.on('close', closedEarly)
   })
 }
 

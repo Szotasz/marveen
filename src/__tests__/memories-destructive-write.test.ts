@@ -41,9 +41,9 @@ function makeCtx(path: string, method: string, body?: unknown, query: Record<str
     ? Readable.from([]) as any
     : Readable.from([Buffer.from(JSON.stringify(body))]) as any
 
-  // The gate resolves the self-asserted X-Agent-Id into ctx.auth.agent; the
+  // The gate resolves the self-asserted X-Agent-Id into ctx.auth.claimedAgent; the
   // route only ever sees the resolved value, so the tests set it directly.
-  const ctx: RouteContext = { req, res: res as any, path, method, url, auth: { kind: 'token', agent: caller } }
+  const ctx: RouteContext = { req, res: res as any, path, method, url, auth: { kind: 'token', claimedAgent: caller } }
   return { ctx, getStatus: () => status, getBody: () => (responseBody ? JSON.parse(responseBody) : null) }
 }
 

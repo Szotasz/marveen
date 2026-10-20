@@ -13,6 +13,7 @@ import { agentDir, agentConfigRoot, listAgentNames, readAgentCapabilities, readA
 import { loadProfileTemplate, profileWantsCredentialGate, profileWantsDestructiveGate, resolveProfilePlaceholders,
   type ProfileTemplate } from './profiles.js'
 import { resolveAgentSecurityProfile } from './agent-team.js'
+import { agentTokensEnabled, dashboardTokenPathFor, ensureAgentToken } from './agent-tokens.js'
 import { sanitizeCapabilityTag, CAPABILITY_TAG_MAX_PER_AGENT } from '../prompt-safety.js'
 import { TMP_ROOT_PREFIXES as _TMP_PREFIXES } from './tmp-root-prefixes.js'
 
@@ -47,7 +48,13 @@ const dashboardOrigin = resolveDashboardOrigin(DASHBOARD_PUBLIC_URL, WEB_PORT, A
 // `store/.dashboard-token` does not exist -- curl then sends an empty Bearer
 // and every call 401s silently. Measured 2026-07-25: relative 401, absolute
 // 200; this had been silently killing sub-agent memory saves and searches.
-const tokenPath = join(PROJECT_ROOT, 'store', '.dashboard-token')
+//
+// The path is resolved PER AGENT, and stays absolute. The main agent keeps the
+// shared store/.dashboard-token; a sub-agent gets its own
+// agents/<name>/.dashboard-token (which the server maps to that agent and
+// refuses schedule writes for) once the file exists -- see
+// dashboardTokenPathFor() in agent-tokens.ts. Every builder below takes the
+// agent name and binds a local `const tokenPath = dashboardTokenPathFor(name)`.
 
 // Hook commands run under `/bin/sh -c` with a NON-interactive PATH. On nvm
 // installs a bare `node` is not on that PATH, so the hook exits 127 -- which
@@ -461,6 +468,7 @@ export const INSTALL_ANCHORED_SUFFIXES = [
   '/scripts/skill-index.sh',
   '/scripts/recipient-ledger.mjs',
   '/scripts/skill-lint.mjs',
+  '/scripts/agent-msg.sh',
 ] as const
 // An absolute path prefix: starts with a `/` that is not the tail of something
 // else (`~/x`, `{{X}}/x`, `a/x` are not absolute roots -- the lookbehind keeps
@@ -2270,6 +2278,19 @@ export function scaffoldAgentDir(name: string) {
   mkdirSync(channelStateDir(CHANNEL_PROVIDER, dir), { recursive: true })
   mkdirSync(join(dir, 'memory'), { recursive: true })
 
+  // The agent's own dashboard token (0600, idempotent), so the CLAUDE.md
+  // generated next points at it instead of the shared main token.
+  // Best-effort: a failure must not abort agent creation -- the generated
+  // CLAUDE.md then falls back to the shared token path (dashboardTokenPathFor),
+  // and startAgentProcess() retries the provisioning on every start.
+  if (agentTokensEnabled()) {
+    try {
+      ensureAgentToken(name)
+    } catch (err) {
+      logger.warn({ err, name }, 'per-agent dashboard token provisioning failed at scaffold (agent keeps the shared token)')
+    }
+  }
+
   // Deploy the quarantine-reader sub-agent definition from the template so every
   // scaffolded agent can use it for safe web/RSS fetching without calling WebFetch
   // directly in the main context (where untrusted content would run as instructions).
@@ -2471,6 +2492,7 @@ function buildFleetRosterBody(selfName: string): string {
 // resolved dashboard origin and the agent's own name so agents don't have to
 // guess.
 function buildAutonomyBody(name: string): string {
+  const tokenPath = dashboardTokenPathFor(name)
   return [
     '## Autonómia és jóváhagyás',
     '',
@@ -2679,7 +2701,10 @@ const MSGCLOSE_BLOCK_RE = new RegExp(
   `${MSGCLOSE_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${MSGCLOSE_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
 )
 
-export function buildMessageCloseBody(): string {
+// The token path is per agent (a sub-agent reads its OWN dashboard token);
+// the default keeps the zero-argument call shape existing callers use.
+export function buildMessageCloseBody(name: string = MAIN_AGENT_ID): string {
+  const tokenPath = dashboardTokenPathFor(name)
   return [
     '## Üzenet lezárása: bejövő riportnál `notify:false`',
     '',
@@ -2712,7 +2737,7 @@ export function ensureMessageCloseSection(name: string): void {
     : join(agentDir(name), 'CLAUDE.md')
   if (!existsSync(claudeMdPath)) return
 
-  const block = `${MSGCLOSE_BEGIN}\n${buildMessageCloseBody()}\n${MSGCLOSE_END}`
+  const block = `${MSGCLOSE_BEGIN}\n${buildMessageCloseBody(name)}\n${MSGCLOSE_END}`
 
   let existing: string
   try {
@@ -3004,6 +3029,7 @@ const SYSTEM_DIRECTIVE_AUTH_BLOCK_RE = new RegExp(
 )
 
 export function buildSystemDirectiveAuthBody(name: string): string {
+  const tokenPath = dashboardTokenPathFor(name)
   return [
     '## Rendszer-direktíva hitelesítés (KÖTELEZŐ, végrehajtás előtt)',
     '',
@@ -3077,6 +3103,10 @@ const AGENT_ID_HEADER_BLOCK_RE = new RegExp(
 // customer deleted 84 rows trusting it. agent-id-header-delete-truth.test.ts
 // ties this text to that behaviour.
 export function buildAgentIdHeaderBody(name: string): string {
+  const tokenPath = dashboardTokenPathFor(name)
+  // A sub-agent with its OWN token (agent-tokens.ts) is named by the server
+  // from the token itself, so it gets its own variant of this section.
+  if (tokenPath !== join(PROJECT_ROOT, 'store', '.dashboard-token')) return buildOwnTokenAgentIdBody(name, tokenPath)
   return [
     '## Ki hívta az API-t: az `X-Agent-Id` fejléc',
     '',
@@ -3102,6 +3132,26 @@ export function buildAgentIdHeaderBody(name: string): string {
     'előtte olvasd ki és mentsd el a sort (`GET /api/memories/<id>`).',
   ].join('\n')
 }
+
+// The same section for a sub-agent that has its own token: the header is
+// redundant there, and the server's answer to a foreign write is its own.
+function buildOwnTokenAgentIdBody(name: string, tokenPath: string): string {
+  return [
+    '## Ki hívta az API-t: a saját tokened',
+    '',
+    `A te tokened a SAJÁT tokened (${tokenPath}), ezért a dashboard a tokenből tudja, hogy te`,
+    'hívtál. Az `X-Agent-Id` fejléc a közös token sávjára való; ha elküldöd, ártalmatlan, a szerver',
+    `akkor is a tokened nevét (${name}) használja.`,
+    '',
+    OWN_TOKEN_FOREIGN_MEMORY_RULE,
+    'Felülírás előtt az előző tartalom eltárolódik (`GET /api/memories/<id>/versions`).',
+    OWN_TOKEN_MEMORY_DELETE_RULE,
+  ].join('\n')
+}
+const OWN_TOKEN_FOREIGN_MEMORY_RULE =
+  'Idegen ágens emlékét a tokeneddel nem írhatod felül és nem adhatod át: 403 ("rule":"agent-identity-binding").'
+const OWN_TOKEN_MEMORY_DELETE_RULE =
+  'Emléket törölni a tokeneddel nem tudsz (403, "rule":"agent-token-scope"): ha egy sort törölni kell, kérd a fő-ágenstől.'
 
 // Same five-rule idempotency contract as ensureSystemDirectiveAuthSection.
 export function ensureAgentIdHeaderSection(name: string): void {
@@ -3424,6 +3474,7 @@ const MEMORY_SEARCH_LABEL_BLOCK_RE = new RegExp(
 // so the header dump file is genuinely per-agent and two agents searching at the
 // same time cannot read each other's label out of one shared /tmp path.
 export function buildMemorySearchLabelBody(name: string): string {
+  const tokenPath = dashboardTokenPathFor(name)
   return [
     '## Memória-keresés: a FEJLÉCET is olvasd el (KÖTELEZŐ)',
     '',
@@ -3597,6 +3648,19 @@ export async function generateClaudeMd(name: string, description: string, model:
   // without STORE_DIR (three suites collapsed at collection when this was static).
   // The value is only needed here, at generation time.
   const { getEffectiveSettingValue } = await import('../settings-store.js')
+  // The agent's OWN token file. scaffoldAgentDir() provisions it before
+  // generation; dashboardTokenPathFor falls back to the shared path if not.
+  const tokenPath = dashboardTokenPathFor(name)
+  // Said only when the agent really has its own token: the shared token (the
+  // fallback, or AGENT_DASHBOARD_TOKENS=0) is not refused anything, and it has
+  // no allowlist (auth-gate.ts AGENT_TOKEN_ALLOWLIST) and no identity binding.
+  const ownToken = tokenPath !== join(PROJECT_ROOT, 'store', '.dashboard-token')
+  const scheduleEnforcedNote = ownToken
+    ? ' Ezt a szerver érvényesíti: a saját tokeneddel minden nem-GET hívás a /api/schedules alatt 403-at ad ("only the main agent writes schedules").'
+    : ''
+  const tokenScopeLine = ownToken
+    ? `Ez a SAJÁT tokened, és csak az ügynök-API-ra szól (üzenetek, kanban, memória, napi napló, jóváhagyás-kérés, ütemezések és a vault olvasása). Minden más végpontra a szerver 403-at ad ("rule":"agent-token-scope"): az ilyen kérést küldd a fő-ágensnek (${MAIN_AGENT_ID}) a /api/messages-en. A tokeneddel CSAK a saját nevedben írhatsz: a from, agent_id, author, actor, updated_by mező mindig a saját neved (AGENT_NAME), memóriát csak a sajátodat módosíthatod, és üzenetet csak a neked címzettet zárhatod le; eltérés esetén 403 ("rule":"agent-identity-binding").\n`
+    : ''
   const ownerDriveFolder = String(getEffectiveSettingValue('OWNER_DRIVE_FOLDER') || '')
   const driveDefault = ownerDriveFolder
     ? `Ha nincs MÁS kijelölve, az ALAPÉRTELMEZETT közös meghajtó: https://drive.google.com/drive/folders/${ownerDriveFolder} - ide írj, rendezett almappákba.`
@@ -3637,7 +3701,7 @@ A memoria 3 retegbol all (hot/warm/cold) + napi naplo.
 ### NINCS MENTAL NOTE! Ha meg kell jegyezni -> AZONNAL mentsd:
 
 Minden /api/* végpont Bearer tokenes: a token a ${tokenPath} fájlban.
-A munkakönyvtárad NEM a projekt gyökere, hanem ${join(PROJECT_ROOT, 'agents')}/AGENT_NAME, ezért a projekt fájljaira (token, scripts/) MINDIG abszolút úttal hivatkozz. Relatív úttal a fájl nem létezik: a cat üres sztringet ad, a curl üres Bearert küld, és a hívás némán 401-gyel elhal.
+${tokenScopeLine}A munkakönyvtárad NEM a projekt gyökere, hanem ${join(PROJECT_ROOT, 'agents')}/AGENT_NAME, ezért a projekt fájljaira (token, scripts/) MINDIG abszolút úttal hivatkozz. Relatív úttal a fájl nem létezik: a cat üres sztringet ad, a curl üres Bearert küld, és a hívás némán 401-gyel elhal.
 
 Memória mentés:
 curl -s -X POST ${dashboardOrigin}/api/memories -H "Content-Type: application/json" -H "Authorization: Bearer $(cat ${tokenPath})" -d '{"agent_id":"AGENT_NAME","content":"MIT","category":"CATEGORY","keywords":"kulcsszo1, kulcsszo2"}'
@@ -3673,8 +3737,11 @@ TÖRLÉS NINCS, ÉS SZÁNDÉKOSAN NE IS LEGYEN. A DELETE /api/memories/:id léte
 
 Az ütemezett feladatok a ~/.claude/scheduled-tasks/ mappában élnek, fájl-alapúak (SKILL.md + task-config.json). A schedule runner 60 másodpercenként ellenőrzi és a te tmux session-ödbe küldi a promptot.
 
-Feladat létrehozása API-n keresztül:
-curl -s -X POST ${dashboardOrigin}/api/schedules -H "Content-Type: application/json" -H "Authorization: Bearer $(cat ${tokenPath})" -d '{"name": "feladat-nev", "description": "Rövid leírás", "prompt": "A részletes prompt", "schedule": "0 8 * * *", "agent": "AGENT_NAME", "type": "heartbeat"}'
+Ütemezést CSAK a fő-ágens (${MAIN_AGENT_ID}) hoz létre, módosít vagy töröl.${scheduleEnforcedNote} Olvasni szabad:
+curl -q -s -H "Authorization: Bearer $(cat ${tokenPath})" ${dashboardOrigin}/api/schedules
+
+Ha új ütemezés, módosítás vagy törlés kell, kérd a fő-ágenstől inter-agent üzenetben (név, cron, típus, a teljes prompt):
+bash ${join(PROJECT_ROOT, 'scripts', 'agent-msg.sh')} AGENT_NAME ${MAIN_AGENT_ID} "Ütemezés-kérés: ..."
 
 Típusok: task (mindig szól az eredménnyel) vagy heartbeat (csak fontosnál szól).
 Cron formátum: perc óra nap hónap hétnapja (pl. 0 8 * * * = minden nap 8:00).
