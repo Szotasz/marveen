@@ -385,7 +385,8 @@ def _segment_is_send(toks, depth: int) -> bool:
 # SUBAGENTMAILGATE1016: the sender was recognised only with the script as the
 # FIRST interpreter argument and the exact --to flag. The boundary and the
 # measured bypasses are written out at pythonHeadSends in email-send-gate.mjs
-# (the JS twin); send-invocation-cases.json binds the two.
+# (the JS twin); send-invocation-cases.json binds the two. MAILGATEVARARGS1020
+# narrowed the undecidable-path branch to the recipient flag (same place).
 _PY_OPT_WITH_ARG = {"-X", "-W", "--check-hash-based-pycs"}
 _RECIPIENT_FLAG = re.compile(r"^--to?(=|$)")
 _UNDECIDABLE_PATH = re.compile(r"[*?[{$]")
@@ -485,7 +486,7 @@ def _python_head_sends(rest) -> bool:
     if script is not None and _SENDPY.match(_basename(script)):
         return recipient
     if script is not None and _UNDECIDABLE_PATH.search(script):
-        return recipient or any(t != script and "$" in t for t in rest)
+        return recipient  # MAILGATEVARARGS1020
     if stdin or (script is None and stdin_redirect):
         return recipient
     return False

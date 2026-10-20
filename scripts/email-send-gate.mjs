@@ -344,15 +344,33 @@ function commandHeads(toksIn, d = 0) {
 //   - send.py by basename + a recipient flag: a send (as before, now from any
 //     operand position, interpreter spelling and flag spelling);
 //   - a script operand that cannot be resolved statically (glob or brace
-//     characters, or a `$` expansion) + a recipient flag or another `$` token:
-//     a send, because what runs is undecidable here;
+//     characters, or a `$` expansion) + a recipient flag: a send, because what
+//     runs is undecidable here (until MAILGATEVARARGS1020 also "or another `$`
+//     token", see below);
 //   - a program read from stdin (`-`, or no script operand and a `<` redirect)
 //     + a recipient flag: a send (a heredoc-fed program is judged by its body,
 //     heredocProgramSends, as before).
 // Anything else stays allowed: `python3 -u other.py`, `python3 -c "print(1)"`,
-// `for f in *.py; do python3 $f; done`, `python3 x.py --to-date ...`.
+// `for f in *.py; do python3 $f; done`, `python3 x.py --to-date ...`,
+// `python3 "$DIR/gen.py" "$OUT"`.
 // Mirrors _python_head_sends in hooks/outgoing-copy-gate.py; the shared
 // send-invocation-cases.json binds the two.
+//
+// MAILGATEVARARGS1020 (measured on a production install, 2026-10-19): the
+// "or another `$` token" half denied ordinary scripted work. In one day 26
+// sub-agent Bash calls, across four agents, were denied as mail sends; none
+// of them was one (no recipient flag, no sender, no mail program). Each was a
+// script run from a variable path with a variable argument:
+// `python3 "$SP/gen.py" "$SP/out.json"`, `python3 "$L" /dev/null "$SP/o.txt"`,
+// `python3 $A/check.py $S/x.json && python3 $A/stamp.py --note-file "$A/n.json"`.
+// The agents lost turns on rewrites and workarounds. The extra `$` rule also
+// guarded nothing the rest of the gate guards: a literal sender path with a
+// variable argument (`python3 scripts/support-mail/send.py $ARGS`) has always
+// passed, because a recipient flag inside a variable is not visible statically
+// on ANY branch. So this branch now asks what the send.py and the stdin
+// branches ask: is there a recipient flag. A variable path WITH one
+// (`python3 $P --to ...`) is still a send; `python3 $SENDER $ARGS` passes,
+// pinned as a documented limit in send-invocation-cases.json.
 const PY_OPT_WITH_ARG = new Set(['-X', '-W', '--check-hash-based-pycs'])
 const RECIPIENT_FLAG = /^--to?(=|$)/
 const UNDECIDABLE_PATH = /[*?[{$]/
@@ -418,9 +436,7 @@ function pythonHeadSends(rest) {
   const recipient = rest.some((t) => RECIPIENT_FLAG.test(t))
   const { script, stdin, stdinRedirect } = pythonScriptOperand(rest)
   if (script !== null && SENDPY.test(basename(script))) return recipient
-  if (script !== null && UNDECIDABLE_PATH.test(script)) {
-    return recipient || rest.some((t) => t !== script && t.includes('$'))
-  }
+  if (script !== null && UNDECIDABLE_PATH.test(script)) return recipient // MAILGATEVARARGS1020
   if (stdin || (script === null && stdinRedirect)) return recipient
   return false
 }

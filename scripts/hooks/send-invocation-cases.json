@@ -947,9 +947,9 @@
       "expected": true
     },
     {
-      "name": "SUBAGENTMAILGATE1016: a variable script path with variable arguments",
+      "name": "MAILGATEVARARGS1020 documented limit: a variable script path with variable arguments and no recipient flag (true under SUBAGENTMAILGATE1016); a recipient flag inside a variable is not visible statically, as with a literal sender path",
       "cmd": "python3 $SENDER $ARGS",
-      "expected": true
+      "expected": false
     },
     {
       "name": "SUBAGENTMAILGATE1016 control: an interpreter option before another script",
@@ -1034,6 +1034,36 @@
     {
       "name": "SUBAGENTMAILGATE1016 control: a variable command without a recipient flag",
       "cmd": "$EDITOR notes.md",
+      "expected": false
+    },
+    {
+      "name": "MAILGATEVARARGS1020: a variable directory in the script path, with a recipient flag",
+      "cmd": "python3 \"$SP/gen.py\" --to a@example.com --subject T --body B",
+      "expected": true
+    },
+    {
+      "name": "MAILGATEVARARGS1020: a variable script path with an abbreviated recipient flag and a variable value",
+      "cmd": "python3 \"$P\" --t=\"$ADDR\"",
+      "expected": true
+    },
+    {
+      "name": "MAILGATEVARARGS1020 control: a variable directory in the script path, a variable argument",
+      "cmd": "python3 \"$SP/gen.py\" \"$SP/out.json\"",
+      "expected": false
+    },
+    {
+      "name": "MAILGATEVARARGS1020 control: a variable script path with variable arguments and redirects",
+      "cmd": "python3 \"$L\" /dev/null \"$SP/out.txt\" > \"$SP/log.txt\" 2>&1",
+      "expected": false
+    },
+    {
+      "name": "MAILGATEVARARGS1020 control: a chain of variable-path scripts with variable arguments",
+      "cmd": "python3 $A/check.py $S/x.json && python3 $A/stamp.py --result blocked --note-file \"$A/note.json\"",
+      "expected": false
+    },
+    {
+      "name": "MAILGATEVARARGS1020 documented limit: a literal sender path with variable arguments (unchanged; it passed before too)",
+      "cmd": "python3 scripts/support-mail/send.py $ARGS",
       "expected": false
     }
   ]
