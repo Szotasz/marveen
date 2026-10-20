@@ -1,5 +1,7 @@
 // bc7c1e9d (b): the main agent's GO-cited email_send requests do not ping one by one; a daily
 // digest to the owner lists them (only on a day that had such a request). Every other request pings at once.
+// ISSUE1895: the digest keeps the install zone (APP_TZ). This file pins it to Europe/Budapest (DST, an
+// offset from UTC); approvals-owner-go-digest-utc.test.ts runs the zone-dependent cases on a UTC install.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 
 const telegram = vi.hoisted(() => ({
@@ -9,7 +11,7 @@ const ownerChat = vi.hoisted(() => ({ id: '111' as string | null }))
 
 vi.mock('../config.js', async (importOriginal) => {
   const real = await importOriginal<typeof import('../config.js')>()
-  return { ...real, MAIN_AGENT_ID: 'agent-main', TELEGRAM_BOT_TOKEN: 'test-token' }
+  return { ...real, MAIN_AGENT_ID: 'agent-main', TELEGRAM_BOT_TOKEN: 'test-token', APP_TZ: 'Europe/Budapest' }
 })
 vi.mock('../owner-chat.js', () => ({ resolveOwnerChatId: () => ownerChat.id }))
 vi.mock('../web/telegram.js', async () => {
@@ -35,7 +37,7 @@ vi.mock('../web/telegram.js', async () => {
 import { createHash } from 'node:crypto'
 import { initDatabase, getPendingMessages, resolveApproval, lastOwnerGoDigestDay, type Approval } from '../db.js'
 import {
-  budapestMidnightUtcMs, buildOwnerGoDigestText, ownerGoDigestDayDue, ownerGoDigestDaysDue, sendOwnerGoDigestIfDue,
+  installMidnightUtcMs, buildOwnerGoDigestText, ownerGoDigestDayDue, ownerGoDigestDaysDue, sendOwnerGoDigestIfDue,
   tryHandleApprovals, OWNER_GO_DIGEST_RETRY_MS, OWNER_GO_DIGEST_MAX_CHARS, OWNER_GO_DIGEST_MAX_SEND_FAILURES,
   _resetOwnerGoDigestStateForTest,
 } from '../web/routes/approvals.js'
@@ -65,11 +67,11 @@ async function post(body: Record<string, unknown>): Promise<{ status: number; bo
 const at = (iso: string) => vi.setSystemTime(new Date(iso))
 
 describe('bc7c1e9d (b): pure parts of the daily owner digest', () => {
-  it('Budapest midnight in UTC follows the DST offset', () => {
-    expect(new Date(budapestMidnightUtcMs('2026-09-23')).toISOString()).toBe('2026-09-22T22:00:00.000Z')
-    expect(new Date(budapestMidnightUtcMs('2026-12-01')).toISOString()).toBe('2026-11-30T23:00:00.000Z')
-    expect(new Date(budapestMidnightUtcMs('2026-10-25')).toISOString()).toBe('2026-10-24T22:00:00.000Z')
-    expect(new Date(budapestMidnightUtcMs('2026-10-26')).toISOString()).toBe('2026-10-25T23:00:00.000Z')
+  it('the install-zone (Budapest) midnight in UTC follows the DST offset', () => {
+    expect(new Date(installMidnightUtcMs('2026-09-23')).toISOString()).toBe('2026-09-22T22:00:00.000Z')
+    expect(new Date(installMidnightUtcMs('2026-12-01')).toISOString()).toBe('2026-11-30T23:00:00.000Z')
+    expect(new Date(installMidnightUtcMs('2026-10-25')).toISOString()).toBe('2026-10-24T22:00:00.000Z')
+    expect(new Date(installMidnightUtcMs('2026-10-26')).toISOString()).toBe('2026-10-25T23:00:00.000Z')
   })
 
   it('the digest is due from 07:00 Budapest, for the oldest unsettled day, at most 7 days back', () => {
@@ -146,7 +148,7 @@ const DAY_91_GO_LINE = 'GO-hivatkozásonként: ' + [
 
 // Requests from 08:00 Budapest time on `day`, one every 7 minutes, each with its own envelope hash.
 function makeRows(day: string, refs: string[]): Approval[] {
-  const start = budapestMidnightUtcMs(day) / 1000 + 8 * 3600
+  const start = installMidnightUtcMs(day) / 1000 + 8 * 3600
   return refs.map((ref, i): Approval => ({
     id: `${day}-${i}`, agent_id: 'agent-main', category: 'email_send', action_description: SECRET_CONTENT,
     action_payload: null, status: 'pending', requested_at: start + i * 420, timeout_at: null, telegram_message_id: null,
@@ -336,7 +338,7 @@ describe('b606226d: the digest end to end, through the request route and the Tel
   // GO-cited main-agent requests through POST /api/approvals, from 08:00 Budapest time on `day`, one every
   // 7 minutes. Returns the request ids.
   async function postGoDay(day: string, refs: string[]): Promise<string[]> {
-    const start = budapestMidnightUtcMs(day) + 8 * 3_600_000
+    const start = installMidnightUtcMs(day) + 8 * 3_600_000
     const ids: string[] = []
     for (let i = 0; i < refs.length; i++) {
       at(new Date(start + i * 420_000).toISOString())

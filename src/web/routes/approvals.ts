@@ -270,7 +270,7 @@ function notifyMainAgent(approval: Approval): void {
 }
 
 // --- bc7c1e9d (b): the daily owner digest of the GO-cited requests ---
-// One message to the owner from 07:00 Budapest time on the next morning, and
+// One message to the owner from 07:00 install-zone time on the next morning, and
 // only if the day had such a request (an empty day is settled without a
 // message). Per row: time, the self-declared agent_id, the category, the
 // envelope hash prefix, the GO reference and the state; never the content. A
@@ -297,11 +297,12 @@ export const OWNER_GO_DIGEST_MAX_CHARS = TELEGRAM_MAX_TEXT - TEST_RUN_PREFIX.len
 // count is kept in memory: a restart starts it again.
 export const OWNER_GO_DIGEST_MAX_SEND_FAILURES = 3
 
-const BUDAPEST = 'Europe/Budapest'
-
-function budapestParts(ms: number): { day: string; hour: number; minute: number } {
+// ISSUE1895 (#1895): the digest keeps the install zone (APP_TZ), like every other
+// time the owner sees: the hour it goes out, the day it lists and the row times.
+// On a UTC install that is 07:00Z; until the develop merge it was 07:00 Budapest.
+function installZoneParts(ms: number): { day: string; hour: number; minute: number } {
   const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone: BUDAPEST, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+    timeZone: APP_TZ, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
   }).formatToParts(new Date(ms))
   const get = (type: string) => parts.find((p) => p.type === type)?.value ?? ''
   return { day: `${get('year')}-${get('month')}-${get('day')}`, hour: Number(get('hour')), minute: Number(get('minute')) }
@@ -312,22 +313,27 @@ function shiftDay(day: string, days: number): string {
   return new Date(Date.UTC(y, m - 1, d) + days * 86_400_000).toISOString().slice(0, 10)
 }
 
-// The UTC instant (ms) of 00:00 Budapest time on `day`; the offset is +1h or +2h (DST). Pure + exported for tests.
-export function budapestMidnightUtcMs(day: string): number {
+// The UTC instant (ms) of 00:00 install-zone time on `day`: the zone's offset is
+// read where the last guess landed and applied to the UTC midnight of `day`, so a
+// DST change between the two is followed. Pure + exported for tests.
+export function installMidnightUtcMs(day: string): number {
   const [y, m, d] = day.split('-').map(Number)
-  for (const offsetHours of [2, 1]) {
-    const ms = Date.UTC(y, m - 1, d) - offsetHours * 3_600_000
-    const p = budapestParts(ms)
+  const utcMidnight = Date.UTC(y, m - 1, d)
+  let ms = utcMidnight
+  for (let i = 0; i < 3; i++) {
+    const p = installZoneParts(ms)
     if (p.day === day && p.hour === 0 && p.minute === 0) return ms
+    const [py, pm, pd] = p.day.split('-').map(Number)
+    ms = utcMidnight - (Date.UTC(py, pm - 1, pd, p.hour, p.minute) - ms)
   }
-  throw new Error(`no Budapest midnight for ${day}`)
+  throw new Error(`no ${APP_TZ} midnight for ${day}`)
 }
 
-// Which Budapest day's digest is due at `nowMs`: the oldest unsettled complete
+// Which install-zone day's digest is due at `nowMs`: the oldest unsettled complete
 // day, from OWNER_GO_DIGEST_HOUR on, at most OWNER_GO_DIGEST_MAX_CATCHUP_DAYS
 // back; the very first run starts with yesterday. Pure + exported for tests.
 export function ownerGoDigestDayDue(nowMs: number, lastSettledDay: string | null): string | null {
-  const now = budapestParts(nowMs)
+  const now = installZoneParts(nowMs)
   if (now.hour < OWNER_GO_DIGEST_HOUR) return null
   const yesterday = shiftDay(now.day, -1)
   const floor = shiftDay(now.day, -OWNER_GO_DIGEST_MAX_CATCHUP_DAYS)
@@ -342,7 +348,7 @@ export function ownerGoDigestDayDue(nowMs: number, lastSettledDay: string | null
 export function ownerGoDigestDaysDue(nowMs: number, lastSettledDay: string | null): string[] {
   const first = ownerGoDigestDayDue(nowMs, lastSettledDay)
   if (first === null) return []
-  const yesterday = shiftDay(budapestParts(nowMs).day, -1)
+  const yesterday = shiftDay(installZoneParts(nowMs).day, -1)
   const days: string[] = []
   for (let day = first; day <= yesterday; day = shiftDay(day, 1)) days.push(day)
   return days
@@ -355,14 +361,14 @@ const DIGEST_STATE: Record<Approval['status'], string> = {
   timeout: 'lejárt',
 }
 
-// One due day of the digest: the Budapest calendar day and its GO-cited requests.
+// One due day of the digest: the install-zone calendar day and its GO-cited requests.
 export interface OwnerGoDigestDay {
   day: string
   rows: Approval[]
 }
 
-function budapestHhmm(sec: number): string {
-  const at = budapestParts(sec * 1000)
+function installHhmm(sec: number): string {
+  const at = installZoneParts(sec * 1000)
   return `${String(at.hour).padStart(2, '0')}:${String(at.minute).padStart(2, '0')}`
 }
 
@@ -372,7 +378,7 @@ function digestState(row: Approval): string {
 
 function digestRowLine(row: Approval): string {
   const hash = row.content_hash ? row.content_hash.slice(0, 12) : '-'
-  return `${budapestHhmm(row.requested_at)} | ${row.agent_id} | ${row.category} | boríték ${hash} | GO: ${row.owner_go_ref ?? '-'} | ${digestState(row)}`
+  return `${installHhmm(row.requested_at)} | ${row.agent_id} | ${row.category} | boríték ${hash} | GO: ${row.owner_go_ref ?? '-'} | ${digestState(row)}`
 }
 
 // Counts per key, the most frequent first (a tie in key order), whatever order the rows come in.
@@ -392,8 +398,8 @@ function fullDayLines(d: OwnerGoDigestDay, multi: boolean): string[] {
 // frequent first. At most `maxRefs` references are named, the rest are summed.
 function compactDayLines(d: OwnerGoDigestDay, multi: boolean, maxRefs: number): string[] {
   const times = d.rows.map((row) => row.requested_at)
-  const first = budapestHhmm(times.reduce((a, b) => Math.min(a, b)))
-  const last = budapestHhmm(times.reduce((a, b) => Math.max(a, b)))
+  const first = installHhmm(times.reduce((a, b) => Math.min(a, b)))
+  const last = installHhmm(times.reduce((a, b) => Math.max(a, b)))
   const span = first === last ? `${first}-kor` : `az első ${first}-kor, az utolsó ${last}-kor`
   const refs = countsByKey(d.rows, (row) => row.owner_go_ref ?? '-')
   const named = refs.slice(0, maxRefs).map(([ref, n]) => `${ref} ${n}`)
@@ -499,7 +505,7 @@ export async function sendOwnerGoDigestIfDue(nowMs: number = Date.now()): Promis
   if (due.length === 0) return 'none'
   const batch: OwnerGoDigestDay[] = due.map((day) => ({
     day,
-    rows: listOwnerGoApprovalsBetween(budapestMidnightUtcMs(day) / 1000, budapestMidnightUtcMs(shiftDay(day, 1)) / 1000),
+    rows: listOwnerGoApprovalsBetween(installMidnightUtcMs(day) / 1000, installMidnightUtcMs(shiftDay(day, 1)) / 1000),
   }))
   const withRows = batch.filter((d) => d.rows.length > 0)
   if (withRows.length === 0) {
