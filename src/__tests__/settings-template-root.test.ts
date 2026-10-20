@@ -5,8 +5,9 @@ import { assertSettingsRootSafe, settingsRootProblem } from '../web/settings-tem
 
 // templates/settings.json.template wraps the project root in double quotes inside a JSON string (the token
 // path of the PreCompact prompt's curl examples). Double quotes carry a space or an apostrophe; they do not carry
-// $, a backtick, a double quote, a backslash or a newline. Such a root must fail LOUDLY at render time instead of
-// producing a quietly broken command (a double quote or backslash also broke the JSON, silently dropping the hooks).
+// $, a backtick, a double quote, a backslash or a control character (tab, newline and the rest of U+0000..U+001F, U+007F).
+// Such a root must fail LOUDLY at render time instead of producing a quietly broken command (a double quote, a
+// backslash or a control character also broke the JSON, silently dropping the hooks or writing an invalid file).
 const SCAFFOLD = readFileSync(fileURLToPath(new URL('../web/agent-scaffold.ts', import.meta.url)), 'utf-8')
 
 describe('settings.json.template: the project root its PreCompact token path cannot carry', () => {
@@ -16,6 +17,10 @@ describe('settings.json.template: the project root its PreCompact token path can
     'a double quote': '/home/u/"quoted"/marveen',
     'a backslash': '/home/u/back\\slash/marveen',
     'a newline': '/home/u/line\nbreak/marveen',
+    'a tab': '/home/u/tab\there/marveen',
+    'a bell control character (U+0007)': '/home/u/bel\u0007l/marveen',
+    'a NUL control character (U+0000)': '/home/u/nul\u0000l/marveen',
+    'a DEL (U+007F)': '/home/u/del\u007fl/marveen',
   }
   for (const [name, root] of Object.entries(UNSUPPORTED)) {
     it(`refuses a root with ${name}, naming the character`, () => {
@@ -37,6 +42,19 @@ describe('settings.json.template: the project root its PreCompact token path can
       expect(() => assertSettingsRootSafe(root)).not.toThrow()
     })
   }
+
+  it('names a control character as such in the error', () => {
+    expect(() => assertSettingsRootSafe('/home/u/tab\there')).toThrowError(/contains a control character "\\t"/)
+    expect(() => assertSettingsRootSafe('/home/u/bel\u0007l')).toThrowError(/contains a control character "\\u0007"/)
+    expect(() => assertSettingsRootSafe('/home/u/$HOME')).toThrowError(/contains "\$"/)
+  })
+
+  // The failure the check prevents, shown on the real thing: a raw tab in the root is an invalid JSON string.
+  it('a tab in the root really would make the rendered template invalid JSON', () => {
+    const rendered = JSON.stringify({ p: 'cat \"{{ROOT}}/x\"' }).replace('{{ROOT}}', '/home/u/tab\there')
+    expect(() => JSON.parse(rendered)).toThrow()
+    expect(settingsRootProblem('/home/u/tab\there')).toBe('\t')
+  })
 
   // The check is only worth anything if every place that renders the settings template goes through it.
   it('both settings.json.template render sites use the checked renderer', () => {
