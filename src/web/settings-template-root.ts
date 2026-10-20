@@ -5,6 +5,9 @@
 // against the characters below: $ and a backtick would be expanded by the shell, a double quote or a backslash
 // would already break the JSON string (the template then fails to parse and the hooks are silently dropped), and a
 // newline ends the command. A root with one of them gets a loud error instead of a quietly broken command.
+//
+// Scope: this covers the PreCompact prompt's token path ONLY. The template's command hooks (bash -c / python3 with the
+// raw root, unquoted) are a separate, older question: they do not survive a space or an apostrophe in the root either.
 const UNSAFE_ROOT_CHARS = /[$`"\\\n\r]/
 
 /** The first character of the root that the settings template cannot carry, or null when the root is fine. */

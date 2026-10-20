@@ -80,7 +80,8 @@ describe('generated curl commands keep the dashboard token off argv', () => {
   const UNQUOTED_CAT: Array<[RegExp, string]> = [
     [/\$\(cat \$\{(?!tokenArg\}|shQuote\()/, 'TypeScript: $(cat ${...}) must be ${tokenArg} or ${shQuote(...)}'],
     [/\$\(cat \{(?!shlex\.quote\()/, 'Python: $(cat {...}) must be {shlex.quote(...)}'],
-    [/\$\(cat \{\{/, 'template: $(cat {{...}}) must be inside single quotes'],
+    [/\$\(cat \{\{/, 'template: $(cat {{...}}) must be quoted'],
+    [/\bcat \{\{/, 'template: cat {{...}} must be quoted'],
     [/\$\(cat \$[A-Za-z_]/, 'shell variable path in $(cat $VAR) must be quoted'],
   ]
   for (const rel of GENERATORS) {
@@ -91,7 +92,7 @@ describe('generated curl commands keep the dashboard token off argv', () => {
   }
 
   it('the quoting net itself flags the bare forms (positive control)', () => {
-    const bare = ['$(cat ${tokenPath})', '$(cat {token})', '$(cat {{PROJECT_ROOT}}/store/.dashboard-token)', '$(cat $TOKEN_FILE)']
+    const bare = ['$(cat ${tokenPath})', '$(cat {token})', '$(cat {{PROJECT_ROOT}}/store/.dashboard-token)', '$(cat $TOKEN_FILE)', 'cat {{PROJECT_ROOT}}/store/.dashboard-token']
     for (const sample of bare) expect(UNQUOTED_CAT.some(([re]) => re.test(sample)), sample).toBe(true)
     const fine = ['$(cat ${tokenArg})', '$(cat ${shQuote(tokenPath)})', '$(cat {shlex.quote(token)})', '$(cat \\"{{PROJECT_ROOT}}/store/.dashboard-token\\")', '$(cat store/.dashboard-token)']
     for (const sample of fine) expect(UNQUOTED_CAT.some(([re]) => re.test(sample)), sample).toBe(false)

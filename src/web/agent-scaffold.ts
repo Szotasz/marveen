@@ -2278,6 +2278,9 @@ export function ensureDefaultScheduledTasks(): void {
 }
 
 export function scaffoldAgentDir(name: string) {
+  // Refuse an unsupported project root BEFORE anything is created: the settings template is rendered at the end of
+  // this function, and a throw there would leave a half-built agent directory (the next POST then gets 409).
+  assertSettingsRootSafe(PROJECT_ROOT)
   const dir = agentDir(name)
   mkdirSync(join(dir, '.claude', 'skills'), { recursive: true })
   mkdirSync(join(dir, '.claude', 'hooks'), { recursive: true })

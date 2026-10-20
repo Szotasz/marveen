@@ -9,7 +9,7 @@ import { assertSettingsRootSafe, settingsRootProblem } from '../web/settings-tem
 // producing a quietly broken command (a double quote or backslash also broke the JSON, silently dropping the hooks).
 const SCAFFOLD = readFileSync(fileURLToPath(new URL('../web/agent-scaffold.ts', import.meta.url)), 'utf-8')
 
-describe('settings.json.template: the project root it cannot carry', () => {
+describe('settings.json.template: the project root its PreCompact token path cannot carry', () => {
   const UNSUPPORTED: Record<string, string> = {
     'a dollar sign': '/home/u/$HOME/marveen',
     'a backtick': '/home/u/`id`/marveen',
@@ -32,7 +32,7 @@ describe('settings.json.template: the project root it cannot carry', () => {
     'non-ASCII letters': '/home/u/árvíztűrő/marveen',
   }
   for (const [name, root] of Object.entries(SUPPORTED)) {
-    it(`accepts a root with ${name}`, () => {
+    it(`accepts a root with ${name} (for the PreCompact token path)`, () => {
       expect(settingsRootProblem(root)).toBeNull()
       expect(() => assertSettingsRootSafe(root)).not.toThrow()
     })
@@ -50,6 +50,14 @@ describe('settings.json.template: the project root it cannot carry', () => {
     expect(fn, 'renderSettingsTemplate is exported').not.toBeNull()
     expect(fn![1].indexOf('assertSettingsRootSafe(PROJECT_ROOT)')).toBeGreaterThanOrEqual(0)
     expect(fn![1].indexOf('assertSettingsRootSafe(PROJECT_ROOT)')).toBeLessThan(fn![1].indexOf('resolveTemplatePlaceholders('))
+  })
+
+  it('scaffoldAgentDir refuses the root before it creates anything', () => {
+    const fn = /export function scaffoldAgentDir\(name: string\) \{([\s\S]*?)\n\}\n/.exec(SCAFFOLD)
+    expect(fn, 'scaffoldAgentDir is exported').not.toBeNull()
+    const body = fn![1]
+    expect(body.indexOf('assertSettingsRootSafe(PROJECT_ROOT)')).toBeGreaterThanOrEqual(0)
+    expect(body.indexOf('assertSettingsRootSafe(PROJECT_ROOT)')).toBeLessThan(body.indexOf('mkdirSync('))
   })
 
   it('ensureAgentHooks logs a render failure instead of dropping the hooks silently', () => {
