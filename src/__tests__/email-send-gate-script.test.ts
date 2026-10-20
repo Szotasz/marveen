@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 // @ts-expect-error -- plain .mjs hook script, no types
 import { gateDecision, isSendInvocation, scriptRunSends } from '../../scripts/email-send-gate.mjs'
 
@@ -28,7 +28,10 @@ const TELETHON_SCRIPT = [
 
 function workdir(files: Record<string, string>): string {
   const dir = mkdtempSync(join(tmpdir(), 'script-send-gate-'))
-  for (const [name, body] of Object.entries(files)) writeFileSync(join(dir, name), body)
+  for (const [name, body] of Object.entries(files)) {
+    mkdirSync(dirname(join(dir, name)), { recursive: true })
+    writeFileSync(join(dir, name), body)
+  }
   return dir
 }
 
@@ -112,5 +115,104 @@ describe('a sender script under any name (SCRIPTSENDGATE1020)', () => {
     const other = run('python3 other.py')
     expect(other.status).toBe(0)
     expect(other.stdout).toBe('')
+  })
+})
+
+// First-round review of #2087 (Szotasz, 2026-10-20): two stated claims did not
+// hold (an extensionless file run through its #!, an address under -m), shell
+// -c strings and one level of helper modules were not seen, and the bare-word
+// content match denied files that only NAME a mail library.
+describe('sender scripts, review round 1 (SCRIPTSENDGATE1020)', () => {
+  const NOEXT_PY = '#!/usr/bin/env python3\nimport smtplib\nsmtplib.SMTP("h")\n'
+
+  it('reads an extensionless, directly executed file by its #! line', () => {
+    const cwd = workdir({
+      noext_sender: NOEXT_PY,
+      node_sender: "#!/usr/bin/env -S node --no-warnings\nconst m = require('nodemailer')\n",
+      py_by_path: '#!/usr/bin/python3.12\nfrom smtplib import SMTP_SSL\n',
+      shell_tool: '#!/bin/sh\n# smtplib\nimport smtplib\n',
+    })
+    chmodSync(join(cwd, 'noext_sender'), 0o755)
+    for (const cmd of ['./noext_sender', `${join(cwd, 'noext_sender')} --subject S`, './node_sender', './py_by_path']) {
+      expect(bash(cmd, cwd).deny, cmd).toBe(true)
+    }
+    // no python/node #! line: not judged, even with the word inside
+    expect(bash('./shell_tool', cwd).deny).toBe(false)
+    expect(bash('/bin/ls -la', cwd).deny).toBe(false)
+  })
+
+  it('an address flag counts under python -m / -c and on a directly run file', () => {
+    const cwd = workdir({ 'tool.py': 'print(1)\n' })
+    for (const cmd of [
+      'python3 -m pkg --to someone@example.invalid',
+      'python3 -m pkg.sender --cc=someone@example.invalid',
+      'python3 -c "import sys" --bcc someone@example.invalid',
+      './tool.py --to someone@example.invalid',
+    ]) {
+      expect(bash(cmd, cwd).deny, cmd).toBe(true)
+    }
+    expect(bash('python3 -m pkg --to 8224042443', cwd).deny).toBe(false)
+  })
+
+  it('judges the string of a shell -c the same way', () => {
+    const cwd = workdir({ 'smtp_send.py': SMTP_SCRIPT })
+    for (const cmd of [
+      'sh -c "python3 smtp_send.py"',
+      "bash -lc 'timeout 30 python3 smtp_send.py'",
+      'zsh -c "python3 -m x --to a@example.invalid"',
+    ]) {
+      expect(bash(cmd, cwd).deny, cmd).toBe(true)
+    }
+    expect(bash('sh -c "python3 other.py"', cwd).deny).toBe(false)
+  })
+
+  it('follows one level of local helper modules', () => {
+    const cwd = workdir({
+      'via_helper.py': 'from mailhelper import send_mail\nsend_mail()\n',
+      'mailhelper.py': 'import smtplib\ndef send_mail(): pass\n',
+      'via_pkg.py': 'import os, mailpkg.core as core\n',
+      'mailpkg/__init__.py': '',
+      'mailpkg/core.py': 'import aiosmtplib\n',
+      'via_node.mjs': "import { send } from './mh.js'\n",
+      'mh.js': "const nm = require('nodemailer')\n",
+      'two_levels.py': 'import via_helper\n',
+      'plain_helper.py': 'import json, helperless\n',
+      'helperless.py': 'print(1)\n',
+    })
+    for (const cmd of ['python3 via_helper.py', 'python3 via_pkg.py', 'node via_node.mjs']) {
+      expect(bash(cmd, cwd).deny, cmd).toBe(true)
+    }
+    // past the first level is a documented limit; a helper without a mail import passes
+    expect(bash('python3 two_levels.py', cwd).deny).toBe(false)
+    expect(bash('python3 plain_helper.py', cwd).deny).toBe(false)
+  })
+
+  it('matches an import, not a bare mention of the library', () => {
+    const cwd = workdir({
+      'alias.py': 'import smtplib as s\n',
+      'from_import.py': 'from smtplib import SMTP_SSL\n',
+      'dyn.py': 'import importlib\nm = importlib.import_module("smtplib")\n',
+      'mocks.py': '# runs send.py in-process with smtplib replaced\nsend.smtplib.SMTP_SSL = object\n',
+      'commented.py': 'import os  # smtplib is not used here\n',
+      'regex.mjs': 'const R = /\\bnodemailer\\b/\n// the fork tests import nodemailer\n',
+      'dyn.mjs': "const nm = await import('nodemailer')\n",
+    })
+    for (const cmd of ['python3 alias.py', 'python3 from_import.py', 'python3 dyn.py', 'node dyn.mjs']) {
+      expect(bash(cmd, cwd).deny, cmd).toBe(true)
+    }
+    for (const cmd of ['python3 mocks.py', 'python3 commented.py', 'node regex.mjs']) {
+      expect(bash(cmd, cwd).deny, cmd).toBe(false)
+    }
+  })
+
+  it('no longer denies the repo files that only name a mail library', () => {
+    const repo = join(__dirname, '..', '..')
+    for (const cmd of [
+      'node scripts/email-send-gate.mjs',
+      'python3 scripts/__tests__/support-mail-rcpt-list.test.py',
+      'tsx vitest.config.ts',
+    ]) {
+      expect(bash(cmd, repo).deny, cmd).toBe(false)
+    }
   })
 })
