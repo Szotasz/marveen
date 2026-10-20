@@ -281,7 +281,8 @@ const PREFIX_OPT_VALUE = {
   timeout: new Set(['-s', '--signal', '-k', '--kill-after']),
   stdbuf: new Set(['-o', '--output', '-e', '--error', '-i', '--input']),
 }
-const PREFIX_COMMANDS = new Set(['env', 'sudo', 'command', 'exec', 'time', 'nohup', 'nice', 'timeout', 'stdbuf', 'setsid'])
+// `builtin` is here for its `--`: `builtin -- eval '...'` is eval as well (#1931 review 7).
+const PREFIX_COMMANDS = new Set(['env', 'sudo', 'command', 'exec', 'time', 'nohup', 'nice', 'timeout', 'stdbuf', 'setsid', 'builtin'])
 const PREFIX_POSITIONALS = { timeout: 1 }
 // Index of the real command word in `mw` (a sub-command's words): assignments, prefix words and
 // the prefix commands' own options and arguments are skipped.
@@ -1302,6 +1303,36 @@ function shellProgramFromSubstitution(masked, a, b, { innerAts, innerEnds }) {
   }
   return null
 }
+// How a shell in span [a, b) gets its program apart from -c: `operand` is true when a script file
+// names it -- a non-option word that is not a redirection or a redirection's target (`bash 2>&1` has
+// none), and no `-s`, which reads the program from stdin and makes the words arguments.
+// `stdinDup` is the first redirection that makes stdin a duplicate of another descriptor (`<&3`,
+// `0<& 3`), or null. A quoted word is blank in `masked`; it is read as a word (`bash "$D/run.sh"`),
+// never as a redirection.
+function shellInputs(masked, orig, a, b) {
+  const words = [...masked.slice(a, b)].map((ch, x) => (ch === ' ' && /\S/.test(orig[a + x]) ? 'q' : ch)).join('')
+  const toks = [...words.matchAll(/\S+/g)].map((m) => m[0])
+  let operand = false
+  let readsStdin = false
+  let stdinDup = null
+  for (let k = commandIndex(toks) + 1; k < toks.length; k++) {
+    const w = toks[k]
+    const redir = /^(\d*)(<>|<<<|<<-?|<|>>?|&>>?)(&?)(.*)$/.exec(w)
+    if (redir) {
+      const target = redir[4] !== '' ? redir[4] : toks[++k]
+      if (redir[2] === '<' && redir[3] === '&' && (redir[1] === '' || redir[1] === '0') && target !== undefined && target !== '-' && stdinDup === null) {
+        stdinDup = `${redir[1]}<&${target}`
+      }
+      continue
+    }
+    if (operand) continue
+    if (w === '-o' || w === '+o' || w === '-O' || w === '+O') { k++; continue }
+    if (/^-[A-Za-z]*s[A-Za-z]*$/.test(w)) readsStdin = true
+    if (w.startsWith('-') || w.startsWith('+')) continue
+    operand = true
+  }
+  return { operand: operand && !readsStdin, stdinDup }
+}
 // Function bodies are judged per call, and a body calling other functions fans out: identical
 // readings are judged once per top-level command, and past FUNCTION_BUDGET judgements the command
 // denies (measured: 30 functions calling each other took 12 s before the memo).
@@ -1532,10 +1563,17 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
             return { deny: true, reason: 'shell-fd-program', hosts: [`<${cmd} reads its program from ${fdArg}>`] }
           }
         }
+        // A shell that reads its program from stdin while stdin is a duplicate of another descriptor
+        // (`exec 3< <(...); bash <&3`) runs whatever that descriptor was opened on, which cannot be read
+        // here: it denies, curl named or not, like the pipe below (#1931 review 7).
+        if (SHELL.test(cmd) && shellCommandCall(cmd, text) === null) {
+          const { operand, stdinDup } = shellInputs(masked, orig, a, b)
+          if (!operand && stdinDup) return { deny: true, reason: 'shell-stdin-dup', hosts: [`<${cmd} reads its commands from ${stdinDup}>`] }
+        }
         // A shell that reads its program from stdin (no -c string, no script file) runs whatever the
         // pipe or redirection hands it: `echo 'curl URL' | sh`. A heredoc / here-string feed is judged
         // above; any other input cannot be read here, so with curl or wget in sight it denies.
-        if (SHELL.test(cmd) && shellCommandCall(cmd, text) === null && !args.some((w) => !w.startsWith('-') && !w.startsWith('+'))
+        if (SHELL.test(cmd) && shellCommandCall(cmd, text) === null && !shellInputs(masked, orig, a, b).operand
           && !feeds.some((f) => f.at >= a && f.at <= b) && (fetches || stdinTainted || /(?:^|[^|])\|\s*$/.test(masked.slice(0, a)))) {
           return { deny: true, reason: 'shell-stdin', hosts: [`<${cmd} reads its commands from stdin>`] }
         }
