@@ -382,10 +382,38 @@ contains a file name of `scripts/` or `scripts/hooks/`, where the built-in gates
 built-in injectors find their own entries by script name); rename a script whose name collides.
 
 Who may write it: `store/extra-hooks.json` and `local-hooks/` decide what runs in EVERY
-sub-agent's session, so the sub-agents' self-pace gate denies their writes to both (native file
-tools and Bash), exactly as for `store/egress-allowlist.json`. The writers are the operator and
-the main agent, which do not run that gate. For the same reason a script may not live in an
-agent's own directory (`agents/<name>/`), which that agent can write.
+sub-agent's session. The intended writers are the operator and the main agent, which do not run
+the sub-agents' self-pace gate. What that gate guarantees is narrower than "a sub-agent cannot
+write them", so here is exactly what it does:
+
+- It denies a sub-agent's native file-tool write (`Write`, `Edit`, `MultiEdit`, `NotebookEdit`)
+  to either, by name and by resolved real path.
+- It denies a sub-agent's Bash command that **spells** one of the protected names, unless the
+  command is a plain read (`cat`, `grep`, `ls`, ...) with no output redirect onto it. "Spells"
+  includes:
+  - quoting, backslashes, `$'...'`, escapes and literal string concatenation
+    (`lo''cal-hooks`, `ext""ra-hooks.json`, `'extra-'+'hooks.json'` in `python3 -c`);
+  - a variable assigned a literal in the same command (`D=local; ... $D-hooks`);
+  - a glob, brace or partly-unresolved word that can expand onto the name: with at least three
+    of the name's own characters (`*-hooks`, `$X-hooks`), or with any characters right under the
+    real project root or store directory (a literal `cd` and symlinks are followed);
+  - a program that names the files it creates itself (`cp`, `mv`, `ln`, `install`, `rsync`,
+    `tar`, `unzip`, `cpio`, `patch`) pointed at the project root or the store directory itself.
+  The rule and its message are the same as for `store/egress-allowlist.json`.
+- It does **not** stop a sub-agent that wants to write the file. A name the command never
+  spells passes: a path built at run time (`chr()`, `base64`, a `$(...)` that prints it), a script
+  file written earlier and then run, or another program (an interpreter, `git apply` /
+  `git checkout`, a build tool) writing under a directory it picks itself. All agents
+  run as one OS user, so these files are in the same trust domain as every agent's own
+  `settings.json`, which a sub-agent can also edit.
+- To make up for that limit, a change is made visible. Every time the extras are synced
+  (dashboard start, sub-agent spawn), the dashboard logs the sha256 of the file and of each
+  `local-hooks/` script it names (`extra-hooks.json: sha256 of the file and of each script it
+  names`). It logs once per distinct content: the first sync after a start always logs, later
+  ones only on a change. Compare the line across starts in `dashboard.log`.
+
+For the same reason a script may not live in an agent's own directory (`agents/<name>/`): there
+the agent writes with no gate at all.
 
 Missing file, blank file or `{"entries": []}`: the generated settings are byte-identical to a
 render without this feature. Invalid JSON or the wrong shape: no extra is added; an invalid

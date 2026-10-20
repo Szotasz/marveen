@@ -24,12 +24,29 @@
  *     isUnsafeHookCommand).
  *
  * Trust: store/extra-hooks.json and local-hooks/ decide what runs in EVERY
- * sub-agent's session, so a sub-agent must not be able to write either. The
- * sub-agents' self-pace gate denies their writes to both (native file tools and
- * Bash), exactly as it does for store/egress-allowlist.json; the operator and
- * the main agent, which do not run that gate, are the writers. That is also
- * why a script may not live in an agent's own directory (agents/<name>/), which
- * the agent itself can write.
+ * sub-agent's session, and the writers are meant to be the operator and the
+ * main agent. What is actually enforced is narrower than "a sub-agent cannot
+ * write them", and it is stated here so nobody reads more into it:
+ *   - the sub-agents' self-pace gate denies a native file-tool write to either
+ *     (by name and by resolved real path), and a Bash command that SPELLS a
+ *     protected name: in plain text, through quoting, escapes or literal string
+ *     concatenation, through a variable assigned a literal in the same command,
+ *     as a glob or partly-unresolved word that can expand onto it, or a
+ *     cp/mv/tar/rsync/... pointed at the project root or the store dir itself
+ *     (the exact list is in scripts/self-pace-gate.mjs, "WHAT MENTIONS MEANS");
+ *   - it does NOT stop a sub-agent that wants to write the file: a path built
+ *     at run time, a script file written earlier and then run, an interpreter
+ *     or git writing under a directory it picks. Every agent runs as the same
+ *     OS user, so these files are in the same trust domain as every agent's own
+ *     settings.json (which a sub-agent can also edit, and where a hand-added
+ *     hook survives a respawn);
+ *   - what the gate misses is made visible, not prevented: every time the
+ *     extras are synced (dashboard start, sub-agent spawn), the sha256 of the
+ *     file and of every script it names is logged once per content
+ *     (logExtraHooksDigest in agent-scaffold.ts), so an unexpected change shows
+ *     up in dashboard.log.
+ * A script may not live in an agent's own directory (agents/<name>/) for the
+ * same reason: that one the agent writes with no gate at all.
  *
  * Absent, empty or `{"entries": []}`: nothing is added and nothing is removed,
  * so the generated settings are byte-identical to a scaffold without this
@@ -40,6 +57,7 @@
  * The main agent is not covered: its hooks are the repo-shipped project
  * settings, which the scaffold never writes (#1305).
  */
+import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from 'node:fs'
 import { extname, isAbsolute, join, relative } from 'node:path'
 
@@ -242,4 +260,38 @@ export function applyExtraHookEntries(settings: Record<string, unknown>, entries
     })
   }
   return JSON.stringify(settings.hooks ?? null) !== before
+}
+
+export interface ExtraHooksDigest {
+  /** sha256 of the file's bytes. */
+  sha256: string
+  /** sha256 of each local-hooks/ script the file names (null: not readable). */
+  scripts: Record<string, string | null>
+}
+
+const sha256Hex = (b: Buffer): string => createHash('sha256').update(b).digest('hex')
+
+/**
+ * The fingerprint the dashboard logs when it syncs the extras: the file, and
+ * every script it names under <projectRoot>/local-hooks/, whether or not the
+ * entry is valid (a rejected entry today can be a valid one after the next
+ * edit). Null when the file does not exist: then nothing is logged, as nothing
+ * is wired. A file that does not parse still gets its own hash.
+ */
+export function extraHooksDigest(path: string, projectRoot: string): ExtraHooksDigest | null {
+  if (!existsSync(path)) return null
+  let bytes: Buffer
+  try { bytes = readFileSync(path) } catch { return { sha256: 'unreadable', scripts: {} } }
+  let raw: unknown = null
+  try { raw = JSON.parse(bytes.toString('utf-8')) } catch { /* the file hash alone */ }
+  const list = raw && typeof raw === 'object' && Array.isArray((raw as { entries?: unknown }).entries)
+    ? (raw as { entries: unknown[] }).entries : []
+  const scripts: Record<string, string | null> = {}
+  for (const e of list) {
+    const script = (e as { script?: unknown } | null)?.script
+    if (typeof script !== 'string' || !SCRIPT_RE.test(script) || script in scripts) continue
+    if (script.split('/')[0] !== EXTRA_HOOKS_DIR || script.split('/').some((x) => x === '..' || x === '.' || x === '')) continue
+    try { scripts[script] = sha256Hex(readFileSync(join(projectRoot, script))) } catch { scripts[script] = null }
+  }
+  return { sha256: sha256Hex(bytes), scripts }
 }
