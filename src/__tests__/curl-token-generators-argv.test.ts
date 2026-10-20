@@ -43,6 +43,8 @@ describe('the argv-token detector sees every spelling of the banned form', () =>
     'python concatenation': `"curl -H 'Authorization: Bearer " + tok + "' http://h/api"`,
     'python f-string': `f'curl -H "Authorization: Bearer {tok}" http://h/api'`,
     'no space after the colon, lower case': `curl -H "authorization:bearer abc" http://h/api`,
+    'a header = " without the printf': `curl -s -H 'header = "Authorization: Bearer x' http://h/api`,
+    'printf with a literal token instead of %s': `printf 'header = "Authorization: Bearer abc123"\\n' | curl -s -K - http://h/api`,
     'a permission rule that allows the argv form': `"Bash(curl -s -H \\"Authorization: Bearer $(cat \${PROJECT_ROOT}/store/.dashboard-token)\\" \\"http://localhost:3420/api/*)"`,
   }
   for (const [name, sample] of Object.entries(BAD)) {
@@ -91,7 +93,7 @@ describe('generated curl commands keep the dashboard token off argv', () => {
   it('the quoting net itself flags the bare forms (positive control)', () => {
     const bare = ['$(cat ${tokenPath})', '$(cat {token})', '$(cat {{PROJECT_ROOT}}/store/.dashboard-token)', '$(cat $TOKEN_FILE)']
     for (const sample of bare) expect(UNQUOTED_CAT.some(([re]) => re.test(sample)), sample).toBe(true)
-    const fine = ['$(cat ${tokenArg})', '$(cat ${shQuote(tokenPath)})', '$(cat {shlex.quote(token)})', "$(cat '{{PROJECT_ROOT}}/store/.dashboard-token')", '$(cat store/.dashboard-token)']
+    const fine = ['$(cat ${tokenArg})', '$(cat ${shQuote(tokenPath)})', '$(cat {shlex.quote(token)})', '$(cat \\"{{PROJECT_ROOT}}/store/.dashboard-token\\")', '$(cat store/.dashboard-token)']
     for (const sample of fine) expect(UNQUOTED_CAT.some(([re]) => re.test(sample)), sample).toBe(false)
   })
 

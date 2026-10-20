@@ -43,6 +43,8 @@ const REPO = join(__dirname, '..', '..')
 let stub: Awaited<ReturnType<typeof startStub>>
 const corpus: Record<string, { text: string; cwd?: string; prelude?: string; needs?: string }> = {}
 let jqAvailable = false
+// `jq -n ... |` up to the curl: the part of the voice command that only produces the JSON body.
+const JQ_PREFIX = /^jq\s[\s\S]*?\|\s*(?=curl\b)/
 
 beforeAll(async () => {
   stub = await startStub()
@@ -102,7 +104,12 @@ beforeAll(async () => {
   corpus['CLAUDE.md.template'] = { text: claudeMd, cwd: st.proj }
 
   // settings.json.template: the PreCompact agent-hook prompt is one JSON string holding curl commands.
-  const settings = JSON.parse(readFileSync(join(REPO, 'templates', 'settings.json.template'), 'utf-8'))
+  // Rendered by the REAL substitution with the space-and-apostrophe root, then parsed: a root that breaks the JSON or the
+  // shell quoting fails here, not on a user's machine.
+  const settings = JSON.parse(scaffold.substituteTemplatePlaceholders(
+    readFileSync(join(REPO, 'templates', 'settings.json.template'), 'utf-8'),
+    { projectRoot: st.proj, mainAgentId: 'agent-a', botName: 'bot-a', ownerName: 'owner-a', webPort: stub.port },
+  ))
   const prompts: string[] = []
   const walk = (v: unknown): void => {
     if (typeof v === 'string') { if (v.includes('curl ')) prompts.push(v) }
@@ -110,8 +117,8 @@ beforeAll(async () => {
   }
   walk(settings)
   corpus['settings.json.template prompt'] = {
-    text: prompts.join('\n').replace(/\{\{PROJECT_ROOT\}\}/g, st.plain).replace(/\{\{WEB_PORT\}\}/g, String(stub.port)).replace(/\{\{[A-Z_]+\}\}/g, 'x'),
-    cwd: st.plain,
+    text: prompts.join('\n').replace(/\{\{[A-Z_]+\}\}/g, 'x'),
+    cwd: st.proj,
   }
 
   const py = (script: string, ...args: string[]) => {
@@ -125,7 +132,7 @@ beforeAll(async () => {
   }
   const tokenFile = join(st.proj, 'store', '.dashboard-token')
   corpus['provenance-gate.py self-task (untraced)'] = {
-    text: py(loader + 'print(m.self_task_trace_text(["a"],"neo","merlin",int(sys.argv[2]),sys.argv[3],logged=False))', join(REPO, 'scripts/hooks/provenance-gate.py'), String(stub.port), tokenFile),
+    text: py(loader + 'print(m.self_task_trace_text(["a"],"agent-a","lead-a",int(sys.argv[2]),sys.argv[3],logged=False))', join(REPO, 'scripts/hooks/provenance-gate.py'), String(stub.port), tokenFile),
   }
 })
 
@@ -157,9 +164,10 @@ describe('rendered generator output: every curl command is well-formed AND works
         // The token VALUE must never be in the command text (it would be on argv).
         expect(raw).not.toContain(TOKEN)
 
-        if (src.needs === 'jq' && !jqAvailable) continue
         const before: SeenRequest[] = stub.seen.slice()
-        const cmd = (src.prelude ? src.prelude + '\n' : '') + fillPlaceholders(raw, st.root)
+        // Without jq the body producer is swapped for a stand-in with the same stdin body, so the curl half still runs.
+        const filled = fillPlaceholders(raw, st.root)
+        const cmd = (src.prelude ? src.prelude + '\n' : '') + (src.needs === 'jq' && !jqAvailable ? filled.replace(JQ_PREFIX, "printf '{}' | ") : filled)
         const r = await runCommand(cmd, src.cwd ?? st.proj, st.root)
         expect(r.code, `${name}: ${raw.split('\n')[0].slice(0, 160)}\n${r.out.slice(0, 400)}`).toBe(0)
         const fresh = stub.seen.slice(before.length)
@@ -170,6 +178,21 @@ describe('rendered generator output: every curl command is well-formed AND works
       }
     })
   }
+
+  it('the voice command also runs with the jq stand-in, whether or not jq is installed', async () => {
+    const commands = curlCommands(corpus['voice directive'].text)
+    expect(commands.length).toBeGreaterThan(0)
+    for (const raw of commands) {
+      const standIn = fillPlaceholders(raw, st.root).replace(JQ_PREFIX, "printf '{}' | ")
+      expect(standIn, 'the stand-in replaced the jq stage').toMatch(/^printf '\{\}' \| curl\b/)
+      const before = stub.seen.length
+      const r = await runCommand(standIn, st.proj, st.root)
+      expect(r.code, r.out.slice(0, 300)).toBe(0)
+      const fresh = stub.seen.slice(before)
+      expect(fresh.length).toBeGreaterThan(0)
+      for (const req of fresh) expect(req.authorization).toBe(`Bearer ${TOKEN}`)
+    }
+  })
 
   it('control: an UNQUOTED token path in the same install really does fail (the test can see the bug)', async () => {
     const unquoted = `printf 'header = "Authorization: Bearer %s"\\n' "$(cat ${join(st.plain, 'store', '.dashboard-token')})" | curl -s -K - http://127.0.0.1:${stub.port}/api/x`

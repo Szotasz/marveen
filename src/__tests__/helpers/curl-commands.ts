@@ -18,7 +18,19 @@ export function logicalLines(text: string): string[] {
   const out: string[] = []
   for (let i = 0; i < raw.length; i++) {
     let line = raw[i]
-    while (line.endsWith('\\') && i + 1 < raw.length) line = line.slice(0, -1) + ' ' + raw[++i].trim()
+    for (;;) {
+      if (line.endsWith('\\') && i + 1 < raw.length) {
+        line = line.slice(0, -1) + ' ' + raw[++i].trim()
+        continue
+      }
+      // A trailing pipe continues the command in the shell too, backslash or not. Only for command lines, so a
+      // markdown table row ending in | cannot swallow the line after it.
+      if (/^\s*(printf|jq|curl)\s/.test(line) && /[^|]\|\s*$/.test(line) && i + 1 < raw.length) {
+        line = line.trimEnd() + ' ' + raw[++i].trim()
+        continue
+      }
+      break
+    }
     const heredoc = /<<-?\s*'([A-Za-z_]+)'\s*$/.exec(line) ?? /<<-?\s*([A-Za-z_]+)\s*$/.exec(line)
     if (heredoc) {
       const body = [line]
@@ -120,7 +132,8 @@ export function fillPlaceholders(cmd: string, scratchDir?: string): string {
   // curl -D and its grep: running them here must not touch that file, so the scratch dir stands in for /tmp.
   // Only the header dump file: the test's own root may itself live under /tmp (Linux), and a blanket /tmp/ rewrite
   // would move the token path out from under the command.
-  return scratchDir ? filled.replace(/\/tmp\/(mem-fejlec)/g, `${scratchDir}/$1`) : filled
+  // Quoted, so a scratch dir with a space or an apostrophe stays one word (the examples write the dump file unquoted).
+  return scratchDir ? filled.replace(/\/tmp\/(mem-fejlec)/g, `'${scratchDir.replace(/'/g, `'\\''`)}'/$1`) : filled
 }
 
 /** Ban list for the argv form, in every spelling the RO listed (and the escaped-JSON one). */
@@ -128,9 +141,11 @@ export function argvTokenHits(text: string): number[] {
   const hits: number[] = []
   const re = /Authorization:\s*Bearer/gi
   for (let m = re.exec(text); m; m = re.exec(text)) {
-    // The one allowed home of the token: the curl config that printf prints (header = "Authorization: ...").
+    // The one allowed home of the token: the curl config that printf prints, printf 'header = "Authorization: Bearer %s".
+    // Both halves are required: a `header = "` without the printf, or a literal token where the %s belongs, is not it.
     const before = text.slice(Math.max(0, m.index - 40), m.index)
-    if (!/header = \\?"$/.test(before)) hits.push(m.index)
+    const printfConfig = /printf \\?'header = \\?"$/.test(before) && /^Authorization:\s*Bearer %s/i.test(text.slice(m.index, m.index + 40))
+    if (!printfConfig) hits.push(m.index)
   }
   return hits
 }

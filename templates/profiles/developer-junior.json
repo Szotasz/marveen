@@ -14,6 +14,7 @@
       "Bash(python3:*)",
       "Bash(ls:*)",
       "Bash(cat:*)",
+      "Bash(printf:*)",
       "Bash(pwd:*)",
       "Bash(curl:*)",
       "WebFetch(*)",
