@@ -72,7 +72,7 @@ import { measureClaudeCliVersion } from './claude-cli-version.js'
 import { decideStateObserver, stateObserverLaunchEnv } from './state-observer.js'
 import { launchableInstallDefault } from './default-model-guard.js'
 import { getClaudePidForSession, probeChannelPluginLiveness } from '../channel-coordinator/liveness.js'
-import { CHANNEL_PROVIDER, MAIN_AGENT_ID, STORE_DIR, PROJECT_ROOT, SUBAGENT_INBOX_TEE, FLEET_PYTHON_VENV } from '../config.js'
+import { CHANNEL_PROVIDER, MAIN_AGENT_ID, STORE_DIR, PROJECT_ROOT, SUBAGENT_INBOX_TEE, FLEET_PYTHON_VENV, HEARTBEAT_AGENT_ID } from '../config.js'
 import { fleetVenvBin } from '../fleet-venv.js'
 
 // FLEETVENV923: the `<venv>/bin:` prefix for a launch PATH, or '' when the venv
@@ -92,6 +92,7 @@ import { filterInheritableMcpServers, readInheritableMcpServerNames, logNotInher
 import { readEnvFile } from '../env.js'
 import { loadProfileTemplate, profileWantsThinChiefHandoff } from './profiles.js'
 import { resolveAgentSecurityProfile } from './agent-team.js'
+import { agentTokensEnabled, ensureAgentToken, migrateAgentClaudeMdTokenRefs } from './agent-tokens.js'
 import { enforceStrictPermissionMode, writeAgentSettingsFromProfile, ensureFleetRosterSection, ensureProjectRootInClaudeMd, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSystemDirectiveAuthSection, ensureAgentIdHeaderSection, ensureThinChiefHandoffSection, ensureMemorySearchLabelSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, ensureMessageCloseSection } from './agent-scaffold.js'
 import { schedulePluginUnlockAfterRespawn } from './channel-plugin-unlock.js'
 import { recordInjectedPrompt } from './injected-prompt-registry.js'
@@ -2231,8 +2232,30 @@ export async function startAgentProcess(name: string, opts: { fresh?: boolean } 
     // without hardcoding agent names.
     const profile = loadProfileTemplate(resolveAgentSecurityProfile(name))
     writeAgentSettingsFromProfile(name, profile)
+    // Provision the agent's own dashboard token (0600, idempotent), so the
+    // generated sections below render the per-agent file. The server refuses
+    // schedule writes for that token. Best-effort: a failure leaves the agent
+    // on the shared token (the old behaviour), never without one. With
+    // AGENT_DASHBOARD_TOKENS off nothing is provisioned.
+    try {
+      if (agentTokensEnabled()) ensureAgentToken(name)
+    } catch (err) {
+      logger.warn({ err, name }, 'per-agent dashboard token provisioning failed (agent keeps the shared token)')
+    }
     ensureFleetRosterSection(name)
     ensureProjectRootInClaudeMd(name)
+    // Point the hand-kept CLAUDE.md body at the agent's own token (or back at
+    // the shared file while the switch is off). AFTER the host-move
+    // re-anchoring above, so a moved install converges in one start: the
+    // shared path is first re-anchored onto this root, then rewritten here.
+    // The hidden heartbeat worker's CLAUDE.md is re-rendered from its own
+    // scaffold on every boot (it only posts /api/messages), so rewriting it
+    // here would just ping-pong with that render.
+    try {
+      if (name !== HEARTBEAT_AGENT_ID) migrateAgentClaudeMdTokenRefs(name)
+    } catch (err) {
+      logger.warn({ err, name }, 'per-agent dashboard token: CLAUDE.md migration failed (the generated sections still name the right file)')
+    }
     ensureAutonomySection(name)
     ensureSkillsPathTrapSection(name)
     ensureSystemDirectiveAuthSection(name)
