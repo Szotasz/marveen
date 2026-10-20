@@ -499,7 +499,7 @@ describe('self-pace-gate: quoted prose cannot fake a command position', () => {
   })
   it('allows a bar-separated pattern naming crontab too', () => {
     // This is the case that proved masking is the right primitive: with only a
-    // quote-aware SPLITTER this stayed denied, because SCHEDULER_RX carries its
+    // quote-aware SPLITTER this stayed denied, because the scheduler regex carried its
     // own boundary anchor and re-found a command position inside the segment.
     expect(selfPaceDecision('Bash', { command: `echo ${Q}foo ${BAR} crontab ${BAR} bar${Q}` }).deny)
       .toBe(false)
