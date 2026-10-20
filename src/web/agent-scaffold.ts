@@ -16,6 +16,7 @@ import { resolveAgentSecurityProfile } from './agent-team.js'
 import { sanitizeCapabilityTag, CAPABILITY_TAG_MAX_PER_AGENT } from '../prompt-safety.js'
 import { TMP_ROOT_PREFIXES as _TMP_PREFIXES } from './tmp-root-prefixes.js'
 import { shQuote } from './ssh-tmux.js'
+import { assertSettingsRootSafe } from './settings-template-root.js'
 
 // Resolve the base URL agents should use to reach the dashboard API.
 //
@@ -228,6 +229,14 @@ export function resolveTemplatePlaceholders(content: string): string {
     ownerName: OWNER_NAME,
     webPort: WEB_PORT,
   })
+}
+
+// templates/settings.json.template wraps the project root in double quotes inside a JSON string (the token path of
+// the PreCompact prompt's curl examples). A root with $, a backtick, a double quote, a backslash or a newline would
+// give a broken command (or broken JSON), so rendering that template refuses such a root loudly.
+export function renderSettingsTemplate(raw: string): string {
+  assertSettingsRootSafe(PROJECT_ROOT)
+  return resolveTemplatePlaceholders(raw)
 }
 
 // Return the settings.json path for an agent.
@@ -551,9 +560,11 @@ export function ensureAgentHooks(
   if (!existsSync(tplPath)) return false
   let tpl: Record<string, unknown>
   try {
-    const raw = resolveTemplatePlaceholders(readFileSync(tplPath, 'utf-8'))
+    const raw = renderSettingsTemplate(readFileSync(tplPath, 'utf-8'))
     tpl = JSON.parse(raw)
-  } catch {
+  } catch (err) {
+    // Loud: a template that cannot be rendered (an unsupported project root, broken JSON) used to drop every hook silently.
+    logger.error({ agent: name, tplPath, err: err instanceof Error ? err.message : String(err) }, 'ensureAgentHooks: settings.json.template not rendered; hooks NOT registered')
     return false
   }
   if (!tpl.hooks) return false
@@ -2328,7 +2339,7 @@ export function scaffoldAgentDir(name: string) {
   if (!existsSync(settingsJson)) {
     const tplPath = join(PROJECT_ROOT, 'templates', 'settings.json.template')
     if (existsSync(tplPath)) {
-      const resolved = resolveTemplatePlaceholders(readFileSync(tplPath, 'utf-8'))
+      const resolved = renderSettingsTemplate(readFileSync(tplPath, 'utf-8'))
       atomicWriteFileSync(settingsJson, resolved)
     }
   }
