@@ -69,7 +69,7 @@ function writtenAutonomyBlock(agentName: string): string {
 describe('generated autonomy block: no shell-expanding curl payload', () => {
   it('the measure is not vacuous -- the written block really carries curl examples', () => {
     const block = writtenAutonomyBlock('meter-check-agent')
-    const curlLines = block.split('\n').filter((l) => l.trimStart().startsWith('curl '))
+    const curlLines = block.split('\n').filter((l) => /^(?:printf .*\| )?curl /.test(l.trimStart()))
     expect(curlLines.length).toBeGreaterThanOrEqual(2)
   })
 

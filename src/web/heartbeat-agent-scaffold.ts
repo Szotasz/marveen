@@ -244,9 +244,9 @@ When you receive the heartbeat prompt:
 
    \`\`\`bash
    TOKEN=$(cat ${id.storeDir}/.dashboard-token)
-   curl -s -X POST ${id.dashboardOrigin}/api/messages \\
+   printf 'header = "Authorization: Bearer %s"\\n' "$TOKEN" | curl -s -X POST ${id.dashboardOrigin}/api/messages \\
      -H "Content-Type: application/json" \\
-     -K <(printf 'header = "Authorization: Bearer %s"\\n' "$TOKEN") \\
+     -K - \\
      -d '{"from":"heartbeat","to":"${id.mainAgentId}","content":"<the formatted text>"}'
    \`\`\`
 

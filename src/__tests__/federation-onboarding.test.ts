@@ -58,8 +58,8 @@ describe('renderFederationBlock', () => {
   })
 
   // Raised 3072->3136: the generated curl now reads the token through a curl config
-  // (-K <(printf ...)), ~55 bytes longer per curl line than the argv -H form, and the
-  // token must stay off argv. Worst measured case is 3086 (en/strong).
+  // (printf ... | curl -K -), longer per curl line than the argv -H form, and the
+  // token must stay off argv. Worst measured case is 3089 (en/strong).
   it('stays within the byte budget in BOTH languages AND EVERY routing mode at the 5-system scale (L5 raised 2048->3072, then 3072->3136 for the curl-config form)', () => {
     // Every peer baseUrl at realistic Tailscale length, not one long + three short.
     // Iterate the routing modes too: 'strong' renders the LONGEST directive, so a

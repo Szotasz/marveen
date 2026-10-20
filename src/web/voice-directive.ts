@@ -58,6 +58,8 @@ export function buildTtsDirective(opts: {
     const { chatId, stateDir, voiceModel } = opts
     // Escape stateDir for embedding in a jq string argument
     const escapedStateDir = stateDir.replace(/'/g, "'\\''")
+    // This curl keeps the process-substitution form of the curl config instead of piping it in:
+    // the jq pipe already feeds the JSON body to curl's stdin (-d @-), so stdin is taken.
     return (
       `\n\n[Hang válasz direktíva]: A fenti hangüzenetre HANGBAN válaszolj. ` +
       `Amikor megvan a válaszod szövege, futtasd le ezt a parancsot (a szöveget JSON-escape-elve add meg a --arg-ban):\n` +

@@ -46,6 +46,8 @@ export function buildRotationHeartbeatPrompt(opts: {
   const target = chatId
     ? `a gazdának a csatorna reply tooljával (chat_id: ${chatId})`
     : 'a gazdának a csatorna reply tooljával (a szokásos gazda-chat_id-ra)'
+  // The curl below keeps the process-substitution form of the curl config instead of piping it in:
+  // its JSON body is read from stdin (--data-binary @- <<'JSON'), so stdin is taken.
   return `Futtasd le csendben:
 
 \`\`\`bash

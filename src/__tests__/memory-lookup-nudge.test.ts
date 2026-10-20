@@ -87,7 +87,7 @@ describe('memory-lookup-nudge: speaks on a human message', () => {
       expect(out).toBe(
         '[memoria-szetnezes] Emberi uzenet: mielott valaszolsz, nezd meg, van-e rola emleked. ' +
           'A kulcsszot te valaszd (nev, tema), ne a mondat toltelekszavait.\n' +
-          `curl -s -G -D /tmp/mem-fejlec-samu.txt -K <(printf 'header = "Authorization: Bearer %s"\\n' "$(cat ${token})") ` +
+          `printf 'header = "Authorization: Bearer %s"\\n' "$(cat ${token})" | curl -s -G -D /tmp/mem-fejlec-samu.txt -K - ` +
           `--data-urlencode "agent=samu" --data-urlencode "q=KULCSSZO" "http://localhost:${port}/api/memories"\n` +
           "grep -i '^x-memory-search' /tmp/mem-fejlec-samu.txt  " +
           '(relaxed=true = kozelites, nem bizonyitek; hiany-allitashoz: --data-urlencode "strict=1")\n',

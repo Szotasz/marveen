@@ -1012,8 +1012,8 @@ def _feloldas_ertesites(db, card_id, actor, now):
     # A MOZGATAS MAR KESZ ES VISSZAOLVASVA. Ha innen valami nem megy at, az ujrafuttatas NEM segit
     # (a mozgatas "nincs teendo"-val all meg), ezert a kimenet a pontos potlo hivast adja.
     potlas = ('A MOZGATAS KESZ (visszaolvasva), csak a feloldas-ertesites nem ment ki. NE futtasd ujra a'
-              ' mozgatast; potold ezzel:\n  curl -s -X POST ' + url
-              + ' -K <(printf \'header = "Authorization: Bearer %s"\\n\' "$(cat store/.dashboard-token)") -H "Content-Type: application/json"'
+              ' mozgatast; potold ezzel:\n  printf \'header = "Authorization: Bearer %s"\\n\' "$(cat store/.dashboard-token)" | curl -s -X POST ' + url
+              + ' -K - -H "Content-Type: application/json"'
               + " --data-binary '" + json.dumps({'actor': actor}) + "'")
     tok = _token_vagy_none()
     if tok is None:
