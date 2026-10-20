@@ -214,7 +214,10 @@ Ki regisztrál:
 - a telepítők és az `update.sh` az általuk ÚJONNAN létrehozott (teljes egészében szállított) feladatkönyvtárakra (a CLI-n át);
 - az `update.sh` seed-frissítése (ami fájlonként frissít, a helyben módosított fájlt megtartja) egy frissített
   feladatot CSAK akkor regisztrál újra, ha (a) a frissítés ELŐTT `ok` volt (`verify`), vagy (b) a frissítés után
-  a könyvtár MINDEN fájlja a mostani szállított tartalommal egyezik. Minden más esetben regisztrálatlan marad
+  a könyvtár MINDEN fájlja (a `references/` alattiak is) a mostani szállított tartalommal egyezik. A
+  `references/` fájl frissítése és a hiányzó pótlása (SEEDREFDIR1018) ugyanebben a keretben történik: az
+  ellenőrzés az első írás ELŐTT, az újraregisztráció az utolsó UTÁN, mert a hash a teljes könyvtárra
+  vonatkozik. Minden más esetben regisztrálatlan marad
   (a runner kihagyja), és az `update.sh` kiírja, hogy kézi átnézés kell (a futás végén egy összesítő sorban
   is). Ha a CLI nem futtatható (az első, registry-s buildre frissítés még a régi dist-en fut), az ítélet
   ISMERETLEN: ilyenkor a dashboard egyszeri backfillje fogja regisztrálni (és a runner futtatni), ezért ezt a

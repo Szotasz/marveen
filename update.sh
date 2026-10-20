@@ -1301,7 +1301,8 @@ register_seeded_schedules() {
 # re-registered only if
 #   (a) it verified OK against the registry BEFORE the refresh (its kept files
 #       were already trusted; the refreshed ones are ours), or
-#   (b) every file now in its dir equals the CURRENT shipped content.
+#   (b) every file now in its dir, references/ included, equals the CURRENT
+#       shipped content (sched_task_all_shipped).
 # Anything else stays unregistered (the runner skips it) and is listed for
 # operator review.
 SCHED_REVIEW_NAMES=""
@@ -1326,21 +1327,38 @@ sched_task_verified_ok() {
   return 2
 }
 
-# True (0) iff every entry of the installed task dir $1 is a regular top-level
-# file (no symlink, no subdir) byte-identical to the current shipped version of
-# the same file in the seed source dir $2 (rendered when $3 = "template"). An
-# extra file with no shipped counterpart (e.g. a planted preCheck script) fails.
+# True (0) iff every entry of the installed task dir $1 is shipped content:
+#   - a regular top-level file (no symlink) byte-identical to the current
+#     shipped version of the same file in the seed source dir $2 (rendered when
+#     $3 = "template"), or
+#   - the references/ subdir (SEEDREFDIR1018) or a file under it: the subdir
+#     a real directory (no symlink) that the seed has too, and each file in it
+#     byte-identical to a file git TRACKS at the same path in the seed (the same
+#     set the seed loops copy).
+# Any other entry fails: an extra file with no shipped counterpart (e.g. a
+# planted preCheck script), a symlink, any other subdir.
 sched_task_all_shipped() {
-  _sa_dir="$1"; _sa_src="$2"; _sa_mode="${3:-verbatim}"
+  _sa_dir="${1%/}"; _sa_src="${2%/}"; _sa_mode="${3:-verbatim}"
   [ -d "$_sa_dir" ] || return 1
   _sa_list="$(find "$_sa_dir" -mindepth 1 2>/dev/null)" || return 1
   [ -n "$_sa_list" ] || return 1
+  _sa_tracked="$(git -C "$_sa_src" ls-files 2>/dev/null)"
   while IFS= read -r _sa_entry; do
     [ -n "$_sa_entry" ] || continue
-    [ "$(dirname "$_sa_entry")" = "$_sa_dir" ] || return 1
-    [ ! -L "$_sa_entry" ] && [ -f "$_sa_entry" ] || return 1
-    _sa_seed="$_sa_src/$(basename "$_sa_entry")"
-    [ -f "$_sa_seed" ] || return 1
+    _sa_rel="${_sa_entry#"$_sa_dir"/}"
+    [ ! -L "$_sa_entry" ] || return 1
+    _sa_seed="$_sa_src/$_sa_rel"
+    case "$_sa_rel" in
+      references)
+        [ -d "$_sa_entry" ] && [ ! -L "$_sa_seed" ] && [ -d "$_sa_seed" ] || return 1
+        continue ;;
+      references/*)
+        [ -f "$_sa_entry" ] || return 1
+        printf '%s\n' "$_sa_tracked" | grep -qxF -- "$_sa_rel" || return 1 ;;
+      */*) return 1 ;;
+      *) [ -f "$_sa_entry" ] || return 1 ;;
+    esac
+    [ ! -L "$_sa_seed" ] && [ -f "$_sa_seed" ] || return 1
     if [ "$_sa_mode" = "template" ]; then
       _sa_want="$(render_seed_template <"$_sa_seed" | shasum -a 256 | awk '{print $1}')"
     else
