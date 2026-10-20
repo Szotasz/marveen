@@ -13,6 +13,7 @@
 // and the other silent preconditions through GET /api/claude-plans/readiness.
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
+import { shQuote } from './ssh-tmux.js'
 import { CHANNEL_CHAT_ID, MAIN_AGENT_ID, PROJECT_ROOT, WEB_PORT } from '../config.js'
 import { getEffectiveSettingValue } from '../settings-store.js'
 import { readClaudePlans } from './claude-plans.js'
@@ -43,6 +44,8 @@ export function buildRotationHeartbeatPrompt(opts: {
   chatId: string
 }): string {
   const { projectRoot, webPort, chatId } = opts
+  // Quoted for the emitted $(cat <path>): a project root with a space must not split into several arguments.
+  const tokenArg = shQuote(`${projectRoot}/store/.dashboard-token`)
   const target = chatId
     ? `a gazdának a csatorna reply tooljával (chat_id: ${chatId})`
     : 'a gazdának a csatorna reply tooljával (a szokásos gazda-chat_id-ra)'
@@ -65,7 +68,7 @@ Ez a Claude-plan rotáció heartbeatje. A \`claude-plan-rotate-check:\` kezdetű
 \`\`\`bash
 curl -s -w '\\nHTTP %{http_code}\\n' -X POST http://localhost:${webPort}/api/claude-plans/rotate \\
   -H "Content-Type: application/json" \\
-  -K <(printf 'header = "Authorization: Bearer %s"\\n' "$(cat ${projectRoot}/store/.dashboard-token)") \\
+  -K <(printf 'header = "Authorization: Bearer %s"\\n' "$(cat ${tokenArg})") \\
   --data-binary @- <<'JSON'
 {"targetPlanId":"<PLAN_ID>"}
 JSON

@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
+import { shQuote } from '../ssh-tmux.js'
 import {
   listKanbanCards, kanbanAssigneeExists, createKanbanCard, updateKanbanCard, KANBAN_WRITABLE_FIELDS, KANBAN_CREATE_FIELDS,
   deleteKanbanCard, moveKanbanCard, archiveKanbanCard, unarchiveKanbanCard,
@@ -71,7 +72,7 @@ export function kanbanMoveInstructions(id: string, target: string): string {
   const tokenPath = join(STORE_DIR, '.dashboard-token')
   const base = `http://${WEB_HOST}:${WEB_PORT}`
   // The token reaches curl as a curl config on stdin (printf is a builtin, so it never lands in an argv).
-  const tokenCfg = `printf 'header = "Authorization: Bearer %s"\\n' "$(cat ${tokenPath})"`
+  const tokenCfg = `printf 'header = "Authorization: Bearer %s"\\n' "$(cat ${shQuote(tokenPath)})"`
   const auth = '-K -'
   const moveUrl = `${base}/api/kanban/${id}/move`
   const commentUrl = `${base}/api/kanban/${id}/comments`

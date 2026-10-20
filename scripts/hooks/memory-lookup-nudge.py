@@ -21,6 +21,7 @@ carries a 3 s timeout, and the hook does no network or DB work at all.
 """
 import json
 import os
+import shlex
 import sys
 
 MACHINE_MARKERS = (
@@ -88,7 +89,7 @@ def nudge(agent, port, token_path):
     return (
         "[memoria-szetnezes] Emberi uzenet: mielott valaszolsz, nezd meg, van-e rola emleked. "
         "A kulcsszot te valaszd (nev, tema), ne a mondat toltelekszavait.\n"
-        f'printf \'header = \"Authorization: Bearer %s\"\\n\' \"$(cat {token_path})\" | curl -s -G -D /tmp/mem-fejlec-{agent}.txt -K - '
+        f'printf \'header = \"Authorization: Bearer %s\"\\n\' \"$(cat {shlex.quote(token_path)})\" | curl -s -G -D /tmp/mem-fejlec-{agent}.txt -K - '
         f'--data-urlencode "agent={agent}" --data-urlencode "q=KULCSSZO" "http://localhost:{port}/api/memories"\n'
         f"grep -i '^x-memory-search' /tmp/mem-fejlec-{agent}.txt  "
         "(relaxed=true = kozelites, nem bizonyitek; hiany-allitashoz: --data-urlencode \"strict=1\")"
