@@ -284,7 +284,7 @@ const PREFIX_OPT_VALUE = {
 // `builtin` is here for its `--`: `builtin -- eval '...'` is eval as well (#1931 review 7).
 const PREFIX_COMMANDS = new Set(['env', 'sudo', 'command', 'exec', 'time', 'nohup', 'nice', 'timeout', 'stdbuf', 'setsid', 'builtin'])
 const PREFIX_POSITIONALS = { timeout: 1 }
-const REDIR_WORD = /^\d*(?:<>|<<<|<<-?|<|>>?|>\||&>>?)&?/
+const REDIR_WORD = /^\d*(?:<>|<<<|<<-?|<|>\||>>?|&>>?)&?/
 // Index of the real command word in `mw` (a sub-command's words): assignments, prefix words and
 // the prefix commands' own options and arguments are skipped.
 export function commandIndex(mw) {
@@ -352,7 +352,8 @@ function spans(masked) {
   const out = []; let start = 0
   // A lone `&` ends a command like `;` (`bash <&3 & wait`, #1931 review 8); `&` of a redirection
   // (`2>&1`, `<&3`, `&>f`) does not. `|&` splits at both characters: a pipe, then an empty span.
-  const re = /&&|\|\||;|\||\n|(?<![<>])&(?!>)/g; let m
+  // The `|` of `>|` (write over noclobber) is a redirection, not a pipe (#1931 review 9).
+  const re = /&&|\|\||;|(?<!>)\||\n|(?<![<>])&(?!>)/g; let m
   while ((m = re.exec(masked))) { out.push([start, m.index]); start = m.index + m[0].length }
   out.push([start, masked.length])
   return out
@@ -699,7 +700,7 @@ export function curlDestinations(args) {
   let positionalOnly = false
   for (let k = 0; k < args.length; k++) {
     const w = args[k]
-    if (/^\d*[<>]/.test(w) || w === '&') { if (/^\d*(?:>>?|<)&?$/.test(w)) k++; continue } // redirection
+    if (/^\d*[<>]/.test(w) || w === '&') { if (/^\d*(?:<>|>\||>>?|<)&?$/.test(w)) k++; continue } // redirection
     if (positionalOnly) { addUrl(w); continue }
     if (w === '--') { positionalOnly = true; continue } // after `--` every word is read as a URL
     if (w.startsWith('--')) {
@@ -803,7 +804,7 @@ export function wgetDestinations(args) {
   let positionalOnly = false
   for (let k = 0; k < args.length; k++) {
     const w = args[k]
-    if (/^\d*[<>]/.test(w) || w === '&') { if (/^\d*(?:>>?|<)&?$/.test(w)) k++; continue } // redirection
+    if (/^\d*[<>]/.test(w) || w === '&') { if (/^\d*(?:<>|>\||>>?|<)&?$/.test(w)) k++; continue } // redirection
     if (positionalOnly) { addUrl(w); continue }
     if (w === '--') { positionalOnly = true; continue }
     if (w.startsWith('--')) {
@@ -959,7 +960,7 @@ export function envIndirect(orig, masked) {
     if (cmd === 'read') {
       for (let k = 0; k < rest.length; k++) {
         const x = rest[k]
-        if (/^\d*[<>]/.test(x)) { if (/^\d*(?:<>|>>?|<)&?$/.test(x)) k++; continue } // a redirection, not a name
+        if (/^\d*[<>]/.test(x)) { if (/^\d*(?:<>|>\||>>?|<)&?$/.test(x)) k++; continue } // a redirection, not a name
         if (x.startsWith('-') && x.length > 1) { if (READ_OPT_WITH_VALUE.has(x[x.length - 1])) { if (x.endsWith('a') && badName(rest[k + 1] ?? '')) return `read ${rest[k + 1]}`; k++ } continue }
         if (badName(x)) return `read ${x}`
       }
@@ -1295,7 +1296,7 @@ function shellProgramFromSubstitution(masked, a, b, { innerAts, innerEnds }) {
   const ci = commandIndex(toks.map((t) => t.w))
   for (let k = 0; k < toks.length; k++) {
     const w = toks[k].w
-    const redir = /^\d*(<>|<|>>?|&>>?)(&?)(.*)$/.exec(w)
+    const redir = /^\d*(<>|<|>\||>>?|&>>?)(&?)(.*)$/.exec(w)
     if (redir) {
       const target = redir[3] !== '' ? toks[k] : toks[++k]
       if ((redir[1] === '<' || redir[1] === '<>') && target && subst(target)) return subst(target)
@@ -1327,7 +1328,7 @@ function shellInputs(masked, orig, a, b) {
   const ci = commandIndex(toks)
   for (let k = 0; k < toks.length; k++) {
     const w = toks[k]
-    const redir = /^(\d*)(<>|<<<|<<-?|<|>>?|>\||&>>?)(&?)(.*)$/.exec(w)
+    const redir = /^(\d*)(<>|<<<|<<-?|<|>\||>>?|&>>?)(&?)(.*)$/.exec(w)
     if (redir) {
       const target = redir[4] !== '' ? redir[4] : toks[++k]
       if (redir[2] === '<' && redir[3] === '&' && (redir[1] === '' || redir[1] === '0') && target !== undefined && target !== '-' && stdinDup === null) {

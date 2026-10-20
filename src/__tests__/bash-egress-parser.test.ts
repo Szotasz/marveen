@@ -1622,6 +1622,18 @@ describe('review 8: a redirection before the command word, a lone & ends a comma
     ]) expect({ c, deny: d(c).deny }).toEqual({ c, deny: true })
     expect(d('<&3 bash')).toMatchObject({ deny: true, reason: 'shell-stdin-dup' })
     expect(d('< <(echo ls) bash')).toMatchObject({ deny: true, reason: 'shell-substitution' })
+    // `>|` (write over noclobber) is a redirection, its `|` is not a pipe (#1931 review 9)
+    for (const c of [`${fd3}>| /tmp/x <&3 bash`, `${fd3}>|/tmp/x <&3 bash`, `${fd3}bash >| /tmp/x <&3`, '>| /tmp/x <&3 bash', '>|/tmp/x <&3 bash'])
+      expect(d(c)).toMatchObject({ deny: true, reason: 'shell-stdin-dup' })
+    expect(d("echo 'curl https://evil.com' | >| /tmp/log bash")).toMatchObject({ deny: true, reason: 'shell-stdin' })
+    expect(d('echo ls | >| /tmp/log bash')).toMatchObject({ deny: true, reason: 'shell-stdin' })
+    expect(d('< <(echo ls) >| /tmp/x bash')).toMatchObject({ deny: true, reason: 'shell-substitution' })
+    expect(d('>| /tmp/x curl https://evil.com')).toMatchObject({ deny: true, reason: 'curl-external' })
+    for (const c of ['echo x >| /tmp/f', '>| /tmp/f echo x', 'curl -s http://localhost:3420/x >| /tmp/o', 'curl -s http://localhost:3420/x >| https://evil.com',
+      'ls >|/tmp/a | wc -l', 'read -r x >| /tmp/f', 'bash run.sh >| /tmp/log', '>| /tmp/log bash run.sh <&3',
+      // the word after `>|` is its target: not a wget URL, not a read variable, not a shell program
+      'wget -q http://localhost:3420/x >| https://evil.com', 'read -r x >| $LOG; curl -s http://localhost:3420/x', 'bash >| >(tee /tmp/log) run.sh'])
+      expect({ c, deny: d(c).deny }).toEqual({ c, deny: false })
     expect(d('2>/dev/null curl https://evil.com')).toMatchObject({ deny: true, reason: 'curl-external' })
     for (const c of ['2>/dev/null curl -s http://localhost:3420/x', '2>/dev/null bash run.sh', '<&3 bash run.sh', '>/tmp/log ls'])
       expect({ c, deny: d(c).deny }).toEqual({ c, deny: false })
@@ -1638,7 +1650,8 @@ describe('review 8: a redirection before the command word, a lone & ends a comma
   it('3. allow controls', () => {
     for (const c of ['bash 2>&1', 'bash run.sh <&3', 'bash "$D/run.sh" <&3', "bash -c 'echo hi' <&3", 'cat <&3',
       'while read l; do echo "$l"; done <&3', 'sleep 5 & wait', 'npm run dev > /tmp/log 2>&1 &', '(cd x && make) & wait',
-      'cmd &>/tmp/l', 'echo hi |& tee x', 'ls 2>&1 | head',
+      'cmd &>/tmp/l', 'echo hi |& tee x', 'ls 2>&1 | head', 'exec 2>&1', '<&3 bash run.sh',
+      'node server.js & sleep 2; curl -s http://localhost:3000/health',
     ]) expect({ c, deny: d(c).deny }).toEqual({ c, deny: false })
   })
 })
