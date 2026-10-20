@@ -2287,13 +2287,14 @@ export function searchAgentMemories(
     if (trace) trace.relaxed = relaxed
     return withoutRank(reRankByRecency(rows, limit)) as Memory[]
   } catch {
+    const pattern = `%${escapeLike(query)}%`
     return (category
       ? db.prepare(
-          "SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND category = ? AND (content LIKE ? OR keywords LIKE ?) ORDER BY accessed_at DESC LIMIT ?"
-        ).all(agentId, category, `%${query}%`, `%${query}%`, limit)
+          "SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND category = ? AND (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\') ORDER BY accessed_at DESC LIMIT ?"
+        ).all(agentId, category, pattern, pattern, limit)
       : db.prepare(
-          "SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND (content LIKE ? OR keywords LIKE ?) ORDER BY accessed_at DESC LIMIT ?"
-        ).all(agentId, `%${query}%`, `%${query}%`, limit)) as Memory[]
+          "SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\') ORDER BY accessed_at DESC LIMIT ?"
+        ).all(agentId, pattern, pattern, limit)) as Memory[]
   }
 }
 
@@ -2491,7 +2492,9 @@ function toBudapestTs(dateStr: string, endOfDay: boolean): number {
   return Math.floor((target.getTime() - offsetMs) / 1000)
 }
 
-function escapeLike(s: string): string {
+// Escapes a user query for `LIKE ? ESCAPE '\\'`: without it `%` and `_` in the
+// query are wildcards, so a search for q=% or q=_ matches every row.
+export function escapeLike(s: string): string {
   return s.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_')
 }
 

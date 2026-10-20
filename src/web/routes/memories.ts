@@ -2,7 +2,7 @@ import {
   saveAgentMemory, getAgentMemories, searchAgentMemories, getMemoryStats, updateMemory,
   hybridSearch, backfillEmbeddings, backfillNeedsWarning,
   searchMemories, getMemoriesForChat, getDb, touchMemoriesAccessed,
-  getMemoryById, deleteMemoryById, getMemoryVersions, consumeApproval,
+  getMemoryById, deleteMemoryById, getMemoryVersions, consumeApproval, escapeLike,
   type Memory, type MemoryRow, type Approval,
 } from '../../db.js'
 import { MAIN_AGENT_ID, ALLOWED_CHAT_ID, OLLAMA_URL, MEMORY_IMPORT_CATEGORIZE_MODEL, APP_TZ, MEMORY_CONTENT_FILTER_STRICT_COMMANDS } from '../../config.js'
@@ -367,13 +367,15 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
         keywordMatchKind = 'substring'
         // Substring fallback. It is NOT a second relaxation: LIKE %q% still
         // requires the query to appear literally, so a query that matches
-        // nothing still returns nothing.
+        // nothing still returns nothing. The query is escaped, so `%` and `_`
+        // in q are literal characters, not wildcards.
         const db2 = getDb()
+        const pattern = `%${escapeLike(q)}%`
         results = (searchCategory
-          ? db2.prepare("SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND category = ? AND (content LIKE ? OR keywords LIKE ?) ORDER BY accessed_at DESC LIMIT ?")
-              .all(agentId, searchCategory, `%${q}%`, `%${q}%`, limit)
-          : db2.prepare("SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND (content LIKE ? OR keywords LIKE ?) ORDER BY accessed_at DESC LIMIT ?")
-              .all(agentId, `%${q}%`, `%${q}%`, limit)) as Memory[]
+          ? db2.prepare("SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND category = ? AND (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\') ORDER BY accessed_at DESC LIMIT ?")
+              .all(agentId, searchCategory, pattern, pattern, limit)
+          : db2.prepare("SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\') ORDER BY accessed_at DESC LIMIT ?")
+              .all(agentId, pattern, pattern, limit)) as Memory[]
       }
     } else if (q) {
       results = searchMemories(q, ALLOWED_CHAT_ID, limit, !strictOnly, searchCategory, searchTrace)
@@ -381,6 +383,7 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
       if (results.length === 0) {
         keywordMatchKind = 'substring'
         const db2 = getDb()
+        const pattern = `%${escapeLike(q)}%`
         results = (searchCategory
           // MEMKWSEARCH1018: keywords joins the fallback here, as it already
           // does on the agent-scoped branch above. Without it the two paths
@@ -390,8 +393,8 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
           // ?agent= was invisible without it, with a header that says
           // relaxed=false. A zero that looks like a real answer is the whole
           // cost of this bug, which is why the fix is the parity, not a new mode.
-          ? db2.prepare('SELECT * FROM memories WHERE (content LIKE ? OR keywords LIKE ?) AND category = ? ORDER BY accessed_at DESC LIMIT ?').all(`%${q}%`, `%${q}%`, searchCategory, limit)
-          : db2.prepare('SELECT * FROM memories WHERE (content LIKE ? OR keywords LIKE ?) ORDER BY accessed_at DESC LIMIT ?').all(`%${q}%`, `%${q}%`, limit)) as Memory[]
+          ? db2.prepare("SELECT * FROM memories WHERE (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\') AND category = ? ORDER BY accessed_at DESC LIMIT ?").all(pattern, pattern, searchCategory, limit)
+          : db2.prepare("SELECT * FROM memories WHERE (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\') ORDER BY accessed_at DESC LIMIT ?").all(pattern, pattern, limit)) as Memory[]
       }
     } else if (agentId) {
       // Category goes into the query, not a post-filter: see getAgentMemories.
