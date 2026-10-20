@@ -31,9 +31,9 @@
 // writeAgentSettingsFromProfile() (agent-scaffold.ts), guarded by
 // name !== MAIN_AGENT_ID, and re-applied on every spawn (respawn-safe).
 
-import { readFileSync, realpathSync } from 'node:fs'
+import { closeSync, openSync, readFileSync, readSync, realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { dirname, join } from 'node:path'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
 
 // HOOKDEPLOAD1008: the ledger module is a DYNAMIC import. As a static import, a
@@ -583,6 +583,109 @@ export function isSendInvocation(cmd, depth = 0) {
   }
 }
 
+// SCRIPTSENDGATE1020: a sender script under any name. isSendInvocation knows a
+// Python sender only by the file name send.py, so `python3 helden_send.py --to
+// x@y.hu < body.txt` -- a self-written SMTP script, the usual way a mail goes
+// out on this fleet -- was no send for this gate (measured 2026-10-20). Two
+// cheap, local signals close it for the sub-agents:
+//   1. an interpreter-run (or directly executed) script given an e-mail
+//      address after --to / --cc / --bcc;
+//   2. the script FILE itself uses an SMTP library (smtplib, aiosmtplib,
+//      yagmail; nodemailer for a node script).
+// Deliberately NOT part of isSendInvocation: that function is the shared
+// contract with the main agent's python gates (send-invocation-cases.json),
+// and on the main agent the owner's single approval in the chat is the rule
+// (owner decision, 2026-10-20). This narrowing is for the sub-agent hard gate
+// only, where every recognised Bash send is denied anyway.
+// Boundaries, on purpose: a script reached through `cd dir && python3 x.py`
+// resolves against the session cwd, not dir; a missing or unreadable file is
+// judged on its arguments alone; code assembled at runtime is not seen.
+const SCRIPT_SMTP_CONTENT = /\b(?:aio)?smtplib\b|\byagmail\b/
+const SCRIPT_NODE_MAIL_CONTENT = /\bnodemailer\b/
+const ADDRESS_FLAG = /^--(?:to|cc|bcc)(?:=(.*))?$/
+const SCRIPT_FILE = /\.(?:py|mjs|cjs|js|ts)$/i
+const SCRIPT_READ_LIMIT = 1024 * 1024
+
+function readScriptHead(path) {
+  let fd = null
+  try {
+    fd = openSync(path, 'r')
+    const buf = Buffer.alloc(SCRIPT_READ_LIMIT)
+    const n = readSync(fd, buf, 0, SCRIPT_READ_LIMIT, 0)
+    return buf.subarray(0, n).toString('utf-8')
+  } catch {
+    return null
+  } finally {
+    if (fd !== null) {
+      try { closeSync(fd) } catch { /* already closed */ }
+    }
+  }
+}
+
+function resolveScriptPath(script, cwd) {
+  if (!script || UNDECIDABLE_PATH.test(script)) return null
+  let p = script
+  if (p === '~' || p.startsWith('~/')) p = join(homedir(), p.slice(1))
+  if (isAbsolute(p)) return p
+  return cwd ? resolve(cwd, p) : null
+}
+
+// node/tsx/bun/deno: the first non-option word is the script; -e/--eval code
+// strings are isSendInvocation's to judge.
+function nodeScriptOperand(rest) {
+  for (const t of rest) {
+    if (t === '--') continue
+    if (t.startsWith('-')) return null
+    return t
+  }
+  return null
+}
+
+function addressFlagGiven(rest) {
+  for (let i = 0; i < rest.length; i++) {
+    const m = ADDRESS_FLAG.exec(rest[i])
+    if (!m) continue
+    const val = m[1] ?? rest[i + 1] ?? ''
+    if (val.includes('@')) return true
+  }
+  return false
+}
+
+function headRunsSenderScript(toks, cwd, readScript) {
+  if (!toks || !toks.length) return false
+  const prog = basename(toks[0])
+  const rest = toks.slice(1)
+  let script = null
+  let content = SCRIPT_SMTP_CONTENT
+  if (PYTHON.test(prog)) {
+    script = pythonScriptOperand(rest).script
+  } else if (NODEISH.test(prog) && prog !== 'npx') {
+    script = nodeScriptOperand(rest)
+    content = SCRIPT_NODE_MAIL_CONTENT
+  } else if (SCRIPT_FILE.test(toks[0])) {
+    script = toks[0] // ./sender.py run through its shebang
+    content = /\.py$/i.test(toks[0]) ? SCRIPT_SMTP_CONTENT : SCRIPT_NODE_MAIL_CONTENT
+  } else {
+    return false
+  }
+  if (script === null) return false
+  if (addressFlagGiven(rest)) return true
+  const path = resolveScriptPath(script, cwd)
+  if (!path) return false
+  const text = readScript(path)
+  return text !== null && content.test(text)
+}
+
+export function scriptRunSends(cmd, cwd = process.cwd(), readScript = readScriptHead) {
+  let segments
+  try {
+    segments = segmentsTokens(cmd)
+  } catch {
+    return false // unparseable: isSendInvocation's legacy fallback already judged it
+  }
+  return segments.some((toks) => commandHeads(toks).some((h) => headRunsSenderScript(h, cwd, readScript)))
+}
+
 // Outbound-shaped operations of the multiplexed manage_email tool. Each of
 // these sends for real unless the call explicitly asks for a draft.
 const MANAGE_EMAIL_SEND_OPS = new Set(['send', 'reply', 'replyall', 'forward'])
@@ -666,7 +769,7 @@ function ledgerLookup() {
 // (the only path the thread-reply capability below can narrow),
 // 'unverified-recipient' is a draft/manage_email address with no recorded
 // source, and everything else is the sub-agent governance block.
-export function gateDecision(toolName, toolInput, isVerified = null) {
+export function gateDecision(toolName, toolInput, isVerified = null, cwd = process.cwd()) {
   const name = String(toolName ?? '')
   // Lazy: only build the ledger lookup when a call actually carries addresses,
   // so a read-shaped tool call never pays a file read.
@@ -733,6 +836,7 @@ export function gateDecision(toolName, toolInput, isVerified = null) {
   if (name === 'Bash') {
     const cmd = String(toolInput?.command ?? '')
     if (isSendInvocation(cmd)) return wrapperDepthHit(cmd) ? { deny: true, kind: 'wrapper-depth' } : { deny: true }
+    if (scriptRunSends(cmd, cwd)) return { deny: true, kind: 'script-send' }
   }
   return { deny: false }
 }
@@ -992,7 +1096,7 @@ if (isInvokedDirectly()) {
   }
   let decision
   try {
-    decision = gateDecision(payload?.tool_name, payload?.tool_input)
+    decision = gateDecision(payload?.tool_name, payload?.tool_input, null, payload?.cwd || process.cwd())
   } catch (err) {
     // HOOKDEPLOAD1008: the call needed the ledger, and the ledger module did
     // not load. Anything else that throws here is not this branch's to judge.
