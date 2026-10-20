@@ -128,6 +128,20 @@ export const BLOCK_LOG = process.env.BASH_EGRESS_BLOCK_LOG || join(ROOT, 'store'
 // a plain DNS name, means no exception: today's behaviour (deny). This is NOT
 // store/egress-allowlist.json -- that one is the WebFetch / quarantine-reader list.
 export const VENDOR_HOSTS_PATH = process.env.BASH_EGRESS_VENDOR_HOSTS || join(ROOT, 'store', 'egress-vendor-hosts.json')
+// EGRESSCURLK1020: the one file a curl config may take its Authorization header from (see
+// curlConfigFromPrintf). STORE_DIR is always <root>/store. Tests point it elsewhere.
+// A relative path is resolved against the hook's cwd (the payload's), set by the entry point.
+let dashboardTokenPaths = null
+let hookCwd = null
+export function setDashboardTokenPath(p) { dashboardTokenPaths = p === null ? null : new Set([p]) }
+export function setHookCwd(cwd) { hookCwd = typeof cwd === 'string' && cwd.startsWith('/') ? cwd : null }
+function tokenPaths() {
+  if (dashboardTokenPaths) return dashboardTokenPaths
+  const p = process.env.BASH_EGRESS_DASHBOARD_TOKEN || join(ROOT, 'store', '.dashboard-token')
+  dashboardTokenPaths = new Set([p])
+  try { dashboardTokenPaths.add(realpathSync(p)) } catch { /* not there: the literal path only */ }
+  return dashboardTokenPaths
+}
 // A plain DNS name: labels of [a-z0-9-], no leading/trailing hyphen, at least one dot, a letter TLD.
 // Not an IP, not localhost, no `*`, no leading dot, no port, no userinfo.
 const VENDOR_HOST = /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/
@@ -687,11 +701,14 @@ export function longOption(word, table) {
 export const UNKNOWN_OPTION = (prog, w) => `<${prog}: unknown or ambiguous option ${w}>`
 export const CURL_HIDDEN = '<curl: destination read from a config file>'
 // Every external destination host in a curl argv (the words AFTER `curl`).
-export function curlDestinations(args) {
+// opts.configs collects every -K / --config value; opts.allowConfig skips them (the caller has
+// proven the config, see curlConfigFromPrintf). --alt-svc stays hidden either way.
+export function curlDestinations(args, opts = {}) {
   const dests = []
   const addUrl = (v) => { const h = destHost(v); if (h) dests.push(h) }
   const addParts = (v) => { for (const p of String(v).split(':')) if (HOSTNAME.test(p)) dests.push(p.toLowerCase()) }
   const judge = (name, v) => {
+    if (name === 'K' || name === 'config') { opts.configs?.push(v ?? ''); if (opts.allowConfig) return }
     if (CURL_HIDDEN_DEST.has(name)) dests.push(CURL_HIDDEN)
     else if (CURL_DEST_URL.has(name)) addUrl(v)
     else if (CURL_DEST_PARTS.has(name)) addParts(v)
@@ -1344,6 +1361,115 @@ function shellInputs(masked, orig, a, b) {
   }
   return { operand: operand && !readsStdin, stdinDup }
 }
+// EGRESSCURLK1020 (#1931 review 9, owner decision 2026-10-20): `-K` / `--config` passes only for the
+// dashboard's Authorization header, written where this hook reads every byte of it:
+//   printf '<FMT>' <ARGS> | curl ... -K - ...        (printf piped straight into this curl)
+//   curl ... -K <(printf '<FMT>' <ARGS>) ...
+// FMT is a single-quoted literal; as printf renders it, every line is `header = "..."` (or
+// `--header` / `-H`, separated by `=`, `:` or blanks). Each ARG is "$(cat <path>)", or "$NAME" with
+// `NAME=$(cat <path>)` assigned once in this command, and <path> is the literal absolute path of
+// THIS install's store/.dashboard-token. A file merely CALLED .dashboard-token is not enough: an
+// earlier command can write one holding `tok\nurl = "..."`, and a newline in an argument is a new
+// config line (the reviewer measured exactly that: a second host fetched with the header).
+// One config only, and `-K -` with nothing else on curl's stdin. Anything else stays denied.
+// The path is one shell word of literal pieces: '...', "..." without $ ` \, an escaped quote, or
+// plain characters -- the shapes shQuote / shlex.quote produce (`'a'\''b'`, `'a'"'"'b'`).
+const TOKEN_PATH_WORD = String.raw`(?:'[^']*'|"[^"$\x60\\]*"|\\['"]|[A-Za-z0-9_@%+=:,./-])+`
+const CAT_TOKEN = new RegExp(String.raw`^\$\(cat[ \t]+(${TOKEN_PATH_WORD})\)$`)
+function unquoteWord(w) {
+  return [...w.matchAll(/'([^']*)'|"([^"]*)"|\\(.)|([^'"\\]+)/g)].map((m) => m[1] ?? m[2] ?? m[3] ?? m[4]).join('')
+}
+// relOk: a relative path may be read from the hook's cwd (no cd / pushd / popd in the command).
+function isTokenRead(sub, relOk) {
+  const m = CAT_TOKEN.exec(sub)
+  if (!m) return false
+  const p = unquoteWord(m[1])
+  if (p.startsWith('/')) return tokenPaths().has(p)
+  if (!relOk || hookCwd === null || p.split('/').includes('..')) return false
+  return tokenPaths().has(resolve(hookCwd, p))
+}
+// `NAME=$(cat <path>)` (quoted or not) as a command of its own, assigned once, before `srcAt`, and
+// NAME written nowhere else bare (no read, for, export, printf -v, unset, a second assignment).
+function isTokenVar(name, norm, masked, srcAt, relOk) {
+  const bare = [...norm.matchAll(new RegExp(String.raw`(?<![\w\${])${name}(?!\w)`, 'g'))]
+  if (bare.length !== 1) return false
+  const at = bare[0].index
+  if (at >= srcAt || masked.slice(at, at + name.length + 1) !== `${name}=`) return false
+  const span = spans(masked).find(([s, e]) => at >= s && at < e)
+  if (!span || norm.slice(span[0], at).trim() !== '') return false
+  const m = new RegExp(String.raw`^${name}=("?)(\$\(cat[ \t]+(?:${TOKEN_PATH_WORD})\))\1$`).exec(norm.slice(at, span[1]).trim())
+  return m !== null && isTokenRead(m[2], relOk)
+}
+// What printf writes for FMT with each %s standing for one argument, or null when FMT holds anything
+// but %s, %%, \n, \\ and \" (an octal, hex or \r escape could hide a line break).
+function renderPrintfFormat(fmt, nArgs) {
+  let out = ''; let used = 0
+  for (let i = 0; i < fmt.length; i++) {
+    const c = fmt[i]; const d = fmt[i + 1]
+    if (c === '%') {
+      if (d === '%') { out += '%'; i++; continue }
+      if (d === 's') { out += 'T'; used++; i++; continue }
+      return null
+    }
+    if (c === '\\') {
+      const esc = { n: '\n', '\\': '\\', '"': '"' }[d]
+      if (esc === undefined) return null
+      out += esc; i++; continue
+    }
+    out += c
+  }
+  return used === nArgs && !/[\x00-\x08\x0b-\x1f\x7f]/.test(out) ? out : null
+}
+const CONFIG_HEADER_LINE = /^[ \t]*(-{0,2})([A-Za-z][\w-]*)(?:[ \t]*[=:][ \t]*|[ \t]+)"(?:[^"\\]|\\.)*"[ \t]*$/
+const PRINTF_ARG = new RegExp(String.raw`[ \t]+"(\$\(cat[ \t]+${TOKEN_PATH_WORD}\)|\$[A-Za-z_]\w*|\$\{[A-Za-z_]\w*\})"`, 'y')
+function printfHeaderConfig(src, srcAt, norm, masked) {
+  const t = src.trim()
+  const m = /^printf[ \t]+'([^']*)'/.exec(t)
+  if (!m) return false
+  const args = []
+  let pos = m[0].length
+  for (;;) {
+    PRINTF_ARG.lastIndex = pos
+    const x = PRINTF_ARG.exec(t)
+    if (!x) break
+    args.push(x[1]); pos = PRINTF_ARG.lastIndex
+  }
+  if (t.slice(pos).trim() !== '') return false
+  const relOk = !/(?:^|[\s;&|(!{])(?:cd|pushd|popd)(?=[\s;&|)]|$)/.test(masked)
+  for (const arg of args) {
+    const v = /^\$(?:([A-Za-z_]\w*)|\{([A-Za-z_]\w*)\})$/.exec(arg)
+    if (!(isTokenRead(arg, relOk) || (v && isTokenVar(v[1] ?? v[2], norm, masked, srcAt, relOk)))) return false
+  }
+  const out = renderPrintfFormat(m[1], args.length)
+  if (out === null) return false
+  const lines = out.split('\n').filter((l) => l.trim() !== '')
+  return lines.length > 0 && lines.every((l) => {
+    const h = CONFIG_HEADER_LINE.exec(l)
+    return h !== null && (h[1] === '-' ? h[2] === 'H' : h[2] === 'header')
+  })
+}
+function curlConfigFromPrintf(configs, { norm, masked, orig, a, b, lifted, feeds, funcs }) {
+  if (configs.length !== 1) return false
+  // printf and cat must be the builtins / binaries, not this command's functions or aliases.
+  if (funcs.has('printf') || funcs.has('cat') || /(?:^|[\s;&|(])alias\s/.test(masked)) return false
+  const v = configs[0]
+  if (v === '-') {
+    // `printf ... | curl -K -`: the span before is the printf, joined to this one by a single `|`,
+    // and curl's stdin is that pipe (no `<`, heredoc or here-string on curl itself).
+    const words = [...masked.slice(a, b)].map((ch, x) => (ch === ' ' && /\S/.test(orig[a + x]) ? 'q' : ch)).join('')
+    if (/(?:^|\s)0?<(?!\()/.test(words) || feeds.some((f) => f.at >= a && f.at <= b) || lifted.herestrings.some((h) => h >= a && h < b)) return false
+    const all = spans(masked)
+    const k = all.findIndex(([s, e]) => s === a && e === b)
+    if (k < 1 || masked.slice(all[k - 1][1], a) !== '|') return false
+    const [ps, pe] = all[k - 1]
+    return printfHeaderConfig(norm.slice(ps, pe), ps, norm, masked)
+  }
+  // `-K <(printf ...)`: the value is the one process substitution in this curl, whole.
+  if (!/^\$+$/.test(v)) return false
+  const subs = lifted.innerAts.map((p, n) => n).filter((n) => lifted.innerAts[n] >= a && lifted.innerAts[n] < b && norm.startsWith('<(', lifted.innerAts[n]))
+  if (subs.length !== 1 || lifted.innerEnds[subs[0]] - lifted.innerAts[subs[0]] !== v.length) return false
+  return printfHeaderConfig(lifted.inners[subs[0]], lifted.innerAts[subs[0]], norm, masked)
+}
 // Function bodies are judged per call, and a body calling other functions fans out: identical
 // readings are judged once per top-level command, and past FUNCTION_BUDGET judgements the command
 // denies (measured: 30 functions calling each other took 12 s before the memo).
@@ -1611,7 +1737,13 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
       let found
       const argv = target === 'curl' || target === 'wget' ? shellWords(text) : null
       const at = argv ? argv.findIndex((w) => w.split('/').pop() === target) : -1
-      if (at !== -1) found = (target === 'curl' ? curlDestinations : wgetDestinations)(argv.slice(at + 1))
+      if (at !== -1 && target === 'curl') {
+        const configs = []
+        found = curlDestinations(argv.slice(at + 1), { configs })
+        if (configs.length && curlConfigFromPrintf(configs, { norm, masked, orig, a, b, lifted, feeds, funcs })) {
+          found = curlDestinations(argv.slice(at + 1), { allowConfig: true })
+        }
+      } else if (at !== -1) found = wgetDestinations(argv.slice(at + 1))
       else found = [...text.matchAll(URL_RE)].map((m) => m[0]).filter(isExternal).map(hostOf)
       // The PLAIN reading leaves a loop variable unexpanded; its values are judged in the loop
       // readings that follow, so here alone an unresolved host is not a finding.
@@ -1668,6 +1800,7 @@ if (isInvokedDirectly()) {
   try { payload = JSON.parse(readFileSync(0, 'utf-8')) } catch { process.exit(0) }
   if (payload?.tool_name !== 'Bash') process.exit(0)
   let r
+  setHookCwd(payload?.cwd)
   try { r = classify(payload?.tool_input?.command, 0, loadVendorHosts(), loadVendorDomains()) } catch (e) {
     // Since curl https:// and wget left the deny list, this hook is the ONLY thing between them and an
     // external host, so an internal error on a command naming either verb denies instead of allowing.
