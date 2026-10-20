@@ -29,7 +29,7 @@
 // writeAgentSettingsFromProfile() (agent-scaffold.ts), guarded by
 // name !== MAIN_AGENT_ID, re-applied on every spawn (respawn-safe).
 
-import { readFileSync, realpathSync } from 'node:fs'
+import { lstatSync, readFileSync, readlinkSync, realpathSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 import { homedir } from 'node:os'
 import { basename, dirname, join, relative, resolve, sep } from 'node:path'
@@ -253,7 +253,8 @@ export function protectedContext(segs, allowlistPath = DEFAULT_ALLOWLIST_PATH, c
     }
   }
   const store = dirname(allowlistPath)
-  return { assigns, root: realOrSelf(resolve(store, '..')), store: realOrSelf(store), cwd: cwd ? resolve(String(cwd)) : null }
+  // root/store are compared as pathKey()s (real, on-disk case, lower-cased): see realDeep.
+  return { assigns, root: pathKey(resolve(store, '..')), store: pathKey(store), cwd: cwd ? resolve(String(cwd)) : null }
 }
 
 // The working directory after one segment: a literal `cd DIR` / `pushd DIR` moves it,
@@ -314,7 +315,7 @@ function protectedPatternWord(text, ctx) {
   // An unresolved expansion is read as any text. One that STARTS a word may be an
   // absolute path, so that word has no known parent directory.
   const words = src.replace(UNRESOLVED_EXPANSION_RX, UNRESOLVED).replace(/[\\'"]/g, '').split(/[\s;&|<>()]+/).filter(Boolean)
-  const cwdReal = ctx?.cwd ? realOrSelf(ctx.cwd) : null
+  const cwdReal = ctx?.cwd ? pathKey(ctx.cwd) : null
   const cwdProtected = !!cwdReal && (cwdReal === ctx.root || cwdReal === ctx.store)
   const cmd = (words.find((w) => !/^[A-Za-z_]\w*=/.test(w)) ?? '').replace(/^.*\//, '')
   if (ctx && DIR_WRITERS.has(cmd)) {
@@ -323,7 +324,7 @@ function protectedPatternWord(text, ctx) {
       if (!v || v.startsWith('-') || v.includes(UNRESOLVED) || /[*?[{]/.test(v)) continue
       const abs = v.startsWith('/') || v === '~' || v.startsWith('~/') ? expandHome(v === '~' ? '~/' : v) : (ctx.cwd ? join(ctx.cwd, v) : null)
       if (!abs) continue
-      const real = realOrSelf(resolve(abs))
+      const real = pathKey(resolve(abs))
       if (real === ctx.root || real === ctx.store) return true
     }
   }
@@ -346,7 +347,7 @@ function protectedPatternWord(text, ctx) {
         const seg = segs[i]
         if (!/[*?[]/.test(seg)) continue
         const above = segs.slice(0, i)
-        const parent = abs && i > 0 && !above.some((x) => /[*?[]/.test(x)) ? realOrSelf(above.join('/') || '/') : null
+        const parent = abs && i > 0 && !above.some((x) => /[*?[]/.test(x)) ? pathKey(above.join('/') || '/') : null
         const literal = seg.replace(/\[[^\]]*\]|[*?]/g, '')
         for (const target of PROTECTED_GLOB_TARGETS) {
           if (!globMatchesName(seg, target)) continue
@@ -364,20 +365,55 @@ function protectedPatternWord(text, ctx) {
 function expandHome(p) {
   return p.startsWith('~/') ? join(homedir(), p.slice(2)) : p
 }
-function realOrSelf(p) {
-  try { return realpathSync(p) } catch { return p }
+
+// The real path of `p` even when it does not exist yet (a Write creates it): the deepest
+// EXISTING ancestor resolved with realpathSync.native, the rest appended as given. The
+// native call returns the on-disk case, so on a case-insensitive volume (macOS APFS
+// default) LOCAL-HOOKS/a.py comes back as local-hooks/a.py; the JS realpathSync keeps the
+// case it was given, and a missing file has no real path at all (review #2001). A
+// dangling symlink is followed to where a write through it would land.
+function realDeep(p) {
+  const tail = []
+  let cur = p
+  for (let hops = 0; ; ) {
+    try {
+      const real = realpathSync.native(cur)
+      return tail.length ? join(real, ...tail.reverse()) : real
+    } catch {
+      try {
+        if (hops < 40 && lstatSync(cur).isSymbolicLink()) {
+          hops++
+          cur = resolve(dirname(cur), readlinkSync(cur))
+          continue
+        }
+      } catch { /* missing: walk up */ }
+      const up = dirname(cur)
+      if (up === cur) return p
+      tail.push(basename(cur))
+      cur = up
+    }
+  }
+}
+// The form every protected-path comparison uses, in the file-tool AND the Bash branch.
+function pathKey(p) {
+  return realDeep(p).toLowerCase()
 }
 
-// Does a native file-tool call target the allowlist? `allowlistPath` is the real file
-// this install's egress-gate reads; tests pass a tmp one.
+// Does a native file-tool call target the allowlist, store/extra-hooks.json or a script
+// under local-hooks/? `allowlistPath` is the real file this install's egress-gate reads;
+// tests pass a tmp one. EVERY comparison here is case-insensitive: the filesystem may be
+// (review #2001), and on a case-sensitive one the extra denial is a differently-cased
+// name a sub-agent has no business writing either.
 export function fileToolTargetsAllowlist(toolInput, allowlistPath = DEFAULT_ALLOWLIST_PATH, cwd = process.cwd()) {
   const raw = String(toolInput?.file_path ?? toolInput?.notebook_path ?? '')
   if (!raw) return false
   if (PROTECTED_BASENAMES.has(basename(raw).toLowerCase())) return true
-  const abs = resolve(cwd, expandHome(raw))
-  const localHooks = realOrSelf(join(dirname(allowlistPath), '..', 'local-hooks'))
-  if (realOrSelf(abs).startsWith(localHooks + '/') || /(^|\/)local-hooks(\/|$)/.test(raw)) return true
-  return realOrSelf(abs) === realOrSelf(allowlistPath)
+  if (/(^|\/)local-hooks(\/|$)/i.test(raw)) return true
+  const real = pathKey(resolve(cwd, expandHome(raw)))
+  if (PROTECTED_BASENAMES.has(basename(real))) return true
+  const localHooks = pathKey(join(dirname(allowlistPath), '..', 'local-hooks'))
+  if (real === localHooks || real.startsWith(localHooks + '/')) return true
+  return real === pathKey(allowlistPath)
 }
 
 // Split a compound command into individual simple commands, so a token in one
