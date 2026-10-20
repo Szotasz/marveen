@@ -65,10 +65,27 @@ describe('the argv-token detector sees every spelling of the banned form', () =>
   }
 })
 
+// The one deliberate exception is the schedule read recipe. The self-pace-gate lets exactly one read form
+// through on /api/schedules (scripts/self-pace-gate.mjs, form a): -q first, the token in a -H header, no -K.
+// It refuses the curl-config form, so this single line keeps the header on argv. It is cut out by its exact
+// line (newline to newline, so nothing can be appended to it) and must be there exactly once: any other argv
+// header in the same file still fails.
+const SCHEDULE_READ_EXCEPTION = {
+  rel: 'src/web/agent-scaffold.ts',
+  line: 'curl -q -s -H "Authorization: Bearer $(cat ${tokenPath})" ${dashboardOrigin}/api/schedules',
+}
+const scanned = (rel: string) => {
+  const src = read(rel)
+  if (rel !== SCHEDULE_READ_EXCEPTION.rel) return src
+  const parts = src.split('\n' + SCHEDULE_READ_EXCEPTION.line + '\n')
+  expect(parts.length - 1, `${rel}: the schedule read recipe (the one argv exception) must be there exactly once`).toBe(1)
+  return parts.join('\n\n')
+}
+
 describe('generated curl commands keep the dashboard token off argv', () => {
   for (const rel of GENERATORS) {
     it(`${rel} carries the token only inside the printf curl config`, () => {
-      const src = read(rel)
+      const src = scanned(rel)
       const hits = argvTokenHits(src).map((i) => src.slice(Math.max(0, i - 60), i + 60).replace(/\n/g, ' '))
       expect(hits).toEqual([])
     })
@@ -86,7 +103,7 @@ describe('generated curl commands keep the dashboard token off argv', () => {
   ]
   for (const rel of GENERATORS) {
     it(`${rel}: no unquoted variable path inside $(cat ...)`, () => {
-      const src = read(rel)
+      const src = scanned(rel)
       for (const [re, why] of UNQUOTED_CAT) expect(src, `${rel}: ${why}`).not.toMatch(re)
     })
   }
