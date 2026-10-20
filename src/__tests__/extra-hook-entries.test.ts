@@ -285,6 +285,59 @@ describe('a sub-agent cannot write the extras file or the scripts it names (self
   })
 })
 
+// Review #2001 round 3: the file-tool path check compared case-sensitively, so on a
+// case-insensitive volume (macOS APFS default) Write <root>/LOCAL-HOOKS/a.py landed in the
+// real local-hooks/. Every protected-path comparison now reads the real path of the
+// deepest existing ancestor (realpathSync.native, on-disk case) and compares lower-cased.
+describe('the protected paths are compared case-insensitively (review #2001, round 3)', () => {
+  const decide = (tool: string, input: Record<string, unknown>, cwd = root) =>
+    gateDecision(tool, input, { allowlistPath: join(root, 'store', 'egress-allowlist.json'), cwd })
+  const write = { content: 'x' }
+  const edit = { old_string: 'a', new_string: 'b' }
+
+  it.each([
+    ['Write', 'LOCAL-HOOKS/a.py', write],
+    ['Write', 'Local-Hooks/new.py', write],
+    ['Edit', 'LOCAL-HOOKS/gate.py', edit],
+    ['Edit', 'local-HOOKS/gate.py', edit],
+    ['MultiEdit', 'Local-hooks/log.mjs', { edits: [] }],
+    ['Write', 'store/EXTRA-HOOKS.JSON', write],
+    ['Edit', 'store/Extra-Hooks.json', edit],
+    ['Write', 'STORE/extra-hooks.JSON', write],
+  ])('%s %s is denied, relative and absolute', (tool, rel, input) => {
+    expect(decide(tool, { file_path: rel, ...input })).toEqual({ deny: true, reason: 'egress-allowlist' })
+    expect(decide(tool, { file_path: join(root, rel), ...input })).toEqual({ deny: true, reason: 'egress-allowlist' })
+  })
+
+  it('a new file through a symlinked directory and a dangling symlink are read at their real target', () => {
+    symlinkSync(join(root, 'local-hooks'), join(outside, 'lh'))
+    expect(decide('Write', { file_path: join(outside, 'lh', 'new.py'), ...write }).deny).toBe(true)
+    symlinkSync(join(root, 'local-hooks', 'not-yet.py'), join(outside, 'dangling.py'))
+    expect(decide('Write', { file_path: join(outside, 'dangling.py'), ...write }).deny).toBe(true)
+    mkdirSync(join(root, 'store'))
+    symlinkSync(join(root, 'store', 'extra-hooks.json'), join(outside, 'innocent.json'))
+    expect(decide('Write', { file_path: join(outside, 'innocent.json'), content: '{}' }).deny).toBe(true)
+  })
+
+  it.each([
+    'cp /x/a.py <R>/STORE/',
+    'cp -R /x/stage/. <R>/Store/',
+    'cp /x/a.py <R>/LOCAL-HOOKS/a.py',
+  ])('Bash, the same class in the directory-writer check: %s is denied', (cmd) => {
+    mkdirSync(join(root, 'store'), { recursive: true })
+    expect(decide('Bash', { command: cmd.replaceAll('<R>', root) }).deny).toBe(true)
+  })
+
+  it.each([
+    ['Write', join('notes', 'Local-Hooks.md')],
+    ['Write', join('notes', 'my-local-hooks', 'a.py')],
+    ['Edit', join('store', 'Other.JSON')],
+    ['Write', join('store', 'extra-hooks.json.md')],
+  ])('POSITIVE CONTROL: %s %s stays allowed', (tool, rel) => {
+    expect(decide(tool, { file_path: join(root, rel), content: 'x', old_string: 'a', new_string: 'b' }).deny).toBe(false)
+  })
+})
+
 // Review #2001: the mention check read the raw command text, so plain shell
 // spellings got past it. The class is "a command that spells a protected name"
 // (self-pace-gate.mjs, WHAT MENTIONS MEANS); what it does not cover is stated
