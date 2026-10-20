@@ -246,6 +246,32 @@ function notifyMainAgent(approval: Approval): void {
   }
 }
 
+// MARVEENGAPS1020 (a): a route that needs an approval files it itself, with a
+// description it built from the real object, on the same path as POST
+// /api/approvals: same row, same timeout rule, same owner and main-agent
+// notification. The requester cannot word the request the owner reads.
+export function fileServerApproval(params: {
+  agent_id: string
+  category: string
+  action_description: string
+  action_payload?: string | null
+  content_hash: string
+}): Approval {
+  const approval = createApproval({
+    id: randomUUID(),
+    agent_id: params.agent_id,
+    category: params.category,
+    action_description: params.action_description,
+    action_payload: params.action_payload ?? null,
+    timeout_at: computeTimeoutAt(params.category, undefined),
+    content_hash: params.content_hash,
+  })
+  notifyOwner(approval)
+  notifyMainAgent(approval)
+  logger.info({ id: approval.id, agent_id: approval.agent_id, category: approval.category }, 'Approval request filed by the server')
+  return approval
+}
+
 export function startApprovalTimeoutSweeper(): NodeJS.Timeout {
   return setInterval(() => {
     try {

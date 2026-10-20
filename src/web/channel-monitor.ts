@@ -3100,8 +3100,8 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
           // and no poller (verified: continue -> "Plugin not found" in /mcp; fresh
           // -> plugin loads + poller attaches). Context is dropped, memory persists.
           // startAgentProcess schedules the recovery brief itself for any
-          // fresh start (see agent-process): this path is no longer the only
-          // door onto a fresh session, so the brief lives at the door rather
+          // successful start (see agent-process): this path is not the only
+          // door onto a new session, so the brief lives at the door rather
           // than at each caller.
           await startAgentProcess(t.agentName!, { fresh: true })
           agentLastRestart.set(t.agentName!, Date.now())

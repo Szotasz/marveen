@@ -2,11 +2,13 @@ import {
   saveAgentMemory, getAgentMemories, searchAgentMemories, getMemoryStats, updateMemory,
   hybridSearch, backfillEmbeddings, backfillNeedsWarning,
   searchMemories, getMemoriesForChat, getDb, touchMemoriesAccessed,
-  getMemoryById, deleteMemoryById, getMemoryVersions,
-  type Memory, type MemoryRow,
+  getMemoryById, deleteMemoryById, getMemoryVersions, consumeApproval,
+  type Memory, type MemoryRow, type Approval,
 } from '../../db.js'
 import { MAIN_AGENT_ID, ALLOWED_CHAT_ID, OLLAMA_URL, MEMORY_IMPORT_CATEGORIZE_MODEL, APP_TZ, MEMORY_CONTENT_FILTER_STRICT_COMMANDS } from '../../config.js'
 import { createHash } from 'crypto'
+import { readAutonomyLevel } from '../autonomy-level.js'
+import { approvalWindowSeconds, fileServerApproval } from './approvals.js'
 import { logger } from '../../logger.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
 import { detectHomoglyphs, formatHomoglyphWarning } from '../../homoglyph.js'
@@ -118,6 +120,39 @@ export const STRICT_COMMAND_PATTERNS = [
 // row within seconds used to lose one edit silently -- last writer wins, and
 // nothing told the loser. updated_at alone cannot serve as the version: it has
 // one-second resolution, so two writes in the same second compare equal.
+// MARVEENGAPS1020 (a): what a data_delete approval is bound to. The memory id
+// and its content version: an edit after the approval makes the anchor differ,
+// and the approval no longer deletes the edited row.
+export function memoryDeleteAnchor(id: number, content: string | null | undefined): string {
+  return createHash('sha256').update(`memory-delete\n${id}\n${memoryVersion(content)}`).digest('hex')
+}
+
+// An open request for the same anchor (pending, or approved, unused and inside
+// the consume window) is answered again instead of filing a second one, so a
+// retrying agent does not flood the owner with requests.
+// Looked up by the anchor in SQL, not by scanning a capped list: with more than
+// 500 data_delete requests on the table, a list scan missed the open one and
+// filed a duplicate (#2090 review).
+function openDeleteApproval(anchor: string): Approval | undefined {
+  const freshAfter = Math.floor(Date.now() / 1000) - approvalWindowSeconds()
+  return getDb().prepare(`
+    SELECT * FROM approvals
+     WHERE category = 'data_delete' AND content_hash = ? AND consumed_at IS NULL
+       AND (status = 'pending' OR (status = 'approved' AND resolved_at >= ?))
+     ORDER BY requested_at DESC LIMIT 1
+  `).get(anchor, freshAfter) as Approval | undefined
+}
+
+// The owner reads this, so the server words it from the row, not the caller.
+function memoryDeleteDescription(row: MemoryRow, caller: string | undefined): string {
+  const snippet = row.content.replace(/\s+/g, ' ').trim().slice(0, 160)
+  return [
+    `Emlék végleges törlése: #${row.id} (gazdája: ${row.agent_id ?? 'ismeretlen'}, tier: ${row.category ?? '-'}, ${row.content.length} karakter).`,
+    `Kezdete: "${snippet}${row.content.length > 160 ? '...' : ''}"`,
+    `Kérte: ${caller || 'ismeretlen hívó'}. A törlés a verziókat is viszi, nem visszaállítható.`,
+  ].join(' ')
+}
+
 export function memoryVersion(content: string | null | undefined): string {
   return createHash('sha256').update(content ?? '').digest('hex').slice(0, 16)
 }
@@ -724,11 +759,57 @@ Respond ONLY with JSON, nothing else:
     const before = getMemoryById(id)
     if (!before) { json(res, { error: 'Memory not found' }, 404); return true }
 
+    // MARVEENGAPS1020 (a): the delete is final (the versions go with the row),
+    // and the autonomy config ships data_delete at level 1, locked. Below level 3
+    // the delete runs only with an approved, unused data_delete approval bound to
+    // THIS memory in THIS content state (the anchor): without one the server files
+    // the request itself and answers 409, so a script never reads it as done.
+    const deleteLevel = readAutonomyLevel('data_delete')
+    let approvedDelete = false
+    if (deleteLevel.level < 3) {
+      const anchor = memoryDeleteAnchor(id, before.content)
+      const approvalId = url.searchParams.get('approval_id')
+      if (!approvalId) {
+        const approval = openDeleteApproval(anchor) ?? fileServerApproval({
+          agent_id: ctx.auth?.agent || 'unknown',
+          category: 'data_delete',
+          action_description: memoryDeleteDescription(before, ctx.auth?.agent),
+          action_payload: JSON.stringify({ memory_id: id, version: memoryVersion(before.content) }),
+          content_hash: anchor,
+        })
+        json(res, {
+          error: 'approval_required',
+          approval_id: approval.id,
+          status: approval.status,
+          level: deleteLevel.level,
+          how_to_proceed: approval.status === 'approved'
+            ? `Jóváhagyva. Ugyanez a kérés ?approval_id=${approval.id} paraméterrel törli; az azonosító egyszer használható.`
+            : `A törlés jóváhagyásra vár (Dashboard -> Jóváhagyások, id: ${approval.id}). Jóváhagyás után ugyanez a kérés ?approval_id=${approval.id} paraméterrel törli; az azonosító egyszer használható, és csak erre az emlékre, ebben a tartalmi állapotban érvényes.`,
+        }, 409)
+        return true
+      }
+      const consumed = consumeApproval({
+        id: approvalId,
+        category: 'data_delete',
+        contentHash: anchor,
+        consumer: 'memory-delete',
+        messageId: null,
+        windowSeconds: approvalWindowSeconds(),
+      })
+      if (!consumed.ok) {
+        logger.warn({ memoryId: id, approvalId, reason: consumed.reason }, 'Memory delete refused: approval not usable')
+        json(res, { error: 'approval_not_usable', reason: consumed.reason }, consumed.reason === 'not_found' ? 404 : 409)
+        return true
+      }
+      approvedDelete = true
+    }
+
     // A delete is a total overwrite, so the same tier scope applies -- but the
     // shrink ratio is meaningless against an empty result: what matters is
     // whether a large, long-lived row disappears. Below the 10th percentile the
     // deletion is not suspicious, exactly as with the edit.
-    if (guardedTier(before) && !confirmOverwrite(url) && before.content.length >= OLD_LEN_FLOOR) {
+    // An owner-approved delete has had the stronger confirmation already.
+    if (!approvedDelete && guardedTier(before) && !confirmOverwrite(url) && before.content.length >= OLD_LEN_FLOOR) {
       const oldLen = before.content.length
       logger.warn({ memoryId: id, oldLen, owner: before.agent_id }, 'Destructive memory delete refused')
       json(res, {

@@ -1682,6 +1682,7 @@ window._i18n.hu = {
   'memories.toast.updated':      'Emlék frissítve',
   'memories.toast.created':      'Emlék létrehozva',
   'memories.toast.deleted':      'Emlék törölve',
+  'memories.toast.delete_pending': 'A törlés jóváhagyásra vár (Jóváhagyások oldal). Jóváhagyás után kattints újra a törlésre.',
   'memories.toast.select_files': 'Válassz legalább egy fájlt',
   'memories.toast.no_content':   'Nincs importálható tartalom a fájlokban',
   'memories.toast.import_error': 'Hiba a költöztetés során',

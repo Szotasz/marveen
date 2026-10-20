@@ -329,6 +329,103 @@ _WRAPPERS = {
 }
 _HEAD_DEPTH = 8
 
+# MAILGATEUV1020: a project launcher's `run` subcommand in front of the sender --
+# `uv run python .../send.py --to x`, `uv run send.py --to x`, `uv run -m send
+# --to x`, `pipx run send.py --to x`, `poetry run python send.py --to x` -- made
+# the launcher the "program", so the send was not recognised by either copy
+# (measured on develop a6325a49: 26 launcher shapes, all passed; found by the
+# #2081 negative control). The launcher is stepped over like a wrapper, past its
+# subcommand and its own options, and the word after them is judged as the
+# command: `uv run` and `pipx run` take a script path directly, so `send.py`
+# there is the program. `uv run -m X` is `python3 -m X`.
+# name -> (subcommand, short flags taking a value, long flags taking a value,
+# module flags, flag lists measured as complete). uv and pipx: the value flags
+# are read from `uv run --help` (uv 0.10.2) and `pipx run --help` (pipx 1.11.1)
+# on the dev host. The others were not installed there, so their flags are not
+# listed, and every word of their option run that could be the program is
+# judged as one (a word after an option may be its value or the command): an
+# unknown option errs toward auditing, as with _WRAPPERS.
+# Not covered: `uvx` / `uv tool run` (they run an installed package's entry
+# point, not a script path), and a module flag inside a short cluster (`-qm`).
+# Mirrored in email-send-gate.mjs (LAUNCHERS / launcherHeads);
+# send-invocation-cases.json binds the two.
+_UV_RUN_LONG_VAL = (
+    "extra", "no-extra", "group", "no-group", "only-group", "env-file", "with",
+    "with-editable", "with-requirements", "package", "python-platform", "index", "default-index",
+    "index-url", "extra-index-url", "find-links", "index-strategy", "keyring-provider",
+    "upgrade-package", "resolution", "prerelease", "fork-strategy", "exclude-newer",
+    "exclude-newer-package", "no-sources-package", "reinstall-package", "link-mode",
+    "config-setting", "config-settings-package", "no-build-isolation-package", "no-build-package",
+    "no-binary-package", "cache-dir", "refresh-package", "python", "color", "allow-insecure-host",
+    "directory", "project", "config-file",
+)
+_LAUNCHERS = {
+    "uv": ("run", "wifPCp", _UV_RUN_LONG_VAL, ("-m", "--module"), True),
+    "pipx": ("run", "", ("index-url", "pip-args", "python", "spec", "with"), (), True),
+    **{n: ("run", "", (), (), False)
+       for n in ("poetry", "pdm", "hatch", "pipenv", "rye", "conda", "mamba", "micromamba")},
+}
+
+
+def _launcher_heads(toks, spec, _d: int):
+    sub, short_val, long_val, module_flags, complete = spec
+    # The subcommand may follow the launcher's global options (`uv --directory d run`):
+    # every word before it is an option or the value right after one.
+    j = -1
+    for x in range(1, len(toks)):
+        if toks[x] == sub:
+            j = x
+            break
+        if not toks[x].startswith("-") and not (x > 1 and toks[x - 1].startswith("-")):
+            break
+    if j < 0:
+        return [toks]
+    heads = []
+    if not complete:
+        # An unmeasured launcher's options are unknown, so every word in its option
+        # run that could be the program is judged as the program: the word after an
+        # option may be that option's value, or the command (Dani's #2086 review:
+        # `conda run --no-capture-output -n base python send.py` mixes a flag and a
+        # value option, which no single reading of all options fits).
+        for x in range(j + 1, len(toks)):
+            if toks[x] == "--":
+                heads.append(toks[x + 1:])
+                break
+            if toks[x].startswith("-") and len(toks[x]) > 1:
+                continue
+            heads.append(toks[x:])
+            if not (x > j + 1 and toks[x - 1].startswith("-") and len(toks[x - 1]) > 1):
+                break
+        if not heads:
+            heads.append([])
+    else:
+        i, head = j + 1, None
+        while i < len(toks):
+            t = toks[i]
+            if t == "--":
+                i += 1
+                break
+            if t in module_flags:
+                head = ["python3", "-m"] + toks[i + 1:]
+                break
+            if t.startswith("--"):
+                eq = t.find("=")
+                if eq > 0 and t[:eq] in module_flags:
+                    head = ["python3", "-m", t[eq + 1:]] + toks[i + 1:]
+                    break
+                i += 2 if eq < 0 and t[2:] in long_val else 1
+                continue
+            if t.startswith("-") and len(t) > 1:
+                k = next((x for x, ch in enumerate(t[1:], 1) if ch in short_val), -1)
+                i += 2 if k == len(t) - 1 else 1
+                continue
+            break
+        heads.append(head if head is not None else toks[i:])
+    out = []
+    for h in heads:
+        out += _command_heads(h, _d + 1)
+    return out
+
 
 def _command_heads(toks, _d: int = 0):
     """Every token list that can be the real command of this segment, after the
@@ -343,11 +440,14 @@ def _command_heads(toks, _d: int = 0):
         # so it counts as a send (None) -- the bound errs toward auditing, like
         # an unknown flag does. It used to return the wrapper itself, and nine
         # nested wrappers + sendmail was silently skipped (Samu, #1521 review).
-        return [None] if (w in _WRAPPERS or w in ("function", "coproc")) else [toks]
+        return [None] if (w in _WRAPPERS or w in _LAUNCHERS or w in ("function", "coproc")) else [toks]
     if w == "function":
         return _command_heads(toks[2:], _d + 1)
     if w == "coproc":
         return _command_heads(toks[1:], _d + 1) + _command_heads(toks[2:], _d + 1)
+    launcher = _LAUNCHERS.get(w)
+    if launcher is not None:
+        return _launcher_heads(toks, launcher, _d)
     spec = _WRAPPERS.get(w)
     if spec is None:
         return [toks]
@@ -387,7 +487,8 @@ def _segment_is_send(toks, depth: int) -> bool:
 # SUBAGENTMAILGATE1016: the sender was recognised only with the script as the
 # FIRST interpreter argument and the exact --to flag. The boundary and the
 # measured bypasses are written out at pythonHeadSends in email-send-gate.mjs
-# (the JS twin); send-invocation-cases.json binds the two.
+# (the JS twin); send-invocation-cases.json binds the two. MAILGATEVARARGS1020
+# narrowed the undecidable-path branch to the recipient flag (same place).
 _PY_OPT_WITH_ARG = {"-X", "-W", "--check-hash-based-pycs"}
 _RECIPIENT_FLAG = re.compile(r"^--to?(=|$)")
 _UNDECIDABLE_PATH = re.compile(r"[*?[{$]")
@@ -487,7 +588,7 @@ def _python_head_sends(rest) -> bool:
     if script is not None and _SENDPY.match(_basename(script)):
         return recipient
     if script is not None and _UNDECIDABLE_PATH.search(script):
-        return recipient or any(t != script and "$" in t for t in rest)
+        return recipient  # MAILGATEVARARGS1020
     if stdin or (script is None and stdin_redirect):
         return recipient
     return False

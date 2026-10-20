@@ -42,6 +42,24 @@ Scheduled task (at 8/12/16/20) relying on a state file (`last_audit_at`):
 
 Every project task runs on a card: the orchestrator records it as a card, delegates to the responsible agent (`assignee`), who updates status and comments back. Meta-tasks (like the audit itself) don't get cards.
 
+### Claim lock, unblock, done evidence
+
+Moving a card to `in_progress` does not stop two agents from picking up the same card (both can see it free). For installs that want that guarantee there is an atomic claim. It is opt-in and off by default: enable it with `KANBAN_CLAIM_LOCK=1` (`.env` or the Settings page, no restart needed). While it is off, `/claim` and `/release` answer 404 with `reason: "claim_lock_disabled"`, no `claim_warning` is added, and nothing requires an agent to claim before it works.
+
+```
+POST /api/kanban/:id/claim    {"agent":"NAME","ttl_seconds":7200}  -- 200 claimed/renewed, 409 held by another (the body names holder and expiry)
+POST /api/kanban/:id/release  {"agent":"NAME"}                     -- 200 released (released: true|false), 409 if someone else holds it; {"force":true} is the operator override
+```
+
+- The claim is a single conditional UPDATE (compare-and-set): of any number of concurrent requests exactly one wins.
+- TTL: 2 hours by default (`ttl_seconds` between 60 and 86400). An expired claim can be taken over by anyone, and the takeover leaves a system comment on the card. The same agent claiming again renews.
+- By any path (API, drag, raw SQL) the claim is released (trigger) on `done`, on archiving, on entering `waiting` or `testing`, and when the `assignee` changes to someone other than the holder (handoff). Moves within `in_progress` and renewals keep it.
+- Cards in `GET /api/kanban` carry `claimed_by`, `claimed_at`, `claim_expires_at`. A PUT never writes them.
+
+Dependency unblock: when a card becomes `done` through /move or PUT, every `waiting` card for which it was the last open blocker (`/api/kanban/:id/blockers`) moves back to `planned` with an automatic comment. The response's `unblocked` field lists them.
+
+Done evidence (soft gate): if a card becomes `done` through /move or PUT with no non-`system` comment since its latest move to `in_progress` (since its creation if it never went there), the response carries `evidence_warning`. The move still succeeds. With the claim lock on, moving a card claimed by another agent to `in_progress` adds `claim_warning`.
+
 ### Access
 
 Direct SQLite, or the dashboard kanban interface. Card status is automatically included in every agent's context.

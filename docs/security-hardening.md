@@ -260,7 +260,8 @@ runs as a `PreToolUse` hook with matcher `WebFetch`, and `wrapUntrustedFetch()`
 brings the outside world into an agent's context is outside both:
 
 - **`WebSearch`** -- result snippets are external text; no allowlist decided
-  which sites they came from, and nothing wraps them on the way in.
+  which sites they came from. The envelope hook below now frames them on the
+  way in (wired by default since MARVEENGAPS1020); nothing filters them.
 - **Any MCP server that fetches** -- a browser server (playwright, chrome), a
   docs server, an API connector. The agent's own `curl` is denied by
   `BASH_EGRESS_DENY`, but an MCP server makes the request in its own process,
@@ -289,7 +290,7 @@ The defence against that is framing, not filtering: content the agent knows is
 content cannot impersonate an instruction. `WebFetch` gets that framing from
 the wrapper. A browser payload gets none.
 
-## The opt-in envelope hook
+## The envelope hook (default on WebSearch, opt-in for browser MCP servers)
 
 `scripts/hooks/browser-content-notice.py` is a `PostToolUse` hook that wraps
 browser / search results in an `<untrusted source="..." fetch-nonce="...">`
@@ -298,11 +299,37 @@ gives the `WebFetch` path -- scrubs forged security tags out of the payload,
 names any injection patterns it matched (forged `<untrusted>` /
 `<system-reminder>` envelopes, a pre-injected scrub sentinel, instruction
 overrides, credential targets, exfil shapes) and appends the full payload to
-`store/browser-content.log` for reading outside the model's context.
+`store/browser-content.log` for reading outside the model's context. The log is
+capped: past `BROWSER_CONTENT_LOG_MAX_BYTES` (default 10 MiB) it moves to
+`browser-content.log.1`, replacing an older one, so at most about twice the cap
+is kept; both files are mode 0600, a symlinked log path is refused, and a
+line that cannot be written leaves a note in `store/hook-errors.log`.
 
-It is **not registered by default** -- an install with no browser gains nothing
-from it. Operators who run a browser MCP server wire it themselves, in the
-project `settings.json` or `settings.local.json`:
+Since MARVEENGAPS1020 (c) it is **wired by default for `WebSearch`**: in the
+repo-shipped `.claude/settings.json` for the main agent, and by the scaffold
+(`injectWebSearchEnvelope`, with a startup migration for existing agents) for
+every sub-agent. Every agent can call WebSearch: three profiles allow it by
+name, and the permissive ones run with the permission bypass. The hook does
+nothing until WebSearch is called. Its label tells the agent to read and use
+the content's facts and to refuse only its imperatives, so an agent does not
+stop on a round whose content was its job (BORITOOLVASAT921).
+
+Two strengths of signal. A forged security frame (`<untrusted>`, `<system-reminder>`,
+a directive header, the scrub sentinel, a channel envelope) has no benign reading,
+so the label tells the agent to report it to the owner. The content heuristics
+(instruction override, role reassignment, agent addressing, credential target,
+exfil shape) also match ordinary technical text, such as an install line, a `.env`
+step or an `api_key:` field. For those, the label only says not to act on the
+content's say-so, and that its facts are usable.
+
+There is no per-agent opt-out: the startup migration re-adds a removed WebSearch
+group on the next dashboard start, as it does for the gates. An operator who
+wires the envelope under their own matcher that also covers WebSearch (the
+browser pattern below) keeps theirs, and no second copy is added.
+
+A browser MCP server is still **not wired by default**, because an install with
+no browser gains nothing from it. Operators who run one add its matcher
+themselves, in the project `settings.json` or `settings.local.json`:
 
 ```json
 {
@@ -390,6 +417,42 @@ is refused by the other.
 
 A 409 means: do not send, and check the sent mailbox before deciding anything,
 because the earlier attempt may already have gone out.
+
+# Memory delete needs an approval (data_delete)
+
+`DELETE /api/memories/:id` is final: the row's versions are purged with it. The
+autonomy config ships `data_delete` at level 1, locked, but until this change no
+code read that level; only the tier guard stood in the way, and the caller could
+pass it with `?confirm_overwrite=1`.
+
+Now the route reads the level (`src/web/autonomy-level.ts`; a missing config or
+key reads as level 1):
+
+- **Level 3**: the delete runs as before, with the tier guard.
+- **Level 1 or 2**: the delete runs only with `?approval_id=<id>` of an approved,
+  unused `data_delete` approval bound to this memory in its current content state.
+  Without one the server files the request itself, on the same path as
+  `POST /api/approvals`: the owner is notified, and the description is worded by
+  the server from the row (id, owner, tier, length, the first 160 characters),
+  not by the caller. The answer is `409 approval_required` with the approval id,
+  so a script never reads the request as done. A retry gets the same open
+  request back instead of a new one.
+- The approval is consumed once, inside the same window as an email approval
+  (`EMAIL_APPROVAL_WINDOW_S`, 1800 s from the approval). An edit to the memory
+  after the approval changes the anchor, and the approval no longer deletes it.
+- The anchor is the memory id plus its content version. A row deleted and later
+  restored with the same id and the same content (a DB restore, a re-import)
+  has the same anchor again; the approval that deleted it is already consumed,
+  so it cannot delete the restored row, and a fresh request is filed instead.
+
+Considered and not chosen: turning the delete into an archive (a soft delete).
+That would keep the data, but it is a different feature with its own readers
+(every list and search would have to skip archived rows). The approval keeps
+the delete what it is and puts the decision where the config says it belongs.
+
+**Limit:** the approval can be resolved by any holder of the shared dashboard
+token, as every approval can today, so an agent could approve its own request.
+"Only a human may delete" needs the per-agent identity decision (#1985) first.
 
 # Sub-agent mail gate: sender scripts under any name
 

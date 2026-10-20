@@ -7768,10 +7768,24 @@ function renderMemories(memories) {
       e.stopPropagation()
       if (!confirm('Biztosan torlod ezt az emleket?')) return
       try {
-        await fetch(`/api/memories/${mem.id}`, { method: 'DELETE' })
-        showToast(t('memories.toast.deleted'))
-        loadMemories()
-        loadMemStats()
+        // MARVEENGAPS1020 (a): below data_delete level 3 the first DELETE files
+        // an approval request (409 approval_required). Once it is approved, the
+        // same click finishes the delete with the one-shot approval id.
+        let res = await fetch(`/api/memories/${mem.id}`, { method: 'DELETE' })
+        let body = await res.json().catch(() => ({}))
+        if (res.status === 409 && body.error === 'approval_required' && body.status === 'approved') {
+          res = await fetch(`/api/memories/${mem.id}?approval_id=${encodeURIComponent(body.approval_id)}`, { method: 'DELETE' })
+          body = await res.json().catch(() => ({}))
+        }
+        if (res.ok) {
+          showToast(t('memories.toast.deleted'))
+          loadMemories()
+          loadMemStats()
+        } else if (body.error === 'approval_required') {
+          showToast(t('memories.toast.delete_pending'))
+        } else {
+          showToast(`${t('common.error_delete')}: ${body.error || res.status}`)
+        }
       } catch {
         showToast(t('common.error_delete'))
       }

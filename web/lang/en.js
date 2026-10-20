@@ -1679,6 +1679,7 @@ window._i18n.en = {
   'memories.toast.updated':      'Memory updated',
   'memories.toast.created':      'Memory created',
   'memories.toast.deleted':      'Memory deleted',
+  'memories.toast.delete_pending': 'The delete is waiting for approval (Approvals page). After it is approved, click delete again.',
   'memories.toast.select_files': 'Select at least one file',
   'memories.toast.no_content':   'No importable content in files',
   'memories.toast.import_error': 'Import error',

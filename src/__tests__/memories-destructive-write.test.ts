@@ -27,6 +27,13 @@ vi.mock('../logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() },
 }))
 
+// These cases pin the tier guard and the version purge of a delete that RUNS.
+// Since MARVEENGAPS1020 (a) a delete below data_delete level 3 needs an approval
+// first (memories-delete-approval.test.ts); level 3 is the path measured here.
+vi.mock('../web/autonomy-level.js', () => ({
+  readAutonomyLevel: () => ({ level: 3, source: 'config' }),
+}))
+
 function makeCtx(path: string, method: string, body?: unknown, query: Record<string, string> = {}, caller?: string) {
   const url = new URL(`http://localhost:3420${path}`)
   for (const [k, v] of Object.entries(query)) url.searchParams.set(k, v)

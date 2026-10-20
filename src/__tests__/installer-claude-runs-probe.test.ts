@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { readFileSync, writeFileSync, mkdtempSync, chmodSync, existsSync, readdirSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdtempSync, chmodSync, existsSync, readdirSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -131,6 +131,22 @@ describe.skipIf(!HAVE_TIMEOUT)('_claude_runs is a real launch probe, not --versi
   })
 })
 
+// The function's only external tool is `mv` (command/hash/echo are builtins).
+// The PATH is the mock dir plus a dir holding just `mv`, NOT /usr/bin:/bin: a
+// REAL claude there (an npm-global install links it into /usr/bin) resolves
+// after the mock is shelved, and "claude no longer resolves" went red for the
+// host, not for the function. bash is run by absolute path, since it is not on
+// that PATH.
+function whichOrThrow(tool: string): string {
+  return execFileSync('sh', ['-c', `command -v ${tool}`], { encoding: 'utf-8' }).trim()
+}
+const BASH_BIN = whichOrThrow('bash')
+const MV_ONLY_DIR = (() => {
+  const d = mkdtempSync(join(tmpdir(), 'clirv-mv-'))
+  symlinkSync(whichOrThrow('mv'), join(d, 'mv'))
+  return d
+})()
+
 describe('_shelve_broken_claude moves a non-launching claude off PATH so the pin can win', () => {
   for (const [label, src] of [['install-linux.sh', LINUX], ['scripts/fix-avx.sh', FIXAVX]] as const) {
     it(`${label}: the binary is renamed to <path>.avx-broken and claude no longer resolves`, () => {
@@ -141,7 +157,7 @@ describe('_shelve_broken_claude moves a non-launching claude off PATH so the pin
         '_shelve_broken_claude',
         'command -v claude >/dev/null 2>&1 && echo STILL_RESOLVES || echo GONE',
       ].join('\n')
-      const out = execFileSync('bash', ['-c', script], { env: { ...process.env, PATH: `${dir}:/usr/bin:/bin` }, encoding: 'utf-8' })
+      const out = execFileSync(BASH_BIN, ['-c', script], { env: { ...process.env, PATH: `${dir}:${MV_ONLY_DIR}` }, encoding: 'utf-8' })
       expect(out).toContain('felretettem')
       expect(out).toContain('GONE')
       expect(readdirSync(dir)).toEqual(['claude.avx-broken'])
