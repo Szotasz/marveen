@@ -265,3 +265,32 @@ describe('the out-of-process watchers treat an extra like any other hook', () =>
     }
   })
 })
+
+// Review #2001 (c): what the self-pace gate cannot see is made visible. Every
+// sync logs the sha256 of the file and of each script it names, once per
+// distinct content.
+describe('the sync logs a sha256 fingerprint of the extras', () => {
+  const logExtraDigest = (path?: string) =>
+    (scaffold as unknown as { logExtraHooksDigest: (p?: string) => void }).logExtraHooksDigest(path)
+  const digestLines = (spy: { mock: { calls: unknown[][] } }) =>
+    spy.mock.calls.filter((c) => String(c[1] ?? '').includes('extra-hooks.json: sha256'))
+
+  it('logs once per content: not again for the same bytes, again after a script changes; no file, no line', () => {
+    const spy = vi.spyOn(logger, 'info')
+    logExtraDigest(missingConfig) // resets the remembered digest
+    expect(digestLines(spy)).toHaveLength(0)
+    render(config([GATE]))
+    expect(ensureExtra(TEST_AGENT, configPath)).toBe(false) // already in sync: no write, but the line came on the first sync
+    const first = digestLines(spy)
+    expect(first).toHaveLength(1)
+    const fields = first[0][0] as { sha256: string; scripts: Record<string, string> }
+    expect(fields.sha256).toMatch(/^[0-9a-f]{64}$/)
+    expect(Object.keys(fields.scripts)).toEqual([gateRel])
+    writeFileSync(join(PROJECT_ROOT, gateRel), 'import sys\nsys.exit(0)  # changed\n')
+    ensureExtra(TEST_AGENT, configPath)
+    const second = digestLines(spy)
+    expect(second).toHaveLength(2)
+    expect((second[1][0] as { scripts: Record<string, string> }).scripts[gateRel]).not.toBe(fields.scripts[gateRel])
+  })
+})
+

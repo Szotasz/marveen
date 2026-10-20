@@ -388,10 +388,40 @@ beépített injektorok fájlnév alapján találják meg a saját bejegyzésüke
 át kell nevezni.
 
 Ki írhatja: a `store/extra-hooks.json` és a `local-hooks/` dönti el, mi fut MINDEN sub-ágens
-sessionjében, ezért a sub-ágensek self-pace kapuja mindkettő írását tiltja (natív fájleszközzel és
-Bash-ből is), pontosan úgy, mint a `store/egress-allowlist.json`-ét. Az írók a gazda és a fő ágens,
-amelyeken ez a kapu nem fut. Ugyanezért nem lehet a szkript egy ágens saját könyvtárában
-(`agents/<név>/`), amelyet az az ágens írhat.
+sessionjében. A szándékolt írók a gazda és a fő ágens, ezeken a sub-ágensek self-pace kapuja nem
+fut. Amit ez a kapu garantál, az szűkebb annál, hogy „a sub-ágens nem írhatja”, ezért pontosan:
+
+- Tiltja a sub-ágens natív fájleszközös írását (`Write`, `Edit`, `MultiEdit`, `NotebookEdit`)
+  bármelyikre, név és feloldott valódi útvonal szerint.
+- Tiltja a sub-ágens olyan Bash-parancsát, amely **leírja** valamelyik védett nevet, kivéve, ha
+  a parancs sima olvasás (`cat`, `grep`, `ls`, ...), és a kimenete nincs rá irányítva. A
+  „leírja” ide érti:
+  - az idézőjeles, backslash-es, `$'...'`, escape-elt és szó szerinti összefűzéses alakot
+    (`lo''cal-hooks`, `ext""ra-hooks.json`, `'extra-'+'hooks.json'` egy `python3 -c`-ben);
+  - az ugyanabban a parancsban szó szerinti értéket kapó változót (`D=local; ... $D-hooks`);
+  - a glob-, kapcsos zárójeles vagy részben feloldatlan szót, amely a névre kibomolhat: ha a
+    név saját karaktereiből legalább hármat tartalmaz (`*-hooks`, `$X-hooks`), vagy ha
+    közvetlenül a valódi projektgyökér, illetve store-könyvtár alatt áll, akármennyit (a
+    szó szerinti `cd`-t és a symlinkeket követi);
+  - az olyan programot, amely maga nevezi el a létrehozott fájlokat (`cp`, `mv`, `ln`, `install`,
+    `rsync`, `tar`, `unzip`, `cpio`, `patch`), ha magát a projektgyökeret vagy a store-könyvtárat
+    kapja argumentumként.
+  A szabály és az üzenete ugyanaz, mint a `store/egress-allowlist.json`-é.
+- **Nem** állítja meg azt a sub-ágenst, amelyik meg akarja írni a fájlt. Átmegy minden név,
+  amelyet a parancs nem ír le: a futás közben összerakott útvonal (`chr()`, `base64`, egy azt
+  kiíró `$(...)`), egy korábban megírt, majd lefuttatott szkriptfájl, vagy egy másik program (egy
+  értelmező, `git apply` / `git checkout`, egy build-eszköz), amely egy maga választotta könyvtár
+  alá ír. Minden ágens ugyanazzal az OS-felhasználóval fut, így ezek a
+  fájlok ugyanabban a bizalmi körben vannak, mint bármelyik ágens saját `settings.json`-ja,
+  amelyet egy sub-ágens szintén szerkeszthet.
+- A korlátot a változás láthatóvá tétele ellensúlyozza. A dashboard minden szinkronnál
+  (dashboard-indulás, sub-ágens spawn) naplózza a fájl és az általa megnevezett összes
+  `local-hooks/` szkript sha256-át (`extra-hooks.json: sha256 of the file and of each script it
+  names`). Egy tartalmat egyszer naplóz: az indulás utáni első szinkron mindig ír, a későbbiek
+  csak változáskor. Vesd össze a sort az indulások között a `dashboard.log`-ban.
+
+Ugyanezért nem lehet a szkript egy ágens saját könyvtárában (`agents/<név>/`): azt az ágens
+semmilyen kapu nélkül írja.
 
 Hiányzó, üres fájl vagy `{"entries": []}`: a generált beállítás bájtra azonos azzal, ami e
 funkció nélkül készülne. Hibás JSON vagy rossz szerkezet: egyetlen plusz hook sem kerül be;

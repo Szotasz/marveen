@@ -4,13 +4,14 @@
  * root. The wiring into the generated settings is extra-hook-entries-wiring.test.ts.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { createHash } from 'node:crypto'
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 // @ts-expect-error -- plain .mjs hook script, no types
 import { gateDecision } from '../../scripts/self-pace-gate.mjs'
 import {
-  EXTRA_HOOK_MARK, applyExtraHookEntries, isExtraHookGroup, loadExtraHookEntries, parseExtraHookEntries,
+  EXTRA_HOOK_MARK, applyExtraHookEntries, extraHooksDigest, isExtraHookGroup, loadExtraHookEntries, parseExtraHookEntries,
   type ExtraHookDeps, type ExtraHookEntry,
 } from '../web/extra-hook-entries.js'
 
@@ -283,3 +284,150 @@ describe('a sub-agent cannot write the extras file or the scripts it names (self
     expect(decide('Write', { file_path: join(root, 'notes', 'x.py'), content: '' }).deny).toBe(false)
   })
 })
+
+// Review #2001: the mention check read the raw command text, so plain shell
+// spellings got past it. The class is "a command that spells a protected name"
+// (self-pace-gate.mjs, WHAT MENTIONS MEANS); what it does not cover is stated
+// there and pinned at the end of this block.
+describe('the gate reads the protected names in every spelling of the name (review #2001)', () => {
+  const decide = (command: string, cwd = root) =>
+    gateDecision('Bash', { command }, { allowlistPath: join(root, 'store', 'egress-allowlist.json'), cwd })
+
+  it.each([
+    // the four the review measured as allowed
+    [`cd <R> && cp /x/a.py lo''cal-hooks/a.py`],
+    [`cd <R>/store && cp /x/h.json ext""ra-hooks.json`],
+    ['D=local; cp /x/a.py <R>/$D-hooks/a.py'],
+    [`python3 -c "open('<R>/store/extra-'+'hooks.json','w').write('{}')"`],
+  ])('the review bypass is denied: %s', (cmd) => {
+    expect(decide(cmd.replaceAll('<R>', root)).deny).toBe(true)
+  })
+
+  it.each([
+    // quoting, backslashes, ANSI-C quotes, escapes
+    "cp /x/a.py 'local-hooks'/a.py",
+    'cp /x/a.py lo\\cal-hooks/a.py',
+    "cp /x/a.py $'loc\\x61l-hooks'/a.py",
+    `cp /x/h.json "store/extra-hooks.json"`,
+    "cp /x/h.json store/extra-hoo''ks.json",
+    'cp /x/h.json store/extra-hooks$IFS.json',
+    // literal concatenation in an interpreter, any language
+    `node -e "require('fs').writeFileSync('<R>/store/' + 'extra-hooks.json', '{}')"`,
+    `python3 -c "import os; open(os.path.join('<R>', 'local-hooks', 'a.py'), 'w')"`,
+    `python3 -c "open('/'.join(['<R>', 'local-hoo' 'ks', 'a.py']), 'w')"`,
+    "python3 - <<'EOF'\nopen('<R>/store/extra-'+'hooks.json','w')\nEOF",
+    // variables: assigned a literal in the command, or left unresolved next to the name
+    'export D=local; cp /x/a.py <R>/${D}-hooks/',
+    'D=loc; E=al-hooks; cp /x/a.py <R>/$D$E/a.py',
+    'for D in local; do cp /x/a.py <R>/$D-hooks/; done',
+    'D=$(printf local); cp /x/a.py <R>/$D-hooks/a.py',
+    'cp /x/a.py <R>/$X-hooks/a.py',
+    'cp /x/h.json <R>/store/${X}hooks.json',
+    // an unknown name right under the store dir or the project root
+    'cp /x/h.json <R>/store/$F',
+    'cd <R>/store; cp /x/h.json $F',
+    // with the cwd AT the project root, an unresolved word is also read relative to it
+    'cp /x/a.py $OUT/b.py',
+    // a program that names the files itself, pointed at the root or the store dir
+    'cd <R> && cp -r /x/stage/$D .',
+    'tar -xf /x/a.tar -C <R>',
+    'rsync -a /x/stage/ <R>/',
+    'unzip /x/a.zip -d <R>/store',
+    'cp -r /x/stage/. <R>',
+    // globs and braces
+    'cp /x/a.py <R>/*-hooks/',
+    'cp /x/a.py <R>/l*/',
+    'cp /x/h.json <R>/store/ext*-hooks.json',
+    'cp /x/h.json <R>/store/e*',
+    'cp /x/a.py <R>/local-{hooks,x}/',
+    'cp /x/h.json store/extra-{hooks,x}.json',
+    // the egress allowlist gets the same reading
+    "cp /x/e.json store/egr''ess-allowlist.json",
+    'cp /x/e.json <R>/store/$F',
+  ])('a spelled-out write is denied: %s', (cmd) => {
+    expect(decide(cmd.replaceAll('<R>', root)).deny).toBe(true)
+  })
+
+  it('a glob under a symlink to the store dir is read under the real store dir', () => {
+    const link = join(outside, 's')
+    symlinkSync(join(root, 'store'), link, 'dir')
+    mkdirSync(join(root, 'store'), { recursive: true })
+    expect(decide(`cp /x/h.json ${link}/e*`).deny).toBe(true)
+    expect(decide(`cp /x/h.json ${link}/$F`).deny).toBe(true)
+  })
+
+  it.each([
+    "grep -n x lo''cal-hooks/gate.py",
+    'cat <R>/store/ext""ra-hooks.json',
+    'ls <R>/l*',
+    'cp a b $HOME/.claude/hooks/',
+    'cp x my-local-hooks/a',
+    'echo hi > local-hooks.md',
+    'cp $X.json /tmp/',
+    'cp /x/a.py <R>/src/$F',
+    'npx vitest run src/__tests__/extra-hook-entries.test.ts',
+    'git add src/web/extra-hook-entries.ts',
+    'sed -i s/a/b/ <R>/scripts/hooks/*.py',
+    'ls src/*',
+  ])('a read, or a write that cannot reach a protected name, is allowed: %s', (cmd) => {
+    expect(decide(cmd.replaceAll('<R>', root)).deny).toBe(false)
+  })
+
+  it.each([
+    'cp /x/a.py $OUT/b.py',
+    'tar -xf /x/a.tar -C ./build',
+    'cp -r /x/stage/. .',
+    'cp /x/h.json $F',
+  ])('from a cwd that is not the root or the store, an unknown destination is allowed: %s', (cmd) => {
+    expect(decide(cmd, outside).deny).toBe(false)
+  })
+
+  // The stated limit, pinned so it is not mistaken for coverage: a name the
+  // command never spells is not seen by a text gate. These are made visible by
+  // the sha256 line the dashboard logs on every sync, not prevented.
+  it.each([
+    `python3 -c "import base64; open(base64.b64decode('<B64>').decode(), 'w')"`,
+    'python3 /tmp/a-script-written-earlier.py',
+  ])('stated limit, not covered: %s', (cmd) => {
+    const b64 = Buffer.from(join(root, 'store', 'extra-hooks.json')).toString('base64')
+    expect(decide(cmd.replace('<B64>', b64)).deny).toBe(false)
+  })
+})
+
+describe('the sha256 fingerprint of the extras (review #2001)', () => {
+  const sha = (s: string) => createHash('sha256').update(s).digest('hex')
+
+  it('no file: no fingerprint', () => {
+    expect(extraHooksDigest(join(root, 'store', 'extra-hooks.json'), root)).toBeNull()
+  })
+
+  it('hashes the file and each local-hooks/ script it names, valid entry or not, nothing outside', () => {
+    mkdirSync(join(root, 'store'), { recursive: true })
+    writeFileSync(join(root, 'local-hooks', 'gate.py'), 'print(1)\n')
+    const text = JSON.stringify({ entries: [
+      ok,
+      { event: 'Bogus', script: 'local-hooks/log.mjs', failClosed: false },
+      { event: 'PreToolUse', script: 'local-hooks/missing.py', failClosed: false },
+      { event: 'PreToolUse', script: 'scripts/lib/local.py', failClosed: false },
+      { event: 'PreToolUse', script: 'local-hooks/../scripts/lib/local.py', failClosed: false },
+    ] })
+    const file = join(root, 'store', 'extra-hooks.json')
+    writeFileSync(file, text)
+    expect(extraHooksDigest(file, root)).toEqual({
+      sha256: sha(text),
+      scripts: { 'local-hooks/gate.py': sha('print(1)\n'), 'local-hooks/log.mjs': sha(''), 'local-hooks/missing.py': null },
+    })
+  })
+
+  it('a changed script changes the fingerprint; a file that does not parse still has its own hash', () => {
+    mkdirSync(join(root, 'store'), { recursive: true })
+    const file = join(root, 'store', 'extra-hooks.json')
+    writeFileSync(file, JSON.stringify({ entries: [ok] }))
+    const before = extraHooksDigest(file, root)
+    writeFileSync(join(root, 'local-hooks', 'gate.py'), 'import os  # changed\n')
+    expect(extraHooksDigest(file, root)).not.toEqual(before)
+    writeFileSync(file, '{ not json')
+    expect(extraHooksDigest(file, root)).toEqual({ sha256: sha('{ not json'), scripts: {} })
+  })
+})
+

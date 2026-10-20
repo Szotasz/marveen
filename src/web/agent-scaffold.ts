@@ -17,7 +17,7 @@ import { loadProfileTemplate, resolveProfileTemplate, profileWantsCredentialGate
 import { resolveAgentSecurityProfile, readAgentTeam } from './agent-team.js'
 import { sanitizeCapabilityTag, CAPABILITY_TAG_MAX_PER_AGENT } from '../prompt-safety.js'
 import { TMP_ROOT_PREFIXES as _TMP_PREFIXES } from './tmp-root-prefixes.js'
-import { EXTRA_HOOKS_FILE, applyExtraHookEntries, loadExtraHookEntries, type ExtraHookDeps } from './extra-hook-entries.js'
+import { EXTRA_HOOKS_FILE, applyExtraHookEntries, extraHooksDigest, loadExtraHookEntries, type ExtraHookDeps } from './extra-hook-entries.js'
 
 // Resolve the base URL agents should use to reach the dashboard API.
 //
@@ -1000,12 +1000,31 @@ function extraHookDeps(): ExtraHookDeps {
 // One error line per distinct problem set, not one per agent and boot.
 const _loggedExtraHookProblems = new Set<string>()
 
+// The fingerprint line (review #2001): the self-pace gate stops a sub-agent
+// command that spells extra-hooks.json or local-hooks/, not one that builds the
+// path at run time (see extra-hook-entries.ts, "Trust"). So every sync logs the
+// sha256 of the file and of each script it names, once per distinct content
+// and process: the first sync after a start always logs, a later one only when
+// something changed. An unexpected change then shows up in dashboard.log, the
+// way the egress allowlist's baseline reports its file. No file, no line.
+let _lastExtraHooksDigest = ''
+export function logExtraHooksDigest(path = extraHooksConfigPath()): void {
+  const digest = extraHooksDigest(path, PROJECT_ROOT)
+  if (!digest) { _lastExtraHooksDigest = ''; return }
+  const key = `${path}\n${JSON.stringify(digest)}`
+  if (key === _lastExtraHooksDigest) return
+  _lastExtraHooksDigest = key
+  logger.info({ path, sha256: digest.sha256, scripts: digest.scripts },
+    'extra-hooks.json: sha256 of the file and of each script it names (a change nobody made on purpose is a write to check)')
+}
+
 // Append the extras to a sub-agent's settings object (after removing the ones
 // an earlier pass wrote). Never the main agent. Any failure here leaves the
 // built-in hooks exactly as the injectors above wrote them.
 export function injectExtraHookEntries(name: string, existing: Record<string, unknown>, path = extraHooksConfigPath()): boolean {
   if (name === MAIN_AGENT_ID) return false
   try {
+    logExtraHooksDigest(path)
     const { entries, errors } = loadExtraHookEntries(path, extraHookDeps())
     if (errors.length) {
       const key = `${path}\n${errors.join('\n')}`
