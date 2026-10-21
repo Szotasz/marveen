@@ -176,6 +176,9 @@ const HTTP_WRITE_RX = /(-X\s*(POST|PUT|PATCH|DELETE)|--request\s+(POST|PUT|PATCH
 //   - a program that names the files it creates itself (cp/mv/ln/install/rsync/tar/
 //     unzip/cpio/patch, DIR_WRITERS) given the project root or the store dir itself as
 //     an argument: the name it creates there is not in the command.
+// Every one of these comparisons, and every path comparison in the file-tool branch, is
+// made on foldName() of the text: a case-insensitive volume reads more than ASCII case
+// as the same name (see foldName).
 //
 // WHAT IT DOES NOT COVER, and cannot from a command's text: a name the command never
 // spells -- built at run time (chr(), base64, a `$(...)` that prints it, os.path.join of
@@ -199,6 +202,23 @@ const PROTECTED_BASENAMES = new Set([ALLOWLIST_BASENAME, 'extra-hooks.json'])
 // (my-local-hooks, local-hooks.md), but after any separator a language puts between
 // pieces (`,` `(` `[` `+`), as in os.path.join(root, 'local-hooks', 'a.py').
 const ALLOWLIST_MENTION_RX = /egress[-_]?allowlist(?:\.json|\.history)|egress[-_]?allow[\w.]*[*?[]|extra[-_]?hooks\.json|(?<![\w.-])local-hooks(?![\w.-])/i
+
+// The ONE fold every comparison of a protected name goes through: the raw-text mention
+// check, the glob match, the file-tool basename and path checks, and pathKey(). A
+// case-insensitive volume (macOS APFS default) matches more than ASCII case: it reads
+// U+017F LATIN SMALL LETTER LONG S as `s` and U+212A KELVIN SIGN as `k` (measured on
+// APFS, review #2001 round 4: the only two code points in U+0080..U+FFFF it treats as an
+// ASCII letter). toLowerCase() maps the Kelvin sign but not the long s, which is already
+// lower case, and a non-unicode /i regex matches neither, so extra-hookſ.json passed
+// and landed as extra-hooks.json. NFKC maps both, and the lower-casing then folds ASCII
+// case. On a case-sensitive volume the extra denial is a look-alike name a sub-agent has
+// no business writing either.
+export function foldName(s) {
+  return String(s ?? '').normalize('NFKC').toLowerCase()
+}
+function mentionsProtectedName(text) {
+  return ALLOWLIST_MENTION_RX.test(foldName(text))
+}
 const ALLOWLIST_READERS = new Set([
   'cat', 'head', 'tail', 'grep', 'egrep', 'fgrep', 'rg', 'jq', 'wc', 'ls', 'stat',
   'file', 'shasum', 'sha256sum', 'md5', 'md5sum', 'diff', 'cmp', 'echo', 'printf',
@@ -292,12 +312,12 @@ export function protectedMention(text, ctx) {
   // $'...' and $"..." are quotes too; $HOME is the one variable the hook can resolve
   const src = String(text ?? '').replace(/\$(?=['"])/g, '').replace(/\$\{HOME\}|\$HOME(?!\w)/g, homedir())
   for (const t of substituteAssignments(src, ctx?.assigns)) {
-    if (scheduleSurfaceVariants(t).some((v) => ALLOWLIST_MENTION_RX.test(v))) return true
+    if (scheduleSurfaceVariants(t).some(mentionsProtectedName)) return true
     // implicit or `+` concatenation glued, every other quote kept as a word break:
     // ['root', 'local-hoo' 'ks'] -> root , local-hooks (scheduleSurfaceVariants'
     // joined form also glues across the comma, and loses the boundary before the name)
     const glued = decodeEscapes(t).replace(/(['"`])\s*(?:\+\s*)?(['"`])/g, '').replace(/[\\'"`]/g, ' ')
-    if (ALLOWLIST_MENTION_RX.test(glued)) return true
+    if (mentionsProtectedName(glued)) return true
     if (protectedPatternWord(t, ctx)) return true
   }
   return false
@@ -337,14 +357,14 @@ function protectedPatternWord(text, ctx) {
     const exps = /[{}]/.test(word) ? expandBraces(word, BRACE_EXPANSION_CAP) : [word]
     if (!exps) return true // too many expansions to prove harmless: fail closed
     for (const e of exps) {
-      if (ALLOWLIST_MENTION_RX.test(` ${e}`)) return true
+      if (mentionsProtectedName(` ${e}`)) return true
       if (!/[*?[]/.test(e)) continue
       const home = e === '~' || e.startsWith('~/')
       const abs = unknownStart ? null
         : e.startsWith('/') || home ? expandHome(home && e === '~' ? '~/' : e) : (ctx?.cwd ? join(ctx.cwd, e) : null)
       const segs = normalizePathSegments(abs ?? e)
       for (let i = 0; i < segs.length; i++) {
-        const seg = segs[i]
+        const seg = foldName(segs[i])
         if (!/[*?[]/.test(seg)) continue
         const above = segs.slice(0, i)
         const parent = abs && i > 0 && !above.some((x) => /[*?[]/.test(x)) ? pathKey(above.join('/') || '/') : null
@@ -396,19 +416,19 @@ function realDeep(p) {
 }
 // The form every protected-path comparison uses, in the file-tool AND the Bash branch.
 function pathKey(p) {
-  return realDeep(p).toLowerCase()
+  return foldName(realDeep(p))
 }
 
 // Does a native file-tool call target the allowlist, store/extra-hooks.json or a script
 // under local-hooks/? `allowlistPath` is the real file this install's egress-gate reads;
-// tests pass a tmp one. EVERY comparison here is case-insensitive: the filesystem may be
-// (review #2001), and on a case-sensitive one the extra denial is a differently-cased
-// name a sub-agent has no business writing either.
+// tests pass a tmp one. EVERY comparison here is made on foldName(): the filesystem may
+// be case-insensitive (review #2001), and on a case-sensitive one the extra denial is a
+// look-alike name a sub-agent has no business writing either.
 export function fileToolTargetsAllowlist(toolInput, allowlistPath = DEFAULT_ALLOWLIST_PATH, cwd = process.cwd()) {
   const raw = String(toolInput?.file_path ?? toolInput?.notebook_path ?? '')
   if (!raw) return false
-  if (PROTECTED_BASENAMES.has(basename(raw).toLowerCase())) return true
-  if (/(^|\/)local-hooks(\/|$)/i.test(raw)) return true
+  if (PROTECTED_BASENAMES.has(foldName(basename(raw)))) return true
+  if (/(^|\/)local-hooks(\/|$)/.test(foldName(raw))) return true
   const real = pathKey(resolve(cwd, expandHome(raw)))
   if (PROTECTED_BASENAMES.has(basename(real))) return true
   const localHooks = pathKey(join(dirname(allowlistPath), '..', 'local-hooks'))

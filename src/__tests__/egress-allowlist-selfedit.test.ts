@@ -72,6 +72,29 @@ describe('gate: native file tools on the allowlist, any case (review #2001, roun
   })
 })
 
+// Review #2001 round 4: APFS reads U+017F LATIN SMALL LETTER LONG S as `s`, and
+// toLowerCase() leaves it alone, so egress-allowli\u017ft.json passed while the file did
+// not exist. The name is folded (foldName) before every comparison.
+describe('gate: the allowlist name is folded before it is compared (review #2001, round 4)', () => {
+  const LONG_S = '\u017f'
+  beforeEach(() => { unlinkSync(allowlist) })
+  it('Write to the long-s spelling with the file absent is denied, relative and absolute', () => {
+    const rel = `store/egress-allowli${LONG_S}t.json`
+    expect(decide('Write', { file_path: rel, content: '{}' })).toEqual({ deny: true, reason: 'egress-allowlist' })
+    expect(decide('Write', { file_path: join(root, rel), content: '{}' })).toEqual({ deny: true, reason: 'egress-allowlist' })
+  })
+  it.each([
+    `cp /tmp/x.json store/egress-allowli${LONG_S}t.json`,
+    `echo '{}' > store/egress-allowli${LONG_S}t.json`,
+    `rm -rf store/egress-allowli${LONG_S}t.hi${LONG_S}tory`,
+  ])('Bash %s is denied', (command) => {
+    expect(decide('Bash', { command })).toEqual({ deny: true, reason: 'egress-allowlist' })
+  })
+  it('POSITIVE CONTROL: a plain read through the folded name stays allowed', () => {
+    expect(decide('Bash', { command: `cat store/egress-allowli${LONG_S}t.json` }).deny).toBe(false)
+  })
+})
+
 describe('gate: Bash is fail-closed on the allowlist', () => {
   const denied = [
     "echo '{}' > store/egress-allowlist.json",
