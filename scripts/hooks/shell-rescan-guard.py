@@ -7,8 +7,8 @@ comment -- is scanned by the shell before any program sees it. A backtick in a
 double-quoted string runs whatever is between the backticks and puts the OUTPUT in
 the text: one such message body ran `git reset --hard origin/main` in a shared
 checkout and destroyed uncommitted work. A written rule against it ("do not put
-data in double quotes") did not hold: it was broken within the hour by agents that
-knew it. A rule is not a control until something mechanical enforces it.
+data in double quotes") did not hold. A rule is not a control until something
+mechanical enforces it.
 
 WHAT IT REFUSES (detector: shell_rescan_lib):
   E  a backtick inside a double-quoted string   -- always command substitution
@@ -53,8 +53,6 @@ KNOWN LIMITS, so a green run is never mistaken for coverage:
     agent's own subprocess is uncovered; and a construct outside those five rules
     passes unchecked, which is a FALSE GREEN, not proof the command was safe.
   - Per-session state files are not pruned; each holds at most 200 keys.
-  - The escape comment counts only on the command's own lines, not after a
-    heredoc header on the same line (that fails closed: the command is refused).
 """
 import sys
 import os

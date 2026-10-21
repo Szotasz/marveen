@@ -28,8 +28,9 @@ DETAILS THAT MATTER (each one reproduced before it was handled):
     command -- a general blinding, and a trivial bypass;
   - the heredoc terminator is matched the way bash matches it: exactly at column
     zero for <<, leading TABS stripped for <<-;
-  - code following a heredoc header on the same line is scanned again
-    (`cat <<EOF && eval "..."`);
+  - the rest of a heredoc header line is still the same command
+    (`cat <<EOF && eval "..."`), and it may open more heredocs: their bodies
+    follow the first one in order, the way bash reads them;
   - `<<<` is a here-string, not a heredoc;
   - `\eval` is still eval: a backslash before a word character quotes only the
     backslash, it does not hide the word;
@@ -47,7 +48,9 @@ SCOPE, deliberately narrow:
   - Quoted heredoc bodies are inert text and are never scanned as syntax.
 
 KNOWN LIMITS, stated so a green run is never read as coverage:
-  - Two heredocs opened on one line are approximated (the first is consumed).
+  - An arithmetic COMMAND `(( ... ))` is not parsed: a `<<` inside it is read
+    as a heredoc header, which refuses a harmless command and hides an eval
+    written after it.
   - Recursion is depth-limited; past the limit it stops descending, so a
     pathologically nested command is under-scanned rather than crashing.
   - It sees only what reaches the Bash tool. Anything executed another way
@@ -66,12 +69,16 @@ HEREDOC_HDR = re.compile(
 PROMPT_EXPAND = re.compile(
     r"\$\{!?(?:[A-Za-z_][A-Za-z0-9_]*(?:\[[^]]*\])?|[0-9]+|[*@#?$!-])@P\}")
 INTERP_WORD = re.compile(r"^(?:python|node|nodejs|perl|ruby|php|bash|sh|zsh)[0-9.]*$")
-# -c, -e, -E, --eval, and the clustered short forms a shell takes (bash -lc).
+# -c, -e, -E, --eval, node's -p/--print, php's -r, and the clustered short
+# forms a shell takes (bash -lc).
 # ⚠️Recognising the FLAG is not the same as inspecting the payload: if that
 # payload is SINGLE-quoted the rule deliberately does not look inside it, so
 # `bash -lc 'echo "$(x)"'` passes. That is the measured 0.159% exemption, and it
 # applies to the clustered forms exactly as it does to a plain -c.
-INLINE_FLAG = re.compile(r"^(?:--eval=?|-[A-Za-z]*[ceE]=?)$")
+INLINE_FLAG = re.compile(r"^(?:--eval=?|--print=?|-[A-Za-z]*[ceE]=?|-[pr])$")
+# The same flag at the START of a double-quoted word that also holds its payload:
+# node "--eval=console.log('$(id)')".
+INLINE_PREFIX = re.compile(r"^(?:--eval=|--print=|-[A-Za-z]*[ceE])")
 
 # Wrappers that pass the real command through, plus the shapes that can legally
 # precede it: options, durations and environment assignments. This list is used
@@ -82,16 +89,10 @@ PREFIX_CMDS = ("env", "nohup", "setsid", "time", "nice", "stdbuf", "timeout",
 # Shell KEYWORDS do not occupy the command position -- `then eval "$x"` is still
 # an eval in command position, and treating `then` as the command silenced it.
 KEYWORDS = ("if", "then", "else", "elif", "fi", "while", "until", "do", "done",
-            "for", "in", "case", "esac", "select", "function", "!")
+            "for", "in", "case", "esac", "select", "function", "coproc", "!")
 OPTIONISH = re.compile(r"^(?:-.*|[0-9.]+[a-z]?)$")
 OPERAND_OPTS = ("-u", "-C", "-s", "-o", "-n", "-p", "-k", "-g", "-r", "-w",
                 "--signal", "--chdir", "--user", "--group", "--unset")
-# Interpreter options that take their operand as the NEXT word (`python3 -W
-# ignore -c ...`, `node --require mod -e ...`). That operand is not the script, so
-# it must not end the interpreter's option list -- otherwise the -c after it is
-# never armed.
-INTERP_OPERAND_OPTS = ("-W", "-X", "-r", "--require", "--import", "--loader",
-                       "--experimental-loader", "-C", "--conditions")
 ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\[[^]]*\])?\+?=$")
 
 SEPARATORS = ";&|\n(){}"
@@ -187,14 +188,11 @@ def _strip_heredoc_escapes(body):
     return "".join(out)
 
 
-def _heredoc_body_end(s, i, dash, delim):
-    """i is the index just past the heredoc header. Returns (body, index_after).
+def _heredoc_body_end(s, pos, dash, delim):
+    """pos is the start of the document's first line. Returns (body, index_after).
     bash ends the document on a line that is EXACTLY the delimiter; with <<- the
     leading TABS (only tabs) are stripped first. Measured against bash, not assumed."""
-    nl = s.find("\n", i)
-    if nl < 0:
-        return "", len(s)
-    lines, pos, n = [], nl + 1, len(s)
+    lines, n = [], len(s)
     while pos <= n:
         eol = s.find("\n", pos)
         line = s[pos:] if eol < 0 else s[pos:eol]
@@ -206,6 +204,26 @@ def _heredoc_body_end(s, i, dash, delim):
             return "\n".join(lines), n
         pos = eol + 1
     return "\n".join(lines), n
+
+
+def _check_body(body, delim, out):
+    """An UNQUOTED heredoc body is expanded: a backtick, $( ) or ${v@P} in it runs."""
+    clean = _strip_heredoc_escapes(body)
+    if "`" in clean:
+        out.append(("B_UNQUOTED_HEREDOC", delim + ":`"))
+    k = clean.find("$(")
+    while k >= 0:
+        if not clean.startswith("$((", k):
+            out.append(("B_UNQUOTED_HEREDOC", delim + ":$("))
+            break
+        nxt2, abody = _arith(clean, k)
+        if "$(" in abody or "`" in abody:
+            out.append(("B_UNQUOTED_HEREDOC", delim + ":$(("))
+            break
+        k = clean.find("$(", nxt2)
+    mp = PROMPT_EXPAND.search(clean)
+    if mp:
+        out.append(("D_PROMPT_EXPAND", mp.group(0)))
 
 
 def _scan_dq(s, i, out, reg, payload, depth, notes=None, armed=False):
@@ -227,13 +245,13 @@ def _scan_dq(s, i, out, reg, payload, depth, notes=None, armed=False):
             # substitution written inside it -- $(( $(id) )) executes. Skipping
             # the whole construct was therefore a blind spot, not a narrowing.
             j, body = _arith(s, i)
-            if body:
+            if body and depth < MAX_DEPTH:   # nested $(( )) recurses through here
                 _scan_dq(body + '"', 0, out, reg, payload, depth + 1, notes=notes)
             i = j
             continue
         if _is_subst(s, i):
             if payload or (start is not None
-                           and INLINE_FLAG.match(_unescape(s[start:i]))):
+                           and INLINE_PREFIX.match(_unescape(s[start:i]))):
                 out.append(("A_INLINE_INTERP_DQ", "$("))
             i = _scan(s, i + 2, out, reg, depth + 1, stop=")", notes=notes)
             continue
@@ -280,6 +298,7 @@ def _scan(s, i, out, reg, depth=0, stop=None, notes=None, inherit=None):
     st.setdefault("glued", False)
     wbuf = []
     present = [False]                     # a QUOTED empty string is still a word
+    pending = []                          # heredocs opened on the current line
 
     def close_word():
         w = "".join(wbuf)
@@ -290,10 +309,13 @@ def _scan(s, i, out, reg, depth=0, stop=None, notes=None, inherit=None):
         if st["skip"]:                    # a pending redirection target -- and it
             st["skip"] = False            # does NOT consume the payload slot either
             return
-        st["await"] = False               # a quoted EMPTY word IS the payload slot
+        awaiting, st["await"] = st["await"], False   # a quoted EMPTY word IS the payload slot
         if not w:
             return
         u = _unescape(w)
+        if awaiting and u == "--":
+            st["await"] = True         # `bash -c -- "$( )"`: the payload is the NEXT word
+            return
         lead = st["lead"]
         base = u.rsplit("/", 1)[-1]
         optarg, st["optarg"] = st["optarg"], False
@@ -319,12 +341,12 @@ def _scan(s, i, out, reg, depth=0, stop=None, notes=None, inherit=None):
             if lead:
                 out.append(("C_EVAL", "eval"))
             return
-        iopt, st["iopt"] = st.get("iopt", False), False
-        if st["interp"] and u in INTERP_OPERAND_OPTS:
-            st["iopt"] = True          # the next word is this option's operand
-        if (st["interp"] and not u.startswith("-") and not st["await"]
-                and not OPTIONISH.match(u) and not iopt):
-            st["interp"] = False       # the interpreter already took its script
+        # The interpreter stays armed to the end of its command. Finding where its
+        # options end takes a table of every option with an operand (python3 -W
+        # ignore -c, bash -o pipefail -c, perl -I lib -e), and such a table is
+        # never complete: each missing entry disarmed the -c after it. So an inline
+        # flag after the script arms too (python3 tool.py -c "$(x)"): a rare false
+        # refusal, traded for a whole class of misses.
         if u == "--":
             st["interp"] = False
         if _interp(u):
@@ -373,36 +395,10 @@ def _scan(s, i, out, reg, depth=0, stop=None, notes=None, inherit=None):
         if c == "<" and s.startswith("<<", i) and HEREDOC_HDR.match(s, i):
             m = HEREDOC_HDR.match(s, i)
             close_word()
-            dash = m.group(1) == "-"
-            delim, quoted = _delim(m.group(2))
-            body, nxt = _heredoc_body_end(s, m.end(), dash, delim)
-            if not quoted:
-                clean = _strip_heredoc_escapes(body)
-                if "`" in clean:
-                    out.append(("B_UNQUOTED_HEREDOC", delim + ":`"))
-                k = clean.find("$(")
-                while k >= 0:
-                    if not clean.startswith("$((", k):
-                        out.append(("B_UNQUOTED_HEREDOC", delim + ":$("))
-                        break
-                    nxt2, abody = _arith(clean, k)
-                    if "$(" in abody or "`" in abody:
-                        out.append(("B_UNQUOTED_HEREDOC", delim + ":$(("))
-                        break
-                    k = clean.find("$(", nxt2)
-                mp = PROMPT_EXPAND.search(clean)
-                if mp:
-                    out.append(("D_PROMPT_EXPAND", mp.group(0)))
-            # the rest of the HEADER line belongs to the SAME command
-            nl = s.find("\n", m.end())
-            if nl > m.end():
-                _scan(s[m.end():nl], 0, out, reg, depth + 1, notes=notes,
-                      inherit=st)
-            # The terminator line ends the command: whatever follows the document
-            # is a NEW command, and reading it as a continuation of `cat` hid an
-            # eval sitting right after a heredoc (measured, round 2).
-            st.update({"interp": False, "await": False, "lead": True, "skip": False})
-            i = nxt
+            # The body starts on the NEXT line. The rest of this line is still the
+            # same command and may open more heredocs; their bodies follow in order.
+            pending.append((m.group(1) == "-",) + _delim(m.group(2)))
+            i = m.end()
             continue
         if c in "<>":
             keep = st["await"]         # `python3 -c 2>/dev/null "$( )"`: the
@@ -455,7 +451,13 @@ def _scan(s, i, out, reg, depth=0, stop=None, notes=None, inherit=None):
             close_word()
             st.update({"interp": False, "await": False, "lead": True, "skip": False})
             i += 1
-            continue
+            if c == "\n" and pending:
+                for dash, delim, quoted in pending:
+                    body, i = _heredoc_body_end(s, i, dash, delim)
+                    if not quoted:
+                        _check_body(body, delim, out)
+                del pending[:]         # what follows the last document is a NEW
+            continue                   # command (an eval right after a heredoc)
         if c in " \t":
             close_word()
             i += 1
