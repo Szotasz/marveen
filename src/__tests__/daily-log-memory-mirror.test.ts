@@ -30,7 +30,7 @@ vi.mock('../logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() },
 }))
 
-import { initDatabase, getDb, backfillDailyLogMemories } from '../db.js'
+import { initDatabase, getDb, backfillDailyLogMemories, recallByDateRange, recallSearch } from '../db.js'
 import { tryHandleDailyLog } from '../web/routes/daily-log.js'
 import { tryHandleMemories, containsSuspiciousContent } from '../web/routes/memories.js'
 import { detectHomoglyphs } from '../homoglyph.js'
@@ -68,6 +68,13 @@ async function search(params: Record<string, string>) {
 }
 
 const count = (sql: string, ...args: unknown[]) => (getDb().prepare(sql).get(...args) as { n: number }).n
+
+function insertMem(agentId: string, content: string, createdAt: number): number {
+  const info = getDb().prepare(
+    "INSERT INTO memories (chat_id, content, sector, salience, created_at, accessed_at, agent_id, category, auto_generated, keywords) VALUES ('test-chat', ?, 'episodic', 1.0, ?, ?, ?, 'cold', 1, 'napi-naplo')"
+  ).run(content, createdAt, createdAt, agentId)
+  return Number(info.lastInsertRowid)
+}
 
 beforeEach(() => {
   initDatabase(':memory:')
@@ -221,6 +228,41 @@ describe('backfill (AC4, AC5)', () => {
     const r = backfillDailyLogMemories({ apply: true, reject: containsSuspiciousContent })
     expect(r.created).toBe(0)
     expect(count("SELECT COUNT(*) AS n FROM memories WHERE agent_id = 'agent-b'")).toBe(0)
+  })
+})
+
+describe('recall shows a mirrored entry once (review E1)', () => {
+  const today = () => new Date().toLocaleDateString('en-CA', { timeZone: 'Europe/Budapest' })
+
+  it('recallByDateRange returns the entry under logs only, and keeps ordinary memories', async () => {
+    await post({ agent_id: 'agent-a', content: 'Pelikanfalka-tanacskozas a telepitesrol' })
+    insertMem('agent-a', 'Egyeb jegyzet ma', Math.floor(Date.now() / 1000))
+    const r = recallByDateRange(today(), today(), 'agent-a')
+    expect(r.logs).toHaveLength(1)
+    expect(r.logs[0].content).toBe('Pelikanfalka-tanacskozas a telepitesrol')
+    expect(r.memories.some(m => m.content.startsWith('[Napló '))).toBe(false)
+    expect(r.memories.map(m => m.content)).toEqual(['Egyeb jegyzet ma'])
+  })
+
+  it('recallByDateRange without an agent filter also drops the mirror', async () => {
+    await post({ agent_id: 'agent-a', content: 'Pelikanfalka-tanacskozas a telepitesrol' })
+    const r = recallByDateRange(today(), today())
+    expect(r.logs).toHaveLength(1)
+    expect(r.memories).toHaveLength(0)
+  })
+
+  it('recallSearch returns the entry under logs only (FTS path, agent and no-agent)', async () => {
+    await post({ agent_id: 'agent-a', content: 'Pelikanfalka-tanacskozas a telepitesrol' })
+    for (const agent of ['agent-a', undefined]) {
+      const r = recallSearch('Pelikanfalka', agent)
+      expect(r.logs).toHaveLength(1)
+      expect(r.memories).toHaveLength(0)
+    }
+  })
+
+  it('an unlinked [Napló] memory (no link row) is still returned: only linked mirrors are hidden', () => {
+    insertMem('agent-a', '[Napló 2026-03-04 10:00] Pelikanfalka kezi', Math.floor(Date.now() / 1000))
+    expect(recallSearch('Pelikanfalka', 'agent-a').memories).toHaveLength(1)
   })
 })
 
