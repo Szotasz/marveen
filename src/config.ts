@@ -409,6 +409,12 @@ export const KANBAN_WIP_OVER_COLOR = env['KANBAN_WIP_OVER_COLOR'] ?? '#c53030'
 // requiresRestart registry keys: read through the override layer so a value
 // saved on the Settings page takes effect on the next restart.
 export const DASHBOARD_PUBLIC_URL = cfg('DASHBOARD_PUBLIC_URL') ?? ''
+// Memory MCP connector (remote MCP server for claude.ai / ChatGPT connectors).
+export const MEMORY_MCP_ENABLED = ['1', 'true'].includes((cfg('MEMORY_MCP_ENABLED') ?? '').trim().toLowerCase())
+export const MEMORY_MCP_REDIRECT_HOSTS: string[] = (cfg('MEMORY_MCP_REDIRECT_HOSTS') ?? 'claude.ai,chatgpt.com')
+  .split(',')
+  .map((h) => h.trim().toLowerCase())
+  .filter(Boolean)
 // Where the AGENTS reach the dashboard API from wherever they run. This is a
 // DIFFERENT question from DASHBOARD_PUBLIC_URL, which answers "where does the
 // BROWSER reach the dashboard" and feeds the CORS allowlist. On a single-host

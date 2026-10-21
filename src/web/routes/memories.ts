@@ -271,12 +271,18 @@ function ownerMismatchPayload(id: number, m: { caller: string; owner: string }) 
   }
 }
 
+const MCP_NAMESPACE_ERROR = 'The mcp: owner namespace is reserved for the memory MCP connector'
+function isReservedOwner(agentId: unknown): boolean {
+  return typeof agentId === 'string' && agentId.trim().toLowerCase().startsWith('mcp:')
+}
+
 export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method, url } = ctx
 
   if (path === '/api/memories' && method === 'POST') {
     const body = await readBody(req)
     const data = JSON.parse(body.toString()) as { agent_id?: string; content: string; tier?: string; category?: string; keywords?: string }
+    if (isReservedOwner(data.agent_id)) { json(res, { error: MCP_NAMESPACE_ERROR }, 400); return true }
     if (!data.content?.trim()) { json(res, { error: 'Content is required' }, 400); return true }
     if (containsSuspiciousContent(data.content)) {
       logger.warn({ agent: data.agent_id }, 'Memory content rejected: suspicious pattern')
@@ -656,6 +662,7 @@ Respond ONLY with JSON, nothing else:
     // the row to this agent" -- an editor updating someone else's memory
     // attributes the WRITE without changing the OWNER.
     const { content: rawContent, category, tier, agent_id, keywords, updated_by, prepend, if_version } = JSON.parse(body.toString()) as { content?: string; category?: string; tier?: string; agent_id?: string; keywords?: string; updated_by?: string; prepend?: string; if_version?: string }
+    if (isReservedOwner(agent_id)) { json(res, { error: MCP_NAMESPACE_ERROR }, 400); return true }
     // MEMVERSION930. Both checks below read the row and write it inside this one
     // synchronous stretch (better-sqlite3, no await in between), so nothing can
     // interleave: the compare and the write are atomic with respect to every

@@ -366,13 +366,19 @@ describe('E6 authorize and consent', () => {
   it('without a dashboard session no code is issued', async () => {
     await start()
     const clientId = await registerOk()
-    const r = await authorizeGet(authorizeQuery(clientId, pkce().challenge))
+    const query = authorizeQuery(clientId, pkce().challenge)
+    const r = await authorizeGet(query)
     expect([302, 401]).toContain(r.status)
     expect(r.headers.get('location') ?? '').not.toMatch(/[?&]code=/)
+    // The login cookie is SameSite=Strict, so it is NOT sent on the connector's
+    // cross-site navigation here. A link on this page back to the same URL is a
+    // same-site navigation that carries it.
+    if (r.status === 401) expect(await r.text()).toContain(`href="/oauth/authorize?${query.replace(/&/g, '&amp;')}"`)
   })
 
   it('the dashboard bearer token is not a consenting user', async () => {
     await start()
+    makeUser('alice') // a user exists, so mapping the token onto any user would show here
     const clientId = await registerOk()
     const r = await fetch(`${base}/oauth/authorize?${authorizeQuery(clientId, pkce().challenge)}`, {
       headers: { Authorization: `Bearer ${DASH_TOKEN}` }, redirect: 'manual',
@@ -391,6 +397,9 @@ describe('E6 authorize and consent', () => {
     expect(html).not.toContain('<script>alert(1)</script>')
     expect(html).toContain('&lt;script&gt;')
     expect(nonceFrom(html)).toBeTruthy()
+    // The approval answers with a redirect to the connector, which form-action
+    // must allow, or the browser blocks the redirect after the submit.
+    expect(r.headers.get('content-security-policy') ?? '').toMatch(/form-action 'self' https:\/\/claude\.ai(;|$)/)
   })
 
   it('PKCE S256 is mandatory', async () => {
@@ -755,7 +764,12 @@ describe('writes', () => {
     expect(refused(await callTool(t.access, 'remember', { content: 'x'.repeat(10001) }))).toBe(true)
     expect(refused(await callTool(t.access, 'remember', { content: `my token is ghp_${'a1B2'.repeat(9)}` }))).toBe(true)
     expect(refused(await callTool(t.access, 'remember', { content: '-----BEGIN OPENSSH PRIVATE KEY-----\nabc' }))).toBe(true)
+    expect(refused(await callTool(t.access, 'remember', { content: 'card 4111 1111 1111 1111 exp 12/30' }))).toBe(true)
     expect(rowsOf('mcp:alice')).toEqual([])
+    // A longer number is not a card number, even when a 13-19 digit slice of it
+    // passes the Luhn check (here the first 19 digits do).
+    await remember(t.access, 'account 411111111111111112834567')
+    getDb().prepare('DELETE FROM memories WHERE agent_id = ?').run('mcp:alice')
 
     const id = await remember(t.access, 'x'.repeat(10000))
     expect(refused(await callTool(t.access, 'update_memory', { id: String(id), content: `ghp_${'a1B2'.repeat(9)}` }))).toBe(true)

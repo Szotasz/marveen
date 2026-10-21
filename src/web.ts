@@ -70,6 +70,7 @@ import { tryHandleDailyLog } from './web/routes/daily-log.js'
 import { tryHandlePrLedger } from './web/routes/pr-ledger.js'
 import { tryHandleHomoglyphs } from './web/routes/homoglyphs.js'
 import { tryHandleMemories } from './web/routes/memories.js'
+import { tryHandleMemoryMcp } from './web/memory-mcp/index.js'
 import { tryHandleMigrate } from './web/routes/migrate.js'
 import { tryHandleKanban } from './web/routes/kanban.js'
 import { tryHandleKanbanProjects } from './web/routes/kanban-projects.js'
@@ -226,6 +227,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleDailyLog(routeCtx)) return
       if (await tryHandlePrLedger(routeCtx)) return
       if (await tryHandleHomoglyphs(routeCtx)) return
+      if (await tryHandleMemoryMcp(routeCtx)) return
       if (await tryHandleMemories(routeCtx)) return
       if (await tryHandleMigrate(routeCtx)) return
       if (await tryHandleKanban(routeCtx)) return

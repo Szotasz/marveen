@@ -652,6 +652,59 @@ export function initDatabase(dbPathOverride?: string): void {
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_versions_mid ON memory_versions(memory_id, superseded_at)`)
 
+  // Memory MCP connector: the connector's rows are tagged with where they came from.
+  // NULL = written by anything else (agents, the REST API).
+  try {
+    db.exec('ALTER TABLE memories ADD COLUMN source TEXT')
+  } catch {
+    // column already exists
+  }
+
+  // Memory MCP connector OAuth state. Codes and tokens are stored as sha256 hex only.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS mcp_oauth_clients (
+      client_id TEXT PRIMARY KEY,
+      client_name TEXT NOT NULL,
+      redirect_uris TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    )
+  `)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS mcp_oauth_codes (
+      code_hash TEXT PRIMARY KEY,
+      client_id TEXT NOT NULL,
+      username TEXT NOT NULL,
+      mode TEXT NOT NULL CHECK(mode IN ('rw','r','w')),
+      label TEXT,
+      redirect_uri TEXT NOT NULL,
+      code_challenge TEXT NOT NULL,
+      expires_at INTEGER NOT NULL,
+      used_at INTEGER
+    )
+  `)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS mcp_oauth_grants (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      client_id TEXT NOT NULL,
+      username TEXT NOT NULL,
+      mode TEXT NOT NULL CHECK(mode IN ('rw','r','w')),
+      label TEXT,
+      created_at INTEGER NOT NULL,
+      last_used_at INTEGER,
+      revoked_at INTEGER
+    )
+  `)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS mcp_oauth_tokens (
+      token_hash TEXT PRIMARY KEY,
+      grant_id INTEGER NOT NULL,
+      kind TEXT NOT NULL CHECK(kind IN ('access','refresh')),
+      expires_at INTEGER NOT NULL,
+      used_at INTEGER,
+      created_at INTEGER NOT NULL
+    )
+  `)
+
   // Daily logs table
   db.exec(`
     CREATE TABLE IF NOT EXISTS daily_logs (
@@ -2440,6 +2493,27 @@ export function deleteMemoryById(id: number): boolean {
   })()
   forgetCachedEmbedding(id)
   // A shared row is listed for every agent, so evicting one owner is not enough.
+  if (before.category === 'shared') clearMemoryCache()
+  else if (before.agent_id) memoryCacheInvalidate(before.agent_id)
+  return true
+}
+
+/**
+ * Forget a memory but keep it readable as a 'delete' version. Unlike
+ * deleteMemoryById this does NOT purge memory_versions: the memory connector's
+ * forget must stay recoverable by the owner.
+ */
+export function forgetMemoryKeepVersion(id: number): boolean {
+  const before = getMemoryById(id)
+  if (!before) return false
+  const now = Math.floor(Date.now() / 1000)
+  db.transaction(() => {
+    db.prepare(
+      'INSERT INTO memory_versions (memory_id, content, agent_id, category, keywords, operation, superseded_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
+    ).run(before.id, before.content, before.agent_id, before.category, before.keywords, 'delete', now)
+    db.prepare('DELETE FROM memories WHERE id = ?').run(id)
+  })()
+  forgetCachedEmbedding(id)
   if (before.category === 'shared') clearMemoryCache()
   else if (before.agent_id) memoryCacheInvalidate(before.agent_id)
   return true
