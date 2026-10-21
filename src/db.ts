@@ -5290,12 +5290,48 @@ export function backfillNeedsWarning(pending: number, embedded: number): boolean
   return pending > 0 && embedded === 0
 }
 
-export async function generateEmbedding(text: string): Promise<number[] | null> {
+// The text set before a query or a stored memory when it is embedded
+// (EMBED_QUERY_PREFIX / EMBED_DOCUMENT_PREFIX). Some models are trained with
+// such task prefixes and retrieve worse without them. Empty = none, the
+// behaviour before these settings existed. Read per call, like the floor.
+// A literal \n in the value is a line break: the settings field is one line,
+// and some prefixes (qwen3-embedding's) span two.
+function embedPrefix(kind: 'query' | 'document'): string {
   try {
+    return String(getEffectiveSettingValue(kind === 'query' ? 'EMBED_QUERY_PREFIX' : 'EMBED_DOCUMENT_PREFIX') ?? '')
+      .replace(/\\n/g, '\n')
+  } catch {
+    return ''
+  }
+}
+
+// Ollama's keep_alive for the embedding model (EMBED_KEEP_ALIVE). Empty = not
+// sent, so Ollama's own default applies. A bare integer is sent as a number
+// (seconds; negative keeps the model loaded), a duration such as "30m" as a
+// string. Anything else (a value set outside the settings UI, past the registry
+// check) is not sent: a keep_alive Ollama refuses would fail every embedding request.
+export function parseEmbedKeepAlive(raw: string): string | number | undefined {
+  const t = raw.trim()
+  if (t === '') return undefined
+  if (/^-?\d+$/.test(t)) return Number.isSafeInteger(Number(t)) ? Number(t) : undefined
+  return /^-?(\d+(\.\d+)?(ns|us|µs|ms|s|m|h))+$/.test(t) ? t : undefined
+}
+
+function embedKeepAlive(): string | number | undefined {
+  try { return parseEmbedKeepAlive(String(getEffectiveSettingValue('EMBED_KEEP_ALIVE') ?? '')) } catch { return undefined }
+}
+
+export async function generateEmbedding(text: string, kind: 'query' | 'document' = 'document'): Promise<number[] | null> {
+  try {
+    const keepAlive = embedKeepAlive()
     const resp = await fetch(`${EMBED_URL}/api/embeddings`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: EMBED_MODEL, prompt: text.slice(0, 2000) }),
+      body: JSON.stringify({
+        model: EMBED_MODEL,
+        prompt: embedPrefix(kind) + text.slice(0, 2000),
+        ...(keepAlive !== undefined ? { keep_alive: keepAlive } : {}),
+      }),
       signal: AbortSignal.timeout(TOOL_TIMEOUTS['ollama-embedding']),
     })
     const data = await resp.json() as { embedding?: number[] }
@@ -5497,6 +5533,12 @@ export async function hybridSearch(
   category?: string,
 ): Promise<HybridSearchHit[]> {
   const k = 60 // RRF constant
+  // Per-branch weights (MEMORY_RRF_FTS_WEIGHT / MEMORY_RRF_VECTOR_WEIGHT), 1/1 by
+  // default: equal fusion, as before. A model with good multilingual vectors can
+  // do better with a lighter keyword branch, whose relaxed OR-matches otherwise
+  // pull good vector hits down; that is a measurement per install, not a default.
+  const wFts = numericSetting('MEMORY_RRF_FTS_WEIGHT', 1, (n) => n >= 0 && n <= 10)
+  const wVec = numericSetting('MEMORY_RRF_VECTOR_WEIGHT', 1, (n) => n >= 0 && n <= 10)
 
   // FTS5 results
   const ftsTrace = { relaxed: false }
@@ -5511,7 +5553,7 @@ export async function hybridSearch(
   // score is NOT the one it had before the floor existed: the vector rank below
   // is computed on the already filtered list, so a kept row moves up past the
   // dropped ones and its RRF term grows accordingly.
-  const queryEmbedding = await generateEmbedding(query)
+  const queryEmbedding = await generateEmbedding(query, 'query')
   const vec = queryEmbedding
     ? vectorSearch(agentId, queryEmbedding, limit * 2, category)
     : { hits: [] as VectorHit[], floor: 0 }
@@ -5538,13 +5580,13 @@ export async function hybridSearch(
   const similarityById: Map<number, number> = new Map()
 
   ftsResults.forEach((m, rank) => {
-    scores.set(m.id, (scores.get(m.id) || 0) + 1 / (k + rank + 1))
+    scores.set(m.id, (scores.get(m.id) || 0) + wFts / (k + rank + 1))
     byId.set(m.id, m)
   })
 
   vecResults.forEach((h, rank) => {
     const m = h.memory
-    scores.set(m.id, (scores.get(m.id) || 0) + 1 / (k + rank + 1))
+    scores.set(m.id, (scores.get(m.id) || 0) + wVec / (k + rank + 1))
     similarityById.set(m.id, h.similarity)
     byId.set(m.id, m)
   })

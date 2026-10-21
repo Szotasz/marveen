@@ -94,6 +94,20 @@ function validUnitFraction(v: string): string | null {
   return Number.isFinite(n) && n >= 0 && n <= 1 ? null : '0 és 1 közötti szám szükséges (pl. 0.1).'
 }
 
+function validKeepAlive(v: string): string | null {
+  const t = v.trim()
+  if (t === '') return null
+  if (/^-?\d+$/.test(t)) return Number.isSafeInteger(Number(t)) ? null : 'Túl nagy szám.'
+  return /^-?(\d+(\.\d+)?(ns|us|µs|ms|s|m|h))+$/.test(t) ? null : 'Egész szám (másodperc) vagy időtartam szükséges, pl. 30m, 1h, -1.'
+}
+
+function validFusionWeight(v: string): string | null {
+  const t = v.trim()
+  if (t === '') return null
+  const n = Number(t)
+  return Number.isFinite(n) && n >= 0 && n <= 10 ? null : '0 és 10 közötti szám szükséges (pl. 0.5).'
+}
+
 export const SETTINGS_REGISTRY: SettingDefinition[] = [
   {
     key: 'KANBAN_WIP_PLANNED',
@@ -425,6 +439,54 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: false,
     validate: (v) => validUnitFraction(v),
+  },
+  {
+    key: 'EMBED_QUERY_PREFIX',
+    type: 'string',
+    default: '',
+    description: 'A memória-keresés LEKÉRDEZÉSE elé fűzött szöveg az embedding előtt. Üres = nincs előtag (a korábbi viselkedés). Egyes modellek így tanultak, és előtag nélkül gyengébben keresnek. Pl. nomic-embed-text v2: "search_query: "; qwen3-embedding: "Instruct: <egymondatos feladatleírás>\\nQuery:" (a modellkártya Transformers-példája; a TEI-példája a "Query:" után szóközt tesz). A \\n az értékben sortörést jelent; a záró szóköz számít. Az EMBED_DOCUMENT_PREFIX-szel együtt állítandó; váltás után az emlékeket újra kell embeddelni (az embedding oszlop NULL-ra állítása után a POST /api/memories/backfill újraszámolja).',
+    module: 'system',
+    secret: false,
+    requiresRestart: false,
+  },
+  {
+    key: 'EMBED_DOCUMENT_PREFIX',
+    type: 'string',
+    default: '',
+    description: 'A tárolt EMLÉK szövege elé fűzött szöveg az embedding előtt. Üres = nincs előtag (a korábbi viselkedés). Pl. nomic-embed-text v2: "search_document: "; a qwen3-embedding a dokumentumot előtag nélkül várja. A \\n az értékben sortörést jelent; a záró szóköz számít. Váltás után az emlékeket újra kell embeddelni (az embedding oszlop NULL-ra állítása után a POST /api/memories/backfill újraszámolja): a régi és az új vektorok nem összehasonlíthatók.',
+    module: 'system',
+    secret: false,
+    requiresRestart: false,
+  },
+  {
+    key: 'EMBED_KEEP_ALIVE',
+    type: 'string',
+    default: '',
+    description: 'Az embedding-kéréssel küldött Ollama keep_alive (pl. "30m", "-1" = mindig betöltve, "0" = minden kérés után kirakja). Üres = nem küldjük, az Ollama alapértéke érvényes. Megosztott GPU-n a hosszabb érték megspórolja a modell újratöltését keresésenként, cserébe a modell tovább foglalja a memóriát.',
+    module: 'system',
+    secret: false,
+    requiresRestart: false,
+    validate: (v) => validKeepAlive(v),
+  },
+  {
+    key: 'MEMORY_RRF_FTS_WEIGHT',
+    type: 'string',
+    default: '1',
+    description: 'Memória-keresés (hybrid): a kulcsszó-ág súlya a rangsor-fúzióban (RRF). 0 és 10 közötti szám, üres = 1. 0 = a kulcsszó-ág nem befolyásolja a sorrendet (a csak általa talált emlékek a lista végére kerülnek; a küszöb alatti vektor-találatot attól még bent tartja, ha a kulcsszó-ág is megtalálta).',
+    module: 'system',
+    secret: false,
+    requiresRestart: false,
+    validate: (v) => validFusionWeight(v),
+  },
+  {
+    key: 'MEMORY_RRF_VECTOR_WEIGHT',
+    type: 'string',
+    default: '1',
+    description: 'Memória-keresés (hybrid): a vektor-ág súlya a rangsor-fúzióban (RRF). 0 és 10 közötti szám, üres = 1. A két súly aránya számít: pl. MEMORY_RRF_FTS_WEIGHT=0.5 és MEMORY_RRF_VECTOR_WEIGHT=1 a vektor-ágat részesíti előnyben, ha a kulcsszó-ág laza (VAGY-os) találatai lerontják a jó vektor-találatokat. Legalább az egyik súly legyen pozitív: két 0-s súllyal minden pontszám 0.',
+    module: 'system',
+    secret: false,
+    requiresRestart: false,
+    validate: (v) => validFusionWeight(v),
   },
   {
     key: 'MEMORY_IMPORT_CATEGORIZE_MODEL',
