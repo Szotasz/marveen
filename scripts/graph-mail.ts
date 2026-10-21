@@ -167,6 +167,9 @@ class DailyLogError extends Error {}
 // DASHBOARD_TOKEN may be any operator string, so allow the usual token alphabet
 // and nothing that could break out of a header (CR, LF, NUL, spaces, non-ASCII).
 const DASHBOARD_TOKEN_RE = /^[A-Za-z0-9._~+/=-]+$/
+// The live CDP browser and its sibling: never a dashboard, never touched
+// (same list as scripts/hooks/email-draft-log.py).
+const FORBIDDEN_PORTS = new Set([18800, 18899])
 
 /** The only text that may describe a failure: our own message, or the bare type name. */
 function describeDailyLogFailure(err: unknown): string {
@@ -191,6 +194,7 @@ async function postSentEntry(to: string[], subject: string): Promise<void> {
     if (!DASHBOARD_TOKEN_RE.test(token)) throw new DailyLogError('invalid dashboard token format')
     const port = Number(installSetting('WEB_PORT', '3420'))
     if (!Number.isInteger(port) || port < 1 || port > 65535) throw new DailyLogError('bad WEB_PORT')
+    if (FORBIDDEN_PORTS.has(port)) throw new DailyLogError(`refused WEB_PORT ${port}`)
     const res = await fetch(`http://127.0.0.1:${port}/api/daily-log`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },

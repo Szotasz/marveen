@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest'
 import { spawn } from 'node:child_process'
-import { cpSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -339,5 +339,17 @@ describe('graph-mail.ts send: the dashboard token never reaches the output', () 
     setToken(TOKEN)
     writeFileSync(join(dir, '.env'), 'WEB_PORT=not-a-port\n')
     expectNoLeak(await run(letter()), /\(bad WEB_PORT\)/)
+  })
+
+  // 18899 only: a regression must never send a request to the live CDP browser on 18800.
+  it('WEB_PORT on the CDP deny list: refused, no request, no token', async () => {
+    setToken(TOKEN)
+    writeFileSync(join(dir, '.env'), 'WEB_PORT=18899\n')
+    expectNoLeak(await run(letter()), /\(refused WEB_PORT 18899\)/)
+  })
+
+  it('the deny list covers the live CDP port 18800 as well', () => {
+    const src = readFileSync(join(ROOT, 'scripts', 'graph-mail.ts'), 'utf-8')
+    expect(src).toMatch(/FORBIDDEN_PORTS = new Set\(\[18800, 18899\]\)/)
   })
 })
