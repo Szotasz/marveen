@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { createHash } from 'node:crypto'
 import {
   initDatabase, getDb, getApproval, resolveApproval, listApprovalEvents, isOwnerVerified,
@@ -275,6 +275,46 @@ describe('resolveApprovalFromPermissionBot', () => {
     const g = pendingPermission({ ...win, run: 'd'.repeat(32) })
     expect(setApprovalCallbackNonceHashes(g.id, { approved: 'aa'.repeat(32), rejected: 'bb'.repeat(32) })).toBe(false)
     expect(setApprovalTelegramMessageId(g.id, 1)).toBe(false) // already stamped by the fixture
+  })
+
+  // Reviewer nit: the race test stays green without the conditional UPDATE as
+  // long as BEGIN IMMEDIATE serialises the callers. This pins the WHERE
+  // consumed_at IS NULL on its own: another writer flips consumed_at between
+  // the checks and the UPDATE (injected on the same connection, right before
+  // the consume's UPDATE runs). The UPDATE must then change 0 rows, the call
+  // must answer already_consumed, and the other writer's values must stand.
+  it('the consume UPDATE is conditional on consumed_at IS NULL by itself (independent of IMMEDIATE)', () => {
+    const f = approvedPermission(win)
+    const db = getDb()
+    const realPrepare = db.prepare.bind(db)
+    let injected = 0
+    const spy = vi.spyOn(db, 'prepare').mockImplementation(((sql: string) => {
+      if (injected === 0 && /^\s*UPDATE approvals SET consumed_at/.test(sql)) {
+        injected++
+        realPrepare("UPDATE approvals SET consumed_at = ?, consumed_by = 'other-writer', consumed_ref = ? WHERE id = ?")
+          .run(START + 5, RUN, f.id)
+      }
+      return realPrepare(sql)
+    }) as typeof db.prepare)
+    try {
+      const r = consume(f)
+      expect(injected).toBe(1)
+      expect(r).toMatchObject({ ok: false, reason: 'already_consumed' })
+    } finally {
+      spy.mockRestore()
+    }
+    expect(getApproval(f.id)).toMatchObject({ consumed_at: START + 5, consumed_by: 'other-writer', consumed_ref: RUN })
+    expect(lastEvent(f.id)).toMatchObject({ event: 'consume_refused', reason: 'already_consumed', actor: 'rag-prod-runner' })
+    expect(events(f.id).some((e) => e.event === 'consumed')).toBe(false)
+  })
+
+  it('the owner pin: null expectedOwnerId is owner_unresolved with an event; another owner is not_owner_verified', () => {
+    const f = approvedPermission(win)
+    expect(consume(f, { expectedOwnerId: null })).toMatchObject({ ok: false, reason: 'owner_unresolved' })
+    expect(lastEvent(f.id)).toMatchObject({ event: 'consume_refused', reason: 'owner_unresolved' })
+    expect(consume(f, { expectedOwnerId: '1000000099' })).toMatchObject({ ok: false, reason: 'not_owner_verified' })
+    expect(getApproval(f.id)?.consumed_at).toBeNull()
+    expect(consume(f, { expectedOwnerId: OWNER }).ok).toBe(true)
   })
 
   it('the bot_id column migration is idempotent', () => {
