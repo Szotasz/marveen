@@ -317,7 +317,7 @@ try:
 finally:
     stub.close()
 check("e2e: dashboard 500 -> exit 0, no stdout, a note on stderr",
-      code == 0 and out == "" and "HTTP Error 500" in err and "email-draft-log" in err, f"{code} {out!r} {err!r}")
+      code == 0 and out == "" and "(HTTP 500)" in err and "email-draft-log" in err, f"{code} {out!r} {err!r}")
 
 stub = Stub(delay=5.0)
 try:
@@ -345,6 +345,117 @@ check("e2e: missing token file -> exit 0, no stdout, a note on stderr",
 code, out, err, _ = run_hook(json.dumps(full), "notaport")
 check("e2e: non-numeric WEB_PORT -> exit 0, a note on stderr",
       code == 0 and out == "" and "email-draft-log" in err, f"{code} {err!r}")
+
+# ---- 6b. B-B1: the bearer token never reaches stdout / stderr on ANY error branch ----
+# urllib / http.client echo a bad header value in their exception text, so the hook
+# validates the token first and prints only its own fixed messages or a bare type name.
+CORE = "abc123XYZ"
+TOKEN = "SECRETTOKEN-" + CORE
+
+
+def no_leak(label, code, out, err, note):
+    leaked = [m for m in (TOKEN, CORE) if m in out or m in err]
+    check(f"token-leak: {label} -> exit 0, empty stdout, one stderr line, token absent, note {note!r}",
+          code == 0 and out == "" and not leaked and len(err.strip().splitlines()) == 1 and note in err
+          and err.startswith("email-draft-log:"), f"{code} {out!r} {err!r} leaked={leaked}")
+
+
+bad_tokens = {
+    "CR/LF injected": TOKEN + "\r\nX-Evil: 1",
+    "LF injected": TOKEN + "\nX-Evil: 1",
+    "NUL": TOKEN + "\x00tail",
+    "non-ASCII char": TOKEN + "-é",
+    "non-latin-1 char": TOKEN + "-中",
+    "a space": TOKEN + " tail",
+}
+for label, tok in bad_tokens.items():
+    stub = Stub()
+    try:
+        code, out, err, _ = run_hook(json.dumps(full), stub.port, token=tok)
+        n_posts = len(stub.received)
+    finally:
+        stub.close()
+    no_leak(f"token with {label}", code, out, err, "(invalid dashboard token format)")
+    check(f"token-leak: token with {label} -> no request was sent", n_posts == 0, str(n_posts))
+
+code, out, err, _ = run_hook(json.dumps(full), 3420, token="")
+no_leak("empty token", code, out, err, "(empty dashboard token)")
+code, out, err, _ = run_hook(json.dumps(full), 3420, token=None)
+no_leak("missing token file", code, out, err, "(cannot read dashboard token file)")
+code, out, err, _ = run_hook(json.dumps(full), "not-a-port", token=TOKEN)
+no_leak("bad WEB_PORT", code, out, err, "(bad WEB_PORT)")
+for port in FORBIDDEN:
+    code, out, err, _ = run_hook(json.dumps(full), port, token=TOKEN)
+    no_leak(f"WEB_PORT={port}", code, out, err, f"(refused WEB_PORT {port})")
+
+stub = Stub(status=500)
+try:
+    code, out, err, _ = run_hook(json.dumps(full), stub.port, token=TOKEN)
+finally:
+    stub.close()
+no_leak("HTTP 500", code, out, err, "(HTTP 500)")
+
+stub = Stub(delay=5.0)
+try:
+    code, out, err, _ = run_hook(json.dumps(full), stub.port, token=TOKEN)
+finally:
+    stub.close()
+no_leak("timeout", code, out, err, "(timeout)")
+
+probe = Stub()
+dead_port = probe.port
+probe.close()
+code, out, err, _ = run_hook(json.dumps(full), dead_port, token=TOKEN)
+no_leak("connection refused", code, out, err, "(URLError)")
+
+# A valid token still goes out as the Bearer header (the check is not over-strict).
+stub = Stub()
+try:
+    code, out, err, _ = run_hook(json.dumps(full), stub.port, token=TOKEN)
+    auth = stub.received[0][1] if stub.received else None
+finally:
+    stub.close()
+check("token-leak: a valid token is still sent as the Bearer header, stderr empty",
+      code == 0 and err == "" and auth == "Bearer " + TOKEN, f"{code} {err!r} {auth!r}")
+
+
+# A foreign exception whose text carries the token (urlopen monkeypatched, in-process).
+class _Gate:
+    STORE_DIR = ""
+
+    @staticmethod
+    def _install_setting(key, default):
+        return "3420"
+
+
+def post_raising(exc):
+    with tempfile.TemporaryDirectory() as td:
+        with open(os.path.join(td, ".dashboard-token"), "w", encoding="utf-8") as fh:
+            fh.write(TOKEN)
+        gate = _Gate()
+        gate.STORE_DIR = td
+        real = hook.urllib.request.urlopen
+
+        def boom(*a, **k):
+            raise exc
+        hook.urllib.request.urlopen = boom
+        try:
+            hook._post(gate, "x")
+        except BaseException as got:  # noqa: BLE001
+            return hook._describe(got)
+        finally:
+            hook.urllib.request.urlopen = real
+    return None
+
+
+for label, exc in (
+        ("ValueError", ValueError("Invalid header value b'Bearer " + TOKEN + "'")),
+        ("OSError", OSError("send failed: Authorization: Bearer " + TOKEN)),
+        ("http.client.InvalidURL", __import__("http.client").client.InvalidURL("bad " + TOKEN)),
+        ("URLError", __import__("urllib.error").error.URLError("refused " + TOKEN))):
+    got = post_raising(exc)
+    check(f"token-leak: foreign {label} carrying the token -> bare type name only",
+          got is not None and TOKEN not in got and CORE not in got and got == type(exc).__name__, repr(got))
 
 # ---- 7. the gate is untouched and its functions are the ones in use -----------------
 src = open(HOOK, encoding="utf-8").read()

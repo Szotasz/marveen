@@ -88,6 +88,11 @@ beforeAll(() => {
     'export async function sendMail(o: { to: string[]; cc?: string[]; subject: string; body: string }) {',
     "  if (process.env.STUB_SEND_FAILS) throw new Error('stub: graph refused the send')",
     "  console.log('STUB-SENT ' + JSON.stringify({ to: o.to, cc: o.cc }))",
+    // Fault injection for the token-leak tests: a foreign fetch error that echoes the token.
+    '  if (process.env.STUB_FETCH_THROWS) {',
+    "    const echoed = process.env.STUB_FETCH_THROWS",
+    "    globalThis.fetch = async () => { throw new TypeError('invalid header value: Bearer ' + echoed, { cause: new Error(echoed) }) }",
+    '  }',
     '}',
     'export async function listMessages() { return [] }',
     "export async function verifyAccess() { return { mailbox: 'stub' } }",
@@ -238,5 +243,101 @@ describe('graph-mail.ts send: daily-log entry after a successful send', () => {
     const replay = await run(letter())
     expect(replay.status).toBe(3)
     expect(hits).toHaveLength(1)
+  })
+})
+
+// Card f90928e3 B-B1: the dashboard bearer token must not reach stdout or
+// stderr on ANY error branch of the entry. A header-validation error from
+// fetch echoes the header value, so the token is checked up front and only
+// our own fixed messages or a bare exception type name are ever printed.
+describe('graph-mail.ts send: the dashboard token never reaches the output', () => {
+  const CORE = 'abc123XYZ'
+  const TOKEN = `SECRETTOKEN-${CORE}`
+  const EXPECTED_STDOUT = 'STUB-SENT {"to":["a@example.com"]}\nsent to a@example.com\n'
+
+  function setToken(content: string) {
+    writeFileSync(join(dir, 'store', '.dashboard-token'), content)
+  }
+  function expectNoLeak(r: Run, note: RegExp) {
+    expect(r.status, r.stderr).toBe(0)
+    expect(r.stdout).toBe(EXPECTED_STDOUT)
+    for (const out of [r.stdout, r.stderr]) {
+      expect(out).not.toContain(TOKEN)
+      expect(out).not.toContain(CORE)
+    }
+    // Other stderr lines (sender check, gates) are not ours; the entry's note is exactly one line.
+    const notes = r.stderr.split('\n').filter((l) => l.includes('napló-bejegyzés nem készült el'))
+    expect(notes, r.stderr).toHaveLength(1)
+    expect(notes[0]).toMatch(note)
+  }
+
+  for (const [name, content] of [
+    ['CR/LF injected', `${TOKEN}\r\nX-Evil: 1`],
+    ['LF injected', `${TOKEN}\nX-Evil: 1`],
+    ['NUL', `${TOKEN}${String.fromCharCode(0)}tail`],
+    ['non-ASCII char', `${TOKEN}-é`],
+    ['a space', `${TOKEN} tail`],
+  ] as const) {
+    it(`token with ${name}: fixed "invalid dashboard token format", no request, send untouched`, async () => {
+      await startServer((respond) => respond(200))
+      setToken(content)
+      const r = await run(letter())
+      expectNoLeak(r, /\(invalid dashboard token format\)/)
+      expect(hits).toHaveLength(0)
+    })
+  }
+
+  it('empty token: fixed message', async () => {
+    await startServer((respond) => respond(200))
+    setToken('\n')
+    expectNoLeak(await run(letter()), /\(empty dashboard token\)/)
+    expect(hits).toHaveLength(0)
+  })
+
+  it('missing token file: fixed message', async () => {
+    expectNoLeak(await run(letter()), /\(cannot read dashboard token file\)/)
+  })
+
+  it('a valid token still goes out as the Bearer header', async () => {
+    await startServer((respond) => respond(200))
+    setToken(`${TOKEN}\n`)
+    const r = await run(letter())
+    expect(r.status, r.stderr).toBe(0)
+    expect(hits).toHaveLength(1)
+    expect(hits[0].auth).toBe(`Bearer ${TOKEN}`)
+    expect(r.stderr).not.toContain('napló-bejegyzés nem készült el')
+  })
+
+  it('a foreign fetch error that echoes the token: only the type name is printed', async () => {
+    await startServer((respond) => respond(200))
+    setToken(TOKEN)
+    const r = await run(letter(), { STUB_FETCH_THROWS: TOKEN })
+    expectNoLeak(r, /\(TypeError\)/)
+  })
+
+  it('dashboard answers 500: "HTTP 500", no token', async () => {
+    await startServer((respond) => respond(500))
+    setToken(TOKEN)
+    expectNoLeak(await run(letter()), /\(HTTP 500\)/)
+  }, 30_000)
+
+  it('dashboard never answers: "timeout", no token', async () => {
+    await startServer((_respond, hang) => hang())
+    setToken(TOKEN)
+    expectNoLeak(await run(letter()), /\(timeout\)/)
+  }, 30_000)
+
+  it('connection refused: a bare type name, no token', async () => {
+    await startServer((respond) => respond(200))
+    await new Promise<void>((r) => server!.close(() => r()))
+    server = null
+    setToken(TOKEN)
+    expectNoLeak(await run(letter()), /\(TypeError\)/)
+  }, 30_000)
+
+  it('bad WEB_PORT: fixed message, no token', async () => {
+    setToken(TOKEN)
+    writeFileSync(join(dir, '.env'), 'WEB_PORT=not-a-port\n')
+    expectNoLeak(await run(letter()), /\(bad WEB_PORT\)/)
   })
 })

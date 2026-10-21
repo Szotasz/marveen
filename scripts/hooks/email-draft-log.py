@@ -29,7 +29,9 @@ import importlib.util
 import json
 import os
 import re
+import socket
 import sys
+import urllib.error
 import urllib.request
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -121,23 +123,57 @@ def entry_text(tool_input: dict) -> str:
     return f"[Levélvázlat] {_recipients(tool_input)}, tárgy: {_subject(tool_input)}, {_budapest_now()}"
 
 
+class _OwnError(Exception):
+    """A failure whose message WE wrote: the only exception text that may reach
+    stderr. Foreign exceptions (urllib, http.client, OSError) can echo a header
+    value, i.e. the bearer token, so they are reported by type name alone."""
+
+
+# The dashboard token is 64 hex chars when generated (src/web/dashboard-auth.ts);
+# DASHBOARD_TOKEN may be any operator string, so allow the usual token alphabet
+# and nothing that could break out of a header (CR, LF, NUL, spaces, non-ASCII).
+_TOKEN_RE = re.compile(r"[A-Za-z0-9._~+/=-]+", re.ASCII)
+
+
 def _post(gate, text: str) -> None:
     """Raises on any failure; the caller turns it into one stderr line."""
-    with open(os.path.join(gate.STORE_DIR, ".dashboard-token"), encoding="utf-8") as fh:
-        token = fh.read().strip()
+    try:
+        with open(os.path.join(gate.STORE_DIR, ".dashboard-token"), encoding="utf-8") as fh:
+            token = fh.read().strip()
+    except (OSError, ValueError):
+        raise _OwnError("cannot read dashboard token file") from None
     if not token:
-        raise RuntimeError("empty dashboard token")
-    port = int(gate._install_setting("WEB_PORT", "3420"))
+        raise _OwnError("empty dashboard token")
+    if _TOKEN_RE.fullmatch(token) is None:  # fullmatch: "$" would let a trailing newline through
+        raise _OwnError("invalid dashboard token format")
+    try:
+        port = int(gate._install_setting("WEB_PORT", "3420"))
+    except ValueError:
+        raise _OwnError("bad WEB_PORT") from None
     if not 1 <= port <= 65535 or port in FORBIDDEN_PORTS:
-        raise RuntimeError(f"refused WEB_PORT {port}")
+        raise _OwnError(f"refused WEB_PORT {port}")
     body = json.dumps({"agent_id": LOG_AGENT, "content": text}, ensure_ascii=False).encode("utf-8")
     req = urllib.request.Request(
         f"http://127.0.0.1:{port}/api/daily-log", data=body, method="POST",
         headers={"Authorization": "Bearer " + token, "Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=POST_TIMEOUT_S) as resp:
-        code = getattr(resp, "status", None) or resp.getcode()
-        if not 200 <= int(code) < 300:
-            raise RuntimeError(f"HTTP {code}")
+    try:
+        with urllib.request.urlopen(req, timeout=POST_TIMEOUT_S) as resp:
+            code = getattr(resp, "status", None) or resp.getcode()
+    except urllib.error.HTTPError as exc:
+        raise _OwnError(f"HTTP {int(exc.code)}") from None
+    except (TimeoutError, socket.timeout):
+        raise _OwnError("timeout") from None
+    except urllib.error.URLError as exc:
+        if isinstance(exc.reason, (TimeoutError, socket.timeout)):
+            raise _OwnError("timeout") from None
+        raise
+    if not 200 <= int(code) < 300:
+        raise _OwnError(f"HTTP {code}")
+
+
+def _describe(exc: BaseException) -> str:
+    """Our own message, or the bare exception type name; never foreign text."""
+    return str(exc) if isinstance(exc, _OwnError) else type(exc).__name__
 
 
 def main() -> None:
@@ -169,5 +205,5 @@ if __name__ == "__main__":
     try:
         main()
     except BaseException as exc:  # noqa: BLE001 -- a log hook must never block a tool call
-        _note(f"nem készült napló-bejegyzés ({type(exc).__name__}: {str(exc)[:200]})")
+        _note(f"nem készült napló-bejegyzés ({_describe(exc)})")
     sys.exit(0)

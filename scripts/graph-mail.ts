@@ -160,22 +160,46 @@ function sentEntry(to: string[], subject: string): string {
   return `[Levél elküldve] ${to.join(', ')}, tárgy: ${truncateSubject(subject)}, ${budapestNow()}`
 }
 
-/** Never throws and never exits; any failure is one line on stderr. */
+/** An error whose message WE wrote: the only exception text that may reach stderr. */
+class DailyLogError extends Error {}
+
+// The dashboard token is 64 hex chars when generated (src/web/dashboard-auth.ts);
+// DASHBOARD_TOKEN may be any operator string, so allow the usual token alphabet
+// and nothing that could break out of a header (CR, LF, NUL, spaces, non-ASCII).
+const DASHBOARD_TOKEN_RE = /^[A-Za-z0-9._~+/=-]+$/
+
+/** The only text that may describe a failure: our own message, or the bare type name. */
+function describeDailyLogFailure(err: unknown): string {
+  if (err instanceof DailyLogError) return err.message
+  const name = err instanceof Error ? (err.name || '') : ''
+  if (name === 'TimeoutError' || name === 'AbortError') return 'timeout'
+  const type = err instanceof Error ? (Object.getPrototypeOf(err)?.constructor?.name ?? '') : ''
+  return /^[A-Za-z][A-Za-z0-9_]{0,39}$/.test(type) ? type : 'Error'
+}
+
+/** Never throws and never exits; any failure is one line on stderr that never
+ * carries foreign exception text (a header-validation error can echo the token). */
 async function postSentEntry(to: string[], subject: string): Promise<void> {
   try {
-    const token = readFileSync(resolve(REPO_ROOT, 'store', '.dashboard-token'), 'utf-8').trim()
-    if (!token) throw new Error('empty dashboard token')
+    let token: string
+    try {
+      token = readFileSync(resolve(REPO_ROOT, 'store', '.dashboard-token'), 'utf-8').trim()
+    } catch {
+      throw new DailyLogError('cannot read dashboard token file')
+    }
+    if (!token) throw new DailyLogError('empty dashboard token')
+    if (!DASHBOARD_TOKEN_RE.test(token)) throw new DailyLogError('invalid dashboard token format')
     const port = Number(installSetting('WEB_PORT', '3420'))
-    if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('bad WEB_PORT')
+    if (!Number.isInteger(port) || port < 1 || port > 65535) throw new DailyLogError('bad WEB_PORT')
     const res = await fetch(`http://127.0.0.1:${port}/api/daily-log`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ agent_id: DAILY_LOG_AGENT, content: sentEntry(to, subject) }),
       signal: AbortSignal.timeout(DAILY_LOG_TIMEOUT_MS),
     })
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    if (!res.ok) throw new DailyLogError(`HTTP ${res.status}`)
   } catch (err) {
-    console.error(`graph-mail: a levél elment, de a napló-bejegyzés nem készült el (${err instanceof Error ? err.message : String(err)})`)
+    console.error(`graph-mail: a levél elment, de a napló-bejegyzés nem készült el (${describeDailyLogFailure(err)})`)
   }
 }
 
