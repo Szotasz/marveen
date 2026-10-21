@@ -252,6 +252,7 @@ if [ -f "$_SCHED_CLI" ] && command -v node >/dev/null 2>&1; then _SCHED_CLI_OK=1
 # is recorded BEFORE the rewrite, and afterwards only a task that was trusted
 # then is re-registered; the rest is listed for operator review.
 _SCHED_PRE_OK=""
+_SCHED_PRE_UNKNOWN=""
 if [ -d "$SCHED_DIR" ] && [ "$_SCHED_CLI_OK" = "1" ]; then
   _SCHED_CANDIDATES="$(python3 - "$SCHED_DIR" <<'PYEOF'
 import sys, json, pathlib, re
@@ -265,8 +266,20 @@ for cfg in sorted(root.glob('*/task-config.json')):
         print(cfg.parent.name)
 PYEOF
 )"
+  # The same three-way verdict as update.sh's sched_task_verified_ok.
+  # Exit 1 is a REAL not-ok verdict only together with the CLI's own
+  # "<verdict> <name>" line (a node crash also exits 1); registry-error, a usage
+  # exit 2 (a CLI without `verify`) or a crash is UNKNOWN, not "not trusted".
   for _n in $_SCHED_CANDIDATES; do
-    if node "$_SCHED_CLI" verify "$_n" >/dev/null 2>&1; then _SCHED_PRE_OK="$_SCHED_PRE_OK $_n"; fi
+    _sv_rc=0
+    _sv_out="$(node "$_SCHED_CLI" verify "$_n" 2>/dev/null)" || _sv_rc=$?
+    if [ "$_sv_rc" = "0" ]; then
+      _SCHED_PRE_OK="$_SCHED_PRE_OK $_n"
+    elif [ "$_sv_rc" = "1" ] && printf '%s\n' "$_sv_out" | grep -xE "[a-z-]+ $_n" | grep -qv '^registry-error '; then
+      :
+    else
+      _SCHED_PRE_UNKNOWN="$_SCHED_PRE_UNKNOWN $_n"
+    fi
   done
 fi
 _SCHED_REWRITTEN_LIST="$(mktemp)"
@@ -293,11 +306,15 @@ PYEOF
 fi
 _SCHED_REREGISTER=""
 _SCHED_REVIEW=""
+_SCHED_REVIEW_UNKNOWN=""
 while IFS= read -r _n; do
   [ -n "$_n" ] || continue
   case "$_n" in *[!a-z0-9-]*) _SCHED_REVIEW="$_SCHED_REVIEW $_n"; continue ;; esac
   case " $_SCHED_PRE_OK " in
-    *" $_n "*) _SCHED_REREGISTER="$_SCHED_REREGISTER $_n" ;;
+    *" $_n "*) _SCHED_REREGISTER="$_SCHED_REREGISTER $_n"; continue ;;
+  esac
+  case " $_SCHED_PRE_UNKNOWN " in
+    *" $_n "*) _SCHED_REVIEW_UNKNOWN="$_SCHED_REVIEW_UNKNOWN $_n" ;;
     *) _SCHED_REVIEW="$_SCHED_REVIEW $_n" ;;
   esac
 done < "$_SCHED_REWRITTEN_LIST"
@@ -316,6 +333,10 @@ if [ -n "$_SCHED_REVIEW" ]; then
     echo "WARNING: rewritten scheduled tasks are not re-registered (no dist/web/schedule-registry-cli.js):$_SCHED_REVIEW" >&2
     echo "         If this install has never run a build with the scheduled-task registry, its first start registers them (one-time backfill); otherwise review them and run: node $_SCHED_CLI register <name>" >&2
   fi
+fi
+if [ -n "$_SCHED_REVIEW_UNKNOWN" ]; then
+  echo "WARNING: rewritten scheduled tasks NOT re-registered (their registry verdict before the rewrite is UNKNOWN -- the registry CLI crashed, has no verify, or could not read the registry):$_SCHED_REVIEW_UNKNOWN" >&2
+  echo "         If this install's dashboard has not yet run its one-time registry backfill, its next start registers AND fires them as they are now: review them NOW. Otherwise the runner skips them until: node $_SCHED_CLI register <name>" >&2
 fi
 
 if [ "$OS" = "Darwin" ]; then

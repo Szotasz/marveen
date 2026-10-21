@@ -591,4 +591,29 @@ describe('migrate-main-agent-id.sh re-registers only tasks trusted before the re
       rmSync(f.base, { recursive: true, force: true })
     }
   }, 30_000)
+
+  // A verify that could not give a verdict is UNKNOWN,
+  // the same split update.sh makes -- "not trusted ... The runner skips them" is
+  // false when the dashboard's one-time backfill has not run yet.
+  it.each([
+    ['crashes on verify', 'if (process.argv[2] === "verify") throw new Error("boom")\n'],
+    ['reports registry-error', 'if (process.argv[2] === "verify") { console.log("registry-error " + process.argv[3]); process.exit(1) }\n'],
+    ['has no verify command (usage exit 2)', 'if (process.argv[2] === "verify") process.exit(2)\n'],
+  ])('when the registry CLI %s, the task is named as UNKNOWN, not as "not trusted", and not registered', (_label, prelude) => {
+    const f = makeMigrateFixture()
+    try {
+      f.task('unknown-task', 'marveen')
+      expect(fakeCli(f.install, f.home, ['register', 'unknown-task'])).toBe(0)
+      const cli = join(f.install, 'dist', 'web', 'schedule-registry-cli.js')
+      writeFileSync(cli, prelude + FAKE_CLI)
+      const r = f.run()
+      expect(r.code, r.err).toBe(0)
+      expect(r.err).toMatch(/registry verdict before the rewrite is UNKNOWN.*unknown-task/)
+      expect(r.err).toMatch(/review them NOW/)
+      expect(r.err).not.toMatch(/not trusted before the rewrite/)
+      expect(cliLog(f.install).filter((e) => e.cmd === 'register' && e.source === 'cli:migrate-agent-id')).toEqual([])
+    } finally {
+      rmSync(f.base, { recursive: true, force: true })
+    }
+  }, 30_000)
 })
