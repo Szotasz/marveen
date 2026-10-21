@@ -9,7 +9,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { gateDecision } from '../../scripts/self-pace-gate.mjs'
+import { foldName, gateDecision } from '../../scripts/self-pace-gate.mjs'
 import {
   EXTRA_HOOK_MARK, applyExtraHookEntries, extraHooksDigest, isExtraHookGroup, loadExtraHookEntries, parseExtraHookEntries,
   type ExtraHookDeps, type ExtraHookEntry,
@@ -335,6 +335,66 @@ describe('the protected paths are compared case-insensitively (review #2001, rou
     ['Write', join('store', 'extra-hooks.json.md')],
   ])('POSITIVE CONTROL: %s %s stays allowed', (tool, rel) => {
     expect(decide(tool, { file_path: join(root, rel), content: 'x', old_string: 'a', new_string: 'b' }).deny).toBe(false)
+  })
+})
+
+// Review #2001 round 4: a case-insensitive volume folds more than ASCII case. APFS
+// treats U+017F LATIN SMALL LETTER LONG S as `s` and U+212A KELVIN SIGN as `k`, and
+// toLowerCase() maps only the second, so extra-hook\u017f.json landed as
+// extra-hooks.json when the target did not exist yet. Every comparison of a protected
+// name now goes through foldName(). The folding itself cannot be reproduced on a
+// case-sensitive volume, so these pin the gate's decision on the spelled names.
+describe('the protected names are folded before every comparison (review #2001, round 4)', () => {
+  const LONG_S = '\u017f'
+  const KELVIN = '\u212a'
+  const decide = (tool: string, input: Record<string, unknown>, cwd = root) =>
+    gateDecision(tool, input, { allowlistPath: join(root, 'store', 'egress-allowlist.json'), cwd })
+  // the default install: neither the extras file nor local-hooks/ exists
+  beforeEach(() => {
+    rmSync(join(root, 'local-hooks'), { recursive: true, force: true })
+    mkdirSync(join(root, 'store'), { recursive: true })
+  })
+
+  it('foldName maps the two non-ASCII letters a case-insensitive volume reads as ASCII', () => {
+    expect(foldName(`extra-hook${LONG_S}.json`)).toBe('extra-hooks.json')
+    expect(foldName(`local-hook${LONG_S}`)).toBe('local-hooks')
+    expect(foldName(`extra-hoo${KELVIN}s.json`)).toBe('extra-hooks.json')
+    expect(foldName('LOCAL-HOOKS')).toBe('local-hooks')
+  })
+
+  it.each([
+    `store/extra-hook${LONG_S}.json`,
+    `local-hook${LONG_S}/a.py`,
+    `store/extra-hoo${KELVIN}s.json`,
+  ])('Write %s with the target absent is denied, relative and absolute', (rel) => {
+    expect(decide('Write', { file_path: rel, content: 'x' })).toEqual({ deny: true, reason: 'egress-allowlist' })
+    expect(decide('Write', { file_path: join(root, rel), content: 'x' })).toEqual({ deny: true, reason: 'egress-allowlist' })
+  })
+
+  it.each([
+    `cp /x/h.json <R>/store/extra-hook${LONG_S}.json`,
+    `cp /x/a.py <R>/local-hook${LONG_S}/a.py`,
+    `cp /x/h.json <R>/store/extra-hoo${KELVIN}s.json`,
+    `cp /x/h.json store/extra-hook${LONG_S}.json`,
+    `cp /x/a.py local-hook${LONG_S}/a.py`,
+    `cp /x/h.json "store/extra-hook\\u017f.json"`,
+    // pathKey(): the store dir itself, spelled with the long s (directory-writer check)
+    `cp /x/h.json <R>/${LONG_S}tore/`,
+    // the glob match: an unresolved expansion next to the long-s spelling
+    `cp /x/h.json store/$X-hook${LONG_S}.json`,
+  ])('Bash %s with the target absent is denied', (cmd) => {
+    expect(decide('Bash', { command: cmd.replaceAll('<R>', root) })).toEqual({ deny: true, reason: 'egress-allowlist' })
+  })
+
+  it.each([
+    ['Write', `notes/${LONG_S}ketch.md`],
+    ['Write', `store/other-hook${LONG_S}.json`],
+    ['Write', `notes/my-local-hook${LONG_S}/a.py`],
+  ])('POSITIVE CONTROL: %s %s stays allowed', (tool, rel) => {
+    expect(decide(tool, { file_path: join(root, rel), content: 'x' }).deny).toBe(false)
+  })
+  it('POSITIVE CONTROL: reading through the folded name stays allowed', () => {
+    expect(decide('Bash', { command: `cat store/extra-hook${LONG_S}.json` }).deny).toBe(false)
   })
 })
 
