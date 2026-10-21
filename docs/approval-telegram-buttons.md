@@ -24,6 +24,7 @@ use, inside the send window, 30 minutes by default).
 - [Rollback](#rollback)
 - [Accepted limitation](#accepted-limitation)
 - [Not yet measured live](#not-yet-measured-live)
+- [RAG production run approval (permission bot)](#rag-production-run-approval-permission-bot)
 
 ## Requester steps
 
@@ -305,3 +306,62 @@ against Telegram:
 - The unit of the 4096 limit (UTF-16 code units, code points, or something
   else). The budget counts UTF-16 code units, which are never fewer than code
   points, and keeps 300 units in reserve.
+
+## RAG production run approval (permission bot)
+
+Categories `rag_production_d` and `permission_bot_probe` (card 9a77b3e5) use a
+separate flow, "D". The owner's buttons come from a second bot, the permission
+bot, never from the main bot; only that bot's button counts as the owner's
+permission for a run.
+
+The flow:
+
+1. The runner files `POST /api/approvals` with a bound, canonical payload
+   (`kind`, `package_sha256`, `run_id`, write window) and its `content_hash`.
+   The `rag_production_` prefix is reserved (case-insensitive), `agent_id` must
+   be a bare agent id, `owner_approved_message_id` is refused (400).
+2. The dashboard sends the owner one message with two buttons through the
+   permission bot. It sends nothing, and not through the main bot either, if
+   the permission bot cannot be resolved (see `PERMISSION_BOT_ID` below), if the
+   main bot is unknown (`main_bot_unresolved`), if the permission bot is the main
+   bot, or if the strict owner is unresolved (`owner_unresolved`).
+3. The press comes back through the relay as
+   `POST /api/approvals/:id/permission-bot` (the id may carry 32 hex digits
+   without dashes). The decision needs the bound nonce, message id, the strict
+   owner and the permission bot's id; it writes an `approval_owner_resolutions`
+   trace in the same transaction. That trace is the owner-verified evidence.
+4. `POST /api/approvals/:id/consume-run` uses the approval once: category,
+   owner-verified, payload still the hash's, package, `run_id`, write window,
+   not used before. Every attempt with a well-formed id leaves an
+   `approval_events` row, including a field-level 400 and a 503.
+
+**`PERMISSION_BOT_ID`.** The id of the permission bot (digits only, the part of
+its token before the colon) is pinned in the process environment or the
+install `.env` and read once at startup. It is not read through
+`config-overrides.json` and is not in the settings registry, so neither the
+Settings API nor any other Bearer-reachable path can set it. The Vault token
+`telegram-engedely-bot-token` is only the credential to send with, and is used
+only while its bot id equals the pin. If the pin is missing or malformed, or
+the token belongs to another bot, the send is refused and both
+`/permission-bot` and `/consume-run` answer 503 `permission_bot_unavailable`
+(the consume attempt is recorded as an event). Evidence and checks compare
+against the pin. Set it in `.env` as `PERMISSION_BOT_ID=<digits>` and restart
+the dashboard.
+
+**Vault write-lock.** `POST /api/vault`, `DELETE /api/vault/:id`,
+`POST /api/vault/import` and `PUT /api/operator/vault/:id` refuse the entry
+`telegram-engedely-bot-token` (403, "locked"). The operator puts the token in
+place out-of-band (not through the API). Reads are unchanged.
+
+**Runner note.** `consume-run` requires the body `category` to equal the
+approval row's category, so a `permission_bot_probe` row can never authorise a
+`rag_production_d` run: the runner must file and consume with category
+`rag_production_d`.
+
+**Residual risk.** The fleet shares one dashboard Bearer token. A holder cannot
+forge the owner's decision (the nonce lives only in the button) or swap the
+permission bot, but can call `consume-run` first with a known package hash and
+`run_id` and so make the real runner get `already_consumed` (denial, not
+forgery). Whoever can read the permission bot's token out-of-band could still
+race the relay's `getUpdates`; restricting that token's readers is a
+precondition for enabling D live.
