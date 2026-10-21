@@ -152,7 +152,7 @@ export const DEFAULT_AGENT_MODEL_IS_DISTRIBUTION = !cfg('DEFAULT_AGENT_MODEL')
 export const TELEGRAM_BOT_TOKEN = env['TELEGRAM_BOT_TOKEN'] ?? ''
 export const ALLOWED_CHAT_ID = env['ALLOWED_CHAT_ID'] ?? ''
 
-// Card 9a77b3e5 (B1): the id of the permission bot (@fireeng_engedely_bot) the
+// Card 9a77b3e5 (B1): the id of the permission bot the
 // RAG production-run approval trusts. Pinned OUTSIDE the dashboard Bearer's
 // reach: read once at startup from the real process environment, else from the
 // install .env -- never through cfg(), so config-overrides.json (the only file

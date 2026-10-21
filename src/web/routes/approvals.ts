@@ -567,8 +567,8 @@ async function sendPlainAfterFailure(token: string, ownerChat: string, approval:
 
 // --- Card 9a77b3e5: the permission bot (rag_production_d, permission_bot_probe) ---
 //
-// The owner's buttons for these rows are sent by the permission bot
-// (@fireeng_engedely_bot), whose token the dashboard reads in-process from the
+// The owner's buttons for these rows are sent by the permission bot,
+// whose token the dashboard reads in-process from the
 // Vault entry below. The token is never logged, returned or put in a message;
 // only its bot id (the part before the colon) is ever used outside the send
 // call itself. The callback comes back through the relay (POST
