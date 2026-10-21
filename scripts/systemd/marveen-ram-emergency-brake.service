@@ -1,0 +1,49 @@
+# NOTE: replace /path/to/marveen (install dir) and /home/USER (home) with your values.
+#
+# RAM emergency brake (scripts/ram-emergency-brake.py), Linux only, opt-in:
+# polls /proc/meminfo every 3 s; under 600 MB MemAvailable for 2 samples it
+# unloads ollama models, then stops the largest allowlisted heavy job (a
+# heavy-job-*.scope first, then ffmpeg, headless browser, node test runner /
+# build / render, and python scripts listed in store/ram-emergency-brake.json).
+# Never touches agent sessions, tmux, dashboard, channels, bun, sshd. One owner
+# alert per incident over the Telegram Bot API (scripts/lib/send-telegram.sh);
+# the owner chat is resolved at send time like scripts/lib/owner-chat.sh.
+# Install:
+#   cp scripts/systemd/marveen-ram-emergency-brake.service ~/.config/systemd/user/
+#   (edit the placeholders)
+#   systemctl --user daemon-reload && systemctl --user enable --now marveen-ram-emergency-brake
+# Check what it would do, without acting:
+#   python3 scripts/ram-emergency-brake.py --dry-run --cycles 3 --simulate-avail-mb 300
+[Unit]
+Description=Marveen RAM emergency brake (unload ollama, stop the heaviest allowlisted job)
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /path/to/marveen/scripts/ram-emergency-brake.py
+Restart=always
+RestartSec=2
+# The brake must outlive the jobs it stops. An unprivileged user manager cannot
+# set a value below its own oom_score_adj (a lower one, e.g. -900, is clamped);
+# agent sessions and the dashboard typically run at 200, so 100 still puts the
+# brake behind them for the kernel OOM killer.
+OOMScoreAdjust=100
+# Small and non-swappable: the script is ~15 MB and mlockall()s itself, so it
+# stays responsive while the rest of the host is thrashing. Its alert child
+# (bash + curl) runs inside this cap too, which is why the owner chat is
+# resolved in Python and not through a node helper.
+MemoryMax=96M
+MemorySwapMax=0
+LimitMEMLOCK=96M
+CPUWeight=1000
+# No TELEGRAM_ENV and no chat id here: the script resolves both from the
+# install's own channel state at send time. Set MARVEEN_ALERT_CHAT_ID only to
+# override the resolved owner chat.
+Environment=PATH=/home/USER/.local/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/USER
+Environment=TZ=Europe/Budapest
+Environment=PYTHONUNBUFFERED=1
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
