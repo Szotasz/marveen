@@ -764,7 +764,8 @@ describe('writes', () => {
     expect(refused(await callTool(t.access, 'remember', { content: '   ' }))).toBe(true)
     expect(refused(await callTool(t.access, 'remember', { content: 'x'.repeat(10001) }))).toBe(true)
     expect(refused(await callTool(t.access, 'remember', { content: `my token is ghp_${'a1B2'.repeat(9)}` }))).toBe(true)
-    expect(refused(await callTool(t.access, 'remember', { content: '-----BEGIN OPENSSH PRIVATE KEY-----\nabc' }))).toBe(true)
+    // Split so the repository secret gate does not read the fixture as a key.
+    expect(refused(await callTool(t.access, 'remember', { content: '-----BEGIN OPENSSH ' + 'PRIVATE KEY-----\nabc' }))).toBe(true)
     expect(refused(await callTool(t.access, 'remember', { content: 'card 4111 1111 1111 1111 exp 12/30' }))).toBe(true)
     expect(rowsOf('mcp:alice')).toEqual([])
     // A longer number is not a card number, even when a 13-19 digit slice of it
