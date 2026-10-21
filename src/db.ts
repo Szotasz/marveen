@@ -7415,6 +7415,26 @@ export function consumeOwnerRunApproval(params: {
   }).immediate()
 }
 
+// A run-consume attempt refused BEFORE the transaction could run (a malformed
+// body, an unavailable permission bot): the contract wants an event row for
+// every attempt with a well-formed approval id. Only the consume_refused kind,
+// never a state change. reason is a short fixed token (a field NAME at most,
+// never a value); actor/ref are whatever of consumer and run_id was well-formed.
+export function recordRunConsumeRefusal(params: {
+  id: string
+  reason: string
+  consumer?: string | null
+  runId?: string | null
+  nowSec?: number
+}): boolean {
+  if (typeof params.id !== 'string' || !PERMISSION_APPROVAL_ID.test(params.id)) return false
+  const now = params.nowSec ?? Math.floor(Date.now() / 1000)
+  db.prepare(`
+    INSERT INTO approval_events (approval_id, event, reason, actor, ref, created_at) VALUES (?, 'consume_refused', ?, ?, ?, ?)
+  `).run(params.id, params.reason.slice(0, 80), params.consumer?.trim() || null, params.runId ?? null, now)
+  return true
+}
+
 export function listApprovals(opts: {
   agent_id?: string
   category?: string

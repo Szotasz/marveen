@@ -487,7 +487,42 @@ describe('POST /api/approvals/:id/consume-run', () => {
     expect((await route('POST', `/api/approvals/${p.id}/consume-run`, 'nope')).status).toBe(400)
     expect(await consume('not-an-id')).toMatchObject({ status: 400, body: { field: 'id' } })
     expect(getApproval(p.id)!.consumed_at).toBeNull()
-    expect(eventsOf(p.id)).toEqual([])
+    // E1: a well-formed id leaves an event row per refused body (the field NAME
+    // only; the 'not-an-id' call, with no usable id, leaves none).
+    expect(eventsOf(p.id)).toEqual([
+      ['consume_refused', 'bad_request:category'],
+      ['consume_refused', 'bad_request:category'],
+      ['consume_refused', 'bad_request:package_sha256'],
+      ['consume_refused', 'bad_request:package_sha256'],
+      ['consume_refused', 'bad_request:run_id'],
+      ['consume_refused', 'bad_request:consumer'],
+      ['consume_refused', 'bad_request:consumer'],
+      ['consume_refused', 'bad_request:body'],
+    ])
+    const rows = listApprovalEvents(p.id)
+    expect(rows[0]).toMatchObject({ actor: 'rag-prod-runner', ref: RUN })
+    expect(rows[4]).toMatchObject({ actor: 'rag-prod-runner', ref: null })   // run_id 'xyz' is not recorded
+    expect(rows[5]).toMatchObject({ actor: null, ref: RUN })                  // consumer '' is not recorded
+    expect(rows[7]).toMatchObject({ actor: null, ref: null })
+  })
+
+  it('E1: a 503 permission_bot_unavailable consume leaves an event row too, and the approval stays usable', async () => {
+    const p = await postD()
+    await approveD(p)
+    state.pinnedId = ''
+    expect(await consume(p.id)).toMatchObject({ status: 503, body: { reason: 'permission_bot_unavailable' } })
+    expect(eventsOf(p.id)).toEqual([['consume_refused', 'permission_bot_unavailable']])
+    expect(listApprovalEvents(p.id)[0]).toMatchObject({ actor: 'rag-prod-runner', ref: RUN })
+    state.pinnedId = PERM_BOT
+    expect((await consume(p.id)).status).toBe(200)
+  })
+
+  it('E1: the consume path does not need the main bot\'s id', async () => {
+    const p = await postD()
+    await approveD(p)
+    state.mainToken = ''
+    state.channelToken = null
+    expect((await consume(p.id)).status).toBe(200)
   })
 
   it('the e-mail /consume endpoint stays as it was (needs a content_hash, knows nothing of runs)', async () => {

@@ -7,7 +7,7 @@ import {
   createApproval, getApproval, resolveApproval, listApprovals, expireTimedOutApprovals, clearSpentEmailPayloads,
   createAgentMessage, setApprovalTelegramMessageId, resolveApprovalFromTelegram,
   setApprovalCallbackNonceHashes,
-  setPermissionBotNonceHashes, resolveApprovalFromPermissionBot, isOwnerVerified, consumeOwnerRunApproval,
+  setPermissionBotNonceHashes, resolveApprovalFromPermissionBot, isOwnerVerified, consumeOwnerRunApproval, recordRunConsumeRefusal,
   type Approval, type ApprovalTelegramRefusal, type PermissionBotRefusal, type OwnerRunConsumeRefusal,
 } from '../../db.js'
 import { logger } from '../../logger.js'
@@ -1154,6 +1154,21 @@ function handleConsumeRun(res: RouteContext['res'], rawId: string, body: unknown
   const parsed = parseConsumeRun(rawId, body)
   if ('badField' in parsed) {
     logger.warn({ id: logId, reason: 'bad_request', field: parsed.badField }, 'Approval run consume refused')
+    // Contract 5: every attempt with a well-formed id leaves an event row. The
+    // reason names the bad field, never its value; actor/ref only if well-formed.
+    if (logId != null) {
+      const raw = body !== null && typeof body === 'object' && !Array.isArray(body) ? body as Record<string, unknown> : {}
+      try {
+        recordRunConsumeRefusal({
+          id: logId,
+          reason: `bad_request:${parsed.badField}`,
+          consumer: isConsumerName(raw.consumer) ? raw.consumer : null,
+          runId: typeof raw.run_id === 'string' && RUN_ID_RE.test(raw.run_id) ? raw.run_id : null,
+        })
+      } catch (err) {
+        logger.warn({ err, id: logId }, 'Approval run consume refusal event could not be written')
+      }
+    }
     json(res, { ok: false, reason: 'bad_request', field: parsed.badField }, 400)
     return
   }
@@ -1161,6 +1176,11 @@ function handleConsumeRun(res: RouteContext['res'], rawId: string, body: unknown
   const bot = resolvePermissionBot()
   if (!bot.ok) {
     logger.warn({ id: parsed.id, reason: 'permission_bot_unavailable', why: bot.reason }, 'Approval run consume refused')
+    try {
+      recordRunConsumeRefusal({ id: parsed.id, reason: 'permission_bot_unavailable', consumer: parsed.consumer, runId: parsed.runId })
+    } catch (err) {
+      logger.warn({ err, id: parsed.id }, 'Approval run consume refusal event could not be written')
+    }
     json(res, { ok: false, reason: 'permission_bot_unavailable' }, 503)
     return
   }
@@ -1420,8 +1440,9 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     try {
       body = JSON.parse((await readBody(req)).toString())
     } catch {
-      logger.warn({ id: normalizeApprovalId(consumeRunMatch[1]), reason: 'bad_request', field: 'body' }, 'Approval run consume refused')
-      json(res, { ok: false, reason: 'bad_request', field: 'body' }, 400)
+      // Unparseable JSON is a 'body' field error like any other: same answer,
+      // same log line, same event row (handleConsumeRun owns all three).
+      handleConsumeRun(res, consumeRunMatch[1], undefined)
       return true
     }
     handleConsumeRun(res, consumeRunMatch[1], body)
