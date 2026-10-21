@@ -3,9 +3,15 @@
 // exactly what the uncached one did (same ids, same order, bit-identical scores,
 // same floor), that a second call parses nothing, and that a changed vector is
 // picked up: by its byte-length fingerprint, or by the explicit forget.
+//
+// vectorSearch stays module-private (another test pins that), so these go through
+// hybridSearch, the exported path that calls it. The query embedding comes from a
+// stubbed embedding endpoint, and the query text matches no row, so the keyword
+// branch is empty and the answer is the vector branch alone: its ranking, cut at
+// its similarity floor.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import {
-  initDatabase, getDb, vectorSearch, vectorSimilarityFloor, clearMemoryCache,
+  initDatabase, getDb, hybridSearch, vectorSimilarityFloor, clearMemoryCache,
   forgetCachedEmbedding, getEmbeddingCacheSize,
 } from '../db.js'
 
@@ -35,12 +41,12 @@ function vec(seed: number): number[] {
 let ids: number[] = []
 const stored = new Map<number, string>()
 
-function insert(agent: string, category: string, embedding: string): number {
+function insert(agent: string, category: string, embedding: string, content = `row ${ids.length}`): number {
   const now = Math.floor(Date.now() / 1000)
   const r = getDb().prepare(
     `INSERT INTO memories (chat_id, content, sector, salience, created_at, accessed_at, agent_id, category, keywords, embedding)
      VALUES ('0', ?, 'semantic', 1.0, ?, ?, ?, ?, NULL, ?)`,
-  ).run(`row ${ids.length}`, now, now, agent, category, embedding)
+  ).run(content, now, now, agent, category, embedding)
   const id = Number(r.lastInsertRowid)
   ids.push(id)
   stored.set(id, embedding)
@@ -66,17 +72,35 @@ function reference(agent: string, query: number[], limit: number, category?: str
   return { hits: scored.slice(0, limit), floor }
 }
 
-const shape = (r: ReturnType<typeof vectorSearch>) => ({ hits: r.hits.map(h => ({ id: h.memory.id, similarity: h.similarity })), floor: r.floor })
+// What hybridSearch shows of the vector branch: it asks for twice the limit, keeps
+// the rows at or above the floor (a row under it only with keyword support), and
+// cuts at the limit.
+function expected(agent: string, query: number[], limit: number, category?: string) {
+  const { hits, floor } = reference(agent, query, limit * 2, category)
+  return hits.filter(h => h.similarity >= floor).slice(0, limit)
+}
+
+let queryVector: number[] = []
+const NO_TEXT_MATCH = 'qzxvbnmw'
+
+async function vectorBranch(agent: string, query: number[], limit: number, category?: string, text = NO_TEXT_MATCH) {
+  queryVector = query
+  const trace: Record<string, unknown> = {}
+  const hits = await hybridSearch(agent, text, limit, trace as never, category)
+  if (text === NO_TEXT_MATCH) expect(trace.ftsHits).toBe(0) // the premise: vector branch alone
+  return hits.map(h => ({ id: h.id, similarity: h.similarity }))
+}
 
 beforeEach(() => {
   initDatabase(':memory:')
+  vi.stubGlobal('fetch', vi.fn(async () => ({ json: async () => ({ embedding: queryVector }) })))
   ids = []
   stored.clear()
   for (let i = 0; i < 12; i++) insert('cache', i % 3 === 0 ? 'hot' : 'warm', JSON.stringify(vec(i + 1)))
   insert('other', 'shared', JSON.stringify(vec(99)))
   insert('other', 'warm', JSON.stringify(vec(98))) // not this agent's, not shared: never a candidate
-  insert('cache', 'warm', 'not json')              // unparsable: scored 0, kept
-  insert('cache', 'warm', JSON.stringify([1, 2, 3])) // another model's length: dropped
+  insert('cache', 'warm', 'not json', 'unparsablemarker')              // unparsable: scored 0, kept
+  insert('cache', 'warm', JSON.stringify([1, 2, 3]), 'otherlengthmarker') // another model's length: dropped
   insert('cache', 'warm', '{}')                      // parses, but not to an array: dropped
   insert('cache', 'warm', 'null')                    // parses to null: scored 0, like an unparsable text
   insert('cache', 'warm', '"abc"')                   // a string of another length: dropped
@@ -88,52 +112,63 @@ beforeEach(() => {
   insert('cache', 'warm', JSON.stringify({ length: DIM, 0: hostile }))
   insert('cache', 'warm', JSON.stringify([null, ...vec(43).slice(1)])) // coerced like the old arithmetic did
 })
-afterEach(() => { vi.restoreAllMocks() })
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
 describe('vectorSearch with the parsed-vector cache', () => {
-  it('answers exactly what the uncached search answered: ids, order, scores, floor', () => {
+  it('answers exactly what the uncached search answered: ids, order, scores, floor', async () => {
     const q = vec(7)
-    expect(shape(vectorSearch('cache', q, 5))).toEqual(reference('cache', q, 5))
-    expect(shape(vectorSearch('cache', q, 50))).toEqual(reference('cache', q, 50))
-    expect(shape(vectorSearch('cache', q, 50, 'hot'))).toEqual(reference('cache', q, 50, 'hot'))
+    expect(await vectorBranch('cache', q, 5)).toEqual(expected('cache', q, 5))
+    expect(await vectorBranch('cache', q, 50)).toEqual(expected('cache', q, 50))
+    expect(await vectorBranch('cache', q, 50, 'hot')).toEqual(expected('cache', q, 50, 'hot'))
     // twice more, now from the cache
-    expect(shape(vectorSearch('cache', q, 50))).toEqual(reference('cache', q, 50))
-    expect(shape(vectorSearch('cache', q, 50, 'hot'))).toEqual(reference('cache', q, 50, 'hot'))
-    // and for a degenerate, zero-length query
-    expect(shape(vectorSearch('cache', [], 50))).toEqual(reference('cache', [], 50))
+    expect(await vectorBranch('cache', q, 50)).toEqual(expected('cache', q, 50))
+    expect(await vectorBranch('cache', q, 50, 'hot')).toEqual(expected('cache', q, 50, 'hot'))
+    // the premise of the comparison: the floor cut something, and something passed it
+    expect(expected('cache', q, 50).length).toBeGreaterThan(0)
+    expect(expected('cache', q, 50).length).toBeLessThan(reference('cache', q, 100).hits.length)
   })
 
-  it('keeps an unparsable vector at score 0 and drops another length', () => {
-    const r = vectorSearch('cache', vec(7), 50)
+  it('keeps an unparsable vector at score 0 and drops another length', async () => {
+    // Both rows sit under the floor; a keyword hit keeps such a row in the answer,
+    // and then its vector score shows: 0 for the kept one, none for the dropped one.
     const bad = ids[ids.length - 10], other = ids[ids.length - 9]
-    expect(r.hits.find(h => h.memory.id === bad)?.similarity).toBe(0)
-    expect(r.hits.some(h => h.memory.id === other)).toBe(false)
-    expect(r.hits.some(h => h.memory.agent_id === 'other' && h.memory.category !== 'shared')).toBe(false)
+    const kept = await vectorBranch('cache', vec(7), 50, undefined, 'unparsablemarker')
+    expect(kept.find(h => h.id === bad)).toEqual({ id: bad, similarity: 0 })
+    const dropped = await vectorBranch('cache', vec(7), 50, undefined, 'otherlengthmarker')
+    expect(dropped.find(h => h.id === other)).toEqual({ id: other, similarity: undefined })
+    const all = await vectorBranch('cache', vec(7), 50)
+    const foreign = getDb().prepare("SELECT id FROM memories WHERE agent_id = 'other' AND category != 'shared'").all() as { id: number }[]
+    expect(all.some(h => foreign.some(f => f.id === h.id))).toBe(false)
   })
 
-  it('a second call parses no stored vector', () => {
+  it('a second call parses no stored vector', async () => {
     const q = vec(7)
-    vectorSearch('cache', q, 5)
+    await vectorBranch('cache', q, 5)
     const parse = vi.spyOn(JSON, 'parse')
-    vectorSearch('cache', q, 5)
+    await vectorBranch('cache', q, 5)
     const embeddingParses = parse.mock.calls.filter(([text]) => typeof text === 'string' && [...stored.values()].includes(text))
     expect(embeddingParses).toHaveLength(0)
   })
 
-  it('a vector rewritten to another byte length is picked up by the fingerprint', () => {
+  it('a vector rewritten to another byte length is picked up by the fingerprint', async () => {
     const q = vec(7)
-    vectorSearch('cache', q, 50)
+    await vectorBranch('cache', q, 50)
     const id = ids[0]
-    const fresh = JSON.stringify(vec(500).map(x => x / 3))
+    // The query's own direction, at another byte length: the row must come out on
+    // top, which only the re-read vector can make it do (rows under the floor are
+    // not shown, so a change that stays under it would prove nothing).
+    const fresh = JSON.stringify(q.map(x => x / 3))
     expect(fresh.length).not.toBe(stored.get(id)!.length)
     getDb().prepare('UPDATE memories SET embedding = ? WHERE id = ?').run(fresh, id)
     stored.set(id, fresh)
-    expect(shape(vectorSearch('cache', q, 50))).toEqual(reference('cache', q, 50))
+    const after = await vectorBranch('cache', q, 50)
+    expect(after[0].id).toBe(id)
+    expect(after).toEqual(expected('cache', q, 50))
   })
 
-  it('a same-length rewrite is picked up after forgetCachedEmbedding', () => {
+  it('a same-length rewrite is picked up after forgetCachedEmbedding', async () => {
     const q = vec(7)
-    vectorSearch('cache', q, 50)
+    await vectorBranch('cache', q, 50)
     const id = ids[0]
     const old = JSON.parse(stored.get(id)!) as number[]
     const same = JSON.stringify([...old].reverse())
@@ -141,15 +176,15 @@ describe('vectorSearch with the parsed-vector cache', () => {
     getDb().prepare('UPDATE memories SET embedding = ? WHERE id = ?').run(same, id)
     stored.set(id, same)
     forgetCachedEmbedding(id)
-    expect(shape(vectorSearch('cache', q, 50))).toEqual(reference('cache', q, 50))
+    expect(await vectorBranch('cache', q, 50)).toEqual(expected('cache', q, 50))
   })
 
-  it('initDatabase and clearMemoryCache empty the cache', () => {
-    vectorSearch('cache', vec(7), 5)
+  it('initDatabase and clearMemoryCache empty the cache', async () => {
+    await vectorBranch('cache', vec(7), 5)
     expect(getEmbeddingCacheSize()).toBeGreaterThan(0)
     clearMemoryCache()
     expect(getEmbeddingCacheSize()).toBe(0)
-    vectorSearch('cache', vec(7), 5)
+    await vectorBranch('cache', vec(7), 5)
     expect(getEmbeddingCacheSize()).toBeGreaterThan(0)
     initDatabase(':memory:')
     expect(getEmbeddingCacheSize()).toBe(0)

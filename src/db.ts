@@ -5442,7 +5442,7 @@ interface VectorHit {
   similarity: number
 }
 
-export function vectorSearch(
+function vectorSearch(
   agentId: string,
   queryEmbedding: number[],
   limit: number = 10,
