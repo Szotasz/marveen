@@ -94,7 +94,8 @@ export function authenticateAccessToken(token: string, now: number): McpPrincipa
             u.username AS u_username
        FROM mcp_oauth_tokens t
        JOIN mcp_oauth_grants g ON g.id = t.grant_id
-       JOIN dashboard_users u ON u.username = g.username COLLATE NOCASE
+       -- Exact match: the namespace is 'mcp:' + the stored username, so a grant must not follow a case change.
+       JOIN dashboard_users u ON u.username = g.username COLLATE BINARY
       WHERE t.token_hash = ? AND t.kind = 'access' AND t.expires_at > ? AND g.revoked_at IS NULL AND u.disabled = 0`
   ).get(sha256Hex(token), now) as (Record<string, any>) | undefined
   if (!row) return undefined

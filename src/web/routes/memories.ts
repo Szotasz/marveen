@@ -478,6 +478,7 @@ export async function tryHandleMemories(ctx: RouteContext): Promise<boolean> {
     }
 
     const agentId = agent_id || MAIN_AGENT_ID
+    if (isReservedOwner(agentId)) { json(res, { error: MCP_NAMESPACE_ERROR }, 400); return true }
     const stats = { hot: 0, warm: 0, cold: 0, shared: 0 }
     let imported = 0
 
@@ -662,7 +663,7 @@ Respond ONLY with JSON, nothing else:
     // the row to this agent" -- an editor updating someone else's memory
     // attributes the WRITE without changing the OWNER.
     const { content: rawContent, category, tier, agent_id, keywords, updated_by, prepend, if_version } = JSON.parse(body.toString()) as { content?: string; category?: string; tier?: string; agent_id?: string; keywords?: string; updated_by?: string; prepend?: string; if_version?: string }
-    if (isReservedOwner(agent_id)) { json(res, { error: MCP_NAMESPACE_ERROR }, 400); return true }
+    if (isReservedOwner(agent_id) || isReservedOwner(getMemoryById(id)?.agent_id)) { json(res, { error: MCP_NAMESPACE_ERROR }, 400); return true }
     // MEMVERSION930. Both checks below read the row and write it inside this one
     // synchronous stretch (better-sqlite3, no await in between), so nothing can
     // interleave: the compare and the write are atomic with respect to every
@@ -768,6 +769,7 @@ Respond ONLY with JSON, nothing else:
     const id = parseInt(memUpdateMatch[1], 10)
     const before = getMemoryById(id)
     if (!before) { json(res, { error: 'Memory not found' }, 404); return true }
+    if (isReservedOwner(before.agent_id)) { json(res, { error: MCP_NAMESPACE_ERROR }, 400); return true }
 
     // MARVEENGAPS1020 (a): the delete is final (the versions go with the row),
     // and the autonomy config ships data_delete at level 1, locked. Below level 3

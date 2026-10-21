@@ -268,6 +268,7 @@ describe('E1 feature switch', () => {
     ['POST', '/oauth/token'],
     ['POST', '/mcp'],
     ['GET', '/api/memory-mcp/tokens'],
+    ['POST', '/api/memory-mcp/tokens/1/revoke'],
   ]
 
   async function statuses(): Promise<number[]> {
@@ -898,5 +899,159 @@ describe('E4 token management, E7 storage', () => {
     expect((await rpc(t.access, 'ping')).status).toBe(200)
     getDb().prepare('UPDATE dashboard_users SET disabled = 1 WHERE id = ?').run(alice.id)
     expect((await rpc(t.access, 'ping')).status).toBe(401)
+  })
+})
+
+// ---------------------------------------------------------------- review round 1
+
+describe('review round 1', () => {
+  const sha = (s: string) => createHash('sha256').update(s).digest('hex')
+
+  it('PKCE: the challenge is exactly 43 base64url chars and the verifier follows RFC 7636', async () => {
+    await start()
+    const alice = makeUser('alice')
+    const clientId = await registerOk()
+    const long = await authorizeGet(authorizeQuery(clientId, 'a'.repeat(50)), alice.cookie)
+    expect(long.status === 400 || /[?&]error=invalid_request/.test(long.headers.get('location') ?? '')).toBe(true)
+    expect(codeFrom(long)).toBeNull()
+
+    // A one-character verifier whose S256 challenge is well formed: the code must not redeem with it.
+    const weak = 'a'
+    const page = await authorizeGet(authorizeQuery(clientId, createHash('sha256').update(weak).digest('base64url')), alice.cookie)
+    expect(page.status).toBe(200)
+    const approved = await consentPost({ nonce: nonceFrom(await page.text()), mode: 'rw', decision: 'approve' }, alice.cookie)
+    const r = await tokenPost({ grant_type: 'authorization_code', code: codeFrom(approved)!, redirect_uri: REDIRECT, client_id: clientId, code_verifier: weak })
+    expect(r.status).toBe(400)
+  })
+
+  it('refresh fails for a disabled user', async () => {
+    await start()
+    const alice = makeUser('alice')
+    const t = await connect(alice)
+    getDb().prepare('UPDATE dashboard_users SET disabled = 1 WHERE id = ?').run(alice.id)
+    const r = await tokenPost({ grant_type: 'refresh_token', refresh_token: t.refresh, client_id: t.clientId })
+    expect(r.status).toBe(400)
+  })
+
+  it('a replayed refresh token revokes the family even with a wrong client_id', async () => {
+    await start()
+    const alice = makeUser('alice')
+    const t = await connect(alice)
+    const n1 = await (await tokenPost({ grant_type: 'refresh_token', refresh_token: t.refresh, client_id: t.clientId })).json() as { access_token: string }
+    expect((await tokenPost({ grant_type: 'refresh_token', refresh_token: t.refresh, client_id: 'someone-else' })).status).toBe(400)
+    expect((await rpc(n1.access_token, 'ping')).status).toBe(401)
+  })
+
+  it('a code presented with the wrong client is burned', async () => {
+    await start()
+    const alice = makeUser('alice')
+    const c = await getCode(alice)
+    const other = await registerOk()
+    expect((await tokenPost({ grant_type: 'authorization_code', code: c.code, redirect_uri: REDIRECT, client_id: other, code_verifier: c.verifier })).status).toBe(400)
+    expect((await tokenPost({ grant_type: 'authorization_code', code: c.code, redirect_uri: REDIRECT, client_id: c.clientId, code_verifier: c.verifier })).status).toBe(400)
+  })
+
+  it('the stored values are the sha256 of the code and the tokens', async () => {
+    await start()
+    const alice = makeUser('alice')
+    const { clientId, code, verifier } = await getCode(alice)
+    const body = await (await tokenPost({ grant_type: 'authorization_code', code, redirect_uri: REDIRECT, client_id: clientId, code_verifier: verifier })).json() as { access_token: string; refresh_token: string }
+    const codes = (getDb().prepare('SELECT code_hash FROM mcp_oauth_codes').all() as Array<{ code_hash: string }>).map((x) => x.code_hash)
+    const tokens = (getDb().prepare('SELECT token_hash FROM mcp_oauth_tokens').all() as Array<{ token_hash: string }>).map((x) => x.token_hash)
+    expect(codes).toContain(sha(code))
+    expect(tokens).toEqual(expect.arrayContaining([sha(body.access_token), sha(body.refresh_token)]))
+  })
+
+  it('a redirect with a port or user info is refused', async () => {
+    await start()
+    expect((await register('https://claude.ai:8443/api/mcp/auth_callback')).status).toBe(400)
+    expect((await register('https://user@claude.ai/api/mcp/auth_callback')).status).toBe(400)
+  })
+
+  it('a grant does not follow a username whose case changed', async () => {
+    await start()
+    const alice = makeUser('alice')
+    const t = await connect(alice)
+    getDb().prepare("UPDATE dashboard_users SET username = 'ALICE' WHERE id = ?").run(alice.id)
+    expect((await rpc(t.access, 'ping')).status).toBe(401)
+  })
+
+  it('a grant revoked while the request body is still arriving is refused', async () => {
+    await start()
+    const alice = makeUser('alice')
+    const t = await connect(alice)
+    await remember(t.access, 'alice keeps bees')
+    const grants = (await (await fetch(`${base}/api/memory-mcp/tokens`, { headers: { cookie: alice.cookie } })).json() as { tokens: Array<{ id: string }> }).tokens
+    const payload = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'search', arguments: { query: 'bees' } } })
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = http.request(`${base}/mcp`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${t.access}`, 'Content-Length': String(Buffer.byteLength(payload)) } })
+      req.on('response', (res) => { res.resume(); resolve(res.statusCode ?? 0) })
+      req.on('error', reject)
+      req.write(payload.slice(0, 10))
+      setTimeout(() => {
+        fetch(`${base}/api/memory-mcp/tokens/${grants[0]!.id}/revoke`, { method: 'POST', headers: { cookie: alice.cookie } })
+          .then((r) => { expect(r.status).toBe(200); req.end(payload.slice(10)) }, reject)
+      }, 300)
+    })
+    expect(status).toBe(401)
+  })
+
+  it('the LIKE fallback of search is owner-scoped too', async () => {
+    await start()
+    const alice = makeUser('alice')
+    const bob = makeUser('bob')
+    const ta = await connect(alice)
+    const tb = await connect(bob)
+    saveAgentMemory('helper-agent', 'xyzzy agent fact', 'warm')
+    await remember(tb.access, 'xyzzy bob fact')
+    const aliceId = await remember(ta.access, 'xyzzy alice fact')
+    // 'yzz' is inside the word, so the FTS prefix query misses and the LIKE fallback answers.
+    const found = toolJson(await callTool(ta.access, 'search', { query: 'yzz' }))
+    expect(found.results.map((x: { id: string }) => x.id)).toEqual([String(aliceId)])
+  })
+
+  it('a w token cannot reach the other tools directly', async () => {
+    await start()
+    const alice = makeUser('alice')
+    const rw = await connect(alice, 'rw')
+    const id = await remember(rw.access, 'alice reads novels', { topic: 'hobby' })
+    const w = await connect(alice, 'w')
+    expect(refused(await callTool(w.access, 'list_topics', {}))).toBe(true)
+    expect(refused(await callTool(w.access, 'update_memory', { id: String(id), content: 'changed' }))).toBe(true)
+    expect(refused(await callTool(w.access, 'forget', { id: String(id) }))).toBe(true)
+    expect(rowById(id)?.content).toBe('alice reads novels')
+  })
+
+  it('a forgotten row stays readable through the REST versions route', async () => {
+    await start()
+    const alice = makeUser('alice')
+    const t = await connect(alice)
+    const id = await remember(t.access, 'alice owns a red bike')
+    toolJson(await callTool(t.access, 'forget', { id: String(id) }))
+    const r = await fetch(`${base}/api/memories/${id}/versions`, { headers: { Authorization: `Bearer ${DASH_TOKEN}` } })
+    expect(r.status).toBe(200)
+    const versions = await r.json() as Array<{ operation: string; content: string }>
+    expect(versions.some((v) => v.operation === 'delete' && v.content === 'alice owns a red bike')).toBe(true)
+  })
+
+  it('the REST API cannot change, move, delete or import into a connector row (controls: an agent row can)', async () => {
+    await start()
+    const api = async (method: string, path: string, body?: unknown) =>
+      (await fetch(`${base}${path}`, { method, headers: { Authorization: `Bearer ${DASH_TOKEN}`, 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) })).status
+    const mcpId = saveAgentMemory('mcp:alice', 'alice prefers tea', 'warm').id
+    const agentId = saveAgentMemory('helper-agent', 'agent row', 'warm').id
+
+    expect(await api('PUT', `/api/memories/${agentId}`, { content: 'agent row v2' })).toBe(200)
+    expect(await api('PUT', `/api/memories/${mcpId}`, { content: 'alice prefers coffee' })).toBe(400)
+    expect(await api('PUT', `/api/memories/${mcpId}`, { content: 'alice prefers tea', category: 'shared' })).toBe(400)
+    expect(await api('PUT', `/api/memories/${mcpId}`, { content: 'alice prefers tea', agent_id: 'helper-agent' })).toBe(400)
+    expect(await api('PATCH', `/api/memories/${mcpId}`, { prepend: 'x ' })).toBe(400)
+    expect(await api('DELETE', `/api/memories/${mcpId}`)).toBe(400)
+    expect(rowById(mcpId)).toMatchObject({ agent_id: 'mcp:alice', content: 'alice prefers tea' })
+
+    expect(await api('POST', '/api/memories/import', { agent_id: 'some-agent', chunks: ['imported control'] })).toBe(200)
+    expect(await api('POST', '/api/memories/import', { agent_id: 'mcp:alice', chunks: ['planted'] })).toBe(400)
+    expect(rowsOf('mcp:alice').map((x) => x.content)).toEqual(['alice prefers tea'])
+    expect(await api('DELETE', `/api/memories/${agentId}`)).toBe(200)
   })
 })

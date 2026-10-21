@@ -103,7 +103,7 @@ function search(args: Record<string, unknown>, ctx: ToolContext): ToolOutcome {
       rows = db.prepare(
         `SELECT ${COLS} FROM memories m JOIN memories_fts f ON m.id = f.rowid
           WHERE f.memories_fts MATCH ? AND m.agent_id = ?${topicSql} ORDER BY f.rank LIMIT ?`
-      ).all(terms.map((t) => `${t}*`).join(' OR '), ctx.owner, ...extra, limit) as Row[]
+      ).all(terms.map((t) => `"${t}"*`).join(' OR '), ctx.owner, ...extra, limit) as Row[]
     } catch { rows = [] }
   }
   if (rows.length === 0) {
@@ -154,8 +154,11 @@ function remember(args: Record<string, unknown>, ctx: ToolContext): ToolOutcome 
   const topic = str(args.topic)?.trim().slice(0, 100) || null
   const tags = str(args.tags)?.trim().slice(0, 500) || undefined
   const db = getDb()
-  const { id } = saveAgentMemory(ctx.owner, content, 'warm', tags)
-  db.prepare('UPDATE memories SET topic_key = ?, source = ? WHERE id = ?').run(topic, ctx.source, id)
+  const id = db.transaction(() => {
+    const saved = saveAgentMemory(ctx.owner, content, 'warm', tags)
+    db.prepare('UPDATE memories SET topic_key = ?, source = ? WHERE id = ?').run(topic, ctx.source, saved.id)
+    return saved.id
+  })()
   return { ok: true, result: ctx.mode === 'w' ? { saved: true } : { id: String(id), saved: true } }
 }
 

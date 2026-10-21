@@ -99,7 +99,8 @@ export async function handleRegister(ctx: RouteContext, st: OAuthState): Promise
 function redirectAllowed(uri: string, hosts: string[]): boolean {
   let u: URL
   try { u = new URL(uri) } catch { return false }
-  return u.protocol === 'https:' && u.hash === '' && !uri.includes('#') && hosts.includes(u.hostname.toLowerCase())
+  return u.protocol === 'https:' && u.hash === '' && !uri.includes('#') && u.port === '' && u.username === '' && u.password === '' &&
+    hosts.includes(u.hostname.toLowerCase())
 }
 
 // ---------------------------------------------------------------- authorize
@@ -151,7 +152,7 @@ export function handleAuthorizeGet(ctx: RouteContext, st: OAuthState): void {
 
   const state = q.get('state')
   const challenge = q.get('code_challenge') ?? ''
-  if (q.get('response_type') !== 'code' || !/^[A-Za-z0-9\-._~]{43,128}$/.test(challenge) || q.get('code_challenge_method') !== 'S256') {
+  if (q.get('response_type') !== 'code' || !/^[A-Za-z0-9_-]{43}$/.test(challenge) || q.get('code_challenge_method') !== 'S256') {
     return redirectTo(res, redirectUri, { error: 'invalid_request', state })
   }
 
@@ -248,7 +249,9 @@ export async function handleToken(ctx: RouteContext): Promise<void> {
     if (row.client_id !== param(get, 'client_id') || row.redirect_uri !== param(get, 'redirect_uri')) {
       return tokenError(res, 'invalid_grant', 'Client or redirect URI mismatch')
     }
-    const computed = Buffer.from(createHash('sha256').update(param(get, 'code_verifier')).digest('base64url'))
+    const verifier = param(get, 'code_verifier')
+    if (!/^[A-Za-z0-9\-._~]{43,128}$/.test(verifier)) return tokenError(res, 'invalid_grant', 'PKCE verification failed')
+    const computed = Buffer.from(createHash('sha256').update(verifier).digest('base64url'))
     const expected = Buffer.from(row.code_challenge)
     if (computed.length !== expected.length || !timingSafeEqual(computed, expected)) {
       return tokenError(res, 'invalid_grant', 'PKCE verification failed')
@@ -263,14 +266,15 @@ export async function handleToken(ctx: RouteContext): Promise<void> {
     const row = store.getToken(store.sha256Hex(param(get, 'refresh_token')), 'refresh')
     if (!row || row.expires_at <= now) return tokenError(res, 'invalid_grant', 'Invalid or expired refresh token')
     const grant = store.getGrant(row.grant_id)
-    if (!grant || grant.revoked_at !== null || grant.client_id !== param(get, 'client_id')) {
-      return tokenError(res, 'invalid_grant', 'Invalid refresh token')
-    }
+    if (!grant || grant.revoked_at !== null) return tokenError(res, 'invalid_grant', 'Invalid refresh token')
+    // A replay revokes the family whoever presents it, so the check comes before the client match.
     if (row.used_at !== null) {
       store.revokeGrant(grant.id, now)
       logger.warn({ grant_id: grant.id }, 'memory-mcp: refresh token replay, grant revoked')
       return tokenError(res, 'invalid_grant', 'Refresh token already used')
     }
+    if (grant.client_id !== param(get, 'client_id')) return tokenError(res, 'invalid_grant', 'Invalid refresh token')
+    if (!store.getActiveUser(grant.username)) return tokenError(res, 'invalid_grant', 'User is not available')
     store.markTokenUsed(row.token_hash, now)
     return issueTokens(res, grant.id, now)
   }

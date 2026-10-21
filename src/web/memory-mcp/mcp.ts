@@ -23,6 +23,9 @@ export async function handleMcp(ctx: RouteContext, publicUrl: string): Promise<v
     return sendJson(res, 405, { error: 'Method not allowed' }, { Allow: 'POST' })
   }
 
+  const unauthorized = () => sendJson(res, 401, { error: 'invalid_token' }, {
+    'WWW-Authenticate': `Bearer resource_metadata="${publicUrl}/.well-known/oauth-protected-resource"`,
+  })
   const header = String(req.headers.authorization ?? '')
   const m = /^Bearer\s+(\S+)$/i.exec(header)
   const now = store.nowSec()
@@ -30,9 +33,7 @@ export async function handleMcp(ctx: RouteContext, publicUrl: string): Promise<v
   if (!principal) {
     // Drain the request so the connection stays usable.
     req.resume()
-    return sendJson(res, 401, { error: 'invalid_token' }, {
-      'WWW-Authenticate': `Bearer resource_metadata="${publicUrl}/.well-known/oauth-protected-resource"`,
-    })
+    return unauthorized()
   }
 
   let raw: string
@@ -42,12 +43,15 @@ export async function handleMcp(ctx: RouteContext, publicUrl: string): Promise<v
     if (err instanceof BodyTooLargeError) return sendJson(res, 413, { error: 'Payload too large' })
     throw err
   }
+  // The body may arrive slowly; a grant revoked meanwhile must not get its request through.
+  const current = store.authenticateAccessToken(m![1]!, store.nowSec())
+  if (!current) return unauthorized()
   let msg: unknown
   try { msg = JSON.parse(raw) } catch { return sendJson(res, 400, rpcError(null, -32700, 'Parse error')) }
   if (Array.isArray(msg)) return sendJson(res, 400, rpcError(null, -32600, 'Batch requests are not supported'))
   if (!msg || typeof msg !== 'object') return sendJson(res, 400, rpcError(null, -32600, 'Invalid Request'))
 
-  store.touchGrant(principal.grant.id, now, principal.grant.last_used_at)
+  store.touchGrant(current.grant.id, now, current.grant.last_used_at)
 
   const body = msg as { id?: unknown; method?: unknown; params?: unknown }
   if (body.id === undefined || body.id === null) {
@@ -56,7 +60,7 @@ export async function handleMcp(ctx: RouteContext, publicUrl: string): Promise<v
     return
   }
   const id = body.id
-  const mode = principal.grant.mode
+  const mode = current.grant.mode
   const params = (body.params && typeof body.params === 'object' ? body.params : {}) as Record<string, unknown>
   const ok = (result: unknown) => sendJson(res, 200, { jsonrpc: '2.0', id, result })
 
@@ -78,9 +82,9 @@ export async function handleMcp(ctx: RouteContext, publicUrl: string): Promise<v
       const name = typeof params.name === 'string' ? params.name : ''
       const args = (params.arguments && typeof params.arguments === 'object' && !Array.isArray(params.arguments) ? params.arguments : {}) as Record<string, unknown>
       const out = runTool(name, args, {
-        owner: 'mcp:' + principal.username,
+        owner: 'mcp:' + current.username,
         mode,
-        source: buildSource(principal.clientName, principal.grant.label),
+        source: buildSource(current.clientName, current.grant.label),
       })
       if (!out) return sendJson(res, 200, rpcError(id, -32602, `Tool not available: ${name}`))
       if (!out.ok) return ok({ content: [{ type: 'text', text: out.message }], isError: true })
