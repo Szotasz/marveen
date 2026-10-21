@@ -115,6 +115,27 @@ export function ensureKanbanClaimSchema(d: Database.Database): boolean {
   return true
 }
 
+// Parsed-embedding cache for vectorSearch. vectorSearch used to SELECT * every embedded
+// memory and JSON.parse each vector (~16 KB of JSON text) on EVERY call, synchronously:
+// on a store with ~8400 vectors that held the event loop for 0.8-2.2 s per call, and
+// memory recall runs it on every inbound message. The parsed vectors live
+// here, keyed by memory id and fingerprinted by octet_length(embedding), which SQLite
+// reads from the record header without loading the value. Every in-process write of an
+// embedding also drops its entry (forgetCachedEmbedding), and initDatabase() and
+// clearMemoryCache() empty the cache. A tool that rewrites vectors from OUTSIDE this
+// process is caught by the fingerprint in the normal case (a different vector almost
+// always has a different JSON byte length) and in every case by a restart. Declared
+// above initDatabase so no code path can reach it inside its temporal dead zone.
+// vec: the stored text parsed to an array of plain numbers (the normal case).
+// Otherwise vec is null and `parsed` holds whatever JSON.parse returned, or `failed`
+// says it threw; such a row is scored by the old code verbatim (see vectorSearch).
+type CachedEmbedding = { len: number; vec: Float64Array | null; parsed: unknown; failed: boolean; normSq: number }
+const embeddingCache = new Map<number, CachedEmbedding>()
+const EMBEDDING_CACHE_MAX = 200_000
+export function forgetCachedEmbedding(id: number | bigint): void { embeddingCache.delete(Number(id)) }
+/** Exposed for tests only. */
+export function getEmbeddingCacheSize(): number { return embeddingCache.size }
+
 // dbPathOverride is for tests: pass ':memory:' (or a temp file path) to open an
 // isolated database instead of the real store/claudeclaw.db. ':memory:' has no
 // path to chmod, so the file-precreate (openSync 'wx') and tightenDbPermissions
@@ -123,6 +144,7 @@ export function ensureKanbanClaimSchema(d: Database.Database): boolean {
 // tightening logic on a throwaway file instead of touching the prod DB. The
 // STORE_DIR mkdir stays prod-only; a temp-file override owns its own directory.
 export function initDatabase(dbPathOverride?: string): void {
+  embeddingCache.clear() // ids are per database: a re-init (tests, ':memory:') must not reuse vectors
   const useOverride = dbPathOverride !== undefined
   const isMemory = dbPathOverride === ':memory:'
   if (!useOverride) mkdirSync(STORE_DIR, { recursive: true })
@@ -1888,6 +1910,7 @@ export function saveMemory(
   generateEmbedding(content).then(emb => {
     if (emb) {
       db.prepare('UPDATE memories SET embedding = ? WHERE id = ?').run(JSON.stringify(emb), id)
+      forgetCachedEmbedding(id)
     }
   }).catch(() => {})
 }
@@ -2190,6 +2213,7 @@ function memoryCacheInvalidate(agentId: string): void {
 /** Exposed for tests and diagnostics only. */
 export function clearMemoryCache(): void {
   memoryCache.clear()
+  embeddingCache.clear()
 }
 
 /** Exposed for tests only. */
@@ -2220,6 +2244,7 @@ export function saveAgentMemory(
   generateEmbedding(content + (keywords ? ' ' + keywords : '')).then(emb => {
     if (emb) {
       db.prepare('UPDATE memories SET embedding = ? WHERE id = ?').run(JSON.stringify(emb), id)
+      forgetCachedEmbedding(id)
     }
   }).catch(() => {})
 
@@ -2368,6 +2393,7 @@ export function deleteMemoryById(id: number): boolean {
     db.prepare('DELETE FROM memory_versions WHERE memory_id = ?').run(id)
     db.prepare('DELETE FROM memories WHERE id = ?').run(id)
   })()
+  forgetCachedEmbedding(id)
   // A shared row is listed for every agent, so evicting one owner is not enough.
   if (before.category === 'shared') clearMemoryCache()
   else if (before.agent_id) memoryCacheInvalidate(before.agent_id)
@@ -5416,7 +5442,7 @@ interface VectorHit {
   similarity: number
 }
 
-function vectorSearch(
+export function vectorSearch(
   agentId: string,
   queryEmbedding: number[],
   limit: number = 10,
@@ -5424,35 +5450,87 @@ function vectorSearch(
 ): { hits: VectorHit[]; floor: number } {
   // Same push-down as searchAgentMemories: this branch scores EVERY embedded
   // row in JS, so filtering in SQL is both correct and strictly less work.
-  const rows = (category
+  // Same WHERE as the full-row read it replaces, but only the id and the
+  // vector's byte length: the vectors come from embeddingCache.
+  const cands = (category
     ? db.prepare(
-        "SELECT * FROM memories WHERE embedding IS NOT NULL AND (agent_id = ? OR category = 'shared') AND category = ?"
+        "SELECT id, octet_length(embedding) AS elen FROM memories WHERE embedding IS NOT NULL AND (agent_id = ? OR category = 'shared') AND category = ?"
       ).all(agentId, category)
     : db.prepare(
-        "SELECT * FROM memories WHERE embedding IS NOT NULL AND (agent_id = ? OR category = 'shared')"
-      ).all(agentId)) as Memory[]
+        "SELECT id, octet_length(embedding) AS elen FROM memories WHERE embedding IS NOT NULL AND (agent_id = ? OR category = 'shared')"
+      ).all(agentId)) as { id: number; elen: number }[]
+
+  // Parse only what is new or changed since the last call.
+  let getVec: Database.Statement | null = null
+  const live: { id: number; entry: CachedEmbedding }[] = []
+  for (const c of cands) {
+    let entry = embeddingCache.get(c.id)
+    if (!entry || entry.len !== c.elen) {
+      getVec ??= db.prepare('SELECT embedding, octet_length(embedding) AS elen FROM memories WHERE id = ?')
+      const r = getVec.get(c.id) as { embedding: string | null; elen: number } | undefined
+      if (!r || r.embedding == null) { embeddingCache.delete(c.id); continue }
+      // A vector that does not parse keeps its former treatment: scored 0, not dropped.
+      let vec: Float64Array | null = null
+      let parsed: unknown = undefined
+      let failed = false
+      let normSq = 0
+      try { parsed = JSON.parse(r.embedding) } catch { failed = true }
+      if (!failed && Array.isArray(parsed) && parsed.every(x => typeof x === 'number')) {
+        vec = Float64Array.from(parsed as number[])
+        for (let i = 0; i < vec.length; i++) normSq += vec[i] * vec[i]
+        parsed = undefined
+      }
+      entry = { len: r.elen, vec, parsed, failed, normSq }
+      // The bound holds at every insert, not only between calls.
+      if (embeddingCache.size >= EMBEDDING_CACHE_MAX) embeddingCache.clear()
+      embeddingCache.set(c.id, entry)
+    }
+    live.push({ id: c.id, entry })
+  }
 
   // A vector written by a DIFFERENT model has a different length, and the
   // cosine loop walks the QUERY's length: the missing entries read as undefined
   // and the score comes back NaN. NaN compares false against everything, so it
   // neither sorts to the top nor raises -- the search quietly returns junk.
   // Drop the mismatches instead, so a half-migrated table degrades to "fewer
-  // results" rather than "wrong results".
-  const scored = rows.flatMap((m): VectorHit[] => {
-    try {
-      const emb = JSON.parse(m.embedding!) as number[]
-      if (emb.length !== queryEmbedding.length) return []
-      return [{ memory: m, similarity: cosineSimilarity(queryEmbedding, emb) }]
-    } catch {
-      return [{ memory: m, similarity: 0 }]
+  // results" rather than "wrong results". The score is cosineSimilarity's,
+  // bit for bit: each sum is accumulated in index order, as there.
+  let normQ = 0
+  for (let i = 0; i < queryEmbedding.length; i++) normQ += queryEmbedding[i] * queryEmbedding[i]
+  const scored = live.flatMap(({ id, entry }): { id: number; similarity: number }[] => {
+    if (entry.vec === null) {
+      // Anything but an array of numbers (never written by this code): the old
+      // per-row code verbatim, so its result, including a throw scored 0, is unchanged.
+      if (entry.failed) return [{ id, similarity: 0 }]
+      try {
+        const emb = entry.parsed as number[]
+        if (emb.length !== queryEmbedding.length) return []
+        return [{ id, similarity: cosineSimilarity(queryEmbedding, emb) }]
+      } catch {
+        return [{ id, similarity: 0 }]
+      }
     }
+    if (entry.vec.length !== queryEmbedding.length) return []
+    let dot = 0
+    for (let i = 0; i < queryEmbedding.length; i++) dot += queryEmbedding[i] * entry.vec[i]
+    return [{ id, similarity: dot / (Math.sqrt(normQ) * Math.sqrt(entry.normSq)) }]
   })
 
   // The floor comes from EVERY scored row, before the cut to `limit`: the
   // plateau is a property of the corpus, not of the top of the list.
   const floor = vectorSimilarityFloor(scored.map(s => s.similarity))
   scored.sort((a, b) => b.similarity - a.similarity)
-  return { hits: scored.slice(0, limit), floor }
+  const top = scored.slice(0, limit)
+  if (top.length === 0) return { hits: [], floor }
+  // Full rows only for the hits, one primary-key read each (no parameter list that
+  // grows with `limit`); a row deleted between the two reads is skipped.
+  const getRow = db.prepare('SELECT * FROM memories WHERE id = ?')
+  const hits: VectorHit[] = []
+  for (const t of top) {
+    const memory = getRow.get(t.id) as Memory | undefined
+    if (memory) hits.push({ memory, similarity: t.similarity })
+  }
+  return { hits, floor }
 }
 
 /**
@@ -5578,6 +5656,7 @@ export async function backfillEmbeddings(): Promise<BackfillResult> {
     const emb = await generateEmbedding(text)
     if (emb) {
       db.prepare('UPDATE memories SET embedding = ? WHERE id = ?').run(JSON.stringify(emb), row.id)
+      forgetCachedEmbedding(row.id)
       count++
     }
     // Small delay to not overwhelm Ollama
