@@ -77,6 +77,7 @@ describe('memory search LIKE fallback treats % and _ literally', () => {
   it('global search: q=_ matches nothing, q=% only the literal hit', async () => {
     expect(await search({ q: '_' })).toEqual([])
     expect((await search({ q: '%' })).map(r => r.content)).toEqual([PERCENT])
+    expect(await search({ q: '%', tier: 'hot' })).toEqual([])
   })
 
   it('a backslash in the query is literal too', async () => {
