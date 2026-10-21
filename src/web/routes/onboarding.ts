@@ -6,6 +6,7 @@ import { PROJECT_ROOT, STORE_DIR, CHANNEL_PROVIDER, MAIN_AGENT_ID } from '../../
 import { logger } from '../../logger.js'
 import { resolveFromPath } from '../../platform.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
+import { assertEnvEntries } from '../../env.js'
 import { channelStateDir, readChannelToken } from '../../channel-provider.js'
 import { sessionExistsOnHost } from '../agent-process.js'
 import { channelsRestartCommand, MAIN_CHANNELS_SESSION } from '../main-agent.js'
@@ -187,6 +188,7 @@ function agentsRunning(): boolean {
 // Atomic, idempotent .env update for one key: drop any prior line for the key,
 // keep every other line verbatim, append the new value, chmod 600. Never sed.
 function setEnvKey(key: string, value: string): void {
+  assertEnvEntries([[key, value]])
   let lines: string[] = []
   try { lines = readFileSync(ENV_FILE, 'utf-8').split('\n') } catch { /* fresh .env */ }
   const kept = lines.filter((l) => l.length > 0 && !l.startsWith(key + '='))

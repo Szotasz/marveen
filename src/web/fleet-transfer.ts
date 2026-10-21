@@ -89,6 +89,28 @@ export interface FleetIdentity {
   CHANNEL_PROVIDER: string
 }
 
+// The keys an import may take over from mainAgent.identity: exactly what
+// exportMainAgent writes there. The import used to copy EVERY string key into
+// config-overrides.json and .env, and /api/fleet/import runs on the fleet's
+// shared dashboard token, so any agent could plant an arbitrary .env key that
+// way (SUDO_AGENTS among them: review of #2101, reproduced twice). A value is
+// taken only as a non-empty single line: .env is line-based, so a newline in
+// a value would start a key of its own.
+export const FLEET_IDENTITY_KEYS = ['MAIN_AGENT_ID', 'BOT_NAME', 'BRAND_NAME', 'OWNER_NAME', 'CHANNEL_PROVIDER'] as const satisfies readonly (keyof FleetIdentity)[]
+
+export function pickFleetIdentity(raw: unknown): { identity: Record<string, string>; dropped: string[] } {
+  const identity: Record<string, string> = {}
+  const dropped: string[] = []
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { identity, dropped }
+  for (const [key, val] of Object.entries(raw as Record<string, unknown>)) {
+    if (!(FLEET_IDENTITY_KEYS as readonly string[]).includes(key)) { dropped.push(key); continue }
+    if (typeof val !== 'string' || val.length === 0) continue
+    if (/[\r\n\0]/.test(val)) { dropped.push(key); continue }
+    identity[key] = val
+  }
+  return { identity, dropped }
+}
+
 // Main agent lives at PROJECT_ROOT (not under agents/), so it needs its own export section.
 export interface MainAgentExport {
   agentId: string  // source MAIN_AGENT_ID -- kept for backward-compat; identity supersedes this
@@ -1297,20 +1319,20 @@ export function importFleet(
     const applyWarnings: string[] = []
     const sourceIdentity = fleet.mainAgent?.identity
     const sourceAgentId = sourceIdentity?.MAIN_AGENT_ID ?? fleet.mainAgent?.agentId
-    if (sourceAgentId && typeof sourceAgentId === 'string') {
+    if (sourceAgentId && typeof sourceAgentId === 'string' && !/[\r\n\0]/.test(sourceAgentId)) {
       const overridesPath = join(STORE_DIR, 'config-overrides.json')
       // JSONCLOBBER926B: a corrupt config-overrides.json is refused, not
       // replaced by the identity keys alone (it holds every dashboard setting).
       // The throw takes the import's own failure path below: tracked writes are
       // cleaned up and the error names the file.
       const overrides = readJsonObjectForWrite(overridesPath)
+      const picked = pickFleetIdentity(sourceIdentity)
+      if (picked.dropped.length > 0) {
+        logger.warn({ dropped: picked.dropped }, 'Fleet import: identity keys outside the identity set (or multi-line values) ignored')
+        applyWarnings.push(`Figyelmen kívül hagyott identitás-kulcsok: ${picked.dropped.join(', ')}.`)
+      }
       if (sourceIdentity && typeof sourceIdentity === 'object') {
-        // Full identity takeover: iterate all keys generically (no hardcoded names)
-        for (const [key, val] of Object.entries(sourceIdentity)) {
-          if (typeof val === 'string' && val.length > 0) {
-            overrides[key] = val
-          }
-        }
+        Object.assign(overrides, picked.identity)
       } else {
         // Backward-compat: old export without identity -- only set MAIN_AGENT_ID
         overrides['MAIN_AGENT_ID'] = sourceAgentId
@@ -1323,14 +1345,9 @@ export function importFleet(
       // DIRECTLY from .env. Without this the main agent would launch under the
       // pre-import identity (`${old-id}-channels`) while the dashboard looks for
       // `${new-id}-channels` and reports the main agent as down.
-      const envIdentity: Record<string, string> = {}
-      if (sourceIdentity && typeof sourceIdentity === 'object') {
-        for (const [key, val] of Object.entries(sourceIdentity)) {
-          if (typeof val === 'string' && val.length > 0) envIdentity[key] = val
-        }
-      } else {
-        envIdentity['MAIN_AGENT_ID'] = sourceAgentId
-      }
+      const envIdentity: Record<string, string> = sourceIdentity && typeof sourceIdentity === 'object'
+        ? { ...picked.identity }
+        : { MAIN_AGENT_ID: sourceAgentId }
       updateEnvFile(envIdentity)
 
       applyWarnings.push(

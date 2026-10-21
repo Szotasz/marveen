@@ -1,7 +1,29 @@
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+
+// The checkout is never written: PROJECT_ROOT points at a temp sandbox (so
+// agentDir() resolves under <sandbox>/agents), and the sandbox borrows the
+// real templates/ and scripts/ read-only through symlinks.
+const sandbox = vi.hoisted(() => {
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const fs = require('node:fs') as typeof import('node:fs')
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const path = require('node:path') as typeof import('node:path')
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const os = require('node:os') as typeof import('node:os')
+  const realRoot = path.resolve(__dirname, '..', '..')
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'sudo-optout-'))
+  for (const d of ['templates', 'scripts', 'src']) fs.symlinkSync(path.join(realRoot, d), path.join(root, d))
+  fs.mkdirSync(path.join(root, 'agents'))
+  fs.mkdirSync(path.join(root, 'store'))
+  return { root, realRoot }
+})
+vi.mock('../config.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../config.js')>()
+  return { ...actual, PROJECT_ROOT: sandbox.root, STORE_DIR: join(sandbox.root, 'store') }
+})
 
 // The sudo grant LOOSENS the fleet deny floor, so its source must not be
 // writable by the agent it frees (review of d4c4f3a4). The install .env is
@@ -25,7 +47,7 @@ import { writeAgentSettingsFromProfile, agentSettingsPath, FLEET_BASELINE_DENY, 
 import { agentDir, agentMaySudo, parseSudoAgents } from '../web/agent-config.js'
 import { listProfileTemplates, loadProfileTemplate, resolveProfilePlaceholders } from '../web/profiles.js'
 import { SETTINGS_REGISTRY, getSettingDefinition } from '../config-registry.js'
-import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
+import { MAIN_AGENT_ID } from '../config.js'
 
 const NAME = 'sudo-optout-test-agent'
 const OTHER = 'sudo-optout-test-other'
@@ -50,6 +72,15 @@ beforeEach(() => {
 afterEach(() => {
   for (const dir of dirs) rmSync(dir, { recursive: true, force: true })
 })
+afterAll(() => {
+  // the symlinks are removed, never followed: rmSync does not recurse through them
+  rmSync(sandbox.root, { recursive: true, force: true })
+})
+
+it('writes only inside the temp sandbox, never into the checkout', () => {
+  expect(agentDir(NAME).startsWith(join(sandbox.root, 'agents'))).toBe(true)
+  expect(agentDir(NAME).startsWith(join(sandbox.realRoot, 'agents'))).toBe(false)
+})
 
 describe('the sudo pair the opt-out lifts', () => {
   it('is part of the floor (a renamed rule would make the opt-out a silent no-op)', () => {
@@ -69,7 +100,7 @@ describe('the grant comes from the install .env, not from anything the agent wri
   it('SUDO_AGENTS is not a registry key, so POST /api/settings (shared token) cannot write it', () => {
     expect(getSettingDefinition('SUDO_AGENTS')).toBeUndefined()
     expect(SETTINGS_REGISTRY.filter(d => /SUDO/i.test(d.key))).toEqual([])
-    const route = readFileSync(join(PROJECT_ROOT, 'src/web/routes/settings.ts'), 'utf-8')
+    const route = readFileSync(join(sandbox.realRoot, 'src/web/routes/settings.ts'), 'utf-8')
     expect(route).toContain('Unknown setting key')
   })
 
