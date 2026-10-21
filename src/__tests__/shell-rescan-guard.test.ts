@@ -49,14 +49,36 @@ describe('the five refused shapes, each with the safe form next to it', () => {
     expect(allowed(bash(`cat > f.txt <<'EOF'\nnote ${BT}date${BT}\nEOF`))).toBe(true)
     expect(denied(bash('cat > f.txt <<EOF\nwho $(id)\nEOF'))).toBe(true)
     expect(allowed(bash("cat > f.txt <<'EOF'\nwho $(id)\nEOF"))).toBe(true)
+    // a $( ) inside $(( )) in the body still runs; plain arithmetic is fine
+    expect(denied(bash('cat > f.txt <<EOF\nn=$(( $(id -u) + 1 ))\nEOF'))).toBe(true)
+    expect(allowed(bash('cat > f.txt <<EOF\nn=$(( 2 + 1 ))\nEOF'))).toBe(true)
+  })
+
+  it('B: two heredocs on one line: each body follows its own header, and the line after both bodies is scanned', () => {
+    expect(denied(bash(`cat <<FIRST <<SECOND\nsafe\nFIRST\ndanger ${BT}id${BT}\nSECOND`))).toBe(true)
+    expect(allowed(bash(`cat <<'FIRST' <<'SECOND'\n${BT}id${BT}\nFIRST\n$(id)\nSECOND`))).toBe(true)
+    expect(denied(bash(`cat <<'FIRST' <<'SECOND'\nx\nFIRST\ny\nSECOND\neval "$x"`))).toBe(true)
+    // a document is read once: two lines after it, the second is still a command
+    expect(denied(bash(`cat <<'EOF'\nx\nEOF\necho ok\neval "$x"`))).toBe(true)
   })
 
   it('A: interpreter options that take an operand do not hide the payload after them', () => {
     expect(denied(bash('python3 -W ignore -c "print(\'$(id)\')"'))).toBe(true)
     expect(denied(bash('python3 -X dev -c "print(\'$(id)\')"'))).toBe(true)
     expect(denied(bash('node --require ./x.js -e "console.log(\'$(id)\')"'))).toBe(true)
-    // control: the operand of -m is the script, so what follows is its arguments
-    expect(allowed(bash('python3 -m http.server -c "$(id)"'))).toBe(true)
+    expect(denied(bash('bash -o pipefail -c "echo $(id)"'))).toBe(true)
+    expect(denied(bash('python3 --check-hash-based-pycs always -c "print(\'$(id)\')"'))).toBe(true)
+  })
+
+  it('A: the interpreter stays armed to the end of the command; only -- ends its options', () => {
+    // no table of which options take an operand: after -m too, an inline flag still counts
+    expect(denied(bash('python3 -m http.server -c "$(id)"'))).toBe(true)
+    // control: an option that is not an inline flag arms nothing
+    expect(allowed(bash('python3 tool.py -rf "$(id)"'))).toBe(true)
+    // control: after --, -c is the script's own argument
+    expect(allowed(bash('python3 -- script.py -c "$(id)"'))).toBe(true)
+    // but a -- right after the inline flag is not the payload: bash runs the next word
+    expect(denied(bash('bash -c -- "echo $(id)"'))).toBe(true)
   })
 
   it('more payload shapes: clustered and glued flags, env, and a nested quote inside $( )', () => {
@@ -65,6 +87,10 @@ describe('the five refused shapes, each with the safe form next to it', () => {
     expect(denied(bash('python3 -c"print(\'$(id)\')"'))).toBe(true)
     expect(denied(bash('python3 -c "x = $(echo "$HOME")"'))).toBe(true)
     expect(denied(bash('\\eval "$CMD"'))).toBe(true)
+    expect(denied(bash('node "--eval=console.log(\'$(id)\')"'))).toBe(true)
+    expect(denied(bash('php -r "echo \'$(id)\';"'))).toBe(true)
+    expect(denied(bash('node -p "\'$(id)\'"'))).toBe(true)
+    expect(denied(bash('node --print "\'$(id)\'"'))).toBe(true)
   })
 
   it('left alone on purpose: a here-string, `command -v eval`, and a single-quoted shell payload (the stated blind spot)', () => {
@@ -79,6 +105,7 @@ describe('the five refused shapes, each with the safe form next to it', () => {
 
   it('C: eval in command position is refused; the word eval as an argument is not', () => {
     expect(denied(bash('eval "$CMD"'))).toBe(true)
+    expect(denied(bash('coproc eval "$CMD"'))).toBe(true)
     expect(allowed(bash('grep -n eval notes.txt'))).toBe(true)
   })
 
@@ -90,6 +117,10 @@ describe('the five refused shapes, each with the safe form next to it', () => {
   it('a backtick inside $(( )) in double quotes still runs and is refused; an escaped backtick is literal text', () => {
     expect(denied(bash(`echo "$(( ${BT}id -u${BT} + 1 ))"`))).toBe(true)
     expect(allowed(bash(`echo "literal \\${BT}id\\${BT} text"`))).toBe(true)
+  })
+
+  it('a $(( )) nested past the depth limit does not hide a backtick after it', () => {
+    expect(denied(bash(`echo "${'$(( '.repeat(3000)}1${' ))'.repeat(3000)} ${BT}id${BT}"`))).toBe(true)
   })
 
   it('the denial names the rule and the remedy, and the decision is logged', () => {
@@ -105,6 +136,12 @@ describe('escape and backstop', () => {
     expect(allowed(bash(`echo "x ${BT}id${BT}" # rescan-ok: deliberate`))).toBe(true)
     expect(logLines().at(-1)).toMatchObject({ decision: 'allow-escape', reason: 'deliberate' })
     expect(denied(bash(`echo "x ${BT}id${BT} # rescan-ok: smuggled"`))).toBe(true)
+  })
+
+  it('the escape comment after a heredoc header counts; the same heredoc without it is refused', () => {
+    expect(allowed(bash('cat > f.txt <<EOF # rescan-ok: deliberate\nnote $(date)\nEOF'))).toBe(true)
+    expect(logLines().at(-1)).toMatchObject({ decision: 'allow-escape', reason: 'deliberate' })
+    expect(denied(bash('cat > f.txt <<EOF\nnote $(date)\nEOF'))).toBe(true)
   })
 
   it('the same command is refused three times, let through once, then refused again (the key is forgotten)', () => {
