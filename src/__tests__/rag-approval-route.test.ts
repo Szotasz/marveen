@@ -218,7 +218,10 @@ describe('POST /api/approvals/:id/permission-bot', () => {
   it('an expired request is refused (409 expired)', async () => {
     const p = await postD({ timeout: 60 })
     vi.useFakeTimers({ toFake: ['Date'] })
-    vi.setSystemTime(new Date((T0 + 61) * 1000))
+    // Relative to the row's own deadline, not to the module-load time T0: the
+    // request is filed at the REAL now, which on a loaded machine is seconds
+    // after T0 (the old T0 + 61 then fell INSIDE the 60 s window: flaky, B2).
+    vi.setSystemTime(new Date((getApproval(p.id)!.timeout_at! + 1) * 1000))
     expect(await press(p)).toMatchObject({ status: 409, body: { ok: false, reason: 'expired' } })
     expect(status(p.id)).toBe('pending')
   })
