@@ -116,6 +116,69 @@ function senderCheckOrExit(letter: Record<string, unknown>): void {
   if (said) console.error(said)
 }
 
+// --- Daily-log entry after a successful send (card f90928e3, part B) --------
+// One line in agent brainy's daily log: who got a letter, about what, when.
+// Never the body, the cc/bcc list, or an attachment (or its name): the
+// approval payload is erased on purpose when it is consumed, and this entry
+// must not bring that content back. It is strictly best-effort and runs only
+// AFTER sendMail returned: nothing in here can refuse, delay beyond its short
+// timeout, or change the exit code or stdout of the send.
+const DAILY_LOG_AGENT = 'brainy'
+const DAILY_LOG_TIMEOUT_MS = 3000
+const SUBJECT_MAX = 80
+
+function truncateSubject(subject: string): string {
+  const chars = Array.from(subject.replace(/\s+/g, ' ').trim())
+  return chars.length <= SUBJECT_MAX ? chars.join('') : chars.slice(0, SUBJECT_MAX - 1).join('') + '…'
+}
+
+/** Local Europe/Budapest time, "YYYY-MM-DD HH:MM". */
+function budapestNow(now: Date = new Date()): string {
+  return new Intl.DateTimeFormat('sv-SE', {
+    timeZone: 'Europe/Budapest', year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+  }).format(now).replace(',', '')
+}
+
+// Env first, then the install .env next to this script's checkout (the same
+// order the hooks use), never an install-specific hardcode.
+function installSetting(key: string, fallback: string): string {
+  const fromEnv = process.env[key]?.trim()
+  if (fromEnv) return fromEnv
+  try {
+    for (const line of readFileSync(resolve(REPO_ROOT, '.env'), 'utf-8').split('\n')) {
+      if (line.startsWith(`${key}=`)) {
+        const v = line.slice(key.length + 1).trim().replace(/^["']|["']$/g, '')
+        if (v) return v
+      }
+    }
+  } catch { /* no .env: the default stands */ }
+  return fallback
+}
+
+function sentEntry(to: string[], subject: string): string {
+  return `[Levél elküldve] ${to.join(', ')}, tárgy: ${truncateSubject(subject)}, ${budapestNow()}`
+}
+
+/** Never throws and never exits; any failure is one line on stderr. */
+async function postSentEntry(to: string[], subject: string): Promise<void> {
+  try {
+    const token = readFileSync(resolve(REPO_ROOT, 'store', '.dashboard-token'), 'utf-8').trim()
+    if (!token) throw new Error('empty dashboard token')
+    const port = Number(installSetting('WEB_PORT', '3420'))
+    if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('bad WEB_PORT')
+    const res = await fetch(`http://127.0.0.1:${port}/api/daily-log`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent_id: DAILY_LOG_AGENT, content: sentEntry(to, subject) }),
+      signal: AbortSignal.timeout(DAILY_LOG_TIMEOUT_MS),
+    })
+    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+  } catch (err) {
+    console.error(`graph-mail: a levél elment, de a napló-bejegyzés nem készült el (${err instanceof Error ? err.message : String(err)})`)
+  }
+}
+
 async function main(): Promise<void> {
   const cmd = process.argv[2]
   switch (cmd) {
@@ -178,6 +241,7 @@ async function main(): Promise<void> {
         contentType: has('html') ? 'HTML' : 'Text',
       })
       console.log(`sent to ${to}`)
+      await postSentEntry(toList, subject)
       break
     }
     default:
