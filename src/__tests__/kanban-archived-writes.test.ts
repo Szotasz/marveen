@@ -85,13 +85,14 @@ describe('a write on an ARCHIVED card says so; on a live card the answer is unch
   it('PUT: {ok, archived:true} on the archived card, and the field is still written', async () => {
     const out = await call(`/api/kanban/${GONE}`, 'PUT', { priority: 'high', actor: 'teszt' })
     expect(out.status).toBe(200)
-    expect(out.body).toEqual({ ok: true, archived: true })
+    // `version` is the card's new row version (PUT answers it on every write).
+    expect(out.body).toEqual({ ok: true, version: readCard(GONE).version, archived: true })
     expect(readCard(GONE).priority).toBe('high')
   })
 
-  it('NEGATIVE: PUT on a live card: exactly {ok:true}', async () => {
+  it('NEGATIVE: PUT on a live card: exactly {ok:true, version}', async () => {
     const out = await call(`/api/kanban/${LIVE}`, 'PUT', { priority: 'high', actor: 'teszt' })
-    expect(out.body).toEqual({ ok: true })
+    expect(out.body).toEqual({ ok: true, version: readCard(LIVE).version })
   })
 })
 

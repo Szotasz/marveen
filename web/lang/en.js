@@ -303,6 +303,8 @@ window._i18n.en = {
   'kanban.toast.comment_no_author': 'Select an author for the comment',
   'kanban.toast.comment_failed': 'Comment not saved: {msg}',
   'kanban.toast.save_error_msg': 'Save error: {msg}',
+  'kanban.toast.stale_version':  'The card changed meanwhile -- nothing was saved. Reopen the card and try again.',
+  'kanban.toast.stale_version_form': 'The card changed meanwhile -- nothing was saved. Copy your text, close this window, reopen the card and make your edit there.',
   'kanban.toast.breakdown_rejected': 'Breakdown dismissed',
   'kanban.confirm.delete_subtask': 'Delete subtask: "{title}"?',
   'kanban.breakdown.generating': 'Generating...',

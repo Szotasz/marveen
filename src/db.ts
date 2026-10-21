@@ -346,6 +346,17 @@ export function initDatabase(dbPathOverride?: string): void {
   } catch {
     // column already exists
   }
+  // Migration: row version for the PUT's lost-update check (see writeKanbanCard).
+  // Not updated_at: that is seconds-granular, so two writers inside the same
+  // second read the same value and the check would pass -- exactly the case it
+  // exists for. NOT NULL DEFAULT 0 gives every existing row a defined value, so
+  // there is no "version unknown" state to guess at. Same AFTER-the-rebuild rule
+  // as the two columns above.
+  try {
+    db.exec('ALTER TABLE kanban_cards ADD COLUMN version INTEGER NOT NULL DEFAULT 0')
+  } catch {
+    // column already exists
+  }
   // Claim lock columns + release triggers. Run AFTER the
   // 'testing' table rebuild above on purpose: that rebuild copies an explicit
   // column list, so a column added before it would be dropped on an old DB.
@@ -777,6 +788,39 @@ export function initDatabase(dbPathOverride?: string): void {
       UPDATE kanban_cards SET updated_at = CAST(strftime('%s','now') AS INTEGER) WHERE id = NEW.id;
     END
   `)
+
+  // The row version moves whenever a column the whole-card PUT writes back
+  // changes (KANBAN_WRITABLE_FIELDS), whoever the writer is: updateKanbanCard,
+  // /move, the archive sweep, or a script writing the table directly. A version
+  // bumped only in the TypeScript write paths would miss those last ones, and a
+  // stale PUT would then pass the check and overwrite them.
+  //
+  // Not the other columns on purpose: comments, dispatch and claim stamps and
+  // updated_at do not travel back in a PUT body, so a change there cannot be
+  // overwritten by one, and bumping on them would refuse writes that lose nothing.
+  //
+  // Dropped and recreated on every start rather than IF NOT EXISTS: the column
+  // list comes from KANBAN_WRITABLE_FIELDS, and a field added there later must
+  // reach the trigger on existing databases too. No recursion: the inner UPDATE
+  // sets only `version`, which is not in the OF list.
+  //
+  // The drop and the create are ONE immediate transaction: between two separate
+  // statements another process could write a card with no trigger in place (that
+  // write would not move the version, and an older copy would then pass the
+  // check), and two processes starting together could both drop and then collide
+  // on the create.
+  const versionedCols = [...KANBAN_WRITABLE_FIELDS]
+  db.transaction(() => {
+    db.exec('DROP TRIGGER IF EXISTS kanban_cards_version_bump')
+    db.exec(`
+      CREATE TRIGGER kanban_cards_version_bump
+      AFTER UPDATE OF ${versionedCols.join(', ')} ON kanban_cards
+      FOR EACH ROW WHEN ${versionedCols.map((c) => `NEW.${c} IS NOT OLD.${c}`).join(' OR ')}
+      BEGIN
+        UPDATE kanban_cards SET version = version + 1 WHERE id = NEW.id;
+      END
+    `)
+  }).immediate()
 
   // KANBANCTXDEAD824 follow-up: paragraph-length card titles cost tokens in
   // every agent that reads the board, and the 2026-08-24 sweep moved ~1.3 MB
@@ -2727,6 +2771,10 @@ export interface KanbanCard {
   // is woken (kanban -> agent dispatch). NULL = never dispatched; the once-only
   // guard so re-dragging a card does not re-prompt the agent.
   dispatched_at: number | null
+  // Row version, moved by a trigger on every change to a writable field. A PUT
+  // that sends back the version it read is refused (409) if the card changed
+  // since, instead of overwriting the change (writeKanbanCard).
+  version: number
   // Seconds this card has spent SITTING IN in_progress, summed over every stay
   // there (kanban_card_events), plus the open stay up to now when it is in
   // progress right now. This is wall-clock time in the column, NOT hours of
@@ -3121,13 +3169,46 @@ export function kanbanWriteClearsDispatch(nextStatus: string | null | undefined)
   return nextStatus !== 'in_progress'
 }
 
+export type KanbanCardWriteResult =
+  | { ok: true; version: number }
+  | { ok: false; reason: 'not_found' }
+  | { ok: false; reason: 'stale'; current_version: number }
+
+// The boolean form for callers that make no claim about what they read: true when
+// the card exists (written or a no-op), false when it does not.
 export function updateKanbanCard(
   id: string,
-  fields: Partial<Omit<KanbanCard, 'id' | 'created_at'>>,
+  fields: Partial<Omit<KanbanCard, 'id' | 'created_at' | 'version'>>,
   actor?: string,
 ): boolean {
+  return writeKanbanCard(id, fields, actor).ok
+}
+
+// `expectedVersion` is the version the caller based its body on. A client that
+// GETs a card, sits on it and PUTs the whole object back would otherwise overwrite
+// whatever changed meanwhile: by then the stale values are its own request body,
+// and nothing here can tell them from a deliberate edit. With the version it is
+// told it lost ('stale' -> 409 at the route) and nothing is written. Without it
+// (null/undefined) the write is last-writer-wins, as before.
+//
+// For such a caller the check is also in the UPDATE itself (`version = ?`), not
+// only in the comparison below: another process writing the table between that
+// read and this write would otherwise slip through. A caller without a version
+// gets the unconditional write it always got.
+export function writeKanbanCard(
+  id: string,
+  fields: Partial<Omit<KanbanCard, 'id' | 'created_at' | 'version'>>,
+  actor?: string,
+  expectedVersion?: number | null,
+): KanbanCardWriteResult {
   const card = getKanbanCard(id)
-  if (!card) return false
+  if (!card) return { ok: false, reason: 'not_found' }
+  // Before the no-op check on purpose: a caller holding an old copy is told so even
+  // when its body happens to change nothing, rather than reading the ok as "my copy
+  // is current".
+  if (expectedVersion != null && expectedVersion !== card.version) {
+    return { ok: false, reason: 'stale', current_version: card.version }
+  }
   const now = Math.floor(Date.now() / 1000)
   // Coerce only what the CALLER sent, never the merged record: normalising a
   // legacy value already in the row would make an unrelated PUT look like a
@@ -3143,17 +3224,25 @@ export function updateKanbanCard(
   // failed write should have preserved. A no-op is not a failure: return true
   // (the card exists) but touch nothing.
   const realChange = KANBAN_WRITABLE_FIELDS.some((k) => f[k] !== card[k])
-  if (!realChange) return true
+  if (!realChange) return { ok: true, version: card.version }
+  // Bound twice as two anonymous parameters: a numbered `?N` would alias the N-th
+  // parameter of the whole statement, not this clause.
+  const guard = expectedVersion ?? null
   // ONE TRANSACTION for the card write and every row it owes (card f6fba9ec,
   // a review finding): the UPDATE, the ancestor stamps, the status event and the
   // field events either all happen or none does. Before, a row insert that
   // threw (an actor SQLite cannot bind: a PUT with actor true answered 500)
   // left the card changed with no row saying who changed it.
-  return db.transaction((): boolean => {
+  return db.transaction((): KanbanCardWriteResult => {
     const changed = db.prepare(
       `UPDATE kanban_cards SET title=?, description=?, test_steps=?, status=?, assignee=?, priority=?, project=?, parent_id=?, due_date=?, start_date=?, sort_order=?, updated_at=?, archived_at=?
-       WHERE id=?`
-    ).run(f.title, f.description, f.test_steps, f.status, f.assignee, f.priority, f.project, f.parent_id, f.due_date, f.start_date ?? null, f.sort_order, f.updated_at, f.archived_at, id).changes > 0
+       WHERE id=? AND (? IS NULL OR version=?)`
+    ).run(f.title, f.description, f.test_steps, f.status, f.assignee, f.priority, f.project, f.parent_id, f.due_date, f.start_date ?? null, f.sort_order, f.updated_at, f.archived_at, id, guard, guard).changes > 0
+    if (!changed) {
+      // Gone, or (only with a version) moved on between the read above and this write.
+      const current = getKanbanCard(id)
+      return current ? { ok: false, reason: 'stale', current_version: current.version } : { ok: false, reason: 'not_found' }
+    }
     // Same dispatched_at rule as moveKanbanCard (kanbanWriteClearsDispatch). Before,
     // a card the PUT took out of in_progress kept its stamp, and the next /move to
     // in_progress woke nobody. The PUT only clears: it never dispatches.
@@ -3183,20 +3272,21 @@ export function updateKanbanCard(
     // row as STORED after the write, as text, so a value echoed back in another
     // shape that the column stores the same way (a due date sent as the string
     // "1790000000" for a stored 1790000000) is not a change.
-    if (changed) {
-      const stored = getKanbanCard(id)
-      if (stored) {
-        const insertField = db.prepare(
-          'INSERT INTO kanban_card_field_events (card_id, field, old_value, new_value, actor, created_at) VALUES (?, ?, ?, ?, ?, ?)'
-        )
-        for (const field of KANBAN_AUDITED_FIELDS) {
-          const before = card[field] == null ? null : String(card[field])
-          const after = stored[field] == null ? null : String(stored[field])
-          if (before !== after) insertField.run(id, field, before, after, actor ?? null, now)
-        }
+    const stored = getKanbanCard(id)
+    if (stored) {
+      const insertField = db.prepare(
+        'INSERT INTO kanban_card_field_events (card_id, field, old_value, new_value, actor, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+      )
+      for (const field of KANBAN_AUDITED_FIELDS) {
+        const before = card[field] == null ? null : String(card[field])
+        const after = stored[field] == null ? null : String(stored[field])
+        if (before !== after) insertField.run(id, field, before, after, actor ?? null, now)
       }
     }
-    return changed
+    // Read back, not card.version + 1: the trigger may move it more than once in
+    // one write (the title gate's own UPDATE re-fires it), and the caller chains
+    // its next write on the value actually stored.
+    return { ok: true, version: stored?.version ?? card.version + 1 }
   })()
 }
 

@@ -1167,15 +1167,19 @@ export function importFleet(
           `INSERT OR IGNORE INTO kanban_cards
            (id, title, description, test_steps, status, assignee, priority, project,
             due_date, start_date, sort_order, created_at, updated_at, archived_at, parent_id, dispatched_at,
-            claimed_by, claimed_at, claim_expires_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            claimed_by, claimed_at, claim_expires_at, version)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         ).run(c.id, c.title, c.description ?? null, c.test_steps ?? null, c.status, c.assignee ?? null,
           c.priority, c.project ?? null, c.due_date ?? null, c.start_date ?? null, c.sort_order,
           c.created_at, c.updated_at, c.archived_at ?? null, c.parent_id ?? null, c.dispatched_at ?? null,
           // The claim lock rides along: a card someone was working on stays
           // held on the new host until the holder releases it or its TTL ends,
           // so a host move cannot hand the same card to a second agent.
-          c.claimed_by ?? null, c.claimed_at ?? null, c.claim_expires_at ?? null)
+          c.claimed_by ?? null, c.claimed_at ?? null, c.claim_expires_at ?? null,
+          // The row version rides along too, so a copy read before the move is still
+          // checked against the same number after it. An export from an install
+          // without the column has none: the NOT NULL column starts at 0.
+          Number.isSafeInteger(c.version) && c.version >= 0 ? c.version : 0)
       }
 
       // kanban comments (idempotent: card_id + content)

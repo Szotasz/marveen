@@ -303,6 +303,8 @@ window._i18n.hu = {
   'kanban.toast.comment_no_author': 'Válassz szerzőt a megjegyzéshez',
   'kanban.toast.comment_failed': 'Megjegyzés nem mentődött: {msg}',
   'kanban.toast.save_error_msg': 'Hiba a mentés során: {msg}',
+  'kanban.toast.stale_version':  'A kártya közben megváltozott, a mentés nem történt meg. Nyisd meg újra a kártyát, és próbáld újra.',
+  'kanban.toast.stale_version_form': 'A kártya közben megváltozott, a mentés nem történt meg. Másold ki a szöveged, zárd be az ablakot, nyisd meg újra a kártyát, és úgy írd át.',
   'kanban.toast.breakdown_rejected': 'Breakdown elvetve',
   'kanban.confirm.delete_subtask': 'Biztosan törlöd az alfeladatot: "{title}"?',
   'kanban.breakdown.generating': 'Generálás...',
