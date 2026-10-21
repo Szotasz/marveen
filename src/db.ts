@@ -2623,16 +2623,41 @@ export interface DailyLogBackfillResult {
   created: number
   /** mirrors a --apply run would write (dry run) */
   wouldCreate: number
+  /** log rows whose mirror memory already exists unlinked (fleet import): link row only */
+  relinked: number
+  /** relinks a --apply run would do (dry run) */
+  wouldRelink: number
   /** refused by the content filter or empty: no mirror, log row untouched */
   skipped: number
   /** rows whose mirror insert threw (the others are unaffected) */
   failed: number
 }
 
+// Looks for a memory that already IS the mirror of this log row but has no link
+// row: a fleet import brings daily_logs and the `[Napló ...]` memories without
+// daily_log_memory. Same agent, exact mirror content, same created_at; memories
+// in `taken` (claimed by an earlier identical row in this run) are skipped.
+function findUnlinkedMirror(
+  handle: Database.Database,
+  row: { agent_id: string; date: string; content: string; created_at: number },
+  taken: Set<number>,
+  linkTable: boolean,
+): number | null {
+  const m = dailyLogMirrorText(row.date, row.created_at, row.content)
+  const cands = handle.prepare(
+    `SELECT id FROM memories WHERE agent_id = ? AND content = ? AND created_at = ?${linkTable
+      ? ' AND NOT EXISTS (SELECT 1 FROM daily_log_memory k WHERE k.memory_id = memories.id)'
+      : ''} ORDER BY id`
+  ).all(row.agent_id, m.content, row.created_at) as { id: number }[]
+  const hit = cands.find(c => !taken.has(c.id))
+  return hit ? hit.id : null
+}
+
 /**
  * Mirrors every daily_logs row that has no link yet, with its own created_at.
  * Idempotent: the link table is the "done" marker, so a second run finds
- * nothing to do. Dry run unless `apply`. Embeddings are left to the existing
+ * nothing to do. A row whose mirror memory already exists without a link (fleet
+ * import) is only re-linked, never mirrored twice. Dry run unless `apply`. Embeddings are left to the existing
  * backfill (the CLI process exits before an async embed could land).
  */
 export function backfillDailyLogMemories(opts: { apply: boolean; reject?: (content: string) => boolean }): DailyLogBackfillResult {
@@ -2642,10 +2667,24 @@ export function backfillDailyLogMemories(opts: { apply: boolean; reject?: (conte
       LEFT JOIN daily_log_memory k ON k.daily_log_id = l.id
       WHERE k.daily_log_id IS NULL ORDER BY l.id`
   ).all() as { id: number; agent_id: string; date: string; content: string; created_at: number }[]
-  const result: DailyLogBackfillResult = { total, already: total - pending.length, created: 0, wouldCreate: 0, skipped: 0, failed: 0 }
+  const result: DailyLogBackfillResult = { total, already: total - pending.length, created: 0, wouldCreate: 0, relinked: 0, wouldRelink: 0, skipped: 0, failed: 0 }
   const link = db.prepare('INSERT INTO daily_log_memory (daily_log_id, memory_id, created_at) VALUES (?, ?, ?)')
+  const taken = new Set<number>()
   for (const row of pending) {
     if (!row.content.trim() || opts.reject?.(row.content)) { result.skipped++; continue }
+    const existing = findUnlinkedMirror(db, row, taken, true)
+    if (existing !== null) {
+      taken.add(existing)
+      if (!opts.apply) { result.wouldRelink++; continue }
+      try {
+        link.run(row.id, existing, Math.floor(Date.now() / 1000))
+        result.relinked++
+      } catch (err) {
+        result.failed++
+        logger.warn({ err: (err as Error)?.message, dailyLogId: row.id }, 'daily-log backfill: relink failed')
+      }
+      continue
+    }
     if (!opts.apply) { result.wouldCreate++; continue }
     try {
       const m = dailyLogMirrorText(row.date, row.created_at, row.content)
@@ -2679,19 +2718,23 @@ export function dryRunDailyLogBackfill(
     handle.prepare("SELECT 1 AS x FROM sqlite_master WHERE type = 'table' AND name = ?").get(name) !== undefined
   const linkTableMissing = !has('daily_log_memory')
   if (!has('daily_logs')) {
-    return { total: 0, already: 0, created: 0, wouldCreate: 0, skipped: 0, failed: 0, linkTableMissing }
+    return { total: 0, already: 0, created: 0, wouldCreate: 0, relinked: 0, wouldRelink: 0, skipped: 0, failed: 0, linkTableMissing }
   }
   const total = (handle.prepare('SELECT COUNT(*) AS n FROM daily_logs').get() as { n: number }).n
   const pending = (linkTableMissing
-    ? handle.prepare('SELECT id, content FROM daily_logs ORDER BY id')
+    ? handle.prepare('SELECT id, agent_id, date, content, created_at FROM daily_logs ORDER BY id')
     : handle.prepare(
-        `SELECT l.id, l.content FROM daily_logs l
+        `SELECT l.id, l.agent_id, l.date, l.content, l.created_at FROM daily_logs l
           LEFT JOIN daily_log_memory k ON k.daily_log_id = l.id
           WHERE k.daily_log_id IS NULL ORDER BY l.id`
-      )).all() as { id: number; content: string }[]
-  const result = { total, already: total - pending.length, created: 0, wouldCreate: 0, skipped: 0, failed: 0, linkTableMissing }
+      )).all() as { id: number; agent_id: string; date: string; content: string; created_at: number }[]
+  const result = { total, already: total - pending.length, created: 0, wouldCreate: 0, relinked: 0, wouldRelink: 0, skipped: 0, failed: 0, linkTableMissing }
+  const canRelink = has('memories')
+  const taken = new Set<number>()
   for (const row of pending) {
-    if (!row.content.trim() || opts.reject?.(row.content)) result.skipped++
+    if (!row.content.trim() || opts.reject?.(row.content)) { result.skipped++; continue }
+    const existing = canRelink ? findUnlinkedMirror(handle, row, taken, !linkTableMissing) : null
+    if (existing !== null) { taken.add(existing); result.wouldRelink++ }
     else result.wouldCreate++
   }
   return result

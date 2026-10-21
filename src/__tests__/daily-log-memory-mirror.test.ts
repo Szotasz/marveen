@@ -30,7 +30,7 @@ vi.mock('../logger.js', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), debug: vi.fn(), error: vi.fn() },
 }))
 
-import { initDatabase, getDb, backfillDailyLogMemories, recallByDateRange, recallSearch } from '../db.js'
+import { initDatabase, getDb, backfillDailyLogMemories, dryRunDailyLogBackfill, dailyLogMirrorText, recallByDateRange, recallSearch } from '../db.js'
 import { tryHandleDailyLog } from '../web/routes/daily-log.js'
 import { tryHandleMemories, containsSuspiciousContent } from '../web/routes/memories.js'
 import { detectHomoglyphs } from '../homoglyph.js'
@@ -182,7 +182,7 @@ describe('backfill (AC4, AC5)', () => {
   it('dry run writes nothing and reports what it would do', () => {
     seedOldLogs()
     const r = backfillDailyLogMemories({ apply: false, reject: containsSuspiciousContent })
-    expect(r).toEqual({ total: 3, already: 0, created: 0, wouldCreate: 2, skipped: 1, failed: 0 })
+    expect(r).toEqual({ total: 3, already: 0, created: 0, wouldCreate: 2, relinked: 0, wouldRelink: 0, skipped: 1, failed: 0 })
     expect(count('SELECT COUNT(*) AS n FROM memories')).toBe(0)
     expect(count('SELECT COUNT(*) AS n FROM daily_log_memory')).toBe(0)
   })
@@ -190,7 +190,7 @@ describe('backfill (AC4, AC5)', () => {
   it('apply mirrors with the original created_at, and a second run changes nothing', () => {
     const t1 = seedOldLogs()
     const first = backfillDailyLogMemories({ apply: true, reject: containsSuspiciousContent })
-    expect(first).toEqual({ total: 3, already: 0, created: 2, wouldCreate: 0, skipped: 1, failed: 0 })
+    expect(first).toEqual({ total: 3, already: 0, created: 2, wouldCreate: 0, relinked: 0, wouldRelink: 0, skipped: 1, failed: 0 })
     const rows = getDb().prepare('SELECT * FROM memories ORDER BY id').all() as any[]
     expect(rows).toHaveLength(2)
     expect(rows[0].created_at).toBe(t1)
@@ -200,7 +200,7 @@ describe('backfill (AC4, AC5)', () => {
     expect(rows[1].agent_id).toBe('agent-b')
 
     const second = backfillDailyLogMemories({ apply: true, reject: containsSuspiciousContent })
-    expect(second).toEqual({ total: 3, already: 2, created: 0, wouldCreate: 0, skipped: 1, failed: 0 })
+    expect(second).toEqual({ total: 3, already: 2, created: 0, wouldCreate: 0, relinked: 0, wouldRelink: 0, skipped: 1, failed: 0 })
     expect(count('SELECT COUNT(*) AS n FROM memories')).toBe(2)
     expect(count('SELECT COUNT(*) AS n FROM daily_log_memory')).toBe(2)
   })
@@ -228,6 +228,65 @@ describe('backfill (AC4, AC5)', () => {
     const r = backfillDailyLogMemories({ apply: true, reject: containsSuspiciousContent })
     expect(r.created).toBe(0)
     expect(count("SELECT COUNT(*) AS n FROM memories WHERE agent_id = 'agent-b'")).toBe(0)
+  })
+})
+
+describe('backfill re-links an imported mirror instead of duplicating it (review E2)', () => {
+  // A fleet import brings daily_logs and the [Napló ...] memories, but no link rows.
+  function seedImported(agent: string, date: string, ts: number, text: string): number {
+    getDb().prepare('INSERT INTO daily_logs (agent_id, date, content, created_at) VALUES (?, ?, ?, ?)').run(agent, date, text, ts)
+    return insertMem(agent, dailyLogMirrorText(date, ts, text).content, ts)
+  }
+
+  it('dry run reports a relink, --apply writes only the link row, a second run changes nothing', () => {
+    const memId = seedImported('agent-a', '2026-03-04', 1_772_600_000, 'Importalt bejegyzes egy')
+    expect(count('SELECT COUNT(*) AS n FROM daily_log_memory')).toBe(0)
+
+    const dry = dryRunDailyLogBackfill(getDb(), { reject: containsSuspiciousContent })
+    expect(dry.wouldRelink).toBe(1)
+    expect(dry.wouldCreate).toBe(0)
+    expect(count('SELECT COUNT(*) AS n FROM daily_log_memory')).toBe(0)
+
+    const r1 = backfillDailyLogMemories({ apply: true, reject: containsSuspiciousContent })
+    expect(r1.relinked).toBe(1)
+    expect(r1.created).toBe(0)
+    expect(count('SELECT COUNT(*) AS n FROM memories')).toBe(1)
+    const link = getDb().prepare('SELECT * FROM daily_log_memory').get() as any
+    expect(link.memory_id).toBe(memId)
+
+    const r2 = backfillDailyLogMemories({ apply: true, reject: containsSuspiciousContent })
+    expect(r2.relinked).toBe(0)
+    expect(r2.created).toBe(0)
+    expect(r2.already).toBe(1)
+    expect(count('SELECT COUNT(*) AS n FROM memories')).toBe(1)
+    expect(count('SELECT COUNT(*) AS n FROM daily_log_memory')).toBe(1)
+  })
+
+  it('a log row without a matching memory is still mirrored; a different created_at is not a match', () => {
+    seedImported('agent-a', '2026-03-04', 1_772_600_000, 'Importalt bejegyzes egy')
+    getDb().prepare('INSERT INTO daily_logs (agent_id, date, content, created_at) VALUES (?, ?, ?, ?)').run('agent-a', '2026-03-05', 'Nincs parja', 1_772_700_000)
+    // same text and clock minute, but another created_at second: not the same entry
+    insertMem('agent-a', dailyLogMirrorText('2026-03-06', 1_772_800_000, 'Mas masodperc').content, 1_772_800_001)
+    getDb().prepare('INSERT INTO daily_logs (agent_id, date, content, created_at) VALUES (?, ?, ?, ?)').run('agent-a', '2026-03-06', 'Mas masodperc', 1_772_800_000)
+    const r = backfillDailyLogMemories({ apply: true, reject: containsSuspiciousContent })
+    expect(r.relinked).toBe(1)
+    expect(r.created).toBe(2)
+    expect(count('SELECT COUNT(*) AS n FROM memories')).toBe(4)
+  })
+
+  it('another agent\'s memory with the same content is not claimed, and one memory links to one log row only', () => {
+    insertMem('agent-b', dailyLogMirrorText('2026-03-04', 1_772_600_000, 'Kozos szoveg').content, 1_772_600_000)
+    getDb().prepare('INSERT INTO daily_logs (agent_id, date, content, created_at) VALUES (?, ?, ?, ?)').run('agent-a', '2026-03-04', 'Kozos szoveg', 1_772_600_000)
+    expect(backfillDailyLogMemories({ apply: true, reject: containsSuspiciousContent }).created).toBe(1)
+
+    // two identical log rows, one imported mirror: one relink, one new mirror
+    const ins = getDb().prepare('INSERT INTO daily_logs (agent_id, date, content, created_at) VALUES (?, ?, ?, ?)')
+    ins.run('agent-c', '2026-03-07', 'Ketszer', 1_772_900_000)
+    ins.run('agent-c', '2026-03-07', 'Ketszer', 1_772_900_000)
+    insertMem('agent-c', dailyLogMirrorText('2026-03-07', 1_772_900_000, 'Ketszer').content, 1_772_900_000)
+    const r = backfillDailyLogMemories({ apply: true, reject: containsSuspiciousContent })
+    expect(r.relinked).toBe(1)
+    expect(r.created).toBe(1)
   })
 })
 

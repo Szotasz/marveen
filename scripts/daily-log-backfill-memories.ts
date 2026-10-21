@@ -8,6 +8,9 @@
 // New entries are mirrored by POST /api/daily-log itself; this only catches up
 // the rows written before that. Idempotent: the daily_log_memory link table
 // marks finished rows, so running it twice writes nothing the second time.
+// A log row whose mirror memory already exists without a link (a fleet import
+// brings both tables but not the link rows) is only re-linked, not mirrored a
+// second time: same agent, exact `[Napló ...]` content, same created_at.
 // Each mirror keeps the log row's own created_at, is tier cold / sector
 // episodic, and goes through the same content filter as POST /api/memories
 // (a refused row stays in the diary and is counted as "skipped").
@@ -68,6 +71,7 @@ process.stdout.write(
   `  daily_logs rows:   ${r.total}\n` +
   `  already mirrored:  ${r.already}\n` +
   `  ${apply ? 'new mirrors:       ' : 'would create:      '} ${apply ? r.created : r.wouldCreate}\n` +
+  `  ${apply ? 'relinked:          ' : 'relink (dry run):'} ${apply ? r.relinked : r.wouldRelink}\n` +
   `  skipped (filter/empty): ${r.skipped}\n` +
   `  failed:            ${r.failed}\n`,
 )
