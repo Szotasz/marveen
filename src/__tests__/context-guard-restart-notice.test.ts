@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeAll, beforeEach } from 'vitest'
-import { mkdtempSync, readFileSync } from 'node:fs'
+import { describe, it, expect, vi, beforeAll, beforeEach, afterAll } from 'vitest'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -11,6 +11,7 @@ import { fileURLToPath } from 'node:url'
 // resend lands as a duplicate. The notice now carries the queue counts instead.
 
 const SANDBOX = mkdtempSync(join(tmpdir(), 'restart-notice-test-'))
+afterAll(() => { rmSync(SANDBOX, { recursive: true, force: true }) })
 
 vi.mock('../config.js', async (orig) => {
   const actual = await orig<typeof import('../config.js')>()
