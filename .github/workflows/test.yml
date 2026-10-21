@@ -74,6 +74,10 @@ jobs:
       # over-report GROWS with every consolidation round, which is why this
       # runs here and not by hand. Hermetic: throwaway fixture dir.
       - run: python3 scripts/__tests__/memory-link-audit.test.py
+      # The host resource heartbeat's exit code IS its alert (1 = resource
+      # warning, 2 = nothing measured): a crash or a bad threshold that exits 1
+      # would page someone for nothing. Hermetic: fake /proc files and disk.
+      - run: python3 scripts/__tests__/host-resource-heartbeat.test.py
       # MORNTIMERPARK914: the #1313 contract tests shipped without CI wiring,
       # so "CI green" said nothing about them -- the exact rot the comment
       # above warns about. All three are hermetic (stubs on PATH / CLAUDE_BIN,
