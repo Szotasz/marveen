@@ -17,7 +17,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="${YT_INGEST_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
-OUT_BASE="${YT_INGEST_OUT_BASE:-$ROOT/agents/leanscout/research/video/_ingest}"
+# Default output stays out of agents/: the dashboard lists every directory
+# there as an agent, so a first run without --out would invent one.
+# workspace/ is gitignored. yt-ingest.sh uses the same default.
+OUT_BASE="${YT_INGEST_OUT_BASE:-$ROOT/workspace/yt-ingest}"
 SAFETY="${YT_INGEST_PROMPT_SAFETY:-$ROOT/dist/prompt-safety.js}"
 
 fail() { echo "FAIL $*" >&2; exit "${FAIL_CODE:-1}"; }

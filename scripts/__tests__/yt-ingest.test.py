@@ -20,6 +20,9 @@ Cases:
   8. failure after the video exists: the temp dir is still removed
   9. yt-read wraps the transcript and scrubs a forged </untrusted> close tag
      (skipped when dist/prompt-safety.js is not built)
+ 10. default output (no --out, no YT_INGEST_OUT_BASE): yt-ingest and yt-read
+     resolve the same directory, and nothing is created under agents/ --
+     the dashboard lists every directory there as an agent (#1704 review)
 """
 import json
 import os
@@ -205,6 +208,63 @@ class Keep(unittest.TestCase):
         shutil.rmtree(d)
 
 
+def default_env(root, **extra):
+    env = {k: v for k, v in os.environ.items() if k not in ('YT_INGEST_OUT_BASE', 'YT_INGEST_ROOT')}
+    env.update(YT_INGEST_ROOT=root, **extra)
+    return env
+
+
+class DefaultOutput(unittest.TestCase):
+    """10: the default output dir is shared by both scripts and is not under agents/."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+
+    def tearDown(self):
+        shutil.rmtree(self.root)
+
+    def test_scripts_share_one_default(self):
+        lines = []
+        for p in (INGEST, READ):
+            found = [ln.strip() for ln in open(p) if ln.startswith('OUT_BASE=')]
+            self.assertEqual(len(found), 1, p)
+            lines.append(found[0])
+        self.assertEqual(lines[0], lines[1])
+        self.assertNotIn('agents/', lines[0])
+
+    def test_keep_and_read_find_the_default_dir(self):
+        d = os.path.join(self.root, 'workspace', 'yt-ingest', VID)
+        os.makedirs(os.path.join(d, 'candidates'))
+        open(os.path.join(d, 'candidates', 'f_0001_500.jpg'), 'w').write('x')
+        json.dump({'schema': lib.SCHEMA, 'video_id': VID, 'frames_stage': 'candidates',
+                   'canonical_url': f'https://www.youtube.com/watch?v={VID}',
+                   'frames': [{'path': 'candidates/f_0001_500.jpg', 't_s': 0, 'scene_score': 0.5}]},
+                  open(os.path.join(d, 'manifest.json'), 'w'))
+        r = subprocess.run(['bash', INGEST, 'keep', VID, 'f_0001_500.jpg'],
+                           capture_output=True, text=True, env=default_env(self.root))
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(f'manifest={d}/manifest.json', r.stdout)
+        # yt-read checks the manifest before the wrapper, so without a built
+        # prompt-safety.js the run still proves it found the directory.
+        rr = subprocess.run(['bash', READ, VID, 'meta'], capture_output=True, text=True,
+                            env=default_env(self.root, YT_INGEST_PROMPT_SAFETY=SAFETY))
+        if os.path.isfile(SAFETY):
+            self.assertEqual(rr.returncode, 0, rr.stderr)
+            self.assertIn(f'[trusted] video_id={VID}', rr.stdout)
+        else:
+            self.assertIn('dep=prompt-safety-js', rr.stderr)
+        self.assertFalse(os.path.exists(os.path.join(self.root, 'agents')))
+
+    def test_missing_manifest_creates_nothing(self):
+        r = subprocess.run(['bash', INGEST, 'keep', VID, 'f_0001_500.jpg'],
+                           capture_output=True, text=True, env=default_env(self.root))
+        self.assertEqual(r.returncode, 4)
+        rr = subprocess.run(['bash', READ, VID], capture_output=True, text=True,
+                            env=default_env(self.root))
+        self.assertEqual(rr.returncode, 4)
+        self.assertEqual(os.listdir(self.root), [])
+
+
 @unittest.skipUnless(SANDBOX_OK, 'bwrap (unprivileged) or ffmpeg not available')
 class FakeRun(unittest.TestCase):
     def setUp(self):
@@ -214,7 +274,7 @@ class FakeRun(unittest.TestCase):
     def tearDown(self):
         shutil.rmtree(self.tmp)
 
-    def run_ingest(self, failvideo=0, extra=()):
+    def run_ingest(self, failvideo=0, extra=(), default_out=False):
         venv = os.path.join(self.tmp, f'venv{failvideo}')
         os.makedirs(os.path.join(venv, 'bin'), exist_ok=True)
         fake = (FAKE.replace('@VID@', VID).replace('@INJECT@', INJECT)
@@ -231,7 +291,15 @@ class FakeRun(unittest.TestCase):
         out = os.path.join(self.tmp, f'out{failvideo}')
         env = dict(os.environ, YT_INGEST_YTDLP_VENV=venv, YT_INGEST_ALLOWLIST=allow, TMPDIR=tmpd,
                    CLAUDE_CODE_OAUTH_TOKEN='sk-should-not-cross', GH_TOKEN='ghp-should-not-cross')
-        r = subprocess.run(['bash', INGEST, '--out', out, *extra,
+        outargs = ['--out', out]
+        if default_out:
+            # Neither --out nor YT_INGEST_OUT_BASE: the script picks the default
+            # under YT_INGEST_ROOT (this temp dir).
+            env = default_env(self.tmp, **{k: v for k, v in env.items()
+                                           if k.startswith('YT_INGEST_') or k == 'TMPDIR'})
+            outargs = []
+            out = os.path.join(self.tmp, 'workspace', 'yt-ingest', VID)
+        r = subprocess.run(['bash', INGEST, *outargs, *extra,
                             f'https://www.youtube.com/watch?v={VID}'],
                            capture_output=True, text=True, env=env, timeout=120)
         return r, out, tmpd
@@ -255,6 +323,14 @@ class FakeRun(unittest.TestCase):
         self.assertIn('home=[]', probe)
         self.assertIn('store=absent', probe)
         self.assertIn('tok=absent', probe)
+
+    def test_default_run_stays_out_of_agents(self):
+        # 10: a fake-yt-dlp run with neither --out nor YT_INGEST_OUT_BASE.
+        r, out, _ = self.run_ingest(extra=('--subs-only',), default_out=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn(f'manifest={out}/manifest.json', r.stdout)
+        self.assertTrue(os.path.isfile(os.path.join(out, 'manifest.json')))
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, 'agents')))
 
     def test_store_probe_control(self):
         # Negative control for 7: the probe path really exists on the host,

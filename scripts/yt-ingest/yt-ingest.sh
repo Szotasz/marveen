@@ -30,7 +30,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="${YT_INGEST_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 LIB="$SCRIPT_DIR/yt_ingest_lib.py"
 ALLOWLIST="${YT_INGEST_ALLOWLIST:-$ROOT/store/egress-allowlist.json}"
-OUT_BASE="${YT_INGEST_OUT_BASE:-$ROOT/agents/leanscout/research/video/_ingest}"
+# Default output stays out of agents/: the dashboard lists every directory
+# there as an agent, so a first run without --out would invent one.
+# workspace/ is gitignored. yt-read.sh uses the same default.
+OUT_BASE="${YT_INGEST_OUT_BASE:-$ROOT/workspace/yt-ingest}"
 YTDLP_VENV="${YT_INGEST_YTDLP_VENV:-$HOME/.local/share/pipx/venvs/yt-dlp}"
 
 fail() { echo "FAIL $*" >&2; exit "${FAIL_CODE:-1}"; }
