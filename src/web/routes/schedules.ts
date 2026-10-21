@@ -245,10 +245,18 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
       throw err
     }
     const data = JSON.parse(body.toString()) as {
-      description?: string; prompt?: string; schedule?: string; agent?: string; enabled?: boolean; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; once?: boolean
+      description?: string; prompt?: string; schedule?: string; agent?: string; enabled?: boolean; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; once?: boolean; preCheck?: string
     }
     if (data.once !== undefined && typeof data.once !== 'boolean') {
       json(res, { error: 'once must be true or false' }, 400)
+      return true
+    }
+    // The body goes to writeScheduledTask whole, so a preCheck of any JSON
+    // type used to be stored as is. The runner and the registry hash treat a
+    // non-string as no script (#2100), so storing one only leaves a config
+    // that says something the runner ignores. null stays allowed: it clears it.
+    if (data.preCheck != null && typeof data.preCheck !== 'string') {
+      json(res, { error: 'preCheck must be a string (a script path) or null' }, 400)
       return true
     }
     if (data.prompt !== undefined && data.prompt.length > MAX_SCHEDULED_TASK_PROMPT_LEN) {

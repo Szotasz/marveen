@@ -1216,6 +1216,8 @@ export function resolvePreCheckPath(taskName: string, preCheck: unknown): string
   return preCheckScriptPath(join(SCHEDULED_TASKS_DIR, taskName), preCheck)
 }
 
+// Logged with typeof only: the value is whatever task-config.json held (an
+// object, an array), and an arbitrary value has no place in dashboard.log.
 const NOT_A_PRECHECK_PATH_MSG = 'pre-check is not a script path (not a non-empty string); the registry hash ignores it, so it is ignored here too, running LLM anyway'
 
 export type PreCheckResult = { skip: boolean; prefix?: string }
@@ -1275,7 +1277,7 @@ export function runPreCheck(task: ScheduledTask): PreCheckResult {
   // the SKILL.md frontmatter and point at a different directory.
   const scriptPath = resolvePreCheckPath(task.dirName ?? task.name, task.preCheck)
   if (scriptPath == null) {
-    logger.warn({ task: task.name, preCheck: task.preCheck }, NOT_A_PRECHECK_PATH_MSG)
+    logger.warn({ task: task.name, preCheckType: typeof task.preCheck }, NOT_A_PRECHECK_PATH_MSG)
     return { skip: false }
   }
   if (!existsSync(scriptPath)) {
@@ -1353,7 +1355,7 @@ export function runPreCheckAsync(
   // which is what the registry hashed (same rule as runPreCheck).
   const scriptPath = resolvePreCheckPath(task.dirName ?? task.name, task.preCheck)
   if (scriptPath == null) {
-    logger.warn({ task: task.name, preCheck: task.preCheck }, NOT_A_PRECHECK_PATH_MSG)
+    logger.warn({ task: task.name, preCheckType: typeof task.preCheck }, NOT_A_PRECHECK_PATH_MSG)
     return Promise.resolve({ skip: false })
   }
   if (!existsSync(scriptPath)) {

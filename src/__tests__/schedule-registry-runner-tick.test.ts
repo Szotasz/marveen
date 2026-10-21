@@ -86,7 +86,7 @@ vi.mock('../web/agent-process.js', () => ({
 
 import { initDatabase, insertPendingTaskRetryIfNew, getDb } from '../db.js'
 import { SCHEDULED_TASKS_DIR } from '../web/scheduled-tasks-io.js'
-import { backfillScheduledTaskRegistryOnce, _resetRegistryWarningsForTest } from '../web/schedule-registry.js'
+import { backfillScheduledTaskRegistryOnce, registerScheduledTask, _resetRegistryWarningsForTest } from '../web/schedule-registry.js'
 import { tryHandleSchedules } from '../web/routes/schedules.js'
 import type { RouteContext } from '../web/routes/types.js'
 
@@ -274,8 +274,13 @@ describe('runner tick x registry (real tick, real registry)', () => {
   // task rejected the whole tick, and no other task fired.
   it('a registered task whose preCheck is not a string does not stop the tick', async () => {
     await createViaApi('badpc', 'Non-string preCheck.', '0 8 * * *')
-    const put = await call('PUT', '/api/schedules/badpc', { preCheck: true })
-    expect(put.status).toBe(200)
+    // The API no longer stores a non-string preCheck (schedule-precheck-put-type.test.ts)...
+    expect((await call('PUT', '/api/schedules/badpc', { preCheck: true })).status).toBe(400)
+    // ...but a config can still carry one into the registry: a hand edit the
+    // operator re-registers with the registry CLI. The runner keeps its guard.
+    const cfgPath = join(dirOf('badpc'), 'task-config.json')
+    writeFileSync(cfgPath, JSON.stringify({ ...JSON.parse(readFileSync(cfgPath, 'utf-8')), preCheck: true }, null, 2))
+    expect(registerScheduledTask('badpc', 'cli')).toBeTruthy()
     await createViaApi('badpc-ctrl', 'Control prompt.')
     insertPendingTaskRetryIfNew('badpc', AGENT, Date.now() - 120_000, 'busy')
 

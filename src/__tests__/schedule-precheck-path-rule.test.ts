@@ -83,4 +83,24 @@ describe('one preCheck path rule for the registry hash and the runner', () => {
     await expect(runPreCheckAsync(makeTask(['pre.sh']))).resolves.toEqual({ skip: false })
     expect(mockWarn.mock.calls.some(c => String(c[1]).includes('not a script path'))).toBe(true)
   })
+
+  // runPreCheckAsync is what both runner loops call, so its warn is pinned on
+  // its own, and so is what it logs: the value's type, never the value (an
+  // arbitrary object from task-config.json has no place in dashboard.log).
+  it('runPreCheckAsync on its own warns "not a script path" with the type only', async () => {
+    const secret = { path: 'pre.sh', note: 'do-not-log-me' }
+    await expect(runPreCheckAsync(makeTask(secret))).resolves.toEqual({ skip: false })
+    const warns = mockWarn.mock.calls.filter(c => String(c[1]).includes('not a script path'))
+    expect(warns).toHaveLength(1)
+    expect(warns[0][0]).toEqual({ task: TASK, preCheckType: 'object' })
+    expect(JSON.stringify(mockWarn.mock.calls)).not.toContain('do-not-log-me')
+  })
+
+  it('runPreCheck logs the type only as well', () => {
+    expect(runPreCheck(makeTask(['do-not-log-me']))).toEqual({ skip: false })
+    const warns = mockWarn.mock.calls.filter(c => String(c[1]).includes('not a script path'))
+    expect(warns).toHaveLength(1)
+    expect(warns[0][0]).toEqual({ task: TASK, preCheckType: 'object' })
+    expect(JSON.stringify(mockWarn.mock.calls)).not.toContain('do-not-log-me')
+  })
 })
