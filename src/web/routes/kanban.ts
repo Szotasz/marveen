@@ -890,7 +890,25 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     if (unknownKeys.length > 0) {
       logger.warn({ id, keys: unknownKeys }, 'POST /api/kanban: ismeretlen mező(k), csendben eldobva')
     }
-    createKanbanCard({ ...data, id })
+    try {
+      createKanbanCard({ ...data, id })
+    } catch (err) {
+      // A caller-supplied id that is already taken is the caller's conflict, not a
+      // server fault: 409, with the id and whether the existing card is archived --
+      // GET /api/kanban hides archived cards, so "not in the list" does not mean
+      // "free". Caught on the INSERT rather than checked before it, so a card
+      // created by another process in between is answered the same way. A
+      // generated id colliding is not the caller's doing and stays an error.
+      if (suppliedId && (err as { code?: unknown })?.code === 'SQLITE_CONSTRAINT_PRIMARYKEY') {
+        json(res, {
+          error: 'A card with this id already exists (GET /api/kanban/<id> returns it, archived or not)',
+          id,
+          archived: getKanbanCard(id)?.archived_at != null,
+        }, 409)
+        return true
+      }
+      throw err
+    }
     json(res, { ok: true, id })
     return true
   }
