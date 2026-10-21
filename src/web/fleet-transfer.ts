@@ -773,11 +773,13 @@ export function exportFleet(options: { vaultPassword?: string } = {}): ExportedF
   const skills = listSkillsInDir(join(homedir(), '.claude', 'skills'))
   const scheduledTasks = exportScheduledTasks()
 
-  // Export ALL memories and daily_logs across every agent_id
+  // Export ALL memories and daily_logs across every agent_id. A retracted memory
+  // is left behind: the export carries no ids or retraction marks, so it would
+  // arrive on the new host as a live claim again.
   const memories = db.prepare(
     `SELECT agent_id, content, sector, salience, created_at, accessed_at,
             category, auto_generated, keywords
-     FROM memories ORDER BY agent_id ASC, created_at ASC`
+     FROM memories WHERE retracted_at IS NULL ORDER BY agent_id ASC, created_at ASC`
   ).all() as MemoryRow[]
 
   const dailyLogs = db.prepare(
