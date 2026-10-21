@@ -11,6 +11,7 @@ const state = vi.hoisted(() => ({
   allowedChatId: '',
   channelToken: null as string | null,
   permToken: null as string | null,
+  pinnedId: '',
 }))
 
 vi.mock('../config.js', async (importOriginal) => {
@@ -18,6 +19,7 @@ vi.mock('../config.js', async (importOriginal) => {
   return {
     ...real,
     MAIN_AGENT_ID: 'marveen',
+    get PERMISSION_BOT_ID() { return state.pinnedId },
     get TELEGRAM_BOT_TOKEN() { return state.mainToken },
     get ALLOWED_CHAT_ID() { return state.allowedChatId },
   }
@@ -109,6 +111,7 @@ beforeEach(() => {
   state.allowedChatId = OWNER
   state.channelToken = MAIN_CHANNEL_TOKEN
   state.permToken = PERM_TOKEN
+  state.pinnedId = PERM_BOT
   tg.reset()
   vi.stubGlobal('fetch', tg.fetch)
   logged = []
@@ -414,6 +417,56 @@ describe('POST /api/approvals/:id/consume-run', () => {
     state.permToken = null
     expect(await consume(p.id)).toMatchObject({ status: 503, body: { reason: 'permission_bot_unavailable' } })
     expect(getApproval(p.id)!.consumed_at).toBeNull()
+  })
+
+  it('B1: a swapped Vault token (another bot id) is never trusted: 503 on both endpoints, nothing sent, no owner-verified', async () => {
+    const p = await postD()
+    const swapped = '7000000099:AAswappedSECRETpartZZZ'
+    // The attacker swaps the Vault entry; the pinned id stays PERM_BOT.
+    state.permToken = swapped
+    const sendsBefore = tg.calls.length
+    expect(await press(p)).toMatchObject({ status: 503, body: { reason: 'permission_bot_unavailable' } })
+    expect(status(p.id)).toBe('pending')
+    expect(await consume(p.id)).toMatchObject({ status: 503, body: { reason: 'permission_bot_unavailable' } })
+    expect((await route('GET', `/api/approvals/${p.id}`)).body.owner_verified).toBe(false)
+    expect(tg.calls.length).toBe(sendsBefore)
+    expect(dumpLogs(logged)).not.toContain('AAswappedSECRETpartZZZ')
+    // And with the swapped bot's id as the "press": a row decided by the REAL
+    // press stays unconsumable while the Vault holds the swapped token.
+    state.permToken = PERM_TOKEN
+    await approveD(p)
+    state.permToken = swapped
+    expect(await consume(p.id)).toMatchObject({ status: 503, body: { reason: 'permission_bot_unavailable' } })
+    expect((await route('GET', `/api/approvals/${p.id}`)).body.owner_verified).toBe(false)
+    expect(getApproval(p.id)!.consumed_at).toBeNull()
+  })
+
+  it('B1: a press carrying the swapped bot\'s id cannot decide even if the Vault token was swapped to match it', async () => {
+    const p = await postD()
+    state.permToken = '7000000099:AAswappedSECRETpartZZZ'
+    expect(await press(p, { bot_id: '7000000099' })).toMatchObject({ status: 503 })
+    expect(status(p.id)).toBe('pending')
+  })
+
+  it('B1: PERMISSION_BOT_ID missing or invalid: /permission-bot and consume-run are 503 and the owner-verified view is false', async () => {
+    const p = await postD()
+    await approveD(p)
+    for (const bad of ['', 'not-digits', '0']) {
+      state.pinnedId = bad
+      expect(await press(p)).toMatchObject({ status: 503, body: { reason: 'permission_bot_unavailable' } })
+      expect(await consume(p.id)).toMatchObject({ status: 503, body: { reason: 'permission_bot_unavailable' } })
+      expect((await route('GET', `/api/approvals/${p.id}`)).body.owner_verified).toBe(false)
+    }
+    expect(getApproval(p.id)!.consumed_at).toBeNull()
+  })
+
+  it('B1: with a missing pin no D request is sent at all (fail-closed on the send side)', async () => {
+    state.pinnedId = ''
+    const payload = canonical({ start: START, end: END })
+    const out = await route('POST', '/api/approvals', requestBody(payload))
+    expect(out.status).toBe(201)
+    await ownerNotificationsSettled()
+    expect(tg.calls).toHaveLength(0)
   })
 
   it('malformed requests are 400 with the field named and write no consume', async () => {

@@ -10,6 +10,7 @@ const state = vi.hoisted(() => ({
   allowedChatId: '',
   channelToken: null as string | null,
   permToken: null as string | null,
+  pinnedId: '',
 }))
 
 vi.mock('../config.js', async (importOriginal) => {
@@ -17,6 +18,7 @@ vi.mock('../config.js', async (importOriginal) => {
   return {
     ...real,
     MAIN_AGENT_ID: 'marveen',
+    get PERMISSION_BOT_ID() { return state.pinnedId },
     get TELEGRAM_BOT_TOKEN() { return state.mainToken },
     get ALLOWED_CHAT_ID() { return state.allowedChatId },
   }
@@ -48,7 +50,7 @@ import { getSecret } from '../web/vault.js'
 import { ownerNotificationsSettled, buildPermissionBotText, PERMISSION_BOT_VAULT_ID } from '../web/routes/approvals.js'
 import { RAG_RESERVED_PREFIX } from '../web/rag-approval-payload.js'
 import {
-  OWNER, MAIN_TOKEN, MAIN_CHANNEL_TOKEN, PERM_TOKEN, SECRET_PARTS, PKG, RUN,
+  OWNER, MAIN_BOT, PERM_BOT, MAIN_TOKEN, MAIN_CHANNEL_TOKEN, PERM_TOKEN, SECRET_PARTS, PKG, RUN,
   createFakeTelegram, route, canonical, requestBody, buttonsOf, dumpLogs, sha,
 } from './helpers/rag-approval-route-harness.js'
 
@@ -71,6 +73,7 @@ beforeEach(() => {
   state.allowedChatId = OWNER
   state.channelToken = MAIN_CHANNEL_TOKEN
   state.permToken = PERM_TOKEN
+  state.pinnedId = PERM_BOT
   tg.reset()
   vi.mocked(getSecret).mockClear()
   vi.stubGlobal('fetch', tg.fetch)
@@ -240,7 +243,27 @@ describe('the permission-bot sender refuses instead of falling back to the main 
     await sentNothing('token_malformed')
   })
 
+  it('B1: a Vault token of ANOTHER bot than the pinned PERMISSION_BOT_ID is never used: nothing is sent', async () => {
+    // e.g. a fleet bot's token swapped into the Vault entry through the API
+    state.permToken = `7000000099:AAswappedSECRETpartZZZ`
+    expect((await post(requestBody(canonical({ start: START, end: END })))).status).toBe(201)
+    await sentNothing('token_bot_mismatch')
+    expect(dumpLogs(logged)).not.toContain('AAswappedSECRETpartZZZ')
+  })
+
+  it('B1: PERMISSION_BOT_ID missing or malformed: nothing is sent, whatever the Vault holds', async () => {
+    for (const bad of ['', 'abc', '0123', '12 34', '1'.repeat(17)]) {
+      logged = []
+      tg.reset()
+      state.pinnedId = bad
+      const run = bad.length.toString(16).padStart(32, 'a')
+      expect((await post(requestBody(canonical({ start: START, end: END, run })))).status).toBe(201)
+      await sentNothing('bot_id_unpinned')
+    }
+  })
+
   it('permission token of the SAME bot as the main bot (equal bot id): nothing is sent', async () => {
+    state.pinnedId = MAIN_BOT
     state.permToken = MAIN_TOKEN.replace('AAmainSECRETpartABC', 'AAotherSECRETpartQQQ')
     expect((await post(requestBody(canonical({ start: START, end: END })))).status).toBe(201)
     await sentNothing('same_as_main_bot')

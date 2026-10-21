@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { readFileSync, existsSync } from 'node:fs'
 import { join, resolve } from 'node:path'
-import { PROJECT_ROOT, MAIN_AGENT_ID, TELEGRAM_BOT_TOKEN, CHANNEL_PROVIDER, APP_TZ } from '../../config.js'
+import { PROJECT_ROOT, MAIN_AGENT_ID, TELEGRAM_BOT_TOKEN, CHANNEL_PROVIDER, APP_TZ, PERMISSION_BOT_ID } from '../../config.js'
 import {
   consumeApproval,
   createApproval, getApproval, resolveApproval, listApprovals, expireTimedOutApprovals, clearSpentEmailPayloads,
@@ -18,6 +18,7 @@ import { channelStateDir, readChannelToken } from '../../channel-provider.js'
 import { TEST_RUN_PREFIX } from '../../test-run-marker.js'
 import { sendTelegramMessage, clearTelegramInlineKeyboard, type TelegramInlineKeyboard } from '../telegram.js'
 import { getSecret } from '../vault.js'
+import { PERMISSION_BOT_VAULT_ID } from '../permission-bot-vault.js'
 import {
   RAG_RESERVED_PREFIX, isPermissionBotCategory, parseRagApprovalPayload,
   validateRagApprovalRequest, type RagApprovalPayload,
@@ -572,7 +573,7 @@ async function sendPlainAfterFailure(token: string, ownerChat: string, approval:
 // only its bot id (the part before the colon) is ever used outside the send
 // call itself. The callback comes back through the relay (POST
 // /api/approvals/:id/permission-bot); this process only SENDS, it never polls.
-export const PERMISSION_BOT_VAULT_ID = 'telegram-engedely-bot-token'
+export { PERMISSION_BOT_VAULT_ID }
 
 type PermissionBotTokenReader = () => string | null
 const vaultPermissionBotToken: PermissionBotTokenReader = () => {
@@ -599,27 +600,48 @@ function mainBotTokens(): string[] {
   return tokens
 }
 
-export type PermissionBotUnavailable = 'token_missing' | 'token_malformed' | 'main_bot_unresolved' | 'same_as_main_bot'
+export type PermissionBotUnavailable =
+  | 'bot_id_unpinned' | 'token_missing' | 'token_malformed' | 'token_bot_mismatch'
+  | 'main_bot_unresolved' | 'same_as_main_bot'
 
 type PermissionBot =
+  | { ok: true; token: string; botId: string }
+  | { ok: false; reason: PermissionBotUnavailable }
+
+type PermissionBotWithMain =
   | { ok: true; token: string; botId: string; mainBotId: string }
   | { ok: false; reason: PermissionBotUnavailable }
 
-// The permission bot as configured NOW: token from the Vault, its bot id, and
-// the main bot's id. Fail-closed: no token, a malformed one, an unknown main
-// bot, or a permission bot that IS the main bot (equal bot ids) is no bot.
+// The permission bot as configured NOW. Its id is the PINNED PERMISSION_BOT_ID
+// (process env / install .env at startup, outside the Bearer's reach); the Vault
+// token is only the credential to SEND with, and only while its bot id (the part
+// before the colon) IS the pinned id. A missing or malformed pin, no token, a
+// malformed token, or a token of another bot is no bot (fail-closed): a token
+// swapped into the Vault is never used and never defines who may approve.
 function resolvePermissionBot(): PermissionBot {
+  const pinned = PERMISSION_BOT_ID
+  if (typeof pinned !== 'string' || !TELEGRAM_BOT_ID_RE.test(pinned)) return { ok: false, reason: 'bot_id_unpinned' }
   let raw: string | null = null
   try { raw = permissionBotTokenReader() } catch { raw = null }
   const token = typeof raw === 'string' ? raw.trim() : ''
   if (token === '') return { ok: false, reason: 'token_missing' }
-  const botId = telegramBotId(token)
-  if (botId == null) return { ok: false, reason: 'token_malformed' }
+  const tokenBotId = telegramBotId(token)
+  if (tokenBotId == null) return { ok: false, reason: 'token_malformed' }
+  if (tokenBotId !== pinned) return { ok: false, reason: 'token_bot_mismatch' }
+  return { ok: true, token, botId: pinned }
+}
+
+// The same, plus the main bot's id: the SEND and the decision paths need it (the
+// permission bot must not be the main bot, and a main-bot press must never
+// decide). The consume path does not: it only compares against the pinned id.
+function resolvePermissionBotWithMain(): PermissionBotWithMain {
+  const bot = resolvePermissionBot()
+  if (!bot.ok) return bot
   const mains = mainBotTokens()
   const mainBotId = mains.length > 0 ? telegramBotId(mains[0]) : null
   if (mainBotId == null) return { ok: false, reason: 'main_bot_unresolved' }
-  if (mains.some(m => sameTelegramBot(m, token))) return { ok: false, reason: 'same_as_main_bot' }
-  return { ok: true, token, botId, mainBotId }
+  if (mainBotId === bot.botId || mains.some(m => sameTelegramBot(m, bot.token))) return { ok: false, reason: 'same_as_main_bot' }
+  return { ok: true, token: bot.token, botId: bot.botId, mainBotId }
 }
 
 // The owner-facing text of a permission-bot request. Built from the stored,
@@ -641,7 +663,7 @@ export function buildPermissionBotText(approval: Approval, payload: RagApprovalP
 }
 
 function notifyPermissionBot(approval: Approval): void {
-  const bot = resolvePermissionBot()
+  const bot = resolvePermissionBotWithMain()
   if (!bot.ok) {
     logger.warn({ approvalId: approval.id, reason: bot.reason }, 'permission-bot approval NOT sent: the permission bot is unavailable -- the owner was not asked')
     fallbackInBand(approval, 'permission-bot-unavailable')
@@ -1065,7 +1087,7 @@ function handlePermissionBotDecision(res: RouteContext['res'], rawId: string, bo
 
   const ownerId = telegramOwnerUserId()
   if (ownerId == null) return refuse(503, 'owner_unresolved')
-  const bot = resolvePermissionBot()
+  const bot = resolvePermissionBotWithMain()
   if (!bot.ok) return refuse(503, 'permission_bot_unavailable', { why: bot.reason })
   if (parsed.chatId !== parsed.fromId) return refuse(403, 'owner_mismatch')
 
@@ -1135,6 +1157,7 @@ function handleConsumeRun(res: RouteContext['res'], rawId: string, body: unknown
     json(res, { ok: false, reason: 'bad_request', field: parsed.badField }, 400)
     return
   }
+  // The consume path needs only the pinned permission-bot id (not the main bot's).
   const bot = resolvePermissionBot()
   if (!bot.ok) {
     logger.warn({ id: parsed.id, reason: 'permission_bot_unavailable', why: bot.reason }, 'Approval run consume refused')

@@ -152,6 +152,22 @@ export const DEFAULT_AGENT_MODEL_IS_DISTRIBUTION = !cfg('DEFAULT_AGENT_MODEL')
 export const TELEGRAM_BOT_TOKEN = env['TELEGRAM_BOT_TOKEN'] ?? ''
 export const ALLOWED_CHAT_ID = env['ALLOWED_CHAT_ID'] ?? ''
 
+// Card 9a77b3e5 (B1): the id of the permission bot (@fireeng_engedely_bot) the
+// RAG production-run approval trusts. Pinned OUTSIDE the dashboard Bearer's
+// reach: read once at startup from the real process environment, else from the
+// install .env -- never through cfg(), so config-overrides.json (the only file
+// the Settings API writes) cannot set it, and the key is not in the settings
+// registry. Digits only; anything else is '' and every permission-bot path
+// fails closed.
+export function resolvePermissionBotId(processValue: string | undefined, envFileValue: string | undefined): string {
+  for (const raw of [processValue, envFileValue]) {
+    const v = (raw ?? '').trim()
+    if (v !== '') return /^[1-9][0-9]{0,15}$/.test(v) ? v : ''
+  }
+  return ''
+}
+export const PERMISSION_BOT_ID = resolvePermissionBotId(process.env['PERMISSION_BOT_ID'], env['PERMISSION_BOT_ID'])
+
 export const SLACK_BOT_TOKEN = env['SLACK_BOT_TOKEN'] ?? ''
 export const SLACK_APP_TOKEN = env['SLACK_APP_TOKEN'] ?? ''
 export const SLACK_CHANNEL_ID = env['SLACK_CHANNEL_ID'] ?? ''

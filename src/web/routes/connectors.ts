@@ -17,6 +17,7 @@ import { shellEscape } from '../sanitize.js'
 import { getExternalProjectPaths, addExternalProjectPath, removeExternalProjectPath, getGitHubRepos, installGitHubRepo, removeGitHubRepo, updateGitHubRepo, detectRequiredEnvVars, parseRunScriptsFlag } from '../dashboard-settings.js'
 import { listSecrets, setSecret, getSecret, deleteSecret } from '../vault.js'
 import { logVaultRead, isSshPrivateKeyId, principalOf } from '../vault-acl.js'
+import { isPermissionBotVaultId, PERMISSION_BOT_VAULT_LOCKED_ERROR } from '../permission-bot-vault.js'
 import {
   getBindings, addBinding, removeBinding, removeBindingsForSecret,
   syncSecret, syncAllBindings, scanMcpConfigs, unsyncBinding,
@@ -745,6 +746,8 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     const body = await readBody(req)
     const { id, label, value } = JSON.parse(body.toString()) as { id: string, label: string, value: string }
     if (!id?.trim() || !value) { json(res, { error: 'id and value required' }, 400); return true }
+    // Card 9a77b3e5: the permission bot's token is never written through the API.
+    if (isPermissionBotVaultId(id)) { json(res, { error: PERMISSION_BOT_VAULT_LOCKED_ERROR }, 403); return true }
     setSecret(id.trim(), label || id.trim(), value)
     const syncResult = syncSecret(id.trim())
     json(res, { ok: true, synced: syncResult.updated })
@@ -785,6 +788,7 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
 
   if (vaultMatch && !isVaultSubroute && method === 'DELETE') {
     const id = decodeURIComponent(vaultMatch[1])
+    if (isPermissionBotVaultId(id)) { json(res, { error: PERMISSION_BOT_VAULT_LOCKED_ERROR }, 403); return true }
     if (!deleteSecret(id)) { json(res, { error: 'Not found' }, 404); return true }
     removeBindingsForSecret(id)
     json(res, { ok: true })
@@ -914,6 +918,10 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     let bound = 0
     const errors: string[] = []
     for (const imp of importRequests) {
+      if (isPermissionBotVaultId(imp.vaultId)) {
+        errors.push(PERMISSION_BOT_VAULT_LOCKED_ERROR)
+        continue
+      }
       let value: string | null = null
       for (const target of imp.targets) {
         try {
