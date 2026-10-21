@@ -399,11 +399,16 @@ export function resumePrompt(
     // The main agent's channel is the OWNER's channel (Telegram), and session
     // meta must never go there (standing owner preference; a 3am status
     // notice measured on 2026-08-05, review msg 14197). Sub-agents' channel
-    // is the inter-agent queue, where the notice belongs. This prompt is the
-    // fresh session's ONLY rule set, so the split must live here.
+    // is the inter-agent queue. Owner request 2026-10-21: sub-agents with their
+    // own bot have the owner's Telegram as channel, so NO agent notifies a
+    // channel about the fresh context; only a faulty handoff is reported, to
+    // the main agent via the queue. This prompt is the fresh session's ONLY
+    // rule set, so the rule must live here.
     (name === MAIN_AGENT_ID
-      ? `Zárásul egyetlen transzkript-sorban rögzítsd, hogy friss kontextussal folytatod -- a csatornádra (a gazda Telegramjára) session-meta NEM mehet ki.`
-      : `Röviden jelezz a csatornádon, hogy friss kontextussal folytatod.`)
+      ? `Zárásul egyetlen transzkript-sorban rögzítsd, hogy friss kontextussal folytatod -- a csatornádra (a gazda Telegramjára) session-meta NEM mehet ki. ` +
+        `Ha az átadás hibás volt (nincs HANDOFF, olvashatatlan, vagy elveszett egy kérés), azt is ebben a transzkript-sorban rögzítsd, a gazdának ne küldj üzenetet.`
+      : `A friss kontextusról a csatornádra (Telegram) NE küldj üzenetet. ` +
+        `Csak ha az átadás hibás volt (nincs HANDOFF, olvashatatlan, vagy elveszett egy kérés), azt jelezd inter-agent üzenetben a fő ügynöknek (${MAIN_AGENT_ID}), a gazdának ne.`)
   )
 }
 
