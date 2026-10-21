@@ -9,7 +9,8 @@
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest'
 import { Readable } from 'node:stream'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import Database from 'better-sqlite3'
@@ -235,8 +236,9 @@ describe('backfill CLI (scripts/daily-log-backfill-memories.ts)', () => {
 
   it('dry run by default, --apply writes, a second --apply writes nothing', () => {
     const dbPath = join(dir, 'cli.db')
-    // First run on an empty DB just lays the schema down.
-    const init = run(dbPath)
+    // First --apply on an empty DB just lays the schema down (a dry run
+    // writes nothing, see the next test).
+    const init = run(dbPath, '--apply')
     expect(init.status).toBe(0)
     const raw = new Database(dbPath)
     const ins = raw.prepare('INSERT INTO daily_logs (agent_id, date, content, created_at) VALUES (?, ?, ?, ?)')
@@ -262,6 +264,41 @@ describe('backfill CLI (scripts/daily-log-backfill-memories.ts)', () => {
     expect((check.prepare('SELECT COUNT(*) AS n FROM memories').get() as any).n).toBe(2)
     check.close()
   }, 120_000)
+
+  it('a dry run writes nothing: no migration, no link table, file byte-identical (msg 3656)', () => {
+    const dbPath = join(dir, 'ro.db')
+    const raw = new Database(dbPath)
+    raw.exec('CREATE TABLE daily_logs (id INTEGER PRIMARY KEY AUTOINCREMENT, agent_id TEXT NOT NULL, date TEXT NOT NULL, content TEXT NOT NULL, created_at INTEGER NOT NULL)')
+    const ins = raw.prepare('INSERT INTO daily_logs (agent_id, date, content, created_at) VALUES (?, ?, ?, ?)')
+    ins.run('agent-a', '2026-03-04', 'RO bejegyzes egy', 1_772_600_000)
+    ins.run('agent-a', '2026-03-05', 'RO bejegyzes ketto', 1_772_700_000)
+    raw.close()
+    const sha = () => createHash('sha256').update(readFileSync(dbPath)).digest('hex')
+    const before = sha()
+
+    const dry = run(dbPath)
+    expect(dry.status).toBe(0)
+    expect(dry.stdout).toContain('DRY RUN')
+    expect(dry.stdout).toContain('daily_log_memory table is missing')
+    expect(dry.stdout).toMatch(/daily_logs rows:\s+2/)
+    expect(dry.stdout).toMatch(/would create:\s+2/)
+    expect(sha()).toBe(before)
+    const check = new Database(dbPath, { readonly: true })
+    expect(check.prepare("SELECT name FROM sqlite_master WHERE name = 'daily_log_memory'").get()).toBeUndefined()
+    check.close()
+
+    // --apply still works on the same file.
+    const apply = run(dbPath, '--apply')
+    expect(apply.status).toBe(0)
+    expect(apply.stdout).toMatch(/new mirrors:\s+2/)
+  }, 120_000)
+
+  it('a dry run on a missing database file fails without creating it', () => {
+    const dbPath = join(dir, 'nope.db')
+    const r = run(dbPath)
+    expect(r.status).toBe(1)
+    expect(existsSync(dbPath)).toBe(false)
+  }, 60_000)
 
   it('rejects an unknown flag with exit 2', () => {
     const r = run(join(dir, 'x.db'), '--bogus')

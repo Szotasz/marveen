@@ -2659,6 +2659,40 @@ export function backfillDailyLogMemories(opts: { apply: boolean; reject?: (conte
   return result
 }
 
+/**
+ * Dry run of the backfill against a handle the CALLER opened read-only, with
+ * no migration: it must not write anything, not even the empty link table.
+ * A database that never ran the mirror migration has no daily_log_memory
+ * table; then every log row counts as pending and `linkTableMissing` says
+ * that `--apply` would create the table first. A database without even a
+ * daily_logs table reports zero rows.
+ */
+export function dryRunDailyLogBackfill(
+  handle: Database.Database,
+  opts: { reject?: (content: string) => boolean } = {},
+): DailyLogBackfillResult & { linkTableMissing: boolean } {
+  const has = (name: string) =>
+    handle.prepare("SELECT 1 AS x FROM sqlite_master WHERE type = 'table' AND name = ?").get(name) !== undefined
+  const linkTableMissing = !has('daily_log_memory')
+  if (!has('daily_logs')) {
+    return { total: 0, already: 0, created: 0, wouldCreate: 0, skipped: 0, failed: 0, linkTableMissing }
+  }
+  const total = (handle.prepare('SELECT COUNT(*) AS n FROM daily_logs').get() as { n: number }).n
+  const pending = (linkTableMissing
+    ? handle.prepare('SELECT id, content FROM daily_logs ORDER BY id')
+    : handle.prepare(
+        `SELECT l.id, l.content FROM daily_logs l
+          LEFT JOIN daily_log_memory k ON k.daily_log_id = l.id
+          WHERE k.daily_log_id IS NULL ORDER BY l.id`
+      )).all() as { id: number; content: string }[]
+  const result = { total, already: total - pending.length, created: 0, wouldCreate: 0, skipped: 0, failed: 0, linkTableMissing }
+  for (const row of pending) {
+    if (!row.content.trim() || opts.reject?.(row.content)) result.skipped++
+    else result.wouldCreate++
+  }
+  return result
+}
+
 export function getDailyLog(agentId: string, date: string): { id: number; content: string; created_at: number }[] {
   return db.prepare('SELECT id, content, created_at FROM daily_logs WHERE agent_id = ? AND date = ? ORDER BY created_at ASC').all(agentId, date) as { id: number; content: string; created_at: number }[]
 }

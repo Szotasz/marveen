@@ -12,12 +12,19 @@
 // episodic, and goes through the same content filter as POST /api/memories
 // (a refused row stays in the diary and is counted as "skipped").
 //
+// A dry run writes NOTHING: it opens the database read-only and runs no
+// migration, so it does not even create the daily_log_memory link table. When
+// that table is missing it says so and counts every log row as pending.
+//
 // Talks to SQLite directly, no HTTP and no token. Embeddings are NOT created
 // here (the process exits first); the existing embedding backfill fills them.
 // Stop the dashboard's writers or run it off-hours on a busy install: SQLite
 // serialises the writes, but this is a bulk insert.
 
-import { initDatabase, backfillDailyLogMemories } from '../src/db.js'
+import { join } from 'node:path'
+import Database from 'better-sqlite3'
+import { initDatabase, backfillDailyLogMemories, dryRunDailyLogBackfill } from '../src/db.js'
+import { STORE_DIR, DB_FILENAME } from '../src/config.js'
 import { containsSuspiciousContent } from '../src/web/routes/memories.js'
 
 function usage(): never {
@@ -34,11 +41,30 @@ for (let i = 0; i < args.length; i++) {
   else usage()
 }
 
-initDatabase(dbPath)
-const r = backfillDailyLogMemories({ apply, reject: (c) => containsSuspiciousContent(c) })
+let r: ReturnType<typeof backfillDailyLogMemories> & { linkTableMissing?: boolean }
+if (apply) {
+  initDatabase(dbPath)
+  r = backfillDailyLogMemories({ apply: true, reject: (c) => containsSuspiciousContent(c) })
+} else {
+  let ro: Database.Database
+  try {
+    ro = new Database(dbPath ?? join(STORE_DIR, DB_FILENAME), { readonly: true, fileMustExist: true })
+  } catch (err) {
+    process.stderr.write(`cannot open the database read-only: ${(err as Error).message}\n`)
+    process.exit(1)
+  }
+  try {
+    r = dryRunDailyLogBackfill(ro, { reject: (c) => containsSuspiciousContent(c) })
+  } finally {
+    ro.close()
+  }
+}
 const mode = apply ? 'APPLY' : 'DRY RUN (use --apply to write)'
 process.stdout.write(
   `daily-log -> memories backfill [${mode}]\n` +
+  (r.linkTableMissing
+    ? '  daily_log_memory table is missing: --apply would create it first; every log row counts as pending\n'
+    : '') +
   `  daily_logs rows:   ${r.total}\n` +
   `  already mirrored:  ${r.already}\n` +
   `  ${apply ? 'new mirrors:       ' : 'would create:      '} ${apply ? r.created : r.wouldCreate}\n` +
