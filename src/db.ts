@@ -1633,6 +1633,25 @@ export function initDatabase(dbPathOverride?: string): void {
     )
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_approval_events_approval ON approval_events(approval_id, created_at)`)
+  // The trace of a decision made by the owner's Telegram button.
+  // resolved_by alone proves nothing (it is a string any writer of the row can
+  // set), so the button decision writes this row in the SAME transaction as the
+  // decision itself, and isOwnerVerified() reads it. Written only by
+  // resolveApprovalFromTelegram (the one INSERT there); no route, PATCH or other
+  // module touches this table. A row decided before this table existed has no
+  // trace, so it is never owner-verified. nonce_hash is the stored button value
+  // that matched (single-use, its button is spent); content_hash is the
+  // approval's hash at the decision.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS approval_owner_resolutions (
+      approval_id TEXT PRIMARY KEY,
+      owner_id TEXT NOT NULL,
+      status TEXT NOT NULL CHECK(status IN ('approved','rejected')),
+      nonce_hash TEXT NOT NULL,
+      content_hash TEXT NOT NULL,
+      resolved_at INTEGER NOT NULL
+    )
+  `)
 
   // --- Control-bot custom commands (CMD920 3.12) ---
   // The owner's own slash commands. DB, not a file, so a later web admin writes
@@ -7079,7 +7098,16 @@ export function resolveApprovalFromTelegram(params: {
          AND telegram_message_id = ? AND ${column} = ?
     `).run(status, now, `owner:telegram:${ownerId}`, status, CLEARED_EMAIL_PAYLOAD, id, now, messageId, nonceHash).changes
     const row = getApproval(id)
-    if (changes === 1) return { ok: true, approval: row }
+    if (changes === 1 && row) {
+      // The evidence of an owner-verified decision, in the same transaction as
+      // the decision: either both land or neither does. The content_hash is
+      // NOT NULL on a winning row (the UPDATE required it).
+      db.prepare(`
+        INSERT INTO approval_owner_resolutions (approval_id, owner_id, status, nonce_hash, content_hash, resolved_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `).run(id, ownerId, status, nonceHash, row.content_hash, row.resolved_at)
+      return { ok: true, approval: row }
+    }
     let reason: ApprovalTelegramRefusal
     if (!row) reason = 'not_found'
     else if (row.category !== 'email_send') reason = 'wrong_category'
@@ -7092,6 +7120,38 @@ export function resolveApprovalFromTelegram(params: {
     else reason = 'bad_nonce'
     return { ok: false, reason, approval: row }
   })()
+}
+
+/**
+ * True only for an APPROVED approval decided by the owner's Telegram button:
+ * its approval_owner_resolutions trace exists (written only by
+ * resolveApprovalFromTelegram), names an owner, says approved, and still
+ * matches the row (resolved_by owner:telegram:<that owner>, the same
+ * resolved_at and content_hash). With `expectedOwnerId` the trace must name
+ * exactly that user (callers pass the strict owner, resolveAlertOwnerChat).
+ * A legacy PATCH, a direct resolveApproval, or a row decided before the trace
+ * existed is never verified.
+ */
+export function isOwnerVerified(approvalId: string, expectedOwnerId?: string): boolean {
+  if (typeof approvalId !== 'string' || approvalId === '') return false
+  if (expectedOwnerId !== undefined && (typeof expectedOwnerId !== 'string' || !TELEGRAM_USER_ID.test(expectedOwnerId))) return false
+  const t = db.prepare(`
+    SELECT a.status, a.resolved_by, a.resolved_at, a.content_hash,
+           r.owner_id, r.status AS r_status, r.content_hash AS r_content_hash, r.resolved_at AS r_resolved_at
+      FROM approvals a JOIN approval_owner_resolutions r ON r.approval_id = a.id
+     WHERE a.id = ?
+  `).get(approvalId) as {
+    status: string; resolved_by: string | null; resolved_at: number | null; content_hash: string | null
+    owner_id: string; r_status: string; r_content_hash: string; r_resolved_at: number
+  } | undefined
+  if (!t) return false
+  if (t.status !== 'approved' || t.r_status !== 'approved') return false
+  if (!TELEGRAM_USER_ID.test(t.owner_id)) return false
+  if (expectedOwnerId !== undefined && t.owner_id !== expectedOwnerId) return false
+  if (t.resolved_by !== `owner:telegram:${t.owner_id}`) return false
+  if (t.resolved_at == null || t.resolved_at !== t.r_resolved_at) return false
+  if (t.content_hash == null || t.content_hash !== t.r_content_hash) return false
+  return true
 }
 
 // Whether the nonce of one button is bound, without ever reading the hash out

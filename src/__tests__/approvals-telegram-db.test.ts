@@ -1,13 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { createHash, randomBytes } from 'node:crypto'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import Database from 'better-sqlite3'
 import {
   initDatabase, getDb, createApproval, getApproval, listApprovals, resolveApproval,
   expireTimedOutApprovals, consumeApproval, setApprovalTelegramMessageId,
-  setApprovalCallbackNonceHashes, resolveApprovalFromTelegram,
+  setApprovalCallbackNonceHashes, resolveApprovalFromTelegram, isOwnerVerified,
 } from '../db.js'
 
 // The DB side of the Telegram approve/reject buttons. Each button
@@ -372,6 +373,117 @@ describe('resolveApprovalFromTelegram', () => {
     expect(consumeApproval({ id: 't20', contentHash: HASH, consumer: 't', windowSeconds: 1800, nowS: NOW + 1 }).ok).toBe(true)
     expect(consumeApproval({ id: 't20', contentHash: HASH, consumer: 't', windowSeconds: 1800, nowS: NOW + 2 })).toMatchObject({ ok: false, reason: 'already_consumed' })
     expect(consumeApproval({ id: 't21', contentHash: HASH, consumer: 't', windowSeconds: 1800, nowS: NOW + 1 })).toMatchObject({ ok: false, reason: 'not_approved' })
+  })
+})
+
+// The trace of the owner's own button decision (approval_owner_resolutions) and
+// isOwnerVerified, which reads it.
+describe('isOwnerVerified: only the owner\'s button press leaves the trace', () => {
+  const STRANGER = '2000000002'
+  const traceOf = (id: string) =>
+    getDb().prepare('SELECT owner_id, status, nonce_hash, content_hash, resolved_at FROM approval_owner_resolutions WHERE approval_id = ?').get(id)
+
+  it('true after the owner\'s approve button, for that owner only; the trace names owner, status, nonce hash, content hash, time', () => {
+    const { nonceHash } = bound('o1')
+    expect(isOwnerVerified('o1')).toBe(false)
+    expect(press('o1', nonceHash).ok).toBe(true)
+    expect(isOwnerVerified('o1')).toBe(true)
+    expect(isOwnerVerified('o1', OWNER)).toBe(true)
+    expect(isOwnerVerified('o1', STRANGER)).toBe(false)
+    expect(traceOf('o1')).toEqual({ owner_id: OWNER, status: 'approved', nonce_hash: nonceHash, content_hash: HASH, resolved_at: NOW })
+  })
+
+  it('false after the owner\'s reject button (the trace says rejected)', () => {
+    const { rejectHash } = bound('o2')
+    expect(press('o2', rejectHash, { status: 'rejected' }).ok).toBe(true)
+    expect(traceOf('o2')).toMatchObject({ owner_id: OWNER, status: 'rejected' })
+    expect(isOwnerVerified('o2')).toBe(false)
+    expect(isOwnerVerified('o2', OWNER)).toBe(false)
+  })
+
+  it('false after a legacy resolve, whatever attribution it claims: no trace, no verification', () => {
+    pending('o3')
+    expect(resolveApproval('o3', 'approved', `owner:telegram:${OWNER}`)).toBe(true)
+    expect(getApproval('o3')).toMatchObject({ status: 'approved', resolved_by: `owner:telegram:${OWNER}` })
+    expect(traceOf('o3')).toBeUndefined()
+    expect(isOwnerVerified('o3')).toBe(false)
+    expect(isOwnerVerified('o3', OWNER)).toBe(false)
+  })
+
+  it('false for a row approved as owner:telegram: by a direct write, i.e. before the trace existed', () => {
+    pending('o4')
+    getDb().prepare("UPDATE approvals SET status = 'approved', resolved_by = ?, resolved_at = ? WHERE id = ?")
+      .run(`owner:telegram:${OWNER}`, NOW, 'o4')
+    expect(isOwnerVerified('o4')).toBe(false)
+    expect(isOwnerVerified('o4', OWNER)).toBe(false)
+  })
+
+  it('refused presses leave no trace; a later valid one writes exactly one', () => {
+    const { nonceHash, rejectHash } = bound('o5')
+    expect(press('o5', rejectHash).reason).toBe('bad_nonce')
+    expect(press('o5', nonceHash, { messageId: MSG + 1 }).reason).toBe('message_mismatch')
+    expect(press('o5', nonceHash, { nowS: NOW + 601 }).reason).toBe('expired')
+    expect(traceOf('o5')).toBeUndefined()
+    expect(press('o5', nonceHash).ok).toBe(true)
+    expect(press('o5', nonceHash, { ownerId: STRANGER }).reason).toBe('already_resolved')
+    expect(getDb().prepare('SELECT COUNT(*) AS n FROM approval_owner_resolutions WHERE approval_id = ?').get('o5')).toEqual({ n: 1 })
+    expect(traceOf('o5')).toMatchObject({ owner_id: OWNER })
+  })
+
+  it('the trace is written in the decision\'s transaction: a failing trace write rolls the decision back', () => {
+    const { nonceHash, hashes } = bound('o6')
+    getDb().prepare(`INSERT INTO approval_owner_resolutions (approval_id, owner_id, status, nonce_hash, content_hash, resolved_at)
+      VALUES ('o6', ?, 'approved', ?, ?, ?)`).run(OWNER, nonceHash, HASH, NOW)
+    expect(() => press('o6', nonceHash)).toThrow()
+    expect(getApproval('o6')).toMatchObject({ status: 'pending', resolved_by: null, resolved_at: null })
+    expect(storedHashes('o6')).toEqual(hashes)
+  })
+
+  it('a verified approval stops being verified when the row no longer matches its trace', () => {
+    for (const [id, change] of [
+      ['o7a', "resolved_by = 'dashboard'"],
+      ['o7b', `content_hash = '${'cd'.repeat(32)}'`],
+      ['o7c', `resolved_at = ${NOW + 5}`],
+      ['o7d', "status = 'rejected'"],
+    ] as const) {
+      const { nonceHash } = bound(id)
+      expect(press(id, nonceHash).ok).toBe(true)
+      expect(isOwnerVerified(id, OWNER)).toBe(true)
+      getDb().prepare(`UPDATE approvals SET ${change} WHERE id = ?`).run(id)
+      expect(isOwnerVerified(id, OWNER)).toBe(false)
+    }
+  })
+
+  it('a trace naming a malformed owner id is never verified', () => {
+    const { nonceHash } = bound('o8')
+    expect(press('o8', nonceHash).ok).toBe(true)
+    getDb().prepare("UPDATE approval_owner_resolutions SET owner_id = '0x1' WHERE approval_id = 'o8'").run()
+    getDb().prepare("UPDATE approvals SET resolved_by = 'owner:telegram:0x1' WHERE id = 'o8'").run()
+    expect(isOwnerVerified('o8')).toBe(false)
+  })
+
+  it('malformed arguments are false, an unknown id is false', () => {
+    const { nonceHash } = bound('o9')
+    expect(press('o9', nonceHash).ok).toBe(true)
+    for (const bad of ['', 'nope', null, undefined, 7]) expect(isOwnerVerified(bad as unknown as string)).toBe(false)
+    for (const bad of ['', '0', 'abc', '1 2', 42, null]) expect(isOwnerVerified('o9', bad as unknown as string)).toBe(false)
+    expect(isOwnerVerified('o9', OWNER)).toBe(true)
+  })
+
+  it('no route and no module but db.ts names the trace table; db.ts inserts into it exactly once', () => {
+    const root = fileURLToPath(new URL('..', import.meta.url))
+    const offenders: string[] = []
+    const walk = (dir: string): void => {
+      for (const name of readdirSync(dir)) {
+        const p = join(dir, name)
+        if (name === '__tests__' || name === 'node_modules') continue
+        if (statSync(p).isDirectory()) walk(p)
+        else if (/\.(ts|mjs|js)$/.test(name) && p !== join(root, 'db.ts') && readFileSync(p, 'utf-8').includes('approval_owner_resolutions')) offenders.push(p)
+      }
+    }
+    walk(root)
+    expect(offenders).toEqual([])
+    expect(readFileSync(join(root, 'db.ts'), 'utf-8').match(/INSERT INTO approval_owner_resolutions/g)).toHaveLength(1)
   })
 })
 
