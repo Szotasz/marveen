@@ -126,6 +126,7 @@ describe('resumePrompt never tells any agent to notify the channel', () => {
         expect(p).not.toContain('jelezz a csatornádon')
         expect(p).toMatch(/NE küldj üzenetet|NEM mehet ki/)
         if (agent === 'samu') expect(p).toContain('(marveen)')
+        if (agent === 'marveen') expect(p).toContain('a gazdának ne küldj üzenetet')
       })
     }
   }
