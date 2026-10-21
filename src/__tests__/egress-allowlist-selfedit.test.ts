@@ -32,6 +32,19 @@ afterEach(() => { rmSync(root, { recursive: true, force: true }) })
 
 const decide = (tool: string, input: Record<string, unknown>) =>
   gateDecision(tool, input, { allowlistPath: allowlist, cwd: root })
+// The fold only ADDS denials (nameForms in self-pace-gate.mjs): NFKC composes a
+// combining mark into the LETTER before it, so a mark right after a protected name, or
+// at the end of a command that ends in a letter, must not turn a denial into an allow.
+// (After `.` or `/` nothing composes, and the mark only names another directory.)
+const withMarks = (cmd: string): string[] => {
+  const names = /egress-allowlist\.json|egress-allowlist\.history|extra-hooks\.json|local-hooks/g
+  const out: string[] = []
+  for (const m of ['\u0301', '\u0303']) {
+    if (/\p{L}$/u.test(cmd)) out.push(cmd + m)
+    if (cmd.match(names)) out.push(cmd.replace(names, (n) => n + m))
+  }
+  return out
+}
 
 describe('gate: native file tools on the allowlist', () => {
   it.each(['Write', 'Edit', 'MultiEdit', 'NotebookEdit'])('%s on the file is denied, with the allowlist reason', (tool) => {
@@ -120,6 +133,18 @@ describe('gate: Bash is fail-closed on the allowlist', () => {
     'echo x > store/egress-allowlist.history/history.log',
   ]
   it.each(denied)('denies: %s', (command) => {
+    expect(decide('Bash', { command })).toEqual({ deny: true, reason: 'egress-allowlist' })
+  })
+  // a case with nowhere for a mark to compose (a glob) is left out
+  it.each(denied.filter((c) => withMarks(c).length))('the fold never removes a denial: %s with a combining mark is still denied', (command) => {
+    for (const marked of withMarks(command)) {
+      expect(decide('Bash', { command: marked }), JSON.stringify(marked)).toEqual({ deny: true, reason: 'egress-allowlist' })
+    }
+  })
+  it.each([
+    `python3 -c "open('store/egress-allowlist.json\u0303'[:-1],'w')"`,
+    `python3 -c "open('store/egress-allowlist.json\u0303'.encode('ascii', 'ignore').decode(),'w')"`,
+  ])('a trailing combining mark that NFKC composes and the program drops again is denied (round 4 delta): %s', (command) => {
     expect(decide('Bash', { command })).toEqual({ deny: true, reason: 'egress-allowlist' })
   })
 

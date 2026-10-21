@@ -176,9 +176,9 @@ const HTTP_WRITE_RX = /(-X\s*(POST|PUT|PATCH|DELETE)|--request\s+(POST|PUT|PATCH
 //   - a program that names the files it creates itself (cp/mv/ln/install/rsync/tar/
 //     unzip/cpio/patch, DIR_WRITERS) given the project root or the store dir itself as
 //     an argument: the name it creates there is not in the command.
-// Every one of these comparisons, and every path comparison in the file-tool branch, is
-// made on foldName() of the text: a case-insensitive volume reads more than ASCII case
-// as the same name (see foldName).
+// Every one of these comparisons, and every path comparison in the file-tool branch,
+// reads every nameForms() form of the text and denies if any matches: the raw text, and
+// the folds a case-insensitive volume reads as the same name (see nameForms).
 //
 // WHAT IT DOES NOT COVER, and cannot from a command's text: a name the command never
 // spells -- built at run time (chr(), base64, a `$(...)` that prints it, os.path.join of
@@ -203,21 +203,39 @@ const PROTECTED_BASENAMES = new Set([ALLOWLIST_BASENAME, 'extra-hooks.json'])
 // pieces (`,` `(` `[` `+`), as in os.path.join(root, 'local-hooks', 'a.py').
 const ALLOWLIST_MENTION_RX = /egress[-_]?allowlist(?:\.json|\.history)|egress[-_]?allow[\w.]*[*?[]|extra[-_]?hooks\.json|(?<![\w.-])local-hooks(?![\w.-])/i
 
-// The ONE fold every comparison of a protected name goes through: the raw-text mention
-// check, the glob match, the file-tool basename and path checks, and pathKey(). A
-// case-insensitive volume (macOS APFS default) matches more than ASCII case: it reads
-// U+017F LATIN SMALL LETTER LONG S as `s` and U+212A KELVIN SIGN as `k` (measured on
-// APFS, review #2001 round 4: the only two code points in U+0080..U+FFFF it treats as an
-// ASCII letter). toLowerCase() maps the Kelvin sign but not the long s, which is already
-// lower case, and a non-unicode /i regex matches neither, so extra-hookſ.json passed
-// and landed as extra-hooks.json. NFKC maps both, and the lower-casing then folds ASCII
-// case. On a case-sensitive volume the extra denial is a look-alike name a sub-agent has
-// no business writing either.
+// The fold every comparison of a protected name ALSO goes through (nameForms): the
+// raw-text mention check, the glob match, the file-tool basename and path checks, and
+// pathKey(). A case-insensitive volume (macOS APFS default) matches more than ASCII
+// case: it reads U+017F LATIN SMALL LETTER LONG S as `s` and U+212A KELVIN SIGN as `k`
+// (measured on APFS in U+0080..U+FFFF, review #2001 round 4: the only two code points
+// there it treats as an ASCII letter; the astral planes were not measured).
+// toLowerCase() maps the Kelvin sign but not the long s, which is already lower case,
+// and a non-unicode /i regex matches neither, so extra-hook<U+017F>.json passed and
+// landed as extra-hooks.json. NFKC maps both, and the lower-casing then folds ASCII case.
 export function foldName(s) {
   return String(s ?? '').normalize('NFKC').toLowerCase()
 }
+
+// Every form a protected-name decision reads, and it denies if ANY of them matches. The
+// fold only ADDS denials, it never replaces the raw reading, because a fold also takes
+// spellings away: NFKC composes a combining mark into the letter before it
+// (extra-hooks.json + U+0301 ends in U+0144, which `${V%?}` or [:-1] strips again at run
+// time), and lower-casing shifts a bracket range's endpoints ([Z-z] covers `k`, [z-z]
+// does not). In this order, fixed, so two keys compare form by form (sameKey):
+//   0. the text as given;
+//   1. lower-cased (the case-insensitive reading the round-3 fix compared);
+//   2. foldName(), for the letters a case-insensitive volume reads as ASCII;
+//   3. NFKD with the combining marks removed, lower-cased: a mark next to a name
+//      (composed or not) does not hide it.
+// On a case-sensitive volume the extra denials are look-alike names a sub-agent has no
+// business writing either.
+const COMBINING_MARK_RX = /\p{M}/gu
+export function nameForms(s) {
+  const raw = String(s ?? '')
+  return [raw, raw.toLowerCase(), foldName(raw), raw.normalize('NFKD').replace(COMBINING_MARK_RX, '').toLowerCase()]
+}
 function mentionsProtectedName(text) {
-  return ALLOWLIST_MENTION_RX.test(foldName(text))
+  return nameForms(text).some((f) => ALLOWLIST_MENTION_RX.test(f))
 }
 const ALLOWLIST_READERS = new Set([
   'cat', 'head', 'tail', 'grep', 'egrep', 'fgrep', 'rg', 'jq', 'wc', 'ls', 'stat',
@@ -273,7 +291,8 @@ export function protectedContext(segs, allowlistPath = DEFAULT_ALLOWLIST_PATH, c
     }
   }
   const store = dirname(allowlistPath)
-  // root/store are compared as pathKey()s (real, on-disk case, lower-cased): see realDeep.
+  // root/store are compared as pathKey()s (real, on-disk case, every nameForms() form):
+  // see realDeep and sameKey.
   return { assigns, root: pathKey(resolve(store, '..')), store: pathKey(store), cwd: cwd ? resolve(String(cwd)) : null }
 }
 
@@ -336,7 +355,7 @@ function protectedPatternWord(text, ctx) {
   // absolute path, so that word has no known parent directory.
   const words = src.replace(UNRESOLVED_EXPANSION_RX, UNRESOLVED).replace(/[\\'"]/g, '').split(/[\s;&|<>()]+/).filter(Boolean)
   const cwdReal = ctx?.cwd ? pathKey(ctx.cwd) : null
-  const cwdProtected = !!cwdReal && (cwdReal === ctx.root || cwdReal === ctx.store)
+  const cwdProtected = !!cwdReal && (sameKey(cwdReal, ctx.root) || sameKey(cwdReal, ctx.store))
   const cmd = (words.find((w) => !/^[A-Za-z_]\w*=/.test(w)) ?? '').replace(/^.*\//, '')
   if (ctx && DIR_WRITERS.has(cmd)) {
     for (const w of words) {
@@ -345,7 +364,7 @@ function protectedPatternWord(text, ctx) {
       const abs = v.startsWith('/') || v === '~' || v.startsWith('~/') ? expandHome(v === '~' ? '~/' : v) : (ctx.cwd ? join(ctx.cwd, v) : null)
       if (!abs) continue
       const real = pathKey(resolve(abs))
-      if (real === ctx.root || real === ctx.store) return true
+      if (sameKey(real, ctx.root) || sameKey(real, ctx.store)) return true
     }
   }
   for (const raw of words) {
@@ -364,17 +383,19 @@ function protectedPatternWord(text, ctx) {
         : e.startsWith('/') || home ? expandHome(home && e === '~' ? '~/' : e) : (ctx?.cwd ? join(ctx.cwd, e) : null)
       const segs = normalizePathSegments(abs ?? e)
       for (let i = 0; i < segs.length; i++) {
-        const seg = foldName(segs[i])
-        if (!/[*?[]/.test(seg)) continue
+        if (!/[*?[]/.test(segs[i])) continue
         const above = segs.slice(0, i)
         const parent = abs && i > 0 && !above.some((x) => /[*?[]/.test(x)) ? pathKey(above.join('/') || '/') : null
-        const literal = seg.replace(/\[[^\]]*\]|[*?]/g, '')
-        for (const target of PROTECTED_GLOB_TARGETS) {
-          if (!globMatchesName(seg, target)) continue
-          const isFile = PROTECTED_FILE_SUFFIX_RX.test(target)
-          if (parent && ctx && parent === (isFile ? ctx.store : ctx.root)) return true
-          const stem = (isFile ? literal.replace(PROTECTED_FILE_SUFFIX_RX, '') : literal).replace(/^[.]+|[.]+$/g, '')
-          if (stem.length >= 3) return true
+        // every form of the pattern: the raw one keeps its bracket ranges as written
+        for (const seg of nameForms(segs[i])) {
+          const literal = seg.replace(/\[[^\]]*\]|[*?]/g, '')
+          for (const target of PROTECTED_GLOB_TARGETS) {
+            if (!globMatchesName(seg, target)) continue
+            const isFile = PROTECTED_FILE_SUFFIX_RX.test(target)
+            if (parent && ctx && sameKey(parent, isFile ? ctx.store : ctx.root)) return true
+            const stem = (isFile ? literal.replace(PROTECTED_FILE_SUFFIX_RX, '') : literal).replace(/^[.]+|[.]+$/g, '')
+            if (stem.length >= 3) return true
+          }
         }
       }
     }
@@ -414,26 +435,34 @@ function realDeep(p) {
     }
   }
 }
-// The form every protected-path comparison uses, in the file-tool AND the Bash branch.
+// The key every protected-path comparison uses, in the file-tool AND the Bash branch:
+// the nameForms() of the real path. Two keys are the same path if any form matches its
+// counterpart (sameKey); a path is under a directory the same way (underKey).
 function pathKey(p) {
-  return foldName(realDeep(p))
+  return nameForms(realDeep(p))
+}
+function sameKey(a, b) {
+  return a.some((f, i) => f === b[i])
+}
+function underKey(a, dir) {
+  return a.some((f, i) => f === dir[i] || f.startsWith(dir[i] + '/'))
 }
 
 // Does a native file-tool call target the allowlist, store/extra-hooks.json or a script
 // under local-hooks/? `allowlistPath` is the real file this install's egress-gate reads;
-// tests pass a tmp one. EVERY comparison here is made on foldName(): the filesystem may
+// tests pass a tmp one. EVERY comparison here reads every nameForms() form: the filesystem may
 // be case-insensitive (review #2001), and on a case-sensitive one the extra denial is a
 // look-alike name a sub-agent has no business writing either.
 export function fileToolTargetsAllowlist(toolInput, allowlistPath = DEFAULT_ALLOWLIST_PATH, cwd = process.cwd()) {
   const raw = String(toolInput?.file_path ?? toolInput?.notebook_path ?? '')
   if (!raw) return false
-  if (PROTECTED_BASENAMES.has(foldName(basename(raw)))) return true
-  if (/(^|\/)local-hooks(\/|$)/.test(foldName(raw))) return true
+  const forms = nameForms(raw)
+  if (forms.some((f) => PROTECTED_BASENAMES.has(basename(f)))) return true
+  if (forms.some((f) => /(^|\/)local-hooks(\/|$)/i.test(f))) return true
   const real = pathKey(resolve(cwd, expandHome(raw)))
-  if (PROTECTED_BASENAMES.has(basename(real))) return true
-  const localHooks = pathKey(join(dirname(allowlistPath), '..', 'local-hooks'))
-  if (real === localHooks || real.startsWith(localHooks + '/')) return true
-  return real === pathKey(allowlistPath)
+  if (real.some((f) => PROTECTED_BASENAMES.has(basename(f)))) return true
+  if (underKey(real, pathKey(join(dirname(allowlistPath), '..', 'local-hooks')))) return true
+  return sameKey(real, pathKey(allowlistPath))
 }
 
 // Split a compound command into individual simple commands, so a token in one
