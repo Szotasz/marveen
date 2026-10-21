@@ -108,3 +108,8 @@ jobs:
       # a throwaway install root, stand-in python and node gates, a local stub for
       # the alert POST.
       - run: python3 scripts/__tests__/hook-load-watch.test.py
+      # The uptime monitor is the alert path that works while the dashboard is down, so its
+      # exit-code contract and its real send path are gate instruments too. Hermetic: a local
+      # HTTP server for the targets and as the Bot API stub (TELEGRAM_API_BASE), throwaway
+      # install trees, HOME on a temp dir, proxies cleared.
+      - run: python3 scripts/__tests__/uptime-monitor.test.py
