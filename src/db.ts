@@ -539,6 +539,20 @@ export function initDatabase(dbPathOverride?: string): void {
   } catch {
     // column already exists
   }
+  // Withdrawal (retractMemory) and replacement (supersedeMemories). A retracted
+  // row is kept -- who said what, and when they took it back, stays readable by
+  // id -- but no recall, search or listing returns it any more. `supersedes`
+  // records, on the replacing row, the ids it actually retracted.
+  try {
+    db.exec('ALTER TABLE memories ADD COLUMN retracted_at INTEGER')
+  } catch {
+    // column already exists
+  }
+  try {
+    db.exec('ALTER TABLE memories ADD COLUMN supersedes TEXT')
+  } catch {
+    // column already exists
+  }
   // Stamp updated_at on CONTENT-shaped updates only. Maintenance writes
   // (salience decay, accessed_at bumps, embedding backfills) must NOT stamp,
   // or updated_at would degrade into "last decay time". A separate trigger
@@ -1859,6 +1873,10 @@ export interface Memory {
   auto_generated: number
   keywords: string | null
   embedding: string | null
+  /** Unix seconds when the author took it back; null while it stands. */
+  retracted_at?: number | null
+  /** Comma-separated ids this row replaced (and retracted); null when none. */
+  supersedes?: string | null
 }
 
 export function saveMemory(
@@ -2074,14 +2092,14 @@ export function searchMemories(
         ? db.prepare(
             `SELECT m.*, f.rank AS rank FROM memories m
              JOIN memories_fts f ON m.id = f.rowid
-             WHERE f.memories_fts MATCH ? AND m.chat_id = ? AND m.category = ?
+             WHERE f.memories_fts MATCH ? AND m.chat_id = ? AND m.category = ? AND m.retracted_at IS NULL
              ORDER BY rank
              LIMIT ?`
           ).all(terms, chatId, category, limit * RECENCY_OVERSAMPLE)
         : db.prepare(
             `SELECT m.*, f.rank AS rank FROM memories m
              JOIN memories_fts f ON m.id = f.rowid
-             WHERE f.memories_fts MATCH ? AND m.chat_id = ?
+             WHERE f.memories_fts MATCH ? AND m.chat_id = ? AND m.retracted_at IS NULL
              ORDER BY rank
              LIMIT ?`
           ).all(terms, chatId, limit * RECENCY_OVERSAMPLE)) as (Memory & { rank: number })[]
@@ -2095,7 +2113,7 @@ export function searchMemories(
 
 export function recentMemories(chatId: string, limit = 5): Memory[] {
   return db
-    .prepare('SELECT * FROM memories WHERE chat_id = ? ORDER BY accessed_at DESC LIMIT ?')
+    .prepare('SELECT * FROM memories WHERE chat_id = ? AND retracted_at IS NULL ORDER BY accessed_at DESC LIMIT ?')
     .all(chatId, limit) as Memory[]
 }
 
@@ -2139,11 +2157,11 @@ export function getMemoriesForChat(chatId: string, limit = 10, offset = 0, categ
   // limit 50) showed 6 of 115 hot memories.
   if (category) {
     return db
-      .prepare('SELECT * FROM memories WHERE chat_id = ? AND category = ? ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?')
+      .prepare('SELECT * FROM memories WHERE chat_id = ? AND category = ? AND retracted_at IS NULL ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?')
       .all(chatId, category, limit, offset) as Memory[]
   }
   return db
-    .prepare('SELECT * FROM memories WHERE chat_id = ? ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?')
+    .prepare('SELECT * FROM memories WHERE chat_id = ? AND retracted_at IS NULL ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?')
     .all(chatId, limit, offset) as Memory[]
 }
 
@@ -2241,10 +2259,10 @@ export function getAgentMemories(agentId: string, limit: number = 20, category?:
   if (cached) return cached
   const result = (category
     ? db.prepare(
-        "SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND category = ? ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?"
+        "SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND category = ? AND retracted_at IS NULL ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?"
       ).all(agentId, category, limit, offset)
     : db.prepare(
-        "SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?"
+        "SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND retracted_at IS NULL ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?"
       ).all(agentId, limit, offset)) as Memory[]
   memoryCacheSet(key, result)
   return result
@@ -2274,13 +2292,13 @@ export function searchAgentMemories(
             `SELECT m.*, f.rank AS rank FROM memories m
              JOIN memories_fts f ON m.id = f.rowid
              WHERE f.memories_fts MATCH ? AND (m.agent_id = ? OR m.category = 'shared')
-               AND m.category = ?
+               AND m.category = ? AND m.retracted_at IS NULL
              ORDER BY rank LIMIT ?`
           ).all(terms, agentId, category, limit * RECENCY_OVERSAMPLE)
         : db.prepare(
             `SELECT m.*, f.rank AS rank FROM memories m
              JOIN memories_fts f ON m.id = f.rowid
-             WHERE f.memories_fts MATCH ? AND (m.agent_id = ? OR m.category = 'shared')
+             WHERE f.memories_fts MATCH ? AND (m.agent_id = ? OR m.category = 'shared') AND m.retracted_at IS NULL
              ORDER BY rank LIMIT ?`
           ).all(terms, agentId, limit * RECENCY_OVERSAMPLE)) as (Memory & { rank: number })[]
     , allowRelaxed)
@@ -2290,10 +2308,10 @@ export function searchAgentMemories(
     const pattern = `%${escapeLike(query)}%`
     return (category
       ? db.prepare(
-          "SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND category = ? AND (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\') ORDER BY accessed_at DESC LIMIT ?"
+          "SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND category = ? AND retracted_at IS NULL AND (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\') ORDER BY accessed_at DESC LIMIT ?"
         ).all(agentId, category, pattern, pattern, limit)
       : db.prepare(
-          "SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\') ORDER BY accessed_at DESC LIMIT ?"
+          "SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND retracted_at IS NULL AND (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\') ORDER BY accessed_at DESC LIMIT ?"
         ).all(agentId, pattern, pattern, limit)) as Memory[]
   }
 }
@@ -2373,6 +2391,77 @@ export function deleteMemoryById(id: number): boolean {
   if (before.category === 'shared') clearMemoryCache()
   else if (before.agent_id) memoryCacheInvalidate(before.agent_id)
   return true
+}
+
+export type RetractOutcome = 'retracted' | 'not_found' | 'not_owner' | 'already_retracted'
+
+/**
+ * Take back one's own memory without deleting it. The row stays readable by id
+ * (who said what, and when it was taken back), but no recall, search or listing
+ * returns it any more. Only the row's author (its agent_id) can retract it.
+ *
+ * Returns what actually happened, so a caller can tell "withdrawn" from "not
+ * yours" from "already withdrawn" -- outcomes an `ok: true` would flatten.
+ * ONE conditional UPDATE, not read-then-write: two callers racing on the same
+ * id must not both be told `retracted`.
+ */
+export function retractMemory(id: number, agentId: string): RetractOutcome {
+  const done = db.prepare(
+    'UPDATE memories SET retracted_at = ? WHERE id = ? AND agent_id = ? AND retracted_at IS NULL'
+  ).run(Math.floor(Date.now() / 1000), id, agentId)
+  const row = db.prepare('SELECT agent_id, category, retracted_at FROM memories WHERE id = ?').get(id) as
+    { agent_id: string; category: string; retracted_at: number | null } | undefined
+  if (done.changes === 1) {
+    // Listings are cached; a retracted row must leave them now, not after the TTL.
+    if (row?.category === 'shared') clearMemoryCache()
+    else memoryCacheInvalidate(agentId)
+    return 'retracted'
+  }
+  if (!row) return 'not_found'
+  if (row.agent_id !== agentId) return 'not_owner'
+  return 'already_retracted'
+}
+
+export interface SupersedeResult {
+  /** Ids this call retracted; recorded on the new row. */
+  superseded: number[]
+  /** Ids it left alone, and why. */
+  skipped: Array<{ id: number; reason: Exclude<RetractOutcome, 'retracted'> | 'self' | 'duplicate' }>
+}
+
+/**
+ * Save a memory that REPLACES older ones: the new row is saved, each listed id
+ * is retracted through retractMemory (so only the author's own rows go, the
+ * same rule as the retract endpoint), and the new row records, in `supersedes`,
+ * the ids it actually retracted. One transaction, so a failure leaves neither a
+ * half-applied replacement nor a new row claiming replacements that did not
+ * happen.
+ */
+export function saveAgentMemorySuperseding(
+  agentId: string,
+  content: string,
+  category: string,
+  keywords: string | undefined,
+  supersedes: number[],
+): { id: number } & SupersedeResult {
+  return db.transaction(() => {
+    const { id } = saveAgentMemory(agentId, content, category, keywords, true)
+    const superseded: number[] = []
+    const skipped: SupersedeResult['skipped'] = []
+    const seen = new Set<number>()
+    for (const old of supersedes) {
+      if (seen.has(old)) { skipped.push({ id: old, reason: 'duplicate' }); continue }
+      seen.add(old)
+      if (old === id) { skipped.push({ id: old, reason: 'self' }); continue }
+      const outcome = retractMemory(old, agentId)
+      if (outcome === 'retracted') superseded.push(old)
+      else skipped.push({ id: old, reason: outcome })
+    }
+    if (superseded.length > 0) {
+      db.prepare('UPDATE memories SET supersedes = ? WHERE id = ?').run(superseded.join(','), id)
+    }
+    return { id, superseded, skipped }
+  })()
 }
 
 export function updateMemory(id: number, content: string, category?: string, agentId?: string, keywords?: string, updatedBy?: string): boolean {
@@ -2508,8 +2597,8 @@ export function recallByDateRange(from: string, to: string, agentId?: string): R
   const fromTs = toBudapestTs(from, false)
   const toTs = toBudapestTs(to, true)
   const memSql = agentId
-    ? "SELECT * FROM memories WHERE created_at >= ? AND created_at <= ? AND (agent_id = ? OR category = 'shared') ORDER BY created_at ASC"
-    : 'SELECT * FROM memories WHERE created_at >= ? AND created_at <= ? ORDER BY created_at ASC'
+    ? "SELECT * FROM memories WHERE created_at >= ? AND created_at <= ? AND (agent_id = ? OR category = 'shared') AND retracted_at IS NULL ORDER BY created_at ASC"
+    : 'SELECT * FROM memories WHERE created_at >= ? AND created_at <= ? AND retracted_at IS NULL ORDER BY created_at ASC'
   const memParams = agentId ? [fromTs, toTs, agentId] : [fromTs, toTs]
   const memories = db.prepare(memSql).all(...memParams) as Memory[]
 
@@ -2525,8 +2614,8 @@ export function recallSearch(query: string, agentId?: string, limit = 50): Recal
       // same λ-blend as the other search paths, so a strongly matching older
       // memory can still surface above barely-matching fresh noise.
       const sql = agentId
-        ? `SELECT m.*, f.rank AS rank FROM memories m JOIN memories_fts f ON m.id = f.rowid WHERE f.memories_fts MATCH ? AND (m.agent_id = ? OR m.category = 'shared') ORDER BY rank LIMIT ?`
-        : `SELECT m.*, f.rank AS rank FROM memories m JOIN memories_fts f ON m.id = f.rowid WHERE f.memories_fts MATCH ? ORDER BY rank LIMIT ?`
+        ? `SELECT m.*, f.rank AS rank FROM memories m JOIN memories_fts f ON m.id = f.rowid WHERE f.memories_fts MATCH ? AND (m.agent_id = ? OR m.category = 'shared') AND m.retracted_at IS NULL ORDER BY rank LIMIT ?`
+        : `SELECT m.*, f.rank AS rank FROM memories m JOIN memories_fts f ON m.id = f.rowid WHERE f.memories_fts MATCH ? AND m.retracted_at IS NULL ORDER BY rank LIMIT ?`
       const { rows } = ftsWithOrFallback(query, (terms) =>
         agentId
           ? db.prepare(sql).all(terms, agentId, limit * RECENCY_OVERSAMPLE) as (Memory & { rank: number })[]
@@ -2535,8 +2624,8 @@ export function recallSearch(query: string, agentId?: string, limit = 50): Recal
       memories = withoutRank(reRankByRecency(rows, limit)) as Memory[]
     } catch {
       const sql = agentId
-        ? "SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\') ORDER BY created_at DESC LIMIT ?"
-        : "SELECT * FROM memories WHERE (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\') ORDER BY created_at DESC LIMIT ?"
+        ? "SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND retracted_at IS NULL AND (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\') ORDER BY created_at DESC LIMIT ?"
+        : "SELECT * FROM memories WHERE retracted_at IS NULL AND (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\') ORDER BY created_at DESC LIMIT ?"
       const pat = `%${escaped}%`
       memories = agentId
         ? db.prepare(sql).all(agentId, pat, pat, limit) as Memory[]
@@ -5429,10 +5518,10 @@ function vectorSearch(
   // row in JS, so filtering in SQL is both correct and strictly less work.
   const rows = (category
     ? db.prepare(
-        "SELECT * FROM memories WHERE embedding IS NOT NULL AND (agent_id = ? OR category = 'shared') AND category = ?"
+        "SELECT * FROM memories WHERE embedding IS NOT NULL AND (agent_id = ? OR category = 'shared') AND category = ? AND retracted_at IS NULL"
       ).all(agentId, category)
     : db.prepare(
-        "SELECT * FROM memories WHERE embedding IS NOT NULL AND (agent_id = ? OR category = 'shared')"
+        "SELECT * FROM memories WHERE embedding IS NOT NULL AND (agent_id = ? OR category = 'shared') AND retracted_at IS NULL"
       ).all(agentId)) as Memory[]
 
   // A vector written by a DIFFERENT model has a different length, and the
@@ -5574,7 +5663,7 @@ export interface BackfillResult {
 }
 
 export async function backfillEmbeddings(): Promise<BackfillResult> {
-  const rows = db.prepare('SELECT id, content, keywords FROM memories WHERE embedding IS NULL').all() as { id: number; content: string; keywords: string | null }[]
+  const rows = db.prepare('SELECT id, content, keywords FROM memories WHERE embedding IS NULL AND retracted_at IS NULL').all() as { id: number; content: string; keywords: string | null }[]
   let count = 0
   for (const row of rows) {
     const text = row.content + (row.keywords ? ' ' + row.keywords : '')
