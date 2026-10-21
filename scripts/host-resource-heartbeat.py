@@ -91,11 +91,15 @@ def loadavg(path=None):
     path = path or env("LOADAVG") or "/proc/loadavg"
     try:
         with open(path) as f:
-            return float(f.read().split()[0])
+            load1 = float(f.read().split()[0])
     except OSError as e:
         raise MeasureError("cannot read %s: %s" % (path, e))
     except (ValueError, IndexError):
         raise MeasureError("%s is not a loadavg line" % path)
+    if not math.isfinite(load1):
+        # nan would compare False against the threshold: a silent "OK"
+        raise MeasureError("%s load is not finite: %r" % (path, load1))
+    return load1
 
 
 def disk_free_mb(path):

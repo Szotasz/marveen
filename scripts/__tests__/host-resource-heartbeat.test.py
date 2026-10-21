@@ -62,13 +62,18 @@ class Env:
     def run(self, *argv, **over):
         # hermetic disk by default (a nearly full real disk must not flip other cases to 1);
         # pass DISK_FREE_MB=None / DISK_USED_PCT=None to measure the real statvfs
-        base = {k: v for k, v in os.environ.items() if not k.startswith(P)}
-        env = dict(base, **{P + "MEMINFO": self.mem, P + "LOADAVG": self.load, P + "LOG": self.log,
-                            P + "DISK_FREE_MB": "50000", P + "DISK_USED_PCT": "50"})
+        env = self.fixture_env()
         env.update({P + k: v for k, v in over.items()})
         env = {k: v for k, v in env.items() if v is not None}
         return subprocess.run([sys.executable, SCRIPT, *argv], env=env, capture_output=True,
                               text=True, timeout=30)
+
+    def fixture_env(self):
+        """The same fixtures as run(), as an environment dict: for in-process and
+        child calls, so the real /proc (absent on macOS) is never read."""
+        base = {k: v for k, v in os.environ.items() if not k.startswith(P)}
+        return dict(base, **{P + "MEMINFO": self.mem, P + "LOADAVG": self.load, P + "LOG": self.log,
+                             P + "DISK_FREE_MB": "50000", P + "DISK_USED_PCT": "50"})
 
     def lines(self):
         try:
@@ -154,6 +159,14 @@ def main():
             f.write("garbage\n")
         p = E.run()
         check("loadavg garbage -> exit 2", p.returncode == 2, (p.returncode, p.stderr))
+        # nan compares False against the threshold: a silent "OK" unless rejected
+        for bad in ("nan", "inf"):
+            with open(E.load, "w") as f:
+                f.write("%s 0.50 0.40 1/300 12345\n" % bad)
+            p = E.run()
+            check("loadavg %r -> exit 2 (not 0), says so" % bad,
+                  p.returncode == 2 and "loadavg" in p.stderr and "not finite" in p.stderr,
+                  (p.returncode, p.stdout, p.stderr))
         E.set_load(0.1)
 
         # --no-log: print only
@@ -184,36 +197,57 @@ def main():
         os.chmod(ro, stat.S_IRWXU)
         E.set_mem(5000)
 
-    # an unexpected crash (not a MeasureError) exits 2, never 1
-    real = mod.meminfo
+    # an unexpected crash (not a MeasureError) exits 2, never 1.
+    # Hermetic: loadavg is read BEFORE meminfo, so without fixtures the real
+    # /proc/loadavg decides the outcome (on macOS it raises MeasureError and the
+    # simulated bug is never reached). Every HOST_HEARTBEAT_* input points at a
+    # fixture for the in-process call, and the bug must be shown to be reached.
+    with tempfile.TemporaryDirectory() as td:
+        E = Env(td)
+        saved = dict(os.environ)
+        real = mod.meminfo
+        reached = []
 
-    def boom(*a, **k):
-        raise RuntimeError("simulated bug")
-    mod.meminfo = boom
-    err, out = io.StringIO(), io.StringIO()
-    try:
-        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(out):
-            code = mod.entry([])
-    finally:
-        mod.meminfo = real
-    check("uncaught crash -> exit 2 (not 1), named on stderr",
-          code == 2 and "RuntimeError: simulated bug" in err.getvalue(), (code, err.getvalue()))
+        def boom(*a, **k):
+            reached.append(True)
+            raise RuntimeError("simulated bug")
+        os.environ.clear()
+        os.environ.update(E.fixture_env())
+        mod.meminfo = boom
+        err, out = io.StringIO(), io.StringIO()
+        try:
+            with contextlib.redirect_stderr(err), contextlib.redirect_stdout(out):
+                code = mod.entry([])
+        finally:
+            mod.meminfo = real
+            os.environ.clear()
+            os.environ.update(saved)
+        check("uncaught crash -> exit 2 (not 1), named on stderr",
+              reached and code == 2 and "UNEXPECTED ERROR" in err.getvalue()
+              and "RuntimeError: simulated bug" in err.getvalue(), (reached, code, err.getvalue()))
 
-    # a crash whose own report cannot be written (closed stdout and stderr) still
-    # exits 2: run in a child so os._exit does not end this test process
-    child = (
-        "import importlib.util,os,sys\n"
-        "spec=importlib.util.spec_from_file_location('hrh', %r)\n"
-        "m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)\n"
-        "def boom(*a, **k): raise RuntimeError('simulated bug')\n"
-        "m.meminfo=boom\n"
-        "class Broken:\n"
-        "    def write(self, *a): raise BrokenPipeError('closed')\n"
-        "    def flush(self): raise BrokenPipeError('closed')\n"
-        "sys.stdout=Broken(); sys.stderr=Broken()\n"
-        "sys.exit(m.entry([]))\n" % SCRIPT)
-    p = subprocess.run([sys.executable, "-c", child], capture_output=True, text=True, timeout=30)
-    check("crash + unwritable report -> exit 2 (not 1)", p.returncode == 2, (p.returncode, p.stderr[-300:]))
+        # a crash whose own report cannot be written (closed stdout and stderr) still
+        # exits 2: run in a child so os._exit does not end this test process. Same
+        # fixtures, and a marker file proves the simulated bug was the path taken
+        # (a MeasureError report on a broken stderr would also end in exit 2).
+        marker = os.path.join(td, "boom-reached")
+        child = (
+            "import importlib.util,os,sys\n"
+            "spec=importlib.util.spec_from_file_location('hrh', %r)\n"
+            "m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m)\n"
+            "def boom(*a, **k):\n"
+            "    open(%r, 'w').close()\n"
+            "    raise RuntimeError('simulated bug')\n"
+            "m.meminfo=boom\n"
+            "class Broken:\n"
+            "    def write(self, *a): raise BrokenPipeError('closed')\n"
+            "    def flush(self): raise BrokenPipeError('closed')\n"
+            "sys.stdout=Broken(); sys.stderr=Broken()\n"
+            "sys.exit(m.entry([]))\n" % (SCRIPT, marker))
+        p = subprocess.run([sys.executable, "-c", child], env=E.fixture_env(), capture_output=True,
+                           text=True, timeout=30)
+        check("crash + unwritable report -> exit 2 (not 1)",
+              p.returncode == 2 and os.path.exists(marker), (p.returncode, os.path.exists(marker), p.stderr[-300:]))
 
     # disk: free space below the floor (default 5 GB) is a resource alert
     with tempfile.TemporaryDirectory() as td:
