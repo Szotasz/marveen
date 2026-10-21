@@ -37,6 +37,12 @@ if [ -z "$FN" ]; then
   fail "park_morning_timer() not found in update.sh"
   echo; echo "PASS=$PASS FAIL=$FAIL"; exit 1
 fi
+# The registry verdict helper park_morning_timer calls.
+VFN="$(awk '/^sched_task_verified_ok\(\) \{/,/^\}$/' "$REPO/update.sh")"
+if [ -z "$VFN" ]; then
+  fail "sched_task_verified_ok() not found in update.sh"
+  echo; echo "PASS=$PASS FAIL=$FAIL"; exit 1
+fi
 
 # systemctl stub: `is-enabled <unit>` answers from a state file the test
 # controls; every call is recorded; disable flips the state to disabled so a
@@ -64,10 +70,20 @@ chmod +x "$TMP/bin/systemctl"
 #   TIMER_STATE    enabled|disabled|absent   (the *-morning.timer unit)
 #   TASK           enabled|disabled|missing  (the runner task on the host)
 #   MARKER         present|absent            (pre-existing migration marker)
+#   CLI            none|ok|notok|crash       (5th arg, default none: the
+#                  running build's schedule-registry-cli.js verify answer)
 run_park() {
-  local name="$1" timer="$2" task="$3" marker="$4"
+  local name="$1" timer="$2" task="$3" marker="$4" cli="${5:-none}"
   local box="$TMP/$name"
   mkdir -p "$box/units" "$box/home/.claude/scheduled-tasks/reggeli-napindito" "$box/install/store"
+  if [ "$cli" != "none" ]; then
+    mkdir -p "$box/install/dist/web"
+    case "$cli" in
+      ok)    printf 'console.log("ok " + process.argv[3]); process.exit(0)\n' ;;
+      notok) printf 'console.log("hash-mismatch " + process.argv[3]); process.exit(1)\n' ;;
+      crash) printf 'throw new Error("boom")\n' ;;
+    esac > "$box/install/dist/web/schedule-registry-cli.js"
+  fi
   : > "$TMP/systemctl.calls"
   if [ "$timer" != "absent" ]; then
     printf '[Timer]\n' > "$box/units/hex-morning.timer"
@@ -80,7 +96,8 @@ run_park() {
   esac
   [ "$marker" = "present" ] && echo "parked_at=earlier" > "$box/install/store/.morning-timer-parked"
   PATH="$TMP/bin:$PATH" HOME="$box/home" \
-    bash -c "set -u; INSTALL_DIR='$box/install'; $FN
+    bash -c "set -u; INSTALL_DIR='$box/install'; $VFN
+$FN
 park_morning_timer '$box/units'" 2>&1
 }
 
@@ -123,6 +140,29 @@ assert_eq "silent when there is nothing to say" "" "$OUT"
 OUT="$(run_park notimer absent enabled absent)"
 assert_eq "no systemctl calls without a timer unit" "0" "$(wc -c < "$TMP/systemctl.calls" | tr -d ' ')"
 assert_eq "marker written on a timer-less host" "yes" "$([ -f "$TMP/notimer/install/store/.morning-timer-parked" ] && echo yes || echo no)"
+
+# 7-9. enabled:true is not proof that the runner fires the task: the registry
+#      gate skips a task whose files do not match its entry. With the running
+#      build's registry CLI present, park only on its 'ok'.
+OUT="$(run_park regok enabled enabled absent ok)"
+assert_contains "registry ok -> parked" "$(cat "$TMP/systemctl.calls")" "--user disable --now hex-morning.timer"
+assert_eq "registry ok -> marker written" "yes" "$([ -f "$TMP/regok/install/store/.morning-timer-parked" ] && echo yes || echo no)"
+
+OUT="$(run_park regbad enabled enabled absent notok)"
+assert_not_contains "registry not-ok -> the timer stays" "$(cat "$TMP/systemctl.calls")" "disable"
+assert_contains "says the registry verdict is why" "$OUT" "registry-itelete"
+assert_eq "registry not-ok -> no marker (retry next update)" "no" "$([ -f "$TMP/regbad/install/store/.morning-timer-parked" ] && echo yes || echo no)"
+
+OUT="$(run_park regcrash enabled enabled absent crash)"
+assert_not_contains "registry CLI crash -> the timer stays" "$(cat "$TMP/systemctl.calls")" "disable"
+assert_eq "registry CLI crash -> no marker" "no" "$([ -f "$TMP/regcrash/install/store/.morning-timer-parked" ] && echo yes || echo no)"
+
+# 10. update.sh runs top to bottom: run_unit_maintenance (which calls
+#     park_morning_timer) executes at top level, so the helper must be DEFINED
+#     above that call, or the real run hits "command not found".
+_def_line="$(grep -n '^sched_task_verified_ok() {' "$REPO/update.sh" | head -1 | cut -d: -f1)"
+_call_line="$(grep -n '^run_unit_maintenance$' "$REPO/update.sh" | head -1 | cut -d: -f1)"
+assert_eq "helper defined before run_unit_maintenance runs" "yes" "$([ -n "$_def_line" ] && [ -n "$_call_line" ] && [ "$_def_line" -lt "$_call_line" ] && echo yes || echo no)"
 
 echo
 echo "PASS=$PASS FAIL=$FAIL"

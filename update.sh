@@ -833,6 +833,28 @@ install_stuck_modal_guard_launchd() {
   return 0
 }
 
+# Registry verdict of task $1 as it is on disk NOW (defined here, above its
+# first caller park_morning_timer in run_unit_maintenance; the seed refresh
+# below uses it too):
+#   0 = trusted (ok), 1 = a REAL not-ok verdict (unregistered / hash mismatch /
+#   not found), 2 = UNKNOWN: no CLI (first update to a guard build, or an
+#   unbuilt dist), no node, a CLI without `verify` (usage exit 2), or a crash.
+# A crash also exits 1 in node, so 1 counts only together with the CLI's own
+# "<verdict> <name>" line.
+sched_task_verified_ok() {
+  _sv_cli="$INSTALL_DIR/dist/web/schedule-registry-cli.js"
+  [ -f "$_sv_cli" ] || return 2
+  command -v node >/dev/null 2>&1 || return 2
+  _sv_rc=0
+  _sv_out="$(node "$_sv_cli" verify "$1" 2>/dev/null)" || _sv_rc=$?
+  [ "$_sv_rc" = "0" ] && return 0
+  # registry-error = the CLI could not read the registry: unknown, not a verdict.
+  if [ "$_sv_rc" = "1" ] && printf '%s\n' "$_sv_out" | grep -xE "[a-z-]+ $1" | grep -qv '^registry-error '; then
+    return 1
+  fi
+  return 2
+}
+
 # Morning-timer parking (MORNTIMERPARK914 -- the missing half of the locked
 # MORNCONS1 decision, 2026-07-27). The #1313 installer change stops ENABLING
 # the 07:27 morning timer on NEW installs, but every already-installed Linux
@@ -878,6 +900,22 @@ park_morning_timer() {
       echo -e "  FIGYELEM: ${_mt_unit} engedelyezve marad -- a reggeli-napindito runner-task nincs jelen/engedelyezve ezen a hoston, es a timer az egyetlen napindito-ut (MORNCONS1 kapu)."
       _park_blocked=1
       continue
+    fi
+    # Since the scheduled-task registry, enabled:true alone is not enough: the
+    # runner skips a task whose files do not match its registry entry. Park only
+    # on a trusted verdict from the running build's CLI. No CLI at all means a
+    # pre-registry build (or the first update to one, whose one-time backfill
+    # registers the task on disk): the runner fires it, as before. A CLI that
+    # answers not-ok, or cannot answer (crash, registry-error, no node), keeps
+    # the timer and leaves the migration unsettled, like condition 1.
+    if [ -f "$INSTALL_DIR/dist/web/schedule-registry-cli.js" ]; then
+      _mt_vrc=0
+      sched_task_verified_ok reggeli-napindito || _mt_vrc=$?
+      if [ "$_mt_vrc" != "0" ]; then
+        echo -e "  FIGYELEM: ${_mt_unit} engedelyezve marad -- a reggeli-napindito runner-task registry-itelete nem 'ok' (a runner kihagyja, vagy nem ellenorizheto), es a timer az egyetlen biztos napindito-ut (MORNCONS1 kapu). Ellenorzes: node $INSTALL_DIR/dist/web/schedule-registry-cli.js verify reggeli-napindito"
+        _park_blocked=1
+        continue
+      fi
     fi
     if systemctl --user disable --now "$_mt_unit" >/dev/null 2>&1; then
       echo -e "  Reggeli 07:27 timer leallitva -- a napinditot a 07:30-as runner-task viszi az elo csatorna-munkamenetbol (MORNCONS1): ${_mt_unit}"
@@ -1306,26 +1344,6 @@ register_seeded_schedules() {
 # Anything else stays unregistered (the runner skips it) and is listed for
 # operator review.
 SCHED_REVIEW_NAMES=""
-
-# Registry verdict of task $1 as it is on disk NOW:
-#   0 = trusted (ok), 1 = a REAL not-ok verdict (unregistered / hash mismatch /
-#   not found), 2 = UNKNOWN: no CLI (first update to a guard build, or an
-#   unbuilt dist), no node, a CLI without `verify` (usage exit 2), or a crash.
-# A crash also exits 1 in node, so 1 counts only together with the CLI's own
-# "<verdict> <name>" line.
-sched_task_verified_ok() {
-  _sv_cli="$INSTALL_DIR/dist/web/schedule-registry-cli.js"
-  [ -f "$_sv_cli" ] || return 2
-  command -v node >/dev/null 2>&1 || return 2
-  _sv_rc=0
-  _sv_out="$(node "$_sv_cli" verify "$1" 2>/dev/null)" || _sv_rc=$?
-  [ "$_sv_rc" = "0" ] && return 0
-  # registry-error = the CLI could not read the registry: unknown, not a verdict.
-  if [ "$_sv_rc" = "1" ] && printf '%s\n' "$_sv_out" | grep -xE "[a-z-]+ $1" | grep -qv '^registry-error '; then
-    return 1
-  fi
-  return 2
-}
 
 # True (0) iff every entry of the installed task dir $1 is shipped content:
 #   - a regular top-level file (no symlink) byte-identical to the current
