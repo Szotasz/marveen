@@ -60,6 +60,8 @@ Dependency unblock: when a card becomes `done` through /move or PUT, every `wait
 
 Done evidence (soft gate): if a card becomes `done` through /move or PUT with no non-`system` comment since its latest move to `in_progress` (since its creation if it never went there), the response carries `evidence_warning`. The move still succeeds. With the claim lock on, moving a card claimed by another agent to `in_progress` adds `claim_warning`.
 
+The unblock and the done-evidence warning live ONLY in these two HTTP routes (`POST /api/kanban/:id/move` and `PUT /api/kanban/:id`), not in `moveKanbanCard` and not in a trigger. A writer that closes a card any other way (a later internal caller, or a script that writes SQLite directly) unblocks no dependent card and gets no `evidence_warning`. Such a writer has to handle the unblock itself, or close the card through one of the two routes. (Releasing the claim is different: a trigger does that, by any path.)
+
 ### Access
 
 Direct SQLite, or the dashboard kanban interface. Card status is automatically included in every agent's context.

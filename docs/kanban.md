@@ -60,6 +60,8 @@ Függőség-alapú feloldás: ha egy kártya a move/PUT útján `done` lesz, min
 
 Lezárási bizonyíték (puha kapu): ha a kártya a move/PUT útján úgy lesz `done`, hogy az utolsó `in_progress` óta nincs rajta nem-`system` komment (ha sosem volt `in_progress`, a létrehozása óta), a válasz `evidence_warning` mezőt kap. A mozgatás ettől még sikeres. Bekapcsolt foglalásnál, ha egy másik ügynök által foglalt kártyát húznak `in_progress`-re, a válasz `claim_warning` mezőt kap.
 
+A feloldás és a lezárási bizonyíték CSAK ebben a két HTTP-útvonalban él (`POST /api/kanban/:id/move` és `PUT /api/kanban/:id`), nem a `moveKanbanCard`-ban és nem triggerben. Ami nem ezeken át zár le egy kártyát (egy későbbi belső hívó, vagy egy szkript, ami közvetlenül az SQLite-ot írja), az nem old fel függő kártyát, és `evidence_warning` sem keletkezik. Ilyen írónál a feloldásról a hívónak kell gondoskodnia, vagy a lezárást a fenti két útvonalon át kell végeznie. (A foglalás elengedése ettől eltér: azt trigger végzi, bármelyik úton.)
+
 ### Hozzáférés
 
 Közvetlen SQLite, vagy a dashboard kanban-felülete. A kártya-állapot minden ügynök kontextusába automatikusan bekerül.
