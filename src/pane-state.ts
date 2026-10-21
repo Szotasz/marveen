@@ -1330,6 +1330,43 @@ export function detectsFeedbackOptOutPrompt(pane: string): boolean {
   return FEEDBACK_OPTOUT_RX.test(liveRegion)
 }
 
+export type FeedbackDismissPlan =
+  | { act: 'none' }
+  | { act: 'keys'; keys: Array<'C-u' | 'Down'> }
+  | { act: 'hold'; reason: 'input-occupied' | 'input-unreadable' }
+
+/**
+ * What the dismisser may type at a feedback-draft modal. NEVER A DIGIT. The card
+ * does not read a keypress: it watches the prompt INPUT VALUE and fires only when
+ * the input changes to exactly one digit, after a 400 ms debounce, ignoring a digit
+ * typed within 600 ms of the card appearing (measured in the shipped CLI). A digit
+ * that did not fire stays in the input, the next attempt makes it two digits, and a
+ * longer input never fires again, so every later attempt only appends (an agent
+ * sat not-ready behind a growing `❯ 0000`). And "2" sends the draft. The measured
+ * manual recipe is C-u, then Down: Down moves focus to the footer, which stops the
+ * band above the prompt from rendering.
+ * C-u clears only what is provably a digit-typing dismisser's leftover -- an empty
+ * or all-digit input -- and NEVER on the main session, whose box may hold an
+ * operator's reply; there even digits may be a numbered answer, so only an empty
+ * prompt gets its Down. Anything else gets no keystroke.
+ * Two captures: `pane`, the plain one the detector reads (the card's own text
+ * may be dim, which a ghost-stripped capture would drop), and `inputView`, the
+ * ghost-stripped one the input box is read from (otherwise an empty prompt
+ * showing an autosuggest reads as occupied and the card stays up).
+ */
+export function feedbackDraftDismissPlan(pane: string, inputView: string | null, isMainSession: boolean): FeedbackDismissPlan {
+  if (!detectsFeedbackDraftModal(pane)) return { act: 'none' }
+  const box = inputView == null ? null : liveInputBox(inputView)
+  if (box == null) return { act: 'hold', reason: 'input-unreadable' }
+  // Only a column-0 ❯ at the top of the box (blank rows allowed) is UI; an
+  // indented ❯ is typed text. Row edges only: a wrapped leftover still joins,
+  // a typed "2 2" does not.
+  const typed = box.replace(/^(?:[^\S\n]*\n)*❯/, '').split('\n').map((row) => row.trim()).join('')
+  if (typed === '') return { act: 'keys', keys: isMainSession ? ['Down'] : ['C-u', 'Down'] }
+  if (!isMainSession && /^\d+$/.test(typed)) return { act: 'keys', keys: ['C-u', 'Down'] }
+  return { act: 'hold', reason: 'input-occupied' }
+}
+
 export interface DetectPaneStateOptions {
   /** If true, the 'typing' state (text parked in input box) is
    * merged into 'busy'. Default false -- callers that care about

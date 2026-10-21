@@ -104,9 +104,12 @@ describe('clearFeedbackModalAndRecheck under the send lane', () => {
     expect(sentKeys().length).toBe(0)
   })
 
-  it("positive control: with the lane free the dismissal '0' fires", async () => {
+  it('positive control: with the lane free the dismissal keys fire (C-u, Down; never a digit)', async () => {
     h.pane = h.MODAL
     await clearFeedbackModalAndRecheck('subagent-modal-free')
-    expect(sentKeys().some(a => a[a.length - 1] === '0')).toBe(true)
+    const keys = sentKeys().map(a => a[a.length - 1])
+    expect(keys).toContain('C-u')
+    expect(keys).toContain('Down')
+    expect(keys.some(k => /^\d$/.test(k))).toBe(false)
   }, 15_000)
 })

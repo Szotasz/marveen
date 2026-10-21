@@ -26,6 +26,7 @@ import {
   detectsModelConsentDialog,
   detectsFeedbackDraftModal,
   detectsFeedbackOptOutPrompt,
+  feedbackDraftDismissPlan,
   firstRunAcceptKeys,
   stuckInputSignature,
   mcpTrustAcceptKeys,
@@ -3141,10 +3142,11 @@ export async function dismissResumeSummaryModalIfPresent(session: string, host: 
 // live on agent-samu 2026-08-31: 10 minutes not-ready, 5 queued messages, and
 // a peer's report parked unsubmitted in the prompt.
 //
-// Dismissal takes TWO steps, measured on that same pane: "0" closes the draft,
-// then Claude Code immediately offers "Turn off Claude-drafted feedback? 0 to
-// turn off · Esc to keep". A second "0" there would silently disable feedback
-// drafting for that agent, so the follow-up is answered with Esc (keep) -- and
+// Dismissal: the card is closed with C-u then Down, never a digit (see
+// feedbackDraftDismissPlan for why a typed digit can stick and pile up). Claude
+// Code may then offer "Turn off Claude-drafted feedback? 0 to turn off · Esc to
+// keep". A "0" there would silently disable feedback drafting for that agent,
+// so the follow-up is answered with Esc (keep) -- and
 // only when its own detector fires, never blind: a bare Esc into a prompt box
 // that holds a parked delivery is not a keystroke worth firing on spec.
 // The not-ready-path companion to the pre-flight dismissal above, and the
@@ -3189,11 +3191,26 @@ export async function clearFeedbackModalAndRecheck(session: string, host: string
   }
 }
 
+// Between C-u and Down: in one tmux call Down would reach the TUI before it
+// re-rendered the cleared input.
+const FEEDBACK_KEY_GAP_MS = 200
+
 export async function dismissFeedbackDraftModalIfPresent(session: string, host: string | null = null): Promise<void> {
   try {
     const pane = captureTmux(host, ['capture-pane', '-t', exactTmuxTarget(session), '-p'])
     if (!detectsFeedbackDraftModal(pane)) return
-    runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), '0'], { timeout: 5000 })
+    // The input box is read from the ghost-stripped view: a dim autosuggest in an
+    // empty box must not read as typed text. Detection stays on the plain capture.
+    const plan = feedbackDraftDismissPlan(pane, captureParkedInputView(session, host), session === MAIN_CHANNELS_SESSION)
+    if (plan.act === 'none') return
+    if (plan.act === 'hold') {
+      logger.info({ session, reason: plan.reason }, 'Feedback-draft modal left up: no keystroke is safe on this prompt')
+      return
+    }
+    for (const [i, key] of plan.keys.entries()) {
+      if (i > 0) await delay(FEEDBACK_KEY_GAP_MS)
+      runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), key], { timeout: 5000 })
+    }
     await delay(300)
     const after = captureTmux(host, ['capture-pane', '-t', exactTmuxTarget(session), '-p'])
     if (detectsFeedbackOptOutPrompt(after)) {
