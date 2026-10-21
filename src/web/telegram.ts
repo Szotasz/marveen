@@ -168,6 +168,22 @@ export async function sendTelegramMessage(token: string, chatId: string, text: s
   return typeof data?.result?.message_id === 'number' ? data.result.message_id : null
 }
 
+// Takes the inline keyboard off one message (editMessageReplyMarkup with an
+// empty keyboard): the buttons of a spent decision. Throws on a refusal, with
+// the status only -- the caller scrubs and logs.
+export async function clearTelegramInlineKeyboard(token: string, chatId: string, messageId: number): Promise<void> {
+  const resp = await fetch(`https://api.telegram.org/bot${token}/editMessageReplyMarkup`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ chat_id: chatId, message_id: messageId, reply_markup: { inline_keyboard: [] } }),
+    signal: AbortSignal.timeout(TOOL_TIMEOUTS['telegram']),
+  })
+  if (!resp.ok) throw new Error(`Telegram API ${resp.status}: editMessageReplyMarkup refused`)
+  let data: { ok?: boolean } | null = null
+  try { data = await resp.json() as { ok?: boolean } } catch { return }
+  if (data?.ok === false) throw new Error('Telegram API: editMessageReplyMarkup ok:false')
+}
+
 export async function sendTelegramPhoto(token: string, chatId: string, photoPath: string, caption: string): Promise<void> {
   const fileData = readFileSync(photoPath)
   const boundary = '----FormBoundary' + Date.now()

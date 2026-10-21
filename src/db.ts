@@ -7330,7 +7330,7 @@ export function resolveApprovalFromPermissionBot(params: {
 // bad_request = the arguments themselves are malformed (the route validates
 // first, so this is a backstop); it writes no event row.
 export type OwnerRunConsumeRefusal =
-  | 'bad_request' | 'not_found' | 'wrong_category' | 'not_approved' | 'not_owner_verified' | 'unbound'
+  | 'bad_request' | 'not_found' | 'wrong_category' | 'not_approved' | 'owner_unresolved' | 'not_owner_verified' | 'unbound'
   | 'package_mismatch' | 'run_id_mismatch' | 'window_not_open' | 'window_closed'
   | 'already_consumed' | 'run_id_already_used'
 
@@ -7356,6 +7356,10 @@ export function consumeOwnerRunApproval(params: {
   runId: string
   consumer: string
   expectedBotId: string
+  // The strict owner (resolveAlertOwnerChat) the trace must name. null = the
+  // owner cannot be resolved right now: refused as owner_unresolved (the route
+  // answers 503), with its event row. undefined = no owner pin (db-level use).
+  expectedOwnerId?: string | null
   nowSec?: number
 }): OwnerRunConsumeResult {
   const { id, category, packageSha256, runId, consumer, expectedBotId } = params
@@ -7383,7 +7387,8 @@ export function consumeOwnerRunApproval(params: {
     if (row.status !== 'approved') return refuse('not_approved')
     // The owner's trace, with the permission bot's id: PATCH, a dashboard click
     // or the main bot's button never reach this.
-    if (!isOwnerVerified(id, undefined, expectedBotId)) return refuse('not_owner_verified')
+    if (params.expectedOwnerId === null) return refuse('owner_unresolved')
+    if (!isOwnerVerified(id, params.expectedOwnerId, expectedBotId)) return refuse('not_owner_verified')
     const parsed = row.content_hash == null || row.action_payload == null
       ? null : parseRagApprovalPayload(row.action_payload, row.category)
     if (!parsed || !parsed.ok || row.content_hash == null || ragPayloadContentHash(parsed.canonical) !== row.content_hash) {
