@@ -14,6 +14,7 @@
 //   * a planted, never-registered task is NOT fired (also when its SKILL.md
 //     frontmatter claims a registered task's name);
 //   * DELETE unregisters -- a re-plant of the identical bytes does not fire;
+//     and if the unregister fails, nothing is deleted (500, retryable);
 //   * PUT/toggle refuse to launder foreign files (409);
 //   * the one-time upgrade backfill registers what is on disk exactly once.
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -38,6 +39,19 @@ const { tmpHome, realHome } = vi.hoisted(() => {
 
 const mockSendPrompt = vi.hoisted(() => vi.fn(async (..._a: unknown[]) => 'sent'))
 const mockWarn = vi.hoisted(() => vi.fn())
+
+// Lets one test make the registry delete fail (a busy or broken DB).
+const failUnregister = vi.hoisted(() => ({ on: false }))
+vi.mock('../web/schedule-registry.js', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../web/schedule-registry.js')>()
+  return {
+    ...real,
+    unregisterScheduledTask: (n: string) => {
+      if (failUnregister.on) throw new Error('database is locked')
+      return real.unregisterScheduledTask(n)
+    },
+  }
+})
 
 vi.mock('../logger.js', () => ({
   logger: { info: vi.fn(), warn: (...a: unknown[]) => mockWarn(...a), debug: vi.fn(), error: vi.fn() },
@@ -260,6 +274,25 @@ describe('scheduled-task source guard (registry)', () => {
     const r = await runScheduledTaskNow('reg-deleted')
     expect(r.ok).toBe(false)
     expect(mockSendPrompt).not.toHaveBeenCalled()
+  })
+
+  it('DELETE fails with 500 and deletes nothing when the registry entry cannot be removed', async () => {
+    await createViaApi('reg-del-fail', 'Keep me.')
+    const dir = join(SCHEDULED_TASKS_DIR, 'reg-del-fail')
+    failUnregister.on = true
+    try {
+      const del = await call('DELETE', '/api/schedules/reg-del-fail')
+      expect(del.status).toBe(500)
+      expect(existsSync(join(dir, 'SKILL.md'))).toBe(true)
+      expect(getScheduledTaskRegistryEntry('reg-del-fail')).toBeDefined()
+    } finally {
+      failUnregister.on = false
+    }
+    // The retry, with a working registry, deletes both.
+    const retry = await call('DELETE', '/api/schedules/reg-del-fail')
+    expect(retry.status).toBe(200)
+    expect(existsSync(dir)).toBe(false)
+    expect(getScheduledTaskRegistryEntry('reg-del-fail')).toBeUndefined()
   })
 
   it('PUT and toggle re-register their own writes, and refuse (409) to launder foreign files', async () => {

@@ -282,12 +282,17 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     if (!resolved) { json(res, { error: 'Schedule not found' }, 404); return true }
     const { name, dir } = resolved
     if (!existsSync(dir)) { json(res, { error: 'Schedule not found' }, 404); return true }
-    rmSync(dir, { recursive: true, force: true })
     // Scheduled-task registry: a deleted task leaves no trust behind -- a later plant with
-    // the same name and bytes must not inherit the old registration.
+    // the same name and bytes must not inherit the old registration. Unregister
+    // FIRST and fail the request if that fails: answering 200 with the files gone
+    // would leave a live registry entry behind a "deleted" task, and a re-plant of
+    // the same bytes would fire. Nothing is deleted then; the caller can retry.
     try { unregisterScheduledTask(name) } catch (err) {
-      logger.warn({ err, name }, 'schedule-registry: unregister on delete failed')
+      logger.error({ err, name }, 'schedule-registry: unregister on delete failed; task NOT deleted')
+      json(res, { error: 'Schedule NOT deleted: its registry entry could not be removed (retry, or check the dashboard DB)' }, 500)
+      return true
     }
+    rmSync(dir, { recursive: true, force: true })
     // #796: remember the removal so a shipped default is not re-seeded on the
     // next restart/update. Harmless for a user-authored task (the seeders only
     // ever revisit shipped names); a later re-create with this name clears it.
