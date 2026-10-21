@@ -63,7 +63,11 @@ function runProbe(src: string, pathDir: string, extraEnv: Record<string, string>
     'if _claude_runs; then echo RUNS; exit 0; else echo NO; exit 3; fi',
   ].join('\n')
   try {
-    execFileSync('bash', ['-c', script], {
+    // bash by absolute path, so a test may hand the probe a PATH without it; and
+    // a cwd outside the checkout, so a claude that does launch never loads the
+    // checkout's own .claude/settings.json (its hooks write into store/).
+    execFileSync(BASH_BIN, ['-c', script], {
+      cwd: tmpdir(),
       env: { ...process.env, PATH: `${pathDir}:${process.env.PATH}`, CLAUDE_PROBE_TIMEOUT: '2', ...extraEnv },
       encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'],
     })
@@ -116,7 +120,12 @@ describe.skipIf(!HAVE_TIMEOUT)('_claude_runs is a real launch probe, not --versi
       })
       it('no claude on PATH: NO', () => {
         const empty = mkdtempSync(join(tmpdir(), 'clirv-empty-'))
-        expect(runProbe(src, empty, { PATH: `${empty}:/usr/bin:/bin` })).toBe(3)
+        // Only the empty dir: on `${empty}:/usr/bin:/bin` an npm-global claude in
+        // /usr/bin resolves, and the probe launched the REAL claude (a 2 s
+        // timeout then read as "NO", so the case passed for the wrong reason).
+        expect(() => execFileSync(BASH_BIN, ['-c', 'command -v claude'], { env: { PATH: empty }, stdio: 'ignore' }),
+          'precondition: no claude resolves on this PATH').toThrow()
+        expect(runProbe(src, empty, { PATH: empty })).toBe(3)
       })
     })
   }
