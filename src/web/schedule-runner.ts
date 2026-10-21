@@ -1,4 +1,4 @@
-import { join, isAbsolute } from 'node:path'
+import { join } from 'node:path'
 import { checkTaskMcpRequirements } from './schedule-mcp-precheck.js'
 import { collectHeartbeatMetricsBlock } from './heartbeat-metrics-inject.js'
 import {
@@ -13,6 +13,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { spawn, spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { isRepoShippedScript } from './precheck-trust.js'
+import { preCheckScriptPath } from './precheck-path.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { logger } from '../logger.js'
 import { decideDesktopGate, readDesktopLock, recordDesktopSkip } from './desktop-lock.js'
@@ -1208,17 +1209,14 @@ export function quotaWorkClass(task: Pick<ScheduledTask, 'type'>): QuotaWorkClas
   return 'owner-facing'
 }
 
-// Where a task's preCheck script lives. Relative -> beside the task's SKILL.md;
-// absolute -> as given; a leading {{PROJECT_ROOT}} / {{INSTALL_DIR}} -> the
-// install root. The placeholder form exists for SHIPPED tasks that gate on a
-// repo script: the node seeder copies task-config.json without template
-// rendering, and update.sh's seed refresh never adds a new file to an existing
-// task dir, so neither a hard-coded path nor a script beside the SKILL.md would
-// reach every install.
-export function resolvePreCheckPath(taskName: string, preCheck: string): string {
-  const rooted = preCheck.replace(/^\{\{(PROJECT_ROOT|INSTALL_DIR)\}\}(?=\/)/, PROJECT_ROOT)
-  return isAbsolute(rooted) ? rooted : join(SCHEDULED_TASKS_DIR, taskName, rooted)
+// Where a task's preCheck script lives, by the same rule the registry hash
+// uses (preCheckScriptPath, precheck-path.ts; the forms are listed there).
+// null: no script (not a non-empty string), exactly when the hash sees none.
+export function resolvePreCheckPath(taskName: string, preCheck: unknown): string | null {
+  return preCheckScriptPath(join(SCHEDULED_TASKS_DIR, taskName), preCheck)
 }
+
+const NOT_A_PRECHECK_PATH_MSG = 'pre-check is not a script path (not a non-empty string); the registry hash ignores it, so it is ignored here too, running LLM anyway'
 
 export type PreCheckResult = { skip: boolean; prefix?: string }
 
@@ -1276,6 +1274,10 @@ export function runPreCheck(task: ScheduledTask): PreCheckResult {
   // which is also what the registry hashed. `name` can come from
   // the SKILL.md frontmatter and point at a different directory.
   const scriptPath = resolvePreCheckPath(task.dirName ?? task.name, task.preCheck)
+  if (scriptPath == null) {
+    logger.warn({ task: task.name, preCheck: task.preCheck }, NOT_A_PRECHECK_PATH_MSG)
+    return { skip: false }
+  }
   if (!existsSync(scriptPath)) {
     logger.warn({ task: task.name, scriptPath }, 'pre-check script not found, running LLM anyway')
     return { skip: false }
@@ -1350,6 +1352,10 @@ export function runPreCheckAsync(
   // dirName, not name: a relative preCheck lives in the task's OWN directory,
   // which is what the registry hashed (same rule as runPreCheck).
   const scriptPath = resolvePreCheckPath(task.dirName ?? task.name, task.preCheck)
+  if (scriptPath == null) {
+    logger.warn({ task: task.name, preCheck: task.preCheck }, NOT_A_PRECHECK_PATH_MSG)
+    return Promise.resolve({ skip: false })
+  }
   if (!existsSync(scriptPath)) {
     logger.warn({ task: task.name, scriptPath }, 'pre-check script not found, running LLM anyway')
     return Promise.resolve({ skip: false })

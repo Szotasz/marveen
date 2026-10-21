@@ -266,4 +266,22 @@ describe('runner tick x registry (real tick, real registry)', () => {
     expect(sent).toHaveLength(1)
     expect(sent.some(s => s.prompt.includes('EDITED'))).toBe(false)
   })
+
+  // The registry hash and the runner read a task's preCheck by one path rule
+  // (precheck-path.ts). A non-string preCheck is no script for the hash, so it
+  // is none for the runner either. Before, the runner took any truthy value
+  // for a path and its `.replace` threw inside the tick: a retry of such a
+  // task rejected the whole tick, and no other task fired.
+  it('a registered task whose preCheck is not a string does not stop the tick', async () => {
+    await createViaApi('badpc', 'Non-string preCheck.', '0 8 * * *')
+    const put = await call('PUT', '/api/schedules/badpc', { preCheck: true })
+    expect(put.status).toBe(200)
+    await createViaApi('badpc-ctrl', 'Control prompt.')
+    insertPendingTaskRetryIfNew('badpc', AGENT, Date.now() - 120_000, 'busy')
+
+    await runOneTick()
+
+    expect(sentTo('badpc')).toHaveLength(1)
+    expect(sentTo('badpc-ctrl')).toHaveLength(1)
+  })
 })

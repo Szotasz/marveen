@@ -1,9 +1,10 @@
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync } from 'node:fs'
-import { join, isAbsolute } from 'node:path'
+import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { createHash } from 'node:crypto'
-import { MAIN_AGENT_ID, PROJECT_ROOT } from '../config.js'
+import { MAIN_AGENT_ID } from '../config.js'
 import { isRepoShippedScript } from './precheck-trust.js'
+import { preCheckScriptPath } from './precheck-path.js'
 import type { ChannelProviderType } from '../channel-provider.js'
 import { logger } from '../logger.js'
 import { atomicWriteFileSync } from './atomic-write.js'
@@ -256,20 +257,17 @@ function readBufferOr(path: string): Buffer | null {
 }
 
 // Which preCheck script is part of a task's trusted content. The runner runs
-// it with bash on every tick (resolvePreCheckPath in schedule-runner.ts):
-// relative -> resolved against the task dir (an escaping `../x` too), absolute
-// -> as given, a leading {{PROJECT_ROOT}}/ or {{INSTALL_DIR}}/ -> the install
-// root (same lookahead as resolvePreCheckPath, so the two agree). The resolved
-// script is hashed wherever it points (an absolute path under a writable dir
-// such as /tmp or an agent's working dir must not be trusted by its path),
+// it with bash on every tick (resolvePreCheckPath in schedule-runner.ts); both
+// locate it by preCheckScriptPath (precheck-path.ts), so they cannot disagree
+// on which script, or whether there is one at all. The resolved script is
+// hashed wherever it points (an absolute path under a writable dir such as
+// /tmp or an agent's working dir must not be trusted by its path),
 // EXCEPT repo-shipped code under <PROJECT_ROOT>/scripts/ (isRepoShippedScript):
 // it is updated with the install, and hashing it would stop the task on every
 // update that changes the script. Returns null when the script is not hashed.
 export function preCheckHashTarget(taskDir: string, preCheck: unknown): string | null {
-  if (typeof preCheck !== 'string' || preCheck.length === 0) return null
-  const rooted = preCheck.replace(/^\{\{(PROJECT_ROOT|INSTALL_DIR)\}\}(?=\/)/, PROJECT_ROOT)
-  const resolved = isAbsolute(rooted) ? rooted : join(taskDir, rooted)
-  if (isRepoShippedScript(resolved)) return null
+  const resolved = preCheckScriptPath(taskDir, preCheck)
+  if (resolved == null || isRepoShippedScript(resolved)) return null
   return resolved
 }
 
