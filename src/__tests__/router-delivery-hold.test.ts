@@ -9,6 +9,12 @@ const mockGetPendingMessages = vi.fn()
 const mockMarkDelivered = vi.fn((..._a: unknown[]) => true)
 const mockMarkFailed = vi.fn((..._a: unknown[]) => true)
 const mockSendPrompt = vi.fn(async (..._a: unknown[]) => 'sent' as const)
+const mockMarkDone = vi.fn((..._a: unknown[]) => true)
+const mockCreateMessage = vi.fn((..._a: unknown[]) => ({ id: 999 }))
+// The reconnect pre-pass's per-agent query; empty unless a test opts in.
+let perAgentPending: (agent: string) => unknown[] = () => []
+// Which tmux sessions exist; all of them unless a test says otherwise.
+let sessionUp: (session: string) => boolean = () => true
 const liveStatus = new Map<number, string | null>()
 const mockGetMessageStatus = vi.fn((id: number) => liveStatus.get(id) ?? null)
 // Runs inside the tick, at the readiness probe (an await between the top-of-tick
@@ -33,16 +39,16 @@ vi.mock('../config.js', async (importOriginal) => ({
 
 vi.mock('../db.js', () => ({
   getPendingMessages: (toAgent?: string) => {
-    if (toAgent) return [] // per-agent query of the reconnect pre-pass
+    if (toAgent) return perAgentPending(toAgent) // per-agent query of the reconnect pre-pass
     return mockGetPendingMessages()
   },
   getMessageStatus: (id: number) => mockGetMessageStatus(id),
   markMessageDelivered: (...a: unknown[]) => mockMarkDelivered(...a),
   markMessageFailed: (...a: unknown[]) => mockMarkFailed(...a),
-  markMessageDone: (..._a: unknown[]) => true,
+  markMessageDone: (...a: unknown[]) => mockMarkDone(...a),
   markPendingFederatedFailed: (..._a: unknown[]) => true,
   setMessageResult: (..._a: unknown[]) => true,
-  createAgentMessage: (..._a: unknown[]) => ({ id: 999 }),
+  createAgentMessage: (...a: unknown[]) => mockCreateMessage(...a),
   countNewerMessagesFromSameSender: (..._a: unknown[]) => 0,
   stampMessageTrace: (..._a: unknown[]) => false,
   upsertOtelSpan: (..._a: unknown[]) => undefined,
@@ -66,7 +72,7 @@ vi.mock('../web/agent-process.js', () => ({
   isSessionReadyForPrompt: vi.fn(async () => { onReadinessProbe(); return paneReady }),
   clearStaleParkedInput: vi.fn(async () => false),
   sendPromptToSession: (...a: unknown[]) => mockSendPrompt(...a),
-  sessionExistsOnHost: (..._a: unknown[]) => true,
+  sessionExistsOnHost: (_host: unknown, session: string) => sessionUp(session),
   capturePane: (..._a: unknown[]) => '',
 }))
 
@@ -90,12 +96,17 @@ vi.mock('../web/telegram-inbox-wake.js', () => ({
 import { runMessageRouterTick, MAX_MESSAGES_PER_TICK } from '../web/message-router.js'
 import { setDeliveryHoldProbe, type DeliveryHold } from '../web/delivery-hold.js'
 
-function row(id: number, to: string) {
+function row(id: number, to: string, extra: { content?: string; urgent?: number; stop_authorized?: number } = {}) {
   return {
     id, from_agent: 'orin', to_agent: to, content: `payload ${id}`,
     created_at: Math.floor(Date.now() / 1000), origin_note: null, trace_id: null, span_id: null,
+    urgent: 0, stop_authorized: 0,
+    ...extra,
   }
 }
+// An authenticated STOP from the main agent ('orin' here) and an authenticated urgent row.
+const stopRow = (id: number, to: string) => row(id, to, { content: `[STOP] halt ${id}`, stop_authorized: 1 })
+const urgentRow = (id: number, to: string) => row(id, to, { urgent: 1 })
 
 function queue(rows: ReturnType<typeof row>[]) {
   liveStatus.clear()
@@ -115,6 +126,8 @@ describe('message router: delivery hold around a context-guard restart', () => {
     log.warn.length = 0
     onReadinessProbe = () => {}
     paneReady = true
+    perAgentPending = () => []
+    sessionUp = () => true
     mockMarkDelivered.mockReturnValue(true)
     mockSendPrompt.mockImplementation(async () => 'sent' as const)
     setDeliveryHoldProbe((agent) => (held.has(agent) ? HOLD : null))
@@ -235,6 +248,82 @@ describe('message router: delivery hold around a context-guard restart', () => {
     // the top-of-tick partition asks once per recipient; the send-time check once per row sent
     const partitionCalls = probe.mock.calls.length - 4
     expect(partitionCalls).toBe(2)
+  })
+
+  it('an authenticated STOP to a held agent goes at once; its ordinary rows stay held', async () => {
+    held.add('dex')
+    queue([row(71, 'dex'), stopRow(72, 'dex'), row(73, 'ana')])
+
+    await runMessageRouterTick()
+
+    expect([...delivered()].sort()).toEqual([72, 73])
+    expect(mockSendPrompt.mock.calls.map((c) => c[0]).sort()).toEqual(['agent-ana', 'agent-dex'])
+    expect(mockMarkFailed).not.toHaveBeenCalled()
+  })
+
+  it('an authenticated urgent row to a held agent goes at once as well', async () => {
+    held.add('dex')
+    queue([row(81, 'dex'), urgentRow(82, 'dex')])
+
+    await runMessageRouterTick()
+
+    expect(delivered()).toEqual([82])
+    expect(mockSendPrompt).toHaveBeenCalledTimes(1)
+    expect(mockMarkFailed).not.toHaveBeenCalled()
+  })
+
+  it('a hold that starts DURING the tick does not stop a STOP', async () => {
+    queue([stopRow(91, 'ivo')])
+    onReadinessProbe = () => { held.add('ivo') }
+
+    await runMessageRouterTick()
+
+    expect(delivered()).toEqual([91])
+  })
+
+  it('control: a "[STOP]" text without the authentication flag is held like any row', async () => {
+    held.add('dex')
+    queue([row(95, 'dex', { content: '[STOP] not authenticated' })])
+
+    await runMessageRouterTick()
+
+    expect(mockSendPrompt).not.toHaveBeenCalled()
+    expect(mockMarkDelivered).not.toHaveBeenCalled()
+  })
+
+  it('a held agent seen absent through its exempt STOP is not backlog-batched on reconnect', async () => {
+    // The STOP puts the held agent in the tick window, so a restart can show its
+    // session absent for a tick and present the next: the reconnect pre-pass
+    // would fold the held ordinary rows into a summary and close them.
+    const run = async (agent: string) => {
+      const old = Math.floor(Date.now() / 1000) - 3600
+      const rows = [stopRow(201, agent), ...Array.from({ length: 7 }, (_, i) => ({ ...row(210 + i, agent), created_at: old }))]
+      queue(rows)
+      perAgentPending = (a) => rows.filter((r) => r.to_agent === a)
+      sessionUp = (s) => s !== `agent-${agent}`
+      await runMessageRouterTick()
+      sessionUp = () => true
+      await runMessageRouterTick()
+    }
+
+    held.add('rex')
+    await run('rex')
+    expect(mockMarkDone).not.toHaveBeenCalled()
+    expect(mockCreateMessage).not.toHaveBeenCalled()
+    expect(delivered()).toEqual([201])
+    // Released: the absence seen during the hold is not carried into a batch
+    // now; the kept rows go out as rows.
+    held.delete('rex')
+    await runMessageRouterTick()
+    expect(mockMarkDone).not.toHaveBeenCalled()
+    expect(mockCreateMessage).not.toHaveBeenCalled()
+    expect(delivered()).toEqual(expect.arrayContaining([210, 211, 212, 213, 214, 215, 216]))
+
+    // Control: the same sequence with no hold does batch the old rows.
+    vi.clearAllMocks()
+    await run('rox')
+    expect(mockMarkDone).toHaveBeenCalledTimes(7)
+    expect(mockCreateMessage).toHaveBeenCalledTimes(1)
   })
 
   it('control: with no hold anywhere, everything is delivered as before', async () => {

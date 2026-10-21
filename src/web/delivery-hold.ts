@@ -14,6 +14,11 @@
 // its probe when it starts. With no guard running there is no restart to hold
 // for, and the default answers "not held".
 //
+// NOT HELD: an authenticated STOP or urgent row (isUrgentDelivery). The router
+// sends it at once, with its usual pane checks; a STOP kept back for a restart
+// would come after the work it was meant to stop. Accepted on purpose: such a
+// row can still reach the old pane after the handoff and die with it.
+//
 // FAIL-OPEN. A probe that throws answers "not held", and the guard's own probe
 // ends every hold at the phase's current deadline plus one sweep -- never at a
 // time computed from `now` -- so a guard that stops sweeping cannot keep an

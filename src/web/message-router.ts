@@ -802,7 +802,10 @@ export async function runMessageRouterTick(): Promise<void> {
     // An agent the context-guard is restarting is held (delivery-hold.ts): its rows
     // stay pending and go to the fresh session after its resume prompt. They are
     // taken out BEFORE the window is chosen, so a held backlog cannot fill the
-    // window and starve every other recipient while it waits.
+    // window and starve every other recipient while it waits. An authenticated STOP
+    // or urgent row (isUrgentDelivery) is never held: it goes now, to whichever pane
+    // is up, with its usual pane checks. A STOP held for the length of a restart
+    // would arrive after the work it was meant to stop.
     const held = new Map<string, { hold: DeliveryHold; rows: number }>()
     // One answer per recipient per tick, "not held" included: a probe that fails
     // (and warns) must not do so once per pending row.
@@ -811,7 +814,7 @@ export async function runMessageRouterTick(): Promise<void> {
       if (isQualifiedId(m.to_agent)) { federatedPending.push(m); continue }
       if (!holdOf.has(m.to_agent)) holdOf.set(m.to_agent, deliveryHoldFor(m.to_agent, now))
       const hold = holdOf.get(m.to_agent)
-      if (hold) { held.set(m.to_agent, { hold, rows: (held.get(m.to_agent)?.rows ?? 0) + 1 }); continue }
+      if (hold && !isUrgentDelivery(m, MAIN_AGENT_ID)) { held.set(m.to_agent, { hold, rows: (held.get(m.to_agent)?.rows ?? 0) + 1 }); continue }
       localPending.push(m)
     }
     for (const [agent, { hold, rows }] of held) {
@@ -868,6 +871,10 @@ export async function runMessageRouterTick(): Promise<void> {
       // in pending/ and get handed over one at a time, acknowledged one at a
       // time. Summarising them away would DISCARD work that was never lost.
       if (agentSessionCache.get(agent)?.worksource) continue
+      // A held agent is not batched either: its ordinary rows were held, not missed,
+      // and go one by one after the release. It is a receiver here only through an
+      // exempt STOP or urgent row, and the restart can show it absent for a tick.
+      if (holdOf.get(agent)) continue
       if (agentWasAbsent.has(agent) && !agentBatchedThisReconnect.has(agent)) {
         // Check if this agent qualifies for backlog batching.
         const agentPending = getPendingMessages(agent)
@@ -1263,8 +1270,9 @@ export async function runMessageRouterTick(): Promise<void> {
         // tick is a snapshot, and the guard can start a restart sequence while this
         // tick awaits (readiness probes, STT). Nothing awaits between here and the
         // send, so a hold set mid-tick is honoured before anything is pasted. The
-        // row stays pending; it is not a failure.
-        const lateHold = deliveryHoldFor(msg.to_agent, Date.now())
+        // row stays pending; it is not a failure. A STOP or urgent row is exempt,
+        // as at the top of the tick.
+        const lateHold = isStop ? null : deliveryHoldFor(msg.to_agent, Date.now())
         if (lateHold) {
           // Same once-per-hold log as the top of the tick; the release is logged there.
           if (!heldAgentsLogged.has(msg.to_agent)) {
