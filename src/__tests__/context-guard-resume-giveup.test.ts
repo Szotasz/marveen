@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { mkdtempSync, readFileSync } from 'node:fs'
+import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -12,6 +12,7 @@ import { fileURLToPath } from 'node:url'
 // operator channel for the main agent itself.
 
 const SANDBOX = mkdtempSync(join(tmpdir(), 'resume-giveup-test-'))
+afterAll(() => { rmSync(SANDBOX, { recursive: true, force: true }) })
 
 vi.mock('../config.js', async (orig) => {
   const actual = await orig<typeof import('../config.js')>()
