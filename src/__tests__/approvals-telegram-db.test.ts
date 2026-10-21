@@ -470,7 +470,7 @@ describe('isOwnerVerified: only the owner\'s button press leaves the trace', () 
     expect(isOwnerVerified('o9', OWNER)).toBe(true)
   })
 
-  it('no route and no module but db.ts names the trace table; db.ts inserts into it exactly once', () => {
+  it('no route and no module but db.ts names the trace table; db.ts inserts into it exactly twice (the two decision functions)', () => {
     const root = fileURLToPath(new URL('..', import.meta.url))
     const offenders: string[] = []
     const walk = (dir: string): void => {
@@ -483,7 +483,10 @@ describe('isOwnerVerified: only the owner\'s button press leaves the trace', () 
     }
     walk(root)
     expect(offenders).toEqual([])
-    expect(readFileSync(join(root, 'db.ts'), 'utf-8').match(/INSERT INTO approval_owner_resolutions/g)).toHaveLength(1)
+    // Two writers, each in its own decision transaction: resolveApprovalFromTelegram
+    // (email_send, main bot) and resolveApprovalFromPermissionBot (card 9a77b3e5,
+    // permission-bot categories, with the bot id).
+    expect(readFileSync(join(root, 'db.ts'), 'utf-8').match(/INSERT INTO approval_owner_resolutions/g)).toHaveLength(2)
   })
 })
 

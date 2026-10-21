@@ -9,6 +9,9 @@ import { TOOL_TIMEOUTS } from './tool-timeouts.js'
 import { triggerLikeClause } from './homoglyph.js'
 import type { LiveKanban } from './web/heartbeat-kanban-verify.js'
 import { compareDeliveryOrder, deliveryRankSql } from './delivery-order.js'
+import { createHash } from 'node:crypto'
+import { isCallbackNonce, nonceHash as callbackNonceHash } from './web/approval-callback-data.js'
+import { PERMISSION_BOT_CATEGORIES, parseRagApprovalPayload, ragPayloadContentHash, type RagApprovalPayload } from './web/rag-approval-payload.js'
 
 let db: Database.Database
 // The path the CURRENT handle was opened on (null for ':memory:'). Kept so
@@ -1652,6 +1655,10 @@ export function initDatabase(dbPathOverride?: string): void {
       resolved_at INTEGER NOT NULL
     )
   `)
+  // Card 9a77b3e5: the id of the bot whose button was pressed. NULL on a row
+  // the main bot's buttons wrote; a permission-bot category (rag_production_d)
+  // counts as owner-verified only with the permission bot's id here.
+  try { db.exec('ALTER TABLE approval_owner_resolutions ADD COLUMN bot_id TEXT') } catch { /* already exists */ }
 
   // --- Control-bot custom commands (CMD920 3.12) ---
   // The owner's own slash commands. DB, not a file, so a later web admin writes
@@ -7019,6 +7026,11 @@ const SHA256_HEX = /^[0-9a-f]{64}$/
 // A Telegram user id as the owner attribution carries it: a positive decimal
 // integer, no sign, no leading zero.
 const TELEGRAM_USER_ID = /^[1-9][0-9]{0,15}$/
+// A Telegram bot id: the digits before the colon of the bot token.
+const TELEGRAM_BOT_ID = /^[1-9][0-9]{0,15}$/
+// The approval ids the permission-bot paths accept: randomUUID() output, or the
+// same without its dashes.
+const PERMISSION_APPROVAL_ID = /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{32})$/
 
 // The column that holds the nonce hash of one button. The only two names that
 // ever reach SQL text: the decision is checked to be one of the two first.
@@ -7131,20 +7143,30 @@ export function resolveApprovalFromTelegram(params: {
  * exactly that user (callers pass the strict owner, resolveAlertOwnerChat).
  * A legacy PATCH, a direct resolveApproval, or a row decided before the trace
  * existed is never verified.
+ * Card 9a77b3e5: for a PERMISSION_BOT_CATEGORIES row the trace must also carry
+ * bot_id === expectedBotId (the permission bot); without expectedBotId such a
+ * row is never verified. Other categories are unchanged.
  */
-export function isOwnerVerified(approvalId: string, expectedOwnerId?: string): boolean {
+export function isOwnerVerified(approvalId: string, expectedOwnerId?: string, expectedBotId?: string): boolean {
   if (typeof approvalId !== 'string' || approvalId === '') return false
   if (expectedOwnerId !== undefined && (typeof expectedOwnerId !== 'string' || !TELEGRAM_USER_ID.test(expectedOwnerId))) return false
+  if (expectedBotId !== undefined && (typeof expectedBotId !== 'string' || !TELEGRAM_BOT_ID.test(expectedBotId))) return false
   const t = db.prepare(`
-    SELECT a.status, a.resolved_by, a.resolved_at, a.content_hash,
-           r.owner_id, r.status AS r_status, r.content_hash AS r_content_hash, r.resolved_at AS r_resolved_at
+    SELECT a.category, a.status, a.resolved_by, a.resolved_at, a.content_hash,
+           r.owner_id, r.status AS r_status, r.content_hash AS r_content_hash, r.resolved_at AS r_resolved_at, r.bot_id AS r_bot_id
       FROM approvals a JOIN approval_owner_resolutions r ON r.approval_id = a.id
      WHERE a.id = ?
   `).get(approvalId) as {
-    status: string; resolved_by: string | null; resolved_at: number | null; content_hash: string | null
-    owner_id: string; r_status: string; r_content_hash: string; r_resolved_at: number
+    category: string; status: string; resolved_by: string | null; resolved_at: number | null; content_hash: string | null
+    owner_id: string; r_status: string; r_content_hash: string; r_resolved_at: number; r_bot_id: string | null
   } | undefined
   if (!t) return false
+  // A permission-bot category is decided only by the permission bot's button:
+  // the trace must carry exactly the expected bot id. No expected id = not
+  // verified (fail closed). Other categories ignore the bot id.
+  if (PERMISSION_BOT_CATEGORIES.includes(t.category)) {
+    if (expectedBotId === undefined || t.r_bot_id !== expectedBotId) return false
+  }
   if (t.status !== 'approved' || t.r_status !== 'approved') return false
   if (!TELEGRAM_USER_ID.test(t.owner_id)) return false
   if (expectedOwnerId !== undefined && t.owner_id !== expectedOwnerId) return false
@@ -7159,6 +7181,233 @@ export function isOwnerVerified(approvalId: string, expectedOwnerId?: string): b
 function approvalHasCallbackNonce(id: string, column: (typeof CALLBACK_NONCE_COLUMN)[keyof typeof CALLBACK_NONCE_COLUMN]): boolean {
   const r = db.prepare(`SELECT ${column} IS NOT NULL AS bound FROM approvals WHERE id = ?`).get(id) as { bound: number } | undefined
   return r?.bound === 1
+}
+
+// --- Card 9a77b3e5: permission-bot approvals (rag_production_d, probe) ---
+//
+// The permission bot's buttons decide these rows, never the main bot's
+// (resolveApprovalFromTelegram still only decides email_send in this tree). The
+// callback arrives through the relay, which forwards the press; this side
+// decides, in one BEGIN IMMEDIATE transaction, and writes the owner trace with
+// the bot id in the same transaction. A consume (consumeOwnerRunApproval) then
+// needs that trace with the permission bot's id.
+
+// The stored value of one permission-bot button: sha256 of the nonce's sha256,
+// ':' and the content hash (the same binding creditGateNonceBinding gives a
+// credit-gate row). A press must match it against the content_hash the row has
+// at the decision, so a payload and hash rewritten together after the message
+// went out match no button. Only this value is stored, never the nonce's own
+// sha256.
+function permissionBotNonceBinding(nonceSha: string, contentHash: string): string {
+  return createHash('sha256').update(`${nonceSha}:${contentHash}`, 'utf8').digest('hex')
+}
+
+// Binds the two button nonces (their sha256s) to a pending permission-bot
+// approval, both at once and once, before the button message goes out (the
+// message id must still be unset). The same rules as
+// setApprovalCallbackNonceHashes -- two distinct sha256 hexes, a row with a
+// content anchor and a deadline -- plus: the category is a permission-bot one
+// and the payload is still the canonical one the content_hash approves. The
+// N0 base binds only email_send rows, hence this separate, minimal binder.
+export function setPermissionBotNonceHashes(id: string, hashes: { approved: string; rejected: string }): boolean {
+  const approved = hashes?.approved
+  const rejected = hashes?.rejected
+  if (typeof id !== 'string' || !PERMISSION_APPROVAL_ID.test(id)
+    || typeof approved !== 'string' || !SHA256_HEX.test(approved)
+    || typeof rejected !== 'string' || !SHA256_HEX.test(rejected)
+    || approved === rejected) return false
+  return db.transaction((): boolean => {
+    const pre = db.prepare('SELECT category, action_payload, content_hash FROM approvals WHERE id = ?')
+      .get(id) as Pick<Approval, 'category' | 'action_payload' | 'content_hash'> | undefined
+    if (!pre || !PERMISSION_BOT_CATEGORIES.includes(pre.category)) return false
+    if (typeof pre.content_hash !== 'string' || !permissionPayloadBinds(pre.category, pre.action_payload, pre.content_hash)) return false
+    return db.prepare(`
+      UPDATE approvals SET callback_nonce_hash_approve = ?, callback_nonce_hash_reject = ?
+       WHERE id = ? AND status = 'pending' AND category = ?
+         AND content_hash = ? AND timeout_at IS NOT NULL
+         AND callback_nonce_hash_approve IS NULL AND callback_nonce_hash_reject IS NULL
+         AND telegram_message_id IS NULL
+    `).run(
+      permissionBotNonceBinding(approved, pre.content_hash), permissionBotNonceBinding(rejected, pre.content_hash),
+      id, pre.category, pre.content_hash,
+    ).changes > 0
+  }).immediate()
+}
+
+// True when `payload` is the canonical payload of `category` and `contentHash`
+// is the sha256 of exactly that text.
+function permissionPayloadBinds(category: string, payload: string | null, contentHash: string | null): boolean {
+  if (typeof payload !== 'string' || typeof contentHash !== 'string') return false
+  const parsed = parseRagApprovalPayload(payload, category)
+  return parsed.ok && ragPayloadContentHash(parsed.canonical) === contentHash
+}
+
+export type PermissionBotRefusal =
+  | 'bad_request' | 'not_found' | 'wrong_category' | 'already_resolved' | 'expired'
+  | 'not_bound' | 'payload_mismatch' | 'message_mismatch' | 'owner_mismatch' | 'bot_mismatch' | 'bad_nonce'
+
+export interface PermissionBotResult {
+  ok: boolean
+  reason?: PermissionBotRefusal
+  approval?: Approval
+}
+
+// The owner's decision from a permission-bot button (card 9a77b3e5). ONE
+// BEGIN IMMEDIATE transaction: the row is pending and unexpired, its category a
+// permission-bot one, its payload still the canonical one its content_hash
+// approves, the stored message id equals the pressed message, the press comes
+// from the strict owner in his own private chat (fromId = chatId = ownerId),
+// from the permission bot (botId = expectedBotId) and NOT the main bot (botId
+// differs from mainBotId), and the nonce hashes to the stored, content-bound
+// value of THIS decision's button. The win decides the row (resolved_by
+// owner:telegram:<owner>), clears both nonce hashes (the buttons are spent) and
+// writes the owner trace with the bot id, all in the same transaction. The
+// submitted message id is compared, never written.
+export function resolveApprovalFromPermissionBot(params: {
+  id: string
+  decision: 'approved' | 'rejected'
+  nonce: string
+  fromId: string
+  chatId: string
+  messageId: number
+  botId: string
+  ownerId: string
+  expectedBotId: string
+  mainBotId: string
+  nowS?: number
+}): PermissionBotResult {
+  const { id, decision, nonce, fromId, chatId, messageId, botId, ownerId, expectedBotId, mainBotId } = params
+  const isStr = (v: unknown): v is string => typeof v === 'string'
+  if (!isStr(id) || !PERMISSION_APPROVAL_ID.test(id) || (decision !== 'approved' && decision !== 'rejected')
+    || !isCallbackNonce(nonce)
+    || !isStr(ownerId) || !TELEGRAM_USER_ID.test(ownerId)
+    || !isStr(fromId) || !TELEGRAM_USER_ID.test(fromId)
+    || !isStr(chatId) || !TELEGRAM_USER_ID.test(chatId)
+    || !Number.isSafeInteger(messageId) || messageId <= 0
+    || !isStr(botId) || !TELEGRAM_BOT_ID.test(botId)
+    || !isStr(expectedBotId) || !TELEGRAM_BOT_ID.test(expectedBotId)
+    || !isStr(mainBotId) || !TELEGRAM_BOT_ID.test(mainBotId)
+    // Misconfiguration: the permission bot must not be the main bot.
+    || expectedBotId === mainBotId) {
+    return { ok: false, reason: 'bad_request' }
+  }
+  const now = params.nowS ?? Math.floor(Date.now() / 1000)
+  const column = CALLBACK_NONCE_COLUMN[decision]
+  const nonceSha = callbackNonceHash(nonce)
+  return db.transaction((): PermissionBotResult => {
+    const pre = db.prepare('SELECT category, action_payload, content_hash, status, timeout_at, telegram_message_id FROM approvals WHERE id = ?')
+      .get(id) as Pick<Approval, 'category' | 'action_payload' | 'content_hash' | 'status' | 'timeout_at' | 'telegram_message_id'> | undefined
+    const refuse = (reason: PermissionBotRefusal): PermissionBotResult => ({ ok: false, reason, approval: getApproval(id) })
+    if (!pre) return { ok: false, reason: 'not_found' }
+    if (!PERMISSION_BOT_CATEGORIES.includes(pre.category)) return refuse('wrong_category')
+    if (pre.status === 'timeout') return refuse('expired')
+    if (pre.status !== 'pending') return refuse('already_resolved')
+    if (pre.timeout_at == null || pre.timeout_at <= now) return refuse('expired')
+    if (pre.content_hash == null || pre.telegram_message_id == null || !approvalHasCallbackNonce(id, column)) return refuse('not_bound')
+    if (!permissionPayloadBinds(pre.category, pre.action_payload, pre.content_hash)) return refuse('payload_mismatch')
+    if (pre.telegram_message_id !== messageId) return refuse('message_mismatch')
+    if (fromId !== ownerId || chatId !== fromId) return refuse('owner_mismatch')
+    if (botId !== expectedBotId || botId === mainBotId) return refuse('bot_mismatch')
+    const presented = permissionBotNonceBinding(nonceSha, pre.content_hash)
+    const changes = db.prepare(`
+      UPDATE approvals SET status = ?, resolved_at = ?, resolved_by = ?,
+             callback_nonce_hash_approve = NULL, callback_nonce_hash_reject = NULL
+       WHERE id = ? AND status = 'pending' AND category = ? AND content_hash = ? AND action_payload = ?
+         AND timeout_at IS NOT NULL AND timeout_at > ?
+         AND telegram_message_id = ? AND ${column} = ?
+    `).run(decision, now, `owner:telegram:${ownerId}`, id, pre.category, pre.content_hash, pre.action_payload, now, messageId, presented).changes
+    if (changes !== 1) return refuse('bad_nonce')
+    const row = getApproval(id)
+    db.prepare(`
+      INSERT INTO approval_owner_resolutions (approval_id, owner_id, status, nonce_hash, content_hash, resolved_at, bot_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(id, ownerId, decision, presented, pre.content_hash, now, botId)
+    return { ok: true, approval: row }
+  }).immediate()
+}
+
+// Why a run consume was refused (the contract table of card 9a77b3e5).
+// bad_request = the arguments themselves are malformed (the route validates
+// first, so this is a backstop); it writes no event row.
+export type OwnerRunConsumeRefusal =
+  | 'bad_request' | 'not_found' | 'wrong_category' | 'not_approved' | 'not_owner_verified' | 'unbound'
+  | 'package_mismatch' | 'run_id_mismatch' | 'window_not_open' | 'window_closed'
+  | 'already_consumed' | 'run_id_already_used'
+
+export interface OwnerRunConsumeResult {
+  ok: boolean
+  reason?: OwnerRunConsumeRefusal
+  approval?: Approval
+  payload?: RagApprovalPayload
+}
+
+// One-shot consumption of a rag_production_d (or probe) approval by the run
+// that it authorises (card 9a77b3e5). ONE BEGIN IMMEDIATE transaction: the
+// checks, in the contract's order, then a single conditional UPDATE (only the
+// call that flips consumed_at from NULL wins). Two processes on one DB file
+// serialise on the write lock, so exactly one gets a yes. consumed_ref = run_id,
+// consumed_by = consumer. Every attempt with a well-formed id leaves an
+// approval_events row, the refused ones and not_found too (actor = consumer,
+// ref = run_id). The window is inclusive at both ends.
+export function consumeOwnerRunApproval(params: {
+  id: string
+  category: string
+  packageSha256: string
+  runId: string
+  consumer: string
+  expectedBotId: string
+  nowSec?: number
+}): OwnerRunConsumeResult {
+  const { id, category, packageSha256, runId, consumer, expectedBotId } = params
+  if (typeof id !== 'string' || !PERMISSION_APPROVAL_ID.test(id)
+    || typeof category !== 'string' || !PERMISSION_BOT_CATEGORIES.includes(category)
+    || typeof packageSha256 !== 'string' || !SHA256_HEX.test(packageSha256)
+    || typeof runId !== 'string' || !/^[0-9a-f]{32}$/.test(runId)
+    || typeof consumer !== 'string' || consumer.trim() === ''
+    || typeof expectedBotId !== 'string' || !TELEGRAM_BOT_ID.test(expectedBotId)) {
+    return { ok: false, reason: 'bad_request' }
+  }
+  const now = params.nowSec ?? Math.floor(Date.now() / 1000)
+  const who = consumer.trim()
+  return db.transaction((): OwnerRunConsumeResult => {
+    const event = (kind: 'consumed' | 'consume_refused', reason: string | null) => db.prepare(`
+      INSERT INTO approval_events (approval_id, event, reason, actor, ref, created_at) VALUES (?, ?, ?, ?, ?, ?)
+    `).run(id, kind, reason, who, runId, now)
+    const row = getApproval(id)
+    const refuse = (reason: OwnerRunConsumeRefusal): OwnerRunConsumeResult => {
+      event('consume_refused', reason)
+      return { ok: false, reason, approval: row }
+    }
+    if (!row) return refuse('not_found')
+    if (row.category !== category) return refuse('wrong_category')
+    if (row.status !== 'approved') return refuse('not_approved')
+    // The owner's trace, with the permission bot's id: PATCH, a dashboard click
+    // or the main bot's button never reach this.
+    if (!isOwnerVerified(id, undefined, expectedBotId)) return refuse('not_owner_verified')
+    const parsed = row.content_hash == null || row.action_payload == null
+      ? null : parseRagApprovalPayload(row.action_payload, row.category)
+    if (!parsed || !parsed.ok || row.content_hash == null || ragPayloadContentHash(parsed.canonical) !== row.content_hash) {
+      return refuse('unbound')
+    }
+    if (parsed.payload.package_sha256 !== packageSha256) return refuse('package_mismatch')
+    if (parsed.payload.run_id !== runId) return refuse('run_id_mismatch')
+    if (now < parsed.payload.write_window_start) return refuse('window_not_open')
+    if (now > parsed.payload.write_window_end) return refuse('window_closed')
+    if (row.consumed_at != null) return refuse('already_consumed')
+    const used = db.prepare(`
+      SELECT 1 AS x FROM approvals
+       WHERE id <> ? AND category = ? AND consumed_at IS NOT NULL AND consumed_ref = ?
+    `).get(id, category, runId)
+    if (used) return refuse('run_id_already_used')
+    const changes = db.prepare(`
+      UPDATE approvals SET consumed_at = ?, consumed_by = ?, consumed_ref = ?
+       WHERE id = ? AND category = ? AND status = 'approved' AND consumed_at IS NULL
+         AND content_hash = ? AND action_payload = ?
+    `).run(now, who, runId, id, category, row.content_hash, row.action_payload).changes
+    if (changes !== 1) return refuse('already_consumed')
+    event('consumed', null)
+    return { ok: true, approval: getApproval(id), payload: parsed.payload }
+  }).immediate()
 }
 
 export function listApprovals(opts: {
