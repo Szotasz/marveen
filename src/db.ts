@@ -9,7 +9,7 @@ import { TOOL_TIMEOUTS } from './tool-timeouts.js'
 import { triggerLikeClause } from './homoglyph.js'
 import type { LiveKanban } from './web/heartbeat-kanban-verify.js'
 import { compareDeliveryOrder, deliveryRankSql } from './delivery-order.js'
-import { toBudapestTs } from './date-range.js'
+import { toBudapestTs, type TsRange } from './date-range.js'
 
 let db: Database.Database
 // The path the CURRENT handle was opened on (null for ':memory:'). Kept so
@@ -402,6 +402,13 @@ export function initDatabase(dbPathOverride?: string): void {
   }
 
   db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_agent ON memories(agent_id, category)`)
+  // The date filter of GET /api/memories (card f90928e3) is a range on
+  // created_at inside one agent's rows: this index makes it a range scan.
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_agent_created ON memories(agent_id, created_at)`)
+  // Every agent's list also carries the shared rows (`agent_id = ? OR category
+  // = 'shared'`). SQLite can serve an OR from indexes only when BOTH sides have
+  // one, so without this the dated listing is a full scan.
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_category_created ON memories(category, created_at)`)
 
   // --- Conversation-continuity ledger (deterministic; P0 2026-06-02) ---
   // A durable ROLLING TRANSCRIPT of every channel turn -- inbound user messages
@@ -532,6 +539,8 @@ export function initDatabase(dbPathOverride?: string): void {
       db.exec(`CREATE TRIGGER memories_au AFTER UPDATE ON memories BEGIN INSERT INTO memories_fts(memories_fts, rowid, content, keywords) VALUES('delete', old.id, old.content, old.keywords); INSERT INTO memories_fts(rowid, content, keywords) VALUES (new.id, new.content, new.keywords); END`)
       db.exec(`INSERT INTO memories_fts(memories_fts) VALUES('rebuild')`)
       db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_agent ON memories(agent_id, category)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_agent_created ON memories(agent_id, created_at)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_category_created ON memories(category, created_at)`)
     }
   } catch (err) {
     // Previously this silently swallowed every error which masked the
@@ -2070,6 +2079,15 @@ export function buildRelaxedFtsExpression(query: string): string {
  * need the hard answer pass allowRelaxed=false and get silence when there is
  * no strict match.
  */
+// ` AND <col> >= ? AND <col> <= ?` for an optional created_at window (card
+// f90928e3), plus its bound parameters. Every memory read path appends this to
+// its WHERE so the window is applied in SQL, ahead of any LIMIT.
+function tsClause(col: string, range?: TsRange): { sql: string; params: number[] } {
+  return range
+    ? { sql: ` AND ${col} >= ? AND ${col} <= ?`, params: [range.fromTs, range.toTs] }
+    : { sql: '', params: [] }
+}
+
 function ftsWithOrFallback<T>(
   query: string,
   run: (terms: string) => T[],
@@ -2149,24 +2167,18 @@ export function searchMemories(
   // Same label searchAgentMemories reports. Without it the no-agent branch of
   // the endpoint said `relaxed=false` whatever this function actually did.
   trace?: { relaxed: boolean },
+  range?: TsRange,
 ): Memory[] {
   try {
+    const dt = tsClause('m.created_at', range)
     const { rows, relaxed } = ftsWithOrFallback(query, (terms) =>
-      (category
-        ? db.prepare(
-            `SELECT m.*, f.rank AS rank FROM memories m
-             JOIN memories_fts f ON m.id = f.rowid
-             WHERE f.memories_fts MATCH ? AND m.chat_id = ? AND m.category = ?
-             ORDER BY rank
-             LIMIT ?`
-          ).all(terms, chatId, category, limit * RECENCY_OVERSAMPLE)
-        : db.prepare(
-            `SELECT m.*, f.rank AS rank FROM memories m
-             JOIN memories_fts f ON m.id = f.rowid
-             WHERE f.memories_fts MATCH ? AND m.chat_id = ?
-             ORDER BY rank
-             LIMIT ?`
-          ).all(terms, chatId, limit * RECENCY_OVERSAMPLE)) as (Memory & { rank: number })[]
+      db.prepare(
+        `SELECT m.*, f.rank AS rank FROM memories m
+         JOIN memories_fts f ON m.id = f.rowid
+         WHERE f.memories_fts MATCH ? AND m.chat_id = ?${category ? ' AND m.category = ?' : ''}${dt.sql}
+         ORDER BY rank
+         LIMIT ?`
+      ).all(terms, chatId, ...(category ? [category] : []), ...dt.params, limit * RECENCY_OVERSAMPLE) as (Memory & { rank: number })[]
       , allowRelaxed)
     if (trace) trace.relaxed = relaxed
     return withoutRank(reRankByRecency(rows, limit)) as Memory[]
@@ -2208,7 +2220,7 @@ export function decayMemories(): void {
   db.prepare('UPDATE memories SET salience = MAX(salience * 0.995, 0.01) WHERE created_at < ?').run(oneWeekAgo)
 }
 
-export function getMemoriesForChat(chatId: string, limit = 10, offset = 0, category?: string): Memory[] {
+export function getMemoriesForChat(chatId: string, limit = 10, offset = 0, category?: string, range?: TsRange): Memory[] {
   // id DESC tie-break (#947): accessed_at has 1-second granularity, so a bulk
   // import leaves hundreds of rows sharing one value; without a stable
   // secondary sort SQLite may order the ties differently between queries, and
@@ -2219,14 +2231,12 @@ export function getMemoriesForChat(chatId: string, limit = 10, offset = 0, categ
   // route, applied after this function had already cut to `limit`: measured
   // 2026-10-17 on the owner store, the dashboard Hot tab (no agent filter,
   // limit 50) showed 6 of 115 hot memories.
-  if (category) {
-    return db
-      .prepare('SELECT * FROM memories WHERE chat_id = ? AND category = ? ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?')
-      .all(chatId, category, limit, offset) as Memory[]
-  }
+  //
+  // The date range (card f90928e3) goes into the query for the same reason.
+  const dt = tsClause('created_at', range)
   return db
-    .prepare('SELECT * FROM memories WHERE chat_id = ? ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?')
-    .all(chatId, limit, offset) as Memory[]
+    .prepare(`SELECT * FROM memories WHERE chat_id = ?${category ? ' AND category = ?' : ''}${dt.sql} ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?`)
+    .all(chatId, ...(category ? [category] : []), ...dt.params, limit, offset) as Memory[]
 }
 
 // --- In-process memory cache (TTL-based) ---
@@ -2334,21 +2344,20 @@ function scheduleEmbedding(id: number, content: string, keywords: string | undef
 // accessed memories" instead of "the N most recent <category> memories", so an
 // older-but-still-active memory would drop out of the list with no truncation
 // signal -- invisible to the caller, and worst right after a restart.
-export function getAgentMemories(agentId: string, limit: number = 20, category?: string, offset: number = 0): Memory[] {
+export function getAgentMemories(agentId: string, limit: number = 20, category?: string, offset: number = 0, range?: TsRange): Memory[] {
   // offset is part of the cache key (#947): without it page 2 would be served
   // page 1's cached rows for up to MEMORY_CACHE_TTL_MS. id DESC tie-break for
   // the same reason getMemoriesForChat has one -- accessed_at ties are common
-  // after a bulk import and make LIMIT/OFFSET non-total without it.
-  const key = `${agentId}:${limit}:${category ?? ''}:${offset}`
+  // after a bulk import and make LIMIT/OFFSET non-total without it. The date
+  // range (card f90928e3) is part of the key for the same reason, and goes
+  // into the query ahead of the LIMIT, never after it.
+  const key = `${agentId}:${limit}:${category ?? ''}:${offset}${range ? `:${range.fromTs}-${range.toTs}` : ''}`
   const cached = memoryCacheGet(key)
   if (cached) return cached
-  const result = (category
-    ? db.prepare(
-        "SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND category = ? ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?"
-      ).all(agentId, category, limit, offset)
-    : db.prepare(
-        "SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?"
-      ).all(agentId, limit, offset)) as Memory[]
+  const dt = tsClause('created_at', range)
+  const result = db.prepare(
+    `SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared')${category ? ' AND category = ?' : ''}${dt.sql} ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?`
+  ).all(agentId, ...(category ? [category] : []), ...dt.params, limit, offset) as Memory[]
   memoryCacheSet(key, result)
   return result
 }
@@ -2369,35 +2378,30 @@ export function searchAgentMemories(
   trace?: { relaxed: boolean },
   allowRelaxed = true,
   category?: string,
+  // Card f90928e3: a created_at window, pushed into every query below for the
+  // same reason as `category` -- a window applied after the LIMIT would answer
+  // "which of the N best matches fall in the window", not "the best matches
+  // inside the window".
+  range?: TsRange,
 ): Memory[] {
+  const dt = tsClause('m.created_at', range)
   try {
     const { rows, relaxed } = ftsWithOrFallback(query, (terms) =>
-      (category
-        ? db.prepare(
-            `SELECT m.*, f.rank AS rank FROM memories m
-             JOIN memories_fts f ON m.id = f.rowid
-             WHERE f.memories_fts MATCH ? AND (m.agent_id = ? OR m.category = 'shared')
-               AND m.category = ?
-             ORDER BY rank LIMIT ?`
-          ).all(terms, agentId, category, limit * RECENCY_OVERSAMPLE)
-        : db.prepare(
-            `SELECT m.*, f.rank AS rank FROM memories m
-             JOIN memories_fts f ON m.id = f.rowid
-             WHERE f.memories_fts MATCH ? AND (m.agent_id = ? OR m.category = 'shared')
-             ORDER BY rank LIMIT ?`
-          ).all(terms, agentId, limit * RECENCY_OVERSAMPLE)) as (Memory & { rank: number })[]
+      db.prepare(
+        `SELECT m.*, f.rank AS rank FROM memories m
+         JOIN memories_fts f ON m.id = f.rowid
+         WHERE f.memories_fts MATCH ? AND (m.agent_id = ? OR m.category = 'shared')${category ? ' AND m.category = ?' : ''}${dt.sql}
+         ORDER BY rank LIMIT ?`
+      ).all(terms, agentId, ...(category ? [category] : []), ...dt.params, limit * RECENCY_OVERSAMPLE) as (Memory & { rank: number })[]
     , allowRelaxed)
     if (trace) trace.relaxed = relaxed
     return withoutRank(reRankByRecency(rows, limit)) as Memory[]
   } catch {
     const pattern = `%${escapeLike(query)}%`
-    return (category
-      ? db.prepare(
-          "SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND category = ? AND (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\') ORDER BY accessed_at DESC LIMIT ?"
-        ).all(agentId, category, pattern, pattern, limit)
-      : db.prepare(
-          "SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\') ORDER BY accessed_at DESC LIMIT ?"
-        ).all(agentId, pattern, pattern, limit)) as Memory[]
+    const ld = tsClause('created_at', range)
+    return db.prepare(
+      `SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared')${category ? ' AND category = ?' : ''}${ld.sql} AND (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\') ORDER BY accessed_at DESC LIMIT ?`
+    ).all(agentId, ...(category ? [category] : []), ...ld.params, pattern, pattern, limit) as Memory[]
   }
 }
 
@@ -5736,18 +5740,18 @@ function vectorSearch(
   queryEmbedding: number[],
   limit: number = 10,
   category?: string,
+  range?: TsRange,
 ): { hits: VectorHit[]; floor: number } {
   // Same push-down as searchAgentMemories: this branch scores EVERY embedded
   // row in JS, so filtering in SQL is both correct and strictly less work.
   // Same WHERE as the full-row read it replaces, but only the id and the
-  // vector's byte length: the vectors come from embeddingCache.
-  const cands = (category
-    ? db.prepare(
-        "SELECT id, octet_length(embedding) AS elen FROM memories WHERE embedding IS NOT NULL AND (agent_id = ? OR category = 'shared') AND category = ?"
-      ).all(agentId, category)
-    : db.prepare(
-        "SELECT id, octet_length(embedding) AS elen FROM memories WHERE embedding IS NOT NULL AND (agent_id = ? OR category = 'shared')"
-      ).all(agentId)) as { id: number; elen: number }[]
+  // vector's byte length: the vectors come from embeddingCache. The date
+  // window (card f90928e3) narrows the candidates here, so the similarity
+  // floor below is computed over the windowed rows.
+  const dt = tsClause('created_at', range)
+  const cands = db.prepare(
+    `SELECT id, octet_length(embedding) AS elen FROM memories WHERE embedding IS NOT NULL AND (agent_id = ? OR category = 'shared')${category ? ' AND category = ?' : ''}${dt.sql}`
+  ).all(agentId, ...(category ? [category] : []), ...dt.params) as { id: number; elen: number }[]
 
   // Parse only what is new or changed since the last call.
   let getVec: Database.Statement | null = null
@@ -5859,6 +5863,7 @@ export async function hybridSearch(
   limit: number = 10,
   trace?: HybridSearchTrace,
   category?: string,
+  range?: TsRange,
 ): Promise<HybridSearchHit[]> {
   const k = 60 // RRF constant
   // Per-branch weights (MEMORY_RRF_FTS_WEIGHT / MEMORY_RRF_VECTOR_WEIGHT), 1/1 by
@@ -5873,7 +5878,7 @@ export async function hybridSearch(
   // Relaxed on purpose, and unchanged by the strict default introduced for the
   // endpoint: the hybrid answer fuses two rankings and already reports which
   // branch produced it, so a loose lexical hit here is labelled, not silent.
-  const ftsResults = searchAgentMemories(agentId, query, limit * 2, ftsTrace, true, category)
+  const ftsResults = searchAgentMemories(agentId, query, limit * 2, ftsTrace, true, category, range)
   const ftsIds = new Set(ftsResults.map(m => m.id))
 
   // Vector results. A row below the floor survives only when the keyword
@@ -5883,7 +5888,7 @@ export async function hybridSearch(
   // dropped ones and its RRF term grows accordingly.
   const queryEmbedding = await generateEmbedding(query, 'query')
   const vec = queryEmbedding
-    ? vectorSearch(agentId, queryEmbedding, limit * 2, category)
+    ? vectorSearch(agentId, queryEmbedding, limit * 2, category, range)
     : { hits: [] as VectorHit[], floor: 0 }
   const vecResults = vec.hits.filter(h => h.similarity >= vec.floor || ftsIds.has(h.memory.id))
   const vectorDropped = vec.hits.length - vecResults.length

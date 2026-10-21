@@ -196,7 +196,94 @@ export function toBudapestTs(dateStr: string, endOfDay: boolean): number {
   return Math.floor((target.getTime() - offsetMs) / 1000)
 }
 
+export interface TsRange { fromTs: number; toTs: number }
+
 /** Inclusive install-zone day range -> unix-second bounds (from 00:00:00, to 23:59:59). */
-export function rangeToTs(range: DateRange): { fromTs: number; toTs: number } {
+export function rangeToTs(range: DateRange): TsRange {
   return { fromTs: toBudapestTs(range.from, false), toTs: toBudapestTs(range.to, true) }
+}
+
+/** The forms the date filter understands, for the 400 body. */
+export const DATE_FILTER_FORMS =
+  'YYYY-MM-DD, YYYY-MM-DD - YYYY-MM-DD, ma, tegnap, tegnapelott, hetfo..vasarnap, mult heten, ezen a heten, ' +
+  'mult honapban, ebben a honapban, N nap, N het, utolso N nap, <honap> <nap>, <honap> (pl. oktober)'
+
+function isRealDay(s: string): boolean {
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/)
+  if (!m) return false
+  const d = new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])))
+  return d.getUTCFullYear() === Number(m[1]) && d.getUTCMonth() === Number(m[2]) - 1 && d.getUTCDate() === Number(m[3])
+}
+
+export interface DateFilter {
+  /** Day bounds as used (YYYY-MM-DD); a side the caller left open is null. */
+  from: string | null
+  to: string | null
+  ts: TsRange
+}
+
+/** Open-ended sides: a unix-second bound no stored row can pass. */
+const TS_MIN = 0
+const TS_MAX = 253_402_300_799 // 9999-12-31T23:59:59Z
+
+/**
+ * Resolves the `date=`, `since=` and `until=` query parameters of
+ * GET /api/memories. `date` takes the whole expression grammar of /api/recall;
+ * `since` / `until` take a day or an expression (since uses the expression's
+ * first day, until its last). Nothing is ignored silently: an unknown or
+ * impossible expression, a reversed range, or `date` mixed with `since` /
+ * `until` is an error the caller turns into a 400. Returns `{ filter: null }`
+ * when no parameter was given.
+ */
+export function resolveDateFilter(
+  params: { date?: string | null; since?: string | null; until?: string | null },
+  nowSec?: number,
+): { ok: true; filter: DateFilter | null } | { ok: false; error: string } {
+  const date = params.date?.trim() || ''
+  const since = params.since?.trim() || ''
+  const until = params.until?.trim() || ''
+  if (!date && !since && !until) return { ok: true, filter: null }
+  if (date && (since || until)) {
+    return { ok: false, error: 'date cannot be combined with since/until: use date=<from> - <to>, or since= and until=' }
+  }
+  const bad = (name: string, value: string): { ok: false; error: string } => ({
+    ok: false,
+    error: `Invalid ${name} "${value}". Recognised forms: ${DATE_FILTER_FORMS}`,
+  })
+  let from: string | null = null
+  let to: string | null = null
+  if (date) {
+    const r = parseDateExpr(date, nowSec)
+    if (!r) return bad('date', date)
+    from = r.from
+    to = r.to
+  } else {
+    if (since) {
+      const r = parseDateExpr(since, nowSec)
+      if (!r) return bad('since', since)
+      from = r.from
+    }
+    if (until) {
+      const r = parseDateExpr(until, nowSec)
+      if (!r) return bad('until', until)
+      to = r.to
+    }
+  }
+  for (const [name, value] of [['date/since', from], ['date/until', to]] as const) {
+    if (value !== null && !isRealDay(value)) return bad(name, value)
+  }
+  if (from !== null && to !== null && from > to) {
+    return { ok: false, error: `Empty range: ${from} is after ${to}` }
+  }
+  return {
+    ok: true,
+    filter: {
+      from,
+      to,
+      ts: {
+        fromTs: from === null ? TS_MIN : toBudapestTs(from, false),
+        toTs: to === null ? TS_MAX : toBudapestTs(to, true),
+      },
+    },
+  }
 }
