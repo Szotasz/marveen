@@ -7049,6 +7049,66 @@ export function consumeApproval(params: {
   })()
 }
 
+// The window bounds for consumeCategoryApproval. The acting tool names its own
+// policy (for example 2 h for one tool, 24 h for another) and the server
+// enforces it in the same write; the cap keeps a caller from turning an
+// approval into an open-ended one.
+export const CATEGORY_CONSUME_DEFAULT_WINDOW_S = 1800
+export const CATEGORY_CONSUME_MAX_WINDOW_S = 24 * 3600
+
+// Categories whose approvals the server consumes on its OWN path: email_send
+// by the send path (consumeApproval above / the gate), data_delete by the
+// memory DELETE route. The generic consume below never touches them, so a
+// tool cannot spend a letter's or a memory delete's approval by naming the
+// category in a generic call.
+export const SERVER_CONSUMED_CATEGORIES: readonly string[] = ['email_send', 'data_delete']
+
+// One-shot consumption for every category other than SERVER_CONSUMED_CATEGORIES.
+// Without it a tool acting on such an approval could only check the row with a
+// GET and keep its own "already used" list, so a replay from another tool, a
+// lost log or a second checkout could reuse one approval. Same shape as
+// consumeApproval: the single conditional UPDATE is the whole decision, so of
+// two concurrent callers exactly one flips consumed_at from NULL.
+// The anchor is matched with IS: a row with a content_hash is consumed only
+// with that exact hash, a row without one only by a caller that sends none.
+export function consumeCategoryApproval(params: {
+  id: string
+  category: string
+  contentHash: string | null
+  consumer: string
+  ref?: string | null
+  windowSeconds: number
+  nowS?: number
+}): ApprovalConsumeResult {
+  const now = params.nowS ?? Math.floor(Date.now() / 1000)
+  const ref = params.ref ?? null
+  const excluded = SERVER_CONSUMED_CATEGORIES.map(() => '?').join(', ')
+  return db.transaction((): ApprovalConsumeResult => {
+    const changes = db.prepare(`
+      UPDATE approvals SET consumed_at = ?, consumed_by = ?, consumed_ref = ?
+       WHERE id = ? AND category = ? AND category NOT IN (${excluded}) AND status = 'approved' AND consumed_at IS NULL
+         AND content_hash IS ? AND resolved_at IS NOT NULL AND resolved_at >= ?
+    `).run(now, params.consumer, ref, params.id, params.category, ...SERVER_CONSUMED_CATEGORIES, params.contentHash, now - params.windowSeconds).changes
+    const event = db.prepare(`
+      INSERT INTO approval_events (approval_id, event, reason, actor, ref, created_at) VALUES (?, ?, ?, ?, ?, ?)
+    `)
+    const row = getApproval(params.id)
+    if (changes === 1) {
+      event.run(params.id, 'consumed', null, params.consumer, ref, now)
+      return { ok: true, approval: row }
+    }
+    let reason: ApprovalConsumeRefusal
+    if (!row) reason = 'not_found'
+    else if (row.category !== params.category || SERVER_CONSUMED_CATEGORIES.includes(row.category)) reason = 'wrong_category'
+    else if (row.consumed_at != null) reason = 'already_consumed'
+    else if (row.status !== 'approved') reason = 'not_approved'
+    else if ((row.content_hash ?? null) !== params.contentHash) reason = 'hash_mismatch'
+    else reason = 'expired'
+    if (row) event.run(params.id, 'consume_refused', reason, params.consumer, ref, now)
+    return { ok: false, reason, approval: row }
+  })()
+}
+
 export interface ApprovalEvent {
   id: number
   approval_id: string
