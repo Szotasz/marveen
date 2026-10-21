@@ -7,6 +7,11 @@
 // by calling importFleet with a pre-encrypted payload and mocked DB / FS module.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+
+const PROJECT_ROOT_FOR_SRC = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 import { _encryptForTest, _decryptForTest, ENCRYPTED_FLEET_VERSION, MIN_VAULT_PASSWORD_LEN } from '../web/fleet-transfer.js'
 
 // ---------------------------------------------------------------------------
@@ -325,6 +330,64 @@ describe('importFleet: identity takeover', () => {
       OWNER_NAME: 'Norbert',
       CHANNEL_PROVIDER: 'telegram',
     })
+  })
+
+  // Review of #2101: /api/fleet/import runs on the shared dashboard token, and
+  // the identity mirror used to copy EVERY string key into config-overrides.json
+  // and .env -- SUDO_AGENTS too (agentMaySudo flipped false -> true, reproduced).
+  // Only the keys exportMainAgent writes may arrive, each as a single line.
+  it('apply takes ONLY the identity key set: SUDO_AGENTS and any other key reach neither file', async () => {
+    const { importFleet, FLEET_IDENTITY_KEYS } = await import('../web/fleet-transfer.js')
+    const { atomicWriteFileSync } = await import('../web/atomic-write.js')
+    const { updateEnvFile } = await import('../env.js')
+    ;(atomicWriteFileSync as any).mockClear()
+    ;(updateEnvFile as any).mockClear()
+    const fleet = JSON.parse(FLEET_WITH_SOURCE_ID)
+    fleet.mainAgent.identity = {
+      ...fleet.mainAgent.identity,
+      SUDO_AGENTS: 'dani',
+      BASH_EGRESS_HOST_ALLOW: 'evil.example',
+      MAIN_AGENT_ISOLATED_CONFIG: '1',
+    }
+    const ir = importFleet(JSON.stringify(fleet), { apply: true }) as any
+
+    const overrideWrites = (atomicWriteFileSync as any).mock.calls
+      .filter((c: string[]) => c[0]?.includes('config-overrides.json'))
+    const written = JSON.parse(overrideWrites.at(-1)[1])
+    const envArg = (updateEnvFile as any).mock.calls.at(-1)[0]
+    for (const key of ['SUDO_AGENTS', 'BASH_EGRESS_HOST_ALLOW', 'MAIN_AGENT_ISOLATED_CONFIG']) {
+      expect(written, key).not.toHaveProperty(key)
+      expect(envArg, key).not.toHaveProperty(key)
+    }
+    expect(Object.keys(envArg).sort()).toEqual([...FLEET_IDENTITY_KEYS].sort())
+    expect(written.MAIN_AGENT_ID).toBe('atlas')
+    expect(ir.warnings.some((w: string) => w.includes('SUDO_AGENTS'))).toBe(true)
+  })
+
+  it('a multi-line identity value is dropped, so it cannot start a .env line of its own', async () => {
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    const { atomicWriteFileSync } = await import('../web/atomic-write.js')
+    const { updateEnvFile } = await import('../env.js')
+    ;(atomicWriteFileSync as any).mockClear()
+    ;(updateEnvFile as any).mockClear()
+    const fleet = JSON.parse(FLEET_WITH_SOURCE_ID)
+    fleet.mainAgent.identity.OWNER_NAME = 'Norbert\nSUDO_AGENTS=dani'
+    importFleet(JSON.stringify(fleet), { apply: true })
+    const envArg = (updateEnvFile as any).mock.calls.at(-1)[0]
+    expect(envArg).not.toHaveProperty('OWNER_NAME')
+    expect(Object.values(envArg).some(v => /[\r\n]/.test(String(v)))).toBe(false)
+    const written = JSON.parse((atomicWriteFileSync as any).mock.calls
+      .filter((c: string[]) => c[0]?.includes('config-overrides.json')).at(-1)[1])
+    expect(written).not.toHaveProperty('SUDO_AGENTS')
+    expect(String(written.OWNER_NAME ?? '')).not.toMatch(/[\r\n]/)
+  })
+
+  it('the identity key set is exactly what the export writes', async () => {
+    const { FLEET_IDENTITY_KEYS } = await import('../web/fleet-transfer.js')
+    const src = readFileSync(join(PROJECT_ROOT_FOR_SRC, 'src/web/fleet-transfer.ts'), 'utf-8')
+    const block = src.slice(src.indexOf('    identity: {'), src.indexOf('},', src.indexOf('    identity: {')))
+    const exported = [...block.matchAll(/^\s+([A-Z_]+),$/gm)].map(m => m[1])
+    expect(exported.sort()).toEqual([...FLEET_IDENTITY_KEYS].sort())
   })
 
   // JSONCLOBBER926B: a corrupt config-overrides.json is refused, not replaced by

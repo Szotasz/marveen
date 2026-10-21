@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { PROJECT_ROOT, MAIN_AGENT_ID, DEFAULT_AGENT_MODEL } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
+import { readEnvFile } from '../env.js'
 import { parseExtraChannels } from './agent-extra-channels.js'
 import type { ChannelProviderType } from '../channel-provider.js'
 import { logger } from '../logger.js'
@@ -805,6 +806,48 @@ export function readAgentToolDeny(name: string): string[] {
     return sanitizeToolDenyList(config.toolDeny)
   } catch {
     return []
+  }
+}
+
+// ---- per-agent sudo opt-out ------------------------------------------------
+//
+// The fleet deny floor (FLEET_BASELINE_DENY) denies sudo to every sub-agent,
+// and it is rebuilt on every spawn, so a sudo grant written straight into
+// settings.json is gone at the next respawn. An agent whose job IS host
+// administration needs a durable way out.
+//
+// The grant LOOSENS a deny, so its source must not be writable by the agent it
+// frees. That rules out two obvious homes:
+//   - agents/<name>/agent-config.json: inside the agent's own cwd, so its own
+//     Write/Edit tools reach it (toolDeny lives there safely only because it can
+//     only TIGHTEN). An "allowSudo" field there is deliberately not read.
+//   - a SETTINGS_REGISTRY key: POST /api/settings writes it with the fleet's one
+//     shared Bearer token, which every sub-agent holds.
+// So it is the install's .env, key SUDO_AGENTS, read directly and NOT in the
+// registry (the settings route answers an unknown key with 404). It lists agent
+// names, separated by commas or whitespace; an entry that is not a valid agent
+// name is ignored, and an absent or empty key grants nothing.
+//
+// What this does NOT claim: .env sits outside every sub-agent's cwd, but on a
+// single-user host a permissive agent's Bash can still write it. Closing that
+// takes a per-agent OS user, not a deny rule.
+const SUDO_AGENT_NAME_RE = /^[a-z0-9-]{1,50}$/
+
+export function parseSudoAgents(raw: unknown): string[] {
+  if (typeof raw !== 'string') return []
+  const out: string[] = []
+  for (const part of raw.split(/[\s,]+/)) {
+    if (SUDO_AGENT_NAME_RE.test(part) && !out.includes(part)) out.push(part)
+  }
+  return out
+}
+
+export function agentMaySudo(name: string): boolean {
+  if (name === MAIN_AGENT_ID) return false
+  try {
+    return parseSudoAgents(readEnvFile(['SUDO_AGENTS']).SUDO_AGENTS).includes(name)
+  } catch {
+    return false
   }
 }
 

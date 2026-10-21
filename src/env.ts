@@ -39,12 +39,25 @@ export const ENV_FILE_MODE = 0o600
 // Values are written UNQUOTED: channels.sh parses with `cut -d= -f2-` and does
 // no quote-stripping, so a quoted value would leak the quotes. Only non-empty
 // string values are written; empty updates are a no-op (no file touch).
+// .env is line-based: a newline inside a value, or a key that is not a plain
+// identifier, would write a key of the caller's choosing (review of #2101: the
+// fleet import is reachable with the shared dashboard token). Refused loudly
+// rather than stripped, so a caller that hits it learns about it.
+const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
+export function assertEnvEntries(entries: Array<[string, string]>): void {
+  for (const [key, val] of entries) {
+    if (!ENV_KEY_RE.test(key)) throw new Error(`refusing to write .env: invalid key ${JSON.stringify(key)}`)
+    if (/[\r\n\0]/.test(val)) throw new Error(`refusing to write .env: the value of ${key} is not a single line`)
+  }
+}
+
 export function updateEnvFile(updates: Record<string, string>): void {
   const envPath = join(PROJECT_ROOT, '.env')
   const entries = Object.entries(updates).filter(
     ([, v]) => typeof v === 'string' && v.length > 0,
   )
   if (entries.length === 0) return
+  assertEnvEntries(entries)
 
   let content = ''
   try {

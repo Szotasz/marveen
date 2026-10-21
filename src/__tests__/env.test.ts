@@ -97,3 +97,29 @@ describe('updateEnvFile keeps the .env mode', () => {
     expect(modeOf(testEnvPath)).toBe(0o600)
   })
 })
+
+// Review of #2101: .env is line-based, so a value carrying a newline writes a
+// key of the caller's choosing. updateEnvFile refuses it and leaves the file alone.
+describe('updateEnvFile refuses what would write a key of its own', () => {
+  it('a multi-line value and a non-identifier key throw, and the file is unchanged', async () => {
+    writeFileSync(testEnvPath, 'MAIN_AGENT_ID=marveen\n')
+    const { updateEnvFile } = await import('../env.js')
+    for (const bad of <Record<string, string>[]>[
+      { MAIN_AGENT_ID: 'x\nSUDO_AGENTS=dani' },
+      { MAIN_AGENT_ID: 'x\rSUDO_AGENTS=dani' },
+      { MAIN_AGENT_ID: 'x\0y' },
+      { 'SUDO_AGENTS=dani\nX': '1' },
+      { 'A B': '1' },
+    ]) {
+      expect(() => updateEnvFile(bad), JSON.stringify(bad)).toThrow(/refusing to write \.env/)
+      expect(readFileSync(testEnvPath, 'utf-8')).toBe('MAIN_AGENT_ID=marveen\n')
+    }
+  })
+
+  it('a plain single-line value is still written', async () => {
+    writeFileSync(testEnvPath, 'MAIN_AGENT_ID=marveen\n')
+    const { updateEnvFile } = await import('../env.js')
+    updateEnvFile({ MAIN_AGENT_ID: 'atlas' })
+    expect(readFileSync(testEnvPath, 'utf-8')).toBe('MAIN_AGENT_ID=atlas\n')
+  })
+})
