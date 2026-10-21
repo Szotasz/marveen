@@ -11,7 +11,7 @@ import { getEffectiveSettingValue } from '../settings-store.js'
 import { findDuplicateJsonKeys } from './json-dup-keys.js'
 import { logger } from '../logger.js'
 import { filterInheritableMcpServers, readInheritableMcpServerNames, logNotInherited } from './mcp-inheritance.js'
-import { agentDir, agentConfigRoot, listAgentNames, readAgentCapabilities, readAgentSenderRoleGatePolicy, readAgentToolDeny } from './agent-config.js'
+import { agentDir, agentConfigRoot, agentMaySudo, listAgentNames, readAgentCapabilities, readAgentSenderRoleGatePolicy, readAgentToolDeny } from './agent-config.js'
 import { loadProfileTemplate, resolveProfileTemplate, profileWantsCredentialGate, profileWantsSecondReviewer, profileWantsDestructiveGate, profileWantsYtIngest, resolveProfilePlaceholders,
   type ProfileTemplate } from './profiles.js'
 import { resolveAgentSecurityProfile, readAgentTeam } from './agent-team.js'
@@ -907,8 +907,13 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   // Pushed here rather than copied into each templates/profiles/*.json so a
   // profile added tomorrow cannot silently ship without it. Deduped against what
   // the profile already declared (developer-senior and marketer both carry some
-  // of these), so the written file stays readable.
+  // of these), so the written file stays readable. The sudo pair is the one part
+  // an agent can be let out of (.env SUDO_AGENTS, default empty; see
+  // agentMaySudo for why not agent-config.json), and only the floor's copy: a
+  // profile-declared sudo rule above stays.
+  const allowSudo = agentMaySudo(name)
   for (const rule of FLEET_BASELINE_DENY.map(r => resolveProfilePlaceholders(r, ctx))) {
+    if (allowSudo && FLEET_SUDO_DENY.includes(rule)) continue
     if (!denyList.includes(rule)) denyList.push(rule)
   }
   // Per-agent tool-name deny (agent-config.json "toolDeny"): merged LAST and
@@ -1416,6 +1421,10 @@ export const FLEET_BASELINE_DENY = [
   'Bash(git push -f:*)',
   'mcp__playwright__browser_run_code_unsafe',
 ]
+
+// The floor's sudo pair, named so the per-agent opt-out (SUDO_AGENTS) lifts
+// exactly these two rules and nothing else of the floor.
+export const FLEET_SUDO_DENY = ['Bash(sudo:*)', 'Bash(*/sudo *)']
 
 // Idempotently merge the egress deny rules into a settings object's
 // permissions.deny. Pure (no I/O) so both the rule set and the merge behaviour
