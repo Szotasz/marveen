@@ -1,5 +1,5 @@
-import { describe, it, expect, vi } from 'vitest'
-import { mkdtempSync, mkdirSync, existsSync, readFileSync } from 'node:fs'
+import { describe, it, expect, vi, afterAll } from 'vitest'
+import { mkdtempSync, mkdirSync, existsSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os'
 // path now reads the mark without writing it; the sweep is the only writer.
 
 const SANDBOX = mkdtempSync(join(tmpdir(), 'guard-status-readonly-'))
+afterAll(() => { rmSync(SANDBOX, { recursive: true, force: true }) })
 mkdirSync(join(SANDBOX, 'store'), { recursive: true })
 const HIGHWATER = join(SANDBOX, 'store', 'context-guard-highwater.json')
 
