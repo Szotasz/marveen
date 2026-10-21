@@ -57,6 +57,40 @@ A "gentle decay": a régi emlékek nem zavarják a keresést, de mindig visszake
 
 Append-only, ágensenként: automatikus bejegyzések napközben + 23:00-kor napi összefoglaló. Nem módosul — kronológiai archívum, ez kerül reggel a napindítóba.
 
+#### Kereshető tükör a memóriában
+
+Minden `POST /api/daily-log` bejegyzés ugyanabban az SQLite-tranzakcióban egy `memories` sort is létrehoz, ezért a napló a memória-keresésben (`GET /api/memories`, kulcsszavas és `mode=hybrid` is) azonnal megtalálható; a vektor az embedding elkészülte után (másodpercek) csatlakozik, Ollama nélkül a meglévő embedding-backfill pótolja.
+
+- **Tier és forma:** `cold` (hogy a hot-lista ne teljen meg napló-sorokkal, amik nyitott feladatnak látszanának), szektor `episodic`. A tartalom `[Napló ÉÉÉÉ-HH-NN ÓÓ:PP] <szöveg>`, a kulcsszavak `napi-naplo, ÉÉÉÉ-HH-NN`; a sor `created_at`-je a napló-sor `created_at`-je.
+- **Kapcsolat:** a `daily_log_memory` tábla köti a napló-sort a tükör-sorhoz (mindkét oldal `UNIQUE`), ez teszi az újrafuttatást idempotenssé. Ha valaki töröl egy tükör-sort, a kapcsolat marad, így a backfill nem támasztja fel szándékosan törölt emléket.
+- **Tartalomszűrő:** a tükör ugyanazon a szűrőn megy át, mint a `POST /api/memories`. Ha a szöveg elbukik rajta, a napló-sor ettől még elmentődik (a napló viselkedése nem változik), a tükör-sor nem jön létre, és a válaszban `memory_mirror: "skipped:content-filter"` jelzi (siker esetén a `memory_mirror` a tükör-sor azonosítója). Adatbázis-hiba mindkét sort visszagörgeti.
+- **Backfill a régi sorokra:** `npx tsx scripts/daily-log-backfill-memories.ts [--db <út>]` (szárazon fut, csak számol és NEM ír: az adatbázist csak olvasásra nyitja, migrációt sem futtat; ha a kapcsolat-tábla hiányzik, kiírja, mit hozna létre az `--apply`, és minden napló-sort függőnek számol), `--apply`-jal ír. Minden sor a saját `created_at`-jével tükröződik. A végén kiírja: napló-sorok, már tükrözött, új (vagy "would create"), kihagyott (szűrő vagy üres), hibás. Az embeddinget nem készíti el (a folyamat előbb kilép), azt a meglévő backfill pótolja.
+
+### Dátumszűrő a keresésen
+
+`GET /api/memories` három paramétert fogad el, mind az `Europe/Budapest` (telepítési zóna) naptári napjaira vonatkozik, a határok zárt intervallumok (00:00:00 - 23:59:59 helyi idő, az óraállítás napján is: 2026-10-25 25 órás nap):
+
+| Paraméter | Érték |
+|---|---|
+| `date=` | a `/api/recall` nyelvtana: `ma`, `tegnap`, `mult heten`, `ezen a heten`, `ÉÉÉÉ-HH-NN`, `ÉÉÉÉ-HH-NN - ÉÉÉÉ-HH-NN`, `utolso 7 nap` stb. |
+| `since=` | nap vagy kifejezés; kifejezésnél annak első napja |
+| `until=` | nap vagy kifejezés; kifejezésnél annak utolsó napja |
+
+- A `date` nem keverhető `since`/`until`-lal. Ismeretlen kifejezés, nem létező nap (`2026-02-30`), fordított tartomány (`since` > `until`) és a fenti keverés **400**, a felismert alakok felsorolásával: a szűrő soha nem marad el némán.
+- **A szűrő SQL-ben, a LIMIT előtt érvényesül, minden ágban:** kulcsszavas (relaxed és strict), LIKE-tartalék, vektor-jelöltek, a hibrid mindkét lába a fúzió előtt, és a sima listázás (ágenssel és anélkül). Soha nem utószűrő: a 200 frissebb, ablakon kívüli sor nem tolja ki a találatot a `limit`-ből.
+- **`X-Memory-Search`:** a fejléc végén `date=<tól>..<ig>` a ténylegesen használt tartománnyal (megadott `since` vagy `until` nélküli oldal üres: `date=2026-10-01..`). Szűrő nélkül nincs `date` mező. A `relaxed`, `strict`, `hits` jelentése változatlan; a dátumszűrő soha nem lazul, a "relaxed" csak a szavakra vonatkozik.
+- **`offset`:** listázásnál `date`-tel együtt működik; `q`-val továbbra is 400.
+- **Relevancia és dátumszűrő:** minden relevancia-számítás a szűrt jelölt-halmazon fut. A vektor-ág hasonlósági küszöbe (a medián + `MEMORY_VECTOR_MIN_MARGIN`, kis halmaznál az abszolút padló) a dátumablakba eső sorokból számolódik, nem a teljes tárból. Egy szűk ablak ezért kisebb halmazt (`MEMORY_VECTOR_BASELINE_MIN_ROWS` alatt a kis-korpusz padlót) jelent, ami a vektor-találatot szigorúbbá teheti; ugyanez igaz minden olyan relevancia-címkére vagy elhallgatásra (abstain), amely a legjobb jelölt hasonlóságából (`topCos`) dönt: a szűrés a `topCos`-t csökkentheti, és a címke a szűrt jelöltekre vonatkozik. Az üres találat ezért az ablakra szól, nem a teljes memóriára.
+- **Index:** `memories(agent_id, created_at)` és `memories(category, created_at)` (idempotens migráció; a második az ágens listájába tartozó `shared` sorok miatt kell, különben az OR miatt teljes táblaolvasás lenne).
+
+```bash
+# tegnapi bejegyzések (a napló tükör-sorai is), kulcsszóra
+curl -s -G -D /tmp/mem-fejlec.txt -H "Authorization: Bearer $(cat store/.dashboard-token)" \
+  --data-urlencode "agent=brainy" --data-urlencode "q=levél" --data-urlencode "date=tegnap" \
+  "http://localhost:3420/api/memories"
+grep -i '^x-memory-search' /tmp/mem-fejlec.txt
+```
+
 ### PreCompact hook (automatikus mentés)
 
 Mielőtt a Claude Code kontextusablaka tömörítődik, a `PreCompact` hook átnézi a beszélgetést, kiemeli a fontos döntéseket/preferenciákat/tanulságokat, elmenti a megfelelő tierbe, és napi napló bejegyzést ír — így a tömörítéskor semmi fontos nem vész el.
@@ -69,7 +103,7 @@ A dashboard memória-oldalán force-directed (HTML5 Canvas) gráf: zoom/pan, ker
 
 ```bash
 POST /api/memories                       # mentés (agent_id, content, tier, keywords)
-GET  /api/memories?agent=&q=&tier=        # keresés (kulcsszó)
+GET  /api/memories?agent=&q=&tier=        # keresés (kulcsszó); &date= | &since=&until= időszakra szűr
 GET  /api/memories/search?agent=&q=&hybrid=true   # hibrid (FTS5 + vektor)
 POST /api/daily-log                       # napi napló (append-only)
 POST /api/memories/backfill               # embedding backfill
