@@ -31,7 +31,7 @@ function stageTree(scriptNames: string[]): { bin: string } {
   const bin = join(stage, 'bin')
   mkdirSync(bin, { recursive: true })
   writeFileSync(join(bin, 'curl'),
-    '#!/bin/bash\necho "$@" >> "${CURL_ARGV_LOG:-/dev/null}"\nif [ "${CURL_STUB_EXIT:-0}" -ne 0 ]; then\n  echo "curl: (6) Could not resolve host for https://api.telegram.org/bot${CURL_STUB_TOKEN:-}/x" >&2\n  exit "${CURL_STUB_EXIT}"\nfi\nprintf \'%s\' "${CURL_STUB_BODY:-{\\"ok\\":true}}"\n')
+    '#!/bin/bash\necho "$@" >> "${CURL_ARGV_LOG:-/dev/null}"\ncat >> "${CURL_STDIN_LOG:-/dev/null}"\nif [ "${CURL_STUB_EXIT:-0}" -ne 0 ]; then\n  echo "curl: (6) Could not resolve host for https://api.telegram.org/bot${CURL_STUB_TOKEN:-}/x" >&2\n  exit "${CURL_STUB_EXIT}"\nfi\nprintf \'%s\' "${CURL_STUB_BODY:-{\\"ok\\":true}}"\n')
   writeFileSync(join(bin, 'sleep'), '#!/bin/bash\nexit 0\n') // set-bot-menu sleeps 15s; irrelevant here
   writeFileSync(join(bin, 'tmux'), '#!/bin/bash\necho "$@" >> "${TMUX_ARGV_LOG:-/dev/null}"\nexit 0\n')
   for (const b of ['curl', 'sleep', 'tmux']) chmodSync(join(bin, b), 0o755)
@@ -45,6 +45,7 @@ function run(rel: string, env: Record<string, string>, bin: string, args: string
       HOME: stage,
       CURL_STUB_TOKEN: FAKE_TOKEN,
       CURL_ARGV_LOG: join(stage, 'curl-argv.log'),
+      CURL_STDIN_LOG: join(stage, 'curl-stdin.log'),
       ...env,
     },
     encoding: 'utf-8',
@@ -76,6 +77,35 @@ describe('telegram_api_call: the generalized contract', () => {
   })
 })
 
+describe('telegram_api_call: the token never reaches curl argv', () => {
+  // A URL argument is world-readable while curl runs (ps -ww, /proc/<pid>/cmdline),
+  // so the Bot API URL travels as a curl -K - config line on stdin instead
+  // (the lib/curl-tok.sh trick). The stub records both streams.
+  it('one successful call: no token in the argv log, the full url line in the stdin log', () => {
+    const { bin } = stageTree([])
+    writeFileSync(join(stage, 'scripts', 'driver.sh'),
+      `#!/bin/bash\n. "$(dirname "$0")/lib/send-telegram.sh"\ntelegram_api_call "${FAKE_TOKEN}" sendMessage --data-urlencode "chat_id=42" --data-urlencode "text=hi"\n`)
+    const r = run('driver.sh', {}, bin)
+    expect(r.status).toBe(0)
+    const argv = readFileSync(join(stage, 'curl-argv.log'), 'utf-8')
+    expect(argv).not.toContain(FAKE_TOKEN)
+    expect(argv).toContain('-K -') // the config really came from stdin
+    const stdinLog = readFileSync(join(stage, 'curl-stdin.log'), 'utf-8')
+    expect(stdinLog).toContain(`url = "https://api.telegram.org/bot${FAKE_TOKEN}/sendMessage"`)
+  })
+  it('a token containing a double quote is refused before curl is ever reached', () => {
+    const { bin } = stageTree([])
+    writeFileSync(join(stage, 'scripts', 'driver.sh'),
+      `#!/bin/bash\n. "$(dirname "$0")/lib/send-telegram.sh"\ntelegram_api_call 'bad"token' sendMessage\n`)
+    const r = run('driver.sh', {}, bin)
+    expect(r.status).toBe(1)
+    expect(r.stderr).toContain('the token, method or API base contains a quote, backslash or newline -- refusing (nothing would be delivered)')
+    expect(r.stderr).toContain('telegram_api_call(sendMessage)')
+    expect(existsSync(join(stage, 'curl-argv.log'))).toBe(false) // the stub was NOT called
+    expect(existsSync(join(stage, 'curl-stdin.log'))).toBe(false)
+  })
+})
+
 describe('set-bot-menu.sh: honest outcome', () => {
   const setup = () => {
     const { bin } = stageTree(['set-bot-menu.sh'])
@@ -100,14 +130,21 @@ describe('set-bot-menu.sh: honest outcome', () => {
     writeFileSync(join(stage, 'store', '.dashboard-token'), 'dash-tok\n')
     // Own curl stub: the shared one's `${CURL_STUB_BODY:-{...}}` default
     // appends a stray `}` to any body that is set, which JSON cannot survive.
-    writeFileSync(join(bin, 'curl'), '#!/bin/bash\necho "$@" >> "$CURL_ARGV_LOG"\nprintf %s "$MENU_BODY"\n')
+    writeFileSync(join(bin, 'curl'), '#!/bin/bash\necho "$@" >> "$CURL_ARGV_LOG"\ncat >> "${CURL_STDIN_LOG:-/dev/null}"\nprintf %s "$MENU_BODY"\n')
     const r = run('set-bot-menu.sh', {
       MENU_BODY: '{"ok":true,"commands":[{"command":"status","description":"Rendszer-állapot"},{"command":"queue","description":"Sor"}]}',
     }, bin)
     expect(r.status).toBe(0)
     const argv = readFileSync(join(stage, 'curl-argv.log'), 'utf-8')
     expect(argv).toContain('/api/commands/menu')
-    const sets = argv.split('\n').filter(l => l.includes('setMyCommands'))
+    // The Bot API URL is a curl -K - config line on stdin now, not an argument
+    // (token secrecy): the two setMyCommands calls must show up there.
+    const stdinLog = readFileSync(join(stage, 'curl-stdin.log'), 'utf-8')
+    const urls = stdinLog.split('\n').filter(l => l.includes('setMyCommands'))
+    expect(urls).toHaveLength(2)
+    expect(urls[0]).toContain(`url = "https://api.telegram.org/bot${FAKE_TOKEN}/setMyCommands"`)
+    // Their -d payloads are still plain curl arguments.
+    const sets = argv.split('\n').filter(l => l.includes('"commands"'))
     expect(sets).toHaveLength(2)
     expect(sets[0]).toContain('"command": "queue"')
     expect(sets[0]).toContain('"description": "Rendszer-állapot"')
