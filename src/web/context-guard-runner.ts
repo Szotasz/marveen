@@ -46,6 +46,7 @@ import {
   INITIAL_GUARD_STATE,
   READY_TIMEOUT_MS,
   RESUME_GIVE_UP_REASON,
+  BUSY_OVERDUE_REASON_PREFIX,
   STALE_REFRESH_REASON_PREFIX,
   SATURATION_CREDIBLE_MIN_PCT,
   saturationBannerCredible,
@@ -902,6 +903,7 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
   }
   if (decision.action === 'none') {
     if (decision.reason === RESUME_GIVE_UP_REASON) await reportResumeGiveUp(name)
+    if (decision.reason.startsWith(BUSY_OVERDUE_REASON_PREFIX)) logger.warn({ name, reason: decision.reason }, 'context-guard: pane still busy far past the handoff deadline -- restart stays deferred')
     // Idle-flush non-decisions carry the measurement that blocked them
     // ("quiet for only 4m of 20m"), which is the only way to see the tier
     // failing to reach its threshold. It matters because the idle clock is the
