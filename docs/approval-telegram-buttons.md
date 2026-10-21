@@ -339,7 +339,9 @@ The flow:
 its token before the colon) is pinned in the process environment or the
 install `.env` and read once at startup. It is not read through
 `config-overrides.json` and is not in the settings registry, so neither the
-Settings API nor any other Bearer-reachable path can set it. The Vault token
+Settings API nor the onboarding `.env` writer (it refuses the key and any value
+with a line break or NUL) can set it. This is a hardening, not a proof that no
+Bearer path exists: see the residual risk below. The Vault token
 `telegram-engedely-bot-token` is only the credential to send with, and is used
 only while its bot id equals the pin. If the pin is missing or malformed, or
 the token belongs to another bot, the send is refused and both
@@ -350,8 +352,12 @@ the dashboard.
 
 **Vault write-lock.** `POST /api/vault`, `DELETE /api/vault/:id`,
 `POST /api/vault/import` and `PUT /api/operator/vault/:id` refuse the entry
-`telegram-engedely-bot-token` (403, "locked"). The operator puts the token in
-place out-of-band (not through the API). Reads are unchanged.
+`telegram-engedely-bot-token` (403, "locked"). The lock is enforced in the
+storage layer too (`setSecret` / `deleteSecret` in `src/web/vault.ts`), so a
+route that builds the same id, such as `POST /api/connectors` with the name
+`telegram-engedely-bot` (slug plus `-token`), is refused as well (403) before
+anything is installed. There is no internal bypass. The operator puts the token
+in place out-of-band (not through the API). Reads are unchanged.
 
 **Runner note.** `consume-run` requires the body `category` to equal the
 approval row's category, so a `permission_bot_probe` row can never authorise a
@@ -365,3 +371,10 @@ permission bot, but can call `consume-run` first with a known package hash and
 forgery). Whoever can read the permission bot's token out-of-band could still
 race the relay's `getUpdates`; restricting that token's readers is a
 precondition for enabling D live.
+
+The Bearer is also the key to installing an MCP server, which runs code on the
+host (card 4d70f8b1). So a Bearer holder is, in the end, a code-execution
+holder and could change `.env` or the Vault file directly, bypassing every
+API-level fence above. The fences close the API routes we know of (Settings,
+Vault, connectors, onboarding); they do not defend against a compromised
+Bearer. That risk is tracked on card 4d70f8b1 and remains open.
