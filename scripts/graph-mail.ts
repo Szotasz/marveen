@@ -132,12 +132,15 @@ function truncateSubject(subject: string): string {
   return chars.length <= SUBJECT_MAX ? chars.join('') : chars.slice(0, SUBJECT_MAX - 1).join('') + '…'
 }
 
-/** Local Europe/Budapest time, "YYYY-MM-DD HH:MM". */
+/** Install-zone time (SCHEDULER_TZ if pinned, else the host zone), "YYYY-MM-DD HH:MM". */
 function budapestNow(now: Date = new Date()): string {
-  return new Intl.DateTimeFormat('sv-SE', {
-    timeZone: 'Europe/Budapest', year: 'numeric', month: '2-digit', day: '2-digit',
+  const fmt = (timeZone?: string) => new Intl.DateTimeFormat('sv-SE', {
+    timeZone, year: 'numeric', month: '2-digit', day: '2-digit',
     hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
   }).format(now).replace(',', '')
+  try {
+    return fmt(installSetting('SCHEDULER_TZ', '') || undefined)
+  } catch { return fmt() } // an invalid pinned zone: the host zone
 }
 
 // Env first, then the install .env next to this script's checkout (the same

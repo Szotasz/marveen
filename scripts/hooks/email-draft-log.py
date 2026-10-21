@@ -2,7 +2,7 @@
 """PostToolUse hook: one daily-log line for agent brainy when an agent wrote an
 e-mail DRAFT (card f90928e3, part B, AC17).
 
-    [Levélvázlat] <to>, tárgy: <subject, max 80 chars>, <YYYY-MM-DD HH:MM Europe/Budapest>
+    [Levélvázlat] <to>, tárgy: <subject, max 80 chars>, <YYYY-MM-DD HH:MM install zone>
 
 The sibling of the "[Levél elküldve]" line scripts/graph-mail.ts writes after a
 send. The entry belongs to brainy whichever agent wrote the draft (Brainy's
@@ -114,8 +114,8 @@ def _budapest_now() -> str:
     from datetime import datetime
     try:
         from zoneinfo import ZoneInfo
-        return datetime.now(ZoneInfo("Europe/Budapest")).strftime("%Y-%m-%d %H:%M")
-    except Exception:  # noqa: BLE001 -- no tz database: the host clock is Budapest on this install
+        return datetime.now(ZoneInfo(os.environ["SCHEDULER_TZ"].strip())).strftime("%Y-%m-%d %H:%M")
+    except Exception:  # noqa: BLE001 -- no pinned/valid zone or no tz database: the host zone
         return datetime.now().astimezone().strftime("%Y-%m-%d %H:%M")
 
 
