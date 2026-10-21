@@ -9,7 +9,7 @@ import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { foldName, gateDecision } from '../../scripts/self-pace-gate.mjs'
+import { foldName, gateDecision, nameForms, protectedMention } from '../../scripts/self-pace-gate.mjs'
 import {
   EXTRA_HOOK_MARK, applyExtraHookEntries, extraHooksDigest, isExtraHookGroup, loadExtraHookEntries, parseExtraHookEntries,
   type ExtraHookDeps, type ExtraHookEntry,
@@ -43,6 +43,20 @@ afterEach(() => {
   rmSync(root, { recursive: true, force: true })
   rmSync(outside, { recursive: true, force: true })
 })
+
+// The fold only ADDS denials (nameForms in self-pace-gate.mjs): NFKC composes a
+// combining mark into the LETTER before it, so a mark right after a protected name, or
+// at the end of a command that ends in a letter, must not turn a denial into an allow.
+// (After `.` or `/` nothing composes, and the mark only names another directory.)
+const withMarks = (cmd: string): string[] => {
+  const names = /egress-allowlist\.json|egress-allowlist\.history|extra-hooks\.json|local-hooks/g
+  const out: string[] = []
+  for (const m of ['\u0301', '\u0303']) {
+    if (/\p{L}$/u.test(cmd)) out.push(cmd + m)
+    if (cmd.match(names)) out.push(cmd.replace(names, (n) => n + m))
+  }
+  return out
+}
 
 const ok = { event: 'PreToolUse', matcher: 'Bash', script: 'local-hooks/gate.py', failClosed: true }
 const one = (e: Record<string, unknown>) => parseExtraHookEntries({ entries: [e] }, deps)
@@ -342,8 +356,9 @@ describe('the protected paths are compared case-insensitively (review #2001, rou
 // treats U+017F LATIN SMALL LETTER LONG S as `s` and U+212A KELVIN SIGN as `k`, and
 // toLowerCase() maps only the second, so extra-hook\u017f.json landed as
 // extra-hooks.json when the target did not exist yet. Every comparison of a protected
-// name now goes through foldName(). The folding itself cannot be reproduced on a
-// case-sensitive volume, so these pin the gate's decision on the spelled names.
+// name now also reads the foldName() form (nameForms). The folding itself cannot be
+// reproduced on a case-sensitive volume, so these pin the gate's decision on the
+// spelled names.
 describe('the protected names are folded before every comparison (review #2001, round 4)', () => {
   const LONG_S = '\u017f'
   const KELVIN = '\u212a'
@@ -398,6 +413,56 @@ describe('the protected names are folded before every comparison (review #2001, 
   })
 })
 
+// Review of the round-4 fix: the fold had REPLACED the raw reading, and a fold also takes
+// spellings away. Lower-casing a glob shifts its bracket ranges ([Z-z] covers `k`,
+// [z-z] does not), and NFKC composes a trailing combining mark into the last letter,
+// which `${V%?}`, [:-1] or an ASCII encode drops again at run time. All were denied
+// before the fold. The cwd is outside the root, so an unresolved word is not read
+// relative to it and the mention check has to carry the decision.
+describe('the fold only adds denials, the raw reading stays (review #2001, round 4 delta)', () => {
+  const decide = (command: string) =>
+    gateDecision('Bash', { command }, { allowlistPath: join(root, 'store', 'egress-allowlist.json'), cwd: outside })
+  beforeEach(() => {
+    mkdirSync(join(root, 'store'), { recursive: true })
+    writeFileSync(join(root, 'store', 'extra-hooks.json'), '{}') // the target is present
+  })
+
+  it.each([
+    // bash expands both onto the real name; folded, the range no longer covers `k`
+    'cp /x/h.json store/extra-hoo[Z-z]s.json',
+    'cp /x/a.py local-hoo[L-z]s/a.py',
+    // a trailing combining mark composes into the last letter under NFKC
+    "V='<R>/store/extra-hooks.json\u0301'; cp /x/h.json \"${V%?}\"",
+    `python3 -c "import os; os.makedirs('<R>/local-hooks\u0301'[:-1])"`,
+    `python3 -c "import os; os.makedirs('<R>/local-hooks\u0301'.encode('ascii', 'ignore').decode())"`,
+    `python3 -c "open('<R>/store/extra-hooks.json\u0301'.encode('ascii', 'ignore').decode(), 'w')"`,
+  ])('denied: %s', (cmd) => {
+    expect(decide(cmd.replaceAll('<R>', root))).toEqual({ deny: true, reason: 'egress-allowlist' })
+  })
+
+  it.each([
+    "V='store/extra-hooks.json\u0301'",
+    `os.makedirs('/r/local-hooks\u0301'[:-1])`,
+    `open('store/egress-allowlist.json\u0303'.encode('ascii', 'ignore').decode(), 'w')`,
+    `rm -rf store/egress-allowlist.history\u0301`,
+  ])('the mention check alone, without the glob layer, reads the raw spelling: %s', (text) => {
+    expect(protectedMention(text)).toBe(true)
+  })
+
+  it('nameForms keeps the raw text first, then the folds', () => {
+    const forms = nameForms('Extra-Hoo\u212as.json\u0301')
+    expect(forms[0]).toBe('Extra-Hoo\u212as.json\u0301')
+    expect(forms[1]).toBe('extra-hoo\u212as.json\u0301'.toLowerCase())
+    expect(forms[2]).toBe('extra-hooks.jso\u0144')
+    expect(forms[3]).toBe('extra-hooks.json')
+  })
+
+  it('the over-fold direction: a full-width or marked spelling is denied too', () => {
+    expect(decide('cp /x/h.json store/\uff45\uff58\uff54\uff52\uff41-hooks.json').deny).toBe(true)
+    expect(decide('cp /x/h.json store/extra-hoo\u0301ks.json').deny).toBe(true)
+  })
+})
+
 // Review #2001: the mention check read the raw command text, so plain shell
 // spellings got past it. The class is "a command that spells a protected name"
 // (self-pace-gate.mjs, WHAT MENTIONS MEANS); what it does not cover is stated
@@ -406,17 +471,18 @@ describe('the gate reads the protected names in every spelling of the name (revi
   const decide = (command: string, cwd = root) =>
     gateDecision('Bash', { command }, { allowlistPath: join(root, 'store', 'egress-allowlist.json'), cwd })
 
-  it.each([
+  const reviewBypasses = [
     // the four the review measured as allowed
     [`cd <R> && cp /x/a.py lo''cal-hooks/a.py`],
     [`cd <R>/store && cp /x/h.json ext""ra-hooks.json`],
     ['D=local; cp /x/a.py <R>/$D-hooks/a.py'],
     [`python3 -c "open('<R>/store/extra-'+'hooks.json','w').write('{}')"`],
-  ])('the review bypass is denied: %s', (cmd) => {
+  ]
+  it.each(reviewBypasses)('the review bypass is denied: %s', (cmd) => {
     expect(decide(cmd.replaceAll('<R>', root)).deny).toBe(true)
   })
 
-  it.each([
+  const spelledOutWrites = [
     // quoting, backslashes, ANSI-C quotes, escapes
     "cp /x/a.py 'local-hooks'/a.py",
     'cp /x/a.py lo\\cal-hooks/a.py',
@@ -457,9 +523,19 @@ describe('the gate reads the protected names in every spelling of the name (revi
     // the egress allowlist gets the same reading
     "cp /x/e.json store/egr''ess-allowlist.json",
     'cp /x/e.json <R>/store/$F',
-  ])('a spelled-out write is denied: %s', (cmd) => {
+  ]
+  it.each(spelledOutWrites)('a spelled-out write is denied: %s', (cmd) => {
     expect(decide(cmd.replaceAll('<R>', root)).deny).toBe(true)
   })
+
+  // the mark goes on the template, so the random temp root never decides where it lands;
+  // a case with nowhere for a mark to compose (a glob, a directory writer) is left out
+  it.each([...reviewBypasses.map(([c]) => c), ...spelledOutWrites].filter((c) => withMarks(c).length))(
+    'the fold never removes a denial: %s with a combining mark is still denied', (cmd) => {
+      for (const marked of withMarks(cmd)) {
+        expect(decide(marked.replaceAll('<R>', root)).deny, JSON.stringify(marked)).toBe(true)
+      }
+    })
 
   it('a glob under a symlink to the store dir is read under the real store dir', () => {
     const link = join(outside, 's')
