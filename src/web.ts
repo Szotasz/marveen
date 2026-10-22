@@ -747,11 +747,7 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
     logger.warn({ err }, 'Claude rotation heartbeat seed skipped')
   }
 
-  try {
-    sweepOrphanedBackgroundTasks()
-  } catch (err) {
-    logger.warn({ err }, 'Background task sweep skipped')
-  }
+  sweepOrphanedBackgroundTasks().catch(err => logger.warn({ err }, 'Background task sweep skipped'))
 
   try {
     const swept = sweepOrphanTaskStates(Date.now())
