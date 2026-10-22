@@ -133,6 +133,10 @@ export function ensureKanbanClaimSchema(d: Database.Database): boolean {
 type CachedEmbedding = { len: number; vec: Float64Array | null; parsed: unknown; failed: boolean; normSq: number }
 const embeddingCache = new Map<number, CachedEmbedding>()
 const EMBEDDING_CACHE_MAX = 200_000
+// What the embedding_model column records: the model, plus the truncation
+// when EMBED_DIMS is set, so a change of either one marks old vectors as
+// another model's (excluded from search, re-embedded by the backfill).
+const EMBED_IDENTITY = EMBED_DIMS > 0 ? `${EMBED_MODEL}@${EMBED_DIMS}` : EMBED_MODEL
 export function forgetCachedEmbedding(id: number | bigint): void { embeddingCache.delete(Number(id)) }
 /** Exposed for tests only. */
 export function getEmbeddingCacheSize(): number { return embeddingCache.size }
@@ -570,6 +574,13 @@ export function initDatabase(dbPathOverride?: string): void {
   // Migration: embedding column for vector search
   try {
     db.exec('ALTER TABLE memories ADD COLUMN embedding TEXT')
+  } catch {
+    // column already exists
+  }
+
+  // Migration: which embedding model wrote the vector (NULL = written before this column existed)
+  try {
+    db.exec('ALTER TABLE memories ADD COLUMN embedding_model TEXT')
   } catch {
     // column already exists
   }
@@ -1988,7 +1999,7 @@ export function saveMemory(
   // backfilled it by hand.
   generateEmbedding(content).then(emb => {
     if (emb) {
-      db.prepare('UPDATE memories SET embedding = ? WHERE id = ?').run(JSON.stringify(emb), id)
+      db.prepare('UPDATE memories SET embedding = ?, embedding_model = ? WHERE id = ? AND content = ? AND keywords IS ?').run(JSON.stringify(emb), EMBED_IDENTITY, id, content, null)
       forgetCachedEmbedding(id)
     }
   }).catch(() => {})
@@ -2344,7 +2355,7 @@ function insertMemoryRow(
 function scheduleEmbedding(id: number, content: string, keywords: string | undefined): void {
   generateEmbedding(content + (keywords ? ' ' + keywords : '')).then(emb => {
     if (emb) {
-      db.prepare('UPDATE memories SET embedding = ? WHERE id = ?').run(JSON.stringify(emb), id)
+      db.prepare('UPDATE memories SET embedding = ?, embedding_model = ? WHERE id = ? AND content = ? AND keywords IS ?').run(JSON.stringify(emb), EMBED_IDENTITY, id, content, keywords ?? null)
       forgetCachedEmbedding(id)
     }
   }).catch(() => {})
@@ -2543,7 +2554,10 @@ export function updateMemory(id: number, content: string, category?: string, age
   // resends the unchanged body on a category-only edit), so presence alone says
   // nothing about a change.
   const keywordsChanged = keywords !== undefined && (before?.keywords ?? null) !== keywords
-  if (before && (before.content !== content || keywordsChanged)) sets.push('embedding = NULL')
+  if (before && (before.content !== content || keywordsChanged)) {
+    sets.push('embedding = NULL')
+    sets.push('embedding_model = NULL')
+  }
   if (category) { sets.push('category = ?'); params.push(category) }
   if (agentId) { sets.push('agent_id = ?'); params.push(agentId) }
   if (keywords !== undefined) { sets.push('keywords = ?'); params.push(keywords) }
@@ -5856,10 +5870,13 @@ function vectorSearch(
   // vector's byte length: the vectors come from embeddingCache. The date
   // window (card f90928e3) narrows the candidates here, so the similarity
   // floor below is computed over the windowed rows.
+  // A vector from another model with the same dimension cannot be told apart by
+  // length, so the model name is the filter; NULL rows predate the column and
+  // keep the length check.
   const dt = tsClause('created_at', range)
   const cands = db.prepare(
-    `SELECT id, octet_length(embedding) AS elen FROM memories WHERE embedding IS NOT NULL AND (agent_id = ? OR category = 'shared')${category ? ' AND category = ?' : ''}${dt.sql}`
-  ).all(agentId, ...(category ? [category] : []), ...dt.params) as { id: number; elen: number }[]
+    `SELECT id, octet_length(embedding) AS elen FROM memories WHERE embedding IS NOT NULL AND (embedding_model IS NULL OR embedding_model = ?) AND (agent_id = ? OR category = 'shared')${category ? ' AND category = ?' : ''}${dt.sql}`
+  ).all(EMBED_IDENTITY, agentId, ...(category ? [category] : []), ...dt.params) as { id: number; elen: number }[]
 
   // Parse only what is new or changed since the last call.
   let getVec: Database.Statement | null = null
@@ -6057,15 +6074,17 @@ export interface BackfillResult {
 }
 
 export async function backfillEmbeddings(): Promise<BackfillResult> {
-  const rows = db.prepare('SELECT id, content, keywords FROM memories WHERE embedding IS NULL').all() as { id: number; content: string; keywords: string | null }[]
+  const rows = db.prepare('SELECT id, content, keywords FROM memories WHERE embedding IS NULL OR (embedding_model IS NOT NULL AND embedding_model != ?)').all(EMBED_IDENTITY) as { id: number; content: string; keywords: string | null }[]
   let count = 0
   for (const row of rows) {
     const text = row.content + (row.keywords ? ' ' + row.keywords : '')
     const emb = await generateEmbedding(text)
     if (emb) {
-      db.prepare('UPDATE memories SET embedding = ? WHERE id = ?').run(JSON.stringify(emb), row.id)
+      // The write only lands if the row still holds the text that was embedded; an
+      // edit in between leaves the vector NULL for the next backfill round.
+      const stored = db.prepare('UPDATE memories SET embedding = ?, embedding_model = ? WHERE id = ? AND content = ? AND keywords IS ?').run(JSON.stringify(emb), EMBED_IDENTITY, row.id, row.content, row.keywords).changes > 0
       forgetCachedEmbedding(row.id)
-      count++
+      if (stored) count++
     }
     // Small delay to not overwhelm Ollama
     await new Promise(r => setTimeout(r, 100))
