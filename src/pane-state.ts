@@ -1566,7 +1566,9 @@ export function idleConsideringDimGhost(plain: string, dimStripped: string | nul
 // Anchor on the LAST TWO box separators (/^\u2500{10,}/) and treat the span
 // between them as the input box ONLY when its first non-empty row starts with
 // the \u276F prompt -- otherwise a pair of scrollback rules would be mis-read.
-function liveInputBoxFooterless(lines: string[]): string | null {
+interface InputBoxBounds { topSep: number; bottomSep: number }
+
+function liveInputBoxBoundsFooterless(lines: string[]): InputBoxBounds | null {
   const seps: number[] = []
   for (let i = 0; i < lines.length; i++) {
     if (BOX_SEP_RX.test(lines[i])) seps.push(i)
@@ -1577,13 +1579,14 @@ function liveInputBoxFooterless(lines: string[]): string | null {
   const inner = lines.slice(topSep + 1, bottomSep)
   const firstNonEmpty = inner.find(l => l.trim().length > 0)
   if (firstNonEmpty == null || !/^\s*\u276F/.test(firstNonEmpty)) return null
-  return inner.join('\n')
+  return { topSep, bottomSep }
 }
 
-function liveInputBox(pane: string): string | null {
-  const lines = pane.split('\n')
+// The live input box as separator-line indices -- the one place the box is
+// located; liveInputBox() and paneTurnInFlight() both read it.
+function liveInputBoxBounds(lines: string[]): InputBoxBounds | null {
   const footerIdx = idleFooterIndex(lines)
-  if (footerIdx < 0) return liveInputBoxFooterless(lines)
+  if (footerIdx < 0) return liveInputBoxBoundsFooterless(lines)
   let bottomSep = -1
   for (let i = footerIdx - 1; i >= 0; i--) {
     if (BOX_SEP_RX.test(lines[i])) { bottomSep = i; break }
@@ -1594,7 +1597,13 @@ function liveInputBox(pane: string): string | null {
     if (BOX_SEP_RX.test(lines[i])) { topSep = i; break }
   }
   if (topSep < 0) return null
-  return lines.slice(topSep + 1, bottomSep).join('\n')
+  return { topSep, bottomSep }
+}
+
+function liveInputBox(pane: string): string | null {
+  const lines = pane.split('\n')
+  const box = liveInputBoxBounds(lines)
+  return box == null ? null : lines.slice(box.topSep + 1, box.bottomSep).join('\n')
 }
 
 // Marker strings from prompt-safety.ts preambles. We do NOT import them
@@ -1926,6 +1935,41 @@ export function stuckInputSignature(pane: string): string | null {
   if (box == null) return null
   const sig = box.replace(/\s+/g, ' ').trim()
   return sig.length > 0 ? sig : null
+}
+
+// Is a turn in flight on this pane, judged with the input box's HEIGHT taken
+// out of the measurement?
+//
+// detectPaneState() looks for the live spinner / token counter in a window
+// counted from the BOTTOM of the pane (BUSY_LIVE_REGION_LINES). The spinner
+// renders just ABOVE the input box, so every row the box grows pushes it one
+// line further up -- and a parked multi-row message pushes it out of the
+// window. The pane then reads 'typing' while the agent is working. Measured
+// 2026-09-11 on agent-cortex-router: the turn counter 13 lines from the
+// bottom, the pane classified 'typing' (parked inter-agent notices there
+// render 6-7 box rows).
+//
+// This scans the same window, for the same indicators, on a copy of the pane
+// with the input box collapsed to its first row -- exactly what
+// detectPaneState would see if the parked text were one line long. It widens
+// nothing a one-row box does not already have: a stale counter scrolled above
+// real output stays outside, as before.
+//
+// Deliberately NOT folded into detectPaneState: that verdict routes delivery
+// and scheduling for every agent. This answers the stuck-input watchers' own
+// question -- is the parked text waiting out a live turn? -- and gates only
+// their recovery and their alerts.
+export function paneTurnInFlight(pane: string): boolean {
+  if (!pane || !pane.trim()) return false
+  if (detectPaneState(pane) === 'busy') return true
+  const lines = pane.split('\n')
+  const box = liveInputBoxBounds(lines)
+  // One row (or none) inside the box: nothing to collapse, and detectPaneState
+  // already saw exactly this geometry.
+  if (box == null || box.bottomSep - box.topSep <= 2) return false
+  const collapsed = [...lines.slice(0, box.topSep + 2), ...lines.slice(box.bottomSep)]
+  const busyRegion = liveTailRegion(collapsed, BUSY_LIVE_REGION_LINES)
+  return BUSY_INDICATORS.some(rx => rx.test(busyRegion))
 }
 
 // A stable signature of a PARKED `[Pasted text #N]` placeholder sitting in the
@@ -2321,12 +2365,15 @@ const NO_STUCK_INPUT: StuckInputState = {
  * @param prev        Previously persisted state for this session.
  * @param now         Current clock (ms).
  * @param thresholds  Confirm / dedup / maxAttempts knobs.
+ * @param opts        turnInFlight: the parked text is waiting out a live turn
+ *                    (paneTurnInFlight) -- hold without spending an attempt.
  */
 export function decideStuckInputRecovery(
   parkedSig: string | null,
   prev: StuckInputState,
   now: number,
   thresholds: StuckInputThresholds,
+  opts: { turnInFlight?: boolean } = {},
 ): StuckInputDecision {
   // Nothing parked: end any active spell.
   if (parkedSig === null) {
@@ -2341,6 +2388,14 @@ export function decideStuckInputRecovery(
   // now would drive the deltas negative and stall. Restart the spell.
   if (now < prev.firstSeenAt || (prev.lastRecoverAt !== null && now < prev.lastRecoverAt)) {
     return { recover: false, next: { parkedSig, firstSeenAt: now, lastRecoverAt: null, attempts: 0 } }
+  }
+  // Parked behind a live turn (paneTurnInFlight): the text is waiting for the
+  // turn to end, not wedged. Hold the spell exactly as it is -- no keystroke
+  // into a working pane, and no attempt spent, so the retry budget (and the
+  // give-up alerts that read it) counts real recovery moves only. firstSeenAt
+  // is kept, so how long the text has waited stays measurable.
+  if (opts.turnInFlight) {
+    return { recover: false, next: { ...prev } }
   }
   // Retry budget spent: hold without acting.
   if (prev.attempts >= thresholds.maxAttempts) {
