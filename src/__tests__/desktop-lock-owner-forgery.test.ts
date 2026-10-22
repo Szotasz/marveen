@@ -44,7 +44,8 @@ describe('a channel identity may not be a desktop-lock owner', () => {
   it('refuses the spellings the classifier still resolves to that id', () => {
     // A guard reading the raw string would let exactly these through, and
     // delivery-time classification sanitizes before matching.
-    for (const forged of ['@hanna', 'hanna.', ' hanna ', 'hanna!', '@telegram-coordinator']) {
+    const voice = VOICE_CHANNEL_AGENT_ID
+    for (const forged of [`@${voice}`, `${voice}.`, ` ${voice} `, `${voice}!`, '@telegram-coordinator']) {
       expect(lockOwnerRefusal(forged), `spelling ${JSON.stringify(forged)}`).not.toBeNull()
     }
   })
