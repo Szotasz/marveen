@@ -1,6 +1,8 @@
 // Ledger sync (card f90928e3, node C3): AC25. Every ledger here is a temp file.
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { Readable } from 'node:stream'
+import { spawn } from 'node:child_process'
+import { createServer } from 'node:http'
 import { mkdtempSync, readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -11,10 +13,11 @@ vi.mock('../logger.js', () => ({
 
 import { initDatabase, getDb } from '../db.js'
 import { tryHandleContacts } from '../web/routes/contacts.js'
-import { setLedgerSyncPath } from '../contacts-ledger-sync.js'
 import type { RouteContext } from '../web/routes/types.js'
 // @ts-expect-error plain .mjs without types
 import { planImport, runImport } from '../../scripts/contacts-import-ledger.mjs'
+// @ts-expect-error plain .mjs without types
+import { syncContactToLedger } from '../../scripts/contacts-sync-ledger.mjs'
 
 async function call(method: string, pathAndQuery: string, payload?: unknown): Promise<{ status: number; body: any }> {
   const out = { status: 200, body: null as any }
@@ -38,59 +41,82 @@ beforeEach(() => {
   initDatabase(':memory:')
   dir = mkdtempSync(join(tmpdir(), 'c3-'))
   ledger = join(dir, 'verified-recipients.json')
-  setLedgerSyncPath(ledger)
 })
-afterEach(() => setLedgerSyncPath(null))
 
-describe('AC25: contact email -> ledger', () => {
-  it('adds the address with the same source and note contact:<id>, version 1 unchanged', async () => {
-    const c = await call('POST', '/api/contacts', { domain: 'business', display_name: 'Kovacs Bela' })
-    const r = await call('POST', `/api/contacts/${c.body.id}/values`, { field: 'email', value: 'Bela@Example.hu', ...src })
+describe('AC25: the API never writes the ledger; the manual CLI sync does', () => {
+  it('an email added through the API (create and add-value) does not reach the ledger', async () => {
+    const c = await call('POST', '/api/contacts', {
+      domain: 'business', display_name: 'Kovacs Bela',
+      values: [{ field: 'email', value: 'first@example.hu', ...src }],
+    })
+    expect(c.status).toBe(201)
+    const r = await call('POST', `/api/contacts/${c.body.id}/values`, { field: 'email', value: 'Bela@Example.hu', source: 'owner', source_date: '2026-10-22' })
     expect(r.status).toBe(201)
-    expect(r.body.ledger).toBe('ok')
+    expect(c.body.ledger).toBeUndefined()
+    expect(r.body.ledger).toBeUndefined()
+    expect(existsSync(ledger)).toBe(false)
+    const stored = getDb().prepare("SELECT value FROM contact_values WHERE field='email' ORDER BY id").all()
+    expect(stored).toHaveLength(2)
+  })
+
+  it('an existing ledger is left byte-identical by API email writes', async () => {
+    const orig = JSON.stringify({ version: 1, recipients: {} })
+    writeFileSync(ledger, orig)
+    const c = await call('POST', '/api/contacts', { domain: 'business', display_name: 'A' })
+    await call('POST', `/api/contacts/${c.body.id}/values`, { field: 'email', value: 'a@example.hu', ...src })
+    expect(readFileSync(ledger, 'utf8')).toBe(orig)
+  })
+
+  it('syncContactToLedger adds active emails with source and note contact:<id>, keeps existing entries', () => {
+    writeFileSync(ledger, JSON.stringify({ version: 1, recipients: { 'old@example.hu': { source: 'owner', note: 'orig', added_at: '2026-01-01T00:00:00.000Z' } } }))
+    const r = syncContactToLedger({ id: 7, values: [
+      { field: 'email', value: 'Bela@Example.hu', source: 'mail:abc123', status: 'active' },
+      { field: 'email', value: 'old@example.hu', source: 'mail:zzz', status: 'active' },
+      { field: 'email', value: 'gone@example.hu', source: 'owner', status: 'retracted' },
+      { field: 'phone', value: '+3612345', source: 'owner', status: 'active' },
+    ] }, ledger)
+    expect(r).toEqual({ added: 1, exists: 1, skipped: 0, failed: 0 })
     const file = JSON.parse(readFileSync(ledger, 'utf8'))
     expect(file.version).toBe(1)
     expect(Object.keys(file)).toEqual(['version', 'recipients'])
-    expect(file.recipients['bela@example.hu']).toMatchObject({ source: 'mail:abc123', note: `contact:${c.body.id}` })
+    expect(file.recipients['bela@example.hu']).toMatchObject({ source: 'mail:abc123', note: 'contact:7' })
+    expect(file.recipients['old@example.hu'].note).toBe('orig')
+    expect(file.recipients['gone@example.hu']).toBeUndefined()
   })
 
-  it('initial values on create sync too; non-email values do not touch the ledger', async () => {
-    const r = await call('POST', '/api/contacts', {
-      domain: 'business', display_name: 'Szabo Anna',
-      values: [{ field: 'phone', value: '+3612345', ...src }, { field: 'email', value: 'anna@example.hu', ...src }],
-    })
-    expect(r.status).toBe(201)
-    expect(r.body.ledger).toBe('ok')
-    expect(Object.keys(JSON.parse(readFileSync(ledger, 'utf8')).recipients)).toEqual(['anna@example.hu'])
-    const p = await call('POST', `/api/contacts/${r.body.id}/values`, { field: 'phone', value: '+3699', ...src })
-    expect(p.body.ledger).toBeUndefined()
-  })
-
-  it('an address already in the ledger is not overwritten', async () => {
-    writeFileSync(ledger, JSON.stringify({ version: 1, recipients: { 'a@example.hu': { source: 'owner', note: 'orig', added_at: '2026-01-01T00:00:00.000Z' } } }))
-    const c = await call('POST', '/api/contacts', { domain: 'business', display_name: 'A' })
-    const r = await call('POST', `/api/contacts/${c.body.id}/values`, { field: 'email', value: 'a@example.hu', ...src })
-    expect(r.body.ledger).toBe('exists')
-    expect(JSON.parse(readFileSync(ledger, 'utf8')).recipients['a@example.hu'].note).toBe('orig')
-  })
-
-  it('ledger write failure keeps the contact value and reports it without the address', async () => {
+  it('a broken ledger is reported as failed and left untouched', () => {
     writeFileSync(ledger, '{ not json')
-    const c = await call('POST', '/api/contacts', { domain: 'business', display_name: 'B' })
-    const r = await call('POST', `/api/contacts/${c.body.id}/values`, { field: 'email', value: 'secret@example.hu', ...src })
-    expect(r.status).toBe(201)
-    expect(r.body.ledger).toBe('failed')
-    expect(JSON.stringify(r.body)).not.toContain('secret@')
+    const r = syncContactToLedger({ id: 1, values: [{ field: 'email', value: 'x@example.hu', source: 'owner', status: 'active' }] }, ledger)
+    expect(r.failed).toBe(1)
     expect(readFileSync(ledger, 'utf8')).toBe('{ not json')
-    const stored = getDb().prepare("SELECT value FROM contact_values WHERE field='email'").all()
-    expect(stored).toEqual([{ value: 'secret@example.hu' }])
   })
 
-  it('a rejected contact value (bad source) writes nothing to the ledger', async () => {
-    const c = await call('POST', '/api/contacts', { domain: 'business', display_name: 'C' })
-    const r = await call('POST', `/api/contacts/${c.body.id}/values`, { field: 'email', value: 'x@example.hu', source: 'trust me', source_date: '2026-10-22' })
-    expect(r.status).toBe(400)
-    expect(existsSync(ledger)).toBe(false)
+  it('CLI sync-ledger reads the contact over the API and writes the (temp) ledger', async () => {
+    const server = createServer((req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' })
+      res.end(JSON.stringify({ id: 9, domain: 'business', display_name: 'Z', values: [{ field: 'email', value: 'cli@example.hu', source: 'crm:42', status: 'active' }] }))
+    })
+    await new Promise<void>((r) => server.listen(0, '127.0.0.1', r))
+    const addr = server.address()
+    const port = typeof addr === 'object' && addr ? addr.port : 0
+    expect([0, 18800, 18899]).not.toContain(port)
+    const tokenFile = join(dir, 'token')
+    writeFileSync(tokenFile, 'tok-test\n')
+    try {
+      const out = await new Promise<{ code: number | null; out: string }>((resolve) => {
+        const p = spawn(process.execPath, [join(__dirname, '..', '..', 'scripts', 'contacts.mjs'), 'sync-ledger', '--domain', 'business', '--id', '9', '--ledger', ledger], {
+          env: { PATH: process.env.PATH, MARVEEN_BASE_URL: `http://127.0.0.1:${port}`, CONTACTS_TOKEN_FILE: tokenFile },
+        })
+        let o = ''
+        p.stdout.on('data', (c) => { o += c })
+        p.on('close', (code) => resolve({ code, out: o }))
+      })
+      expect(out.code).toBe(0)
+      expect(JSON.parse(out.out)).toEqual({ ledger: { added: 1, exists: 0, skipped: 0, failed: 0 } })
+      expect(JSON.parse(readFileSync(ledger, 'utf8')).recipients['cli@example.hu']).toMatchObject({ source: 'crm:42', note: 'contact:9' })
+    } finally {
+      await new Promise((r) => server.close(r))
+    }
   })
 })
 

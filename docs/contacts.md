@@ -17,7 +17,7 @@ Brainy saját névjegytára: név, e-mail, telefon, cím, szervezet, viszony, mi
 
 ## Ledger-kapcsolat
 
-- E-mail érték felvételekor egyirányú szinkron megy a `store/verified-recipients.json` ledgerbe (`addRecipient`, ugyanaz a forrás, megjegyzés `contact:<id>`). Előbb a névjegy-érték kerül be; ha a ledger-írás bukik, az érték megmarad, és a válasz `ledger: "failed"`-et jelez. A ledgerben már szereplő címet nem írja felül.
+- Az API soha nem ír a `store/verified-recipients.json` ledgerbe: a hívó azonosítója önbevallott, ezért egy API-n felvett cím nem válhat a küldési kapu által megbízhatóvá. Névjegy -> ledger csak kézzel, a CLI-ből: `node scripts/contacts.mjs sync-ledger --domain business --id 12` (az aktív e-mail értékeket veszi fel `addRecipient`-tel, ugyanazzal a forrással, megjegyzés `contact:<id>`; a ledgerben már szereplő címet nem írja felül; ledger-hiba esetén 1-es kilépési kód).
 - Ledger -> névjegy csak kézzel, megnevezett címekre, kötelező tartománnyal, alapból próbafutás:
 
 ```bash

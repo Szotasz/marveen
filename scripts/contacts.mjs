@@ -6,6 +6,7 @@
 //   node scripts/contacts.mjs find    --domain D [--q text] [--limit N]
 //   node scripts/contacts.mjs show    --domain D --id N
 //   node scripts/contacts.mjs retract --value-id N --source S [--source-date YYYY-MM-DD]
+//   node scripts/contacts.mjs sync-ledger --domain D --id N [--ledger PATH]   (manual: active emails -> recipient ledger)
 //
 // Sends X-Agent-Id: brainy (self-declared, NOT authentication) and the
 // dashboard Bearer token, read from store/.dashboard-token at call time. The
@@ -69,8 +70,12 @@ switch (cmd) {
     method = 'POST'; path = `/api/contacts/values/${intId('value-id')}/retract`
     body = { source: need('source'), source_date: sourceDate() }
     break
+  case 'sync-ledger':
+    // Reads the contact through the API, then writes the ledger locally.
+    method = 'GET'; path = `/api/contacts/${intId('id')}?${new URLSearchParams({ domain: domain() })}`
+    break
   default:
-    usage('subcommand must be one of: add, value, find, show, retract')
+    usage('subcommand must be one of: add, value, find, show, retract, sync-ledger')
 }
 
 function base() {
@@ -105,5 +110,12 @@ if (!res.ok) {
   const err = parsed && typeof parsed.error === 'string' ? parsed.error : 'no error field'
   process.stderr.write(`error: HTTP ${res.status}: ${err}\n`)
   process.exit(1)
+}
+if (cmd === 'sync-ledger') {
+  // Manual-only ledger sync (AC25): never triggered by an API write.
+  const { syncContactToLedger } = await import('./contacts-sync-ledger.mjs')
+  const r = syncContactToLedger(parsed ?? {}, opt.ledger || undefined)
+  process.stdout.write(JSON.stringify({ ledger: r }) + '\n')
+  process.exit(r.failed ? 1 : 0)
 }
 process.stdout.write((parsed ? JSON.stringify(parsed, null, 2) : text) + '\n')

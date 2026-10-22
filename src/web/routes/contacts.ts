@@ -14,7 +14,6 @@ import {
   type ContactDomain,
   type ContactField,
 } from '../../contacts-db.js'
-import { syncEmailToLedger, type LedgerSyncResult } from '../../contacts-ledger-sync.js'
 import type { RouteContext } from './types.js'
 
 // Contacts API (card f90928e3, node C2). Bearer-gated like every /api/* route;
@@ -22,6 +21,8 @@ import type { RouteContext } from './types.js'
 // That header is NOT authentication (one shared token), it keeps accidents out.
 // Reads always name a domain; there is no "both". Nothing here logs or echoes
 // a contact value: log lines carry route and ids only.
+// No route writes the recipient ledger: the caller identity is self-declared, so
+// the ledger sync is manual-only (scripts/contacts.mjs sync-ledger).
 
 const LIST_DEFAULT_LIMIT = 10
 const LIST_MAX_LIMIT = 50
@@ -178,14 +179,6 @@ export async function tryHandleContacts(ctx: RouteContext): Promise<boolean> {
       })
       const id = tx()
       const out: Record<string, unknown> = { ok: true, id }
-      // Contact committed above; the ledger sync runs after and may only fail alone.
-      const syncs: LedgerSyncResult[] = []
-      for (const v of initial as Record<string, unknown>[]) {
-        if (v.field === 'email' && typeof v.value === 'string') {
-          syncs.push(await syncEmailToLedger({ contactId: id, value: v.value.trim(), source: String(v.source).trim() }))
-        }
-      }
-      if (syncs.length) out.ledger = syncs.includes('failed') ? 'failed' : syncs.includes('ok') ? 'ok' : 'exists'
       if (warnings.length) out.warning = `possible look-alike of an existing ${[...new Set(warnings)].join('/')} (Cyrillic/Greek letters); saved unchanged, please check`
       json(res, out, 201)
     } catch (err) {
@@ -240,9 +233,6 @@ export async function tryHandleContacts(ctx: RouteContext): Promise<boolean> {
       })
       recordWrite(d, { actor: actorOf(ctx), contact_id: contact.id, value_id: id, action: 'add' })
       const out: Record<string, unknown> = { ok: true, id }
-      if (body.field === 'email' && typeof body.value === 'string') {
-        out.ledger = await syncEmailToLedger({ contactId: contact.id, value: body.value.trim(), source: String(body.source).trim() })
-      }
       if (warn) out.warning = `possible look-alike of an existing ${body.field} (Cyrillic/Greek letters); saved unchanged, please check`
       json(res, out, 201)
     } catch (err) {
