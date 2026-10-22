@@ -108,3 +108,11 @@ jobs:
       # a throwaway install root, stand-in python and node gates, a local stub for
       # the alert POST.
       - run: python3 scripts/__tests__/hook-load-watch.test.py
+      # The heavy-job gate and the RAM emergency brake decide what may run and
+      # what gets killed; their fail-closed and never-kill cases are gate
+      # instruments. Hermetic: temp lock/queue/log, fake meminfo, fake
+      # systemd-run/systemctl/cgroup fs, a fake /proc tree, a recording killer
+      # and a fake send helper; the gate's live-scope section skips when no
+      # systemd --user scope can be created.
+      - run: python3 scripts/__tests__/heavy-job.test.py
+      - run: python3 scripts/__tests__/ram-emergency-brake.test.py
