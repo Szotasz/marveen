@@ -29,20 +29,20 @@ function makeGit(
 }
 
 describe('checkUpdatePreflight --happy path', () => {
-  it('returns ok when on main with a clean tree', () => {
-    const result = checkUpdatePreflight(makeGit('main', ''))
+  it('returns ok when on main with a clean tree', async () => {
+    const result = await checkUpdatePreflight(makeGit('main', ''))
     expect(result.ok).toBe(true)
   })
 
-  it('ignores whitespace-only branch output', () => {
-    const result = checkUpdatePreflight(makeGit('  main  ', '   '))
+  it('ignores whitespace-only branch output', async () => {
+    const result = await checkUpdatePreflight(makeGit('  main  ', '   '))
     expect(result.ok).toBe(true)
   })
 })
 
 describe('checkUpdatePreflight --local commits (diverged history)', () => {
-  it('rejects when the checkout is both ahead of and behind the upstream', () => {
-    const result = checkUpdatePreflight(makeGit('main', '', 2, 5))
+  it('rejects when the checkout is both ahead of and behind the upstream', async () => {
+    const result = await checkUpdatePreflight(makeGit('main', '', 2, 5))
     expect(result.ok).toBe(false)
     if (result.ok) return
     expect(result.reason).toBe('local-commits')
@@ -51,20 +51,20 @@ describe('checkUpdatePreflight --local commits (diverged history)', () => {
     expect(result.message).toMatch(/fast-forward/)
   })
 
-  it('passes a clean tree with zero ahead', () => {
-    expect(checkUpdatePreflight(makeGit('main', '', 0)).ok).toBe(true)
+  it('passes a clean tree with zero ahead', async () => {
+    expect((await checkUpdatePreflight(makeGit('main', '', 0))).ok).toBe(true)
   })
 
   // The rule update.sh actually applies since 2026-08-30: ahead with nothing
   // behind is an install that also develops locally, the pull is a no-op, and
   // the update proceeds. Blocking it here locked the button on a tree that
   // was in fact current.
-  it('passes when ahead but not behind, matching update.sh', () => {
-    expect(checkUpdatePreflight(makeGit('main', '', 53, 0)).ok).toBe(true)
+  it('passes when ahead but not behind, matching update.sh', async () => {
+    expect((await checkUpdatePreflight(makeGit('main', '', 53, 0))).ok).toBe(true)
   })
 
-  it('dirty-tree takes precedence over divergence (stash is offered first)', () => {
-    const result = checkUpdatePreflight(makeGit('main', ' M src/x.ts', 3, 3))
+  it('dirty-tree takes precedence over divergence (stash is offered first)', async () => {
+    const result = await checkUpdatePreflight(makeGit('main', ' M src/x.ts', 3, 3))
     expect(result.ok).toBe(false)
     if (result.ok) return
     expect(result.reason).toBe('dirty-tree')
@@ -75,8 +75,8 @@ describe('checkUpdatePreflight --branch missing on origin', () => {
   // update.sh exits 2 on a local-only branch. Without this gate the dashboard
   // answered {ok:true}, spawned a run that could never start, and showed the
   // reload countdown anyway.
-  it('rejects a branch origin does not have', () => {
-    const result = checkUpdatePreflight(makeGit('fix/local-only', '', 0, 0, 'no'))
+  it('rejects a branch origin does not have', async () => {
+    const result = await checkUpdatePreflight(makeGit('fix/local-only', '', 0, 0, 'no'))
     expect(result.ok).toBe(false)
     if (result.ok) return
     expect(result.reason).toBe('branch-not-on-origin')
@@ -85,21 +85,21 @@ describe('checkUpdatePreflight --branch missing on origin', () => {
     expect(result.message).toMatch(/origin/)
   })
 
-  it('does NOT block when the probe could not answer (offline, auth failure)', () => {
-    expect(checkUpdatePreflight(makeGit('main', '', 0, 0, 'unknown')).ok).toBe(true)
+  it('does NOT block when the probe could not answer (offline, auth failure)', async () => {
+    expect((await checkUpdatePreflight(makeGit('main', '', 0, 0, 'unknown'))).ok).toBe(true)
   })
 
   // update.sh checks the branch BEFORE the dirty tree, so both entry points
   // must name the same first reason; stashing would not have helped here.
-  it('reports the missing branch before the dirty tree, as update.sh does', () => {
-    const result = checkUpdatePreflight(makeGit('fix/local-only', ' M src/x.ts', 0, 0, 'no'))
+  it('reports the missing branch before the dirty tree, as update.sh does', async () => {
+    const result = await checkUpdatePreflight(makeGit('fix/local-only', ' M src/x.ts', 0, 0, 'no'))
     expect(result.ok).toBe(false)
     if (result.ok) return
     expect(result.reason).toBe('branch-not-on-origin')
   })
 
-  it('still reports detached HEAD first', () => {
-    const result = checkUpdatePreflight(makeGit('HEAD', '', 0, 0, 'no'))
+  it('still reports detached HEAD first', async () => {
+    const result = await checkUpdatePreflight(makeGit('HEAD', '', 0, 0, 'no'))
     expect(result.ok).toBe(false)
     if (result.ok) return
     expect(result.reason).toBe('detached-head')
@@ -107,25 +107,25 @@ describe('checkUpdatePreflight --branch missing on origin', () => {
 })
 
 describe('checkUpdatePreflight --detached HEAD', () => {
-  it('rejects an empty branch name', () => {
-    const result = checkUpdatePreflight(makeGit(''))
+  it('rejects an empty branch name', async () => {
+    const result = await checkUpdatePreflight(makeGit(''))
     expect(result.ok).toBe(false)
     if (result.ok) return
     expect(result.reason).toBe('detached-head')
     expect(result.message).toMatch(/detached-HEAD/)
   })
 
-  it('rejects the literal "HEAD" that git prints for detached checkouts', () => {
-    const result = checkUpdatePreflight(makeGit('HEAD'))
+  it('rejects the literal "HEAD" that git prints for detached checkouts', async () => {
+    const result = await checkUpdatePreflight(makeGit('HEAD'))
     expect(result.ok).toBe(false)
     if (result.ok) return
     expect(result.reason).toBe('detached-head')
   })
 
-  it('prioritises detached-HEAD over dirty-tree when both apply', () => {
+  it('prioritises detached-HEAD over dirty-tree when both apply', async () => {
     // If we are detached we do not want a "commit your changes" message,
     // because the right next step is checkout main first.
-    const result = checkUpdatePreflight(makeGit('HEAD', ' M src/web.ts\n'))
+    const result = await checkUpdatePreflight(makeGit('HEAD', ' M src/web.ts\n'))
     expect(result.ok).toBe(false)
     if (result.ok) return
     expect(result.reason).toBe('detached-head')
@@ -133,27 +133,27 @@ describe('checkUpdatePreflight --detached HEAD', () => {
 })
 
 describe('checkUpdatePreflight --branch agnostic', () => {
-  it('accepts a non-main release branch on a clean tree', () => {
+  it('accepts a non-main release branch on a clean tree', async () => {
     // The update is branch-agnostic: update.sh pulls origin/<this-branch>.
     // An install that tracks "develop" must be allowed to self-update.
-    const result = checkUpdatePreflight(makeGit('develop', ''))
+    const result = await checkUpdatePreflight(makeGit('develop', ''))
     expect(result.ok).toBe(true)
   })
 
-  it('accepts an arbitrary feature branch on a clean tree', () => {
-    const result = checkUpdatePreflight(makeGit('v3-05-ui-trustfrom-picker', ''))
+  it('accepts an arbitrary feature branch on a clean tree', async () => {
+    const result = await checkUpdatePreflight(makeGit('v3-05-ui-trustfrom-picker', ''))
     expect(result.ok).toBe(true)
   })
 
-  it('accepts "master" on a clean tree', () => {
-    const result = checkUpdatePreflight(makeGit('master', ''))
+  it('accepts "master" on a clean tree', async () => {
+    const result = await checkUpdatePreflight(makeGit('master', ''))
     expect(result.ok).toBe(true)
   })
 
-  it('still blocks a dirty tree regardless of branch name', () => {
+  it('still blocks a dirty tree regardless of branch name', async () => {
     // The branch is fine, but uncommitted changes would break the
     // fast-forward pull, so dirty-tree is the reported reason.
-    const result = checkUpdatePreflight(makeGit('develop', ' M src/web.ts\n'))
+    const result = await checkUpdatePreflight(makeGit('develop', ' M src/web.ts\n'))
     expect(result.ok).toBe(false)
     if (result.ok) return
     expect(result.reason).toBe('dirty-tree')
@@ -161,23 +161,23 @@ describe('checkUpdatePreflight --branch agnostic', () => {
 })
 
 describe('checkUpdatePreflight --dirty working tree', () => {
-  it('rejects unstaged modifications', () => {
-    const result = checkUpdatePreflight(makeGit('main', ' M src/web.ts\n'))
+  it('rejects unstaged modifications', async () => {
+    const result = await checkUpdatePreflight(makeGit('main', ' M src/web.ts\n'))
     expect(result.ok).toBe(false)
     if (result.ok) return
     expect(result.reason).toBe('dirty-tree')
     expect(result.message).toMatch(/git stash/)
   })
 
-  it('rejects staged modifications', () => {
-    const result = checkUpdatePreflight(makeGit('main', 'M  src/web.ts\n'))
+  it('rejects staged modifications', async () => {
+    const result = await checkUpdatePreflight(makeGit('main', 'M  src/web.ts\n'))
     expect(result.ok).toBe(false)
     if (result.ok) return
     expect(result.reason).toBe('dirty-tree')
   })
 
-  it('rejects a mix of staged and unstaged', () => {
-    const result = checkUpdatePreflight(
+  it('rejects a mix of staged and unstaged', async () => {
+    const result = await checkUpdatePreflight(
       makeGit('main', 'M  src/web.ts\n M src/db.ts\n'),
     )
     expect(result.ok).toBe(false)
@@ -185,29 +185,29 @@ describe('checkUpdatePreflight --dirty working tree', () => {
     expect(result.reason).toBe('dirty-tree')
   })
 
-  it('accepts on-main with only trailing whitespace in porcelain output', () => {
+  it('accepts on-main with only trailing whitespace in porcelain output', async () => {
     // `git status --porcelain` returns a trailing newline even when
     // clean on some platforms. Trim-then-compare keeps that from being
     // read as dirty.
-    const result = checkUpdatePreflight(makeGit('main', '\n'))
+    const result = await checkUpdatePreflight(makeGit('main', '\n'))
     expect(result.ok).toBe(true)
   })
 })
 
 describe('checkUpdatePreflight -- result shape', () => {
-  it('never emits a branch field on any path', () => {
+  it('never emits a branch field on any path', async () => {
     // No result carries a branch field anymore; the update is
     // branch-agnostic, so the branch name is never part of a rejection.
-    const ok = checkUpdatePreflight(makeGit('main'))
+    const ok = await checkUpdatePreflight(makeGit('main'))
     expect(Object.hasOwn(ok, 'branch')).toBe(false)
 
-    const detached = checkUpdatePreflight(makeGit(''))
+    const detached = await checkUpdatePreflight(makeGit(''))
     expect(Object.hasOwn(detached, 'branch')).toBe(false)
 
-    const dirty = checkUpdatePreflight(makeGit('main', ' M x'))
+    const dirty = await checkUpdatePreflight(makeGit('main', ' M x'))
     expect(Object.hasOwn(dirty, 'branch')).toBe(false)
 
-    const feature = checkUpdatePreflight(makeGit('feature-x'))
+    const feature = await checkUpdatePreflight(makeGit('feature-x'))
     expect(Object.hasOwn(feature, 'branch')).toBe(false)
   })
 })
