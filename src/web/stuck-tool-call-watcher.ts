@@ -145,6 +145,8 @@ export function confirmsWedgeProfile(cpuPercent: number | null, maxCpuPercent: n
 // files that replace each other, and of 938 five-minute windows with writes
 // only 5 had two writers, all of them session hand-overs -- so no overlap here.
 // An install that runs a second claude session in the same project dir has it.
+// KILLGATECWD1022: when the session's working directory differs from PROJECT_ROOT, the writers of both project dirs count
+// (newest wins), so a second session in the session's own directory can also mask a wedge.
 export const STALE_VERDICT_FRESH_MS = 30_000
 
 // STUCKALLCLEAR923 (owner request, 2026-09-23). The failed-recovery branch
@@ -238,6 +240,50 @@ export function killGateTranscriptMtime(
   roots: ReadonlyArray<string | undefined> = mainConfigRoots(),
 ): number | null {
   return readTranscriptMtimeAcrossConfigDirs(workingDir, roots)
+}
+
+// KILLGATECWD1022: the kill gate must read the transcript of the session it is about to kill, and a session writes its
+// transcript under its own working directory, which is not always PROJECT_ROOT. Two known cases: scripts/channels.sh restarts
+// the main session in a mktemp directory (/tmp/marveen-channels-XXXXXX) when the first start fails with EPERM, and a dashboard
+// can run from a different directory than the one the session was started in (a release layout, <releases>/<sha>). In both
+// cases, the PROJECT_ROOT read saw either nothing or a frozen mtime, so the gate could never hold the kill of a live
+// session. Newest wins across PROJECT_ROOT and the session's working directory (every candidate config root for each); a
+// missing working directory (tmux failed), an empty one, or the same directory gives exactly the old read. The result is
+// never older than the old read, so this can only hold a kill, never cause one.
+let killGateCwdFallbackLogged = false
+
+export function killGateTranscriptMtimeForSession(
+  projectRoot: string,
+  paneCwd: string | null,
+  roots: ReadonlyArray<string | undefined> = mainConfigRoots(),
+): number | null {
+  const own = killGateTranscriptMtime(projectRoot, roots)
+  if (!paneCwd || paneCwd === projectRoot) return own
+  const session = killGateTranscriptMtime(paneCwd, roots)
+  // The session directory has no transcript but PROJECT_ROOT has one: the layout fallback is in use. Say so once per
+  // process, so a layout change (a transcript the gate cannot see) does not stay invisible.
+  if (session === null && own !== null && !killGateCwdFallbackLogged) {
+    killGateCwdFallbackLogged = true
+    // No path in the log: only that the working directory differs from PROJECT_ROOT, and its length.
+    logger.info({ paneCwdDiffersFromProjectRoot: true, paneCwdLength: paneCwd.length }, 'stuck-tool-call-watcher: no transcript under the main session working directory; the PROJECT_ROOT transcript is used for the kill gate (layout fallback)')
+  }
+  if (own === null) return session
+  if (session === null) return own
+  return Math.max(own, session)
+}
+
+// KILLGATECWD1022: the main session's working directory (the tmux pane_current_path of the exact session target), or null
+// on any failure. The main channels session is one pane; `list-panes -s` lists every window of the session, and anything
+// other than exactly one pane gives null (no guessing between panes), so the caller falls back to the PROJECT_ROOT read.
+export function mainPaneCwd(session: string): string | null {
+  try {
+    const lines = execFileSync(TMUX, ['list-panes', '-s', '-t', exactTmuxTarget(session), '-F', '#{pane_current_path}'], { timeout: 3000, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] })
+      .split('\n').map(l => l.trim()).filter(Boolean)
+    return lines.length === 1 ? lines[0] : null
+  } catch (err) {
+    logger.warn({ site: 'stuck-tool-call-watcher.mainPaneCwd', session, tmux: tmuxStderr(err) }, 'tmux list-panes failed')
+    return null
+  }
 }
 
 // Pure: is the recovery verdict stale because the session's transcript shows
@@ -702,7 +748,8 @@ async function checkSession(label: string, session: string): Promise<void> {
     // 2026-09-23 17:28 this watcher killed a session whose transcript was being
     // written in that same second. Take the candidate list from the shared
     // mainConfigRoots() and let newest-wins decide; never write a second list.
-    const transcriptMtime = killGateTranscriptMtime()
+    // KILLGATECWD1022: there are also two candidate project directories: PROJECT_ROOT and the session's working directory.
+    const transcriptMtime = killGateTranscriptMtimeForSession(PROJECT_ROOT, mainPaneCwd(session))
     if (verdictStaleByTranscript(transcriptMtime, Date.now())) {
       logTranscriptAbort(
         session, next.stagnantSince,

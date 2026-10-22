@@ -778,11 +778,11 @@ describe('STUCKROOT923: the kill-boundary gate reads EVERY candidate root', () =
     } finally { rmrf(base, { recursive: true, force: true }) }
   })
 
-  it('the gate calls killGateTranscriptMtime(), and its default roots are mainConfigRoots(), not one of them', () => {
+  it('the gate calls killGateTranscriptMtimeForSession() (KILLGATECWD1022: PROJECT_ROOT + the session cwd), and its default roots are mainConfigRoots(), not one of them', () => {
     const SRC = rfs(pjoin(__dirname, '..', 'web', 'stuck-tool-call-watcher.ts'), 'utf-8')
     const start = SRC.indexOf('async function checkSession')
     const code = SRC.slice(start, SRC.indexOf('\n}', start)).split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
-    expect(code).toContain('killGateTranscriptMtime()')
+    expect(code).toContain('killGateTranscriptMtimeForSession(PROJECT_ROOT, mainPaneCwd(session))')
     expect(code).not.toContain('readTranscriptMtimeAcrossConfigDirs(')
     expect(SRC).toContain('roots: ReadonlyArray<string | undefined> = mainConfigRoots(),')
     const noComments = SRC.split('\n').filter(l => !l.trim().startsWith('//')).join('\n')
