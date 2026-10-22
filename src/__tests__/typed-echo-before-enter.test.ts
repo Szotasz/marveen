@@ -234,7 +234,7 @@ describe('wiring', () => {
 
   it('a multi-chunk prompt waits for its echo, then for settle, then presses Enter', () => {
     expect(AGENT).toMatch(
-      /if \(oneLine\.length > CHUNK && !\(await waitForTypedEcho\(\(\) => capturePane\(session, host\), oneLine\)\)\) \{[\s\S]{0,300}?\}\s*\n(?:\s*\/\/.*\n)*\s*if \(oneLine\.length > CHUNK\) await waitForPaneSettle/,
+      /if \(oneLine\.length > CHUNK && !\(await budgetedWait\(TYPED_ECHO_MAX_MS, \(maxMs\) => waitForTypedEcho\(\(\) => capturePane\(session, host\), oneLine, \{ maxMs \}\)\)\)\) \{[\s\S]{0,300}?\}\s*\n(?:\s*\/\/.*\n)*\s*if \(oneLine\.length > CHUNK\) await budgetedWait\(PANE_SETTLE_MAX_MS, \(maxMs\) => waitForPaneSettle/,
     )
   })
 })

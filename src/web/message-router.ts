@@ -430,8 +430,9 @@ export function detectUrgentPaneHold(pane: string | null): UrgentPaneHold | null
 }
 
 /**
- * Pure: the last look at the pane inside the send lane, right before the first key
- * (sendPromptToSession's emitGuard). Stricter than detectUrgentPaneHold: any blocking
+ * Pure: the last look at the pane inside the send lane, right before the first key and
+ * again right before every submitting Enter and follow-up key (sendPromptToSession's
+ * emitGuard, #2143). Stricter than detectUrgentPaneHold: any blocking
  * menu, a held peer message, and a pane that cannot be read, refuse too -- here no
  * later step could undo an Enter that landed in the wrong place. The held peer message
  * is checked on its own because detectsBlockingMenu leaves it out (the menu pass must
@@ -465,12 +466,21 @@ export function shouldNoticeUrgentHold(hold: UrgentPaneHold, prev: { key: string
   return now - prev.at >= (hold.kind === 'quota-wall' ? QUOTA_WALL_SILENCE_MS : STUCK_ESCALATE_MS)
 }
 
-export function formatUrgentHoldNotice(msg: Pick<AgentMessage, 'id' | 'from_agent' | 'to_agent'>, session: string, hold: UrgentPaneHold, label: string): string {
-  const head = `[urgent-held] ${label} row #${msg.id} (from ${msg.from_agent}) to '${msg.to_agent}' (tmux ${session}) is waiting and was NOT typed:`
-  const keep = 'The row stays pending and goes out on the first tick after the pane is free.'
+// typed: the refusal came before the submitting Enter (sendPromptToSession 'aborted-guard-typed',
+// #2143), so the row's text is already in the pane, unsubmitted; false: nothing was typed.
+export function formatUrgentHoldNotice(msg: Pick<AgentMessage, 'id' | 'from_agent' | 'to_agent'>, session: string, hold: UrgentPaneHold, label: string, typed = false): string {
+  const head = typed
+    ? `[urgent-held] ${label} row #${msg.id} (from ${msg.from_agent}) to '${msg.to_agent}' (tmux ${session}) is waiting: its text WAS typed into the pane but NOT submitted (no Enter):`
+    : `[urgent-held] ${label} row #${msg.id} (from ${msg.from_agent}) to '${msg.to_agent}' (tmux ${session}) is waiting and was NOT typed:`
+  const keep = typed
+    ? 'The row stays pending and is typed AGAIN on the first tick after the pane is free; if the first copy is still in the input box then, clear it, or the agent gets the text twice.'
+    : 'The row stays pending and goes out on the first tick after the pane is free.'
   if (hold.kind === 'permission-prompt') {
     const ask = hold.ask ? ` It asks: ${hold.ask.title} -- ${hold.ask.reason}` : ''
-    return `${head} the pane is on a TOOL-PERMISSION PROMPT.${ask} Typed text + Enter would APPROVE that prompt, and an Escape would deny it, so the router sends neither. Answer the prompt in the pane (tmux attach -t ${session}). ${keep}`
+    const keys = typed
+      ? 'The prompt opened after the text went in. An Enter would APPROVE that prompt, and an Escape would deny it, so the router pressed neither.'
+      : 'Typed text + Enter would APPROVE that prompt, and an Escape would deny it, so the router sends neither.'
+    return `${head} the pane is on a TOOL-PERMISSION PROMPT.${ask} ${keys} Answer the prompt in the pane (tmux attach -t ${session}). ${keep}`
   }
   if (hold.kind === 'first-run') {
     return `${head} the pane is on a Claude Code first-run gate (${hold.gate}); a keystroke would answer it. Clear the gate in the pane (tmux attach -t ${session}). ${keep}`
@@ -479,12 +489,12 @@ export function formatUrgentHoldNotice(msg: Pick<AgentMessage, 'id' | 'from_agen
   return `${head} the agent is at the PLAN USAGE LIMIT (quota wall). ${resume} Banner: "${hold.wall.banner}". It cannot act on the row before the reset or a key switch. ${keep}`
 }
 
-function noticeUrgentHold(msg: AgentMessage, session: string, hold: UrgentPaneHold, label: string, now: number): void {
+function noticeUrgentHold(msg: AgentMessage, session: string, hold: UrgentPaneHold, label: string, now: number, typed = false): void {
   const prev = agentUrgentHoldNoticed.get(msg.to_agent)
   if (!shouldNoticeUrgentHold(hold, prev, now)) return
   agentUrgentHoldNoticed.set(msg.to_agent, { key: urgentHoldKey(hold), at: now })
   try {
-    createAgentMessage('system', MAIN_AGENT_ID, formatUrgentHoldNotice(msg, session, hold, label))
+    createAgentMessage('system', MAIN_AGENT_ID, formatUrgentHoldNotice(msg, session, hold, label, typed))
     logger.info({ id: msg.id, to: msg.to_agent, hold: hold.kind }, 'urgent-held surfaced to orchestrator')
   } catch (err) {
     logger.warn({ err, id: msg.id }, 'Failed to enqueue urgent-held notification')
@@ -1362,14 +1372,18 @@ export async function runMessageRouterTick(): Promise<void> {
           } else {
             // STOP: no idle wait (the 12 s budget exists to find an idle gap, and a STOP
             // must not wait for one), but a last look at the pane inside the send lane,
-            // right before the first key: a running turn can open a permission prompt
-            // between the check above and this send (urgentEmitRefusal).
+            // right before the first key and again right before the submitting Enter (#2143):
+            // a running turn can open a permission prompt between the check above and either
+            // of them (urgentEmitRefusal).
             if (isStop) {
               const outcome = await sendPromptToSession(session, prefix + wrapped, host, { waitForIdle: false, emitGuard: urgentEmitRefusal })
-              if (outcome === 'aborted-guard') {
+              if (outcome === 'aborted-guard' || outcome === 'aborted-guard-typed') {
+                const typed = outcome === 'aborted-guard-typed'
                 const hold = detectUrgentPaneHold(capturePane(session, host))
-                logger.warn({ id: msg.id, to: msg.to_agent, hold: hold?.kind ?? null }, 'message-router: urgent or STOP row not typed, the pane turned into a prompt before the send; the row stays pending')
-                if (hold) noticeUrgentHold(msg, session, hold, urgentLabel, now)
+                logger.warn({ id: msg.id, to: msg.to_agent, hold: hold?.kind ?? null, typed }, typed
+                  ? 'message-router: urgent or STOP row typed but NOT submitted, the pane turned into a prompt before the Enter; the row stays pending'
+                  : 'message-router: urgent or STOP row not typed, the pane turned into a prompt before the send; the row stays pending')
+                if (hold) noticeUrgentHold(msg, session, hold, urgentLabel, now, typed)
                 continue
               }
               logger.info({ id: msg.id, to: msg.to_agent, urgent: msg.urgent === 1 }, 'message-router: urgent or STOP row sent without waiting for an idle pane')

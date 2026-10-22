@@ -96,7 +96,7 @@ import { loadProfileTemplate, profileWantsThinChiefHandoff } from './profiles.js
 import { resolveAgentSecurityProfile } from './agent-team.js'
 import { enforceStrictPermissionMode, writeAgentSettingsFromProfile, ensureFleetRosterSection, ensureProjectRootInClaudeMd, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSystemDirectiveAuthSection, ensureAgentIdHeaderSection, ensureThinChiefHandoffSection, ensureMemorySearchLabelSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, ensureMessageCloseSection } from './agent-scaffold.js'
 import { schedulePluginUnlockAfterRespawn } from './channel-plugin-unlock.js'
-import { recordInjectedPrompt } from './injected-prompt-registry.js'
+import { recordInjectedPrompt, forgetInjectedPrompt } from './injected-prompt-registry.js'
 import { getSecret } from './vault.js'
 import { resolveOpenRouterModel } from './openrouter-models.js'
 import { reapChannelOrphans, reapDetachedChannelClaudes } from './channel-poller-reap.js'
@@ -3600,6 +3600,8 @@ const SUBMIT_RETRY_MAX_ATTEMPTS = 4
 // with the parked text (still stuck). Empirically 300ms is past the
 // frame-render gap detectPaneState already guards against.
 const SUBMIT_RETRY_POLL_MS = 300
+// Upper bound of the pre-Enter settle wait (waitForPaneSettle).
+const PANE_SETTLE_MAX_MS = 5000
 
 // Pre-flight wait-until-idle gate (root-cause fix for the busy-stuck class).
 // Before streaming chunks we poll the pane and wait for it to return to the
@@ -3868,14 +3870,19 @@ export interface SendPromptOpts {
   onBusySend?: () => void
   onEmitStart?: () => void
 }
-/** Card 71263d15 (C): returns a reason to send nothing (see emitToPane), or null to go ahead. */
+/**
+ * Card 71263d15 (C): returns a reason to press no (further) key, or null to go ahead. Asked
+ * before the first keystroke (a refusal there is 'aborted-guard': nothing typed) and again
+ * before every submitting Enter (#2143: 'aborted-guard-typed', the text is in the pane but
+ * not submitted), plus before each follow-up key of the retry loop.
+ */
 export type SendEmitGuard = (pane: string | null) => string | null
 
 // Two signatures so only a caller that passes an emitGuard has to handle 'aborted-guard'. The
 // plain one is LAST on purpose: Parameters<>/ReturnType<> (system-directive.ts) read the last one.
 export function sendPromptToSession(
   session: string, text: string, host: string | null, opts: SendPromptOpts & { emitGuard: SendEmitGuard },
-): Promise<'sent' | 'aborted-busy' | 'skipped-locked' | 'aborted-guard'>
+): Promise<'sent' | 'aborted-busy' | 'skipped-locked' | 'aborted-guard' | 'aborted-guard-typed'>
 export function sendPromptToSession(
   session: string, text: string, host?: string | null, opts?: SendPromptOpts,
 ): Promise<'sent' | 'aborted-busy' | 'skipped-locked'>
@@ -3884,7 +3891,7 @@ export async function sendPromptToSession(
   text: string,
   host: string | null = null,
   opts: { waitForIdle?: boolean; onBusyTimeout?: 'send' | 'abort'; idleTimeoutMs?: number; lockMode?: SendLockMode; onBusySend?: () => void; onEmitStart?: () => void } & { emitGuard?: SendEmitGuard } = {},
-): Promise<'sent' | 'aborted-busy' | 'skipped-locked' | 'aborted-guard'> {
+): Promise<'sent' | 'aborted-busy' | 'skipped-locked' | 'aborted-guard' | 'aborted-guard-typed'> {
   const lockMode: SendLockMode = opts.lockMode ?? 'deliver'
   // PANEWRITERS805: the three modal dismissals are probe+act keystroke writers
   // that ran BEFORE the lane lock -- so they could press Escape/Enter into a
@@ -3980,7 +3987,19 @@ export async function sendPromptToSession(
   // is the per-session critical section. Held under a per-pane in-process mutex
   // (session-send-lock): normal delivery is fail-open (a stuck holder must not
   // silence the fleet); a `recover` caller skips instead of racing a live send.
-  const emitToPane = async (): Promise<'sent'> => {
+  // #2143: the caller's emitGuard. Run before the first keystroke (guardedEmit, on a fresh
+  // capture), before every submitting Enter (sendChunks, fresh capture) and before every
+  // follow-up key (the retry loop, on the capture it just took); null = go ahead.
+  // The capture is taken only when a guard is set, so an unguarded send makes no extra tmux call.
+  const emitGuardRefusal = (pane?: string | null): string | null => {
+    if (!opts.emitGuard) return null
+    try {
+      return opts.emitGuard(pane === undefined ? capturePane(session, host) : pane)
+    } catch (err) {
+      return `emit guard threw: ${String(err).slice(0, 120)}`
+    }
+  }
+  const emitToPane = async (): Promise<'sent' | 'aborted-guard-typed'> => {
   // PROMPTCSONK923: tell the caller the moment the first keystroke of THIS
   // prompt is about to be emitted (we hold the lane from here). The scheduler
   // judges delivery from transcript prompts recorded after this instant.
@@ -4012,12 +4031,26 @@ export async function sendPromptToSession(
   // a delivery that parks mid-stream is recoverable too.
   recordInjectedPrompt(session, oneLine)
   const CHUNK = 80
+  // #2144: what is left of PRE_ENTER_WAIT_BUDGET_MS, the ONE budget for every echo and settle
+  // wait of this call (the first send and every clear-and-resend). Only waited time counts, so it
+  // starts after the first send's typing and does not depend on the prompt's length. Before, each
+  // resend of a frozen pane waited the full bounds again, and one holder kept the send lane past
+  // DEFAULT_DELIVER_WAIT_BUDGET_MS. Typing time is NOT bounded here (it predates #2135).
+  let waitBudgetLeftMs = PRE_ENTER_WAIT_BUDGET_MS
+  const budgetedWait = async <T>(capMs: number, wait: (maxMs: number) => Promise<T>): Promise<T> => {
+    const started = Date.now()
+    try {
+      return await wait(Math.min(capMs, waitBudgetLeftMs))
+    } finally {
+      waitBudgetLeftMs = Math.max(0, waitBudgetLeftMs - (Date.now() - started))
+    }
+  }
   // Stream oneLine into the pane as CHUNK-sized literal send-keys writes,
   // followed by a submitting Enter. Extracted as a closure so the
   // clear-and-resend recovery path below can replay the EXACT same byte
   // stream after a Ctrl-C, rather than duplicating the boundary logic
   // (see computeTmuxChunk for the two chunk-boundary dodges it applies).
-  const sendChunks = async (): Promise<void> => {
+  const sendChunks = async (): Promise<'sent' | 'aborted-guard-typed'> => {
     let i = 0
     while (i < oneLine.length) {
       const { chunk, end } = computeTmuxChunk(oneLine, i, CHUNK, TMUX_CHUNK_MAX_SLIDE)
@@ -4028,9 +4061,10 @@ export async function sendPromptToSession(
     // The settle wait below cannot tell a TUI that finished drawing from one
     // that stopped READING its input (both give identical captures), so first
     // wait until the end of the prompt is actually on screen. Bounded; on
-    // timeout the Enter goes out as before, and the log says so.
-    if (oneLine.length > CHUNK && !(await waitForTypedEcho(() => capturePane(session, host), oneLine))) {
-      logger.warn({ session, chars: oneLine.length, waitedMs: TYPED_ECHO_MAX_MS }, 'sendPromptToSession: the end of the typed prompt never appeared in the pane; sending Enter anyway (TUI not reading input?)')
+    // timeout the Enter goes out as before, and the log says so. Both waits
+    // draw on the call's wait budget; the first send gets its full bounds.
+    if (oneLine.length > CHUNK && !(await budgetedWait(TYPED_ECHO_MAX_MS, (maxMs) => waitForTypedEcho(() => capturePane(session, host), oneLine, { maxMs })))) {
+      logger.warn({ session, chars: oneLine.length, waitBudgetLeftMs }, 'sendPromptToSession: the end of the typed prompt never appeared in the pane; sending Enter anyway (TUI not reading input?)')
     }
     // A multi-chunk prompt gets its Enter only once the TUI has stopped
     // redrawing. Sent straight after the last chunk, the Enter races the
@@ -4040,10 +4074,24 @@ export async function sendPromptToSession(
     // The parked copy was invisible to the retry loop below (the box was
     // taller than the pane, see overfullParkedInputTail), so nothing
     // re-pressed it. Single-chunk prompts keep the immediate Enter.
-    if (oneLine.length > CHUNK) await waitForPaneSettle(() => capturePane(session, host))
+    if (oneLine.length > CHUNK) await budgetedWait(PANE_SETTLE_MAX_MS, (maxMs) => waitForPaneSettle(() => capturePane(session, host), { maxMs }))
+    // #2143: the guard's last look before the submitting Enter. The echo and settle waits above
+    // can take tens of seconds, and a pane that turned into a permission prompt meanwhile would
+    // take this Enter as its answer. On refusal press nothing more (no Enter, no Escape): the
+    // typed text stays unsubmitted, the caller keeps its row, and the outcome says keys went in.
+    // Only the router passes a guard, and it types the row again later, so the record is dropped:
+    // that disables the stuck-input watcher's 'reinject-recorded' path (channel-monitor.ts,
+    // recordedMatch) for this leftover. Its other parked-input paths are not affected.
+    const refusal = emitGuardRefusal()
+    if (refusal) {
+      forgetInjectedPrompt(session, oneLine)
+      logger.warn({ session, reason: refusal }, 'sendPromptToSession: emit guard refused the pane before the submitting Enter; typed text left unsubmitted, no further keys')
+      return 'aborted-guard-typed'
+    }
     runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), 'Enter'], { timeout: 5000 })
+    return 'sent'
   }
-  await sendChunks()
+  if ((await sendChunks()) === 'aborted-guard-typed') return 'aborted-guard-typed'
 
   // Post-send retry loop. The payload hint is the first chunk of oneLine
   // (truncated to a safe length) so the verbatim-stuck path has something
@@ -4069,17 +4117,18 @@ export async function sendPromptToSession(
     const pane = capturePane(session, host)
     // Card 71263d15 (C): a guarded send presses no follow-up key into a pane that has
     // turned into a prompt since the text went in (a retry Enter would answer it).
-    if (opts.emitGuard) {
-      let reason: string | null = null
-      try { reason = opts.emitGuard(pane) } catch { reason = 'emit guard threw' }
-      if (reason) {
-        logger.warn({ session, attempt, reason }, 'sendPromptToSession: emit guard refused the pane after the send; no follow-up keys')
-        break
-      }
+    const reason = emitGuardRefusal(pane)
+    if (reason) {
+      logger.warn({ session, attempt, reason }, 'sendPromptToSession: emit guard refused the pane after the send; no follow-up keys')
+      break
     }
-    const action = decideSubmitFollowup(pane, payloadHint, attempt, SUBMIT_RETRY_MAX_ATTEMPTS)
+    // #2144: once the wait budget is spent, the attempts count as used up, so a still-parked
+    // prompt ends exactly as at the retry limit: decideSubmitFollowup's 'give-up' below.
+    const budgetSpent = waitBudgetLeftMs <= 0
+    const action = decideSubmitFollowup(pane, payloadHint, attempt, budgetSpent ? attempt : SUBMIT_RETRY_MAX_ATTEMPTS)
     if (action === 'done') break
     if (action === 'give-up') {
+      if (budgetSpent && attempt < SUBMIT_RETRY_MAX_ATTEMPTS) logger.warn({ session, attempt, waitBudgetMs: PRE_ENTER_WAIT_BUDGET_MS }, 'sendPromptToSession: pre-Enter wait budget spent; no further follow-ups')
       logger.warn({ session, attempt }, 'sendPromptToSession: prompt still parked after retries')
       break
     }
@@ -4099,8 +4148,9 @@ export async function sendPromptToSession(
       if (discard.outcome === 'failed') {
         logger.warn({ session, attempt }, 'sendPromptToSession: failed to clear paste placeholder before resend')
       }
+      let resent: 'sent' | 'aborted-guard-typed'
       try {
-        await sendChunks()
+        resent = await sendChunks()
       } catch (err) {
         // Card 71263d15 (a1): the pane can be gone by now ("can't find pane" in all three
         // measured replay failures, 2026-10-06..10-08). Returning 'sent' made the router log
@@ -4109,6 +4159,8 @@ export async function sendPromptToSession(
         logger.warn({ err, session, attempt, lastScreen: paneTail(discard.lastPane) }, 'Clear-and-resend chunk replay failed')
         throw err
       }
+      // #2143: the box was cleared and the resend was typed but not submitted.
+      if (resent === 'aborted-guard-typed') return 'aborted-guard-typed'
       continue
     }
     // action === 'retry-enter'
@@ -4122,7 +4174,7 @@ export async function sendPromptToSession(
     return 'sent'
   }
 
-  const guardedEmit = async (): Promise<'sent' | 'aborted-guard'> => {
+  const guardedEmit = async (): Promise<'sent' | 'aborted-guard' | 'aborted-guard-typed'> => {
     // Card 71263d15 (C): the caller's last look at the pane, taken INSIDE the lane right
     // before the first keystroke. The router's STOP path passes one: a STOP skips the idle
     // wait, so between its pane check and this point a running turn can open a permission
@@ -4130,17 +4182,10 @@ export async function sendPromptToSession(
     // Code 2.1.294: the pending command ran and the text was lost). A non-null answer sends
     // NOTHING -- no text, no Escape (an Escape would deny the pending call) -- and returns
     // 'aborted-guard' so the caller keeps its row.
-    if (opts.emitGuard) {
-      let reason: string | null = null
-      try {
-        reason = opts.emitGuard(capturePane(session, host))
-      } catch (err) {
-        reason = `emit guard threw: ${String(err).slice(0, 120)}`
-      }
-      if (reason) {
-        logger.warn({ session, reason }, 'sendPromptToSession: emit guard refused the pane; no keystrokes sent')
-        return 'aborted-guard'
-      }
+    const reason = emitGuardRefusal()
+    if (reason) {
+      logger.warn({ session, reason }, 'sendPromptToSession: emit guard refused the pane; no keystrokes sent')
+      return 'aborted-guard'
     }
     return emitToPane()
   }
@@ -4154,7 +4199,7 @@ export async function sendPromptToSession(
   }
 
   const lockResult = await withSessionSendLock(session, host, lockMode, guardedEmit)
-  if (lockResult.ran && lockResult.value === 'aborted-guard') return 'aborted-guard'
+  if (lockResult.ran && (lockResult.value === 'aborted-guard' || lockResult.value === 'aborted-guard-typed')) return lockResult.value
   if (!lockResult.ran) {
     // recover mode + lane busy: a delivery is mid-flight into this pane. Do NOT
     // race it (we would clear or submit the wrong buffer). Skip this round and
@@ -4204,7 +4249,7 @@ export async function waitForPaneSettle(
   opts: { pollMs?: number; maxMs?: number; sleep?: (ms: number) => Promise<void>; now?: () => number } = {},
 ): Promise<boolean> {
   const pollMs = opts.pollMs ?? 250
-  const maxMs = opts.maxMs ?? 5000
+  const maxMs = opts.maxMs ?? PANE_SETTLE_MAX_MS
   const sleep = opts.sleep ?? delay
   const now = opts.now ?? Date.now
   const deadline = now() + maxMs
@@ -4222,6 +4267,9 @@ export async function waitForPaneSettle(
 // TUI stopped reading input mid-prompt) lasted 18.5 s and 24.9 s; past this
 // the Enter goes out as it did before.
 export const TYPED_ECHO_MAX_MS = 30_000
+// #2144: the budget for ALL echo and settle waits of one sendPromptToSession call, the first
+// send and every clear-and-resend together. The first send's full bounds fit in it.
+export const PRE_ENTER_WAIT_BUDGET_MS = TYPED_ECHO_MAX_MS + PANE_SETTLE_MAX_MS
 
 // Resolve true as soon as typedTailEchoed() sees the end of `typed` in a
 // capture, false after `maxMs` without it. Capture, sleep and clock are
