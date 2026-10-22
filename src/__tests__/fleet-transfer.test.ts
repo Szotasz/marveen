@@ -661,7 +661,7 @@ describe('importFleet: kanban card columns', () => {
 })
 
 describe('contacts are excluded from the fleet transfer (AC24)', () => {
-  const CONTACT_TABLES = /contacts|contact_values|contacts_fts|contact_reads/i
+  const CONTACT_TABLES = /contacts|contact_values|contacts_fts|contact_reads|contact_writes/i
 
   it('exportFleet never queries a contacts table and the package carries no contacts key', async () => {
     const { exportFleet } = await import('../web/fleet-transfer.js')

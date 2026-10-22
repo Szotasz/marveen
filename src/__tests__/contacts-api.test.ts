@@ -225,3 +225,41 @@ describe('homoglyph warning', () => {
     expect(plain.body.warning).toBeUndefined()
   })
 })
+
+describe('write audit', () => {
+  const SECRET_EMAIL = 'audit.leak.check@example.com'
+  const SECRET_PHONE = '+36 99 555 0101'
+
+  it('one contact_writes row per create / add / retract, actor from X-Agent-Id, no value anywhere in either audit table', async () => {
+    const id = await mk('business', 'Audit Person', [{ field: 'email', value: SECRET_EMAIL, ...src }])
+    const add = await call('POST', `/api/contacts/${id}/values`, { field: 'phone', value: SECRET_PHONE, ...src })
+    const ret = await call('POST', `/api/contacts/values/${add.body.id}/retract`, src)
+    expect(ret.status).toBe(201)
+    await call('GET', `/api/contacts/${id}?domain=business`)
+    const rows = getDb().prepare('SELECT * FROM contact_writes ORDER BY id').all() as any[]
+    expect(rows.map((r) => r.action)).toEqual(['create', 'add', 'add', 'retract'])
+    expect(rows.every((r) => r.actor === 'brainy' && r.contact_id === id && typeof r.at === 'number')).toBe(true)
+    expect(rows[0].value_id).toBeNull()
+    expect(rows[2].value_id).toBe(add.body.id)
+    expect(rows[3].value_id).toBe(ret.body.id)
+    expect(Object.keys(rows[0]).sort()).toEqual(['action', 'actor', 'at', 'contact_id', 'id', 'value_id'])
+    const dump = JSON.stringify([
+      ...getDb().prepare('SELECT * FROM contact_writes').all(),
+      ...getDb().prepare('SELECT * FROM contact_reads').all(),
+    ])
+    expect(dump).not.toContain(SECRET_EMAIL)
+    expect(dump).not.toContain(SECRET_PHONE)
+  })
+
+  it('failed writes leave no audit row; audit tables are append-only', async () => {
+    const bad = await call('POST', '/api/contacts', { domain: 'business', display_name: 'X', values: [{ field: 'email', value: 'a@example.com' }] })
+    expect(bad.status).toBe(400)
+    expect(getDb().prepare('SELECT COUNT(*) n FROM contact_writes').get()).toEqual({ n: 0 })
+    const id = await mk('business', 'Y')
+    await call('GET', `/api/contacts/${id}?domain=business`)
+    for (const sql of [
+      'UPDATE contact_writes SET actor = 1', 'DELETE FROM contact_writes',
+      'UPDATE contact_reads SET reader = 1', 'DELETE FROM contact_reads',
+    ]) expect(() => getDb().prepare(sql).run(), sql).toThrow(/append-only/)
+  })
+})

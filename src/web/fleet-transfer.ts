@@ -773,7 +773,7 @@ export function exportFleet(options: { vaultPassword?: string } = {}): ExportedF
   const skills = listSkillsInDir(join(homedir(), '.claude', 'skills'))
   const scheduledTasks = exportScheduledTasks()
 
-  // Contacts (contacts, contact_values, contacts_fts, contact_reads) are
+  // Contacts (contacts, contact_values, contacts_fts, contact_reads, contact_writes) are
   // deliberately NOT exported: every table here is named explicitly (AC24).
   // Export ALL memories and daily_logs across every agent_id
   const memories = db.prepare(

@@ -105,6 +105,30 @@ export function ensureContactsSchema(d: Database.Database): void {
       contact_id INTEGER,
       query TEXT
     );
+
+    -- Write audit: who, when, which record, what kind of write. No value column.
+    CREATE TABLE IF NOT EXISTS contact_writes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      actor TEXT NOT NULL,
+      at INTEGER NOT NULL DEFAULT (unixepoch()),
+      contact_id INTEGER NOT NULL,
+      value_id INTEGER,
+      action TEXT NOT NULL CHECK (action IN ('create','add','retract'))
+    );
+
+    -- Both audit tables are append-only, like contact_values.
+    CREATE TRIGGER IF NOT EXISTS contact_reads_no_update
+    BEFORE UPDATE ON contact_reads
+    BEGIN SELECT RAISE(ABORT, 'contact_reads is append-only: UPDATE not allowed'); END;
+    CREATE TRIGGER IF NOT EXISTS contact_reads_no_delete
+    BEFORE DELETE ON contact_reads
+    BEGIN SELECT RAISE(ABORT, 'contact_reads is append-only: DELETE not allowed'); END;
+    CREATE TRIGGER IF NOT EXISTS contact_writes_no_update
+    BEFORE UPDATE ON contact_writes
+    BEGIN SELECT RAISE(ABORT, 'contact_writes is append-only: UPDATE not allowed'); END;
+    CREATE TRIGGER IF NOT EXISTS contact_writes_no_delete
+    BEFORE DELETE ON contact_writes
+    BEGIN SELECT RAISE(ABORT, 'contact_writes is append-only: DELETE not allowed'); END;
   `)
 }
 
@@ -230,6 +254,15 @@ export function findContacts(d: Database.Database, input: { domain: unknown; q?:
     ).all(domain, match) as Contact[]
   }
   return rows.map((c) => ({ ...c, values: activeValues(d, c.id) }))
+}
+
+/** Audit a write. Records who, when, which contact/value and the kind -- never a value. */
+export function recordWrite(
+  d: Database.Database,
+  input: { actor: string; contact_id: number; value_id?: number | null; action: 'create' | 'add' | 'retract' },
+): void {
+  d.prepare('INSERT INTO contact_writes (actor, contact_id, value_id, action) VALUES (?, ?, ?, ?)')
+    .run(input.actor, input.contact_id, input.value_id ?? null, input.action)
 }
 
 /** Audit a read. Records who, when, which contact and the query -- never a value. */

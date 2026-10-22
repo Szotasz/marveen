@@ -9,6 +9,7 @@ import {
   findContacts,
   getContact,
   recordRead,
+  recordWrite,
   retractValue,
   type ContactDomain,
   type ContactField,
@@ -30,6 +31,12 @@ const AUDIT_QUERY_MAX = 100
 function callerIsBrainy(ctx: RouteContext): boolean {
   const raw = ctx.req.headers['x-agent-id']
   return typeof raw === 'string' && raw === 'brainy'
+}
+
+// Only reached after callerIsBrainy(); read from the header so the audit shows what was declared.
+function actorOf(ctx: RouteContext): string {
+  const raw = ctx.req.headers['x-agent-id']
+  return typeof raw === 'string' ? raw : 'unknown'
 }
 
 function domainParam(url: URL): ContactDomain | null {
@@ -154,9 +161,10 @@ export async function tryHandleContacts(ctx: RouteContext): Promise<boolean> {
       }
       const tx = d.transaction(() => {
         const id = createContact(d, { domain, display_name: name })
+        recordWrite(d, { actor: actorOf(ctx), contact_id: id, action: 'create' })
         for (const v of initial as Record<string, unknown>[]) {
           if (!v || typeof v !== 'object') throw new Error('value is required')
-          addValue(d, {
+          const vid = addValue(d, {
             contact_id: id,
             field: v.field as ContactField,
             value: v.value as string,
@@ -164,6 +172,7 @@ export async function tryHandleContacts(ctx: RouteContext): Promise<boolean> {
             source_date: v.source_date,
             added_by: 'brainy',
           })
+          recordWrite(d, { actor: actorOf(ctx), contact_id: id, value_id: vid, action: 'add' })
         }
         return id
       })
@@ -190,12 +199,17 @@ export async function tryHandleContacts(ctx: RouteContext): Promise<boolean> {
     const body = await parseBody(ctx)
     if (!body) { json(res, { error: 'invalid JSON body' }, 400); return true }
     try {
-      const id = retractValue(d, {
-        value_id: Number(retractMatch[1]),
-        source: body.source,
-        source_date: body.source_date,
-        added_by: 'brainy',
-      })
+      const target = d.prepare('SELECT contact_id FROM contact_values WHERE id = ?').get(Number(retractMatch[1])) as { contact_id: number } | undefined
+      const id = d.transaction(() => {
+        const rid = retractValue(d, {
+          value_id: Number(retractMatch[1]),
+          source: body.source,
+          source_date: body.source_date,
+          added_by: 'brainy',
+        })
+        recordWrite(d, { actor: actorOf(ctx), contact_id: target!.contact_id, value_id: rid, action: 'retract' })
+        return rid
+      })()
       json(res, { ok: true, id }, 201)
     } catch (err) {
       fail(ctx, err, 'retract')
@@ -224,6 +238,7 @@ export async function tryHandleContacts(ctx: RouteContext): Promise<boolean> {
         source_date: body.source_date,
         added_by: 'brainy',
       })
+      recordWrite(d, { actor: actorOf(ctx), contact_id: contact.id, value_id: id, action: 'add' })
       const out: Record<string, unknown> = { ok: true, id }
       if (body.field === 'email' && typeof body.value === 'string') {
         out.ledger = await syncEmailToLedger({ contactId: contact.id, value: body.value.trim(), source: String(body.source).trim() })
