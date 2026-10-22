@@ -102,7 +102,13 @@ const FOOTER_TRUNCATED_RX = /(?:[A-Za-z][\w-]* ){1,3}on · [^\n]*·[^\n]*…\s*$
 // mode word, `on`, then only `· N shell(s)` and an optional `· N monitor(s)`
 // to the end of the line, and ONLY on the last non-empty line, so the same
 // words quoted in a log line in the scrollback never count.
-const FOOTER_SHELL_TAIL_RX = /(?:[A-Za-z][\w-]* ){1,3}on(?: \(shift\+tab to cycle\))? · \d+ shells?(?: · \d+ monitors?)?\s*$/
+// COMMATAIL1022: newer builds join the counts with a comma, "· 1 shell, 1 monitor".
+// The comma takes exactly one space, and a bare tail with any other count stays
+// 'unknown'. The line must also START like the live footer, blanks and the mode
+// glyph (⏵⏵, ⏵, ⏸): detectPaneState returns 'idle' on this footer even without an
+// input box above it, so a log line or a sentence in the footer slot that ends in
+// the same words must not match.
+const FOOTER_SHELL_TAIL_RX = /^\s*[\u23F5\u23F8]{1,2} (?:[A-Za-z][\w-]* ){1,3}on(?: \(shift\+tab to cycle\))? · \d+ shells?(?:(?: ·|,) \d+ monitors?)?\s*$/
 
 /**
  * Index of the idle footer line, or -1. The full footer may sit anywhere the
