@@ -8,6 +8,7 @@ import {
   markMessageDelivered,
   markMessageDone,
   markMessageFailed,
+  ABANDONED_SESSION_ABSENT,
   markPendingFederatedFailed,
   setMessageResult,
   createAgentMessage,
@@ -1016,7 +1017,7 @@ export async function runMessageRouterTick(): Promise<void> {
       const absentForMs = continuousAbsenceMs(msg.to_agent, sessionExists, now)
       if (!worksourceServing && shouldAbandon(sessionExists, absentForMs, MESSAGE_ABANDON_WINDOW_MS)) {
         logger.warn({ id: msg.id, from: msg.from_agent, to: msg.to_agent, ageMs, absentForMs }, 'Agent message abandoned: target session absent for full retry window')
-        const closed = markMessageFailed(msg.id, 'Abandoned: target session absent for full retry window')
+        const closed = markMessageFailed(msg.id, ABANDONED_SESSION_ABSENT)
         if (!closed) {
           logger.warn({ id: msg.id }, 'markMessageFailed affected 0 rows (deleted concurrently?)')
         }
