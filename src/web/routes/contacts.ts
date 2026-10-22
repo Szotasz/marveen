@@ -132,7 +132,13 @@ export async function tryHandleContacts(ctx: RouteContext): Promise<boolean> {
     try {
       const all = findContacts(d, { domain, q })
       const contacts = all.slice(0, limit)
-      recordRead(d, { reader: 'brainy', query: q ? q.slice(0, AUDIT_QUERY_MAX) : null })
+      // One audit row per contact returned (which records were read); an empty
+      // result still leaves one row carrying only the query.
+      const auditQuery = q ? q.slice(0, AUDIT_QUERY_MAX) : null
+      d.transaction(() => {
+        if (!contacts.length) recordRead(d, { reader: 'brainy', query: auditQuery })
+        for (const c of contacts) recordRead(d, { reader: 'brainy', contact_id: c.id, query: auditQuery })
+      })()
       json(res, { domain, limit, truncated: all.length > contacts.length, contacts })
     } catch (err) {
       fail(ctx, err, 'list')
@@ -252,7 +258,12 @@ export async function tryHandleContacts(ctx: RouteContext): Promise<boolean> {
       const id = Number(getMatch[1])
       const c = getContact(d, id)
       // Other domain looks exactly like a missing row.
-      if (!c || c.domain !== domain) { json(res, { error: 'not found' }, 404); return true }
+      // Both cases are audited the same way: the attempt to read this id.
+      if (!c || c.domain !== domain) {
+        recordRead(d, { reader: 'brainy', contact_id: id, query: 'get:not-found' })
+        json(res, { error: 'not found' }, 404)
+        return true
+      }
       recordRead(d, { reader: 'brainy', contact_id: id })
       json(res, c)
     } catch (err) {

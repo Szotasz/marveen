@@ -188,12 +188,37 @@ describe('read audit', () => {
     const id = await mk('business', 'Audit Target', [nameVal('Audit Target'), { field: 'phone', value: '+3699887766', ...src }])
     await call('GET', '/api/contacts?domain=business&q=Audit')
     await call('GET', `/api/contacts/${id}?domain=business`)
-    await call('GET', `/api/contacts/${id}?domain=family`) // 404, no read
     const rows = getDb().prepare('SELECT * FROM contact_reads ORDER BY id').all() as any[]
     expect(rows).toHaveLength(2)
-    expect(rows[0]).toMatchObject({ reader: 'brainy', contact_id: null, query: 'Audit' })
+    expect(rows[0]).toMatchObject({ reader: 'brainy', contact_id: id, query: 'Audit' })
     expect(rows[1]).toMatchObject({ reader: 'brainy', contact_id: id, query: null })
     expect(JSON.stringify(rows)).not.toMatch(/3699887766/)
+  })
+
+  it('a list read audits every returned contact_id; an empty result leaves one id-less row', async () => {
+    const a = await mk('business', 'Listed One', [nameVal('Listed One')])
+    const b = await mk('business', 'Listed Two', [nameVal('Listed Two')])
+    await mk('family', 'Listed Fam', [nameVal('Listed Fam')])
+    await call('GET', '/api/contacts?domain=business&q=Listed')
+    let rows = getDb().prepare('SELECT contact_id FROM contact_reads ORDER BY id').all() as any[]
+    expect(rows.map((r) => r.contact_id)).toEqual([a, b])
+    await call('GET', '/api/contacts?domain=business&q=Nobody')
+    rows = getDb().prepare('SELECT contact_id, query FROM contact_reads ORDER BY id').all() as any[]
+    expect(rows).toHaveLength(3)
+    expect(rows[2]).toEqual({ contact_id: null, query: 'Nobody' })
+  })
+
+  it('404 reads (missing id and other-domain id) are audited with the requested id, same response', async () => {
+    const fam = await mk('family', 'Hidden', [nameVal('Hidden')])
+    const missing = await call('GET', '/api/contacts/9999?domain=business')
+    const cross = await call('GET', `/api/contacts/${fam}?domain=business`)
+    expect(missing.status).toBe(404)
+    expect(cross).toEqual(missing)
+    const rows = getDb().prepare('SELECT contact_id, query FROM contact_reads ORDER BY id').all() as any[]
+    expect(rows).toEqual([
+      { contact_id: 9999, query: 'get:not-found' },
+      { contact_id: fam, query: 'get:not-found' },
+    ])
   })
 })
 

@@ -13,7 +13,7 @@ Brainy saját névjegytára: név, e-mail, telefon, cím, szervezet, viszony, mi
 ## Ki férhet hozzá
 
 - Csak az `X-Agent-Id: brainy` fejlécű hívás (pontos egyezés), minden más 403 és naplósor. Ez ÖNBEVALLOTT azonosítás, nem hitelesítés: a flotta közös Bearer tokent használ.
-- Ezért minden olvasás (`contact_reads`) és minden írás (`contact_writes`: create, add, retract) auditsort kap: ki, mikor, melyik rekord. Az érték soha nem kerül az auditba. Az audit-táblák is append-only-k.
+- Ezért minden olvasás (`contact_reads`) és minden írás (`contact_writes`: create, add, retract) auditsort kap: ki, mikor, melyik rekord. A listázás minden visszaadott kapcsolat azonosítóját külön sorban naplózza (üres találatnál egyetlen azonosító nélküli sor a kereséssel), a 404-es lekérés (nem létező vagy másik tartományú azonosító) is naplósort kap a kért azonosítóval, ugyanazzal a válasszal. Az érték soha nem kerül az auditba. Az audit-táblák is append-only-k.
 
 ## Ledger-kapcsolat
 
