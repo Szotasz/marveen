@@ -1667,11 +1667,14 @@ export function agentGetsDestructiveGate(name: string, profile?: ProfileTemplate
 // ones run with the permission bypass, so the hook goes to all of them; it does
 // nothing until WebSearch is called. Its label tells the agent to use the
 // content's facts and only refuse its imperatives (BORITOOLVASAT921), so it
-// marks the payload instead of stopping the round. The hook never fails a tool
+// marks the payload instead of stopping the round. WebFetch is covered too:
+// the allowlist gates which host is reached, but an allowlisted host's content
+// is still external text. The hook never fails a tool
 // call (it exits 0 on any error), so it is a plain command, not a fail-closed
 // gate. Browser MCP matchers stay operator-wired (the doc shows how).
 export const WEBSEARCH_ENVELOPE_SCRIPT = 'browser-content-notice.py'
-export const WEBSEARCH_ENVELOPE_MATCHER = 'WebSearch'
+export const ENVELOPE_TOOLS = ['WebSearch', 'WebFetch'] as const
+export const WEBSEARCH_ENVELOPE_MATCHER = 'WebSearch|WebFetch'
 
 // A settings.json hook command, not text in a CLAUDE.md: after a host move the
 // startup migration (ensureWebSearchEnvelope) sees the command no longer wired
@@ -1685,11 +1688,24 @@ function webSearchEnvelopeCommand(): string {
 // Removes OUR envelope hook only (a hook in a group, not the group: an
 // operator's own hook sharing a WebSearch group stays), then adds the managed
 // group -- unless an operator already wired the envelope under a matcher that
-// covers WebSearch (e.g. the docs' "...|WebSearch" browser pattern), where a
+// covers the tool (e.g. the docs' "...|WebSearch" browser pattern), where a
 // second copy would run the hook twice. Returns whether anything changed.
-function matcherCoversWebSearch(matcher: unknown): boolean {
-  if (typeof matcher !== 'string' || matcher === '') return true // no matcher = every tool
-  try { return new RegExp(`^(?:${matcher})$`).test(WEBSEARCH_ENVELOPE_MATCHER) } catch { return false }
+function envelopeToolsCovered(matcher: unknown): Set<string> {
+  // Claude Code's PostToolUse matching, as the shipped CLI does it: a missing, '' or '*' matcher matches every
+  // tool; a plain name list (letters, digits, _ | , space -) matches the exact names split on | or ,; anything
+  // else is an UNANCHORED regex, and an invalid one matches nothing. A non-string matcher (null included) fails
+  // the CLI's settings schema, so that group never runs: it covers nothing and the managed group is added.
+  if (matcher === undefined || matcher === '' || matcher === '*') return new Set(ENVELOPE_TOOLS)
+  if (typeof matcher !== 'string') return new Set()
+  if (/^[a-zA-Z0-9_|, -]+$/.test(matcher)) {
+    const names = matcher.split(/[|,]/).map((n) => n.trim()).filter(Boolean)
+    return new Set(ENVELOPE_TOOLS.filter((t) => names.includes(t)))
+  }
+  const covered = new Set<string>()
+  for (const tool of ENVELOPE_TOOLS) {
+    try { if (new RegExp(matcher).test(tool)) covered.add(tool) } catch { /* invalid regex covers nothing */ }
+  }
+  return covered
 }
 
 export function injectWebSearchEnvelope(existing: Record<string, unknown>): boolean {
@@ -1705,13 +1721,21 @@ export function injectWebSearchEnvelope(existing: Record<string, unknown>): bool
   const isEnvelope = (h: { command?: unknown }) => typeof h?.command === 'string' && h.command.includes(WEBSEARCH_ENVELOPE_SCRIPT)
   const kept: G[] = []
   for (const g of prev) {
-    if (g?.matcher !== WEBSEARCH_ENVELOPE_MATCHER || !Array.isArray(g.hooks)) { kept.push(g); continue }
+    const managed = typeof g?.matcher === 'string' && (
+      g.matcher === WEBSEARCH_ENVELOPE_MATCHER ||
+      // a single envelope tool name; this also migrates the old WebSearch-only group
+      (ENVELOPE_TOOLS as readonly string[]).includes(g.matcher))
+    if (!managed || !Array.isArray(g.hooks)) { kept.push(g); continue }
     const rest = g.hooks.filter((h) => !isEnvelope(h))
     if (rest.length) kept.push({ ...g, hooks: rest })
   }
-  const operatorWired = kept.some((g) => matcherCoversWebSearch(g?.matcher) && Array.isArray(g.hooks) && g.hooks.some(isEnvelope))
-  if (!operatorWired) {
-    kept.push({ matcher: WEBSEARCH_ENVELOPE_MATCHER, hooks: [{ type: 'command', command, timeout: 10 } as { command: string }] })
+  const covered = new Set<string>()
+  for (const g of kept) {
+    if (Array.isArray(g?.hooks) && g.hooks.some(isEnvelope)) for (const t of envelopeToolsCovered(g.matcher)) covered.add(t)
+  }
+  const missing = ENVELOPE_TOOLS.filter((t) => !covered.has(t))
+  if (missing.length) {
+    kept.push({ matcher: missing.join('|'), hooks: [{ type: 'command', command, timeout: 10 } as { command: string }] })
   }
   hooks.PostToolUse = kept
   return JSON.stringify(hooks.PostToolUse) !== before
