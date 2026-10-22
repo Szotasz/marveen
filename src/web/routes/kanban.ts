@@ -28,7 +28,7 @@ import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
 import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, STORE_DIR, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS, KANBAN_LABEL_COLORS_REJECTED, KANBAN_LABEL_COLORS_OVERFLOW, DB_FILENAME } from '../../config.js'
 import { listAgentNames, readAgentDisplayName } from '../agent-config.js'
 import { isAgentRunning } from '../agent-process.js'
-import { resolveKanbanDispatch } from '../../kanban-dispatch.js'
+import { resolveKanbanDispatch, parseDispatchSkipAgents } from '../../kanban-dispatch.js'
 import { generateBreakdown } from '../llm-breakdown.js'
 import { getCardTokenUsage } from '../token-usage.js'
 import { logger } from '../../logger.js'
@@ -245,12 +245,19 @@ function fireKanbanDispatch(id: string, actor?: string | null): void {
       agentNames: listAgentNames(),
       isRunning: isAgentRunning,
       actor,
+      // Read at dispatch time (not at module load), so a Settings change applies to the next move.
+      skipAgents: parseDispatchSkipAgents(getEffectiveSettingValue('KANBAN_DISPATCH_SKIP_AGENTS')),
     })
     const target = decision.target
     if (!target) {
-      // 'not-dispatchable' (no/unknown assignee, human owner) and 'self-move'
-      // are DELIBERATE no-dispatch cases -- staying quiet is correct, and
-      // alerting on them would bury the one case that matters.
+      // 'not-dispatchable' (no/unknown assignee, human owner), 'self-move' and
+      // 'skip-listed' (KANBAN_DISPATCH_SKIP_AGENTS) are DELIBERATE no-dispatch
+      // cases -- staying quiet is correct, and alerting on them would bury the
+      // one case that matters. The card is NOT stamped dispatched_at in these
+      // cases, so a later handover + move still wakes the new assignee once.
+      if (decision.reason === 'skip-listed') {
+        logger.info({ id, assignee: card.assignee }, 'Kanban dispatch skipped (KANBAN_DISPATCH_SKIP_AGENTS)')
+      }
       if (decision.reason === 'session-down') reportUndeliveredDispatch(id, decision.unreachable ?? String(card.assignee))
       return
     }

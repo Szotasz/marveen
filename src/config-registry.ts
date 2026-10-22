@@ -94,6 +94,16 @@ function validUnitFraction(v: string): string | null {
   return Number.isFinite(n) && n >= 0 && n <= 1 ? null : '0 és 1 közötti szám szükséges (pl. 0.1).'
 }
 
+// A '' (nobody) or a comma-separated list of agent names, e.g. "pm,reviewer".
+const AGENT_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,49}$/
+function validAgentNameList(v: string): string | null {
+  const t = v.trim()
+  if (t === '') return null
+  return t.split(',').every((n) => AGENT_NAME_RE.test(n.trim()))
+    ? null
+    : 'Ügynöknevek vesszővel elválasztva (pl. pm vagy pm,reviewer).'
+}
+
 function validKeepAlive(v: string): string | null {
   const t = v.trim()
   if (t === '') return null
@@ -233,6 +243,17 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     module: 'kanban',
     secret: false,
     requiresRestart: false,
+  },
+  // --- Kanban dispatch skip list (opt-in, hot-reload via settings-store) ---
+  {
+    key: 'KANBAN_DISPATCH_SKIP_AGENTS',
+    type: 'string',
+    default: '',
+    description: 'Ügynökök, akiket a kártya in_progress-be húzása nem ébreszt fel, vesszővel elválasztva. Ez olyan ügynöknek való, aki maga osztja tovább a munkát, vagy akinek a feladatát más kézbesíti. Üres = mindenki ébred, mint eddig.',
+    module: 'kanban',
+    secret: false,
+    requiresRestart: false,
+    validate: (v) => validAgentNameList(v),
   },
   // --- Kanban claim lock (opt-in, hot-reload via settings-store) ---
   {

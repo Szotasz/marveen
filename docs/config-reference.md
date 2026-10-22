@@ -136,6 +136,7 @@ Minden dashboard-szerkeszthető beállítás egy bejegyzésként szerepel a regi
 | `KANBAN_WIP_FULL_COLOR` | color | `#d46b00` | #rrggbb | nem |
 | `KANBAN_WIP_OVER_COLOR` | color | `#c53030` | #rrggbb | nem |
 | `KANBAN_ARCHIVE_DONE_DAYS` | int | 30 | min 1, max 365 | nem |
+| `KANBAN_DISPATCH_SKIP_AGENTS` | string | (üres) | ügynöknevek vesszővel elválasztva, pl. `pm,reviewer` (az itt felsorolt ügynököt a kártya `in_progress`-be húzása nem ébreszti, lásd `kanban.md`) | nem |
 | `KANBAN_CLAIM_LOCK` | boolean | `0` | `0` vagy `1` (kártya-foglalás, lásd `kanban.md`) | nem |
 | `KANBAN_AGING_WARN_H` | int | 24 | min 1, max 8760 | nem |
 | `KANBAN_AGING_CAUTION_H` | int | 72 | min 1, max 8760 | nem |
