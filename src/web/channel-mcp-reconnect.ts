@@ -3,37 +3,51 @@ import { resolveFromPath } from '../platform.js'
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID, CHANNEL_PROVIDER } from '../config.js'
 import { readAgentChannelProvider } from './agent-config.js'
-import { agentSessionName, capturePane } from './agent-process.js'
+import { agentSessionName, capturePane, captureParkedInputView } from './agent-process.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { getProvider, type ChannelProviderType } from '../channel-provider.js'
 import { tryAcquireSessionSendLane } from './session-send-lock.js'
-import { paneLooksIdle, detectPaneState, detectsBlockingMenu } from '../pane-state.js'
+import {
+  paneLooksIdle,
+  detectPaneState,
+  detectsBlockingMenu,
+  idleConsideringDimGhost,
+  parkedInputText,
+} from '../pane-state.js'
 import { exactTmuxTarget } from '../tmux-target.js'
+import {
+  classifyMcpInlineReply,
+  countMcpCommandEchoes,
+  isSafeMcpServerName,
+  mcpCommandReply,
+  mcpReplyIsLatest,
+  showsMcpDialogTitle,
+  type McpInlineAction,
+  type McpInlineOutcome,
+} from './mcp-inline-command.js'
 
 const TMUX = resolveFromPath('tmux')
-const MAX_UP_ATTEMPTS = 8
+
+// A reconnect settles in a few seconds (busy spinner, "Reconnecting" panel,
+// then the result line); poll once a second for up to this many seconds.
+const TYPED_POLL_MAX = 10
 
 /**
- * Fully dismiss the /mcp modal before returning.
+ * Dismiss the /mcp modal by pressing Escape until the pane is back at the idle
+ * prompt (bounded to 4 presses).
  *
- * The /mcp menu is TWO levels deep (plugin LIST -> per-plugin action submenu).
- * A single Escape from inside the submenu only pops back to the LIST -- the
- * modal stays open. A reconnect that bails mid-navigation (e.g. "could not
- * place cursor on target option") then leaves the session parked in /mcp:
- * detectPaneState reads 'unknown', the scheduler skips it, and the session
- * goes deaf for up to an hour until the separate blocking-menu safety net
- * (Escape + respawn) fires. Root cause of the 2026-06-17 ~06:14 incident where
- * duolingo-esti-ellenorzes / kanban-audit / dream-engine waited 60+ min.
+ * The /mcp menu is two levels deep (server list -> per-server submenu), so a
+ * single Escape may only pop one level. We assert the POSITIVE idle state
+ * (paneLooksIdle) rather than "no blocking menu": a pane parked in the
+ * 'unknown' state is not a blocking menu, yet is exactly the deaf-causing
+ * state, so a negative check would report success there.
  *
- * Press Escape until the pane is confirmed back at the idle prompt (bounded).
- * We assert the POSITIVE idle state (paneLooksIdle) rather than the negative
- * "no blocking menu" (!detectsBlockingMenu): the incident failure mode is the
- * pane parked in the 'unknown' state, and 'unknown' is NOT a blocking menu, so a
- * negative check would return success while the pane is in exactly the deaf-
- * causing state. paneLooksIdle returns only when the input box is live and empty.
- * Extra Escapes at the normal prompt are harmless no-ops, so over-pressing is safe.
+ * With stopWhenMenuClosed the loop is gate-safe: after each Escape it
+ * re-captures and stops at once if the capture failed, the pane turned busy or
+ * the blocking menu is gone. Further Escapes would clear text parked in the
+ * revealed input box or interrupt a running turn.
  */
-function dismissMcpMenu(session: string): void {
+function dismissMcpMenu(session: string, opts: { stopWhenMenuClosed?: boolean } = {}): void {
   for (let i = 0; i < 4; i++) {
     try {
       execFileSync(TMUX, ['send-keys', '-t', exactTmuxTarget(session), 'Escape'], { timeout: 3000 })
@@ -41,12 +55,16 @@ function dismissMcpMenu(session: string): void {
     } catch {
       return
     }
-    const pane = capturePane(session) ?? ''
+    const captured = capturePane(session)
+    if (opts.stopWhenMenuClosed) {
+      if (captured == null || detectPaneState(captured) === 'busy' || !detectsBlockingMenu(captured)) return
+    }
+    const pane = captured ?? ''
     if (pane && paneLooksIdle(pane)) return
   }
   // Budget exhausted without confirming idle: the modal may still be open (the
-  // exact deaf-but-alive condition). Log loudly so the separate blocking-menu
-  // safety net / operator can intervene instead of failing silently.
+  // deaf-but-alive condition). Log loudly so the blocking-menu safety net or an
+  // operator can intervene instead of failing silently.
   const pane = capturePane(session) ?? ''
   if (!pane || !paneLooksIdle(pane)) {
     logger.warn({ session }, 'channel-mcp-reconnect: pane NOT confirmed idle after dismissMcpMenu escapes -- possible stuck /mcp modal')
@@ -77,12 +95,10 @@ function getPluginPattern(providerType: ChannelProviderType): RegExp {
 
 /**
  * Redacted diagnostic signature of a captured pane for the failure warns.
- * Booleans/counts ONLY: the pane is the main session's screen and may contain
- * conversation content, which must never reach the log. The signature answers
- * the questions the 383c3463 investigation could not (79 submenu-not-found and
- * 68 cursor-placement failures in the retained prod log window, none with any
- * record of what the TUI showed): was a blocking menu open at all, was the
- * plugin row rendered, and what state the pane was in.
+ * Booleans/counts ONLY: the pane is a live session's screen and may contain
+ * conversation content, which must never reach the log. The signature answers:
+ * was a blocking menu open at all, was the plugin row rendered, and what state
+ * the pane was in.
  */
 export function paneDiagSignature(
   pane: string | null,
@@ -98,115 +114,141 @@ export function paneDiagSignature(
   }
 }
 
-// Max Down presses we'll spend trying to land the cursor on the target
-// option inside the plugin submenu.
-const SUBMENU_MAX_STEPS = 6
-const RECONNECT_RX = /reconnect/i
-// Word-anchored so it never matches the "Disable" option (which we must
-// never activate). "Disable" contains no "enable" substring anyway, but the
-// boundary keeps intent explicit.
-const ENABLE_RX = /\benable\b/i
-// Plugin-state markers Claude Code renders in the submenu header line
-// `Status: <glyph> <word>`. We use the STATUS as authoritative when present,
-// because scanning the whole pane for "reconnect"/"enable" is fragile in two
-// ways: (a) Claude Code's own footer line ("Use /mcp to reconnect") triggers
-// a false RECONNECT match even for disabled plugins; (b) action labels can
-// change order across CC versions. Status text is rendered once, plugin-
-// header-line, and is the ground truth for what action menu is offered.
-//   ✔ connected -> View tools / Reconnect / Disable
-//   ✗ failed    -> Reconnect / ...
-//   ◯ disabled  -> Enable
-// The ◯ vs ○ ambiguity is real (Claude Code has shipped both); match either.
-const DISABLED_STATUS_RX = /Status:\s*[◯○]\s*disabled/i
-const FAILED_STATUS_RX = /Status:\s*[✗x×]\s*failed/i
-// Claude Code's TUI marks the selected list row with a `❯` cursor (same glyph
-// the input prompt uses -- see pane-state.ts). capture-pane -p strips colour,
-// so this textual marker is our only selection signal.
-const POINTER_RX = /❯/
+const REFUSE_UNREADABLE: ReconnectResult = { ok: false, message: 'Pane unreadable -- reconnect refused' }
+const DEFER_BUSY: ReconnectResult = { ok: false, message: 'Pane busy -- reconnect deferred to avoid interrupting active work' }
+const DEFER_PARKED: ReconnectResult = { ok: false, message: 'Input box not empty -- reconnect deferred' }
 
-/** The submenu row currently marked with the `❯` cursor, or null. */
-export function selectedSubmenuLine(pane: string): string | null {
-  for (const raw of pane.split('\n')) {
-    if (POINTER_RX.test(raw)) return raw
-  }
-  return null
+/** Idle prompt with an empty box; a dim placeholder in the box still counts as empty. */
+function isIdle(session: string, pane: string): boolean {
+  return idleConsideringDimGhost(pane, detectPaneState(pane) === 'typing' ? captureParkedInputView(session) : null)
 }
 
 /**
- * Pick which action to drive in the plugin submenu based on what the pane
- * offers. Authoritative source is the `Status: <glyph> <word>` header that
- * Claude Code renders for every plugin in the submenu -- because scanning
- * for the option labels themselves false-positives on CC's own footer text
- * ("Use /mcp to reconnect", etc.) and pulled stage-1 onto Reconnect even
- * for disabled plugins (2026-06-01 20:02 incident: "could not place cursor
- * on target option ... target: reconnect" while the plugin was actually
- * `◯ disabled` and only an Enable row existed).
- *
- *   ◯ disabled -> Enable
- *   ✗ failed   -> Reconnect
- *   ✔ connected -> Reconnect (View tools is safe, Disable is forbidden)
- *
- * Returns null when neither status nor option label is found -- in that
- * case we must NOT press anything, because the remaining option could be
- * "Disable".
+ * What a reply that never showed up reports, from a fresh capture: the /mcp
+ * dialog opened instead of the command (see dialogOpenedResult), the typed
+ * command still sits in the input box (touch nothing), or nothing was
+ * observed. "Not observed" is ok:true only when it is unambiguous: an older
+ * identical echo on screen before typing (ours may push it off screen, so the
+ * count never grows) or a grown echo count whose reply could not be claimed as
+ * ours (not the latest exchange) both make it ok:false.
  */
-export function chooseSubmenuTarget(pane: string): RegExp | null {
-  // Status-first: ground truth, immune to footer false-positives.
-  if (DISABLED_STATUS_RX.test(pane)) return ENABLE_RX
-  if (FAILED_STATUS_RX.test(pane)) return RECONNECT_RX
-  // Fallback: status header absent (older CC versions or partial captures).
-  // Prefer Reconnect -- if the plugin were truly disabled it would not
-  // expose a Reconnect row, so seeing one means we are NOT disabled.
-  if (RECONNECT_RX.test(pane)) return RECONNECT_RX
-  if (ENABLE_RX.test(pane)) return ENABLE_RX
-  return null
+function unobservedResult(session: string, ambiguous: boolean): ReconnectResult {
+  // Decide on a FRESH capture: the last poll can be seconds old.
+  const pane = capturePane(session)
+  if (pane == null) return { ok: false, message: 'Pane unreadable after the command -- outcome not observed' }
+  if (detectsBlockingMenu(pane)) return dialogOpenedResult(session, pane)
+  if ((parkedInputText(pane) ?? '').includes('/mcp')) {
+    return { ok: false, message: 'Command left in the input box' }
+  }
+  if (ambiguous) {
+    return { ok: false, message: 'Outcome not observed (an identical echo on screen could not be claimed as ours)' }
+  }
+  return { ok: true, message: 'Command sent; outcome not observed' }
 }
 
 /**
- * Attempt to reconnect a channel MCP plugin by navigating the /mcp
- * menu in the agent's tmux session. Generalises the existing
- * softReconnectMarveen() logic to any agent.
+ * The /mcp dialog opened instead of the command. Escape only the /mcp dialog,
+ * and only on a pane that is not busy: Escape on another modal (a tool
+ * permission prompt, a consent dialog) would answer it, and on a busy pane it
+ * would interrupt the turn.
+ */
+function dialogOpenedResult(session: string, pane: string): ReconnectResult {
+  if (detectsBlockingMenu(pane) && showsMcpDialogTitle(pane) && detectPaneState(pane) !== 'busy') {
+    dismissMcpMenu(session, { stopWhenMenuClosed: true })
+  }
+  return { ok: false, message: 'MCP dialog opened instead of the command' }
+}
+
+/**
+ * Type `/mcp <action> <serverName>`, submit it and poll until ITS OWN reply is
+ * on screen. The echo count must grow past the pre-typing baseline, so an older
+ * identical echo and result still on screen are never taken for ours; the
+ * reply is the block under the newest echo. Never presses Escape itself (only
+ * unobservedResult may, through dismissMcpMenu).
+ */
+function typeMcpCommandAndWait(
+  session: string,
+  action: McpInlineAction,
+  serverName: string,
+): McpInlineOutcome | ReconnectResult {
+  // Gate again right before the first key (this also covers the later steps of
+  // the disabled path). The baseline must come from a readable, still-idle
+  // pane: a null capture would count as zero echoes and let an older identical
+  // reply pass as ours.
+  const before = capturePane(session)
+  if (before == null) return REFUSE_UNREADABLE
+  if (detectPaneState(before) === 'busy') return DEFER_BUSY
+  if (!isIdle(session, before)) return DEFER_PARKED
+  const baseline = countMcpCommandEchoes(before, action, serverName)
+  execFileSync(TMUX, ['send-keys', '-t', exactTmuxTarget(session), '-l', `/mcp ${action} ${serverName}`], { timeout: 3000 })
+  execFileSync('/bin/sleep', ['0.3'], { timeout: 2000 })
+  execFileSync(TMUX, ['send-keys', '-t', exactTmuxTarget(session), 'Enter'], { timeout: 3000 })
+  // A grown echo count whose reply could not be claimed (not rendered yet, or
+  // not the latest exchange) makes a later timeout ambiguous, like an older
+  // echo on screen does.
+  let unclaimedEcho = false
+  for (let i = 0; i < TYPED_POLL_MAX; i++) {
+    execFileSync('/bin/sleep', ['1'], { timeout: 3000 })
+    const pane = capturePane(session)
+    if (pane == null) continue
+    if (countMcpCommandEchoes(pane, action, serverName) <= baseline) continue
+    unclaimedEcho = true
+    const reply = mcpCommandReply(pane, action, serverName)
+    if (reply == null) continue
+    // An older identical echo that came into view is not ours: wait for ours.
+    if (!mcpReplyIsLatest(pane, action, serverName)) continue
+    const outcome = classifyMcpInlineReply(reply, action, serverName)
+    if (outcome === 'dialog-open') return dialogOpenedResult(session, pane)
+    // A reply of OURS is on screen but matches no known literal (CLI wording
+    // drift, the exception branch's "Error: ..."): never read that as success.
+    if (outcome === 'unknown') return { ok: false, message: `Unrecognised reply to /mcp ${action}` }
+    return outcome
+  }
+  return unobservedResult(session, baseline > 0 || unclaimedEcho)
+}
+
+function isOutcome(r: McpInlineOutcome | ReconnectResult): r is McpInlineOutcome {
+  return typeof r === 'string'
+}
+
+function reconnectResult(outcome: McpInlineOutcome, serverName: string): ReconnectResult {
+  if (outcome === 'reconnected') return { ok: true, message: 'Reconnected via /mcp reconnect' }
+  return { ok: false, message: `/mcp reconnect ${serverName}: ${outcome}` }
+}
+
+/**
+ * Attempt to reconnect a channel MCP plugin by typing the one-line
+ * `/mcp reconnect <server>` command into the agent's tmux session and reading
+ * the CLI's reply (no menu navigation).
  *
- * Sequence: Escape → /mcp Enter → Up×N until plugin found → Enter →
- * step the `❯` cursor onto "Reconnect" (or "Enable" when disabled),
- * verifying after each step → Enter → Escape.
+ * Nothing is typed unless the pane is provably idle with an empty input box:
+ * send-keys APPENDS to the input box and Enter submits whatever is parked
+ * there. An open /mcp modal is dismissed first, but only on a pane that is not
+ * busy, and the dismiss stops as soon as the menu is gone.
  *
- * The submenu option order is STATE-DEPENDENT in Claude Code 2.1.x:
- *   connected: 1.View tools  2.Reconnect  3.Disable
- *   failed:    1.Reconnect   ...
- *   disabled:  1.Enable
- * The previous logic blindly pressed Down+Enter, assuming "Reconnect" was
- * always one row down -- true only while connected. In the failed state that
- * landed on "Disable" and DISABLED the plugin, which then offered only
- * "Enable" and broke every subsequent retry ("submenu not found"). We now
- * read the menu and only press Enter once the cursor is confirmed on a safe
- * target.
+ * Replies map as: reconnected -> ok; disabled -> `/mcp enable <server>` then
+ * one more reconnect; any other recognised outcome -> ok:false naming it; an
+ * unrecognised reply or timeout -> see unobservedResult.
  */
 export function attemptChannelMcpReconnect(agentName: string): ReconnectResult {
   const session = resolveAgentSession(agentName)
   const providerType = resolveAgentProviderType(agentName)
   const pluginPattern = getPluginPattern(providerType)
 
-  // Idle-guard: NEVER drive the /mcp menu (which starts by pressing Escape and
-  // then navigates Up/Enter/Down) into a pane that is actively generating. The
-  // Escape would interrupt the agent's in-flight turn and the navigation keys
-  // would inject stray input into a live session -- i.e. it kills work in
-  // progress. A 'busy' read means an Escape lands as an interrupt, so we defer
-  // and let the caller retry on a later tick when the pane is back at the idle
-  // prompt. (detectPaneState reads the live footer / busy indicators; scrollback
-  // mentions of "esc to interrupt" are footer-scoped so they don't false-trip.)
-  const preflight = capturePane(session) ?? ''
-  if (detectPaneState(preflight) === 'busy') {
+  let pre = capturePane(session)
+  if (pre == null) {
+    logger.warn({ agentName, session }, 'channel-mcp-reconnect: capture failed before any keystroke -- refusing')
+    return REFUSE_UNREADABLE
+  }
+  if (detectPaneState(pre) === 'busy') {
     logger.info({ agentName, session }, 'channel-mcp-reconnect: pane busy -- deferring reconnect to avoid interrupting active work')
     return { ok: false, message: 'Pane busy -- reconnect deferred to avoid interrupting active work' }
   }
 
-  // PANEWRITERS805: the whole /mcp menu walk (Escape, /mcp, Up/Down/Enter) is
-  // direct keystrokes into a pane that also receives locked deliveries. Take
-  // the pane's send lane fail-closed for the entire sequence: a busy lane means
-  // a delivery is mid-chunk-stream, and our Escape/Enter would land inside its
-  // framed text. Skip and let the caller's tick retry -- same contract as the
-  // busy-pane defer above.
+  // The typed command is a direct write into a pane that also receives locked
+  // deliveries. Take the pane's send lane fail-closed for the entire sequence:
+  // a busy lane means a delivery is mid-chunk-stream and our keys would land
+  // inside its framed text. Skip and let the caller's tick retry.
   const releaseLane = tryAcquireSessionSendLane(session, null)
   if (!releaseLane) {
     logger.info({ agentName, session }, 'channel-mcp-reconnect: pane send lane busy (delivery in flight) -- deferring reconnect (fail-closed)')
@@ -214,108 +256,55 @@ export function attemptChannelMcpReconnect(agentName: string): ReconnectResult {
   }
 
   try {
-    execFileSync(TMUX, ['send-keys', '-t', exactTmuxTarget(session), 'Escape'], { timeout: 3000 })
-    execFileSync('/bin/sleep', ['1'], { timeout: 2000 })
-
-    execFileSync(TMUX, ['send-keys', '-t', exactTmuxTarget(session), '/mcp', 'Enter'], { timeout: 3000 })
-    execFileSync('/bin/sleep', ['1'], { timeout: 3000 })
-
-    const pane1 = capturePane(session)
-    if (!pane1) {
-      logger.warn({ agentName, session }, 'channel-mcp-reconnect: capture failed after /mcp')
-      dismissMcpMenu(session)
-      return { ok: false, message: 'Failed to capture pane after /mcp' }
-    }
-
-    let matchedAt = -1
-    // Kept for the failure diagnostics below: the last thing the TUI showed.
-    let lastPane: string | null = pane1
-    for (let upCount = 1; upCount <= MAX_UP_ATTEMPTS; upCount++) {
-      execFileSync(TMUX, ['send-keys', '-t', exactTmuxTarget(session), 'Up'], { timeout: 3000 })
-      execFileSync('/bin/sleep', ['0.2'], { timeout: 1000 })
-      execFileSync(TMUX, ['send-keys', '-t', exactTmuxTarget(session), 'Enter'], { timeout: 3000 })
-      execFileSync('/bin/sleep', ['1'], { timeout: 3000 })
-
-      const pane = capturePane(session)
-      lastPane = pane ?? lastPane
-      if (pane && pluginPattern.test(pane)) {
-        matchedAt = upCount
-        break
+    if (!isIdle(session, pre)) {
+      if (detectsBlockingMenu(pre) && !showsMcpDialogTitle(pre)) {
+        // Another modal (a tool permission prompt, a consent dialog): any key
+        // would answer it. Touch nothing.
+        logger.warn({ agentName, session, pane: paneDiagSignature(pre, pluginPattern) }, 'channel-mcp-reconnect: a dialog other than /mcp is open -- refusing')
+        return { ok: false, message: 'A dialog other than /mcp is open -- reconnect refused' }
       }
-      execFileSync(TMUX, ['send-keys', '-t', exactTmuxTarget(session), 'Escape'], { timeout: 3000 })
-      execFileSync('/bin/sleep', ['0.5'], { timeout: 1000 })
-    }
-
-    if (matchedAt < 0) {
-      logger.warn(
-        {
-          agentName,
-          session,
-          maxUpAttempts: MAX_UP_ATTEMPTS,
-          pluginPattern: pluginPattern.source,
-          afterMcp: paneDiagSignature(pane1, pluginPattern),
-          lastAttempt: paneDiagSignature(lastPane, pluginPattern),
-        },
-        'channel-mcp-reconnect: plugin submenu not found',
-      )
-      dismissMcpMenu(session)
-      return { ok: false, message: `Plugin not found within ${MAX_UP_ATTEMPTS} Up attempts` }
-    }
-
-    // Inside the plugin submenu now. Drive the cursor onto a safe action
-    // ("Reconnect", or "Enable" when disabled) and only press Enter once it
-    // is confirmed there -- never blindly, which previously hit "Disable".
-    let submenu = capturePane(session)
-    if (!submenu) {
-      logger.warn({ agentName, session }, 'channel-mcp-reconnect: capture failed in submenu')
-      dismissMcpMenu(session)
-      return { ok: false, message: 'Failed to capture submenu pane' }
-    }
-
-    const target = chooseSubmenuTarget(submenu)
-    if (!target) {
-      logger.warn({ agentName, session }, 'channel-mcp-reconnect: no Reconnect/Enable option in submenu')
-      dismissMcpMenu(session)
-      return { ok: false, message: 'No Reconnect/Enable option in submenu' }
-    }
-
-    let onTarget = false
-    for (let step = 0; step <= SUBMENU_MAX_STEPS; step++) {
-      const sel = selectedSubmenuLine(submenu)
-      if (sel && target.test(sel)) {
-        onTarget = true
-        break
+      if (detectsBlockingMenu(pre)) {
+        dismissMcpMenu(session, { stopWhenMenuClosed: true })
+        pre = capturePane(session)
+        if (pre == null) return REFUSE_UNREADABLE
+        if (detectPaneState(pre) === 'busy') return DEFER_BUSY
+        if (detectsBlockingMenu(pre)) {
+          logger.warn({ agentName, session, pane: paneDiagSignature(pre, pluginPattern) }, 'channel-mcp-reconnect: menu still open after dismiss -- refusing')
+          return { ok: false, message: 'MCP dialog still open -- reconnect refused' }
+        }
+        if (!isIdle(session, pre)) return DEFER_PARKED
+      } else {
+        logger.warn({ agentName, session, pane: paneDiagSignature(pre, pluginPattern) }, 'channel-mcp-reconnect: input box not empty -- reconnect deferred')
+        return DEFER_PARKED
       }
-      execFileSync(TMUX, ['send-keys', '-t', exactTmuxTarget(session), 'Down'], { timeout: 3000 })
-      execFileSync('/bin/sleep', ['0.3'], { timeout: 1000 })
-      submenu = capturePane(session) ?? ''
     }
 
-    if (!onTarget) {
-      logger.warn(
-        {
-          agentName,
-          session,
-          target: target.source,
-          maxSteps: SUBMENU_MAX_STEPS,
-          submenu: paneDiagSignature(submenu, pluginPattern),
-        },
-        'channel-mcp-reconnect: could not place cursor on target option',
-      )
-      dismissMcpMenu(session)
-      return { ok: false, message: `Could not select ${target.source} within ${SUBMENU_MAX_STEPS} steps` }
+    const serverName = getProvider(providerType).pluginPaneId
+    if (!isSafeMcpServerName(serverName)) {
+      logger.warn({ agentName, session, provider: providerType }, 'channel-mcp-reconnect: unsafe MCP server name -- nothing typed')
+      return { ok: false, message: 'Unsafe MCP server name -- reconnect refused' }
     }
 
-    execFileSync(TMUX, ['send-keys', '-t', exactTmuxTarget(session), 'Enter'], { timeout: 3000 })
-    execFileSync('/bin/sleep', ['2'], { timeout: 4000 })
-    dismissMcpMenu(session)
+    const first = typeMcpCommandAndWait(session, 'reconnect', serverName)
+    if (!isOutcome(first)) return first
+    if (first !== 'disabled') {
+      if (first !== 'reconnected') logger.warn({ agentName, session, outcome: first }, 'channel-mcp-reconnect: /mcp reconnect did not succeed')
+      return reconnectResult(first, serverName)
+    }
 
-    const action = target === RECONNECT_RX ? 'Reconnect' : 'Enable'
-    logger.info({ agentName, session, matchedAt, action, provider: providerType }, 'channel-mcp-reconnect: completed')
-    return { ok: true, message: `Activated ${action} via /mcp (Up x${matchedAt})` }
+    // The server is disabled: enable it, then reconnect once more. Each typed
+    // step re-gates the pane itself before its first key.
+    const enable = typeMcpCommandAndWait(session, 'enable', serverName)
+    if (!isOutcome(enable)) return enable
+    if (enable === 'already-enabled') {
+      return { ok: false, message: `/mcp enable ${serverName}: already enabled but reported disabled` }
+    }
+    if (enable !== 'enabled') return { ok: false, message: `/mcp enable ${serverName}: ${enable}` }
+    const second = typeMcpCommandAndWait(session, 'reconnect', serverName)
+    if (!isOutcome(second)) return second
+    return reconnectResult(second, serverName)
   } catch (err) {
     logger.warn({ err, agentName, session }, 'channel-mcp-reconnect failed')
-    try { dismissMcpMenu(session) } catch { /* best effort */ }
     return { ok: false, message: err instanceof Error ? err.message : String(err) }
   } finally {
     releaseLane()

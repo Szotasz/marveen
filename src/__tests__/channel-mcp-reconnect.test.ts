@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { readFileSync } from 'node:fs'
 
 const mockExecFileSync = vi.fn()
 vi.mock('node:child_process', () => ({
@@ -31,12 +32,17 @@ vi.mock('../web/agent-config.js', () => ({
 }))
 
 const mockCapturePane = vi.fn<(session: string) => string | null>()
+const mockCaptureParkedInputView = vi.fn<(session: string) => string | null>()
+// Lets a single test swap the provider mock's pluginPaneId; vi.mock factories
+// run lazily, so they read this at call time.
+const mockPluginPaneIdOverride = { value: null as string | null }
 vi.mock('../web/agent-process.js', () => ({
   // The not-ready-path modal clear: false = no modal, so every caller keeps
   // its existing skip/busy behaviour and these fixtures are unaffected.
   clearFeedbackModalAndRecheck: () => false,
   agentSessionName: (name: string) => `agent-${name}`,
   capturePane: (session: string) => mockCapturePane(session),
+  captureParkedInputView: (session: string) => mockCaptureParkedInputView(session),
 }))
 
 vi.mock('../web/main-agent.js', () => ({
@@ -48,9 +54,9 @@ vi.mock('../channel-provider.js', () => ({
     pluginId: type === 'slack'
       ? 'slack-channel@marveen-marketplace'
       : 'telegram@claude-plugins-official',
-    pluginPaneId: type === 'slack'
+    pluginPaneId: mockPluginPaneIdOverride.value ?? (type === 'slack'
       ? 'plugin:slack-channel:marveen-marketplace'
-      : 'plugin:telegram:telegram',
+      : 'plugin:telegram:telegram'),
   }),
 }))
 
@@ -58,34 +64,12 @@ import {
   attemptChannelMcpReconnect,
   resolveAgentSession,
   resolveAgentProviderType,
-  selectedSubmenuLine,
-  chooseSubmenuTarget,
   paneDiagSignature,
 } from '../web/channel-mcp-reconnect.js'
-
-// Submenu panes Claude Code renders for each plugin state. The `❯` marks the
-// row the cursor sits on when the submenu first opens (top row).
-const SUBMENU_CONNECTED_TOP = [
-  'plugin:telegram:telegram',
-  '❯ View tools',
-  '  Reconnect',
-  '  Disable',
-].join('\n')
-const SUBMENU_CONNECTED_ON_RECONNECT = [
-  'plugin:telegram:telegram',
-  '  View tools',
-  '❯ Reconnect',
-  '  Disable',
-].join('\n')
-const SUBMENU_FAILED_TOP = [
-  'plugin:telegram:telegram',
-  '❯ Reconnect',
-  '  Disable',
-].join('\n')
-const SUBMENU_DISABLED_TOP = [
-  'plugin:telegram:telegram',
-  '❯ Enable',
-].join('\n')
+import { logger } from '../logger.js'
+import { detectPaneState, detectsBlockingMenu } from '../pane-state.js'
+import { mcpCommandReply, showsMcpDialogTitle } from '../web/mcp-inline-command.js'
+import { tryAcquireSessionSendLane } from '../web/session-send-lock.js'
 
 describe('paneDiagSignature', () => {
   const PLUGIN_RX = /plugin:telegram:telegram/i
@@ -155,235 +139,839 @@ describe('resolveAgentProviderType', () => {
   })
 })
 
-describe('selectedSubmenuLine', () => {
-  it('returns the row marked with the cursor', () => {
-    expect(selectedSubmenuLine(SUBMENU_CONNECTED_TOP)).toBe('❯ View tools')
-    expect(selectedSubmenuLine(SUBMENU_FAILED_TOP)).toBe('❯ Reconnect')
-  })
+// Pane shapes for the pre-keystroke gate; the REAL pane-state code reads them.
+const SEP = '─'.repeat(80)
+const FOOTER = '  ⏵⏵ bypass permissions on (shift+tab to cycle)'
+const IDLE_EMPTY = ['', SEP, '❯ ', SEP, FOOTER].join('\n')
 
-  it('returns null when no cursor is present', () => {
-    expect(selectedSubmenuLine('  View tools\n  Reconnect')).toBeNull()
-  })
-})
+// A delivery wrap parked, unsubmitted, in an otherwise idle pane.
+const PARKED_DELIVERY_WRAP = [
+  '',
+  SEP,
+  '❯ [BATCH: 2 inter-agent messages delivered at once] TEAM MEMBER NOTICE -- the',
+  '  next <trusted-peer source="..."> block is a message from an agent in your own',
+  '  team. [Message from @peer-agent -- trusted team member, msg_id:12345]:',
+  SEP,
+  FOOTER,
+].join('\n')
 
-describe('chooseSubmenuTarget', () => {
-  it('prefers Reconnect when present', () => {
-    expect(chooseSubmenuTarget(SUBMENU_CONNECTED_TOP)?.source).toBe('reconnect')
-    expect(chooseSubmenuTarget(SUBMENU_FAILED_TOP)?.source).toBe('reconnect')
-  })
+const BUSY_MID_TURN = [
+  '✢ Combobulating… (52s · ↓ 2.6k tokens · thinking some more)',
+  '',
+  SEP,
+  '❯ ',
+  SEP,
+  '  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt',
+].join('\n')
 
-  it('falls back to Enable in the disabled state', () => {
-    const t = chooseSubmenuTarget(SUBMENU_DISABLED_TOP)
-    expect(t?.test('❯ Enable')).toBe(true)
-    expect(t?.source).not.toBe('reconnect')
-  })
+// The /mcp server list modal, shaped like the CLI 2.1.291 capture: the top rule
+// (a run of U+2594), the title alone on its line, selectable rows, nav footer.
+const MCP_DIALOG = [
+  '▔'.repeat(40),
+  '   Manage MCP servers',
+  '',
+  '  ❯ 1. telegram',
+  '    2. filesystem',
+  '',
+  '  ↑/↓ to navigate · Enter to select · Esc to back',
+].join('\n')
 
-  it('never targets Disable when no Reconnect/Enable exists', () => {
-    expect(chooseSubmenuTarget('plugin:x\n❯ View tools\n  Disable')).toBeNull()
-  })
+const sendKeysCalls = () =>
+  mockExecFileSync.mock.calls.filter((c) => Array.isArray(c[1]) && c[1].includes('send-keys'))
+const mcpKeystrokeCalls = () =>
+  mockExecFileSync.mock.calls.filter(
+    (c) => Array.isArray(c[1]) && c[1].some((a: unknown) => typeof a === 'string' && a.startsWith('/mcp')),
+  )
+const escapeCalls = () => sendKeysCalls().filter((c) => Array.isArray(c[1]) && c[1].includes('Escape'))
 
-  it('does not mistake "Disable" for an Enable target', () => {
-    // \benable\b must not match the "Disable" row.
-    expect(chooseSubmenuTarget('plugin:x\n❯ View tools\n  Disable')).toBeNull()
-  })
+function resetPaneMocks(): void {
+  vi.clearAllMocks()
+  mockCapturePane.mockReset()
+  mockCaptureParkedInputView.mockReset()
+  mockCaptureParkedInputView.mockReturnValue(null)
+  mockPluginPaneIdOverride.value = null
+}
 
-  it('uses status header as ground truth: disabled status -> Enable even if pane contains the word "reconnect"', () => {
-    // 2026-06-01 20:02 incident: stage 1 logged
-    //   "could not place cursor on target option ... target: reconnect"
-    // while the plugin was actually `◯ disabled`. Cause was a stray
-    // "reconnect" substring elsewhere in the pane (Claude Code's own
-    // footer / scrollback). Status header is now authoritative.
-    const paneWithDisabledStatusAndFooterText = [
-      'Plugin:telegram:telegram MCP Server',
-      '',
-      'Status:           ◯ disabled',
-      '',
-      '❯ 1. Enable',
-      '',
-      '↑/↓ to navigate · Enter to select · Esc to back',
-      '※ Run claude --debug to see error logs / use /mcp to reconnect',
-    ].join('\n')
-    const t = chooseSubmenuTarget(paneWithDisabledStatusAndFooterText)
-    expect(t?.test('Enable')).toBe(true)
-    expect(t?.source).not.toBe('reconnect')
-  })
-
-  it('uses status header: failed status -> Reconnect', () => {
-    const failedPane = [
-      'Plugin:telegram:telegram MCP Server',
-      'Status:           ✗ failed',
-      '❯ 1. Reconnect',
-    ].join('\n')
-    expect(chooseSubmenuTarget(failedPane)?.source).toBe('reconnect')
-  })
-
-  it('handles the ◯/○ glyph variants Claude Code has shipped', () => {
-    const withHollow = 'Status: ○ disabled\n❯ Enable'
-    const withCircled = 'Status: ◯ disabled\n❯ Enable'
-    expect(chooseSubmenuTarget(withHollow)?.source).toBe(ENABLE_RX.source)
-    expect(chooseSubmenuTarget(withCircled)?.source).toBe(ENABLE_RX.source)
-  })
-})
-
-// Re-export the regex for the glyph-variant test (defined in helper file)
-const ENABLE_RX = /\benable\b/i
-
-describe('attemptChannelMcpReconnect', () => {
-  beforeEach(() => {
-    vi.clearAllMocks()
-    // attemptChannelMcpReconnect now does a preflight capturePane + busy-guard
-    // BEFORE pressing any key (so it never interrupts an actively generating
-    // pane). Queue a non-busy preflight read first; each test's own capture
-    // sequence then flows behind it unchanged. A 'no idle footer' string reads
-    // as 'unknown' (not 'busy'), so the guard lets the reconnect proceed.
-    mockCapturePane.mockReturnValueOnce('preflight-not-busy')
-  })
+describe('pane-side gate', () => {
+  beforeEach(resetPaneMocks)
 
   it('defers (sends NO keys) when the pane is actively generating', () => {
-    // Reni-reported root cause: the soft /mcp reconnect blindly pressed Escape
-    // into a live session, interrupting work in progress. The busy-guard must
-    // bail before any send-keys when detectPaneState reads 'busy'.
-    mockCapturePane.mockReset()
     mockCapturePane.mockReturnValueOnce('· Synthesizing… (8s · ↓ 1.2k tokens · esc to interrupt)')
 
     const result = attemptChannelMcpReconnect('marveen')
 
     expect(result.ok).toBe(false)
-    expect(result.message).toContain('busy')
-    // The hard assertion: not a single key was sent into the pane.
-    const sendKeyCalls = mockExecFileSync.mock.calls.filter(
-      (c) => Array.isArray(c[1]) && c[1].includes('send-keys'),
-    )
-    expect(sendKeyCalls.length).toBe(0)
+    expect(result.message).toContain('Pane busy -- reconnect deferred')
+    expect(sendKeysCalls().length).toBe(0)
   })
 
-  it('connected state: steps Down onto Reconnect, then activates it', () => {
-    mockCapturePane
-      .mockReturnValueOnce('/mcp menu content')            // after /mcp
-      .mockReturnValueOnce('plugin:telegram:telegram')     // first loop: matched on Up x1
-      .mockReturnValueOnce(SUBMENU_CONNECTED_TOP)          // submenu capture: cursor on View tools
-      .mockReturnValueOnce(SUBMENU_CONNECTED_ON_RECONNECT) // after one Down: cursor on Reconnect
-
-    const result = attemptChannelMcpReconnect('marveen')
-
-    expect(result.ok).toBe(true)
-    expect(result.message).toContain('Reconnect')
-    expect(result.message).toContain('Up x1')
-    // Exactly one Enter is sent inside the submenu (the activation).
-    const submenuEnters = mockExecFileSync.mock.calls.filter(
-      (c) => Array.isArray(c[1]) && c[1].includes('Enter') && !c[1].includes('/mcp'),
-    )
-    expect(submenuEnters.length).toBeGreaterThanOrEqual(2) // open submenu + activate
+  it('defers (sends NO keys) while another writer holds the pane send lane', () => {
+    mockCapturePane.mockReturnValue(IDLE_EMPTY)
+    const release = tryAcquireSessionSendLane('marveen-channels', null)
+    expect(release).not.toBeNull() // precondition: this test holds the lane
+    try {
+      const result = attemptChannelMcpReconnect('marveen')
+      expect(result.ok).toBe(false)
+      expect(result.message).toMatch(/deferred/)
+      expect(sendKeysCalls().length).toBe(0)
+    } finally {
+      release!()
+    }
   })
 
-  it('failed state: Reconnect is already selected, activates WITHOUT pressing Down', () => {
-    mockCapturePane
-      .mockReturnValueOnce('/mcp menu')
-      .mockReturnValueOnce('plugin:telegram:telegram')
-      .mockReturnValueOnce(SUBMENU_FAILED_TOP) // cursor already on Reconnect
-
-    const result = attemptChannelMcpReconnect('marveen')
-
-    expect(result.ok).toBe(true)
-    expect(result.message).toContain('Reconnect')
-    // Regression guard: the old code blindly pressed Down here and landed on
-    // "Disable", killing the plugin. No Down may be sent in the submenu.
-    const downCalls = mockExecFileSync.mock.calls.filter(
-      (c) => Array.isArray(c[1]) && c[1].includes('Down'),
-    )
-    expect(downCalls.length).toBe(0)
-  })
-
-  it('disabled state: activates Enable', () => {
-    mockCapturePane
-      .mockReturnValueOnce('/mcp menu')
-      .mockReturnValueOnce('plugin:telegram:telegram')
-      .mockReturnValueOnce(SUBMENU_DISABLED_TOP)
-
-    const result = attemptChannelMcpReconnect('marveen')
-
-    expect(result.ok).toBe(true)
-    expect(result.message).toContain('Enable')
-  })
-
-  it('never activates when only unsafe options exist (no Reconnect/Enable)', () => {
-    mockCapturePane
-      .mockReturnValueOnce('/mcp menu')
-      .mockReturnValueOnce('plugin:telegram:telegram')
-      .mockReturnValueOnce('plugin:telegram:telegram\n❯ View tools\n  Disable')
-
-    const result = attemptChannelMcpReconnect('marveen')
-
-    expect(result.ok).toBe(false)
-    expect(result.message).toContain('No Reconnect/Enable')
-    // No Enter is pressed inside the submenu -> Disable can never be triggered.
-    const downCalls = mockExecFileSync.mock.calls.filter(
-      (c) => Array.isArray(c[1]) && c[1].includes('Down'),
-    )
-    expect(downCalls.length).toBe(0)
-  })
-
-  it('finds the plugin on the third Up before opening the submenu', () => {
-    mockCapturePane
-      .mockReturnValueOnce('/mcp menu')
-      .mockReturnValueOnce('no match')
-      .mockReturnValueOnce('no match')
-      .mockReturnValueOnce('plugin:telegram:telegram here') // matched on Up x3
-      .mockReturnValueOnce(SUBMENU_FAILED_TOP)              // submenu: Reconnect selected
-
-    const result = attemptChannelMcpReconnect('marveen')
-
-    expect(result.ok).toBe(true)
-    expect(result.message).toContain('Up x3')
-  })
-
-  it('returns ok:false when capture fails after /mcp', () => {
+  it('E1: a failed first capture refuses before any keystroke', () => {
     mockCapturePane.mockReturnValueOnce(null)
 
     const result = attemptChannelMcpReconnect('marveen')
 
-    expect(result.ok).toBe(false)
-    expect(result.message).toContain('capture')
+    expect(result).toEqual({ ok: false, message: 'Pane unreadable -- reconnect refused' })
+    expect(sendKeysCalls().length).toBe(0)
   })
 
-  it('returns ok:false when plugin not found within max attempts', () => {
-    mockCapturePane.mockReturnValueOnce('/mcp menu')
-    for (let i = 0; i < 8; i++) {
-      mockCapturePane.mockReturnValueOnce('no match here')
-    }
+  it('E2: parked text in the input box defers with zero keystrokes and no pane text in the log', () => {
+    mockCapturePane.mockReturnValue(PARKED_DELIVERY_WRAP)
 
     const result = attemptChannelMcpReconnect('marveen')
 
     expect(result.ok).toBe(false)
-    expect(result.message).toContain('not found')
+    expect(result.message).toMatch(/deferred/)
+    expect(result.message).toBe('Input box not empty -- reconnect deferred')
+    expect(sendKeysCalls().length).toBe(0)
+    const logs = JSON.stringify([...vi.mocked(logger.warn).mock.calls, ...vi.mocked(logger.info).mock.calls])
+    expect(logs).not.toContain('BATCH')
+    expect(logs).not.toContain('peer-agent')
+    expect(logs).not.toContain('msg_id:12345')
   })
 
-  it('uses correct session for sub-agents', () => {
+  it('E3: a busy pane defers with zero keystrokes (so no Escape either)', () => {
+    mockCapturePane.mockReturnValue(BUSY_MID_TURN)
+
+    const result = attemptChannelMcpReconnect('marveen')
+
+    expect(result.ok).toBe(false)
+    expect(result.message).toMatch(/deferred/)
+    expect(sendKeysCalls().length).toBe(0)
+  })
+
+  it('E3b: a busy pane that also shows the MCP dialog title gets no Escape from the menu dismiss', () => {
+    mockCapturePane.mockReturnValue(['Manage MCP servers', '', BUSY_MID_TURN].join('\n'))
+
+    const result = attemptChannelMcpReconnect('marveen')
+
+    expect(result.ok).toBe(false)
+    expect(result.message).toMatch(/deferred/)
+    expect(sendKeysCalls().length).toBe(0)
+  })
+
+  it('E4a: an open MCP dialog on the first capture is dismissed, then the reconnect proceeds', () => {
     mockCapturePane
-      .mockReturnValueOnce('/mcp')
-      .mockReturnValueOnce('plugin:slack-channel:marveen-marketplace found')
-      .mockReturnValueOnce('plugin:slack-channel:marveen-marketplace\n❯ Reconnect\n  Disable')
+      .mockReturnValueOnce(MCP_DIALOG) // gate: /mcp modal already up
+      .mockReturnValue(IDLE_EMPTY)     // dismiss re-capture + everything after
 
-    attemptChannelMcpReconnect('slacker')
+    const result = attemptChannelMcpReconnect('marveen')
 
-    expect(mockExecFileSync).toHaveBeenCalledWith(
-      '/usr/local/bin/tmux',
-      ['send-keys', '-t', '=agent-slacker:', 'Escape'],
-      expect.any(Object),
-    )
+    // The pane never shows an echo or a result, so the typed command ends in
+    // "outcome not observed"; what matters is that the command was typed.
+    expect(result.message).toContain('not observed')
+    expect(mcpKeystrokeCalls().length).toBeGreaterThan(0)
   })
 
-  it('sends Escape on error to clean up menu state', () => {
-    mockExecFileSync.mockImplementationOnce(() => { /* Escape */ })
-    mockExecFileSync.mockImplementationOnce(() => { /* sleep */ })
-    mockExecFileSync.mockImplementationOnce(() => { throw new Error('tmux dead') })
+  it('E4b: dialog first, then an occupied idle pane -> deferred, and no /mcp keystroke', () => {
+    mockCapturePane
+      .mockReturnValueOnce(MCP_DIALOG)
+      .mockReturnValue(PARKED_DELIVERY_WRAP)
 
     const result = attemptChannelMcpReconnect('marveen')
 
     expect(result.ok).toBe(false)
-    const escapeCalls = mockExecFileSync.mock.calls.filter(
-      (c) => Array.isArray(c[1]) && c[1].includes('Escape'),
+    expect(result.message).toMatch(/deferred/)
+    expect(mcpKeystrokeCalls().length).toBe(0)
+  })
+
+  it('E4c: a dialog that survives the dismiss attempts is refused', () => {
+    mockCapturePane.mockReturnValue(MCP_DIALOG)
+
+    const result = attemptChannelMcpReconnect('marveen')
+
+    expect(result.ok).toBe(false)
+    expect(result.message).toBe('MCP dialog still open -- reconnect refused')
+    expect(mcpKeystrokeCalls().length).toBe(0)
+  })
+
+  it('E4d: the dismiss stops at the first Escape when it reveals parked text', () => {
+    mockCapturePane
+      .mockReturnValueOnce(MCP_DIALOG)
+      .mockReturnValue(PARKED_DELIVERY_WRAP)
+
+    const result = attemptChannelMcpReconnect('marveen')
+
+    expect(result.ok).toBe(false)
+    expect(result.message).toBe('Input box not empty -- reconnect deferred')
+    expect(escapeCalls().length).toBe(1)
+    expect(mcpKeystrokeCalls().length).toBe(0)
+  })
+
+  it('E4e: the dismiss stops at the first Escape when the pane has turned busy', () => {
+    mockCapturePane
+      .mockReturnValueOnce(MCP_DIALOG)
+      .mockReturnValue(BUSY_MID_TURN)
+
+    const result = attemptChannelMcpReconnect('marveen')
+
+    expect(result.ok).toBe(false)
+    expect(result.message).toContain('Pane busy -- reconnect deferred')
+    expect(escapeCalls().length).toBe(1)
+    expect(mcpKeystrokeCalls().length).toBe(0)
+  })
+
+  it('E4f: a dialog that stays open still gets the full Escape budget before the refusal', () => {
+    mockCapturePane.mockReturnValue(MCP_DIALOG)
+
+    const result = attemptChannelMcpReconnect('marveen')
+
+    expect(result.message).toBe('MCP dialog still open -- reconnect refused')
+    expect(escapeCalls().length).toBe(4)
+    expect(mcpKeystrokeCalls().length).toBe(0)
+  })
+
+  it('E4g: an unreadable pane after the first Escape stops the dismiss -- no blind Escape', () => {
+    mockCapturePane
+      .mockReturnValueOnce(MCP_DIALOG)
+      .mockReturnValueOnce(null)       // after the first Escape
+      .mockReturnValue(MCP_DIALOG)     // the gate's recapture: still open
+
+    const result = attemptChannelMcpReconnect('marveen')
+
+    expect(result.ok).toBe(false)
+    expect(result.message).toBe('MCP dialog still open -- reconnect refused')
+    expect(escapeCalls().length).toBe(1)
+    expect(mcpKeystrokeCalls().length).toBe(0)
+  })
+
+  it('E4h: a pane that turns busy with the dialog title still on screen gets no second Escape', () => {
+    mockCapturePane
+      .mockReturnValueOnce(MCP_DIALOG)
+      .mockReturnValue(['Manage MCP servers', '', BUSY_MID_TURN].join('\n'))
+
+    const result = attemptChannelMcpReconnect('marveen')
+
+    expect(result.ok).toBe(false)
+    expect(result.message).toContain('Pane busy -- reconnect deferred')
+    expect(escapeCalls().length).toBe(1)
+    expect(mcpKeystrokeCalls().length).toBe(0)
+  })
+
+  it('E5: on an idle-empty pane the first keystroke is the typed /mcp reconnect -- no leading Escape', () => {
+    mockCapturePane.mockReturnValue(IDLE_EMPTY)
+
+    attemptChannelMcpReconnect('marveen')
+
+    const first = sendKeysCalls()[0]
+    expect(first?.[1]).toEqual(['send-keys', '-t', '=marveen-channels:', '-l', '/mcp reconnect plugin:telegram:telegram'])
+  })
+
+  it('a pane read as typing only because of a dim placeholder proceeds when the dim-stripped view is idle', () => {
+    // Precondition: the plain read is 'typing' (placeholder hint in the box).
+    const GHOST = ['', SEP, '❯ Try "refactor this"', SEP, FOOTER].join('\n')
+    expect(detectPaneState(GHOST)).toBe('typing')
+    mockCapturePane.mockReturnValue(GHOST)
+    mockCaptureParkedInputView.mockReturnValue(IDLE_EMPTY)
+
+    attemptChannelMcpReconnect('marveen')
+
+    expect(mockCaptureParkedInputView).toHaveBeenCalled()
+    expect(mcpKeystrokeCalls().length).toBeGreaterThan(0)
+  })
+
+  it('the same typing pane stays deferred when the dim-stripped view is not idle', () => {
+    const GHOST = ['', SEP, '❯ Try "refactor this"', SEP, FOOTER].join('\n')
+    mockCapturePane.mockReturnValue(GHOST)
+    mockCaptureParkedInputView.mockReturnValue(GHOST)
+
+    const result = attemptChannelMcpReconnect('marveen')
+
+    expect(result.ok).toBe(false)
+    expect(sendKeysCalls().length).toBe(0)
+  })
+})
+
+// F4 and F5 are dropped: they need a dialog drawn above a live empty box with
+// the idle footer still visible to count as a blocking menu, but this repo's
+// detectsBlockingMenu returns false whenever the idle footer is present.
+describe('dialog title only inside the dialog region', () => {
+  beforeEach(resetPaneMocks)
+
+  // A capture of the dialog quoted in a reply: the live prompt is below it.
+  const QUOTED_TITLE = [
+    '⏺ This is what the stuck pane showed:',
+    '',
+    '  Manage MCP servers',
+    '  3 servers',
+    '',
+    '  It is closed now.',
+  ]
+  const TITLE_IN_TRANSCRIPT_PARKED = [
+    ...QUOTED_TITLE,
+    '',
+    SEP,
+    '❯ please look at the follow-up card when you are free',
+    SEP,
+    FOOTER,
+  ].join('\n')
+  const TITLE_IN_TRANSCRIPT_EMPTY_BOX = [...QUOTED_TITLE, '', SEP, '❯ ', SEP, FOOTER].join('\n')
+  const DIALOG_TEXT_IN_PARKED_BOX = [
+    '⏺ Done.',
+    '',
+    SEP,
+    '❯ the pane showed this:',
+    '  Manage MCP servers',
+    '  ↑/↓ to navigate · Enter to confirm · Esc to cancel',
+    SEP,
+    FOOTER,
+  ].join('\n')
+  const gateEscapes = () => {
+    const calls = sendKeysCalls()
+    const mcpAt = calls.findIndex((c) => Array.isArray(c[1]) && c[1].includes('-l'))
+    return (mcpAt < 0 ? calls : calls.slice(0, mcpAt)).filter((c) => Array.isArray(c[1]) && c[1].includes('Escape'))
+  }
+
+  it('F1: the title as transcript text over parked text gets no keystroke at all, and is deferred', () => {
+    mockCapturePane.mockReturnValue(TITLE_IN_TRANSCRIPT_PARKED)
+
+    const result = attemptChannelMcpReconnect('marveen')
+
+    expect(sendKeysCalls().length).toBe(0)
+    expect(result.ok).toBe(false)
+    expect(result.message).toBe('Input box not empty -- reconnect deferred')
+  })
+
+  it('F2: the title as transcript text over an empty box does not block the reconnect', () => {
+    mockCapturePane.mockReturnValue(TITLE_IN_TRANSCRIPT_EMPTY_BOX)
+
+    const result = attemptChannelMcpReconnect('marveen')
+
+    expect(result.message).not.toBe('MCP dialog still open -- reconnect refused')
+    expect(gateEscapes().length).toBe(0)
+    expect(mcpKeystrokeCalls().length).toBeGreaterThan(0)
+  })
+
+  it('F3: the dialog text inside a parked delivery gets no keystroke at all, and is deferred', () => {
+    mockCapturePane.mockReturnValue(DIALOG_TEXT_IN_PARKED_BOX)
+
+    const result = attemptChannelMcpReconnect('marveen')
+
+    expect(sendKeysCalls().length).toBe(0)
+    expect(result.message).toBe('Input box not empty -- reconnect deferred')
+  })
+
+  it('F6: a dismissed dialog that leaves the title in the transcript over an empty box lets the reconnect proceed', () => {
+    mockCapturePane
+      .mockReturnValueOnce(MCP_DIALOG)
+      .mockReturnValue(TITLE_IN_TRANSCRIPT_EMPTY_BOX)
+
+    const result = attemptChannelMcpReconnect('marveen')
+
+    expect(result.message).not.toBe('MCP dialog still open -- reconnect refused')
+    expect(gateEscapes().length).toBe(1)
+    expect(mcpKeystrokeCalls().length).toBeGreaterThan(0)
+  })
+
+  it('F7: a dismissed dialog that leaves the title in the transcript over parked text stops at one Escape, and is deferred', () => {
+    mockCapturePane
+      .mockReturnValueOnce(MCP_DIALOG)
+      .mockReturnValue(TITLE_IN_TRANSCRIPT_PARKED)
+
+    const result = attemptChannelMcpReconnect('marveen')
+
+    expect(escapeCalls().length).toBe(1)
+    expect(result.message).toBe('Input box not empty -- reconnect deferred')
+    expect(mcpKeystrokeCalls().length).toBe(0)
+  })
+})
+
+// Every pane below is a REAL capture from ./fixtures/mcp-reconnect-cli-2.1.291/
+// with the probe server names rewritten into this repo's pluginPaneId. Capture
+// order per typed command: (the gate's `pre` once), then one baseline capture
+// taken just before typing, then the one-second polls.
+describe('typed /mcp reconnect', () => {
+  const FIX = (f: string) =>
+    readFileSync(new URL(`./fixtures/mcp-reconnect-cli-2.1.291/${f}`, import.meta.url), 'utf8')
+  const TG = 'plugin:telegram:telegram'
+  const PROBE_NAMES = [
+    'plugin:probeplug:okplug',
+    'plugin:probeflaky:flaky',
+    'plugin:probedead:dead',
+    'nosuchserver',
+    'badserver',
+    'okserver',
+  ]
+  const asName = (s: string, name: string) => PROBE_NAMES.reduce((acc, n) => acc.split(n).join(name), s)
+  const asTg = (f: string) => asName(FIX(f), TG)
+  const sendKeys = () => sendKeysCalls()
+  const escapes = escapeCalls
+  const queue = (...panes: Array<string | null>) => { for (const p of panes) mockCapturePane.mockReturnValueOnce(p) }
+  const withBoxText = (pane: string, text: string) => {
+    const lines = pane.split('\n')
+    let boxAt = -1
+    lines.forEach((l, i) => { if (l.trim() === '❯') boxAt = i })
+    expect(boxAt).toBeGreaterThanOrEqual(0)
+    lines[boxAt] = text
+    return lines.join('\n')
+  }
+
+  beforeEach(resetPaneMocks)
+
+  it('T1: success submits exactly one typed command and reads the ⎿ result', () => {
+    queue(
+      asTg('idle.txt'),               // gate pre
+      asTg('idle.txt'),               // baseline
+      asTg('reconnect-busy.txt'),     // poll 1: echo, no ⎿ yet
+      asTg('reconnect-progress.txt'), // poll 2: "Reconnecting" panel, no echo
+      asTg('reconnect-ok.txt'),       // poll 3: echo + result
     )
-    expect(escapeCalls.length).toBeGreaterThan(0)
+
+    const result = attemptChannelMcpReconnect('marveen')
+
+    expect(result).toEqual({ ok: true, message: 'Reconnected via /mcp reconnect' })
+    expect(sendKeys().map((c) => c[1])).toEqual([
+      ['send-keys', '-t', '=marveen-channels:', '-l', `/mcp reconnect ${TG}`],
+      ['send-keys', '-t', '=marveen-channels:', 'Enter'],
+    ])
+    const calls = mockExecFileSync.mock.calls
+    const litAt = calls.findIndex((c) => Array.isArray(c[1]) && c[1].includes('-l'))
+    const enterAt = calls.findIndex((c) => Array.isArray(c[1]) && c[1].includes('Enter'))
+    expect(litAt).toBeGreaterThanOrEqual(0)
+    expect(enterAt).toBeGreaterThan(litAt)
+    expect(
+      calls.slice(litAt + 1, enterAt).some((c) => c[0] === '/bin/sleep' && Array.isArray(c[1]) && c[1][0] === '0.3'),
+    ).toBe(true)
+    expect(escapes().length).toBe(0)
+  })
+
+  it('T2: a measured failure reports reconnect-failed with no pane text in the log', () => {
+    queue(
+      asTg('idle.txt'),
+      asTg('idle.txt'),
+      asTg('reconnect-plugin-busy.txt'),
+      asTg('reconnect-plugin-failed.txt'),
+    )
+
+    const result = attemptChannelMcpReconnect('marveen')
+
+    expect(result.ok).toBe(false)
+    expect(result.message).toContain('reconnect-failed')
+    expect(sendKeys().length).toBe(2)
+    expect(escapes().length).toBe(0)
+    const warns = JSON.stringify(vi.mocked(logger.warn).mock.calls)
+    expect(warns).not.toContain('⎿')
+    expect(warns).not.toContain('Failed to reconnect to')
+  })
+
+  it('T3: not-found is reported as such', () => {
+    queue(asTg('idle.txt'), asTg('idle.txt'), asTg('reconnect-not-found.txt'))
+
+    const result = attemptChannelMcpReconnect('marveen')
+
+    expect(result.ok).toBe(false)
+    expect(result.message).toContain('not-found')
+  })
+
+  it('T4: disabled runs /mcp enable and then /mcp reconnect once more', () => {
+    queue(
+      asTg('idle.txt'),                      // gate pre
+      asTg('idle.txt'),                      // baseline (reconnect)
+      asTg('reconnect-plugin-disabled.txt'), // poll: "is disabled"
+      asTg('reconnect-plugin-disabled.txt'), // the step's own gate
+      asTg('reconnect-plugin-disabled.txt'), // baseline (enable)
+      asTg('enable-plugin-ok.txt'),          // poll: "enabled"
+      asTg('enable-plugin-ok.txt'),          // the step's own gate
+      asTg('enable-plugin-ok.txt'),          // baseline (second reconnect)
+      asTg('reconnect-plugin-ok.txt'),       // poll: reconnected
+    )
+
+    const result = attemptChannelMcpReconnect('marveen')
+
+    expect(result).toEqual({ ok: true, message: 'Reconnected via /mcp reconnect' })
+    expect(sendKeys().map((c) => c[1])).toEqual([
+      ['send-keys', '-t', '=marveen-channels:', '-l', `/mcp reconnect ${TG}`],
+      ['send-keys', '-t', '=marveen-channels:', 'Enter'],
+      ['send-keys', '-t', '=marveen-channels:', '-l', `/mcp enable ${TG}`],
+      ['send-keys', '-t', '=marveen-channels:', 'Enter'],
+      ['send-keys', '-t', '=marveen-channels:', '-l', `/mcp reconnect ${TG}`],
+      ['send-keys', '-t', '=marveen-channels:', 'Enter'],
+    ])
+  })
+
+  it('T4b: a second "disabled" after the enable does not start another enable round', () => {
+    queue(
+      asTg('idle.txt'),
+      asTg('idle.txt'),
+      asTg('reconnect-plugin-disabled.txt'),
+      asTg('reconnect-plugin-disabled.txt'),
+      asTg('reconnect-plugin-disabled.txt'),
+      asTg('enable-plugin-ok.txt'),
+      asTg('enable-plugin-ok.txt'),
+      asTg('enable-plugin-ok.txt'),
+      asTg('reconnect-plugin-disabled.txt'),
+    )
+
+    const result = attemptChannelMcpReconnect('marveen')
+
+    expect(result.ok).toBe(false)
+    expect(result.message).toContain('disabled')
+    expect(sendKeys().length).toBe(6)
+  })
+
+  it('T5: an enable that only says already-enabled stops there', () => {
+    const already = asTg('enable-plugin-ok.txt').replace('" enabled', '" is already enabled')
+    expect(already).not.toBe(asTg('enable-plugin-ok.txt'))
+    queue(
+      asTg('idle.txt'),
+      asTg('idle.txt'),
+      asTg('reconnect-plugin-disabled.txt'),
+      asTg('reconnect-plugin-disabled.txt'), // the step's own gate
+      asTg('reconnect-plugin-disabled.txt'), // baseline (enable)
+      already,
+    )
+
+    const result = attemptChannelMcpReconnect('marveen')
+
+    expect(result.ok).toBe(false)
+    expect(result.message).toContain('already enabled but reported disabled')
+    expect(sendKeys().length).toBe(4)
+  })
+
+  it('T6: an OLD echo+result still on screen is never read as this attempt\'s result', () => {
+    const OLD = asTg('reconnect-plugin-ok.txt')
+    mockCapturePane.mockReturnValue(OLD)
+
+    const result = attemptChannelMcpReconnect('marveen')
+
+    // The older echo makes "not observed" ambiguous (ours may have pushed it off
+    // screen), so it is not reported as ok.
+    expect(result.ok).toBe(false)
+    expect(result.message).toBe('Outcome not observed (an identical echo on screen could not be claimed as ours)')
+    expect(sendKeys().length).toBe(2)
+    expect(escapes().length).toBe(0)
+  })
+
+  it('an older echo scrolled off while ours shows a failure: never ok:true', () => {
+    // Baseline: one older identical echo with a success. After typing, only ONE
+    // echo is visible (the older one scrolled off) and it carries a failure.
+    const OLD = asTg('reconnect-plugin-ok.txt')
+    const NOW = OLD.replace(/Successfully reconnected to plugin:telegram:telegram/, 'Failed to reconnect to plugin:telegram:telegram')
+    expect(NOW).not.toBe(OLD)
+    queue(OLD, OLD)
+    mockCapturePane.mockReturnValue(NOW)
+
+    const result = attemptChannelMcpReconnect('marveen')
+
+    expect(result.ok).toBe(false)
+    expect(escapes().length).toBe(0)
+  })
+
+  it('a reply of ours that matches no known literal is ok:false, not "not observed"', () => {
+    const OK = asTg('reconnect-plugin-ok.txt')
+    const ERR = OK.replace(/Successfully reconnected to plugin:telegram:telegram/, 'Error: connect ECONNREFUSED')
+    expect(ERR).not.toBe(OK)
+    queue(asTg('idle.txt'), asTg('idle.txt'))
+    mockCapturePane.mockReturnValue(ERR)
+
+    const result = attemptChannelMcpReconnect('marveen')
+
+    expect(result).toEqual({ ok: false, message: 'Unrecognised reply to /mcp reconnect' })
+  })
+
+  it('an unreadable baseline capture types nothing', () => {
+    queue(asTg('idle.txt'), null)
+    mockCapturePane.mockReturnValue(asTg('reconnect-plugin-ok.txt'))
+
+    const result = attemptChannelMcpReconnect('marveen')
+
+    expect(result).toEqual({ ok: false, message: 'Pane unreadable -- reconnect refused' })
+    expect(sendKeys().length).toBe(0)
+  })
+
+  it('T7: when the new result joins the old one, the newest echo\'s reply wins', () => {
+    const OLD = asTg('reconnect-plugin-ok.txt')
+    const at = OLD.split('\n').findIndex((l) => l.includes('Successfully reconnected'))
+    expect(at).toBeGreaterThanOrEqual(0)
+    const NEW = [
+      ...OLD.split('\n').slice(0, at + 1),
+      `❯ /mcp reconnect ${TG}`,
+      `  ⎿  Failed to reconnect to ${TG}`,
+      ...OLD.split('\n').slice(at + 1),
+    ].join('\n')
+    queue(OLD, OLD, OLD, OLD, NEW) // pre, baseline, two polls, new result
+
+    const result = attemptChannelMcpReconnect('marveen')
+
+    expect(result.ok).toBe(false)
+    expect(result.message).toContain('reconnect-failed')
+  })
+
+  it('T8: the full dialog opening instead of the command is dismissed, and only after the submit', () => {
+    queue(asTg('idle.txt'), asTg('idle.txt'))
+    mockCapturePane.mockReturnValue(asTg('dialog-unknown-arg.txt'))
+
+    const result = attemptChannelMcpReconnect('marveen')
+
+    expect(result.ok).toBe(false)
+    expect(result.message).toBe('MCP dialog opened instead of the command')
+    expect(escapes().length).toBeGreaterThan(0)
+    const calls = mockExecFileSync.mock.calls
+    const enterAt = calls.findIndex((c) => Array.isArray(c[1]) && c[1].includes('Enter'))
+    expect(enterAt).toBeGreaterThanOrEqual(0)
+    for (const esc of escapes()) expect(calls.indexOf(esc)).toBeGreaterThan(enterAt)
+  })
+
+  it('T9: the command left sitting in the input box is reported and never touched again', () => {
+    // The LIVE box row is `❯` + U+00A0 (measured); a U+0020 would be an echo line.
+    // pre and baseline are idle; every poll then shows the command in the box
+    queue(asTg('idle.txt'), asTg('idle.txt'))
+    mockCapturePane.mockReturnValue(withBoxText(asTg('idle.txt'), `❯ /mcp reconnect ${TG}`))
+
+    const result = attemptChannelMcpReconnect('marveen')
+
+    expect(result.ok).toBe(false)
+    expect(result.message).toBe('Command left in the input box')
+    expect(sendKeys().length).toBe(2)
+    expect(escapes().length).toBe(0)
+  })
+
+  it('T10: unreadable captures are waited out, not escaped out of', () => {
+    queue(asTg('idle.txt'), asTg('idle.txt'), null, null, asTg('reconnect-ok.txt'))
+
+    const result = attemptChannelMcpReconnect('marveen')
+
+    expect(result.ok).toBe(true)
+    expect(result.message).toBe('Reconnected via /mcp reconnect')
+    expect(escapes().length).toBe(0)
+  })
+
+  it('T11: an unsafe server name is refused before anything is typed', () => {
+    mockPluginPaneIdOverride.value = 'plugin:telegram:telegram; rm'
+    queue(FIX('idle.txt'))
+
+    const result = attemptChannelMcpReconnect('marveen')
+
+    expect(result).toEqual({ ok: false, message: 'Unsafe MCP server name -- reconnect refused' })
+    expect(sendKeys().length).toBe(0)
+    expect(logger.warn).toHaveBeenCalled()
+  })
+
+  it('T12: a sub-agent gets the typed command in its own session', () => {
+    queue(
+      asTg('idle.txt'),
+      asTg('idle.txt'),
+      asName(FIX('reconnect-ok.txt'), 'plugin:slack-channel:marveen-marketplace'),
+    )
+
+    const result = attemptChannelMcpReconnect('slacker')
+
+    expect(result.ok).toBe(true)
+    expect(sendKeys()[0]?.[1]).toEqual([
+      'send-keys', '-t', '=agent-slacker:', '-l', '/mcp reconnect plugin:slack-channel:marveen-marketplace',
+    ])
+  })
+
+  it('T13: a tmux failure surfaces the error and sends no cleanup Escape', () => {
+    queue(asTg('idle.txt'), asTg('idle.txt'))
+    mockExecFileSync.mockImplementationOnce(() => { throw new Error('tmux gone') })
+
+    const result = attemptChannelMcpReconnect('marveen')
+
+    expect(result.ok).toBe(false)
+    expect(result.message).toBe('tmux gone')
+    expect(escapes().length).toBe(0)
+  })
+
+  it('after a tmux error mid-sequence no further key is pressed', () => {
+    queue(asTg('idle.txt'), asTg('idle.txt'))
+    // First call is the literal text; the settle sleep then fails.
+    mockExecFileSync
+      .mockImplementationOnce(() => undefined)
+      .mockImplementationOnce(() => { throw new Error('tmux gone') })
+
+    const result = attemptChannelMcpReconnect('marveen')
+
+    expect(result).toEqual({ ok: false, message: 'tmux gone' })
+    expect(sendKeys().map((c) => c[1])).toEqual([
+      ['send-keys', '-t', '=marveen-channels:', '-l', `/mcp reconnect ${TG}`],
+    ])
+  })
+
+  it('T14: disabled, but the pane turned unsafe before the enable step -> deferred, no enable typed', () => {
+    queue(
+      asTg('idle.txt'),
+      asTg('idle.txt'),
+      asTg('reconnect-plugin-disabled.txt'),
+      withBoxText(asTg('reconnect-plugin-disabled.txt'), '❯ parked text'), // the step's own gate
+    )
+
+    const result = attemptChannelMcpReconnect('marveen')
+
+    expect(result.ok).toBe(false)
+    expect(result.message).toMatch(/deferred/)
+    expect(sendKeys().length).toBe(2)
+  })
+
+  it('T14b: disabled, but the pane turned busy before the enable step -> deferred, no enable typed', () => {
+    const BUSY = asTg('reconnect-busy.txt')
+    expect(detectPaneState(BUSY)).toBe('busy') // precondition: the fixture reads busy
+    queue(
+      asTg('idle.txt'),
+      asTg('idle.txt'),
+      asTg('reconnect-plugin-disabled.txt'),
+      BUSY, // the enable step's own gate
+    )
+
+    const result = attemptChannelMcpReconnect('marveen')
+
+    expect(result.ok).toBe(false)
+    expect(result.message).toContain('Pane busy -- reconnect deferred')
+    expect(sendKeys().length).toBe(2)
+  })
+
+  it('T15: enabled, but the pane turned unsafe before the second reconnect -> deferred, no reconnect typed', () => {
+    queue(
+      asTg('idle.txt'),
+      asTg('idle.txt'),
+      asTg('reconnect-plugin-disabled.txt'),
+      asTg('reconnect-plugin-disabled.txt'), // the step's own gate
+      asTg('reconnect-plugin-disabled.txt'), // baseline (enable)
+      asTg('enable-plugin-ok.txt'),
+      withBoxText(asTg('enable-plugin-ok.txt'), '❯ parked text'), // the step's own gate
+    )
+
+    const result = attemptChannelMcpReconnect('marveen')
+
+    expect(result.ok).toBe(false)
+    expect(result.message).toMatch(/deferred/)
+    expect(sendKeys().map((c) => c[1])).toEqual([
+      ['send-keys', '-t', '=marveen-channels:', '-l', `/mcp reconnect ${TG}`],
+      ['send-keys', '-t', '=marveen-channels:', 'Enter'],
+      ['send-keys', '-t', '=marveen-channels:', '-l', `/mcp enable ${TG}`],
+      ['send-keys', '-t', '=marveen-channels:', 'Enter'],
+    ])
+  })
+
+  it('an older identical echo that comes INTO view while ours is not rendered is not read as ours', () => {
+    const OLD_OK = asTg('reconnect-plugin-ok.txt').split('\n')
+    const at = OLD_OK.findIndex((l) => l.startsWith('❯ /mcp reconnect ' + TG))
+    expect(at).toBeGreaterThanOrEqual(0)
+    // The old success at the top, then the later conversation, then the panel (no echo of ours).
+    const REVEALED = [OLD_OK[at], OLD_OK[at + 1], '', '❯ a later prompt', '', '⏺ a later reply', ...OLD_OK.slice(at + 2)].join('\n')
+    expect(mcpCommandReply(REVEALED, 'reconnect', TG)).not.toBeNull() // the old reply is found, so only the latest check can refuse it
+    queue(asTg('idle.txt'), asTg('idle.txt'), REVEALED)
+    mockCapturePane.mockReturnValue(asTg('reconnect-plugin-failed.txt'))
+
+    const result = attemptChannelMcpReconnect('marveen')
+
+    expect(result.ok).toBe(false)
+    expect(result.message).toContain('reconnect-failed')
+  })
+
+  it('a modal other than the /mcp dialog gets no key at all (a permission prompt would be answered)', () => {
+    const OTHER = asTg('dialog-unknown-arg.txt').split('Manage MCP servers').join('Allow this tool to run?')
+    expect(showsMcpDialogTitle(OTHER)).toBe(false)
+    expect(detectsBlockingMenu(OTHER)).toBe(true) // precondition: it still reads as a blocking menu
+    mockCapturePane.mockReturnValue(OTHER)
+
+    const result = attemptChannelMcpReconnect('marveen')
+
+    expect(result).toEqual({ ok: false, message: 'A dialog other than /mcp is open -- reconnect refused' })
+    expect(mockExecFileSync.mock.calls.filter((c) => Array.isArray(c[1]) && c[1][0] === 'send-keys').length).toBe(0)
+  })
+
+  it('the timeout decides on a fresh capture: an unreadable pane gets no Escape', () => {
+    queue(asTg('idle.txt'), asTg('idle.txt'))
+    for (let i = 0; i < 10; i++) queue(asTg('dialog-unknown-arg.txt')) // every poll
+    queue(null) // the timeout's fresh read
+
+    const result = attemptChannelMcpReconnect('marveen')
+
+    expect(result).toEqual({ ok: false, message: 'Pane unreadable after the command -- outcome not observed' })
+    expect(escapes().length).toBe(0)
+  })
+
+  it('a modal other than /mcp on the timeout\'s fresh read gets no Escape', () => {
+    const OTHER = asTg('dialog-unknown-arg.txt').split('Manage MCP servers').join('Allow this tool to run?')
+    expect(showsMcpDialogTitle(OTHER)).toBe(false)
+    expect(detectsBlockingMenu(OTHER)).toBe(true) // precondition
+    queue(asTg('idle.txt'), asTg('idle.txt'))
+    for (let i = 0; i < 10; i++) queue(asTg('dialog-unknown-arg.txt')) // every poll
+    queue(OTHER) // the timeout's fresh read
+
+    const result = attemptChannelMcpReconnect('marveen')
+
+    expect(result.ok).toBe(false)
+    expect(escapes().length).toBe(0)
+  })
+
+  it('a modal other than /mcp with the /mcp title quoted higher up in the transcript gets no key', () => {
+    const OTHER = asTg('dialog-unknown-arg.txt').split('Manage MCP servers').join('Allow this tool to run?')
+    const PANE = ['⏺ As the docs say, open Manage MCP servers to fix it', '', '⏺ Bash(ls)', ...OTHER.split('\n')].join('\n')
+    expect(detectsBlockingMenu(PANE)).toBe(true) // precondition
+    expect(PANE).toContain('Manage MCP servers') // precondition: the title words are on screen
+    mockCapturePane.mockReturnValue(PANE)
+
+    const result = attemptChannelMcpReconnect('marveen')
+
+    expect(result).toEqual({ ok: false, message: 'A dialog other than /mcp is open -- reconnect refused' })
+    expect(mockExecFileSync.mock.calls.filter((c) => Array.isArray(c[1]) && c[1][0] === 'send-keys').length).toBe(0)
+  })
+
+  it('a modal other than /mcp directly under a transcript row that quotes the /mcp title gets no key', () => {
+    const OTHER = asTg('dialog-unknown-arg.txt').split('Manage MCP servers').join('Allow this tool to run?')
+    const PANE = ['⏺ As the docs say, open Manage MCP servers to fix it', ...OTHER.split('\n')].join('\n')
+    expect(detectsBlockingMenu(PANE)).toBe(true) // precondition
+    mockCapturePane.mockReturnValue(PANE)
+
+    const result = attemptChannelMcpReconnect('marveen')
+
+    expect(result).toEqual({ ok: false, message: 'A dialog other than /mcp is open -- reconnect refused' })
+    expect(mockExecFileSync.mock.calls.filter((c) => Array.isArray(c[1]) && c[1][0] === 'send-keys').length).toBe(0)
+  })
+
+  it('our failure reply that a later turn pushed out of the latest exchange is never ok:true', () => {
+    const FAILED = asTg('reconnect-plugin-failed.txt').split('\n')
+    const at = FAILED.findIndex((l) => l.startsWith('❯ /mcp reconnect ' + TG))
+    expect(at).toBeGreaterThanOrEqual(0)
+    const LATER = [...FAILED.slice(0, at + 2), '', '⏺ a turn started by an incoming message', ...FAILED.slice(at + 2)].join('\n')
+    expect(mcpCommandReply(LATER, 'reconnect', TG)).not.toBeNull() // precondition: our reply is on screen
+    queue(asTg('idle.txt'), asTg('idle.txt'))
+    mockCapturePane.mockReturnValue(LATER)
+
+    const result = attemptChannelMcpReconnect('marveen')
+
+    expect(result.ok).toBe(false)
+  })
+
+  it('a dialog-open reply of ours is ok:false even without a blocking menu, and gets no Escape', () => {
+    const OK = asTg('reconnect-plugin-ok.txt')
+    const DIALOG_REPLY = OK.replace('Successfully reconnected to ' + TG, 'Manage MCP servers')
+    expect(DIALOG_REPLY).not.toBe(OK)
+    expect(detectsBlockingMenu(DIALOG_REPLY)).toBe(false) // precondition
+    queue(asTg('idle.txt'), asTg('idle.txt'))
+    mockCapturePane.mockReturnValue(DIALOG_REPLY)
+
+    const result = attemptChannelMcpReconnect('marveen')
+
+    expect(result).toEqual({ ok: false, message: 'MCP dialog opened instead of the command' })
+    expect(escapes().length).toBe(0)
+  })
+
+  it('T16: a dialog that closes onto an occupied input box costs exactly one Escape', () => {
+    const parked = withBoxText(asTg('idle.txt'), '❯ parked text') // the live box form: U+276F + U+00A0
+    queue(asTg('idle.txt'), asTg('idle.txt')) // pre, baseline
+    for (let i = 0; i < 11; i++) queue(asTg('dialog-unknown-arg.txt')) // every poll + the timeout's fresh read
+    mockCapturePane.mockReturnValue(parked) // the box the first Escape reveals
+
+    const result = attemptChannelMcpReconnect('marveen')
+
+    expect(result.ok).toBe(false)
+    expect(result.message).toBe('MCP dialog opened instead of the command')
+    expect(escapes().length).toBe(1)
   })
 })

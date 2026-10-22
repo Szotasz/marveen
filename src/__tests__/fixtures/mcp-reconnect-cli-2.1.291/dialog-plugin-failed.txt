@@ -1,0 +1,50 @@
+
+ ▐▛███▛█   Claude Code v2.1.291
+▝▜██████▀  Opus 5.5 · API Usage Billing
+ ▝▝   ▝▝   /tmp/claude-1000/tkp-3b44/work
+
+⚠ Remote managed settings failed to load (authentication rejected (401)) · no remote policy applied · /status for details
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔ ◐ medium · /effort ▔
+   Manage MCP servers
+   3 servers
+
+     Local MCPs (/tmp/claude-1000/tkp-3b44/cfg/.claude.json [project: /tmp/claude-1000/tkp-3b44/work])
+   ❯ ✘ badserver
+     ⚠ okserver   no tools · connected
+
+     Built-in MCPs (always available)
+     ✘ plugin:probeflaky:flaky
+
+   ※ Run claude --debug to see error logs
+   https://code.claude.com/docs/en/mcp for help
+   ↑/↓ to navigate · Enter to confirm · Esc to cancel
