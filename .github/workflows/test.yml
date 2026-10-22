@@ -74,6 +74,10 @@ jobs:
       # over-report GROWS with every consolidation round, which is why this
       # runs here and not by hand. Hermetic: throwaway fixture dir.
       - run: python3 scripts/__tests__/memory-link-audit.test.py
+      # TGPENDING1016: the pending-update watchdog restarts agents, so both its
+      # "do nothing" and its "restart" paths are pinned here. Hermetic: one local
+      # stub server plays the Bot API and the dashboard, throwaway install dir.
+      - run: python3 scripts/__tests__/telegram-pending-watchdog.test.py
       # MORNTIMERPARK914: the #1313 contract tests shipped without CI wiring,
       # so "CI green" said nothing about them -- the exact rot the comment
       # above warns about. All three are hermetic (stubs on PATH / CLAUDE_BIN,
