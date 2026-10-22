@@ -50,9 +50,10 @@ describe('encrypt/decrypt round-trip', () => {
 // Every statement the import runs, with its bound values, so a test can check
 // which columns a fixed-list INSERT carries.
 const dbRuns = vi.hoisted(() => [] as { sql: string; args: unknown[] }[])
+const dbPrepared = vi.hoisted(() => [] as string[])
 vi.mock('../db.js', () => ({
   getDb: () => ({
-    prepare: (sql: string) => ({
+    prepare: (sql: string) => (dbPrepared.push(sql), {
       all: () => [],
       get: () => null,
       run: (...args: unknown[]) => { dbRuns.push({ sql, args }); return { changes: 0 } },
@@ -656,5 +657,32 @@ describe('importFleet: kanban card columns', () => {
     const row = Object.fromEntries(cols.map((c, i) => [c, insert!.args[i]]))
     expect(row.start_date).toBe(1789000000)
     expect(row.due_date).toBe(1790000000)
+  })
+})
+
+describe('contacts are excluded from the fleet transfer (AC24)', () => {
+  const CONTACT_TABLES = /contacts|contact_values|contacts_fts|contact_reads/i
+
+  it('exportFleet never queries a contacts table and the package carries no contacts key', async () => {
+    const { exportFleet } = await import('../web/fleet-transfer.js')
+    dbPrepared.length = 0
+    const { data } = exportFleet()
+    expect(dbPrepared.length).toBeGreaterThan(0)
+    expect(dbPrepared.filter((q) => CONTACT_TABLES.test(q))).toEqual([])
+    expect(Object.keys(JSON.parse(data)).filter((k) => CONTACT_TABLES.test(k))).toEqual([])
+  })
+
+  it('importFleet ignores a contacts section smuggled into a package', async () => {
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    dbRuns.length = 0
+    dbPrepared.length = 0
+    const pkg = JSON.stringify({
+      ...JSON.parse(MINIMAL_FLEET),
+      contacts: [{ id: 1, domain: 'family', display_name: 'X' }],
+      contact_values: [{ id: 1, contact_id: 1, field: 'phone', value: '1', source: 'owner', source_date: '2026-10-22' }],
+    })
+    importFleet(pkg, { apply: true })
+    expect(dbPrepared.filter((q) => CONTACT_TABLES.test(q))).toEqual([])
+    expect(dbRuns.filter((r) => CONTACT_TABLES.test(r.sql))).toEqual([])
   })
 })
