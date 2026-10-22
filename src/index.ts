@@ -16,6 +16,7 @@ import { PROJECT_ROOT, STORE_DIR, PID_FILENAME, WEB_PORT, MAIN_AGENT_ID, RESPAWN
 import { resolveOwnerChatId } from './owner-chat.js'
 import { initDatabase, backfillEmbeddings } from './db.js'
 import { runDecaySweep, runDailyDigest } from './memory.js'
+import { scheduleDecaySweep } from './decay-schedule.js'
 import { DECAY_SWEEP_INTERVAL_MS } from './db.js'
 import { initHeartbeat, stopHeartbeat, ensureHeartbeatWorkerHidden } from './heartbeat.js'
 import { ensureHeartbeatAgent, shouldBootHeartbeatAgent, HEARTBEAT_AGENT_NAME } from './web/heartbeat-agent-scaffold.js'
@@ -411,7 +412,7 @@ function releaseLock(): void {
 // after partial state was already wired up (e.g. initDatabase throws after
 // acquireLock wrote the pidfile -- we still need to drop the heartbeat /
 // digest timers and release the pidfile on the way out).
-let decayInterval: NodeJS.Timeout | null = null
+let stopDecaySweep: (() => void) | null = null
 let digestTimer: NodeJS.Timeout | null = null
 let digestInterval: NodeJS.Timeout | null = null
 let logRotationInterval: NodeJS.Timeout | null = null
@@ -436,7 +437,7 @@ const shutdown = (): void => {
     try { stopInviteMonitor() } catch (err) { logger.warn({ err }, 'stopInviteMonitor threw during shutdown') }
     try { stopChannelRequestWatcher() } catch (err) { logger.warn({ err }, 'stopChannelRequestWatcher threw during shutdown') }
     try { stopStoreWatcher() } catch (err) { logger.warn({ err }, 'stopStoreWatcher threw during shutdown') }
-    if (decayInterval) clearInterval(decayInterval)
+    if (stopDecaySweep) stopDecaySweep()
     if (digestTimer) clearTimeout(digestTimer)
     if (digestInterval) clearInterval(digestInterval)
     if (logRotationInterval) clearInterval(logRotationInterval)
@@ -500,10 +501,11 @@ async function main(): Promise<void> {
     if (embedded > 0) logger.info({ count: embedded, attempted, failed }, 'Embedding backfill befejezve')
   }).catch(err => logger.warn({ err }, 'Embedding backfill hiba (Ollama nem elerheto)'))
 
-  // Memory decay (24h cycle)
-  runDecaySweep()
-  decayInterval = setInterval(runDecaySweep, DECAY_SWEEP_INTERVAL_MS)
-  logger.info('Memoria leepulesi ciklus beallitva (24 oras)')
+  // Memory decay (24h cycle). The first sweep is deferred: it is synchronous
+  // database work (prune + checkpoint, possibly VACUUM) and used to hold the
+  // dashboard port closed for seconds on every start.
+  stopDecaySweep = scheduleDecaySweep(runDecaySweep, DECAY_SWEEP_INTERVAL_MS)
+  logger.info('Memoria leepulesi ciklus beallitva (24 oras, az elso sopres 60 mp mulva)')
 
   // Log rotation (LOGROTATE910): copytruncate on the launcher-redirected
   // logs, size-capped, hourly check. Runs inside the dashboard so every
