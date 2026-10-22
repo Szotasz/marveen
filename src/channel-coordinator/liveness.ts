@@ -9,7 +9,8 @@
 
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { resolveFromPath } from '../platform.js'
 import { logger } from '../logger.js'
 import { PROJECT_ROOT } from '../config.js'
@@ -20,6 +21,7 @@ import { exactTmuxTarget } from '../tmux-target.js'
 import { stateDirPluginPollerPids } from '../web/channel-poller-reap.js'
 
 const TMUX = resolveFromPath('tmux')
+const execFileAsync = promisify(execFile)
 
 // Keep in sync with channel-monitor.ts. The scheduled keepalive refreshes
 // store/.channel-keepalive every ~6 min REGARDLESS of inbound traffic, so a
@@ -261,6 +263,16 @@ export function probeChannelPluginLiveness(
     logger.warn({ err, claudePid, agentName, providerType }, 'Channel-plugin liveness probe failed (ps, after retry) -- verdict unknown, not restarting')
     return 'unknown'
   }
+  return livenessFromSnapshot(psOutput, claudePid, providerType, agentName, opts)
+}
+
+function livenessFromSnapshot(
+  psOutput: string,
+  claudePid: number,
+  providerType: ChannelProviderType,
+  agentName: string | undefined,
+  opts: { strictTree?: boolean },
+): PluginLiveness {
   try {
     const stateDir = agentName
       ? channelStateDir(providerType, agentDir(agentName))
@@ -301,6 +313,90 @@ export function probeChannelPluginLiveness(
     logger.warn({ err, claudePid, agentName, providerType }, 'Channel-plugin liveness probe failed (state dir) -- verdict unknown, not restarting')
     return 'unknown'
   }
+}
+
+export async function getClaudePidForSessionAsync(session: string): Promise<number | null> {
+  try {
+    const out = (await execFileAsync(TMUX, ['list-panes', '-t', exactTmuxTarget(session), '-F', '#{pane_pid}'], { timeout: 3000, encoding: 'utf-8' })).stdout
+    const panePid = parseInt(out.trim().split('\n')[0], 10)
+    if (!panePid) return null
+    const cmd = (await execFileAsync('/bin/ps', ['-p', String(panePid), '-o', 'comm='], { timeout: 3000, encoding: 'utf-8' })).stdout.trim()
+    if (cmd === 'claude' || cmd.endsWith('/claude')) return panePid
+    try {
+      const child = (await execFileAsync('/usr/bin/pgrep', ['-P', String(panePid), '-x', 'claude'], { timeout: 3000, encoding: 'utf-8' })).stdout.trim()
+      if (child) return parseInt(child.split('\n')[0], 10)
+    } catch { /* none */ }
+    return null
+  } catch {
+    return null
+  }
+}
+
+async function snapshotProcsAsync(): Promise<string> {
+  const run = async (timeout: number): Promise<string> =>
+    (await execFileAsync('/bin/ps', ['-axww', '-o', 'pid,ppid,command'], {
+      timeout,
+      encoding: 'utf-8',
+      maxBuffer: PS_PROBE_MAX_BUFFER,
+    })).stdout
+  try {
+    return await run(PS_PROBE_TIMEOUT_MS)
+  } catch (firstErr) {
+    logger.debug({ err: firstErr }, 'Channel-plugin liveness probe: ps snapshot timed out, retrying with a longer deadline')
+    return run(PS_PROBE_RETRY_TIMEOUT_MS)
+  }
+}
+
+export async function takeProcSnapshotAsync(): Promise<string | null> {
+  try {
+    return await snapshotProcsAsync()
+  } catch {
+    return null
+  }
+}
+
+// The sweep takes ONE shared ps snapshot before its target loop, but each target's claude
+// pid is looked up afterwards. For an agent (re)spawned in between, the snapshot predates
+// its new claude and poller, so the shared snapshot says 'down' while the plugin is fine.
+// A 'down' reached from a shared snapshot is therefore confirmed with a FRESH ps before
+// anyone acts on it. The snapshot can also read 'alive' for a poller that died after it
+// was taken; that 'alive' is confirmed only when the caller asks (confirmAlive: an open
+// down spell it would close). 'unknown' is never re-probed, and a verdict from a fresh
+// snapshot is final.
+export async function recheckSharedVerdict(
+  first: PluginLiveness,
+  usedSharedSnapshot: boolean,
+  recheck: () => Promise<PluginLiveness>,
+  confirmAlive = false,
+): Promise<PluginLiveness> {
+  if (!usedSharedSnapshot) return first
+  if (first === 'down' || (first === 'alive' && confirmAlive)) return recheck()
+  return first
+}
+
+export async function probeChannelPluginLivenessAsync(
+  claudePid: number,
+  providerType: ChannelProviderType,
+  agentName?: string,
+  opts: { strictTree?: boolean; confirmAlive?: boolean } = {},
+  snapshot?: string,
+): Promise<PluginLiveness> {
+  let psOutput: string
+  try {
+    psOutput = snapshot ?? await snapshotProcsAsync()
+  } catch (err) {
+    logger.warn({ err, claudePid, agentName, providerType }, 'Channel-plugin liveness probe failed (ps, after retry) -- verdict unknown, not restarting')
+    return 'unknown'
+  }
+  const first = livenessFromSnapshot(psOutput, claudePid, providerType, agentName, opts)
+  return recheckSharedVerdict(first, snapshot !== undefined, async () => {
+    try {
+      return livenessFromSnapshot(await snapshotProcsAsync(), claudePid, providerType, agentName, opts)
+    } catch (err) {
+      logger.warn({ err, claudePid, agentName, providerType }, 'Channel-plugin liveness re-probe failed (ps) -- verdict unknown, not restarting')
+      return 'unknown'
+    }
+  }, opts.confirmAlive === true)
 }
 
 // Boolean view for callers that only act on a positive verdict (a failed probe
