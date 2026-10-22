@@ -26,8 +26,26 @@ spec = importlib.util.spec_from_file_location("ram_emergency_brake", BRAKE)
 rvf = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(rvf)
 
-UID = 1000
-APP = "/user.slice/user-1000.slice/user@1000.service/app.slice/"
+def _proc_self_uid():
+    """The real uid of this process as the kernel reports it in /proc (what a
+    real child's /proc entry will show), or None off Linux."""
+    try:
+        with open("/proc/self/status") as f:
+            for line in f:
+                if line.startswith("Uid:"):
+                    return int(line.split()[1])
+    except (OSError, ValueError, IndexError):
+        pass
+    return None
+
+
+# The fake /proc's uid is deliberately NOT the uid this test runs as (nor the
+# kernel's view of it): every brake call on the fake /proc passes my_uid=UID
+# explicitly, so no check depends on the host's uid. A CI runner is not uid
+# 1000; with a fixture uid equal to the host's, a missing my_uid would pass here
+# and fail there.
+UID = next(u for u in (1000, 2000, 3000) if u not in (os.getuid(), _proc_self_uid(), 999))
+APP = "/user.slice/user-%d.slice/user@%d.service/app.slice/" % (UID, UID)
 fails = []
 
 
@@ -1122,7 +1140,7 @@ def main():
     with tempfile.TemporaryDirectory() as td:
         root, sent, fkill, both = fallback_world(td)
         res = rvf.kill_victim(both, proc_root=root, grace=1.0, sleep=lambda s: None,
-                              use_pidfd=False, kill=fkill)
+                              use_pidfd=False, kill=fkill, my_uid=UID)
         check("terminate: SIGTERM to both", (11, rvf.signal.SIGTERM) in sent and (12, rvf.signal.SIGTERM) in sent, sent)
         check("terminate: SIGKILL only to the one ignoring SIGTERM",
               (12, rvf.signal.SIGKILL) in sent and (11, rvf.signal.SIGKILL) not in sent, sent)
@@ -1142,14 +1160,14 @@ def main():
                     mutate(root)        # pid 12 is now someone else
                     done.append(1)
             res = rvf.kill_victim(both, proc_root=root, grace=1.0, sleep=sleep_and_reuse,
-                                  use_pidfd=False, kill=fkill)
+                                  use_pidfd=False, kill=fkill, my_uid=UID)
             check("pid reuse (%s changed after the TERM): no SIGKILL reaches the new process" % what,
                   (12, rvf.signal.SIGKILL) not in sent and res.get(12) == "term_then_reused", (sent, res))
     with tempfile.TemporaryDirectory() as td:
         root, sent, fkill, both = fallback_world(td)
         write_stat(root, 12, "ffmpeg", start=4242)   # reused BEFORE the first signal
         res = rvf.kill_victim(both, proc_root=root, grace=1.0, sleep=lambda s: None,
-                              use_pidfd=False, kill=fkill)
+                              use_pidfd=False, kill=fkill, my_uid=UID)
         check("pid reuse before the TERM: no signal at all to the new process, result 'reused'",
               not any(pid == 12 for pid, _ in sent) and res.get(12) == "reused", (sent, res))
 
@@ -1163,7 +1181,7 @@ def main():
         v = rvf.select_victim(rvf.list_processes(root), UID)
         try:
             res = rvf.kill_victim(v, proc_root=root, grace=0.5, sleep=lambda s: None, use_pidfd=False,
-                                  kill=eperm_kill)
+                                  kill=eperm_kill, my_uid=UID)
             check("terminate: SIGKILL PermissionError is caught -> 'eperm'", res == {13: "eperm"}, res)
         except PermissionError:
             check("terminate: SIGKILL PermissionError is caught -> 'eperm'", False, "raised")
@@ -1176,7 +1194,8 @@ def main():
         c = child(ign)
         time.sleep(0.3)
         me = rvf.read_proc("/proc", c.pid)
-        res = rvf.kill_victim({"ident": {c.pid: (me["start"], me["cgroup"])}}, grace=0.5, use_pidfd=True)
+        res = rvf.kill_victim({"ident": {c.pid: (me["start"], me["cgroup"])}}, grace=0.5, use_pidfd=True,
+                              my_uid=me["uid"])
         c.wait(timeout=10)
         check("pidfd: a real SIGTERM-ignoring child gets TERM then KILL through its pidfd",
               res == {c.pid: "kill"} and c.returncode == -9, (res, c.returncode))
@@ -1186,7 +1205,7 @@ def main():
         time.sleep(0.3)
         me = rvf.read_proc("/proc", c.pid)
         res = rvf.kill_victim({"ident": {c.pid: (str(int(me["start"]) + 1), me["cgroup"])}}, grace=0.5,
-                              use_pidfd=True)
+                              use_pidfd=True, my_uid=me["uid"])
         time.sleep(0.2)
         survived = c.poll() is None
         c.kill()
@@ -1197,7 +1216,8 @@ def main():
         c = child("pass")
         me_start = rvf.read_start("/proc", c.pid) or "0"
         c.wait()
-        res = rvf.kill_victim({"ident": {c.pid: (me_start, "")}}, grace=0.5, use_pidfd=True)
+        res = rvf.kill_victim({"ident": {c.pid: (me_start, "")}}, grace=0.5, use_pidfd=True,
+                              my_uid=_proc_self_uid())
         # ('reused' too: the kernel may have handed the pid on already; either way no signal)
         check("pidfd: a process gone (reaped) before pinning -> 'gone', nothing sent",
               res in ({c.pid: "gone"}, {c.pid: "reused"}), res)
