@@ -66,7 +66,7 @@ export function ensureContactsSchema(d: Database.Database): void {
     BEFORE DELETE ON contact_values
     BEGIN SELECT RAISE(ABORT, 'contact_values is append-only: DELETE not allowed'); END;
 
-    -- Name and organisation only. Email, phone and address are never indexed.
+    -- Display name, name and organisation only. Email, phone and address are never indexed.
     CREATE VIRTUAL TABLE IF NOT EXISTS contacts_fts USING fts5(
       value, contact_id UNINDEXED, value_id UNINDEXED
     );
@@ -77,6 +77,18 @@ export function ensureContactsSchema(d: Database.Database): void {
     BEGIN
       INSERT INTO contacts_fts(value, contact_id, value_id) VALUES (NEW.value, NEW.contact_id, NEW.id);
     END;
+
+    -- display_name rows carry value_id NULL, so a retraction (which deletes by
+    -- value_id) never touches them; display_name is never updated.
+    CREATE TRIGGER IF NOT EXISTS contacts_fts_display_name
+    AFTER INSERT ON contacts
+    BEGIN
+      INSERT INTO contacts_fts(value, contact_id, value_id) VALUES (NEW.display_name, NEW.id, NULL);
+    END;
+
+    INSERT INTO contacts_fts(value, contact_id, value_id)
+      SELECT c.display_name, c.id, NULL FROM contacts c
+      WHERE NOT EXISTS (SELECT 1 FROM contacts_fts f WHERE f.contact_id = c.id AND f.value_id IS NULL);
 
     CREATE TRIGGER IF NOT EXISTS contact_values_fts_retract
     AFTER INSERT ON contact_values

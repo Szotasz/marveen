@@ -144,3 +144,16 @@ describe('read audit', () => {
     expect(Object.keys(row).sort()).toEqual(['contact_id', 'id', 'query', 'read_at', 'reader'])
   })
 })
+
+describe('display_name is searchable', () => {
+  it('a contact with ONLY a display_name is found by it, inside its domain only; email/phone stay unindexed', () => {
+    const biz = createContact(d, { domain: 'business', display_name: 'Zoltan Fenyes' })
+    createContact(d, { domain: 'family', display_name: 'Zoltan Fenyes' })
+    addValue(d, { contact_id: biz, field: 'email', value: 'unindexed.mail@example.com', ...base })
+    addValue(d, { contact_id: biz, field: 'phone', value: '+3699887766', ...base })
+    expect(findContacts(d, { domain: 'business', q: 'Fenyes' }).map((c) => c.id)).toEqual([biz])
+    expect(findContacts(d, { domain: 'family', q: 'Fenyes' })).toHaveLength(1)
+    expect(findContacts(d, { domain: 'business', q: 'unindexed' })).toEqual([])
+    expect(findContacts(d, { domain: 'business', q: '3699887766' })).toEqual([])
+  })
+})
