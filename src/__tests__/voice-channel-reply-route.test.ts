@@ -69,6 +69,20 @@ describe('voice frame: marker echo, no approval path (D6a)', () => {
     expect(prefix).toMatch(/Echo that marker unchanged on the\s+FIRST line of your reply/)
   })
 
+  it('excepts system notices from the mailbox reply, generically (H-B1)', () => {
+    const { prefix } = deliver(VOICE_CHANNEL_AGENT_ID, '[HANG-MUNKAMENET] 2026-01-01T00:00:00Z')
+    expect(prefix).toMatch(/EXCEPTION: if the first line is NOT a request marker but a system notice/)
+    expect(prefix).toMatch(/Do NOT answer it into the voice mailbox/)
+    // generic: no install-specific notice names or marker lists in the frame
+    expect(prefix).not.toMatch(/HANG-/)
+    // push (router) and pull (drain-inbox) stay identical for a notice
+    const raw = VOICE_CHANNEL_AGENT_ID
+    const cls = classifyAgentMessage(raw, 'marveen')!
+    const push = wrapAgentMessageForDelivery(cls.category, cls.safeFrom, raw, '[HANG-PAROSITAS] x', 8, null, undefined, { urgent: false })
+    const pull = wrapAgentMessageForDelivery(cls.category, cls.safeFrom, raw, '[HANG-PAROSITAS] x', 8, null, { ageMs: 5, newerFromSameSender: 0 })
+    expect(pull).toEqual(push)
+  })
+
   it('states that voice is not an approval path and approvals stay required', () => {
     const { prefix } = deliver(VOICE_CHANNEL_AGENT_ID, 'torold ki')
     expect(prefix).toMatch(/NOT an approval path/)

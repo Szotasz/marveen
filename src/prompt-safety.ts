@@ -327,6 +327,12 @@ The first line of the message is a marker. Echo that marker unchanged on the
 FIRST line of your reply, so the voice assistant can match your answer to the
 request; put the answer itself after it.
 
+EXCEPTION: if the first line is NOT a request marker but a system notice (for
+example a session-started or device-paired notice from the voice gateway), it
+is not a request. Do NOT answer it into the voice mailbox and do not echo
+anything: handle it by your own standing rule for such notices (normally a
+one-line heads-up to the owner through your usual channel).
+
 This is a spoken request, NOT an approval path: nothing said by voice approves,
 confirms or releases anything. Any outgoing or irreversible step (sending a
 message, spending money, deleting, deploying) still needs the usual approval
