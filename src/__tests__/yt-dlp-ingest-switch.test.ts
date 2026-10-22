@@ -20,7 +20,7 @@ vi.mock('../settings-store.js', async (importOriginal) => {
 
 const {
   writeAgentSettingsFromProfile, agentSettingsPath, ensureBashEgressDeny, seedSettingsFromTemplate,
-  resolveTemplatePlaceholders, YT_DLP_EGRESS_DENY, YT_INGEST_ALLOW, BASH_EGRESS_DENY,
+  resolveTemplatePlaceholders, YT_DLP_EGRESS_DENY, YT_INGEST_ALLOW, BASH_EGRESS_DENY, LEGACY_BASH_EGRESS_DENY,
 } = await import('../web/agent-scaffold.js')
 const { agentDir } = await import('../web/agent-config.js')
 const { listProfileTemplates, loadProfileTemplate, profileWantsYtIngest } = await import('../web/profiles.js')
@@ -116,7 +116,8 @@ describe('switch ON', () => {
     try {
       expect(ensureBashEgressDeny(MAIN_AGENT_ID, dir)).toBe(true)
       const deny = JSON.parse(readFileSync(join(dir, 'settings.json'), 'utf-8')).permissions.deny as string[]
-      expect(deny).toEqual([...BASH_EGRESS_DENY, ...YT_DLP_EGRESS_DENY])
+      // develop (#1931): with BASH_EGRESS_HOST_ALLOW off the legacy curl-https / wget rules ride too
+      expect(deny).toEqual([...BASH_EGRESS_DENY, ...YT_DLP_EGRESS_DENY, ...LEGACY_BASH_EGRESS_DENY])
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }
