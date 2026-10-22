@@ -454,7 +454,9 @@ npm_ci_failed() {
   if [ -n "$OLD_VERSION_FULL" ]; then
     git reset --hard "$OLD_VERSION_FULL" >/dev/null 2>&1 || true
     if npm ci --silent --include=dev 2>/dev/null; then deps_ok=1; fi
-    npm rebuild better-sqlite3 --silent 2>/dev/null || true
+    # #950: rebuild only when the installed prebuild does not load -- a failing source build
+    # deletes the working binary, which is what this rollback is trying to restore.
+    native_module_loads || npm rebuild better-sqlite3 --silent 2>/dev/null || true
     npm run build --silent 2>/dev/null || true
     [ -d "$INSTALL_DIR/dist" ] && echo "$OLD_VERSION_FULL" > "$BUILT_COMMIT_FILE"
   fi
@@ -1552,7 +1554,7 @@ if [ "${SKIP_BUILD:-0}" != "1" ]; then
       # and without the compiler this rollback build would also fail silently,
       # leaving git=OLD + node_modules=pruned (AUTOUPDNODEENV905 finding A).
       npm ci --silent --include=dev 2>/dev/null || true
-      npm rebuild better-sqlite3 --silent 2>/dev/null || true
+      native_module_loads || npm rebuild better-sqlite3 --silent 2>/dev/null || true
       npm run build --silent 2>/dev/null || true
       [ -d "$INSTALL_DIR/dist" ] && echo "$OLD_VERSION_FULL" > "$BUILT_COMMIT_FILE"
     fi
@@ -1575,7 +1577,7 @@ if [ "${SKIP_BUILD:-0}" != "1" ]; then
     if [ -n "$OLD_VERSION_FULL" ]; then
       git reset --hard "$OLD_VERSION_FULL" >/dev/null 2>&1 || true
       npm ci --silent --include=dev 2>/dev/null || true
-      npm rebuild better-sqlite3 --silent 2>/dev/null || true
+      native_module_loads || npm rebuild better-sqlite3 --silent 2>/dev/null || true
       npm run build --silent 2>/dev/null || true
       [ -d "$INSTALL_DIR/dist" ] && echo "$OLD_VERSION_FULL" > "$BUILT_COMMIT_FILE"
     fi
@@ -1975,6 +1977,8 @@ cd "$INSTALL_DIR" 2>/dev/null || true
 # stage= line as the marker.
 STAGE="boot"
 _stage() { STAGE="$1"; echo "[finalize] stage=$1 $(date '+%H:%M:%S')" >&2; }
+# Same check as update.sh's native_module_loads (#950): this script runs on its own.
+native_module_loads() { node -e "new (require('better-sqlite3'))(':memory:').close()" >/dev/null 2>&1; }
 trap 'echo "[finalize] SIGNAL caught in stage=${STAGE} $(date +%H:%M:%S)" >&2' TERM HUP INT
 
 _esc() { printf '%s' "$1" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))' 2>/dev/null || printf '"%s"' "$1"; }
@@ -2059,7 +2063,7 @@ if [ -n "$OLD_FULL" ]; then
   # NODE_ENV=production a plain ci prunes the compiler and the rebuild below
   # dies silently, re-creating the pruned tree this rollback tries to escape.
   npm ci --silent --include=dev 2>/dev/null || true
-  npm rebuild better-sqlite3 --silent 2>/dev/null || true
+  native_module_loads || npm rebuild better-sqlite3 --silent 2>/dev/null || true
   npm run build --silent 2>/dev/null || true
   [ -d "$INSTALL_DIR/dist" ] && echo "$OLD_FULL" > "$BUILT"
   _restart
