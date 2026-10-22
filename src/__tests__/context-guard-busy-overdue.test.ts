@@ -133,10 +133,11 @@ describe('decideGuard: a busy pane far past the handoff deadline', () => {
     expect(d.nextState.busyOverdueWarned).toBeUndefined()
   })
 
-  it('the idle-phase hard-tier deferral never warns (it has no handoff deadline)', () => {
+  it('the idle-phase hard tier on a busy pane does not warn: it starts a handoff sequence, which can', () => {
     const d = decideGuard(INITIAL_GUARD_STATE, inputs({ nowMs: OVERDUE_AT * 10, pct: 0.99, paneBusy: true, paneIdle: false }), CFG)
-    expect(d.action).toBe('none')
+    expect(d.action).toBe('request-handoff')
     expect(d.reason.startsWith(BUSY_OVERDUE_REASON_PREFIX)).toBe(false)
+    expect(d.nextState.busyOverdueWarned).toBeUndefined()
   })
 })
 
