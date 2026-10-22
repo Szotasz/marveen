@@ -6,6 +6,8 @@
       "Read(~/.gnupg/**)",
       "Read(~/.env)",
       "Read(**/.env)",
+      "Read(**/.approval-bot-token)",
+      "Read(**/.approval-bot-key)",
       "Bash(sudo:*)",
       "Bash(*/sudo *)",
       "Bash(rm -rf ~:*)",

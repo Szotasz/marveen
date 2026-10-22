@@ -1241,6 +1241,12 @@ export const FLEET_BASELINE_DENY = [
   'Read(${HOME}/.gnupg/**)',
   'Read(${HOME}/.env)',
   'Read(**/.env)',
+  // The owner's approval bot (#2160): its token and the key its button data is signed with. Only the
+  // dashboard server reads them. Measured 2026-10-22 in a --dangerously-skip-permissions child session:
+  // with these two rules the Read tool returned "Permission to read ... has been denied" on both files,
+  // without them it returned the content. Bash reads are the self-pace gate's (secretStoreBashSegmentAllowed).
+  'Read(**/.approval-bot-token)',
+  'Read(**/.approval-bot-key)',
   'Bash(sudo:*)',
   'Bash(*/sudo *)',
   'Bash(rm -rf ${HOME}:*)',

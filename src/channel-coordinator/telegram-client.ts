@@ -53,7 +53,7 @@ export class TelegramApiError extends Error {
   }
 }
 
-interface RawUpdate {
+export interface RawUpdate {
   update_id: number
   message?: RawMessage
   edited_message?: RawMessage
@@ -66,7 +66,7 @@ interface RawUpdate {
   }
 }
 
-interface RawMessage {
+export interface RawMessage {
   message_id: number
   date?: number
   text?: string
@@ -80,7 +80,7 @@ interface RawMessage {
   is_topic_message?: boolean
 }
 
-interface RawUser {
+export interface RawUser {
   id: number
   username?: string
   first_name?: string

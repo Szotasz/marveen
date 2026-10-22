@@ -92,6 +92,7 @@ import { tryHandleOnboarding } from './web/routes/onboarding.js'
 import { tryHandleStatus } from './web/routes/status.js'
 import { tryHandleAutonomy } from './web/routes/autonomy.js'
 import { tryHandleApprovals, startApprovalTimeoutSweeper } from './web/routes/approvals.js'
+import { startApprovalBotPoller } from './approval-bot.js'
 import { tryHandleDesktopLock, sweepExpiredDesktopLock } from './web/routes/desktop-lock.js'
 import { tryHandleFleetFreeze } from './web/routes/fleet-freeze.js'
 import { tryHandleTokenUsage } from './web/routes/token-usage.js'
@@ -549,6 +550,9 @@ export function startWebServer(port = 3420): http.Server {
   // token estimates stay fresh without requiring a manual dashboard visit.
   // Sweep timed-out pending approvals every minute
   const approvalTimeoutInterval = startApprovalTimeoutSweeper()
+  // 80d0e3c6: the approval bot's presses (off unless APPROVAL_BOT_ENABLED and store/.approval-bot-token).
+  // Not in WEB_ONLY: one getUpdates consumer per bot token.
+  if (!webOnly) startApprovalBotPoller()
 // Desktop-lock TTL sweeper. Independent of the schedule gate on purpose: an
 // abandoned lock must expire (and be reported) even on a day when no
 // desktop-driving round happens to be due.

@@ -816,6 +816,15 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     requiresRestart: true,
   },
   {
+    key: 'APPROVAL_BOT_ENABLED',
+    type: 'boolean',
+    default: '0',
+    description: 'Jóváhagyás Telegram-gombbal: a jóváhagyás-kérés egy külön, csak jóváhagyásra használt boton megy ki Jóváhagyom / Elutasítom gombbal, és a gombnyomást a dashboard-szerver fogadja, nem ágens. A jóváhagyás két nyomás: az első a kérés szövegét az adatbázisból frissíti és megerősítést kér. A gomb csak a párosított tulajdonosnak (a csatorna allowFrom listája), a saját privát chatjében, és csak azon az üzeneten működik, amit a szerver küldött. Kell hozzá: egy új bot a BotFather-nél, a tokenje a store/.approval-bot-token fájlban, és a tulajdonos egy /start üzenete az új botnak. Kikapcsolva (alapértelmezés) a jóváhagyás a dashboardon megy, bejelentkezve. A módosítás a dashboard újraindításakor lép életbe.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
     key: 'TELEGRAM_TOPICS_ENABLED',
     type: 'boolean',
     default: '0',

@@ -110,6 +110,9 @@ describe('(A) the baseline reaches EVERY profile, including ones added later', (
     // `Bash(*/git *)` matches the whole command text, so it also refuses
     // `ls /usr/bin/git`, `/usr/bin/git -C <worktree> status --short`. The
     // force-push rules stay as friction; closing them is a hook's job.
+    // #2160: the approval bot's secrets, read by the dashboard server only (measured in a bypass session)
+    expect(FLEET_BASELINE_DENY).toContain('Read(**/.approval-bot-token)')
+    expect(FLEET_BASELINE_DENY).toContain('Read(**/.approval-bot-key)')
     expect(FLEET_BASELINE_DENY).toContain('Bash(git push --force:*)')
     expect(FLEET_BASELINE_DENY).toContain('Bash(git push -f:*)')
     expect(FLEET_BASELINE_DENY).not.toContain('Bash(*/git *)')

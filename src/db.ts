@@ -1615,6 +1615,18 @@ export function initDatabase(dbPathOverride?: string): void {
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status, requested_at)`)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_approvals_agent ON approvals(agent_id, requested_at)`)
+  // 80d0e3c6: the approval bot's question for a row -- the chat it went to and the message the buttons sit
+  // on. A press counts only on this exact message (src/approval-bot.ts); confirm_at marks step 1 of the
+  // two-step approve.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS approval_bot_messages (
+      approval_id TEXT PRIMARY KEY,
+      chat_id TEXT NOT NULL,
+      message_id INTEGER NOT NULL,
+      sent_at INTEGER NOT NULL,
+      confirm_at INTEGER
+    )
+  `)
   // EMAILKAPU901 PR2: content-hash anchor + one-shot consumption. content_hash
   // pins an approval to the EXACT letter (sha256 over to+cc+subject+body,
   // computed by scripts/hooks/email-approval-gate.py); consumed_at is flipped
@@ -7141,6 +7153,27 @@ export function resolveApproval(id: string, status: 'approved' | 'rejected' | 't
         telegram_message_id = COALESCE(?, telegram_message_id)
     WHERE id = ? AND status = 'pending'
   `).run(status, now, resolvedBy, telegramMessageId ?? null, id).changes > 0
+}
+
+export interface ApprovalBotMessage {
+  approval_id: string
+  chat_id: string
+  message_id: number
+  sent_at: number
+  confirm_at: number | null
+}
+
+export function recordApprovalBotMessage(approvalId: string, chatId: string, messageId: number, now = Math.floor(Date.now() / 1000)): void {
+  db.prepare('INSERT OR REPLACE INTO approval_bot_messages (approval_id, chat_id, message_id, sent_at, confirm_at) VALUES (?, ?, ?, ?, NULL)')
+    .run(approvalId, chatId, messageId, now)
+}
+
+export function getApprovalBotMessage(approvalId: string): ApprovalBotMessage | undefined {
+  return db.prepare('SELECT * FROM approval_bot_messages WHERE approval_id = ?').get(approvalId) as ApprovalBotMessage | undefined
+}
+
+export function setApprovalBotConfirmAt(approvalId: string, confirmAt: number | null): void {
+  db.prepare('UPDATE approval_bot_messages SET confirm_at = ? WHERE approval_id = ?').run(confirmAt, approvalId)
 }
 
 // The CREATE path stamps the owner-notification message id onto the row

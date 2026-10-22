@@ -226,6 +226,19 @@ export function protectedStoreBashSegmentAllowed(seg) {
   return readOnlyMentionAllowed(seg, PROTECTED_MENTION_RX)
 }
 
+// Two of the protected files are SECRETS, not settings: the approval bot's token and the key its
+// button data is signed with (#2160). Reading them is no more an agent's business than writing them --
+// the dashboard server reads them, nobody else -- so a Bash segment that names one is denied even when
+// it is a plain read (review on #2153). The native Read tool is stopped by the fleet deny floor
+// (Read(**/.approval-bot-token), FLEET_BASELINE_DENY in agent-scaffold.ts), measured in a
+// --dangerously-skip-permissions session; this gate does not see Read calls.
+export const SECRET_STORE_FILES = new Set(['.approval-bot-token', '.approval-bot-key'])
+const SECRET_MENTION_RX = /\.approval[-_]?bot[-_]?(?:token|key)\b|\.approval[-_]?bot[\w.-]*[*?[]/i
+
+export function secretStoreBashSegmentAllowed(seg) {
+  return !SECRET_MENTION_RX.test(String(seg ?? ''))
+}
+
 // Does a native file-tool call target one of the protected store files? By name anywhere
 // (fail-closed, as for the allowlist), or by real path, so a symlink under another name does
 // not walk past it. `storeDir` is this install's store; tests pass a tmp one.
@@ -1726,6 +1739,8 @@ function decide(toolName, toolInput, opts = {}) {
       if (SCHEDULE_API_RX.test(seg) && HTTP_WRITE_RX.test(seg)) return { deny: true }
       // the egress allowlist: a plain read only (EGRESSSELFEDIT824)
       if (!allowlistBashSegmentAllowed(seg)) return { deny: true, reason: 'egress-allowlist' }
+      // ...the secrets among them: not even a read (#2160)
+      if (!secretStoreBashSegmentAllowed(seg)) return { deny: true, reason: 'secret-store-file' }
       // ...and the other store files that gate the sub-agent (c556a35a)
       if (!protectedStoreBashSegmentAllowed(seg)) return { deny: true, reason: 'protected-store-file' }
     }
@@ -1772,7 +1787,14 @@ const PROTECTED_STORE_GATE_MSG =
   'store/email-standing-recipients.json, store/.approval-bot-token es store/.approval-bot-key ' +
   'fajlt: mindegyik RAD vonatkozo kapu beallitasa. ' +
   'Ha valtoztatas kell, kerd a fo agenst (inter-agent uzenet: mit es miert); o a gazda ' +
-  'jovahagyasaval irja. Olvasni szabad: cat / grep / jq a fajlra (ertelmezo -- python, node -- nem).'
+  'jovahagyasaval irja. Olvasni szabad: cat / grep / jq a fajlra (ertelmezo -- python, node -- nem), ' +
+  'KIVEVE a .approval-bot-token es .approval-bot-key fajlt: azok titkok, olvasni sem szabad.'
+
+const SECRET_STORE_GATE_MSG =
+  'Titok TILTOTT (governance hard-gate). A store/.approval-bot-token es a store/.approval-bot-key ' +
+  'a gazda jovahagyo botjanak tokenje es alairo kulcsa: sub-agentkent se olvasni, se irni, se ' +
+  'masolni nem szabad, egyetlen paranccsal sem. Csak a dashboard-szerver olvassa. Ha a jovahagyo ' +
+  'bottal gond van, szolj a fo agensnek (inter-agent uzenet), ne a fajlt nezd meg.'
 
 function allow() { process.exit(0) }
 
@@ -1859,7 +1881,8 @@ if (!isMainThread && workerData?.selfPaceGateWorker) {
     if (verdict.error) deny(FAIL_CLOSED_MSG(verdict.error.split('\n')[0]))
     if (verdict.deny) {
       deny(verdict.reason === 'egress-allowlist' ? ALLOWLIST_GATE_MSG
-        : verdict.reason === 'protected-store-file' ? PROTECTED_STORE_GATE_MSG : GATE_MSG)
+        : verdict.reason === 'protected-store-file' ? PROTECTED_STORE_GATE_MSG
+        : verdict.reason === 'secret-store-file' ? SECRET_STORE_GATE_MSG : GATE_MSG)
     }
     allow()
   } catch (err) {

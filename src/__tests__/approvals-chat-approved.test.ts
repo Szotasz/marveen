@@ -46,7 +46,9 @@ function fakeReq(method: 'POST' | 'PATCH', path: string, body: unknown): { ctx: 
       if (event === 'end') cb()
     },
   }
-  return { ctx: { req, res, path: url.pathname, method, url } as RouteContext, out }
+  // Approving takes an owner credential (kanban 80d0e3c6, approvals-approve-owner-only.test.ts):
+  // this harness calls as the owner's dashboard session.
+  return { ctx: { req, res, path: url.pathname, method, url, auth: { kind: 'session', user: 'owner' } } as RouteContext, out }
 }
 
 async function post(body: unknown) {
