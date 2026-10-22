@@ -186,7 +186,15 @@ function agentsRunning(): boolean {
 
 // Atomic, idempotent .env update for one key: drop any prior line for the key,
 // keep every other line verbatim, append the new value, chmod 600. Never sed.
-function setEnvKey(key: string, value: string): void {
+//
+// Card 9a77b3e5 (B4): one KEY=value line only. A value holding a line break or
+// NUL would add a line of the caller's choosing (same rule as updateEnvFile),
+// and PERMISSION_BOT_ID is never written from here: it pins which bot may sign
+// approvals, so it is set by the operator out-of-band.
+const ENV_LINE_BREAK_RE = /[\r\n\0]/
+export function setEnvKey(key: string, value: string): void {
+  if (key.trim().toUpperCase() === 'PERMISSION_BOT_ID') throw new Error('refusing to write PERMISSION_BOT_ID through setEnvKey')
+  if (ENV_LINE_BREAK_RE.test(value) || ENV_LINE_BREAK_RE.test(key)) throw new Error(`refusing to write .env: the value of ${key} holds a line break or NUL`)
   let lines: string[] = []
   try { lines = readFileSync(ENV_FILE, 'utf-8').split('\n') } catch { /* fresh .env */ }
   const kept = lines.filter((l) => l.length > 0 && !l.startsWith(key + '='))
@@ -385,6 +393,8 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
     if (!token && !apiKey) { json(res, { error: 'token vagy apiKey szukseges.', reason: 'missing' }, 400); return true }
     if (token && !/^sk-ant-oat/.test(token)) { json(res, { error: 'A setup-token formatuma nem stimmel (sk-ant-oat...).', reason: 'bad-token' }, 400); return true }
     if (apiKey && !/^sk-ant-/.test(apiKey)) { json(res, { error: 'Az API-kulcs formatuma nem stimmel (sk-ant-...).', reason: 'bad-key' }, 400); return true }
+    // B4: refuse a line break / NUL BEFORE the live probe or any write.
+    if (ENV_LINE_BREAK_RE.test(token) || ENV_LINE_BREAK_RE.test(apiKey)) { json(res, { error: 'A token/kulcs nem tartalmazhat sortörést.', reason: 'bad-chars' }, 400); return true }
 
     // Read BEFORE persisting: on a fresh install the channels session is
     // booted by the installer/service unit with NO credentials, so if the

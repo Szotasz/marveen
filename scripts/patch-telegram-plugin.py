@@ -3,7 +3,8 @@
 Take /status and /help away from the Telegram channel plugin (ELSOKOR922 D-4),
 mark forwarded messages in the inbound meta (forwarded="1"), record every
 inbound message the bot receives (the evidence owner WRITE commands need),
-and -- only while TELEGRAM_TOPICS_ENABLED is on -- carry the topic of a
+hand the email-approval buttons (apv:*) to the repo's callback block (see
+APV_MARKER), and -- only while TELEGRAM_TOPICS_ENABLED is on -- carry the topic of a
 message in and the answer back into it (see TOPICS_STEPS).
 
 The official plugin (claude-plugins-official/telegram/<ver>/server.ts) answers
@@ -34,6 +35,9 @@ must not rewrite the user-level cache other Claude Code sessions load
   its marker, so taking it back is deleting the lines that carry
   "MARVEEN-PATCH(c67f5f34-kbd)" (the file is then byte-identical to the one
   patched without it; tested);
+- the approval-button patch is one marked BEGIN..END block, one
+  marked env-snapshot line right after END and one marked call line; deleting
+  those gives back the file patched without it;
 - with --state FILE, the outcome per file (and per patch) is written there as
   JSON, so /status can say in one line when a patch is missing
   (src/web/system-status.ts) instead of the command silently falling back.
@@ -42,6 +46,7 @@ Usage: patch-telegram-plugin.py [--state FILE] [--topics on|off] [<plugins cache
 (default root: $CLAUDE_CONFIG_DIR/plugins/cache, else ~/.claude/plugins/cache;
 without --topics the TELEGRAM_TOPICS_ENABLED setting of this install decides)
 """
+import hashlib
 import json
 import os
 import re
@@ -116,6 +121,189 @@ KBD_SEND = ("reply send options", re.compile(
     "kbdButtons.map(label => [{{ text: label }}]), one_time_keyboard: true, resize_keyboard: true }} : "
     "{{ remove_keyboard: true as const }} }} : {{}}), " + KBD_MARKER + "\n")
 
+# Email-approval buttons: the plugin's callback_query handler only
+# knows perm:*, and answers every other press with an empty toast. The handler
+# for the apv:* buttons the dashboard puts under an approval notice lives in
+# the repo, as an import-free TS module with its own tests
+# (src/telegram-plugin-patches/approval-callback.ts); this patch copies it in.
+# Two edits, all-or-nothing together:
+#  - the module, its line-leading `export ` cut, between a BEGIN line (carrying
+#    the sha256 of the module source) and an END line, right before the
+#    callback_query handler;
+#  - one call line as the handler's first branch, right before its perm: regex,
+#    so an apv: press never reaches the perm: branch (or the model), and every
+#    other press runs exactly as before.
+# The block uses only what server.ts already has (readFileSync from the fs
+# import, STATE_DIR, loadAccess, the global fetch, process.env for the proxy
+# check); those are checked, not assumed. The module may not name `process`
+# (APV_DENY), so its proxy check gets the environment from two patcher lines:
+# the call line passes process.env as it is now, and a snapshot line right after
+# END copies process.env once, when the plugin loads (after its .env loader):
+# bun keeps proxying after a variable is deleted from process.env at runtime
+# (measured on 1.4.2), so the current env alone could miss a proxy.
+# Every run rebuilds the patch from the module source and compares it with what
+# the file holds, so a changed source OR a hand-edited block or line (even under
+# a matching sha label) is replaced.
+# Taking it back: delete the lines from BEGIN to END, the snapshot line and the
+# call line (the file is then byte-identical to the one patched without it;
+# tested).
+APV_MARKER = "// MARVEEN-PATCH(apv-buttons)"
+APV_SOURCE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                          "src", "telegram-plugin-patches", "approval-callback.ts")
+APV_BEGIN_RX = re.compile(r"^" + re.escape(APV_MARKER) + r" BEGIN src-sha256:([0-9a-f]{16})\n", re.MULTILINE)
+APV_END_RX = re.compile(r"^" + re.escape(APV_MARKER) + r" END\n", re.MULTILINE)
+APV_CALL_RX = re.compile(r"^ *if \(data\.startsWith\('apv:'\)\) \{[^\n]* " + re.escape(APV_MARKER) + r"\n", re.MULTILINE)
+APV_SNAP_RX = re.compile(r"^const MARVEEN_APV_ENV_AT_LOAD = [^\n]* " + re.escape(APV_MARKER) + r"\n", re.MULTILINE)
+APV_HANDLER = ("callback_query handler", re.compile(r"^bot\.on\('callback_query:data', async ctx => \{\n", re.MULTILINE))
+APV_PERM = ("perm regex", re.compile(
+    r"^( *)const m = /\^perm:\(allow\|deny\|more\):\(\[a-km-z\]\{5\}\)\$/\.exec\(data\)\n", re.MULTILINE))
+# The call line runs with the handler's `ctx` and `data`: only this one line may
+# stand between the handler's opening and the perm: regex.
+APV_DATA_LINE = re.compile(r" *const data = ctx\.callbackQuery\.data\n")
+APV_NAMES = [
+    ("fs readFileSync import", re.compile(r"^import \{[^}\n]*\breadFileSync\b[^}\n]*\} from 'fs'\n", re.MULTILINE)),
+    ("STATE_DIR", re.compile(r"^const STATE_DIR = ", re.MULTILINE)),
+    ("loadAccess", re.compile(r"^function loadAccess\(\)", re.MULTILINE)),
+]
+# Every top-level name of the module starts with one of these (its own rule).
+APV_OWN_NAMES = re.compile(r"marveenApprovalCallback|marveenApv|MarveenApv|MARVEEN_APV")
+# The block is inlined into the plugin process next to the bot token: a source
+# naming any of these is not copied in (the same list the module's own test
+# holds, src/__tests__/approval-callback-plugin.test.ts). Checked over the
+# whole source, comments included.
+APV_DENY = [
+    ("import", re.compile(r"\bimport\b")),
+    ("require", re.compile(r"\brequire\b")),
+    ("mcp", re.compile(r"mcp", re.IGNORECASE)),
+    ("notification", re.compile(r"notification", re.IGNORECASE)),
+    ("console", re.compile(r"console\.")),
+    ("process", re.compile(r"\bprocess\b")),
+    ("eval", re.compile(r"\beval\b")),
+    ("Function", re.compile(r"\bFunction\b")),
+    ("Bun", re.compile(r"\bBun\b")),
+    ("child process", re.compile(r"child_process|\bexecFile|\bexecSync|\bspawn")),
+    ("globalThis", re.compile(r"globalThis")),
+]
+# A line at column 0 of the block is a comment, a closing bracket, or a
+# declaration of a prefixed name; anything else (a destructuring, a bare
+# statement, `const STATE_DIR = ...`, which would stop bun from loading the
+# plugin at all) makes the source unusable.
+APV_TOP_LEVEL_OK = re.compile(r"^(//|/\*|\*/|[}\])])")
+APV_TOP_LEVEL_DECL = re.compile(
+    r"^(?:async\s+)?(?:function\*?|const|let|var|class|interface|type|enum)\s+"
+    r"(?:marveenApprovalCallback\b|marveenApv\w|MarveenApv\w|MARVEEN_APV_\w)")
+APV_CALL = ("if (data.startsWith('apv:')) { await marveenApprovalCallback(ctx, data, "
+            "{ stateDir: STATE_DIR, readFileSync, fetch, loadAccess, env: process.env, envAtLoad: MARVEEN_APV_ENV_AT_LOAD }); "
+            "return } " + APV_MARKER + "\n")
+APV_SNAP = "const MARVEEN_APV_ENV_AT_LOAD = { ...process.env } " + APV_MARKER + "\n"
+
+_apv_source_cache = {}
+
+
+def apv_source(path=None):
+    """(block, sha16) to insert, or (None, why). The module must name nothing
+    on APV_DENY, declare only prefixed top-level names, and carry no marker of
+    its own."""
+    path = path or APV_SOURCE
+    if path in _apv_source_cache:
+        return _apv_source_cache[path]
+    try:
+        with open(path, "rb") as f:
+            raw = f.read()
+        src = raw.decode("utf-8")
+    except FileNotFoundError:
+        res = (None, "missing")
+    except Exception as e:
+        res = (None, f"unreadable ({type(e).__name__})")
+    else:
+        block = re.sub(r"^export ", "", src, flags=re.MULTILINE)
+        if not block.endswith("\n"):
+            block += "\n"
+        denied = next((name for name, rx in APV_DENY if rx.search(block)), None)
+        top = next((ln for ln in block.split("\n") if ln and not ln[0].isspace()
+                    and not APV_TOP_LEVEL_OK.match(ln) and not APV_TOP_LEVEL_DECL.match(ln)), None)
+        if denied:
+            res = (None, f"denied {denied}")
+        elif "MARVEEN-PATCH" in block or "\r" in block:
+            res = (None, "marker or CR in the source")
+        elif re.search(r"^\s*export\b", block, re.MULTILINE) or re.search(
+                r"^export (?!(async function|function|const|let|interface|type|class) )", src, re.MULTILINE):
+            res = (None, "export form")
+        elif len(re.findall(r"^async function marveenApprovalCallback\(", block, re.MULTILINE)) != 1:
+            res = (None, "no marveenApprovalCallback")
+        elif top is not None:
+            res = (None, "top-level name")
+        else:
+            res = (block, hashlib.sha256(raw).hexdigest()[:16])
+    _apv_source_cache[path] = res
+    return res
+
+
+def strip_apv(text):
+    """(text without the apv patch, sha16 label of the block it had) -- or
+    (text, None) when it has none -- or (None, why) when the marked lines are not
+    one intact block, at most one snapshot line and one call line (then nothing
+    is touched). A missing snapshot line (a file patched before it existed, or a
+    hand edit) is not damage: the rebuild puts it back."""
+    if APV_MARKER not in text:
+        return text, None
+    begins = list(APV_BEGIN_RX.finditer(text))
+    ends = list(APV_END_RX.finditer(text))
+    calls = list(APV_CALL_RX.finditer(text))
+    snaps = list(APV_SNAP_RX.finditer(text))
+    if (len(begins), len(ends), len(calls)) != (1, 1, 1) or len(snaps) > 1 \
+            or text.count(APV_MARKER) != 3 + len(snaps) or ends[0].start() < begins[0].end():
+        return None, "apv markers"
+    b, e = begins[0], ends[0]
+    lines = [(m.start(), m.end()) for m in calls + snaps]
+    if any(b.start() <= start < e.end() for start, _ in lines):
+        return None, "apv markers"
+    cut = sorted([(b.start(), e.end())] + lines)
+    out, at = [], 0
+    for start, end in cut:
+        out.append(text[at:start])
+        at = end
+    out.append(text[at:])
+    return "".join(out), b.group(1)
+
+
+def apply_apv(text, source=None):
+    """Returns (new_text, status), all-or-nothing like apply_patch. status:
+    'patched' (inserted, or a stale or hand-edited block replaced) | 'already' |
+    'anchor-missing:<name>' | 'source-unusable:<why>' | 'damaged:<why>' | 'conflict:apv names'.
+    'already' only when the file holds exactly the patch built from the source now."""
+    base, had = strip_apv(text)
+    if base is None:
+        return text, f"damaged:{had}"
+    block, sha = apv_source(source)
+    if block is None:
+        # A block already in place keeps working; it is only not refreshed.
+        return text, f"source-unusable:{sha}"
+    if APV_OWN_NAMES.search(base):
+        return text, "conflict:apv names"
+    for name, rx in APV_NAMES:
+        if len(rx.findall(base)) != 1:
+            return text, f"anchor-missing:{name}"
+    handler = list(APV_HANDLER[1].finditer(base))
+    if len(handler) != 1:
+        return text, f"anchor-missing:{APV_HANDLER[0]}"
+    perm = list(APV_PERM[1].finditer(base))
+    if len(perm) != 1:
+        return text, f"anchor-missing:{APV_PERM[0]}"
+    h, m = handler[0], perm[0]
+    if m.start() < h.end() or not APV_DATA_LINE.fullmatch(base, h.end(), m.start()):
+        return text, "anchor-missing:callback data line"
+    out = base[:m.start()] + m.group(1) + APV_CALL + base[m.start():]
+    begin = f"{APV_MARKER} BEGIN src-sha256:{sha}\n"
+    out = out[:h.start()] + begin + block + f"{APV_MARKER} END\n" + APV_SNAP + out[h.start():]
+    if out == text:
+        return text, "already"
+    if had == sha:
+        log(f"LOUD: the apv block or a marked apv line differs from its source under a matching label "
+            f"(src-sha256:{sha}, edited by hand?) -- replaced")
+    return out, "patched"
+
+
 # Independent patches: each has its own marker and is all-or-nothing on its
 # own, so a plugin update that moves one anchor does not undo the other.
 PATCHES = [
@@ -130,6 +318,9 @@ PATCHES = [
     # an anchor may carry its own mode and insert (name, regex, mode, insert): the three kbd lines differ
     {"name": "kbd", "marker": KBD_MARKER, "anchors": [KBD_SCHEMA, KBD_CHECK, KBD_SEND], "mode": "insert-after",
      "fallback": "the reply tool has no buttons: a question goes out without them and is answered by typing"},
+    # its own apply (block + call line, refreshed when the module source changes)
+    {"name": "apv", "marker": APV_MARKER, "apply": apply_apv,
+     "fallback": "the email-approval buttons do nothing, approvals are decided on the dashboard"},
 ]
 
 # Topics (TELEGRAM_TOPICS_ENABLED, default off). A private chat with topic mode
@@ -259,7 +450,7 @@ def patch_text(text, topics=False):
     when the switch is on, or when switching it off took the patch out."""
     results = []
     for patch in PATCHES:
-        text, status = apply_patch(text, patch)
+        text, status = patch["apply"](text) if "apply" in patch else apply_patch(text, patch)
         results.append((patch, status))
     if topics:
         text, status = apply_topics(text)
@@ -273,13 +464,12 @@ def patch_text(text, topics=False):
 
 def file_status(results):
     """One word for the file: 'already' when every patch was there,
-    'patched' when this run wrote (or took out) one, else the first anchor-missing."""
+    'patched' when this run wrote (or took out) one, else the first failure
+    (anchor-missing:..., or one of the apv patch's own)."""
     statuses = [st for _, st in results]
     if "patched" in statuses or "removed" in statuses:
         return "patched"
-    if all(st == "already" for st in statuses):
-        return "already"
-    return next(st for st in statuses if st.startswith("anchor-missing"))
+    return next((st for st in statuses if st != "already"), "already")
 
 
 def patch_file(path, topics=False):
@@ -296,6 +486,9 @@ def patch_file(path, topics=False):
         if status.startswith("anchor-missing"):
             log(f"LOUD: {status.split(':', 1)[1]} not found exactly once in {path} (plugin changed?) -- "
                 f"the {patch['name']} patch left out, {patch['fallback']}")
+        elif status not in ("patched", "already", "removed"):
+            log(f"LOUD: {status} in {path} -- the {patch['name']} patch not applied or not refreshed, "
+                f"{patch['fallback']} unless an earlier copy is in place")
     patched = [p["name"] + (" removed" if st == "removed" else "") for p, st in results if st in ("patched", "removed")]
     if not patched:
         return file_status(results), per_patch

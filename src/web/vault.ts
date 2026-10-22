@@ -5,6 +5,7 @@ import { PROJECT_ROOT } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { isKeychainAvailable, keychainStore, keychainRetrieveStatus } from './keychain.js'
 import { logger } from '../logger.js'
+import { isPermissionBotVaultId, PERMISSION_BOT_VAULT_LOCKED_ERROR } from './permission-bot-vault.js'
 
 const VAULT_PATH = join(PROJECT_ROOT, 'store', 'vault.json')
 const VAULT_KEY_PATH = join(PROJECT_ROOT, 'store', '.vault-key')
@@ -238,7 +239,19 @@ export function listSecrets(): Array<{ id: string, label: string, createdAt: str
   return readVault().entries.map(({ id, label, createdAt, updatedAt }) => ({ id, label, createdAt, updatedAt }))
 }
 
+// Card 9a77b3e5 (B3): the permission bot's token entry is locked in the storage
+// layer, so no route (connectors slugify, imports, ...) can overwrite or delete
+// it by building the same id. There is deliberately no internal bypass: the
+// entry is provisioned out-of-band by the operator.
+export class VaultEntryLockedError extends Error {
+  constructor() {
+    super(PERMISSION_BOT_VAULT_LOCKED_ERROR)
+    this.name = 'VaultEntryLockedError'
+  }
+}
+
 export function setSecret(id: string, label: string, value: string): void {
+  if (isPermissionBotVaultId(id)) throw new VaultEntryLockedError()
   const store = readVault()
   const now = new Date().toISOString()
   const idx = store.entries.findIndex(e => e.id === id)
@@ -260,6 +273,7 @@ export function getSecret(id: string): string | null {
 }
 
 export function deleteSecret(id: string): boolean {
+  if (isPermissionBotVaultId(id)) throw new VaultEntryLockedError()
   const store = readVault()
   const before = store.entries.length
   store.entries = store.entries.filter(e => e.id !== id)

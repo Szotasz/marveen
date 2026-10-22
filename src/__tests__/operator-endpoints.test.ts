@@ -269,6 +269,12 @@ describe('forwarded actions', () => {
     expect((await call('PUT', '/api/operator/vault/ssh-key-abc', { body: { value: 'x' } })).status).toBe(400)
   })
 
+  it('the permission bot\'s Vault entry is locked here too (card 9a77b3e5): 403, nothing written', async () => {
+    const r = await call('PUT', '/api/operator/vault/telegram-engedely-bot-token', { body: { value: 'x' } })
+    expect(r.status).toBe(403)
+    expect(h.secrets.has('telegram-engedely-bot-token')).toBe(false)
+  })
+
   it('a new secret says so in the owner notification', async () => {
     await call('PUT', '/api/operator/vault/NEW_KEY', { body: { value: 'v' } })
     expect(h.notified[0]).toContain('új titok létrehozva')

@@ -52,6 +52,7 @@ import type { QuotaSnapshot, QuotaWindow } from '../quota.js'
 import { getSystemStatus, type SystemStatus } from '../system-status.js'
 import { getUpdateStatus, refreshUpdateStatus, type UpdateStatus } from '../update-checker.js'
 import { listSecrets, setSecret } from '../vault.js'
+import { isPermissionBotVaultId, PERMISSION_BOT_VAULT_LOCKED_ERROR } from '../permission-bot-vault.js'
 import { syncSecret } from '../vault-bindings.js'
 import { listAgentSummaries, tryHandleAgents, type AgentSummary } from './agents.js'
 import { tryHandleAgentTerminal } from './agent-terminal.js'
@@ -408,6 +409,10 @@ export async function tryHandleOperator(ctx: RouteContext, webDir: string): Prom
     try { id = decodeURIComponent(vaultMatch[1]!) } catch { /* rejected below */ }
     if (!VAULT_ID_RE.test(id) || id.startsWith(SSH_KEY_PREFIX)) {
       json(res, { error: 'Invalid secret id' }, 400)
+      return true
+    }
+    if (isPermissionBotVaultId(id)) {
+      json(res, { error: PERMISSION_BOT_VAULT_LOCKED_ERROR }, 403)
       return true
     }
     let value: unknown
