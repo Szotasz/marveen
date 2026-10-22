@@ -1,4 +1,4 @@
-import { execFile, execFileSync } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
@@ -19,14 +19,20 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
-function isTmuxSessionAlive(session: string): boolean {
-  try {
-    const inv = tmuxInvocationFor(['has-session', '-t', exactTmuxTarget(session)])
-    execFileSync(inv.file, inv.args, { timeout: 3000, stdio: 'ignore' })
-    return true
-  } catch {
-    return false
-  }
+// has-session off the event loop, with the child's stdio ignored as the
+// synchronous call had it (no buffering, so no output size can turn a
+// successful exit into "not running"); alive means exit status 0.
+function isTmuxSessionAlive(session: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    try {
+      const inv = tmuxInvocationFor(['has-session', '-t', exactTmuxTarget(session)])
+      const child = spawn(inv.file, inv.args, { stdio: 'ignore', timeout: 3000 })
+      child.on('error', () => resolve(false))
+      child.on('exit', (code) => resolve(code === 0))
+    } catch {
+      resolve(false)
+    }
+  })
 }
 
 // Resolve a terminal target for both sub-agents and the MAIN agent (Marveen).
@@ -34,9 +40,9 @@ function isTmuxSessionAlive(session: string): boolean {
 // `agent-<name>` -- so the sub-agent assumptions (existsSync(agentDir) +
 // agentSessionName) 404 it (Zara hit this, 871005b). Branch on the main agent.
 interface SessionTarget { exists: boolean; running: boolean; session: string }
-function resolveTarget(name: string): SessionTarget {
+async function resolveTarget(name: string): Promise<SessionTarget> {
   if (isMainChannelsAgent(name)) {
-    return { exists: true, running: isTmuxSessionAlive(MAIN_CHANNELS_SESSION), session: MAIN_CHANNELS_SESSION }
+    return { exists: true, running: await isTmuxSessionAlive(MAIN_CHANNELS_SESSION), session: MAIN_CHANNELS_SESSION }
   }
   return { exists: existsSync(agentDir(name)), running: isAgentRunning(name), session: agentSessionName(name) }
 }
@@ -145,7 +151,15 @@ export async function tryHandleAgentTerminal(ctx: RouteContext): Promise<boolean
   const streamMatch = path.match(/^\/api\/agents\/([^/]+)\/pane\/stream$/)
   if (streamMatch && method === 'GET') {
     const name = decodeURIComponent(streamMatch[1])
-    const target = resolveTarget(name)
+    // The client can go away while resolveTarget awaits tmux; listen first, so a
+    // close during that await is not missed (it would leave the ticks running).
+    let closed = false
+    let interval: ReturnType<typeof setInterval> | undefined
+    const stop = (): void => { closed = true; if (interval) clearInterval(interval) }
+    ctx.req.on('close', stop)
+    ctx.req.on('error', stop)
+    const target = await resolveTarget(name)
+    if (closed) return true
     if (!target.exists) { json(res, { error: 'Agent not found' }, 404); return true }
     const session = target.session
 
@@ -156,7 +170,6 @@ export async function tryHandleAgentTerminal(ctx: RouteContext): Promise<boolean
       'X-Accel-Buffering': 'no',
     })
 
-    let closed = false
     let inFlight = false
     const tick = (): void => {
       if (closed || inFlight) return // skip if a slow capture is still running
@@ -175,25 +188,28 @@ export async function tryHandleAgentTerminal(ctx: RouteContext): Promise<boolean
       // pane is what the operator reported as "nem jelenit meg semmit".
       const capture = tmuxInvocationFor(['capture-pane', '-t', exactTmuxTarget(session), '-S', '-2000', '-e', '-p'])
       execFile(capture.file, capture.args, { timeout: 3000, encoding: 'utf-8', maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
-        inFlight = false
-        if (closed) return
+        if (closed) { inFlight = false; return }
         const pane = err ? '' : (stdout ?? '')
+        // The tick stays in flight until the probe answers, so a slow probe
+        // never overlaps the next tick.
+        const send = (running: boolean): void => {
+          inFlight = false
+          if (closed) return
+          try {
+            res.write(`data: ${JSON.stringify({ pane, running })}\n\n`)
+          } catch {
+            closed = true
+          }
+        }
         // A successful capture proves the session is alive; only re-probe on
         // capture failure (cheap, and avoids a has-session call every tick).
-        const running = err ? isTmuxSessionAlive(session) : true
-        try {
-          res.write(`data: ${JSON.stringify({ pane, running })}\n\n`)
-        } catch {
-          closed = true
-        }
+        if (err) void isTmuxSessionAlive(session).then(send)
+        else send(true)
       })
     }
 
     tick()
-    const interval = setInterval(tick, 700)
-    const stop = (): void => { closed = true; clearInterval(interval) }
-    ctx.req.on('close', stop)
-    ctx.req.on('error', stop)
+    interval = setInterval(tick, 700)
     return true
   }
 
@@ -224,7 +240,7 @@ export async function tryHandleAgentTerminal(ctx: RouteContext): Promise<boolean
       json(res, { error: 'Terminal input is disabled. Enable it in the dashboard first.' }, 403)
       return true
     }
-    const target = resolveTarget(name)
+    const target = await resolveTarget(name)
     if (!target.exists) { json(res, { error: 'Agent not found' }, 404); return true }
     if (!target.running) { json(res, { error: 'Agent is not running' }, 400); return true }
     const session = target.session
@@ -273,7 +289,7 @@ export async function tryHandleAgentTerminal(ctx: RouteContext): Promise<boolean
   const loginMatch = path.match(/^\/api\/agents\/([^/]+)\/login$/)
   if (loginMatch && method === 'POST') {
     const name = decodeURIComponent(loginMatch[1])
-    const target = resolveTarget(name)
+    const target = await resolveTarget(name)
     if (!target.exists) { json(res, { error: 'Agent not found' }, 404); return true }
     if (!target.running) { json(res, { error: 'Agent is not running' }, 400); return true }
     const session = target.session
