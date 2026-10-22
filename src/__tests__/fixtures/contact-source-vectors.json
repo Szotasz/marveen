@@ -1,0 +1,25 @@
+{
+  "valid": [
+    "mail:AAMkAD123",
+    "site:https://example.com/kapcsolat",
+    "site:http://example.com",
+    "owner",
+    "  owner  ",
+    "crm:12345",
+    "order:9981",
+    "doc:szerzodes-2026-01.pdf"
+  ],
+  "invalid": [
+    "",
+    "   ",
+    "mail:",
+    "mail:two words",
+    "site:ftp://example.com",
+    "site:example.com",
+    "owner:me",
+    "Owner",
+    "crm:",
+    "random text",
+    "memory:5720"
+  ]
+}

@@ -7,6 +7,7 @@ import { getEffectiveSettingValue } from './settings-store.js'
 import { logger } from './logger.js'
 import { TOOL_TIMEOUTS } from './tool-timeouts.js'
 import { triggerLikeClause } from './homoglyph.js'
+import { ensureContactsSchema } from './contacts-db.js'
 import type { LiveKanban } from './web/heartbeat-kanban-verify.js'
 import { compareDeliveryOrder, deliveryRankSql } from './delivery-order.js'
 import { toBudapestTs, type TsRange } from './date-range.js'
@@ -1595,6 +1596,9 @@ export function initDatabase(dbPathOverride?: string): void {
   try { db.exec('ALTER TABLE vault_ssh_servers DROP COLUMN key_expires_at') } catch { /* column absent or SQLite pre-3.35 */ }
   try { db.exec('ALTER TABLE vault_ssh_servers ADD COLUMN ssh_key_id TEXT REFERENCES vault_ssh_keys(id)') } catch { /* already exists */ }
   db.exec(`CREATE INDEX IF NOT EXISTS idx_vault_ssh_servers_key ON vault_ssh_servers(ssh_key_id)`)
+
+  // --- Contacts (append-only values, name/org FTS, read audit) ---
+  ensureContactsSchema(db)
 
   // --- Approvals (HITL) ---
   db.exec(`
