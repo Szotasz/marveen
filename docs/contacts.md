@@ -13,7 +13,7 @@ Brainy saját névjegytára: név, e-mail, telefon, cím, szervezet, viszony, mi
 ## Ki férhet hozzá
 
 - Csak az `X-Agent-Id: brainy` fejlécű hívás (pontos egyezés), minden más 403 és naplósor. Ez ÖNBEVALLOTT azonosítás, nem hitelesítés: a flotta közös Bearer tokent használ.
-- Ezért minden olvasás (`contact_reads`) és minden írás (`contact_writes`: create, add, retract) auditsort kap: ki, mikor, melyik rekord. A listázás minden visszaadott kapcsolat azonosítóját külön sorban naplózza (üres találatnál egyetlen azonosító nélküli sor a kereséssel), a 404-es lekérés (nem létező vagy másik tartományú azonosító) is naplósort kap a kért azonosítóval, ugyanazzal a válasszal. Az érték soha nem kerül az auditba. Az audit-táblák is append-only-k.
+- Ezért minden olvasás (`contact_reads`) és minden írás (`contact_writes`: create, add, retract; a 404-es írási kísérlet, vagyis másik tartományú vagy nem létező névjegy/érték, `attempt` sort kap) auditsort kap: ki, mikor, melyik rekord. A listázás minden visszaadott kapcsolat azonosítóját külön sorban naplózza (üres találatnál egyetlen azonosító nélküli sor a kereséssel), a 404-es lekérés (nem létező vagy másik tartományú azonosító) is naplósort kap a kért azonosítóval, ugyanazzal a válasszal. Az érték soha nem kerül az auditba. Az audit-táblák is append-only-k.
 
 ## Ledger-kapcsolat
 
@@ -32,7 +32,7 @@ node scripts/contacts-import-ledger.mjs --domain business --address a@pelda.hu -
 | `GET /api/contacts?domain=&q=&limit=` | keresés (domain kötelező; limit alap 10, max 50, `truncated` jelzi a levágást) |
 | `GET /api/contacts/:id?domain=` | egy kapcsolat az értékeivel és forrásaikkal |
 | `POST /api/contacts` | új kapcsolat (`domain`, `display_name`, opcionális kezdőértékek forrással) |
-| `POST /api/contacts/:id/values` | új érték (`field`, `value`, `source`, `source_date`) |
+| `POST /api/contacts/:id/values` | új érték (`domain`, `field`, `value`, `source`, `source_date`; a `domain` kötelező, másik tartományú vagy nem létező névjegy ugyanaz a 404, a mezők ellenőrzése előtt) |
 | `POST /api/contacts/values/:id/retract` | visszavonás (`domain` és `source` kötelező; másik tartományú vagy nem létező érték ugyanaz a 404) |
 
 Megtévesztően hasonló (homoglifás) név vagy szervezet esetén a 201-es válasz `warning` mezőt kap; a felvételt nem blokkolja.

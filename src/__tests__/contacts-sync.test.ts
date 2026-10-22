@@ -50,7 +50,7 @@ describe('AC25: the API never writes the ledger; the manual CLI sync does', () =
       values: [{ field: 'email', value: 'first@example.hu', ...src }],
     })
     expect(c.status).toBe(201)
-    const r = await call('POST', `/api/contacts/${c.body.id}/values`, { field: 'email', value: 'Bela@Example.hu', source: 'owner', source_date: '2026-10-22' })
+    const r = await call('POST', `/api/contacts/${c.body.id}/values`, { domain: 'business', field: 'email', value: 'Bela@Example.hu', source: 'owner', source_date: '2026-10-22' })
     expect(r.status).toBe(201)
     expect(c.body.ledger).toBeUndefined()
     expect(r.body.ledger).toBeUndefined()
@@ -63,7 +63,7 @@ describe('AC25: the API never writes the ledger; the manual CLI sync does', () =
     const orig = JSON.stringify({ version: 1, recipients: {} })
     writeFileSync(ledger, orig)
     const c = await call('POST', '/api/contacts', { domain: 'business', display_name: 'A' })
-    await call('POST', `/api/contacts/${c.body.id}/values`, { field: 'email', value: 'a@example.hu', ...src })
+    await call('POST', `/api/contacts/${c.body.id}/values`, { domain: 'business', field: 'email', value: 'a@example.hu', ...src })
     expect(readFileSync(ledger, 'utf8')).toBe(orig)
   })
 

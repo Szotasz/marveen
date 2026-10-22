@@ -74,11 +74,11 @@ describe('contacts.mjs', () => {
 
   it('value: POST /api/contacts/<id>/values', async () => {
     reply = { status: 201, json: { ok: true, id: 9 } }
-    const r = await run(['value', '--id', '7', '--field', 'phone', '--value', '+36 1 234', '--source', 'doc:szerzodes', '--source-date', '2026-10-22'])
+    const r = await run(['value', '--domain', 'business', '--id', '7', '--field', 'phone', '--value', '+36 1 234', '--source', 'doc:szerzodes', '--source-date', '2026-10-22'])
     expect(r.code).toBe(0)
     expect(seen.method).toBe('POST')
     expect(seen.url).toBe('/api/contacts/7/values')
-    expect(JSON.parse(seen.body)).toEqual({ field: 'phone', value: '+36 1 234', source: 'doc:szerzodes', source_date: '2026-10-22' })
+    expect(JSON.parse(seen.body)).toEqual({ domain: 'business', field: 'phone', value: '+36 1 234', source: 'doc:szerzodes', source_date: '2026-10-22' })
   })
 
   it('find: GET with domain and q in the query, no body', async () => {
@@ -109,7 +109,7 @@ describe('contacts.mjs', () => {
 
   it('non-2xx: non-zero exit, status and error field only, no token, no sent value', async () => {
     reply = { status: 400, json: { error: 'invalid or missing source' } }
-    const r = await run(['value', '--id', '7', '--field', 'email', '--value', 'leak@example.com', '--source', 'bad'])
+    const r = await run(['value', '--domain', 'business', '--id', '7', '--field', 'email', '--value', 'leak@example.com', '--source', 'bad'])
     expect(r.code).toBe(1)
     expect(r.err).toContain('HTTP 400: invalid or missing source')
     expect(r.out + r.err).not.toContain(TOKEN)

@@ -111,9 +111,9 @@ export function ensureContactsSchema(d: Database.Database): void {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       actor TEXT NOT NULL,
       at INTEGER NOT NULL DEFAULT (unixepoch()),
-      contact_id INTEGER NOT NULL,
+      contact_id INTEGER,
       value_id INTEGER,
-      action TEXT NOT NULL CHECK (action IN ('create','add','retract'))
+      action TEXT NOT NULL CHECK (action IN ('create','add','retract','attempt'))
     );
 
     -- Both audit tables are append-only, like contact_values.
@@ -259,10 +259,10 @@ export function findContacts(d: Database.Database, input: { domain: unknown; q?:
 /** Audit a write. Records who, when, which contact/value and the kind -- never a value. */
 export function recordWrite(
   d: Database.Database,
-  input: { actor: string; contact_id: number; value_id?: number | null; action: 'create' | 'add' | 'retract' },
+  input: { actor: string; contact_id: number | null; value_id?: number | null; action: 'create' | 'add' | 'retract' | 'attempt' },
 ): void {
   d.prepare('INSERT INTO contact_writes (actor, contact_id, value_id, action) VALUES (?, ?, ?, ?)')
-    .run(input.actor, input.contact_id, input.value_id ?? null, input.action)
+    .run(input.actor, input.contact_id ?? null, input.value_id ?? null, input.action)
 }
 
 /** Audit a read. Records who, when, which contact and the query -- never a value. */

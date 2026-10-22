@@ -206,7 +206,11 @@ export async function tryHandleContacts(ctx: RouteContext): Promise<boolean> {
       const target = d.prepare('SELECT contact_id FROM contact_values WHERE id = ?').get(Number(retractMatch[1])) as { contact_id: number } | undefined
       // A value in another domain looks exactly like a missing one (no existence oracle).
       const owner = target ? getContact(d, target.contact_id) : null
-      if (!target || !owner || owner.domain !== domain) { json(res, { error: 'not found' }, 404); return true }
+      if (!target || !owner || owner.domain !== domain) {
+        recordWrite(d, { actor: actorOf(ctx), contact_id: null, value_id: Number(retractMatch[1]), action: 'attempt' })
+        json(res, { error: 'not found' }, 404)
+        return true
+      }
       const id = d.transaction(() => {
         const rid = retractValue(d, {
           value_id: Number(retractMatch[1]),
@@ -228,8 +232,20 @@ export async function tryHandleContacts(ctx: RouteContext): Promise<boolean> {
   if (valuesMatch && method === 'POST') {
     const body = await parseBody(ctx)
     if (!body) { json(res, { error: 'invalid JSON body' }, 400); return true }
-    const contact = getContact(d, Number(valuesMatch[1]))
-    if (!contact) { json(res, { error: 'not found' }, 404); return true }
+    const domain = CONTACT_DOMAINS.includes(body.domain as ContactDomain) ? (body.domain as ContactDomain) : null
+    if (!domain) {
+      json(res, { error: `domain is required and must be one of: ${CONTACT_DOMAINS.join(', ')}` }, 400)
+      return true
+    }
+    const requestedId = Number(valuesMatch[1])
+    const contact = getContact(d, requestedId)
+    // A contact in another domain looks exactly like a missing one, and the 404
+    // comes before any other field check, so an empty body cannot probe ids.
+    if (!contact || contact.domain !== domain) {
+      recordWrite(d, { actor: actorOf(ctx), contact_id: requestedId, action: 'attempt' })
+      json(res, { error: 'not found' }, 404)
+      return true
+    }
     if (!CONTACT_FIELDS.includes(body.field as ContactField)) {
       json(res, { error: `field must be one of: ${CONTACT_FIELDS.join(', ')}` }, 400)
       return true

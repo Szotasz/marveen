@@ -2,7 +2,7 @@
 // contacts.mjs -- Brainy's CLI for the contacts API (card f90928e3, node C4).
 //
 //   node scripts/contacts.mjs add     --domain business|family --name "<display name>" [--field F --value V] --source S [--source-date YYYY-MM-DD]
-//   node scripts/contacts.mjs value   --id N --field F --value V --source S [--source-date YYYY-MM-DD]
+//   node scripts/contacts.mjs value   --domain D --id N --field F --value V --source S [--source-date YYYY-MM-DD]
 //   node scripts/contacts.mjs find    --domain D [--q text] [--limit N]
 //   node scripts/contacts.mjs show    --domain D --id N
 //   node scripts/contacts.mjs retract --domain D --value-id N --source S [--source-date YYYY-MM-DD]
@@ -54,7 +54,7 @@ switch (cmd) {
   }
   case 'value':
     method = 'POST'; path = `/api/contacts/${intId('id')}/values`
-    body = { field: field(), value: need('value'), source: need('source'), source_date: sourceDate() }
+    body = { domain: domain(), field: field(), value: need('value'), source: need('source'), source_date: sourceDate() }
     break
   case 'find': {
     const p = new URLSearchParams({ domain: domain() })
