@@ -5,7 +5,8 @@ import { releaseOwnRespawnStamp, type OwnRespawnStamp } from './respawn-stamp-re
 import { existsSync, readFileSync, statSync, writeFileSync, utimesSync } from 'node:fs'
 import { hostname, loadavg, cpus, homedir } from 'node:os'
 import { join } from 'node:path'
-import { execFileSync, spawn } from 'node:child_process'
+import { execFileSync, execFile, spawn } from 'node:child_process'
+import { promisify } from 'node:util'
 import { makeLazyBinResolver } from '../platform.js'
 import { WEB_PORT } from '../config.js'
 import { logger } from '../logger.js'
@@ -70,11 +71,11 @@ import {
   AGENT_FAILURE_COUNT_TTL_MS,
   GIVE_UP_REALERT_MS,
   isFailureCountStale,
-  parseEtimeToSeconds,
+  etimeOutputToMs,
 } from './agent-restart-policy.js'
 // getClaudePidForSession + hasChannelPluginAlive live in the shared liveness
 // module so the standalone channel-coordinator reuses the exact same probe.
-import { getClaudePidForSession, hasChannelPluginAlive, probeChannelPluginLiveness, classifyRespawnStampAdvance } from '../channel-coordinator/liveness.js'
+import { getClaudePidForSession, getClaudePidForSessionAsync, hasChannelPluginAlive, probeChannelPluginLiveness, probeChannelPluginLivenessAsync, takeProcSnapshotAsync, classifyRespawnStampAdvance } from '../channel-coordinator/liveness.js'
 import { colistenProviders, runColistenCheck, type ColistenState } from './main-colisten-health.js'
 import { runReconcileBurst, waitReconcileGap, RECONCILE_MAIN_FIRST_MAX_WAIT_MS } from './reconcile-stagger.js'
 import { getDesiredAgents } from './agent-desired-state.js'
@@ -107,8 +108,19 @@ const CHANNELS_FAILURES_LOG_PATH = join(PROJECT_ROOT, 'store', 'channels-failure
 function getProcessAgeMs(pid: number): number {
   try {
     const out = execFileSync('/bin/ps', ['-o', 'etime=', '-p', String(pid)], { timeout: 3000, encoding: 'utf-8' })
-    const secs = parseEtimeToSeconds(out)
-    return secs < 0 ? -1 : secs * 1000
+    return etimeOutputToMs(out)
+  } catch {
+    return -1
+  }
+}
+
+const execFileAsyncCm = promisify(execFile)
+// Async twin of getProcessAgeMs for the per-minute check(): the sweep must not hold the
+// event loop on one ps per agent.
+async function getProcessAgeMsAsync(pid: number): Promise<number> {
+  try {
+    const { stdout } = await execFileAsyncCm('/bin/ps', ['-o', 'etime=', '-p', String(pid)], { timeout: 3000, encoding: 'utf-8' })
+    return etimeOutputToMs(stdout)
   } catch {
     return -1
   }
@@ -2836,8 +2848,10 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
       }
     }
 
+    // One ps snapshot for the whole liveness loop (null -> each probe takes its own).
+    const sweepSnapshot = await takeProcSnapshotAsync()
     for (const t of targets) {
-      const claudePid = getClaudePidForSession(t.session)
+      const claudePid = await getClaudePidForSessionAsync(t.session)
       if (!claudePid) {
         if (!t.isMarveen && t.agentName) {
           const lastRestart = agentLastRestart.get(t.agentName)
@@ -2869,7 +2883,13 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
         }
         continue
       }
-      const liveness = probeChannelPluginLiveness(claudePid, t.provider, t.agentName)
+      // An 'alive' read from the shared snapshot is confirmed with a fresh ps when it would
+      // close an open down spell (and reset its restart back-off): the poller may have died
+      // after the snapshot was taken.
+      const openDownSpell = t.isMarveen
+        ? marveenSuspectFirstSeen !== null || marveenDownState !== null || marveenRecreatedOutage !== null
+        : agentDownSince.has(t.session) || (t.agentName !== undefined && agentRestartFailures.has(t.agentName))
+      const liveness = await probeChannelPluginLivenessAsync(claudePid, t.provider, t.agentName, { confirmAlive: openDownSpell }, sweepSnapshot ?? undefined)
       if (liveness === 'unknown') {
         // The PROBE failed (ps timed out, state dir unreadable) -- that is not
         // evidence about the plugin. Leave every counter untouched (down-since,
@@ -2943,6 +2963,10 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
             logger.warn({ err, agent: t.agentName }, 'Plugin-down forensics failed (continuing)')
           }
         }
+        // Awaited BEFORE the restart state below is read: the context guard calls
+        // markAgentRestartPending() before its own stop, and a read taken before this
+        // await could miss that mark and restart the agent a second time.
+        const processAgeMs = await getProcessAgeMsAsync(claudePid)
         const lastRestart = agentLastRestart.get(t.agentName!)
         const failures = agentRestartFailures.get(t.agentName!) ?? 0
         // If the unlock probe confirmed the plugin ABSENT from /mcp (never
@@ -2962,7 +2986,7 @@ export function startChannelPluginMonitor(): NodeJS.Timeout | null {
         const agentPaneState = agentPane != null ? detectPaneState(agentPane) : null
         const agentBusy = shouldDeferKeepaliveRespawn(agentPaneState)
         const action = decideDownAgentAction({
-          processAgeMs: getProcessAgeMs(claudePid),
+          processAgeMs,
           msSinceLastRestart: lastRestart != null ? Date.now() - lastRestart : null,
           startupGraceMs: AGENT_STARTUP_GRACE_MS,
           restartGraceMs: AGENT_RESTART_GRACE_MS,
