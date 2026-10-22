@@ -82,6 +82,7 @@ vi.mock('../web/active-model.js', () => ({
   readActiveModelFromProjectDir: () => null,
   readTranscriptMtimeFromProjectDir: () => null,
   readTranscriptTailFromProjectDir: () => null,
+  readLastTurnActivityMs: () => null,
 }))
 vi.mock('../web/main-agent.js', () => ({ MAIN_CHANNELS_SESSION: 'main-channels' }))
 vi.mock('../notify.js', () => ({ notifyChannel: async () => {} }))
