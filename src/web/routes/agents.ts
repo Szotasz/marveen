@@ -1,7 +1,8 @@
 import { existsSync, readFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync, copyFileSync, renameSync } from 'node:fs'
 import { join, extname, dirname } from 'node:path'
 import { homedir, platform, tmpdir } from 'node:os'
-import { execSync } from 'node:child_process'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { logger } from '../../logger.js'
 import { beginRestart, endRestart } from '../restart-lock.js'
 import { restartOptsFromBody } from '../restart-wake.js'
@@ -175,6 +176,27 @@ import { readAgentTranscript, isTranscriptAllowed } from '../agent-transcript.js
 import { configDirFor } from '../main-transcript-root.js'
 import { kindAllowed, FORBIDDEN_KIND } from './auth.js'
 import { isValidModelId, InvalidModelIdError } from '../../model-id.js'
+
+const execFileAsync = promisify(execFile)
+
+// The Slack smoke test runs for up to 60 s: run it off the event loop, and as an
+// argv, so the agent name is a plain argument, never part of a shell command
+// line. stdin is closed at once, as execSync did.
+export async function runSlackSmokeTest(scriptPath: string, name: string): Promise<{ ok: boolean; output: string }> {
+  try {
+    const pending = execFileAsync('bash', [scriptPath, name], {
+      timeout: 60000,
+      encoding: 'utf-8',
+      env: { ...process.env, SLACK_SMOKE_TEST_ALLOWED: 'true' },
+    })
+    pending.child.stdin?.end()
+    const { stdout } = await pending
+    return { ok: true, output: stdout }
+  } catch (err: unknown) {
+    const execErr = err as { stdout?: string; stderr?: string }
+    return { ok: false, output: (execErr.stdout || '') + (execErr.stderr || '') }
+  }
+}
 
 // Which credential kinds may read a transcript. NAMED principals only: a
 // logged-in human, or a key enrolled to that human's own device. Deliberately
@@ -1342,17 +1364,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       json(res, { error: 'SLACK_SMOKE_TEST_ALLOWED=true nincs beállítva az agent .env-jében' }, 403)
       return true
     }
-    try {
-      const output = execSync(`bash "${scriptPath}" "${name}"`, {
-        timeout: 60000,
-        encoding: 'utf-8',
-        env: { ...process.env, SLACK_SMOKE_TEST_ALLOWED: 'true' },
-      })
-      json(res, { ok: true, output })
-    } catch (err: unknown) {
-      const execErr = err as { stdout?: string; stderr?: string }
-      json(res, { ok: false, output: (execErr.stdout || '') + (execErr.stderr || '') }, 200)
-    }
+    json(res, await runSlackSmokeTest(scriptPath, name))
     return true
   }
 
