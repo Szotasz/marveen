@@ -100,10 +100,11 @@ describe('contacts.mjs', () => {
 
   it('retract: POST /api/contacts/values/<id>/retract', async () => {
     reply = { status: 201, json: { ok: true, id: 12 } }
-    const r = await run(['retract', '--value-id', '9', '--source', 'owner', '--source-date', '2026-10-22'])
+    const r = await run(['retract', '--domain', 'family', '--value-id', '9', '--source', 'owner', '--source-date', '2026-10-22'])
     expect(r.code).toBe(0)
     expect(seen.url).toBe('/api/contacts/values/9/retract')
-    expect(JSON.parse(seen.body)).toEqual({ source: 'owner', source_date: '2026-10-22' })
+    expect(JSON.parse(seen.body)).toEqual({ domain: 'family', source: 'owner', source_date: '2026-10-22' })
+    expect((await run(['retract', '--value-id', '9', '--source', 'owner'])).code).toBe(2)
   })
 
   it('non-2xx: non-zero exit, status and error field only, no token, no sent value', async () => {

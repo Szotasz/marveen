@@ -197,8 +197,16 @@ export async function tryHandleContacts(ctx: RouteContext): Promise<boolean> {
   if (retractMatch && method === 'POST') {
     const body = await parseBody(ctx)
     if (!body) { json(res, { error: 'invalid JSON body' }, 400); return true }
+    const domain = CONTACT_DOMAINS.includes(body.domain as ContactDomain) ? (body.domain as ContactDomain) : null
+    if (!domain) {
+      json(res, { error: `domain is required and must be one of: ${CONTACT_DOMAINS.join(', ')}` }, 400)
+      return true
+    }
     try {
       const target = d.prepare('SELECT contact_id FROM contact_values WHERE id = ?').get(Number(retractMatch[1])) as { contact_id: number } | undefined
+      // A value in another domain looks exactly like a missing one (no existence oracle).
+      const owner = target ? getContact(d, target.contact_id) : null
+      if (!target || !owner || owner.domain !== domain) { json(res, { error: 'not found' }, 404); return true }
       const id = d.transaction(() => {
         const rid = retractValue(d, {
           value_id: Number(retractMatch[1]),
@@ -206,7 +214,7 @@ export async function tryHandleContacts(ctx: RouteContext): Promise<boolean> {
           source_date: body.source_date,
           added_by: 'brainy',
         })
-        recordWrite(d, { actor: actorOf(ctx), contact_id: target!.contact_id, value_id: rid, action: 'retract' })
+        recordWrite(d, { actor: actorOf(ctx), contact_id: target.contact_id, value_id: rid, action: 'retract' })
         return rid
       })()
       json(res, { ok: true, id }, 201)

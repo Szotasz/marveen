@@ -33,7 +33,7 @@ node scripts/contacts-import-ledger.mjs --domain business --address a@pelda.hu -
 | `GET /api/contacts/:id?domain=` | egy kapcsolat az értékeivel és forrásaikkal |
 | `POST /api/contacts` | új kapcsolat (`domain`, `display_name`, opcionális kezdőértékek forrással) |
 | `POST /api/contacts/:id/values` | új érték (`field`, `value`, `source`, `source_date`) |
-| `POST /api/contacts/values/:id/retract` | visszavonás (`source` kötelező) |
+| `POST /api/contacts/values/:id/retract` | visszavonás (`domain` és `source` kötelező; másik tartományú vagy nem létező érték ugyanaz a 404) |
 
 Megtévesztően hasonló (homoglifás) név vagy szervezet esetén a 201-es válasz `warning` mezőt kap; a felvételt nem blokkolja.
 
@@ -44,7 +44,7 @@ node scripts/contacts.mjs add     --domain business --name "Minta Kft." --field 
 node scripts/contacts.mjs value   --id 12 --field phone --value "+36 1 234 5678" --source doc:<ref> --source-date 2026-10-22
 node scripts/contacts.mjs find    --domain business --q minta
 node scripts/contacts.mjs show    --domain business --id 12
-node scripts/contacts.mjs retract --value-id 34 --source owner --source-date 2026-10-22
+node scripts/contacts.mjs retract --domain business --value-id 34 --source owner --source-date 2026-10-22
 ```
 
 A token a `store/.dashboard-token`-ből jön hívásidőben, és nem jelenik meg sem argv-ben, sem a kimenetben. Kilépési kód: 0 = 2xx, 1 = hibás válasz vagy hálózati hiba, 2 = hibás használat.

@@ -133,11 +133,27 @@ describe('writes and source validation', () => {
   it('retract needs a source; a retracted value disappears from reads', async () => {
     const id = await mk('business', 'A B')
     const v = (await call('POST', `/api/contacts/${id}/values`, { field: 'phone', value: '555', ...src })).body.id
-    expect((await call('POST', `/api/contacts/values/${v}/retract`, {})).status).toBe(400)
-    expect((await call('POST', `/api/contacts/values/${v}/retract`, { source: 'nope', source_date: '2026-10-22' })).status).toBe(400)
-    expect((await call('POST', `/api/contacts/values/${v}/retract`, { source: 'doc:x', source_date: '2026-10-22' })).status).toBe(201)
+    const biz = { domain: 'business' }
+    expect((await call('POST', `/api/contacts/values/${v}/retract`, biz)).status).toBe(400)
+    expect((await call('POST', `/api/contacts/values/${v}/retract`, { ...biz, source: 'nope', source_date: '2026-10-22' })).status).toBe(400)
+    expect((await call('POST', `/api/contacts/values/${v}/retract`, { ...biz, source: 'doc:x', source_date: '2026-10-22' })).status).toBe(201)
     expect((await call('GET', `/api/contacts/${id}?domain=business`)).body.values).toEqual([])
-    expect((await call('POST', `/api/contacts/values/${v}/retract`, { source: 'doc:x', source_date: '2026-10-22' })).status).toBe(400)
+    expect((await call('POST', `/api/contacts/values/${v}/retract`, { ...biz, source: 'doc:x', source_date: '2026-10-22' })).status).toBe(400)
+  })
+
+  it('retract needs a domain; another domain or a missing value is the same 404 and writes nothing', async () => {
+    const fam = await mk('family', 'F')
+    const v = (await call('POST', `/api/contacts/${fam}/values`, { field: 'phone', value: '555', ...src })).body.id
+    const ok = { source: 'doc:x', source_date: '2026-10-22' }
+    expect((await call('POST', `/api/contacts/values/${v}/retract`, ok)).status).toBe(400)
+    expect((await call('POST', `/api/contacts/values/${v}/retract`, { ...ok, domain: 'both' })).status).toBe(400)
+    const cross = await call('POST', `/api/contacts/values/${v}/retract`, { ...ok, domain: 'business' })
+    const missing = await call('POST', `/api/contacts/values/99999/retract`, { ...ok, domain: 'business' })
+    expect(cross.status).toBe(404)
+    expect(cross).toEqual(missing)
+    expect(getDb().prepare("SELECT COUNT(*) n FROM contact_values WHERE status = 'retracted'").get()).toEqual({ n: 0 })
+    expect(getDb().prepare("SELECT COUNT(*) n FROM contact_writes WHERE action = 'retract'").get()).toEqual({ n: 0 })
+    expect((await call('POST', `/api/contacts/values/${v}/retract`, { ...ok, domain: 'family' })).status).toBe(201)
   })
 
   it('malformed JSON is 400 and echoes nothing', async () => {
@@ -258,7 +274,7 @@ describe('write audit', () => {
   it('one contact_writes row per create / add / retract, actor from X-Agent-Id, no value anywhere in either audit table', async () => {
     const id = await mk('business', 'Audit Person', [{ field: 'email', value: SECRET_EMAIL, ...src }])
     const add = await call('POST', `/api/contacts/${id}/values`, { field: 'phone', value: SECRET_PHONE, ...src })
-    const ret = await call('POST', `/api/contacts/values/${add.body.id}/retract`, src)
+    const ret = await call('POST', `/api/contacts/values/${add.body.id}/retract`, { domain: 'business', ...src })
     expect(ret.status).toBe(201)
     await call('GET', `/api/contacts/${id}?domain=business`)
     const rows = getDb().prepare('SELECT * FROM contact_writes ORDER BY id').all() as any[]

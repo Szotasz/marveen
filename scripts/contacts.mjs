@@ -5,7 +5,7 @@
 //   node scripts/contacts.mjs value   --id N --field F --value V --source S [--source-date YYYY-MM-DD]
 //   node scripts/contacts.mjs find    --domain D [--q text] [--limit N]
 //   node scripts/contacts.mjs show    --domain D --id N
-//   node scripts/contacts.mjs retract --value-id N --source S [--source-date YYYY-MM-DD]
+//   node scripts/contacts.mjs retract --domain D --value-id N --source S [--source-date YYYY-MM-DD]
 //   node scripts/contacts.mjs sync-ledger --domain D --id N [--ledger PATH]   (manual: active emails -> recipient ledger)
 //
 // Sends X-Agent-Id: brainy (self-declared, NOT authentication) and the
@@ -68,7 +68,7 @@ switch (cmd) {
     break
   case 'retract':
     method = 'POST'; path = `/api/contacts/values/${intId('value-id')}/retract`
-    body = { source: need('source'), source_date: sourceDate() }
+    body = { domain: domain(), source: need('source'), source_date: sourceDate() }
     break
   case 'sync-ledger':
     // Reads the contact through the API, then writes the ledger locally.
