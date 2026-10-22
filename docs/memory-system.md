@@ -110,3 +110,7 @@ POST /api/memories/backfill               # embedding backfill
 ```
 
 Zero-config: az SQLite automatikusan létrejön, az embedding mentéskor generálódik.
+
+## Névjegyek
+
+A névjegyek nem a memóriában élnek, hanem külön, append-only táblákban, forrással és tartománnyal: [contacts.md](contacts.md).
