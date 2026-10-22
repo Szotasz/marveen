@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
+import { shQuote } from '../ssh-tmux.js'
 import {
   listKanbanCards, kanbanAssigneeExists, createKanbanCard, writeKanbanCard, KANBAN_WRITABLE_FIELDS, KANBAN_CREATE_FIELDS,
   deleteKanbanCard, moveKanbanCard, archiveKanbanCard, unarchiveKanbanCard,
@@ -78,7 +79,9 @@ const KANBAN_MOVE_FIELDS = ['status', 'sort_order', 'actor', 'expected_status'] 
 export function kanbanMoveInstructions(id: string, target: string): string {
   const tokenPath = join(STORE_DIR, '.dashboard-token')
   const base = `http://${WEB_HOST}:${WEB_PORT}`
-  const auth = `-H "Authorization: Bearer $(cat ${tokenPath})"`
+  // The token reaches curl as a curl config on stdin (printf is a builtin, so it never lands in an argv).
+  const tokenCfg = `printf 'header = "Authorization: Bearer %s"\\n' "$(cat ${shQuote(tokenPath)})"`
+  const auth = '-K -'
   const moveUrl = `${base}/api/kanban/${id}/move`
   const commentUrl = `${base}/api/kanban/${id}/comments`
   const cardUrl = `${base}/api/kanban/${id}`
@@ -125,7 +128,7 @@ export function kanbanMoveInstructions(id: string, target: string): string {
   // (2026-09-15, 7ed56208) confirmed the failure mode -- the reader ran exactly
   // this probe, saw a status, and never saw the override sitting one field over.
   const statusProbe =
-    `  curl -s ${auth} ${base}/api/kanban | python3 -c "import sys,json;d=json.load(sys.stdin);c=(next((x for x in d if x.get('id')=='${id}'),None) if isinstance(d,list) else None);print(('status: '+str(c.get('status'))+chr(10)+'description: '+((c.get('description') or '').strip() or '(nincs)')) if c else ('nincs ilyen kartya' if isinstance(d,list) else 'ismeretlen -- a szerver nem kartya-listat adott: '+str(d)[:120]))"`
+    `  ${tokenCfg} | curl -s ${auth} ${base}/api/kanban | python3 -c "import sys,json;d=json.load(sys.stdin);c=(next((x for x in d if x.get('id')=='${id}'),None) if isinstance(d,list) else None);print(('status: '+str(c.get('status'))+chr(10)+'description: '+((c.get('description') or '').strip() or '(nincs)')) if c else ('nincs ilyen kartya' if isinstance(d,list) else 'ismeretlen -- a szerver nem kartya-listat adott: '+str(d)[:120]))"`
   return [
     'MIELŐTT NEKIKEZDESZ: nézd meg a kártya AKTUÁLIS státuszát ÉS leírását. Ez az üzenet egy foglalt session sorában KÉSHET, és közben a munka elkészülhetett -- a leírás pedig a kártya saját, ennél a sablonnál erősebb szabályait hordozhatja (lásd lent):',
     statusProbe,
@@ -135,13 +138,13 @@ export function kanbanMoveInstructions(id: string, target: string): string {
     'A kártyát in_progress-re húzták. Amikor VÉGEZTÉL, két lépés (mindkettő a kártyára kerül, a web UI-ban látszik):',
     '',
     '1) Írj egy rövid eredmény-összefoglalót kommentként (1-2 mondat: mi lett a vége):',
-    `  curl -s -X POST ${commentUrl} \\`,
+    `  ${tokenCfg} | curl -s -X POST ${commentUrl} \\`,
     `    ${auth} \\`,
     `    -H 'Content-Type: application/json' \\`,
     `    -d '{"author":"${target}","content":"AZ EREDMENY ROVIDEN"}'`,
     '',
     '2) Állítsd a kártyát done-ra:',
-    `  curl -s -w '\\nHTTP %{http_code}\\n' -X POST ${moveUrl} \\`,
+    `  ${tokenCfg} | curl -s -w '\\nHTTP %{http_code}\\n' -X POST ${moveUrl} \\`,
     `    ${auth} \\`,
     `    -H 'Content-Type: application/json' \\`,
     `    -d '{"status":"done","actor":"${target}","expected_status":"in_progress"}'`,
@@ -170,7 +173,7 @@ export function kanbanMoveInstructions(id: string, target: string): string {
     // is indistinguishable from an assignment, and the dispatcher echoes the
     // task back at the agent that just started it.
     `Az "actor":"${target}" mezőt MINDEN mozgatásnál küldd el (ez mondja meg a táblának, hogy te mozgattad). Ha te magad veszed fel a kártyát in_progress-re, ott is:`,
-    `  curl -s -X POST ${moveUrl} \\`,
+    `  ${tokenCfg} | curl -s -X POST ${moveUrl} \\`,
     `    ${auth} \\`,
     `    -H 'Content-Type: application/json' \\`,
     `    -d '{"status":"in_progress","actor":"${target}"}'`,
@@ -178,7 +181,7 @@ export function kanbanMoveInstructions(id: string, target: string): string {
     `Ha elakadtál / ${escalateTo} döntésére/lépésére vársz: NE csak status="waiting"-et állíts be. HÁROM lépés kell EGYÜTT:`,
     `  a) Írj egy kommentet ami KÖZVETLENÜL ${escalateTo}-hez szól, egyértelműen megfogalmazva mit kell eldöntenie/megtennie (NE a saját belső elemzésedet írd oda) -- ugyanaz a comments hívás mint fent, "content" mezőben.`,
     `  b) Told át a kártyát ${escalateTo}-re, hogy egyértelmű legyen a felelősség (a te neved NE maradjon rajta, ha nem te vagy a blokkoló):`,
-    `     curl -s -X PUT ${cardUrl} \\`,
+    `     ${tokenCfg} | curl -s -X PUT ${cardUrl} \\`,
     `       ${auth} \\`,
     `       -H 'Content-Type: application/json' \\`,
     `       -d '{"assignee":"${escalateTo}"}'`,

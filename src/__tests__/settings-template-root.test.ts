@@ -1,0 +1,84 @@
+import { readFileSync } from 'node:fs'
+import { fileURLToPath } from 'node:url'
+import { describe, it, expect } from 'vitest'
+import { assertSettingsRootSafe, settingsRootProblem } from '../web/settings-template-root.js'
+
+// templates/settings.json.template wraps the project root in double quotes inside a JSON string (the token
+// path of the PreCompact prompt's curl examples). Double quotes carry a space or an apostrophe; they do not carry
+// $, a backtick, a double quote, a backslash or a control character (tab, newline and the rest of U+0000..U+001F, U+007F).
+// Such a root must fail LOUDLY at render time instead of producing a quietly broken command (a double quote, a
+// backslash or a control character also broke the JSON, silently dropping the hooks or writing an invalid file).
+const SCAFFOLD = readFileSync(fileURLToPath(new URL('../web/agent-scaffold.ts', import.meta.url)), 'utf-8')
+
+describe('settings.json.template: the project root its PreCompact token path cannot carry', () => {
+  const UNSUPPORTED: Record<string, string> = {
+    'a dollar sign': '/home/u/$HOME/marveen',
+    'a backtick': '/home/u/`id`/marveen',
+    'a double quote': '/home/u/"quoted"/marveen',
+    'a backslash': '/home/u/back\\slash/marveen',
+    'a newline': '/home/u/line\nbreak/marveen',
+    'a tab': '/home/u/tab\there/marveen',
+    'a bell control character (U+0007)': '/home/u/bel\u0007l/marveen',
+    'a NUL control character (U+0000)': '/home/u/nul\u0000l/marveen',
+    'a DEL (U+007F)': '/home/u/del\u007fl/marveen',
+  }
+  for (const [name, root] of Object.entries(UNSUPPORTED)) {
+    it(`refuses a root with ${name}, naming the character`, () => {
+      expect(settingsRootProblem(root)).not.toBeNull()
+      expect(() => assertSettingsRootSafe(root)).toThrowError(/settings\.json\.template: the project root .* contains /)
+    })
+  }
+
+  const SUPPORTED: Record<string, string> = {
+    'a plain path': '/home/u/marveen',
+    'a space': '/home/u/my marveen',
+    'an apostrophe': "/home/u/John's marveen",
+    'a space and an apostrophe': "/home/u/pro ject's root",
+    'non-ASCII letters': '/home/u/árvíztűrő/marveen',
+  }
+  for (const [name, root] of Object.entries(SUPPORTED)) {
+    it(`accepts a root with ${name} (for the PreCompact token path)`, () => {
+      expect(settingsRootProblem(root)).toBeNull()
+      expect(() => assertSettingsRootSafe(root)).not.toThrow()
+    })
+  }
+
+  it('names a control character as such in the error', () => {
+    expect(() => assertSettingsRootSafe('/home/u/tab\there')).toThrowError(/contains a control character "\\t"/)
+    expect(() => assertSettingsRootSafe('/home/u/bel\u0007l')).toThrowError(/contains a control character "\\u0007"/)
+    expect(() => assertSettingsRootSafe('/home/u/$HOME')).toThrowError(/contains "\$"/)
+  })
+
+  // The failure the check prevents, shown on the real thing: a raw tab in the root is an invalid JSON string.
+  it('a tab in the root really would make the rendered template invalid JSON', () => {
+    const rendered = JSON.stringify({ p: 'cat \"{{ROOT}}/x\"' }).replace('{{ROOT}}', '/home/u/tab\there')
+    expect(() => JSON.parse(rendered)).toThrow()
+    expect(settingsRootProblem('/home/u/tab\there')).toBe('\t')
+  })
+
+  // The check is only worth anything if every place that renders the settings template goes through it.
+  it('both settings.json.template render sites use the checked renderer', () => {
+    const rendered = SCAFFOLD.match(/renderSettingsTemplate\(readFileSync\(tplPath/g) ?? []
+    expect(rendered.length, 'ensureAgentHooks and the first-settings seed both render through renderSettingsTemplate').toBe(2)
+    expect(SCAFFOLD).not.toMatch(/resolveTemplatePlaceholders\(readFileSync\(tplPath/)
+  })
+
+  it('the checked renderer asserts the root before substituting', () => {
+    const fn = /export function renderSettingsTemplate\(raw: string\): string \{([\s\S]*?)\n\}/.exec(SCAFFOLD)
+    expect(fn, 'renderSettingsTemplate is exported').not.toBeNull()
+    expect(fn![1].indexOf('assertSettingsRootSafe(PROJECT_ROOT)')).toBeGreaterThanOrEqual(0)
+    expect(fn![1].indexOf('assertSettingsRootSafe(PROJECT_ROOT)')).toBeLessThan(fn![1].indexOf('resolveTemplatePlaceholders('))
+  })
+
+  it('scaffoldAgentDir refuses the root before it creates anything', () => {
+    const fn = /export function scaffoldAgentDir\(name: string\) \{([\s\S]*?)\n\}\n/.exec(SCAFFOLD)
+    expect(fn, 'scaffoldAgentDir is exported').not.toBeNull()
+    const body = fn![1]
+    expect(body.indexOf('assertSettingsRootSafe(PROJECT_ROOT)')).toBeGreaterThanOrEqual(0)
+    expect(body.indexOf('assertSettingsRootSafe(PROJECT_ROOT)')).toBeLessThan(body.indexOf('mkdirSync('))
+  })
+
+  it('ensureAgentHooks logs a render failure instead of dropping the hooks silently', () => {
+    expect(SCAFFOLD).toMatch(/settings\.json\.template not rendered; hooks NOT registered/)
+  })
+})

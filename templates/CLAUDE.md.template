@@ -102,23 +102,23 @@ A dashboard `/api/*` végpontjai Bearer tokennel védettek. A token a
 
 Memória mentés:
 ```bash
-curl -s -X POST http://localhost:{{WEB_PORT}}/api/memories \
+printf 'header = "Authorization: Bearer %s"\n' "$(cat store/.dashboard-token)" | curl -s -X POST http://localhost:{{WEB_PORT}}/api/memories \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \
+  -K - \
   -d '{"agent_id":"{{MAIN_AGENT_ID}}","content":"MIT","category":"CATEGORY","keywords":"kulcsszó1, kulcsszó2"}'
 ```
 
 Napi napló (append-only):
 ```bash
-curl -s -X POST http://localhost:{{WEB_PORT}}/api/daily-log \
+printf 'header = "Authorization: Bearer %s"\n' "$(cat store/.dashboard-token)" | curl -s -X POST http://localhost:{{WEB_PORT}}/api/daily-log \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \
+  -K - \
   -d '{"agent_id":"{{MAIN_AGENT_ID}}","content":"## HH:MM -- Téma\nMi történt, mi lett az eredmény"}'
 ```
 
 Keresés (mielőtt válaszolsz, nézd meg van-e releváns emlék):
 ```bash
-curl -s -D /tmp/mem-fejlec.txt -H "Authorization: Bearer $(cat store/.dashboard-token)" \
+printf 'header = "Authorization: Bearer %s"\n' "$(cat store/.dashboard-token)" | curl -s -D /tmp/mem-fejlec.txt -K - \
   "http://localhost:{{WEB_PORT}}/api/memories?agent={{MAIN_AGENT_ID}}&q=KULCSSZÓ&category=warm"
 grep -i '^x-memory-search' /tmp/mem-fejlec.txt   # EZT IS OLVASD EL, nem opcionális
 ```
@@ -147,23 +147,23 @@ Bearer token, mint a memóriánál. Szűréshez/számoláshoz `python3` van mind
 
 Kártyák listázása (JSON tömb: id, title, status, assignee, priority, updated_at, archived_at):
 ```bash
-curl -s -H "Authorization: Bearer $(cat store/.dashboard-token)" \
+printf 'header = "Authorization: Bearer %s"\n' "$(cat store/.dashboard-token)" | curl -s -K - \
   http://localhost:{{WEB_PORT}}/api/kanban
 ```
 
 Új kártya:
 ```bash
-curl -s -X POST http://localhost:{{WEB_PORT}}/api/kanban \
+printf 'header = "Authorization: Bearer %s"\n' "$(cat store/.dashboard-token)" | curl -s -X POST http://localhost:{{WEB_PORT}}/api/kanban \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \
+  -K - \
   -d '{"title":"CÍM","status":"planned","assignee":"{{MAIN_AGENT_ID}}","priority":"normal"}'
 ```
 
 Kártya mozgatása:
 ```bash
-curl -s -X POST http://localhost:{{WEB_PORT}}/api/kanban/KARTYA_ID/move \
+printf 'header = "Authorization: Bearer %s"\n' "$(cat store/.dashboard-token)" | curl -s -X POST http://localhost:{{WEB_PORT}}/api/kanban/KARTYA_ID/move \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \
+  -K - \
   -d '{"status":"in_progress"}'
 ```
 
@@ -175,9 +175,9 @@ hol tart most) azt jelenti, hogy a kártya közben továbblépett: NE mozgasd ú
 
 Komment a kártyára (az eredmény ide kerül, a dashboardon ez látszik):
 ```bash
-curl -s -X POST http://localhost:{{WEB_PORT}}/api/kanban/KARTYA_ID/comments \
+printf 'header = "Authorization: Bearer %s"\n' "$(cat store/.dashboard-token)" | curl -s -X POST http://localhost:{{WEB_PORT}}/api/kanban/KARTYA_ID/comments \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \
+  -K - \
   -d '{"author":"{{MAIN_AGENT_ID}}","content":"AZ EREDMÉNY RÖVIDEN"}'
 ```
 
@@ -194,9 +194,9 @@ Az ütemezett feladatok a `~/.claude/scheduled-tasks/` mappában élnek, fájl-a
 ### Feladat létrehozása API-n keresztül
 
 ```bash
-curl -s -X POST http://localhost:{{WEB_PORT}}/api/schedules \
+printf 'header = "Authorization: Bearer %s"\n' "$(cat store/.dashboard-token)" | curl -s -X POST http://localhost:{{WEB_PORT}}/api/schedules \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \
+  -K - \
   -d '{"name": "feladat-nev", "description": "Rövid leírás", "prompt": "A részletes prompt amit végre kell hajtani", "schedule": "0 8 * * *", "agent": "{{MAIN_AGENT_ID}}", "type": "heartbeat"}'
 ```
 
@@ -225,9 +225,9 @@ Az ágensek közvetlenül tudnak egymásnak üzenni egy közös SQLite üzenetso
 Ha delegálni akarsz egy feladatot másik ágensnek, használd az API-t:
 
 ```bash
-curl -s -X POST http://localhost:{{WEB_PORT}}/api/messages \
+printf 'header = "Authorization: Bearer %s"\n' "$(cat store/.dashboard-token)" | curl -s -X POST http://localhost:{{WEB_PORT}}/api/messages \
   -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \
+  -K - \
   -d '{"from": "{{MAIN_AGENT_ID}}", "to": "TARGET_AGENT", "content": "Feladat leírása."}'
 ```
 
@@ -245,7 +245,7 @@ A rendszer automatikusan:
 
 ### Fontos szabályok
 - Csak futó ágensnek lehet üzenni (tmux session kell hozzá)
-- Az elérhető ágensek listája: `curl -s -H "Authorization: Bearer $(cat store/.dashboard-token)" http://localhost:{{WEB_PORT}}/api/agents`
+- Az elérhető ágensek listája: `printf 'header = "Authorization: Bearer %s"\n' "$(cat store/.dashboard-token)" | curl -s -K - http://localhost:{{WEB_PORT}}/api/agents`
 
 ### Sub-ágens ismeretlen-sender ping kezelése (auto-approval, default-deny)
 

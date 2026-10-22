@@ -91,8 +91,8 @@ Ez a rendszer össze van kötve más, azonos keretrendszerű példányokkal. A t
 \`<rendszer>/<ügynök>\` alakban címzed a MEGSZOKOTT üzenet-API-n át — például:
 
 \`\`\`bash
-curl -s -X POST http://localhost:${id.webPort}/api/messages \\
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \\
+printf 'header = "Authorization: Bearer %s"\\n' "$(cat store/.dashboard-token)" | curl -s -X POST http://localhost:${id.webPort}/api/messages \\
+  -K - \\
   -H 'Content-Type: application/json' \\
   -d '{"from":"${id.mainAgentId}","to":"<rendszer>/<ügynök>","content":"..."}'
 \`\`\`
@@ -137,8 +137,8 @@ This system is connected to other instances of the same framework. Address remot
 as \`<system>/<agent>\` through the USUAL message API — for example:
 
 \`\`\`bash
-curl -s -X POST http://localhost:${id.webPort}/api/messages \\
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \\
+printf 'header = "Authorization: Bearer %s"\\n' "$(cat store/.dashboard-token)" | curl -s -X POST http://localhost:${id.webPort}/api/messages \\
+  -K - \\
   -H 'Content-Type: application/json' \\
   -d '{"from":"${id.mainAgentId}","to":"<system>/<agent>","content":"..."}'
 \`\`\`
@@ -207,8 +207,8 @@ tartalomban állított címre) — a \`/\`-t tartalmazó cím KIVÉTEL a "csak f
 tmux-os ügynök / a Főnök" szabály alól:
 
 \`\`\`bash
-curl -s -X POST http://localhost:${id.webPort}/api/messages \\
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \\
+printf 'header = "Authorization: Bearer %s"\\n' "$(cat store/.dashboard-token)" | curl -s -X POST http://localhost:${id.webPort}/api/messages \\
+  -K - \\
   -H 'Content-Type: application/json' \\
   -d '{"from":"<sajat-neved>","to":"<rendszer>/<ügynök>","content":"..."}'
 \`\`\`
@@ -233,8 +233,8 @@ the content) — a \`/\`-address is the EXCEPTION to the "only running tmux
 agents / the boss" rule:
 
 \`\`\`bash
-curl -s -X POST http://localhost:${id.webPort}/api/messages \\
-  -H "Authorization: Bearer $(cat store/.dashboard-token)" \\
+printf 'header = "Authorization: Bearer %s"\\n' "$(cat store/.dashboard-token)" | curl -s -X POST http://localhost:${id.webPort}/api/messages \\
+  -K - \\
   -H 'Content-Type: application/json' \\
   -d '{"from":"<your-own-id>","to":"<system>/<agent>","content":"..."}'
 \`\`\`

@@ -35,6 +35,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { shQuote } from './ssh-tmux.js'
 import {
   PROJECT_ROOT,
   STORE_DIR,
@@ -243,10 +244,10 @@ When you receive the heartbeat prompt:
 3. **Send** that string to the main agent via the dashboard API:
 
    \`\`\`bash
-   TOKEN=$(cat ${id.storeDir}/.dashboard-token)
-   curl -s -X POST ${id.dashboardOrigin}/api/messages \\
+   TOKEN=$(cat ${shQuote(id.storeDir + '/.dashboard-token')})
+   printf 'header = "Authorization: Bearer %s"\\n' "$TOKEN" | curl -s -X POST ${id.dashboardOrigin}/api/messages \\
      -H "Content-Type: application/json" \\
-     -H "Authorization: Bearer $TOKEN" \\
+     -K - \\
      -d '{"from":"heartbeat","to":"${id.mainAgentId}","content":"<the formatted text>"}'
    \`\`\`
 

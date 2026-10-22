@@ -42,7 +42,8 @@ describe('renderHeartbeatClaudeMd', () => {
     // HBMETRICSWIRE910: the WORKER runs the instrument, so the prose ships
     // no CLAW_* env prefix and no DB path -- the only store-dir surface
     // left is the message POST's token read.
-    expect(out).toContain('cat /srv/app/store/.dashboard-token')
+    // The path is shell-quoted where it is emitted, so a store dir with a space still reads the token.
+    expect(out).toContain("cat '/srv/app/store/.dashboard-token'")
     expect(out).not.toContain('CLAW_STORE_DIR=')
     expect(out).not.toContain('claudeclaw.db')
   })

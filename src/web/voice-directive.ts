@@ -1,6 +1,7 @@
-import { readFileSync, existsSync } from 'node:fs'
+import { accessSync, constants, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
+import { shQuote } from './ssh-tmux.js'
 import { STORE_DIR, WEB_PORT } from '../config.js'
 import { AGENTS_BASE_DIR } from './agent-config.js'
 import { channelStateDir, type ChannelProviderType } from '../channel-provider.js'
@@ -54,17 +55,19 @@ export function buildTtsDirective(opts: {
 }): string | null {
   try {
     const tokenPath = join(STORE_DIR, '.dashboard-token')
-    if (!existsSync(tokenPath)) return null
-    const token = readFileSync(tokenPath, 'utf-8').trim()
+    // The curl below reads the token at run time ($(cat ...)), so the file must be readable now, not just present.
+    accessSync(tokenPath, constants.R_OK)
     const { chatId, stateDir, voiceModel } = opts
     // Escape stateDir for embedding in a jq string argument
     const escapedStateDir = stateDir.replace(/'/g, "'\\''")
+    // This curl keeps the process-substitution form of the curl config instead of piping it in:
+    // the jq pipe already feeds the JSON body to curl's stdin (-d @-), so stdin is taken.
     return (
       `\n\n[Hang válasz direktíva]: A fenti hangüzenetre HANGBAN válaszolj. ` +
       `Amikor megvan a válaszod szövege, futtasd le ezt a parancsot (a szöveget JSON-escape-elve add meg a --arg-ban):\n` +
       `\`\`\`bash\n` +
       `jq -n --arg t "A_VÁLASZOD_SZÖVEGE" '{"text":$t,"chat_id":"${chatId}","state_dir":"${escapedStateDir}","voice_model":"${voiceModel}"}' | ` +
-      `curl -s -X POST http://localhost:${WEB_PORT}/api/voice/tts -H "Content-Type: application/json" -H "Authorization: Bearer ${token}" -d @-\n` +
+      `curl -s -X POST http://localhost:${WEB_PORT}/api/voice/tts -H "Content-Type: application/json" -K <(printf 'header = "Authorization: Bearer %s"\\n' "$(cat ${shQuote(tokenPath)})") -d @-\n` +
       `\`\`\`\n` +
       `Szöveges választ NE küldj -- CSAK a fenti curl-t futtasd le a hangküldéshez.`
     )
