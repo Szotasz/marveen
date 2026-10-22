@@ -101,6 +101,7 @@ vi.mock('../web/active-model.js', async () => {
     readActiveModelFromProjectDir: () => null,
     readTranscriptMtimeFromProjectDir: () => h.transcriptMtime,
     readTranscriptTailFromProjectDir: (...a: unknown[]) => h.readTail(...a),
+    readLastTurnActivityMs: () => null,
   }
 })
 vi.mock('../web/main-agent.js', () => ({ MAIN_CHANNELS_SESSION: 'marveen-channels' }))
