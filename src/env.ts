@@ -27,6 +27,15 @@ export function readEnvFile(keys?: string[]): Record<string, string> {
 // install-linux.sh chmod it to 600.
 export const ENV_FILE_MODE = 0o600
 
+// Write a whole .env at ENV_FILE_MODE. writeFileSync's `mode` only applies when
+// the file is CREATED, so rewriting an existing, looser .env in place would keep
+// its old mode. The content goes into a fresh temp file created at 0600 and
+// renamed over the target: the secrets never sit in a loose file, and a reader
+// still holding the old file open does not see them.
+export function writeEnvFileFresh(envPath: string, content: string): void {
+  atomicWriteFileSync(envPath, content, { mode: ENV_FILE_MODE })
+}
+
 const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
 
 // Update (or append) the given keys in .env, preserving every other line,

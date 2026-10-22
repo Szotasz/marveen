@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { createInterface } from 'node:readline'
 import { homedir, platform } from 'node:os'
 import { SERVICE_ID, BRAND_NAME, appServiceLabel, LEGACY_SERVICE_ID, LEGACY_APP_SERVICE_LABEL } from '../src/config.js'
+import { writeEnvFileFresh } from '../src/env.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const PROJECT_ROOT = join(__dirname, '..')
@@ -169,7 +170,7 @@ async function main() {
   for (const [key, value] of Object.entries(config)) {
     envContent += `${key}=${value}\n`
   }
-  writeFileSync(envPath, envContent, { mode: 0o600 })
+  writeEnvFileFresh(envPath, envContent)
   ok('.env fajl letrehozva (0600)')
 
   // CLAUDE.md szerkesztes
