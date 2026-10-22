@@ -1,7 +1,8 @@
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir, userInfo } from 'node:os'
-import { execFileSync } from 'node:child_process'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { PROJECT_ROOT, STORE_DIR, CHANNEL_PROVIDER, MAIN_AGENT_ID } from '../../config.js'
 import { logger } from '../../logger.js'
 import { resolveFromPath } from '../../platform.js'
@@ -19,6 +20,8 @@ import { liveProbeAuth, stampTokenVerified } from '../claude-credentials-guard.j
 import { json, readBody } from '../http-helpers.js'
 import { isManagedSettingsReady, getManagedSettingsSudoCommand } from './agents.js'
 import type { RouteContext } from './types.js'
+
+const execFileAsync = promisify(execFile)
 
 // First-run onboarding for the "pre-install now, configure later" flow: the
 // dashboard boots without Claude auth / channels, and the operator finishes
@@ -53,14 +56,16 @@ function readEnvValue(key: string): string | null {
 // enters this process just to answer a yes/no question. It fails closed (false
 // off macOS / on any lookup error), so a Keychain ACL that refused `security`
 // just falls back to the previous behaviour.
-function keychainHasClaudeCredentials(): boolean {
+async function keychainHasClaudeCredentials(): Promise<boolean> {
   if (process.platform !== 'darwin') return false
   try {
-    execFileSync(
+    const pending = execFileAsync(
       '/usr/bin/security',
       ['find-generic-password', '-s', 'Claude Code-credentials', '-a', userInfo().username],
-      { timeout: 3000, stdio: 'ignore' },
+      { timeout: 3000 },
     )
+    pending.child.stdin?.end()
+    await pending
     return true
   } catch { return false }
 }
@@ -103,17 +108,19 @@ function fleetTokenPresent(): boolean {
 // signal, or gating on a fresh successful-auth log line) is deferred to a
 // separate hardening card, NOT bolted on here. The token value is matched with a
 // regex only -- never captured, returned, or logged.
-function runningSessionAuthenticated(): boolean {
+async function runningSessionAuthenticated(): Promise<boolean> {
   try {
     if (!sessionExistsOnHost(null, MAIN_CHANNELS_SESSION)) return false
-    const out = execFileSync(resolveFromPath('tmux'), ['show-environment', '-g'], {
+    const pending = execFileAsync(resolveFromPath('tmux'), ['show-environment', '-g'], {
       timeout: 3000, encoding: 'utf-8',
     })
+    pending.child.stdin?.end()
+    const { stdout: out } = await pending
     return /^(CLAUDE_CODE_OAUTH_TOKEN|ANTHROPIC_API_KEY)=.+/m.test(out)
   } catch { return false }
 }
 
-function claudeAuthPresent(): boolean {
+async function claudeAuthPresent(): Promise<boolean> {
   if (readEnvValue('CLAUDE_CODE_OAUTH_TOKEN')) return true
   if (readEnvValue('ANTHROPIC_API_KEY')) return true
   try {
@@ -124,7 +131,7 @@ function claudeAuthPresent(): boolean {
     if (d?.apiKey) return true
   } catch { /* no / unreadable credentials.json */ }
   if (fleetTokenPresent()) return true
-  if (keychainHasClaudeCredentials()) return true
+  if (await keychainHasClaudeCredentials()) return true
   return runningSessionAuthenticated()
 }
 
@@ -238,7 +245,7 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
 
   // Onboarding state so the frontend knows which step to show.
   if (path === '/api/onboarding/status' && method === 'GET') {
-    const claude = claudeAuthPresent()
+    const claude = await claudeAuthPresent()
     const running = agentsRunning()
     const ch = channelConfigured()
     const pr = paired()
@@ -321,7 +328,7 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
     // Genuine first-run-setup signal: the same probes the wizard gates on.
     // NOT the IDENTITY_CONFIRMED flag -- a pre-wizard-era install lacks that
     // flag while its running session is a live working agent (#758 review).
-    const freshSetup = !claudeAuthPresent() || !channelConfigured() || !paired()
+    const freshSetup = !(await claudeAuthPresent()) || !channelConfigured() || !paired()
     const prevAgentName = readEnvValue('BOT_NAME') || 'Marveen'
     const prevOwnerName = readEnvValue('OWNER_NAME') || ''
     const nameChanged = agentName !== prevAgentName
@@ -391,7 +398,7 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
     // install had no auth at this point, a running session is unauthenticated
     // by construction. That is the one case where this endpoint must restart
     // it after the save -- a running process never picks up new env.
-    const hadAuthBefore = claudeAuthPresent()
+    const hadAuthBefore = await claudeAuthPresent()
 
     // Verify BEFORE persisting, with a REAL probe. 2026-07-15 bootcamp bug 3:
     // the old persist-then-verify order stored a mistyped/revoked token into
@@ -453,7 +460,7 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
   // Launch the fleet (main-agent channels session). Idempotent: no double-spawn.
   if (path === '/api/onboarding/launch' && method === 'POST') {
     if (agentsRunning()) { json(res, { ok: true, alreadyRunning: true }); return true }
-    if (!claudeAuthPresent()) { json(res, { error: 'Eloszor allitsd be a Claude-autentikaciot.', reason: 'no-auth' }, 409); return true }
+    if (!(await claudeAuthPresent())) { json(res, { error: 'Eloszor allitsd be a Claude-autentikaciot.', reason: 'no-auth' }, 409); return true }
     // ONBTMUX1: on a fresh install the channels session does NOT exist yet, and
     // `tmux respawn-pane` (what hardRestartMarveenChannels does on Linux) cannot
     // bring back a session that was never there -- it fails with "respawn-pane
