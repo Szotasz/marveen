@@ -79,7 +79,10 @@ import {
   shouldNotifySenderOfFailure,
   formatSenderFailureNotice,
 } from '../web/message-router.js'
-import { COORDINATOR_AGENT_ID, VOICE_CHANNEL_AGENT_ID } from '../channel-coordinator/ingest.js'
+import { COORDINATOR_AGENT_ID, VOICE_CHANNEL_AGENT_ID as VOICE_ID_OR_NULL } from '../channel-coordinator/ingest.js'
+// VOICECHANNELID1022: the id is null only when the voice lane is off (even the
+// default names another sender); on this suite's install it is on.
+const VOICE_CHANNEL_AGENT_ID = VOICE_ID_OR_NULL as string
 import type { AgentMessage } from '../db.js'
 
 const MIN = 60_000

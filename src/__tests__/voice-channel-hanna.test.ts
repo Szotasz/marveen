@@ -4,7 +4,10 @@ import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Readable } from 'node:stream'
 import { classifyAgentMessage } from '../web/agent-message-wrap.js'
-import { COORDINATOR_AGENT_ID, VOICE_CHANNEL_AGENT_ID } from '../channel-coordinator/ingest.js'
+import { COORDINATOR_AGENT_ID, VOICE_CHANNEL_AGENT_ID as VOICE_ID_OR_NULL } from '../channel-coordinator/ingest.js'
+// VOICECHANNELID1022: the id is null only when the voice lane is off (even the
+// default names another sender); on this suite's install it is on.
+const VOICE_CHANNEL_AGENT_ID = VOICE_ID_OR_NULL as string
 import { tryHandleMessages } from '../web/routes/messages.js'
 import { DEFAULT_VOICE_CHANNEL_ID, VOICE_CHANNEL_ID } from '../config.js'
 

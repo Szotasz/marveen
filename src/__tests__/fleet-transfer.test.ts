@@ -599,6 +599,35 @@ describe('importFleet: avatarExt traversal rejected', () => {
   })
 })
 
+// FLEETRESERVEDNAME1021 + VOICECHANNELID1022: a sub-agent under a reserved id
+// (the voice channel id in effect included) is refused before any write, like
+// POST /api/agents and the agent bundle import.
+describe('importFleet: a sub-agent under a reserved id is refused', () => {
+  const fleetWithAgent = (name: string): string => JSON.stringify({
+    ...JSON.parse(MINIMAL_FLEET),
+    agents: [{ name, config: {}, claudeMd: '', soulMd: '', mcp: {}, settings: {}, channelsAccess: {}, agentSkills: [] }],
+  })
+
+  for (const reserved of ['system', 'heartbeat', 'telegram-coordinator', 'channel-coordinator', 'hanna']) {
+    it(`agent.name "${reserved}" is refused on the dry run and on apply, and nothing is written`, async () => {
+      const { importFleet } = await import('../web/fleet-transfer.js')
+      const { atomicWriteFileSync } = await import('../web/atomic-write.js')
+      const dry = importFleet(fleetWithAgent(reserved), { apply: false }) as { errors?: string[] }
+      expect((dry.errors ?? []).join(' ')).toContain(`Reserved agent.name: "${reserved}"`)
+      vi.mocked(atomicWriteFileSync).mockClear()
+      const applied = importFleet(fleetWithAgent(reserved), { apply: true }) as { errors?: string[] }
+      expect((applied.errors ?? []).join(' ')).toContain(`Reserved agent.name: "${reserved}"`)
+      expect(atomicWriteFileSync).not.toHaveBeenCalled()
+    })
+  }
+
+  it('NEGATIVE CONTROL: an ordinary name raises no reserved error', async () => {
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    const r = importFleet(fleetWithAgent('alpha'), { apply: false }) as { errors?: string[] }
+    expect((r.errors ?? []).join(' ')).not.toContain('Reserved agent.name')
+  })
+})
+
 // SECSZIVEK1007: an import writes the main agent's .claude/settings.json and
 // every agent's agent-config.json / settings.json verbatim; their model ids go
 // through the same allowlist as every other model writer, before any write.

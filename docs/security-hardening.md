@@ -672,10 +672,16 @@ What happens now:
   part in `src/web/sanitize.ts`): `system` is refused on every POST, so a main
   agent with that id could not send, and the voice channel id
   (`VOICE_CHANNEL_ID`, `hanna` by default) is accepted only from a device key
-  and framed as the owner; the configured id is the reserved one.
-  `scripts/migrate-main-agent-id.sh` refuses the same ids (it resolves the
-  voice channel id from `.env` exactly as the dashboard does), and a `BOT_NAME`
-  whose id is already a sub-agent, before it stops anything. The installers
+  and framed as the owner; the id in effect is the reserved one, and none is
+  when the voice lane is off (even `hanna` names another sender).
+  A SUB-agent under a reserved id is refused on every path that creates one:
+  `POST /api/agents` (409), the agent bundle import (a single bundle is
+  refused, a fleet bundle skips that agent with a reason), and the fleet
+  transfer import (`validateNames`, before the dry run or any write).
+  `scripts/migrate-main-agent-id.sh` refuses the same ids, a `BOT_NAME`
+  whose id is already a sub-agent, and a migration that would move the voice
+  channel id (it is resolved again against the new main agent id), before it
+  stops anything. The installers
   (`install-macos.sh`, `install-linux.sh`) derive the id from `BOT_NAME`
   without this check.
 

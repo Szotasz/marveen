@@ -17,7 +17,7 @@ import {
   type BundleManifest,
   type FleetBundleManifest,
 } from '../web/agent-bundle.js'
-import { MAIN_AGENT_ID } from '../config.js'
+import { MAIN_AGENT_ID, VOICE_CHANNEL_ID } from '../config.js'
 
 // Hermetic: every test builds its own agent source tree and install target in a
 // temp dir, so nothing touches the real AGENTS_BASE_DIR. The full round-trip
@@ -164,6 +164,21 @@ describe('agent bundle export/import', () => {
     expect(existsSync(join(destBase, MAIN_AGENT_ID))).toBe(false)
   })
 
+  it('refuses a name that sanitizes to a reserved id', () => {
+    const src = join(tmp, 'src')
+    makeAgent(src, { 'CLAUDE.md': 'x' })
+    const stageRoot = join(tmp, 'pack')
+    mkdirSync(stageRoot, { recursive: true })
+    stageAgentDirForExport(src, join(stageRoot, 'agent'), false)
+    const bundle = packBundle(stageRoot, 'original', false)
+    const destBase = join(tmp, 'agents')
+    expect(() => importAgentBundle(bundle, {
+      resolveDest: (n) => join(destBase, n),
+      overrideName: 'Telegram Coordinator',
+    })).toThrow(/reserved by the system/)
+    expect(existsSync(join(destBase, 'telegram-coordinator'))).toBe(false)
+  })
+
   it('strips machine-specific config fields on import', () => {
     const stagedAgent = join(tmp, 'agent')
     mkdirSync(stagedAgent, { recursive: true })
@@ -287,6 +302,22 @@ describe('fleet bundle export/import', () => {
     expect(result.imported.map((a) => a.name)).toEqual(['beta'])
     expect(result.skipped).toEqual([{ name: MAIN_AGENT_ID, reason: 'reserved for the main agent' }])
     expect(existsSync(join(destBase, MAIN_AGENT_ID))).toBe(false)
+  })
+
+  it('skips an agent named like a reserved id (the voice channel id included), imports the rest', () => {
+    // FLEETRESERVEDNAME1021 + VOICECHANNELID1022: a sub-agent under an id the
+    // message layer owns could not send, or would be framed as the owner.
+    const reserved = ['system', ...(VOICE_CHANNEL_ID === null ? [] : [VOICE_CHANNEL_ID])]
+    const bundle = packFleetBundle(join(tmp, 'f'), {
+      ...Object.fromEntries(reserved.map((n) => [n, { 'CLAUDE.md': 'impostor' }])),
+      beta: { 'CLAUDE.md': 'fresh' },
+    })
+    const destBase = join(tmp, 'agents')
+    const result = importAllAgentsBundle(bundle, { resolveDest: (n) => join(destBase, n), overwrite: true })
+    expect(result.imported.map((a) => a.name)).toEqual(['beta'])
+    expect([...result.skipped].sort((a, b) => a.name.localeCompare(b.name)))
+      .toEqual(reserved.sort().map((name) => ({ name, reason: 'reserved by the system' })))
+    for (const n of reserved) expect(existsSync(join(destBase, n))).toBe(false)
   })
 
   it('skips colliding agents without overwrite, replaces them with it', () => {

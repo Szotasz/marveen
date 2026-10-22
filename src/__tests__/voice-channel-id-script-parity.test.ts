@@ -32,13 +32,13 @@ const work = mkdtempSync(join(tmpdir(), 'voice-id-parity-'))
 const resolverPath = join(work, 'resolver.py')
 writeFileSync(resolverPath, RESOLVER)
 
-function scriptResolves(envDir: string): string {
-  // The same arguments the script passes: the .env path and its fixed list.
-  const out = execFileSync('python3', ['-I', resolverPath, join(envDir, '.env'), FIXED_RESERVED_AGENT_IDS.join(' ')], { encoding: 'utf-8' })
-  return out
+function scriptResolves(envDir: string): string | null {
+  // The same arguments the script passes: the .env path, its fixed list, the agents dir.
+  const out = execFileSync('python3', ['-I', resolverPath, join(envDir, '.env'), FIXED_RESERVED_AGENT_IDS.join(' '), join(PROJECT_ROOT, 'agents')], { encoding: 'utf-8' })
+  return out === '' ? null : out
 }
 
-async function dashboardResolves(envDir: string): Promise<string> {
+async function dashboardResolves(envDir: string): Promise<string | null> {
   process.env.CLAUDECLAW_ENV_DIR = envDir
   vi.resetModules()
   return (await import('../config.js')).VOICE_CHANNEL_ID
@@ -52,8 +52,8 @@ function envDirWith(content: string): string {
   return dir
 }
 
-// [label, .env content, the id both must resolve]
-const CASES: [string, string, string][] = [
+// [label, .env content, the id both must resolve (null = lane off)]
+const CASES: [string, string, string | null][] = [
   ['empty .env', '', 'hanna'],
   ['plain value', 'VOICE_CHANNEL_ID=voice-relay\n', 'voice-relay'],
   ['export prefix: not the key the dashboard reads', 'export VOICE_CHANNEL_ID=voice-relay\n', 'hanna'],
@@ -65,6 +65,7 @@ const CASES: [string, string, string][] = [
   ['whitespace around key and value', '   VOICE_CHANNEL_ID   =   voice-relay   \n', 'voice-relay'],
   ['whitespace inside the quotes', 'VOICE_CHANNEL_ID=" voice-relay "\n', 'voice-relay'],
   ['tabs and a CRLF line end', '\tVOICE_CHANNEL_ID=\tvoice-relay\r\n', 'voice-relay'],
+  ['a lone CR does not end a line (parseEnvContent splits on LF only)', 'OWNER_NAME=x\rVOICE_CHANNEL_ID=voice-relay\n', 'hanna'],
   ['no-break spaces (JS trim strips them)', 'VOICE_CHANNEL_ID= voice-relay \n', 'voice-relay'],
   ['a BOM before the first key', '﻿VOICE_CHANNEL_ID=voice-relay\n', 'voice-relay'],
   ['a commented-out line', '# VOICE_CHANNEL_ID=voice-relay\n', 'hanna'],
@@ -72,6 +73,14 @@ const CASES: [string, string, string][] = [
   ['an empty value', 'VOICE_CHANNEL_ID=\n', 'hanna'],
   ['not canonical', 'VOICE_CHANNEL_ID=Voice_Relay\n', 'hanna'],
   ['a fixed reserved id', 'VOICE_CHANNEL_ID=system\n', 'hanna'],
+  ['the main agent id', 'MAIN_AGENT_ID=voice-relay\nVOICE_CHANNEL_ID=voice-relay\n', 'hanna'],
+  ['an empty main agent id', 'MAIN_AGENT_ID=\nVOICE_CHANNEL_ID=voice-relay\n', 'voice-relay'],
+  ["the owner's name", 'OWNER_NAME=voice-relay\nVOICE_CHANNEL_ID=voice-relay\n', 'hanna'],
+  ['a SYSTEM_SENDER_IDS entry', 'SYSTEM_SENDER_IDS=cortex, voice-relay\nVOICE_CHANNEL_ID=voice-relay\n', 'hanna'],
+  ['default collides with the main agent: lane off', 'MAIN_AGENT_ID=hanna\n', null],
+  ['default collides with the owner after an invalid value: lane off', 'OWNER_NAME=hanna\nVOICE_CHANNEL_ID=Bad\n', null],
+  ['default collides with a sanitized system sender: lane off', 'SYSTEM_SENDER_IDS=@hanna.\n', null],
+  ['a free configured id survives a default collision', 'MAIN_AGENT_ID=hanna\nVOICE_CHANNEL_ID=voice-relay\n', 'voice-relay'],
 ]
 
 describe('the migration script resolves the same voice channel id as the dashboard', () => {

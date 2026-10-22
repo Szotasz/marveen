@@ -895,6 +895,13 @@ function validateNames(fleet: FleetJson): string[] {
     if (!SAFE_NAME_RE.test(String(agent.name ?? ''))) {
       errors.push(`Érvénytelen agent.name: "${String(agent.name).slice(0, 60)}"`)
     }
+    // FLEETRESERVEDNAME1021 + VOICECHANNELID1022: a sub-agent under an id the
+    // message layer owns (the voice channel id in effect included) could not
+    // send, or would be framed as something it is not -- refused here like in
+    // POST /api/agents and the agent bundle import.
+    if (RESERVED_AGENT_IDS.includes(String(agent.name ?? ''))) {
+      errors.push(`Reserved agent.name: "${String(agent.name).slice(0, 60)}" is reserved by the system`)
+    }
     // B1: avatarExt defense-in-depth guard (primary enforcement in writeAgentFiles)
     if (agent.avatar && agent.avatarExt !== undefined &&
         !/^(png|jpe?g|webp)$/i.test(String(agent.avatarExt))) {

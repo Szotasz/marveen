@@ -36,6 +36,9 @@ export const COORDINATOR_AGENT_ID = 'telegram-coordinator'
 // CHANNEL_COORDINATOR_AGENTS would let any token holder forge an owner message.
 // The id itself is VOICE_CHANNEL_ID in config.ts ('hanna' unless .env sets
 // another, VOICECHANNELID1022); this alias keeps the existing import sites.
+// It is null when the voice lane is off (even the default would name another
+// sender): then no id earns the framing or the device-key lane, and an exact
+// comparison against it never matches.
 export const VOICE_CHANNEL_AGENT_ID = VOICE_CHANNEL_ID
 
 let db: Database.Database | null = null
