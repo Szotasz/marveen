@@ -6,7 +6,7 @@
 //   node scripts/contacts.mjs find    --domain D [--q text] [--limit N]
 //   node scripts/contacts.mjs show    --domain D --id N
 //   node scripts/contacts.mjs retract --domain D --value-id N --source S [--source-date YYYY-MM-DD]
-//   node scripts/contacts.mjs sync-ledger --domain D --id N [--ledger PATH]   (manual: active emails -> recipient ledger)
+//   node scripts/contacts.mjs sync-ledger --domain D --id N [--ledger PATH] [--apply]   (manual: active emails -> recipient ledger; dry run unless --apply)
 //
 // Sends X-Agent-Id: brainy (self-declared, NOT authentication) and the
 // dashboard Bearer token, read from store/.dashboard-token at call time. The
@@ -30,10 +30,13 @@ const opt = {}
 for (let i = 0; i < rest.length; i++) {
   const a = rest[i]
   if (!a.startsWith('--')) usage(`unexpected argument ${a}`)
+  if (a === '--apply') { opt.apply = true; continue }
   const v = rest[++i]
   if (v === undefined) usage(`${a} needs a value`)
   opt[a.slice(2)] = v
 }
+
+if (opt.apply && cmd !== 'sync-ledger') usage('--apply is only for sync-ledger')
 
 const need = (k) => { if (!opt[k]) usage(`--${k} is required`); return opt[k] }
 const domain = () => { const d = need('domain'); if (!DOMAINS.includes(d)) usage(`--domain must be one of: ${DOMAINS.join(', ')}`); return d }
@@ -114,7 +117,7 @@ if (!res.ok) {
 if (cmd === 'sync-ledger') {
   // Manual-only ledger sync (AC25): never triggered by an API write.
   const { syncContactToLedger } = await import('./contacts-sync-ledger.mjs')
-  const r = syncContactToLedger(parsed ?? {}, opt.ledger || undefined)
+  const r = syncContactToLedger(parsed ?? {}, opt.ledger || undefined, { apply: opt.apply === true })
   process.stdout.write(JSON.stringify({ ledger: r }) + '\n')
   process.exit(r.failed ? 1 : 0)
 }

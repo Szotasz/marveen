@@ -3,26 +3,35 @@
 // never from the dashboard API: the API caller identity is self-declared, so an
 // API write must not be able to make an address gate-trusted.
 // An address already in the ledger is left alone (its evidence and timestamp
-// stay). Nothing here prints an address.
+// stay). Dry run is the default: it lists each address and its source and
+// writes nothing; only `apply: true` (CLI: --apply) calls addRecipient.
 import { addRecipient, isVerifiedIn, ledgerPath, loadLedger } from './recipient-ledger.mjs'
 
 /**
  * @param {{ id: number, values?: Array<{ field: string, value: string, source: string, status?: string }> }} contact
- * @returns {{ added: number, exists: number, skipped: number, failed: number }}
+ * @param {string} [ledgerFile]
+ * @param {{ apply?: boolean }} [opts]
+ * @returns {{ dryRun: boolean, added: number, would_add: number, exists: number, skipped: number, failed: number, entries: Array<{ address: string, source: string, action: string }> }}
  */
-export function syncContactToLedger(contact, ledgerFile = ledgerPath()) {
-  const out = { added: 0, exists: 0, skipped: 0, failed: 0 }
+export function syncContactToLedger(contact, ledgerFile = ledgerPath(), { apply = false } = {}) {
+  const out = { dryRun: !apply, added: 0, would_add: 0, exists: 0, skipped: 0, failed: 0, entries: [] }
   for (const v of contact.values ?? []) {
     if (v.field !== 'email' || (v.status && v.status !== 'active')) continue
     const value = String(v.value ?? '').trim()
+    const source = String(v.source).trim()
     if (!value.includes('@')) { out.skipped++; continue }
     try {
       const existing = loadLedger(ledgerFile)
-      if (existing && isVerifiedIn(existing, value)) { out.exists++; continue }
-      addRecipient(value, String(v.source).trim(), `contact:${contact.id}`, ledgerFile)
-      out.added++
+      if (existing && isVerifiedIn(existing, value)) {
+        out.exists++; out.entries.push({ address: value, source, action: 'exists' }); continue
+      }
+      if (!apply) {
+        out.would_add++; out.entries.push({ address: value, source, action: 'would-add' }); continue
+      }
+      addRecipient(value, source, `contact:${contact.id}`, ledgerFile)
+      out.added++; out.entries.push({ address: value, source, action: 'added' })
     } catch {
-      out.failed++
+      out.failed++; out.entries.push({ address: value, source, action: 'failed' })
     }
   }
   return out

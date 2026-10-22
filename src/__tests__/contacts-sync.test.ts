@@ -74,8 +74,12 @@ describe('AC25: the API never writes the ledger; the manual CLI sync does', () =
       { field: 'email', value: 'old@example.hu', source: 'mail:zzz', status: 'active' },
       { field: 'email', value: 'gone@example.hu', source: 'owner', status: 'retracted' },
       { field: 'phone', value: '+3612345', source: 'owner', status: 'active' },
-    ] }, ledger)
-    expect(r).toEqual({ added: 1, exists: 1, skipped: 0, failed: 0 })
+    ] }, ledger, { apply: true })
+    expect(r).toMatchObject({ dryRun: false, added: 1, would_add: 0, exists: 1, skipped: 0, failed: 0 })
+    expect(r.entries).toEqual([
+      { address: 'Bela@Example.hu', source: 'mail:abc123', action: 'added' },
+      { address: 'old@example.hu', source: 'mail:zzz', action: 'exists' },
+    ])
     const file = JSON.parse(readFileSync(ledger, 'utf8'))
     expect(file.version).toBe(1)
     expect(Object.keys(file)).toEqual(['version', 'recipients'])
@@ -84,9 +88,21 @@ describe('AC25: the API never writes the ledger; the manual CLI sync does', () =
     expect(file.recipients['gone@example.hu']).toBeUndefined()
   })
 
+  it('without apply it is a dry run: lists address and source, writes nothing', () => {
+    const orig = JSON.stringify({ version: 1, recipients: { 'old@example.hu': { source: 'owner', note: 'orig', added_at: '2026-01-01T00:00:00.000Z' } } })
+    writeFileSync(ledger, orig)
+    const r = syncContactToLedger({ id: 7, values: [
+      { field: 'email', value: 'new@example.hu', source: 'crm:5', status: 'active' },
+      { field: 'email', value: 'old@example.hu', source: 'mail:zzz', status: 'active' },
+    ] }, ledger)
+    expect(r).toMatchObject({ dryRun: true, added: 0, would_add: 1, exists: 1, failed: 0 })
+    expect(r.entries[0]).toEqual({ address: 'new@example.hu', source: 'crm:5', action: 'would-add' })
+    expect(readFileSync(ledger, 'utf8')).toBe(orig)
+  })
+
   it('a broken ledger is reported as failed and left untouched', () => {
     writeFileSync(ledger, '{ not json')
-    const r = syncContactToLedger({ id: 1, values: [{ field: 'email', value: 'x@example.hu', source: 'owner', status: 'active' }] }, ledger)
+    const r = syncContactToLedger({ id: 1, values: [{ field: 'email', value: 'x@example.hu', source: 'owner', status: 'active' }] }, ledger, { apply: true })
     expect(r.failed).toBe(1)
     expect(readFileSync(ledger, 'utf8')).toBe('{ not json')
   })
@@ -103,16 +119,22 @@ describe('AC25: the API never writes the ledger; the manual CLI sync does', () =
     const tokenFile = join(dir, 'token')
     writeFileSync(tokenFile, 'tok-test\n')
     try {
-      const out = await new Promise<{ code: number | null; out: string }>((resolve) => {
-        const p = spawn(process.execPath, [join(__dirname, '..', '..', 'scripts', 'contacts.mjs'), 'sync-ledger', '--domain', 'business', '--id', '9', '--ledger', ledger], {
+      const runCli = (extra: string[]) => new Promise<{ code: number | null; out: string }>((resolve) => {
+        const p = spawn(process.execPath, [join(__dirname, '..', '..', 'scripts', 'contacts.mjs'), 'sync-ledger', '--domain', 'business', '--id', '9', '--ledger', ledger, ...extra], {
           env: { PATH: process.env.PATH, MARVEEN_BASE_URL: `http://127.0.0.1:${port}`, CONTACTS_TOKEN_FILE: tokenFile },
         })
         let o = ''
         p.stdout.on('data', (c) => { o += c })
         p.on('close', (code) => resolve({ code, out: o }))
       })
+      const dry = await runCli([])
+      expect(dry.code).toBe(0)
+      expect(JSON.parse(dry.out).ledger).toMatchObject({ dryRun: true, would_add: 1, added: 0 })
+      expect(JSON.parse(dry.out).ledger.entries).toEqual([{ address: 'cli@example.hu', source: 'crm:42', action: 'would-add' }])
+      expect(existsSync(ledger)).toBe(false)
+      const out = await runCli(['--apply'])
       expect(out.code).toBe(0)
-      expect(JSON.parse(out.out)).toEqual({ ledger: { added: 1, exists: 0, skipped: 0, failed: 0 } })
+      expect(JSON.parse(out.out).ledger).toMatchObject({ dryRun: false, added: 1, would_add: 0, exists: 0, skipped: 0, failed: 0 })
       expect(JSON.parse(readFileSync(ledger, 'utf8')).recipients['cli@example.hu']).toMatchObject({ source: 'crm:42', note: 'contact:9' })
     } finally {
       await new Promise((r) => server.close(r))
