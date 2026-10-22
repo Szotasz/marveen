@@ -136,7 +136,11 @@ const EMBEDDING_CACHE_MAX = 200_000
 // What the embedding_model column records: the model, plus the truncation
 // when EMBED_DIMS is set, so a change of either one marks old vectors as
 // another model's (excluded from search, re-embedded by the backfill).
-const EMBED_IDENTITY = EMBED_DIMS > 0 ? `${EMBED_MODEL}@${EMBED_DIMS}` : EMBED_MODEL
+// Read at call time, not at import: many tests mock config.js without the
+// EMBED_* settings, and a module-level read fails their import.
+function embedIdentity(): string {
+  return EMBED_DIMS > 0 ? `${EMBED_MODEL}@${EMBED_DIMS}` : EMBED_MODEL
+}
 export function forgetCachedEmbedding(id: number | bigint): void { embeddingCache.delete(Number(id)) }
 /** Exposed for tests only. */
 export function getEmbeddingCacheSize(): number { return embeddingCache.size }
@@ -1999,7 +2003,7 @@ export function saveMemory(
   // backfilled it by hand.
   generateEmbedding(content).then(emb => {
     if (emb) {
-      db.prepare('UPDATE memories SET embedding = ?, embedding_model = ? WHERE id = ? AND content = ? AND keywords IS ?').run(JSON.stringify(emb), EMBED_IDENTITY, id, content, null)
+      db.prepare('UPDATE memories SET embedding = ?, embedding_model = ? WHERE id = ? AND content = ? AND keywords IS ?').run(JSON.stringify(emb), embedIdentity(), id, content, null)
       forgetCachedEmbedding(id)
     }
   }).catch(() => {})
@@ -2355,7 +2359,7 @@ function insertMemoryRow(
 function scheduleEmbedding(id: number, content: string, keywords: string | undefined): void {
   generateEmbedding(content + (keywords ? ' ' + keywords : '')).then(emb => {
     if (emb) {
-      db.prepare('UPDATE memories SET embedding = ?, embedding_model = ? WHERE id = ? AND content = ? AND keywords IS ?').run(JSON.stringify(emb), EMBED_IDENTITY, id, content, keywords ?? null)
+      db.prepare('UPDATE memories SET embedding = ?, embedding_model = ? WHERE id = ? AND content = ? AND keywords IS ?').run(JSON.stringify(emb), embedIdentity(), id, content, keywords ?? null)
       forgetCachedEmbedding(id)
     }
   }).catch(() => {})
@@ -5876,7 +5880,7 @@ function vectorSearch(
   const dt = tsClause('created_at', range)
   const cands = db.prepare(
     `SELECT id, octet_length(embedding) AS elen FROM memories WHERE embedding IS NOT NULL AND (embedding_model IS NULL OR embedding_model = ?) AND (agent_id = ? OR category = 'shared')${category ? ' AND category = ?' : ''}${dt.sql}`
-  ).all(EMBED_IDENTITY, agentId, ...(category ? [category] : []), ...dt.params) as { id: number; elen: number }[]
+  ).all(embedIdentity(), agentId, ...(category ? [category] : []), ...dt.params) as { id: number; elen: number }[]
 
   // Parse only what is new or changed since the last call.
   let getVec: Database.Statement | null = null
@@ -6074,7 +6078,7 @@ export interface BackfillResult {
 }
 
 export async function backfillEmbeddings(): Promise<BackfillResult> {
-  const rows = db.prepare('SELECT id, content, keywords FROM memories WHERE embedding IS NULL OR (embedding_model IS NOT NULL AND embedding_model != ?)').all(EMBED_IDENTITY) as { id: number; content: string; keywords: string | null }[]
+  const rows = db.prepare('SELECT id, content, keywords FROM memories WHERE embedding IS NULL OR (embedding_model IS NOT NULL AND embedding_model != ?)').all(embedIdentity()) as { id: number; content: string; keywords: string | null }[]
   let count = 0
   for (const row of rows) {
     const text = row.content + (row.keywords ? ' ' + row.keywords : '')
@@ -6082,7 +6086,7 @@ export async function backfillEmbeddings(): Promise<BackfillResult> {
     if (emb) {
       // The write only lands if the row still holds the text that was embedded; an
       // edit in between leaves the vector NULL for the next backfill round.
-      const stored = db.prepare('UPDATE memories SET embedding = ?, embedding_model = ? WHERE id = ? AND content = ? AND keywords IS ?').run(JSON.stringify(emb), EMBED_IDENTITY, row.id, row.content, row.keywords).changes > 0
+      const stored = db.prepare('UPDATE memories SET embedding = ?, embedding_model = ? WHERE id = ? AND content = ? AND keywords IS ?').run(JSON.stringify(emb), embedIdentity(), row.id, row.content, row.keywords).changes > 0
       forgetCachedEmbedding(row.id)
       if (stored) count++
     }
