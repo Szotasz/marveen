@@ -16,7 +16,7 @@ import { COORDINATOR_AGENT_ID, VOICE_CHANNEL_AGENT_ID } from '../../channel-coor
 import { SYSTEM_DIRECTIVE_SENDER } from '../system-directive.js'
 import { sanitizeAgentIdent } from '../../prompt-safety.js'
 import { isKnownAgent, readAgentPullDelivery } from '../agent-config.js'
-import { MAIN_AGENT_ID, HEARTBEAT_AGENT_ID, OWNER_NAME, SYSTEM_SENDER_IDS, parseSystemSenderIds, MESSAGE_URGENT_DEVICE_IDS, parseDeviceKeyIds } from '../../config.js'
+import { MAIN_AGENT_ID, HEARTBEAT_AGENT_ID, OWNER_NAME, VOICE_CHANNEL_ID_INVALID, SYSTEM_SENDER_IDS, parseSystemSenderIds, MESSAGE_URGENT_DEVICE_IDS, parseDeviceKeyIds } from '../../config.js'
 import { isAgentRunning } from '../agent-process.js'
 import { MESSAGE_ABANDON_WINDOW_MS } from '../message-abandon.js'
 import { readBody, json, jsonMaybeGzip } from '../http-helpers.js'
@@ -29,6 +29,15 @@ import { getFederationConfig } from '../federation/config.js'
 import { decidePriority, parsePriorityField } from '../message-priority.js'
 import { rankedSenders } from '../../delivery-order.js'
 import type { RouteContext } from './types.js'
+
+// A VOICE_CHANNEL_ID that is not a usable agent id was replaced by the default in
+// config.ts (which cannot log, VOICECHANNELID1022); say so once, when the message
+// routes load -- otherwise a relay writing under the configured name would get
+// a silent 403 and the operator would not know why.
+const VOICE_ID_RULE = 'lowercase a-z, 0-9 and single dashes, at most 50 characters, not a system id'
+if (VOICE_CHANNEL_ID_INVALID !== undefined) {
+  logger.warn({ rejected: VOICE_CHANNEL_ID_INVALID, using: VOICE_CHANNEL_AGENT_ID }, `VOICE_CHANNEL_ID=${JSON.stringify(VOICE_CHANNEL_ID_INVALID)} is not a usable voice channel id (${VOICE_ID_RULE}); the default '${VOICE_CHANNEL_AGENT_ID}' is used instead`)
+}
 
 // Should closing a message produce a reverse "[Eredmény]" notification to its sender?
 //

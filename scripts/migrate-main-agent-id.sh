@@ -66,8 +66,55 @@ PYEOF
 # An id the message layer already owns, or a sub-agent's name, cannot become the
 # main agent's (FLEETRESERVEDNAME1021): 'system' is refused on every POST, so a
 # main agent named that could not send. Checked before anything is stopped.
-# The list is RESERVED_AGENT_IDS in src/web/sanitize.ts; a test keeps them equal.
-RESERVED_AGENT_IDS="system heartbeat telegram-coordinator channel-coordinator hanna"
+# The fixed list is FIXED_RESERVED_AGENT_IDS in src/web/sanitize.ts; a test keeps
+# them equal.
+# The voice channel id is configurable (VOICECHANNELID1022): it is VOICE_CHANNEL_ID
+# resolved EXACTLY as the dashboard resolves it, so the id refused here is the one
+# the dashboard reserves. Two halves, both mirrored:
+#   * the .env grammar of src/env-parse.ts parseEnvContent, NOT the BOT_NAME reader
+#     above: no "export" prefix, no trailing "# comment" (both stay part of the key
+#     or the value), one pair of matching quotes stripped, JS String.trim()
+#     whitespace, the last assignment wins, a missing .env reads as empty;
+#   * the rule of resolveVoiceChannelId in src/config.ts: a canonical agent id
+#     that is not a fixed reserved id, else 'hanna'.
+# src/__tests__/voice-channel-id-script-parity.test.ts runs this resolver against
+# the dashboard's on the same .env files. A function for the same bash 3.2 reason
+# as read_env_bot_name above.
+RESERVED_AGENT_IDS="system heartbeat telegram-coordinator channel-coordinator"
+resolve_voice_channel_id() {
+  python3 - "$@" <<'PYEOF'
+import re, sys
+env_path, fixed = sys.argv[1], sys.argv[2].split()
+JS_WS = ('\t\n\x0b\x0c\r \xa0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006'
+         '\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff')
+def trim(t):
+    return t.strip(JS_WS)
+try:
+    with open(env_path, encoding='utf-8', errors='replace') as fh:
+        content = fh.read()
+except OSError:
+    content = ''
+env = {}
+for line in content.split('\n'):
+    t = trim(line)
+    if not t or t.startswith('#'):
+        continue
+    i = t.find('=')
+    if i == -1:
+        continue
+    key, val = trim(t[:i]), trim(t[i + 1:])
+    if (val.startswith('"') and val.endswith('"')) or (val.startswith("'") and val.endswith("'")):
+        val = val[1:-1]
+    env[key] = val
+v = trim(env.get('VOICE_CHANNEL_ID', ''))
+if v and len(v) <= 50 and re.fullmatch(r'[a-z0-9]+(?:-[a-z0-9]+)*', v) and v not in fixed:
+    print(v, end='')
+else:
+    print('hanna', end='')
+PYEOF
+}
+VOICE_CHANNEL_ID="$(resolve_voice_channel_id "$INSTALL_DIR/.env" "$RESERVED_AGENT_IDS")"
+RESERVED_AGENT_IDS="$RESERVED_AGENT_IDS $VOICE_CHANNEL_ID"
 case " $RESERVED_AGENT_IDS " in
   *" $NEW_SLUG "*)
     echo "ERROR: BOT_NAME=\"$BOT_NAME\" gives the id \"$NEW_SLUG\", which is reserved by the system." >&2

@@ -6,6 +6,7 @@ import { Readable } from 'node:stream'
 import { classifyAgentMessage } from '../web/agent-message-wrap.js'
 import { COORDINATOR_AGENT_ID, VOICE_CHANNEL_AGENT_ID } from '../channel-coordinator/ingest.js'
 import { tryHandleMessages } from '../web/routes/messages.js'
+import { DEFAULT_VOICE_CHANNEL_ID, VOICE_CHANNEL_ID } from '../config.js'
 
 // HANGCSATORNA918 (owner request, 2026-09-18). The owner dictates into an
 // external voice assistant which relays the transcript to /api/messages. Before
@@ -14,9 +15,11 @@ import { tryHandleMessages } from '../web/routes/messages.js'
 // from internal fleet traffic.
 //
 // The fix has TWO halves and they only work together:
-//   1. delivery side: 'hanna' is in CHANNEL_COORDINATOR_AGENTS -> channel-inbound
+//   1. delivery side: the voice id is in CHANNEL_COORDINATOR_AGENTS -> channel-inbound
 //      framing, so EVERY agent sees the provenance, not just the main agent;
-//   2. write side: a 'hanna' POST is accepted only from an enrolled DEVICE KEY.
+//   2. write side: a voice-id POST is accepted only from an enrolled DEVICE KEY.
+// The id is VOICE_CHANNEL_ID from config.ts ('hanna' unless .env sets another,
+// VOICECHANNELID1022); voice-channel-id-config.test.ts covers the override.
 // Half 1 alone would be a forgery hole: channel-inbound means "the owner, reply
 // expected", and the dashboard token is readable by every sub-agent.
 
@@ -24,8 +27,12 @@ const here = dirname(fileURLToPath(import.meta.url))
 const MESSAGES_ROUTE_SRC = readFileSync(join(here, '../web/routes/messages.ts'), 'utf-8')
 
 describe('voice channel identity', () => {
+  it('keeps the historical default, so an existing relay needs no change', () => {
+    expect(DEFAULT_VOICE_CHANNEL_ID).toBe('hanna')
+  })
+
   it('has its own id, distinct from the main agent and the telegram coordinator', () => {
-    expect(VOICE_CHANNEL_AGENT_ID).toBe('hanna')
+    expect(VOICE_CHANNEL_AGENT_ID).toBe(VOICE_CHANNEL_ID)
     expect(VOICE_CHANNEL_AGENT_ID).not.toBe(COORDINATOR_AGENT_ID)
   })
 
@@ -78,7 +85,8 @@ describe('/api/messages write guard for the voice channel', () => {
   })
 
   it('rejects the sanitize-bypass spellings on the same lane (router-symmetric)', async () => {
-    for (const forged of ['@hanna', 'hanna.', ' hanna ', 'hanna!']) {
+    const id = VOICE_CHANNEL_AGENT_ID
+    for (const forged of [`@${id}`, `${id}.`, ` ${id} `, `${id}!`]) {
       const { status } = await postAs(forged, { kind: 'token' })
       expect(status, `forged from=${JSON.stringify(forged)} must be blocked`).toBe(403)
     }
@@ -114,6 +122,6 @@ describe('the two halves stay paired in the source', () => {
     expect(MESSAGES_ROUTE_SRC).toMatch(/import \{ COORDINATOR_AGENT_ID, VOICE_CHANNEL_AGENT_ID \}/)
     // The id must not appear as a bare literal anywhere in the route, not even
     // in a comment: a future reader copying the comment would fork the source of truth.
-    expect(MESSAGES_ROUTE_SRC).not.toMatch(/['\"`]hanna['\"`]/)
+    expect(MESSAGES_ROUTE_SRC).not.toMatch(new RegExp(`['"\`]${DEFAULT_VOICE_CHANNEL_ID}['"\`]`))
   })
 })
