@@ -974,4 +974,34 @@ describe('typed /mcp reconnect', () => {
     expect(result.message).toBe('MCP dialog opened instead of the command')
     expect(escapes().length).toBe(1)
   })
+
+  it('a final capture that still shows the Reconnecting panel is ok:false (still reconnecting)', () => {
+    queue(asTg('idle.txt'), asTg('idle.txt'))
+    mockCapturePane.mockReturnValue(asTg('reconnect-progress.txt'))
+
+    const result = attemptChannelMcpReconnect('marveen')
+
+    expect(result).toEqual({ ok: false, message: 'Still reconnecting -- outcome not observed' })
+    expect(sendKeys().length).toBe(2)
+    expect(escapes().length).toBe(0)
+  })
+
+  it('the panel of another server is not ours', () => {
+    queue(asTg('idle.txt'), asTg('idle.txt'))
+    mockCapturePane.mockReturnValue(asName(FIX('reconnect-progress.txt'), 'plugin:other:other'))
+
+    const result = attemptChannelMcpReconnect('marveen')
+
+    expect(result).toEqual({ ok: true, message: 'Command sent; outcome not observed' })
+  })
+
+  it('a panel seen only during the polls, then an idle pane, keeps the old not-observed result', () => {
+    queue(asTg('idle.txt'), asTg('idle.txt'))
+    for (let i = 0; i < 10; i++) queue(asTg('reconnect-progress.txt'))
+    queue(asTg('idle.txt'))
+
+    const result = attemptChannelMcpReconnect('marveen')
+
+    expect(result).toEqual({ ok: true, message: 'Command sent; outcome not observed' })
+  })
 })

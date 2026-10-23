@@ -24,6 +24,7 @@ import {
   showsMcpDialogTitle,
   type McpInlineAction,
   type McpInlineOutcome,
+  showsReconnectingPanel,
 } from './mcp-inline-command.js'
 
 const TMUX = resolveFromPath('tmux')
@@ -115,6 +116,7 @@ export function paneDiagSignature(
 }
 
 const REFUSE_UNREADABLE: ReconnectResult = { ok: false, message: 'Pane unreadable -- reconnect refused' }
+const STILL_RECONNECTING: ReconnectResult = { ok: false, message: 'Still reconnecting -- outcome not observed' }
 const DEFER_BUSY: ReconnectResult = { ok: false, message: 'Pane busy -- reconnect deferred to avoid interrupting active work' }
 const DEFER_PARKED: ReconnectResult = { ok: false, message: 'Input box not empty -- reconnect deferred' }
 
@@ -124,7 +126,8 @@ function isIdle(session: string, pane: string): boolean {
 }
 
 /**
- * What a reply that never showed up reports, from a fresh capture: the /mcp
+ * What a reply that never showed up reports, from a fresh capture: the
+ * "Reconnecting to <server>" panel is still on screen (still reconnecting), the /mcp
  * dialog opened instead of the command (see dialogOpenedResult), the typed
  * command still sits in the input box (touch nothing), or nothing was
  * observed. "Not observed" is ok:true only when it is unambiguous: an older
@@ -132,10 +135,11 @@ function isIdle(session: string, pane: string): boolean {
  * count never grows) or a grown echo count whose reply could not be claimed as
  * ours (not the latest exchange) both make it ok:false.
  */
-function unobservedResult(session: string, ambiguous: boolean): ReconnectResult {
+function unobservedResult(session: string, ambiguous: boolean, serverName: string): ReconnectResult {
   // Decide on a FRESH capture: the last poll can be seconds old.
   const pane = capturePane(session)
   if (pane == null) return { ok: false, message: 'Pane unreadable after the command -- outcome not observed' }
+  if (showsReconnectingPanel(pane, serverName)) return STILL_RECONNECTING
   if (detectsBlockingMenu(pane)) return dialogOpenedResult(session, pane)
   if ((parkedInputText(pane) ?? '').includes('/mcp')) {
     return { ok: false, message: 'Command left in the input box' }
@@ -204,7 +208,7 @@ function typeMcpCommandAndWait(
     if (outcome === 'unknown') return { ok: false, message: `Unrecognised reply to /mcp ${action}` }
     return outcome
   }
-  return unobservedResult(session, baseline > 0 || unclaimedEcho)
+  return unobservedResult(session, baseline > 0 || unclaimedEcho, serverName)
 }
 
 function isOutcome(r: McpInlineOutcome | ReconnectResult): r is McpInlineOutcome {
