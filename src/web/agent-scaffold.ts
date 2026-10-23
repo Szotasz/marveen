@@ -12,7 +12,7 @@ import { findDuplicateJsonKeys } from './json-dup-keys.js'
 import { logger } from '../logger.js'
 import { filterInheritableMcpServers, readInheritableMcpServerNames, logNotInherited } from './mcp-inheritance.js'
 import { agentDir, agentConfigRoot, listAgentNames, readAgentCapabilities, readAgentToolDeny } from './agent-config.js'
-import { loadProfileTemplate, profileWantsCredentialGate, profileWantsDestructiveGate, profileWantsYtIngest, resolveProfilePlaceholders,
+import { loadProfileTemplate, profileWantsCredentialGate, profileWantsSecondReviewer, profileWantsDestructiveGate, profileWantsYtIngest, resolveProfilePlaceholders,
   type ProfileTemplate } from './profiles.js'
 import { resolveAgentSecurityProfile } from './agent-team.js'
 import { sanitizeCapabilityTag, CAPABILITY_TAG_MAX_PER_AGENT } from '../prompt-safety.js'
@@ -893,6 +893,7 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   if (agentGetsChildClaudeGuard(name)) injectChildClaudeGuard(existing)
   if (agentGetsDestructiveGate(name, profile)) injectDestructiveGate(existing)
   if (agentGetsCredentialGate(name, profile)) injectCredentialGate(existing)
+  if (agentGetsSecondReviewer(name, profile)) injectSecondReviewerGate(existing)
   injectEgressGate(existing)
   if (agentGetsBashEgressParser(name)) injectBashEgressParser(existing)
   if (name !== MAIN_AGENT_ID) injectWebSearchEnvelope(existing)
@@ -1871,6 +1872,38 @@ export function injectCredentialGate(existing: Record<string, unknown>): void {
   ]
 }
 
+// D3(b): the second reviewer, opt-in per security profile (`"secondReviewer": true`), default OFF,
+// the same posture as the credential gate. The matcher is wide on purpose: the hook itself picks the
+// high-risk shapes (a Bash command that deletes, pushes, uploads or escalates; an MCP tool that
+// sends, deletes or shares) and exits 0 on everything else, so only those cost a review. Never the
+// main agent: the operator authorizes its work directly.
+export const SECOND_REVIEWER_MATCHER = 'Bash|mcp__.*'
+export function agentGetsSecondReviewer(name: string, profile?: ProfileTemplate): boolean {
+  if (name === MAIN_AGENT_ID) return false
+  const p = profile ?? loadProfileTemplate(resolveAgentSecurityProfile(name))
+  return profileWantsSecondReviewer(p)
+}
+
+export function injectSecondReviewerGate(existing: Record<string, unknown>): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'second-reviewer-gate.py'))
+  // Registration guard: a /tmp or missing path must never enter shared settings.
+  if (isUnsafeHookCommand(command)) return
+  // 180 s: the server gives the reviewer 45 s; the hook's socket timeout (75 s) applies per operation,
+  // so connect plus read stays well inside this, and the hook never times out while a review is pending.
+  const entry = {
+    matcher: SECOND_REVIEWER_MATCHER,
+    hooks: [{ type: 'command', command, timeout: 180 }],
+  }
+  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  hooks.PreToolUse = [
+    ...prev.filter((e) => !JSON.stringify(e).includes('second-reviewer-gate.py')),
+    entry,
+  ]
+}
+
 // Idempotent migration for the EXISTING fleet: the scaffold only rewrites a
 // sub-agent's settings on spawn, so without this the gate would reach the three
 // running agents no sooner than their next respawn. Returns true if written.
@@ -2321,13 +2354,19 @@ export function ensureGovernanceGateCommands(name: string, profile?: ProfileTemp
     && (e as { matcher?: unknown })?.matcher !== EMAIL_GATE_MATCHER)
   const needCredential = agentGetsCredentialGate(name, profile)
     && (!hookCommandWired(ptuJson, credentialCmd) || credentialStale)
-  if (!needEmail && !needPace && !needDestructive && !needCredential) return false
+  const reviewerCmd = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'second-reviewer-gate.py'))
+  const reviewerStale = ptu.some((e) => JSON.stringify(e).includes('second-reviewer-gate.py')
+    && (e as { matcher?: unknown })?.matcher !== SECOND_REVIEWER_MATCHER)
+  const needReviewer = agentGetsSecondReviewer(name, profile)
+    && (!hookCommandWired(ptuJson, reviewerCmd) || reviewerStale)
+  if (!needEmail && !needPace && !needDestructive && !needCredential && !needReviewer) return false
   // The injectors dedupe by script basename, so a stale bare-`node` entry is
   // replaced in place rather than accumulated.
   if (needEmail) injectEmailSendGate(settings, threadReply)
   if (needPace) injectSelfPaceGate(settings)
   if (needDestructive) injectDestructiveGate(settings)
   if (needCredential) injectCredentialGate(settings)
+  if (needReviewer) injectSecondReviewerGate(settings)
   atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
   return true
 }

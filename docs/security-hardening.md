@@ -552,6 +552,42 @@ load-bearing control is that nothing goes live without the approval.
   too. "Only a human approves" needs the per-agent identity decision (#1985)
   first.
 
+# A second reviewer for high-risk tool calls (opt-in)
+
+A security profile can set `"secondReviewer": true`. A sub-agent rendered from
+that profile gets `scripts/hooks/second-reviewer-gate.py` as a `PreToolUse`
+hook on Bash and on MCP tools. The main agent never gets it, and no shipped
+profile sets the flag: every reviewed call costs a model call, so turning it on
+is the operator's decision. Switching it off later does not remove the hook
+from an agent that already has it.
+
+The hook reviews only high-risk shapes and lets everything else through
+untouched: a Bash command that deletes recursively, pushes, resets hard,
+uploads or posts with curl or wget, opens ssh/scp/rsync, uses sudo, changes
+ownership or modes recursively, wipes a disk, edits the crontab, kills
+processes, removes containers or drops tables; an MCP tool whose name says it
+sends, replies, posts, publishes, forwards, deletes, removes, transfers, pays,
+shares or invites. These patterns are a triage of what is worth a review, not a
+boundary.
+
+For such a call the hook asks `POST /api/review-action`. The server gives the
+call, wrapped as untrusted data, to a model with a fixed prompt, for at most 45
+seconds. `allow` lets the call run; `deny` stops it with the reviewer's reason.
+Anything else (an `ask` verdict, a timeout, a frozen fleet, an answer that does
+not parse) files an approval for the owner (category `second_review`) and stops
+the call. Once the owner approved it, the same call goes through once. "The
+same call" means the same agent, tool and effect: for Bash the command only
+(the tool input's model-written description changes on every retry), for any
+other tool its whole input. A call whose effect is longer than 4 000
+characters is denied without a review: the reviewer and the owner must both
+see the whole call they decide on. The hook is fail-closed: if the dashboard cannot be
+reached, the call is stopped.
+
+What it is not: a model is not a security boundary. The reviewer sees only the
+call, not the task, and can only say no or ask; it never widens what an agent
+may do. An agent that runs as the same OS user can still act outside its tool
+calls.
+
 # Fleet import takes over only the identity keys
 
 `POST /api/fleet/import?apply=true` makes the target install adopt the source's

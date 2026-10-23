@@ -407,6 +407,12 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       json(res, { error: 'category is required' }, 400)
       return true
     }
+    // D3(b): second_review rows are filed by the server only (routes/review-action.ts), with the
+    // exact call as payload. A caller-filed row could carry a call's hash under a harmless text.
+    if (category.trim() === 'second_review') {
+      json(res, { error: 'category second_review is reserved for the server' }, 403)
+      return true
+    }
     if (typeof action_description !== 'string' || !action_description.trim()) {
       json(res, { error: 'action_description is required' }, 400)
       return true
