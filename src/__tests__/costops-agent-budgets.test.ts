@@ -43,6 +43,18 @@ describe('agentSpend', () => {
     expect(s.cost).toBe(0)
     expect(s.unpriced_tokens).toBe(7)
   })
+  it('missing cache_write price makes only cache-write tokens unpriced', () => {
+    insert('a1', WIN.start + 1, 'm1', 1000, 2000, 30, 40)
+    const p = { input: 4, output: 20, cache_read: 0.4 }
+    const s = agentSpend(getDb(), 'a1', WIN.start, WIN.end, { m1: p })
+    expect(s.unpriced_tokens).toBe(40)
+    expect(s.cost).toBeCloseTo(1000 * p.input / 1e6 + 2000 * p.output / 1e6 + 30 * p.cache_read / 1e6, 10)
+  })
+  it('input/output-only price leaves both cache kinds unpriced', () => {
+    insert('a1', WIN.start + 1, 'm1', 1000, 2000, 30, 40)
+    const s = agentSpend(getDb(), 'a1', WIN.start, WIN.end, { m1: { input: 4, output: 20 } })
+    expect(s.unpriced_tokens).toBe(70)
+  })
   it('counts only own rows inside [start, end)', () => {
     insert('a1', WIN.end, 'm1', 1_000_000, 0, 0, 0)
     insert('a1', WIN.start, 'm1', 1_000_000, 0, 0, 0)
@@ -84,6 +96,26 @@ describe('evaluateAgentBudgets', () => {
   })
 })
 
+describe('unpriced status', () => {
+  const one = [{ id: 'b1', scope: 'agent' as const, scope_ref: 'a1', amount: 100 }]
+  it('is unpriced when the only usage is on an unpriced model', () => {
+    insert('a1', WIN.start + 1, 'm2', 5, 6, 7, 8)
+    const [r] = evaluateAgentBudgets(getDb(), cfg(one), NOW)
+    expect(r.status).toBe('unpriced')
+    expect(r.spend).toBe(0)
+  })
+  it('is ok without usage this month', () => {
+    expect(evaluateAgentBudgets(getDb(), cfg(one), NOW)[0].status).toBe('ok')
+  })
+  it('stays ok for priced usage under the threshold plus some unpriced usage', () => {
+    seed53()
+    insert('a1', WIN.start + 2, 'm2', 5, 6, 7, 8)
+    const [r] = evaluateAgentBudgets(getDb(), cfg(one), NOW)
+    expect(r.status).toBe('ok')
+    expect(r.unpriced_tokens).toBe(26)
+  })
+})
+
 describe('rounding', () => {
   it('judges the budget on the unrounded cost', () => {
     insert('a1', WIN.start + 1, 'm', 1, 0, 0, 0)
@@ -111,8 +143,17 @@ describe('alertAgentBudgets', () => {
     expect(send.mock.calls[0][2]).toEqual({ cooldownMs: d })
     expect(send.mock.calls[0][1]).toContain('ag-b1')
     expect(send.mock.calls[0][1]).toContain('85%')
-    expect(send.mock.calls[0][1]).not.toContain('Arazatlan')
-    expect(send.mock.calls[1][1]).toContain('Arazatlan tokenek: 5.')
+    expect(send.mock.calls[0][1]).not.toContain('Árazatlan')
+    expect(send.mock.calls[1][1]).toContain('Árazatlan tokenek: 5.')
+  })
+  it('alerts for unpriced status and not for ok', () => {
+    const send = vi.fn((_k: string, _t: string, _o: { cooldownMs: number }) => true)
+    expect(alertAgentBudgets([st('b1', 'unpriced', 9), st('b2', 'ok')], send)).toBe(1)
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(send.mock.calls[0][0]).toBe('agent-budget:b1:unpriced:2026-10')
+    expect(send.mock.calls[0][1]).toContain('teljesen árazatlan')
+    expect(send.mock.calls[0][1]).toContain('(9 token)')
+    expect(send.mock.calls[0][2]).toEqual({ cooldownMs: 40 * 24 * 60 * 60 * 1000 })
   })
   it('counts only calls that returned true', () => {
     expect(alertAgentBudgets([st('b1', 'warning')], () => false)).toBe(0)

@@ -70,4 +70,20 @@ describe('checkAgentBudgets', () => {
     expect(() => checkAgentBudgets(NOW, send, STATE)).not.toThrow()
     expect(send).toHaveBeenCalledTimes(1)
   })
+
+  it('alerts once for fully unpriced usage and dedups in the same month', () => {
+    getDb().prepare('DELETE FROM token_usage').run()
+    getDb().prepare(
+      'INSERT INTO token_usage (agent, session_id, timestamp, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, thinking_tokens, model) VALUES (?,?,?,?,?,?,?,?,?)',
+    ).run('a1', 's-unpriced', NOW - 3600, 100, 50, 0, 0, 0, 'unknown-model')
+    const state = join(H.root, 'store', 'state-unpriced.json')
+    const send = vi.fn(() => true)
+    expect(checkAgentBudgets(NOW, send, state)).toBe(1)
+    expect(send).toHaveBeenCalledTimes(1)
+    const [key, text] = send.mock.calls[0] as unknown as [string, string]
+    expect(key).toBe('agent-budget:b1:unpriced:2026-10')
+    expect(text).toContain('teljesen árazatlan')
+    expect(checkAgentBudgets(NOW, send, state)).toBe(0)
+    expect(send).toHaveBeenCalledTimes(1)
+  })
 })

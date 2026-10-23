@@ -57,3 +57,13 @@ export function checkAgentBudgets(
   }
   return count
 }
+
+// Collect, then check the budgets. A collect failure propagates (no check on
+// stale data); a check failure is logged and never fails the collection.
+export async function collectTokenUsageAndCheckBudgets(
+  collect: () => Promise<unknown>,
+  check: () => unknown,
+): Promise<void> {
+  await collect()
+  try { check() } catch (err) { logger.warn({ err }, 'Agent budget check failed') }
+}

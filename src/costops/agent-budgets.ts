@@ -64,7 +64,7 @@ export interface AgentBudgetStatus {
   spend: number
   unpriced_tokens: number
   used_pct: number
-  status: 'ok' | 'warning' | 'hard'
+  status: 'ok' | 'warning' | 'hard' | 'unpriced'
   warning_threshold: number
   hard_threshold: number
 }
@@ -78,11 +78,16 @@ export function evaluateAgentBudgets(db: Database.Database, config: CostOpsConfi
     const warning = b.warning_threshold ?? 0.8
     const hard = b.hard_threshold ?? 1.0
     const used = s.cost / b.amount
+    const total = s.tokens.input + s.tokens.output + s.tokens.cache_write + s.tokens.cache_read
+    // Every token is unpriced: the spend is not measurable, so never report 'ok'.
+    const status: AgentBudgetStatus['status'] = total > 0 && s.unpriced_tokens === total
+      ? 'unpriced'
+      : used >= hard ? 'hard' : used >= warning ? 'warning' : 'ok'
     out.push({
       id: b.id, agent: b.scope_ref, amount: b.amount, month: win.key,
       spend: Math.round(s.cost * 100) / 100, unpriced_tokens: s.unpriced_tokens,
       used_pct: Math.round(used * 10000) / 10000,
-      status: used >= hard ? 'hard' : used >= warning ? 'warning' : 'ok',
+      status,
       warning_threshold: warning, hard_threshold: hard,
     })
   }
@@ -95,9 +100,14 @@ export function alertAgentBudgets(
 ): number {
   let sent = 0
   for (const s of statuses) {
-    if (s.status !== 'warning' && s.status !== 'hard') continue
-    let text = `Ugynok-koltsegkeret (${s.agent}): ${Math.round(s.used_pct * 100)}% a(z) ${s.month} havi keretbol (${s.spend} / ${s.amount}).`
-    if (s.unpriced_tokens > 0) text += ` Arazatlan tokenek: ${s.unpriced_tokens}.`
+    if (s.status === 'ok') continue
+    let text: string
+    if (s.status === 'unpriced') {
+      text = `Ügynök-költségkeret (${s.agent}): a(z) ${s.month} havi használat teljesen árazatlan (${s.unpriced_tokens} token), a keret nem mérhető. Adj meg árat a token_prices beállításban.`
+    } else {
+      text = `Ügynök-költségkeret (${s.agent}): ${Math.round(s.used_pct * 100)}% a(z) ${s.month} havi keretből (${s.spend} / ${s.amount}).`
+      if (s.unpriced_tokens > 0) text += ` Árazatlan tokenek: ${s.unpriced_tokens}.`
+    }
     if (send(`agent-budget:${s.id}:${s.status}:${s.month}`, text, { cooldownMs: 40 * 24 * 60 * 60 * 1000 })) sent++
   }
   return sent
