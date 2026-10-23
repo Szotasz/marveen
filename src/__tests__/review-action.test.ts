@@ -2,12 +2,20 @@
 import { describe, it, expect, vi, beforeAll, beforeEach, afterAll } from 'vitest'
 import type http from 'node:http'
 import { Readable } from 'node:stream'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 const tmpHome = mkdtempSync(join(tmpdir(), 'review-action-home-'))
 const tmpRoot = mkdtempSync(join(tmpdir(), 'review-action-root-'))
+
+// The agents the tests call as have a profile that turns the second reviewer on; 'plain-agent' has none.
+mkdirSync(join(tmpRoot, 'templates', 'profiles'), { recursive: true })
+writeFileSync(join(tmpRoot, 'templates', 'profiles', 'reviewed.json'), JSON.stringify({ id: 'reviewed', secondReviewer: true }))
+for (const name of ['probe-agent', 'auth-agent', 'host-main']) {
+  mkdirSync(join(tmpRoot, 'agents', name), { recursive: true })
+  writeFileSync(join(tmpRoot, 'agents', name, 'agent-config.json'), JSON.stringify({ securityProfile: 'reviewed' }))
+}
 const realHome = process.env.HOME
 process.env.HOME = tmpHome
 afterAll(() => { process.env.HOME = realHome; rmSync(tmpHome, { recursive: true, force: true }); rmSync(tmpRoot, { recursive: true, force: true }) })
@@ -120,8 +128,8 @@ describe('review-action', () => {
   })
 
   it('V9 400 for a missing tool_name and for a non-JSON body', async () => {
-    expect((await call({ agent: 'x' })).status).toBe(400)
-    expect((await call(null, undefined, 'not json')).status).toBe(400)
+    expect((await call({ agent: 'probe-agent' })).status).toBe(400)
+    expect((await call(null, { kind: 'token', agent: 'probe-agent' } as Auth, 'not json')).status).toBe(400)
   })
 
   it('V10 the prompt wraps the call as untrusted; runAgent gets a bounded timeout', async () => {
@@ -278,5 +286,33 @@ describe('review-action', () => {
     getDb().prepare("UPDATE approvals SET requested_at = ? - CAST(substr(id, 7) AS INTEGER) WHERE id LIKE 'clone-%'").run(now)
     for (let i = 0; i < 20; i++) expect((await call(BODY)).body.decision).toBe('allow')
     expect((await call(BODY)).body).toMatchObject({ decision: 'allow', approval_id: id })
+  })
+
+  it('V26 off for the caller: 404 like an unknown route, no review, nothing filed', async () => {
+    say('{"decision":"allow","reason":"routine"}')
+    const offCalls: Array<[unknown, Auth, string?]> = [
+      [{ ...BODY, agent: 'plain-agent' }, { kind: 'token' } as Auth],
+      [BODY, { kind: 'token', agent: 'plain-agent' } as Auth],
+      [{ ...BODY, agent: 'host-main' }, { kind: 'token' } as Auth],
+      [{ tool_name: 'Bash', tool_input: { command: 'git push origin main' } }, { kind: 'token' } as Auth],
+      [{ ...BODY, agent: 'plain-agent', tool_input: { command: 'z'.repeat(5000) } }, { kind: 'token' } as Auth],
+      [null, { kind: 'token' } as Auth, 'not json'],
+      [{ agent: 'plain-agent' }, { kind: 'token' } as Auth],
+    ]
+    for (const [body, auth, raw] of offCalls) {
+      const r = await call(body, auth, raw)
+      expect(r.status).toBe(404)
+      expect(r.body).toBe('Not found')
+    }
+    expect(run).not.toHaveBeenCalled()
+    expect(listApprovals({ category: 'second_review' })).toHaveLength(0)
+  })
+
+  it('V27 on for the caller: the same call is reviewed', async () => {
+    say('{"decision":"allow","reason":"routine"}')
+    const r = await call(BODY)
+    expect(r.status).toBe(200)
+    expect(r.body.decision).toBe('allow')
+    expect(run).toHaveBeenCalledTimes(1)
   })
 })

@@ -9,6 +9,8 @@ import { join } from 'node:path'
 import {
   agentGetsSecondReviewer,
   injectSecondReviewerGate,
+  removeSecondReviewerGate,
+  ensureGovernanceGateCommands,
   writeAgentSettingsFromProfile,
   agentSettingsPath,
   SECOND_REVIEWER_MATCHER,
@@ -81,5 +83,61 @@ describe('second reviewer wiring', () => {
     for (const v of [undefined, null, 'true', 1]) {
       expect(profileWantsSecondReviewer(v === undefined || v === null ? v : ({ secondReviewer: v } as any))).toBe(false)
     }
+  })
+  it('W6 on, then off: the respawn write drops the entry and keeps the other hooks', () => {
+    render(ON)
+    writeAgentSettingsFromProfile(TEST_AGENT, BASE)
+    const s = readFileSync(agentSettingsPath(TEST_AGENT), 'utf-8')
+    expect(entries(s)).toHaveLength(0)
+    expect((JSON.parse(s) as Settings).hooks?.PreToolUse?.length ?? 0).toBeGreaterThan(0)
+  })
+  it('W7 on, then off: ensureGovernanceGateCommands drops the entry and says it wrote', () => {
+    render(ON)
+    expect(ensureGovernanceGateCommands(TEST_AGENT, BASE)).toBe(true)
+    expect(entries(readFileSync(agentSettingsPath(TEST_AGENT), 'utf-8'))).toHaveLength(0)
+    expect(ensureGovernanceGateCommands(TEST_AGENT, BASE)).toBe(false)
+  })
+  it('W8 still on: ensureGovernanceGateCommands keeps the one entry', () => {
+    render(ON)
+    ensureGovernanceGateCommands(TEST_AGENT, ON)
+    expect(entries(readFileSync(agentSettingsPath(TEST_AGENT), 'utf-8'))).toHaveLength(1)
+  })
+  it('W9 removeSecondReviewerGate touches only the reviewer entry', () => {
+    const other = { matcher: 'Bash', hooks: [{ type: 'command', command: 'python3 /x/scripts/hooks/destructive-gate.py' }] }
+    const s: Record<string, unknown> = { hooks: { PreToolUse: [other] } }
+    injectSecondReviewerGate(s)
+    expect(removeSecondReviewerGate(s)).toBe(true)
+    expect((s.hooks as any).PreToolUse).toEqual([other])
+    expect(removeSecondReviewerGate(s)).toBe(false)
+    expect(removeSecondReviewerGate({})).toBe(false)
+  })
+  it('W10 a hand-merged entry keeps its other hook; a lookalike script name is not the reviewer', () => {
+    const other = { type: 'command', command: 'python3 /x/scripts/hooks/destructive-gate.py' }
+    const lookalike = { matcher: 'Bash', hooks: [{ type: 'command', command: 'python3 /x/my-second-reviewer-gate.py' }] }
+    const s: Record<string, unknown> = { hooks: { PreToolUse: [lookalike] } }
+    injectSecondReviewerGate(s)
+    const merged = (s.hooks as any).PreToolUse[1]
+    merged.hooks.push(other)
+    expect(removeSecondReviewerGate(s)).toBe(true)
+    expect((s.hooks as any).PreToolUse).toEqual([lookalike, { ...merged, hooks: [other] }])
+  })
+  it('W11 a command that only names the file as an argument stays; a malformed entry does not throw', () => {
+    const argOnly = { matcher: 'Bash', hooks: [{ type: 'command', command: 'python3 /x/audit.py second-reviewer-gate.py' }] }
+    const malformed = { matcher: 'Bash', hooks: {} }
+    const s: Record<string, unknown> = { hooks: { PreToolUse: [argOnly, malformed] } }
+    expect(removeSecondReviewerGate(s)).toBe(false)
+    injectSecondReviewerGate(s)
+    expect(removeSecondReviewerGate(s)).toBe(true)
+    expect((s.hooks as any).PreToolUse).toEqual([argOnly, malformed])
+  })
+  it('W12 still on, with a lookalike entry beside it: the migration pass settles after one write', () => {
+    render(ON)
+    const p = agentSettingsPath(TEST_AGENT)
+    const s = JSON.parse(readFileSync(p, 'utf-8'))
+    s.hooks.PreToolUse.push({ matcher: 'Bash', hooks: [{ type: 'command', command: 'python3 /x/my-second-reviewer-gate.py' }] })
+    writeFileSync(p, JSON.stringify(s))
+    ensureGovernanceGateCommands(TEST_AGENT, ON)
+    expect(ensureGovernanceGateCommands(TEST_AGENT, ON)).toBe(false)
+    expect(entries(readFileSync(p, 'utf-8'))).toHaveLength(2)
   })
 })

@@ -117,3 +117,6 @@ jobs:
       # HTTP server for the targets and as the Bot API stub (TELEGRAM_API_BASE), throwaway
       # install trees, HOME on a temp dir, proxies cleared.
       - run: python3 scripts/__tests__/uptime-monitor.test.py
+      # #2202: the second-reviewer hook decides whether a high-risk call goes through, so its
+      # contract is a gate instrument. Hermetic: a local HTTP stand-in for the review route.
+      - run: python3 scripts/__tests__/second-reviewer-gate.test.py

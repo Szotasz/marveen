@@ -4,7 +4,8 @@
 // else (an "ask" verdict, a timeout, a frozen fleet, an answer that does not parse) files an approval for
 // the owner, and the call is refused until the owner approves; then the SAME call (same agent, tool and
 // input) is allowed once. A model is not a security boundary: this is a second pair of eyes that can
-// only say no or ask, never widen what the agent may do.
+// only say no or ask, never widen what the agent may do. Off (the main agent, or a caller whose profile does
+// not set secondReviewer) answers 404 like an unknown route.
 import { createHash } from 'node:crypto'
 import { logger } from '../../logger.js'
 import { PROJECT_ROOT } from '../../config.js'
@@ -13,6 +14,7 @@ import { wrapUntrusted } from '../../prompt-safety.js'
 import { getDb, consumeCategoryApproval, type Approval } from '../../db.js'
 import { readBody, json } from '../http-helpers.js'
 import { sanitizeAgentName } from '../sanitize.js'
+import { agentGetsSecondReviewer } from '../agent-scaffold.js'
 import { fileServerApproval, categoryWindowSeconds, approvalWindowSeconds } from './approvals.js'
 import type { RouteContext } from './types.js'
 
@@ -91,15 +93,25 @@ export function parseVerdict(text: string | null | undefined): { decision: Revie
   }
 }
 
+// The caller's profile must turn the second reviewer on. A name the agent directory cannot hold makes
+// agentDir throw: such a caller has no profile, so the reviewer is off for it.
+function secondReviewerOn(agent: string): boolean {
+  try { return agentGetsSecondReviewer(agent) } catch { return false }
+}
+
 export async function tryHandleReviewAction(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
   if (path !== '/api/review-action' || method !== 'POST') return false
-  let body: { agent?: unknown; tool_name?: unknown; tool_input?: unknown }
-  try { body = JSON.parse((await readBody(req)).toString()) } catch { json(res, { error: 'Invalid JSON body' }, 400); return true }
-  const toolName = typeof body?.tool_name === 'string' ? body.tool_name : ''
-  if (!TOOL_NAME_RE.test(toolName)) { json(res, { error: 'tool_name is required (letters, digits, _ . : -)' }, 400); return true }
+  let body: { agent?: unknown; tool_name?: unknown; tool_input?: unknown } | null | undefined
+  try { body = JSON.parse((await readBody(req)).toString()) } catch { body = undefined }
   const authAgent = typeof ctx.auth?.agent === 'string' && ctx.auth.agent ? ctx.auth.agent : ''
   const agent = authAgent || sanitizeAgentName(typeof body?.agent === 'string' ? body.agent : '') || 'unknown'
+  // Off means unchanged behaviour: unless the caller's profile turns the second reviewer on, this path
+  // answers exactly like an unknown route (the dispatcher's 404), so no model call runs and nothing is filed.
+  if (!secondReviewerOn(agent)) { res.writeHead(404); res.end('Not found'); return true }
+  if (body === undefined) { json(res, { error: 'Invalid JSON body' }, 400); return true }
+  const toolName = typeof body?.tool_name === 'string' ? body.tool_name : ''
+  if (!TOOL_NAME_RE.test(toolName)) { json(res, { error: 'tool_name is required (letters, digits, _ . : -)' }, 400); return true }
   const serialized = JSON.stringify(effectOf(toolName, body?.tool_input))
   const contentHash = createHash('sha256').update(`${agent}\n${toolName}\n${serialized}`).digest('hex')
 

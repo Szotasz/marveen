@@ -894,6 +894,7 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   if (agentGetsDestructiveGate(name, profile)) injectDestructiveGate(existing)
   if (agentGetsCredentialGate(name, profile)) injectCredentialGate(existing)
   if (agentGetsSecondReviewer(name, profile)) injectSecondReviewerGate(existing)
+  else removeSecondReviewerGate(existing)
   injectEgressGate(existing)
   if (agentGetsBashEgressParser(name)) injectBashEgressParser(existing)
   if (name !== MAIN_AGENT_ID) injectWebSearchEnvelope(existing)
@@ -1897,11 +1898,43 @@ export function injectSecondReviewerGate(existing: Record<string, unknown>): voi
     matcher: SECOND_REVIEWER_MATCHER,
     hooks: [{ type: 'command', command, timeout: 180 }],
   }
+  removeSecondReviewerGate(existing)
   const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
-  hooks.PreToolUse = [
-    ...prev.filter((e) => !JSON.stringify(e).includes('second-reviewer-gate.py')),
-    entry,
-  ]
+  hooks.PreToolUse = [...prev, entry]
+}
+
+// Off again: a profile that no longer sets secondReviewer must not leave the hook behind. The route
+// answers such a caller 404 and the hook fails closed on that, so a stale entry would stop every
+// high-risk call of the agent. Only the reviewer hook goes: another hook in the same entry stays, and
+// the entry is dropped only when nothing is left in it. Returns true if a hook was removed.
+// The script by its install path (scripts/hooks/, either separator), so a bare file name in another
+// command, or a lookalike name, is not taken for the reviewer.
+const SECOND_REVIEWER_SCRIPT_RE = /[/\\]scripts[/\\]hooks[/\\]second-reviewer-gate\.py(?:$|[\s'";])/
+function isSecondReviewerHook(hook: unknown): boolean {
+  const command = (hook as { command?: unknown } | null)?.command
+  return typeof command === 'string' && SECOND_REVIEWER_SCRIPT_RE.test(command)
+}
+function entryHasSecondReviewer(e: unknown): boolean {
+  const inner = (e as HookEntry | null)?.hooks
+  return Array.isArray(inner) && inner.some(isSecondReviewerHook)
+}
+export function hasSecondReviewerHook(preToolUse: unknown[]): boolean {
+  return preToolUse.some(entryHasSecondReviewer)
+}
+export function removeSecondReviewerGate(existing: Record<string, unknown>): boolean {
+  const hooks = existing.hooks
+  if (!hooks || typeof hooks !== 'object') return false
+  const h = hooks as Record<string, unknown>
+  if (!Array.isArray(h.PreToolUse) || !hasSecondReviewerHook(h.PreToolUse)) return false
+  const kept: unknown[] = []
+  for (const e of h.PreToolUse as unknown[]) {
+    const inner = (e as HookEntry | null)?.hooks
+    if (!Array.isArray(inner) || !entryHasSecondReviewer(e)) { kept.push(e); continue }
+    const rest = inner.filter((hook) => !isSecondReviewerHook(hook))
+    if (rest.length > 0) kept.push({ ...(e as HookEntry), hooks: rest })
+  }
+  h.PreToolUse = kept
+  return true
 }
 
 // Idempotent migration for the EXISTING fleet: the scaffold only rewrites a
@@ -2355,11 +2388,13 @@ export function ensureGovernanceGateCommands(name: string, profile?: ProfileTemp
   const needCredential = agentGetsCredentialGate(name, profile)
     && (!hookCommandWired(ptuJson, credentialCmd) || credentialStale)
   const reviewerCmd = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'second-reviewer-gate.py'))
-  const reviewerStale = ptu.some((e) => JSON.stringify(e).includes('second-reviewer-gate.py')
+  const reviewerStale = ptu.some((e) => entryHasSecondReviewer(e)
     && (e as { matcher?: unknown })?.matcher !== SECOND_REVIEWER_MATCHER)
   const needReviewer = agentGetsSecondReviewer(name, profile)
     && (!hookCommandWired(ptuJson, reviewerCmd) || reviewerStale)
-  if (!needEmail && !needPace && !needDestructive && !needCredential && !needReviewer) return false
+  // Off with an entry still wired: the entry goes (see removeSecondReviewerGate).
+  const dropReviewer = !agentGetsSecondReviewer(name, profile) && hasSecondReviewerHook(ptu)
+  if (!needEmail && !needPace && !needDestructive && !needCredential && !needReviewer && !dropReviewer) return false
   // The injectors dedupe by script basename, so a stale bare-`node` entry is
   // replaced in place rather than accumulated.
   if (needEmail) injectEmailSendGate(settings, threadReply)
@@ -2367,6 +2402,7 @@ export function ensureGovernanceGateCommands(name: string, profile?: ProfileTemp
   if (needDestructive) injectDestructiveGate(settings)
   if (needCredential) injectCredentialGate(settings)
   if (needReviewer) injectSecondReviewerGate(settings)
+  if (dropReviewer) removeSecondReviewerGate(settings)
   atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
   return true
 }

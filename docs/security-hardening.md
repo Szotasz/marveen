@@ -558,8 +558,10 @@ A security profile can set `"secondReviewer": true`. A sub-agent rendered from
 that profile gets `scripts/hooks/second-reviewer-gate.py` as a `PreToolUse`
 hook on Bash and on MCP tools. The main agent never gets it, and no shipped
 profile sets the flag: every reviewed call costs a model call, so turning it on
-is the operator's decision. Switching it off later does not remove the hook
-from an agent that already has it.
+is the operator's decision. Switching it off later removes the hook from an
+agent at its next respawn or at the next dashboard start. Until then that
+agent's high-risk calls are stopped: the route answers a caller whose profile
+does not set the flag like an unknown route (404), and the hook is fail-closed.
 
 The hook reviews only high-risk shapes and lets everything else through
 untouched: a Bash command that deletes recursively, pushes, resets hard,
