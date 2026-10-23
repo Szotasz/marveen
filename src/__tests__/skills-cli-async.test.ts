@@ -1,7 +1,7 @@
 // Acceptance test: the zip / cp calls in the skills routes must run off the
 // event loop, as an argv (no shell), with stdin closed.
 import { describe, it, expect, afterEach, afterAll, vi } from 'vitest'
-import { mkdirSync, rmSync, writeFileSync, readFileSync, mkdtempSync, existsSync, chmodSync } from 'node:fs'
+import { mkdirSync, rmSync, writeFileSync, readFileSync, mkdtempSync, existsSync, chmodSync, realpathSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { Readable, Writable } from 'node:stream'
@@ -114,7 +114,7 @@ describe('skills routes run zip/cp asynchronously', () => {
     expect(r.body.toString()).toBe('ZIPDATA')
     const lines = readFileSync(log, 'utf8').split('\n')
     const end = lines.indexOf('zip end-args')
-    expect(lines.slice(0, end + 1).filter((l) => l.startsWith('zip cwd='))).toEqual([`zip cwd=${join(fakeHome, '.claude', 'skills')}`])
+    expect(lines.slice(0, end + 1).filter((l) => l.startsWith('zip cwd='))).toEqual([`zip cwd=${realpathSync(join(fakeHome, '.claude', 'skills'))}`])
     const tmpZip = lines[2].slice('arg='.length)
     expect(tmpZip).toMatch(/skills-export-[0-9a-f-]+\.zip$/)
     expect(lines.slice(1, end)).toEqual(['arg=-r', `arg=${tmpZip}`, 'arg=.', 'arg=--include', 'arg=*/SKILL.md', 'arg=--include', 'arg=*/references/*'])
