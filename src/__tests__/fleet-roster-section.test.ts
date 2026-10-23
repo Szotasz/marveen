@@ -137,7 +137,10 @@ describe('ensureFleetRosterSection', () => {
     setup('agent-a', '# Agent A\n')
     ensureFleetRosterSection('agent-a')
     const result = read('agent-a')
-    expect(result).toContain('Vezetőd: **main-agent**.')
+    // Whole-line pin (review #2211, non-blocking item): toContain would also
+    // pass if the pre-"factual only" wording (which this same prefix) were
+    // reintroduced, so it does not actually guard the shorter sentence.
+    expect(result).toMatch(/^Vezetőd: \*\*main-agent\*\*\.$/m)
     expect(result).toMatch(/\*\*main-agent\*\* \(agent_id: main-agent\) \(vezetőd\)/)
     // agent-b has no reportsTo at all, so no stray tag on its line.
     expect(result).toMatch(/\*\*agent-b\*\* \(agent_id: agent-b\): management/)
@@ -177,6 +180,21 @@ describe('ensureFleetRosterSection', () => {
       const result = read('ghost-ref-agent')
       expect(result).not.toContain('Vezetőd:')
       expect(result).not.toContain('nonexistent-manager')
+    } finally {
+      agentListOverride = null
+      teamReportsToOverride = null
+    }
+  })
+
+  it('(i2) a reportsTo matching a known name only by different case is not a member (case-sensitive)', () => {
+    agentListOverride = ['case-ref-agent', 'agent-b']
+    teamReportsToOverride = { 'case-ref-agent': 'Agent-B' }
+    try {
+      setup('case-ref-agent', '# Case ref\n')
+      ensureFleetRosterSection('case-ref-agent')
+      const result = read('case-ref-agent')
+      expect(result).not.toContain('Vezetőd:')
+      expect(result).not.toContain('Agent-B')
     } finally {
       agentListOverride = null
       teamReportsToOverride = null
