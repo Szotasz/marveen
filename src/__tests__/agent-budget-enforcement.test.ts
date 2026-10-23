@@ -47,11 +47,11 @@ describe('E1 validateConfig', () => {
 
 describe('E2 agentsAtHardLimit', () => {
   it('returns only agents with status hard', () => {
-    const mk = (agent: string, status: 'ok' | 'warning' | 'hard') => ({
+    const mk = (agent: string, status: 'ok' | 'warning' | 'hard' | 'unpriced') => ({
       id: agent, agent, amount: 1, month: '2026-10', spend: 0, unpriced_tokens: 0, used_pct: 0,
       status, warning_threshold: 0.8, hard_threshold: 1,
     })
-    expect([...agentsAtHardLimit([mk('a', 'ok'), mk('b', 'warning'), mk('c', 'hard')])]).toEqual(['c'])
+    expect([...agentsAtHardLimit([mk('a', 'ok'), mk('b', 'warning'), mk('c', 'hard'), mk('d', 'unpriced')])]).toEqual(['c'])
   })
 })
 

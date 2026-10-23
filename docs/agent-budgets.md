@@ -1,6 +1,6 @@
 # Agent budgets
 
-Per-agent monthly budgets live in the costops config (`store/costops-config.json`): `budgets` entries with `"scope": "agent"` and `scope_ref` set to the agent name, plus `token_prices` per model. `checkAgentBudgets` measures them after each hourly token collection and alerts at the warning and hard levels.
+Per-agent monthly budgets live in the costops config (`store/costops-config.json`): `budgets` entries with `"scope": "agent"` and `scope_ref` set to the agent name, plus `token_prices` per model. `checkAgentBudgets` measures them after each hourly token collection and alerts at the warning and hard levels. When every token an agent used this month is unpriced, the status is `unpriced` and a monthly alert asks for a price; such an agent is never held, because its spend is not measured.
 
 ## Opt-in enforcement
 
