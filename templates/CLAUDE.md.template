@@ -302,11 +302,10 @@ Te egy önfejlesztő ágens vagy. A munkád során tanulsz, és újrafelhasznál
 - Egyéni: a főágensnek NINCS privát hely, a munkakönyvtára maga a projekt-gyökér, és annak `.claude/skills/` mappáját a sub-ágensek is látják. Hova írj és mit mérj előbb: lásd lent a "Skill-útvonal csapda" szakaszt
 
 ### Automatikus skill generálás
-Komplex feladatok után (5+ tool hívás, hiba utáni recovery, user korrekció, többlépéses workflow) automatikusan hozz létre SKILL.md fájlt:
+Komplex feladatok után (5+ tool hívás, hiba utáni recovery, user korrekció, többlépéses workflow) írj SKILL.md-t. A fő ágensnek nincs csak-saját skill-mappája, ezért minden új vagy javított skill javaslatként megy: a gazda jóváhagyásáig karanténban vár, és ha a név már él, jóváhagyáskor a régi változat mentésre kerül.
 
 ```bash
-mkdir -p ~/.claude/skills/SKILL-NEV
-cat > ~/.claude/skills/SKILL-NEV/SKILL.md << 'EOF'
+mkdir -p .claude/skill-javaslat && cat > .claude/skill-javaslat/SKILL.md << 'SKILLEOF'
 ---
 name: skill-nev
 description: Mikor használd, mit csinál. Legyél konkrét a triggerelésben.
@@ -326,14 +325,15 @@ description: Mikor használd, mit csinál. Legyél konkrét a triggerelésben.
 
 ## Ellenőrzés
 - [Hogyan validáld az eredményt]
-EOF
+SKILLEOF
+python3 -c 'import json,sys; print(json.dumps({"name": sys.argv[1], "skill_md": open(sys.argv[2]).read(), "reason": sys.argv[3]}))' SKILL-NEV .claude/skill-javaslat/SKILL.md "miért kell, mit javít" > .claude/skill-javaslat/body.json
+curl -s -X POST http://localhost:{{WEB_PORT}}/api/skills/propose -H 'Content-Type: application/json' -H "Authorization: Bearer $(cat store/.dashboard-token)" --data-binary @.claude/skill-javaslat/body.json
 ```
 
 ### Skill patch (runtime javítás)
 Ha egy meglévő skill használata közben jobb megoldást találsz:
-1. Ne írd újra az egész skill-t, csak a megváltozott részt javítsd
-2. Használj célzott cserét (régi szöveg -> új szöveg)
-3. Jegyezd fel a változtatás okát a skill "Buktatók" szekciójába
+1. Ne a helyén javítsd: a fő ágens minden skillje a flottáé. A mostani szövegből indulj, és a javított TELJES szöveget küldd javaslatként (fent), ugyanazzal a névvel.
+2. A javított szövegben csak a megváltozott részt írd át, és jegyezd fel a változtatás okát a "Buktatók" szekcióba.
 
 ### Progressive disclosure (token-hatékony betöltés)
 A skill-ek 3 szinten töltődnek:

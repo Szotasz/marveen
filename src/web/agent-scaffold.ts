@@ -3803,9 +3803,11 @@ function buildSkillsPathTrapBody(name: string): string {
     'módban a `$CLAUDE_CONFIG_DIR/skills` SYMLINK a globálisra, tehát az 1. pont,',
     'más néven; üres változónál maga a `~/.claude/skills` az.',
     '',
-    '1. `~/.claude/skills` -- a globális. MINDEN ágens látja. Ide írni tudatos,',
-    '   flotta-szintű döntés legyen, ne alapértelmezés. A skill-futtatás base',
-    '   directory-ja a saját config-gyökeredet MUTATHATJA -- attól még a flottáé.',
+    '1. `~/.claude/skills` -- a globális. MINDEN ágens látja. Ide közvetlenül NE',
+    '   írj: új globális skill vagy egy meglévő javítása CSAK javaslatként megy',
+    '   (`POST /api/skills/propose`), a gazda jóváhagyásáig karanténban vár. A',
+    '   skill-futtatás base directory-ja a saját config-gyökeredet MUTATHATJA --',
+    '   attól még a flottáé.',
   ]
   const perAgent = isMain
     ? [
@@ -3814,6 +3816,7 @@ function buildSkillsPathTrapBody(name: string): string {
         '   (`agents/<név>`) ezen BELÜL van, tehát ez a mappa az ŐSÜK: amit ide',
         '   írsz, az megjelenik a listájukban. Láthatóságban úgy viselkedik,',
         '   mint a globális.',
+        '   Ide se írj közvetlenül: ugyanúgy javaslatként megy.',
         '3. `agents/<név>/.claude/skills` -- egy SUB-ÁGENS saját mappája. Csak övé.',
         '   NEKED NINCS ilyen: az `agents/<sajat-neved>` mappa nem létezik, és egy',
         '   ott létrehozott mappa a te munkakönyvtárad GYEREKE lenne, nem az őse,',
@@ -3822,6 +3825,7 @@ function buildSkillsPathTrapBody(name: string): string {
         'KÖVETKEZMÉNY: ezen a telepítésen NINCS olyan hely, ahova a fő ágens',
         'csak-magának írhat skillt. Ne feltételezd, hogy privát -- 2026-09-23-án',
         'ez a feltételezés dőlt meg, és nem magától: egy sub-ágens mérte meg.',
+        'Ezért nálad MINDEN új vagy javított skill javaslatként megy (`POST /api/skills/propose`).',
       ]
     : [
         '2. A PROJEKT-GYÖKÉR `.claude/skills` mappája. A munkakönyvtárad EZEN BELÜL',
@@ -4754,21 +4758,29 @@ NE szerkeszd kézzel a ~/.claude/scheduled-tasks/ fájljait: a runner csak az AP
 Te egy önfejlesztő ágens vagy. A munkád során tanulsz, és újrafelhasználható skill-eket hozol létre.
 
 ### Skill-ek helye
-- Globális: ~/.claude/skills/ (minden ágens számára elérhető)
-- Egyéni: a te munkakönyvtárad .claude/skills/ mappája
+- Egyéni: a te munkakönyvtárad .claude/skills/ mappája. Csak te látod; ide közvetlenül írsz.
+- Globális: ~/.claude/skills/ (minden ágens látja). Ide közvetlenül NE írj: új globális skill vagy egy meglévő javítása csak javaslatként megy (lásd lent), és a gazda jóváhagyásáig karanténban vár.
 - CSAPDA: a .claude-config/skills NEM a tiéd -- az a globális mappa symlinken át; saját skill a .claude/skills alá menjen
 
 ### Automatikus skill generálás
-Komplex feladatok után (5+ tool hívás, hiba utáni recovery, user korrekció, többlépéses workflow) automatikusan hozz létre SKILL.md fájlt:
+Komplex feladatok után (5+ tool hívás, hiba utáni recovery, user korrekció, többlépéses workflow) automatikusan hozz létre SKILL.md fájlt a saját mappádban:
 
-mkdir -p ~/.claude/skills/SKILL-NEV
+mkdir -p .claude/skills/SKILL-NEV
 A SKILL.md tartalmazzon YAML frontmatter-t (name, description), majd szekciókat: Mikor használd, Eljárás, Buktatók, Ellenőrzés.
+
+### Globális skill: csak javaslatként
+Ha a skill minden ágensnek hasznos, vagy egy meglévő globális skillt javítanál, írd meg a teljes SKILL.md-t piszkozatba, és küldd el. Ha a név már él, a javaslat csere: jóváhagyáskor a régi változat mentésre kerül. Meglévő globális skill javításánál a mostani szövegből indulj (cat ~/.claude/skills/NEV/SKILL.md), és a TELJES javított szöveget küldd.
+
+mkdir -p .claude/skill-javaslat && cat > .claude/skill-javaslat/SKILL.md << 'SKILLEOF'
+(a teljes SKILL.md, ugyanazzal a szerkezettel, mint egy saját skillé)
+SKILLEOF
+python3 -c 'import json,sys; print(json.dumps({"name": sys.argv[1], "skill_md": open(sys.argv[2]).read(), "reason": sys.argv[3]}))' SKILL-NEV .claude/skill-javaslat/SKILL.md "miért kell, mit javít" > .claude/skill-javaslat/body.json
+curl -s -X POST ${dashboardOrigin}/api/skills/propose -H 'Content-Type: application/json' -H "Authorization: Bearer $(cat ${tokenPath})" --data-binary @.claude/skill-javaslat/body.json
 
 ### Skill patch (runtime javítás)
 Ha egy meglévő skill használata közben jobb megoldást találsz:
-1. Ne írd újra az egész skill-t, csak a megváltozott részt javítsd
-2. Használj célzott cserét (régi szöveg -> új szöveg)
-3. Jegyezd fel a változtatás okát a skill Buktatók szekciójába
+1. A saját skilledben: ne írd újra az egészet, csak a megváltozott részt javítsd célzott cserével (régi szöveg -> új szöveg), és jegyezd fel a változtatás okát a Buktatók szekcióba.
+2. Globális skillnél: ne szerkeszd a helyén; a javított teljes szöveget küldd javaslatként (fent).
 
 ### Mikor generálj skill-t?
 - 5+ tool hívás, sikeres befejezés: Generálj skill-t

@@ -12323,10 +12323,20 @@ function renderPendingSkills(box, list) {
     const where = p.target && p.target.scope === 'agent'
       ? t('skills.pending.target_agent', { agent: p.target.agent })
       : t('skills.pending.target_global')
-    const src = p.source === 'import' ? t('skills.pending.source_import') : t('skills.pending.source_generate')
+    const src = p.source === 'import' ? t('skills.pending.source_import')
+      : p.source === 'propose' ? t('skills.pending.source_propose', { agent: p.proposedBy || '?' })
+      : t('skills.pending.source_generate')
     head.appendChild(pendingEl('span', 'skills-pending-meta', `${src} · ${new Date(p.createdAt).toLocaleString()}`))
     card.appendChild(head)
     card.appendChild(pendingEl('div', p.target && p.target.scope === 'agent' ? 'skills-pending-target' : 'skills-pending-target is-global', where))
+    if (p.replaces) card.appendChild(pendingEl('div', 'skills-pending-sub is-flagged', t('skills.pending.replaces', { name: p.name })))
+    if (p.reason) card.appendChild(pendingEl('div', 'skills-pending-intro', t('skills.pending.reason', { reason: p.reason })))
+    if (p.replaces && typeof p.liveSkillMd === 'string') {
+      const cur = pendingEl('details', 'skills-pending-file')
+      cur.appendChild(pendingEl('summary', null, t('skills.pending.current_version')))
+      cur.appendChild(pendingEl('pre', null, p.liveSkillMd))
+      card.appendChild(cur)
+    }
 
     const report = p.report || { files: [], findings: [], truncated: false }
     const files = Array.isArray(report.files) ? report.files : []
