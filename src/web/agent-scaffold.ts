@@ -14,7 +14,7 @@ import { filterInheritableMcpServers, readInheritableMcpServerNames, logNotInher
 import { agentDir, agentConfigRoot, listAgentNames, readAgentCapabilities, readAgentToolDeny } from './agent-config.js'
 import { loadProfileTemplate, profileWantsCredentialGate, profileWantsDestructiveGate, profileWantsYtIngest, resolveProfilePlaceholders,
   type ProfileTemplate } from './profiles.js'
-import { resolveAgentSecurityProfile } from './agent-team.js'
+import { resolveAgentSecurityProfile, readAgentTeam } from './agent-team.js'
 import { sanitizeCapabilityTag, CAPABILITY_TAG_MAX_PER_AGENT } from '../prompt-safety.js'
 import { TMP_ROOT_PREFIXES as _TMP_PREFIXES } from './tmp-root-prefixes.js'
 
@@ -2721,7 +2721,25 @@ function buildFleetRosterBody(selfName: string): string {
     ? agentNames
     : [MAIN_AGENT_ID, ...agentNames]
 
+  // Hierarchy (TEAMROSTER1023): a sub-agent's reportsTo lives in its own
+  // agent-config.json (team.reportsTo), but until now nothing surfaced it
+  // here -- only team-trust.ts (the <trusted-peer> tag) and the dashboard
+  // overview route read it. A sub-agent therefore had no way to learn from
+  // its OWN CLAUDE.md who it reports to or who reports to it; that knowledge
+  // only lived in the main agent's dashboard-memory, which does not load
+  // into a sub-agent's context by itself (mért eset, 2026-10-23: Junior
+  // escalated a PR-opening blocker to both Anita and the main agent even
+  // though Anita had already decided, in a prior session, that Artúr opens
+  // Junior's PRs -- Artúr's own CLAUDE.md never said so).
+  // selfName's own reportsTo is read the same way a peer's would be; for the
+  // main agent (no agents/ subdirectory) readAgentTeam() safely falls back
+  // to DEFAULT_TEAM (reportsTo: null), which is correct -- the main agent
+  // reports to no one.
+  const selfTeam = readAgentTeam(selfName)
+  const selfReportsTo = selfTeam.reportsTo !== selfName ? selfTeam.reportsTo : null
+
   const lines: string[] = []
+  const subordinates: string[] = []
   for (const agentName of names) {
     if (agentName === selfName) continue
 
@@ -2738,10 +2756,30 @@ function buildFleetRosterBody(selfName: string): string {
       .slice(0, CAPABILITY_TAG_MAX_PER_AGENT)
 
     const capsStr = caps.length > 0 ? caps.join(', ') : '-'
-    lines.push(`- **${agentName}** (agent_id: ${agentName}): ${capsStr}`)
+
+    const peerReportsTo = readAgentTeam(agentName).reportsTo
+    let roleTag = ''
+    if (peerReportsTo === selfName) {
+      subordinates.push(agentName)
+      roleTag = ' (beosztottad)'
+    } else if (agentName === selfReportsTo) {
+      roleTag = ' (vezetőd)'
+    }
+
+    lines.push(`- **${agentName}** (agent_id: ${agentName})${roleTag}: ${capsStr}`)
   }
 
   const roster = lines.length > 0 ? lines.join('\n') : '(nincs regisztrált ágens)'
+
+  const hierarchyLines: string[] = []
+  if (selfReportsTo) {
+    hierarchyLines.push(
+      `Vezetőd: **${selfReportsTo}**. Neki jelentesz, tőle kapsz feladatot, a kész munkát neki adod át (nem közvetlenül a gazdának).`,
+    )
+  }
+  if (subordinates.length > 0) {
+    hierarchyLines.push(`Beosztottjaid: ${subordinates.map((n) => `**${n}**`).join(', ')}.`)
+  }
 
   return [
     '## A flotta többi agense',
@@ -2751,6 +2789,7 @@ function buildFleetRosterBody(selfName: string): string {
     '',
     roster,
     '',
+    ...(hierarchyLines.length > 0 ? [...hierarchyLines, ''] : []),
     'Ha egy kérés egyértelműen más szakterületére esik, jelezd vagy delegáld inter-agent üzenettel a megfelelő ágensnek.',
   ].join('\n')
 }

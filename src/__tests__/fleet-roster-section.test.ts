@@ -40,6 +40,25 @@ vi.mock('../web/atomic-write.js', () => ({
   atomicWriteFileSync: (path: string, content: string) => writeFileSync(path, content, 'utf-8'),
 }))
 
+// TEAMROSTER1023: only agent-a declares a reportsTo (to the main agent), so
+// the pre-existing tests (none of whose selfNames or peers appear here) see
+// no behaviour change -- readAgentTeam() falls back to reportsTo: null for
+// everyone else, exactly like the real DEFAULT_TEAM.
+const TEAM_REPORTS_TO: Record<string, string | null> = {
+  'agent-a': 'main-agent',
+}
+
+vi.mock('../web/agent-team.js', () => ({
+  readAgentTeam: (name: string) => ({
+    role: 'member' as const,
+    reportsTo: TEAM_REPORTS_TO[name] ?? null,
+    delegatesTo: [],
+    autoDelegation: false,
+    trustFrom: [],
+  }),
+  resolveAgentSecurityProfile: () => 'default',
+}))
+
 const { ensureFleetRosterSection } = await import('../web/agent-scaffold.js')
 
 const MARKER_BEGIN = '<!-- BEGIN GENERATED: fleet-roster (auto-generated, do not edit by hand) -->'
@@ -103,5 +122,34 @@ describe('ensureFleetRosterSection', () => {
     expect(result).toContain('architecture')
     expect(result).toContain('infrastructure')
     expect(result).not.toContain('IGNORE ALL PREVIOUS')
+  })
+
+  it('(f) a subordinate\'s CLAUDE.md names its manager and tags the roster line', () => {
+    setup('agent-a', '# Agent A\n')
+    ensureFleetRosterSection('agent-a')
+    const result = read('agent-a')
+    expect(result).toContain('Vezetőd: **main-agent**.')
+    expect(result).toMatch(/\*\*main-agent\*\* \(agent_id: main-agent\) \(vezetőd\)/)
+    // agent-b has no reportsTo at all, so no stray tag on its line.
+    expect(result).toMatch(/\*\*agent-b\*\* \(agent_id: agent-b\): management/)
+  })
+
+  it('(g) a manager\'s CLAUDE.md lists its subordinate and tags the roster line', () => {
+    setup('main-agent', '# Main\n')
+    ensureFleetRosterSection('main-agent')
+    const result = read('main-agent')
+    expect(result).toContain('Beosztottjaid: **agent-a**.')
+    expect(result).toMatch(/\*\*agent-a\*\* \(agent_id: agent-a\) \(beosztottad\)/)
+    expect(result).not.toContain('Vezetőd:')
+  })
+
+  it('(h) no hierarchy lines when nobody reports to anyone involved', () => {
+    setup('agent-b', '# Agent B\n')
+    ensureFleetRosterSection('agent-b')
+    const result = read('agent-b')
+    expect(result).not.toContain('Vezetőd:')
+    expect(result).not.toContain('Beosztottjaid:')
+    expect(result).not.toContain('(vezetőd)')
+    expect(result).not.toContain('(beosztottad)')
   })
 })
