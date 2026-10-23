@@ -515,7 +515,6 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
 
   if (connectorDetailMatch && method === 'DELETE' && !path.includes('/assign')) {
     const name = decodeURIComponent(connectorDetailMatch[1])
-    let removed = 0
     const mcpFiles = [
       join(PROJECT_ROOT, '.mcp.json'),
       join(homedir(), '.claude.json'),
@@ -536,16 +535,22 @@ export async function tryHandleConnectors(ctx: RouteContext): Promise<boolean> {
     for (const extPath of getExternalProjectPaths()) {
       mcpFiles.push(join(extPath, '.mcp.json'))
     }
-    for (const mcpPath of mcpFiles) {
-      try {
-        const parsed = JSON.parse(readFileOr(mcpPath, '{}'))
-        if (parsed.mcpServers && parsed.mcpServers[name]) {
-          delete parsed.mcpServers[name]
-          atomicWriteFileSync(mcpPath, JSON.stringify(parsed, null, 2))
-          removed++
-        }
-      } catch { /* skip unreadable files */ }
-    }
+    // Must not interleave with a running `claude mcp add/remove` child that
+    // rewrites the same ~/.claude.json, so hold the CLI slot for the whole loop.
+    const removed = await serializeClaudeMcp(async () => {
+      let count = 0
+      for (const mcpPath of mcpFiles) {
+        try {
+          const parsed = JSON.parse(readFileOr(mcpPath, '{}'))
+          if (parsed.mcpServers && parsed.mcpServers[name]) {
+            delete parsed.mcpServers[name]
+            atomicWriteFileSync(mcpPath, JSON.stringify(parsed, null, 2))
+            count++
+          }
+        } catch { /* skip unreadable files */ }
+      }
+      return count
+    })
     if (removed > 0) {
       purgeFromMcpListCache(name)
       json(res, { ok: true, removed })

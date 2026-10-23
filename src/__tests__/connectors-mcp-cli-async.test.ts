@@ -130,6 +130,7 @@ describe('claude mcp CLI is async and shell-free', () => {
     const stall = await stallDuring(async () => {
       r = await call('POST', '/api/connectors', { name: 'local1', type: 'stdio', command: 'node', args: '  server.js   --port 9  ' })
     })
+    expect(r.status).toBe(200)
     expect(argvOf(1)).toEqual(['mcp', 'add', '-s', 'user', 'local1', '--', 'node', 'server.js', '--port', '9'])
     expect(stall).toBeLessThan(STALL_MAX_MS)
   })
@@ -245,6 +246,39 @@ describe('claude mcp CLI is async and shell-free', () => {
     expect(argvOf(1)).toEqual(['mcp', 'remove', 'fake-local', '-s', 'user'])
     expect(argvOf(2)).toEqual(['mcp', 'remove', 'fake-local', '-s', 'project'])
     expect(argvOf(3)).toEqual(['mcp', 'add', '--transport', 'http', '-s', 'project', 'fake-local', 'https://example.test/p'])
+  })
+
+  it('a connector DELETE waits for a running claude mcp add before rewriting the config', async () => {
+    const name = 'del-serial-1'
+    const file = join(tmpRoot, '.mcp.json')
+    writeFileSync(file, JSON.stringify({ mcpServers: { [name]: { command: 'x' } } }))
+    setSleep('1')
+    const add = call('POST', '/api/connectors', { name: 'busy-add', type: 'http', url: 'https://example.test/busy' })
+    await vi.waitFor(() => expect(events()).toContain('start 1'), { timeout: 5000 })
+    const del = call('DELETE', '/api/connectors/' + encodeURIComponent(name))
+    await sleep(300)
+    expect(readFileSync(file, 'utf-8')).toContain(name)
+    expect(events()).not.toContain('end 1')
+    const [a, d] = await Promise.all([add, del])
+    expect(a.status).toBe(200)
+    expect(d.status).toBe(200)
+    expect(d.json).toEqual({ ok: true, removed: 1 })
+    expect(readFileSync(file, 'utf-8')).not.toContain(name)
+  })
+
+  it('a connector DELETE whose config file is unreadable does not block later CLI calls', async () => {
+    const file = join(tmpRoot, '.mcp.json')
+    writeFileSync(file, '{not json')
+    try {
+      setSleep('0')
+      const d = await call('DELETE', '/api/connectors/del-missing-2')
+      expect(d.status).toBe(404)
+      const r = await call('POST', '/api/connectors', HTTP_BODY)
+      expect(r.status).toBe(200)
+      expect(callCount()).toBe(1)
+    } finally {
+      writeFileSync(file, '{}')
+    }
   })
 
   it('a non-string value (url: {}) answers 500 and runs no CLI, as the shell form did', async () => {
