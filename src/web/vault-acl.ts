@@ -21,6 +21,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { STORE_DIR } from '../config.js'
 import { logger } from '../logger.js'
+import { getEffectiveSettingValue } from '../settings-store.js'
 import type { RouteContext } from './routes/types.js'
 
 export const VAULT_ACL_PATH = join(STORE_DIR, 'vault-acl.json')
@@ -43,7 +44,7 @@ export function readVaultAcl(path: string = VAULT_ACL_PATH): VaultAcl {
     logger.warn({ path }, 'vault-acl: top level is not an object, treating as empty')
     return {}
   }
-  const acl: VaultAcl = {}
+  const acl: VaultAcl = Object.create(null)
   for (const [id, agents] of Object.entries(raw as Record<string, unknown>)) {
     if (!Array.isArray(agents)) continue
     acl[id] = agents.filter((a): a is string => typeof a === 'string' && a.trim().length > 0).map(a => a.trim())
@@ -76,27 +77,77 @@ export function principalOf(auth: RouteContext['auth']): { kind: string; princip
 // kind so the audit rows are uniform.
 export type VaultAclVerdict = 'owner-lane' | 'allowed' | 'not-listed' | 'no-acl'
 
+// Own-property lookup only: an id like '__proto__' or 'constructor' must not reach Object.prototype.
+function listedFor(acl: VaultAcl, id: string): string[] | undefined {
+  return Object.prototype.hasOwnProperty.call(acl, id) && Array.isArray(acl[id]) ? acl[id] : undefined
+}
+
 export function evaluateVaultRead(id: string, auth: RouteContext['auth'], acl: VaultAcl): VaultAclVerdict {
   const { kind, principal } = principalOf(auth)
   if (kind !== 'agent') return 'owner-lane'
-  const listed = acl[id]
+  const listed = listedFor(acl, id)
   if (!listed || listed.length === 0) return 'no-acl'
   return listed.includes(principal) ? 'allowed' : 'not-listed'
+}
+
+// D1 (1): the switch, read where the Settings page writes it: the registry value (store/config-overrides.json, then .env,
+// then the default 'audit'), read fresh on every call. 'enforce' in the dashboard's process environment also enforces, so
+// a strict environment cannot be undone from the Settings page. Only the exact value 'enforce' enforces.
+export type VaultAclMode = 'audit' | 'enforce'
+export function vaultAclMode(env: NodeJS.ProcessEnv = process.env): VaultAclMode {
+  if ((env.VAULT_ACL_MODE ?? '').trim() === 'enforce') return 'enforce'
+  return String(getEffectiveSettingValue('VAULT_ACL_MODE')).trim() === 'enforce' ? 'enforce' : 'audit'
+}
+
+// The agent name a shared-token caller CLAIMS (X-Agent-Id). Self-asserted: it can attribute a read and
+// let an honest caller be held to its allowlist, it cannot authenticate anyone. This is a trail and an
+// access rule, NOT isolation: every agent runs as the same OS user and can read the master-key file.
+export function claimedAgentOf(auth: RouteContext['auth']): string | null {
+  if (!auth || auth.kind !== 'token') return null
+  const a = typeof auth.agent === 'string' ? auth.agent.trim() : ''
+  return a || null
+}
+
+// Whether this read is refused. Only in 'enforce', only for a caller that claims an agent, and only when
+// the allowlist does not list that agent for the secret (no entry, an empty list, or another agent).
+export function vaultReadRefused(id: string, auth: RouteContext['auth'], acl: VaultAcl, mode: VaultAclMode = vaultAclMode()): boolean {
+  if (mode !== 'enforce') return false
+  const claimed = claimedAgentOf(auth)
+  if (!claimed) return false
+  const listed = listedFor(acl, id)
+  return !listed || !listed.includes(claimed)
+}
+
+// The allowlist's verdict for a name a caller claims (not the credential kind's lane).
+function claimedVerdict(id: string, claimed: string, acl: VaultAcl): VaultAclVerdict {
+  const listed = listedFor(acl, id)
+  if (!listed || listed.length === 0) return 'no-acl'
+  return listed.includes(claimed) ? 'allowed' : 'not-listed'
 }
 
 // The ONE audit line per value read. Fields: which secret, which credential
 // kind, which principal, what the allowlist says, and whether the secret
 // existed. The VALUE is never passed in and never logged -- the function
 // signature has no parameter for it on purpose.
-export function logVaultRead(id: string, auth: RouteContext['auth'], found: boolean, acl: VaultAcl = readVaultAcl()): void {
+export function logVaultRead(
+  id: string,
+  auth: RouteContext['auth'],
+  found: boolean,
+  acl: VaultAcl = readVaultAcl(),
+  extra: { channel?: 'value' | 'resolve'; refused?: boolean } = {},
+): void {
   const { kind, principal } = principalOf(auth)
+  const claimed = claimedAgentOf(auth)
   logger.info({
     event: 'vault-read',
     id,
     kind,
     principal,
-    acl: evaluateVaultRead(id, auth, acl),
-    mode: 'audit',
+    acl: claimed ? claimedVerdict(id, claimed, acl) : evaluateVaultRead(id, auth, acl),
+    mode: vaultAclMode(),
+    claimed,
+    channel: extra.channel ?? 'value',
+    refused: extra.refused === true,
     found,
   }, 'vault: secret value read')
 }

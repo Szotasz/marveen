@@ -552,6 +552,46 @@ load-bearing control is that nothing goes live without the approval.
   too. "Only a human approves" needs the per-agent identity decision (#1985)
   first.
 
+# Vault reads go through the dashboard (a trail and an opt-in allowlist)
+
+The two resolver scripts that hand secrets to MCP servers
+(`scripts/vault-resolve.mjs` for env bindings, `scripts/vault-headers-helper.mjs`
+for header bindings) used to decrypt the vault inside the agent's own process.
+They now ask the dashboard (`POST /api/vault/resolve`), so every read leaves a
+row in the dashboard's vault log: which secret, which agent claimed to ask
+(`X-Agent-Id`, taken from the launcher's environment or from the agent's
+working directory), and what the allowlist said.
+
+`VAULT_ACL_MODE` (Settings, audit module) decides what the allowlist
+(`store/vault-acl.json`, `{ "<secret-id>": ["agent", ...] }`) does. The dashboard and the scripts read it the same way:
+the Settings page value, else the `.env` line, else `audit`; a `VAULT_ACL_MODE=enforce` in the process environment also
+enforces and cannot be undone from the Settings page. Each side reads only its own process environment, so set the
+mode on the Settings page or in `.env`, where the dashboard and the scripts both see it. A change takes effect on the
+next read, without a restart:
+
+- `audit` (the default): nothing is refused; every read is logged. If the
+  dashboard cannot be reached, the scripts print a warning and resolve locally,
+  so that read is not in the log.
+- `enforce`: a caller that claims an agent name gets a secret only if the
+  allowlist lists that agent for it, through the scripts and through
+  `GET /api/vault/:id`. If the dashboard cannot be reached, the scripts stop
+  with exit code 5 and resolve nothing, so the MCP server does not start.
+
+What it is not: isolation. Every agent runs as the same OS user and can read
+the master-key file, the agent name is claimed, not authenticated, a caller
+that claims no name is treated as the owner, and in `audit` mode the local
+fallback is a way around the trail. It is a record of who read what, and an
+access rule that holds for agents that follow the shipped paths.
+
+Two consequences worth knowing: the auth gate drops an `X-Agent-Id` that does
+not name a registered agent, so such a caller is an owner lane and is never
+refused; and `resolve` is now a sub-route like `bindings` and `sync`, so a
+secret whose id is literally `resolve` can no longer be read or deleted
+through `GET` / `DELETE /api/vault/:id`. A dashboard token file that exists
+but is empty, unreadable or malformed counts as an unreachable dashboard
+(a warning in `audit`, exit 5 in `enforce`), not as "no dashboard". An id that cannot be sent (empty, or longer than 200
+characters) counts as missing; only in `audit` mode with no dashboard token file is it looked up locally.
+
 # Fleet import takes over only the identity keys
 
 `POST /api/fleet/import?apply=true` makes the target install adopt the source's

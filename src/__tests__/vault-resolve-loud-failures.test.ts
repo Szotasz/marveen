@@ -46,6 +46,7 @@ beforeAll(() => {
     join(process.cwd(), 'scripts', 'vault-resolve.mjs'),
     join(ROOT, 'scripts', 'vault-resolve.mjs'),
   )
+  copyFileSync(join(process.cwd(), 'scripts', 'vault-dashboard-client.mjs'), join(ROOT, 'scripts', 'vault-dashboard-client.mjs'))
   // The stub mirrors the real contract: a known label resolves, anything
   // else returns null. The value is a fixture string, not vault content.
   writeFileSync(

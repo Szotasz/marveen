@@ -660,6 +660,17 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: false,
   },
+  {
+    key: 'VAULT_ACL_MODE',
+    type: 'string',
+    default: 'audit',
+    valueSet: ['audit', 'enforce'],
+    description: 'A vault-olvasás hozzáférés-szabálya. audit = minden olvasás naplózva, semmi nem tiltva; enforce = egy ügynök-nevet bevalló hívó (X-Agent-Id) csak a store/vault-acl.json-ban neki engedett titkot kapja meg, és a feloldó szkriptek nem oldanak fel helyben, ha a dashboard nem érhető el. Nyom és hozzáférés-szabály, nem elzárás: minden ügynök ugyanazzal a felhasználóval fut, és a mesterkulcs-fájl olvasható.',
+    module: 'audit',
+    secret: false,
+    requiresRestart: false,
+    loosens: (oldValue: string, newValue: string) => oldValue.trim() === 'enforce' && newValue.trim() !== 'enforce',
+  },
   // --- Token usage module ---
   {
     key: 'TOKEN_USAGE_RETENTION_DAYS',
