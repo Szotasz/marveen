@@ -56,6 +56,8 @@ const REGISTRATION_SURFACES = [...SEEDING_SURFACES, ...CHECKOUT_SURFACES]
 // name -> why it is allowed to be unregistered. Keep every reason concrete;
 // "misc" entries defeat the lint.
 const EXEMPT: Record<string, string> = {
+  'email-draft-log.py':
+    'wiring is GO-gated: registered at the card f90928e3 deploy, when this exemption is removed',
   'ledger_lib.py':
     'shared library imported by the ledger hooks; not itself a hook',
   'command_prompt.py':

@@ -116,6 +116,100 @@ function senderCheckOrExit(letter: Record<string, unknown>): void {
   if (said) console.error(said)
 }
 
+// --- Daily-log entry after a successful send (card f90928e3, part B) --------
+// One line in agent brainy's daily log: who got a letter, about what, when.
+// Never the body, the cc/bcc list, or an attachment (or its name): the
+// approval payload is erased on purpose when it is consumed, and this entry
+// must not bring that content back. It is strictly best-effort and runs only
+// AFTER sendMail returned: nothing in here can refuse, delay beyond its short
+// timeout, or change the exit code or stdout of the send.
+const DAILY_LOG_AGENT = 'brainy'
+const DAILY_LOG_TIMEOUT_MS = 3000
+const SUBJECT_MAX = 80
+
+function truncateSubject(subject: string): string {
+  const chars = Array.from(subject.replace(/\s+/g, ' ').trim())
+  return chars.length <= SUBJECT_MAX ? chars.join('') : chars.slice(0, SUBJECT_MAX - 1).join('') + '…'
+}
+
+/** Install-zone time (SCHEDULER_TZ if pinned, else the host zone), "YYYY-MM-DD HH:MM". */
+function budapestNow(now: Date = new Date()): string {
+  const fmt = (timeZone?: string) => new Intl.DateTimeFormat('sv-SE', {
+    timeZone, year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+  }).format(now).replace(',', '')
+  try {
+    return fmt(installSetting('SCHEDULER_TZ', '') || undefined)
+  } catch { return fmt() } // an invalid pinned zone: the host zone
+}
+
+// Env first, then the install .env next to this script's checkout (the same
+// order the hooks use), never an install-specific hardcode.
+function installSetting(key: string, fallback: string): string {
+  const fromEnv = process.env[key]?.trim()
+  if (fromEnv) return fromEnv
+  try {
+    for (const line of readFileSync(resolve(REPO_ROOT, '.env'), 'utf-8').split('\n')) {
+      if (line.startsWith(`${key}=`)) {
+        const v = line.slice(key.length + 1).trim().replace(/^["']|["']$/g, '')
+        if (v) return v
+      }
+    }
+  } catch { /* no .env: the default stands */ }
+  return fallback
+}
+
+function sentEntry(to: string[], subject: string): string {
+  return `[Levél elküldve] ${to.join(', ')}, tárgy: ${truncateSubject(subject)}, ${budapestNow()}`
+}
+
+/** An error whose message WE wrote: the only exception text that may reach stderr. */
+class DailyLogError extends Error {}
+
+// The dashboard token is 64 hex chars when generated (src/web/dashboard-auth.ts);
+// DASHBOARD_TOKEN may be any operator string, so allow the usual token alphabet
+// and nothing that could break out of a header (CR, LF, NUL, spaces, non-ASCII).
+const DASHBOARD_TOKEN_RE = /^[A-Za-z0-9._~+/=-]+$/
+// The live CDP browser and its sibling: never a dashboard, never touched
+// (same list as scripts/hooks/email-draft-log.py).
+const FORBIDDEN_PORTS = new Set([18800, 18899])
+
+/** The only text that may describe a failure: our own message, or the bare type name. */
+function describeDailyLogFailure(err: unknown): string {
+  if (err instanceof DailyLogError) return err.message
+  const name = err instanceof Error ? (err.name || '') : ''
+  if (name === 'TimeoutError' || name === 'AbortError') return 'timeout'
+  const type = err instanceof Error ? (Object.getPrototypeOf(err)?.constructor?.name ?? '') : ''
+  return /^[A-Za-z][A-Za-z0-9_]{0,39}$/.test(type) ? type : 'Error'
+}
+
+/** Never throws and never exits; any failure is one line on stderr that never
+ * carries foreign exception text (a header-validation error can echo the token). */
+async function postSentEntry(to: string[], subject: string): Promise<void> {
+  try {
+    let token: string
+    try {
+      token = readFileSync(resolve(REPO_ROOT, 'store', '.dashboard-token'), 'utf-8').trim()
+    } catch {
+      throw new DailyLogError('cannot read dashboard token file')
+    }
+    if (!token) throw new DailyLogError('empty dashboard token')
+    if (!DASHBOARD_TOKEN_RE.test(token)) throw new DailyLogError('invalid dashboard token format')
+    const port = Number(installSetting('WEB_PORT', '3420'))
+    if (!Number.isInteger(port) || port < 1 || port > 65535) throw new DailyLogError('bad WEB_PORT')
+    if (FORBIDDEN_PORTS.has(port)) throw new DailyLogError(`refused WEB_PORT ${port}`)
+    const res = await fetch(`http://127.0.0.1:${port}/api/daily-log`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent_id: DAILY_LOG_AGENT, content: sentEntry(to, subject) }),
+      signal: AbortSignal.timeout(DAILY_LOG_TIMEOUT_MS),
+    })
+    if (!res.ok) throw new DailyLogError(`HTTP ${res.status}`)
+  } catch (err) {
+    console.error(`graph-mail: a levél elment, de a napló-bejegyzés nem készült el (${describeDailyLogFailure(err)})`)
+  }
+}
+
 async function main(): Promise<void> {
   const cmd = process.argv[2]
   switch (cmd) {
@@ -178,6 +272,7 @@ async function main(): Promise<void> {
         contentType: has('html') ? 'HTML' : 'Text',
       })
       console.log(`sent to ${to}`)
+      await postSentEntry(toList, subject)
       break
     }
     default:
