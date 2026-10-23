@@ -113,6 +113,7 @@ describe.skipIf(!tmuxBin)('a real caller against an isolated tmux server', () =>
     }
     expect(siblingPid).toBeGreaterThan(1) // positive control: the instrument sees a claude
     expect(getClaudePidForSession('agent-foo')).toBeNull() // the prefix match is gone
+    expect(getClaudePidForSession('agent-foo2')).toBe(siblingPid) // and the sibling still runs: the null is not a dead pane
   })
 })
 
