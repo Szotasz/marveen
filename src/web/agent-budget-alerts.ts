@@ -4,11 +4,32 @@ import { getDb } from '../db.js'
 import { PROJECT_ROOT } from '../config.js'
 import { logger } from '../logger.js'
 import { loadCostopsConfig } from '../costops/config.js'
-import { evaluateAgentBudgets, alertAgentBudgets } from '../costops/agent-budgets.js'
+import { evaluateAgentBudgets, alertAgentBudgets, agentsAtHardLimit } from '../costops/agent-budgets.js'
 import { sendRoutineAlert } from './routine-alert.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 
 export const AGENT_BUDGET_ALERTS_PATH = join(PROJECT_ROOT, 'store', 'agent-budget-alerts.json')
+
+let budgetHold = new Set<string>()
+
+function applyHold(next: Set<string>): void {
+  const changed = next.size !== budgetHold.size || [...next].some(a => !budgetHold.has(a))
+  budgetHold = next
+  if (changed) {
+    if (next.size > 0) logger.info({ agents: [...next] }, 'Agent budget hold: background scheduled tasks of these agents are deferred')
+    else logger.info('Agent budget hold lifted: no agent is held')
+  }
+}
+
+/** True while the opt-in enforcement holds this agent's background scheduled tasks (measured at the last budget check). */
+export function isAgentBudgetHeld(agent: string): boolean {
+  return budgetHold.has(agent)
+}
+
+/** Test helper: replace the hold set. */
+export function setAgentBudgetHoldForTest(agents: string[]): void {
+  budgetHold = new Set(agents)
+}
 
 function readSent(statePath: string): Record<string, number> {
   if (!existsSync(statePath)) return {}
@@ -49,7 +70,9 @@ export function checkAgentBudgets(
     if (ok) sent[key] = now
     return ok
   }
-  const count = alertAgentBudgets(evaluateAgentBudgets(getDb(), config, now), wrapped)
+  const statuses = evaluateAgentBudgets(getDb(), config, now)
+  applyHold(config.enforce_agent_budgets ? agentsAtHardLimit(statuses) : new Set())
+  const count = alertAgentBudgets(statuses, wrapped)
 
   if (JSON.stringify(sent) !== JSON.stringify(before)) {
     try { atomicWriteFileSync(statePath, JSON.stringify({ sent }, null, 2)) }

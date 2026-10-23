@@ -69,6 +69,7 @@ export interface CostOpsConfig {
   fixed_costs: FixedCostEntry[]
   budgets: BudgetEntry[]
   token_prices?: Record<string, TokenPrice>  // keyed by model id as stored in token_usage.model
+  enforce_agent_budgets?: boolean  // opt-in: defer an agent's background scheduled tasks while it is at its hard budget level; default false
 }
 
 const EMPTY_CONFIG: CostOpsConfig = {
@@ -76,6 +77,7 @@ const EMPTY_CONFIG: CostOpsConfig = {
   currency: 'HUF',
   fixed_costs: [],
   budgets: [],
+  enforce_agent_budgets: false,
 }
 
 // Safe skeleton with placeholder (zero) values -- contains no real amounts,
@@ -95,6 +97,7 @@ const EXAMPLE_CONFIG = {
     { id: 'global-monthly', name: 'Global monthly', scope: 'global', amount: 0, warning_threshold: 0.8, hard_threshold: 1.0 },
   ],
   token_prices: {},
+  enforce_agent_budgets: false,
 }
 
 export interface ConfigLoadResult {
@@ -202,9 +205,14 @@ export function validateConfig(raw: unknown): ConfigLoadResult {
   }
   const token_prices: Record<string, TokenPrice> = { ...collected }
 
+  let enforce_agent_budgets = false
+  if (obj.enforce_agent_budgets === undefined) enforce_agent_budgets = false
+  else if (typeof obj.enforce_agent_budgets === 'boolean') enforce_agent_budgets = obj.enforce_agent_budgets
+  else errors.push('enforce_agent_budgets: must be true or false')
+
   return {
     config: {
-      version: typeof obj.version === 'number' ? obj.version : 1, currency, fixed_costs, budgets,
+      version: typeof obj.version === 'number' ? obj.version : 1, currency, fixed_costs, budgets, enforce_agent_budgets,
       ...(Object.keys(token_prices).length > 0 ? { token_prices } : {}),
     },
     exists: true,

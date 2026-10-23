@@ -94,6 +94,11 @@ export function evaluateAgentBudgets(db: Database.Database, config: CostOpsConfi
   return out
 }
 
+/** The agents at their hard budget level (status 'hard'), for the opt-in background-task hold. */
+export function agentsAtHardLimit(statuses: AgentBudgetStatus[]): Set<string> {
+  return new Set(statuses.filter(s => s.status === 'hard').map(s => s.agent))
+}
+
 export function alertAgentBudgets(
   statuses: AgentBudgetStatus[],
   send: (key: string, text: string, opts: { cooldownMs: number }) => boolean,
