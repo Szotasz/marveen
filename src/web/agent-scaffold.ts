@@ -529,6 +529,60 @@ export function upgradeForeignRootInHookPrompts(existingHooks: Record<string, un
   return changed
 }
 
+/**
+ * A stock agent-hook prompt an earlier template shipped (templates/retired-hook-prompts.json,
+ * resolved like the template) that an agent still carries word for word was never edited:
+ * it becomes the current template prompt of the same event. Any other prompt was edited by
+ * someone and stays. Exported for unit tests.
+ */
+export function upgradeRetiredHookPrompts(
+  existingHooks: Record<string, unknown>,
+  tplHooks: Record<string, unknown>,
+  retired: Record<string, string[]>,
+): boolean {
+  let changed = false
+  for (const [event, oldPrompts] of Object.entries(retired)) {
+    const tplEntries = tplHooks[event]
+    if (!Array.isArray(tplEntries)) continue
+    const current = (tplEntries as HookEntry[])
+      .flatMap((e) => e.hooks ?? [])
+      .find((h) => h.type === 'agent' && typeof h.prompt === 'string')?.prompt as string | undefined
+    if (current === undefined) continue
+    const entries = existingHooks[event]
+    if (!Array.isArray(entries)) continue
+    for (const entry of entries as HookEntry[]) {
+      for (const hook of entry.hooks ?? []) {
+        if (hook.type !== 'agent' || typeof hook.prompt !== 'string') continue
+        if (hook.prompt !== current && oldPrompts.includes(hook.prompt)) {
+          hook.prompt = current
+          changed = true
+        }
+      }
+    }
+  }
+  return changed
+}
+
+// The retired stock prompts, resolved like the template. A missing file means no
+// migration; an unreadable one is logged and also means no migration. The path is
+// a test seam only.
+export function readRetiredHookPrompts(
+  p: string = join(PROJECT_ROOT, 'templates', 'retired-hook-prompts.json'),
+): Record<string, string[]> {
+  if (!existsSync(p)) return {}
+  try {
+    const parsed = JSON.parse(resolveTemplatePlaceholders(readFileSync(p, 'utf-8'))) as Record<string, unknown>
+    const out: Record<string, string[]> = {}
+    for (const [event, list] of Object.entries(parsed)) {
+      if (Array.isArray(list)) out[event] = list.filter((s): s is string => typeof s === 'string')
+    }
+    return out
+  } catch (err) {
+    logger.warn({ err, path: p }, 'ensureAgentHooks: retired-hook-prompts.json unreadable, stock prompts are not migrated')
+    return {}
+  }
+}
+
 // Idempotent migration: every agent's settings.json should carry the
 // PreCompact hook (memory save + skill reflection). Pre-refactor agents
 // were scaffolded before scaffoldAgentDir seeded the template, so their
@@ -590,6 +644,9 @@ export function ensureAgentHooks(
     // HOSTMOVE923: an existing PreCompact prompt inherited from another
     // install/host names a dead root; the add pass below would never see it.
     if (upgradeForeignRootInHookPrompts(existingHooks, PROJECT_ROOT)) changed = true
+    // #2200: an agent still on a stock prompt from an earlier template gets the
+    // current one; an edited prompt stays.
+    if (upgradeRetiredHookPrompts(existingHooks, tplHooks, readRetiredHookPrompts())) changed = true
     // Matcher pass: a widened template matcher (e.g. SessionStart gaining
     // `clear`) must reach agents whose command string is unchanged.
     if (syncHookMatchers(existingHooks, tplHooks)) changed = true
