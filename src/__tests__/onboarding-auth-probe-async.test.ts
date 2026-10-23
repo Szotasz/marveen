@@ -1,10 +1,12 @@
-import { describe, it, expect, vi, afterAll, afterEach } from 'vitest'
+import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest'
 import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, rmSync, truncateSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import { monitorEventLoopDelay } from 'node:perf_hooks'
 import { setTimeout as sleep } from 'node:timers/promises'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 
 const H = vi.hoisted(() => ({ root: '' }))
 
@@ -16,6 +18,17 @@ vi.mock('node:os', async (orig) => {
   const a = await orig<typeof import('node:os')>()
   const homedir = () => `${H.root}/fakehome`
   return { ...a, homedir, default: { ...a, homedir } }
+})
+
+// The launch route must never start or restart a real fleet from a test: the
+// two channel-session actions are fakes the launch-gate case can count.
+const L = vi.hoisted(() => ({
+  create: vi.fn(() => 'started' as const),
+  restart: vi.fn(() => ({ ok: true })),
+}))
+vi.mock('../web/channel-monitor.js', async (orig) => {
+  const a = await orig<typeof import('../web/channel-monitor.js')>()
+  return { ...a, createMainChannelsSession: L.create, hardRestartMarveenChannels: L.restart }
 })
 
 const tmpRoot = mkdtempSync(join(tmpdir(), 'onb-probe-'))
@@ -54,6 +67,19 @@ const { MAIN_CHANNELS_SESSION } = await import('../web/main-agent.js')
 process.env.FAKE_SESSION = MAIN_CHANNELS_SESSION
 const { tryHandleOnboarding } = await import('../web/routes/onboarding.js')
 
+// On macOS the Keychain probe answers from the host's real Claude login before
+// the tmux probe runs, so every case here would read "authenticated" (#2191
+// review). These cases are about the tmux probe: the route sees Linux.
+const realPlatform = Object.getOwnPropertyDescriptor(process, 'platform')!
+beforeAll(async () => {
+  Object.defineProperty(process, 'platform', { ...realPlatform, value: 'linux' })
+  // The first exec of a freshly written script can be slow (seen on macOS), and
+  // the route's synchronous list-sessions would pay it inside the stall case:
+  // run the fake once before any case, its sleep included (0 s).
+  await promisify(execFile)(join(binDir, 'tmux'), ['show-environment', '-g'], { env: { ...process.env, FAKE_SLEEP: '0' } })
+  truncateSync(logFile, 0)
+}, 30_000)
+
 afterEach(() => {
   delete process.env.FAKE_SLEEP
   delete process.env.FAKE_AUTH
@@ -61,6 +87,7 @@ afterEach(() => {
   truncateSync(logFile, 0)
 })
 afterAll(() => {
+  Object.defineProperty(process, 'platform', realPlatform)
   process.env.PATH = origPath
   rmSync(tmpRoot, { recursive: true, force: true })
 })
@@ -74,7 +101,7 @@ async function stallDuring(fn: () => Promise<unknown>): Promise<number> {
 }
 const STALL_MAX_MS = 750
 
-async function call() {
+async function call(method = 'GET', path = '/api/onboarding/status') {
   let status = 0
   let out = ''
   const req = Object.assign(Readable.from([]), { headers: {} })
@@ -83,8 +110,8 @@ async function call() {
     writeHead(s: number) { status = s },
     end(b?: string) { out = b ?? '' },
   }
-  const url = new URL('http://localhost/api/onboarding/status')
-  await tryHandleOnboarding({ req, res, path: url.pathname, method: 'GET', url } as any)
+  const url = new URL(`http://localhost${path}`)
+  await tryHandleOnboarding({ req, res, path: url.pathname, method, url } as any)
   return { status, json: JSON.parse(out) }
 }
 
@@ -120,5 +147,19 @@ describe('onboarding auth probes are async', () => {
     const winner = await Promise.race([call(), sleep(5000).then(() => 'timeout' as const)])
     expect(winner).not.toBe('timeout')
     expect((winner as Awaited<ReturnType<typeof call>>).json.claudeAuthPresent).toBe(true)
+  })
+
+  it('launch: without Claude auth it answers 409 no-auth and starts nothing', async () => {
+    // No channels session: the fleet is not running, and there is no session env to read.
+    process.env.FAKE_SESSION = ''
+    try {
+      const r = await call('POST', '/api/onboarding/launch')
+      expect(r.status).toBe(409)
+      expect(r.json.reason).toBe('no-auth')
+    } finally {
+      process.env.FAKE_SESSION = MAIN_CHANNELS_SESSION
+    }
+    expect(L.create).not.toHaveBeenCalled()
+    expect(L.restart).not.toHaveBeenCalled()
   })
 })
