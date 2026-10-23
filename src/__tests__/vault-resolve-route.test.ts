@@ -103,6 +103,13 @@ describe('GET /api/vault/:id with VAULT_ACL_MODE', () => {
     expect((await get(ID, { kind: 'token' })).statusCode).toBe(200)
     expect((await get(ID, { kind: 'session', user: 'owner' })).statusCode).toBe(200)
   })
+  it('V14 enforce: a secret listed only for another agent is refused to this caller', async () => {
+    process.env.VAULT_ACL_MODE = 'enforce'
+    allow({ [ID]: ['other'] })
+    const res = await get(ID, AGENT)
+    expect(res.statusCode).toBe(403)
+    expect(res.body).not.toContain(SECRET_VALUE)
+  })
 })
 
 describe('POST /api/vault/resolve', () => {
@@ -121,6 +128,15 @@ describe('POST /api/vault/resolve', () => {
     expect(body.values).toEqual({})
     expect(body.refused).toContainEqual({ id: ID, reason: 'acl' })
     expect(body.mode).toBe('enforce')
+  })
+  it('V15 enforce: a secret listed only for another agent is refused to this caller', async () => {
+    process.env.VAULT_ACL_MODE = 'enforce'
+    allow({ [ID]: ['other'] })
+    const res = await resolve({ ids: [ID] }, AGENT)
+    expect(res.statusCode).toBe(200)
+    const body = JSON.parse(res.body)
+    expect(body.values).toEqual({})
+    expect(body.refused).toContainEqual({ id: ID, reason: 'acl' })
   })
   it('V10 audit: a secret whose id is __proto__ is an own property of values', async () => {
     const body = JSON.parse((await resolve({ ids: ['__proto__'] }, AGENT)).body)

@@ -576,6 +576,9 @@ next read, without a restart:
   allowlist lists that agent for it, through the scripts and through
   `GET /api/vault/:id`. If the dashboard cannot be reached, the scripts stop
   with exit code 5 and resolve nothing, so the MCP server does not start.
+  That includes a dashboard restart: an MCP server launched while the
+  dashboard is down does not start. This fail-closed is deliberate; know it
+  before you switch `enforce` on.
 
 What it is not: isolation. Every agent runs as the same OS user and can read
 the master-key file, the agent name is claimed, not authenticated, a caller
