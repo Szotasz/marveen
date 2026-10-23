@@ -279,7 +279,8 @@ export function attemptChannelMcpReconnect(agentName: string): ReconnectResult {
       }
     }
 
-    const serverName = getProvider(providerType).pluginPaneId
+    const provider = getProvider(providerType)
+    const serverName = provider.mcpServerName ?? provider.pluginPaneId
     if (!isSafeMcpServerName(serverName)) {
       logger.warn({ agentName, session, provider: providerType }, 'channel-mcp-reconnect: unsafe MCP server name -- nothing typed')
       return { ok: false, message: 'Unsafe MCP server name -- reconnect refused' }

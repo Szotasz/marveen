@@ -36,6 +36,7 @@ const mockCaptureParkedInputView = vi.fn<(session: string) => string | null>()
 // Lets a single test swap the provider mock's pluginPaneId; vi.mock factories
 // run lazily, so they read this at call time.
 const mockPluginPaneIdOverride = { value: null as string | null }
+const mockMcpServerNameOverride = { value: null as string | null }
 vi.mock('../web/agent-process.js', () => ({
   // The not-ready-path modal clear: false = no modal, so every caller keeps
   // its existing skip/busy behaviour and these fixtures are unaffected.
@@ -57,6 +58,7 @@ vi.mock('../channel-provider.js', () => ({
     pluginPaneId: mockPluginPaneIdOverride.value ?? (type === 'slack'
       ? 'plugin:slack-channel:marveen-marketplace'
       : 'plugin:telegram:telegram'),
+    ...(type === 'slack' ? { mcpServerName: mockMcpServerNameOverride.value ?? 'plugin:slack-channel:slack' } : {}),
   }),
 }))
 
@@ -190,6 +192,7 @@ function resetPaneMocks(): void {
   mockCaptureParkedInputView.mockReset()
   mockCaptureParkedInputView.mockReturnValue(null)
   mockPluginPaneIdOverride.value = null
+  mockMcpServerNameOverride.value = null
 }
 
 describe('pane-side gate', () => {
@@ -764,15 +767,51 @@ describe('typed /mcp reconnect', () => {
     queue(
       asTg('idle.txt'),
       asTg('idle.txt'),
-      asName(FIX('reconnect-ok.txt'), 'plugin:slack-channel:marveen-marketplace'),
+      asName(FIX('reconnect-ok.txt'), 'plugin:slack-channel:slack'),
     )
 
     const result = attemptChannelMcpReconnect('slacker')
 
     expect(result.ok).toBe(true)
     expect(sendKeys()[0]?.[1]).toEqual([
-      'send-keys', '-t', '=agent-slacker:', '-l', '/mcp reconnect plugin:slack-channel:marveen-marketplace',
+      'send-keys', '-t', '=agent-slacker:', '-l', '/mcp reconnect plugin:slack-channel:slack',
     ])
+  })
+
+  it('S1: a Slack agent types the server name, not the pane id', () => {
+    queue(
+      asTg('idle.txt'),
+      asTg('idle.txt'),
+      asName(FIX('reconnect-ok.txt'), 'plugin:slack-channel:slack'),
+    )
+
+    const result = attemptChannelMcpReconnect('slacker')
+
+    expect(result.ok).toBe(true)
+    expect(JSON.stringify(sendKeys())).not.toContain('marveen-marketplace')
+  })
+
+  it('S2: the server name is what the reply is matched against', () => {
+    mockCapturePane.mockReset()
+    mockCapturePane
+      .mockReturnValueOnce(asTg('idle.txt'))
+      .mockReturnValueOnce(asTg('idle.txt'))
+      .mockReturnValueOnce(asName(FIX('reconnect-ok.txt'), 'plugin:slack-channel:marveen-marketplace'))
+      .mockReturnValue(asTg('idle.txt'))
+
+    const result = attemptChannelMcpReconnect('slacker')
+
+    expect(result.ok === true && result.message === 'Reconnected via /mcp reconnect').toBe(false)
+  })
+
+  it('S3: an unsafe MCP server name is refused even when the pane id is safe', () => {
+    mockMcpServerNameOverride.value = 'plugin:slack-channel:slack; rm'
+    queue(FIX('idle.txt'))
+
+    const result = attemptChannelMcpReconnect('slacker')
+
+    expect(result).toEqual({ ok: false, message: 'Unsafe MCP server name -- reconnect refused' })
+    expect(sendKeys().length).toBe(0)
   })
 
   it('T13: a tmux failure surfaces the error and sends no cleanup Escape', () => {

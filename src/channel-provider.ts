@@ -24,6 +24,9 @@ export interface ChannelProvider {
   readonly type: ChannelProviderType
   readonly pluginId: string
   readonly pluginPaneId: string
+  /** The MCP server name the installed plugin registers, as `/mcp reconnect <name>` takes it. Omitted when it is
+   *  the same as pluginPaneId. */
+  readonly mcpServerName?: string
   readonly envKeys: string[]
   readonly stateDir: string
   readonly chatIdFormat: string
@@ -255,6 +258,7 @@ const slackProvider: ChannelProvider = {
   type: 'slack',
   pluginId: 'slack-channel@marveen-marketplace',
   pluginPaneId: 'plugin:slack-channel:marveen-marketplace',
+  mcpServerName: 'plugin:slack-channel:slack',
   envKeys: ['SLACK_BOT_TOKEN', 'SLACK_APP_TOKEN'],
   stateDir: 'slack',
   chatIdFormat: 'Slack channel/DM ID (e.g. C01234ABCDE)',
@@ -497,6 +501,7 @@ const teamsProvider: ChannelProvider = {
   type: 'teams',
   pluginId: 'teams@marveen-marketplace',
   pluginPaneId: 'plugin:teams:marveen-marketplace',
+  mcpServerName: 'plugin:teams:teams',
   envKeys: ['TEAMS_BOT_APP_ID', 'TEAMS_BOT_APP_PASSWORD', 'TEAMS_BOT_TENANT_ID'],
   stateDir: 'teams',
   chatIdFormat: 'Teams conversation id (managed by the plugin per pairing)',
