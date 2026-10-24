@@ -34,6 +34,8 @@ export interface ChannelProvider {
   sendMessage(token: string, chatId: string, text: string, parseMode?: string, threadId?: string): Promise<SendReceipt | void>
   sendPhoto(token: string, chatId: string, photoPath: string, caption: string): Promise<void>
   validateToken(token: string): Promise<TokenValidation>
+  /** For providers whose credentials are more than one token (Teams): check them all for real. */
+  validateCredentials?(env: Record<string, string>): Promise<TokenValidation>
   formatMessage(text: string): string
   splitMessage(text: string): string[]
 }
@@ -497,6 +499,54 @@ const googlechatProvider: ChannelProvider = {
 
 const TEAMS_MAX_MESSAGE_LENGTH = 28000
 
+export const TEAMS_CREDENTIAL_TIMEOUT_MS = 10_000
+
+export async function checkTeamsCredentials(
+  env: Record<string, string>,
+  deps: { fetch?: typeof fetch; timeoutMs?: number } = {},
+): Promise<TokenValidation> {
+  const appId = env.TEAMS_BOT_APP_ID
+  const secret = env.TEAMS_BOT_APP_PASSWORD
+  const tenant = env.TEAMS_BOT_TENANT_ID
+  if (!appId || !secret || !tenant) {
+    return { ok: false, error: 'Teams credentials incomplete: TEAMS_BOT_APP_ID, TEAMS_BOT_APP_PASSWORD and TEAMS_BOT_TENANT_ID are all needed' }
+  }
+  if (!/^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$/.test(tenant)) {
+    return { ok: false, error: 'Teams tenant id has an unexpected form' }
+  }
+  let res: Response
+  try {
+    res = await (deps.fetch ?? fetch)(`https://login.microsoftonline.com/${encodeURIComponent(tenant)}/oauth2/v2.0/token`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'client_credentials',
+        client_id: appId,
+        client_secret: secret,
+        scope: 'https://api.botframework.com/.default',
+      }).toString(),
+      redirect: 'error',
+      signal: AbortSignal.timeout(deps.timeoutMs ?? TEAMS_CREDENTIAL_TIMEOUT_MS),
+    })
+  } catch {
+    return { ok: false, error: 'Teams credentials could not be checked (network error or timeout)' }
+  }
+  let body: any = {}
+  try {
+    body = await res.json()
+  } catch {
+    body = {}
+  }
+  if (body === null || typeof body !== 'object') body = {}
+  if (res.status === 200 && typeof body.access_token === 'string' && body.access_token) {
+    return { ok: true, botName: 'Microsoft Teams' }
+  }
+  const code = typeof body.error === 'string' && /^[a-z_]{1,64}$/.test(body.error) ? body.error : 'unknown_error'
+  const first = Array.isArray(body.error_codes) ? body.error_codes[0] : undefined
+  const aad = typeof first === 'number' && Number.isInteger(first) ? first : undefined
+  return { ok: false, error: `Teams credentials refused by Entra: ${code}${aad !== undefined ? ` (AADSTS${aad})` : ''}` }
+}
+
 const teamsProvider: ChannelProvider = {
   type: 'teams',
   pluginId: 'teams@marveen-marketplace',
@@ -522,6 +572,8 @@ const teamsProvider: ChannelProvider = {
     // secret + tenant, JWT). Report ok so channel-config flows don't false-negative.
     return { ok: true, botName: 'Microsoft Teams' }
   },
+
+  validateCredentials: (env) => checkTeamsCredentials(env),
 
   formatMessage: (text) => text,
   splitMessage: (text) => splitMessage(text, TEAMS_MAX_MESSAGE_LENGTH),
@@ -798,4 +850,19 @@ export function readChannelToken(provider: ChannelProviderType, envFilePath: str
   // configured channel for hasChannel/agentHasChannel.
   const match = content.match(new RegExp(`^\\s*${key}=(.+)$`, 'm'))
   return match ? match[1].trim() : null
+}
+
+export function readChannelEnv(envFilePath: string, keys: readonly string[]): Record<string, string> {
+  let content: string
+  try {
+    content = readFileSync(envFilePath, 'utf-8')
+  } catch {
+    return {}
+  }
+  const out: Record<string, string> = {}
+  for (const key of keys) {
+    const match = content.match(new RegExp(`^\\s*${key}=(.+)$`, 'm'))
+    if (match) out[key] = match[1].trim()
+  }
+  return out
 }

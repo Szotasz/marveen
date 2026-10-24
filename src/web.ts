@@ -32,6 +32,7 @@ import { startChannelPluginMonitor } from './web/channel-monitor.js'
 import { startInboundProber } from './web/inbound-probe.js'
 import { startChannelHealthMonitor } from './web/channel-health-monitor.js'
 import { startChannelIntakeMonitor } from './web/channel-intake-monitor.js'
+import { startTeamsCredentialMonitor } from './web/teams-credential-monitor.js'
 import { startStuckInputWatcher } from './web/stuck-input-watcher.js'
 import { startMidTurnCommandWatcher } from './web/midturn-commands.js'
 import { startInboxNudgeWatcher } from './web/inbox-nudge-watcher.js'
@@ -488,6 +489,8 @@ export function startWebServer(port = 3420): http.Server {
   // only signal a silently deaf poller leaves behind.
   const channelIntakeInterval = webOnly ? undefined : startChannelIntakeMonitor(PROJECT_ROOT)
   if (!webOnly) logger.info('Channel intake monitor started (5min poll, 100s offset)')
+  const teamsCredentialInterval = webOnly ? undefined : startTeamsCredentialMonitor()
+  if (!webOnly) logger.info('Teams credential monitor started (daily, 5min offset)')
 
   // CostOps: reflect the local config's fixed costs into the ledger once at boot + every
   // 10 minutes. Deliberately NOT done inside the GET /api/costs/summary handler -- a read
@@ -770,6 +773,7 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
     if (workerLivenessInterval) clearInterval(workerLivenessInterval)
     clearInterval(channelHealthInterval)
     if (channelIntakeInterval) clearInterval(channelIntakeInterval)
+    if (teamsCredentialInterval) clearInterval(teamsCredentialInterval)
     if (costsSyncInterval) clearInterval(costsSyncInterval)
     clearInterval(stuckInputInterval)
     if (midTurnCommandInterval) clearInterval(midTurnCommandInterval)

@@ -97,6 +97,7 @@ import {
   getProvider,
   channelStateDir,
   readChannelToken,
+  readChannelEnv,
   checkTelegramTokenBusy,
   generateSlackAppManifest,
   getSlackAppSetupInstructions,
@@ -1411,7 +1412,9 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const token = readChannelToken(provider, envPath) || (!isMain && provider === 'telegram' ? parseTelegramToken(name) : null)
     if (!token) { json(res, { error: `${provider} not configured for this agent` }, 404); return true }
     const channelProvider = getProvider(provider)
-    const result = await channelProvider.validateToken(token)
+    const result = channelProvider.validateCredentials
+      ? await channelProvider.validateCredentials(readChannelEnv(envPath, channelProvider.envKeys))
+      : await channelProvider.validateToken(token)
     if (result.ok) {
       json(res, {
         ok: true,
