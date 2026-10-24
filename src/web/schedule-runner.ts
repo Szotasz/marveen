@@ -107,6 +107,7 @@ import { findTelegramTopic, telegramTopicsEnabled } from './telegram-topics.js'
 import { runCommandTask } from './command-task.js'
 import { trackDetachedGroup } from './detached-groups.js'
 import { decideQuotaAction, type QuotaWorkClass } from '../quota-gate.js'
+import { isAgentBudgetHeld } from './agent-budget-alerts.js'
 import { readQuotaSnapshot } from '../quota-snapshot.js'
 import { detectsFirstRunGate, detectPaneState, overfullParkedInputTail, type PaneState } from '../pane-state.js'
 import { getInjectedPrompt, matchesInjectedPrompt, type InjectedPromptRecord } from './injected-prompt-registry.js'
@@ -1241,6 +1242,19 @@ export function resolveBoundChannel(agentName: string, providerOverride?: Channe
     if (candidates > 1) return { provider, chatId: null, ambiguousCandidates: candidates }
     return { provider, chatId: chatIdFromAccessConfig(raw) }
   } catch { return { provider, chatId: null } }
+}
+
+// Opt-in agent budget hold: only background work can hold an agent back.
+export function splitBudgetHeld(
+  targetAgents: string[],
+  workClass: QuotaWorkClass,
+  isHeld: (agent: string) => boolean,
+): { run: string[]; held: string[] } {
+  if (workClass !== 'background') return { run: [...targetAgents], held: [] }
+  const run: string[] = []
+  const held: string[] = []
+  for (const a of targetAgents) (isHeld(a) ? held : run).push(a)
+  return { run, held }
 }
 
 // What a scheduled task costs the shared quota pool, for the gate in
@@ -3221,7 +3235,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
         continue
       }
 
-      const targetAgents = resolveTargetAgents(task)
+      const resolvedAgents = resolveTargetAgents(task)
 
       // Quota gate. Every heartbeat across the fleet spends from the same
       // subscription pool as the owner's own turns, so a routine background
@@ -3243,9 +3257,26 @@ export function startScheduleRunner(): NodeJS.Timeout {
         )
         scheduleLastRun.set(task.name, now)
         persistScheduleLastRun()
-        for (const agentName of targetAgents) appendTaskRun(task.name, agentName, 'skipped')
+        for (const agentName of resolvedAgents) appendTaskRun(task.name, agentName, 'skipped')
         continue
       }
+
+      // Opt-in agent budget hold: background tasks of agents at their hard
+      // budget are deferred, recorded like the quota defer above.
+      const budget = splitBudgetHeld(resolvedAgents, quotaWorkClass(task), isAgentBudgetHeld)
+      for (const agent of budget.held) {
+        logger.info(
+          { task: task.name, agent },
+          'Agent budget: holding back a background task for an agent at its hard budget',
+        )
+        appendTaskRun(task.name, agent, 'skipped')
+      }
+      if (budget.run.length === 0) {
+        scheduleLastRun.set(task.name, now)
+        persistScheduleLastRun()
+        continue
+      }
+      const targetAgents = budget.run
 
       // Run pre-check once per task (not per agent) since it queries shared
       // state (DB, filesystem) that does not vary by target agent.
