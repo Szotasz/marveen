@@ -7,7 +7,7 @@ call itself. Nothing here may reach store/claudeclaw.db or the live agent.
 The scenario that matters most is `scenario_own_turn_does_not_retrigger`: it is
 the whole reason the watermark is written by the agent instead of by the gate.
 
-Run: python3 scripts/test_memoria_heartbeat_gate.py
+Run: python3 scripts/__tests__/memoria-heartbeat-gate.test.py
 """
 
 from __future__ import annotations
@@ -20,10 +20,12 @@ import tempfile
 from pathlib import Path
 
 SPEC = importlib.util.spec_from_file_location(
-    "memoria_heartbeat_gate", Path(__file__).resolve().parent / "memoria_heartbeat_gate.py"
+    "memoria_heartbeat_gate", Path(__file__).resolve().parent.parent / "memoria_heartbeat_gate.py"
 )
 gate = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(gate)
+
+VALODI_WAKE = gate.wake_agent  # a wire() lecsereli, ezert itt kell elkapni
 
 FAILURES: list[str] = []
 
@@ -52,7 +54,12 @@ def build_db(path: Path) -> sqlite3.Connection:
     return con
 
 
-def add_conv(con, agent="picard", direction="in") -> None:
+def add_conv(con, agent=None, direction="in") -> None:
+    # BEEGETETT913: the agent id used to be hardcoded here AND in the gate.
+    # When the gate started reading it from .env, this test kept inserting
+    # the old name and the SQL filter matched nothing -- the gate looked
+    # broken while it was the fixture that was stale. Follow the gate.
+    agent = agent or gate.AGENT
     con.execute(
         "INSERT INTO conversation_log (agent_id, chat_id, direction, created_at) "
         "VALUES (?, 'c', ?, 0)",
@@ -61,7 +68,8 @@ def add_conv(con, agent="picard", direction="in") -> None:
     con.commit()
 
 
-def add_tool(con, agent="picard", summary="ls") -> None:
+def add_tool(con, agent=None, summary="ls") -> None:
+    agent = agent or gate.AGENT
     con.execute(
         "INSERT INTO tool_call_log (session_id, tool_name, success, created_at, agent_id, "
         "input_summary) VALUES ('s', 'Bash', 1, 0, ?, ?)",
@@ -374,6 +382,151 @@ def scenario_conv_upto_clamped() -> None:
         )
 
 
+def scenario_agent_id_comes_from_env() -> None:
+    """BEEGETETT913: the id must be the INSTALL's, resolved the way the product does.
+
+    The other scenarios follow gate.AGENT wherever it points, so they pass with
+    ANY value -- including the old hardcoded "picard". This is the scenario that
+    looks at the value itself.
+    """
+    print("the agent id is resolved like the product does")
+    env = gate.MARVEEN_DIR / ".env"
+    expected = None
+    try:
+        for line in env.read_text(encoding="utf-8").splitlines():
+            if line.startswith("MAIN_AGENT_ID="):
+                expected = line.split("=", 1)[1].strip().strip("\"'")
+                break
+    except OSError:
+        pass
+
+    if expected:
+        check_eq("AGENT matches .env MAIN_AGENT_ID", gate.AGENT, expected)
+        check_eq("main_agent_id() agrees", gate.main_agent_id(), expected)
+    else:
+        # No .env (a stripped checkout, or a git worktree): the fallback has to
+        # be the PRODUCT's, because src/config.ts resolves it as
+        # `env['MAIN_AGENT_ID'] ?? 'marveen'`. On such an install "marveen" is
+        # the registered main agent, so the POST is accepted; anything else we
+        # invented here would be rejected with 403.
+        check_eq("falls back exactly like src/config.ts", gate.AGENT, "marveen")
+
+    check_eq(
+        "not a name from another install",
+        gate.AGENT not in {"picard", "geordi", "seven", "samu", "boni"},
+        True,
+    )
+
+
+def scenario_env_shapes() -> None:
+    """A hand-edited .env is not always `KEY=value` on a bare line.
+
+    Asked for in review: the reader has to survive `export `, quotes and a
+    trailing comment. Each of these was a silent wrong answer before -- the
+    line simply did not match, and the gate fell back to the default while a
+    perfectly good id sat in the file.
+    """
+    print("the .env reader is a LINE-FOR-LINE mirror of the product (parity)")
+    import tempfile, pathlib
+    esetek = [
+        # PARITAS-TABLAZAT a termek src/env.ts readEnvFile-javal + a config.ts
+        # `?? 'marveen'` fallbackjaval. Merve 2026-09-27 a LEFORDITOTT dist/env.js
+        # ellen, tizenharom alakon; minden elvart ertek ONNAN jon, nem attol, ami
+        # kenyelmes lenne. Az elozo valtozat itt az ENGEDEKENY alakot pinnelte
+        # helyesnek, es ezzel ot ponton a termektol ELTERO viselkedest rogzitett.
+        ("MAIN_AGENT_ID=sima\n", "sima"),
+        # a termek kulcsa `export MAIN_AGENT_ID` lesz, tehat a kulcs HIANYZIK ->
+        # fallback. Ez a legfontosabb sor: epp ez a felreiranyitas, amiert a
+        # BEEGETETT913 keszult.
+        ("export MAIN_AGENT_ID=exportalt\n", "marveen"),
+        ('MAIN_AGENT_ID="idezett"\n', "idezett"),
+        # a sorvegi komment az ERTEK RESZE a termeknel
+        ("MAIN_AGENT_ID=kommentes  # ez itt megjegyzes\n", "kommentes  # ez itt megjegyzes"),
+        # idezojel csak akkor jon le, ha MINDKET veg az; itt a veg a komment
+        ('MAIN_AGENT_ID="ra#cs"  # a kettes a kommentben\n', '"ra#cs"  # a kettes a kommentben'),
+        ("  export   MAIN_AGENT_ID = 'mind'   \n", "marveen"),
+        ("BOT_NAME=Valami\n", "marveen"),
+        # URES ertek: a termek `??`-ja NULLISH-only, tehat az ures sztring ATMEGY
+        ("MAIN_AGENT_ID=\n", ""),
+        # a termek minden sort feldolgoz es FELULIRJA a kulcsot: az UTOLSO nyer
+        ("MAIN_AGENT_ID=elso\nMAIN_AGENT_ID=masodik\n", "masodik"),
+        # `#`-kal kezdodo sor kihagyva, tehat a valodi sor ervenyesul
+        ("# MAIN_AGENT_ID=kikommentezve\nMAIN_AGENT_ID=valodi\n", "valodi"),
+        # egyoldalu idezojel NEM jon le
+        ("MAIN_AGENT_ID='egyoldalu\n", "'egyoldalu"),
+        # --- A 2026-09-27 TOVABBI NEGY ALAK (a review merese a termek sajat readEnvFile-ja ellen) ---
+        # UTF-8 BOM az elso soron: a termek JS trim()-je a U+FEFF-et is levagja, a Python strip()-je
+        # nem, es ez nema felreiranyitas lett volna (a riasztas a `marveen`-nek menne).
+        ("\ufeffMAIN_AGENT_ID=bomos\n", "bomos"),
+        # ervenytelen UTF-8 bajt egy megjegyzesben: a termek U+FFFD-re cserel es megy tovabb; a kapu
+        # eddig UnicodeDecodeError-ral meghalt (a memoria-kapu importkor oldja fel az azonositot).
+        (b"# latin-2 megjegyz\xe9s\nMAIN_AGENT_ID=bajtos\n", "bajtos"),
+        # lapdobas az ertekben: a termek csak "\n"-nel vag, a splitlines() itt ketteszedte volna
+        ("MAIN_AGENT_ID=lap\fdobas\n", "lap\fdobas"),
+        # U+2028 a soron belul: ugyanez
+        ("MAIN_AGENT_ID=sor\u2028X=1\n", "sor\u2028X=1"),
+        # a trim-halmaz HATARA a masik iranyban: a Python strip() levagna, a JS trim() NEM
+        ("MAIN_AGENT_ID=fs\x1c\n", "fs\x1c"),
+        ("MAIN_AGENT_ID=nel\x85\n", "nel\x85"),
+        # es amit a JS trim() levag, de a Python strip() nem: a BOM az ertek vegen
+        ("MAIN_AGENT_ID=vegen\ufeff\n", "vegen"),
+    ]
+    eredeti = gate.MARVEEN_DIR
+    with tempfile.TemporaryDirectory() as d:
+        gate.MARVEEN_DIR = pathlib.Path(d)
+        for tartalom, vart in esetek:
+            env_fajl = gate.MARVEEN_DIR / ".env"
+            if isinstance(tartalom, bytes):
+                env_fajl.write_bytes(tartalom)
+            else:
+                env_fajl.write_text(tartalom, encoding="utf-8")
+            kapott = gate.main_agent_id()
+            cimke = ascii(tartalom).replace("\\n", " ")[:46]
+            check_eq(f"{cimke} -> {vart!r}", kapott, vart)
+    gate.MARVEEN_DIR = eredeti
+
+
+def scenario_sender_is_the_agent_id() -> None:
+    """The SENDER is the agent id too, not a readable label.
+
+    Measured on the live dashboard 2026-09-25: from=memoria-gate answers HTTP
+    403, from=<the install's main agent> answers 200. The API accepts only a
+    registered fleet agent id. A label like "memoria-gate" reads nicely and
+    loses the message -- the same failure as the old hardcoded name, one step
+    further along. Nothing pinned this before, which is why it survived review.
+    """
+    print("the wake-up message is sent AS the agent, not as a label")
+    kuldott = {}
+
+    class Valasz:
+        status = 200
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    def hamis(req, timeout=None):
+        import json as _json
+        kuldott.update(_json.loads(req.data.decode()))
+        return Valasz()
+
+    with tempfile.TemporaryDirectory() as d:
+        tmp = Path(d)
+        con, _ = wire(tmp)          # DB es token kell, kulonben a token-olvasas dob
+        add_conv(con)
+        # A wire() KICSERELI a wake_agent-et egy naplozo lambdara, tehat itt az
+        # IMPORTKOR elkapott VALODIT kell hivni -- kulonben ez az eset nemán
+        # semmit sem mer. (Ugyanez a csapda a garmin-teszt notify_seven-jenel.)
+        eredeti_urlopen = gate.urllib.request.urlopen
+        gate.urllib.request.urlopen = hamis
+        try:
+            VALODI_WAKE({"conversation_log": 0, "tool_call_log": 0},
+                        {"conversation_log": 1, "tool_call_log": 0})
+        finally:
+            gate.urllib.request.urlopen = eredeti_urlopen
+    check_eq("from is the agent id", kuldott.get("from"), gate.AGENT)
+    check_eq("to is the agent id", kuldott.get("to"), gate.AGENT)
+    check_eq("not a descriptive label", kuldott.get("from") in {"memoria-gate", "geordi"}, False)
+
+
 if __name__ == "__main__":
     for scenario in (
         scenario_quiet,
@@ -391,6 +544,9 @@ if __name__ == "__main__":
         scenario_midturn_message_survives_mark_seen,
         scenario_mark_seen_requires_conv_upto,
         scenario_conv_upto_clamped,
+        scenario_agent_id_comes_from_env,
+        scenario_env_shapes,
+        scenario_sender_is_the_agent_id,
     ):
         scenario()
         print()
