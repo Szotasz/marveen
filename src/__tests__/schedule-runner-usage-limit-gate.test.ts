@@ -253,7 +253,7 @@ describe('scheduler usage-limit gate (attemptFireTask)', () => {
     clearInterval(stop)
 
     expect(mockSendPrompt).not.toHaveBeenCalled()
-    expect(db.insertPendingTaskRetryIfNew).toHaveBeenCalledWith('ul-daily', 'limitagent', expect.any(Number), 'usage-limited')
+    expect(db.insertPendingTaskRetryIfNew).toHaveBeenCalledWith('ul-daily', 'limitagent', expect.any(Number), 'usage-limited', expect.any(Number))
     expect(mockAppendTaskRun).not.toHaveBeenCalledWith('ul-daily', 'limitagent', 'skipped-usage-limit')
   })
   it('a run-now into a usage-limited pane queues a retry; the retry goes through the same gate and is delivered once the banner is gone', async () => {
@@ -268,7 +268,7 @@ describe('scheduler usage-limit gate (attemptFireTask)', () => {
     const res = await runner.runScheduledTaskNow(t.name)
     expect(res.result).toBe('limitagent: usage-limited')
     expect(mockSendPrompt).not.toHaveBeenCalled()
-    expect(db.insertPendingTaskRetryIfNew).toHaveBeenCalledWith('ul-run-now', 'limitagent', expect.any(Number), 'usage-limited')
+    expect(db.insertPendingTaskRetryIfNew).toHaveBeenCalledWith('ul-run-now', 'limitagent', expect.any(Number), 'usage-limited', expect.any(Number))
     expect(retryRows.map(r => r.task_name)).toEqual(['ul-run-now'])
 
     // First retry tick, banner still on screen: the same gate holds it back
