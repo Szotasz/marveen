@@ -4318,7 +4318,13 @@ async function openAgentDetail(agentName) {
   // Delete button (restore visibility for normal agents)
   document.getElementById('deleteAgentBtn').style.display = ''
   document.getElementById('deleteAgentBtn').onclick = async () => {
-    if (!confirm(t('agents.confirm.delete', { name: currentAgent.name }))) return
+    const confirmed = await confirmDialog({
+      title: t('agents.confirm.delete_title'),
+      message: t('agents.confirm.delete', { name: currentAgent.name }),
+      okLabel: t('agents.confirm.delete_ok'),
+      danger: true,
+    })
+    if (!confirmed) return
     try {
       await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}`, { method: 'DELETE' })
       closeModal(agentDetailOverlay)
@@ -4610,7 +4616,13 @@ function postMarveenRestart(force) {
 }
 
 document.getElementById('marveenRestartBtn').addEventListener('click', async () => {
-  if (!confirm(t('agents.confirm.hard_restart'))) return
+  const confirmed = await confirmDialog({
+    title: t('agents.confirm.hard_restart_title'),
+    message: t('agents.confirm.hard_restart'),
+    okLabel: t('agents.confirm.hard_restart_ok'),
+    danger: true,
+  })
+  if (!confirmed) return
   const btn = document.getElementById('marveenRestartBtn')
   btn.disabled = true
   try {
@@ -4619,7 +4631,13 @@ document.getElementById('marveenRestartBtn').addEventListener('click', async () 
       const blocked = await res.clone().json().catch(() => ({}))
       if (blocked.error === 'restart-blocked') {
         const key = blocked.reason === 'busy' ? 'agents.confirm.force_restart_busy' : 'agents.confirm.force_restart_unreadable'
-        if (!confirm(t(key))) { showToast(t('agents.toast.restart_not_forced')); return }
+        const forced = await confirmDialog({
+          title: t('agents.confirm.hard_restart_title'),
+          message: t(key),
+          okLabel: t('agents.confirm.force_restart_ok'),
+          danger: true,
+        })
+        if (!forced) { showToast(t('agents.toast.restart_not_forced')); return }
         res = await postMarveenRestart(true)
       }
     }
@@ -4667,7 +4685,13 @@ document.getElementById('agentStartBtn').addEventListener('click', async () => {
 
 document.getElementById('agentStopBtn').addEventListener('click', async () => {
   if (!currentAgent) return
-  if (!confirm(t('agents.confirm.stop'))) return
+  const confirmed = await confirmDialog({
+    title: t('agents.confirm.stop_title'),
+    message: t('agents.confirm.stop'),
+    okLabel: t('agents.confirm.stop_ok'),
+    danger: true,
+  })
+  if (!confirmed) return
 
   try {
     const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}/stop`, { method: 'POST' })
@@ -16953,16 +16977,15 @@ function formatSettingValue(value) {
   return value === '' ? t('settings.value.empty') : value
 }
 
-// The confirmation for a reset, per row and per tab, in the app's own modal
-// (the native confirm() carries the host name as its title and cannot show a
-// list as a list). An override is often a deliberate choice, and removing one
-// can switch a safety setting back (notifications on again, isolation off), so
-// the dialog shows for every key what the value is now, what it becomes and
-// where that comes from -- the owner approves a change, not a list of names.
-// Resolves true only on the explicit confirm button; Escape, the close button,
-// the backdrop and Cancel all resolve false, and Cancel has the focus, so
-// Enter on a freshly opened dialog changes nothing.
-function confirmSettingsReset(items) {
+// The app's own confirmation dialog, in place of the native confirm(): that one
+// carries the host name as its title, cannot show a list as a list, and looks
+// the same for "stop" as for "delete". Resolves true only on the explicit
+// confirm button; Escape, the close button, the backdrop and Cancel all resolve
+// false, and Cancel has the focus, so Enter on a freshly opened dialog changes
+// nothing. `danger` styles the confirm button for an action that cannot be
+// undone or cuts running work. Every text goes in through textContent; extra
+// markup (`content`) is built by the caller from elements, never from HTML.
+function confirmDialog({ title, message, okLabel, danger = false, content = null, wide = false, bodyClass = '' }) {
   return new Promise((resolve) => {
     const overlay = document.createElement('div')
     overlay.className = 'modal-overlay active'
@@ -16970,53 +16993,36 @@ function confirmSettingsReset(items) {
     overlay.setAttribute('aria-modal', 'true')
 
     const modal = document.createElement('div')
-    modal.className = 'modal modal-wide'
+    modal.className = wide ? 'modal modal-wide' : 'modal'
 
     const header = document.createElement('div')
     header.className = 'modal-header'
-    const title = document.createElement('h2')
-    title.textContent = t('settings.confirm.reset_tab_title')
+    const titleEl = document.createElement('h2')
+    titleEl.textContent = title
     const closeBtn = document.createElement('button')
     closeBtn.type = 'button'
     closeBtn.className = 'modal-close'
     closeBtn.textContent = '\u00d7'
-    header.append(title, closeBtn)
+    header.append(titleEl, closeBtn)
 
     const body = document.createElement('div')
-    body.className = 'modal-body settings-reset-confirm'
-    const message = document.createElement('p')
-    message.textContent = t('settings.confirm.reset_tab')
-    const list = document.createElement('ul')
-    list.className = 'settings-reset-confirm-keys'
-    for (const item of items) {
-      const li = document.createElement('li')
-      const key = document.createElement('span')
-      key.className = 'settings-reset-confirm-key'
-      key.textContent = item.key
-      const change = document.createElement('span')
-      change.className = 'settings-reset-confirm-change'
-      change.textContent = formatSettingValue(item.from) + ' \u2192 ' + formatSettingValue(item.to) + ' (' + item.source + ')'
-      li.append(key, change)
-      if (item.requiresRestart) {
-        const restart = document.createElement('span')
-        restart.className = 'settings-restart-badge'
-        restart.textContent = t('settings.restart_badge')
-        li.appendChild(restart)
-      }
-      list.appendChild(li)
-    }
+    body.className = 'modal-body confirm-dialog' + (bodyClass ? ' ' + bodyClass : '')
+    const messageEl = document.createElement('p')
+    messageEl.textContent = message
+    body.appendChild(messageEl)
+    if (content) body.appendChild(content)
     const actions = document.createElement('div')
-    actions.className = 'settings-reset-confirm-actions'
+    actions.className = 'confirm-dialog-actions'
     const cancelBtn = document.createElement('button')
     cancelBtn.type = 'button'
     cancelBtn.className = 'btn-secondary'
     cancelBtn.textContent = t('common.cancel')
     const okBtn = document.createElement('button')
     okBtn.type = 'button'
-    okBtn.className = 'btn-primary'
-    okBtn.textContent = t('settings.confirm.reset_tab_ok')
+    okBtn.className = danger ? 'btn-danger' : 'btn-primary'
+    okBtn.textContent = okLabel
     actions.append(cancelBtn, okBtn)
-    body.append(message, list, actions)
+    body.appendChild(actions)
 
     modal.append(header, body)
     overlay.appendChild(modal)
@@ -17035,6 +17041,41 @@ function confirmSettingsReset(items) {
 
     document.body.appendChild(overlay)
     cancelBtn.focus()
+  })
+}
+
+// The confirmation for a reset, per row and per tab. An override is often a
+// deliberate choice, and removing one can switch a safety setting back
+// (notifications on again, isolation off), so the dialog shows for every key
+// what the value is now, what it becomes and where that comes from -- the owner
+// approves a change, not a list of names.
+function confirmSettingsReset(items) {
+  const list = document.createElement('ul')
+  list.className = 'settings-reset-confirm-keys'
+  for (const item of items) {
+    const li = document.createElement('li')
+    const key = document.createElement('span')
+    key.className = 'settings-reset-confirm-key'
+    key.textContent = item.key
+    const change = document.createElement('span')
+    change.className = 'settings-reset-confirm-change'
+    change.textContent = formatSettingValue(item.from) + ' \u2192 ' + formatSettingValue(item.to) + ' (' + item.source + ')'
+    li.append(key, change)
+    if (item.requiresRestart) {
+      const restart = document.createElement('span')
+      restart.className = 'settings-restart-badge'
+      restart.textContent = t('settings.restart_badge')
+      li.appendChild(restart)
+    }
+    list.appendChild(li)
+  }
+  return confirmDialog({
+    title: t('settings.confirm.reset_tab_title'),
+    message: t('settings.confirm.reset_tab'),
+    okLabel: t('settings.confirm.reset_tab_ok'),
+    content: list,
+    wide: true,
+    bodyClass: 'settings-reset-confirm',
   })
 }
 

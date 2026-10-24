@@ -6517,7 +6517,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 /* === Settings page === */
 .settings-group { margin-bottom: 28px; }
 .settings-group:last-child { margin-bottom: 0; }
-.settings-reset-confirm p {
+.confirm-dialog p {
   margin: 0 0 14px;
   font-size: 14px;
   line-height: 1.5;
@@ -6551,7 +6551,7 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   color: var(--text-muted);
   overflow-wrap: anywhere;
 }
-.settings-reset-confirm-actions {
+.confirm-dialog-actions {
   display: flex;
   justify-content: flex-end;
   align-items: stretch;
@@ -6559,8 +6559,9 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 }
 /* .btn-primary is a full-width block by default; here the confirm button must
    not outweigh Cancel, which is the safe choice and holds the focus. */
-.settings-reset-confirm-actions .btn-primary,
-.settings-reset-confirm-actions .btn-secondary {
+.confirm-dialog-actions .btn-primary,
+.confirm-dialog-actions .btn-danger,
+.confirm-dialog-actions .btn-secondary {
   width: auto;
   min-width: 120px;
   /* Same box for both: .btn-primary alone carries a top margin, a larger
