@@ -26,6 +26,8 @@ vi.mock('../config.js', async (orig) => {
 
 const tmpRoot = mkdtempSync(join(tmpdir(), 'upd-preflight-'))
 H.root = tmpRoot
+// Registered after tmpRoot exists; independent of the git env restore above.
+afterAll(() => { rmSync(tmpRoot, { recursive: true, force: true }) })
 const { tryHandleUpdates } = await import('../web/routes/updates.js')
 const config = await import('../config.js')
 if (config.PROJECT_ROOT !== tmpRoot) throw new Error('refusing to run: PROJECT_ROOT is not the temporary root')
