@@ -3970,7 +3970,7 @@ export function normalizeSectionWhitespace(s: string): string {
     .filter((l) => l !== '').join('\n')
 }
 
-/** The section of a CLAUDE.md that starts at a line equal to `heading` and ends before the next line starting with "## " (or at the end). */
+/** The section of a CLAUDE.md that starts at a line equal to `heading` (trailing spaces, tabs and CR ignored) and ends before the next line starting with "## " (or at the end). */
 export function findSection(text: string, heading: string): { start: number; end: number } | null {
   const lines = text.split('\n')
   let offset = 0
