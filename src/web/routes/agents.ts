@@ -98,6 +98,8 @@ import {
   channelStateDir,
   readChannelToken,
   readChannelEnv,
+  teamsSecretExpiry,
+  TEAMS_SECRET_EXPIRY_KEY,
   checkTelegramTokenBusy,
   generateSlackAppManifest,
   getSlackAppSetupInstructions,
@@ -1412,18 +1414,24 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const token = readChannelToken(provider, envPath) || (!isMain && provider === 'telegram' ? parseTelegramToken(name) : null)
     if (!token) { json(res, { error: `${provider} not configured for this agent` }, 404); return true }
     const channelProvider = getProvider(provider)
+    const channelEnv = readChannelEnv(envPath, [...channelProvider.envKeys, TEAMS_SECRET_EXPIRY_KEY])
     const result = channelProvider.validateCredentials
-      ? await channelProvider.validateCredentials(readChannelEnv(envPath, channelProvider.envKeys))
+      ? await channelProvider.validateCredentials(channelEnv)
       : await channelProvider.validateToken(token)
+    const secretExpiry = provider === 'teams' ? teamsSecretExpiry(channelEnv[TEAMS_SECRET_EXPIRY_KEY]) : undefined
+    if (secretExpiry?.state === 'invalid') {
+      logger.warn({ agent: name, value: secretExpiry.value }, 'Teams secret expiry date is not YYYY-MM-DD; ignored')
+    }
     if (result.ok) {
       json(res, {
         ok: true,
         botName: result.botName,
         ...(result.missingScopes ? { scopes: result.scopes, missingScopes: result.missingScopes } : {}),
+        ...(secretExpiry ? { secretExpiry } : {}),
       })
       return true
     }
-    json(res, { error: result.error }, 400)
+    json(res, { error: result.error, ...(secretExpiry ? { secretExpiry } : {}) }, 400)
     return true
   }
 

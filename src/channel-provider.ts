@@ -499,6 +499,29 @@ const googlechatProvider: ChannelProvider = {
 
 const TEAMS_MAX_MESSAGE_LENGTH = 28000
 
+export const TEAMS_SECRET_EXPIRY_KEY = 'TEAMS_BOT_SECRET_EXPIRES'
+export const TEAMS_SECRET_WARN_DAYS = [30, 7, 1] as const
+export type TeamsSecretExpiry =
+  | { state: 'missing' }
+  | { state: 'invalid'; value: string }
+  | { state: 'ok' | 'soon' | 'expired'; date: string; daysLeft: number }
+
+export function teamsSecretExpiry(raw: string | undefined, now: number = Date.now()): TeamsSecretExpiry {
+  const value = (raw ?? '').trim()
+  if (!value) return { state: 'missing' }
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value)
+  if (m) {
+    const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])]
+    const expiresAt = Date.UTC(y, mo - 1, d)
+    const back = new Date(expiresAt)
+    if (back.getUTCFullYear() === y && back.getUTCMonth() === mo - 1 && back.getUTCDate() === d) {
+      const daysLeft = Math.ceil((expiresAt - now) / 86_400_000) + 0
+      return { state: daysLeft <= 0 ? 'expired' : daysLeft <= 30 ? 'soon' : 'ok', date: value, daysLeft }
+    }
+  }
+  return { state: 'invalid', value: value.slice(0, 32) }
+}
+
 export const TEAMS_CREDENTIAL_TIMEOUT_MS = 10_000
 
 export async function checkTeamsCredentials(

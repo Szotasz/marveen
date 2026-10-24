@@ -97,6 +97,8 @@ Beüzemelés:
    ```
 3. **Párosítás + zárolás.** A párosítás és az allowlist-policy a `/teams:access` paranccsal állítható, a tulajdonos termináljából (csatornán érkező engedély-kérést a rendszer sosem hajt végre magától).
 
+**Titok-lejárat.** A Teams-bot kliens-titka lejár. Írd a lejárati dátumát az ügynök Teams csatornájának `.env` fájljába: `TEAMS_BOT_SECRET_EXPIRES=ÉÉÉÉ-HH-NN`. A dashboard naponta ellenőrzi a hitelesítést, és 30, 7 és 1 nappal a lejárat előtt, valamint lejáratkor figyelmeztet; a csatorna Teszt gombja kiírja a dátumot. A kulcs nélkül nem figyeljük a lejáratot (ez nem hiba). Az Entra portálon: Microsoft Entra admin center -> App registrations -> a bot alkalmazása -> Certificates & secrets -> Client secrets; a lejárat az, amit a titok létrehozásakor választottál (Microsoft szerint legfeljebb 24 hónap).
+
 ### Discord-specifikum
 
 A Discord csatorna a hivatalos `discord@claude-plugins-official` plugin. `CHANNEL_PROVIDER=discord` -> a `channels.sh` a discord plugint indítja, az állapot a `~/.claude/channels/discord/` mappában (a `DISCORD_STATE_DIR` env-en keresztül). A provider-elágazások (PLUGIN_ID, state-dir, plugin-watchdog) ugyanúgy viselkednek mint a többi providernél, külön kezelés nélkül. A telepítő a Linux ÉS a macOS úton is felkínálja (3. opció).

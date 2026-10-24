@@ -5994,7 +5994,15 @@ document.getElementById('chTestBtn').addEventListener('click', async () => {
         + (missing.includes('im:read') ? ' ' + t('channel.toast.missing_scopes_imread') : '')
       showToast(msg, 12000)
     } else {
-      showToast('Kapcsolat rendben!')
+      const exp = data.secretExpiry
+      const suffix = !exp ? ''
+        : exp.state === 'missing' ? ' ' + t('channel.toast.teams_secret_expiry_missing')
+        : exp.state === 'invalid' ? ' ' + t('channel.toast.teams_secret_expiry_invalid')
+        : exp.state === 'ok' ? ' ' + t('channel.toast.teams_secret_expiry_ok', { date: exp.date, days: exp.daysLeft })
+        : exp.state === 'soon' ? ' ' + t('channel.toast.teams_secret_expiry_soon', { date: exp.date, days: exp.daysLeft })
+        : exp.state === 'expired' ? ' ' + t('channel.toast.teams_secret_expiry_expired', { date: exp.date })
+        : ''
+      showToast('Kapcsolat rendben!' + suffix, suffix ? 8000 : undefined)
     }
   } catch {
     showToast(t('channel.toast.smoke_failed'))

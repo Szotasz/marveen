@@ -4,7 +4,7 @@
 import { join } from 'node:path'
 import { MAIN_AGENT_ID } from '../config.js'
 import { logger } from '../logger.js'
-import { channelStateDir, checkTeamsCredentials, readChannelEnv, type TokenValidation } from '../channel-provider.js'
+import { channelStateDir, checkTeamsCredentials, readChannelEnv, teamsSecretExpiry, TEAMS_SECRET_EXPIRY_KEY, TEAMS_SECRET_WARN_DAYS, type TokenValidation } from '../channel-provider.js'
 import { agentDir, listAgentNames } from './agent-config.js'
 import { readAgentTeamsConfig, readMarveenTeamsConfig } from './telegram.js'
 import { whileNotFrozen } from './fleet-freeze.js'
@@ -16,6 +16,7 @@ export interface TeamsCredentialMonitorDeps {
   check?: (env: Record<string, string>) => Promise<TokenValidation>
   agents?: () => Array<{ name: string; envPath: string }>
   alert?: (text: string) => void
+  now?: () => number
   log?: { warn: (obj: object, msg: string) => void }
 }
 
@@ -35,6 +36,9 @@ export function teamsAgents(): Array<{ name: string; envPath: string }> {
 
 export function createTeamsCredentialChecker(deps: TeamsCredentialMonitorDeps = {}): () => Promise<void> {
   const alerted = new Set<string>()
+  const expiryAlerts = new Map<string, { date: string; sent: Set<string> }>()
+  const invalidWarned = new Map<string, string>()
+  const now = deps.now ?? Date.now
   const check = deps.check ?? checkTeamsCredentials
   const log = deps.log ?? logger
   // Loaded on first use: channel-monitor is a large module with its own start-up wiring.
@@ -46,8 +50,9 @@ export function createTeamsCredentialChecker(deps: TeamsCredentialMonitorDeps = 
   return async () => {
     for (const { name, envPath } of (deps.agents ?? teamsAgents)()) {
       let r: TokenValidation
+      const env = readChannelEnv(envPath, ['TEAMS_BOT_APP_ID', 'TEAMS_BOT_APP_PASSWORD', 'TEAMS_BOT_TENANT_ID', TEAMS_SECRET_EXPIRY_KEY])
       try {
-        r = await check(readChannelEnv(envPath, ['TEAMS_BOT_APP_ID', 'TEAMS_BOT_APP_PASSWORD', 'TEAMS_BOT_TENANT_ID']))
+        r = await check(env)
       } catch (err) {
         log.warn({ agent: name, error: String(err) }, 'teams-credential-monitor: check not possible')
         continue
@@ -59,6 +64,31 @@ export function createTeamsCredentialChecker(deps: TeamsCredentialMonitorDeps = 
       } else if (!alerted.has(name)) {
         alerted.add(name)
         alert(`⚠️ ${name}: a Teams-bot hitelesítése nem sikerül (${r.error}). Amíg nincs új titok, a Teams-válaszok nem mennek ki.`)
+      }
+      const e = teamsSecretExpiry(env[TEAMS_SECRET_EXPIRY_KEY], now())
+      if (e.state === 'invalid') {
+        if (invalidWarned.get(name) !== e.value) {
+          invalidWarned.set(name, e.value)
+          log.warn({ agent: name, value: e.value }, 'teams-credential-monitor: secret expiry date is not YYYY-MM-DD; ignored')
+        }
+      } else if (e.state !== 'missing') {
+        let entry = expiryAlerts.get(name)
+        if (!entry || entry.date !== e.date) {
+          entry = { date: e.date, sent: new Set() }
+          expiryAlerts.set(name, entry)
+        }
+        if (e.state === 'expired') {
+          if (!entry.sent.has('expired')) {
+            entry.sent.add('expired')
+            alert(`⚠️ ${name}: a Teams-bot titka lejárt (${e.date}). Amíg nincs új titok, a Teams-válaszok nem mennek ki.`)
+          }
+        } else if (e.state === 'soon') {
+          const k = [...TEAMS_SECRET_WARN_DAYS].sort((a, b) => a - b).find((w) => e.daysLeft <= w)!
+          if (!entry.sent.has(String(k))) {
+            for (const w of TEAMS_SECRET_WARN_DAYS) if (w >= k) entry.sent.add(String(w))
+            alert(`⏳ ${name}: a Teams-bot titka ${e.daysLeft} nap múlva lejár (${e.date}). Cseréld le, mielőtt a Teams-válaszok leállnak.`)
+          }
+        }
       }
     }
   }
