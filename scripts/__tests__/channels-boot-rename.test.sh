@@ -57,6 +57,13 @@ chmod +x "$TMPD/tmux"
 PARKED=$'earlier output\n\n──────────── Marveen ─\n❯ /rename Marveen\n────────────────────\n  Sonnet 5 | ctx 11% | 7d 5%\n  ⏵⏵ bypass permissions on (shift+tab to cycle)'
 # Submitted: the command is echoed in the transcript, the box is empty.
 DONE=$'❯ /rename Marveen\n  ⎿  Session renamed to: Marveen\n\n────────────────────\n❯ \n────────────────────\n  Sonnet 5 | ctx 11% | 7d 5%'
+# The prompt is drawn and the box is empty: ready to type.
+READY=$'──────────── Marveen ─\n────────────────────\n❯ \n────────────────────\n  footer'
+# Booting: the ready banner is out, the input prompt is not drawn yet
+# (the 2026-10-23 boot: text sent here parked for hours).
+BOOTING=$'Listening for messages from Telegram\n  loading...'
+# A session started with history: an earlier prompt is echoed, no box yet.
+HISTORY_BOOTING=$'❯ /rename Marveen\n  ⎿  Session renamed to: Marveen\nListening for messages from Telegram'
 # Someone else's text in the box: never the bot's own command.
 OTHER=$'────────────────────\n❯ /rename Marveen please not yet\n────────────────────\n  footer'
 
@@ -66,7 +73,7 @@ run() {
   export FAKE_LOG="$FAKE_DIR/log"; : > "$FAKE_LOG"
   local i=0 f
   for f in "$@"; do i=$((i + 1)); printf '%s\n' "$f" > "$FAKE_DIR/frame-$i"; done
-  MAIN_RENAME_RETRY_S=0 MAIN_RENAME_TYPE_S=0 main_rename_send "$TMPD/tmux" "=main-channels:" "Marveen" 2> "$FAKE_DIR/err"
+  MAIN_RENAME_RETRY_S=0 MAIN_RENAME_TYPE_S=0 MAIN_RENAME_POLL_S=0 main_rename_send "$TMPD/tmux" "=main-channels:" "Marveen" 2> "$FAKE_DIR/err"
   RC=$?
 }
 enters()  { grep -c '^send-keys -t =main-channels: Enter$' "$FAKE_LOG"; }
@@ -87,21 +94,21 @@ run "$DONE"
 eq "the Enter lands: exit 0"                          "0" "$RC"
 eq "...text typed once, literally (-l)"               "1" "$(texts)"
 eq "...and exactly one Enter"                         "1" "$(enters)"
-eq "...and the text comes before the Enter"           "send-keys -t =main-channels: -l /rename Marveen" "$(head -1 "$FAKE_LOG")"
+eq "...and the text comes before the Enter"           "send-keys -t =main-channels: -l /rename Marveen" "$(grep '^send-keys' "$FAKE_LOG" | head -1)"
 
-run "$PARKED" "$DONE"
+run "$READY" "$PARKED" "$DONE"
 eq "the first Enter is lost: exit 0 after a retry"   "0" "$RC"
 eq "...two Enters in all"                             "2" "$(enters)"
 eq "...the text is NOT typed again"                   "1" "$(texts)"
 case "$(cat "$FAKE_DIR/err")" in *"Enter again (1/3)"*) pass "...and the retry is logged" ;; *) fail "...and the retry is logged" "Enter again (1/3)" "$(cat "$FAKE_DIR/err")" ;; esac
 
-run "$PARKED"
+run "$READY" "$PARKED"
 eq "parked for good: exit 1, bounded"                 "1" "$RC"
 eq "...1 Enter + MAIN_RENAME_MAX_ENTERS (3) retries"  "4" "$(enters)"
 eq "...never anything but the text and Enter (no clear)" "0" "$(nonenter)"
 case "$(cat "$FAKE_DIR/err")" in *"left as is"*) pass "...and the give-up is logged" ;; *) fail "...and the give-up is logged" "left as is" "$(cat "$FAKE_DIR/err")" ;; esac
 
-run "$OTHER"
+run "$READY" "$OTHER"
 eq "someone else's text in the box: no extra Enter"  "1" "$(enters)"
 eq "...exit 0"                                        "0" "$RC"
 
@@ -110,6 +117,41 @@ eq "an unreadable pane: no extra Enter, exit 0"       "1" "$(enters)"
 
 FAKE_SEND_FAIL=1 run "$DONE"
 eq "the first send fails: exit 2"                     "2" "$RC"
+
+echo ""
+echo "waiting for the input prompt (2026-10-23 boot)"
+echo "=============================================="
+run "$BOOTING" "$BOOTING" "$READY" "$DONE"
+first_send="$(grep -n '^send-keys' "$FAKE_LOG" | head -1 | cut -d: -f1)"
+eq "no prompt yet: nothing is typed before it is drawn (3 captures first)" "4" "$first_send"
+eq "...then the text is typed once"                   "1" "$(texts)"
+eq "...one Enter, exit 0"                             "1 0" "$(enters) $RC"
+
+run "$READY" "$BOOTING" "$PARKED" "$DONE"
+eq "no prompt right after the Enter is not read as submitted: a retry follows" "2" "$(enters)"
+eq "...exit 0"                                        "0" "$RC"
+
+run "$HISTORY_BOOTING" "$READY" "$DONE"
+first_send="$(grep -n '^send-keys' "$FAKE_LOG" | head -1 | cut -d: -f1)"
+eq "an echoed earlier prompt is not the input box: waits for the box" "3" "$first_send"
+
+run "$READY" "$BOOTING" "$BOOTING" "$BOOTING" "$PARKED" "$PARKED" "$DONE"
+eq "no-prompt captures do not use up the Enter retries" "3 0" "$(enters) $RC"
+
+eq "prompt-drawn: box between rules"                  "0" "$(main_rename_prompt_drawn "$READY"; echo $?)"
+eq "prompt-drawn: bordered box"                       "0" "$(main_rename_prompt_drawn $'│ ❯ hi  │\n╰────╯'; echo $?)"
+eq "prompt-drawn: history echo only"                  "1" "$(main_rename_prompt_drawn "$HISTORY_BOOTING"; echo $?)"
+eq "prompt-drawn: a numbered dialog cursor is not the box" "1" "$(main_rename_prompt_drawn $'│ ❯ 2. No, exit │\n╰────╯'; echo $?)"
+
+ECHO_OTHER=$'❯ hello\n  ⎿  hi\nworking...'
+run "$READY" "$ECHO_OTHER" "$PARKED" "$DONE"
+eq "after the Enter, an echoed other prompt with no box is not read as submitted" "2 0" "$(enters) $RC"
+
+MAIN_RENAME_READY_TRIES=2 run "$BOOTING"
+eq "the prompt never shows: the rename is still sent once" "1" "$(texts)"
+eq "...exit 1 (not reported as submitted)"            "1" "$RC"
+case "$(cat "$FAKE_DIR/err")" in *"typing anyway"*) pass "...and the missing prompt is logged" ;; *) fail "...and the missing prompt is logged" "typing anyway" "$(cat "$FAKE_DIR/err")" ;; esac
+eq "...never anything but the text and Enter"         "0" "$(nonenter)"
 
 echo ""
 echo "channels.sh wiring (read, never run)"
