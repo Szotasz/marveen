@@ -21,6 +21,10 @@ of the current turn count, and the strictest one wins:
   moment it is written, before the model has seen the message, and its later `remove` does not undo it;
 - the `queued_command` line that hands such a message to the model.
 
+Only a chat message is read for envelopes. Claude Code marks one with `origin.kind: "channel"`; text typed at the
+terminal or an inter-agent message is not read, whatever it quotes. An `enqueue` line has no origin, so it counts
+when its text begins with an envelope.
+
 The sender id is read from the envelope: Telegram `user_id`, Teams `aad_object_id`. A sender who is not in the
 table, a channel without a known sender attribute, an envelope with a repeated attribute, and a forged owner
 envelope typed inside a colleague's message all make the turn a member turn.
@@ -51,7 +55,8 @@ all. The launcher wires it at the agent's next start; edits to the table take ef
 
 Fail-closed: a malformed `senderRoleGate` value treats every tool as risky and every chat sender as a member
 (an owner at the terminal is still not blocked). An unreadable or empty transcript, a turn start that cannot be
-found within 64 MiB from the end, or a half-written line inside the turn also count as a member turn.
+confirmed within 64 MiB from the end, or a half-written or undecodable line inside the turn also count as a member
+turn. A `roles` entry listed twice keeps the stricter role.
 
 ## Limits
 
@@ -60,6 +65,8 @@ found within 64 MiB from the end, or a half-written line inside the turn also co
 - In `claude -p` (stream-json) runs a channel message leaves no line in the transcript at all (measured with
   CLI 2.1.296), so the gate cannot see it there. It is built for the interactive sessions the fleet runs.
 - The main agent is not covered: the gate is wired for sub-agents only.
+- A message the owner types at the terminal while the agent is working, if it begins with an envelope tag, counts
+  as that sender's message for the rest of the turn (its enqueue line has no origin to tell it apart).
 - An `agent-config.json` that is not valid JSON does not wire the hook (the launcher already treats such a file
   as broken).
 - On a risky call the hook reads the transcript backwards to the start of the previous turn, at most 64 MiB.

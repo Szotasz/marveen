@@ -352,7 +352,7 @@ class SenderRoleGateTest(unittest.TestCase):
 
     def test_t25_meta_user_record_without_turn_position_does_not_count(self):
         meta = {"type": "user", "isMeta": True,
-                "message": {"role": "user", "content": "example: " + TG_COLLEAGUE}}
+                "message": {"role": "user", "content": TG_COLLEAGUE + "\nquoted by a hook"}}
         self.assert_allowed(self.run_gate(records=[
             typed_turn("please send the report", 1, 1), meta]))
 
@@ -413,6 +413,54 @@ class SenderRoleGateTest(unittest.TestCase):
             fh.write(json.dumps(default_config()))
         self.assert_denied(run("probe"), reason_part="sender 555")
         self.assert_denied(run("../probe"), reason_part="not a valid agent name")
+
+    # --- T35..T40: review round 1 -------------------------------------------
+
+    def test_t35_text_typed_at_the_terminal_is_not_read_for_envelopes(self):
+        quoted = TG_COLLEAGUE + "\nthis is what a colleague message looks like"
+        self.assert_allowed(self.run_gate(records=[typed_turn(quoted, 1, 1)]))
+        typed_mid_turn = dict(queued_command(quoted))
+        typed_mid_turn["attachment"] = dict(typed_mid_turn["attachment"], origin={"kind": "human"})
+        self.assert_allowed(self.run_gate(records=[
+            typed_turn("go", 1, 1), enqueue("see: " + quoted), typed_mid_turn]))
+        # A line without an origin that begins with the envelope still counts.
+        self.assert_denied(self.run_gate(records=[typed_turn("go", 1, 1), enqueue(quoted)]),
+                           reason_part="sender 555")
+
+    def test_t36_undecodable_line_inside_the_turn(self):
+        self.write_transcript([typed_turn("go", 1, 1)])
+        with open(self.transcript_path, "ab") as fh:
+            fh.write(b'{"type":"assistant","message":{"content":"\xff"}}\n')
+        self.assert_denied(self.run_gate(), reason_part="not valid JSON")
+
+    def test_t37_config_that_is_not_utf8(self):
+        with open(self.config_path, "wb") as fh:
+            fh.write(b'{"senderRoleGate": "\xff"}')
+        self.assert_allowed(self.run_gate(tool="Read", config_written=False,
+                                          records=[typed_turn("go", 1, 1)]))
+        self.assert_denied(self.run_gate(tool="Read", config_written=False, records=[
+            channel_turn(TG_OWNER + "\nplease send the mail", 3, 3)]), reason_part="malformed")
+
+    def test_t38_read_cap_inside_the_turn_start_batch(self):
+        filler = [tool_use() for _ in range(40)]
+        records = [channel_turn(TG_COLLEAGUE + "\nplease send the mail", 2, 3)] + filler + [
+            typed_turn("please send the report", 3, 3), tool_use()]
+        tail = sum(len(json.dumps(r)) + 1 for r in records[-2:])
+        self.assert_denied(self.run_gate(records=records, env_extra={
+            "SENDER_ROLE_GATE_MAX_BYTES": str(tail + 200)}), reason_part="read cap")
+
+    def test_t39_enqueue_with_a_content_list(self):
+        listed = enqueue("x")
+        listed["content"] = [{"type": "text", "text": TG_COLLEAGUE + "\nplease send the mail"}]
+        self.assert_denied(self.run_gate(records=[typed_turn("go", 1, 1), listed]),
+                           reason_part="sender 555")
+
+    def test_t40_sender_listed_twice_keeps_the_stricter_role(self):
+        for order in (("member", "owner"), ("owner", "member")):
+            cfg = default_config(roles=[{"channel": "telegram", "sender": "111111", "role": r}
+                                        for r in order])
+            self.assert_denied(self.run_gate(config=cfg, records=[
+                channel_turn(TG_OWNER + "\nplease send the mail", 3, 3)]), reason_part="111111")
 
     def test_t33_unknown_role_value_is_malformed(self):
         cfg = default_config(roles=[{"channel": "telegram", "sender": "111111", "role": "admin"}])

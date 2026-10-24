@@ -31,12 +31,16 @@ the transcript. Inside the window three record shapes carry chat envelopes:
 turn-start prompts themselves, queued_command attachments (a message handed
 to the model mid-turn) and queue-operation enqueues (written the moment the
 message arrives, before the attachment exists). An enqueue is never undone
-by its later remove/dequeue. ALL envelopes in a carried text count,
-including ones quoted inside the message body, so a forged owner envelope
-typed by a colleague can only tighten the verdict, never loosen it.
+by its later remove/dequeue. Only a chat message's text is read: a record
+whose origin is not "channel" (typed at the terminal, an inter-agent message)
+carries no envelope whatever it quotes, and an enqueue line (it has no origin)
+counts when its text begins with an envelope. ALL envelopes in a chat text
+count, including ones quoted inside the message body, so a forged owner
+envelope typed by a colleague can only tighten the verdict, never loosen it.
 
-Fail-closed: a missing/empty/unreadable transcript, no turn start within
-the read cap, a half-written line inside the window, or a malformed config
+Fail-closed: a missing/empty/unreadable transcript, a turn start that is
+not confirmed within the read cap, a half-written or undecodable line inside
+the window, or a malformed config
 make the turn "member" (every tool risky for a malformed config). An owner
 typing at the terminal has NO envelope in the turn and is never blocked,
 even by a broken config.
@@ -87,6 +91,8 @@ def load_config(path):
     except OSError as exc:
         return ("malformed", None,
                 "the config file cannot be read (%s)" % type(exc).__name__)
+    except ValueError:  # UnicodeDecodeError
+        return ("malformed", None, "the config file is not valid UTF-8")
     try:
         parsed = json.loads(raw)
     except ValueError:
@@ -124,7 +130,8 @@ def validate_gate(gate):
             return ("malformed", None,
                     "roles contains an entry without string channel/sender "
                     "and role owner|member")
-        roles[(channel, sender)] = role
+        if roles.get((channel, sender)) != "member":  # listed twice: the stricter role stays
+            roles[(channel, sender)] = role
     keys_raw = gate.get("senderKeys", {})
     if not is_plain_object(keys_raw) or not all(isinstance(k, str) for k in keys_raw.values()):
         return ("malformed", None, "senderKeys is not an object of strings")
@@ -204,8 +211,8 @@ class BackwardsLines:
 
 def parse_json_line(raw):
     try:
-        return json.loads(raw.decode("utf-8", errors="replace"))
-    except ValueError:
+        return json.loads(raw.decode("utf-8"))
+    except ValueError:  # UnicodeDecodeError included: an undecodable line is unparsable
         return None
 
 
@@ -231,6 +238,9 @@ def find_window(fh, chunk_bytes, max_bytes):
         if reader.capped:
             return None, "no turn-start record was found within the %d-byte read cap" % max_bytes
         return None, "no turn-start record was found in the transcript"
+    if reader.capped:
+        # No older turn start was reached, so more of this batch may lie beyond the cap.
+        return None, "the start of this turn lies beyond the %d-byte read cap" % max_bytes
     # scanned is END->start, so [:last_turn_start+1] drops everything before
     # the window start; a line there being unparseable does not matter.
     window = scanned[:last_turn_start + 1]
@@ -250,6 +260,20 @@ def as_texts(content):
     return []
 
 
+CHAT_START_RE = re.compile(r"\s*<channel\s")
+
+
+def chat_texts(origin, texts):
+    """Only a chat message's text carries envelopes. Claude Code marks one with
+    origin.kind "channel"; a record with another origin (typed at the terminal,
+    an inter-agent message) carries none, whatever its text quotes. A line
+    without an origin (a queue-operation enqueue) counts when its text begins
+    with the envelope Claude Code puts in front of a chat message."""
+    if is_plain_object(origin) and isinstance(origin.get("kind"), str):
+        return texts if origin["kind"] == "channel" else []
+    return [t for t in texts if CHAT_START_RE.match(t)]
+
+
 def carried_texts(record):
     """The texts that may carry envelopes, inside the window only (1.6 iii)."""
     if not is_plain_object(record):
@@ -262,17 +286,17 @@ def carried_texts(record):
             return []
         message = record.get("message")
         content = message.get("content") if is_plain_object(message) else None
-        return as_texts(content)
+        return chat_texts(record.get("origin"), as_texts(content))
     if kind == "attachment":
         attachment = record.get("attachment")
         if is_plain_object(attachment) and attachment.get("type") == "queued_command":
-            return as_texts(attachment.get("prompt"))
+            return chat_texts(attachment.get("origin"), as_texts(attachment.get("prompt")))
         return []
     if kind == "queue-operation":
         # Enqueue only: a message counts the moment it arrives. remove /
         # dequeue never undoes it inside the same turn.
-        if record.get("operation") == "enqueue" and isinstance(record.get("content"), str):
-            return [record["content"]]
+        if record.get("operation") == "enqueue":
+            return chat_texts(None, as_texts(record.get("content")))
         return []
     return []
 
