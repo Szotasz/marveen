@@ -139,7 +139,7 @@ Társak kikapcsolt föderáció mellett is szerkeszthetők — a párosítás te
 
 ### Ismert korlátok
 
-- **Nincs done/failed visszacsatolás:** a küldő a `delivered`-ig lát (a társ befogadta); a feldolgozás eredménye nem folyik vissza (későbbi fázis: ack + `remote_ref`).
+- **Eredmény-nyugta a hídon:** ha a címzett a föderált feladatot eredménnyel zárja le (`PUT /api/messages/<id>`, nem üres `result`), egy `[Eredmény] msg_id:<a küldő saját azonosítója> status:<s>` üzenet megy vissza a hídon (a beérkező `ref` a `remote_ref` oszlopban áll). Üres eredményre, `notify:false`-ra, nyugtára adott nyugtára nem megy semmi; ha az eredmény privát adatot tartalmaz (tulaj neve, chat id, token, belső rendszernév), a nyugta VISSZATARTVA, és a PUT válasz `federatedReceipt` mezője megmondja, miért (ilyenkor külön üzenetben válaszolj). A küldő saját sora ettől még `delivered` marad.
 - **Dedup restartig:** a fogadó duplikátum-szűrése memóriabeli.
 - **Nincs rate-limit** az inboxon (méret- és backoff-védelmen túl).
 - **A szétkapcsolás aszimmetrikus:** társ-törlés/token-csere után a MÁSIK oldal tulajának is lépnie kell; addig a társ ügynöke a halott címre küldött üzenetekről csak a `failed` státuszból értesül.

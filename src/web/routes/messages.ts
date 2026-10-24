@@ -26,6 +26,8 @@ import { verifyHeartbeatKanban, HEARTBEAT_KANBAN_WINDOW_SEC } from '../heartbeat
 import { buildFreshnessInfo, type MessageFreshness } from '../agent-message-wrap.js'
 import { parseQualifiedId, formatQualifiedId, isQualifiedId } from '../federation/address.js'
 import { getFederationConfig } from '../federation/config.js'
+import { containsPrivateData } from '../federation/capabilities.js'
+import { FEDERATION_MAX_CONTENT_BYTES } from '../federation/bridge.js'
 import { decidePriority, parsePriorityField } from '../message-priority.js'
 import { rankedSenders } from '../../delivery-order.js'
 import type { RouteContext } from './types.js'
@@ -52,6 +54,61 @@ export function shouldNotifyDelegator(fromAgent: string, toAgent: string, conten
   if (!isKnownAgent(fromAgent)) return false
   if (content.startsWith(COMPLETION_REPORT_PREFIX)) return false
   return true
+}
+
+/**
+ * The completion receipt for a FEDERATED sender ("<system>/<agent>"), or why none is sent.
+ *
+ * shouldNotifyDelegator refuses such a sender (no local agent directory), so until this
+ * existed a peer's task closed here with a result never reached the peer: measured
+ * 2026-10-15, a peer answered our status question by closing it, and the answer was lost
+ * on both sides while the sender saw only `delivered`. The receipt is an ordinary
+ * qualified-recipient row, so the bridge delivers it like any other outbound message.
+ *
+ * Stricter than the local receipt, because it leaves the machine:
+ *   - no result, no receipt: the bridge carries no content-free acknowledgements;
+ *   - the result goes through the same deterministic private-data scrub as the manifest
+ *     (owner name, chat id, tokens, internal system names). A hit WITHHOLDS the receipt --
+ *     it is not redacted, since a half-scrubbed answer reads as a whole one;
+ *   - a receipt is never answered with a receipt (the [Eredmény] prefix), so the two
+ *     systems cannot ping-pong -- and an older peer refuses it anyway (qualified sender).
+ * The header names the PEER's message id (remote_ref), not ours: ours means nothing there.
+ * Skips are returned, not swallowed: the PUT answer reports them, so the closer learns it
+ * has to send the answer as a separate message instead.
+ */
+export type FederatedReceipt =
+  | { send: true; content: string }
+  | { send: false; reason: 'empty-result' | 'completion-report' | 'federation-disabled' | 'unknown-peer' | 'private-data' }
+
+export function federatedReceipt(
+  done: Pick<AgentMessage, 'id' | 'from_agent' | 'content' | 'remote_ref'>,
+  status: string,
+  result: string | undefined | null,
+): FederatedReceipt | null {
+  const sender = parseQualifiedId(done.from_agent)
+  if (!sender) return null
+  if (done.content.startsWith(COMPLETION_REPORT_PREFIX)) return { send: false, reason: 'completion-report' }
+  const text = (result ?? '').trim()
+  if (!text) return { send: false, reason: 'empty-result' }
+  const cfg = getFederationConfig()
+  if (!cfg.enabled) return { send: false, reason: 'federation-disabled' }
+  if (!cfg.peers.some((p) => p.id === sender.system.toLowerCase())) return { send: false, reason: 'unknown-peer' }
+  if (containsPrivateData(text)) return { send: false, reason: 'private-data' }
+  // The ref is peer-supplied: keep it to a plain id so it cannot reshape the header line.
+  const ref = (done.remote_ref ?? '').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 64)
+  const header = ref
+    ? `${COMPLETION_REPORT_PREFIX} msg_id:${ref} status:${status}`
+    : `${COMPLETION_REPORT_PREFIX} msg_id:ismeretlen status:${status} (nálunk msg ${done.id})`
+  // The peer cannot follow a local "read the rest" pointer, so the whole result goes, up to
+  // what the bridge accepts; only a result larger than that is cut, and the cut says so.
+  const cutNote = '\n... [levágva: a teljes eredmény nem fér át a hídon]'
+  const budget = FEDERATION_MAX_CONTENT_BYTES - Buffer.byteLength(`${header}\n\n${cutNote}`, 'utf8')
+  let body = text
+  if (Buffer.byteLength(body, 'utf8') > budget) {
+    while (Buffer.byteLength(body, 'utf8') > budget) body = body.slice(0, Math.floor(body.length * 0.95))
+    body += cutNote
+  }
+  return { send: true, content: `${header}\n\n${body}` }
 }
 
 /** The result a voice-channel answer is closed with: it is read by the relay, never delivered. */
@@ -684,7 +741,16 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
           `${COMPLETION_REPORT_PREFIX} msg_id:${id} status:${newStatus}\n\n${summary}`,
         )
       }
-      json(res, { ok: true }); return true
+      // A federated sender: see federatedReceipt. The outcome rides on the answer, so a
+      // withheld receipt is never silent to the closer.
+      const receipt = done && notify !== false ? federatedReceipt(done, newStatus, result) : null
+      if (done && receipt?.send === true) {
+        createAgentMessage(done.to_agent, done.from_agent, receipt.content)
+        logger.info({ id, to: done.from_agent }, 'Federated completion receipt queued')
+      } else if (receipt?.send === false) {
+        logger.info({ id, to: done?.from_agent, reason: receipt.reason }, 'Federated completion receipt not sent')
+      }
+      json(res, receipt ? { ok: true, federatedReceipt: receipt.send ? 'queued' : receipt.reason } : { ok: true }); return true
     }
     json(res, { error: 'Message not found or invalid status' }, 404)
     return true

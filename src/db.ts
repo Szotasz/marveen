@@ -1135,6 +1135,10 @@ export function initDatabase(dbPathOverride?: string): void {
   // sets it; POST /api/messages never does, so a 1 here is authenticated by construction.
   // 0 for every older row.
   try { db.exec('ALTER TABLE agent_messages ADD COLUMN stop_authorized INTEGER NOT NULL DEFAULT 0') } catch { /* exists */ }
+  // Federated inbound rows: the sending peer's message id (the inbox `ref`), stored so the
+  // completion receipt sent back over the bridge names the message the PEER knows -- our local
+  // id means nothing on the other system. Null for local rows and for federated rows from before.
+  try { db.exec('ALTER TABLE agent_messages ADD COLUMN remote_ref TEXT') } catch { /* exists */ }
 
   // INVARIANT: a row that says 'delivered' must carry a delivered_at.
   //
@@ -4632,6 +4636,9 @@ export interface AgentMessage {
   // Card 71263d15 (C): 1 = a STOP from an authenticated writer (see the migration). Optional in the type
   // only because rows built in code before the column (tests, fixtures) do not carry it.
   stop_authorized?: number
+  // The SENDER's own id for a federated inbound row (the bridge's `ref`), so a completion
+  // receipt can name the message the peer knows. Null for local rows and older federated ones.
+  remote_ref?: string | null
 }
 
 export function createAgentMessage(
@@ -4640,7 +4647,7 @@ export function createAgentMessage(
   content: string,
   originNote?: string | null,
   traceCtx?: { trace_id: string; span_id: string; parent_span_id: string | null } | null,
-  opts?: { urgent?: boolean; stopAuthorized?: boolean; priority?: 0 | 1 },
+  opts?: { urgent?: boolean; stopAuthorized?: boolean; priority?: 0 | 1; remoteRef?: string | null },
 ): AgentMessage {
   const now = Math.floor(Date.now() / 1000)
   // Card 795d1f48 (a): urgent only when a caller asks for it; the callers that may are the in-process writers and the
@@ -4652,9 +4659,10 @@ export function createAgentMessage(
   // Card ad771121: the stored delivery priority (0 normal, 1 high), as the caller decided it (the route's
   // per-pair budget, decidePriority). An urgent row is above high by its own column; the route stores it 0.
   const priority: 0 | 1 = opts?.priority === 1 ? 1 : 0
+  const remoteRef = opts?.remoteRef ?? null
   const info = db.prepare(
-    'INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at, origin_note, trace_id, span_id, parent_span_id, urgent, stop_authorized, priority) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-  ).run(from, to, content, 'pending', now, originNote ?? null, traceCtx?.trace_id ?? null, traceCtx?.span_id ?? null, traceCtx?.parent_span_id ?? null, urgent, stopAuthorized, priority)
+    'INSERT INTO agent_messages (from_agent, to_agent, content, status, created_at, origin_note, trace_id, span_id, parent_span_id, urgent, stop_authorized, priority, remote_ref) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+  ).run(from, to, content, 'pending', now, originNote ?? null, traceCtx?.trace_id ?? null, traceCtx?.span_id ?? null, traceCtx?.parent_span_id ?? null, urgent, stopAuthorized, priority, remoteRef)
   return {
     id: Number(info.lastInsertRowid),
     from_agent: from, to_agent: to, content, status: 'pending',
@@ -4666,6 +4674,7 @@ export function createAgentMessage(
     urgent,
     stop_authorized: stopAuthorized,
     priority,
+    remote_ref: remoteRef,
   }
 }
 

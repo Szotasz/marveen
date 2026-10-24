@@ -370,7 +370,11 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
     // Content is stored VERBATIM: normalizeKanbanRefs must not run here -- it
     // would rewrite the PEER's #hex card refs against the LOCAL board
     // (content corruption + a card-id oracle for the peer).
-    const msg = createAgentMessage(verdict.from, verdict.to, verdict.content)
+    // The ref is kept ONLY for a peer-authenticated caller, like the dedup key: it is what
+    // the completion receipt names back to that peer (routes/messages.ts federatedReceipt),
+    // and a dashboard-token smoke test has no peer for it to mean anything to.
+    const msg = createAgentMessage(verdict.from, verdict.to, verdict.content, null, null,
+      { remoteRef: callerPeerId !== null ? verdict.ref : null })
     if (callerPeerId !== null && verdict.ref !== null) rememberRef(`${callerPeerId}:${verdict.ref}`, msg.id)
     logger.info({ fedIn: true, callerPeer: callerPeerId, id: msg.id, from: verdict.from, to: verdict.to, ref: verdict.ref }, 'federation inbox: message accepted')
     json(res, { id: msg.id, ref: verdict.ref }, 202)
