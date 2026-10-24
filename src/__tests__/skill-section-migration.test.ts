@@ -92,9 +92,8 @@ describe('skill section migration', () => {
     const mkdirAt = lines.findIndex((l) => l.includes('SKILL-NEV'))
     expect(mkdirAt).toBeGreaterThan(-1)
     // an LLM's copy: CRLF line endings, an extra blank line padded into the
-    // SKILL-NEV block (where a blank line already sits, so normalizing absorbs
-    // it), trailing spaces on two body lines (the heading line is left
-    // verbatim so the section is still found)
+    // SKILL-NEV block, trailing spaces on two body lines (blank lines are
+    // dropped and lines right-trimmed before comparing)
     const padded = [...lines.slice(0, mkdirAt), '', ...lines.slice(mkdirAt)]
     padded[2] += '  '
     padded[padded.length - 1] += '  '
