@@ -56,6 +56,7 @@ MARKER = "// MARVEEN-PATCH(elsokor922-d4): /status and /help belong to the comma
 FWD_MARKER = "// MARVEEN-PATCH(elsokor922-fwd): forwarded flag for the command hook"
 EVID_MARKER = "// MARVEEN-PATCH(cmd920-evid): inbound evidence for owner write commands"
 KBD_MARKER = "// MARVEEN-PATCH(c67f5f34-kbd): one-tap answer buttons"
+SILENT_MARKER = "// MARVEEN-PATCH(tgsilent): reply without a notification sound"
 
 # Each anchor is the handler's full block, up to its closing `})` at column 0.
 ANCHORS = [
@@ -238,6 +239,36 @@ INVIS_CONTENT_ANCHOR = ("channel content", re.compile(r"^( *)content: text,\n", 
 INVIS_ATTACHMENT_ANCHOR = ("inbound meta attachment_name", re.compile(
     r"^( *)\.\.\.\(attachment\.name \? \{ attachment_name: attachment\.name \} : \{\}\),\n", re.MULTILINE))
 
+# A status / done / summary message should be able to go out without a
+# notification sound (Bot API disable_notification). The reply tool gets an
+# optional `silent` boolean: schema field (after `files`), a check before
+# anything is sent, and the option on every text chunk. The file sends are the
+# catch: the topics patch (below, run AFTER the PATCHES) REPLACES the three-line
+# `const opts = reply_to != null ...` block, so this patch must touch neither
+# that block nor the two send-call lines. Instead it captures the outer `opts`
+# in replyFileOpts before the if, and declares a new `const opts` as the first
+# line inside the if / else blocks, which shadows the outer one (legal block
+# scoping) and adds disable_notification when silent.
+_SIL_OPTS = ("{indent}const opts = silentReply ? {{ ...replyFileOpts, disable_notification: true as const }} : "
+             "replyFileOpts " + SILENT_MARKER + "\n")
+SIL_SCHEMA = ("reply schema files property", KBD_SCHEMA[1], "insert-after",
+    "{indent}silent: {{ type: 'boolean', description: 'Optional. true sends without a notification sound (the message "
+    "still arrives and shows up in the chat). Use it for status, progress, done and summary messages that need nothing "
+    "from the user right now; leave it off for a question, a decision or anything urgent.' }}, " + SILENT_MARKER + "\n")
+SIL_CHECK = ("reply chat check", KBD_CHECK[1], "insert-after",
+    "{indent}const silentReply = args.silent == null ? false : typeof args.silent === 'boolean' ? args.silent : "
+    "(() => {{ throw new Error('silent: true or false') }})() " + SILENT_MARKER + "\n")
+SIL_SEND = ("reply send options", KBD_SEND[1], "insert-after",
+    "{indent}...(silentReply ? {{ disable_notification: true as const }} : {{}}), " + SILENT_MARKER + "\n")
+SIL_FILE_CAPTURE = ("reply file branch", re.compile(r"^( *)if \(PHOTO_EXTS\.has\(ext\)\) \{\n", re.MULTILINE),
+    "insert-before", "{indent}const replyFileOpts = opts " + SILENT_MARKER + "\n")
+SIL_PHOTO = ("reply photo send", re.compile(
+    r"^ *if \(PHOTO_EXTS\.has\(ext\)\) \{\n(?=( *)const sent = await bot\.api\.sendPhoto\(chat_id, input, opts\)\n)",
+    re.MULTILINE), "insert-after", _SIL_OPTS)
+SIL_DOC = ("reply document send", re.compile(
+    r"^ *\} else \{\n(?=( *)const sent = await bot\.api\.sendDocument\(chat_id, input, opts\)\n)",
+    re.MULTILINE), "insert-after", _SIL_OPTS)
+
 # Independent patches: each has its own marker and is all-or-nothing on its
 # own, so a plugin update that moves one anchor does not undo the other.
 PATCHES = [
@@ -251,6 +282,12 @@ PATCHES = [
      "fallback": "no inbound evidence is recorded, owner write commands are refused"},
     # an anchor may carry its own mode and insert (name, regex, mode, insert): the kbd lines differ.
     # "apply" replaces apply_patch for a patch that must also rebuild an older version of itself.
+    # silent shares three anchors with kbd and runs BEFORE it: apply_kbd strips and rebuilds its own
+    # lines right after each anchor, so a silent line inserted after kbd's would be reordered (and the
+    # file rewritten) on the next run. Placed first, both runs give the same text.
+    {"name": "silent", "marker": SILENT_MARKER,
+     "anchors": [SIL_SCHEMA, SIL_CHECK, SIL_SEND, SIL_FILE_CAPTURE, SIL_PHOTO, SIL_DOC], "mode": "insert-after",
+     "fallback": "the reply tool has no silent option: every reply plays the notification sound"},
     KBD_PATCH,
     # the four invis lines differ too, and share two regexes with evid and fwd
     {"name": "invis", "marker": INVIS_MARKER, "mode": "insert-after",

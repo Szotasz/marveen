@@ -248,6 +248,7 @@ const PLUGIN_PATCHES = [
   { name: 'd4', marker: PLUGIN_PATCH_MARKER, label: '', fallback: 'a /status és a /help a plugin saját válasza' },
   { name: 'fwd', marker: 'MARVEEN-PATCH(elsokor922-fwd)', label: ' (továbbítás-jelölő)', fallback: 'egy továbbított parancs úgy fut, mint a begépelt' },
   { name: 'evid', marker: 'MARVEEN-PATCH(cmd920-evid)', label: ' (bejövő-napló)', fallback: 'az író parancsok (/model, /context clear, saját parancsok) nem futnak, nincs mihez ellenőrizni őket' },
+  { name: 'silent', marker: 'MARVEEN-PATCH(tgsilent)', label: ' (hangtalan válasz)', fallback: 'minden válasz hanggal érkezik, a státuszüzenetek is' },
   { name: 'kbd', marker: 'MARVEEN-PATCH(c67f5f34-kbd)', label: ' (válaszgombok)', fallback: 'a kérdések gomb nélkül mennek ki, a válasz betűvel jön' },
   { name: 'invis', marker: 'MARVEEN-PATCH(invis1024)', label: ' (láthatatlan karakterek)', fallback: 'a bejövő szövegben maradnak a láthatatlan karakterek, a modell látja őket' },
 ]
