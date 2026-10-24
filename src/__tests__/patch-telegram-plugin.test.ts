@@ -1091,6 +1091,8 @@ describe('invis: invisible characters (invis1024)', () => {
         ['x\u{1F3F4}\u{E007F}y', 'x\u{1F3F4}y', { invisible_tag: '1' }],
         // a tag outside the letter/digit range breaks the sequence
         ['\u{1F3F4}\u{E0067}\u{E007B}\u{E007F}', '\u{1F3F4}', { invisible_tag: '3' }],
+        // tag digits are part of a valid flag too
+        ['\u{1F3F4}\u{E0075}\u{E0073}\u{E0030}\u{E0031}\u{E007F}', '\u{1F3F4}\u{E0075}\u{E0073}\u{E0030}\u{E0031}\u{E007F}', {}],
         // the longest valid flag (seven tag characters) is kept whole
         ['\u{1F3F4}' + '\u{E0061}'.repeat(7) + '\u{E007F}', '\u{1F3F4}' + '\u{E0061}'.repeat(7) + '\u{E007F}', {}],
       ]
