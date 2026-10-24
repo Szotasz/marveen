@@ -19,6 +19,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach, vi } from 'vitest'
 import { EventEmitter } from 'node:events'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs'
+import { safeRmTmp } from './helpers/safe-rm-tmp.js'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -61,7 +62,7 @@ function fixture(name: string, config: Record<string, unknown>, withSkill = true
   writeFileSync(join(dirOf(name), 'task-config.json'), JSON.stringify(config, null, 2))
 }
 
-beforeEach(() => { rmSync(io.SCHEDULED_TASKS_DIR, { recursive: true, force: true }) })
+beforeEach(() => { safeRmTmp(io.SCHEDULED_TASKS_DIR) })
 
 describe('the sandbox holds', () => {
   it('SCHEDULED_TASKS_DIR is under the throwaway HOME', () => {
