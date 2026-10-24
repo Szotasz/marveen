@@ -4,11 +4,12 @@
 // fixtures/telegram-plugin-0.0.7/server.ts.txt) in a scratch plugins cache.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, copyFileSync, readFileSync, writeFileSync, rmSync, statSync, renameSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, copyFileSync, readFileSync, writeFileSync, rmSync, existsSync, statSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import ts from 'typescript'
 import { checkWriteEvidence, findEvidence, readEvidenceLines } from '../web/write-evidence.js'
+import { telegramPluginPatchStatus } from '../web/system-status.js'
 
 const ROOT = join(__dirname, '..', '..')
 const SCRIPT = join(ROOT, 'scripts', 'patch-telegram-plugin.py')
@@ -52,20 +53,21 @@ describe('patch-telegram-plugin.py', () => {
     expect(text).not.toContain('Paired as')
     expect(text).toContain("bot.command('start'")
     expect(text.match(/MARVEEN-PATCH\(elsokor922-d4\)/g)).toHaveLength(3)
-    expect(text).toMatch(/ +user_id: String\(from\.id\),\n +\.\.\.\(ctx\.message\?\.forward_origin \? \{ forwarded: '1' \} : \{\}\), \/\/ MARVEEN-PATCH\(elsokor922-fwd\)/)
+    // the invis meta spread lands between user_id and the forwarded flag
+    expect(text).toMatch(/ +user_id: String\(from\.id\),\n +\.\.\.__invis\.meta, \/\/ MARVEEN-PATCH\(invis1024\)[^\n]*\n +\.\.\.\(ctx\.message\?\.forward_origin \? \{ forwarded: '1' \} : \{\}\), \/\/ MARVEEN-PATCH\(elsokor922-fwd\)/)
     expect(syntaxErrors(text)).toEqual([])
   })
 
   it('2nd run is a no-op: returns `already`, byte-identical, silent', () => {
     const state = join(cache, 'state.json')
     run(['--state', state])
-    expect(readState(state).files).toEqual([{ version: '0.0.7', path: server, status: 'patched', patches: { d4: 'patched', fwd: 'patched', evid: 'patched', kbd: 'patched' } }])
+    expect(readState(state).files).toEqual([{ version: '0.0.7', path: server, status: 'patched', patches: { d4: 'patched', fwd: 'patched', evid: 'patched', kbd: 'patched', invis: 'patched' } }])
     const once = readFileSync(server, 'utf-8')
     const r = run(['--state', state])
     expect(r.status).toBe(0)
     expect(r.stderr).toBe('')
     expect(readFileSync(server, 'utf-8')).toBe(once)
-    expect(readState(state).files).toEqual([{ version: '0.0.7', path: server, status: 'already', patches: { d4: 'already', fwd: 'already', evid: 'already', kbd: 'already' } }])
+    expect(readState(state).files).toEqual([{ version: '0.0.7', path: server, status: 'already', patches: { d4: 'already', fwd: 'already', evid: 'already', kbd: 'already', invis: 'already' } }])
   })
 
   it('a changed anchor (plugin update): loud line, THAT patch left out, the other still applied, exit 0', () => {
@@ -80,7 +82,7 @@ describe('patch-telegram-plugin.py', () => {
     expect(text).toContain("bot.command('help', async ctx => {")
     expect(text).toContain('elsokor922-fwd')
     expect(syntaxErrors(text)).toEqual([])
-    expect(readState(state).files[0].patches).toEqual({ d4: 'anchor-missing:status handler', fwd: 'patched', evid: 'patched', kbd: 'patched' })
+    expect(readState(state).files[0].patches).toEqual({ d4: 'anchor-missing:status handler', fwd: 'patched', evid: 'patched', kbd: 'patched', invis: 'patched' })
   })
 
   // #1530 review: owner write commands need evidence the owner's chat sent
@@ -92,8 +94,10 @@ describe('patch-telegram-plugin.py', () => {
     expect(text.match(/MARVEEN-PATCH\(cmd920-evid\)/g)).toHaveLength(1)
     const lines = text.split('\n')
     const i = lines.findIndex(l => l.includes('MARVEEN-PATCH(cmd920-evid)'))
-    expect(lines[i + 1]).toMatch(/^ *mcp\.notification\(\{$/)
-    expect(lines[i + 2]).toMatch(/method: 'notifications\/claude\/channel',$/)
+    // the invis1024 const line sits between the evidence line and the notification
+    expect(lines[i + 1]).toMatch(/const __invis = /)
+    expect(lines[i + 2]).toMatch(/^ *mcp\.notification\(\{$/)
+    expect(lines[i + 3]).toMatch(/method: 'notifications\/claude\/channel',$/)
     expect(syntaxErrors(text)).toEqual([])
     // Run the inserted line with the handler's own names in scope.
     const stateDir = mkdtempSync(join(tmpdir(), 'tg-evid-'))
@@ -382,7 +386,7 @@ describe('kbd: inline answer buttons (c67f5f34)', () => {
     expect(r.status).toBe(0)
     expect(r.stderr).toMatch(/LOUD: reply send options not found exactly once.*the kbd patch left out, the reply tool has no buttons/)
     expect(readFileSync(server, 'utf-8')).not.toContain(KBD)
-    expect(readState(state).files[0].patches).toEqual({ d4: 'patched', fwd: 'patched', evid: 'patched', kbd: 'anchor-missing:reply send options' })
+    expect(readState(state).files[0].patches).toEqual({ d4: 'patched', fwd: 'patched', evid: 'patched', kbd: 'anchor-missing:reply send options', invis: 'patched' })
   })
 
   it('each of the three new anchors, when moved, leaves every kbd line out on a fresh file', () => {
@@ -987,8 +991,191 @@ describe('kbd: the callback branch and the delivery of a tap (c67f5f34, card 267
   })
 })
 
-describe('channels.sh wiring (review #1529, point 1)', () => {
-  const sh = readFileSync(join(ROOT, 'scripts', 'channels.sh'), 'utf-8')
+// invis1024: a forwarded or pasted text can carry characters a person cannot see but the model reads
+// (Unicode tag characters, "ASCII smuggling") or that reorder what the reader sees (bidi controls).
+// The patched handler hands the model the stripped text and says per class how many went -- the same
+// rule as the Teams plugin. The evidence line, written just before, still holds the RAW text.
+describe('invis: invisible characters (invis1024)', () => {
+  const INVIS = 'MARVEEN-PATCH(invis1024)'
+
+  it('1st run patches: exactly three marked lines, the file still parses, the evidence line stays first', () => {
+    expect(run().status).toBe(0)
+    const text = readFileSync(server, 'utf-8')
+    expect(text.match(/MARVEEN-PATCH\(invis1024\)/g)).toHaveLength(3)
+    // the const line sits after the evidence line (which keeps the RAW text) and before the notification
+    const lines = text.split('\n')
+    const evid = lines.findIndex(l => l.includes('MARVEEN-PATCH(cmd920-evid)'))
+    const invis = lines.findIndex(l => l.includes('const __invis ='))
+    expect(evid).toBeGreaterThan(-1)
+    expect(invis).toBe(evid + 1)
+    expect(lines[evid]).toContain('mode: 0o600')
+    expect(lines[invis + 1]).toMatch(/^ *mcp\.notification\(\{$/)
+    // the content spread overrides `content: text`, the meta spread lands right after user_id
+    expect(text).toMatch(/content: text,\n +\.\.\.\{ content: __invis\.text \}, \/\/ MARVEEN-PATCH\(invis1024\)/)
+    expect(text).toMatch(/user_id: String\(from\.id\),\n +\.\.\.__invis\.meta, \/\/ MARVEEN-PATCH\(invis1024\)/)
+    expect(syntaxErrors(text)).toEqual([])
+  })
+
+  type Inbound = { content: string; meta: Record<string, string> }
+
+  // Runs the PATCHED handleInbound of the fixture with a fake mcp and gate: what the channel notification
+  // really gets, and what the evidence line wrote on the way there. Only the names the block uses are
+  // handed in; the reply/permission branches are never taken.
+  function inboundHandler(patched: string, stateDir: string) {
+    const start = patched.indexOf('async function handleInbound')
+    expect(start).toBeGreaterThan(0)
+    const end = patched.indexOf('// --- Server instructions')
+    const js = ts.transpileModule(patched.slice(start, end), { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
+    const notifications: Inbound[] = []
+    const mcp = { notification: async (n: { params: Inbound }) => { notifications.push(n.params) } }
+    const bot = { api: { sendChatAction: async () => ({}), setMessageReaction: async () => ({}) } }
+    const gate = () => ({ action: 'ok', access: {} })
+    const handleInbound = new Function('gate', 'PERMISSION_REPLY_RE', 'mcp', 'bot', 'writeFileSync', 'statSync', 'renameSync', 'join', 'STATE_DIR',
+      js + '\nreturn handleInbound')(gate, /PERMISSION_REPLY_RE never matches this/, mcp, bot, writeFileSync, statSync, renameSync, join, stateDir)
+    return {
+      notifications,
+      send: async (text: string, forwarded = false) => {
+        const ctx = {
+          from: { id: 7, username: 'colleague' },
+          chat: { id: 42 },
+          message: { message_id: 901, date: 0, ...(forwarded ? { forward_origin: { date: 0 } } : {}) },
+        }
+        await handleInbound(ctx, text, undefined, undefined)
+        return notifications[notifications.length - 1]
+      },
+      evidence: () => readFileSync(join(stateDir, 'inbound-evidence.jsonl'), 'utf-8').trim().split('\n').map(l => JSON.parse(l)),
+    }
+  }
+
+  it('tag characters, zero-width spaces, a BOM and a bidi control: stripped and counted per class; the evidence record holds the RAW text', async () => {
+    run()
+    // A then three smuggled tag characters, B, two zero-width spaces, C, a BOM, D, one RTL override, E
+    const raw = 'A\u{E0041}\u{E0042}\u{E0043}B\u{200B}\u{200B}C\u{FEFF}D\u{202E}E'
+    const stateDir = mkdtempSync(join(tmpdir(), 'tg-invis-'))
+    try {
+      const h = inboundHandler(readFileSync(server, 'utf-8'), stateDir)
+      const n = await h.send(raw)
+      expect(n.content).toBe('ABCDE')
+      expect(n.meta).toEqual({
+        chat_id: '42',
+        message_id: '901',
+        user: 'colleague',
+        user_id: '7',
+        ts: '1970-01-01T00:00:00.000Z',
+        invisible_tag: '3',
+        invisible_zwsp: '2',
+        invisible_bom: '1',
+        invisible_bidi: '1',
+      })
+      expect(h.evidence().map(r => [r.chat_id, r.message_id, r.text])).toEqual([['42', '901', raw]])
+    } finally { rmSync(stateDir, { recursive: true, force: true }) }
+  })
+
+  // The same edge cases the Teams plugin pins for its stripInvisible (tests/invisibleChars.test.ts there): one rule,
+  // two implementations, both held to the same inputs.
+  it('the shared rule on its edges: word joiner and isolates, and every malformed flag sequence', async () => {
+    run()
+    const stateDir = mkdtempSync(join(tmpdir(), 'tg-invis-'))
+    const tags = (n: Inbound) => Object.fromEntries(Object.entries(n.meta).filter(([k]) => k.startsWith('invisible_')))
+    try {
+      const h = inboundHandler(readFileSync(server, 'utf-8'), stateDir)
+      const cases: Array<[string, string, Record<string, string>]> = [
+        // U+2060..U+2064 are the zwsp class, U+2066..U+2069 the bidi isolates
+        ['a\u{2060}b\u{2061}c\u{2064}d', 'abcd', { invisible_zwsp: '3' }],
+        ['a\u{2066}b\u{2069}c', 'abc', { invisible_bidi: '2' }],
+        // a flag-shaped run without the closing CANCEL TAG: its tags go, the black flag stays
+        ['\u{1F3F4}\u{E0067}\u{E0062}', '\u{1F3F4}', { invisible_tag: '2' }],
+        // eight tag letters are one too many for a flag: all of them and the cancel tag go
+        ['\u{1F3F4}' + '\u{E0061}'.repeat(8) + '\u{E007F}', '\u{1F3F4}', { invisible_tag: '9' }],
+        // no tag letter before the cancel tag: not a sequence
+        ['x\u{1F3F4}\u{E007F}y', 'x\u{1F3F4}y', { invisible_tag: '1' }],
+        // a tag outside the letter/digit range breaks the sequence
+        ['\u{1F3F4}\u{E0067}\u{E007B}\u{E007F}', '\u{1F3F4}', { invisible_tag: '3' }],
+        // the longest valid flag (seven tag characters) is kept whole
+        ['\u{1F3F4}' + '\u{E0061}'.repeat(7) + '\u{E007F}', '\u{1F3F4}' + '\u{E0061}'.repeat(7) + '\u{E007F}', {}],
+      ]
+      for (const [raw, content, counts] of cases) {
+        const n = await h.send(raw)
+        expect(n.content).toBe(content)
+        expect(tags(n)).toEqual(counts)
+      }
+    } finally { rmSync(stateDir, { recursive: true, force: true }) }
+  })
+
+  it('an emoji tag sequence (the flag of England) and a ZWJ family emoji pass byte-identical', async () => {
+    run()
+    const england = '\u{1F3F4}\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F}'
+    const family = '\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}'
+    const stateDir = mkdtempSync(join(tmpdir(), 'tg-invis-'))
+    try {
+      const h = inboundHandler(readFileSync(server, 'utf-8'), stateDir)
+      for (const whole of [england, family, `${england} ${family}`]) {
+        const n = await h.send(whole)
+        expect(Buffer.from(n.content, 'utf-8')).toEqual(Buffer.from(whole, 'utf-8'))
+        expect(Object.keys(n.meta).filter(k => k.startsWith('invisible_'))).toEqual([])
+      }
+    } finally { rmSync(stateDir, { recursive: true, force: true }) }
+  })
+
+  it('clean text: the content is the same string, no invisible_* key, forwarded and user_id still in the meta', async () => {
+    run()
+    const stateDir = mkdtempSync(join(tmpdir(), 'tg-invis-'))
+    try {
+      const h = inboundHandler(readFileSync(server, 'utf-8'), stateDir)
+      const n = await h.send('Szia, minden rendben?', true)
+      expect(n.content).toBe('Szia, minden rendben?')
+      expect(Object.keys(n.meta).filter(k => k.startsWith('invisible_'))).toEqual([])
+      expect(n.meta.forwarded).toBe('1')
+      expect(n.meta.user_id).toBe('7')
+    } finally { rmSync(stateDir, { recursive: true, force: true }) }
+  })
+
+  it('a changed content anchor: invis left out with one loud line, the other patches still applied, the 2nd run a no-op', () => {
+    const changed = readFileSync(FIXTURE, 'utf-8').replace('content: text,', 'content: String(text),')
+    writeFileSync(server, changed)
+    const state = join(cache, 'state.json')
+    const r = run(['--state', state])
+    expect(r.status).toBe(0)
+    expect(r.stderr).toMatch(/LOUD: channel content not found exactly once.*the invis patch left out, inbound text reaches the model with its invisible characters/)
+    const text = readFileSync(server, 'utf-8')
+    expect(text).not.toContain(INVIS)
+    expect(text).toContain('MARVEEN-PATCH(elsokor922-d4)')
+    expect(text).toContain('MARVEEN-PATCH(elsokor922-fwd)')
+    expect(text).toContain('MARVEEN-PATCH(cmd920-evid)')
+    expect(text).toContain('MARVEEN-PATCH(c67f5f34-kbd)')
+    expect(syntaxErrors(text)).toEqual([])
+    expect(readState(state).files[0].patches).toEqual({ d4: 'patched', fwd: 'patched', evid: 'patched', kbd: 'patched', invis: 'anchor-missing:channel content' })
+    const once = readFileSync(server, 'utf-8')
+    expect(run(['--state', state]).status).toBe(0)
+    expect(readFileSync(server, 'utf-8')).toBe(once)
+  })
+
+  it('the --state JSON names the invis patch like the others', () => {
+    const state = join(cache, 'state.json')
+    run(['--state', state])
+    expect(readState(state).files[0].patches).toEqual({ d4: 'patched', fwd: 'patched', evid: 'patched', kbd: 'patched', invis: 'patched' })
+  })
+
+  it('system-status measures the invis patch on its own, with this marker', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'tg-invis-status-'))
+    try {
+      const d = join(dir, 'cache', 'claude-plugins-official', 'telegram', '0.0.7')
+      mkdirSync(d, { recursive: true })
+      writeFileSync(join(d, 'server.ts'), ['elsokor922-d4', 'elsokor922-fwd', 'cmd920-evid', 'c67f5f34-kbd'].map(m => `// MARVEEN-PATCH(${m}): x`).join('\n'))
+      const state = join(dir, 'state.json')
+      writeFileSync(state, JSON.stringify({ at: 0, root: join(dir, 'cache'), files: [
+        { version: '0.0.7', status: 'patched', patches: { d4: 'already', fwd: 'already', evid: 'already', kbd: 'already', invis: 'anchor-missing:channel content' } },
+      ] }))
+      expect(telegramPluginPatchStatus(state)).toBe('HIÁNYZIK (láthatatlan karakterek): 0.0.7 (anchor-missing:channel content) · a bejövő szövegben maradnak a láthatatlan karakterek, a modell látja őket')
+    } finally { rmSync(dir, { recursive: true, force: true }) }
+  })
+})
+
+// channels.sh carries the channel wiring and is not part of every checkout this
+// test runs in; without it there is nothing to pin here.
+const CHANNELS_SH = join(ROOT, 'scripts', 'channels.sh')
+const sh = existsSync(CHANNELS_SH) ? readFileSync(CHANNELS_SH, 'utf-8') : ''
+describe.skipIf(sh === '')('channels.sh wiring (review #1529, point 1)', () => {
   const code = sh.split('\n').filter(l => !l.trim().startsWith('#')).join('\n')
 
   it('calls the patcher for Telegram, with the state file, before the session (and so the plugin) is spawned', () => {
