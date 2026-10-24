@@ -14,6 +14,7 @@
 //     pending-retry path.
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { safeRmTmp } from './helpers/safe-rm-tmp.js'
 import { join } from 'node:path'
 
 const { tmpHome, realHome } = vi.hoisted(() => {
@@ -161,7 +162,7 @@ async function runOneTick(): Promise<void> {
 
 const sentTo = (name: string) => sent.filter(s => s.session === `sess-${name}`)
 const resetTasks = () => {
-  rmSync(SCHEDULED_TASKS_DIR, { recursive: true, force: true })
+  safeRmTmp(SCHEDULED_TASKS_DIR)
   mkdirSync(SCHEDULED_TASKS_DIR, { recursive: true })
   getDb().prepare('DELETE FROM scheduled_task_registry').run()
   getDb().prepare('DELETE FROM pending_task_retries').run()

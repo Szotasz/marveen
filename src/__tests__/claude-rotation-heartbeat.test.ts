@@ -8,6 +8,7 @@
 // test here can touch a real ~/.claude/scheduled-tasks.
 import { describe, it, expect, vi, beforeEach, afterAll } from 'vitest'
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs'
+import { safeRmTmp } from './helpers/safe-rm-tmp.js'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ClaudePlan } from '../web/claude-plans.js'
@@ -70,7 +71,7 @@ function fakePost(path: string, body: unknown): { ctx: any; out: { status: numbe
 }
 
 beforeEach(() => {
-  rmSync(io.SCHEDULED_TASKS_DIR, { recursive: true, force: true })
+  safeRmTmp(io.SCHEDULED_TASKS_DIR)
   settings.clear()
   plans = []
   activePlanByAgent = {}

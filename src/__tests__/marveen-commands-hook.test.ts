@@ -14,6 +14,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import type { AddressInfo } from 'node:net'
+import { safeRmTmp } from './helpers/safe-rm-tmp.js'
 import { clearCommandsForTest, listCommands } from '../web/commands.js'
 import { registerBuiltinCommands } from '../web/builtin-commands.js'
 import Database from 'better-sqlite3'
@@ -33,6 +34,7 @@ let base = ''
 let install = ''
 let stateDir = ''
 let ledgerDb = ''
+let ledgerDir = ''
 
 beforeAll(async () => {
   server = http.createServer((req, res) => {
@@ -67,7 +69,7 @@ beforeAll(async () => {
       res.end(JSON.stringify({ ok: true, result: (req.url ?? '').endsWith('/sendMessage') ? { message_id: 555 } : {} }))
     })
   })
-  await new Promise<void>(r => server.listen(0, '127.0.0.1', r))
+  await new Promise<void>((r, reject) => { server.on('error', reject); server.listen(0, '127.0.0.1', r) })
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
 
   install = mkdtempSync(join(tmpdir(), 'mcmd-install-'))
@@ -84,15 +86,16 @@ beforeAll(async () => {
   // checkout's own scripts/hooks/ dir (not from MARVEEN_INSTALL_DIR), so
   // without this override every hook spawn here would write real rows into
   // the checkout's live store (gitignored, but still cross-run shared state).
-  ledgerDb = join(mkdtempSync(join(tmpdir(), 'mcmd-ledger-')), 'claudeclaw.db')
+  ledgerDir = mkdtempSync(join(tmpdir(), 'mcmd-ledger-'))
+  ledgerDb = join(ledgerDir, 'claudeclaw.db')
 })
 
 afterAll(() => {
-  server.closeAllConnections()
-  server.close()
-  rmSync(install, { recursive: true, force: true })
-  rmSync(stateDir, { recursive: true, force: true })
-  rmSync(join(ledgerDb, '..'), { recursive: true, force: true })
+  server?.closeAllConnections()
+  server?.close()
+  // Each variable is '' if beforeAll failed early; join('', '..') === '..' used
+  // to delete the parent of the cwd here, so only non-empty temp dirs are removed.
+  for (const d of [install, stateDir, ledgerDir]) if (d) safeRmTmp(d)
 })
 
 beforeEach(() => {

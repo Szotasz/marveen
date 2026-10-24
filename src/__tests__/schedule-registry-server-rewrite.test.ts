@@ -11,6 +11,7 @@
 //     runner (which fires registered tasks only) actually fires it.
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { rmSync, writeFileSync } from 'node:fs'
+import { safeRmTmp } from './helpers/safe-rm-tmp.js'
 import { join } from 'node:path'
 
 // HOME must point at the sandbox BEFORE scheduled-tasks-io is imported:
@@ -60,7 +61,7 @@ function onceTask(name: string): void {
 
 beforeEach(() => {
   initDatabase(':memory:')
-  rmSync(SCHEDULED_TASKS_DIR, { recursive: true, force: true })
+  safeRmTmp(SCHEDULED_TASKS_DIR)
   settings.CLAUDE_ROTATION_ENABLED = '1'
 })
 
