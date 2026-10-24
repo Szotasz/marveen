@@ -119,6 +119,24 @@ function validKeepAlive(v: string): string | null {
   return /^-?(\d+(\.\d+)?(ns|us|µs|ms|s|m|h))+$/.test(t) ? null : 'Egész szám (másodperc) vagy időtartam szükséges, pl. 30m, 1h, -1.'
 }
 
+// OSS_INVENTORY_NOTES_DIRS: comma-separated folder names under each agent
+// folder that hold research notes. Each name is one plain directory (no path
+// separator, not '.' or '..'); '' means the default. Returns the list, or null
+// when any name is invalid. Shared by the validator and the inventory route.
+export const OSS_INVENTORY_DEFAULT_NOTES_DIRS = 'research'
+export function parseOssNotesDirs(raw: string): string[] | null {
+  const names = raw.split(',').map((n) => n.trim()).filter((n) => n !== '')
+  if (names.length === 0) return OSS_INVENTORY_DEFAULT_NOTES_DIRS.split(',')
+  for (const n of names) {
+    if (n === '.' || n === '..' || n.includes('/') || n.includes('\\') || n.length > 64 || n.startsWith('-')) return null
+  }
+  return [...new Set(names)]
+}
+
+function validOssNotesDirs(v: string): string | null {
+  return parseOssNotesDirs(v) ? null : 'Vesszővel elválasztott mappanevek kellenek (pl. research,kutatas), útvonal-elválasztó és .. nélkül.'
+}
+
 function validFusionWeight(v: string): string | null {
   const t = v.trim()
   if (t === '') return null
@@ -390,6 +408,16 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     module: 'system',
     secret: false,
     requiresRestart: true,
+  },
+  {
+    key: 'OSS_INVENTORY_NOTES_DIRS',
+    type: 'string',
+    default: OSS_INVENTORY_DEFAULT_NOTES_DIRS,
+    description: 'Az átvett nyílt forrású projektek leltára (Kapcsolatok oldal) ezekből a mappákból olvassa az ügynökök kutatási jegyzeteit (csillagszám, mért előtte/utána hatás): vesszővel elválasztott mappanevek az ügynök mappáján belül, pl. research,kutatas. Üres = research. A következő leltár-frissítéskor érvényes.',
+    module: 'system',
+    secret: false,
+    requiresRestart: false,
+    validate: validOssNotesDirs,
   },
   {
     key: 'OLLAMA_URL',

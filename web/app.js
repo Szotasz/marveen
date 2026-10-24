@@ -8973,6 +8973,7 @@ async function loadConnectors() {
     renderConnectors()
     loadExternalPaths()
     loadGitHubRepos()
+    loadOssInventory()
     loadVault()
   } catch (err) {
     console.error('Connector betöltés hiba:', err)
@@ -9282,6 +9283,126 @@ async function loadGitHubRepos() {
     }
   } catch { /* ignore */ }
 }
+
+// --- Adopted open-source inventory ---
+// Read-only view of scripts/opensource-inventory.py's output. The header count
+// is the number of DIRECT adoptions (transitive pip and npm deps are behind the
+// checkbox), so it sits next to the GitHub repos counter as the answer that one misses.
+let ossInventory = null
+const OSS_TYPE_ORDER = ['skill', 'vendor', 'mcp', 'npm', 'pip']
+
+async function loadOssInventory(refresh = false) {
+  const countEl = document.getElementById('ossInventoryCount')
+  const errEl = document.getElementById('ossInventoryError')
+  if (!countEl || !errEl) return
+  try {
+    const res = await fetch('/api/opensource-inventory' + (refresh ? '?refresh=1' : ''))
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok || !Array.isArray(data.entries)) {
+      throw new Error(data.detail || data.error || ('HTTP ' + res.status))
+    }
+    ossInventory = data
+    const regenError = data.cache && data.cache.regen_error
+    errEl.hidden = !regenError
+    errEl.textContent = regenError ? t('oss.regen_error', { msg: regenError }) : ''
+    renderOssInventory()
+  } catch (err) {
+    countEl.textContent = '?'
+    errEl.hidden = false
+    errEl.textContent = t('oss.load_error', { msg: err && err.message ? err.message : String(err) })
+  }
+}
+
+function renderOssInventory() {
+  const data = ossInventory
+  const list = document.getElementById('ossInventoryList')
+  const countEl = document.getElementById('ossInventoryCount')
+  const metaEl = document.getElementById('ossInventoryMeta')
+  const showTransitive = !!document.getElementById('ossInventoryTransitive')?.checked
+  if (!data || !list) return
+  const entries = data.entries
+  const transitive = entries.filter((e) => !e.direct).length
+  countEl.textContent = String(entries.length - transitive)
+  const when = data.generated_at ? new Date(data.generated_at).toLocaleString(window._lang === 'en' ? 'en-GB' : 'hu-HU') : '?'
+  metaEl.textContent = t('oss.meta', { total: entries.length, transitive, when })
+  list.innerHTML = ''
+  if (entries.length === 0) {
+    list.innerHTML = `<div class="oss-inv-sub">${escapeHtml(t('oss.empty'))}</div>`
+    return
+  }
+  const byAgent = new Map()
+  for (const e of entries) {
+    if (!byAgent.has(e.agent)) byAgent.set(e.agent, [])
+    byAgent.get(e.agent).push(e)
+  }
+  for (const [agent, rows] of [...byAgent.entries()].sort((a, b) => a[0].localeCompare(b[0]))) {
+    const visible = rows.filter((e) => showTransitive || e.direct)
+    const hidden = rows.length - visible.length
+    const typeCounts = OSS_TYPE_ORDER
+      .map((ty) => [ty, rows.filter((e) => e.type === ty && (showTransitive || e.direct)).length])
+      .filter(([, n]) => n > 0)
+      .map(([ty, n]) => `${ty} ${n}`)
+      .join(' · ')
+    const group = document.createElement('div')
+    group.className = 'oss-inv-agent'
+    group.innerHTML = `<div class="oss-inv-agent-head"><span>${escapeHtml(agent)}</span>`
+      + `<span class="oss-inv-agent-counts">${escapeHtml(t('oss.agent_count', { n: visible.length }))}`
+      + `${typeCounts ? ' · ' + escapeHtml(typeCounts) : ''}`
+      + `${hidden > 0 ? ' · ' + escapeHtml(t('oss.transitive_hidden', { n: hidden })) : ''}</span></div>`
+    for (const e of visible) group.appendChild(renderOssRow(e))
+    list.appendChild(group)
+  }
+}
+
+function renderOssRow(e) {
+  const item = document.createElement('div')
+  item.className = 'connector-external-item oss-inv-item'
+  const safeUrl = typeof e.source_url === 'string' && /^https:\/\//.test(e.source_url) ? e.source_url : null
+  const name = safeUrl
+    ? `<a class="oss-inv-name" href="${escapeHtml(safeHref(safeUrl))}" target="_blank" rel="noopener noreferrer">${escapeHtml(e.name)}</a>`
+    : `<span class="oss-inv-name">${escapeHtml(e.name)}</span>`
+  // An npx MCP spec without @version is its bare name: that is "not pinned",
+  // not a version string.
+  const version = e.version || (e.declared && e.declared !== e.name ? e.declared : t('oss.unpinned'))
+  const sub = []
+  if (e.license) {
+    const tip = e.license_source === 'skill-header' ? ` title="${escapeHtml(t('oss.license_header'))}"` : ''
+    sub.push(`<span${tip}>${escapeHtml(e.license)}${e.license_source === 'skill-header' ? '*' : ''}</span>`)
+  } else {
+    sub.push(escapeHtml(t('oss.license_unknown')))
+  }
+  if (e.stars) {
+    sub.push(`<span title="${escapeHtml(t('oss.source', { src: e.stars_source || '' }))}">${escapeHtml(t('oss.stars', { n: e.stars }))}</span>`)
+  }
+  if (e.used_in && e.used_in.length) sub.push(escapeHtml(t('oss.used_in', { list: e.used_in.join(', ') })))
+  sub.push(escapeHtml(e.path))
+  let html = `<div class="oss-inv-line">${name}<span class="oss-inv-type">${escapeHtml(e.type)}</span>`
+    + `<span class="oss-inv-version">${escapeHtml(version)}</span></div>`
+    + `<div class="oss-inv-sub">${sub.join(' · ')}</div>`
+  if (e.effect) {
+    html += `<div class="oss-inv-effect">${escapeHtml(t('oss.effect', { text: e.effect }))}`
+      + ` <span class="oss-inv-sub">(${escapeHtml(e.effect_source || '')})</span></div>`
+  }
+  item.innerHTML = html
+  return item
+}
+
+;(function wireOssInventory() {
+  const toggle = document.getElementById('ossInventoryToggle')
+  const body = document.getElementById('ossInventoryBody')
+  if (!toggle || !body) return
+  toggle.addEventListener('click', () => {
+    const arrow = toggle.querySelector('.connector-scope-toggle')
+    if (body.hidden) { body.hidden = false; arrow.textContent = '▼' }
+    else { body.hidden = true; arrow.textContent = '▶' }
+  })
+  document.getElementById('ossInventoryTransitive')?.addEventListener('change', renderOssInventory)
+  const refreshBtn = document.getElementById('ossInventoryRefresh')
+  refreshBtn?.addEventListener('click', async () => {
+    refreshBtn.disabled = true
+    try { await loadOssInventory(true) } finally { refreshBtn.disabled = false }
+  })
+})()
 
 ;(function wireGitHubRepos() {
   const toggle = document.getElementById('githubReposToggle')
