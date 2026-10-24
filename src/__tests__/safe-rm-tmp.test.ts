@@ -134,3 +134,20 @@ describe('isStrictlyInside', () => {
     expect(isStrictlyInside(root + '\\a\\b', root, path.win32)).toBe(true)
   })
 })
+
+describe('safeRmTmp with a throwaway $HOME under the temp dir', () => {
+  it('still removes a mkdtemp dir: the HOME check uses the account home, not $HOME', () => {
+    const fakeHome = mkdtempSync(join(tmpdir(), 'safe-rm-fakehome-'))
+    const saved = process.env.HOME
+    process.env.HOME = fakeHome
+    try {
+      const d = mkdtempSync(join(tmpdir(), 'safe-rm-victim-'))
+      safeRmTmp(d)
+      expect(existsSync(d)).toBe(false)
+    } finally {
+      if (saved === undefined) delete process.env.HOME
+      else process.env.HOME = saved
+      safeRmTmp(fakeHome)
+    }
+  })
+})

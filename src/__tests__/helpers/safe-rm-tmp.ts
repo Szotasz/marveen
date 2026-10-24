@@ -1,6 +1,6 @@
 import { existsSync, realpathSync, rmSync } from 'node:fs'
 import * as nodePath from 'node:path'
-import { homedir, tmpdir } from 'node:os'
+import { tmpdir, userInfo } from 'node:os'
 
 type PathModule = Pick<typeof nodePath, 'isAbsolute' | 'relative' | 'resolve' | 'parse' | 'sep'>
 
@@ -27,7 +27,9 @@ export function isStrictlyInside(candidate: string, root: string, pathMod: PathM
 export function assertSafeTmpRoot(root: string, env: TmpRootEnv = {}): void {
   const platform = env.platform ?? process.platform
   const pathMod = env.pathMod ?? nodePath
-  const home = env.home ?? homedir()
+  // The account's real home from the user database, not $HOME: tests point $HOME at a
+  // throwaway dir under the temp root, which would make every temp root look like its ancestor.
+  const home = env.home ?? userInfo().homedir
   const bad = (why: string): never => {
     throw new Error(`safeRmTmp: unsafe temp root ${JSON.stringify(root)} (${why})`)
   }
