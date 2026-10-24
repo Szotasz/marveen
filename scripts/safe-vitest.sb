@@ -1,0 +1,14 @@
+;; Write-restricting sandbox profile for scripts/safe-vitest.sh (macOS sandbox-exec).
+;; Everything is allowed except file writes; file writes are re-allowed only for the
+;; worktree, the temp dir and the system scratch areas. Network is NOT denied: tests
+;; listen on loopback, and denying it broke the beforeAll of a test (card 183347ee).
+;; Parameters (sandbox-exec -D): WT = realpath of the worktree root, TMP = realpath of $TMPDIR.
+(version 1)
+(allow default)
+(deny file-write*)
+(allow file-write*
+  (subpath (param "WT"))
+  (subpath (param "TMP"))
+  (subpath "/private/var/folders")
+  (subpath "/private/tmp")
+  (subpath "/dev"))
