@@ -1459,7 +1459,7 @@ def accentless_evidence(tok_pos, text):
 try:
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from email_extract import (collect_bash_body, collect_harder_mail_text, collect_mcp_body,  # noqa: E402
-                               classify_mail_tool, is_harder_mail_tool, is_ms365_shaped,
+                               classify_mail_tool, is_harder_mail_tool, is_ms365_tool,
                                ms365_text_checked)
 except Exception as _extract_exc:  # noqa: BLE001 -- deliberate fail-closed stub
     _EXTRACT_ERR = repr(_extract_exc)
@@ -1467,7 +1467,7 @@ except Exception as _extract_exc:  # noqa: BLE001 -- deliberate fail-closed stub
     def collect_bash_body(cmd: str):
         return ("", f"az email_extract modul nem toltheto be ({_EXTRACT_ERR})")
 
-    def collect_mcp_body(tool_input: dict):
+    def collect_mcp_body(tool_input: dict, tool_name: str = ""):
         return ""
 
     def collect_harder_mail_text(tool_input: dict):
@@ -1476,7 +1476,7 @@ except Exception as _extract_exc:  # noqa: BLE001 -- deliberate fail-closed stub
     def is_harder_mail_tool(tool_name):
         return False
 
-    def is_ms365_shaped(tool_input):
+    def is_ms365_tool(tool_name):
         return False
 
     def ms365_text_checked(tool_input):
@@ -2091,25 +2091,28 @@ def main():
         # drafts that may carry only a flag (isRead) or a changed field, not a
         # letter -- with no text there is nothing of ours to audit, and the
         # fail-closed "no inspectable text" branch below would block the read
-        # flag flip for no reason. SECURITY review on MS365MAIL1024: a Graph-shaped
-        # call is read through ms365_text_checked, so a case-duplicate key (a
-        # "Subject" next to a "subject") is unreadable here, not "no text"; an
-        # update tool skips the audit only when it is readable AND carries no text.
+        # flag flip for no reason. SECURITY review on MS365MAIL1024, round 2: the
+        # Graph read is chosen by the tool NAME (is_ms365_tool), so a non-Graph
+        # tool with an object body is audited on its flat fields and a Graph
+        # tool without a Graph shape still is; a Graph call is read through
+        # ms365_text_checked, so a case-duplicate key (a "Subject" next to a
+        # "subject") is unreadable here, not "no text"; an update tool skips the
+        # audit only when it is readable AND carries no text.
         is_update = (str(tool or "").lower().replace("-", "_")
                      .endswith(("update_mail_message", "update_shared_mailbox_message")))
-        if is_ms365_shaped(tool_input):
+        if is_ms365_tool(tool):
             text, unreadable = ms365_text_checked(tool_input)
             if is_update and not unreadable and not text:
                 sys.exit(0)
         else:
-            if is_update and not collect_mcp_body(tool_input):
+            if is_update and not collect_mcp_body(tool_input, tool):
                 sys.exit(0)
             if is_harder_mail_tool(tool) and tool_input.get("body_format") not in (None, ""):
                 # HARDERMAILGATES1019 (design 6.3a): a formatted harder-mail letter is
                 # audited on the text the server renders from it, never on raw markup.
                 text, unreadable = collect_harder_mail_text(tool_input)
             else:
-                text, unreadable = collect_mcp_body(tool_input), None
+                text, unreadable = collect_mcp_body(tool_input, tool), None
     elif tool == "Bash":
         cmd = str(tool_input.get("command") or "")
         if not is_send_invocation(cmd):

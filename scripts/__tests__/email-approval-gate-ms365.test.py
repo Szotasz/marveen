@@ -19,6 +19,11 @@ Branches proven:
     recipient item and a non-text address are each denied as not anchorable.
   - the owner-CC check reads the Graph recipients.
   - email_extract reads the Graph text and puts the messageId into the anchor's `to`.
+  - SECURITY review round 2: the Graph path is chosen by NAME (a non-Graph send
+    with an object body keeps the flat read), the top-level keys are per send
+    (a userId is not a send-mail key), SaveToSentItems is in the anchor, a
+    content without contentType is not anchorable, and the anchor's id/op tokens
+    are never addresses (a userId:owner token does not satisfy owner CC).
 
 Run: python3 <thisfile>   Exit 0 = all pass.
 """
@@ -196,6 +201,31 @@ with tempfile.TemporaryDirectory() as td:
           code == 2 and "NINCS jovahagyas" in err and anchor_from_stderr(err) not in (None, a_reply),
           f"exit={code} err={err[:200]!r}")
 
+    # Round 2: the Graph path is chosen by NAME, never by the payload's shape --
+    # a non-Graph send tool with an OBJECT body keeps the flat read, so its deny
+    # carries a flat anchor instead of a Graph "unexpected field" reason.
+    code, _, err = run_gate(store, {"tool_name": "mcp__server-gmail-autoauth-mcp__send_email",
+                                    "tool_input": {"to": ["a@example.com"], "subject": "Teszt",
+                                                   "body": {"x": 1}}})
+    check("level 2: a non-Graph send with an object body keeps the flat path (an anchor, not a Graph read)",
+          code == 2 and anchor_from_stderr(err) is not None and "nem ismert Graph-kuldes" not in err
+          and "nem vart mezo" not in err,
+          f"exit={code} err={err[:200]!r}")
+
+    # Round 2: SaveToSentItems is in the anchor -- the copy-to-Sent-Items decision
+    # is part of what is approved, so an approval for one value does not answer the other.
+    code, _, err = run_gate(store, {"tool_name": "mcp__ms365__send-mail", "tool_input": {
+        "body": {"Message": message(), "SaveToSentItems": False}}})
+    check("the approved send-mail with SaveToSentItems flipped is NOT answered by that approval",
+          code == 2 and "NINCS jovahagyas" in err and anchor_from_stderr(err) not in (None, anchor),
+          f"exit={code} err={err[:200]!r}")
+
+    # Round 2, pinned: a Graph draft send carries only an id, so level 2 denies it
+    # as not anchorable -- exactly as the underscored send_draft always did.
+    code, _, err = run_gate(store, call("send-draft-message", {"draftId": "r-1"}))
+    check("level 2: send-draft-message DENIED with 'send_draft nem horgonyozhato'",
+          code == 2 and "send_draft nem horgonyozhato" in err, f"exit={code} err={err[:200]!r}")
+
     # --- fail-closed shapes at level 2 -------------------------------------------
     # Each must be the NOT-ANCHORABLE deny with its own reason, not just any deny: a plain
     # "no approval" deny would also exit 2 and would hide a reader that let the field through.
@@ -208,7 +238,7 @@ with tempfile.TemporaryDirectory() as td:
         "toRecipients twice in different case": (ms365_send({**message(), "ToRecipients": recipients("b@example.com")}),
                                                   "ketszer szerepel"),
         "a MIME (string) body": ({"tool_name": "mcp__ms365__send-mail", "tool_input": {"body": "TUlNRS1WZXJzaW9uOiAxLjA="}},
-                                 None),
+                                 "mime vagy szoveges torzs"),
         "an extra key in a recipient item": (ms365_send({**message(), "toRecipients": [
             {"emailAddress": {"address": "a@example.com"}, "type": "to"}]}), "ismeretlen mezo ['type']"),
         "an address that is not text": (ms365_send({**message(), "toRecipients": [{"emailAddress": {"address": 5}}]}),
@@ -227,7 +257,15 @@ with tempfile.TemporaryDirectory() as td:
         "a flat to next to the Graph body": ({"tool_name": "mcp__ms365__send-mail", "tool_input": {
             "body": {"Message": message()}, "to": ["x@y.hu"]}}, "nem egyertelmu"),
         "no body key, only a top-level Message": ({"tool_name": "mcp__ms365__send-mail", "tool_input": {
-            "Message": message()}}, "ismeretlen mezo a hivasban ['message']"),
+            "Message": message()}}, "a send_mail hivasban nem vart mezo ['message']"),
+        # Round 2: the top-level keys are per send -- send_mail takes only body,
+        # so a userId there is a field the server never reads (it is a shared-mailbox key).
+        "a userId at the top of a send-mail (not a send-mail key)": (
+            ms365_send(message(), **{"userId": "u-1"}), "a send_mail hivasban nem vart mezo ['userid']"),
+        # Round 2: a content with no contentType is not anchorable -- the server
+        # defaults it, a later default change would re-deliver the same anchor.
+        "a Message body with content and no contentType": (
+            ms365_send({**message(), "body": {"content": "Torzs."}}), "contenttype: hianyzik (text vagy html kell)"),
     }
     for what, (payload, why) in bad.items():
         code, _, err = run_gate(store, payload)
@@ -258,6 +296,18 @@ with tempfile.TemporaryDirectory() as td:
         {"emailAddress": {"address": f'"{OWNER}" <x@example.org>'}}]}))
     check("owner CC: the owner inside a display-name address does NOT count (the letter goes to the stranger)",
           code == 2 and "A gazda masolata hianyzik" in err, f"exit={code} err={err[:200]!r}")
+    # Round 2: the id/op tokens the anchor carries in `to` are not addresses --
+    # "userId:owner@example.com" must not satisfy the owner-CC check while the
+    # letter goes to the Message's recipients alone.
+    code, _, err = run_gate(store, call("send-shared-mailbox-mail",
+                                        {"userId": OWNER, "body": {"Message": message()}}))
+    check("owner CC: the owner only in the userId anchor token does NOT count (a token is not a recipient)",
+          code == 2 and "A gazda masolata hianyzik" in err, f"exit={code} err={err[:200]!r}")
+    # Round 2: a MIME (string) body is an unreadable Graph send by NAME, so the
+    # owner cannot be proven in it either.
+    code, _, err = run_gate(store, {"tool_name": "mcp__ms365__send-mail", "tool_input": {"body": "TUlNRS1WZXJzaW9uOiAxLjA="}})
+    check("owner CC: a MIME (string) body on a send DENIED (owner missing: the send is unreadable)",
+          code == 2 and "A gazda masolata hianyzik" in err, f"exit={code} err={err[:200]!r}")
 
     # --- the recipient ledger reads the Graph recipients, strays included ------------
     def ledger_store(root, level, known):
@@ -284,16 +334,30 @@ with tempfile.TemporaryDirectory() as td:
           code == 2 and "invented@example.org" in err, f"exit={code} err={err[:200]!r}")
     code, _, err = run_gate(st, call("send-mail", {"Message": message(to=("invented@example.org",)),
                                                    "body": {"SaveToSentItems": True}}))
-    check("ledger on: an unknown address in a stray top-level Message is denied at level 3",
-          code == 2 and "invented@example.org" in err, f"exit={code} err={err[:200]!r}")
+    check("ledger on: a stray top-level Message on a send is not a send-mail key -> fail-closed unreadable",
+          code == 2 and "nem olvashato ki determinisztikusan" in err and "nem vart mezo ['message']" in err,
+          f"exit={code} err={err[:220]!r}")
     code, _, err = run_gate(st, call("create-draft-email", {"subject": "Teszt targy",
                                                             "toRecipients": recipients("invented@example.org")}))
     check("ledger on: an unknown address in a body-less top-level draft is denied",
           code == 2 and "invented@example.org" in err, f"exit={code} err={err[:200]!r}")
+    # Round 2: a Graph send is read by NAME, so a MIME (string) body is an
+    # unreadable Graph send here -- not a flat call whose empty recipients pass.
+    code, _, err = run_gate(st, {"tool_name": "mcp__ms365__send-mail", "tool_input": {"body": "TUlNRS1WZXJzaW9uOiAxLjA="}})
+    check("ledger on: a MIME (string) body on a send is DENIED as unreadable (the name decides)",
+          code == 2 and "nem olvashato ki determinisztikusan" in err and "mime vagy szoveges torzs" in err.lower(),
+          f"exit={code} err={err[:220]!r}")
+    # Round 2: a top-level toRecipients that is not a list is read (and refused),
+    # not skipped as "no Graph shape".
+    code, _, err = run_gate(st, call("create-draft-email", {"toRecipients": {"a": 1}}))
+    check("ledger on: a body-less draft whose top-level toRecipients is an object (not a list) is DENIED",
+          code == 2 and "nem olvashato ki determinisztikusan" in err and "nem lista" in err,
+          f"exit={code} err={err[:220]!r}")
 
     code, _, err = run_gate(st, ms365_send_raw({"Message": {"subject": "Teszt targy", "toRecipients": recipients("invented@example.org")}}))
-    check("ledger on: a body-less send whose only Graph field is a top-level Message is read too (denied)",
-          code == 2 and "invented@example.org" in err, f"exit={code} err={err[:200]!r}")
+    check("ledger on: a body-less send whose only Graph field is a top-level Message is fail-closed too",
+          code == 2 and "nem olvashato ki determinisztikusan" in err and "nem vart mezo ['message']" in err,
+          f"exit={code} err={err[:220]!r}")
     code, _, err = run_gate(st, call("create-draft-email", {"to": "invented@example.org", "body": {
         "subject": "Teszt targy", "toRecipients": recipients("known@example.com")}}))
     check("ledger on: a flat to next to Graph recipients is ambiguous, not a Graph-only read (denied)",
@@ -307,6 +371,23 @@ with tempfile.TemporaryDirectory() as td:
         "Comment": "Rendben.", "Message": {"toRecipients": recipients("a@example.com")}}}))
     check("owner CC on a Graph reply draft (create-reply-draft): checked, the owner missing -> DENIED",
           code == 2 and "A gazda masolata hianyzik" in err, f"exit={code} err={err[:200]!r}")
+
+    code, _, err = run_gate(st, call("create-reply-draft", {"messageId": "m1", "body": {
+        "Comment": "Rendben.", "Message": {"toRecipients": recipients("invented@example.org")}}}))
+    check("ledger on: an unknown address in a Graph reply draft's body.Message is denied",
+          code == 2 and "invented@example.org" in err, f"exit={code} err={err[:200]!r}")
+    code, _, err = run_gate(st, call("create-reply-draft", {"messageId": "m1", "Message": {
+        "toRecipients": recipients("invented@example.org")}, "body": {"Comment": "Rendben."}}))
+    check("ledger on: an unknown address in a Graph reply draft's stray top-level Message is denied",
+          code == 2 and "invented@example.org" in err, f"exit={code} err={err[:200]!r}")
+
+    # The underscored harder-mail send_mail is not a Graph tool: its flat letter keeps the flat anchor.
+    st2 = make_store(os.path.join(td, "harder-flat"), 2)
+    code, _, err = run_gate(st2, {"tool_name": "mcp__harder-mail__send_mail", "tool_input": {
+        "account": "ceges", "to": ["a@example.com"], "subject": "Teszt targy", "body": "Kedves Ugyfelunk!"}})
+    check("the harder-mail send_mail (underscored) keeps the flat path: denied for approval with an anchor",
+          code == 2 and "NINCS jovahagyas" in err and anchor_from_stderr(err) is not None
+          and "Graph" not in err, f"exit={code} err={err[:220]!r}")
 
     # --- the extractor itself ---------------------------------------------------------
     spec = importlib.util.spec_from_file_location("email_extract_ms365_test", os.path.join(HOOKS, "email_extract.py"))

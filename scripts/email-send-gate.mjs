@@ -938,6 +938,42 @@ export function isMs365Shaped(toolInput) {
   return false
 }
 
+// A Microsoft Graph MCP mail tool, decided by NAME (MS365MAIL1024 round 2): the
+// Graph server names its tools with hyphens, and the last segment of the
+// qualified name must contain one -- so the harder-mail server's underscored
+// send_mail is never Graph, however its payload looks. Same rule as
+// ms365_tool_kind in email_extract.py; the suffix lists are classifyMailTool's.
+export function ms365ToolKind(toolName) {
+  const raw = String(toolName ?? '').toLowerCase()
+  const last = raw.split('__').pop()
+  if (!last.includes('-')) return null
+  const n = raw.replaceAll('-', '_')
+  if (MS365_SEND_SUFFIXES.some((s) => n.endsWith(s))) return 'send'
+  if (MS365_DRAFT_SEND_SUFFIXES.some((s) => n.endsWith(s))) return 'draft_send'
+  if (MS365_DRAFT_SUFFIXES.some((s) => n.endsWith(s)) || n.endsWith('create_draft_email')) return 'draft'
+  return null
+}
+
+export function isMs365Tool(toolName) {
+  return ms365ToolKind(toolName) !== null
+}
+
+// Does the call carry Graph MATERIAL at all: an object body/Message/Post, or a
+// top-level Graph recipient key in ANY shape (a non-list toRecipients is
+// Graph material -- it must be read strictly, and fails there)? A Graph-named
+// draft with flat-only fields has none and keeps the flat checks, which is the
+// pinned contract for the ledger-checked drafts; a non-Graph tool with an
+// object body never enters the Graph block.
+function ms365HasGraphFields(toolInput) {
+  if (!isPlainObject(toolInput)) return false
+  for (const [k, v] of Object.entries(toolInput)) {
+    const lk = String(k).toLowerCase()
+    if (isPlainObject(v) && (lk === 'body' || lk === 'message' || lk === 'post')) return true
+    if (MS365_TOP_GRAPH_KEYS.has(lk)) return true
+  }
+  return false
+}
+
 // A Graph-shaped call that ALSO carries flat to/cc/bcc is ambiguous: one reader
 // would hide the other's addresses (SECURITY review on MS365MAIL1024).
 export function ms365FlatConflict(toolInput) {
@@ -1168,10 +1204,15 @@ export function gateDecision(toolName, toolInput, isVerified = null, cwd = proce
   // verified: the owner presses send on what we typed, so an invented address
   // reaches the outside world through a draft just as surely as through a send.
   if (mailKind === 'draft') {
-    // MS365MAIL1024: a Graph-shaped draft carries its recipients as
-    // toRecipients/ccRecipients/bccRecipients items, not in the flat fields.
-    // Read them the same strict way; an unreadable recipient list fails closed.
-    if (isMs365Shaped(toolInput)) {
+    // MS365MAIL1024, round 2: the Graph read is decided by the tool NAME, not
+    // by the payload's shape -- a non-Graph tool with an object body keeps the
+    // flat checks below, and a Graph draft carries its recipients as
+    // toRecipients/ccRecipients/bccRecipients items, read the same strict way;
+    // an unreadable recipient list fails closed. A Graph-named draft with no
+    // Graph material at all (flat to/cc/bcc only) keeps the flat checks too:
+    // that is the pinned draft contract, and it errs toward the flat read,
+    // which checks every field it can see.
+    if (isMs365Tool(name) && ms365HasGraphFields(toolInput)) {
       const r = ms365Recipients(toolInput)
       if (r.reason) return { deny: true, kind: 'unparseable-recipient', addresses: [r.reason] }
       const all = [...r.to, ...r.cc, ...r.bcc]

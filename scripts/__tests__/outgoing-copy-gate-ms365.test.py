@@ -76,6 +76,12 @@ with tempfile.TemporaryDirectory(prefix="copygate-ms365-") as tmp:
                                "tool_input": {"messageId": "m1", "body": {"subject": "A", "Subject": "B"}}}, corrupt)
     check("update-mail-message with a subject twice in different case: unreadable, not 'no text' (exit 2)",
           code == 2, f"exit={code} err={err[:200]!r}")
+    # Round 2: the Graph read is by NAME, so a body-less update whose only text is a
+    # capitalized top-level Subject is audited too -- it is Graph material, not "no text".
+    code, out, err = run_hook({"tool_name": "mcp__ms365__update-mail-message",
+                               "tool_input": {"messageId": "m1", "Subject": "Uj targy"}}, corrupt)
+    check("update-mail-message body-less with a capitalized top-level Subject: audited (exit 2)",
+          code == 2, f"exit={code} err={err[:200]!r}")
     code, out, err = run_hook({"tool_name": "mcp__ms365__send-mail", "tool_input": {"body": {
         "Message": {"subject": "Valasz a megkeresesere", "body": {"contentType": "Text", "content": TEXT},
                     "toRecipients": [{"emailAddress": {"address": "a@example.com"}}]},

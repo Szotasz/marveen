@@ -556,6 +556,12 @@ describe('Microsoft Graph (ms365) mail tools', () => {
       .toMatchObject({ deny: true, kind: 'unparseable-recipient' })
   })
 
+  it('an underscored name is never a Graph tool: its object body does not move it off the flat check', () => {
+    const flat = { to: 'x@y.hu', body: { a: 1 } }
+    expect(gateDecision('mcp__x__update_mail_message', flat, () => false))
+      .toMatchObject({ deny: true, kind: 'unverified-recipient', addresses: ['x@y.hu'] })
+  })
+
   it('a stray top-level recipient field is checked too (the server moves it into body)', () => {
     const stray = { toRecipients: [{ emailAddress: { address: 'x@y.hu' } }], body: { subject: 'Targy' } }
     expect(gateDecision('mcp__ms365__create-draft-email', stray, () => false))
@@ -588,5 +594,21 @@ describe('Microsoft Graph (ms365) mail tools', () => {
     const named = { body: { toRecipients: [{ emailAddress: { address: '"x@y.hu" <z@example.org>' } }] } }
     expect(gateDecision('mcp__ms365__create-draft-email', named, verifiable))
       .toMatchObject({ deny: true, kind: 'unparseable-recipient' })
+  })
+
+  // SECURITY review on MS365MAIL1024, round 2: the Graph read is chosen by the
+  // tool NAME, not by the payload's shape. A non-Graph draft tool with an OBJECT
+  // body therefore keeps the flat checks -- an object body must not turn the
+  // flat address check into a Graph read (or a "conflict") it never was.
+  it('a non-Graph draft with an object body keeps the flat ledger check', () => {
+    const d = gateDecision('mcp__x__create_draft', { to: 'x@y.hu', body: { a: 1 } }, () => false)
+    expect(d).toMatchObject({ deny: true, kind: 'unverified-recipient', addresses: ['x@y.hu'] })
+  })
+
+  // ...and a Graph draft whose top-level recipient field is not even a list is
+  // read (and refused) by NAME: no Graph shape is needed to enter the read.
+  it('a Graph draft with a top-level toRecipients that is an object is unparseable', () => {
+    const d = gateDecision('mcp__ms365__create-draft-email', { toRecipients: { a: 1 } }, verifiable)
+    expect(d).toMatchObject({ deny: true, kind: 'unparseable-recipient' })
   })
 })

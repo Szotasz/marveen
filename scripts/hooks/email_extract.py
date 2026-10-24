@@ -152,8 +152,12 @@ def _payload_text(data: str, raw: str):
     return ("\n".join(got), None)
 
 
-def collect_mcp_body(tool_input: dict):
-    if is_ms365_shaped(tool_input):
+def collect_mcp_body(tool_input: dict, tool_name: str = ""):
+    # By NAME when the caller knows it (MS365MAIL1024 round 2): a non-Graph tool
+    # with an object body keeps the flat read, and a Graph tool without a Graph
+    # shape is still read the Graph way. The shape remains the fallback for the
+    # callers that have no name (collect_email_envelope's Bash path passes "").
+    if (is_ms365_tool(tool_name) if tool_name else is_ms365_shaped(tool_input)):
         return ms365_text(tool_input)
     fields = ("body", "text", "html", "htmlBody", "message", "subject", "content", "forwardText")
     got = [str(tool_input[f]) for f in fields if tool_input.get(f)]
@@ -380,7 +384,23 @@ def classify_mail_tool(tool_name):
 # contentType in the anchor); the lenient text reader is case-strict about
 # duplicates, because a "Subject" and a "subject" could otherwise be audited
 # as one text and delivered as the other.
-_MS365_TOP_KEYS = frozenset({"body", "messageid", "userid", "eventid", "groupid", "conversationthreadid"})
+# Per Graph send: the top-level keys (path parameters) each send takes, besides body.
+# A key another send takes is NOT allowed on this one (MS365MAIL1024 round 2): a
+# userId accepted on send-mail was never read by the server, so the anchor would
+# cover a field that does not exist, and stay silent about one that does.
+_MS365_SEND_TOP_KEYS = {
+    "send_mail": frozenset({"body"}),
+    "send_shared_mailbox_mail": frozenset({"body", "userid"}),
+    "reply_mail_message": frozenset({"body", "messageid"}),
+    "reply_all_mail_message": frozenset({"body", "messageid"}),
+    "forward_mail_message": frozenset({"body", "messageid"}),
+    "reply_shared_mailbox_mail": frozenset({"body", "messageid", "userid"}),
+    "reply_all_shared_mailbox_mail": frozenset({"body", "messageid", "userid"}),
+    "forward_shared_mailbox_mail": frozenset({"body", "messageid", "userid"}),
+    "forward_calendar_event": frozenset({"body", "eventid"}),
+    "reply_to_group_thread": frozenset({"body", "groupid", "conversationthreadid"}),
+}
+_MS365_ANCHOR_TOKEN_RE = re.compile(r"^(messageId|userId|eventId|groupThread|op|saveToSentItems):")
 _MS365_MESSAGE_KEYS = frozenset({"subject", "body", "torecipients", "ccrecipients", "bccrecipients"})
 _MS365_CONTENT_KEYS = frozenset({"contenttype", "content"})
 _MS365_RECIPIENT_FIELDS = ("torecipients", "ccrecipients", "bccrecipients")
@@ -408,6 +428,33 @@ def ms365_op(tool_name) -> str | None:
         if n.endswith(op):
             return op
     return None
+
+
+def ms365_tool_kind(tool_name) -> str | None:
+    """'send' / 'draft_send' / 'draft' for a Microsoft Graph MCP mail tool, by NAME, else None.
+    The Graph server names its tools with hyphens; the last segment of the qualified name
+    must contain one, so the harder-mail server's underscored send_mail is never Graph."""
+    raw = str(tool_name or "").lower()
+    last = raw.rsplit("__", 1)[-1]
+    if "-" not in last:
+        return None
+    n = raw.replace("-", "_")
+    if any(n.endswith(op) for op in _MS365_SEND_BODY_KEYS):
+        return "send"
+    if n.endswith(_MS365_DRAFT_SEND_SUFFIXES):
+        return "draft_send"
+    if n.endswith(_MS365_DRAFT_SUFFIXES) or n.endswith("create_draft_email"):
+        return "draft"
+    return None
+
+
+def is_ms365_tool(tool_name) -> bool:
+    return ms365_tool_kind(tool_name) is not None
+
+
+def is_ms365_anchor_token(value) -> bool:
+    """An id/op token ms365_send_fields puts into `to` (never a recipient address)."""
+    return bool(_MS365_ANCHOR_TOKEN_RE.match(str(value)))
 
 
 def is_ms365_shaped(tool_input) -> bool:
@@ -504,6 +551,11 @@ def _ms365_content(value, where: str):
     content = b.get("content")
     if content is not None and not isinstance(content, str):
         return "", None, f"{where}.content: nem szoveg"
+    if content and ctype is None:
+        # The server defaults an absent contentType (to Text today): the anchor
+        # must not cover a letter whose rendering the sender did not pin down,
+        # because a later default change would re-deliver it as something else.
+        return "", None, f"{where}.contentType: hianyzik (Text vagy HTML kell)"
     return content or "", ctype, None
 
 
@@ -535,9 +587,9 @@ def ms365_send_fields(tool_input: dict, tool_name: str = ""):
     top, reason = _ms365_lower(tool_input, "a hivas")
     if reason:
         return (*empty, reason)
-    extra = set(top) - _MS365_TOP_KEYS
+    extra = set(top) - _MS365_SEND_TOP_KEYS[op]
     if extra:
-        return (*empty, f"ismeretlen mezo a hivasban {sorted(extra)} -- a level a horgony nelkul valtozhatna")
+        return (*empty, f"a {op} hivasban nem vart mezo {sorted(extra)}")
     body, reason = (_ms365_lower(top["body"], "body") if isinstance(top.get("body"), dict)
                     else (None, "body: hianyzik vagy nem objektum (MIME vagy szoveges torzs nem horgonyozhato)"))
     if reason:
@@ -597,6 +649,11 @@ def ms365_send_fields(tool_input: dict, tool_name: str = ""):
         # A bool check, not a truthy one: in Python 0 == False and 1 == True, so
         # a 0/1 SaveToSentItems would slip a changed value past the anchor.
         return (*empty, "body.SaveToSentItems: nem igaz/hamis")
+    if stsi is not None:
+        # The copy-to-Sent-Items decision is part of what is approved (a send
+        # with it off leaves no trace in the owner's mailbox), so it joins the
+        # anchor when present -- absent keeps every existing anchor unchanged.
+        to.append(f"saveToSentItems:{'true' if stsi else 'false'}")
     for key, label in (("messageid", "messageId"), ("userid", "userId"), ("eventid", "eventId")):
         v = top.get(key)
         if v is None:
@@ -821,14 +878,16 @@ def collect_email_envelope(tool_name: str, tool_input: dict):
     # A prefixed name (mcp__gmail__v2_reply_all) is extracted like the bare one.
     if classify_mail_tool(tool_name) in ("send_email", "connector_send"):
         ti = tool_input if isinstance(tool_input, dict) else {}
-        if is_ms365_shaped(ti) or ms365_op(tool_name) not in (None, "send_mail"):
-            # A Graph-shaped send: strictly-read fields + id tokens (fail-closed).
-            # send_mail is decided by the shape alone (the harder-mail server's flat
-            # send_mail keeps its own path below); every other Graph send tool is
-            # anchored by its op name, shape or no shape, so its tool_name decides.
+        if ms365_tool_kind(tool_name) == "send":
+            # A Graph send, decided by NAME alone (MS365MAIL1024 round 2): a non-Graph
+            # mail tool with an object `body` keeps its flat path below, and a Graph
+            # send with no Graph shape (no body, a MIME string body, a non-list
+            # top-level toRecipients, a lone top-level Subject) still lands here --
+            # strictly read, so the anchor covers it or the caller denies, instead
+            # of sliding to the flat path where its recipients were never seen.
             to, cc, bcc, text, reason = ms365_send_fields(ti, tool_name)
             return {"to": to, "cc": cc, "bcc": bcc, "text": text, "unreadable_reason": reason}
-        text = collect_mcp_body(ti)
+        text = collect_mcp_body(ti, tool_name)
         to, cc, bcc, reason = collect_mcp_recipients(ti)
         # A connector reply/forward addresses the ORIGINAL message: its
         # recipient is fixed by messageId, not by a `to` field, so the id is
