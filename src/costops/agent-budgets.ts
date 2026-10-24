@@ -100,15 +100,22 @@ export function alertAgentBudgets(
 ): number {
   let sent = 0
   for (const s of statuses) {
-    if (s.status === 'ok') continue
-    let text: string
-    if (s.status === 'unpriced') {
-      text = `Ügynök-költségkeret (${s.agent}): a(z) ${s.month} havi használat teljesen árazatlan (${s.unpriced_tokens} token), a keret nem mérhető. Adj meg árat a token_prices beállításban.`
-    } else {
-      text = `Ügynök-költségkeret (${s.agent}): ${Math.round(s.used_pct * 100)}% a(z) ${s.month} havi keretből (${s.spend} / ${s.amount}).`
-      if (s.unpriced_tokens > 0) text += ` Árazatlan tokenek: ${s.unpriced_tokens}.`
+    if (s.status !== 'ok') {
+      let text: string
+      if (s.status === 'unpriced') {
+        text = `Ügynök-költségkeret (${s.agent}): a(z) ${s.month} havi használat teljesen árazatlan (${s.unpriced_tokens} token), a keret nem mérhető. Adj meg árat a token_prices beállításban.`
+      } else {
+        text = `Ügynök-költségkeret (${s.agent}): ${Math.round(s.used_pct * 100)}% a(z) ${s.month} havi keretből (${s.spend} / ${s.amount}).`
+        if (s.unpriced_tokens > 0) text += ` Árazatlan tokenek: ${s.unpriced_tokens}.`
+      }
+      if (send(`agent-budget:${s.id}:${s.status}:${s.month}`, text, { cooldownMs: 40 * 24 * 60 * 60 * 1000 })) sent++
     }
-    if (send(`agent-budget:${s.id}:${s.status}:${s.month}`, text, { cooldownMs: 40 * 24 * 60 * 60 * 1000 })) sent++
+    // Priced and unpriced usage in the same month: the level is measured on the priced part only,
+    // so the unpriced part gets its own alert, once a month, whatever the level.
+    if (s.status !== 'unpriced' && s.unpriced_tokens > 0) {
+      const text = `Ügynök-költségkeret (${s.agent}): a(z) ${s.month} havi használatban árazatlan tokenek is vannak (${s.unpriced_tokens} token); ezek nincsenek benne a ${Math.round(s.used_pct * 100)}%-ban. Adj meg árat a token_prices beállításban.`
+      if (send(`agent-budget:${s.id}:unpriced-partial:${s.month}`, text, { cooldownMs: 40 * 24 * 60 * 60 * 1000 })) sent++
+    }
   }
   return sent
 }

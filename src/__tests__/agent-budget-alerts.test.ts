@@ -86,4 +86,21 @@ describe('checkAgentBudgets', () => {
     expect(checkAgentBudgets(NOW, send, state)).toBe(0)
     expect(send).toHaveBeenCalledTimes(1)
   })
+
+  it('alerts once for partly unpriced usage and dedups in the same month', () => {
+    getDb().prepare('DELETE FROM token_usage').run()
+    usage(1_000_000, 0) // 4 of 10 -> ok on the priced part alone
+    getDb().prepare(
+      'INSERT INTO token_usage (agent, session_id, timestamp, input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, thinking_tokens, model) VALUES (?,?,?,?,?,?,?,?,?)',
+    ).run('a1', 's-unpriced-partial', NOW - 3600, 100, 50, 0, 0, 0, 'unknown-model')
+    const state = join(H.root, 'store', 'state-unpriced-partial.json')
+    const send = vi.fn(() => true)
+    expect(checkAgentBudgets(NOW, send, state)).toBe(1)
+    expect(send).toHaveBeenCalledTimes(1)
+    const [key, text] = send.mock.calls[0] as unknown as [string, string]
+    expect(key).toBe('agent-budget:b1:unpriced-partial:2026-10')
+    expect(text).toContain('árazatlan tokenek is vannak')
+    expect(checkAgentBudgets(NOW, send, state)).toBe(0)
+    expect(send).toHaveBeenCalledTimes(1)
+  })
 })

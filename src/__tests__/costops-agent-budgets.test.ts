@@ -37,6 +37,13 @@ describe('agentSpend', () => {
     expect(s.cost).toBe(4)
     expect(s.unpriced_tokens).toBe(10 + 100)
   })
+  it('a model id that is an Object.prototype key ("constructor") is unpriced, not priced through the prototype', () => {
+    insert('a1', WIN.start + 1, 'constructor', 1, 2, 3, 4)
+    const s = agentSpend(getDb(), 'a1', WIN.start, WIN.end, PRICES)
+    expect(s.cost).toBe(0)
+    expect(s.unpriced_tokens).toBe(10)
+    expect(evaluateAgentBudgets(getDb(), cfg([{ id: 'b1', scope: 'agent', scope_ref: 'a1', amount: 100 }]), NOW)[0].status).toBe('unpriced')
+  })
   it('missing cache_read price makes cache-read tokens unpriced', () => {
     insert('a1', WIN.start + 1, 'm1', 0, 0, 7, 0)
     const s = agentSpend(getDb(), 'a1', WIN.start, WIN.end, { m1: { input: 4, output: 20 } })
@@ -107,12 +114,18 @@ describe('unpriced status', () => {
   it('is ok without usage this month', () => {
     expect(evaluateAgentBudgets(getDb(), cfg(one), NOW)[0].status).toBe('ok')
   })
-  it('stays ok for priced usage under the threshold plus some unpriced usage', () => {
+  it('stays ok for priced usage under the threshold plus some unpriced usage, and the unpriced part alerts on its own', () => {
     seed53()
     insert('a1', WIN.start + 2, 'm2', 5, 6, 7, 8)
     const [r] = evaluateAgentBudgets(getDb(), cfg(one), NOW)
     expect(r.status).toBe('ok')
     expect(r.unpriced_tokens).toBe(26)
+    const send = vi.fn((_k: string, _t: string, _o: { cooldownMs: number }) => true)
+    expect(alertAgentBudgets([r], send)).toBe(1)
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(send.mock.calls[0][0]).toBe('agent-budget:b1:unpriced-partial:2026-10')
+    expect(send.mock.calls[0][1]).toContain('(26 token)')
+    expect(send.mock.calls[0][1]).toContain('token_prices')
   })
 })
 
@@ -135,11 +148,12 @@ describe('alertAgentBudgets', () => {
   it('sends once per warning/hard status', () => {
     const send = vi.fn((_k: string, _t: string, _o: { cooldownMs: number }) => true)
     const n = alertAgentBudgets([st('b1', 'warning'), st('b2', 'hard', 5), st('b3', 'ok')], send)
-    expect(n).toBe(2)
-    expect(send).toHaveBeenCalledTimes(2)
+    expect(n).toBe(3)
+    expect(send).toHaveBeenCalledTimes(3)
     const d = 40 * 24 * 60 * 60 * 1000
     expect(send.mock.calls[0][0]).toBe('agent-budget:b1:warning:2026-10')
     expect(send.mock.calls[1][0]).toBe('agent-budget:b2:hard:2026-10')
+    expect(send.mock.calls[2][0]).toBe('agent-budget:b2:unpriced-partial:2026-10')
     expect(send.mock.calls[0][2]).toEqual({ cooldownMs: d })
     expect(send.mock.calls[0][1]).toContain('ag-b1')
     expect(send.mock.calls[0][1]).toContain('85%')
@@ -157,6 +171,27 @@ describe('alertAgentBudgets', () => {
   })
   it('counts only calls that returned true', () => {
     expect(alertAgentBudgets([st('b1', 'warning')], () => false)).toBe(0)
+  })
+  it('an ok level with unpriced usage sends only the unpriced alert', () => {
+    const send = vi.fn((_k: string, _t: string, _o: { cooldownMs: number }) => true)
+    expect(alertAgentBudgets([st('b1', 'ok', 7)], send)).toBe(1)
+    expect(send).toHaveBeenCalledTimes(1)
+    const [key, text, opts] = send.mock.calls[0] as unknown as [string, string, { cooldownMs: number }]
+    expect(key).toBe('agent-budget:b1:unpriced-partial:2026-10')
+    expect(text).toContain('(7 token)')
+    expect(text).toContain('85%')
+    expect(opts).toEqual({ cooldownMs: 40 * 24 * 60 * 60 * 1000 })
+  })
+  it('a fully unpriced month sends only its own status alert', () => {
+    const send = vi.fn((_k: string, _t: string, _o: { cooldownMs: number }) => true)
+    expect(alertAgentBudgets([st('b1', 'unpriced', 9)], send)).toBe(1)
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(send.mock.calls[0][0]).toBe('agent-budget:b1:unpriced:2026-10')
+  })
+  it('an ok level without unpriced usage sends nothing', () => {
+    const send = vi.fn((_k: string, _t: string, _o: { cooldownMs: number }) => true)
+    expect(alertAgentBudgets([st('b1', 'ok', 0)], send)).toBe(0)
+    expect(send).not.toHaveBeenCalled()
   })
 })
 
