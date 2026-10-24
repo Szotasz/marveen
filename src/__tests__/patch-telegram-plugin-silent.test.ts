@@ -38,13 +38,13 @@ function syntaxErrors(text: string): string[] {
   return (out.diagnostics ?? []).map(d => ts.flattenDiagnosticMessageText(d.messageText, '\n'))
 }
 
-function patchedWithoutSilent(text: string): string {
+function patchedWithoutSilent(text: string, topics = false): string {
   const code = [
     'import importlib.util, sys',
     "spec = importlib.util.spec_from_file_location('ptp', sys.argv[1])",
     'm = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)',
     "m.PATCHES = [p for p in m.PATCHES if p['name'] != 'silent']",
-    'sys.stdout.write(m.patch_text(sys.stdin.read())[0])',
+    `sys.stdout.write(m.patch_text(sys.stdin.read(), topics=${topics ? 'True' : 'False'})[0])`,
   ].join('\n')
   const r = spawnSync('python3', ['-c', code, SCRIPT], { input: text, encoding: 'utf-8' })
   expect(r.status).toBe(0)
@@ -116,8 +116,7 @@ describe('silent: reply without a notification sound', () => {
     const h = replyHandler(readFileSync(server, 'utf-8'))
     await h.call({ chat_id: '42', text: 'a|b', files: ['/x/a.png', '/x/b.pdf'] })
     await h.call({ chat_id: '42', text: 'a|b', files: ['/x/a.png', '/x/b.pdf'], silent: false })
-    await h.call({ chat_id: '42', text: 'a', files: ['/x/a.png'], silent: null })
-    expect(h.sent).toHaveLength(10)
+    expect(h.sent).toHaveLength(8)
     expect(h.sent.some(hasKey)).toBe(false)
     for (const s of h.sent.filter(s => s.method !== 'sendMessage')) expect(s.opts).toBeUndefined()
     await h.call({ chat_id: '42', text: 'a', files: ['/x/a.png'], reply_to: 3, silent: false })
@@ -127,12 +126,27 @@ describe('silent: reply without a notification sound', () => {
   it('a bad silent value is a tool error before anything is sent', async () => {
     run()
     const h = replyHandler(readFileSync(server, 'utf-8'))
-    for (const silent of ['true', 1, {}]) {
+    for (const silent of ['true', 1, {}, null]) {
       const res = await h.call({ chat_id: '42', text: 'a', files: ['/x/a.png'], silent })
       expect(res.isError).toBe(true)
       expect(res.content[0].text).toMatch(/^reply failed: silent: /)
     }
     expect(h.sent).toHaveLength(0)
+  })
+
+  it('kbd and silent on the same send', async () => {
+    run()
+    const h = replyHandler(readFileSync(server, 'utf-8'))
+    const res = await h.call({ chat_id: '42', text: 'a|b', buttons: ['A', 'B'], silent: true })
+    expect(res.isError).toBeUndefined()
+    expect(h.sent.map(s => s.method)).toEqual(['sendMessage', 'sendMessage'])
+    for (const s of h.sent) expect(s.opts!.disable_notification).toBe(true)
+    expect(h.sent[1].opts!.reply_markup).toEqual({
+      keyboard: [[{ text: 'A' }], [{ text: 'B' }]],
+      one_time_keyboard: true,
+      resize_keyboard: true,
+    })
+    expect(h.sent[0].opts).not.toHaveProperty('reply_markup')
   })
 
   it('with topics: thread id and silent on text and file sends; topics off leaves the silent lines', async () => {
@@ -142,14 +156,43 @@ describe('silent: reply without a notification sound', () => {
     const text = readFileSync(server, 'utf-8')
     expect(syntaxErrors(text)).toEqual([])
     const h = replyHandler(text)
-    await h.call({ chat_id: '42', text: 'a', files: ['/x/b.pdf'], message_thread_id: '5', silent: true })
-    expect(h.sent).toHaveLength(2)
+    await h.call({ chat_id: '42', text: 'a', files: ['/x/a.png', '/x/b.pdf'], message_thread_id: '5', silent: true })
+    expect(h.sent.map(s => s.method)).toEqual(['sendMessage', 'sendPhoto', 'sendDocument'])
     for (const s of h.sent) expect(s.opts).toMatchObject({ message_thread_id: 5, disable_notification: true })
+    // the same three sends without silent: the topic stays, the notification sound comes back
+    await h.call({ chat_id: '42', text: 'a', files: ['/x/a.png', '/x/b.pdf'], message_thread_id: '5' })
+    const unsilent = h.sent.slice(3)
+    expect(unsilent.map(s => s.method)).toEqual(['sendMessage', 'sendPhoto', 'sendDocument'])
+    for (const s of unsilent) {
+      expect(s.opts).toMatchObject({ message_thread_id: 5 })
+      expect('disable_notification' in s.opts!).toBe(false)
+    }
 
     run(['--topics', 'off'])
     const off = readFileSync(server, 'utf-8')
     expect(off).not.toContain('message_thread_id')
     expect(off.split('\n').filter(l => l.includes(SIL))).toHaveLength(6)
+    copyFileSync(FIXTURE, server)
+    run()
+    expect(off).toBe(readFileSync(server, 'utf-8'))
+  })
+
+  it('upgrade: a file patched by the previous script with topics on gets silent, and topics off still restores it', async () => {
+    // what an install that ran the previous script with topics on has today
+    writeFileSync(server, patchedWithoutSilent(readFileSync(FIXTURE, 'utf-8'), true))
+    const state = join(cache, 'state.json')
+    expect(run(['--state', state, '--topics', 'on']).status).toBe(0)
+    expect(readState(state).files[0].patches).toMatchObject({ silent: 'patched', topics: 'already' })
+    const text = readFileSync(server, 'utf-8')
+    expect(syntaxErrors(text)).toEqual([])
+    expect(text.split('\n').filter(l => l.includes(SIL))).toHaveLength(6)
+    const h = replyHandler(text)
+    await h.call({ chat_id: '42', text: 'a', files: ['/x/a.png', '/x/b.pdf'], message_thread_id: '5', silent: true })
+    expect(h.sent.map(s => s.method)).toEqual(['sendMessage', 'sendPhoto', 'sendDocument'])
+    for (const s of h.sent) expect(s.opts).toMatchObject({ message_thread_id: 5, disable_notification: true })
+
+    run(['--topics', 'off'])
+    const off = readFileSync(server, 'utf-8')
     copyFileSync(FIXTURE, server)
     run()
     expect(off).toBe(readFileSync(server, 'utf-8'))
