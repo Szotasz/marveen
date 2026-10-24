@@ -11,7 +11,7 @@ import { getEffectiveSettingValue } from '../settings-store.js'
 import { findDuplicateJsonKeys } from './json-dup-keys.js'
 import { logger } from '../logger.js'
 import { filterInheritableMcpServers, readInheritableMcpServerNames, logNotInherited } from './mcp-inheritance.js'
-import { agentDir, agentConfigRoot, listAgentNames, readAgentCapabilities, readAgentSenderRoleGate, readAgentToolDeny } from './agent-config.js'
+import { agentDir, agentConfigRoot, listAgentNames, readAgentCapabilities, readAgentSenderRoleGatePolicy, readAgentToolDeny } from './agent-config.js'
 import { loadProfileTemplate, resolveProfileTemplate, profileWantsCredentialGate, profileWantsSecondReviewer, profileWantsDestructiveGate, profileWantsYtIngest, resolveProfilePlaceholders,
   type ProfileTemplate } from './profiles.js'
 import { resolveAgentSecurityProfile, readAgentTeam } from './agent-team.js'
@@ -922,8 +922,9 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
     injectDigestProvenanceGate(existing)
   }
   if (agentGetsTelegramCopyGate(name)) injectTelegramCopyGate(existing)
-  if (name !== MAIN_AGENT_ID && readAgentSenderRoleGate(name)) {
-    injectSenderRoleGate(existing, name)
+  const senderRolePolicy = agentGetsSenderRoleGate(name) ? readAgentSenderRoleGatePolicy(name) : null
+  if (senderRolePolicy) {
+    injectSenderRoleGate(existing, senderRolePolicy)
   } else {
     removeSenderRoleGate(existing)
   }
@@ -1665,18 +1666,32 @@ export function injectTelegramCopyGate(existing: Record<string, unknown>): void 
 
 // The sender-role gate (scripts/hooks/sender-role-gate.py): in a turn that carries a chat message from a
 // sender who is not listed as an owner in the agent's agent-config.json `senderRoleGate`, the configured
-// risky tools are denied. Opt-in per agent: wired only when that key is set (readAgentSenderRoleGate),
-// and removed again on the next spawn once it is not, so an agent without the key pays no hook at all.
-// The hook gets the agent's NAME (a hook argument may not carry a path) and reads
-// <install>/agents/<name>/agent-config.json itself, so a later edit of the table takes effect on the next
-// tool call; switching the gate on or off takes a respawn.
+// risky tools are denied. Opt-in per agent: wired only when that key is set, and removed again on the
+// next spawn once it is not, so an agent without the key pays no hook at all. The table itself rides on
+// the hook's command line (--policy, see senderRoleGatePolicyArg): it is read from agent-config.json at
+// spawn, so an edit the agent makes to that file in this session cannot loosen the running gate.
 const SENDER_ROLE_GATE_SCRIPT = 'sender-role-gate.py'
 
-export function injectSenderRoleGate(existing: Record<string, unknown>, agentName: string): void {
+// Sub-agents only: the main agent is out of scope on purpose.
+export function agentGetsSenderRoleGate(name: string): boolean {
+  return name !== MAIN_AGENT_ID
+}
+
+// This gate's entry, by the script's exact file name in a hook command (`.../sender-role-gate.py"`), so a
+// differently named script that merely contains the name is never touched.
+function isSenderRoleGateEntry(e: unknown): boolean {
+  const inner = (e as { hooks?: unknown } | null)?.hooks
+  return Array.isArray(inner) && inner.some((h) => {
+    const command = (h as { command?: unknown } | null)?.command
+    return typeof command === 'string' && /\/sender-role-gate\.py"/.test(command)
+  })
+}
+
+export function injectSenderRoleGate(existing: Record<string, unknown>, policy: string): void {
   const hooks = (existing.hooks && typeof existing.hooks === 'object'
     ? existing.hooks
     : (existing.hooks = {})) as Record<string, unknown>
-  const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', SENDER_ROLE_GATE_SCRIPT), ['--agent', agentName])
+  const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', SENDER_ROLE_GATE_SCRIPT), ['--policy', policy])
   // Registration guard: a /tmp or missing path must never enter shared settings.
   if (isUnsafeHookCommand(command)) return
   const entry = {
@@ -1685,7 +1700,7 @@ export function injectSenderRoleGate(existing: Record<string, unknown>, agentNam
   }
   const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
   hooks.PreToolUse = [
-    ...prev.filter((e) => !JSON.stringify(e).includes(SENDER_ROLE_GATE_SCRIPT)),
+    ...prev.filter((e) => !isSenderRoleGateEntry(e)),
     entry,
   ]
 }
@@ -1695,7 +1710,7 @@ export function removeSenderRoleGate(existing: Record<string, unknown>): void {
   if (!hooks || typeof hooks !== 'object') return
   const h = hooks as Record<string, unknown>
   if (!Array.isArray(h.PreToolUse)) return
-  h.PreToolUse = (h.PreToolUse as unknown[]).filter((e) => !JSON.stringify(e).includes(SENDER_ROLE_GATE_SCRIPT))
+  h.PreToolUse = (h.PreToolUse as unknown[]).filter((e) => !isSenderRoleGateEntry(e))
 }
 
 // Which tools the destructive-gate inspects. Bash carries the banned commands

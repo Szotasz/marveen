@@ -488,7 +488,7 @@ export function readAgentStateObserver(name: string): boolean {
 //
 // The gate itself is scripts/hooks/sender-role-gate.py, a PreToolUse hook that
 // denies the configured risky tools whenever the current turn carries a chat
-// envelope from a sender who is not an owner. This pair only decides whether
+// envelope from a sender who is not an owner. These decide whether
 // the launcher WIRES that hook for the agent: the key must be present and not
 // be the explicit "off" shape (riskyTools missing or empty). A malformed
 // value (string, null, array, non-array riskyTools) deliberately returns
@@ -509,12 +509,22 @@ export function senderRoleGateEnabled(config: unknown): boolean {
   return true
 }
 
-export function readAgentSenderRoleGate(name: string): boolean {
+// The hook's --policy argument: base64url (no padding) of the senderRoleGate value, or null when the gate
+// is off. The launcher copies the table into the generated settings.json at the agent's start, so an edit
+// the agent makes to its own agent-config.json during the session does not change the running gate.
+// base64url keeps the argument inside the hook-argument charset ([A-Za-z0-9_-]).
+export function senderRoleGatePolicyArg(config: unknown): string | null {
+  if (!senderRoleGateEnabled(config)) return null
+  const value = (config as Record<string, unknown>).senderRoleGate
+  return Buffer.from(JSON.stringify(value), 'utf-8').toString('base64url')
+}
+
+export function readAgentSenderRoleGatePolicy(name: string): string | null {
   const configPath = join(agentDir(name), 'agent-config.json')
   try {
-    return senderRoleGateEnabled(JSON.parse(readFileOr(configPath, '{}')))
+    return senderRoleGatePolicyArg(JSON.parse(readFileOr(configPath, '{}')))
   } catch {
-    return false
+    return null
   }
 }
 

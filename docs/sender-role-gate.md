@@ -27,7 +27,8 @@ when its text begins with an envelope.
 
 The sender id is read from the envelope: Telegram `user_id`, Teams `aad_object_id`. A sender who is not in the
 table, a channel without a known sender attribute, an envelope with a repeated attribute, and a forged owner
-envelope typed inside a colleague's message all make the turn a member turn.
+envelope typed inside a colleague's message all make the turn a member turn. So does an envelope whose
+attribute text does not parse cleanly, and a chat message in which no envelope can be read.
 
 ## Configuration
 
@@ -51,7 +52,10 @@ Per agent, in `agents/<name>/agent-config.json`:
   sender id.
 
 The key is off by default. With the key missing, or `riskyTools` missing or empty, the hook is not wired at
-all. The launcher wires it at the agent's next start; edits to the table take effect on the next tool call.
+all. At the agent's start the launcher copies the `senderRoleGate` value onto the hook's command line in the
+generated `.claude/settings.json` (`--policy`, base64url), next to every other gate, so a change to the table
+takes effect at the agent's next start, and an edit the agent itself makes to `agent-config.json` during the
+session does not change the running gate.
 
 Fail-closed: a malformed `senderRoleGate` value treats every tool as risky and every chat sender as a member
 (an owner at the terminal is still not blocked). An unreadable or empty transcript, a turn start that cannot be
@@ -69,4 +73,8 @@ turn. A `roles` entry listed twice keeps the stricter role.
   as that sender's message for the rest of the turn (its enqueue line has no origin to tell it apart).
 - An `agent-config.json` that is not valid JSON does not wire the hook (the launcher already treats such a file
   as broken).
+- An agent that can write its own `agent-config.json` can change the table for its NEXT start, as it can every
+  other key in that file (`toolDeny`, `capabilities`). The running gate is not affected.
+- A chat plugin that writes an attribute value with an unescaped double quote makes that envelope unreadable,
+  which counts as a member turn.
 - On a risky call the hook reads the transcript backwards to the start of the previous turn, at most 64 MiB.

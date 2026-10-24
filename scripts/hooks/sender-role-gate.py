@@ -17,8 +17,10 @@ The rule in one sentence: risky tool + any non-owner envelope anywhere in
 the current turn -> deny; everything else -> allow silently.
 
 What it reads:
-  --config <abs path to agents/<name>/agent-config.json>, key
-  "senderRoleGate": {"riskyTools": [glob patterns], "roles":
+  --policy <base64url of the agent-config.json "senderRoleGate" value, copied
+  by the launcher at the agent's start> (or --config <an agent-config.json>
+  for tests and manual checks). The value:
+  {"riskyTools": [glob patterns], "roles":
   [{"channel","sender","role"}], "senderKeys": {channel: attribute}}.
   riskyTools patterns are fnmatch-case globs matched after replacing every
   "-" with "_" on BOTH sides, so "send_mail" and "send-mail" are the same
@@ -49,7 +51,7 @@ Output contract (PreToolUse): allow = print nothing, exit 0; deny = one
 JSON object on stdout, exit 0. Never exit 2, never write to stderr on the
 normal path.
 """
-import argparse, fnmatch, json, os, re, sys
+import argparse, base64, fnmatch, json, os, re, sys
 
 # Reading bounds for the backwards transcript scan (1.6(ii)). The defaults
 # keep a multi-gigabyte session transcript from being pulled into a hook
@@ -69,6 +71,9 @@ DEFAULT_SENDER_KEYS = {"telegram": "user_id", "teams": "aad_object_id"}
 # like "<channels" does not match.
 CHANNEL_TAG_RE = re.compile(r"<channel\s+([^>]*)>")
 ATTR_RE = re.compile(r'([A-Za-z_][A-Za-z0-9_]*)="([^"]*)"')
+# The whole attribute string must be such pairs: text between them (an unescaped quote in a
+# value that swallowed the next attribute's opening quote) makes the envelope unreadable.
+ATTRS_FULL_RE = re.compile(r'(?:[A-Za-z_][A-Za-z0-9_]*="[^"]*"\s*)*')
 
 
 def is_plain_object(value):
@@ -97,6 +102,27 @@ def load_config(path):
         parsed = json.loads(raw)
     except ValueError:
         return ("malformed", None, "the config file is not valid JSON")
+    return classify_config(parsed)
+
+
+# What the launcher wires: base64url (no padding) of the senderRoleGate value, copied out of
+# agent-config.json at the agent's start. The table then sits in the generated settings.json next to
+# every other gate, so an edit the agent itself makes to agent-config.json in this session does not
+# change it.
+POLICY_RE = re.compile(r"[A-Za-z0-9_-]+")
+
+
+def load_policy(arg):
+    if not POLICY_RE.fullmatch(arg):
+        return ("malformed", None, "--policy is not base64url")
+    try:
+        value = json.loads(base64.urlsafe_b64decode(arg + "=" * (-len(arg) % 4)).decode("utf-8"))
+    except ValueError:  # binascii.Error and UnicodeDecodeError included
+        return ("malformed", None, "--policy does not decode to JSON")
+    return classify_config({"senderRoleGate": value})
+
+
+def classify_config(parsed):
     if not is_plain_object(parsed):
         return ("malformed", None, "the config file is not a JSON object")
     if "senderRoleGate" not in parsed:
@@ -270,20 +296,21 @@ def chat_texts(origin, texts):
     without an origin (a queue-operation enqueue) counts when its text begins
     with the envelope Claude Code puts in front of a chat message."""
     if is_plain_object(origin) and isinstance(origin.get("kind"), str):
-        return texts if origin["kind"] == "channel" else []
-    return [t for t in texts if CHAT_START_RE.match(t)]
+        return (texts, True) if origin["kind"] == "channel" else ([], False)
+    chat = [t for t in texts if CHAT_START_RE.match(t)]
+    return (chat, bool(chat))
 
 
 def carried_texts(record):
-    """The texts that may carry envelopes, inside the window only (1.6 iii)."""
+    """-> (texts that may carry envelopes, is_chat_message), inside the window only (1.6 iii)."""
     if not is_plain_object(record):
-        return []
+        return ([], False)
     kind = record.get("type")
     if kind == "user":
         # Turn-start prompts only: a tool_result user record has no
         # turnPosition and must not count.
         if not is_plain_object(record.get("turnPosition")):
-            return []
+            return ([], False)
         message = record.get("message")
         content = message.get("content") if is_plain_object(message) else None
         return chat_texts(record.get("origin"), as_texts(content))
@@ -291,14 +318,14 @@ def carried_texts(record):
         attachment = record.get("attachment")
         if is_plain_object(attachment) and attachment.get("type") == "queued_command":
             return chat_texts(attachment.get("origin"), as_texts(attachment.get("prompt")))
-        return []
+        return ([], False)
     if kind == "queue-operation":
         # Enqueue only: a message counts the moment it arrives. remove /
         # dequeue never undoes it inside the same turn.
         if record.get("operation") == "enqueue":
             return chat_texts(None, as_texts(record.get("content")))
-        return []
-    return []
+        return ([], False)
+    return ([], False)
 
 
 def envelope_role(attrs, roles, sender_keys):
@@ -334,9 +361,13 @@ def window_role(window, roles, sender_keys):
     for record in window:
         if record is None:
             return ("member", "a transcript line inside this turn is not valid JSON")
-        for text in carried_texts(record):
+        texts, is_chat = carried_texts(record)
+        found = False
+        for text in texts:
             for match in CHANNEL_TAG_RE.finditer(text):
-                saw_envelope = True
+                saw_envelope = found = True
+                if not ATTRS_FULL_RE.fullmatch(match.group(1).strip()):
+                    return ("member", "it carries a message envelope that cannot be parsed")
                 pairs = ATTR_RE.findall(match.group(1))
                 attrs = dict(pairs)
                 # A repeated attribute is a member, never last-one-wins: a display
@@ -347,6 +378,8 @@ def window_role(window, roles, sender_keys):
                 role, clause = envelope_role(attrs, roles, sender_keys)
                 if role != "owner":
                     return ("member", clause)
+        if is_chat and not found:
+            return ("member", "it carries a chat message without a readable envelope")
     return ("owner" if saw_envelope else "none", None)
 
 
@@ -424,29 +457,16 @@ def run(raw_stdin, state, settings, problem):
     return deny(reason)
 
 
-def _install_dir():
-    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-
-# What sanitizeAgentName (src/web/sanitize.ts) can produce.
-AGENT_NAME_RE = re.compile(r"[a-z0-9][a-z0-9-]*")
-
-
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[1])
     src = ap.add_mutually_exclusive_group(required=True)
-    # The launcher wires --agent: a hook argument may not carry a path (the
-    # scaffold refuses anything that would need quoting), and the agent's
-    # config lives at <install>/agents/<name>/agent-config.json.
-    src.add_argument("--agent", help="the agent's name")
-    src.add_argument("--config", help="path to an agent-config.json (tests)")
+    # The launcher wires --policy (see load_policy); --config reads an agent-config.json and is
+    # there for tests and manual checks.
+    src.add_argument("--policy", help="base64url of the senderRoleGate value")
+    src.add_argument("--config", help="path to an agent-config.json")
     args = ap.parse_args(argv)
-    if args.agent is not None:
-        if not AGENT_NAME_RE.fullmatch(args.agent):
-            state, settings, problem = ("malformed", None, "--agent is not a valid agent name")
-        else:
-            state, settings, problem = load_config(
-                os.path.join(_install_dir(), "agents", args.agent, "agent-config.json"))
+    if args.policy is not None:
+        state, settings, problem = load_policy(args.policy)
     else:
         state, settings, problem = load_config(args.config)
     if state == "off":
