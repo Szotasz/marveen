@@ -18,6 +18,10 @@
 # Kézzel rácsatlakozás: tmux attach -t <MAIN_AGENT_ID>-channels (pl. marveen-channels)
 
 INSTALL_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+# Diagnostic modes retain their Claude-only fixture behavior.
+if [ "$#" -eq 0 ] && { [ "${MARVEEN_AGENT_BACKEND:-}" = "codex" ] || grep -q '^MARVEEN_AGENT_BACKEND=codex$' "$INSTALL_DIR/.env" 2>/dev/null; }; then
+  exec /bin/bash "$INSTALL_DIR/scripts/codex-channels.sh"
+fi
 
 # WHO THE GUARD ALERTS IN THIS SCRIPT ARE SENT AS.
 #

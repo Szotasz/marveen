@@ -1815,6 +1815,16 @@ function verifyHardRestartLater(): void {
 }
 
 export function hardRestartMarveenChannels(): { ok: boolean; error?: string } {
+  if (process.env.MARVEEN_AGENT_BACKEND === 'codex') {
+    const paneScript = join(PROJECT_ROOT, 'scripts', 'codex-channels.sh')
+    const pluginEnv = process.env.MARVEEN_CODEX_TELEGRAM_PLUGIN
+      ? `export MARVEEN_CODEX_TELEGRAM_PLUGIN=${shSingleQuote(process.env.MARVEEN_CODEX_TELEGRAM_PLUGIN)} && ` : ''
+    try {
+      execFileSync(tmuxBin(), ['respawn-pane', '-k', '-c', PROJECT_ROOT, '-t', exactTmuxTarget(MAIN_CHANNELS_SESSION), `${pluginEnv}/bin/bash ${shSingleQuote(paneScript)} --pane`], { timeout: 15000 })
+      writeRespawnStamp()
+      return { ok: true }
+    } catch (error) { return { ok: false, error: String(error) } }
+  }
   // FABLEFALL1: the restarted session boots from the main/worker shared config
   // roots, which the per-agent spawn-time stamp never covers -- stamp them now
   // so the model consent dialog cannot render on the fresh boot (change-only,
