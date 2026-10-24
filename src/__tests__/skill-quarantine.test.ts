@@ -3,7 +3,7 @@
 // bound to the hash of what was shown. Real route handlers, real unzip, a
 // sandboxed HOME / store / agents tree; only the LLM generator is stubbed.
 import { describe, it, expect, beforeEach, afterAll, vi } from 'vitest'
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { execFileSync } from 'node:child_process'
@@ -477,5 +477,152 @@ describe('every byte is shown and scanned, or the skill is not approvable (#2088
     expect(p.report.findingsTruncated).toBe(true)
     expect(p.report.truncated).toBe(false)
     expect(p.approvable).toBe(true)
+  })
+})
+
+describe('proposed skills (D4)', async () => {
+  const q = await import('../web/skill-quarantine.js')
+  const md = '---\nname: x\ndescription: x\n---\n# new\n'
+  const liveDir = (n: string) => join(q.globalSkillsRoot(), n)
+  const mkLive = (n: string, text = 'old') => { mkdirSync(liveDir(n), { recursive: true }); writeFileSync(join(liveDir(n), 'SKILL.md'), text) }
+  const propose = (n: string) => {
+    const r = q.queueProposedSkill(n, md, { proposedBy: 'soma', reason: 'why' })
+    if (!r.ok) throw new Error(r.error)
+    return r.meta
+  }
+
+  it('P1: a free name is queued, nothing goes live', () => {
+    const r = q.queueProposedSkill('new-one', md)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(r.meta.source).toBe('propose')
+    expect(r.meta.replaces).toBeUndefined()
+    expect(readFileSync(join(PENDING, r.meta.id, 'skill', 'SKILL.md'), 'utf-8')).toBe(md)
+    expect(existsSync(liveDir('new-one'))).toBe(false)
+  })
+
+  it('P2: a live name is a replacement bound to its hash; live untouched', () => {
+    mkLive('live-one')
+    const m = propose('live-one')
+    expect(m.replaces?.hash).toBe(q.skillDirHash(liveDir('live-one')))
+    expect(readFileSync(join(liveDir('live-one'), 'SKILL.md'), 'utf-8')).toBe('old')
+  })
+
+  it('P3: the same name twice is 409', () => {
+    propose('twice')
+    expect(q.queueProposedSkill('twice', md)).toMatchObject({ ok: false, status: 409 })
+  })
+
+  it('P4: a symlinked live skill is 400', () => {
+    const other = join(tmpRoot, 'elsewhere'); mkdirSync(other, { recursive: true })
+    symlinkSync(other, liveDir('linked'))
+    expect(q.queueProposedSkill('linked', md)).toMatchObject({ ok: false, status: 400 })
+  })
+
+  it('P5: approving a replacement backs the old version up', () => {
+    mkLive('swap')
+    const m = propose('swap')
+    const r = q.approvePending(m.id, q.getPending(m.id)!.hash)
+    expect(r.ok).toBe(true)
+    if (!r.ok) return
+    expect(readFileSync(join(liveDir('swap'), 'SKILL.md'), 'utf-8')).toBe(md)
+    expect(r.backup!.startsWith(q.replacedRoot())).toBe(true)
+    expect(readFileSync(join(r.backup!, 'SKILL.md'), 'utf-8')).toBe('old')
+    expect(q.getPending(m.id)).toBeNull()
+  })
+
+  it('P5b: a replacement keeps the live skill\'s other files, shown and installed', () => {
+    mkLive('multi')
+    mkdirSync(join(liveDir('multi'), 'scripts'), { recursive: true })
+    writeFileSync(join(liveDir('multi'), 'scripts', 'run.sh'), 'echo hi\n')
+    const m = propose('multi')
+    const p = q.getPending(m.id)!
+    const paths = p.report.files.map((f) => f.path)
+    expect(paths).toContain('SKILL.md')
+    expect(paths).toContain('scripts/run.sh')
+    expect(q.approvePending(m.id, p.hash).ok).toBe(true)
+    expect(readFileSync(join(liveDir('multi'), 'SKILL.md'), 'utf-8')).toBe(md)
+    expect(readFileSync(join(liveDir('multi'), 'scripts', 'run.sh'), 'utf-8')).toBe('echo hi\n')
+  })
+
+  it('P5c: if the install fails, the old version is put back', () => {
+    mkLive('restore')
+    const m = propose('restore')
+    const hash = q.getPending(m.id)!.hash
+    chmodSync(join(PENDING, m.id), 0o555)
+    try {
+      const r = q.approvePending(m.id, hash)
+      if (process.getuid?.() === 0) return
+      expect(r).toMatchObject({ ok: false, status: 500 })
+      expect((r as any).error).toMatch(/restored/)
+      expect(readFileSync(join(liveDir('restore'), 'SKILL.md'), 'utf-8')).toBe('old')
+    } finally {
+      chmodSync(join(PENDING, m.id), 0o755)
+    }
+  })
+
+  it('P6: a live skill changed after proposing is 409 and untouched', () => {
+    mkLive('moved')
+    const m = propose('moved')
+    const hash = q.getPending(m.id)!.hash
+    writeFileSync(join(liveDir('moved'), 'SKILL.md'), 'changed')
+    expect(q.approvePending(m.id, hash)).toMatchObject({ ok: false, status: 409 })
+    expect(readFileSync(join(liveDir('moved'), 'SKILL.md'), 'utf-8')).toBe('changed')
+    expect(q.getPending(m.id)).not.toBeNull()
+  })
+
+  it('P6b: a symlink planted into the live skill after proposing blocks the replacement', () => {
+    mkLive('planted')
+    const m = propose('planted')
+    const hash = q.getPending(m.id)!.hash
+    symlinkSync('/etc/hosts', join(liveDir('planted'), 'link'))
+    expect(q.approvePending(m.id, hash)).toMatchObject({ ok: false, status: 409, error: expect.stringMatching(/symlink/) })
+    expect(readFileSync(join(liveDir('planted'), 'SKILL.md'), 'utf-8')).toBe('old')
+  })
+
+  it('P6d: the live skill swapped for a symlink to an identical copy after proposing is refused', () => {
+    mkLive('swapped')
+    const m = propose('swapped')
+    const hash = q.getPending(m.id)!.hash
+    const twin = mkdtempSync(join(tmpdir(), 'skill-twin-'))
+    writeFileSync(join(twin, 'SKILL.md'), 'old')
+    rmSync(liveDir('swapped'), { recursive: true, force: true })
+    symlinkSync(twin, liveDir('swapped'))
+    expect(q.approvePending(m.id, hash)).toMatchObject({ ok: false, status: 409, error: expect.stringMatching(/symlink/) })
+    expect(lstatSync(liveDir('swapped')).isSymbolicLink()).toBe(true)
+    rmSync(twin, { recursive: true, force: true })
+  })
+
+  it('P6c: the shown hash binds the replaced version, so editing replaces in meta.json voids it', () => {
+    mkLive('bound')
+    const p = q.getPending(propose('bound').id)!
+    expect(p.hash).not.toBe(q.skillDirHash(join(PENDING, p.id, 'skill'), { name: p.name, target: p.target, source: p.source }))
+  })
+
+  it('P7: a live skill deleted after proposing is 409, nothing installed', () => {
+    mkLive('gone')
+    const m = propose('gone')
+    const hash = q.getPending(m.id)!.hash
+    rmSync(liveDir('gone'), { recursive: true, force: true })
+    expect(q.approvePending(m.id, hash)).toMatchObject({ ok: false, status: 409 })
+    expect(existsSync(liveDir('gone'))).toBe(false)
+    expect(q.getPending(m.id)).not.toBeNull()
+  })
+
+  it('P8: liveSkillMd is on getPending, not on listPending', () => {
+    mkLive('shown')
+    const m = propose('shown')
+    expect(q.getPending(m.id)!.liveSkillMd).toBe('old')
+    const items = q.listPending()
+    expect(items.length).toBeGreaterThan(0)
+    for (const i of items) expect('liveSkillMd' in i).toBe(false)
+  })
+
+  it('P9: the hash of an entry without replaces is unchanged', () => {
+    const meta = q.queueGeneratedSkill({ scope: 'global' }, 'plain', md)
+    const dir = join(PENDING, meta.id, 'skill')
+    const base = { name: meta.name, target: meta.target, source: meta.source }
+    expect(q.skillDirHash(dir, base)).toBe(q.skillDirHash(dir, { ...base, replaces: undefined }))
+    expect(q.getPending(meta.id)!.hash).toBe(q.skillDirHash(dir, base))
   })
 })

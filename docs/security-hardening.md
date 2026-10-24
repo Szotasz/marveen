@@ -542,18 +542,45 @@ boundary for prompt injection (see the SKILLSCAN824 research). An empty findings
 list means the filter found no known shape, not that the skill is safe. The
 load-bearing control is that nothing goes live without the approval.
 
+A fifth route, `POST /api/skills/propose`, is how an agent offers a skill to the
+whole fleet: it sends a complete `SKILL.md`, which is queued for the global root
+like the others. If that name is already live, the proposal is a replacement:
+its `SKILL.md` replaces the live one and the live skill's other files are copied
+into the proposal, so the approver sees (and the hash binds) the whole directory
+that goes live; the approver is also shown the current `SKILL.md`, the approval
+fails if the live skill changed since it was proposed, and on approval the old
+version is moved to `store/skills-replaced/` first. Proposing needs only the
+dashboard token; approving needs the owner's session, as for every pending skill.
+When the backup area and the skill root are on different filesystems, the
+move is a copy and a remove: the live skill is re-hashed after the copy and
+removed only if it did not change, so a write that lands in the short window
+between that check and the remove would be lost. That is a stated limit, not a
+boundary: the same OS user can write `~/.claude/skills` directly anyway.
+
+An agent's OWN skill folder (its working directory's `.claude/skills`) is left
+outside the quarantine on purpose: only that agent loads it, and it already
+writes anything else in its own directory with its file tools, so a queue there
+would add a click without adding a boundary. The shipped instructions tell every
+agent to write its own skills there and to propose everything global. That is an
+instruction, not a control: the same OS user can still write `~/.claude/skills`.
+The main agent has no private folder (its working directory is the project root,
+which every sub-agent sees), so its instructions always propose.
+
 **Not covered, stated out loud:**
 
 - An agent writing a skill directory directly with its file tools. All agents
-  run as one OS user, and the self-learning instructions tell them to do this.
+  run as one OS user. The shipped instructions keep direct writes to the
+  agent's own folder and send everything global through
+  `POST /api/skills/propose`, but nothing stops a direct write to
+  `~/.claude/skills`.
 - The fleet import, the agent-bundle import and the `skill` CLI, which have
   their own paths.
 - Editing a live skill's `SKILL.md` through `PUT /api/skills/:name` (a follow-up
   PR puts it through the same queue).
-- Who approves. The approve route takes the same credentials as every other
-  dashboard write, and with the one shared dashboard token an agent can call it
-  too. "Only a human approves" needs the per-agent identity decision (#1985)
-  first.
+- Who approves. The approve and reject routes take the owner's browser session;
+  the shared dashboard token every agent holds is refused, except before the
+  first dashboard login exists. On such an install an agent could approve its
+  own proposal, so log in once before relying on the queue.
 
 # A second reviewer for high-risk tool calls (opt-in)
 

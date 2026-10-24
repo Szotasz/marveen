@@ -529,6 +529,60 @@ export function upgradeForeignRootInHookPrompts(existingHooks: Record<string, un
   return changed
 }
 
+/**
+ * A stock agent-hook prompt an earlier template shipped (templates/retired-hook-prompts.json,
+ * resolved like the template) that an agent still carries word for word was never edited:
+ * it becomes the current template prompt of the same event. Any other prompt was edited by
+ * someone and stays. Exported for unit tests.
+ */
+export function upgradeRetiredHookPrompts(
+  existingHooks: Record<string, unknown>,
+  tplHooks: Record<string, unknown>,
+  retired: Record<string, string[]>,
+): boolean {
+  let changed = false
+  for (const [event, oldPrompts] of Object.entries(retired)) {
+    const tplEntries = tplHooks[event]
+    if (!Array.isArray(tplEntries)) continue
+    const current = (tplEntries as HookEntry[])
+      .flatMap((e) => e.hooks ?? [])
+      .find((h) => h.type === 'agent' && typeof h.prompt === 'string')?.prompt as string | undefined
+    if (current === undefined) continue
+    const entries = existingHooks[event]
+    if (!Array.isArray(entries)) continue
+    for (const entry of entries as HookEntry[]) {
+      for (const hook of entry.hooks ?? []) {
+        if (hook.type !== 'agent' || typeof hook.prompt !== 'string') continue
+        if (hook.prompt !== current && oldPrompts.includes(hook.prompt)) {
+          hook.prompt = current
+          changed = true
+        }
+      }
+    }
+  }
+  return changed
+}
+
+// The retired stock prompts, resolved like the template. A missing file means no
+// migration; an unreadable one is logged and also means no migration. The path is
+// a test seam only.
+export function readRetiredHookPrompts(
+  p: string = join(PROJECT_ROOT, 'templates', 'retired-hook-prompts.json'),
+): Record<string, string[]> {
+  if (!existsSync(p)) return {}
+  try {
+    const parsed = JSON.parse(resolveTemplatePlaceholders(readFileSync(p, 'utf-8'))) as Record<string, unknown>
+    const out: Record<string, string[]> = {}
+    for (const [event, list] of Object.entries(parsed)) {
+      if (Array.isArray(list)) out[event] = list.filter((s): s is string => typeof s === 'string')
+    }
+    return out
+  } catch (err) {
+    logger.warn({ err, path: p }, 'ensureAgentHooks: retired-hook-prompts.json unreadable, stock prompts are not migrated')
+    return {}
+  }
+}
+
 // Idempotent migration: every agent's settings.json should carry the
 // PreCompact hook (memory save + skill reflection). Pre-refactor agents
 // were scaffolded before scaffoldAgentDir seeded the template, so their
@@ -590,6 +644,9 @@ export function ensureAgentHooks(
     // HOSTMOVE923: an existing PreCompact prompt inherited from another
     // install/host names a dead root; the add pass below would never see it.
     if (upgradeForeignRootInHookPrompts(existingHooks, PROJECT_ROOT)) changed = true
+    // #2200: an agent still on a stock prompt from an earlier template gets the
+    // current one; an edited prompt stays.
+    if (upgradeRetiredHookPrompts(existingHooks, tplHooks, readRetiredHookPrompts())) changed = true
     // Matcher pass: a widened template matcher (e.g. SessionStart gaining
     // `clear`) must reach agents whose command string is unchanged.
     if (syncHookMatchers(existingHooks, tplHooks)) changed = true
@@ -3348,9 +3405,11 @@ function buildSkillsPathTrapBody(name: string): string {
     'módban a `$CLAUDE_CONFIG_DIR/skills` SYMLINK a globálisra, tehát az 1. pont,',
     'más néven; üres változónál maga a `~/.claude/skills` az.',
     '',
-    '1. `~/.claude/skills` -- a globális. MINDEN ágens látja. Ide írni tudatos,',
-    '   flotta-szintű döntés legyen, ne alapértelmezés. A skill-futtatás base',
-    '   directory-ja a saját config-gyökeredet MUTATHATJA -- attól még a flottáé.',
+    '1. `~/.claude/skills` -- a globális. MINDEN ágens látja. Ide közvetlenül NE',
+    '   írj: új globális skill vagy egy meglévő javítása CSAK javaslatként megy',
+    '   (`POST /api/skills/propose`), a gazda jóváhagyásáig karanténban vár. A',
+    '   skill-futtatás base directory-ja a saját config-gyökeredet MUTATHATJA --',
+    '   attól még a flottáé.',
   ]
   const perAgent = isMain
     ? [
@@ -3359,6 +3418,7 @@ function buildSkillsPathTrapBody(name: string): string {
         '   (`agents/<név>`) ezen BELÜL van, tehát ez a mappa az ŐSÜK: amit ide',
         '   írsz, az megjelenik a listájukban. Láthatóságban úgy viselkedik,',
         '   mint a globális.',
+        '   Ide se írj közvetlenül: ugyanúgy javaslatként megy.',
         '3. `agents/<név>/.claude/skills` -- egy SUB-ÁGENS saját mappája. Csak övé.',
         '   NEKED NINCS ilyen: az `agents/<sajat-neved>` mappa nem létezik, és egy',
         '   ott létrehozott mappa a te munkakönyvtárad GYEREKE lenne, nem az őse,',
@@ -3367,6 +3427,7 @@ function buildSkillsPathTrapBody(name: string): string {
         'KÖVETKEZMÉNY: ezen a telepítésen NINCS olyan hely, ahova a fő ágens',
         'csak-magának írhat skillt. Ne feltételezd, hogy privát -- 2026-09-23-án',
         'ez a feltételezés dőlt meg, és nem magától: egy sub-ágens mérte meg.',
+        'Ezért nálad MINDEN új vagy javított skill javaslatként megy (`POST /api/skills/propose`).',
       ]
     : [
         '2. A PROJEKT-GYÖKÉR `.claude/skills` mappája. A munkakönyvtárad EZEN BELÜL',
@@ -3441,6 +3502,77 @@ export function ensureSkillsPathTrapSection(name: string): void {
 
   if (updated === existing) return
   atomicWriteFileSync(claudeMdPath, updated)
+}
+
+const SKILL_SECTION_HEADING = '## Öntanulás és Skill rendszer'
+
+/** Whitespace-only differences do not make a section edited: an LLM copy may add or drop a blank
+ *  line anywhere (measured on a live sub-agent: one inserted between two text lines), or leave
+ *  trailing spaces or CRLF. So blank lines are dropped and every line is right-trimmed. */
+export function normalizeSectionWhitespace(s: string): string {
+  return s.replace(/\r\n?/g, '\n').split('\n').map((l) => l.replace(/[ \t]+$/, ''))
+    .filter((l) => l !== '').join('\n')
+}
+
+/** The section of a CLAUDE.md that starts at a line equal to `heading` (trailing spaces, tabs and CR ignored) and ends before the next line starting with "## " (or at the end). */
+export function findSection(text: string, heading: string): { start: number; end: number } | null {
+  const lines = text.split('\n')
+  let offset = 0
+  let start = -1
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].replace(/[ \t\r]+$/, '')
+    if (start < 0 && line === heading) start = offset
+    else if (start >= 0 && line.startsWith('## ')) return { start, end: offset }
+    offset += lines[i].length + 1
+  }
+  return start < 0 ? null : { start, end: text.length }
+}
+
+/** The CLAUDE.md with an unedited retired skill section replaced by `current`, or null when nothing changes. */
+export function upgradeRetiredSkillSection(text: string, retired: string[], current: string): string | null {
+  const at = findSection(text, SKILL_SECTION_HEADING)
+  if (!at) return null
+  const norm = normalizeSectionWhitespace(text.slice(at.start, at.end))
+  if (norm === normalizeSectionWhitespace(current)) return null
+  if (!retired.some((r) => normalizeSectionWhitespace(r) === norm)) return null
+  const tail = at.end < text.length ? '\n\n' : '\n'
+  return text.slice(0, at.start) + current.replace(/\n+$/, '') + tail + text.slice(at.end)
+}
+
+// The retired stock sections (templates/retired-claude-md-sections.json, newest first).
+// A missing file means no migration; an unreadable one is logged and also means no
+// migration. The path is a test seam only.
+export function readRetiredSkillSections(
+  p: string = join(PROJECT_ROOT, 'templates', 'retired-claude-md-sections.json'),
+): string[] {
+  if (!existsSync(p)) return []
+  try {
+    const parsed = JSON.parse(readFileSync(p, 'utf-8')) as Record<string, unknown>
+    const list = parsed[SKILL_SECTION_HEADING]
+    return Array.isArray(list) ? list.filter((s): s is string => typeof s === 'string') : []
+  } catch (err) {
+    logger.warn({ err, path: p }, 'ensureSkillSectionCurrent: retired-claude-md-sections.json unreadable, the skill section is not migrated')
+    return []
+  }
+}
+
+// Called on every startAgentProcess(), like the sections above. Sub-agents only:
+// the main agent's CLAUDE.md belongs to its owner and is never rewritten here
+// (the pull request description says how the owner updates it).
+export function ensureSkillSectionCurrent(name: string, retiredPath?: string): boolean {
+  if (name === MAIN_AGENT_ID) return false
+  const claudeMdPath = join(agentDir(name), 'CLAUDE.md')
+  if (!existsSync(claudeMdPath)) return false
+  let existing: string
+  try {
+    existing = readFileSync(claudeMdPath, 'utf-8')
+  } catch {
+    return false
+  }
+  const updated = upgradeRetiredSkillSection(existing, readRetiredSkillSections(retiredPath), buildSkillSection())
+  if (updated === null || updated === existing) return false
+  atomicWriteFileSync(claudeMdPath, updated)
+  return true
 }
 
 // GUARDHITELES903: the RECEIVER half of the authenticated system-directive
@@ -4044,6 +4176,52 @@ export function ensureFleetAuthSection(name: string): void {
   atomicWriteFileSync(claudeMdPath, updated)
 }
 
+// The current "## Öntanulás és Skill rendszer" section of a sub-agent CLAUDE.md,
+// as generateClaudeMd asks the model to copy it. One source for the prompt and
+// for ensureSkillSectionCurrent's migration of an unedited old copy.
+export function buildSkillSection(): string {
+  return `## Öntanulás és Skill rendszer
+
+Te egy önfejlesztő ágens vagy. A munkád során tanulsz, és újrafelhasználható skill-eket hozol létre.
+
+### Skill-ek helye
+- Egyéni: a te munkakönyvtárad .claude/skills/ mappája. Csak te látod; ide közvetlenül írsz.
+- Globális: ~/.claude/skills/ (minden ágens látja). Ide közvetlenül NE írj: új globális skill vagy egy meglévő javítása csak javaslatként megy (lásd lent), és a gazda jóváhagyásáig karanténban vár.
+- CSAPDA: a .claude-config/skills NEM a tiéd -- az a globális mappa symlinken át; saját skill a .claude/skills alá menjen
+
+### Automatikus skill generálás
+Komplex feladatok után (5+ tool hívás, hiba utáni recovery, user korrekció, többlépéses workflow) automatikusan hozz létre SKILL.md fájlt a saját mappádban:
+
+mkdir -p .claude/skills/SKILL-NEV
+A SKILL.md tartalmazzon YAML frontmatter-t (name, description), majd szekciókat: Mikor használd, Eljárás, Buktatók, Ellenőrzés.
+
+### Globális skill: csak javaslatként
+Ha a skill minden ágensnek hasznos, vagy egy meglévő globális skillt javítanál, írd meg a teljes SKILL.md-t piszkozatba, és küldd el. Ha a név már él, a javaslat csere: jóváhagyáskor a régi változat mentésre kerül. Meglévő globális skill javításánál a mostani szövegből indulj (cat ~/.claude/skills/NEV/SKILL.md), és a TELJES javított szöveget küldd.
+
+mkdir -p .claude/skill-javaslat && cat > .claude/skill-javaslat/SKILL.md << 'SKILLEOF'
+(a teljes SKILL.md, ugyanazzal a szerkezettel, mint egy saját skillé)
+SKILLEOF
+python3 -c 'import json,sys; print(json.dumps({"name": sys.argv[1], "skill_md": open(sys.argv[2]).read(), "reason": sys.argv[3]}))' SKILL-NEV .claude/skill-javaslat/SKILL.md "miért kell, mit javít" > .claude/skill-javaslat/body.json
+curl -s -X POST ${dashboardOrigin}/api/skills/propose -H 'Content-Type: application/json' -H "Authorization: Bearer $(cat ${tokenPath})" --data-binary @.claude/skill-javaslat/body.json
+
+### Skill patch (runtime javítás)
+Ha egy meglévő skill használata közben jobb megoldást találsz:
+1. A saját skilledben: ne írd újra az egészet, csak a megváltozott részt javítsd célzott cserével (régi szöveg -> új szöveg), és jegyezd fel a változtatás okát a Buktatók szekcióba.
+2. Globális skillnél: ne szerkeszd a helyén; a javított teljes szöveget küldd javaslatként (fent).
+
+### Mikor generálj skill-t?
+- 5+ tool hívás, sikeres befejezés: Generálj skill-t
+- Hiba -> recovery -> siker: Generálj skill-t (buktató szekcióval)
+- User korrekció: Patch-eld a meglévő skill-t
+- Nem triviális workflow: Generálj skill-t
+- Egyszerű, egylépéses feladat: Ne generálj semmit
+
+### Skill reflexió
+Minden kontextus-tömörítés előtt (PreCompact hook) automatikusan vizsgáld meg:
+- Van-e a session-ben újrafelhasználható minta?
+- Van-e meglévő skill amit javítani kellene?`
+}
+
 export async function generateClaudeMd(name: string, description: string, model: string): Promise<string> {
   // Distribution-safe default-drive line: only emit a concrete folder when this
   // install has one configured (OWNER_DRIVE_FOLDER). A fresh install with no
@@ -4145,38 +4323,7 @@ Cron formátum: perc óra nap hónap hétnapja (pl. 0 8 * * * = minden nap 8:00)
 NE írd közvetlenül az SQLite scheduled_tasks táblát - az egy régi API.
 NE szerkeszd kézzel a ~/.claude/scheduled-tasks/ fájljait: a runner csak az API-n át írt (regisztrált) feladatot indítja, egy kézzel létrehozott vagy módosított feladat NEM fut le.
 
-## Öntanulás és Skill rendszer
-
-Te egy önfejlesztő ágens vagy. A munkád során tanulsz, és újrafelhasználható skill-eket hozol létre.
-
-### Skill-ek helye
-- Globális: ~/.claude/skills/ (minden ágens számára elérhető)
-- Egyéni: a te munkakönyvtárad .claude/skills/ mappája
-- CSAPDA: a .claude-config/skills NEM a tiéd -- az a globális mappa symlinken át; saját skill a .claude/skills alá menjen
-
-### Automatikus skill generálás
-Komplex feladatok után (5+ tool hívás, hiba utáni recovery, user korrekció, többlépéses workflow) automatikusan hozz létre SKILL.md fájlt:
-
-mkdir -p ~/.claude/skills/SKILL-NEV
-A SKILL.md tartalmazzon YAML frontmatter-t (name, description), majd szekciókat: Mikor használd, Eljárás, Buktatók, Ellenőrzés.
-
-### Skill patch (runtime javítás)
-Ha egy meglévő skill használata közben jobb megoldást találsz:
-1. Ne írd újra az egész skill-t, csak a megváltozott részt javítsd
-2. Használj célzott cserét (régi szöveg -> új szöveg)
-3. Jegyezd fel a változtatás okát a skill Buktatók szekciójába
-
-### Mikor generálj skill-t?
-- 5+ tool hívás, sikeres befejezés: Generálj skill-t
-- Hiba -> recovery -> siker: Generálj skill-t (buktató szekcióval)
-- User korrekció: Patch-eld a meglévő skill-t
-- Nem triviális workflow: Generálj skill-t
-- Egyszerű, egylépéses feladat: Ne generálj semmit
-
-### Skill reflexió
-Minden kontextus-tömörítés előtt (PreCompact hook) automatikusan vizsgáld meg:
-- Van-e a session-ben újrafelhasználható minta?
-- Van-e meglévő skill amit javítani kellene?
+${buildSkillSection()}
 
 ## Időkezelés
 
