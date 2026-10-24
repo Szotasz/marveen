@@ -2081,7 +2081,9 @@ EOF
 # itself as a prompt injection (observed 2026-09-13, and it stamped the day as
 # delivered on the way out). The scheduled task runs inside the live channel
 # session, which has the allowlist. The unit files stay on disk so an operator
-# who wants the timer path can `systemctl --user enable --now <id>-morning.timer`.
+# who wants the timer path can `systemctl --user enable --now <id>-morning.timer`,
+# but only with ANTHROPIC_API_KEY in the install .env: morning-briefing.sh refuses
+# to run its headless `claude -p` on the subscription login (MORNTIMER2197, #2197).
 #
 # NO Requires=/Wants= on the service here: a [Unit] dependency on the
 # triggered service makes EVERY activation of the timer unit (each systemd

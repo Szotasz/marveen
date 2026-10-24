@@ -223,11 +223,11 @@ describe('decideGuard: idle', () => {
     expect(d.nextState.deadlineMs).toBe(NOW + CFG.handoffTimeoutMinutes * 60_000)
   })
 
-  it('defers the idle-phase hard-tier restart while the agent is mid-turn', () => {
+  it('asks a mid-turn agent past hardPct for a handoff and never restarts it', () => {
     const d = decideGuard(INITIAL_GUARD_STATE, inputs({ pct: 0.99, paneBusy: true, paneIdle: false }), CFG)
-    expect(d.action).toBe('none')
-    expect(d.reason).toContain('deferring')
-    expect(d.nextState.phase).toBe('idle')
+    expect(d.action).toBe('request-handoff')
+    expect(d.reason).toContain('mid-turn')
+    expect(d.nextState.phase).toBe('await-handoff')
   })
 
   it('skips straight to restart at hardPct', () => {

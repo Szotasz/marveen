@@ -37,6 +37,8 @@ describe('requiresAuth (gated-path predicate)', () => {
     expect(requiresAuth('/api/auth/status', 'GET')).toBe(false)
     expect(requiresAuth('/api/auth/login', 'POST')).toBe(false)
     expect(requiresAuth('/api/marveen/avatar', 'GET')).toBe(false)
+    // An <img src> cannot send a bearer header, so the owner portrait is public like the other avatars.
+    expect(requiresAuth('/api/marveen/owner-avatar', 'GET')).toBe(false)
     expect(requiresAuth('/api/agents/zara/avatar', 'GET')).toBe(false)
   })
   it('gates every other /api/* path and the fleet manifest', () => {
@@ -44,6 +46,12 @@ describe('requiresAuth (gated-path predicate)', () => {
     expect(requiresAuth('/api/memories', 'POST')).toBe(true)
     expect(requiresAuth('/api/auth/users', 'POST')).toBe(true)
     expect(requiresAuth('/.well-known/fleetq', 'GET')).toBe(true)
+  })
+  it('keeps the public owner portrait an exact GET match, not a prefix', () => {
+    expect(requiresAuth('/api/marveen/config', 'GET')).toBe(true)
+    expect(requiresAuth('/api/marveen/owner-avatar/', 'GET')).toBe(true)
+    expect(requiresAuth('/api/marveen/owner-avatarx', 'GET')).toBe(true)
+    expect(requiresAuth('/api/marveen/owner-avatar', 'POST')).toBe(true)
   })
   it('does not gate non-api static paths', () => {
     expect(requiresAuth('/', 'GET')).toBe(false)

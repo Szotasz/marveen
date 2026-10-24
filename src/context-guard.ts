@@ -1072,7 +1072,7 @@ export function decideGuard(
         return none(`${USAGE_LIMIT_REASON_PREFIX}: session blocked by a usage limit -- no handoff, flush or restart until it lifts`, cleared)
       }
       if (cfg.enabled && inputs.pct !== null) {
-        const wedgeTier = decideWedgeTiers(nowMs, inputs, cfg, cleared, none)
+        const wedgeTier = decideWedgeTiers(nowMs, inputs, cfg)
         if (wedgeTier) return wedgeTier
       }
       // Idle-flush tier. Ranked BELOW the wedge tiers deliberately: those two
@@ -1273,13 +1273,14 @@ export function decideGuard(
 
 type NoneFn = (reason: string, next?: GuardState) => GuardDecision
 
-/** The two wedge tiers (hardPct restart, actPct handoff). Null = neither applies. */
+/**
+ * The two wedge tiers (hardPct restart, actPct handoff). Null = neither applies.
+ * A busy pane past hardPct gets the handoff request, not the restart.
+ */
 function decideWedgeTiers(
   nowMs: number,
   inputs: GuardInputs,
   cfg: ContextGuardConfig,
-  cleared: GuardState,
-  none: NoneFn,
 ): GuardDecision | null {
   const pct = inputs.pct as number
   if (pct >= cfg.hardPct) {
@@ -1288,11 +1289,22 @@ function decideWedgeTiers(
     // POSITIVELY busy pane is working, not wedged -- restarting it cuts
     // a live turn and destroys any queued/parked input with it (Szabi,
     // 2026-07-27: agents restarted mid-work, dispatched instructions
-    // lost). Defer while busy; the sweep re-decides every interval, and
-    // a turn that tips into saturation is caught by the saturation net,
-    // which deliberately ignores the busy signal.
+    // lost). Working also means it can still answer a handoff request
+    // after its turn, the way it answers the act tier's. So ask, and let
+    // await-handoff do the waiting: that phase never cuts a live turn
+    // either, restarts on the first sweep that finds the pane no longer
+    // busy, and warns once when the turn runs far past the deadline.
+    // Deferring here instead was silent, and the restart that ended it
+    // came with no handoff written. The usual way into this branch is a
+    // context that jumped from below actPct past hardPct between two
+    // sweeps (one parallel tool batch can), so the act tier never asked.
+    // A turn that tips into saturation is still caught by the saturation
+    // net, which deliberately ignores the busy signal.
     if (inputs.paneBusy) {
-      return none(`hard threshold (${Math.round(pct * 100)}%) but agent mid-turn -- deferring restart`, cleared)
+      return handoffRequest(
+        nowMs, inputs, cfg,
+        `hard threshold (${Math.round(pct * 100)}% >= ${Math.round(cfg.hardPct * 100)}%) but agent mid-turn -- requesting handoff, the restart waits for the turn`,
+      )
     }
     return restartDecision(
       nowMs,

@@ -24,6 +24,7 @@ import {
   showsMcpDialogTitle,
   type McpInlineAction,
   type McpInlineOutcome,
+  showsReconnectingPanel,
 } from './mcp-inline-command.js'
 
 const TMUX = resolveFromPath('tmux')
@@ -31,6 +32,30 @@ const TMUX = resolveFromPath('tmux')
 // A reconnect settles in a few seconds (busy spinner, "Reconnecting" panel,
 // then the result line); poll once a second for up to this many seconds.
 const TYPED_POLL_MAX = 10
+
+// A plugin that fails once on startup and then comes up gets one more `/mcp reconnect` after this pause,
+// before the failure is reported (and escalated by the caller).
+const RECONNECT_RETRY_DELAY_S = 3
+
+/**
+ * Type `/mcp reconnect`; if it measurably failed ('reconnect-failed'), pause and
+ * type it one more time, because a plugin that fails once on startup and then
+ * comes up deserves one retry before escalation. The second answer is final.
+ * The retry is re-gated by typeMcpCommandAndWait, so a pane that turned busy or
+ * got text meanwhile is deferred, not typed into. Other outcomes are not retried.
+ */
+function typeReconnectWithOneRetry(agentName: string, session: string, serverName: string): McpInlineOutcome | ReconnectResult {
+  const first = typeMcpCommandAndWait(session, 'reconnect', serverName)
+  if (first !== 'reconnect-failed') return first
+  logger.info({ agentName, session }, 'channel-mcp-reconnect: /mcp reconnect failed -- retrying once before escalation')
+  execFileSync('/bin/sleep', [String(RECONNECT_RETRY_DELAY_S)], { timeout: (RECONNECT_RETRY_DELAY_S + 2) * 1000 })
+  const retry = typeMcpCommandAndWait(session, 'reconnect', serverName)
+  // The retry's answer is final: it becomes the result here, so a retry that
+  // answers "disabled" never starts an enable round.
+  if (!isOutcome(retry)) return retry
+  if (retry !== 'reconnected') logger.warn({ agentName, session, outcome: retry }, 'channel-mcp-reconnect: /mcp reconnect retry did not succeed')
+  return reconnectResult(retry, serverName)
+}
 
 /**
  * Dismiss the /mcp modal by pressing Escape until the pane is back at the idle
@@ -115,6 +140,7 @@ export function paneDiagSignature(
 }
 
 const REFUSE_UNREADABLE: ReconnectResult = { ok: false, message: 'Pane unreadable -- reconnect refused' }
+const STILL_RECONNECTING: ReconnectResult = { ok: false, message: 'Still reconnecting -- outcome not observed' }
 const DEFER_BUSY: ReconnectResult = { ok: false, message: 'Pane busy -- reconnect deferred to avoid interrupting active work' }
 const DEFER_PARKED: ReconnectResult = { ok: false, message: 'Input box not empty -- reconnect deferred' }
 
@@ -124,7 +150,8 @@ function isIdle(session: string, pane: string): boolean {
 }
 
 /**
- * What a reply that never showed up reports, from a fresh capture: the /mcp
+ * What a reply that never showed up reports, from a fresh capture: the
+ * "Reconnecting to <server>" panel is still on screen (still reconnecting), the /mcp
  * dialog opened instead of the command (see dialogOpenedResult), the typed
  * command still sits in the input box (touch nothing), or nothing was
  * observed. "Not observed" is ok:true only when it is unambiguous: an older
@@ -132,10 +159,11 @@ function isIdle(session: string, pane: string): boolean {
  * count never grows) or a grown echo count whose reply could not be claimed as
  * ours (not the latest exchange) both make it ok:false.
  */
-function unobservedResult(session: string, ambiguous: boolean): ReconnectResult {
+function unobservedResult(session: string, ambiguous: boolean, serverName: string): ReconnectResult {
   // Decide on a FRESH capture: the last poll can be seconds old.
   const pane = capturePane(session)
   if (pane == null) return { ok: false, message: 'Pane unreadable after the command -- outcome not observed' }
+  if (showsReconnectingPanel(pane, serverName)) return STILL_RECONNECTING
   if (detectsBlockingMenu(pane)) return dialogOpenedResult(session, pane)
   if ((parkedInputText(pane) ?? '').includes('/mcp')) {
     return { ok: false, message: 'Command left in the input box' }
@@ -204,7 +232,7 @@ function typeMcpCommandAndWait(
     if (outcome === 'unknown') return { ok: false, message: `Unrecognised reply to /mcp ${action}` }
     return outcome
   }
-  return unobservedResult(session, baseline > 0 || unclaimedEcho)
+  return unobservedResult(session, baseline > 0 || unclaimedEcho, serverName)
 }
 
 function isOutcome(r: McpInlineOutcome | ReconnectResult): r is McpInlineOutcome {
@@ -227,7 +255,8 @@ function reconnectResult(outcome: McpInlineOutcome, serverName: string): Reconne
  * busy, and the dismiss stops as soon as the menu is gone.
  *
  * Replies map as: reconnected -> ok; disabled -> `/mcp enable <server>` then
- * one more reconnect; any other recognised outcome -> ok:false naming it; an
+ * one more reconnect; reconnect-failed -> one retry after a short pause, whose
+ * answer is final; any other recognised outcome -> ok:false naming it; an
  * unrecognised reply or timeout -> see unobservedResult.
  */
 export function attemptChannelMcpReconnect(agentName: string): ReconnectResult {
@@ -279,13 +308,14 @@ export function attemptChannelMcpReconnect(agentName: string): ReconnectResult {
       }
     }
 
-    const serverName = getProvider(providerType).pluginPaneId
+    const provider = getProvider(providerType)
+    const serverName = provider.mcpServerName ?? provider.pluginPaneId
     if (!isSafeMcpServerName(serverName)) {
       logger.warn({ agentName, session, provider: providerType }, 'channel-mcp-reconnect: unsafe MCP server name -- nothing typed')
       return { ok: false, message: 'Unsafe MCP server name -- reconnect refused' }
     }
 
-    const first = typeMcpCommandAndWait(session, 'reconnect', serverName)
+    const first = typeReconnectWithOneRetry(agentName, session, serverName)
     if (!isOutcome(first)) return first
     if (first !== 'disabled') {
       if (first !== 'reconnected') logger.warn({ agentName, session, outcome: first }, 'channel-mcp-reconnect: /mcp reconnect did not succeed')
@@ -300,7 +330,7 @@ export function attemptChannelMcpReconnect(agentName: string): ReconnectResult {
       return { ok: false, message: `/mcp enable ${serverName}: already enabled but reported disabled` }
     }
     if (enable !== 'enabled') return { ok: false, message: `/mcp enable ${serverName}: ${enable}` }
-    const second = typeMcpCommandAndWait(session, 'reconnect', serverName)
+    const second = typeReconnectWithOneRetry(agentName, session, serverName)
     if (!isOutcome(second)) return second
     return reconnectResult(second, serverName)
   } catch (err) {

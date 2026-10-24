@@ -7,6 +7,7 @@ import {
   mcpCommandReply,
   mcpReplyIsLatest,
   showsMcpDialogTitle,
+  showsReconnectingPanel,
   type McpInlineAction,
   type McpInlineOutcome,
 } from '../web/mcp-inline-command.js'
@@ -307,5 +308,23 @@ describe('mcpReplyIsLatest and showsMcpDialogTitle (CLI 2.1.291 fixtures)', () =
     const permission = FIX('dialog-unknown-arg.txt').split('   Manage MCP servers').join('   Allow the Manage MCP servers helper to run?')
     expect(permission).toContain('Manage MCP servers')
     expect(showsMcpDialogTitle(permission)).toBe(false)
+  })
+})
+
+describe('showsReconnectingPanel', () => {
+  const FIX = (f: string) =>
+    readFileSync(new URL(`./fixtures/mcp-reconnect-cli-2.1.291/${f}`, import.meta.url), 'utf8')
+
+  it('is true while the panel for this server is shown', () => {
+    expect(showsReconnectingPanel(FIX('reconnect-progress.txt'), 'okserver')).toBe(true)
+    expect(showsReconnectingPanel(FIX('reconnect-plugin-progress.txt'), 'plugin:probeflaky:flaky')).toBe(true)
+  })
+
+  it('is false otherwise', () => {
+    expect(showsReconnectingPanel(FIX('idle.txt'), 'okserver')).toBe(false)
+    expect(showsReconnectingPanel(FIX('reconnect-ok.txt'), 'okserver')).toBe(false)
+    expect(showsReconnectingPanel(FIX('reconnect-progress.txt'), 'plugin:telegram:telegram')).toBe(false)
+    expect(showsReconnectingPanel('Reconnecting to okserver now', 'okserver')).toBe(false)
+    expect(showsReconnectingPanel('   Reconnecting to okserver2', 'okserver')).toBe(false)
   })
 })

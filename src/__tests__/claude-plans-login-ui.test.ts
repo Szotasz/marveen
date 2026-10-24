@@ -96,7 +96,9 @@ describe('error codes', () => {
   const serverCodes = new Set<string>()
   const errorUnion = SESSION.slice(SESSION.indexOf('export type LoginErrorCode'), SESSION.indexOf('export interface LoginTimeouts'))
   for (const m of errorUnion.matchAll(/'([a-z-]+)'/g)) serverCodes.add(m[1])
-  for (const m of ROUTE.matchAll(/code: '([a-z-]+)'/g)) serverCodes.add(m[1])
+  for (const m of ROUTE.matchAll(/code: '([a-z_-]+)'/g)) serverCodes.add(m[1])
+  // The owner gate answers with a shared constant, not a literal code here (#2183 showed its raw English).
+  if (ROUTE.includes('json(res, OWNER_SESSION_REQUIRED')) serverCodes.add('owner_session_required')
 
   it('every code the server sends maps to a key, or knowingly falls back to the server text', () => {
     const mapBlock = APP.slice(APP.indexOf('const CLAUDE_PLAN_LOGIN_ERROR_KEYS'), APP.indexOf('function claudePlanLoginErrorText'))

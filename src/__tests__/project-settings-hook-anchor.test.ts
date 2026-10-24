@@ -63,9 +63,9 @@ const EXPECTED: Record<string, string[]> = {
     // walked straight past it. PostToolUse is the event that cannot be
     // dodged by choosing a different tool.
     'persona-change-notify.py',
-    // MARVEENGAPS1020 (c): WebSearch results reach the main agent framed as
-    // untrusted content, as WebFetch results already do.
-    'browser-content-notice.py @ WebSearch',
+    // MARVEENGAPS1020 (c): WebSearch and WebFetch results reach the main agent
+    // framed as untrusted content (an allowlisted host's text is still external).
+    'browser-content-notice.py @ WebSearch|WebFetch',
   ],
   // A failed tool call fires PostToolUseFailure, never PostToolUse
   // (TOOLLOGVAKSIKER921): without this entry tool_call_log cannot hold a 0.

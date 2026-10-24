@@ -906,6 +906,7 @@ window._i18n.en = {
   'settings.claude_plans.login.error_no_token': 'No token came after the code. Check the code and get a new link.',
   'settings.claude_plans.login.error_bad_code': 'That does not look like the code from the login page. Paste it again, in full.',
   'settings.claude_plans.login.error_rejected': 'A test call rejected the new token, so it was not stored.',
+  'settings.claude_plans.login.error_owner_session': 'This needs the owner\'s dashboard login: sign in with your dashboard username and password. If this window is signed in with the access token or a device key that is not a paired Bridge: Settings, the Dashboard login card, the Sign in with the dashboard password button, then try again.',
   'settings.claude_plans.readiness.no_active_plan': 'Rotation has no recorded active plan for the main agent, so the heartbeat does not know which quota to watch. Fix: switch once by hand to the plan the main agent is running on now ("Switch to this plan" below). This restarts the main agent.',
   'settings.claude_plans.switch_btn': 'Switch to this plan',
   'settings.claude_plans.confirm_switch': 'Switch the main agent to "{label}"? This restarts the session of the main agent.',
@@ -1919,6 +1920,12 @@ window._i18n.en = {
   'kanban.filter.sort_created_asc': 'Oldest first',
   'kanban.filter.sort_created_desc':'Newest first',
   'kanban.filter.sort_updated_desc':'Recently updated first',
+  'kanban.owner_strip.title':       'Waiting on you',
+  'kanban.owner_strip.show':        'show',
+  'kanban.owner_strip.hide':        'hide',
+  'kanban.owner_strip.tier_urgent':  'Urgent',
+  'kanban.owner_strip.tier_later':   'When I have time',
+  'kanban.owner_strip.tier_parked':  'Can wait',
 
   // --- Projects overview ---
   'projects.title':              'Projects',

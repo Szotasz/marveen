@@ -267,3 +267,9 @@ export function showsMcpDialogTitle(pane: string): boolean {
   }
   return true
 }
+
+/** The CLI's "Reconnecting to <server>" progress panel for this server is on screen. */
+export function showsReconnectingPanel(pane: string, serverName: string): boolean {
+  const want = `Reconnecting to ${serverName}`
+  return pane.split('\n').some((line) => line.trim() === want)
+}

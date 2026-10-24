@@ -1,4 +1,5 @@
-import { execFileSync } from 'node:child_process'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { mkdtempSync, readFileSync, rmSync, writeFileSync, chmodSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -15,6 +16,17 @@ import {
 import { setSecret, getSecret, deleteSecret } from '../vault.js'
 import type { RouteContext } from './types.js'
 
+const execFileAsync = promisify(execFile)
+
+// ssh-keygen runs off the event loop; stdin is closed at once, as the
+// synchronous call with stdio 'pipe' did.
+async function sshKeygen(args: string[]): Promise<string> {
+  const pending = execFileAsync('ssh-keygen', args, { encoding: 'utf-8' })
+  pending.child.stdin?.end()
+  const { stdout } = await pending
+  return stdout
+}
+
 function fingerprintFromPubKey(authorizedKeyLine: string): string {
   const parts = authorizedKeyLine.trim().split(' ')
   if (parts.length < 2) return ''
@@ -22,11 +34,11 @@ function fingerprintFromPubKey(authorizedKeyLine: string): string {
   return 'SHA256:' + createHash('sha256').update(raw).digest('base64').replace(/=+$/, '')
 }
 
-export function generateSshKeyPair(comment: string): { privateKey: string; publicKey: string; fingerprint: string } {
+export async function generateSshKeyPair(comment: string): Promise<{ privateKey: string; publicKey: string; fingerprint: string }> {
   const tmpDir = mkdtempSync(join(tmpdir(), 'marveen-ssh-'))
   const keyPath = join(tmpDir, 'key')
   try {
-    execFileSync('ssh-keygen', ['-t', 'ed25519', '-f', keyPath, '-N', '', '-C', comment], { stdio: 'pipe' })
+    await sshKeygen(['-t', 'ed25519', '-f', keyPath, '-N', '', '-C', comment])
     const privateKey = readFileSync(keyPath, 'utf-8')
     const publicKey = readFileSync(`${keyPath}.pub`, 'utf-8').trim()
     return { privateKey, publicKey, fingerprint: fingerprintFromPubKey(publicKey) }
@@ -35,7 +47,7 @@ export function generateSshKeyPair(comment: string): { privateKey: string; publi
   }
 }
 
-export function extractPublicKeyFromVault(vaultKeyId: string): string | null {
+export async function extractPublicKeyFromVault(vaultKeyId: string): Promise<string | null> {
   const privateKeyPem = getSecret(vaultKeyId)
   if (!privateKeyPem) return null
   const tmpDir = mkdtempSync(join(tmpdir(), 'marveen-ssh-'))
@@ -43,7 +55,7 @@ export function extractPublicKeyFromVault(vaultKeyId: string): string | null {
   try {
     writeFileSync(keyPath, privateKeyPem, { mode: 0o600 })
     chmodSync(keyPath, 0o600)
-    return execFileSync('ssh-keygen', ['-y', '-f', keyPath], { stdio: 'pipe' }).toString().trim()
+    return (await sshKeygen(['-y', '-f', keyPath])).trim()
   } finally {
     rmSync(tmpDir, { recursive: true, force: true })
   }
@@ -88,7 +100,7 @@ export async function tryHandleVaultSshKeys(ctx: RouteContext): Promise<boolean>
 
       const id = randomBytes(8).toString('hex')
       const comment = `${username} (${label})`
-      const { privateKey, publicKey, fingerprint } = generateSshKeyPair(comment)
+      const { privateKey, publicKey, fingerprint } = await generateSshKeyPair(comment)
 
       const vaultKeyId = `ssh-key-${id}`
       setSecret(vaultKeyId, `SSH private key: ${label}`, privateKey)
@@ -132,7 +144,7 @@ export async function tryHandleVaultSshKeys(ctx: RouteContext): Promise<boolean>
       try {
         writeFileSync(keyPath, privateKey, { mode: 0o600 })
         chmodSync(keyPath, 0o600)
-        publicKey = execFileSync('ssh-keygen', ['-y', '-f', keyPath], { stdio: 'pipe' }).toString().trim()
+        publicKey = (await sshKeygen(['-y', '-f', keyPath])).trim()
       } catch (err: any) {
         json(res, { error: 'Invalid private key: ' + (err?.stderr?.toString().trim() ?? err?.message ?? String(err)) }, 400)
         return true

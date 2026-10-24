@@ -148,6 +148,83 @@ describe('owner gate (mayIssueCredentials)', () => {
   })
 })
 
+// SETUPTOKENHU1023 (owner decision): the owner adds plans from the Bridge, which signs every
+// request with its paired device key. Real gate (resolveAuth) and real keys over the in-memory db.
+describe('a paired Bridge device key (SETUPTOKENHU1023)', () => {
+  const GATE_TOKEN = 'g'.repeat(64)
+  const path = '/api/claude-plans/login/status'
+  async function asBearer(bearer: string, handler: Handler = tryHandleClaudePlansLogin, method = 'GET', p = path, body?: unknown) {
+    const { resolveAuth } = await import('../web/auth-gate.js')
+    const req = { headers: { authorization: `Bearer ${bearer}` } } as unknown as http.IncomingMessage
+    const auth = resolveAuth(req, new URL(`http://127.0.0.1:3420${p}`), p, method, GATE_TOKEN)
+    return { kind: auth.kind, ...(await call(method, p, auth as RouteContext['auth'], body, handler)) }
+  }
+  beforeEach(async () => {
+    const { _clearDeviceKeyCacheForTest } = await import('../web/auth-device-keys.js')
+    getDb().exec('DELETE FROM device_keys')
+    _clearDeviceKeyCacheForTest()
+    await addOwner()
+  })
+
+  it('a full-scope key from Bridge pairing reaches the login routes, and a login starts', async () => {
+    const { mintBridgeDeviceKey } = await import('../web/auth-device-keys.js')
+    const { minted } = mintBridgeDeviceKey('Macbookom', '0b3c8a9e-2f41-4c55-9d1e-7a6f5e4d3c2b')
+    const r = await asBearer(minted.key)
+    expect(r.kind).toBe('device')
+    expect(r.status).toBe(200)
+    const start = await asBearer(minted.key, tryHandleClaudePlansLogin, 'POST', '/api/claude-plans/login/start', START)
+    expect(start.status).toBe(200)
+    expect(start.json.url).toBe(LOGIN_URL)
+    await asBearer(minted.key, tryHandleClaudePlansLogin, 'POST', '/api/claude-plans/login/cancel')
+  })
+
+  it('the shared fleet token still gets 403, with or without a paired Bridge around: an agent cannot add a subscription', async () => {
+    const { mintBridgeDeviceKey } = await import('../web/auth-device-keys.js')
+    mintBridgeDeviceKey('Macbookom', '0b3c8a9e-2f41-4c55-9d1e-7a6f5e4d3c2b')
+    const r = await asBearer(GATE_TOKEN, tryHandleClaudePlansLogin, 'POST', '/api/claude-plans/login/start', START)
+    expect(r.kind).toBe('token')
+    expect(r.status).toBe(403)
+    expect(r.json.code).toBe('owner_session_required')
+    expect(launches).toBe(0)
+  })
+
+  it('a full-scope key minted from the device-key list (no install id, e.g. an MCP) gets 403', async () => {
+    const { createDeviceKey } = await import('../web/auth-device-keys.js')
+    const machine = createDeviceKey('mac-mini hang-MCP', { scope: 'full' })
+    const r = await asBearer(machine.key)
+    expect(r.kind).toBe('device')
+    expect(r.status).toBe(403)
+    expect(r.json.code).toBe('owner_session_required')
+  })
+
+  it('a narrower key gets 403 even with an install id', async () => {
+    const { createDeviceKey } = await import('../web/auth-device-keys.js')
+    const op = createDeviceKey('operator', { scope: 'operator', expiresInDays: 1, installId: '1d2c3b4a-5f6e-4d7c-8b9a-0f1e2d3c4b5a' })
+    const r = await asBearer(op.key)
+    expect(r.kind).toBe('device')
+    expect(r.status).toBe(403)
+  })
+
+  it('a revoked Bridge key does not resolve, so it gets 403', async () => {
+    const { mintBridgeDeviceKey, revokeDeviceKey } = await import('../web/auth-device-keys.js')
+    const { minted } = mintBridgeDeviceKey('Macbookom', '0b3c8a9e-2f41-4c55-9d1e-7a6f5e4d3c2b')
+    expect(revokeDeviceKey(minted.id)).toBe(true)
+    const r = await asBearer(minted.key)
+    expect(r.kind).toBe('none')
+    expect(r.status).toBe(403)
+  })
+
+  it('the other owner-only routes stay closed to the paired key (minting a key, adding a user)', async () => {
+    const { mintBridgeDeviceKey, listDeviceKeys } = await import('../web/auth-device-keys.js')
+    const { minted } = mintBridgeDeviceKey('Macbookom', '0b3c8a9e-2f41-4c55-9d1e-7a6f5e4d3c2b')
+    const mint = await asBearer(minted.key, tryHandleAuth, 'POST', '/api/auth/device-keys', { name: 'second' })
+    expect(mint.status).toBe(403)
+    expect(listDeviceKeys()).toHaveLength(1)
+    const user = await asBearer(minted.key, tryHandleAuth, 'POST', '/api/auth/users', { username: 'mallory', password: 'super-secret-pw' })
+    expect(user.status).toBe(403)
+  })
+})
+
 describe('the login flow', () => {
   it('start -> link, code -> the plan is stored through the same write path as a pasted token', async () => {
     const start = await call('POST', '/api/claude-plans/login/start', SESSION_AUTH, START)

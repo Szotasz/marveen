@@ -103,14 +103,91 @@ describe('WebSearch envelope: where it lands', () => {
     injectWebSearchEnvelope(s2)
     expect(s2.hooks.PostToolUse).toHaveLength(2)
     expect(s2.hooks.PostToolUse[0]).toEqual({ matcher: 'WebSearch', hooks: [own] })
-    // (3) the docs' browser pattern already covering WebSearch: nothing added, no change
+    // (3) the docs' browser pattern covering WebSearch: only WebFetch is added
     const s3: Record<string, any> = { hooks: { PostToolUse: [{ matcher: 'mcp__playwright__browser_.*|mcp__chrome.*|WebSearch', hooks: [theirEnvelope] }] } }
-    expect(injectWebSearchEnvelope(s3)).toBe(false)
-    expect(s3.hooks.PostToolUse).toHaveLength(1)
+    expect(injectWebSearchEnvelope(s3)).toBe(true)
+    expect(s3.hooks.PostToolUse).toHaveLength(2)
     // a browser-only operator matcher does NOT cover WebSearch: ours is added
     const s4: Record<string, any> = { hooks: { PostToolUse: [{ matcher: 'mcp__playwright__browser_.*', hooks: [theirEnvelope] }] } }
     expect(injectWebSearchEnvelope(s4)).toBe(true)
-    expect(envelopeGroups(s4 as any).map((g) => g.matcher)).toEqual(['mcp__playwright__browser_.*', 'WebSearch'])
+    expect(envelopeGroups(s4 as any).map((g) => g.matcher)).toEqual(['mcp__playwright__browser_.*', 'WebSearch|WebFetch'])
+  })
+
+  it('empty settings get exactly one managed group, WebSearch|WebFetch', () => {
+    const s: Record<string, any> = {}
+    expect(injectWebSearchEnvelope(s)).toBe(true)
+    const groups = envelopeGroups(s as any)
+    expect(groups).toHaveLength(1)
+    expect(groups[0].matcher).toBe('WebSearch|WebFetch')
+  })
+
+  it('the old WebSearch-only managed group is migrated, not duplicated, and a sibling hook stays', () => {
+    const own = { type: 'command', command: 'python3 "/x/own-audit.py"', timeout: 5 }
+    const old = { type: 'command', command: `python3 "/old/scripts/hooks/${WEBSEARCH_ENVELOPE_SCRIPT}"`, timeout: 10 }
+    const s: Record<string, any> = { hooks: { PostToolUse: [{ matcher: 'WebSearch', hooks: [old, own] }] } }
+    expect(injectWebSearchEnvelope(s)).toBe(true)
+    const groups = envelopeGroups(s as any)
+    expect(groups).toHaveLength(1)
+    expect(groups[0].matcher).toBe('WebSearch|WebFetch')
+    expect(s.hooks.PostToolUse).toContainEqual({ matcher: 'WebSearch', hooks: [own] })
+  })
+
+  it('an operator group ending in |WebSearch gets a managed WebFetch group only', () => {
+    const theirs = { type: 'command', command: `python3 "$CLAUDE_PROJECT_DIR/scripts/hooks/${WEBSEARCH_ENVELOPE_SCRIPT}"`, timeout: 10 }
+    const s: Record<string, any> = { hooks: { PostToolUse: [{ matcher: 'mcp__browser.*|WebSearch', hooks: [theirs] }] } }
+    expect(injectWebSearchEnvelope(s)).toBe(true)
+    expect(envelopeGroups(s as any).map((g) => g.matcher)).toEqual(['mcp__browser.*|WebSearch', 'WebFetch'])
+  })
+
+  it.each(['*', ''])('an operator group with matcher %j holding the envelope hook gets no managed group', (matcher) => {
+    const theirs = { type: 'command', command: `python3 "$CLAUDE_PROJECT_DIR/scripts/hooks/${WEBSEARCH_ENVELOPE_SCRIPT}"`, timeout: 10 }
+    const s: Record<string, any> = { hooks: { PostToolUse: [{ matcher, hooks: [theirs] }] } }
+    expect(injectWebSearchEnvelope(s)).toBe(false)
+    expect(envelopeGroups(s as any)).toHaveLength(1)
+    expect(s.hooks.PostToolUse).toEqual([{ matcher, hooks: [theirs] }])
+  })
+
+  it('an operator group covering both tools gets no managed group', () => {
+    const theirs = { type: 'command', command: `python3 "$CLAUDE_PROJECT_DIR/scripts/hooks/${WEBSEARCH_ENVELOPE_SCRIPT}"`, timeout: 10 }
+    const s: Record<string, any> = { hooks: { PostToolUse: [{ matcher: '.*', hooks: [theirs] }] } }
+    expect(injectWebSearchEnvelope(s)).toBe(false)
+    expect(s.hooks.PostToolUse).toHaveLength(1)
+  })
+
+  it.each([
+    ['MISSING', false, [undefined]],
+    ['We.', false, ['We.']],
+    ['WebSearch, WebFetch', false, ['WebSearch, WebFetch']],
+    ['WebSearch | WebFetch', false, ['WebSearch | WebFetch']],
+    ['Fetch$', true, ['Fetch$', 'WebSearch']],
+    ['Web', true, ['Web', 'WebSearch|WebFetch']],
+    ['WebSearch|Web', true, ['WebSearch|Web', 'WebFetch']],
+    ['(', true, ['(', 'WebSearch|WebFetch']],
+    [5, true, [5, 'WebSearch|WebFetch']],
+    [null, true, [null, 'WebSearch|WebFetch']],
+  ])('an operator matcher %j holding the envelope hook is read the way Claude Code reads it', (m, changed, groups) => {
+    const theirs = { type: 'command', command: `python3 "$CLAUDE_PROJECT_DIR/scripts/hooks/${WEBSEARCH_ENVELOPE_SCRIPT}"`, timeout: 10 }
+    const group = m === 'MISSING' ? { hooks: [theirs] } : { matcher: m, hooks: [theirs] }
+    const s = { hooks: { PostToolUse: [group] } }
+    expect(injectWebSearchEnvelope(s)).toBe(changed)
+    expect(envelopeGroups(s as any).map((g) => g.matcher)).toEqual(groups)
+  })
+
+  it('running the injector twice changes nothing the second time', () => {
+    const s: Record<string, any> = {}
+    injectWebSearchEnvelope(s)
+    const after = JSON.stringify(s)
+    expect(injectWebSearchEnvelope(s)).toBe(false)
+    expect(JSON.stringify(s)).toBe(after)
+  })
+
+  it("the repo's project settings wire the hook under a matcher covering WebSearch and WebFetch", () => {
+    const project = JSON.parse(readFileSync(join(ROOT, '.claude', 'settings.json'), 'utf-8')) as { hooks: Record<string, Group[]> }
+    const groups = envelopeGroups(project)
+    expect(groups).toHaveLength(1)
+    for (const tool of ['WebSearch', 'WebFetch']) {
+      expect(new RegExp(`^(?:${groups[0].matcher})$`).test(tool), tool).toBe(true)
+    }
   })
 
   it('never writes the main agent: its entry is in the repo-shipped project settings instead', () => {

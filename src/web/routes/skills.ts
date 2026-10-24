@@ -2,7 +2,8 @@ import { createReadStream, existsSync, readdirSync, mkdirSync, unlinkSync, rmSyn
 import { join, sep, basename } from 'node:path'
 import { homedir, tmpdir } from 'node:os'
 import { randomUUID } from 'node:crypto'
-import { execSync } from 'node:child_process'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { logger } from '../../logger.js'
 import { atomicWriteFileSync } from '../atomic-write.js'
 import { AGENTS_BASE_DIR, listAgentNames, readFileOr, agentDir } from '../agent-config.js'
@@ -14,9 +15,32 @@ import {
 } from '../skill-quarantine.js'
 import { parseMultipart } from '../multipart.js'
 import { readBody, json } from '../http-helpers.js'
-import { sanitizeSkillName, shellEscape } from '../sanitize.js'
+import { sanitizeSkillName } from '../sanitize.js'
 import type { RouteContext } from './types.js'
 import { mayIssueCredentials, OWNER_SESSION_REQUIRED } from './auth.js'
+
+const execFileAsync = promisify(execFile)
+
+// zip and cp run as an argv (no shell) and off the event loop: the synchronous
+// shell form froze the whole dashboard for up to its 10-15 s timeout. stdin is
+// closed at once, as execSync did.
+async function runTool(file: string, args: string[], opts: { cwd?: string; timeout: number }): Promise<void> {
+  const pending = execFileAsync(file, args, opts)
+  pending.child.stdin?.end()
+  await pending
+}
+
+// Assign removes and re-copies agents' skill directories across awaits (cp now
+// runs off the event loop). Overlapping assigns -- two tabs, a double submit --
+// must not interleave: they run one at a time, as they did while the copy was
+// synchronous.
+let assignQueue: Promise<unknown> = Promise.resolve()
+
+function serializeAssign<T>(op: () => Promise<T>): Promise<T> {
+  const run = assignQueue.then(op)
+  assignQueue = run.catch(() => {})
+  return run
+}
 
 function parseFrontmatterField(content: string, field: string): string {
   const fmMatch = content.match(/^---\s*\n([\s\S]*?)\n---/)
@@ -230,10 +254,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     }
     const tmpZip = join(tmpdir(), `skills-export-${randomUUID()}.zip`)
     try {
-      execSync(
-        `cd ${shellEscape(USER_SKILLS_DIR)} && zip -r ${shellEscape(tmpZip)} . --include "*/SKILL.md" --include "*/references/*"`,
-        { timeout: 15000 }
-      )
+      await runTool('zip', ['-r', tmpZip, '.', '--include', '*/SKILL.md', '--include', '*/references/*'], { cwd: USER_SKILLS_DIR, timeout: 15000 })
       const stat = statSync(tmpZip)
       res.setHeader('Content-Type', 'application/zip')
       res.setHeader('Content-Disposition', 'attachment; filename="skills-export.zip"')
@@ -472,27 +493,29 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     const body = await readBody(req)
     const { agents: targetAgents } = JSON.parse(body.toString()) as { agents: string[] }
 
-    const allAgentNames = listAgentNames()
+    await serializeAssign(async () => {
+      const allAgentNames = listAgentNames()
 
-    for (const agentName of targetAgents) {
-      if (!allAgentNames.includes(agentName)) continue
-      const agentSkillsDir = join(AGENTS_BASE_DIR, agentName, '.claude', 'skills')
-      mkdirSync(agentSkillsDir, { recursive: true })
-      const destDir = join(agentSkillsDir, skillName)
-      if (existsSync(destDir)) rmSync(destDir, { recursive: true, force: true })
-      execSync(`cp -r ${shellEscape(globalSkillDir)} ${shellEscape(destDir)}`, { timeout: 10000 })
-    }
-
-    for (const agentName of allAgentNames) {
-      if (targetAgents.includes(agentName)) continue
-      const agentSkillDir = join(AGENTS_BASE_DIR, agentName, '.claude', 'skills', skillName)
-      if (existsSync(agentSkillDir)) {
-        rmSync(agentSkillDir, { recursive: true, force: true })
+      for (const agentName of targetAgents) {
+        if (!allAgentNames.includes(agentName)) continue
+        const agentSkillsDir = join(AGENTS_BASE_DIR, agentName, '.claude', 'skills')
+        mkdirSync(agentSkillsDir, { recursive: true })
+        const destDir = join(agentSkillsDir, skillName)
+        if (existsSync(destDir)) rmSync(destDir, { recursive: true, force: true })
+        await runTool('cp', ['-r', globalSkillDir, destDir], { timeout: 10000 })
       }
-    }
 
-    logger.info({ skillName, agents: targetAgents }, 'Skill assignment updated')
-    json(res, { ok: true })
+      for (const agentName of allAgentNames) {
+        if (targetAgents.includes(agentName)) continue
+        const agentSkillDir = join(AGENTS_BASE_DIR, agentName, '.claude', 'skills', skillName)
+        if (existsSync(agentSkillDir)) {
+          rmSync(agentSkillDir, { recursive: true, force: true })
+        }
+      }
+
+      logger.info({ skillName, agents: targetAgents }, 'Skill assignment updated')
+      json(res, { ok: true })
+    })
     return true
   }
 

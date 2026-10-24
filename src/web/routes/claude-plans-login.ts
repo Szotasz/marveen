@@ -8,7 +8,10 @@
 //
 // Every route takes the owner (mayIssueCredentials): this mints a credential
 // that runs the whole fleet on a subscription, so the shared bearer token alone
-// is not enough once a dashboard login exists.
+// is not enough once a dashboard login exists. One more owner credential is let
+// in here, and only here (SETUPTOKENHU1023, owner decision): a full-scope device
+// key minted by Bridge pairing. The owner adds plans from the Bridge, and the
+// Bridge signs every request with its paired key, never with a session.
 //
 // The plan fields are checked at start, before anyone logs in, so a login is
 // never thrown away at the end over a taken id. The caught token is
@@ -30,6 +33,7 @@ import {
 } from '../setup-token-login.js'
 import { commitNewPlan } from './claude-plans.js'
 import { mayIssueCredentials, OWNER_SESSION_REQUIRED } from './auth.js'
+import { getDeviceKey } from '../auth-device-keys.js'
 import type { RouteContext } from './types.js'
 
 interface PlanFields { id: string; label: string; planType: unknown; channelsAllowed: unknown }
@@ -96,11 +100,22 @@ async function readJson(ctx: RouteContext): Promise<Record<string, unknown> | nu
   }
 }
 
+// A paired Bridge: a full-scope device key that carries the install id. Only Bridge
+// pairing (mintBridgeDeviceKey: the dashboard pairing, which takes the owner session,
+// or the machine-local enroll CLIs) sets the install id; a key minted from the
+// device-key list never has one, so a machine key (an MCP, a script) stays out.
+// The shared token is not a device key, so an agent still cannot start a login.
+function isPairedBridgeKey(auth: RouteContext['auth']): boolean {
+  if (auth?.kind !== 'device' || auth.scope !== 'full' || typeof auth.deviceId !== 'number') return false
+  const key = getDeviceKey(auth.deviceId)
+  return key !== null && key.scope === 'full' && typeof key.installId === 'string' && key.installId.length > 0
+}
+
 export async function tryHandleClaudePlansLogin(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
   if (!path.startsWith('/api/claude-plans/login/')) return false
 
-  if (!mayIssueCredentials(ctx.auth, req)) {
+  if (!mayIssueCredentials(ctx.auth, req) && !isPairedBridgeKey(ctx.auth)) {
     json(res, OWNER_SESSION_REQUIRED, 403)
     return true
   }

@@ -59,6 +59,8 @@ import {
   buildSshExec,
   buildRemoteLaunchCommand,
   buildContinueProbeCommand,
+  buildRemoteTranscriptMtimeCommand,
+  parseRemoteTranscriptMtime,
   classifyRunState,
   classifyRunStateFromExit,
   sessionInList,
@@ -4273,6 +4275,34 @@ export function capturePane(session: string, host: string | null = null): string
     // (a banner otherwise pins detectPaneState 'unknown', blocking scheduler +
     // inter-agent delivery). See stripSessionTitleBanner.
     return stripAllAnsi(stripSessionTitleBanner(captureTmux(host, ['capture-pane', '-t', exactTmuxTarget(session), '-e', '-p'])))
+  } catch {
+    return null
+  }
+}
+
+/**
+ * REMOTESAWTURN1022: newest transcript write of a remote agent, as a local-clock
+ * epoch ms, read over the existing ssh path. The local clock is taken before the
+ * ssh call (see parseRemoteTranscriptMtime for why that keeps the estimate
+ * conservative). One bounded call; any failure (host unreachable, timeout, no
+ * transcript, garbage output) returns null and never throws, so the caller treats it
+ * as "no evidence", never as a turn.
+ */
+export function readRemoteTranscriptMtime(
+  host: string,
+  workdir: string,
+  deps: {
+    exec?: (file: string, args: string[], timeoutMs: number) => string
+    now?: () => number
+  } = {},
+): number | null {
+  const now = deps.now ?? Date.now
+  const exec = deps.exec ?? ((file: string, args: string[], timeoutMs: number): string =>
+    execFileSync(file, args, { timeout: timeoutMs, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] }))
+  try {
+    const localBeforeMs = now()
+    const inv = buildSshExec(host, buildRemoteTranscriptMtimeCommand(workdir))
+    return parseRemoteTranscriptMtime(exec(inv.file, inv.args, 3000), localBeforeMs)
   } catch {
     return null
   }

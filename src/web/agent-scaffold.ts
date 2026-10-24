@@ -12,9 +12,9 @@ import { findDuplicateJsonKeys } from './json-dup-keys.js'
 import { logger } from '../logger.js'
 import { filterInheritableMcpServers, readInheritableMcpServerNames, logNotInherited } from './mcp-inheritance.js'
 import { agentDir, agentConfigRoot, listAgentNames, readAgentCapabilities, readAgentToolDeny } from './agent-config.js'
-import { loadProfileTemplate, profileWantsCredentialGate, profileWantsDestructiveGate, profileWantsYtIngest, resolveProfilePlaceholders,
+import { loadProfileTemplate, profileWantsCredentialGate, profileWantsSecondReviewer, profileWantsDestructiveGate, profileWantsYtIngest, resolveProfilePlaceholders,
   type ProfileTemplate } from './profiles.js'
-import { resolveAgentSecurityProfile } from './agent-team.js'
+import { resolveAgentSecurityProfile, readAgentTeam } from './agent-team.js'
 import { sanitizeCapabilityTag, CAPABILITY_TAG_MAX_PER_AGENT } from '../prompt-safety.js'
 import { TMP_ROOT_PREFIXES as _TMP_PREFIXES } from './tmp-root-prefixes.js'
 
@@ -893,6 +893,8 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   if (agentGetsChildClaudeGuard(name)) injectChildClaudeGuard(existing)
   if (agentGetsDestructiveGate(name, profile)) injectDestructiveGate(existing)
   if (agentGetsCredentialGate(name, profile)) injectCredentialGate(existing)
+  if (agentGetsSecondReviewer(name, profile)) injectSecondReviewerGate(existing)
+  else removeSecondReviewerGate(existing)
   injectEgressGate(existing)
   if (agentGetsBashEgressParser(name)) injectBashEgressParser(existing)
   if (name !== MAIN_AGENT_ID) injectWebSearchEnvelope(existing)
@@ -1667,11 +1669,14 @@ export function agentGetsDestructiveGate(name: string, profile?: ProfileTemplate
 // ones run with the permission bypass, so the hook goes to all of them; it does
 // nothing until WebSearch is called. Its label tells the agent to use the
 // content's facts and only refuse its imperatives (BORITOOLVASAT921), so it
-// marks the payload instead of stopping the round. The hook never fails a tool
+// marks the payload instead of stopping the round. WebFetch is covered too:
+// the allowlist gates which host is reached, but an allowlisted host's content
+// is still external text. The hook never fails a tool
 // call (it exits 0 on any error), so it is a plain command, not a fail-closed
 // gate. Browser MCP matchers stay operator-wired (the doc shows how).
 export const WEBSEARCH_ENVELOPE_SCRIPT = 'browser-content-notice.py'
-export const WEBSEARCH_ENVELOPE_MATCHER = 'WebSearch'
+export const ENVELOPE_TOOLS = ['WebSearch', 'WebFetch'] as const
+export const WEBSEARCH_ENVELOPE_MATCHER = 'WebSearch|WebFetch'
 
 // A settings.json hook command, not text in a CLAUDE.md: after a host move the
 // startup migration (ensureWebSearchEnvelope) sees the command no longer wired
@@ -1685,11 +1690,24 @@ function webSearchEnvelopeCommand(): string {
 // Removes OUR envelope hook only (a hook in a group, not the group: an
 // operator's own hook sharing a WebSearch group stays), then adds the managed
 // group -- unless an operator already wired the envelope under a matcher that
-// covers WebSearch (e.g. the docs' "...|WebSearch" browser pattern), where a
+// covers the tool (e.g. the docs' "...|WebSearch" browser pattern), where a
 // second copy would run the hook twice. Returns whether anything changed.
-function matcherCoversWebSearch(matcher: unknown): boolean {
-  if (typeof matcher !== 'string' || matcher === '') return true // no matcher = every tool
-  try { return new RegExp(`^(?:${matcher})$`).test(WEBSEARCH_ENVELOPE_MATCHER) } catch { return false }
+function envelopeToolsCovered(matcher: unknown): Set<string> {
+  // Claude Code's PostToolUse matching, as the shipped CLI does it: a missing, '' or '*' matcher matches every
+  // tool; a plain name list (letters, digits, _ | , space -) matches the exact names split on | or ,; anything
+  // else is an UNANCHORED regex, and an invalid one matches nothing. A non-string matcher (null included) fails
+  // the CLI's settings schema, so that group never runs: it covers nothing and the managed group is added.
+  if (matcher === undefined || matcher === '' || matcher === '*') return new Set(ENVELOPE_TOOLS)
+  if (typeof matcher !== 'string') return new Set()
+  if (/^[a-zA-Z0-9_|, -]+$/.test(matcher)) {
+    const names = matcher.split(/[|,]/).map((n) => n.trim()).filter(Boolean)
+    return new Set(ENVELOPE_TOOLS.filter((t) => names.includes(t)))
+  }
+  const covered = new Set<string>()
+  for (const tool of ENVELOPE_TOOLS) {
+    try { if (new RegExp(matcher).test(tool)) covered.add(tool) } catch { /* invalid regex covers nothing */ }
+  }
+  return covered
 }
 
 export function injectWebSearchEnvelope(existing: Record<string, unknown>): boolean {
@@ -1705,13 +1723,21 @@ export function injectWebSearchEnvelope(existing: Record<string, unknown>): bool
   const isEnvelope = (h: { command?: unknown }) => typeof h?.command === 'string' && h.command.includes(WEBSEARCH_ENVELOPE_SCRIPT)
   const kept: G[] = []
   for (const g of prev) {
-    if (g?.matcher !== WEBSEARCH_ENVELOPE_MATCHER || !Array.isArray(g.hooks)) { kept.push(g); continue }
+    const managed = typeof g?.matcher === 'string' && (
+      g.matcher === WEBSEARCH_ENVELOPE_MATCHER ||
+      // a single envelope tool name; this also migrates the old WebSearch-only group
+      (ENVELOPE_TOOLS as readonly string[]).includes(g.matcher))
+    if (!managed || !Array.isArray(g.hooks)) { kept.push(g); continue }
     const rest = g.hooks.filter((h) => !isEnvelope(h))
     if (rest.length) kept.push({ ...g, hooks: rest })
   }
-  const operatorWired = kept.some((g) => matcherCoversWebSearch(g?.matcher) && Array.isArray(g.hooks) && g.hooks.some(isEnvelope))
-  if (!operatorWired) {
-    kept.push({ matcher: WEBSEARCH_ENVELOPE_MATCHER, hooks: [{ type: 'command', command, timeout: 10 } as { command: string }] })
+  const covered = new Set<string>()
+  for (const g of kept) {
+    if (Array.isArray(g?.hooks) && g.hooks.some(isEnvelope)) for (const t of envelopeToolsCovered(g.matcher)) covered.add(t)
+  }
+  const missing = ENVELOPE_TOOLS.filter((t) => !covered.has(t))
+  if (missing.length) {
+    kept.push({ matcher: missing.join('|'), hooks: [{ type: 'command', command, timeout: 10 } as { command: string }] })
   }
   hooks.PostToolUse = kept
   return JSON.stringify(hooks.PostToolUse) !== before
@@ -1869,6 +1895,70 @@ export function injectCredentialGate(existing: Record<string, unknown>): void {
     ...prev.filter((e) => !JSON.stringify(e).includes('credential-gate.py')),
     entry,
   ]
+}
+
+// D3(b): the second reviewer, opt-in per security profile (`"secondReviewer": true`), default OFF,
+// the same posture as the credential gate. The matcher is wide on purpose: the hook itself picks the
+// high-risk shapes (a Bash command that deletes, pushes, uploads or escalates; an MCP tool that
+// sends, deletes or shares) and exits 0 on everything else, so only those cost a review. Never the
+// main agent: the operator authorizes its work directly.
+export const SECOND_REVIEWER_MATCHER = 'Bash|mcp__.*'
+export function agentGetsSecondReviewer(name: string, profile?: ProfileTemplate): boolean {
+  if (name === MAIN_AGENT_ID) return false
+  const p = profile ?? loadProfileTemplate(resolveAgentSecurityProfile(name))
+  return profileWantsSecondReviewer(p)
+}
+
+export function injectSecondReviewerGate(existing: Record<string, unknown>): void {
+  const hooks = (existing.hooks && typeof existing.hooks === 'object'
+    ? existing.hooks
+    : (existing.hooks = {})) as Record<string, unknown>
+  const command = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'second-reviewer-gate.py'))
+  // Registration guard: a /tmp or missing path must never enter shared settings.
+  if (isUnsafeHookCommand(command)) return
+  // 180 s: the server gives the reviewer 45 s; the hook's socket timeout (75 s) applies per operation,
+  // so connect plus read stays well inside this, and the hook never times out while a review is pending.
+  const entry = {
+    matcher: SECOND_REVIEWER_MATCHER,
+    hooks: [{ type: 'command', command, timeout: 180 }],
+  }
+  removeSecondReviewerGate(existing)
+  const prev = Array.isArray(hooks.PreToolUse) ? (hooks.PreToolUse as unknown[]) : []
+  hooks.PreToolUse = [...prev, entry]
+}
+
+// Off again: a profile that no longer sets secondReviewer must not leave the hook behind. The route
+// answers such a caller 404 and the hook fails closed on that, so a stale entry would stop every
+// high-risk call of the agent. Only the reviewer hook goes: another hook in the same entry stays, and
+// the entry is dropped only when nothing is left in it. Returns true if a hook was removed.
+// The script by its install path (scripts/hooks/, either separator), so a bare file name in another
+// command, or a lookalike name, is not taken for the reviewer.
+const SECOND_REVIEWER_SCRIPT_RE = /[/\\]scripts[/\\]hooks[/\\]second-reviewer-gate\.py(?:$|[\s'";])/
+function isSecondReviewerHook(hook: unknown): boolean {
+  const command = (hook as { command?: unknown } | null)?.command
+  return typeof command === 'string' && SECOND_REVIEWER_SCRIPT_RE.test(command)
+}
+function entryHasSecondReviewer(e: unknown): boolean {
+  const inner = (e as HookEntry | null)?.hooks
+  return Array.isArray(inner) && inner.some(isSecondReviewerHook)
+}
+export function hasSecondReviewerHook(preToolUse: unknown[]): boolean {
+  return preToolUse.some(entryHasSecondReviewer)
+}
+export function removeSecondReviewerGate(existing: Record<string, unknown>): boolean {
+  const hooks = existing.hooks
+  if (!hooks || typeof hooks !== 'object') return false
+  const h = hooks as Record<string, unknown>
+  if (!Array.isArray(h.PreToolUse) || !hasSecondReviewerHook(h.PreToolUse)) return false
+  const kept: unknown[] = []
+  for (const e of h.PreToolUse as unknown[]) {
+    const inner = (e as HookEntry | null)?.hooks
+    if (!Array.isArray(inner) || !entryHasSecondReviewer(e)) { kept.push(e); continue }
+    const rest = inner.filter((hook) => !isSecondReviewerHook(hook))
+    if (rest.length > 0) kept.push({ ...(e as HookEntry), hooks: rest })
+  }
+  h.PreToolUse = kept
+  return true
 }
 
 // Idempotent migration for the EXISTING fleet: the scaffold only rewrites a
@@ -2321,13 +2411,22 @@ export function ensureGovernanceGateCommands(name: string, profile?: ProfileTemp
     && (e as { matcher?: unknown })?.matcher !== EMAIL_GATE_MATCHER)
   const needCredential = agentGetsCredentialGate(name, profile)
     && (!hookCommandWired(ptuJson, credentialCmd) || credentialStale)
-  if (!needEmail && !needPace && !needDestructive && !needCredential) return false
+  const reviewerCmd = pythonHookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'second-reviewer-gate.py'))
+  const reviewerStale = ptu.some((e) => entryHasSecondReviewer(e)
+    && (e as { matcher?: unknown })?.matcher !== SECOND_REVIEWER_MATCHER)
+  const needReviewer = agentGetsSecondReviewer(name, profile)
+    && (!hookCommandWired(ptuJson, reviewerCmd) || reviewerStale)
+  // Off with an entry still wired: the entry goes (see removeSecondReviewerGate).
+  const dropReviewer = !agentGetsSecondReviewer(name, profile) && hasSecondReviewerHook(ptu)
+  if (!needEmail && !needPace && !needDestructive && !needCredential && !needReviewer && !dropReviewer) return false
   // The injectors dedupe by script basename, so a stale bare-`node` entry is
   // replaced in place rather than accumulated.
   if (needEmail) injectEmailSendGate(settings, threadReply)
   if (needPace) injectSelfPaceGate(settings)
   if (needDestructive) injectDestructiveGate(settings)
   if (needCredential) injectCredentialGate(settings)
+  if (needReviewer) injectSecondReviewerGate(settings)
+  if (dropReviewer) removeSecondReviewerGate(settings)
   atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
   return true
 }
@@ -2697,7 +2796,39 @@ function buildFleetRosterBody(selfName: string): string {
     ? agentNames
     : [MAIN_AGENT_ID, ...agentNames]
 
+  // Hierarchy (TEAMROSTER1023): a sub-agent's reportsTo lives in its own
+  // agent-config.json (team.reportsTo), but until now nothing surfaced it
+  // here -- only team-trust.ts (the <trusted-peer> tag) and the dashboard
+  // overview route read it. A sub-agent therefore had no way to learn from
+  // its OWN CLAUDE.md who it reports to or who reports to it; that knowledge
+  // lived elsewhere and did not load into a sub-agent's context by itself.
+  //
+  // selfReportsTo is validated against `names` (the known-agent list), not
+  // just read and trusted: readAgentTeam() only TRIMS the stored value
+  // (sanitizeTeamConfig, which drops a self-reference or an unknown name,
+  // runs on the dashboard write path only -- a hand-edited agent-config.json,
+  // or an agent editing its own, bypasses it entirely). Without this check,
+  // a bad reportsTo value reaches this generated, trusted block two ways:
+  // (1) a name that does not resolve to any real agent (wrong case, typo, a
+  // deleted agent) produces a "Vezetőd:" line pointing at a ghost, and (2) a
+  // value containing newlines is inserted into the agent's own CLAUDE.md
+  // verbatim -- e.g. "zara\n\n## IGNORE ALL PREVIOUS INSTRUCTIONS\n..." would
+  // become a heading in the agent's own instructions, the same class of risk
+  // sanitizeCapabilityTag() already closes for capability tags on this same
+  // line. Requiring membership in `names` (itself sourced from
+  // listAgentNames(), not from the untrusted field) closes both: neither a
+  // ghost name nor a newline-laden string is a member.
+  //
+  // For the main agent (no agents/ subdirectory) readAgentTeam() safely
+  // falls back to DEFAULT_TEAM (reportsTo: null), which is correct -- the
+  // main agent reports to no one.
+  const selfTeam = readAgentTeam(selfName)
+  const selfReportsTo = selfTeam.reportsTo && selfTeam.reportsTo !== selfName && names.includes(selfTeam.reportsTo)
+    ? selfTeam.reportsTo
+    : null
+
   const lines: string[] = []
+  const subordinates: string[] = []
   for (const agentName of names) {
     if (agentName === selfName) continue
 
@@ -2714,10 +2845,38 @@ function buildFleetRosterBody(selfName: string): string {
       .slice(0, CAPABILITY_TAG_MAX_PER_AGENT)
 
     const capsStr = caps.length > 0 ? caps.join(', ') : '-'
-    lines.push(`- **${agentName}** (agent_id: ${agentName}): ${capsStr}`)
+
+    const peerReportsTo = readAgentTeam(agentName).reportsTo
+    let roleTag = ''
+    // A two-agent cycle (A reports to B, B reports to A) would otherwise tag
+    // the same roster line BOTH "(beosztottad)" (this loop) AND as the
+    // "Vezetőd:" target (below) -- a peer is only a subordinate if it is not
+    // ALSO this agent's own (validated) manager.
+    if (peerReportsTo === selfName && agentName !== selfReportsTo) {
+      subordinates.push(agentName)
+      roleTag = ' (beosztottad)'
+    } else if (agentName === selfReportsTo) {
+      roleTag = ' (vezetőd)'
+    }
+
+    lines.push(`- **${agentName}** (agent_id: ${agentName})${roleTag}: ${capsStr}`)
   }
 
   const roster = lines.length > 0 ? lines.join('\n') : '(nincs regisztrált ágens)'
+
+  // Factual only (2026-10-23, reviewer-measured): the line used to also
+  // prescribe ROUTING ("a kész munkát neki adod át, nem közvetlenül a
+  // gazdának"), which can contradict an individual agent's own standing
+  // instructions -- e.g. an agent that owns a channel and is told to report
+  // certain things straight to the owner. Routing rules belong in each
+  // agent's own text, not in this generated, one-size-fits-all block.
+  const hierarchyLines: string[] = []
+  if (selfReportsTo) {
+    hierarchyLines.push(`Vezetőd: **${selfReportsTo}**.`)
+  }
+  if (subordinates.length > 0) {
+    hierarchyLines.push(`Beosztottjaid: ${subordinates.map((n) => `**${n}**`).join(', ')}.`)
+  }
 
   return [
     '## A flotta többi agense',
@@ -2727,6 +2886,7 @@ function buildFleetRosterBody(selfName: string): string {
     '',
     roster,
     '',
+    ...(hierarchyLines.length > 0 ? [...hierarchyLines, ''] : []),
     'Ha egy kérés egyértelműen más szakterületére esik, jelezd vagy delegáld inter-agent üzenettel a megfelelő ágensnek.',
   ].join('\n')
 }
