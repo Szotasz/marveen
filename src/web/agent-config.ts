@@ -484,6 +484,40 @@ export function readAgentStateObserver(name: string): boolean {
   return false
 }
 
+// ---- per-agent sender-role gate (hook wiring) --------------------------------
+//
+// The gate itself is scripts/hooks/sender-role-gate.py, a PreToolUse hook that
+// denies the configured risky tools whenever the current turn carries a chat
+// envelope from a sender who is not an owner. This pair only decides whether
+// the launcher WIRES that hook for the agent: the key must be present and not
+// be the explicit "off" shape (riskyTools missing or empty). A malformed
+// value (string, null, array, non-array riskyTools) deliberately returns
+// TRUE -- the hook gets wired and fails closed on its side -- while an
+// unparseable file returns false, matching how the rest of the launcher
+// already treats a broken agent-config.json.
+
+// PURE: takes the parsed agent-config.json value, no I/O.
+export function senderRoleGateEnabled(config: unknown): boolean {
+  if (!config || typeof config !== 'object' || Array.isArray(config)) return false
+  const cfg = config as Record<string, unknown>
+  if (!Object.hasOwn(cfg, 'senderRoleGate')) return false
+  const gate = cfg.senderRoleGate
+  if (!gate || typeof gate !== 'object' || Array.isArray(gate)) return true
+  const risky = (gate as Record<string, unknown>).riskyTools
+  if (risky === undefined) return false
+  if (Array.isArray(risky) && risky.length === 0) return false
+  return true
+}
+
+export function readAgentSenderRoleGate(name: string): boolean {
+  const configPath = join(agentDir(name), 'agent-config.json')
+  try {
+    return senderRoleGateEnabled(JSON.parse(readFileOr(configPath, '{}')))
+  } catch {
+    return false
+  }
+}
+
 // Opt-in per-agent worksource channel (default OFF). When true the router hands
 // inter-agent messages to this agent by writing a file into its worksource
 // queue instead of typing them into its tmux pane, and the launcher loads the
