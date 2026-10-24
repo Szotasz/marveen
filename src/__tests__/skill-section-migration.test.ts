@@ -11,7 +11,7 @@
 //
 // Pure functions only -- no real agent directory is read or written here.
 import { describe, it, expect } from 'vitest'
-import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs'
+import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import {
@@ -39,11 +39,13 @@ const MIGRATED = `# A\n\nintro\n\n${current}\n\n## Időkezelés\n\nx\n`
 
 describe('skill section migration', () => {
   it('M0: normalizeSectionWhitespace erases copy artifacts only', () => {
-    // CRLF, trailing spaces/tabs, 3+ blank-line runs, outer blank lines
-    expect(normalizeSectionWhitespace('\r\na \t\r\n\r\n\r\nb  \n\n')).toBe('a\n\nb')
-    // a spaces-only line is a blank line after the strip
-    expect(normalizeSectionWhitespace('a\n   \nb')).toBe('a\n\nb')
+    // CRLF, trailing spaces/tabs and every blank line (an LLM copy may add or drop one anywhere)
+    expect(normalizeSectionWhitespace('\r\na \t\r\n\r\n\r\nb  \n\n')).toBe('a\nb')
+    expect(normalizeSectionWhitespace('a\n   \nb')).toBe('a\nb')
+    expect(normalizeSectionWhitespace('a\nb')).toBe(normalizeSectionWhitespace('a\n\nb'))
     expect(normalizeSectionWhitespace('\n\n\na\n\n\n')).toBe('a')
+    // text is not whitespace: a changed or a joined line stays different
+    expect(normalizeSectionWhitespace('a b')).not.toBe(normalizeSectionWhitespace('a\nb'))
   })
 
   it('M1: the newest retired section is replaced, its neighbours unchanged', () => {
@@ -64,6 +66,25 @@ describe('skill section migration', () => {
 
   it('M2: the older retired section is replaced the same way', () => {
     expect(upgradeRetiredSkillSection(around(retired[1]), retired, current)).toBe(MIGRATED)
+  })
+
+  it('the live case: one blank line inserted between two text lines (an LLM copy) is still unedited', () => {
+    // Measured on a live sub-agent: the copy had a blank line right after the
+    // `mkdir -p ~/.claude/skills/SKILL-NEV` line, where the shipped text has none.
+    const [r] = readRetiredSkillSections()
+    const lines = r.split('\n')
+    const at = lines.findIndex((l) => l.includes('SKILL-NEV'))
+    expect(lines[at + 1]).not.toBe('')
+    const copy = [...lines.slice(0, at + 1), '', ...lines.slice(at + 1)].join('\n')
+    const out = upgradeRetiredSkillSection(`# A\n\n${copy}\n\n## Időkezelés\n\nx\n`, [r], buildSkillSection())
+    expect(out).toBe(`# A\n\n${buildSkillSection()}\n\n## Időkezelés\n\nx\n`)
+  })
+
+  it('a heading line with trailing spaces is still the section heading', () => {
+    const [r] = readRetiredSkillSections()
+    const copy = r.replace(/^## Öntanulás és Skill rendszer/, '## Öntanulás és Skill rendszer  ')
+    expect(copy).not.toBe(r)
+    expect(upgradeRetiredSkillSection(`# A\n\n${copy}\n`, [r], buildSkillSection())).toBe(`# A\n\n${buildSkillSection()}\n`)
   })
 
   it('M3: a whitespace-only copy of the newest retired section is replaced too', () => {
@@ -114,11 +135,15 @@ describe('skill section migration', () => {
   })
 
   it('M8: readRetiredSkillSections returns [] for a missing file and for invalid JSON', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'marveen-skill-section-'))
-    expect(readRetiredSkillSections(join(dir, 'missing.json'))).toEqual([])
-    const bad = join(dir, 'bad.json')
-    writeFileSync(bad, 'not { valid json')
-    expect(readRetiredSkillSections(bad)).toEqual([])
+    const dir = mkdtempSync(join(tmpdir(), 'skill-section-'))
+    try {
+      expect(readRetiredSkillSections(join(dir, 'missing.json'))).toEqual([])
+      const bad = join(dir, 'bad.json')
+      writeFileSync(bad, 'not { valid json')
+      expect(readRetiredSkillSections(bad)).toEqual([])
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 
   it('M9: the main agent CLAUDE.md is never touched', () => {
