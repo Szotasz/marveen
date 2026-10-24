@@ -331,7 +331,7 @@ describe('the sweep is wired to it (source-level: the sweep needs live tmux)', (
     // typedAt is re-stamped at the first emitted keystroke, not at call start
     expect(RUNNER.slice(sendIdx, sendIdx + 200)).toMatch(/onEmitStart: \(\) => \{\s*typedAt = Date\.now\(\)/)
     const AP = readFileSync(join(__dirname, '../web/agent-process.ts'), 'utf-8')
-    const emitIdx = AP.indexOf("const emitToPane = async (): Promise<'sent'> => {")
+    const emitIdx = AP.indexOf("const emitToPane = async (): Promise<'sent' | 'aborted-guard-typed'> => {")
     expect(emitIdx).toBeGreaterThan(0)
     expect(AP.slice(emitIdx, emitIdx + 500)).toContain('opts.onEmitStart?.()')
     expect(RUNNER).toMatch(/host == null \? \{ sentText: paneOneLine\(fullPrompt\), typedAt \} : \{\}/)

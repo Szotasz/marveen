@@ -82,6 +82,15 @@ export function recordInjectedPrompt(session: string, text: string, now: number 
   records.set(session, { text, at: now })
 }
 
+/**
+ * Drop the record when it still holds `text`: the sender left this prompt typed but
+ * unsubmitted and will type it again (#2143), so the stuck-input watcher's
+ * 'reinject-recorded' path must not match and submit the leftover copy meanwhile.
+ */
+export function forgetInjectedPrompt(session: string, text: string): void {
+  if (records.get(session)?.text === text) records.delete(session)
+}
+
 /** The last prompt typed into this pane, or null if absent/expired. */
 export function getInjectedPrompt(session: string, now: number = Date.now()): InjectedPromptRecord | null {
   const rec = records.get(session)
