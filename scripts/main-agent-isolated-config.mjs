@@ -20,7 +20,7 @@
 // Usage: node scripts/main-agent-isolated-config.mjs [provider]
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { writeSync, fstatSync } from 'node:fs'
+import { writeSync, fstatSync, existsSync, statSync } from 'node:fs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const projectRoot = join(__dirname, '..')
@@ -47,6 +47,7 @@ const emitContract = (line) => writeSync(CONTRACT_FD, line)
 const {
   ensureMainAgentIsolatedConfigDir,
   ensureMainAgentIsolatedConfigDirForRotatedToken,
+  explicitConfigDirLacksOwnLogin,
   resolveMainAgentConfigDir,
   resolveMainAgentRotatedConfigDir,
   resolveMainAgentRotatedTokenSecretId,
@@ -75,7 +76,24 @@ const {
 // fallback -- configDir-mode is tried first only because it is the older,
 // more specific case; a plan is never both modes at once (validatePlan).
 const explicit = resolveMainAgentConfigDir()
-if (explicit) {
+// An explicit dir with no login of its own (no .credentials.json, Linux and
+// Windows) would start the bot "Not logged in" once the caller drops the fleet
+// token for it. When the fleet setup-token exists, keep the operator's dir but
+// authenticate it like an isolated dir, and say so loudly (stderr lands in
+// store/channels-failures.log). Without a fleet token nothing better exists,
+// so the old explicit handling stays.
+const fleetTokenFile = join(projectRoot, 'store', '.claude-oauth-token')
+// typeof: a dist built before this change has no such export; then keep the
+// old explicit handling instead of throwing.
+const fleetTokenUsable = existsSync(fleetTokenFile) && statSync(fleetTokenFile).size > 0
+if (explicit && typeof explicitConfigDirLacksOwnLogin !== 'function') {
+  process.stderr.write(`${new Date().toISOString()} main-agent-isolated-config: WARN the dist build predates the explicit-dir login check; rebuild (npm run build) -- MAIN_AGENT_CONFIG_DIR keeps the old handling\n`)
+}
+if (explicit && typeof explicitConfigDirLacksOwnLogin === 'function'
+    && explicitConfigDirLacksOwnLogin(explicit) && fleetTokenUsable) {
+  process.stderr.write(`${new Date().toISOString()} main-agent-isolated-config: WARN MAIN_AGENT_CONFIG_DIR=${explicit} has no .credentials.json (no login of its own); using the fleet setup-token for it instead of starting "Not logged in". Log in there, or unset MAIN_AGENT_CONFIG_DIR.\n`)
+  emitContract(`isolated\t${explicit}\n`)
+} else if (explicit) {
   emitContract(`explicit\t${explicit}\n`)
 } else {
   const rotated = resolveMainAgentRotatedConfigDir()

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
-import { mkdtempSync, mkdirSync, rmSync, readFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -23,7 +23,7 @@ vi.mock('../settings-store.js', async (orig) => {
   }
 })
 
-const { resolveMainAgentConfigDir } = await import('../web/agent-process.js')
+const { resolveMainAgentConfigDir, explicitConfigDirLacksOwnLogin } = await import('../web/agent-process.js')
 
 beforeEach(() => {
   SANDBOX = mkdtempSync(join(tmpdir(), 'maincfg-'))
@@ -75,6 +75,56 @@ describe('resolveMainAgentConfigDir', () => {
   })
 })
 
+describe('explicitConfigDirLacksOwnLogin (2026-10-23 "Not logged in" regression)', () => {
+  it('a Linux dir with no .credentials.json has no login of its own', () => {
+    expect(explicitConfigDirLacksOwnLogin(join(SANDBOX, 'home', '.claude-bot'), 'linux')).toBe(true)
+  })
+  it('a Linux dir with .credentials.json has its own login', () => {
+    const dir = join(SANDBOX, 'home', '.claude-bot')
+    writeFileSync(join(dir, '.credentials.json'), '{}')
+    expect(explicitConfigDirLacksOwnLogin(dir, 'linux')).toBe(false)
+  })
+  it('an API-key login (primaryApiKey in .claude.json) counts as its own login', () => {
+    const dir = join(SANDBOX, 'home', '.claude-bot')
+    writeFileSync(join(dir, '.claude.json'), '{"primaryApiKey":"x"}')
+    expect(explicitConfigDirLacksOwnLogin(dir, 'linux')).toBe(false)
+  })
+  it('an apiKeyHelper in settings.json counts as its own login', () => {
+    const dir = join(SANDBOX, 'home', '.claude-bot')
+    writeFileSync(join(dir, 'settings.json'), '{"apiKeyHelper":"/bin/true"}')
+    expect(explicitConfigDirLacksOwnLogin(dir, 'linux')).toBe(false)
+  })
+  it('an empty apiKeyHelper or primaryApiKey is not a login', () => {
+    const dir = join(SANDBOX, 'home', '.claude-bot')
+    writeFileSync(join(dir, 'settings.json'), '{"apiKeyHelper":""}')
+    writeFileSync(join(dir, '.claude.json'), '{"primaryApiKey":"  "}')
+    expect(explicitConfigDirLacksOwnLogin(dir, 'linux')).toBe(true)
+  })
+  it('a key or provider switch in settings.json env counts as its own login', () => {
+    const dir = join(SANDBOX, 'home', '.claude-bot')
+    writeFileSync(join(dir, 'settings.json'), '{"env":{"ANTHROPIC_API_KEY":"k"}}')
+    expect(explicitConfigDirLacksOwnLogin(dir, 'linux')).toBe(false)
+    writeFileSync(join(dir, 'settings.json'), '{"env":{"CLAUDE_CODE_USE_BEDROCK":"1"}}')
+    expect(explicitConfigDirLacksOwnLogin(dir, 'linux')).toBe(false)
+  })
+  it('a broken settings.json is not a login', () => {
+    const dir = join(SANDBOX, 'home', '.claude-bot')
+    writeFileSync(join(dir, 'settings.json'), '{not json')
+    expect(explicitConfigDirLacksOwnLogin(dir, 'linux')).toBe(true)
+  })
+  it('a .claude.json without a key does not', () => {
+    const dir = join(SANDBOX, 'home', '.claude-bot')
+    writeFileSync(join(dir, '.claude.json'), '{"oauthAccount":{}}')
+    expect(explicitConfigDirLacksOwnLogin(dir, 'linux')).toBe(true)
+  })
+  it('the same on Windows', () => {
+    expect(explicitConfigDirLacksOwnLogin(join(SANDBOX, 'home', '.claude-bot'), 'win32')).toBe(true)
+  })
+  it('macOS keeps its login in the Keychain: never reported as missing (no behaviour change there)', () => {
+    expect(explicitConfigDirLacksOwnLogin(join(SANDBOX, 'home', '.claude-bot'), 'darwin')).toBe(false)
+  })
+})
+
 describe('launcher wiring', () => {
   const HELPER = readFileSync(join(__dirname, '../../scripts/main-agent-isolated-config.mjs'), 'utf-8')
   const CHANNELS = readFileSync(join(__dirname, '../../scripts/channels.sh'), 'utf-8')
@@ -89,6 +139,13 @@ describe('launcher wiring', () => {
     expect(HELPER).toMatch(
       /const explicit = resolveMainAgentConfigDir\(\)[\s\S]*if \(explicit\)[\s\S]*const rotated = resolveMainAgentRotatedConfigDir\(\)[\s\S]*if \(rotated\)[\s\S]*const tokenSecretId = resolveMainAgentRotatedTokenSecretId\(\)[\s\S]*if \(tokenSecretId\)/,
     )
+  })
+
+  it('an explicit dir without its own login keeps the fleet token (isolated mode), only when the fleet token file exists, and warns', () => {
+    expect(HELPER).toMatch(/if \(explicit && typeof explicitConfigDirLacksOwnLogin === 'function'\s*&& explicitConfigDirLacksOwnLogin\(explicit\) && fleetTokenUsable\) \{[\s\S]*?process\.stderr\.write\([\s\S]*?WARN MAIN_AGENT_CONFIG_DIR[\s\S]*?emitContract\(`isolated\\t\$\{explicit\}\\n`\)\s*\} else if \(explicit\) \{\s*emitContract\(`explicit\\t/)
+    expect(HELPER).toMatch(/const fleetTokenFile = join\(projectRoot, 'store', '\.claude-oauth-token'\)/)
+    expect(HELPER).toMatch(/const fleetTokenUsable = existsSync\(fleetTokenFile\) && statSync\(fleetTokenFile\)\.size > 0/)
+    expect(HELPER).toMatch(/typeof explicitConfigDirLacksOwnLogin !== 'function'\) \{\s*process\.stderr\.write\(/)
   })
 
   it('the helper tags each path with its mode so the caller knows how to authenticate', () => {
