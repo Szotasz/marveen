@@ -13,6 +13,10 @@ const realTurn = (category: 'trusted-peer' | 'untrusted' | 'federated', from: st
   const { prefix, wrapped } = wrapAgentMessageForDelivery(category, from, from, body, id)
   return userLine(prefix + wrapped)
 }
+const pushedTurn = (from: string, id: number, body: string) => {
+  const { prefix, wrapped } = wrapAgentMessageForDelivery('trusted-peer', from, from, body, id)
+  return userLine((prefix + wrapped).replace(/\n/g, ' '))
+}
 const seenAt = (id: number) => (getDb().prepare('SELECT seen_at FROM agent_messages WHERE id = ?').get(id) as any).seen_at
 const pushed = (to: string) => {
   const m = createAgentMessage('s', to, 'x')
@@ -55,8 +59,24 @@ describe('findSeenMsgIds', () => {
   it('a header naming another sender does not count', () => {
     expect(findSeenMsgIds(userLine('[Uzenet @x-tol -- trusted team member, msg_id:47]: hi'), new Map([[47, 'a']])).size).toBe(0)
   })
-  it('a header that does not start a line does not count', () => {
-    expect(findSeenMsgIds(userLine('see [Uzenet @a-tol -- x, msg_id:48]'), new Map([[48, 'a']])).size).toBe(0)
+  it('a header glued to the text before it does not count', () => {
+    expect(findSeenMsgIds(userLine('see:[Uzenet @a-tol -- x, msg_id:48]'), new Map([[48, 'a']])).size).toBe(0)
+  })
+  // A push types the turn into the pane on one line: every newline arrives as a space, so the
+  // header follows the preamble after two spaces. Measured on a real pushed transcript line:
+  // its text up to the body is byte-identical to the router's prefix with each newline a space.
+  it('reads a real pushed trusted-peer turn (one line, every newline a space)', () => {
+    expect(findSeenMsgIds(pushedTurn('peer-a', 70, 'hi\nsecond line'), new Map([[70, 'peer-a']]))).toEqual(new Set([70]))
+  })
+  it('recognises every message of a pushed batch', () => {
+    const t = '[KOTEG: 2 uzenet EGY injektalasban]\n\n[Uzenet @a-tol -- trusted team member, msg_id:71]: \n<trusted-peer source="agent:a">\none\n</trusted-peer>\n\n[Uzenet @c-tol -- trusted team member, msg_id:72]: \n<trusted-peer source="agent:c">\ntwo\n</trusted-peer>\n\n[KOTEG-VEGE: 2 uzenet]'
+    expect(findSeenMsgIds(userLine(t.replace(/\n/g, ' ')), new Map([[71, 'a'], [72, 'c']]))).toEqual(new Set([71, 72]))
+  })
+  it('a pushed body quoting a real header does not mark the quoted id', () => {
+    const quoted = JSON.parse(realTurn('trusted-peer', 'peer-a', 73, '')).message.content as string
+    const body = quoted.slice(0, quoted.indexOf('<trusted-peer'))
+    const m = new Map([[73, 'peer-a'], [74, 'peer-a']])
+    expect(findSeenMsgIds(pushedTurn('peer-a', 74, body), m)).toEqual(new Set([74]))
   })
   it('reads a real trusted-peer turn', () => {
     expect(findSeenMsgIds(realTurn('trusted-peer', 'peer-a', 60, 'hi'), new Map([[60, 'peer-a']]))).toEqual(new Set([60]))

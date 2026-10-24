@@ -4,7 +4,9 @@
 // a push, the recipient's own Claude Code transcript showing the message.
 // Only the router's header ("[Uzenet @<sender>-tol ... msg_id:N...]") counts --
 // the router's header (local or federated form) counts only outside the
-// source-attributed wrapper that carries the body, at a line start, naming the
+// source-attributed wrapper that carries the body, at a line start or after
+// whitespace (a push types the turn into the pane on one line, so every newline
+// arrives as a space and the header follows the preamble after two), naming the
 // row's own sender; a cut wrapper hides what it would have enclosed. So a body
 // that quotes another message's header, tool output and assistant text never
 // mark anything seen; every message of a batch injection is recognised.
@@ -20,7 +22,7 @@ import { whileNotFrozen } from './fleet-freeze.js'
 export const SEEN_WINDOW_SEC = 24 * 60 * 60
 export const SEEN_SWEEP_INTERVAL_MS = 60_000
 
-const HEADER_RE = /(?:^|\n)\[Uzenet (?:@([^\s\]]+)-tol|a tavoli @([^\s\]]+) ugynoktol)\b[^\]\n]*?msg_id:(\d+)[,\]]/g
+const HEADER_RE = /(?:^|\s)\[Uzenet (?:@([^\s\]]+)-tol|a tavoli @([^\s\]]+) ugynoktol)\b[^\]\n]*?msg_id:(\d+)[,\]]/g
 
 export function findSeenMsgIds(transcriptTail: string, candidates: ReadonlyMap<number, string>): Set<number> {
   const found = new Set<number>()
