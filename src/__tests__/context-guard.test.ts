@@ -115,6 +115,10 @@ describe('contextLimitForModel / calibrateLimit', () => {
     expect(contextLimitForModel('claude-haiku-4-5')).toBe(200_000)
     expect(contextLimitForModel('claude-opus-4-5')).toBe(200_000)
     expect(contextLimitForModel('deepseek-v4-pro')).toBe(200_000)
+    // OpenRouter DeepSeek V4: 1M, paired with the CLAUDE_CODE_MAX_CONTEXT_TOKENS
+    // export in agent-process.ts (status bar was 165k/200k without it).
+    expect(contextLimitForModel('deepseek/deepseek-v4.1-flash')).toBe(1_000_000)
+    expect(contextLimitForModel('qwen/qwen3-coder')).toBe(200_000)
     expect(contextLimitForModel(null)).toBe(200_000)
   })
 

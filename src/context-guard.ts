@@ -230,7 +230,21 @@ export function contextLimitForModel(model: string | null | undefined): number {
   // override without reverting this would under-restart against a window the
   // CLI no longer has.
   if (m.startsWith('minimax-')) return 1_000_000
+  // Same pairing for OpenRouter's DeepSeek V4 family: OpenRouter lists a
+  // 1,048,576-token context for deepseek/deepseek-v4* (models API, 2026-10-12),
+  // but Claude Code does not know these ids and caps the session at 200k
+  // (dipike on deepseek/deepseek-v4.1-flash: status bar 165k/200k).
+  // agent-process.ts exports CLAUDE_CODE_MAX_CONTEXT_TOKENS=1000000 for exactly
+  // the ids this predicate accepts. The direct-API deepseek-v4-pro (no
+  // "deepseek/" prefix) is untouched and stays 200k.
+  if (isOpenRouterOneMillionModel(m)) return 1_000_000
   return 200_000
+}
+
+/** OpenRouter model ids that run a 1M window once Claude Code is told so via
+ *  CLAUDE_CODE_MAX_CONTEXT_TOKENS (set in agent-process.ts resolveProviderEnv). */
+export function isOpenRouterOneMillionModel(model: string): boolean {
+  return /^deepseek\/deepseek-v4/.test(model.toLowerCase())
 }
 
 /**
