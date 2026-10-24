@@ -56,6 +56,45 @@ szekció) érdemes lenne `references/` alá mozgatni.
 
 ---
 
+## Agents on the worksource channel
+
+An agent can opt into the worksource channel (`worksourceChannel: true` in its
+`agent-config.json`). For such an agent the scheduler delivers the prompt
+differently:
+
+- **Queued, not typed.** The prompt goes into the agent's worksource queue
+  directory as an item, and the channel reader hands it to the agent as a real
+  turn. Nothing is typed into its tmux pane.
+- **Same prompt text.** The queued content is byte for byte the prompt the
+  typed path would send, including the preamble, the delivery instruction and
+  the task block.
+- **Item meta.** The item carries `from: scheduler`, `message_id` (the item id),
+  `task` and `category: scheduled-task`.
+
+**Item id rule.** The id is `sched-<name>-<hash8>-<stamp>`, so the same
+occurrence never lands twice. For a cron occurrence the stamp is the UTC minute
+of the scheduled occurrence, date included (one item per scheduled minute). A
+pending-retry fire keeps the FIRST attempt's time, so every retry of the same
+occurrence maps to the same item. A manual "Run now" gets its own id with its
+own timestamp.
+
+**What does not apply.** The typing-specific machinery is skipped: the idle
+wait before typing, the post-send resubmit chain, the delivery-integrity check
+and the lost re-injection. The queue's reader owns the delivery from here: it
+acknowledges each item and re-offers anything the agent did not acknowledge.
+
+**What still applies.** Every gate before the send runs unchanged (restart in
+flight, missing session and auto-start, readiness and busy checks, forceSend
+rules, usage limit, MCP pre-check). The busy-timeout alert also still applies:
+if the agent stays busy long past the threshold, the watchdog alerts as usual.
+
+**No extra rights.** The reader treats a `from: scheduler` item exactly like
+any other routed item: same verbatim delivery, same provenance stamp, same
+acknowledgment contract. Being sent by the scheduler grants the content
+nothing.
+
+---
+
 ## Fájlstruktúra
 
 Minden feladat egy önálló mappában él:

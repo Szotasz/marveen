@@ -78,7 +78,8 @@ import {
   describeVerdict,
   type RegistryVerdict,
 } from './schedule-registry.js'
-import { listAgentNames, readFileOr, readAgentRemoteHost, readAgentRemoteConfig, agentDir } from './agent-config.js'
+import { listAgentNames, readFileOr, readAgentRemoteHost, readAgentRemoteConfig, agentDir, readAgentWorksourceChannel } from './agent-config.js'
+import { enqueueWorksourceItem } from './worksource-queue.js'
 import { resolveAgentConfigDirForRead } from './claude-plans.js'
 import { readTranscriptMtimeAcrossConfigDirs, projectsDirFor } from './active-model.js'
 import { classifyDelivery, readUserPromptsSince, type DeliveryVerdict, type ReceivedPrompt } from './delivery-integrity.js'
@@ -235,6 +236,11 @@ export interface TaskInflightEntry {
   // re-send (SCHEDLOST915: kanban-audit 2026-09-15, delivered twice, the second
   // copy with spliced sentences).
   deliveryPending: boolean
+  // True when this injection went through the agent's worksource queue, not the
+  // keyboard. The queue's reader owns the delivery from there (it re-offers
+  // anything the agent does not acknowledge), so the sweep can never call it
+  // 'lost' -- see decideTaskTimeout.
+  viaWorksource?: boolean
   // Set once the sweep has pressed its single recovery Enter for a prompt parked
   // in an overfull input box, so a second 'lost' verdict on this entry takes the
   // ordinary lost path instead of Enter-looping.
@@ -483,7 +489,7 @@ export function probeTurnEvidence(
 }
 
 export function decideTaskTimeout(
-  entry: Pick<TaskInflightEntry, 'injectedAt' | 'alerted' | 'ownerAlerted' | 'sawTurn'> & { deliveryPending?: boolean },
+  entry: Pick<TaskInflightEntry, 'injectedAt' | 'alerted' | 'ownerAlerted' | 'sawTurn'> & { deliveryPending?: boolean; viaWorksource?: boolean },
   paneState: PaneState | null,
   now: number,
   opts: { graceMs: number; timeoutMs: number; maxTrackMs: number; ownerExtraMs: number },
@@ -499,7 +505,11 @@ export function decideTaskTimeout(
     // The post-send resubmit chain still owns this delivery (a parked prompt
     // or paste placeholder it is about to re-submit). Its own give-up path
     // queues the pending retry, so holding here cannot lose the task.
-    if (entry.deliveryPending) return 'hold'
+    // A worksource-queued item is in the same position for its whole life:
+    // the queue's reader owns the hand-off and re-offers what the agent does
+    // not acknowledge, so it is never 'lost' -- it is held until maxTrackMs
+    // ages it out as 'abandoned'.
+    if (entry.deliveryPending || entry.viaWorksource) return 'hold'
     return 'lost'
   }
   // NOTE: no early `if (entry.alerted) return 'hold'` here -- that was
@@ -1680,12 +1690,77 @@ export function resolveTaskTarget(
   return { session, host }
 }
 
+// --- Worksource delivery of scheduled prompts --------------------------------
+//
+// An agent opted into the worksource channel (readAgentWorksourceChannel) gets
+// its scheduled prompts as queue items instead of keystrokes. The three helpers
+// below are pure so the id rule, the meta contract and the gate are unit-tested
+// without tmux, DB or disk.
+
+// Which fire an item id belongs to. 'occurrence' carries the SCHEDULED minute
+// (a cron occurrence or a pending retry -- the retry keeps the FIRST attempt's
+// time so every attempt of the same occurrence dedupes to one item); 'manual'
+// carries the run-now timestamp, because a manual run is its own delivery by
+// definition, not a retry of the cron occurrence.
+export type ScheduledOccurrence = { kind: 'occurrence' | 'manual'; at: number }
+
+// The item id is DERIVED, not random, for the same reason as the router's
+// worksourceItemId: it is the dedupe key (a retried tick must not hand the same
+// occurrence over twice), and it has to survive the reader's shape check
+// (/^[A-Za-z0-9._-]{1,128}$/, refused rather than sanitised -- a rewritten id
+// would acknowledge the WRONG item). The name is slugified for readability and
+// hashed to keep two names that slug to the same string distinct (an accented
+// letter and a dash both slug to '-').
+export function scheduledWorksourceItemId(taskName: string, occurrence: ScheduledOccurrence): string {
+  const slug = taskName.replace(/[^A-Za-z0-9._-]/g, '-').slice(0, 60) || 'task'
+  const hash8 = createHash('sha256').update(taskName, 'utf8').digest('hex').slice(0, 8)
+  if (occurrence.kind === 'manual') {
+    return `sched-${slug}-${hash8}-manual-${Math.trunc(occurrence.at)}`
+  }
+  // The UTC MINUTE of the occurrence (date included), seconds and ms ignored:
+  // one item per scheduled minute per task, while a same-minute retry or catch-up
+  // re-derives the same id and enqueueWorksourceItem refuses to double it.
+  const d = new Date(occurrence.at)
+  const p2 = (n: number) => String(n).padStart(2, '0')
+  const stamp = `${d.getUTCFullYear()}${p2(d.getUTCMonth() + 1)}${p2(d.getUTCDate())}T${p2(d.getUTCHours())}${p2(d.getUTCMinutes())}Z`
+  return `sched-${slug}-${hash8}-${stamp}`
+}
+
+// The meta the reader sees on a scheduler item. `message_id` is the item id (not
+// a DB row id -- this delivery has no agent_messages row), so an agent quoting
+// it back names exactly the queued item it is working on. Everything is a
+// string: the client validates meta as Record<string, string>.
+export function scheduledWorksourceMeta(taskName: string, itemId: string): Record<string, string> {
+  return { from: 'scheduler', message_id: itemId, task: taskName, category: 'scheduled-task' }
+}
+
+// True only for a LOCAL sub-agent that opted in. host must be null because the
+// queue directory lives on THIS machine: a remote agent's reader polls its own
+// host, so an item written here would never be picked up. The main agent is
+// excluded: it has no worksource channel, and queueing its own scheduler's
+// prompts would strand them. A readFlag that throws keeps the typed path -- a
+// broken agent-config.json must not take the schedule down with it.
+export function shouldQueueScheduledToWorksource(
+  agentName: string,
+  host: string | null,
+  readFlag: (name: string) => boolean = readAgentWorksourceChannel,
+): boolean {
+  if (host != null) return false
+  if (agentName === MAIN_AGENT_ID) return false
+  try {
+    return readFlag(agentName) === true
+  } catch {
+    return false
+  }
+}
+
 async function attemptFireTask(
   task: ScheduledTask,
   agentName: string,
   now: number,
   preCheckPrefix?: string,
   lateCatchUpMs?: number,
+  occurrence?: ScheduledOccurrence,
 ): Promise<'fired' | 'busy' | 'missing' | 'starting' | 'error' | 'mcp-missing' | 'first-run' | 'respawning' | 'usage-limited'> {
   const { session, host } = resolveTaskTarget(task, agentName)
   // resolveTaskTarget() computes this internally but does not expose it (it
@@ -1967,6 +2042,69 @@ async function attemptFireTask(
     // off) while task_runs still recorded a plain 'fired'. The flag only changes
     // the recorded status below; delivery is untouched.
     let busySend = false
+    // A worksource agent takes this prompt through its queue instead of the
+    // keyboard. The queue's reader acknowledges each item and re-offers what the
+    // agent never acknowledged, so the typing-specific machinery below (idle
+    // wait, resubmit chain, delivery-integrity check, lost re-injection) does
+    // not apply; the busy-timeout alert still does. Everything above -- every
+    // gate from the restart check to the MCP pre-check -- already ran unchanged.
+    const viaWorksource = shouldQueueScheduledToWorksource(agentName, host)
+    if (viaWorksource) {
+      // The content is `fullPrompt` byte for byte: the same string the typed
+      // path below would type, so an agent on the queue reads the same task.
+      const itemId = scheduledWorksourceItemId(task.name, occurrence ?? { kind: 'occurrence', at: now })
+      const queued = enqueueWorksourceItem(agentName, itemId, fullPrompt, scheduledWorksourceMeta(task.name, itemId))
+      if (!queued) {
+        // The id is already pending/active/done: this occurrence was handed
+        // over before (a retried tick, or the reader re-offering it). Record
+        // the occurrence as served and stay quiet -- re-queueing would hand
+        // the agent the same work twice.
+        logger.info({ task: task.name, agent: agentName, itemId }, 'Scheduled task already in the worksource queue -- not re-queued')
+        scheduleLastRun.set(task.name, now)
+        persistScheduleLastRun()
+        return 'fired'
+      }
+      logger.info({ task: task.name, agent: agentName, itemId }, 'Scheduled task queued to worksource')
+      const submittedAt = Date.now()
+      scheduleLastRun.set(task.name, now)
+      persistScheduleLastRun()
+      let firedRunId: number | null = null
+      if (lateCatchUpMs != null) {
+        firedRunId = appendTaskRun(task.name, agentName, 'fired_late')
+        logger.warn(
+          { task: task.name, agent: agentName, session, lateCatchUpMinutes: Math.round(lateCatchUpMs / 60000) },
+          'Scheduled task fired via restart catch-up window -- missed its normal tick',
+        )
+      } else {
+        // busySend stays false: there was no pane and no idle budget, so the
+        // 'fired_busy' branch cannot apply.
+        firedRunId = appendTaskRun(task.name, agentName, 'fired')
+      }
+      // Same watchdog entry as the typed path (the busy-timeout alert still
+      // applies), minus everything that presumes keystrokes: deliveryPending
+      // false (no resubmit chain will own this), and no sentText/typedAt, so
+      // the delivery-integrity check never runs for a queued item.
+      taskInflightMap.set(`${task.name}@${agentName}`, {
+        taskName: task.name,
+        agentName,
+        session,
+        host,
+        injectedAt: submittedAt,
+        alerted: false,
+        ownerAlerted: false,
+        sawTurn: false,
+        workingDir: agentName === MAIN_AGENT_ID ? PROJECT_ROOT : agentDir(agentName),
+        configDirs: agentName === MAIN_AGENT_ID
+          ? mainConfigRoots()
+          : [resolveAgentConfigDirForRead(agentName) ?? undefined],
+        timeoutMs: resolveStuckTimeoutMs(task),
+        runId: firedRunId,
+        taskType: task.type,
+        viaWorksource: true,
+        deliveryPending: false,
+      })
+      return 'fired'
+    }
     await sendPromptToSession(session, fullPrompt, host, {
       onEmitStart: () => {
         typedAt = Date.now()
@@ -2310,7 +2448,10 @@ export async function runScheduledTaskNow(
 
   const summary: string[] = []
   for (const agentName of targets) {
-    const result = await attemptFireTask(task, agentName, now)
+    // A manual run gets its own worksource item id, distinct from the cron
+    // occurrence's minute stamp: it is a separate delivery the operator asked
+    // for now, not a retry of the scheduled occurrence.
+    const result = await attemptFireTask(task, agentName, now, undefined, undefined, { kind: 'manual', at: now })
     // A manual run ALWAYS wants delivery: an auto-started ('starting') or a
     // busy session both get a queued retry that lands once the session is
     // ready. We deliberately do NOT consult skipIfBusy here -- that flag trims
@@ -3104,7 +3245,9 @@ export function startScheduleRunner(): NodeJS.Timeout {
       }
 
       const view = toPendingRetryView(row, now)
-      const result = await attemptFireTask(current, row.agent_name, now, retryPc.prefix)
+      // The retry keeps the FIRST attempt's time in the item id, so every retry
+      // of the same occurrence dedupes to one worksource item.
+      const result = await attemptFireTask(current, row.agent_name, now, retryPc.prefix, undefined, { kind: 'occurrence', at: row.first_attempt })
       if (result === 'fired') {
         deletePendingTaskRetry(row.task_name, row.agent_name)
         continue
@@ -3342,7 +3485,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
           )
           continue
         }
-        const result = await attemptFireTask(current, agentName, now, cronPc.prefix, lateCatchUpMs)
+        const result = await attemptFireTask(current, agentName, now, cronPc.prefix, lateCatchUpMs, { kind: 'occurrence', at: occurrenceMs })
         if (result === 'starting') {
           // Agent was auto-started this tick. ALWAYS enqueue the retry that
           // delivers the prompt once the session is ready -- skipIfBusy must
