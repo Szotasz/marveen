@@ -457,18 +457,29 @@ def run(raw_stdin, state, settings, problem):
     return deny(reason)
 
 
+class _ArgParser(argparse.ArgumentParser):
+    def error(self, message):  # no usage on stderr and no exit 2 (which blocks every tool)
+        raise ValueError(message)
+
+
 def main(argv=None):
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[1])
-    src = ap.add_mutually_exclusive_group(required=True)
+    ap = _ArgParser(description=__doc__.splitlines()[1])
+    src = ap.add_mutually_exclusive_group()
     # The launcher wires --policy (see load_policy); --config reads an agent-config.json and is
     # there for tests and manual checks.
     src.add_argument("--policy", help="base64url of the senderRoleGate value")
     src.add_argument("--config", help="path to an agent-config.json")
-    args = ap.parse_args(argv)
-    if args.policy is not None:
+    try:
+        args = ap.parse_args(argv)
+    except ValueError:
+        args = None
+    if args is not None and args.policy is not None:
         state, settings, problem = load_policy(args.policy)
-    else:
+    elif args is not None and args.config is not None:
         state, settings, problem = load_config(args.config)
+    else:
+        # Only a hand-broken settings entry gets here: the same as a corrupted policy.
+        state, settings, problem = ("malformed", None, "the hook was started without a usable --policy")
     if state == "off":
         # 1.4: not configured -- no opinion, and the transcript is not even
         # opened.

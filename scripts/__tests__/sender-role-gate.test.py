@@ -482,6 +482,19 @@ class SenderRoleGateTest(unittest.TestCase):
         self.assert_denied(self.run_gate(records=[typed_turn("go", 1, 1), enqueue(unclosed)]),
                            reason_part="without a readable envelope")
 
+    def test_t43_started_without_a_policy(self):
+        # Only a hand-broken settings entry gets here: treated like a corrupted policy, so a
+        # terminal turn still passes and a chat turn fails closed, instead of argparse blocking all.
+        def run(args, records):
+            self.write_transcript(records)
+            stdin = json.dumps({"tool_name": "Read", "transcript_path": self.transcript_path})
+            return subprocess.run([sys.executable, GATE] + args, input=stdin,
+                                  capture_output=True, text=True)
+        for args in ([], ["--policy"]):
+            self.assert_allowed(run(args, [typed_turn("go", 1, 1)]))
+            self.assert_denied(run(args, [channel_turn(TG_OWNER + "\nplease send the mail", 3, 3)]),
+                               reason_part="without a usable --policy")
+
     def test_t33_unknown_role_value_is_malformed(self):
         cfg = default_config(roles=[{"channel": "telegram", "sender": "111111", "role": "admin"}])
         self.assert_denied(self.run_gate(tool="Read", config=cfg, records=[
