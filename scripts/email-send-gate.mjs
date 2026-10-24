@@ -886,19 +886,221 @@ const DRAFT_NAMES = ['draft_email', 'create_draft', 'update_draft', 'draft_gmail
 // The harder-mail MCP's sends (HARDERMAILGATES1019): connector_send, so the
 // thread-reply narrowing (send_email only) can never release one.
 const MAILBOX_SEND_SUFFIXES = ['send_mail', 'send_mail_auto']
+// The Microsoft Graph MCP's names, hyphens normalized (MS365MAIL1024): the
+// server names its tools with hyphens (send-mail, create-draft-email, ...),
+// which no underscore-shaped suffix ever matched.
+const MS365_SEND_SUFFIXES = ['send_mail', 'send_shared_mailbox_mail', 'reply_mail_message',
+  'reply_all_mail_message', 'forward_mail_message', 'reply_shared_mailbox_mail',
+  'reply_all_shared_mailbox_mail', 'forward_shared_mailbox_mail', 'forward_calendar_event',
+  'reply_to_group_thread']
+const MS365_DRAFT_SEND_SUFFIXES = ['send_draft_message', 'send_shared_mailbox_draft']
+const MS365_DRAFT_SUFFIXES = ['create_draft_email', 'create_shared_mailbox_draft', 'create_reply_draft',
+  'create_reply_all_draft', 'create_forward_draft', 'create_shared_mailbox_reply_draft',
+  'create_shared_mailbox_reply_all_draft', 'create_shared_mailbox_forward_draft',
+  'update_mail_message', 'update_shared_mailbox_message']
 
 export function classifyMailTool(toolName) {
-  const n = String(toolName ?? '').toLowerCase()
+  const n = String(toolName ?? '').toLowerCase().replaceAll('-', '_')
   if (!n || n === 'bash') return null
   // send_gmail_message: the Google Workspace MCP's Gmail send tool
   if (n.includes('send_email') || n.includes('send_gmail_message')) return 'send_email'
   if (n.endsWith('reply_all')) return 'connector_send'
   if (n.includes('gmail') && CONNECTOR_GENERIC_SUFFIXES.some((b) => n.endsWith(b))) return 'connector_send'
   if (MAILBOX_SEND_SUFFIXES.some((b) => n.endsWith(b))) return 'connector_send'
+  if (MS365_SEND_SUFFIXES.some((b) => n.endsWith(b))) return 'connector_send'
+  if (MS365_DRAFT_SEND_SUFFIXES.some((b) => n.endsWith(b))) return 'send_draft'
   if (n.endsWith('send_draft')) return 'send_draft'
   if (n.endsWith('manage_email')) return 'manage_email'
+  if (MS365_DRAFT_SUFFIXES.some((b) => n.endsWith(b))) return 'draft'
   if (DRAFT_NAMES.some((d) => n.includes(d))) return 'draft'
   return null
+}
+
+// --- Microsoft Graph letters (MS365MAIL1024) ----------------------------------
+// The ms365 MCP server carries the letter Graph-shaped: body.Message.{subject,
+// body:{contentType, content}, toRecipients/ccRecipients/bccRecipients:
+// [{emailAddress:{address, name?}}]}, a reply's Comment, a forward's
+// ToRecipients. The server reads keys in ANY case (so a key twice in different
+// case is ambiguous -> reason), and moves a stray top-level field into body
+// (so a stray is read wherever it sits). Reading is STRICT for the recipient
+// checks (an unreadable list fails closed, like the Python gate's copy).
+const isPlainObject = (v) => typeof v === 'object' && v !== null && !Array.isArray(v)
+
+const MS365_TOP_GRAPH_KEYS = new Set(['torecipients', 'ccrecipients', 'bccrecipients'])
+
+export function isMs365Shaped(toolInput) {
+  if (!isPlainObject(toolInput)) return false
+  for (const [k, v] of Object.entries(toolInput)) {
+    const lk = String(k).toLowerCase()
+    if (isPlainObject(v) && (lk === 'body' || lk === 'message' || lk === 'post')) return true
+    if (Array.isArray(v) && MS365_TOP_GRAPH_KEYS.has(lk)) return true
+  }
+  return false
+}
+
+// A Microsoft Graph MCP mail tool, decided by NAME (MS365MAIL1024 round 2): the
+// Graph server names its tools with hyphens, and the last segment of the
+// qualified name must contain one -- so the harder-mail server's underscored
+// send_mail is never Graph, however its payload looks. Same rule as
+// ms365_tool_kind in email_extract.py; the suffix lists are classifyMailTool's.
+export function ms365ToolKind(toolName) {
+  const raw = String(toolName ?? '').toLowerCase()
+  const last = raw.split('__').pop()
+  if (!last.includes('-')) return null
+  const n = raw.replaceAll('-', '_')
+  if (MS365_SEND_SUFFIXES.some((s) => n.endsWith(s))) return 'send'
+  if (MS365_DRAFT_SEND_SUFFIXES.some((s) => n.endsWith(s))) return 'draft_send'
+  if (MS365_DRAFT_SUFFIXES.some((s) => n.endsWith(s)) || n.endsWith('create_draft_email')) return 'draft'
+  return null
+}
+
+export function isMs365Tool(toolName) {
+  return ms365ToolKind(toolName) !== null
+}
+
+// Does the call carry Graph MATERIAL at all: an object body/Message/Post, or a
+// top-level Graph recipient key in ANY shape (a non-list toRecipients is
+// Graph material -- it must be read strictly, and fails there)? A Graph-named
+// draft with flat-only fields has none and keeps the flat checks, which is the
+// pinned contract for the ledger-checked drafts; a non-Graph tool with an
+// object body never enters the Graph block.
+function ms365HasGraphFields(toolInput) {
+  if (!isPlainObject(toolInput)) return false
+  for (const [k, v] of Object.entries(toolInput)) {
+    const lk = String(k).toLowerCase()
+    if (isPlainObject(v) && (lk === 'body' || lk === 'message' || lk === 'post')) return true
+    if (MS365_TOP_GRAPH_KEYS.has(lk)) return true
+  }
+  return false
+}
+
+// A Graph-shaped call that ALSO carries flat to/cc/bcc is ambiguous: one reader
+// would hide the other's addresses (SECURITY review on MS365MAIL1024).
+export function ms365FlatConflict(toolInput) {
+  if (!isPlainObject(toolInput)) return null
+  const flat = Object.entries(toolInput)
+    .filter(([k, v]) => ['to', 'cc', 'bcc'].includes(String(k).toLowerCase())
+      && !(v === null || v === undefined || v === '' || (Array.isArray(v) && v.length === 0)))
+    .map(([k]) => k)
+  return flat.length
+    ? `a hivas lapos (${flat.sort().join(', ')}) es Graph-alaku cimzettet is visz -- nem egyertelmu`
+    : null
+}
+
+// (the object with lowercased keys, reason). A key twice in a different case is
+// ambiguous.
+export function ms365Lower(d, where) {
+  const out = {}
+  for (const [k, v] of Object.entries(d)) {
+    const lk = String(k).toLowerCase()
+    if (lk in out) {
+      return [null, `${where}: a(z) '${lk}' mezo ketszer szerepel (kis/nagybetu) -- nem egyertelmu`]
+    }
+    out[lk] = v
+  }
+  return [out, null]
+}
+
+// Python-style sorted set repr, so the deny reasons read the same as the
+// Python gate's: ['a', 'b'].
+function ms365FieldRepr(keys) {
+  const sorted = [...new Set(keys)].sort()
+  return `['${sorted.join("', '")}']`
+}
+
+// Python-style repr of one short string (the quote Python's repr would pick),
+// so an address named in a deny reason reads the same on both gates.
+function ms365StrRepr(s) {
+  const q = s.includes("'") && !s.includes('"') ? '"' : "'"
+  return q + s.replace(/\\/g, '\\\\').split(q).join(`\\${q}`) + q
+}
+
+// [{emailAddress: {address, name?}}] -> (addresses, reason). Strict: nothing
+// else is accepted.
+export function ms365RecipientList(value, where) {
+  if (value === null || value === undefined) return [[], null]
+  if (!Array.isArray(value)) return [[], `${where}: nem lista`]
+  const out = []
+  for (let i = 0; i < value.length; i++) {
+    const here = `${where}[${i}]`
+    const item = value[i]
+    if (!isPlainObject(item)) return [[], `${here}: nem objektum`]
+    const [it, reason] = ms365Lower(item, here)
+    if (reason) return [[], reason]
+    const extra = Object.keys(it).filter((k) => k !== 'emailaddress')
+    if (extra.length) return [[], `${here}: ismeretlen mezo ${ms365FieldRepr(extra)}`]
+    const ea = it.emailaddress
+    if (!isPlainObject(ea)) return [[], `${here}.emailAddress: nem objektum`]
+    const [e, reason2] = ms365Lower(ea, `${here}.emailAddress`)
+    if (reason2) return [[], reason2]
+    const extra2 = Object.keys(e).filter((k) => k !== 'address' && k !== 'name')
+    if (extra2.length) return [[], `${here}.emailAddress: ismeretlen mezo ${ms365FieldRepr(extra2)}`]
+    const addr = e.address
+    if (typeof addr !== 'string' || !addr.trim()) {
+      return [[], `${here}.emailAddress.address: hianyzik vagy nem szoveg`]
+    }
+    if (!MS365_ADDR_RE.test(addr.trim())) {
+      return [[], `${here}.emailAddress.address: nem egyetlen puszta cim (${ms365StrRepr(addr.slice(0, 60))})`]
+    }
+    if ('name' in e && typeof e.name !== 'string') {
+      return [[], `${here}.emailAddress.name: nem szoveg`]
+    }
+    out.push(addr.trim())
+  }
+  return [out, null]
+}
+
+const MS365_RECIPIENT_FIELDS = ['torecipients', 'ccrecipients', 'bccrecipients']
+
+// One bare address, nothing around it: a '"owner@x" <stranger@y>' entry would
+// let a recipient check find the owner while the letter goes to the stranger.
+const MS365_ADDR_RE = /^[^\s<>,;:"'()\[\]@]+@[^\s<>,;:"'()\[\]@]+$/
+
+// {to, cc, bcc, reason} of a Graph-shaped call, for the recipient checks: only
+// the recipient fields are read, each strictly, wherever the server would take
+// them from -- the top level and the top-level message object (strays the server
+// moves into body), body itself (create-draft-email, update-mail-message),
+// body.Message, and body.ToRecipients (a forward). A flat to/cc/bcc next to the
+// Graph shape is a reason first: one reader would hide the other's addresses.
+// A port of ms365_recipients in email_extract.py (same logic, same reason
+// texts), so the two gates cannot drift.
+export function ms365Recipients(toolInput) {
+  if (!isPlainObject(toolInput)) return { to: [], cc: [], bcc: [], reason: 'a hivas: nem objektum' }
+  const flat = ms365FlatConflict(toolInput)
+  if (flat) return { to: [], cc: [], bcc: [], reason: flat }
+  const [top, topReason] = ms365Lower(toolInput, 'a hivas')
+  if (topReason) return { to: [], cc: [], bcc: [], reason: topReason }
+  const places = [['a hivas', top]]
+  if (top.message !== null && top.message !== undefined) {
+    if (!isPlainObject(top.message)) return { to: [], cc: [], bcc: [], reason: 'a hivas.Message: nem objektum' }
+    const [m, msgReason] = ms365Lower(top.message, 'a hivas.Message')
+    if (msgReason) return { to: [], cc: [], bcc: [], reason: msgReason }
+    places.push(['a hivas.Message', m])
+  }
+  const body = top.body
+  if (isPlainObject(body)) {
+    const [b, bodyReason] = ms365Lower(body, 'body')
+    if (bodyReason) return { to: [], cc: [], bcc: [], reason: bodyReason }
+    places.push(['body', b])
+    if (b.message !== null && b.message !== undefined) {
+      if (!isPlainObject(b.message)) return { to: [], cc: [], bcc: [], reason: 'body.Message: nem objektum' }
+      const [m, msgReason] = ms365Lower(b.message, 'body.Message')
+      if (msgReason) return { to: [], cc: [], bcc: [], reason: msgReason }
+      places.push(['body.Message', m])
+    }
+  }
+  const to = [], cc = [], bcc = []
+  const buckets = [to, cc, bcc]
+  for (const [where, d] of places) {
+    for (let f = 0; f < MS365_RECIPIENT_FIELDS.length; f++) {
+      const field = MS365_RECIPIENT_FIELDS[f]
+      const [got, reason] = ms365RecipientList(d[field], `${where}.${field}`)
+      if (reason) return { to: [], cc: [], bcc: [], reason }
+      const bucket = buckets[f]
+      for (const x of got) if (!bucket.includes(x)) bucket.push(x)
+    }
+  }
+  return { to, cc, bcc, reason: null }
 }
 
 // RECOVERYPATH920: the recovery command in the deny message used to be the
@@ -1002,6 +1204,24 @@ export function gateDecision(toolName, toolInput, isVerified = null, cwd = proce
   // verified: the owner presses send on what we typed, so an invented address
   // reaches the outside world through a draft just as surely as through a send.
   if (mailKind === 'draft') {
+    // MS365MAIL1024, round 2: the Graph read is decided by the tool NAME, not
+    // by the payload's shape -- a non-Graph tool with an object body keeps the
+    // flat checks below, and a Graph draft carries its recipients as
+    // toRecipients/ccRecipients/bccRecipients items, read the same strict way;
+    // an unreadable recipient list fails closed. A Graph-named draft with no
+    // Graph material at all (flat to/cc/bcc only) keeps the flat checks too:
+    // that is the pinned draft contract, and it errs toward the flat read,
+    // which checks every field it can see.
+    if (isMs365Tool(name) && ms365HasGraphFields(toolInput)) {
+      const r = ms365Recipients(toolInput)
+      if (r.reason) return { deny: true, kind: 'unparseable-recipient', addresses: [r.reason] }
+      const all = [...r.to, ...r.cc, ...r.bcc]
+      const unparseable = unparseableRecipients({ to: all })
+      if (unparseable.length) return { deny: true, kind: 'unparseable-recipient', addresses: unparseable }
+      const bad = unverifiedRecipients({ to: all }, verify)
+      if (bad.length) return { deny: true, kind: 'unverified-recipient', addresses: bad }
+      return { deny: false }
+    }
     const unparseable = unparseableRecipients(toolInput)
     if (unparseable.length) return { deny: true, kind: 'unparseable-recipient', addresses: unparseable }
     const bad = unverifiedRecipients(toolInput, verify)

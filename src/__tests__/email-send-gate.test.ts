@@ -372,7 +372,13 @@ describe('injectEmailSendGate', () => {
     expect(hooks[0].matcher).toBe('Bash|.*send_email.*|.*manage_email.*|.*[Gg]mail.*__.*|.*draft_email.*'
       + '|.*send_draft.*|.*update_draft.*|.*create_draft.*|.*reply_all.*|.*send_gmail_message.*|.*draft_gmail_message.*'
       + '|.*[Gg][Mm][Aa][Ii][Ll].*send_message.*|.*[Gg][Mm][Aa][Ii][Ll].*reply.*|.*[Gg][Mm][Aa][Ii][Ll].*forward.*'
-      + '|.*send_mail.*')
+      + '|.*send[-_]mail.*|.*send[-_]shared[-_]mailbox[-_]mail.*|.*send[-_]shared[-_]mailbox[-_]draft.*|.*send[-_]draft[-_]message.*'
+      + '|.*reply[-_]mail[-_]message.*|.*reply[-_]all[-_]mail[-_]message.*|.*forward[-_]mail[-_]message.*'
+      + '|.*reply[-_]shared[-_]mailbox[-_]mail.*|.*reply[-_]all[-_]shared[-_]mailbox[-_]mail.*|.*forward[-_]shared[-_]mailbox[-_]mail.*'
+      + '|.*forward[-_]calendar[-_]event.*|.*reply[-_]to[-_]group[-_]thread.*|.*draft[-_]email.*'
+      + '|.*create[-_]shared[-_]mailbox[-_]draft.*|.*create[-_]reply[-_]draft.*|.*create[-_]reply[-_]all[-_]draft.*|.*create[-_]forward[-_]draft.*'
+      + '|.*create[-_]shared[-_]mailbox[-_]reply[-_]draft.*|.*create[-_]shared[-_]mailbox[-_]reply[-_]all[-_]draft.*|.*create[-_]shared[-_]mailbox[-_]forward[-_]draft.*'
+      + '|.*update[-_]mail[-_]message.*|.*update[-_]shared[-_]mailbox[-_]message.*')
     const inner = (hooks[0].hooks as Array<{ command: string }>)[0]
     expect(inner.command).toContain('email-send-gate.mjs')
   })
@@ -500,5 +506,109 @@ describe('a recipient-ledger module that does not load (HOOKDEPLOAD1008)', () =>
     }
     const r = run(broken, CALLS['non-send Bash'])
     expect(r).toEqual({ status: 0, stdout: '', stderr: '' })
+  })
+})
+
+// MS365MAIL1024: the Microsoft Graph MCP server names its tools with hyphens
+// (send-mail, create-draft-email, ...), so no matcher or classifier shaped on
+// underscores ever saw them, and its letter sits Graph-shaped under `body`
+// (body.Message.subject / body.Message.body.content, recipients as
+// [{emailAddress: {address}}]) instead of the flat to/cc/subject fields.
+describe('Microsoft Graph (ms365) mail tools', () => {
+  const verifiable = (a: string) => a === 'x@y.hu'
+
+  it('the sends are denied with their kind, the reads are not gated at all', () => {
+    const letter = { body: { Message: { subject: 'Targy', body: { contentType: 'Text', content: 'Szia!' } } } }
+    expect(gateDecision('mcp__ms365__send-mail', letter)).toMatchObject({ deny: true, kind: 'connector-send' })
+    expect(gateDecision('mcp__ms365__reply-mail-message', { messageId: 'm1', body: { Comment: 'V' } }))
+      .toMatchObject({ deny: true, kind: 'connector-send' })
+    expect(gateDecision('mcp__ms365__send-draft-message', { messageId: 'd1' }))
+      .toMatchObject({ deny: true, kind: 'send-draft' })
+    expect(gateDecision('mcp__ms365__list-mail-messages', { body: { folderPath: 'inbox' } }).deny).toBe(false)
+  })
+
+  it('a Graph-shaped draft address goes through the same parse and ledger check as a flat to', () => {
+    const draft = { body: { subject: 'Targy', body: { contentType: 'Text', content: 'Szia!' },
+      toRecipients: [{ emailAddress: { address: 'x@y.hu' } }] } }
+    expect(gateDecision('mcp__ms365__create-draft-email', draft, () => false))
+      .toMatchObject({ deny: true, kind: 'unverified-recipient', addresses: ['x@y.hu'] })
+    expect(gateDecision('mcp__ms365__create-draft-email', draft, verifiable).deny).toBe(false)
+  })
+
+  it('a recipient item that is not a clean address object is unparseable (fail-closed)', () => {
+    const bad = { body: { toRecipients: [{ emailAddress: { address: 5 } }] } }
+    expect(gateDecision('mcp__ms365__create-draft-email', bad, verifiable))
+      .toMatchObject({ deny: true, kind: 'unparseable-recipient' })
+  })
+
+  it('update-mail-message: a flag update passes, a draft recipient change is ledger-checked', () => {
+    expect(gateDecision('mcp__ms365__update-mail-message', { messageId: 'm1', body: { isRead: true } }, verifiable).deny).toBe(false)
+    const rcpt = { messageId: 'm1', body: { toRecipients: [{ emailAddress: { address: 'x@y.hu' } }] } }
+    expect(gateDecision('mcp__ms365__update-mail-message', rcpt, () => false))
+      .toMatchObject({ deny: true, kind: 'unverified-recipient', addresses: ['x@y.hu'] })
+  })
+
+  it('a recipient field twice in different case is ambiguous, not a last-one-wins read (fail-closed)', () => {
+    // The server reads keys in any case: if one spelling were dropped, an unverified address in it would pass.
+    const twice = { body: { toRecipients: [{ emailAddress: { address: 'x@y.hu' } }],
+      ToRecipients: [{ emailAddress: { address: 'z@example.org' } }] } }
+    expect(gateDecision('mcp__ms365__create-draft-email', twice, verifiable))
+      .toMatchObject({ deny: true, kind: 'unparseable-recipient' })
+  })
+
+  it('an underscored name is never a Graph tool: its object body does not move it off the flat check', () => {
+    const flat = { to: 'x@y.hu', body: { a: 1 } }
+    expect(gateDecision('mcp__x__update_mail_message', flat, () => false))
+      .toMatchObject({ deny: true, kind: 'unverified-recipient', addresses: ['x@y.hu'] })
+  })
+
+  it('a stray top-level recipient field is checked too (the server moves it into body)', () => {
+    const stray = { toRecipients: [{ emailAddress: { address: 'x@y.hu' } }], body: { subject: 'Targy' } }
+    expect(gateDecision('mcp__ms365__create-draft-email', stray, () => false))
+      .toMatchObject({ deny: true, kind: 'unverified-recipient', addresses: ['x@y.hu'] })
+  })
+
+  it('a body-less draft with only top-level fields is Graph-shaped and ledger-checked', () => {
+    // SECURITY review on MS365MAIL1024: every field stray at the top is Graph-shaped
+    // too (the server moves them into body), so it cannot skip the address check.
+    const flat = { subject: 'Targy', toRecipients: [{ emailAddress: { address: 'x@y.hu' } }] }
+    expect(gateDecision('mcp__ms365__create-draft-email', flat, () => false))
+      .toMatchObject({ deny: true, kind: 'unverified-recipient', addresses: ['x@y.hu'] })
+    expect(gateDecision('mcp__ms365__create-draft-email', flat, verifiable).deny).toBe(false)
+  })
+
+  it('a stray top-level Message is read too (the server moves it into body)', () => {
+    const strayMsg = { Message: { toRecipients: [{ emailAddress: { address: 'x@y.hu' } }] }, body: { Comment: 'V' } }
+    expect(gateDecision('mcp__ms365__create-reply-draft', strayMsg, () => false))
+      .toMatchObject({ deny: true, kind: 'unverified-recipient', addresses: ['x@y.hu'] })
+  })
+
+  it('a flat to next to the Graph shape is ambiguous, not a Graph-only read (fail-closed)', () => {
+    // One reader would hide the other's addresses, so neither may be trusted.
+    const mixed = { to: 'x@y.hu', body: { subject: 'Targy', toRecipients: [{ emailAddress: { address: 'x@y.hu' } }] } }
+    expect(gateDecision('mcp__ms365__create-draft-email', mixed, verifiable))
+      .toMatchObject({ deny: true, kind: 'unparseable-recipient' })
+  })
+
+  it('an address with a display name around it is not one bare address (fail-closed)', () => {
+    const named = { body: { toRecipients: [{ emailAddress: { address: '"x@y.hu" <z@example.org>' } }] } }
+    expect(gateDecision('mcp__ms365__create-draft-email', named, verifiable))
+      .toMatchObject({ deny: true, kind: 'unparseable-recipient' })
+  })
+
+  // SECURITY review on MS365MAIL1024, round 2: the Graph read is chosen by the
+  // tool NAME, not by the payload's shape. A non-Graph draft tool with an OBJECT
+  // body therefore keeps the flat checks -- an object body must not turn the
+  // flat address check into a Graph read (or a "conflict") it never was.
+  it('a non-Graph draft with an object body keeps the flat ledger check', () => {
+    const d = gateDecision('mcp__x__create_draft', { to: 'x@y.hu', body: { a: 1 } }, () => false)
+    expect(d).toMatchObject({ deny: true, kind: 'unverified-recipient', addresses: ['x@y.hu'] })
+  })
+
+  // ...and a Graph draft whose top-level recipient field is not even a list is
+  // read (and refused) by NAME: no Graph shape is needed to enter the read.
+  it('a Graph draft with a top-level toRecipients that is an object is unparseable', () => {
+    const d = gateDecision('mcp__ms365__create-draft-email', { toRecipients: { a: 1 } }, verifiable)
+    expect(d).toMatchObject({ deny: true, kind: 'unparseable-recipient' })
   })
 })

@@ -85,7 +85,7 @@ def letter_of(tool: str, tool_input: dict):
     if classify_mail_tool(tool) in _SEND_KINDS:
         return collect_email_envelope(tool, tool_input), True
     if _LETTER_TOOL.search(tool):
-        text = collect_mcp_body(tool_input)
+        text = collect_mcp_body(tool_input, tool)
         to, cc, bcc, reason = collect_mcp_recipients(tool_input)
         if not to and tool_input.get("messageId"):
             to = [f"messageId:{tool_input['messageId']}"]
