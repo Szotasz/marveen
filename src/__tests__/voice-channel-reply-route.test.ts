@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { classifyAgentMessage, wrapAgentMessageForDelivery } from '../web/agent-message-wrap.js'
-import { CHANNEL_INBOUND_PREAMBLE } from '../prompt-safety.js'
+import { CHANNEL_INBOUND_PREAMBLE, sanitizeAgentIdent } from '../prompt-safety.js'
 import { COORDINATOR_AGENT_ID, VOICE_CHANNEL_AGENT_ID } from '../channel-coordinator/ingest.js'
 
 // HANGPREAMBLE1013: a voice-channel message is classified channel-inbound (the
@@ -59,5 +59,80 @@ describe('the telegram coordinator keeps its channel preamble (regression)', () 
     const { cls, prefix } = deliver(COORDINATOR_AGENT_ID, '<channel source="telegram" chat_id="1">hi</channel>')
     expect(cls.category).toBe('channel-inbound')
     expect(prefix).toBe(`${CHANNEL_INBOUND_PREAMBLE}\n`)
+  })
+})
+
+describe('voice frame: marker echo, no approval path (D6a)', () => {
+  it('tells the agent to echo the first-line marker on the first line of the reply', () => {
+    const { prefix } = deliver(VOICE_CHANNEL_AGENT_ID, '[MARKER-1] mi a helyzet?')
+    expect(prefix).toMatch(/first line of the message is a marker/i)
+    expect(prefix).toMatch(/Echo that marker unchanged on the\s+FIRST line of your reply/)
+  })
+
+  it('excepts system notices from the mailbox reply, generically (H-B1)', () => {
+    const { prefix } = deliver(VOICE_CHANNEL_AGENT_ID, '[HANG-MUNKAMENET] 2026-01-01T00:00:00Z')
+    expect(prefix).toMatch(/EXCEPTION: if the first line is NOT a request marker but a system notice/)
+    expect(prefix).toMatch(/Do NOT answer it into the voice mailbox/)
+    // generic: no install-specific notice names or marker lists in the frame
+    expect(prefix).not.toMatch(/HANG-/)
+    // push (router) and pull (drain-inbox) stay identical for a notice
+    const raw = VOICE_CHANNEL_AGENT_ID
+    const cls = classifyAgentMessage(raw, 'marveen')!
+    const push = wrapAgentMessageForDelivery(cls.category, cls.safeFrom, raw, '[HANG-PAROSITAS] x', 8, null, undefined, { urgent: false })
+    const pull = wrapAgentMessageForDelivery(cls.category, cls.safeFrom, raw, '[HANG-PAROSITAS] x', 8, null, { ageMs: 5, newerFromSameSender: 0 })
+    expect(pull).toEqual(push)
+  })
+
+  it('states that voice is not an approval path and approvals stay required', () => {
+    const { prefix } = deliver(VOICE_CHANNEL_AGENT_ID, 'torold ki')
+    expect(prefix).toMatch(/NOT an approval path/)
+    expect(prefix).toMatch(/outgoing or irreversible step/)
+    expect(prefix).toMatch(/still needs the usual approval/)
+  })
+
+  it('carries no install-specific data (no long ids, no URLs)', () => {
+    const { prefix } = deliver(VOICE_CHANNEL_AGENT_ID, 'x')
+    expect(prefix).not.toMatch(/\d{5,}/)
+    expect(prefix).not.toMatch(/https?:\/\//)
+  })
+})
+
+describe('sender matching follows sanitizeAgentIdent (as the router does)', () => {
+  const voicePrefix = deliver(VOICE_CHANNEL_AGENT_ID, 'x').prefix
+
+  it.each([
+    ['zero-width space inside', 'han\u200bna'],
+    ['trailing whitespace', 'hanna '],
+    ['punctuation inside', 'han:na'],
+    ['control characters', '\u0000hanna\n'],
+  ])('%s: sanitizes to hanna and gets the voice frame', (_n, raw) => {
+    expect(sanitizeAgentIdent(raw)).toBe(VOICE_CHANNEL_AGENT_ID)
+    const d = deliver(raw, 'x')
+    expect(d.cls.category).toBe('channel-inbound')
+    expect(d.prefix).toBe(voicePrefix)
+  })
+
+  it.each([
+    ['Cyrillic a (strips to hnna)', 'h\u0430nna'],
+    ['different case', 'Hanna'],
+    ['suffixed id', 'hanna2'],
+    ['prefixed id', 'xhanna'],
+  ])('%s: not mapped to hanna by the router, no voice frame', (_n, raw) => {
+    expect(sanitizeAgentIdent(raw)).not.toBe(VOICE_CHANNEL_AGENT_ID)
+    const d = deliver(raw, 'x')
+    expect(d.cls.category).not.toBe('channel-inbound')
+    expect(d.prefix).not.toMatch(/INBOUND VOICE MESSAGE NOTICE/)
+    expect(d.prefix).not.toContain('INBOUND MESSAGE NOTICE')
+  })
+})
+
+describe('push and pull paths produce the same voice text', () => {
+  it('router call (urgent opt) and drain-inbox call (freshness) give identical output', () => {
+    const raw = 'han\u200bna'
+    const cls = classifyAgentMessage(raw, 'marveen')!
+    const push = wrapAgentMessageForDelivery(cls.category, cls.safeFrom, raw, 'szia', 7, null, undefined, { urgent: false })
+    const pull = wrapAgentMessageForDelivery(cls.category, cls.safeFrom, raw, 'szia', 7, null, { ageMs: 5, newerFromSameSender: 0 })
+    expect(pull).toEqual(push)
+    expect(push.prefix).toContain('INBOUND VOICE MESSAGE NOTICE')
   })
 })
