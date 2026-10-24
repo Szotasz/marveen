@@ -316,6 +316,25 @@ describe('sendTeamsMessage (serviceUrl resolution before any request)', () => {
     )
     expect(calls).toEqual([]) // the token is never requested and never sent anywhere
   })
+
+  it('a rejected refs file is not masked by TEAMS_SERVICE_URL: the override is only for a missing reference', async () => {
+    const env = { TEAMS_SERVICE_URL: 'https://smba.trafficmanager.net/teams/' }
+    const foreign = stateDirWithRefs(validRefs('https://evil.example/'))
+    scratch.push(foreign)
+    const f1 = fakeFetch(happyRoutes())
+    await expect(sendTeamsMessage(CREDS, foreign, CONVERSATION, 'hi', { fetch: f1.impl, env })).rejects.toThrow(
+      'Teams API config: the stored serviceUrl is not a Teams service host',
+    )
+    expect(f1.calls).toEqual([])
+
+    const bad = stateDirWithRefs('{"version":2,"refs":[]}')
+    scratch.push(bad)
+    const f2 = fakeFetch(happyRoutes())
+    await expect(sendTeamsMessage(CREDS, bad, CONVERSATION, 'hi', { fetch: f2.impl, env })).rejects.toThrow(
+      'Teams API config: conversation-refs.json has an unexpected format',
+    )
+    expect(f2.calls).toEqual([])
+  })
 })
 
 // -- S8: the secret and the token never leak ----------------------------------
@@ -426,6 +445,35 @@ describe('sendTeamsMessage (secret and token hygiene)', () => {
     expect(err?.message).not.toContain(TOKEN)
     expect(loggedText()).not.toContain(SECRET)
     expect(loggedText()).not.toContain(TOKEN)
+  })
+
+  it('(e) a send error body that echoes the token or the secret is scrubbed', async () => {
+    const dir = stateDirWithRefs()
+    scratch.push(dir)
+    const routes = {
+      ...happyRoutes({ access_token: TOKEN, expires_in: 3600 }),
+      [SEND_URL]: () => jsonResponse(403, { error: { code: 'Forbidden', message: `rejected Bearer ${TOKEN} for ${SECRET}` } }),
+    }
+    const { impl } = fakeFetch(routes)
+    const err = (await sendTeamsMessage(CREDS_LEAK, dir, CONVERSATION, 'hi', { fetch: impl, env: {} }).catch((e: unknown) => e)) as Error
+    expect(err?.message).toMatch(/^Teams API 403: Forbidden rejected Bearer \[redacted\] for \[redacted\]$/)
+    expect(err?.message).not.toContain(TOKEN)
+    expect(err?.message).not.toContain(SECRET)
+  })
+
+  it('(f) a response id that carries the token or the secret is not passed on as the messageId', async () => {
+    for (const echoed of [TOKEN, `x${SECRET}`]) {
+      clearTeamsTokenCache()
+      const dir = stateDirWithRefs()
+      scratch.push(dir)
+      const routes = {
+        ...happyRoutes({ access_token: TOKEN, expires_in: 3600 }),
+        [SEND_URL]: () => jsonResponse(201, { id: echoed }),
+      }
+      const { impl } = fakeFetch(routes)
+      const receipt = await sendTeamsMessage(CREDS_LEAK, dir, CONVERSATION, 'hi', { fetch: impl, env: {} })
+      expect(receipt).toEqual({ status: 201, messageId: undefined })
+    }
   })
 
   it('(d) success: the receipt carries no credential', async () => {

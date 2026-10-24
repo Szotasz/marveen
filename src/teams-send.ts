@@ -28,6 +28,20 @@ const TEAMS_DEFAULT_TIMEOUT_MS = 10_000
 const TEAMS_REFS_FILE = 'conversation-refs.json'
 const TEAMS_REFS_MAX_BYTES = 1_048_576 // 1 MiB: a pairing store, never large
 const TEAMS_TOKEN_SAFETY_S = 300 // refresh this far before expiry
+// The only readTeamsServiceUrl answers that mean "no stored reference": TEAMS_SERVICE_URL may stand in for those.
+// Every other answer (a symlink, another user's file, a foreign host, ...) is a refs file that was REJECTED, and an
+// override must not paper over it.
+const TEAMS_NO_REF_REASONS = new Set([
+  `no ${TEAMS_REFS_FILE} in the Teams state directory`,
+  'no conversation reference for the target conversation',
+])
+
+// A value a response echoed back may carry a credential: every occurrence of the token or the secret is cut out.
+function scrubCredentials(text: string, secrets: readonly string[]): string {
+  let out = text
+  for (const s of secrets) if (s) out = out.split(s).join('[redacted]')
+  return out
+}
 
 /**
  * True only for a Bot Framework service host: https, no userinfo, no explicit
@@ -258,7 +272,7 @@ export async function sendTeamsMessage(
     serviceUrl = ref.url
   } else {
     const override = (deps?.env ?? process.env).TEAMS_SERVICE_URL
-    if (typeof override === 'string' && override !== '') {
+    if (TEAMS_NO_REF_REASONS.has(ref.reason) && typeof override === 'string' && override !== '') {
       if (!isTeamsServiceUrl(override)) {
         throw teamsConfigFail('TEAMS_SERVICE_URL is not a Teams service host')
       }
@@ -308,9 +322,10 @@ export async function sendTeamsMessage(
     const parts: string[] = []
     if (typeof fields?.code === 'string') parts.push(fields.code)
     if (typeof fields?.message === 'string') parts.push(fields.message)
-    const detail = (parts.length > 0 ? parts.join(' ') : 'send failed').slice(0, 200)
+    const detail = scrubCredentials(parts.length > 0 ? parts.join(' ') : 'send failed', [token, creds.secret]).slice(0, 200)
     throw new Error(`Teams API ${res.status}: ${detail}`)
   }
   const id = (body as { id?: unknown } | undefined)?.id
-  return { status: res.status, messageId: typeof id === 'string' ? id : undefined }
+  const clean = typeof id === 'string' && scrubCredentials(id, [token, creds.secret]) === id
+  return { status: res.status, messageId: clean ? (id as string) : undefined }
 }
