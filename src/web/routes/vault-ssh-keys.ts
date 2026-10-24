@@ -146,7 +146,13 @@ export async function tryHandleVaultSshKeys(ctx: RouteContext): Promise<boolean>
         chmodSync(keyPath, 0o600)
         publicKey = (await sshKeygen(['-y', '-f', keyPath])).trim()
       } catch (err: any) {
-        json(res, { error: 'Invalid private key: ' + (err?.stderr?.toString().trim() ?? err?.message ?? String(err)) }, 400)
+        // With the promisified execFile, a missing ssh-keygen rejects with
+        // err.stderr === '' (empty string, not undefined), and '' is not
+        // nullish -- ?? would pick it and the error would name no reason at
+        // all. Only a non-empty stderr wins; then a non-empty message.
+        const stderr = err?.stderr?.toString().trim() ?? ''
+        const reason = stderr || (err?.message ?? '') || String(err)
+        json(res, { error: 'Invalid private key: ' + reason }, 400)
         return true
       } finally {
         rmSync(tmpDir, { recursive: true, force: true })

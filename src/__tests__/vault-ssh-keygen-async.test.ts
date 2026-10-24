@@ -142,6 +142,21 @@ describe('ssh-keygen runs asynchronously', () => {
     expect(stall).toBeLessThan(STALL_MAX_MS)
   })
 
+  it('import route names the cause when ssh-keygen is missing', async () => {
+    const emptyBin = mkdtempSync(join(tmpRoot, 'empty-bin-'))
+    const savedPath = process.env.PATH
+    process.env.PATH = emptyBin
+    try {
+      const result = await importKey('not a key')
+      expect(result.res.statusCode).toBe(400)
+      const err = result.json().error as string
+      expect(err.startsWith('Invalid private key: ')).toBe(true)
+      expect(err).toContain('ENOENT')
+    } finally {
+      process.env.PATH = savedPath
+    }
+  })
+
   it('closes stdin so a stdin-reading ssh-keygen settles', async () => {
     process.env.FAKE_READ_STDIN = '1'
     const outcome = await Promise.race([generateSshKeyPair('s@h'), sleep(5000).then(() => 'timeout' as const)])
