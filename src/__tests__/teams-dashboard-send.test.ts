@@ -317,6 +317,28 @@ describe('sendTeamsMessage (serviceUrl resolution before any request)', () => {
     expect(calls).toEqual([]) // the token is never requested and never sent anywhere
   })
 
+  it('a refs file that cannot be inspected (EACCES) is not "absent": no override, nothing sent', async () => {
+    const denied = () => {
+      throw Object.assign(new Error('permission denied'), { code: 'EACCES' })
+    }
+    expect(readTeamsServiceUrl('/x', CONVERSATION, { lstat: denied as never })).toEqual({
+      reason: 'conversation-refs.json cannot be read',
+    })
+    const absent = () => {
+      throw Object.assign(new Error('no such file'), { code: 'ENOENT' })
+    }
+    expect(readTeamsServiceUrl('/x', CONVERSATION, { lstat: absent as never })).toEqual({
+      reason: 'no conversation-refs.json in the Teams state directory',
+    })
+    const { impl, calls } = fakeFetch(happyRoutes())
+    await expect(sendTeamsMessage(CREDS, '/x', CONVERSATION, 'hi', {
+      fetch: impl,
+      env: { TEAMS_SERVICE_URL: 'https://smba.trafficmanager.net/teams/' },
+      readRefs: (d, c) => readTeamsServiceUrl(d, c, { lstat: denied as never }),
+    })).rejects.toThrow('Teams API config: conversation-refs.json cannot be read')
+    expect(calls).toEqual([])
+  })
+
   it('a rejected refs file is not masked by TEAMS_SERVICE_URL: the override is only for a missing reference', async () => {
     const env = { TEAMS_SERVICE_URL: 'https://smba.trafficmanager.net/teams/' }
     const foreign = stateDirWithRefs(validRefs('https://evil.example/'))
@@ -474,6 +496,14 @@ describe('sendTeamsMessage (secret and token hygiene)', () => {
       const receipt = await sendTeamsMessage(CREDS_LEAK, dir, CONVERSATION, 'hi', { fetch: impl, env: {} })
       expect(receipt).toEqual({ status: 201, messageId: undefined })
     }
+    // A secret that happens to read like the redaction marker is still caught.
+    clearTeamsTokenCache()
+    const dir = stateDirWithRefs()
+    scratch.push(dir)
+    const odd: TeamsCreds = { appId: 'app-1', secret: '[redacted]', tenant: 't-1' }
+    const routes = { ...happyRoutes({ access_token: TOKEN, expires_in: 3600 }), [SEND_URL]: () => jsonResponse(201, { id: 'msg-[redacted]' }) }
+    const { impl } = fakeFetch(routes)
+    expect(await sendTeamsMessage(odd, dir, CONVERSATION, 'hi', { fetch: impl, env: {} })).toEqual({ status: 201, messageId: undefined })
   })
 
   it('(d) success: the receipt carries no credential', async () => {

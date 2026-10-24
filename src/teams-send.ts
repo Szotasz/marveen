@@ -87,8 +87,13 @@ export function readTeamsServiceUrl(
   let st: ReturnType<typeof lstatSync>
   try {
     st = lstat(path)
-  } catch {
-    return { reason: `no ${TEAMS_REFS_FILE} in the Teams state directory` }
+  } catch (err) {
+    // Only a file that is not there is "no reference": a permission or other filesystem error is a refs file that
+    // could not be checked, and TEAMS_SERVICE_URL must not stand in for it.
+    if ((err as { code?: unknown } | null)?.code === 'ENOENT') {
+      return { reason: `no ${TEAMS_REFS_FILE} in the Teams state directory` }
+    }
+    return { reason: `${TEAMS_REFS_FILE} cannot be read` }
   }
   if (st.isSymbolicLink() || !st.isFile()) {
     return { reason: `${TEAMS_REFS_FILE} is not a regular file` }
@@ -326,6 +331,6 @@ export async function sendTeamsMessage(
     throw new Error(`Teams API ${res.status}: ${detail}`)
   }
   const id = (body as { id?: unknown } | undefined)?.id
-  const clean = typeof id === 'string' && scrubCredentials(id, [token, creds.secret]) === id
+  const clean = typeof id === 'string' && !id.includes(token) && !(creds.secret && id.includes(creds.secret))
   return { status: res.status, messageId: clean ? (id as string) : undefined }
 }
