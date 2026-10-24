@@ -185,6 +185,21 @@ describe('background tasks: tmux calls do not block the event loop', () => {
     expect(stall).toBeLessThan(STALL_MAX_MS)
   })
 
+  it('GET /api/background-tasks/:id reports a task finished while the capture was in flight', async () => {
+    // AA000002 is taken by the DELETE test below; rows persist across tests.
+    seedRunning('AA000007', 'agent-get-race', true)
+    put('pane', 'live text\n')
+    put('sleep', '1')
+    const p = call('GET', '/api/background-tasks/AA000007')
+    await vi.waitFor(() => expect(calls()).toContainEqual(expect.stringMatching(/^start capture-pane/)), { timeout: 5000 })
+    db.finishBackgroundTask('AA000007', 'failed', '(cancelled)')
+    const r = await p
+    expect(r.status).toBe(200)
+    expect(r.json.status).toBe('failed')
+    expect(r.json.output).toBe('(cancelled)')
+    expect(r.json.liveOutput).toBeNull()
+  })
+
   it('POST starts the tmux session with the prompt in BG_PROMPT without stalling the loop', async () => {
     put('sleep', String(SLEEP_S))
     let r: { status: number; json: any } | undefined

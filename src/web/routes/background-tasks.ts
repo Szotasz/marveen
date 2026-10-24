@@ -216,15 +216,19 @@ export async function tryHandleBackgroundTasks(ctx: RouteContext): Promise<boole
     if (!task) { json(res, { error: 'Háttérfeladat nem található' }, 404); return true }
 
     let liveOutput: string | null = null
+    let row = task
     if (task.status === 'running' && task.tmux_session) {
       liveOutput = await captureSession(task.tmux_session)
+      // The poller or a DELETE can finish the task while the capture was in
+      // flight; answer with the row as it is NOW, not the stale 'running' one.
+      row = getBackgroundTask(taskMatch[1]) ?? task
     }
 
     json(res, {
-      ...task,
-      liveOutput,
-      started_label: new Date(task.started_at * 1000).toLocaleString('hu-HU', { timeZone: TZ }),
-      finished_label: task.finished_at ? new Date(task.finished_at * 1000).toLocaleString('hu-HU', { timeZone: TZ }) : null,
+      ...row,
+      liveOutput: row.status === 'running' ? liveOutput : null,
+      started_label: new Date(row.started_at * 1000).toLocaleString('hu-HU', { timeZone: TZ }),
+      finished_label: row.finished_at ? new Date(row.finished_at * 1000).toLocaleString('hu-HU', { timeZone: TZ }) : null,
     })
     return true
   }
