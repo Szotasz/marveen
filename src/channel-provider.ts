@@ -519,7 +519,9 @@ export function teamsSecretExpiry(raw: string | undefined, now: number = Date.no
       return { state: daysLeft <= 0 ? 'expired' : daysLeft <= 30 ? 'soon' : 'ok', date: value, daysLeft }
     }
   }
-  return { state: 'invalid', value: value.slice(0, 32) }
+  // Only a value that looks like a mistyped date is echoed into the log and the
+  // Test answer; anything else (a secret pasted into the wrong key) is not.
+  return { state: 'invalid', value: /^[0-9./ -]{1,20}$/.test(value) ? value : `(${value.length} characters, not shown)` }
 }
 
 export const TEAMS_CREDENTIAL_TIMEOUT_MS = 10_000
@@ -566,7 +568,7 @@ export async function checkTeamsCredentials(
   if (res.status === 200 && typeof body?.access_token === 'string' && body.access_token) {
     return { ok: true, botName: 'Microsoft Teams' }
   }
-  if ((res.status !== 400 && res.status !== 401) || body === null || typeof body !== 'object') {
+  if ((res.status !== 400 && res.status !== 401) || body === null || typeof body !== 'object' || Array.isArray(body)) {
     return { ok: false, error: `Teams credentials could not be checked (unexpected Entra answer, HTTP ${res.status})` }
   }
   const code = typeof body.error === 'string' && /^[a-z_]{1,64}$/.test(body.error) ? body.error : 'unknown_error'

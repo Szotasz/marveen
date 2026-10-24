@@ -65,6 +65,8 @@ describe('checkTeamsCredentials', () => {
     expect((await run(200, {}).p).error).toBe(notChecked(200))
     expect((await run(401, 'not json').p).error).toBe(notChecked(401))
     expect((await run(400, 'null').p).error).toBe(notChecked(400))
+    expect((await run(400, []).p).error).toBe(notChecked(400))
+    expect((await run(401, [{ error: 'invalid_client' }]).p).error).toBe(notChecked(401))
   })
   it('fetch throws', async () => {
     const f = (async () => { throw new Error('boom') }) as unknown as typeof fetch
@@ -176,7 +178,10 @@ describe('teamsSecretExpiry', () => {
   const now = Date.UTC(2026, 9, 24, 12)
   it('classifies values', () => {
     for (const v of [undefined, '', '  ']) expect(teamsSecretExpiry(v, now)).toEqual({ state: 'missing' })
-    for (const v of ['2026-13-01', '2026-02-30', '26-10-24', 'tomorrow']) expect(teamsSecretExpiry(v, now)).toEqual({ state: 'invalid', value: v })
+    for (const v of ['2026-13-01', '2026-02-30', '26-10-24', '24.10.2026']) expect(teamsSecretExpiry(v, now)).toEqual({ state: 'invalid', value: v })
+    // Not date-like (a secret pasted into the wrong key): the value is never echoed.
+    expect(teamsSecretExpiry('tomorrow', now)).toEqual({ state: 'invalid', value: '(8 characters, not shown)' })
+    expect(JSON.stringify(teamsSecretExpiry(' Abc~DEF.ghi-1234567890 ', now))).not.toContain('Abc')
     expect(teamsSecretExpiry('2027-10-24', now)).toMatchObject({ state: 'ok', daysLeft: 365 })
     expect(teamsSecretExpiry('2026-11-20', now)).toMatchObject({ state: 'soon', daysLeft: 27 })
     expect(teamsSecretExpiry('2026-10-25', now)).toMatchObject({ state: 'soon', daysLeft: 1 })
