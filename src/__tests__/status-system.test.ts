@@ -324,11 +324,12 @@ describe('Telegram plugin-patch row', () => {
 
   // c67f5f34: without the reply-keyboard patch the staff questions still go out, only without buttons.
   it('the reply-keyboard patch is measured on its own: missing says the questions go out without buttons', () => {
-    server('0.0.8', '// MARVEEN-PATCH(elsokor922-d4): x\n// MARVEEN-PATCH(elsokor922-fwd): y\n// MARVEEN-PATCH(cmd920-evid): z\n// MARVEEN-PATCH(tgsilent): s\n// MARVEEN-PATCH(invis1024): v')
+    // the silent patch shares the send-options anchor, so it is missing with kbd
+    server('0.0.8', '// MARVEEN-PATCH(elsokor922-d4): x\n// MARVEEN-PATCH(elsokor922-fwd): y\n// MARVEEN-PATCH(cmd920-evid): z\n// MARVEEN-PATCH(invis1024): v')
     writeFileSync(state, JSON.stringify({ at: 0, root: join(dir, 'cache'), files: [
-      { version: '0.0.8', status: 'patched', patches: { d4: 'patched', fwd: 'patched', evid: 'patched', silent: 'patched', kbd: 'anchor-missing:reply send options', invis: 'patched' } },
+      { version: '0.0.8', status: 'patched', patches: { d4: 'patched', fwd: 'patched', evid: 'patched', silent: 'anchor-missing:reply send options', kbd: 'anchor-missing:reply send options', invis: 'patched' } },
     ] }))
-    expect(telegramPluginPatchStatus(state)).toBe('HIÁNYZIK (válaszgombok): 0.0.8 (anchor-missing:reply send options) · a kérdések gomb nélkül mennek ki, a válasz betűvel jön')
+    expect(telegramPluginPatchStatus(state)).toBe('HIÁNYZIK (válaszgombok): 0.0.8 (anchor-missing:reply send options) · a kérdések gomb nélkül mennek ki, a válasz betűvel jön; HIÁNYZIK (hangtalan válasz): 0.0.8 (anchor-missing:reply send options) · minden válasz hanggal érkezik, a státuszüzenetek is')
   })
 
   // Without the silent-reply patch every reply still goes out, only with the notification sound.

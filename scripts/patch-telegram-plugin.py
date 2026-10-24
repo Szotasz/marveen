@@ -256,7 +256,7 @@ SIL_SCHEMA = ("reply schema files property", KBD_SCHEMA[1], "insert-after",
     "still arrives and shows up in the chat). Use it for status, progress, done and summary messages that need nothing "
     "from the user right now; leave it off for a question, a decision or anything urgent.' }}, " + SILENT_MARKER + "\n")
 SIL_CHECK = ("reply chat check", KBD_CHECK[1], "insert-after",
-    "{indent}const silentReply = args.silent == null ? false : typeof args.silent === 'boolean' ? args.silent : "
+    "{indent}const silentReply = args.silent === undefined ? false : typeof args.silent === 'boolean' ? args.silent : "
     "(() => {{ throw new Error('silent: true or false') }})() " + SILENT_MARKER + "\n")
 SIL_SEND = ("reply send options", KBD_SEND[1], "insert-after",
     "{indent}...(silentReply ? {{ disable_notification: true as const }} : {{}}), " + SILENT_MARKER + "\n")
