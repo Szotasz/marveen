@@ -5,6 +5,8 @@ import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import { monitorEventLoopDelay } from 'node:perf_hooks'
 import { setTimeout as sleep } from 'node:timers/promises'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 
 // The background-task routes talk to tmux on every poll tick (every 10 s per
 // running task), on every task-detail GET, on DELETE, on spawn and on the
@@ -125,7 +127,19 @@ beforeAll(async () => {
   db = await import('../db.js')
   mod = await import('../web/routes/background-tasks.js')
   db.initDatabase(':memory:')
-})
+  // Warm-up: the fake's first exec can be far slower than the later ones (on a
+  // loaded macOS host 2-3.3 s against 1.55 s warm, #2186), and the first GET or
+  // POST case would spend that inside the route's 5 s tmux timeout. Pay it here,
+  // once, on the path the measured cases take (the sleep included, for 0 s).
+  const warm = mkdtempSync(join(tmpdir(), 'bg-fake-warm-'))
+  try {
+    writeFileSync(join(warm, 'sleep'), '0')
+    writeFileSync(join(warm, 'sessions'), '')
+    await promisify(execFile)(join(bin, 'tmux'), ['list-sessions'], { env: { ...process.env, FAKE_TMUX_DIR: warm } })
+  } finally {
+    rmSync(warm, { recursive: true, force: true })
+  }
+}, 30_000) // a loaded host hit the default 10 s here even without the warm-up
 
 afterAll(() => {
   process.env.PATH = savedPath

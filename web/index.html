@@ -330,6 +330,10 @@
         <button class="view-btn" id="kanbanViewArchived" style="width:auto;padding:0 12px;margin-left:12px;" data-i18n="kanban.view.archived">Archiváltak</button>
       </div>
 
+      <!-- The owner's own queue: what is waiting on the person, not on an agent.
+           Rendered by renderKanbanOwnerStrip(); hidden when there is nothing. -->
+      <div id="kanbanOwnerStrip" class="kanban-owner-strip" hidden></div>
+
       <!-- Board-specific filter row (hidden when gantt active) -->
       <div id="kanbanBoardFilters" style="margin-bottom:12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
         <label for="kanbanSearch" style="font-size:13px;color:var(--muted);white-space:nowrap;" data-i18n="kanban.filter.search_label">Keresés:</label>
@@ -2236,6 +2240,12 @@
         <div class="card-detail-test-steps" id="cardDetailTestSteps" hidden>
           <h4 data-i18n="kanban.test_steps.title">Tesztelési lépések</h4>
           <pre class="card-detail-test-steps-body" id="cardDetailTestStepsBody"></pre>
+        </div>
+        <!-- Card ee8638e0 (#566): what the closing agent said it checked.
+             Hidden while the card has no evidence. -->
+        <div class="card-detail-test-steps card-detail-evidence" id="cardDetailEvidence" hidden>
+          <h4 data-i18n="kanban.evidence.title">Indoklás</h4>
+          <pre class="card-detail-test-steps-body" id="cardDetailEvidenceBody"></pre>
         </div>
         <div class="card-detail-labels">
           <h4 data-i18n="kanban.modal.labels_title">Címkék</h4>

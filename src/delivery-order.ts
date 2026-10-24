@@ -25,19 +25,26 @@
 // it ranks 3 here; the router's busy-pane path treats it as a STOP all the same. An urgent row never
 // spends the per-pair high budget (the route stores it with priority 0, and countHighForPairSince
 // skips urgent rows).
-import { OWNER_NAME } from './config.js'
+import { OWNER_NAME, VOICE_CHANNEL_ID } from './config.js'
 
-// The channel coordinator's and the voice channel's sender ids. Kept as literals here (not
-// imported from channel-coordinator/ingest.ts, which opens its own DB handle) and pinned equal to
-// those constants by message-priority.test.ts.
+// The channel coordinator's and the voice channel's sender ids. Not imported from
+// channel-coordinator/ingest.ts, which opens its own DB handle: the coordinator id is a literal,
+// and the voice channel id comes from config.ts (configurable, VOICECHANNELID1022), where ingest.ts
+// reads it too; null when the voice lane is off. It is read at CALL time, like OWNER_NAME below:
+// db.ts imports this module, and the many tests that mock config.js without the voice id must
+// still load db.ts. message-priority.test.ts pins both equal to the ingest.ts constants.
 export const COORDINATOR_SENDER_ID = 'telegram-coordinator'
-export const VOICE_CHANNEL_SENDER_ID = 'hanna'
+export function voiceChannelSenderId(): string | null {
+  return VOICE_CHANNEL_ID
+}
 
 /** The stored from_agent ids whose rows rank above a peer high whatever their stored priority: the
  *  in-process 'system' writer and the owner's own channels. Exact match on the stored id. */
 export function rankedSenders(): readonly string[] {
   const owner = (OWNER_NAME ?? '').trim()
-  return [...new Set(['system', COORDINATOR_SENDER_ID, VOICE_CHANNEL_SENDER_ID, ...(owner ? [owner] : [])])]
+  const voiceId = voiceChannelSenderId()
+  const voice = voiceId === null ? [] : [voiceId]
+  return [...new Set(['system', COORDINATOR_SENDER_ID, ...voice, ...(owner ? [owner] : [])])]
 }
 
 export interface DeliveryOrderKey {

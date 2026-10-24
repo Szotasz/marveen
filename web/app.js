@@ -1281,12 +1281,153 @@ function renderKanbanOngoing(cards) {
   }
 }
 
+// The owner's own queue, above the board and OUTSIDE every filter.
+//
+// Why it ignores the filters: this answers "what is the process waiting on me
+// for", which is a question about the person, not about the current view. A
+// queue that an unrelated project filter can silently empty would be worse
+// than no queue, because an empty strip reads as "nothing to do".
+//
+// Order: priority first (urgent > high > normal > low), then card number, so
+// the oldest card wins inside a priority. Done cards never appear.
+//
+// Two ways onto the strip: the owner's own cards, and any agent's card carrying
+// the "Rád vár" ("waiting on you") label -- the agent keeps the work, the owner
+// owes it a decision. Assignment alone missed most of that queue, because an
+// agent that needs an answer keeps its card. A card that is both appears once
+// (one filter pass over kanbanCards).
+//
+// The label is matched by name, not by id, so a re-created label (new id,
+// same name) still counts. Accents and case are folded because the label
+// editor accepts free text.
+const KANBAN_OWNER_QUEUE_LABEL = 'Rád vár'
+
+function kanbanNormalizeLabelName(s) {
+  return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').trim().toLowerCase()
+}
+
+function kanbanIsOnOwnerStrip(card, owner) {
+  if (card.status === 'done') return false
+  if (String(card.assignee || '').trim().toLowerCase() === owner.toLowerCase()) return true
+  const want = kanbanNormalizeLabelName(KANBAN_OWNER_QUEUE_LABEL)
+  return (card.labels || []).some((l) => kanbanNormalizeLabelName(l && l.name) === want)
+}
+
+function renderKanbanOwnerStrip() {
+  const el = document.getElementById('kanbanOwnerStrip')
+  if (!el) return
+  const owner = ownerAssigneeName()
+  if (!owner) { el.hidden = true; return }
+  const mine = kanbanCards
+    .filter((c) => kanbanIsOnOwnerStrip(c, owner))
+    .sort((a, b) => {
+      const pa = KANBAN_PRIORITY_ORDER.indexOf(a.priority || 'normal')
+      const pb = KANBAN_PRIORITY_ORDER.indexOf(b.priority || 'normal')
+      if (pa !== pb) return pa - pb
+      return (a.seq ?? Infinity) - (b.seq ?? Infinity)
+    })
+  if (mine.length === 0) { el.hidden = true; return }
+  el.hidden = false
+
+  const collapsed = localStorage.getItem('marveen.kanbanOwnerStripCollapsed') === '1'
+  el.classList.toggle('collapsed', collapsed)
+  el.innerHTML = ''
+
+  const head = document.createElement('div')
+  head.className = 'kanban-owner-strip-head'
+  // The owner's portrait belongs here, because this strip is the ONLY place
+  // the owner's open cards are drawn (see kanbanHideFromLanes).
+  const face = document.createElement('span')
+  face.className = 'kanban-team-avatar owner kanban-owner-strip-avatar'
+  face.textContent = (owner[0] || '?').toUpperCase()
+  kanbanDecorateAvatar(face, owner)
+  const label = document.createElement('span')
+  label.textContent = t('kanban.owner_strip.title')
+  // The owner's nickname goes here too: this strip replaces the owner's lane,
+  // and the lane header is the other place a nickname is drawn.
+  const ownerNick = kanbanSwimlaneMeta(owner).nickname
+  const nick = document.createElement('span')
+  nick.className = 'kanban-nickname'
+  if (ownerNick) nick.textContent = ownerNick
+  const count = document.createElement('span')
+  count.className = 'kanban-owner-strip-count'
+  count.textContent = mine.length
+  const toggle = document.createElement('span')
+  toggle.className = 'kanban-owner-strip-toggle'
+  toggle.textContent = collapsed ? t('kanban.owner_strip.show') : t('kanban.owner_strip.hide')
+  head.append(face, label, nick, count, toggle)
+  head.addEventListener('click', () => {
+    const now = !el.classList.contains('collapsed')
+    localStorage.setItem('marveen.kanbanOwnerStripCollapsed', now ? '1' : '0')
+    renderKanbanOwnerStrip()
+  })
+  el.appendChild(head)
+
+  // Three tiers, urgent on top, each with its own colour: one chip row in
+  // priority order still made the owner read every dot to find what was
+  // urgent. The tier comes from the priority field: urgent+high = urgent,
+  // normal = when I have time, low = can wait.
+  const groups = document.createElement('div')
+  groups.className = 'kanban-owner-strip-groups'
+  const tierOf = (c) => (c.priority === 'urgent' || c.priority === 'high') ? 'urgent' : (c.priority === 'low' ? 'parked' : 'later')
+  for (const tier of ['urgent', 'later', 'parked']) {
+    const cards = mine.filter((c) => tierOf(c) === tier)
+    if (cards.length === 0) continue
+    const group = document.createElement('div')
+    group.className = 'kanban-owner-strip-group tier-' + tier
+    const gh = document.createElement('div')
+    gh.className = 'kanban-owner-strip-group-head'
+    gh.textContent = t('kanban.owner_strip.tier_' + tier) + ' · ' + cards.length
+    const items = document.createElement('div')
+    items.className = 'kanban-owner-strip-items'
+    group.append(gh, items)
+    groups.appendChild(group)
+    for (const card of cards) {
+      const chip = document.createElement('div')
+      chip.className = 'kanban-owner-strip-item'
+      chip.title = card.title
+      const dot = document.createElement('span')
+      dot.className = 'dot ' + (card.priority || 'normal')
+      const seq = document.createElement('span')
+      seq.className = 'seq'
+      seq.textContent = card.seq != null ? '#' + card.seq : ''
+      const title = document.createElement('span')
+      title.className = 'title'
+      title.textContent = card.title
+      chip.append(dot, seq, title)
+      // A labelled card stays with its agent; the chip says whose it is, so the
+      // owner knows who is waiting on the answer. Their own cards carry no marker.
+      const raw = String(card.assignee || '').trim()
+      if (raw && raw.toLowerCase() !== owner.toLowerCase()) {
+        const m = kanbanAssignees.find((a) => a.name.toLowerCase() === raw.toLowerCase())
+        const name = m ? (m.displayName || m.name) : raw
+        const who = document.createElement('span')
+        who.className = 'who'
+        const av = document.createElement('span')
+        av.className = 'kanban-team-avatar kanban-owner-strip-who-avatar ' + (m ? m.type : 'unknown')
+        av.textContent = (name[0] || '?').toUpperCase()
+        if (m) kanbanDecorateAvatar(av, m.name)
+        const nm = document.createElement('span')
+        nm.className = 'who-name'
+        nm.textContent = name
+        who.append(av, nm)
+        chip.appendChild(who)
+        chip.title = card.title + ' (' + name + ')'
+      }
+      chip.addEventListener('click', () => showCardDetail(card))
+      items.appendChild(chip)
+    }
+  }
+  el.appendChild(groups)
+}
+
 function renderKanban() {
   const cardById = new Map(kanbanCards.map(c => [c.id, c]))
 
   renderKanbanColumnChips()
   renderKanbanQuickFilters()
   renderKanbanSearchHint()
+  renderKanbanOwnerStrip()
 
   // Determine which top-level cards are visible under current filters.
   const visibleCardIds = new Set()
@@ -1407,7 +1548,82 @@ function kanbanSwimlaneMeta(key) {
   if (key === '__unassigned__') return { label: t('kanban.unassigned'), avatarClass: 'unknown', avatarChar: '?' }
   const match = kanbanAssignees.find(a => a.name === key)
   const label = match ? (match.displayName || match.name) : key
-  return { label, avatarClass: match ? match.type : 'unknown', avatarChar: (label[0] || '?').toUpperCase() }
+  return {
+    label,
+    // The character name behind the portrait, from store/team-nicknames.json.
+    // Empty when nobody set one, and the lane then shows the plain name.
+    nickname: (match && match.nickname) ? match.nickname : '',
+    avatarClass: match ? match.type : 'unknown',
+    avatarChar: (label[0] || '?').toUpperCase(),
+  }
+}
+
+// === Character portraits on the board ===
+//
+// Each lane head (and the owner strip) shows the person's portrait over the
+// coloured circle with the first letter of the name.
+//
+// The image is served by the SAME endpoints the agents page already uses, so no
+// new storage and no new upload path: agents/<name>/avatar.png for an agent,
+// store/marveen-avatar.png for the bot, store/owner-avatar.png for the owner.
+//
+// Why an <img> laid OVER the letter instead of asking first whether a picture
+// exists: the board would otherwise need a per-assignee "hasAvatar" round trip
+// before it could draw a single lane. The letter is rendered first and the image
+// covers it; if the file is missing the request 404s, the <img> removes itself,
+// and the letter is already underneath. One less thing that can be stale, and a
+// half-populated set of portraits degrades one lane at a time instead of all.
+function kanbanAvatarUrlFor(key) {
+  if (kanbanGroupBy === 'priority') return null
+  if (!key || key === '__unassigned__') return null
+  const m = kanbanAssignees.find(a => a.name === key)
+  if (!m) return null
+  if (m.type === 'owner') return '/api/marveen/owner-avatar' + avatarBust()
+  if (m.type === 'bot') return '/api/marveen/avatar' + avatarBust()
+  if (m.type === 'agent') return `/api/agents/${encodeURIComponent(m.name)}/avatar` + avatarBust()
+  return null
+}
+
+function kanbanDecorateAvatar(spanEl, key) {
+  if (!spanEl) return
+  const url = kanbanAvatarUrlFor(key)
+  if (!url) return
+  const img = document.createElement('img')
+  img.className = 'kanban-avatar-img'
+  img.alt = ''
+  img.addEventListener('error', () => img.remove())
+  img.src = url
+  spanEl.appendChild(img)
+}
+
+// The owner's cards live in the strip above the board, OUTSIDE every filter
+// (see renderKanbanOwnerStrip). Drawing them in a swimlane as well would show
+// the same card twice. The strip wins: it is always visible and no filter can
+// empty it.
+//
+// Only the owner's OPEN cards are dropped, not the lane itself. The strip
+// deliberately omits done cards, so if one is closed and still on the board,
+// the lane reappears carrying exactly what the strip does not show. Nothing can
+// fall between the two.
+//
+// The "Rád vár" label does NOT hide a card here, on purpose: a labelled agent
+// card shows in the strip AND in its agent's lane, because the lane is where
+// that agent's whole queue is read. Only the owner's cards live in one place.
+//
+// Only when the lanes ARE people (group by assignee). Grouped by priority, a
+// lane is a priority, not the owner's lane: hiding there would drop the
+// owner's most urgent card from the one view built to rank urgency (review of
+// #1860). Whether a card is the owner's open card at all is kanbanIsOwnerOpen,
+// for views that are about people whatever the board grouping.
+function kanbanIsOwnerOpen(card) {
+  if (card.status === 'done') return false
+  const owner = ownerAssigneeName()
+  if (!owner) return false
+  return String(card.assignee || '').trim().toLowerCase() === owner.toLowerCase()
+}
+
+function kanbanHideFromLanes(card) {
+  return kanbanGroupBy === 'assignee' && kanbanIsOwnerOpen(card)
 }
 
 function renderSwimlaneBoard(grouped, embeddedSubtaskIds) {
@@ -1416,7 +1632,10 @@ function renderSwimlaneBoard(grouped, embeddedSubtaskIds) {
 
   const presentKeys = new Set()
   for (const cards of Object.values(grouped)) {
-    for (const c of cards) presentKeys.add(kanbanSwimlaneKeyFor(c))
+    for (const c of cards) {
+      if (kanbanHideFromLanes(c)) continue
+      presentKeys.add(kanbanSwimlaneKeyFor(c))
+    }
   }
 
   const canonicalOrder = kanbanGroupBy === 'priority'
@@ -1435,7 +1654,7 @@ function renderSwimlaneBoard(grouped, embeddedSubtaskIds) {
     const laneCardsByStatus = {}
     let totalCount = 0
     for (const def of KANBAN_STATUS_DEFS) {
-      const cards = grouped[def.status].filter(c => kanbanSwimlaneKeyFor(c) === key)
+      const cards = grouped[def.status].filter(c => !kanbanHideFromLanes(c) && kanbanSwimlaneKeyFor(c) === key)
       laneCardsByStatus[def.status] = cards
       if (!kanbanHiddenColumns.has(def.status)) totalCount += cards.length
     }
@@ -1450,9 +1669,11 @@ function renderSwimlaneBoard(grouped, embeddedSubtaskIds) {
     header.innerHTML = `
       <span class="kanban-swimlane-avatar ${meta.avatarClass}">${escapeHtml(meta.avatarChar)}</span>
       <span class="kanban-swimlane-name">${escapeHtml(meta.label)}</span>
+      ${meta.nickname ? `<span class="kanban-nickname">${escapeHtml(meta.nickname)}</span>` : ''}
       <span class="kanban-swimlane-count">${totalCount}</span>
       <button class="kanban-swimlane-toggle" type="button" aria-expanded="${!collapsed}" title="${collapsed ? t('kanban.swimlane.expand') : t('kanban.swimlane.collapse')}">${collapsed ? '▶' : '▼'}</button>
     `
+    kanbanDecorateAvatar(header.querySelector('.kanban-swimlane-avatar'), key)
     header.querySelector('.kanban-swimlane-toggle').addEventListener('click', (e) => {
       e.stopPropagation()
       if (kanbanCollapsedLanes.has(key)) kanbanCollapsedLanes.delete(key)
@@ -1645,8 +1866,13 @@ function createCardEl(card, embeddedChildren = []) {
   // Display the persona displayName (falling back to the id) per #216, while
   // keeping the robust match above and the raw-name fallback chip below.
   const assigneeLabel = assignee ? (assignee.displayName || assignee.name) : ''
+  // The nickname rides along with the name here too. It matters most on the
+  // FLAT board: with no swimlanes there are no lane headers, so this chip is
+  // the only place a person is named at all.
+  const assigneeNick = (assignee && assignee.nickname)
+    ? `<span class="kanban-nickname">${escapeHtml(assignee.nickname)}</span>` : ''
   const assigneeHtml = assignee
-    ? `<span class="kanban-card-assignee"><span class="assignee-dot ${assignee.type}">${escapeHtml(assigneeLabel[0])}</span>${escapeHtml(assigneeLabel)}</span>`
+    ? `<span class="kanban-card-assignee"><span class="assignee-dot ${assignee.type}">${escapeHtml(assigneeLabel[0])}</span>${escapeHtml(assigneeLabel)}${assigneeNick}</span>`
     : rawAssignee
       ? `<span class="kanban-card-assignee"><span class="assignee-dot unknown">${escapeHtml(rawAssignee[0])}</span>${escapeHtml(rawAssignee)}</span>`
       : ''
@@ -1740,10 +1966,17 @@ function createCardEl(card, embeddedChildren = []) {
     embeddedHtml = `<div class="kanban-embedded-subtasks">${items}</div>`
   }
 
+  // Evidence on done: what the closing agent said it checked. Shown only on
+  // done cards that carry it; the full text is in the tooltip and the detail.
+  const evidence = card.status === 'done' && typeof card.done_evidence === 'string' ? card.done_evidence.trim() : ''
+  const evidenceHtml = evidence
+    ? `<span class="kanban-card-evidence" title="${escapeAttr(t('kanban.evidence.tooltip', { text: evidence }))}">${escapeHtml(t('kanban.evidence.badge'))}</span>`
+    : ''
+
   el.innerHTML = `
     ${projectHtml}
     <div class="kanban-card-title">${seqHtml}${escapeHtml(card.title)}</div>
-    <div class="kanban-card-footer">${assigneeHtml}${kanbanAgentLiveBadge(card)}${dueHtml}${blockedHtml}</div>
+    <div class="kanban-card-footer">${assigneeHtml}${kanbanAgentLiveBadge(card)}${dueHtml}${blockedHtml}${evidenceHtml}</div>
     ${labelsHtml}
     <div class="kanban-card-actions">
       <button class="card-breakdown-btn" title="${t('kanban.btn.breakdown')}" aria-label="${t('kanban.btn.breakdown')}">⚡</button>
@@ -2618,6 +2851,12 @@ async function showCardDetail(card) {
   testStepsBody.textContent = steps
   testStepsBox.hidden = !steps
   testStepsBox.classList.toggle('is-testing', !!steps && card.status === 'testing')
+  const evidenceBox = document.getElementById('cardDetailEvidence')
+  if (evidenceBox) {
+    const ev = typeof card.done_evidence === 'string' ? card.done_evidence.trim() : ''
+    document.getElementById('cardDetailEvidenceBody').textContent = ev
+    evidenceBox.hidden = !ev
+  }
 
   renderCardLabelsSection(card)
   renderCardBlockersSection(card)
@@ -3947,7 +4186,7 @@ function renderAgents() {
       <div class="agent-card-top">
         <div class="agent-avatar gradient-1"><img src="/api/marveen/avatar${avatarBust()}" alt="${escapeHtml(displayName)}"></div>
         <div class="agent-card-info">
-          <div class="agent-name">${escapeHtml(displayName)} <span class="marveen-badge">${t('agents.main_badge')}</span></div>
+          <div class="agent-name">${escapeHtml(displayName)}${m.nickname ? ` <span class="agent-nickname">${escapeHtml(m.nickname)}</span>` : ''} <span class="marveen-badge">${t('agents.main_badge')}</span></div>
           <div class="agent-desc">${escapeHtml(m.description || '')}</div>
         </div>
       </div>
@@ -4010,7 +4249,7 @@ function renderAgents() {
       <div class="agent-card-top">
         <div class="agent-avatar ${gradientClass}">${avatarHtml}</div>
         <div class="agent-card-info">
-          <div class="agent-name">${escapeHtml(label)}</div>
+          <div class="agent-name">${escapeHtml(label)}${agent.nickname ? ` <span class="agent-nickname">${escapeHtml(agent.nickname)}</span>` : ''}</div>
           <div class="agent-desc">${escapeHtml(agent.description || '')}</div>
         </div>
       </div>
@@ -4318,7 +4557,13 @@ async function openAgentDetail(agentName) {
   // Delete button (restore visibility for normal agents)
   document.getElementById('deleteAgentBtn').style.display = ''
   document.getElementById('deleteAgentBtn').onclick = async () => {
-    if (!confirm(t('agents.confirm.delete', { name: currentAgent.name }))) return
+    const confirmed = await confirmDialog({
+      title: t('agents.confirm.delete_title'),
+      message: t('agents.confirm.delete', { name: currentAgent.name }),
+      okLabel: t('agents.confirm.delete_ok'),
+      danger: true,
+    })
+    if (!confirmed) return
     try {
       await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}`, { method: 'DELETE' })
       closeModal(agentDetailOverlay)
@@ -4610,7 +4855,13 @@ function postMarveenRestart(force) {
 }
 
 document.getElementById('marveenRestartBtn').addEventListener('click', async () => {
-  if (!confirm(t('agents.confirm.hard_restart'))) return
+  const confirmed = await confirmDialog({
+    title: t('agents.confirm.hard_restart_title'),
+    message: t('agents.confirm.hard_restart'),
+    okLabel: t('agents.confirm.hard_restart_ok'),
+    danger: true,
+  })
+  if (!confirmed) return
   const btn = document.getElementById('marveenRestartBtn')
   btn.disabled = true
   try {
@@ -4619,7 +4870,13 @@ document.getElementById('marveenRestartBtn').addEventListener('click', async () 
       const blocked = await res.clone().json().catch(() => ({}))
       if (blocked.error === 'restart-blocked') {
         const key = blocked.reason === 'busy' ? 'agents.confirm.force_restart_busy' : 'agents.confirm.force_restart_unreadable'
-        if (!confirm(t(key))) { showToast(t('agents.toast.restart_not_forced')); return }
+        const forced = await confirmDialog({
+          title: t('agents.confirm.hard_restart_title'),
+          message: t(key),
+          okLabel: t('agents.confirm.force_restart_ok'),
+          danger: true,
+        })
+        if (!forced) { showToast(t('agents.toast.restart_not_forced')); return }
         res = await postMarveenRestart(true)
       }
     }
@@ -4667,7 +4924,13 @@ document.getElementById('agentStartBtn').addEventListener('click', async () => {
 
 document.getElementById('agentStopBtn').addEventListener('click', async () => {
   if (!currentAgent) return
-  if (!confirm(t('agents.confirm.stop'))) return
+  const confirmed = await confirmDialog({
+    title: t('agents.confirm.stop_title'),
+    message: t('agents.confirm.stop'),
+    okLabel: t('agents.confirm.stop_ok'),
+    danger: true,
+  })
+  if (!confirmed) return
 
   try {
     const res = await fetch(`/api/agents/${encodeURIComponent(currentAgent.name)}/stop`, { method: 'POST' })
@@ -5994,7 +6257,15 @@ document.getElementById('chTestBtn').addEventListener('click', async () => {
         + (missing.includes('im:read') ? ' ' + t('channel.toast.missing_scopes_imread') : '')
       showToast(msg, 12000)
     } else {
-      showToast('Kapcsolat rendben!')
+      const exp = data.secretExpiry
+      const suffix = !exp ? ''
+        : exp.state === 'missing' ? ' ' + t('channel.toast.teams_secret_expiry_missing')
+        : exp.state === 'invalid' ? ' ' + t('channel.toast.teams_secret_expiry_invalid')
+        : exp.state === 'ok' ? ' ' + t('channel.toast.teams_secret_expiry_ok', { date: exp.date, days: exp.daysLeft })
+        : exp.state === 'soon' ? ' ' + t('channel.toast.teams_secret_expiry_soon', { date: exp.date, days: exp.daysLeft })
+        : exp.state === 'expired' ? ' ' + t('channel.toast.teams_secret_expiry_expired', { date: exp.date })
+        : ''
+      showToast('Kapcsolat rendben!' + suffix, suffix ? 8000 : undefined)
     }
   } catch {
     showToast(t('channel.toast.smoke_failed'))
@@ -16758,6 +17029,15 @@ function openAddProviderModal(container, editProvider = null) {
   })
 }
 
+// t() answers a missing key with the key itself, which is truthy, so a plain
+// `t(...) || def.description` never fell back and the row showed the raw
+// settings.desc.<KEY> (#2228). Compare with the key instead.
+function settingDescription(def) {
+  const key = 'settings.desc.' + def.key
+  const text = t(key)
+  return text === key ? (def.description || '') : text
+}
+
 function buildSettingRow(def) {
   const row = document.createElement('div')
   row.className = 'settings-row'
@@ -16778,7 +17058,7 @@ function buildSettingRow(def) {
 
   const desc = document.createElement('div')
   desc.className = 'settings-row-desc'
-  desc.textContent = t('settings.desc.' + def.key) || def.description
+  desc.textContent = settingDescription(def)
   info.appendChild(desc)
 
   const meta = document.createElement('div')
@@ -16953,16 +17233,15 @@ function formatSettingValue(value) {
   return value === '' ? t('settings.value.empty') : value
 }
 
-// The confirmation for a reset, per row and per tab, in the app's own modal
-// (the native confirm() carries the host name as its title and cannot show a
-// list as a list). An override is often a deliberate choice, and removing one
-// can switch a safety setting back (notifications on again, isolation off), so
-// the dialog shows for every key what the value is now, what it becomes and
-// where that comes from -- the owner approves a change, not a list of names.
-// Resolves true only on the explicit confirm button; Escape, the close button,
-// the backdrop and Cancel all resolve false, and Cancel has the focus, so
-// Enter on a freshly opened dialog changes nothing.
-function confirmSettingsReset(items) {
+// The app's own confirmation dialog, in place of the native confirm(): that one
+// carries the host name as its title, cannot show a list as a list, and looks
+// the same for "stop" as for "delete". Resolves true only on the explicit
+// confirm button; Escape, the close button, the backdrop and Cancel all resolve
+// false, and Cancel has the focus, so Enter on a freshly opened dialog changes
+// nothing. `danger` styles the confirm button for an action that cannot be
+// undone or cuts running work. Every text goes in through textContent; extra
+// markup (`content`) is built by the caller from elements, never from HTML.
+function confirmDialog({ title, message, okLabel, danger = false, content = null, wide = false, bodyClass = '' }) {
   return new Promise((resolve) => {
     const overlay = document.createElement('div')
     overlay.className = 'modal-overlay active'
@@ -16970,53 +17249,36 @@ function confirmSettingsReset(items) {
     overlay.setAttribute('aria-modal', 'true')
 
     const modal = document.createElement('div')
-    modal.className = 'modal modal-wide'
+    modal.className = wide ? 'modal modal-wide' : 'modal'
 
     const header = document.createElement('div')
     header.className = 'modal-header'
-    const title = document.createElement('h2')
-    title.textContent = t('settings.confirm.reset_tab_title')
+    const titleEl = document.createElement('h2')
+    titleEl.textContent = title
     const closeBtn = document.createElement('button')
     closeBtn.type = 'button'
     closeBtn.className = 'modal-close'
     closeBtn.textContent = '\u00d7'
-    header.append(title, closeBtn)
+    header.append(titleEl, closeBtn)
 
     const body = document.createElement('div')
-    body.className = 'modal-body settings-reset-confirm'
-    const message = document.createElement('p')
-    message.textContent = t('settings.confirm.reset_tab')
-    const list = document.createElement('ul')
-    list.className = 'settings-reset-confirm-keys'
-    for (const item of items) {
-      const li = document.createElement('li')
-      const key = document.createElement('span')
-      key.className = 'settings-reset-confirm-key'
-      key.textContent = item.key
-      const change = document.createElement('span')
-      change.className = 'settings-reset-confirm-change'
-      change.textContent = formatSettingValue(item.from) + ' \u2192 ' + formatSettingValue(item.to) + ' (' + item.source + ')'
-      li.append(key, change)
-      if (item.requiresRestart) {
-        const restart = document.createElement('span')
-        restart.className = 'settings-restart-badge'
-        restart.textContent = t('settings.restart_badge')
-        li.appendChild(restart)
-      }
-      list.appendChild(li)
-    }
+    body.className = 'modal-body confirm-dialog' + (bodyClass ? ' ' + bodyClass : '')
+    const messageEl = document.createElement('p')
+    messageEl.textContent = message
+    body.appendChild(messageEl)
+    if (content) body.appendChild(content)
     const actions = document.createElement('div')
-    actions.className = 'settings-reset-confirm-actions'
+    actions.className = 'confirm-dialog-actions'
     const cancelBtn = document.createElement('button')
     cancelBtn.type = 'button'
     cancelBtn.className = 'btn-secondary'
     cancelBtn.textContent = t('common.cancel')
     const okBtn = document.createElement('button')
     okBtn.type = 'button'
-    okBtn.className = 'btn-primary'
-    okBtn.textContent = t('settings.confirm.reset_tab_ok')
+    okBtn.className = danger ? 'btn-danger' : 'btn-primary'
+    okBtn.textContent = okLabel
     actions.append(cancelBtn, okBtn)
-    body.append(message, list, actions)
+    body.appendChild(actions)
 
     modal.append(header, body)
     overlay.appendChild(modal)
@@ -17035,6 +17297,41 @@ function confirmSettingsReset(items) {
 
     document.body.appendChild(overlay)
     cancelBtn.focus()
+  })
+}
+
+// The confirmation for a reset, per row and per tab. An override is often a
+// deliberate choice, and removing one can switch a safety setting back
+// (notifications on again, isolation off), so the dialog shows for every key
+// what the value is now, what it becomes and where that comes from -- the owner
+// approves a change, not a list of names.
+function confirmSettingsReset(items) {
+  const list = document.createElement('ul')
+  list.className = 'settings-reset-confirm-keys'
+  for (const item of items) {
+    const li = document.createElement('li')
+    const key = document.createElement('span')
+    key.className = 'settings-reset-confirm-key'
+    key.textContent = item.key
+    const change = document.createElement('span')
+    change.className = 'settings-reset-confirm-change'
+    change.textContent = formatSettingValue(item.from) + ' \u2192 ' + formatSettingValue(item.to) + ' (' + item.source + ')'
+    li.append(key, change)
+    if (item.requiresRestart) {
+      const restart = document.createElement('span')
+      restart.className = 'settings-restart-badge'
+      restart.textContent = t('settings.restart_badge')
+      li.appendChild(restart)
+    }
+    list.appendChild(li)
+  }
+  return confirmDialog({
+    title: t('settings.confirm.reset_tab_title'),
+    message: t('settings.confirm.reset_tab'),
+    okLabel: t('settings.confirm.reset_tab_ok'),
+    content: list,
+    wide: true,
+    bodyClass: 'settings-reset-confirm',
   })
 }
 

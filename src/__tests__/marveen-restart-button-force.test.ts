@@ -7,6 +7,8 @@
  * - the second confirm declined: no forced POST, a toast that says nothing was started;
  * - another 409 or a 500 is an error toast, never a force;
  * - the first confirm declined: no request at all.
+ * Both confirmations go through the app's own confirmDialog, with a danger button; the native confirm()
+ * is not called at all (it is injected as a function that fails the test).
  */
 import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
@@ -33,13 +35,19 @@ async function click(replies: Reply[], confirms: boolean[]) {
     const res = { status: r.status, ok: r.status >= 200 && r.status < 300, json: async () => r.body, clone: () => res }
     return res
   }
-  const confirm = (msg: string) => { asked.push(msg); return confirms.shift() ?? false }
+  const dialogs: { title: string; okLabel: string; danger?: boolean }[] = []
+  const confirmDialog = async (o: { title: string; message: string; okLabel: string; danger?: boolean }) => {
+    asked.push(o.message)
+    dialogs.push({ title: o.title, okLabel: o.okLabel, danger: o.danger })
+    return confirms.shift() ?? false
+  }
+  const confirm = () => { throw new Error('native confirm() called') }
   const t = (k: string) => k
   const showToast = (m: string) => { toasts.push(m) }
-  new Function('document', 'fetch', 'confirm', 't', 'showToast', SNIPPET)(document, fetch, confirm, t, showToast)
+  new Function('document', 'fetch', 'confirm', 'confirmDialog', 't', 'showToast', SNIPPET)(document, fetch, confirm, confirmDialog, t, showToast)
   expect(handler).not.toBeNull()
   await handler!()
-  return { calls, toasts, asked, btn }
+  return { calls, toasts, asked, btn, dialogs }
 }
 
 const plain = (c: Call) => c.url === '/api/marveen/restart' && c.init.method === 'POST' && c.init.body === undefined
@@ -54,6 +62,7 @@ describe('main-agent restart button', () => {
 
   it('idle pane: one plain POST, success toast, no second confirm', async () => {
     const r = await click([{ status: 200, body: { ok: true } }], [true])
+    expect(r.dialogs).toEqual([{ title: 'agents.confirm.hard_restart_title', okLabel: 'agents.confirm.hard_restart_ok', danger: true }])
     expect(r.calls).toHaveLength(1)
     expect(plain(r.calls[0])).toBe(true)
     expect(r.asked).toEqual(['agents.confirm.hard_restart'])
@@ -68,6 +77,7 @@ describe('main-agent restart button', () => {
   ])('refused (%s): a second confirm, then a forced POST', async (reason, key) => {
     const r = await click([{ status: 409, body: { error: 'restart-blocked', reason } }, { status: 200, body: { ok: true } }], [true, true])
     expect(r.asked).toEqual(['agents.confirm.hard_restart', key])
+    expect(r.dialogs[1]).toEqual({ title: 'agents.confirm.hard_restart_title', okLabel: 'agents.confirm.force_restart_ok', danger: true })
     expect(r.calls).toHaveLength(2)
     expect(plain(r.calls[0])).toBe(true)
     expect(forced(r.calls[1])).toBe(true)

@@ -61,7 +61,7 @@ async function route(method: 'POST' | 'PUT', path: string, body: Record<string, 
 }
 
 const move = (id: string, status: string, actor?: string) =>
-  route('POST', `/api/kanban/${encodeURIComponent(id)}/move`, { status, sort_order: 0, actor })
+  route('POST', `/api/kanban/${encodeURIComponent(id)}/move`, { status, sort_order: 0, actor, ...(status === 'done' ? { evidence: 'test' } : {}) })
 const put = (id: string, body: Record<string, unknown>) => route('PUT', `/api/kanban/${encodeURIComponent(id)}`, body)
 
 const sentTo = (who: string) => mockCreateAgentMessage.mock.calls.filter((c) => c[1] === who)

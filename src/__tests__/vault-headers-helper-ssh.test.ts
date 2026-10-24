@@ -24,6 +24,7 @@ beforeAll(() => {
   mkdirSync(join(ROOT, 'scripts'), { recursive: true })
   mkdirSync(join(ROOT, 'dist', 'web'), { recursive: true })
   copyFileSync(join(process.cwd(), 'scripts', 'vault-headers-helper.mjs'), join(ROOT, 'scripts', 'vault-headers-helper.mjs'))
+  copyFileSync(join(process.cwd(), 'scripts', 'vault-dashboard-client.mjs'), join(ROOT, 'scripts', 'vault-dashboard-client.mjs'))
   // The stub behaves like the real vault module on macOS without a GUI session: unless the helper silenced the logger
   // it logs a Keychain-migration warning to STDOUT, and unless it switched the migration off it "tries" it (a line on stderr).
   writeFileSync(join(ROOT, 'dist', 'web', 'vault.js'),

@@ -555,6 +555,87 @@ load-bearing control is that nothing goes live without the approval.
   too. "Only a human approves" needs the per-agent identity decision (#1985)
   first.
 
+# A second reviewer for high-risk tool calls (opt-in)
+
+A security profile can set `"secondReviewer": true`. A sub-agent rendered from
+that profile gets `scripts/hooks/second-reviewer-gate.py` as a `PreToolUse`
+hook on Bash and on MCP tools. The main agent never gets it, and no shipped
+profile sets the flag: every reviewed call costs a model call, so turning it on
+is the operator's decision. Switching it off later removes the hook from an
+agent at its next respawn or at the next dashboard start. Until then that
+agent's high-risk calls are stopped: the route answers a caller whose profile
+does not set the flag like an unknown route (404), and the hook is fail-closed.
+
+The hook reviews only high-risk shapes and lets everything else through
+untouched: a Bash command that deletes recursively, pushes, resets hard,
+uploads or posts with curl or wget, opens ssh/scp/rsync, uses sudo, changes
+ownership or modes recursively, wipes a disk, edits the crontab, kills
+processes, removes containers or drops tables; an MCP tool whose name says it
+sends, replies, posts, publishes, forwards, deletes, removes, transfers, pays,
+shares or invites. These patterns are a triage of what is worth a review, not a
+boundary.
+
+For such a call the hook asks `POST /api/review-action`. The server gives the
+call, wrapped as untrusted data, to a model with a fixed prompt, for at most 45
+seconds. `allow` lets the call run; `deny` stops it with the reviewer's reason.
+Anything else (an `ask` verdict, a timeout, a frozen fleet, an answer that does
+not parse) files an approval for the owner (category `second_review`) and stops
+the call. Once the owner approved it, the same call goes through once. "The
+same call" means the same agent, tool and effect: for Bash the command only
+(the tool input's model-written description changes on every retry), for any
+other tool its whole input. A call whose effect is longer than 4 000
+characters is denied without a review: the reviewer and the owner must both
+see the whole call they decide on. The hook is fail-closed: if the dashboard cannot be
+reached, the call is stopped.
+
+What it is not: a model is not a security boundary. The reviewer sees only the
+call, not the task, and can only say no or ask; it never widens what an agent
+may do. An agent that runs as the same OS user can still act outside its tool
+calls.
+
+# Vault reads go through the dashboard (a trail and an opt-in allowlist)
+
+The two resolver scripts that hand secrets to MCP servers
+(`scripts/vault-resolve.mjs` for env bindings, `scripts/vault-headers-helper.mjs`
+for header bindings) used to decrypt the vault inside the agent's own process.
+They now ask the dashboard (`POST /api/vault/resolve`), so every read leaves a
+row in the dashboard's vault log: which secret, which agent claimed to ask
+(`X-Agent-Id`, taken from the launcher's environment or from the agent's
+working directory), and what the allowlist said.
+
+`VAULT_ACL_MODE` (Settings, audit module) decides what the allowlist
+(`store/vault-acl.json`, `{ "<secret-id>": ["agent", ...] }`) does. The dashboard and the scripts read it the same way:
+the Settings page value, else the `.env` line, else `audit`; a `VAULT_ACL_MODE=enforce` in the process environment also
+enforces and cannot be undone from the Settings page. Each side reads only its own process environment, so set the
+mode on the Settings page or in `.env`, where the dashboard and the scripts both see it. A change takes effect on the
+next read, without a restart:
+
+- `audit` (the default): nothing is refused; every read is logged. If the
+  dashboard cannot be reached, the scripts print a warning and resolve locally,
+  so that read is not in the log.
+- `enforce`: a caller that claims an agent name gets a secret only if the
+  allowlist lists that agent for it, through the scripts and through
+  `GET /api/vault/:id`. If the dashboard cannot be reached, the scripts stop
+  with exit code 5 and resolve nothing, so the MCP server does not start.
+  That includes a dashboard restart: an MCP server launched while the
+  dashboard is down does not start. This fail-closed is deliberate; know it
+  before you switch `enforce` on.
+
+What it is not: isolation. Every agent runs as the same OS user and can read
+the master-key file, the agent name is claimed, not authenticated, a caller
+that claims no name is treated as the owner, and in `audit` mode the local
+fallback is a way around the trail. It is a record of who read what, and an
+access rule that holds for agents that follow the shipped paths.
+
+Two consequences worth knowing: the auth gate drops an `X-Agent-Id` that does
+not name a registered agent, so such a caller is an owner lane and is never
+refused; and `resolve` is now a sub-route like `bindings` and `sync`, so a
+secret whose id is literally `resolve` can no longer be read or deleted
+through `GET` / `DELETE /api/vault/:id`. A dashboard token file that exists
+but is empty, unreadable or malformed counts as an unreachable dashboard
+(a warning in `audit`, exit 5 in `enforce`), not as "no dashboard". An id that cannot be sent (empty, or longer than 200
+characters) counts as missing; only in `audit` mode with no dashboard token file is it looked up locally.
+
 # Fleet import takes over only the identity keys
 
 `POST /api/fleet/import?apply=true` makes the target install adopt the source's
@@ -587,11 +668,20 @@ What happens now:
   none), or when it is the target's own provider; otherwise that key alone is
   left out, with a warning.
 - `MAIN_AGENT_ID` must also not be an id the message layer owns
-  (FLEETRESERVEDNAME1021, `RESERVED_AGENT_IDS` in `src/web/sanitize.ts`):
-  `system` is refused on every POST, so a main agent with that id could not
-  send, and `hanna` is accepted only from a device key and framed as the owner.
-  `scripts/migrate-main-agent-id.sh` refuses the same ids, and a `BOT_NAME`
-  whose id is already a sub-agent, before it stops anything. The installers
+  (FLEETRESERVEDNAME1021, `RESERVED_AGENT_IDS` in `src/config.ts`, the fixed
+  part in `src/web/sanitize.ts`): `system` is refused on every POST, so a main
+  agent with that id could not send, and the voice channel id
+  (`VOICE_CHANNEL_ID`, `hanna` by default) is accepted only from a device key
+  and framed as the owner; the id in effect is the reserved one, and none is
+  when the voice lane is off (even `hanna` names another sender).
+  A SUB-agent under a reserved id is refused on every path that creates one:
+  `POST /api/agents` (409), the agent bundle import (a single bundle is
+  refused, a fleet bundle skips that agent with a reason), and the fleet
+  transfer import (`validateNames`, before the dry run or any write).
+  `scripts/migrate-main-agent-id.sh` refuses the same ids, a `BOT_NAME`
+  whose id is already a sub-agent, and a migration that would move the voice
+  channel id (it is resolved again against the new main agent id), before it
+  stops anything. The installers
   (`install-macos.sh`, `install-linux.sh`) derive the id from `BOT_NAME`
   without this check.
 
@@ -600,3 +690,61 @@ the vault, scheduled tasks) still writes with the same shared token, and on a
 single-user host an agent whose Bash is permissive can write `.env` directly.
 Closing those needs the per-agent identity decision (#1985) and per-agent OS
 users, not this filter.
+
+# Sub-agent mail gate: sender scripts under any name
+
+`scripts/email-send-gate.mjs` (sub-agents only) denies every Bash send it
+recognises. `isSendInvocation` recognises a Python sender only by the name
+`send.py`, so a self-written SMTP script under any other name
+(`python3 helden_send.py --to x@y < body.txt`) was no send for it.
+
+`gateDecision` therefore also runs `scriptRunSends` on the Bash path
+(SCRIPTSENDGATE1020). A run is a send when:
+
+- **An address flag.** An interpreter (python, node, tsx, bun, deno) or a
+  directly executed script is given an e-mail address after `--to`, `--cc` or
+  `--bcc`. This also holds when no script file is named (`python3 -m pkg`,
+  `python3 -c ...`). A Telegram chat id after `--to` is not an address.
+- **A mail-library import in the script.** The script file is resolved against
+  the hook payload `cwd` and read up to 1 MiB. It imports a mail library:
+  - an `import` / `from ... import` of `smtplib`, `aiosmtplib` or `yagmail`
+    (or `importlib.import_module` of one) in a python script;
+  - a `require` / `import` of `nodemailer` in a node script.
+
+  A bare mention of the name is no import: a comment, a mock
+  (`send.smtplib.SMTP_SSL = ...`) or a regex. So this gate's own source, a test
+  that mocks the library and a config that names it are not denied.
+- **A helper that imports one.** One level of local helper modules imports a
+  mail library. Helpers are the modules the script imports, resolved next to
+  it (`from mailhelper import send_mail` reads `mailhelper.py`; `./mh.js` for
+  node).
+- **A shell `-c` string.** The string of `sh`, `bash`, `zsh` or `dash -c`
+  (also `-lc`, `-ec`) runs one of the above.
+
+A directly executed file (`./x`, `/abs/x`, `x.py`) is read as python or node by
+its `#!` line (`#!/usr/bin/env python3`, `#!/usr/bin/env -S node`), else by its
+extension. An extensionless file without a python or node `#!` line is not
+judged.
+
+The check is deliberately not part of `isSendInvocation`. That function is the
+contract shared with the main agent's Python gates (`send-invocation-cases.json`),
+and the main agent's `email_send` approval gate keeps its current reach.
+
+**Known limits.** These are allowed, so do not read the gate as complete:
+
+- **Mail sent without one of these libraries:**
+  - the Gmail API client (`users().messages().send`);
+  - an HTTP mail API through `requests.post` or `fetch`;
+  - raw `socket` / `ssl` SMTP;
+  - `perl` Net::SMTP and `ruby` net/smtp.
+- **Script sources the gate does not read:**
+  - a script read from stdin (`python3 < smtp_send.py`);
+  - a script path through a variable (`"$PWD/x.py"`, `$S`);
+  - a module run with `-m` and no address flag;
+  - an import after the first 1 MiB of the file.
+- **Reach:**
+  - helpers past the first level;
+  - a script started after `cd dir &&`, which is resolved against the session
+    cwd, not `dir`;
+  - a missing file, which is judged on its arguments alone;
+  - code assembled at runtime.

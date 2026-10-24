@@ -18,7 +18,7 @@
 
 import Database from 'better-sqlite3'
 import { join } from 'node:path'
-import { STORE_DIR, DB_FILENAME, MAIN_AGENT_ID } from '../config.js'
+import { STORE_DIR, DB_FILENAME, MAIN_AGENT_ID, VOICE_CHANNEL_ID } from '../config.js'
 
 export const COORDINATOR_AGENT_ID = 'telegram-coordinator'
 
@@ -30,11 +30,16 @@ export const COORDINATOR_AGENT_ID = 'telegram-coordinator'
 //
 // Unlike COORDINATOR_AGENT_ID this id IS a legitimate /api/messages writer (the
 // relay is out-of-process), so the route cannot blanket-403 it. The guard is
-// the AUTH LANE instead: a 'hanna' POST is accepted only from an enrolled
+// the AUTH LANE instead: a voice-channel POST is accepted only from an enrolled
 // DEVICE KEY, never from the shared dashboard token that every sub-agent can
 // read. See routes/messages.ts -- without that pairing, adding this id to
 // CHANNEL_COORDINATOR_AGENTS would let any token holder forge an owner message.
-export const VOICE_CHANNEL_AGENT_ID = 'hanna'
+// The id itself is VOICE_CHANNEL_ID in config.ts ('hanna' unless .env sets
+// another, VOICECHANNELID1022); this alias keeps the existing import sites.
+// It is null when the voice lane is off (even the default would name another
+// sender): then no id earns the framing or the device-key lane, and an exact
+// comparison against it never matches.
+export const VOICE_CHANNEL_AGENT_ID = VOICE_CHANNEL_ID
 
 let db: Database.Database | null = null
 

@@ -46,7 +46,7 @@ beforeAll(async () => {
   mkdirSync(join(ROOT, 'scripts'), { recursive: true })
   mkdirSync(join(ROOT, 'home'), { recursive: true })
   mkdirSync(STORE, { recursive: true })   // the dashboard always has store/; the vault module does not create it
-  for (const f of ['vault-headers-helper.mjs', 'vault-resolve.mjs']) copyFileSync(join(REPO, 'scripts', f), join(ROOT, 'scripts', f))
+  for (const f of ['vault-headers-helper.mjs', 'vault-resolve.mjs', 'vault-dashboard-client.mjs']) copyFileSync(join(REPO, 'scripts', f), join(ROOT, 'scripts', f))
   writeFileSync(join(ROOT, 'package.json'), '{ "type": "module" }\n')
   symlinkSync(join(REPO, 'node_modules'), join(ROOT, 'node_modules'))
   // the preload: platform = $PRELOAD_PLATFORM, and /usr/bin/security never runs (recorded, then it fails like on a Mac without a GUI)

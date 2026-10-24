@@ -26,7 +26,10 @@ import { scan as scanInjection } from '../skill-scan.js'
 // Channel-coordinator sources whose messages are real inbound user messages
 // (relayed during a native-channel disconnect), matched on a CODE CONSTANT --
 // never the attacker-influenceable from_agent string.
-const CHANNEL_COORDINATOR_AGENTS = new Set<string>([COORDINATOR_AGENT_ID, VOICE_CHANNEL_AGENT_ID])
+// The voice channel id is null when its lane is off (VOICECHANNELID1022).
+const CHANNEL_COORDINATOR_AGENTS = new Set<string>(
+  VOICE_CHANNEL_AGENT_ID === null ? [COORDINATOR_AGENT_ID] : [COORDINATOR_AGENT_ID, VOICE_CHANNEL_AGENT_ID],
+)
 
 export type AgentMessageCategory = 'channel-inbound' | 'trusted-peer' | 'untrusted' | 'federated'
 

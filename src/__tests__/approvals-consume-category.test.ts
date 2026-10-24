@@ -328,7 +328,12 @@ describe('cross-process double consume', () => {
     const startAt = Date.now() + 8000
     const results = await Promise.all(Array.from({ length: 6 }, (_, i) => runChild(script, [dbPath, String(startAt), `proc-${i}`])))
     const parsed = results.map((r) => {
-      if (r.code !== 0) throw new Error(`child failed (${r.code}): ${r.err.slice(-500)}`)
+      // The child's stderr goes in as one JSON-escaped line. Raw, its own "    at ..." lines
+      // read as frames of this error, and vitest then parses the tsx frame's file for a source
+      // map: tsx/dist/register-*.cjs has a "//# sourceMappingURL=data:..." template at a line
+      // start, the JSON.parse of it throws in the reporter, and this failure disappears from
+      // the run (an "Unhandled Error", the test counted neither passed nor failed).
+      if (r.code !== 0) throw new Error(`child failed (${r.code}): ${JSON.stringify(r.err.slice(-500))}`)
       return JSON.parse(r.out.trim().split('\n').pop()!) as { ok: boolean; reason: string | null; late: boolean }
     })
     // Every child reached the barrier before the release, so they really raced.

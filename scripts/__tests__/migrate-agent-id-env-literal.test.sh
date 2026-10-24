@@ -94,6 +94,72 @@ mkdir -p "$TMP/defaultsub/agents/marveen"
 run_case defaultsub 'BOT_NAME=Marveen'
 printf '%s\n' "$OUT" | grep -q 'Nothing to migrate' && pass 'the default id is not refused by an agents/marveen dir' || fail "defaultsub: $OUT"
 
+# --- VOICECHANNELID1022: the CONFIGURED voice channel id is the reserved one --------
+run_case voice-custom "$(printf 'VOICE_CHANNEL_ID=voice-relay\nBOT_NAME="Voice Relay"')"
+refused voice-custom && printf '%s\n' "$OUT" | grep -q 'reserved by the system' \
+  && pass 'the configured VOICE_CHANNEL_ID is refused as a reserved id' || fail "voice-custom: rc=$RC $OUT"
+run_case voice-freed "$(printf 'VOICE_CHANNEL_ID=voice-relay\nBOT_NAME=Hanna')"
+[ "$(slug_of)" = "hanna" ] && pass "with another VOICE_CHANNEL_ID, 'hanna' is not reserved" || fail "voice-freed: rc=$RC $OUT"
+run_case voice-invalid "$(printf 'VOICE_CHANNEL_ID=Not_Valid\nBOT_NAME=Hanna')"
+refused voice-invalid && printf '%s\n' "$OUT" | grep -q 'reserved by the system' \
+  && pass "an invalid VOICE_CHANNEL_ID falls back to 'hanna', which stays reserved" || fail "voice-invalid: rc=$RC $OUT"
+# The voice id is read with the DASHBOARD's .env grammar (src/env-parse.ts), not the
+# BOT_NAME reader's: the script must reserve exactly the id the dashboard uses.
+# voice_is <label> <id>: the script reserved <id> as the voice id ("Voice Relay"
+# refused, "Hanna" free) -- or, for hanna, the other way round.
+voice_is() {
+  local label="$1" id="$2" envline="$3"
+  run_case "$label-a" "$(printf '%s\nBOT_NAME="Voice Relay"' "$envline")"
+  local relay_refused=0; refused "$label-a" && relay_refused=1
+  run_case "$label-b" "$(printf '%s\nBOT_NAME=Hanna' "$envline")"
+  local hanna_refused=0; refused "$label-b" && hanna_refused=1
+  case "$id" in
+    voice-relay) [ "$relay_refused" -eq 1 ] && [ "$hanna_refused" -eq 0 ] ;;
+    hanna) [ "$relay_refused" -eq 0 ] && [ "$hanna_refused" -eq 1 ] ;;
+    none) [ "$relay_refused" -eq 0 ] && [ "$hanna_refused" -eq 0 ] ;;
+  esac
+}
+voice_is grammar-export hanna 'export VOICE_CHANNEL_ID=voice-relay' \
+  && pass "'export VOICE_CHANNEL_ID=...' is not the dashboard's key: 'hanna' stays the voice id" || fail 'grammar-export'
+voice_is grammar-comment hanna 'VOICE_CHANNEL_ID=voice-relay  # the relay' \
+  && pass "a trailing comment is part of the dashboard's value (invalid): 'hanna' stays the voice id" || fail 'grammar-comment'
+voice_is grammar-dq voice-relay 'VOICE_CHANNEL_ID="voice-relay"' \
+  && pass 'double quotes are stripped, as by the dashboard' || fail 'grammar-dq'
+voice_is grammar-sq voice-relay "VOICE_CHANNEL_ID='voice-relay'" \
+  && pass 'single quotes are stripped, as by the dashboard' || fail 'grammar-sq'
+voice_is grammar-mixed hanna "VOICE_CHANNEL_ID='voice-relay\"" \
+  && pass 'mismatched quotes are kept (invalid), as by the dashboard' || fail 'grammar-mixed'
+voice_is grammar-ws voice-relay '   VOICE_CHANNEL_ID  =  voice-relay   ' \
+  && pass 'whitespace around the key and the value is trimmed, as by the dashboard' || fail 'grammar-ws'
+voice_is grammar-ws-quoted voice-relay 'VOICE_CHANNEL_ID=" voice-relay "' \
+  && pass 'whitespace inside the quotes is trimmed by the resolver, as by the dashboard' || fail 'grammar-ws-quoted'
+voice_is grammar-crlf voice-relay "$(printf 'VOICE_CHANNEL_ID=voice-relay\r')" \
+  && pass 'a CRLF line end is trimmed, as by the dashboard' || fail 'grammar-crlf'
+voice_is sender-collision hanna "$(printf 'SYSTEM_SENDER_IDS=cortex,voice-relay\nVOICE_CHANNEL_ID=voice-relay')" \
+  && pass "a VOICE_CHANNEL_ID that is a SYSTEM_SENDER_IDS entry falls back to 'hanna'" || fail 'sender-collision'
+voice_is lane-off none 'OWNER_NAME=hanna' \
+  && pass "when even 'hanna' names another sender, no voice id is reserved (the lane is off)" || fail 'lane-off'
+
+# The voice id is resolved again against the NEW main agent id: a migration that
+# would move it (here VOICE_CHANNEL_ID=marveen, invalid while marveen is the main
+# agent, valid once the main agent is atlas) is refused before anything changes.
+run_case voice-moves "$(printf 'VOICE_CHANNEL_ID=marveen\nBOT_NAME=Atlas')"
+refused voice-moves && printf '%s\n' "$OUT" | grep -q 'voice channel id would change from "hanna" to "marveen"' \
+  && pass 'a migration that would re-point the voice id is refused' || fail "voice-moves: rc=$RC $OUT"
+run_case voice-stays "$(printf 'VOICE_CHANNEL_ID=voice-relay\nBOT_NAME=Atlas')"
+[ "$(slug_of)" = "atlas" ] && pass 'NEGATIVE CONTROL: a voice id the migration does not move lets it through' || fail "voice-stays: rc=$RC $OUT"
+
+# Only a DIRECTORY under agents/ is a sub-agent, as on the dashboard: a stray file
+# named like the voice id does not push it back to 'hanna'.
+for d in voice-file-a voice-file-b; do mkdir -p "$TMP/$d/agents" && : > "$TMP/$d/agents/voice-relay"; done
+voice_is voice-file voice-relay 'VOICE_CHANNEL_ID=voice-relay' \
+  && pass 'a plain file under agents/ is not a sub-agent' || fail 'voice-file'
+
+mkdir -p "$TMP/voice-subagent/agents/voice-relay"
+run_case voice-subagent "$(printf 'VOICE_CHANNEL_ID=voice-relay\nBOT_NAME=Hanna')"
+refused voice-subagent && printf '%s\n' "$OUT" | grep -q 'reserved by the system' \
+  && pass "a VOICE_CHANNEL_ID that is a sub-agent falls back to 'hanna'" || fail "voice-subagent: rc=$RC $OUT"
+
 echo ""
 echo "PASS=$PASS FAIL=$FAIL"
 [ "$FAIL" -eq 0 ]

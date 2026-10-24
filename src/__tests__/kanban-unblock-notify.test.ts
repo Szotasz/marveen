@@ -57,8 +57,9 @@ async function call(method: string, path: string, body: unknown): Promise<number
   return status
 }
 
+// An agent closes to done only with evidence (#2026), so a done move carries one.
 const move = (id: string, status: string, actor = 'zara') =>
-  call('POST', `/api/kanban/${id}/move`, { status, sort_order: 0, actor })
+  call('POST', `/api/kanban/${id}/move`, { status, sort_order: 0, actor, ...(status === 'done' ? { evidence: 'test' } : {}) })
 const put = (id: string, fields: Record<string, unknown>) => call('PUT', `/api/kanban/${id}`, fields)
 
 const unblockMessages = () =>

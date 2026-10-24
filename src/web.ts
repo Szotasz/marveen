@@ -32,7 +32,9 @@ import { startChannelPluginMonitor } from './web/channel-monitor.js'
 import { startInboundProber } from './web/inbound-probe.js'
 import { startChannelHealthMonitor } from './web/channel-health-monitor.js'
 import { startChannelIntakeMonitor } from './web/channel-intake-monitor.js'
+import { startTeamsCredentialMonitor } from './web/teams-credential-monitor.js'
 import { startStuckInputWatcher } from './web/stuck-input-watcher.js'
+import { startMessageSeenSweep } from './web/message-seen-sweep.js'
 import { startMidTurnCommandWatcher } from './web/midturn-commands.js'
 import { startInboxNudgeWatcher } from './web/inbox-nudge-watcher.js'
 import { startStuckToolCallWatcher } from './web/stuck-tool-call-watcher.js'
@@ -44,6 +46,7 @@ import { startContextGuardRunner } from './web/context-guard-runner.js'
 import { startContextRestartGateRunner, setMainSweepHook } from './web/context-restart-gate-runner.js'
 import { startEventLoopLagMonitor } from './web/event-loop-lag-monitor.js'
 import { collectTokenUsage } from './web/token-usage.js'
+import { checkAgentBudgets, collectTokenUsageAndCheckBudgets } from './web/agent-budget-alerts.js'
 import { logger } from './logger.js'
 import { tryHandleAuth } from './web/routes/auth.js'
 import { tryHandleSecurity } from './web/routes/security.js'
@@ -81,6 +84,7 @@ import { tryHandleResearch } from './web/routes/research.js'
 import { tryHandleConnectorsHu } from './web/routes/connectors-hu.js'
 import { tryHandleAgentsSkills } from './web/routes/agents-skills.js'
 import { tryHandleSkills } from './web/routes/skills.js'
+import { tryHandleReviewAction } from './web/routes/review-action.js'
 import { tryHandleAgents } from './web/routes/agents.js'
 import { tryHandleClaudePlans } from './web/routes/claude-plans.js'
 import { tryHandleClaudePlansLogin } from './web/routes/claude-plans-login.js'
@@ -240,6 +244,7 @@ export function startWebServer(port = 3420): http.Server {
       if (await tryHandleDocs(routeCtx)) return
       if (await tryHandleResearch(routeCtx)) return
       if (await tryHandleAgentsSkills(routeCtx)) return
+      if (await tryHandleReviewAction(routeCtx)) return
       if (await tryHandleSkills(routeCtx)) return
       if (await tryHandleAgentTerminal(routeCtx)) return
       if (await tryHandleAgentConversation(routeCtx)) return
@@ -491,6 +496,8 @@ export function startWebServer(port = 3420): http.Server {
   // only signal a silently deaf poller leaves behind.
   const channelIntakeInterval = claudeOnly ? startChannelIntakeMonitor(PROJECT_ROOT) : undefined
   if (!webOnly) logger.info('Channel intake monitor started (5min poll, 100s offset)')
+  const teamsCredentialInterval = webOnly ? undefined : startTeamsCredentialMonitor()
+  if (!webOnly) logger.info('Teams credential monitor started (daily, 5min offset)')
 
   // CostOps: reflect the local config's fixed costs into the ledger once at boot + every
   // 10 minutes. Deliberately NOT done inside the GET /api/costs/summary handler -- a read
@@ -500,6 +507,9 @@ export function startWebServer(port = 3420): http.Server {
 
   const stuckInputInterval = claudeOnly ? startStuckInputWatcher() : undefined
   if (!webOnly) logger.info('Stuck-input watcher started (15s poll, 20s offset)')
+
+  const messageSeenInterval = webOnly ? undefined : startMessageSeenSweep()
+  if (!webOnly) logger.info('Message-seen sweep started (60s poll)')
 
   const midTurnCommandInterval = claudeOnly ? startMidTurnCommandWatcher() : undefined
   if (claudeOnly) logger.info('Mid-turn command watcher started (3s poll)')
@@ -576,10 +586,12 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
   }, 60 * 60 * 1000)
 
   const tokenCollectInterval = webOnly ? undefined : setInterval(() => {
-    collectTokenUsage().catch(err => logger.warn({ err }, 'Periodic token usage collection failed'))
+    collectTokenUsageAndCheckBudgets(collectTokenUsage, checkAgentBudgets)
+      .catch(err => logger.warn({ err }, 'Periodic token usage collection failed'))
   }, 60 * 60 * 1000)
   if (!webOnly) {
-    collectTokenUsage().catch(err => logger.warn({ err }, 'Startup token usage collection failed'))
+    collectTokenUsageAndCheckBudgets(collectTokenUsage, checkAgentBudgets)
+      .catch(err => logger.warn({ err }, 'Startup token usage collection failed'))
     logger.info('Token usage auto-collect started (1h poll + startup)')
   }
 
@@ -773,8 +785,10 @@ setInterval(() => { try { sweepExpiredDesktopLock() } catch { /* never kill the 
     if (workerLivenessInterval) clearInterval(workerLivenessInterval)
     clearInterval(channelHealthInterval)
     if (channelIntakeInterval) clearInterval(channelIntakeInterval)
+    if (teamsCredentialInterval) clearInterval(teamsCredentialInterval)
     if (costsSyncInterval) clearInterval(costsSyncInterval)
     clearInterval(stuckInputInterval)
+    if (messageSeenInterval) clearInterval(messageSeenInterval)
     if (midTurnCommandInterval) clearInterval(midTurnCommandInterval)
     clearInterval(stuckToolCallInterval)
     if (inboxNudgeInterval) clearInterval(inboxNudgeInterval)

@@ -384,6 +384,14 @@ export function initDatabase(dbPathOverride?: string): void {
   // 'testing' table rebuild above on purpose: that rebuild copies an explicit
   // column list, so a column added before it would be dropped on an old DB.
   ensureKanbanClaimSchema(db)
+  // Migration: done_evidence -- what an agent says it checked when it closed
+  // the card (test run, PR link, file read back). Same placement rule as
+  // test_steps above: after the testing-status rebuild.
+  try {
+    db.exec('ALTER TABLE kanban_cards ADD COLUMN done_evidence TEXT')
+  } catch {
+    // column already exists
+  }
   // Migration: add agent_id, category, auto_generated columns to memories
   try {
     db.exec("ALTER TABLE memories ADD COLUMN agent_id TEXT NOT NULL DEFAULT 'marveen'")
@@ -1108,6 +1116,9 @@ export function initDatabase(dbPathOverride?: string): void {
   try { db.exec('ALTER TABLE agent_messages ADD COLUMN trace_id TEXT') } catch { /* exists */ }
   try { db.exec('ALTER TABLE agent_messages ADD COLUMN span_id TEXT') } catch { /* exists */ }
   try { db.exec('ALTER TABLE agent_messages ADD COLUMN parent_span_id TEXT') } catch { /* exists */ }
+  // F9: when the recipient was seen to have the message (message-seen-sweep.ts).
+  try { db.exec('ALTER TABLE agent_messages ADD COLUMN seen_at INTEGER') } catch { /* exists */ }
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_agent_messages_unseen ON agent_messages(delivered_at) WHERE seen_at IS NULL') } catch { /* exists */ }
   // Card ad771121: delivery priority. 0 = normal: the default, and what every caller that sends no
   // priority gets, i.e. today's FIFO unchanged. 1 = high: delivered ahead of the recipient's normal
   // rows, FIFO among the high ones. Existing rows read as 0 (normal).
@@ -2979,6 +2990,9 @@ export interface KanbanCard {
   // description is what the task IS, this is how to check it is done. Written
   // into comments before, where the current version was unfindable.
   test_steps: string | null
+  // What the closing agent says it checked (test run, PR link, file read back,
+  // measured number). Set only by a move to done that carries it; never by PUT.
+  done_evidence?: string | null
   status: 'planned' | 'in_progress' | 'waiting' | 'testing' | 'done'
   assignee: string | null
   priority: 'low' | 'normal' | 'high' | 'urgent'
@@ -3534,6 +3548,9 @@ export interface MoveKanbanCardOptions {
   // call returns false. Without it the move is unconditional (last writer
   // wins), exactly as before.
   expectedStatus?: KanbanCard['status']
+  // Stored in done_evidence with the move, in the same statement. Only
+  // honoured when the move goes to done; a move elsewhere leaves it alone.
+  evidence?: string
 }
 
 export function moveKanbanCard(
@@ -3567,13 +3584,18 @@ export function moveKanbanCard(
   // ancestor stamps and the status event either all happen or none does, so a row insert that throws cannot leave a
   // card moved with no row saying who moved it.
   const expected = opts?.expectedStatus
-  const setClause = kanbanWriteClearsDispatch(status)
+  const evidence = status === 'done' && typeof opts?.evidence === 'string' && opts.evidence.trim() !== ''
+    ? opts.evidence.trim()
+    : undefined
+  const baseSet = kanbanWriteClearsDispatch(status)
     ? 'SET status=?, sort_order=?, updated_at=?, dispatched_at=NULL'
     : 'SET status=?, sort_order=?, updated_at=?'
+  const setClause = evidence !== undefined ? `${baseSet}, done_evidence=?` : baseSet
+  const setArgs: (string | number)[] = evidence !== undefined ? [status, sortOrder, now, evidence] : [status, sortOrder, now]
   return db.transaction((): boolean => {
     const changed = (expected === undefined
-      ? db.prepare(`UPDATE kanban_cards ${setClause} WHERE id=?`).run(status, sortOrder, now, id)
-      : db.prepare(`UPDATE kanban_cards ${setClause} WHERE id=? AND status=?`).run(status, sortOrder, now, id, expected)
+      ? db.prepare(`UPDATE kanban_cards ${setClause} WHERE id=?`).run(...setArgs, id)
+      : db.prepare(`UPDATE kanban_cards ${setClause} WHERE id=? AND status=?`).run(...setArgs, id, expected)
     ).changes > 0
     if (changed) touchAncestorChain(row?.parent_id, now, id)
     // With the guard, a successful UPDATE proves the status WAS `expected` at
@@ -4590,6 +4612,9 @@ export interface AgentMessage {
   result: string | null
   created_at: number
   delivered_at: number | null
+  // F9: when the recipient was seen to have the message: the pull drain itself,
+  // or the message's own header found in the recipient's transcript. Null until then.
+  seen_at?: number | null
   completed_at: number | null
   // Card 06f062e4: optional, self-declared attributability tag (e.g. a
   // sub-agent's own task/branch name) -- NOT an authentication mechanism,
@@ -4634,7 +4659,7 @@ export function createAgentMessage(
   return {
     id: Number(info.lastInsertRowid),
     from_agent: from, to_agent: to, content, status: 'pending',
-    result: null, created_at: now, delivered_at: null, completed_at: null,
+    result: null, created_at: now, delivered_at: null, seen_at: null, completed_at: null,
     origin_note: originNote ?? null,
     trace_id: traceCtx?.trace_id ?? null,
     span_id: traceCtx?.span_id ?? null,
@@ -4899,6 +4924,30 @@ export function countRestartQueueState(agent: string, failedSinceEpoch: number):
   return { pending: pending.c, failed: failed.c }
 }
 
+// F9: delivered rows not yet seen, delivered at or after `sinceSec`, that did
+// reach a recipient (rows closed without delivery are excluded).
+export function listDeliveredUnseen(sinceSec: number): Array<{ id: number; to_agent: string; from_agent: string }> {
+  return db.prepare(
+    `SELECT id, to_agent, from_agent FROM agent_messages
+      WHERE status IN ('delivered', 'done') AND seen_at IS NULL
+        AND delivered_at IS NOT NULL AND delivered_at >= ?
+        AND (result IS NULL OR result NOT LIKE ?)
+      ORDER BY id ASC`,
+  ).all(sinceSec, `${CLOSED_WITHOUT_DELIVERY_PREFIX}%`) as Array<{ id: number; to_agent: string; from_agent: string }>
+}
+
+// F9: set seen_at once; a row that already has one keeps it.
+export function markMessagesSeen(ids: number[], nowSec: number): number {
+  if (!ids.length) return 0
+  const stmt = db.prepare('UPDATE agent_messages SET seen_at = ? WHERE id = ? AND seen_at IS NULL')
+  const run = db.transaction((rows: number[]) => {
+    let n = 0
+    for (const id of rows) n += stmt.run(nowSec, id).changes
+    return n
+  })
+  return run(ids)
+}
+
 // Close a pending backlog that is NOT going to be delivered -- stale rows an
 // operator does not want the router to replay (an old thank-you note, a legal
 // warning whose content has since changed). Separate from markMessageDelivered
@@ -4968,15 +5017,15 @@ export function claimPendingForAgent(toAgent: string, limit: number): AgentMessa
   const now = Math.floor(Date.now() / 1000)
   const rank = deliveryRankSql()
   const rows = db.prepare(
-    `UPDATE agent_messages SET status = 'delivered', delivered_at = ?
+    `UPDATE agent_messages SET status = 'delivered', delivered_at = ?, seen_at = COALESCE(seen_at, ?)
        WHERE id IN (
          SELECT id FROM agent_messages
          WHERE to_agent = ? AND status = 'pending'
          ORDER BY ${rank.sql} DESC, created_at ASC, id ASC
          LIMIT ?
        )
-     RETURNING id, from_agent, to_agent, content, status, result, created_at, delivered_at, completed_at, priority, urgent, stop_authorized`,
-  ).all(now, toAgent, ...rank.params, limit) as AgentMessage[]
+     RETURNING id, from_agent, to_agent, content, status, result, created_at, delivered_at, seen_at, completed_at, priority, urgent, stop_authorized`,
+  ).all(now, now, toAgent, ...rank.params, limit) as AgentMessage[]
   // RETURNING row order is unspecified; restore the delivery order (card ad771121: high first, then
   // FIFO with id as the tiebreaker for same-second inserts).
   return rows.sort(compareDeliveryOrder)

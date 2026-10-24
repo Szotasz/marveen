@@ -66,14 +66,87 @@ PYEOF
 # An id the message layer already owns, or a sub-agent's name, cannot become the
 # main agent's (FLEETRESERVEDNAME1021): 'system' is refused on every POST, so a
 # main agent named that could not send. Checked before anything is stopped.
-# The list is RESERVED_AGENT_IDS in src/web/sanitize.ts; a test keeps them equal.
-RESERVED_AGENT_IDS="system heartbeat telegram-coordinator channel-coordinator hanna"
+# The fixed list is FIXED_RESERVED_AGENT_IDS in src/web/sanitize.ts; a test keeps
+# them equal.
+# The voice channel id is configurable (VOICECHANNELID1022): it is VOICE_CHANNEL_ID
+# resolved EXACTLY as the dashboard resolves it, so the id refused here is the one
+# the dashboard reserves. Two halves, both mirrored:
+#   * the .env grammar of src/env-parse.ts parseEnvContent, NOT the BOT_NAME reader
+#     above: no "export" prefix, no trailing "# comment" (both stay part of the key
+#     or the value), one pair of matching quotes stripped, JS String.trim()
+#     whitespace, the last assignment wins, a missing .env reads as empty;
+#   * the rule of resolveVoiceChannelId in src/config.ts: a canonical agent id
+#     that names no other sender (a fixed reserved id, a SYSTEM_SENDER_IDS entry,
+#     the main agent, the owner's sanitized name, a sub-agent), else 'hanna' under
+#     the same checks, else NO voice id at all (the dashboard switches the lane off).
+# src/__tests__/voice-channel-id-script-parity.test.ts runs this resolver against
+# the dashboard's on the same .env files. A function for the same bash 3.2 reason
+# as read_env_bot_name above. The optional 4th argument stands in for
+# MAIN_AGENT_ID, to resolve the id the dashboard will use AFTER the migration.
+RESERVED_AGENT_IDS="system heartbeat telegram-coordinator channel-coordinator"
+FIXED_RESERVED_AGENT_IDS="$RESERVED_AGENT_IDS"
+resolve_voice_channel_id() {
+  python3 - "$@" <<'PYEOF'
+import os, re, sys
+env_path, fixed, agents_dir = sys.argv[1], sys.argv[2].split(), sys.argv[3]
+main_override = sys.argv[4] if len(sys.argv) > 4 else None
+JS_WS = ('\t\n\x0b\x0c\r \xa0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006'
+         '\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff')
+def trim(t):
+    return t.strip(JS_WS)
+try:
+    with open(env_path, encoding='utf-8', errors='replace', newline='') as fh:
+        content = fh.read()
+except OSError:
+    content = ''
+env = {}
+for line in content.split('\n'):
+    t = trim(line)
+    if not t or t.startswith('#'):
+        continue
+    i = t.find('=')
+    if i == -1:
+        continue
+    key, val = trim(t[:i]), trim(t[i + 1:])
+    if (val.startswith('"') and val.endswith('"')) or (val.startswith("'") and val.endswith("'")):
+        val = val[1:-1]
+    env[key] = val
+def ident(t):
+    return re.sub(r'[^a-zA-Z0-9_-]', '', t)
+main = main_override if main_override is not None else env.get('MAIN_AGENT_ID', 'marveen')
+owner = ident(env.get('OWNER_NAME', 'Owner'))
+senders = {ident(trim(x)) for x in env.get('SYSTEM_SENDER_IDS', '').split(',')} - {''}
+def collides(i):
+    return (i in fixed or i in senders or i == main or i == owner
+            or os.path.isdir(os.path.join(agents_dir, i)))
+v = trim(env.get('VOICE_CHANNEL_ID', ''))
+if v and len(v) <= 50 and re.fullmatch(r'[a-z0-9]+(?:-[a-z0-9]+)*', v) and not collides(v):
+    print(v, end='')
+elif not collides('hanna'):
+    print('hanna', end='')
+PYEOF
+}
+VOICE_CHANNEL_ID="$(resolve_voice_channel_id "$INSTALL_DIR/.env" "$RESERVED_AGENT_IDS" "$INSTALL_DIR/agents")"
+if [ -n "$VOICE_CHANNEL_ID" ]; then
+  RESERVED_AGENT_IDS="$RESERVED_AGENT_IDS $VOICE_CHANNEL_ID"
+fi
 case " $RESERVED_AGENT_IDS " in
   *" $NEW_SLUG "*)
     echo "ERROR: BOT_NAME=\"$BOT_NAME\" gives the id \"$NEW_SLUG\", which is reserved by the system." >&2
     echo "Nothing was changed. Set another BOT_NAME in .env and rerun." >&2
     exit 1 ;;
 esac
+# The voice id is checked against the main agent id, and the migration changes
+# that id: resolve it again as the dashboard will after the migration. If the
+# answer moves (a VOICE_CHANNEL_ID equal to the CURRENT main id becomes valid, or
+# the voice lane would go off), the migration would re-point the owner's voice
+# lane as a side effect -- refused, the operator decides.
+VOICE_CHANNEL_ID_AFTER="$(resolve_voice_channel_id "$INSTALL_DIR/.env" "$FIXED_RESERVED_AGENT_IDS" "$INSTALL_DIR/agents" "$NEW_SLUG")"
+if [ "$VOICE_CHANNEL_ID_AFTER" != "$VOICE_CHANNEL_ID" ]; then
+  echo "ERROR: with the main agent id \"$NEW_SLUG\" the voice channel id would change from \"${VOICE_CHANNEL_ID:-<off>}\" to \"${VOICE_CHANNEL_ID_AFTER:-<off>}\"." >&2
+  echo "Nothing was changed. Set VOICE_CHANNEL_ID (or BOT_NAME) in .env so both agree, and rerun." >&2
+  exit 1
+fi
 # "marveen" is the id the install already runs under: nothing to rename there.
 if [ "$NEW_SLUG" != "marveen" ] && [ -d "$INSTALL_DIR/agents/$NEW_SLUG" ]; then
   echo "ERROR: BOT_NAME=\"$BOT_NAME\" gives the id \"$NEW_SLUG\", which is already a sub-agent (agents/$NEW_SLUG)." >&2

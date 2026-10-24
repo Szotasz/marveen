@@ -130,8 +130,8 @@ describe('web-reading profile posture (TMPLPERM908)', () => {
   // needs. Each assertion pins one item of the PR #1357 fleet review
   // (2026-09-25): a general interpreter sidesteps the whole deny list; store/
   // holds the dashboard and fleet tokens; a raw dashboard POST is any write,
-  // not only memory and messaging (the agent-msg.sh / agent-mem.sh helpers
-  // cover those); /mnt/... paths are one machine's layout, not the product's.
+  // not only memory and messaging (the agent-msg.sh / marveen-api.sh helpers
+  // cover those; agent-mem.sh never existed, #2232); /mnt/... paths are one machine's layout, not the product's.
   it('researcher ships without the injection-exposed grants', () => {
     const p = loadProfileTemplate('researcher')
     const rules = [...p.filesystem.allow, ...(p.additionalDirectories ?? [])]
@@ -140,7 +140,7 @@ describe('web-reading profile posture (TMPLPERM908)', () => {
     expect(p.filesystem.allow.filter(r => /^Bash\(curl\b.*-X\s*POST/i.test(r))).toEqual([])
     expect(rules.filter(r => r.includes('/mnt/'))).toEqual([])
     // the product-needed grants stay
-    expect(p.filesystem.allow).toContain('Bash(bash ${PROJECT_ROOT}/scripts/agent-mem.sh:*)')
+    expect(p.filesystem.allow).toContain('Bash(bash ${PROJECT_ROOT}/scripts/marveen-api.sh:*)')
     expect(p.filesystem.allow).toContain('Bash(pdf2txt.py:*)')
     // The research-inbox write grant is the Edit rule: Write(path) is never consulted (PERMWRITERULE927).
     expect(p.filesystem.allow).toContain('Edit(${PROJECT_ROOT}/research-inbox/**)')

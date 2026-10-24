@@ -20,14 +20,16 @@ export function sanitizeAgentName(raw: string): string {
 
 // Ids the message layer already owns, so a main agent must never take one
 // (FLEETRESERVEDNAME1021). 'system' is the in-process directive sender and is
-// 403'd on every POST lane; 'telegram-coordinator' is 403'd too;
-// 'hanna' (the voice channel) is accepted only from a device key and is framed
-// as the owner; 'heartbeat' and 'channel-coordinator' are hidden as chat
-// threads. A main agent with one of these ids could not send, or would speak
-// as something it is not. Literals, not imports: the shell migration script
-// keeps the same list, and a test pins both to the source constants.
-export const RESERVED_AGENT_IDS: readonly string[] =
-  ['system', 'heartbeat', 'telegram-coordinator', 'channel-coordinator', 'hanna']
+// 403'd on every POST lane; 'telegram-coordinator' is 403'd too; 'heartbeat'
+// and 'channel-coordinator' are hidden as chat threads. A main agent with one
+// of these ids could not send, or would speak as something it is not.
+// Literals, not imports: the shell migration script keeps the same list, and a
+// test pins both to the source constants. This is only the FIXED part: the
+// voice channel id is configurable (VOICECHANNELID1022), so the full list,
+// RESERVED_AGENT_IDS, is built in config.ts. Kept here so this module stays a
+// leaf with no load-time .env read.
+export const FIXED_RESERVED_AGENT_IDS: readonly string[] =
+  ['system', 'heartbeat', 'telegram-coordinator', 'channel-coordinator']
 
 // Same rules as sanitizeAgentName -- used for skill names to prevent path traversal.
 export function sanitizeSkillName(raw: string): string {

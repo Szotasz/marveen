@@ -15,12 +15,12 @@ import { homedir, hostname } from 'node:os'
 import {
   randomBytes, createCipheriv, createDecipheriv, scryptSync,
 } from 'node:crypto'
-import { PROJECT_ROOT, STORE_DIR, MAIN_AGENT_ID, BOT_NAME, BRAND_NAME, OWNER_NAME, CHANNEL_PROVIDER } from '../config.js'
+import { PROJECT_ROOT, STORE_DIR, MAIN_AGENT_ID, BOT_NAME, BRAND_NAME, OWNER_NAME, CHANNEL_PROVIDER, RESERVED_AGENT_IDS } from '../config.js'
 import { channelStateDir, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { updateEnvFile } from '../env.js'
 import { AGENTS_BASE_DIR, listAgentNames, readJsonObjectForWrite } from './agent-config.js'
-import { RESERVED_AGENT_IDS, safeJoin, sanitizeAgentName } from './sanitize.js'
+import { safeJoin, sanitizeAgentName } from './sanitize.js'
 import { importedLabelColor } from '../css-color.js'
 import { SCHEDULED_TASKS_DIR, type ScheduledTaskWritten } from './scheduled-tasks-io.js'
 import { registerScheduledTask } from './schedule-registry.js'
@@ -895,6 +895,13 @@ function validateNames(fleet: FleetJson): string[] {
     if (!SAFE_NAME_RE.test(String(agent.name ?? ''))) {
       errors.push(`Érvénytelen agent.name: "${String(agent.name).slice(0, 60)}"`)
     }
+    // FLEETRESERVEDNAME1021 + VOICECHANNELID1022: a sub-agent under an id the
+    // message layer owns (the voice channel id in effect included) could not
+    // send, or would be framed as something it is not -- refused here like in
+    // POST /api/agents and the agent bundle import.
+    if (RESERVED_AGENT_IDS.includes(String(agent.name ?? ''))) {
+      errors.push(`Reserved agent.name: "${String(agent.name).slice(0, 60)}" is reserved by the system`)
+    }
     // B1: avatarExt defense-in-depth guard (primary enforcement in writeAgentFiles)
     if (agent.avatar && agent.avatarExt !== undefined &&
         !/^(png|jpe?g|webp)$/i.test(String(agent.avatarExt))) {
@@ -1259,8 +1266,8 @@ export function importFleet(
           `INSERT OR IGNORE INTO kanban_cards
            (id, title, description, test_steps, status, assignee, priority, project,
             due_date, start_date, sort_order, created_at, updated_at, archived_at, parent_id, dispatched_at,
-            claimed_by, claimed_at, claim_expires_at, version)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            claimed_by, claimed_at, claim_expires_at, version, done_evidence)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         ).run(c.id, c.title, c.description ?? null, c.test_steps ?? null, c.status, c.assignee ?? null,
           c.priority, c.project ?? null, c.due_date ?? null, c.start_date ?? null, c.sort_order,
           c.created_at, c.updated_at, c.archived_at ?? null, c.parent_id ?? null, c.dispatched_at ?? null,
@@ -1271,7 +1278,8 @@ export function importFleet(
           // The row version rides along too, so a copy read before the move is still
           // checked against the same number after it. An export from an install
           // without the column has none: the NOT NULL column starts at 0.
-          Number.isSafeInteger(c.version) && c.version >= 0 ? c.version : 0)
+          Number.isSafeInteger(c.version) && c.version >= 0 ? c.version : 0,
+          c.done_evidence ?? null)
       }
 
       // kanban comments (idempotent: card_id + content)

@@ -888,13 +888,22 @@ def komment_mod(a):
     _elozmeny_figyelmeztetes(db, a, now)
 
     sets = ', '.join(f'{k}=?' for k in valtozik)
+    ertekek = list(valtozik.values())
+    # DONE-EVIDENCE (#566): a /move-on egy agens csak bizonyitekkal zarhat done-ra. Ezen az uton
+    # a komment KOTELEZO, tehat a komment maga a bizonyitek: ugyanabba az UPDATE-be irjuk a
+    # done_evidence oszlopba, hogy a tabla "ellenorizve" jelzese innen is latsszon. Egy regi DB-n
+    # (nincs oszlop) kimarad, a mozgatas valtozatlan.
+    if valtozik.get('status') == 'done' and any(
+            r[1] == 'done_evidence' for r in db.execute('PRAGMA table_info(kanban_cards)')):
+        sets += ', done_evidence=?'
+        ertekek.append(text.strip())
     # A MOZGATO a tablan: ugyanaz a kisbetus agens-nev, amit a szerver /move-ja actor-kent kap
     # (a dispatch-recept "actor":"<agens>"-et kuld), es amit ez a szkript feladokent hasznal.
     actor = (a.from_agent or a.author).strip().lower()
     # dispatched_at az UPDATE-ben, mint a /move SQL-jeben (KARTYADISPATCH1010).
     nullaz = _dispatch_nullaz(valtozik.get('status', elotte['status']))
     cur = db.execute(f'UPDATE kanban_cards SET {sets}, updated_at=?' + (', dispatched_at=NULL' if nullaz else '')
-                     + ' WHERE id=?', (*valtozik.values(), now, a.id))
+                     + ' WHERE id=?', (*ertekek, now, a.id))
     if cur.rowcount != 1:
         db.rollback()
         sys.exit(f'HIBA: a mezomozgatas {cur.rowcount} sort erintett (1 helyett) -- a komment MAR BEIRT.')

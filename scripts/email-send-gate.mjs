@@ -31,9 +31,9 @@
 // writeAgentSettingsFromProfile() (agent-scaffold.ts), guarded by
 // name !== MAIN_AGENT_ID, and re-applied on every spawn (respawn-safe).
 
-import { readFileSync, realpathSync } from 'node:fs'
+import { closeSync, openSync, readFileSync, readSync, realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
-import { dirname, join } from 'node:path'
+import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
 
 // HOOKDEPLOAD1008: the ledger module is a DYNAMIC import. As a static import, a
@@ -670,6 +670,194 @@ export function isSendInvocation(cmd, depth = 0) {
   }
 }
 
+// SCRIPTSENDGATE1020: a sender script under any name. isSendInvocation knows a
+// Python sender only by the file name send.py, so `python3 helden_send.py --to
+// x@y.hu < body.txt` -- a self-written SMTP script, the usual way a mail goes
+// out on this fleet -- was no send for this gate (measured 2026-10-20). Cheap,
+// local signals close it for the sub-agents. A run is a send when:
+//   1. an interpreter (python, node, tsx, bun, deno) or a directly executed
+//      script is given an e-mail address after --to / --cc / --bcc. This holds
+//      with no script file too (`python3 -m pkg`, `python3 -c ...`);
+//   2. the script file IMPORTS a mail library: an import statement of the
+//      python SMTP modules (smtplib, aiosmtplib, yagmail), or a require /
+//      import of nodemailer for a node script. A bare mention (a comment, a
+//      mock, a regex like this file's own) is no import and passes;
+//   3. one level of local helper modules imported by the script, resolved
+//      next to it, imports one (`from mailhelper import send_mail`);
+//   4. a shell `-c` string (sh, bash, zsh, dash) runs one of the above.
+// A directly executed file (`./x`, `/abs/x`, `x.py`) is read as python or node
+// by its #! line, else by its extension; an extensionless file without a
+// python/node #! line is not judged.
+// Deliberately NOT part of isSendInvocation: that function is the shared
+// contract with the main agent's python gates (send-invocation-cases.json),
+// and on the main agent the owner's single approval in the chat is the rule
+// (owner decision, 2026-10-20). This narrowing is for the sub-agent hard gate
+// only, where every recognised Bash send is denied anyway.
+// Not seen, on purpose (docs/security-hardening.md lists them): mail sent
+// without one of these libraries (Gmail API client, an HTTP mail API, raw
+// socket SMTP, perl/ruby), a script read from stdin or named through a
+// variable, a script reached after `cd dir &&` (resolved against the session
+// cwd), helpers past the first level, an import after the first 1 MiB, and
+// code assembled at runtime.
+const PY_MAIL_MODULE = String.raw`(?:(?:aio)?smtplib|yagmail)`
+const PY_MAIL_IMPORT = new RegExp(
+  String.raw`^[ \t]*(?:import[ \t]+[^\n#]*\b${PY_MAIL_MODULE}\b|from[ \t]+${PY_MAIL_MODULE}\b[^\n]*\bimport\b)` +
+  String.raw`|\bimport_module\(\s*['"]${PY_MAIL_MODULE}['"]`,
+  'm',
+)
+const NODE_MAIL_MODULE = String.raw`['"]nodemailer['"]`
+const NODE_MAIL_IMPORT = new RegExp(
+  String.raw`\brequire\s*\(\s*${NODE_MAIL_MODULE}\s*\)|^[ \t]*import\b[^\n]*${NODE_MAIL_MODULE}|\bimport\s*\(\s*${NODE_MAIL_MODULE}\s*\)`,
+  'm',
+)
+const PY_LOCAL_IMPORT = /^[ \t]*(?:from[ \t]+([\w.]+)[ \t]+import\b|import[ \t]+([\w., \t]+))/gm
+const NODE_LOCAL_IMPORT = /(?:\brequire\s*\(\s*|^[ \t]*import\b[^\n]*?\bfrom\s*|^[ \t]*import\s*|\bimport\s*\(\s*)['"](\.{1,2}\/[^'"\n]+)['"]/gm
+const NODE_EXTS = ['', '.js', '.mjs', '.cjs', '.ts', '/index.js', '/index.mjs', '/index.ts']
+const HELPER_LIMIT = 40
+const ADDRESS_FLAG = /^--(?:to|cc|bcc)(?:=(.*))?$/
+const SCRIPT_FILE = /\.(?:py|mjs|cjs|js|ts)$/i
+const SHELL_C_FLAG = /^-[a-zA-Z]*c[a-zA-Z]*$/
+const SCRIPT_READ_LIMIT = 1024 * 1024
+const SHEBANG_READ_LIMIT = 512
+const SHELL_C_DEPTH = 3
+
+function readScriptHead(path, limit = SCRIPT_READ_LIMIT) {
+  let fd = null
+  try {
+    fd = openSync(path, 'r')
+    const buf = Buffer.alloc(limit)
+    const n = readSync(fd, buf, 0, limit, 0)
+    return buf.subarray(0, n).toString('utf-8')
+  } catch {
+    return null
+  } finally {
+    if (fd !== null) {
+      try { closeSync(fd) } catch { /* already closed */ }
+    }
+  }
+}
+
+function resolveScriptPath(script, cwd) {
+  if (!script || UNDECIDABLE_PATH.test(script)) return null
+  let p = script
+  if (p === '~' || p.startsWith('~/')) p = join(homedir(), p.slice(1))
+  if (isAbsolute(p)) return p
+  return cwd ? resolve(cwd, p) : null
+}
+
+// node/tsx/bun/deno: the first non-option word is the script; -e/--eval code
+// strings are isSendInvocation's to judge.
+function nodeScriptOperand(rest) {
+  for (const t of rest) {
+    if (t === '--') continue
+    if (t.startsWith('-')) return null
+    return t
+  }
+  return null
+}
+
+function addressFlagGiven(rest) {
+  for (let i = 0; i < rest.length; i++) {
+    const m = ADDRESS_FLAG.exec(rest[i])
+    if (!m) continue
+    const val = m[1] ?? rest[i + 1] ?? ''
+    if (val.includes('@')) return true
+  }
+  return false
+}
+
+// 'py' | 'node' | null from a #! line (`#!/usr/bin/python3`, `#!/usr/bin/env -S node`).
+function shebangKind(text) {
+  const m = /^#!\s*(\S+)([^\n]*)/.exec(text ?? '')
+  if (!m) return null
+  let prog = basename(m[1])
+  if (prog === 'env') prog = basename(m[2].trim().split(/\s+/).find((w) => w && !w.startsWith('-') && !w.includes('=')) ?? '')
+  if (PYTHON.test(prog)) return 'py'
+  if (NODEISH.test(prog) && prog !== 'npx') return 'node'
+  return null
+}
+
+// One level of local helpers: modules the script imports, resolved next to it.
+function localHelperPaths(path, text, kind) {
+  const dir = dirname(path)
+  const out = []
+  if (kind === 'py') {
+    for (const m of text.matchAll(PY_LOCAL_IMPORT)) {
+      const names = m[1] ? [m[1]] : m[2].split(',').map((n) => n.trim().split(/\s+/)[0])
+      for (const name of names) {
+        if (!name || name.startsWith('.')) continue
+        const rel = name.split('.').join('/')
+        out.push(join(dir, `${rel}.py`), join(dir, rel, '__init__.py'))
+      }
+    }
+  } else {
+    for (const m of text.matchAll(NODE_LOCAL_IMPORT)) {
+      for (const ext of NODE_EXTS) out.push(resolve(dir, m[1] + ext))
+    }
+  }
+  return [...new Set(out)].filter((p) => p !== path).slice(0, HELPER_LIMIT)
+}
+
+function fileSends(path, text, kind, readScript) {
+  const imports = kind === 'py' ? PY_MAIL_IMPORT : NODE_MAIL_IMPORT
+  if (imports.test(text)) return true
+  return localHelperPaths(path, text, kind).some((h) => {
+    const t = readScript(h)
+    return t !== null && imports.test(t)
+  })
+}
+
+function headRunsSenderScript(toks, cwd, readScript, depth) {
+  if (!toks || !toks.length) return false
+  const prog = basename(toks[0])
+  const rest = toks.slice(1)
+  if (WRAPPER_SHELL.test(prog)) {
+    if (depth >= SHELL_C_DEPTH) return false
+    for (let i = 0; i < rest.length - 1; i++) {
+      if (SHELL_C_FLAG.test(rest[i]) && scriptRunSends(rest[i + 1], cwd, readScript, depth + 1)) return true
+    }
+    return false
+  }
+  let script
+  let kind
+  if (PYTHON.test(prog)) {
+    if (addressFlagGiven(rest)) return true // also under -m / -c, where no file is named
+    script = pythonScriptOperand(rest).script
+    kind = 'py'
+  } else if (NODEISH.test(prog) && prog !== 'npx') {
+    if (addressFlagGiven(rest)) return true
+    script = nodeScriptOperand(rest)
+    kind = 'node'
+  } else if (SCRIPT_FILE.test(toks[0]) || toks[0].includes('/')) {
+    // a directly executed file: its #! line picks the interpreter, else its extension
+    const path = resolveScriptPath(toks[0], cwd)
+    if (!path) return false
+    kind = shebangKind(readScript(path, SHEBANG_READ_LIMIT)) ??
+      (/\.py$/i.test(toks[0]) ? 'py' : SCRIPT_FILE.test(toks[0]) ? 'node' : null)
+    if (!kind) return false
+    if (addressFlagGiven(rest)) return true
+    const text = readScript(path)
+    return text !== null && fileSends(path, text, kind, readScript)
+  } else {
+    return false
+  }
+  if (script === null) return false
+  const path = resolveScriptPath(script, cwd)
+  if (!path) return false
+  const text = readScript(path)
+  return text !== null && fileSends(path, text, kind, readScript)
+}
+
+export function scriptRunSends(cmd, cwd = process.cwd(), readScript = readScriptHead, depth = 0) {
+  let segments
+  try {
+    segments = segmentsTokens(cmd)
+  } catch {
+    return false // unparseable: isSendInvocation's legacy fallback already judged it
+  }
+  return segments.some((toks) => commandHeads(toks).some((h) => headRunsSenderScript(h, cwd, readScript, depth)))
+}
+
 // Outbound-shaped operations of the multiplexed manage_email tool. Each of
 // these sends for real unless the call explicitly asks for a draft.
 const MANAGE_EMAIL_SEND_OPS = new Set(['send', 'reply', 'replyall', 'forward'])
@@ -774,7 +962,7 @@ function ledgerLookup() {
 // (the only path the thread-reply capability below can narrow),
 // 'unverified-recipient' is a draft/manage_email address with no recorded
 // source, and everything else is the sub-agent governance block.
-export function gateDecision(toolName, toolInput, isVerified = null) {
+export function gateDecision(toolName, toolInput, isVerified = null, cwd = process.cwd()) {
   const name = String(toolName ?? '')
   // Lazy: only build the ledger lookup when a call actually carries addresses,
   // so a read-shaped tool call never pays a file read.
@@ -845,6 +1033,7 @@ export function gateDecision(toolName, toolInput, isVerified = null) {
   if (name === 'Bash') {
     const cmd = String(toolInput?.command ?? '')
     if (isSendInvocation(cmd)) return wrapperDepthHit(cmd) ? { deny: true, kind: 'wrapper-depth' } : { deny: true }
+    if (scriptRunSends(cmd, cwd)) return { deny: true, kind: 'script-send' }
   }
   return { deny: false }
 }
@@ -1129,7 +1318,7 @@ if (isInvokedDirectly()) {
   }
   let decision
   try {
-    decision = gateDecision(payload?.tool_name, payload?.tool_input)
+    decision = gateDecision(payload?.tool_name, payload?.tool_input, null, payload?.cwd || process.cwd())
   } catch (err) {
     // HOOKDEPLOAD1008: the call needed the ledger, and the ledger module did
     // not load. Anything else that throws here is not this branch's to judge.

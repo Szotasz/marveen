@@ -21,6 +21,7 @@
 import { createRequire } from 'node:module'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { resolveInBatches, vaultAclMode, dashboardConfigured } from './vault-dashboard-client.mjs'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
 const projectRoot = join(__dirname, '..')
@@ -36,9 +37,6 @@ const projectRoot = join(__dirname, '..')
 process.env.LOG_LEVEL = 'silent'
 process.env.MARVEEN_VAULT_NO_KEYCHAIN_MIGRATION = '1'
 
-// Dynamic import from compiled dist
-const { getSecret } = await import(join(projectRoot, 'dist', 'web', 'vault.js'))
-
 const input = await new Promise(resolve => {
   let data = ''
   process.stdin.setEncoding('utf-8')
@@ -49,6 +47,7 @@ const input = await new Promise(resolve => {
 let malformed = 0
 let refused = 0
 let missing = 0
+const valid = []
 for (const line of input.trim().split('\n')) {
   if (!line.trim()) continue
   const eq = line.indexOf('=')
@@ -60,15 +59,57 @@ for (const line of input.trim().split('\n')) {
     continue
   }
   const envVar = line.slice(0, eq)
-  const secretId = line.slice(eq + 1)
+  const secretId = line.slice(eq + 1).trim()
   // VAULTSZELES826: SSH private keys are consumed only in-process by the SSH feature;
   // this resolver never hands one out (same rule as isSshPrivateKeyId in vault-acl.ts).
-  if (secretId.trim().startsWith('ssh-key-')) {
+  if (secretId.startsWith('ssh-key-')) {
     process.stderr.write(`vault-resolve: refused, SSH private keys are not resolvable here: ${secretId}\n`)
     refused++
     continue
   }
-  const value = getSecret(secretId)
+  // An empty or over-long id is never sent: it counts as missing, like an id the vault does not have.
+  valid.push({ envVar, secretId, unsendable: !secretId || secretId.length > 200 })
+}
+
+// The dashboard first (its vault log, its allowlist); the local vault module only when that cannot be used.
+const ids = [...new Set(valid.filter(v => !v.unsendable).map(v => v.secretId))]
+let fromDashboard = null
+if (ids.length > 0) {
+  const r = await resolveInBatches(projectRoot, ids)
+  if (r.ok) fromDashboard = r
+  else if (vaultAclMode(projectRoot) === 'enforce') {
+    process.stderr.write(`vault-resolve: the dashboard could not be reached (${r.error}); VAULT_ACL_MODE=enforce, nothing is resolved locally\n`)
+    process.exit(malformed > 0 ? 2 : 5)
+  } else if (r.configured) {
+    process.stderr.write(`vault-resolve: WARNING: the dashboard could not be reached (${r.error}); resolving locally, and this read is not in the dashboard's vault log\n`)
+  }
+} else if (valid.length > 0 && (vaultAclMode(projectRoot) === 'enforce' || dashboardConfigured(projectRoot))) {
+  // Only ids that cannot be sent: there is nothing to ask the dashboard. They count as missing, as in its answer; the
+  // local vault is asked only in audit mode without a dashboard token file (the path before the dashboard existed).
+  fromDashboard = { values: Object.create(null), missing: [], refused: [] }
+}
+
+let getSecret = null
+if (!fromDashboard && valid.length > 0) {
+  // Dynamic import from compiled dist
+  ;({ getSecret } = await import(join(projectRoot, 'dist', 'web', 'vault.js')))
+}
+
+for (const { envVar, secretId, unsendable } of valid) {
+  let value = null
+  if (fromDashboard) {
+    // an unsendable id was never sent: it counts as missing
+    const v = !unsendable && Object.prototype.hasOwnProperty.call(fromDashboard.values, secretId) ? fromDashboard.values[secretId] : null
+    if (typeof v === 'string') value = v
+    else if (!unsendable && fromDashboard.refused.some(x => x && x.id === secretId && x.reason === 'acl')) {
+      process.stderr.write(`vault-resolve: refused by the vault allowlist for this agent: ${secretId}\n`)
+      refused++
+      continue
+    }
+  } else if (!unsendable || !dashboardConfigured(projectRoot)) {
+    // with a dashboard token file (the warning fallback) an unsendable id counts as missing here too
+    value = getSecret(secretId)
+  }
   if (value !== null) {
     process.stdout.write(`${envVar}=${value}\n`)
   } else {

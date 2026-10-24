@@ -27,6 +27,7 @@ import {
 import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
 import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, STORE_DIR, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS, KANBAN_LABEL_COLORS_REJECTED, KANBAN_LABEL_COLORS_OVERFLOW, DB_FILENAME } from '../../config.js'
 import { listAgentNames, readAgentDisplayName } from '../agent-config.js'
+import { nicknameFor } from '../team-nicknames.js'
 import { isAgentRunning } from '../agent-process.js'
 import { resolveKanbanDispatch, parseDispatchSkipAgents } from '../../kanban-dispatch.js'
 import { generateBreakdown } from '../llm-breakdown.js'
@@ -62,11 +63,29 @@ const KANBAN_READONLY_FIELDS = new Set<string>([
   // /claim and /release (a PUT must not be a way around the compare-and-set),
   // so they are accepted-and-ignored here, never written.
   'claimed_by', 'claimed_at', 'claim_expires_at',
+  // done_evidence is written only by a move to done (see the /move route);
+  // a whole-card PUT carries it back and must not 400 on it.
+  'done_evidence',
 ])
 
 // Every key POST /api/kanban/:id/move accepts; anything else is a 400, same
 // rule as the PUT above.
-const KANBAN_MOVE_FIELDS = ['status', 'sort_order', 'actor', 'expected_status'] as const
+const KANBAN_MOVE_FIELDS = ['status', 'sort_order', 'actor', 'expected_status', 'evidence'] as const
+
+// Evidence on done (one human, many agents). The owner cannot re-check every
+// card a fleet of agents closes, so an AGENT may only close a card by saying
+// what it checked: a test run, a PR link, a file read back, a measured number.
+// A move to done by an agent without it lands in testing instead, and the
+// answer says why -- the work is kept, it just waits for a look. A human
+// (browser session, or a token caller naming no agent) closes as before.
+export const KANBAN_EVIDENCE_MAX_CHARS = 2000
+
+export function isAgentActor(actor: string | undefined): boolean {
+  if (!actor) return false
+  const a = actor.trim().toLowerCase()
+  if (a === MAIN_AGENT_ID.toLowerCase()) return true
+  return listAgentNames().some((n) => n.toLowerCase() === a)
+}
 
 // A headless agent cannot "drag" a card to done, so the dispatch hands it the
 // exact curl commands to (1) post a short, human-readable result summary as a
@@ -140,11 +159,11 @@ export function kanbanMoveInstructions(id: string, target: string): string {
     `    -H 'Content-Type: application/json' \\`,
     `    -d '{"author":"${target}","content":"AZ EREDMENY ROVIDEN"}'`,
     '',
-    '2) Állítsd a kártyát done-ra:',
+    '2) Állítsd a kártyát done-ra, és az "evidence" mezőbe írd, MIVEL ellenőrizted (teszt eredménye, PR link, visszaolvasott fájl, mért szám). Bizonyíték nélkül a kártya "testing"-be kerül, nem done-ba:',
     `  curl -s -w '\\nHTTP %{http_code}\\n' -X POST ${moveUrl} \\`,
     `    ${auth} \\`,
     `    -H 'Content-Type: application/json' \\`,
-    `    -d '{"status":"done","actor":"${target}","expected_status":"in_progress"}'`,
+    `    -d '{"status":"done","actor":"${target}","expected_status":"in_progress","evidence":"MIVEL ELLENORIZTED"}'`,
     // The close used to be unconditional, so a dispatch read a round late (see
     // the pre-flight comment above) could still drag a card that had moved on
     // (reviewed to testing, closed by someone else, put back to planned) to
@@ -510,7 +529,8 @@ export function isKanbanClaimLockEnabled(): boolean {
 //     prevent. Soft: the dashboard's drag carries no actor and must keep working.
 //   - evidence_warning: closed as done without a single non-system comment since
 //     the work started (no done without evidence). Soft for
-//     the same reason; the warning names the fix.
+//     the same reason; the warning names the fix. Skipped when the move itself
+//     carried "evidence": the closer already said what it checked.
 //   - unblocked: the waiting cards this close released back to planned.
 // Best-effort like the dispatch: the move has already happened, so a failure in
 // here is logged and swallowed rather than turned into a 500.
@@ -519,6 +539,7 @@ export function statusChangeExtras(
   before: Pick<KanbanCard, 'status' | 'claimed_by' | 'claim_expires_at'> | undefined,
   newStatus: unknown,
   actor?: string | null,
+  opts?: { evidenceGiven?: boolean },
 ): Record<string, unknown> {
   const extras: Record<string, unknown> = {}
   if (!before || before.status === newStatus) return extras
@@ -529,7 +550,7 @@ export function statusChangeExtras(
       'Ha nem te vagy, NE dolgozz rajta párhuzamosan: egyeztess vele, vagy várd meg, amíg elengedi.'
   }
   if (newStatus === 'done') {
-    try {
+    if (!opts?.evidenceGiven) try {
       const ev = getDoneEvidence(id)
       if (ev && ev.comments === 0) {
         extras.evidence_warning =
@@ -841,10 +862,18 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
   }
 
   if (path === '/api/kanban/assignees' && method === 'GET') {
-    const agents = listAgentNames().map((name) => ({ name, type: 'agent', displayName: readAgentDisplayName(name) || name }))
+    // `nickname` is the character name behind the portrait. Undefined when
+    // store/team-nicknames.json has no entry, and the board then falls back to
+    // the plain name.
+    const agents = listAgentNames().map((name) => ({
+      name,
+      type: 'agent',
+      displayName: readAgentDisplayName(name) || name,
+      nickname: nicknameFor(name),
+    }))
     json(res, [
-      { name: OWNER_NAME, type: 'owner' },
-      { name: BOT_NAME, type: 'bot' },
+      { name: OWNER_NAME, type: 'owner', nickname: nicknameFor(OWNER_NAME) },
+      { name: BOT_NAME, type: 'bot', nickname: nicknameFor(BOT_NAME) },
       ...agents,
     ])
     return true
@@ -993,6 +1022,15 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
         return true
       }
     }
+    // Evidence on done: the PUT carries no evidence field, so an agent closing a
+    // card through it would skip the rule. A card the agent puts to done here
+    // goes to testing instead -- unless it is already done (a whole-card PUT of
+    // an unrelated edit round-trips status:'done' and must not reopen it).
+    let putNeedsEvidence = false
+    if (data.status === 'done' && isAgentActor(who.actor) && getKanbanCard(id)?.status !== 'done') {
+      data.status = 'testing'
+      putNeedsEvidence = true
+    }
     // PUT to in_progress clears but does not dispatch; /move remains the only
     // dispatch path (KARTYADISPATCH1010). writeKanbanCard applies the shared
     // dispatched_at clear; no fireKanbanDispatch call belongs here.
@@ -1001,7 +1039,17 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     if (written.ok) {
       const after = getKanbanCard(id)
       if (before?.status !== 'done' && after?.status === 'done') notifyUnblockedCards(id, who.actor)
-      json(res, { ok: true, version: written.version, ...archivedNote(after), ...statusChangeExtras(id, before, data.status ?? before?.status, who.actor) })
+      json(res, {
+        ok: true,
+        version: written.version,
+        ...(putNeedsEvidence ? {
+          status: 'testing',
+          evidence_required: true,
+          note: 'An agent closes a card only through POST /api/kanban/:id/move with "evidence". The card was moved to testing, not done.',
+        } : {}),
+        ...archivedNote(after),
+        ...statusChangeExtras(id, before, data.status ?? before?.status, who.actor),
+      })
       return true
     }
     if (written.reason === 'stale') {
@@ -1171,7 +1219,15 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       json(res, { error: `Unknown field(s): ${unknownMoveKeys.join(', ')}. Accepted: ${KANBAN_MOVE_FIELDS.join(', ')}` }, 400)
       return true
     }
-    const { status, sort_order, actor, expected_status } = moveBody as { status: Parameters<typeof moveKanbanCard>[1]; sort_order?: number; actor?: unknown; expected_status?: unknown }
+    const { status, sort_order, actor, expected_status, evidence } = moveBody as { status: Parameters<typeof moveKanbanCard>[1]; sort_order?: number; actor?: unknown; expected_status?: unknown; evidence?: unknown }
+    if (evidence !== undefined && evidence !== null && typeof evidence !== 'string') {
+      json(res, { error: 'evidence must be a string or null' }, 400)
+      return true
+    }
+    if (typeof evidence === 'string' && evidence.length > KANBAN_EVIDENCE_MAX_CHARS) {
+      json(res, { error: `evidence is longer than ${KANBAN_EVIDENCE_MAX_CHARS} characters` }, 400)
+      return true
+    }
     // Optional compare-and-set guard. Absent (undefined/null) keeps the old
     // unconditional move. Present, it must name a real status: an unknown value
     // could never match, and a 409 would wrongly suggest someone else moved it.
@@ -1189,15 +1245,31 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       json(res, { error: who.error }, 400)
       return true
     }
-    if (moveKanbanCard(id, status, sort_order ?? 0, who.actor, hasExpected ? { expectedStatus: expected_status as Parameters<typeof moveKanbanCard>[1] } : undefined)) {
+    const hasEvidence = typeof evidence === 'string' && evidence.trim() !== ''
+    const needsEvidence = status === 'done' && !hasEvidence && isAgentActor(who.actor)
+    const effectiveStatus: Parameters<typeof moveKanbanCard>[1] = needsEvidence ? 'testing' : status
+    const moveOpts = {
+      ...(hasExpected ? { expectedStatus: expected_status as Parameters<typeof moveKanbanCard>[1] } : {}),
+      ...(hasEvidence ? { evidence: evidence as string } : {}),
+    }
+    if (moveKanbanCard(id, effectiveStatus, sort_order ?? 0, who.actor, moveOpts)) {
       // Wake the assigned agent once when the card enters in_progress -- unless
       // that agent is the one who moved it (self-pickup needs no wake-up).
-      if (status === 'in_progress') fireKanbanDispatch(id, who.actor)
+      if (effectiveStatus === 'in_progress') fireKanbanDispatch(id, who.actor)
       // A reorder inside the done column is not a closing: only a real
       // transition to done frees the cards waiting on this one.
       const moved = getKanbanCard(id)
       if (before?.status !== 'done' && moved?.status === 'done') notifyUnblockedCards(id, who.actor)
-      json(res, { ok: true, ...archivedNote(moved), ...statusChangeExtras(id, before, status, who.actor) })
+      json(res, {
+        ok: true,
+        ...(needsEvidence ? {
+          status: 'testing',
+          evidence_required: true,
+          note: 'An agent closes a card only with "evidence" (what it checked: test run, PR link, file read back). Without it the card was moved to testing, not done. Move it to done again with "evidence" set.',
+        } : {}),
+        ...archivedNote(moved),
+        ...statusChangeExtras(id, before, effectiveStatus, who.actor, { evidenceGiven: hasEvidence }),
+      })
       return true
     }
     // Nothing changed: a missing card stays the old 404; an existing card means

@@ -16,6 +16,8 @@
       "Bash(cat:*)",
       "Bash(pwd:*)",
       "Bash(curl:*)",
+      "Bash(bash ${PROJECT_ROOT}/scripts/marveen-api.sh:*)",
+      "Bash(bash ${PROJECT_ROOT}/scripts/agent-msg.sh:*)",
       "WebFetch(*)",
       "WebSearch(*)"
     ],

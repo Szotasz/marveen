@@ -7,9 +7,10 @@ import { logger } from '../../logger.js'
 import { beginRestart, endRestart } from '../restart-lock.js'
 import { restartOptsFromBody } from '../restart-wake.js'
 import { isModelProfileId, MODEL_PROFILE_IDS } from '../../model-profiles.js'
-import { MAIN_AGENT_ID, currentBotName, PROJECT_ROOT } from '../../config.js'
+import { MAIN_AGENT_ID, currentBotName, PROJECT_ROOT, RESERVED_AGENT_IDS } from '../../config.js'
 import { createAgentMessage, listPendingChannelRequests, updateChannelRequestStatus, getDb, claimPendingForAgent, markMessageFailed, countNewerMessagesFromSameSender,
   getAgentToolActivity, getAgentMessageActivity, getAgentCurrentCards } from '../../db.js'
+import { nicknameFor } from '../team-nicknames.js'
 import { deriveAgentStatus, AGENT_STATUS_THRESHOLDS } from '../agent-status.js'
 import type { AgentStatusSignals, AgentStatusRow } from '../agent-status.js'
 import { classifyAgentMessage, wrapAgentMessageForDelivery } from '../agent-message-wrap.js'
@@ -97,6 +98,9 @@ import {
   getProvider,
   channelStateDir,
   readChannelToken,
+  readChannelEnv,
+  teamsSecretExpiry,
+  TEAMS_SECRET_EXPIRY_KEY,
   checkTelegramTokenBusy,
   generateSlackAppManifest,
   getSlackAppSetupInstructions,
@@ -489,6 +493,8 @@ export interface AgentSummary {
   remoteWorkdir: string | null
   session?: string
   hasAvatar: boolean
+  /** Character nickname from store/team-nicknames.json; undefined when unset. */
+  nickname?: string
   autoRestart: AutoRestartConfig
   /** Per-agent context-guard config, carried here for the same reason as
    *  autoRestart: the settings pane renders both from one detail fetch. */
@@ -514,6 +520,8 @@ interface AgentDetail extends AgentSummary {
   mcpJson: string
   skills: { name: string; hasSkillMd: boolean }[]
   hasAvatar: boolean
+  /** Character nickname from store/team-nicknames.json; undefined when unset. */
+  nickname?: string
   hasApiKey: boolean
 }
 
@@ -628,6 +636,7 @@ function getAgentSummary(name: string): AgentSummary {
     remoteWorkdir: remote.workdir,
     session,
     hasAvatar: findAvatarForAgent(name) !== null,
+    nickname: nicknameFor(name),
     autoRestart: readAutoRestartConfig(name),
     contextGuard: readContextGuardConfig(name),
     // GATECTX910: same location the activeModel read above uses. The previous
@@ -671,6 +680,7 @@ function getAgentDetail(name: string): AgentDetail {
     mcpJson,
     skills,
     hasAvatar: findAvatarForAgent(name) !== null,
+    nickname: nicknameFor(name),
     hasApiKey: getSecret(`agent-${name}-api-key`) !== null,
   }
 }
@@ -1121,6 +1131,10 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     // below never sees it: without this, a sub-agent named like the main one
     // is created and shares its id in messages, kanban and memories.
     if (name === MAIN_AGENT_ID) { json(res, { error: 'Name is reserved for the main agent' }, 409); return true }
+    // An id the message layer owns (FLEETRESERVEDNAME1021, with the configured
+    // voice channel id, VOICECHANNELID1022): a sub-agent under it could not
+    // send, or would be framed as something it is not.
+    if (RESERVED_AGENT_IDS.includes(name)) { json(res, { error: 'Name is reserved by the system' }, 409); return true }
     if (existsSync(agentDir(name))) { json(res, { error: 'Agent already exists' }, 409); return true }
 
     scaffoldAgentDir(name)
@@ -1411,16 +1425,24 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const token = readChannelToken(provider, envPath) || (!isMain && provider === 'telegram' ? parseTelegramToken(name) : null)
     if (!token) { json(res, { error: `${provider} not configured for this agent` }, 404); return true }
     const channelProvider = getProvider(provider)
-    const result = await channelProvider.validateToken(token)
+    const channelEnv = readChannelEnv(envPath, [...channelProvider.envKeys, TEAMS_SECRET_EXPIRY_KEY])
+    const result = channelProvider.validateCredentials
+      ? await channelProvider.validateCredentials(channelEnv)
+      : await channelProvider.validateToken(token)
+    const secretExpiry = provider === 'teams' ? teamsSecretExpiry(channelEnv[TEAMS_SECRET_EXPIRY_KEY]) : undefined
+    if (secretExpiry?.state === 'invalid') {
+      logger.warn({ agent: name, value: secretExpiry.value }, 'Teams secret expiry date is not YYYY-MM-DD; ignored')
+    }
     if (result.ok) {
       json(res, {
         ok: true,
         botName: result.botName,
         ...(result.missingScopes ? { scopes: result.scopes, missingScopes: result.missingScopes } : {}),
+        ...(secretExpiry ? { secretExpiry } : {}),
       })
       return true
     }
-    json(res, { error: result.error }, 400)
+    json(res, { error: result.error, ...(secretExpiry ? { secretExpiry } : {}) }, 400)
     return true
   }
 

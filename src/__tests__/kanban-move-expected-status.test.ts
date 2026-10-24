@@ -94,7 +94,8 @@ describe('POST /api/kanban/<id>/move with expected_status', () => {
 
   it('(b) refuses with 409 and leaves a done card done when expected_status is stale', async () => {
     createKanbanCard({ id: 'c-b', title: 'Already closed', assignee: 'dex' })
-    await move('c-b', { status: 'done', actor: 'dex' })
+    // An agent closes with evidence (kanban-done-evidence); without it the card would land in testing.
+    await move('c-b', { status: 'done', actor: 'dex', evidence: 'checked' })
     expect(getKanbanCard('c-b')?.status).toBe('done')
     const updatedBefore = getKanbanCard('c-b')?.updated_at
 

@@ -428,6 +428,15 @@ Ezek a sablonok az ágens scaffold során töltődnek ki és kerülnek az `agent
 
 A profil beállítása az ágens `agent-config.json` `profileId` mezőjével történik, és a dashboard "Ágensek" felületén módosítható.
 
+Strict profilnál a Claude Code `dontAsk` módban fut: a parancs-behelyettesítést (`$(cat <token>)`)
+az engedélylista sosem illeszti, ezért egy ilyen ágens a tokenes `curl`-recepteket nem tudja
+futtatni (#2232). A dashboard-API-t a `scripts/marveen-api.sh` segéden éri el, amely maga olvassa
+a tokent, és minden szöveget fájlból vesz (az igéket a `bash scripts/marveen-api.sh --help`
+sorolja fel). A segéd és a `scripts/agent-msg.sh` a `developer-junior.json` engedélylistáján áll,
+és a generált CLAUDE.md-blokkok strict ágensnél ezt a receptet adják; minden más ágensnél a
+`curl`-recept marad változatlanul. A segéd a tokent csak loopback címre, vagy pontosan az install `.env`-jében álló
+`AGENT_API_ORIGIN` / `DASHBOARD_PUBLIC_URL` címre küldi (`MARVEEN_API_BASE`), és csak `.dashboard-token` nevű fájlból olvassa.
+
 ### toolDeny -- ágensenkénti eszköz-tiltás (kontextus-fogantyú)
 
 Az `agent-config.json` opcionális `toolDeny` mezője csupasz Claude Code eszköznevek listája

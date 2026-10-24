@@ -98,7 +98,7 @@ import { filterInheritableMcpServers, readInheritableMcpServerNames, logNotInher
 import { readEnvFile } from '../env.js'
 import { loadProfileTemplate, profileWantsThinChiefHandoff } from './profiles.js'
 import { resolveAgentSecurityProfile } from './agent-team.js'
-import { enforceStrictPermissionMode, writeAgentSettingsFromProfile, ensureFleetRosterSection, ensureProjectRootInClaudeMd, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSystemDirectiveAuthSection, ensureAgentIdHeaderSection, ensureThinChiefHandoffSection, ensureMemorySearchLabelSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, ensureMessageCloseSection } from './agent-scaffold.js'
+import { enforceStrictPermissionMode, writeAgentSettingsFromProfile, ensureFleetRosterSection, ensureProjectRootInClaudeMd, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSystemDirectiveAuthSection, ensureAgentIdHeaderSection, ensureThinChiefHandoffSection, ensureMemorySearchLabelSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, ensureMessageCloseSection, ensureStrictApiSection } from './agent-scaffold.js'
 import { schedulePluginUnlockAfterRespawn } from './channel-plugin-unlock.js'
 import { recordInjectedPrompt } from './injected-prompt-registry.js'
 import { getSecret } from './vault.js'
@@ -740,6 +740,36 @@ export function resolveMainAgentConfigDir(): string | null {
     return null
   }
   return dir
+}
+
+// True when an explicit MAIN_AGENT_CONFIG_DIR shows no login of its own, so
+// treating it as "the operator logged in here" would start the bot as "Not
+// logged in". REPORTED 2026-10-23 (Linux, v1.44): MAIN_AGENT_CONFIG_DIR pointed
+// at the install user's own ~/.claude, which held no .credentials.json; the
+// launcher unset the fleet token for the explicit dir and the main agent sat
+// at "Not logged in" for about 10 hours. On Linux and Windows a /login writes
+// <dir>/.credentials.json. Other auth set up in the dir counts as its own login
+// too, so such a dir keeps its explicit handling: a non-empty primaryApiKey in
+// <dir>/.claude.json, a non-empty apiKeyHelper in <dir>/settings.json, or a
+// non-empty key / provider switch in that settings.json's env block. On macOS the
+// login lives in the Keychain, so a file check proves nothing there and this
+// always answers false (no change).
+export function explicitConfigDirLacksOwnLogin(dir: string, platform: NodeJS.Platform = process.platform): boolean {
+  if (platform === 'darwin') return false
+  if (existsSync(join(dir, '.credentials.json'))) return false
+  const read = (file: string): Record<string, unknown> => {
+    try {
+      const v: unknown = JSON.parse(readFileSync(join(dir, file), 'utf8'))
+      return v && typeof v === 'object' && !Array.isArray(v) ? v as Record<string, unknown> : {}
+    } catch { return {} }
+  }
+  const set = (v: unknown): boolean => typeof v === 'string' && v.trim() !== ''
+  const settings = read('settings.json')
+  const env = settings.env && typeof settings.env === 'object' ? settings.env as Record<string, unknown> : {}
+  const ownAuth = set(read('.claude.json').primaryApiKey) || set(settings.apiKeyHelper)
+    || ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX']
+      .some((k) => set(env[k]))
+  return !ownAuth
 }
 
 // The main agent's CLAUDE_CONFIG_DIR when the rotation side-car
@@ -2294,6 +2324,8 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
     ensureEvidenceSection(name)
     ensureMcpListChannelSection(name)
     ensureMessageCloseSection(name)
+    // #2232: a strict (dontAsk) agent's recipes for the creation-time text, through the helper.
+    ensureStrictApiSection(name)
     // A sub-agent must load ONLY its own channel plugin. The user-scope
     // enabledPlugins would otherwise make EVERY sub-agent spawn a telegram
     // (and slack/discord) poller that falls back to the main agent's bot

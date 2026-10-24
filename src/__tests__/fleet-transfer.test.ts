@@ -108,6 +108,8 @@ vi.mock('../config.js', () => ({
   BRAND_NAME: 'Marveen',
   OWNER_NAME: 'Szabolcs',
   CHANNEL_PROVIDER: 'telegram',
+  // config.ts builds it from web/sanitize.ts plus the voice channel id in effect.
+  RESERVED_AGENT_IDS: ['system', 'heartbeat', 'telegram-coordinator', 'channel-coordinator', 'hanna'],
 }))
 
 vi.mock('../web/vault-bindings.js', () => ({
@@ -594,6 +596,35 @@ describe('importFleet: avatarExt traversal rejected', () => {
     expect('dryRun' in result).toBe(true)
     const errors = (result as any).errors as string[]
     expect(errors.some(e => e.includes('avatarExt') && e.includes('testbot'))).toBe(true)
+  })
+})
+
+// FLEETRESERVEDNAME1021 + VOICECHANNELID1022: a sub-agent under a reserved id
+// (the voice channel id in effect included) is refused before any write, like
+// POST /api/agents and the agent bundle import.
+describe('importFleet: a sub-agent under a reserved id is refused', () => {
+  const fleetWithAgent = (name: string): string => JSON.stringify({
+    ...JSON.parse(MINIMAL_FLEET),
+    agents: [{ name, config: {}, claudeMd: '', soulMd: '', mcp: {}, settings: {}, channelsAccess: {}, agentSkills: [] }],
+  })
+
+  for (const reserved of ['system', 'heartbeat', 'telegram-coordinator', 'channel-coordinator', 'hanna']) {
+    it(`agent.name "${reserved}" is refused on the dry run and on apply, and nothing is written`, async () => {
+      const { importFleet } = await import('../web/fleet-transfer.js')
+      const { atomicWriteFileSync } = await import('../web/atomic-write.js')
+      const dry = importFleet(fleetWithAgent(reserved), { apply: false }) as { errors?: string[] }
+      expect((dry.errors ?? []).join(' ')).toContain(`Reserved agent.name: "${reserved}"`)
+      vi.mocked(atomicWriteFileSync).mockClear()
+      const applied = importFleet(fleetWithAgent(reserved), { apply: true }) as { errors?: string[] }
+      expect((applied.errors ?? []).join(' ')).toContain(`Reserved agent.name: "${reserved}"`)
+      expect(atomicWriteFileSync).not.toHaveBeenCalled()
+    })
+  }
+
+  it('NEGATIVE CONTROL: an ordinary name raises no reserved error', async () => {
+    const { importFleet } = await import('../web/fleet-transfer.js')
+    const r = importFleet(fleetWithAgent('alpha'), { apply: false }) as { errors?: string[] }
+    expect((r.errors ?? []).join(' ')).not.toContain('Reserved agent.name')
   })
 })
 

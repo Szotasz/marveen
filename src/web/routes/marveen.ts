@@ -10,6 +10,7 @@ import { readMarveenTelegramConfig, readMarveenDiscordConfig, readMarveenSlackCo
 import { hardRestartMarveenChannels } from '../channel-monitor.js'
 import { gateManualRestart, MANUAL_RESTART_FORCE_HINT, wantsForceRestart } from '../manual-restart-gate.js'
 import { readFileOr } from '../agent-config.js'
+import { nicknameFor } from '../team-nicknames.js'
 import { parseMultipart } from '../multipart.js'
 import { readBody, json, serveFile } from '../http-helpers.js'
 import { MAIN_CHANNELS_SESSION } from '../main-agent.js'
@@ -60,6 +61,12 @@ export function buildMarveenIdentityCore(
   }
 }
 
+// CORPAVATAR1024 (owner decision 2026-10-18): the bot's and the owner's portraits stay
+// public (auth-gate exempts these two GETs), but no other website may embed them. The
+// dashboard and the Bridge webview load them by a relative URL, from the dashboard's own
+// origin, which same-origin allows; another site's <img> is refused by the browser.
+const AVATAR_CORP = 'same-origin'
+
 export async function tryHandleMarveen(ctx: RouteContext, webDir: string): Promise<boolean> {
   const { req, res, path, method } = ctx
 
@@ -90,6 +97,8 @@ export async function tryHandleMarveen(ctx: RouteContext, webDir: string): Promi
       // this to pin/label the owner's own message thread instead of a hardcoded
       // literal, so a renamed install recognizes its real owner.
       ownerName: currentOwnerName(),
+      // Character nickname (store/team-nicknames.json), same field as on /api/agents.
+      nickname: nicknameFor(currentBotName()),
       description,
       model: getActiveMarveenModel(),
       tmuxSession: MAIN_CHANNELS_SESSION,
@@ -176,6 +185,7 @@ export async function tryHandleMarveen(ctx: RouteContext, webDir: string): Promi
   }
 
   if (path === '/api/marveen/avatar' && method === 'GET') {
+    res.setHeader('Cross-Origin-Resource-Policy', AVATAR_CORP)
     // Avatars are ~1MB each and rarely change: let browsers reuse them for an
     // hour without a round-trip (an avatar swapped in another session shows up
     // after at most 1h, then ETag revalidation; the swapping session itself
@@ -186,6 +196,23 @@ export async function tryHandleMarveen(ctx: RouteContext, webDir: string): Promi
     }
     const fallback = join(webDir, 'avatars', '01_robot.png')
     if (existsSync(fallback)) { serveFile(req, res, fallback, { cacheSeconds: 3600 }); return true }
+    res.writeHead(404); res.end()
+    return true
+  }
+
+  // The owner's own portrait, for the kanban lanes and the owner strip.
+  // Read-only on purpose: there is no upload route, the picture is put in place
+  // on disk (store/owner-avatar.{png,jpg,jpeg,webp}), the same way an agent
+  // avatar is. No gallery fallback either: a generic robot standing in for the
+  // owner would be worse than the initial the board already draws, and the
+  // frontend falls back to that initial on a 404. no-cache (revalidate) rather
+  // than a max-age, because nothing busts the URL when the file is replaced.
+  if (path === '/api/marveen/owner-avatar' && method === 'GET') {
+    res.setHeader('Cross-Origin-Resource-Policy', AVATAR_CORP)
+    for (const ext of ['.png', '.jpg', '.jpeg', '.webp']) {
+      const p = join(PROJECT_ROOT, 'store', `owner-avatar${ext}`)
+      if (existsSync(p)) { serveFile(req, res, p); return true }
+    }
     res.writeHead(404); res.end()
     return true
   }

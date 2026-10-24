@@ -31,9 +31,9 @@ export const FLEET_RESTART_GAP_MS = 5_000
  * Mirrors the launcher's rule (agent-process.ts startAgentProcess, the
  * oauthTokenEnv branches): a Claude-model sub-agent with no configured config
  * dir (no resolving claudePlan configDir, no raw claudeConfigDir), whose
- * authMode is neither 'api' (own API key) nor 'own_team' (own /login), and
- * that runs on this host. Everything else keeps its own credential and must
- * be left alone.
+ * authMode is neither 'api' (own API key) nor 'own_team' (own /login), that
+ * has no own setup-token file (oauthTokenFile, #1511), and that runs on this
+ * host. Everything else keeps its own credential and must be left alone.
  */
 export function agentUsesFleetToken(input: {
   name: string
@@ -45,12 +45,19 @@ export function agentUsesFleetToken(input: {
   configuredConfigDir: string | null
   /** Agent runs on another host (remote agent): its token lives there. */
   remote: boolean
+  /**
+   * The agent's agent-config.json names its own setup-token file (oauthTokenFile,
+   * #1511), set or invalid: the launcher then exports that file's token, or
+   * refuses to start, and never falls back to the fleet token (#2227).
+   */
+  ownTokenFile: boolean
 }): boolean {
   if (input.name === input.mainAgentId) return false
   if (input.remote) return false
   if (!input.model.startsWith('claude-')) return false
   if (input.authMode === 'api' || input.authMode === 'own_team') return false
   if (input.configuredConfigDir) return false
+  if (input.ownTokenFile) return false
   return true
 }
 
