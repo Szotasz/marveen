@@ -1631,9 +1631,14 @@ def collect_channel_body(tool_input: dict, unescape_mdv2: bool) -> str:
     # tapped label is what the recipient sees and sends back. A label this gate
     # did not read would be the silent zero above, so every label joins the body;
     # a value that is not a list is read as it is (the loud side).
+    # DCBTN1023: the Discord reply tool's buttons (scripts/patch-discord-plugin.py)
+    # are objects, {label, style}: only the label is shown, so only the label is
+    # read -- the dict's own words (label, style, success) would be ASCII noise in
+    # the accent ratio. An object without a string label is read as it is.
     buttons = tool_input.get("buttons")
     if isinstance(buttons, (list, tuple)):
-        got += [str(b) for b in buttons if str(b).strip()]
+        got += [s for s in (str(b["label"]) if isinstance(b, dict) and isinstance(b.get("label"), str) else str(b)
+                            for b in buttons) if s.strip()]
     elif buttons:
         got.append(str(buttons))
     joined = "\n".join(got)

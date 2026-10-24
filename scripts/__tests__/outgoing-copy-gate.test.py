@@ -355,6 +355,28 @@ def main():
         check("tiszta gombfeliratok atmennek (exit 0)", code, 0)
         code, out, err = run_hook(gombos([]), rules_file=active)
         check("ures gomblista (a billentyuzet levetele) atmegy (exit 0)", code, 0)
+        # DCBTN1023: a Discord reply tool gombjai objektumok ({label, style}); a
+        # felirat ott is kimeno szoveg, az objektum sajat szavai (label, style) nem.
+        def dc_gombos(buttons):
+            return {"tool_name": "mcp__plugin_discord_discord__reply",
+                    "tool_input": {"chat_id": "1", "text": CLEAN_HU_OK, "buttons": buttons}}
+        code, out, err = run_hook(dc_gombos([{"label": "Igen", "style": "success"}, {"label": "Nem — később", "style": "danger"}]),
+                                  rules_file=active)
+        check("Discord: gondolatjel a gomb label-jeben blokkol (exit 2)", code, 2)
+        code, out, err = run_hook(dc_gombos([{"label": "Igen", "style": "success"}, {"label": "Nem", "style": "danger"}]),
+                                  rules_file=active)
+        check("Discord: tiszta gomb-objektumok atmennek (exit 0)", code, 0)
+        # Ami a kapuhoz jut: CSAK a feliratok, az objektum szavai (label, style,
+        # success) nem -- azok ASCII-zajkent huznak le az ekezet-aranyon.
+        probe = subprocess.run(
+            [sys.executable, "-c",
+             "import importlib.util,sys,json\n"
+             "spec=importlib.util.spec_from_file_location('g',sys.argv[1]); g=importlib.util.module_from_spec(spec); spec.loader.exec_module(g)\n"
+             "print(json.dumps(g.collect_channel_body(json.loads(sys.argv[2]), False)))",
+             HOOK, json.dumps({"text": "Mehet?", "buttons": [{"label": "Igen", "style": "success"}, {"label": "Nem"}, {"style": "danger"}, "Talán"]})],
+            capture_output=True, text=True, timeout=20)
+        check("Discord: a kapu a gomb-objektumbol csak a feliratot olvassa",
+              json.loads(probe.stdout or "null"), "Mehet?\nIgen\nNem\n{'style': 'danger'}\nTalán")
 
         # --- GMAILCONNECTOR914: the claude.ai Gmail connector ----------------
         # mcp__claude_ai_Gmail__send_message carries ONE underscore before Gmail,

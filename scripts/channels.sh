@@ -1539,6 +1539,21 @@ if [ "$CHANNEL_PROVIDER" = "telegram" ]; then
   fi
 fi
 
+# Discord answer buttons (DCBTN1023): the plugin's reply tool gets an optional
+# `buttons` list. Same rules as the Telegram patch above: before the plugin is
+# spawned, only the cache this session launches from, idempotent, a missing
+# anchor leaves the file unchanged with one loud line, never fails the start.
+# Also when Discord is only co-listened (CHANNEL_PLUGINS_EXTRA).
+case " $CHANNEL_PROVIDER $CHANNEL_PLUGINS_EXTRA " in
+  *" discord "*|*" discord@"*)
+    if [ -n "$CFG_ENV" ]; then
+      CLAUDE_CONFIG_DIR="$_cfg_dir" python3 "$INSTALL_DIR/scripts/patch-discord-plugin.py" --state "$INSTALL_DIR/store/discord-plugin-patch.json" 2>> "$INSTALL_DIR/store/channels-failures.log" || true
+    else
+      python3 "$INSTALL_DIR/scripts/patch-discord-plugin.py" --state "$INSTALL_DIR/store/discord-plugin-patch.json" 2>> "$INSTALL_DIR/store/channels-failures.log" || true
+    fi
+    ;;
+esac
+
 # Hybrid channel-coordinator model: the native plugin stays the PRIMARY inbound
 # path (it always polls getUpdates here -- never outbound-only). The standalone
 # marveen-channel-coordinator only BACKFILLS while this session's plugin is
