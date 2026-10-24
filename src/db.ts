@@ -1124,6 +1124,7 @@ export function initDatabase(dbPathOverride?: string): void {
   // sets it; POST /api/messages never does, so a 1 here is authenticated by construction.
   // 0 for every older row.
   try { db.exec('ALTER TABLE agent_messages ADD COLUMN stop_authorized INTEGER NOT NULL DEFAULT 0') } catch { /* exists */ }
+  try { db.exec('ALTER TABLE agent_messages ADD COLUMN requeued_at INTEGER') } catch { /* exists */ }
 
   // INVARIANT: a row that says 'delivered' must carry a delivered_at.
   //
@@ -4992,6 +4993,50 @@ export function markMessageDone(id: number, result?: string): boolean {
 export function markMessageFailed(id: number, error?: string): boolean {
   const now = Math.floor(Date.now() / 1000)
   return db.prepare("UPDATE agent_messages SET status = 'failed', result = ?, completed_at = ? WHERE id = ?").run(error ?? null, now, id).changes > 0
+}
+
+// The result text the router stores when it abandons a message because the
+// target session was absent for the whole retry window.
+export const ABANDONED_SESSION_ABSENT = 'Abandoned: target session absent for full retry window'
+
+export interface RequeueAbandonedOpts { maxAgeSec?: number; cap?: number; now?: number }
+
+// Put an agent's messages that were abandoned while its session was down back
+// in its queue. Each row is revived at most once (requeued_at), so a row that is
+// abandoned again stays failed and does not re-notify. A row is skipped when the
+// same sender has sent the same recipient anything after the abandon (it re-sent
+// or moved on after being told the handoff failed). Of the candidates created
+// within `maxAgeSec`, the cap picks the newest by created_at. The rows
+// themselves go back to 'pending' (not copies), so delivery shows their real age.
+// Returns the requeued ids, oldest first.
+export function requeueAbandonedForAgent(agent: string, opts: RequeueAbandonedOpts = {}): number[] {
+  const maxAgeSec = opts.maxAgeSec ?? 7 * 24 * 3600
+  const cap = opts.cap ?? 20
+  const now = opts.now ?? Math.floor(Date.now() / 1000)
+  if (cap <= 0 || maxAgeSec <= 0) return []
+  return db.transaction(() => {
+    const rows = db.prepare(
+      `SELECT m.id FROM agent_messages m
+       WHERE m.to_agent = ? AND m.status = 'failed' AND m.result = ? AND m.created_at >= ?
+         AND m.requeued_at IS NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM agent_messages n
+           WHERE n.from_agent = m.from_agent AND n.to_agent = m.to_agent
+             AND n.id > m.id AND n.created_at >= COALESCE(m.completed_at, m.created_at)
+         )
+       ORDER BY m.created_at DESC, m.id DESC
+       LIMIT ?`
+    ).all(agent, ABANDONED_SESSION_ABSENT, now - maxAgeSec, cap) as { id: number }[]
+    const upd = db.prepare(
+      "UPDATE agent_messages SET status = 'pending', result = NULL, completed_at = NULL, delivered_at = NULL, requeued_at = ? WHERE id = ? AND status = 'failed' AND result = ? AND requeued_at IS NULL"
+    )
+    const kept: number[] = []
+    for (const { id } of rows) {
+      if (upd.run(now, id, ABANDONED_SESSION_ABSENT).changes === 1) kept.push(id)
+    }
+    // Selected newest first by created_at; hand them back oldest first.
+    return kept.reverse()
+  })()
 }
 
 // Close a message that is still OPEN (pending or delivered), atomically: the
