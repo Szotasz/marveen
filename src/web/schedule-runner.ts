@@ -2282,10 +2282,11 @@ async function attemptFireTask(
 }
 
 // A worksource agent takes this prompt through its queue instead of the
-// keyboard. The queue's reader acknowledges each item and re-offers what the
-// agent never acknowledged, so the typing-specific machinery of the typed path
-// (idle wait, resubmit chain, delivery-integrity check, lost re-injection) does
-// not apply; the busy-timeout alert still does. Everything attemptFireTask ran
+// keyboard. The agent acknowledges each item (work_complete) and the queue's
+// reader re-offers what stays unacknowledged, so the typing-specific machinery
+// of the typed path (idle wait, resubmit chain, delivery-integrity check, lost
+// re-injection) does not apply; the busy-timeout alert still does. Everything
+// attemptFireTask ran
 // before handing over -- every gate from the restart check to the MCP pre-check
 // -- already ran unchanged. The content is `fullPrompt` byte for byte: the same
 // string the typed path would type, so an agent on the queue reads the same task.
