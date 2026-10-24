@@ -7,6 +7,7 @@ import { readEnvFile } from './env.js'
 import { parseLabelPalette } from './css-color.js'
 import { resolveFleetVenvDir } from './fleet-venv.js'
 import { DISTRIBUTION_DEFAULT_AGENT_MODEL } from './config-registry.js'
+import { FIXED_RESERVED_AGENT_IDS } from './web/sanitize.js'
 import { getProviderType, getChannelToken, getChannelChatId, type ChannelProviderType } from './channel-provider.js'
 
 const __dirname = dirname(fileURLToPath(import.meta.url))
@@ -303,6 +304,31 @@ export const MAIN_AGENT_ID = env['MAIN_AGENT_ID'] ?? 'marveen'
 // heartbeat-agent-scaffold) so agent-scaffold can key gates on it without an
 // import cycle: heartbeat-agent-scaffold already imports agent-scaffold.
 export const HEARTBEAT_AGENT_ID = 'heartbeat'
+
+// The voice channel's sender id (VOICECHANNELID1022): the external voice relay
+// posts the owner's dictation under it (HANGCSATORNA918). Unset keeps 'hanna'.
+// It must be a canonical agent id (lowercase a-z, 0-9, single inner dashes, at
+// most 50 characters) and not a fixed reserved id, because the route compares the
+// sanitized sender to it exactly. An invalid value falls back to the default and
+// is exported in VOICE_CHANNEL_ID_INVALID for routes/messages.ts to log.
+export const DEFAULT_VOICE_CHANNEL_ID = 'hanna'
+const VOICE_CHANNEL_ID_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
+export function resolveVoiceChannelId(raw: string | undefined): { id: string; invalid?: string } {
+  const v = (raw ?? '').trim()
+  if (!v) return { id: DEFAULT_VOICE_CHANNEL_ID }
+  if (v.length > 50 || !VOICE_CHANNEL_ID_RE.test(v) || FIXED_RESERVED_AGENT_IDS.includes(v)) {
+    return { id: DEFAULT_VOICE_CHANNEL_ID, invalid: v }
+  }
+  return { id: v }
+}
+const voiceChannel = resolveVoiceChannelId(env['VOICE_CHANNEL_ID'])
+export const VOICE_CHANNEL_ID = voiceChannel.id
+export const VOICE_CHANNEL_ID_INVALID = voiceChannel.invalid
+
+// The full reserved-id list (FLEETRESERVEDNAME1021): the fixed ids from
+// web/sanitize.ts plus the voice channel id in effect. No main agent may take
+// one of these.
+export const RESERVED_AGENT_IDS: readonly string[] = [...FIXED_RESERVED_AGENT_IDS, VOICE_CHANNEL_ID]
 
 // Identifier the OS service manager uses for the main agent's units (launchd
 // label com.<id>.channels / com.<id>.dashboard, systemd <id>-channels, etc.).

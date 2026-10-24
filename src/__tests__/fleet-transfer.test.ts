@@ -108,6 +108,8 @@ vi.mock('../config.js', () => ({
   BRAND_NAME: 'Marveen',
   OWNER_NAME: 'Szabolcs',
   CHANNEL_PROVIDER: 'telegram',
+  // config.ts builds it from web/sanitize.ts plus the voice channel id in effect.
+  RESERVED_AGENT_IDS: ['system', 'heartbeat', 'telegram-coordinator', 'channel-coordinator', 'hanna'],
 }))
 
 vi.mock('../web/vault-bindings.js', () => ({

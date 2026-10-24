@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from
 import { EventEmitter } from 'node:events'
 import { mkdirSync, rmSync } from 'node:fs'
 import { agentDir } from '../web/agent-config.js'
-import { compareDeliveryOrder, deliveryRank, rankedSenders, COORDINATOR_SENDER_ID, VOICE_CHANNEL_SENDER_ID } from '../delivery-order.js'
+import { compareDeliveryOrder, deliveryRank, rankedSenders, COORDINATOR_SENDER_ID, voiceChannelSenderId } from '../delivery-order.js'
 import { COORDINATOR_AGENT_ID, VOICE_CHANNEL_AGENT_ID } from '../channel-coordinator/ingest.js'
 import {
   initDatabase,
@@ -398,7 +398,7 @@ describe('review point 1: system and owner rows rank above a peer high, so a pri
 
   it('the rank in TS and in SQL agree, and the sender ids are the coordinator\'s own constants', () => {
     expect(COORDINATOR_SENDER_ID).toBe(COORDINATOR_AGENT_ID)
-    expect(VOICE_CHANNEL_SENDER_ID).toBe(VOICE_CHANNEL_AGENT_ID)
+    expect(voiceChannelSenderId()).toBe(VOICE_CHANNEL_AGENT_ID)
     expect(rankedSenders()).toEqual(expect.arrayContaining(['system', COORDINATOR_AGENT_ID, VOICE_CHANNEL_AGENT_ID, OWNER_NAME.trim()]))
     expect(deliveryRank({ priority: 0, from_agent: 'system' })).toBe(2)
     expect(deliveryRank({ priority: 0, from_agent: 'kuldo-x' })).toBe(0)
