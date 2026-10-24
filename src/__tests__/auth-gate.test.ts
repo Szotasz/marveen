@@ -47,6 +47,12 @@ describe('requiresAuth (gated-path predicate)', () => {
     expect(requiresAuth('/api/auth/users', 'POST')).toBe(true)
     expect(requiresAuth('/.well-known/fleetq', 'GET')).toBe(true)
   })
+  it('keeps the public owner portrait an exact GET match, not a prefix', () => {
+    expect(requiresAuth('/api/marveen/config', 'GET')).toBe(true)
+    expect(requiresAuth('/api/marveen/owner-avatar/', 'GET')).toBe(true)
+    expect(requiresAuth('/api/marveen/owner-avatarx', 'GET')).toBe(true)
+    expect(requiresAuth('/api/marveen/owner-avatar', 'POST')).toBe(true)
+  })
   it('does not gate non-api static paths', () => {
     expect(requiresAuth('/', 'GET')).toBe(false)
     expect(requiresAuth('/app.js', 'GET')).toBe(false)
