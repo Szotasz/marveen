@@ -222,11 +222,25 @@ def owner_cc_address() -> str:
     return ""
 
 
+# The Graph mail tool names (email_extract's _MS365_SEND/_DRAFT_SEND/_DRAFT_SUFFIXES),
+# copied so this precheck needs no module load; a test keeps the two in step.
+_MS365_TOOL_SUFFIXES = (
+    "send_mail", "send_shared_mailbox_mail", "reply_mail_message", "reply_all_mail_message",
+    "forward_mail_message", "reply_shared_mailbox_mail", "reply_all_shared_mailbox_mail",
+    "forward_shared_mailbox_mail", "forward_calendar_event", "reply_to_group_thread",
+    "send_draft_message", "send_shared_mailbox_draft",
+    "create_draft_email", "create_shared_mailbox_draft", "create_reply_draft", "create_reply_all_draft",
+    "create_forward_draft", "create_shared_mailbox_reply_draft", "create_shared_mailbox_reply_all_draft",
+    "create_shared_mailbox_forward_draft", "update_mail_message", "update_shared_mailbox_message")
+
+
 def _maybe_ms365_tool(tool: str) -> bool:
-    """A Microsoft Graph MCP tool name is hyphenated in its last segment; only such a name can
-    be one (email_extract.ms365_tool_kind decides), so any other call never loads the
-    extractor for these reads (HOOKDEPLOAD1008)."""
-    return "-" in str(tool or "").lower().rsplit("__", 1)[-1]
+    """Only a name hyphenated in its last segment AND ending in a Graph mail tool's name can be
+    one (email_extract.ms365_tool_kind decides), so any other call -- a hyphenated non-Graph
+    send-email or create-draft included -- never loads the extractor for these reads
+    (HOOKDEPLOAD1008)."""
+    raw = str(tool or "").lower()
+    return "-" in raw.rsplit("__", 1)[-1] and raw.replace("-", "_").endswith(_MS365_TOOL_SUFFIXES)
 
 
 def owner_cc_missing(tool_input: dict, owner: str, tool: str = "", draft: bool = False) -> bool:

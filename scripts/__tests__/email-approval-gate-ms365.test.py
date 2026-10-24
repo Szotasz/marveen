@@ -24,13 +24,19 @@ Branches proven:
     (a userId is not a send-mail key), SaveToSentItems is in the anchor, a
     content without contentType is not anchorable, and the anchor's id/op tokens
     are never addresses (a userId:owner token does not satisfy owner CC).
+  - SECURITY review round 3: with email_extract.py broken, a hyphenated NON-Graph tool
+    (create-draft, send-email) keeps its flat owner-CC and ledger decision; only a Graph
+    tool name needs the extractor there, and the gate's copy of the Graph names matches
+    the extractor's.
 
 Run: python3 <thisfile>   Exit 0 = all pass.
 """
+import ast
 import importlib.util
 import json
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -81,12 +87,12 @@ def owner_store(root, level, owner=OWNER):
     return store
 
 
-def run_gate(store, payload):
+def run_gate(store, payload, gate=GATE):
     env = dict(os.environ,
                EMAIL_APPROVAL_GATE_STORE=store,
                EMAIL_APPROVAL_WINDOW_S=str(WINDOW),
                OUTGOING_COPY_GATE_RULES=os.path.join(store, "no-rules.json"))
-    proc = subprocess.run([sys.executable, GATE], input=json.dumps(payload).encode(),
+    proc = subprocess.run([sys.executable, gate], input=json.dumps(payload).encode(),
                           capture_output=True, env=env)
     return proc.returncode, proc.stdout.decode(), proc.stderr.decode()
 
@@ -389,6 +395,42 @@ with tempfile.TemporaryDirectory() as td:
           code == 2 and "NINCS jovahagyas" in err and anchor_from_stderr(err) is not None
           and "Graph" not in err, f"exit={code} err={err[:220]!r}")
 
+    # --- a broken extractor: a hyphenated NON-Graph tool decides as before -----------
+    # Only a Graph tool NAME needs the extractor for the owner-CC and ledger reads; another
+    # server's create-draft or send-email keeps the flat read, which loads nothing
+    # (HOOKDEPLOAD1008). A disposable copy of scripts/hooks + scripts/lib, the extractor broken.
+    def broken_gate(dst):
+        skip = shutil.ignore_patterns("__pycache__")
+        shutil.copytree(HOOKS, os.path.join(dst, "scripts", "hooks"), ignore=skip)
+        shutil.copytree(os.path.join(os.path.dirname(HOOKS), "lib"), os.path.join(dst, "scripts", "lib"), ignore=skip)
+        with open(os.path.join(dst, "scripts", "hooks", "email_extract.py"), "a", encoding="utf-8") as fh:
+            fh.write("<" * 7 + " Updated upstream\n")  # assembled: this file holds no marker line
+        return os.path.join(dst, "scripts", "hooks", "email-approval-gate.py")
+    bg = broken_gate(os.path.join(td, "broken-extract"))
+    st = owner_store(os.path.join(td, "broken-owner"), 3)
+    code, _, err = run_gate(st, {"tool_name": "mcp__x__create-draft", "tool_input": {
+        "to": [OWNER], "subject": "Teszt targy", "body": "Kedves Ugyfelunk!"}}, gate=bg)
+    check("broken extractor, owner CC: a hyphenated non-Graph draft with the owner in `to` passes as before",
+          code == 0, f"exit={code} err={err[:200]!r}")
+    code, _, err = run_gate(st, call("create-draft-email", {"body": {
+        "subject": "Teszt targy", "body": {"contentType": "Text", "content": "Kedves Ugyfelunk!"},
+        "toRecipients": recipients(OWNER)}}), gate=bg)
+    check("broken extractor, owner CC: a Graph draft still needs the extractor and is DENIED, naming it",
+          code == 2 and "email_extract.py" in err and "nem toltheto be" in err, f"exit={code} err={err[:200]!r}")
+    code, _, err = run_gate(st, {"tool_name": "mcp__harder-mail__send_mail", "tool_input": {
+        "account": "ceges", "to": [OWNER], "subject": "Teszt targy", "body": "Kedves Ugyfelunk!"}}, gate=bg)
+    check("broken extractor, owner CC: the harder-mail send_mail (Graph's name, underscored) passes as before",
+          code == 0, f"exit={code} err={err[:200]!r}")
+    st = ledger_store(os.path.join(td, "broken-ledger"), 3, ["known@example.com"])
+    flat = lambda to: {"tool_name": "mcp__x__send-email", "tool_input": {
+        "to": [to], "subject": "Teszt targy", "body": "Kedves Ugyfelunk!"}}
+    code, _, err = run_gate(st, flat("known@example.com"), gate=bg)
+    check("broken extractor, ledger on: a hyphenated non-Graph send to a known address passes as before",
+          code == 0, f"exit={code} err={err[:200]!r}")
+    code, _, err = run_gate(st, flat("invented@example.org"), gate=bg)
+    check("broken extractor, ledger on: its flat ledger check still runs (an unknown address is denied)",
+          code == 2 and "Nem igazolt cimzett: invented@example.org" in err, f"exit={code} err={err[:200]!r}")
+
     # --- the extractor itself ---------------------------------------------------------
     spec = importlib.util.spec_from_file_location("email_extract_ms365_test", os.path.join(HOOKS, "email_extract.py"))
     ee = importlib.util.module_from_spec(spec)
@@ -401,6 +443,12 @@ with tempfile.TemporaryDirectory() as td:
     check("ms365_send_fields: a reply's anchor holds its messageId and its op",
           reason is None and to == ["messageId:m9", "op:reply_mail_message"] and text == "Rendben.",
           f"to={to} text={text!r} reason={reason!r}")
+    gate_names = next(ast.literal_eval(n.value) for n in ast.parse(open(GATE, encoding="utf-8").read()).body
+                      if isinstance(n, ast.Assign) and getattr(n.targets[0], "id", "") == "_MS365_TOOL_SUFFIXES")
+    ee_names = set(ee._MS365_SEND_SUFFIXES) | set(ee._MS365_DRAFT_SEND_SUFFIXES) | set(ee._MS365_DRAFT_SUFFIXES)
+    check("the gate's local copy of the Graph tool names is the extractor's",
+          set(gate_names) == ee_names and len(gate_names) == len(ee_names),
+          f"only gate={sorted(set(gate_names) - ee_names)} only extractor={sorted(ee_names - set(gate_names))}")
     check("classify_mail_tool: send-mail is a send, list-mail-messages is not",
           ee.classify_mail_tool("mcp__ms365__send-mail") == "connector_send"
           and ee.classify_mail_tool("mcp__ms365__list-mail-messages") is None)
