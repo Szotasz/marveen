@@ -131,6 +131,29 @@ describe('agent-terminal async liveness probe', () => {
     s!.req.emit('close')
   })
 
+  it('a has-session probe that outlives its 3 s timeout counts as not running', async () => {
+    // The fake would answer "alive" -- but only after 6 s, past the 3 s the probe
+    // allows, so the answer must never arrive. FAKE_CAPTURE_FAIL makes the tick's
+    // capture-pane fail too, so the stream's `running` comes from a has-session
+    // probe rather than from a successful capture (resolveTarget probes once, the
+    // tick's fallback then probes again: two probes, each killed near its 3 s).
+    process.env.FAKE_ALIVE = '1'
+    process.env.FAKE_SLEEP = '6'
+    process.env.FAKE_CAPTURE_FAIL = '1'
+    const t0 = Date.now()
+    const s = await openStream(MAIN_AGENT_ID)
+    await firstEvent(s.events)
+    const took = Date.now() - t0
+    expect(s.status).toBe(200)
+    expect(parsed(s.events)[0]).toEqual({ pane: '', running: false })
+    // ~6 s for two killed probes, not the ~12 s waiting them out would take
+    expect(took).toBeGreaterThanOrEqual(5500)
+    expect(took).toBeLessThan(10_000)
+    expect(log()).toContain('start has-session')
+    expect(log()).not.toContain('end has-session')
+    s.req.emit('close')
+  }, 15_000)
+
   it('a live main session streams the pane and the tick does not probe', async () => {
     process.env.FAKE_ALIVE = '1'
     const s = await openStream(MAIN_AGENT_ID)
