@@ -233,3 +233,10 @@ export function parseEtimeToSeconds(etime: string): number {
   if (minutes > 59 || seconds > 59) return -1
   return days * 86400 + hours * 3600 + minutes * 60 + seconds
 }
+
+// `ps -o etime=` output -> milliseconds, -1 when it cannot be parsed. Shared by the
+// sync and the async process-age probe in channel-monitor.ts so the two cannot drift.
+export function etimeOutputToMs(out: string): number {
+  const secs = parseEtimeToSeconds(out)
+  return secs < 0 ? -1 : secs * 1000
+}
