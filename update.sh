@@ -375,10 +375,30 @@ STASHED_AUTO=0
 # Exclude it from the dirty check; the preflight ignores it too. It will be
 # auto-overwritten on the next heartbeat anyway, so no data loss.
 DIRTY=$(git status --porcelain --untracked-files=no | grep -vE ' HEARTBEAT\.md$' | head -n 1)
+# An unmerged index (leftover conflict) makes `git stash push` refuse outright
+# with "<file>: needs merge", so the auto-stash branch below would die at exit 3
+# with no usable explanation. Incident (2026-07-31 -> 2026-08-07): a conflicted
+# auto-stash pop left package-lock.json unmerged, and the next SIX updates all
+# failed at "init / code 3" for a week without the operator being told why.
+# Name the blocking files and the one-line recovery instead.
+UNMERGED=$(git diff --name-only --diff-filter=U | head -n 3 | tr '\n' ' ')
+if [ -n "$UNMERGED" ]; then
+  RESULT_MSG="A repo befejezetlen osszeolvasztasban (merge conflict) all: ${UNMERGED}-- amig ez all, egyetlen frissites sem tud elindulni. Feloldas: git status, majd 'git reset --hard HEAD' (a helyi munka a 'git stash list'-ben marad)."
+  if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
+    echo -e "${RED}ERROR:${NC} The repo has an unresolved merge conflict: ${UNMERGED}"
+  else
+    echo -e "${RED}HIBA:${NC} A repo befejezetlen osszeolvasztasban all: ${UNMERGED}"
+  fi
+  echo "       Amig ez all, a stash (es igy a frissites) nem tud elindulni. Feloldas:"
+  echo "         git status && git reset --hard HEAD"
+  echo "       A korabban felstashelt helyi munka megmarad: git stash list"
+  exit 3
+fi
 if [ -n "$DIRTY" ]; then
   if [ "${AUTO_STASH:-0}" = "1" ]; then
     echo -e "  Lokalis valtozasok stash-elve (auto-stash)..."
     if ! git stash push -u -m "marveen-update-auto-stash $(date +%Y%m%d-%H%M%S)"; then
+      RESULT_MSG="Az auto-stash nem sikerult, ezert a frissites el sem indult. Nezd meg: git status"
       if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
         echo -e "${RED}ERROR:${NC} Auto-stash failed. Check: git status"
       else
@@ -393,6 +413,7 @@ if [ -n "$DIRTY" ]; then
     else
       echo -e "${RED}HIBA:${NC} A working tree módosult állapotban van."
     fi
+    RESULT_MSG="A working tree modosult allapotban van, ezert a frissites nem indult el. Commitold vagy stasheld a valtozasokat, vagy inditsd a frissitest auto-stash-sel."
     echo "       Commitold vagy stasheld a valtozasokat, majd indithatod ujra:"
     echo "         git stash"
     exit 3
@@ -405,12 +426,25 @@ fi
 # local files with no restore. Incident (2026-07-12): the AHEAD-check exit
 # left scripts/imap-business-mail/*.py, billingo-report, crm-report etc.
 # stashed for hours until manually recovered via `git stash apply`.
+# A conflicted `git stash pop` leaves UNMERGED entries in the index. Left there,
+# they poison EVERY later run: git refuses to stash with an unmerged index
+# ("<file>: needs merge"), so the updater dies at init/exit 3 forever -- the
+# 2026-07-31 -> 2026-08-07 incident, six silently failed updates in a row.
+# A failed pop does NOT drop the stash entry, so resetting the tree back to HEAD
+# throws nothing away: the operator's work is still in `git stash list` and
+# recoverable with `git stash apply`. Untracked files are left alone.
+clear_conflicted_pop() {
+  echo -e "  Konfliktusos stash-visszaallitas: a munkakonyvtar visszaallitasa HEAD-re (a stash megmarad)..."
+  git reset --hard HEAD >/dev/null 2>&1 || true
+}
+
 restore_stash_before_exit() {
   if [ "$STASHED_AUTO" = "1" ]; then
     echo -e "  Auto-stash visszaallitasa (korai kilepes elott)..."
     if git stash pop; then
       STASHED_AUTO=0
     else
+      clear_conflicted_pop
       if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
         echo -e "${RED}WARNING:${NC} Auto-stash pop had conflicts; the stash remains in 'git stash list'."
       else
@@ -1926,6 +1960,7 @@ if [ "$STASHED_AUTO" = "1" ]; then
       fi
     fi
   else
+    clear_conflicted_pop
     if [[ "${MARVEEN_LANG:-hu}" == "en" ]]; then
       echo -e "${RED}WARNING:${NC} Auto-stash pop had conflicts; the stash remains in 'git stash list'."
     else

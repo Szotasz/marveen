@@ -9,9 +9,21 @@ the whole (possibly very long) turn even though the user already got an answer.
 Clearing on the reply tool makes the placeholder disappear exactly when the
 answer appears — matching the user's mental model.
 
-Fires after the Telegram `reply` tool. Deletes any pending placeholder(s) for
-the replied chat_id in this session. The Stop hook + watchdog remain as
-backstops for turns that end without a reply, or true crashes.
+Fires after the Telegram `reply` tool. Two jobs:
+  1) Record a per-turn "a reply WAS sent to this chat" marker
+     (replied-<sid>-<chatid>.marker), written UNCONDITIONALLY — even if no
+     placeholder file exists yet. The UserPromptSubmit placeholder is created
+     asynchronously, so on a fast turn the reply can fire BEFORE the placeholder
+     is written; without a durable record the Stop enforce hook would later see
+     a "still pending" placeholder, assume the agent never replied, and deliver
+     the transcript prose a SECOND time -> the user got the answer twice (plus a
+     bogus "you never replied" nudge). The Stop hook consults this marker and
+     skips both the nudge and the prose fallback for chats already answered.
+  2) Delete any pending placeholder(s) for the replied chat_id (best effort —
+     the marker is the durable signal, the delete is cosmetic).
+
+The Stop hook + watchdog remain as backstops for turns that end without a reply,
+or true crashes.
 
 Silent on stdout. Honors TELEGRAM_STATE_DIR (per-agent token) like the others.
 """
@@ -49,6 +61,16 @@ def api(tok, method, payload):
         return json.loads(r.read().decode())
 
 
+def mark_replied(pdir, sid, chat_id):
+    """Durably record that a reply went to this chat during this turn, so the
+    Stop enforce hook won't re-deliver the transcript prose. Best effort."""
+    try:
+        os.makedirs(pdir, exist_ok=True)
+        open(os.path.join(pdir, f"replied-{sid}-{chat_id}.marker"), "w").close()
+    except Exception:
+        pass
+
+
 def main():
     try:
         ev = json.loads(sys.stdin.read())
@@ -64,7 +86,15 @@ def main():
     chat_id = str(chat_id)
     sid = ev.get("session_id") or "default"
     sd = state_dir()
-    path = os.path.join(sd, "progress", f"{sid}.json")
+    pdir = os.path.join(sd, "progress")
+
+    # (1) Record the reply FIRST, unconditionally — before any pend check. This
+    # is the durable signal the Stop hook trusts; it must survive the race where
+    # the placeholder file is written only AFTER this reply fires.
+    mark_replied(pdir, sid, chat_id)
+
+    # (2) Cosmetic: drop any placeholder(s) already posted for this chat.
+    path = os.path.join(pdir, f"{sid}.json")
     try:
         pend = json.load(open(path))
     except Exception:

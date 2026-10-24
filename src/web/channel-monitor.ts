@@ -2,6 +2,7 @@ import { tmuxStderr } from './tmux-stderr.js'
 import { writeMainExtraPluginsSettings } from './main-extra-plugins-settings.js'
 import { decideSkipTrace, decideMenuPassTrace, type SkipTraceState } from './monitor-trace.js'
 import { releaseOwnRespawnStamp, type OwnRespawnStamp } from './respawn-stamp-release.js'
+import { decideNetGate, newNetGateState, probeNetwork, NET_CANARY_HOSTS } from './net-ready-gate.js'
 import { existsSync, readFileSync, statSync, writeFileSync, utimesSync } from 'node:fs'
 import { hostname, loadavg, cpus, homedir } from 'node:os'
 import { join } from 'node:path'
@@ -3281,12 +3282,39 @@ function memGateAllowsStart(agentName: string): boolean {
   }
 }
 
+// HALOZATELOTT923: the boot-ordering gate. An agent started before the host's
+// DNS answers comes up with no external MCP servers at all and never retries --
+// see net-ready-gate.ts for the measured 2026-09-22 case. State is module-level
+// because the latch and the outage start must survive across ticks.
+const netGateState = newNetGateState()
+
 async function reconcileDesiredAgents(): Promise<void> {
   if (reconcileBurstInProgress) return
   const desired = getDesiredAgents()
   if (desired.size === 0) return
   const down = [...desired].filter((name) => !isAgentRunning(name))
   if (down.length === 0) return
+  // Probe only while the gate is unlatched: once the network has answered, this
+  // costs nothing on every later tick.
+  const resolved = netGateState.ready ? true : await probeNetwork()
+  const netGate = decideNetGate(netGateState, resolved, Date.now())
+  if (!netGate.allow) {
+    if (netGate.logWaiting) {
+      logger.warn(
+        { agents: down, canaries: NET_CANARY_HOSTS },
+        'Net gate: DNS not answering yet -- deferring agent start (an agent booted now would lose every external MCP server for the life of its session)',
+      )
+    }
+    return
+  }
+  if (netGate.reason === 'ready' && netGate.waitedMs > 0) {
+    logger.info({ waitedMs: netGate.waitedMs, agents: down }, 'Net gate: network up, releasing deferred agent start')
+  } else if (netGate.reason === 'timed-out') {
+    logger.warn(
+      { waitedMs: netGate.waitedMs, agents: down },
+      'Net gate: still no DNS after the wait window -- starting anyway (their external MCP servers will be missing until restarted)',
+    )
+  }
   reconcileBurstInProgress = true
   try {
     // BOOTSTAGGER1007 (c): the gate, the skips and the readiness gap live in

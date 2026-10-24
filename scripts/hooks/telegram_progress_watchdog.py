@@ -325,6 +325,24 @@ def topic_of(entry):
     return {"message_thread_id": t} if isinstance(t, int) and t > 0 else {}
 
 
+def claim_send(progress_dir, sid, message_id):
+    """Win-once guard for one placeholder's answer, ACROSS PROCESSES. The Stop
+    hook (telegram_progress_clear.py) back-stops the very same turn and creates
+    the identically named marker, so whichever of the two gets there first is
+    the one that sends -- the in-process `sent` set below cannot see the other
+    process at all. Keyed by the unique placeholder message_id, so a leftover
+    marker can never suppress a later turn's delivery."""
+    try:
+        fd = os.open(os.path.join(progress_dir, f"fbsent-{sid}-{message_id}.marker"),
+                     os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.close(fd)
+        return True
+    except FileExistsError:
+        return False
+    except Exception:
+        return True  # guard unavailable -> prefer delivering over silence
+
+
 def deliver(tok, chat_id, message_id, answer, progress_dir, topic=None, answer_sent=False):
     """Deliver the real answer if we have one (sendMessage + drop the
     placeholder), else rewrite the placeholder into a generic error. Returns a
@@ -467,11 +485,18 @@ def handle_dir(progress_dir):
         # (FALLBACKEGYSZER1019).
         modes = []
         sent = set()
+        sid = os.path.basename(path)[:-len(".json")]
         for p in pend:
             topic = topic_of(p)
             dest = (str(p.get("chat_id")), topic.get("message_thread_id"))
-            mode = deliver(tok, p.get("chat_id"), p.get("message_id"),
-                           answer, progress_dir, topic, answer_sent=dest in sent)
+            mid = p.get("message_id")
+            # Two guards, two scopes. `sent` covers the entries of THIS loop;
+            # claim_send covers the Stop hook racing us on the same turn from
+            # another process. Losing either one means "do not send, but still
+            # drop the placeholder", which is exactly answer_sent=True.
+            claimed = bool(answer) and dest not in sent and claim_send(progress_dir, sid, mid)
+            mode = deliver(tok, p.get("chat_id"), mid,
+                           answer, progress_dir, topic, answer_sent=not claimed)
             if mode == "real-answer":
                 sent.add(dest)
             modes.append(mode)

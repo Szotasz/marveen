@@ -52,8 +52,13 @@ const BUSY_OVERFULL = [...wrap(PROMPT).slice(-5), SEP, FOOTER + ' · esc to inte
 const record = (text: string) => ({ text, at: Date.now() })
 
 describe('overfullParkedInputTail', () => {
-  it('pins the blind spot: detectPaneState reads the overfull parked box as idle', () => {
-    expect(detectPaneState(OVERFULL)).toBe('idle')
+  // Was: "pins the blind spot: detectPaneState reads the overfull parked box as
+  // idle". The blind spot is closed -- detectPaneState now recognises a parked
+  // box whose top separator and prompt glyph scrolled off the capture, so the
+  // pane reads as 'typing' instead of 'idle'. isScheduledPromptStuck still
+  // returns false here; that path is unchanged by this fix.
+  it('reads the overfull parked box as a parked prompt, not as idle', () => {
+    expect(detectPaneState(OVERFULL)).toBe('typing')
     expect(isScheduledPromptStuck(OVERFULL, '[Heartbeat: memoria-heartbeat]')).toBe(false)
   })
 
