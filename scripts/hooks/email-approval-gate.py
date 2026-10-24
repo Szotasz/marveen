@@ -149,7 +149,9 @@ WINDOW_S, _WINDOW_ERR = _window_from_env()
 # let through BEFORE the load: every name the classifier can put in scope holds
 # one of these words, so this is a superset of it, and a read-only call never
 # needs the module (classify_tool below).
-_MAYBE_MAIL_TOOL = re.compile(r"send|reply|forward|draft|manage_email", re.I)
+_MAYBE_MAIL_TOOL = re.compile(
+    r"send|reply|forward|draft|manage_email|update[-_]mail[-_]message|update[-_]shared[-_]mailbox[-_]message",
+    re.I)
 
 # manage_email is a MULTIPLEXER, not a send tool: the same MCP tool searches the
 # mailbox, reads a thread, writes a draft AND sends. Scoping this gate on the
@@ -211,11 +213,33 @@ def owner_cc_address() -> str:
     return ""
 
 
+def _is_ms365_shaped(tool_input) -> bool:
+    """email_extract.is_ms365_shaped without loading the module: the owner-CC check and
+    the ledger must not need the extractor for a call that is not Graph-shaped
+    (HOOKDEPLOAD1008). Same test as the extractor's: `body` (any key case) is an object."""
+    return isinstance(tool_input, dict) and any(
+        str(k).lower() == "body" and isinstance(v, dict) for k, v in tool_input.items())
+
+
 def owner_cc_missing(tool_input: dict, owner: str) -> bool:
     """True when the owner's address is in none of the call's to / cc / bcc
-    fields. Read straight from the MCP input, not through email_extract: that
+    fields. A Graph-shaped (ms365) call is read through email_extract: its
+    recipients sit in toRecipients/ccRecipients/bccRecipients items, and a
+    reason (an unreadable list) means the owner cannot be proven in it.
+    Otherwise read straight from the MCP input, not through email_extract: that
     collector only reads send_email-shaped tools, and a draft or a manage_email
     call would come back with no recipients at all."""
+    if _is_ms365_shaped(tool_input):
+        # Only a Graph-shaped call needs the extractor here, so a broken
+        # email_extract.py leaves every other call's owner check as it was
+        # (HOOKDEPLOAD1008); a load failure on this path is the loader's deny.
+        to, cc, bcc, reason = _load_email_extract().ms365_recipients(tool_input, include_top=False)
+        if reason:
+            return True  # cannot prove the owner is in it: fail-closed
+        found = set()
+        for raw in to + cc + bcc:
+            found.update(a.lower().rstrip(".") for a in _ADDR.findall(str(raw)))
+        return owner not in found
     found = set()
     for field in ("to", "cc", "bcc"):
         v = tool_input.get(field)
@@ -726,7 +750,17 @@ def ledger_gate(kind: str, tool_input: dict, cmd: str) -> None:
                  "Fail-closed: adj meg literal --to/--cc/--bcc cimet (shell-valtozo NELKUL).")
         fields = {"to": to, "cc": cc, "bcc": bcc}
     else:
-        fields = {f: tool_input.get(f) for f in RECIPIENT_FIELDS}
+        if _is_ms365_shaped(tool_input):
+            # A Graph-shaped call: the recipients sit in toRecipients/ccRecipients/
+            # bccRecipients items, read strictly -- a reason fails closed, like Bash.
+            to, cc, bcc, reason = _load_email_extract().ms365_recipients(tool_input)
+            if reason:
+                deny("A cimzett nem olvashato ki determinisztikusan, igy a cimzett-ledger nem "
+                     f"ellenorizheti: {reason}.\n"
+                     "Fail-closed.")
+            fields = {"to": to, "cc": cc, "bcc": bcc}
+        else:
+            fields = {f: tool_input.get(f) for f in RECIPIENT_FIELDS}
     addresses, unparseable = [], []
     for f in RECIPIENT_FIELDS:
         value = fields.get(f)

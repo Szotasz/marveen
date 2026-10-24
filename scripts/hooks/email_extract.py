@@ -153,6 +153,8 @@ def _payload_text(data: str, raw: str):
 
 
 def collect_mcp_body(tool_input: dict):
+    if is_ms365_shaped(tool_input):
+        return ms365_text(tool_input)
     fields = ("body", "text", "html", "htmlBody", "message", "subject", "content", "forwardText")
     got = [str(tool_input[f]) for f in fields if tool_input.get(f)]
     return "\n".join(got)
@@ -310,6 +312,17 @@ CONNECTOR_SEND_RE = re.compile(r"gmail__(reply|reply_all|send_message|forward)$"
 _CONNECTOR_GENERIC_SUFFIXES = ("send_message", "reply", "forward")
 _DRAFT_NAMES = ("draft_email", "create_draft", "update_draft", "draft_gmail_message")
 _MAILBOX_SEND_SUFFIXES = ("send_mail", "send_mail_auto")
+# Microsoft Graph MCP names, hyphens normalized (MS365MAIL1024).
+_MS365_SEND_SUFFIXES = ("send_mail", "send_shared_mailbox_mail", "reply_mail_message",
+                        "reply_all_mail_message", "forward_mail_message", "reply_shared_mailbox_mail",
+                        "reply_all_shared_mailbox_mail", "forward_shared_mailbox_mail",
+                        "forward_calendar_event", "reply_to_group_thread")
+_MS365_DRAFT_SEND_SUFFIXES = ("send_draft_message", "send_shared_mailbox_draft")
+_MS365_DRAFT_SUFFIXES = ("create_draft_email", "create_shared_mailbox_draft", "create_reply_draft",
+                         "create_reply_all_draft", "create_forward_draft",
+                         "create_shared_mailbox_reply_draft", "create_shared_mailbox_reply_all_draft",
+                         "create_shared_mailbox_forward_draft", "update_mail_message",
+                         "update_shared_mailbox_message")
 
 # Kinds (the same vocabulary as classifyMailTool in email-send-gate.mjs):
 #   "send_email"     address-carrying direct send (to/cc/bcc fields)
@@ -326,7 +339,7 @@ MAIL_TOOL_KINDS = ("send_email", "connector_send", "send_draft", "manage_email",
 def classify_mail_tool(tool_name):
     """Classify a (possibly prefixed, qualified) tool name. Strictest kind
     first, so a name that fits two kinds lands in the one that gates harder."""
-    n = str(tool_name or "").lower()
+    n = str(tool_name or "").lower().replace("-", "_")
     if not n or n == "bash":
         return None
     if "send_email" in n or "send_gmail_message" in n:
@@ -337,13 +350,248 @@ def classify_mail_tool(tool_name):
         return "connector_send"
     if n.endswith(_MAILBOX_SEND_SUFFIXES):
         return "connector_send"
+    if n.endswith(_MS365_SEND_SUFFIXES):
+        return "connector_send"
+    if n.endswith(_MS365_DRAFT_SEND_SUFFIXES):
+        return "send_draft"
     if n.endswith("send_draft"):
         return "send_draft"
     if n.endswith("manage_email"):
         return "manage_email"
+    if n.endswith(_MS365_DRAFT_SUFFIXES):
+        return "draft"
     if any(d in n for d in _DRAFT_NAMES):
         return "draft"
     return None
+
+
+# --- Microsoft Graph letters (MS365MAIL1024) ------------------------------------
+# The ms365 MCP server names its tools with hyphens and carries the letter
+# Graph-shaped: body.Message.{subject, body:{contentType, content},
+# toRecipients/ccRecipients/bccRecipients:[{emailAddress:{address, name?}}]},
+# a reply's Comment, a forward's ToRecipients, a group-thread post's Post.
+# The server reads keys in ANY case (so a key twice in different case is
+# ambiguous -> reason), and moves a stray top-level field into body (so a
+# stray is read wherever it sits). Reading is STRICT for the anchor (any
+# field the anchor does not cover is a reason: fail-closed) and LENIENT for
+# the copy audit's text (subject, body content, comment, post content).
+_MS365_TOP_KEYS = frozenset({"body", "messageid", "userid", "eventid", "groupid", "conversationthreadid"})
+_MS365_BODY_KEYS = frozenset({"message", "savetosentitems", "comment", "torecipients", "post"})
+_MS365_MESSAGE_KEYS = frozenset({"subject", "body", "torecipients", "ccrecipients", "bccrecipients"})
+_MS365_CONTENT_KEYS = frozenset({"contenttype", "content"})
+_MS365_RECIPIENT_FIELDS = ("torecipients", "ccrecipients", "bccrecipients")
+
+
+def is_ms365_shaped(tool_input) -> bool:
+    """A Microsoft Graph-shaped call: its `body` (key in any case) is an object."""
+    return isinstance(tool_input, dict) and any(
+        str(k).lower() == "body" and isinstance(v, dict) for k, v in tool_input.items())
+
+
+def _ms365_lower(d: dict, where: str):
+    """(the dict with lowercased keys, reason). A key twice in different case is ambiguous."""
+    out = {}
+    for k, v in d.items():
+        lk = str(k).lower()
+        if lk in out:
+            return None, f"{where}: a(z) {lk!r} mezo ketszer szerepel (kis/nagybetu) -- nem egyertelmu"
+        out[lk] = v
+    return out, None
+
+
+def _ms365_recipients(value, where: str):
+    """[{emailAddress: {address, name?}}] -> (addresses, reason). Strict: nothing else is accepted."""
+    if value is None:
+        return [], None
+    if not isinstance(value, list):
+        return [], f"{where}: nem lista"
+    out = []
+    for i, item in enumerate(value):
+        here = f"{where}[{i}]"
+        if not isinstance(item, dict):
+            return [], f"{here}: nem objektum"
+        it, reason = _ms365_lower(item, here)
+        if reason:
+            return [], reason
+        if set(it) - {"emailaddress"}:
+            return [], f"{here}: ismeretlen mezo {sorted(set(it) - {'emailaddress'})}"
+        ea = it.get("emailaddress")
+        if not isinstance(ea, dict):
+            return [], f"{here}.emailAddress: nem objektum"
+        e, reason = _ms365_lower(ea, f"{here}.emailAddress")
+        if reason:
+            return [], reason
+        if set(e) - {"address", "name"}:
+            return [], f"{here}.emailAddress: ismeretlen mezo {sorted(set(e) - {'address', 'name'})}"
+        addr = e.get("address")
+        if not isinstance(addr, str) or not addr.strip():
+            return [], f"{here}.emailAddress.address: hianyzik vagy nem szoveg"
+        out.append(addr)
+    return out, None
+
+
+def _ms365_content(value, where: str):
+    """A Graph itemBody {contentType, content} -> (content text, reason)."""
+    if value is None:
+        return "", None
+    if not isinstance(value, dict):
+        return "", f"{where}: nem objektum (MIME vagy szoveges torzs nem horgonyozhato)"
+    b, reason = _ms365_lower(value, where)
+    if reason:
+        return "", reason
+    if set(b) - _MS365_CONTENT_KEYS:
+        return "", f"{where}: ismeretlen mezo {sorted(set(b) - _MS365_CONTENT_KEYS)}"
+    content = b.get("content")
+    if content is not None and not isinstance(content, str):
+        return "", f"{where}.content: nem szoveg"
+    return content or "", None
+
+
+def ms365_send_fields(tool_input: dict):
+    """(to, cc, bcc, text, reason) for a Graph-shaped SEND, read strictly: any field the anchor
+    does not cover (attachments, from, replyTo, headers, importance, a MIME body, a stray
+    top-level field the server would move into body) is a reason, so the caller fails closed.
+    The ids the call answers or sends from go into `to` as tokens, so an approval for one
+    message, mailbox, event or thread cannot answer another."""
+    empty = ([], [], [], "")
+    top, reason = _ms365_lower(tool_input, "a hivas")
+    if reason:
+        return (*empty, reason)
+    extra = set(top) - _MS365_TOP_KEYS
+    if extra:
+        return (*empty, f"ismeretlen mezo a hivasban {sorted(extra)} -- a level a horgony nelkul valtozhatna")
+    body, reason = _ms365_lower(top["body"], "body") if isinstance(top.get("body"), dict) else (None, "body: nem objektum (MIME vagy szoveges torzs nem horgonyozhato)")
+    if reason:
+        return (*empty, reason)
+    extra = set(body) - _MS365_BODY_KEYS
+    if extra:
+        return (*empty, f"ismeretlen mezo a body-ban {sorted(extra)} -- a level a horgony nelkul valtozhatna")
+    to, cc, bcc, parts = [], [], [], []
+    msg = body.get("message")
+    if msg is not None:
+        if not isinstance(msg, dict):
+            return (*empty, "body.Message: nem objektum")
+        m, reason = _ms365_lower(msg, "body.Message")
+        if reason:
+            return (*empty, reason)
+        extra = set(m) - _MS365_MESSAGE_KEYS
+        if extra:
+            return (*empty, f"ismeretlen mezo a body.Message-ben {sorted(extra)} -- a level a horgony nelkul valtozhatna")
+        subject = m.get("subject")
+        if subject is not None and not isinstance(subject, str):
+            return (*empty, "body.Message.subject: nem szoveg")
+        if subject:
+            parts.append(subject)
+        content, reason = _ms365_content(m.get("body"), "body.Message.body")
+        if reason:
+            return (*empty, reason)
+        if content:
+            parts.append(content)
+        for field, bucket in zip(_MS365_RECIPIENT_FIELDS, (to, cc, bcc)):
+            got, reason = _ms365_recipients(m.get(field), f"body.Message.{field}")
+            if reason:
+                return (*empty, reason)
+            bucket.extend(got)
+    got, reason = _ms365_recipients(body.get("torecipients"), "body.ToRecipients")
+    if reason:
+        return (*empty, reason)
+    to.extend(got)
+    comment = body.get("comment")
+    if comment is not None and not isinstance(comment, str):
+        return (*empty, "body.Comment: nem szoveg")
+    if comment:
+        parts.append(comment)
+    post = body.get("post")
+    if post is not None:
+        if not isinstance(post, dict):
+            return (*empty, "body.Post: nem objektum")
+        p, reason = _ms365_lower(post, "body.Post")
+        if reason:
+            return (*empty, reason)
+        if set(p) - {"body"}:
+            return (*empty, f"ismeretlen mezo a body.Post-ban {sorted(set(p) - {'body'})}")
+        content, reason = _ms365_content(p.get("body"), "body.Post.body")
+        if reason:
+            return (*empty, reason)
+        if content:
+            parts.append(content)
+    if body.get("savetosentitems") not in (None, True, False):
+        return (*empty, "body.SaveToSentItems: nem igaz/hamis")
+    for key, label in (("messageid", "messageId"), ("userid", "userId"), ("eventid", "eventId")):
+        v = top.get(key)
+        if v is None:
+            continue
+        if not isinstance(v, str) or not v:
+            return (*empty, f"{label}: nem szoveg vagy ures")
+        to.append(f"{label}:{v}")
+    g, t = top.get("groupid"), top.get("conversationthreadid")
+    if g is not None or t is not None:
+        if not (isinstance(g, str) and g and isinstance(t, str) and t):
+            return (*empty, "groupId / conversationThreadId: hianyzik vagy nem szoveg")
+        to.append(f"groupThread:{g}/{t}")
+    return to, cc, bcc, "\n".join(parts), None
+
+
+def ms365_recipients(tool_input: dict, include_top: bool = True):
+    """(to, cc, bcc, reason) of a Graph-shaped call, for the recipient checks (owner CC, ledger,
+    a draft): only the recipient fields are read, each strictly, wherever the server would take
+    them from -- the top level (a stray the server moves into body), body itself (create-draft-email,
+    update-mail-message), body.Message, and body.ToRecipients (a forward)."""
+    to, cc, bcc = [], [], []
+    top, reason = _ms365_lower(tool_input, "a hivas")
+    if reason:
+        return [], [], [], reason
+    # include_top=False: the owner-CC check must not count an address in a stray top-level
+    # field the server may not deliver; the ledger and the drafts read it, the stricter way.
+    places = [("a hivas", top)] if include_top else []
+    body = top.get("body")
+    if isinstance(body, dict):
+        b, reason = _ms365_lower(body, "body")
+        if reason:
+            return [], [], [], reason
+        places.append(("body", b))
+        if isinstance(b.get("message"), dict):
+            m, reason = _ms365_lower(b["message"], "body.Message")
+            if reason:
+                return [], [], [], reason
+            places.append(("body.Message", m))
+    for where, d in places:
+        for field, bucket in zip(_MS365_RECIPIENT_FIELDS, (to, cc, bcc)):
+            got, reason = _ms365_recipients(d.get(field), f"{where}.{field}")
+            if reason:
+                return [], [], [], reason
+            bucket.extend(x for x in got if x not in bucket)
+    return to, cc, bcc, None
+
+
+def ms365_text(tool_input: dict) -> str:
+    """The letter text of a Graph-shaped call for the copy audit (lenient: subject, body content,
+    comment and post content wherever they sit; non-text values are skipped)."""
+    parts = []
+
+    def take(d):
+        if not isinstance(d, dict):
+            return
+        low = {str(k).lower(): v for k, v in d.items()}
+        if isinstance(low.get("subject"), str) and low["subject"]:
+            parts.append(low["subject"])
+        b = low.get("body")
+        if isinstance(b, dict):
+            c = {str(k).lower(): v for k, v in b.items()}.get("content")
+            if isinstance(c, str) and c:
+                parts.append(c)
+        if isinstance(low.get("comment"), str) and low["comment"]:
+            parts.append(low["comment"])
+
+    body = {str(k).lower(): v for k, v in tool_input.items()}.get("body") if isinstance(tool_input, dict) else None
+    if isinstance(body, dict):
+        take(body)
+        low = {str(k).lower(): v for k, v in body.items()}
+        take(low.get("message"))
+        post = low.get("post")
+        if isinstance(post, dict):
+            take(post)
+    return "\n".join(parts)
 
 
 # --- harder-mail letters (HARDERMAILGATES1019) --------------------------------
@@ -478,6 +726,12 @@ def collect_email_envelope(tool_name: str, tool_input: dict):
     # A prefixed name (mcp__gmail__v2_reply_all) is extracted like the bare one.
     if classify_mail_tool(tool_name) in ("send_email", "connector_send"):
         ti = tool_input if isinstance(tool_input, dict) else {}
+        if is_ms365_shaped(ti):
+            # A Graph-shaped send: strictly-read fields + id tokens (fail-closed).
+            # A send_mail carrying a non-object body (a MIME/string sendMail) is
+            # not ms365-shaped and falls to the flat path below, unchanged.
+            to, cc, bcc, text, reason = ms365_send_fields(ti)
+            return {"to": to, "cc": cc, "bcc": bcc, "text": text, "unreadable_reason": reason}
         text = collect_mcp_body(ti)
         to, cc, bcc, reason = collect_mcp_recipients(ti)
         # A connector reply/forward addresses the ORIGINAL message: its

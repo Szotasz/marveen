@@ -2080,6 +2080,15 @@ def main():
             sys.exit(0)
         text, unreadable = collect_mcp_body(tool_input), None
     elif mail_kind in _AUDITED_MAIL_KINDS:
+        # MS365MAIL1024: update-mail-message / update-shared-mailbox-message are
+        # drafts that may carry only a flag (isRead) or a changed field, not a
+        # letter -- with no text there is nothing of ours to audit, and the
+        # fail-closed "no inspectable text" branch below would block the read
+        # flag flip for no reason.
+        if (str(tool or "").lower().replace("-", "_")
+                .endswith(("update_mail_message", "update_shared_mailbox_message"))
+                and not collect_mcp_body(tool_input)):
+            sys.exit(0)
         if is_harder_mail_tool(tool) and tool_input.get("body_format") not in (None, ""):
             # HARDERMAILGATES1019 (design 6.3a): a formatted harder-mail letter is
             # audited on the text the server renders from it, never on raw markup.
