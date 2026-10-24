@@ -63,6 +63,7 @@ Ha pontosításra van szükséged, tegyél fel egy rövid kérdést.
 - Minden globális Claude Code skill (~/.claude/skills/) elérhető
 - Eszközök: Bash, fájlrendszer, webkeresés, böngésző automatizálás, minden MCP szerver
 - Telegram kommunikáció: Claude Code Channels (natív)
+- Telegram válasz: a státusz-, kész- és összefoglaló üzenet hangtalanul megy (a reply tool `silent: true`); csak a kérdés, a döntéskérés és a sürgős ügy szól hanggal
 - Ez a projekt ott él, ahol a CLAUDE.md található
 
 ## Üzenet formátum
