@@ -926,9 +926,29 @@ export function classifyMailTool(toolName) {
 // checks (an unreadable list fails closed, like the Python gate's copy).
 const isPlainObject = (v) => typeof v === 'object' && v !== null && !Array.isArray(v)
 
+const MS365_TOP_GRAPH_KEYS = new Set(['torecipients', 'ccrecipients', 'bccrecipients'])
+
 export function isMs365Shaped(toolInput) {
-  return isPlainObject(toolInput) && Object.entries(toolInput).some(
-    ([k, v]) => String(k).toLowerCase() === 'body' && isPlainObject(v))
+  if (!isPlainObject(toolInput)) return false
+  for (const [k, v] of Object.entries(toolInput)) {
+    const lk = String(k).toLowerCase()
+    if (isPlainObject(v) && (lk === 'body' || lk === 'message' || lk === 'post')) return true
+    if (Array.isArray(v) && MS365_TOP_GRAPH_KEYS.has(lk)) return true
+  }
+  return false
+}
+
+// A Graph-shaped call that ALSO carries flat to/cc/bcc is ambiguous: one reader
+// would hide the other's addresses (SECURITY review on MS365MAIL1024).
+export function ms365FlatConflict(toolInput) {
+  if (!isPlainObject(toolInput)) return null
+  const flat = Object.entries(toolInput)
+    .filter(([k, v]) => ['to', 'cc', 'bcc'].includes(String(k).toLowerCase())
+      && !(v === null || v === undefined || v === '' || (Array.isArray(v) && v.length === 0)))
+    .map(([k]) => k)
+  return flat.length
+    ? `a hivas lapos (${flat.sort().join(', ')}) es Graph-alaku cimzettet is visz -- nem egyertelmu`
+    : null
 }
 
 // (the object with lowercased keys, reason). A key twice in a different case is
@@ -950,6 +970,13 @@ export function ms365Lower(d, where) {
 function ms365FieldRepr(keys) {
   const sorted = [...new Set(keys)].sort()
   return `['${sorted.join("', '")}']`
+}
+
+// Python-style repr of one short string (the quote Python's repr would pick),
+// so an address named in a deny reason reads the same on both gates.
+function ms365StrRepr(s) {
+  const q = s.includes("'") && !s.includes('"') ? '"' : "'"
+  return q + s.replace(/\\/g, '\\\\').split(q).join(`\\${q}`) + q
 }
 
 // [{emailAddress: {address, name?}}] -> (addresses, reason). Strict: nothing
@@ -976,30 +1003,51 @@ export function ms365RecipientList(value, where) {
     if (typeof addr !== 'string' || !addr.trim()) {
       return [[], `${here}.emailAddress.address: hianyzik vagy nem szoveg`]
     }
-    out.push(addr)
+    if (!MS365_ADDR_RE.test(addr.trim())) {
+      return [[], `${here}.emailAddress.address: nem egyetlen puszta cim (${ms365StrRepr(addr.slice(0, 60))})`]
+    }
+    if ('name' in e && typeof e.name !== 'string') {
+      return [[], `${here}.emailAddress.name: nem szoveg`]
+    }
+    out.push(addr.trim())
   }
   return [out, null]
 }
 
 const MS365_RECIPIENT_FIELDS = ['torecipients', 'ccrecipients', 'bccrecipients']
 
+// One bare address, nothing around it: a '"owner@x" <stranger@y>' entry would
+// let a recipient check find the owner while the letter goes to the stranger.
+const MS365_ADDR_RE = /^[^\s<>,;:"'()\[\]@]+@[^\s<>,;:"'()\[\]@]+$/
+
 // {to, cc, bcc, reason} of a Graph-shaped call, for the recipient checks: only
 // the recipient fields are read, each strictly, wherever the server would take
-// them from -- the top level (a stray the server moves into body), body itself
-// (create-draft-email, update-mail-message), body.Message, and body.ToRecipients
-// (a forward). A port of ms365_recipients in email_extract.py (same logic, same
-// reason texts), so the two gates cannot drift.
+// them from -- the top level and the top-level message object (strays the server
+// moves into body), body itself (create-draft-email, update-mail-message),
+// body.Message, and body.ToRecipients (a forward). A flat to/cc/bcc next to the
+// Graph shape is a reason first: one reader would hide the other's addresses.
+// A port of ms365_recipients in email_extract.py (same logic, same reason
+// texts), so the two gates cannot drift.
 export function ms365Recipients(toolInput) {
   if (!isPlainObject(toolInput)) return { to: [], cc: [], bcc: [], reason: 'a hivas: nem objektum' }
+  const flat = ms365FlatConflict(toolInput)
+  if (flat) return { to: [], cc: [], bcc: [], reason: flat }
   const [top, topReason] = ms365Lower(toolInput, 'a hivas')
   if (topReason) return { to: [], cc: [], bcc: [], reason: topReason }
   const places = [['a hivas', top]]
+  if (top.message !== null && top.message !== undefined) {
+    if (!isPlainObject(top.message)) return { to: [], cc: [], bcc: [], reason: 'a hivas.Message: nem objektum' }
+    const [m, msgReason] = ms365Lower(top.message, 'a hivas.Message')
+    if (msgReason) return { to: [], cc: [], bcc: [], reason: msgReason }
+    places.push(['a hivas.Message', m])
+  }
   const body = top.body
   if (isPlainObject(body)) {
     const [b, bodyReason] = ms365Lower(body, 'body')
     if (bodyReason) return { to: [], cc: [], bcc: [], reason: bodyReason }
     places.push(['body', b])
-    if (isPlainObject(b.message)) {
+    if (b.message !== null && b.message !== undefined) {
+      if (!isPlainObject(b.message)) return { to: [], cc: [], bcc: [], reason: 'body.Message: nem objektum' }
       const [m, msgReason] = ms365Lower(b.message, 'body.Message')
       if (msgReason) return { to: [], cc: [], bcc: [], reason: msgReason }
       places.push(['body.Message', m])

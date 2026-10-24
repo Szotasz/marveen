@@ -67,6 +67,23 @@ with tempfile.TemporaryDirectory(prefix="copygate-ms365-") as tmp:
     check("update-mail-message that writes text: audited (exit 2 with the broken rules file)",
           code == 2, f"exit={code} err={err[:200]!r}")
 
+    code, out, err = run_hook({"tool_name": "mcp__ms365__update-mail-message",
+                               "tool_input": {"messageId": "m1", "subject": "Uj targy",
+                                              "body": {"contentType": "Text", "content": "Szoveg"}}}, corrupt)
+    check("update-mail-message with the fields at the top (body is the itemBody): audited (exit 2)",
+          code == 2, f"exit={code} err={err[:200]!r}")
+    code, out, err = run_hook({"tool_name": "mcp__ms365__update-mail-message",
+                               "tool_input": {"messageId": "m1", "body": {"subject": "A", "Subject": "B"}}}, corrupt)
+    check("update-mail-message with a subject twice in different case: unreadable, not 'no text' (exit 2)",
+          code == 2, f"exit={code} err={err[:200]!r}")
+    code, out, err = run_hook({"tool_name": "mcp__ms365__send-mail", "tool_input": {"body": {
+        "Message": {"subject": "Valasz a megkeresesere", "body": {"contentType": "Text", "content": TEXT},
+                    "toRecipients": [{"emailAddress": {"address": "a@example.com"}}]},
+        "message": {"subject": "Masik targy", "body": {"contentType": "Text", "content": "Masik torzs."}}}}},
+        no_rule)
+    check("send-mail with both Message and message in body: unreadable even with a clean rules file (exit 2)",
+          code == 2, f"exit={code} err={err[:200]!r}")
+
     code, out, err = run_hook({"tool_name": "mcp__ms365__list-mail-messages", "tool_input": {}}, corrupt)
     check("list-mail-messages: not mail, untouched (exit 0)", code == 0, f"exit={code} err={err[:200]!r}")
 

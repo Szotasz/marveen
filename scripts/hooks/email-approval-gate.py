@@ -191,7 +191,16 @@ def _is_explicit_draft(tool_input: dict) -> bool:
 # letter it sends can only be checked where the draft is written. An update of
 # an existing draft is not checked: it may carry only the changed fields, and a
 # missing cc there would be a false deny.
-_DRAFT_TOOL = re.compile(r"draft_email|create_draft|draft_gmail_message", re.I)
+# Read on the name with hyphens as underscores: the Graph MCP's draft writers
+# (create-draft-email, create-reply-draft, ...) are hyphenated, and before this
+# their drafts skipped the owner-CC check (MS365MAIL1024). An update stays out.
+_DRAFT_TOOL = re.compile(
+    r"draft_email|create_draft|draft_gmail_message"
+    r"|create_(shared_mailbox_)?(reply_all_|reply_|forward_)?draft", re.I)
+
+
+def _draft_tool(tool: str) -> bool:
+    return bool(_DRAFT_TOOL.search(str(tool or "").replace("-", "_")))
 _ADDR = re.compile(r"[^\s<>,;:\"'()\[\]]+@[^\s<>,;:\"'()\[\]]+")
 
 
@@ -213,27 +222,46 @@ def owner_cc_address() -> str:
     return ""
 
 
+_MS365_TOP_GRAPH_KEYS = frozenset(("torecipients", "ccrecipients", "bccrecipients"))
+
+
 def _is_ms365_shaped(tool_input) -> bool:
     """email_extract.is_ms365_shaped without loading the module: the owner-CC check and
     the ledger must not need the extractor for a call that is not Graph-shaped
-    (HOOKDEPLOAD1008). Same test as the extractor's: `body` (any key case) is an object."""
-    return isinstance(tool_input, dict) and any(
-        str(k).lower() == "body" and isinstance(v, dict) for k, v in tool_input.items())
+    (HOOKDEPLOAD1008). MUST MATCH email_extract.is_ms365_shaped: a `body` / `Message` /
+    `Post` (any key case) that is an object, or a Graph recipient list at the top; a
+    call whose fields all sit at the top level is Graph-shaped too (the server moves
+    them into body)."""
+    if not isinstance(tool_input, dict):
+        return False
+    for k, v in tool_input.items():
+        lk = str(k).lower()
+        if isinstance(v, dict) and lk in ("body", "message", "post"):
+            return True
+        if isinstance(v, list) and lk in _MS365_TOP_GRAPH_KEYS:
+            return True
+    return False
 
 
-def owner_cc_missing(tool_input: dict, owner: str) -> bool:
+def owner_cc_missing(tool_input: dict, owner: str, tool: str = "", draft: bool = False) -> bool:
     """True when the owner's address is in none of the call's to / cc / bcc
-    fields. A Graph-shaped (ms365) call is read through email_extract: its
-    recipients sit in toRecipients/ccRecipients/bccRecipients items, and a
-    reason (an unreadable list) means the owner cannot be proven in it.
-    Otherwise read straight from the MCP input, not through email_extract: that
-    collector only reads send_email-shaped tools, and a draft or a manage_email
-    call would come back with no recipients at all."""
+    fields. A Graph-shaped (ms365) call is read through email_extract: a send
+    through ms365_send_fields (only what Graph DELIVERS counts, so a body-level
+    recipient field a send does not read cannot satisfy the check), a draft
+    through ms365_recipients(include_top=False); a reason (an unreadable list)
+    means the owner cannot be proven in it. Otherwise read straight from the MCP
+    input, not through email_extract: that collector only reads send_email-shaped
+    tools, and a draft or a manage_email call would come back with no recipients
+    at all."""
     if _is_ms365_shaped(tool_input):
         # Only a Graph-shaped call needs the extractor here, so a broken
         # email_extract.py leaves every other call's owner check as it was
         # (HOOKDEPLOAD1008); a load failure on this path is the loader's deny.
-        to, cc, bcc, reason = _load_email_extract().ms365_recipients(tool_input, include_top=False)
+        extract = _load_email_extract()
+        if draft:
+            to, cc, bcc, reason = extract.ms365_recipients(tool_input, include_top=False)
+        else:
+            to, cc, bcc, _text, reason = extract.ms365_send_fields(tool_input, tool)
         if reason:
             return True  # cannot prove the owner is in it: fail-closed
         found = set()
@@ -266,19 +294,19 @@ def owner_cc_scope(tool: str, kind, tool_input: dict):
     a manage_email send. send_draft is neither: it carries only a draft id, and
     its letter was checked where the draft was written."""
     if kind == "unclassified":
-        return bool(_DRAFT_TOOL.search(tool)), bool(_OWNER_CC_SEND_FALLBACK.search(tool))
-    is_draft = (kind == "draft" and bool(_DRAFT_TOOL.search(tool))) or (
+        return _draft_tool(tool), bool(_OWNER_CC_SEND_FALLBACK.search(tool))
+    is_draft = (kind == "draft" and _draft_tool(tool)) or (
         kind == "manage_email" and _is_explicit_draft(tool_input))
     is_send = kind in ("send_email", "connector_send") or (
         kind == "manage_email" and manage_email_is_send(tool_input))
     return is_draft, is_send
 
 
-def owner_cc_gate(tool_input: dict, is_draft_only: bool) -> None:
+def owner_cc_gate(tool_input: dict, is_draft_only: bool, tool: str = "") -> None:
     """Deny (exit 2) when MAIL_OWNER_CC is set and the owner is in none of the
     call's to / cc / bcc. Returns normally when the check is off or passes."""
     owner = owner_cc_address()
-    if not owner or not owner_cc_missing(tool_input, owner):
+    if not owner or not owner_cc_missing(tool_input, owner, tool=tool, draft=is_draft_only):
         return
     what = "piszkozat" if is_draft_only else "level"
     no_fields = not any(tool_input.get(f) for f in ("to", "cc", "bcc"))
@@ -1167,7 +1195,7 @@ def main():
         # SUPPORT_OWNER_CC).
         is_mcp_draft, is_mcp_send = owner_cc_scope(tool, kind, tool_input)
         if is_mcp_draft or is_mcp_send:
-            owner_cc_gate(tool_input, is_mcp_draft and not is_mcp_send)
+            owner_cc_gate(tool_input, is_mcp_draft and not is_mcp_send, tool)
         if kind is None:
             sys.exit(0)  # reads, labels: nothing goes on the wire
         # The ledger comes first: it applies to drafts and at every level, and

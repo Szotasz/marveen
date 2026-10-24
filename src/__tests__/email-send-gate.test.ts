@@ -561,4 +561,32 @@ describe('Microsoft Graph (ms365) mail tools', () => {
     expect(gateDecision('mcp__ms365__create-draft-email', stray, () => false))
       .toMatchObject({ deny: true, kind: 'unverified-recipient', addresses: ['x@y.hu'] })
   })
+
+  it('a body-less draft with only top-level fields is Graph-shaped and ledger-checked', () => {
+    // SECURITY review on MS365MAIL1024: every field stray at the top is Graph-shaped
+    // too (the server moves them into body), so it cannot skip the address check.
+    const flat = { subject: 'Targy', toRecipients: [{ emailAddress: { address: 'x@y.hu' } }] }
+    expect(gateDecision('mcp__ms365__create-draft-email', flat, () => false))
+      .toMatchObject({ deny: true, kind: 'unverified-recipient', addresses: ['x@y.hu'] })
+    expect(gateDecision('mcp__ms365__create-draft-email', flat, verifiable).deny).toBe(false)
+  })
+
+  it('a stray top-level Message is read too (the server moves it into body)', () => {
+    const strayMsg = { Message: { toRecipients: [{ emailAddress: { address: 'x@y.hu' } }] }, body: { Comment: 'V' } }
+    expect(gateDecision('mcp__ms365__create-reply-draft', strayMsg, () => false))
+      .toMatchObject({ deny: true, kind: 'unverified-recipient', addresses: ['x@y.hu'] })
+  })
+
+  it('a flat to next to the Graph shape is ambiguous, not a Graph-only read (fail-closed)', () => {
+    // One reader would hide the other's addresses, so neither may be trusted.
+    const mixed = { to: 'x@y.hu', body: { subject: 'Targy', toRecipients: [{ emailAddress: { address: 'x@y.hu' } }] } }
+    expect(gateDecision('mcp__ms365__create-draft-email', mixed, verifiable))
+      .toMatchObject({ deny: true, kind: 'unparseable-recipient' })
+  })
+
+  it('an address with a display name around it is not one bare address (fail-closed)', () => {
+    const named = { body: { toRecipients: [{ emailAddress: { address: '"x@y.hu" <z@example.org>' } }] } }
+    expect(gateDecision('mcp__ms365__create-draft-email', named, verifiable))
+      .toMatchObject({ deny: true, kind: 'unparseable-recipient' })
+  })
 })
