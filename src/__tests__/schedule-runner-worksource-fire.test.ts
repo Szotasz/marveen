@@ -8,7 +8,8 @@ import type { ScheduledTask } from '../web/scheduled-tasks-io.js'
 //   * flag on  -> enqueueWorksourceItem gets the fire, sendPromptToSession does not;
 //   * flag off -> the typed path, exactly as before;
 //   * the queued content is byte for byte the prompt the typed path would type;
-//   * an enqueue that reports "already present" records no run and types nothing.
+//   * an enqueue that reports "already present" records no run and types nothing;
+//   * an enqueue that throws lands in attemptFireTask's catch: an 'error' run.
 
 const mockAppendTaskRun = vi.fn()
 const mockListScheduledTasks = vi.fn(() => [] as ScheduledTask[])
@@ -197,5 +198,14 @@ describe('schedule runner: a worksource agent gets scheduled prompts through its
     expect(mockEnqueue).toHaveBeenCalledTimes(1)
     expect(sentPrompts).toHaveLength(0)
     expect(runsForTask()).toHaveLength(0)
+  })
+
+  it('an enqueue that throws (I/O error) is booked as an error run, like any failed fire', async () => {
+    worksourceFlag = true
+    mockEnqueue.mockImplementationOnce(() => { throw new Error('EIO') })
+    await runOneTick()
+    expect(mockEnqueue).toHaveBeenCalledTimes(1)
+    expect(sentPrompts).toHaveLength(0)
+    expect(runsForTask()).toEqual([[TASK_NAME, AGENT, 'error']])
   })
 })

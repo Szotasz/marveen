@@ -2030,6 +2030,11 @@ async function attemptFireTask(
       SCHEDULED_TASK_PREAMBLE + '\n' +
       prefix.trimEnd() + '\n\n' +
       scheduledTaskBlock
+    // A worksource agent takes the prompt through its queue, not the keyboard (see queueScheduledToWorksource).
+    // `await`, so a throwing enqueue still lands in the catch below and books an 'error' run.
+    if (shouldQueueScheduledToWorksource(agentName, host)) {
+      return await queueScheduledToWorksource(task, agentName, session, host, now, fullPrompt, lateCatchUpMs, occurrence)
+    }
     let typedAt = Date.now() // replaced by onEmitStart; see the note after the call
     // forceSend skips the busy-state check above; it must also skip the
     // pre-flight wait-until-idle gate inside sendPromptToSession, otherwise a
@@ -2042,69 +2047,6 @@ async function attemptFireTask(
     // off) while task_runs still recorded a plain 'fired'. The flag only changes
     // the recorded status below; delivery is untouched.
     let busySend = false
-    // A worksource agent takes this prompt through its queue instead of the
-    // keyboard. The queue's reader acknowledges each item and re-offers what the
-    // agent never acknowledged, so the typing-specific machinery below (idle
-    // wait, resubmit chain, delivery-integrity check, lost re-injection) does
-    // not apply; the busy-timeout alert still does. Everything above -- every
-    // gate from the restart check to the MCP pre-check -- already ran unchanged.
-    const viaWorksource = shouldQueueScheduledToWorksource(agentName, host)
-    if (viaWorksource) {
-      // The content is `fullPrompt` byte for byte: the same string the typed
-      // path below would type, so an agent on the queue reads the same task.
-      const itemId = scheduledWorksourceItemId(task.name, occurrence ?? { kind: 'occurrence', at: now })
-      const queued = enqueueWorksourceItem(agentName, itemId, fullPrompt, scheduledWorksourceMeta(task.name, itemId))
-      if (!queued) {
-        // The id is already pending/active/done: this occurrence was handed
-        // over before (a retried tick, or the reader re-offering it). Record
-        // the occurrence as served and stay quiet -- re-queueing would hand
-        // the agent the same work twice.
-        logger.info({ task: task.name, agent: agentName, itemId }, 'Scheduled task already in the worksource queue -- not re-queued')
-        scheduleLastRun.set(task.name, now)
-        persistScheduleLastRun()
-        return 'fired'
-      }
-      logger.info({ task: task.name, agent: agentName, itemId }, 'Scheduled task queued to worksource')
-      const submittedAt = Date.now()
-      scheduleLastRun.set(task.name, now)
-      persistScheduleLastRun()
-      let firedRunId: number | null = null
-      if (lateCatchUpMs != null) {
-        firedRunId = appendTaskRun(task.name, agentName, 'fired_late')
-        logger.warn(
-          { task: task.name, agent: agentName, session, lateCatchUpMinutes: Math.round(lateCatchUpMs / 60000) },
-          'Scheduled task fired via restart catch-up window -- missed its normal tick',
-        )
-      } else {
-        // busySend stays false: there was no pane and no idle budget, so the
-        // 'fired_busy' branch cannot apply.
-        firedRunId = appendTaskRun(task.name, agentName, 'fired')
-      }
-      // Same watchdog entry as the typed path (the busy-timeout alert still
-      // applies), minus everything that presumes keystrokes: deliveryPending
-      // false (no resubmit chain will own this), and no sentText/typedAt, so
-      // the delivery-integrity check never runs for a queued item.
-      taskInflightMap.set(`${task.name}@${agentName}`, {
-        taskName: task.name,
-        agentName,
-        session,
-        host,
-        injectedAt: submittedAt,
-        alerted: false,
-        ownerAlerted: false,
-        sawTurn: false,
-        workingDir: agentName === MAIN_AGENT_ID ? PROJECT_ROOT : agentDir(agentName),
-        configDirs: agentName === MAIN_AGENT_ID
-          ? mainConfigRoots()
-          : [resolveAgentConfigDirForRead(agentName) ?? undefined],
-        timeoutMs: resolveStuckTimeoutMs(task),
-        runId: firedRunId,
-        taskType: task.type,
-        viaWorksource: true,
-        deliveryPending: false,
-      })
-      return 'fired'
-    }
     await sendPromptToSession(session, fullPrompt, host, {
       onEmitStart: () => {
         typedAt = Date.now()
@@ -2337,6 +2279,76 @@ async function attemptFireTask(
     appendTaskRun(task.name, agentName, 'error')
     return 'error'
   }
+}
+
+// A worksource agent takes this prompt through its queue instead of the
+// keyboard. The queue's reader acknowledges each item and re-offers what the
+// agent never acknowledged, so the typing-specific machinery of the typed path
+// (idle wait, resubmit chain, delivery-integrity check, lost re-injection) does
+// not apply; the busy-timeout alert still does. Everything attemptFireTask ran
+// before handing over -- every gate from the restart check to the MCP pre-check
+// -- already ran unchanged. The content is `fullPrompt` byte for byte: the same
+// string the typed path would type, so an agent on the queue reads the same task.
+async function queueScheduledToWorksource(
+  task: ScheduledTask,
+  agentName: string,
+  session: string,
+  host: string | null,
+  now: number,
+  fullPrompt: string,
+  lateCatchUpMs: number | undefined,
+  occurrence: ScheduledOccurrence | undefined,
+): Promise<'fired'> {
+  const itemId = scheduledWorksourceItemId(task.name, occurrence ?? { kind: 'occurrence', at: now })
+  const queued = enqueueWorksourceItem(agentName, itemId, fullPrompt, scheduledWorksourceMeta(task.name, itemId))
+  if (!queued) {
+    // The id is already pending/active/done: this occurrence was handed
+    // over before (a retried tick, or the reader re-offering it). Record
+    // the occurrence as served and stay quiet -- re-queueing would hand
+    // the agent the same work twice.
+    logger.info({ task: task.name, agent: agentName, itemId }, 'Scheduled task already in the worksource queue -- not re-queued')
+    scheduleLastRun.set(task.name, now)
+    persistScheduleLastRun()
+    return 'fired'
+  }
+  logger.info({ task: task.name, agent: agentName, itemId }, 'Scheduled task queued to worksource')
+  const queuedAt = Date.now()
+  scheduleLastRun.set(task.name, now)
+  persistScheduleLastRun()
+  // 'fired_busy' cannot apply on this path: there was no pane and no idle
+  // budget, the queue hand-over has no busy fall-through.
+  const status = lateCatchUpMs != null ? 'fired_late' : 'fired'
+  const firedRunId = appendTaskRun(task.name, agentName, status)
+  if (lateCatchUpMs != null) {
+    logger.warn(
+      { task: task.name, agent: agentName, session, lateCatchUpMinutes: Math.round(lateCatchUpMs / 60000) },
+      'Scheduled task fired via restart catch-up window -- missed its normal tick',
+    )
+  }
+  // Same watchdog entry as the typed path (the busy-timeout alert still
+  // applies), minus everything that presumes keystrokes: deliveryPending
+  // false (no resubmit chain will own this), and no sentText/typedAt, so
+  // the delivery-integrity check never runs for a queued item.
+  taskInflightMap.set(`${task.name}@${agentName}`, {
+    taskName: task.name,
+    agentName,
+    session,
+    host,
+    injectedAt: queuedAt,
+    alerted: false,
+    ownerAlerted: false,
+    sawTurn: false,
+    workingDir: agentName === MAIN_AGENT_ID ? PROJECT_ROOT : agentDir(agentName),
+    configDirs: agentName === MAIN_AGENT_ID
+      ? mainConfigRoots()
+      : [resolveAgentConfigDirForRead(agentName) ?? undefined],
+    timeoutMs: resolveStuckTimeoutMs(task),
+    runId: firedRunId,
+    taskType: task.type,
+    viaWorksource: true,
+    deliveryPending: false,
+  })
+  return 'fired'
 }
 
 // Injection priority within one tick: when several tasks are due in the same
