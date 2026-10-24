@@ -1,3 +1,5 @@
+// FIRST import on purpose: it sets Node's per-attempt connect timeout before any module opens a socket.
+import { netAttemptTimeoutAtStartup } from './net-attempt-timeout.js'
 import {
   readFileSync,
   readlinkSync,
@@ -471,6 +473,7 @@ const shutdown = (): void => {
 }
 
 async function main(): Promise<void> {
+  logger.info({ netAttemptTimeout: netAttemptTimeoutAtStartup }, 'network: per-attempt connect timeout')
   console.log(BANNER)
 
   // Install signal handlers EARLIEST so we can respond cleanly to SIGTERM
