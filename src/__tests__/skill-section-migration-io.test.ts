@@ -1,5 +1,5 @@
-import { describe, it, expect, vi } from 'vitest'
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { afterAll, describe, it, expect, vi } from 'vitest'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -24,6 +24,7 @@ const write = (name: string, text: string) => {
 const doc = (section: string) => `# Ágens\n\nbevezető\n\n${section}\n\n## Időkezelés\n\nx\n`
 
 describe('ensureSkillSectionCurrent on real files', () => {
+  afterAll(() => rmSync(H.root, { recursive: true, force: true }))
   const [retired] = readRetiredSkillSections()
 
   it('replaces an unedited sub-agent section once, and the second run writes nothing', () => {

@@ -3331,10 +3331,12 @@ export function ensureSkillsPathTrapSection(name: string): void {
 
 const SKILL_SECTION_HEADING = '## Öntanulás és Skill rendszer'
 
-/** Whitespace-only differences do not make a section edited: an LLM copy may add or drop blank lines. */
+/** Whitespace-only differences do not make a section edited: an LLM copy may add or drop a blank
+ *  line anywhere (measured on a live sub-agent: one inserted between two text lines), or leave
+ *  trailing spaces or CRLF. So blank lines are dropped and every line is right-trimmed. */
 export function normalizeSectionWhitespace(s: string): string {
   return s.replace(/\r\n?/g, '\n').split('\n').map((l) => l.replace(/[ \t]+$/, ''))
-    .join('\n').replace(/\n{3,}/g, '\n\n').replace(/^\n+|\n+$/g, '')
+    .filter((l) => l !== '').join('\n')
 }
 
 /** The section of a CLAUDE.md that starts at a line equal to `heading` and ends before the next line starting with "## " (or at the end). */
@@ -3343,7 +3345,7 @@ export function findSection(text: string, heading: string): { start: number; end
   let offset = 0
   let start = -1
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i].replace(/\r$/, '')
+    const line = lines[i].replace(/[ \t\r]+$/, '')
     if (start < 0 && line === heading) start = offset
     else if (start >= 0 && line.startsWith('## ')) return { start, end: offset }
     offset += lines[i].length + 1
