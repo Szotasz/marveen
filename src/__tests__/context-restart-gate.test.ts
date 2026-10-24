@@ -11,6 +11,7 @@ import {
   openQuestionBlocks,
   TASKSTATE_FRESH_WINDOW_MS,
 } from '../web/context-restart-gate-runner.js'
+import { MAIN_AGENT_ID } from '../config.js'
 import {
   decideGate,
   decideWake,
@@ -752,18 +753,31 @@ describe('decideWake', () => {
 })
 
 describe('gateWakePrompt', () => {
-  // The nudge exists to produce a turn AND a visible sign of life; a nudge that
-  // only said "you restarted" would leave the owner staring at silence again.
-  it('asks the agent to continue and to report on its channel', () => {
-    const p = gateWakePrompt()
-    expect(p).toContain('[CONTEXT-RESTART-GATE]')
-    expect(p.toLowerCase()).toContain('folytasd')
-    expect(p.toLowerCase()).toContain('csatorna')
+  // The nudge exists to produce a turn. Owner request 2026-10-21: it must NOT
+  // ask for a channel notice about the fresh context (several agents' channel is
+  // the owner's Telegram); only a faulty restart is reported, by a sub-agent to
+  // the main agent over the inter-agent queue.
+  it('asks the agent to continue without a channel notice', () => {
+    for (const name of [MAIN_AGENT_ID, 'samu']) {
+      const p = gateWakePrompt(name)
+      expect(p).toContain('[CONTEXT-RESTART-GATE]')
+      expect(p.toLowerCase()).toContain('folytasd')
+      expect(p).toContain('A friss kontextusrol a csatornadra (Telegram) NE kuldj uzenetet.')
+      expect(p).not.toContain('Rovid jelzest kuldj a sajat csatornadon')
+      expect(p).toContain('a gazdanak ne')
+    }
+  })
+
+  it('routes a faulty restart: sub-agent to the main agent, main agent to its transcript', () => {
+    expect(gateWakePrompt('samu')).toContain(`inter-agent uzenetben a fo ugynoknek (${MAIN_AGENT_ID})`)
+    const main = gateWakePrompt(MAIN_AGENT_ID)
+    expect(main).toContain('a transzkriptben rogzitsd')
+    expect(main).not.toContain('inter-agent uzenetben a fo ugynoknek')
   })
 
   // Guard against the nudge itself becoming a source of invented work.
   it('tells the agent that "nothing in flight" is a complete state', () => {
-    expect(gateWakePrompt()).toContain('ne talalj ki magadnak feladatot')
+    expect(gateWakePrompt('samu')).toContain('ne talalj ki magadnak feladatot')
   })
 })
 
