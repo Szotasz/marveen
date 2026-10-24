@@ -261,7 +261,8 @@ brings the outside world into an agent's context is outside both:
 
 - **`WebSearch`** -- result snippets are external text; no allowlist decided
   which sites they came from. The envelope hook below now frames them on the
-  way in (wired by default since MARVEENGAPS1020); nothing filters them.
+  way in (wired by default since MARVEENGAPS1020, on WebSearch and WebFetch);
+  nothing filters them.
 - **Any MCP server that fetches** -- a browser server (playwright, chrome), a
   docs server, an API connector. The agent's own `curl` is denied by
   `BASH_EGRESS_DENY`, but an MCP server makes the request in its own process,
@@ -290,7 +291,7 @@ The defence against that is framing, not filtering: content the agent knows is
 content cannot impersonate an instruction. `WebFetch` gets that framing from
 the wrapper. A browser payload gets none.
 
-## The envelope hook (default on WebSearch, opt-in for browser MCP servers)
+## The envelope hook (default on WebSearch and WebFetch, opt-in for browser MCP servers)
 
 `scripts/hooks/browser-content-notice.py` is a `PostToolUse` hook that wraps
 browser / search results in an `<untrusted source="..." fetch-nonce="...">`
@@ -302,15 +303,18 @@ overrides, credential targets, exfil shapes) and appends the full payload to
 `store/browser-content.log` for reading outside the model's context. The log is
 capped: past `BROWSER_CONTENT_LOG_MAX_BYTES` (default 10 MiB) it moves to
 `browser-content.log.1`, replacing an older one, so at most about twice the cap
-is kept; both files are mode 0600, a symlinked log path is refused, and a
-line that cannot be written leaves a note in `store/hook-errors.log`.
+is kept; both files are mode 0600, a symlinked log path or lock file
+(`browser-content.log.lock`) is refused, and a line that cannot be written
+leaves a note in `store/hook-errors.log`.
 
-Since MARVEENGAPS1020 (c) it is **wired by default for `WebSearch`**: in the
+Since MARVEENGAPS1020 (c) it is **wired by default for `WebSearch` and `WebFetch`**
+(for WebFetch too because the allowlist decides which host is reached, not
+whether its content can be trusted): in the
 repo-shipped `.claude/settings.json` for the main agent, and by the scaffold
 (`injectWebSearchEnvelope`, with a startup migration for existing agents) for
 every sub-agent. Every agent can call WebSearch: three profiles allow it by
 name, and the permissive ones run with the permission bypass. The hook does
-nothing until WebSearch is called. Its label tells the agent to read and use
+nothing until WebSearch or WebFetch is called. Its label tells the agent to read and use
 the content's facts and to refuse only its imperatives, so an agent does not
 stop on a round whose content was its job (BORITOOLVASAT921).
 
@@ -392,12 +396,22 @@ and a field that claimed success would be the most misleading line in the file.
 At `email_send` level 2 an approval authorizes ONE letter: `content_hash` pins
 it to the exact envelope and `consumed_at` makes it one-shot. The gate
 (`scripts/hooks/email-approval-gate.py`) flips `consumed_at` itself, but only
-for a send it can read in the command text (an MCP mail tool, `send.py --to`,
-an inline mailer call). A tool that mails through a script on another host,
+for a send it can read in the command text (an MCP mail tool, an inline mailer
+call). A tool that mails through a script on another host,
 for example `ssh <host> 'tsx send-letter.mjs'`, is invisible to it, so its
 approval stayed unconsumed and could authorize a second send.
 
-Such a tool consumes on its own path, right BEFORE the letter goes out, and
+This project's own senders (`scripts/support-mail/send.py`,
+`scripts/graph-mail.ts`) do the same without the endpoint: they run
+`scripts/hooks/sender_check.py` on the envelope they are about to deliver,
+which consumes the approval of THAT envelope with the gate's own one-shot
+update (and applies the standing-recipient list and level 1 / 3 the same
+way). The gate therefore does not consume for them: a literal call of one of
+them passes the hook at level 2, any other spelling of them is denied without
+consuming and without an anchor, and the sender's refusal prints the anchor
+to approve.
+
+Any other tool consumes on its own path, right BEFORE the letter goes out, and
 sends only on a yes:
 
 ```bash
@@ -417,6 +431,24 @@ is refused by the other.
 
 A 409 means: do not send, and check the sent mailbox before deciding anything,
 because the earlier attempt may already have gone out.
+
+# Approving takes the owner's session
+
+Approving a request (`PATCH /api/approvals/<id>` with `status=approved`, and the born-approved
+`POST /api/approvals` with `owner_approved_message_id`) goes through the same predicate as issuing
+credentials (`mayIssueCredentials`, #2163): the owner's dashboard session, also when the browser
+sends the stored access token alongside it; the bare token only before the first dashboard login
+exists. The shared token, which every agent holds, can still file a request and resolve it as
+`rejected` or `timeout` (that only cancels it), but no longer approve one: measured before, with it
+any agent made its own letter approved and the email gate let it through (kanban 80d0e3c6). A
+device key is not an owner session, whatever its scope.
+
+What the owner sees:
+- A browser that came in with `?token=` or through the mobile QR now gets a "Sign in with the
+  dashboard password" button (Settings, Security): it drops the stored token, and from then on the
+  browser runs on the owner's session, so approving from it works.
+- A Telegram "YES <id>" (or "IGEN <id>") reply no longer closes an approval: the agent sends the
+  owner to the dashboard instead.
 
 # Memory delete needs an approval (data_delete)
 
@@ -453,6 +485,121 @@ the delete what it is and puts the decision where the config says it belongs.
 **Limit:** the approval can be resolved by any holder of the shared dashboard
 token, as every approval can today, so an agent could approve its own request.
 "Only a human may delete" needs the per-agent identity decision (#1985) first.
+
+# New skills wait for approval (skill quarantine)
+
+A skill is an instruction set, and the global root `~/.claude/skills` is loaded
+by every agent of the fleet. Four dashboard routes bring new skill content in:
+
+- `POST /api/skills` (an LLM-generated `SKILL.md`, global);
+- `POST /api/skills/import` (an uploaded `.skill` / zip archive, global);
+- `POST /api/agents/:name/skills` and `POST /api/agents/:name/skills/import`
+  (the same, for one agent's own root).
+
+Until this change all four made the content live at once. The import checked
+only the structure (path traversal, a name clash, symlinks, a `SKILL.md`
+somewhere), never the text or the scripts shipped with it.
+
+Now all four write into `store/skills-pending/<id>/`, outside every skill root,
+so a pending skill is inert: no agent loads it. It goes live only when it is
+approved on the dashboard's Skills page, which shows first:
+
+- where it will land, named plainly: global means the whole fleet loads it
+  (a skill queued for the main agent is global, because its root is the global
+  one);
+- every file IN FULL: the text of every file, losslessly (control bytes such as
+  NUL, and bytes that are not UTF-8, appear as `<0xNN>`; C1 controls and the
+  U+2028/U+2029 separators as `<U+XXXX>`; all of them flagged), the size and
+  sha256 of every file, and whether it is executable, with scripts, binaries and
+  executables listed first. An image is shown by size and sha256 only, and a
+  file counts as an image by its first bytes (PNG, JPEG, GIF, WEBP, BMP, ICO,
+  matching its extension), not by its name: a text file named `logo.png` is
+  shown and scanned as text. The readable runs between a real image's bytes
+  (at least 8 printable characters; a control byte such as NUL is skipped, not
+  a break, so text spelled out between NULs or as UTF-16LE is one run) are
+  shown under the file and scanned, because `cat` hands them to the model;
+  a line break stays a line break, so each line is scanned on its own. Text drawn
+  inside a real image is not shown. A PDF
+  (the model reads its text) and a compiled program (ELF, PE, Mach-O) cannot be
+  reviewed there, so a skill that carries one cannot be approved from the
+  dashboard;
+- the scan findings: invisible Unicode (zero-width and tag characters), forged
+  security envelopes and directive headers, instruction overrides, credential
+  targets, exfil and pipe-to-shell shapes, decode-and-run, shell exec,
+  persistence targets (settings, scheduled tasks, shell rc files), install
+  hooks and long encoded blobs;
+- the `SKILL.md` text.
+
+The approval is bound to the hash of that content and of the name and target
+shown (`meta.json` is inside the hash): a file added, removed or changed, or the
+target edited, after the listing makes the approval fail (409), and a symlink
+planted into the pending skill blocks it. A skill over the review bounds (300
+files or 8 MiB) cannot be shown in full, so it cannot be approved from the
+dashboard.
+
+**The scan is a triage list, not a verdict.** No text filter is a security
+boundary for prompt injection (see the SKILLSCAN824 research). An empty findings
+list means the filter found no known shape, not that the skill is safe. The
+load-bearing control is that nothing goes live without the approval.
+
+**Not covered, stated out loud:**
+
+- An agent writing a skill directory directly with its file tools. All agents
+  run as one OS user, and the self-learning instructions tell them to do this.
+- The fleet import, the agent-bundle import and the `skill` CLI, which have
+  their own paths.
+- Editing a live skill's `SKILL.md` through `PUT /api/skills/:name` (a follow-up
+  PR puts it through the same queue).
+- Who approves. The approve route takes the same credentials as every other
+  dashboard write, and with the one shared dashboard token an agent can call it
+  too. "Only a human approves" needs the per-agent identity decision (#1985)
+  first.
+
+# Fleet import takes over only the identity keys
+
+`POST /api/fleet/import?apply=true` makes the target install adopt the source's
+main-agent identity: it writes the identity into `store/config-overrides.json`
+and mirrors it into `.env`, because `scripts/channels.sh` reads `MAIN_AGENT_ID`
+and `CHANNEL_PROVIDER` from `.env` directly.
+
+Until FLEETIMPORTENVKEY1021 the takeover copied every key of
+`mainAgent.identity`. The import is reachable with the fleet's one shared
+dashboard token, and `.env` also holds keys that decide what an agent may do,
+so one import call could set any of them.
+
+What happens now:
+
+- Only the keys the export writes are taken over: `MAIN_AGENT_ID`, `BOT_NAME`,
+  `BRAND_NAME`, `OWNER_NAME`, `CHANNEL_PROVIDER` (`FLEET_IDENTITY_KEYS` in
+  `src/web/fleet-transfer.ts`). The same set goes into both files.
+- A value with a control character is left out, not cleaned. `.env` values are
+  written unquoted, one per line, so a line break would start a line of the
+  file's choosing. If `MAIN_AGENT_ID` is left out, nothing is taken over.
+- Every key that is left out is named in a warning, in the dry run and in the
+  apply result.
+- `updateEnvFile` itself refuses a value with CR, LF or NUL, and a key that is
+  not a plain env name, before it reads the file.
+- The identity is checked against the target (FLEETIMPORTFOLLOW1021), in the
+  dry run and the apply alike. `MAIN_AGENT_ID` must have the installer's slug
+  shape and must not be the name of a sub-agent, on the target or in the same
+  import; otherwise nothing is taken over. `CHANNEL_PROVIDER` is taken over only
+  when the target already holds a token for that channel (the import carries
+  none), or when it is the target's own provider; otherwise that key alone is
+  left out, with a warning.
+- `MAIN_AGENT_ID` must also not be an id the message layer owns
+  (FLEETRESERVEDNAME1021, `RESERVED_AGENT_IDS` in `src/web/sanitize.ts`):
+  `system` is refused on every POST, so a main agent with that id could not
+  send, and `hanna` is accepted only from a device key and framed as the owner.
+  `scripts/migrate-main-agent-id.sh` refuses the same ids, and a `BOT_NAME`
+  whose id is already a sub-agent, before it stops anything. The installers
+  (`install-macos.sh`, `install-linux.sh`) derive the id from `BOT_NAME`
+  without this check.
+
+**Not covered, stated out loud:** the rest of the import (agent files, settings,
+the vault, scheduled tasks) still writes with the same shared token, and on a
+single-user host an agent whose Bash is permissive can write `.env` directly.
+Closing those needs the per-agent identity decision (#1985) and per-agent OS
+users, not this filter.
 
 # Sub-agent mail gate: sender scripts under any name
 

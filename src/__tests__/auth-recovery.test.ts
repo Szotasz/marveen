@@ -20,8 +20,9 @@ import type { RouteContext } from '../web/routes/types.js'
 // AUTHPLAN1 #5 -- recovery paths. Contract under test:
 //   - securityReset revokes every device key AND every browser session in one
 //     step, leaves users/passwords in place, and writes an audit row;
-//   - the HTTP break-glass password reset (token, no current_password) writes
-//     an audit row carrying the target username, never the password;
+//   - the token cannot reset a password over HTTP (DEVKEYMINT1022): the
+//     refusal changes nothing and writes no break-glass audit row; the CLI
+//     (scripts/dashboard-user.ts) is the recovery path and keeps its audit;
 //   - out-of-band revocation (a different process deleting rows, as the CLI
 //     does) is honored by a LIVE process's cache within the 60s debounce:
 //     the debounced write doubles as an existence check.
@@ -115,15 +116,14 @@ describe('securityReset', () => {
   })
 })
 
-describe('HTTP break-glass password reset audit', () => {
-  it('writes an audit row with the target username on the token path', async () => {
+describe('password reset over HTTP: the token path is closed (DEVKEYMINT1022)', () => {
+  it('a token reset is refused, changes nothing and leaves no break-glass row', async () => {
     const mk = await call('POST', '/api/auth/users', { auth: { kind: 'token' }, body: { username: 'alice', password: GOOD_PW } })
     expect(mk.statusCode).toBe(201)
+    getDb().prepare('DELETE FROM config_change_log').run()
     const r = await call('POST', '/api/auth/password', { auth: { kind: 'token' }, body: { username: 'alice', new_password: GOOD_PW + 'x' } })
-    expect(r.statusCode).toBe(200)
-    const rows = auditRows('security.break_glass_password_reset')
-    expect(rows).toHaveLength(1)
-    expect(rows[0]!).toEqual({ key: 'security.break_glass_password_reset', new_value: 'alice', actor: 'token' })
+    expect(r.statusCode).toBe(403)
+    expect(auditRows('security.break_glass_password_reset')).toHaveLength(0)
     // Never credential material in the trail.
     const all = JSON.stringify(getDb().prepare('SELECT * FROM config_change_log').all())
     expect(all).not.toContain(GOOD_PW)

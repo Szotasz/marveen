@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { PROJECT_ROOT, MAIN_AGENT_ID, currentBotName } from '../../config.js'
@@ -11,53 +11,16 @@ import { isAgentRunning } from '../agent-process.js'
 import { json, jsonMaybeGzip } from '../http-helpers.js'
 import { readQuotaSnapshot, DEFAULT_MAX_AGE_SEC, readFableSnapshot, DEFAULT_FABLE_MAX_AGE_SEC, readModQuotaSnapshot, chooseQuotaSnapshot, type QuotaSnapshot } from '../quota.js'
 import { STATE_OBSERVER_STATE_DIR } from '../state-observer.js'
+import { createUserTurnCounter } from '../user-turns.js'
 import type { RouteContext } from './types.js'
 
 // Count "real" user turns (operator prompts, Telegram messages) in every
 // Claude Code session JSONL under ~/.claude/projects/. Filters out
 // tool_result, local-command, and synthetic system events so a task-heavy
-// hour doesn't inflate the counter.
-function countUserTurns(fromMs: number, toMs: number = Number.POSITIVE_INFINITY): number {
-  const root = join(homedir(), '.claude', 'projects')
-  if (!existsSync(root)) return 0
-  let total = 0
-  try {
-    for (const projectDir of readdirSync(root)) {
-      const absDir = join(root, projectDir)
-      let stat: ReturnType<typeof statSync>
-      try { stat = statSync(absDir) } catch { continue }
-      if (!stat.isDirectory()) continue
-      for (const fname of readdirSync(absDir)) {
-        if (!fname.endsWith('.jsonl')) continue
-        const absFile = join(absDir, fname)
-        let fstat: ReturnType<typeof statSync>
-        try { fstat = statSync(absFile) } catch { continue }
-        if (fstat.mtimeMs < fromMs) continue
-        try {
-          const data = readFileSync(absFile, 'utf-8')
-          for (const line of data.split('\n')) {
-            if (!line) continue
-            let e: any
-            try { e = JSON.parse(line) } catch { continue }
-            if (e.type !== 'user' || e.isMeta) continue
-            const ts = e.timestamp ? Date.parse(e.timestamp) : 0
-            if (!ts || ts < fromMs || ts >= toMs) continue
-            const content = e.message?.content
-            if (typeof content === 'string') {
-              if (content.startsWith('<local-command') || content.startsWith('<command-name>')) continue
-              total++
-            } else if (Array.isArray(content)) {
-              const hasToolResult = content.some((b: any) => b && b.type === 'tool_result')
-              if (hasToolResult) continue
-              total++
-            }
-          }
-        } catch { /* skip unreadable file */ }
-      }
-    }
-  } catch { /* ignore */ }
-  return total
-}
+// hour doesn't inflate the counter. Incremental: transcripts are append-only,
+// so per file only the bytes written since the last request are read (see
+// src/web/user-turns.ts).
+const userTurns = createUserTurnCounter(join(homedir(), '.claude', 'projects'))
 
 // The fleet's remaining quota, as the overview strip shows it. Same file and
 // the same staleness threshold the quota monitor uses, so the strip and the
@@ -92,9 +55,9 @@ export async function tryHandleOverview(ctx: RouteContext): Promise<boolean> {
     const yesterday = startTs - 24 * 60 * 60 * 1000
     const schedToday = countTaskRunsBetween(startTs)
     const schedYesterday = countTaskRunsBetween(yesterday, startTs)
-    const userTurns = countUserTurns(startTs)
-    const userTurnsPrev = countUserTurns(yesterday, startTs)
-    const tasksToday = schedToday + userTurns
+    const userTurnsToday = userTurns.count(startTs)
+    const userTurnsPrev = userTurns.count(yesterday, startTs)
+    const tasksToday = schedToday + userTurnsToday
     const tasksYesterday = schedYesterday + userTurnsPrev
 
     let skillCount = 0

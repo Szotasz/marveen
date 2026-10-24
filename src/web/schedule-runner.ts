@@ -1,4 +1,4 @@
-import { join, isAbsolute } from 'node:path'
+import { join } from 'node:path'
 import { checkTaskMcpRequirements } from './schedule-mcp-precheck.js'
 import { collectHeartbeatMetricsBlock } from './heartbeat-metrics-inject.js'
 import {
@@ -11,6 +11,9 @@ import {
 import { verifyHeartbeatKanban, HEARTBEAT_KANBAN_WINDOW_SEC } from './heartbeat-kanban-verify.js'
 import { existsSync, readFileSync } from 'node:fs'
 import { spawn, spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
+import { isRepoShippedScript } from './precheck-trust.js'
+import { preCheckScriptPath } from './precheck-path.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { logger } from '../logger.js'
 import { decideDesktopGate, readDesktopLock, recordDesktopSkip } from './desktop-lock.js'
@@ -67,7 +70,15 @@ import {
   disableOnceTask,
   type ScheduledTask,
 } from './scheduled-tasks-io.js'
-import { listAgentNames, readFileOr, readAgentRemoteHost, agentDir } from './agent-config.js'
+import { rewriteRegisteredTask } from './schedule-registry-rewrite.js'
+import {
+  filterRegisteredTasks,
+  backfillScheduledTaskRegistryOnce,
+  verifyScheduledTask,
+  describeVerdict,
+  type RegistryVerdict,
+} from './schedule-registry.js'
+import { listAgentNames, readFileOr, readAgentRemoteHost, readAgentRemoteConfig, agentDir } from './agent-config.js'
 import { resolveAgentConfigDirForRead } from './claude-plans.js'
 import { readTranscriptMtimeAcrossConfigDirs, projectsDirFor } from './active-model.js'
 import { classifyDelivery, readUserPromptsSince, type DeliveryVerdict, type ReceivedPrompt } from './delivery-integrity.js'
@@ -82,6 +93,7 @@ import {
   startAgentProcess,
   sessionExistsOnHost,
   capturePane,
+  readRemoteTranscriptMtime,
   sendEnterToSession,
   clearStaleParkedInput,
   resolveAgentProvider,
@@ -101,6 +113,7 @@ import { getInjectedPrompt, matchesInjectedPrompt, type InjectedPromptRecord } f
 import { withSessionSendLock } from './session-send-lock.js'
 import { startSleepWakeDetector, systemSleptBetween } from './sleep-wake-detector.js'
 import { decideUsageLimitGate, USAGE_LIMIT_PROBE_INTERVAL_MS, type UsageLimitEpisode } from '../usage-limit-gate.js'
+import { whileNotFrozen } from './fleet-freeze.js'
 
 // How many bare-Enter attempts the post-send resubmit tries before escalating
 // to a clear + re-inject, and the hard cap after which it gives up.
@@ -195,6 +208,12 @@ export interface TaskInflightEntry {
   // `undefined` inside the list means the shared ~/.claude default.
   workingDir: string
   configDirs: ReadonlyArray<string | undefined>
+  // REMOTESAWTURN1022: for a remote (ssh) agent the transcript is on the remote
+  // host, under this absolute workdir (the one the remote launcher cd's into).
+  // The workingDir/configDirs fields point at a local path that has no transcript
+  // for such an agent, so the sawTurn probe reads it over ssh instead. Captured
+  // at injection time for the same reason as configDirs. Unset for a local agent.
+  remoteWorkdir?: string
   // Per-task stuck threshold, resolved at injection time from the task config
   // (see resolveStuckTimeoutMs). Captured on the entry rather than looked up
   // during the sweep so an edit to the schedule mid-run cannot move the
@@ -418,12 +437,49 @@ export function settleOnceAfterRun(
       )
       return
     }
-    if (disableOnceTask(taskName, now)) {
+    if (rewriteRegisteredTask(taskName, 'server:once-disable', () => disableOnceTask(taskName, now))) {
       logger.info({ task: taskName, delivery: remote ? 'remote-unchecked' : deliveryVerdict }, 'Once-task switched off after its first successful run')
     }
   } catch (err) {
     logger.warn({ err, task: taskName }, 'Once-task could not be switched off -- left enabled')
   }
+}
+
+/**
+ * REMOTESAWTURN1022: has the injected prompt started a turn? Called by the
+ * post-fire sweep until the first yes. 'busy' is the direct observation;
+ * otherwise the newest transcript write must be strictly later than the
+ * injection. A local agent's transcript is read from this machine's disk, a
+ * remote agent's (entry.host) over ssh from the host it runs on, because the
+ * local workingDir/configDirs of a remote agent point at a path that never gets
+ * a transcript. A remote entry without a remoteWorkdir, an unreachable host, or
+ * an unreadable directory gives no evidence (never an ssh call without a
+ * workdir, never a guess).
+ */
+export function probeTurnEvidence(
+  entry: Pick<TaskInflightEntry, 'injectedAt' | 'sawTurn' | 'host' | 'workingDir' | 'configDirs' | 'remoteWorkdir'>,
+  paneState: PaneState | null,
+  deps: {
+    readLocal?: (workingDir: string, configDirs: ReadonlyArray<string | undefined>) => number | null
+    readRemote?: (host: string, workdir: string) => number | null
+  } = {},
+): { sawTurn: boolean; mtimeSeen: number | null } {
+  if (entry.sawTurn) return { sawTurn: true, mtimeSeen: null }
+  if (paneState === 'busy') return { sawTurn: true, mtimeSeen: null }
+  let mtimeSeen: number | null
+  if (entry.host == null) {
+    mtimeSeen = deps.readLocal
+      ? deps.readLocal(entry.workingDir, entry.configDirs)
+      : readTranscriptMtimeAcrossConfigDirs(entry.workingDir, entry.configDirs)
+  } else if (entry.remoteWorkdir && paneState != null) {
+    // paneState null = the pane capture over ssh already failed (host
+    // unreachable): the verdict is 'hold' anyway, so a second ssh (up to 3 s)
+    // on every sweep for up to the whole tracking window would only block the sweep.
+    mtimeSeen = (deps.readRemote ?? readRemoteTranscriptMtime)(entry.host, entry.remoteWorkdir)
+  } else {
+    mtimeSeen = null
+  }
+  return { sawTurn: mtimeSeen != null && mtimeSeen > entry.injectedAt, mtimeSeen }
 }
 
 export function decideTaskTimeout(
@@ -1198,17 +1254,16 @@ export function quotaWorkClass(task: Pick<ScheduledTask, 'type'>): QuotaWorkClas
   return 'owner-facing'
 }
 
-// Where a task's preCheck script lives. Relative -> beside the task's SKILL.md;
-// absolute -> as given; a leading {{PROJECT_ROOT}} / {{INSTALL_DIR}} -> the
-// install root. The placeholder form exists for SHIPPED tasks that gate on a
-// repo script: the node seeder copies task-config.json without template
-// rendering, and update.sh's seed refresh never adds a new file to an existing
-// task dir, so neither a hard-coded path nor a script beside the SKILL.md would
-// reach every install.
-export function resolvePreCheckPath(taskName: string, preCheck: string): string {
-  const rooted = preCheck.replace(/^\{\{(PROJECT_ROOT|INSTALL_DIR)\}\}(?=\/)/, PROJECT_ROOT)
-  return isAbsolute(rooted) ? rooted : join(SCHEDULED_TASKS_DIR, taskName, rooted)
+// Where a task's preCheck script lives, by the same rule the registry hash
+// uses (preCheckScriptPath, precheck-path.ts; the forms are listed there).
+// null: no script (not a non-empty string), exactly when the hash sees none.
+export function resolvePreCheckPath(taskName: string, preCheck: unknown): string | null {
+  return preCheckScriptPath(join(SCHEDULED_TASKS_DIR, taskName), preCheck)
 }
+
+// Logged with typeof only: the value is whatever task-config.json held (an
+// object, an array), and an arbitrary value has no place in dashboard.log.
+const NOT_A_PRECHECK_PATH_MSG = 'pre-check is not a script path (not a non-empty string); the registry hash ignores it, so it is ignored here too, running LLM anyway'
 
 export type PreCheckResult = { skip: boolean; prefix?: string }
 
@@ -1217,19 +1272,67 @@ export const PRECHECK_TIMEOUT_MS = 10_000
 // spawnSync's default maxBuffer: a longer stdout fails the run the same way in both forms.
 const PRECHECK_MAX_STDOUT_BYTES = 1024 * 1024
 
+// Scheduled-task registry: the bash argv for a task's preCheck. A hashed
+// preCheck (ScheduledTask.preCheckSha256, see preCheckHashTarget) is run from
+// the bytes verified HERE, not re-read by bash from the path later, so a script
+// swapped after the task was read and verified is never executed: a mismatch
+// skips the tick ({ skip: true }), the tampered task does not run. The bytes
+// go in as `bash -c <script> <path>`, so $0 is still the script path (BASH_SOURCE
+// is empty in that form). An unhashed preCheck runs as before (bash <path>):
+// a repo-shipped script under <PROJECT_ROOT>/scripts/ (re-checked here, so a
+// path that stopped resolving inside scripts/ since the read is not run), or a
+// task object that was not read from disk (no contentHash).
+// Above MAX_VERIFIED_PRECHECK_BYTES (a single argv string is capped at 128 KiB
+// on Linux) the script is not run and the LLM runs anyway, as on any pre-check
+// failure.
+const MAX_VERIFIED_PRECHECK_BYTES = 120 * 1024
+
+export function preCheckInvocation(task: ScheduledTask, scriptPath: string): { args: string[] } | { result: PreCheckResult } {
+  if (task.preCheckSha256 === undefined) {
+    if (task.contentHash !== undefined && !isRepoShippedScript(scriptPath)) {
+      logger.warn({ task: task.name, scriptPath }, 'pre-check script is no longer repo-shipped code and was not hashed; NOT running it, skipping this tick')
+      return { result: { skip: true } }
+    }
+    return { args: [scriptPath] }
+  }
+  let bytes: Buffer
+  try { bytes = readFileSync(scriptPath) } catch (err) {
+    logger.warn({ task: task.name, scriptPath, error: (err as Error).message }, 'pre-check script unreadable, running LLM anyway')
+    return { result: { skip: false } }
+  }
+  if (createHash('sha256').update(bytes).digest('hex') !== task.preCheckSha256) {
+    logger.warn({ task: task.name, scriptPath }, 'pre-check script changed after the task was verified against the registry; NOT running it, skipping this tick')
+    return { result: { skip: true } }
+  }
+  if (bytes.length > MAX_VERIFIED_PRECHECK_BYTES) {
+    logger.warn({ task: task.name, bytes: bytes.length }, 'pre-check script too large to run from its verified bytes, running LLM anyway')
+    return { result: { skip: false } }
+  }
+  return { args: ['-c', bytes.toString('utf-8'), scriptPath] }
+}
+
 // The synchronous form. Since CRONPRECHECKSYNC1007 the runner calls it from
 // nowhere: both loops use runPreCheckAsync. Kept only as the reference the
 // async form's contract tests compare against; do not call it from the runner
 // (it holds the event loop, and its timeout ends only the direct child).
 export function runPreCheck(task: ScheduledTask): PreCheckResult {
   if (!task.preCheck) return { skip: false }
-  const scriptPath = resolvePreCheckPath(task.name, task.preCheck)
+  // dirName, not name: a relative preCheck lives in the task's OWN directory,
+  // which is also what the registry hashed. `name` can come from
+  // the SKILL.md frontmatter and point at a different directory.
+  const scriptPath = resolvePreCheckPath(task.dirName ?? task.name, task.preCheck)
+  if (scriptPath == null) {
+    logger.warn({ task: task.name, preCheckType: typeof task.preCheck }, NOT_A_PRECHECK_PATH_MSG)
+    return { skip: false }
+  }
   if (!existsSync(scriptPath)) {
     logger.warn({ task: task.name, scriptPath }, 'pre-check script not found, running LLM anyway')
     return { skip: false }
   }
+  const inv = preCheckInvocation(task, scriptPath)
+  if ('result' in inv) return inv.result
   try {
-    const r = spawnSync('bash', [scriptPath], { timeout: PRECHECK_TIMEOUT_MS, encoding: 'utf-8' })
+    const r = spawnSync('bash', inv.args, { timeout: PRECHECK_TIMEOUT_MS, encoding: 'utf-8' })
     if (r.error) {
       logger.warn({ task: task.name, error: r.error.message }, 'pre-check script spawn error, running LLM anyway')
       return { skip: false }
@@ -1293,11 +1396,19 @@ export function runPreCheckAsync(
   opts: { timeoutMs?: number; maxStdoutBytes?: number } = {},
 ): Promise<PreCheckResult> {
   if (!task.preCheck) return Promise.resolve({ skip: false })
-  const scriptPath = resolvePreCheckPath(task.name, task.preCheck)
+  // dirName, not name: a relative preCheck lives in the task's OWN directory,
+  // which is what the registry hashed (same rule as runPreCheck).
+  const scriptPath = resolvePreCheckPath(task.dirName ?? task.name, task.preCheck)
+  if (scriptPath == null) {
+    logger.warn({ task: task.name, preCheckType: typeof task.preCheck }, NOT_A_PRECHECK_PATH_MSG)
+    return Promise.resolve({ skip: false })
+  }
   if (!existsSync(scriptPath)) {
     logger.warn({ task: task.name, scriptPath }, 'pre-check script not found, running LLM anyway')
     return Promise.resolve({ skip: false })
   }
+  const inv = preCheckInvocation(task, scriptPath)
+  if ('result' in inv) return Promise.resolve(inv.result)
   const timeoutMs = opts.timeoutMs ?? PRECHECK_TIMEOUT_MS
   const maxStdoutBytes = opts.maxStdoutBytes ?? PRECHECK_MAX_STDOUT_BYTES
   return new Promise<PreCheckResult>((resolve) => {
@@ -1313,7 +1424,7 @@ export function runPreCheckAsync(
     try {
       // detached: the script leads its own process group, so the limit can end
       // everything it started (endPreCheckGroup), not just bash.
-      child = spawn('bash', [scriptPath], { stdio: ['ignore', 'pipe', 'pipe'], detached: true })
+      child = spawn('bash', inv.args, { stdio: ['ignore', 'pipe', 'pipe'], detached: true })
     } catch (err) {
       logger.warn({ err, task: task.name }, 'pre-check script threw, running LLM anyway')
       settle({ skip: false })
@@ -1419,7 +1530,17 @@ export function resetPreCheckAnswersForTests(): void {
 function currentEnabledTask(name: string): ScheduledTask | null {
   const direct = readScheduledTask(name)
   const t = direct && direct.name === name ? direct : listScheduledTasks().find(x => x.name === name)
-  return t && t.enabled ? t : null
+  if (!t || !t.enabled) return null
+  // Registry x SCHEDRECHECK1007: the fresh read is what actually fires, so it
+  // must pass the registry gate too, not only the tick's snapshot. Otherwise a
+  // task edited on disk between the tick's check and a (retry) fire would go out
+  // unverified.
+  const verdict = verifyScheduledTask(t)
+  if (!verdict.ok) {
+    logger.warn({ task: t.dirName ?? t.name, reason: verdict.reason }, 'schedule-runner: fire dropped -- the task no longer matches its registry entry')
+    return null
+  }
+  return t
 }
 
 // Who a task fires at, from its `agent` field: everyone running plus the main
@@ -1787,7 +1908,7 @@ async function attemptFireTask(
           createAgentMessage(
             'system',
             MAIN_AGENT_ID,
-            `[FELHIVAS] A(z) "${task.name}" utemezett feladat (agent: ${agentName}) cimzettje bizonytalan -- ${bound.ambiguousCandidates} lehetseges kontakt van az agens allowFrom listajan, es a task-config.json-ban nincs telegramChatId megadva. A kezbesitesi utasitas kimaradt EBBOL A futasbol (nem tippeltunk). Toltsd ki a telegramChatId mezot (konkret chat_id, vagy "none" ha a taskot nem kell csatornara kuldeni) a ~/.claude/scheduled-tasks/${task.name}/task-config.json-ban.`,
+            `[FELHIVAS] A(z) "${task.name}" utemezett feladat (agent: ${agentName}) cimzettje bizonytalan -- ${bound.ambiguousCandidates} lehetseges kontakt van az agens allowFrom listajan, es a task-config.json-ban nincs telegramChatId megadva. A kezbesitesi utasitas kimaradt EBBOL A futasbol (nem tippeltunk). Toltsd ki a telegramChatId mezot (konkret chat_id, vagy "none" ha a taskot nem kell csatornara kuldeni) a PUT /api/schedules/${task.dirName ?? task.name} hivassal ({"telegramChatId": ...}); a task-config.json kezi szerkesztese hash-elteres miatt leallitja a feladatot.`,
           )
         }
         prefix = `[Utemezett feladat: ${task.name}] `
@@ -1971,6 +2092,7 @@ async function attemptFireTask(
       taskType: task.type,
       // Local agents only: a remote agent's transcript is on its own host.
       ...(host == null ? { sentText: paneOneLine(fullPrompt), typedAt } : {}),
+      ...(host != null ? { remoteWorkdir: readAgentRemoteConfig(agentName).workdir ?? undefined } : {}),
       deliveryPending: true,
     }
     taskInflightMap.set(`${task.name}@${agentName}`, inflightEntry)
@@ -2142,21 +2264,35 @@ export function digestGapTasks(tasks: Array<{ name: string; agent: string; sched
 }
 
 export function runHeartbeatGapCheck(nowMs: number = Date.now()): string[] {
-  return checkHeartbeatDigestGaps(digestGapTasks(listScheduledTasks()), nowMs, digestGapGuardDeps())
+  // Registered tasks only: the gap note carries the task's name and agent text
+  // to the main agent, so an unregistered (planted) task must not reach it.
+  // verifyScheduledTask, not filterRegisteredTasks: the filter's one-time-warning
+  // set is shared with the runner tick, and this 5-minute guard must not consume
+  // the key that makes the tick send its skip notice.
+  const registered = listScheduledTasks().filter((t) => verifyScheduledTask(t).ok)
+  return checkHeartbeatDigestGaps(digestGapTasks(registered), nowMs, digestGapGuardDeps())
 }
 
 export function startHeartbeatGapGuard(): ReturnType<typeof setInterval> {
-  return setInterval(() => {
+  return setInterval(whileNotFrozen('heartbeat-gap-guard', () => {
     try { runHeartbeatGapCheck() } catch (err) { logger.warn({ err }, 'HBFABRIC1003: heartbeat gap check failed') }
-  }, HEARTBEAT_GAP_CHECK_INTERVAL_MS)
+  }), HEARTBEAT_GAP_CHECK_INTERVAL_MS)
 }
 
 export async function runScheduledTaskNow(
   taskName: string,
   opts: { allowDisabled?: boolean } = {},
 ): Promise<{ ok: boolean; result?: string; error?: string }> {
-  const task = listScheduledTasks().find(t => t.name === taskName)
+  // Directory name first (the route passes the sanitized dir name): a planted
+  // dir whose SKILL.md frontmatter claims this name must not shadow the real one.
+  const all = listScheduledTasks()
+  const task = all.find(t => t.dirName === taskName) ?? all.find(t => t.name === taskName)
   if (!task) return { ok: false, error: 'Schedule not found' }
+  // "Run now" is still a fire -- the same registry gate applies.
+  const verdict = verifyScheduledTask(task)
+  if (!verdict.ok) {
+    return { ok: false, error: `Schedule not fired: ${describeVerdict(verdict)}. Save it through the dashboard/API, or review the files and re-register it (node dist/web/schedule-registry-cli.js register <name>).` }
+  }
   // allowDisabled: for on-demand-only tasks that are intentionally kept
   // enabled:false so the cron never fires them, but a guarded endpoint can
   // still trigger them (e.g. the post-rollback diagnosis, PR-D).
@@ -2509,7 +2645,9 @@ function sendTaskInflightMainAgentNotice(entry: TaskInflightEntry, elapsedMs: nu
   const thresholdMinutes = Math.round(entry.timeoutMs / 60000)
   const text = [
     `[scheduler] ${describeInflightPaneAge(entry, elapsedMs, runStatusOf(entry))} Küszöb: ${thresholdMinutes} perc pane-foglaltság.`,
-    'Ha a pane jogosan foglalt ennél tovább (hosszú feladat, vagy az ágens mással dolgozik), allitsd a task-config.json "stuckAfterMinutes" mezojet.',
+    // Scheduled-task registry: a hand edit of task-config.json now stops the task from
+    // firing (registry hash mismatch), so the advice points to the API.
+    'Ha a pane jogosan foglalt ennél tovább (hosszú feladat, vagy az ágens mással dolgozik), allitsd a "stuckAfterMinutes" erteket a PUT /api/schedules/<nev> hivassal (pl. {"stuckAfterMinutes": 60}); a task-config.json kezi szerkesztese utan a feladat NEM indul, amig ujra nem regisztraljak.',
     'Ellenőrizd az ágenst; ha nem oldódik meg, az uzemeltető direkt ertesitest kap ha ez tovabb tart.',
   ].join('\n')
   try {
@@ -2598,7 +2736,7 @@ function sendTaskTimeoutAlert(entry: TaskInflightEntry, elapsedMs: number): void
   const text = [
     `[${BOT_NAME} scheduler] ${describeInflightPaneAge(entry, elapsedMs, runStatusOf(entry))} A(z) fő-agent mar ertesitve volt errol, de a pane azota is foglalt.`,
     ...(typical ? [`Ez a feladat általában ${typical} alatt lefut (a korábbi befejezett futások mediánja; ez is PANE-IDŐ: az injektálástól a pane első tétlen állapotáig, nem munkaidő).`] : []),
-    `A riasztási küszöb ennél a feladatnál ${thresholdMinutes} perc; ha ez a feladat jogosan fut ennél tovább, allitsd a task-config.json "stuckAfterMinutes" mezojet.`,
+    `A riasztási küszöb ennél a feladatnál ${thresholdMinutes} perc; ha ez a feladat jogosan fut ennél tovább, allitsd a "stuckAfterMinutes" erteket a PUT /api/schedules/<nev> hivassal (pl. {"stuckAfterMinutes": 60}); a task-config.json kezi szerkesztese utan a feladat NEM indul, amig ujra nem regisztraljak.`,
     'Az ágensben megtekintheted; a dashboard /Ütemezések oldalán visszavonható ha kell.',
   ].join('\n')
   ;(async () => {
@@ -2616,7 +2754,30 @@ function sendTaskTimeoutAlert(entry: TaskInflightEntry, elapsedMs: number): void
 // SQLite SELECT so the load is negligible.
 export const SCHEDULE_TICK_MS = 15_000
 
+// Scheduled-task registry: tell the main agent (once per task+content, see
+// filterRegisteredTasks) that a task on disk is being refused. Only the reduced
+// task label and the reason go out -- never the task's prompt, which is exactly
+// the untrusted content the gate exists to keep away from an agent session.
+function sendRegistrySkipNotice(label: string, verdict: Exclude<RegistryVerdict, { ok: true }>): void {
+  const text =
+    `[scheduler] A(z) "${label}" utemezett feladatot NEM inditom: ${describeVerdict(verdict)}. ` +
+    'Ha a valtozas jogos, mentsd a dashboardon/API-n at, vagy nezd at a fajlokat es regisztrald: ' +
+    `node dist/web/schedule-registry-cli.js register ${label}.`
+  createAgentMessage('system', MAIN_AGENT_ID, text)
+}
+
 export function startScheduleRunner(): NodeJS.Timeout {
+  // Scheduled-task registry, one-time upgrade migration: the first start of a build with the
+  // registry gate trusts the tasks already on disk (same trust as before the
+  // upgrade), so the live install keeps firing them. Marker-guarded in the DB:
+  // it never runs again. A failure here is non-fatal -- the gate then simply
+  // skips unregistered tasks (fail-closed) and says so per task.
+  try {
+    backfillScheduledTaskRegistryOnce()
+  } catch (err) {
+    logger.warn({ err }, 'schedule-registry: upgrade backfill failed (non-fatal); unregistered tasks will be skipped')
+  }
+
   // Close EVERY run that the previous process was still watching when it
   // stopped. taskInflightMap is in memory, so a restart loses every open entry
   // and nothing else can ever close those rows (SCHEDSORZAR923: an age window
@@ -2705,7 +2866,11 @@ export function startScheduleRunner(): NodeJS.Timeout {
     }
     tickRunning = true
     try {
-    const tasks = listScheduledTasks()
+    // Scheduled-task registry: only tasks whose files hash-match the server-owned registry
+    // are considered at all (cron fires, catch-ups AND pending retries -- a
+    // retry of a task that was tampered with after queueing finds no taskDef
+    // and is dropped like a deleted task).
+    const tasks = filterRegisteredTasks(listScheduledTasks(), sendRegistrySkipNotice)
     const now = Date.now()
     // Scan the real interval elapsed since the previous tick (30 min on the
     // first tick), not a fixed 60s window -- a late/dropped tick must not let a
@@ -2732,12 +2897,9 @@ export function startScheduleRunner(): NodeJS.Timeout {
       // other side.
       let lastMtimeSeen: number | null = null
       if (!entry.sawTurn) {
-        if (state === 'busy') {
-          entry.sawTurn = true
-        } else {
-          lastMtimeSeen = readTranscriptMtimeAcrossConfigDirs(entry.workingDir, entry.configDirs)
-          if (lastMtimeSeen != null && lastMtimeSeen > entry.injectedAt) entry.sawTurn = true
-        }
+        const probed = probeTurnEvidence(entry, state)
+        lastMtimeSeen = probed.mtimeSeen
+        if (probed.sawTurn) entry.sawTurn = true
       }
       const decision = decideTaskTimeout(entry, state, now, {
         graceMs: TASK_FIRE_GRACE_MS,
@@ -2862,6 +3024,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
             injectedAt: entry.injectedAt,
             workingDir: entry.workingDir,
             configDirs: entry.configDirs,
+            remoteWorkdir: entry.remoteWorkdir,
             paneState: state,
             mtimeSeen: lastMtimeSeen,
             mtimeAheadOfInjectMs: lastMtimeSeen != null ? lastMtimeSeen - entry.injectedAt : null,
@@ -3297,5 +3460,5 @@ export function startScheduleRunner(): NodeJS.Timeout {
 
   // Run immediately on start (catches missed tasks)
   setTimeout(() => { void runCheck() }, 5000)
-  return setInterval(() => { void runCheck() }, SCHEDULE_TICK_MS)
+  return setInterval(whileNotFrozen('schedule-runner', () => { void runCheck() }), SCHEDULE_TICK_MS)
 }

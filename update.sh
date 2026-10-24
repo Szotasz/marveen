@@ -454,7 +454,9 @@ npm_ci_failed() {
   if [ -n "$OLD_VERSION_FULL" ]; then
     git reset --hard "$OLD_VERSION_FULL" >/dev/null 2>&1 || true
     if npm ci --silent --include=dev 2>/dev/null; then deps_ok=1; fi
-    npm rebuild better-sqlite3 --silent 2>/dev/null || true
+    # #950: rebuild only when the installed prebuild does not load -- a failing source build
+    # deletes the working binary, which is what this rollback is trying to restore.
+    native_module_loads || npm rebuild better-sqlite3 --silent 2>/dev/null || true
     npm run build --silent 2>/dev/null || true
     [ -d "$INSTALL_DIR/dist" ] && echo "$OLD_VERSION_FULL" > "$BUILT_COMMIT_FILE"
   fi
@@ -833,6 +835,28 @@ install_stuck_modal_guard_launchd() {
   return 0
 }
 
+# Registry verdict of task $1 as it is on disk NOW (defined here, above its
+# first caller park_morning_timer in run_unit_maintenance; the seed refresh
+# below uses it too):
+#   0 = trusted (ok), 1 = a REAL not-ok verdict (unregistered / hash mismatch /
+#   not found), 2 = UNKNOWN: no CLI (first update to a guard build, or an
+#   unbuilt dist), no node, a CLI without `verify` (usage exit 2), or a crash.
+# A crash also exits 1 in node, so 1 counts only together with the CLI's own
+# "<verdict> <name>" line.
+sched_task_verified_ok() {
+  _sv_cli="$INSTALL_DIR/dist/web/schedule-registry-cli.js"
+  [ -f "$_sv_cli" ] || return 2
+  command -v node >/dev/null 2>&1 || return 2
+  _sv_rc=0
+  _sv_out="$(node "$_sv_cli" verify "$1" 2>/dev/null)" || _sv_rc=$?
+  [ "$_sv_rc" = "0" ] && return 0
+  # registry-error = the CLI could not read the registry: unknown, not a verdict.
+  if [ "$_sv_rc" = "1" ] && printf '%s\n' "$_sv_out" | grep -xE "[a-z-]+ $1" | grep -qv '^registry-error '; then
+    return 1
+  fi
+  return 2
+}
+
 # Morning-timer parking (MORNTIMERPARK914 -- the missing half of the locked
 # MORNCONS1 decision, 2026-07-27). The #1313 installer change stops ENABLING
 # the 07:27 morning timer on NEW installs, but every already-installed Linux
@@ -878,6 +902,22 @@ park_morning_timer() {
       echo -e "  FIGYELEM: ${_mt_unit} engedelyezve marad -- a reggeli-napindito runner-task nincs jelen/engedelyezve ezen a hoston, es a timer az egyetlen napindito-ut (MORNCONS1 kapu)."
       _park_blocked=1
       continue
+    fi
+    # Since the scheduled-task registry, enabled:true alone is not enough: the
+    # runner skips a task whose files do not match its registry entry. Park only
+    # on a trusted verdict from the running build's CLI. No CLI at all means a
+    # pre-registry build (or the first update to one, whose one-time backfill
+    # registers the task on disk): the runner fires it, as before. A CLI that
+    # answers not-ok, or cannot answer (crash, registry-error, no node), keeps
+    # the timer and leaves the migration unsettled, like condition 1.
+    if [ -f "$INSTALL_DIR/dist/web/schedule-registry-cli.js" ]; then
+      _mt_vrc=0
+      sched_task_verified_ok reggeli-napindito || _mt_vrc=$?
+      if [ "$_mt_vrc" != "0" ]; then
+        echo -e "  FIGYELEM: ${_mt_unit} engedelyezve marad -- a reggeli-napindito runner-task registry-itelete nem 'ok' (a runner kihagyja, vagy nem ellenorizheto), es a timer az egyetlen biztos napindito-ut (MORNCONS1 kapu). Ellenorzes: node $INSTALL_DIR/dist/web/schedule-registry-cli.js verify reggeli-napindito"
+        _park_blocked=1
+        continue
+      fi
     fi
     if systemctl --user disable --now "$_mt_unit" >/dev/null 2>&1; then
       echo -e "  Reggeli 07:27 timer leallitva -- a napinditot a 07:30-as runner-task viszi az elo csatorna-munkamenetbol (MORNCONS1): ${_mt_unit}"
@@ -1115,6 +1155,19 @@ render_seed_file() {
   if [ "$2" = "template" ]; then render_seed_template <"$1"; else cat "$1"; fi
 }
 
+# Scheduled-task registry: take the registry verdict of the task dir being
+# refreshed, ONCE per dir, right before its first file is rewritten or added
+# (sched_pre_ok: "" = not asked yet, 1 = trusted, 0 = not trusted, u = unknown /
+# no CLI). A no-op outside a scheduled-task dir. Reads/sets the per-dir state
+# refresh_untouched_seeds keeps (sched_task, sched_pre_ok, name).
+sched_pre_verify_once() {
+  if [ "${sched_task:-0}" = "1" ] && [ -z "${sched_pre_ok:-}" ]; then
+    sched_pre_rc=0
+    sched_task_verified_ok "$name" || sched_pre_rc=$?
+    case "$sched_pre_rc" in 0) sched_pre_ok=1 ;; 1) sched_pre_ok=0 ;; *) sched_pre_ok=u ;; esac
+  fi
+}
+
 # Refresh ONE installed copy of a shipped file if it is provably untouched.
 # $1 = source file, $2 = installed path, $3 = repo-relative path, $4 = mode.
 refresh_one_seed_file() {
@@ -1127,12 +1180,14 @@ refresh_one_seed_file() {
   have="$(shasum -a 256 <"$installed" 2>/dev/null | awk '{print $1}')"
   [ "$want" = "$have" ] && return 0
   if seed_copy_is_untouched "$installed" "$rel" "$mode"; then
+    sched_pre_verify_once
     if [ "$mode" = "template" ]; then
       render_seed_template <"$f" >"$installed.seedtmp" && mv "$installed.seedtmp" "$installed"
     else
       cp "$f" "$installed"
     fi
     SEED_REFRESH_UPDATED=$((SEED_REFRESH_UPDATED + 1))
+    sched_dir_refreshed=1
   else
     SEED_REFRESH_KEPT=$((SEED_REFRESH_KEPT + 1))
   fi
@@ -1151,6 +1206,15 @@ refresh_untouched_seeds() {
     [ -d "$d" ] || continue
     name="$(basename "$d")"
     [ -d "$target_root/$name" ] || continue     # not seeded here -> not ours to add
+    # Scheduled-task registry: the registry hash covers the WHOLE task dir,
+    # references/ included, so every write below (a top-level file, a
+    # references/ file refreshed, a missing references/ file added) sits inside
+    # the same bracket: verify once before the first write
+    # (sched_pre_verify_once), re-register once after the last one.
+    sched_task=0
+    case "$target_root" in */scheduled-tasks) sched_task=1 ;; esac
+    sched_pre_ok=""
+    sched_dir_refreshed=0
     for f in "$d"*; do
       [ -f "$f" ] || continue
       base="$(basename "$f")"
@@ -1184,6 +1248,7 @@ refresh_untouched_seeds() {
       if [ -f "$installed" ]; then
         refresh_one_seed_file "$f" "$installed" "$src_rel/$name/$rel" "$mode"
       elif [ "$skill_current" = "1" ]; then
+        sched_pre_verify_once
         mkdir -p "$(dirname "$installed")"
         if [ "$mode" = "template" ]; then
           render_seed_template <"$f" >"$installed.seedtmp" && mv "$installed.seedtmp" "$installed"
@@ -1191,10 +1256,18 @@ refresh_untouched_seeds() {
           cp -p "$f" "$installed"   # verbatim keeps the mode bits (a skill's scripts)
         fi
         SEED_REFRESH_UPDATED=$((SEED_REFRESH_UPDATED + 1))
+        sched_dir_refreshed=1
       fi
     done <<EOF_TRACKED
 $tracked
 EOF_TRACKED
+    # Scheduled-task registry: a refreshed scheduled task changed on disk, so its registry
+    # hash must be renewed or the runner refuses it -- but ONLY when the task is
+    # provably trusted, and right now (not at the end of the whole run), so the
+    # runner's ticks in between do not flag it as "NOT firing".
+    if [ "$sched_task" = "1" ] && [ "$sched_dir_refreshed" = "1" ]; then
+      register_refreshed_schedule "$name" "$sched_pre_ok" "$target_root/$name" "$d" "$mode"
+    fi
   done
   return 0
 }
@@ -1226,8 +1299,120 @@ run_seed_refresh() {
   if [ "$SEED_REFRESH_UPDATED" -gt 0 ]; then
     echo -e "  ${GREEN}✓${NC} Szallitott skill/feladat frissitve: ${SEED_REFRESH_UPDATED} (erintetlen masolat); megtartva: ${SEED_REFRESH_KEPT} (helyben modositott)"
   fi
+  # Scheduled-task registry: one summary line at the end, so an unattended auto-update log
+  # shows every refreshed-but-unregistered task in one place.
+  if [ -n "$(echo "${SCHED_REVIEW_NAMES:-}" | tr -d ' ')" ]; then
+    echo -e "  ${ORANGE:-}⚠${NC:-} Kezi atnezesre varo utemezett feladatok (frissitve, de NEM regisztralva):${SCHED_REVIEW_NAMES}"
+  fi
   return 0
 }
+# Scheduled-task registry: the schedule runner fires a task only if its
+# files hash-match the dashboard's registry (store/claudeclaw.db). A task dir
+# THIS script creates from the seed is entirely shipped content, so it is
+# registered here through the registry CLI of the CURRENTLY built dist (a
+# REFRESHED dir goes through register_refreshed_schedule below, which checks
+# trust first). On the very first update to a build with the guard the CLI is
+# not built yet -- that is fine: the dashboard's one-time upgrade backfill
+# registers every task on disk at its first start. Idempotent; clears the
+# pending list.
+register_seeded_schedules() {
+  _names="${SCHED_REGISTER_NAMES:-}"
+  SCHED_REGISTER_NAMES=""
+  [ -n "$(echo "$_names" | tr -d ' ')" ] || return 0
+  _cli="$INSTALL_DIR/dist/web/schedule-registry-cli.js"
+  if [ ! -f "$_cli" ] || ! command -v node >/dev/null 2>&1; then
+    echo -e "  ${ORANGE}⚠${NC} Utemezes-regisztracio kihagyva (nincs $_cli):${_names}. Az elso, registry-t tartalmazo frissitesnel ezt a dashboard egyszeri backfillje potolja; kulonben build utan: node $_cli register${_names}"
+    return 0
+  fi
+  # shellcheck disable=SC2086 # word-splitting the name list is intended
+  if node "$_cli" register --source update-sh $(printf '%s\n' $_names | sort -u) >/dev/null 2>&1; then
+    echo -e "  ${GREEN}✓${NC} Utemezett feladatok regisztralva:$(printf ' %s' $(printf '%s\n' $_names | sort -u))"
+  else
+    echo -e "  ${ORANGE}⚠${NC} Utemezes-regisztracio sikertelen:${_names} -- futtasd: node $_cli status"
+  fi
+  return 0
+}
+
+# Scheduled-task registry, seed refresh: the seed refresh rewrites a task only FILE BY
+# FILE -- a locally modified sibling (SKILL.md, task-config.json, an in-dir
+# preCheck script) is kept. Registering the whole dir afterwards would make that
+# kept file trusted, i.e. launder a plant on the next (unattended) auto-update
+# that ships a change to any other file of the task. So a refreshed task is
+# re-registered only if
+#   (a) it verified OK against the registry BEFORE the refresh (its kept files
+#       were already trusted; the refreshed ones are ours), or
+#   (b) every file now in its dir, references/ included, equals the CURRENT
+#       shipped content (sched_task_all_shipped).
+# Anything else stays unregistered (the runner skips it) and is listed for
+# operator review.
+SCHED_REVIEW_NAMES=""
+
+# True (0) iff every entry of the installed task dir $1 is shipped content:
+#   - a regular top-level file (no symlink) byte-identical to the current
+#     shipped version of the same file in the seed source dir $2 (rendered when
+#     $3 = "template"), or
+#   - the references/ subdir (SEEDREFDIR1018) or a file under it: the subdir
+#     a real directory (no symlink) that the seed has too, and each file in it
+#     byte-identical to a file git TRACKS at the same path in the seed (the same
+#     set the seed loops copy).
+# Any other entry fails: an extra file with no shipped counterpart (e.g. a
+# planted preCheck script), a symlink, any other subdir.
+sched_task_all_shipped() {
+  _sa_dir="${1%/}"; _sa_src="${2%/}"; _sa_mode="${3:-verbatim}"
+  [ -d "$_sa_dir" ] || return 1
+  _sa_list="$(find "$_sa_dir" -mindepth 1 2>/dev/null)" || return 1
+  [ -n "$_sa_list" ] || return 1
+  _sa_tracked="$(git -C "$_sa_src" ls-files 2>/dev/null)"
+  while IFS= read -r _sa_entry; do
+    [ -n "$_sa_entry" ] || continue
+    _sa_rel="${_sa_entry#"$_sa_dir"/}"
+    [ ! -L "$_sa_entry" ] || return 1
+    _sa_seed="$_sa_src/$_sa_rel"
+    case "$_sa_rel" in
+      references)
+        [ -d "$_sa_entry" ] && [ ! -L "$_sa_seed" ] && [ -d "$_sa_seed" ] || return 1
+        continue ;;
+      references/*)
+        [ -f "$_sa_entry" ] || return 1
+        printf '%s\n' "$_sa_tracked" | grep -qxF -- "$_sa_rel" || return 1 ;;
+      */*) return 1 ;;
+      *) [ -f "$_sa_entry" ] || return 1 ;;
+    esac
+    [ ! -L "$_sa_seed" ] && [ -f "$_sa_seed" ] || return 1
+    if [ "$_sa_mode" = "template" ]; then
+      _sa_want="$(render_seed_template <"$_sa_seed" | shasum -a 256 | awk '{print $1}')"
+    else
+      _sa_want="$(shasum -a 256 <"$_sa_seed" | awk '{print $1}')"
+    fi
+    _sa_have="$(shasum -a 256 <"$_sa_entry" 2>/dev/null | awk '{print $1}')"
+    [ -n "$_sa_have" ] && [ "$_sa_want" = "$_sa_have" ] || return 1
+  done <<EOF_SA
+$_sa_list
+EOF_SA
+  return 0
+}
+
+# $1 task name, $2 pre-refresh verdict (1 = trusted, 0 = not trusted,
+# u = unknown), $3 installed dir, $4 seed source dir, $5 verbatim|template.
+register_refreshed_schedule() {
+  _rr_name="$1"; _rr_pre="$2"; _rr_dir="$3"; _rr_src="$4"; _rr_mode="${5:-verbatim}"
+  if [ "$_rr_pre" = "1" ] || sched_task_all_shipped "$_rr_dir" "$_rr_src" "$_rr_mode"; then
+    SCHED_REGISTER_NAMES="$_rr_name"
+    register_seeded_schedules
+    return 0
+  fi
+  SCHED_REVIEW_NAMES="${SCHED_REVIEW_NAMES:-} $_rr_name"
+  if [ "$_rr_pre" = "0" ]; then
+    echo -e "  ${ORANGE:-}⚠${NC:-} Utemezett feladat NEM regisztralva (kezi atnezes kell): $_rr_name -- a frissites elott sem volt megbizhato, es a konyvtaraban nem csak szallitott tartalom van. A runner addig kihagyja. Atnezes utan: node $INSTALL_DIR/dist/web/schedule-registry-cli.js status ; register $_rr_name"
+  else
+    # No usable CLI: on the first update to a guard build (old dist) the
+    # dashboard's one-time backfill will register AND fire this task as it is
+    # on disk, so "the runner skips it" would be false here.
+    echo -e "  ${ORANGE:-}⚠${NC:-} Utemezett feladat NEM regisztralva (kezi atnezes kell): $_rr_name -- a registry-ellenorzes nem futott (nincs vagy nem mukodik: $INSTALL_DIR/dist/web/schedule-registry-cli.js verify), a frissites elotti allapota ISMERETLEN, es a konyvtaraban nem csak szallitott tartalom van. Ha ez az elso frissites a registry-t tartalmazo buildre, a dashboard egyszeri backfillje az elso indulaskor regisztralja es a runner futtatni fogja: nezd at MOST ($_rr_dir). Kulonben build utan: node $INSTALL_DIR/dist/web/schedule-registry-cli.js status ; register $_rr_name"
+  fi
+  return 0
+}
+
 run_seed_refresh
 
 # Marketplace channel plugins (SLACKPLUGINVER1006): the official
@@ -1369,7 +1554,7 @@ if [ "${SKIP_BUILD:-0}" != "1" ]; then
       # and without the compiler this rollback build would also fail silently,
       # leaving git=OLD + node_modules=pruned (AUTOUPDNODEENV905 finding A).
       npm ci --silent --include=dev 2>/dev/null || true
-      npm rebuild better-sqlite3 --silent 2>/dev/null || true
+      native_module_loads || npm rebuild better-sqlite3 --silent 2>/dev/null || true
       npm run build --silent 2>/dev/null || true
       [ -d "$INSTALL_DIR/dist" ] && echo "$OLD_VERSION_FULL" > "$BUILT_COMMIT_FILE"
     fi
@@ -1392,7 +1577,7 @@ if [ "${SKIP_BUILD:-0}" != "1" ]; then
     if [ -n "$OLD_VERSION_FULL" ]; then
       git reset --hard "$OLD_VERSION_FULL" >/dev/null 2>&1 || true
       npm ci --silent --include=dev 2>/dev/null || true
-      npm rebuild better-sqlite3 --silent 2>/dev/null || true
+      native_module_loads || npm rebuild better-sqlite3 --silent 2>/dev/null || true
       npm run build --silent 2>/dev/null || true
       [ -d "$INSTALL_DIR/dist" ] && echo "$OLD_VERSION_FULL" > "$BUILT_COMMIT_FILE"
     fi
@@ -1544,8 +1729,10 @@ if [ -d "$SEED_SCHED_DIR" ]; then
               "$f" > "$target/$sub$(basename "$f")"
         done
       done
+      SCHED_REGISTER_NAMES="${SCHED_REGISTER_NAMES:-} $task_name"
       if [ "$forced" = "1" ]; then SCHED_FORCED=$((SCHED_FORCED + 1)); else SCHED_NEW=$((SCHED_NEW + 1)); fi
     done
+    register_seeded_schedules
     if [ "$SCHED_NEW" -gt 0 ] || [ "$SCHED_SKIP" -gt 0 ] || [ "$SCHED_FORCED" -gt 0 ]; then
       echo -e "  ${GREEN}✓${NC} Seed scheduled tasks: ${SCHED_NEW} új, ${SCHED_FORCED} frissítve, ${SCHED_SKIP} kihagyva"
     fi
@@ -1790,6 +1977,8 @@ cd "$INSTALL_DIR" 2>/dev/null || true
 # stage= line as the marker.
 STAGE="boot"
 _stage() { STAGE="$1"; echo "[finalize] stage=$1 $(date '+%H:%M:%S')" >&2; }
+# Same check as update.sh's native_module_loads (#950): this script runs on its own.
+native_module_loads() { node -e "new (require('better-sqlite3'))(':memory:').close()" >/dev/null 2>&1; }
 trap 'echo "[finalize] SIGNAL caught in stage=${STAGE} $(date +%H:%M:%S)" >&2' TERM HUP INT
 
 _esc() { printf '%s' "$1" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))' 2>/dev/null || printf '"%s"' "$1"; }
@@ -1874,7 +2063,7 @@ if [ -n "$OLD_FULL" ]; then
   # NODE_ENV=production a plain ci prunes the compiler and the rebuild below
   # dies silently, re-creating the pruned tree this rollback tries to escape.
   npm ci --silent --include=dev 2>/dev/null || true
-  npm rebuild better-sqlite3 --silent 2>/dev/null || true
+  native_module_loads || npm rebuild better-sqlite3 --silent 2>/dev/null || true
   npm run build --silent 2>/dev/null || true
   [ -d "$INSTALL_DIR/dist" ] && echo "$OLD_FULL" > "$BUILT"
   _restart

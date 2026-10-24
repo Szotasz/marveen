@@ -829,12 +829,23 @@ function isClaudeBinary(command: string): boolean {
  * to any live tmux pane (orphans). `livePanePids` is the set of pane pids from
  * `tmux list-panes -a`. `channelNeedle` optionally restricts to one plugin
  * (e.g. 'plugin:telegram@...'); when omitted, every channel plugin is in scope.
+ *
+ * `ownTmuxServerPid` keeps the scan to THIS install. `livePanePids` lists only
+ * the panes of our own tmux server, so the live session of another install on
+ * the same host (its own tmux server, same uid) looks detached from here. When
+ * the argument is given, a claude with a tmux server other than ours among its
+ * ancestors is spared: another install's live session always sits under its own
+ * server, while an orphan sits under ours or, once its server died, under pid 1.
+ * `null` (our server could not be resolved) treats every tmux ancestor as
+ * foreign, so only the orphans that no tmux server holds any more are found.
+ * Omitted, the scan is host-wide as before.
  * Exported for testability.
  */
 export function findOrphanChannelClaudes(
   procs: ProcRow[],
   livePanePids: Set<number>,
   channelNeedle?: string,
+  ownTmuxServerPid?: number | null,
 ): number[] {
   const byPid = new Map<number, ProcRow>()
   for (const p of procs) byPid.set(p.pid, p)
@@ -853,12 +864,28 @@ export function findOrphanChannelClaudes(
     return false
   }
 
+  // Walks the whole parent chain (to pid 1), not a fixed number of hops: a
+  // sub-agent's claude sits under a shell under its server.
+  const underForeignTmuxServer = (pid: number): boolean => {
+    let cur = byPid.get(pid)?.ppid
+    const seen = new Set<number>([pid])
+    while (cur !== undefined && cur > 1 && !seen.has(cur)) {
+      seen.add(cur)
+      const row = byPid.get(cur)
+      if (!row) return false
+      if (argv0Base(row.command) === 'tmux' && row.pid !== ownTmuxServerPid) return true
+      cur = row.ppid
+    }
+    return false
+  }
+
   const orphans: number[] = []
   for (const p of procs) {
     if (!p.command.includes('--channels')) continue
     if (!isClaudeBinary(p.command)) continue
     if (channelNeedle && !p.command.includes(channelNeedle)) continue
     if (attachedToLivePane(p.pid)) continue
+    if (ownTmuxServerPid !== undefined && underForeignTmuxServer(p.pid)) continue
     orphans.push(p.pid)
   }
   return orphans
@@ -922,7 +949,8 @@ function killBunChildren(claudePid: number, uid: number | null, seams: ReapSeams
  * it never kills the active session or a live sibling agent -- only truly
  * detached leftovers. Kills each orphan's bun poller children first, then the
  * claude (SIGTERM, ~300ms grace, SIGKILL stragglers). Signals only processes of
- * the dashboard's own uid (35ea0375). Returns the pids actually killed.
+ * the dashboard's own uid (35ea0375), and never a claude that sits under another
+ * install's tmux server (findOrphanChannelClaudes). Returns the pids actually killed.
  *
  * tmuxPath defaults to a bare `tmux` (resolved on PATH); callers that already
  * hold an absolute path should pass it.
@@ -937,7 +965,10 @@ export function reapDetachedChannelClaudes(opts: { channelNeedle?: string; tmuxP
     logger.warn('channel-poller-reap: no live panes resolved, skipping detached-claude reap (fail-safe)')
     return []
   }
-  const detached = findOrphanChannelClaudes(procs, live, opts.channelNeedle)
+  // Another install's live session is not ours to reap (see findOrphanChannelClaudes).
+  // An unresolved server (null) spares every claude under any tmux server.
+  const server = opts.tmuxServerPid ? opts.tmuxServerPid() : tmuxServerPid(tmuxPath)
+  const detached = findOrphanChannelClaudes(procs, live, opts.channelNeedle, server)
   const where = { channelNeedle: opts.channelNeedle ?? '(all)' }
   // cf075d41: the orphan test looks UP from the claude (is it or an ancestor a
   // live pane?), so a detached `claude --channels` that sits ABOVE a live pane

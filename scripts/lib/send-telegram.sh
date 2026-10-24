@@ -40,10 +40,24 @@ telegram_api_call() {
     return 1
   fi
 
-  local response curl_exit
+  local response curl_exit base
   # TELEGRAM_API_BASE: test seam only (a local Bot API stub), the same variable
   # telegram_fallback_send.py honours; unset in production.
-  response=$(curl -sS -m 15 "${TELEGRAM_API_BASE:-https://api.telegram.org}/bot${token}/${method}" "$@" 2>&1)
+  base="${TELEGRAM_API_BASE:-https://api.telegram.org}"
+  # The URL carries the token, so it must never sit in curl's ARGV (ps -ww,
+  # /proc/<pid>/cmdline). Same trick as lib/curl-tok.sh: a curl config line on
+  # stdin (-K -), written by the printf builtin, so no other process carries it
+  # either. The URL is a QUOTED config value: a quote, backslash or newline in
+  # the token, the method or the base would break out of it -- refuse, because
+  # such a call could not deliver anything anyway.
+  case "$token$method$base" in
+    *\"*|*\\*|*$'\n'*)
+      echo "telegram_api_call(${method}): the token, method or API base contains a quote, backslash or newline -- refusing (nothing would be delivered)" >&2
+      return 1
+      ;;
+  esac
+  response=$(printf 'url = "%s"\n' "${base}/bot${token}/${method}" | curl -sS -m 15 -K - "$@" 2>&1)
+  # curl is the last command of the pipe, so $? is its exit code, not printf's.
   curl_exit=$?
   # Never let the token reach a log/journal: redact before any echo.
   response="${response//${token}/<token>}"

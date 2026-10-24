@@ -43,17 +43,17 @@ import { homedir } from 'node:os'
 // unchecked -- the send_email deny included, which never needs the ledger.
 // Now the failure is kept, only a decision that needs the ledger hits it, and
 // that one fails closed at the entrypoint (exit 2, the reason on stderr).
-let loadLedger, isVerifiedIn, splitAddresses, SOURCE_HELP
+let loadLedger, isVerifiedIn, splitAddresses, parseAddresses, SOURCE_HELP
 let LEDGER_LOAD_ERROR = null
 try {
-  ({ loadLedger, isVerifiedIn, splitAddresses, SOURCE_HELP } = await import('./recipient-ledger.mjs'))
-  const missing = Object.entries({ loadLedger, isVerifiedIn, splitAddresses })
+  ({ loadLedger, isVerifiedIn, splitAddresses, parseAddresses, SOURCE_HELP } = await import('./recipient-ledger.mjs'))
+  const missing = Object.entries({ loadLedger, isVerifiedIn, splitAddresses, parseAddresses })
     .filter(([, fn]) => typeof fn !== 'function').map(([name]) => name)
   if (missing.length) throw new Error(`missing export: ${missing.join(', ')}`)
 } catch (err) {
   LEDGER_LOAD_ERROR = err
   const unavailable = () => { throw new Error(`recipient-ledger.mjs did not load: ${err?.message ?? err}`) }
-  loadLedger = isVerifiedIn = splitAddresses = unavailable
+  loadLedger = isVerifiedIn = splitAddresses = parseAddresses = unavailable
   SOURCE_HELP = '(a ledger modul nem toltheto be)'
 }
 
@@ -883,6 +883,9 @@ const MANAGE_EMAIL_SEND_OPS = new Set(['send', 'reply', 'replyall', 'forward'])
 // 'draft' | null (reads, search, labels, delete: not outbound).
 const CONNECTOR_GENERIC_SUFFIXES = ['send_message', 'reply', 'forward']
 const DRAFT_NAMES = ['draft_email', 'create_draft', 'update_draft', 'draft_gmail_message']
+// The harder-mail MCP's sends (HARDERMAILGATES1019): connector_send, so the
+// thread-reply narrowing (send_email only) can never release one.
+const MAILBOX_SEND_SUFFIXES = ['send_mail', 'send_mail_auto']
 
 export function classifyMailTool(toolName) {
   const n = String(toolName ?? '').toLowerCase()
@@ -891,6 +894,7 @@ export function classifyMailTool(toolName) {
   if (n.includes('send_email') || n.includes('send_gmail_message')) return 'send_email'
   if (n.endsWith('reply_all')) return 'connector_send'
   if (n.includes('gmail') && CONNECTOR_GENERIC_SUFFIXES.some((b) => n.endsWith(b))) return 'connector_send'
+  if (MAILBOX_SEND_SUFFIXES.some((b) => n.endsWith(b))) return 'connector_send'
   if (n.endsWith('send_draft')) return 'send_draft'
   if (n.endsWith('manage_email')) return 'manage_email'
   if (DRAFT_NAMES.some((d) => n.includes(d))) return 'draft'
@@ -919,8 +923,25 @@ export function unverifiedRecipients(toolInput, isVerified) {
   for (const field of RECIPIENT_FIELDS) {
     const value = toolInput?.[field]
     if (value === undefined || value === null || value === '') continue
-    for (const addr of splitAddresses(value)) {
+    for (const addr of parseAddresses(value).addresses) {
       if (!isVerified(addr) && !out.includes(addr)) out.push(addr)
+    }
+  }
+  return out
+}
+
+// Every recipient piece of this call that is not exactly ONE address
+// (recipient-ledger.mjs parseAddresses): two addresses in one array item, an
+// address in the display name, two <...> pairs, an object value. The ledger
+// cannot vouch for what it cannot read as one address, and the mail tool may
+// still deliver to it, so the gate denies on any such piece.
+export function unparseableRecipients(toolInput) {
+  const out = []
+  for (const field of RECIPIENT_FIELDS) {
+    const value = toolInput?.[field]
+    if (value === undefined || value === null || value === '') continue
+    for (const piece of parseAddresses(value).unparseable) {
+      if (!out.includes(piece)) out.push(piece)
     }
   }
   return out
@@ -981,6 +1002,8 @@ export function gateDecision(toolName, toolInput, isVerified = null, cwd = proce
   // verified: the owner presses send on what we typed, so an invented address
   // reaches the outside world through a draft just as surely as through a send.
   if (mailKind === 'draft') {
+    const unparseable = unparseableRecipients(toolInput)
+    if (unparseable.length) return { deny: true, kind: 'unparseable-recipient', addresses: unparseable }
     const bad = unverifiedRecipients(toolInput, verify)
     if (bad.length) return { deny: true, kind: 'unverified-recipient', addresses: bad }
     return { deny: false }
@@ -996,6 +1019,8 @@ export function gateDecision(toolName, toolInput, isVerified = null, cwd = proce
     if (!MANAGE_EMAIL_SEND_OPS.has(op)) return { deny: false }
     // The address check runs before the draft rule, so it applies to the send
     // AND to the draft the deny message would send us back to write.
+    const unparseable = unparseableRecipients(toolInput)
+    if (unparseable.length) return { deny: true, kind: 'unparseable-recipient', addresses: unparseable }
     const bad = unverifiedRecipients(toolInput, verify)
     if (bad.length) return { deny: true, kind: 'unverified-recipient', addresses: bad }
     // Fail safe: only an explicit draft request passes. A missing/ambiguous
@@ -1043,6 +1068,19 @@ export function buildUnverifiedRecipientMsg(addresses) {
     `  node ${LEDGER_CLI} add ${first} --source <forras> --note "<honnan>"\n` +
     `  --source: ${SOURCE_HELP}\n` +
     'Ha nem talalsz forrast, a cim NINCS meg: mondd meg a gazdanak, ne kuldj levelet.'
+  )
+}
+
+// Deny wording for a recipient piece that is not exactly one address. The fix
+// is on the caller's side: one clean address per item.
+export function buildUnparseableRecipientMsg(pieces) {
+  return (
+    `Nem ertelmezheto cimzett: ${pieces.join(' | ')}. ` +
+    'A cimzett-mezo minden eleme (vesszovel vagy pontosvesszovel elvalasztva) ' +
+    'pontosan EGY cim legyen: "cim@pelda.hu" vagy "Nev <cim@pelda.hu>". ' +
+    'Ket cim egy elemben, cim a megjelenitett nevben vagy tobb <...> ' +
+    'nem ellenorizheto a cimzett-ledgerrel, ezert a kapu tilt (fail-closed). ' +
+    'Ird at a mezot tiszta cimekre, aztan kuldd ujra.'
   )
 }
 
@@ -1121,6 +1159,18 @@ const ADDR_TOKEN = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi
 // the membership check).
 export function extractAddress(raw) {
   const s = String(raw ?? '').trim()
+  // More than one '@' is ONE clean address only when the display name IS the
+  // bracketed address ("jane@example.com" <jane@example.com>, a common client
+  // form). "invented@example.org <known@example.com>" would otherwise pass the
+  // trailing-bracket test as known@example.com, with a second address in the
+  // display name the membership check never looked at.
+  if ((s.match(/@/g) ?? []).length > 1) {
+    const m = s.match(/^([^<>]*)<([^<>]+)>$/)
+    if (!m) return ''
+    const display = m[1].trim().replace(/^"(.*)"$/, '$1').trim()
+    if (display.toLowerCase() !== m[2].trim().toLowerCase()) return ''
+  }
+
   const angle = s.match(/<([^<>]+)>$/)
   const cand = (angle ? angle[1] : s).trim()
   return /^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$/i.test(cand) ? cand.toLowerCase() : ''
@@ -1282,6 +1332,7 @@ if (isInvokedDirectly()) {
     // An address with no recorded source loses before every other branch,
     // including the thread-reply narrowing below: a verified thread cannot
     // vouch for an unsourced recipient.
+    if (kind === 'unparseable-recipient') deny(buildUnparseableRecipientMsg(addresses ?? []))
     if (kind === 'unverified-recipient') deny(buildUnverifiedRecipientMsg(addresses ?? []))
     if (kind === 'draft-required') deny(buildDraftOnlyMsg(ownerName))
     if (kind === 'wrapper-depth') deny(buildWrapperDepthMsg())

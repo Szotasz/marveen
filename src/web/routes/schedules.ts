@@ -1,4 +1,4 @@
-import { existsSync, rmSync } from 'node:fs'
+import { existsSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import {
   listPendingTaskRetries, deletePendingTaskRetryById, listTaskRunHistory,
@@ -15,8 +15,12 @@ import { listAgentNames } from '../agent-config.js'
 import { readFileOr, readJsonObjectForWrite } from '../agent-config.js'
 import {
   SCHEDULED_TASKS_DIR, MAX_SCHEDULED_TASK_PROMPT_LEN,
-  listScheduledTasks, writeScheduledTask, markDefaultTaskRemoved,
+  listScheduledTasks, writeScheduledTask, markDefaultTaskRemoved, readScheduledTask,
+  type ScheduledTaskWritten,
 } from '../scheduled-tasks-io.js'
+import {
+  registerScheduledTask, unregisterScheduledTask, verifyScheduledTask, describeVerdict,
+} from '../schedule-registry.js'
 import { runScheduledTaskNow } from '../schedule-runner.js'
 import type { RouteContext } from './types.js'
 
@@ -45,6 +49,44 @@ export function summarizeScheduledTasks(tasks: Array<{ enabled?: boolean }>): { 
   // explicitly false (absent field = enabled).
   const enabled = tasks.filter(t => t.enabled !== false).length
   return { total: tasks.length, enabled, disabled: tasks.length - enabled }
+}
+
+// Scheduled-task registry: an in-place edit (PUT / toggle) rewrites the
+// task starting from its CURRENT files and then registers the result. If those
+// files were changed outside the API, re-registering would launder the foreign
+// content (a toggle carries no prompt, a PUT rarely carries every config field),
+// so the edit is refused until the operator reviews and re-registers the task
+// (schedule-registry-cli) or deletes and re-creates it.
+function refuseIfForeign(res: RouteContext['res'], name: string): boolean {
+  const current = readScheduledTask(name)
+  if (!current) return false
+  const v = verifyScheduledTask(current)
+  if (v.ok) return false
+  json(res, {
+    error: `Schedule files changed outside the dashboard API: ${describeVerdict(v)}. ` +
+      `Review the files, then re-register (node dist/web/schedule-registry-cli.js register ${name}) or delete and re-create the task.`,
+    registry: v.reason,
+  }, 409)
+  return true
+}
+
+// Record the just-written files as trusted: the bytes the route WROTE, not
+// whatever is on disk a moment later (a concurrent writer in between makes the
+// hashes differ and nothing is registered). A failure leaves a task on disk
+// the runner will refuse (fail-closed), so the caller must hear about it.
+// A create writes only SKILL.md and task-config.json into a dir that did not
+// exist, so it also refuses any other file found there (noUnwrittenDirFiles).
+function registerAfterWrite(
+  res: RouteContext['res'], name: string, source: string, written: ScheduledTaskWritten | undefined,
+  opts: { noUnwrittenDirFiles?: boolean } = {},
+): boolean {
+  try {
+    if (registerScheduledTask(name, source, written, opts)) return true
+  } catch (err) {
+    logger.error({ err, name }, 'schedule-registry: registration after API write failed')
+  }
+  json(res, { error: 'Schedule written but NOT registered; the runner will not fire it until it is re-saved or re-registered' }, 500)
+  return false
 }
 
 export async function tryHandleSchedules(ctx: RouteContext): Promise<boolean> {
@@ -122,7 +164,13 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
   }
 
   if (path === '/api/schedules' && method === 'GET') {
-    json(res, listScheduledTasks())
+    // `registry`: 'ok' when the runner would fire the task, else the reason it
+    // will not ('unregistered', 'hash-mismatch', 'no-hash', 'registry-error'),
+    // so an operator sees a skipped task without reading the log.
+    json(res, listScheduledTasks().map(t => {
+      const v = verifyScheduledTask(t)
+      return { ...t, registry: v.ok ? 'ok' : v.reason }
+    }))
     return true
   }
 
@@ -161,7 +209,7 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     const dir = join(SCHEDULED_TASKS_DIR, name)
     if (existsSync(dir)) { json(res, { error: 'Schedule already exists' }, 409); return true }
 
-    writeScheduledTask(name, {
+    const written = writeScheduledTask(name, {
       description: data.description || '',
       prompt: data.prompt.trim(),
       schedule: data.schedule.trim(),
@@ -173,6 +221,7 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
       targetSession: data.targetSession || undefined,
       once: data.once,
     })
+    if (!registerAfterWrite(res, name, 'api:create', written, { noUnwrittenDirFiles: true })) return true
     logger.info({ name, schedule: data.schedule, once: data.once === true }, 'Scheduled task created')
     json(res, { ok: true, name })
     return true
@@ -196,10 +245,18 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
       throw err
     }
     const data = JSON.parse(body.toString()) as {
-      description?: string; prompt?: string; schedule?: string; agent?: string; enabled?: boolean; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; once?: boolean
+      description?: string; prompt?: string; schedule?: string; agent?: string; enabled?: boolean; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; once?: boolean; preCheck?: string
     }
     if (data.once !== undefined && typeof data.once !== 'boolean') {
       json(res, { error: 'once must be true or false' }, 400)
+      return true
+    }
+    // The body goes to writeScheduledTask whole, so a preCheck of any JSON
+    // type used to be stored as is. The runner and the registry hash treat a
+    // non-string as no script (#2100), so storing one only leaves a config
+    // that says something the runner ignores. null stays allowed: it clears it.
+    if (data.preCheck != null && typeof data.preCheck !== 'string') {
+      json(res, { error: 'preCheck must be a string (a script path) or null' }, 400)
       return true
     }
     if (data.prompt !== undefined && data.prompt.length > MAX_SCHEDULED_TASK_PROMPT_LEN) {
@@ -212,7 +269,9 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
       json(res, { error: 'Invalid cron expression' }, 400)
       return true
     }
-    writeScheduledTask(name, data)
+    if (refuseIfForeign(res, name)) return true
+    const written = writeScheduledTask(name, data)
+    if (!registerAfterWrite(res, name, 'api:update', written)) return true
     logger.info({ name }, 'Scheduled task updated')
     json(res, { ok: true })
     return true
@@ -223,6 +282,16 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     if (!resolved) { json(res, { error: 'Schedule not found' }, 404); return true }
     const { name, dir } = resolved
     if (!existsSync(dir)) { json(res, { error: 'Schedule not found' }, 404); return true }
+    // Scheduled-task registry: a deleted task leaves no trust behind -- a later plant with
+    // the same name and bytes must not inherit the old registration. Unregister
+    // FIRST and fail the request if that fails: answering 200 with the files gone
+    // would leave a live registry entry behind a "deleted" task, and a re-plant of
+    // the same bytes would fire. Nothing is deleted then; the caller can retry.
+    try { unregisterScheduledTask(name) } catch (err) {
+      logger.error({ err, name }, 'schedule-registry: unregister on delete failed; task NOT deleted')
+      json(res, { error: 'Schedule NOT deleted: its registry entry could not be removed (retry, or check the dashboard DB)' }, 500)
+      return true
+    }
     rmSync(dir, { recursive: true, force: true })
     // #796: remember the removal so a shipped default is not re-seeded on the
     // next restart/update. Harmless for a user-authored task (the seeders only
@@ -240,13 +309,20 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     const { name, dir } = resolved
     if (!existsSync(dir)) { json(res, { error: 'Schedule not found' }, 404); return true }
 
+    if (refuseIfForeign(res, name)) return true
     const configPath = join(dir, 'task-config.json')
     let config: Record<string, unknown> = {}
     // JSONCLOBBER926: a corrupt task-config.json is refused, not reset to {enabled}.
     config = readJsonObjectForWrite(configPath)
     const newEnabled = !(config.enabled !== false)
     config.enabled = newEnabled
-    atomicWriteFileSync(configPath, JSON.stringify(config, null, 2))
+    // The toggle writes only the config; the SKILL.md it registers along with
+    // it is the one read here, right after the trust check above.
+    let skillBytes: Buffer | null = null
+    try { skillBytes = readFileSync(join(dir, 'SKILL.md')) } catch { /* command task: no SKILL.md */ }
+    const configContent = JSON.stringify(config, null, 2)
+    atomicWriteFileSync(configPath, configContent)
+    if (!registerAfterWrite(res, name, 'api:toggle', { skill: skillBytes, config: configContent })) return true
     logger.info({ name, enabled: newEnabled }, 'Scheduled task toggled')
     json(res, { ok: true, enabled: newEnabled })
     return true

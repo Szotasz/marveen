@@ -189,6 +189,87 @@ Ha egy ütemezett feladatnak kellene futnia, de a célpont session nem létezik 
 
 A prompt injektálás előtt egy "untrusted" preamble kerül eléje, hogy az esetleg felhasználói adatból érkező tartalom ne hajtson végre kód-injekciót az ágens context-jében. A maximális prompt hossz 50 000 karakter (~12K token) -- ennél nagyobb kérelmet a backend elutasít 413-mal.
 
+### Forrás-oldali védelem: csak regisztrált feladat fut
+
+A runner egy feladatot CSAK akkor indít (cron, catch-up, pending retry, "Run now"), ha a fájljainak sha256-ja
+egyezik a szerver saját nyilvántartásával (`scheduled_task_registry` tábla a `store/claudeclaw.db`-ben, NEM a
+`~/.claude/scheduled-tasks/` alatt). A hash a `SKILL.md` + `task-config.json` bájtjaiból készül, plusz a
+feladatkönyvtár MINDEN további fájljából, rekurzívan (relatív úttal címkézve, hossz-keretezve; symlinknél a cél
+bájtjaiból, hurok nélkül; fifo/socket csak a nevével), plusz a
+`preCheck` szkriptből, ha van: relatív útnál a feladatkönyvtárhoz képest, abszolút útnál bárhol (egy `/tmp` alatti
+vagy ügynök-könyvtárbeli szkriptet sem az útja tesz megbízhatóvá). Kivétel a telepítés saját repó-szkriptje: ami az
+útja szerint ÉS a symlinkek feloldása után is a `<telepítés>/scripts/` alatt van (akár `{{PROJECT_ROOT}}/` alakban, akár a
+seeder által abszolútra írva), az a kóddal együtt frissül, ezért nincs a hashben; a runner futtatás előtt ezt újra ellenőrzi. A kulcs a könyvtárnév,
+nem a frontmatter `name`. A hash-elt `preCheck`-et a runner a beolvasáskor ellenőrzött bájtokból futtatja
+(`bash -c <szkript> <út>`: a `$0` az út, a `BASH_SOURCE` üres), így a beolvasás után kicserélt szkript nem fut le, a
+feladat abban a körben kimarad.
+
+Ki regisztrál:
+- `POST /api/schedules`, `PUT /api/schedules/<name>`, `POST /api/schedules/<name>/toggle`: az írás után PONTOSAN a
+  most kiírt bájtokat (ha közben más is írt a könyvtárba, a hash eltér, és nincs regisztráció: 500); a `POST` ezen
+  felül csak akkor regisztrál, ha az új könyvtárban a `SKILL.md`-n és a `task-config.json`-on kívül nincs más fájl;
+- a dashboard saját default-seedere (`ensureDefaultScheduledTasks`);
+- a flotta-import, szintén csak az általa kiírt bájtokat: ha a célkönyvtárban maradt más fájl (régi `SKILL.md`,
+  egy `preCheck` szkript, bármilyen más fájl), a feladat regisztrálatlan marad, átnézésre;
+- a telepítők és az `update.sh` az általuk ÚJONNAN létrehozott (teljes egészében szállított) feladatkönyvtárakra (a CLI-n át);
+- az `update.sh` seed-frissítése (ami fájlonként frissít, a helyben módosított fájlt megtartja) egy frissített
+  feladatot CSAK akkor regisztrál újra, ha (a) a frissítés ELŐTT `ok` volt (`verify`), vagy (b) a frissítés után
+  a könyvtár MINDEN fájlja (a `references/` alattiak is) a mostani szállított tartalommal egyezik. A
+  `references/` fájl frissítése és a hiányzó pótlása (SEEDREFDIR1018) ugyanebben a keretben történik: az
+  ellenőrzés az első írás ELŐTT, az újraregisztráció az utolsó UTÁN, mert a hash a teljes könyvtárra
+  vonatkozik. Minden más esetben regisztrálatlan marad
+  (a runner kihagyja), és az `update.sh` kiírja, hogy kézi átnézés kell (a futás végén egy összesítő sorban
+  is). Ha a CLI nem futtatható (az első, registry-s buildre frissítés még a régi dist-en fut), az ítélet
+  ISMERETLEN: ilyenkor a dashboard egyszeri backfillje fogja regisztrálni (és a runner futtatni), ezért ezt a
+  feladatot MOST kell átnézni. A regisztráció az adott feladat frissítése után azonnal megtörténik, nem a
+  futás végén;
+- a `scripts/migrate-main-agent-id.sh` az `agent` mező átírása után CSAK azt a feladatot regisztrálja újra,
+  amelyik az átírás ELŐTT `ok` volt; a többit (regisztrálatlan vagy eltérő hash) kiírja átnézésre;
+- a szerver saját átírásai (`src/web/schedule-registry-rewrite.ts`): az egyszeri
+  (`once`) feladat első sikeres futás utáni kikapcsolása (`server:once-disable`) és a Claude-plan rotációs
+  heartbeat be-/kikapcsolása CSAK akkor regisztrál újra, ha a feladat az átírás ELŐTT `ok` volt; a szerver által
+  a kódjából most LÉTREHOZOTT rotációs feladat (`server:rotation-heartbeat`) seedként regisztrálódik;
+- a `DELETE /api/schedules/<name>` törli a bejegyzést.
+
+Ha a fájl az API megkerülésével jött létre vagy változott (kézi szerkesztés, `cp`, ügynök Write-ja), a runner
+NEM indítja, egyszer figyelmeztet a logban és egy `[scheduler]` üzenetben a fő-ágensnek (csak a feladat nevével,
+a tartalma nélkül), és a feladatot nem törli, nem kapcsolja ki. A `PUT` és a `toggle` ilyen feladatra 409-et ad,
+hogy ne "mossa tisztára" az idegen tartalmat.
+
+Feloldás, ha a változás jogos: mentsd a dashboardon/API-n át, vagy nézd át a fájlokat és regisztráld:
+
+```bash
+node dist/web/schedule-registry-cli.js status              # minden feladat: ok / unregistered / hash-mismatch
+node dist/web/schedule-registry-cli.js verify <nev> ...    # kilépési kód 0 csak ha mind ok
+node dist/web/schedule-registry-cli.js register <nev> ...  # a MOSTANI fájlok elfogadása
+node dist/web/schedule-registry-cli.js register --all      # minden feladat elfogadása (előbb: status)
+node dist/web/schedule-registry-cli.js unregister <nev>
+```
+
+Frissítés (egyszeri backfill): az első dashboard-indítás, amelyik már tartalmazza ezt a védelmet, a
+runner indulásakor regisztrál MINDEN akkor a lemezen lévő feladatot (egyszer; a jelölő a
+`scheduled_task_registry_state` táblában `upgrade-backfill-v1`), és a logba WARN szinten kiírja a neveket.
+Ez ugyanaz a bizalom, amit a runner a frissítés előtt is megadott; utána már csak a fenti utak regisztrálnak.
+Ha a backfill előtt gyanús feladat került a könyvtárba, a frissítés előtt nézd át (`ls ~/.claude/scheduled-tasks`).
+
+A backfill jelölője a DB-ben van: egy újra létrehozott (törölt, üresről induló) `store/claudeclaw.db` mellett az első
+indulás ISMÉT mindent elfogad, ami a lemezen van. DB-csere vagy -visszaállítás előtt nézd át a feladatkönyvtárat.
+
+Korlátok:
+- a hash a feladat SAJÁT könyvtárát fedi (és a `preCheck` szkriptet, bárhová mutat, a repó `scripts/` kivételével).
+  Ha egy `command` vagy egy prompt egy MÁSIK feladat könyvtárába, vagy a repó `scripts/`-én kívül bárhová mutat,
+  azt a tartalmat a nyilvántartás nem látta, és a védelem nem fedi;
+- mivel a könyvtár minden fájlja a hash része, egy kézzel odatett fájl (akár egy szerkesztő mentési másolata,
+  `.bak`, `.swp`) is megállítja a feladatot, amíg át nem nézed és újra nem regisztrálod;
+- 500 bejegyzés vagy 16 MiB tartalom fölötti feladatkönyvtárnak nincs hash-e: nem regisztrálható és nem fut
+  (a log egyszer kiírja);
+- a nyilvántartás ugyanannak a felhasználónak írható DB-ben van, tehát a védelem a CSAK-fájl alapú
+  telepítést zárja ki; egy feladat becsempészéséhez mostantól célzott DB-írás vagy CLI-hívás kell
+  (a CLI-t egy ügynök Bash-ból is meghívhatja: ezt a kliens-oldali hook-kapu zárhatja);
+- a bizalom-ellenőrzés és a szerver saját írása közti pillanatban (PUT, toggle, once-kikapcsolás), valamint a
+  seeder és az `update.sh` írása és regisztrációja között egy PÁRHUZAMOSAN író, azonos felhasználójú folyamat
+  tartalma is elfogadódhat; a hatókör a fájl-alapú elhelyezés, nem a versenyző helyi folyamat.
+
 ---
 
 ## API referencia

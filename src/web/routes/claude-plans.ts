@@ -139,6 +139,44 @@ export function deleteOwnTokenSecret(planId: string, secretId: string | null | u
   if (secretId && secretId === tokenSecretIdFor(planId)) deleteSecret(secretId)
 }
 
+// Create a new plan from a POST body: every rejection check first, the vault
+// write last. The dashboard's "add by logging in" flow (claude-plans-login.ts)
+// calls this too, with the caught token as `token`, so both ways in share one
+// write path.
+export function commitNewPlan(rawBody: Record<string, unknown>): { status: number; payload: unknown } {
+  if (hasAmbiguousTokenField(rawBody)) {
+    return { status: 400, payload: { error: 'Invalid plan: token cannot be combined with configDir or tokenSecretId' } }
+  }
+  const rawId = typeof rawBody.id === 'string' ? rawBody.id.trim() : ''
+  const { candidate, pendingToken } = prepareTokenCandidate(rawBody, rawId)
+
+  const plan = validatePlan(candidate, homedir())
+  if (!plan) {
+    return {
+      status: 400,
+      payload: {
+        error: 'Invalid plan: id (letters/digits/_.- only), label, exactly one of configDir (safe absolute or ~-prefixed path, no traversal/spaces) or token (raw claude setup-token output), planType (personal|team) and channelsAllowed (boolean) are all required',
+      },
+    }
+  }
+
+  const current = readClaudePlans()
+  if (current.some((p) => p.id === plan.id)) {
+    return { status: 409, payload: { error: `Plan id already exists: ${plan.id}` } }
+  }
+  if (pendingToken) {
+    const otherId = findPlanWithSameToken(current, plan.id, pendingToken.value)
+    if (otherId) return { status: 409, payload: { error: DUPLICATE_TOKEN_ERROR(otherId) } }
+  }
+
+  // Vault write happens only now, after every rejection check has already
+  // passed -- see prepareTokenCandidate's header.
+  if (pendingToken) setSecret(pendingToken.secretId, pendingToken.label, pendingToken.value)
+  writeClaudePlans([...current, plan])
+  logger.info({ id: plan.id, mode: plan.tokenSecretId ? 'token' : 'configDir' }, 'Claude plan created')
+  return { status: 201, payload: plan }
+}
+
 export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
 
@@ -160,40 +198,8 @@ export async function tryHandleClaudePlans(ctx: RouteContext): Promise<boolean> 
     }
 
     const rawBody = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>
-    if (hasAmbiguousTokenField(rawBody)) {
-      json(res, { error: 'Invalid plan: token cannot be combined with configDir or tokenSecretId' }, 400)
-      return true
-    }
-    const rawId = typeof rawBody.id === 'string' ? rawBody.id.trim() : ''
-    const { candidate, pendingToken } = prepareTokenCandidate(rawBody, rawId)
-
-    const plan = validatePlan(candidate, homedir())
-    if (!plan) {
-      json(res, {
-        error: 'Invalid plan: id (letters/digits/_.- only), label, exactly one of configDir (safe absolute or ~-prefixed path, no traversal/spaces) or token (raw claude setup-token output), planType (personal|team) and channelsAllowed (boolean) are all required',
-      }, 400)
-      return true
-    }
-
-    const current = readClaudePlans()
-    if (current.some((p) => p.id === plan.id)) {
-      json(res, { error: `Plan id already exists: ${plan.id}` }, 409)
-      return true
-    }
-    if (pendingToken) {
-      const otherId = findPlanWithSameToken(current, plan.id, pendingToken.value)
-      if (otherId) {
-        json(res, { error: DUPLICATE_TOKEN_ERROR(otherId) }, 409)
-        return true
-      }
-    }
-
-    // Vault write happens only now, after every rejection check has already
-    // passed -- see prepareTokenCandidate's header.
-    if (pendingToken) setSecret(pendingToken.secretId, pendingToken.label, pendingToken.value)
-    writeClaudePlans([...current, plan])
-    logger.info({ id: plan.id, mode: plan.tokenSecretId ? 'token' : 'configDir' }, 'Claude plan created')
-    json(res, plan, 201)
+    const out = commitNewPlan(rawBody)
+    json(res, out.payload, out.status)
     return true
   }
 

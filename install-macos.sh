@@ -1082,6 +1082,7 @@ if [ -d "$SCHED_TPL_DIR" ]; then
             "$f" > "$target/$sub$(basename "$f")"
       done
     done
+    INSTALL_SCHED_REGISTER="${INSTALL_SCHED_REGISTER:-} $task_name"
     echo -e "  ${GREEN}✓${NC} Utemezett feladat scaffoldolva: $task_name"
   done
 fi
@@ -1256,6 +1257,7 @@ if [ -d "$SEED_SCHED_DIR" ]; then
             "$f" > "$target/$sub$(basename "$f")"
       done
     done
+    INSTALL_SCHED_REGISTER="${INSTALL_SCHED_REGISTER:-} $task_name"
     SCHED_NEW=$((SCHED_NEW + 1))
   done
   if [ "$SCHED_NEW" -gt 0 ] || [ "$SCHED_SKIP" -gt 0 ]; then
@@ -1280,6 +1282,17 @@ if [ -d "$SEED_SCHED_DIR" ]; then
   fi
 fi
 
+# Scheduled-task registry: the schedule runner fires a task only if its
+# files hash-match the dashboard's registry. Register the tasks seeded above
+# (dist is already built at this point). On a FRESH install this is redundant
+# with the dashboard's one-time upgrade backfill; on a reinstall over an
+# existing box it is what keeps a newly seeded default firing.
+if [ -n "$(echo "${INSTALL_SCHED_REGISTER:-}" | tr -d ' ')" ] && [ -f "$INSTALL_DIR/dist/web/schedule-registry-cli.js" ] && command -v node >/dev/null 2>&1; then
+  # shellcheck disable=SC2086 # word-splitting the name list is intended
+  node "$INSTALL_DIR/dist/web/schedule-registry-cli.js" register --source installer $INSTALL_SCHED_REGISTER >/dev/null 2>&1 \
+    || echo "  WARN: scheduled-task registry registration failed; run: node $INSTALL_DIR/dist/web/schedule-registry-cli.js status"
+fi
+
 # Seed config: copy default config files into store/ (idempotent: never overwrite)
 SEED_CONFIG_DIR="$INSTALL_DIR/seed-config"
 if [ -d "$SEED_CONFIG_DIR" ]; then
@@ -1294,29 +1307,61 @@ if [ -d "$SEED_CONFIG_DIR" ]; then
   done
 fi
 
-# Ollama + nomic-embed-text (szemantikus kereséshez)
+# Ollama + nomic-embed-text (szemantikus kereséshez) -- OPTIONAL.
+#
+# On a Mac without Homebrew (prerequisites met via MacPorts, so the
+# prerequisites step never installs brew) `brew install ollama` fails and the
+# `curl ... | sh` fallback ran. That script installed Ollama.app and the
+# /usr/local/bin/ollama symlink, yet exited non-zero, and the ERR trap blamed
+# the closing `fi`: "Unexpected error at line 1318". Same cure as the Whisper
+# block below: do the work in a function called from an `|| rc=$?` list, and
+# judge success by `command -v ollama` afterwards, not by the installer's rc.
 echo ""
 echo -e "$(_t macos.ollama_check)"
-if command -v ollama &>/dev/null; then
-  echo -e "  ${GREEN}✓${NC} $(_t macos.ollama_installed)"
+
+install_ollama() {
+  if command -v ollama &>/dev/null; then
+    echo -e "  ${GREEN}✓${NC} $(_t macos.ollama_installed)"
+  else
+    echo -e "  ${ORANGE}$(_t macos.ollama_installing)${NC}"
+    if command -v brew &>/dev/null; then
+      brew install ollama || true
+    fi
+    if ! command -v ollama &>/dev/null; then
+      curl -fsSL https://ollama.com/install.sh | sh || true
+    fi
+    command -v ollama &>/dev/null || return 1
+    echo -e "  ${GREEN}✓${NC} $(_t macos.ollama_installed)"
+  fi
+
+  # Start Ollama if not running
+  if ! curl -s http://localhost:11434/api/version &>/dev/null; then
+    echo -e "$(_t macos.ollama_starting)"
+    ollama serve &>/dev/null &
+    local i
+    for i in 1 2 3 4 5 6 7 8 9 10; do
+      curl -s http://localhost:11434/api/version &>/dev/null && break
+      sleep 1
+    done
+  fi
+
+  # Pull nomic-embed-text model
+  if ! ollama list 2>/dev/null | grep -q "nomic-embed-text"; then
+    echo -e "$(_t macos.nomic_downloading)"
+    ollama pull nomic-embed-text || return 1
+  fi
+  return 0
+}
+
+OLLAMA_RC=0
+install_ollama || OLLAMA_RC=$?
+
+if [ "$OLLAMA_RC" -eq 0 ]; then
+  echo -e "$(_t macos.ollama_done)"
 else
-  echo -e "  ${ORANGE}$(_t macos.ollama_installing)${NC}"
-  brew install ollama 2>/dev/null || curl -fsSL https://ollama.com/install.sh | sh
+  warn "$(_t macos.ollama_skipped)"
+  echo -e "    ${DIM}$(_t macos.ollama_skipped_hint)${NC}"
 fi
-
-# Start Ollama if not running
-if ! curl -s http://localhost:11434/api/version &>/dev/null; then
-  echo -e "$(_t macos.ollama_starting)"
-  ollama serve &>/dev/null &
-  sleep 3
-fi
-
-# Pull nomic-embed-text model
-if ! ollama list 2>/dev/null | grep -q "nomic-embed-text"; then
-  echo -e "$(_t macos.nomic_downloading)"
-  ollama pull nomic-embed-text
-fi
-echo -e "$(_t macos.ollama_done)"
 
 # Whisper (speech-to-text for video transcription) -- OPTIONAL.
 #
@@ -1390,12 +1435,21 @@ if [ "$WHISPER_RC" -ne 0 ]; then
   echo -e "    ${DIM}$(_t macos.whisper_skipped_hint)${NC}"
 fi
 
-# ffmpeg (audio/video processing)
+# ffmpeg (audio/video processing). Without Homebrew an unguarded
+# `brew install ffmpeg` was the next fatal stop after the Ollama block, so a
+# missing brew (or a failed install) now warns instead of aborting.
 if ! command -v ffmpeg &>/dev/null; then
   echo -e "$(_t macos.ffmpeg_installing)"
-  brew install ffmpeg
+  if command -v brew &>/dev/null; then
+    brew install ffmpeg || true
+  fi
 fi
-echo -e "$(_t macos.ffmpeg_done)"
+if command -v ffmpeg &>/dev/null; then
+  echo -e "$(_t macos.ffmpeg_done)"
+else
+  warn "$(_t macos.ffmpeg_skipped)"
+  echo -e "    ${DIM}$(_t macos.ffmpeg_skipped_hint)${NC}"
+fi
 
 INSTALL_STEP="bumblebee"
 # Go + bumblebee (supply-chain scanner)

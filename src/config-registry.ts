@@ -82,6 +82,14 @@ export interface SettingDefinition {
    * validateSettingValue (SECSZIVEK1007).
    */
   validate?: (value: string) => string | null
+  /**
+   * Optional: does changing `oldValue` to `newValue` LOOSEN a security control? When it does, the
+   * settings route refuses the change from a fleet-token caller (the shared Bearer every agent
+   * holds) and accepts it only from an owner session or a full-scope device key; tightening stays
+   * open to everyone. The token cannot tell the owner from an agent, so without this an agent the
+   * control constrains could switch it off for itself (BASHSANDBOX1022 security review).
+   */
+  loosens?: (oldValue: string, newValue: string) => boolean
 }
 
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/
@@ -92,6 +100,30 @@ function validUnitFraction(v: string): string | null {
   if (t === '') return null
   const n = Number(t)
   return Number.isFinite(n) && n >= 0 && n <= 1 ? null : '0 és 1 közötti szám szükséges (pl. 0.1).'
+}
+
+// A '' (nobody) or a comma-separated list of agent names, e.g. "pm,reviewer".
+const AGENT_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,49}$/
+function validAgentNameList(v: string): string | null {
+  const t = v.trim()
+  if (t === '') return null
+  return t.split(',').every((n) => AGENT_NAME_RE.test(n.trim()))
+    ? null
+    : 'Ügynöknevek vesszővel elválasztva (pl. pm vagy pm,reviewer).'
+}
+
+function validKeepAlive(v: string): string | null {
+  const t = v.trim()
+  if (t === '') return null
+  if (/^-?\d+$/.test(t)) return Number.isSafeInteger(Number(t)) ? null : 'Túl nagy szám.'
+  return /^-?(\d+(\.\d+)?(ns|us|µs|ms|s|m|h))+$/.test(t) ? null : 'Egész szám (másodperc) vagy időtartam szükséges, pl. 30m, 1h, -1.'
+}
+
+function validFusionWeight(v: string): string | null {
+  const t = v.trim()
+  if (t === '') return null
+  const n = Number(t)
+  return Number.isFinite(n) && n >= 0 && n <= 10 ? null : '0 és 10 közötti szám szükséges (pl. 0.5).'
 }
 
 export const SETTINGS_REGISTRY: SettingDefinition[] = [
@@ -219,6 +251,17 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     module: 'kanban',
     secret: false,
     requiresRestart: false,
+  },
+  // --- Kanban dispatch skip list (opt-in, hot-reload via settings-store) ---
+  {
+    key: 'KANBAN_DISPATCH_SKIP_AGENTS',
+    type: 'string',
+    default: '',
+    description: 'Ügynökök, akiket a kártya in_progress-be húzása nem ébreszt fel, vesszővel elválasztva. Ez olyan ügynöknek való, aki maga osztja tovább a munkát, vagy akinek a feladatát más kézbesíti. Üres = mindenki ébred, mint eddig.',
+    module: 'kanban',
+    secret: false,
+    requiresRestart: false,
+    validate: (v) => validAgentNameList(v),
   },
   // --- Kanban claim lock (opt-in, hot-reload via settings-store) ---
   {
@@ -425,6 +468,54 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: false,
     validate: (v) => validUnitFraction(v),
+  },
+  {
+    key: 'EMBED_QUERY_PREFIX',
+    type: 'string',
+    default: '',
+    description: 'A memória-keresés LEKÉRDEZÉSE elé fűzött szöveg az embedding előtt. Üres = nincs előtag (a korábbi viselkedés). Egyes modellek így tanultak, és előtag nélkül gyengébben keresnek. Pl. nomic-embed-text v2: "search_query: "; qwen3-embedding: "Instruct: <egymondatos feladatleírás>\\nQuery:" (a modellkártya Transformers-példája; a TEI-példája a "Query:" után szóközt tesz). A \\n az értékben sortörést jelent; a záró szóköz számít. Az EMBED_DOCUMENT_PREFIX-szel együtt állítandó; váltás után az emlékeket újra kell embeddelni (az embedding oszlop NULL-ra állítása után a POST /api/memories/backfill újraszámolja).',
+    module: 'system',
+    secret: false,
+    requiresRestart: false,
+  },
+  {
+    key: 'EMBED_DOCUMENT_PREFIX',
+    type: 'string',
+    default: '',
+    description: 'A tárolt EMLÉK szövege elé fűzött szöveg az embedding előtt. Üres = nincs előtag (a korábbi viselkedés). Pl. nomic-embed-text v2: "search_document: "; a qwen3-embedding a dokumentumot előtag nélkül várja. A \\n az értékben sortörést jelent; a záró szóköz számít. Váltás után az emlékeket újra kell embeddelni (az embedding oszlop NULL-ra állítása után a POST /api/memories/backfill újraszámolja): a régi és az új vektorok nem összehasonlíthatók.',
+    module: 'system',
+    secret: false,
+    requiresRestart: false,
+  },
+  {
+    key: 'EMBED_KEEP_ALIVE',
+    type: 'string',
+    default: '',
+    description: 'Az embedding-kéréssel küldött Ollama keep_alive (pl. "30m", "-1" = mindig betöltve, "0" = minden kérés után kirakja). Üres = nem küldjük, az Ollama alapértéke érvényes. Megosztott GPU-n a hosszabb érték megspórolja a modell újratöltését keresésenként, cserébe a modell tovább foglalja a memóriát.',
+    module: 'system',
+    secret: false,
+    requiresRestart: false,
+    validate: (v) => validKeepAlive(v),
+  },
+  {
+    key: 'MEMORY_RRF_FTS_WEIGHT',
+    type: 'string',
+    default: '1',
+    description: 'Memória-keresés (hybrid): a kulcsszó-ág súlya a rangsor-fúzióban (RRF). 0 és 10 közötti szám, üres = 1. 0 = a kulcsszó-ág nem befolyásolja a sorrendet (a csak általa talált emlékek a lista végére kerülnek; a küszöb alatti vektor-találatot attól még bent tartja, ha a kulcsszó-ág is megtalálta).',
+    module: 'system',
+    secret: false,
+    requiresRestart: false,
+    validate: (v) => validFusionWeight(v),
+  },
+  {
+    key: 'MEMORY_RRF_VECTOR_WEIGHT',
+    type: 'string',
+    default: '1',
+    description: 'Memória-keresés (hybrid): a vektor-ág súlya a rangsor-fúzióban (RRF). 0 és 10 közötti szám, üres = 1. A két súly aránya számít: pl. MEMORY_RRF_FTS_WEIGHT=0.5 és MEMORY_RRF_VECTOR_WEIGHT=1 a vektor-ágat részesíti előnyben, ha a kulcsszó-ág laza (VAGY-os) találatai lerontják a jó vektor-találatokat. Legalább az egyik súly legyen pozitív: két 0-s súllyal minden pontszám 0.',
+    module: 'system',
+    secret: false,
+    requiresRestart: false,
+    validate: (v) => validFusionWeight(v),
   },
   {
     key: 'MEMORY_IMPORT_CATEGORIZE_MODEL',
@@ -636,6 +727,30 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     requiresRestart: true,
   },
   {
+    key: 'BASH_EGRESS_HOST_ALLOW',
+    type: 'boolean',
+    default: '0',
+    description: 'Bash-letöltés hoszt szerint (curl https:// és wget). Kikapcsolva (alapértelmezés) a "Bash(curl *https://*)" és "Bash(wget *)" deny-szabályok minden ágensen tiltják ezt a két parancsot, hoszttól függetlenül; a store/egress-vendor-hosts.json listája rájuk nem hat, mert a deny minden engedélyt felülír. Bekapcsolva ez a négy deny-sor lekerül azokról az ágensekről, amelyeken a bash-egress-parser hook fut (a fő ágensen ehhez a dashboard a projekt .claude/settings.local.json fájljába --main-scope bejegyzést tesz, kikapcsoláskor kiveszi; a követett .claude/settings.json egyik állásban sem változik), és a hook dönt: localhost, helyi hálózat és a vendor-listán szereplő hoszt átmegy, minden más tiltva marad. A rövidített kapcsolót a hook úgy oldja fel, ahogy a curl és a wget; tiltva marad az ismeretlen vagy kétértelmű kapcsoló, a wget -e (néhány ártalmatlan beállítás kivételével), a konfigfájlból olvasott cél (curl -K, wget -i/--config), a proxy- vagy rc-változó (https_proxy, WGETRC, CURL_HOME, HOME) megadása a parancsban, és a futásidőben kiszámított cél (változóból, fájlból vagy $(...)-ből jövő hoszt, pl. a vaultból kiolvasott URL): a hosztnak szó szerint a parancsban kell állnia. MARADÉK KOCKÁZAT: egy korábbi hívással megírt ~/.wgetrc vagy ~/.curlrc proxyt vagy további URL-t adhat minden curl/wget futásnak, ezt a hook nem látja; és az átirányítás (a wget alapból, a curl -L-lel követi) a vendor-hosztról más hosztra is vihet. A gazda saját Claude-sessionje egyik állásban sem korlátozott. Az nc/ncat/telnet tiltás mindkét állásban marad. A módosítás a dashboard újraindításakor és az ágensek következő indításakor lép életbe.',
+    module: 'system',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
+    key: 'BASH_SANDBOX_AGENTS',
+    type: 'string',
+    default: '',
+    // Taking an agent OFF the list loosens it; adding one does not.
+    loosens: (oldValue, newValue) => {
+      const ids = (v: string) => new Set(v.split(/[\s,]+/).map((w) => w.trim().toLowerCase()).filter(Boolean))
+      const next = ids(newValue)
+      return [...ids(oldValue)].some((id) => !next.has(id))
+    },
+    description: 'Bash-sandbox ágensenként (Claude Code beépített sandboxa, macOS). Az itt felsorolt ágensek (azonosító, vesszővel vagy szóközzel elválasztva, pl. "soma") minden Bash-parancsa és annak minden gyerekfolyamata, a fájlba írt és úgy futtatott szkript is (python3 crawl.py), csak a store/egress-vendor-hosts.json listáján szereplő hosztot éri el (a "domains" bejegyzés aldomainjeivel együtt), a localhostot és a helyi hálózatot. Minden más hoszt kérdés nélkül tiltva, nyers sockettel is. Írni a saját mappájába, a ~/worktrees/<azonosító> alá, a temp-mappába és a store/bash-sandbox-write-paths.json-ban neki megadott helyekre tud. A beállítást a dashboard minden indításkor a store/bash-sandbox/<azonosító>.settings.json fájlba írja, és --settings kapcsolóval adja át; ha nem tudja megírni, vagy az ágens távoli gépen fut, az ágens NEM indul el. Üresen (alapértelmezés) senki nincs sandboxban. A fő ágensre nem hat. Ágenst felvenni bármely hívó tud, LEVENNI csak bejelentkezett gazda-session vagy teljes jogú eszközkulcs (a közös tokennel nem, mert azt minden ágens is birtokolja), illetve a store/config-overrides.json kézi szerkesztése. NEM fedi: a hookok és az MCP-szerverek hálózatát (azok a sandboxon kívül futnak), a Write/Edit eszközt, és a headless Chrome-ot (a sandboxban nem indul el). A módosítás az ágens következő indításakor lép életbe.',
+    module: 'system',
+    secret: false,
+    requiresRestart: true,
+  },
+  {
     key: 'NOTIFY_SLACK_TARGET',
     type: 'string',
     default: '',
@@ -781,6 +896,18 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     module: 'agents',
     secret: false,
     requiresRestart: false,
+  },
+  // Opt-in (#1705 maintainer decision, 2026-10-14): read per spawn by
+  // agent-scaffold.ts (ytDlpIngestOnly / bashEgressDeny). Off == the generated
+  // settings are byte-identical to an install without the switch.
+  {
+    key: 'YT_DLP_INGEST_ONLY',
+    type: 'boolean',
+    default: '0',
+    description: 'yt-dlp csak a scripts/yt-ingest/yt-ingest.sh izolált lépésén át. Bekapcsolva minden ügynök (a fő ügynök is, ha saját config-könyvtára van) deny-szabályt kap a közvetlen yt-dlp hívásra (yt-dlp, <út>/yt-dlp, python -m yt_dlp), a ytIngest-es profil (researcher) pedig engedélyt a yt-ingest.sh és a yt-read.sh futtatására. Figyelem: a yt-dlp-t közvetlenül hívó skillek ezután megtagadást kapnak. Önmagában nem elég: a yt-ingest.sh csak akkor tölt le, ha a store/egress-allowlist.json binary_egress["yt-dlp"] kulcsa engedi (Linuxon bwrap is kell). Az ügynökök következő indításakor lép életbe.',
+    module: 'agents',
+    secret: false,
+    requiresRestart: true,
   },
   {
     key: 'DEFAULT_AGENT_MODEL',

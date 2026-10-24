@@ -1,6 +1,7 @@
 import { logger } from '../logger.js'
 import { capturePane } from './agent-process.js'
 import { workerContexts, isWorkerSessionAlive } from './agent-worker.js'
+import { whileNotFrozen } from './fleet-freeze.js'
 
 // Worker-session liveness instrument (WORKERBOOT1).
 //
@@ -217,5 +218,5 @@ export function startWorkerLivenessMonitor(): NodeJS.Timeout {
       first = false
     }
   }
-  return setInterval(tick, LIVENESS_POLL_MS)
+  return setInterval(whileNotFrozen('worker-liveness', tick), LIVENESS_POLL_MS)
 }

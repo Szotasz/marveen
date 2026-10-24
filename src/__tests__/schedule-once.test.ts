@@ -22,6 +22,17 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+// Scheduled-task registry: the runner fires only registry-matched tasks and the API routes register what
+// they write. The registry gate is covered by schedule-source-registry.test.ts; here it is a passthrough.
+vi.mock('../web/schedule-registry.js', () => ({
+  filterRegisteredTasks: <T,>(tasks: T[]) => tasks,
+  backfillScheduledTaskRegistryOnce: () => ({ ran: false, registered: [] }),
+  verifyScheduledTask: () => ({ ok: true }),
+  describeVerdict: () => '',
+  registerScheduledTask: () => 'test-hash',
+  unregisterScheduledTask: () => true,
+}))
+
 const tmpHome = mkdtempSync(join(tmpdir(), 'schedule-once-home-'))
 const realHome = process.env.HOME
 process.env.HOME = tmpHome

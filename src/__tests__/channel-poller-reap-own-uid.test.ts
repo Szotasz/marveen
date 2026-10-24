@@ -199,12 +199,18 @@ describe('35ea0375 reapChannelOrphans on real processes', () => {
 describe('35ea0375 reapDetachedChannelClaudes on real processes', () => {
   const needle = (tag: string) => `plugin:telegram@own-uid-35ea0375-${tag}-${process.pid}-${Date.now()}`
   async function claudeWithChild(tag: string, n: string): Promise<{ claude: number; child: number }> {
+    // Double fork: the outer bash exits, so the fake claude is reparented away
+    // from the test runner. Under the runner it would inherit the runner's
+    // ancestry, and a runner inside a tmux pane puts a foreign tmux server
+    // above it (spared as another install's session, #2078).
     const childFile = join(tmp, `dc-${tag}.pid`)
-    const claude = spawnWithEnv('/bin/bash', ['-c',
-      `exec -a claude /bin/bash -c 'sleep 300 & echo $! > ${childFile}; wait' x --channels ${n}`], {})
-    for (let i = 0; i < 40 && !existsSync(childFile); i++) await sleep(50)
+    const claudeFile = join(tmp, `dc-${tag}.claude.pid`)
+    spawnWithEnv('/bin/bash', ['-c',
+      `(exec -a claude /bin/bash -c 'sleep 300 & echo $! > ${childFile}; wait' x --channels ${n}) & echo $! > ${claudeFile}`], {})
+    for (let i = 0; i < 40 && !(existsSync(childFile) && existsSync(claudeFile)); i++) await sleep(50)
+    const claude = parseInt(readFileSync(claudeFile, 'utf-8').trim(), 10)
     const child = parseInt(readFileSync(childFile, 'utf-8').trim(), 10)
-    kids.push(child)
+    kids.push(claude, child)
     return { claude, child }
   }
 

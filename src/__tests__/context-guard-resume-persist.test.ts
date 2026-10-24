@@ -428,16 +428,16 @@ describe('restartLossLine (pure)', () => {
   // these pin the two branches of the wording itself.
   it('idle-flush + worksource: the queue redelivers, do not resend', async () => {
     const { restartLossLine } = await import('../web/context-guard-runner.js')
-    const line = restartLossLine(true, true, 30)
+    const line = restartLossLine(true, true, 30, { pending: 0, failed: 0 })
     expect(line).toContain('NE kuldj ujra')
     expect(line).toContain('ujrakezbesulnek')
     expect(line).not.toContain('ELVESZHETTEK')
   })
 
-  it('keeps the generic line elsewhere: not worksource, or not an idle-flush', async () => {
+  it('elsewhere (not worksource, or not an idle-flush) the line reports the queue', async () => {
     const { restartLossLine } = await import('../web/context-guard-runner.js')
-    expect(restartLossLine(true, false, 30)).toContain('ELVESZHETTEK')
-    expect(restartLossLine(false, true, 30)).toContain('ELVESZHETTEK')
+    expect(restartLossLine(true, false, 30, { pending: 1, failed: 0 })).toContain('1 pending, 0 failed')
+    expect(restartLossLine(false, true, 30, { pending: 1, failed: 0 })).toContain('1 pending, 0 failed')
   })
 })
 

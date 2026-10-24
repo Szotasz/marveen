@@ -25,6 +25,32 @@ deny, level 2 deny with a pointer to send_email with the full envelope (which
 the anchor CAN pin), level 3 allow. A draft tool puts nothing on the wire and
 stays out of scope.
 
+THE SENDERS CHECK THEMSELVES. A hook sees a command's text, not what runs:
+a glob or variable script path, an interpreter option (python3 -u / -X utf8)
+or a program read from stdin passes this hook as "not a send", and the
+email_send level did not apply at all. So the project's own senders
+(scripts/support-mail/send.py, scripts/graph-mail.ts) run the level check
+THEMSELVES on the exact letter they deliver (scripts/hooks/sender_check.py,
+built on this module's level reader, standing list and anchor): level 1
+refuses, level 2 consumes the approval of the delivered envelope (or applies
+the standing list), level 3 sends. To keep ONE consumption per send, this hook
+passes a level-2 Bash send through WITHOUT consuming only when the WHOLE
+command is one literal call of this project's own sender
+(canonical_sender_send). Any OTHER spelling that still runs this project's
+own sender (a cd prefix, a wrapper, a second command...) is denied WITHOUT
+consuming and without an anchor (names_own_sender): the sender would anchor
+the envelope it parses itself, so a hook anchor could never be the one it
+consumes. Every other Bash send (another mailer, a sender copy elsewhere) is
+levelled here as before.
+
+RECIPIENT LEDGER, opt-in: with MAIN_AGENT_RECIPIENT_LEDGER=1 in the install's
+.env, the verified-recipient ledger (store/verified-recipients.json, the one
+the sub-agent gate enforces) applies to the main agent too: every to/cc/bcc
+address of a send, a draft or a manage_email call, and of a Bash send, must be
+in it, at every level and BEFORE any approval is consumed; the senders check
+every address they deliver to as well. Off by default: whether the main agent
+is held to the ledger is the install owner's decision.
+
 At level 2 there is ONE narrow bypass, the standing recipient list
 (store/email-standing-recipients.json, EMAILALLANDOCIMZETT926): a letter whose
 sole recipient is on that list, with no cc and no bcc, is allowed without an
@@ -202,7 +228,10 @@ def owner_cc_missing(tool_input: dict, owner: str) -> bool:
 # The pre-classifier send-name test, kept ONLY for owner_cc_scope when the
 # extractor does not load (classify_tool -> "unclassified"), so a broken
 # email_extract.py cannot switch the owner-CC check off at level 3.
-_OWNER_CC_SEND_FALLBACK = re.compile(r"send_email|gmail__(reply|reply_all|send_message|forward)$", re.I)
+# send_mail(_auto)$: the harder-mail sends (HARDERMAILGATES1019), the suffix
+# classify_mail_tool gates them by.
+_OWNER_CC_SEND_FALLBACK = re.compile(
+    r"send_email|gmail__(reply|reply_all|send_message|forward)$|send_mail(_auto)?$", re.I)
 
 
 def owner_cc_scope(tool: str, kind, tool_input: dict):
@@ -343,6 +372,11 @@ def read_standing():
     return out, None
 
 
+# The recipient-anchor tokens email_extract.collect_email_envelope (and the
+# credential gate) put in `to` for a reply addressed by its original.
+_ANCHOR_TOKEN_PREFIXES = ("messageId:", "reply_to:")
+
+
 def standing_match(env: dict, standing):
     """The address this letter may be sent to WITHOUT an approval, or None.
 
@@ -356,6 +390,21 @@ def standing_match(env: dict, standing):
     to exactly one known address falls through to the approval path -- never to
     an allow."""
     if not standing:
+        return None
+    # A harder-mail reply is addressed by its original (reply_to), not by `to`:
+    # the `to` the envelope holds is then a made-up anchor token, and an address
+    # typed into reply_folder / reply_to_uid parses out of it as a recipient
+    # (security review of HARDERMAILGATES1019). Such a letter is never on the list.
+    if env.get("reply_to"):
+        return None
+    # A reply addressed by its ORIGINAL carries a made-up anchor token in `to`
+    # (messageId:<id> for a connector reply, reply_to:[folder, uid] for a
+    # harder-mail one), not a recipient. getaddresses reads an address typed
+    # into the id as THE one listed recipient, and the reply -- whose real
+    # recipient is the original's sender -- went out without an approval
+    # (measured 2026-10-20: messageId "<listed@addr>" -> exit 0 at level 2).
+    # A letter whose `to` holds such a token is never on the list.
+    if any(str(v).startswith(_ANCHOR_TOKEN_PREFIXES) for v in (env.get("to") or [])):
         return None
     for field in ("cc", "bcc"):
         if any(str(v).strip() for v in (env.get(field) or [])):
@@ -405,6 +454,32 @@ def _install_setting(key: str, default: str) -> str:
     except Exception:  # noqa: BLE001 -- a missing .env just means the default
         pass
     return default
+
+
+def _env_file_setting(key: str, default: str = "") -> str:
+    """The install .env value of `key`, else the default -- NEVER os.environ.
+    For a setting that decides who may receive a letter: a sender runs in the
+    agent's own shell, where `KEY=... python3 ...` sets the environment. The
+    .env is the one next to the store this gate reads (<root>/.env for
+    <root>/store), so a test that points the store elsewhere brings its own."""
+    try:
+        with open(os.path.join(os.path.dirname(os.path.abspath(STORE_DIR)), ".env"), encoding="utf-8") as fh:
+            for line in fh:
+                if line.startswith(key + "="):
+                    val = line.split("=", 1)[1].strip().strip('"').strip("'")
+                    if val:
+                        return val
+    except Exception:  # noqa: BLE001 -- a missing .env just means the default
+        pass
+    return default
+
+
+LEDGER_SWITCH = "MAIN_AGENT_RECIPIENT_LEDGER"
+
+
+def ledger_enabled() -> bool:
+    """Is the verified-recipient ledger on for the main agent (and the senders)?"""
+    return _env_file_setting(LEDGER_SWITCH).lower() in ("1", "true", "yes", "on")
 
 
 def _standing_log_append(line: str) -> None:
@@ -541,14 +616,28 @@ def content_anchor(env: dict) -> str:
     EMAILHTMLHORGONY929: the HTML body's and the attachments' sha256 join the
     canon the same way, ONLY when present: an approved letter re-sent with a
     different HTML or an added/changed attachment has another anchor, and a
-    plain letter's anchor is unchanged."""
+    plain letter's anchor is unchanged.
+
+    `render` follows the same rule: the render mode a sender delivers the body
+    in (send.py --html / --html-wrap, graph-mail.ts --html), set by the
+    senders' own check (sender_check.py) and absent for a plain letter, so an
+    approved plain letter cannot go out as HTML. A separate field, so no body
+    text can forge it."""
     fields = {"to": env["to"], "cc": env["cc"], "text": env["text"]}
     if env.get("bcc"):
         fields["bcc"] = env["bcc"]
+    if env.get("render"):
+        fields["render"] = env["render"]
     if env.get("html_sha256"):
         fields["html_sha256"] = env["html_sha256"]
     if env.get("attachments"):
         fields["attachments"] = env["attachments"]
+    # HARDERMAILGATES1019: a harder-mail send names its account (the From), a
+    # non-plain body_format and, for a reply, the original message; they join
+    # the canon only when present, so every other anchor stays byte-identical.
+    for key in ("account", "reply_to", "body_format"):
+        if env.get(key):
+            fields[key] = env[key]
     canon = json.dumps(fields, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canon.encode("utf-8")).hexdigest()
 
@@ -601,6 +690,342 @@ def find_and_consume(anchor: str):
         return ("none", None)
     finally:
         con.close()
+
+
+# --- verified-recipient ledger on the main agent (opt-in, LEDGER_SWITCH) -----
+# The same evidence store the sub-agent gate enforces (scripts/recipient-ledger.mjs),
+# read through its Python twin scripts/hooks/recipient_ledger.py, which loads
+# lazily like email_extract.py: only a call that needs the ledger needs it, and
+# its load failure is a deny that names the file.
+RECIPIENT_FIELDS = ("to", "cc", "bcc", "recipients", "recipient", "recipient_email")
+LEDGER_SOURCE_HELP = "mail:<messageId> | site:<url> | owner | crm:<ref> | order:<id> | doc:<ref>"
+
+
+def _load_recipient_ledger():
+    try:
+        sys.path.insert(0, _HERE)
+        import recipient_ledger
+        recipient_ledger.load_ledger  # noqa: B018 -- a stub without it is a load failure
+        recipient_ledger.parse_addresses  # noqa: B018
+    except Exception as exc:  # noqa: BLE001 -- SyntaxError, ImportError, anything: fail-closed
+        deny(f"A kapu fuggosege (scripts/hooks/recipient_ledger.py) nem toltheto be ({exc!r}) "
+             "-- fail-closed: a cimzett nem ellenorizheto, ezert a hivas nem mehet at.")
+    return recipient_ledger
+
+
+def ledger_gate(kind: str, tool_input: dict, cmd: str) -> None:
+    """Deny (exit 2) unless every recipient address of the call is in the
+    ledger. Returns normally when the call is clean or carries no address
+    field (a thread reply by messageId, a send_draft: nothing was typed)."""
+    rl = _load_recipient_ledger()
+    if kind == "bash":
+        to, cc, bcc, reason = _load_email_extract().collect_bash_recipients(cmd)
+        if reason:
+            deny("A cimzett nem olvashato ki determinisztikusan, igy a cimzett-ledger nem "
+                 f"ellenorizheti: {reason}.\n"
+                 "Fail-closed: adj meg literal --to/--cc/--bcc cimet (shell-valtozo NELKUL).")
+        fields = {"to": to, "cc": cc, "bcc": bcc}
+    else:
+        fields = {f: tool_input.get(f) for f in RECIPIENT_FIELDS}
+    addresses, unparseable = [], []
+    for f in RECIPIENT_FIELDS:
+        value = fields.get(f)
+        if value is None or value == "" or value == []:
+            continue
+        a, u = rl.parse_addresses(value)
+        addresses += [x for x in a if x not in addresses]
+        unparseable += [x for x in u if x not in unparseable]
+    if unparseable:
+        deny(f"Nem ertelmezheto cimzett: {' | '.join(unparseable)}.\n"
+             "A cimzett-mezo minden eleme (vesszovel vagy pontosvesszovel elvalasztva) "
+             "pontosan EGY cim legyen: \"cim@pelda.hu\" vagy \"Nev <cim@pelda.hu>\". "
+             "Ket cim egy elemben, cim a megjelenitett nevben vagy tobb <...> nem "
+             "ellenorizheto a cimzett-ledgerrel (fail-closed).")
+    if kind == "bash" and not addresses:
+        # A Bash sender always has a recipient: when the hook cannot see it
+        # (a positional sendmail address, a To: header in a piped file), it
+        # cannot vouch for it.
+        deny("A Bash-kuldesbol nem nyerheto ki cimzett, igy a cimzett-ledger nem "
+             "ellenorizheti (pozicionalis cim vagy fajlban levo To: fejlec).\n"
+             "Fail-closed: hasznalj explicit --to (es --cc/--bcc) flaget, aztan kuldd ujra.")
+    if not addresses:
+        return
+    cli = os.path.join(_ROOT, "scripts", "recipient-ledger.mjs")
+    try:
+        known = rl.load_ledger(os.path.join(STORE_DIR, "verified-recipients.json"))
+    except rl.LedgerUnreadable as exc:
+        if exc.missing:
+            fix = (f"Az elso igazolt cim felvetele letrehozza:\n  node {cli} add <cim> --source <forras> "
+                   f"--note \"<honnan>\"\n  --source: {LEDGER_SOURCE_HELP}")
+        else:
+            fix = ("Javitsd a fajlt kezzel, vagy allitsd vissza mentesbol: amig hasznalhatatlan, a "
+                   "recipient-ledger.mjs `add` parancsa megtagadja az irast.")
+        deny(f"A cimzett-ledger nem hasznalhato: {exc}. Fail-closed: olvashatatlan "
+             "bizonyitek-tar mellett egy cim sem igazolt.\n" + fix)
+    bad = [a for a in addresses if rl.normalize_address(a) not in known]
+    if bad:
+        deny(f"Nem igazolt cimzett: {', '.join(bad)}.\n"
+             "A cimzett-ledger (store/verified-recipients.json) nem ismeri ezt a cimet, es "
+             "ismeretlen cimre meg piszkozat sem mehet. Ne talalgass: keresd meg a cimet egy "
+             "valodi forrasban (a toluk kapott level From fejlece, az elo oldaluk, a rendeles, "
+             "a szerzodes), aztan vedd fel a ledgerbe:\n"
+             f"  node {cli} add {bad[0]} --source <forras> --note \"<honnan>\"\n"
+             f"  --source: {LEDGER_SOURCE_HELP}\n"
+             "Ha nem talalsz forrast, a cim NINCS meg: mondd meg a gazdanak, ne kuldj levelet.")
+
+
+# --- the level-2 pass-through for this project's own senders ----------------
+# The senders consume the level-2 approval themselves (sender_check.py), so a
+# Bash send of one of them must not be charged here too. The pass-through is
+# deliberately NARROW, because whatever it lets through is not levelled by the
+# hook: the WHOLE command must be exactly
+#
+#   python3 <SENDER.py> FLAGS...   or   [npx] tsx <SENDER.ts> send FLAGS...
+#   [<<'EOF' ... EOF | < FILE] [2>&1] [| tail -N | head -N]
+#
+#   SENDER  literally <root>/scripts/support-mail/send.py or
+#           <root>/scripts/graph-mail.ts (<root> = this hook's own project,
+#           a path that is its own realpath), or the same relative path when
+#           the payload's cwd IS <root>. No `cd`, no other path semantics: a
+#           sender copy elsewhere (another checkout, an old worktree) may not
+#           check anything itself, so it is levelled here as before.
+#   FLAGS   the sender's own flags, spelled exactly (`--flag value` or
+#           `--flag=value`), each value ONE literal word that does not start
+#           with '-'; no `$`, backtick or command substitution anywhere; a
+#           heredoc only with a QUOTED delimiter, and nothing after it.
+#
+# Anything else -- a second command, a wrapper, a variable, an unknown flag --
+# is not passed through. When such a command still runs THIS project's own
+# sender (names_own_sender), it is denied without consuming the approval and
+# without an anchor: the sender checks itself, so a consumption here would
+# burn the owner's approval and leave the sender none, and the hook's anchor
+# (built from the flags it can read) is not the one the sender computes from
+# the envelope it parses. The deny names the canonical forms. A command that
+# runs some other mailer or a sender copy elsewhere is levelled here exactly as
+# before.
+_SENDER_FLAGS = {
+    "send.py": ({"--to", "--cc", "--subject", "--body"}, {"--no-owner-cc", "--html", "--html-wrap"}),
+    "graph-mail.ts": ({"--to", "--cc", "--subject", "--body", "--attach"}, {"--html"}),
+}
+_CANONICAL_RELATIVE = {"scripts/support-mail/send.py": "send.py", "scripts/graph-mail.ts": "graph-mail.ts"}
+
+
+class _NotCanonical(ValueError):
+    pass
+
+
+class _ShapeScanner:
+    def __init__(self, s: str):
+        self.s, self.i, self.n = s, 0, len(s)
+
+    def fail(self, why):
+        raise _NotCanonical(why)
+
+    def peek(self, k=0):
+        j = self.i + k
+        return self.s[j] if j < self.n else ""
+
+    def skip_ws(self):
+        while self.i < self.n:
+            if self.s[self.i] in " \t":
+                self.i += 1
+            elif self.s.startswith("\\\n", self.i):
+                self.i += 2  # line continuation
+            else:
+                break
+
+    def word(self):
+        """One LITERAL word; anything run-time ($, backtick, glob...) fails."""
+        text, start = "", self.i
+        while self.i < self.n:
+            c = self.s[self.i]
+            if c in " \t\n;&|<>()":
+                break
+            if c == "'":
+                j = self.s.find("'", self.i + 1)
+                if j < 0:
+                    self.fail("unclosed '")
+                text += self.s[self.i + 1:j]
+                self.i = j + 1
+            elif c == '"':
+                j = self.i + 1
+                while True:
+                    if j >= self.n:
+                        self.fail('unclosed "')
+                    d = self.s[j]
+                    if d == '"':
+                        break
+                    if d in "$`":
+                        self.fail("$ or backtick inside double quotes")
+                    if d == "\\" and j + 1 < self.n and self.s[j + 1] in '"\\\n':
+                        if self.s[j + 1] != "\n":
+                            text += self.s[j + 1]
+                        j += 2
+                        continue
+                    text += d
+                    j += 1
+                self.i = j + 1
+            elif c == "\\" and self.peek(1) == "\n":
+                break
+            elif re.match(r"[\w@.+:,/%=-]", c):
+                text += c
+                self.i += 1
+            else:
+                self.fail(f"character {c!r} outside quotes")
+        if self.i == start:
+            self.fail("empty word")
+        return text
+
+    def words_until_operator(self):
+        out = []
+        while True:
+            self.skip_ws()
+            if self.i >= self.n or self.peek() in "\n;&|<>()" or self.s.startswith("2>&1", self.i):
+                return out
+            out.append(self.word())
+
+
+def _canonical_sender(word: str, cwd) -> str:
+    """The sender's short name when `word` names this project's own sender
+    by the literal rules above, else ''."""
+    for rel, short in _CANONICAL_RELATIVE.items():
+        canon = _ROOT + "/" + rel
+        if os.path.realpath(canon) != canon:
+            continue  # the project root runs through a symlink: never pass
+        if word == canon:
+            return short
+        if word == rel and isinstance(cwd, str) and cwd == _ROOT and os.path.realpath(cwd) == _ROOT:
+            return short
+    return ""
+
+
+def canonical_sender_send(cmd: str, cwd) -> bool:
+    """True ONLY when the whole command is one literal send of this project's
+    own sender (see above)."""
+    try:
+        sc = _ShapeScanner(cmd.strip(" \t\n"))
+        words = sc.words_until_operator()
+        if words[:1] == ["python3"]:
+            k = 1
+        elif words[:2] == ["npx", "tsx"]:
+            k = 2
+        elif words[:1] == ["tsx"]:
+            k = 1
+        else:
+            return False
+        if k >= len(words):
+            return False
+        short = _canonical_sender(words[k], cwd)
+        if not short or (short == "send.py") != (words[0] == "python3"):
+            return False
+        value_flags, bool_flags = _SENDER_FLAGS[short]
+        args = words[k + 1:]
+        if short == "graph-mail.ts":
+            if args[:1] != ["send"]:
+                return False
+            args = args[1:]
+        j = 0
+        while j < len(args):
+            name, eq, value = args[j].partition("=")
+            if name in value_flags:
+                if not eq:
+                    j += 1
+                    if j >= len(args):
+                        return False
+                    value = args[j]
+                if value.startswith("-"):
+                    return False
+            elif not (name in bool_flags and not eq):
+                return False
+            j += 1
+        heredoc, seen_stdin, seen_2to1 = None, False, False
+        while True:
+            sc.skip_ws()
+            if sc.s.startswith("2>&1", sc.i) and not seen_2to1:
+                seen_2to1 = True
+                sc.i += 4
+                continue
+            if sc.peek() == "<" and not seen_stdin and not seen_2to1:
+                seen_stdin = True
+                if sc.s.startswith("<<", sc.i):
+                    sc.i += 2
+                    if sc.peek() in "<-":
+                        return False
+                    sc.skip_ws()
+                    m = re.compile(r"'(\w+)'|\"(\w+)\"").match(sc.s, sc.i)
+                    if not m:
+                        return False  # an unquoted delimiter expands the body
+                    sc.i = m.end()
+                    heredoc = m.group(1) or m.group(2)
+                else:
+                    sc.i += 1
+                    sc.skip_ws()
+                    sc.word()
+                continue
+            break
+        if sc.peek() == "|" and sc.peek(1) != "|":
+            sc.i += 1
+            tt = sc.words_until_operator()
+            if not tt or tt[0] not in ("tail", "head") or not (
+                    (len(tt) == 2 and re.match(r"^-\d+$", tt[1]))
+                    or (len(tt) == 3 and tt[1] == "-n" and tt[2].isdigit())):
+                return False
+        sc.skip_ws()
+        if heredoc is not None:
+            if sc.peek() != "\n":
+                return False
+            lines = sc.s[sc.i + 1:].split("\n")
+            if heredoc not in lines:
+                return False
+            return not any(line.strip() for line in lines[lines.index(heredoc) + 1:])
+        return sc.i >= sc.n
+    except _NotCanonical:
+        return False
+
+
+def names_own_sender(cmd: str, cwd) -> bool:
+    """Does any word of `cmd` name THIS project's own sender file, read
+    literally or against the payload cwd or a `cd DIR` target in the command
+    (realpath on both sides)? Used only to DENY: a false positive refuses a
+    call, it never lets one through."""
+    import shlex
+    try:
+        lexer = shlex.shlex(cmd, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        words = list(lexer)
+    except ValueError:
+        words = cmd.split()
+    targets = set()
+    for rel in _CANONICAL_RELATIVE:
+        p = os.path.realpath(os.path.join(_ROOT, rel))
+        if os.path.exists(p):
+            targets.add(p)
+    if not targets:
+        return False
+    here = cwd if isinstance(cwd, str) and os.path.isabs(cwd) else None
+    bases = [here] if here else []
+    for i, w in enumerate(words[:-1]):
+        if w == "cd":
+            d = os.path.expanduser(words[i + 1])
+            if os.path.isabs(d):
+                bases.append(d)
+            elif here:
+                bases.append(os.path.join(here, d))
+    for w in words:
+        if os.path.basename(w) not in ("send.py", "graph-mail.ts", "graph-mail.js"):
+            continue
+        cands = [w] if os.path.isabs(w) else [os.path.join(b, w) for b in bases if os.path.isabs(b)]
+        if any(os.path.realpath(c) in targets for c in cands):
+            return True
+    return False
+
+
+def canonical_forms_text() -> str:
+    """The Bash send forms whose level-2 approval the SENDER consumes."""
+    return ("`python3 scripts/support-mail/send.py --flag 'ertek' ...` vagy "
+            "`npx tsx scripts/graph-mail.ts send --flag 'ertek' ...` a projekt gyokerebol, cd "
+            "nelkul, vagy ugyanez a projekt abszolut (szimlink nelkuli) utvonalaval; a torzs "
+            "literal, vagy <<'EOF' heredoc, utana semmi mas parancs")
 
 
 def deny(msg: str):
@@ -664,6 +1089,12 @@ def summarize(env: dict) -> str:
         extra += f" | HTML sha256: {env['html_sha256'][:16]}"
     if env.get("attachments"):
         extra += " | Csatolmany: " + ", ".join(f"{a['name']} ({a['sha256'][:16]})" for a in env["attachments"])
+    if env.get("account"):
+        extra += f" | Fiok: {env['account']}"
+    if env.get("body_format"):
+        extra += f" | Formatum: {env['body_format']}"
+    if env.get("reply_to"):
+        extra += f" | Valasz erre: {env['reply_to'][0]} / uid {env['reply_to'][1]}"
     return f"Cimzett: {to} | CC: {cc} | Szoveg eleje: {head}{extra}"
 
 
@@ -685,10 +1116,13 @@ def main():
     tool_input = tool_input if isinstance(tool_input, dict) else {}
 
     kind = None
+    cmd = ""
     if tool == "Bash":
         cmd = str(tool_input.get("command") or "")
         if not _load_is_send_invocation()(cmd):
             sys.exit(0)
+        if ledger_enabled():
+            ledger_gate("bash", tool_input, cmd)
     else:
         if not _MAYBE_MAIL_TOOL.search(tool):
             sys.exit(0)  # no mail kind is possible: the extractor is not needed
@@ -700,8 +1134,14 @@ def main():
         is_mcp_draft, is_mcp_send = owner_cc_scope(tool, kind, tool_input)
         if is_mcp_draft or is_mcp_send:
             owner_cc_gate(tool_input, is_mcp_draft and not is_mcp_send)
-        if kind is None or kind == "draft":
-            sys.exit(0)  # reads, labels, drafts: nothing goes on the wire
+        if kind is None:
+            sys.exit(0)  # reads, labels: nothing goes on the wire
+        # The ledger comes first: it applies to drafts and at every level, and
+        # it must never run AFTER an approval was consumed.
+        if ledger_enabled():
+            ledger_gate(kind, tool_input, cmd)
+        if kind == "draft":
+            sys.exit(0)  # a draft puts nothing on the wire; the level stops SENDS
         # A multiplexer tool is in scope only when the call is a send; a search,
         # a read or a draft is not what email_send levels.
         if kind == "manage_email" and not manage_email_is_send(tool_input):
@@ -716,6 +1156,23 @@ def main():
              "Az email_send autonomia-szint 1 (csak jelez): a kuldes tiltott.\n"
              "Jelezd a gazdanak inter-agent uzenettel vagy a dashboardon; a szint "
              "emelese a store/autonomy-config.json-ban a gazda dontese.")
+    if tool == "Bash" and canonical_sender_send(cmd, payload.get("cwd")):
+        # This project's own sender, called literally: it enforces level 2
+        # itself (sender_check.py) on the envelope it delivers, standing list
+        # included, and consumes the approval there. Not consuming here keeps
+        # exactly one consumption per send.
+        print(json.dumps({"systemMessage":
+            "email-approval-gate: email_send level 2 -- a kuldo maga ellenorzi a jovahagyast "
+            "(vagy az allando cimzett-listat), es elutasitaskor kiirja a level horgonyat."}))
+        sys.exit(0)
+    if tool == "Bash" and names_own_sender(cmd, payload.get("cwd")):
+        deny(prefix +
+             "email_send level 2: ez a parancs a projekt SAJAT kuldojet futtatja, de nem a "
+             "kanonikus alakban. A kuldo maga ellenorzi es hasznalja fel a jovahagyast a sajat "
+             "maga altal kezbesitett boritekra, ezert a kapu itt NEM hasznal fel jovahagyast, es "
+             "nem ad horgonyt (az ugysem az lenne, amit a kuldo szamol).\n"
+             f"Futtasd igy: {canonical_forms_text()}. Level 2-n a kuldo elutasitaskor kiirja a "
+             "level horgonyat, azzal kerj jovahagyast.")
     if kind == "send_draft":
         # The call carries only a draftId: the gate sees neither the recipient
         # nor the text, so there is nothing an approval could be anchored to.
@@ -752,7 +1209,13 @@ def main():
     standing, standing_note = read_standing()
     if standing_note:
         prefix = prefix + f"({standing_note})\n"
-    hit = standing_match(env, standing)
+    # A call that names its original (a connector reply, reply_all or forward)
+    # is never a standing-list send, whatever `to` says: the letter reaches the
+    # original's sender or participants, or carries the original's content,
+    # none of which this gate read. The envelope only shows the messageId as a
+    # `to` token when `to` is empty, so this is decided on the call itself
+    # (PR #2098 review: messageId + a listed `to` -> exit 0 at level 2).
+    hit = None if tool_input.get("messageId") else standing_match(env, standing)
     if hit:
         # The list makes the address a CANDIDATE; only the owner's one-time
         # approval makes it live. Checked before the trace, because an address
@@ -807,9 +1270,15 @@ def main():
              f"A jovahagyasok nem elerheto(k) ({exc!r}) -- nem-eldontheto, ezert "
              "fail-closed TILTVA. Ha a dashboard/DB helyreallt, kuldd ujra.")
 
+    copy_note = ""
+    if tool == "Bash":
+        copy_note = ("\nMegjegyzes: ez a Bash-kuldes nem a projekt sajat kuldojet futtatja, ezert a "
+                     "kapu maga hasznalja fel a jovahagyast. A projekt kuldoinek alakja: "
+                     f"{canonical_forms_text()}.")
     if verdict == "allowed":
         print(json.dumps({"systemMessage":
-            f"email-approval-gate: jovahagyas {detail} felhasznalva (egyszer-hasznalatos), a kuldes mehet."}))
+            f"email-approval-gate: jovahagyas {detail} felhasznalva (egyszer-hasznalatos), a kuldes mehet."
+            + copy_note}))
         sys.exit(0)
 
     reasons = {
@@ -832,7 +1301,7 @@ def main():
          "Ha ez visszatero, EGY cimzettnek szolo level (tipikusan a gazda sajat "
          "ertesitese), a gazda beallithatja a cimet allando cimzettnek. KERD TOLE "
          "a csatornan es vard meg a valaszat. A beallitast MAGAD NE vegezd el: ez "
-         "a kapu sajat korlatja, es egy korlatot nem a korlatozott old fel.")
+         "a kapu sajat korlatja, es egy korlatot nem a korlatozott old fel." + copy_note)
 
 
 if __name__ == "__main__":

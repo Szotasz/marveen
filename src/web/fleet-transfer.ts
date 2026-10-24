@@ -16,13 +16,14 @@ import {
   randomBytes, createCipheriv, createDecipheriv, scryptSync,
 } from 'node:crypto'
 import { PROJECT_ROOT, STORE_DIR, MAIN_AGENT_ID, BOT_NAME, BRAND_NAME, OWNER_NAME, CHANNEL_PROVIDER } from '../config.js'
-import { channelStateDir, type ChannelProviderType } from '../channel-provider.js'
+import { channelStateDir, readChannelToken, type ChannelProviderType } from '../channel-provider.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { updateEnvFile } from '../env.js'
 import { AGENTS_BASE_DIR, listAgentNames, readJsonObjectForWrite } from './agent-config.js'
-import { safeJoin } from './sanitize.js'
+import { RESERVED_AGENT_IDS, safeJoin, sanitizeAgentName } from './sanitize.js'
 import { importedLabelColor } from '../css-color.js'
-import { SCHEDULED_TASKS_DIR } from './scheduled-tasks-io.js'
+import { SCHEDULED_TASKS_DIR, type ScheduledTaskWritten } from './scheduled-tasks-io.js'
+import { registerScheduledTask } from './schedule-registry.js'
 import { getBindings } from './vault-bindings.js'
 import { resolveMasterKeyForExport } from './vault.js'
 import { getDb, backfillEmbeddings } from '../db.js'
@@ -86,6 +87,96 @@ export interface FleetIdentity {
   BRAND_NAME: string
   OWNER_NAME: string
   CHANNEL_PROVIDER: string
+}
+
+// FLEETIMPORTENVKEY1021: the keys an import may take over, exactly the ones
+// exportMainAgent() writes. The import is reachable with the fleet's one shared
+// token, and .env also holds keys that decide what an agent may do (SUDO_AGENTS),
+// so the takeover is never generic over whatever the file brings.
+export const FLEET_IDENTITY_KEYS: readonly (keyof FleetIdentity)[] =
+  ['MAIN_AGENT_ID', 'BOT_NAME', 'BRAND_NAME', 'OWNER_NAME', 'CHANNEL_PROVIDER']
+
+// updateEnvFile writes KEY=value unquoted, one per line: a control character
+// in a value would start a line of its own. Such a value is left out, not cleaned.
+const IDENTITY_VALUE_BAD_RE = /[\u0000-\u001f\u007f]/
+
+// The identity an import takes over, and the keys it leaves out (named in a
+// warning). An export from before the identity field carries agentId only.
+export function importedIdentity(main: Partial<MainAgentExport> | undefined): { identity: Record<string, string>; ignored: string[] } {
+  const identity: Record<string, string> = {}
+  const ignored: string[] = []
+  const take = (key: string, val: unknown) => {
+    if (typeof val !== 'string' || val.length === 0) return
+    if (IDENTITY_VALUE_BAD_RE.test(val)) ignored.push(key)
+    else identity[key] = val
+  }
+  const src = main?.identity
+  if (src && typeof src === 'object') {
+    for (const [key, val] of Object.entries(src)) {
+      if ((FLEET_IDENTITY_KEYS as readonly string[]).includes(key)) take(key, val)
+      else ignored.push(key)
+    }
+  } else {
+    take('MAIN_AGENT_ID', main?.agentId)
+  }
+  return { identity, ignored }
+}
+
+function identityIgnoredWarning(ignored: string[]): string {
+  return `Fő-agent identitás: kimaradt kulcs(ok): ${ignored.map(k => k.slice(0, 60)).join(', ')}. ` +
+    `Csak ${FLEET_IDENTITY_KEYS.join(', ')} vehető át, vezérlőkarakter nélküli értékkel.`
+}
+
+const CHANNEL_PROVIDER_IDS: readonly ChannelProviderType[] = ['telegram', 'slack', 'discord', 'googlechat', 'teams']
+
+// FLEETIMPORTFOLLOW1021: what the import would take over, checked against the
+// TARGET, shared by the dry run and the apply so the two never disagree.
+//   - MAIN_AGENT_ID keys tmux sessions, service units and DB rows: it must have
+//     the installer's slug shape (sanitizeAgentName leaves it unchanged),
+//     must not be a reserved id (RESERVED_AGENT_IDS) and must not be the name
+//     of a sub-agent, on the target or in this import.
+//     Otherwise nothing is taken over.
+//   - CHANNEL_PROVIDER switches the main agent's channel, and the import carries
+//     no bot token (re-pair model): a provider the target holds no token for
+//     would leave the main agent down, so only that key is left out. The
+//     target's own provider stays takeable (nothing changes).
+export function planIdentityTakeover(fleet: Pick<FleetJson, 'mainAgent' | 'agents'>):
+    { identity: Record<string, string>; sourceAgentId?: string; warnings: string[] } {
+  const { identity, ignored } = importedIdentity(fleet.mainAgent)
+  const warnings = ignored.length > 0 ? [identityIgnoredWarning(ignored)] : []
+  // An identity without MAIN_AGENT_ID still names the source by agentId (same check);
+  // one whose MAIN_AGENT_ID was left out takes over nothing.
+  const sourceAgentId = ignored.includes('MAIN_AGENT_ID') ? undefined
+    : identity.MAIN_AGENT_ID ?? importedIdentity({ agentId: fleet.mainAgent?.agentId }).identity.MAIN_AGENT_ID
+  if (!sourceAgentId) return { identity: {}, warnings }
+  const refuse = (why: string) => ({
+    identity: {},
+    warnings: [...warnings, `Fő-agent identitás NEM vehető át: a MAIN_AGENT_ID "${sourceAgentId.slice(0, 60)}" ${why}.`],
+  })
+  if (sourceAgentId !== sanitizeAgentName(sourceAgentId)) {
+    return refuse('nem slug alakú (kisbetű, számjegy, egyszeres kötőjel, legfeljebb 50 karakter, ahogy a telepítő képzi)')
+  }
+  if (RESERVED_AGENT_IDS.includes(sourceAgentId)) {
+    return refuse('a rendszer fenntartott azonosítója (az üzenetkezelő saját feladója)')
+  }
+  // The target's own MAIN_AGENT_ID is never a sub-agent there: the main agent lives in
+  // PROJECT_ROOT, and the agent API refuses that name. A directory with it is a stray
+  // (agents/marveen drafts on a host), and re-importing the id the target already runs
+  // under changes nothing, so it does not count. A sub-agent the import brings still does.
+  const onTarget = listAgentNames().filter(n => n !== MAIN_AGENT_ID)
+  const subAgents = new Set([...onTarget, ...(fleet.agents ?? []).map(a => String(a.name))])
+  if (subAgents.has(sourceAgentId)) return refuse('egy al-ügynök neve ezen a gépen vagy ebben az importban')
+  const provider = identity.CHANNEL_PROVIDER
+  if (provider !== undefined && provider !== CHANNEL_PROVIDER) {
+    const known = (CHANNEL_PROVIDER_IDS as readonly string[]).includes(provider)
+    if (!known || readChannelToken(provider as ChannelProviderType, join(channelStateDir(provider as ChannelProviderType), '.env')) == null) {
+      delete identity.CHANNEL_PROVIDER
+      warnings.push(`Fő-agent identitás: a CHANNEL_PROVIDER "${provider.slice(0, 60)}" kimaradt, mert ` +
+        (known ? 'ezen a gépen nincs hozzá token. Előbb állítsd be a csatornát, utána válts.' : 'ismeretlen csatorna.') +
+        ` Marad: ${CHANNEL_PROVIDER}.`)
+    }
+  }
+  return { identity, sourceAgentId, warnings }
 }
 
 // Main agent lives at PROJECT_ROOT (not under agents/), so it needs its own export section.
@@ -886,8 +977,10 @@ function buildDiffReport(fleet: FleetJson): DiffReport {
   }
 
   // Identity takeover preview
-  const drySourceId = fleet.mainAgent?.identity?.MAIN_AGENT_ID ?? fleet.mainAgent?.agentId
-  if (drySourceId && typeof drySourceId === 'string') {
+  const dryPlan = planIdentityTakeover(fleet)
+  warnings.push(...dryPlan.warnings)
+  const drySourceId = dryPlan.sourceAgentId
+  if (drySourceId) {
     warnings.push(
       `Fő-agent identitás átvéve: ${drySourceId}. Apply után újraindítás szükséges hogy a dashboard ${drySourceId}-ként induljon.`
     )
@@ -1117,6 +1210,7 @@ export function importFleet(
     }
 
     // 3. Scheduled tasks (all paused: enabled=false already set at export time)
+    const importedTaskBytes = new Map<string, ScheduledTaskWritten>()
     if (existsSync(SCHEDULED_TASKS_DIR) || fleet.scheduledTasks?.length) {
       trackedMkdir(SCHEDULED_TASKS_DIR, tracker)
     }
@@ -1124,11 +1218,9 @@ export function importFleet(
       const dir = safeJoin(SCHEDULED_TASKS_DIR, task.dirName)
       trackedMkdir(dir, tracker)
       if (task.skillMd) trackedWrite(join(dir, 'SKILL.md'), task.skillMd, tracker)
-      trackedWrite(
-        join(dir, 'task-config.json'),
-        JSON.stringify({ ...task.config, enabled: false }, null, 2),
-        tracker,
-      )
+      const configContent = JSON.stringify({ ...task.config, enabled: false }, null, 2)
+      trackedWrite(join(dir, 'task-config.json'), configContent, tracker)
+      importedTaskBytes.set(task.dirName, { skill: task.skillMd || null, config: configContent })
     }
 
     // 4. Dashboard settings
@@ -1167,15 +1259,19 @@ export function importFleet(
           `INSERT OR IGNORE INTO kanban_cards
            (id, title, description, test_steps, status, assignee, priority, project,
             due_date, start_date, sort_order, created_at, updated_at, archived_at, parent_id, dispatched_at,
-            claimed_by, claimed_at, claim_expires_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            claimed_by, claimed_at, claim_expires_at, version)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
         ).run(c.id, c.title, c.description ?? null, c.test_steps ?? null, c.status, c.assignee ?? null,
           c.priority, c.project ?? null, c.due_date ?? null, c.start_date ?? null, c.sort_order,
           c.created_at, c.updated_at, c.archived_at ?? null, c.parent_id ?? null, c.dispatched_at ?? null,
           // The claim lock rides along: a card someone was working on stays
           // held on the new host until the holder releases it or its TTL ends,
           // so a host move cannot hand the same card to a second agent.
-          c.claimed_by ?? null, c.claimed_at ?? null, c.claim_expires_at ?? null)
+          c.claimed_by ?? null, c.claimed_at ?? null, c.claim_expires_at ?? null,
+          // The row version rides along too, so a copy read before the move is still
+          // checked against the same number after it. An export from an install
+          // without the column has none: the NOT NULL column starts at 0.
+          Number.isSafeInteger(c.version) && c.version >= 0 ? c.version : 0)
       }
 
       // kanban comments (idempotent: card_id + content)
@@ -1295,26 +1391,18 @@ export function importFleet(
     // Preference: use identity object (full set) if present; fall back to agentId-only for
     // exports produced before the identity field was added.
     const applyWarnings: string[] = []
-    const sourceIdentity = fleet.mainAgent?.identity
-    const sourceAgentId = sourceIdentity?.MAIN_AGENT_ID ?? fleet.mainAgent?.agentId
-    if (sourceAgentId && typeof sourceAgentId === 'string') {
+    const { identity: takeover, sourceAgentId, warnings: identityWarnings } = planIdentityTakeover(fleet)
+    applyWarnings.push(...identityWarnings)
+    if (sourceAgentId) {
       const overridesPath = join(STORE_DIR, 'config-overrides.json')
       // JSONCLOBBER926B: a corrupt config-overrides.json is refused, not
       // replaced by the identity keys alone (it holds every dashboard setting).
       // The throw takes the import's own failure path below: tracked writes are
       // cleaned up and the error names the file.
       const overrides = readJsonObjectForWrite(overridesPath)
-      if (sourceIdentity && typeof sourceIdentity === 'object') {
-        // Full identity takeover: iterate all keys generically (no hardcoded names)
-        for (const [key, val] of Object.entries(sourceIdentity)) {
-          if (typeof val === 'string' && val.length > 0) {
-            overrides[key] = val
-          }
-        }
-      } else {
-        // Backward-compat: old export without identity -- only set MAIN_AGENT_ID
-        overrides['MAIN_AGENT_ID'] = sourceAgentId
-      }
+      // Only the identity keys (FLEETIMPORTENVKEY1021); an export without the
+      // identity field gives MAIN_AGENT_ID alone.
+      Object.assign(overrides, takeover)
       atomicWriteFileSync(overridesPath, JSON.stringify(overrides, null, 2))
 
       // Mirror the identity into .env as well. The dashboard reads identity via
@@ -1323,19 +1411,30 @@ export function importFleet(
       // DIRECTLY from .env. Without this the main agent would launch under the
       // pre-import identity (`${old-id}-channels`) while the dashboard looks for
       // `${new-id}-channels` and reports the main agent as down.
-      const envIdentity: Record<string, string> = {}
-      if (sourceIdentity && typeof sourceIdentity === 'object') {
-        for (const [key, val] of Object.entries(sourceIdentity)) {
-          if (typeof val === 'string' && val.length > 0) envIdentity[key] = val
-        }
-      } else {
-        envIdentity['MAIN_AGENT_ID'] = sourceAgentId
-      }
-      updateEnvFile(envIdentity)
+      updateEnvFile(takeover)
 
       applyWarnings.push(
         `Fő-agent identitás átvéve: ${sourceAgentId}. Újraindítás kell hogy a dashboard ${sourceAgentId}-ként induljon.`
       )
+    }
+
+    // Scheduled-task registry: the imported tasks were written by the server from an
+    // operator-authorized API import (and arrive paused, enabled=false), so they
+    // are registered like any other API write; otherwise the operator could not
+    // even toggle them on (the toggle route refuses unregistered files). Only the
+    // bytes the import WROTE are registered: an existing target dir can hold
+    // leftover files (a SKILL.md the import did not ship, a preCheck script), and
+    // those must not become trusted as "api:fleet-import". Such a task is left
+    // unregistered (the runner skips it) for the operator to review.
+    for (const task of fleet.scheduledTasks ?? []) {
+      const written = importedTaskBytes.get(task.dirName)
+      try {
+        if (!written || !registerScheduledTask(task.dirName, 'api:fleet-import', written, { noUnwrittenPreCheck: true, noUnwrittenDirFiles: true })) {
+          logger.warn({ task: task.dirName }, 'Fleet import: scheduled task not registered (its dir holds files the import did not write); review it, then register')
+        }
+      } catch (err) {
+        logger.warn({ err, task: task.dirName }, 'Fleet import: scheduled task not registered (runner will skip it)')
+      }
     }
 
     logger.info({ agents: (fleet.agents ?? []).map(a => a.name) }, 'Fleet import completed')

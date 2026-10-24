@@ -26,13 +26,34 @@ if [ ! -f .env ]; then
   exit 1
 fi
 
-# Load BOT_NAME (and existing MAIN_AGENT_ID if present).
-set -a
-# shellcheck disable=SC1091
-source .env
-set +a
-
-BOT_NAME="${BOT_NAME:-Marveen}"
+# Read BOT_NAME from .env as a LITERAL, never by sourcing the file: .env is data
+# (a fleet import writes its identity values into it), and `source` would run
+# any $(...) or backticks a value holds (FLEETIMPORTFOLLOW1021). The shapes
+# source accepted read the same: "..." or '...' quotes, an export prefix, a
+# trailing " # comment" on a bare value, the last assignment wins. Without a
+# BOT_NAME line the caller's environment applies, then the default.
+# A function, not a heredoc inside $(...): bash 3.2 (macOS) misparses a quote
+# in a heredoc that sits inside a command substitution.
+read_env_bot_name() {
+  python3 - "$1" <<'PYEOF'
+import re, sys
+val = None
+with open(sys.argv[1], encoding='utf-8', errors='replace') as fh:
+    for line in fh:
+        m = re.match(r'\s*(?:export\s+)?BOT_NAME=(.*)$', line.rstrip('\r\n'))
+        if not m:
+            continue
+        v = m.group(1).strip()
+        if len(v) >= 2 and v[0] == v[-1] and v[0] in ('"', "'"):
+            v = v[1:-1]
+        else:
+            v = re.split(r'\s+#', v, maxsplit=1)[0].strip()
+        val = v
+print(val or '', end='')
+PYEOF
+}
+ENV_BOT_NAME="$(read_env_bot_name .env)"
+BOT_NAME="${ENV_BOT_NAME:-${BOT_NAME:-Marveen}}"
 NEW_SLUG=$(python3 - "$BOT_NAME" <<'PYEOF'
 import sys, unicodedata, re
 s = sys.argv[1].strip()
@@ -41,6 +62,24 @@ s = re.sub(r'[^a-zA-Z0-9]+', '-', s).strip('-').lower()
 print(s or 'marveen')
 PYEOF
 )
+
+# An id the message layer already owns, or a sub-agent's name, cannot become the
+# main agent's (FLEETRESERVEDNAME1021): 'system' is refused on every POST, so a
+# main agent named that could not send. Checked before anything is stopped.
+# The list is RESERVED_AGENT_IDS in src/web/sanitize.ts; a test keeps them equal.
+RESERVED_AGENT_IDS="system heartbeat telegram-coordinator channel-coordinator hanna"
+case " $RESERVED_AGENT_IDS " in
+  *" $NEW_SLUG "*)
+    echo "ERROR: BOT_NAME=\"$BOT_NAME\" gives the id \"$NEW_SLUG\", which is reserved by the system." >&2
+    echo "Nothing was changed. Set another BOT_NAME in .env and rerun." >&2
+    exit 1 ;;
+esac
+# "marveen" is the id the install already runs under: nothing to rename there.
+if [ "$NEW_SLUG" != "marveen" ] && [ -d "$INSTALL_DIR/agents/$NEW_SLUG" ]; then
+  echo "ERROR: BOT_NAME=\"$BOT_NAME\" gives the id \"$NEW_SLUG\", which is already a sub-agent (agents/$NEW_SLUG)." >&2
+  echo "Nothing was changed. Set another BOT_NAME in .env and rerun." >&2
+  exit 1
+fi
 
 if [ "$NEW_SLUG" = "marveen" ]; then
   echo "BOT_NAME=\"$BOT_NAME\" → slug \"marveen\" (default). Nothing to migrate."
@@ -203,23 +242,101 @@ fi
 # scheduler routes by this name, and "marveen" now targets a non-existent
 # session on non-default installs.
 SCHED_DIR="$HOME/.claude/scheduled-tasks"
+_SCHED_CLI="$INSTALL_DIR/dist/web/schedule-registry-cli.js"
+_SCHED_CLI_OK=0
+if [ -f "$_SCHED_CLI" ] && command -v node >/dev/null 2>&1; then _SCHED_CLI_OK=1; fi
+# Scheduled-task registry: the rewrite below changes task-config.json
+# bytes, so the runner's registry hashes stop matching. Re-registering every
+# rewritten task would launder a never-registered or tampered (planted) task
+# that happens to target "marveen". So the registry verdict of each candidate
+# is recorded BEFORE the rewrite, and afterwards only a task that was trusted
+# then is re-registered; the rest is listed for operator review.
+_SCHED_PRE_OK=""
+_SCHED_PRE_UNKNOWN=""
+if [ -d "$SCHED_DIR" ] && [ "$_SCHED_CLI_OK" = "1" ]; then
+  _SCHED_CANDIDATES="$(python3 - "$SCHED_DIR" <<'PYEOF'
+import sys, json, pathlib, re
+root = pathlib.Path(sys.argv[1])
+for cfg in sorted(root.glob('*/task-config.json')):
+    try:
+        data = json.loads(cfg.read_text())
+    except Exception:
+        continue
+    if isinstance(data, dict) and data.get('agent') == 'marveen' and re.fullmatch(r'[a-z0-9-]+', cfg.parent.name):
+        print(cfg.parent.name)
+PYEOF
+)"
+  # The same three-way verdict as update.sh's sched_task_verified_ok.
+  # Exit 1 is a REAL not-ok verdict only together with the CLI's own
+  # "<verdict> <name>" line (a node crash also exits 1); registry-error, a usage
+  # exit 2 (a CLI without `verify`) or a crash is UNKNOWN, not "not trusted".
+  for _n in $_SCHED_CANDIDATES; do
+    _sv_rc=0
+    _sv_out="$(node "$_SCHED_CLI" verify "$_n" 2>/dev/null)" || _sv_rc=$?
+    if [ "$_sv_rc" = "0" ]; then
+      _SCHED_PRE_OK="$_SCHED_PRE_OK $_n"
+    elif [ "$_sv_rc" = "1" ] && printf '%s\n' "$_sv_out" | grep -xE "[a-z-]+ $_n" | grep -qv '^registry-error '; then
+      :
+    else
+      _SCHED_PRE_UNKNOWN="$_SCHED_PRE_UNKNOWN $_n"
+    fi
+  done
+fi
+_SCHED_REWRITTEN_LIST="$(mktemp)"
 if [ -d "$SCHED_DIR" ]; then
-  python3 - "$SCHED_DIR" "$NEW_SLUG" <<'PYEOF'
+  python3 - "$SCHED_DIR" "$NEW_SLUG" "$_SCHED_REWRITTEN_LIST" <<'PYEOF'
 import sys, json, pathlib
 root = pathlib.Path(sys.argv[1]); slug = sys.argv[2]
+rewritten = []
 fixed = 0
 for cfg in root.glob('*/task-config.json'):
     try:
         data = json.loads(cfg.read_text())
     except Exception:
         continue
-    if data.get('agent') == 'marveen':
+    if isinstance(data, dict) and data.get('agent') == 'marveen':
         data['agent'] = slug
         cfg.write_text(json.dumps(data, indent=2))
         fixed += 1
+        rewritten.append(cfg.parent.name)
+pathlib.Path(sys.argv[3]).write_text(''.join(n + '\n' for n in rewritten))
 if fixed:
     print(f'✓ Scheduled task configs updated ({fixed} file(s))')
 PYEOF
+fi
+_SCHED_REREGISTER=""
+_SCHED_REVIEW=""
+_SCHED_REVIEW_UNKNOWN=""
+while IFS= read -r _n; do
+  [ -n "$_n" ] || continue
+  case "$_n" in *[!a-z0-9-]*) _SCHED_REVIEW="$_SCHED_REVIEW $_n"; continue ;; esac
+  case " $_SCHED_PRE_OK " in
+    *" $_n "*) _SCHED_REREGISTER="$_SCHED_REREGISTER $_n"; continue ;;
+  esac
+  case " $_SCHED_PRE_UNKNOWN " in
+    *" $_n "*) _SCHED_REVIEW_UNKNOWN="$_SCHED_REVIEW_UNKNOWN $_n" ;;
+    *) _SCHED_REVIEW="$_SCHED_REVIEW $_n" ;;
+  esac
+done < "$_SCHED_REWRITTEN_LIST"
+rm -f "$_SCHED_REWRITTEN_LIST"
+if [ -n "$_SCHED_REREGISTER" ]; then
+  # shellcheck disable=SC2086 # word-splitting the name list is intended
+  node "$_SCHED_CLI" register --source migrate-agent-id $_SCHED_REREGISTER >/dev/null \
+    && echo "✓ Scheduled task registry re-registered:$_SCHED_REREGISTER" \
+    || echo "WARNING: scheduled-task registry re-registration failed; run: node $_SCHED_CLI status" >&2
+fi
+if [ -n "$_SCHED_REVIEW" ]; then
+  if [ "$_SCHED_CLI_OK" = "1" ]; then
+    echo "WARNING: rewritten scheduled tasks NOT re-registered (they were not trusted before the rewrite -- unregistered or changed on disk):$_SCHED_REVIEW" >&2
+    echo "         The runner skips them. Review their files, then: node $_SCHED_CLI register <name>" >&2
+  else
+    echo "WARNING: rewritten scheduled tasks are not re-registered (no dist/web/schedule-registry-cli.js):$_SCHED_REVIEW" >&2
+    echo "         If this install has never run a build with the scheduled-task registry, its first start registers them (one-time backfill); otherwise review them and run: node $_SCHED_CLI register <name>" >&2
+  fi
+fi
+if [ -n "$_SCHED_REVIEW_UNKNOWN" ]; then
+  echo "WARNING: rewritten scheduled tasks NOT re-registered (their registry verdict before the rewrite is UNKNOWN -- the registry CLI crashed, has no verify, or could not read the registry):$_SCHED_REVIEW_UNKNOWN" >&2
+  echo "         If this install's dashboard has not yet run its one-time registry backfill, its next start registers AND fires them as they are now: review them NOW. Otherwise the runner skips them until: node $_SCHED_CLI register <name>" >&2
 fi
 
 if [ "$OS" = "Darwin" ]; then

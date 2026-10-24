@@ -1,0 +1,40 @@
+{
+  "_comment": "HARDERMAILGATES1019: the harder-mail MCP's letter tools and what every email gate must do with them, measured end-to-end on the real hooks (not on a regex). WHICH kind a name is comes from the shared suffix classifier (scripts/hooks/email_extract.py classify_mail_tool and its JS twin classifyMailTool, bound by scripts/hooks/mail-tool-name-cases.json); this file pins the per-gate OUTCOME of that kind for these names. Consumers: scripts/__tests__/email-approval-gate.test.py (approval levels 1-3, owner-CC), scripts/__tests__/outgoing-copy-gate.test.py (copy audit), src/__tests__/email-gate-matcher-drift.test.ts (EMAIL_GATE_MATCHER, the main .claude/settings.json email hook entries, the sub-agent gateDecision in scripts/email-send-gate.mjs). Each consumer also pins the NAME SET, so deleting a row fails too. send_mail / send_mail_auto: kind connector_send; approval-gated sends (level 2: denied with an anchor, released by the approval of that anchor), owner-CC checked, sub-agents denied. create_draft: kind draft; never level-gated, owner-CC checked, sub-agent recipients ledger-checked. Every row is audited by the copy gate. Each row runs in both shapes: a new thread (`to`) and a reply (reply_to_uid + reply_folder, no `to`).",
+  "names": [
+    "mcp__harder-mail__send_mail",
+    "mcp__harder-mail__send_mail_auto",
+    "mcp__harder-mail__create_draft"
+  ],
+  "cases": {
+    "mcp__harder-mail__send_mail": {
+      "kind": "connector_send",
+      "approval_level1": "deny",
+      "approval_level2": "approval",
+      "approval_level3": "allow",
+      "owner_cc_missing": "deny",
+      "owner_cc_present": "allow",
+      "copy_gate_em_dash": "deny",
+      "subagent": "deny"
+    },
+    "mcp__harder-mail__send_mail_auto": {
+      "kind": "connector_send",
+      "approval_level1": "deny",
+      "approval_level2": "approval",
+      "approval_level3": "allow",
+      "owner_cc_missing": "deny",
+      "owner_cc_present": "allow",
+      "copy_gate_em_dash": "deny",
+      "subagent": "deny"
+    },
+    "mcp__harder-mail__create_draft": {
+      "kind": "draft",
+      "approval_level1": "allow",
+      "approval_level2": "allow",
+      "approval_level3": "allow",
+      "owner_cc_missing": "deny",
+      "owner_cc_present": "allow",
+      "copy_gate_em_dash": "deny",
+      "subagent": "ledger"
+    }
+  }
+}

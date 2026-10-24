@@ -5,10 +5,13 @@
 // (setup_required:true). Login enforcement becomes available -- never required,
 // the bearer token always works -- once the operator creates a user.
 //
-// The bearer token stays the break-glass credential: creating the FIRST user
-// and resetting a password are reachable with a valid bearer, so there is never
-// an unauthenticated first-run setup page (which would be a claim-the-admin race
-// on loopback).
+// The bearer token creates the FIRST user, so there is never an unauthenticated
+// first-run setup page (which would be a claim-the-admin race on loopback).
+// Resetting a password without the current one is NOT reachable over HTTP: the
+// owner's recovery path is the machine-local CLI, npm run dashboard-user --
+// reset-password <username> (DEVKEYMINT1022).
+// Once a user exists, issuing credentials and adding or removing users take the
+// owner's session instead (mayIssueCredentials, DEVKEYMINT1022).
 //
 // Principal discipline: every handler that grants or removes access checks the
 // caller's auth kind against an EXPLICIT allowlist. Only 'token' and 'session'
@@ -33,6 +36,7 @@ import {
   revokeSession,
   revokeAllForUser,
   listUserSessions,
+  resolveSession,
 } from '../auth-sessions.js'
 import {
   checkThrottle,
@@ -60,7 +64,6 @@ import {
   deleteDashboardUser,
   logConfigChange,
 } from '../../db.js'
-import { notifySecurityEvent } from '../../notify.js'
 import type { RouteContext } from './types.js'
 
 const LOGIN_BODY_MAX_BYTES = 8 * 1024
@@ -119,6 +122,34 @@ const USER_ADMIN_KINDS = ['token', 'session'] as const
 // and deliberately NOT 'device': a device key that could mint further keys
 // would turn one leaked device into unlimited, unexpiring access.
 const DEVICE_KEY_ADMIN_KINDS = ['token', 'session'] as const
+
+// DEVKEYMINT1022: issuing a credential (a device key, a Bridge pairing) and adding
+// or removing a dashboard user GRANT access, and the bearer token cannot tell the
+// owner apart from anything else that holds it. So once a dashboard login exists,
+// these take the owner's session. The token keeps them only for the first-run
+// setup (no user yet), where it is the one credential there is. The machine-local
+// CLI (npm run dashboard-user, npm run remote-enroll) stays the break-glass.
+// Counted with the disabled users too: a disabled account still means a login was
+// set up, so it must not reopen the first-run path.
+// A logged-in owner whose browser also keeps the access token sends both: the
+// gate resolves the bearer first, so the session cookie is checked here as well.
+export function mayIssueCredentials(auth: RouteContext['auth'], req?: http.IncomingMessage): boolean {
+  if (auth?.kind === 'session') return true
+  if (auth?.kind !== 'token') return false
+  if (countDashboardUsers(true) === 0) return true
+  const cookie = req ? parseCookies(req.headers.cookie)[SESSION_COOKIE_NAME] : undefined
+  return !!cookie && resolveSession(cookie) !== null
+}
+
+export const CLI_RECOVERY_ONLY = {
+  error: 'Resetting a password needs the dashboard login and the current password. Without them, recover on the machine itself: npm run dashboard-user -- reset-password <username>.',
+  code: 'cli_recovery_only',
+}
+
+export const OWNER_SESSION_REQUIRED = {
+  error: 'This needs the dashboard login (an owner session). The access token can do it only before the first login exists; on the machine itself, npm run dashboard-user is the break-glass.',
+  code: 'owner_session_required',
+}
 
 const DEVICE_KEY_NAME_RE = /^[\p{L}\p{N} ._-]{1,64}$/u
 const DEVICE_KEY_MAX_EXPIRY_DAYS = 3650
@@ -259,15 +290,11 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
         return true
       }
     } else if (auth?.kind === 'token') {
-      // Bearer break-glass: may omit current_password but must name the target.
-      // EXPLICITLY token-only -- a reset without the current password is the
-      // strongest action here and must never leak to weaker credential kinds.
-      const username = str(body.username)
-      user = username ? getDashboardUser(username) : undefined
-      if (!user) {
-        json(res, { error: 'User not found' }, 404)
-        return true
-      }
+      // The token cannot reset a password: it cannot tell the owner apart from
+      // anything else that holds it. Recovery is the machine-local CLI.
+      logger.warn({ agent: auth.agent }, 'password reset via bearer token refused (recovery is the CLI)')
+      json(res, CLI_RECOVERY_ONLY, 403)
+      return true
     } else {
       json(res, FORBIDDEN_KIND, 403)
       return true
@@ -284,16 +311,6 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
     // Revoke every other session of this user; keep the caller's own if present.
     const presented = parseCookies(req.headers.cookie)[SESSION_COOKIE_NAME]
     revokeAllForUser(user.id, presented ?? undefined)
-    if (auth?.kind === 'token') {
-      // Break-glass reset (no current_password proven): leave a durable audit
-      // row and ping the operator's channel. Only the username goes into the
-      // trail, never credential material. Fire-and-forget: the reset must
-      // succeed with or without a wired channel (notifySecurityEvent is
-      // silent when none is configured).
-      logConfigChange('security.break_glass_password_reset', null, user.username, 'token')
-      logger.warn({ username: user.username }, 'break-glass password reset via bearer token')
-      void notifySecurityEvent(`🔑 Break-glass jelszó-reset a dashboardon: "${user.username}" jelszavát a hozzáférési tokennel állították át. Ha nem te voltál, futtasd: npm run dashboard-user -- security:reset`)
-    }
     json(res, { ok: true })
     return true
   }
@@ -303,6 +320,12 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
       json(res, FORBIDDEN_KIND, 403)
       return true
     }
+    // The usernames are the first half of a password guess, so once a login
+    // exists the list takes the owner's session too (DEVKEYFOLLOW1022).
+    if (!mayIssueCredentials(auth, req)) {
+      json(res, OWNER_SESSION_REQUIRED, 403)
+      return true
+    }
     json(res, { users: listDashboardUsers() })
     return true
   }
@@ -310,6 +333,10 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
   if (path === '/api/auth/users' && method === 'POST') {
     if (!kindAllowed(auth, USER_ADMIN_KINDS)) {
       json(res, FORBIDDEN_KIND, 403)
+      return true
+    }
+    if (!mayIssueCredentials(auth, req)) {
+      json(res, OWNER_SESSION_REQUIRED, 403)
       return true
     }
     let body: Record<string, unknown>
@@ -354,6 +381,10 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
   if (path === '/api/auth/device-keys' && method === 'POST') {
     if (!kindAllowed(auth, DEVICE_KEY_ADMIN_KINDS)) {
       json(res, FORBIDDEN_KIND, 403)
+      return true
+    }
+    if (!mayIssueCredentials(auth, req)) {
+      json(res, OWNER_SESSION_REQUIRED, 403)
       return true
     }
     let body: Record<string, unknown>
@@ -433,6 +464,10 @@ export async function tryHandleAuth(ctx: RouteContext): Promise<boolean> {
   if (delMatch && method === 'DELETE') {
     if (!kindAllowed(auth, USER_ADMIN_KINDS)) {
       json(res, FORBIDDEN_KIND, 403)
+      return true
+    }
+    if (!mayIssueCredentials(auth, req)) {
+      json(res, OWNER_SESSION_REQUIRED, 403)
       return true
     }
     const username = decodeURIComponent(delMatch[1]!)

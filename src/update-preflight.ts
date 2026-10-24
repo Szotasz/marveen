@@ -24,35 +24,35 @@
 // run that was guaranteed to fail.
 //
 // The module takes its git calls through a GitRunner interface so the
-// decision logic is pure and synchronously testable without shelling
+// decision logic is pure and testable without shelling
 // out in tests.
 
 export interface GitRunner {
   // Current branch name. "HEAD" (or empty) signals a detached checkout.
-  currentBranch(): string
+  currentBranch(): string | Promise<string>
   // Number of local commits ahead of origin/<branch>, the ref update.sh pulls
   // (git rev-list --count origin/<branch>..HEAD; not @{u}, see UPSTREAMSRC927). Returns 0 when there is no upstream
   // or the probe fails (the safe default: do not block on an uncertain
   // count -- the branch-on-origin probe below catches the no-upstream case
   // on its own terms).
-  aheadCount(): number
+  aheadCount(): number | Promise<number>
   // Number of upstream commits the local checkout is missing
   // (git rev-list --count HEAD..origin/<branch>), same failure convention as above.
   // Ahead ALONE is not a divergence: there is simply nothing to
   // fast-forward to, and update.sh proceeds. Only ahead AND behind
   // together mean the histories parted and ff-only must refuse.
-  behindCount(): number
+  behindCount(): number | Promise<number>
   // Does the branch exist on the `origin` remote? update.sh pulls
   // origin/<branch> and exits 2 when that ref does not exist, so a
   // local-only branch is a guaranteed-failed run. Network probe, hence
   // three-valued: 'unknown' (offline, auth failure, timeout) must NOT
   // block -- an uncertain probe is not evidence of a missing branch.
-  originHasBranch(branch: string): 'yes' | 'no' | 'unknown'
+  originHasBranch(branch: string): 'yes' | 'no' | 'unknown' | Promise<'yes' | 'no' | 'unknown'>
   // Porcelain status excluding untracked files. Non-empty = dirty tree.
   // Untracked files are excluded because the repo legitimately carries
   // ad-hoc backup files (CLAUDE.md.backup-*, SOUL.md mid-edit, etc.)
   // that should not block an update.
-  porcelainStatus(): string
+  porcelainStatus(): string | Promise<string>
 }
 
 export type PreflightResult =
@@ -164,8 +164,8 @@ export function checkNoConcurrentUpdate(pf: PidfileRunner): ConcurrencyResult {
   }
 }
 
-export function checkUpdatePreflight(git: GitRunner): PreflightResult {
-  const branch = git.currentBranch().trim()
+export async function checkUpdatePreflight(git: GitRunner): Promise<PreflightResult> {
+  const branch = (await git.currentBranch()).trim()
 
   // `git rev-parse --abbrev-ref HEAD` prints "HEAD" on a detached
   // checkout. A detached HEAD has no branch to pull from, so it is the
@@ -192,7 +192,7 @@ export function checkUpdatePreflight(git: GitRunner): PreflightResult {
   // Ordered to match update.sh: this check runs BEFORE the dirty-tree one
   // there, so the operator sees the same first reason from either entry
   // point instead of being sent to stash changes that would not have helped.
-  if (git.originHasBranch(branch) === 'no') {
+  if ((await git.originHasBranch(branch)) === 'no') {
     return {
       ok: false,
       reason: 'branch-not-on-origin',
@@ -210,7 +210,7 @@ export function checkUpdatePreflight(git: GitRunner): PreflightResult {
   // gitignore'd as "tracked-but-mutable" by convention. Any other dirty
   // file still blocks (see update.sh which stashes HEARTBEAT.md before
   // git pull and pops it after).
-  const dirty = git.porcelainStatus()
+  const dirty = (await git.porcelainStatus())
     .split('\n')
     .map((l) => l.trim())
     .filter((l) => l.length > 0)
@@ -238,8 +238,8 @@ export function checkUpdatePreflight(git: GitRunner): PreflightResult {
   // was locked out of its own updater), but this copy of the rule was never
   // updated with it, so the button stayed refused where the script would
   // have run. Both sides now use the same condition.
-  const ahead = git.aheadCount()
-  const behind = git.behindCount()
+  const ahead = await git.aheadCount()
+  const behind = await git.behindCount()
   if (ahead > 0 && behind > 0) {
     return {
       ok: false,

@@ -50,6 +50,7 @@ import { ensureFederationClaudeMdSection } from '../federation/onboarding.js'
 import { hardRestartMarveenChannels } from '../channel-monitor.js'
 import { gateManualRestart, MANUAL_RESTART_FORCE_HINT, wantsForceRestart } from '../manual-restart-gate.js'
 import { MAIN_CHANNELS_SESSION } from '../main-agent.js'
+import { mayIssueCredentials, OWNER_SESSION_REQUIRED } from './auth.js'
 import type { RouteContext } from './types.js'
 
 export const FEDERATION_VERSION = 1
@@ -290,6 +291,24 @@ function refuseIfConfigUnhealthy(res: RouteContext['res']): boolean {
   return false
 }
 
+// DEVKEYFOLLOW1022: a peer's inbound token admits a REMOTE system into our inbox,
+// so adding a peer, writing the full document (it carries the inbound tokens),
+// rotating and revealing a token, editing a peer (it re-points its outbound
+// token) and switching federation on are credential issuance, the same as a device
+// key (routes/auth.ts, DEVKEYMINT1022): once a dashboard login exists they take
+// the owner's session. On the machine itself store/federation.json stays editable.
+const FED_OWNER_SESSION_REQUIRED = {
+  ...OWNER_SESSION_REQUIRED,
+  error: 'Adding a peer or issuing, rotating or revealing its inbound token needs the dashboard login (an owner session). The access token can do it only before the first login exists; on the machine itself, store/federation.json stays editable.',
+}
+
+function refuseUnlessOwner(ctx: RouteContext): boolean {
+  if (mayIssueCredentials(ctx.auth, ctx.req)) return false
+  logger.warn({ fed: true, path: ctx.path, method: ctx.method, kind: ctx.auth?.kind }, 'federation: credential issuance refused (owner session required)')
+  json(ctx.res, FED_OWNER_SESSION_REQUIRED, 403)
+  return true
+}
+
 // ---- route handler ------------------------------------------------------------
 
 export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
@@ -471,6 +490,7 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
   // endpoints below; this stays as the scriptable primitive. Requires
   // explicit inboundTokens (it does not mint).
   if (path === '/api/federation/peers' && method === 'PUT') {
+    if (refuseUnlessOwner(ctx)) return true
     const payload = await readJsonBody(ctx)
     if (isErr(payload)) return true
     const validated = validateFederationConfig(payload)
@@ -531,6 +551,11 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
     const payload = await readJsonBody(ctx)
     if (isErr(payload)) return true
     const enabled = payload !== null && typeof payload === 'object' && (payload as Record<string, unknown>).enabled === true
+    // Switching ON admits the paired peers and starts sending our outbound
+    // tokens: the owner's session once a login exists (Marveen, #2175 review).
+    // Switching OFF only takes away, so it stays open; telling the two apart
+    // needs the (small, capped) body, hence the gate after the read.
+    if (enabled && refuseUnlessOwner(ctx)) return true
     const flipped = setFederationEnabledPreservingFile(enabled)
     if (!flipped) { json(res, { error: 'federation.json failed validation -- federation stays disabled; fix or remove the file' }, 409); return true }
     if (!enabled) {
@@ -567,6 +592,7 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
   // Add a peer: the server MINTS the inbound token and returns it ONCE in
   // the creation response (and later via the reveal endpoint).
   if (path === '/api/federation/peers' && method === 'POST') {
+    if (refuseUnlessOwner(ctx)) return true
     const payload = await readJsonBody(ctx)
     if (isErr(payload)) return true
     if (payload === null || typeof payload !== 'object') { json(res, { error: 'Body must be a JSON object' }, 400); return true }
@@ -625,6 +651,11 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
     if (refuseIfConfigUnhealthy(res)) return true
 
     if (method === 'PATCH') {
+      // A new baseUrl sends this peer's outbound token (poller manifest call,
+      // bridge inbox) and our outbound messages to that host, and
+      // shareCapabilitySummaries ships our summaries: re-pointing an existing
+      // credential is issuance too (Samu, #2175 review). DELETE stays open.
+      if (refuseUnlessOwner(ctx)) return true
       const payload = await readJsonBody(ctx)
       if (isErr(payload)) return true
       if (payload === null || typeof payload !== 'object') { json(res, { error: 'Body must be a JSON object' }, 400); return true }
@@ -686,6 +717,7 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
 
   const revealMatch = path.match(/^\/api\/federation\/peers\/([^/]+)\/inbound-token$/)
   if (revealMatch && method === 'GET') {
+    if (refuseUnlessOwner(ctx)) return true
     const id = decodeURIComponent(revealMatch[1]).toLowerCase()
     if (!isValidIdSegment(id)) { json(res, { error: 'invalid peer id' }, 400); return true }
     const peer = getFederationConfig().peers.find((p) => p.id === id)
@@ -700,6 +732,7 @@ export async function tryHandleFederation(ctx: RouteContext): Promise<boolean> {
 
   const rotateMatch = path.match(/^\/api\/federation\/peers\/([^/]+)\/rotate-inbound-token$/)
   if (rotateMatch && method === 'POST') {
+    if (refuseUnlessOwner(ctx)) return true
     const id = decodeURIComponent(rotateMatch[1]).toLowerCase()
     if (!isValidIdSegment(id)) { json(res, { error: 'invalid peer id' }, 400); return true }
     if (refuseIfConfigUnhealthy(res)) return true

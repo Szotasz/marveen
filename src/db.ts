@@ -9,6 +9,7 @@ import { TOOL_TIMEOUTS } from './tool-timeouts.js'
 import { triggerLikeClause } from './homoglyph.js'
 import type { LiveKanban } from './web/heartbeat-kanban-verify.js'
 import { compareDeliveryOrder, deliveryRankSql } from './delivery-order.js'
+import { toBudapestTs, type TsRange } from './date-range.js'
 
 let db: Database.Database
 // The path the CURRENT handle was opened on (null for ':memory:'). Kept so
@@ -115,6 +116,27 @@ export function ensureKanbanClaimSchema(d: Database.Database): boolean {
   return true
 }
 
+// Parsed-embedding cache for vectorSearch. vectorSearch used to SELECT * every embedded
+// memory and JSON.parse each vector (~16 KB of JSON text) on EVERY call, synchronously:
+// on a store with ~8400 vectors that held the event loop for 0.8-2.2 s per call, and
+// memory recall runs it on every inbound message. The parsed vectors live
+// here, keyed by memory id and fingerprinted by octet_length(embedding), which SQLite
+// reads from the record header without loading the value. Every in-process write of an
+// embedding also drops its entry (forgetCachedEmbedding), and initDatabase() and
+// clearMemoryCache() empty the cache. A tool that rewrites vectors from OUTSIDE this
+// process is caught by the fingerprint in the normal case (a different vector almost
+// always has a different JSON byte length) and in every case by a restart. Declared
+// above initDatabase so no code path can reach it inside its temporal dead zone.
+// vec: the stored text parsed to an array of plain numbers (the normal case).
+// Otherwise vec is null and `parsed` holds whatever JSON.parse returned, or `failed`
+// says it threw; such a row is scored by the old code verbatim (see vectorSearch).
+type CachedEmbedding = { len: number; vec: Float64Array | null; parsed: unknown; failed: boolean; normSq: number }
+const embeddingCache = new Map<number, CachedEmbedding>()
+const EMBEDDING_CACHE_MAX = 200_000
+export function forgetCachedEmbedding(id: number | bigint): void { embeddingCache.delete(Number(id)) }
+/** Exposed for tests only. */
+export function getEmbeddingCacheSize(): number { return embeddingCache.size }
+
 // dbPathOverride is for tests: pass ':memory:' (or a temp file path) to open an
 // isolated database instead of the real store/claudeclaw.db. ':memory:' has no
 // path to chmod, so the file-precreate (openSync 'wx') and tightenDbPermissions
@@ -123,6 +145,7 @@ export function ensureKanbanClaimSchema(d: Database.Database): boolean {
 // tightening logic on a throwaway file instead of touching the prod DB. The
 // STORE_DIR mkdir stays prod-only; a temp-file override owns its own directory.
 export function initDatabase(dbPathOverride?: string): void {
+  embeddingCache.clear() // ids are per database: a re-init (tests, ':memory:') must not reuse vectors
   const useOverride = dbPathOverride !== undefined
   const isMemory = dbPathOverride === ':memory:'
   if (!useOverride) mkdirSync(STORE_DIR, { recursive: true })
@@ -346,6 +369,17 @@ export function initDatabase(dbPathOverride?: string): void {
   } catch {
     // column already exists
   }
+  // Migration: row version for the PUT's lost-update check (see writeKanbanCard).
+  // Not updated_at: that is seconds-granular, so two writers inside the same
+  // second read the same value and the check would pass -- exactly the case it
+  // exists for. NOT NULL DEFAULT 0 gives every existing row a defined value, so
+  // there is no "version unknown" state to guess at. Same AFTER-the-rebuild rule
+  // as the two columns above.
+  try {
+    db.exec('ALTER TABLE kanban_cards ADD COLUMN version INTEGER NOT NULL DEFAULT 0')
+  } catch {
+    // column already exists
+  }
   // Claim lock columns + release triggers. Run AFTER the
   // 'testing' table rebuild above on purpose: that rebuild copies an explicit
   // column list, so a column added before it would be dropped on an old DB.
@@ -368,6 +402,13 @@ export function initDatabase(dbPathOverride?: string): void {
   }
 
   db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_agent ON memories(agent_id, category)`)
+  // The date filter of GET /api/memories (card f90928e3) is a range on
+  // created_at inside one agent's rows: this index makes it a range scan.
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_agent_created ON memories(agent_id, created_at)`)
+  // Every agent's list also carries the shared rows (`agent_id = ? OR category
+  // = 'shared'`). SQLite can serve an OR from indexes only when BOTH sides have
+  // one, so without this the dated listing is a full scan.
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_category_created ON memories(category, created_at)`)
 
   // --- Conversation-continuity ledger (deterministic; P0 2026-06-02) ---
   // A durable ROLLING TRANSCRIPT of every channel turn -- inbound user messages
@@ -498,6 +539,8 @@ export function initDatabase(dbPathOverride?: string): void {
       db.exec(`CREATE TRIGGER memories_au AFTER UPDATE ON memories BEGIN INSERT INTO memories_fts(memories_fts, rowid, content, keywords) VALUES('delete', old.id, old.content, old.keywords); INSERT INTO memories_fts(rowid, content, keywords) VALUES (new.id, new.content, new.keywords); END`)
       db.exec(`INSERT INTO memories_fts(memories_fts) VALUES('rebuild')`)
       db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_agent ON memories(agent_id, category)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_agent_created ON memories(agent_id, created_at)`)
+      db.exec(`CREATE INDEX IF NOT EXISTS idx_memories_category_created ON memories(category, created_at)`)
     }
   } catch (err) {
     // Previously this silently swallowed every error which masked the
@@ -630,6 +673,20 @@ export function initDatabase(dbPathOverride?: string): void {
     )
   `)
   db.exec(`CREATE INDEX IF NOT EXISTS idx_daily_logs_date ON daily_logs(agent_id, date)`)
+
+  // Link between a daily-log row and the searchable memories row that mirrors
+  // it (card f90928e3). UNIQUE on both sides: one log row has at most one
+  // mirror, and one memory is the mirror of at most one log row -- that is what
+  // makes the backfill idempotent. No foreign key on purpose: when somebody
+  // deletes a mirror row the link stays, so a later backfill does not quietly
+  // resurrect a memory that was removed deliberately.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS daily_log_memory (
+      daily_log_id INTEGER NOT NULL UNIQUE,
+      memory_id INTEGER NOT NULL UNIQUE,
+      created_at INTEGER NOT NULL
+    )
+  `)
 
   db.exec(`CREATE INDEX IF NOT EXISTS idx_kanban_status ON kanban_cards(status, archived_at)`)
 
@@ -777,6 +834,39 @@ export function initDatabase(dbPathOverride?: string): void {
       UPDATE kanban_cards SET updated_at = CAST(strftime('%s','now') AS INTEGER) WHERE id = NEW.id;
     END
   `)
+
+  // The row version moves whenever a column the whole-card PUT writes back
+  // changes (KANBAN_WRITABLE_FIELDS), whoever the writer is: updateKanbanCard,
+  // /move, the archive sweep, or a script writing the table directly. A version
+  // bumped only in the TypeScript write paths would miss those last ones, and a
+  // stale PUT would then pass the check and overwrite them.
+  //
+  // Not the other columns on purpose: comments, dispatch and claim stamps and
+  // updated_at do not travel back in a PUT body, so a change there cannot be
+  // overwritten by one, and bumping on them would refuse writes that lose nothing.
+  //
+  // Dropped and recreated on every start rather than IF NOT EXISTS: the column
+  // list comes from KANBAN_WRITABLE_FIELDS, and a field added there later must
+  // reach the trigger on existing databases too. No recursion: the inner UPDATE
+  // sets only `version`, which is not in the OF list.
+  //
+  // The drop and the create are ONE immediate transaction: between two separate
+  // statements another process could write a card with no trigger in place (that
+  // write would not move the version, and an older copy would then pass the
+  // check), and two processes starting together could both drop and then collide
+  // on the create.
+  const versionedCols = [...KANBAN_WRITABLE_FIELDS]
+  db.transaction(() => {
+    db.exec('DROP TRIGGER IF EXISTS kanban_cards_version_bump')
+    db.exec(`
+      CREATE TRIGGER kanban_cards_version_bump
+      AFTER UPDATE OF ${versionedCols.join(', ')} ON kanban_cards
+      FOR EACH ROW WHEN ${versionedCols.map((c) => `NEW.${c} IS NOT OLD.${c}`).join(' OR ')}
+      BEGIN
+        UPDATE kanban_cards SET version = version + 1 WHERE id = NEW.id;
+      END
+    `)
+  }).immediate()
 
   // KANBANCTXDEAD824 follow-up: paragraph-length card titles cost tokens in
   // every agent that reads the board, and the 2026-08-24 sweep moved ~1.3 MB
@@ -1177,6 +1267,27 @@ export function initDatabase(dbPathOverride?: string): void {
   // exactly (claim-before-send guard, cleared on delivery failure), just for
   // the later, bigger threshold.
   try { db.exec('ALTER TABLE pending_task_retries ADD COLUMN owner_alert_sent_at INTEGER') } catch { /* already exists */ }
+
+  // Server-owned registry of scheduled tasks.
+  // The task files live in ~/.claude/scheduled-tasks, which any same-user
+  // process can write; the runner fires a task only if the sha256 of its
+  // current files matches the hash recorded here when the server (API, seeder,
+  // explicit operator CLI) last wrote/approved it. Kept in the DB on purpose,
+  // NOT next to the files: a plant in the tasks dir cannot also plant its hash.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS scheduled_task_registry (
+      name TEXT PRIMARY KEY,
+      sha256 TEXT NOT NULL,
+      source TEXT NOT NULL,
+      registered_at INTEGER NOT NULL
+    )
+  `)
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS scheduled_task_registry_state (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    )
+  `)
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS background_tasks (
@@ -1702,6 +1813,49 @@ export function getDb(): Database.Database {
   return db
 }
 
+// --- Scheduled-task registry ---
+
+export interface ScheduledTaskRegistryRow {
+  name: string
+  sha256: string
+  source: string
+  registered_at: number
+}
+
+export function upsertScheduledTaskRegistry(name: string, sha256: string, source: string, nowSec = Math.floor(Date.now() / 1000)): void {
+  db.prepare(`
+    INSERT INTO scheduled_task_registry (name, sha256, source, registered_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(name) DO UPDATE SET sha256 = excluded.sha256, source = excluded.source, registered_at = excluded.registered_at
+  `).run(name, sha256, source, nowSec)
+}
+
+export function getScheduledTaskRegistryEntry(name: string): ScheduledTaskRegistryRow | undefined {
+  return db.prepare('SELECT name, sha256, source, registered_at FROM scheduled_task_registry WHERE name = ?')
+    .get(name) as ScheduledTaskRegistryRow | undefined
+}
+
+export function listScheduledTaskRegistry(): ScheduledTaskRegistryRow[] {
+  return db.prepare('SELECT name, sha256, source, registered_at FROM scheduled_task_registry ORDER BY name')
+    .all() as ScheduledTaskRegistryRow[]
+}
+
+export function deleteScheduledTaskRegistryEntry(name: string): boolean {
+  return db.prepare('DELETE FROM scheduled_task_registry WHERE name = ?').run(name).changes > 0
+}
+
+export function getScheduledTaskRegistryState(key: string): string | undefined {
+  const row = db.prepare('SELECT value FROM scheduled_task_registry_state WHERE key = ?').get(key) as { value: string } | undefined
+  return row?.value
+}
+
+export function setScheduledTaskRegistryState(key: string, value: string): void {
+  db.prepare(`
+    INSERT INTO scheduled_task_registry_state (key, value) VALUES (?, ?)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value
+  `).run(key, value)
+}
+
 // --- Munkamenetek ---
 
 export function getSession(chatId: string): { sessionId: string; messageCount: number } | undefined {
@@ -1824,6 +1978,7 @@ export function saveMemory(
   generateEmbedding(content).then(emb => {
     if (emb) {
       db.prepare('UPDATE memories SET embedding = ? WHERE id = ?').run(JSON.stringify(emb), id)
+      forgetCachedEmbedding(id)
     }
   }).catch(() => {})
 }
@@ -1924,6 +2079,15 @@ export function buildRelaxedFtsExpression(query: string): string {
  * need the hard answer pass allowRelaxed=false and get silence when there is
  * no strict match.
  */
+// ` AND <col> >= ? AND <col> <= ?` for an optional created_at window (card
+// f90928e3), plus its bound parameters. Every memory read path appends this to
+// its WHERE so the window is applied in SQL, ahead of any LIMIT.
+function tsClause(col: string, range?: TsRange): { sql: string; params: number[] } {
+  return range
+    ? { sql: ` AND ${col} >= ? AND ${col} <= ?`, params: [range.fromTs, range.toTs] }
+    : { sql: '', params: [] }
+}
+
 function ftsWithOrFallback<T>(
   query: string,
   run: (terms: string) => T[],
@@ -2003,24 +2167,18 @@ export function searchMemories(
   // Same label searchAgentMemories reports. Without it the no-agent branch of
   // the endpoint said `relaxed=false` whatever this function actually did.
   trace?: { relaxed: boolean },
+  range?: TsRange,
 ): Memory[] {
   try {
+    const dt = tsClause('m.created_at', range)
     const { rows, relaxed } = ftsWithOrFallback(query, (terms) =>
-      (category
-        ? db.prepare(
-            `SELECT m.*, f.rank AS rank FROM memories m
-             JOIN memories_fts f ON m.id = f.rowid
-             WHERE f.memories_fts MATCH ? AND m.chat_id = ? AND m.category = ?
-             ORDER BY rank
-             LIMIT ?`
-          ).all(terms, chatId, category, limit * RECENCY_OVERSAMPLE)
-        : db.prepare(
-            `SELECT m.*, f.rank AS rank FROM memories m
-             JOIN memories_fts f ON m.id = f.rowid
-             WHERE f.memories_fts MATCH ? AND m.chat_id = ?
-             ORDER BY rank
-             LIMIT ?`
-          ).all(terms, chatId, limit * RECENCY_OVERSAMPLE)) as (Memory & { rank: number })[]
+      db.prepare(
+        `SELECT m.*, f.rank AS rank FROM memories m
+         JOIN memories_fts f ON m.id = f.rowid
+         WHERE f.memories_fts MATCH ? AND m.chat_id = ?${category ? ' AND m.category = ?' : ''}${dt.sql}
+         ORDER BY rank
+         LIMIT ?`
+      ).all(terms, chatId, ...(category ? [category] : []), ...dt.params, limit * RECENCY_OVERSAMPLE) as (Memory & { rank: number })[]
       , allowRelaxed)
     if (trace) trace.relaxed = relaxed
     return withoutRank(reRankByRecency(rows, limit)) as Memory[]
@@ -2062,7 +2220,7 @@ export function decayMemories(): void {
   db.prepare('UPDATE memories SET salience = MAX(salience * 0.995, 0.01) WHERE created_at < ?').run(oneWeekAgo)
 }
 
-export function getMemoriesForChat(chatId: string, limit = 10, offset = 0, category?: string): Memory[] {
+export function getMemoriesForChat(chatId: string, limit = 10, offset = 0, category?: string, range?: TsRange): Memory[] {
   // id DESC tie-break (#947): accessed_at has 1-second granularity, so a bulk
   // import leaves hundreds of rows sharing one value; without a stable
   // secondary sort SQLite may order the ties differently between queries, and
@@ -2073,14 +2231,12 @@ export function getMemoriesForChat(chatId: string, limit = 10, offset = 0, categ
   // route, applied after this function had already cut to `limit`: measured
   // 2026-10-17 on the owner store, the dashboard Hot tab (no agent filter,
   // limit 50) showed 6 of 115 hot memories.
-  if (category) {
-    return db
-      .prepare('SELECT * FROM memories WHERE chat_id = ? AND category = ? ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?')
-      .all(chatId, category, limit, offset) as Memory[]
-  }
+  //
+  // The date range (card f90928e3) goes into the query for the same reason.
+  const dt = tsClause('created_at', range)
   return db
-    .prepare('SELECT * FROM memories WHERE chat_id = ? ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?')
-    .all(chatId, limit, offset) as Memory[]
+    .prepare(`SELECT * FROM memories WHERE chat_id = ?${category ? ' AND category = ?' : ''}${dt.sql} ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?`)
+    .all(chatId, ...(category ? [category] : []), ...dt.params, limit, offset) as Memory[]
 }
 
 // --- In-process memory cache (TTL-based) ---
@@ -2126,6 +2282,7 @@ function memoryCacheInvalidate(agentId: string): void {
 /** Exposed for tests and diagnostics only. */
 export function clearMemoryCache(): void {
   memoryCache.clear()
+  embeddingCache.clear()
 }
 
 /** Exposed for tests only. */
@@ -2140,11 +2297,7 @@ export function saveAgentMemory(
   keywords?: string,
   autoGenerated: boolean = false
 ): { id: number } {
-  const now = Math.floor(Date.now() / 1000)
-  const info = db.prepare(
-    'INSERT INTO memories (chat_id, topic_key, content, sector, salience, created_at, accessed_at, agent_id, category, auto_generated, keywords) VALUES (?, ?, ?, ?, 1.0, ?, ?, ?, ?, ?, ?)'
-  ).run(ALLOWED_CHAT_ID, null, content, 'semantic', now, now, agentId, category, autoGenerated ? 1 : 0, keywords ?? null)
-  const id = Number(info.lastInsertRowid)
+  const id = insertMemoryRow(agentId, content, category, keywords, autoGenerated, 'semantic', Math.floor(Date.now() / 1000))
 
   // A new 'shared' row joins EVERY agent's list, not just the author's, so
   // evicting the author alone would leave every other agent serving a list
@@ -2152,14 +2305,38 @@ export function saveAgentMemory(
   if (category === 'shared') clearMemoryCache()
   else memoryCacheInvalidate(agentId)
 
-  // Fire-and-forget: generate embedding asynchronously
+  scheduleEmbedding(id, content, keywords)
+
+  return { id }
+}
+
+// The bare INSERT shared by saveAgentMemory and the daily-log mirror. No cache
+// eviction and no embedding here: the mirror runs this inside a transaction
+// that may still roll back, so side effects wait for the commit.
+function insertMemoryRow(
+  agentId: string,
+  content: string,
+  category: string,
+  keywords: string | undefined,
+  autoGenerated: boolean,
+  sector: 'semantic' | 'episodic',
+  createdAt: number,
+): number {
+  const info = db.prepare(
+    'INSERT INTO memories (chat_id, topic_key, content, sector, salience, created_at, accessed_at, agent_id, category, auto_generated, keywords) VALUES (?, ?, ?, ?, 1.0, ?, ?, ?, ?, ?, ?)'
+  ).run(ALLOWED_CHAT_ID, null, content, sector, createdAt, createdAt, agentId, category, autoGenerated ? 1 : 0, keywords ?? null)
+  return Number(info.lastInsertRowid)
+}
+
+// Fire-and-forget: generate the embedding asynchronously. A backend that is
+// down leaves the column NULL and the existing backfill picks the row up later.
+function scheduleEmbedding(id: number, content: string, keywords: string | undefined): void {
   generateEmbedding(content + (keywords ? ' ' + keywords : '')).then(emb => {
     if (emb) {
       db.prepare('UPDATE memories SET embedding = ? WHERE id = ?').run(JSON.stringify(emb), id)
+      forgetCachedEmbedding(id)
     }
   }).catch(() => {})
-
-  return { id }
 }
 
 // The category filter belongs in SQL, ahead of the LIMIT. Filtering the rows
@@ -2167,21 +2344,20 @@ export function saveAgentMemory(
 // accessed memories" instead of "the N most recent <category> memories", so an
 // older-but-still-active memory would drop out of the list with no truncation
 // signal -- invisible to the caller, and worst right after a restart.
-export function getAgentMemories(agentId: string, limit: number = 20, category?: string, offset: number = 0): Memory[] {
+export function getAgentMemories(agentId: string, limit: number = 20, category?: string, offset: number = 0, range?: TsRange): Memory[] {
   // offset is part of the cache key (#947): without it page 2 would be served
   // page 1's cached rows for up to MEMORY_CACHE_TTL_MS. id DESC tie-break for
   // the same reason getMemoriesForChat has one -- accessed_at ties are common
-  // after a bulk import and make LIMIT/OFFSET non-total without it.
-  const key = `${agentId}:${limit}:${category ?? ''}:${offset}`
+  // after a bulk import and make LIMIT/OFFSET non-total without it. The date
+  // range (card f90928e3) is part of the key for the same reason, and goes
+  // into the query ahead of the LIMIT, never after it.
+  const key = `${agentId}:${limit}:${category ?? ''}:${offset}${range ? `:${range.fromTs}-${range.toTs}` : ''}`
   const cached = memoryCacheGet(key)
   if (cached) return cached
-  const result = (category
-    ? db.prepare(
-        "SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND category = ? ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?"
-      ).all(agentId, category, limit, offset)
-    : db.prepare(
-        "SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?"
-      ).all(agentId, limit, offset)) as Memory[]
+  const dt = tsClause('created_at', range)
+  const result = db.prepare(
+    `SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared')${category ? ' AND category = ?' : ''}${dt.sql} ORDER BY accessed_at DESC, id DESC LIMIT ? OFFSET ?`
+  ).all(agentId, ...(category ? [category] : []), ...dt.params, limit, offset) as Memory[]
   memoryCacheSet(key, result)
   return result
 }
@@ -2202,34 +2378,30 @@ export function searchAgentMemories(
   trace?: { relaxed: boolean },
   allowRelaxed = true,
   category?: string,
+  // Card f90928e3: a created_at window, pushed into every query below for the
+  // same reason as `category` -- a window applied after the LIMIT would answer
+  // "which of the N best matches fall in the window", not "the best matches
+  // inside the window".
+  range?: TsRange,
 ): Memory[] {
+  const dt = tsClause('m.created_at', range)
   try {
     const { rows, relaxed } = ftsWithOrFallback(query, (terms) =>
-      (category
-        ? db.prepare(
-            `SELECT m.*, f.rank AS rank FROM memories m
-             JOIN memories_fts f ON m.id = f.rowid
-             WHERE f.memories_fts MATCH ? AND (m.agent_id = ? OR m.category = 'shared')
-               AND m.category = ?
-             ORDER BY rank LIMIT ?`
-          ).all(terms, agentId, category, limit * RECENCY_OVERSAMPLE)
-        : db.prepare(
-            `SELECT m.*, f.rank AS rank FROM memories m
-             JOIN memories_fts f ON m.id = f.rowid
-             WHERE f.memories_fts MATCH ? AND (m.agent_id = ? OR m.category = 'shared')
-             ORDER BY rank LIMIT ?`
-          ).all(terms, agentId, limit * RECENCY_OVERSAMPLE)) as (Memory & { rank: number })[]
+      db.prepare(
+        `SELECT m.*, f.rank AS rank FROM memories m
+         JOIN memories_fts f ON m.id = f.rowid
+         WHERE f.memories_fts MATCH ? AND (m.agent_id = ? OR m.category = 'shared')${category ? ' AND m.category = ?' : ''}${dt.sql}
+         ORDER BY rank LIMIT ?`
+      ).all(terms, agentId, ...(category ? [category] : []), ...dt.params, limit * RECENCY_OVERSAMPLE) as (Memory & { rank: number })[]
     , allowRelaxed)
     if (trace) trace.relaxed = relaxed
     return withoutRank(reRankByRecency(rows, limit)) as Memory[]
   } catch {
-    return (category
-      ? db.prepare(
-          "SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND category = ? AND (content LIKE ? OR keywords LIKE ?) ORDER BY accessed_at DESC LIMIT ?"
-        ).all(agentId, category, `%${query}%`, `%${query}%`, limit)
-      : db.prepare(
-          "SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND (content LIKE ? OR keywords LIKE ?) ORDER BY accessed_at DESC LIMIT ?"
-        ).all(agentId, `%${query}%`, `%${query}%`, limit)) as Memory[]
+    const pattern = `%${escapeLike(query)}%`
+    const ld = tsClause('created_at', range)
+    return db.prepare(
+      `SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared')${category ? ' AND category = ?' : ''}${ld.sql} AND (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\') ORDER BY accessed_at DESC LIMIT ?`
+    ).all(agentId, ...(category ? [category] : []), ...ld.params, pattern, pattern, limit) as Memory[]
   }
 }
 
@@ -2304,6 +2476,7 @@ export function deleteMemoryById(id: number): boolean {
     db.prepare('DELETE FROM memory_versions WHERE memory_id = ?').run(id)
     db.prepare('DELETE FROM memories WHERE id = ?').run(id)
   })()
+  forgetCachedEmbedding(id)
   // A shared row is listed for every agent, so evicting one owner is not enough.
   if (before.category === 'shared') clearMemoryCache()
   else if (before.agent_id) memoryCacheInvalidate(before.agent_id)
@@ -2386,13 +2559,185 @@ export function updateMemory(id: number, content: string, category?: string, age
 
 // --- Daily logs ---
 
-export function appendDailyLog(agentId: string, content: string): void {
+// Tier of the searchable copy of a log entry: cold, so the hot list (the
+// "what is in flight right now" list) does not fill up with diary lines that
+// would read as open tasks.
+const DAILY_LOG_MIRROR_CATEGORY = 'cold'
+
+/**
+ * Text and keywords of the memories row that mirrors one daily-log entry:
+ * `[Napló ÉÉÉÉ-HH-NN ÓÓ:PP] <text>`. The date is the log row's own date; the
+ * clock time is the entry's created_at in the install zone.
+ */
+export function dailyLogMirrorText(date: string, createdAt: number, text: string): { content: string; keywords: string } {
+  const parts = new Intl.DateTimeFormat('en-GB', {
+    timeZone: APP_TZ, hour: '2-digit', minute: '2-digit', hourCycle: 'h23',
+  }).formatToParts(new Date(createdAt * 1000))
+  const get = (t: string) => parts.find(p => p.type === t)?.value ?? '00'
+  return {
+    content: `[Napló ${date} ${get('hour')}:${get('minute')}] ${text}`,
+    keywords: `napi-naplo, ${date}`,
+  }
+}
+
+/**
+ * Appends a daily-log entry. With `mirror: true` the same transaction also
+ * inserts the searchable memories row and the link row, so the log entry is
+ * findable by the memory search the moment this returns (FTS comes from the
+ * memories_ai trigger; the embedding follows asynchronously). Any DB error
+ * rolls BOTH rows back and throws. Content-filter decisions are the caller's:
+ * a refused entry is simply appended with `mirror: false`.
+ */
+export function appendDailyLog(
+  agentId: string,
+  content: string,
+  opts: { mirror?: boolean } = {},
+): { id: number; memoryId: number | null } {
   const now = Math.floor(Date.now() / 1000)
   // Budapest calendar day, not UTC -- otherwise an entry written 00:00-02:00
   // local time lands on the previous day and the "ma" recall query misses it.
   // en-CA formats as YYYY-MM-DD.
   const today = new Date().toLocaleDateString('en-CA', { timeZone: APP_TZ })
-  db.prepare('INSERT INTO daily_logs (agent_id, date, content, created_at) VALUES (?, ?, ?, ?)').run(agentId, today, content, now)
+  const mirror = opts.mirror === true ? dailyLogMirrorText(today, now, content) : null
+  const result = db.transaction((): { id: number; memoryId: number | null } => {
+    const info = db.prepare('INSERT INTO daily_logs (agent_id, date, content, created_at) VALUES (?, ?, ?, ?)').run(agentId, today, content, now)
+    const id = Number(info.lastInsertRowid)
+    if (!mirror) return { id, memoryId: null }
+    const memoryId = insertMemoryRow(agentId, mirror.content, DAILY_LOG_MIRROR_CATEGORY, mirror.keywords, true, 'episodic', now)
+    db.prepare('INSERT INTO daily_log_memory (daily_log_id, memory_id, created_at) VALUES (?, ?, ?)').run(id, memoryId, now)
+    return { id, memoryId }
+  })()
+  if (mirror && result.memoryId !== null) {
+    memoryCacheInvalidate(agentId)
+    scheduleEmbedding(result.memoryId, mirror.content, mirror.keywords)
+  }
+  return result
+}
+
+export interface DailyLogBackfillResult {
+  /** daily_logs rows in the table */
+  total: number
+  /** rows that already had a mirror (link row present) */
+  already: number
+  /** mirrors written (apply) */
+  created: number
+  /** mirrors a --apply run would write (dry run) */
+  wouldCreate: number
+  /** log rows whose mirror memory already exists unlinked (fleet import): link row only */
+  relinked: number
+  /** relinks a --apply run would do (dry run) */
+  wouldRelink: number
+  /** refused by the content filter or empty: no mirror, log row untouched */
+  skipped: number
+  /** rows whose mirror insert threw (the others are unaffected) */
+  failed: number
+}
+
+// Looks for a memory that already IS the mirror of this log row but has no link
+// row: a fleet import brings daily_logs and the `[Napló ...]` memories without
+// daily_log_memory. Same agent, exact mirror content, same created_at; memories
+// in `taken` (claimed by an earlier identical row in this run) are skipped.
+function findUnlinkedMirror(
+  handle: Database.Database,
+  row: { agent_id: string; date: string; content: string; created_at: number },
+  taken: Set<number>,
+  linkTable: boolean,
+): number | null {
+  const m = dailyLogMirrorText(row.date, row.created_at, row.content)
+  const cands = handle.prepare(
+    `SELECT id FROM memories WHERE agent_id = ? AND content = ? AND created_at = ?${linkTable
+      ? ' AND NOT EXISTS (SELECT 1 FROM daily_log_memory k WHERE k.memory_id = memories.id)'
+      : ''} ORDER BY id`
+  ).all(row.agent_id, m.content, row.created_at) as { id: number }[]
+  const hit = cands.find(c => !taken.has(c.id))
+  return hit ? hit.id : null
+}
+
+/**
+ * Mirrors every daily_logs row that has no link yet, with its own created_at.
+ * Idempotent: the link table is the "done" marker, so a second run finds
+ * nothing to do. A row whose mirror memory already exists without a link (fleet
+ * import) is only re-linked, never mirrored twice. Dry run unless `apply`. Embeddings are left to the existing
+ * backfill (the CLI process exits before an async embed could land).
+ */
+export function backfillDailyLogMemories(opts: { apply: boolean; reject?: (content: string) => boolean }): DailyLogBackfillResult {
+  const total = (db.prepare('SELECT COUNT(*) AS n FROM daily_logs').get() as { n: number }).n
+  const pending = db.prepare(
+    `SELECT l.id, l.agent_id, l.date, l.content, l.created_at FROM daily_logs l
+      LEFT JOIN daily_log_memory k ON k.daily_log_id = l.id
+      WHERE k.daily_log_id IS NULL ORDER BY l.id`
+  ).all() as { id: number; agent_id: string; date: string; content: string; created_at: number }[]
+  const result: DailyLogBackfillResult = { total, already: total - pending.length, created: 0, wouldCreate: 0, relinked: 0, wouldRelink: 0, skipped: 0, failed: 0 }
+  const link = db.prepare('INSERT INTO daily_log_memory (daily_log_id, memory_id, created_at) VALUES (?, ?, ?)')
+  const taken = new Set<number>()
+  for (const row of pending) {
+    if (!row.content.trim() || opts.reject?.(row.content)) { result.skipped++; continue }
+    const existing = findUnlinkedMirror(db, row, taken, true)
+    if (existing !== null) {
+      taken.add(existing)
+      if (!opts.apply) { result.wouldRelink++; continue }
+      try {
+        link.run(row.id, existing, Math.floor(Date.now() / 1000))
+        result.relinked++
+      } catch (err) {
+        result.failed++
+        logger.warn({ err: (err as Error)?.message, dailyLogId: row.id }, 'daily-log backfill: relink failed')
+      }
+      continue
+    }
+    if (!opts.apply) { result.wouldCreate++; continue }
+    try {
+      const m = dailyLogMirrorText(row.date, row.created_at, row.content)
+      db.transaction(() => {
+        const memoryId = insertMemoryRow(row.agent_id, m.content, DAILY_LOG_MIRROR_CATEGORY, m.keywords, true, 'episodic', row.created_at)
+        link.run(row.id, memoryId, Math.floor(Date.now() / 1000))
+      })()
+      result.created++
+    } catch (err) {
+      result.failed++
+      logger.warn({ err: (err as Error)?.message, dailyLogId: row.id }, 'daily-log backfill: mirror insert failed')
+    }
+  }
+  if (result.created > 0) clearMemoryCache()
+  return result
+}
+
+/**
+ * Dry run of the backfill against a handle the CALLER opened read-only, with
+ * no migration: it must not write anything, not even the empty link table.
+ * A database that never ran the mirror migration has no daily_log_memory
+ * table; then every log row counts as pending and `linkTableMissing` says
+ * that `--apply` would create the table first. A database without even a
+ * daily_logs table reports zero rows.
+ */
+export function dryRunDailyLogBackfill(
+  handle: Database.Database,
+  opts: { reject?: (content: string) => boolean } = {},
+): DailyLogBackfillResult & { linkTableMissing: boolean } {
+  const has = (name: string) =>
+    handle.prepare("SELECT 1 AS x FROM sqlite_master WHERE type = 'table' AND name = ?").get(name) !== undefined
+  const linkTableMissing = !has('daily_log_memory')
+  if (!has('daily_logs')) {
+    return { total: 0, already: 0, created: 0, wouldCreate: 0, relinked: 0, wouldRelink: 0, skipped: 0, failed: 0, linkTableMissing }
+  }
+  const total = (handle.prepare('SELECT COUNT(*) AS n FROM daily_logs').get() as { n: number }).n
+  const pending = (linkTableMissing
+    ? handle.prepare('SELECT id, agent_id, date, content, created_at FROM daily_logs ORDER BY id')
+    : handle.prepare(
+        `SELECT l.id, l.agent_id, l.date, l.content, l.created_at FROM daily_logs l
+          LEFT JOIN daily_log_memory k ON k.daily_log_id = l.id
+          WHERE k.daily_log_id IS NULL ORDER BY l.id`
+      )).all() as { id: number; agent_id: string; date: string; content: string; created_at: number }[]
+  const result = { total, already: total - pending.length, created: 0, wouldCreate: 0, relinked: 0, wouldRelink: 0, skipped: 0, failed: 0, linkTableMissing }
+  const canRelink = has('memories')
+  const taken = new Set<number>()
+  for (const row of pending) {
+    if (!row.content.trim() || opts.reject?.(row.content)) { result.skipped++; continue }
+    const existing = canRelink ? findUnlinkedMirror(handle, row, taken, !linkTableMissing) : null
+    if (existing !== null) { taken.add(existing); result.wouldRelink++ }
+    else result.wouldCreate++
+  }
+  return result
 }
 
 export function getDailyLog(agentId: string, date: string): { id: number; content: string; created_at: number }[] {
@@ -2411,25 +2756,17 @@ export interface RecallResult {
   dateRange: { from: string; to: string }
 }
 
-function toBudapestTs(dateStr: string, endOfDay: boolean): number {
-  const fmt = new Intl.DateTimeFormat('en-US', {
-    timeZone: APP_TZ,
-    year: 'numeric', month: '2-digit', day: '2-digit',
-    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
-  })
-  const refDate = new Date(`${dateStr}T${endOfDay ? '23:59:59' : '00:00:00'}`)
-  const parts = fmt.formatToParts(refDate)
-  const get = (t: string) => parts.find(p => p.type === t)?.value || '0'
-  const localStr = `${get('year')}-${get('month')}-${get('day')}T${get('hour')}:${get('minute')}:${get('second')}`
-  const localMs = new Date(localStr + 'Z').getTime()
-  const offsetMs = localMs - refDate.getTime()
-  const target = new Date(`${dateStr}T${endOfDay ? '23:59:59' : '00:00:00'}Z`)
-  return Math.floor((target.getTime() - offsetMs) / 1000)
-}
-
-function escapeLike(s: string): string {
+// Escapes a user query for `LIKE ? ESCAPE '\\'`: without it `%` and `_` in the
+// query are wildcards, so a search for q=% or q=_ matches every row.
+export function escapeLike(s: string): string {
   return s.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_')
 }
+
+// SQL fragments: the memory row is NOT the mirror of a daily-log entry. The
+// mirror is already in `logs`, so recall leaves it out of `memories` and every
+// entry shows once (card f90928e3).
+const NOT_MIRROR = 'NOT EXISTS (SELECT 1 FROM daily_log_memory dlm WHERE dlm.memory_id = id)'
+const NOT_MIRROR_M = 'NOT EXISTS (SELECT 1 FROM daily_log_memory dlm WHERE dlm.memory_id = m.id)'
 
 export function recallByDateRange(from: string, to: string, agentId?: string): RecallResult {
   const logSql = agentId
@@ -2441,8 +2778,8 @@ export function recallByDateRange(from: string, to: string, agentId?: string): R
   const fromTs = toBudapestTs(from, false)
   const toTs = toBudapestTs(to, true)
   const memSql = agentId
-    ? "SELECT * FROM memories WHERE created_at >= ? AND created_at <= ? AND (agent_id = ? OR category = 'shared') ORDER BY created_at ASC"
-    : 'SELECT * FROM memories WHERE created_at >= ? AND created_at <= ? ORDER BY created_at ASC'
+    ? `SELECT * FROM memories WHERE created_at >= ? AND created_at <= ? AND (agent_id = ? OR category = 'shared') AND ${NOT_MIRROR} ORDER BY created_at ASC`
+    : `SELECT * FROM memories WHERE created_at >= ? AND created_at <= ? AND ${NOT_MIRROR} ORDER BY created_at ASC`
   const memParams = agentId ? [fromTs, toTs, agentId] : [fromTs, toTs]
   const memories = db.prepare(memSql).all(...memParams) as Memory[]
 
@@ -2458,8 +2795,8 @@ export function recallSearch(query: string, agentId?: string, limit = 50): Recal
       // same λ-blend as the other search paths, so a strongly matching older
       // memory can still surface above barely-matching fresh noise.
       const sql = agentId
-        ? `SELECT m.*, f.rank AS rank FROM memories m JOIN memories_fts f ON m.id = f.rowid WHERE f.memories_fts MATCH ? AND (m.agent_id = ? OR m.category = 'shared') ORDER BY rank LIMIT ?`
-        : `SELECT m.*, f.rank AS rank FROM memories m JOIN memories_fts f ON m.id = f.rowid WHERE f.memories_fts MATCH ? ORDER BY rank LIMIT ?`
+        ? `SELECT m.*, f.rank AS rank FROM memories m JOIN memories_fts f ON m.id = f.rowid WHERE f.memories_fts MATCH ? AND (m.agent_id = ? OR m.category = 'shared') AND ${NOT_MIRROR_M} ORDER BY rank LIMIT ?`
+        : `SELECT m.*, f.rank AS rank FROM memories m JOIN memories_fts f ON m.id = f.rowid WHERE f.memories_fts MATCH ? AND ${NOT_MIRROR_M} ORDER BY rank LIMIT ?`
       const { rows } = ftsWithOrFallback(query, (terms) =>
         agentId
           ? db.prepare(sql).all(terms, agentId, limit * RECENCY_OVERSAMPLE) as (Memory & { rank: number })[]
@@ -2468,8 +2805,8 @@ export function recallSearch(query: string, agentId?: string, limit = 50): Recal
       memories = withoutRank(reRankByRecency(rows, limit)) as Memory[]
     } catch {
       const sql = agentId
-        ? "SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\') ORDER BY created_at DESC LIMIT ?"
-        : "SELECT * FROM memories WHERE (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\') ORDER BY created_at DESC LIMIT ?"
+        ? `SELECT * FROM memories WHERE (agent_id = ? OR category = 'shared') AND (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\') AND ${NOT_MIRROR} ORDER BY created_at DESC LIMIT ?`
+        : `SELECT * FROM memories WHERE (content LIKE ? ESCAPE '\\' OR keywords LIKE ? ESCAPE '\\') AND ${NOT_MIRROR} ORDER BY created_at DESC LIMIT ?`
       const pat = `%${escaped}%`
       memories = agentId
         ? db.prepare(sql).all(agentId, pat, pat, limit) as Memory[]
@@ -2660,6 +2997,10 @@ export interface KanbanCard {
   // is woken (kanban -> agent dispatch). NULL = never dispatched; the once-only
   // guard so re-dragging a card does not re-prompt the agent.
   dispatched_at: number | null
+  // Row version, moved by a trigger on every change to a writable field. A PUT
+  // that sends back the version it read is refused (409) if the card changed
+  // since, instead of overwriting the change (writeKanbanCard).
+  version: number
   // Seconds this card has spent SITTING IN in_progress, summed over every stay
   // there (kanban_card_events), plus the open stay up to now when it is in
   // progress right now. This is wall-clock time in the column, NOT hours of
@@ -3054,13 +3395,46 @@ export function kanbanWriteClearsDispatch(nextStatus: string | null | undefined)
   return nextStatus !== 'in_progress'
 }
 
+export type KanbanCardWriteResult =
+  | { ok: true; version: number }
+  | { ok: false; reason: 'not_found' }
+  | { ok: false; reason: 'stale'; current_version: number }
+
+// The boolean form for callers that make no claim about what they read: true when
+// the card exists (written or a no-op), false when it does not.
 export function updateKanbanCard(
   id: string,
-  fields: Partial<Omit<KanbanCard, 'id' | 'created_at'>>,
+  fields: Partial<Omit<KanbanCard, 'id' | 'created_at' | 'version'>>,
   actor?: string,
 ): boolean {
+  return writeKanbanCard(id, fields, actor).ok
+}
+
+// `expectedVersion` is the version the caller based its body on. A client that
+// GETs a card, sits on it and PUTs the whole object back would otherwise overwrite
+// whatever changed meanwhile: by then the stale values are its own request body,
+// and nothing here can tell them from a deliberate edit. With the version it is
+// told it lost ('stale' -> 409 at the route) and nothing is written. Without it
+// (null/undefined) the write is last-writer-wins, as before.
+//
+// For such a caller the check is also in the UPDATE itself (`version = ?`), not
+// only in the comparison below: another process writing the table between that
+// read and this write would otherwise slip through. A caller without a version
+// gets the unconditional write it always got.
+export function writeKanbanCard(
+  id: string,
+  fields: Partial<Omit<KanbanCard, 'id' | 'created_at' | 'version'>>,
+  actor?: string,
+  expectedVersion?: number | null,
+): KanbanCardWriteResult {
   const card = getKanbanCard(id)
-  if (!card) return false
+  if (!card) return { ok: false, reason: 'not_found' }
+  // Before the no-op check on purpose: a caller holding an old copy is told so even
+  // when its body happens to change nothing, rather than reading the ok as "my copy
+  // is current".
+  if (expectedVersion != null && expectedVersion !== card.version) {
+    return { ok: false, reason: 'stale', current_version: card.version }
+  }
   const now = Math.floor(Date.now() / 1000)
   // Coerce only what the CALLER sent, never the merged record: normalising a
   // legacy value already in the row would make an unrelated PUT look like a
@@ -3076,17 +3450,25 @@ export function updateKanbanCard(
   // failed write should have preserved. A no-op is not a failure: return true
   // (the card exists) but touch nothing.
   const realChange = KANBAN_WRITABLE_FIELDS.some((k) => f[k] !== card[k])
-  if (!realChange) return true
+  if (!realChange) return { ok: true, version: card.version }
+  // Bound twice as two anonymous parameters: a numbered `?N` would alias the N-th
+  // parameter of the whole statement, not this clause.
+  const guard = expectedVersion ?? null
   // ONE TRANSACTION for the card write and every row it owes (card f6fba9ec,
   // a review finding): the UPDATE, the ancestor stamps, the status event and the
   // field events either all happen or none does. Before, a row insert that
   // threw (an actor SQLite cannot bind: a PUT with actor true answered 500)
   // left the card changed with no row saying who changed it.
-  return db.transaction((): boolean => {
+  return db.transaction((): KanbanCardWriteResult => {
     const changed = db.prepare(
       `UPDATE kanban_cards SET title=?, description=?, test_steps=?, status=?, assignee=?, priority=?, project=?, parent_id=?, due_date=?, start_date=?, sort_order=?, updated_at=?, archived_at=?
-       WHERE id=?`
-    ).run(f.title, f.description, f.test_steps, f.status, f.assignee, f.priority, f.project, f.parent_id, f.due_date, f.start_date ?? null, f.sort_order, f.updated_at, f.archived_at, id).changes > 0
+       WHERE id=? AND (? IS NULL OR version=?)`
+    ).run(f.title, f.description, f.test_steps, f.status, f.assignee, f.priority, f.project, f.parent_id, f.due_date, f.start_date ?? null, f.sort_order, f.updated_at, f.archived_at, id, guard, guard).changes > 0
+    if (!changed) {
+      // Gone, or (only with a version) moved on between the read above and this write.
+      const current = getKanbanCard(id)
+      return current ? { ok: false, reason: 'stale', current_version: current.version } : { ok: false, reason: 'not_found' }
+    }
     // Same dispatched_at rule as moveKanbanCard (kanbanWriteClearsDispatch). Before,
     // a card the PUT took out of in_progress kept its stamp, and the next /move to
     // in_progress woke nobody. The PUT only clears: it never dispatches.
@@ -3116,20 +3498,21 @@ export function updateKanbanCard(
     // row as STORED after the write, as text, so a value echoed back in another
     // shape that the column stores the same way (a due date sent as the string
     // "1790000000" for a stored 1790000000) is not a change.
-    if (changed) {
-      const stored = getKanbanCard(id)
-      if (stored) {
-        const insertField = db.prepare(
-          'INSERT INTO kanban_card_field_events (card_id, field, old_value, new_value, actor, created_at) VALUES (?, ?, ?, ?, ?, ?)'
-        )
-        for (const field of KANBAN_AUDITED_FIELDS) {
-          const before = card[field] == null ? null : String(card[field])
-          const after = stored[field] == null ? null : String(stored[field])
-          if (before !== after) insertField.run(id, field, before, after, actor ?? null, now)
-        }
+    const stored = getKanbanCard(id)
+    if (stored) {
+      const insertField = db.prepare(
+        'INSERT INTO kanban_card_field_events (card_id, field, old_value, new_value, actor, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+      )
+      for (const field of KANBAN_AUDITED_FIELDS) {
+        const before = card[field] == null ? null : String(card[field])
+        const after = stored[field] == null ? null : String(stored[field])
+        if (before !== after) insertField.run(id, field, before, after, actor ?? null, now)
       }
     }
-    return changed
+    // Read back, not card.version + 1: the trigger may move it more than once in
+    // one write (the title gate's own UPDATE re-fires it), and the caller chains
+    // its next write on the value actually stored.
+    return { ok: true, version: stored?.version ?? card.version + 1 }
   })()
 }
 
@@ -4502,6 +4885,19 @@ export function getRecipientQueueState(toAgent: string): RecipientQueueState {
   }
 }
 
+// The queue state the context guard's restart notice reports for one agent:
+// rows still pending (the router delivers them into the fresh session) and rows
+// that failed since `failedSinceEpoch` (the router does not retry those).
+export function countRestartQueueState(agent: string, failedSinceEpoch: number): { pending: number; failed: number } {
+  const pending = db.prepare(
+    "SELECT COUNT(*) AS c FROM agent_messages WHERE status = 'pending' AND to_agent = ?",
+  ).get(agent) as { c: number }
+  const failed = db.prepare(
+    "SELECT COUNT(*) AS c FROM agent_messages WHERE status = 'failed' AND to_agent = ? AND completed_at > ?",
+  ).get(agent, failedSinceEpoch) as { c: number }
+  return { pending: pending.c, failed: failed.c }
+}
+
 // Close a pending backlog that is NOT going to be delivered -- stale rows an
 // operator does not want the router to replay (an old thank-you note, a legal
 // warning whose content has since changed). Separate from markMessageDelivered
@@ -5223,12 +5619,48 @@ export function backfillNeedsWarning(pending: number, embedded: number): boolean
   return pending > 0 && embedded === 0
 }
 
-export async function generateEmbedding(text: string): Promise<number[] | null> {
+// The text set before a query or a stored memory when it is embedded
+// (EMBED_QUERY_PREFIX / EMBED_DOCUMENT_PREFIX). Some models are trained with
+// such task prefixes and retrieve worse without them. Empty = none, the
+// behaviour before these settings existed. Read per call, like the floor.
+// A literal \n in the value is a line break: the settings field is one line,
+// and some prefixes (qwen3-embedding's) span two.
+function embedPrefix(kind: 'query' | 'document'): string {
   try {
+    return String(getEffectiveSettingValue(kind === 'query' ? 'EMBED_QUERY_PREFIX' : 'EMBED_DOCUMENT_PREFIX') ?? '')
+      .replace(/\\n/g, '\n')
+  } catch {
+    return ''
+  }
+}
+
+// Ollama's keep_alive for the embedding model (EMBED_KEEP_ALIVE). Empty = not
+// sent, so Ollama's own default applies. A bare integer is sent as a number
+// (seconds; negative keeps the model loaded), a duration such as "30m" as a
+// string. Anything else (a value set outside the settings UI, past the registry
+// check) is not sent: a keep_alive Ollama refuses would fail every embedding request.
+export function parseEmbedKeepAlive(raw: string): string | number | undefined {
+  const t = raw.trim()
+  if (t === '') return undefined
+  if (/^-?\d+$/.test(t)) return Number.isSafeInteger(Number(t)) ? Number(t) : undefined
+  return /^-?(\d+(\.\d+)?(ns|us|µs|ms|s|m|h))+$/.test(t) ? t : undefined
+}
+
+function embedKeepAlive(): string | number | undefined {
+  try { return parseEmbedKeepAlive(String(getEffectiveSettingValue('EMBED_KEEP_ALIVE') ?? '')) } catch { return undefined }
+}
+
+export async function generateEmbedding(text: string, kind: 'query' | 'document' = 'document'): Promise<number[] | null> {
+  try {
+    const keepAlive = embedKeepAlive()
     const resp = await fetch(`${EMBED_URL}/api/embeddings`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: EMBED_MODEL, prompt: text.slice(0, 2000) }),
+      body: JSON.stringify({
+        model: EMBED_MODEL,
+        prompt: embedPrefix(kind) + text.slice(0, 2000),
+        ...(keepAlive !== undefined ? { keep_alive: keepAlive } : {}),
+      }),
       signal: AbortSignal.timeout(TOOL_TIMEOUTS['ollama-embedding']),
     })
     const data = await resp.json() as { embedding?: number[] }
@@ -5357,38 +5789,90 @@ function vectorSearch(
   queryEmbedding: number[],
   limit: number = 10,
   category?: string,
+  range?: TsRange,
 ): { hits: VectorHit[]; floor: number } {
   // Same push-down as searchAgentMemories: this branch scores EVERY embedded
   // row in JS, so filtering in SQL is both correct and strictly less work.
-  const rows = (category
-    ? db.prepare(
-        "SELECT * FROM memories WHERE embedding IS NOT NULL AND (agent_id = ? OR category = 'shared') AND category = ?"
-      ).all(agentId, category)
-    : db.prepare(
-        "SELECT * FROM memories WHERE embedding IS NOT NULL AND (agent_id = ? OR category = 'shared')"
-      ).all(agentId)) as Memory[]
+  // Same WHERE as the full-row read it replaces, but only the id and the
+  // vector's byte length: the vectors come from embeddingCache. The date
+  // window (card f90928e3) narrows the candidates here, so the similarity
+  // floor below is computed over the windowed rows.
+  const dt = tsClause('created_at', range)
+  const cands = db.prepare(
+    `SELECT id, octet_length(embedding) AS elen FROM memories WHERE embedding IS NOT NULL AND (agent_id = ? OR category = 'shared')${category ? ' AND category = ?' : ''}${dt.sql}`
+  ).all(agentId, ...(category ? [category] : []), ...dt.params) as { id: number; elen: number }[]
+
+  // Parse only what is new or changed since the last call.
+  let getVec: Database.Statement | null = null
+  const live: { id: number; entry: CachedEmbedding }[] = []
+  for (const c of cands) {
+    let entry = embeddingCache.get(c.id)
+    if (!entry || entry.len !== c.elen) {
+      getVec ??= db.prepare('SELECT embedding, octet_length(embedding) AS elen FROM memories WHERE id = ?')
+      const r = getVec.get(c.id) as { embedding: string | null; elen: number } | undefined
+      if (!r || r.embedding == null) { embeddingCache.delete(c.id); continue }
+      // A vector that does not parse keeps its former treatment: scored 0, not dropped.
+      let vec: Float64Array | null = null
+      let parsed: unknown = undefined
+      let failed = false
+      let normSq = 0
+      try { parsed = JSON.parse(r.embedding) } catch { failed = true }
+      if (!failed && Array.isArray(parsed) && parsed.every(x => typeof x === 'number')) {
+        vec = Float64Array.from(parsed as number[])
+        for (let i = 0; i < vec.length; i++) normSq += vec[i] * vec[i]
+        parsed = undefined
+      }
+      entry = { len: r.elen, vec, parsed, failed, normSq }
+      // The bound holds at every insert, not only between calls.
+      if (embeddingCache.size >= EMBEDDING_CACHE_MAX) embeddingCache.clear()
+      embeddingCache.set(c.id, entry)
+    }
+    live.push({ id: c.id, entry })
+  }
 
   // A vector written by a DIFFERENT model has a different length, and the
   // cosine loop walks the QUERY's length: the missing entries read as undefined
   // and the score comes back NaN. NaN compares false against everything, so it
   // neither sorts to the top nor raises -- the search quietly returns junk.
   // Drop the mismatches instead, so a half-migrated table degrades to "fewer
-  // results" rather than "wrong results".
-  const scored = rows.flatMap((m): VectorHit[] => {
-    try {
-      const emb = JSON.parse(m.embedding!) as number[]
-      if (emb.length !== queryEmbedding.length) return []
-      return [{ memory: m, similarity: cosineSimilarity(queryEmbedding, emb) }]
-    } catch {
-      return [{ memory: m, similarity: 0 }]
+  // results" rather than "wrong results". The score is cosineSimilarity's,
+  // bit for bit: each sum is accumulated in index order, as there.
+  let normQ = 0
+  for (let i = 0; i < queryEmbedding.length; i++) normQ += queryEmbedding[i] * queryEmbedding[i]
+  const scored = live.flatMap(({ id, entry }): { id: number; similarity: number }[] => {
+    if (entry.vec === null) {
+      // Anything but an array of numbers (never written by this code): the old
+      // per-row code verbatim, so its result, including a throw scored 0, is unchanged.
+      if (entry.failed) return [{ id, similarity: 0 }]
+      try {
+        const emb = entry.parsed as number[]
+        if (emb.length !== queryEmbedding.length) return []
+        return [{ id, similarity: cosineSimilarity(queryEmbedding, emb) }]
+      } catch {
+        return [{ id, similarity: 0 }]
+      }
     }
+    if (entry.vec.length !== queryEmbedding.length) return []
+    let dot = 0
+    for (let i = 0; i < queryEmbedding.length; i++) dot += queryEmbedding[i] * entry.vec[i]
+    return [{ id, similarity: dot / (Math.sqrt(normQ) * Math.sqrt(entry.normSq)) }]
   })
 
   // The floor comes from EVERY scored row, before the cut to `limit`: the
   // plateau is a property of the corpus, not of the top of the list.
   const floor = vectorSimilarityFloor(scored.map(s => s.similarity))
   scored.sort((a, b) => b.similarity - a.similarity)
-  return { hits: scored.slice(0, limit), floor }
+  const top = scored.slice(0, limit)
+  if (top.length === 0) return { hits: [], floor }
+  // Full rows only for the hits, one primary-key read each (no parameter list that
+  // grows with `limit`); a row deleted between the two reads is skipped.
+  const getRow = db.prepare('SELECT * FROM memories WHERE id = ?')
+  const hits: VectorHit[] = []
+  for (const t of top) {
+    const memory = getRow.get(t.id) as Memory | undefined
+    if (memory) hits.push({ memory, similarity: t.similarity })
+  }
+  return { hits, floor }
 }
 
 /**
@@ -5428,15 +5912,22 @@ export async function hybridSearch(
   limit: number = 10,
   trace?: HybridSearchTrace,
   category?: string,
+  range?: TsRange,
 ): Promise<HybridSearchHit[]> {
   const k = 60 // RRF constant
+  // Per-branch weights (MEMORY_RRF_FTS_WEIGHT / MEMORY_RRF_VECTOR_WEIGHT), 1/1 by
+  // default: equal fusion, as before. A model with good multilingual vectors can
+  // do better with a lighter keyword branch, whose relaxed OR-matches otherwise
+  // pull good vector hits down; that is a measurement per install, not a default.
+  const wFts = numericSetting('MEMORY_RRF_FTS_WEIGHT', 1, (n) => n >= 0 && n <= 10)
+  const wVec = numericSetting('MEMORY_RRF_VECTOR_WEIGHT', 1, (n) => n >= 0 && n <= 10)
 
   // FTS5 results
   const ftsTrace = { relaxed: false }
   // Relaxed on purpose, and unchanged by the strict default introduced for the
   // endpoint: the hybrid answer fuses two rankings and already reports which
   // branch produced it, so a loose lexical hit here is labelled, not silent.
-  const ftsResults = searchAgentMemories(agentId, query, limit * 2, ftsTrace, true, category)
+  const ftsResults = searchAgentMemories(agentId, query, limit * 2, ftsTrace, true, category, range)
   const ftsIds = new Set(ftsResults.map(m => m.id))
 
   // Vector results. A row below the floor survives only when the keyword
@@ -5444,9 +5935,9 @@ export async function hybridSearch(
   // score is NOT the one it had before the floor existed: the vector rank below
   // is computed on the already filtered list, so a kept row moves up past the
   // dropped ones and its RRF term grows accordingly.
-  const queryEmbedding = await generateEmbedding(query)
+  const queryEmbedding = await generateEmbedding(query, 'query')
   const vec = queryEmbedding
-    ? vectorSearch(agentId, queryEmbedding, limit * 2, category)
+    ? vectorSearch(agentId, queryEmbedding, limit * 2, category, range)
     : { hits: [] as VectorHit[], floor: 0 }
   const vecResults = vec.hits.filter(h => h.similarity >= vec.floor || ftsIds.has(h.memory.id))
   const vectorDropped = vec.hits.length - vecResults.length
@@ -5471,13 +5962,13 @@ export async function hybridSearch(
   const similarityById: Map<number, number> = new Map()
 
   ftsResults.forEach((m, rank) => {
-    scores.set(m.id, (scores.get(m.id) || 0) + 1 / (k + rank + 1))
+    scores.set(m.id, (scores.get(m.id) || 0) + wFts / (k + rank + 1))
     byId.set(m.id, m)
   })
 
   vecResults.forEach((h, rank) => {
     const m = h.memory
-    scores.set(m.id, (scores.get(m.id) || 0) + 1 / (k + rank + 1))
+    scores.set(m.id, (scores.get(m.id) || 0) + wVec / (k + rank + 1))
     similarityById.set(m.id, h.similarity)
     byId.set(m.id, m)
   })
@@ -5514,6 +6005,7 @@ export async function backfillEmbeddings(): Promise<BackfillResult> {
     const emb = await generateEmbedding(text)
     if (emb) {
       db.prepare('UPDATE memories SET embedding = ? WHERE id = ?').run(JSON.stringify(emb), row.id)
+      forgetCachedEmbedding(row.id)
       count++
     }
     // Small delay to not overwhelm Ollama
@@ -6752,6 +7244,79 @@ export function consumeApproval(params: {
     else if (row.consumed_at != null) reason = 'already_consumed'
     else if (row.status !== 'approved') reason = 'not_approved'
     else if (row.content_hash !== params.contentHash) reason = 'hash_mismatch'
+    else reason = 'expired'
+    if (row) event.run(params.id, 'consume_refused', reason, params.consumer, ref, now)
+    return { ok: false, reason, approval: row }
+  })()
+}
+
+// The window bounds for consumeCategoryApproval. The acting tool names its own
+// policy (for example 2 h for one tool, 24 h for another) and the server
+// enforces it in the same write; the cap keeps a caller from turning an
+// approval into an open-ended one.
+export const CATEGORY_CONSUME_DEFAULT_WINDOW_S = 1800
+export const CATEGORY_CONSUME_MAX_WINDOW_S = 24 * 3600
+
+// Categories whose approvals the server consumes on its OWN path: email_send
+// by the send path (consumeApproval above / the gate), data_delete by the
+// memory DELETE route. The generic consume below never touches them, so a
+// tool cannot spend a letter's or a memory delete's approval by naming the
+// category in a generic call.
+export const SERVER_CONSUMED_CATEGORIES: readonly string[] = ['email_send', 'data_delete']
+
+// Categories that are a STANDING decision, not a one-off permission: the owner's
+// LAST resolved decision on the anchor wins, and a later rejection revokes it
+// (email_standing_recipient: scripts/hooks/email-approval-gate.py; credential_alias:
+// scripts/hooks/credential-gate.py). Their readers never look at consumed_at, so a
+// generic consume of such a row would change nothing they do, but it would mark a
+// standing decision "used" in the audit trail. Refused as wrong_category
+// (APPROVALCONSUME1022), like the server-consumed ones.
+export const STANDING_DECISION_CATEGORIES: readonly string[] = ['email_standing_recipient', 'credential_alias']
+
+// Every category the generic consume below refuses.
+const NOT_GENERICALLY_CONSUMED: readonly string[] = [...SERVER_CONSUMED_CATEGORIES, ...STANDING_DECISION_CATEGORIES]
+
+// One-shot consumption for every category other than SERVER_CONSUMED_CATEGORIES
+// and STANDING_DECISION_CATEGORIES.
+// Without it a tool acting on such an approval could only check the row with a
+// GET and keep its own "already used" list, so a replay from another tool, a
+// lost log or a second checkout could reuse one approval. Same shape as
+// consumeApproval: the single conditional UPDATE is the whole decision, so of
+// two concurrent callers exactly one flips consumed_at from NULL.
+// The anchor is matched with IS: a row with a content_hash is consumed only
+// with that exact hash, a row without one only by a caller that sends none.
+export function consumeCategoryApproval(params: {
+  id: string
+  category: string
+  contentHash: string | null
+  consumer: string
+  ref?: string | null
+  windowSeconds: number
+  nowS?: number
+}): ApprovalConsumeResult {
+  const now = params.nowS ?? Math.floor(Date.now() / 1000)
+  const ref = params.ref ?? null
+  const excluded = NOT_GENERICALLY_CONSUMED.map(() => '?').join(', ')
+  return db.transaction((): ApprovalConsumeResult => {
+    const changes = db.prepare(`
+      UPDATE approvals SET consumed_at = ?, consumed_by = ?, consumed_ref = ?
+       WHERE id = ? AND category = ? AND category NOT IN (${excluded}) AND status = 'approved' AND consumed_at IS NULL
+         AND content_hash IS ? AND resolved_at IS NOT NULL AND resolved_at >= ?
+    `).run(now, params.consumer, ref, params.id, params.category, ...NOT_GENERICALLY_CONSUMED, params.contentHash, now - params.windowSeconds).changes
+    const event = db.prepare(`
+      INSERT INTO approval_events (approval_id, event, reason, actor, ref, created_at) VALUES (?, ?, ?, ?, ?, ?)
+    `)
+    const row = getApproval(params.id)
+    if (changes === 1) {
+      event.run(params.id, 'consumed', null, params.consumer, ref, now)
+      return { ok: true, approval: row }
+    }
+    let reason: ApprovalConsumeRefusal
+    if (!row) reason = 'not_found'
+    else if (row.category !== params.category || NOT_GENERICALLY_CONSUMED.includes(row.category)) reason = 'wrong_category'
+    else if (row.consumed_at != null) reason = 'already_consumed'
+    else if (row.status !== 'approved') reason = 'not_approved'
+    else if ((row.content_hash ?? null) !== params.contentHash) reason = 'hash_mismatch'
     else reason = 'expired'
     if (row) event.run(params.id, 'consume_refused', reason, params.consumer, ref, now)
     return { ok: false, reason, approval: row }

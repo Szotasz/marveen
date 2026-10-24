@@ -5,7 +5,8 @@
     "mcp__server-gmail-autoauth-mcp__",
     "mcp__claude_ai_Gmail__",
     "mcp__gmail-personal__",
-    "mcp__workmail__"
+    "mcp__workmail__",
+    "mcp__harder-mail__"
   ],
   "prefixes": ["", "v2_", "v2", "work-", "shared_inbox_", "v-2_", "V2_", "x", "_", "__", "2", "info_", "personal_", "a.b_", "gmail_"],
   "bases": {
@@ -15,6 +16,8 @@
     "reply": { "kind": "connector_send", "needs_gmail": true },
     "forward": { "kind": "connector_send", "needs_gmail": true },
     "send_draft": { "kind": "send_draft" },
+    "send_mail": { "kind": "connector_send" },
+    "send_mail_auto": { "kind": "connector_send" },
     "draft_email": { "kind": "draft" },
     "create_draft": { "kind": "draft" },
     "update_draft": { "kind": "draft" },
@@ -43,7 +46,13 @@
     "create_filter": { "kind": null },
     "create_filter_from_template": { "kind": null },
     "search_threads": { "kind": null },
-    "label_message": { "kind": null }
+    "label_message": { "kind": null },
+    "search_mail": { "kind": null },
+    "read_mail": { "kind": null },
+    "list_accounts": { "kind": null },
+    "list_folders": { "kind": null },
+    "get_attachment": { "kind": null },
+    "preview_mail": { "kind": null }
   },
   "matcher_must_not_fire": [
     "mcp__plugin_telegram_telegram__reply",
@@ -91,6 +100,15 @@
     { "name": "mcp__gmail__send_email_or_draft_email", "expected": "send_email" },
     { "name": "mcp__gmail__v2_no_reply", "expected": "connector_send" },
     { "name": "mcp__claude_ai_Gmail__reply", "expected": "connector_send" },
-    { "name": "mcp__gmail__reply_all", "expected": "connector_send" }
+    { "name": "mcp__gmail__reply_all", "expected": "connector_send" },
+    { "name": "mcp__harder-mail__send_mail", "expected": "connector_send", "why": "HARDERMAILGATES1019: a reply names reply_to_uid + reply_folder, not a to; connector_send keeps it out of the sub-agent gate's send_email thread-reply narrowing" },
+    { "name": "mcp__harder-mail__send_mail_auto", "expected": "connector_send" },
+    { "name": "mcp__harder-mail__create_draft", "expected": "draft" },
+    { "name": "mcp__harder-mail__search_mail", "expected": null },
+    { "name": "mcp__harder-mail__read_mail", "expected": null },
+    { "name": "mcp__harder-mail__list_accounts", "expected": null },
+    { "name": "mcp__x__resend_mail", "expected": "connector_send", "why": "suffix: a look-alike ending in send_mail fails closed, as resend_email does" },
+    { "name": "mcp__harder-mail__send_mail_log", "expected": null },
+    { "name": "mcp__harder-mail__send_mailbox_rule", "expected": null }
   ]
 }

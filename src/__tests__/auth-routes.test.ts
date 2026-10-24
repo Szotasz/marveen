@@ -224,15 +224,16 @@ describe('POST /api/auth/password', () => {
     expect(login.res.statusCode).toBe(200)
   })
 
-  it('does NOT require current_password on the token break-glass path', async () => {
+  it('the token cannot reset a password: 403, and the old password still works (recovery is the CLI)', async () => {
     await seedUser('alice')
-    const ok = await call('POST', '/api/auth/password', {
+    const r = await call('POST', '/api/auth/password', {
       auth: TOKEN_AUTH,
       body: { username: 'alice', new_password: 'token-reset-pass' },
     })
-    expect(ok.res.statusCode).toBe(200)
-    const login = await call('POST', '/api/auth/login', { body: { username: 'alice', password: 'token-reset-pass' } })
-    expect(login.res.statusCode).toBe(200)
+    expect(r.res.statusCode).toBe(403)
+    expect(r.json().code).toBe('cli_recovery_only')
+    expect((await call('POST', '/api/auth/login', { body: { username: 'alice', password: 'token-reset-pass' } })).res.statusCode).toBe(401)
+    expect((await call('POST', '/api/auth/login', { body: { username: 'alice', password: GOOD_PW } })).res.statusCode).toBe(200)
   })
 
   it('revokes OTHER sessions on password change but keeps the caller', async () => {
@@ -253,8 +254,8 @@ describe('POST /api/auth/password', () => {
   it('enforces the password policy on the new password', async () => {
     await seedUser('alice')
     const short = await call('POST', '/api/auth/password', {
-      auth: TOKEN_AUTH,
-      body: { username: 'alice', new_password: 'short' },
+      auth: { kind: 'session', user: 'alice' },
+      body: { current_password: GOOD_PW, new_password: 'short' },
     })
     expect(short.res.statusCode).toBe(400)
   })
@@ -270,7 +271,8 @@ describe('users CRUD', () => {
 
   it('rejects a duplicate username with 409', async () => {
     await seedUser('alice')
-    const dup = await call('POST', '/api/auth/users', { auth: TOKEN_AUTH, body: { username: 'alice', password: GOOD_PW } })
+    // a second user is added by the owner's session once a login exists (DEVKEYMINT1022)
+    const dup = await call('POST', '/api/auth/users', { auth: { kind: 'session', user: 'alice' }, body: { username: 'alice', password: GOOD_PW } })
     expect(dup.res.statusCode).toBe(409)
   })
 
@@ -281,7 +283,8 @@ describe('users CRUD', () => {
 
   it('lists users without password hashes', async () => {
     await seedUser('alice')
-    const { json } = await call('GET', '/api/auth/users', { auth: TOKEN_AUTH })
+    // DEVKEYFOLLOW1022: once a login exists the list takes the owner's session.
+    const { json } = await call('GET', '/api/auth/users', { auth: { kind: 'session', user: 'alice' } })
     const users = json().users as Record<string, unknown>[]
     expect(users.length).toBe(1)
     expect(users[0]).not.toHaveProperty('password_hash')
@@ -292,7 +295,11 @@ describe('users CRUD', () => {
     await seedUser('alice')
     const login = await call('POST', '/api/auth/login', { body: { username: 'alice', password: GOOD_PW } })
     const token = cookieToken(login.res)
-    const del = await call('DELETE', '/api/auth/users/alice', { auth: TOKEN_AUTH })
+    // the token no longer removes a user once a login exists (DEVKEYMINT1022)
+    const byToken = await call('DELETE', '/api/auth/users/alice', { auth: TOKEN_AUTH })
+    expect(byToken.res.statusCode).toBe(403)
+    expect(getDashboardUser('alice')).toBeDefined()
+    const del = await call('DELETE', '/api/auth/users/alice', { auth: { kind: 'session', user: 'alice' } })
     expect(del.res.statusCode).toBe(200)
     expect(getDashboardUser('alice')).toBeUndefined()
     expect(resolveSession(token)).toBeNull()
@@ -340,9 +347,12 @@ describe('credential-kind allowlists (default-deny for future kinds)', () => {
     })
   }
 
-  it('keeps the token break-glass reset working (allowlist did not over-tighten)', async () => {
+  it('the session path still changes a password (the allowlist did not over-tighten)', async () => {
     await seedUser('alice')
-    const reset = await call('POST', '/api/auth/password', { auth: TOKEN_AUTH, body: { username: 'alice', new_password: 'legit-reset-pw' } })
-    expect(reset.res.statusCode).toBe(200)
+    const r = await call('POST', '/api/auth/password', {
+      auth: { kind: 'session', user: 'alice' },
+      body: { current_password: GOOD_PW, new_password: 'legit-new-pw' },
+    })
+    expect(r.res.statusCode).toBe(200)
   })
 })

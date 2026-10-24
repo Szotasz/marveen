@@ -35,6 +35,7 @@ import {
   type GateInputs,
 } from '../context-restart-gate.js'
 import { exactTmuxTarget } from '../tmux-target.js'
+import { frozenSkip } from './fleet-freeze.js'
 
 // Fleet context-restart gate: proactively send /clear to an agent session
 // before the context grows unwieldy, while holding the send lane and only
@@ -965,6 +966,11 @@ function scheduleSweep(name: string, delayMs: number): void {
     if (!currentRoster().includes(name)) {
       sweepTimers.delete(name)
       logger.info({ agent: name }, 'context-restart-gate: agent gone from roster, sweep retired')
+      return
+    }
+    // KILLSWITCH1022: a frozen fleet is not restarted; keep the timer alive.
+    if (frozenSkip('context-restart-gate')) {
+      scheduleSweep(name, DISABLED_RECHECK_MS)
       return
     }
     if (name === MAIN_AGENT_ID) await runMainSweepHook()

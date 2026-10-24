@@ -51,8 +51,17 @@ except Exception: pass
 print(json.dumps({'seen1': seen1, 'seen2': seen2, 'out': buf.decode('utf-8', 'replace')}))
 `
 
+// Node 26 deprecates module.register(), which tsx (4.21) still calls: the DEP0205
+// warning goes to the same terminal and landed right after "New password: ", so
+// the test read it as prompt output and failed on a Node 26 host. Only that one
+// warning is silenced for the child; any other warning still reaches the pty.
+const CHILD_ENV = {
+  ...process.env,
+  NODE_OPTIONS: [process.env.NODE_OPTIONS, '--disable-warning=DEP0205'].filter(Boolean).join(' '),
+}
+
 function runOnPty(password: string): { seen1: boolean; seen2: boolean; out: string } {
-  const r = spawnSync('python3', ['-c', DRIVER, TSX, CHILD, password], { encoding: 'utf-8', timeout: 120_000 })
+  const r = spawnSync('python3', ['-c', DRIVER, TSX, CHILD, password], { encoding: 'utf-8', timeout: 120_000, env: CHILD_ENV })
   expect(r.status, r.stderr).toBe(0)
   return JSON.parse(r.stdout)
 }

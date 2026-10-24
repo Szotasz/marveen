@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { join } from 'node:path'
 import {
-  listKanbanCards, kanbanAssigneeExists, createKanbanCard, updateKanbanCard, KANBAN_WRITABLE_FIELDS, KANBAN_CREATE_FIELDS,
+  listKanbanCards, kanbanAssigneeExists, createKanbanCard, writeKanbanCard, KANBAN_WRITABLE_FIELDS, KANBAN_CREATE_FIELDS,
   deleteKanbanCard, moveKanbanCard, archiveKanbanCard, unarchiveKanbanCard,
   getKanbanComments, addKanbanComment, getKanbanCardEvents, getKanbanCardFieldEvents, listKanbanProjects,
   getKanbanCard, getChildCards, getDb, KANBAN_STATUSES,
@@ -28,7 +28,7 @@ import { normalizeKanbanRefs } from '../kanban-ref-normalize.js'
 import { OWNER_NAME, BOT_NAME, MAIN_AGENT_ID, STORE_DIR, WEB_HOST, WEB_PORT, KANBAN_LABEL_COLORS, KANBAN_LABEL_COLORS_REJECTED, KANBAN_LABEL_COLORS_OVERFLOW, DB_FILENAME } from '../../config.js'
 import { listAgentNames, readAgentDisplayName } from '../agent-config.js'
 import { isAgentRunning } from '../agent-process.js'
-import { resolveKanbanDispatch } from '../../kanban-dispatch.js'
+import { resolveKanbanDispatch, parseDispatchSkipAgents } from '../../kanban-dispatch.js'
 import { generateBreakdown } from '../llm-breakdown.js'
 import { getCardTokenUsage } from '../token-usage.js'
 import { logger } from '../../logger.js'
@@ -245,12 +245,19 @@ function fireKanbanDispatch(id: string, actor?: string | null): void {
       agentNames: listAgentNames(),
       isRunning: isAgentRunning,
       actor,
+      // Read at dispatch time (not at module load), so a Settings change applies to the next move.
+      skipAgents: parseDispatchSkipAgents(getEffectiveSettingValue('KANBAN_DISPATCH_SKIP_AGENTS')),
     })
     const target = decision.target
     if (!target) {
-      // 'not-dispatchable' (no/unknown assignee, human owner) and 'self-move'
-      // are DELIBERATE no-dispatch cases -- staying quiet is correct, and
-      // alerting on them would bury the one case that matters.
+      // 'not-dispatchable' (no/unknown assignee, human owner), 'self-move' and
+      // 'skip-listed' (KANBAN_DISPATCH_SKIP_AGENTS) are DELIBERATE no-dispatch
+      // cases -- staying quiet is correct, and alerting on them would bury the
+      // one case that matters. The card is NOT stamped dispatched_at in these
+      // cases, so a later handover + move still wakes the new assignee once.
+      if (decision.reason === 'skip-listed') {
+        logger.info({ id, assignee: card.assignee }, 'Kanban dispatch skipped (KANBAN_DISPATCH_SKIP_AGENTS)')
+      }
       if (decision.reason === 'session-down') reportUndeliveredDispatch(id, decision.unreachable ?? String(card.assignee))
       return
     }
@@ -890,7 +897,25 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     if (unknownKeys.length > 0) {
       logger.warn({ id, keys: unknownKeys }, 'POST /api/kanban: ismeretlen mező(k), csendben eldobva')
     }
-    createKanbanCard({ ...data, id })
+    try {
+      createKanbanCard({ ...data, id })
+    } catch (err) {
+      // A caller-supplied id that is already taken is the caller's conflict, not a
+      // server fault: 409, with the id and whether the existing card is archived --
+      // GET /api/kanban hides archived cards, so "not in the list" does not mean
+      // "free". Caught on the INSERT rather than checked before it, so a card
+      // created by another process in between is answered the same way. A
+      // generated id colliding is not the caller's doing and stays an error.
+      if (suppliedId && (err as { code?: unknown })?.code === 'SQLITE_CONSTRAINT_PRIMARYKEY') {
+        json(res, {
+          error: 'A card with this id already exists (GET /api/kanban/<id> returns it, archived or not)',
+          id,
+          archived: getKanbanCard(id)?.archived_at != null,
+        }, 409)
+        return true
+      }
+      throw err
+    }
     json(res, { ok: true, id })
     return true
   }
@@ -902,7 +927,25 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
     // `actor` is metadata for the audit event, not a card column -- keep it out
     // of the field set so it can never be mistaken for one. Same name the /move
     // route already accepts, so callers do not have to learn a second spelling.
-    const { actor, ...data } = JSON.parse(body.toString()) as Record<string, unknown> & { actor?: unknown }
+    const { actor, version, expected_version, ...data } = JSON.parse(body.toString()) as Record<string, unknown> & { actor?: unknown }
+    // The version the body was based on (writeKanbanCard). Two spellings, because the
+    // two real caller shapes differ: `expected_version` for a caller that builds a
+    // partial body by hand, and `version` for one that GETs the card and PUTs the
+    // whole object back -- the dashboard does that on every assignee and parent edit,
+    // and that body carries `description` from whenever the board was loaded, so it
+    // gets the check without changing. Neither is ever written as a column.
+    // A malformed value is a 400, not "no check": a caller that believes it sent a
+    // guard must not get an unguarded write.
+    const versionError = (v: unknown) => v !== undefined && !(Number.isSafeInteger(v) && (v as number) >= 0)
+    if (versionError(version) || versionError(expected_version)) {
+      json(res, { error: '"version" / "expected_version" must be a non-negative integer (the version the card was read at)' }, 400)
+      return true
+    }
+    if (version !== undefined && expected_version !== undefined && version !== expected_version) {
+      json(res, { error: '"version" and "expected_version" disagree -- send one' }, 400)
+      return true
+    }
+    const expectedVersion = (expected_version ?? version) as number | undefined
     // The actor rule (kanbanWriteActor): a non-string actor is refused BEFORE any write (card f6fba9ec, found in review:
     // `actor: true` changed the card, then the row insert threw, 500).
     const who = kanbanWriteActor(actor, ctx.auth)
@@ -911,7 +954,7 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       return true
     }
     // #1023: reject unknown fields loudly instead of dropping them silently.
-    // updateKanbanCard writes only KANBAN_WRITABLE_FIELDS, so anything outside
+    // writeKanbanCard writes only KANBAN_WRITABLE_FIELDS, so anything outside
     // the accepted set below was silently discarded while the write still
     // reported success and bumped updated_at -- twice a real closing note was
     // lost this way (#1023). A body that carries a key the writer cannot honour
@@ -951,13 +994,24 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       }
     }
     // PUT to in_progress clears but does not dispatch; /move remains the only
-    // dispatch path (KARTYADISPATCH1010). updateKanbanCard applies the shared
+    // dispatch path (KARTYADISPATCH1010). writeKanbanCard applies the shared
     // dispatched_at clear; no fireKanbanDispatch call belongs here.
     const before = getKanbanCard(id)
-    if (updateKanbanCard(id, data, who.actor)) {
+    const written = writeKanbanCard(id, data, who.actor, expectedVersion)
+    if (written.ok) {
       const after = getKanbanCard(id)
       if (before?.status !== 'done' && after?.status === 'done') notifyUnblockedCards(id, who.actor)
-      json(res, { ok: true, ...archivedNote(after), ...statusChangeExtras(id, before, data.status ?? before?.status, who.actor) })
+      json(res, { ok: true, version: written.version, ...archivedNote(after), ...statusChangeExtras(id, before, data.status ?? before?.status, who.actor) })
+      return true
+    }
+    if (written.reason === 'stale') {
+      // An instruction, not a diagnosis: the next act has to be a re-read. Reposting
+      // the same body is exactly the overwrite this refused.
+      json(res, {
+        error: 'The card changed since you read it -- nothing was saved. Read it again and apply your change to the current version.',
+        conflict: 'stale_version',
+        current_version: written.current_version,
+      }, 409)
       return true
     }
     json(res, { error: 'Kártya nem található' }, 404)

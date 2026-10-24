@@ -23,6 +23,7 @@ import json
 import os
 import re
 import hashlib
+import importlib.util
 import shutil
 import sqlite3
 import subprocess
@@ -562,6 +563,36 @@ with tempfile.TemporaryDirectory() as td:
     check("standing: a listan NEM szereplo cimre tovabbra is jovahagyas kell",
           code == 2 and "NINCS jovahagyas" in err, f"exit={code}")
 
+    # A reply addressed by its original carries an anchor TOKEN in `to`, not a
+    # recipient: an address typed into the messageId must not read as the one
+    # listed recipient (measured before the fix: exit 0, no approval).
+    for mid in ("<dani@pelda.hu>", "dani@pelda.hu", "Dani <dani@pelda.hu>"):
+        code, out, err = run_gate(store, connector("reply", messageId=mid, body="Kedves Ügyfelünk! Válasz."))
+        check(f"standing: a connector reply with messageId={mid!r} still needs approval",
+              code == 2 and anchor_from_stderr(err) is not None, f"exit={code} out={out[:120]!r}")
+    # A call that names its original never takes the standing path, even with a
+    # listed `to` next to the messageId: reply and reply_all reach the original's
+    # sender or participants, forward carries content the gate never read
+    # (PR #2098 review, measured before the fix: exit 0 for all three).
+    for tool in ("reply", "reply_all", "forward"):
+        code, out, err = run_gate(store, connector(tool, messageId="m1", to=["dani@pelda.hu"],
+                                                   body="Kedves Ügyfelünk! Válasz."))
+        check(f"standing: a connector {tool} with messageId and a listed to still needs approval",
+              code == 2 and anchor_from_stderr(err) is not None, f"exit={code} out={out[:120]!r}")
+    code, out, _ = run_gate(store, connector("send_message", to=["dani@pelda.hu"], subject="T",
+                                             body="Kedves Ügyfelünk! Levél."))
+    check("standing: a connector send_message to the listed address still passes (control)",
+          code == 0 and "allando cimzett" in out, f"exit={code} out={out[:120]!r}")
+    _spec = importlib.util.spec_from_file_location("eag_standing", GATE)
+    _eag = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_eag)
+    listed = {"dani@pelda.hu"}
+    for tok in ('messageId:<dani@pelda.hu>', 'reply_to:["", "dani@pelda.hu"]', 'reply_to:["dani@pelda.hu", "7"]'):
+        got = _eag.standing_match({"to": [tok], "cc": [], "bcc": []}, listed)
+        check(f"standing_match: the anchor token {tok!r} is never the listed recipient", got is None, f"got={got!r}")
+    check("standing_match: the plain listed address still matches (control)",
+          _eag.standing_match({"to": ["dani@pelda.hu"], "cc": [], "bcc": []}, listed) == "dani@pelda.hu")
+
     # A ketto egyutt a lenyeg: a lista NEM a level helyettesitoje.
     store1 = make_store(os.path.join(td, "sl2"), level=1)
     write_standing(store1, {"recipients": ["dani@pelda.hu"]})
@@ -1077,6 +1108,341 @@ with tempfile.TemporaryDirectory() as td:
     code, _, err = run_gate(owner_store(os.path.join(td, "dn-owner-3"), 3), mcp_send(), gate=broken)
     check("broken email_extract.py -> level 3 send_email without the owner DENIED, naming the owner",
           code == 2 and OWNER in err, f"exit={code} err={err[:200]!r}")
+
+# --- the level-2 pass-through for this project's own senders -----------------
+# The senders consume the level-2 approval themselves (scripts/hooks/sender_check.py).
+# The hook passes a Bash send through WITHOUT consuming only when the whole command
+# is one literal call of THIS project's own sender; every other form is levelled by
+# the hook as before (so a sender copy elsewhere, which may check nothing, never
+# goes out unlevelled).
+REPO = os.path.dirname(os.path.dirname(HOOKS))
+SENDER_REL = "scripts/support-mail/" + "se" + "nd.py"
+GRAPH_REL = "scripts/graph-mai" + "l.ts"
+SENDER_ABS = os.path.join(REPO, SENDER_REL)
+LETTER = " --to a@example.com --subject 'Teszt targy' --body 'Kedves Ugyfelunk! Torzs.'"
+
+
+def bash_payload(cmd, cwd=REPO):
+    return {"tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": cwd}
+
+
+def unconsumed_count(store):
+    con = sqlite3.connect(os.path.join(store, "claudeclaw.db"))
+    n = con.execute("SELECT COUNT(*) FROM approvals WHERE consumed_at IS NULL").fetchone()[0]
+    con.close()
+    return n
+
+
+with tempfile.TemporaryDirectory() as td:
+    store = make_store(os.path.join(td, "pt"), level=2)
+    canonical = {
+        "relative, cwd = project root": bash_payload("python3 " + SENDER_REL + LETTER),
+        "absolute project path": bash_payload("python3 " + SENDER_ABS + LETTER, cwd="/"),
+        "graph sender via npx tsx": bash_payload("npx tsx " + GRAPH_REL + " send" + LETTER),
+        "heredoc with a quoted delimiter": bash_payload(
+            "python3 " + SENDER_REL + " --to a@example.com --subject T <<'EOF'\nTorzs.\nEOF"),
+        "with 2>&1 | tail -5": bash_payload("python3 " + SENDER_REL + LETTER + " 2>&1 | tail -5"),
+    }
+    for label, payload in canonical.items():
+        code, out, err = run_gate(store, payload)
+        check(f"pass-through at level 2: {label} -> allowed, the hook consumes nothing",
+              code == 0 and "a kuldo maga ellenorzi" in out and unconsumed_count(store) == 0,
+              f"exit={code} out={out[:120]!r} err={err[:160]!r}")
+    own_noncanonical = {
+        "a cd prefix": bash_payload("cd " + REPO + " && python3 " + SENDER_REL + LETTER),
+        "a relative cd": bash_payload("cd scripts/support-mail && python3 " + "se" + "nd.py" + LETTER),
+        "a second command": bash_payload("python3 " + SENDER_REL + LETTER + "; ls"),
+        "a variable in a value": bash_payload("python3 " + SENDER_REL + LETTER.replace("'Teszt targy'", '"$S"')),
+        "an unquoted heredoc delimiter": bash_payload(
+            "python3 " + SENDER_REL + " --to a@example.com --subject T <<EOF\nTorzs.\nEOF"),
+        "a path with /./ in it": bash_payload("python3 " + REPO + "/scripts/./support-mail/" + "se" + "nd.py" + LETTER, cwd="/"),
+        "an unknown flag": bash_payload("python3 " + SENDER_REL + LETTER + " --bcc x@example.org"),
+        "an env prefix": bash_payload("A=1 python3 " + SENDER_REL + LETTER),
+        "a wrapper": bash_payload("timeout 30 python3 " + SENDER_REL + LETTER),
+        "a display-name recipient": bash_payload("timeout 30 python3 " + SENDER_REL
+                                                 + LETTER.replace("--to a@example.com", "--to 'Ann <a@example.com>'")),
+    }
+    # an approval the owner granted must survive every one of these calls
+    approve(store, "e" * 64)
+    for label, payload in own_noncanonical.items():
+        code, _, err = run_gate(store, payload)
+        check(f"own sender, not canonical, level 2: {label} -> denied WITHOUT consuming and without an anchor",
+              code == 2 and "nem a kanonikus alakban" in err and anchor_from_stderr(err) is None
+              and "a projekt gyokerebol, cd nelkul" in err and unconsumed_count(store) == 1,
+              f"exit={code} err={err[:200]!r}")
+    levelled = {
+        "a sender copy at another path": bash_payload("python3 /tmp/other/" + SENDER_REL + LETTER),
+        "the relative path from another cwd": bash_payload("python3 " + SENDER_REL + LETTER, cwd="/tmp"),
+        "another mailer": bash_payload("sendmail --to a@example.com --subject T --body 'Torzs.'"),
+    }
+    for label, payload in levelled.items():
+        code, _, err = run_gate(store, payload)
+        check(f"levelled by the hook at level 2: {label} -> denied without an approval, with the anchor",
+              code == 2 and "NINCS jovahagyas" in err and anchor_from_stderr(err) is not None,
+              f"exit={code} err={err[:200]!r}")
+    code, _, err = run_gate(store, levelled["a sender copy at another path"])
+    anchor = anchor_from_stderr(err)
+    approve(store, anchor)
+    code, out, _ = run_gate(store, levelled["a sender copy at another path"])
+    check("a sender copy elsewhere is consumed BY THE HOOK with an approval, as before",
+          code == 0 and "felhasznalva" in out, f"exit={code} out={out[:200]!r}")
+    store1 = make_store(os.path.join(td, "pt1"), level=1)
+    code, _, err = run_gate(store1, canonical["relative, cwd = project root"])
+    check("level 1: the canonical sender form is still denied by the hook", code == 2 and "szint 1" in err,
+          f"exit={code}")
+
+# --- the recipient ledger on the main agent, opt-in (MAIN_AGENT_RECIPIENT_LEDGER) ---
+# Read from the .env next to the store the gate uses, never from the environment.
+# Off (no .env line): the gate behaves exactly as before.
+def ledger_store(td, name, level, switch, recipients):
+    store = make_store(os.path.join(td, name), level=level)
+    if switch:
+        with open(os.path.join(td, name, ".env"), "w", encoding="utf-8") as fh:
+            fh.write("MAIN_AGENT_RECIPIENT_LEDGER=1\n")
+    if recipients is not None:
+        with open(os.path.join(store, "verified-recipients.json"), "w", encoding="utf-8") as fh:
+            if isinstance(recipients, str):
+                fh.write(recipients)
+            else:
+                json.dump({"version": 1, "recipients": {a: {"source": "owner"} for a in recipients}}, fh)
+    return store
+
+
+with tempfile.TemporaryDirectory() as td:
+    off = ledger_store(td, "off", 3, False, ["known@example.com"])
+    code, _, _ = run_gate(off, mcp_send(to="invented@example.org"))
+    check("ledger off: an unknown address passes at level 3 (unchanged)", code == 0, f"exit={code}")
+    code, _, _ = run_gate(off, {"tool_name": "Bash", "tool_input": {"command": "sendmail invented@example.org"}},
+                          extra_env={"MAIN_AGENT_RECIPIENT_LEDGER": "1"})
+    check("ledger off: the switch in the ENVIRONMENT changes nothing", code == 0, f"exit={code}")
+
+    on = ledger_store(td, "on", 3, True, ["known@example.com"])
+    code, _, err = run_gate(on, mcp_send(to="invented@example.org"))
+    check("ledger on: an unknown MCP recipient is denied, with the add command",
+          code == 2 and "Nem igazolt cimzett: invented@example.org" in err and "recipient-ledger.mjs add" in err,
+          f"exit={code} err={err[:200]!r}")
+    code, _, _ = run_gate(on, mcp_send(to="Known <KNOWN@example.com>"))
+    check("ledger on: a known recipient passes", code == 0, f"exit={code}")
+    code, _, err = run_gate(on, {"tool_name": "mcp__gmail__v2_draft_email",
+                                 "tool_input": {"to": ["Known <known@example.com>, Bad <invented@example.org>"], "body": "x"}})
+    check("ledger on: a draft hiding an unknown address is denied", code == 2 and "invented@example.org" in err,
+          f"exit={code} err={err[:200]!r}")
+    code, _, err = run_gate(on, {"tool_name": "mcp__gmail__draft_email",
+                                 "tool_input": {"to": "invented@example.org <known@example.com>", "body": "x"}})
+    check("ledger on: an address in the display name is unparseable and denied",
+          code == 2 and "Nem ertelmezheto cimzett" in err, f"exit={code} err={err[:200]!r}")
+    code, _, err = run_gate(on, {"tool_name": "Bash", "tool_input": {"command": "sendmail invented@example.org < /dev/null"}})
+    check("ledger on: a Bash send with a positional (unreadable) recipient is denied",
+          code == 2 and "nem nyerheto ki cimzett" in err, f"exit={code} err={err[:200]!r}")
+    code, _, err = run_gate(on, bash_payload("python3 " + SENDER_REL + LETTER.replace("a@example.com", "invented@example.org")))
+    check("ledger on: a Bash send to an unknown --to is denied by the hook too",
+          code == 2 and "invented@example.org" in err, f"exit={code}")
+    code, _, _ = run_gate(on, {"tool_name": "mcp__gmail__send_draft", "tool_input": {"draftId": "r-1"}})
+    check("ledger on: a send_draft (no address field) is decided by the level only", code == 0, f"exit={code}")
+
+    on2 = ledger_store(td, "on2", 2, True, ["known@example.com"])
+    payload = mcp_send(to="invented@example.org")
+    approve(on2, "f" * 64)
+    code, _, err = run_gate(on2, payload)
+    check("ledger on: the ledger runs BEFORE the level-2 anchor (no approval is looked up or consumed)",
+          code == 2 and "Nem igazolt cimzett" in err and "Tartalom-horgony" not in err, f"err={err[:200]!r}")
+
+    bad = ledger_store(td, "bad", 3, True, '{"version":1,"recipients":')
+    code, _, err = run_gate(bad, mcp_send(to="known@example.com"))
+    check("ledger on: an unusable ledger denies, naming that `add` refuses to overwrite it",
+          code == 2 and "nem hasznalhato" in err and "megtagadja" in err, f"err={err[:200]!r}")
+    missing = ledger_store(td, "missing", 3, True, None)
+    code, _, err = run_gate(missing, mcp_send(to="known@example.com"))
+    check("ledger on: a missing ledger denies, with the command that creates it",
+          code == 2 and "letrehozza" in err, f"err={err[:200]!r}")
+
+# --- harder-mail (HARDERMAILGATES1019): only the SEND asks for approval ---------
+def hm(tool, **fields):
+    ti = {"account": "ceges", "subject": "Teszt tárgy", "body": "Kedves Ügyfelünk! Törzs."}
+    ti.update(fields)
+    return {"tool_name": f"mcp__harder-mail__{tool}", "tool_input": ti}
+
+
+with tempfile.TemporaryDirectory() as td:
+    store = make_store(td, level=1)
+    code, _, err = run_gate(store, hm("send_mail", to=["a@b.hu"]))
+    check("harder-mail level 1: send_mail -> DENIED", code == 2 and "szint 1" in err, f"exit={code} err={err[:160]!r}")
+    code, _, err = run_gate(store, hm("send_mail_auto", to=["a@b.hu"]))
+    check("harder-mail level 1: send_mail_auto -> DENIED", code == 2, f"exit={code} err={err[:160]!r}")
+    code, _, err = run_gate(store, hm("create_draft", to=["a@b.hu"]))
+    check("harder-mail level 1: create_draft -> no approval asked, allowed", code == 0, f"exit={code} err={err[:160]!r}")
+
+with tempfile.TemporaryDirectory() as td:
+    store = make_store(td, level=2)
+    code, _, err = run_gate(store, hm("create_draft", to=["a@b.hu"]))
+    check("harder-mail level 2: create_draft -> allowed without approval", code == 0, f"exit={code} err={err[:160]!r}")
+    code, _, err = run_gate(store, hm("create_draft", reply_to_uid=7, reply_folder="INBOX"))
+    check("harder-mail level 2: reply draft (no to) -> allowed", code == 0, f"exit={code} err={err[:160]!r}")
+
+    new = hm("send_mail", to=["a@b.hu"])
+    code, _, err = run_gate(store, new)
+    anchor = anchor_from_stderr(err)
+    check("harder-mail level 2: unapproved new-thread send -> DENIED with an anchor",
+          code == 2 and anchor is not None, f"exit={code} err={err[:160]!r}")
+    approve(store, anchor)
+    code, _, err = run_gate(store, new)
+    check("harder-mail level 2: the approved send goes out", code == 0, f"exit={code} err={err[:160]!r}")
+    code, _, err = run_gate(store, new)
+    check("harder-mail level 2: the approval is one-shot", code == 2, f"exit={code}")
+
+    other_account = hm("send_mail", to=["a@b.hu"], account="info")
+    _, _, err = run_gate(store, other_account)
+    check("harder-mail: the same letter from another account has another anchor",
+          anchor_from_stderr(err) not in (None, anchor), f"err={err[:160]!r}")
+
+    reply7 = hm("send_mail", reply_to_uid=7, reply_folder="INBOX")
+    code, _, err = run_gate(store, reply7)
+    a7 = anchor_from_stderr(err)
+    check("harder-mail reply without to: anchored on the original message, not 'nincs cimzett'",
+          code == 2 and a7 is not None and "nem nyerheto ki cimzett" not in err, f"exit={code} err={err[:200]!r}")
+    _, _, err = run_gate(store, hm("send_mail", reply_to_uid=8, reply_folder="INBOX"))
+    check("harder-mail reply to another uid: another anchor", anchor_from_stderr(err) not in (None, a7))
+    approve(store, a7)
+    code, _, err = run_gate(store, reply7)
+    check("harder-mail approved reply goes out", code == 0, f"exit={code} err={err[:160]!r}")
+
+    # Fail-closed on a field the anchor does not cover (e.g. a future body_format or
+    # attachment): an approval for a plain letter must not release another shape.
+    code, _, err = run_gate(store, hm("send_mail", to=["a@b.hu"], attachments=["/tmp/x.pdf"]))
+    check("harder-mail send with an unknown field -> DENIED as unanchorable",
+          code == 2 and "nem horgonyozhato" in err and "attachments" in err, f"exit={code} err={err[:200]!r}")
+
+    # Design 6.3b: body_format joins the anchor (only when not plain).
+    fresh = hm("send_mail", to=["a@b.hu"], body="Harmadik level.")
+    _, _, err = run_gate(store, fresh)
+    plain_anchor = anchor_from_stderr(err)
+    _, _, err = run_gate(store, hm("send_mail", to=["a@b.hu"], body="Harmadik level.", body_format="plain"))
+    check("harder-mail: an explicit body_format=plain keeps the plain anchor byte-identical",
+          anchor_from_stderr(err) == plain_anchor, f"{anchor_from_stderr(err)} vs {plain_anchor}")
+    html_letter = hm("send_mail", to=["a@b.hu"], body="Harmadik level.", body_format="html")
+    approve(store, plain_anchor)
+    code, _, err = run_gate(store, html_letter)
+    html_anchor = anchor_from_stderr(err)
+    check("harder-mail: a plain approval does NOT release the same body as html",
+          code == 2 and html_anchor not in (None, plain_anchor), f"exit={code} err={err[:200]!r}")
+    approve(store, html_anchor)
+    code, _, err = run_gate(store, html_letter)
+    check("harder-mail: the approved html send goes out", code == 0, f"exit={code} err={err[:200]!r}")
+    code, _, err = run_gate(store, fresh)
+    check("harder-mail: the plain approval is still unused and releases the plain letter", code == 0,
+          f"exit={code} err={err[:200]!r}")
+    _, _, err = run_gate(store, hm("send_mail", to=["a@b.hu"], body="Harmadik level.", body_format="markdown"))
+    check("harder-mail: markdown and html anchors differ", anchor_from_stderr(err) not in (None, html_anchor))
+    # The reply anchor is structured: a ':' in the folder cannot collide with another uid.
+    _, _, e1 = run_gate(store, hm("send_mail", reply_to_uid="b:7", reply_folder="a"))
+    _, _, e2 = run_gate(store, hm("send_mail", reply_to_uid="7", reply_folder="a:b"))
+    check("harder-mail reply anchor: folder/uid split is unambiguous",
+          anchor_from_stderr(e1) not in (None, anchor_from_stderr(e2)))
+
+    auto = hm("send_mail_auto", to=["a@b.hu"], body="Masik level.")
+    code, _, err = run_gate(store, auto)
+    check("harder-mail send_mail_auto is gated like send_mail", code == 2 and anchor_from_stderr(err), f"exit={code}")
+
+    # The account/reply fields join the anchor ONLY for harder-mail: a send_email
+    # anchor stays byte-identical to its pre-change value.
+    plain = mcp_send()
+    _, _, err = run_gate(store, plain)
+    sys.path.insert(0, HOOKS)
+    import importlib.util as _ilu
+    _spec = _ilu.spec_from_file_location("eag", GATE)
+    _eag = _ilu.module_from_spec(_spec)
+    _spec.loader.exec_module(_eag)
+    from email_extract import collect_email_envelope as _cee
+    legacy = {"to": ["a@b.hu"], "cc": [], "text": "Kedves Ügyfelünk! Törzs.\nTeszt tárgy"}
+    legacy_hash = hashlib.sha256(json.dumps(legacy, ensure_ascii=False, sort_keys=True,
+                                            separators=(",", ":")).encode()).hexdigest()
+    check("send_email anchor unchanged by the harder-mail fields",
+          anchor_from_stderr(err) == _eag.content_anchor(_cee(plain["tool_name"], plain["tool_input"])))
+    check("send_email anchor equals the pre-change canon", anchor_from_stderr(err) == legacy_hash,
+          f"got={anchor_from_stderr(err)} legacy={legacy_hash}")
+
+# --- harder-mail and the standing list (security review): a reply is addressed by
+# its original, so an address typed into reply_to_uid / reply_folder must never
+# be read as the one listed recipient that skips the approval.
+with tempfile.TemporaryDirectory() as td:
+    store = make_store(os.path.join(td, "hm-standing"), level=2)
+    write_standing(store, {"recipients": ["dani@pelda.hu"]})
+    activate_standing(store, "dani@pelda.hu")
+    code, out, err = run_gate(store, hm("send_mail", to=["dani@pelda.hu"]))
+    check("harder-mail standing: a new-thread send to the listed address goes out (control)",
+          code == 0 and "allando cimzett" in out, f"exit={code} out={out[:120]!r} err={err[:120]!r}")
+    for uid, folder in (("dani@pelda.hu", ""), (7, "dani@pelda.hu"), ("Dani <dani@pelda.hu>", "")):
+        code, out, err = run_gate(store, hm("send_mail", reply_to_uid=uid, reply_folder=folder))
+        check(f"harder-mail standing: a reply with the address in uid={uid!r} folder={folder!r} still needs approval",
+              code == 2 and anchor_from_stderr(err) is not None, f"exit={code} out={out[:120]!r}")
+
+# --- harder-mail tool-name fixture: the outcome per NAME and per gate, at every
+# approval level, so a classifier change that moves one of these names to
+# another kind fails here, whatever the classifier is called.
+print("\nHARDERMAILGATES1019: shared harder-mail tool-name fixture, gate by gate")
+with open(os.path.join(HERE, "fixtures", "harder-mail-tool-names.json"), encoding="utf-8") as fh:
+    HM_NAMES = json.load(fh)
+check("fixture names the three harder-mail letter tools",
+      HM_NAMES["names"] == ["mcp__harder-mail__send_mail", "mcp__harder-mail__send_mail_auto",
+                            "mcp__harder-mail__create_draft"]
+      and sorted(HM_NAMES["cases"]) == sorted(HM_NAMES["names"]), f"names={HM_NAMES['names']}")
+sys.path.insert(0, HOOKS)
+import email_extract as _ee  # noqa: E402
+for name in HM_NAMES["names"]:
+    check(f"{name}: the shared classifier gives {HM_NAMES['cases'][name]['kind']}",
+          _ee.classify_mail_tool(name) == HM_NAMES["cases"][name]["kind"], _ee.classify_mail_tool(name))
+HM_SHAPES = {"new thread": {"to": ["a@b.hu"]}, "reply": {"reply_to_uid": 7, "reply_folder": "INBOX"}}
+with tempfile.TemporaryDirectory() as td:
+    stores = {
+        "approval_level1": make_store(os.path.join(td, "l1"), level=1),
+        "approval_level2": make_store(os.path.join(td, "l2"), level=2),
+        "approval_level3": make_store(os.path.join(td, "l3"), level=3),
+        "owner_cc_missing": owner_store(os.path.join(td, "owner"), 3),
+        "owner_cc_present": owner_store(os.path.join(td, "owner-ok"), 3),
+    }
+    for name in HM_NAMES["names"]:
+        for shape, fields in HM_SHAPES.items():
+            for key, store in stores.items():
+                ti = {"account": "ceges", "subject": "Teszt tárgy", "body": f"Kedves Ügyfelünk! {shape}.", **fields}
+                if key == "owner_cc_present":
+                    ti["cc"] = [OWNER]
+                payload = {"tool_name": name, "tool_input": ti}
+                want = HM_NAMES["cases"][name][key]
+                code, _, err = run_gate(store, payload)
+                if want == "approval":
+                    # level 2: denied with the letter's anchor, released by approving
+                    # exactly that anchor, once.
+                    anchor = anchor_from_stderr(err)
+                    ok = code == 2 and anchor is not None
+                    if ok:
+                        approve(store, anchor)
+                        code2, _, err2 = run_gate(store, payload)
+                        code3, _, _ = run_gate(store, payload)
+                        ok = code2 == 0 and code3 == 2
+                    check(f"{name} ({shape}) {key}: denied, then released by its approval once", ok,
+                          f"exit={code} err={err[:160]!r}")
+                    continue
+                check(f"{name} ({shape}) {key}: {want}", code == (2 if want == "deny" else 0),
+                      f"exit={code} err={err[:160]!r}")
+
+    # A broken email_extract.py takes the classifier with it: every harder-mail
+    # letter must stay owner-CC checked (the fallback regex), and the sends keep
+    # their level-1 deny / level-3 pass, as for every other send.
+    broken = copy_hook_tree(os.path.join(td, "broken-extract-harder"))
+    break_module(broken, "email_extract.py")
+    for name in HM_NAMES["names"]:
+        payload = {"tool_name": name, "tool_input": {"account": "ceges", "to": ["a@b.hu"],
+                                                     "subject": "Teszt tárgy", "body": "Kedves Ügyfelünk!"}}
+        code, _, err = run_gate(owner_store(os.path.join(td, f"hm-owner-{name}"), 3), payload, gate=broken)
+        check(f"broken email_extract.py -> {name} at level 3 without the owner DENIED, naming the owner",
+              code == 2 and OWNER in err, f"exit={code} err={err[:200]!r}")
+        if HM_NAMES["cases"][name]["kind"] == "connector_send":
+            for level, want in ((1, 2), (3, 0)):
+                code, _, err = run_gate(make_store(os.path.join(td, f"hm-dn-{level}-{name}"), level=level),
+                                        payload, gate=broken)
+                check(f"broken email_extract.py -> {name} at level {level} exits {want}",
+                      code == want, f"exit={code} err={err[:200]!r}")
+
 
 print()
 if failed:

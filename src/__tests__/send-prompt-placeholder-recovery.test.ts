@@ -32,9 +32,12 @@ const h = vi.hoisted(() => {
     ctrlC: 0,
     chunksAfterCtrlC: 0,
     parkedCaptures: 0,
+    // what the idle input box echoes: the chunks typed since the last Enter /
+    // Ctrl-C, as a live TUI shows them (the pre-Enter echo wait reads it)
+    typed: '',
     calls: [] as string[][],
   }
-  return { IDLE, PARKED_BOX, PARKED_TAIL, QUOTED_ABOVE_BOX, s }
+  return { box, IDLE, PARKED_BOX, PARKED_TAIL, QUOTED_ABOVE_BOX, s }
 })
 
 vi.mock('node:child_process', async (orig) => ({
@@ -51,7 +54,7 @@ vi.mock('node:child_process', async (orig) => ({
         if (s.parkedCaptures === s.nullParkedCapture) throw new Error('capture failed')
         return s.parkedAs === 'box' ? h.PARKED_BOX : h.PARKED_TAIL
       }
-      return h.IDLE
+      return s.typed ? h.box(s.typed) : h.IDLE
     }
     if (args.includes('display-message')) {
       if (s.state === 'gone') gone()
@@ -65,14 +68,17 @@ vi.mock('node:child_process', async (orig) => ({
           s.state = 'gone'
           gone()
         }
+        s.typed += args[args.indexOf('-l') + 1]
         return ''
       }
       if (key === 'Enter') {
+        s.typed = ''
         s.enters++
         s.state = s.enters === 1 ? 'parked' : 'idle'
         return ''
       }
       if (key === 'C-c') {
+        s.typed = ''
         s.ctrlC++
         if (s.onCtrlC === 'clear') s.state = 'idle'
         // the press emptied the box, but the next frame shows no separators: only the tail is readable
@@ -102,7 +108,7 @@ const logged = (spy: { mock: { calls: unknown[][] } }, msg: string) => spy.mock.
 function scenario(over: Partial<typeof h.s>): void {
   Object.assign(h.s, {
     parkedAs: 'box', onCtrlC: 'clear', dieAtReplayChunk: 0, nullParkedCapture: 0,
-    state: 'idle', enters: 0, ctrlC: 0, chunksAfterCtrlC: 0, parkedCaptures: 0,
+    state: 'idle', enters: 0, ctrlC: 0, chunksAfterCtrlC: 0, parkedCaptures: 0, typed: '',
   }, over)
   h.s.calls.length = 0
 }

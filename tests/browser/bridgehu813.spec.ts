@@ -46,8 +46,9 @@ async function showPairingPanel(page: import('@playwright/test').Page) {
     // the sections the other just appended (measured, 2026-09-04).
     await w.loadSettings!()
   })
-  // renderAuthCard renders the pairing section itself when the credential is a
-  // token or a session: if this input is here, the real render path ran.
+  // renderAuthCard renders the pairing section itself for a session, or for the
+  // token before the first login exists (DEVKEYMINT1022): if this input is here,
+  // the real render path ran.
   await page.locator('#authBridgeKeyLine').waitFor({ state: 'visible' })
 }
 
@@ -71,7 +72,7 @@ async function openPairingPanel(page: import('@playwright/test').Page, lang: 'hu
   await page.route('**/api/settings', (r) =>
     r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ settings: [] }) }))
   await page.route('**/api/auth/status', (r) =>
-    r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ method: 'token', authenticated: true }) }))
+    r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ method: 'token', authenticated: true, setup_required: true }) }))
   await page.route('**/api/auth/device-keys', (r) =>
     r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ keys: [] }) }))
   await page.route('**/api/security/bridge-enroll', (r) =>
@@ -132,7 +133,7 @@ test.describe('BRIDGEHU813 -- the pairing error in a real browser', () => {
     await page.route('**/api/settings', (r) =>
       r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ settings: [] }) }))
     await page.route('**/api/auth/status', (r) =>
-      r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ method: 'token', authenticated: true }) }))
+      r.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ method: 'token', authenticated: true, setup_required: true }) }))
     await page.route('**/api/security/bridge-enroll', (r) =>
       r.fulfill({
         status: 400,

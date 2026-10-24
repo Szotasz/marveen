@@ -102,7 +102,13 @@ const FOOTER_TRUNCATED_RX = /(?:[A-Za-z][\w-]* ){1,3}on · [^\n]*·[^\n]*…\s*$
 // mode word, `on`, then only `· N shell(s)` and an optional `· N monitor(s)`
 // to the end of the line, and ONLY on the last non-empty line, so the same
 // words quoted in a log line in the scrollback never count.
-const FOOTER_SHELL_TAIL_RX = /(?:[A-Za-z][\w-]* ){1,3}on(?: \(shift\+tab to cycle\))? · \d+ shells?(?: · \d+ monitors?)?\s*$/
+// COMMATAIL1022: newer builds join the counts with a comma, "· 1 shell, 1 monitor".
+// The comma takes exactly one space, and a bare tail with any other count stays
+// 'unknown'. The line must also START like the live footer, blanks and the mode
+// glyph (⏵⏵, ⏵, ⏸): detectPaneState returns 'idle' on this footer even without an
+// input box above it, so a log line or a sentence in the footer slot that ends in
+// the same words must not match.
+const FOOTER_SHELL_TAIL_RX = /^\s*[\u23F5\u23F8]{1,2} (?:[A-Za-z][\w-]* ){1,3}on(?: \(shift\+tab to cycle\))? · \d+ shells?(?:(?: ·|,) \d+ monitors?)?\s*$/
 
 /**
  * Index of the idle footer line, or -1. The full footer may sit anywhere the
@@ -284,6 +290,7 @@ const PASTE_REGION_FALLBACK_LINES = 8
 // destructive Ctrl-C + resend on a perfectly healthy session. Scoping to
 // the box (same discipline as BUSY_ESC_TO_INTERRUPT_RX / the footer checks)
 // confines the match to where a genuine parked stub actually lives.
+// typedTailEchoed() reads the same region, for the same reason.
 function pastePlaceholderRegion(pane: string): { where: PastePlaceholderWhere; text: string } {
   const lines = pane.split('\n')
   let bottomSep = -1
@@ -1330,6 +1337,43 @@ export function detectsFeedbackOptOutPrompt(pane: string): boolean {
   return FEEDBACK_OPTOUT_RX.test(liveRegion)
 }
 
+export type FeedbackDismissPlan =
+  | { act: 'none' }
+  | { act: 'keys'; keys: Array<'C-u' | 'Down'> }
+  | { act: 'hold'; reason: 'input-occupied' | 'input-unreadable' }
+
+/**
+ * What the dismisser may type at a feedback-draft modal. NEVER A DIGIT. The card
+ * does not read a keypress: it watches the prompt INPUT VALUE and fires only when
+ * the input changes to exactly one digit, after a 400 ms debounce, ignoring a digit
+ * typed within 600 ms of the card appearing (measured in the shipped CLI). A digit
+ * that did not fire stays in the input, the next attempt makes it two digits, and a
+ * longer input never fires again, so every later attempt only appends (an agent
+ * sat not-ready behind a growing `❯ 0000`). And "2" sends the draft. The measured
+ * manual recipe is C-u, then Down: Down moves focus to the footer, which stops the
+ * band above the prompt from rendering.
+ * C-u clears only what is provably a digit-typing dismisser's leftover -- an empty
+ * or all-digit input -- and NEVER on the main session, whose box may hold an
+ * operator's reply; there even digits may be a numbered answer, so only an empty
+ * prompt gets its Down. Anything else gets no keystroke.
+ * Two captures: `pane`, the plain one the detector reads (the card's own text
+ * may be dim, which a ghost-stripped capture would drop), and `inputView`, the
+ * ghost-stripped one the input box is read from (otherwise an empty prompt
+ * showing an autosuggest reads as occupied and the card stays up).
+ */
+export function feedbackDraftDismissPlan(pane: string, inputView: string | null, isMainSession: boolean): FeedbackDismissPlan {
+  if (!detectsFeedbackDraftModal(pane)) return { act: 'none' }
+  const box = inputView == null ? null : liveInputBox(inputView)
+  if (box == null) return { act: 'hold', reason: 'input-unreadable' }
+  // Only a column-0 ❯ at the top of the box (blank rows allowed) is UI; an
+  // indented ❯ is typed text. Row edges only: a wrapped leftover still joins,
+  // a typed "2 2" does not.
+  const typed = box.replace(/^(?:[^\S\n]*\n)*❯/, '').split('\n').map((row) => row.trim()).join('')
+  if (typed === '') return { act: 'keys', keys: isMainSession ? ['Down'] : ['C-u', 'Down'] }
+  if (!isMainSession && /^\d+$/.test(typed)) return { act: 'keys', keys: ['C-u', 'Down'] }
+  return { act: 'hold', reason: 'input-occupied' }
+}
+
 export interface DetectPaneStateOptions {
   /** If true, the 'typing' state (text parked in input box) is
    * merged into 'busy'. Default false -- callers that care about
@@ -2175,6 +2219,44 @@ export function overfullParkedInputTail(pane: string): string | null {
 export function submitLanded(prevSig: string, paneAfter: string | null): boolean {
   if (paneAfter == null) return false
   return stuckInputSignature(paneAfter) !== prevSig
+}
+
+// How many trailing characters of a typed prompt (whitespace removed) must be
+// visible before the submitting Enter goes out. Long enough to be specific to
+// this prompt, short enough to fit on the bottom rows of an overfull box.
+export const TYPED_ECHO_TAIL_CHARS = 24
+
+// Has the TUI ECHOED the end of what we just typed? True when the last
+// TYPED_ECHO_TAIL_CHARS non-whitespace characters of `typed` are visible IN THE
+// LIVE INPUT BOX (whitespace removed on both sides, so terminal wrap and the row
+// indent do not matter), or when a `[Pasted text #N]` placeholder sits there
+// (the TUI ingested the burst as a paste, which is also "read"). False on a null
+// capture.
+//
+// Both checks read the SAME region, pastePlaceholderRegion(): between the two
+// bottom-most box separators, or the last few lines when the box is taller than
+// the pane (overfull: the top separator scrolled off, the tail is at the
+// bottom). The whole pane would not do: a submitted prompt stays visible in the
+// transcript above the box, and many prompts end the same way every time (the
+// by-reference scheduled-task block, the batch trailer, a recurring task's own
+// text), so an earlier copy of the tail would pass for the echo of this one
+// while the box still shows only the head.
+//
+// Why: the pre-Enter settle wait reads two identical captures as "settled". A
+// TUI that has stopped reading its input looks exactly like that, so the Enter
+// and the retry Enters went out while most of the prompt was still unread in
+// the PTY. Measured on a sub-agent still on keyboard delivery: the two long
+// deliveries that did land were split at a chunk boundary (offset 800) into a
+// <pasted_content> block and reached the transcript 18.5 s and 24.9 s AFTER the
+// router had finished the send (median for the other 110 deliveries: 0 s);
+// three others never landed. The end of the text on screen is the one signal a
+// frozen TUI cannot fake.
+export function typedTailEchoed(pane: string | null, typed: string): boolean {
+  if (pane == null) return false
+  const tail = typed.replace(/\s+/g, '').slice(-TYPED_ECHO_TAIL_CHARS)
+  if (tail.length === 0) return true
+  const region = pastePlaceholderRegion(pane).text
+  return region.replace(/\s+/g, '').includes(tail) || PENDING_PASTE_RX.test(region)
 }
 
 // Per-session bookkeeping for the stuck-input recovery watcher. A "spell"

@@ -2063,6 +2063,13 @@ function getDragAfterElement(col, y) {
   return closest
 }
 
+// The card version the edit form was FILLED from (PUT /api/kanban/:id refuses a
+// stale one with 409). The form is the one write path that does not round-trip the
+// card object -- it rebuilds the body from its fields -- so without this it would be
+// the one UI write that can still replace someone else's description. null = a new
+// card, or a card from a server without versions: the PUT then goes unchecked.
+let cardEditBaseVersion = null
+
 // === New card modal ===
 function openNewCardModal(status) {
   document.getElementById('cardModalTitle').textContent = t('kanban.modal.title_new')
@@ -2074,6 +2081,7 @@ function openNewCardModal(status) {
   document.getElementById('cardDue').value = ''
   document.getElementById('cardStart').value = ''
   document.getElementById('cardEditId').value = ''
+  cardEditBaseVersion = null
   document.getElementById('cardEditStatus').value = status || 'planned'
   populateAssigneeSelect('cardAssignee')
   populateProjectSuggestions()
@@ -2117,12 +2125,22 @@ document.getElementById('saveCardBtn').addEventListener('click', async () => {
 
   try {
     if (editId) {
+      if (cardEditBaseVersion !== null) data.expected_version = cardEditBaseVersion
       const res = await fetch(`/api/kanban/${encodeURIComponent(editId)}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data),
       })
-      if (!res.ok) { const e = await res.json().catch(() => ({})); throw new Error(e.error || res.status) }
+      if (!res.ok) {
+        const e = await res.json().catch(() => ({}))
+        if (res.status === 409 && e.conflict === 'stale_version') {
+          // The modal STAYS OPEN: the typed text is the only copy of it, and closing
+          // would destroy it to report that something else was nearly destroyed.
+          showToast(t('kanban.toast.stale_version_form'), 8000)
+          return
+        }
+        throw new Error(e.error || res.status)
+      }
       showToast(t('kanban.toast.card_updated'))
     } else {
       data.status = document.getElementById('cardEditStatus').value
@@ -2555,7 +2573,22 @@ async function showCardDetail(card) {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ ...card, assignee: newVal }),
         })
+        // `{...card}` carries the version this object was loaded at, so a card that
+        // changed meanwhile is refused instead of having its description reverted.
+        if (r.status === 409) {
+          const e = await r.json().catch(() => ({}))
+          if (e.conflict === 'stale_version') {
+            assigneeValueEl.textContent = current ? current : '-- nincs --'
+            showToast(t('kanban.toast.stale_version'), 6000)
+            loadKanban && loadKanban()
+            return
+          }
+        }
         if (!r.ok) throw new Error('PUT failed')
+        // The next whole-card write from this same view must carry the NEW version,
+        // or it would be refused as stale against our own write.
+        const saved = await r.json().catch(() => ({}))
+        if (Number.isInteger(saved.version)) card.version = saved.version
         card.assignee = newVal
         assigneeValueEl.textContent = newVal ? newVal : '-- nincs --'
         showToast(t('kanban.toast.assignee_updated'))
@@ -2617,8 +2650,14 @@ async function showCardDetail(card) {
         method: 'PUT', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...card, parent_id: newParentId }),
       })
-      if (r.ok) { card.parent_id = newParentId; showToast(label); loadKanban(); showCardDetail(card) }
-      else showToast(t('kanban.toast.save_error'))
+      if (r.ok) {
+        const saved = await r.json().catch(() => ({}))
+        if (Number.isInteger(saved.version)) card.version = saved.version
+        card.parent_id = newParentId; showToast(label); loadKanban(); showCardDetail(card)
+      } else if (r.status === 409 && (await r.json().catch(() => ({}))).conflict === 'stale_version') {
+        showToast(t('kanban.toast.stale_version'), 6000)
+        loadKanban()
+      } else showToast(t('kanban.toast.save_error'))
     }
     parentMetaItem.style.display = ''
   } else {
@@ -2697,6 +2736,9 @@ async function showCardDetail(card) {
       ? new Date(card.start_date * 1000).toISOString().split('T')[0]
       : ''
     document.getElementById('cardEditId').value = card.id
+    // Taken at FILL time, not at save time: it has to describe the text the user
+    // is about to edit on top of, or the check certifies nothing.
+    cardEditBaseVersion = Number.isInteger(card.version) ? card.version : null
     document.getElementById('cardEditStatus').value = card.status
     populateAssigneeSelect('cardAssignee', card.assignee)
     populateProjectSuggestions()
@@ -6497,8 +6539,9 @@ document.getElementById('saveSkillBtn').addEventListener('click', async () => {
       const err = await res.json()
       throw new Error(err.error || 'Hiba')
     }
+    const created = await res.json().catch(() => ({}))
     closeModal(skillModalOverlay)
-    showToast(t('skills.toast.added'))
+    showToast(created.pending ? t('skills.toast.queued') : t('skills.toast.added'))
     if (isGlobal) {
       loadGlobalSkills()
     } else {
@@ -6541,7 +6584,7 @@ document.getElementById('importSkillBtn').addEventListener('click', async () => 
     const result = await res.json()
     closeModal(skillModalOverlay)
     const importedList = Array.isArray(result.imported) ? result.imported : []
-    showToast(t('skills.toast.imported', { list: importedList.join(', ') }))
+    showToast(t(result.pending ? 'skills.toast.imported_queued' : 'skills.toast.imported', { list: importedList.join(', ') }))
     skillFile = null
     document.getElementById('skillFileName').textContent = ''
     if (isGlobal) {
@@ -11682,9 +11725,154 @@ async function loadGlobalSkills() {
     globalSkills = await globalRes.json()
     localAgentSkills = localRes.ok ? await localRes.json() : []
     renderGlobalSkills()
+    loadPendingSkills()
   } catch (err) {
     console.error('Skills betoltes hiba:', err)
     skillsGrid.innerHTML = `<div class="connector-loading">${t('skills.error')}</div>`
+  }
+}
+
+// MARVEENGAPS1020 (b): skills waiting for approval. A generated or imported
+// skill is not live until it is approved here. The approver sees every file
+// in FULL (the text of every non-binary file, size and sha256 of every file,
+// scripts and executables listed first), the scan's findings, and where the
+// skill will land; the approval is bound to the hash of exactly that content,
+// name and target. Everything below is built with textContent: the skill's
+// own text is untrusted data, never markup.
+async function loadPendingSkills() {
+  const box = document.getElementById('skillsPending')
+  if (!box) return
+  let list = []
+  try {
+    const res = await fetch('/api/skills/pending')
+    list = res.ok ? await res.json() : []
+  } catch { list = [] }
+  if (!Array.isArray(list)) list = []
+  const details = await Promise.all(list.map(async (p) => {
+    try {
+      const r = await fetch(`/api/skills/pending/${encodeURIComponent(p.id)}`)
+      return r.ok ? await r.json() : null
+    } catch { return null }
+  }))
+  renderPendingSkills(box, details.filter(Boolean))
+}
+
+function pendingEl(tag, cls, text) {
+  const el = document.createElement(tag)
+  if (cls) el.className = cls
+  if (text != null) el.textContent = String(text)
+  return el
+}
+
+function pendingFileRow(f) {
+  const det = pendingEl('details', 'skills-pending-file')
+  const flagged = f.kind === 'script' || f.kind === 'binary' || f.executable
+  const sum = pendingEl('summary', flagged ? 'is-flagged' : null)
+  const flags = [f.kind]
+  if (f.executable) flags.push(t('skills.pending.executable'))
+  if (f.shebang) flags.push(f.shebang)
+  sum.appendChild(pendingEl('code', null, f.path))
+  sum.appendChild(pendingEl('span', null, ` ${f.size} B · ${flags.join(' · ')}`))
+  det.appendChild(sum)
+  det.appendChild(pendingEl('div', 'skills-pending-sha', `sha256 ${f.sha256 || '-'}`))
+  det.appendChild(f.text != null
+    ? pendingEl('pre', null, f.text)
+    : pendingEl('div', 'skills-pending-warn', t('skills.pending.binary_not_shown')))
+  // #2088 delta 3: the readable runs of an image (what `cat` would hand the model)
+  if (f.text == null && f.strings) {
+    det.appendChild(pendingEl('div', 'skills-pending-warn', t('skills.pending.image_strings')))
+    det.appendChild(pendingEl('pre', null, f.strings))
+    det.open = true
+  }
+  if (f.path === 'SKILL.md') det.open = true
+  return det
+}
+
+function renderPendingSkills(box, list) {
+  box.replaceChildren()
+  if (!list.length) { box.hidden = true; return }
+  box.hidden = false
+  box.appendChild(pendingEl('h2', 'skills-pending-title', t('skills.pending.title', { n: list.length })))
+  box.appendChild(pendingEl('p', 'skills-pending-intro', t('skills.pending.intro')))
+  for (const p of list) {
+    const card = pendingEl('div', 'skills-pending-card')
+    const head = pendingEl('div', 'skills-pending-head')
+    head.appendChild(pendingEl('strong', null, p.name))
+    const where = p.target && p.target.scope === 'agent'
+      ? t('skills.pending.target_agent', { agent: p.target.agent })
+      : t('skills.pending.target_global')
+    const src = p.source === 'import' ? t('skills.pending.source_import') : t('skills.pending.source_generate')
+    head.appendChild(pendingEl('span', 'skills-pending-meta', `${src} · ${new Date(p.createdAt).toLocaleString()}`))
+    card.appendChild(head)
+    card.appendChild(pendingEl('div', p.target && p.target.scope === 'agent' ? 'skills-pending-target' : 'skills-pending-target is-global', where))
+
+    const report = p.report || { files: [], findings: [], truncated: false }
+    const files = Array.isArray(report.files) ? report.files : []
+    const risky = files.filter((f) => f.kind === 'script' || f.kind === 'binary' || f.executable)
+    const rest = files.filter((f) => !risky.includes(f))
+    if (risky.length) {
+      card.appendChild(pendingEl('div', 'skills-pending-sub is-flagged', t('skills.pending.scripts', { n: risky.length })))
+      for (const f of risky) card.appendChild(pendingFileRow(f))
+    }
+    card.appendChild(pendingEl('div', 'skills-pending-sub', t('skills.pending.files', { n: rest.length })))
+    for (const f of rest) card.appendChild(pendingFileRow(f))
+
+    card.appendChild(pendingEl('div', 'skills-pending-sub',
+      report.findings.length ? t('skills.pending.findings', { n: report.findings.length }) : t('skills.pending.no_findings')))
+    if (report.findings.length) {
+      const fl = pendingEl('ul', 'skills-pending-findings')
+      for (const f of report.findings) {
+        const li = pendingEl('li')
+        li.appendChild(pendingEl('span', 'skills-pending-pattern', f.pattern))
+        li.appendChild(pendingEl('code', null, `${f.file}:${f.line}`))
+        li.appendChild(pendingEl('span', 'skills-pending-excerpt', f.excerpt))
+        fl.appendChild(li)
+      }
+      card.appendChild(fl)
+    }
+    if (report.findingsTruncated) card.appendChild(pendingEl('div', 'skills-pending-warn', t('skills.pending.findings_truncated')))
+    if (Array.isArray(report.unreviewable) && report.unreviewable.length) {
+      card.appendChild(pendingEl('div', 'skills-pending-warn', t('skills.pending.unreviewable', { list: report.unreviewable.join(', ') })))
+    } else if (!p.approvable) {
+      card.appendChild(pendingEl('div', 'skills-pending-warn', t('skills.pending.not_approvable')))
+    }
+
+    const actions = pendingEl('div', 'skills-pending-actions')
+    const approve = pendingEl('button', 'btn-primary btn-compact', t('skills.pending.approve'))
+    const reject = pendingEl('button', 'btn-danger btn-compact', t('skills.pending.reject'))
+    approve.disabled = !p.approvable
+    approve.addEventListener('click', async () => {
+      if (!confirm(t('skills.pending.confirm_approve', { name: p.name, where }))) return
+      approve.disabled = true
+      try {
+        const res = await fetch(`/api/skills/pending/${encodeURIComponent(p.id)}/approve`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ hash: p.hash }),
+        })
+        const body = await res.json().catch(() => ({}))
+        if (!res.ok) throw new Error(body.error || String(res.status))
+        showToast(t('skills.pending.approved', { name: p.name }))
+        loadGlobalSkills()
+      } catch (err) {
+        showToast(`${t('skills.pending.error')}: ${err.message}`)
+        loadPendingSkills()
+      } finally { approve.disabled = !p.approvable }
+    })
+    reject.addEventListener('click', async () => {
+      if (!confirm(t('skills.pending.confirm_reject', { name: p.name }))) return
+      reject.disabled = true
+      try {
+        const res = await fetch(`/api/skills/pending/${encodeURIComponent(p.id)}/reject`, { method: 'POST' })
+        if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || String(res.status))
+        showToast(t('skills.pending.rejected', { name: p.name }))
+      } catch (err) {
+        showToast(`${t('skills.pending.error')}: ${err.message}`)
+      } finally { reject.disabled = false; loadPendingSkills() }
+    })
+    actions.append(approve, reject)
+    card.appendChild(actions)
+    box.appendChild(card)
   }
 }
 
@@ -14895,10 +15083,12 @@ async function renderAuthCard() {
   if (!status) { body.innerHTML = `<p class="auth-muted">${t('auth.card.unavailable')}</p>`; return }
   if (status.setup_required) { renderCreateLoginForm(body) }
   else if (status.method === 'session') { renderSessionPanel(body, status) }
-  else renderTokenModePanel(body)
+  else renderTokenModePanel(body, status)
   // Device keys are managed by token/session operators only (a device key
   // itself gets 403 from the management endpoints, so don't render the panel).
-  if (status.method === 'token' || status.method === 'session') {
+  // Once a login exists, issuing keys and pairing take the owner's session
+  // (DEVKEYMINT1022), so a token-mode browser gets the sign-in button above instead.
+  if (status.method === 'session' || (status.method === 'token' && status.setup_required)) {
     renderDeviceKeysSection(body)
     renderBridgeEnrollSection(body)
     renderOperatorAccessSection(body)
@@ -15297,9 +15487,28 @@ async function renderAuthSessions() {
   } catch { el.innerHTML = '' }
 }
 
-function renderTokenModePanel(body) {
+function renderTokenModePanel(body, status) {
   body.innerHTML =
     `<p class="auth-muted">${t('auth.card.token_mode')}</p>`
+  if (!status || !status.login_available) return
+  // The browser sends a stored access token ahead of the session cookie, so a
+  // browser that came in with ?token= (or the mobile QR) never reaches the login.
+  // Dropping the stored token and reloading lands on the sign-in overlay; from
+  // then on this browser runs on the owner's session (DEVKEYMINT1022).
+  const p = document.createElement('p')
+  p.className = 'auth-muted'
+  p.textContent = t('auth.card.token_mode_signin_desc')
+  const btn = document.createElement('button')
+  btn.type = 'button'
+  btn.className = 'btn-primary'
+  btn.id = 'authTokenSignIn'
+  btn.textContent = t('auth.card.token_mode_signin_btn')
+  btn.addEventListener('click', () => {
+    try { localStorage.removeItem('marveen-dashboard-token') } catch { /* storage blocked */ }
+    window.location.reload()
+  })
+  body.appendChild(p)
+  body.appendChild(btn)
 }
 
 // Dismissible setup banner: shown only when the operator is authed via the token
@@ -15338,7 +15547,74 @@ document.addEventListener('DOMContentLoaded', () => {
   wireAuthBanner()
   initAuthBanner()
   wireBranchDriftBanner()
+  wireFleetFreeze()
 })
+
+// --- Fleet freeze, the red button (KILLSWITCH1022) ---------------------------
+// Pulling it is open to every signed-in browser; lifting it needs the owner's
+// dashboard login (the server answers 403 owner_session_required otherwise).
+const FLEET_FREEZE_POLL_MS = 15000
+
+function renderFleetFreeze(data) {
+  const banner = document.getElementById('fleetFreezeBanner')
+  const text = document.getElementById('fleetFreezeBannerText')
+  const btn = document.getElementById('fleetFreezeBtn')
+  if (!banner || !text || !btn) return
+  const st = data && data.frozen ? data.state : null
+  if (!st) {
+    banner.hidden = true
+    btn.disabled = false
+    return
+  }
+  const when = st.at ? new Date(st.at).toLocaleString() : ''
+  text.textContent = t(st.mode === 'stop' ? 'fleet_freeze.banner.stop' : 'fleet_freeze.banner.freeze',
+    { by: st.by || '?', at: when, reason: st.reason || '' })
+  banner.hidden = false
+  btn.disabled = st.mode === 'stop'
+}
+
+async function pollFleetFreeze() {
+  try {
+    const res = await fetch('/api/fleet/freeze')
+    if (!res.ok) return
+    renderFleetFreeze(await res.json())
+  } catch { /* the next poll retries */ }
+}
+
+function wireFleetFreeze() {
+  const btn = document.getElementById('fleetFreezeBtn')
+  const unfreezeBtn = document.getElementById('fleetUnfreezeBtn')
+  if (!btn || !unfreezeBtn) return
+  btn.addEventListener('click', async () => {
+    const reason = (window.prompt(t('fleet_freeze.prompt.reason')) || '').trim()
+    if (!reason) return
+    const mode = window.confirm(t('fleet_freeze.prompt.stop')) ? 'stop' : 'freeze'
+    try {
+      const res = await fetch('/api/fleet/freeze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason, mode }),
+      })
+      const data = await res.json().catch(() => ({}))
+      if (!res.ok) { showToast(data.error || ('HTTP ' + res.status)); return }
+      renderFleetFreeze(data)
+      showToast(t('fleet_freeze.toast.frozen'))
+    } catch (err) { showToast(String(err.message || err)) }
+  })
+  unfreezeBtn.addEventListener('click', async () => {
+    if (!window.confirm(t('fleet_freeze.prompt.unfreeze'))) return
+    try {
+      const res = await fetch('/api/fleet/unfreeze', { method: 'POST' })
+      const data = await res.json().catch(() => ({}))
+      if (res.status === 403) { showToast(t('fleet_freeze.toast.owner_only'), 8000); return }
+      if (!res.ok) { showToast(data.error || ('HTTP ' + res.status)); return }
+      renderFleetFreeze({ frozen: false })
+      showToast(t('fleet_freeze.toast.unfrozen'))
+    } catch (err) { showToast(String(err.message || err)) }
+  })
+  pollFleetFreeze()
+  setInterval(pollFleetFreeze, FLEET_FREEZE_POLL_MS)
+}
 
 async function loadSettings() {
   const tabNav = document.getElementById('settingsTabNav')
@@ -15629,6 +15905,7 @@ async function renderClaudePlansPanel(body) {
         <div class="form-group" style="flex:1">
           <label>${t('settings.claude_plans.form.mode')}</label>
           <select class="input" id="cpFormMode">
+            <option value="login">${t('settings.claude_plans.form.mode_login')}</option>
             <option value="token">${t('settings.claude_plans.form.mode_token')}</option>
             <option value="configDir">${t('settings.claude_plans.form.mode_config_dir')}</option>
           </select>
@@ -15645,6 +15922,23 @@ async function renderClaudePlansPanel(body) {
         <label for="cpFormToken">${t('settings.claude_plans.form.token')}</label>
         <input class="input" id="cpFormToken" type="password" autocomplete="off" spellcheck="false" placeholder="sk-ant-oat01-…">
         <div class="claude-plans-form-hint" id="cpFormTokenHint">${t('settings.claude_plans.form.token_hint')}</div>
+      </div>
+      <div class="form-group" id="cpFormLoginGroup" hidden>
+        <div class="claude-plans-form-hint">${t('settings.claude_plans.login.hint')}</div>
+        <div id="cpLoginStep" class="claude-plans-login-step" hidden>
+          <a class="btn-secondary btn-compact" id="cpLoginLink" href="#" target="_blank" rel="noopener noreferrer">${t('settings.claude_plans.login.open_link')}</a>
+          <label for="cpLoginUrl">${t('settings.claude_plans.login.copy_hint')}</label>
+          <div class="form-row">
+            <input class="input" id="cpLoginUrl" style="flex:1" readonly spellcheck="false">
+            <button class="btn-secondary btn-compact" id="cpLoginCopyBtn">${t('settings.claude_plans.login.copy_btn')}</button>
+          </div>
+          <label for="cpLoginCode">${t('settings.claude_plans.login.code')}</label>
+          <div class="form-row">
+            <input class="input" id="cpLoginCode" style="flex:1" autocomplete="off" spellcheck="false">
+            <button class="btn-secondary btn-compact" id="cpLoginCodeBtn">${t('settings.claude_plans.login.submit_code')}</button>
+          </div>
+        </div>
+        <div id="cpLoginStatus" class="claude-plans-form-hint" role="status" hidden></div>
       </div>
       <div class="form-group" id="cpFormConfigDirGroup" hidden>
         <label for="cpFormConfigDir">${t('settings.claude_plans.form.config_dir')}</label>
@@ -15663,15 +15957,27 @@ async function renderClaudePlansPanel(body) {
   `
 
   document.getElementById('cpFormMode').addEventListener('change', () => syncClaudePlanFormMode())
-  document.getElementById('cpFormAddBtn').addEventListener('click', () => saveClaudePlan())
-  document.getElementById('cpFormCancelBtn').addEventListener('click', () => resetClaudePlanForm())
+  document.getElementById('cpFormAddBtn').addEventListener('click', () => {
+    if (document.getElementById('cpFormMode').value === 'login' && !claudePlanFormEditing) startClaudePlanLogin()
+    else saveClaudePlan()
+  })
+  document.getElementById('cpFormCancelBtn').addEventListener('click', () => {
+    if (claudePlanLoginActive) cancelClaudePlanLogin()
+    else resetClaudePlanForm()
+  })
+  document.getElementById('cpLoginCodeBtn').addEventListener('click', () => submitClaudePlanLoginCode())
+  document.getElementById('cpLoginCopyBtn').addEventListener('click', () => copyClaudePlanLoginUrl())
+  document.getElementById('cpLoginUrl').addEventListener('focus', (e) => e.target.select())
+  document.getElementById('cpLoginCode').addEventListener('keydown', (e) => { if (e.key === 'Enter') submitClaudePlanLoginCode() })
   for (const id of ['cpFormId', 'cpFormLabel', 'cpFormConfigDir', 'cpFormToken']) {
     document.getElementById(id).addEventListener('keydown', (e) => { if (e.key === 'Enter') saveClaudePlan() })
   }
   claudePlanFormEditing = null
+  claudePlanLoginActive = false
   syncClaudePlanFormMode()
 
   await loadClaudePlansList()
+  await resumeClaudePlanLogin()
 }
 
 // The plan being edited in the form (the GET /api/claude-plans object), or
@@ -15715,9 +16021,19 @@ function syncClaudePlanFormMode() {
   const mode = document.getElementById('cpFormMode')?.value
   const tokenGroup = document.getElementById('cpFormTokenGroup')
   const dirGroup = document.getElementById('cpFormConfigDirGroup')
-  if (!tokenGroup || !dirGroup) return
+  const loginGroup = document.getElementById('cpFormLoginGroup')
+  if (!tokenGroup || !dirGroup || !loginGroup) return
   tokenGroup.hidden = mode !== 'token'
-  dirGroup.hidden = mode === 'token'
+  dirGroup.hidden = mode !== 'configDir'
+  loginGroup.hidden = mode !== 'login'
+  // Logging in creates a NEW plan; an edit keeps the paste and config-dir ways.
+  const loginOption = document.querySelector('#cpFormMode option[value="login"]')
+  if (loginOption) loginOption.hidden = !!claudePlanFormEditing
+  const addBtn = document.getElementById('cpFormAddBtn')
+  if (addBtn && !claudePlanFormEditing) {
+    addBtn.textContent = t(mode === 'login' ? 'settings.claude_plans.login.start_btn' : 'settings.claude_plans.form.add_btn')
+    addBtn.hidden = mode === 'login' && claudePlanLoginActive
+  }
   const hasStoredToken = !!claudePlanFormEditing?.tokenSecretId
   const hint = document.getElementById('cpFormTokenHint')
   if (hint) {
@@ -15739,13 +16055,14 @@ function resetClaudePlanForm() {
   document.getElementById('cpFormLabel').value = ''
   document.getElementById('cpFormConfigDir').value = ''
   document.getElementById('cpFormToken').value = ''
-  document.getElementById('cpFormMode').value = 'token'
+  document.getElementById('cpFormMode').value = 'login'
   document.getElementById('cpFormType').value = 'personal'
   document.getElementById('cpFormChannelsAllowed').checked = true
   document.getElementById('cpFormTitle').textContent = t('settings.claude_plans.form.title_add')
   document.getElementById('cpFormAddBtn').textContent = t('settings.claude_plans.form.add_btn')
   document.getElementById('cpFormCancelBtn').hidden = true
   document.getElementById('cpFormError').hidden = true
+  showClaudePlanLoginStep(null)
   syncClaudePlanFormMode()
 }
 
@@ -15820,6 +16137,183 @@ async function saveClaudePlan() {
     errEl.textContent = t('settings.claude_plans.form.error_generic')
     errEl.hidden = false
   }
+}
+
+// "Log in to add a plan" (SETUPTOKENWIZ1022): the server runs claude
+// setup-token, this form shows its login link, takes the code the login page
+// gives, and the server stores the token it catches. The token never reaches
+// the browser. The paste and config-dir modes stay as they were.
+let claudePlanLoginActive = false
+
+// Pure: the start body from the form fields, or an i18n error key.
+function buildClaudePlanLoginStartBody(fields) {
+  const id = String(fields.id || '').trim()
+  const label = String(fields.label || '').trim()
+  if (!id || !label) return { error: 'settings.claude_plans.form.error_required' }
+  return { body: { id, label, planType: fields.planType, channelsAllowed: !!fields.channelsAllowed } }
+}
+
+// Server error code -> i18n key; unknown codes fall back to the server text.
+const CLAUDE_PLAN_LOGIN_ERROR_KEYS = {
+  'busy': 'settings.claude_plans.login.error_busy',
+  'id-taken': 'settings.claude_plans.login.error_id_taken',
+  'invalid-plan': 'settings.claude_plans.login.error_invalid',
+  'claude-not-found': 'settings.claude_plans.login.error_claude_missing',
+  'url-timeout': 'settings.claude_plans.login.error_no_link',
+  'code-timeout': 'settings.claude_plans.login.error_expired',
+  'token-timeout': 'settings.claude_plans.login.error_no_token',
+  'exited': 'settings.claude_plans.login.error_no_token',
+  'bad-code': 'settings.claude_plans.login.error_bad_code',
+  'wrong-phase': 'settings.claude_plans.login.error_expired',
+  'verify-failed': 'settings.claude_plans.login.error_rejected',
+  // Every route here takes the owner session or a paired Bridge key: a token or other device-key window gets this.
+  'owner_session_required': 'settings.claude_plans.login.error_owner_session',
+}
+
+function claudePlanLoginErrorText(data) {
+  const key = data && CLAUDE_PLAN_LOGIN_ERROR_KEYS[data.code]
+  if (key) return t(key)
+  return (data && data.error) || t('settings.claude_plans.form.error_generic')
+}
+
+// url: show the link + code step; null: back to the start button.
+function showClaudePlanLoginStep(url) {
+  const step = document.getElementById('cpLoginStep')
+  const link = document.getElementById('cpLoginLink')
+  const code = document.getElementById('cpLoginCode')
+  if (!step || !link || !code) return
+  claudePlanLoginActive = !!url
+  step.hidden = !url
+  const safeUrl = url && url.startsWith('https://') ? url : ''
+  link.href = safeUrl || '#'
+  const urlField = document.getElementById('cpLoginUrl')
+  if (urlField) urlField.value = safeUrl
+  code.value = ''
+  for (const id of ['cpFormId', 'cpFormLabel', 'cpFormType', 'cpFormChannelsAllowed', 'cpFormMode']) {
+    const el = document.getElementById(id)
+    if (el) el.disabled = !!url
+  }
+  const cancelBtn = document.getElementById('cpFormCancelBtn')
+  if (cancelBtn) cancelBtn.hidden = !url && !claudePlanFormEditing
+  setClaudePlanLoginStatus(url ? t('settings.claude_plans.login.waiting_code') : null)
+  syncClaudePlanFormMode()
+}
+
+function setClaudePlanLoginStatus(text) {
+  const el = document.getElementById('cpLoginStatus')
+  if (!el) return
+  el.textContent = text || ''
+  el.hidden = !text
+}
+
+function showClaudePlanFormError(text) {
+  const errEl = document.getElementById('cpFormError')
+  errEl.textContent = text
+  errEl.hidden = false
+}
+
+// The link is also shown as text, for opening it on another device or in
+// another browser profile (the Claude account to add may live there).
+async function copyClaudePlanLoginUrl() {
+  const field = document.getElementById('cpLoginUrl')
+  if (!field || !field.value) return
+  try {
+    await navigator.clipboard.writeText(field.value)
+    showToast(t('settings.claude_plans.login.copied'))
+  } catch {
+    field.focus()
+    field.select()
+  }
+}
+
+async function startClaudePlanLogin() {
+  document.getElementById('cpFormError').hidden = true
+  const built = buildClaudePlanLoginStartBody({
+    id: document.getElementById('cpFormId').value,
+    label: document.getElementById('cpFormLabel').value,
+    planType: document.getElementById('cpFormType').value,
+    channelsAllowed: document.getElementById('cpFormChannelsAllowed').checked,
+  })
+  if (built.error) { showClaudePlanFormError(t(built.error)); return }
+  const addBtn = document.getElementById('cpFormAddBtn')
+  addBtn.disabled = true
+  setClaudePlanLoginStatus(t('settings.claude_plans.login.starting'))
+  try {
+    const res = await fetch('/api/claude-plans/login/start', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(built.body),
+    })
+    let data = null
+    try { data = await res.json() } catch { /* non-JSON error body */ }
+    if (!res.ok || !data || typeof data.url !== 'string') {
+      setClaudePlanLoginStatus(null)
+      showClaudePlanFormError(claudePlanLoginErrorText(data))
+      return
+    }
+    showClaudePlanLoginStep(data.url)
+    document.getElementById('cpLoginLink').focus()
+  } catch {
+    setClaudePlanLoginStatus(null)
+    showClaudePlanFormError(t('settings.claude_plans.form.error_generic'))
+  } finally {
+    addBtn.disabled = false
+  }
+}
+
+async function submitClaudePlanLoginCode() {
+  const codeEl = document.getElementById('cpLoginCode')
+  const code = codeEl.value.trim()
+  if (!code) return
+  document.getElementById('cpFormError').hidden = true
+  const btn = document.getElementById('cpLoginCodeBtn')
+  btn.disabled = true
+  setClaudePlanLoginStatus(t('settings.claude_plans.login.checking'))
+  try {
+    const res = await fetch('/api/claude-plans/login/code', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code }),
+    })
+    let data = null
+    try { data = await res.json() } catch { /* non-JSON error body */ }
+    if (res.status === 201 && data) {
+      showToast(t(data.verified ? 'settings.claude_plans.login.done' : 'settings.claude_plans.login.done_unverified', { label: data.label || data.id }))
+      resetClaudePlanForm()
+      await loadClaudePlansList()
+      return
+    }
+    // A mistyped code leaves the login waiting; anything else has ended it.
+    if (data && data.code === 'bad-code') {
+      setClaudePlanLoginStatus(t('settings.claude_plans.login.waiting_code'))
+    } else {
+      showClaudePlanLoginStep(null)
+    }
+    showClaudePlanFormError(claudePlanLoginErrorText(data))
+  } catch {
+    showClaudePlanLoginStep(null)
+    showClaudePlanFormError(t('settings.claude_plans.form.error_generic'))
+  } finally {
+    btn.disabled = false
+  }
+}
+
+async function cancelClaudePlanLogin() {
+  try { await fetch('/api/claude-plans/login/cancel', { method: 'POST' }) } catch { /* the server ends it on its own timeout */ }
+  resetClaudePlanForm()
+}
+
+// Coming back to the tab while a login waits for its code: show its link again.
+async function resumeClaudePlanLogin() {
+  try {
+    const res = await fetch('/api/claude-plans/login/status')
+    if (!res.ok) return
+    const data = await res.json()
+    if (data && data.active && typeof data.url === 'string') {
+      document.getElementById('cpFormMode').value = 'login'
+      showClaudePlanLoginStep(data.url)
+    }
+  } catch { /* status is a convenience */ }
 }
 
 // POST /api/claude-plans/rotate for the main agent (agentId defaults to it

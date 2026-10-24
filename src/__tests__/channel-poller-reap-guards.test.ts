@@ -162,12 +162,18 @@ describe('cf075d41 reapChannelOrphans on real processes', () => {
 describe('cf075d41 reapDetachedChannelClaudes on real processes', () => {
   const needle = (tag: string) => `plugin:telegram@guards-cf075d41-${tag}-${process.pid}-${Date.now()}`
   async function claudeWithChild(tag: string, n: string): Promise<{ claude: number; child: number }> {
+    // Double fork: the outer bash exits, so the fake claude is reparented away
+    // from the test runner. Under the runner it would inherit the runner's
+    // ancestry, and a runner inside a tmux pane puts a foreign tmux server
+    // above it (spared as another install's session, #2078).
     const childFile = join(tmp, `dc-${tag}.pid`)
-    const claude = spawnWith('/bin/bash', ['-c',
-      `exec -a claude /bin/bash -c 'sleep 300 & echo $! > ${childFile}; wait' x --channels ${n}`], {})
-    for (let i = 0; i < 40 && !existsSync(childFile); i++) await sleep(50)
+    const claudeFile = join(tmp, `dc-${tag}.claude.pid`)
+    spawnWith('/bin/bash', ['-c',
+      `(exec -a claude /bin/bash -c 'sleep 300 & echo $! > ${childFile}; wait' x --channels ${n}) & echo $! > ${claudeFile}`], {})
+    for (let i = 0; i < 40 && !(existsSync(childFile) && existsSync(claudeFile)); i++) await sleep(50)
+    const claude = parseInt(readFileSync(claudeFile, 'utf-8').trim(), 10)
     const child = parseInt(readFileSync(childFile, 'utf-8').trim(), 10)
-    kids.push(child)
+    kids.push(claude, child)
     return { claude, child }
   }
 
@@ -266,7 +272,7 @@ describe('cf075d41 seams: the reapers read a handed snapshot, not the host', () 
     ]
     const k = fakeKill([ABOVE, ITS_PANE, ALONE])
     const reaped = reapDetachedChannelClaudes({
-      channelNeedle: needle, procs: () => rows, panePids: () => new Set([ITS_PANE]), ownUid: 1000, ownerOf: () => 1000, kill: k.kill,
+      channelNeedle: needle, procs: () => rows, panePids: () => new Set([ITS_PANE]), tmuxServerPid: () => SERVER, ownUid: 1000, ownerOf: () => 1000, kill: k.kill,
     })
     expect(reaped).toEqual([ALONE])
     expect(k.signalled).toEqual([ALONE])

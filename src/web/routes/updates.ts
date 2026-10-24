@@ -2,11 +2,12 @@ import {
   readFileSync, writeFileSync, mkdirSync, openSync, closeSync, statSync, unlinkSync,
 } from 'node:fs'
 import { join } from 'node:path'
-import { spawn, execFileSync } from 'node:child_process'
+import { spawn, execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import { PROJECT_ROOT, STORE_DIR } from '../../config.js'
 import { logger } from '../../logger.js'
 import {
-  getUpdateStatus, refreshUpdateStatus, trackedBranch,
+  getUpdateStatus, refreshUpdateStatus,
 } from '../update-checker.js'
 import {
   checkUpdatePreflight, checkNoConcurrentUpdate, classifyLockWriteError,
@@ -17,6 +18,28 @@ import { claudeAgentRunnable } from '../../update-agent-capability.js'
 import { runScheduledTaskNow } from '../schedule-runner.js'
 import { buildCliUpdateStatus, cliUpdateDepsForRoute, startCliUpdate, VERSION_RE } from '../cli-update.js'
 import type { RouteContext } from './types.js'
+
+const execFileAsync = promisify(execFile)
+
+// git for the update pre-check, off the event loop (ls-remote is a network call
+// with a 15 s timeout). stdin is closed at once, as the synchronous calls did.
+async function gitOut(args: string[], timeout: number): Promise<string> {
+  const pending = execFileAsync('/usr/bin/git', args, { cwd: PROJECT_ROOT, timeout, encoding: 'utf-8' })
+  pending.child.stdin?.end()
+  const { stdout } = await pending
+  return stdout
+}
+
+// trackedBranch() (update-checker.ts) runs git synchronously; the pre-check
+// needs the same answer without blocking the event loop.
+async function trackedBranchAsync(): Promise<string> {
+  try {
+    const b = (await gitOut(['rev-parse', '--abbrev-ref', 'HEAD'], 3000)).trim()
+    return b && b !== 'HEAD' ? b : 'main'
+  } catch {
+    return 'main'
+  }
+}
 
 // Pidfile path owned by update.sh for the lifetime of an update run.
 // The dashboard never writes it -- update.sh does on entry, removes on exit
@@ -228,56 +251,42 @@ export async function tryHandleUpdates(ctx: RouteContext): Promise<boolean> {
       try { unlinkSync(UPDATE_PIDFILE) } catch { /* already gone */ }
       lockHeld = false
     }
-    const countRevs = (range: string): number => {
+    const countRevs = async (range: string): Promise<number> => {
       try {
-        const out = execFileSync(
-          '/usr/bin/git',
-          ['rev-list', '--count', range],
-          { cwd: PROJECT_ROOT, timeout: 3000, encoding: 'utf-8' },
-        ).trim()
+        const out = (await gitOut(['rev-list', '--count', range], 3000)).trim()
         const n = parseInt(out, 10)
         return Number.isFinite(n) ? n : 0
       } catch { return 0 }
     }
     const git: GitRunner = {
-      currentBranch: () => execFileSync(
-        '/usr/bin/git',
-        ['rev-parse', '--abbrev-ref', 'HEAD'],
-        { cwd: PROJECT_ROOT, timeout: 3000, encoding: 'utf-8' },
-      ),
-      porcelainStatus: () => execFileSync(
-        '/usr/bin/git',
-        ['status', '--porcelain', '--untracked-files=no'],
-        { cwd: PROJECT_ROOT, timeout: 3000, encoding: 'utf-8' },
-      ),
+      currentBranch: () => gitOut(['rev-parse', '--abbrev-ref', 'HEAD'], 3000),
+      porcelainStatus: () => gitOut(['status', '--porcelain', '--untracked-files=no'], 3000),
       // UPSTREAMSRC927: origin/<branch>, the ref update.sh pulls -- not `@{u}`,
       // which is whatever the branch happens to track. No fetch here (this is
       // the request path); the ref can be stale, which is why update.sh fetches
       // and measures again before its own divergence check.
-      aheadCount: () => countRevs(`origin/${trackedBranch()}..HEAD`),
-      behindCount: () => countRevs(`HEAD..origin/${trackedBranch()}`),
+      aheadCount: async () => countRevs(`origin/${await trackedBranchAsync()}..HEAD`),
+      behindCount: async () => countRevs(`HEAD..origin/${await trackedBranchAsync()}`),
       // Mirrors update.sh guard 2. `git ls-remote --exit-code --heads` exits
       // 2 for "no such branch" and 128 for a transport/auth failure -- the
       // difference matters: only 2 is evidence, 128 is an unknown we must not
-      // block on. status is undefined when the spawn itself failed (timeout,
-      // git missing), which is likewise unknown.
-      originHasBranch: (branch: string) => {
+      // block on. A spawn failure or a timeout leaves no numeric exit code,
+      // which is likewise unknown.
+      originHasBranch: async (branch: string) => {
         try {
-          execFileSync(
-            '/usr/bin/git',
-            ['ls-remote', '--exit-code', '--heads', 'origin', branch],
-            { cwd: PROJECT_ROOT, timeout: 15000, stdio: 'ignore' },
-          )
+          await gitOut(['ls-remote', '--exit-code', '--heads', 'origin', branch], 15000)
           return 'yes' as const
         } catch (err) {
-          const status = (err as { status?: number }).status
-          return status === 2 ? ('no' as const) : ('unknown' as const)
+          // execFile reports git's exit status as err.code (a number); a spawn
+          // failure or a timeout leaves no numeric code -- unknown, as before.
+          const code = (err as { code?: unknown }).code
+          return code === 2 ? ('no' as const) : ('unknown' as const)
         }
       },
     }
     let preflight
     try {
-      preflight = checkUpdatePreflight(git)
+      preflight = await checkUpdatePreflight(git)
     } catch (err) {
       releaseLock()
       json(res, {

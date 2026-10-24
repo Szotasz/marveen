@@ -132,13 +132,23 @@ export const DEFAULT_CONTEXT_GUARD: ContextGuardConfig = {
   dailyHandoffTime: null,
 }
 
+/**
+ * Upper bound for every minutes field. Each one is turned into a millisecond
+ * deadline (nowMs + minutes * 60_000), and Number.isFinite(1e308) is true while
+ * 1e308 * 60_000 is Infinity: an infinite deadline is never reached, so the
+ * phase would never time out. This is a conversion limit, not a business one
+ * (about 5800 years): it keeps the latest possible Date plus two such durations
+ * a safe integer.
+ */
+export const MAX_GUARD_MINUTES = Math.floor((Number.MAX_SAFE_INTEGER - 8.64e15) / (2 * 60_000))
+
 /** Coerce arbitrary parsed JSON into a safe, fully-populated config. */
 export function normalizeContextGuardConfig(raw: unknown): ContextGuardConfig {
   const o = (raw && typeof raw === 'object') ? raw as Record<string, unknown> : {}
   const pct = (v: unknown, dflt: number): number =>
     (typeof v === 'number' && Number.isFinite(v) && v > 0 && v < 1) ? v : dflt
   const mins = (v: unknown, dflt: number): number =>
-    (typeof v === 'number' && Number.isFinite(v) && v > 0) ? v : dflt
+    (typeof v === 'number' && Number.isFinite(v) && v > 0) ? Math.min(v, MAX_GUARD_MINUTES) : dflt
   let actPct = pct(o.actPct, DEFAULT_CONTEXT_GUARD.actPct)
   let hardPct = pct(o.hardPct, DEFAULT_CONTEXT_GUARD.hardPct)
   if (hardPct < actPct) hardPct = actPct // hard tier can never sit below act
@@ -315,6 +325,12 @@ export interface GuardState {
    *  decision reason is "handoff written" and the idle-flush origin is only
    *  here. */
   idleFlushSequence?: boolean
+
+  /** await-handoff only: the busy-pane deferral already reported, once, that
+   *  the pane stayed busy a whole handoffTimeoutMinutes past the deadline.
+   *  Optional, and absent from every state literal that starts a sequence, so
+   *  each new handoff sequence may report once again. */
+  busyOverdueWarned?: boolean
 }
 
 export const INITIAL_GUARD_STATE: GuardState = {
@@ -686,6 +702,21 @@ export const STALE_REFRESH_REASON_PREFIX = 'stale-handoff-refresh'
 export const DAILY_HANDOFF_REASON_PREFIX = 'daily-handoff'
 
 /**
+ * Reason prefix of the one-time busy-pane warning: the pane is still mid-turn a
+ * whole handoffTimeoutMinutes past the handoff deadline. The decision stays
+ * action 'none' (a busy pane is never restarted); the runner matches this
+ * prefix to log a warning, once per handoff sequence.
+ */
+export const BUSY_OVERDUE_REASON_PREFIX = 'busy-overdue'
+
+/**
+ * Reason for giving up on the resume injection: the restarted session did not
+ * become ready within READY_TIMEOUT_MS. The decision is action 'none', so the
+ * runner matches this constant to raise an alert instead of staying silent.
+ */
+export const RESUME_GIVE_UP_REASON = 'ready timeout -- giving up on resume injection'
+
+/**
  * Whether the daily tier can actually fire for this config.
  *
  * ONE predicate, two readers: the tier itself, and the auto-restart runner
@@ -995,6 +1026,17 @@ export function decideGuard(
   const none = (reason: string, next: GuardState = state): GuardDecision =>
     ({ action: 'none', reason, nextState: next })
 
+  // A busy pane is never restarted (both await-handoff deferrals wait for the
+  // turn to end). Once per handoff sequence, a whole handoffTimeoutMinutes past
+  // the deadline, the deferral says so: same action, same state otherwise.
+  const deferBusy = (reason: string): GuardDecision => {
+    if (!state.busyOverdueWarned && nowMs >= state.deadlineMs + cfg.handoffTimeoutMinutes * 60_000) {
+      const minutes = Math.floor((nowMs - state.deadlineMs) / 60_000)
+      return none(`${BUSY_OVERDUE_REASON_PREFIX}: ${reason} (${minutes}m past the handoff deadline)`, { ...state, busyOverdueWarned: true })
+    }
+    return none(reason)
+  }
+
   if (!cfg.enabled && !cfg.saturationRestart && !cfg.idleFlushEnabled && !cfg.dailyHandoffEnabled) {
     return none('disabled', INITIAL_GUARD_STATE)
   }
@@ -1030,7 +1072,7 @@ export function decideGuard(
         return none(`${USAGE_LIMIT_REASON_PREFIX}: session blocked by a usage limit -- no handoff, flush or restart until it lifts`, cleared)
       }
       if (cfg.enabled && inputs.pct !== null) {
-        const wedgeTier = decideWedgeTiers(nowMs, inputs, cfg, cleared, none)
+        const wedgeTier = decideWedgeTiers(nowMs, inputs, cfg)
         if (wedgeTier) return wedgeTier
       }
       // Idle-flush tier. Ranked BELOW the wedge tiers deliberately: those two
@@ -1171,11 +1213,11 @@ export function decideGuard(
       // sweep that finds the pane no longer busy; a turn that saturates
       // mid-flight is caught by the paneSaturated branch above.
       if (inputs.pct !== null && inputs.pct >= cfg.hardPct) {
-        if (inputs.paneBusy) return none('hard threshold during await-handoff but agent mid-turn -- deferring restart')
+        if (inputs.paneBusy) return deferBusy('hard threshold during await-handoff but agent mid-turn -- deferring restart')
         return restartDecision(nowMs, 'hard threshold during await-handoff', handoffStaleMinutes(inputs))
       }
       if (nowMs >= state.deadlineMs) {
-        if (inputs.paneBusy) return none('handoff timeout but agent mid-turn -- deferring restart')
+        if (inputs.paneBusy) return deferBusy('handoff timeout but agent mid-turn -- deferring restart')
         // No handoff in time (agent wedged or ignored the prompt). Restart
         // anyway: taskstate + kanban + hot memories are the fallback context.
         // An OLD HANDOFF.md may still exist; measure how far behind it is so
@@ -1222,7 +1264,7 @@ export function decideGuard(
         }
       }
       if (nowMs >= state.deadlineMs) {
-        return cooldown(nowMs, cfg, 'ready timeout -- giving up on resume injection')
+        return cooldown(nowMs, cfg, RESUME_GIVE_UP_REASON)
       }
       return none('waiting for restarted session')
     }
@@ -1231,13 +1273,14 @@ export function decideGuard(
 
 type NoneFn = (reason: string, next?: GuardState) => GuardDecision
 
-/** The two wedge tiers (hardPct restart, actPct handoff). Null = neither applies. */
+/**
+ * The two wedge tiers (hardPct restart, actPct handoff). Null = neither applies.
+ * A busy pane past hardPct gets the handoff request, not the restart.
+ */
 function decideWedgeTiers(
   nowMs: number,
   inputs: GuardInputs,
   cfg: ContextGuardConfig,
-  cleared: GuardState,
-  none: NoneFn,
 ): GuardDecision | null {
   const pct = inputs.pct as number
   if (pct >= cfg.hardPct) {
@@ -1246,11 +1289,22 @@ function decideWedgeTiers(
     // POSITIVELY busy pane is working, not wedged -- restarting it cuts
     // a live turn and destroys any queued/parked input with it (Szabi,
     // 2026-07-27: agents restarted mid-work, dispatched instructions
-    // lost). Defer while busy; the sweep re-decides every interval, and
-    // a turn that tips into saturation is caught by the saturation net,
-    // which deliberately ignores the busy signal.
+    // lost). Working also means it can still answer a handoff request
+    // after its turn, the way it answers the act tier's. So ask, and let
+    // await-handoff do the waiting: that phase never cuts a live turn
+    // either, restarts on the first sweep that finds the pane no longer
+    // busy, and warns once when the turn runs far past the deadline.
+    // Deferring here instead was silent, and the restart that ended it
+    // came with no handoff written. The usual way into this branch is a
+    // context that jumped from below actPct past hardPct between two
+    // sweeps (one parallel tool batch can), so the act tier never asked.
+    // A turn that tips into saturation is still caught by the saturation
+    // net, which deliberately ignores the busy signal.
     if (inputs.paneBusy) {
-      return none(`hard threshold (${Math.round(pct * 100)}%) but agent mid-turn -- deferring restart`, cleared)
+      return handoffRequest(
+        nowMs, inputs, cfg,
+        `hard threshold (${Math.round(pct * 100)}% >= ${Math.round(cfg.hardPct * 100)}%) but agent mid-turn -- requesting handoff, the restart waits for the turn`,
+      )
     }
     return restartDecision(
       nowMs,

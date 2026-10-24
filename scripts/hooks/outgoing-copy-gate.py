@@ -1458,7 +1458,8 @@ def accentless_evidence(tok_pos, text):
 # calls these) fail-open as designed.
 try:
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    from email_extract import collect_bash_body, collect_mcp_body, classify_mail_tool  # noqa: E402
+    from email_extract import (collect_bash_body, collect_harder_mail_text, collect_mcp_body,  # noqa: E402
+                               classify_mail_tool, is_harder_mail_tool)
 except Exception as _extract_exc:  # noqa: BLE001 -- deliberate fail-closed stub
     _EXTRACT_ERR = repr(_extract_exc)
 
@@ -1467,6 +1468,12 @@ except Exception as _extract_exc:  # noqa: BLE001 -- deliberate fail-closed stub
 
     def collect_mcp_body(tool_input: dict):
         return ""
+
+    def collect_harder_mail_text(tool_input: dict):
+        return ("", f"az email_extract modul nem toltheto be ({_EXTRACT_ERR})")
+
+    def is_harder_mail_tool(tool_name):
+        return False
 
     def classify_mail_tool(tool_name):
         # Without the shared classifier nothing can be classified precisely.
@@ -2073,7 +2080,12 @@ def main():
             sys.exit(0)
         text, unreadable = collect_mcp_body(tool_input), None
     elif mail_kind in _AUDITED_MAIL_KINDS:
-        text, unreadable = collect_mcp_body(tool_input), None
+        if is_harder_mail_tool(tool) and tool_input.get("body_format") not in (None, ""):
+            # HARDERMAILGATES1019 (design 6.3a): a formatted harder-mail letter is
+            # audited on the text the server renders from it, never on raw markup.
+            text, unreadable = collect_harder_mail_text(tool_input)
+        else:
+            text, unreadable = collect_mcp_body(tool_input), None
     elif tool == "Bash":
         cmd = str(tool_input.get("command") or "")
         if not is_send_invocation(cmd):

@@ -61,6 +61,26 @@ describe('agent-scaffold.ts buildAutonomyBody: approval wiring content', () => {
     expect(level2Block).toMatch(/status=rejected/)
   })
 
+  // APPROVALCONSUME1022: an approval is one-shot. The recipe consumes it before acting and
+  // acts only on a 200, and it names the two categories whose own paths consume them.
+  it('level 2 consumes the approval before acting, and acts only on a 200', () => {
+    const level2Block = AUTONOMY_FN.slice(AUTONOMY_FN.indexOf('Level 2'), AUTONOMY_FN.indexOf('Level 3'))
+    const consumeAt = level2Block.indexOf('/api/approvals/<id>/consume')
+    expect(consumeAt).toBeGreaterThan(-1)
+    expect(level2Block).toMatch(/"consumer":"\$\{name\}"/)
+    expect(level2Block).toContain('Csak HTTP 200 után végezd el a műveletet')
+    expect(level2Block).toMatch(/409[^\n]*NE csináld/)
+    expect(level2Block).toMatch(/email_send és data_delete kategóriánál NE hívd/)
+    // The old unconditional "approved -> do it" line is gone.
+    expect(level2Block).not.toMatch(/status=approved -> végezd el/)
+  })
+
+  it('the seed skill tells the main agent that an approval is one-shot', () => {
+    const skill = readFileSync(join(process.cwd(), 'seed-skills', 'approval-request-handling', 'SKILL.md'), 'utf-8')
+    expect(skill).toContain('POST /api/approvals/<id>/consume')
+    expect(skill).toMatch(/egyszer használatos/)
+  })
+
   it('level 3 means act then report -- no approval API call', () => {
     expect(AUTONOMY_FN).toMatch(/Level 3[^*]*autonóm/)
     const level3Block = AUTONOMY_FN.slice(AUTONOMY_FN.indexOf('Level 3'))

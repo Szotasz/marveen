@@ -65,9 +65,24 @@ agent_launch_env() {
   fi
 }
 
+# BASHSANDBOX1022: an agent on the owner's BASH_SANDBOX_AGENTS list runs its Bash in Claude
+# Code's sandbox, from a --settings file the dashboard writes on every start of it (and removes
+# for an agent the switch does not list). A restart from here must carry the same file, or the
+# first auto-recovery would bring the agent back unsandboxed. The file's presence decides: this
+# script cannot read the dashboard's settings, and a stale file errs on the restrictive side.
+agent_sandbox_flag() {
+  local F="$INSTALL_DIR/store/bash-sandbox/$1.settings.json"
+  if [ -f "$F" ]; then printf " --settings '%s'" "$F"; fi
+}
+
 # Self-test hook, mirroring --resolve-provider: print the launch-env prefix
 # for one agent dir and exit, so the isolation contract is testable from
 # fixtures (scripts/__tests__/watchdog-config-isolation.test.sh).
+if [ "${1:-}" = "--sandbox-flag" ]; then
+  [ -n "${2:-}" ] || { echo "usage: watchdog.sh --sandbox-flag <agent-id>" >&2; exit 2; }
+  echo "flag=$(agent_sandbox_flag "$2")"
+  exit 0
+fi
 if [ "${1:-}" = "--launch-env" ]; then
   [ -n "${2:-}" ] || { echo "usage: watchdog.sh --launch-env <agent-dir>" >&2; exit 2; }
   ENV_PREFIX="$(agent_launch_env "$2")"
@@ -239,7 +254,7 @@ for AGENT_DIR in "$INSTALL_DIR/agents"/*/; do
   # watchdog restart must not hand the agent a different python3 (#1626 review).
   FLEET_VENV_PREFIX="$(fleet_venv_prefix "$INSTALL_DIR" "$LOG")"
 
-  CMD="${ISO_ENV}export PATH=\"${FLEET_VENV_PREFIX}\$HOME/.local/bin:/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin:\$PATH\" && unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN && export CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && export ${STATE_ENV_VAR}=\"$CHAN_DIR\" && cd \"$AGENT_DIR\" && ${CLAUDE_BIN} --dangerously-skip-permissions --model '$MODEL' --channels plugin:${AGENT_PROVIDER}@claude-plugins-official"
+  CMD="${ISO_ENV}export PATH=\"${FLEET_VENV_PREFIX}\$HOME/.local/bin:/opt/homebrew/bin:\$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/usr/local/bin:/usr/bin:/bin:\$PATH\" && unset TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN SLACK_APP_TOKEN DISCORD_BOT_TOKEN && export CLAUDE_CODE_DISABLE_AGENT_VIEW=1 && { [ \"\$(id -u)\" != 0 ] || export IS_SANDBOX=1; } && export ${STATE_ENV_VAR}=\"$CHAN_DIR\" && cd \"$AGENT_DIR\" && ${CLAUDE_BIN} --dangerously-skip-permissions --model '$MODEL' --channels plugin:${AGENT_PROVIDER}@claude-plugins-official$(agent_sandbox_flag "$AGENT_ID")"
 
   tmux new-session -d -s "$SESSION_NAME" "$CMD" 2>/dev/null
   sleep 2

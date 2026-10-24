@@ -1,18 +1,20 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, readdirSync, statSync, rmSync, watchFile, unwatchFile, realpathSync } from 'node:fs'
 import { readRemovedDefaultTasks } from './scheduled-tasks-io.js'
-import { basename, join } from 'node:path'
+import { registerScheduledTask } from './schedule-registry.js'
+import { basename, dirname, join } from 'node:path'
 import { homedir } from 'node:os'
-import { PROJECT_ROOT, OWNER_NAME, MAIN_AGENT_ID, HEARTBEAT_AGENT_ID, BOT_NAME, CHANNEL_PROVIDER, WEB_PORT, OWNER_DRIVE_FOLDER, APP_TZ, DASHBOARD_PUBLIC_URL, AGENT_API_ORIGIN, STORE_DIR } from '../config.js'
+import { PROJECT_ROOT, OWNER_NAME, MAIN_AGENT_ID, HEARTBEAT_AGENT_ID, BOT_NAME, CHANNEL_PROVIDER, WEB_PORT, OWNER_DRIVE_FOLDER, APP_TZ, DASHBOARD_PUBLIC_URL, AGENT_API_ORIGIN, STORE_DIR, mainAgentRecipientLedgerEnabled } from '../config.js'
 import { channelStateDir } from '../channel-provider.js'
 import { runAgent } from '../agent.js'
 import { atomicWriteFileSync } from './atomic-write.js'
+import { getEffectiveSettingValue } from '../settings-store.js'
 import { findDuplicateJsonKeys } from './json-dup-keys.js'
 import { logger } from '../logger.js'
 import { filterInheritableMcpServers, readInheritableMcpServerNames, logNotInherited } from './mcp-inheritance.js'
 import { agentDir, agentConfigRoot, listAgentNames, readAgentCapabilities, readAgentToolDeny } from './agent-config.js'
-import { loadProfileTemplate, profileWantsCredentialGate, profileWantsDestructiveGate, resolveProfilePlaceholders,
+import { loadProfileTemplate, profileWantsCredentialGate, profileWantsDestructiveGate, profileWantsYtIngest, resolveProfilePlaceholders,
   type ProfileTemplate } from './profiles.js'
-import { resolveAgentSecurityProfile } from './agent-team.js'
+import { resolveAgentSecurityProfile, readAgentTeam } from './agent-team.js'
 import { sanitizeCapabilityTag, CAPABILITY_TAG_MAX_PER_AGENT } from '../prompt-safety.js'
 import { TMP_ROOT_PREFIXES as _TMP_PREFIXES } from './tmp-root-prefixes.js'
 
@@ -825,7 +827,12 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   // Egress deny: applied to EVERY profile, not just the gated ones. This
   // function replaces permissions wholesale on each spawn, so without it a
   // respawn would silently drop what ensureBashEgressDeny() merged in.
-  denyList.push(...BASH_EGRESS_DENY)
+  const ytIngestOnly = ytDlpIngestOnly()
+  denyList.push(...bashEgressDeny(ytIngestOnly))
+  // The curl-https / wget name rules stay unless the owner switched on host-based
+  // judging (BASH_EGRESS_HOST_ALLOW) -- the parser hook is injected below for
+  // every sub-agent, so with the switch on it is the gate on those two verbs.
+  if (!bashEgressHostAllowEnabled() || !agentGetsBashEgressParser(name)) denyList.push(...LEGACY_BASH_EGRESS_DENY)
   // Fleet baseline: the deny FLOOR every agent gets regardless of profile.
   // Pushed here rather than copied into each templates/profiles/*.json so a
   // profile added tomorrow cannot silently ship without it. Deduped against what
@@ -851,8 +858,11 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   // before the grant and ran silently after it). Omitted entirely when the
   // profile declares none, so existing profiles are unaffected.
   const extraDirs = (profile.additionalDirectories ?? []).map(p => resolveProfilePlaceholders(p, ctx))
+  const allowRules = profileWantsYtIngest(profile) && ytIngestOnly
+    ? [...profile.filesystem.allow, ...YT_INGEST_ALLOW.filter(r => !profile.filesystem.allow.includes(r))]
+    : profile.filesystem.allow
   existing.permissions = {
-    allow: profile.filesystem.allow.map(p => absolutizeFileRule(resolveProfilePlaceholders(p, ctx))),
+    allow: allowRules.map(p => absolutizeFileRule(resolveProfilePlaceholders(p, ctx))),
     deny: denyList,
     ...(extraDirs.length ? { additionalDirectories: extraDirs } : {}),
   }
@@ -955,7 +965,10 @@ export function hasThreadReplyCapability(name: string, capabilities: string[]): 
 // is `..._telegram__reply`, and the email gates must never fire on it. The
 // `[Gg][Mm][Aa][Ii][Ll].*<word>` form is case-insensitive like the
 // classifiers' lowercased test, and it also reaches a "gmail" that sits in a
-// tool PREFIX (mcp__mail__gmail_reply), which `[Gg]mail.*__` cannot. Kept a
+// tool PREFIX (mcp__mail__gmail_reply), which `[Gg]mail.*__` cannot.
+// `.*send_mail.*` is the harder-mail MCP's send_mail / send_mail_auto
+// (HARDERMAILGATES1019, measured 2026-10-19: no email hook fired on them); its
+// create_draft is already the create_draft alternative. Kept a
 // FLAT alternation (no inner `|`): the drift test splits it on '|'.
 // Binding: email-gate-matcher-drift.test.ts asserts this matcher fires for
 // every name either classifier gates, and never for the Telegram tools.
@@ -963,6 +976,7 @@ export const EMAIL_GATE_MATCHER =
   'Bash|.*send_email.*|.*manage_email.*|.*[Gg]mail.*__.*|.*draft_email.*'
   + '|.*send_draft.*|.*update_draft.*|.*create_draft.*|.*reply_all.*|.*send_gmail_message.*|.*draft_gmail_message.*'
   + '|.*[Gg][Mm][Aa][Ii][Ll].*send_message.*|.*[Gg][Mm][Aa][Ii][Ll].*reply.*|.*[Gg][Mm][Aa][Ii][Ll].*forward.*'
+  + '|.*send_mail.*'
 
 // Does an existing PreToolUse array carry an email-gate entry whose matcher is
 // NOT the current one? Pure + exported: this is the predicate that lets
@@ -1082,14 +1096,24 @@ const SELF_PACE_TOOL_DENY = ['ScheduleWakeup', 'CronCreate', 'CronDelete', 'Cron
 //     from pieces, and every other network-capable binary still pass, and the
 //     main agent is not covered by the hook. Closing those needs an allowlist
 //     or network-level gate, which is a separate owner decision.
+//
+// CURL HTTPS + WGET LEFT THIS LIST (2026-10-13), BEHIND AN OWNER SWITCH. A name rule
+// cannot let a vendor host through -- deny beats every allow -- so with these
+// rules on the list store/egress-vendor-hosts.json was dead letter for both
+// download verbs, and a sanctioned release / map download could not run on any
+// agent (measured: the OSRM map refresh stopped on it on the main agent and on
+// a sub-agent alike, with the host already on the vendor list). Both verbs are
+// now judged by the bash-egress-parser hook, which reads the destination host
+// and honours the vendor list. The rules are not dropped: LEGACY_BASH_EGRESS_DENY
+// below names them, and they stay on every agent unless the owner turns on
+// BASH_EGRESS_HOST_ALLOW (default off, so an install that does nothing keeps
+// today's behaviour). Even with the switch on, mergeBashEgressDeny keeps them on
+// any settings file the parser does not cover, so no agent ends up with neither
+// gate.
 export const BASH_EGRESS_DENY = [
-  // curl: the https:// form only -- see the localhost note above.
-  'Bash(curl *https://*)',
-  'Bash(*/curl *https://*)',
-  // wget / nc / ncat / telnet have no internal use in this install, so they are
-  // denied whole; no localhost carve-out is needed and none is possible.
-  'Bash(wget *)',
-  'Bash(*/wget *)',
+  // nc / ncat / telnet are raw channels, not download verbs, and have no internal
+  // use in this install, so they are denied whole; no localhost carve-out is
+  // needed and none is possible.
   'Bash(nc *)',
   'Bash(*/nc *)',
   'Bash(ncat *)',
@@ -1097,6 +1121,46 @@ export const BASH_EGRESS_DENY = [
   'Bash(telnet *)',
   'Bash(*/telnet *)',
 ]
+
+// yt-dlp only through scripts/yt-ingest/yt-ingest.sh -- an OPT-IN switch,
+// YT_DLP_INGEST_ONLY (config-registry.ts), off by default (#1705 maintainer
+// decision, 2026-10-14). The shared default cannot carry these: skills call
+// yt-dlp directly from a SKILL.md command line, and a default deny would break
+// them on the next respawn of every agent on every install. With the switch on,
+// the rules ride exactly where BASH_EGRESS_DENY rides (every spawn's profile
+// write, the startup merge, the main agent's own config dir); with it off,
+// nothing here is written and the generated settings are byte-identical to an
+// install without this code. The third rule catches `<venv>/bin/python -m
+// yt_dlp`. A call hidden inside another program is out of reach of name rules
+// (see the parser note above).
+export const YT_DLP_EGRESS_DENY = [
+  'Bash(yt-dlp *)',
+  'Bash(*/yt-dlp *)',
+  'Bash(* -m yt_dlp*)',
+]
+
+// The sanctioned way in, granted to a profile that sets `ytIngest: true`
+// (researcher), and only while the switch is on -- the allow lines go with the
+// deny, not ahead of it.
+export const YT_INGEST_ALLOW = [
+  'Bash(bash ${PROJECT_ROOT}/scripts/yt-ingest/yt-ingest.sh:*)',
+  'Bash(bash ${PROJECT_ROOT}/scripts/yt-ingest/yt-read.sh:*)',
+]
+
+export const YT_DLP_INGEST_ONLY_KEY = 'YT_DLP_INGEST_ONLY'
+
+// Read per call (override > .env > default), so flipping the switch needs no
+// dashboard restart -- it binds each agent from its next spawn. Unreadable or
+// unknown reads as OFF: the off state is the shipped default, not a widening.
+export function ytDlpIngestOnly(read: (key: string) => string | number = getEffectiveSettingValue): boolean {
+  try { return String(read(YT_DLP_INGEST_ONLY_KEY)) === '1' } catch { return false }
+}
+
+// The egress deny set an agent actually gets: BASH_EGRESS_DENY, plus the
+// yt-dlp rules when the switch is on.
+export function bashEgressDeny(ytIngestOnly: boolean = ytDlpIngestOnly()): string[] {
+  return ytIngestOnly ? [...BASH_EGRESS_DENY, ...YT_DLP_EGRESS_DENY] : [...BASH_EGRESS_DENY]
+}
 
 // The fleet-wide deny FLOOR: applied to EVERY profile, exactly like
 // BASH_EGRESS_DENY above and for the same reason. permissions.deny is rebuilt
@@ -1192,17 +1256,35 @@ export const FLEET_BASELINE_DENY = [
 // are unit-testable; ensureBashEgressDeny() below is the filesystem wrapper.
 // Existing entries are preserved and their order kept: an operator's own deny
 // rule must never be dropped by a migration. Returns true if anything changed.
-export function mergeBashEgressDeny(settings: Record<string, unknown>): boolean {
+//
+// parserCovers: whether the bash-egress-parser hook judges the session that
+// reads this file. True -> the LEGACY curl-https / wget rules are removed (and
+// only those exact strings: an operator's own rule is never touched). False ->
+// they are kept or put back, because then they are the only gate on those verbs.
+// rules: the switch-aware egress set (bashEgressDeny: + the yt-dlp rules while
+// YT_DLP_INGEST_ONLY is on).
+export function mergeBashEgressDeny(settings: Record<string, unknown>, parserCovers = false, rules: string[] = bashEgressDeny()): boolean {
   const perms = (settings.permissions && typeof settings.permissions === 'object' && !Array.isArray(settings.permissions))
     ? settings.permissions as Record<string, unknown>
     : {}
   const deny = Array.isArray(perms.deny) ? [...(perms.deny as unknown[])] : []
-  const missing = BASH_EGRESS_DENY.filter((rule) => !deny.includes(rule))
-  if (missing.length === 0) return false
-  perms.deny = [...deny, ...missing]
+  const required = parserCovers ? rules : [...rules, ...LEGACY_BASH_EGRESS_DENY]
+  const missing = required.filter((rule) => !deny.includes(rule))
+  const kept = parserCovers ? deny.filter((rule) => !LEGACY_BASH_EGRESS_DENY.includes(rule as string)) : deny
+  if (missing.length === 0 && kept.length === deny.length) return false
+  perms.deny = [...kept, ...missing]
   settings.permissions = perms
   return true
 }
+
+// The curl-https / wget name rules this list carried until 2026-10-13. See the
+// note above BASH_EGRESS_DENY: kept wherever the parser hook is not wired.
+export const LEGACY_BASH_EGRESS_DENY = [
+  'Bash(curl *https://*)',
+  'Bash(*/curl *https://*)',
+  'Bash(wget *)',
+  'Bash(*/wget *)',
+]
 
 // WHICH FILE the egress deny is written to -- the part that is not obvious, so
 // it is a pure function with its own tests.
@@ -1248,15 +1330,99 @@ export function bashEgressDenyTargetPath(name: string, mainAgentConfigDir: strin
 // when the session boots and is NOT re-read while it runs (the project scope
 // is -- measured 2026-09-07, both directions). So a freshly written rule binds
 // the main agent from its next restart, not immediately.
-export function ensureBashEgressDeny(name: string, mainAgentConfigDir: string | null = null): boolean {
+export function ensureBashEgressDeny(name: string, mainAgentConfigDir: string | null = null,
+  mainScopeSettingsPath = MAIN_SCOPE_SETTINGS_PATH): boolean {
   const settingsPath = bashEgressDenyTargetPath(name, mainAgentConfigDir)
   if (!settingsPath) return false
   let settings: Record<string, unknown> = {}
   if (existsSync(settingsPath)) {
     try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
   }
-  if (!mergeBashEgressDeny(settings)) return false
+  // A sub-agent's parser hook is wired FIRST (idempotent): the legacy rules leave
+  // only a settings file the parser already covers, so without this the boot that
+  // turns the switch on would keep them until the next one.
+  if (name !== MAIN_AGENT_ID && bashEgressHostAllowEnabled() && ensureBashEgressParser(name)) {
+    try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+  }
+  const parserCovers = bashEgressHostAllowEnabled() && bashEgressParserCovers(name, settings, mainScopeSettingsPath)
+  if (!mergeBashEgressDeny(settings, parserCovers)) return false
   if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
+  atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  return true
+}
+
+// The owner's switch (Settings, BASH_EGRESS_HOST_ALLOW, default off): off keeps
+// the legacy curl-https / wget name rules on every agent exactly as before; on
+// lets the parser hook judge those two verbs by destination host. An unreadable
+// setting reads as OFF -- the deny rules are the safe direction.
+export function bashEgressHostAllowEnabled(): boolean {
+  try { return String(getEffectiveSettingValue('BASH_EGRESS_HOST_ALLOW')) === '1' } catch { return false }
+}
+
+// Does the bash-egress-parser hook judge this agent's Bash calls? Decides whether
+// the legacy curl-https / wget deny rules may leave its settings (mergeBashEgressDeny).
+// A sub-agent: its own settings carry the hook under the Bash matcher. The main
+// agent: the project-local settings carry the --main-scope registration (its own
+// config dir cannot hold hooks, the provisioner deletes them, #1305). An unreadable
+// file reads as NOT covered, which keeps the deny rules: the safe direction.
+export function bashEgressParserCovers(name: string, settings: Record<string, unknown>,
+  projectSettingsPath = MAIN_SCOPE_SETTINGS_PATH): boolean {
+  const wiredIn = (s: Record<string, unknown>, needle: string): boolean => {
+    const hooks = s.hooks && typeof s.hooks === 'object' ? s.hooks as Record<string, unknown> : {}
+    const ptu = Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse as unknown[] : []
+    return ptu.some((e) => (e as { matcher?: unknown })?.matcher === 'Bash' && JSON.stringify(e).includes(needle))
+  }
+  if (name !== MAIN_AGENT_ID) return wiredIn(settings, 'bash-egress-parser.mjs')
+  try {
+    return wiredIn(JSON.parse(readFileSync(projectSettingsPath, 'utf-8')), 'bash-egress-parser.mjs\\\" --main-scope')
+  } catch { return false }
+}
+
+// WHERE the main agent's parser hook is registered: the PROJECT-LOCAL settings,
+// which Claude Code loads for every session in this repo, as it does the tracked
+// .claude/settings.json. Not the tracked file (#1931 review): the registration
+// exists only while BASH_EGRESS_HOST_ALLOW is on, and a runtime write to a tracked
+// file dirties the tree, which the update preflight refuses and the next update
+// reverts. With the switch off the tracked file is byte-for-byte what it was, and
+// this one carries no parser entry. The file may hold the owner's own settings:
+// only the parser entry is ever added or removed, and an unreadable file is left
+// alone (the main agent then keeps the legacy deny rules, bashEgressParserCovers).
+export const MAIN_SCOPE_SETTINGS_PATH = join(PROJECT_ROOT, '.claude', 'settings.local.json')
+
+// Idempotently add (switch on) or remove (switch off) the --main-scope
+// bash-egress-parser entry. Returns true if the file changed.
+export function ensureMainScopeBashEgressParser(enabled = bashEgressHostAllowEnabled(),
+  settingsPath = MAIN_SCOPE_SETTINGS_PATH): boolean {
+  let settings: Record<string, unknown> = {}
+  if (existsSync(settingsPath)) {
+    try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
+    if (!settings || typeof settings !== 'object' || Array.isArray(settings)) return false
+  } else if (!enabled) {
+    return false
+  }
+  const hooks = (settings.hooks && typeof settings.hooks === 'object' && !Array.isArray(settings.hooks))
+    ? settings.hooks as Record<string, unknown>
+    : {}
+  const ptu = Array.isArray(hooks.PreToolUse) ? hooks.PreToolUse as unknown[] : []
+  const others = ptu.filter((e) => !JSON.stringify(e).includes('bash-egress-parser.mjs'))
+  if (enabled) {
+    const command = hookCommand(join(PROJECT_ROOT, 'scripts', 'hooks', 'bash-egress-parser.mjs'), ['--main-scope'])
+    const wired = ptu.some((e) => (e as { matcher?: unknown })?.matcher === 'Bash' && hookCommandWired(JSON.stringify(e), command))
+    if (wired && others.length === ptu.length - 1) return false
+    if (isUnsafeHookCommand(command)) return false
+    hooks.PreToolUse = [...others, { matcher: 'Bash', hooks: [{ type: 'command', command, timeout: 10 }] }]
+    settings.hooks = hooks
+  } else {
+    if (others.length === ptu.length) return false
+    if (others.length) hooks.PreToolUse = others
+    else delete hooks.PreToolUse
+    if (Object.keys(hooks).length) settings.hooks = hooks
+    else delete settings.hooks
+    // Nothing of the owner's left: the file was ours alone, so it goes, and the
+    // directory is as it was before the switch was ever turned on.
+    if (Object.keys(settings).length === 0) { rmSync(settingsPath, { force: true }); return true }
+  }
+  mkdirSync(dirname(settingsPath), { recursive: true })
   atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
   return true
 }
@@ -1501,11 +1667,14 @@ export function agentGetsDestructiveGate(name: string, profile?: ProfileTemplate
 // ones run with the permission bypass, so the hook goes to all of them; it does
 // nothing until WebSearch is called. Its label tells the agent to use the
 // content's facts and only refuse its imperatives (BORITOOLVASAT921), so it
-// marks the payload instead of stopping the round. The hook never fails a tool
+// marks the payload instead of stopping the round. WebFetch is covered too:
+// the allowlist gates which host is reached, but an allowlisted host's content
+// is still external text. The hook never fails a tool
 // call (it exits 0 on any error), so it is a plain command, not a fail-closed
 // gate. Browser MCP matchers stay operator-wired (the doc shows how).
 export const WEBSEARCH_ENVELOPE_SCRIPT = 'browser-content-notice.py'
-export const WEBSEARCH_ENVELOPE_MATCHER = 'WebSearch'
+export const ENVELOPE_TOOLS = ['WebSearch', 'WebFetch'] as const
+export const WEBSEARCH_ENVELOPE_MATCHER = 'WebSearch|WebFetch'
 
 // A settings.json hook command, not text in a CLAUDE.md: after a host move the
 // startup migration (ensureWebSearchEnvelope) sees the command no longer wired
@@ -1519,11 +1688,24 @@ function webSearchEnvelopeCommand(): string {
 // Removes OUR envelope hook only (a hook in a group, not the group: an
 // operator's own hook sharing a WebSearch group stays), then adds the managed
 // group -- unless an operator already wired the envelope under a matcher that
-// covers WebSearch (e.g. the docs' "...|WebSearch" browser pattern), where a
+// covers the tool (e.g. the docs' "...|WebSearch" browser pattern), where a
 // second copy would run the hook twice. Returns whether anything changed.
-function matcherCoversWebSearch(matcher: unknown): boolean {
-  if (typeof matcher !== 'string' || matcher === '') return true // no matcher = every tool
-  try { return new RegExp(`^(?:${matcher})$`).test(WEBSEARCH_ENVELOPE_MATCHER) } catch { return false }
+function envelopeToolsCovered(matcher: unknown): Set<string> {
+  // Claude Code's PostToolUse matching, as the shipped CLI does it: a missing, '' or '*' matcher matches every
+  // tool; a plain name list (letters, digits, _ | , space -) matches the exact names split on | or ,; anything
+  // else is an UNANCHORED regex, and an invalid one matches nothing. A non-string matcher (null included) fails
+  // the CLI's settings schema, so that group never runs: it covers nothing and the managed group is added.
+  if (matcher === undefined || matcher === '' || matcher === '*') return new Set(ENVELOPE_TOOLS)
+  if (typeof matcher !== 'string') return new Set()
+  if (/^[a-zA-Z0-9_|, -]+$/.test(matcher)) {
+    const names = matcher.split(/[|,]/).map((n) => n.trim()).filter(Boolean)
+    return new Set(ENVELOPE_TOOLS.filter((t) => names.includes(t)))
+  }
+  const covered = new Set<string>()
+  for (const tool of ENVELOPE_TOOLS) {
+    try { if (new RegExp(matcher).test(tool)) covered.add(tool) } catch { /* invalid regex covers nothing */ }
+  }
+  return covered
 }
 
 export function injectWebSearchEnvelope(existing: Record<string, unknown>): boolean {
@@ -1539,13 +1721,21 @@ export function injectWebSearchEnvelope(existing: Record<string, unknown>): bool
   const isEnvelope = (h: { command?: unknown }) => typeof h?.command === 'string' && h.command.includes(WEBSEARCH_ENVELOPE_SCRIPT)
   const kept: G[] = []
   for (const g of prev) {
-    if (g?.matcher !== WEBSEARCH_ENVELOPE_MATCHER || !Array.isArray(g.hooks)) { kept.push(g); continue }
+    const managed = typeof g?.matcher === 'string' && (
+      g.matcher === WEBSEARCH_ENVELOPE_MATCHER ||
+      // a single envelope tool name; this also migrates the old WebSearch-only group
+      (ENVELOPE_TOOLS as readonly string[]).includes(g.matcher))
+    if (!managed || !Array.isArray(g.hooks)) { kept.push(g); continue }
     const rest = g.hooks.filter((h) => !isEnvelope(h))
     if (rest.length) kept.push({ ...g, hooks: rest })
   }
-  const operatorWired = kept.some((g) => matcherCoversWebSearch(g?.matcher) && Array.isArray(g.hooks) && g.hooks.some(isEnvelope))
-  if (!operatorWired) {
-    kept.push({ matcher: WEBSEARCH_ENVELOPE_MATCHER, hooks: [{ type: 'command', command, timeout: 10 } as { command: string }] })
+  const covered = new Set<string>()
+  for (const g of kept) {
+    if (Array.isArray(g?.hooks) && g.hooks.some(isEnvelope)) for (const t of envelopeToolsCovered(g.matcher)) covered.add(t)
+  }
+  const missing = ENVELOPE_TOOLS.filter((t) => !covered.has(t))
+  if (missing.length) {
+    kept.push({ matcher: missing.join('|'), hooks: [{ type: 'command', command, timeout: 10 } as { command: string }] })
   }
   hooks.PostToolUse = kept
   return JSON.stringify(hooks.PostToolUse) !== before
@@ -2335,6 +2525,15 @@ export function ensureDefaultScheduledTasks(): void {
         }
       }
     }
+    // Scheduled-task registry: the server just wrote this task from the repo template, so
+    // it is server-written content -- register it, or the runner would refuse
+    // a shipped default on a fresh install. Best-effort: a failure leaves the
+    // task unregistered (skipped, with a warning), never crashes startup.
+    try {
+      registerScheduledTask(taskName, 'seed:dashboard')
+    } catch (err) {
+      logger.warn({ err, taskName }, 'schedule-registry: could not register seeded default task')
+    }
   }
 }
 
@@ -2401,8 +2600,22 @@ export function scaffoldAgentDir(name: string) {
     const tplPath = join(PROJECT_ROOT, 'templates', 'settings.json.template')
     if (existsSync(tplPath)) {
       const resolved = resolveTemplatePlaceholders(readFileSync(tplPath, 'utf-8'))
-      atomicWriteFileSync(settingsJson, resolved)
+      atomicWriteFileSync(settingsJson, seedSettingsFromTemplate(resolved, ytDlpIngestOnly()))
     }
+  }
+}
+
+// The template carries BASH_EGRESS_DENY only. With YT_DLP_INGEST_ONLY on, the
+// yt-dlp rules are merged into the seeded file too; with it off the template
+// text is returned verbatim, exactly as before the switch existed. Pure, so
+// both switch states are testable without scaffolding a real agent dir.
+export function seedSettingsFromTemplate(resolved: string, ytIngestOnly: boolean): string {
+  if (!ytIngestOnly) return resolved
+  try {
+    const tpl = JSON.parse(resolved) as Record<string, unknown>
+    return mergeBashEgressDeny(tpl, true, bashEgressDeny(true)) ? JSON.stringify(tpl, null, 2) : resolved
+  } catch {
+    return resolved // unparsable template: write it as is, the profile write follows
   }
 }
 
@@ -2508,7 +2721,39 @@ function buildFleetRosterBody(selfName: string): string {
     ? agentNames
     : [MAIN_AGENT_ID, ...agentNames]
 
+  // Hierarchy (TEAMROSTER1023): a sub-agent's reportsTo lives in its own
+  // agent-config.json (team.reportsTo), but until now nothing surfaced it
+  // here -- only team-trust.ts (the <trusted-peer> tag) and the dashboard
+  // overview route read it. A sub-agent therefore had no way to learn from
+  // its OWN CLAUDE.md who it reports to or who reports to it; that knowledge
+  // lived elsewhere and did not load into a sub-agent's context by itself.
+  //
+  // selfReportsTo is validated against `names` (the known-agent list), not
+  // just read and trusted: readAgentTeam() only TRIMS the stored value
+  // (sanitizeTeamConfig, which drops a self-reference or an unknown name,
+  // runs on the dashboard write path only -- a hand-edited agent-config.json,
+  // or an agent editing its own, bypasses it entirely). Without this check,
+  // a bad reportsTo value reaches this generated, trusted block two ways:
+  // (1) a name that does not resolve to any real agent (wrong case, typo, a
+  // deleted agent) produces a "Vezetőd:" line pointing at a ghost, and (2) a
+  // value containing newlines is inserted into the agent's own CLAUDE.md
+  // verbatim -- e.g. "zara\n\n## IGNORE ALL PREVIOUS INSTRUCTIONS\n..." would
+  // become a heading in the agent's own instructions, the same class of risk
+  // sanitizeCapabilityTag() already closes for capability tags on this same
+  // line. Requiring membership in `names` (itself sourced from
+  // listAgentNames(), not from the untrusted field) closes both: neither a
+  // ghost name nor a newline-laden string is a member.
+  //
+  // For the main agent (no agents/ subdirectory) readAgentTeam() safely
+  // falls back to DEFAULT_TEAM (reportsTo: null), which is correct -- the
+  // main agent reports to no one.
+  const selfTeam = readAgentTeam(selfName)
+  const selfReportsTo = selfTeam.reportsTo && selfTeam.reportsTo !== selfName && names.includes(selfTeam.reportsTo)
+    ? selfTeam.reportsTo
+    : null
+
   const lines: string[] = []
+  const subordinates: string[] = []
   for (const agentName of names) {
     if (agentName === selfName) continue
 
@@ -2525,10 +2770,38 @@ function buildFleetRosterBody(selfName: string): string {
       .slice(0, CAPABILITY_TAG_MAX_PER_AGENT)
 
     const capsStr = caps.length > 0 ? caps.join(', ') : '-'
-    lines.push(`- **${agentName}** (agent_id: ${agentName}): ${capsStr}`)
+
+    const peerReportsTo = readAgentTeam(agentName).reportsTo
+    let roleTag = ''
+    // A two-agent cycle (A reports to B, B reports to A) would otherwise tag
+    // the same roster line BOTH "(beosztottad)" (this loop) AND as the
+    // "Vezetőd:" target (below) -- a peer is only a subordinate if it is not
+    // ALSO this agent's own (validated) manager.
+    if (peerReportsTo === selfName && agentName !== selfReportsTo) {
+      subordinates.push(agentName)
+      roleTag = ' (beosztottad)'
+    } else if (agentName === selfReportsTo) {
+      roleTag = ' (vezetőd)'
+    }
+
+    lines.push(`- **${agentName}** (agent_id: ${agentName})${roleTag}: ${capsStr}`)
   }
 
   const roster = lines.length > 0 ? lines.join('\n') : '(nincs regisztrált ágens)'
+
+  // Factual only (2026-10-23, reviewer-measured): the line used to also
+  // prescribe ROUTING ("a kész munkát neki adod át, nem közvetlenül a
+  // gazdának"), which can contradict an individual agent's own standing
+  // instructions -- e.g. an agent that owns a channel and is told to report
+  // certain things straight to the owner. Routing rules belong in each
+  // agent's own text, not in this generated, one-size-fits-all block.
+  const hierarchyLines: string[] = []
+  if (selfReportsTo) {
+    hierarchyLines.push(`Vezetőd: **${selfReportsTo}**.`)
+  }
+  if (subordinates.length > 0) {
+    hierarchyLines.push(`Beosztottjaid: ${subordinates.map((n) => `**${n}**`).join(', ')}.`)
+  }
 
   return [
     '## A flotta többi agense',
@@ -2538,6 +2811,7 @@ function buildFleetRosterBody(selfName: string): string {
     '',
     roster,
     '',
+    ...(hierarchyLines.length > 0 ? [...hierarchyLines, ''] : []),
     'Ha egy kérés egyértelműen más szakterületére esik, jelezd vagy delegáld inter-agent üzenettel a megfelelő ágensnek.',
   ].join('\n')
 }
@@ -2583,7 +2857,11 @@ function buildAutonomyBody(name: string): string {
     '',
     'Döntés lekérdezése (GET, 60 mp-enként ismételve):',
     `curl -s -H "Authorization: Bearer $(cat ${tokenPath})" "${dashboardOrigin}/api/approvals/<id>"`,
-    'status=approved -> végezd el a műveletet. status=rejected vagy status=timeout -> ne csináld, naplózd az okot.',
+    'status=rejected vagy status=timeout -> ne csináld, naplózd az okot.',
+    'status=approved -> a jóváhagyás EGYSZER használható: MIELŐTT cselekszel, használd fel (APPROVALCONSUME1022):',
+    `curl -s -X POST ${dashboardOrigin}/api/approvals/<id>/consume -H "Content-Type: application/json" -H "Authorization: Bearer $(cat ${tokenPath})" -d '{"category":"CATEGORY_KEY","consumer":"${name}"}'`,
+    'Csak HTTP 200 után végezd el a műveletet. 409 (already_consumed, expired, not_approved, hash_mismatch) = NE csináld: kérj új jóváhagyást.',
+    'Ha a kérésben content_hash volt, a felhasználásban is ugyanazt add meg. Kivétel: email_send és data_delete kategóriánál NE hívd (409 wrong_category); azokat a küldés, illetve a törlés útja maga használja fel.',
     '',
     '**Level 3 (autonóm)**: elvégzed a műveletet, majd utána jelented a főágensnek.',
   ].join('\n')
@@ -2620,15 +2898,25 @@ function buildAutonomyBody(name: string): string {
 // ledger IS a machine gate, for the main agent it is NOT. Wiring the ledger for
 // the main agent is a separate owner decision; this text only stops promising a
 // protection that is not there.
-export function buildEvidenceBody(isMainAgent = false): string {
-  const gateParagraphs: string[] = isMainAgent
+// `mainLedger`: an install that sets MAIN_AGENT_RECIPIENT_LEDGER=1 wires the
+// ledger for the main agent too (its approval gate and the project's own
+// senders check every recipient), and the paragraph then says so: the text
+// must stay true for the install it is written into.
+export function buildEvidenceBody(isMainAgent = false, mainLedger = mainAgentRecipientLedgerEnabled()): string {
+  const gateParagraphs: string[] = isMainAgent && mainLedger
     ? [
-        'Kimenő levélnél a címzett-ledger (`store/verified-recipients.json`) **nálad NEM gépi kapu**: az `email-send-gate.mjs` hook csak a sub-ügynökök settingsébe van bekötve, a tiédbe nem (mérve 2026-09-22). Ami nálad fut, az a jóváhagyás-kapu (a küldés csak a boríték -- címzett, cc, bcc, tárgy, törzs -- hash-ére adott, el nem használt jóváhagyás mellett megy át) és a magyar copy-kapu (ékezet és szöveg-QA a küldés előtt), mindkettő a `scripts/hooks/` alatt. Ezek a KÜLDÉST szigorúan kapuzzák, de a **címet nem mérik a ledgerhez**: egy rossz cím pontosan úgy megy be a jóváhagyásba, ahogy te írtad. A címforrás-szabály nálad tehát szabály, nem gép -- ne olvasd védelemnek ott, ahol nincs.',
+        'Kimenő levélnél a címzett-ledger (`store/verified-recipients.json`) **nálad is gépi kapu**: ez a telepítés bekapcsolta (`MAIN_AGENT_RECIPIENT_LEDGER=1` a `.env`-ben). A jóváhagyás-kapu minden küldés, piszkozat és Bash-küldés címzettjét a ledgerhez méri, mielőtt bármilyen jóváhagyás fogyna, és a projekt saját küldői is csak a ledgerben lévő címre kézbesítenek, a gazda-CC-re is. Amit a kapu nem lát, az a szkriptbe zárt cím: azt a szabály tartja, nem a gép.',
+        '',
+        'Ha egy cím hiányzik, a helyes lépés a **cím felvétele forrással**, nem a kapu megkerülése. Ha nem találsz forrást, a cím nincs meg: mondd meg a gazdának.',
+      ]
+    : isMainAgent
+    ? [
+        'Kimenő levélnél a címzett-ledger (`store/verified-recipients.json`) **nálad NEM gépi kapu**: az `email-send-gate.mjs` hook csak a sub-ügynökök settingsébe van bekötve, a tiédbe nem (mérve 2026-09-22). Ami nálad fut, az a jóváhagyás-kapu (a küldés csak a boríték -- címzett, cc, bcc, tárgy, törzs -- hash-ére adott, el nem használt jóváhagyás mellett megy át) és a magyar copy-kapu (ékezet és szöveg-QA a küldés előtt), mindkettő a `scripts/hooks/` alatt. Melyik eszközre melyik fut: a jóváhagyás-kapu CSAK a tényleges küldésre (Bash-ból indított levélküldés, `send_email`, a `manage_email` küldő művelete, a Gmail-connector `send_message`/`reply`/`forward` eszköze, a harder-mail `send_mail` és `send_mail_auto` eszköze); a piszkozat (`create_draft`, `draft_email`, `update_draft`, a harder-mail `create_draft`-ja is) NEM kér jóváhagyást. A copy-kapu a küldést ÉS a piszkozatot is vizsgálja, a harder-mail eszközökét is (mérve 2026-10-19: előtte a harder-mail eszközeire egyik kapu sem futott). Ezek a KÜLDÉST szigorúan kapuzzák, de a **címet nem mérik a ledgerhez**: egy rossz cím pontosan úgy megy be a jóváhagyásba, ahogy te írtad. A címforrás-szabály nálad tehát szabály, nem gép -- ne olvasd védelemnek ott, ahol nincs.',
         '',
         'A ledger ettől még a flottáé: a sub-ügynökök küldését méri, és ha nekik kell egy cím, forrással veszed fel. A ledger bekötése a fő ügynökre külön, gazda-döntés: magadtól ne kösd be, és ne is számolj vele, amíg nincs bekötve.',
       ]
     : [
-        'Kimenő levélnél van gépi kapu is, de **szűkebb, mint a szabály** -- és a különbség csendes, ezért tudni kell róla. Amit a PreToolUse hook lát: a `to`/`cc`/`bcc` mezőt **hordozó** tool-hívást (küldés, piszkozat). Azt a `store/verified-recipients.json` ledgerhez méri, és ismeretlen címre nem engedi át. **Amit NEM lát: a szkriptbe zárt címet.** Ha a levelet egy futtatott szkript állítja össze (`python3 kuldes.py`), a címzett a hook elől rejtve marad; ezt a kapu forrása maga mondja ki, mert tetszőleges értelmezőkód statikus elemzése eldönthetetlen. A gépi kapu tehát a szabály EGY részét fedi le, a maradékot a szabály tartja -- **ne olvasd védelemnek ott, ahol nincs.**',
+        'Kimenő levélnél van gépi kapu is, de **szűkebb, mint a szabály** -- és a különbség csendes, ezért tudni kell róla. Amit a PreToolUse hook lát: a `to`/`cc`/`bcc` mezőt **hordozó** tool-hívást (küldés, piszkozat). Azt a `store/verified-recipients.json` ledgerhez méri, és ismeretlen címre nem engedi át. A harder-mail eszközei közül a `send_mail` és a `send_mail_auto` nálad mindig tiltott, a `create_draft` címzettjét pedig a ledger méri (a válasz-piszkozatnak nincs címzett-mezője, azt a szerver az eredeti levélből oldja fel). **Amit NEM lát: a szkriptbe zárt címet.** Ha a levelet egy futtatott szkript állítja össze (`python3 kuldes.py`), a címzett a hook elől rejtve marad; ezt a kapu forrása maga mondja ki, mert tetszőleges értelmezőkód statikus elemzése eldönthetetlen. A gépi kapu tehát a szabály EGY részét fedi le, a maradékot a szabály tartja -- **ne olvasd védelemnek ott, ahol nincs.**',
         '',
         'És egy következmény, ami a hiányzó ledgerből jön: amíg a `verified-recipients.json` nem létezik, a kapu fail-closed, tehát MINDEN címet hordozó küldés tiltott. Ez helyes irány, de ha egy jóváhagyott, ismétlődő feladat emiatt akad el, a helyes lépés a **cím felvétele forrással** -- nem a kapu megkerülése egy szkripttel. Ha megkerülnéd, állj meg és jelezd.',
       ]
@@ -3522,6 +3810,11 @@ export function buildMemorySearchLabelBody(name: string): string {
     'Ha a kérdés az, hogy VAN-E EGYÁLTALÁN emlékünk valamiről (hiány-állítás), tedd hozzá a',
     '`&strict=1`-et: ott az üres válasz pontosan azt jelenti, aminek látszik.',
     '',
+    'Időszakra szűrés: `&date=tegnap` (ma, tegnap, múlt héten, `ÉÉÉÉ-HH-NN`, `ÉÉÉÉ-HH-NN - ÉÉÉÉ-HH-NN`)',
+    'vagy `&since=ÉÉÉÉ-HH-NN&until=ÉÉÉÉ-HH-NN`, ékezet nélkül, kódolva. A szűrő nem lazul: érvénytelen',
+    'kifejezésre 400 jön, és az `X-Memory-Search` fejléc `date=<tól>..<ig>` mezője mutatja a ténylegesen',
+    'használt tartományt. A napi napló bejegyzései is kereshetők (`[Napló ÉÉÉÉ-HH-NN ÓÓ:PP]` kezdettel, cold tierben).',
+    '',
     'NYERS ÉKEZET A `q`-BAN = HTTP 400, ÜRES TÖRZZSEL. A `q=funkcionális` alak 400-at ad, a',
     '`q=funkcion%C3%A1lis` és a `-G --data-urlencode "q=..."` alak 200-at. A 400-on NINCS',
     '`X-Memory-Search` fejléc, tehát a fenti `grep` némán semmit nem ír, és a nulla sor pontosan',
@@ -3729,6 +4022,7 @@ A -D NEM dísz, és a fejlécet KÖTELEZŐ elolvasni. A keresés alapból ENGED�
 relaxed=true  -> semmi nem illeszkedett ÚGY, AHOGY KÉRTED; amit látsz, az mentett közelítés, NEM bizonyíték.
 relaxed=false -> a kérdés úgy illeszkedett, ahogy kérted. NEM jelenti azt, hogy ez MINDEN, és azt sem, hogy van találat (hits=0 is lehet mellette).
 Ha a kérdés az, hogy VAN-E EGYÁLTALÁN emlékünk valamiről (hiány-állítás), tedd hozzá a &strict=1-et: ott az üres válasz pontosan azt jelenti, aminek látszik.
+Időszakra szűrés: &date=tegnap (ma, tegnap, múlt héten, ÉÉÉÉ-HH-NN, ÉÉÉÉ-HH-NN - ÉÉÉÉ-HH-NN) vagy &since=ÉÉÉÉ-HH-NN&until=ÉÉÉÉ-HH-NN, ékezet nélkül, kódolva. A szűrő nem lazul, érvénytelen kifejezésre 400 jön; az X-Memory-Search fejléc date=<tól>..<ig> mezője mutatja a ténylegesen használt tartományt. A napi napló bejegyzései is kereshetők ([Napló ÉÉÉÉ-HH-NN ÓÓ:PP] kezdettel, cold tierben).
 
 ### Átsorolás (hot -> cold/warm), amikor egy feladat lezárult
 
@@ -3759,6 +4053,7 @@ A -q legyen az ELSŐ argumentum, a token útja SZÓ SZERINT ez az abszolút út 
 Típusok: task (mindig szól az eredménnyel) vagy heartbeat (csak fontosnál szól).
 Cron formátum: perc óra nap hónap hétnapja (pl. 0 8 * * * = minden nap 8:00).
 NE írd közvetlenül az SQLite scheduled_tasks táblát - az egy régi API.
+NE szerkeszd kézzel a ~/.claude/scheduled-tasks/ fájljait: a runner csak az API-n át írt (regisztrált) feladatot indítja, egy kézzel létrehozott vagy módosított feladat NEM fut le.
 
 ## Öntanulás és Skill rendszer
 

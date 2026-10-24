@@ -9,6 +9,7 @@
     "dev": "tsx src/index.ts",
     "setup": "tsx scripts/setup.ts",
     "status": "tsx scripts/status.ts",
+    "hook-failures": "tsx scripts/hook-failures.ts",
     "remote-enroll": "tsx scripts/remote-access-enroll.ts",
     "bridge-device-key": "tsx scripts/bridge-device-key.ts",
     "dashboard-user": "tsx scripts/dashboard-user.ts",

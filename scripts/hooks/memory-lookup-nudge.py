@@ -91,7 +91,8 @@ def nudge(agent, port, token_path):
         f'curl -s -G -D /tmp/mem-fejlec-{agent}.txt -H "Authorization: Bearer $(cat {token_path})" '
         f'--data-urlencode "agent={agent}" --data-urlencode "q=KULCSSZO" "http://localhost:{port}/api/memories"\n'
         f"grep -i '^x-memory-search' /tmp/mem-fejlec-{agent}.txt  "
-        "(relaxed=true = kozelites, nem bizonyitek; hiany-allitashoz: --data-urlencode \"strict=1\")"
+        "(relaxed=true = kozelites, nem bizonyitek; hiany-allitashoz: --data-urlencode \"strict=1\"; "
+        "idoszak: date=tegnap | since= until=)"
     )
 
 

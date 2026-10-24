@@ -90,7 +90,8 @@ describe('memory-lookup-nudge: speaks on a human message', () => {
           `curl -s -G -D /tmp/mem-fejlec-samu.txt -H "Authorization: Bearer $(cat ${token})" ` +
           `--data-urlencode "agent=samu" --data-urlencode "q=KULCSSZO" "http://localhost:${port}/api/memories"\n` +
           "grep -i '^x-memory-search' /tmp/mem-fejlec-samu.txt  " +
-          '(relaxed=true = kozelites, nem bizonyitek; hiany-allitashoz: --data-urlencode "strict=1")\n',
+          '(relaxed=true = kozelites, nem bizonyitek; hiany-allitashoz: --data-urlencode "strict=1"; ' +
+          'idoszak: date=tegnap | since= until=)\n',
       )
     } finally {
       server.close()

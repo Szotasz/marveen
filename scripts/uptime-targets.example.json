@@ -1,0 +1,23 @@
+{
+  "_comment": "Example for store/uptime-targets.json (untracked, install-specific). Every target needs at least one content signal (title_contains, contains or next_data): measuring the status alone is not enough. The reference must not sit behind the same CDN as the targets, and must be a host the install can reach (a new outbound destination). A target name must not start with '_'.",
+  "targets": [
+    {
+      "name": "site",
+      "url": "https://example.com/",
+      "title_contains": "Example Domain",
+      "contains": ["<h1>Example Domain</h1>"]
+    },
+    {
+      "name": "widget",
+      "url": "https://example.com/booking/embed",
+      "next_data": {
+        "equals": {"page": "/[slug]/embed", "query.slug": "example-slug"},
+        "non_empty": ["buildId"],
+        "false": ["isFallback"]
+      }
+    }
+  ],
+  "reference": "https://www.google.com/generate_204",
+  "wait_seconds": 90,
+  "blind_notice_runs": 6
+}

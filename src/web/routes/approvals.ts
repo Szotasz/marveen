@@ -3,7 +3,8 @@ import { readFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { PROJECT_ROOT, MAIN_AGENT_ID, TELEGRAM_BOT_TOKEN, CHANNEL_PROVIDER, APP_TZ } from '../../config.js'
 import {
-  consumeApproval,
+  consumeApproval, consumeCategoryApproval,
+  CATEGORY_CONSUME_DEFAULT_WINDOW_S, CATEGORY_CONSUME_MAX_WINDOW_S,
   createApproval, getApproval, resolveApproval, listApprovals, expireTimedOutApprovals,
   createAgentMessage, setApprovalTelegramMessageId,
   type Approval,
@@ -13,7 +14,23 @@ import { readBody, json } from '../http-helpers.js'
 import { resolveOwnerChatId } from '../../owner-chat.js'
 import { sendOwnerMessage } from '../../notify.js'
 import { sendTelegramMessage } from '../telegram.js'
+import { mayIssueCredentials, OWNER_SESSION_REQUIRED } from './auth.js'
 import type { RouteContext } from './types.js'
+
+// Kanban 80d0e3c6: APPROVING is the owner's decision, so the two routes that make a row approved
+// (the born-approved POST and PATCH status=approved) take an owner credential. Measured before:
+// a caller with the shared token (every agent holds it) got an approved row on both routes, and
+// the real email-approval-gate then let its letter through; through STANDING_CATEGORY the same
+// row made every later letter to an address approval-free. The self-declared agent_id and
+// resolved_by checks below stay, but they were never what stopped this.
+// Who counts as the owner is the predicate that guards issuing credentials (mayIssueCredentials,
+// #2163): the owner's session, also when the browser sends the stored token alongside it; the
+// bare token only before the first dashboard login exists.
+const OWNER_ONLY = {
+  ...OWNER_SESSION_REQUIRED,
+  error: 'Approving needs the dashboard login (an owner session); the shared dashboard token can file, reject or time out a request, not approve one. ' +
+    'The token alone approves only before the first login exists.',
+}
 
 const AUTONOMY_CONFIG_PATH = join(PROJECT_ROOT, 'store', 'autonomy-config.json')
 
@@ -83,6 +100,35 @@ export function isConsumerName(v: unknown): v is string {
 // letter that used it.
 export function isMessageId(v: unknown): v is string {
   return typeof v === 'string' && v.length <= 250 && /^<[^<>\s@]+@[^<>\s@]+>$/.test(v)
+}
+
+// A category key as the autonomy config spells them (email_send, data_delete,
+// external_message): lower-case ASCII letter first, then letters, digits, underscore.
+export function isCategoryKey(v: unknown): v is string {
+  return typeof v === 'string' && /^[a-z][a-z0-9_]{0,63}$/.test(v)
+}
+
+// What the acting tool names as the thing that used the approval (a plan id,
+// a change-list id). Printable, 1-250 characters after trimming.
+export function isConsumeRef(v: unknown): v is string {
+  if (typeof v !== 'string') return false
+  const t = v.trim()
+  if (t.length < 1 || t.length > 250) return false
+  for (let i = 0; i < t.length; i++) {
+    const c = t.charCodeAt(i)
+    if (c < 32 || c === 127) return false
+  }
+  return true
+}
+
+// The window the acting tool asks for, in seconds. Absent = the default;
+// anything else must be a whole number inside 1..cap, or the call is refused
+// (400) rather than silently clamped, so a tool learns its policy is not what
+// it thinks.
+export function categoryWindowSeconds(v: unknown): number | null {
+  if (v === undefined || v === null) return CATEGORY_CONSUME_DEFAULT_WINDOW_S
+  if (typeof v !== 'number' || !Number.isSafeInteger(v) || v < 1 || v > CATEGORY_CONSUME_MAX_WINDOW_S) return null
+  return v
 }
 
 // Owner-facing Telegram text. Pure + exported for tests. Plain text (no
@@ -283,6 +329,62 @@ export function startApprovalTimeoutSweeper(): NodeJS.Timeout {
   }, 60_000)
 }
 
+// POST /api/approvals/:id/consume with a category other than email_send. The
+// acting tool calls it right BEFORE its first irreversible write and acts only
+// on 200; 409 means do NOT act (used, unapproved, another plan, another
+// category, stale). Same answer shapes as the letter path. email_send and
+// data_delete rows are refused here (wrong_category): the server consumes
+// those on their own paths.
+function handleCategoryConsume(ctx: RouteContext, id: string, body: Record<string, unknown>): void {
+  const { res } = ctx
+  const { category, content_hash, consumer, ref, max_age_seconds } = body
+  if (!isCategoryKey(category)) {
+    json(res, { error: 'category must be a category key (lower-case letters, digits, underscore; max 64)' }, 400)
+    return
+  }
+  if (content_hash !== undefined && content_hash !== null && (typeof content_hash !== 'string' || !/^[0-9a-f]{64}$/.test(content_hash))) {
+    json(res, { error: 'content_hash, if given, must be the 64-char lowercase sha256 hex anchor the approval was requested with' }, 400)
+    return
+  }
+  if (!isConsumerName(consumer)) {
+    json(res, { error: 'consumer is required: 1-120 printable characters naming the acting tool' }, 400)
+    return
+  }
+  if (ref !== undefined && ref !== null && !isConsumeRef(ref)) {
+    json(res, { error: 'ref, if given, must be 1-250 printable characters' }, 400)
+    return
+  }
+  const windowSeconds = categoryWindowSeconds(max_age_seconds)
+  if (windowSeconds === null) {
+    json(res, { error: `max_age_seconds, if given, must be a whole number of seconds between 1 and ${CATEGORY_CONSUME_MAX_WINDOW_S}` }, 400)
+    return
+  }
+  const result = consumeCategoryApproval({
+    id,
+    category,
+    contentHash: typeof content_hash === 'string' ? content_hash : null,
+    consumer: consumer.trim(),
+    ref: typeof ref === 'string' ? ref.trim() : null,
+    windowSeconds,
+  })
+  if (result.ok) {
+    logger.info({ id, category, consumer: consumer.trim(), ref: ref ?? null }, 'Approval consumed by the acting tool')
+    json(res, { ok: true, approval: result.approval })
+    return
+  }
+  if (result.reason === 'not_found') {
+    json(res, { ok: false, reason: 'not_found' }, 404)
+    return
+  }
+  const a = result.approval
+  logger.warn({ id, category, consumer: consumer.trim(), reason: result.reason }, 'Approval consume refused')
+  json(res, {
+    ok: false,
+    reason: result.reason,
+    approval: a ? { id: a.id, status: a.status, consumed_at: a.consumed_at, consumed_by: a.consumed_by, consumed_ref: a.consumed_ref } : null,
+  }, 409)
+}
+
 export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method, url } = ctx
 
@@ -344,6 +446,11 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     // PATCH writes); a string id is kept in the owner note and the log line.
     let chatApprovedMessageId: number | string | null = null
     if (owner_approved_message_id !== undefined && owner_approved_message_id !== null) {
+      if (!mayIssueCredentials(ctx.auth, req)) {
+        logger.warn({ agent_id, category, auth: ctx.auth?.kind, agent: ctx.auth?.agent }, 'born-approved approval refused: no owner session')
+        json(res, OWNER_ONLY, 403)
+        return true
+      }
       if (agent_id.trim() !== MAIN_AGENT_ID) {
         json(res, { error: 'owner_approved_message_id is only accepted from the main agent; a requesting agent cannot pre-approve its own request' }, 400)
         return true
@@ -402,13 +509,27 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
   // 409 means do NOT send: the approval is used, unapproved, for another letter,
   // or stale -- and a second attempt on a used approval is the double send this
   // exists to stop.
+  // With "category": "<key>" (anything but email_send) the same route consumes
+  // an approval of that category once, for the tool about to act on it
+  // (handleCategoryConsume above).
   const consumeMatch = path.match(/^\/api\/approvals\/([^/]+)\/consume$/)
   if (consumeMatch && method === 'POST') {
-    let body: { content_hash?: unknown; consumer?: unknown; message_id?: unknown }
+    let body: { content_hash?: unknown; consumer?: unknown; message_id?: unknown; category?: unknown }
     try {
       body = JSON.parse((await readBody(req)).toString())
     } catch {
       json(res, { error: 'Invalid JSON' }, 400)
+      return true
+    }
+    if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+      json(res, { error: 'body must be a JSON object' }, 400)
+      return true
+    }
+    // A body naming any category other than email_send is the generic one-shot
+    // path. No category (or email_send, or null) is the letter path below,
+    // exactly as before.
+    if (body.category !== undefined && body.category !== null && body.category !== 'email_send') {
+      handleCategoryConsume(ctx, consumeMatch[1], body as Record<string, unknown>)
       return true
     }
     const { content_hash, consumer, message_id } = body
@@ -482,6 +603,14 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       return true
     }
     const msgId = typeof telegram_message_id === 'number' ? telegram_message_id : null
+
+    // Approving takes the owner (see OWNER_ONLY); rejecting or timing out does not, since
+    // an agent that cancels a request gains nothing by it.
+    if (status === 'approved' && !mayIssueCredentials(ctx.auth, req)) {
+      logger.warn({ id: idMatch[1], resolved_by, auth: ctx.auth?.kind, agent: ctx.auth?.agent }, 'approval approve refused: no owner session')
+      json(res, OWNER_ONLY, 403)
+      return true
+    }
 
     // Self-approval guard: the requesting agent cannot approve its own request.
     // This is a best-effort check on the self-declared resolved_by value (all fleet

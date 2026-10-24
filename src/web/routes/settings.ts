@@ -6,6 +6,21 @@ import { logConfigChange } from '../../db.js'
 import { setStoreWriteActor } from '../../store-watcher.js'
 import { syncRotationHeartbeatTask } from '../claude-rotation-heartbeat.js'
 import type { RouteContext } from './types.js'
+import { mayIssueCredentials, OWNER_SESSION_REQUIRED } from './auth.js'
+
+// A change the registry marks as loosening a security control (SettingDefinition.loosens) needs the
+// owner. The shared fleet token is held by every agent, so it cannot be told apart from the agent
+// the control constrains. Who counts as the owner is the predicate that guards issuing credentials
+// (mayIssueCredentials, #2163): the owner's session, also when the browser sends the stored token
+// alongside it; the bare token only before the first dashboard login exists.
+function ownerCredential(ctx: RouteContext): boolean {
+  return mayIssueCredentials(ctx.auth, ctx.req)
+}
+const LOOSEN_FORBIDDEN = {
+  ...OWNER_SESSION_REQUIRED,
+  error: 'This change loosens a security control: it needs the dashboard login (an owner session), not the shared token. ' +
+    'The token alone can do it only before the first login exists.',
+}
 
 export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
   const { req, res, path, method } = ctx
@@ -68,6 +83,11 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
         return true
       }
 
+      if (def.loosens?.(String(getEffectiveSettingValue(key)), String(validation.value)) && !ownerCredential(ctx)) {
+        json(res, LOOSEN_FORBIDDEN, 403)
+        return true
+      }
+
       const resolvedActor = typeof actor === 'string' && actor ? actor : 'dashboard'
       setStoreWriteActor(resolvedActor)
       const oldValue = getEffectiveSettingValue(key)
@@ -121,6 +141,10 @@ export async function tryHandleSettings(ctx: RouteContext): Promise<boolean> {
         // A DELETE usually has no body; an unreadable one just keeps the default actor.
       }
 
+      if (def.loosens?.(String(getEffectiveSettingValue(key)), String(getSettingFallback(key).value)) && !ownerCredential(ctx)) {
+        json(res, LOOSEN_FORBIDDEN, 403)
+        return true
+      }
       setStoreWriteActor(actor)
       const oldValue = getEffectiveSettingValue(key)
       const result = clearOverride(key)

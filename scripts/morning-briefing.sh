@@ -7,7 +7,8 @@
 # munkát a beseedelt reggeli-napindito scheduled task végzi 07:30-kor, az élő
 # csatorna-munkamenetben, ahol VAN channel allowlist. Ez a script a tartalék
 # és a kézi út marad (systemctl --user enable --now <agent>-morning.timer,
-# vagy MORNING_FORCE=1 mellett közvetlen futtatás).
+# vagy MORNING_FORCE=1 mellett közvetlen futtatás), és CSAK ANTHROPIC_API_KEY-jel
+# fut: az előfizetéses logint fej nélküli futásra nem használja (MORNTIMER2197).
 
 export PATH="$HOME/.local/bin:$HOME/.bun/bin:/home/linuxbrew/.linuxbrew/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
 
@@ -149,12 +150,26 @@ if [ "$TG_READY" = "0" ] && [ -z "$SLACK_TARGET" ]; then
   exit 0
 fi
 
+# MORNTIMER2197 (#2197): this headless `claude -p` runs on an API key only. The
+# daily briefing ships as the seeded reggeli-napindito task inside the live
+# channel session; this script is the manual path an operator opts into, and it
+# must not quietly spend the install's subscription login on an unattended run.
+# No key: no model call, no stamp, a non-zero exit so `systemctl status` shows it.
+if [ -z "${ANTHROPIC_API_KEY:-}" ]; then
+  echo "=== Reggeli napindító MEGTAGADVA: nincs ANTHROPIC_API_KEY (a .env-ben vagy a környezetben). Ez a szkript csak API-kulccsal fut; a napindítót a reggeli-napindito ütemezett feladat szállítja. -- guard nem pecsételve ===" >> "$LOG"
+  echo "morning-briefing: refusing to run without ANTHROPIC_API_KEY (the subscription login is not used headlessly); the seeded reggeli-napindito task delivers the briefing" >&2
+  exit 1
+fi
+
 RUN_OUT="$(mktemp)"; RUN_ERR="$(mktemp)"; BODY="$(mktemp)"; NO_CHANNEL_STATE="$(mktemp -d)"
 trap 'rm -f "$RUN_OUT" "$RUN_ERR" "$BODY"; rm -rf "$NO_CHANNEL_STATE"' EXIT
 
 # ROOTRESPAWN1001: claude refuses --dangerously-skip-permissions as root without it.
 if [ "$(id -u)" = "0" ]; then export IS_SANDBOX=1; fi
+# The subscription tokens an .env may carry are dropped too, so the call cannot
+# fall back to them (MORNTIMER2197).
 env -u TELEGRAM_BOT_TOKEN -u SLACK_BOT_TOKEN -u SLACK_APP_TOKEN -u DISCORD_BOT_TOKEN \
+  -u CLAUDE_CODE_OAUTH_TOKEN -u ANTHROPIC_AUTH_TOKEN \
   TELEGRAM_STATE_DIR="$NO_CHANNEL_STATE" SLACK_STATE_DIR="$NO_CHANNEL_STATE" \
   DISCORD_STATE_DIR="$NO_CHANNEL_STATE" GOOGLECHAT_STATE_DIR="$NO_CHANNEL_STATE" \
   TEAMS_STATE_DIR="$NO_CHANNEL_STATE" \

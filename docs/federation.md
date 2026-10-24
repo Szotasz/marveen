@@ -103,16 +103,18 @@ Ha csak az egyik oldal állít be megengedő bizalmat, az együttműködés **as
 | GET | `/api/federation/manifest` | bármely társ bejövő tokenje VAGY dashboard | rendszernév, verzió, ügynöklista, al-ügynök skillek |
 | POST | `/api/federation/inbox` | bármely társ bejövő tokenje VAGY dashboard | bejövő üzenet (a token azonosítja a hívót) |
 | GET | `/api/federation/peers` | csak dashboard | konfiguráció-nézet (tokenek NÉLKÜL, jelenlét-flagek) |
-| PUT | `/api/federation/peers` | csak dashboard | teljes konfig írása (szkriptelhető primitíva) |
-| POST | `/api/federation/peers` | csak dashboard | társ felvétele — a bejövő tokent a szerver generálja és egyszer visszaadja |
-| PATCH / DELETE | `/api/federation/peers/:id` | csak dashboard | társ szerkesztése / törlése (törléskor: függő üzenetei lezárva, dedup+backoff+poller-cache purgálva) |
-| GET | `/api/federation/peers/:id/inbound-token` | csak dashboard | token-felfedés (naplózott) |
-| POST | `/api/federation/peers/:id/rotate-inbound-token` | csak dashboard | token-csere (naplózott) |
-| POST | `/api/federation/enabled` | csak dashboard | fő kapcsoló (veszteségmentes) |
+| PUT | `/api/federation/peers` | dashboard; ha már van login, gazda-session | teljes konfig írása (szkriptelhető primitíva) |
+| POST | `/api/federation/peers` | dashboard; ha már van login, gazda-session | társ felvétele: a bejövő tokent a szerver generálja és egyszer visszaadja |
+| PATCH / DELETE | `/api/federation/peers/:id` | PATCH: dashboard; ha már van login, gazda-session. DELETE: dashboard | társ szerkesztése / törlése (törléskor: függő üzenetei lezárva, dedup+backoff+poller-cache purgálva) |
+| GET | `/api/federation/peers/:id/inbound-token` | dashboard; ha már van login, gazda-session | token-felfedés (naplózott) |
+| POST | `/api/federation/peers/:id/rotate-inbound-token` | dashboard; ha már van login, gazda-session | token-csere (naplózott) |
+| POST | `/api/federation/enabled` | bekapcsolás: dashboard; ha már van login, gazda-session. Kikapcsolás: dashboard | fő kapcsoló (veszteségmentes) |
 | POST | `/api/federation/routing-mode` | csak dashboard | delegálási mód (`strong` / `catalog-first` / `advisory`) |
 | GET / POST | `/api/federation/status` / `/api/federation/refresh` | csak dashboard | poller-cache / kézi frissítés |
 | POST | `/api/federation/apply` | csak dashboard | beállítások életbe léptetése (fő-ügynök célzott újraindítása) |
 | POST | `/api/federation/remove` | csak dashboard | teljes eltávolítás |
+
+A társ bejövő tokenje egy távoli rendszert enged be, ezért a kiadása (társ felvétele, teljes konfig PUT, csere), a felfedése, a társ szerkesztése (az új baseUrl-re a kimenő tokenünk menne) és a föderáció bekapcsolása (beengedi a társakat, és elindítja a kimenő tokenek küldését); a kikapcsolás nyitva marad a gazda sessionjét kéri, amint van dashboard-login; a hozzáférési token csak az első telepítéskor (még nincs login) teheti meg (403 `owner_session_required`). A gépen magán a `store/federation.json` továbbra is szerkeszthető.
 
 A társ-tokenek hatóköre kizárólag a manifest+inbox pár — minden más API-ra 401-et kapnak. A dashboard-token soha nem kerül át a társhoz.
 

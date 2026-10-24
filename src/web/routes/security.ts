@@ -20,6 +20,7 @@ import { isSshDirGuardError } from '../../ssh-dir.js'
 import { checkEnrollHost } from '../../remote-enroll-core.js'
 import { DEVICE_NAME_RE } from '../auth-device-keys.js'
 import { isIP } from 'node:net'
+import { mayIssueCredentials, OWNER_SESSION_REQUIRED } from './auth.js'
 import type { RouteContext } from './types.js'
 
 const BODY_MAX_BYTES = 8 * 1024
@@ -36,6 +37,12 @@ export async function tryHandleSecurity(ctx: RouteContext): Promise<boolean> {
 
   if (auth === undefined || !ENROLL_KINDS.includes(auth.kind as (typeof ENROLL_KINDS)[number])) {
     json(res, { error: 'Forbidden for this credential type', code: 'forbidden_credential' }, 403)
+    return true
+  }
+  // DEVKEYMINT1022: pairing issues a full device key and an SSH line, so after the
+  // first login exists it takes the owner's session (routes/auth.ts).
+  if (!mayIssueCredentials(auth, req)) {
+    json(res, OWNER_SESSION_REQUIRED, 403)
     return true
   }
 

@@ -1,0 +1,176 @@
+{
+ "source": "PR #2080 ed7c83bd, src/__tests__/curl-token-rendered.test.ts, install root \"/srv/mv/pro ject root\" (space; the apostrophe variant is unparseable for the shared masker)",
+ "token": "/srv/mv/pro ject root/store/.dashboard-token",
+ "commands": [
+  {
+   "name": "kanban dispatch",
+   "cmd": "printf 'header = \"Authorization: Bearer %s\"\\n' \"$(cat '/srv/mv/pro ject root/store/.dashboard-token')\" | curl -s -K - http://127.0.0.1:3420/api/kanban | python3 -c \"import sys,json;d=json.load(sys.stdin);c=(next((x for x in d if x.get('id')=='abc123'),None) if isinstance(d,list) else None);print(('status: '+str(c.get('status'))+chr(10)+'description: '+((c.get('description') or '').strip() or '(nincs)')) if c else ('nincs ilyen kartya' if isinstance(d,list) else 'ismeretlen -- a szerver nem kartya-listat adott: '+str(d)[:120]))\"",
+   "cwd": "/srv/mv/pro ject root"
+  },
+  {
+   "name": "kanban dispatch",
+   "cmd": "printf 'header = \"Authorization: Bearer %s\"\\n' \"$(cat '/srv/mv/pro ject root/store/.dashboard-token')\" | curl -s -X POST http://127.0.0.1:3420/api/kanban/abc123/comments  -K -  -H 'Content-Type: application/json'  -d '{\"author\":\"cody\",\"content\":\"AZ EREDMENY ROVIDEN\"}'",
+   "cwd": "/srv/mv/pro ject root"
+  },
+  {
+   "name": "kanban dispatch",
+   "cmd": "printf 'header = \"Authorization: Bearer %s\"\\n' \"$(cat '/srv/mv/pro ject root/store/.dashboard-token')\" | curl -s -X POST http://127.0.0.1:3420/api/kanban/abc123/move  -K -  -H 'Content-Type: application/json'  -d '{\"status\":\"done\",\"actor\":\"cody\"}'",
+   "cwd": "/srv/mv/pro ject root"
+  },
+  {
+   "name": "kanban dispatch",
+   "cmd": "printf 'header = \"Authorization: Bearer %s\"\\n' \"$(cat '/srv/mv/pro ject root/store/.dashboard-token')\" | curl -s -X POST http://127.0.0.1:3420/api/kanban/abc123/move  -K -  -H 'Content-Type: application/json'  -d '{\"status\":\"in_progress\",\"actor\":\"cody\"}'",
+   "cwd": "/srv/mv/pro ject root"
+  },
+  {
+   "name": "kanban dispatch",
+   "cmd": "printf 'header = \"Authorization: Bearer %s\"\\n' \"$(cat '/srv/mv/pro ject root/store/.dashboard-token')\" | curl -s -X PUT http://127.0.0.1:3420/api/kanban/abc123  -K -  -H 'Content-Type: application/json'  -d '{\"assignee\":\"marveen\"}'",
+   "cwd": "/srv/mv/pro ject root"
+  },
+  {
+   "name": "voice directive",
+   "cmd": "jq -n --arg t \"A_VÁLASZOD_SZÖVEGE\" '{\"text\":$t,\"chat_id\":\"1\",\"state_dir\":\"/srv/mv/pro ject root/state\",\"voice_model\":\"v\"}' | curl -s -X POST http://localhost:3420/api/voice/tts -H \"Content-Type: application/json\" -K <(printf 'header = \"Authorization: Bearer %s\"\\n' \"$(cat '/srv/mv/pro ject root/store/.dashboard-token')\") -d @-",
+   "cwd": "/srv/mv/pro ject root"
+  },
+  {
+   "name": "message-close body",
+   "cmd": "printf 'header = \"Authorization: Bearer %s\"\\n' \"$(cat '/srv/mv/pro ject root/store/.dashboard-token')\" | curl -s -X PUT http://localhost:3420/api/messages/x -H \"Content-Type: application/json\"  -K - --data-binary '{\"status\":\"done\",\"notify\":false}'",
+   "cwd": "/srv/mv/pro ject root"
+  },
+  {
+   "name": "system-directive auth body",
+   "cmd": "printf 'header = \"Authorization: Bearer %s\"\\n' \"$(cat '/srv/mv/pro ject root/store/.dashboard-token')\" | curl -s -K - http://localhost:3420/api/messages/x",
+   "cwd": "/srv/mv/pro ject root"
+  },
+  {
+   "name": "agent-id header body",
+   "cmd": "printf 'header = \"Authorization: Bearer %s\"\\n' \"$(cat '/srv/mv/pro ject root/store/.dashboard-token')\" | curl -s -X PUT http://localhost:3420/api/memories/x  -H \"Content-Type: application/json\"  -K -  -H \"X-Agent-Id: agent-a\"  -d '{\"content\":\"...\"}'",
+   "cwd": "/srv/mv/pro ject root"
+  },
+  {
+   "name": "memory-search label body",
+   "cmd": "printf 'header = \"Authorization: Bearer %s\"\\n' \"$(cat '/srv/mv/pro ject root/store/.dashboard-token')\" | curl -s -D '/srv/mv'/mem-fejlec-agent-a.txt -K -  \"http://localhost:3420/api/memories?agent=agent-a&q=KULCSSZO\"",
+   "cwd": "/srv/mv/pro ject root"
+  },
+  {
+   "name": "autonomy section",
+   "cmd": "curl -s -X POST http://localhost:3420/api/messages  -H \"Content-Type: application/json\"  -K <(printf 'header = \"Authorization: Bearer %s\"\\n' \"$(cat '/srv/mv/pro ject root/store/.dashboard-token')\")  --data-binary @- <<'JSON'\n{\"from\":\"agent-a\",\"to\":\"marveen\",\"content\":\"[FELHÍVÁS] CATEGORY_KEY: MIT akartam elvégezni, de level 1 miatt csak jelzek.\"}\nJSON",
+   "cwd": "/srv/mv/pro ject root"
+  },
+  {
+   "name": "autonomy section",
+   "cmd": "printf 'header = \"Authorization: Bearer %s\"\\n' \"$(cat '/srv/mv/pro ject root/store/.dashboard-token')\" | curl -s -X POST http://localhost:3420/api/approvals -H \"Content-Type: application/json\" -K - -d '{\"agent_id\":\"agent-a\",\"category\":\"CATEGORY_KEY\",\"action_description\":\"Mit tervezel elvégezni és miért\",\"timeout_seconds\":3600}'",
+   "cwd": "/srv/mv/pro ject root"
+  },
+  {
+   "name": "autonomy section",
+   "cmd": "printf 'header = \"Authorization: Bearer %s\"\\n' \"$(cat '/srv/mv/pro ject root/store/.dashboard-token')\" | curl -s -K - \"http://localhost:3420/api/approvals/x\"",
+   "cwd": "/srv/mv/pro ject root"
+  },
+  {
+   "name": "federation block hu",
+   "cmd": "printf 'header = \"Authorization: Bearer %s\"\\n' \"$(cat store/.dashboard-token)\" | curl -s -X POST http://localhost:3420/api/messages  -K -  -H 'Content-Type: application/json'  -d '{\"from\":\"arthur\",\"to\":\"x/x\",\"content\":\"...\"}'",
+   "cwd": "/srv/mv/pro ject root"
+  },
+  {
+   "name": "federation block en",
+   "cmd": "printf 'header = \"Authorization: Bearer %s\"\\n' \"$(cat store/.dashboard-token)\" | curl -s -X POST http://localhost:3420/api/messages  -K -  -H 'Content-Type: application/json'  -d '{\"from\":\"arthur\",\"to\":\"x/x\",\"content\":\"...\"}'",
+   "cwd": "/srv/mv/pro ject root"
+  },
+  {
+   "name": "federation sub-agent block hu",
+   "cmd": "printf 'header = \"Authorization: Bearer %s\"\\n' \"$(cat store/.dashboard-token)\" | curl -s -X POST http://localhost:3420/api/messages  -K -  -H 'Content-Type: application/json'  -d '{\"from\":\"x\",\"to\":\"x/x\",\"content\":\"...\"}'",
+   "cwd": "/srv/mv/pro ject root"
+  },
+  {
+   "name": "federation sub-agent block en",
+   "cmd": "printf 'header = \"Authorization: Bearer %s\"\\n' \"$(cat store/.dashboard-token)\" | curl -s -X POST http://localhost:3420/api/messages  -K -  -H 'Content-Type: application/json'  -d '{\"from\":\"x\",\"to\":\"x/x\",\"content\":\"...\"}'",
+   "cwd": "/srv/mv/pro ject root"
+  },
+  {
+   "name": "rotation heartbeat prompt",
+   "cmd": "curl -s -w '\\nHTTP %{http_code}\\n' -X POST http://localhost:3420/api/claude-plans/rotate  -H \"Content-Type: application/json\"  -K <(printf 'header = \"Authorization: Bearer %s\"\\n' \"$(cat '/srv/mv/pro ject root/store/.dashboard-token')\")  --data-binary @- <<'JSON'\n{\"targetPlanId\":\"x\"}\nJSON",
+   "cwd": "/srv/mv/pro ject root"
+  },
+  {
+   "name": "heartbeat scaffold",
+   "cmd": "TOKEN=$(cat '/srv/mv/pro ject root/store/.dashboard-token')\nprintf 'header = \"Authorization: Bearer %s\"\\n' \"$TOKEN\" | curl -s -X POST http://127.0.0.1:3420/api/messages  -H \"Content-Type: application/json\"  -K -  -d '{\"from\":\"heartbeat\",\"to\":\"marveen\",\"content\":\"<the formatted text>\"}'",
+   "cwd": "/srv/mv/pro ject root"
+  },
+  {
+   "name": "CLAUDE.md.template",
+   "cmd": "printf 'header = \"Authorization: Bearer %s\"\\n' \"$(cat store/.dashboard-token)\" | curl -s -X POST http://localhost:3420/api/memories  -H \"Content-Type: application/json\"  -K -  -d '{\"agent_id\":\"x\",\"content\":\"MIT\",\"category\":\"CATEGORY\",\"keywords\":\"kulcsszó1, kulcsszó2\"}'",
+   "cwd": "/srv/mv/pro ject root"
+  },
+  {
+   "name": "CLAUDE.md.template",
+   "cmd": "printf 'header = \"Authorization: Bearer %s\"\\n' \"$(cat store/.dashboard-token)\" | curl -s -X POST http://localhost:3420/api/daily-log  -H \"Content-Type: application/json\"  -K -  -d '{\"agent_id\":\"x\",\"content\":\"## HH:MM -- Téma\\nMi történt, mi lett az eredmény\"}'",
+   "cwd": "/srv/mv/pro ject root"
+  },
+  {
+   "name": "CLAUDE.md.template",
+   "cmd": "printf 'header = \"Authorization: Bearer %s\"\\n' \"$(cat store/.dashboard-token)\" | curl -s -D '/srv/mv'/mem-fejlec.txt -K -  \"http://localhost:3420/api/memories?agent=x&q=KULCSSZO&category=warm\"",
+   "cwd": "/srv/mv/pro ject root"
+  },
+  {
+   "name": "CLAUDE.md.template",
+   "cmd": "printf 'header = \"Authorization: Bearer %s\"\\n' \"$(cat store/.dashboard-token)\" | curl -s -K -  http://localhost:3420/api/kanban",
+   "cwd": "/srv/mv/pro ject root"
+  },
+  {
+   "name": "CLAUDE.md.template",
+   "cmd": "printf 'header = \"Authorization: Bearer %s\"\\n' \"$(cat store/.dashboard-token)\" | curl -s -X POST http://localhost:3420/api/kanban  -H \"Content-Type: application/json\"  -K -  -d '{\"title\":\"CÍM\",\"status\":\"planned\",\"assignee\":\"x\",\"priority\":\"normal\"}'",
+   "cwd": "/srv/mv/pro ject root"
+  },
+  {
+   "name": "CLAUDE.md.template",
+   "cmd": "printf 'header = \"Authorization: Bearer %s\"\\n' \"$(cat store/.dashboard-token)\" | curl -s -X POST http://localhost:3420/api/kanban/KARTYA_ID/move  -H \"Content-Type: application/json\"  -K -  -d '{\"status\":\"in_progress\"}'",
+   "cwd": "/srv/mv/pro ject root"
+  },
+  {
+   "name": "CLAUDE.md.template",
+   "cmd": "printf 'header = \"Authorization: Bearer %s\"\\n' \"$(cat store/.dashboard-token)\" | curl -s -X POST http://localhost:3420/api/kanban/KARTYA_ID/comments  -H \"Content-Type: application/json\"  -K -  -d '{\"author\":\"x\",\"content\":\"AZ EREDMÉNY RÖVIDEN\"}'",
+   "cwd": "/srv/mv/pro ject root"
+  },
+  {
+   "name": "CLAUDE.md.template",
+   "cmd": "printf 'header = \"Authorization: Bearer %s\"\\n' \"$(cat store/.dashboard-token)\" | curl -s -X POST http://localhost:3420/api/schedules  -H \"Content-Type: application/json\"  -K -  -d '{\"name\": \"feladat-nev\", \"description\": \"Rövid leírás\", \"prompt\": \"A részletes prompt amit végre kell hajtani\", \"schedule\": \"0 8 * * *\", \"agent\": \"x\", \"type\": \"heartbeat\"}'",
+   "cwd": "/srv/mv/pro ject root"
+  },
+  {
+   "name": "CLAUDE.md.template",
+   "cmd": "printf 'header = \"Authorization: Bearer %s\"\\n' \"$(cat store/.dashboard-token)\" | curl -s -X POST http://localhost:3420/api/messages  -H \"Content-Type: application/json\"  -K -  -d '{\"from\": \"x\", \"to\": \"TARGET_AGENT\", \"content\": \"Feladat leírása.\"}'",
+   "cwd": "/srv/mv/pro ject root"
+  },
+  {
+   "name": "CLAUDE.md.template",
+   "cmd": "printf 'header = \"Authorization: Bearer %s\"\\n' \"$(cat store/.dashboard-token)\" | curl -s -K - http://localhost:3420/api/agents",
+   "cwd": "/srv/mv/pro ject root"
+  },
+  {
+   "name": "settings.json.template prompt",
+   "cmd": "printf 'header = \"Authorization: Bearer %s\"\\n' \"$(cat \"/srv/mv/pro ject root/store/.dashboard-token\")\" | curl -s -X POST http://localhost:3420/api/memories -H 'Content-Type: application/json' -K - -d '{\"agent_id\":\"SAJAT_NEVED\",\"content\":\"...\",\"category\":\"warm\",\"keywords\":\"...\"}'",
+   "cwd": "/srv/mv/pro ject root"
+  },
+  {
+   "name": "settings.json.template prompt",
+   "cmd": "printf 'header = \"Authorization: Bearer %s\"\\n' \"$(cat \"/srv/mv/pro ject root/store/.dashboard-token\")\" | curl -s -X POST http://localhost:3420/api/daily-log -H 'Content-Type: application/json' -K - -d '{\"agent_id\":\"SAJAT_NEVED\",\"content\":\"...\"}'",
+   "cwd": "/srv/mv/pro ject root"
+  },
+  {
+   "name": "settings.json.template prompt",
+   "cmd": "printf 'header = \"Authorization: Bearer %s\"\\n' \"$(cat \"/srv/mv/pro ject root/store/.dashboard-token\")\" | curl -s -X POST http://localhost:3420/api/agent-taskstate/SAJAT_NEVED -H 'Content-Type: application/json' -K - -d '{\"summary\":\"egy mondat mit csinálsz\",\"doneSteps\":[\"már kész lépés\"],\"alreadyDelegated\":[\"mit kinek adtál már át\"],\"nextAction\":\"a következő konkrét lépés\",\"pendingDecision\":\"nyitott döntés vagy blokkoló ha van\"}'",
+   "cwd": "/srv/mv/pro ject root"
+  },
+  {
+   "name": "memory-lookup-nudge.py",
+   "cmd": "printf 'header = \"Authorization: Bearer %s\"\\n' \"$(cat '/srv/mv/pro ject root/store/.dashboard-token')\" | curl -s -G -D '/srv/mv'/mem-fejlec-samu.txt -K - --data-urlencode \"agent=samu\" --data-urlencode \"q=KULCSSZO\" \"http://localhost:3420/api/memories\"",
+   "cwd": "/srv/mv/pro ject root"
+  },
+  {
+   "name": "provenance-gate.py self-task (untraced)",
+   "cmd": "printf 'header = \"Authorization: Bearer %s\"\\n' \"$(cat '/srv/mv/pro ject root/store/.dashboard-token')\" | curl -s -X POST http://localhost:3420/api/messages -H 'Content-Type: application/json' -K - -d '{\"from\":\"x\",\"to\":\"lead-a\",\"content\":\"[PROVENANCE-SAJAT-TASK] Sajat hatter-task eredmenye erkezett (a kapu naploja nem irhato), muvelet-kategoria: ...\"}'",
+   "cwd": "/srv/mv/pro ject root"
+  }
+ ]
+}

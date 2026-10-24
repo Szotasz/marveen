@@ -14,6 +14,7 @@ import {
   type StuckInputState,
   type StuckInputThresholds,
 } from '../pane-state.js'
+import { whileNotFrozen } from './fleet-freeze.js'
 
 /**
  * The owner alert for an input recovery gave up on. A sub-agent restarts through its own route. The MAIN
@@ -328,5 +329,5 @@ export function startStuckInputWatcher(): NodeJS.Timeout {
   }
 
   setTimeout(() => { void sweep() }, INITIAL_DELAY_MS)
-  return setInterval(() => { void sweep() }, INTERVAL_MS)
+  return setInterval(whileNotFrozen('stuck-input', () => { void sweep() }), INTERVAL_MS)
 }

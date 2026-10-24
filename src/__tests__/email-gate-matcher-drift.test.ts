@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
-import { execFileSync } from 'node:child_process'
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { execFileSync, spawnSync } from 'node:child_process'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { EMAIL_GATE_MATCHER } from '../web/agent-scaffold.js'
 // @ts-expect-error -- plain .mjs hook script, no types
@@ -65,9 +66,9 @@ describe('main-agent email hook matchers cover the canonical EMAIL_GATE_MATCHER'
     const full = new RegExp(`^(${EMAIL_GATE_MATCHER})$`)
     const tool = 'mcp__server-gmail-autoauth-mcp__draft_email'
     expect(full.test(tool), 'matcher must fire for the tool the fleet actually has').toBe(true)
-    const verified = (a: string) => a === 'known@vlbbtab.com'
+    const verified = (a: string) => a === 'known@example.com'
     expect(gateDecision(tool, { to: 'invented@example.com' }, verified).deny).toBe(true)
-    expect(gateDecision(tool, { to: 'known@vlbbtab.com' }, verified).deny).toBe(false)
+    expect(gateDecision(tool, { to: 'known@example.com' }, verified).deny).toBe(false)
     // A name-keyed matcher goes blind on the next new server name, so the draft
     // surface is pinned by the OPERATION too: a server with no gmail in its name.
     expect(full.test('mcp__whatever_mail_server__draft_email')).toBe(true)
@@ -87,6 +88,82 @@ describe('main-agent email hook matchers cover the canonical EMAIL_GATE_MATCHER'
     expect(full.test('mcp__gmail__send_email')).toBe(true)
     expect(full.test('mcp__plugin_telegram_telegram__reply')).toBe(false)
     expect(full.test('Read')).toBe(false)
+  })
+
+  it('the canonical matcher reaches the harder-mail draft and send tools (HARDERMAILGATES1019)', () => {
+    // Measured 2026-10-19: no email hook fired for mcp__harder-mail__* at all, so
+    // its drafts skipped the copy audit and a send would have skipped approval.
+    const full = new RegExp(`^(${EMAIL_GATE_MATCHER})$`)
+    for (const tool of ['create_draft', 'send_mail', 'send_mail_auto']) {
+      expect(full.test(`mcp__harder-mail__${tool}`), tool).toBe(true)
+    }
+    // Reads and the local preview stay out of the matcher.
+    for (const tool of ['search_mail', 'read_mail', 'list_accounts', 'preview_mail']) {
+      expect(full.test(`mcp__harder-mail__${tool}`), tool).toBe(false)
+    }
+    // Sub-agents: a send is the governance block, a draft is ledger-checked.
+    const verified = (a: string) => a === 'known@example.com'
+    expect(gateDecision('mcp__harder-mail__send_mail', { to: ['known@example.com'] }, verified).deny).toBe(true)
+    expect(gateDecision('mcp__harder-mail__send_mail_auto', { to: ['known@example.com'] }, verified).deny).toBe(true)
+    expect(gateDecision('mcp__harder-mail__create_draft', { to: ['invented@example.com'] }, verified).deny).toBe(true)
+    expect(gateDecision('mcp__harder-mail__create_draft', { to: ['known@example.com'] }, verified).deny).toBe(false)
+    // A reply draft has no recipient field (the server resolves it from the original).
+    expect(gateDecision('mcp__harder-mail__create_draft', { reply_to_uid: 7, body: 'x' }, verified).deny).toBe(false)
+  })
+
+  it('every name in the shared harder-mail fixture fires the hooks and gets its sub-agent verdict (PR #2075 review)', () => {
+    // The outcome is pinned per NAME, not per regex: a classifier change that
+    // moves one of these names to another kind goes red here.
+    const fixture = JSON.parse(readFileSync(join(ROOT, 'scripts', '__tests__', 'fixtures', 'harder-mail-tool-names.json'), 'utf-8')) as {
+      names: string[]
+      cases: Record<string, { subagent: 'deny' | 'ledger' }>
+    }
+    expect(fixture.names).toEqual([
+      'mcp__harder-mail__send_mail',
+      'mcp__harder-mail__send_mail_auto',
+      'mcp__harder-mail__create_draft',
+    ])
+    const full = new RegExp(`^(${EMAIL_GATE_MATCHER})$`)
+    const settingsFire = (script: string, tool: string) =>
+      (SETTINGS.hooks?.PreToolUse ?? []).some((e) =>
+        (e.hooks ?? []).some((h) => (h.command ?? '').includes(script))
+        && new RegExp(`^(${e.matcher ?? ''})$`).test(tool))
+    const verified = (a: string) => a === 'known@example.com'
+    for (const name of fixture.names) {
+      expect(full.test(name), `EMAIL_GATE_MATCHER misses ${name}`).toBe(true)
+      for (const script of EMAIL_HOOKS) {
+        expect(settingsFire(script, name), `${script} is not wired for ${name}`).toBe(true)
+      }
+      const reply = gateDecision(name, { account: 'ceges', reply_to_uid: 7, reply_folder: 'INBOX', body: 'x' }, verified)
+      const known = gateDecision(name, { account: 'ceges', to: ['known@example.com'], body: 'x' }, verified)
+      const invented = gateDecision(name, { account: 'ceges', to: ['invented@example.com'], body: 'x' }, verified)
+      if (fixture.cases[name].subagent === 'deny') {
+        expect([reply.deny, known.deny, invented.deny], `${name}: a sub-agent send must be denied`).toEqual([true, true, true])
+        expect(known.kind, name).toBe('connector-send')
+      } else {
+        expect([reply.deny, known.deny, invented.deny], `${name}: a sub-agent draft is ledger-checked`).toEqual([false, false, true])
+      }
+    }
+  })
+
+  it('a harder-mail create_draft does NOT ask for approval on the main agent; send_mail does', () => {
+    // Owner decision (tg 6349): approval is for the actual send only.
+    const td = mkdtempSync(join(tmpdir(), 'hm-gate-'))
+    const store = join(td, 'store')
+    mkdirSync(store)
+    writeFileSync(join(store, 'autonomy-config.json'), JSON.stringify({
+      version: 1, categories: [{ key: 'email_send', label: 'Email', level: 2, locked: false }],
+    }))
+    const run = (tool: string) => spawnSync('python3', [join(ROOT, 'scripts', 'hooks', 'email-approval-gate.py')], {
+      input: JSON.stringify({ tool_name: `mcp__harder-mail__${tool}`,
+        tool_input: { account: 'ceges', to: ['a@b.hu'], subject: 'Targy', body: 'Szia!' } }),
+      encoding: 'utf-8',
+      env: { ...process.env, EMAIL_APPROVAL_GATE_STORE: store },
+    })
+    expect(run('create_draft').status).toBe(0)
+    const send = run('send_mail')
+    expect(send.status).toBe(2)
+    expect(send.stderr).toContain('EMAIL JOVAHAGYASI KAPU')
   })
 })
 
@@ -197,6 +274,26 @@ describe('mail-tool names are classified by suffix, identically in Python and JS
     for (const p of ['v2_', 'v2', 'work-', 'shared_inbox_', 'v-2_']) {
       expect(NAME_CASES.prefixes, p).toContain(p)
     }
+  })
+
+  it('the harder-mail tools are in the shared case list, by suffix (HARDERMAILGATES1019)', () => {
+    // Deleting a row from mail-tool-name-cases.json would drop these names from
+    // the parity matrix above without any test noticing; this pins them.
+    expect(NAME_CASES.servers).toContain('mcp__harder-mail__')
+    expect(NAME_CASES.bases.send_mail).toEqual({ kind: 'connector_send' })
+    expect(NAME_CASES.bases.send_mail_auto).toEqual({ kind: 'connector_send' })
+    expect(NAME_CASES.bases.create_draft).toEqual({ kind: 'draft' })
+    for (const read of ['search_mail', 'read_mail', 'list_accounts', 'list_folders', 'get_attachment', 'preview_mail']) {
+      expect(NAME_CASES.bases[read], read).toEqual({ kind: null })
+    }
+    const want: Record<string, Kind> = {}
+    for (const [base, kind] of [['send_mail', 'connector_send'], ['send_mail_auto', 'connector_send'], ['create_draft', 'draft'], ['search_mail', null], ['read_mail', null]] as const) {
+      for (const prefix of NAME_CASES.prefixes) want[`mcp__harder-mail__${prefix}${base}`] = kind
+    }
+    const names = Object.keys(want)
+    const py = pyClassify(names)
+    const wrong = names.filter((n, i) => classifyMailTool(n) !== want[n] || py[i] !== want[n])
+    expect(wrong).toEqual([])
   })
 
   it('fuzzed random prefixes (seeded) never change the verdict, in either copy', () => {

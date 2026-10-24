@@ -164,6 +164,7 @@
  "showBreakdownModal>cb:subtasks.forEach((st, i) => {::attr:data-idx::i": "SAFE-NUM [n=1]: forEach index",
  "showBreakdownModal>cb:subtasks.forEach((st, i) => {::text::i + 1": "SAFE-NUM [n=1]: forEach index",
  "showCardDetail::text::priorityLabels[card.priority]": "SAFE-CONST [n=1]: priority DB CHECK (src/db.ts), i18n map",
+ "showClaudePlanLoginStep::.href=::safeUrl || '#'": "SAFE-CONST [n=1]: safeUrl is '' unless the value starts with https:// (checked on the line above), else the literal '#'; the server only sends an https oauth/authorize URL on an Anthropic host (isAllowedAuthUrl, src/web/setup-token-login.ts)",
  "showSmokeTestResult::text::output.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')": "SAFE-PRE [n=1]: escapes & < > inline, text node in <pre>",
  "tuFormatLocalShort::text::String(d.getDate()).padStart(2,'0')": "SAFE-NUM [n=1]: d = new Date(ts * 1000): Date getters return numbers",
  "tuFormatLocalShort::text::String(d.getHours()).padStart(2,'0')": "SAFE-NUM [n=2]: d = new Date(ts * 1000): Date getters return numbers",

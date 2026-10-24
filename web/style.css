@@ -6006,6 +6006,33 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
 .md-rendered pre code { background: none; padding: 0; }
 .md-rendered :not(pre) > code { border-radius: 3px; padding: 1px 5px; }
 
+/* MARVEENGAPS1020 (b): skills waiting for approval */
+.skills-pending {
+  margin: 0 0 16px;
+  padding: 14px 16px;
+  border: 1px solid var(--warning, #d4a52c);
+  border-left-width: 3px;
+  border-radius: 8px;
+  background: var(--bg-card);
+}
+.skills-pending-title { font-size: 15px; margin: 0 0 6px; }
+.skills-pending-intro { font-size: 13px; color: var(--text-secondary); margin: 0 0 12px; line-height: 1.5; }
+.skills-pending-card { border-top: 1px solid var(--border); padding: 12px 0 4px; }
+.skills-pending-head { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; }
+.skills-pending-meta { font-size: 12px; color: var(--text-muted); }
+.skills-pending-sub { font-size: 12px; font-weight: 600; margin: 10px 0 4px; color: var(--text-secondary); }
+.skills-pending-findings { margin: 0; padding-left: 18px; font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+.skills-pending-pattern { display: inline-block; min-width: 150px; font-weight: 600; color: var(--danger); margin-right: 6px; }
+.skills-pending-excerpt { display: block; color: var(--text-muted); white-space: pre-wrap; }
+.skills-pending-warn { font-size: 12px; color: var(--danger); margin-top: 6px; }
+.skills-pending-target { font-size: 13px; font-weight: 600; margin: 6px 0 2px; }
+.skills-pending-target.is-global { color: var(--danger); }
+.skills-pending-sub.is-flagged { color: var(--danger); }
+.skills-pending-file { font-size: 12px; margin: 2px 0; overflow-wrap: anywhere; }
+.skills-pending-file summary.is-flagged { color: var(--danger); }
+.skills-pending-file pre { max-height: 360px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: var(--bg-code); padding: 10px; border-radius: 6px; font-size: 12px; }
+.skills-pending-sha { font-family: monospace; font-size: 11px; color: var(--text-muted); overflow-wrap: anywhere; }
+.skills-pending-actions { display: flex; gap: 8px; margin: 10px 0 6px; flex-wrap: wrap; }
 .skills-stats {
   display: flex;
   gap: 12px;
@@ -6721,6 +6748,23 @@ main.kanban-active { padding-left: 16px; padding-right: 16px; }
   font-size: 12px;
   color: var(--text-muted);
   margin-top: 6px;
+}
+
+/* "Log in to add a plan" (SETUPTOKENWIZ1022): link, code field, submit. */
+.claude-plans-login-step {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 8px;
+}
+/* display:flex would override the hidden attribute without this. */
+.claude-plans-login-step[hidden] {
+  display: none;
+}
+.claude-plans-login-step .form-row {
+  width: 100%;
+  align-items: center;
 }
 .claude-plans-form-actions {
   display: flex;
@@ -8108,4 +8152,25 @@ body {
   .notes-table td[data-label]::before { content: attr(data-label) ": "; color: var(--text-muted, #888); font-size: 0.85em; }
   .notes-actions { text-align: left; }
   .notes-assignee { white-space: normal; overflow-wrap: anywhere; }
+}
+
+/* KILLSWITCH1022: the fleet's red button and its banner. */
+.fleet-freeze-btn {
+  margin-bottom: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--danger);
+  border-radius: 8px;
+  background: var(--danger-soft);
+  color: var(--danger);
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+  text-align: left;
+}
+.fleet-freeze-btn:hover:not(:disabled) { background: var(--danger); color: #fff; }
+.fleet-freeze-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.fleet-freeze-banner {
+  border-left-color: var(--danger);
+  background: var(--danger-soft);
+  font-weight: 600;
 }

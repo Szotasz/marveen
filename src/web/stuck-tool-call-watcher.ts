@@ -32,7 +32,9 @@
 // A real wedge satisfies BOTH. A real slow-but-progressing tool-call fails
 // the second (counter keeps incrementing) so we never act.
 //
-// Scope, main session: detect AND recover (respawn-pane), as above.
+// Scope, main session: detect AND recover (respawn-pane), as above. One
+// waiting shape is alert-only on the main session too: a held peer message
+// (see checkMainHeldPeer below).
 //
 // Scope, sub-agents (SUBWAIT925, card c3f8f062): detect and ALERT only, never
 // recover, never a keystroke. The case materialised on 2026-09-23: a sub-agent
@@ -67,7 +69,7 @@ import { tmuxStderr } from './tmux-stderr.js'
 import { resolveFromPath } from '../platform.js'
 import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { PROJECT_ROOT, STORE_DIR } from '../config.js'
+import { PROJECT_ROOT, STORE_DIR, BOT_NAME, MAIN_AGENT_ID } from '../config.js'
 import { capturePane, isAgentRunning, agentSessionName, agentHasChannel } from './agent-process.js'
 import { listAgentNames, readAgentRemoteHost } from './agent-config.js'
 import { readTranscriptMtimeAcrossConfigDirs } from './active-model.js'
@@ -93,6 +95,7 @@ import {
   type PermissionPromptSummary,
 } from '../pane-state.js'
 import { exactTmuxTarget } from '../tmux-target.js'
+import { whileNotFrozen } from './fleet-freeze.js'
 
 const TMUX = resolveFromPath('tmux')
 
@@ -960,6 +963,52 @@ const LIVE_SUB_AGENT_DEPS: SubAgentSweepDeps = {
   readState: readLocalAgentState,
 }
 
+// ---- the main session's held peer message (#1596 follow-up) -----------------
+//
+// The channel-monitor's menu pass used to Escape a held peer message on the
+// main session like any other modal. #1596 stopped that (Escape there may
+// decline the message and tell the sender so), and the sweep above leaves the
+// main agent out, so on the main session nothing reported the dialog any more
+// (#1596 review: alert instead of Escape). The main session joins the
+// alert-only rule for this one shape: the same thresholds and text as a
+// sub-agent, never a keystroke. Its tool-permission prompt stays with the
+// channel-monitor's escalation (card 68cb6715): one owner per state.
+
+export interface MainHeldPeerDeps {
+  capture: () => string | null
+  now: () => number
+  alertWait: (waitingMs: number) => void
+  waitThresholds?: PaneErrorAlertThresholds
+}
+
+let mainHeldPeerState: PaneErrorAlertState | null = null
+
+export function resetMainHeldPeerState(): void {
+  mainHeldPeerState = null
+}
+
+export function checkMainHeldPeer(deps: MainHeldPeerDeps): void {
+  const pane = deps.capture()
+  const now = deps.now()
+  const held = pane != null && detectsHeldPeerMessage(pane)
+  const prev = mainHeldPeerState ?? { firstSeenAt: null, lastAlertAt: null, lastErrorAt: null }
+  const wait = decidePaneErrorAlert(held, prev, now, deps.waitThresholds ?? AGENT_WAIT_THRESHOLDS)
+  mainHeldPeerState = wait.next.firstSeenAt === null ? null : wait.next
+  if (wait.alert && held) {
+    const waitingMs = now - (wait.next.firstSeenAt ?? now)
+    logger.warn({ session: MAIN_CHANNELS_SESSION, waitingMs }, 'stuck-tool-call-watcher: main session holds a peer message for approval (no keystrokes sent) -- alerting')
+    deps.alertWait(waitingMs)
+  }
+}
+
+const LIVE_MAIN_HELD_PEER_DEPS: MainHeldPeerDeps = {
+  capture: () => capturePane(MAIN_CHANNELS_SESSION),
+  now: () => Date.now(),
+  alertWait: (waitingMs) => {
+    sendRoutineAlert(`agent-wait:${MAIN_AGENT_ID}`, formatAgentWaitAlert(BOT_NAME, MAIN_CHANNELS_SESSION, 'peer-message', waitingMs, null))
+  },
+}
+
 export function startStuckToolCallWatcher(): NodeJS.Timeout {
   async function sweep() {
     try {
@@ -968,11 +1017,16 @@ export function startStuckToolCallWatcher(): NodeJS.Timeout {
       logger.debug({ err }, 'stuck-tool-call-watcher: main session check error')
     }
     try {
+      checkMainHeldPeer(LIVE_MAIN_HELD_PEER_DEPS)
+    } catch (err) {
+      logger.debug({ err }, 'stuck-tool-call-watcher: main session held-peer check error')
+    }
+    try {
       sweepSubAgents(LIVE_SUB_AGENT_DEPS)
     } catch (err) {
       logger.debug({ err }, 'stuck-tool-call-watcher: sub-agent sweep error')
     }
   }
   setTimeout(() => { void sweep() }, INITIAL_DELAY_MS)
-  return setInterval(() => { void sweep() }, INTERVAL_MS)
+  return setInterval(whileNotFrozen('stuck-tool-call', () => { void sweep() }), INTERVAL_MS)
 }

@@ -173,8 +173,42 @@ const ALLOWLIST_READERS = new Set([
 const OUTPUT_REDIRECT_RX = /(?:&>>?|\d*>>?\|?)\s*([^\s;&|<>]+)/g
 
 export function allowlistBashSegmentAllowed(seg) {
+  return readOnlyMentionAllowed(seg, ALLOWLIST_MENTION_RX)
+}
+
+// MORE STORE FILES ARE GATES ON THE SUB-AGENT ITSELF (kanban c556a35a), and get the same
+// treatment as the allowlist above:
+//   egress-vendor-hosts.json       -- the hosts bash-egress-parser lets curl/wget reach
+//   config-overrides.json          -- dashboard settings; BASH_SANDBOX_AGENTS is one of them
+//   bash-sandbox-write-paths.json  -- where a sandboxed agent may write (#2149)
+//   email-standing-recipients.json -- an address on it (once activated) takes letters with
+//                                     no per-letter approval (email-approval-gate.py)
+//   .approval-bot-token, .approval-bot-key -- the owner's approval bot and the key its button data is
+//                                     signed with (src/approval-bot.ts, #2160)
+// Their writers are the owner, the main agent and, for config-overrides.json, the dashboard
+// process; none of them runs this gate. Unlike the allowlist, these have no hash baseline yet,
+// so what this gate cannot see (a path built at runtime) is not reported after the fact.
+const DEFAULT_STORE_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'store')
+export const PROTECTED_STORE_FILES = new Set([
+  'egress-vendor-hosts.json',
+  'config-overrides.json',
+  'bash-sandbox-write-paths.json',
+  'email-standing-recipients.json',
+  '.approval-bot-token',
+  '.approval-bot-key',
+])
+// The file, or a glob that starts on its name. The prefixes are long enough that this gate's
+// and the features' own sources (bash-sandbox.ts, config-registry.ts) stay out of it; the
+// approval-bot files need their leading dot, so a source or doc named approval-bot-key-*.md or a
+// glob over src/approval-bot* stays out too.
+const PROTECTED_MENTION_RX =
+  /(?:egress[-_]?vendor[-_]?hosts|config[-_]?overrides|bash[-_]?sandbox[-_]?write[-_]?paths|email[-_]?standing[-_]?recipients)\.json|\.approval[-_]?bot[-_]?(?:token|key)\b|(?:egress[-_]?vendor|config[-_]?overrid|bash[-_]?sandbox[-_]?write|email[-_]?standing|\.approval[-_]?bot)[\w.-]*[*?[]/i
+
+// One rule for every protected store object: a segment that mentions it may only be a plain
+// READ, and no output redirect in it may point at it (or at a target built at runtime).
+function readOnlyMentionAllowed(seg, mentionRx) {
   const s = String(seg ?? '').trim()
-  if (!ALLOWLIST_MENTION_RX.test(s)) return true
+  if (!mentionRx.test(s)) return true
   const words = s.split(/\s+/)
   let i = 0
   while (i < words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[i])) i++ // leading VAR=x
@@ -183,9 +217,24 @@ export function allowlistBashSegmentAllowed(seg) {
   for (const m of s.matchAll(OUTPUT_REDIRECT_RX)) {
     const target = m[1]
     if (/^&?\d+$/.test(target) || target === '/dev/null') continue // 2>&1, >/dev/null
-    if (ALLOWLIST_MENTION_RX.test(target) || /[$`]/.test(target)) return false
+    if (mentionRx.test(target) || /[$`]/.test(target)) return false
   }
   return true
+}
+
+export function protectedStoreBashSegmentAllowed(seg) {
+  return readOnlyMentionAllowed(seg, PROTECTED_MENTION_RX)
+}
+
+// Does a native file-tool call target one of the protected store files? By name anywhere
+// (fail-closed, as for the allowlist), or by real path, so a symlink under another name does
+// not walk past it. `storeDir` is this install's store; tests pass a tmp one.
+export function fileToolTargetsProtectedStoreFile(toolInput, storeDir = DEFAULT_STORE_DIR, cwd = process.cwd()) {
+  const raw = String(toolInput?.file_path ?? toolInput?.notebook_path ?? '')
+  if (!raw) return false
+  if (PROTECTED_STORE_FILES.has(basename(raw).toLowerCase())) return true
+  const real = realOrSelf(resolve(cwd, expandHome(raw)))
+  return [...PROTECTED_STORE_FILES].some((f) => real === realOrSelf(join(storeDir, f)))
 }
 
 function expandHome(p) {
@@ -1639,6 +1688,7 @@ function decide(toolName, toolInput, opts = {}) {
     const fp = String(toolInput?.file_path ?? toolInput?.notebook_path ?? '')
     if (SCHEDULE_STORE_RX.test(fp)) return { deny: true }
     if (fileToolTargetsAllowlist(toolInput, opts.allowlistPath, opts.cwd)) return { deny: true, reason: 'egress-allowlist' }
+    if (fileToolTargetsProtectedStoreFile(toolInput, opts.storeDir, opts.cwd)) return { deny: true, reason: 'protected-store-file' }
     // ...and the dashboard's schedule store, which the runner turns into turns
     if (SCHEDULE_DIR_PATH_RX.test(fp)) return { deny: true }
   }
@@ -1676,6 +1726,8 @@ function decide(toolName, toolInput, opts = {}) {
       if (SCHEDULE_API_RX.test(seg) && HTTP_WRITE_RX.test(seg)) return { deny: true }
       // the egress allowlist: a plain read only (EGRESSSELFEDIT824)
       if (!allowlistBashSegmentAllowed(seg)) return { deny: true, reason: 'egress-allowlist' }
+      // ...and the other store files that gate the sub-agent (c556a35a)
+      if (!protectedStoreBashSegmentAllowed(seg)) return { deny: true, reason: 'protected-store-file' }
     }
     // The scheduler check is the ANCHORED one -- it fires on what sits at a
     // segment START -- so it is the one a fake segment boundary can mislead, and
@@ -1713,6 +1765,14 @@ const ALLOWLIST_GATE_MSG =
   'store/egress-allowlist.json-t: ez a kapu RAD vonatkozik. Ha egy domain kell, kerd a fo ' +
   'agenst (inter-agent uzenet: domain + miert); o a gazda jovahagyasaval veszi fel. ' +
   'Olvasni szabad: cat / grep / jq a fajlra (ertelmezo -- python, node -- nem).'
+
+const PROTECTED_STORE_GATE_MSG =
+  'Vedett store-fajl TILTOTT (governance hard-gate). Sub-agentkent NEM irhatod a ' +
+  'store/egress-vendor-hosts.json, store/config-overrides.json, store/bash-sandbox-write-paths.json, ' +
+  'store/email-standing-recipients.json, store/.approval-bot-token es store/.approval-bot-key ' +
+  'fajlt: mindegyik RAD vonatkozo kapu beallitasa. ' +
+  'Ha valtoztatas kell, kerd a fo agenst (inter-agent uzenet: mit es miert); o a gazda ' +
+  'jovahagyasaval irja. Olvasni szabad: cat / grep / jq a fajlra (ertelmezo -- python, node -- nem).'
 
 function allow() { process.exit(0) }
 
@@ -1797,7 +1857,10 @@ if (!isMainThread && workerData?.selfPaceGateWorker) {
     const selfAgent = selfAgentFromProjectDir(process.env.CLAUDE_PROJECT_DIR)
     const verdict = await decideInWorker(payload?.tool_name, payload?.tool_input, { cwd: payload?.cwd, selfAgent })
     if (verdict.error) deny(FAIL_CLOSED_MSG(verdict.error.split('\n')[0]))
-    if (verdict.deny) deny(verdict.reason === 'egress-allowlist' ? ALLOWLIST_GATE_MSG : GATE_MSG)
+    if (verdict.deny) {
+      deny(verdict.reason === 'egress-allowlist' ? ALLOWLIST_GATE_MSG
+        : verdict.reason === 'protected-store-file' ? PROTECTED_STORE_GATE_MSG : GATE_MSG)
+    }
     allow()
   } catch (err) {
     deny(FAIL_CLOSED_MSG(err?.message ?? err))

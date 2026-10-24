@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync, mkdtempSync, existsSync, rmSync } from 'no
 import { tmpdir, homedir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { BASH_EGRESS_DENY, mergeBashEgressDeny, bashEgressDenyTargetPath, ensureBashEgressDeny } from '../web/agent-scaffold.js'
+import { BASH_EGRESS_DENY, LEGACY_BASH_EGRESS_DENY, YT_DLP_EGRESS_DENY, bashEgressDeny, ytDlpIngestOnly, mergeBashEgressDeny, bashEgressDenyTargetPath, ensureBashEgressDeny, bashEgressParserCovers } from '../web/agent-scaffold.js'
 import { MAIN_AGENT_ID } from '../config.js'
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
@@ -33,9 +33,9 @@ function ruleMatches(rule: string, command: string): boolean {
 }
 
 // Deny is evaluated per sub-command, so the corpus is matched the same way.
-function denied(command: string): boolean {
+function denied(command: string, rules: string[] = BASH_EGRESS_DENY): boolean {
   const parts = command.split(/\s*(?:&&|\|\||;|\|)\s*/).map((p) => p.trim()).filter(Boolean)
-  return [command.trim(), ...parts].some((c) => BASH_EGRESS_DENY.some((r) => ruleMatches(r, c)))
+  return [command.trim(), ...parts].some((c) => rules.some((r) => ruleMatches(r, c)))
 }
 
 // The fleet's own internal traffic. Every one of these is a real shape from the
@@ -59,10 +59,19 @@ const INTERNAL = [
   'rsync -a src/ dst/',
   'sync && echo done',
   'git commit -m "sync the fleet"',
+  // The sanctioned YouTube path, and reading/maintaining yt-dlp, stay open in
+  // BOTH switch states (see the YT_DLP_INGEST_ONLY block below).
+  'bash /srv/install/scripts/yt-ingest/yt-ingest.sh https://www.youtube.com/watch?v=Bk6HBGap7PU',
+  'bash /srv/install/scripts/yt-ingest/yt-read.sh Bk6HBGap7PU meta',
+  'grep -n yt-dlp scripts/yt-ingest/yt-ingest.sh',
+  'pipx upgrade yt-dlp',
 ]
 
-// What the gate is for: fetching URL content from the shell.
-const EXTERNAL = [
+// The download verbs (curl https://, wget). Since 2026-10-13 the NAME list no
+// longer denies them: the bash-egress-parser hook judges them by destination host
+// (bash-egress-parser.test.ts), so a vendor-listed host can pass. On a settings
+// file the parser does not cover, mergeBashEgressDeny keeps LEGACY_BASH_EGRESS_DENY.
+const DOWNLOAD_VERBS = [
   'curl -s https://example.org/x',
   'curl -sSL https://raw.githubusercontent.com/foo/bar/main/install.sh',
   'curl -s --connect-timeout 1 -o /dev/null https://api.github.com/rate_limit',
@@ -70,9 +79,21 @@ const EXTERNAL = [
   'cd /tmp && curl -s https://example.org/x',
   'wget -q -O /tmp/x https://example.org/x',
   '/usr/bin/wget https://example.org/x',
+]
+
+// What the name list still denies: the raw network channels.
+const EXTERNAL = [
   'nc example.org 443',
   'ncat --ssl example.org 443',
   'telnet example.org 80',
+]
+
+// yt-dlp called directly: denied ONLY with YT_DLP_INGEST_ONLY on.
+const YT_DIRECT = [
+  'yt-dlp --skip-download https://www.youtube.com/watch?v=Bk6HBGap7PU',
+  '/home/u/.local/bin/yt-dlp -f best https://youtu.be/Bk6HBGap7PU',
+  '/home/u/.local/share/pipx/venvs/yt-dlp/bin/python -m yt_dlp https://youtu.be/Bk6HBGap7PU',
+  'cd /tmp && yt-dlp https://youtu.be/Bk6HBGap7PU',
 ]
 
 describe('BASH_EGRESS_DENY rule set', () => {
@@ -80,36 +101,31 @@ describe('BASH_EGRESS_DENY rule set', () => {
     for (const cmd of INTERNAL) expect({ cmd, denied: denied(cmd) }).toEqual({ cmd, denied: false })
   })
 
-  it('denies the shell URL-fetch verbs', () => {
+  it('denies the raw network channels', () => {
     for (const cmd of EXTERNAL) expect({ cmd, denied: denied(cmd) }).toEqual({ cmd, denied: true })
   })
 
-  // The allowlist is a WebFetch-scoped list. A host being on it says the
-  // quarantine path may reach it, not that the shell may -- the sanctioned
-  // route stays WebFetch. This is the control that would catch a rule set
-  // rewritten to consult the allowlist.
-  it('denies an allowlisted host too, because the sanctioned route is WebFetch', () => {
-    expect(denied('curl -s https://api.github.com/rate_limit')).toBe(true)
+  // 2026-10-13: the name list leaves the download verbs to the parser hook. A
+  // name rule cannot let a vendor-listed host through (deny beats allow), so it
+  // made store/egress-vendor-hosts.json dead letter for curl https and wget.
+  it('leaves the download verbs to the parser hook', () => {
+    for (const cmd of DOWNLOAD_VERBS) expect({ cmd, denied: denied(cmd) }).toEqual({ cmd, denied: false })
   })
 
-  // #1611: a host listed for the Bash egress PARSER (store/egress-vendor-hosts.json, "hosts" or
-  // "domains") is NOT exempt from this list. Deny rules are evaluated before any PreToolUse hook
-  // and deny always beats allow, so `curl https://<listed host>` is still refused here; the parser
-  // list only opens the shapes this name list does not match (plain http, interpreter one-liners).
-  // Pinned so that a change to that interaction is a deliberate, visible decision.
-  it('still denies curl https to a host the parser allowlist would let through', () => {
-    expect(denied('curl -s https://api.elevenlabs.io/v1/voices')).toBe(true)
-    expect(denied('curl -s https://api.example.com/v1')).toBe(true)
-    expect(denied('curl -s http://api.example.com/v1')).toBe(false)
+  // ...but the retired rules still deny every one of them, which is what a
+  // settings file the parser does not cover keeps (mergeBashEgressDeny).
+  it('the legacy rules still cover every download verb, for files the parser does not reach', () => {
+    for (const cmd of DOWNLOAD_VERBS) {
+      const viaLegacy = cmd.split(/\s*(?:&&|\|\||;|\|)\s*/).some((p) => LEGACY_BASH_EGRESS_DENY.some((r) => ruleMatches(r, p.trim())))
+      expect({ cmd, viaLegacy }).toEqual({ cmd, viaLegacy: true })
+    }
   })
 
-  // Measured collateral, pinned deliberately (2026-09-07). An internal POST
-  // whose DOUBLE-quoted payload quotes an https URL matches the curl rule.
-  // Single quotes do not (the engine excludes single-quoted content). The fix
-  // for a caller that hits this is single quotes or -d @file, and this test
-  // exists so the limit is a known cost and not a surprise.
-  it('pins the known collateral: a double-quoted payload carrying an https URL matches', () => {
-    expect(denied(`curl -s -X POST http://localhost:3420/api/memories -d "{\\"content\\":\\"lasd https://github.com/x\\"}"`)).toBe(true)
+  // The old curl rule also denied an internal POST whose DOUBLE-quoted payload
+  // quoted an https URL (pinned collateral since 2026-09-07). With the rule
+  // retired that call passes; the parser reads curl's argv, not its payload.
+  it('the double-quoted payload collateral is gone', () => {
+    expect(denied(`curl -s -X POST http://localhost:3420/api/memories -d "{\\"content\\":\\"lasd https://github.com/x\\"}"`)).toBe(false)
   })
 
   // The rule language has no negation and deny always beats allow, so
@@ -118,6 +134,47 @@ describe('BASH_EGRESS_DENY rule set', () => {
   it('documents the residual gap: plain-http external fetches still pass', () => {
     expect(denied('curl -s http://example.org/x')).toBe(false)
     expect(denied(`python3 -c "import urllib.request; urllib.request.urlopen('http://example.org/x')"`)).toBe(false)
+  })
+})
+
+// #1705 maintainer decision: the yt-dlp rules are an OPT-IN switch, off by
+// default. Off must be exactly the shared set; on adds the yt-dlp rules and
+// keeps every other verdict of the corpus.
+describe('YT_DLP_INGEST_ONLY switch', () => {
+  it('off: the deny set is exactly BASH_EGRESS_DENY, with no yt-dlp rule', () => {
+    expect(bashEgressDeny(false)).toEqual(BASH_EGRESS_DENY)
+    expect(bashEgressDeny(false).filter((r) => /yt[-_]dlp/.test(r))).toEqual([])
+    for (const cmd of YT_DIRECT) expect({ cmd, denied: denied(cmd, bashEgressDeny(false)) }).toEqual({ cmd, denied: false })
+  })
+
+  it('on: the yt-dlp rules are added and a direct call is denied', () => {
+    expect(bashEgressDeny(true)).toEqual([...BASH_EGRESS_DENY, ...YT_DLP_EGRESS_DENY])
+    for (const cmd of YT_DIRECT) expect({ cmd, denied: denied(cmd, bashEgressDeny(true)) }).toEqual({ cmd, denied: true })
+  })
+
+  it('on: the internal corpus (yt-ingest.sh included) stays open and the external one stays denied', () => {
+    for (const cmd of INTERNAL) expect({ cmd, denied: denied(cmd, bashEgressDeny(true)) }).toEqual({ cmd, denied: false })
+    for (const cmd of EXTERNAL) expect({ cmd, denied: denied(cmd, bashEgressDeny(true)) }).toEqual({ cmd, denied: true })
+  })
+
+  it('the shared set never carries the yt-dlp rules itself', () => {
+    expect(BASH_EGRESS_DENY.filter((r) => YT_DLP_EGRESS_DENY.includes(r))).toEqual([])
+  })
+
+  it('reads the switch fail-closed to OFF: only "1" turns it on', () => {
+    expect(ytDlpIngestOnly(() => '1')).toBe(true)
+    expect(ytDlpIngestOnly(() => '0')).toBe(false)
+    expect(ytDlpIngestOnly(() => '')).toBe(false)
+    expect(ytDlpIngestOnly(() => { throw new Error('Unknown setting key') })).toBe(false)
+  })
+
+  it('merges the on-set when asked, and the shared set alone otherwise', () => {
+    const on: Record<string, unknown> = {}
+    mergeBashEgressDeny(on, true, bashEgressDeny(true))
+    expect((on.permissions as { deny: string[] }).deny).toEqual([...BASH_EGRESS_DENY, ...YT_DLP_EGRESS_DENY])
+    const off: Record<string, unknown> = {}
+    mergeBashEgressDeny(off, true, bashEgressDeny(false))
+    expect((off.permissions as { deny: string[] }).deny).toEqual(BASH_EGRESS_DENY)
   })
 })
 
@@ -137,7 +194,28 @@ describe('mergeBashEgressDeny', () => {
     const perms = settings.permissions as { allow: string[]; deny: string[] }
     expect(perms.deny.slice(0, 2)).toEqual(['Bash(sudo:*)', 'Read(/Users/x/.ssh/**)'])
     expect(perms.allow).toEqual(['Bash(ls:*)'])
-    expect(perms.deny).toHaveLength(2 + BASH_EGRESS_DENY.length)
+    expect(perms.deny).toHaveLength(2 + BASH_EGRESS_DENY.length + LEGACY_BASH_EGRESS_DENY.length)
+  })
+
+  it('keeps the legacy curl-https / wget rules when the parser does not cover the file', () => {
+    const settings: Record<string, unknown> = {}
+    mergeBashEgressDeny(settings, false)
+    expect((settings.permissions as { deny: string[] }).deny).toEqual([...BASH_EGRESS_DENY, ...LEGACY_BASH_EGRESS_DENY])
+  })
+
+  it('retires exactly the legacy rules when the parser covers the file, and nothing of the operator\'s', () => {
+    const settings: Record<string, unknown> = {
+      permissions: { deny: ['Bash(sudo:*)', ...LEGACY_BASH_EGRESS_DENY, ...BASH_EGRESS_DENY, 'Bash(curl -X POST:*)'] },
+    }
+    expect(mergeBashEgressDeny(settings, true)).toBe(true)
+    expect((settings.permissions as { deny: string[] }).deny).toEqual(['Bash(sudo:*)', ...BASH_EGRESS_DENY, 'Bash(curl -X POST:*)'])
+    expect(mergeBashEgressDeny(settings, true)).toBe(false)
+  })
+
+  it('puts the legacy rules back when the parser stops covering the file', () => {
+    const settings: Record<string, unknown> = { permissions: { deny: [...BASH_EGRESS_DENY] } }
+    expect(mergeBashEgressDeny(settings, false)).toBe(true)
+    for (const rule of LEGACY_BASH_EGRESS_DENY) expect((settings.permissions as { deny: string[] }).deny).toContain(rule)
   })
 
   it('is idempotent: a second merge changes nothing', () => {
@@ -151,7 +229,35 @@ describe('mergeBashEgressDeny', () => {
   it('does not choke on a malformed permissions value', () => {
     const settings: Record<string, unknown> = { permissions: 'nonsense' }
     expect(mergeBashEgressDeny(settings)).toBe(true)
-    expect((settings.permissions as { deny: string[] }).deny).toEqual(BASH_EGRESS_DENY)
+    expect((settings.permissions as { deny: string[] }).deny).toEqual([...BASH_EGRESS_DENY, ...LEGACY_BASH_EGRESS_DENY])
+  })
+})
+
+describe('bashEgressParserCovers', () => {
+  const parserEntry = { matcher: 'Bash', hooks: [{ type: 'command', command: 'node "/x/scripts/hooks/bash-egress-parser.mjs"' }] }
+  it('a sub-agent is covered only when its own settings wire the parser under Bash', () => {
+    expect(bashEgressParserCovers('agent-a', { hooks: { PreToolUse: [parserEntry] } })).toBe(true)
+    expect(bashEgressParserCovers('agent-a', { hooks: { PreToolUse: [{ ...parserEntry, matcher: 'WebFetch' }] } })).toBe(false)
+    expect(bashEgressParserCovers('agent-a', {})).toBe(false)
+  })
+  it('the main agent is covered by the --main-scope registration in the project-local settings', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'marveen-egress-'))
+    try {
+      const p = join(dir, 'settings.json')
+      writeFileSync(p, JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'node "$CLAUDE_PROJECT_DIR/scripts/hooks/bash-egress-parser.mjs" --main-scope' }] }] } }))
+      expect(bashEgressParserCovers(MAIN_AGENT_ID, {}, p)).toBe(true)
+      writeFileSync(p, JSON.stringify({ hooks: { PreToolUse: [parserEntry] } }))
+      expect(bashEgressParserCovers(MAIN_AGENT_ID, {}, p)).toBe(false)
+      expect(bashEgressParserCovers(MAIN_AGENT_ID, {}, join(dir, 'missing.json'))).toBe(false)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+  // #1931 review: with BASH_EGRESS_HOST_ALLOW off the tracked file must be byte-for-byte what it was,
+  // so the --main-scope entry is never in it; the dashboard writes it to settings.local.json instead.
+  it('the tracked project settings of this repo carry NO parser registration', () => {
+    expect(readFileSync(join(ROOT, '.claude', 'settings.json'), 'utf-8')).not.toContain('bash-egress-parser')
+    expect(bashEgressParserCovers(MAIN_AGENT_ID, {}, join(ROOT, '.claude', 'settings.json'))).toBe(false)
   })
 })
 
@@ -203,7 +309,8 @@ describe('ensureBashEgressDeny for the main agent', () => {
     try {
       expect(ensureBashEgressDeny(MAIN_AGENT_ID, dir)).toBe(true)
       const written = JSON.parse(readFileSync(join(dir, 'settings.json'), 'utf-8'))
-      expect(written.permissions.deny).toEqual(BASH_EGRESS_DENY)
+      // BASH_EGRESS_HOST_ALLOW is off by default: the legacy curl-https / wget rules stay.
+      expect(written.permissions.deny).toEqual([...BASH_EGRESS_DENY, ...LEGACY_BASH_EGRESS_DENY])
       // Idempotent: a second boot must not append the same rules again.
       expect(ensureBashEgressDeny(MAIN_AGENT_ID, dir)).toBe(false)
     } finally {

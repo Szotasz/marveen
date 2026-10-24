@@ -63,7 +63,11 @@ function runProbe(src: string, pathDir: string, extraEnv: Record<string, string>
     'if _claude_runs; then echo RUNS; exit 0; else echo NO; exit 3; fi',
   ].join('\n')
   try {
-    execFileSync('bash', ['-c', script], {
+    // bash by absolute path, so a test may hand the probe a PATH without it; and
+    // a cwd outside the checkout, so a claude that does launch never loads the
+    // checkout's own .claude/settings.json (its hooks write into store/).
+    execFileSync(BASH_BIN, ['-c', script], {
+      cwd: tmpdir(),
       env: { ...process.env, PATH: `${pathDir}:${process.env.PATH}`, CLAUDE_PROBE_TIMEOUT: '2', ...extraEnv },
       encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'],
     })
@@ -74,9 +78,16 @@ function runProbe(src: string, pathDir: string, extraEnv: Record<string, string>
 }
 
 /** The OLD instrument (`--version` with a timeout), kept only as the control. */
+// SUITEFLAKY925: the control must RUN (exit 0: the old gate is fooled), so its
+// timeout must never be what decides it. On the shared 2 s it came back 124
+// under a full-suite load (measured 2026-10-22), the same race PROBEFLAKY924
+// fixed for the healthy case. The mock answers --version at once, so a generous
+// limit costs nothing; the probe side keeps its 2 s, where the timeout firing
+// IS the assertion.
+const OLD_GATE_TIMEOUT_S = 30
 function runOldGate(pathDir: string): number {
   try {
-    execFileSync('bash', ['-c', 'command -v claude >/dev/null 2>&1 && timeout 2 claude --version </dev/null >/dev/null 2>&1'], {
+    execFileSync('bash', ['-c', `command -v claude >/dev/null 2>&1 && timeout ${OLD_GATE_TIMEOUT_S} claude --version </dev/null >/dev/null 2>&1`], {
       env: { ...process.env, PATH: `${pathDir}:${process.env.PATH}` }, stdio: 'ignore',
     })
     return 0
@@ -116,7 +127,12 @@ describe.skipIf(!HAVE_TIMEOUT)('_claude_runs is a real launch probe, not --versi
       })
       it('no claude on PATH: NO', () => {
         const empty = mkdtempSync(join(tmpdir(), 'clirv-empty-'))
-        expect(runProbe(src, empty, { PATH: `${empty}:/usr/bin:/bin` })).toBe(3)
+        // Only the empty dir: on `${empty}:/usr/bin:/bin` an npm-global claude in
+        // /usr/bin resolves, and the probe launched the REAL claude (a 2 s
+        // timeout then read as "NO", so the case passed for the wrong reason).
+        expect(() => execFileSync(BASH_BIN, ['-c', 'command -v claude'], { env: { PATH: empty }, stdio: 'ignore' }),
+          'precondition: no claude resolves on this PATH').toThrow()
+        expect(runProbe(src, empty, { PATH: empty })).toBe(3)
       })
     })
   }

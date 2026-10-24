@@ -74,6 +74,10 @@ jobs:
       # over-report GROWS with every consolidation round, which is why this
       # runs here and not by hand. Hermetic: throwaway fixture dir.
       - run: python3 scripts/__tests__/memory-link-audit.test.py
+      # The host resource heartbeat's exit code IS its alert (1 = resource
+      # warning, 2 = nothing measured): a crash or a bad threshold that exits 1
+      # would page someone for nothing. Hermetic: fake /proc files and disk.
+      - run: python3 scripts/__tests__/host-resource-heartbeat.test.py
       # MORNTIMERPARK914: the #1313 contract tests shipped without CI wiring,
       # so "CI green" said nothing about them -- the exact rot the comment
       # above warns about. All three are hermetic (stubs on PATH / CLAUDE_BIN,
@@ -81,9 +85,14 @@ jobs:
       # above because the briefing script takes its binary from CLAUDE_BIN.
       - run: bash scripts/__tests__/keepalive-probe-install.test.sh
       - run: bash scripts/__tests__/morning-stamp-gate.test.sh
+      - run: bash scripts/__tests__/morning-briefing-api-key-only.test.sh
       - run: bash scripts/__tests__/morning-timer-park.test.sh
       - run: bash scripts/__tests__/userbot-arming-gate.test.sh
       - run: bash scripts/__tests__/supabase-q-token-hiding.test.sh
+      # FLEETIMPORTFOLLOW1021: migrate-main-agent-id.sh reads .env as data and
+      # never sources it. Hermetic: throwaway install dirs, uname/tmux stubs on
+      # PATH, every case answers "n" before anything is migrated.
+      - run: bash scripts/__tests__/migrate-agent-id-env-literal.test.sh
       # Same reasoning for the taskstate stub writer: its load-bearing contract
       # is the EXIT CODE (a non-zero UserPromptSubmit hook blocks every prompt),
       # and that is only asserted by this shell suite. The live-API case inside
@@ -104,3 +113,8 @@ jobs:
       # a throwaway install root, stand-in python and node gates, a local stub for
       # the alert POST.
       - run: python3 scripts/__tests__/hook-load-watch.test.py
+      # The uptime monitor is the alert path that works while the dashboard is down, so its
+      # exit-code contract and its real send path are gate instruments too. Hermetic: a local
+      # HTTP server for the targets and as the Bot API stub (TELEGRAM_API_BASE), throwaway
+      # install trees, HOME on a temp dir, proxies cleared.
+      - run: python3 scripts/__tests__/uptime-monitor.test.py

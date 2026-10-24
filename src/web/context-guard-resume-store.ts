@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { PROJECT_ROOT } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
+import { logger } from '../logger.js'
 import { INITIAL_GUARD_STATE, type GuardState, type HandoffStaleness } from '../context-guard.js'
 
 // The context-guard's "restarted, resume prompt
@@ -61,10 +62,24 @@ export function parsePendingResumes(raw: unknown): PendingResumeMap {
   return out
 }
 
+// A missing file is the normal "nothing owed" state and stays silent. Any other
+// failure (an unreadable file, corrupt JSON) still answers {} -- the caller must
+// keep running -- but says so: those resume obligations are lost, and the next
+// write overwrites the file. Every read error used to be swallowed without a trace.
 export function readPendingResumes(path: string = PENDING_RESUME_PATH): PendingResumeMap {
+  let text: string
   try {
-    return parsePendingResumes(JSON.parse(readFileSync(path, 'utf-8')))
-  } catch {
+    text = readFileSync(path, 'utf-8')
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      logger.warn({ path, code: (err as NodeJS.ErrnoException).code, error: (err as Error).message }, 'context-guard: pending-resume file unreadable, treating it as empty (its resume obligations are lost)')
+    }
+    return {}
+  }
+  try {
+    return parsePendingResumes(JSON.parse(text))
+  } catch (err) {
+    logger.warn({ path, error: (err as Error).message }, 'context-guard: pending-resume file is not valid JSON, treating it as empty (its resume obligations are lost)')
     return {}
   }
 }

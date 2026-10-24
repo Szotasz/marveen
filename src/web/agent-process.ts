@@ -26,11 +26,13 @@ import {
   detectsModelConsentDialog,
   detectsFeedbackDraftModal,
   detectsFeedbackOptOutPrompt,
+  feedbackDraftDismissPlan,
   firstRunAcceptKeys,
   stuckInputSignature,
   mcpTrustAcceptKeys,
   devChannelsAcceptKeys,
   detectsBlockingMenu,
+  typedTailEchoed,
   detectsHeldPeerMessage,
   type FirstRunGateKind,
 } from '../pane-state.js'
@@ -44,6 +46,7 @@ import { loadCustomProvider, type CustomProviderDef } from './custom-providers.j
 import { decideOwnOauthToken, ownOauthTokenExport, ownOauthLaunchVerdict } from './agent-oauth-token-file.js'
 import { inheritedAuthUnset } from './inherited-auth-unset.js'
 import { worksourceRootFor } from './worksource-queue.js'
+import { syncBashSandboxSettings } from './bash-sandbox.js'
 import { resolveAgentConfigDir, readClaudePlans, getClaudePlan } from './claude-plans.js'
 import { readClaudePlansState } from './claude-plans-state.js'
 import { provisionMemoryBoundaryDir } from './memory-boundary.js'
@@ -56,6 +59,8 @@ import {
   buildSshExec,
   buildRemoteLaunchCommand,
   buildContinueProbeCommand,
+  buildRemoteTranscriptMtimeCommand,
+  parseRemoteTranscriptMtime,
   classifyRunState,
   classifyRunStateFromExit,
   sessionInList,
@@ -2057,6 +2062,26 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
   }
   const ownTokenFile = ownOauth.kind === 'ok' ? ownOauth.path : null
 
+  // BASHSANDBOX1022: an agent on the owner's BASH_SANDBOX_AGENTS list runs its Bash in Claude Code's
+  // sandbox, configured by a --settings file this start writes (see bash-sandbox.ts). Fail closed: a
+  // listed agent that cannot get its file, or runs on a remote host the file cannot follow, is not
+  // started -- starting it unsandboxed would turn the switch into a label.
+  let bashSandboxFlag = ''
+  try {
+    const sandboxFile = syncBashSandboxSettings(name)
+    if (sandboxFile) {
+      if (remote.host && remote.workdir) {
+        logger.error({ name }, 'bash-sandbox: agent NOT started (listed in BASH_SANDBOX_AGENTS, but remote agents cannot be sandboxed)')
+        return { ok: false, error: 'bash-sandbox: a remote agent cannot be sandboxed; take it off BASH_SANDBOX_AGENTS' }
+      }
+      bashSandboxFlag = ` --settings ${shSingleQuote(sandboxFile)}`
+      logger.info({ name, path: sandboxFile }, 'bash-sandbox: agent starts with its Bash sandbox settings')
+    }
+  } catch (err) {
+    logger.error({ err, name }, 'bash-sandbox: agent NOT started (fail-closed, its sandbox settings could not be written)')
+    return { ok: false, error: `bash-sandbox: ${err instanceof Error ? err.message : String(err)}` }
+  }
+
   if (remote.host && remote.workdir) {
     return startRemoteAgentProcess(name, remote.host, remote.workdir, opts)
   }
@@ -2808,7 +2833,7 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
     // FLEETVENV923: the fleet venv's bin/ goes FIRST so its python3 beats the
     // Homebrew one that carries no packages.
     const venvPathPrefix = fleetVenvPathPrefix()
-    const buildLaunchCmd = (launchCwd: string) => `${umaskPrefix}export PATH="${venvPathPrefix}/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${stateFence}${autoUpdaterEnv}${byoUnsetEnv}${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${providerEnv}${stateObserverEnv}cd "${launchCwd}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}${worksourceFlags}`.trimEnd()
+    const buildLaunchCmd = (launchCwd: string) => `${umaskPrefix}export PATH="${venvPathPrefix}/opt/homebrew/bin:$HOME/.bun/bin:/usr/local/bin:/usr/bin:/bin:$PATH" && ${unsetTokens} && ${stateFence}${autoUpdaterEnv}${byoUnsetEnv}${promptSuggestionEnv}${mcpEnv}${channelSetup}${apiKeyEnv}${claudeConfigEnv}${oauthTokenEnv}${providerEnv}${stateObserverEnv}cd "${launchCwd}" && ${claudeBin()} ${continueFlag}${skipFlag}--model ${shSingleQuote(model)} ${channelFlag}${worksourceFlags}${bashSandboxFlag}`.trimEnd()
     // The agent's own target: for a per-user agent this is what makes the whole
     // session (and every process inside it) belong to that uid. Passing null here
     // silently started it as the router's user -- measured 2026-08-19: the start
@@ -3141,10 +3166,11 @@ export async function dismissResumeSummaryModalIfPresent(session: string, host: 
 // live on agent-samu 2026-08-31: 10 minutes not-ready, 5 queued messages, and
 // a peer's report parked unsubmitted in the prompt.
 //
-// Dismissal takes TWO steps, measured on that same pane: "0" closes the draft,
-// then Claude Code immediately offers "Turn off Claude-drafted feedback? 0 to
-// turn off · Esc to keep". A second "0" there would silently disable feedback
-// drafting for that agent, so the follow-up is answered with Esc (keep) -- and
+// Dismissal: the card is closed with C-u then Down, never a digit (see
+// feedbackDraftDismissPlan for why a typed digit can stick and pile up). Claude
+// Code may then offer "Turn off Claude-drafted feedback? 0 to turn off · Esc to
+// keep". A "0" there would silently disable feedback drafting for that agent,
+// so the follow-up is answered with Esc (keep) -- and
 // only when its own detector fires, never blind: a bare Esc into a prompt box
 // that holds a parked delivery is not a keystroke worth firing on spec.
 // The not-ready-path companion to the pre-flight dismissal above, and the
@@ -3189,11 +3215,26 @@ export async function clearFeedbackModalAndRecheck(session: string, host: string
   }
 }
 
+// Between C-u and Down: in one tmux call Down would reach the TUI before it
+// re-rendered the cleared input.
+const FEEDBACK_KEY_GAP_MS = 200
+
 export async function dismissFeedbackDraftModalIfPresent(session: string, host: string | null = null): Promise<void> {
   try {
     const pane = captureTmux(host, ['capture-pane', '-t', exactTmuxTarget(session), '-p'])
     if (!detectsFeedbackDraftModal(pane)) return
-    runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), '0'], { timeout: 5000 })
+    // The input box is read from the ghost-stripped view: a dim autosuggest in an
+    // empty box must not read as typed text. Detection stays on the plain capture.
+    const plan = feedbackDraftDismissPlan(pane, captureParkedInputView(session, host), session === MAIN_CHANNELS_SESSION)
+    if (plan.act === 'none') return
+    if (plan.act === 'hold') {
+      logger.info({ session, reason: plan.reason }, 'Feedback-draft modal left up: no keystroke is safe on this prompt')
+      return
+    }
+    for (const [i, key] of plan.keys.entries()) {
+      if (i > 0) await delay(FEEDBACK_KEY_GAP_MS)
+      runTmux(host, ['send-keys', '-t', exactTmuxTarget(session), key], { timeout: 5000 })
+    }
     await delay(300)
     const after = captureTmux(host, ['capture-pane', '-t', exactTmuxTarget(session), '-p'])
     if (detectsFeedbackOptOutPrompt(after)) {
@@ -4007,6 +4048,13 @@ export async function sendPromptToSession(
       i = end
       if (i < oneLine.length) await delay(30)
     }
+    // The settle wait below cannot tell a TUI that finished drawing from one
+    // that stopped READING its input (both give identical captures), so first
+    // wait until the end of the prompt is actually on screen. Bounded; on
+    // timeout the Enter goes out as before, and the log says so.
+    if (oneLine.length > CHUNK && !(await waitForTypedEcho(() => capturePane(session, host), oneLine))) {
+      logger.warn({ session, chars: oneLine.length, waitedMs: TYPED_ECHO_MAX_MS }, 'sendPromptToSession: the end of the typed prompt never appeared in the pane; sending Enter anyway (TUI not reading input?)')
+    }
     // A multi-chunk prompt gets its Enter only once the TUI has stopped
     // redrawing. Sent straight after the last chunk, the Enter races the
     // TUI still ingesting the burst and is dropped: measured 2026-09-15
@@ -4193,6 +4241,31 @@ export async function waitForPaneSettle(
   return false
 }
 
+// Upper bound for waitForTypedEcho. The measured stalls (a sub-agent whose
+// TUI stopped reading input mid-prompt) lasted 18.5 s and 24.9 s; past this
+// the Enter goes out as it did before.
+export const TYPED_ECHO_MAX_MS = 30_000
+
+// Resolve true as soon as typedTailEchoed() sees the end of `typed` in a
+// capture, false after `maxMs` without it. Capture, sleep and clock are
+// injectable, like waitForPaneSettle, so the loop is tested without tmux.
+export async function waitForTypedEcho(
+  capture: () => string | null,
+  typed: string,
+  opts: { pollMs?: number; maxMs?: number; sleep?: (ms: number) => Promise<void>; now?: () => number } = {},
+): Promise<boolean> {
+  const pollMs = opts.pollMs ?? 250
+  const maxMs = opts.maxMs ?? TYPED_ECHO_MAX_MS
+  const sleep = opts.sleep ?? delay
+  const now = opts.now ?? Date.now
+  const deadline = now() + maxMs
+  for (;;) {
+    if (typedTailEchoed(capture(), typed)) return true
+    if (now() >= deadline) return false
+    await sleep(pollMs)
+  }
+}
+
 export function capturePane(session: string, host: string | null = null): string | null {
   try {
     // Capture WITH colour, strip a trailing /rename session-title banner, then
@@ -4202,6 +4275,34 @@ export function capturePane(session: string, host: string | null = null): string
     // (a banner otherwise pins detectPaneState 'unknown', blocking scheduler +
     // inter-agent delivery). See stripSessionTitleBanner.
     return stripAllAnsi(stripSessionTitleBanner(captureTmux(host, ['capture-pane', '-t', exactTmuxTarget(session), '-e', '-p'])))
+  } catch {
+    return null
+  }
+}
+
+/**
+ * REMOTESAWTURN1022: newest transcript write of a remote agent, as a local-clock
+ * epoch ms, read over the existing ssh path. The local clock is taken before the
+ * ssh call (see parseRemoteTranscriptMtime for why that keeps the estimate
+ * conservative). One bounded call; any failure (host unreachable, timeout, no
+ * transcript, garbage output) returns null and never throws, so the caller treats it
+ * as "no evidence", never as a turn.
+ */
+export function readRemoteTranscriptMtime(
+  host: string,
+  workdir: string,
+  deps: {
+    exec?: (file: string, args: string[], timeoutMs: number) => string
+    now?: () => number
+  } = {},
+): number | null {
+  const now = deps.now ?? Date.now
+  const exec = deps.exec ?? ((file: string, args: string[], timeoutMs: number): string =>
+    execFileSync(file, args, { timeout: timeoutMs, encoding: 'utf-8', stdio: ['ignore', 'pipe', 'pipe'] }))
+  try {
+    const localBeforeMs = now()
+    const inv = buildSshExec(host, buildRemoteTranscriptMtimeCommand(workdir))
+    return parseRemoteTranscriptMtime(exec(inv.file, inv.args, 3000), localBeforeMs)
   } catch {
     return null
   }

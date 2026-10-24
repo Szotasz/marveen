@@ -49,6 +49,8 @@ import { computeNextRun } from './cron.js'
 import { getTokenSummary, getModelDistribution } from './token-usage.js'
 import { registerModelWriteCommands, readModelChoices as readChoiceList, readHold, readLastSent, readEffortSent, readConfiguredEffort, withRetry, MODEL_CHOICES_FILE, MODEL_HOLD_FILE, MODEL_LAST_SENT_FILE, EFFORT_SENT_FILE, EFFORT_LEVELS, type LastSent, type HoldState, modelSupportsEffort } from './main-model.js'
 import { contextClear } from './session-control.js'
+import { pullFleetBrake } from './routes/fleet-freeze.js'
+import { readFleetFreeze, REASON_MAX as FLEET_REASON_MAX } from './fleet-freeze.js'
 
 function clip(s: string, n: number): string {
   const one = s.replace(/\s+/g, ' ').trim()
@@ -818,6 +820,30 @@ export function registerBuiltinCommands(): void {
     matches: args => args[0]?.toLowerCase() === 'clear',
     touches: ['context'],
     run: async ctx => { const r = await contextClear(ctx.now); await ctx.reply(withRetry('/context clear', { ok: r.cleared, text: r.text, busy: r.busy }, ctx)) },
+  })
+
+  // KILLSWITCH1022: the red button from the owner's phone. /stop pulls the brake
+  // (freeze: tool calls denied, loops paused, sessions kept); it is a write, so the
+  // owner-chat and inbound-evidence gates of dispatchForChat apply. Lifting it is
+  // NOT a command: this path runs on the shared token, and the unfreeze takes the
+  // owner's login (POST /api/fleet/unfreeze, the #2163 predicate). /resume says so.
+  registerCommand({
+    name: 'stop', kind: 'write', usage: '/stop <indok>', description: 'piros gomb: a flotta fagyasztása (feloldás a dashboardon, bejelentkezve)',
+    run: async (ctx, args) => {
+      const reason = args.join(' ').trim()
+      if (!reason) return reply(ctx, 'Írd mögé az okát: /stop <indok>. A gazda-üzenet és a napló is ezt mutatja.')
+      if (reason.length > FLEET_REASON_MAX) return reply(ctx, `Az indok legfeljebb ${FLEET_REASON_MAX} karakter lehet.`)
+      const state = await pullFleetBrake('freeze', reason, 'owner-command')
+      return reply(ctx, `🛑 A flotta ${state.mode === 'stop' ? 'LEÁLLÍTVA' : 'FAGYASZTVA'}: ${state.reason}\nFeloldás: a dashboardon, bejelentkezve (Feloldás gomb a piros sávban).`)
+    },
+  })
+  registerCommand({
+    name: 'resume', kind: 'read', description: 'a fagyasztás feloldása: hol és hogyan',
+    run: ctx => {
+      const st = readFleetFreeze()
+      if (!st) return reply(ctx, 'A flotta nincs fagyasztva.')
+      return reply(ctx, `A flotta ${st.mode === 'stop' ? 'leállítva' : 'fagyasztva'} (${st.by}): ${st.reason}\nFeloldani csak a dashboardon lehet, a dashboard-jelszóval bejelentkezve: a piros sáv Feloldás gombja. Innen nem, mert ez az út a közös tokennel fut.`)
+    },
   })
 
   // ÍR, megerősítéssel: planned until after the stabilization (CMD920 2.).

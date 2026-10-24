@@ -62,7 +62,9 @@ HASZNALAT:
                  credentials -- de NEM kuld, credentials nelkul is lefut.
   --approval   : kulso cimzettnel KOTELEZO. A szkript lekerdezi, es CSAK `approved`
                  statusznal kuld, ES csak ha a cimzett szama SZEREPEL a keres
-                 leirasaban.
+                 leirasaban. Kuldes elott FELHASZNALJA (POST .../consume): egy
+                 jovahagyas EGY kuldesre szol, a masodik kiserlet 409-et kap, es
+                 nem kuld (APPROVALCONSUME1022). A dry-run nem fogyaszt.
   --reference  : sajat azonosito a SeeMe fele (opcionalis, alapertelmezetten
                  `fleet-adhoc-<unix-ido>`).
 
@@ -88,9 +90,14 @@ ENV_FILE = os.path.join(ROOT, "store", "seeme-gateway.env")
 # +36305552860 teszt-szam csak az EN sajat, nem-committolt store/seeme-internal-
 # numbers.json-omban szerepelt -- egy fris checkout ezt sosem latja.
 INTERNAL_FILE = os.environ.get("SEEME_INTERNAL_FILE") or os.path.join(ROOT, "store", "seeme-internal-numbers.json")
-LOG_FILE = os.path.join(ROOT, "store", "seeme-send.log")
 DASH_TOKEN_FILE = os.environ.get("SEEME_DASH_TOKEN_FILE") or os.path.join(ROOT, "store", ".dashboard-token")
-DASH_BASE = "http://localhost:3420"
+# Ugyanaz az ok (APPROVALCONSUME1022): a fogyasztas-teszt egy hamis dashboardot es egy
+# hamis SeeMe-atjarot futtat, ezert a credentials-fajl, a naplo es a dashboard cime is
+# atallithato. Eles hasznalatnal egyik sincs beallitva.
+ENV_FILE = os.environ.get("SEEME_ENV_FILE") or ENV_FILE
+LOG_FILE = os.environ.get("SEEME_LOG_FILE") or os.path.join(ROOT, "store", "seeme-send.log")
+DASH_BASE = os.environ.get("SEEME_DASH_BASE") or "http://localhost:3420"
+CONSUMER = "seeme-send.py"
 DEFAULT_BASE = "https://seeme.hu/gateway"
 # Elovigyazatossagbol, NEM mert protekcio -- lasd a fejlecet.
 USER_AGENT = "kaszap-jobs-seeme-gateway/1.0 (+marveen)"
@@ -190,6 +197,49 @@ def check_approval(approval_id, to_number):
     return rec
 
 
+def consume_approval(approval_id, rec, reference):
+    """A jovahagyas EGYSZERI felhasznalasa, KozVETLENuL a kuldes elott (APPROVALCONSUME1022).
+    A check_approval csak azt nezi, hogy a sor `approved`; egymagaban ugyanazzal az
+    id-vel akarhany SMS kimehetett. A dashboard egyetlen feltetelES irassal allitja a
+    consumed_at-ot, tehat ket kiseRletbol pontosan egy kap igent. CSAK 200 utan kuldunk:
+    minden mas (409 elhasznalt/lejart, 404, halozati hiba) azt jelenti, hogy NEM."""
+    tok = open(DASH_TOKEN_FILE, encoding="utf-8").read().strip()
+    body = json.dumps({
+        "category": "external_message",
+        # Az approval sajat horgonya (vagy null): a szerver `content_hash IS ?`-vel veti ossze.
+        "content_hash": rec.get("content_hash"),
+        "consumer": CONSUMER,
+        "ref": reference,
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        f"{DASH_BASE}/api/approvals/{approval_id}/consume", data=body, method="POST",
+        headers={"Authorization": f"Bearer {tok}", "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            code = resp.status
+            answer = resp.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as exc:
+        reason = ""
+        try:
+            reason = str(json.loads(exc.read().decode("utf-8", "replace")).get("reason") or "")
+        except Exception:
+            pass
+        die(f"az approval felhasznalasa HTTP {exc.code}{f' ({reason})' if reason else ''} -- NEM kuldok.\n"
+            f"      already_consumed: ezzel a jovahagyassal mar ment SMS; expired: a jovahagyas regi,\n"
+            f"      kerj ujat. Egy jovahagyas EGY kuldesre szol.")
+    except Exception as exc:
+        die(f"az approval felhasznalasa nem sikerult ({exc}) -- NEM kuldok")
+    if code != 200:
+        die(f"az approval felhasznalasa HTTP {code} -- NEM kuldok")
+    try:
+        ok = json.loads(answer).get("ok") is True
+    except Exception:
+        ok = False
+    if not ok:
+        die("az approval felhasznalasanak valasza nem ok:true -- NEM kuldok")
+
+
 def log(line):
     try:
         with open(LOG_FILE, "a", encoding="utf-8") as fh:
@@ -234,10 +284,14 @@ def main():
         if not args.approval:
             die("KULSO cimzett, es nincs --approval.\n"
                 "      Az `external_message` level=1 ES maxLevel=1 (locked), tehat ez SOHA nem\n"
-                "      autonom. Elobb kerj jovahagyast, a cimzett szamaval a leirasban:\n"
-                "        bash scripts/approval-request.sh --category external_message <<'EOF'\n"
-                f"        SMS-t kuldenek a {to} szamra (SeeMe). A szoveg: \"...\". Indok: ...\n"
-                "        EOF")
+                "      autonom. Elobb kerj jovahagyast, a cimzett szamaval a leirasban\n"
+                "      (idezett heredoc: a szovegben levo backtick vagy $(...) igy nem fut le):\n"
+                f"        curl -s -X POST {DASH_BASE}/api/approvals -H \"Content-Type: application/json\" \\\n"
+                "          -H \"Authorization: Bearer $(cat store/.dashboard-token)\" --data-binary @- <<'JSON'\n"
+                "        {\"agent_id\":\"<a neved>\",\"category\":\"external_message\",\"action_description\":"
+                f"\"SMS-t kuldenek a {to} szamra (SeeMe). A szoveg: ... Indok: ...\",\"timeout_seconds\":3600}}\n"
+                "        JSON\n"
+                "      A valaszban kapott id-vel futtasd ujra: --approval <id>.")
         rec = check_approval(args.approval, to)
         print(f"approval    : {args.approval} -> approved "
               f"(kert: {rec.get('requested_at')}, dontott: {rec.get('resolved_at')})")
@@ -253,6 +307,11 @@ def main():
     env = read_env()
     base = env.get("SEEME_BASE") or DEFAULT_BASE
     reference = args.reference or f"fleet-adhoc-{int(time.time())}"
+
+    # A fogyasztas az UTOLSO lepes a kuldes elott: a dry-run, a hianyzo credentials es
+    # minden korabbi elutasitas NEM eget el jovahagyast. Belso cimzettnel nincs mit fogyasztani.
+    if not is_internal:
+        consume_approval(args.approval, rec, reference)
 
     params = {
         "key": env["SEEME_API_KEY"],

@@ -133,6 +133,7 @@ Every dashboard-editable setting is a registry entry with the following fields:
 | `KANBAN_WIP_FULL_COLOR` | color | `#d46b00` | #rrggbb | no |
 | `KANBAN_WIP_OVER_COLOR` | color | `#c53030` | #rrggbb | no |
 | `KANBAN_ARCHIVE_DONE_DAYS` | int | 30 | min 1, max 365 | no |
+| `KANBAN_DISPATCH_SKIP_AGENTS` | string | (empty) | agent names, comma-separated, for example `pm,reviewer` (an agent listed here is not woken when a card is moved to `in_progress`, see `kanban.md`) | no |
 | `KANBAN_CLAIM_LOCK` | boolean | `0` | `0` or `1` (card claim lock, see `kanban.md`) | no |
 | `KANBAN_AGING_WARN_H` | int | 24 | min 1, max 8760 | no |
 | `KANBAN_AGING_CAUTION_H` | int | 72 | min 1, max 8760 | no |
@@ -402,6 +403,20 @@ These templates are populated during agent scaffolding and placed into `agents/<
 | `researcher.json` | strict | Researcher profile, limited writes |
 
 Profile is set via the `profileId` field in `agent-config.json` and configurable from the dashboard "Agents" view.
+
+---
+
+## Memory: daily-log mirror and date filter
+
+There is nothing to configure: both are always on. Details: [memory-system.md](memory-system.md) (Hungarian).
+
+| What | Behaviour |
+|------|-----------|
+| Log mirror | Every `POST /api/daily-log` entry also creates a `cold`-tier, `episodic` `memories` row (`[Napló YYYY-MM-DD HH:MM] <text>`, keywords `napi-naplo, YYYY-MM-DD`); the `daily_log_memory` table holds the link. Text that fails the memory content filter is still saved to the log, without a mirror (`memory_mirror: "skipped:content-filter"`). |
+| Backfill | `npx tsx scripts/daily-log-backfill-memories.ts [--db <path>] [--apply]`. A dry run by default that writes nothing (the database is opened read-only, no migration); `--apply` writes, idempotent. |
+| Date filter | `GET /api/memories?...&date=<expression>` or `&since=YYYY-MM-DD&until=YYYY-MM-DD`, calendar days in the install time zone (`APP_TZ`). Applied in SQL before the LIMIT in every search branch. An invalid value is a 400. The `X-Memory-Search` header carries `date=<from>..<to>` with the range actually used. |
+| Relevance | The similarity floor (`MEMORY_VECTOR_MIN_MARGIN`, `MEMORY_VECTOR_BASELINE_MIN_ROWS`, `MEMORY_VECTOR_SMALL_CORPUS_MIN_SIMILARITY`) is computed from the candidates inside the date window; a narrow window can fall back to the small-corpus floor. |
+| Indexes | `memories(agent_id, created_at)`, `memories(category, created_at)` (created at startup, idempotent). |
 
 ---
 

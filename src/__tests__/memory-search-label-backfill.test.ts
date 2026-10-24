@@ -162,6 +162,22 @@ describe('buildMemorySearchLabelBody', () => {
     expect(buildMemorySearchLabelBody('agent-b')).toContain('strict=1')
   })
 
+  // Card f90928e3: the date filter and the searchable diary are part of the
+  // recipe every agent is given, in the generated block and in the template.
+  it('teaches the date filter and the diary mirror', () => {
+    const b = buildMemorySearchLabelBody('agent-b')
+    expect(b).toContain('&date=tegnap')
+    expect(b).toContain('&since=')
+    expect(b).toContain('date=<tól>..<ig>')
+    expect(b).toContain('[Napló')
+  })
+
+  it('the CLAUDE.md template carries the same date-filter line', () => {
+    const src = readFileSync(join(__dirname, '..', 'web', 'agent-scaffold.ts'), 'utf-8')
+    expect(src).toContain('Időszakra szűrés: &date=tegnap')
+    expect(src).toContain('&since=ÉÉÉÉ-HH-NN&until=ÉÉÉÉ-HH-NN')
+  })
+
   // There used to be an assertion here that the block warns the tier filter
   // truncates after the limit. #1384 pushed that filter down into the search
   // SQL, so the warning became false before this PR ever merged and the text it

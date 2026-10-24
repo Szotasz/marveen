@@ -12,7 +12,7 @@ import { encodeClaudeProjectDir } from '../claude-project-dir.js'
 
 const tmpRoot = mkdtempSync(join(tmpdir(), 'marveen-claude-plans-routes-test-'))
 
-vi.mock('../config.js', () => ({ PROJECT_ROOT: tmpRoot, MAIN_AGENT_ID: 'agent-a', DEFAULT_AGENT_MODEL: 'claude-opus-5' }))
+vi.mock('../config.js', () => ({ PROJECT_ROOT: tmpRoot, MAIN_AGENT_ID: 'agent-a', DEFAULT_AGENT_MODEL: 'claude-opus-5', APP_TZ: 'Europe/Budapest' }))
 
 let rotationEnabled = '0'
 let fleetEnabled = false
