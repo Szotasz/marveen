@@ -69,7 +69,7 @@ beforeAll(async () => {
       res.end(JSON.stringify({ ok: true, result: (req.url ?? '').endsWith('/sendMessage') ? { message_id: 555 } : {} }))
     })
   })
-  await new Promise<void>(r => server.listen(0, '127.0.0.1', r))
+  await new Promise<void>((r, reject) => { server.on('error', reject); server.listen(0, '127.0.0.1', r) })
   base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
 
   install = mkdtempSync(join(tmpdir(), 'mcmd-install-'))

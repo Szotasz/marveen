@@ -1,8 +1,9 @@
 import { describe, it, expect, afterEach } from 'vitest'
-import { existsSync, mkdtempSync, mkdirSync, symlinkSync, writeFileSync, rmSync } from 'node:fs'
-import { join } from 'node:path'
-import { tmpdir } from 'node:os'
-import { safeRmTmp } from './helpers/safe-rm-tmp.js'
+import { existsSync, mkdtempSync, mkdirSync, realpathSync, symlinkSync, writeFileSync, rmSync } from 'node:fs'
+import * as path from 'node:path'
+import { join, dirname } from 'node:path'
+import { tmpdir, homedir } from 'node:os'
+import { safeRmTmp, assertSafeTmpRoot, isStrictlyInside } from './helpers/safe-rm-tmp.js'
 
 // The helper is what keeps a broken beforeAll (empty path variable) from
 // turning a cleanup into rmSync(join('', '..')) === rmSync('..').
@@ -57,5 +58,79 @@ describe('safeRmTmp', () => {
     symlinkSync(outside, link)
     expect(() => safeRmTmp(link)).toThrow(/refusing/)
     expect(existsSync(outside)).toBe(true)
+  })
+
+  it("rejects '.' (the cwd) and a sibling whose name only shares the temp dir prefix", () => {
+    expect(() => safeRmTmp('.')).toThrow(/refusing/)
+    expect(() => safeRmTmp(realpathSync(tmpdir()) + 'X/a')).toThrow(/refusing/)
+  })
+})
+
+describe('safeRmTmp with a poisoned TMPDIR', () => {
+  const saved = process.env.TMPDIR
+  afterEach(() => {
+    if (saved === undefined) delete process.env.TMPDIR
+    else process.env.TMPDIR = saved
+  })
+  // a missing path under the cwd: nothing can be deleted, the guard must throw first
+  const victim = join(process.cwd(), '.safe-rm-never-existed-xyz')
+
+  it('refuses TMPDIR=/', () => {
+    process.env.TMPDIR = '/'
+    expect(() => safeRmTmp(victim)).toThrow(/unsafe temp root/)
+  })
+  it('refuses TMPDIR=$HOME', () => {
+    process.env.TMPDIR = homedir()
+    expect(() => safeRmTmp(victim)).toThrow(/unsafe temp root/)
+  })
+  it('refuses TMPDIR=<parent of $HOME>', () => {
+    process.env.TMPDIR = dirname(homedir())
+    expect(() => safeRmTmp(victim)).toThrow(/unsafe temp root/)
+  })
+})
+
+describe('assertSafeTmpRoot', () => {
+  const mac = { platform: 'darwin' as const, home: '/Users/u' }
+  it('accepts the macOS per-user temp dir and /private/tmp', () => {
+    expect(() => assertSafeTmpRoot('/private/var/folders/ab/cd/T', mac)).not.toThrow()
+    expect(() => assertSafeTmpRoot('/private/var/folders/ab/cd/T/run.X', mac)).not.toThrow()
+    expect(() => assertSafeTmpRoot('/private/tmp', mac)).not.toThrow()
+  })
+  it('rejects /, $HOME, an ancestor of $HOME, and an empty root', () => {
+    expect(() => assertSafeTmpRoot('/', mac)).toThrow(/filesystem root/)
+    expect(() => assertSafeTmpRoot('/Users/u', mac)).toThrow(/equals \$HOME/)
+    expect(() => assertSafeTmpRoot('/Users', mac)).toThrow(/ancestor of \$HOME/)
+    expect(() => assertSafeTmpRoot('', mac)).toThrow(/empty/)
+  })
+  it('rejects a darwin root outside /private/var/folders and /private/tmp', () => {
+    expect(() => assertSafeTmpRoot('/Users/u/scratch', mac)).toThrow(/not under/)
+    expect(() => assertSafeTmpRoot('/private/var/folders', mac)).toThrow(/not under/)
+    expect(() => assertSafeTmpRoot('/private/var', mac)).toThrow(/not under/)
+    expect(() => assertSafeTmpRoot('/private/tmpX', mac)).toThrow(/not under/)
+  })
+  it('applies the same root/HOME rules with path.win32', () => {
+    const win = { platform: 'win32' as const, home: 'C:\\Users\\u', pathMod: path.win32 }
+    expect(() => assertSafeTmpRoot('C:\\', win)).toThrow(/filesystem root/)
+    expect(() => assertSafeTmpRoot('C:\\Users\\u', win)).toThrow(/equals \$HOME/)
+    expect(() => assertSafeTmpRoot('C:\\Users', win)).toThrow(/ancestor of \$HOME/)
+    expect(() => assertSafeTmpRoot('C:\\Users\\u\\AppData\\Local\\Temp', win)).not.toThrow()
+  })
+})
+
+describe('isStrictlyInside', () => {
+  it('posix: inside, itself, parent, prefix sibling', () => {
+    expect(isStrictlyInside('/t/a', '/t')).toBe(true)
+    expect(isStrictlyInside('/t/..foo', '/t')).toBe(true)
+    expect(isStrictlyInside('/t', '/t')).toBe(false)
+    expect(isStrictlyInside('/', '/t')).toBe(false)
+    expect(isStrictlyInside('/tX/a', '/t')).toBe(false)
+  })
+  it('path.win32: a backslash-separated escape on the same drive is rejected', () => {
+    const root = 'C:\\Users\\u\\AppData\\Local\\Temp'
+    expect(path.win32.relative(root, 'C:\\Users\\u\\Documents')).toBe('..\\..\\..\\Documents')
+    expect(isStrictlyInside('C:\\Users\\u\\Documents', root, path.win32)).toBe(false)
+    expect(isStrictlyInside('D:\\x', root, path.win32)).toBe(false)
+    expect(isStrictlyInside(root, root, path.win32)).toBe(false)
+    expect(isStrictlyInside(root + '\\a\\b', root, path.win32)).toBe(true)
   })
 })

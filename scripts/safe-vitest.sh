@@ -3,9 +3,13 @@
 #
 # Why: a test cleanup that deletes a path built from an empty variable
 # (join('', '..') === '..') can remove the PARENT of the working directory.
-# Under this sandbox every file write outside the worktree, the temp dir and the
-# system scratch areas fails with EPERM, so a bad cleanup cannot reach anything
+# Under this sandbox every file write outside the worktree, a private per-run
+# temp dir and /dev fails with EPERM, so a bad cleanup cannot reach anything
 # else. Network is not restricted (tests listen on loopback).
+#
+# The per-run temp dir is created here with mktemp -d under the user's own
+# DARWIN_USER_TEMP_DIR (never taken from the caller's TMPDIR, which is not
+# trusted), exported as TMPDIR, and removed again on exit.
 #
 # Usage:  scripts/safe-vitest.sh [vitest args...]      runs: npx vitest run "$@"
 #         scripts/safe-vitest.sh --probe <cmd> [args]  runs <cmd> in the same sandbox
@@ -32,17 +36,49 @@ case "$root" in
 esac
 [ "$root" != "/" ] || die "refusing to run at /"
 
-tmp_raw="${TMPDIR:-/tmp}"
-tmp="$(cd "$tmp_raw" 2>/dev/null && pwd -P)" || die "cannot resolve TMPDIR '$tmp_raw'"
-export TMPDIR="$tmp"
-# npx/npm write a cache and logs under $HOME by default; keep them in the temp dir
-export npm_config_cache="$tmp/safe-vitest-npm-cache"
+user_tmp_raw="$(getconf DARWIN_USER_TEMP_DIR 2>/dev/null)" || die "getconf DARWIN_USER_TEMP_DIR failed"
+user_tmp="$(cd "$user_tmp_raw" 2>/dev/null && pwd -P)" || die "cannot resolve DARWIN_USER_TEMP_DIR '$user_tmp_raw'"
+case "$user_tmp" in
+  /private/var/folders/?*/?*/T|/private/var/folders/?*/?*/T/*) ;;
+  *) die "user temp dir '$user_tmp' is not under /private/var/folders/" ;;
+esac
+
+run="$(mktemp -d "$user_tmp/safe-vitest.XXXXXXXX")" || die "mktemp -d failed"
+run="$(cd "$run" && pwd -P)"
+case "$run" in
+  /private/var/folders/*/safe-vitest.?*) ;;
+  *) die "unexpected per-run dir '$run'" ;;
+esac
+
+child=""
+cleanup() {
+  if [ -n "$child" ] && kill -0 "$child" 2>/dev/null; then kill "$child" 2>/dev/null || true; wait "$child" 2>/dev/null || true; fi
+  # exactly the directory created above, nothing derived from the environment
+  case "$run" in
+    /private/var/folders/*/safe-vitest.?*) rm -rf -- "$run" ;;
+  esac
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+export TMPDIR="$run"
+# npx/npm write a cache and logs under $HOME by default; keep them in the per-run dir
+export npm_config_cache="$run/npm-cache"
 export npm_config_update_notifier=false
 
 if [ "${1:-}" = "--probe" ]; then
   shift
   [ "$#" -gt 0 ] || die "--probe needs a command"
-  exec sandbox-exec -D "WT=$root" -D "TMP=$tmp" -f "$PROFILE" "$@"
+  cmd=("$@")
+else
+  cmd=(npx --no-install vitest run "$@")
 fi
 
-exec sandbox-exec -D "WT=$root" -D "TMP=$tmp" -f "$PROFILE" npx --no-install vitest run "$@"
+set +e
+sandbox-exec -D "WT=$root" -D "RUN=$run" -f "$PROFILE" "${cmd[@]}" <&0 &
+child=$!
+wait "$child"
+rc=$?
+child=""
+exit "$rc"
