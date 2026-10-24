@@ -554,15 +554,20 @@ export async function checkTeamsCredentials(
   } catch {
     return { ok: false, error: 'Teams credentials could not be checked (network error or timeout)' }
   }
-  let body: any = {}
+  // A refusal of these credentials is a 400/401 with Entra's JSON error body.
+  // Throttling, an Entra outage or an answer that cannot be read says nothing
+  // about the secret, so it is "could not be checked", not a refusal.
+  let body: any
   try {
     body = await res.json()
   } catch {
-    body = {}
+    body = undefined
   }
-  if (body === null || typeof body !== 'object') body = {}
-  if (res.status === 200 && typeof body.access_token === 'string' && body.access_token) {
+  if (res.status === 200 && typeof body?.access_token === 'string' && body.access_token) {
     return { ok: true, botName: 'Microsoft Teams' }
+  }
+  if ((res.status !== 400 && res.status !== 401) || body === null || typeof body !== 'object') {
+    return { ok: false, error: `Teams credentials could not be checked (unexpected Entra answer, HTTP ${res.status})` }
   }
   const code = typeof body.error === 'string' && /^[a-z_]{1,64}$/.test(body.error) ? body.error : 'unknown_error'
   const first = Array.isArray(body.error_codes) ? body.error_codes[0] : undefined

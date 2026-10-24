@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -52,12 +52,19 @@ describe('checkTeamsCredentials', () => {
     expect((await run(400, { error: 'invalid_request', error_codes: [90002] }).p).error).toBe(REFUSED + 'invalid_request (AADSTS90002)')
   })
   it('unknown shapes', async () => {
-    expect((await run(500, 'not json').p).error).toBe(REFUSED + 'unknown_error')
     expect((await run(400, { error: 'Bad Value!' }).p).error).toBe(REFUSED + 'unknown_error')
     expect((await run(400, { error: 'invalid_client', error_codes: ['x'] }).p).error).toBe(REFUSED + 'invalid_client')
-    expect((await run(200, {}).p).error).toBe(REFUSED + 'unknown_error')
     // A token only counts on a 200 answer.
     expect((await run(401, { access_token: 'tok', error: 'invalid_client' }).p).ok).toBe(false)
+  })
+  it('throttling, an outage or an unreadable answer is not a refusal', async () => {
+    const notChecked = (s: number) => `Teams credentials could not be checked (unexpected Entra answer, HTTP ${s})`
+    expect((await run(500, 'not json').p).error).toBe(notChecked(500))
+    expect((await run(503, { error: 'temporarily_unavailable' }).p).error).toBe(notChecked(503))
+    expect((await run(429, { error: 'invalid_client' }).p).error).toBe(notChecked(429))
+    expect((await run(200, {}).p).error).toBe(notChecked(200))
+    expect((await run(401, 'not json').p).error).toBe(notChecked(401))
+    expect((await run(400, 'null').p).error).toBe(notChecked(400))
   })
   it('fetch throws', async () => {
     const f = (async () => { throw new Error('boom') }) as unknown as typeof fetch
@@ -135,6 +142,23 @@ describe('createTeamsCredentialChecker', () => {
     expect(warn).toHaveBeenCalledTimes(2)
     await tick()
     expect(alert).toHaveBeenCalledTimes(1)
+  })
+  it('an Entra outage only logs', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'teams-cred-'))
+    const envPath = join(dir, '.env')
+    writeFileSync(envPath, Object.entries(env).map(([k, v]) => `${k}=${v}`).join('\n') + '\n')
+    const f = (async () => new Response('upstream error', { status: 502 })) as unknown as typeof fetch
+    const alert = vi.fn(); const warn = vi.fn()
+    const tick = createTeamsCredentialChecker({
+      check: (e) => checkTeamsCredentials(e, { fetch: f }), alert, log: { warn }, agents: () => [{ name: 'bob', envPath }],
+    })
+    try {
+      await tick()
+      expect(alert).not.toHaveBeenCalled()
+      expect(warn).toHaveBeenCalledTimes(1)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
 
