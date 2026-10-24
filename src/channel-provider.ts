@@ -7,6 +7,7 @@ import { logger } from './logger.js'
 import { formatForTelegram, splitMessage } from './format.js'
 import { markIfTestRun } from './test-run-marker.js'
 import { TOOL_TIMEOUTS } from './tool-timeouts.js'
+import { sendTeamsMessage, type TeamsCreds } from './teams-send.js'
 
 export type ChannelProviderType = 'telegram' | 'slack' | 'discord' | 'googlechat' | 'teams'
 
@@ -491,11 +492,12 @@ const googlechatProvider: ChannelProvider = {
 //
 // Teams (Azure Bot Service) has no single bot token: the channel plugin
 // authenticates with an app id + client secret + tenant id (TEAMS_BOT_*) and
-// receives Activities over an inbound webhook (JWT-validated). So the
-// token-based dashboard helpers below are minimal -- actual delivery happens
-// through the plugin's MCP tools, not these direct-send methods (same shape as
-// the Google Chat stub). "Configured" is detected via TEAMS_BOT_APP_ID in the
-// agent's channel .env (see readChannelToken), standing in for the token.
+// receives Activities over an inbound webhook (JWT-validated). The agent's own
+// replies go through the plugin's MCP tools; the DASHBOARD alerts (notify.ts,
+// schedule-runner.ts) send directly over the Bot Framework REST API
+// (teams-send.ts), using the same three credentials from the same .env the
+// plugin reads. "Configured" is detected via TEAMS_BOT_APP_ID in the agent's
+// channel .env (see readChannelToken), standing in for the token.
 
 const TEAMS_MAX_MESSAGE_LENGTH = 28000
 
@@ -586,11 +588,13 @@ const teamsProvider: ChannelProvider = {
   stateDir: 'teams',
   chatIdFormat: 'Teams conversation id (managed by the plugin per pairing)',
 
-  async sendMessage() {
-    // Direct dashboard send is not supported for Teams; the agent delivers via
-    // the plugin's reply tool inside its own session (Bot Framework outbound
-    // needs the per-conversation serviceUrl + a client_credentials token).
-    throw new Error('teams: direct dashboard send not supported (delivery via plugin MCP tools)')
+  async sendMessage(token, chatId, text) {
+    // Direct dashboard send over the Bot Framework REST API: a
+    // client-credentials token plus the conversation's recorded serviceUrl
+    // (teams-send.ts). The `token` parameter is the app id stand-in from
+    // readChannelToken -- the real credentials come from the channel .env,
+    // the same file the plugin itself runs with.
+    return sendTeamsMessage(readTeamsCreds(token), channelStateDir('teams'), chatId, text)
   },
 
   async sendPhoto() {
@@ -895,4 +899,26 @@ export function readChannelEnv(envFilePath: string, keys: readonly string[]): Re
     if (match) out[key] = match[1].trim()
   }
   return out
+}
+
+// The Teams send needs all three TEAMS_BOT_* keys from ONE file, never mixed:
+// a secret from a newer .env paired with an app id from a stale one would
+// produce an Entra refusal that looks like a config error elsewhere. The FIRST
+// file that has a TEAMS_BOT_APP_ID line wins; `files` is injectable so the
+// lookup can be tested against temp files. When no file qualifies, the app-id
+// stand-in from the caller becomes the appId with empty secret/tenant, which
+// sendTeamsMessage reports as the incomplete-credentials config error.
+export function readTeamsCreds(fallbackAppId: string, files?: string[]): TeamsCreds {
+  const candidates = files ?? [join(INSTALL_ROOT, '.env'), join(channelStateDir('teams'), '.env')]
+  for (const path of candidates) {
+    const env = readChannelEnv(path, ['TEAMS_BOT_APP_ID', 'TEAMS_BOT_APP_PASSWORD', 'TEAMS_BOT_TENANT_ID'])
+    if (env['TEAMS_BOT_APP_ID']) {
+      return {
+        appId: env['TEAMS_BOT_APP_ID'],
+        secret: env['TEAMS_BOT_APP_PASSWORD'] ?? '',
+        tenant: env['TEAMS_BOT_TENANT_ID'] ?? '',
+      }
+    }
+  }
+  return { appId: fallbackAppId, secret: '', tenant: '' }
 }

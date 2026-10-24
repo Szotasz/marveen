@@ -134,11 +134,11 @@ describe('resolveSchedulerAlertToken (lookup order via injected reader)', () => 
     expect(resolveSchedulerAlertToken('telegram', read)).toBeUndefined()
   })
 
-  it('creds-based providers never read a token: their reader value is a project/app id, not a bot token', () => {
+  it('Google Chat never reads a token; Teams resolves its app id like the others', () => {
     const { read, calls } = stub({ [PROJECT_ENV]: 'project-id-would-be-here' })
     expect(resolveSchedulerAlertToken('googlechat', read)).toBeUndefined()
-    expect(resolveSchedulerAlertToken('teams', read)).toBeUndefined()
-    expect(calls).toEqual([])
+    expect(resolveSchedulerAlertToken('teams', read)).toBe('project-id-would-be-here')
+    expect(calls).toEqual([['teams', PROJECT_ENV]])
   })
 })
 

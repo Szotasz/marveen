@@ -2344,15 +2344,16 @@ export async function runScheduledTaskNow(
 // to the plugin env after the channels migration -- that fallback must hold
 // for Telegram and Slack alike). readChannelToken maps the provider to its
 // env key (TELEGRAM_BOT_TOKEN / SLACK_BOT_TOKEN / ...). A creds-based
-// provider (Google Chat/Teams) has no bot token and no direct send path, so
-// the alert falls back to the log-only path in each caller.
+// provider without a direct send path (Google Chat) has no bot token, so the
+// alert falls back to the log-only path in each caller; Teams now has a
+// direct dashboard send and resolves its app id through the same lookup.
 // `provider` and `readToken` are injectable for the unit test only (lookup
 // order + empty-value fall-through); production callers use the defaults.
 export function resolveSchedulerAlertToken(
   provider: ChannelProviderType = CHANNEL_PROVIDER,
   readToken: (provider: ChannelProviderType, envFilePath: string) => string | null = readChannelToken,
 ): string | undefined {
-  if (provider === "googlechat" || provider === "teams") return undefined;
+  if (provider === "googlechat") return undefined;
 
   return (
     readToken(provider, join(PROJECT_ROOT, ".env")) ||
