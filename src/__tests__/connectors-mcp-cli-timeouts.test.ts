@@ -114,7 +114,7 @@ describe('claude mcp CLI calls carry a timeout', () => {
     expect(calls).toHaveLength(1)
     expect(calls[0].args[1]).toBe('add')
     expect(calls[0].timeout).toBe(15000)
-    expect(mcpLines()).toHaveLength(calls.length)
+    expect(mcpLines()).toEqual(calls.map(c => c.args.join(' ')))
   })
 
   it('a custom stdio connector add gets 15 s', async () => {
@@ -124,7 +124,7 @@ describe('claude mcp CLI calls carry a timeout', () => {
     expect(calls).toHaveLength(1)
     expect(calls[0].args[1]).toBe('add')
     expect(calls[0].timeout).toBe(15000)
-    expect(mcpLines()).toHaveLength(calls.length)
+    expect(mcpLines()).toEqual(calls.map(c => c.args.join(' ')))
   })
 
   it('a local catalog install gets 30 s', async () => {
@@ -134,7 +134,7 @@ describe('claude mcp CLI calls carry a timeout', () => {
     expect(calls).toHaveLength(1)
     expect(calls[0].args[1]).toBe('add')
     expect(calls[0].timeout).toBe(30000)
-    expect(mcpLines()).toHaveLength(calls.length)
+    expect(mcpLines()).toEqual(calls.map(c => c.args.join(' ')))
   })
 
   it('a remote catalog install gets 30 s', async () => {
@@ -144,7 +144,7 @@ describe('claude mcp CLI calls carry a timeout', () => {
     expect(calls).toHaveLength(1)
     expect(calls[0].args[1]).toBe('add')
     expect(calls[0].timeout).toBe(30000)
-    expect(mcpLines()).toHaveLength(calls.length)
+    expect(mcpLines()).toEqual(calls.map(c => c.args.join(' ')))
   })
 
   it('an uninstall tries user scope once, with 15 s', async () => {
@@ -155,7 +155,7 @@ describe('claude mcp CLI calls carry a timeout', () => {
     expect(calls[0].args[1]).toBe('remove')
     expect(calls[0].args).toContain('user')
     expect(calls[0].timeout).toBe(15000)
-    expect(mcpLines()).toHaveLength(calls.length)
+    expect(mcpLines()).toEqual(calls.map(c => c.args.join(' ')))
   })
 
   it('a failed user-scope uninstall retries with project scope, both with 15 s', async () => {
@@ -169,6 +169,6 @@ describe('claude mcp CLI calls carry a timeout', () => {
     expect(calls[1].args[1]).toBe('remove')
     expect(calls[1].args).toContain('project')
     expect(calls.map(c => c.timeout)).toEqual([15000, 15000])
-    expect(mcpLines()).toHaveLength(calls.length)
+    expect(mcpLines()).toEqual(calls.map(c => c.args.join(' ')))
   })
 })
