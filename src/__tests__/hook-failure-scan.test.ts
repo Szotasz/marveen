@@ -142,6 +142,29 @@ describe('scanHookFailures over transcript roots', () => {
     expect(scanHookFailures({ roots: roots('ana'), sinceMs: 30 * 86400_000 }).failures).toHaveLength(2)
   })
 
+  it('reads the sub-agent transcripts under <encoded-cwd>/<session-uuid>/subagents/', () => {
+    const subagents = join(dir, 'ana', 'projects', '-work-dir', '0b1c2d3e-0000-4000-8000-000000000001', 'subagents')
+    mkdirSync(subagents, { recursive: true })
+    writeFileSync(join(subagents, 'agent-a.jsonl'), NON_BLOCKING + '\n')
+    const scan = scanHookFailures({ roots: roots('ana') })
+    expect(scan.failures).toHaveLength(1)
+    expect(scan.failures[0]).toMatchObject({ agent: 'ana', file: join(subagents, 'agent-a.jsonl') })
+    expect(scan).toMatchObject({ filesScanned: 1 })
+  })
+
+  it('the window edge is inclusive: a transcript modified exactly at the cutoff is read, one second earlier is skipped', () => {
+    const sinceMs = 86_400_000
+    const cutoffSec = 1_700_000_000
+    const now = cutoffSec * 1000 + sinceMs
+    const edge = transcript('ana', 'edge.jsonl', [NON_BLOCKING])
+    utimesSync(edge, cutoffSec, cutoffSec)
+    const before = transcript('ana', 'before.jsonl', [BLOCKING])
+    utimesSync(before, cutoffSec - 1, cutoffSec - 1)
+    const scan = scanHookFailures({ roots: roots('ana'), now, sinceMs })
+    expect(scan).toMatchObject({ filesScanned: 1, filesSkippedByAge: 1 })
+    expect(scan.failures.map((f) => f.file)).toEqual([edge])
+  })
+
   it('a transcript reachable from two roots (a symlinked projects directory) is read once, owned by the first', () => {
     transcript('ana', 'shared.jsonl', [NON_BLOCKING])
     mkdirSync(join(dir, 'dex'), { recursive: true })
