@@ -35,6 +35,17 @@
 # 3, 4, 5 and 7 are the positive controls: the guard must not switch the npm path
 # off for hosts that really are npm installs.
 #
+# DAILYRACE1024 (the daily update raced the launch): the block only DECIDES the
+# daily check; channels.sh starts it with claude_daily_check_start once the main
+# session is up. run_block therefore runs the block and then the starter, as
+# channels.sh does. Pinned as well:
+#   15. npm host, the block alone          -> NO npm call before the launch, the check is due
+#   16. the starter runs at most once      -> a second call starts nothing
+#   17. in channels.sh the starter is called once, after START_TS and after every
+#       launch (`new-session -d`), behind a has-session guard, and the daily
+#       `claude_install` is reachable only through it
+# Negative control for 15-17: CHANNELS_BIN=<pre-fix channels.sh>.
+#
 # Version fixtures include 2.1.9, 2.1.30 and 2.1.265 so that a lexical sort, or
 # picking the first instead of the last, selects a wrong version (sort -V pin).
 #
@@ -87,7 +98,18 @@ run_block() {
   PATH="$1/stub:$1/home/.local/bin:$2" \
   INSTALL_DIR="$1/install" CLAUDE_PKG="@anthropic-ai/claude-code" AVX_LESS=0 \
   "$BASH_BIN" -c "$BLOCK
+claude_daily_check_start
 wait" 2>&1 >/dev/null
+}
+
+# run_block_only <root> <system-path> <tail>: the block, then <tail>, nothing else.
+run_block_only() {
+  HOME="$1/home" \
+  PATH="$1/stub:$1/home/.local/bin:$2" \
+  INSTALL_DIR="$1/install" CLAUDE_PKG="@anthropic-ai/claude-code" AVX_LESS=0 \
+  "$BASH_BIN" -c "$BLOCK
+$3
+wait" 2>/dev/null
 }
 
 # run_case <setup-fn> [<between-fn>]  -> sets NPM_CALLS, LINK_TARGET, ERR, FAILLOG, WARNS in the caller
@@ -321,6 +343,56 @@ case "$FAILLOG" in
   *) fail "native launcher behind npm, npm not on the PATH: only 'claude install stable' is advised" \
        "npm copy: unknown (npm not found) + claude install stable" "${FAILLOG:-<empty>}" ;;
 esac
+
+echo "channels.sh daily update after the launch (DAILYRACE1024)"
+
+root="$(mktemp -d)"
+mkdir -p "$root/home" "$root/stub" "$root/install/store" "$root/npmroot"
+cat > "$root/stub/npm" <<EOF
+#!/bin/sh
+if [ "\$1" = "root" ]; then echo "$root/npmroot"; exit 0; fi
+echo "npm \$*" >> "$root/npm.log"
+exit 0
+EOF
+chmod +x "$root/stub/npm"
+setup_npm_host "$root"
+OUT="$(run_block_only "$root" "$SYSBIN" 'echo "due=$DAILY_CLAUDE_CHECK"')"
+NPM_CALLS="$( { wc -l < "$root/npm.log"; } 2>/dev/null | tr -d ' ')"
+if [ "${NPM_CALLS:-0}" = "0" ]; then pass "npm host: the block alone calls no npm before the launch"
+else fail "npm host: the block alone calls no npm before the launch" "0 npm calls" "$NPM_CALLS"; fi
+if [ "$OUT" = "due=1" ]; then pass "npm host: the daily check is due after the block"
+else fail "npm host: the daily check is due after the block" "due=1" "${OUT:-<nothing>}"; fi
+rm -f "$root/npm.log"
+run_block_only "$root" "$SYSBIN" 'claude_daily_check_start; wait; claude_daily_check_start' >/dev/null
+NPM_CALLS="$( { wc -l < "$root/npm.log"; } 2>/dev/null | tr -d ' ')"
+if [ "${NPM_CALLS:-0}" = "1" ]; then pass "the starter runs the daily check once, a second call starts nothing"
+else fail "the starter runs the daily check once, a second call starts nothing" "1 npm call" "${NPM_CALLS:-0}"; fi
+rm -rf "$root"
+
+# 17: source order in channels.sh (line numbers of the top-level statements).
+START_LINE="$(grep -n '^START_TS=' "$SRC" | head -1 | cut -d: -f1)"
+LAST_LAUNCH="$(grep -n 'new-session -d' "$SRC" | tail -1 | cut -d: -f1)"
+CALLS="$(grep -n '^[[:space:]]*claude_daily_check_start[[:space:]]*$' "$SRC" | cut -d: -f1)"
+N_CALLS="$(printf '%s\n' "$CALLS" | grep -c .)"
+GUARD_LINE="$(grep -n '^if \$TMUX has-session -t "=\$SESSION:" 2>/dev/null; then$' "$SRC" | cut -d: -f1 | while read -r l; do [ -n "$CALLS" ] && [ "$l" -eq $((CALLS - 1)) ] && echo "$l"; done)"
+DAILY_SITES="$(grep -n 'claude_install "daily check"' "$SRC" | cut -d: -f1)"
+FN_LINE="$(grep -n '^claude_daily_check_start() {' "$SRC" | cut -d: -f1)"
+if [ "$N_CALLS" = "1" ] && [ -n "$START_LINE" ] && [ -n "$LAST_LAUNCH" ] \
+   && [ "$CALLS" -gt "$START_LINE" ] && [ "$CALLS" -gt "$LAST_LAUNCH" ]; then
+  pass "channels.sh: the starter is called once, after START_TS and after every launch"
+else
+  fail "channels.sh: the starter is called once, after START_TS and after every launch" \
+    "1 call after line $START_LINE and $LAST_LAUNCH" "${N_CALLS} call(s) at: ${CALLS:-<none>}"
+fi
+if [ -n "$GUARD_LINE" ]; then pass "channels.sh: the starter sits behind a has-session guard"
+else fail "channels.sh: the starter sits behind a has-session guard" "if \$TMUX has-session ... on the line above" "<no guard>"; fi
+if [ "$(printf '%s\n' "$DAILY_SITES" | grep -c .)" = "1" ] && [ -n "$FN_LINE" ] \
+   && [ "$DAILY_SITES" -gt "$FN_LINE" ] && [ "$DAILY_SITES" -le $((FN_LINE + 4)) ]; then
+  pass "channels.sh: the daily claude_install is reachable only through the starter"
+else
+  fail "channels.sh: the daily claude_install is reachable only through the starter" \
+    "one site, inside claude_daily_check_start" "site(s): ${DAILY_SITES:-<none>}, starter at ${FN_LINE:-<none>}"
+fi
 
 echo "channels.sh native-install guard: $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ]

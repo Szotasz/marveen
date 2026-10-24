@@ -819,7 +819,9 @@ export CLAUDE_CODE_DISABLE_AGENT_VIEW=1
 #     self-heal for an update a power-off or a race left half-finished.
 #   * claude PRESENT -> at most one update per 24h (stamp file), in the
 #     BACKGROUND. A foreground `npm install -g` would hold the Telegram
-#     channel offline for the 20-40s it takes, on every boot.
+#     channel offline for the 20-40s it takes, on every boot. And only once
+#     the main session is up (claude_daily_check_start, DAILYRACE1024): the
+#     install swaps the very binary the session launches from.
 # Failures are logged, never fatal: a stale claude still works, and a missing
 # one is retried by the next KeepAlive restart 30 seconds later.
 CLAUDE_UPDATE_STAMP="$INSTALL_DIR/store/.claude-update-stamp"
@@ -978,6 +980,26 @@ claude_native_behind_npm_note() {
   fi
 }
 
+# DAILYRACE1024: the daily update is decided here but STARTED only once the
+# main session is up (claude_daily_check_start, after START_TS below). Started
+# here, in the background, it raced the launch a few lines down: `npm install
+# -g` replaces bin/claude.exe in place, and a launch that lands in that window
+# dies at once -- before remain-on-exit is set, so the whole tmux session goes
+# with it. Measured on a live install, three of five daily checks: install OK
+# 3 s after START, then "rapid-exit after 0s reason=session-gone", exit 1, the
+# OnFailure crash alert, and a systemd restart 10 s later (2026-10-14 20:09,
+# 2026-10-16 07:37, 2026-10-21 04:37). The two checks that did not crash took
+# 73-75 s (a new version to download): the swap came after the session was up,
+# and replacing the file under a running claude is harmless. So the update now
+# always runs under a running session, never under a launch; a new version
+# takes effect on the next restart, as before.
+DAILY_CLAUDE_CHECK=0
+claude_daily_check_start() {
+  [ "$DAILY_CLAUDE_CHECK" = "1" ] || return 0
+  DAILY_CLAUDE_CHECK=0
+  claude_install "daily check" &
+}
+
 if ! command -v claude >/dev/null 2>&1; then
   if ! claude_relink_native; then
     claude_install "binary missing -- self-heal"
@@ -988,7 +1010,8 @@ elif claude_is_native; then
 elif [ "$AVX_LESS" = "0" ] && [ -z "$(find "$CLAUDE_UPDATE_STAMP" -mtime -1 2>/dev/null)" ]; then
   # AVX-less hosts are excluded on purpose: their claude is pinned, and
   # "keep it current" is exactly what breaks them.
-  claude_install "daily check" &
+  # Due, not started: see DAILYRACE1024 above.
+  DAILY_CLAUDE_CHECK=1
 fi
 
 CLAUDE="$(command -v claude)"
@@ -1917,6 +1940,14 @@ fi
 # failure and exit non-zero so the service manager's own back-off kicks in
 # instead of tight-looping and burning API tokens.
 START_TS=$(date +%s)
+
+# DAILYRACE1024: the session is launched and past its dialogs; only now may the
+# daily update swap the binary under it. A session that is already gone does
+# not get it: this start exits as a rapid failure, and the next start, under a
+# session that came up, runs the check instead.
+if $TMUX has-session -t "=$SESSION:" 2>/dev/null; then
+  claude_daily_check_start
+fi
 
 # Plugin liveness watchdog (main channels session only) -- a last-resort
 # backstop UNDER the dashboard channel-monitor, not a replacement. The monitor
