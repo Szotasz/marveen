@@ -192,6 +192,8 @@ describe('schedule runner: a worksource agent gets scheduled prompts through its
   beforeEach(() => {
     vi.stubEnv('SCHEDULER_TZ', 'Europe/Budapest')
     vi.clearAllMocks()
+    // clearAllMocks keeps a mockReturnValue: restore the queue's accept-all default.
+    mockEnqueue.mockReturnValue(true)
     vi.useFakeTimers()
     // 10:30:00 UTC; the startup tick runs at 10:30:05, an every-minute occurrence is due.
     vi.setSystemTime(new Date('2026-07-31T10:30:00.000Z'))
@@ -269,10 +271,6 @@ describe('schedule runner: a worksource agent gets scheduled prompts through its
     worksourceFlag = true
     paneText = IDLE_PANE_TEXT
     mockListScheduledTasks.mockReturnValue([QUEUED_ONCE])
-    // The 'already present' test above leaves mockEnqueue returning false
-    // (vi.clearAllMocks does not undo a mockReturnValue), and a false enqueue
-    // opens no run row -- restore the queue's accept-all default.
-    mockEnqueue.mockReturnValue(true)
     // 4 minutes of 15 s ticks, well past the 30 s grace window (the control
     // below proves this harness does produce 'lost' at this point in time).
     await runForMs(4 * 60_000)
@@ -306,10 +304,10 @@ describe('schedule runner: a worksource agent gets scheduled prompts through its
     expect(catchUpMaxAgeMs(CAUGHT_UP)).toBeGreaterThan(10 * 60_000)
     worksourceFlag = true
     mockListScheduledTasks.mockReturnValue([CAUGHT_UP])
-    // Same as above: undo the 'already present' test's leaked false return.
-    mockEnqueue.mockReturnValue(true)
     await runOneTick()
     expect(mockEnqueue).toHaveBeenCalledTimes(1)
+    // The id carries the occurrence's minute (12:20 Budapest = 10:20 UTC), not the tick's (10:30).
+    expect(String(mockEnqueue.mock.calls[0][1])).toMatch(/-20260731T1020Z$/)
     expect(sentPrompts).toHaveLength(0)
     expect(runsFor(CAUGHT_UP.name)).toEqual([[CAUGHT_UP.name, AGENT, 'fired_late']])
   })

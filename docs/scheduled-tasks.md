@@ -71,8 +71,11 @@ differently:
 - **Item meta.** The item carries `from: scheduler`, `message_id` (the item id),
   `task` and `category: scheduled-task`.
 
-**Item id rule.** The id is `sched-<name>-<hash8>-<stamp>`, so the same
-occurrence never lands twice. For a cron occurrence the stamp is the UTC minute
+**Item id rule.** The id is `sched-<slug>-<hash8>-<stamp>`, so the same
+occurrence never lands twice. The slug is the task name with every character
+outside `A-Za-z0-9._-` replaced by `-`, cut to 60 characters; `<hash8>` is the
+first 8 hex digits of the full name's SHA-256, so two names with the same slug
+still get different ids. For a cron occurrence the stamp is the UTC minute
 of the scheduled occurrence, date included (one item per scheduled minute). A
 pending-retry fire keeps the FIRST attempt's time, so every retry of the same
 occurrence maps to the same item. A manual "Run now" gets its own id with its
@@ -80,8 +83,9 @@ own timestamp.
 
 **What does not apply.** The typing-specific machinery is skipped: the idle
 wait before typing, the post-send resubmit chain, the delivery-integrity check
-and the lost re-injection. The queue's reader owns the delivery from here: it
-acknowledges each item and re-offers anything the agent did not acknowledge.
+and the lost re-injection. The queue's reader owns the delivery from here: the
+agent acknowledges each item with `work_complete`, and the reader re-offers any
+item left unacknowledged past its timeout or across a restart.
 
 **What still applies.** Every gate before the send runs unchanged (restart in
 flight, missing session and auto-start, readiness and busy checks, forceSend
