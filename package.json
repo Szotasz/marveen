@@ -14,6 +14,8 @@
     "bridge-device-key": "tsx scripts/bridge-device-key.ts",
     "dashboard-user": "tsx scripts/dashboard-user.ts",
     "test": "vitest run",
+    "test:codex-node": "node --test scripts/__tests__/codex-channel-fixture.test.mjs scripts/__tests__/codex-delivery-lifecycle.test.mjs scripts/__tests__/codex-thread-rotation.test.mjs",
+    "test:codex-channel-import": "npm run build && node scripts/codex-channels.mjs --offline-import-smoke",
     "typecheck": "tsc --noEmit",
     "syntax-check": "node --check web/app.js web/sw.js",
     "smoke": "playwright test --config=playwright.config.ts",

@@ -50,6 +50,10 @@ jobs:
           exit 1
           EOF
       - run: npm run typecheck
+      # The channel host imports generated lifecycle modules before dispatching
+      # its offline smoke mode, so build the TypeScript artifacts first.
+      - run: npm run test:codex-channel-import
+      - run: npm run test:codex-node
       - run: npm test
       # Shell-test wiring (SEEDREFRESH826 fold-in, from the #1066 verify): a
       # regression guard that only runs manually rots exactly like a one-shot

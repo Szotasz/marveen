@@ -1425,6 +1425,8 @@ export function detectPaneState(
   opts: DetectPaneStateOptions = {},
 ): PaneState {
   if (!pane || !pane.trim()) return 'unknown'
+  if (pane.trim() === '[marveen-codex:ready]') return 'idle'
+  if (pane.trim() === '[marveen-codex:busy]') return 'busy'
 
   // Classify the pane as it would look without the background-agent block, so
   // the footer is the bottom line again for every probe below.

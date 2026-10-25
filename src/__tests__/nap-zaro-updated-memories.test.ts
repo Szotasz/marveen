@@ -28,6 +28,8 @@ function extractPyBlock(): string {
 function runScript(port: number, since: number): Promise<{ status: number | null; stdout: string; stderr: string }> {
   const fixture = JSON.parse(readFileSync(FIXTURE_PATH, 'utf-8'))
   const script = extractPyBlock().split('{{MAIN_AGENT_ID}}').join(fixture.agent_id)
+    // Match the fixture server's explicit IPv6 bind; localhost may resolve only to IPv4.
+    .replaceAll('http://localhost:', 'http://[::1]:')
   const dir = mkdtempSync(join(tmpdir(), 'nap-zaro-py-'))
   const scriptPath = join(dir, 'napzaro.py')
   writeFileSync(scriptPath, script)

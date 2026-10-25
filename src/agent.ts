@@ -1,4 +1,5 @@
 import { query } from '@anthropic-ai/claude-agent-sdk'
+import { usesCodex, runCodexWorker } from './codex-backend.js'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { execSync } from 'node:child_process'
@@ -150,6 +151,11 @@ export async function runAgent(
     return { text: null, error: 'fleet frozen (KILLSWITCH1022)' }
   }
   const timeoutMs = opts.timeoutMs ?? AGENT_TIMEOUT_MS
+  if (usesCodex()) {
+    const typing = onTyping ? setInterval(onTyping, TYPING_REFRESH_MS) : undefined
+    try { return await runCodexWorker(message, cwd, timeoutMs, allowTools) }
+    finally { if (typing) clearInterval(typing) }
+  }
   if (agentBackend() === 'worker') {
     // The interactive worker is a single shared session with its own fixed,
     // isolated, NEUTRAL cwd/config -- so the SDK-era per-call cwd/env isolation

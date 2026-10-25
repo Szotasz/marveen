@@ -187,7 +187,7 @@ describe('fix-revert guard: alert paths are sleep-aware', () => {
     const src = readFileSync(join(__dirname, '../web/schedule-runner.ts'), 'utf-8')
     const fnStart = src.indexOf('function sendTaskTimeoutAlert')
     expect(fnStart).toBeGreaterThan(0)
-    const fnEnd = src.indexOf('\nexport const SCHEDULE_TICK_MS', fnStart)
+    const fnEnd = src.indexOf('\nexport function codexDeliveryNeedsNotice', fnStart)
     const fnBody = src.slice(fnStart, fnEnd > fnStart ? fnEnd : undefined)
     const sleptIdx = fnBody.indexOf('systemSleptBetween(entry.injectedAt')
     const sendIdx = fnBody.indexOf('await sendSchedulerAlertMessage(')

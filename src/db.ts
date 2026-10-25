@@ -1272,6 +1272,7 @@ export function initDatabase(dbPathOverride?: string): void {
       UNIQUE(task_name, agent_name)
     )
   `)
+  if (!(db.pragma('table_info(pending_task_retries)') as Array<{name: string}>).some(c => c.name === 'scheduled_occurrence')) db.exec('ALTER TABLE pending_task_retries ADD COLUMN scheduled_occurrence INTEGER')
   db.exec(`CREATE INDEX IF NOT EXISTS idx_pending_retries_first_attempt ON pending_task_retries(first_attempt)`)
   // Stage-2 escalation stamp (direct-to-owner channel alert), added
   // alongside the two-stage escalation redesign. Mirrors alert_sent_at
@@ -5525,6 +5526,7 @@ export function getActiveScheduledTaskCount(): { count: number; nextRun: number 
 // --- Pending scheduled-task retries ------------------------------------
 
 export interface PendingTaskRetryRow {
+  scheduled_occurrence?: number | null
   id: number
   task_name: string
   agent_name: string
@@ -5547,12 +5549,13 @@ export function insertPendingTaskRetryIfNew(
   agentName: string,
   now: number,
   reason: string,
+  scheduledOccurrence: number | null = null,
 ): boolean {
   return db.prepare(`
     INSERT OR IGNORE INTO pending_task_retries
-      (task_name, agent_name, first_attempt, last_attempt, attempt_count, last_reason)
-    VALUES (?, ?, ?, ?, 1, ?)
-  `).run(taskName, agentName, now, now, reason).changes > 0
+      (task_name, agent_name, first_attempt, last_attempt, attempt_count, last_reason, scheduled_occurrence)
+    VALUES (?, ?, ?, ?, 1, ?, ?)
+  `).run(taskName, agentName, now, now, reason, scheduledOccurrence).changes > 0
 }
 
 /**

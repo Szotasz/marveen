@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { execFileSync } from 'node:child_process'
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, symlinkSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { spawn } from 'node:child_process'
@@ -199,11 +199,17 @@ describe('scripts/channel-keepalive-probe.sh: a run stamp on every run, a produc
       writeFileSync(join(dir, 'bin', 'tmux'), `#!/bin/sh\n${tmux}\n`)
       chmodSync(join(dir, 'bin', 'tmux'), 0o755)
     }
+    // Keep the missing-tmux case hermetic on hosts which have tmux installed.
+    const tools = join(dir, 'tools'); mkdirSync(tools)
+    for (const name of ['date', 'dirname', 'sleep', 'pkill', 'grep', 'head', 'cut', 'uname', 'ps', 'tr', 'touch', 'cat', 'awk', 'sed', 'systemctl']) {
+      const binary = ['/usr/bin/', '/bin/'].map(prefix => prefix + name).find(existsSync)
+      if (binary) symlinkSync(binary, join(tools, name))
+    }
     const run = (env: Record<string, string> = {}) => {
       try {
         execFileSync('/bin/bash', [join(dir, 'scripts', 'channel-keepalive-probe.sh')], {
           // stdio ignored: a hung stub child would otherwise hold the pipe open past the probe's own kill.
-          env: { PATH: `${join(dir, 'bin')}:/usr/bin:/bin`, HOME: dir, PROBE_TIMEOUT_S: '20', ...env }, stdio: 'ignore',
+          env: { PATH: `${join(dir, 'bin')}:${tools}`, HOME: dir, PROBE_TIMEOUT_S: '20', ...env }, stdio: 'ignore',
         })
         return 0
       } catch (e) {

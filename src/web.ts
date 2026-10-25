@@ -425,6 +425,9 @@ export function startWebServer(port = 3420): http.Server {
   // Used for staging preview instances that must not conflict with the live fleet
   // (duplicate schedule execution, Telegram 409, tmux manipulation, etc.).
   const webOnly = process.env['WEB_ONLY'] === 'true'
+  // Codex owns its process lifecycle. These monitors parse and manipulate the
+  // Claude TUI and must not inject Claude commands into the Codex channel host.
+  const claudeOnly = !webOnly && process.env.MARVEEN_AGENT_BACKEND !== 'codex'
   if (webOnly) {
     logger.info('[staging] WEB_ONLY mode: background services disabled')
   }
@@ -444,7 +447,7 @@ export function startWebServer(port = 3420): http.Server {
   // heartbeat / scheduled generation after boot does not pay the cold-boot
   // latency. runViaWorker still lazy-starts + restarts it on demand, so this is
   // a warm-up, not a hard dependency. Skipped on the SDK rollback backend.
-  if (!webOnly && (process.env.MARVEEN_AGENT_BACKEND || 'worker').toLowerCase() !== 'sdk') {
+  if (claudeOnly && (process.env.MARVEEN_AGENT_BACKEND || 'worker').toLowerCase() !== 'sdk') {
     import('./web/agent-worker.js')
       .then(m => { m.startWorkerSession(); logger.info('Interactive agent worker pre-started') })
       .catch(err => logger.warn({ err }, 'Failed to pre-start agent worker (will lazy-start on first use)'))
@@ -461,7 +464,7 @@ export function startWebServer(port = 3420): http.Server {
   // event loop alive, so that is not just a leak: the process would never exit.
   // The other monitors are synchronous calls and cannot hit this.
   let workerLivenessCancelled = false
-  if (!webOnly && (process.env.MARVEEN_AGENT_BACKEND || 'worker').toLowerCase() !== 'sdk') {
+  if (claudeOnly && (process.env.MARVEEN_AGENT_BACKEND || 'worker').toLowerCase() !== 'sdk') {
     import('./web/worker-liveness.js')
       .then(m => {
         if (workerLivenessCancelled) return
@@ -471,7 +474,7 @@ export function startWebServer(port = 3420): http.Server {
       .catch(err => logger.warn({ err }, 'Failed to start the worker liveness monitor'))
   }
 
-  const pluginMonitorInterval = webOnly ? undefined : startChannelPluginMonitor()
+  const pluginMonitorInterval = claudeOnly ? startChannelPluginMonitor() : undefined
   if (!webOnly) logger.info('Channel plugin health monitor started (60s poll)')
 
   // Userbot inbound-probe (gold-standard deafness detector). Safe no-op until
@@ -485,13 +488,13 @@ export function startWebServer(port = 3420): http.Server {
     }
   }
 
-  const channelHealthInterval = webOnly ? undefined : startChannelHealthMonitor()
+  const channelHealthInterval = claudeOnly ? startChannelHealthMonitor() : undefined
   if (!webOnly) logger.info('Channel MCP health monitor started (60s poll, 45s offset)')
 
   // The pane-grep above only sees a channel that SAYS it failed. This one asks
   // Telegram whether anyone is still fetching the agent's updates, which is the
   // only signal a silently deaf poller leaves behind.
-  const channelIntakeInterval = webOnly ? undefined : startChannelIntakeMonitor(PROJECT_ROOT)
+  const channelIntakeInterval = claudeOnly ? startChannelIntakeMonitor(PROJECT_ROOT) : undefined
   if (!webOnly) logger.info('Channel intake monitor started (5min poll, 100s offset)')
   const teamsCredentialInterval = webOnly ? undefined : startTeamsCredentialMonitor()
   if (!webOnly) logger.info('Teams credential monitor started (daily, 5min offset)')
@@ -502,28 +505,28 @@ export function startWebServer(port = 3420): http.Server {
   const costsSyncInterval = webOnly ? undefined : startCostsSyncTask()
   if (!webOnly) logger.info('CostOps fixed-cost sync started (10min poll + startup)')
 
-  const stuckInputInterval = webOnly ? undefined : startStuckInputWatcher()
+  const stuckInputInterval = claudeOnly ? startStuckInputWatcher() : undefined
   if (!webOnly) logger.info('Stuck-input watcher started (15s poll, 20s offset)')
 
   const messageSeenInterval = webOnly ? undefined : startMessageSeenSweep()
   if (!webOnly) logger.info('Message-seen sweep started (60s poll)')
 
-  const midTurnCommandInterval = webOnly ? undefined : startMidTurnCommandWatcher()
-  if (!webOnly) logger.info('Mid-turn command watcher started (3s poll)')
+  const midTurnCommandInterval = claudeOnly ? startMidTurnCommandWatcher() : undefined
+  if (claudeOnly) logger.info('Mid-turn command watcher started (3s poll)')
 
-  const stuckToolCallInterval = webOnly ? undefined : startStuckToolCallWatcher()
+  const stuckToolCallInterval = claudeOnly ? startStuckToolCallWatcher() : undefined
   if (!webOnly) logger.info('Stuck-tool-call watcher started (30s poll, 35s offset)')
 
-  const inboxNudgeInterval = webOnly ? undefined : startInboxNudgeWatcher()
+  const inboxNudgeInterval = claudeOnly ? startInboxNudgeWatcher() : undefined
   if (!webOnly) logger.info('Inbox nudge watcher started (20s poll, 55s offset)')
 
-  const reauthHealerInterval = webOnly ? undefined : startReauthHealer()
+  const reauthHealerInterval = claudeOnly ? startReauthHealer() : undefined
   if (!webOnly && reauthHealerInterval) logger.info('Reauth healer started (3min poll, 90s offset)')
 
-  const autoRestartInterval = webOnly ? undefined : startAutoRestartRunner()
+  const autoRestartInterval = claudeOnly ? startAutoRestartRunner() : undefined
   if (!webOnly) logger.info('Auto-restart runner started (60s poll, 40s offset)')
 
-  const modelFallbackInterval = webOnly ? undefined : startModelFallbackRunner()
+  const modelFallbackInterval = claudeOnly ? startModelFallbackRunner() : undefined
   if (!webOnly) logger.info('Model-fallback runner started (60s poll, 50s offset)')
 
   // The kanban archive sweep used to ride along on every listKanbanCards() call (measured on
@@ -535,11 +538,11 @@ export function startWebServer(port = 3420): http.Server {
   const kanbanArchiveInterval = webOnly ? undefined : startKanbanArchiveRunner()
   if (!webOnly) logger.info('Kanban archive runner started (60min poll, 70s offset)')
 
-  const contextGuardInterval = webOnly ? undefined : startContextGuardRunner()
+  const contextGuardInterval = claudeOnly ? startContextGuardRunner() : undefined
   if (!webOnly) logger.info('Context-guard runner started (5min poll, 4.5min initial delay)')
 
   if (!webOnly) {
-    startContextRestartGateRunner()
+    if (claudeOnly) startContextRestartGateRunner()
     logger.info('Context-restart gate runner started (per-agent poll, 3min initial delay)')
   }
 

@@ -133,7 +133,7 @@ describe('schedule-runner: a tick into the main session waits out an in-process 
     await tick(runner)
 
     expect(sentTo()).not.toContain(MAIN_CHANNELS_SESSION)
-    expect(mockInsertRetry).toHaveBeenCalledWith('hold-heartbeat', MAIN_AGENT_ID, expect.any(Number), 'respawning')
+    expect(mockInsertRetry).toHaveBeenCalledWith('hold-heartbeat', MAIN_AGENT_ID, expect.any(Number), 'respawning', expect.any(Number))
     const runs = mockAppendTaskRun.mock.calls.filter((c: unknown[]) => c[0] === 'hold-heartbeat').map((c: unknown[]) => String(c[2]))
     expect(runs).not.toContain('skipped')
   })
@@ -145,7 +145,7 @@ describe('schedule-runner: a tick into the main session waits out an in-process 
     await tick(runner)
 
     expect(sentTo()).not.toContain(MAIN_CHANNELS_SESSION)
-    expect(mockInsertRetry).toHaveBeenCalledWith('hold-force', MAIN_AGENT_ID, expect.any(Number), 'respawning')
+    expect(mockInsertRetry).toHaveBeenCalledWith('hold-force', MAIN_AGENT_ID, expect.any(Number), 'respawning', expect.any(Number))
   })
 
   it('the queued retry fires on the first tick after the settle ends', async () => {
@@ -196,6 +196,6 @@ describe('schedule-runner: a tick into the main session waits out an in-process 
     await tick(runner)
 
     expect(sentTo()).toContain('agent-someagent')
-    expect(mockInsertRetry).not.toHaveBeenCalledWith('hold-sub', 'someagent', expect.any(Number), 'respawning')
+    expect(mockInsertRetry).not.toHaveBeenCalledWith('hold-sub', 'someagent', expect.any(Number), 'respawning', expect.any(Number))
   })
 })
