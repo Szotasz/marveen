@@ -30,6 +30,7 @@ mean "let it through". The block message says how to make it inspectable.
 Contract: PreToolUse. Reads the hook payload on stdin, exit 0 = allow,
 exit 2 = block (stderr goes back to the model).
 """
+import atexit
 import html
 import json
 import os
@@ -1187,6 +1188,50 @@ _LOCAL_RULES = os.environ.get(
 
 _GATE_LOG = os.path.join(os.path.dirname(_LOCAL_RULES), "outgoing-copy-gate.log")
 
+# SECURITY_COPY_GATE_MODE (the dashboard's Security tab): 'warn' lets a text with
+# copy findings out and reports them on the owner's surface and in the gate log;
+# 'block' (the default) denies, as before the switch. Only the copy findings
+# soften: an unreadable send, a broken rules file and a mixed-script word stay
+# denied in both modes. A reader that does not load reads as 'block'.
+_SYSTEM_MESSAGES = []
+
+
+def _copy_gate_mode() -> str:
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "security_settings", os.path.join(os.path.dirname(os.path.abspath(__file__)), "security_settings.py"))
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod.security_setting("SECURITY_COPY_GATE_MODE", "block", ("block", "warn"))
+    except Exception:  # noqa: BLE001 -- no reader: the shipped block mode
+        return "block"
+
+
+def _flush_system_messages() -> None:
+    print(json.dumps({"systemMessage": "\n\n".join(_SYSTEM_MESSAGES)}))
+
+
+def _system_message(text: str) -> None:
+    """One systemMessage per run: Claude Code reads a single JSON object on
+    stdout, so every note of this run is joined and printed at exit."""
+    if not _SYSTEM_MESSAGES:
+        atexit.register(_flush_system_messages)
+    _SYSTEM_MESSAGES.append(text)
+
+
+def _copy_findings(label: str, lines, footer: str, header: str = "") -> None:
+    """Copy findings: deny (exit 2) in block mode; in warn mode log and report
+    them and RETURN, so the caller's remaining checks still run."""
+    body = "\n".join(f"  - {p}" for p in lines)
+    if _copy_gate_mode() == "warn":
+        _gate_log(f"WARN-MODE ({label}): {len(lines)} copy finding(s) let through")
+        _system_message(f"KIMENO-SZOVEG KAPU ({label}, figyelo mod): a szoveg kiment, de ezeket talaltam:\n{body}")
+        return
+    header = header or f"KIMENO-SZOVEG KAPU ({label}): TILTVA, az uzenet nem mehet ki igy.\n\n"
+    sys.stderr.write(f"{header}{body}\n\n{footer}")
+    sys.exit(2)
+
 
 def _gate_log(message: str) -> None:
     """Append one TIMESTAMPED line to the gate log.
@@ -1704,11 +1749,7 @@ def http_channel_gate(cmd: str) -> None:
         _gate_log(warn)
         sys.exit(0)
     if problems:
-        sys.stderr.write(
-            f"KIMENO-SZOVEG KAPU ({label}): TILTVA, az uzenet nem mehet ki igy.\n\n"
-            + "\n".join(f"  - {p}" for p in problems)
-            + "\n\nJavitsd a szoveget es kuldd ujra.\n")
-        sys.exit(2)
+        _copy_findings(label, problems, "Javitsd a szoveget es kuldd ujra.\n")
     sys.exit(0)
 
 
@@ -1772,16 +1813,15 @@ def channel_gate(tool_input: dict, label: str, unescape_mdv2: bool) -> None:
         # here is the channel.
         if (label == "Telegram" and "```" in raw
                 and str(tool_input.get("format", "")).lower() != "markdownv2"):
-            sys.stderr.write(
-                "KIMENO-SZOVEG KAPU (Telegram): TILTVA, a kodblokk nem lenne masolhato.\n\n"
-                "  - A szoveg harom backtickes kodblokkot tartalmaz, de a hivasban\n"
-                "    format=\"" + str(tool_input.get("format") or "text") + "\". Plain textben a Telegram nem ad copy gombot,\n"
-                "    es a MarkdownV2 escape-ek (\\. \\- \\() nyersen latszanak.\n\n"
+            _copy_findings(
+                "Telegram",
+                ["A szoveg harom backtickes kodblokkot tartalmaz, de a hivasban\n"
+                 "    format=\"" + str(tool_input.get("format") or "text") + "\". Plain textben a Telegram nem ad copy gombot,\n"
+                 "    es a MarkdownV2 escape-ek (\\. \\- \\() nyersen latszanak."],
                 "Kuldd ujra ugyanezt a szoveget format=\"markdownv2\"-vel. Kodblokkon\n"
                 "belul csak a backtickot es a backslasht kell escapelni, a blokkon\n"
-                "kivuli prozat viszont teljesen (_*[]()~`>#+-=|{}.!).\n"
-            )
-            sys.exit(2)
+                "kivuli prozat viszont teljesen (_*[]()~`>#+-=|{}.!).\n",
+                header="KIMENO-SZOVEG KAPU (Telegram): TILTVA, a kodblokk nem lenne masolhato.\n\n")
         problems = audit(text)
     except SystemExit:
         raise
@@ -1791,13 +1831,9 @@ def channel_gate(tool_input: dict, label: str, unescape_mdv2: bool) -> None:
         _gate_log(warn)
         sys.exit(0)
     if problems:
-        sys.stderr.write(
-            f"KIMENO-SZOVEG KAPU ({label}): TILTVA, az uzenet nem mehet ki igy.\n\n"
-            + "\n".join(f"  - {p}" for p in problems)
-            + "\n\nJavitsd a szoveget es kuldd ujra (a MarkdownV2 escape-eket a kapu "
-              "az ellenorzes elott feloldja, azok nem szamitanak hibanak).\n"
-        )
-        sys.exit(2)
+        _copy_findings(label, problems,
+                       "Javitsd a szoveget es kuldd ujra (a MarkdownV2 escape-eket a kapu "
+                       "az ellenorzes elott feloldja, azok nem szamitanak hibanak).\n")
     # GATEPERSIST816(2): a hianyzo nev-szabaly a csatorna-agon fail-open marad,
     # de a figyelmeztetes ODA megy, ahol a session tenyleg latja -- a hook
     # stdout systemMessage mezoje a futo sessionben jelenik meg, nem egy
@@ -2257,24 +2293,21 @@ def main():
 
     problems = audit(text)
     if problems:
-        sys.stderr.write(
-            "KIMENO-SZOVEG KAPU: TILTVA, a levél nem mehet ki így.\n\n"
-            + "\n".join(f"  - {p}" for p in problems)
-            + "\n\nJavitsd a szoveget es kuldd ujra. Ekezetes magyar szoveg a vevo fele "
-              "nem stiluskerdes: Szabi 2026-08-10-en ket kulon esetben kerte szamon.\n"
-        )
-        sys.exit(2)
+        _copy_findings("level", problems,
+                       "Javitsd a szoveget es kuldd ujra. Ekezetes magyar szoveg a vevo fele "
+                       "nem stiluskerdes: Szabi 2026-08-10-en ket kulon esetben kerte szamon.\n",
+                       header="KIMENO-SZOVEG KAPU: TILTVA, a levél nem mehet ki így.\n\n")
 
     if RULES_STATE in (RULES_MISSING, RULES_EMPTY):
         # Fail-OPEN, but never silent: the send goes out WITHOUT the name
         # check, and the user must see that on the surface they are using --
         # a log line nobody reads is the same as nothing (CLCOPYGATEHIANY902).
-        print(json.dumps({"systemMessage":
+        _system_message(
             "outgoing-copy-gate: a NEV-SZABALY fajl "
             + ("HIANYZIK" if RULES_STATE == RULES_MISSING else "URES (nincs minta)")
             + f" ({_LOCAL_RULES}) -- ez a level a nev-ellenorzes NELKUL ment ki. "
             "Ha kell a vedelem, hozd letre a fajlt: "
-            '{"bad_name_patterns": ["<python-regex>"], "correction": "<helyes alak>"}.'}))
+            '{"bad_name_patterns": ["<python-regex>"], "correction": "<helyes alak>"}.')
     sys.exit(0)
 
 

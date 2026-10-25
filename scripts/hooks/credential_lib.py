@@ -97,6 +97,24 @@ DEFAULTS = {
 }
 
 
+def _fleet_mode() -> str:
+    """SECURITY_CREDENTIAL_GATE when it is 'warn' or 'block', else ''. Read
+    next to the store this gate uses, so a test store brings its own settings;
+    a reader that does not load leaves the file in charge."""
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            "security_settings", os.path.join(_HERE, "security_settings.py"))
+        security_settings = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(security_settings)
+    except Exception:  # noqa: BLE001 -- no reader: the file decides, as before
+        return ""
+    mode = security_settings.security_setting(
+        "SECURITY_CREDENTIAL_GATE", "", ("warn", "block"),
+        root=os.path.dirname(os.path.abspath(store_dir())))
+    return mode
+
+
 def load_config() -> dict:
     """Defaults, overridden by the install's JSON file and by
     CREDENTIAL_GATE_MODE. A missing file means the defaults; a file that
@@ -115,6 +133,13 @@ def load_config() -> dict:
         if unknown:
             raise GateConfigError(f"ismeretlen konfig-kulcs(ok): {', '.join(unknown)} ({path})")
         cfg.update(user)
+    # The dashboard's Security tab (SECURITY_CREDENTIAL_GATE): 'warn' or 'block'
+    # sets the mode fleet-wide over the file; 'off' (the default) only means the
+    # dashboard does not wire the gate, so a profile-wired agent keeps the file's
+    # mode. The variable below still wins, as a per-process override.
+    fleet_mode = _fleet_mode()
+    if fleet_mode:
+        cfg["mode"] = fleet_mode
     env_mode = os.environ.get("CREDENTIAL_GATE_MODE")
     if env_mode:
         cfg["mode"] = env_mode.strip()

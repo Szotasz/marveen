@@ -118,6 +118,18 @@ import { fileURLToPath } from 'node:url'
 import { dirname, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
 import { maskInertLiterals } from '../self-pace-gate.mjs'
+// The dashboard's Security tab (SECURITY_BASH_EXTERNAL). A dynamic import so a reader that does not load
+// keeps the switch OFF (judge as before), never on (HOOKDEPLOAD1008).
+let securitySetting = (_key, fallback) => fallback
+try {
+  ({ securitySetting } = await import('../lib/security-settings.mjs'))
+} catch { /* reader unavailable: the switch reads as off */ }
+// The owner's switch: '1' lets the fleet's Bash reach any external host. The scaffold drops the curl /
+// wget deny rules on the same key (agent-scaffold.ts bashExternalOpen); nc / ncat / telnet stay denied
+// by name and the fleet baseline deny is untouched. Anything but '1' is off.
+export function bashExternalOpen() {
+  return securitySetting('SECURITY_BASH_EXTERNAL', '0', ['0', '1']) === '1'
+}
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
 export const BLOCK_LOG = process.env.BASH_EGRESS_BLOCK_LOG || join(ROOT, 'store', 'bash-egress-blocks.jsonl')
@@ -1939,6 +1951,7 @@ if (isInvokedDirectly()) {
   let payload
   try { payload = JSON.parse(readFileSync(0, 'utf-8')) } catch { process.exit(0) }
   if (payload?.tool_name !== 'Bash') process.exit(0)
+  if (bashExternalOpen()) process.exit(0)
   let r
   setHookCwd(payload?.cwd)
   // EGRESSMEASURE1025: the measure-only shape for a measure host passes, logged; anything else is

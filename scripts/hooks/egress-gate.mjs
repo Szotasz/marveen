@@ -49,6 +49,12 @@ import { readFileSync, appendFileSync, mkdirSync } from 'node:fs'
 import { realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+// The dashboard's Security tab (SECURITY_QUARANTINE_POSTURE). A dynamic import so a reader that does not
+// load leaves this gate on its own file, never without a decision (HOOKDEPLOAD1008).
+let securitySetting = (_key, fallback) => fallback
+try {
+  ({ securitySetting } = await import('../lib/security-settings.mjs'))
+} catch { /* reader unavailable: the file below decides, as before the switch existed */ }
 
 // Derive repo root from this script's location (scripts/hooks/egress-gate.mjs).
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..')
@@ -315,12 +321,20 @@ export function loadRuntimeAllowlist() {
       // The reader-posture switch. ONLY the literal string "denylist" opens
       // the reader; any other value -- absent key, typo, wrong type -- is the
       // allowlist default. Fail-closed to the louder failure direction.
-      quarantinePosture: parsed.quarantine_reader_posture === 'denylist' ? 'denylist' : 'allowlist',
+      quarantinePosture: effectiveQuarantinePosture(parsed.quarantine_reader_posture === 'denylist' ? 'denylist' : 'allowlist'),
     }
   } catch {
     // Missing file or JSON parse error: treat as empty, never propagate.
-    return { domains: [], prefixes: [], quarantineDomains: [], quarantinePosture: 'allowlist' }
+    return { domains: [], prefixes: [], quarantineDomains: [], quarantinePosture: effectiveQuarantinePosture('allowlist') }
   }
+}
+
+// The posture once the dashboard has a say: SECURITY_QUARANTINE_POSTURE, saved on
+// the Security tab (or set in .env), wins; while it is unset the file's own
+// quarantine_reader_posture keeps deciding, so an install that set it there does
+// not flip at upgrade. A value other than the two postures counts as unset.
+export function effectiveQuarantinePosture(filePosture) {
+  return securitySetting('SECURITY_QUARANTINE_POSTURE', null, ['allowlist', 'denylist']) ?? filePosture
 }
 
 // Pure decision, with the tier that decided it.

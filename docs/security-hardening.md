@@ -748,3 +748,32 @@ and the main agent's `email_send` approval gate keeps its current reach.
     cwd, not `dir`;
   - a missing file, which is judged on its arguments alone;
   - code assembled at runtime.
+
+# The Security tab: gate switches on the Settings page
+
+Seven gates have a switch on Settings > Security (registry module `security`, `src/config-registry.ts`).
+Every default is the gate's shipped behaviour, so an install that never opens the tab is unchanged.
+The value is saved to `store/config-overrides.json` like every other setting; the hooks read it
+through `scripts/lib/security-settings.mjs` (Node) and `scripts/hooks/security_settings.py`
+(Python), in the settings store's order: the overrides file, then the install `.env`, then the
+default. A malformed overrides file, a value outside the switch's set, or a reader that does not
+load reads as the default.
+
+| Key | Values (default first) | What it changes | Takes effect |
+|---|---|---|---|
+| `SECURITY_BASH_EXTERNAL` | `0`, `1` | `1` drops the `curl https://` / `wget` deny rules and the bash-egress-parser lets any external host through. `nc` / `ncat` / `telnet` and the fleet baseline deny stay. | hook: next call; deny rules: next agent spawn |
+| `SECURITY_QUARANTINE_POSTURE` | `allowlist`, `denylist` | The quarantine-reader's WebFetch posture. While it is unset, `quarantine_reader_posture` in `store/egress-allowlist.json` keeps deciding. | next call |
+| `MAIL_OWNER_CC` | empty, one address | The main agent's letters and drafts must carry the owner's address (email-approval-gate). Read from the overrides file or `.env`, never from the process environment. | next call |
+| `SECURITY_COPY_GATE_MODE` | `block`, `warn` | `warn` lets a text with copy findings out with a notice. An unreadable send, a broken rules file and a mixed-script word stay denied. | next call |
+| `SECURITY_RECIPIENT_LEDGER_MODE` | `block`, `warn` | Sub-agent mail gate: `warn` lets a draft whose only problem is an unsourced address through with a notice. Every other deny (a send, the draft rule, an unreadable recipient) stays. | next call |
+| `SECURITY_CREDENTIAL_GATE` | `off`, `warn`, `block` | `warn` / `block` wires the credential gate for every sub-agent and sets its mode (`CREDENTIAL_GATE_MODE` still overrides per process). `off` leaves the security profile in charge. | next agent spawn |
+| `SECURITY_DESTRUCTIVE_GATE` | `0`, `1` | `1` wires the destructive gate for every sub-agent. `0` leaves the security profile in charge. | next agent spawn |
+
+Each entry declares `loosens`: the shared fleet token (which every agent holds) may tighten a
+switch, but loosening it (opening Bash egress, `allowlist` -> `denylist`, `block` -> `warn`,
+clearing or changing the owner's copy address, switching a fleet-wide gate off) needs the owner's
+dashboard session. A sub-agent cannot write `store/config-overrides.json` directly either
+(self-pace-gate, protected store files).
+
+Switching a fleet-wide gate back off does not tear down a hook an agent already has, the same rule
+the security-profile flags follow: disarming a live agent has to be someone's explicit act.
