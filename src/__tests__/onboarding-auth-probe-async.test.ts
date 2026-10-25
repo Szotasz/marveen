@@ -66,6 +66,8 @@ writeFileSync(logFile, '')
 const { MAIN_CHANNELS_SESSION } = await import('../web/main-agent.js')
 process.env.FAKE_SESSION = MAIN_CHANNELS_SESSION
 const { tryHandleOnboarding } = await import('../web/routes/onboarding.js')
+const { channelStateDirEnvVar } = await import('../channel-provider.js')
+const { CHANNEL_PROVIDER } = await import('../config.js')
 
 // On macOS the Keychain probe answers from the host's real Claude login before
 // the tmux probe runs, so every case here would read "authenticated" (#2191
@@ -105,6 +107,20 @@ async function call(method = 'GET', path = '/api/onboarding/status') {
   let status = 0
   let out = ''
   const req = Object.assign(Readable.from([]), { headers: {} })
+  const res = {
+    setHeader() {},
+    writeHead(s: number) { status = s },
+    end(b?: string) { out = b ?? '' },
+  }
+  const url = new URL(`http://localhost${path}`)
+  await tryHandleOnboarding({ req, res, path: url.pathname, method, url } as any)
+  return { status, json: JSON.parse(out) }
+}
+
+async function callWithBody(method: string, path: string, body: unknown) {
+  let status = 0
+  let out = ''
+  const req = Object.assign(Readable.from([Buffer.from(JSON.stringify(body))]), { headers: {} })
   const res = {
     setHeader() {},
     writeHead(s: number) { status = s },
@@ -161,5 +177,49 @@ describe('onboarding auth probes are async', () => {
     }
     expect(L.create).not.toHaveBeenCalled()
     expect(L.restart).not.toHaveBeenCalled()
+  })
+
+  it('launch: with Claude auth and no running fleet it starts the fleet instead of answering 409', async () => {
+    const envFile = join(tmpRoot, '.env')
+    process.env.FAKE_SESSION = ''
+    writeFileSync(envFile, 'CLAUDE_CODE_OAUTH_TOKEN=abc\n')
+    L.create.mockClear()
+    L.restart.mockClear()
+    try {
+      const r = await call('POST', '/api/onboarding/launch')
+      expect(r.status).toBe(200)
+      expect(r.json.ok).toBe(true)
+      expect(r.json.reason).toBeUndefined()
+    } finally {
+      rmSync(envFile, { force: true })
+      process.env.FAKE_SESSION = MAIN_CHANNELS_SESSION
+    }
+    expect(L.create.mock.calls.length + L.restart.mock.calls.length).toBe(1)
+  })
+
+  it('identity: a rename mid-setup (no Claude auth, owner already paired) with the fleet up restarts the channels session', async () => {
+    const envVar = channelStateDirEnvVar(CHANNEL_PROVIDER)
+    const prevStateDir = process.env[envVar]
+    const stateDir = join(tmpRoot, 'chan-state')
+    mkdirSync(stateDir, { recursive: true })
+    writeFileSync(join(stateDir, 'access.json'), JSON.stringify({ allowFrom: ['1'] }))
+    process.env[envVar] = stateDir
+    process.env.FAKE_SESSION = MAIN_CHANNELS_SESSION
+    L.create.mockClear()
+    L.restart.mockClear()
+    try {
+      const r = await callWithBody('POST', '/api/onboarding/identity', { agentName: 'Newname', ownerName: 'Owner' })
+      expect(r.status).toBe(200)
+      expect(r.json.ok).toBe(true)
+      expect(r.json.restarted).toBe(true)
+      expect(r.json.restartNeeded).toBeUndefined()
+    } finally {
+      if (prevStateDir === undefined) delete process.env[envVar]
+      else process.env[envVar] = prevStateDir
+      rmSync(stateDir, { recursive: true, force: true })
+      rmSync(join(tmpRoot, '.env'), { force: true })
+    }
+    expect(L.restart).toHaveBeenCalledTimes(1)
+    expect(L.create).not.toHaveBeenCalled()
   })
 })
