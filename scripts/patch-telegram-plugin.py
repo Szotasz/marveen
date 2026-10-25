@@ -30,10 +30,12 @@ must not rewrite the user-level cache other Claude Code sessions load
 - always exits 0: a failed patch must never stop the channel from starting
   (the one exception is a --topics value other than on or off: exit 2, nothing
   patched; channels.sh never passes --topics);
-- the reply-keyboard patch (c67f5f34) inserts WHOLE LINES only, each carrying
-  its marker, so taking it back is deleting the lines that carry
+- the answer-buttons patch (c67f5f34: inline keyboard under the message, a
+  tap comes back as an ordinary text message) inserts WHOLE LINES only, each
+  carrying its marker, so taking it back is deleting the lines that carry
   "MARVEEN-PATCH(c67f5f34-kbd)" (the file is then byte-identical to the one
-  patched without it; tested);
+  patched without it; tested). It has its own apply function: a file carrying
+  an older version of those lines (the reply keyboard) is rebuilt in place;
 - with --state FILE, the outcome per file (and per patch) is written there as
   JSON, so /status can say in one line when a patch is missing
   (src/web/system-status.ts) instead of the command silently falling back.
@@ -88,33 +90,106 @@ EVID_INSERT = (
 # The staff are asked one question at a time, with lettered options (A/B/C),
 # and today they type the letter back (c67f5f34, owner request). The reply
 # tool can send no button: its schema has no such field and the send passes
-# only reply_parameters and parse_mode. A reply keyboard needs nothing on the
-# inbound side: a tapped text-only button arrives as the user's ordinary text
-# message, through the same gate, evidence log and channel notification as a
-# typed letter. So three lines, all in the reply tool: an optional `buttons`
-# list in the schema (after `files`), its check before anything is sent (the
-# tool-call handler turns the throw into a tool error), and the keyboard on
-# the LAST text chunk (an empty list removes a keyboard shown earlier). The
-# labels are outgoing text: the copy gate (scripts/hooks/outgoing-copy-gate.py)
+# only reply_parameters and parse_mode. First version: a reply keyboard, which
+# Gyuri's client keeps collapsed until he starts typing. Now an INLINE keyboard
+# under the message: one button per label (callback_data kbd:<index>), and a
+# tap comes back as the label in an ordinary text message, through the same
+# gate, evidence log and channel notification as a typed letter. Six anchors:
+# the optional `buttons` list in the reply schema (after `files`), its check
+# before anything is sent (the tool-call handler turns the throw into a tool
+# error), the inline keyboard on the LAST text chunk (an empty list removes a
+# keyboard shown earlier), a module-level Set of answered messages, the kbd
+# branch of the callback handler, and the ts of the inbound meta.
+#
+# The callback branch sits right AFTER the perm regex line, not before it: the
+# apv patch (approval buttons) requires nothing but the `const data` line
+# between the handler's opening line and the perm regex, and the Set sits
+# after PERMISSION_REPLY_RE for the same reason (the apv block goes in front
+# of the handler). The branch answers only the owner in a private chat (never
+# gate(): its pairing path would write a pending code for a stranger), takes
+# the label from the keyboard of the message the button sits on (never from
+# the data), lets one message be answered once, and takes the other buttons
+# off BEFORE anything is delivered. A label never starts with a slash (checked
+# when it is sent): a tap carries no message id, and the write-evidence of the
+# command hook would otherwise have only the text to go by.
+# The labels are outgoing text: the copy gate (scripts/hooks/outgoing-copy-gate.py)
 # audits them together with `text`.
+
+
+def _kbd_lines(lines):
+    """Whole inserted lines, each carrying the marker; `{`/`}` are doubled
+    because the insert goes through str.format (the {indent} field)."""
+    return "".join("{indent}" + line.replace("{", "{{").replace("}", "}}") + " " + KBD_MARKER + "\n" for line in lines)
+
+
 KBD_SCHEMA = ("reply schema files property", re.compile(
     r"^ *description: 'Absolute file paths to attach\. [^\n]*',\n( *)\},\n", re.MULTILINE), "insert-after",
     "{indent}buttons: {{ type: 'array', items: {{ type: 'string' }}, description: 'Optional one-tap answer buttons, "
-    "shown as a keyboard under the input field and hidden after one tap; the tapped label comes back as an ordinary "
-    "text message from the user. Also write the options into text, so the question can be answered by typing. An "
-    "empty list removes a keyboard shown earlier. At most 12 labels, each non-empty and at most 64 characters.' }}, "
+    "shown under the message; after one tap the chosen one stays, marked with a check mark, and its label comes back "
+    "as an ordinary text message from the user. Also write the options into text, so the question can be answered by "
+    "typing. At most 12 labels, each non-empty, at most 64 characters, not starting with a slash; private chats only. "
+    "Editing the message with edit_message removes the buttons; with files the buttons sit under the last text part. "
+    "An empty list removes a keyboard shown earlier under the input field.' }}, "
     + KBD_MARKER + "\n")
 KBD_CHECK = ("reply chat check", re.compile(r"^( *)assertAllowedChat\(chat_id\)\n", re.MULTILINE), "insert-after",
-    "{indent}const kbdButtons = args.buttons == null ? undefined : Array.isArray(args.buttons) && args.buttons.length <= 12 "
-    "&& args.buttons.every(b => typeof b === 'string' && b.trim() !== '' && b.length <= 64) ? (args.buttons as string[]) "
-    ": (() => {{ throw new Error('buttons: a list of at most 12 non-empty labels, each at most 64 characters') }})() "
-    + KBD_MARKER + "\n")
+    _kbd_lines([
+        r"const kbdButtons = args.buttons == null ? undefined : Array.isArray(args.buttons) && args.buttons.length <= 12 "
+        r"&& args.buttons.every(b => typeof b === 'string' && b.trim() !== '' && b.length <= 64 "
+        r"&& !/^[^\p{L}\p{N}]*\//u.test(b) && !/[\u0000-\u001f\u007f-\u009f]/.test(b) && !PERMISSION_REPLY_RE.test(b)) "
+        r"? (args.buttons as string[]) : (() => { throw new Error('buttons: a list of at most 12 non-empty labels, "
+        r"each at most 64 characters, not starting with a slash, without control characters, not a permission reply') })()",
+        r"if (kbdButtons?.length && !loadAccess().allowFrom.includes(chat_id)) "
+        r"throw new Error('buttons: only in a private chat with a paired user')",
+    ]))
 KBD_SEND = ("reply send options", re.compile(
     r"^( *)\.\.\.\(parseMode \? \{ parse_mode: parseMode \} : \{\}\),\n",
     re.MULTILINE), "insert-after",
-    "{indent}...(kbdButtons && i === chunks.length - 1 ? {{ reply_markup: kbdButtons.length ? {{ keyboard: "
-    "kbdButtons.map(label => [{{ text: label }}]), one_time_keyboard: true, resize_keyboard: true }} : "
-    "{{ remove_keyboard: true as const }} }} : {{}}), " + KBD_MARKER + "\n")
+    _kbd_lines([
+        "...(kbdButtons && i === chunks.length - 1 ? { reply_markup: kbdButtons.length ? { inline_keyboard: "
+        "kbdButtons.map((label, n) => [{ text: label, callback_data: 'kbd:' + n }]) } : "
+        "{ remove_keyboard: true as const } } : {}),",
+    ]))
+KBD_SET = ("permission reply regex", re.compile(r"^( *)const PERMISSION_REPLY_RE = [^\n]*\n", re.MULTILINE), "insert-after",
+    _kbd_lines(["const marveenKbdAnswered = new Set<string>()"]))
+KBD_CALLBACK = ("callback perm regex", re.compile(
+    r"^( *)const m = /\^perm:\(allow\|deny\|more\):\(\[a-km-z\]\{5\}\)\$/\.exec\(data\)\n", re.MULTILINE), "insert-after",
+    _kbd_lines([
+        "if (data.startsWith('kbd:')) {",
+        "  const kbdMsg = ctx.callbackQuery.message",
+        "  const kbdToast = (text: string) => ctx.answerCallbackQuery({ text }).catch(() => {})",
+        "  if (!kbdMsg || !ctx.from || kbdMsg.chat.type !== 'private' || kbdMsg.chat.id !== ctx.from.id "
+        "|| !loadAccess().allowFrom.includes(String(ctx.from.id))) { await kbdToast('Nem engedélyezett.'); return }",
+        "  const kbdRows = 'reply_markup' in kbdMsg ? kbdMsg.reply_markup?.inline_keyboard : undefined",
+        "  const kbdButton = /^kbd:(0|[1-9]|1[01])$/.test(data) "
+        "? kbdRows?.flat().find(b => 'callback_data' in b && b.callback_data === data) : undefined",
+        "  if (!kbdButton) { await kbdToast(data === 'kbd:-' ? 'Erre már válaszoltál.' "
+        ": 'Ez a gomb már nem él, írd be a választ.'); return }",
+        "  const kbdKey = kbdMsg.chat.id + ':' + kbdMsg.message_id",
+        "  if (marveenKbdAnswered.has(kbdKey)) { await kbdToast('Erre már válaszoltál.'); return }",
+        "  if (marveenKbdAnswered.size >= 1000) marveenKbdAnswered.clear()",
+        "  marveenKbdAnswered.add(kbdKey)",
+        "  try { await ctx.editMessageReplyMarkup({ reply_markup: { inline_keyboard: "
+        "[[{ text: '✓ ' + kbdButton.text, callback_data: 'kbd:-' }]] } }) } "
+        "catch { marveenKbdAnswered.delete(kbdKey); await kbdToast('Nem sikerült rögzíteni, írd be a választ.'); return }",
+        "  await kbdToast('✓ ' + kbdButton.text)",
+        "  await handleInbound(ctx, kbdButton.text, undefined)",
+        "  return",
+        "}",
+    ]))
+# A tap has no ctx.message: the meta would say ts 1970 (the staleness guard then warns on every tap) and carry no
+# message_id. A later spread wins over the earlier `ts` key; message_id is the id of the QUESTION the button sits on
+# (the conversation ledger keys the tapped answer by it). Before the imagePath line, not after the ts line: the topics
+# patch inserts after the ts line, and both orders must give the same file.
+KBD_TS = ("inbound meta imagePath", re.compile(
+    r"^( *)\.\.\.\(imagePath \? \{ image_path: imagePath \} : \{\}\),\n", re.MULTILINE), "insert-before",
+    _kbd_lines([
+        "...(ctx.callbackQuery?.message ? { ts: new Date().toISOString(), "
+        "message_id: String(ctx.callbackQuery.message.message_id) } : {}),",
+    ]))
+KBD_ANCHORS = [KBD_SCHEMA, KBD_CHECK, KBD_SEND, KBD_SET, KBD_CALLBACK, KBD_TS]
+KBD_PATCH = {"name": "kbd", "marker": KBD_MARKER, "anchors": KBD_ANCHORS, "mode": "insert-after",
+             "apply": lambda text: apply_kbd(text),  # defined below
+             "fallback": "the reply tool has no buttons: a question goes out without them and is answered by typing"}
 
 # Independent patches: each has its own marker and is all-or-nothing on its
 # own, so a plugin update that moves one anchor does not undo the other.
@@ -127,9 +202,9 @@ PATCHES = [
     {"name": "evid", "marker": EVID_MARKER, "anchors": [EVID_ANCHOR], "mode": "insert-before",
      "insert": EVID_INSERT,
      "fallback": "no inbound evidence is recorded, owner write commands are refused"},
-    # an anchor may carry its own mode and insert (name, regex, mode, insert): the three kbd lines differ
-    {"name": "kbd", "marker": KBD_MARKER, "anchors": [KBD_SCHEMA, KBD_CHECK, KBD_SEND], "mode": "insert-after",
-     "fallback": "the reply tool has no buttons: a question goes out without them and is answered by typing"},
+    # an anchor may carry its own mode and insert (name, regex, mode, insert): the kbd lines differ.
+    # "apply" replaces apply_patch for a patch that must also rebuild an older version of itself.
+    KBD_PATCH,
 ]
 
 # Topics (TELEGRAM_TOPICS_ENABLED, default off). A private chat with topic mode
@@ -217,6 +292,30 @@ def apply_patch(text, patch):
     return out, "patched"
 
 
+def strip_kbd(text):
+    """The text without the lines the kbd patch inserted (they all end with ' ' + KBD_MARKER)."""
+    return "".join(line for line in text.splitlines(keepends=True) if not line.rstrip("\n").endswith(" " + KBD_MARKER))
+
+
+def apply_kbd(text):
+    """Returns (new_text, status) like apply_patch, but a file that already carries kbd lines is not skipped:
+    the lines are taken out and rebuilt, so an older version (the reply keyboard) is replaced in place and
+    a current one comes out byte-identical ('already'). Status also: 'damaged:kbd markers' (a marker that is
+    not at the end of a line; the file is left alone)."""
+    if KBD_MARKER not in text:
+        return apply_patch(text, KBD_PATCH)
+    base = strip_kbd(text)
+    if KBD_MARKER in base:
+        return text, "damaged:kbd markers"
+    new, status = apply_patch(base, KBD_PATCH)
+    if status != "patched":
+        return text, status  # the old lines stay: they still work
+    if new == text:
+        return text, "already"
+    log("kbd lines of an older or edited version replaced")
+    return new, "patched"
+
+
 def apply_topics(text):
     """Returns (new_text, status), all-or-nothing like apply_patch."""
     if TOPICS_TAG in text:
@@ -259,7 +358,7 @@ def patch_text(text, topics=False):
     when the switch is on, or when switching it off took the patch out."""
     results = []
     for patch in PATCHES:
-        text, status = apply_patch(text, patch)
+        text, status = patch["apply"](text) if "apply" in patch else apply_patch(text, patch)
         results.append((patch, status))
     if topics:
         text, status = apply_topics(text)
@@ -273,13 +372,13 @@ def patch_text(text, topics=False):
 
 def file_status(results):
     """One word for the file: 'already' when every patch was there,
-    'patched' when this run wrote (or took out) one, else the first anchor-missing."""
+    'patched' when this run wrote (or took out) one, else the first anchor-missing (or damaged)."""
     statuses = [st for _, st in results]
     if "patched" in statuses or "removed" in statuses:
         return "patched"
     if all(st == "already" for st in statuses):
         return "already"
-    return next(st for st in statuses if st.startswith("anchor-missing"))
+    return next(st for st in statuses if st.startswith(("anchor-missing", "damaged")))
 
 
 def patch_file(path, topics=False):
@@ -296,7 +395,10 @@ def patch_file(path, topics=False):
         if status.startswith("anchor-missing"):
             log(f"LOUD: {status.split(':', 1)[1]} not found exactly once in {path} (plugin changed?) -- "
                 f"the {patch['name']} patch left out, {patch['fallback']}")
-    patched = [p["name"] + (" removed" if st == "removed" else "") for p, st in results if st in ("patched", "removed")]
+        elif status.startswith("damaged"):
+            log(f"LOUD: {status.split(':', 1)[1]} damaged in {path} (a marker not at the end of a line) -- "
+                f"the {patch['name']} patch left alone, {patch['fallback']}")
+    patched =[p["name"] + (" removed" if st == "removed" else "") for p, st in results if st in ("patched", "removed")]
     if not patched:
         return file_status(results), per_patch
     tmp = path + ".marveen-tmp"
