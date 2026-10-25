@@ -2827,3 +2827,49 @@ describe('idle footer whose background-task tail joins the counts with a comma (
     expect(detectsPermissionDialog(pane)).toBe(true)
   })
 })
+
+describe('idle footer whose background-task tail is a monitor alone or first (MONITORTAIL1025)', () => {
+  // Measured on two builder panes 2026-10-25: a Monitor waiting on a long run leaves the footer
+  // `⏵⏵ bypass permissions on · 1 monitor` (no shell count, no hint) over an empty prompt. It read 'unknown',
+  // so the router held the bus and the not-ready path raised [session-stuck] every 10 minutes.
+  const MONITOR_TAIL = '  ⏵⏵ bypass permissions on · 1 monitor'
+
+  it('reads the measured "· 1 monitor" footer as idle and ready', () => {
+    expect(detectPaneState(modeFooter(MONITOR_TAIL))).toBe('idle')
+    expect(isReadyForPrompt(modeFooter(MONITOR_TAIL))).toBe(true)
+  })
+
+  it('reads the plural, a monitor first and the shift+tab hint as idle', () => {
+    for (const tail of ['  ⏵⏵ bypass permissions on · 2 monitors', '  ⏵⏵ bypass permissions on · 1 monitor · 1 shell',
+      '  ⏵⏵ bypass permissions on · 1 monitor, 2 shells', '  ⏵⏵ accept edits on · 1 monitor',
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle) · 1 monitor']) {
+      expect(detectPaneState(modeFooter(tail)), tail).toBe('idle')
+    }
+  })
+
+  it('reads idle when blank rows follow the monitor-tail footer', () => {
+    expect(detectPaneState(modeFooter(MONITOR_TAIL) + '\n\n\n')).toBe('idle')
+  })
+
+  it('still refuses a monitor tail that only looks like the footer', () => {
+    for (const tail of ['  ⏵⏵ bypass permissions on · monitor', '  ⏵⏵ bypass permissions on · 1 monitor later it broke',
+      '  ⏵⏵ bypass permissions on · 1 monitor, 1 agent', '  ⏵⏵ bypass permissions on · 1 monitor,1 shell',
+      'log: bypass permissions on · 1 monitor', 'bypass permissions on · 1 monitor']) {
+      expect(detectPaneState(modeFooter(tail)), tail).toBe('unknown')
+      expect(isReadyForPrompt(modeFooter(tail)), tail).toBe(false)
+    }
+  })
+
+  it('keeps a working pane busy under the monitor-tail footer (the spinner wins, no delivery)', () => {
+    for (const spinner of ['✶ (4s · ↓ 120 tokens)', '✢ Combobulating… (12s · ↓ 480 tokens)']) {
+      const busy = [spinner, '', SEP, '❯ ', SEP, MONITOR_TAIL].join('\n')
+      expect(detectPaneState(busy), spinner).toBe('busy')
+      expect(isReadyForPrompt(busy), spinner).toBe(false)
+    }
+  })
+
+  it('does not count the monitor tail when it is not the last line (a log line in the scrollback)', () => {
+    const above = ['  ⏵⏵ bypass permissions on · 1 monitor', '', SEP, '❯ ', SEP, '  some status line'].join('\n')
+    expect(detectPaneState(above)).toBe('unknown')
+  })
+})

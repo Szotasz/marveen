@@ -108,7 +108,15 @@ const FOOTER_TRUNCATED_RX = /(?:[A-Za-z][\w-]* ){1,3}on · [^\n]*·[^\n]*…\s*$
 // glyph (⏵⏵, ⏵, ⏸): detectPaneState returns 'idle' on this footer even without an
 // input box above it, so a log line or a sentence in the footer slot that ends in
 // the same words must not match.
-const FOOTER_SHELL_TAIL_RX = /^\s*[\u23F5\u23F8]{1,2} (?:[A-Za-z][\w-]* ){1,3}on(?: \(shift\+tab to cycle\))? · \d+ shells?(?:(?: ·|,) \d+ monitors?)?\s*$/
+// MONITORTAIL1025 (measured 2026-10-25 on two builder panes): the count can be a MONITOR alone or first --
+// `⏵⏵ bypass permissions on · 1 monitor`, shell-less and hint-less, with an empty prompt above, while a Monitor
+// waits on a long run. That read 'unknown': the router held the bus for hours and the not-ready path raised a
+// [session-stuck] every 10 minutes on a live session. The tail is now one or more `N shell(s)` / `N monitor(s)`
+// counters in any order, joined as before (` · ` or a comma and one space); any other kind still stays 'unknown'.
+const FOOTER_COUNT = String.raw`\d+ (?:shells?|monitors?)`
+const FOOTER_SHELL_TAIL_RX = new RegExp(
+  String.raw`^\s*[\u23F5\u23F8]{1,2} (?:[A-Za-z][\w-]* ){1,3}on(?: \(shift\+tab to cycle\))? · ${FOOTER_COUNT}(?:(?: ·|,) ${FOOTER_COUNT})*\s*$`,
+)
 
 /**
  * Index of the idle footer line, or -1. The full footer may sit anywhere the
