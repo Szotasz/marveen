@@ -20,7 +20,7 @@ import { deliverWhenReady, RESUME_DELIVERY_OPTIONS } from './resume-delivery.js'
 import { notifyChannel } from '../notify.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { detectPaneState, paneShowsContextSaturation, paneShowsContextSaturationHardError } from '../pane-state.js'
-import { readContextTokensFromProjectDir, readActiveModelFromProjectDir, readTranscriptMtimeFromProjectDir, readTranscriptTailFromProjectDir } from './active-model.js'
+import { readContextTokensFromProjectDir, readActiveModelFromProjectDir, readTranscriptMtimeFromProjectDir, readTranscriptTailFromProjectDir, readLastTurnActivityMs } from './active-model.js'
 import { readContextGuardConfig } from './context-guard-store.js'
 import { setDeliveryHoldProbe, type DeliveryHold } from './delivery-hold.js'
 import {
@@ -659,6 +659,16 @@ export function restartLossLine(
   return '.' + restartNoticeQueueText(queue)
 }
 
+/**
+ * How recent a transcript turn line has to be for an idle-looking pane to
+ * still count as mid-turn when a restart is about to fire. Same figure and
+ * same reason as SWITCH_TURN_QUIET_MS in session-control.ts: it only has to
+ * cover the moment the pane reads idle between two tool calls of a running
+ * turn. Kept here, not imported: session-control sits on the restart-gate
+ * runner, which imports this module.
+ */
+export const RESTART_TURN_QUIET_MS = 20_000
+
 async function checkAgent(name: string, nowMs: number): Promise<void> {
   const cfg = readContextGuardConfig(name)
   const state = guardStates.get(name) ?? INITIAL_GUARD_STATE
@@ -851,7 +861,34 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
       : null,
   }
 
-  const decision = decideGuard(state, inputs, cfg)
+  let decision = decideGuard(state, inputs, cfg)
+
+  // An idle-looking pane is not a finished turn. Between two tool calls of a
+  // running turn the pane can read idle (the gap the restart gate's transcript
+  // quiet window and the /model switch already guard), and a restart decided
+  // on that reading cuts the turn. Measured on a live install: a hard-threshold
+  // restart was decided 80 ms after the session wrote two parallel tool calls;
+  // their results landed 40 ms after the decision and died with the session.
+  // So a restart that a not-busy reading allowed asks the transcript first: a
+  // turn line younger than RESTART_TURN_QUIET_MS means the turn is still
+  // running, and the decision is taken again with the pane read as busy -- the
+  // same deferral a busy pane gets. The saturation net ignores the busy
+  // signal, so its restart is decided the same either way. An unreadable
+  // transcript (null) keeps the decision: a wedged pane must still get the
+  // restart that is its only way out. One tail read per restart decision.
+  if (decision.action === 'restart' && !inputs.paneBusy) {
+    const turnAt = readLastTurnActivityMs(workingDirFor(name), configDirFor(name))
+    if (turnAt !== null && nowMs - turnAt < RESTART_TURN_QUIET_MS) {
+      const held = decideGuard(state, { ...inputs, paneBusy: true, paneIdle: false }, cfg)
+      if (held.action !== 'restart') {
+        logger.warn(
+          { name, phase: state.phase, wouldHave: decision.reason, turnAgoMs: Math.max(0, nowMs - turnAt), instead: held.action, insteadReason: held.reason },
+          'context-guard: pane read idle but the transcript shows a running turn -- restart held, decided again as busy',
+        )
+        decision = held
+      }
+    }
+  }
 
   // Mark the slot served at DECISION time, not after the prompt lands. If the
   // directive fails to send, the machine is already in await-handoff and its
