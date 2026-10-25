@@ -4,10 +4,11 @@
 // fixtures/telegram-plugin-0.0.7/server.ts.txt) in a scratch plugins cache.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, mkdirSync, copyFileSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, copyFileSync, readFileSync, writeFileSync, rmSync, statSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import ts from 'typescript'
+import { checkWriteEvidence, findEvidence, readEvidenceLines } from '../web/write-evidence.js'
 
 const ROOT = join(__dirname, '..', '..')
 const SCRIPT = join(ROOT, 'scripts', 'patch-telegram-plugin.py')
@@ -528,6 +529,452 @@ describe('kbd: inline answer buttons (c67f5f34)', () => {
     expect(r2.stderr).toBe('')
     expect(readState(state).files[0].patches.kbd).toBe('already')
     expect(readFileSync(server, 'utf-8')).toBe(first)
+  })
+})
+
+// Card 2676132e, N2: the BEHAVIOUR of what the kbd patch inserted. The patched callback_query:data handler and the
+// patched handleInbound are cut out of the patched fixture (the verbatim plugin blocks plus the marked lines), transpiled
+// and run with fakes for everything they reach for: loadAccess, gate, saveAccess, the grammY ctx, mcp, the Telegram API.
+// A restart of the plugin = a harness with a new marveenKbdAnswered Set (the declaration line is taken from the file).
+type Btn = { text: string; callback_data?: string; url?: string }
+type Toast = { text?: string } | undefined
+type FakeCtx = Record<string, unknown>
+type InboundFn = (ctx: FakeCtx, text: string, img: undefined) => Promise<void>
+
+interface TapSpec {
+  data: string
+  fromId?: number | null // null: the update has no `from`
+  chat?: { id: number; type: string }
+  messageId?: number
+  markup?: Btn[][] // the inline keyboard the message carries (default: Alfa, Béta, Gamma as kbd:0..2)
+  inaccessible?: boolean // an InaccessibleMessage: chat and message_id, no reply_markup
+  noMessage?: boolean // no callbackQuery.message at all
+  edit?: 'ok' | 'fail' // what editMessageReplyMarkup does
+  answerFails?: boolean // answerCallbackQuery rejects (network)
+}
+
+const kb = (...labels: string[]): Btn[][] => labels.map((text, i) => [{ text, callback_data: 'kbd:' + i }])
+const NOT_ALLOWED = 'Nem engedélyezett.'
+const ALREADY = 'Erre már válaszoltál.'
+const DEAD = 'Ez a gomb már nem él, írd be a választ.'
+const NOT_RECORDED = 'Nem sikerült rögzíteni, írd be a választ.'
+
+function transpile(code: string): string {
+  return ts.transpileModule(code, { compilerOptions: { target: ts.ScriptTarget.ES2022 } }).outputText
+}
+
+function callbackHarness(patched: string, o: { allowFrom?: string[]; handleInbound?: InboundFn } = {}) {
+  const setLine = patched.split('\n').find(l => l.startsWith('const marveenKbdAnswered = '))
+  expect(setLine).toBeDefined()
+  expect(syntaxErrors(setLine!)).toEqual([])
+  const start = patched.indexOf("bot.on('callback_query:data'")
+  const end = patched.indexOf('async function handleInbound(')
+  expect(start).toBeGreaterThan(0)
+  expect(end).toBeGreaterThan(start)
+  expect(patched.indexOf(setLine!)).toBeLessThan(start) // module level, ahead of the handler
+  const js = transpile(setLine + '\n' + patched.slice(start, end))
+  const events: string[] = []
+  const delivered: Array<{ ctx: FakeCtx; text: string; img: unknown }> = []
+  const gateCalls: unknown[][] = []
+  const saveCalls: unknown[][] = []
+  const permNotifications: unknown[] = []
+  const approvals: string[] = []
+  const pendingPermissions = new Map<string, { tool_name: string; description: string; input_preview: string }>()
+  let handler: ((ctx: FakeCtx) => Promise<void>) | undefined
+  const bot = { on: (_ev: string, fn: (ctx: FakeCtx) => Promise<void>) => { handler = fn } }
+  const handleInbound: InboundFn = async (ctx, text, img) => {
+    events.push('deliver')
+    delivered.push({ ctx, text, img })
+    if (o.handleInbound) await o.handleInbound(ctx, text, img)
+  }
+  const mcp = { notification: (n: unknown) => { permNotifications.push(n); return Promise.resolve() } }
+  class InlineKeyboard { text() { return this } }
+  const set = new Function('bot', 'loadAccess', 'handleInbound', 'pendingPermissions', 'mcp', 'InlineKeyboard', 'gate', 'saveAccess',
+    'marveenApprovalCallback', 'STATE_DIR', 'readFileSync', 'fetch', 'MARVEEN_APV_ENV_AT_LOAD', js + '\nreturn marveenKbdAnswered')(
+    bot, () => ({ allowFrom: o.allowFrom ?? ['42'] }), handleInbound, pendingPermissions, mcp, InlineKeyboard,
+    (...a: unknown[]) => { gateCalls.push(a); return { action: 'pair', code: 'abc123' } },
+    (...a: unknown[]) => { saveCalls.push(a) },
+    async (_ctx: FakeCtx, data: string) => { approvals.push(data) }, '/scratch-state', () => '',
+    () => { throw new Error('no network in a test') }, {}) as Set<string>
+  expect(handler).toBeDefined()
+  expect(set).toBeInstanceOf(Set)
+
+  const press = async (t: TapSpec) => {
+    const answers: Toast[] = []
+    const edits: unknown[] = []
+    const textEdits: unknown[] = []
+    const chat = t.chat ?? { id: 42, type: 'private' }
+    const message = t.noMessage ? undefined : {
+      message_id: t.messageId ?? 901,
+      chat,
+      ...(t.inaccessible ? { date: 0 } : { text: 'Kérdés', reply_markup: { inline_keyboard: t.markup ?? kb('Alfa', 'Béta', 'Gamma') } }),
+    }
+    const ctx: FakeCtx = {
+      callbackQuery: { data: t.data, ...(message ? { message } : {}) },
+      from: t.fromId === null ? undefined : { id: t.fromId ?? 42, username: 'gyuri' },
+      chat: message?.chat,
+      answerCallbackQuery: async (a?: { text?: string }) => { answers.push(a); events.push('answer'); if (t.answerFails) throw new Error('network down') },
+      editMessageReplyMarkup: async (a: unknown) => { edits.push(a); events.push('edit'); if (t.edit === 'fail') throw new Error('400 Bad Request: message is not modified') },
+      editMessageText: async (...a: unknown[]) => { textEdits.push(a); events.push('editText') },
+    }
+    await handler!(ctx)
+    return { ctx, answers, edits, textEdits }
+  }
+  return { press, set, events, delivered, gateCalls, saveCalls, permNotifications, approvals, pendingPermissions }
+}
+type Harness = ReturnType<typeof callbackHarness>
+type PressResult = Awaited<ReturnType<Harness['press']>>
+
+// A press that must change nothing: one toast with exactly this text, no edit, no delivery, no gate (pairing), no
+// saveAccess, no approval or permission side effect, nothing in the Set.
+function expectToastOnly(h: Harness, r: PressResult, text: string, what: string): void {
+  expect(r.answers, what).toEqual([{ text }])
+  expect(r.edits, what).toHaveLength(0)
+  expect(r.textEdits, what).toHaveLength(0)
+  expect(h.delivered, what).toHaveLength(0)
+  expect(h.gateCalls, what).toHaveLength(0)
+  expect(h.saveCalls, what).toHaveLength(0)
+  expect(h.permNotifications, what).toHaveLength(0)
+  expect(h.approvals, what).toHaveLength(0)
+  expect(h.set.size, what).toBe(0)
+}
+
+type Notification = { method: string; params: { content: string; meta: Record<string, string> } }
+type EvidenceRec = { chat_id: string; message_id: string | null; text: string; at: number }
+
+// The PATCHED handleInbound of the fixture with a gate that delivers (what gate() says for a paired owner in a private chat).
+function inboundHarness(patched: string, stateDir: string) {
+  const start = patched.indexOf('async function handleInbound(')
+  const end = patched.indexOf('// --- Server instructions')
+  expect(start).toBeGreaterThan(0)
+  expect(end).toBeGreaterThan(start)
+  const notifications: Notification[] = []
+  const mcp = { notification: (n: Notification) => { notifications.push(n); return Promise.resolve() } }
+  const bot = { api: { sendChatAction: async () => {}, setMessageReaction: async () => {} } }
+  const handleInbound = new Function('gate', 'PERMISSION_REPLY_RE', 'mcp', 'bot', 'STATE_DIR', 'join', 'writeFileSync', 'statSync', 'renameSync',
+    transpile(patched.slice(start, end)) + '\nreturn handleInbound')(
+    () => ({ action: 'deliver', access: {} }), /^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i, mcp, bot, stateDir, join, writeFileSync, statSync, renameSync) as InboundFn
+  const evidence = (): EvidenceRec[] => readEvidenceLines(stateDir).filter(l => l !== '').map(l => JSON.parse(l) as EvidenceRec)
+  return { handleInbound, notifications, evidence }
+}
+
+describe('kbd: the callback branch and the delivery of a tap (c67f5f34, card 2676132e N2)', () => {
+  let patched = ''
+  let stateDir = ''
+  beforeEach(() => {
+    expect(run(['--topics', 'off']).status).toBe(0)
+    patched = readFileSync(server, 'utf-8')
+    stateDir = mkdtempSync(join(tmpdir(), 'tg-kbd-evid-'))
+  })
+  afterEach(() => rmSync(stateDir, { recursive: true, force: true }))
+
+  it('AC-C1: a stranger (not in allowFrom) gets the toast only: no delivery, no edit, no gate/pairing, no saveAccess, no Set entry', async () => {
+    const h = callbackHarness(patched, { allowFrom: ['42'] })
+    const strangers: TapSpec[] = [
+      { data: 'kbd:0', fromId: 99, chat: { id: 99, type: 'private' } },
+      { data: 'kbd:1', fromId: 99, chat: { id: 99, type: 'private' }, markup: kb('A', 'B') },
+      { data: 'kbd:0', fromId: 99, chat: { id: 99, type: 'private' }, messageId: 5 },
+      { data: 'kbd:12', fromId: 99, chat: { id: 99, type: 'private' } }, // forged data does not get a different answer
+      { data: 'kbd:-', fromId: 99, chat: { id: 99, type: 'private' }, markup: [[{ text: '✓ Alfa', callback_data: 'kbd:-' }]] },
+    ]
+    for (const t of strangers) {
+      const r = await h.press(t)
+      expectToastOnly(h, r, NOT_ALLOWED, JSON.stringify(t))
+    }
+    // the owner himself when nobody is paired
+    const empty = callbackHarness(patched, { allowFrom: [] })
+    expectToastOnly(empty, await empty.press({ data: 'kbd:0' }), NOT_ALLOWED, 'empty allowFrom')
+  })
+
+  it('AC-C1: no `from`, no message, or an update without the message the keyboard sits on: the same refusal (fail closed)', async () => {
+    const h = callbackHarness(patched)
+    expectToastOnly(h, await h.press({ data: 'kbd:0', fromId: null }), NOT_ALLOWED, 'no from')
+    expectToastOnly(h, await h.press({ data: 'kbd:0', noMessage: true }), NOT_ALLOWED, 'no message')
+  })
+
+  it('AC-C2: the owner in a group, a supergroup, a channel, or a chat that is not his own: the same toast, nothing else', async () => {
+    const h = callbackHarness(patched, { allowFrom: ['42'] })
+    const chats: Array<{ id: number; type: string }> = [
+      { id: -1001234567890, type: 'supergroup' },
+      { id: -555, type: 'group' },
+      { id: -100777, type: 'channel' },
+      { id: 42, type: 'group' }, // an id equal to his, but not a private chat
+      { id: 77, type: 'private' }, // a private chat, but chat.id !== from.id
+      { id: 4242, type: 'private' },
+    ]
+    for (const chat of chats) {
+      const r = await h.press({ data: 'kbd:0', fromId: 42, chat })
+      expectToastOnly(h, r, NOT_ALLOWED, JSON.stringify(chat))
+    }
+  })
+
+  it('AC-C3: forged data (out-of-range index, leading zero, sign, junk, trailing space/newline, hex, digits that are not ASCII, nested prefixes) gets the dead-button toast only, even when the keyboard itself carries that data', async () => {
+    const h = callbackHarness(patched)
+    const forged = ['kbd:12', 'kbd:01', 'kbd:00', 'kbd:-1', 'kbd:+1', 'kbd:', 'kbd:a', 'kbd:1 ', 'kbd:1\n', 'kbd:0\n', 'kbd:0x1', 'kbd:1e0',
+      'kbd:١', 'kbd:apv:abcde', 'kbd:perm:allow:abcde', 'kbd:kbd:0', 'kbd:99', 'kbd:100']
+    const hostile: Btn[][] = [...forged.map(d => [{ text: 'Hostile ' + d, callback_data: d }]), ...kb('Alfa', 'Béta')]
+    for (const data of forged) {
+      for (const markup of [kb('Alfa', 'Béta'), hostile]) {
+        const r = await h.press({ data, markup })
+        expectToastOnly(h, r, DEAD, JSON.stringify(data))
+      }
+    }
+  })
+
+  it('AC-C3: forged data from a stranger is refused as a stranger, before the data is even looked at', async () => {
+    const h = callbackHarness(patched)
+    for (const data of ['kbd:12', 'kbd:x', 'kbd:']) {
+      expectToastOnly(h, await h.press({ data, fromId: 99, chat: { id: 99, type: 'private' } }), NOT_ALLOWED, data)
+    }
+  })
+
+  it('AC-C4: well-formed data that is not in the keyboard of the message the button sits on (index too high, no callback_data, empty keyboard, no reply_markup, InaccessibleMessage): toast only', async () => {
+    const h = callbackHarness(patched)
+    expectToastOnly(h, await h.press({ data: 'kbd:3', markup: kb('Alfa', 'Béta') }), DEAD, 'index beyond the keyboard')
+    expectToastOnly(h, await h.press({ data: 'kbd:0', markup: [[{ text: 'Link', url: 'https://example.invalid/' }]] }), DEAD, 'url button only')
+    expectToastOnly(h, await h.press({ data: 'kbd:0', markup: [] }), DEAD, 'empty keyboard')
+    expectToastOnly(h, await h.press({ data: 'kbd:0', markup: [[]] }), DEAD, 'empty row')
+    expectToastOnly(h, await h.press({ data: 'kbd:0', inaccessible: true }), DEAD, 'InaccessibleMessage')
+    expectToastOnly(h, await h.press({ data: 'kbd:5', markup: [[{ text: 'Csak ez', callback_data: 'kbd:7' }]] }), DEAD, 'another index only')
+  })
+
+  it('AC-C9: the label comes from the button of the keyboard, never from the data; it is handed to handleInbound as (ctx, label, undefined) after the other buttons are taken off', async () => {
+    const h = callbackHarness(patched)
+    // kbd:1 is not the second label: rows with several buttons, other order, labels that look like data or a command
+    const markup: Btn[][] = [
+      [{ text: 'kbd:0', callback_data: 'kbd:2' }, { text: 'Ez a második gomb', callback_data: 'kbd:1' }],
+      [{ text: 'A/B', callback_data: 'kbd:0' }],
+    ]
+    const r = await h.press({ data: 'kbd:1', markup })
+    expect(r.edits).toEqual([{ reply_markup: { inline_keyboard: [[{ text: '✓ Ez a második gomb', callback_data: 'kbd:-' }]] } }])
+    expect(r.answers).toEqual([{ text: '✓ Ez a második gomb' }])
+    expect(h.delivered).toHaveLength(1)
+    expect(h.delivered[0].text).toBe('Ez a második gomb')
+    expect(h.delivered[0].text).not.toBe('kbd:1')
+    expect(h.delivered[0].ctx).toBe(r.ctx)
+    expect(h.delivered[0].img).toBeUndefined()
+    expect(h.events).toEqual(['edit', 'answer', 'deliver'])
+    expect([...h.set]).toEqual(['42:901'])
+    expect(h.gateCalls).toHaveLength(0)
+    expect(h.saveCalls).toHaveLength(0)
+    // a label that is only data-shaped is still just the label of the button
+    const r2 = await h.press({ data: 'kbd:2', markup, messageId: 902 })
+    expect(h.delivered[1].text).toBe('kbd:0')
+    expect(r2.answers).toEqual([{ text: '✓ kbd:0' }])
+  })
+
+  it('AC-C5: a second press on the same message (the second update still carries the old keyboard): one edit, one delivery, the second toast says it was answered', async () => {
+    const h = callbackHarness(patched)
+    const first = await h.press({ data: 'kbd:0' })
+    const second = await h.press({ data: 'kbd:0' })
+    const other = await h.press({ data: 'kbd:2' }) // another button of the same message, stale keyboard
+    expect(first.answers).toEqual([{ text: '✓ Alfa' }])
+    expect(second.answers).toEqual([{ text: ALREADY }])
+    expect(other.answers).toEqual([{ text: ALREADY }])
+    expect(first.edits).toHaveLength(1)
+    expect(second.edits).toHaveLength(0)
+    expect(other.edits).toHaveLength(0)
+    expect(h.delivered.map(d => d.text)).toEqual(['Alfa'])
+    expect([...h.set]).toEqual(['42:901'])
+  })
+
+  it('AC-C5: the Set is per message: another message, and another paired owner in his own chat, still deliver once each', async () => {
+    const h = callbackHarness(patched, { allowFrom: ['42', '43'] })
+    await h.press({ data: 'kbd:0', messageId: 901 })
+    await h.press({ data: 'kbd:1', messageId: 902 })
+    await h.press({ data: 'kbd:2', messageId: 901, fromId: 43, chat: { id: 43, type: 'private' } })
+    expect(h.delivered.map(d => d.text)).toEqual(['Alfa', 'Béta', 'Gamma'])
+    expect([...h.set].sort()).toEqual(['42:901', '42:902', '43:901'])
+  })
+
+  it('AC-C5: the Set is emptied before it grows past 1000 keys, and a tap still delivers', async () => {
+    const full = callbackHarness(patched)
+    for (let i = 0; i < 1000; i++) full.set.add(`1:${i}`)
+    const r = await full.press({ data: 'kbd:0' })
+    expect(r.answers).toEqual([{ text: '✓ Alfa' }])
+    expect(full.delivered).toHaveLength(1)
+    expect([...full.set]).toEqual(['42:901'])
+    const almost = callbackHarness(patched)
+    for (let i = 0; i < 999; i++) almost.set.add(`1:${i}`)
+    await almost.press({ data: 'kbd:0' })
+    expect(almost.set.size).toBe(1000)
+    expect(almost.set.has('42:901')).toBe(true)
+  })
+
+  it('AC-C6: after a restart (new Set) a press on a message whose keyboard is already the "✓ label" / kbd:- button delivers nothing', async () => {
+    const before = callbackHarness(patched)
+    const r = await before.press({ data: 'kbd:1' })
+    expect(r.edits).toHaveLength(1)
+    expect(before.delivered).toHaveLength(1)
+    // the plugin restarts: the Set is gone, the Telegram-side keyboard is the durable trace
+    const after = callbackHarness(patched)
+    const done: Btn[][] = [[{ text: '✓ Béta', callback_data: 'kbd:-' }]]
+    expectToastOnly(after, await after.press({ data: 'kbd:-', markup: done }), ALREADY, 'kbd:- on the answered message')
+    expectToastOnly(after, await after.press({ data: 'kbd:1', markup: done }), DEAD, 'old data on the answered message')
+    expectToastOnly(after, await after.press({ data: 'kbd:0', markup: done }), DEAD, 'another old data on the answered message')
+  })
+
+  it('AC-C6: a kbd:- press (the answered button) is an answer to the tap only, in the same harness too', async () => {
+    const h = callbackHarness(patched)
+    const r = await h.press({ data: 'kbd:-', markup: [[{ text: '✓ Alfa', callback_data: 'kbd:-' }]] })
+    expect(r.answers).toEqual([{ text: ALREADY }])
+    expectToastOnly(h, r, ALREADY, 'kbd:-')
+    // even if the keyboard is still the live one (forged or stale update): nothing to deliver
+    expectToastOnly(h, await h.press({ data: 'kbd:-', markup: kb('Alfa', 'Béta') }), ALREADY, 'kbd:- on a live keyboard')
+  })
+
+  it('AC-C7: when the edit fails nothing is delivered, the key leaves the Set and the toast tells him to type; a repeated press with a working edit delivers once', async () => {
+    const h = callbackHarness(patched)
+    const bad = await h.press({ data: 'kbd:1', edit: 'fail' })
+    expect(bad.answers).toEqual([{ text: NOT_RECORDED }])
+    expect(bad.edits).toHaveLength(1)
+    expect(h.delivered).toHaveLength(0)
+    expect(h.set.size).toBe(0)
+    expect(h.events).toEqual(['edit', 'answer'])
+    expect(h.gateCalls).toHaveLength(0)
+    const bad2 = await h.press({ data: 'kbd:1', edit: 'fail' })
+    expect(bad2.answers).toEqual([{ text: NOT_RECORDED }])
+    expect(h.delivered).toHaveLength(0)
+    const good = await h.press({ data: 'kbd:1' })
+    expect(good.answers).toEqual([{ text: '✓ Béta' }])
+    expect(h.delivered.map(d => d.text)).toEqual(['Béta'])
+    expect([...h.set]).toEqual(['42:901'])
+    const again = await h.press({ data: 'kbd:1' })
+    expect(again.answers).toEqual([{ text: ALREADY }])
+    expect(h.delivered).toHaveLength(1)
+  })
+
+  it('AC-C8: every path calls answerCallbackQuery exactly once, also when it rejects; a failed toast neither blocks the delivery nor throws', async () => {
+    const h = callbackHarness(patched, { allowFrom: ['42'] })
+    const taps: TapSpec[] = [
+      { data: 'kbd:0' }, // delivered
+      { data: 'kbd:0' }, // already answered
+      { data: 'kbd:1', messageId: 7, edit: 'fail' }, // edit failure
+      { data: 'kbd:9' }, // not in the keyboard
+      { data: 'kbd:12' }, // forged
+      { data: 'kbd:-', markup: [[{ text: '✓ x', callback_data: 'kbd:-' }]] },
+      { data: 'kbd:0', fromId: 99, chat: { id: 99, type: 'private' } }, // stranger
+      { data: 'kbd:0', chat: { id: -100, type: 'supergroup' } }, // group
+      { data: 'kbd:0', noMessage: true },
+      { data: 'kbd:0', inaccessible: true },
+    ]
+    for (const t of taps) {
+      const r = await h.press(t)
+      expect(r.answers, JSON.stringify(t)).toHaveLength(1)
+      expect(r.answers[0]?.text, JSON.stringify(t)).toEqual(expect.any(String))
+    }
+    // the toast request itself fails on a delivering path and on a refusing one
+    const flaky = callbackHarness(patched)
+    const ok = await flaky.press({ data: 'kbd:2', answerFails: true })
+    expect(ok.answers).toHaveLength(1)
+    expect(ok.edits).toHaveLength(1)
+    expect(flaky.delivered.map(d => d.text)).toEqual(['Gamma'])
+    const refused = await flaky.press({ data: 'kbd:2', fromId: 99, chat: { id: 99, type: 'private' }, answerFails: true })
+    expect(refused.answers).toHaveLength(1)
+    expect(flaky.delivered).toHaveLength(1)
+    const editFail = await flaky.press({ data: 'kbd:1', messageId: 5, edit: 'fail', answerFails: true })
+    expect(editFail.answers).toHaveLength(1)
+    expect(flaky.delivered).toHaveLength(1)
+    expect(flaky.set.has('42:5')).toBe(false)
+  })
+
+  it('AC-C10: data that is not kbd: keeps the old behaviour (perm branch, empty toast); kbd: lookalikes in case or with a prefix are not kbd', async () => {
+    const h = callbackHarness(patched)
+    // perm:allow by a paired user: the structured permission event, the old toast, the message text edited
+    h.pendingPermissions.set('abcde', { tool_name: 'Bash', description: 'd', input_preview: '{}' })
+    const allow = await h.press({ data: 'perm:allow:abcde' })
+    expect(allow.answers).toEqual([{ text: '✅ Allowed' }])
+    expect(h.permNotifications).toEqual([{ method: 'notifications/claude/channel/permission', params: { request_id: 'abcde', behavior: 'allow' } }])
+    expect(h.pendingPermissions.has('abcde')).toBe(false)
+    expect(allow.textEdits).toHaveLength(1)
+    // perm from a stranger: refused by the plugin's own check
+    const stranger = await h.press({ data: 'perm:deny:fghij', fromId: 99, chat: { id: 99, type: 'private' } })
+    expect(stranger.answers).toEqual([{ text: 'Not authorized.' }])
+    expect(h.permNotifications).toHaveLength(1)
+    // perm:more with nothing pending
+    const more = await h.press({ data: 'perm:more:mnopq' })
+    expect(more.answers).toEqual([{ text: 'Details no longer available.' }])
+    // everything else: the plugin's empty toast, once, and nothing else happens
+    for (const data of ['xyz', '', 'KBD:0', ' kbd:0', 'xkbd:0', 'kbd', 'apv:abc']) {
+      const r = await h.press({ data })
+      expect(r.answers, JSON.stringify(data)).toEqual([undefined])
+      expect(r.edits, JSON.stringify(data)).toHaveLength(0)
+    }
+    expect(h.delivered).toHaveLength(0)
+    expect(h.set.size).toBe(0)
+    expect(h.gateCalls).toHaveLength(0)
+    expect(h.saveCalls).toHaveLength(0)
+    // and a kbd: press afterwards is unaffected by all of that
+    const tap = await h.press({ data: 'kbd:0' })
+    expect(tap.answers).toEqual([{ text: '✓ Alfa' }])
+    expect(h.delivered.map(d => d.text)).toEqual(['Alfa'])
+  })
+
+  it('AC-C10: with the apv hook line (PR #1964) in front of the perm regex, apv: still goes to that hook, and a kbd: press still works', async () => {
+    const fixtureText = readFileSync(FIXTURE, 'utf-8')
+    const withApv = fixtureText.replace(`${CALLBACK_OPEN}\n  const data = ctx.callbackQuery.data\n`, `${CALLBACK_OPEN}\n  const data = ctx.callbackQuery.data\n${APV_LINE}\n`)
+    expect(withApv).not.toBe(fixtureText)
+    writeFileSync(server, withApv)
+    expect(run(['--topics', 'off']).status).toBe(0)
+    const h = callbackHarness(readFileSync(server, 'utf-8'))
+    const apv = await h.press({ data: 'apv:abc:allow' })
+    expect(h.approvals).toEqual(['apv:abc:allow'])
+    expect(apv.answers).toHaveLength(0) // the hook answers its own queries; the kbd branch and the plugin's empty toast never ran
+    expect(h.delivered).toHaveLength(0)
+    const tap = await h.press({ data: 'kbd:1' })
+    expect(tap.answers).toEqual([{ text: '✓ Béta' }])
+    expect(h.approvals).toHaveLength(1)
+    expect(h.delivered.map(d => d.text)).toEqual(['Béta'])
+  })
+
+  it('AC-D1/D2: a tap through the real patched handleInbound: content is the label, meta has the question id and a fresh ts, no forwarded flag, the evidence record has message_id null', async () => {
+    const inbound = inboundHarness(patched, stateDir)
+    const h = callbackHarness(patched, { handleInbound: inbound.handleInbound })
+    const r = await h.press({ data: 'kbd:1', messageId: 901 })
+    expect(r.answers).toEqual([{ text: '✓ Béta' }])
+    expect(inbound.notifications).toHaveLength(1)
+    const n = inbound.notifications[0]
+    expect(n.method).toBe('notifications/claude/channel')
+    expect(n.params.content).toBe('Béta')
+    expect(Object.keys(n.params.meta).sort()).toEqual(['chat_id', 'message_id', 'ts', 'user', 'user_id'])
+    expect(n.params.meta).toMatchObject({ chat_id: '42', message_id: '901', user: 'gyuri', user_id: '42' })
+    expect(n.params.meta).not.toHaveProperty('forwarded')
+    expect(Number.isNaN(Date.parse(n.params.meta.ts))).toBe(false)
+    expect(Math.abs(Date.now() - Date.parse(n.params.meta.ts))).toBeLessThan(5000)
+    // the evidence line: the existing behaviour, message_id null (ctx.message is absent on a callback)
+    const recs = inbound.evidence()
+    expect(recs.map(e => [e.chat_id, e.message_id, e.text])).toEqual([['42', null, 'Béta']])
+    // so the question id in the meta matches no evidence record, and a write command cannot ride on a tap
+    const lines = readEvidenceLines(stateDir)
+    expect(findEvidence(lines, '42', '901')).toBeNull()
+    const verdict = (messageId: string | null, text: string) => checkWriteEvidence({ chatId: '42', messageId, text, now: Date.now() }, () => lines, () => true)
+    expect(verdict(null, 'Béta')).toEqual({ ok: false, reason: 'no-message-id' })
+    expect(verdict('901', 'Béta')).toEqual({ ok: false, reason: 'not-found' })
+  })
+
+  it('AC-D1: a typed message through the same patched handleInbound keeps its old meta exactly (ts from message.date, own message_id, nothing added)', async () => {
+    const inbound = inboundHarness(patched, stateDir)
+    const ctx: FakeCtx = {
+      from: { id: 42, username: 'gyuri' },
+      chat: { id: 42, type: 'private' },
+      message: { message_id: 5, date: 1_700_000_000 },
+    }
+    await inbound.handleInbound(ctx, 'B', undefined)
+    expect(inbound.notifications[0].params.content).toBe('B')
+    expect(inbound.notifications[0].params.meta).toEqual({
+      chat_id: '42', message_id: '5', user: 'gyuri', user_id: '42', ts: new Date(1_700_000_000 * 1000).toISOString(),
+    })
+    expect(inbound.evidence().map(e => [e.chat_id, e.message_id, e.text])).toEqual([['42', '5', 'B']])
+  })
+
+  it('AC-D1: a forwarded typed message is still flagged by the same patched handleInbound', async () => {
+    const inbound = inboundHarness(patched, stateDir)
+    await inbound.handleInbound({
+      from: { id: 42 }, chat: { id: 42, type: 'private' },
+      message: { message_id: 6, date: 1_700_000_000, forward_origin: { type: 'user' } },
+    }, 'x', undefined)
+    expect(inbound.notifications[0].params.meta.forwarded).toBe('1')
+    expect(inbound.notifications[0].params.meta.user).toBe('42')
   })
 })
 
