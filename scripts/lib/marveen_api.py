@@ -47,6 +47,8 @@ USAGE = """usage: bash scripts/marveen-api.sh <verb> [args]
   approval-request <agent> <category-key> <timeout-seconds> <description-file> [--content-hash <h>]
   approval-status <approval-id>
   approval-consume <approval-id> <category-key> <consumer> [--content-hash <h>]
+  project-thread-post <agent> <project> <content-file> [--to owner|agent|main|both] [--needs-owner]
+  project-thread-read <project>
 A <content-file> is a path, or - for stdin. Write it with your file tool first: never put the text on the command line."""
 
 
@@ -283,6 +285,32 @@ def build_request(verb, args):
         if content_hash is not None:
             body['content_hash'] = check(content_hash, HASH_RE, 'content hash')
         return 'POST', f'/api/approvals/{approval_id}/consume', body, headers, {}
+    if verb == 'project-thread-post':
+        # Project thread (src/web/project-threads.ts): the post is stored, and the server queues it for
+        # whoever it is addressed to. Success prints the stored row; it counts as posted only with an id.
+        to = take_opt(args, '--to')
+        needs_owner = take_flag(args, '--needs-owner')
+        agent, project, content_file = positional(args, 3, verb)
+        check(agent, NAME_RE, 'agent name')
+        if not project.strip():
+            fail_usage('project-thread-post: the project is empty')
+        content = read_text(content_file)
+        if not content.strip():
+            fail_usage('project-thread-post: the content is empty')
+        body = {'author': agent, 'content': content}
+        if to is not None:
+            if to not in ('owner', 'agent', 'main', 'both'):
+                fail_usage(f'invalid --to: {to!r} (one of owner, agent, main, both)')
+            body['to'] = to
+        if needs_owner:
+            body['needs_owner'] = True
+        headers['X-Agent-Id'] = agent
+        return 'POST', '/api/project-threads/' + urllib.parse.quote(project.strip(), safe=''), body, headers, {}
+    if verb == 'project-thread-read':
+        (project,) = positional(args, 1, verb)
+        if not project.strip():
+            fail_usage('project-thread-read: the project is empty')
+        return 'GET', '/api/project-threads/' + urllib.parse.quote(project.strip(), safe=''), None, headers, {}
     fail_usage(f'unknown verb: {verb!r}')
 
 

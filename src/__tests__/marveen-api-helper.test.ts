@@ -274,3 +274,28 @@ describe('marveen-api.sh: failures are loud, and nothing is sent on a bad call',
     expect(sh).not.toMatch(/dashboard-token|TOKEN=/)
   })
 })
+
+describe('marveen-api.sh: project thread verbs', () => {
+  it('project-thread-post: POST to the URL-encoded project with author, content, to, needs_owner and X-Agent-Id', async () => {
+    const r = await run(['project-thread-post', 'dani', "Demo / o'brien", file('pt.txt', 'Kérdés `backtick` és $(nem fut)\n'), '--to', 'owner', '--needs-owner'])
+    expect(r.code).toBe(0)
+    expect(seen).toHaveLength(1)
+    const [s] = seen
+    expect(s.method).toBe('POST')
+    expect(s.url).toBe('/api/project-threads/Demo%20%2F%20o%27brien')
+    expect(s.headers['x-agent-id']).toBe('dani')
+    expect(JSON.parse(s.body)).toEqual({ author: 'dani', content: 'Kérdés `backtick` és $(nem fut)\n', to: 'owner', needs_owner: true })
+  })
+
+  it('project-thread-post: a bad --to or an empty text fails before anything is sent', async () => {
+    expect((await run(['project-thread-post', 'dani', 'demo', file('pt2.txt', 'x'), '--to', 'everyone'])).code).toBe(2)
+    expect((await run(['project-thread-post', 'dani', 'demo', file('pt3.txt', '  \n')])).code).toBe(2)
+    expect(seen).toHaveLength(0)
+  })
+
+  it('project-thread-read: GET the thread', async () => {
+    const r = await run(['project-thread-read', 'demo'])
+    expect(r.code).toBe(0)
+    expect(seen.map((s) => `${s.method} ${s.url}`)).toEqual(['GET /api/project-threads/demo'])
+  })
+})

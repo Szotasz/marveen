@@ -349,6 +349,38 @@ export function initDatabase(dbPathOverride?: string): void {
     )
   `)
 
+  // Project threads: one shared conversation per project between the owner
+  // (dashboard UI, author 'owner'), the project's responsible agent and the
+  // main agent (supervisor). See src/web/project-threads.ts for the delivery
+  // rules. `project` is the same free-text key as kanban_cards.project.
+  // `to_party` is the addressee ROLE ('owner' | 'agent' | 'main' | 'both',
+  // 'both' = the two parties other than the author). `responsible_agent` is
+  // the agent id the 'agent' role resolved to when the row was written, so the
+  // history keeps its labels after the project changes hands. `deliveries` is
+  // a JSON array of the agent_messages ids the post produced (traceability).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS project_thread_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      project TEXT NOT NULL,
+      author TEXT NOT NULL,
+      to_party TEXT NOT NULL,
+      responsible_agent TEXT,
+      content TEXT NOT NULL,
+      needs_owner INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL,
+      owner_read_at INTEGER,
+      deliveries TEXT
+    )
+  `)
+  db.exec('CREATE INDEX IF NOT EXISTS idx_project_thread_project ON project_thread_messages(project, id)')
+  // Explicit per-project override of the thread's responsible agent; NULL =
+  // derived from the project's kanban cards (resolveResponsibleAgent).
+  try {
+    db.exec('ALTER TABLE kanban_projects ADD COLUMN thread_agent TEXT')
+  } catch {
+    // column already exists
+  }
+
   // Migration: add test_steps to kanban_cards (card 8fe51afd -- the testing
   // instructions get a field of their own instead of living in the comment
   // thread). Placed AFTER the testing-status rebuild above on purpose: that

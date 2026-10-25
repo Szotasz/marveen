@@ -1,5 +1,6 @@
 import { listKanbanProjectSummaries, upsertKanbanProjectDescription } from '../../db.js'
 import { readBody, json } from '../http-helpers.js'
+import { listProjectThreadSummaries, resolveResponsibleAgent } from '../project-threads.js'
 import type { RouteContext } from './types.js'
 
 // Project-overview endpoints: a human-readable, project-grouped summary of the
@@ -13,7 +14,20 @@ export async function tryHandleKanbanProjects(ctx: RouteContext): Promise<boolea
   const { req, res, path, method } = ctx
 
   if (path === '/api/kanban-projects/summary' && method === 'GET') {
-    json(res, listKanbanProjectSummaries())
+    // Each row also carries its project thread's state (unread for the owner,
+    // waiting on the owner, last message), so the Projects page needs one
+    // fetch for its badges. `thread` is null for a project with no thread yet.
+    const threads = new Map(listProjectThreadSummaries().map((t) => [t.project, t]))
+    json(res, listKanbanProjectSummaries().map((p) => {
+      const t = threads.get(p.project)
+      return {
+        ...p,
+        thread: t
+          ? { messageCount: t.messageCount, unreadForOwner: t.unreadForOwner, waitingOnOwner: t.waitingOnOwner, lastMessageAt: t.lastMessageAt, lastAuthor: t.lastAuthor }
+          : null,
+        threadAgent: resolveResponsibleAgent(p.project).agent,
+      }
+    }))
     return true
   }
 

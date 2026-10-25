@@ -798,6 +798,15 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     requiresRestart: false,
   },
   {
+    key: 'PROJECT_THREAD_OWNER_PING',
+    type: 'boolean',
+    default: '1',
+    description: 'Projekt-szál: ha egy ügynök a projekt szálában a gazda válaszát kéri (needs_owner), menjen-e rövid értesítés a gazda csatornájára a projekt nevével és a dashboard-linkkel. Bekapcsolva (alapértelmezés) megy, kikapcsolva csak a Projektek oldal "vár rád" jelzése mutatja.',
+    module: 'channels',
+    secret: false,
+    requiresRestart: false,
+  },
+  {
     key: 'SLACK_OWNER_USER_ID',
     type: 'string',
     default: '',
