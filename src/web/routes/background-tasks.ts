@@ -27,12 +27,17 @@ function bgSessionName(id: string): string {
   return `bg-${id}`
 }
 
-async function isBgSessionAlive(session: string): Promise<boolean> {
+// A tmux that does not answer within the timeout used to read as a dead session, so the
+// task was closed while its session (and the claude -p in it) ran on with no owner. Only
+// a non-zero tmux exit (e.g. 1, "no server running") means the session is really gone.
+async function bgSessionState(session: string): Promise<'alive' | 'dead' | 'unknown'> {
   try {
     const { stdout } = await execFileAsync(TMUX, ['list-sessions', '-F', '#{session_name}'], { timeout: 3000, encoding: 'utf-8' })
-    return stdout.split('\n').some(l => l.trim() === session)
-  } catch {
-    return false
+    return stdout.split('\n').some(l => l.trim() === session) ? 'alive' : 'dead'
+  } catch (err) {
+    if (typeof (err as { code?: unknown }).code === 'number') return 'dead'
+    logger.warn({ err, session }, 'tmux list-sessions did not answer; background task liveness unknown')
+    return 'unknown'
   }
 }
 
@@ -106,9 +111,10 @@ function pollUntilDone(id: string): void {
       const session = task.tmux_session
       if (!session) { clearInterval(interval); return }
 
-      const alive = await isBgSessionAlive(session)
+      const state = await bgSessionState(session)
       if (getBackgroundTask(id)?.status !== 'running') { clearInterval(interval); return }
-      if (!alive) {
+      if (state === 'unknown') return // tmux did not answer; ask again on the next tick
+      if (state === 'dead') {
         finishBackgroundTask(id, 'done', '(session ended)')
         logger.info({ id }, 'Background task session ended')
         clearInterval(interval)
@@ -156,7 +162,8 @@ export async function sweepOrphanedBackgroundTasks(): Promise<void> {
   const running = getRunningBackgroundTasks()
   let orphaned = 0
   for (const task of running) {
-    if (!task.tmux_session || !(await isBgSessionAlive(task.tmux_session))) {
+    const state = task.tmux_session ? await bgSessionState(task.tmux_session) : 'dead'
+    if (state === 'dead') {
       const output = task.tmux_session ? await captureSession(task.tmux_session) : null
       // A DELETE may have closed the task while the sweep awaited tmux.
       if (getBackgroundTask(task.id)?.status !== 'running') continue
