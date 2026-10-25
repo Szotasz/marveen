@@ -408,15 +408,15 @@ describe('background tasks: tmux calls do not block the event loop', () => {
   }, 30_000)
 
   it('startup sweep: a list-sessions that does not answer in time keeps the task running and polls it', async () => {
-    seedRunning('AA000007', 'agent-sweep-slow', true)
+    seedRunning('AA000009', 'agent-sweep-slow', true)
     put('sleep-list-sessions', '4')
     await mod.sweepOrphanedBackgroundTasks()
-    expect(db.getBackgroundTask('AA000007')!.status).toBe('running')
+    expect(db.getBackgroundTask('AA000009')!.status).toBe('running')
     drop('sleep-list-sessions')
     put('pane', 'swept answer\n___BG_DONE___\n')
     await vi.advanceTimersByTimeAsync(POLL_MS)
-    await vi.waitFor(() => expect(db.getBackgroundTask('AA000007')!.status).toBe('done'), { timeout: 10_000 })
-    expect(db.getBackgroundTask('AA000007')!.output).toBe('swept answer')
+    await vi.waitFor(() => expect(db.getBackgroundTask('AA000009')!.status).toBe('done'), { timeout: 10_000 })
+    expect(db.getBackgroundTask('AA000009')!.output).toBe('swept answer')
   }, 30_000)
 
   it('no tmux server (list-sessions exits 1) still reads as a dead session, in the poll and in the sweep', async () => {
