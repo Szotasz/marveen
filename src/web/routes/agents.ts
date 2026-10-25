@@ -186,7 +186,7 @@ const execFileAsync = promisify(execFile)
 // The Slack smoke test runs for up to 60 s: run it off the event loop, and as an
 // argv, so the agent name is a plain argument, never part of a shell command
 // line. stdin is closed at once, as execSync did.
-export async function runSlackSmokeTest(scriptPath: string, name: string): Promise<{ ok: boolean; output: string }> {
+async function runSlackSmokeTestNow(scriptPath: string, name: string): Promise<{ ok: boolean; output: string }> {
   try {
     const pending = execFileAsync('bash', [scriptPath, name], {
       timeout: 60000,
@@ -194,12 +194,27 @@ export async function runSlackSmokeTest(scriptPath: string, name: string): Promi
       env: { ...process.env, SLACK_SMOKE_TEST_ALLOWED: 'true' },
     })
     pending.child.stdin?.end()
-    const { stdout } = await pending
+    const { stdout, stderr } = await pending
+    // execSync let the script's stderr through to the dashboard's own; keep that
+    // for a passing run (a failing run already returns it in `output`).
+    if (stderr) process.stderr.write(stderr)
     return { ok: true, output: stdout }
   } catch (err: unknown) {
     const execErr = err as { stdout?: string; stderr?: string }
     return { ok: false, output: (execErr.stdout || '') + (execErr.stderr || '') }
   }
+}
+
+// One smoke test at a time, as while the call was synchronous: the script
+// passes on ANY new gate.inbound.deliver entry that lands in the agent's
+// audit.jsonl after it started, so a run overlapping another could pass on
+// the other run's delivery.
+let slackSmokeQueue: Promise<unknown> = Promise.resolve()
+
+export function runSlackSmokeTest(scriptPath: string, name: string): Promise<{ ok: boolean; output: string }> {
+  const run = slackSmokeQueue.then(() => runSlackSmokeTestNow(scriptPath, name))
+  slackSmokeQueue = run.catch(() => {})
+  return run
 }
 
 // Which credential kinds may read a transcript. NAMED principals only: a

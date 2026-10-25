@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeAll, afterAll, afterEach } from 'vitest'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
@@ -46,9 +46,12 @@ beforeAll(() => {
   mkdirSync(join(tmpRoot, 'scripts'), { recursive: true })
   writeFileSync(join(tmpRoot, 'scripts', 'smoke-test-slack-channel.sh'), [
     'if [ -n "$FAKE_READ_STDIN" ]; then cat > /dev/null; fi',
+    'if [ -n "$FAKE_LOG" ]; then echo "start $1" >> "$FAKE_LOG"; fi',
     'if [ -n "$FAKE_SLEEP" ]; then sleep "$FAKE_SLEEP"; fi',
+    'if [ -n "$FAKE_LOG" ]; then echo "end $1" >> "$FAKE_LOG"; fi',
     "printf 'name=%s allowed=%s\\n' \"$1\" \"$SLACK_SMOKE_TEST_ALLOWED\"",
     'if [ -n "$FAKE_FAIL" ]; then echo "to-stderr" >&2; exit 3; fi',
+    'if [ -n "$FAKE_STDERR_OK" ]; then echo "warn-on-ok" >&2; fi',
     'exit 0',
     '',
   ].join('\n'))
@@ -60,6 +63,8 @@ afterEach(() => {
   delete process.env.FAKE_SLEEP
   delete process.env.FAKE_FAIL
   delete process.env.FAKE_READ_STDIN
+  delete process.env.FAKE_LOG
+  delete process.env.FAKE_STDERR_OK
 })
 
 describe('slack smoke-test route', () => {
@@ -111,5 +116,40 @@ describe('slack smoke-test route', () => {
     makeAgent('smoke-noflag')
     writeFileSync(join(tmpRoot, 'agents', 'smoke-noflag', '.claude', 'channels', 'slack', '.env'), 'OTHER=1\n')
     expect((await call('smoke-noflag')).status).toBe(403)
+  })
+
+  it('runs overlapping smoke tests one after the other', async () => {
+    makeAgent('smoke-q1')
+    makeAgent('smoke-q2')
+    const logPath = join(tmpRoot, 'order.log')
+    process.env.FAKE_LOG = logPath
+    process.env.FAKE_SLEEP = '1'
+    const t0 = Date.now()
+    const [a, b] = await Promise.all([call('smoke-q1'), call('smoke-q2')])
+    expect(a.status).toBe(200)
+    expect(b.status).toBe(200)
+    expect(a.json).toEqual({ ok: true, output: 'name=smoke-q1 allowed=true\n' })
+    expect(b.json).toEqual({ ok: true, output: 'name=smoke-q2 allowed=true\n' })
+    expect(readFileSync(logPath, 'utf-8').trim().split('\n')).toEqual([
+      'start smoke-q1',
+      'end smoke-q1',
+      'start smoke-q2',
+      'end smoke-q2',
+    ])
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(1900)
+  }, 15_000)
+
+  it('passes the stderr of a passing run through to the dashboard stderr', async () => {
+    makeAgent('smoke-warn')
+    process.env.FAKE_STDERR_OK = '1'
+    const spy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true)
+    let r!: { status: number; json: any }
+    let writes: unknown[][] = []
+    // mockRestore() clears mock.calls, so keep a copy of what was written up to
+    // the restore; the assertions below run on that copy.
+    try { r = await call('smoke-warn'); writes = [...spy.mock.calls] } finally { spy.mockRestore() }
+    expect(r.status).toBe(200)
+    expect(r.json).toEqual({ ok: true, output: 'name=smoke-warn allowed=true\n' })
+    expect(writes.filter((c) => String(c[0]) === 'warn-on-ok\n')).toHaveLength(1)
   })
 })
