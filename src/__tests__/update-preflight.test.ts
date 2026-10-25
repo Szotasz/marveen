@@ -11,7 +11,9 @@ import {
 
 // Helper: build a GitRunner from plain strings. Covers the common
 // "return this exact branch / status" fixtures without dragging in a
-// real git invocation.
+// real git invocation. The methods answer with promises, as the real
+// runner does: a synchronous stub would let a lost `await` in
+// checkUpdatePreflight pass unseen.
 function makeGit(
   branch: string,
   porcelain = '',
@@ -20,11 +22,11 @@ function makeGit(
   onOrigin: 'yes' | 'no' | 'unknown' = 'yes',
 ): GitRunner {
   return {
-    currentBranch: () => branch,
-    porcelainStatus: () => porcelain,
-    aheadCount: () => ahead,
-    behindCount: () => behind,
-    originHasBranch: () => onOrigin,
+    currentBranch: async () => branch,
+    porcelainStatus: async () => porcelain,
+    aheadCount: async () => ahead,
+    behindCount: async () => behind,
+    originHasBranch: async () => onOrigin,
   }
 }
 
