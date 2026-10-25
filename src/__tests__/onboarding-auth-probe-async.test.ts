@@ -12,7 +12,8 @@ const H = vi.hoisted(() => ({ root: '' }))
 
 vi.mock('../config.js', async (orig) => {
   const a = await orig<typeof import('../config.js')>()
-  return { ...a, PROJECT_ROOT: H.root, STORE_DIR: `${H.root}/store-dir` }
+  // The provider is pinned: the identity case configures a telegram channel, whatever the checkout's own setting.
+  return { ...a, PROJECT_ROOT: H.root, STORE_DIR: `${H.root}/store-dir`, CHANNEL_PROVIDER: 'telegram' as const }
 })
 vi.mock('node:os', async (orig) => {
   const a = await orig<typeof import('node:os')>()
@@ -208,7 +209,7 @@ describe('onboarding auth probes are async', () => {
     const stateDir = join(tmpRoot, 'chan-state')
     mkdirSync(stateDir, { recursive: true })
     writeFileSync(join(stateDir, 'access.json'), JSON.stringify({ allowFrom: ['1'] }))
-    writeFileSync(join(stateDir, '.env'), ['TELEGRAM_BOT_TOKEN', 'DISCORD_BOT_TOKEN', 'SLACK_BOT_TOKEN', 'GOOGLECHAT_PROJECT_ID', 'TEAMS_BOT_APP_ID'].map((k) => `${k}=x\n`).join(''))
+    writeFileSync(join(stateDir, '.env'), 'TELEGRAM_BOT_TOKEN=x\n')
     process.env[envVar] = stateDir
     process.env.FAKE_SESSION = MAIN_CHANNELS_SESSION
     try {

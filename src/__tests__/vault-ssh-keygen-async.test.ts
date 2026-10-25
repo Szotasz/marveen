@@ -186,6 +186,7 @@ describe('ssh-keygen runs asynchronously', () => {
     const body = json()
     expect(body.publicKey.endsWith('\n')).toBe(false)
     expect(body.publicKey).toBe(kp.publicKey)
+    expect(body.key.publicKey).toBe(kp.publicKey)
     const row = getVaultSshKey(body.key.id as string)
     expect(row).toBeDefined()
     expect(row!.public_key).toBe(kp.publicKey)
