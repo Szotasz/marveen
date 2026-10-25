@@ -13330,6 +13330,7 @@ async function loadProjects() {
     _projectsLastSummaries = await summaryRes.json()
     _projectsAssignees = assigneesRes.ok ? await assigneesRes.json() : []
     renderProjects()
+    maybeOpenProjectThreadFromUrl()
   } catch (err) {
     console.error('loadProjects failed:', err)
     grid.innerHTML = ''
@@ -13420,6 +13421,7 @@ function renderProjects() {
         <button class="btn-secondary btn-compact" data-act="cancel" hidden>${escapeHtml(t('projects.cancel'))}</button>
       </div>
       <div class="project-card-assignees">${assigneeChips}</div>
+      ${projectThreadRowHtml(p)}
       <div class="project-card-foot">
         <span>${escapeHtml(activity)}</span>
         <a href="#" data-act="view-kanban">${escapeHtml(t('projects.view_in_kanban'))}</a>
@@ -13441,6 +13443,11 @@ document.getElementById('projectsGrid')?.addEventListener('click', async (e) => 
   const editArea = card.querySelector('[data-role="desc-edit"]')
   const [editBtn, saveBtn, cancelBtn] = card.querySelectorAll('[data-role="desc-actions"] button')
 
+  if (e.target.closest('[data-act="thread"]')) {
+    e.preventDefault()
+    openProjectThread(project)
+    return
+  }
   if (e.target.closest('[data-act="edit"]')) {
     view.hidden = true; editArea.hidden = false
     editBtn.hidden = true; saveBtn.hidden = false; cancelBtn.hidden = false
@@ -13481,6 +13488,252 @@ document.getElementById('projectsGrid')?.addEventListener('click', async (e) => 
     switchPage('kanban')
   }
 })
+
+// === Project thread (owner <-> responsible agent <-> main agent) ===
+// One shared conversation per project (src/web/project-threads.ts). The card
+// shows a badge: "vár rád" when an agent asked the owner something after the
+// owner's last post, "új üzenet" when something is unread. Opening the panel
+// marks the thread read; the owner's reply clears "vár rád" server-side.
+// The owner picks the addressee (the responsible agent, the main agent, or
+// both); a text that opens with "Marveen," switches the pick to the main agent.
+let _ptProject = null
+let _ptData = null
+let _ptTo = 'agent'
+let _ptAutoMain = false
+let _ptPollTimer = null
+let _ptSending = false
+
+function projectThreadRowHtml(p) {
+  const th = p.thread
+  let badge = ''
+  if (th && th.waitingOnOwner) badge = `<button class="pt-badge wait" data-act="thread">${escapeHtml(t('projects.thread.badge_wait'))}</button>`
+  else if (th && th.unreadForOwner > 0) badge = `<button class="pt-badge new" data-act="thread">${escapeHtml(t('projects.thread.badge_new', { n: th.unreadForOwner }))}</button>`
+  const meta = th && th.lastMessageAt
+    ? `<span class="pt-meta">${escapeHtml(t('projects.thread.last', { when: formatRelative(th.lastMessageAt * 1000) }))}</span>`
+    : ''
+  const label = th && th.messageCount ? t('projects.thread.open_n', { n: th.messageCount }) : t('projects.thread.open')
+  return `<div class="project-card-thread">
+    <button class="btn-secondary btn-compact" data-act="thread">${escapeHtml(label)}</button>
+    ${badge}${meta}
+  </div>`
+}
+
+function ptMainId() { return (_ptData && _ptData.main && _ptData.main.id) || mainAgentId() }
+function ptMainLabel() { return (_ptData && _ptData.main && _ptData.main.label) || 'Marveen' }
+function ptOwnerLabel() { return (_ptData && _ptData.owner && _ptData.owner.label) || t('projects.thread.owner') }
+
+function ptAgentLabel(id) {
+  if (!id) return '?'
+  if (id === 'owner') return ptOwnerLabel()
+  if (id === ptMainId()) return ptMainLabel()
+  return projectAssigneeMeta(id).label || id
+}
+
+function ptPartyLabel(role, msg) {
+  if (role === 'owner') return ptOwnerLabel()
+  if (role === 'main') return ptMainLabel()
+  return ptAgentLabel(msg ? msg.responsible_agent : (_ptData && _ptData.responsible && _ptData.responsible.agent))
+}
+
+function ptAuthorRole(author) {
+  if (author === 'owner') return 'owner'
+  if (author === ptMainId()) return 'main'
+  return 'agent'
+}
+
+function ptToLabel(msg) {
+  const role = ptAuthorRole(msg.author)
+  const roles = msg.to_party === 'both' ? ['owner', 'agent', 'main'].filter((r) => r !== role) : [msg.to_party]
+  return roles.map((r) => ptPartyLabel(r, msg)).join(' + ')
+}
+
+function ptFormatTime(sec) {
+  const opts = { year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }
+  const d = new Date(sec * 1000)
+  const locale = window._lang === 'en' ? 'en-GB' : 'hu-HU'
+  try {
+    return d.toLocaleString(locale, _ptData && _ptData.timeZone ? { ...opts, timeZone: _ptData.timeZone } : opts)
+  } catch {
+    return d.toLocaleString(locale, opts)
+  }
+}
+
+function ptAddressesMain(text) {
+  const names = [ptMainId(), ptMainLabel()].filter(Boolean)
+  const s = String(text || '').trimStart()
+  return names.some((n) => {
+    const esc = String(n).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    return new RegExp(`^@?${esc}(?![\\p{L}\\p{N}_-])`, 'iu').test(s)
+  })
+}
+
+function renderProjectThreadChips() {
+  const box = document.getElementById('projectThreadTo')
+  if (!box || !_ptData) return
+  const agentId = _ptData.responsible && _ptData.responsible.agent
+  const agentIsMain = agentId === ptMainId()
+  // When the main agent is itself responsible, "agent" and "main" are one party.
+  const chips = agentIsMain
+    ? [['main', ptMainLabel()]]
+    : [['agent', ptAgentLabel(agentId)], ['main', ptMainLabel()], ['both', t('projects.thread.to_both')]]
+  if (agentIsMain && _ptTo !== 'main') _ptTo = 'main'
+  box.innerHTML = `<span class="pt-to-label">${escapeHtml(t('projects.thread.to_label'))}</span>` + chips.map(([v, label]) =>
+    `<button type="button" class="pt-chip${_ptTo === v ? ' active' : ''}" role="radio" aria-checked="${_ptTo === v}" data-to="${escapeAttr(v)}">${escapeHtml(label)}</button>`,
+  ).join('')
+}
+
+function renderProjectThread() {
+  const list = document.getElementById('projectThreadList')
+  const title = document.getElementById('projectThreadTitle')
+  const sub = document.getElementById('projectThreadSub')
+  if (!list || !_ptData) return
+  title.textContent = t('projects.thread.title_for', { project: _ptData.project })
+  const resp = _ptData.responsible || {}
+  sub.textContent = t('projects.thread.responsible', { agent: ptAgentLabel(resp.agent) })
+  const msgs = Array.isArray(_ptData.messages) ? _ptData.messages : []
+  const atBottom = list.scrollHeight - list.scrollTop - list.clientHeight < 40
+  if (msgs.length === 0) {
+    list.innerHTML = `<div class="project-thread-empty">${escapeHtml(t('projects.thread.empty'))}</div>`
+  } else {
+    list.innerHTML = msgs.map((m) => {
+      const role = ptAuthorRole(m.author)
+      const needs = m.needs_owner ? `<span class="pt-msg-needs">${escapeHtml(t('projects.thread.needs_owner'))}</span>` : ''
+      return `<div class="pt-msg ${escapeAttr(role)}">
+        <div class="pt-msg-head"><strong>${escapeHtml(ptAgentLabel(m.author))} → ${escapeHtml(ptToLabel(m))}</strong><span>${escapeHtml(ptFormatTime(m.created_at))}</span>${needs}</div>
+        <div class="pt-msg-body">${escapeHtml(m.content)}</div>
+      </div>`
+    }).join('')
+  }
+  if (atBottom || !list.dataset.rendered) list.scrollTop = list.scrollHeight
+  list.dataset.rendered = '1'
+  renderProjectThreadChips()
+}
+
+async function fetchProjectThread(project) {
+  const res = await fetch(`/api/project-threads/${encodeURIComponent(project)}`)
+  if (!res.ok) throw new Error('HTTP ' + res.status)
+  return res.json()
+}
+
+async function markProjectThreadRead(project) {
+  try {
+    await fetch(`/api/project-threads/${encodeURIComponent(project)}/read`, { method: 'POST' })
+  } catch { /* the badge simply stays until the next open */ }
+  const s = (_projectsLastSummaries || []).find((p) => p.project === project)
+  if (s && s.thread) { s.thread.unreadForOwner = 0; renderProjects() }
+}
+
+async function openProjectThread(project) {
+  const overlay = document.getElementById('projectThreadOverlay')
+  if (!overlay) return
+  _ptProject = project
+  _ptTo = 'agent'
+  _ptAutoMain = false
+  const list = document.getElementById('projectThreadList')
+  if (list) { list.innerHTML = `<div class="project-thread-empty">${escapeHtml(t('common.loading'))}</div>`; delete list.dataset.rendered }
+  document.getElementById('projectThreadHint').textContent = ''
+  openModal(overlay)
+  try {
+    _ptData = await fetchProjectThread(project)
+    renderProjectThread()
+    await markProjectThreadRead(project)
+  } catch (err) {
+    console.error('openProjectThread failed:', err)
+    if (list) list.innerHTML = `<div class="project-thread-empty">${escapeHtml(t('projects.thread.load_error'))}</div>`
+  }
+  clearInterval(_ptPollTimer)
+  _ptPollTimer = setInterval(refreshOpenProjectThread, 15000)
+  setTimeout(() => document.getElementById('projectThreadInput')?.focus(), 200)
+}
+
+async function refreshOpenProjectThread() {
+  const overlay = document.getElementById('projectThreadOverlay')
+  if (!_ptProject || !overlay || !overlay.classList.contains('active')) {
+    clearInterval(_ptPollTimer)
+    _ptPollTimer = null
+    return
+  }
+  try {
+    const before = _ptData && _ptData.messages ? _ptData.messages.length : 0
+    _ptData = await fetchProjectThread(_ptProject)
+    renderProjectThread()
+    if ((_ptData.messages || []).length !== before) await markProjectThreadRead(_ptProject)
+  } catch { /* transient; the next tick retries */ }
+}
+
+async function sendProjectThreadMessage() {
+  const input = document.getElementById('projectThreadInput')
+  const hint = document.getElementById('projectThreadHint')
+  const text = (input.value || '').trim()
+  if (!text || !_ptProject || _ptSending) return
+  _ptSending = true
+  const btn = document.getElementById('projectThreadSend')
+  btn.disabled = true
+  hint.textContent = t('projects.thread.sending')
+  try {
+    const res = await fetch(`/api/project-threads/${encodeURIComponent(_ptProject)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ author: 'owner', content: text, to: _ptTo }),
+    })
+    const body = await res.json().catch(() => ({}))
+    if (!res.ok || !body.id) throw new Error(body.error || ('HTTP ' + res.status))
+    input.value = ''
+    _ptAutoMain = false
+    hint.textContent = t('projects.thread.sent')
+    _ptData = await fetchProjectThread(_ptProject)
+    renderProjectThread()
+    const list = document.getElementById('projectThreadList')
+    if (list) list.scrollTop = list.scrollHeight
+    loadProjects()
+  } catch (err) {
+    console.error('send project thread message failed:', err)
+    hint.textContent = t('projects.thread.send_error', { error: String(err.message || err) })
+  } finally {
+    _ptSending = false
+    btn.disabled = false
+  }
+}
+
+function maybeOpenProjectThreadFromUrl() {
+  const params = new URLSearchParams(window.location.search)
+  const project = params.get('thread')
+  if (!project) return
+  params.delete('thread')
+  const clean = window.location.pathname + (params.toString() ? '?' + params : '') + window.location.hash
+  window.history.replaceState({}, '', clean)
+  openProjectThread(project)
+}
+
+// A named init, not an anonymous IIFE: the HTML-sink review
+// (app-js-html-sinks.test.ts) keys its allowlist on the ordinal of each
+// anonymous top-level callback, so a new IIFE here would renumber every
+// later one.
+function initProjectThreadPanel() {
+  const overlay = document.getElementById('projectThreadOverlay')
+  if (!overlay) return
+  attachOverlayCloseGuard(overlay)
+  document.getElementById('projectThreadClose')?.addEventListener('click', () => closeModal(overlay))
+  document.getElementById('projectThreadSend')?.addEventListener('click', sendProjectThreadMessage)
+  const input = document.getElementById('projectThreadInput')
+  input?.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); sendProjectThreadMessage() }
+  })
+  input?.addEventListener('input', () => {
+    if (!_ptData || (_ptData.responsible && _ptData.responsible.agent === ptMainId())) return
+    const hits = ptAddressesMain(input.value)
+    if (hits && _ptTo === 'agent') { _ptTo = 'main'; _ptAutoMain = true; renderProjectThreadChips() }
+    else if (!hits && _ptAutoMain && _ptTo === 'main') { _ptTo = 'agent'; _ptAutoMain = false; renderProjectThreadChips() }
+  })
+  document.getElementById('projectThreadTo')?.addEventListener('click', (e) => {
+    const chip = e.target.closest('.pt-chip[data-to]')
+    if (!chip) return
+    _ptTo = chip.dataset.to
+    _ptAutoMain = false
+    renderProjectThreadChips()
+  })
+}
+initProjectThreadPanel()
 
 // Forward-looking duration, reusing the same abbreviations formatRelative uses
 // so the strip does not invent a second time vocabulary.

@@ -3244,6 +3244,83 @@ export function ensureMcpListChannelSection(name: string): void {
   atomicWriteFileSync(claudeMdPath, updated)
 }
 
+// ---- Project threads (src/web/project-threads.ts) ----
+//
+// Every kanban project has a shared thread between the owner (dashboard UI),
+// the project's responsible agent and the main agent. An agent's question for
+// the owner goes there instead of to the main agent for a Telegram relay. The
+// reader is the agent at the moment it has something to say about a project,
+// so the recipe ships as a generated section like message-close. The helper
+// line is the same for strict and non-strict agents (no substitution); a
+// non-strict agent also gets the raw curl with a QUOTED heredoc payload.
+const PROJTHREAD_BEGIN = '<!-- BEGIN GENERATED: project-thread (auto-generated, do not edit by hand) -->'
+const PROJTHREAD_END = '<!-- END GENERATED: project-thread -->'
+const PROJTHREAD_BLOCK_RE = new RegExp(
+  `${PROJTHREAD_BEGIN.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s\\S]*?${PROJTHREAD_END.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`,
+)
+
+export function buildProjectThreadBody(name: string, strict = false): string {
+  const isMain = name === MAIN_AGENT_ID
+  return [
+    '## Projekt-szál: kérdés és riport a gazdának egy projektről',
+    '',
+    `Minden Kanban-projektnek van egy közös szála a dashboard Projektek oldalán: ${OWNER_NAME}, a projekt`,
+    `felelős ügynöke és a Főnök (${MAIN_AGENT_ID}) írnak bele. Ha egy PROJEKTRŐL van kérdésed vagy riportod`,
+    `${OWNER_NAME} felé, ide írd, ne inter-agent üzenetben a Főnöknek továbbításra.`,
+    '',
+    '- Címzett (`--to`): `owner` (alapértelmezés), `main` (a Főnök), `agent` (a projekt felelős ügynöke), `both` (a két másik fél).',
+    `- \`--needs-owner\`: ha ${OWNER_NAME} döntésére vagy válaszára vársz. A szálon "vár rád" jelzés lesz, és ${OWNER_NAME} rövid értesítést kap a csatornáján.`,
+    `- A szálba érkező, neked szóló üzenet így jön: \`[Projekt-szál: <projekt> @<szerző> -> ${name}]: ...\`. Ugyanide válaszolj (a válasz-parancs az üzenet végén áll), és az inter-agent üzenetet \`notify:false\`-szal zárd le.`,
+    ...(isMain ? [
+      `- \`[Projekt-szál FYI: ...]\` = tájékoztató másolat (felügyelet): nem neked szól, nem kell rá válaszolni. Ha ${OWNER_NAME} téged szólít meg ("${BOT_NAME}, ..."), az \`-> ${MAIN_AGENT_ID}\` címzéssel érkezik, és az már feladat.`,
+    ] : []),
+    '',
+    'Írás: a szöveget előbb írd egy fájlba a fájl-eszközöddel, majd:',
+    '```bash',
+    `${apiHelper} project-thread-post ${name} '<projekt>' <fájl> --to owner --needs-owner`,
+    `${apiHelper} project-thread-read '<projekt>'`,
+    '```',
+    ...(strict ? [] : [
+      'Nyers curl-lel ugyanez (IDÉZETT heredoc, soha ne `-d "..."` dupla idézőjellel; a projektnév URL-kódolva):',
+      '```bash',
+      `curl -s -X POST ${dashboardOrigin}/api/project-threads/<projekt-url-kódolva> \\`,
+      '  -H "Content-Type: application/json" \\',
+      `  -H "Authorization: Bearer $(cat ${tokenPath})" -H "X-Agent-Id: ${name}" \\`,
+      `  --data-binary @- <<'JSON'`,
+      `{"author":"${name}","to":"owner","needs_owner":true,"content":"A kérdés vagy riport szövege."}`,
+      'JSON',
+      '```',
+    ]),
+    'Elküldöttnek CSAK akkor számít, ha a válaszban visszajött egy `"id"`. Ismeretlen projekt 404, ismeretlen szerző 403:',
+    'ilyenkor semmi nem került a szálba.',
+  ].join('\n')
+}
+
+// Idempotently ensures the project-thread block is present and current in the
+// agent's CLAUDE.md; same contract and call sites as ensureMessageCloseSection.
+export function ensureProjectThreadSection(name: string): void {
+  const claudeMdPath = name === MAIN_AGENT_ID
+    ? join(PROJECT_ROOT, 'CLAUDE.md')
+    : join(agentDir(name), 'CLAUDE.md')
+  if (!existsSync(claudeMdPath)) return
+
+  const block = `${PROJTHREAD_BEGIN}\n${buildProjectThreadBody(name, agentRunsStrict(name))}\n${PROJTHREAD_END}`
+
+  let existing: string
+  try {
+    existing = readFileSync(claudeMdPath, 'utf-8')
+  } catch {
+    return
+  }
+
+  const updated = PROJTHREAD_BLOCK_RE.test(existing)
+    ? existing.replace(PROJTHREAD_BLOCK_RE, block)
+    : existing.trimEnd() + '\n\n' + block + '\n'
+
+  if (updated === existing) return
+  atomicWriteFileSync(claudeMdPath, updated)
+}
+
 // ---- Message close: notify:false for an incoming report (ACKONCLOSE927) ----
 //
 // Closing a message (PUT /api/messages/:id, status done/failed) sends an

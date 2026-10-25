@@ -248,6 +248,7 @@ A rendszer automatikusan:
 ### Fontos szabályok
 - Csak futó ágensnek lehet üzenni (tmux session kell hozzá)
 - Az elérhető ágensek listája: `curl -s -H "Authorization: Bearer $(cat store/.dashboard-token)" http://localhost:{{WEB_PORT}}/api/agents`
+- Egy projektről szóló kérdés vagy riport {{OWNER_NAME}} felé a projekt közös szálába megy (dashboard Projektek oldal), nem inter-agent üzenetben továbbításra. A `[Projekt-szál ...]` üzenetek kezelését és az írás módját a generált "Projekt-szál" szakasz írja le (`bash scripts/marveen-api.sh project-thread-post|project-thread-read`).
 
 ### Sub-ágens ismeretlen-sender ping kezelése (auto-approval, default-deny)
 

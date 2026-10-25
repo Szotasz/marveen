@@ -1250,6 +1250,28 @@
       <div class="projects-grid" id="projectsGrid"></div>
     </div>
 
+<!-- === Project thread panel (owner <-> responsible agent <-> main agent) === -->
+    <div class="modal-overlay" id="projectThreadOverlay">
+      <div class="modal modal-wide project-thread-modal" role="dialog" aria-modal="true" aria-labelledby="projectThreadTitle">
+        <div class="modal-header">
+          <div class="project-thread-head">
+            <h2 id="projectThreadTitle" data-i18n="projects.thread.title">Projekt-szál</h2>
+            <div class="project-thread-sub" id="projectThreadSub"></div>
+          </div>
+          <button class="modal-close" id="projectThreadClose" aria-label="Bezárás" data-i18n-aria-label="common.close">&times;</button>
+        </div>
+        <div class="project-thread-list" id="projectThreadList" aria-live="polite"></div>
+        <div class="project-thread-compose">
+          <div class="project-thread-to" id="projectThreadTo" role="radiogroup" aria-label="Címzett" data-i18n-aria-label="projects.thread.to_label"></div>
+          <textarea id="projectThreadInput" class="input project-thread-input" rows="3" data-i18n-placeholder="projects.thread.placeholder" placeholder="Írj a szálba... (Ctrl+Enter: küldés)"></textarea>
+          <div class="project-thread-actions">
+            <span class="project-thread-hint" id="projectThreadHint"></span>
+            <button class="btn-primary" id="projectThreadSend" data-i18n="projects.thread.send">Küldés</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
 <!-- === Approvals Page === -->
     <div class="page" id="approvalsPage" hidden>
       <div class="page-header">
