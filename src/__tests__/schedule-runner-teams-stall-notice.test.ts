@@ -132,7 +132,7 @@ type StallTaskArg = Parameters<typeof resolveTaskChannelTarget>[0]
 function teamsTask(overrides: Partial<StallTask> = {}): StallTask {
   return {
     name: 'napi-riport',
-    agent: 'aladar',
+    agent: 'teamsagent',
     telegramChatId: CONVERSATION,
     channelProvider: 'teams',
     ...overrides,
@@ -146,7 +146,7 @@ function teamsTarget(chatId: string | null, ambiguousCandidates?: number): Bound
 }
 
 /** A pending row two hours old: past ALERT_THRESHOLD_MS, so stage 1 applies. */
-function pendingView(now = Date.now(), agentName = 'aladar') {
+function pendingView(now = Date.now(), agentName = 'teamsagent') {
   return toPendingRetryView(
     {
       id: 1,
@@ -182,7 +182,7 @@ describe('notifyTaskTargetOfStall', () => {
       async (_creds: TeamsCreds, _stateDir: string, _conversationId: string, _text: string) => ({ status: 201 }),
     )
 
-    const outcome = await notifyTaskTargetOfStall(teamsTask(), 'aladar', 75, { resolveTarget, send, readCreds })
+    const outcome = await notifyTaskTargetOfStall(teamsTask(), 'teamsagent', 75, { resolveTarget, send, readCreds })
 
     expect(outcome).toBe('sent')
     expect(send).toHaveBeenCalledTimes(1)
@@ -192,7 +192,7 @@ describe('notifyTaskTargetOfStall', () => {
     expect(text).toContain('napi-riport')
     // The STUCK agent's channel state dir (path.sep-agnostic: the last five
     // segments are agents/<agent>/.claude/channels/teams).
-    expect(stateDir.split(/[\\/]/).slice(-5).join('/')).toBe('agents/aladar/.claude/channels/teams')
+    expect(stateDir.split(/[\\/]/).slice(-5).join('/')).toBe('agents/teamsagent/.claude/channels/teams')
     // The bot credentials come from that same directory's .env, and nowhere else.
     expect(readCreds).toHaveBeenCalledTimes(1)
     expect(readCreds).toHaveBeenCalledWith('', [join(stateDir, '.env')])
@@ -226,10 +226,10 @@ describe('notifyTaskTargetOfStall', () => {
       async (_creds: TeamsCreds, _stateDir: string, _conversationId: string, _text: string) => ({ status: 201 }),
     )
 
-    await notifyTaskTargetOfStall(teamsTask({ agent: 'x' }), 'aladar', 30, { resolveTarget, send, readCreds })
+    await notifyTaskTargetOfStall(teamsTask({ agent: 'x' }), 'teamsagent', 30, { resolveTarget, send, readCreds })
 
     expect(resolveTarget).toHaveBeenCalledTimes(1)
-    expect(resolveTarget).toHaveBeenCalledWith(expect.objectContaining({ agent: 'aladar' }))
+    expect(resolveTarget).toHaveBeenCalledWith(expect.objectContaining({ agent: 'teamsagent' }))
     expect(resolveTarget.mock.calls[0][0].agent).not.toBe('x')
   })
 
@@ -238,7 +238,7 @@ describe('notifyTaskTargetOfStall', () => {
       async (_creds: TeamsCreds, _stateDir: string, _conversationId: string, _text: string) => ({ status: 201 }),
     )
 
-    const outcome = await notifyTaskTargetOfStall(teamsTask({ channelProvider: 'telegram' }), 'aladar', 30, {
+    const outcome = await notifyTaskTargetOfStall(teamsTask({ channelProvider: 'telegram' }), 'teamsagent', 30, {
       resolveTarget: () => ({ provider: 'telegram', chatId: '42' }),
       send,
     })
@@ -252,7 +252,7 @@ describe('notifyTaskTargetOfStall', () => {
       async (_creds: TeamsCreds, _stateDir: string, _conversationId: string, _text: string) => ({ status: 201 }),
     )
 
-    const outcome = await notifyTaskTargetOfStall(teamsTask({ telegramChatId: undefined }), 'aladar', 30, {
+    const outcome = await notifyTaskTargetOfStall(teamsTask({ telegramChatId: undefined }), 'teamsagent', 30, {
       resolveTarget: () => teamsTarget(null),
       send,
     })
@@ -267,7 +267,7 @@ describe('notifyTaskTargetOfStall', () => {
       async (_creds: TeamsCreds, _stateDir: string, _conversationId: string, _text: string) => ({ status: 201 }),
     )
 
-    const outcome = await notifyTaskTargetOfStall(teamsTask({ telegramChatId: undefined }), 'aladar', 30, {
+    const outcome = await notifyTaskTargetOfStall(teamsTask({ telegramChatId: undefined }), 'teamsagent', 30, {
       resolveTarget: () => teamsTarget(null, 2),
       send,
     })
@@ -275,7 +275,7 @@ describe('notifyTaskTargetOfStall', () => {
     expect(outcome).toBe('no-target')
     expect(send).not.toHaveBeenCalled()
     expect(vi.mocked(logger.info)).toHaveBeenCalledTimes(1)
-    expect(vi.mocked(logger.info).mock.calls[0][0]).toMatchObject({ task: 'napi-riport', agent: 'aladar', ambiguousCandidates: 2 })
+    expect(vi.mocked(logger.info).mock.calls[0][0]).toMatchObject({ task: 'napi-riport', agent: 'teamsagent', ambiguousCandidates: 2 })
   })
 
   it("resolves 'failed' on a send error, logs the message only, and never leaks the secret", async () => {
@@ -285,7 +285,7 @@ describe('notifyTaskTargetOfStall', () => {
       throw new Error('Teams API 403: Forbidden')
     })
 
-    const outcome = await notifyTaskTargetOfStall(teamsTask(), 'aladar', 45, {
+    const outcome = await notifyTaskTargetOfStall(teamsTask(), 'teamsagent', 45, {
       resolveTarget: () => teamsTarget(CONVERSATION),
       send,
       readCreds,
@@ -310,7 +310,7 @@ describe('notifyTaskTargetOfStall', () => {
       throw new Error('access.json unreadable')
     })
 
-    const outcome = await notifyTaskTargetOfStall(teamsTask(), 'aladar', 30, { resolveTarget, send })
+    const outcome = await notifyTaskTargetOfStall(teamsTask(), 'teamsagent', 30, { resolveTarget, send })
 
     expect(outcome).toBe('failed')
     expect(send).not.toHaveBeenCalled()
@@ -322,7 +322,7 @@ describe('notifyTaskTargetOfStall', () => {
       async (_creds: TeamsCreds, _stateDir: string, _conversationId: string, _text: string) => ({ status: 201 }),
     )
 
-    await notifyTaskTargetOfStall(teamsTask(), 'aladar', 75, {
+    await notifyTaskTargetOfStall(teamsTask(), 'teamsagent', 75, {
       resolveTarget: () => teamsTarget(CONVERSATION),
       send,
       readCreds: () => CREDS,
@@ -353,6 +353,8 @@ describe('sendPendingRetryMainAgentNotice: Teams stall notice', () => {
     expect(mockCreateAgentMessage).toHaveBeenCalledTimes(1)
     expect(mockSendTeamsMessage).toHaveBeenCalledTimes(1)
     expect(mockSendTeamsMessage.mock.calls[0][2]).toBe(CONVERSATION)
+    // The row's real age (pendingView: two hours), not a stand-in.
+    expect(String(mockSendTeamsMessage.mock.calls[0][3])).toContain('120 perce')
     // A failed Teams send is the notice's own business: it must never roll
     // back the alert claim that was already made.
     expect(mockClearPendingTaskRetryAlert).not.toHaveBeenCalled()
@@ -378,7 +380,7 @@ describe('sendPendingRetryMainAgentNotice: Teams stall notice', () => {
 
     expect(mockSendTeamsMessage).not.toHaveBeenCalled()
     expect(mockClearPendingTaskRetryAlert).toHaveBeenCalledTimes(1)
-    expect(mockClearPendingTaskRetryAlert).toHaveBeenCalledWith('napi-riport', 'aladar')
+    expect(mockClearPendingTaskRetryAlert).toHaveBeenCalledWith('napi-riport', 'teamsagent')
   })
 
   it('sends nothing without a task definition (the legacy two-argument call)', async () => {
