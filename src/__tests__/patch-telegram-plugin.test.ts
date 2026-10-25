@@ -248,7 +248,7 @@ describe('kbd: inline answer buttons (c67f5f34)', () => {
     expect(run().status).toBe(0)
     const text = readFileSync(server, 'utf-8')
     const lines = kbdLines(text)
-    expect(lines).toHaveLength(22)
+    expect(lines).toHaveLength(23)
     for (const l of lines) expect(l.endsWith(' ' + KBD_MARKER)).toBe(true)
     const reply = text.indexOf("name: 'reply'")
     const react = text.indexOf("name: 'react'")
@@ -407,7 +407,7 @@ describe('kbd: inline answer buttons (c67f5f34)', () => {
     writeFileSync(server, patchedWithoutKbd(readFileSync(FIXTURE, 'utf-8')))
     const r = run()
     expect(r.stderr).toMatch(/patched .*\(kbd\)/)
-    expect(kbdLines(readFileSync(server, 'utf-8'))).toHaveLength(22)
+    expect(kbdLines(readFileSync(server, 'utf-8'))).toHaveLength(23)
   })
 
   it('a file with the FIRST kbd version (reply keyboard) is rebuilt in place: byte-identical to a fresh patching, no old line left', () => {
@@ -476,7 +476,7 @@ describe('kbd: inline answer buttons (c67f5f34)', () => {
     expect(readState(state).files[0].patches.kbd).toBe('already')
     const off = readFileSync(server, 'utf-8')
     expect(off).not.toContain('MARVEEN-PATCH(tgtopics)')
-    expect(kbdLines(off)).toHaveLength(22)
+    expect(kbdLines(off)).toHaveLength(23)
     const offAgain = run(['--topics', 'off', '--state', state])
     expect(offAgain.stderr).toBe('')
     run(['--topics', 'on', '--state', state])
@@ -590,12 +590,12 @@ function callbackHarness(patched: string, o: { allowFrom?: string[]; handleInbou
   const mcp = { notification: (n: unknown) => { permNotifications.push(n); return Promise.resolve() } }
   class InlineKeyboard { text() { return this } }
   const set = new Function('bot', 'loadAccess', 'handleInbound', 'pendingPermissions', 'mcp', 'InlineKeyboard', 'gate', 'saveAccess',
-    'marveenApprovalCallback', 'STATE_DIR', 'readFileSync', 'fetch', 'MARVEEN_APV_ENV_AT_LOAD', js + '\nreturn marveenKbdAnswered')(
+    'marveenApprovalCallback', 'STATE_DIR', 'readFileSync', 'fetch', 'MARVEEN_APV_ENV_AT_LOAD', 'PERMISSION_REPLY_RE', js + '\nreturn marveenKbdAnswered')(
     bot, () => ({ allowFrom: o.allowFrom ?? ['42'] }), handleInbound, pendingPermissions, mcp, InlineKeyboard,
     (...a: unknown[]) => { gateCalls.push(a); return { action: 'pair', code: 'abc123' } },
     (...a: unknown[]) => { saveCalls.push(a) },
     async (_ctx: FakeCtx, data: string) => { approvals.push(data) }, '/scratch-state', () => '',
-    () => { throw new Error('no network in a test') }, {}) as Set<string>
+    () => { throw new Error('no network in a test') }, {}, /^\s*(y|yes|n|no)\s+([a-km-z]{5})\s*$/i) as Set<string>
   expect(handler).toBeDefined()
   expect(set).toBeInstanceOf(Set)
 
@@ -736,6 +736,15 @@ describe('kbd: the callback branch and the delivery of a tap (c67f5f34, card 267
     expectToastOnly(h, await h.press({ data: 'kbd:0', markup: [[]] }), DEAD, 'empty row')
     expectToastOnly(h, await h.press({ data: 'kbd:0', inaccessible: true }), DEAD, 'InaccessibleMessage')
     expectToastOnly(h, await h.press({ data: 'kbd:5', markup: [[{ text: 'Csak ez', callback_data: 'kbd:7' }]] }), DEAD, 'another index only')
+  })
+
+  it('B1: the label rule runs again on the label a tap brings back (slash, permission reply, control character): toast only, nothing delivered', async () => {
+    const h = callbackHarness(patched)
+    expectToastOnly(h, await h.press({ data: 'kbd:0', markup: [[{ text: '/context clear', callback_data: 'kbd:0' }]] }), DEAD, 'slash label')
+    expectToastOnly(h, await h.press({ data: 'kbd:0', markup: [[{ text: ' » /model opus', callback_data: 'kbd:0' }]] }), DEAD, 'slash after punctuation')
+    expectToastOnly(h, await h.press({ data: 'kbd:0', markup: [[{ text: 'yes abcde', callback_data: 'kbd:0' }]] }), DEAD, 'permission reply')
+    expectToastOnly(h, await h.press({ data: 'kbd:0', markup: [[{ text: 'A\u0007B', callback_data: 'kbd:0' }]] }), DEAD, 'control character')
+    expect(h.set.size).toBe(0)
   })
 
   it('AC-C9: the label comes from the button of the keyboard, never from the data; it is handed to handleInbound as (ctx, label, undefined) after the other buttons are taken off', async () => {

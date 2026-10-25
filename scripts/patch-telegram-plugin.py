@@ -109,9 +109,10 @@ EVID_INSERT = (
 # gate(): its pairing path would write a pending code for a stranger), takes
 # the label from the keyboard of the message the button sits on (never from
 # the data), lets one message be answered once, and takes the other buttons
-# off BEFORE anything is delivered. A label never starts with a slash (checked
-# when it is sent): a tap carries no message id, and the write-evidence of the
-# command hook would otherwise have only the text to go by.
+# off BEFORE anything is delivered. A label never starts with a slash and is
+# never a permission reply (checked when it is sent, and again on the label the
+# tap brings back): the meta of a tap carries the QUESTION's message id, its
+# evidence record carries none, so no owner write command can match it.
 # The labels are outgoing text: the copy gate (scripts/hooks/outgoing-copy-gate.py)
 # audits them together with `text`.
 
@@ -164,6 +165,8 @@ KBD_CALLBACK = ("callback perm regex", re.compile(
         "? kbdRows?.flat().find(b => 'callback_data' in b && b.callback_data === data) : undefined",
         "  if (!kbdButton) { await kbdToast(data === 'kbd:-' ? 'Erre már válaszoltál.' "
         ": 'Ez a gomb már nem él, írd be a választ.'); return }",
+        "  if (/^[^\\p{L}\\p{N}]*\\//u.test(kbdButton.text) || /[\\u0000-\\u001f\\u007f-\\u009f]/.test(kbdButton.text) "
+        "|| PERMISSION_REPLY_RE.test(kbdButton.text)) { await kbdToast('Ez a gomb már nem él, írd be a választ.'); return }",
         "  const kbdKey = kbdMsg.chat.id + ':' + kbdMsg.message_id",
         "  if (marveenKbdAnswered.has(kbdKey)) { await kbdToast('Erre már válaszoltál.'); return }",
         "  if (marveenKbdAnswered.size >= 1000) marveenKbdAnswered.clear()",
@@ -398,7 +401,7 @@ def patch_file(path, topics=False):
         elif status.startswith("damaged"):
             log(f"LOUD: {status.split(':', 1)[1]} damaged in {path} (a marker not at the end of a line) -- "
                 f"the {patch['name']} patch left alone, {patch['fallback']}")
-    patched =[p["name"] + (" removed" if st == "removed" else "") for p, st in results if st in ("patched", "removed")]
+    patched = [p["name"] + (" removed" if st == "removed" else "") for p, st in results if st in ("patched", "removed")]
     if not patched:
         return file_status(results), per_patch
     tmp = path + ".marveen-tmp"
