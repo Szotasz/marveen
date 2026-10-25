@@ -30,6 +30,8 @@ d="$FAKE_TMUX_DIR"
 sub="$1"
 printf 'start %s\\n' "$*" >> "$d/calls.log"
 if [ -f "$d/sleep" ]; then sleep "$(cat "$d/sleep")"; fi
+if [ -f "$d/sleep-$sub" ]; then sleep "$(cat "$d/sleep-$sub")"; fi
+if [ -f "$d/no-server" ]; then echo "no server running on /tmp/fake-tmux" >&2; printf 'end %s\\n' "$sub" >> "$d/calls.log"; exit 1; fi
 target=""; prev=""
 for a in "$@"; do
   if [ "$prev" = "-t" ]; then target="$a"; fi
@@ -74,6 +76,7 @@ let db: typeof import('../db.js')
 let mod: typeof import('../web/routes/background-tasks.js')
 
 const put = (name: string, content: string) => writeFileSync(join(dir, name), content)
+const drop = (name: string): void => rmSync(join(dir, name), { force: true })
 const calls = (): string[] => (existsSync(join(dir, 'calls.log')) ? readFileSync(join(dir, 'calls.log'), 'utf-8').split('\n').filter(Boolean) : [])
 const sessions = (): string[] => (existsSync(join(dir, 'sessions')) ? readFileSync(join(dir, 'sessions'), 'utf-8').split('\n').filter(Boolean) : [])
 
@@ -385,6 +388,49 @@ describe('background tasks: tmux calls do not block the event loop', () => {
     expect(db.getBackgroundTask('AA000006')!.status).toBe('failed')
     expect(db.getBackgroundTask('AA000006')!.output).toBe('(cancelled)')
   })
+
+  it('poll: a list-sessions that does not answer in time leaves the task running and its session alive', async () => {
+    const r = await call('POST', '/api/background-tasks', { agent_id: 'agent-slow-list', prompt: 'x' })
+    const id = r.json.id as string
+    put('sleep-list-sessions', '4') // more than the route's 3000 ms list-sessions timeout
+    await vi.advanceTimersByTimeAsync(POLL_MS)
+    await vi.waitFor(() => expect(calls()).toContainEqual(expect.stringMatching(/^start list-sessions/)), { timeout: 5000 })
+    await sleep(4500) // real time: the timed-out call has ended and the tick has finished
+    expect(db.getBackgroundTask(id)!.status).toBe('running')
+    expect(sessions()).toContain(`bg-${id}`)
+    expect(calls()).not.toContainEqual(expect.stringMatching(/^start kill-session/))
+    // tmux answers again: the next tick finishes the task with the pane's output
+    drop('sleep-list-sessions')
+    put('pane', 'slow answer\n___BG_DONE___\n')
+    await vi.advanceTimersByTimeAsync(POLL_MS)
+    await vi.waitFor(() => expect(db.getBackgroundTask(id)!.status).toBe('done'), { timeout: 10_000 })
+    expect(db.getBackgroundTask(id)!.output).toBe('slow answer')
+  }, 30_000)
+
+  it('startup sweep: a list-sessions that does not answer in time keeps the task running and polls it', async () => {
+    seedRunning('AA000007', 'agent-sweep-slow', true)
+    put('sleep-list-sessions', '4')
+    await mod.sweepOrphanedBackgroundTasks()
+    expect(db.getBackgroundTask('AA000007')!.status).toBe('running')
+    drop('sleep-list-sessions')
+    put('pane', 'swept answer\n___BG_DONE___\n')
+    await vi.advanceTimersByTimeAsync(POLL_MS)
+    await vi.waitFor(() => expect(db.getBackgroundTask('AA000007')!.status).toBe('done'), { timeout: 10_000 })
+    expect(db.getBackgroundTask('AA000007')!.output).toBe('swept answer')
+  }, 30_000)
+
+  it('no tmux server (list-sessions exits 1) still reads as a dead session, in the poll and in the sweep', async () => {
+    const r = await call('POST', '/api/background-tasks', { agent_id: 'agent-no-server', prompt: 'x' })
+    const id = r.json.id as string
+    seedRunning('AA000008', 'agent-no-server-sweep', true)
+    put('no-server', '')
+    await vi.advanceTimersByTimeAsync(POLL_MS)
+    await vi.waitFor(() => expect(db.getBackgroundTask(id)!.status).toBe('done'), { timeout: 10_000 })
+    expect(db.getBackgroundTask(id)!.output).toBe('(session ended)')
+    await mod.sweepOrphanedBackgroundTasks()
+    expect(db.getBackgroundTask('AA000008')!.status).toBe('failed')
+    expect(db.getBackgroundTask('AA000008')!.output).toBe('(orphaned on restart)')
+  }, 30_000)
 
   it('POST: a spawn that fails after the task was cancelled keeps the cancellation and still answers 429', async () => {
     put('fail-new', '1'); put('sleep', '1')
