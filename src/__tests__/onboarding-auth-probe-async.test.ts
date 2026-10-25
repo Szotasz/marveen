@@ -51,6 +51,10 @@ case "$1" in
     printf 'end %s\\n' "$1" >> "$FAKE_TMUX_LOG"
     printf '%s\\n' "$FAKE_SESSION"
     exit 0 ;;
+  has-session)
+    printf 'end %s\\n' "$1" >> "$FAKE_TMUX_LOG"
+    if [ -n "$FAKE_SESSION" ]; then exit 0; fi
+    exit 1 ;;
   *)
     printf 'end %s\\n' "$1" >> "$FAKE_TMUX_LOG"
     exit 0 ;;
@@ -87,6 +91,8 @@ afterEach(() => {
   delete process.env.FAKE_AUTH
   delete process.env.FAKE_READ_STDIN
   truncateSync(logFile, 0)
+  L.create.mockClear()
+  L.restart.mockClear()
 })
 afterAll(() => {
   Object.defineProperty(process, 'platform', realPlatform)
@@ -183,8 +189,6 @@ describe('onboarding auth probes are async', () => {
     const envFile = join(tmpRoot, '.env')
     process.env.FAKE_SESSION = ''
     writeFileSync(envFile, 'CLAUDE_CODE_OAUTH_TOKEN=abc\n')
-    L.create.mockClear()
-    L.restart.mockClear()
     try {
       const r = await call('POST', '/api/onboarding/launch')
       expect(r.status).toBe(200)
@@ -194,7 +198,8 @@ describe('onboarding auth probes are async', () => {
       rmSync(envFile, { force: true })
       process.env.FAKE_SESSION = MAIN_CHANNELS_SESSION
     }
-    expect(L.create.mock.calls.length + L.restart.mock.calls.length).toBe(1)
+    expect(L.create).toHaveBeenCalledTimes(1)
+    expect(L.restart).not.toHaveBeenCalled()
   })
 
   it('identity: a rename mid-setup (no Claude auth, owner already paired) with the fleet up restarts the channels session', async () => {
@@ -203,11 +208,15 @@ describe('onboarding auth probes are async', () => {
     const stateDir = join(tmpRoot, 'chan-state')
     mkdirSync(stateDir, { recursive: true })
     writeFileSync(join(stateDir, 'access.json'), JSON.stringify({ allowFrom: ['1'] }))
+    writeFileSync(join(stateDir, '.env'), ['TELEGRAM_BOT_TOKEN', 'DISCORD_BOT_TOKEN', 'SLACK_BOT_TOKEN', 'GOOGLECHAT_PROJECT_ID', 'TEAMS_BOT_APP_ID'].map((k) => `${k}=x\n`).join(''))
     process.env[envVar] = stateDir
     process.env.FAKE_SESSION = MAIN_CHANNELS_SESSION
-    L.create.mockClear()
-    L.restart.mockClear()
     try {
+      // Missing Claude auth must be the only fresh-setup signal: the channel is configured and the owner paired.
+      const s = await call('GET', '/api/onboarding/status')
+      expect(s.json.claudeAuthPresent).toBe(false)
+      expect(s.json.channelConfigured).toBe(true)
+      expect(s.json.paired).toBe(true)
       const r = await callWithBody('POST', '/api/onboarding/identity', { agentName: 'Newname', ownerName: 'Owner' })
       expect(r.status).toBe(200)
       expect(r.json.ok).toBe(true)
