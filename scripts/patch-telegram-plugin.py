@@ -91,7 +91,7 @@ EVID_INSERT = (
 # and today they type the letter back (c67f5f34, owner request). The reply
 # tool can send no button: its schema has no such field and the send passes
 # only reply_parameters and parse_mode. First version: a reply keyboard, which
-# Gyuri's client keeps collapsed until he starts typing. Now an INLINE keyboard
+# the owner's client keeps collapsed until they start typing. Now an INLINE keyboard
 # under the message: one button per label (callback_data kbd:<index>), and a
 # tap comes back as the label in an ordinary text message, through the same
 # gate, evidence log and channel notification as a typed letter. Six anchors:

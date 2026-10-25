@@ -611,7 +611,7 @@ function callbackHarness(patched: string, o: { allowFrom?: string[]; handleInbou
     }
     const ctx: FakeCtx = {
       callbackQuery: { data: t.data, ...(message ? { message } : {}) },
-      from: t.fromId === null ? undefined : { id: t.fromId ?? 42, username: 'gyuri' },
+      from: t.fromId === null ? undefined : { id: t.fromId ?? 42, username: 'owner' },
       chat: message?.chat,
       answerCallbackQuery: async (a?: { text?: string }) => { answers.push(a); events.push('answer'); if (t.answerFails) throw new Error('network down') },
       editMessageReplyMarkup: async (a: unknown) => { edits.push(a); events.push('edit'); if (t.edit === 'fail') throw new Error('400 Bad Request: message is not modified') },
@@ -946,7 +946,7 @@ describe('kbd: the callback branch and the delivery of a tap (c67f5f34, card 267
     expect(n.method).toBe('notifications/claude/channel')
     expect(n.params.content).toBe('Béta')
     expect(Object.keys(n.params.meta).sort()).toEqual(['chat_id', 'message_id', 'ts', 'user', 'user_id'])
-    expect(n.params.meta).toMatchObject({ chat_id: '42', message_id: '901', user: 'gyuri', user_id: '42' })
+    expect(n.params.meta).toMatchObject({ chat_id: '42', message_id: '901', user: 'owner', user_id: '42' })
     expect(n.params.meta).not.toHaveProperty('forwarded')
     expect(Number.isNaN(Date.parse(n.params.meta.ts))).toBe(false)
     expect(Math.abs(Date.now() - Date.parse(n.params.meta.ts))).toBeLessThan(5000)
@@ -964,14 +964,14 @@ describe('kbd: the callback branch and the delivery of a tap (c67f5f34, card 267
   it('AC-D1: a typed message through the same patched handleInbound keeps its old meta exactly (ts from message.date, own message_id, nothing added)', async () => {
     const inbound = inboundHarness(patched, stateDir)
     const ctx: FakeCtx = {
-      from: { id: 42, username: 'gyuri' },
+      from: { id: 42, username: 'owner' },
       chat: { id: 42, type: 'private' },
       message: { message_id: 5, date: 1_700_000_000 },
     }
     await inbound.handleInbound(ctx, 'B', undefined)
     expect(inbound.notifications[0].params.content).toBe('B')
     expect(inbound.notifications[0].params.meta).toEqual({
-      chat_id: '42', message_id: '5', user: 'gyuri', user_id: '42', ts: new Date(1_700_000_000 * 1000).toISOString(),
+      chat_id: '42', message_id: '5', user: 'owner', user_id: '42', ts: new Date(1_700_000_000 * 1000).toISOString(),
     })
     expect(inbound.evidence().map(e => [e.chat_id, e.message_id, e.text])).toEqual([['42', '5', 'B']])
   })
