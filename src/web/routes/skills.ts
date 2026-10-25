@@ -16,6 +16,7 @@ import {
 import { parseMultipart } from '../multipart.js'
 import { readBody, json } from '../http-helpers.js'
 import { sanitizeSkillName } from '../sanitize.js'
+import { serializeSkillsDir } from '../skills-dir-queue.js'
 import type { RouteContext } from './types.js'
 import { mayIssueCredentials, OWNER_SESSION_REQUIRED } from './auth.js'
 
@@ -28,18 +29,6 @@ async function runTool(file: string, args: string[], opts: { cwd?: string; timeo
   const pending = execFileAsync(file, args, opts)
   pending.child.stdin?.end()
   await pending
-}
-
-// Assign removes and re-copies agents' skill directories across awaits (cp now
-// runs off the event loop). Overlapping assigns -- two tabs, a double submit --
-// must not interleave: they run one at a time, as they did while the copy was
-// synchronous.
-let assignQueue: Promise<unknown> = Promise.resolve()
-
-function serializeAssign<T>(op: () => Promise<T>): Promise<T> {
-  const run = assignQueue.then(op)
-  assignQueue = run.catch(() => {})
-  return run
 }
 
 function parseFrontmatterField(content: string, field: string): string {
@@ -254,8 +243,11 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     }
     const tmpZip = join(tmpdir(), `skills-export-${randomUUID()}.zip`)
     try {
-      await runTool('zip', ['-r', tmpZip, '.', '--include', '*/SKILL.md', '--include', '*/references/*'], { cwd: USER_SKILLS_DIR, timeout: 15000 })
-      const stat = statSync(tmpZip)
+      // Only the zip itself holds the queue: once it is written, tmpZip is a private copy.
+      const stat = await serializeSkillsDir(async () => {
+        await runTool('zip', ['-r', tmpZip, '.', '--include', '*/SKILL.md', '--include', '*/references/*'], { cwd: USER_SKILLS_DIR, timeout: 15000 })
+        return statSync(tmpZip)
+      })
       res.setHeader('Content-Type', 'application/zip')
       res.setHeader('Content-Disposition', 'attachment; filename="skills-export.zip"')
       res.setHeader('Content-Length', stat.size)
@@ -310,8 +302,9 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     const body = await readBody(req)
     let hash: unknown
     try { hash = (JSON.parse(body.toString() || '{}') as { hash?: unknown }).hash } catch { hash = undefined }
-    let r
-    try { r = approvePending(id, hash) } catch { r = { ok: false as const, status: 404, error: 'Pending skill not found' } }
+    const r = await serializeSkillsDir(() => {
+      try { return approvePending(id, hash) } catch { return { ok: false as const, status: 404, error: 'Pending skill not found' } }
+    })
     if (!r.ok) { json(res, { error: r.error }, r.status); return true }
     logger.info({ id, name: r.name, path: r.path, auth: ctx.auth?.kind }, 'Pending skill approved and installed')
     json(res, { ok: true, name: r.name })
@@ -493,7 +486,7 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     const body = await readBody(req)
     const { agents: targetAgents } = JSON.parse(body.toString()) as { agents: string[] }
 
-    await serializeAssign(async () => {
+    await serializeSkillsDir(async () => {
       const allAgentNames = listAgentNames()
 
       for (const agentName of targetAgents) {
