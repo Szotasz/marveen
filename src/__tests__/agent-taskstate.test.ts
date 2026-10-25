@@ -22,6 +22,7 @@ const rec = (over: Partial<AgentTaskState> = {}): AgentTaskState => ({
   summary: 'building X',
   ts: NOW,
   consumed: false,
+  writer: 'agent:tester',
   ...over,
 })
 
