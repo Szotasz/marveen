@@ -290,6 +290,21 @@ rm -f "$SB/store/".stuck-modal-*
 echo "$(( $(date +%s) - 300 ))" > "$SB/store/.stuck-modal-firstseen"
 run_live act >/dev/null
 case "$(cat "$SB/tmux.calls")" in *"Escape"*) pass "act: recovery starts with Escape" ;; *) fail "act: no Escape sent" ;; esac
+# PEERSESSION1025: act on a PEER session escapes, but never respawns. The stub
+# pane stays stuck, so the run always reaches the point where the main session
+# would be respawned -- the assertion is that it is NOT, and that the skip is
+# logged. (CHANNELS_SESSION here is sbx-channels, i.e. not <MAIN_AGENT_ID>-channels.)
+rm -f "$SB/store/".stuck-modal-*
+echo "$(( $(date +%s) - 300 ))" > "$SB/store/.stuck-modal-firstseen"
+OUT="$(run_live act)"
+case "$(cat "$SB/tmux.calls")" in
+  *"respawn-pane"*) fail "act/peer: respawn-pane was sent to a peer session" ;;
+  *) pass "act/peer: no respawn-pane on a peer session" ;;
+esac
+case "$OUT" in
+  *"no respawn"*) pass "act/peer: the skipped respawn is logged" ;;
+  *) fail "act/peer: no peer log line ($OUT)" ;;
+esac
 # off: nothing at all, not even a capture
 : > "$SB/tmux.calls"
 OUT="$(PATH="$SB/bin:$PATH" STUCK_MODAL_MODE=off STUCK_MODAL_STATE_DIR="$SB/store" CHANNELS_SESSION=sbx-channels bash "$GUARD" 2>&1)"

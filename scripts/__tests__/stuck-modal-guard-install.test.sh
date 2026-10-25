@@ -39,6 +39,16 @@ EOF
 chmod +x "$TMP/bin/launchctl"
 : > "$TMP/launchctl.calls"
 
+# SERVICEID1025: the label keys off this install's SERVICE_ID / MAIN_AGENT_ID
+# (helper_launchd_label), so on a renamed install the real .env makes it
+# com.<that-id>.stuck-modal-guard and every com.marveen assertion below failed
+# -- eight of them, on the test's own premise rather than on the installer.
+# helper_launchd_label supports MARVEEN_ENV_FILE for exactly this ("tests only"),
+# so pin a sandbox .env and the block tests the installer again, not the host.
+cat > "$TMP/env" <<'ENV_EOF'
+SERVICE_ID=marveen
+ENV_EOF
+export MARVEEN_ENV_FILE="$TMP/env"
 PLIST="$TMP/home/Library/LaunchAgents/com.marveen.stuck-modal-guard.plist"
 PATH="$TMP/bin:$PATH" HOME="$TMP/home" bash "$INSTALLER" >/dev/null 2>&1
 assert_eq "the plist is written" "yes" "$([ -f "$PLIST" ] && echo yes || echo no)"
@@ -63,6 +73,7 @@ assert_eq "a second run writes the same plist" "$FIRST" "$(cat "$PLIST")"
 # the installer exits 3 here -- what is checked is that it registered.
 PATH="$TMP/bin:$PATH" HOME="$TMP/home" LAUNCHD_START_TRIES=1 bash "$INSTALLER" --load >/dev/null 2>&1
 assert_contains "--load registers it in the GUI domain" "$(cat "$TMP/launchctl.calls")" "bootstrap gui/$(id -u) $PLIST"
+unset MARVEEN_ENV_FILE   # SERVICEID1025: scoped to block 1 only
 
 # ---------------------------------------------------------------------------
 echo

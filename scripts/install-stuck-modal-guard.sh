@@ -36,14 +36,48 @@ PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 # #1873: com.<SERVICE_ID>.stuck-modal-guard, not a fixed com.marveen.stuck-modal-guard -- two installs
 # under one user must not share (and overwrite) one helper job.
 . "$SCRIPT_DIR/launchd-label.sh"
+
+# PEERSESSION1025: optional --session <tmux-session> installs a SECOND, independent
+# instance that watches a PEER agent's pane instead of the main channels session.
+# Why this exists: the Claude Code autocompact dialog opens on peer panes too, and
+# while it is open detectPaneState reads 'unknown' and every scheduled round for
+# that agent is refused (measured 2026-10-25 on peet: 58,5 and 55 minutes of
+# blocked delivery). One guard instance can only watch one session.
+# Each instance needs its OWN state dir, or the episode stamps, the respawn
+# counter and the report stamp would collide between sessions.
+# The guard itself never respawns a peer pane (see PEERSESSION1025 there): the
+# respawn command line belongs to the main agent.
+LOAD=0
+SESSION_ARG=""
+PRINT_LABEL=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --load) LOAD=1 ;;
+    --print-label) PRINT_LABEL=1 ;;
+    --session) shift; SESSION_ARG="${1:-}" ;;
+    --session=*) SESSION_ARG="${1#--session=}" ;;
+    *) echo "ERROR: unknown argument: $1" >&2; exit 2 ;;
+  esac
+  shift || true
+done
+# Sanitize: the value becomes part of a launchd label and a path.
+SESSION_SAFE="$(printf '%s' "$SESSION_ARG" | tr -cd 'a-zA-Z0-9_-')"
+if [ -n "$SESSION_ARG" ] && [ -z "$SESSION_SAFE" ]; then
+  echo "ERROR: --session value has no usable characters: $SESSION_ARG" >&2; exit 2
+fi
+
 LABEL="$(helper_launchd_label "$PROJECT_DIR" stuck-modal-guard)"
+STATE_DIR="$PROJECT_DIR/store"
+LOG_PATH="$PROJECT_DIR/store/stuck-modal-guard.log"
+if [ -n "$SESSION_SAFE" ]; then
+  LABEL="$LABEL-$SESSION_SAFE"
+  STATE_DIR="$PROJECT_DIR/store/stuck-modal-$SESSION_SAFE"
+  LOG_PATH="$PROJECT_DIR/store/stuck-modal-guard-$SESSION_SAFE.log"
+fi
 # update.sh asks the installer for the label instead of grepping a fixed one.
-if [ "${1:-}" = "--print-label" ]; then printf '%s\n' "$LABEL"; exit 0; fi
+if [ "$PRINT_LABEL" = "1" ]; then printf '%s\n' "$LABEL"; exit 0; fi
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 GUARD="$PROJECT_DIR/scripts/stuck-modal-guard.sh"
-
-LOAD=0
-[ "${1:-}" = "--load" ] && LOAD=1
 
 if [ ! -f "$GUARD" ]; then
   echo "ERROR: $GUARD not found." >&2
@@ -66,7 +100,21 @@ if [ -n "$PINNED_TZ" ]; then
     <string>$PINNED_TZ</string>"
 fi
 
-retire_legacy_helper_label "$PROJECT_DIR" stuck-modal-guard "$LABEL" "$HOME/Library/LaunchAgents"
+# Only the main instance inherits the legacy fixed label; a per-session instance
+# is new, so there is nothing of its own to retire (and it must not touch the
+# main instance's unit).
+if [ -z "$SESSION_SAFE" ]; then
+  retire_legacy_helper_label "$PROJECT_DIR" stuck-modal-guard "$LABEL" "$HOME/Library/LaunchAgents"
+fi
+mkdir -p "$STATE_DIR"
+SESSION_XML=""
+if [ -n "$SESSION_SAFE" ]; then
+  SESSION_XML="
+    <key>CHANNELS_SESSION</key>
+    <string>$SESSION_ARG</string>
+    <key>STUCK_MODAL_STATE_DIR</key>
+    <string>$STATE_DIR</string>"
+fi
 cat > "$PLIST" <<PLIST_EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -86,9 +134,9 @@ cat > "$PLIST" <<PLIST_EOF
   <key>StartInterval</key>
   <integer>60</integer>
   <key>StandardOutPath</key>
-  <string>$PROJECT_DIR/store/stuck-modal-guard.log</string>
+  <string>$LOG_PATH</string>
   <key>StandardErrorPath</key>
-  <string>$PROJECT_DIR/store/stuck-modal-guard.log</string>
+  <string>$LOG_PATH</string>
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
@@ -96,7 +144,7 @@ cat > "$PLIST" <<PLIST_EOF
     <key>HOME</key>
     <string>$HOME</string>
     <key>USER</key>
-    <string>$(id -un)</string>$TZ_XML
+    <string>$(id -un)</string>$TZ_XML$SESSION_XML
   </dict>
 </dict>
 </plist>
