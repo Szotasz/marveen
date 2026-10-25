@@ -57,6 +57,25 @@ try {
   SOURCE_HELP = '(a ledger modul nem toltheto be)'
 }
 
+// SECURITY_RECIPIENT_LEDGER_MODE (the dashboard's Security tab). 'warn' lets a
+// draft whose ONLY problem is an address the ledger does not know through, with
+// a notice; 'block' (the default) denies it, as before the switch. A reader that
+// does not load reads as 'block'.
+let securitySetting = (_key, fallback) => fallback
+try {
+  ({ securitySetting } = await import('./lib/security-settings.mjs'))
+} catch { /* reader unavailable: block mode */ }
+export function recipientLedgerMode() {
+  return securitySetting('SECURITY_RECIPIENT_LEDGER_MODE', 'block', ['block', 'warn'])
+}
+
+// Warn mode only. The verdict with the ledger left out (every address counts as
+// sourced): when THAT still denies, the call is refused for another reason and
+// warn mode must not lift it; when it allows, the ledger was the only objection.
+export function ledgerOnlyObjection(toolName, toolInput, cwd = process.cwd()) {
+  return !gateDecision(toolName, toolInput, () => true, cwd).deny
+}
+
 // Bash command patterns that send mail. SUBGATEPOZ822 (2026-08-22): these are
 // no longer the primary trigger -- they matched CONTENT anywhere in the
 // command string, and the header's old premise ("a sub-agent has no
@@ -1565,6 +1584,12 @@ export function buildThreadDenyMsg(botName, detail) {
 
 function allow() { process.exit(0) }
 
+// Allow, with a notice on the owner's surface (one JSON object on stdout).
+function warnAllow(message) {
+  process.stdout.write(JSON.stringify({ systemMessage: message }))
+  process.exit(0)
+}
+
 function deny(reason) {
   process.stdout.write(JSON.stringify({
     hookSpecificOutput: {
@@ -1598,15 +1623,24 @@ if (isInvokedDirectly()) {
   } catch {
     allow() // malformed/empty input must never break the agent's tool calls
   }
+  const cwd = payload?.cwd || process.cwd()
+  const ledgerWarn = recipientLedgerMode() === 'warn'
   let decision
   try {
-    decision = gateDecision(payload?.tool_name, payload?.tool_input, null, payload?.cwd || process.cwd())
+    decision = gateDecision(payload?.tool_name, payload?.tool_input, null, cwd)
   } catch (err) {
     // HOOKDEPLOAD1008: the call needed the ledger, and the ledger module did
     // not load. Anything else that throws here is not this branch's to judge.
     if (!LEDGER_LOAD_ERROR) throw err
+    if (ledgerWarn && ledgerOnlyObjection(payload?.tool_name, payload?.tool_input, cwd)) {
+      warnAllow('CIMZETT-LEDGER (figyelo mod): a ledger nem toltheto be, a cimek forrasat nem tudtam ellenorizni.')
+    }
     process.stderr.write(buildLedgerUnavailableMsg(LEDGER_LOAD_ERROR))
     process.exit(2)
+  }
+  if (ledgerWarn && decision.kind === 'unverified-recipient' && ledgerOnlyObjection(payload?.tool_name, payload?.tool_input, cwd)) {
+    warnAllow(`CIMZETT-LEDGER (figyelo mod): forras nelkuli cim a piszkozatban: ${(decision.addresses ?? []).join(', ')}. ` +
+      'Blokkolo modban tiltott lenne; vedd fel forrassal: node scripts/recipient-ledger.mjs add <cim> --source ...')
   }
   const { deny: shouldDeny, kind, addresses } = decision
   if (shouldDeny) {

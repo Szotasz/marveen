@@ -899,7 +899,9 @@ export function writeAgentSettingsFromProfile(name: string, profile: ProfileTemp
   // The curl-https / wget name rules stay unless the owner switched on host-based
   // judging (BASH_EGRESS_HOST_ALLOW) -- the parser hook is injected below for
   // every sub-agent, so with the switch on it is the gate on those two verbs.
-  if (!bashEgressHostAllowEnabled() || !agentGetsBashEgressParser(name)) denyList.push(...LEGACY_BASH_EGRESS_DENY)
+  // With SECURITY_BASH_EXTERNAL on (Security tab) the owner opened external hosts for the fleet's Bash,
+  // so neither rule set applies; nc / ncat / telnet above and the baseline below stay.
+  if (!bashExternalOpen() && (!bashEgressHostAllowEnabled() || !agentGetsBashEgressParser(name))) denyList.push(...LEGACY_BASH_EGRESS_DENY)
   // Fleet baseline: the deny FLOOR every agent gets regardless of profile.
   // Pushed here rather than copied into each templates/profiles/*.json so a
   // profile added tomorrow cannot silently ship without it. Deduped against what
@@ -1428,7 +1430,7 @@ export function ensureBashEgressDeny(name: string, mainAgentConfigDir: string | 
   if (name !== MAIN_AGENT_ID && bashEgressHostAllowEnabled() && ensureBashEgressParser(name)) {
     try { settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) } catch { return false }
   }
-  const parserCovers = bashEgressHostAllowEnabled() && bashEgressParserCovers(name, settings, mainScopeSettingsPath)
+  const parserCovers = bashExternalOpen() || (bashEgressHostAllowEnabled() && bashEgressParserCovers(name, settings, mainScopeSettingsPath))
   if (!mergeBashEgressDeny(settings, parserCovers)) return false
   if (name !== MAIN_AGENT_ID) mkdirSync(join(agentDir(name), '.claude'), { recursive: true })
   atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
@@ -1441,6 +1443,13 @@ export function ensureBashEgressDeny(name: string, mainAgentConfigDir: string | 
 // setting reads as OFF -- the deny rules are the safe direction.
 export function bashEgressHostAllowEnabled(): boolean {
   try { return String(getEffectiveSettingValue('BASH_EGRESS_HOST_ALLOW')) === '1' } catch { return false }
+}
+
+// The Security tab's SECURITY_BASH_EXTERNAL (default off): on drops the legacy curl-https / wget name
+// rules from every agent it is written for, and bash-egress-parser.mjs lets external hosts through on
+// the same key, so the two layers move together. Unreadable reads as OFF.
+export function bashExternalOpen(): boolean {
+  try { return String(getEffectiveSettingValue('SECURITY_BASH_EXTERNAL')) === '1' } catch { return false }
 }
 
 // Does the bash-egress-parser hook judge this agent's Bash calls? Decides whether
@@ -1786,8 +1795,16 @@ export const DESTRUCTIVE_GATE_MATCHER = 'Bash|Read|Edit|Write|NotebookEdit'
 // can call it; omitted, the agent's own profile is resolved from its config.
 export function agentGetsDestructiveGate(name: string, profile?: ProfileTemplate): boolean {
   if (name === MAIN_AGENT_ID) return false
+  if (destructiveGateForAll()) return true
   const p = profile ?? loadProfileTemplate(resolveAgentSecurityProfile(name))
   return profileWantsDestructiveGate(p)
+}
+
+// The Security tab's SECURITY_DESTRUCTIVE_GATE (default off): on wires the gate for every sub-agent,
+// whatever its profile says. Off leaves the profile in charge, and like the profile flag it never
+// tears down a hook an agent already has. Unreadable reads as OFF, i.e. the profile decides.
+export function destructiveGateForAll(): boolean {
+  try { return String(getEffectiveSettingValue('SECURITY_DESTRUCTIVE_GATE')) === '1' } catch { return false }
 }
 
 // MARVEENGAPS1020 (c): WebSearch result snippets are external text that no
@@ -2002,8 +2019,19 @@ export function injectDestructiveGate(existing: Record<string, unknown>): void {
 // the hook through the install's own settings (see docs/credential-gate.md).
 export function agentGetsCredentialGate(name: string, profile?: ProfileTemplate): boolean {
   if (name === MAIN_AGENT_ID) return false
+  if (credentialGateFleetMode() !== 'off') return true
   const p = profile ?? loadProfileTemplate(resolveAgentSecurityProfile(name))
   return profileWantsCredentialGate(p)
+}
+
+// The Security tab's SECURITY_CREDENTIAL_GATE: 'warn' or 'block' wires the gate for every sub-agent
+// (the hook reads the mode itself, credential_lib.load_config); 'off' (default) leaves the profile in
+// charge. Unreadable or unknown reads as 'off'.
+export function credentialGateFleetMode(): 'off' | 'warn' | 'block' {
+  try {
+    const v = String(getEffectiveSettingValue('SECURITY_CREDENTIAL_GATE')).trim()
+    return v === 'warn' || v === 'block' ? v : 'off'
+  } catch { return 'off' }
 }
 
 // Idempotently wire the credential gate, on the SAME matcher as the email-send
