@@ -4238,7 +4238,7 @@ function renderAgents() {
 
     const modelClass = agent.model && agent.model !== 'inherit' ? agent.model : ''
     const modelLabel = agent.model || 'inherit'
-    const chConnected = agentIsConnected(agent)
+    const chConnected = agentOwnChannelConnected(agent)
     const chDotClass = chConnected ? 'connected' : 'disconnected'
     const chLabel = chConnected ? t('agents.status.online') : t('agents.status.offline')
     const isRunning = agent.running || false
@@ -4466,7 +4466,7 @@ async function openAgentDetail(agentName) {
   document.getElementById('agentDetailModel').textContent = currentAgent.activeModel || currentAgent.model || 'inherit'
   document.getElementById('agentDetailModelRestarting').hidden = true
 
-  const chConnected = agentIsConnected(currentAgent)
+  const chConnected = agentOwnChannelConnected(currentAgent)
   document.getElementById('agentDetailChStatus').innerHTML = `<span class="tg-status"><span class="tg-dot ${chConnected ? 'connected' : 'disconnected'}"></span>${chConnected ? t('agents.channel.connected') : t('agents.channel.disconnected')}</span>`
 
   // Settings tab - load Ollama + DeepSeek + custom-provider models then set value
@@ -6043,6 +6043,28 @@ function agentIsConnected(agent) {
   if (currentChannelProvider === 'slack') return !!agent.hasSlack
   if (currentChannelProvider === 'teams') return !!agent.hasTeams
   return !!agent.hasTelegram
+}
+
+// The agent card and the detail header ask about the agent's OWN channel
+// (agent-config.json channelProvider, carried on the /api/agents summary).
+// An unset or unknown value falls back to agentIsConnected(), i.e. to the
+// dashboard-wide provider. The Channel tab keeps agentIsConnected(): it
+// follows its own provider dropdown.
+const AGENT_CHANNEL_FLAG = {
+  telegram: 'hasTelegram',
+  discord: 'hasDiscord',
+  slack: 'hasSlack',
+  teams: 'hasTeams',
+  googlechat: 'hasGooglechat',
+}
+
+function agentOwnChannelConnected(agent) {
+  if (!agent) return false
+  const own = agent.channelProvider
+  if (typeof own === 'string' && Object.prototype.hasOwnProperty.call(AGENT_CHANNEL_FLAG, own)) {
+    return !!agent[AGENT_CHANNEL_FLAG[own]]
+  }
+  return agentIsConnected(agent)
 }
 
 function getProviderLabel() {
