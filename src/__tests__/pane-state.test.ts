@@ -69,6 +69,12 @@ const IDLE_BYPASS_FLEETVIEW = modeFooter('  ⏵⏵ bypass permissions on (shift+
 // No shift+tab hint at all: the tail alone has to carry it.
 const IDLE_ACCEPT_EDITS_TAIL_ONLY = modeFooter('  ⏵⏵ accept edits on · 1 monitor · ← for agents')
 
+// A STRICT-PROFILE AGENT RENDERS THE MODE WITH NO TAIL AT ALL (measured
+// 2026-10-24 on agent-helga, live pane). No shift+tab hint, no `·` action:
+// just the glyph and the mode. Before the glyph anchor this read 'unknown' and
+// the router silently refused every message to her for nine days.
+const IDLE_MANUAL_NO_TAIL = modeFooter('  ⏸ manual mode on')
+
 // The tail is what keeps prose out. Scrollback quoting a footer phrase without
 // the UI chrome must NOT read as idle -- otherwise a pasted log line parks the
 // router on a busy agent.
@@ -422,6 +428,7 @@ describe('detectPermissionMode', () => {
     ['auto mode', IDLE_AUTO_MODE],
     ['manual mode', IDLE_MANUAL_MODE],
     ['accept edits', IDLE_ACCEPT_EDITS_TAIL_ONLY],
+    ['manual mode', IDLE_MANUAL_NO_TAIL],
   ])('reads %s off the footer', (expected, pane) => {
     expect(detectPermissionMode(pane)).toBe(expected)
   })
@@ -463,6 +470,7 @@ describe('detectPaneState', () => {
     ['manual mode', IDLE_MANUAL_MODE],
     ['bypass with the FleetView tail', IDLE_BYPASS_FLEETVIEW],
     ['accept edits with no shift+tab hint', IDLE_ACCEPT_EDITS_TAIL_ONLY],
+    ['manual mode with no tail at all (strict profile)', IDLE_MANUAL_NO_TAIL],
   ])('detects idle on the %s footer', (_label, pane) => {
     expect(detectPaneState(pane)).toBe('idle')
     expect(isReadyForPrompt(pane)).toBe(true)
