@@ -23,6 +23,23 @@ describe('isQuarantineDenied: internal spellings', () => {
     expect(isQuarantineDenied('http://printer.local./')).toBe(true)
   })
 
+  it('denies the other IPv4-embedding IPv6 prefixes: translated, compatible and NAT64', () => {
+    expect(isQuarantineDenied('http://[::ffff:0:7f00:1]/')).toBe(true)
+    expect(isQuarantineDenied('http://[::7f00:1]/')).toBe(true)
+    expect(isQuarantineDenied('http://[::127.0.0.1]/')).toBe(true)
+    expect(isQuarantineDenied('http://[64:ff9b::7f00:1]/')).toBe(true)
+    expect(isQuarantineDenied('http://[64:ff9b::a9fe:a9fe]/latest/meta-data')).toBe(true)
+  })
+
+  it('lets those prefixes through when the embedded IPv4 is public (control)', () => {
+    expect(isQuarantineDenied('https://[64:ff9b::5db8:d822]/')).toBe(false)
+    expect(isQuarantineDenied('https://[::ffff:0:5db8:d822]/')).toBe(false)
+  })
+
+  it('denies an internal name with several trailing dots', () => {
+    expect(isQuarantineDenied('http://localhost../')).toBe(true)
+  })
+
   it('lets a trailing-dot public name through (control)', () => {
     expect(isQuarantineDenied('https://example.com./')).toBe(false)
   })

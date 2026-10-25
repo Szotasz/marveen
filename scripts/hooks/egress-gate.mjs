@@ -210,9 +210,12 @@ function isPrivateIPv6(host) {
   // IPv4-mapped (::ffff:10.0.0.1) -- reuse the v4 rules on the tail.
   const tail = h.split(':').pop() ?? ''
   if (tail.includes('.')) return isPrivateIPv4(tail)
-  // be27524d: the URL parser writes the mapped form in hex ([::ffff:127.0.0.1] -> [::ffff:7f00:1]),
-  // so the dotted-tail check above never sees it; decode the two hex groups back to IPv4.
-  const mapped = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(h)
+  // be27524d: the URL parser writes an embedded IPv4 in hex ([::ffff:127.0.0.1] -> [::ffff:7f00:1]),
+  // so the dotted-tail check above never sees it; decode the two hex groups back to IPv4. The same
+  // decoding covers every prefix that carries an IPv4 address in its last 32 bits: IPv4-mapped
+  // (::ffff:0:0/96), IPv4-translated (::ffff:0:0:0/96), IPv4-compatible (::/96) and the NAT64
+  // well-known prefix (64:ff9b::/96), which a NAT64 gateway translates to the embedded address.
+  const mapped = /^(?:::ffff:|::ffff:0:|::|64:ff9b::)([0-9a-f]{1,4}):([0-9a-f]{1,4})$/.exec(h)
   if (mapped) {
     const [hi, lo] = [parseInt(mapped[1], 16), parseInt(mapped[2], 16)]
     return isPrivateIPv4([hi >> 8, hi & 255, lo >> 8, lo & 255].join('.'))
@@ -232,9 +235,9 @@ export function isQuarantineDenied(url) {
     return true // unparseable -> deny
   }
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return true
-  // be27524d: one trailing dot is the same name to the resolver ("localhost." is
-  // localhost), so the lists below see the name without it.
-  const host = parsed.hostname.toLowerCase().replace(/\.$/, '')
+  // be27524d: trailing dots do not change the name for the resolver ("localhost." and
+  // "localhost.." are localhost), so the lists below see the name without them.
+  const host = parsed.hostname.toLowerCase().replace(/\.+$/, '')
   if (!host) return true
   if (QUARANTINE_DENY_HOSTS.has(host)) return true
   if (QUARANTINE_DENY_SUFFIXES.some((s) => host.endsWith(s))) return true
