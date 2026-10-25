@@ -84,6 +84,16 @@ vi.mock('../web/scheduled-tasks-io.js', () => ({
   MAX_SCHEDULED_TASK_PROMPT_LEN: 50_000,
 }))
 
+// The scheduler's zone is config.APP_TZ, which reads config-overrides.json and
+// .env, never process.env: vi.stubEnv('SCHEDULER_TZ') does not reach it, and
+// APP_TZ falls back to the host zone. The fixed-time fixtures below (12:30 and
+// 12:20 Budapest) are only due at the startup tick in Budapest time, so on a
+// UTC host (the CI runner) they would never fire. Pin the zone here instead.
+vi.mock('../config.js', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../config.js')>()
+  return { ...real, APP_TZ: 'Europe/Budapest', SCHEDULER_TZ_CONFIGURED: 'Europe/Budapest' }
+})
+
 // The worksource opt-in is the one knob this file exists to flip; everything
 // else in agent-config stays real (readAgentRemoteHost on a nonexistent agent
 // dir yields host=null, which is what a local worksource agent looks like).
@@ -190,7 +200,6 @@ const runsFor = (name: string) => mockAppendTaskRun.mock.calls.filter(c => c[0] 
 
 describe('schedule runner: a worksource agent gets scheduled prompts through its queue', () => {
   beforeEach(() => {
-    vi.stubEnv('SCHEDULER_TZ', 'Europe/Budapest')
     vi.clearAllMocks()
     // clearAllMocks keeps a mockReturnValue: restore the queue's accept-all default.
     mockEnqueue.mockReturnValue(true)
