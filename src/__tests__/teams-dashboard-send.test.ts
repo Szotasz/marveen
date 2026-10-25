@@ -306,6 +306,99 @@ describe('sendTeamsMessage (serviceUrl resolution before any request)', () => {
     expect(foreign.calls).toEqual([])
   })
 
+  it('no ref + the serviceUrl from the channel .env (creds.serviceUrl): the send goes there', async () => {
+    const dir = stateDirWithRefs(validRefs(undefined, 'a:different'))
+    scratch.push(dir)
+    const overrideSend = 'https://smba.trafficmanager.net/teams/v3/conversations/a%3A1x/activities'
+    const { impl, calls } = fakeFetch({
+      'https://login.microsoftonline.com/t-1/oauth2/v2.0/token': () => jsonResponse(200, { access_token: 'tok-1', expires_in: 3600 }),
+      [overrideSend]: () => jsonResponse(200, { id: 'm2' }),
+    })
+
+    const receipt = await sendTeamsMessage(
+      { ...CREDS, serviceUrl: 'https://smba.trafficmanager.net/teams/' },
+      dir,
+      CONVERSATION,
+      'hi',
+      { fetch: impl, env: {} },
+    )
+
+    expect(receipt).toEqual({ status: 200, messageId: 'm2' })
+    expect(calls.map((c) => c.url)).toEqual(['https://login.microsoftonline.com/t-1/oauth2/v2.0/token', overrideSend])
+  })
+
+  it('an EMPTY TEAMS_SERVICE_URL in the environment (Environment=TEAMS_SERVICE_URL=) does not shadow the .env file value', async () => {
+    const dir = stateDirWithRefs(validRefs(undefined, 'a:different'))
+    scratch.push(dir)
+    const overrideSend = 'https://smba.trafficmanager.net/teams/v3/conversations/a%3A1x/activities'
+    const { impl, calls } = fakeFetch({
+      'https://login.microsoftonline.com/t-1/oauth2/v2.0/token': () => jsonResponse(200, { access_token: 'tok-1', expires_in: 3600 }),
+      [overrideSend]: () => jsonResponse(200, { id: 'm2' }),
+    })
+
+    const receipt = await sendTeamsMessage(
+      { ...CREDS, serviceUrl: 'https://smba.trafficmanager.net/teams/' },
+      dir,
+      CONVERSATION,
+      'hi',
+      { fetch: impl, env: { TEAMS_SERVICE_URL: '' } },
+    )
+
+    expect(receipt).toEqual({ status: 200, messageId: 'm2' })
+    expect(calls.map((c) => c.url)).toEqual(['https://login.microsoftonline.com/t-1/oauth2/v2.0/token', overrideSend])
+  })
+
+  it('a TEAMS_SERVICE_URL in the environment takes precedence over the one in the .env file', async () => {
+    const dir = stateDirWithRefs(validRefs(undefined, 'a:different'))
+    scratch.push(dir)
+    const overrideSend = 'https://smba.trafficmanager.net/teams/v3/conversations/a%3A1x/activities'
+    const { impl, calls } = fakeFetch({
+      'https://login.microsoftonline.com/t-1/oauth2/v2.0/token': () => jsonResponse(200, { access_token: 'tok-1', expires_in: 3600 }),
+      [overrideSend]: () => jsonResponse(200, { id: 'm2' }),
+    })
+
+    const receipt = await sendTeamsMessage(
+      { ...CREDS, serviceUrl: 'https://smba.emea.trafficmanager.net/' },
+      dir,
+      CONVERSATION,
+      'hi',
+      { fetch: impl, env: { TEAMS_SERVICE_URL: 'https://smba.trafficmanager.net/teams/' } },
+    )
+
+    expect(receipt).toEqual({ status: 200, messageId: 'm2' })
+    expect(calls.map((c) => c.url)).toEqual(['https://login.microsoftonline.com/t-1/oauth2/v2.0/token', overrideSend])
+    // Nothing ever went to the file's host.
+    expect(calls.some((c) => c.url.includes('smba.emea.trafficmanager.net'))).toBe(false)
+  })
+
+  it('a foreign host in the .env file value is refused locally, so nothing is requested anywhere', async () => {
+    const dir = stateDirWithRefs(validRefs(undefined, 'a:different'))
+    scratch.push(dir)
+    const { impl, calls } = fakeFetch(happyRoutes())
+
+    await expect(
+      sendTeamsMessage({ ...CREDS, serviceUrl: 'https://evil.example/' }, dir, CONVERSATION, 'hi', { fetch: impl, env: {} }),
+    ).rejects.toThrow('Teams API config: TEAMS_SERVICE_URL is not a Teams service host')
+    expect(calls).toEqual([])
+  })
+
+  it('a stored ref still wins over the file value', async () => {
+    const dir = stateDirWithRefs() // a valid matching ref for CONVERSATION
+    scratch.push(dir)
+    const { impl, calls } = fakeFetch(happyRoutes())
+
+    const receipt = await sendTeamsMessage(
+      { ...CREDS, serviceUrl: 'https://smba.emea.trafficmanager.net/' },
+      dir,
+      CONVERSATION,
+      'hi',
+      { fetch: impl, env: {} },
+    )
+
+    expect(receipt).toEqual({ status: 201, messageId: 'm1' })
+    expect(calls.map((c) => c.url)).toEqual([TOKEN_URL, SEND_URL])
+  })
+
   it('a ref with a foreign serviceUrl -> TeamsConfigError, fetch never called', async () => {
     const dir = stateDirWithRefs(validRefs('https://evil.example/'))
     scratch.push(dir)
@@ -592,6 +685,56 @@ describe('teamsProvider.sendMessage (provider level)', () => {
     expect(receipt).toEqual({ status: 201, messageId: 'm1' })
     expect(calls.map((c) => c.url)).toEqual([TOKEN_URL, SEND_URL])
   })
+
+  it('a TEAMS_SERVICE_URL that is only in the channel .env (not in the environment) still routes the send', async () => {
+    delete process.env.TEAMS_SERVICE_URL
+    const dir = scratchDir()
+    writeFileSync(
+      join(dir, '.env'),
+      'TEAMS_BOT_APP_ID=app-1\nTEAMS_BOT_APP_PASSWORD=s\nTEAMS_BOT_TENANT_ID=t-1\n'
+        + 'TEAMS_SERVICE_URL=https://smba.trafficmanager.net/teams/\n',
+    )
+    writeFileSync(join(dir, 'conversation-refs.json'), JSON.stringify(validRefs(undefined, 'a:different')))
+    process.env.TEAMS_STATE_DIR = dir
+
+    const overrideSend = 'https://smba.trafficmanager.net/teams/v3/conversations/a%3A1x/activities'
+    const { impl, calls } = fakeFetch({
+      [TOKEN_URL]: () => jsonResponse(200, { access_token: 'tok-1', expires_in: 3600 }),
+      [overrideSend]: () => jsonResponse(200, { id: 'm2' }),
+    })
+    vi.stubGlobal('fetch', impl)
+
+    const receipt = await getProvider('teams').sendMessage('app-1', CONVERSATION, 'hello')
+    expect(receipt).toEqual({ status: 200, messageId: 'm2' })
+    expect(calls.map((c) => c.url)).toEqual([TOKEN_URL, overrideSend])
+  })
+})
+
+// -- S12: the tenant id is checked before anything is requested -----------------
+
+describe('getTeamsBotToken (tenant id form)', () => {
+  it('a malformed tenant is refused before any request; a well-formed one sends normally', async () => {
+    const dir = stateDirWithRefs()
+    scratch.push(dir)
+    const { impl, calls } = fakeFetch(happyRoutes())
+
+    for (const tenant of ['a/b', '../x', 'x y', '-leading', 'x?y']) {
+      await expect(
+        sendTeamsMessage({ appId: 'app-1', secret: 'sec-1', tenant }, dir, CONVERSATION, 'hi', { fetch: impl, env: {} }),
+      ).rejects.toThrow('Teams API config: Teams tenant id has an unexpected form')
+    }
+    expect(calls).toEqual([])
+
+    // Positive: a tenant of the shape the .env carries sends normally.
+    const ok = fakeFetch(happyRoutes())
+    expect(
+      await sendTeamsMessage({ appId: 'app-1', secret: 'sec-1', tenant: 't-1' }, dir, CONVERSATION, 'hi', {
+        fetch: ok.impl,
+        env: {},
+      }),
+    ).toEqual({ status: 201, messageId: 'm1' })
+    expect(ok.calls.map((c) => c.url)).toEqual([TOKEN_URL, SEND_URL])
+  })
 })
 
 describe('readTeamsCreds (first file with TEAMS_BOT_APP_ID wins, never mixed)', () => {
@@ -618,5 +761,53 @@ describe('readTeamsCreds (first file with TEAMS_BOT_APP_ID wins, never mixed)', 
       secret: '',
       tenant: '',
     })
+  })
+
+  it('a TEAMS_SERVICE_URL line in the winning file comes back as serviceUrl; a later file never supplies it', () => {
+    const dir = scratchDir()
+    const first = join(dir, 'one.env')
+    const second = join(dir, 'two.env')
+
+    // The winning file sets it, so it travels with the other three keys.
+    writeFileSync(
+      first,
+      'TEAMS_BOT_APP_ID=app-first\nTEAMS_BOT_APP_PASSWORD=p1\nTEAMS_BOT_TENANT_ID=t1\n'
+        + 'TEAMS_SERVICE_URL=https://smba.trafficmanager.net/teams/\n',
+    )
+    writeFileSync(second, 'TEAMS_BOT_APP_ID=app-second\nTEAMS_BOT_TENANT_ID=t2\n')
+    expect(readTeamsCreds('fallback', [first, second])).toEqual({
+      appId: 'app-first',
+      secret: 'p1',
+      tenant: 't1',
+      serviceUrl: 'https://smba.trafficmanager.net/teams/',
+    })
+
+    // Only the second file sets it: the first file wins, so its value is NOT
+    // used -- the serviceUrl obeys the same never-mixed rule as the secret.
+    writeFileSync(first, 'TEAMS_BOT_APP_ID=app-first\nTEAMS_BOT_APP_PASSWORD=p1\nTEAMS_BOT_TENANT_ID=t1\n')
+    writeFileSync(
+      second,
+      'TEAMS_BOT_APP_ID=app-second\nTEAMS_BOT_APP_PASSWORD=p2\nTEAMS_BOT_TENANT_ID=t2\n'
+        + 'TEAMS_SERVICE_URL=https://smba.emea.trafficmanager.net/\n',
+    )
+    const result = readTeamsCreds('fallback', [first, second])
+    expect(result).toEqual({ appId: 'app-first', secret: 'p1', tenant: 't1' })
+    expect('serviceUrl' in result).toBe(false)
+
+    // A whitespace-only value in the winning file (it trims to '') sets nothing:
+    // no serviceUrl key at all.
+    writeFileSync(first, 'TEAMS_BOT_APP_ID=app-first\nTEAMS_BOT_APP_PASSWORD=p1\nTEAMS_BOT_TENANT_ID=t1\nTEAMS_SERVICE_URL=   \n')
+    const emptyLine = readTeamsCreds('fallback', [first, second])
+    expect('serviceUrl' in emptyLine).toBe(false)
+  })
+
+  it("the secret is never paired with another file's app id (no password line in the winner -> empty secret)", () => {
+    const dir = scratchDir()
+    const first = join(dir, 'one.env')
+    const second = join(dir, 'two.env')
+
+    writeFileSync(first, 'TEAMS_BOT_APP_ID=app-first\nTEAMS_BOT_TENANT_ID=t1\n')
+    writeFileSync(second, 'TEAMS_BOT_APP_ID=app-second\nTEAMS_BOT_APP_PASSWORD=p2\nTEAMS_BOT_TENANT_ID=t2\n')
+    expect(readTeamsCreds('fallback', [first, second])).toEqual({ appId: 'app-first', secret: '', tenant: 't1' })
   })
 })

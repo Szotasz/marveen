@@ -905,19 +905,28 @@ export function readChannelEnv(envFilePath: string, keys: readonly string[]): Re
 // a secret from a newer .env paired with an app id from a stale one would
 // produce an Entra refusal that looks like a config error elsewhere. The FIRST
 // file that has a TEAMS_BOT_APP_ID line wins; `files` is injectable so the
-// lookup can be tested against temp files. When no file qualifies, the app-id
-// stand-in from the caller becomes the appId with empty secret/tenant, which
-// sendTeamsMessage reports as the incomplete-credentials config error.
+// lookup can be tested against temp files. TEAMS_SERVICE_URL is read from that
+// same winning file, so an operator override written next to the bot keys also
+// reaches a dashboard that never loads the .env into process.env. When no file
+// qualifies, the app-id stand-in from the caller becomes the appId with empty
+// secret/tenant, which sendTeamsMessage reports as the incomplete-credentials
+// config error.
 export function readTeamsCreds(fallbackAppId: string, files?: string[]): TeamsCreds {
   const candidates = files ?? [join(INSTALL_ROOT, '.env'), join(channelStateDir('teams'), '.env')]
   for (const path of candidates) {
-    const env = readChannelEnv(path, ['TEAMS_BOT_APP_ID', 'TEAMS_BOT_APP_PASSWORD', 'TEAMS_BOT_TENANT_ID'])
+    const env = readChannelEnv(path, ['TEAMS_BOT_APP_ID', 'TEAMS_BOT_APP_PASSWORD', 'TEAMS_BOT_TENANT_ID', 'TEAMS_SERVICE_URL'])
     if (env['TEAMS_BOT_APP_ID']) {
-      return {
+      const creds: TeamsCreds = {
         appId: env['TEAMS_BOT_APP_ID'],
         secret: env['TEAMS_BOT_APP_PASSWORD'] ?? '',
         tenant: env['TEAMS_BOT_TENANT_ID'] ?? '',
       }
+      // Only a non-empty value from the winning file: an empty line must not
+      // shadow the environment, and a later file's value is never mixed in.
+      if (typeof env['TEAMS_SERVICE_URL'] === 'string' && env['TEAMS_SERVICE_URL'] !== '') {
+        creds.serviceUrl = env['TEAMS_SERVICE_URL']
+      }
+      return creds
     }
   }
   return { appId: fallbackAppId, secret: '', tenant: '' }

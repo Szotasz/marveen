@@ -9,8 +9,9 @@
 // not supported', so a CHANNEL_PROVIDER=teams install silently had NO alerts.
 //
 // Security shape (SSRF): the conversation's serviceUrl comes from disk (the
-// plugin's conversation-refs.json) or from TEAMS_SERVICE_URL, and is sent the
-// bearer token -- so it must be a real Bot Framework host before anything is
+// plugin's conversation-refs.json), or else from TEAMS_SERVICE_URL -- the
+// environment first, or the same .env file as the bot credentials -- and is sent
+// the bearer token, so it must be a real Bot Framework host before anything is
 // requested or sent. isTeamsServiceUrl accepts only https://smba.trafficmanager.net
 // and https://smba.<region>.trafficmanager.net (no userinfo, no port, no IP
 // literal, no look-alike domain). The token is fetched only AFTER the route is
@@ -138,6 +139,8 @@ export interface TeamsCreds {
   appId: string
   secret: string
   tenant: string
+  /** TEAMS_SERVICE_URL from the same .env file as the three keys above, if that file sets it. */
+  serviceUrl?: string
 }
 
 /** Every "cannot send, config is missing or wrong" case. The message always
@@ -242,10 +245,11 @@ export async function getTeamsBotToken(
 
 /**
  * Send one plain-text message to a Teams conversation over the Bot Framework
- * REST API. The destination is the conversation's recorded serviceUrl (or
- * TEAMS_SERVICE_URL as an operator override), and it must pass
- * isTeamsServiceUrl BEFORE any token is requested -- a missing or foreign route
- * fails locally, with nothing sent anywhere.
+ * REST API. The destination is the conversation's recorded serviceUrl, or else
+ * TEAMS_SERVICE_URL as an operator override -- taken from the environment
+ * first, or else from the same .env file as the bot credentials -- and it must
+ * pass isTeamsServiceUrl BEFORE any token is requested: a missing or foreign
+ * route fails locally, with nothing sent anywhere.
  *
  * TeamsConfigError (with one preceding logger.warn) for every config problem;
  * a plain Error for transport failures. Resolves with the HTTP status and the
@@ -276,7 +280,8 @@ export async function sendTeamsMessage(
   if ('url' in ref) {
     serviceUrl = ref.url
   } else {
-    const override = (deps?.env ?? process.env).TEAMS_SERVICE_URL
+    const envOverride = (deps?.env ?? process.env).TEAMS_SERVICE_URL
+    const override = typeof envOverride === 'string' && envOverride !== '' ? envOverride : creds.serviceUrl
     if (TEAMS_NO_REF_REASONS.has(ref.reason) && typeof override === 'string' && override !== '') {
       if (!isTeamsServiceUrl(override)) {
         throw teamsConfigFail('TEAMS_SERVICE_URL is not a Teams service host')
