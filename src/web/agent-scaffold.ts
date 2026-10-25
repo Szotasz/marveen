@@ -561,6 +561,39 @@ export function upgradeForeignRootInHookPrompts(existingHooks: Record<string, un
   return changed
 }
 
+/**
+ * In-place pass over an agent's hooks block: the template's
+ * PreCompact task-state curl now sends X-Agent-Id, so the agent's own record
+ * replays as its own. The add pass dedupes on COMMAND strings and never
+ * rewrites a `type: "agent"` prompt, so without this pass an agent scaffolded
+ * before the change would keep the header-less curl forever. Only the exact
+ * template spelling is upgraded; an operator-customised curl is left alone.
+ * Idempotent. Exported for unit tests.
+ */
+const TASKSTATE_CURL_ANCHOR = "/api/agent-taskstate/SAJAT_NEVED -H 'Content-Type: application/json'"
+const TASKSTATE_AGENT_HEADER = " -H 'X-Agent-Id: SAJAT_NEVED'"
+export function upgradeTaskStateHeaderInHookPrompts(existingHooks: Record<string, unknown>): boolean {
+  let changed = false
+  for (const entries of Object.values(existingHooks)) {
+    if (!Array.isArray(entries)) continue
+    for (const entry of entries as HookEntry[]) {
+      for (const hook of entry.hooks ?? []) {
+        if (typeof hook.prompt !== 'string' || !hook.prompt.includes(TASKSTATE_CURL_ANCHOR)) continue
+        const withHeader = TASKSTATE_CURL_ANCHOR + TASKSTATE_AGENT_HEADER
+        const upgraded = hook.prompt
+          .split(withHeader)
+          .map((part) => part.split(TASKSTATE_CURL_ANCHOR).join(withHeader))
+          .join(withHeader)
+        if (upgraded !== hook.prompt) {
+          hook.prompt = upgraded
+          changed = true
+        }
+      }
+    }
+  }
+  return changed
+}
+
 // Idempotent migration: every agent's settings.json should carry the
 // PreCompact hook (memory save + skill reflection). Pre-refactor agents
 // were scaffolded before scaffoldAgentDir seeded the template, so their
@@ -622,6 +655,8 @@ export function ensureAgentHooks(
     // HOSTMOVE923: an existing PreCompact prompt inherited from another
     // install/host names a dead root; the add pass below would never see it.
     if (upgradeForeignRootInHookPrompts(existingHooks, PROJECT_ROOT)) changed = true
+    // The same blind spot for the task-state curl's X-Agent-Id header.
+    if (upgradeTaskStateHeaderInHookPrompts(existingHooks)) changed = true
     // Matcher pass: a widened template matcher (e.g. SessionStart gaining
     // `clear`) must reach agents whose command string is unchanged.
     if (syncHookMatchers(existingHooks, tplHooks)) changed = true
