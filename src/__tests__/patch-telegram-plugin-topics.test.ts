@@ -168,6 +168,7 @@ function load(source: string): Plugin {
   const record = (name: string) => async (...a: unknown[]) => { calls.push([name, ...a]); return { message_id: nextId++ } }
   const bot = {
     command: () => {},
+    on: () => {},
     start: async () => {},
     api: {
       sendChatAction: record('sendChatAction'),
@@ -191,14 +192,13 @@ function load(source: string): Plugin {
     bot, Server, ListToolsRequestSchema: ListTools, CallToolRequestSchema: CallTool, InputFile, extname,
     dmCommandGate: () => null,
     gate: () => ({ action: 'deliver', access: {} }),
-    PERMISSION_REPLY_RE: /^\b$/,
     chunk: (t: string) => t.split('|'),
     assertAllowedChat: () => {},
     assertSendable: () => {},
     statSync: () => ({ size: 1 }),
     MAX_ATTACHMENT_BYTES: 50 * 1024 * 1024,
     MAX_CHUNK_LIMIT: 4096,
-    loadAccess: () => ({}),
+    loadAccess: () => ({ allowFrom: ['42'] }),
     PHOTO_EXTS: new Set(['.png', '.jpg']),
     writeFileSync: () => {}, renameSync: () => {}, join, STATE_DIR: '/nonexistent',
   }
@@ -308,7 +308,7 @@ describe('the patched plugin, run', () => {
     const { calls } = await replyTrace(on, { text: 'a|b', message_thread_id: '12', buttons: ['Igen', 'Nem'] })
     expect(calls).toEqual([
       ['sendMessage', '42', 'a', { message_thread_id: 12 }],
-      ['sendMessage', '42', 'b', { message_thread_id: 12, reply_markup: { keyboard: [[{ text: 'Igen' }], [{ text: 'Nem' }]], one_time_keyboard: true, resize_keyboard: true } }],
+      ['sendMessage', '42', 'b', { message_thread_id: 12, reply_markup: { inline_keyboard: [[{ text: 'Igen', callback_data: 'kbd:0' }], [{ text: 'Nem', callback_data: 'kbd:1' }]] } }],
     ])
   })
 
