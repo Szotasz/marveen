@@ -52,7 +52,7 @@ function argvOf(n: number): string[] {
   return text.replace(/\n$/, '').split('\n')
 }
 
-const { initDatabase } = await import('../db.js')
+const { initDatabase, getVaultSshKey } = await import('../db.js')
 const { generateSshKeyPair, extractPublicKeyFromVault, tryHandleVaultSshKeys } = await import('../web/routes/vault-ssh-keys.js')
 const { setSecret } = await import('../web/vault.js')
 
@@ -92,6 +92,21 @@ async function importKey(privateKey: string) {
     path: '/api/vault/ssh-keys/import',
     method: 'POST',
     url: new URL('http://127.0.0.1:3420/api/vault/ssh-keys/import'),
+  }
+  await tryHandleVaultSshKeys(ctx)
+  return { res, json: () => JSON.parse(res.body || '{}') }
+}
+
+async function generateKey(label: string, username: string) {
+  const payload = Buffer.from(JSON.stringify({ label, username }))
+  const req = Readable.from([payload]) as unknown as http.IncomingMessage
+  const res = mkRes()
+  const ctx: RouteContext = {
+    req,
+    res: res as unknown as http.ServerResponse,
+    path: '/api/vault/ssh-keys',
+    method: 'POST',
+    url: new URL('http://127.0.0.1:3420/api/vault/ssh-keys'),
   }
   await tryHandleVaultSshKeys(ctx)
   return { res, json: () => JSON.parse(res.body || '{}') }
@@ -147,5 +162,32 @@ describe('ssh-keygen runs asynchronously', () => {
     const outcome = await Promise.race([generateSshKeyPair('s@h'), sleep(5000).then(() => 'timeout' as const)])
     expect(outcome).not.toBe('timeout')
     expect((outcome as { publicKey: string }).publicKey).toMatch(/^ssh-ed25519 \S+ s@h$/)
+  })
+
+  it('generate route: the key comment is "<username> (<label>)" from the trimmed fields', async () => {
+    const { res, json } = await generateKey('  web-1  ', ' deploy ')
+    expect(res.statusCode).toBe(201)
+    const argv = argvOf(1)
+    expect(argv.indexOf('-C')).toBeGreaterThan(-1)
+    expect(argv[argv.indexOf('-C') + 1]).toBe('deploy (web-1)')
+    const body = json()
+    expect(body.publicKey).toMatch(/^ssh-ed25519 \S+ deploy \(web-1\)$/)
+    const row = getVaultSshKey(body.key.id as string)
+    expect(row).toBeDefined()
+    expect(row!.public_key).toBe(body.publicKey)
+    expect(row!.label).toBe('web-1')
+    expect(row!.username).toBe('deploy')
+  })
+
+  it('import route: the returned and stored public key carry no trailing newline', async () => {
+    const kp = await generateSshKeyPair('i@h')
+    const { res, json } = await importKey(kp.privateKey)
+    expect(res.statusCode).toBe(201)
+    const body = json()
+    expect(body.publicKey.endsWith('\n')).toBe(false)
+    expect(body.publicKey).toBe(kp.publicKey)
+    const row = getVaultSshKey(body.key.id as string)
+    expect(row).toBeDefined()
+    expect(row!.public_key).toBe(kp.publicKey)
   })
 })
