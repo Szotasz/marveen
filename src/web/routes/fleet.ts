@@ -1,6 +1,7 @@
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
 import { exportFleet, importFleet, MIN_VAULT_PASSWORD_LEN, UserFacingError, type ExportedFleet } from '../fleet-transfer.js'
+import { serializeSkillsDir } from '../skills-dir-queue.js'
 import type { RouteContext } from './types.js'
 
 export async function tryHandleFleet(ctx: RouteContext): Promise<boolean> {
@@ -56,7 +57,8 @@ export async function tryHandleFleet(ctx: RouteContext): Promise<boolean> {
 
     // importFleet handles JSON parse (and encrypted blob detection) internally
     try {
-      const result = importFleet(rawBody, { vaultPassword: vaultPassword || undefined, apply })
+      // The import writes skill directories; it waits for an export's zip or an assign's copy still running.
+      const result = await serializeSkillsDir(() => importFleet(rawBody, { vaultPassword: vaultPassword || undefined, apply }))
       if ('dryRun' in result && result.errors.length > 0) {
         json(res, result, 400)
       } else {

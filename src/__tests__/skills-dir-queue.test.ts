@@ -32,6 +32,19 @@ vi.mock('../web/agent-config.js', async (orig) => ({
   ...(await orig<typeof import('../web/agent-config.js')>()),
   listAgentNames: () => ['a1'],
 }))
+// The fleet import itself is not under test here: a stand-in writes one global
+// skill synchronously, the way the real import writes them.
+vi.mock('../web/fleet-transfer.js', () => ({
+  MIN_VAULT_PASSWORD_LEN: 12,
+  UserFacingError: class UserFacingError extends Error {},
+  exportFleet: () => { throw new Error('exportFleet is not used in this test') },
+  importFleet: () => {
+    const dir = join(`${H.root}/home`, '.claude', 'skills', 's5')
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'SKILL.md'), '# s5\n')
+    return { applied: true }
+  },
+}))
 
 mkdirSync(bin, { recursive: true })
 // The route runs zip with cwd = the global skills root, so PROBE_SKILL=s1
@@ -53,6 +66,7 @@ process.env.TOOL_LOG = log
 const { tryHandleSkills } = await import('../web/routes/skills.js')
 const { tryHandleAgentsSkills } = await import('../web/routes/agents-skills.js')
 const q = await import('../web/skill-quarantine.js')
+const { tryHandleFleet } = await import('../web/routes/fleet.js')
 
 afterEach(() => {
   delete process.env.FAKE_SLEEP
@@ -176,5 +190,18 @@ describe('skill directory operations run one at a time', () => {
     const r = await call(tryHandleAgentsSkills, 'DELETE', '/api/agents/host-main/skills/nope')
     expect(r.status).toBe(404)
     expect(JSON.parse(r.body.toString())).toEqual({ error: 'Skill not found' })
+  })
+
+  it('a fleet import issued while the export zips writes its skills after the zip ended', async () => {
+    process.env.FAKE_SLEEP = '1'
+    process.env.PROBE_SKILL = 's5'
+    const exp = call(tryHandleSkills, 'GET', '/api/skills/export')
+    await waitForLog('zip start')
+    const imp = call(tryHandleFleet, 'POST', '/api/fleet/import?apply=true', {})
+    const [e, i] = await Promise.all([exp, imp])
+    expect(e.status).toBe(200)
+    expect(i.status).toBe(200)
+    expect(readLog()).toContain('zip end saw=no')
+    expect(existsSync(join(fakeHome, '.claude', 'skills', 's5', 'SKILL.md'))).toBe(true)
   })
 })

@@ -4,7 +4,7 @@
 // a skill. Now the zip / cp child keeps running across an await, so a delete or
 // an approval could change a directory under it: zip exits 18 on a file removed
 // after its scan (the export then fails with 500), and a copy can take half of a
-// skill. Export, assign, approve and delete go through this queue. Writers
+// skill. Export, assign, approve, delete and the fleet import go through this queue. Writers
 // outside the dashboard (an agent editing its own skills) are not covered, as
 // they never were.
 let skillsDirQueue: Promise<unknown> = Promise.resolve()
