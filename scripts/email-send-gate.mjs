@@ -31,7 +31,7 @@
 // writeAgentSettingsFromProfile() (agent-scaffold.ts), guarded by
 // name !== MAIN_AGENT_ID, and re-applied on every spawn (respawn-safe).
 
-import { closeSync, openSync, readFileSync, readSync, realpathSync } from 'node:fs'
+import { closeSync, openSync, readdirSync, readFileSync, readSync, realpathSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 import { homedir } from 'node:os'
@@ -445,6 +445,62 @@ function commandHeads(toksIn, d = 0) {
 const PY_OPT_WITH_ARG = new Set(['-X', '-W', '--check-hash-based-pycs'])
 const RECIPIENT_FLAG = /^--to?(=|$)/
 const UNDECIDABLE_PATH = /[*?[{$]/
+
+// FLEETTOFLAG1025 v4 (Merlin 34827; the python twin: _FLEET_EXEMPT_BLOCK / _known_agents / _fleet_to_exempt): no tokenizer reading
+// of the recipient value any more. On an UNDECIDABLE program or script the recipient flag is a send, EXCEPT when every --to / --to=
+// value is a KNOWN agent name (the install's agents/ directories and its MAIN_AGENT_ID) AND the WHOLE command line has no `@`, no `~`
+// word other than a `~/` path and no --cc / --bcc. Every other shape is a send (fail-closed).
+const FLEET_EXEMPT_BLOCK = /@|(?:^|[\s='"(])~(?!\/)|--b?cc\b/
+const FLEET_TOKEN_BLOCK = /^(?:--(?:cc?|bc{0,2})(?:=|$)|~(?!\/))/ // on the DEQUOTED words: `--c""c`, `--\cc` are `--cc` to the program;
+// (v4.1, Merlin 34962) an argparse abbreviation (--c, --b, --bc) is --cc / --bcc to a default-argparse script: a send
+const AGENT_NAME = /^[a-z0-9][a-z0-9_-]*$/
+let knownAgentsOverride = null // the shared conformance list sets it (send-invocation-cases.json known_agents); null = the install
+let lineExemptOk = false // set per top-level isSendInvocation call from the WHOLE command line
+export function setKnownAgentsOverride(list) { knownAgentsOverride = list == null ? null : new Set(list) }
+const tok = (t) => t.replace(/^\n+|\n+$/g, '')
+const recipientFlag = (t) => RECIPIENT_FLAG.test(tok(t))
+// the agent names of THIS install: <root>/agents/* directories and MAIN_AGENT_ID in <root>/.env (root = one level above this
+// file). Any read error = an empty set, i.e. no exception (fail-closed).
+function knownAgents() {
+  if (knownAgentsOverride !== null) return knownAgentsOverride
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..')
+  const names = new Set()
+  try {
+    const d = join(root, 'agents')
+    for (const e of readdirSync(d, { withFileTypes: true })) if (e.isDirectory() && AGENT_NAME.test(e.name)) names.add(e.name)
+  } catch { /* no agents/ directory: only the main agent can be known */ }
+  try {
+    const m = readFileSync(join(root, '.env'), 'utf-8').match(/^\s*MAIN_AGENT_ID\s*=\s*['"]?([^'"\s#]+)/m)
+    if (m && AGENT_NAME.test(m[1])) names.add(m[1])
+  } catch { /* no .env: the main agent is not known (fail-closed) */ }
+  return names
+}
+// FLEETTOFLAG1025 v4 (Codex 0dd77c650df7): no address marker in the line -- neither in the raw text nor in any DEQUOTED word of any
+// segment, the substitution-flattened form included. An unparseable line is not clean (fail-closed).
+function lineClean(cmd) {
+  if (FLEET_EXEMPT_BLOCK.test(cmd)) return false
+  let words
+  try {
+    words = [cmd, flattenSubstitutions(cmd)].flatMap((c) => segmentsTokens(c).flat())
+  } catch { return false }
+  return !words.some((w) => w.includes('@') || FLEET_TOKEN_BLOCK.test(tok(w)))
+}
+// true (not a letter) only if the whole line passed the address check and every --to / --t value -- the very next token, or the
+// part after `=` -- is a known agent name. A missing or empty value is not a name.
+function fleetToExempt(rest) {
+  if (!lineExemptOk) return false
+  const vals = []
+  for (let i = 0; i < rest.length; i++) {
+    const t = tok(rest[i])
+    if (t === '--to' || t === '--t') vals.push(i + 1 < rest.length ? tok(rest[i + 1]) : '')
+    else if (t.startsWith('--to=') || t.startsWith('--t=')) vals.push(t.slice(t.indexOf('=') + 1))
+  }
+  if (!vals.length) return false
+  const known = knownAgents()
+  return vals.every((v) => known.has(v))
+}
+// an undecidable program / script with a recipient flag is a send unless the fleet-agent exception holds
+const undecidableRecipientSends = (rest) => rest.some((t) => recipientFlag(t)) && !fleetToExempt(rest)
 function pythonScriptOperand(rest) {
   let stdinRedirect = false
   for (let i = 0; i < rest.length; i++) {
@@ -504,10 +560,10 @@ export function flattenSubstitutions(cmd) {
 }
 
 function pythonHeadSends(rest) {
-  const recipient = rest.some((t) => RECIPIENT_FLAG.test(t))
+  const recipient = rest.some((t) => recipientFlag(t))
   const { script, stdin, stdinRedirect } = pythonScriptOperand(rest)
   if (script !== null && SENDPY.test(basename(script))) return recipient
-  if (script !== null && UNDECIDABLE_PATH.test(script)) return recipient // MAILGATEVARARGS1020
+  if (script !== null && UNDECIDABLE_PATH.test(script)) return undecidableRecipientSends(rest) // MAILGATEVARARGS1020, FLEETTOFLAG1025 v4
   if (stdin || (script === null && stdinRedirect)) return recipient
   return false
 }
@@ -541,11 +597,14 @@ function headIsSend(toks, depth) {
       if (rest[i] === '-m' && rest[i + 1].split('.').pop() === 'send') candidates.push('send.py')
     }
   }
-  if (candidates.some((c) => SENDPY.test(c)) && rest.some((t) => RECIPIENT_FLAG.test(t))) return true
+  if (candidates.some((c) => SENDPY.test(c)) && rest.some((t) => recipientFlag(t))) return true
   if (PYTHON.test(prog) && pythonHeadSends(rest)) return true
   // An interpreter or program that cannot be resolved statically ($PY, a glob,
   // a substitution) with a recipient flag: what runs is undecidable here.
-  if (UNDECIDABLE_PATH.test(toks[0]) && rest.some((t) => RECIPIENT_FLAG.test(t))) return true
+  // FLEETTOFLAG1025: the address rule -- but a send.py run by it (`$PY scripts/support-mail/send.py --to x`) keeps the bare flag rule
+  const scriptTok = pythonScriptOperand(rest).script // the script position (interpreter options, redirections skipped), not a data argument
+  if (UNDECIDABLE_PATH.test(toks[0]) && (undecidableRecipientSends(rest)
+      || (scriptTok != null && SENDPY.test(basename(scriptTok)) && rest.some((t) => recipientFlag(t))))) return true
   if (toks.some((t) => GRAPHMAIL.test(basename(t))) && rest.includes('send')) return true
   // RESENDGETTWIN1010: only an actual send (POST/PUT/..., or a body) fires; a
   // read-only GET/HEAD passes; an undecidable method stays fail-closed.
@@ -649,6 +708,9 @@ function heredocProgramSends(cmd, depth = 0) {
 }
 
 export function isSendInvocation(cmd, depth = 0) {
+  // FLEETTOFLAG1025 v4: the fleet-agent exception is decided on the WHOLE line; a wrapper body (depth > 0) can only tighten it.
+  // A module-level flag is enough: the hook is one process per tool call, and the evaluation is single-threaded.
+  lineExemptOk = (depth === 0 || lineExemptOk) && lineClean(cmd)
   if (heredocProgramSends(cmd, depth)) return true
   let segments
   try {

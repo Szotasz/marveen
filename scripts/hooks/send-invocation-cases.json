@@ -1,5 +1,13 @@
 {
   "_comment": "Shared recognition contract of the two mail gates (scripts/hooks/outgoing-copy-gate.py :: is_send_invocation and scripts/email-send-gate.mjs :: isSendInvocation). The conformance test (send-invocation-conformance.test.ts) runs EVERY case through BOTH implementations and asserts both equal `expected` -- divergence between the two copies surfaces as a test failure, not an incident (SUBGATEPOZ822, msg 14289). Unparseable-input fallbacks are deliberately NOT here: the two gates fall back differently by design (copy-gate: strong literals; hard-gate: full legacy patterns) and each pins its own in its scope test. A [marveen:...] prefixu esetek Marveen fuggetlen review-probai (store/marveen-send-gate-cases.json, msg 14302) -- a 'hatar' jeloles tortenete: az ot naiv exec-alak 2026-08-22 delutan LEZARULT (expected true), a megmaradt dokumentalt korlat az elfedett/futasidoben osszerakott kod; egy kesobbi valtozasnak itt teszt-hibakent kell jelentkeznie MINDKET iranyban, a nema atbillenes a tiltott allapot. INTERAGENTHOMOGLIF923 (2026-09-23): the inter-agent `curl .../api/messages` cases STAY expected:false here -- they are NOT email sends, and NONE of the email copy rules (accents, name rule, em dash) run on them. What changed is OUTSIDE this contract: the copy gate runs a SEPARATE, homoglyph-only check on that path (outgoing-copy-gate.py :: inter_agent_homoglyph_gate), blocking on a mixed-script word and passing an uninterpretable body with a loud warning. A reader must not take the expected:false rows as 'the path is unguarded', nor that change as 'the full copy gate now runs there'.",
+  "known_agents_comment": "FLEETTOFLAG1025 v4: the agent names the conformance test hands BOTH twins (KNOWN_AGENTS_OVERRIDE / setKnownAgentsOverride) instead of the install's agents/ + MAIN_AGENT_ID",
+  "known_agents": [
+    "merlin",
+    "diszpecser",
+    "tervezo",
+    "neo",
+    "neo3"
+  ],
   "cases": [
     {
       "name": "inter-agent curl, content mentions the mail script",
@@ -1294,6 +1302,471 @@
     {
       "name": "MAILGATEUV1020 control: an unmeasured launcher with mixed options, an ordinary run",
       "cmd": "conda run --no-capture-output -n base python train.py --epochs 3",
+      "expected": false
+    },
+    {
+      "name": "FLEETTOFLAG1025: the fleet CLI kept in a variable, an agent name after --to (measured false positive, 2026-10-25)",
+      "cmd": "$F message post --from merlin --to diszpecser --content-stdin < $S/pm5.txt",
+      "expected": false
+    },
+    {
+      "name": "FLEETTOFLAG1025: the variable set in the same command, an agent name after --to",
+      "cmd": "F=/Users/merlin/.local/bin/fleet; $F message post --from merlin --to tervezo --content-stdin < x.txt",
+      "expected": false
+    },
+    {
+      "name": "FLEETTOFLAG1025: a quoted variable program, --to=<agent name>",
+      "cmd": "\"$F\" message post --to=neo --content-stdin < x.txt",
+      "expected": false
+    },
+    {
+      "name": "FLEETTOFLAG1025: a variable script path, an agent name after --to",
+      "cmd": "python3 $S/post.py --to neo3 --text kesz",
+      "expected": false
+    },
+    {
+      "name": "FLEETTOFLAG1025 control: a variable program with an address after --to stays a send",
+      "cmd": "$X --to a@example.com --subject T --body B",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 control: a variable program with a variable --to value stays a send",
+      "cmd": "$X --to \"$ADDR\" --subject T --body B",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 control: a variable program with --to=<variable> stays a send",
+      "cmd": "$X --to=$ADDR --body B",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 control: a variable program with a --to that has no value stays a send",
+      "cmd": "$X --body B --to",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 control: a variable script path with an address after --to stays a send",
+      "cmd": "python3 $S/send2.py --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 control: the literal sender keeps the bare flag rule, an agent name after --to",
+      "cmd": "python3 scripts/support-mail/send.py --to diszpecser --subject T --body B",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 control: a substituted program with a substituted --to value stays a send",
+      "cmd": "$(which mailer) --to $(cat addr.txt) --body B",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 control: an empty --to value stays a send (fail-closed)",
+      "cmd": "$X --to \"\" --subject T --body B",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 control: an empty --to= value stays a send (fail-closed)",
+      "cmd": "$F message post --to= --content-stdin < x.txt",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 control: another flag as the --to value stays a send (fail-closed)",
+      "cmd": "$X --to --body B",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 control: one address among several --to values is a send",
+      "cmd": "$X --to neo --to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025: a substituted program with an agent name after --to is not a send (D1: the address rule, not variable resolution)",
+      "cmd": "$(which fleet) message post --to diszpecser --content-stdin < x.txt",
+      "expected": false
+    },
+    {
+      "name": "FLEETTOFLAG1025 RO#56 M1: a stderr redirection between --to and the address stays a send",
+      "cmd": "$X --to 2>/dev/null a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 RO#56 M1: a stdin redirection between --to and the address stays a send",
+      "cmd": "$X --to </dev/null a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 RO#56 M1: a redirection with a separate target between --to and the address stays a send",
+      "cmd": "$X --to 2> /dev/null a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 RO#56 M1: an output redirection with a separate target between --to and the address stays a send",
+      "cmd": "$X --to > out.txt a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 RO#56 M1: a backslash-newline between --to and the address stays a send",
+      "cmd": "$X --to \\\n  a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 RO#56 M1: the sender under a variable interpreter, a redirection before the address",
+      "cmd": "$PY scripts/support-mail/send.py --to </dev/null a@example.com --subject T --body B",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 RO#56 M2: a leading ~ (shell expansion) as the --to value stays a send",
+      "cmd": "$X --to ~/addr --body B",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 RO#56 minor 2: an agent name after --to with an address after --cc stays a send",
+      "cmd": "$X --to neo --cc a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 RO#56 minor 1: the sender under a variable interpreter keeps the bare flag rule",
+      "cmd": "$PY scripts/support-mail/send.py --to diszpecser --subject T --body B",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025: an angle-bracket address as the --to value stays a send",
+      "cmd": "$X --to \"<a@example.com>\" --body B",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 v4 (Merlin 34827): a redirection between --to and an agent name -- the value is not a known agent name: a send (fail-closed)",
+      "cmd": "$F message post --to 2>/dev/null diszpecser --content-stdin < x.txt",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 RO#56 control: a trailing redirection after an agent name is not a send",
+      "cmd": "$F message post --from merlin --to neo --content-stdin < $S/x.txt 2>/dev/null",
+      "expected": false
+    },
+    {
+      "name": "FLEETTOFLAG1025 RO#56: an appending stderr redirection with a separate target before the address stays a send",
+      "cmd": "$X --to 2>> err.log a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 RO#56: a here-string before the address stays a send",
+      "cmd": "$X --to <<< x a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 RO#56: &>> splits the segment, --to without a value stays a send",
+      "cmd": "$X --to &>> out.log a@example.com",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 RO#56: a separate redirection target with an @ is read as the address (fail-closed)",
+      "cmd": "$X --to > a@example.com neo",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 RO#56: the sender under a variable interpreter with an interpreter option keeps the bare flag rule",
+      "cmd": "$PY -u scripts/support-mail/send.py --to diszpecser",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 RO#56 control: send.py as a data argument, not the script, does not make it a send",
+      "cmd": "$X --to diszpecser --attachment /tmp/send.py",
+      "expected": false
+    },
+    {
+      "name": "FLEETTOFLAG1025 v3 RO#56 M1b: a glued backslash-newline before a redirection stays a send",
+      "cmd": "$X --to \\\n2>/dev/null a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 v3 RO#56 M1b: a glued backslash-newline before a stdin redirection stays a send",
+      "cmd": "$X --to \\\n</dev/null a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 v3 RO#56 M1b: a backslash-newline between the redirection operator and its target stays a send",
+      "cmd": "$X --to 2>\\\n  /dev/null a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 v3 RO#56 M1b: an unknown redirection shape <> next to the value stays a send (fail-closed)",
+      "cmd": "$X --to <> /dev/null a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 v3 RO#56 M1b: a heredoc intro <<- next to the value stays a send (fail-closed)",
+      "cmd": "$X --to <<- EOF a@example.com",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 v3 RO#56 M1b: a heredoc intro << next to an agent name stays a send (fail-closed)",
+      "cmd": "$F message post --to << EOF diszpecser",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 v3 RO#56 minor 1: --to with a glued backslash-newline is the recipient flag in both twins",
+      "cmd": "$X --to\\\n a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 v3 RO#56 minor 2: the sender after an interpreter option with a value keeps the bare flag rule",
+      "cmd": "$PY -X utf8 scripts/support-mail/send.py --to diszpecser",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 v3 RO#56 minor 2: the sender after a redirection keeps the bare flag rule",
+      "cmd": "$PY 2>/dev/null scripts/support-mail/send.py --to diszpecser",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 v3 RO#56 minor 3: a quoted &> next to the value is an unknown redirection shape (fail-closed)",
+      "cmd": "$F message post --to '&>' diszpecser --content-stdin < x.txt",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 v3 RO#56 minor 3 control: --cc with an address but no --to on a variable program is not a send (as in the base)",
+      "cmd": "$X --cc a@example.com --body B",
+      "expected": false
+    },
+    {
+      "name": "FLEETTOFLAG1025 v4 (Merlin 34827): a backslash-newline after --to -- the next token is not a known agent name: a send (fail-closed)",
+      "cmd": "$F message post --to \\\n  diszpecser --content-stdin < x.txt",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 v3: 2>&1 after --to -- the tokenizer cuts the segment at &, --to has no value: a send (fail-closed)",
+      "cmd": "$F message post --to 2>&1 neo --content-stdin < x.txt",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 v4 (Merlin 34827): a non-ASCII digit + > after --to -- not a known agent name: a send (fail-closed)",
+      "cmd": "$X --to ٣>/dev/null diszpecser --body B",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 v4 (Merlin 34827): an `@` anywhere in the line blocks the fleet-agent exception: a send",
+      "cmd": "$X --to ٣> a@example.com",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 v4 (Merlin 34827): a --cc anywhere blocks the exception",
+      "cmd": "$F message post --to diszpecser --cc neo --content-stdin < x.txt",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 v4 (Merlin 34827): a --bcc= anywhere blocks the exception",
+      "cmd": "$F message post --to diszpecser --bcc=neo --content-stdin < x.txt",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 v4 (Merlin 34827): an unknown name is not an agent: a send",
+      "cmd": "$F message post --to idegen --content-stdin < x.txt",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 v4 (Merlin 34827): the name is matched exactly (case): a send",
+      "cmd": "$F message post --to Diszpecser --content-stdin < x.txt",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 v4 (Merlin 34827): every --to value a known agent: not a send",
+      "cmd": "$F message post --to diszpecser --to neo --content-stdin < x.txt",
+      "expected": false
+    },
+    {
+      "name": "FLEETTOFLAG1025 v4 (Merlin 34827): one unknown --to value among known ones: a send",
+      "cmd": "$F message post --to diszpecser --to idegen --content-stdin < x.txt",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 v4 (Merlin 34827): an `@` in another segment of the line blocks the exception",
+      "cmd": "$F message post --to=diszpecser --content-stdin < x.txt; echo a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 v4 (Merlin 34827): a ~/ path is not an address candidate: not a send",
+      "cmd": "$F message post --to diszpecser --content-stdin < ~/pm.txt",
+      "expected": false
+    },
+    {
+      "name": "FLEETTOFLAG1025 v4 (Merlin 34827): a ~word (not ~/) anywhere blocks the exception",
+      "cmd": "$F message post --to diszpecser --content-stdin < ~ugyfel/pm.txt",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 v4 (Merlin 34827): a ~ value is not a known agent name: a send",
+      "cmd": "$F message post --to ~diszpecser --content-stdin < x.txt",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 v4 (Merlin 34827): a quoted known agent name: not a send",
+      "cmd": "$F message post --to 'diszpecser' --content-stdin < x.txt",
+      "expected": false
+    },
+    {
+      "name": "FLEETTOFLAG1025 v4 (Merlin 34827): the --t alias with a known agent name: not a send",
+      "cmd": "$F message post --t diszpecser --content-stdin < x.txt",
+      "expected": false
+    },
+    {
+      "name": "FLEETTOFLAG1025 v4 (Merlin 34827): an empty --to= value: a send",
+      "cmd": "$F message post --to= --content-stdin < x.txt",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 v4 (Merlin 34827): a --to without a value: a send",
+      "cmd": "$F message post --content-stdin < x.txt --to",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 v4 (Merlin 34827): inside a wrapper the outer line decides: no address, a known agent: not a send",
+      "cmd": "bash -c '$F message post --to diszpecser --content-stdin < x.txt'",
+      "expected": false
+    },
+    {
+      "name": "FLEETTOFLAG1025 v4 (Merlin 34827): an `@` in the outer line blocks the exception inside the wrapper",
+      "cmd": "bash -c '$F message post --to diszpecser --content-stdin < x.txt' # a@b.hu",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 v4 (Merlin 34827): the undecidable script branch: a --cc blocks the exception",
+      "cmd": "python3 $S/post.py --to neo3 --cc tervezo --text kesz",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 v4 (Merlin 34827): an `@` inside a quoted argument blocks the exception",
+      "cmd": "$X --to diszpecser --body 'irj a@example.com cimre'",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 v4 (Merlin 34827): Codex 0dd77c650df7: a quote-split --c\"\"c is --cc to the program: a send",
+      "cmd": "$F message post --to neo --c\"\"c \"$EMAIL\"",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 v4 (Merlin 34827): Codex 0dd77c650df7: a backslash-escaped --\\cc is --cc to the program: a send",
+      "cmd": "$F message post --to neo --\\cc \"$EMAIL\"",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 v4 (Merlin 34827): Codex 0dd77c650df7: a quoted, split --bcc= is --bcc to the program: a send",
+      "cmd": "$F message post --to neo \"--b\"\"cc=$EMAIL\"",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 v4 (Merlin 34827): Codex 0dd77c650df7: the same split --cc inside a wrapper body tightens the outer decision: a send",
+      "cmd": "bash -c '$F message post --to neo --c\"\"c \"$EMAIL\"'",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 v4 (Merlin 34827): Codex 0dd77c650df7: a quoted ~word is a ~word after dequoting: a send",
+      "cmd": "$F message post --to neo --content-stdin < ~\"ugyfel\"/x.txt",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 v4 (Merlin 34827): an `@` between quotes is still an `@` in the line: a send",
+      "cmd": "$F message post --to neo --content-stdin < x.txt \"a\"@\"b.hu\"",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 v4.1 (Merlin 34962, RO#56 4. kor T1) M1c: a redirection, a backslash-newline, then its target between --to and the address stays a send",
+      "cmd": "$X --to 2> \\\n  /dev/null a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 v4.1 (Merlin 34962, RO#56 4. kor T1) M1c: a stdout redirection split by a backslash-newline before the address stays a send",
+      "cmd": "$X --to > \\\n  out.txt a@example.com",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 v4.1 (Merlin 34962, RO#56 4. kor T1) M1c: an appending stderr redirection split by a backslash-newline before the address stays a send",
+      "cmd": "$X --to 2>> \\\n  err.log a@example.com",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 v4.1 (Merlin 34962, RO#56 4. kor T1) M1c: a stdin redirection split by a backslash-newline before the address stays a send",
+      "cmd": "$X --to < \\\n  /dev/null a@example.com",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 v4.1 (Merlin 34962, RO#56 4. kor T1) M1c: a here-string split by a backslash-newline before the address stays a send",
+      "cmd": "$X --to <<< \\\n  x a@example.com",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 v4.1 (Merlin 34962, RO#56 4. kor T1) M1c: a split redirection between --to and an agent name -- the value is not a known agent name: a send (fail-closed, v4)",
+      "cmd": "$F message post --to 2> \\\n  /dev/null diszpecser --content-stdin < x.txt",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 v4.1 (Merlin 34962, RO#56 4. kor T1) M1c control: a split redirection AFTER the agent name is not a send",
+      "cmd": "$F message post --to diszpecser --content-stdin < x.txt 2> \\\n  /dev/null",
+      "expected": false
+    },
+    {
+      "name": "FLEETTOFLAG1025 v4.1 (Merlin 34962, RO#56 4. kor T1) A12: a backslash-newline before --to stays a send",
+      "cmd": "$X \\\n--to a@example.com --body B",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 v4.1 (Merlin 34962, RO#56 4. kor T1) A24: python3 - with a glued backslash-newline after --to stays a send",
+      "cmd": "python3 - --to\\\n a@example.com < send.py",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 v4.1 (Merlin 34962, RO#56 4. kor T1) B24: python3 - with a backslash-newline before --to stays a send",
+      "cmd": "python3 - \\\n--to a@example.com < send.py",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 v4.1 (Merlin 34962, RO#56 4. kor minor 3): the argparse abbreviation --bc (of --bcc) next to an agent --to is a send",
+      "cmd": "$PY $S/x.py --to neo --bc \"$EMAIL\"",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 v4.1 (Merlin 34962, RO#56 4. kor minor 3): the argparse abbreviation --c= (of --cc) next to an agent --to is a send",
+      "cmd": "$PY $S/x.py --to neo --c=\"$EMAIL\"",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 v4.1 (Merlin 34962, RO#56 4. kor minor 3): the argparse abbreviation --b (of --bcc) next to an agent --to is a send",
+      "cmd": "$PY $S/x.py --to neo --b \"$EMAIL\"",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 v4.1 (Merlin 34962, RO#56 4. kor minor 3) control: a longer flag starting with --b (--body) next to an agent --to is not a send",
+      "cmd": "$PY $S/x.py --to neo --body B",
+      "expected": false
+    },
+    {
+      "name": "FLEETTOFLAG1025 v4.1 (Merlin 34962, RO#56 4. kor minor 1): a non-ASCII digit before > is no file descriptor in either twin (the operand is not send.py): no send",
+      "cmd": "$PY ٣>/dev/null scripts/support-mail/send.py --to diszpecser",
+      "expected": false
+    },
+    {
+      "name": "FLEETTOFLAG1025 v4.1 (Merlin 34962, RO#56 4. kor minor 3; Codex 03d059dca749): an abbreviation glued to its value (--bc=x) is a send even without an address",
+      "cmd": "$PY $S/x.py --to neo --bc=x",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 v4.1 (Merlin 34962, RO#56 4. kor minor 3; Codex 03d059dca749): a quoted abbreviation (\"--b\") is --b to the program: a send",
+      "cmd": "$PY $S/x.py --to neo \"--b\" x",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 v4.1 (Merlin 34962, RO#56 4. kor minor 3; Codex 03d059dca749): an abbreviation split by quotes (--b\"c\") is --bc to the program: a send",
+      "cmd": "$PY $S/x.py --to neo --b\"c\" x",
+      "expected": true
+    },
+    {
+      "name": "FLEETTOFLAG1025 v4.1 (Merlin 34962, RO#56 4. kor minor 3; Codex 03d059dca749) control: a longer flag starting with --b (--batch) is no abbreviation: not a send",
+      "cmd": "$PY $S/x.py --to neo --batch",
+      "expected": false
+    },
+    {
+      "name": "FLEETTOFLAG1025 v4.1 (Merlin 34962, RO#56 4. kor minor 3; Codex 03d059dca749) control: a longer flag starting with --c (--content) is no abbreviation: not a send",
+      "cmd": "$PY $S/x.py --to neo --content hello",
       "expected": false
     }
   ]

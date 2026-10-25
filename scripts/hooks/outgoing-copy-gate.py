@@ -494,6 +494,88 @@ _RECIPIENT_FLAG = re.compile(r"^--to?(=|$)")
 _UNDECIDABLE_PATH = re.compile(r"[*?[{$]")
 
 
+# FLEETTOFLAG1025 v4 (Merlin 34827, after three RO rounds of tokenizer patches): no tokenizer reading of the recipient value any
+# more. On an UNDECIDABLE program or script the recipient flag is a send, EXCEPT when every --to / --to= value is a KNOWN agent name
+# (the install's agents/ directories and its MAIN_AGENT_ID) AND the WHOLE command line has no `@`, no `~` word other than a `~/` path
+# and no --cc / --bcc. Every other shape is a send (fail-closed): a continuation, a redirection or a future form next to the value
+# simply is not a known agent name, and an address anywhere in the line blocks the exception.
+_FLEET_EXEMPT_BLOCK = re.compile(r"@|(?:^|[\s='\"(])~(?!/)|--b?cc\b")
+_FLEET_TOKEN_BLOCK = re.compile(r"--(?:cc?|bc{0,2})(?:=|\Z)|~(?!/)")   # on the DEQUOTED words: `--c""c`, `--\cc` are `--cc` to the program;
+# (v4.1, Merlin 34962) an argparse abbreviation (--c, --b, --bc) is --cc / --bcc to a default-argparse script: a send
+_AGENT_NAME = re.compile(r"[a-z0-9][a-z0-9_-]*\Z")
+KNOWN_AGENTS_OVERRIDE = None   # the shared conformance list sets it (send-invocation-cases.json known_agents); None = the install
+_LINE_EXEMPT_OK = [False]      # set per top-level is_send_invocation call from the WHOLE command line
+
+
+def _tok(t: str) -> str:
+    """a token as the program sees it after a backslash-newline: the glued leading / trailing newlines cut"""
+    return t.strip("\n")
+
+
+def _recipient_flag(t: str) -> bool:
+    """the --to / --t flag on the cut token (RO #56 minor 1: the python `$` also matched before a trailing newline, the JS one not)"""
+    return _RECIPIENT_FLAG.match(_tok(t)) is not None
+
+
+def _known_agents() -> set:
+    """the agent names of THIS install: <root>/agents/* directories and MAIN_AGENT_ID in <root>/.env (root = two levels above
+    this file). Any read error = an empty set, i.e. no exception (fail-closed)."""
+    if KNOWN_AGENTS_OVERRIDE is not None:
+        return set(KNOWN_AGENTS_OVERRIDE)
+    root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    names = set()
+    try:
+        d = os.path.join(root, "agents")
+        names |= {n for n in os.listdir(d) if _AGENT_NAME.match(n) and os.path.isdir(os.path.join(d, n))}
+    except OSError:
+        pass   # no agents/ directory: only the main agent can be known
+    try:
+        with open(os.path.join(root, ".env"), encoding="utf-8") as f:
+            for line in f:
+                m = re.match(r"\s*MAIN_AGENT_ID\s*=\s*['\"]?([^'\"\s#]+)", line)
+                if m and _AGENT_NAME.match(m.group(1)):
+                    names.add(m.group(1))
+    except OSError:
+        pass   # no .env: the main agent is not known (fail-closed)
+    return names
+
+
+def _line_clean(cmd: str) -> bool:
+    """FLEETTOFLAG1025 v4 (Codex 0dd77c650df7): no address marker in the line -- neither in the raw text (`@`, `~`-word, --cc/--bcc)
+    nor in any DEQUOTED word of any segment, the substitution-flattened form included (`--c""c "$E"` is `--cc` to the program).
+    An unparseable line is not clean (fail-closed)."""
+    if _FLEET_EXEMPT_BLOCK.search(cmd):
+        return False
+    try:
+        words = [t for c in (cmd, flatten_substitutions(cmd)) for seg in _segments_tokens(c) for t in seg]
+    except ValueError:
+        return False
+    return not any("@" in w or _FLEET_TOKEN_BLOCK.match(_tok(w)) for w in words)
+
+
+def _fleet_to_exempt(rest) -> bool:
+    """FLEETTOFLAG1025 v4: True (not a letter) only if the whole line passed the address check and every --to / --t value -- the
+    very next token, or the part after `=` -- is a known agent name. A missing or empty value is not a name."""
+    if not _LINE_EXEMPT_OK[0]:
+        return False
+    vals = []
+    for i, t in enumerate(rest):
+        tt = _tok(t)
+        if tt in ("--to", "--t"):
+            vals.append(_tok(rest[i + 1]) if i + 1 < len(rest) else "")
+        elif tt.startswith(("--to=", "--t=")):
+            vals.append(tt.split("=", 1)[1])
+    if not vals:
+        return False
+    known = _known_agents()
+    return all(v in known for v in vals)
+
+
+def _undecidable_recipient_sends(rest) -> bool:
+    """an undecidable program / script with a recipient flag is a send unless the fleet-agent exception holds"""
+    return any(_recipient_flag(t) for t in rest) and not _fleet_to_exempt(rest)
+
+
 def _python_script_operand(rest):
     """(script, stdin, stdin_redirect) for an interpreter's argument list."""
     stdin_redirect = False
@@ -513,8 +595,8 @@ def _python_script_operand(rest):
             stdin_redirect = True
             i += 2 if t == "<" else 1
             continue
-        if re.match(r"^\d*>", t):
-            i += 2 if re.match(r"^\d*>>?$", t) else 1
+        if re.match(r"^[0-9]*>", t):   # ASCII digits only, as the JS twin (and bash: a file descriptor is ASCII)
+            i += 2 if re.match(r"^[0-9]*>>?$", t) else 1
             continue
         if t.startswith("-") and len(t) > 1:
             i += 1
@@ -583,12 +665,12 @@ def flatten_substitutions(cmd: str) -> str:
 
 
 def _python_head_sends(rest) -> bool:
-    recipient = any(_RECIPIENT_FLAG.match(t) for t in rest)
+    recipient = any(_recipient_flag(t) for t in rest)
     script, stdin, stdin_redirect = _python_script_operand(rest)
     if script is not None and _SENDPY.match(_basename(script)):
         return recipient
     if script is not None and _UNDECIDABLE_PATH.search(script):
-        return recipient  # MAILGATEVARARGS1020
+        return _undecidable_recipient_sends(rest)  # MAILGATEVARARGS1020, FLEETTOFLAG1025 v4
     if stdin or (script is None and stdin_redirect):
         return recipient
     return False
@@ -624,13 +706,16 @@ def _head_is_send(toks, depth: int) -> bool:
         for i, t in enumerate(rest):
             if t == "-m" and i + 1 < len(rest) and rest[i + 1].rsplit(".", 1)[-1] == "send":
                 candidates.append("send.py")
-    if any(_SENDPY.match(c) for c in candidates) and any(_RECIPIENT_FLAG.match(t) for t in rest):
+    if any(_SENDPY.match(c) for c in candidates) and any(_recipient_flag(t) for t in rest):
         return True
     if _PYTHON.match(prog) and _python_head_sends(rest):
         return True
     # an interpreter or program that cannot be resolved statically ($PY, a glob,
     # a substitution) with a recipient flag: what runs is undecidable here
-    if _UNDECIDABLE_PATH.search(toks[0]) and any(_RECIPIENT_FLAG.match(t) for t in rest):
+    # FLEETTOFLAG1025: the address rule -- but a send.py run by it (`$PY scripts/support-mail/send.py --to x`) keeps the bare flag rule
+    script = _python_script_operand(rest)[0]   # the script position (interpreter options, redirections skipped), not a data argument
+    if _UNDECIDABLE_PATH.search(toks[0]) and (_undecidable_recipient_sends(rest) or (
+            script is not None and _SENDPY.match(_basename(script)) and any(_recipient_flag(t) for t in rest))):
         return True
     # graph-mail kimeno alparanccsal (tsx/node runner utan is)
     if any(_GRAPHMAIL.match(_basename(t)) for t in toks) and "send" in rest:
@@ -764,6 +849,9 @@ def _heredoc_program_sends(cmd: str, depth: int = 0) -> bool:
 
 
 def is_send_invocation(cmd: str, _depth: int = 0) -> bool:
+    # FLEETTOFLAG1025 v4: the fleet-agent exception is decided on the WHOLE line; a wrapper body (depth > 0) can only tighten it.
+    # A module-level flag is enough: the hook is one process per tool call, and the evaluation is single-threaded.
+    _LINE_EXEMPT_OK[0] = (_depth == 0 or _LINE_EXEMPT_OK[0]) and _line_clean(cmd)
     if _heredoc_program_sends(cmd, _depth):
         return True
     try:
