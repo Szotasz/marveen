@@ -2,7 +2,7 @@
 // The board API gains (1) a single-card read on /api/kanban/<id> -- the list's 400 hint had
 // pointed callers there while it answered 405 -- and (2) status, ids and fields filters on the
 // list. Without a new parameter the list must answer exactly as before.
-import { describe, it, expect, beforeEach } from 'vitest'
+import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { Readable } from 'node:stream'
 import {
   initDatabase, createKanbanCard, moveKanbanCard, archiveKanbanCard, createLabel, addLabelToCard, addCardBlocker,
@@ -71,15 +71,23 @@ describe('GET /api/kanban/<id>: one card in the list shape (card 12b0f698)', () 
   beforeEach(() => { initDatabase(':memory:'); seed() })
 
   it('answers 200 with the very bytes the list gives for that card, labels and blockers included', async () => {
-    const one = await call('/api/kanban/aaaa0002')
-    expect(one.status).toBe(200)
-    const list = await call('/api/kanban')
-    const inList = (list.body as any[]).find((c) => c.id === 'aaaa0002')
-    expect(one.raw).toBe(JSON.stringify(inList))
-    expect(one.body.labels.map((l: any) => l.id)).toEqual(['lbl1'])
-    expect(one.body.blockers.map((b: any) => b.id)).toEqual(['aaaa0003'])
-    expect(one.body.last_status_at).toBeTypeOf('number')
-    expect(one.body.seq).toBeTypeOf('number')
+    // active_seconds is counted up to Date.now(): the clock is frozen, or a second boundary
+    // between the two reads makes the byte comparison flaky (review on #2270). Only Date is
+    // faked, so the request streams keep their real timers.
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      const one = await call('/api/kanban/aaaa0002')
+      expect(one.status).toBe(200)
+      const list = await call('/api/kanban')
+      const inList = (list.body as any[]).find((c) => c.id === 'aaaa0002')
+      expect(one.raw).toBe(JSON.stringify(inList))
+      expect(one.body.labels.map((l: any) => l.id)).toEqual(['lbl1'])
+      expect(one.body.blockers.map((b: any) => b.id)).toEqual(['aaaa0003'])
+      expect(one.body.last_status_at).toBeTypeOf('number')
+      expect(one.body.seq).toBeTypeOf('number')
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('an archived card is readable too, in the includeArchived list shape', async () => {
