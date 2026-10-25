@@ -107,14 +107,14 @@ DEFAULT_WEDGED_UP_SEC = 180
 ERROR_TEXT = ("⚠️ Valami elakadt, és erre nem érkezett válasz. "
               "Lehet, hogy újra kell indítani az ügynököt, vagy próbáld újra kicsit később.")
 
-# 1bde4163: the CLI writes its OWN lines into the transcript as assistant messages -- the session-limit
-# wall ("You've hit your session limit · resets 12am (UTC)"), the usage limit, an API error. On 2026-10-09 20:46:02Z this
-# watchdog delivered four of them to owners as their real answers. Such an event carries isApiErrorMessage and the model
-# "<synthetic>" (measured in the transcript of that round); the text prefixes cover a format without the flags. A round
+# #2269: the CLI writes its OWN lines into the transcript as assistant messages -- the session-limit
+# wall ("You've hit your session limit · resets 12am (UTC)"), the usage limit, an API error. Before #2269 this
+# watchdog delivered such lines to owners as their real answers. Such an event carries isApiErrorMessage and the model
+# "<synthetic>"; the text prefixes cover a format without the flags. A round
 # whose LAST assistant text is such a line has no answer: the placeholder is rewritten into OUTAGE_TEXT, nothing is sent,
 # and the ledger gets no row, so the question stays open and the agent answers it after the outage.
-# 1dc37186 (1): only a limit or error line is an outage. Another line the CLI writes itself, unflagged
-# under the model "<synthetic>" ("No response requested.", 1450 in seven days of the fleet's transcripts), means the round
+# #2269: only a limit or error line is an outage. Another line the CLI writes itself, unflagged
+# under the model "<synthetic>" ("No response requested.", a frequent line), means the round
 # simply has no answer, and it takes the no-answer path (ERROR_TEXT here), never the outage line.
 SYNTHETIC_MODEL = "<synthetic>"
 SYNTHETIC_PREFIXES = (
@@ -123,7 +123,7 @@ SYNTHETIC_PREFIXES = (
     "invalid api key", "please run /login",
 )
 OUTAGE_TEXT = "⏳ A válasz egy átmeneti kiesés miatt késik."
-# 1bde4163: every real send of this watchdog goes into the conversation ledger (direction out), marked in the TEXT the way
+# #2269: every real send of this watchdog goes into the conversation ledger (direction out), marked in the TEXT the way
 # the other machine rows are ("[token-main-rotation, ...] ..."). NOT in the source column: ledger_lib.source_for() returns
 # the newest non-NULL source of the chat in any direction, and the reply guard derives the reply tool's name from it.
 LEDGER_PREFIX = "[telegram-progress-watchdog]"
@@ -132,8 +132,8 @@ LEDGER_PREFIX = "[telegram-progress-watchdog]"
 def _synthetic_kind(ev, text):
     """What an assistant text is: "" the agent's own; "outage" a CLI limit or error line (isApiErrorMessage, or a known
     prefix on an event that names no model or the model "<synthetic>"); "none" any other CLI-written line, i.e. no
-    answer (1dc37186). A real answer carries its model id (in the 2026-10-09 transcript all 105 real assistant events
-    did, all 22 limit lines had "<synthetic>") and may itself begin with "API error"."""
+    answer (#2269). A real answer carries its model id (the limit lines carry "<synthetic>") and may itself begin
+    with "API error"."""
     msg = ev.get("message") or {}
     model = msg.get("model")
     if ev.get("isApiErrorMessage") is True:
@@ -146,7 +146,7 @@ def _synthetic_kind(ev, text):
 
 
 def _ledger_lib():
-    """1bde4163: the ledger_lib of the install this watchdog scans (FLEET_ROOT/scripts/hooks), loaded by file path, so
+    """#2269: the ledger_lib of the install this watchdog scans (FLEET_ROOT/scripts/hooks), loaded by file path, so
     its db_path() and main_agent_id() are that install's -- also for a copy of this file outside the repo (the legacy
     ~/.claude/hooks one). None when the install has none (a test tree under MARVEEN_ROOT: nothing is written)."""
     import importlib.util
@@ -160,11 +160,11 @@ def _ledger_lib():
 
 
 def ledger_log_out(progress_dir, chat_id, text, result):
-    """1bde4163: one conversation_log row (direction out) for a message this watchdog really sent, through ledger_lib, as
+    """#2269: one conversation_log row (direction out) for a message this watchdog really sent, through ledger_lib, as
     the reply tool's own row goes (ledger-outbound.py). The agent is the channel's: agents/<name> of the progress dir,
     else the install's main agent. Writes only into an EXISTING ledger. Called only after the marker is gone, and it
     swallows EVERYTHING, SystemExit included: a ledger step that stopped this tick before the marker went would make the
-    next tick send the same answer again, every minute (measured as a gap on the Stop hook, 1dc37186 (2))."""
+    next tick send the same answer again, every minute (the same gap was closed on the Stop hook)."""
     try:
         lib = _ledger_lib()
         if lib is None:
@@ -283,7 +283,7 @@ def _ev_epoch(ev):
 def _is_user_prompt(ev):
     """A real inbound prompt (starts a turn) -- NOT a tool_result carrier, and NOT a line the harness writes INSIDE a
     running turn: an isMeta line with no origin (a skill load "Base directory for this skill: ...", a <system-reminder>,
-    "Continue from where you left off.") or a compaction summary (isCompactSummary). c9be04f8: a skill
+    "Continue from where you left off.") or a compaction summary (isCompactSummary). #2269: a skill
     load after the round's 2nd minute ended the marker's round here, and the 15-min backstop then fired on a round that
     was still writing. An isMeta line that carries an origin (a message from another session, an auto-continuation)
     can start a turn of its own, so it still counts."""
@@ -309,7 +309,7 @@ class _Acc:
         self.results = set()      # tool_use_ids that have a tool_result
         self.reply_ids = set()    # tool_use_ids of Telegram reply calls
         self.last_tool_use = None  # (id, is_reply) of the most recent tool_use
-        self.kind = ""             # 1bde4163/1dc37186: what the last assistant text is (_synthetic_kind)
+        self.kind = ""             # #2269: what the last assistant text is (_synthetic_kind)
 
     def feed(self, ev):
         msg = ev.get("message") or {}
@@ -342,7 +342,7 @@ class _Acc:
 
     def answer(self):
         """(text, synthetic) of the round: an outage line comes back with synthetic=True; another CLI-written line is no
-        answer at all, an empty text (1dc37186)."""
+        answer at all, an empty text (#2269)."""
         if self.kind == "none":
             return "", False
         return self.text, self.kind == "outage"
@@ -358,9 +358,9 @@ class _Acc:
 def read_transcript(transcript_path, turn_start=None):
     """Return (last_assistant_text, reply_is_hung, reply_delivered, synthetic).
 
-    synthetic (1bde4163): the last assistant text is a CLI limit or error line (session limit, usage limit, API error),
+    synthetic (#2269): the last assistant text is a CLI limit or error line (session limit, usage limit, API error),
     not the agent's answer; deliver() then sends nothing. Any other CLI-written last line ("No response requested.")
-    comes back as an empty text: the round has no answer (1dc37186).
+    comes back as an empty text: the round has no answer (#2269).
 
     last_assistant_text: the agent's final user-facing answer (last non-empty
     assistant text block) -- the same source the Stop hook's fallback uses.
@@ -411,12 +411,11 @@ def read_transcript(transcript_path, turn_start=None):
 
 
 def round_activity(transcript_path, turn_start):
-    """c9be04f8: (last_event_epoch, round_open) of the round that posted the marker, in the same window as
+    """#2269: (last_event_epoch, round_open) of the round that posted the marker, in the same window as
     read_transcript (from the last timestamped user prompt at/before turn_start+slack to the next one).
 
     The 15-minute backstop fired on an agent that was up and still working a long round (many tool calls; the Stop
-    hook clears the marker only when the round ends), and the owner's waiting note became the error text (measured
-    2026-10-13 12:29Z). A round that is still open and wrote a transcript line within WEDGED_SEC is
+    hook clears the marker only when the round ends), and the owner's waiting note became the error text. A round that is still open and wrote a transcript line within WEDGED_SEC is
     working, not wedged. What cannot be told keeps the old behaviour: no timestamps, no anchoring prompt, or a round
     that already ended -> (None, False), and the backstop fires as before.
     """
@@ -461,7 +460,7 @@ def deliver(tok, chat_id, message_id, answer, progress_dir, topic=None, answer_s
     this chat (and topic) through an earlier entry, so only the placeholder is
     dropped (FALLBACKEGYSZER1019).
 
-    1bde4163: a synthetic last text (CLI limit or error line) is never sent: the placeholder becomes OUTAGE_TEXT and stays,
+    #2269: a synthetic last text (CLI limit or error line) is never sent: the placeholder becomes OUTAGE_TEXT and stays,
     no ledger row (the question stays open). A real send is appended to `sent`; handle_dir ledgers it after the marker
     is removed, so the bookkeeping can never stand between a send and the cleanup that keeps it from repeating."""
     if answer and synthetic:
@@ -567,7 +566,7 @@ def handle_dir(progress_dir):
             fire = True
             reason = "reply-hung"
         elif age > WEDGED_SEC:
-            # c9be04f8: an open round that wrote a line within WEDGED_SEC is working, not wedged; anything that
+            # #2269: an open round that wrote a line within WEDGED_SEC is working, not wedged; anything that
             # cannot be told (no timestamps, no anchor, an ended round) fires as before.
             last, round_open = round_activity(transcript_path, now - age)
             if round_open and last is not None and now - last < WEDGED_SEC:
@@ -633,7 +632,7 @@ def handle_dir(progress_dir):
         log(progress_dir, f"orphan handled ({reason}): {os.path.basename(path)} "
                           f"agent_up={agent_up} age={int(age)}s "
                           f"delivered={','.join(modes)}")
-        # 1bde4163: the ledger rows only now, with the marker gone (see ledger_log_out).
+        # #2269: the ledger rows only now, with the marker gone (see ledger_log_out).
         for chat_id, text, res in sent:
             ledger_log_out(progress_dir, chat_id, text, res)
 

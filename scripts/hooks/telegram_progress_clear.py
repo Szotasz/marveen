@@ -28,12 +28,12 @@ decision JSON when blocking. Token/state dir resolution mirrors the plugin
 """
 import sys, os, json, glob, urllib.request
 
-# 1bde4163: the CLI writes its OWN lines into the transcript as assistant messages (the session-limit
+# #2269: the CLI writes its OWN lines into the transcript as assistant messages (the session-limit
 # wall "You've hit your session limit · resets 12am (UTC)", the usage limit, an API error); the guaranteed fallback below
-# must never send such a line as the agent's answer (the progress watchdog did, to four owners, 2026-10-09 20:46Z). The
+# must never send such a line as the agent's answer (the progress watchdog did, before #2269). The
 # markers are the watchdog's: isApiErrorMessage, the model "<synthetic>", or a known prefix. Instead the placeholder says
 # the answer is late (OUTAGE_TEXT) and stays; no ledger row, so the open question stays open for the next session.
-# 1dc37186 (1): only a limit or error line is an outage; another CLI-written line ("No response
+# #2269: only a limit or error line is an outage; another CLI-written line ("No response
 # requested.") means the turn has no answer, and it takes the no-answer path: the placeholder goes, nothing is sent.
 SYNTHETIC_MODEL = "<synthetic>"
 SYNTHETIC_PREFIXES = (
@@ -42,7 +42,7 @@ SYNTHETIC_PREFIXES = (
     "invalid api key", "please run /login",
 )
 OUTAGE_TEXT = "⏳ A válasz egy átmeneti kiesés miatt késik."
-# 1bde4163: a real fallback send goes into the conversation ledger (direction out), marked in the TEXT like the other
+# #2269: a real fallback send goes into the conversation ledger (direction out), marked in the TEXT like the other
 # machine rows, not in the source column (ledger_lib.source_for() reads the newest source in any direction, and the reply
 # guard names the reply tool from it).
 LEDGER_PREFIX = "[telegram-progress-clear, fallback]"
@@ -109,7 +109,7 @@ def topic_of(entry):
 
 
 def _synthetic_kind(ev, text):
-    """What an assistant text is (1bde4163, 1dc37186): "" the agent's own; "outage" a CLI limit or error line
+    """What an assistant text is (#2269): "" the agent's own; "outage" a CLI limit or error line
     (isApiErrorMessage, or a known prefix on an event that names no model or the model "<synthetic>"); "none" any other
     CLI-written line, i.e. no answer. A real answer carries its model id and may itself begin with "API error"."""
     msg = ev.get("message") or {}
@@ -130,8 +130,8 @@ def last_assistant_text(transcript_path):
 
 
 def last_assistant(transcript_path):
-    """(text, synthetic): the last non-empty assistant text, and whether it is a CLI limit or error line (1bde4163); any
-    other CLI-written last line comes back as ("", False): the turn has no answer (1dc37186)."""
+    """(text, synthetic): the last non-empty assistant text, and whether it is a CLI limit or error line (#2269); any
+    other CLI-written last line comes back as ("", False): the turn has no answer (#2269)."""
     text = ""
     kind = ""
     if not transcript_path:
@@ -168,7 +168,7 @@ def last_assistant(transcript_path):
 
 
 def _ledger_lib():
-    """1bde4163: the install's ledger_lib, loaded by file path: next to this file (the repo copy, beside
+    """#2269: the install's ledger_lib, loaded by file path: next to this file (the repo copy, beside
     ledger-outbound.py), else under MARVEEN_ROOT, CLAUDE_PROJECT_DIR or ~/marveen (the legacy ~/.claude/hooks copy has
     none of its own). Its own location fixes the install, so db_path() is that install's ledger. None when not found."""
     import importlib.util
@@ -187,12 +187,12 @@ def _ledger_lib():
 
 
 def ledger_log_out(sd, ev, chat_id, text, result):
-    """1bde4163: one conversation_log row (direction out) for a fallback message that really went out, through ledger_lib,
+    """#2269: one conversation_log row (direction out) for a fallback message that really went out, through ledger_lib,
     under the session identity the reply tool's own row gets (agent_id_from_payload: the transcript path, not the mutable
     cwd, LEDGERCWD828). Writes only into an EXISTING ledger. Called only after the pending state is removed, and it
     swallows EVERYTHING, SystemExit included: a ledger step that ended this hook before the cleanup (an exit, or the
     15 s hook limit spent waiting on a locked ledger) would leave the pending state for the next Stop to send again
-    (1dc37186 (2))."""
+    (#2269)."""
     try:
         lib = _ledger_lib()
         if lib is None:
@@ -278,7 +278,7 @@ def main():
             topic = topic_of(p)
             dest = (str(cid), topic.get("message_thread_id"))
             if answer and synthetic:
-                # 1bde4163: the turn ended on a CLI line, not an answer: the placeholder says the answer is late and stays.
+                # #2269: the turn ended on a CLI line, not an answer: the placeholder says the answer is late and stays.
                 try:
                     api(tok, "editMessageText", {"chat_id": cid, "message_id": mid, "text": OUTAGE_TEXT})
                 except Exception as e:
@@ -302,7 +302,7 @@ def main():
             pass
     log(sd, f"[enforce] fallback-delivered={bool(answer) and not synthetic} synthetic={synthetic} "
             f"cleared {len(pend)} placeholder(s) sid={sid}")
-    # 1bde4163: the ledger rows only now, with the pending state gone (see ledger_log_out).
+    # #2269: the ledger rows only now, with the pending state gone (see ledger_log_out).
     for cid, text, res in sent:
         ledger_log_out(sd, ev, cid, text, res)
 

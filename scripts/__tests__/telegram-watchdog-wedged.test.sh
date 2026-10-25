@@ -275,19 +275,19 @@ assert_eq "one real-answer sendMessage" "1" "$(count sendMessage)"
 assert_eq "the delivery names the topic" "yes" "$(body_has '"message_thread_id": 12')"
 
 # ---------------------------------------------------------------------------
-# c9be04f8: the 15-min backstop must not fire on an agent that is up and still
+# #2269: the 15-min backstop must not fire on an agent that is up and still
 # WRITING the marker's round (a long round of many tool calls: the Stop hook
-# clears the marker only at the round's end). Measured 2026-10-13 12:29Z: the
-# owner's waiting note became the error text mid-round. A real wedge
+# clears the marker only at the round's end): before #2269 the owner's waiting
+# note became the error text mid-round. A real wedge
 # (no new transcript line for WEDGED_SEC) and the hung-reply branch still fire.
 # layout = writing   -> prompt at -age, a line every 120 s up to -30 s (open, active)
 # layout = silent    -> prompt at -age, its last line 1000 s ago (open, quiet)
 # layout = hunglive  -> prompt at -age, a reply tool_use with no result at -30 s
 # layout = ended     -> the marker's round answered, then a LATER prompt whose
 #                       round keeps writing up to -20 s (the marker's round ended)
-# layout = skillmeta -> writing, plus the lines the harness writes INSIDE a turn (c9be04f8): a
+# layout = skillmeta -> writing, plus the lines the harness writes INSIDE a turn (#2269): a
 #                       skill load (isMeta, no origin) at +12 s and at the 34th minute, a <system-reminder> (isMeta
-#                       string) in between; the real transcript shape the tester measured (a 57-min round)
+#                       string) in between; the shape of a real long round
 # layout = compactmid -> writing, plus a compaction summary (isCompactSummary) at +900 s
 # layout = peerlater -> the marker's round answered, then a LATER round started by a message from another
 #                       session (isMeta WITH an origin) that keeps writing up to -20 s
@@ -312,7 +312,7 @@ def say(t, blocks):
 def result(t, tid):
     return {"type": "user", "timestamp": iso(t),
             "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": tid}]}}
-# The harness's own lines, in the shapes of a real transcript (2026-10-13): a skill load is an isMeta user line with a
+# The harness's own lines, in the shapes of a real transcript: a skill load is an isMeta user line with a
 # text block and the Skill call's id; a reminder an isMeta string; neither has an origin. A message from another
 # session is isMeta WITH an origin; a compaction summary carries isCompactSummary.
 def skill(t):
@@ -388,7 +388,7 @@ PY
 }
 
 echo ""
-echo "(k) c9be04f8: a 30-min round still writing is NOT fired by the backstop"
+echo "(k) #2269: a 30-min round still writing is NOT fired by the backstop"
 PK="$(make_live_case wk writing 1800)"
 run_wd 1 1
 assert_eq "no delivery while the round is writing" "0" "$(count sendMessage)"
@@ -396,7 +396,7 @@ assert_eq "no error edit while the round is writing" "0" "$(count editMessageTex
 assert_eq "placeholder kept (the round is alive)" "yes" "$(pend_exists "$PK")"
 
 echo ""
-echo "(l) c9be04f8: an open round with no new line for >15 min still fires"
+echo "(l) #2269: an open round with no new line for >15 min still fires"
 PL="$(make_live_case wl silent 1200)"
 run_wd 1 1
 assert_eq "backstop fires: one delivery" "1" "$(count sendMessage)"
@@ -404,7 +404,7 @@ assert_eq "delivers the round's own text" "yes" "$(body_has "VALODI_T1_VALASZ")"
 assert_eq "state file removed" "no" "$(pend_exists "$PL")"
 
 echo ""
-echo "(m) c9be04f8: the hung-reply branch is unchanged by recent activity"
+echo "(m) #2269: the hung-reply branch is unchanged by recent activity"
 PM="$(make_live_case wm hunglive 100)"
 run_wd 1 1
 assert_eq "fires fast on the hung reply" "1" "$(count sendMessage)"
@@ -412,7 +412,7 @@ assert_eq "delivers the real answer" "yes" "$(body_has "VALODI_T1_VALASZ")"
 assert_eq "state file removed" "no" "$(pend_exists "$PM")"
 
 echo ""
-echo "(n) c9be04f8: a LATER round's activity does not hold an ended round's backstop"
+echo "(n) #2269: a LATER round's activity does not hold an ended round's backstop"
 PN="$(make_live_case wn ended 1200)"
 run_wd 1 1
 assert_eq "backstop fires: one delivery" "1" "$(count sendMessage)"
@@ -421,7 +421,7 @@ assert_eq "the later round's text NOT sent" "no" "$(body_has "BELSO_NAPLO")"
 assert_eq "state file removed" "no" "$(pend_exists "$PN")"
 
 echo ""
-echo "(o) c9be04f8: skill loads and a reminder inside a 57-min round still writing do NOT fire the backstop"
+echo "(o) #2269: skill loads and a reminder inside a long round still writing do NOT fire the backstop"
 PO="$(make_live_case wo skillmeta 3420)"
 run_wd 1 1
 assert_eq "no delivery while the round is writing" "0" "$(count sendMessage)"
@@ -429,7 +429,7 @@ assert_eq "no error edit while the round is writing" "0" "$(count editMessageTex
 assert_eq "placeholder kept (the round is alive)" "yes" "$(pend_exists "$PO")"
 
 echo ""
-echo "(p) c9be04f8: a compaction summary inside a round still writing does NOT fire the backstop"
+echo "(p) #2269: a compaction summary inside a round still writing does NOT fire the backstop"
 PP="$(make_live_case wp compactmid 1800)"
 run_wd 1 1
 assert_eq "no delivery while the round is writing" "0" "$(count sendMessage)"
@@ -437,7 +437,7 @@ assert_eq "no error edit while the round is writing" "0" "$(count editMessageTex
 assert_eq "placeholder kept (the round is alive)" "yes" "$(pend_exists "$PP")"
 
 echo ""
-echo "(q) c9be04f8: a LATER round started by another session's message (isMeta with an origin) does not hold the backstop"
+echo "(q) #2269: a LATER round started by another session's message (isMeta with an origin) does not hold the backstop"
 PQ="$(make_live_case wq peerlater 1200)"
 run_wd 1 1
 assert_eq "backstop fires: one delivery" "1" "$(count sendMessage)"
@@ -446,7 +446,7 @@ assert_eq "the later round's text NOT sent" "no" "$(body_has "BELSO_NAPLO")"
 assert_eq "state file removed" "no" "$(pend_exists "$PQ")"
 
 echo ""
-echo "(r) c9be04f8: a skill load inside a round, then no new line for >15 min, still fires"
+echo "(r) #2269: a skill load inside a round, then no new line for >15 min, still fires"
 PR="$(make_live_case wr skillsilent 1500)"
 run_wd 1 1
 assert_eq "backstop fires: one delivery" "1" "$(count sendMessage)"
