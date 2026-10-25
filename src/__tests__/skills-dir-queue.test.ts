@@ -140,6 +140,24 @@ describe('skill directory operations run one at a time', () => {
     expect(existsSync(join(fakeHome, '.claude', 'skills', 's2', 'SKILL.md'))).toBe(true)
   })
 
+  it('a delete queued behind an approval of the same skill sees it installed', async () => {
+    makeSkill('s0')
+    const meta = q.queueGeneratedSkill({ scope: 'global' }, 's4', '---\nname: s4\ndescription: x\n---\n# s4\n')
+    const hash = JSON.parse((await call(tryHandleSkills, 'GET', `/api/skills/pending/${meta.id}`)).body.toString()).hash
+    process.env.FAKE_SLEEP = '1'
+    const exp = call(tryHandleSkills, 'GET', '/api/skills/export')
+    await waitForLog('zip start')
+    const ap = call(tryHandleSkills, 'POST', `/api/skills/pending/${meta.id}/approve`, { hash }, SESSION)
+    // The approval reads its body before it queues; the delete must queue after it, while zip still holds the queue.
+    await sleep(200)
+    expect(readLog().some((l) => l.startsWith('zip end'))).toBe(false)
+    const del = call(tryHandleAgentsSkills, 'DELETE', '/api/agents/host-main/skills/s4')
+    const [, a, d] = await Promise.all([exp, ap, del])
+    expect(a.status).toBe(200)
+    expect(d.status).toBe(200)
+    expect(existsSync(join(fakeHome, '.claude', 'skills', 's4'))).toBe(false)
+  })
+
   it('a failed export does not wedge the delete queued behind it', async () => {
     makeSkill('s3')
     process.env.FAKE_SLEEP = '0.5'
