@@ -3381,9 +3381,7 @@ export function buildBackgroundCheckpointBody(): string {
     '  részeredményt fájlba, a munkakönyvtárad alatt (a scratchpad session-hez kötött /tmp-mappa: új session, például a',
     '  context-guard friss indítása, vagy gép-újraindulás után nincs meg). A háttér-alügynök briefjébe ezt írd bele, a',
     '  fájl útjával együtt.',
-    '- A mentésbe NE kerüljön titok, token vagy személyes adat, és git által figyelmen kívül hagyott helyre menjen',
-    '  (például a munkakönyvtárad egy .gitignore-ban szereplő almappájába), soha ne olyan fájlba, ami commitba kerülhet:',
-    '  a munkakönyvtárad a projekt git-repójában van.',
+    '- A mentésbe NE kerüljön titok, token vagy személyes adat; git által figyelmen kívül hagyott helyre (.gitignore-os almappa) menjen, soha ne olyan fájlba, ami commitba kerülhet.',
     '- Újraindulás vagy kulcsfal után ELŐBB a mentett részt olvasd be, és onnan folytasd, ne elölről.',
     '- A lapra (vagy a HANDOFF.md-be) egy sor: hol a mentett rész (út), és mi a következő lépés.',
   ].join('\n')

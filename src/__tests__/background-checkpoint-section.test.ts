@@ -72,7 +72,7 @@ describe('background-checkpoint section: what it says (BGCHECKPOINT1008)', () =>
 
   it('no secrets, tokens or personal data in the checkpoint, and a git-ignored place, never a committable file', () => {
     expect(body).toMatch(/NE kerüljön titok, token vagy személyes adat/)
-    expect(body).toMatch(/git által figyelmen kívül hagyott helyre[\s\S]{0,120}\.gitignore[\s\S]{0,120}soha ne olyan fájlba, ami commitba kerülhet/)
+    expect(body).toMatch(/git által figyelmen kívül hagyott helyre[\s\S]{0,40}\.gitignore[\s\S]{0,40}soha ne olyan fájlba, ami commitba kerülhet/)
   })
 
   it('after a restart or a key wall: resume from the saved part, not from scratch', () => {
