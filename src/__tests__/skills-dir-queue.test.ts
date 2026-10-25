@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os'
 import { Readable, Writable } from 'node:stream'
 import { setTimeout as sleep } from 'node:timers/promises'
 
-const H = vi.hoisted(() => ({ root: '' }))
+const H = vi.hoisted(() => ({ root: '', fleetExportSawZipEnd: undefined as boolean | undefined }))
 const tmpRoot = mkdtempSync(join(tmpdir(), 'skills-dir-queue-'))
 H.root = tmpRoot
 const fakeHome = join(tmpRoot, 'home')
@@ -32,12 +32,16 @@ vi.mock('../web/agent-config.js', async (orig) => ({
   ...(await orig<typeof import('../web/agent-config.js')>()),
   listAgentNames: () => ['a1'],
 }))
-// The fleet import itself is not under test here: a stand-in writes one global
-// skill synchronously, the way the real import writes them.
+// The fleet transfer itself is not under test here: the import stand-in writes
+// one global skill synchronously, the way the real import writes them, and the
+// export stand-in records whether the export's zip had ended when it ran.
 vi.mock('../web/fleet-transfer.js', () => ({
   MIN_VAULT_PASSWORD_LEN: 12,
   UserFacingError: class UserFacingError extends Error {},
-  exportFleet: () => { throw new Error('exportFleet is not used in this test') },
+  exportFleet: () => {
+    H.fleetExportSawZipEnd = readFileSync(`${H.root}/tool.log`, 'utf8').includes('zip end')
+    return { data: '{}', exportedAt: '2026-10-25T00:00:00.000Z' }
+  },
   importFleet: () => {
     const dir = join(`${H.root}/home`, '.claude', 'skills', 's5')
     mkdirSync(dir, { recursive: true })
@@ -193,6 +197,7 @@ describe('skill directory operations run one at a time', () => {
   })
 
   it('a fleet import issued while the export zips writes its skills after the zip ended', async () => {
+    makeSkill('s0')
     process.env.FAKE_SLEEP = '1'
     process.env.PROBE_SKILL = 's5'
     const exp = call(tryHandleSkills, 'GET', '/api/skills/export')
@@ -203,5 +208,36 @@ describe('skill directory operations run one at a time', () => {
     expect(i.status).toBe(200)
     expect(readLog()).toContain('zip end saw=no')
     expect(existsSync(join(fakeHome, '.claude', 'skills', 's5', 'SKILL.md'))).toBe(true)
+  })
+
+  it('a fleet export issued while the export zips reads the skills after the zip ended', async () => {
+    makeSkill('s0')
+    process.env.FAKE_SLEEP = '1'
+    H.fleetExportSawZipEnd = undefined
+    const exp = call(tryHandleSkills, 'GET', '/api/skills/export')
+    await waitForLog('zip start')
+    const fx = call(tryHandleFleet, 'GET', '/api/fleet/export')
+    const [e, f] = await Promise.all([exp, fx])
+    expect(e.status).toBe(200)
+    expect(f.status).toBe(200)
+    expect(H.fleetExportSawZipEnd).toBe(true)
+  })
+
+  it('an assign queued behind a delete of its skill answers 404 and keeps the agent copy', async () => {
+    makeSkill('s6')
+    const agentCopy = join(tmpRoot, 'agents', 'a1', '.claude', 'skills', 's6')
+    mkdirSync(agentCopy, { recursive: true })
+    writeFileSync(join(agentCopy, 'SKILL.md'), '# s6 old\n')
+    process.env.FAKE_SLEEP = '1'
+    const exp = call(tryHandleSkills, 'GET', '/api/skills/export')
+    await waitForLog('zip start')
+    // The delete queues at once; the assign reads its body first, so it queues behind it.
+    const del = call(tryHandleAgentsSkills, 'DELETE', '/api/agents/host-main/skills/s6')
+    const asg = call(tryHandleSkills, 'POST', '/api/skills/s6/assign', { agents: ['a1'] })
+    const [e, d, a] = await Promise.all([exp, del, asg])
+    expect(e.status).toBe(200)
+    expect(d.status).toBe(200)
+    expect(a.status).toBe(404)
+    expect(readFileSync(join(agentCopy, 'SKILL.md'), 'utf8')).toBe('# s6 old\n')
   })
 })

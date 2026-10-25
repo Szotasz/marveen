@@ -18,7 +18,8 @@ export async function tryHandleFleet(ctx: RouteContext): Promise<boolean> {
       return true
     }
     try {
-      const exported: ExportedFleet = exportFleet({ vaultPassword: vaultPassword || undefined })
+      // The export reads skill directories; it waits for an assign's copy still running.
+      const exported: ExportedFleet = await serializeSkillsDir(() => exportFleet({ vaultPassword: vaultPassword || undefined }))
       const buf = Buffer.from(exported.data)
       res.writeHead(200, {
         'Content-Type': 'application/json',

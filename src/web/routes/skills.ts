@@ -487,6 +487,8 @@ export async function tryHandleSkills(ctx: RouteContext): Promise<boolean> {
     const { agents: targetAgents } = JSON.parse(body.toString()) as { agents: string[] }
 
     await serializeSkillsDir(async () => {
+      // Checked again on the queue: a delete queued before this assign may have removed the source.
+      if (!existsSync(globalSkillDir)) { json(res, { error: 'Skill not found' }, 404); return }
       const allAgentNames = listAgentNames()
 
       for (const agentName of targetAgents) {
