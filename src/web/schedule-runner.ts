@@ -78,8 +78,8 @@ import {
   describeVerdict,
   type RegistryVerdict,
 } from './schedule-registry.js'
-import { listAgentNames, readFileOr, readAgentRemoteHost, readAgentRemoteConfig, agentDir, readAgentWorksourceChannel } from './agent-config.js'
-import { enqueueWorksourceItem } from './worksource-queue.js'
+import { listAgentNames, readFileOr, readAgentRemoteHost, readAgentRemoteConfig, agentDir, readAgentWorksourceChannel, readAgentSenderRoleGatePolicy } from './agent-config.js'
+import { enqueueWorksourceItem, worksourceItemStage, worksourcePendingHead, type WorksourceItemStage } from './worksource-queue.js'
 import { resolveAgentConfigDirForRead } from './claude-plans.js'
 import { readTranscriptMtimeAcrossConfigDirs, projectsDirFor } from './active-model.js'
 import { classifyDelivery, readUserPromptsSince, type DeliveryVerdict, type ReceivedPrompt } from './delivery-integrity.js'
@@ -241,6 +241,24 @@ export interface TaskInflightEntry {
   // anything the agent does not acknowledge), so the sweep can never call it
   // 'lost' -- see decideTaskTimeout.
   viaWorksource?: boolean
+  // The queued item's id, captured at enqueue time so the sweep can ask the
+  // queue directory which stage the item is in (worksourceItemStage). Without
+  // it the sweep could not tell "still in pending/, nobody picked it up" from
+  // "handed over and being worked on" -- the difference between an alert and a
+  // quiet hold. Absent on every entry that did not go through the queue,
+  // including the already-queued branch of queueScheduledToWorksource (it
+  // registers no entry at all).
+  worksourceItemId?: string
+  // The sweep time at which this entry's queued item was first seen in pending/
+  // in an unbroken run of sweeps; cleared when a sweep sees it in active/ or
+  // done/. A single 'pending' sample is no signal (the reader re-offers an
+  // unacknowledged item), so the watchdog measures how long the run has lasted
+  // instead -- see isWorksourceItemStuckInPending.
+  worksourcePendingSince?: number
+  // The head of pending/ seen by the last sweep during the current pending
+  // run; the next sweep checks whether that item has left pending/ (progress:
+  // the reader consumed the head, so our item's wait is backlog, not neglect).
+  worksourcePendingHead?: string
   // Set once the sweep has pressed its single recovery Enter for a prompt parked
   // in an overfull input box, so a second 'lost' verdict on this entry takes the
   // ordinary lost path instead of Enter-looping.
@@ -488,16 +506,47 @@ export function probeTurnEvidence(
   return { sawTurn: mtimeSeen != null && mtimeSeen > entry.injectedAt, mtimeSeen }
 }
 
+// True when a queued item's stay in pending/ has lasted long enough to MEAN
+// something. The queue's reader (plugins/worksource/server.mjs) moves the head
+// of pending/ to active/ on every poll and requeues an active/ item that went
+// unacknowledged for 120 s, so a WORKING reader still shows an item in pending/
+// for up to one poll (~3 s) -- a single 'pending' sample is not evidence that
+// nobody is consuming the queue. Only a pending run that has spanned graceMs is,
+// because that takes several polls coming and going without anyone taking the
+// item. Written once, here, and used by BOTH decideTaskTimeout and the sweep's
+// pendingReason, so the two can never drift apart on what "stuck" means.
+export function isWorksourceItemStuckInPending(
+  entry: { viaWorksource?: boolean; worksourcePendingSince?: number },
+  worksourceStage: WorksourceItemStage | null | undefined,
+  now: number,
+  graceMs: number,
+): boolean {
+  return entry.viaWorksource === true && worksourceStage === 'pending'
+    && entry.worksourcePendingSince != null && now - entry.worksourcePendingSince >= graceMs
+}
+
 export function decideTaskTimeout(
-  entry: Pick<TaskInflightEntry, 'injectedAt' | 'alerted' | 'ownerAlerted' | 'sawTurn'> & { deliveryPending?: boolean; viaWorksource?: boolean },
+  entry: Pick<TaskInflightEntry, 'injectedAt' | 'alerted' | 'ownerAlerted' | 'sawTurn'> & {
+    deliveryPending?: boolean
+    viaWorksource?: boolean
+    worksourcePendingSince?: number
+  },
   paneState: PaneState | null,
   now: number,
   opts: { graceMs: number; timeoutMs: number; maxTrackMs: number; ownerExtraMs: number },
+  worksourceStage?: WorksourceItemStage | null,
 ): TaskTimeoutDecision {
   const elapsed = now - entry.injectedAt
   if (elapsed >= opts.maxTrackMs) return 'abandoned'
+  const stuckInPending = isWorksourceItemStuckInPending(entry, worksourceStage, now, opts.graceMs)
   if (paneState === 'idle') {
-    if (entry.sawTurn) return 'done'
+    // sawTurn is evidence about the SESSION, not about THIS queued item: the
+    // agent can be mid-conversation with a human while its queue reader is
+    // dead, in which case the item sits in pending/ and a turn says nothing
+    // about it. Closing the entry as 'done' there is exactly the silent
+    // pending/ sit the alert ladder exists to prevent, so an item still in
+    // pending/ keeps the entry open regardless of the turn evidence.
+    if (entry.sawTurn && !(entry.viaWorksource === true && worksourceStage === 'pending')) return 'done'
     // Idle, and nothing ever showed the prompt being picked up. Inside the
     // grace window that is just the normal pre-turn lag, so hold; past it the
     // delivery is gone.
@@ -505,11 +554,34 @@ export function decideTaskTimeout(
     // The post-send resubmit chain still owns this delivery (a parked prompt
     // or paste placeholder it is about to re-submit). Its own give-up path
     // queues the pending retry, so holding here cannot lose the task.
+    if (entry.deliveryPending) return 'hold'
     // A worksource-queued item is in the same position for its whole life:
     // the queue's reader owns the hand-off and re-offers what the agent does
-    // not acknowledge, so it is never 'lost' -- it is held until maxTrackMs
-    // ages it out as 'abandoned'.
-    if (entry.deliveryPending || entry.viaWorksource) return 'hold'
+    // not acknowledge, so it is never 'lost'. "Held" must not mean "silent",
+    // though: an item still in pending/ was never handed to the agent at all
+    // -- no reader is consuming the queue -- and until this ladder existed it
+    // sat there until maxTrackMs aged it out with nothing but an info log.
+    // PENDING must PERSIST for graceMs across sweeps before it counts, because
+    // a working reader moves an unacknowledged item back to pending/ for one
+    // poll (requeueStale in server.mjs) -- so the ladder keys off
+    // stuckInPending (the unbroken pending run the sweep stamps in
+    // worksourcePendingSince) rather than off the stage alone, and both steps
+    // of the ladder measure from the START of that stuck run, not from the
+    // injection -- a run can begin long after it (the item was handed over,
+    // requeued, and only then did the reader die) -- nor from timeoutMs (a
+    // pane-busy threshold that says nothing about a queue nobody is reading).
+    // Anything else keeps the plain hold: a
+    // pending run younger than graceMs, 'active' (the reader did its job and
+    // the agent owns the work), 'done' (acknowledged), and null (the queue
+    // directory could not be read -- no signal, conservative).
+    if (entry.viaWorksource) {
+      if (stuckInPending) {
+        if (!entry.alerted) return 'alert'
+        if (!entry.ownerAlerted && now - (entry.worksourcePendingSince as number) >= opts.graceMs + opts.ownerExtraMs) return 'escalate'
+        return 'hold'
+      }
+      return 'hold'
+    }
     return 'lost'
   }
   // NOTE: no early `if (entry.alerted) return 'hold'` here -- that was
@@ -1697,11 +1769,18 @@ export function resolveTaskTarget(
 // below are pure so the id rule, the meta contract and the gate are unit-tested
 // without tmux, DB or disk.
 
-// Which fire an item id belongs to. 'occurrence' carries the SCHEDULED minute
-// (a cron occurrence or a pending retry -- the retry keeps the FIRST attempt's
-// time so every attempt of the same occurrence dedupes to one item); 'manual'
-// carries the run-now timestamp, because a manual run is its own delivery by
-// definition, not a retry of the cron occurrence.
+// Which fire an item id belongs to. 'occurrence' carries the minute the fire
+// is bound to: a cron fire's own scheduled minute, or -- on the pending-retry
+// path -- pending_task_retries.first_attempt. That column is NOT the scheduled
+// occurrence: it is the time of the FIRST BUSY HIT (insertPendingTaskRetryIfNew
+// stores its `now` argument), and the table holds ONE ROW PER TASK AND AGENT,
+// not per occurrence. The ids still dedupe in practice because a retry row
+// exists only when the cron path did not queue the item (the session was busy
+// or missing, so no cron-stamped item was written), and every retry of the row
+// re-derives the same id (updatePendingTaskRetry never touches first_attempt).
+// Nobody should use first_attempt as an occurrence key. 'manual' carries the
+// run-now timestamp, because a manual run is its own delivery by definition,
+// not a retry of the cron occurrence.
 export type ScheduledOccurrence = { kind: 'occurrence' | 'manual'; at: number }
 
 // The item id is DERIVED, not random, for the same reason as the router's
@@ -1734,24 +1813,39 @@ export function scheduledWorksourceMeta(taskName: string, itemId: string): Recor
   return { from: 'scheduler', message_id: itemId, task: taskName, category: 'scheduled-task' }
 }
 
-// True only for a LOCAL sub-agent that opted in. host must be null because the
-// queue directory lives on THIS machine: a remote agent's reader polls its own
-// host, so an item written here would never be picked up. The main agent is
-// excluded: it has no worksource channel, and queueing its own scheduler's
-// prompts would strand them. A readFlag that throws keeps the typed path -- a
-// broken agent-config.json must not take the schedule down with it.
+// True only for a LOCAL sub-agent that opted in AND runs no sender-role gate.
+// host must be null because the queue directory lives on THIS machine: a
+// remote agent's reader polls its own host, so an item written here would
+// never be picked up. The main agent is excluded: it has no worksource
+// channel, and queueing its own scheduler's prompts would strand them.
+//
+// The sender-role gate (agent-config.json senderRoleGate) also keeps the typed
+// path. A queued item reaches the agent inside a <channel> envelope, which the
+// gate's hook reads as a NON-OWNER sender and answers by denying the risky
+// tools; a typed prompt carries no envelope and is treated as the owner. The
+// item's `from: scheduler` meta is not an owner credential -- anything that
+// can write the queue directory can set it -- so it is deliberately not used
+// to lift the gate. A readFlag or readGate that throws keeps the typed path
+// too: a broken agent-config.json must not take the schedule down with it.
 export function shouldQueueScheduledToWorksource(
   agentName: string,
   host: string | null,
   readFlag: (name: string) => boolean = readAgentWorksourceChannel,
+  readGate: (name: string) => boolean = (name) => readAgentSenderRoleGatePolicy(name) != null,
 ): boolean {
   if (host != null) return false
   if (agentName === MAIN_AGENT_ID) return false
   try {
-    return readFlag(agentName) === true
+    if (readFlag(agentName) !== true) return false
   } catch {
     return false
   }
+  try {
+    if (readGate(agentName)) return false
+  } catch {
+    return false
+  }
+  return true
 }
 
 async function attemptFireTask(
@@ -2347,6 +2441,9 @@ async function queueScheduledToWorksource(
     runId: firedRunId,
     taskType: task.type,
     viaWorksource: true,
+    // What the sweep needs to ask worksourceItemStage apart from this entry:
+    // pending/ means the reader never took it, active/done that it did.
+    worksourceItemId: itemId,
     deliveryPending: false,
   })
   return 'fired'
@@ -2788,7 +2885,7 @@ function runStatusOf(entry: Pick<TaskInflightEntry, 'runId'>): string | null {
   try { return getTaskRunStatus(entry.runId) } catch { return null }
 }
 
-function sendTaskInflightMainAgentNotice(entry: TaskInflightEntry, elapsedMs: number): void {
+function sendTaskInflightMainAgentNotice(entry: TaskInflightEntry, elapsedMs: number, reason?: 'worksource-pending'): void {
   const ageMinutes = Math.floor(elapsedMs / 60000)
 
   const movedCardId = markScheduledTaskKanbanWaiting(entry.taskName)
@@ -2797,11 +2894,20 @@ function sendTaskInflightMainAgentNotice(entry: TaskInflightEntry, elapsedMs: nu
   }
 
   const thresholdMinutes = Math.round(entry.timeoutMs / 60000)
+  // The worksource-pending variant says what is actually wrong: the pane is
+  // IDLE, the task is not running long -- its queued item was never picked up.
+  // The pane-busy first line and the stuckAfterMinutes advice would both send
+  // the reader chasing a threshold problem that does not exist, so both lines
+  // are swapped for the "is the queue reader running?" wording.
   const text = [
-    `[scheduler] ${describeInflightPaneAge(entry, elapsedMs, runStatusOf(entry))} Küszöb: ${thresholdMinutes} perc pane-foglaltság.`,
+    reason === 'worksource-pending'
+      ? `[scheduler] ${entry.taskName} @ ${entry.agentName}: a worksource-sorba tett tétel ${ageMinutes} perce a pending/ mappában áll, az ágens olvasója nem vette át (tétel: ${entry.worksourceItemId}).`
+      : `[scheduler] ${describeInflightPaneAge(entry, elapsedMs, runStatusOf(entry))} Küszöb: ${thresholdMinutes} perc pane-foglaltság.`,
     // Scheduled-task registry: a hand edit of task-config.json now stops the task from
     // firing (registry hash mismatch), so the advice points to the API.
-    'Ha a pane jogosan foglalt ennél tovább (hosszú feladat, vagy az ágens mással dolgozik), allitsd a "stuckAfterMinutes" erteket a PUT /api/schedules/<nev> hivassal (pl. {"stuckAfterMinutes": 60}); a task-config.json kezi szerkesztese utan a feladat NEM indul, amig ujra nem regisztraljak.',
+    reason === 'worksource-pending'
+      ? 'Ellenőrizd, fut-e az ágens worksource-olvasója (plugin betöltve, session bejelentkezve); amíg nem fut, minden ütemezett feladata a pending/ mappában marad.'
+      : 'Ha a pane jogosan foglalt ennél tovább (hosszú feladat, vagy az ágens mással dolgozik), allitsd a "stuckAfterMinutes" erteket a PUT /api/schedules/<nev> hivassal (pl. {"stuckAfterMinutes": 60}); a task-config.json kezi szerkesztese utan a feladat NEM indul, amig ujra nem regisztraljak.',
     'Ellenőrizd az ágenst; ha nem oldódik meg, az uzemeltető direkt ertesitest kap ha ez tovabb tart.',
   ].join('\n')
   try {
@@ -2822,7 +2928,7 @@ function sendTaskInflightMainAgentNotice(entry: TaskInflightEntry, elapsedMs: nu
 // token-resolution and owner-chat path as sendPendingRetryAlert
 // (provider-aware, over CHANNEL_PROVIDER): this is a system-level scheduler
 // alert, not a per-agent channel notification.
-function sendTaskTimeoutAlert(entry: TaskInflightEntry, elapsedMs: number): void {
+function sendTaskTimeoutAlert(entry: TaskInflightEntry, elapsedMs: number, reason?: 'worksource-pending'): void {
   const ageMinutes = Math.floor(elapsedMs / 60000)
   // Heartbeats are excluded from this alert on purpose -- the same reasoning as
   // the catch-up summary filter below. A heartbeat is self-healing: the next
@@ -2888,9 +2994,16 @@ function sendTaskTimeoutAlert(entry: TaskInflightEntry, elapsedMs: number): void
       ? `${Math.round(medianMs / 1000)} másodperc`
       : `${Math.round(medianMs / 60_000)} perc`
   const text = [
-    `[${BOT_NAME} scheduler] ${describeInflightPaneAge(entry, elapsedMs, runStatusOf(entry))} A(z) fő-agent mar ertesitve volt errol, de a pane azota is foglalt.`,
+    // Same swap as stage 1 (sendTaskInflightMainAgentNotice): a pending/ item
+    // nobody picked up is not a long-running pane, so the pane-age first line
+    // and the stuckAfterMinutes advice are replaced with the queue wording.
+    reason === 'worksource-pending'
+      ? `[${BOT_NAME} scheduler] ${entry.taskName} @ ${entry.agentName}: a worksource-sorba tett tétel ${ageMinutes} perce a pending/ mappában áll, az ágens olvasója nem vette át (tétel: ${entry.worksourceItemId}).`
+      : `[${BOT_NAME} scheduler] ${describeInflightPaneAge(entry, elapsedMs, runStatusOf(entry))} A(z) fő-agent mar ertesitve volt errol, de a pane azota is foglalt.`,
     ...(typical ? [`Ez a feladat általában ${typical} alatt lefut (a korábbi befejezett futások mediánja; ez is PANE-IDŐ: az injektálástól a pane első tétlen állapotáig, nem munkaidő).`] : []),
-    `A riasztási küszöb ennél a feladatnál ${thresholdMinutes} perc; ha ez a feladat jogosan fut ennél tovább, allitsd a "stuckAfterMinutes" erteket a PUT /api/schedules/<nev> hivassal (pl. {"stuckAfterMinutes": 60}); a task-config.json kezi szerkesztese utan a feladat NEM indul, amig ujra nem regisztraljak.`,
+    reason === 'worksource-pending'
+      ? 'Ellenőrizd, fut-e az ágens worksource-olvasója (plugin betöltve, session bejelentkezve); amíg nem fut, minden ütemezett feladata a pending/ mappában marad.'
+      : `A riasztási küszöb ennél a feladatnál ${thresholdMinutes} perc; ha ez a feladat jogosan fut ennél tovább, allitsd a "stuckAfterMinutes" erteket a PUT /api/schedules/<nev> hivassal (pl. {"stuckAfterMinutes": 60}); a task-config.json kezi szerkesztese utan a feladat NEM indul, amig ujra nem regisztraljak.`,
     'Az ágensben megtekintheted; a dashboard /Ütemezések oldalán visszavonható ha kell.',
   ].join('\n')
   ;(async () => {
@@ -3055,12 +3168,58 @@ export function startScheduleRunner(): NodeJS.Timeout {
         lastMtimeSeen = probed.mtimeSeen
         if (probed.sawTurn) entry.sawTurn = true
       }
+      // A queued delivery's stage in the agent's queue directory, read for
+      // viaWorksource entries ONLY -- the typed path has no queue item to ask
+      // about, and the answer is what separates "still in pending/, nobody
+      // picked it up" from "handed over / finished" inside decideTaskTimeout.
+      // worksourceItemStage never throws, so an unreadable queue directory
+      // degrades to null (an ordinary hold) instead of taking the sweep down.
+      const worksourceStage = entry.viaWorksource && entry.worksourceItemId != null
+        ? worksourceItemStage(entry.agentName, entry.worksourceItemId)
+        : undefined
+      // Track how long this item's CURRENT stay in pending/ has lasted. Two
+      // rules keep a healthy queue out of the alert. First, the stage alone
+      // cannot tell a dead reader from a working one that just re-offered an
+      // unacknowledged item: the run is stamped on the first sweep that sees
+      // pending/ and cleared the moment the item is seen in active/ or done/
+      // -- a stage of null/undefined (unreadable queue directory) leaves the
+      // stamps untouched, since it is no signal either way. Second, a busy
+      // reader with a backlog ahead of our item keeps it in pending/ for many
+      // sweeps while the queue IS being consumed: the run restarts whenever
+      // the head of pending/ recorded by the previous sweep has since moved
+      // on to active/ or done/, so only a pending run during which the queue
+      // made NO progress can ever span the grace window.
+      if (entry.viaWorksource === true) {
+        if (worksourceStage === 'pending') {
+          if (entry.worksourcePendingSince == null) {
+            entry.worksourcePendingSince = now
+          } else if (entry.worksourcePendingHead != null) {
+            const prevHeadStage = worksourceItemStage(entry.agentName, entry.worksourcePendingHead)
+            // the previous head left pending/: the reader is consuming the queue, restart the run
+            if (prevHeadStage === 'active' || prevHeadStage === 'done') entry.worksourcePendingSince = now
+          }
+          const head = worksourcePendingHead(entry.agentName)
+          if (head != null) entry.worksourcePendingHead = head
+        } else if (worksourceStage === 'active' || worksourceStage === 'done') {
+          entry.worksourcePendingSince = undefined
+          entry.worksourcePendingHead = undefined
+        }
+      }
       const decision = decideTaskTimeout(entry, state, now, {
         graceMs: TASK_FIRE_GRACE_MS,
         timeoutMs: entry.timeoutMs,
         maxTrackMs: TASK_FIRE_MAX_TRACK_MS,
         ownerExtraMs: OWNER_ESCALATION_EXTRA_MS,
-      })
+      }, worksourceStage)
+      // The alert texts for the pending branch name the queue (and the item)
+      // instead of pane busyness; the busy-path texts stay the default. The
+      // same predicate as decideTaskTimeout's ladder, so a busy-path alert that
+      // happens to sample a one-poll requeue never claims the item was not
+      // picked up.
+      const pendingReason: 'worksource-pending' | undefined =
+        isWorksourceItemStuckInPending(entry, worksourceStage, now, TASK_FIRE_GRACE_MS)
+          ? 'worksource-pending'
+          : undefined
       // PROMPTCSONK923: record what actually ARRIVED, from the transcript. On
       // a closing decision this is the last look, so a head-only arrival is
       // recorded as 'tail-lost' instead of waiting for a tail that is not
@@ -3122,10 +3281,10 @@ export function startScheduleRunner(): NodeJS.Timeout {
         }
         taskInflightMap.delete(key)
       } else if (decision === 'alert') {
-        sendTaskInflightMainAgentNotice(entry, now - entry.injectedAt)
+        sendTaskInflightMainAgentNotice(entry, now - entry.injectedAt, pendingReason)
         entry.alerted = true
       } else if (decision === 'escalate') {
-        sendTaskTimeoutAlert(entry, now - entry.injectedAt)
+        sendTaskTimeoutAlert(entry, now - entry.injectedAt, pendingReason)
         entry.ownerAlerted = true
       } else if (decision === 'lost' && !entry.parkedEnterSent && isOwnPromptParkedOverfull(pane, getInjectedPrompt(entry.session))) {
         // Not lost: our prompt is parked in a box taller than the pane, where
@@ -3258,8 +3417,15 @@ export function startScheduleRunner(): NodeJS.Timeout {
       }
 
       const view = toPendingRetryView(row, now)
-      // The retry keeps the FIRST attempt's time in the item id, so every retry
-      // of the same occurrence dedupes to one worksource item.
+      // The worksource item id is bound to row.first_attempt -- NOT the
+      // scheduled occurrence but the time of the FIRST BUSY HIT that created
+      // this row (insertPendingTaskRetryIfNew(..., now, ...)), and there is one
+      // row per task and agent, not per occurrence. Binding the id to it still
+      // dedupes in practice: every retry of the row re-derives the same id
+      // (updatePendingTaskRetry never touches first_attempt), and the row only
+      // exists at all when the cron path did not queue the item. It is a
+      // dedupe key, not an occurrence key -- do not read it as the scheduled
+      // minute.
       const result = await attemptFireTask(current, row.agent_name, now, retryPc.prefix, undefined, { kind: 'occurrence', at: row.first_attempt })
       if (result === 'fired') {
         deletePendingTaskRetry(row.task_name, row.agent_name)

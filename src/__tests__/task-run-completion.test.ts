@@ -67,7 +67,9 @@ describe('the two ending kinds stay distinct', () => {
 
   it('max tracking age returns abandoned; idle-after-a-turn returns done', () => {
     expect(RUNNER_SRC).toMatch(/if \(elapsed >= opts\.maxTrackMs\) return 'abandoned'/)
-    expect(RUNNER_SRC).toMatch(/if \(entry\.sawTurn\) return 'done'/)
+    // The one exception: a turn says nothing about a queued item still in
+    // pending/ (the reader never handed it over), so that entry stays open.
+    expect(RUNNER_SRC).toMatch(/if \(entry\.sawTurn(?: && !\(entry\.viaWorksource === true && worksourceStage === 'pending'\))?\) return 'done'/)
   })
 })
 

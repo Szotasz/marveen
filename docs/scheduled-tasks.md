@@ -77,9 +77,22 @@ outside `A-Za-z0-9._-` replaced by `-`, cut to 60 characters; `<hash8>` is the
 first 8 hex digits of the full name's SHA-256, so two names with the same slug
 still get different ids. For a cron occurrence the stamp is the UTC minute
 of the scheduled occurrence, date included (one item per scheduled minute). A
-pending-retry fire keeps the FIRST attempt's time, so every retry of the same
-occurrence maps to the same item. A manual "Run now" gets its own id with its
+pending-retry fire stamps the retry row's `first_attempt` -- the time of the
+first busy hit, not the scheduled minute, and one row per task and agent -- so
+every retry of that row maps to the same item; it dedupes in practice because
+the row exists only when the cron path did not queue the item, and it is a
+dedupe key, not an occurrence key. A manual "Run now" gets its own id with its
 own timestamp.
+
+**The sender-role gate keeps the typed path.** An agent configured with
+`senderRoleGate` still gets its scheduled prompts typed into its pane, even
+with `worksourceChannel: true`. A queued item reaches the agent inside a
+`<channel source="worksource" ...>` envelope, which the gate's hook treats as
+a non-owner sender and answers by denying the configured risky tools; a typed
+prompt carries no envelope and is treated as the owner. The item's
+`from: scheduler` meta is not an owner credential -- anything that can write
+the queue directory can set it -- so it is deliberately not used to lift the
+gate.
 
 **What does not apply.** The typing-specific machinery is skipped: the idle
 wait before typing, the post-send resubmit chain, the delivery-integrity check

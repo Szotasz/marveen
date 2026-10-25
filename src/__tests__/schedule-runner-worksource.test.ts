@@ -1,7 +1,11 @@
-import { describe, expect, it } from 'vitest'
+import { afterAll, describe, expect, it } from 'vitest'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { MAIN_AGENT_ID } from '../config.js'
+import { worksourceItemStageAt, worksourcePendingHeadAt } from '../web/worksource-queue.js'
 
-const { scheduledWorksourceItemId, scheduledWorksourceMeta, shouldQueueScheduledToWorksource, decideTaskTimeout } = await import('../web/schedule-runner.js')
+const { scheduledWorksourceItemId, scheduledWorksourceMeta, shouldQueueScheduledToWorksource, decideTaskTimeout, isWorksourceItemStuckInPending } = await import('../web/schedule-runner.js')
 
 // The scheduler's worksource helpers, pinned pure: the id rule, the meta
 // contract and the gate decide WHAT reaches a worksource agent's queue, so a
@@ -77,8 +81,8 @@ describe('scheduledWorksourceMeta (exactly four string keys)', () => {
 })
 
 describe('shouldQueueScheduledToWorksource (local sub-agent that opted in)', () => {
-  it('flag on, local, sub-agent -> true', () => {
-    expect(shouldQueueScheduledToWorksource('cortex-router', null, () => true)).toBe(true)
+  it('flag on, local, sub-agent, no gate -> true', () => {
+    expect(shouldQueueScheduledToWorksource('cortex-router', null, () => true, () => false)).toBe(true)
   })
 
   it('flag off -> false (the typed path stays)', () => {
@@ -95,6 +99,103 @@ describe('shouldQueueScheduledToWorksource (local sub-agent that opted in)', () 
 
   it('a readFlag that throws keeps the typed path', () => {
     expect(shouldQueueScheduledToWorksource('cortex-router', null, () => { throw new Error('broken agent-config.json') })).toBe(false)
+  })
+})
+
+describe('shouldQueueScheduledToWorksource: the sender-role gate keeps the typed path', () => {
+  // The queue delivers inside a <channel> envelope, which the gate's hook
+  // treats as a non-owner sender; a typed prompt is treated as the owner.
+  // Queueing into a gated agent would silently disarm its scheduled tasks.
+  it('flag on + gate on -> false: the prompt is typed, not queued', () => {
+    expect(shouldQueueScheduledToWorksource('cortex-router', null, () => true, () => true)).toBe(false)
+  })
+
+  it('flag on + gate off -> true', () => {
+    expect(shouldQueueScheduledToWorksource('cortex-router', null, () => true, () => false)).toBe(true)
+  })
+
+  it('flag on + gate read throws -> false (typed, like a throwing readFlag)', () => {
+    expect(shouldQueueScheduledToWorksource('cortex-router', null, () => true, () => { throw new Error('broken agent-config.json') })).toBe(false)
+  })
+
+  it('flag off + gate on -> false: the flag is never bypassed by the gate', () => {
+    expect(shouldQueueScheduledToWorksource('cortex-router', null, () => false, () => true)).toBe(false)
+  })
+})
+
+describe('worksourceItemStageAt (which queue directory holds the item)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'worksource-stage-'))
+  const put = (stage: string, id: string): void => {
+    mkdirSync(join(root, stage), { recursive: true })
+    writeFileSync(join(root, stage, `${id}.json`), '{}')
+  }
+
+  afterAll(() => {
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  it('reports the directory the item is in: pending, active, done', () => {
+    put('pending', 'in-pending')
+    put('active', 'in-active')
+    put('done', 'in-done')
+    expect(worksourceItemStageAt(root, 'in-pending')).toBe('pending')
+    expect(worksourceItemStageAt(root, 'in-active')).toBe('active')
+    expect(worksourceItemStageAt(root, 'in-done')).toBe('done')
+  })
+
+  it('an unknown id is in none of them: null', () => {
+    expect(worksourceItemStageAt(root, 'no-such-item')).toBeNull()
+  })
+
+  it('an id present in more than one directory reports the first in the order pending, active, done', () => {
+    put('done', 'two-dirs-pd')
+    put('pending', 'two-dirs-pd')
+    expect(worksourceItemStageAt(root, 'two-dirs-pd')).toBe('pending')
+
+    put('done', 'two-dirs-ad')
+    put('active', 'two-dirs-ad')
+    expect(worksourceItemStageAt(root, 'two-dirs-ad')).toBe('active')
+
+    put('pending', 'three-dirs')
+    put('active', 'three-dirs')
+    put('done', 'three-dirs')
+    expect(worksourceItemStageAt(root, 'three-dirs')).toBe('pending')
+  })
+
+  it('a root that does not exist is a probe, not an error: null', () => {
+    expect(worksourceItemStageAt(join(root, 'no-such-root'), 'any')).toBeNull()
+  })
+})
+
+describe('worksourcePendingHeadAt (the item the reader hands over next)', () => {
+  const root = mkdtempSync(join(tmpdir(), 'worksource-head-'))
+  const put = (stage: string, id: string): void => {
+    mkdirSync(join(root, stage), { recursive: true })
+    writeFileSync(join(root, stage, `${id}.json`), '{}')
+  }
+
+  afterAll(() => {
+    rmSync(root, { recursive: true, force: true })
+  })
+
+  it('an empty pending/ has no next item: null', () => {
+    mkdirSync(join(root, 'pending'), { recursive: true })
+    expect(worksourcePendingHeadAt(root)).toBeNull()
+  })
+
+  it('a missing pending/ is a probe, not an error: null', () => {
+    expect(worksourcePendingHeadAt(join(root, 'no-such-root'))).toBeNull()
+  })
+
+  it("returns the lexically smallest id and ignores names that do not end in '.json'", () => {
+    put('pending', 'b-item')
+    put('pending', 'a-item')
+    // Reader-shaped noise in the same directory: a half-written tmp file and a
+    // dotfile. ('.hidden.json' WOULD count -- the reader's filter, and ours,
+    // is endsWith('.json'), so it is deliberately not used here.)
+    writeFileSync(join(root, 'pending', 'b.json.tmp'), '{}')
+    writeFileSync(join(root, 'pending', '.hidden'), '{}')
+    expect(worksourcePendingHeadAt(root)).toBe('a-item')
   })
 })
 
@@ -116,5 +217,119 @@ describe('decideTaskTimeout with a worksource-queued entry', () => {
 
   it('busy past the threshold still alerts', () => {
     expect(decideTaskTimeout({ ...entry, viaWorksource: true }, 'busy', entry.injectedAt + opts.timeoutMs + 1, opts)).toBe('alert')
+  })
+})
+
+describe('decideTaskTimeout: a queued item still in pending/ past the grace window climbs the alert ladder', () => {
+  // The queue's reader owns the hand-off, so the item is never 'lost' -- but
+  // pending/ means the reader never took it, and that must be TOLD to someone
+  // instead of holding silently until maxTrackMs ages it out. The gate is the
+  // LENGTH of the pending run (worksourcePendingSince), not the stage alone:
+  // a working reader re-offers an unacknowledged item, so a single 'pending'
+  // sample is the healthy queue's normal face.
+  const opts = { graceMs: 30_000, timeoutMs: 300_000, maxTrackMs: 6 * 60 * 60_000, ownerExtraMs: 600_000 }
+  const entry = { injectedAt: 1_000_000, alerted: false, ownerAlerted: false, sawTurn: false }
+  const at = (msPast: number) => entry.injectedAt + msPast
+  // The ladder's precondition: the sweep stamped worksourcePendingSince at the
+  // injection itself, so every `at(...)` below is a pending run >= graceMs.
+  const stuck = { ...entry, viaWorksource: true, worksourcePendingSince: entry.injectedAt }
+
+  it("stage 'pending', not yet alerted -> alert", () => {
+    expect(decideTaskTimeout({ ...stuck }, 'idle', at(60_000), opts, 'pending')).toBe('alert')
+  })
+
+  it("stage 'pending' but first seen less than graceMs ago -> hold (a one-poll requeue by a working reader)", () => {
+    // The sweep at at(45_000) is the FIRST to see the item in pending/ (the
+    // reader re-offered it), so 30 s short of the grace window it is still the
+    // ordinary face of a working queue -- no alert yet.
+    expect(decideTaskTimeout({ ...entry, viaWorksource: true, worksourcePendingSince: at(45_000) }, 'idle', at(45_000 + opts.graceMs - 1), opts, 'pending')).toBe('hold')
+  })
+
+  it("stage 'pending' with no worksourcePendingSince -> hold", () => {
+    expect(decideTaskTimeout({ ...entry, viaWorksource: true }, 'idle', at(60_000), opts, 'pending')).toBe('hold')
+  })
+
+  it("stage 'pending', alerted, still inside the owner window -> hold", () => {
+    expect(decideTaskTimeout({ ...stuck, alerted: true }, 'idle', at(opts.graceMs + opts.ownerExtraMs - 1), opts, 'pending')).toBe('hold')
+  })
+
+  it('escalation is measured from the pending run, not from the injection', () => {
+    // A LATE pending run: the item was handed over, requeued, and only then
+    // did the reader die -- 80 minutes after the injection. Measuring the
+    // owner window from the injection would escalate on the very sweep after
+    // the main-agent notice; from the run, 31 s in is still a plain hold.
+    const now = at(80 * 60_000)
+    const lateRun = { ...entry, viaWorksource: true, alerted: true, ownerAlerted: false }
+    expect(decideTaskTimeout({ ...lateRun, worksourcePendingSince: now - 31_000 }, 'idle', now, opts, 'pending')).toBe('hold')
+    expect(decideTaskTimeout({ ...lateRun, worksourcePendingSince: now - (opts.graceMs + opts.ownerExtraMs) }, 'idle', now, opts, 'pending')).toBe('escalate')
+  })
+
+  it("stage 'pending', alerted, past the owner window, not ownerAlerted -> escalate", () => {
+    expect(decideTaskTimeout({ ...stuck, alerted: true }, 'idle', at(opts.graceMs + opts.ownerExtraMs), opts, 'pending')).toBe('escalate')
+  })
+
+  it("stage 'pending', alerted and ownerAlerted -> hold (both notices already out)", () => {
+    expect(decideTaskTimeout({ ...stuck, alerted: true, ownerAlerted: true }, 'idle', at(opts.graceMs + opts.ownerExtraMs), opts, 'pending')).toBe('hold')
+  })
+
+  it("sawTurn true, idle, stage 'pending' for >= graceMs -> alert, not done (an unrelated turn is no evidence)", () => {
+    // sawTurn comes from ANY transcript write (or a busy pane): the agent can
+    // be chatting with a human while its queue reader is dead, so a turn must
+    // not close an entry whose item is still sitting in pending/.
+    expect(decideTaskTimeout({ ...stuck, sawTurn: true }, 'idle', at(60_000), opts, 'pending')).toBe('alert')
+  })
+
+  it("sawTurn true, idle, stage 'active' -> done (unchanged)", () => {
+    expect(decideTaskTimeout({ ...entry, viaWorksource: true, sawTurn: true }, 'idle', at(60_000), opts, 'active')).toBe('done')
+  })
+
+  it("stage 'active' -> hold: the reader handed it over, the agent owns the work", () => {
+    expect(decideTaskTimeout({ ...entry, viaWorksource: true }, 'idle', at(60_000), opts, 'active')).toBe('hold')
+  })
+
+  it("stage 'done' -> hold: the agent acknowledged the item", () => {
+    expect(decideTaskTimeout({ ...entry, viaWorksource: true }, 'idle', at(60_000), opts, 'done')).toBe('hold')
+  })
+
+  it('stage null (no signal, e.g. unreadable queue) -> hold', () => {
+    expect(decideTaskTimeout({ ...entry, viaWorksource: true }, 'idle', at(60_000), opts, null)).toBe('hold')
+  })
+
+  it('stage omitted -> hold (four-argument callers keep their behaviour)', () => {
+    expect(decideTaskTimeout({ ...entry, viaWorksource: true }, 'idle', at(60_000), opts)).toBe('hold')
+  })
+
+  it("past maxTrackMs with stage 'pending' -> abandoned (the age-out rule still comes first)", () => {
+    expect(decideTaskTimeout({ ...stuck }, 'idle', at(opts.maxTrackMs), opts, 'pending')).toBe('abandoned')
+  })
+
+  it("control: the same 'pending' stage on an entry WITHOUT viaWorksource keeps today's 'lost'", () => {
+    expect(decideTaskTimeout({ ...entry }, 'idle', at(60_000), opts, 'pending')).toBe('lost')
+  })
+})
+
+describe('isWorksourceItemStuckInPending (the one predicate behind the ladder and the alert wording)', () => {
+  const since = 1_000_000
+  const graceMs = 30_000
+  const queued = { viaWorksource: true, worksourcePendingSince: since }
+
+  it('true at exactly graceMs: a pending run that has spanned the whole window', () => {
+    expect(isWorksourceItemStuckInPending(queued, 'pending', since + graceMs, graceMs)).toBe(true)
+  })
+
+  it('false just below graceMs: one poll is not a dead reader', () => {
+    expect(isWorksourceItemStuckInPending(queued, 'pending', since + graceMs - 1, graceMs)).toBe(false)
+  })
+
+  it("false for 'active': the reader handed the item over", () => {
+    expect(isWorksourceItemStuckInPending(queued, 'active', since + graceMs, graceMs)).toBe(false)
+  })
+
+  it('false without viaWorksource: the typed path has no queue item to judge', () => {
+    expect(isWorksourceItemStuckInPending({ worksourcePendingSince: since }, 'pending', since + graceMs, graceMs)).toBe(false)
+  })
+
+  it('false with no pendingSince: the sweep has not seen a pending run yet', () => {
+    expect(isWorksourceItemStuckInPending({ viaWorksource: true }, 'pending', since + graceMs, graceMs)).toBe(false)
   })
 })
