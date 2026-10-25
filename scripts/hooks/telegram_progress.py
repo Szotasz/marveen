@@ -55,13 +55,32 @@ def token(sd):
     return None
 
 
+def _ssl_ctx():
+    # Some macOS python.org builds ship with no default CA store (cafile=None)
+    # after an OpenSSL upgrade -> every api.telegram.org verify fails with
+    # "self-signed certificate in certificate chain". SSL_CERT_FILE (set in
+    # ~/.claude/settings.json env) fixes it, but fall back to the system bundle
+    # so the guard works even if that env is not propagated to this subprocess.
+    import ssl
+    ctx = ssl.create_default_context()
+    if ssl.get_default_verify_paths().cafile is None:
+        for p in ("/private/etc/ssl/cert.pem", "/usr/local/etc/ca-certificates/cert.pem"):
+            if os.path.exists(p):
+                ctx.load_verify_locations(p)
+                break
+    return ctx
+
+
+_SSL_CTX = _ssl_ctx()
+
+
 def api(tok, method, payload):
     base = os.environ.get("TELEGRAM_API_BASE", "https://api.telegram.org")
     url = f"{base}/bot{tok}/{method}"
     data = json.dumps(payload).encode()
     req = urllib.request.Request(url, data=data,
                                  headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=8) as r:
+    with urllib.request.urlopen(req, timeout=8, context=_SSL_CTX) as r:
         return json.loads(r.read().decode())
 
 

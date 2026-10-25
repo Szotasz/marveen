@@ -48,12 +48,57 @@ function transcribeCalls(body: string): string[] {
   return calls
 }
 
-describe('VOICEWHISPER910: every whisper call site pins condition_on_previous_text=False', () => {
+/**
+ * whisper.cpp CLI invocations (argv arrays containing WHISPER_CLI). This install
+ * cannot run faster-whisper -- no wheel for macOS 12 x86_64 -- so the live
+ * transcriber is the whisper.cpp CLI, and the SAME previous-text conditioning
+ * bug applies to it. This build has no -nc; its equivalent is `-mc 0` (store
+ * zero text-context tokens). Upstream #1268 fixed only the faster-whisper
+ * sites, so the pin has to cover both mechanisms or it reports a green that
+ * says nothing about the path actually in use here.
+ */
+function whisperCliCalls(body: string): string[] {
+  const calls: string[] = []
+  const open = 'subprocess.run(['
+  let from = 0
+  while (true) {
+    const at = body.indexOf(open, from)
+    if (at < 0) break
+    let depth = 1
+    let i = at + open.length
+    while (i < body.length && depth > 0) {
+      if (body[i] === '[') depth++
+      else if (body[i] === ']') depth--
+      i++
+    }
+    const args = body.slice(at + open.length, i - 1)
+    if (args.includes('WHISPER_CLI')) calls.push(args)
+    from = i
+  }
+  return calls
+}
+
+describe('VOICEWHISPER910: every whisper call site disables previous-text conditioning', () => {
   const body = readFileSync(SOURCE, 'utf-8')
   const calls = transcribeCalls(body)
+  const cliCalls = whisperCliCalls(body)
 
-  it('finds both known call sites (live path and canary), so a silently removed site fails too', () => {
-    expect(calls.length, `${SOURCE}: expected the live _whisper call and the canary call`).toBeGreaterThanOrEqual(2)
+  it('finds at least one transcriber call site, so a silently removed site fails too', () => {
+    expect(
+      calls.length + cliCalls.length,
+      `${SOURCE}: expected a faster-whisper .transcribe() call or a whisper.cpp CLI invocation`,
+    ).toBeGreaterThanOrEqual(1)
+  })
+
+  it.each(cliCalls.map((args, i) => [i + 1, args] as const))(
+    'whisper.cpp call site %i carries -mc 0 (the -nc equivalent in this build)',
+    (_i, args) => {
+      expect(args.replace(/\s+/g, '')).toContain('"-mc","0"')
+    },
+  )
+
+  it('whisper.cpp still transcribes Hungarian', () => {
+    for (const args of cliCalls) expect(args.replace(/\s+/g, '')).toContain('"-l","hu"')
   })
 
   it.each(calls.map((args, i) => [i + 1, args] as const))(
@@ -63,7 +108,7 @@ describe('VOICEWHISPER910: every whisper call site pins condition_on_previous_te
     },
   )
 
-  it('still transcribes Hungarian (the flag was added next to language="hu", not instead of it)', () => {
+  it('faster-whisper sites, if any, still transcribe Hungarian', () => {
     for (const args of calls) expect(args).toContain('language="hu"')
   })
 })

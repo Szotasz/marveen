@@ -8,6 +8,7 @@ import {
   shouldRegisterHooks,
   pruneStaleHookEntries,
   pruneStaleHooksFromSettingsFile,
+  dedupeHookEntries,
   KNOWN_HOOK_SCRIPTS,
 } from '../web/hook-registration-guard.js'
 
@@ -291,6 +292,107 @@ describe('pruneStaleHooksFromSettingsFile', () => {
       writeFileSync(badPath, '{ not json')
       expect(pruneStaleHooksFromSettingsFile(badPath)).toEqual([])
       expect(readFileSync(badPath, 'utf-8')).toBe('{ not json')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+})
+
+// 2026-08-12 incident: the telegram-progress installer keyed idempotency on the
+// full command string (interpreter included), so a python3 that started
+// resolving to /usr/local/bin appended a SECOND registration of the same hook
+// script. Every event then ran two copies at once; for the Stop hook the twins
+// raced and the user received every un-replied Telegram answer twice.
+describe('dedupeHookEntries', () => {
+  const stop = '/Users/x/.claude/hooks/telegram_progress_clear.py'
+
+  it('collapses the same hook script registered under two interpreters', () => {
+    const settings = {
+      hooks: {
+        Stop: [
+          {
+            hooks: [
+              { type: 'command', command: `/usr/bin/python3 ${stop}`, timeout: 15 },
+              { type: 'command', command: `/usr/local/bin/python3 ${stop}`, timeout: 15 },
+            ],
+          },
+        ],
+      },
+    }
+    const { changed, removed } = dedupeHookEntries(settings)
+    expect(changed).toBe(true)
+    expect(removed).toEqual([`/usr/local/bin/python3 ${stop}`])
+    expect(settings.hooks.Stop[0].hooks).toHaveLength(1)
+    expect(settings.hooks.Stop[0].hooks[0].command).toBe(`/usr/bin/python3 ${stop}`)
+  })
+
+  it('collapses duplicates spread across separate groups of one event', () => {
+    const settings = {
+      hooks: {
+        UserPromptSubmit: [
+          { hooks: [{ type: 'command', command: `python3 ${stop}` }] },
+          { hooks: [{ type: 'command', command: `/usr/bin/python3 ${stop}` }] },
+        ],
+      },
+    }
+    expect(dedupeHookEntries(settings).changed).toBe(true)
+    expect(JSON.stringify(settings.hooks.UserPromptSubmit).match(/telegram_progress_clear/g))
+      .toHaveLength(1)
+  })
+
+  it('never touches foreign commands or a single legitimate registration', () => {
+    const settings = {
+      hooks: {
+        Stop: [
+          {
+            hooks: [
+              { type: 'command', command: `/usr/bin/python3 ${stop}` },
+              { type: 'command', command: 'python3 /opt/someone-elses/hook.py' },
+              { type: 'command', command: 'python3 /opt/someone-elses/hook.py' },
+            ],
+          },
+        ],
+      },
+    }
+    const { changed, removed } = dedupeHookEntries(settings)
+    expect(changed).toBe(false)
+    expect(removed).toEqual([])
+    expect(settings.hooks.Stop[0].hooks).toHaveLength(3)
+  })
+
+  it('keeps the same script under different matchers (distinct registrations)', () => {
+    const script = '/Users/x/.claude/hooks/telegram_progress.py'
+    const settings = {
+      hooks: {
+        PostToolUse: [
+          { matcher: 'telegram.*reply', hooks: [{ type: 'command', command: `python3 ${script}` }] },
+          { matcher: 'Bash', hooks: [{ type: 'command', command: `python3 ${script}` }] },
+        ],
+      },
+    }
+    expect(dedupeHookEntries(settings).changed).toBe(false)
+  })
+
+  it('is applied by pruneStaleHooksFromSettingsFile', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'hook-dupe-test-'))
+    try {
+      const settingsPath = join(dir, 'settings.json')
+      const live = join(dir, 'telegram_progress_clear.py')
+      writeFileSync(live, '#')
+      writeFileSync(settingsPath, JSON.stringify({
+        hooks: {
+          Stop: [{
+            hooks: [
+              { type: 'command', command: `/usr/bin/python3 ${live}` },
+              { type: 'command', command: `/usr/local/bin/python3 ${live}` },
+            ],
+          }],
+        },
+      }, null, 2))
+      const removed = pruneStaleHooksFromSettingsFile(settingsPath)
+      expect(removed).toHaveLength(1)
+      const after = JSON.parse(readFileSync(settingsPath, 'utf-8'))
+      expect(after.hooks.Stop[0].hooks).toHaveLength(1)
     } finally {
       rmSync(dir, { recursive: true, force: true })
     }

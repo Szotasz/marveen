@@ -107,6 +107,93 @@ describe('detectReauthNeeded', () => {
     expect(r.reason).toMatch(/not logged in/i)
   })
 
+  // itzhakstern 2026-09-09, the case the Devy hardening went blind to, and the
+  // reason this file now has a lookback. The token expired, so every incoming
+  // prompt was refused -- but the session stayed up, so the live status line
+  // kept showing an ordinary context readout. The refusal sits 4 lines above the
+  // box top (spinner + blank between), i.e. outside the old one-line window.
+  // The agent looked healthy for 40 days.
+  it('DOES fire on a transactional "Login expired" while the status line looks normal', () => {
+    const pane = [
+      '❯ [Üzenet @mikrobi-tól]: kérlek nézd meg a mai kártyákat',
+      '  ⎿  Login expired · Please run /login',
+      '✻ Worked for 0s',
+      '',
+      '                                        ~158k uncached · /clear to start fresh',
+      '──────────────────────────────────────────────────────── itzhakstern ──',
+      '❯ ',
+      '────────────────────────────────────────────────────────────────────────',
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents',
+    ].join('\n')
+    const r = detectReauthNeeded(pane)
+    expect(r.needsReauth).toBe(true)
+    expect(r.reason).toMatch(/login/i)
+  })
+
+  // The pair to the test above: SAME shape, same distance from the box, but a
+  // completed login after the refusal. This is what keeps the wider window from
+  // re-creating the Devy false positive -- recovery decides, not position.
+  it('does NOT fire when that same refusal is followed by a completed login', () => {
+    const pane = [
+      '❯ [Üzenet @mikrobi-tól]: kérlek nézd meg a mai kártyákat',
+      '  ⎿  Login expired · Please run /login',
+      '❯ /login',
+      '  ⎿  Login successful',
+      '',
+      '                                        ~158k uncached · /clear to start fresh',
+      '──────────────────────────────────────────────────────── itzhakstern ──',
+      '❯ ',
+      '────────────────────────────────────────────────────────────────────────',
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents',
+    ].join('\n')
+    expect(detectReauthNeeded(pane).needsReauth).toBe(false)
+  })
+
+  // Order matters, not mere presence: a login that succeeded BEFORE a later
+  // refusal is not recovery. Without this the guard would silently swallow an
+  // agent whose token died again after a successful re-login.
+  it('DOES fire when a completed login is followed by a NEW refusal', () => {
+    const pane = [
+      '❯ /login',
+      '  ⎿  Login successful',
+      '❯ [Üzenet @mikrobi-tól]: folytasd',
+      '  ⎿  Login expired · Please run /login',
+      '✻ Worked for 0s',
+      '',
+      '                                        ~158k uncached · /clear to start fresh',
+      '──────────────────────────────────────────────────────── itzhakstern ──',
+      '❯ ',
+      '────────────────────────────────────────────────────────────────────────',
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents',
+    ].join('\n')
+    expect(detectReauthNeeded(pane).needsReauth).toBe(true)
+  })
+
+  // Review 2026-09-23, found before merge: the recovery guard was a bare
+  // substring match, so PROSE containing "Login successful" anywhere in the
+  // lookback cancelled a real badge. An agent narrating this very fix, or a
+  // quoted healer alert, would have silenced a live outage -- the same
+  // self-quote family that bit this file in 2026-06-03 and 2026-07-13, only on
+  // the recovery side instead of the marker side. Recovery must look like a
+  // tool result, not like talk about one.
+  it('DOES fire when only PROSE mentions a successful login after a real failure', () => {
+    const pane = [
+      '❯ [Üzenet @mikrobi-tól]: folytasd a kártyát',
+      '  ⎿  Login expired · Please run /login',
+      '❯ mi történt? a naplóban a "Login successful" sor után is elszállt?',
+      '✻ Worked for 0s',
+      '',
+      '                                        ~158k uncached · /clear to start fresh',
+      '──────────────────────────────────────────────────────── itzhakstern ──',
+      '❯ ',
+      '────────────────────────────────────────────────────────────────────────',
+      '  ⏵⏵ bypass permissions on (shift+tab to cycle) · ← for agents',
+    ].join('\n')
+    const r = detectReauthNeeded(pane)
+    expect(r.needsReauth).toBe(true)
+    expect(r.reason).toMatch(/login/i)
+  })
+
   it('does NOT fire when a prior escalation message is quoted back into the pane (self-loop)', () => {
     // Reproduces the 2026-07-13 bug: the owner pastes the healer's own alert
     // (which embeds the raw marker text) back into the chat, and it re-matches.

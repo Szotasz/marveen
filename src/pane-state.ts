@@ -1420,6 +1420,44 @@ export function detectPermissionMode(pane: string): string | null {
   return /\? for shortcuts/.test(pane) ? 'default' : null
 }
 
+// OVERFULL INPUT BOX (2026-08-17). A parked prompt taller than the visible
+// pane pushes the input box's TOP separator -- and the ❯ prompt row with it --
+// off the top of the capture. The bottom border still sits just above the
+// footer, but no second separator exists anywhere above it, so the two-
+// separator scan below found `topSep < 0`: detectPaneState fell straight
+// through to 'idle' and liveInputBox returned null. Every layer that gates on
+// 'typing' (stuck-input-watcher, channel-monitor's recoverStuckInputForSession,
+// the schedule-runner resubmit ladder via isScheduledPromptStuck,
+// decideTaskTimeout) therefore stood down SILENTLY -- not one log line -- while
+// isSessionReadyForPrompt's separate non-empty-box check still refused to send.
+// The session pinned itself on the parked prompt until a human message pushed
+// the box through. Observed on the MAIN channels pane: the 07:30
+// reggeli-napindito prompt (~40 rendered rows) sat parked for 30 minutes and
+// only submitted when the owner typed at 08:00, at which point BOTH ran in one
+// turn.
+//
+// The content-level half of this case was already handled --
+// MACHINE_ORIGIN_TRUNCATED_MARKERS exists precisely because "the TUI drops the
+// leading rows of an overfull input box" -- but those markers were unreachable:
+// nothing ever classified the pane 'typing' to begin with.
+//
+// Why the inference is safe: an EMPTY live box is ~3 rows and ALWAYS renders
+// both of its borders above the footer. "Bottom border found, no top border
+// anywhere above it" therefore cannot describe an idle pane; it only happens
+// when the box holds more text than the capture can show. Guarded on a minimum
+// of two non-blank rows so a short or garbled capture is not read as parked
+// input. Returns the visible TAIL of the box (head truncated) -- callers that
+// re-inject verbatim already carry their own truncation guards
+// (parkedChannelInput.complete, shouldClearTruncatedPreamble).
+const OVERFLOW_BOX_MIN_CONTENT_ROWS = 2
+
+function overflowBoxInner(lines: string[], bottomSep: number): string[] | null {
+  if (bottomSep <= 0) return null
+  const inner = lines.slice(0, bottomSep)
+  const filled = inner.filter(l => l.trim().length > 0).length
+  return filled >= OVERFLOW_BOX_MIN_CONTENT_ROWS ? inner : null
+}
+
 export function detectPaneState(
   pane: string,
   opts: DetectPaneStateOptions = {},
@@ -1499,8 +1537,9 @@ export function detectPaneState(
         if (BOX_SEP_RX.test(lines[i])) { topSep = i; break }
       }
     }
-    if (topSep >= 0 && bottomSep > topSep) {
-      const inputLines = lines.slice(topSep + 1, bottomSep)
+    const boxFramed = topSep >= 0 && bottomSep > topSep
+    const inputLines = boxFramed ? lines.slice(topSep + 1, bottomSep) : overflowBoxInner(lines, bottomSep)
+    if (inputLines != null) {
       // Queued messages first: the hint lives in the box and would otherwise
       // read as parked text ('typing'), which idleConsideringDimGhost then
       // rescues to 'idle' because the hint is dim -- the exact false-ready
@@ -1510,6 +1549,10 @@ export function detectPaneState(
       if (inputLines.some(l => PARKED_INPUT_RX.test(l))) {
         return opts.mergeTypingAsBusy ? 'busy' : 'typing'
       }
+      // Overfull box: the ❯ row scrolled off with the top border, so
+      // PARKED_INPUT_RX has nothing to match. The box outgrowing the whole
+      // capture IS the parked-text signal here (see overflowBoxInner).
+      if (!boxFramed) return opts.mergeTypingAsBusy ? 'busy' : 'typing'
     }
   }
 
@@ -1599,7 +1642,13 @@ function liveInputBox(pane: string): string | null {
   for (let i = bottomSep - 1; i >= 0; i--) {
     if (BOX_SEP_RX.test(lines[i])) { topSep = i; break }
   }
-  if (topSep < 0) return null
+  if (topSep < 0) {
+    // Overfull box -- top border scrolled off the capture. Return the visible
+    // TAIL so the 'typing'-gated recovery stack can read it; the head-truncation
+    // guards live in the callers (see overflowBoxInner).
+    const inner = overflowBoxInner(lines, bottomSep)
+    return inner == null ? null : inner.join('\n')
+  }
   return lines.slice(topSep + 1, bottomSep).join('\n')
 }
 
@@ -2536,6 +2585,20 @@ export function decideStuckInputAction(f: StuckInputActionFacts): StuckInputActi
 // channel hard-restarted twice for exactly this shape of parked input, a
 // routine scheduled-task tick whose visible fragment held neither marker).
 export function parkedMainInputHasRemedy(pane: string, recordedMatch = false): boolean {
+  return parkedInputHasRemedy(pane, false, recordedMatch)
+}
+
+// Same question for ANY session. allowPlainReinject mirrors the flag the soft
+// recovery runs with for that session (MAIN false, local sub-agents true), so
+// the answer matches what recoverStuckInputForSession would actually do -- a
+// sub-agent park that reinject-plain can still submit must NOT be read as
+// no-remedy, or the wedge escalation would nuke a session soft recovery was
+// about to fix on its own.
+export function parkedInputHasRemedy(
+  pane: string,
+  allowPlainReinject: boolean,
+  recordedMatch = false,
+): boolean {
   const block = parkedChannelInput(pane)
   const facts: StuckInputActionFacts = {
     escalate: true,
@@ -2543,13 +2606,78 @@ export function parkedMainInputHasRemedy(pane: string, recordedMatch = false): b
     blockComplete: block != null && block.complete && block.block != null,
     blockTruncated: block != null && !block.complete,
     truncatedPreamble: shouldClearTruncatedPreamble(pane),
-    allowPlainReinject: false,
-    hasPlainText: false,
+    allowPlainReinject,
+    hasPlainText: allowPlainReinject && parkedInputText(pane) != null,
     scheduledTaskBlock: parkedScheduledTaskInput(pane),
     machineOrigin: parkedMachineOriginInput(pane),
     recordedMatch,
   }
   return decideStuckInputAction(facts) !== 'hold'
+}
+
+// --- Sub-agent no-remedy wedge escalation (2026-08-13 designer/Frida incident) ---
+//
+// A local sub-agent whose parked input has no soft remedy ('hold') used to end
+// at "alerting for manual restart" and then sit silent forever: unlike MAIN
+// (maybeRestartWedgedMainChannel) nothing escalated further, and a mute
+// sub-agent is invisible until someone happens to need it. designer wedged on
+// 2026-08-08 11:10 and was STILL wedged on 08-12 10:58 -- four days, across a
+// dashboard restart, until a human stopped the session by hand.
+//
+// Why this cannot just reuse MAIN's carve-out: applyStuckRestartBusyGuard gates
+// the restart on machineOrigin (a recognisable delivery-wrapper prefix) so a
+// human draft is never nuked. That signal is unavailable exactly here -- the
+// case that wedges a sub-agent is a head-lost delivery frame whose wrapper rows
+// the TUI dropped from an overfull box, so machineOrigin reads FALSE precisely
+// when the wedge is real (that is what routes it to 'hold' in the first place).
+//
+// TIME is the substitute safety signal. A human draft does not sit byte-
+// identical in the prompt box for the whole grace window while the watcher
+// hammers the pane every 15s; and the restart runs WITHOUT `fresh`, so the
+// conversation resumes and the only thing lost is the unsubmittable fragment --
+// which, by definition of 'hold', no move could have submitted anyway.
+export interface SubAgentWedgeFacts {
+  /** Input still parked (soft-recovery state has a signature). */
+  parked: boolean
+  /** Soft-recovery attempts spent in this spell, and the budget. */
+  attempts: number
+  maxAttempts: number
+  /** parkedInputHasRemedy(view, true): soft recovery still has a move. */
+  softRemedy: boolean
+  paneState: PaneState | null
+  /** How long the SAME text has been parked (age clock resets when it changes). */
+  wedgeAgeMs: number
+  graceMs: number
+  now: number
+  lastRestartAt: number
+  restartCount: number
+  minIntervalMs: number
+  maxConsecutive: number
+}
+
+/**
+ * Pure gate for the sub-agent wedge restart.
+ *   'restart' -> soft recovery exhausted, no remedy, wedge older than the
+ *                grace window, rate-limit ok
+ *   'alert'   -> restarts are not clearing it (cap reached) -> surface once
+ *   'skip'    -> anything else. Deliberately conservative: every unknown
+ *                answers 'skip', so a bug here leaves today's behaviour
+ *                (alert-only) rather than restarting a healthy agent.
+ */
+export function decideSubAgentWedgeRestart(f: SubAgentWedgeFacts): 'restart' | 'alert' | 'skip' {
+  if (!f.parked || f.attempts < f.maxAttempts) return 'skip'
+  // Soft recovery still has a move -> let it work; a restart would destroy a
+  // message the re-inject was about to submit.
+  if (f.softRemedy) return 'skip'
+  // A busy pane is working, not wedged (the TUI cannot submit inbound text
+  // mid-turn, so parked text there is normal and transient).
+  if (f.paneState === 'busy') return 'skip'
+  // The age gate is what stands in for machineOrigin -- do not shorten it
+  // without replacing that safety.
+  if (f.wedgeAgeMs < f.graceMs) return 'skip'
+  if (f.now - f.lastRestartAt < f.minIntervalMs) return 'skip'
+  if (f.restartCount >= f.maxConsecutive) return f.restartCount === f.maxConsecutive ? 'alert' : 'skip'
+  return 'restart'
 }
 
 // =============================================================================

@@ -26,7 +26,7 @@ once; `stop_hook_active` is also honored. Silent on stdout EXCEPT the single
 decision JSON when blocking. Token/state dir resolution mirrors the plugin
 (TELEGRAM_STATE_DIR else default).
 """
-import sys, os, json, glob, urllib.request
+import sys, os, json, glob, time, urllib.request
 
 INSTRUCTION = (
     "KÖTELEZŐ: erre a Telegram-üzenetre még NEM küldtél választ a Telegram "
@@ -51,10 +51,13 @@ def state_dir():
 
 
 def log(sd, msg):
+    # Timestamped: the 2026-08-12 duplicate-reply hunt stalled for an hour
+    # because [submit]/[enforce] lines carried no clock, so a twin-hook race
+    # (milliseconds apart) was indistinguishable from two separate turns.
     try:
         os.makedirs(os.path.join(sd, "progress"), exist_ok=True)
         with open(os.path.join(sd, "progress", "debug.log"), "a", encoding="utf-8") as f:
-            f.write(msg + "\n")
+            f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')} pid={os.getpid()}] {msg}\n")
     except Exception:
         pass
 
@@ -70,6 +73,23 @@ def token(sd):
     return None
 
 
+def _ssl_ctx():
+    # See telegram_progress.py: some macOS python.org builds lose the default CA
+    # store (cafile=None) after an OpenSSL upgrade, breaking the Stop-hook
+    # enforce fallback. Fall back to the system bundle if the default is empty.
+    import ssl
+    ctx = ssl.create_default_context()
+    if ssl.get_default_verify_paths().cafile is None:
+        for p in ("/private/etc/ssl/cert.pem", "/usr/local/etc/ca-certificates/cert.pem"):
+            if os.path.exists(p):
+                ctx.load_verify_locations(p)
+                break
+    return ctx
+
+
+_SSL_CTX = _ssl_ctx()
+
+
 def api(tok, method, payload):
     # Base is overridable (TELEGRAM_API_BASE) so tests can point it at a local
     # stub; defaults to the real Bot API, so production is unchanged.
@@ -78,7 +98,7 @@ def api(tok, method, payload):
     data = json.dumps(payload).encode()
     req = urllib.request.Request(url, data=data,
                                  headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=8) as r:
+    with urllib.request.urlopen(req, timeout=8, context=_SSL_CTX) as r:
         return json.loads(r.read().decode())
 
 
@@ -143,6 +163,37 @@ def main():
         except Exception:
             pass
 
+    # Which chats already got a REAL reply this turn? The PostToolUse reply hook
+    # drops replied-<sid>-<chat>.marker the moment the reply tool fires (even
+    # before the async placeholder file is written). Those chats are done and
+    # must NEVER get the transcript-prose fallback, or the user sees the answer
+    # twice — and must NOT be nudged with a bogus "you never replied".
+    def already_replied(chat_id):
+        return os.path.exists(os.path.join(pdir, f"replied-{sid}-{chat_id}.marker"))
+
+    def clear_replied_markers():
+        for m in glob.glob(os.path.join(pdir, f"replied-{sid}-*.marker")):
+            try:
+                os.remove(m)
+            except Exception:
+                pass
+
+    def claim_send(mid):
+        """Win-once guard so a Stop hook registered under two python paths can't
+        deliver the fallback twice. Both copies can run at once; only the one
+        that atomically creates this marker sends -> the answer goes out exactly
+        ONCE. Keyed by the unique placeholder message_id, so a leftover marker
+        never suppresses a later turn's fallback."""
+        try:
+            fd = os.open(os.path.join(pdir, f"fbsent-{sid}-{mid}.marker"),
+                         os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
+            return True
+        except FileExistsError:
+            return False
+        except Exception:
+            return True  # guard unavailable -> prefer delivering over silence
+
     path = os.path.join(pdir, f"{sid}.json")
     try:
         pend = json.load(open(path))
@@ -151,44 +202,121 @@ def main():
 
     if not pend:
         # Nothing pending: either not a Telegram turn, or the reply was already
-        # sent (PostToolUse cleared it). Drop any stale enforce marker and exit.
+        # sent (PostToolUse cleared it). Drop stale markers and exit.
         try:
             os.remove(guard)
         except Exception:
             pass
+        clear_replied_markers()
+        # Opportunistic housekeeping of spent send-claim markers (safe here: no
+        # fallback is in flight this turn, and they are keyed by message_id).
+        for m in glob.glob(os.path.join(pdir, f"fbsent-{sid}-*.marker")):
+            try:
+                os.remove(m)
+            except Exception:
+                pass
         return
 
-    # A Telegram turn whose reply was NOT sent for the listed chat(s).
-    blocked_before = os.path.exists(guard)
-    if not stop_active and not blocked_before:
-        # First Stop with an un-replied Telegram turn -> nudge the agent to reply
-        # properly via its own tool. Keep the placeholder so the re-entry path
-        # (PostToolUse) clears it when the reply finally goes out.
+    tok = token(sd)
+    answered = [p for p in pend if already_replied(str(p.get("chat_id")))]
+    unanswered = [p for p in pend if not already_replied(str(p.get("chat_id")))]
+
+    # Answered chats: the reply DID go out via the tool; the placeholder just
+    # wasn't cleared in time (race). Delete it silently — no fallback, no dupe.
+    if answered and tok:
+        for p in answered:
+            try:
+                api(tok, "deleteMessage",
+                    {"chat_id": p.get("chat_id"), "message_id": p.get("message_id")})
+            except Exception as e:
+                log(sd, f"[stop] answered-delete failed: {e}")
+
+    if not unanswered:
+        # Every pending chat was actually answered -> nothing to enforce.
+        for f in (path, guard):
+            try:
+                os.remove(f)
+            except Exception:
+                pass
+        clear_replied_markers()
+        log(sd, f"[enforce] all {len(pend)} placeholder(s) already answered, "
+                f"no fallback sid={sid}")
+        return
+
+    # A Telegram turn whose reply was NOT sent for the remaining chat(s).
+    #
+    # "First stop" vs "already nudged" must be decided ATOMICALLY, because this
+    # hook can run as two concurrent copies: the installer used to key its
+    # idempotency on the resolved interpreter path, so a python3 upgrade added a
+    # SECOND registration of the same script (2026-08-12 incident: every Stop ran
+    # /usr/bin/python3 and /usr/local/bin/python3 side by side).
+    #
+    # With the old exists()-then-create the twins split down two different
+    # branches: copy A saw no marker, wrote it and BLOCKED (nudging the agent to
+    # reply through its tool), while copy B saw the marker A had just written,
+    # concluded "already nudged" and delivered the raw transcript text. The agent
+    # then replied properly -> the user got the same answer twice. That is the
+    # duplicate-reply bug, and it hit every un-replied Telegram turn, the morning
+    # briefing included.
+    #
+    # O_EXCL makes exactly one copy the nudger. The loser must NOT fall through
+    # to delivery: a nudge is already in flight. A marker younger than
+    # TWIN_WINDOW_SEC can only belong to a twin in this same Stop (a genuine
+    # post-nudge Stop is a whole agent turn later), so that is the discriminator
+    # when the harness does not set stop_hook_active.
+    TWIN_WINDOW_SEC = 5
+    nudged = False
+    if not stop_active:
         try:
-            open(guard, "w").close()
+            fd = os.open(guard, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            os.close(fd)
+            nudged = True
+        except FileExistsError:
+            try:
+                age = time.time() - os.path.getmtime(guard)
+            except Exception:
+                age = TWIN_WINDOW_SEC  # unreadable -> treat as a real post-nudge
+            if age < TWIN_WINDOW_SEC:
+                # A twin copy owns the nudge for THIS stop. Stay silent; the
+                # agent is about to reply with its own tool.
+                log(sd, f"[enforce] twin stop hook, nudge already in flight sid={sid}")
+                return
         except Exception:
-            pass
-        chats = ", ".join(sorted({str(p.get("chat_id")) for p in pend}))
+            nudged = True  # marker unavailable -> prefer nudging over silence
+
+    if nudged:
+        # First Stop with a genuinely un-replied chat -> nudge the agent to reply
+        # via its own tool. Keep only the unanswered placeholder(s) pending.
+        if answered:
+            try:
+                json.dump(unanswered, open(path, "w"))
+            except Exception:
+                pass
+        chats = ", ".join(sorted({str(p.get("chat_id")) for p in unanswered}))
         log(sd, f"[enforce] blocking stop, no reply sent sid={sid} chats={chats}")
         print(json.dumps({"decision": "block", "reason": INSTRUCTION % chats}))
         return
 
     # Already nudged once (or loop guard tripped) and STILL no reply -> guaranteed
-    # fallback: deliver the agent's final answer to the chat, then clear.
+    # fallback: deliver the agent's final answer to the un-replied chat(s), clear.
     answer = last_assistant_text(transcript)
-    tok = token(sd)
     if tok:
         # One pending entry per inbound MESSAGE, not per chat: a batched delivery
         # (several messages from one chat in one turn) leaves several entries for
         # the same chat. The answer goes to each chat (and topic) ONCE; every
         # placeholder is still deleted (FALLBACKEGYSZER1019). A failed send does
         # not count as sent, so the next entry of that chat retries it.
+        #
+        # `sent` is per-PROCESS, and that is the half this hook cannot rely on
+        # alone: a Stop hook registered under two interpreter paths runs as two
+        # copies at once, each with its own empty `sent`. claim_send is the
+        # cross-process half -- an O_EXCL marker only one copy can create.
         sent = set()
-        for p in pend:
+        for p in unanswered:
             cid, mid = p.get("chat_id"), p.get("message_id")
             topic = topic_of(p)
             dest = (str(cid), topic.get("message_thread_id"))
-            if answer and dest not in sent:
+            if answer and dest not in sent and claim_send(str(mid)):
                 try:
                     api(tok, "sendMessage", {"chat_id": cid, "text": answer[:4000], **topic})
                     sent.add(dest)
@@ -203,7 +331,8 @@ def main():
             os.remove(f)
         except Exception:
             pass
-    log(sd, f"[enforce] fallback-delivered={bool(answer)} cleared {len(pend)} "
+    clear_replied_markers()
+    log(sd, f"[enforce] fallback-delivered={bool(answer)} cleared {len(unanswered)} "
             f"placeholder(s) sid={sid}")
 
 

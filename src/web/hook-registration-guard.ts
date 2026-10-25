@@ -35,6 +35,10 @@ export const KNOWN_HOOK_SCRIPTS: readonly string[] = [
   'self-pace-gate.mjs',
   'telegram_progress.py',
   'telegram_progress_clear.py',
+  // Was missing until 2026-08-12, which is why the duplicate-registration
+  // self-heal initially skipped it: seven fleet agents kept a doubled
+  // PostToolUse entry that neither prune nor dedupe could see.
+  'telegram_progress_reply_clear.py',
   'telegram_progress_watchdog.py',
   // The Slack counterpart: the three settings hooks are repo-shipped in
   // .claude/settings.json (#1305); the watchdog comes from
@@ -226,10 +230,88 @@ export function pruneStaleHookEntries(
   return { changed: removed.length > 0, removed }
 }
 
-// File-level wrapper: parse a settings.json, prune stale entries, and write it
-// back atomically when anything changed. Unparseable or missing files are left
-// untouched (never destroy a user's settings on a parse error). Returns the
-// pruned command strings for logging.
+// Self-heal #2: collapse DUPLICATE registrations of the same hook script within
+// one event, keeping the first.
+//
+// Incident (2026-08-12): the telegram-progress installer keyed its idempotency
+// on the full command string, interpreter included. When `command -v python3`
+// started resolving to a Homebrew build instead of /usr/bin/python3, the check
+// no longer recognised its own entry and appended a SECOND registration of the
+// same script. Every event then ran two copies concurrently -- and for the Stop
+// hook the twins raced: one nudged the agent to reply, the other decided the
+// nudge had already happened and delivered the transcript text itself, so every
+// un-replied Telegram answer reached the user TWICE.
+//
+// The installer no longer creates duplicates, but any settings.json already
+// carrying a pair (every fleet agent's, at the time of the incident) needs to be
+// repaired, and nothing else in the app would notice: pruneStaleHookEntries only
+// removes entries whose FILE is gone, and both copies point at a file that very
+// much exists. Only our own known hook scripts are considered; foreign entries
+// and legitimately repeated commands are never touched.
+export function dedupeHookEntries(
+  settings: Record<string, unknown>,
+  opts: { knownScripts?: readonly string[] } = {},
+): PruneResult {
+  const knownScripts = opts.knownScripts ?? KNOWN_HOOK_SCRIPTS
+  const removed: string[] = []
+  const hooks = settings.hooks
+  if (!hooks || typeof hooks !== 'object' || Array.isArray(hooks)) return { changed: false, removed }
+  const hooksRecord = hooks as Record<string, unknown>
+
+  for (const [event, groups] of Object.entries(hooksRecord)) {
+    if (!Array.isArray(groups)) continue
+    // Scripts already registered under this event. Keyed by script BASENAME, so
+    // the same hook wired through two different interpreters (or two absolute
+    // paths) still collapses to one.
+    const seen = new Set<string>()
+    const keptGroups: HookGroup[] = []
+    let eventChanged = false
+    for (const group of groups as HookGroup[]) {
+      if (!group || typeof group !== 'object' || !Array.isArray(group.hooks)) {
+        keptGroups.push(group)
+        continue
+      }
+      const keptHooks = group.hooks.filter((h) => {
+        if (!h || typeof h !== 'object' || h.type !== 'command' || typeof h.command !== 'string') return true
+        const scripts = ourScriptPaths(h.command, knownScripts)
+          .map((p) => normalizeSeparators(p).slice(normalizeSeparators(p).lastIndexOf('/') + 1))
+          .filter((b) => knownScripts.includes(b))
+        if (scripts.length === 0) return true // foreign entry: never touch
+        // A group-scoped matcher makes the same script under a different matcher
+        // a distinct registration, not a duplicate.
+        // The separator is written as an ESCAPE, not as a literal NUL byte.
+        // With a raw \0 in the source, git/diff classify this file as BINARY:
+        // the local-fixes patch round-trip truncated the line at the NUL and
+        // shipped an unterminated template literal, so `npm run build` failed
+        // and the whole install stayed on the previous dist (2026-09-17).
+        // Same value at runtime, plain text on disk.
+        const key = `${group.matcher ?? ''}\u0000${scripts.join(',')}`
+        if (seen.has(key)) {
+          removed.push(h.command)
+          return false
+        }
+        seen.add(key)
+        return true
+      })
+      if (keptHooks.length !== group.hooks.length) {
+        eventChanged = true
+        if (keptHooks.length > 0) keptGroups.push({ ...group, hooks: keptHooks })
+      } else {
+        keptGroups.push(group)
+      }
+    }
+    if (eventChanged) {
+      if (keptGroups.length > 0) hooksRecord[event] = keptGroups
+      else delete hooksRecord[event]
+    }
+  }
+  return { changed: removed.length > 0, removed }
+}
+
+// File-level wrapper: parse a settings.json, prune stale entries AND collapse
+// duplicate registrations, then write it back atomically when anything changed.
+// Unparseable or missing files are left untouched (never destroy a user's
+// settings on a parse error). Returns the removed command strings for logging.
 export function pruneStaleHooksFromSettingsFile(settingsPath: string): string[] {
   if (!existsSync(settingsPath)) return []
   let settings: Record<string, unknown>
@@ -239,7 +321,10 @@ export function pruneStaleHooksFromSettingsFile(settingsPath: string): string[] 
     return []
   }
   if (!settings || typeof settings !== 'object') return []
-  const { changed, removed } = pruneStaleHookEntries(settings, { fileExists: existsSync })
-  if (changed) atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
-  return removed
+  const stale = pruneStaleHookEntries(settings, { fileExists: existsSync })
+  const dupes = dedupeHookEntries(settings)
+  if (stale.changed || dupes.changed) {
+    atomicWriteFileSync(settingsPath, JSON.stringify(settings, null, 2))
+  }
+  return [...stale.removed, ...dupes.removed]
 }

@@ -77,9 +77,57 @@ function tailOf(pane: string, n: number): string {
 // mode, plain captures, unit fixtures) keep the tail heuristic.
 const BOX_BORDER_RX = /─{10,}/
 
+// The `top - 1` narrowing above was too tight, and it cost us a 40-day outage.
+//
+// itzhakstern 2026-09-09: the token expired, so Claude Code answered EVERY
+// incoming prompt with "Login expired · Please run /login" -- but the live
+// status line kept showing an ordinary context readout (`~158k uncached`),
+// because the session itself was alive and only the API calls were rejected.
+// The refusal sat 4 lines above the box top (marker, `✻ Worked for 0s`, a blank
+// line), so the one-line window never saw it. The healer ran, inspected the
+// agent, and reported nothing wrong for 40 days.
+//
+// So the region has to reach back over the last transcript lines. Bounded, and
+// well under the ~20-line gap the scrollback fixtures rely on, so an agent that
+// merely DISCUSSES these markers higher up still does not badge.
+const TRANSCRIPT_LOOKBACK = 10
+
+// What makes the wider window safe is this, not the narrow region: proof that a
+// login round-trip completed AFTER the failure.
+//
+// That is the actual difference between the two panes we keep confusing. Devy
+// 2026-07-12 (recovered): stale refusal, then `/login`, then "Login successful".
+// Itzhak 2026-09-09 (broken): the refusal, and nothing after it but a spinner.
+// Position alone never distinguished them -- recovery does.
+//
+// Kept deliberately NARROW to one explicit string. The tempting generalisation
+// is "any later tool output means the session works", but Itzhak's pane HAS
+// later output (`Worked for 0s`) while being completely dead: every prompt was
+// refused. A loose recovery signal would re-create exactly the blindness this
+// change removes, so a new entry here needs a captured pane behind it.
+//
+// ANCHORED to the tool-result prefix, and that anchor is the load-bearing part
+// (review 2026-09-23). A bare /Login successful/i is a suppressor: anything in
+// the lookback window that merely CONTAINS the phrase -- an agent narrating
+// this very fix, a healer alert quoted back, a review comment -- silently
+// cancels a real badge. This file has already been bitten twice by exactly that
+// (2026-06-03 reviewer's own pane, 2026-07-13 escalation self-loop), and both
+// times the marker side was hardened while the recovery side stayed prose.
+//
+// Claude Code renders a completed /login as a tool result, so every captured
+// recovery line we have carries the `⎿` prefix; narration never does.
+//
+// The trade-off is deliberate and asymmetric: if some future pane renders
+// recovery WITHOUT the prefix, we badge an agent that already healed -- noisy,
+// visible, self-correcting on the next capture. Unanchored, the failure is a
+// dead agent nobody hears about, which is the 40-day outage this change exists
+// to end. Prefer the false alarm.
+const RECOVERY_RX = /⎿\s*Login successful/i
+
 /**
- * The live status region: the status line + the input box + the hint lines
- * under it. Returns null when the pane has no input box to anchor on.
+ * The live status region: the last transcript lines + the status line + the
+ * input box + the hint lines under it. Returns null when the pane has no input
+ * box to anchor on.
  */
 function liveStatusRegion(pane: string): string | null {
   const lines = pane.split('\n')
@@ -89,7 +137,28 @@ function liveStatusRegion(pane: string): string | null {
   }
   if (borders.length < 2) return null
   const top = Math.min(borders[0], borders[1])
-  return lines.slice(Math.max(0, top - 1)).join('\n')
+  return lines.slice(Math.max(0, top - 1 - TRANSCRIPT_LOOKBACK)).join('\n')
+}
+
+// Bounded above by TRANSCRIPT_LOOKBACK, so a refusal that has scrolled further
+// than that is still invisible. 10 covers the one pane we actually captured
+// (distance 4) with margin, and stays under the ~20-line gap the scrollback
+// fixtures rely on. It is a heuristic pending a real capture, NOT a settled
+// constant: a marker at distance 11-19 would be missed today.
+
+/**
+ * Index of the LAST line matching `rx`, or -1.
+ *
+ * Line granularity, which relies on an invariant worth stating: in every pane
+ * captured so far each auth marker and each recovery line sits alone on its own
+ * line. If a future marker can share a line with a recovery string, ordering
+ * within that line becomes invisible here and this needs character offsets.
+ */
+function lastLineMatching(lines: string[], rx: RegExp): number {
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (rx.test(lines[i])) return i
+  }
+  return -1
 }
 
 /**
@@ -105,6 +174,25 @@ export function detectReauthNeeded(pane: string | null | undefined): ReauthState
   if (!pane) return { needsReauth: false }
   const region = liveStatusRegion(pane) ?? tailOf(pane, TAIL_LINES)
   if (ESCALATION_QUOTE_MARKERS.some((rx) => rx.test(region))) return { needsReauth: false }
+
+  const lines = region.split('\n')
+
+  // Where the newest auth complaint sits, across ALL markers -- not just the
+  // first one that happens to match. Devy's stale line carries two of them
+  // ("Not logged in" and "Please run /login"); judging recovery against only
+  // the first would be arbitrary.
+  let lastFailure = -1
+  for (const m of REAUTH_MARKERS) {
+    lastFailure = Math.max(lastFailure, lastLineMatching(lines, m.rx))
+  }
+  if (lastFailure < 0) return { needsReauth: false }
+
+  // A completed login AFTER the newest complaint means the agent already healed
+  // itself; the complaint is scrollback. Before the complaint it means nothing.
+  if (lastLineMatching(lines, RECOVERY_RX) > lastFailure) return { needsReauth: false }
+
+  // Reason still comes from the most-specific-first ordering, not from position,
+  // so the text surfaced to the owner does not change with pane layout.
   for (const m of REAUTH_MARKERS) {
     if (m.rx.test(region)) return { needsReauth: true, reason: m.reason }
   }

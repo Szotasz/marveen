@@ -95,27 +95,42 @@ def _token(state_dir):
     return m.group(1).strip().strip('"').strip("'")
 
 
-def _whisper(path, words=False):
-    # ADDITIV (2026-09-12): a words=False ag VALTOZATLAN -- a stt.sh es a canary erre epul, es a
-    # repetition-teszt a stdoutjat kapja el. A words=True ag KULON kimenet (JSON), uj hivoknak:
-    # a vagas-hatar ellenorzeshez SZO-SZINTU `end` ido kell, amit a szoveges alak nem hordoz.
-    from faster_whisper import WhisperModel
-    # Model size is configurable: 'medium' is noticeably better than 'small' on
-    # Hungarian accents/diacritics, at a cost in latency and memory. Default
-    # stays 'small'; set MARVEEN_WHISPER_MODEL=medium to trade speed for accuracy.
-    m = WhisperModel(_whisper_model_name(), device="cpu", compute_type="int8")
-    segs, _ = m.transcribe(path, language="hu", beam_size=5, condition_on_previous_text=False,
-                           word_timestamps=words)
-    segs = list(segs)
-    if not words:
-        print(" ".join(s.text.strip() for s in segs).strip())
-        return
-    out = []
-    for s_ in segs:
-        for w in (getattr(s_, "words", None) or []):
-            out.append({"word": w.word.strip(), "start": round(w.start, 3), "end": round(w.end, 3)})
-    print(json.dumps({"text": " ".join(s_.text.strip() for s_ in segs).strip(), "words": out},
-                     ensure_ascii=False))
+# whisper.cpp (local, prebuilt for macOS 12 x86_64). faster-whisper has no wheel
+# for this old platform, so the fleet STT runs the whisper.cpp CLI instead. Paths
+# are env-overridable so other installs can point at their own binary/model.
+WHISPER_CLI = os.environ.get("WHISPER_CLI", os.path.expanduser("~/.local/bin/whisper-cli"))
+WHISPER_MODEL = os.environ.get("WHISPER_MODEL",
+                               os.path.expanduser("~/.local/src/whisper.cpp/models/ggml-small.bin"))
+# The dashboard runs _vtools.py under the venv python whose PATH may not include
+# ~/.local/bin, so resolve ffmpeg to an absolute path (env override, then PATH,
+# then the known install location) instead of relying on a bare "ffmpeg".
+import shutil
+FFMPEG = os.environ.get("FFMPEG") or shutil.which("ffmpeg") or os.path.expanduser("~/.local/bin/ffmpeg")
+
+
+def _whisper(path):
+    """Transcribe an audio file (Hungarian) with whisper.cpp and return the text.
+    whisper.cpp wants 16kHz mono WAV, so convert first (ffmpeg decodes ogg/opus)."""
+    fd, wav = tempfile.mkstemp(suffix=".wav")
+    os.close(fd)
+    try:
+        subprocess.run([FFMPEG, "-hide_banner", "-loglevel", "error", "-y",
+                        "-i", path, "-ar", "16000", "-ac", "1", wav], check=True)
+        # -mc 0 is this build's equivalent of faster-whisper's
+        # condition_on_previous_text=False / whisper.cpp's -nc (absent here):
+        # zero text-context tokens are carried between segments, so a silent or
+        # noisy tail cannot feed the model its own previous output and loop on
+        # one phrase (VOICEWHISPER910, upstream #1268 -- fixed there for the
+        # faster-whisper path only, which this install cannot run).
+        r = subprocess.run([WHISPER_CLI, "-m", WHISPER_MODEL, "-f", wav,
+                            "-l", "hu", "-nt", "-mc", "0"],
+                           capture_output=True, text=True, check=True)
+        return r.stdout.strip()
+    finally:
+        try:
+            os.unlink(wav)
+        except OSError:
+            pass
 
 
 def transcribe(file_id, state_dir):
@@ -123,7 +138,7 @@ def transcribe(file_id, state_dir):
     # plugin's download_attachment tool hands back a PATH, and feeding that to getFile as
     # a file_id fails with HTTP 400 (hit live 2026-07-27).
     if os.path.isfile(file_id):
-        _whisper(file_id)
+        print(_whisper(file_id))
         return
     token = _token(state_dir)
     d = json.load(urllib.request.urlopen(
@@ -134,7 +149,7 @@ def transcribe(file_id, state_dir):
     os.close(fd)
     try:
         urllib.request.urlretrieve(f"https://api.telegram.org/file/bot{token}/{fp}", out)
-        _whisper(out)
+        print(_whisper(out))
     finally:
         try:
             os.unlink(out)
@@ -460,10 +475,7 @@ def canary(voice_onnx, expected_text):
         subprocess.run([VENV_PY, "-m", "piper", "-m", voice_onnx, "-f", wav],
                        input=expected_text.encode(), check=True,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        from faster_whisper import WhisperModel
-        m = WhisperModel(_whisper_model_name(), device="cpu", compute_type="int8")
-        segs, _ = m.transcribe(wav, language="hu", beam_size=5, condition_on_previous_text=False)
-        transcript = " ".join(s.text.strip() for s in segs).strip()
+        transcript = _whisper(wav)
         exp_words = _normalize(expected_text).split()
         got_words = set(_normalize(transcript).split())
         common = sum(1 for w in exp_words if w in got_words)
@@ -488,7 +500,12 @@ if __name__ == "__main__":
     elif cmd == "transcribe-words":
         # Lokalis fajl -> JSON szo-szintu idokkel. Telegram file_id-t NEM fogad: a hivoi (pl. a
         # vagas-hatar verify) maguk vagjak ki a klipet ffmpeg-gel.
-        _whisper(sys.argv[2], words=True)
+        # Upstream's word-level JSON comes from faster-whisper (word_timestamps=True),
+        # which has no wheel for this platform -- the local transcriber is the
+        # whisper.cpp CLI. No caller in the repo uses this subcommand; fail loudly
+        # rather than crash on an unsupported keyword argument.
+        sys.exit("transcribe-words: nem tamogatott ezen a gepen (faster-whisper nincs; "
+                 "a helyi atirat a whisper.cpp CLI-vel megy, szo-szintu idok nelkul)")
     elif cmd == "canary":
         canary(sys.argv[2], " ".join(sys.argv[3:]))
     else:

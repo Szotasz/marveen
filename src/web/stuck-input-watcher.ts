@@ -1,7 +1,7 @@
 import { logger } from '../logger.js'
 import { MAIN_AGENT_ID } from '../config.js'
 import { listAgentNames, readAgentRemoteHost } from './agent-config.js'
-import { isAgentRunning, captureParkedInputView, sendEnterToSession, capturePane } from './agent-process.js'
+import { isAgentRunning, captureParkedInputView, sendEnterToSession, capturePane, restartAgentProcess } from './agent-process.js'
 import { resolveAgentSession } from './channel-mcp-reconnect.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { recoverStuckInputForSession, sendAlert } from './channel-monitor.js'
@@ -9,7 +9,9 @@ import {
   stuckInputSignature,
   parkedPasteSignature,
   decideStuckInputRecovery,
+  decideSubAgentWedgeRestart,
   detectPaneState,
+  parkedInputHasRemedy,
   type PaneState,
   type StuckInputState,
   type StuckInputThresholds,
@@ -27,7 +29,10 @@ export function parkedGiveUpAlertText(label: string, isMain: boolean): string {
   if (isMain) {
     return `${head} Valószínűleg kézi restart kell: a dashboardon a restart gomb (foglalt panelnél rákérdez, és megerősítés után kényszerítve indít), vagy POST /api/marveen/restart {"force": true}. A kényszerített restart megszakítja a futó kört.`
   }
-  return `${head} Valószínűleg kézi restart kell: POST /api/agents/${label}/restart vagy a dashboardon.`
+  // A sub-agent also has the automatic wedge escalation below, so say that the
+  // manual route is the fallback, not the only way out -- otherwise the restart
+  // that lands ~WEDGE_GRACE_MS later reads as something nobody asked for.
+  return `${head} Valószínűleg kézi restart kell: POST /api/agents/${label}/restart vagy a dashboardon. Ha ${Math.round(WEDGE_GRACE_MS / 60_000)} percen belül nem oldódik fel, magamtól is megkísérlem az újraindítást.`
 }
 
 // RIASZTASZAJ819: the owner alert for a parked-past-max-attempts sub-agent
@@ -130,6 +135,104 @@ const watchState = new Map<string, StuckInputState>()
 // open and are dropped with it, so a NEW spell on the same session alerts
 // again. Not persisted -- a dashboard restart may re-alert once, acceptable.
 const alertedSpells = new Set<string>()
+
+// --- Sub-agent no-remedy wedge escalation (2026-08-13 designer/Frida) ---
+//
+// Before this, a local sub-agent that exhausted soft recovery got ONE alert and
+// then stayed mute forever (designer: 4 days across a dashboard restart). This
+// is the sub-agent counterpart of channel-monitor's maybeRestartWedgedMainChannel.
+// The pure gate lives in pane-state (decideSubAgentWedgeRestart); everything
+// here is I/O + the per-session bookkeeping.
+//
+// The grace window is deliberately long: it is what stands in for MAIN's
+// machineOrigin guard (unavailable here -- see the pane-state comment), so it
+// must stay far longer than any plausible human pause mid-composition.
+const WEDGE_GRACE_MS = 10 * 60 * 1000
+const WEDGE_RESTART_MIN_INTERVAL_MS = 20 * 60 * 1000
+const WEDGE_RESTART_MAX_CONSECUTIVE = 2
+
+// Age clock for the CURRENT parked text. Reset whenever the text changes (a new
+// spell is not the old one) and dropped when the box clears.
+const wedgeAge = new Map<string, { sig: string; firstSeenAt: number }>()
+// Restart bookkeeping. Mirrors MAIN: the consecutive-restart COUNT resets as
+// soon as the box clears (a successful restart is not penalised), but
+// lastRestartAt PERSISTS across that reset -- otherwise the post-restart empty
+// box would erase the rate limit and a re-wedge could restart immediately.
+const wedgeRestarts = new Map<string, { lastRestartAt: number; count: number }>()
+
+export function resetSubAgentWedgeState(session?: string): void {
+  if (session == null) { wedgeAge.clear(); wedgeRestarts.clear(); return }
+  wedgeAge.delete(session)
+  wedgeRestarts.delete(session)
+}
+
+// Escalate a LOCAL sub-agent that soft recovery has given up on. Runs only
+// after checkLocalSession has spent its whole attempts budget, so the extra
+// pane captures here cost nothing on a healthy fleet.
+async function maybeRestartWedgedSubAgent(label: string, session: string, state: StuckInputState): Promise<void> {
+  const now = Date.now()
+  const book = wedgeRestarts.get(session) ?? { lastRestartAt: 0, count: 0 }
+
+  if (state.parkedSig === null) {
+    // Box clear -> spell over. Drop the age clock and forgive the count, but
+    // KEEP lastRestartAt so the rate limit survives a restart.
+    wedgeAge.delete(session)
+    if (book.count !== 0) wedgeRestarts.set(session, { ...book, count: 0 })
+    return
+  }
+
+  const age = wedgeAge.get(session)
+  const clock = age != null && age.sig === state.parkedSig ? age : { sig: state.parkedSig, firstSeenAt: now }
+  wedgeAge.set(session, clock)
+
+  // Cheap exit before any tmux capture: soft recovery still has budget left.
+  if (state.attempts < LOCAL_FAST_THRESHOLDS.maxAttempts) return
+
+  const paneContent = capturePane(session)
+  const paneState = paneContent != null ? detectPaneState(paneContent) : null
+  const parkedView = captureParkedInputView(session)
+  // Unreadable pane -> assume a remedy exists (fail SAFE = do not restart).
+  const softRemedy = parkedView == null || parkedInputHasRemedy(parkedView, true)
+
+  const action = decideSubAgentWedgeRestart({
+    parked: true,
+    attempts: state.attempts,
+    maxAttempts: LOCAL_FAST_THRESHOLDS.maxAttempts,
+    softRemedy,
+    paneState,
+    wedgeAgeMs: now - clock.firstSeenAt,
+    graceMs: WEDGE_GRACE_MS,
+    now,
+    lastRestartAt: book.lastRestartAt,
+    restartCount: book.count,
+    minIntervalMs: WEDGE_RESTART_MIN_INTERVAL_MS,
+    maxConsecutive: WEDGE_RESTART_MAX_CONSECUTIVE,
+  })
+
+  if (action === 'skip') return
+
+  if (action === 'alert') {
+    logger.error({ label, session, restarts: book.count }, 'Sub-agent wedge survived every automatic restart -- manual intervention needed')
+    sendAlert(`⛔ A(z) ${label} agens bemenete beragadt es ${WEDGE_RESTART_MAX_CONSECUTIVE} automatikus ujrainditas sem szabaditotta ki. Kezi beavatkozas kell.`)
+    wedgeRestarts.set(session, { ...book, count: book.count + 1 }) // tick past the cap: alert once
+    return
+  }
+
+  logger.warn(
+    { label, session, attempts: state.attempts, wedgeMinutes: Math.round((now - clock.firstSeenAt) / 60_000), restart: book.count + 1 },
+    'Sub-agent input wedged with no soft remedy -- escalating to a restart (the parked fragment is unsubmittable and is lost)',
+  )
+  const r = await restartAgentProcess(label)
+  wedgeRestarts.set(session, { lastRestartAt: now, count: r.ok ? book.count + 1 : book.count })
+  if (r.ok) {
+    // Re-evaluate the fresh pane cleanly on the next tick.
+    watchState.delete(session)
+    wedgeAge.delete(session)
+    sendAlert(`♻️ A(z) ${label} agens bemenete beragadt es magatol nem oldodott fel, ezert ujrainditottam. A beragadt uzenet elveszett, ha fontos volt, kuldd ujra.`)
+  } else {
+    logger.error({ label, session, err: r.error }, 'Sub-agent wedge restart failed')
+  }
+}
 
 // Backstop for a PARKED `[Pasted text #N]` placeholder -- a long inbound prompt
 // (e.g. a scheduled-task notice > ~700 chars) the TUI collapsed into a paste
@@ -266,13 +369,24 @@ async function checkLocalSession(label: string, session: string, alertOnGiveUp: 
         paneState,
       })) {
         alertedSpells.add(session)
-        logger.warn({ label, session, paneState }, 'stuck-input-watcher: sub-agent input still parked after max recovery attempts at a non-busy pane, alerting for manual restart')
+        logger.warn({ label, session, paneState }, 'stuck-input-watcher: sub-agent input still parked after max recovery attempts at a non-busy pane, alerting before the wedge restart')
         sendAlert(parkedGiveUpAlertText(label, session === MAIN_CHANNELS_SESSION))
       } else if (paneState === 'busy' && prev.attempts < LOCAL_FAST_THRESHOLDS.maxAttempts) {
         // Once per spell, at the crossing tick: say WHY no alert went out, so
         // a real wedge investigation finds the suppression instead of a hole.
         logger.info({ label, session }, 'stuck-input-watcher: parked past max attempts but the pane is BUSY -- input is waiting out the turn, owner alert suppressed until an idle tick (RIASZTASZAJ819)')
       }
+    }
+  }
+
+  // alertOnGiveUp marks the LOCAL SUB-AGENT path (MAIN passes false and keeps
+  // its own escalation in channel-monitor). Runs on both branches so a cleared
+  // box also ends the wedge spell.
+  if (alertOnGiveUp) {
+    try {
+      await maybeRestartWedgedSubAgent(label, session, next)
+    } catch (err) {
+      logger.warn({ err, label, session }, 'Sub-agent wedge escalation failed')
     }
   }
 }
@@ -302,7 +416,11 @@ export function startStuckInputWatcher(): NodeJS.Timeout {
     }
     for (const name of listAgentNames()) {
       if (!isAgentRunning(name)) {
-        watchState.delete(resolveAgentSession(name))
+        const stopped = resolveAgentSession(name)
+        watchState.delete(stopped)
+        // A stopped agent has no wedge; drop the age clock but KEEP the restart
+        // book, so a restart-loop cannot be laundered through a stop/start.
+        wedgeAge.delete(stopped)
         continue
       }
       const session = resolveAgentSession(name)
