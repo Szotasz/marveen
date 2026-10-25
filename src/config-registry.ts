@@ -94,6 +94,23 @@ export interface SettingDefinition {
 
 const HEX_COLOR_RE = /^#[0-9a-fA-F]{6}$/
 
+// A '' (off) or exactly one plain e-mail address, e.g. the owner's copy address.
+const SINGLE_EMAIL_RE = /^[^\s@<>,;:"'()[\]]+@[^\s@<>,;:"'()[\]]+\.[^\s@<>,;:"'()[\]]+$/
+function validOptionalEmail(v: string): string | null {
+  const t = v.trim()
+  if (t === '') return null
+  return SINGLE_EMAIL_RE.test(t) ? null : 'Egyetlen e-mail-cím vagy üres érték szükséges.'
+}
+
+// A security switch loosens when it moves DOWN this order (index 0 = the loosest value).
+function rankDrops(order: string[]) {
+  return (oldValue: string, newValue: string): boolean => {
+    const o = order.indexOf(oldValue.trim())
+    const n = order.indexOf(newValue.trim())
+    return o !== -1 && (n === -1 || n < o)
+  }
+}
+
 // A '' (use the default) or a number in [0, 1], e.g. a cosine-similarity threshold.
 function validUnitFraction(v: string): string | null {
   const t = v.trim()
@@ -987,6 +1004,88 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     module: 'claude-plans',
     secret: false,
     requiresRestart: false,
+  },
+  // --- Security module (the Biztonság tab) ---
+  // Every default is the shipped gate behaviour, so an install that never opens the tab is
+  // unchanged. Each entry declares `loosens`: a fleet-token caller (any agent) can tighten a gate
+  // but only an owner session can loosen one. The hooks read these keys through
+  // scripts/lib/security-settings.mjs and scripts/hooks/security_settings.py (override > .env >
+  // default, the same order as this store).
+  {
+    key: 'SECURITY_BASH_EXTERNAL',
+    type: 'boolean',
+    default: '0',
+    description: 'Külső hoszt a sub-agentek Bash curl/wget hívásaiból. Kikapcsolva (alapértelmezés) a kapuk a mostani módon döntenek (BASH_EGRESS_HOST_ALLOW és a vendor-lista). Bekapcsolva a "Bash(curl *https://*)" és "Bash(wget *)" deny-sorok lekerülnek, és a bash-egress-parser hook bármely külső hosztot átenged. Az nc/ncat/telnet tiltás és az alap tiltólista mindkét állásban marad. A deny-sorok az ágens következő indításakor változnak, a hook azonnal.',
+    module: 'security',
+    secret: false,
+    requiresRestart: true,
+    loosens: (oldValue, newValue) => oldValue.trim() !== '1' && newValue.trim() === '1',
+  },
+  {
+    key: 'SECURITY_QUARANTINE_POSTURE',
+    type: 'string',
+    default: 'allowlist',
+    valueSet: ['allowlist', 'denylist'],
+    description: 'A quarantine-reader WebFetch-szabálya. allowlist = csak az engedélylistás domainek; denylist = minden nyilvános oldal, a belső hálózat tiltva marad. Amíg itt nincs mentve, a store/egress-allowlist.json quarantine_reader_posture mezője dönt (a meglévő telepítés nem változik). Azonnal hat.',
+    module: 'security',
+    secret: false,
+    requiresRestart: false,
+    loosens: rankDrops(['denylist', 'allowlist']),
+  },
+  {
+    key: 'MAIL_OWNER_CC',
+    type: 'string',
+    default: '',
+    validate: (v) => validOptionalEmail(v),
+    description: 'A gazda másolat-címe: ha be van állítva, a fő ágens levele és piszkozata csak akkor mehet ki, ha ez a cím a címzettek vagy a CC között van (minden email_send szinten). Üresen (alapértelmezés) a kapu ki van kapcsolva. Azonnal hat.',
+    module: 'security',
+    secret: false,
+    requiresRestart: false,
+    // Clearing it switches the check off; changing it sends the owner's copy elsewhere.
+    loosens: (oldValue, newValue) => oldValue.trim() !== '' && newValue.trim().toLowerCase() !== oldValue.trim().toLowerCase(),
+  },
+  {
+    key: 'SECURITY_COPY_GATE_MODE',
+    type: 'string',
+    default: 'block',
+    valueSet: ['block', 'warn'],
+    description: 'A kimenő szöveg kapuja (ékezet, gondolatjel, név- és formázási szabályok). block = a hibás szöveg nem mehet ki; warn = kimegy, a talált hibákról figyelmeztetés jön. A vizsgálhatatlan küldés és a vegyes írásrendszerű szó (homoglifa) mindkét módban tiltva marad. Azonnal hat.',
+    module: 'security',
+    secret: false,
+    requiresRestart: false,
+    loosens: rankDrops(['warn', 'block']),
+  },
+  {
+    key: 'SECURITY_RECIPIENT_LEDGER_MODE',
+    type: 'string',
+    default: 'block',
+    valueSet: ['block', 'warn'],
+    description: 'A sub-agentek levélkapujának címzett-ellenőrzése (store/verified-recipients.json). block = forrás nélküli cím nem kerülhet piszkozatba; warn = a piszkozat elkészül, az ismeretlen címekről figyelmeztetés jön. A küldés tiltása és minden más ok mindkét módban marad. Azonnal hat.',
+    module: 'security',
+    secret: false,
+    requiresRestart: false,
+    loosens: rankDrops(['warn', 'block']),
+  },
+  {
+    key: 'SECURITY_CREDENTIAL_GATE',
+    type: 'string',
+    default: 'off',
+    valueSet: ['off', 'warn', 'block'],
+    description: 'Jelszó-kapu a sub-agentek leveleire (jelszó, PIN, wifi-kulcs a levélben, docs/credential-gate.md). off = csak az a sub-agent kapja, akinek a biztonsági profilja kéri (alapértelmezés); warn = minden sub-agent, figyelmeztet; block = minden sub-agent, tilt. A bekötés az ágens következő indításakor változik; a kikapcsolás nem veszi le a már bekötött hookot.',
+    module: 'security',
+    secret: false,
+    requiresRestart: true,
+    loosens: rankDrops(['off', 'warn', 'block']),
+  },
+  {
+    key: 'SECURITY_DESTRUCTIVE_GATE',
+    type: 'boolean',
+    default: '0',
+    description: 'Destruktív-kapu minden sub-agentre (rm/mv a munkakönyvtáron kívül, sudo, hitelesítő-fájl olvasása, force push). Kikapcsolva (alapértelmezés) csak az a sub-agent kapja, akinek a biztonsági profilja kéri. A bekötés az ágens következő indításakor változik; a kikapcsolás nem veszi le a már bekötött hookot.',
+    module: 'security',
+    secret: false,
+    requiresRestart: true,
+    loosens: (oldValue, newValue) => oldValue.trim() === '1' && newValue.trim() !== '1',
   },
 ]
 

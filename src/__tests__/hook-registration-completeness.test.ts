@@ -74,6 +74,8 @@ const EXEMPT: Record<string, string> = {
     'sender-side check, run by scripts/support-mail/send.py (import) and scripts/graph-mail.ts (CLI) before they deliver; not a PreToolUse hook',
   'credential_lib.py':
     'shared library: the credential detector and state, imported by credential-gate.py and scripts/credential-gate-cli.py (CREDGATE1003); not itself a hook',
+  'security_settings.py':
+    'shared library: the Settings > Security switch reader, loaded by path by outgoing-copy-gate.py, email-approval-gate.py and credential_lib.py; not itself a hook',
   'memory-save.sh':
     'legacy: referenced only by a historical rebuild prompt, wired nowhere; kept pending a maintainer decision to remove it',
   'telegram-ack.py':
