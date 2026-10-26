@@ -69,9 +69,9 @@ vi.mock('../db.js', () => ({
   createAgentMessage: (...a: unknown[]) => mockCreateAgentMessage(...(a as [])),
 }))
 
-// channelStateDir and readTeamsCreds stay REAL: the notifyTaskTargetOfStall
-// cases pin the state directory and the .env candidate list the runner builds
-// (readTeamsCreds itself is injected there). Only the provider's own
+// channelStateDir and readTeamsCreds stay REAL: the stage-1 cases go through
+// them, while the notifyTaskTargetOfStall cases inject readTeamsCreds to pin
+// the state directory and the .env candidate list the runner builds. Only the provider's own
 // sends are neutralized, as in schedule-runner-retry-missing.test.ts.
 vi.mock('../channel-provider.js', async (importOriginal) => {
   const real = await importOriginal<typeof import('../channel-provider.js')>()
