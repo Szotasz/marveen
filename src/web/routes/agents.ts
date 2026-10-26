@@ -2478,18 +2478,16 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
   // before the generic /api/agents/:name GET further down, or "export-all"
   // would be read as an agent name.
   if (path === '/api/agents/export-all' && method === 'GET') {
-    const names = listAgentNames().filter((n) => n !== MAIN_AGENT_ID)
-    if (names.length === 0) { json(res, { error: 'No agents to export' }, 404); return true }
     const includeSecrets = /[?&]secrets=(1|true)\b/.test(req.url || '')
     const work = mkdtempSync(join(tmpdir(), 'marveen-fleet-dl-'))
     const outPath = join(work, fleetBundleFilename())
     try {
       // The tar reads every agent's skills: it waits on the skills directory queue, like the fleet export.
       const data = await serializeSkillsDir(() => {
-        // An agent deleted while this export waited on the queue is left out.
-        const present = names.filter((n) => existsSync(agentDir(n)))
-        if (present.length === 0) return null
-        exportAllAgentsBundle(outPath, present, {
+        // Listed on the queue: the bundle holds the agents the operations queued before it left.
+        const names = listAgentNames().filter((n) => n !== MAIN_AGENT_ID)
+        if (names.length === 0) return null
+        exportAllAgentsBundle(outPath, names, {
           includeSecrets,
           exportedBy: MAIN_AGENT_ID,
           exportedAt: new Date().toISOString(),
