@@ -5084,6 +5084,19 @@ export function listAgentMessages(limit = 50): AgentMessage[] {
   return db.prepare('SELECT * FROM agent_messages ORDER BY created_at DESC LIMIT ?').all(limit) as AgentMessage[]
 }
 
+// Local helper message watch (src/web/helper/watch-engine.ts): rows after an id
+// cursor, or -- before the watch has a cursor -- created at/after a time.
+// Ascending, capped. `from`/`to` null = any.
+export function listAgentMessagesForWatch(opts: { afterId: number | null; sinceSec: number; from: string | null; to: string | null; limit?: number }): AgentMessage[] {
+  const where: string[] = []
+  const args: unknown[] = []
+  if (opts.afterId !== null) { where.push('id > ?'); args.push(opts.afterId) } else { where.push('created_at >= ?'); args.push(opts.sinceSec) }
+  if (opts.from) { where.push('from_agent = ?'); args.push(opts.from) }
+  if (opts.to) { where.push('to_agent = ?'); args.push(opts.to) }
+  args.push(Math.min(Math.max(1, opts.limit ?? 200), 500))
+  return db.prepare(`SELECT * FROM agent_messages WHERE ${where.join(' AND ')} ORDER BY id ASC LIMIT ?`).all(...args) as AgentMessage[]
+}
+
 // --- Context-restart gate helpers -------------------------------------------
 
 export interface DispatchedPendingStats {

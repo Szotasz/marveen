@@ -4,6 +4,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { PROJECT_ROOT } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
+import { HELPER_TASK_TYPES, type HelperTaskType, type HelperFallback } from './helper/types.js'
 
 const PROVIDERS_PATH = join(PROJECT_ROOT, 'store', 'custom-providers.json')
 
@@ -15,6 +16,118 @@ export interface CustomProviderDef {
   baseUrl: string
   authHeader: AuthHeaderType
   vaultKey: string | null
+  // Local helper routing (work/local-model-routing/SPEC.md 4.3). All optional:
+  // a provider file written before these fields loads unchanged, and a def
+  // without them is saved byte-identical to before (the route copies them
+  // only when present). Read only while HELPER_ENABLED=1 names this provider
+  // in HELPER_PROVIDER_ID.
+  /** Model tag for the helper's stateless decision call, e.g. "qwen3:14b". */
+  helperModel?: string
+  /** Which background task types this endpoint may handle. */
+  taskTypes?: Partial<Record<HelperTaskType, boolean>>
+  /** What a ticked task type does while this endpoint is down. */
+  fallback?: Partial<Record<HelperTaskType, HelperFallback>>
+  /** The Opus agent a fallback 'opus' goes to (default: the task's own agent). */
+  fallbackAgent?: string
+}
+
+export { HELPER_TASK_TYPES, type HelperTaskType, type HelperFallback }
+
+// Defaults for a provider on this machine: the first four types on (SPEC.md
+// section 2). A remote endpoint defaults all-off -- the owner ticks it
+// explicitly, because a ticked type sends card/message text to that host.
+const LOCAL_DEFAULT_ON: ReadonlySet<HelperTaskType> = new Set(['watch', 'wake', 'quietHeartbeat', 'rotationDecision'])
+
+export function isLocalBaseUrl(baseUrl: string): boolean {
+  try {
+    const h = new URL(baseUrl).hostname
+    return h === 'localhost' || h.startsWith('127.')
+  } catch { return false }
+}
+
+export function defaultHelperTaskTypes(baseUrl: string): Record<HelperTaskType, boolean> {
+  const local = isLocalBaseUrl(baseUrl)
+  const out = {} as Record<HelperTaskType, boolean>
+  for (const t of HELPER_TASK_TYPES) out[t] = local && LOCAL_DEFAULT_ON.has(t)
+  return out
+}
+
+// Only the rotation decision falls through to an Opus agent by default; the
+// others are skipped while the endpoint is down (SPEC.md section 2).
+export function defaultHelperFallback(): Record<HelperTaskType, HelperFallback> {
+  const out = {} as Record<HelperTaskType, HelperFallback>
+  for (const t of HELPER_TASK_TYPES) out[t] = t === 'rotationDecision' ? 'opus' : 'skip'
+  return out
+}
+
+/** The ticks in effect: the stored ones over the host-based defaults. */
+export function effectiveTaskTypes(def: Pick<CustomProviderDef, 'baseUrl' | 'taskTypes'>): Record<HelperTaskType, boolean> {
+  const out = defaultHelperTaskTypes(def.baseUrl)
+  if (def.taskTypes) for (const t of HELPER_TASK_TYPES) if (typeof def.taskTypes[t] === 'boolean') out[t] = def.taskTypes[t] as boolean
+  return out
+}
+
+export function effectiveFallback(def: Pick<CustomProviderDef, 'fallback'>): Record<HelperTaskType, HelperFallback> {
+  const out = defaultHelperFallback()
+  if (def.fallback) for (const t of HELPER_TASK_TYPES) {
+    const v = def.fallback[t]
+    if (v === 'skip' || v === 'opus') out[t] = v
+  }
+  return out
+}
+
+const HELPER_MODEL_RE = /^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,127}$/
+const AGENT_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/
+
+// Validates the optional helper fields of a POST body. null = valid (or absent).
+export function validateHelperFields(d: Record<string, unknown>): string | null {
+  if (d.helperModel !== undefined && d.helperModel !== null && d.helperModel !== '') {
+    if (typeof d.helperModel !== 'string' || !HELPER_MODEL_RE.test(d.helperModel.trim())) {
+      return 'helperModel must be a model tag (letters, digits, . _ : / @ -; max 128)'
+    }
+  }
+  for (const field of ['taskTypes', 'fallback'] as const) {
+    const v = d[field]
+    if (v === undefined || v === null) continue
+    if (typeof v !== 'object' || Array.isArray(v)) return `${field} must be an object`
+    for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+      if (!(HELPER_TASK_TYPES as readonly string[]).includes(k)) return `${field}: unknown task type "${k}"`
+      if (field === 'taskTypes' && typeof val !== 'boolean') return `taskTypes.${k} must be a JSON boolean`
+      if (field === 'fallback' && val !== 'skip' && val !== 'opus') return `fallback.${k} must be "skip" or "opus"`
+    }
+  }
+  if (d.fallbackAgent !== undefined && d.fallbackAgent !== null && d.fallbackAgent !== '') {
+    if (typeof d.fallbackAgent !== 'string' || !AGENT_ID_RE.test(d.fallbackAgent.trim())) {
+      return 'fallbackAgent must be an agent id'
+    }
+    if (d.fallbackAgent.trim() === 'system') return 'fallbackAgent cannot be "system"'
+  }
+  return null
+}
+
+// Copies the helper fields of a validated body onto a def. A field absent from
+// the body stays absent on the def, so a pre-helper payload saves exactly the
+// five fields it always did.
+export function copyHelperFields(def: CustomProviderDef, d: Record<string, unknown>): CustomProviderDef {
+  if (typeof d.helperModel === 'string' && d.helperModel.trim()) def.helperModel = d.helperModel.trim()
+  if (d.taskTypes && typeof d.taskTypes === 'object') {
+    const tt: Partial<Record<HelperTaskType, boolean>> = {}
+    for (const t of HELPER_TASK_TYPES) {
+      const v = (d.taskTypes as Record<string, unknown>)[t]
+      if (typeof v === 'boolean') tt[t] = v
+    }
+    def.taskTypes = tt
+  }
+  if (d.fallback && typeof d.fallback === 'object') {
+    const fb: Partial<Record<HelperTaskType, HelperFallback>> = {}
+    for (const t of HELPER_TASK_TYPES) {
+      const v = (d.fallback as Record<string, unknown>)[t]
+      if (v === 'skip' || v === 'opus') fb[t] = v
+    }
+    def.fallback = fb
+  }
+  if (typeof d.fallbackAgent === 'string' && d.fallbackAgent.trim()) def.fallbackAgent = d.fallbackAgent.trim()
+  return def
 }
 
 interface ProvidersStore {
@@ -120,5 +233,5 @@ export function validateCustomProvider(data: unknown): string | null {
     return 'vaultKey is required unless authHeader is none'
   }
 
-  return null
+  return validateHelperFields(d)
 }

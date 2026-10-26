@@ -106,6 +106,7 @@ import { mainRespawnHold } from './main-respawn-hold.js'
 import { MAIN_CHANNELS_SESSION } from './main-agent.js'
 import { findTelegramTopic, telegramTopicsEnabled } from './telegram-topics.js'
 import { runCommandTask } from './command-task.js'
+import { helperDispatch } from './helper/dispatch.js'
 import { trackDetachedGroup } from './detached-groups.js'
 import { decideQuotaAction, type QuotaWorkClass } from '../quota-gate.js'
 import { isAgentBudgetHeld } from './agent-budget-alerts.js'
@@ -3535,6 +3536,17 @@ export function startScheduleRunner(): NodeJS.Timeout {
       }
       const lateCatchUpMs = decision === 'catch-up' ? ageMs : undefined
       if (lateCatchUpMs != null) caughtUpThisTick.push({ task: task.name, ageMs, type: task.type, schedule: task.schedule })
+
+      // Local helper (work/local-model-routing/SPEC.md 4.4): a watch, a
+      // one-shot wake or the rotation decision handled by the dashboard
+      // itself, with at most one stateless call to the local provider. Off by
+      // default: with HELPER_ENABLED unset helperDispatch returns false before
+      // reading anything, and the task takes the unchanged path below.
+      if (helperDispatch(task, now, { fallbackRun: (name) => runScheduledTaskNow(name) })) {
+        scheduleLastRun.set(task.name, now)
+        persistScheduleLastRun()
+        continue
+      }
 
       // type='command' tasks run a raw shell command directly -- no LLM, no
       // tmux, no target agent. They self-manage failure streaks + Telegram

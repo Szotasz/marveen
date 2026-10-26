@@ -988,6 +988,32 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: false,
   },
+  // --- Local helper routing (work/local-model-routing/SPEC.md) ---
+  // Master switch, default OFF: with it off the schedule runner never consults
+  // the helper and every task runs exactly as before. Switching it ON moves
+  // background decisions to the provider named below, so it is owner-only
+  // (loosens) like the other switches that change who decides.
+  {
+    key: 'HELPER_ENABLED',
+    type: 'boolean',
+    default: '0',
+    description: 'Helyi helper: a háttérmunka (figyelés, egyszeri ébresztés, rotációs döntés) a HELPER_PROVIDER_ID providerre kerül, ha az adott feladattípus ott be van pipálva (Beállítások > Provider-ok). A helper csak dönt és értesít: egyetlen ágens-üzenetet küld, kódot nem ír, külső üzenetet nem küld. Kikapcsolva minden ütemezés pontosan úgy fut, mint eddig.',
+    module: 'helper',
+    secret: false,
+    requiresRestart: false,
+    loosens: (oldValue: string, newValue: string) => oldValue.trim() !== '1' && newValue.trim() === '1',
+  },
+  {
+    key: 'HELPER_PROVIDER_ID',
+    type: 'string',
+    default: '',
+    description: 'Az egyetlen aktív helper provider azonosítója (Beállítások > Provider-ok). Üresen a helper semmit nem vesz át.',
+    module: 'helper',
+    secret: false,
+    requiresRestart: false,
+    validate: (v: string) => (v.trim() === '' || /^[a-zA-Z0-9_-]+$/.test(v.trim()) ? null : 'Csak a-z, 0-9, _ és - használható.'),
+    loosens: (oldValue: string, newValue: string) => oldValue.trim() !== newValue.trim() && newValue.trim() !== '',
+  },
 ]
 
 export function getSettingDefinition(key: string): SettingDefinition | undefined {
