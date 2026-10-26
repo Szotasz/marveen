@@ -2486,13 +2486,17 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     try {
       // The tar reads every agent's skills: it waits on the skills directory queue, like the fleet export.
       const data = await serializeSkillsDir(() => {
-        exportAllAgentsBundle(outPath, names, {
+        // An agent deleted while this export waited on the queue is left out.
+        const present = names.filter((n) => existsSync(agentDir(n)))
+        if (present.length === 0) return null
+        exportAllAgentsBundle(outPath, present, {
           includeSecrets,
           exportedBy: MAIN_AGENT_ID,
           exportedAt: new Date().toISOString(),
         })
         return readFileSync(outPath)
       })
+      if (!data) { json(res, { error: 'No agents to export' }, 404); return true }
       res.writeHead(200, {
         'Content-Type': 'application/gzip',
         'Content-Disposition': `attachment; filename="${fleetBundleFilename()}"`,
@@ -2523,6 +2527,8 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     try {
       // The tar reads the agent's skills: it waits on the skills directory queue.
       const data = await serializeSkillsDir(() => {
+        // Checked again on the queue: a delete queued before this export may have removed the agent.
+        if (!existsSync(agentDir(name))) return null
         exportAgentBundle(name, outPath, {
           includeSecrets,
           exportedBy: MAIN_AGENT_ID,
@@ -2530,6 +2536,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
         })
         return readFileSync(outPath)
       })
+      if (!data) { json(res, { error: 'Agent not found' }, 404); return true }
       res.writeHead(200, {
         'Content-Type': 'application/gzip',
         'Content-Disposition': `attachment; filename="${bundleFilename(name)}"`,
@@ -2783,7 +2790,12 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     // provider) for its orphan reap, so it must run while the dir still exists.
     if (isAgentRunning(name)) await stopAgentProcess(name)
     // An assign may be copying a skill into this directory: the removal waits on the skills directory queue.
-    await serializeSkillsDir(() => rmSync(dir, { recursive: true, force: true }))
+    await serializeSkillsDir(async () => {
+      // Started again while the removal waited (by hand: the reconciler no longer wants it): stop it first,
+      // for the same reason as above.
+      if (isAgentRunning(name)) await stopAgentProcess(name)
+      rmSync(dir, { recursive: true, force: true })
+    })
     cleanupTeamReferences(name)
     json(res, { ok: true })
     return true
