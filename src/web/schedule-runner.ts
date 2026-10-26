@@ -262,7 +262,9 @@ export interface TaskInflightEntry {
   worksourcePendingHead?: string
   // The sweep time at which the item was first seen in pending/ in its current
   // stay there; cleared with worksourcePendingSince, but never restarted by
-  // queue progress. Only the alert texts read it ("N minutes in pending/").
+  // queue progress. Only the alert texts read it ("N minutes in pending/"). A
+  // stretch with an unreadable stage (null) keeps it, as it keeps
+  // worksourcePendingSince: no signal either way.
   worksourcePendingEnteredAt?: number
   // Set once the sweep has pressed its single recovery Enter for a prompt parked
   // in an overfull input box, so a second 'lost' verdict on this entry takes the

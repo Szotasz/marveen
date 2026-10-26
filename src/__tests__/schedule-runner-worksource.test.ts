@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
-import { join } from 'node:path'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { MAIN_AGENT_ID } from '../config.js'
 import { worksourceItemStageAt, worksourcePendingHeadAt } from '../web/worksource-queue.js'
@@ -354,15 +354,16 @@ describe('shouldQueueScheduledToWorksource: the default gate reads the agent con
   // A name no live fleet member can collide with; its directory exists only during this describe.
   const NAME = 'zz-ws-gate-probe'
   const dir = agentDir(NAME)
-  // Never overwrite or remove a directory this describe did not create.
+  // Never overwrite or remove a directory this describe did not create: it is created exclusively (mkdirSync
+  // without recursive throws EEXIST when it exists already), and only then marked for removal.
   let created = false
   beforeAll(() => {
-    if (existsSync(dir)) throw new Error(`refusing to use ${dir}: it exists already`)
+    mkdirSync(dirname(dir), { recursive: true })
+    mkdirSync(dir)
     created = true
   })
   afterAll(() => { if (created) rmSync(dir, { recursive: true, force: true }) })
   const writeConfig = (cfg: unknown): void => {
-    mkdirSync(dir, { recursive: true })
     writeFileSync(join(dir, 'agent-config.json'), JSON.stringify(cfg))
   }
   it('an enabled sender-role gate keeps the typed path', () => {

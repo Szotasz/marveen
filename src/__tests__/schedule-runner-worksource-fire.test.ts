@@ -512,7 +512,14 @@ describe('schedule runner: a worksource agent gets scheduled prompts through its
     // start a new count, not continue the first one.
     const handedOverAt = Date.UTC(2026, 6, 31, 10, 30, 21)
     const requeueAt = Date.UTC(2026, 6, 31, 10, 50, 0)
-    worksourceStage = () => (Date.now() < handedOverAt || Date.now() >= requeueAt ? 'pending' : 'active')
+    let firstStaySampled = false
+    worksourceStage = () => {
+      if (Date.now() < handedOverAt) {
+        firstStaySampled = true
+        return 'pending'
+      }
+      return Date.now() >= requeueAt ? 'pending' : 'active'
+    }
     mockListScheduledTasks.mockReturnValue([REQUEUED_LATE_ONCE])
     const pendingWindowMs = TASK_FIRE_GRACE_MS + OWNER_ESCALATION_EXTRA_MS + 2 * 60_000
     await runForMs(20 * 60_000 + pendingWindowMs)
@@ -529,6 +536,8 @@ describe('schedule runner: a worksource agent gets scheduled prompts through its
     expect(ownerAlerts).toHaveLength(1)
     expect(minutesIn(ownerAlerts[0])).toBeLessThanOrEqual(Math.ceil(pendingWindowMs / 60_000))
     expect(minutesIn(ownerAlerts[0])).toBeGreaterThanOrEqual(Math.floor((TASK_FIRE_GRACE_MS + OWNER_ESCALATION_EXTRA_MS) / 60_000))
+    // A sweep really saw the first stay: without that sample the test could not tell a count the hand-over resets.
+    expect(firstStaySampled).toBe(true)
     expect(runsFor(REQUEUED_LATE_ONCE.name)).toEqual([[REQUEUED_LATE_ONCE.name, AGENT, 'fired']])
   })
 
@@ -689,7 +698,8 @@ describe('schedule runner: a worksource agent gets scheduled prompts through its
       // ... and soon after it (a run never stamped would not alert at all; one sweep of slack)
       expect(noticeTimes[0]).toBeLessThanOrEqual(stallAt + TASK_FIRE_GRACE_MS + 30_000)
       // The text counts the item's stay in pending/ (since its first sighting, two minutes before the stall), not
-      // the pending run that every drained head restarted.
+      // the pending run that every drained head restarted. A count from the injection would pass here too; the
+      // requeue test above is the one that rules that out.
       const notice = mockCreateAgentMessage.mock.calls
         .find(c => c[0] === 'system' && c[1] === MAIN_AGENT_ID && String(c[2]).includes('pending/ mappában áll'))
       const minutes = Number(/tett tétel (\d+) perce a pending\/ mappában áll/.exec(String(notice?.[2]))?.[1] ?? NaN)
