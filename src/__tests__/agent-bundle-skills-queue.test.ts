@@ -26,7 +26,7 @@ vi.mock('../web/agent-bundle.js', async (orig) => ({ ...(await orig<typeof impor
   exportAgentBundle: (name: string, outPath: string) => { H.calls.push(`export ${name} q=${H.inQueue}`); writeFileSync(outPath, 'BUNDLE') },
   exportAllAgentsBundle: (outPath: string, names: string[]) => { H.calls.push(`export-all ${names.join(',')} q=${H.inQueue}`); writeFileSync(outPath, 'FLEET') },
   importAgentBundle: (_bundle: Buffer, opts: { overrideName?: string; overwrite?: boolean }) => { H.calls.push(`import ${String(opts.overrideName)} ${String(opts.overwrite)} q=${H.inQueue}`); return { name: 'zz-bundle-queue-probe', overwritten: false, manifest: { includesSecrets: false } } },
-  importAllAgentsBundle: (_bundle: Buffer, opts: { overwrite?: boolean }) => { H.calls.push(`import-all ${String(opts.overwrite)} q=${H.inQueue}`); return { imported: [], skipped: [], includesSecrets: false } },
+  importAllAgentsBundle: (_bundle: Buffer, opts: { overwrite?: boolean }) => { H.calls.push(`import-all ${String(opts.overwrite)} q=${H.inQueue}`); mkdirSync(H.dir, { recursive: true }); return { imported: [], skipped: [], includesSecrets: false } },
   peekBundleKind: () => H.kind,
 }))
 vi.mock('../web/agent-process.js', async (orig) => ({ ...(await orig<typeof import('../web/agent-process.js')>()),
@@ -34,7 +34,7 @@ vi.mock('../web/agent-process.js', async (orig) => ({ ...(await orig<typeof impo
   stopAgentProcess: async (name: string) => { H.calls.push(`stop ${name} dir=${existsSync(H.dir)} q=${H.inQueue}`); H.running = false; return { ok: true } },
 }))
 vi.mock('../web/agent-config.js', async (orig) => ({ ...(await orig<typeof import('../web/agent-config.js')>()),
-  listAgentNames: () => ['zz-bundle-queue-probe'] }))
+  listAgentNames: () => (existsSync(H.dir) ? ['zz-bundle-queue-probe'] : []) }))
 vi.mock('../web/context-guard-store.js', async (orig) => ({ ...(await orig<typeof import('../web/context-guard-store.js')>()),
   seedContextGuardForNewAgent: () => {} }))
 
@@ -45,7 +45,7 @@ import { agentDir } from '../web/agent-config.js'
 import { removeDesiredAgent } from '../web/agent-desired-state.js'
 import type { RouteContext } from '../web/routes/types.js'
 
-// A name no live fleet member can collide with; listAgentNames is mocked to it.
+// A name no live fleet member can collide with; listAgentNames is mocked to list it while its directory exists.
 const T = 'zz-bundle-queue-probe'
 H.dir = agentDir(T)
 
@@ -100,8 +100,10 @@ function start(path: string, method: string, body?: Buffer): {
   return { p: tryHandleAgents(ctx, join(PROJECT_ROOT, 'web')), out }
 }
 
-afterEach(() => {
+afterEach(async () => {
   releaseHeld()
+  // What a failed test left queued finishes before its state is cleaned up.
+  await serializeSkillsDir(() => {})
   rmSync(agentDir(T), { recursive: true, force: true })
   removeDesiredAgent(T)
   H.calls.length = 0
@@ -223,6 +225,25 @@ describe('agent bundle routes wait on the skills directory queue', () => {
     expect(exp.out.status).toBe(404)
     expect(JSON.parse(exp.out.body).error).toBe('No agents to export')
     expect(H.calls).toEqual([])
+  })
+
+  it('a fleet bundle export queued behind a fleet import includes the imported agent', async () => {
+    H.kind = 'fleet'
+    const { release, held } = hold()
+    const before = H.queued
+    const imp = start('/api/agents/import', 'POST', Buffer.from('x'))
+    await waitForQueued(before + 1)
+    const exp = start('/api/agents/export-all', 'GET')
+    await waitForQueued(before + 2)
+    expect(H.calls).toEqual([])
+    release()
+    await held
+    expect(await imp.p).toBe(true)
+    expect(await exp.p).toBe(true)
+    expect(imp.out.status).toBe(200)
+    expect(exp.out.status).toBe(200)
+    expect(exp.out.body).toBe('FLEET')
+    expect(H.calls).toEqual(['import-all false q=1', `export-all ${T} q=1`])
   })
 
   it('an agent started again while its delete waited is stopped before the removal', async () => {
