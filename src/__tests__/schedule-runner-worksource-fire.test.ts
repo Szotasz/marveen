@@ -666,12 +666,13 @@ describe('schedule runner: a worksource agent gets scheduled prompts through its
       return head
     }
     const noticeTimes: number[] = []
-    // Record the fake time of each pending-worded notice; the previous
-    // implementation is restored in the finally so later tests are not affected
+    // Record the fake time of each pending-worded notice, preserving the mock's
+    // return value; restored in the finally so it cannot leak into later tests
     // (beforeEach clears calls, never implementations).
     const originalCreateAgentMessage = mockCreateAgentMessage.getMockImplementation()
-    mockCreateAgentMessage.mockImplementation((from: string, to: string, text: string) => {
-      if (from === 'system' && to === MAIN_AGENT_ID && String(text).includes('pending/ mappában áll')) noticeTimes.push(Date.now())
+    mockCreateAgentMessage.mockImplementation((...args: unknown[]) => {
+      if (args[0] === 'system' && args[1] === MAIN_AGENT_ID && String(args[2]).includes('pending/ mappában áll')) noticeTimes.push(Date.now())
+      return originalCreateAgentMessage?.(...args)
     })
     try {
       mockListScheduledTasks.mockReturnValue([BACKLOG_STALLS_ONCE])
@@ -845,6 +846,8 @@ describe('schedule runner: a worksource agent gets scheduled prompts through its
       // The pane-busy wording, not the queue wording: one pending/ sample says
       // nothing about nobody picking the item up.
       expect(String(notices[0][2])).not.toContain('pending/ mappában áll')
+      // ... and its minutes run from the injection (60 s ago), not from the pending/ sample of this very sweep.
+      expect(String(notices[0][2])).toContain('injektálása óta a pane 1 perce foglalt')
       // Still only the one 'fired' row: the alert opens nothing new.
       expect(runsFor(BUSY_BLIP_ONCE.name)).toEqual([[BUSY_BLIP_ONCE.name, AGENT, 'fired']])
     } finally {
