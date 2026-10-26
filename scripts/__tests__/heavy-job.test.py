@@ -13,6 +13,17 @@ few small transient heavy-job-*.scope units (sleep/sh/true, 200M cap) to
 check the scope teardown and the cgroup-based nested check. It is skipped when
 no user scope can be created, or with HEAVY_JOB_TEST_NO_LIVE=1.
 """
+import sys
+
+# Linux only, like the gate itself (systemd --user scopes, cgroup v2, /proc). On any other
+# platform the gate refuses every call with 77 by design, so nothing here can be measured:
+# report a counted skip (the script-tests-runner contract: exit 77 plus a reason line)
+# instead of a wall of FAILs. This runs before anything platform-specific is touched.
+if not sys.platform.startswith("linux"):
+    print("SKIP (control unmet): heavy-job gate is Linux only (systemd --user scopes, cgroup v2, "
+          "/proc/meminfo); sys.platform is %r" % sys.platform)
+    sys.exit(77)
+
 import fcntl
 import importlib.util
 import json

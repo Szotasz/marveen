@@ -10,6 +10,17 @@ TelegramAlert only ever runs against a fake send helper in a temp dir (to
 prove the bot token never reaches the log and the owner chat is resolved),
 so nothing is ever sent. The owner-chat resolver runs on temp install trees.
 """
+import sys
+
+# Linux only, like the brake itself (/proc, PSI, cgroup v2, pidfd). On any other platform
+# the brake exits before its own checks and os.pidfd_open does not exist, so nothing here
+# can be measured: report a counted skip (the script-tests-runner contract: exit 77 plus a
+# reason line) instead of FAILs. This runs before anything platform-specific is touched.
+if not sys.platform.startswith("linux"):
+    print("SKIP (control unmet): RAM emergency brake is Linux only (/proc, PSI, cgroup v2, "
+          "pidfd); sys.platform is %r" % sys.platform)
+    sys.exit(77)
+
 import importlib.util
 import json
 import os

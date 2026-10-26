@@ -33,7 +33,7 @@ can be classified: **btime change = host/VM restart**, **OnFailure = app crash**
 
 **Heavy-job gate.** Prefix a heavy command with the gate:
 
-    scripts/heavy-job.sh [--max-mem 2G] [--min-mb 2500] [--wait-sec 300] [--max-sec N] [--label NAME] [--agent NAME] -- <command...>
+    scripts/heavy-job.sh [--max-mem 2G] [--swap-max 256M] [--min-mb 2500] [--wait-sec 300] [--max-sec N] [--label NAME] [--agent NAME] [--allow-uncapped] -- <command...>
 
 One heavy job runs at a time, in arrival order (a FIFO ticket queue in
 `store/.heavy-job-queue/`, lock `store/.heavy-job.lock`; `--agent` stops one agent
@@ -46,8 +46,12 @@ busy for `--wait-sec`, 74 lock/queue unusable, 75 memory floor not met or
 unreadable, 76 stopped after `--max-sec`, 77 no enforceable memory cap (needs
 cgroup2 with the memory controller delegated to the user manager; also: not Linux),
 128+signo when signalled while queued. On 73/75 retry later; do not run the job
-around the gate. Log: `store/heavy-job-log.jsonl`. Linux only: on macOS every
-call is refused with 77 (no systemd scope, no `/proc` to measure).
+around the gate. No cap means no admission by default; `--allow-uncapped` is the
+explicit, logged (`uncapped` line) and warned opt-out that runs the job without the
+cgroup cap when no capped scope can be created (the memory floor, lock and queue
+still apply; it never bypasses the not-Linux refusal). Log: `store/heavy-job-log.jsonl`.
+Linux only: on macOS every call is refused with 77 (no systemd scope, no `/proc` to
+measure).
 
 **Emergency brake (opt-in).** Install the unit as its header says. It never
 stops agent sessions, tmux, the dashboard, channels, bun, sshd or ollama. Killable
