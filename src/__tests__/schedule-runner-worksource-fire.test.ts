@@ -285,6 +285,12 @@ const BACKLOG_ACKED_ONCE = task({ name: 'ws-pending-backlog-acked', schedule: '3
 const BACKLOG_NULL_HEAD_ONCE = task({ name: 'ws-pending-backlog-null-head', schedule: '30 12 * * *', targetSession: 'ws-session' })
 // A dead reader with fresh items arriving ahead of ours: the head changes, nothing is consumed.
 const BACKLOG_DEAD_INFLOW_ONCE = task({ name: 'ws-pending-backlog-dead-inflow', schedule: '30 12 * * *', targetSession: 'ws-session' })
+// Drains for two minutes, then the reader dies: the pending run restarts on every drained head, so the
+// notice must come one grace window after the LAST progress -- not at once, and not never.
+const BACKLOG_STALLS_ONCE = task({ name: 'ws-pending-backlog-stalls', schedule: '30 12 * * *', targetSession: 'ws-session' })
+// Handed over (active/) for 20 minutes, then requeued into pending/ for good: the alert texts must count the
+// stay in pending/, not the time since the injection.
+const REQUEUED_LATE_ONCE = task({ name: 'ws-pending-requeued-late', schedule: '30 12 * * *', targetSession: 'ws-session' })
 // The busy-path wording fixture: a busy pane with stuckAfterMinutes 1 (clamped
 // to a 60 s timeoutMs), so the pane-busy ladder is the one that fires.
 const BUSY_BLIP_ONCE = task({ name: 'ws-busy-blip-wording', schedule: '30 12 * * *', targetSession: 'ws-session', stuckAfterMinutes: 1 })
@@ -489,6 +495,38 @@ describe('schedule runner: a worksource agent gets scheduled prompts through its
     expect(runsFor(ESCALATED_ONCE.name)).toEqual([[ESCALATED_ONCE.name, AGENT, 'fired']])
   })
 
+  it('an item requeued after a long hand-over counts its minutes in pending/ from the requeue, in both texts', async () => {
+    // The escalation test above measures a pending run that begins at the
+    // injection; here the item is handed over to active/ for 20 minutes first
+    // and only then lands in pending/ for good. Both alert texts say "N perce a
+    // pending/ mappában áll", and N must be the CURRENT stay in pending/ -- the
+    // requeued item has stood there for minutes, not since the injection.
+    expect(detectPaneState(IDLE_PANE_TEXT)).toBe('idle')
+    worksourceFlag = true
+    paneText = IDLE_PANE_TEXT
+    schedulerBotToken = 'test-token'
+    ownerChat = '4242'
+    const { OWNER_ESCALATION_EXTRA_MS } = await import('../pending-retries.js')
+    const { TASK_FIRE_GRACE_MS } = await import('../web/schedule-runner.js')
+    const requeueAt = Date.UTC(2026, 6, 31, 10, 50, 0)
+    worksourceStage = () => (Date.now() < requeueAt ? 'active' : 'pending')
+    mockListScheduledTasks.mockReturnValue([REQUEUED_LATE_ONCE])
+    const pendingWindowMs = TASK_FIRE_GRACE_MS + OWNER_ESCALATION_EXTRA_MS + 2 * 60_000
+    await runForMs(20 * 60_000 + pendingWindowMs)
+    expect(mockEnqueue).toHaveBeenCalledTimes(1)
+    const minutesIn = (t: string): number => Number(/tett tétel (\d+) perce a pending\/ mappában áll/.exec(t)?.[1] ?? NaN)
+    const notices = mockCreateAgentMessage.mock.calls
+      .filter(c => c[0] === 'system' && c[1] === MAIN_AGENT_ID && String(c[2]).includes('pending/ mappában áll'))
+    expect(notices).toHaveLength(1)
+    // the notice goes out right after the grace window of the pending run: under a minute or two, not 20+
+    expect(minutesIn(String(notices[0][2]))).toBeLessThanOrEqual(2)
+    const ownerAlerts = ownerAlertTexts.filter(t => t.includes('pending/ mappában áll'))
+    expect(ownerAlerts).toHaveLength(1)
+    expect(minutesIn(ownerAlerts[0])).toBeLessThanOrEqual(Math.ceil(pendingWindowMs / 60_000))
+    expect(minutesIn(ownerAlerts[0])).toBeGreaterThanOrEqual(Math.floor((TASK_FIRE_GRACE_MS + OWNER_ESCALATION_EXTRA_MS) / 60_000))
+    expect(runsFor(REQUEUED_LATE_ONCE.name)).toEqual([[REQUEUED_LATE_ONCE.name, AGENT, 'fired']])
+  })
+
   it('a single-sweep pending/ blip (a working reader re-offering) alerts nobody', async () => {
     // requeueStale moves an unacknowledged active/ item back to pending/ and
     // the next poll takes it again, so one sweep can sample 'pending' from a
@@ -599,6 +637,55 @@ describe('schedule runner: a worksource agent gets scheduled prompts through its
     // on (nearly) every one of its 15 s ticks, not just once or twice.
     expect(headCalls).toBeGreaterThanOrEqual(8)
     expect(runsFor(BACKLOG_DRAINING_ONCE.name)).toEqual([[BACKLOG_DRAINING_ONCE.name, AGENT, 'fired']])
+  })
+
+  it('a reader that drains, then stops, alerts once, one grace window after the last progress', async () => {
+    // The draining backlog above never stops; this one drains for two minutes
+    // and then dies mid-backlog. Until the stall every sweep's progress check
+    // restarts the pending run, so no alert may fire during the drain -- and
+    // once the head stops moving the run must still be RUNNING, so the notice
+    // comes one grace window after the last consumed head, exactly once.
+    expect(detectPaneState(IDLE_PANE_TEXT)).toBe('idle')
+    worksourceFlag = true
+    paneText = IDLE_PANE_TEXT
+    const { TASK_FIRE_GRACE_MS } = await import('../web/schedule-runner.js')
+    const stallAt = Date.UTC(2026, 6, 31, 10, 32, 0)
+    const consumedHeads: string[] = []
+    worksourceStageById = (id: string) => {
+      if (id.startsWith('sched-')) return 'pending'
+      if (consumedHeads.includes(id) && Date.now() < stallAt) return 'active'
+      if (consumedHeads.includes(id)) return 'pending'
+      return undefined
+    }
+    // Before the stall every sweep sees a new head (the previous one was consumed); from the stall on the head
+    // stays the last one and nothing moves.
+    worksourceHead = () => {
+      if (Date.now() >= stallAt && consumedHeads.length > 0) return consumedHeads[consumedHeads.length - 1]
+      const head = `msg-${String(consumedHeads.length + 1).padStart(4, '0')}`
+      consumedHeads.push(head)
+      return head
+    }
+    const noticeTimes: number[] = []
+    // Record the fake time of each pending-worded notice; the previous
+    // implementation is restored in the finally so later tests are not affected
+    // (beforeEach clears calls, never implementations).
+    const originalCreateAgentMessage = mockCreateAgentMessage.getMockImplementation()
+    mockCreateAgentMessage.mockImplementation((from: string, to: string, text: string) => {
+      if (from === 'system' && to === MAIN_AGENT_ID && String(text).includes('pending/ mappában áll')) noticeTimes.push(Date.now())
+    })
+    try {
+      mockListScheduledTasks.mockReturnValue([BACKLOG_STALLS_ONCE])
+      await runForMs(4 * 60_000)
+      expect(mockEnqueue).toHaveBeenCalledTimes(1)
+      expect(noticeTimes).toHaveLength(1)
+      // not before the stall plus the grace window (a run never restarted would alert during the drain) ...
+      expect(noticeTimes[0]).toBeGreaterThanOrEqual(stallAt + TASK_FIRE_GRACE_MS - 15_000)
+      // ... and soon after it (a run never stamped would not alert at all; one sweep of slack)
+      expect(noticeTimes[0]).toBeLessThanOrEqual(stallAt + TASK_FIRE_GRACE_MS + 30_000)
+      expect(runsFor(BACKLOG_STALLS_ONCE.name)).toEqual([[BACKLOG_STALLS_ONCE.name, AGENT, 'fired']])
+    } finally {
+      mockCreateAgentMessage.mockImplementation(originalCreateAgentMessage ?? (() => undefined))
+    }
   })
 
   it('a dead reader behind a backlog still alerts', async () => {

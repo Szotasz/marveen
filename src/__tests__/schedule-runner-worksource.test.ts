@@ -1,11 +1,27 @@
-import { afterAll, describe, expect, it } from 'vitest'
+import { afterAll, describe, expect, it, vi } from 'vitest'
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { MAIN_AGENT_ID } from '../config.js'
 import { worksourceItemStageAt, worksourcePendingHeadAt } from '../web/worksource-queue.js'
+import { agentDir } from '../web/agent-config.js'
 
 const { scheduledWorksourceItemId, scheduledWorksourceMeta, shouldQueueScheduledToWorksource, decideTaskTimeout, isWorksourceItemStuckInPending } = await import('../web/schedule-runner.js')
+
+// readdir order is the filesystem's: for the pending/ head test it is forced to reverse-lexical, so the head is
+// found by the sort in worksourcePendingHeadAt and not by the order the files happened to come back in.
+vi.mock('node:fs', async (orig) => {
+  const real = await orig<typeof import('node:fs')>()
+  return {
+    ...real,
+    readdirSync: ((p: Parameters<typeof real.readdirSync>[0], ...rest: unknown[]) => {
+      const names = (real.readdirSync as (...a: unknown[]) => unknown)(p, ...rest)
+      return String(p).includes('worksource-head-unsorted') && Array.isArray(names)
+        ? [...(names as string[])].sort().reverse()
+        : names
+    }) as typeof real.readdirSync,
+  }
+})
 
 // The scheduler's worksource helpers, pinned pure: the id rule, the meta
 // contract and the gate decide WHAT reaches a worksource agent's queue, so a
@@ -168,7 +184,7 @@ describe('worksourceItemStageAt (which queue directory holds the item)', () => {
 })
 
 describe('worksourcePendingHeadAt (the item the reader hands over next)', () => {
-  const root = mkdtempSync(join(tmpdir(), 'worksource-head-'))
+  const root = mkdtempSync(join(tmpdir(), 'worksource-head-unsorted-'))
   const put = (stage: string, id: string): void => {
     mkdirSync(join(root, stage), { recursive: true })
     writeFileSync(join(root, stage, `${id}.json`), '{}')
@@ -331,5 +347,28 @@ describe('isWorksourceItemStuckInPending (the one predicate behind the ladder an
 
   it('false with no pendingSince: the sweep has not seen a pending run yet', () => {
     expect(isWorksourceItemStuckInPending({ viaWorksource: true }, 'pending', since + graceMs, graceMs)).toBe(false)
+  })
+})
+
+describe('shouldQueueScheduledToWorksource: the default gate reads the agent config', () => {
+  // A name no live fleet member can collide with; its directory exists only during this describe.
+  const NAME = 'zz-ws-gate-probe'
+  const dir = agentDir(NAME)
+  afterAll(() => { rmSync(dir, { recursive: true, force: true }) })
+  const writeConfig = (cfg: unknown): void => {
+    mkdirSync(dir, { recursive: true })
+    writeFileSync(join(dir, 'agent-config.json'), JSON.stringify(cfg))
+  }
+  it('an enabled sender-role gate keeps the typed path', () => {
+    writeConfig({ senderRoleGate: { riskyTools: ['Bash'] } })
+    expect(shouldQueueScheduledToWorksource(NAME, null, () => true)).toBe(false)
+  })
+  it('a present but disabled gate (no risky tools) does not', () => {
+    writeConfig({ senderRoleGate: { riskyTools: [] } })
+    expect(shouldQueueScheduledToWorksource(NAME, null, () => true)).toBe(true)
+  })
+  it('no gate in the config does not', () => {
+    writeConfig({})
+    expect(shouldQueueScheduledToWorksource(NAME, null, () => true)).toBe(true)
   })
 })
