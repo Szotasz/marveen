@@ -1,5 +1,5 @@
-import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs'
-import { join } from 'node:path'
+import { readFileSync, existsSync, readdirSync, statSync, lstatSync, realpathSync } from 'node:fs'
+import { join, resolve, sep } from 'node:path'
 import { homedir } from 'node:os'
 import { PROJECT_ROOT, MAIN_AGENT_ID, DEFAULT_AGENT_MODEL } from '../config.js'
 import { atomicWriteFileSync } from './atomic-write.js'
@@ -651,6 +651,15 @@ export function writeAgentClaudePlan(name: string, planId: string): void {
 // jelenjen a dashboardon").
 export const HIDDEN_AGENT_SENTINEL = '.hidden-from-dashboard'
 
+// ROSTERALIAS1026: statSync() FOLLOWS symlinks, so agents/alias -> agents/alpha
+// put ONE directory on the roster under TWO names -- the dashboard list,
+// supervision, the boot hook-seeding loop and the fleet export all saw a
+// phantom agent 'alias' that was really 'alpha'. A symlink whose target is
+// inside agents/ itself is an alias, not an agent, and is dropped; a link to a
+// directory OUTSIDE agents/ (an agent moved to another disk and linked back)
+// stays allowed.
+const warnedRosterAliases = new Set<string>()
+
 /**
  * EVERY agent directory, hidden technical workers included.
  *
@@ -674,9 +683,32 @@ export function listAllAgentNames(): string[] {
   // session. A directory of that name (old drafts left in agents/marveen) is
   // not a sub-agent, and listing it gave the team graph a second, stopped
   // 'marveen' node that replaced the main one (MAINGHOST1024).
+  let baseReal: string
+  try { baseReal = realpathSync(AGENTS_BASE_DIR) } catch { baseReal = resolve(AGENTS_BASE_DIR) }
   return readdirSync(AGENTS_BASE_DIR).filter((f) => {
     if (f === MAIN_AGENT_ID) return false
-    try { return statSync(join(AGENTS_BASE_DIR, f)).isDirectory() } catch { return false }
+    const path = join(AGENTS_BASE_DIR, f)
+    try {
+      const st = lstatSync(path)
+      // Real directory, not through a link: listed exactly as before.
+      if (!st.isSymbolicLink()) return st.isDirectory()
+      const target = realpathSync(path)
+      // A symlink into agents/ itself (another roster directory, or something
+      // inside one) is the same agent under a second name, not a new agent.
+      if (target === baseReal || target.startsWith(baseReal + sep)) {
+        // This runs on every timer tick of many passes: warn once per entry.
+        if (!warnedRosterAliases.has(f)) {
+          warnedRosterAliases.add(f)
+          logger.warn({ entry: f, target }, 'agents/ entry is a symlink into agents/ itself -- not listed as an agent (ROSTERALIAS1026)')
+        }
+        return false
+      }
+      // Target outside agents/ (e.g. an agent directory moved to another disk
+      // and linked back): keep only if it really is a directory.
+      return statSync(path).isDirectory()
+    } catch {
+      return false
+    }
   })
 }
 
