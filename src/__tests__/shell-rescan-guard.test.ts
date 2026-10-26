@@ -160,6 +160,9 @@ describe('the five refused shapes, each with the safe form next to it', () => {
     expect(denied(bash('bash -co pipefail "echo $(id)"'))).toBe(true)
     expect(denied(bash('bash -oc pipefail "echo $(id)"'))).toBe(true)
     expect(denied(bash('bash -cxo pipefail "echo $(id)"'))).toBe(true)
+    // an O owes an operand too, and every o/O in the cluster owes one of its own
+    expect(denied(bash('bash -cO extglob "echo $(id)"'))).toBe(true)
+    expect(denied(bash('bash -coO pipefail extglob "echo $(id)"'))).toBe(true)
     // controls: python runs the glued "x" as code; only a shell reads options after -c
     expect(allowed(bash('python3 -cx "$(id)"'))).toBe(true)
     // the single-quoted word is the payload; "$(id)" is only $0
@@ -172,6 +175,10 @@ describe('the five refused shapes, each with the safe form next to it', () => {
     expect(denied(bash('bash -c &>>log "echo $(id)"'))).toBe(true)
     expect(denied(bash('bash -c >|/dev/null "echo $(id)"'))).toBe(true)
     expect(denied(bash('bash -c {fd}>/dev/null "echo $(id)"'))).toBe(true)
+    expect(denied(bash('bash -c {fd}</dev/null "echo $(id)"'))).toBe(true)
+    // a quoted part makes {fd} an ordinary word: here it is the payload, and "$(id)" is only $0
+    expect(allowed(bash('bash -c ""{fd}>/dev/null "echo $(id)"'))).toBe(true)
+    expect(allowed(bash('bash -c ""{fd}>/dev/null -c "$(id)"'))).toBe(true)
     expect(denied(bash('bash -c -x 0<<EOF "echo $(id)"\nEOF'))).toBe(true)
     expect(denied(bash('python3 -c 0<<EOF "print(1) $(id)"\nEOF'))).toBe(true)
     // controls: a lone & still ends the command
@@ -187,6 +194,7 @@ describe('the five refused shapes, each with the safe form next to it', () => {
     expect(denied(bash('dash -c -x "echo $(id)"'))).toBe(true)
     expect(denied(bash('/bin/dash -c "echo $(id)"'))).toBe(true)
     expect(denied(bash('ksh -c "echo $(id)"'))).toBe(true)
+    expect(denied(bash('mksh -c "echo $(id)"'))).toBe(true)
     // control: a single-quoted payload is the documented exemption, as for bash
     expect(allowed(bash("dash -c 'echo $(id)'"))).toBe(true)
   })
