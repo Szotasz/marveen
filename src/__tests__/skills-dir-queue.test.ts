@@ -53,7 +53,7 @@ vi.mock('../web/fleet-transfer.js', () => ({
 // operation has been taken by the queue, without waiting on a fixed sleep.
 vi.mock('../web/skills-dir-queue.js', async (orig) => {
   const real = await orig<typeof import('../web/skills-dir-queue.js')>()
-  return { serializeSkillsDir: <T>(op: () => Promise<T> | T): Promise<T> => { H.queued++; return real.serializeSkillsDir(op) } }
+  return { ...real, serializeSkillsDir: <T>(op: () => Promise<T> | T): Promise<T> => { H.queued++; return real.serializeSkillsDir(op) } }
 })
 
 mkdirSync(bin, { recursive: true })
