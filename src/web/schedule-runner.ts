@@ -3235,6 +3235,11 @@ export function startScheduleRunner(): NodeJS.Timeout {
         isWorksourceItemStuckInPending(entry, worksourceStage, now, TASK_FIRE_GRACE_MS)
           ? 'worksource-pending'
           : undefined
+      // The pending wording counts the item's current stay in pending/, not the time since the injection: an item
+      // requeued after a long hand-over has stood there only since its pending run began.
+      const alertElapsedMs = pendingReason === 'worksource-pending' && entry.worksourcePendingSince != null
+        ? now - entry.worksourcePendingSince
+        : now - entry.injectedAt
       // PROMPTCSONK923: record what actually ARRIVED, from the transcript. On
       // a closing decision this is the last look, so a head-only arrival is
       // recorded as 'tail-lost' instead of waiting for a tail that is not
@@ -3296,10 +3301,10 @@ export function startScheduleRunner(): NodeJS.Timeout {
         }
         taskInflightMap.delete(key)
       } else if (decision === 'alert') {
-        sendTaskInflightMainAgentNotice(entry, now - entry.injectedAt, pendingReason)
+        sendTaskInflightMainAgentNotice(entry, alertElapsedMs, pendingReason)
         entry.alerted = true
       } else if (decision === 'escalate') {
-        sendTaskTimeoutAlert(entry, now - entry.injectedAt, pendingReason)
+        sendTaskTimeoutAlert(entry, alertElapsedMs, pendingReason)
         entry.ownerAlerted = true
       } else if (decision === 'lost' && !entry.parkedEnterSent && isOwnPromptParkedOverfull(pane, getInjectedPrompt(entry.session))) {
         // Not lost: our prompt is parked in a box taller than the pane, where
