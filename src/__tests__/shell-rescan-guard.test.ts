@@ -99,6 +99,12 @@ describe('the five refused shapes, each with the safe form next to it', () => {
     expect(denied(bash('bash -c -o 2>/dev/null pipefail "echo $(id)"'))).toBe(true)
     expect(denied(bash('bash -c -o 2>&1 pipefail "echo $(id)"'))).toBe(true)
     expect(denied(bash('bash -c -o 0<<<x pipefail "echo $(id)"'))).toBe(true)
+    // ... and it does not fill the payload slot either
+    expect(denied(bash('python3 -c 2>/dev/null "print(1) $(id)"'))).toBe(true)
+    // a payload glued to a redirection is still the payload: the words after it are arguments
+    expect(allowed(bash('bash -c "echo hi">/dev/null -x "$(id)"'))).toBe(true)
+    // quoted digits are a word, not a descriptor: "2" is the payload here
+    expect(allowed(bash('bash -c "2">/dev/null -x "$(id)"'))).toBe(true)
     // zsh is armed as a shell too (not installed here: this pins the rule, the conservative direction)
     expect(denied(bash('zsh -c -x "echo $(id)"'))).toBe(true)
     // only a SHELL reads options after -c: python3 runs the word after -c ("-x") as code

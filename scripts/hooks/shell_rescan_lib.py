@@ -425,11 +425,11 @@ def _scan(s, i, out, reg, depth=0, stop=None, notes=None, inherit=None):
             st["shopt"] = 0
 
     def drop_fd_number():
-        # Digits glued to a redirection are its file descriptor (2>/dev/null,
-        # 0<<<x), not a word. Closed as a word they used up the -o operand or the
-        # slot after --, and bash -c -o 2>/dev/null pipefail "$( )" passed
-        # (RESCANMINOR1026).
-        if wbuf and FD_NUMBER.match("".join(wbuf)):
+        # UNQUOTED digits glued to a redirection are its file descriptor
+        # (2>/dev/null, 0<<<x), not a word. Closed as a word they used up the -o
+        # operand or the slot after --, and bash -c -o 2>/dev/null pipefail "$( )"
+        # passed. Quoted digits ("2">x) are a word (RESCANMINOR1026).
+        if wbuf and not present[0] and FD_NUMBER.match("".join(wbuf)):
             del wbuf[:]
             present[0] = False
 
@@ -457,9 +457,7 @@ def _scan(s, i, out, reg, depth=0, stop=None, notes=None, inherit=None):
             continue
         if c == "<" and s.startswith("<<<", i):
             drop_fd_number()
-            keep = st["await"]
             close_word()
-            st["await"] = keep
             i += 3
             st["skip"] = True              # the here-string operand is not a command
             continue
@@ -472,11 +470,9 @@ def _scan(s, i, out, reg, depth=0, stop=None, notes=None, inherit=None):
             i = m.end()
             continue
         if c in "<>":
-            drop_fd_number()
-            keep = st["await"]         # `python3 -c 2>/dev/null "$( )"`: the
-            close_word()               # descriptor is not the payload
-            st["await"] = keep
-            i += 1
+            drop_fd_number()           # `python3 -c 2>/dev/null "$( )"`: the
+            close_word()               # descriptor is not the payload; a word glued
+            i += 1                     # to the redirection IS a word and fills the slot
             while i < n and s[i] in "<>&":
                 i += 1
             st["skip"] = True              # the target is not a command word
