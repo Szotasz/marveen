@@ -129,6 +129,7 @@
  "renderPendingRetries::attr:data-id::r.id": "SAFE-NUM [n=1]: pending retry view id: number (src/pending-retries.ts)",
  "renderPendingRetries::text::t('tasks.retries.meta', { age: formatPendingAge(r.ageMs), n: r.attemptCount })": "SAFE-NUM [n=1]: formatPendingAge returns t() constants with numeric params; attemptCount numeric counter",
  "renderPendingRetries::text::t('tasks.retries.title', { n: rows.length })": "SAFE-NUM [n=1]: rows.map() runs on the same value: an array, .length is a number",
+ "renderQuotaStrip::style::week.widths.map((w) => w.toFixed(3) + 'fr').join(' ')": "SAFE-NUM [n=1]: widths are numbers computed by weekSegments from epoch seconds; toFixed(3) + 'fr' joined by spaces yields only digits, '.', 'fr' and spaces",
  "renderRecallSummary::text::p": "SAFE-PRE [n=1]: parts built earlier in the function from esc()/t() with numeric counts; agent names via esc",
  "renderScheduleList::text::CADENCE_ICON[o] || ''": "SAFE-CONST [n=1]: fixed emoji map keyed by loop literal",
  "renderScheduleList::text::g.tasks.length": "SAFE-NUM [n=1]: array length",
