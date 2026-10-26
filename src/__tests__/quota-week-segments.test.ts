@@ -90,6 +90,61 @@ describe('weekSegments', () => {
     expect(w.widths.reduce((a, b) => a + b, 0)).toBeCloseTo(100, 6)
   })
 
+  // Review of #2082: where DST starts AT local midnight with a negative UTC
+  // offset, 00:00 of that Sunday does not exist. A midnight computed from
+  // offsets fell back to Saturday 23:00 twice: a zero-width segment, and
+  // Sunday 01:00-02:00 drawn under "Szombat". The cut must be the day's real
+  // first instant, 01:00.
+  for (const [zone, reset, nowOnSunday] of [
+    // Sunday 2026-09-06 02:00 -03 (the reviewer's case); Sunday 00:30 does not exist, 01:30 does
+    ['America/Santiago', Date.UTC(2026, 8, 6, 5, 0) / 1000, Date.UTC(2026, 8, 6, 4, 30) / 1000],
+    // Sunday 2026-03-08 02:00 CDT
+    ['America/Havana', Date.UTC(2026, 2, 8, 6, 0) / 1000, Date.UTC(2026, 2, 8, 5, 30) / 1000],
+  ] as const) {
+    it(`${zone}: DST starts at midnight -- no zero-width segment, the Sunday cut is 01:00, now on Sunday is under Vasárnap`, () => {
+      const w = weekSegments(reset, nowOnSunday, 'hu', zone)!
+      const hm = (sec: number) =>
+        new Date(sec * 1000).toLocaleTimeString('hu-HU', { timeZone: zone, hour: '2-digit', minute: '2-digit' })
+      expect(w.labels).toEqual(['Vasárnap', 'Hétfő', 'Kedd', 'Szerda', 'Csütörtök', 'Péntek', 'Szombat', 'Vasárnap'])
+      expect(w.starts.map(hm)).toEqual(['01:00', ...Array(6).fill('00:00'), '01:00'])
+      expect(w.widths.every((x) => x > 0)).toBe(true)
+      expect(w.widths[0]).toBeCloseTo(pct(23), 6) // the window starts Sunday 01:00, standard time
+      expect(w.widths[6]).toBeCloseTo(pct(24), 6) // Saturday ends at Sunday 01:00 DST
+      expect(w.widths[7]).toBeCloseTo(pct(1), 6)
+      expect(w.widths.reduce((a, b) => a + b, 0)).toBeCloseTo(100, 6)
+      let left = 0
+      let i = 0
+      while (left + w.widths[i] <= w.nowPct) left += w.widths[i++]
+      expect(i).toBe(7)
+      expect(w.labels[i]).toBe('Vasárnap')
+    })
+  }
+
+  // Review of #2082: in Budapest and UTC the DST change is far enough from
+  // midnight that a midnight computed with ONE offset correction is also
+  // right, so the cases above cannot tell. Lord Howe (+10:30 -> +11 at
+  // 02:00) and Chatham (+12:45 -> +13:45 at 02:45) change offset within
+  // half a day after the DST day's midnight, and the single correction cut
+  // Saturday at 23:30 / 23:00 there.
+  for (const [zone, reset, sundayH, labels] of [
+    // Wednesday 2026-10-07 09:00 +11; DST starts Sunday 2026-10-04
+    ['Australia/Lord_Howe', Date.UTC(2026, 9, 6, 22, 0) / 1000, 23.5,
+      ['Szerda', 'Csütörtök', 'Péntek', 'Szombat', 'Vasárnap', 'Hétfő', 'Kedd', 'Szerda']],
+    // Wednesday 2026-09-30 09:00 +13:45; DST starts Sunday 2026-09-27
+    ['Pacific/Chatham', Date.UTC(2026, 8, 29, 19, 15) / 1000, 23,
+      ['Szerda', 'Csütörtök', 'Péntek', 'Szombat', 'Vasárnap', 'Hétfő', 'Kedd', 'Szerda']],
+  ] as const) {
+    it(`${zone}: fractional-offset DST start -- every inner cut at local 00:00, Sunday is ${sundayH} h`, () => {
+      const w = weekSegments(reset, reset - 86400, 'hu', zone)!
+      const hm = (sec: number) =>
+        new Date(sec * 1000).toLocaleTimeString('hu-HU', { timeZone: zone, hour: '2-digit', minute: '2-digit' })
+      expect(w.labels).toEqual(labels)
+      expect(w.starts.slice(1).map(hm)).toEqual(Array(7).fill('00:00'))
+      expect(w.widths[4]).toBeCloseTo(pct(sundayH), 6)
+      expect(w.widths.reduce((a, b) => a + b, 0)).toBeCloseTo(100, 6)
+    })
+  }
+
   it('Thursday reset: the labels follow the window, not the calendar', () => {
     const thuReset = MONDAY_RESET - 4 * 86400 // Thursday 2026-10-01 09:00
     const w = weekSegments(thuReset, TUE_2317, 'hu', TZ)!
@@ -224,6 +279,24 @@ describe('renderQuotaStrip weekly row', () => {
     expect(week).toContain('class="quota-bar-days"')
     expect(week).not.toContain('no-narrow')
     expect([7, 8]).toContain((week.match(/class="day-narrow">[A-Z]<\/span>/g) || []).length)
+  })
+
+  // A segment under half a day (100/14 %) keeps its column but no label: a
+  // 2 h sliver has no room for one. Reset at 02:00 local, 3 days ahead, so
+  // the window's last day is a ~2 h sliver in whatever zone the suite runs.
+  it('a sub-half-day sliver keeps its column but gets an empty label', () => {
+    const r = new Date()
+    r.setDate(r.getDate() + 3)
+    r.setHours(2, 0, 0, 0)
+    const [week] = render({ status: 'ok', ageSec: 5,
+      sevenDay: { usedPercentage: 34, resetsAt: Math.floor(r.getTime() / 1000) } })
+    const fr = /grid-template-columns:([^"]+)"/.exec(week)![1].split(' ').map((x) => parseFloat(x))
+    expect(fr).toHaveLength(8)
+    expect(fr[7]).toBeLessThan(100 / 14)
+    expect(fr.slice(0, 7).every((x) => x >= 100 / 14)).toBe(true)
+    const days = week.slice(week.indexOf('class="quota-bar-days'))
+    expect((days.match(/class="day-full"/g) || []).length).toBe(7)
+    expect(days).toMatch(/<span><\/span><\/div>/) // the last column is the empty one
   })
 
   it('missing / null resetsAt: plain bar, no division, no marker', () => {

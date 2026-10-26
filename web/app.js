@@ -13035,24 +13035,30 @@ function weekSegments(resetsAt, nowSec, lang, timeZone) {
   const start = resetsAt - WEEK
   if (resetsAt <= nowSec || nowSec < start) return null
   const locale = lang === 'en' ? 'en-US' : 'hu-HU'
-  const fmt = new Intl.DateTimeFormat('en-US', { timeZone, hourCycle: 'h23',
-    year: 'numeric', month: 'numeric', day: 'numeric', hour: 'numeric', minute: 'numeric', second: 'numeric' })
-  const parts = (sec) => {
+  const fmt = new Intl.DateTimeFormat('en-US', { timeZone, year: 'numeric', month: 'numeric', day: 'numeric' })
+  // Local calendar date of an instant as one comparable number (YYYYMMDD).
+  const dateKey = (sec) => {
     const p = {}
     for (const x of fmt.formatToParts(new Date(sec * 1000))) p[x.type] = Number(x.value)
-    return p
+    return p.year * 10000 + p.month * 100 + p.day
   }
-  // UTC offset in seconds at an instant; the next local midnight is found by
-  // correcting the wall-clock midnight with it twice, so a 23 h or 25 h DST
-  // day still ends at its real midnight.
-  const offsetAt = (sec) => {
-    const p = parts(sec)
-    return Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second) / 1000 - sec
-  }
+  // The next day's first instant: the first second whose local DATE differs
+  // from sec's, found by binary search in (sec, sec + 26 h]. No wall-clock
+  // arithmetic, so a 23 h / 25 h DST day ends where it really ends, and on a
+  // day whose 00:00 does not exist (DST starting AT midnight, e.g.
+  // America/Santiago 2026-09-06) the cut is its real first instant, 01:00 --
+  // a 00:00 computed from offsets fell back to the previous day's 23:00 and
+  // left a zero-width segment (review of #2082).
   const midnightAfter = (sec) => {
-    const p = parts(sec)
-    const wall = Date.UTC(p.year, p.month - 1, p.day + 1) / 1000
-    return wall - offsetAt(wall - offsetAt(wall))
+    const day = dateKey(sec)
+    let lo = Math.floor(sec)
+    let hi = lo + 26 * 3600
+    while (hi - lo > 1) {
+      const mid = Math.floor((lo + hi) / 2)
+      if (dateKey(mid) === day) lo = mid
+      else hi = mid
+    }
+    return hi
   }
   const bounds = [start]
   for (let m = midnightAfter(start); m < resetsAt && bounds.length < 9; m = midnightAfter(m)) bounds.push(m)
