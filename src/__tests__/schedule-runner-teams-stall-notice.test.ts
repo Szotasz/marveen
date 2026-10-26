@@ -26,9 +26,9 @@ import {
 //   * stage 1 fires it only when the alert claim was won AND the main-agent
 //     message landed -- a lost race or a DB error must not reach Teams.
 //
-// src/web/agent-scaffold.ts is not part of this checkout, so BOTH of its
-// importers are mocked here (agent-process.js and heartbeat-metrics-inject.js):
-// loading either would fail the whole suite on the missing module.
+// agent-process.js is stubbed as in schedule-runner-retry-missing.test.ts: no
+// case here may touch a real tmux session, and resolveAgentProvider is pinned
+// so no target depends on the machine's channel config.
 
 const mockSendTeamsMessage = vi.fn(
   async (_creds: TeamsCreds = CREDS, _stateDir = '', _conversationId = '', _text = '') => ({ status: 201, messageId: 'm-1' }),
@@ -69,8 +69,9 @@ vi.mock('../db.js', () => ({
   createAgentMessage: (...a: unknown[]) => mockCreateAgentMessage(...(a as [])),
 }))
 
-// channelStateDir and readTeamsCreds must stay REAL: the suite pins the state
-// directory and the .env lookup the runner hands them. Only the provider's own
+// channelStateDir and readTeamsCreds stay REAL: the notifyTaskTargetOfStall
+// cases pin the state directory and the .env candidate list the runner builds
+// (readTeamsCreds itself is injected there). Only the provider's own
 // sends are neutralized, as in schedule-runner-retry-missing.test.ts.
 vi.mock('../channel-provider.js', async (importOriginal) => {
   const real = await importOriginal<typeof import('../channel-provider.js')>()
@@ -112,12 +113,6 @@ vi.mock('../web/agent-process.js', () => ({
   sendEnterToSession: vi.fn(),
   clearStaleParkedInput: vi.fn(() => false),
   resolveAgentProvider: () => 'telegram',
-}))
-
-// Second importer of the withheld agent-scaffold.ts -- mocked for the same
-// reason as agent-process.js above.
-vi.mock('../web/heartbeat-metrics-inject.js', () => ({
-  collectHeartbeatMetricsBlock: vi.fn(() => ''),
 }))
 
 // -- fixtures --------------------------------------------------------------

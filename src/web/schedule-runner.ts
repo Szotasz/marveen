@@ -2772,7 +2772,7 @@ function pendingRetryAlertText(view: PendingRetryView, prefix: string, ageMinute
 // no operator detail (tmux, MCP, dashboard page, login steps) -- because the
 // recipients are the humans waiting for the output, not the person who has to
 // fix the session. Best effort and never a throw: the stall is already being
-// escalated through the stage-1/stage-2 paths above, so a failed Teams send
+// escalated through the stage-1/stage-2 paths below, so a failed Teams send
 // must not take the tick down with it.
 export type StallNoticeOutcome = 'sent' | 'not-teams' | 'no-target' | 'failed'
 
