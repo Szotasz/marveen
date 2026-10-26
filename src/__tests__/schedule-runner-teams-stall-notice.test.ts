@@ -172,6 +172,9 @@ async function flushPromises(): Promise<void> {
 describe('notifyTaskTargetOfStall', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    // clearAllMocks keeps implementations: without this, the throwing
+    // createAgentMessage of one case leaks into the next.
+    mockCreateAgentMessage.mockReset()
     mockMarkPendingTaskRetryAlert.mockReturnValue(true)
   })
 
@@ -260,6 +263,22 @@ describe('notifyTaskTargetOfStall', () => {
     expect(outcome).toBe('no-target')
     expect(send).not.toHaveBeenCalled()
     expect(vi.mocked(logger.info)).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(logger.info).mock.calls[0][0]).toMatchObject({ reason: 'unbound' })
+  })
+
+  it("names an opted-out task ('none') as the reason", async () => {
+    const send = vi.fn(
+      async (_creds: TeamsCreds, _stateDir: string, _conversationId: string, _text: string) => ({ status: 201 }),
+    )
+
+    const outcome = await notifyTaskTargetOfStall(teamsTask({ telegramChatId: 'none' }), 'teamsagent', 30, {
+      resolveTarget: () => teamsTarget(null),
+      send,
+    })
+
+    expect(outcome).toBe('no-target')
+    expect(send).not.toHaveBeenCalled()
+    expect(vi.mocked(logger.info).mock.calls[0][0]).toMatchObject({ reason: 'opted-out' })
   })
 
   it('reports the ambiguity count when the target is an unpinned 2+ contact binding', async () => {
@@ -275,7 +294,7 @@ describe('notifyTaskTargetOfStall', () => {
     expect(outcome).toBe('no-target')
     expect(send).not.toHaveBeenCalled()
     expect(vi.mocked(logger.info)).toHaveBeenCalledTimes(1)
-    expect(vi.mocked(logger.info).mock.calls[0][0]).toMatchObject({ task: 'napi-riport', agent: 'teamsagent', ambiguousCandidates: 2 })
+    expect(vi.mocked(logger.info).mock.calls[0][0]).toMatchObject({ task: 'napi-riport', agent: 'teamsagent', reason: 'ambiguous', ambiguousCandidates: 2 })
   })
 
   it("resolves 'failed' on a send error, logs the message only, and never leaks the secret", async () => {
@@ -342,6 +361,9 @@ describe('notifyTaskTargetOfStall', () => {
 describe('sendPendingRetryMainAgentNotice: Teams stall notice', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    // clearAllMocks keeps implementations: without this, the throwing
+    // createAgentMessage of one case leaks into the next.
+    mockCreateAgentMessage.mockReset()
     mockMarkPendingTaskRetryAlert.mockReturnValue(true)
   })
 
@@ -355,9 +377,20 @@ describe('sendPendingRetryMainAgentNotice: Teams stall notice', () => {
     expect(mockSendTeamsMessage.mock.calls[0][2]).toBe(CONVERSATION)
     // The row's real age (pendingView: two hours), not a stand-in.
     expect(String(mockSendTeamsMessage.mock.calls[0][3])).toContain('120 perce')
+    expect(mockClearPendingTaskRetryAlert).not.toHaveBeenCalled()
+  })
+
+  it('keeps the alert claim when the Teams send fails', async () => {
+    const now = Date.now()
+    mockSendTeamsMessage.mockRejectedValueOnce(new Error('Teams API 503: unavailable'))
+    sendPendingRetryMainAgentNotice(pendingView(now), now, teamsTask())
+    await flushPromises()
+
+    expect(mockSendTeamsMessage).toHaveBeenCalledTimes(1)
     // A failed Teams send is the notice's own business: it must never roll
     // back the alert claim that was already made.
     expect(mockClearPendingTaskRetryAlert).not.toHaveBeenCalled()
+    expect(vi.mocked(logger.warn).mock.calls.map(c => c[1])).toContain('Teams stall notice failed')
   })
 
   it('sends nothing when the alert claim was lost to a racing tick', async () => {
@@ -389,6 +422,8 @@ describe('sendPendingRetryMainAgentNotice: Teams stall notice', () => {
     await flushPromises()
 
     expect(mockCreateAgentMessage).toHaveBeenCalledTimes(1)
+    // The main-agent message landed: the skip is down to the missing task.
+    expect(mockCreateAgentMessage.mock.results[0].type).toBe('return')
     expect(mockSendTeamsMessage).not.toHaveBeenCalled()
   })
 })

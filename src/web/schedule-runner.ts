@@ -2793,7 +2793,8 @@ export async function notifyTaskTargetOfStall(
     const target = (deps.resolveTarget ?? resolveTaskChannelTarget)({ ...task, agent: agentName })
     if (target.provider !== 'teams') return 'not-teams'
     if (!target.chatId) {
-      logger.info({ task: task.name, agent: agentName, ambiguousCandidates: target.ambiguousCandidates }, 'Teams stall notice skipped: no target conversation for the task')
+      const reason = task.telegramChatId === 'none' ? 'opted-out' : target.ambiguousCandidates ? 'ambiguous' : 'unbound'
+      logger.info({ task: task.name, agent: agentName, reason, ambiguousCandidates: target.ambiguousCandidates }, 'Teams stall notice skipped: no target conversation for the task')
       return 'no-target'
     }
     // The Teams bot credentials live in the state dir of the agent that owns
