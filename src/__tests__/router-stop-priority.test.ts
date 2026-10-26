@@ -368,6 +368,38 @@ describe('a STOP never types into a pane that is asking something (#1809 review,
     expect(liveStatus.get(251)).toBe('pending')
     expect(heldNotices('max')).toHaveLength(1)
   })
+
+  // #2143 (PR #2152 review): the guard refuses either before the first key ('aborted-guard',
+  // nothing typed) or before the submitting Enter ('aborted-guard-typed', the text sits unsent in
+  // the input box). The router must keep the row pending for BOTH: a STOP marked delivered while
+  // its text is unsubmitted would never be typed again. The notice must say which one happened.
+  it.each([
+    { outcome: 'aborted-guard', id: 261, agent: 'ned', says: 'was NOT typed', saysNot: 'WAS typed' },
+    { outcome: 'aborted-guard-typed', id: 271, agent: 'oli', says: 'WAS typed into the pane but NOT submitted', saysNot: 'was NOT typed' },
+  ])('(h7) ⛔ guard refusal $outcome: the row stays pending, nothing is marked delivered, the notice says "$says"', async ({ outcome, id, agent, says, saysNot }) => {
+    let captures = 0
+    mockCapturePane.mockImplementation(() => (captures++ === 0 ? BUSY_PANE : PERMISSION_PANE))
+    mockSendPrompt.mockImplementation(async () => outcome as unknown as 'sent')
+    queue(stop(id, agent))
+    await tickAt(T0)
+    expect(mockSendPrompt).toHaveBeenCalledTimes(1)
+    expect(mockMarkDelivered).not.toHaveBeenCalled()
+    expect(liveStatus.get(id)).toBe('pending')
+    const notices = heldNotices(agent)
+    expect(notices).toHaveLength(1)
+    const text = String(notices[0][2])
+    expect(text).toContain(`#${id}`)
+    expect(text).toContain('TOOL-PERMISSION PROMPT')
+    expect(text).toContain(says)
+    expect(text).not.toContain(saysNot)
+    expect(text).toContain('The row stays pending')
+    // The row is still offered: the next tick on a pane that lets the STOP through delivers it.
+    mockCapturePane.mockImplementation(() => BUSY_PANE)
+    mockSendPrompt.mockImplementation(async () => 'sent' as const)
+    await tickAt(T0 + 5_000)
+    expect(mockSendPrompt).toHaveBeenCalledTimes(2)
+    expect(liveStatus.get(id)).toBe('delivered')
+  })
 })
 
 describe('the hold rules as pure functions', () => {

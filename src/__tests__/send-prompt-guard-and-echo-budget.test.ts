@@ -224,7 +224,7 @@ describe('#2144: the pre-Enter waits of one call share one budget', () => {
     return passStart >= 0 ? total + (last - passStart) : total
   }
 
-  it('the wait part of a frozen-pane send is bounded the same for a 5.4k and a 53k prompt; the first send keeps its full echo wait; the call ends on the retry-limit give-up', async () => {
+  it('the wait part of a frozen-pane send is bounded the same for a 5.4k and a 53k prompt; the first send keeps its full echo wait; the call ends on the spent-budget give-up, before the retry limit', async () => {
     vi.useFakeTimers()
     const warn = vi.spyOn(logger, 'warn')
     try {
@@ -242,6 +242,12 @@ describe('#2144: the pre-Enter waits of one call share one budget', () => {
         await runUntil(() => holder.done)
         expect(holder.value, `${items} items`).toBe('sent') // develop's give-up path returns 'sent'
         expect(warn.mock.calls.some((c) => String(c[1]).includes('prompt still parked after retries'))).toBe(true)
+        // The give-up came from the spent budget, not from the attempt limit: one clear-and-resend
+        // used the rest of the budget, so no further follow-up was made. Without the budgetSpent
+        // branch the loop runs on to SUBMIT_RETRY_MAX_ATTEMPTS (more Ctrl-C resends and Enters).
+        expect(warn.mock.calls.some((c) => String(c[1]).includes('pre-Enter wait budget spent; no further follow-ups')), `${items} items: budget give-up`).toBe(true)
+        expect(h.s.ctrlC, `${items} items: clear-and-resends`).toBe(1)
+        expect(h.s.enters, `${items} items: Enters`).toHaveLength(2)
         const first = h.s.enters[0]
         expect(first.at - first.lastChunkAt, `${items} items: first echo wait`).toBeGreaterThanOrEqual(TYPED_ECHO_MAX_MS)
         waitParts.push(holder.at - typingMs())
