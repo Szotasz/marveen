@@ -78,8 +78,11 @@ SHELL_C_FLAG = re.compile(r"^-[A-Za-z]*c$")
 # php's -B and -R run code too, so they are inline flags ONLY here
 # (RESCANMINOR1026); python3 -B and python3 -R are ordinary options.
 PHP_WORD = re.compile(r"^php[0-9.]*$")
+PHP_RUN_FLAGS = ("-B", "-R", "--run", "--process-begin", "--process-code", "--process-end")
+FD_NUMBER = re.compile(r"^[0-9]+$")
 # -c, -e, -E, --eval, node's -p/--print, php's -r, and the clustered short
-# forms a shell takes (bash -lc).
+# forms a shell takes (bash -lc). php's -B/-R and the long forms of its
+# run-code flags are added by _inline_flag(), for php only.
 # ⚠️Recognising the FLAG is not the same as inspecting the payload: if that
 # payload is SINGLE-quoted the rule deliberately does not look inside it, so
 # `bash -lc 'echo "$(x)"'` passes. That is the measured 0.159% exemption, and it
@@ -186,9 +189,9 @@ def _interp(word):
 
 def _inline_flag(st, word):
     """A word that makes an armed interpreter read code in the NEXT word. php's
-    -B and -R run code too, but only for php: on python3 the same letters are
-    ordinary options (RESCANMINOR1026)."""
-    return bool(INLINE_FLAG.match(word)) or (st.get("php", False) and word in ("-B", "-R"))
+    -B and -R (and --run, --process-begin/-code/-end) run code too, but only for
+    php: on python3 the same letters are ordinary options (RESCANMINOR1026)."""
+    return bool(INLINE_FLAG.match(word)) or (st.get("php", False) and word in PHP_RUN_FLAGS)
 
 
 def _strip_heredoc_escapes(body):
@@ -421,6 +424,15 @@ def _scan(s, i, out, reg, depth=0, stop=None, notes=None, inherit=None):
             st["sc"] = st["shell"] and bool(SHELL_C_FLAG.match(u))
             st["shopt"] = 0
 
+    def drop_fd_number():
+        # Digits glued to a redirection are its file descriptor (2>/dev/null,
+        # 0<<<x), not a word. Closed as a word they used up the -o operand or the
+        # slot after --, and bash -c -o 2>/dev/null pipefail "$( )" passed
+        # (RESCANMINOR1026).
+        if wbuf and FD_NUMBER.match("".join(wbuf)):
+            del wbuf[:]
+            present[0] = False
+
     while i < n:
         c = s[i]
         if c == "\\":
@@ -444,6 +456,7 @@ def _scan(s, i, out, reg, depth=0, stop=None, notes=None, inherit=None):
             i = end
             continue
         if c == "<" and s.startswith("<<<", i):
+            drop_fd_number()
             keep = st["await"]
             close_word()
             st["await"] = keep
@@ -459,6 +472,7 @@ def _scan(s, i, out, reg, depth=0, stop=None, notes=None, inherit=None):
             i = m.end()
             continue
         if c in "<>":
+            drop_fd_number()
             keep = st["await"]         # `python3 -c 2>/dev/null "$( )"`: the
             close_word()               # descriptor is not the payload
             st["await"] = keep

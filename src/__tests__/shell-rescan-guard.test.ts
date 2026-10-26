@@ -92,6 +92,17 @@ describe('the five refused shapes, each with the safe form next to it', () => {
     expect(denied(bash('bash -c -x -- "echo $(id)"'))).toBe(true)
     expect(denied(bash('bash -c - "echo $(id)"'))).toBe(true)
     expect(denied(bash('bash -lc -e "echo $(id)"'))).toBe(true)
+    // -O and +O owe an operand too (bash -c -O extglob 'echo x' runs echo x)
+    expect(denied(bash('bash -c -O extglob "echo $(id)"'))).toBe(true)
+    expect(denied(bash('bash -c +O extglob "echo $(id)"'))).toBe(true)
+    // a redirection's fd number is not a word: it must not use up the operand of -o
+    expect(denied(bash('bash -c -o 2>/dev/null pipefail "echo $(id)"'))).toBe(true)
+    expect(denied(bash('bash -c -o 2>&1 pipefail "echo $(id)"'))).toBe(true)
+    expect(denied(bash('bash -c -o 0<<<x pipefail "echo $(id)"'))).toBe(true)
+    // zsh is armed as a shell too (not installed here: this pins the rule, the conservative direction)
+    expect(denied(bash('zsh -c -x "echo $(id)"'))).toBe(true)
+    // only a SHELL reads options after -c: python3 runs the word after -c ("-x") as code
+    expect(allowed(bash('python3 -c -x "$(id)"'))).toBe(true)
     // after the payload, -x is an argument of the script, not an option before it
     expect(allowed(bash("bash -c 'echo hi' -x \"$(id)\""))).toBe(true)
     // -e on a shell is not -c: the slot closes on the next word, so -x fills it
@@ -115,6 +126,10 @@ describe('the five refused shapes, each with the safe form next to it', () => {
     expect(denied(bash('bash -c -- "$(id)" -c "$(id)"'))).toBe(true)
     // after the payload that followed --, a later -c arms nothing
     expect(allowed(bash('bash -c -- "echo hi" -c "$(id)"'))).toBe(true)
+    // the same when that payload is an empty word
+    expect(allowed(bash('bash -c -- "" -c "$(id)"'))).toBe(true)
+    // after --, an option-looking word IS the payload (bash runs "-x"), so "$(id)" is only $0
+    expect(allowed(bash('bash -c -- -x "$(id)"'))).toBe(true)
   })
 
   it('A: php -B and -R run code, so they are inline flags -- for php only (RESCANMINOR1026)', () => {
@@ -122,9 +137,15 @@ describe('the five refused shapes, each with the safe form next to it', () => {
     expect(denied(bash('php -B "echo \'$(id)\';"'))).toBe(true)
     // glued to its payload
     expect(denied(bash('php -R"echo \'$(id)\';"'))).toBe(true)
-    // controls: the same letters on python3 are ordinary options
+    // the long forms run code as well (php --run is -r, --process-code is -R ...)
+    expect(denied(bash('php --run "echo \'$(id)\';"'))).toBe(true)
+    expect(denied(bash('php --process-code "echo \'$(id)\';"'))).toBe(true)
+    expect(denied(bash('php --process-begin "echo \'$(id)\';"'))).toBe(true)
+    expect(denied(bash('php --process-end "echo \'$(id)\';"'))).toBe(true)
+    // controls: the same letters on python3 are ordinary options, glued or not
     expect(allowed(bash('python3 -B "$(id)/x.py"'))).toBe(true)
     expect(allowed(bash('python3 -R "$(id)/x.py"'))).toBe(true)
+    expect(allowed(bash('python3 -R"x$(id)"'))).toBe(true)
   })
 
   it('more payload shapes: clustered and glued flags, env, and a nested quote inside $( )', () => {
