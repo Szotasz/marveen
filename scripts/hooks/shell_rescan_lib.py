@@ -69,6 +69,15 @@ HEREDOC_HDR = re.compile(
 PROMPT_EXPAND = re.compile(
     r"\$\{!?(?:[A-Za-z_][A-Za-z0-9_]*(?:\[[^]]*\])?|[0-9]+|[*@#?$!-])@P\}")
 INTERP_WORD = re.compile(r"^(?:python|node|nodejs|perl|ruby|php|bash|sh|zsh)[0-9.]*$")
+# The interpreters that keep reading options after -c (RESCANMINOR1026).
+SHELL_WORD = re.compile(r"^(?:bash|sh|zsh)[0-9.]*$")
+# A shell's -c, alone or clustered (-lc, -xc); only this flag makes the shell
+# read options before its payload. -e/-E on a shell is errexit, not a payload
+# flag (RESCANMINOR1026).
+SHELL_C_FLAG = re.compile(r"^-[A-Za-z]*c$")
+# php's -B and -R run code too, so they are inline flags ONLY here
+# (RESCANMINOR1026); python3 -B and python3 -R are ordinary options.
+PHP_WORD = re.compile(r"^php[0-9.]*$")
 # -c, -e, -E, --eval, node's -p/--print, php's -r, and the clustered short
 # forms a shell takes (bash -lc).
 # ⚠️Recognising the FLAG is not the same as inspecting the payload: if that
@@ -173,6 +182,13 @@ def _arith(s, i):
 
 def _interp(word):
     return bool(INTERP_WORD.match(word.rsplit("/", 1)[-1]))
+
+
+def _inline_flag(st, word):
+    """A word that makes an armed interpreter read code in the NEXT word. php's
+    -B and -R run code too, but only for php: on python3 the same letters are
+    ordinary options (RESCANMINOR1026)."""
+    return bool(INLINE_FLAG.match(word)) or (st.get("php", False) and word in ("-B", "-R"))
 
 
 def _strip_heredoc_escapes(body):
@@ -293,9 +309,22 @@ def _scan(s, i, out, reg, depth=0, stop=None, notes=None, inherit=None):
     n = len(s)
     st = dict(inherit) if inherit else {"interp": False, "await": False,
                                         "lead": True, "skip": False,
-                                        "optarg": False, "glued": False}
+                                        "optarg": False, "glued": False,
+                                        "shell": False, "sc": False,
+                                        "dd": False, "shopt": 0,
+                                        "php": False}
     st.setdefault("optarg", False)
     st.setdefault("glued", False)
+    # shell = the armed interpreter is bash/sh/zsh; sc = the current await was
+    # set by that shell's -c; dd = the current await was set by a `--`; shopt =
+    # how many option OPERANDS are still due (bash -c -o pipefail: pipefail is
+    # an operand of -o, not the payload); php = the interpreter is php
+    # (RESCANMINOR1026).
+    st.setdefault("shell", False)
+    st.setdefault("sc", False)
+    st.setdefault("dd", False)
+    st.setdefault("shopt", 0)
+    st.setdefault("php", False)
     wbuf = []
     present = [False]                     # a QUOTED empty string is still a word
     pending = []                          # heredocs opened on the current line
@@ -310,12 +339,35 @@ def _scan(s, i, out, reg, depth=0, stop=None, notes=None, inherit=None):
             st["skip"] = False            # does NOT consume the payload slot either
             return
         awaiting, st["await"] = st["await"], False   # a quoted EMPTY word IS the payload slot
+        dd, st["dd"] = st["dd"], False
         if not w:
+            if awaiting and dd:
+                st["interp"] = False   # the slot after `--` is filled: no option follows
             return
         u = _unescape(w)
+        # M2: a shell keeps reading options after -c; the payload is its first
+        # NON-option word (RESCANMINOR1026).
+        if awaiting and st["interp"] and st["sc"] and not dd:
+            if st["shopt"] > 0:
+                st["shopt"] -= 1       # the operand of -o/-O (bash -c -o pipefail), not the payload
+                st["await"] = True
+                return
+            if u in ("--", "-"):
+                st["await"] = True     # both end a shell's options: the payload is the NEXT word
+                st["dd"] = True
+                return
+            if len(u) > 1 and u[0] in "-+":
+                if re.match(r"^[-+][A-Za-z]+$", u):
+                    st["shopt"] = u[1:].count("o") + u[1:].count("O")   # -o, +O, -xo, -ox ...
+                st["await"] = True     # an option, not the payload: the slot stays open
+                return
         if awaiting and u == "--":
-            st["await"] = True         # `bash -c -- "$( )"`: the payload is the NEXT word
-            return
+            st["await"] = True         # a shell runs the NEXT word; python3 and perl take `--`
+            st["dd"] = True            # itself as the code, so for them this is a deliberate
+            return                     # over-check (RESCANMINOR1026)
+        if awaiting and dd:
+            st["interp"] = False       # M1: the slot after `--` is filled; nothing after it
+                                       # is an option, so a later -c/-e arms nothing
         lead = st["lead"]
         base = u.rsplit("/", 1)[-1]
         optarg, st["optarg"] = st["optarg"], False
@@ -355,13 +407,19 @@ def _scan(s, i, out, reg, depth=0, stop=None, notes=None, inherit=None):
             # a measured false positive on ordinary work.
             if lead:
                 st["interp"] = True
+                st["shell"] = bool(SHELL_WORD.match(base))
+                st["php"] = bool(PHP_WORD.match(base))
             return
         glued, st["glued"] = st["glued"], False
         if glued:
             return                     # -c"payload": the payload was THIS word
         head = u.split('"', 1)[0].split("'", 1)[0]      # -c"..." is a flag too
-        if st["interp"] and (INLINE_FLAG.match(u) or (head and INLINE_FLAG.match(head))):
+        if st["interp"] and (_inline_flag(st, u) or (head and _inline_flag(st, head))):
             st["await"] = True
+            # A shell's own -c lets it read options before its payload; any other
+            # flag closes on the next word (RESCANMINOR1026).
+            st["sc"] = st["shell"] and bool(SHELL_C_FLAG.match(u))
+            st["shopt"] = 0
 
     while i < n:
         c = s[i]
@@ -449,7 +507,9 @@ def _scan(s, i, out, reg, depth=0, stop=None, notes=None, inherit=None):
             continue
         if c in SEPARATORS:
             close_word()
-            st.update({"interp": False, "await": False, "lead": True, "skip": False})
+            st.update({"interp": False, "await": False, "lead": True, "skip": False,
+                       "shell": False, "sc": False, "dd": False, "shopt": 0,
+                       "php": False})
             i += 1
             if c == "\n" and pending:
                 for dash, delim, quoted in pending:
@@ -483,7 +543,7 @@ def _scan(s, i, out, reg, depth=0, stop=None, notes=None, inherit=None):
         if c == '"':
             present[0] = True
             head = _unescape("".join(wbuf))
-            glued_flag = st["interp"] and bool(INLINE_FLAG.match(head))
+            glued_flag = st["interp"] and _inline_flag(st, head)
             take = st["await"] or glued_flag
             if glued_flag:
                 st["glued"] = True
@@ -500,8 +560,8 @@ def _scan(s, i, out, reg, depth=0, stop=None, notes=None, inherit=None):
             i = j
             continue
         if _is_subst(s, i):
-            glued_here = st["interp"] and bool(
-                INLINE_FLAG.match(_unescape("".join(wbuf))))
+            glued_here = st["interp"] and _inline_flag(
+                st, _unescape("".join(wbuf)))
             if st["await"] or glued_here:
                 out.append(("A_INLINE_INTERP_DQ", "$( )"))
             wbuf.append("\x00")           # a substitution IS a word: without this

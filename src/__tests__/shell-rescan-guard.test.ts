@@ -81,6 +81,52 @@ describe('the five refused shapes, each with the safe form next to it', () => {
     expect(denied(bash('bash -c -- "echo $(id)"'))).toBe(true)
   })
 
+  it('A: a shell reads options after -c, so the payload is its first non-option word (RESCANMINOR1026)', () => {
+    expect(denied(bash('bash -c -x "echo $(id)"'))).toBe(true)
+    expect(denied(bash('bash -c -o pipefail "echo $(id)"'))).toBe(true)
+    expect(denied(bash('sh -c -x "echo $(id)"'))).toBe(true)
+    expect(denied(bash('sh -c -o errexit "echo $(id)"'))).toBe(true)
+    expect(denied(bash('bash -c +x "echo $(id)"'))).toBe(true)
+    expect(denied(bash('bash -c -xo pipefail "echo $(id)"'))).toBe(true)
+    expect(denied(bash('bash -c -ox pipefail "echo $(id)"'))).toBe(true)
+    expect(denied(bash('bash -c -x -- "echo $(id)"'))).toBe(true)
+    expect(denied(bash('bash -c - "echo $(id)"'))).toBe(true)
+    expect(denied(bash('bash -lc -e "echo $(id)"'))).toBe(true)
+    // after the payload, -x is an argument of the script, not an option before it
+    expect(allowed(bash("bash -c 'echo hi' -x \"$(id)\""))).toBe(true)
+    // -e on a shell is not -c: the slot closes on the next word, so -x fills it
+    expect(allowed(bash('bash -e -x "$(id)/run.sh"'))).toBe(true)
+    // same, and -o after the payload takes no operand
+    expect(allowed(bash("bash -c 'echo hi' -o \"$(id)\""))).toBe(true)
+  })
+
+  it('A: the word after -- fills the slot and ends the options; the gaps around -- are pinned (RESCANMINOR1026)', () => {
+    // M1: after -- nothing is an option any more, so the later -c/-e arms nothing
+    expect(allowed(bash('python3 -E -- script.py -c "$(id)"'))).toBe(true)
+    expect(allowed(bash('bash -e -- script.sh -c "$(id)"'))).toBe(true)
+    expect(allowed(bash('perl -p -- f.pl -e "$(id)"'))).toBe(true)
+    expect(denied(bash('bash -c -- "echo ' + BT + 'id' + BT + '"'))).toBe(true)
+    expect(denied(bash('sh -c -- "echo $(id)"'))).toBe(true)
+    // python3 and perl take -- itself as the code, so "$(id)" is only sys.argv[1];
+    // refusing it is a deliberate over-check, pinned here so that a change to it
+    // is a decision, not an accident
+    expect(denied(bash('python3 -c -- "$(id)"'))).toBe(true)
+    // the payload after -- is still checked
+    expect(denied(bash('bash -c -- "$(id)" -c "$(id)"'))).toBe(true)
+    // after the payload that followed --, a later -c arms nothing
+    expect(allowed(bash('bash -c -- "echo hi" -c "$(id)"'))).toBe(true)
+  })
+
+  it('A: php -B and -R run code, so they are inline flags -- for php only (RESCANMINOR1026)', () => {
+    expect(denied(bash('php -R "echo \'$(id)\';"'))).toBe(true)
+    expect(denied(bash('php -B "echo \'$(id)\';"'))).toBe(true)
+    // glued to its payload
+    expect(denied(bash('php -R"echo \'$(id)\';"'))).toBe(true)
+    // controls: the same letters on python3 are ordinary options
+    expect(allowed(bash('python3 -B "$(id)/x.py"'))).toBe(true)
+    expect(allowed(bash('python3 -R "$(id)/x.py"'))).toBe(true)
+  })
+
   it('more payload shapes: clustered and glued flags, env, and a nested quote inside $( )', () => {
     expect(denied(bash('bash -lc "echo $(id)"'))).toBe(true)
     expect(denied(bash('env python3 -c "print(\'$(id)\')"'))).toBe(true)
