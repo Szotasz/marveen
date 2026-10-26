@@ -10,7 +10,7 @@ import { tmpdir } from 'node:os'
 import { Readable, Writable } from 'node:stream'
 import { setTimeout as sleep } from 'node:timers/promises'
 
-const H = vi.hoisted(() => ({ root: '', fleetExportSawZipEnd: undefined as boolean | undefined }))
+const H = vi.hoisted(() => ({ root: '', fleetExportSawZipEnd: undefined as boolean | undefined, queued: 0 }))
 const tmpRoot = mkdtempSync(join(tmpdir(), 'skills-dir-queue-'))
 H.root = tmpRoot
 const fakeHome = join(tmpRoot, 'home')
@@ -49,12 +49,19 @@ vi.mock('../web/fleet-transfer.js', () => ({
     return { applied: true }
   },
 }))
+// Counting wrapper around the real queue: the tests below need to know when an
+// operation has been taken by the queue, without waiting on a fixed sleep.
+vi.mock('../web/skills-dir-queue.js', async (orig) => {
+  const real = await orig<typeof import('../web/skills-dir-queue.js')>()
+  return { serializeSkillsDir: <T>(op: () => Promise<T> | T): Promise<T> => { H.queued++; return real.serializeSkillsDir(op) } }
+})
 
 mkdirSync(bin, { recursive: true })
 // The route runs zip with cwd = the global skills root, so PROBE_SKILL=s1
 // probes <root>/s1/SKILL.md at the moment the zip ends.
 writeFileSync(join(bin, 'zip'), `#!/bin/sh
 printf 'zip start\n' >> "$TOOL_LOG"
+if [ -n "$FAKE_HOLD" ]; then i=0; while [ ! -e "$FAKE_HOLD" ] && [ "$i" -lt 1000 ]; do sleep 0.01; i=$((i+1)); done; fi
 if [ -n "$FAKE_SLEEP" ]; then sleep "$FAKE_SLEEP"; fi
 if [ -f "$PROBE_SKILL/SKILL.md" ]; then printf 'zip end saw=yes\n' >> "$TOOL_LOG"; else printf 'zip end saw=no\n' >> "$TOOL_LOG"; fi
 if [ -n "$FAKE_FAIL" ]; then echo "zip failed" >&2; exit 12; fi
@@ -74,6 +81,9 @@ const { tryHandleFleet } = await import('../web/routes/fleet.js')
 
 afterEach(() => {
   delete process.env.FAKE_SLEEP
+  // A test that failed before its release must not leave the fake zip holding the queue.
+  if (process.env.FAKE_HOLD) writeFileSync(process.env.FAKE_HOLD, '')
+  delete process.env.FAKE_HOLD
   delete process.env.FAKE_FAIL
   delete process.env.PROBE_SKILL
   writeFileSync(log, '')
@@ -126,6 +136,15 @@ async function waitForLog(line: string): Promise<void> {
   throw new Error(`timed out waiting for tool log line "${line}"; log was: ${JSON.stringify(readLog())}`)
 }
 
+async function waitForQueued(n: number): Promise<void> {
+  const deadline = Date.now() + 2000
+  while (Date.now() < deadline) {
+    if (H.queued >= n) return
+    await sleep(5)
+  }
+  throw new Error(`timed out waiting for ${n} queued operations; ${H.queued} queued`)
+}
+
 describe('skill directory operations run one at a time', () => {
   it('a delete of a global skill issued while the export zips takes effect after the zip ended', async () => {
     makeSkill('s1')
@@ -162,14 +181,18 @@ describe('skill directory operations run one at a time', () => {
     makeSkill('s0')
     const meta = q.queueGeneratedSkill({ scope: 'global' }, 's4', '---\nname: s4\ndescription: x\n---\n# s4\n')
     const hash = JSON.parse((await call(tryHandleSkills, 'GET', `/api/skills/pending/${meta.id}`)).body.toString()).hash
-    process.env.FAKE_SLEEP = '1'
+    const release = join(tmpRoot, 'release-s4')
+    process.env.FAKE_HOLD = release
+    const before = H.queued
     const exp = call(tryHandleSkills, 'GET', '/api/skills/export')
     await waitForLog('zip start')
     const ap = call(tryHandleSkills, 'POST', `/api/skills/pending/${meta.id}/approve`, { hash }, SESSION)
-    // The approval reads its body before it queues; the delete must queue after it, while zip still holds the queue.
-    await sleep(200)
+    // The approval reads its body before it queues: wait until it has queued, while the zip still holds the queue.
+    await waitForQueued(before + 2)
     expect(readLog().some((l) => l.startsWith('zip end'))).toBe(false)
     const del = call(tryHandleAgentsSkills, 'DELETE', '/api/agents/host-main/skills/s4')
+    await waitForQueued(before + 3)
+    writeFileSync(release, '')
     const [, a, d] = await Promise.all([exp, ap, del])
     expect(a.status).toBe(200)
     expect(d.status).toBe(200)
