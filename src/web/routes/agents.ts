@@ -157,6 +157,7 @@ import {
 import { sanitizeAgentName, safeJoin } from '../sanitize.js'
 import { parseMultipart } from '../multipart.js'
 import { readBody, json, jsonMaybeGzip, serveFile } from '../http-helpers.js'
+import { serializeSkillsDir } from '../skills-dir-queue.js'
 import {
   exportAgentBundle,
   importAgentBundle,
@@ -2483,12 +2484,15 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const work = mkdtempSync(join(tmpdir(), 'marveen-fleet-dl-'))
     const outPath = join(work, fleetBundleFilename())
     try {
-      exportAllAgentsBundle(outPath, names, {
-        includeSecrets,
-        exportedBy: MAIN_AGENT_ID,
-        exportedAt: new Date().toISOString(),
+      // The tar reads every agent's skills: it waits on the skills directory queue, like the fleet export.
+      const data = await serializeSkillsDir(() => {
+        exportAllAgentsBundle(outPath, names, {
+          includeSecrets,
+          exportedBy: MAIN_AGENT_ID,
+          exportedAt: new Date().toISOString(),
+        })
+        return readFileSync(outPath)
       })
-      const data = readFileSync(outPath)
       res.writeHead(200, {
         'Content-Type': 'application/gzip',
         'Content-Disposition': `attachment; filename="${fleetBundleFilename()}"`,
@@ -2517,12 +2521,15 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     const work = mkdtempSync(join(tmpdir(), 'marveen-agent-dl-'))
     const outPath = join(work, bundleFilename(name))
     try {
-      exportAgentBundle(name, outPath, {
-        includeSecrets,
-        exportedBy: MAIN_AGENT_ID,
-        exportedAt: new Date().toISOString(),
+      // The tar reads the agent's skills: it waits on the skills directory queue.
+      const data = await serializeSkillsDir(() => {
+        exportAgentBundle(name, outPath, {
+          includeSecrets,
+          exportedBy: MAIN_AGENT_ID,
+          exportedAt: new Date().toISOString(),
+        })
+        return readFileSync(outPath)
       })
-      const data = readFileSync(outPath)
       res.writeHead(200, {
         'Content-Type': 'application/gzip',
         'Content-Disposition': `attachment; filename="${bundleFilename(name)}"`,
@@ -2559,11 +2566,13 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       overwrite = /[?&]overwrite=(1|true)\b/.test(url)
     }
     if (!bundle || bundle.length === 0) { json(res, { error: 'No bundle uploaded' }, 400); return true }
+    const upload: Buffer = bundle
     try {
       // One endpoint accepts either format: peek the manifest, then dispatch to
       // the single-agent or whole-fleet importer.
-      if (peekBundleKind(bundle) === 'fleet') {
-        const result = importAllAgentsBundle(bundle, { overwrite })
+      // The importers write agent directories, skills included: they wait on the skills directory queue.
+      if (peekBundleKind(upload) === 'fleet') {
+        const result = await serializeSkillsDir(() => importAllAgentsBundle(upload, { overwrite }))
         // An imported agent is a NEW agent on this machine: the bundle carries
         // the agent directory, never store/context-guard.json. Same rule as
         // creation (fleet policy, 2026-09-08) and idempotent, so re-importing over an
@@ -2587,7 +2596,7 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
         return true
       }
 
-      const result = importAgentBundle(bundle, { overrideName: overrideName || undefined, overwrite })
+      const result = await serializeSkillsDir(() => importAgentBundle(upload, { overrideName: overrideName || undefined, overwrite }))
       seedContextGuardForNewAgent(result.name)
       logger.info({ name: result.name, overwritten: result.overwritten, secrets: result.manifest.includesSecrets }, 'Agent imported from bundle')
       json(res, {
@@ -2773,7 +2782,8 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
     // stopAgentProcess() reads config from the dir (remote host, channel
     // provider) for its orphan reap, so it must run while the dir still exists.
     if (isAgentRunning(name)) await stopAgentProcess(name)
-    rmSync(dir, { recursive: true, force: true })
+    // An assign may be copying a skill into this directory: the removal waits on the skills directory queue.
+    await serializeSkillsDir(() => rmSync(dir, { recursive: true, force: true }))
     cleanupTeamReferences(name)
     json(res, { ok: true })
     return true
