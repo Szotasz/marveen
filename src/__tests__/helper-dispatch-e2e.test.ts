@@ -60,9 +60,9 @@ describe('helperDispatch watch, end to end', () => {
   it('one matching comment -> one message, zero model calls, task switched off', async () => {
     io.writeScheduledTask('release-watch', {
       prompt: 'Szólj, ha kiadták a CRM-et.', schedule: '* * * * *', agent: 'marveen', enabled: true, type: 'heartbeat',
-      watch: { kind: 'kanban-comment', target: 'card1', authorPrefix: 'fejlesztes-', match: 'KIADVA', needsJudgement: true },
+      watch: { kind: 'kanban-comment', target: 'card1', authorPrefix: 'dev-', match: 'KIADVA', needsJudgement: true },
     })
-    db.addKanbanComment('card1', 'fejlesztes-vezeto', 'KIADVA az elo CRM-en, Elo HEAD a -> b')
+    db.addKanbanComment('card1', 'dev-lead', 'KIADVA az elo CRM-en, Elo HEAD a -> b')
     db.addKanbanComment('card1', 'c3po', 'KIADVA? (not the watched author)')
     const task = { ...io.readScheduledTask('release-watch')!, createdAt: 0 }
 

@@ -8,8 +8,8 @@ import type { WatchSpec } from '../web/helper/types.js'
 import { validateWatchSpec } from '../web/helper/types.js'
 
 const CREATED = 1_000
-const card = (over: Partial<WatchSpec> = {}): WatchSpec => ({ kind: 'kanban-comment', target: 'abc123', authorPrefix: 'fejlesztes-', match: 'KIADVA', ...over })
-const item = (id: number, content: string, author = 'fejlesztes-vezeto', createdAt = CREATED + id): WatchItem => ({ id, author, content, createdAt })
+const card = (over: Partial<WatchSpec> = {}): WatchSpec => ({ kind: 'kanban-comment', target: 'abc123', authorPrefix: 'dev-', match: 'KIADVA', ...over })
+const item = (id: number, content: string, author = 'dev-lead', createdAt = CREATED + id): WatchItem => ({ id, author, content, createdAt })
 
 function deps(items: WatchItem[], judge: (q: string, it: WatchItem) => Promise<JudgeOutcome>, over: Partial<WatchEvalDeps> = {}): WatchEvalDeps {
   return { nowMs: 5_000_000, listItems: () => items, judge, fallback: 'skip', ...over }
@@ -53,7 +53,7 @@ describe('author / history filtering', () => {
   })
   it('the first evaluation ignores comments written before the watch existed, later ones use the cursor', async () => {
     const judge = vi.fn(async (): Promise<JudgeOutcome> => ({ kind: 'skip', reason: '' }))
-    const history = item(1, 'KIADVA (old)', 'fejlesztes-vezeto', CREATED - 10)
+    const history = item(1, 'KIADVA (old)', 'dev-lead', CREATED - 10)
     const first = await evaluateWatch('', CREATED, card({ repeat: true }), undefined, deps([history], judge))
     expect(first.event).toBeNull()
     expect(first.nextState.cursor).toBe(1)

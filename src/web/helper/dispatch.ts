@@ -1,4 +1,4 @@
-// Schedule-runner glue for the local helper (work/local-model-routing/SPEC.md
+// Schedule-runner glue for the local helper (docs/superpowers/specs/2026-10-26-local-helper-task-routing-design.md
 // 4.4). helperDispatch() is called for every due task, next to the `command`
 // branch. It returns false -- and the task runs exactly as it always did --
 // unless ALL of these hold:

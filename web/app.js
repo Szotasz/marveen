@@ -16942,7 +16942,7 @@ function buildProvidersUI(container, providers) {
   container.appendChild(addBtn)
 }
 
-// Local helper task types (work/local-model-routing/SPEC.md section 2), the
+// Local helper task types (docs/superpowers/specs/2026-10-26-local-helper-task-routing-design.md section 2), the
 // same keys and defaults as src/web/custom-providers.ts: on a provider at
 // localhost/127.x the first four are ticked, a remote one starts all-off;
 // only the rotation decision falls back to an Opus agent by default.

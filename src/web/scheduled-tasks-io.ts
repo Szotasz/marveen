@@ -182,7 +182,7 @@ export interface ScheduledTask {
   // main agent's tasks delivered on Telegram; otherwise ignored (see
   // resolveTaskTopicThreadId in schedule-runner.ts).
   telegramTopic?: string
-  // Local helper routing (work/local-model-routing/SPEC.md 4.3): routes the
+  // Local helper routing (docs/superpowers/specs/2026-10-26-local-helper-task-routing-design.md 4.3): routes the
   // task to the helper while HELPER_ENABLED=1 and the active helper provider
   // ticks this type; otherwise the task runs exactly as it always did. Both
   // keys are absent (not undefined-valued) on a task that does not set them.

@@ -123,9 +123,9 @@ describe('validateHelperTaskFields', () => {
 })
 
 describe('resolveEscalationTarget', () => {
-  const known = (id: string) => ['marveen', 'fejlesztes-vezeto', 'c3po'].includes(id)
+  const known = (id: string) => ['marveen', 'dev-lead', 'c3po'].includes(id)
   it('takes the first known candidate and never system', () => {
-    expect(d.resolveEscalationTarget('fejlesztes-vezeto', 'c3po', undefined, known)).toBe('fejlesztes-vezeto')
+    expect(d.resolveEscalationTarget('dev-lead', 'c3po', undefined, known)).toBe('dev-lead')
     expect(d.resolveEscalationTarget('ghost', 'c3po', undefined, known)).toBe('c3po')
     expect(d.resolveEscalationTarget('system', 'ghost', 'c3po', (id) => id !== 'ghost' && known(id))).toBe('c3po')
   })

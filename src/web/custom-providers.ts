@@ -16,7 +16,7 @@ export interface CustomProviderDef {
   baseUrl: string
   authHeader: AuthHeaderType
   vaultKey: string | null
-  // Local helper routing (work/local-model-routing/SPEC.md 4.3). All optional:
+  // Local helper routing (docs/superpowers/specs/2026-10-26-local-helper-task-routing-design.md 4.3). All optional:
   // a provider file written before these fields loads unchanged, and a def
   // without them is saved byte-identical to before (the route copies them
   // only when present). Read only while HELPER_ENABLED=1 names this provider

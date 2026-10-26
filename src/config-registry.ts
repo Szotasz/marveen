@@ -988,7 +988,7 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     secret: false,
     requiresRestart: false,
   },
-  // --- Local helper routing (work/local-model-routing/SPEC.md) ---
+  // --- Local helper routing (docs/superpowers/specs/2026-10-26-local-helper-task-routing-design.md) ---
   // Master switch, default OFF: with it off the schedule runner never consults
   // the helper and every task runs exactly as before. Switching it ON moves
   // background decisions to the provider named below, so it is owner-only

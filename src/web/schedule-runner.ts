@@ -3537,7 +3537,7 @@ export function startScheduleRunner(): NodeJS.Timeout {
       const lateCatchUpMs = decision === 'catch-up' ? ageMs : undefined
       if (lateCatchUpMs != null) caughtUpThisTick.push({ task: task.name, ageMs, type: task.type, schedule: task.schedule })
 
-      // Local helper (work/local-model-routing/SPEC.md 4.4): a watch, a
+      // Local helper (docs/superpowers/specs/2026-10-26-local-helper-task-routing-design.md 4.4): a watch, a
       // one-shot wake or the rotation decision handled by the dashboard
       // itself, with at most one stateless call to the local provider. Off by
       // default: with HELPER_ENABLED unset helperDispatch returns false before

@@ -1,4 +1,4 @@
-// Deterministic watch engine (work/local-model-routing/SPEC.md 4.1/1). Plain
+// Deterministic watch engine (docs/superpowers/specs/2026-10-26-local-helper-task-routing-design.md 4.1/1). Plain
 // code decides; the model is asked only about an item the matcher cannot
 // classify, and only for a watch with `needsJudgement`. Per the Q1
 // measurement the matcher is the PRIMARY detector: a matcher hit is escalated

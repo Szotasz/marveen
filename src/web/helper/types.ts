@@ -1,4 +1,4 @@
-// Task-side data model of the local helper (work/local-model-routing/SPEC.md
+// Task-side data model of the local helper (docs/superpowers/specs/2026-10-26-local-helper-task-routing-design.md
 // 4.3). Pure parsing only: scheduled-tasks-io.ts imports this module, so it
 // must not import anything (a test that mocks ../config.js for the task
 // reader must not have to know about the helper).

@@ -1,4 +1,4 @@
-// Rotation decision without an Opus turn (work/local-model-routing/SPEC.md
+// Rotation decision without an Opus turn (docs/superpowers/specs/2026-10-26-local-helper-task-routing-design.md
 // 4.4, task type rotationDecision). The decision was already code
 // (decideRotationAction via scripts/claude-plan-rotate-check.ts); the seeded
 // heartbeat spent a main-agent LLM turn every 10 minutes only to read that

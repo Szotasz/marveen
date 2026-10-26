@@ -1,4 +1,4 @@
-// Outage tracking for the helper provider (work/local-model-routing/SPEC.md
+// Outage tracking for the helper provider (docs/superpowers/specs/2026-10-26-local-helper-task-routing-design.md
 // section 6): the owner hears about an outage ONCE when it starts and ONCE
 // when it ends, never per failed call. sendRoutineAlert's 30-minute cooldown
 // is deliberately not reused -- it would re-ping every half hour of a long

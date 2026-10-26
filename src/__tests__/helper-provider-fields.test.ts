@@ -1,4 +1,4 @@
-// Local helper routing (work/local-model-routing/SPEC.md 4.3): the optional
+// Local helper routing (docs/superpowers/specs/2026-10-26-local-helper-task-routing-design.md 4.3): the optional
 // helper fields on a custom provider survive POST /api/custom-providers (the
 // route rebuilds the def field by field, so a new field is dropped unless it
 // is copied explicitly), are validated, and -- the flag-off guarantee -- a

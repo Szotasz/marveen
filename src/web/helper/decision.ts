@@ -1,4 +1,4 @@
-// The helper's ONE model call (work/local-model-routing/SPEC.md 4.1/2, option
+// The helper's ONE model call (docs/superpowers/specs/2026-10-26-local-helper-task-routing-design.md 4.1/2, option
 // B): a single stateless Anthropic /v1/messages request to the active helper
 // provider, no tools, answering strict JSON {"action":"skip"|"escalate",
 // "reason":"..."}. The dashboard, not the model, performs any escalation, so

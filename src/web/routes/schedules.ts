@@ -226,7 +226,7 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     if (!isValidCronShape(data.schedule)) { json(res, { error: 'Invalid cron expression' }, 400); return true }
     if (data.once !== undefined && typeof data.once !== 'boolean') { json(res, { error: 'once must be true or false' }, 400); return true }
 
-    // Local helper fields (work/local-model-routing/SPEC.md 4.3). Only checked
+    // Local helper fields (docs/superpowers/specs/2026-10-26-local-helper-task-routing-design.md 4.3). Only checked
     // when sent, so every existing caller is untouched. A watch is refused
     // unless the helper would actually take it: written while the helper is
     // off, the task would fire as an ordinary LLM turn on every tick of its
