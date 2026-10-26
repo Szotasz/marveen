@@ -508,8 +508,11 @@ describe('schedule runner: a worksource agent gets scheduled prompts through its
     ownerChat = '4242'
     const { OWNER_ESCALATION_EXTRA_MS } = await import('../pending-retries.js')
     const { TASK_FIRE_GRACE_MS } = await import('../web/schedule-runner.js')
+    // A short first stay in pending/ (under the grace window, so no alert) before the hand-over: the requeue must
+    // start a new count, not continue the first one.
+    const handedOverAt = Date.UTC(2026, 6, 31, 10, 30, 21)
     const requeueAt = Date.UTC(2026, 6, 31, 10, 50, 0)
-    worksourceStage = () => (Date.now() < requeueAt ? 'active' : 'pending')
+    worksourceStage = () => (Date.now() < handedOverAt || Date.now() >= requeueAt ? 'pending' : 'active')
     mockListScheduledTasks.mockReturnValue([REQUEUED_LATE_ONCE])
     const pendingWindowMs = TASK_FIRE_GRACE_MS + OWNER_ESCALATION_EXTRA_MS + 2 * 60_000
     await runForMs(20 * 60_000 + pendingWindowMs)
@@ -518,6 +521,8 @@ describe('schedule runner: a worksource agent gets scheduled prompts through its
     const notices = mockCreateAgentMessage.mock.calls
       .filter(c => c[0] === 'system' && c[1] === MAIN_AGENT_ID && String(c[2]).includes('pending/ mappában áll'))
     expect(notices).toHaveLength(1)
+    // ... and nothing else reached the main agent during the 20 minutes in active/
+    expect(mockCreateAgentMessage.mock.calls.filter(c => c[1] === MAIN_AGENT_ID)).toHaveLength(1)
     // the notice goes out right after the grace window of the pending run: under a minute or two, not 20+
     expect(minutesIn(String(notices[0][2]))).toBeLessThanOrEqual(2)
     const ownerAlerts = ownerAlertTexts.filter(t => t.includes('pending/ mappában áll'))
@@ -683,6 +688,12 @@ describe('schedule runner: a worksource agent gets scheduled prompts through its
       expect(noticeTimes[0]).toBeGreaterThanOrEqual(stallAt + TASK_FIRE_GRACE_MS - 15_000)
       // ... and soon after it (a run never stamped would not alert at all; one sweep of slack)
       expect(noticeTimes[0]).toBeLessThanOrEqual(stallAt + TASK_FIRE_GRACE_MS + 30_000)
+      // The text counts the item's stay in pending/ (since its first sighting, two minutes before the stall), not
+      // the pending run that every drained head restarted.
+      const notice = mockCreateAgentMessage.mock.calls
+        .find(c => c[0] === 'system' && c[1] === MAIN_AGENT_ID && String(c[2]).includes('pending/ mappában áll'))
+      const minutes = Number(/tett tétel (\d+) perce a pending\/ mappában áll/.exec(String(notice?.[2]))?.[1] ?? NaN)
+      expect(minutes).toBeGreaterThanOrEqual(1)
       expect(runsFor(BACKLOG_STALLS_ONCE.name)).toEqual([[BACKLOG_STALLS_ONCE.name, AGENT, 'fired']])
     } finally {
       mockCreateAgentMessage.mockImplementation(originalCreateAgentMessage ?? (() => undefined))

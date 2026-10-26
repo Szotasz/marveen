@@ -1,5 +1,5 @@
-import { afterAll, describe, expect, it, vi } from 'vitest'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { MAIN_AGENT_ID } from '../config.js'
@@ -354,7 +354,13 @@ describe('shouldQueueScheduledToWorksource: the default gate reads the agent con
   // A name no live fleet member can collide with; its directory exists only during this describe.
   const NAME = 'zz-ws-gate-probe'
   const dir = agentDir(NAME)
-  afterAll(() => { rmSync(dir, { recursive: true, force: true }) })
+  // Never overwrite or remove a directory this describe did not create.
+  let created = false
+  beforeAll(() => {
+    if (existsSync(dir)) throw new Error(`refusing to use ${dir}: it exists already`)
+    created = true
+  })
+  afterAll(() => { if (created) rmSync(dir, { recursive: true, force: true }) })
   const writeConfig = (cfg: unknown): void => {
     mkdirSync(dir, { recursive: true })
     writeFileSync(join(dir, 'agent-config.json'), JSON.stringify(cfg))
