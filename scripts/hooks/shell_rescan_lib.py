@@ -68,18 +68,20 @@ HEREDOC_HDR = re.compile(
     r"<<(-?)[ \t]*((?:\$'[^']*'|'[^']*'|\"(?:\\.|[^\"\\])*\"|\\.|[A-Za-z0-9_.:+@%,=-])+)")
 PROMPT_EXPAND = re.compile(
     r"\$\{!?(?:[A-Za-z_][A-Za-z0-9_]*(?:\[[^]]*\])?|[0-9]+|[*@#?$!-])@P\}")
-INTERP_WORD = re.compile(r"^(?:python|node|nodejs|perl|ruby|php|bash|sh|zsh)[0-9.]*$")
+INTERP_WORD = re.compile(r"^(?:python|node|nodejs|perl|ruby|php|bash|sh|zsh|dash|ksh|mksh)[0-9.]*$")
 # The interpreters that keep reading options after -c (RESCANMINOR1026).
-SHELL_WORD = re.compile(r"^(?:bash|sh|zsh)[0-9.]*$")
-# A shell's -c, alone or clustered (-lc, -xc); only this flag makes the shell
+SHELL_WORD = re.compile(r"^(?:bash|sh|zsh|dash|ksh|mksh)[0-9.]*$")
+# A shell's -c anywhere in a single-dash cluster (-c, -lc, -cx, -co, -oc); only this flag makes the shell
 # read options before its payload. -e/-E on a shell is errexit, not a payload
 # flag (RESCANMINOR1026).
-SHELL_C_FLAG = re.compile(r"^-[A-Za-z]*c$")
+SHELL_C_FLAG = re.compile(r"^-[A-Za-z]*c[A-Za-z]*$")
 # php's -B and -R run code too, so they are inline flags ONLY here
 # (RESCANMINOR1026); python3 -B and python3 -R are ordinary options.
 PHP_WORD = re.compile(r"^php[0-9.]*$")
 PHP_RUN_FLAGS = ("-B", "-R", "--run", "--process-begin", "--process-code", "--process-end")
 FD_NUMBER = re.compile(r"^[0-9]+$")
+# {name}> and {name}< name a descriptor: a redirection, not a brace group.
+NAMED_FD = re.compile(r"\{[A-Za-z_][A-Za-z0-9_]*\}(?=[<>])")
 # -c, -e, -E, --eval, node's -p/--print, php's -r, and the clustered short
 # forms a shell takes (bash -lc). php's -B/-R and the long forms of its
 # run-code flags are added by _inline_flag(), for php only.
@@ -190,8 +192,10 @@ def _interp(word):
 def _inline_flag(st, word):
     """A word that makes an armed interpreter read code in the NEXT word. php's
     -B and -R (and --run, --process-begin/-code/-end) run code too, but only for
-    php: on python3 the same letters are ordinary options (RESCANMINOR1026)."""
-    return bool(INLINE_FLAG.match(word)) or (st.get("php", False) and word in PHP_RUN_FLAGS)
+    php: on python3 the same letters are ordinary options (RESCANMINOR1026). For a shell, -c anywhere in a cluster
+    is the inline flag (bash -cx)."""
+    return (bool(INLINE_FLAG.match(word)) or (st.get("php", False) and word in PHP_RUN_FLAGS)
+            or (st.get("shell", False) and bool(SHELL_C_FLAG.match(word))))
 
 
 def _strip_heredoc_escapes(body):
@@ -422,7 +426,8 @@ def _scan(s, i, out, reg, depth=0, stop=None, notes=None, inherit=None):
             # A shell's own -c lets it read options before its payload; any other
             # flag closes on the next word (RESCANMINOR1026).
             st["sc"] = st["shell"] and bool(SHELL_C_FLAG.match(u))
-            st["shopt"] = 0
+            # an o/O in the -c cluster owes an operand too (bash -oc pipefail "...")
+            st["shopt"] = (u[1:].count("o") + u[1:].count("O")) if st["sc"] else 0
 
     def drop_fd_number():
         # UNQUOTED digits glued to a redirection are its file descriptor
@@ -463,6 +468,7 @@ def _scan(s, i, out, reg, depth=0, stop=None, notes=None, inherit=None):
             continue
         if c == "<" and s.startswith("<<", i) and HEREDOC_HDR.match(s, i):
             m = HEREDOC_HDR.match(s, i)
+            drop_fd_number()
             close_word()
             # The body starts on the NEXT line. The rest of this line is still the
             # same command and may open more heredocs; their bodies follow in order.
@@ -475,8 +481,22 @@ def _scan(s, i, out, reg, depth=0, stop=None, notes=None, inherit=None):
             i += 1                     # to the redirection IS a word and fills the slot
             while i < n and s[i] in "<>&":
                 i += 1
+            if i < n and s[i] == "|" and s[i - 1] == ">":
+                i += 1                     # >| (clobber) is one operator, not a pipe
             st["skip"] = True              # the target is not a command word
             continue
+        if c == "&" and s.startswith("&>", i):
+            close_word()
+            i += 2
+            if i < n and s[i] == ">":
+                i += 1
+            st["skip"] = True          # the target is not a command word
+            continue
+        if c == "{" and not wbuf:
+            m = NAMED_FD.match(s, i)
+            if m:
+                i = m.end()            # {fd}>file: the redirection branch handles the rest
+                continue
         if c == "(" and wbuf and "".join(wbuf).endswith("=") and ASSIGN.match(
                 _unescape("".join(wbuf))):
             j, dep = i + 1, 0          # array assignment: the ELEMENTS are data,

@@ -154,6 +154,43 @@ describe('the five refused shapes, each with the safe form next to it', () => {
     expect(allowed(bash('python3 -R"x$(id)"'))).toBe(true)
   })
 
+  it('A: a shell\'s -c anywhere in a cluster arms it, and an o/O in that cluster owes an operand (RESCANCLUSTER1026)', () => {
+    expect(denied(bash('bash -cx "echo $(id)"'))).toBe(true)
+    expect(denied(bash('sh -cx "echo $(id)"'))).toBe(true)
+    expect(denied(bash('bash -co pipefail "echo $(id)"'))).toBe(true)
+    expect(denied(bash('bash -oc pipefail "echo $(id)"'))).toBe(true)
+    expect(denied(bash('bash -cxo pipefail "echo $(id)"'))).toBe(true)
+    // controls: python runs the glued "x" as code; only a shell reads options after -c
+    expect(allowed(bash('python3 -cx "$(id)"'))).toBe(true)
+    // the single-quoted word is the payload; "$(id)" is only $0
+    expect(allowed(bash("bash -cx 'echo hi' \"$(id)\""))).toBe(true)
+  })
+
+  it('A: a redirection the shell reads as one operator does not end the command (RESCANREDIR1026)', () => {
+    expect(denied(bash('bash -c &>/dev/null "echo $(id)"'))).toBe(true)
+    expect(denied(bash('python3 -c &>/dev/null "print(1) $(id)"'))).toBe(true)
+    expect(denied(bash('bash -c &>>log "echo $(id)"'))).toBe(true)
+    expect(denied(bash('bash -c >|/dev/null "echo $(id)"'))).toBe(true)
+    expect(denied(bash('bash -c {fd}>/dev/null "echo $(id)"'))).toBe(true)
+    expect(denied(bash('bash -c -x 0<<EOF "echo $(id)"\nEOF'))).toBe(true)
+    expect(denied(bash('python3 -c 0<<EOF "print(1) $(id)"\nEOF'))).toBe(true)
+    // controls: a lone & still ends the command
+    expect(allowed(bash('echo hi & echo "$(id)"'))).toBe(true)
+    // a brace group is still a group
+    expect(allowed(bash('{ echo "$(id)"; }'))).toBe(true)
+    // >| alone arms nothing
+    expect(allowed(bash('echo "$(id)" >| out.txt'))).toBe(true)
+  })
+
+  it('A: dash and ksh are shells too (RESCANSHELLS1026)', () => {
+    expect(denied(bash('dash -c "echo $(id)"'))).toBe(true)
+    expect(denied(bash('dash -c -x "echo $(id)"'))).toBe(true)
+    expect(denied(bash('/bin/dash -c "echo $(id)"'))).toBe(true)
+    expect(denied(bash('ksh -c "echo $(id)"'))).toBe(true)
+    // control: a single-quoted payload is the documented exemption, as for bash
+    expect(allowed(bash("dash -c 'echo $(id)'"))).toBe(true)
+  })
+
   it('more payload shapes: clustered and glued flags, env, and a nested quote inside $( )', () => {
     expect(denied(bash('bash -lc "echo $(id)"'))).toBe(true)
     expect(denied(bash('env python3 -c "print(\'$(id)\')"'))).toBe(true)
