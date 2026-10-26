@@ -16988,9 +16988,9 @@ function helperTaskRowsHtml(p) {
   return HELPER_TASK_TYPE_LABELS.map(([k, label]) => `
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
             <label style="display:flex;align-items:center;gap:6px;flex:1;min-width:200px;font-size:13px">
-              <input type="checkbox" data-helper-type="${k}"${ticks[k] ? ' checked' : ''}> ${escapeHtml(label)}
+              <input type="checkbox" data-helper-type="${escapeHtml(k)}"${ticks[k] ? ' checked' : ''}> ${escapeHtml(label)}
             </label>
-            <select class="input" data-helper-fallback="${k}" style="width:auto;font-size:12px;padding:2px 6px" title="Ha a végpont nem elérhető">
+            <select class="input" data-helper-fallback="${escapeHtml(k)}" style="width:auto;font-size:12px;padding:2px 6px" title="Ha a végpont nem elérhető">
               <option value="skip"${fb[k] === 'skip' ? ' selected' : ''}>kiesésnél: kihagyás</option>
               <option value="opus"${fb[k] === 'opus' ? ' selected' : ''}>kiesésnél: Opus ágens</option>
             </select>
