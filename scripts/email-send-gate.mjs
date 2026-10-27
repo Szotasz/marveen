@@ -217,7 +217,7 @@ const CODE_SEND_MODULE = new RegExp(
 // MAILGATESCRIPT1027: a Microsoft Graph send endpoint (sendMail, or send/reply/replyAll/forward of a message)
 // MAILGATESCRIPT1027 R1: a send needs the endpoint shape AND Graph evidence in the same text (an application
 // route of the same shape is no send); `\/` is normalised to `/` first (JSON-escaped URLs).
-const GRAPH_SEND = /\/(?:me|users\/[^\n]{1,120}?)\/(?:sendMail(?![\w-])|messages\/[^\n]{1,160}?\/(?:send|reply|replyAll|forward)(?![\w-]))/i
+const GRAPH_SEND = /\/(?:me|users\/[^\n]{1,120}?)\/(?:sendMail(?![A-Za-z0-9_-]|[^\x00-\x7f])|messages\/[^\n]{1,160}?\/(?:send|reply|replyAll|forward)(?![A-Za-z0-9_-]|[^\x00-\x7f]))/i
 const GRAPH_EVIDENCE = /graph\.microsoft\.com|microsoft-graph-client|msgraph|\.api\s*\(/i
 const graphSends = (text) => {
   const t = text.replaceAll('\\/', '/')
@@ -782,9 +782,11 @@ const NODE_MAIL_IMPORT = new RegExp(
   String.raw`\brequire\s*\(\s*${NODE_MAIL_MODULE}\s*\)|^[ \t]*import\b[^\n]*${NODE_MAIL_MODULE}|\bimport\s*\(\s*${NODE_MAIL_MODULE}\s*\)`,
   'm',
 )
-const PY_LOCAL_IMPORT = /^[ \t]*(?:from[ \t]+([\w.]+)[ \t]+import\b|import[ \t]+([\w., \t]+))/gm
+// MAILGATESCRIPT1027 R2: groups: 1 = X and 2 = NAMES of `from X import NAMES`, 3 = NAMES of `import NAMES`
+const PY_LOCAL_IMPORT = /^[ \t]*(?:from[ \t]+([\w.]+)[ \t]+import\b(?:[ \t]*\(?[ \t]*([\w., \t]+))?|import[ \t]+([\w., \t]+))/gm
 // MAILGATESCRIPT1027 R1: `export ... from './x'` (an ESM re-export) loads the helper too
-const NODE_LOCAL_IMPORT = /(?:^[ \t]*export\b[^\n]*?\bfrom\s*|\brequire\s*\(\s*|^[ \t]*import\b[^\n]*?\bfrom\s*|^[ \t]*import\s*|\bimport\s*\(\s*)['"](\.{1,2}\/[^'"\n]+)['"]/gm
+// MAILGATESCRIPT1027 R2: a type-only import or export loads nothing
+const NODE_LOCAL_IMPORT = /(?:^[ \t]*export(?![ \t]+type[ \t]*(?:\{|\*|[A-Za-z_$][\w$]*[ \t]+from\b))\b[^\n]*?\bfrom\s*|\brequire\s*\(\s*|^[ \t]*import(?![ \t]+type[ \t]*(?:\{|\*|[A-Za-z_$][\w$]*[ \t]+from\b))\b[^\n]*?\bfrom\s*|^[ \t]*import\s*|\bimport\s*\(\s*)['"](\.{1,2}\/[^'"\n]+)['"]/gm
 const NODE_EXTS = ['', '.js', '.mjs', '.cjs', '.ts', '/index.js', '/index.mjs', '/index.ts']
 const HELPER_LIMIT = 40
 const ADDRESS_FLAG = /^--(?:to|cc|bcc)(?:=(.*))?$/
@@ -864,11 +866,23 @@ function localHelperPaths(path, text, kind) {
     const real = dirname(realpathSync(path))
     if (!dirs.includes(real)) dirs.push(real)
   } catch { /* lexical directory only */ }
-  const out = []
+  // MAILGATESCRIPT1027 R2: the limit applies per directory, so a symlinked entry's real-path helpers are looked at
+  const lists = []
   for (const dir of dirs) {
+    const out = []
     if (kind === 'py') {
       for (const m of text.matchAll(PY_LOCAL_IMPORT)) {
-        const names = m[1] ? [m[1]] : m[2].split(',').map((n) => n.trim().split(/\s+/)[0])
+        if (m[1] && m[1].startsWith('.')) {
+          const rest = m[1].replace(/^\.+/, '')
+          let base = dir
+          for (let i = 0; i < m[1].length - rest.length - 1; i++) base = dirname(base)
+          const rels = rest ? [rest.split('.').join('/')] : (m[2] ?? '').split(',').map((n) => n.trim().split(/\s+/)[0])
+          for (const rel of rels) {
+            if (rel) out.push(join(base, `${rel}.py`), join(base, rel, '__init__.py'))
+          }
+          continue
+        }
+        const names = m[1] ? [m[1]] : (m[3] || '').split(',').map((n) => n.trim().split(/\s+/)[0])
         for (const name of names) {
           if (!name || name.startsWith('.')) continue
           const rel = name.split('.').join('/')
@@ -880,8 +894,9 @@ function localHelperPaths(path, text, kind) {
         for (const ext of NODE_EXTS) out.push(resolve(dir, m[1] + ext))
       }
     }
+    lists.push([...new Set(out)].filter((p) => p !== path).slice(0, HELPER_LIMIT))
   }
-  return [...new Set(out)].filter((p) => p !== path).slice(0, HELPER_LIMIT)
+  return [...new Set(lists.flat())]
 }
 
 function fileSends(path, text, kind, readScript) {

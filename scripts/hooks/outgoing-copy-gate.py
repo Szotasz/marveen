@@ -134,10 +134,12 @@ _CODE_SENDER_LIT = re.compile(r"sendmail|msmtp|swaks|send\.py", re.I)
 
 
 # MAILGATESCRIPT1027: a Microsoft Graph send endpoint (sendMail, or send/reply/replyAll/forward of a message)
+# MAILGATESCRIPT1027 R2: no ASCII word character, '-' or non-ASCII letter may follow the action word (the same rule in
+# both twins), so send-preview, or reply followed by an accented letter, is no action; any punctuation ends it.
 # MAILGATESCRIPT1027 R1: a send needs the endpoint shape AND Graph evidence in the same text (an application
 # route of the same shape is no send); `\/` is normalised to `/` first (JSON-escaped URLs).
 _GRAPH_SEND = re.compile(
-    r"/(?:me|users/[^\n]{1,120}?)/(?:sendMail(?![\w-])|messages/[^\n]{1,160}?/(?:send|reply|replyAll|forward)(?![\w-]))",
+    r"/(?:me|users/[^\n]{1,120}?)/(?:sendMail(?![A-Za-z0-9_-]|[^\x00-\x7f])|messages/[^\n]{1,160}?/(?:send|reply|replyAll|forward)(?![A-Za-z0-9_-]|[^\x00-\x7f]))",
     re.I,
 )
 _GRAPH_EVIDENCE = re.compile(r"graph\.microsoft\.com|microsoft-graph-client|msgraph|\.api\s*\(", re.I)
@@ -910,10 +912,13 @@ _NODE_MAIL_IMPORT = re.compile(
     + r"|\bimport\s*\(\s*" + _NODE_MAIL_MODULE + r"\s*\)",
     re.M,
 )
-_PY_LOCAL_IMPORT = re.compile(r"^[ \t]*(?:from[ \t]+([\w.]+)[ \t]+import\b|import[ \t]+([\w., \t]+))", re.M)
+# MAILGATESCRIPT1027 R2: groups: 1 = X and 2 = NAMES of `from X import NAMES`, 3 = NAMES of `import NAMES`
+_PY_LOCAL_IMPORT = re.compile(
+    r"^[ \t]*(?:from[ \t]+([\w.]+)[ \t]+import\b(?:[ \t]*\(?[ \t]*([\w., \t]+))?|import[ \t]+([\w., \t]+))", re.M)
 _NODE_LOCAL_IMPORT = re.compile(
     # MAILGATESCRIPT1027 R1: `export ... from './x'` (an ESM re-export) loads the helper too
-    r"(?:^[ \t]*export\b[^\n]*?\bfrom\s*|\brequire\s*\(\s*|^[ \t]*import\b[^\n]*?\bfrom\s*|^[ \t]*import\s*|\bimport\s*\(\s*)['\"](\.{1,2}/[^'\"\n]+)['\"]",
+    # MAILGATESCRIPT1027 R2: a type-only import or export loads nothing
+    r"(?:^[ \t]*export(?![ \t]+type[ \t]*(?:\{|\*|[A-Za-z_$][\w$]*[ \t]+from\b))\b[^\n]*?\bfrom\s*|\brequire\s*\(\s*|^[ \t]*import(?![ \t]+type[ \t]*(?:\{|\*|[A-Za-z_$][\w$]*[ \t]+from\b))\b[^\n]*?\bfrom\s*|^[ \t]*import\s*|\bimport\s*\(\s*)['\"](\.{1,2}/[^'\"\n]+)['\"]",
     re.M,
 )
 _NODE_EXTS = ("", ".js", ".mjs", ".cjs", ".ts", "/index.js", "/index.mjs", "/index.ts")
@@ -935,7 +940,7 @@ def _read_script_head(path: str, limit: int = _SCRIPT_READ_LIMIT):
         return None
 
 
-_CD_OPTIONS = ("--", "-P", "-L", "-e", "-@")
+_CD_OPTIONS = ("-P", "-L", "-e", "-@")
 
 
 def _cd_bases(cwd, cmd_words):
@@ -954,6 +959,8 @@ def _cd_bases(cwd, cmd_words):
         i += 1
         while i < len(cmd_words) and cmd_words[i] in _CD_OPTIONS:
             i += 1
+        if i < len(cmd_words) and cmd_words[i] == "--":
+            i += 1  # MAILGATESCRIPT1027 R2: `--` ends the options, the next word is DIR even when it starts with `-`
         d = cmd_words[i] if i < len(cmd_words) else None
         tilde = d is not None and (d == "~" or d.startswith("~/"))
         if (not d or d == "-" or (d.startswith("~") and not tilde) or _UNDECIDABLE_PATH.search(d)):
@@ -1061,11 +1068,28 @@ def _local_helper_paths(path, text, kind):
             dirs.append(real)
     except (OSError, ValueError):
         pass  # the lexical directory only
-    out = []
+    # MAILGATESCRIPT1027 R2: the limit applies per directory, so a symlinked entry's real-path helpers are looked at
+    lists = []
     for d in dirs:
+        out = []
         if kind == "py":
             for m in _PY_LOCAL_IMPORT.finditer(text):
-                names = [m.group(1)] if m.group(1) else [(n.split() or [""])[0] for n in m.group(2).split(",")]
+                if m.group(1) and m.group(1).startswith("."):
+                    x = m.group(1)
+                    rest = x.lstrip(".")
+                    base = d
+                    for _ in range(len(x) - len(rest) - 1):
+                        base = os.path.dirname(base)
+                    if rest:
+                        rels = [rest.replace(".", "/")]
+                    else:
+                        rels = [(n.split() or [""])[0] for n in (m.group(2) or "").split(",")]
+                    for rel in rels:
+                        if rel:
+                            out += [os.path.normpath(os.path.join(base, rel + ".py")),
+                                    os.path.normpath(os.path.join(base, rel, "__init__.py"))]
+                    continue
+                names = [m.group(1)] if m.group(1) else [(n.split() or [""])[0] for n in (m.group(3) or "").split(",")]
                 for name in names:
                     if not name or name.startswith("."):
                         continue
@@ -1075,7 +1099,8 @@ def _local_helper_paths(path, text, kind):
         else:
             for m in _NODE_LOCAL_IMPORT.finditer(text):
                 out += [os.path.normpath(os.path.join(d, m.group(1) + ext)) for ext in _NODE_EXTS]
-    return [p for p in dict.fromkeys(out) if p != path][:_HELPER_LIMIT]
+        lists.append([p for p in dict.fromkeys(out) if p != path][:_HELPER_LIMIT])
+    return list(dict.fromkeys(p for lst in lists for p in lst))
 
 
 def _file_sends(path, text, kind, read_script) -> bool:
@@ -1128,8 +1153,11 @@ def _python_module_sends(module, cwd, cmd_words, read_script) -> bool:
     if not re.match(r"^[\w.]+$", module):
         return False
     rel = module.replace(".", "/")
+    bases, undecidable = _cd_bases(cwd, cmd_words)
+    if undecidable:
+        return True  # MAILGATESCRIPT1027 R2: a cd that cannot be resolved: fail-closed
     paths = []
-    for base in _cd_bases(cwd, cmd_words)[0]:
+    for base in bases:
         paths += [os.path.normpath(os.path.join(base, rel + ".py")),
                   os.path.normpath(os.path.join(base, rel, "__main__.py"))]
     return _judge_candidates(paths, "py", read_script)[1]
@@ -1168,7 +1196,7 @@ def _head_runs_sender_script(toks, cwd, read_script, depth, cmd_words) -> bool:
         # MAILGATESCRIPT1027 R1: every candidate is judged on its own, with its own kind
         paths = _resolve_script_paths(toks[0], cwd, cmd_words)
         ext_kind = "py" if re.search(r"\.py$", toks[0], re.I) else "node" if _SCRIPT_FILE.search(toks[0]) else None
-        if ext_kind and _relative_under_undecidable_cd(toks[0], cwd, cmd_words):
+        if _relative_under_undecidable_cd(toks[0], cwd, cmd_words):
             return True
         addr = _address_flag_given(rest)
         readable = False

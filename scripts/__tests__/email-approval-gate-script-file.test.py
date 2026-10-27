@@ -102,6 +102,37 @@ try:
     put("escaped.mjs", 'await fetch("https:\\/\\/graph.microsoft.com\\/v1.0\\/me\\/sendMail", { method: "POST" })\n')
     put("routes.mjs", "app.get('/me/messages/:id/reply', showReplyPage)\n")
     put("preview.mjs", "await fetch('https://graph.microsoft.com/v1.0/me/messages/1/send-preview')\n")
+    # MAILGATESCRIPT1027 R2: fixtures of the second-round review fixes
+    for sub_dir in ("r2pkg", "-P", "r2real", "r2link", "r2rel", "r2rel2"):
+        os.makedirs(os.path.join(D, sub_dir), exist_ok=True)
+    put("r2pkg/__init__.py", "")
+    put("r2pkg/__main__.py", "print('x')\n")
+    os.chmod(put("r2task", "echo hi\n"), 0o755)
+    put("-P/r2job.mjs", GRAPH_SEND)
+    put("r2job.mjs", "console.log(1)\n")
+    put("r2real/main.mjs", "".join(f"import './h{n}.mjs'\n" for n in range(5)))
+    put("r2real/h0.mjs", "const n = require('nodemailer')\n")
+    for n in range(1, 5):
+        put(f"r2real/h{n}.mjs", "console.log(1)\n")
+    os.symlink(os.path.join(D, "r2real", "main.mjs"), os.path.join(D, "r2link", "main.mjs"))
+    put("r2rel/__init__.py", "")
+    put("r2rel/__main__.py", "from . import mailer\n")
+    put("r2rel/mailer.py", "import smtplib\n")
+    put("r2rel2/__init__.py", "")
+    put("r2rel2/__main__.py", "from .mail import go\n")
+    put("r2rel2/mail.py", "import smtplib\n")
+    put("r2types.ts", "export type { T } from './r2sender.mjs'\nimport type { U } from './r2sender.mjs'\nconsole.log(1)\n")
+    put("r2sender.mjs", GRAPH_SEND)
+    put("r2uni.mjs", "await fetch('https://graph.microsoft.com/v1.0/me/messages/1/reply\u00e9')\n")
+    # MAILGATESCRIPT1027 R3: the forms the round-2 commit lost, and a value import named `type`
+    put("r3mailer.py", "import smtplib\n")
+    put("r3star.py", "from r3mailer import *\n")
+    put("r3paren.py", "from r3mailer import (\n    send,\n)\n")
+    put("r3nospace.py", "from r3mailer import(send)\n")
+    put("r3esc.mjs", 'const u = "https://graph.microsoft.com/v1.0/me/sendMail\\"; await fetch(u)\n')
+    put("r3fstr.py", "import requests\nrequests.post(f'https://graph.microsoft.com/v1.0/me/sendMail{qs}')\n")
+    put("r3sender.mjs", "import nodemailer from 'nodemailer'\nexport default 1\n")
+    put("r3typedefault.mjs", "import type from './r3sender.mjs'\nvoid type\n")
     locked = put("locked.mjs", "console.log('x')\n")
     can_lock = os.geteuid() != 0
     if can_lock:
@@ -148,6 +179,20 @@ try:
         ("npx harmless-report --to qa@example.test", D, False, "npx with another package and an address"),
         (f"npx tsx {D}/harmless.mjs --to qa@example.test", D, True, "npx runner with an address"),
         ("cd $DEST && node --version", D, False, "no script operand under a variable cd"),
+        ('cd "$DEST" && python3 -m r2pkg', D, True, "python -m after a variable cd: fail-closed"),
+        ('cd "$DEST" && ./r2task', D, True, "an extensionless file after a variable cd: fail-closed"),
+        ("cd -- -P && node r2job.mjs", D, True, "cd -- ends the options: -P is the directory"),
+        ("node r2link/main.mjs", D, True, "a symlinked entry with five imports: the real-path helpers are read"),
+        ("python3 -m r2rel", D, True, "python -m with a package-relative helper"),
+        ("python3 -m r2rel2", D, True, "from .module import name"),
+        ("tsx r2types.ts", D, False, "type-only export and import load nothing"),
+        ("node r2uni.mjs", D, False, "a letter after the action word, also outside ASCII, ends no action"),
+        ("python3 r3star.py", D, True, "from X import *"),
+        ("python3 r3paren.py", D, True, "from X import ( over several lines"),
+        ("python3 r3nospace.py", D, True, "from X import(name)"),
+        ("node r3esc.mjs", D, True, "an escaped quote after the action word"),
+        ("python3 r3fstr.py", D, True, "an f-string brace after the action word"),
+        ("node r3typedefault.mjs", D, True, "a value import named type loads the module"),
     ]
     if can_lock:
         cases.append((f"node {D}/locked.mjs", D, True, "an unreadable script (fail-closed)"))
