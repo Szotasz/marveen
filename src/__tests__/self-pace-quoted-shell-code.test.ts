@@ -95,6 +95,60 @@ describe('self-pace-gate: a scheduler inside shell code', () => {
   })
 })
 
+describe('self-pace-gate: shell grammar around the command word', () => {
+  it('DENIES eval after a reserved word or inside a group', () => {
+    for (const cmd of [
+      "if true; then eval 'crontab -r'; fi",
+      "for i in 1; do eval 'crontab -r'; done",
+      "! eval 'crontab -r'",
+      "time eval 'crontab -r'",
+      "{ eval 'crontab -r'; }",
+      "(eval 'crontab -r')",
+    ]) {
+      expect(deny(cmd), cmd).toBe(true)
+    }
+  })
+
+  it('DENIES a shell, tmux or systemctl command inside a ( ) subshell', () => {
+    for (const cmd of [
+      "(sh -c 'crontab -r')",
+      '(tmux send -t x hi)',
+      '(systemctl --user start x.timer)',
+    ]) {
+      expect(deny(cmd), cmd).toBe(true)
+    }
+  })
+
+  it('DENIES when a redirection is glued to a word or stands before the command word', () => {
+    for (const cmd of [
+      "sh<<<'crontab -r'",
+      'bash<<EOF\ncrontab -r\nEOF',
+      "bash 2>/dev/null <<< 'crontab -r'",
+      'tmux 2>/dev/null send -t x hi',
+      'tmux >/dev/null send -t x hi',
+      'tmux -S /x/s 2>&1 send -t x hi',
+      'tmux send>/dev/null -t x hi',
+      'systemctl --user start x.timer>/dev/null',
+      'systemctl --user 2>/dev/null start x.timer',
+    ]) {
+      expect(deny(cmd), cmd).toBe(true)
+    }
+  })
+
+  it('ALLOWS redirections around harmless commands, and eval outside command position', () => {
+    for (const cmd of [
+      'tmux -S /x/s list-panes 2>/dev/null',
+      'systemctl --user status x.timer 2>/dev/null',
+      "bash -c 'npm test' >/tmp/x 2>&1",
+      'grep -rn eval src',
+      "echo eval 'crontab -r'",
+      '(cd /w && npm test)',
+    ]) {
+      expect(deny(cmd), cmd).toBe(false)
+    }
+  })
+})
+
 describe('self-pace-gate: systemctl arming a timer or path unit', () => {
   it('DENIES a verb that starts or arms a .timer or .path unit', () => {
     for (const cmd of [
