@@ -270,6 +270,8 @@ export function fileToolTargetsAllowlist(toolInput, allowlistPath = DEFAULT_ALLO
 //   - A $(...) or backtick substitution that assigns a scheduler result
 //     (`X=$(crontab -)`, `X=`crontab -``) is caught by SCHEDULER_RX's boundary
 //     anchor, which now includes both `(` and the backtick.
+//   - Code piped into a shell (`echo ... | sh`) is not decided.
+//   - Code run by another interpreter (`python3 -c`, `node -e`) is not decided.
 export function splitSegments(command) {
   return String(command ?? '')
     .replace(/\\\r?\n/g, ' ')
@@ -1680,6 +1682,222 @@ export function gateDecision(toolName, toolInput, opts = {}) {
   }
 }
 
+// Small word splitter for the shell-code and tmux checks (shellWords/readWord
+// stay as they are, other checks depend on them). Returns [{ value, ansi }] or
+// null on an unterminated quote. $(...), backticks and ${...} stay plain text in
+// the word: they are tracked only so a space inside one does not split the word.
+function splitCodeWords(text) {
+  const words = []
+  let cur = null
+  let i = 0
+  const add = (s, ansi) => {
+    if (cur == null) cur = { value: '', ansi: false }
+    cur.value += s
+    if (ansi) cur.ansi = true
+  }
+  let depth = 0
+  let tick = false
+  while (i < text.length) {
+    const c = text[i]
+    if (depth === 0 && !tick && (c === ' ' || c === '\t')) {
+      if (cur) words.push(cur)
+      cur = null
+      i++
+    } else if (c === "'") {
+      const end = text.indexOf("'", i + 1)
+      if (end < 0) return null
+      add(text.slice(i + 1, end))
+      i = end + 1
+    } else if (c === '"') {
+      let j = i + 1
+      let s = ''
+      for (;;) {
+        if (j >= text.length) return null
+        if (text[j] === '"') break
+        if (text[j] === '\\' && '"\\$`'.includes(text[j + 1] ?? '')) j++
+        s += text[j]
+        j++
+      }
+      add(s)
+      i = j + 1
+    } else if (c === '$' && text[i + 1] === "'") {
+      let j = i + 2
+      for (;;) {
+        if (j >= text.length) return null
+        if (text[j] === '\\') j++
+        else if (text[j] === "'") break
+        j++
+      }
+      add(text.slice(i, j + 1), true)
+      i = j + 1
+    } else if (c === '\\') {
+      if (i + 1 < text.length) add(text[i + 1])
+      i += 2
+    } else {
+      if (c === '`') tick = !tick
+      else if (c === '$' && (text[i + 1] === '(' || text[i + 1] === '{')) {
+        depth++
+        add(c + text[i + 1])
+        i += 2
+        continue
+      } else if (depth > 0 && (c === ')' || c === '}')) depth--
+      add(c)
+      i++
+    }
+  }
+  if (cur) words.push(cur)
+  return words
+}
+
+const SHELL_NAMES = new Set(['sh', 'bash', 'dash', 'zsh', 'ksh', 'ash'])
+const baseName = (v) => v.slice(v.lastIndexOf('/') + 1)
+const REDIRECT_WORD_RX = /^(?:\d*|&)(?:<<<|<<-?|<>|>>|>\||>&|<&|>|<)/
+const REDIRECT_OP_ONLY_RX = /^(?:\d*|&)(?:<<<|<<-?|<>|>>|>\||>&|<&|>|<)$/
+
+// tmux global options: flags (combinable) and options taking a value (attached
+// or as the next word). Returns { next, codes } where next is the index of the
+// tmux command word and codes the words given to -c.
+function tmuxGlobalOptions(words, from) {
+  const codes = []
+  let i = from
+  while (i < words.length) {
+    const v = words[i].value
+    if (!/^-[2CDlNuvVcfLST]/.test(v)) break
+    let consumedNext = false
+    for (let j = 1; j < v.length; j++) {
+      if ('2CDlNuvV'.includes(v[j])) continue
+      if (!'cfLST'.includes(v[j])) break
+      const attached = v.slice(j + 1)
+      let val = null
+      if (attached) val = { value: attached, ansi: words[i].ansi }
+      else if (words[i + 1]) {
+        val = words[i + 1]
+        consumedNext = true
+      }
+      if (v[j] === 'c' && val) codes.push(val)
+      break
+    }
+    i += consumedNext ? 2 : 1
+  }
+  return { next: i, codes }
+}
+
+// What one shell word in `words` (at index i) runs: { code } for -c, or
+// { stdin } when it reads its code from stdin.
+function shellWordRuns(words, i) {
+  let j = i + 1
+  let cGiven = false
+  let sGiven = false
+  for (; j < words.length; j++) {
+    const v = words[j].value
+    if (!/^[-+]/.test(v)) break
+    if (v === '--') { j++; break }
+    if (/^[-+][oO]$/.test(v)) { j++; continue }
+    if (/^-[A-Za-z]+$/.test(v)) {
+      if (v.includes('c')) cGiven = true
+      if (v.includes('s')) sGiven = true
+    }
+  }
+  if (cGiven) return { code: words[j] }
+  // is there a non-option word that is not a redirection?
+  let operand = false
+  for (; j < words.length; j++) {
+    const v = words[j].value
+    if (REDIRECT_WORD_RX.test(v)) {
+      if (REDIRECT_OP_ONLY_RX.test(v)) j++
+      continue
+    }
+    operand = true
+    break
+  }
+  return { stdin: sGiven || !operand }
+}
+
+// shellSegments cuts at an escaped `\;` (tmux's own command separator); glue
+// such pieces back together so `tmux a \; send-keys` stays one segment.
+function codeSegments(command) {
+  const segs = shellSegments(command)
+  if (segs == null) return [{ own: String(command ?? ''), bodies: [] }]
+  const out = []
+  for (const seg of segs) {
+    const prev = out[out.length - 1]
+    if (prev && prev.sep === ';' && /(?:^|[^\\])(?:\\\\)*\\$/.test(prev.own)) {
+      out[out.length - 1] = { ...seg, own: prev.own + '; ' + seg.own, bodies: [...prev.bodies, ...seg.bodies] }
+    } else out.push(seg)
+  }
+  return out
+}
+
+// Every piece of shell code the command hands to another shell as
+// { value, ansi }, plus `bad` when a segment holding a shell word, eval or tmux
+// could not be split (unterminated quote).
+function scanShellCode(command) {
+  const segs = codeSegments(command)
+  const codes = []
+  let bad = false
+  for (const seg of segs) {
+    const words = splitCodeWords(seg.own)
+    if (words == null) {
+      if (/\b(?:sh|bash|dash|zsh|ksh|ash|eval)\b/.test(seg.own)) bad = true
+      continue
+    }
+    let k = 0
+    while (k < words.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[k].value) || words[k].value === 'builtin' || words[k].value === 'command')) k++
+    if (words[k]?.value === 'eval') {
+      const rest = words.slice(k + 1)
+      if (rest.length) codes.push({ value: rest.map((w) => w.value).join(' '), ansi: rest.some((w) => w.ansi) })
+    }
+    for (let i = 0; i < words.length; i++) {
+      const base = baseName(words[i].value)
+      if (base === 'tmux') codes.push(...tmuxGlobalOptions(words, i + 1).codes)
+      if (!SHELL_NAMES.has(base)) continue
+      const runs = shellWordRuns(words, i)
+      if (runs.code) codes.push(runs.code)
+      if (!runs.stdin) continue
+      for (const b of seg.bodies ?? []) codes.push({ value: b, ansi: false })
+      for (let j = 0; j < words.length; j++) {
+        const v = words[j].value
+        if (v === '<<<') {
+          if (words[j + 1]) codes.push(words[j + 1])
+        } else if (v.startsWith('<<<')) codes.push({ value: v.slice(3), ansi: words[j].ansi })
+      }
+    }
+  }
+  return { codes, bad }
+}
+
+export function shellCodeStrings(command) {
+  return scanShellCode(command).codes.map((c) => c.value)
+}
+
+// tmux takes an exact command name or alias first, otherwise a prefix that only
+// one command name starts with. Measured with tmux 3.6 `list-commands`, the
+// words that reach a pane-injecting command are:
+//   send-keys:    send send-k send-ke send-key send-keys
+//   run-shell:    ru run run- run-s run-sh run-she run-shel run-shell
+//   paste-buffer: pa pas past paste paste- pasteb paste-b paste-bu paste-buf paste-buff paste-buffe paste-buffer
+//   set-buffer:   setb set-b set-bu set-buf set-buff set-buffe set-buffer
+const TMUX_PANE_INJECT_WORDS = new Set([
+  'send', 'send-k', 'send-ke', 'send-key', 'send-keys',
+  'ru', 'run', 'run-', 'run-s', 'run-sh', 'run-she', 'run-shel', 'run-shell',
+  'pa', 'pas', 'past', 'paste', 'paste-', 'pasteb', 'paste-b', 'paste-bu', 'paste-buf', 'paste-buff', 'paste-buffe', 'paste-buffer',
+  'setb', 'set-b', 'set-bu', 'set-buf', 'set-buff', 'set-buffe', 'set-buffer',
+])
+
+// words: output of splitCodeWords. Follows `tmux [global options] cmd ... \; cmd`.
+export function tmuxInjectsPane(words) {
+  for (let i = 0; i < words.length; i++) {
+    if (baseName(words[i].value) !== 'tmux') continue
+    let k = tmuxGlobalOptions(words, i + 1).next
+    if (words[k] && TMUX_PANE_INJECT_WORDS.has(words[k].value)) return true
+    for (; k < words.length; k++) {
+      const v = words[k].value
+      if ((v === ';' || v.endsWith(';')) && words[k + 1] && TMUX_PANE_INJECT_WORDS.has(words[k + 1].value)) return true
+    }
+  }
+  return false
+}
+
 function decide(toolName, toolInput, opts = {}) {
   const name = String(toolName ?? '')
   if (SELF_PACE_TOOLS.has(name)) return { deny: true }
@@ -1737,6 +1955,24 @@ function decide(toolName, toolInput, opts = {}) {
     for (const seg of (masked == null ? naiveSegs : splitSegments(masked))) {
       // scheduler binaries: deny the exec/submit forms, allow pure read-listing
       if (SCHEDULER_RX.test(seg) && !SCHEDULER_READ_RX.test(seg)) return { deny: true }
+    }
+    // Shell code handed to another shell (sh -c, eval, here-strings, heredocs,
+    // tmux -c) is decided recursively; quoted, it was blanked above. The RAW
+    // command is used: safeCommand blanks heredoc bodies and data payloads.
+    const rawCommand = String(toolInput?.command ?? '')
+    const depth = opts.depth ?? 0
+    const scan = scanShellCode(rawCommand)
+    for (const code of scan.codes) {
+      if (code.ansi) return { deny: true, reason: 'shell-code' }
+      if (depth >= 4) return { deny: true, reason: 'shell-code-depth' }
+      const inner = decide('Bash', { command: code.value }, { ...opts, depth: depth + 1 })
+      if (inner.deny) return { deny: true, reason: inner.reason ?? 'shell-code' }
+    }
+    if (scan.bad) return { deny: true, reason: 'shell-code' }
+    // tmux command shortcuts and `tmux a \; send-keys` chains
+    for (const seg of codeSegments(rawCommand)) {
+      const words = splitCodeWords(seg.own)
+      if (words != null && tmuxInjectsPane(words)) return { deny: true }
     }
   }
   return { deny: false }
