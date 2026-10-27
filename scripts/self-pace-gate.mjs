@@ -1837,6 +1837,7 @@ function shellWordRuns(words, i) {
   const fish = baseName(words[i].value) === 'fish'
   const codes = []
   let cGiven = false
+  let mainGiven = false
   for (let j = i + 1; j < words.length; j++) {
     const v = words[j].value
     if (!/^[-+]/.test(v)) break
@@ -1844,6 +1845,7 @@ function shellWordRuns(words, i) {
     if (fish && /^-[^-]/.test(v) && /[cC]/.test(v.slice(1))) {
       const k = v.slice(1).search(/[cC]/) + 1
       const rest = v.slice(k + 1)
+      if (v[k] === 'c') mainGiven = true
       if (rest === '') {
         if (words[j + 1]) codes.push(words[j + 1])
         j++
@@ -1879,7 +1881,7 @@ function shellWordRuns(words, i) {
     }
     if (words[j]) codes.push(words[j])
   }
-  return { codes, stdin: fish ? codes.length === 0 : !cGiven }
+  return { codes, stdin: fish ? !mainGiven : !cGiven }
 }
 
 // shellSegments cuts at an escaped `\;` (tmux's own command separator); glue
