@@ -1817,7 +1817,15 @@ function shellWordRuns(words, i) {
 // such pieces back together so `tmux a \; send-keys` stays one segment.
 function codeSegments(command) {
   const segs = shellSegments(command)
-  if (segs == null) return [{ own: String(command ?? ''), bodies: [] }]
+  if (segs == null) {
+    const whole = String(command ?? '')
+    const out = [{ own: whole, bodies: [] }]
+    for (const piece of splitSegments(whole)) {
+      const own = piece.trim()
+      if (own) out.push({ own, bodies: [] })
+    }
+    return out
+  }
   const out = []
   for (const seg of segs) {
     const prev = out[out.length - 1]
@@ -1883,6 +1891,25 @@ const TMUX_PANE_INJECT_WORDS = new Set([
   'pa', 'pas', 'past', 'paste', 'paste-', 'pasteb', 'paste-b', 'paste-bu', 'paste-buf', 'paste-buff', 'paste-buffe', 'paste-buffer',
   'setb', 'set-b', 'set-bu', 'set-buf', 'set-buff', 'set-buffe', 'set-buffer',
 ])
+
+// A .timer or .path unit runs its service later or on a file change, so
+// starting, enabling or linking one is a self-timed future run, the same thing
+// SCHEDULER_RX denies for systemd-run.
+const SYSTEMCTL_ARM_VERBS = new Set([
+  'start', 'restart', 'try-restart', 'reload-or-restart', 'try-reload-or-restart',
+  'condrestart', 'force-reload', 'enable', 'reenable', 'preset', 'link', 'edit',
+  'add-wants', 'add-requires', 'isolate',
+])
+
+// words: output of splitCodeWords. True for `systemctl <arm verb> ... x.timer|x.path`.
+export function systemctlArmsTimer(words) {
+  for (let i = 0; i < words.length; i++) {
+    if (baseName(words[i].value) !== 'systemctl') continue
+    const rest = words.slice(i + 1).map((w) => w.value)
+    if (rest.some((v) => SYSTEMCTL_ARM_VERBS.has(v)) && rest.some((v) => v.endsWith('.timer') || v.endsWith('.path'))) return true
+  }
+  return false
+}
 
 // words: output of splitCodeWords. Follows `tmux [global options] cmd ... \; cmd`.
 export function tmuxInjectsPane(words) {
@@ -1972,7 +1999,7 @@ function decide(toolName, toolInput, opts = {}) {
     // tmux command shortcuts and `tmux a \; send-keys` chains
     for (const seg of codeSegments(rawCommand)) {
       const words = splitCodeWords(seg.own)
-      if (words != null && tmuxInjectsPane(words)) return { deny: true }
+      if (words != null && (tmuxInjectsPane(words) || systemctlArmsTimer(words))) return { deny: true }
     }
   }
   return { deny: false }
