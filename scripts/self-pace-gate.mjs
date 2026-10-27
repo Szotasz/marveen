@@ -156,7 +156,9 @@ const TRANSIENT_PAYLOAD_DENY_WORD_RX =
   /(?:^|[^A-Za-z0-9_-])(?:claude(?:-code)?|crontab|launchctl|systemd-run|at|batch|tmux|nohup|setsid|disown|sleep|watch|eval)(?=$|[^A-Za-z0-9_-])/i
 
 // Split a string into shell words: [{ value (quotes removed), start (index of the
-// word's first character, including an opening quote) }]; null if unterminated.
+// word's first character, including an opening quote), expands (bash would still
+// expand it: `$` or a backtick outside single quotes, or a brace or glob character
+// outside any quotes) }]; null if unterminated.
 function transientShellWords(command) {
   const words = []
   const n = command.length
@@ -165,6 +167,7 @@ function transientShellWords(command) {
     if (command[i] === ' ' || command[i] === '\t') { i++; continue }
     const start = i
     let value = ''
+    let expands = false
     while (i < n && command[i] !== ' ' && command[i] !== '\t') {
       const c = command[i]
       if (c === "'") {
@@ -182,6 +185,7 @@ function transientShellWords(command) {
             value += command[i + 1]
             i += 2
           } else {
+            if (d === '$' || d === '`') expands = true
             value += d
             i++
           }
@@ -192,11 +196,12 @@ function transientShellWords(command) {
         value += command[i + 1]
         i += 2
       } else {
+        if ('$`{}*?['.includes(c)) expands = true
         value += c
         i++
       }
     }
-    words.push({ value, start })
+    words.push({ value, start, expands })
   }
   return words
 }
@@ -258,6 +263,10 @@ export function transientUserUnitAllowed(command) {
     }
   }
   if (!user || !collect || i >= words.length) return false
+  // systemd-run reads options up to its first non-option argument ("+" getopt), so a
+  // word bash still splits or expands there can turn into an option this loop never
+  // saw: --description=x${IFS}--on-active=5m, {--on-active=5m,true}, an empty $X.
+  if (words.slice(0, i + 1).some((w) => w.expands)) return false
   const rawPayload = command.slice(words[i].start)
   const joined = words.slice(i).map((w) => w.value).join(' ')
   for (const s of [rawPayload, joined]) {

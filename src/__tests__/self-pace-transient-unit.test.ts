@@ -126,11 +126,13 @@ describe('self-pace-gate: immediate transient user unit', () => {
       'systemd-run --user --collect cl\\aude -p hi',
       "systemd-run --user --collect cl''aude -p hi",
       "systemd-run --user --collect $'cl\\x61ude' -p hi",
+      "systemd-run --user --collect sh -c $'cl\\x61ude -p hi'",
       'systemd-run --user --collect $"claude" -p hi',
       // a tmux command abbreviation (send = send-keys)
       'systemd-run --user --collect tmux send -t x hi Enter',
       // bash expands ${X} to nothing in front of the name
       'systemd-run --user --collect ${X}claude -p hi',
+      "systemd-run --user --collect sh -c '${X}claude -p hi'",
     ]) {
       expect(deny(cmd), cmd).toBe(true)
     }
@@ -153,6 +155,7 @@ describe('self-pace-gate: immediate transient user unit', () => {
       "systemd-run --user --collect sh -c 'npm test",
       // a process substitution or a second line hidden in an option value
       'systemd-run --user --collect -p WorkingDirectory=<(crontab${IFS}-r) npm test',
+      'systemd-run --user --collect -p WorkingDirectory=<(true) npm test',
       'systemd-run --user --collect -E A=1\ncrontab cronfile',
     ]) {
       expect(deny(cmd), cmd).toBe(true)
@@ -170,6 +173,30 @@ describe('self-pace-gate: immediate transient user unit', () => {
       expect(deny(cmd), cmd).toBe(true)
     }
     expect(deny('crontab -l')).toBe(false)
+  })
+
+  it('DENIES an option or the command name that bash would still split or expand', () => {
+    for (const cmd of [
+      "systemd-run --user --collect --description=x${IFS}--on-active=5m sh -c 'npm test'",
+      'systemd-run --user --collect --description x${IFS}--on-active=5m npm test',
+      'systemd-run --user --collect {--on-active=5m,true}',
+      'systemd-run --user --collect ${IFS}--on-active=5m${IFS}true',
+      'systemd-run --user --collect $X --on-active=5m true',
+      'systemd-run --user --collect "$X" npm test',
+      'systemd-run --user --collect * npm test',
+      'systemd-run --user --collect -E A=$HOME npm test',
+      'systemd-run --user --collect --working-directory=/w/[ab] npm test',
+    ]) {
+      expect(deny(cmd), cmd).toBe(true)
+    }
+    // quoted text, and the arguments after the command name, are not options
+    for (const cmd of [
+      "systemd-run --user --collect --description='$x {a,b} *' npm test",
+      "systemd-run --user --collect sh -c 'npm test > $TMPDIR/x.log 2>&1'",
+      'systemd-run --user --collect npx vitest run src/*.test.ts',
+    ]) {
+      expect(deny(cmd), cmd).toBe(false)
+    }
   })
 
   it('reports a unit with no command to run as not allowed, without throwing', () => {
