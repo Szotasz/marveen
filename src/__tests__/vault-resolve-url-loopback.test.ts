@@ -9,7 +9,11 @@ import { tmpdir } from 'node:os'
 const ROOT = mkdtempSync(join(tmpdir(), 'vault-resolve-url-loopback-'))
 const TOKEN = 'loopback-test-token-0123456789'
 
-type Mod = typeof import('../../scripts/vault-dashboard-client.mjs')
+type Resolved = { ok: boolean; configured?: boolean; error?: string; values?: Record<string, string> }
+type Mod = {
+  resolveViaDashboard: (root: string, ids: string[]) => Promise<Resolved>
+  resolveInBatches: (root: string, ids: string[], opts: object) => Promise<Resolved>
+}
 let mod: Mod
 let calls: Array<{ url: string; auth: string | undefined }> = []
 const savedUrl = process.env.VAULT_RESOLVE_URL
@@ -18,7 +22,7 @@ const savedTokenFile = process.env.VAULT_RESOLVE_TOKEN_FILE
 beforeAll(async () => {
   mkdirSync(join(ROOT, 'store'), { recursive: true })
   writeFileSync(join(ROOT, 'store', '.dashboard-token'), TOKEN + '\n')
-  mod = await import(join(process.cwd(), 'scripts', 'vault-dashboard-client.mjs'))
+  mod = (await import(join(process.cwd(), 'scripts', 'vault-dashboard-client.mjs'))) as Mod
 })
 
 afterAll(() => {
