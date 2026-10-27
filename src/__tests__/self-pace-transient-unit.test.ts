@@ -246,6 +246,12 @@ describe('self-pace-gate: immediate transient user unit', () => {
       // a later assignment overrides an earlier one, so every value must pass
       'systemd-run --user --collect -p RuntimeMaxSec=600 -p RuntimeMaxSec=infinity npm test',
       'systemd-run --user --collect -p RuntimeMaxSec=600 -p RuntimeMaxSec= npm test',
+      // every option after a repeated RuntimeMaxSec is still checked
+      'systemd-run --user --collect -p RuntimeMaxSec=600 -p RuntimeMaxSec=1200 --on-active=5m npm test',
+      // an environment variable named RuntimeMaxSec is not the unit property
+      'systemd-run --user --collect --setenv=RuntimeMaxSec=600 npm test',
+      'systemd-run --user --collect --setenv RuntimeMaxSec=600 npm test',
+      'systemd-run --user --collect -E RuntimeMaxSec=600 npm test',
     ]) {
       expect(deny(cmd), cmd).toBe(true)
       expect(transientUserUnitAllowed(cmd), cmd).toBe(false)
