@@ -25,7 +25,7 @@ Exit code: 0 whenever it measured (an alert is not a failure); 1 only when it
 could not measure or not save its state, so the runner's failure streak
 catches a broken watcher.
 """
-import argparse, json, os, shutil, subprocess, sys, tempfile, time
+import argparse, json, os, shutil, subprocess, sys, tempfile, time, urllib.request
 
 GB = 1024 ** 3
 CRIT_REPEAT_S = 3600
@@ -94,26 +94,26 @@ def save_state(path, state):
 
 
 def send(text, root):
-    """Slack to the owner (notify.sh), and an inter-agent message to the main agent."""
-    ok = subprocess.run([os.path.join(root, "scripts", "notify.sh"), text], capture_output=True, text=True, timeout=60).returncode == 0
+    """Slack to the owner (notify.sh), and an inter-agent message to the main agent. True if at
+    least one went out. The token never reaches an argv (Dani 50671 (1)): urllib, no subprocess."""
+    try:
+        slack = subprocess.run([os.path.join(root, "scripts", "notify.sh"), text], capture_output=True, text=True, timeout=60).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        slack = False
+    agent = False
     try:
         token = open(os.path.join(root, "store", ".dashboard-token")).read().strip()
         # The main agent's self-notice form (CLAUDE.md, level 1): an unregistered sender id would be refused.
-        body = json.dumps({"from": "marveen", "to": "marveen", "content": "[DISKFREEWATCH1027] " + text})
-        fd, tmp = tempfile.mkstemp(prefix="dfw-")
-        with os.fdopen(fd, "w") as f:
-            f.write(body)
-        try:
-            code = subprocess.run(["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}", "-X", "POST", "http://localhost:3420/api/messages",
-                                   "-H", "Content-Type: application/json", "-H", "Authorization: Bearer " + token,
-                                   "--data-binary", "@" + tmp], capture_output=True, text=True, timeout=30).stdout
-            if code != "200":
-                print("disk-free-watch: the message to the main agent got HTTP %s" % code, file=sys.stderr)
-        finally:
-            os.unlink(tmp)
-    except OSError:
-        pass
-    return ok
+        body = json.dumps({"from": "marveen", "to": "marveen", "content": "[DISKFREEWATCH1027] " + text}).encode("utf-8")
+        req = urllib.request.Request("http://localhost:3420/api/messages", data=body, method="POST",
+                                     headers={"Content-Type": "application/json", "Authorization": "Bearer " + token})
+        with urllib.request.urlopen(req, timeout=30) as r:
+            agent = r.status == 200
+    except (OSError, ValueError):
+        agent = False
+    if not (slack and agent):
+        print("disk-free-watch: sent slack=%s agent=%s" % (slack, agent), file=sys.stderr)
+    return slack or agent
 
 
 def main(argv=None):
@@ -122,6 +122,7 @@ def main(argv=None):
     ap.add_argument("--state", default=os.path.join(ROOT, "store", "disk-free-watch.json"))
     ap.add_argument("--free-gb", type=float, help="tests: use this instead of measuring")
     ap.add_argument("--dry-run", action="store_true", help="print the message instead of sending it")
+    ap.add_argument("--root", default=ROOT, help="tests: the install root (notify.sh, store/.dashboard-token)")
     args = ap.parse_args(argv)
     warn_gb = float(os.environ.get("DISK_WARN_GB", "50"))
     crit_gb = float(os.environ.get("DISK_CRIT_GB", "20"))
@@ -135,14 +136,18 @@ def main(argv=None):
         prev = json.load(open(args.state))
     except (OSError, ValueError):
         prev = {}
-    state, kind = decide(prev if isinstance(prev, dict) else {}, free_gb, int(time.time()), warn_gb, crit_gb)
+    prev = prev if isinstance(prev, dict) else {}
+    state, kind = decide(prev, free_gb, int(time.time()), warn_gb, crit_gb)
     if kind:
         dirs = [] if kind == "recovered" else [(p, du_gb(p)) for p in KNOWN_DIRS]
         text = message(kind, free_gb, usage.total / GB, warn_gb, crit_gb, dirs)
         if args.dry_run:
             print(text)
-        else:
-            send(text, ROOT)
+        elif not send(text, args.root):
+            # Nothing went out: the state stays, so the next run tries again, and exit 1 lets the
+            # runner's failure streak see it (Dani 50671 (2)).
+            print("disk-free-watch: %.1f GB free, level %s, the alert could NOT be sent" % (free_gb, state["level"]), file=sys.stderr)
+            return 1
     try:
         save_state(args.state, state)
     except OSError as e:

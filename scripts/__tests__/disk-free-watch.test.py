@@ -69,6 +69,39 @@ class Cli(unittest.TestCase):
             r = subprocess.run([sys.executable, SCRIPT, "--path", d, "--state", st, "--free-gb", "10", "--dry-run"], capture_output=True, text=True)
             self.assertNotIn("KRITIKUS", r.stdout, "no repeat within the hour")
 
+    def _root(self, d, notify_rc):
+        os.makedirs(os.path.join(d, "scripts"))
+        os.makedirs(os.path.join(d, "store"))
+        n = os.path.join(d, "scripts", "notify.sh")
+        with open(n, "w") as f:
+            f.write("#!/bin/sh\nexit %d\n" % notify_rc)
+        os.chmod(n, 0o755)
+        return d
+
+    def test_a_send_that_fails_everywhere_keeps_the_state_and_exits_1(self):
+        # Dani 50671 (2): the alert must not be counted as sent when nothing went out.
+        with tempfile.TemporaryDirectory() as d:
+            root = self._root(d, 1)  # notify.sh fails, and there is no token for the agent message
+            st = os.path.join(d, "s.json")
+            r = subprocess.run([sys.executable, SCRIPT, "--path", d, "--state", st, "--free-gb", "10", "--root", root], capture_output=True, text=True)
+            self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+            self.assertIn("could NOT be sent", r.stderr)
+            self.assertFalse(os.path.exists(st), "the state did not move")
+
+    def test_a_send_that_goes_out_on_one_channel_moves_the_state(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = self._root(d, 0)
+            st = os.path.join(d, "s.json")
+            r = subprocess.run([sys.executable, SCRIPT, "--path", d, "--state", st, "--free-gb", "10", "--root", root], capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+            self.assertEqual(json.load(open(st))["level"], "crit")
+
+    def test_the_token_never_reaches_an_argv(self):
+        # Dani 50671 (1): no subprocess carries the token; the agent message goes through urllib.
+        src = open(SCRIPT).read()
+        self.assertNotIn('"curl"', src)
+        self.assertIn("urllib.request.Request(", src)
+
     def test_cannot_measure_is_exit_1(self):
         r = subprocess.run([sys.executable, SCRIPT, "--path", "/no/such/volume/path", "--dry-run"], capture_output=True, text=True)
         self.assertEqual(r.returncode, 1)
