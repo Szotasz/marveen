@@ -65,6 +65,12 @@ describe('self-pace-gate: immediate transient user unit', () => {
       "systemd-run --user --collect --unit=x.path sh -c 'npm test'",
       "systemd-run --user --collect --unit='a b' sh -c 'npm test'",
       "systemd-run --user --collect -E '1BAD=x' sh -c 'npm test'",
+      // a trigger option is denied even when its value looks like an allowed property
+      "systemd-run --user --collect --timer-property=Nice=19 sh -c 'npm test'",
+      "systemd-run --user --collect --path-property=Nice=19 sh -c 'npm test'",
+      "systemd-run --user --collect --socket-property=Nice=19 sh -c 'npm test'",
+      'systemd-run --user --collect --nice=abc npm test',
+      'systemd-run --user --collect --description= npm test',
     ]) {
       expect(deny(cmd), cmd).toBe(true)
     }
@@ -113,6 +119,13 @@ describe('self-pace-gate: immediate transient user unit', () => {
       'systemd-run --user --collect sh -c "$(cat f)"',
       "systemd-run --user --collect sh < script.sh",
       "systemd-run --user --collect bash -s < script.sh",
+      // quoting that bash removes still spells claude
+      'systemd-run --user --collect cl\\aude -p hi',
+      "systemd-run --user --collect cl''aude -p hi",
+      "systemd-run --user --collect $'cl\\x61ude' -p hi",
+      'systemd-run --user --collect $"claude" -p hi',
+      // a tmux command abbreviation (send = send-keys)
+      'systemd-run --user --collect tmux send -t x hi Enter',
     ]) {
       expect(deny(cmd), cmd).toBe(true)
     }
@@ -133,6 +146,9 @@ describe('self-pace-gate: immediate transient user unit', () => {
       'systemd-run --user --collect sh <<EOF\nnpm test\nEOF',
       'systemd-run --user --collect sh <<< "npm test"',
       "systemd-run --user --collect sh -c 'npm test",
+      // a process substitution or a second line hidden in an option value
+      'systemd-run --user --collect -p WorkingDirectory=<(crontab${IFS}-r) npm test',
+      'systemd-run --user --collect -E A=1\ncrontab cronfile',
     ]) {
       expect(deny(cmd), cmd).toBe(true)
     }

@@ -128,6 +128,139 @@ const SCHEDULER_RX = new RegExp(
 // schedule-API read exemptions): crontab -l, launchctl list/print, atq.
 const SCHEDULER_READ_RX = new RegExp(String.raw`(^|${SCHED_BOUNDARY}\s*)${SCHED_PREFIX}(crontab\s+-l\b|launchctl\s+(?:list|print|dumpstate|blame|examine)\b|atq\b)`, 'i')
 
+// Transient user unit exemption. A sub-agent's long test run started with setsid
+// stays in the tmux-spawn scope cgroup, so a session restart kills it; a transient
+// user unit (systemd-run --user --collect ...) runs outside that cgroup and
+// survives. What the gate guards against is a SELF-TIMED FUTURE TURN, and an
+// immediate unit with no timer option schedules nothing. So exactly ONE such
+// invocation is allowed. The option check is an ALLOWLIST, not a denylist (same
+// reasoning as the LAUNCHCTL_SUBCOMMAND comment: miss one dangerous option in a
+// denylist and it is a hole). maskInertLiterals blanks quoted text, so the payload
+// of `sh -c '...'` is invisible in the masked segments; the payload check therefore
+// reads the RAW command text, never the masked text.
+// Known limit: a deliberately hidden payload (a name assembled from variables, an
+// encoded command, a script file) is not seen; the same is true of the existing
+// setsid/nohup branch. The gate's threat model (see KNOWN LIMITATIONS near
+// splitSegments) is a sub-agent that must not casually self-pace.
+const TRANSIENT_UNIT_PROPERTIES = new Set([
+  'WorkingDirectory', 'Nice', 'IOSchedulingClass', 'IOSchedulingPriority', 'CPUWeight', 'IOWeight',
+  'CPUQuota', 'MemoryMax', 'MemoryHigh', 'TasksMax', 'RuntimeMaxSec', 'TimeoutStopSec',
+  'StandardOutput', 'StandardError', 'Environment',
+])
+const TRANSIENT_PAYLOAD_DENY_WORD_RX =
+  /(?:^|[\s'"();&|`=/])(?:claude(?:-code)?|crontab|launchctl|systemd-run|at|batch|tmux|nohup|setsid|disown|sleep|watch|eval)(?=$|[\s'"();&|`/])/i
+
+// Split a string into shell words: [{ value (quotes removed), start (index of the
+// word's first character, including an opening quote) }]; null if unterminated.
+function transientShellWords(command) {
+  const words = []
+  const n = command.length
+  let i = 0
+  while (i < n) {
+    if (command[i] === ' ' || command[i] === '\t') { i++; continue }
+    const start = i
+    let value = ''
+    while (i < n && command[i] !== ' ' && command[i] !== '\t') {
+      const c = command[i]
+      if (c === "'") {
+        const end = command.indexOf("'", i + 1)
+        if (end < 0) return null
+        value += command.slice(i + 1, end)
+        i = end + 1
+      } else if (c === '"') {
+        i++
+        let closed = false
+        while (i < n) {
+          const d = command[i]
+          if (d === '"') { closed = true; i++; break }
+          if (d === '\\' && i + 1 < n && '"\\$`'.includes(command[i + 1])) {
+            value += command[i + 1]
+            i += 2
+          } else {
+            value += d
+            i++
+          }
+        }
+        if (!closed) return null
+      } else if (c === '\\') {
+        if (i + 1 >= n) return null
+        value += command[i + 1]
+        i += 2
+      } else {
+        value += c
+        i++
+      }
+    }
+    words.push({ value, start })
+  }
+  return words
+}
+
+export function transientUserUnitAllowed(command) {
+  if (typeof command !== 'string' || /[\r\n]/.test(command)) return false
+  // $'...' (ANSI-C) and $"..." quoting are not modelled by the word splitter below:
+  // bash turns $'cl\x61ude' into `claude`, so a payload in that quoting gets no exemption.
+  if (/\$['"]/.test(command)) return false
+  const masked = maskInertLiterals(command)
+  if (masked == null) return false
+  if (/[;&|`<]|\$\(|>\(/.test(masked.replace(/\d*>&\d+/g, ' '))) return false
+  const words = transientShellWords(command)
+  if (words == null || words.length === 0) return false
+  if (words[0].value !== 'systemd-run' || command.slice(words[0].start, words[0].start + 11) !== 'systemd-run') return false
+  const FLAGS = new Set(['--user', '--collect', '-G', '--quiet', '-q', '--same-dir', '-d', '--wait', '--pipe', '-P'])
+  const LONG_VALUE = new Set(['--unit', '--description', '--working-directory', '--nice', '--setenv', '--property'])
+  const SHORT_VALUE = { '-u': '--unit', '-E': '--setenv', '-p': '--property' }
+  let user = false
+  let collect = false
+  let i = 1
+  while (i < words.length && words[i].value.startsWith('-')) {
+    const w = words[i].value
+    i++
+    if (w === '--') break
+    if (FLAGS.has(w)) {
+      if (w === '--user') user = true
+      if (w === '--collect' || w === '-G') collect = true
+      continue
+    }
+    let opt
+    let val
+    if (SHORT_VALUE[w] !== undefined) {
+      opt = SHORT_VALUE[w]
+    } else if (w.startsWith('--')) {
+      const eq = w.indexOf('=')
+      opt = eq < 0 ? w : w.slice(0, eq)
+      if (!LONG_VALUE.has(opt)) return false
+      if (eq >= 0) val = w.slice(eq + 1)
+    } else {
+      return false
+    }
+    if (val === undefined) {
+      if (i >= words.length) return false
+      val = words[i].value
+      i++
+    }
+    if (opt === '--unit') {
+      if (!/^[A-Za-z0-9][A-Za-z0-9_@:-]*(?:\.service)?$/.test(val)) return false
+    } else if (opt === '--description' || opt === '--working-directory') {
+      if (val === '') return false
+    } else if (opt === '--nice') {
+      if (!/^-?\d{1,2}$/.test(val)) return false
+    } else if (opt === '--setenv') {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*(?:=[\s\S]*)?$/.test(val)) return false
+    } else {
+      const m = /^([A-Za-z]+)=[\s\S]*$/.exec(val)
+      if (!m || !TRANSIENT_UNIT_PROPERTIES.has(m[1])) return false
+    }
+  }
+  if (!user || !collect || i >= words.length) return false
+  const rawPayload = command.slice(words[i].start)
+  const joined = words.slice(i).map((w) => w.value).join(' ')
+  for (const s of [rawPayload, joined]) {
+    if (TRANSIENT_PAYLOAD_DENY_WORD_RX.test(s) || /\/api\//i.test(s) || /\$\(|`|</.test(s)) return false
+  }
+  return true
+}
+
 // The Claude self-schedule store. Blocked for WRITE on any route (a Bash write,
 // or the native Write/Edit/NotebookEdit tool); a read/grep is legit diagnostics.
 const SCHEDULE_STORE_RX = /scheduled_tasks\.json/i
@@ -1734,9 +1867,12 @@ function decide(toolName, toolInput, opts = {}) {
     // the only one that gets quote-aware segments. Null (unresolvable quoting)
     // falls back to the naive split, i.e. to scanning strictly more.
     const masked = maskInertLiterals(safeCommand)
+    // The transient-unit exemption lifts ONLY the scheduler-binary deny, and only for a
+    // command that is one single transient-unit invocation; every check above still ran.
+    const transientUnitOk = transientUserUnitAllowed(String(toolInput?.command ?? ''))
     for (const seg of (masked == null ? naiveSegs : splitSegments(masked))) {
       // scheduler binaries: deny the exec/submit forms, allow pure read-listing
-      if (SCHEDULER_RX.test(seg) && !SCHEDULER_READ_RX.test(seg)) return { deny: true }
+      if (SCHEDULER_RX.test(seg) && !SCHEDULER_READ_RX.test(seg) && !transientUnitOk) return { deny: true }
     }
   }
   return { deny: false }
@@ -1752,7 +1888,9 @@ const GATE_MSG =
   '$HOME nem), se ~/.claude/scheduled-tasks/ iras (olvasni ls/cat/grep/sed -n lehet, ' +
   'de NE cd-vel a store-ba -- abszolut uttal hivatkozz ra), se schedule-registry-cli register/unregister ' +
   '(csak status es verify), se utemezes-tabla SQL-iras vagy a claudeclaw.db fajl felulirasa, ' +
-  'se /loop self-pace. Ha csak egy dokumentumot irsz, ami az utemezo API-t vagy a store-t emliti ' +
+  'se /loop self-pace. ' +
+  'Kivetel: hosszu tesztfutashoz EGYETLEN azonnali, idozito nelkuli `systemd-run --user --collect [--unit=NEV] <parancs>` megengedett, onallo parancskent (--on-*/--timer-property, claude, utemezo, tmux, sleep es /api/ nelkul). ' +
+  'Ha csak egy dokumentumot irsz, ami az utemezo API-t vagy a store-t emliti ' +
   '(jegyzet, review-tervezet): a nativ Write tool-lal ird, a store-on kivuli utra -- az atmegy; ' +
   'egy fajlba iranyitott heredoc (cat <<EOF > fajl) nem. Utemezest a fo agenstol kerj inter-agent uzenetben. ' +
   'Input-vezerelt ' +
