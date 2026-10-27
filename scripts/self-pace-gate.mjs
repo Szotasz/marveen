@@ -1713,6 +1713,11 @@ function splitCodeWords(text) {
       if (cur) words.push(cur)
       cur = null
       i++
+    } else if (c === '#' && cur == null && depth === 0 && !tick) {
+      // an unquoted # at a word start comments out the rest of the line, so an
+      // apostrophe there (`# don't`) is not an unterminated quote
+      const nl = text.indexOf('\n', i)
+      i = nl < 0 ? text.length : nl
     } else if (c === "'") {
       const end = text.indexOf("'", i + 1)
       if (end < 0) return null
@@ -1869,7 +1874,7 @@ function scanShellCode(command) {
   for (const seg of segs) {
     const words = splitCodeWords(seg.own)
     if (words == null) {
-      if (/\b(?:sh|bash|dash|zsh|ksh|ash|eval)\b/.test(seg.own)) bad = true
+      if (/\b(?:sh|bash|dash|zsh|ksh|ash|eval|tmux|systemctl)\b/.test(seg.own)) bad = true
       continue
     }
     const args = argWords(words)

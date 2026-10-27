@@ -135,8 +135,22 @@ describe('self-pace-gate: shell grammar around the command word', () => {
     }
   })
 
+  it('DENIES it when a trailing comment holds an apostrophe', () => {
+    for (const cmd of [
+      "sh -c 'crontab -r' # don't",
+      "tmux send -t x hi # it's fine",
+      "systemctl --user start x.timer # don't",
+    ]) {
+      expect(deny(cmd), cmd).toBe(true)
+    }
+  })
+
   it('ALLOWS redirections around harmless commands, and eval outside command position', () => {
     for (const cmd of [
+      "npm test # don't",
+      "tmux ls # it's fine",
+      "systemctl --user status x.timer # don't",
+      'systemctl --user start web.service >/tmp/x.timer',
       'tmux -S /x/s list-panes 2>/dev/null',
       'systemctl --user status x.timer 2>/dev/null',
       "bash -c 'npm test' >/tmp/x 2>&1",
