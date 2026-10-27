@@ -160,6 +160,10 @@ describe('self-pace-gate: immediate transient user unit', () => {
       'systemd-run --user --collect -p RuntimeMaxSec=600 -p WorkingDirectory=<(crontab${IFS}-r) npm test',
       'systemd-run --user --collect -p RuntimeMaxSec=600 -p WorkingDirectory=<(true) npm test',
       'systemd-run --user --collect -p RuntimeMaxSec=600 --nice=1\ncrontab cronfile',
+      // a free-text value has no format check of its own, so only the newline check stops these
+      'systemd-run --user --collect -p RuntimeMaxSec=600 --description=x\ncrontab cronfile npm test',
+      'systemd-run --user --collect -p RuntimeMaxSec=600 --working-directory=x\ncrontab cronfile npm test',
+      'systemd-run --user --collect -p RuntimeMaxSec=600 -p WorkingDirectory=x\ncrontab cronfile npm test',
     ]) {
       expect(deny(cmd), cmd).toBe(true)
     }
