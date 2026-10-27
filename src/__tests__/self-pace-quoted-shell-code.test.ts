@@ -329,6 +329,18 @@ describe('self-pace-gate: review round 2', () => {
     }
   })
 
+  it('DENIES a heredoc or here-string read by fish when only init code (-C, --init-command) is given', () => {
+    for (const cmd of [
+      "fish -C 'echo init' <<'EOF'\ncrontab -r\nEOF",
+      "fish -iC 'echo init' <<< 'crontab -r'",
+      "fish --init-command 'echo init' <<'EOF'\ncrontab -r\nEOF",
+      "fish --init-command='echo init' <<< 'crontab -r'",
+    ]) {
+      expect(deny(cmd), cmd).toBe(true)
+    }
+    expect(deny("fish -C 'echo init' <<'EOF'\nnpm test\nEOF")).toBe(false)
+  })
+
   it('ALLOWS trap - with signal names after it (a lone - resets them, nothing runs)', () => {
     expect(deny("trap - 'crontab -r'")).toBe(false)
   })
