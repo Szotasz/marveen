@@ -582,11 +582,20 @@ export function initDatabase(dbPathOverride?: string): void {
     // column already exists
   }
 
-  // Migration: which embedding model wrote the vector (NULL = written before this column existed)
+  // Migration: which embedding model wrote the vector. When the column is
+  // added, every vector already stored is stamped with the model configured
+  // now. Assumption: those vectors were written by this model. A model switch
+  // made earlier without re-embedding is misattributed here, as it was before
+  // the column existed; the next switch re-embeds those rows like any other.
+  let addedEmbeddingModel = false
   try {
     db.exec('ALTER TABLE memories ADD COLUMN embedding_model TEXT')
+    addedEmbeddingModel = true
   } catch {
     // column already exists
+  }
+  if (addedEmbeddingModel) {
+    db.prepare('UPDATE memories SET embedding_model = ? WHERE embedding IS NOT NULL').run(embedIdentity())
   }
 
   // MEMIRASNYOM915: write-trace columns. Every agent patches memories with
@@ -5875,8 +5884,9 @@ function vectorSearch(
   // window (card f90928e3) narrows the candidates here, so the similarity
   // floor below is computed over the windowed rows.
   // A vector from another model with the same dimension cannot be told apart by
-  // length, so the model name is the filter; NULL rows predate the column and
-  // keep the length check.
+  // length, so the model name is the filter. The migration stamps the vectors
+  // it finds; a NULL row was written later by a build from before the column
+  // and keeps the length check.
   const dt = tsClause('created_at', range)
   const cands = db.prepare(
     `SELECT id, octet_length(embedding) AS elen FROM memories WHERE embedding IS NOT NULL AND (embedding_model IS NULL OR embedding_model = ?) AND (agent_id = ? OR category = 'shared')${category ? ' AND category = ?' : ''}${dt.sql}`
