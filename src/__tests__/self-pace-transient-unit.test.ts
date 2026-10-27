@@ -166,9 +166,15 @@ describe('self-pace-gate: immediate transient user unit', () => {
   })
 
   it('keeps every other check on an otherwise allowed transient unit', () => {
-    // the scheduled-tasks store and the egress allowlist stay write-protected
-    expect(deny("systemd-run --user --collect -p RuntimeMaxSec=600 sh -c 'echo x > ~/.claude/scheduled_tasks.json'")).toBe(true)
-    expect(deny("systemd-run --user --collect -p RuntimeMaxSec=600 sh -c 'echo {} > data/egress-allowlist.json'")).toBe(true)
+    // the scheduled-tasks store and the egress allowlist stay write-protected; the unit itself
+    // passes the exemption, so the denial comes from the store-write checks
+    for (const cmd of [
+      "systemd-run --user --collect -p RuntimeMaxSec=600 sh -c 'echo x > ~/.config/scheduled_tasks.json'",
+      "systemd-run --user --collect -p RuntimeMaxSec=600 sh -c 'echo {} > data/egress-allowlist.json'",
+    ]) {
+      expect(transientUserUnitAllowed(cmd), cmd).toBe(true)
+      expect(deny(cmd), cmd).toBe(true)
+    }
   })
 
   it('leaves the other scheduler denials unchanged', () => {
@@ -248,9 +254,16 @@ describe('self-pace-gate: immediate transient user unit', () => {
       // a later assignment overrides an earlier one, so every value must pass
       'systemd-run --user --collect -p RuntimeMaxSec=600 -p RuntimeMaxSec=infinity npm test',
       'systemd-run --user --collect -p RuntimeMaxSec=600 -p RuntimeMaxSec= npm test',
+      'systemd-run --user --collect -p RuntimeMaxSec=600 --property RuntimeMaxSec=infinity npm test',
+      'systemd-run --user --collect -p RuntimeMaxSec=600 --property=RuntimeMaxSec= npm test',
+      // systemd-run also takes an attached short value and an abbreviated long option; both are denied
+      'systemd-run --user --collect -pRuntimeMaxSec=infinity npm test',
+      'systemd-run --user --collect -p RuntimeMaxSec=600 -pRuntimeMaxSec=infinity npm test',
+      'systemd-run --user --collect --prop=RuntimeMaxSec=infinity npm test',
       // every option after a repeated RuntimeMaxSec is still checked
       'systemd-run --user --collect -p RuntimeMaxSec=600 -p RuntimeMaxSec=1200 --on-active=5m npm test',
-      // an environment variable named RuntimeMaxSec is not the unit property
+      // an environment variable named RuntimeMaxSec is not the unit property (denied twice over:
+      // the property is still missing, and every environment option is denied on its own below)
       'systemd-run --user --collect --setenv=RuntimeMaxSec=600 npm test',
       'systemd-run --user --collect --setenv RuntimeMaxSec=600 npm test',
       'systemd-run --user --collect -E RuntimeMaxSec=600 npm test',
@@ -270,6 +283,9 @@ describe('self-pace-gate: immediate transient user unit', () => {
         `-p Environment=${name}=/tmp/x`,
         `--property=Environment=${name}=/tmp/x`,
         `--property Environment=${name}=/tmp/x`,
+        // the attached short value and an abbreviated long option, which systemd-run also takes
+        `-E${name}=/tmp/x`,
+        `--sete=${name}=/tmp/x`,
       ]) {
         const cmd = `systemd-run --user --collect -p RuntimeMaxSec=600 ${opt} bash -c true`
         expect(deny(cmd), cmd).toBe(true)
