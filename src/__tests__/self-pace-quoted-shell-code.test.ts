@@ -341,6 +341,28 @@ describe('self-pace-gate: review round 2', () => {
     expect(deny("fish -C 'echo init' <<'EOF'\nnpm test\nEOF")).toBe(false)
   })
 
+  it('DENIES . or source in command position reading a heredoc or here-string', () => {
+    for (const cmd of [
+      "X=1 . /dev/stdin <<< 'crontab -r'",
+      "if true; then . /dev/stdin <<< 'crontab -r'; fi",
+      "time source /dev/stdin <<< 'crontab -r'",
+      "sudo source /dev/stdin <<'EOF'\ncrontab -r\nEOF",
+    ]) {
+      expect(deny(cmd), cmd).toBe(true)
+    }
+  })
+
+  it('ALLOWS a heredoc next to . or source used as data, and next to fish --command', () => {
+    for (const cmd of [
+      "git -C . commit -F - <<'EOF'\nfix: x\n\ncrontab entries are now blocked\nEOF",
+      "git log --grep source <<'EOF'\ncrontab -r\nEOF",
+      "fish --command 'echo ok' <<'EOF'\ncrontab -r\nEOF",
+      "fish --command='echo ok' <<< 'crontab -r'",
+    ]) {
+      expect(deny(cmd), cmd).toBe(false)
+    }
+  })
+
   it('ALLOWS trap - with signal names after it (a lone - resets them, nothing runs)', () => {
     expect(deny("trap - 'crontab -r'")).toBe(false)
   })
