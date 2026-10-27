@@ -372,6 +372,41 @@ describe('self-pace-gate: review round 2', () => {
     expect(systemctlArmsTimer([w('systemctl'), w('--user'), w('start'), w('x.{timer,service}', true)])).toBe(true)
     expect(systemctlArmsTimer([w('systemctl'), w('--user'), w('start'), w('x.service')])).toBe(false)
   })
+
+  it('DENIES a hidden command word after a reserved word or an opening brace', () => {
+    for (const cmd of [
+      "if true; then s{h,} -c 'crontab -r'; fi",
+      "{ s{h,} -c 'crontab -r'; }",
+      "! s{h,} -c 'crontab -r'",
+      'while true; do t{mux,} send -t x hi Enter; done',
+      "{ ev{al,} 'crontab -r'; }",
+    ]) {
+      expect(deny(cmd), cmd).toBe(true)
+    }
+  })
+
+  it('DENIES a fish -c or --command after an option that takes a value', () => {
+    for (const cmd of [
+      "fish -d config -c 'crontab -r'",
+      "fish -p /tmp/prof -c 'crontab -r'",
+      "fish -D 3 -c 'crontab -r'",
+      "fish --debug config -c 'crontab -r'",
+      "fish --profile /tmp/p --command 'crontab -r'",
+    ]) {
+      expect(deny(cmd), cmd).toBe(true)
+    }
+  })
+
+  it('DENIES a bash option bundle with o or O before its end', () => {
+    for (const cmd of [
+      "bash -oc pipefail 'crontab -r'",
+      "bash -Oc extglob 'crontab -r'",
+      "bash -eoc pipefail 'crontab -r'",
+    ]) {
+      expect(deny(cmd), cmd).toBe(true)
+    }
+    expect(deny("bash -oc pipefail 'npm test'")).toBe(false)
+  })
 })
 
 describe('self-pace-gate: systemctl arming a timer or path unit', () => {
