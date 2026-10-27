@@ -1828,6 +1828,66 @@
       "name": "MAILGATEHEREDOCFP1027 node -e posting to the Resend endpoint is still a send",
       "cmd": "node -e \"fetch('https://api.resend.com/emails', { method: 'POST' })\"",
       "expected": true
+    },
+    {
+      "name": "MAILGATEAPIB1027 mail -s with an address is a send",
+      "cmd": "echo hi | mail -s 'subject' a@example.invalid",
+      "expected": true
+    },
+    {
+      "name": "MAILGATEAPIB1027 mailx to a local user is a send",
+      "cmd": "mailx root < /tmp/body.txt",
+      "expected": true
+    },
+    {
+      "name": "MAILGATEAPIB1027 mail with -c cc is a send",
+      "cmd": "mail -c b@example.invalid -s x a@example.invalid < /tmp/b",
+      "expected": true
+    },
+    {
+      "name": "MAILGATEAPIB1027 mail alone reads the mailbox",
+      "cmd": "mail",
+      "expected": false
+    },
+    {
+      "name": "MAILGATEAPIB1027 mail -f mbox reads a file",
+      "cmd": "mail -f ~/mbox",
+      "expected": false
+    },
+    {
+      "name": "MAILGATEAPIB1027 mail -u user reads another mailbox",
+      "cmd": "mail -u marvin",
+      "expected": false
+    },
+    {
+      "name": "MAILGATEAPIB1027 mail -H lists headers",
+      "cmd": "mail -H",
+      "expected": false
+    },
+    {
+      "name": "MAILGATEAPIB1027 curl to an smtps URL is a send",
+      "cmd": "curl --url smtps://smtp.example.invalid:465 --mail-rcpt a@example.invalid -T /tmp/m.eml",
+      "expected": true
+    },
+    {
+      "name": "MAILGATEAPIB1027 curl to a local smtp URL is a send",
+      "cmd": "curl smtp://localhost:25 --mail-from x@example.invalid --mail-rcpt a@example.invalid -T m.eml",
+      "expected": true
+    },
+    {
+      "name": "MAILGATEAPIB1027 curl with --mail-rcpt= is a send",
+      "cmd": "curl --mail-rcpt=a@example.invalid -T m.eml smtp://relay.example.invalid",
+      "expected": true
+    },
+    {
+      "name": "MAILGATEAPIB1027 curl to an https URL that names smtp in the path stays no send",
+      "cmd": "curl -s https://docs.example.invalid/smtp/setup",
+      "expected": false
+    },
+    {
+      "name": "MAILGATEAPIB1027 a grep for mail stays no send",
+      "cmd": "grep -rn 'mail -s' scripts/",
+      "expected": false
     }
   ]
 }

@@ -1,5 +1,5 @@
 {
- "_comment": "MAILGATEHTTPAPI1027: shared cases of the HTTP mail API rule in both mail gates (scripts/hooks/outgoing-copy-gate.py :: _mail_api_sends, scripts/email-send-gate.mjs :: mailApiSends). Each body is written to a script file and judged by script_run_sends / scriptRunSends, and passed as a -c / -e code string to is_send_invocation / isSendInvocation; both twins must answer `expected` on both paths. Origin: Marveen 50920, a Gmail REST send from a python script file passed the main agent's approval gate. A case may carry `helpers` (file name -> body): local modules written next to it, so the one-level helper read is pinned too; such a case is judged as a script file only, since a code string has no helper of its own here. MAILGATEHEREDOCFP1027: a send marker in a docstring, a comment or a prose literal is no send (the prose-literal masker).",
+ "_comment": "MAILGATEHTTPAPI1027: shared cases of the HTTP mail API rule in both mail gates (scripts/hooks/outgoing-copy-gate.py :: _mail_api_sends, scripts/email-send-gate.mjs :: mailApiSends). Each body is written to a script file and judged by script_run_sends / scriptRunSends, and passed as a -c / -e code string to is_send_invocation / isSendInvocation; both twins must answer `expected` on both paths. Origin: Marveen 50920, a Gmail REST send from a python script file passed the main agent's approval gate. A case may carry `helpers` (file name -> body): local modules written next to it, so the one-level helper read is pinned too; such a case is judged as a script file only, since a code string has no helper of its own here. MAILGATEHEREDOCFP1027: a send marker in a docstring, a comment or a prose literal is no send (the prose-literal masker). A case with `file_only` is judged as a script file only: the code-string path's older exec heuristic (an exec word and a sender word anywhere, pinned by send-invocation-cases.json) stays looser on purpose.",
  "cases": [
   {
    "name": "gmail REST send, urllib (the real shape)",
@@ -192,6 +192,49 @@
    "file": "review_note.py",
    "expected": false,
    "body": "\"\"\"Writes the review note for the gate (MAILGATEHEREDOCFP1027).\nimport smtplib was the old way; this file only writes text.\n\"\"\"\nimport json\nnote = {'content': \"A1: import { Resend } from 'resend'; client.emails.send(x). A2: import { gmail } from '@googleapis/gmail'; g.users.messages.send(y).\"}\nopen('/tmp/note.json', 'w').write(json.dumps(note))\n"
+  },
+  {
+   "name": "postmark node SDK, batch send (MAILGATEAPIB1027 B1)",
+   "file": "pm_sdk.mjs",
+   "expected": true,
+   "body": "import { ServerClient } from 'postmark'\nconst client = new ServerClient(token)\nawait client.sendEmailBatch(messages)\n"
+  },
+  {
+   "name": "postmark node SDK, single send on the file path (B1 asymmetry)",
+   "file": "pm_single.mjs",
+   "expected": true,
+   "body": "import postmark from 'postmark'\nconst client = new postmark.ServerClient(token)\nawait client.sendEmail({ From: a, To: b, Subject: s, TextBody: t })\n"
+  },
+  {
+   "name": "python postmarker emails.send",
+   "file": "pm_py.py",
+   "expected": true,
+   "body": "from postmarker.core import PostmarkClient\nclient = PostmarkClient(server_token=token)\nclient.emails.send(From=a, To=b, Subject=s, HtmlBody=h)\n"
+  },
+  {
+   "name": "python file running sendmail through a shell string (Samu 50983)",
+   "file": "exec_shell.py",
+   "expected": true,
+   "body": "import subprocess\nsubprocess.run('sendmail -t < /tmp/m.eml', shell=True)\n"
+  },
+  {
+   "name": "node file running sendmail through execSync (Samu 50983)",
+   "file": "exec_node.mjs",
+   "expected": true,
+   "body": "import { execSync } from 'node:child_process'\nexecSync('sendmail -t < /tmp/m.eml')\n"
+  },
+  {
+   "name": "a python file that runs git and only NAMES sendmail in its docstring",
+   "file": "git_only.py",
+   "expected": false,
+   "body": "\"\"\"This used to call sendmail; now it only runs git.\"\"\"\nimport subprocess\nsubprocess.run(['git', 'status'])\n",
+   "file_only": true
+  },
+  {
+   "name": "a node file whose comment names a client send",
+   "file": "comment_only.mjs",
+   "expected": false,
+   "body": "// client.sendEmail( moved to the worker\nconsole.log(1)\n"
   }
  ]
 }

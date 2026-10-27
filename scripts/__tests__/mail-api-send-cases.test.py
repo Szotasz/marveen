@@ -50,7 +50,7 @@ try:
         prog = prog_for(c["file"])
         got = ocg.script_run_sends(f"{prog} {c['file']}", td)
         check(f"script file: {c['name']}", got == c["expected"], f"got {got}")
-        if c.get("helpers"):
+        if c.get("helpers") or c.get("file_only"):
             continue
         flag = "-c" if prog == "python3" else "-e"
         got = ocg.is_send_invocation(f"{prog} {flag} {shlex.quote(c['body'])}")

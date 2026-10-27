@@ -10,7 +10,7 @@ import { isSendInvocation, scriptRunSends } from '../../scripts/email-send-gate.
 // is shared with the main agent's python twin (scripts/__tests__/mail-api-send-cases.test.py),
 // so the two gates cannot drift apart on it.
 
-type Case = { name: string; file: string; body: string; expected: boolean; helpers?: Record<string, string> }
+type Case = { name: string; file: string; body: string; expected: boolean; helpers?: Record<string, string>; file_only?: boolean }
 const { cases } = JSON.parse(
   readFileSync(join(__dirname, '..', '..', 'scripts', 'hooks', 'mail-api-send-cases.json'), 'utf-8'),
 ) as { cases: Case[] }
@@ -35,7 +35,7 @@ describe('HTTP mail API sends (MAILGATEHTTPAPI1027)', () => {
     expect(scriptRunSends(`${progFor(c.file)} ${c.file}`, cwd)).toBe(c.expected)
   })
 
-  it.each(cases.filter((c) => !c.helpers))('code string: $name', (c) => {
+  it.each(cases.filter((c) => !c.helpers && !c.file_only))('code string: $name', (c) => {
     const prog = progFor(c.file)
     const flag = prog === 'python3' ? '-c' : '-e'
     expect(isSendInvocation(`${prog} ${flag} ${shQuote(c.body)}`)).toBe(c.expected)

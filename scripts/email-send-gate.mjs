@@ -110,6 +110,26 @@ const ENV_ASSIGN = /^[A-Za-z_][A-Za-z_0-9]*=/
 // twin); the shared send-invocation-cases.json binds the two copies.
 const CMD_POSITION_KEYWORDS = new Set(['if', 'then', 'else', 'elif', 'do', 'while', 'until', '{', '!'])
 const SENDER_PROG = /^(sendmail|msmtp|swaks)$/i
+// MAILGATEAPIB1027: mail / mailx / s-nail send when given an address, a subject, a cc/bcc/from/attach option or
+// any operand (a recipient); with none of these (`mail`, `mail -f mbox`, `mail -u user`) they read mail.
+// Mirrors _MAIL_PROG / _mail_prog_sends in hooks/outgoing-copy-gate.py.
+const MAIL_PROG = /^(mail|mailx|s-nail)$/i
+const MAIL_SEND_OPT = /^-[A-Za-z]*[sbcrtaAq]/
+const CURL_SMTP = /^(?:smtps?:\/\/|--mail-(?:rcpt|from)(?:=|$))/i
+function mailProgSends(rest) {
+  let skip = false
+  for (const t of rest) {
+    if (skip) { skip = false; continue }
+    if (t.includes('@')) return true
+    if (t === '-f' || t === '-u') { skip = true; continue }
+    if (t.startsWith('-')) {
+      if (MAIL_SEND_OPT.test(t)) return true
+      continue
+    }
+    return true
+  }
+  return false
+}
 const SENDPY = /^send\.py$/i
 // SUBAGENTMAILGATE1016: a version-suffixed interpreter (python3.12, python3.13, and
 // the free-threaded python3.13t) is the same python; the old /^python3?$/ let it
@@ -246,9 +266,11 @@ const MAIL_API_RULES = [
   // /api/messages is one.
   [/mailgun\.net|['"]mailgun(?:\.js)?['"]/i,
     new RegExp(String.raw`\/v3\/[^\n]{1,200}?\/messages(?:\.mime)?` + ACTION_END + String.raw`|\.messages\.create\s*\(`, 'i')],
-  // Postmark: the email endpoints on the API host (single, batch, with a template).
-  [/api\.postmarkapp\.com/i,
-    new RegExp(String.raw`api\.postmarkapp\.com\/email(?:\/batch|\/withTemplate)?` + ACTION_END, 'i')],
+  // Postmark: the email endpoints on the API host (single, batch, with a template), or the SDKs (MAILGATEAPIB1027):
+  // the node client's sendEmail family, python postmarker's emails.send family.
+  [/api\.postmarkapp\.com|['"]postmark['"]|\bpostmarker\b/i,
+    new RegExp(String.raw`api\.postmarkapp\.com\/email(?:\/batch|\/withTemplate)?` + ACTION_END +
+      String.raw`|\.sendEmail(?:Batch|WithTemplate|BatchWithTemplates)?\s*\(|\.emails\.send(?:_batch|_with_template)?\s*\(`, 'i')],
 ]
 const mailApiSends = (text) => {
   const t = text.replaceAll('\\/', '/')
@@ -721,6 +743,9 @@ function headIsSend(toks, depth) {
   const prog = basename(toks[0])
   const rest = toks.slice(1)
   if (SENDER_PROG.test(prog)) return true
+  if (MAIL_PROG.test(prog) && mailProgSends(rest)) return true
+  // MAILGATEAPIB1027: curl speaks SMTP too (an smtp:// or smtps:// URL, --mail-rcpt, --mail-from)
+  if (CURLISH.test(prog) && rest.some((t) => CURL_SMTP.test(t))) return true
   if (WRAPPER_SHELL.test(prog) && depth < 3) {
     for (let i = 0; i < rest.length; i++) {
       if (rest[i] === '-c' && rest[i + 1] && isSendInvocation(rest[i + 1], depth + 1)) return true
@@ -1035,17 +1060,23 @@ function localHelperPaths(path, text, kind) {
   return [...new Set(lists.flat())]
 }
 
+// MAILGATEAPIB1027: a script file's (or helper's) text: the mail imports, the web mail APIs, and a CALL that runs a
+// mail program (a process-starting call whose first argument, a string or a list's first item, starts with
+// sendmail, msmtp or swaks; read on the raw text). See _FILE_EXEC_SENDER in hooks/outgoing-copy-gate.py for why
+// not the looser code-string rule. Mirrors _text_sends there.
+const FILE_EXEC_SENDER = new RegExp(
+  String.raw`(?:\bsubprocess\.(?:run|call|check_call|check_output|Popen)|\bos\.(?:system|popen)|\bexec(?:File)?(?:Sync)?|\bspawn(?:Sync)?)` +
+  String.raw`\s*\(\s*\[?\s*['"` + '`' + String.raw`](?:[^'"` + '`' + String.raw`\s]*\/)?(?:sendmail|msmtp|swaks)(?=['"` + '`' + String.raw`\s])`)
+const textSends = (raw, masked, imports) =>
+  imports.test(masked) || webMailSends(masked) || FILE_EXEC_SENDER.test(raw)
 function fileSends(path, text, kind, readScript) {
   const imports = kind === 'py' ? PY_MAIL_IMPORT : NODE_MAIL_IMPORT
   const lang = kind === 'py' ? 'py' : 'js'
-  const masked = maskProseLiterals(text, lang)
-  if (imports.test(masked) || webMailSends(masked)) return true
+  if (textSends(text, maskProseLiterals(text, lang), imports)) return true
   // The helpers are found on the raw text: a helper named only in a docstring is read too, which errs toward a send.
   return localHelperPaths(path, text, kind).some((h) => {
     const t = readScript(h)
-    if (t === null) return false
-    const m = maskProseLiterals(t, lang)
-    return imports.test(m) || webMailSends(m)
+    return t !== null && textSends(t, maskProseLiterals(t, lang), imports)
   })
 }
 

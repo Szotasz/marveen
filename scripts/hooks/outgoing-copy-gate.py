@@ -88,6 +88,30 @@ _ENV_ASSIGN = re.compile(r"^[A-Za-z_][A-Za-z_0-9]*=")
 # the shared send-invocation-cases.json binds the two.
 _CMD_POSITION_KEYWORDS = frozenset(("if", "then", "else", "elif", "do", "while", "until", "{", "!"))
 _SENDER_PROG = re.compile(r"^(sendmail|msmtp|swaks)$", re.I)
+# MAILGATEAPIB1027 (Samu 50983): mail / mailx / s-nail send when given an address, a subject, a cc/bcc/from/attach
+# option or any operand (a recipient); with none of these (`mail`, `mail -f mbox`, `mail -u user`) they read mail.
+_MAIL_PROG = re.compile(r"^(mail|mailx|s-nail)$", re.I)
+_MAIL_SEND_OPT = re.compile(r"^-[A-Za-z]*[sbcrtaAq]")
+_CURL_SMTP = re.compile(r"^(?:smtps?://|--mail-(?:rcpt|from)(?:=|$))", re.I)
+
+
+def _mail_prog_sends(rest) -> bool:
+    skip = False
+    for t in rest:
+        if skip:
+            skip = False
+            continue
+        if "@" in t:
+            return True
+        if t in ("-f", "-u"):
+            skip = True
+            continue
+        if t.startswith("-"):
+            if _MAIL_SEND_OPT.match(t):
+                return True
+            continue
+        return True
+    return False
 _SENDPY = re.compile(r"^send\.py$", re.I)
 # SUBAGENTMAILGATE1016: a version-suffixed interpreter (python3.12, python3.13t) is the same python.
 _PYTHON = re.compile(r"^python(3(\.\d+t?)?)?$", re.I)
@@ -175,9 +199,11 @@ _MAIL_API_RULES = (
     # /api/messages is one.
     (re.compile(r"mailgun\.net|['\"]mailgun(?:\.js)?['\"]", re.I),
      re.compile(r"/v3/[^\n]{1,200}?/messages(?:\.mime)?" + _ACTION_END + r"|\.messages\.create\s*\(", re.I)),
-    # Postmark: the email endpoints on the API host (single, batch, with a template).
-    (re.compile(r"api\.postmarkapp\.com", re.I),
-     re.compile(r"api\.postmarkapp\.com/email(?:/batch|/withTemplate)?" + _ACTION_END, re.I)),
+    # Postmark: the email endpoints on the API host (single, batch, with a template), or the SDKs (MAILGATEAPIB1027,
+    # Samu 50950 B1): the node client's sendEmail family, python postmarker's emails.send family.
+    (re.compile(r"api\.postmarkapp\.com|['\"]postmark['\"]|\bpostmarker\b", re.I),
+     re.compile(r"api\.postmarkapp\.com/email(?:/batch|/withTemplate)?" + _ACTION_END
+                + r"|\.sendEmail(?:Batch|WithTemplate|BatchWithTemplates)?\s*\(|\.emails\.send(?:_batch|_with_template)?\s*\(", re.I)),
 )
 
 def _mail_api_sends(text: str) -> bool:
@@ -854,6 +880,11 @@ def _head_is_send(toks, depth: int) -> bool:
     rest = toks[1:]
     if _SENDER_PROG.match(prog):
         return True
+    if _MAIL_PROG.match(prog) and _mail_prog_sends(rest):
+        return True
+    # MAILGATEAPIB1027: curl speaks SMTP too (an smtp:// or smtps:// URL, --mail-rcpt, --mail-from)
+    if _CURLISH.match(prog) and any(_CURL_SMTP.match(t) for t in rest):
+        return True
     # burkolo hejj: a -c string-argumentum maga is parancs -- rekurzio
     if _WRAPPER_SHELL.match(prog) and depth < 3:
         for i, t in enumerate(rest):
@@ -1265,19 +1296,33 @@ def _local_helper_paths(path, text, kind):
     return list(dict.fromkeys(p for lst in lists for p in lst))
 
 
+# MAILGATEAPIB1027 (Samu 50983): a subprocess that runs a mail program, written into a FILE, went through, while
+# the same code as a -c string did not. The file path takes a CALL shape: a process-starting call whose first
+# argument (a string, or the first item of a list) starts with sendmail, msmtp or swaks. Read on the raw text, since
+# a shell string ('sendmail -t < m.eml') holds whitespace and the masker blanks it. Not the code-string rule as it
+# is: measured over the repo, its loose form (exec word anywhere, the sender word anywhere, plus sendMail( / mail.send
+# / SMTP( anywhere) made 21 of the gates' own sources and tests a "sender" for the sub-agents' hard gate, which
+# would refuse running them. Not send.py either: the support-mail test harnesses run it under stubs.
+_FILE_EXEC_SENDER = re.compile(
+    r"(?:\bsubprocess\.(?:run|call|check_call|check_output|Popen)|\bos\.(?:system|popen)|\bexec(?:File)?(?:Sync)?|\bspawn(?:Sync)?)"
+    r"""\s*\(\s*\[?\s*['"`](?:[^'"`\s]*/)?(?:sendmail|msmtp|swaks)(?=['"`\s])""")
+
+
+def _text_sends(raw: str, masked: str, imports) -> bool:
+    """A script file's (or helper's) text: the mail imports, the web mail APIs, and a call that runs a mail program."""
+    return bool(imports.search(masked) or _web_mail_sends(masked) or _FILE_EXEC_SENDER.search(raw))
+
+
 def _file_sends(path, text, kind, read_script) -> bool:
     imports = _PY_MAIL_IMPORT if kind == "py" else _NODE_MAIL_IMPORT
     lang = "py" if kind == "py" else "js"
-    masked = _mask_prose_literals(text, lang)
-    if imports.search(masked) or _web_mail_sends(masked):
+    if _text_sends(text, _mask_prose_literals(text, lang), imports):
         return True
     # The helpers are found on the raw text: a helper named only in a docstring is read too, which errs toward a send.
     for h in _local_helper_paths(path, text, kind):
         t = read_script(h, _SCRIPT_READ_LIMIT)
-        if t is not None:
-            t = _mask_prose_literals(t, lang)
-            if imports.search(t) or _web_mail_sends(t):
-                return True
+        if t is not None and _text_sends(t, _mask_prose_literals(t, lang), imports):
+            return True
     return False
 
 
