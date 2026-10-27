@@ -1829,28 +1829,51 @@ function tmuxGlobalOptions(words, from) {
   return { next: i, codes }
 }
 
-// What one shell word in `words` (at index i) runs: { code } for -c, or
-// { stdin } when it reads its code from stdin.
-const STDIN_OPERANDS = new Set(['-', '/dev/stdin', '/dev/fd/0', '/proc/self/fd/0'])
-
+// What one shell word in `words` (at index i) runs: { codes } the words given
+// as code strings (-c; for fish also -C, --command, --init-command), and
+// { stdin } when no code string is given, so the word may read its code from
+// stdin (whatever its operand is).
 function shellWordRuns(words, i) {
-  let j = i + 1
+  const fish = baseName(words[i].value) === 'fish'
+  const codes = []
   let cGiven = false
-  let sGiven = false
-  for (; j < words.length; j++) {
+  for (let j = i + 1; j < words.length; j++) {
     const v = words[j].value
     if (!/^[-+]/.test(v)) break
-    if (v === '--') { j++; break }
-    if (/^[-+][oO]$/.test(v) || v === '--rcfile' || v === '--init-file') { j++; continue }
-    if (/^-[A-Za-z]+$/.test(v)) {
-      if (v.includes('c')) cGiven = true
-      if (v.includes('s')) sGiven = true
+    if (v === '--') break
+    if (fish && (v === '-c' || v === '-C')) {
+      if (words[j + 1]) codes.push(words[j + 1])
+      j++
+      continue
     }
+    if (fish && (v === '--command' || v === '--init-command')) {
+      if (words[j + 1]) codes.push(words[j + 1])
+      j++
+      continue
+    }
+    if (fish && (v.startsWith('--command=') || v.startsWith('--init-command='))) {
+      codes.push({ value: v.slice(v.indexOf('=') + 1), ansi: words[j].ansi })
+      continue
+    }
+    if (/^[-+][A-Za-z]*[oO]$/.test(v) || v === '--rcfile' || v === '--init-file') {
+      if (/^-[A-Za-z]+$/.test(v) && v.includes('c')) cGiven = true
+      j++
+      continue
+    }
+    if (/^-[A-Za-z]+$/.test(v) && v.includes('c')) cGiven = true
   }
-  if (cGiven) return { code: words[j] }
-  // a non-option word after the options is the operand (a script file), unless
-  // it names stdin
-  return { stdin: sGiven || j >= words.length || STDIN_OPERANDS.has(words[j].value) }
+  if (!fish && cGiven) {
+    // the code string is the first non-option word after the options
+    let j = i + 1
+    for (; j < words.length; j++) {
+      const v = words[j].value
+      if (!/^[-+]/.test(v)) break
+      if (v === '--') { j++; break }
+      if (/^[-+][A-Za-z]*[oO]$/.test(v) || v === '--rcfile' || v === '--init-file') j++
+    }
+    if (words[j]) codes.push(words[j])
+  }
+  return { codes, stdin: fish ? codes.length === 0 : !cGiven }
 }
 
 // shellSegments cuts at an escaped `\;` (tmux's own command separator); glue
@@ -1880,13 +1903,18 @@ function codeSegments(command) {
 // { value, ansi }, plus `bad` when a segment holding a shell word, eval or tmux
 // could not be split (unterminated quote) or hides such a word behind $'..' or a
 // brace expansion.
+const HIDDEN_NAMES = new Set([...SHELL_NAMES, 'eval', 'trap', 'tmux', 'systemctl'])
+const CMD_WRAPPERS = new Set(['env', 'sudo', 'command', 'builtin', 'exec', 'nohup', 'nice', 'time', 'stdbuf', 'setsid', 'xargs'])
+const EVAL_QUOTING_COMMANDS = new Set(['echo', 'printf', 'grep', 'egrep', 'fgrep', 'rg', 'sed', 'awk', 'cat', 'git', 'jq', 'test', '[', 'man', 'which', 'type'])
+
 function scanShellCode(command) {
   const segs = codeSegments(command)
   const codes = []
   const seen = new Set()
   const push = (c) => {
-    if (seen.has(c.value)) return
-    seen.add(c.value)
+    const key = `${c.ansi ? 1 : 0}:${c.value}`
+    if (seen.has(key)) return
+    seen.add(key)
     codes.push(c)
   }
   let bad = false
@@ -1898,8 +1926,10 @@ function scanShellCode(command) {
       if (!seg.naive && names.test(seg.own)) bad = true
       continue
     }
-    if (names.test(seg.own) && words.some((w) => w.ansi || w.brace)) bad = true
     const args = argWords(words)
+    const cmdWord = args.find((w) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w.value) && !CMD_WRAPPERS.has(w.value))
+    if (cmdWord && (cmdWord.ansi || cmdWord.brace)) bad = true
+    if (args.some((w) => HIDDEN_NAMES.has(baseName(w.value))) && words.some((w) => w.ansi || w.brace)) bad = true
     let stdinBodies = null
     const stdinCodes = () => {
       if (stdinBodies == null) {
@@ -1912,23 +1942,26 @@ function scanShellCode(command) {
     }
     for (let i = 0; i < args.length; i++) {
       const v = args[i].value
-      if (v === 'eval') {
+      if (v === 'eval' && !(cmdWord && EVAL_QUOTING_COMMANDS.has(cmdWord.value))) {
         const rest = args.slice(i + 1)
         if (rest.length) push({ value: rest.map((w) => w.value).join(' '), ansi: rest.some((w) => w.ansi) })
       }
       if (v === 'trap') {
         let t = i + 1
-        while (t < args.length && args[t].value.startsWith('-')) t++
+        // option words end at `--`; a lone `-` is the action word
+        while (t < args.length && args[t].value.length > 1 && args[t].value.startsWith('-')) {
+          if (args[t++].value === '--') break
+        }
         if (args[t]) push(args[t])
       }
-      if ((v === '.' || v === 'source') && args[i + 1] && STDIN_OPERANDS.has(args[i + 1].value)) {
+      if ((v === '.' || v === 'source') && args[i + 1]) {
         for (const c of stdinCodes()) push(c)
       }
       const base = baseName(v)
       if (base === 'tmux') for (const c of tmuxGlobalOptions(args, i + 1).codes) push(c)
       if (!SHELL_NAMES.has(base)) continue
       const runs = shellWordRuns(args, i)
-      if (runs.code) push(runs.code)
+      for (const c of runs.codes) push(c)
       if (!runs.stdin) continue
       for (const c of stdinCodes()) push(c)
     }
@@ -1984,13 +2017,24 @@ const SYSTEMCTL_VERBS = new Set([
 // expands `x.{timer,service}` and systemctl matches `x.*` against loaded
 // units. A non-arm verb arms nothing, even if `start x.timer` follows it as
 // unit names.
+const SYSTEMCTL_VALUE_OPTIONS = new Set([
+  '-o', '--output', '-t', '--type', '-p', '--property', '-P', '-M', '--machine', '-H', '--host', '-s', '--signal',
+  '-n', '--lines', '--root', '--image', '--image-policy', '--state', '--what', '--job-mode', '--kill-whom',
+  '--kill-value', '--timestamp', '--message', '--drop-in', '--when', '--boot-loader-entry', '--boot-loader-menu',
+  '--reboot-argument', '--check-inhibitors', '--preset-mode',
+])
+
 export function systemctlArmsTimer(words) {
   words = argWords(words)
   for (let i = 0; i < words.length; i++) {
     if (baseName(words[i].value) !== 'systemctl') continue
-    const v = words.findIndex((w, k) => k > i && SYSTEMCTL_VERBS.has(w.value))
+    let v = -1
+    for (let k = i + 1; k < words.length; k++) {
+      if (SYSTEMCTL_VERBS.has(words[k].value)) { v = k; break }
+      if (SYSTEMCTL_VALUE_OPTIONS.has(words[k].value)) k++
+    }
     if (v < 0 || !SYSTEMCTL_ARM_VERBS.has(words[v].value)) continue
-    if (words.slice(v + 1).some((w) => w.value.endsWith('.timer') || w.value.endsWith('.path') || w.value.endsWith('.target') || /[*?[{]/.test(w.value))) return true
+    if (words.slice(v + 1).some((w) => w.value.endsWith('.timer') || w.value.endsWith('.path') || w.value.endsWith('.target') || w.brace || /[*?[]/.test(w.value))) return true
   }
   return false
 }
