@@ -1,5 +1,5 @@
 {
- "_comment": "MAILGATEHTTPAPI1027: shared cases of the HTTP mail API rule in both mail gates (scripts/hooks/outgoing-copy-gate.py :: _mail_api_sends, scripts/email-send-gate.mjs :: mailApiSends). Each body is written to a script file and judged by script_run_sends / scriptRunSends, and passed as a -c / -e code string to is_send_invocation / isSendInvocation; both twins must answer `expected` on both paths. Origin: Marveen 50920, a Gmail REST send from a python script file passed the main agent's approval gate. A case may carry `helpers` (file name -> body): local modules written next to it, so the one-level helper read is pinned too; such a case is judged as a script file only, since a code string has no helper of its own here.",
+ "_comment": "MAILGATEHTTPAPI1027: shared cases of the HTTP mail API rule in both mail gates (scripts/hooks/outgoing-copy-gate.py :: _mail_api_sends, scripts/email-send-gate.mjs :: mailApiSends). Each body is written to a script file and judged by script_run_sends / scriptRunSends, and passed as a -c / -e code string to is_send_invocation / isSendInvocation; both twins must answer `expected` on both paths. Origin: Marveen 50920, a Gmail REST send from a python script file passed the main agent's approval gate. A case may carry `helpers` (file name -> body): local modules written next to it, so the one-level helper read is pinned too; such a case is judged as a script file only, since a code string has no helper of its own here. MAILGATEHEREDOCFP1027: a send marker in a docstring, a comment or a prose literal is no send (the prose-literal masker).",
  "cases": [
   {
    "name": "gmail REST send, urllib (the real shape)",
@@ -186,6 +186,12 @@
    "file": "app_mailer.mjs",
    "expected": false,
    "body": "import { mailer } from './lib/mailer-stub.mjs'\nawait mailer.emails.send({ to })\n"
+  },
+  {
+   "name": "a python file that only WRITES a note naming smtplib, Resend and Gmail sends (MAILGATEHEREDOCFP1027)",
+   "file": "review_note.py",
+   "expected": false,
+   "body": "\"\"\"Writes the review note for the gate (MAILGATEHEREDOCFP1027).\nimport smtplib was the old way; this file only writes text.\n\"\"\"\nimport json\nnote = {'content': \"A1: import { Resend } from 'resend'; client.emails.send(x). A2: import { gmail } from '@googleapis/gmail'; g.users.messages.send(y).\"}\nopen('/tmp/note.json', 'w').write(json.dumps(note))\n"
   }
  ]
 }
