@@ -223,6 +223,76 @@ describe('self-pace-gate: review round 1, second reviewer', () => {
   })
 })
 
+describe('self-pace-gate: review round 2', () => {
+  it('DENIES an encoded or brace-built command word', () => {
+    for (const cmd of [
+      "$'\\x73h' -c 'crontab -r'",
+      "$'\\x74mux' send -t x hi",
+      "$'\\145val' 'crontab -r'",
+      "$'sys\\x74emctl' --user start x.timer",
+      "s{h,} -c 'crontab -r'",
+      't{mux,} send -t x hi',
+      "ev{al,} 'crontab -r'",
+    ]) {
+      expect(deny(cmd), cmd).toBe(true)
+    }
+  })
+
+  it('DENIES a heredoc or here-string read by a shell or . whatever the operand', () => {
+    for (const cmd of [
+      'bash /dev/./stdin <<EOF\ncrontab -r\nEOF',
+      'bash //dev/stdin <<EOF\ncrontab -r\nEOF',
+      '. /dev/./stdin <<EOF\ncrontab -r\nEOF',
+      'bash /proc/$$/fd/0 <<EOF\ncrontab -r\nEOF',
+      "bash /dev/fd/3 3<<<'crontab -r'",
+      "bash --rcfile /dev/stdin -i /dev/null <<'EOF'\ncrontab -r\nEOF",
+    ]) {
+      expect(deny(cmd), cmd).toBe(true)
+    }
+  })
+
+  it('DENIES the code options of fish, a bash option bundle ending in o, and trap --', () => {
+    for (const cmd of [
+      "fish -C true -c 'crontab -r'",
+      "fish --command 'crontab -r'",
+      "fish --command='crontab -r'",
+      "fish -C 'crontab -r'",
+      "bash -eo pipefail -c 'crontab -r'",
+      "trap -- '-; crontab -r' EXIT",
+    ]) {
+      expect(deny(cmd), cmd).toBe(true)
+    }
+  })
+
+  it('DENIES a systemctl option value that looks like a verb', () => {
+    for (const cmd of [
+      'systemctl --user -o cat start x.timer',
+      'systemctl --user -p status start x.timer',
+      'systemctl --user --property status start x.timer',
+    ]) {
+      expect(deny(cmd), cmd).toBe(true)
+    }
+  })
+
+  it('ALLOWS ordinary commands with braces, $-quotes, eval or systemctl as data', () => {
+    for (const cmd of [
+      'chmod +x scripts/{build,deploy}.sh',
+      'git add scripts/{a,b}.sh',
+      'cp deploy.sh{,.bak}',
+      "git commit -m $'Fix flaky test\\n\\nupdate build.sh'",
+      "git commit -m $'fix: bash prompt'",
+      'cp systemctl.log x.{js,map} /tmp/out',
+      "printf '%s\\n' eval 'crontab -r'",
+      "echo eval 'crontab -r'",
+      'systemctl --user restart ${UNIT}.service',
+      'trap - EXIT',
+      'bash script.sh <<EOF\nnpm test\nEOF',
+    ]) {
+      expect(deny(cmd), cmd).toBe(false)
+    }
+  })
+})
+
 describe('self-pace-gate: systemctl arming a timer or path unit', () => {
   it('DENIES a verb that starts or arms a .timer or .path unit', () => {
     for (const cmd of [
