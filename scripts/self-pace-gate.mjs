@@ -1841,9 +1841,15 @@ function shellWordRuns(words, i) {
     const v = words[j].value
     if (!/^[-+]/.test(v)) break
     if (v === '--') break
-    if (fish && (v === '-c' || v === '-C')) {
-      if (words[j + 1]) codes.push(words[j + 1])
-      j++
+    if (fish && /^-[^-]/.test(v) && /[cC]/.test(v.slice(1))) {
+      const k = v.slice(1).search(/[cC]/) + 1
+      const rest = v.slice(k + 1)
+      if (rest === '') {
+        if (words[j + 1]) codes.push(words[j + 1])
+        j++
+      } else {
+        codes.push({ value: rest, ansi: words[j].ansi })
+      }
       continue
     }
     if (fish && (v === '--command' || v === '--init-command')) {
@@ -1905,7 +1911,7 @@ function codeSegments(command) {
 // brace expansion.
 const HIDDEN_NAMES = new Set([...SHELL_NAMES, 'eval', 'trap', 'tmux', 'systemctl'])
 const CMD_WRAPPERS = new Set(['env', 'sudo', 'command', 'builtin', 'exec', 'nohup', 'nice', 'time', 'stdbuf', 'setsid', 'xargs'])
-const EVAL_QUOTING_COMMANDS = new Set(['echo', 'printf', 'grep', 'egrep', 'fgrep', 'rg', 'sed', 'awk', 'cat', 'git', 'jq', 'test', '[', 'man', 'which', 'type'])
+const EVAL_QUOTING_COMMANDS = new Set(['echo', 'printf', 'grep', 'egrep', 'fgrep', 'rg', 'sed', 'awk', 'cat', 'jq', 'test', '[', 'man', 'which', 'type'])
 
 function scanShellCode(command) {
   const segs = codeSegments(command)
