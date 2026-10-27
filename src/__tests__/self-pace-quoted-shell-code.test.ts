@@ -62,6 +62,17 @@ describe('self-pace-gate: a scheduler inside shell code', () => {
     }
   })
 
+  it('DENIES it on a later line when the quote-aware splitter gives up (a here-string)', () => {
+    for (const cmd of [
+      "cat <<< 'a'\nsh -c 'crontab -r'",
+      "cat <<< 'a'\neval 'crontab -r'",
+      "cat <<< 'a'\ntmux send -t x hi",
+    ]) {
+      expect(deny(cmd), cmd).toBe(true)
+    }
+    expect(deny("cat <<< 'a'\nnpm test")).toBe(false)
+  })
+
   it('denies past the nesting limit and allows within it', () => {
     expect(deny('eval eval eval eval true')).toBe(false)
     expect(deny('eval eval eval eval eval true')).toBe(true)
@@ -78,6 +89,49 @@ describe('self-pace-gate: a scheduler inside shell code', () => {
       "grep -n 'at now' notes.txt",
       `printf '%s\\n' "sh -c 'crontab -r'"`,
       'git log --grep="crontab -r"',
+    ]) {
+      expect(deny(cmd), cmd).toBe(false)
+    }
+  })
+})
+
+describe('self-pace-gate: systemctl arming a timer or path unit', () => {
+  it('DENIES a verb that starts or arms a .timer or .path unit', () => {
+    for (const cmd of [
+      'systemctl --user start x.timer',
+      'systemctl --user enable --now x.timer',
+      'systemctl --user enable x.timer',
+      'systemctl --user restart x.timer',
+      'systemctl --user try-restart x.timer',
+      'systemctl --user reload-or-restart x.timer',
+      'systemctl --user reenable x.timer',
+      'systemctl --user start x.path',
+      'systemctl --user link /w/x.timer',
+      'systemctl start x.timer',
+      'sudo systemctl start x.timer',
+      'systemctl --user --no-block start x.timer',
+      'systemctl --user start a.service x.timer',
+      'systemctl --user start "x.timer"',
+      "systemctl --user start '*.timer'",
+      '/usr/bin/systemctl --user start x.timer',
+      "sh -c 'systemctl --user start x.timer'",
+    ]) {
+      expect(deny(cmd), cmd).toBe(true)
+    }
+  })
+
+  it('ALLOWS reads, stopping a timer, and starting a service', () => {
+    for (const cmd of [
+      'systemctl --user list-timers',
+      'systemctl --user status x.timer',
+      'systemctl --user is-active x.timer',
+      'systemctl --user cat x.timer',
+      'systemctl --user show x.timer -p NextElapseUSecRealtime',
+      'systemctl --user stop x.timer',
+      'systemctl --user disable x.timer',
+      'systemctl --user restart web.service',
+      'systemctl --user start x.service',
+      'journalctl --user -u x.timer',
     ]) {
       expect(deny(cmd), cmd).toBe(false)
     }
