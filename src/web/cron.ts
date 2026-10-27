@@ -172,6 +172,8 @@ function plainPrevOccurrence(cron: string, fromMs: number, toMs: number, tz: str
 const DST_LOOKBACK_MS = 3 * 60 * 60 * 1000
 // Bound of the candidate walk: a "* 2 * * *" cron has up to 120 candidates in
 // the repeated hour and its neighbours; this keeps the loop finite regardless.
+// A walk that hits the bound (only a sub-minute anchored cron over a wide
+// window) falls back to plain prev(): the old behaviour, never a silent miss.
 const DST_MAX_CANDIDATES = 400
 
 const tzFormatters = new Map<string, Intl.DateTimeFormat>()
@@ -273,21 +275,28 @@ function dstCronPrevOccurrence(cron: string, fromMs: number, toMs: number, tz: s
   // fired in an earlier window) does not end the search: an older candidate may
   // still be a valid slot inside the window.
   let best: number | null = null
+  let walkEnded = false
   const expr = CronExpressionParser.parse(cron, { tz, currentDate: new Date(toMs + 1) })
   for (let i = 0; i < DST_MAX_CANDIDATES; i++) {
     let candidate: number
     try {
       candidate = expr.prev().getTime()
     } catch {
+      walkEnded = true
       break
     }
-    if (candidate <= fromMs) break
+    if (candidate <= fromMs) {
+      walkEnded = true
+      break
+    }
     const first = firstPassOf(candidate, tz)
     if (first > fromMs) {
       best = first
+      walkEnded = true
       break
     }
   }
+  if (!walkEnded) return undefined
 
   const spring = springCatchUp(cron, fromMs, toMs, tz)
   if (spring != null && (best == null || spring > best)) best = spring

@@ -242,7 +242,7 @@ describe('schedule runner across the autumn DST end (2026-10-25, Europe/Budapest
         cmd('dst-30-3', '30 3 * * *'),
       ],
       '2026-10-24T23:30:00.000Z',
-      '2026-10-25T03:00:00.000Z',
+      '2026-10-25T02:59:00.000Z',
     )
     storeReads = [...fakeStore.reads]
     storeWrites = [...fakeStore.writes]
@@ -299,7 +299,7 @@ describe('schedule runner across the spring DST start (2027-03-28, Europe/Budape
         cmd('dst-0-3', '0 3 * * *'),
       ],
       '2027-03-27T23:30:00.000Z',
-      '2027-03-28T03:00:00.000Z',
+      '2027-03-28T02:59:00.000Z',
     )
   }, 120_000)
 

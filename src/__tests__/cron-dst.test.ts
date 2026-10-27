@@ -330,3 +330,14 @@ describe('AC8: the digest gap guard does not report the dropped second pass', ()
     expect(sent).toEqual([`[HB-HIANY] task=dream-digest slot=${iso(FIRST_PASS)}`])
   })
 })
+
+describe('candidate bound (review E1)', () => {
+  it('a sub-minute anchored cron over a wide autumn window falls back to plain prev(), never a silent null', () => {
+    // 400 second-pass candidates exhaust the walk before any first-pass slot
+    // inside the window is reached; the fallback is the pre-fix answer.
+    const from = ms('2026-10-25T00:30:00Z')
+    const to = ms('2026-10-25T01:30:00Z')
+    const plain = CronExpressionParser.parse('* * 2 * * *', { tz: TZ, currentDate: new Date(to + 1) }).prev().getTime()
+    expect(cronPrevOccurrence('* * 2 * * *', from, to, TZ)).toBe(plain)
+  })
+})
