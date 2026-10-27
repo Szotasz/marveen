@@ -256,9 +256,109 @@ const mailApiSends = (text) => {
 }
 // A Microsoft Graph send or an HTTP mail API send in a code string or a script file.
 const webMailSends = (text) => graphSends(text) || mailApiSends(text)
-const codeStringSends = (code) =>
-  CODE_SEND.test(code) || CODE_SEND_MODULE.test(code) || webMailSends(code) ||
-  (CODE_EXECISH.test(code) && CODE_SENDER_LIT.test(code))
+// MAILGATEHEREDOCFP1027: a send marker that only sits in DATA is no send. The interpreter's code is read with its
+// prose blanked: a string literal whose text holds whitespace and every comment become spaces (length and line
+// breaks kept); a literal without whitespace (a URL, a package name, a 'sendmail' argv item) stays, and so do the
+// interpolations of a template literal or an f-string. An unterminated literal is left raw to the end of where the
+// scan stopped. Mirrors _mask_prose_literals in hooks/outgoing-copy-gate.py (see the rationale there);
+// hooks/prose-literal-cases.json binds the two.
+const PY_STR_PREFIX = /^(?:rb|br|fr|rf|r|b|u|f)$/i
+const isAlpha = (ch) => /^\p{L}$/u.test(ch)
+const isWordish = (ch) => /^[\p{L}\p{N}_]$/u.test(ch)
+const blankText = (s) => Array.from(s, (ch) => (ch === '\n' ? '\n' : ' ')).join('')
+export function maskProseLiterals(text, lang) {
+  if (lang !== 'py' && lang !== 'js') return text
+  const chars = Array.from(text)
+  const n = chars.length
+  const at = (k, s) => { for (let q = 0; q < s.length; q++) if (chars[k + q] !== s[q]) return false; return true }
+  const slice = (a, b) => chars.slice(a, b).join('')
+  // ASCII whitespace only, the same set in both twins (str.isspace and \s differ outside ASCII).
+  const isSpace = (ch) => ' \t\n\r\f\v'.includes(ch)
+  const out = []
+  let i = 0
+  while (i < n) {
+    const c = chars[i]
+    if ((lang === 'py' && c === '#') || (lang === 'js' && at(i, '//'))) {
+      let j = chars.indexOf('\n', i)
+      if (j === -1) j = n
+      out.push(blankText(slice(i, j)))
+      i = j
+      continue
+    }
+    if (lang === 'js' && at(i, '/*')) {
+      let j = -1
+      for (let k = i + 2; k < n - 1; k++) if (chars[k] === '*' && chars[k + 1] === '/') { j = k; break }
+      if (j === -1) { out.push(slice(i, n)); break }
+      out.push(blankText(slice(i, j + 2)))
+      i = j + 2
+      continue
+    }
+    if (c === "'" || c === '"' || (lang === 'js' && c === '`')) {
+      let prefix = ''
+      if (lang === 'py') {
+        let k = i
+        while (k > 0 && isAlpha(chars[k - 1]) && i - k < 2) k--
+        if (k < i && PY_STR_PREFIX.test(slice(k, i)) && (k === 0 || !isWordish(chars[k - 1]))) prefix = slice(k, i).toLowerCase()
+      }
+      const triple = lang === 'py' && at(i, c + c + c)
+      const quote = triple ? c + c + c : c
+      const interp = (lang === 'js' && c === '`') || prefix.includes('f')
+      const multiline = triple || (lang === 'js' && c === '`')
+      let j = i + quote.length
+      const parts = []
+      let buf = ''
+      let closed = false
+      while (j < n) {
+        const ch = chars[j]
+        if (ch === '\\' && j + 1 < n) { buf += ch + chars[j + 1]; j += 2; continue }
+        if (at(j, quote)) { closed = true; break }
+        if (ch === '\n' && !multiline) break
+        if (interp && ((lang === 'js' && at(j, '${')) || (lang === 'py' && ch === '{' && !at(j, '{{')))) {
+          const start = j + (lang === 'js' ? 2 : 1)
+          let depth = 1
+          let k = start
+          while (k < n && depth) {
+            if (chars[k] === '{') depth++
+            else if (chars[k] === '}') depth--
+            k++
+          }
+          if (depth) break
+          parts.push([false, buf])
+          buf = ''
+          parts.push([true, slice(j, k)])
+          j = k
+          continue
+        }
+        if (interp && lang === 'py' && at(j, '{{')) { buf += '{{'; j += 2; continue }
+        buf += ch
+        j++
+      }
+      if (!closed) {
+        // Raw up to where the scan stopped: its text is not read again as code (a `//` in it is no comment).
+        out.push(slice(i, j))
+        i = j
+        continue
+      }
+      parts.push([false, buf])
+      const prose = parts.some(([code, s]) => !code && Array.from(s).some(isSpace))
+      out.push(quote)
+      for (const [code, s] of parts) out.push(code || !prose ? s : blankText(s))
+      out.push(quote)
+      i = j + quote.length
+      continue
+    }
+    out.push(c)
+    i++
+  }
+  return out.join('')
+}
+// The masking language of an interpreter: python, a JS runtime, else none.
+const langOf = (prog) => (PYTHON.test(basename(prog)) ? 'py' : NODEISH.test(basename(prog)) ? 'js' : null)
+const codeStringSends = (code, lang = null) => {
+  const masked = maskProseLiterals(code, lang)
+  return CODE_SEND.test(masked) || CODE_SEND_MODULE.test(masked) || webMailSends(masked) ||
+    (CODE_EXECISH.test(masked) && CODE_SENDER_LIT.test(code))
+}
 
 // Unquoted newline / backtick / `$(` become segment separators; quoted text is
 // untouched (it is content). Tracks quote state by hand -- no shell involved.
@@ -629,7 +729,7 @@ function headIsSend(toks, depth) {
   if (PYTHON.test(prog) || NODEISH.test(prog)) {
     for (let i = 0; i < rest.length; i++) {
       if ((rest[i] === '-c' || rest[i] === '-e' || rest[i] === '--eval') &&
-          rest[i + 1] && codeStringSends(rest[i + 1])) return true
+          rest[i + 1] && codeStringSends(rest[i + 1], langOf(prog))) return true
     }
   }
   const candidates = [prog]
@@ -700,8 +800,10 @@ export function buildWrapperDepthMsg() {
 // PIPED (#1855): `cat <<'EOF' | bash` or `| python3 -` hands the body over the pipe on the
 // heredoc's opening line; it is judged the same way.
 const HEREDOC_SENDER_ARGV = /['"](?:[^'"\s]*\/)?(?:sendmail|msmtp|swaks|send\.py)(?=['"\s])/
-const heredocBodySends = (body) =>
-  CODE_SEND.test(body) || CODE_SEND_MODULE.test(body) || (CODE_EXECISH.test(body) && HEREDOC_SENDER_ARGV.test(body))
+const heredocBodySends = (body, lang = null) => {
+  const masked = maskProseLiterals(body, lang)
+  return CODE_SEND.test(masked) || CODE_SEND_MODULE.test(masked) || (CODE_EXECISH.test(masked) && HEREDOC_SENDER_ARGV.test(body))
+}
 const HEREDOC_SHELL = /(?:^|[\s;&|(])(?:\S*\/)?(?:bash|sh|zsh|dash)\b[^\n<]*$/i
 const HEREDOC_INTERP = /(?:^|[\s;&|(])(?:\S*\/)?(python3?(?:\.\d+)?|node|tsx|ts-node|deno|bun)\b[^\n<]*$/i
 const HEREDOC_PIPE = /\|\s*(?:\S*\/)?(python3?(?:\.\d+)?|node|tsx|ts-node|deno|bun|bash|sh|zsh|dash)\b/i
@@ -718,7 +820,7 @@ function writtenThenRun(cmd, written, depth) {
       if (prog.toLowerCase() === 'npx' && args.length) args = args.slice(1) // npx <runner> <file>
       if (!args.length || !written.has(args[0])) continue
       const body = written.get(args[0])
-      if ((PYTHON.test(prog) || NODEISH.test(prog)) && heredocBodySends(body)) return true
+      if ((PYTHON.test(prog) || NODEISH.test(prog)) && heredocBodySends(body, langOf(prog))) return true
       if (WRAPPER_SHELL.test(prog) && depth < 3 && isSendInvocation(body, depth + 1)) return true
     }
   }
@@ -735,14 +837,15 @@ function heredocProgramSends(cmd, depth = 0) {
       const pbody = cmd.slice(m.index + m[1].length + 1, m.index + m[0].length - m[2].length)
       if (WRAPPER_SHELL.test(piped[1])) {
         if (depth < 3 && isSendInvocation(pbody, depth + 1)) return true
-      } else if (heredocBodySends(pbody)) return true
+      } else if (heredocBodySends(pbody, langOf(piped[1]))) return true
     }
     const lineStart = cmd.lastIndexOf('\n', m.index - 1) + 1
     const head = cmd.slice(lineStart, m.index)
     const bodyStart = m.index + m[1].length + 1
     const body = cmd.slice(bodyStart, m.index + m[0].length - m[2].length)
-    if (HEREDOC_INTERP.test(head)) {
-      if (heredocBodySends(body)) return true
+    const interp = HEREDOC_INTERP.exec(head)
+    if (interp) {
+      if (heredocBodySends(body, langOf(interp[1]))) return true
     } else if (HEREDOC_SHELL.test(head) && depth < 3) {
       if (isSendInvocation(body, depth + 1)) return true
     }
@@ -934,10 +1037,15 @@ function localHelperPaths(path, text, kind) {
 
 function fileSends(path, text, kind, readScript) {
   const imports = kind === 'py' ? PY_MAIL_IMPORT : NODE_MAIL_IMPORT
-  if (imports.test(text) || webMailSends(text)) return true
+  const lang = kind === 'py' ? 'py' : 'js'
+  const masked = maskProseLiterals(text, lang)
+  if (imports.test(masked) || webMailSends(masked)) return true
+  // The helpers are found on the raw text: a helper named only in a docstring is read too, which errs toward a send.
   return localHelperPaths(path, text, kind).some((h) => {
     const t = readScript(h)
-    return t !== null && (imports.test(t) || webMailSends(t))
+    if (t === null) return false
+    const m = maskProseLiterals(t, lang)
+    return imports.test(m) || webMailSends(m)
   })
 }
 

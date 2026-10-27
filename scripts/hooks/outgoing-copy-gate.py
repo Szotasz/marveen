@@ -190,10 +190,122 @@ def _web_mail_sends(text: str) -> bool:
     return _graph_sends(text) or _mail_api_sends(text)
 
 
-def _code_string_sends(code: str) -> bool:
-    if _CODE_SEND.search(code) or _CODE_SEND_MODULE.search(code) or _web_mail_sends(code):
+# MAILGATEHEREDOCFP1027: a send marker that only sits in DATA is no send. A heredoc or a -c string that writes an
+# inter-agent message or a probe file carries the sender's words in a string literal ("the gate knows smtplib",
+# "client.emails.send(...)"), and the rules, read on the raw text, refused it every day. The interpreter's code is
+# read with its prose blanked: a string literal whose text holds whitespace (a sentence, a JSON body, a docstring)
+# and every comment become spaces, the length and the line breaks kept. A literal without whitespace stays as it is,
+# because that is how a real send carries its evidence: a URL, a package name, a 'sendmail' argv item, 'send'. The
+# interpolations of an f-string or a template literal are code and stay. An unterminated literal is left raw, so a
+# cut text is judged as before. Not a parser: a JS regex literal holding a quote can shift the scan (stated limit).
+# Mirrored in email-send-gate.mjs (maskProseLiterals); scripts/hooks/prose-literal-cases.json binds the two.
+_PY_STR_PREFIX = re.compile(r"(?i)(?:rb|br|fr|rf|r|b|u|f)$")
+
+
+def _mask_prose_literals(text: str, lang) -> str:
+    if lang not in ("py", "js"):
+        return text
+    out = []
+    i, n = 0, len(text)
+
+    def blank(s):
+        return "".join(c if c == "\n" else " " for c in s)
+
+    while i < n:
+        c = text[i]
+        if lang == "py" and c == "#":
+            j = text.find("\n", i)
+            j = n if j == -1 else j
+            out.append(blank(text[i:j]))
+            i = j
+            continue
+        if lang == "js" and text.startswith("//", i):
+            j = text.find("\n", i)
+            j = n if j == -1 else j
+            out.append(blank(text[i:j]))
+            i = j
+            continue
+        if lang == "js" and text.startswith("/*", i):
+            j = text.find("*/", i + 2)
+            if j == -1:
+                out.append(text[i:])
+                break
+            out.append(blank(text[i:j + 2]))
+            i = j + 2
+            continue
+        if c in "'\"" or (lang == "js" and c == "`"):
+            prefix = ""
+            if lang == "py":
+                k = i
+                while k > 0 and text[k - 1].isalpha() and i - k < 2:
+                    k -= 1
+                if k < i and _PY_STR_PREFIX.match(text[k:i]) and (k == 0 or not (text[k - 1].isalnum() or text[k - 1] == "_")):
+                    prefix = text[k:i].lower()
+            triple = lang == "py" and text.startswith(c * 3, i)
+            quote = c * 3 if triple else c
+            interp = (lang == "js" and c == "`") or "f" in prefix
+            multiline = triple or (lang == "js" and c == "`")
+            j = i + len(quote)
+            parts = []  # (is_code, text) between the quotes
+            buf = []
+            closed = False
+            while j < n:
+                ch = text[j]
+                if ch == "\\" and j + 1 < n:
+                    buf.append(text[j:j + 2])
+                    j += 2
+                    continue
+                if text.startswith(quote, j):
+                    closed = True
+                    break
+                if ch == "\n" and not multiline:
+                    break
+                if interp and ((lang == "js" and text.startswith("${", j)) or (lang == "py" and ch == "{" and not text.startswith("{{", j))):
+                    start = j + (2 if lang == "js" else 1)
+                    depth, k = 1, start
+                    while k < n and depth:
+                        if text[k] == "{":
+                            depth += 1
+                        elif text[k] == "}":
+                            depth -= 1
+                        k += 1
+                    if depth:
+                        break
+                    parts.append((False, "".join(buf)))
+                    buf = []
+                    parts.append((True, text[j:k]))
+                    j = k
+                    continue
+                if interp and lang == "py" and text.startswith("{{", j):
+                    buf.append("{{")
+                    j += 2
+                    continue
+                buf.append(ch)
+                j += 1
+            if not closed:
+                # Raw up to where the scan stopped: its text is not read again as code (a `//` in it is no comment).
+                out.append(text[i:j])
+                i = j
+                continue
+            parts.append((False, "".join(buf)))
+            # ASCII whitespace only, the same set in both twins (str.isspace and JS \s differ outside ASCII).
+            prose = any(any(ch in " \t\n\r\f\v" for ch in s) for code, s in parts if not code)
+            out.append(quote)
+            for code, s in parts:
+                out.append(s if code or not prose else blank(s))
+            out.append(quote)
+            i = j + len(quote)
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def _code_string_sends(code: str, lang=None) -> bool:
+    masked = _mask_prose_literals(code, lang)
+    if _CODE_SEND.search(masked) or _CODE_SEND_MODULE.search(masked) or _web_mail_sends(masked):
         return True
-    return bool(_CODE_EXECISH.search(code) and _CODE_SENDER_LIT.search(code))
+    return bool(_CODE_EXECISH.search(masked) and _CODE_SENDER_LIT.search(code))
 # Token-ELEJERE horgonyzott cel-minta: egy URL-argumentum vagy csupasz
 # domain/utvonal illik ra; egy JSON-payload ('{...api.resend.com...}') nem.
 _RESEND_TARGET = re.compile(r"^(https?://)?([^/@\s]*\.)?api\.resend\.com(/|$|\s|$)", re.I)
@@ -751,7 +863,7 @@ def _head_is_send(toks, depth: int) -> bool:
     # interpreter kod-string: python -c / node -e / --eval, ami kuldest hiv
     if _PYTHON.match(prog) or _NODEISH.match(prog):
         for i, t in enumerate(rest):
-            if t in ("-c", "-e", "--eval") and i + 1 < len(rest) and _code_string_sends(rest[i + 1]):
+            if t in ("-c", "-e", "--eval") and i + 1 < len(rest) and _code_string_sends(rest[i + 1], _lang_of(prog)):
                 return True
     # send.py futtatasa (kozvetlenul, vagy python/runner utan) --to cimzettel
     candidates = [prog] + (
@@ -836,10 +948,19 @@ def wrapper_depth_hit(cmd: str) -> bool:
 _HEREDOC_SENDER_ARGV = re.compile(r"""['"](?:[^'"\s]*/)?(?:sendmail|msmtp|swaks|send\.py)(?=['"\s])""")
 
 
-def _heredoc_body_sends(body: str) -> bool:
-    if _CODE_SEND.search(body) or _CODE_SEND_MODULE.search(body):
+def _heredoc_body_sends(body: str, lang=None) -> bool:
+    masked = _mask_prose_literals(body, lang)
+    if _CODE_SEND.search(masked) or _CODE_SEND_MODULE.search(masked):
         return True
-    return bool(_CODE_EXECISH.search(body) and _HEREDOC_SENDER_ARGV.search(body))
+    return bool(_CODE_EXECISH.search(masked) and _HEREDOC_SENDER_ARGV.search(body))
+
+
+def _lang_of(prog: str):
+    """The masking language of an interpreter (MAILGATEHEREDOCFP1027): python, a JS runtime, else none."""
+    prog = _basename(prog)
+    if _PYTHON.match(prog):
+        return "py"
+    return "js" if _NODEISH.match(prog) else None
 
 
 _HEREDOC_SHELL = re.compile(r"(?:^|[\s;&|(])(?:\S*/)?(?:bash|sh|zsh|dash)\b[^\n<]*$", re.I)
@@ -871,7 +992,7 @@ def _written_then_run(cmd: str, written: dict, depth: int) -> bool:
             if not args or args[0] not in written:
                 continue
             body = written[args[0]]
-            if (_PYTHON.match(prog) or _NODEISH.match(prog)) and _heredoc_body_sends(body):
+            if (_PYTHON.match(prog) or _NODEISH.match(prog)) and _heredoc_body_sends(body, _lang_of(prog)):
                 return True
             if _WRAPPER_SHELL.match(prog) and depth < 3 and is_send_invocation(body, _depth=depth + 1):
                 return True
@@ -891,13 +1012,14 @@ def _heredoc_program_sends(cmd: str, depth: int = 0) -> bool:
             if _WRAPPER_SHELL.match(piped.group(1)):
                 if depth < 3 and is_send_invocation(pbody, _depth=depth + 1):
                     return True
-            elif _heredoc_body_sends(pbody):
+            elif _heredoc_body_sends(pbody, _lang_of(piped.group(1))):
                 return True
         line_start = cmd.rfind("\n", 0, m.start()) + 1
         head = cmd[line_start:m.start()]
         body = cmd[m.end(1) + 1:m.end() - len(m.group(2))]
-        if _HEREDOC_INTERP.search(head):
-            if _heredoc_body_sends(body):
+        interp = _HEREDOC_INTERP.search(head)
+        if interp:
+            if _heredoc_body_sends(body, _lang_of(interp.group(1))):
                 return True
         elif _HEREDOC_SHELL.search(head) and depth < 3:
             if is_send_invocation(body, _depth=depth + 1):
@@ -1145,12 +1267,17 @@ def _local_helper_paths(path, text, kind):
 
 def _file_sends(path, text, kind, read_script) -> bool:
     imports = _PY_MAIL_IMPORT if kind == "py" else _NODE_MAIL_IMPORT
-    if imports.search(text) or _web_mail_sends(text):
+    lang = "py" if kind == "py" else "js"
+    masked = _mask_prose_literals(text, lang)
+    if imports.search(masked) or _web_mail_sends(masked):
         return True
+    # The helpers are found on the raw text: a helper named only in a docstring is read too, which errs toward a send.
     for h in _local_helper_paths(path, text, kind):
         t = read_script(h, _SCRIPT_READ_LIMIT)
-        if t is not None and (imports.search(t) or _web_mail_sends(t)):
-            return True
+        if t is not None:
+            t = _mask_prose_literals(t, lang)
+            if imports.search(t) or _web_mail_sends(t):
+                return True
     return False
 
 

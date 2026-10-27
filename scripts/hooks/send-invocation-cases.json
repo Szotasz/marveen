@@ -1783,6 +1783,51 @@
       "name": "MAILGATESCRIPT1027 node -e Graph read is no send",
       "cmd": "node -e \"fetch('https://graph.microsoft.com/v1.0/me/messages?top=5')\"",
       "expected": false
+    },
+    {
+      "name": "MAILGATEHEREDOCFP1027 heredoc python writes an inter-agent JSON whose text names smtplib (Marveen 50934)",
+      "cmd": "cd /Users/marvin/ClaudeClaw && S=/tmp/x && python3 - <<'EOF'\nimport json\nopen('/tmp/x/m.json', 'w').write(json.dumps({'from': 'marveen', 'to': 'dani', 'content': 'the gate knows the smtplib and Graph shapes, not Gmail REST'}))\nEOF\ncurl -s -X POST http://localhost:3420/api/messages --data-binary @/tmp/x/m.json",
+      "expected": false
+    },
+    {
+      "name": "MAILGATEHEREDOCFP1027 python -c writes a JSON whose text quotes a Resend client call (Samu 50950)",
+      "cmd": "python3 -c \"import json; open('/tmp/x/m.json', 'w').write(json.dumps({'content': \\\"import { Resend } from 'resend'; const client = new Resend(k); client.emails.send(x) passes\\\"}))\"",
+      "expected": false
+    },
+    {
+      "name": "MAILGATEHEREDOCFP1027 heredoc python whose comment names smtplib",
+      "cmd": "python3 - <<'EOF'\n# this used to go through smtplib\nprint(1)\nEOF",
+      "expected": false
+    },
+    {
+      "name": "MAILGATEHEREDOCFP1027 node -e whose JSON body names sendMail(",
+      "cmd": "node -e \"console.log(JSON.stringify({ content: 'the gate reads sendMail( as a send' }))\"",
+      "expected": false
+    },
+    {
+      "name": "MAILGATEHEREDOCFP1027 heredoc python that imports smtplib is still a send",
+      "cmd": "python3 - <<'EOF'\nimport smtplib\ns = smtplib.SMTP('mail.example.invalid', 587)\nEOF",
+      "expected": true
+    },
+    {
+      "name": "MAILGATEHEREDOCFP1027 a sender written by a heredoc and run in the same command is still a send (Samu's control)",
+      "cmd": "cat > /tmp/x/s.py <<'EOF'\nimport smtplib\nsmtplib.SMTP('mail.example.invalid').send_message(m)\nEOF\npython3 /tmp/x/s.py",
+      "expected": true
+    },
+    {
+      "name": "MAILGATEHEREDOCFP1027 python -c os.system with a spaced sendmail literal is still a send",
+      "cmd": "python3 -c \"import os; os.system('sendmail -t < /tmp/m.eml')\"",
+      "expected": true
+    },
+    {
+      "name": "MAILGATEHEREDOCFP1027 an f-string interpolation that calls smtplib is still a send",
+      "cmd": "python3 - <<'EOF'\nprint(f\"id {smtplib.SMTP('h')} done\")\nEOF",
+      "expected": true
+    },
+    {
+      "name": "MAILGATEHEREDOCFP1027 node -e posting to the Resend endpoint is still a send",
+      "cmd": "node -e \"fetch('https://api.resend.com/emails', { method: 'POST' })\"",
+      "expected": true
     }
   ]
 }
