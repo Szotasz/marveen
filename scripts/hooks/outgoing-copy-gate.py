@@ -150,8 +150,44 @@ def _graph_sends(text: str) -> bool:
     return bool(_GRAPH_SEND.search(t) and _GRAPH_EVIDENCE.search(t))
 
 
+# MAILGATEHTTPAPI1027: an HTTP mail API reached from a script (Marveen 50920: a Gmail REST send from
+# urllib went past the approval gate, because only SMTP, nodemailer and Graph were known). Each provider
+# needs its own evidence (the API host or the client package) AND a send shape in the same text, so a
+# Gmail read (messages list, profile) or a text that only names the provider is no send. Mirrored in
+# email-send-gate.mjs (MAIL_API_SEND); scripts/hooks/mail-api-send-cases.json binds the two twins.
+_ACTION_END = r"(?![A-Za-z0-9_-]|[^\x00-\x7f])"
+_MAIL_API_RULES = (
+    # Gmail: REST (users/<id>/messages/send, users/<id>/drafts/send, also when the URL is assembled
+    # from a base) and the client libraries (.messages().send( in Python, .messages.send( in Node).
+    (re.compile(r"gmail\.googleapis\.com|/gmail/v1/|\bgmail\b", re.I),
+     re.compile(r"/(?:messages|drafts)/send" + _ACTION_END + r"|\.(?:messages|drafts)\s*(?:\(\s*\))?\s*\.send\s*\(", re.I)),
+    # Resend: the /emails endpoint (and /emails/batch), or the SDK call.
+    (re.compile(r"api\.resend\.com|\bresend\b", re.I),
+     re.compile(r"api\.resend\.com/emails" + _ACTION_END + r"|api\.resend\.com/emails/batch|\bresend\.emails\.send\s*\(", re.I)),
+    # SendGrid: v3 mail/send, or the mail client.
+    (re.compile(r"sendgrid", re.I),
+     re.compile(r"/v3/mail/send" + _ACTION_END + r"|['\"]@sendgrid/mail['\"]|\bSendGridAPIClient\b", re.I)),
+    # Mailgun: /v3/<domain>/messages (and messages.mime), or the client's messages.create(.
+    (re.compile(r"mailgun", re.I),
+     re.compile(r"/messages(?:\.mime)?" + _ACTION_END + r"|\.messages\.create\s*\(", re.I)),
+    # Postmark: /email, /email/batch, /email/withTemplate.
+    (re.compile(r"api\.postmarkapp\.com", re.I),
+     re.compile(r"api\.postmarkapp\.com/email(?:/batch|/withTemplate)?" + _ACTION_END, re.I)),
+)
+
+
+def _mail_api_sends(text: str) -> bool:
+    t = text.replace("\\/", "/")
+    return any(ev.search(t) and send.search(t) for ev, send in _MAIL_API_RULES)
+
+
+def _web_mail_sends(text: str) -> bool:
+    """A Microsoft Graph send or an HTTP mail API send in a code string or a script file."""
+    return _graph_sends(text) or _mail_api_sends(text)
+
+
 def _code_string_sends(code: str) -> bool:
-    if _CODE_SEND.search(code) or _CODE_SEND_MODULE.search(code) or _graph_sends(code):
+    if _CODE_SEND.search(code) or _CODE_SEND_MODULE.search(code) or _web_mail_sends(code):
         return True
     return bool(_CODE_EXECISH.search(code) and _CODE_SENDER_LIT.search(code))
 # Token-ELEJERE horgonyzott cel-minta: egy URL-argumentum vagy csupasz
@@ -1105,11 +1141,11 @@ def _local_helper_paths(path, text, kind):
 
 def _file_sends(path, text, kind, read_script) -> bool:
     imports = _PY_MAIL_IMPORT if kind == "py" else _NODE_MAIL_IMPORT
-    if imports.search(text) or _graph_sends(text):
+    if imports.search(text) or _web_mail_sends(text):
         return True
     for h in _local_helper_paths(path, text, kind):
         t = read_script(h, _SCRIPT_READ_LIMIT)
-        if t is not None and (imports.search(t) or _graph_sends(t)):
+        if t is not None and (imports.search(t) or _web_mail_sends(t)):
             return True
     return False
 

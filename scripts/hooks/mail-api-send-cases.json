@@ -1,0 +1,149 @@
+{
+ "_comment": "MAILGATEHTTPAPI1027: shared cases of the HTTP mail API rule in both mail gates (scripts/hooks/outgoing-copy-gate.py :: _mail_api_sends, scripts/email-send-gate.mjs :: mailApiSends). Each body is written to a script file and judged by script_run_sends / scriptRunSends, and passed as a -c / -e code string to is_send_invocation / isSendInvocation; both twins must answer `expected` on both paths. Origin: Marveen 50920, a Gmail REST send from a python script file passed the main agent's approval gate. A case may carry `helpers` (file name -> body): local modules written next to it, so the one-level helper read is pinned too; such a case is judged as a script file only, since a code string has no helper of its own here.",
+ "cases": [
+  {
+   "name": "gmail REST send, urllib (the real shape)",
+   "file": "gm.py",
+   "expected": true,
+   "body": "import json, urllib.request\nA = {'Authorization': 'Bearer ' + tok}\nr = urllib.request.Request('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', data=json.dumps({'raw': raw}).encode(), headers=A, method='POST')\nurllib.request.urlopen(r)\n"
+  },
+  {
+   "name": "gmail REST send, requests",
+   "file": "gm_requests.py",
+   "expected": true,
+   "body": "import requests\nrequests.post('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', json={'raw': raw})\n"
+  },
+  {
+   "name": "gmail REST send, URL assembled from a base",
+   "file": "gm_base.py",
+   "expected": true,
+   "body": "import requests\nBASE = 'https://gmail.googleapis.com/gmail/v1/users/me'\nrequests.post(BASE + '/messages/send', json={'raw': raw})\n"
+  },
+  {
+   "name": "gmail REST drafts/send",
+   "file": "gm_draft.py",
+   "expected": true,
+   "body": "import requests\nrequests.post('https://gmail.googleapis.com/gmail/v1/users/me/drafts/send', json={'id': d})\n"
+  },
+  {
+   "name": "gmail REST send, JSON-escaped URL",
+   "file": "gm_esc.mjs",
+   "expected": true,
+   "body": "await fetch(\"https:\\/\\/gmail.googleapis.com\\/gmail\\/v1\\/users\\/me\\/messages\\/send\", { method: 'POST', body })\n"
+  },
+  {
+   "name": "gmail python client",
+   "file": "gm_client.py",
+   "expected": true,
+   "body": "from googleapiclient.discovery import build\nsvc = build('gmail', 'v1', credentials=c)\nsvc.users().messages().send(userId='me', body={'raw': raw}).execute()\n"
+  },
+  {
+   "name": "gmail node client",
+   "file": "gm_client.mjs",
+   "expected": true,
+   "body": "import { google } from 'googleapis'\nconst gmail = google.gmail({ version: 'v1', auth })\nawait gmail.users.messages.send({ userId: 'me', requestBody: { raw } })\n"
+  },
+  {
+   "name": "resend endpoint from python",
+   "file": "rs.py",
+   "expected": true,
+   "body": "import requests\nrequests.post('https://api.resend.com/emails', json={'to': to}, headers=h)\n"
+  },
+  {
+   "name": "resend batch endpoint from node",
+   "file": "rs_batch.mjs",
+   "expected": true,
+   "body": "await fetch('https://api.resend.com/emails/batch', { method: 'POST', body })\n"
+  },
+  {
+   "name": "resend node SDK",
+   "file": "rs_sdk.mjs",
+   "expected": true,
+   "body": "import { Resend } from 'resend'\nconst resend = new Resend(key)\nawait resend.emails.send({ to, subject, html })\n"
+  },
+  {
+   "name": "sendgrid endpoint",
+   "file": "sg.py",
+   "expected": true,
+   "body": "import requests\nrequests.post('https://api.sendgrid.com/v3/mail/send', json=payload)\n"
+  },
+  {
+   "name": "sendgrid node client",
+   "file": "sg.mjs",
+   "expected": true,
+   "body": "import sgMail from '@sendgrid/mail'\nawait sgMail.send(msg)\n"
+  },
+  {
+   "name": "mailgun endpoint",
+   "file": "mg.py",
+   "expected": true,
+   "body": "import requests\nrequests.post('https://api.mailgun.net/v3/' + domain + '/messages', auth=('api', key), data=d)\n"
+  },
+  {
+   "name": "postmark endpoint",
+   "file": "pm.py",
+   "expected": true,
+   "body": "import requests\nrequests.post('https://api.postmarkapp.com/email', json=payload)\n"
+  },
+  {
+   "name": "python main whose local helper sends through gmail",
+   "file": "gm_main.py",
+   "expected": true,
+   "body": "from gm_helper import deliver\ndeliver()\n",
+   "helpers": {
+    "gm_helper.py": "import requests\ndef deliver():\n    requests.post('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', json={'raw': raw})\n"
+   }
+  },
+  {
+   "name": "node main whose local helper sends through resend",
+   "file": "rs_main.mjs",
+   "expected": true,
+   "body": "import { deliver } from './rs_helper.mjs'\nawait deliver()\n",
+   "helpers": {
+    "rs_helper.mjs": "export async function deliver() { await fetch('https://api.resend.com/emails', { method: 'POST' }) }\n"
+   }
+  },
+  {
+   "name": "gmail REST list (a read)",
+   "file": "gm_list.py",
+   "expected": false,
+   "body": "import requests\nrequests.get('https://gmail.googleapis.com/gmail/v1/users/me/messages?q=from:x')\n"
+  },
+  {
+   "name": "gmail REST profile and a message get (reads)",
+   "file": "gm_read.py",
+   "expected": false,
+   "body": "import requests\nrequests.get('https://gmail.googleapis.com/gmail/v1/users/me/profile')\nrequests.get('https://gmail.googleapis.com/gmail/v1/users/me/messages/' + mid)\n"
+  },
+  {
+   "name": "gmail send-preview-like action word is no send",
+   "file": "gm_preview.py",
+   "expected": false,
+   "body": "import requests\nrequests.get('https://gmail.googleapis.com/gmail/v1/users/me/messages/send-status')\n"
+  },
+  {
+   "name": "a messages/send route without any provider",
+   "file": "routes.mjs",
+   "expected": false,
+   "body": "app.post('/api/messages/send', handler)\n"
+  },
+  {
+   "name": "resend domains list (a read)",
+   "file": "rs_domains.py",
+   "expected": false,
+   "body": "import requests\nrequests.get('https://api.resend.com/domains', headers=h)\n"
+  },
+  {
+   "name": "a note that only names the providers",
+   "file": "notes.py",
+   "expected": false,
+   "body": "print('the newsletter goes out on resend, support mail on gmail, nothing is sent here')\n"
+  },
+  {
+   "name": "telegram send_message is no mail",
+   "file": "tg.py",
+   "expected": false,
+   "body": "from telethon import TelegramClient\nclient = TelegramClient('s', 1, 'h')\nclient.send_message('me', 'ping')\n"
+  }
+ ]
+}

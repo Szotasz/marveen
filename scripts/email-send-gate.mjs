@@ -223,8 +223,36 @@ const graphSends = (text) => {
   const t = text.replaceAll('\\/', '/')
   return GRAPH_SEND.test(t) && GRAPH_EVIDENCE.test(t)
 }
+// MAILGATEHTTPAPI1027: an HTTP mail API reached from a script (a Gmail REST send from urllib went past
+// the main agent's approval gate). Each provider needs its own evidence AND a send shape in the same
+// text, so a Gmail read or a text that only names the provider is no send. Mirrors _MAIL_API_RULES in
+// hooks/outgoing-copy-gate.py; hooks/mail-api-send-cases.json binds the two twins.
+const ACTION_END = String.raw`(?![A-Za-z0-9_-]|[^\x00-\x7f])`
+const MAIL_API_RULES = [
+  // Gmail: REST messages/send and drafts/send (also an assembled URL), and the client libraries.
+  [/gmail\.googleapis\.com|\/gmail\/v1\/|\bgmail\b/i,
+    new RegExp(String.raw`\/(?:messages|drafts)\/send` + ACTION_END + String.raw`|\.(?:messages|drafts)\s*(?:\(\s*\))?\s*\.send\s*\(`, 'i')],
+  // Resend: the /emails endpoint (and /emails/batch), or the SDK call.
+  [/api\.resend\.com|\bresend\b/i,
+    new RegExp(String.raw`api\.resend\.com\/emails` + ACTION_END + String.raw`|api\.resend\.com\/emails\/batch|\bresend\.emails\.send\s*\(`, 'i')],
+  // SendGrid: v3 mail/send, or the mail client.
+  [/sendgrid/i,
+    new RegExp(String.raw`\/v3\/mail\/send` + ACTION_END + String.raw`|['"]@sendgrid\/mail['"]|\bSendGridAPIClient\b`, 'i')],
+  // Mailgun: /v3/<domain>/messages (and messages.mime), or the client's messages.create(.
+  [/mailgun/i,
+    new RegExp(String.raw`\/messages(?:\.mime)?` + ACTION_END + String.raw`|\.messages\.create\s*\(`, 'i')],
+  // Postmark: /email, /email/batch, /email/withTemplate.
+  [/api\.postmarkapp\.com/i,
+    new RegExp(String.raw`api\.postmarkapp\.com\/email(?:\/batch|\/withTemplate)?` + ACTION_END, 'i')],
+]
+const mailApiSends = (text) => {
+  const t = text.replaceAll('\\/', '/')
+  return MAIL_API_RULES.some(([evidence, send]) => evidence.test(t) && send.test(t))
+}
+// A Microsoft Graph send or an HTTP mail API send in a code string or a script file.
+const webMailSends = (text) => graphSends(text) || mailApiSends(text)
 const codeStringSends = (code) =>
-  CODE_SEND.test(code) || CODE_SEND_MODULE.test(code) || graphSends(code) ||
+  CODE_SEND.test(code) || CODE_SEND_MODULE.test(code) || webMailSends(code) ||
   (CODE_EXECISH.test(code) && CODE_SENDER_LIT.test(code))
 
 // Unquoted newline / backtick / `$(` become segment separators; quoted text is
@@ -901,10 +929,10 @@ function localHelperPaths(path, text, kind) {
 
 function fileSends(path, text, kind, readScript) {
   const imports = kind === 'py' ? PY_MAIL_IMPORT : NODE_MAIL_IMPORT
-  if (imports.test(text) || graphSends(text)) return true
+  if (imports.test(text) || webMailSends(text)) return true
   return localHelperPaths(path, text, kind).some((h) => {
     const t = readScript(h)
-    return t !== null && (imports.test(t) || graphSends(t))
+    return t !== null && (imports.test(t) || webMailSends(t))
   })
 }
 
