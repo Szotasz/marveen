@@ -274,4 +274,19 @@ describe('self-pace-gate: immediate transient user unit', () => {
       }
     }
   })
+
+  it('DENIES TimeoutStopSec, so a payload that ignores SIGTERM still gets SIGKILL after RuntimeMaxSec', () => {
+    for (const opt of [
+      '-p TimeoutStopSec=infinity',
+      '--property=TimeoutStopSec=infinity',
+      '-p TimeoutStopSec=',
+      '-p TimeoutStopSec=30',
+    ]) {
+      const cmd = `systemd-run --user --collect -p RuntimeMaxSec=600 ${opt} sh -c 'trap "" TERM; npm test'`
+      expect(deny(cmd), cmd).toBe(true)
+      expect(transientUserUnitAllowed(cmd), cmd).toBe(false)
+    }
+    // the same payload with no TimeoutStopSec stays allowed
+    expect(deny(`systemd-run --user --collect -p RuntimeMaxSec=600 sh -c 'trap "" TERM; npm test'`)).toBe(false)
+  })
 })
