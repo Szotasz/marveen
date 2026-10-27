@@ -392,6 +392,9 @@ describe('self-pace-gate: review round 2', () => {
       "fish -D 3 -c 'crontab -r'",
       "fish --debug config -c 'crontab -r'",
       "fish --profile /tmp/p --command 'crontab -r'",
+      // a -c after a non-option word may be a script argument: stdin is still read
+      "fish -d config -c 'echo hi' <<< 'crontab -r'",
+      "fish -d config --command 'echo hi' <<< 'crontab -r'",
     ]) {
       expect(deny(cmd), cmd).toBe(true)
     }

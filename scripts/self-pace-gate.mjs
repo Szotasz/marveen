@@ -1829,6 +1829,14 @@ function tmuxGlobalOptions(words, from) {
   return { next: i, codes }
 }
 
+// How many following words a shell option word takes as its values: one per o/O letter in a
+// short-option bundle (bash -oc pipefail 'code'), one for --rcfile/--init-file, else none.
+function optionValueCount(v) {
+  if (/^[-+][A-Za-z]+$/.test(v)) return (v.match(/[oO]/g) ?? []).length
+  if (v === '--rcfile' || v === '--init-file') return 1
+  return 0
+}
+
 // What one shell word in `words` (at index i) runs: { codes } the words given
 // as code strings (-c; for fish also -C, --command, --init-command), and
 // { stdin } when no code string is given, so the word may read its code from
@@ -1838,14 +1846,19 @@ function shellWordRuns(words, i) {
   const codes = []
   let cGiven = false
   let mainGiven = false
+  let operand = false
   for (let j = i + 1; j < words.length; j++) {
     const v = words[j].value
-    if (!/^[-+]/.test(v)) break
-    if (v === '--') break
+    if (!/^[-+]/.test(v) || v === '--') {
+      // fish: a -c/-C/--command/--init-command anywhere still runs code
+      if (!fish) break
+      operand = true
+      continue
+    }
     if (fish && /^-[^-]/.test(v) && /[cC]/.test(v.slice(1))) {
       const k = v.slice(1).search(/[cC]/) + 1
       const rest = v.slice(k + 1)
-      if (v[k] === 'c') mainGiven = true
+      if (v[k] === 'c' && !operand) mainGiven = true
       if (rest === '') {
         if (words[j + 1]) codes.push(words[j + 1])
         j++
@@ -1855,22 +1868,18 @@ function shellWordRuns(words, i) {
       continue
     }
     if (fish && (v === '--command' || v === '--init-command')) {
-      if (v === '--command') mainGiven = true
+      if (v === '--command' && !operand) mainGiven = true
       if (words[j + 1]) codes.push(words[j + 1])
       j++
       continue
     }
     if (fish && (v.startsWith('--command=') || v.startsWith('--init-command='))) {
-      if (v.startsWith('--command=')) mainGiven = true
+      if (v.startsWith('--command=') && !operand) mainGiven = true
       codes.push({ value: v.slice(v.indexOf('=') + 1), ansi: words[j].ansi })
       continue
     }
-    if (/^[-+][A-Za-z]*[oO]$/.test(v) || v === '--rcfile' || v === '--init-file') {
-      if (/^-[A-Za-z]+$/.test(v) && v.includes('c')) cGiven = true
-      j++
-      continue
-    }
     if (/^-[A-Za-z]+$/.test(v) && v.includes('c')) cGiven = true
+    j += optionValueCount(v)
   }
   if (!fish && cGiven) {
     // the code string is the first non-option word after the options
@@ -1879,7 +1888,7 @@ function shellWordRuns(words, i) {
       const v = words[j].value
       if (!/^[-+]/.test(v)) break
       if (v === '--') { j++; break }
-      if (/^[-+][A-Za-z]*[oO]$/.test(v) || v === '--rcfile' || v === '--init-file') j++
+      j += optionValueCount(v)
     }
     if (words[j]) codes.push(words[j])
   }
@@ -1943,8 +1952,8 @@ function scanShellCode(command) {
       continue
     }
     const args = argWords(words)
-    const cmdWord = args.find((w) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w.value) && !CMD_WRAPPERS.has(w.value))
     const cmdIndex = commandWordIndex(args)
+    const cmdWord = cmdIndex >= 0 ? args[cmdIndex] : undefined
     if (cmdWord && (cmdWord.ansi || cmdWord.brace)) bad = true
     if (args.some((w) => HIDDEN_NAMES.has(baseName(w.value))) && words.some((w) => w.ansi || w.brace)) bad = true
     let stdinBodies = null
