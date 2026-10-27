@@ -1064,11 +1064,25 @@ function localHelperPaths(path, text, kind) {
 // mail program (a process-starting call whose first argument, a string or a list's first item, starts with
 // sendmail, msmtp or swaks; read on the raw text). See _FILE_EXEC_SENDER in hooks/outgoing-copy-gate.py for why
 // not the looser code-string rule. Mirrors _text_sends there.
-const FILE_EXEC_SENDER = new RegExp(
-  String.raw`(?:\bsubprocess\.(?:run|call|check_call|check_output|Popen)|\bos\.(?:system|popen)|\bexec(?:File)?(?:Sync)?|\bspawn(?:Sync)?)` +
-  String.raw`\s*\(\s*\[?\s*['"` + '`' + String.raw`](?:[^'"` + '`' + String.raw`\s]*\/)?(?:sendmail|msmtp|swaks)(?=['"` + '`' + String.raw`\s])`)
+// Samu 50995 N1: the call is found on the MASKED text (a call shape quoted inside a prose literal is blanked there),
+// its first argument is read from the RAW text at the same position. The masker keeps the length in code points,
+// not in UTF-16 units, so the position is carried over in code points.
+const FILE_EXEC_CALL = new RegExp(
+  String.raw`(?:\bsubprocess\.(?:run|call|check_call|check_output|Popen)|\bos\.(?:system|popen)|\bexec(?:File)?(?:Sync)?|\bspawn(?:Sync)?)\s*\(`, 'g')
+const FILE_EXEC_ARG = new RegExp(
+  String.raw`^\s*\[?\s*['"` + '`' + String.raw`](?:[^'"` + '`' + String.raw`\s]*\/)?(?:sendmail|msmtp|swaks)(?=['"` + '`' + String.raw`\s])`)
+function fileExecSends(raw, masked) {
+  const rawCp = Array.from(raw)
+  // not expected; the raw text is then judged alone, which errs toward a send
+  if (rawCp.length !== Array.from(masked).length) masked = raw
+  for (const m of masked.matchAll(FILE_EXEC_CALL)) {
+    const at = Array.from(masked.slice(0, m.index + m[0].length)).length
+    if (FILE_EXEC_ARG.test(rawCp.slice(at).join(''))) return true
+  }
+  return false
+}
 const textSends = (raw, masked, imports) =>
-  imports.test(masked) || webMailSends(masked) || FILE_EXEC_SENDER.test(raw)
+  imports.test(masked) || webMailSends(masked) || fileExecSends(raw, masked)
 function fileSends(path, text, kind, readScript) {
   const imports = kind === 'py' ? PY_MAIL_IMPORT : NODE_MAIL_IMPORT
   const lang = kind === 'py' ? 'py' : 'js'

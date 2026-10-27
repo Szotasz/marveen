@@ -235,6 +235,30 @@
    "file": "comment_only.mjs",
    "expected": false,
    "body": "// client.sendEmail( moved to the worker\nconsole.log(1)\n"
+  },
+  {
+   "name": "a script that only WRITES a note quoting a sendmail call (Samu 50995 N1)",
+   "file": "note_writer.py",
+   "expected": false,
+   "body": "import json\nnote = {'todo': \"run subprocess.run('sendmail -t') later\"}\nopen('/tmp/note.json', 'w').write(json.dumps(note))\n"
+  },
+  {
+   "name": "a node script that only WRITES a note quoting an execSync sendmail call (N1, node)",
+   "file": "note_writer.mjs",
+   "expected": false,
+   "body": "import { writeFileSync } from 'node:fs'\nwriteFileSync('/tmp/note.txt', \"later: execSync('sendmail -t') from the worker\")\n"
+  },
+  {
+   "name": "an emoji in a prose literal before a real sendmail call (code-point position, N1 fix)",
+   "file": "emoji_then_send.mjs",
+   "expected": true,
+   "body": "import { execSync } from 'node:child_process'\nconst title = 'launch 🚀🚀 today'\nexecSync('sendmail -t < /tmp/m.eml')\n"
+  },
+  {
+   "name": "an emoji in a prose literal before a real sendmail call (python twin)",
+   "file": "emoji_then_send.py",
+   "expected": true,
+   "body": "import subprocess\ntitle = 'launch 🚀🚀 today'\nsubprocess.run('sendmail -t < /tmp/m.eml', shell=True)\n"
   }
  ]
 }

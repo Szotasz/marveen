@@ -1303,14 +1303,23 @@ def _local_helper_paths(path, text, kind):
 # is: measured over the repo, its loose form (exec word anywhere, the sender word anywhere, plus sendMail( / mail.send
 # / SMTP( anywhere) made 21 of the gates' own sources and tests a "sender" for the sub-agents' hard gate, which
 # would refuse running them. Not send.py either: the support-mail test harnesses run it under stubs.
-_FILE_EXEC_SENDER = re.compile(
-    r"(?:\bsubprocess\.(?:run|call|check_call|check_output|Popen)|\bos\.(?:system|popen)|\bexec(?:File)?(?:Sync)?|\bspawn(?:Sync)?)"
-    r"""\s*\(\s*\[?\s*['"`](?:[^'"`\s]*/)?(?:sendmail|msmtp|swaks)(?=['"`\s])""")
+# Samu 50995 N1: the call is found on the MASKED text (its name and the opening parenthesis are code there; a call
+# shape quoted inside a prose literal is blanked), and its first argument is read from the RAW text at the same
+# position (the masker keeps the length in code points), since a shell string holds whitespace.
+_FILE_EXEC_CALL = re.compile(
+    r"(?:\bsubprocess\.(?:run|call|check_call|check_output|Popen)|\bos\.(?:system|popen)|\bexec(?:File)?(?:Sync)?|\bspawn(?:Sync)?)\s*\(")
+_FILE_EXEC_ARG = re.compile(r"""\s*\[?\s*['"`](?:[^'"`\s]*/)?(?:sendmail|msmtp|swaks)(?=['"`\s])""")
+
+
+def _file_exec_sends(raw: str, masked: str) -> bool:
+    if len(raw) != len(masked):  # not expected; the raw text is then judged alone, which errs toward a send
+        masked = raw
+    return any(_FILE_EXEC_ARG.match(raw, m.end()) for m in _FILE_EXEC_CALL.finditer(masked))
 
 
 def _text_sends(raw: str, masked: str, imports) -> bool:
     """A script file's (or helper's) text: the mail imports, the web mail APIs, and a call that runs a mail program."""
-    return bool(imports.search(masked) or _web_mail_sends(masked) or _FILE_EXEC_SENDER.search(raw))
+    return bool(imports.search(masked) or _web_mail_sends(masked) or _file_exec_sends(raw, masked))
 
 
 def _file_sends(path, text, kind, read_script) -> bool:
