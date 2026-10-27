@@ -277,8 +277,9 @@ entries say what v1.45.0 does and what the next release does.
    The parser hook that runs on every sub-agent denies a command word that
    starts with `$` when the command sets `IFS=` anywhere, so
    `while IFS= read -r line; do $c "$line"; done < list` is denied as a network
-   call (rule `ifs-expanded-command`). A fix is proposed in #2298 and not yet
-   merged. Also new: `BASH_EGRESS_HOST_ALLOW` (default off). Off, `curl https://`
+   call (rule `ifs-expanded-command`). A fix is open in #2298 and not ready yet.
+   Until then, name the command literally in the loop instead of `$c` (for
+   example `echo "$line"`); that passes the gate. Also new: `BASH_EGRESS_HOST_ALLOW` (default off). Off, `curl https://`
    and `wget` stay denied on every agent as before; on, the parser judges them
    by host (localhost, the local network and `store/egress-vendor-hosts.json`
    pass). See `docs/bash-sandbox.md`.

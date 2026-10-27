@@ -280,8 +280,9 @@ ezeknél a tétel megmondja, mit csinál a v1.45.0, és mit a következő kiadá
    A minden sub-ügynökön futó elemző-hook tiltja azt a parancsszót, amely `$`-ral
    kezdődik, ha a parancs bárhol `IFS=`-t állít, így a
    `while IFS= read -r line; do $c "$line"; done < lista` hálózati hívásnak számít,
-   és tiltva van (`ifs-expanded-command` szabály). A javítás a #2298-ban van, még
-   nincs mergelve. Szintén új: a `BASH_EGRESS_HOST_ALLOW` (alapból kikapcsolva).
+   és tiltva van (`ifs-expanded-command` szabály). A javítás a #2298-ban nyitott,
+   még nem kész. Addig a ciklusban a parancs nevét írd ki szó szerint a `$c` helyett
+   (például `echo "$line"`); az átmegy a kapun. Szintén új: a `BASH_EGRESS_HOST_ALLOW` (alapból kikapcsolva).
    Kikapcsolva a `curl https://` és a `wget` minden ügynökön tiltva marad, mint
    eddig; bekapcsolva az elemző hoszt szerint dönt (a localhost, a helyi hálózat és
    a `store/egress-vendor-hosts.json` hosztjai átmennek). Lásd: `docs/bash-sandbox.md`.
