@@ -214,8 +214,11 @@ const CODE_SEND_MODULE = new RegExp(
   // The same class on the Graph sender (export sendMail): renamed on import, or a string key.
   String.raw`|\bsendMail\s+as\b|\[\s*['"]sendMail['"]\s*\]`,
 )
+// MAILGATESCRIPT1027: a Microsoft Graph send endpoint (sendMail, or send/reply/replyAll/forward of a message)
+const GRAPH_SEND = /\/(?:me|users\/[^\n]{1,120}?)\/(?:sendMail\b|messages\/[^\n]{1,160}?\/(?:send|reply|replyAll|forward)\b)/i
 const codeStringSends = (code) =>
-  CODE_SEND.test(code) || CODE_SEND_MODULE.test(code) || (CODE_EXECISH.test(code) && CODE_SENDER_LIT.test(code))
+  CODE_SEND.test(code) || CODE_SEND_MODULE.test(code) || GRAPH_SEND.test(code) ||
+  (CODE_EXECISH.test(code) && CODE_SENDER_LIT.test(code))
 
 // Unquoted newline / backtick / `$(` become segment separators; quoted text is
 // untouched (it is content). Tracks quote state by hand -- no shell involved.
@@ -809,13 +812,19 @@ function resolveScriptPath(script, cwd) {
 
 // node/tsx/bun/deno: the first non-option word is the script; -e/--eval code
 // strings are isSendInvocation's to judge.
-function nodeScriptOperand(rest) {
+// MAILGATESCRIPT1027: `bun run x` / `deno run x` skip the run word; `npx tsx x` / `npx ts-node x`
+// / `npx node x` name the script after the runner, any other npx package is no script.
+function nodeScriptOperand(prog, rest) {
+  const words = []
   for (const t of rest) {
     if (t === '--') continue
     if (t.startsWith('-')) return null
-    return t
+    words.push(t)
+    if (words.length === 2) break
   }
-  return null
+  if (prog === 'npx') return /^(?:tsx|ts-node|node)$/.test(words[0] ?? '') ? (words[1] ?? null) : null
+  if ((prog === 'bun' || prog === 'deno') && words[0] === 'run') return words[1] ?? null
+  return words[0] ?? null
 }
 
 function addressFlagGiven(rest) {
@@ -862,10 +871,10 @@ function localHelperPaths(path, text, kind) {
 
 function fileSends(path, text, kind, readScript) {
   const imports = kind === 'py' ? PY_MAIL_IMPORT : NODE_MAIL_IMPORT
-  if (imports.test(text)) return true
+  if (imports.test(text) || GRAPH_SEND.test(text)) return true
   return localHelperPaths(path, text, kind).some((h) => {
     const t = readScript(h)
-    return t !== null && imports.test(t)
+    return t !== null && (imports.test(t) || GRAPH_SEND.test(t))
   })
 }
 
@@ -886,9 +895,9 @@ function headRunsSenderScript(toks, cwd, readScript, depth) {
     if (addressFlagGiven(rest)) return true // also under -m / -c, where no file is named
     script = pythonScriptOperand(rest).script
     kind = 'py'
-  } else if (NODEISH.test(prog) && prog !== 'npx') {
+  } else if (NODEISH.test(prog)) {
     if (addressFlagGiven(rest)) return true
-    script = nodeScriptOperand(rest)
+    script = nodeScriptOperand(prog, rest)
     kind = 'node'
   } else if (SCRIPT_FILE.test(toks[0]) || toks[0].includes('/')) {
     // a directly executed file: its #! line picks the interpreter, else its extension

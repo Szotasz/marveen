@@ -133,8 +133,14 @@ _CODE_EXECISH = re.compile(
 _CODE_SENDER_LIT = re.compile(r"sendmail|msmtp|swaks|send\.py", re.I)
 
 
+# MAILGATESCRIPT1027: a Microsoft Graph send endpoint (sendMail, or send/reply/replyAll/forward of a message)
+_GRAPH_SEND = re.compile(
+    r"/(?:me|users/[^\n]{1,120}?)/(?:sendMail\b|messages/[^\n]{1,160}?/(?:send|reply|replyAll|forward)\b)", re.I
+)
+
+
 def _code_string_sends(code: str) -> bool:
-    if _CODE_SEND.search(code) or _CODE_SEND_MODULE.search(code):
+    if _CODE_SEND.search(code) or _CODE_SEND_MODULE.search(code) or _GRAPH_SEND.search(code):
         return True
     return bool(_CODE_EXECISH.search(code) and _CODE_SENDER_LIT.search(code))
 # Token-ELEJERE horgonyzott cel-minta: egy URL-argumentum vagy csupasz
@@ -873,6 +879,231 @@ def is_send_invocation(cmd: str, _depth: int = 0) -> bool:
         return any(_segment_is_send(toks, _depth) for toks in _segments_tokens(flat))
     except ValueError:
         return bool(_FALLBACK_LITERALS.search(cmd))
+
+# MAILGATESCRIPT1027: a mail send done by a SCRIPT FILE. is_send_invocation sees the command text only,
+# so `node send-it.mjs` or `python3 notify.py` ran a mail past the main agent's approval gate. This is the
+# port of scriptRunSends in email-send-gate.mjs (the sub-agent gate; see SCRIPTSENDGATE1020 there for the
+# rationale and the stated limits): the script an interpreter runs is read, and it is a send when it imports
+# an SMTP library or nodemailer, or names a Microsoft Graph send endpoint, itself or in one level of local
+# helpers. Unlike the JS twin it is FAIL-CLOSED, because here a "send" only asks for the level check: a script
+# that cannot be found or read, or is too large, or whose path is a variable, counts as a send. Deliberately
+# NOT part of is_send_invocation (the shared contract of send-invocation-cases.json); email-approval-gate.py
+# calls it next to it.
+_PY_MAIL_MODULE = r"(?:(?:aio)?smtplib|yagmail)"
+_PY_MAIL_IMPORT = re.compile(
+    r"^[ \t]*(?:import[ \t]+[^\n#]*\b" + _PY_MAIL_MODULE + r"\b|from[ \t]+" + _PY_MAIL_MODULE + r"\b[^\n]*\bimport\b)"
+    r"|\bimport_module\(\s*['\"]" + _PY_MAIL_MODULE + r"['\"]",
+    re.M,
+)
+_NODE_MAIL_MODULE = r"['\"]nodemailer['\"]"
+_NODE_MAIL_IMPORT = re.compile(
+    r"\brequire\s*\(\s*" + _NODE_MAIL_MODULE + r"\s*\)|^[ \t]*import\b[^\n]*" + _NODE_MAIL_MODULE
+    + r"|\bimport\s*\(\s*" + _NODE_MAIL_MODULE + r"\s*\)",
+    re.M,
+)
+_PY_LOCAL_IMPORT = re.compile(r"^[ \t]*(?:from[ \t]+([\w.]+)[ \t]+import\b|import[ \t]+([\w., \t]+))", re.M)
+_NODE_LOCAL_IMPORT = re.compile(
+    r"(?:\brequire\s*\(\s*|^[ \t]*import\b[^\n]*?\bfrom\s*|^[ \t]*import\s*|\bimport\s*\(\s*)['\"](\.{1,2}/[^'\"\n]+)['\"]",
+    re.M,
+)
+_NODE_EXTS = ("", ".js", ".mjs", ".cjs", ".ts", "/index.js", "/index.mjs", "/index.ts")
+_HELPER_LIMIT = 40
+_ADDRESS_FLAG = re.compile(r"^--(?:to|cc|bcc)(?:=(.*))?$", re.S)
+_SCRIPT_FILE = re.compile(r"\.(?:py|mjs|cjs|js|ts)$", re.I)
+_SHELL_C_FLAG = re.compile(r"^-[a-zA-Z]*c[a-zA-Z]*$")
+_SCRIPT_READ_LIMIT = 1024 * 1024
+_SHEBANG_READ_LIMIT = 512
+_SHELL_C_DEPTH = 3
+
+
+def _read_script_head(path: str, limit: int = _SCRIPT_READ_LIMIT):
+    """The first `limit` bytes of the file as text, or None when it cannot be read."""
+    try:
+        with open(path, "rb") as fh:
+            return fh.read(limit).decode("utf-8", errors="replace")
+    except (OSError, ValueError):
+        return None
+
+
+def _resolve_script_paths(script, cwd, cmd_words):
+    """Every absolute path the script operand can name: itself when absolute, `~` expanded, a relative
+    one under cwd and under every literal `cd DIR` target of the command. May be empty."""
+    if not script or _UNDECIDABLE_PATH.search(script):
+        return []
+    p = script
+    if p == "~" or p.startswith("~/"):
+        p = os.path.expanduser(p)
+    if os.path.isabs(p):
+        return [p]
+    bases = []
+    cwd_abs = isinstance(cwd, str) and os.path.isabs(cwd)
+    if cwd_abs:
+        bases.append(cwd)
+    for i, w in enumerate(cmd_words[:-1]):
+        if w != "cd":
+            continue
+        d = cmd_words[i + 1]
+        if not d or _UNDECIDABLE_PATH.search(d):
+            continue
+        if os.path.isabs(d):
+            bases.append(d)
+        elif cwd_abs:
+            bases.append(os.path.join(cwd, d))
+    out = []
+    for b in bases:
+        c = os.path.normpath(os.path.join(b, p))
+        if c not in out:
+            out.append(c)
+    return out
+
+
+def _node_script_operand(prog, rest):
+    """node/tsx/bun/deno: the first non-option word is the script (-e/--eval code strings are
+    is_send_invocation's). `bun run x` / `deno run x` skip the run word; `npx tsx x` / `npx ts-node x` /
+    `npx node x` name the script after the runner, any other npx package is no script."""
+    words = []
+    for t in rest:
+        if t == "--":
+            continue
+        if t.startswith("-"):
+            return None
+        words.append(t)
+        if len(words) == 2:
+            break
+    if prog == "npx":
+        return (words[1] if len(words) > 1 else None) if words and words[0] in ("tsx", "ts-node", "node") else None
+    if prog in ("bun", "deno") and words and words[0] == "run":
+        return words[1] if len(words) > 1 else None
+    return words[0] if words else None
+
+
+def _address_flag_given(rest) -> bool:
+    for i, t in enumerate(rest):
+        m = _ADDRESS_FLAG.match(t)
+        if not m:
+            continue
+        val = m.group(1) if m.group(1) is not None else (rest[i + 1] if i + 1 < len(rest) else "")
+        if "@" in val:
+            return True
+    return False
+
+
+def _shebang_kind(text):
+    """'py' | 'node' | None from a #! line (`#!/usr/bin/python3`, `#!/usr/bin/env -S node`)."""
+    m = re.match(r"#!\s*(\S+)([^\n]*)", text or "")
+    if not m:
+        return None
+    prog = _basename(m.group(1))
+    if prog == "env":
+        prog = _basename(next((w for w in m.group(2).split() if not w.startswith("-") and "=" not in w), ""))
+    if _PYTHON.match(prog):
+        return "py"
+    if _NODEISH.match(prog) and prog != "npx":
+        return "node"
+    return None
+
+
+def _local_helper_paths(path, text, kind):
+    """One level of local helpers: modules the script imports, resolved next to it."""
+    d = os.path.dirname(path)
+    out = []
+    if kind == "py":
+        for m in _PY_LOCAL_IMPORT.finditer(text):
+            names = [m.group(1)] if m.group(1) else [(n.split() or [""])[0] for n in m.group(2).split(",")]
+            for name in names:
+                if not name or name.startswith("."):
+                    continue
+                rel = name.replace(".", "/")
+                out += [os.path.normpath(os.path.join(d, rel + ".py")),
+                        os.path.normpath(os.path.join(d, rel, "__init__.py"))]
+    else:
+        for m in _NODE_LOCAL_IMPORT.finditer(text):
+            out += [os.path.normpath(os.path.join(d, m.group(1) + ext)) for ext in _NODE_EXTS]
+    return [p for p in dict.fromkeys(out) if p != path][:_HELPER_LIMIT]
+
+
+def _file_sends(path, text, kind, read_script) -> bool:
+    imports = _PY_MAIL_IMPORT if kind == "py" else _NODE_MAIL_IMPORT
+    if imports.search(text) or _GRAPH_SEND.search(text):
+        return True
+    for h in _local_helper_paths(path, text, kind):
+        t = read_script(h, _SCRIPT_READ_LIMIT)
+        if t is not None and (imports.search(t) or _GRAPH_SEND.search(t)):
+            return True
+    return False
+
+
+def _judge_candidates(paths, kind, read_script):
+    """(readable, verdict): a send when ANY readable candidate sends -- the candidates are where the script
+    may be (cwd, each `cd` target), and which one runs is not known here; a file over the read limit is a send."""
+    readable = False
+    for path in paths:
+        text = read_script(path, _SCRIPT_READ_LIMIT + 1)
+        if text is None:
+            continue
+        readable = True
+        if len(text.encode("utf-8")) > _SCRIPT_READ_LIMIT or _file_sends(path, text, kind, read_script):
+            return True, True
+    return readable, False
+
+
+def _head_runs_sender_script(toks, cwd, read_script, depth, cmd_words) -> bool:
+    if not toks:
+        return False
+    prog = _basename(toks[0])
+    rest = toks[1:]
+    if _WRAPPER_SHELL.match(prog):
+        if depth >= _SHELL_C_DEPTH:
+            return False
+        for i in range(len(rest) - 1):
+            if _SHELL_C_FLAG.match(rest[i]) and script_run_sends(rest[i + 1], cwd, read_script, depth + 1, cmd_words):
+                return True
+        return False
+    if _PYTHON.match(prog):
+        if _address_flag_given(rest):  # also under -m / -c, where no file is named
+            return True
+        script = _python_script_operand(rest)[0]
+        kind = "py"
+    elif _NODEISH.match(prog):
+        if _address_flag_given(rest):
+            return True
+        script = _node_script_operand(prog, rest)
+        kind = "node"
+    elif _SCRIPT_FILE.search(toks[0]) or "/" in toks[0]:
+        # a directly executed file: its #! line picks the interpreter, else its extension
+        paths = _resolve_script_paths(toks[0], cwd, cmd_words)
+        head = next((t for t in (read_script(p, _SHEBANG_READ_LIMIT) for p in paths) if t is not None), None)
+        kind = _shebang_kind(head) or ("py" if re.search(r"\.py$", toks[0], re.I)
+                                       else "node" if _SCRIPT_FILE.search(toks[0]) else None)
+        if not kind:
+            return False
+        if _address_flag_given(rest):
+            return True
+        readable, verdict = _judge_candidates(paths, kind, read_script)
+        return verdict if readable else True  # the kind is known and no candidate is readable: fail-closed
+    else:
+        return False
+    if script is None:
+        return False
+    if _UNDECIDABLE_PATH.search(script):
+        return True  # what runs is undecidable here: fail-closed
+    readable, verdict = _judge_candidates(_resolve_script_paths(script, cwd, cmd_words), kind, read_script)
+    if readable:
+        return verdict
+    return bool(_SCRIPT_FILE.search(script) or "/" in script)  # a missing script is a send; `bun test` is not
+
+
+def script_run_sends(cmd: str, cwd, read_script=None, depth: int = 0, _cd_words=()) -> bool:
+    if read_script is None:
+        read_script = _read_script_head
+    try:
+        segments = _segments_tokens(cmd)
+    except ValueError:
+        return False  # unparseable: is_send_invocation's legacy fallback already judged it
+    cmd_words = list(_cd_words) + [w for toks in segments for w in toks]
+    return any(_head_runs_sender_script(h, cwd, read_script, depth, cmd_words)
+               for toks in segments for h in _command_heads(toks))
+
 
 # --- Hungarian detection (accent-insensitive markers) -----------------------
 # These fire on both the correct and the stripped spelling, so a transliterated

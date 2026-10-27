@@ -1768,6 +1768,21 @@
       "name": "FLEETTOFLAG1025 v4.1 (Merlin 34962, RO#56 4. kor minor 3; Codex 03d059dca749) control: a longer flag starting with --c (--content) is no abbreviation: not a send",
       "cmd": "$PY $S/x.py --to neo --content hello",
       "expected": false
+    },
+    {
+      "name": "MAILGATESCRIPT1027 node -e Graph sendMail",
+      "cmd": "node -e \"fetch('https://graph.microsoft.com/v1.0/me/sendMail', {method: 'POST'})\"",
+      "expected": true
+    },
+    {
+      "name": "MAILGATESCRIPT1027 python -c Graph reply by concatenated id",
+      "cmd": "python3 -c \"import requests; requests.post('https://graph.microsoft.com/v1.0/users/' + u + '/messages/' + m + '/reply')\"",
+      "expected": true
+    },
+    {
+      "name": "MAILGATESCRIPT1027 node -e Graph read is no send",
+      "cmd": "node -e \"fetch('https://graph.microsoft.com/v1.0/me/messages?top=5')\"",
+      "expected": false
     }
   ]
 }

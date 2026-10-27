@@ -216,3 +216,35 @@ describe('sender scripts, review round 1 (SCRIPTSENDGATE1020)', () => {
     }
   })
 })
+
+describe('Microsoft Graph sends in a script (MAILGATESCRIPT1027)', () => {
+  const GRAPH_SEND = "const id = process.argv[2]\nawait fetch('https://graph.microsoft.com/v1.0/me/messages/' + id + '/send', { method: 'POST' })\n"
+  const GRAPH_REPLY = "const u = 'x'\nawait fetch(`https://graph.microsoft.com/v1.0/users/${u}/messages/1/reply`, { method: 'POST' })\n"
+  const GRAPH_READ = "await fetch('https://graph.microsoft.com/v1.0/me/messages?top=5')\n"
+  const cwd = workdir({
+    'graph-send.mjs': GRAPH_SEND,
+    'graph-reply.ts': GRAPH_REPLY,
+    'graph-read.mjs': GRAPH_READ,
+    'harmless.mjs': "console.log('hello')\n",
+    'main.mjs': "import './lib.mjs'\nconsole.log('main')\n",
+    'lib.mjs': "await fetch('https://graph.microsoft.com/v1.0/me/sendMail', { method: 'POST' })\n",
+  })
+
+  it('is a send for a node file, a .ts file and a file whose helper sends', () => {
+    for (const cmd of ['node graph-send.mjs AAMk1', 'tsx graph-reply.ts', 'node main.mjs']) {
+      expect(scriptRunSends(cmd, cwd), cmd).toBe(true)
+    }
+  })
+
+  it('is no send for a Graph read or a harmless file', () => {
+    for (const cmd of ['node graph-read.mjs', 'node harmless.mjs']) {
+      expect(scriptRunSends(cmd, cwd), cmd).toBe(false)
+    }
+  })
+
+  it('reads the script after bun run and npx tsx, and not after another npx package', () => {
+    expect(scriptRunSends('bun run graph-send.mjs', cwd)).toBe(true)
+    expect(scriptRunSends('npx tsx graph-send.mjs', cwd)).toBe(true)
+    expect(scriptRunSends('npx vitest run', cwd)).toBe(false)
+  })
+})
