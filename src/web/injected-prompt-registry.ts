@@ -133,13 +133,6 @@ export function matchesInjectedPrompt(parked: string | null, record: InjectedPro
   // floor is well under the shortest real inter-agent frame (the security
   // preamble alone is ~700 chars) but high enough to exclude noise. Counted on
   // the whitespace-free form, so it is 24 real characters, not 24 columns.
-  //
-  // An EXACT whole-text match is exempt: the floor guards against a fragment
-  // that happens to occur inside a long message, and a box that holds byte for
-  // byte the whole short line we typed is not a fragment. This is what lets the
-  // post-spawn `/rename <name>` (13 chars) recover when its Enter is swallowed
-  // (measured 2026-10-19: parked at a sub-agent, held 5 attempts, owner alert).
-  if (a === b) return true
   if (a.length < 24) return false
   return b.includes(a) || a.includes(b)
 }
