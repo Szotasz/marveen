@@ -24,6 +24,9 @@ describe('self-pace-gate: a scheduler inside shell code', () => {
       "bash -o errexit -c 'crontab -r'",
       "bash -c -- 'crontab -r'",
       "bash -c 'crontab -r' arg0",
+      // bash long options that take a value
+      "bash --rcfile /dev/null -c 'crontab -r'",
+      "bash --init-file /dev/null -c 'crontab -r'",
       // tmux's own global -c runs a shell command through the default shell
       "tmux -c 'crontab -r'",
     ]) {
@@ -186,6 +189,12 @@ describe('self-pace-gate: systemctl arming a timer or path unit', () => {
       "systemctl --user start '*.timer'",
       '/usr/bin/systemctl --user start x.timer',
       "sh -c 'systemctl --user start x.timer'",
+      // bash brace expansion, and systemctl's own glob match against loaded units
+      'systemctl --user start x.{timer,service}',
+      "systemctl --user start 'x.*'",
+      'systemctl --user start x.[t]imer',
+      // an option value in front of the verb
+      'systemctl --user -p Id start x.timer',
     ]) {
       expect(deny(cmd), cmd).toBe(true)
     }
@@ -203,6 +212,9 @@ describe('self-pace-gate: systemctl arming a timer or path unit', () => {
       'systemctl --user restart web.service',
       'systemctl --user start x.service',
       'journalctl --user -u x.timer',
+      // the verb is status: `start` is just a unit argument here
+      'systemctl --user status start x.timer',
+      'systemctl --user show -p Id start.timer',
     ]) {
       expect(deny(cmd), cmd).toBe(false)
     }
