@@ -1121,7 +1121,8 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       const after = getKanbanCard(id)
       if (before?.status !== 'done' && after?.status === 'done') notifyUnblockedCards(id, who.actor)
       json(res, {
-        ok: true,
+        // ok is false when the close was held: a client that reads only ok must not report a closed card.
+        ok: !putNeedsEvidence,
         version: written.version,
         ...(putNeedsEvidence ? {
           status: 'testing',
@@ -1342,7 +1343,8 @@ export async function tryHandleKanban(ctx: RouteContext): Promise<boolean> {
       const moved = getKanbanCard(id)
       if (before?.status !== 'done' && moved?.status === 'done') notifyUnblockedCards(id, who.actor)
       json(res, {
-        ok: true,
+        // ok is false when the close was held: a client that reads only ok must not report a closed card.
+        ok: !needsEvidence,
         ...(needsEvidence ? {
           status: 'testing',
           evidence_required: true,

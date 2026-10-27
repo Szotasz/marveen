@@ -62,6 +62,12 @@ describe('move to done: evidence required from an agent', () => {
     expect(readCard().done_evidence).toBeNull()
   })
 
+  it('agent without evidence: ok is false, so a client that only reads ok does not report a closed card', async () => {
+    const out = await call(`/api/kanban/${CARD}/move`, 'POST', { status: 'done', actor: AGENT })
+    expect(out.body.ok).toBe(false)
+    expect(readCard().status).toBe('testing')
+  })
+
   it('agent with blank evidence counts as none', async () => {
     const out = await call(`/api/kanban/${CARD}/move`, 'POST', { status: 'done', actor: AGENT, evidence: '   ' })
     expect(out.body.evidence_required).toBe(true)
@@ -108,6 +114,12 @@ describe('PUT cannot route around the rule', () => {
     const out = await call(`/api/kanban/${CARD}`, 'PUT', { status: 'done', actor: AGENT })
     expect(out.body.evidence_required).toBe(true)
     expect(readCard().status).toBe('testing')
+  })
+
+  it('agent PUT status:done: ok is false as well', async () => {
+    seed()
+    const out = await call(`/api/kanban/${CARD}`, 'PUT', { status: 'done', actor: AGENT })
+    expect(out.body.ok).toBe(false)
   })
 
   it('NEGATIVE: agent PUT of an unrelated edit on an already-done card does not reopen it', async () => {
