@@ -85,6 +85,9 @@ describe('self-pace-gate: a scheduler inside shell code', () => {
       "bash -lc 'cd /w && npx vitest run'",
       'eval "$(ssh-agent -s)"',
       'bash <<EOF\nnpm test\nEOF',
+      // every code route has a harmless case, so a deny there cannot come from an error
+      "bash <<< 'npm test'",
+      "tmux -c 'echo hi'",
       "echo 'crontab -r'",
       "grep -n 'at now' notes.txt",
       `printf '%s\\n' "sh -c 'crontab -r'"`,
