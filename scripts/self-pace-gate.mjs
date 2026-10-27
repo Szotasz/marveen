@@ -1686,12 +1686,22 @@ export function gateDecision(toolName, toolInput, opts = {}) {
 // stay as they are, other checks depend on them). Returns [{ value, ansi }] or
 // null on an unterminated quote. $(...), backticks and ${...} stay plain text in
 // the word: they are tracked only so a space inside one does not split the word.
+// Unquoted ( and ) end a word and are dropped. Unquoted < and > end a word and
+// start a redirection operator, emitted as its own word with redirect: true; the
+// word after it is its target (target: true).
 function splitCodeWords(text) {
   const words = []
   let cur = null
   let i = 0
+  let expectTarget = false
   const add = (s, ansi) => {
-    if (cur == null) cur = { value: '', ansi: false }
+    if (cur == null) {
+      cur = { value: '', ansi: false }
+      if (expectTarget) {
+        cur.target = true
+        expectTarget = false
+      }
+    }
     cur.value += s
     if (ansi) cur.ansi = true
   }
@@ -1733,6 +1743,24 @@ function splitCodeWords(text) {
     } else if (c === '\\') {
       if (i + 1 < text.length) add(text[i + 1])
       i += 2
+    } else if (depth === 0 && !tick && (c === '(' || c === ')')) {
+      if (cur) words.push(cur)
+      cur = null
+      i++
+    } else if (depth === 0 && !tick && (c === '<' || c === '>')) {
+      let prefix = ''
+      if (cur && (cur.value === '' || /^\d+$/.test(cur.value) || cur.value === '&')) {
+        prefix = cur.value
+        cur = null
+      } else if (cur) {
+        words.push(cur)
+        cur = null
+      }
+      let j = i
+      while (j < text.length && '<>&|-'.includes(text[j])) j++
+      words.push({ value: prefix + text.slice(i, j), ansi: false, redirect: true })
+      expectTarget = true
+      i = j
     } else {
       if (c === '`') tick = !tick
       else if (c === '$' && (text[i + 1] === '(' || text[i + 1] === '{')) {
@@ -1751,8 +1779,10 @@ function splitCodeWords(text) {
 
 const SHELL_NAMES = new Set(['sh', 'bash', 'dash', 'zsh', 'ksh', 'ash'])
 const baseName = (v) => v.slice(v.lastIndexOf('/') + 1)
-const REDIRECT_WORD_RX = /^(?:\d*|&)(?:<<<|<<-?|<>|>>|>\||>&|<&|>|<)/
-const REDIRECT_OP_ONLY_RX = /^(?:\d*|&)(?:<<<|<<-?|<>|>>|>\||>&|<&|>|<)$/
+
+// The words without redirection operators and their targets: the command's
+// own arguments.
+const argWords = (words) => words.filter((w) => !w.redirect && !w.target)
 
 // tmux global options: flags (combinable) and options taking a value (attached
 // or as the next word). Returns { next, codes } where next is the index of the
@@ -1799,18 +1829,8 @@ function shellWordRuns(words, i) {
     }
   }
   if (cGiven) return { code: words[j] }
-  // is there a non-option word that is not a redirection?
-  let operand = false
-  for (; j < words.length; j++) {
-    const v = words[j].value
-    if (REDIRECT_WORD_RX.test(v)) {
-      if (REDIRECT_OP_ONLY_RX.test(v)) j++
-      continue
-    }
-    operand = true
-    break
-  }
-  return { stdin: sGiven || !operand }
+  // a non-option word after the options is the operand (a script file)
+  return { stdin: sGiven || j >= words.length }
 }
 
 // shellSegments cuts at an escaped `\;` (tmux's own command separator); glue
@@ -1836,6 +1856,9 @@ function codeSegments(command) {
   return out
 }
 
+// Words that may precede `eval` at a command position.
+const EVAL_PREFIX_WORDS = new Set(['builtin', 'command', 'if', 'then', 'else', 'elif', 'do', 'while', 'until', '!', 'time', '{'])
+
 // Every piece of shell code the command hands to another shell as
 // { value, ansi }, plus `bad` when a segment holding a shell word, eval or tmux
 // could not be split (unterminated quote).
@@ -1849,25 +1872,23 @@ function scanShellCode(command) {
       if (/\b(?:sh|bash|dash|zsh|ksh|ash|eval)\b/.test(seg.own)) bad = true
       continue
     }
+    const args = argWords(words)
     let k = 0
-    while (k < words.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(words[k].value) || words[k].value === 'builtin' || words[k].value === 'command')) k++
-    if (words[k]?.value === 'eval') {
-      const rest = words.slice(k + 1)
+    while (k < args.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(args[k].value) || EVAL_PREFIX_WORDS.has(args[k].value))) k++
+    if (args[k]?.value === 'eval') {
+      const rest = args.slice(k + 1)
       if (rest.length) codes.push({ value: rest.map((w) => w.value).join(' '), ansi: rest.some((w) => w.ansi) })
     }
-    for (let i = 0; i < words.length; i++) {
-      const base = baseName(words[i].value)
-      if (base === 'tmux') codes.push(...tmuxGlobalOptions(words, i + 1).codes)
+    for (let i = 0; i < args.length; i++) {
+      const base = baseName(args[i].value)
+      if (base === 'tmux') codes.push(...tmuxGlobalOptions(args, i + 1).codes)
       if (!SHELL_NAMES.has(base)) continue
-      const runs = shellWordRuns(words, i)
+      const runs = shellWordRuns(args, i)
       if (runs.code) codes.push(runs.code)
       if (!runs.stdin) continue
       for (const b of seg.bodies ?? []) codes.push({ value: b, ansi: false })
       for (let j = 0; j < words.length; j++) {
-        const v = words[j].value
-        if (v === '<<<') {
-          if (words[j + 1]) codes.push(words[j + 1])
-        } else if (v.startsWith('<<<')) codes.push({ value: v.slice(3), ansi: words[j].ansi })
+        if (words[j].redirect && /^\d*<<<$/.test(words[j].value) && words[j + 1]?.target) codes.push(words[j + 1])
       }
     }
   }
@@ -1903,6 +1924,7 @@ const SYSTEMCTL_ARM_VERBS = new Set([
 
 // words: output of splitCodeWords. True for `systemctl <arm verb> ... x.timer|x.path`.
 export function systemctlArmsTimer(words) {
+  words = argWords(words)
   for (let i = 0; i < words.length; i++) {
     if (baseName(words[i].value) !== 'systemctl') continue
     const rest = words.slice(i + 1).map((w) => w.value)
@@ -1913,6 +1935,7 @@ export function systemctlArmsTimer(words) {
 
 // words: output of splitCodeWords. Follows `tmux [global options] cmd ... \; cmd`.
 export function tmuxInjectsPane(words) {
+  words = argWords(words)
   for (let i = 0; i < words.length; i++) {
     if (baseName(words[i].value) !== 'tmux') continue
     let k = tmuxGlobalOptions(words, i + 1).next
