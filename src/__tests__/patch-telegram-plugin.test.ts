@@ -1103,6 +1103,12 @@ describe('invis: invisible characters (invis1024)', () => {
         ['\u{1F3F4}\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0066}\u{E007F}', '\u{1F3F4}', { invisible_tag: '6' }],
         // England's five letters with a sixth tag letter where the CANCEL TAG belongs
         ['\u{1F3F4}\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E0078}', '\u{1F3F4}', { invisible_tag: '6' }],
+        // after a kept flag the next code point is judged on its own: a tag goes, a second flag is matched again
+        ['\u{1F3F4}\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F}\u{E0041}\u{1F3F4}\u{1F3F4}\u{E0067}\u{E0062}\u{E0077}\u{E006C}\u{E0073}\u{E007F}',
+          '\u{1F3F4}\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F}\u{1F3F4}\u{1F3F4}\u{E0067}\u{E0062}\u{E0077}\u{E006C}\u{E0073}\u{E007F}',
+          { invisible_tag: '1' }],
+        // a black flag at the very end stays
+        ['x\u{1F3F4}', 'x\u{1F3F4}', {}],
       ]
       for (const [raw, content, counts] of cases) {
         const n = await h.send(raw)
