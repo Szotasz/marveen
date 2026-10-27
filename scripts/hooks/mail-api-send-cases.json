@@ -144,6 +144,18 @@
    "file": "tg.py",
    "expected": false,
    "body": "from telethon import TelegramClient\nclient = TelegramClient('s', 1, 'h')\nclient.send_message('me', 'ping')\n"
+  },
+  {
+   "name": "a script that names mailgun and posts to the dashboard's /api/messages",
+   "file": "mg_dash.py",
+   "expected": false,
+   "body": "import urllib.request\n# the newsletter moved off mailgun last year\nurllib.request.urlopen(urllib.request.Request('http://localhost:3420/api/messages', data=b'{}', method='POST'))\n"
+  },
+  {
+   "name": "mailgun node client",
+   "file": "mg_client.mjs",
+   "expected": true,
+   "body": "import formData from 'form-data'\nimport Mailgun from 'mailgun.js'\nconst mg = new Mailgun(formData).client({ username: 'api', key })\nawait mg.messages.create(domain, { to, subject, text })\n"
   }
  ]
 }

@@ -152,29 +152,32 @@ def _graph_sends(text: str) -> bool:
 
 # MAILGATEHTTPAPI1027: an HTTP mail API reached from a script (Marveen 50920: a Gmail REST send from
 # urllib went past the approval gate, because only SMTP, nodemailer and Graph were known). Each provider
-# needs its own evidence (the API host or the client package) AND a send shape in the same text, so a
-# Gmail read (messages list, profile) or a text that only names the provider is no send. Mirrored in
-# email-send-gate.mjs (MAIL_API_SEND); scripts/hooks/mail-api-send-cases.json binds the two twins.
+# needs its own evidence AND a send shape in the same text, so a Gmail read (messages list, profile) or a
+# text that only names the provider is no send. The evidence is a literal API host or a client call or
+# package name, never the bare provider word: after the `\/` normalisation a gate's own regex source and
+# comments carry the shapes, and a gate file must not count as a sender. Mirrored in email-send-gate.mjs
+# (MAIL_API_RULES); scripts/hooks/mail-api-send-cases.json binds the two twins.
 _ACTION_END = r"(?![A-Za-z0-9_-]|[^\x00-\x7f])"
 _MAIL_API_RULES = (
-    # Gmail: REST (users/<id>/messages/send, users/<id>/drafts/send, also when the URL is assembled
-    # from a base) and the client libraries (.messages().send( in Python, .messages.send( in Node).
-    (re.compile(r"gmail\.googleapis\.com|/gmail/v1/|\bgmail\b", re.I),
+    # Gmail: the REST host (also when the URL is assembled from a base) or the Python or Node gmail client;
+    # the send shapes are the messages or drafts send call.
+    (re.compile(r"gmail\.googleapis\.com|[/]gmail[/]v1[/]|\bbuild\s*\(\s*['\"]gmail['\"]|\bgoogle\.gmail\s*\(", re.I),
      re.compile(r"/(?:messages|drafts)/send" + _ACTION_END + r"|\.(?:messages|drafts)\s*(?:\(\s*\))?\s*\.send\s*\(", re.I)),
-    # Resend: the /emails endpoint (and /emails/batch), or the SDK call.
-    (re.compile(r"api\.resend\.com|\bresend\b", re.I),
-     re.compile(r"api\.resend\.com/emails" + _ACTION_END + r"|api\.resend\.com/emails/batch|\bresend\.emails\.send\s*\(", re.I)),
-    # SendGrid: v3 mail/send, or the mail client.
-    (re.compile(r"sendgrid", re.I),
-     re.compile(r"/v3/mail/send" + _ACTION_END + r"|['\"]@sendgrid/mail['\"]|\bSendGridAPIClient\b", re.I)),
-    # Mailgun: /v3/<domain>/messages (and messages.mime), or the client's messages.create(.
-    (re.compile(r"mailgun", re.I),
-     re.compile(r"/messages(?:\.mime)?" + _ACTION_END + r"|\.messages\.create\s*\(", re.I)),
-    # Postmark: /email, /email/batch, /email/withTemplate.
+    # Resend: the emails endpoint on the API host (and its batch), or the SDK call.
+    (re.compile(r"api\.resend\.com|['\"]resend['\"]|\bimport\s+resend\b", re.I),
+     re.compile(r"api\.resend\.com/emails(?:/batch)?" + _ACTION_END + r"|\bresend\.emails\.send\s*\(", re.I)),
+    # SendGrid: v3 mail send on the API host, or the mail client.
+    (re.compile(r"api\.sendgrid\.com|['\"]@sendgrid/mail['\"]|\bSendGridAPIClient\s*\(", re.I),
+     re.compile(r"api\.sendgrid\.com/v3/mail/send" + _ACTION_END + r"|['\"]@sendgrid/mail['\"]|\bSendGridAPIClient\s*\(", re.I)),
+    # Mailgun: the API host with a v3 domain messages path (an assembled URL too), or the client's
+    # messages.create( next to the package name. A bare "/messages" is no evidence: the dashboard's own
+    # /api/messages is one.
+    (re.compile(r"mailgun\.net|['\"]mailgun(?:\.js)?['\"]", re.I),
+     re.compile(r"/v3/[^\n]{1,200}?/messages(?:\.mime)?" + _ACTION_END + r"|\.messages\.create\s*\(", re.I)),
+    # Postmark: the email endpoints on the API host (single, batch, with a template).
     (re.compile(r"api\.postmarkapp\.com", re.I),
      re.compile(r"api\.postmarkapp\.com/email(?:/batch|/withTemplate)?" + _ACTION_END, re.I)),
 )
-
 
 def _mail_api_sends(text: str) -> bool:
     t = text.replace("\\/", "/")
