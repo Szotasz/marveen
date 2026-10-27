@@ -291,6 +291,30 @@ describe('self-pace-gate: review round 2', () => {
       expect(deny(cmd), cmd).toBe(false)
     }
   })
+
+  it('DENIES a fish -c inside an option bundle or joined to its code, and eval run by git bisect', () => {
+    for (const cmd of [
+      "fish -ic 'crontab -r'",
+      "fish -lc 'crontab -r'",
+      "fish -iC 'crontab -r'",
+      "fish -c'crontab -r'",
+      "fish -C'crontab -r' -c true",
+      "git bisect run eval 'crontab -r'",
+    ]) {
+      expect(deny(cmd), cmd).toBe(true)
+    }
+  })
+
+  it('ALLOWS harmless fish code in an option bundle, and git commands that only name eval', () => {
+    for (const cmd of [
+      "fish -ic 'npm test'",
+      "fish --no-config -c 'npm test'",
+      'git grep -n eval src/',
+      'git log --oneline -S eval',
+    ]) {
+      expect(deny(cmd), cmd).toBe(false)
+    }
+  })
 })
 
 describe('self-pace-gate: systemctl arming a timer or path unit', () => {
