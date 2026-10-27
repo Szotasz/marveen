@@ -145,11 +145,19 @@ const SCHEDULER_READ_RX = new RegExp(String.raw`(^|${SCHED_BOUNDARY}\s*)${SCHED_
 // StandardOutput/StandardError are left out on purpose: `file:PATH` makes systemd write
 // PATH, and the store-write checks above only recognise a shell redirect as a write.
 // A log goes through the payload instead: sh -c 'npm test > /tmp/x.log 2>&1'.
+// RuntimeMaxSec is mandatory and bounded (whole seconds, 1 to TRANSIENT_UNIT_RUNTIME_MAX_SEC):
+// without it, or with `infinity` or an empty value (which resets it to infinity),
+// the unit is a process with no end the gate can see.
+// Environment, --setenv and -E are left out on purpose: they pass any variable name,
+// and names such as BASH_ENV, ENV, NODE_OPTIONS, LD_PRELOAD, DYLD_*, PYTHONSTARTUP,
+// PYTHONPATH or PATH make the payload's interpreter load code the payload check never reads.
+// This puts the option channel in line with the existing known limit: a payload
+// that runs a script file is not read either.
 const TRANSIENT_UNIT_PROPERTIES = new Set([
   'WorkingDirectory', 'Nice', 'IOSchedulingClass', 'IOSchedulingPriority', 'CPUWeight', 'IOWeight',
   'CPUQuota', 'MemoryMax', 'MemoryHigh', 'TasksMax', 'RuntimeMaxSec', 'TimeoutStopSec',
-  'Environment',
 ])
+const TRANSIENT_UNIT_RUNTIME_MAX_SEC = 7200
 // A word ends at any character that cannot be part of a command name, so `${X}claude`
 // is caught here as it is by the setsid/nohup branch's \bclaude\b.
 const TRANSIENT_PAYLOAD_DENY_WORD_RX =
@@ -218,9 +226,10 @@ export function transientUserUnitAllowed(command) {
   if (words == null || words.length === 0) return false
   if (words[0].value !== 'systemd-run' || command.slice(words[0].start, words[0].start + 11) !== 'systemd-run') return false
   const FLAGS = new Set(['--user', '--collect', '-G', '--quiet', '-q', '--same-dir', '-d', '--wait', '--pipe', '-P'])
-  const LONG_VALUE = new Set(['--unit', '--description', '--working-directory', '--nice', '--setenv', '--property'])
-  const SHORT_VALUE = { '-u': '--unit', '-E': '--setenv', '-p': '--property' }
+  const LONG_VALUE = new Set(['--unit', '--description', '--working-directory', '--nice', '--property'])
+  const SHORT_VALUE = { '-u': '--unit', '-p': '--property' }
   let user = false
+  let runtimeMax = false
   let collect = false
   let i = 1
   while (i < words.length && words[i].value.startsWith('-')) {
@@ -255,14 +264,17 @@ export function transientUserUnitAllowed(command) {
       if (val === '') return false
     } else if (opt === '--nice') {
       if (!/^-?\d{1,2}$/.test(val)) return false
-    } else if (opt === '--setenv') {
-      if (!/^[A-Za-z_][A-Za-z0-9_]*(?:=[\s\S]*)?$/.test(val)) return false
     } else {
       const m = /^([A-Za-z]+)=[\s\S]*$/.exec(val)
       if (!m || !TRANSIENT_UNIT_PROPERTIES.has(m[1])) return false
+      if (m[1] === 'RuntimeMaxSec') {
+        const text = val.slice(val.indexOf('=') + 1)
+        if (!/^[1-9][0-9]{0,3}$/.test(text) || Number(text) > TRANSIENT_UNIT_RUNTIME_MAX_SEC) return false
+        runtimeMax = true
+      }
     }
   }
-  if (!user || !collect || i >= words.length) return false
+  if (!user || !collect || !runtimeMax || i >= words.length) return false
   // systemd-run reads options up to its first non-option argument ("+" getopt), so a
   // word bash still splits or expands there can turn into an option this loop never
   // saw: --description=x${IFS}--on-active=5m, {--on-active=5m,true}, an empty $X, or a
@@ -1904,7 +1916,7 @@ const GATE_MSG =
   'de NE cd-vel a store-ba -- abszolut uttal hivatkozz ra), se schedule-registry-cli register/unregister ' +
   '(csak status es verify), se utemezes-tabla SQL-iras vagy a claudeclaw.db fajl felulirasa, ' +
   'se /loop self-pace. ' +
-  'Kivetel: hosszu tesztfutashoz EGYETLEN azonnali, idozito nelkuli `systemd-run --user --collect [--unit=NEV] <parancs>` megengedett, onallo parancskent (--on-*/--timer-property, claude, utemezo, tmux, sleep es /api/ nelkul). ' +
+  'Kivetel: hosszu tesztfutashoz EGYETLEN azonnali, idozito nelkuli `systemd-run --user --collect -p RuntimeMaxSec=<1..7200> [--unit=NEV] <parancs>` megengedett, onallo parancskent (--on-*/--timer-property, -E/--setenv/Environment=, claude, utemezo, tmux, sleep es /api/ nelkul). ' +
   'Ha csak egy dokumentumot irsz, ami az utemezo API-t vagy a store-t emliti ' +
   '(jegyzet, review-tervezet): a nativ Write tool-lal ird, a store-on kivuli utra -- az atmegy; ' +
   'egy fajlba iranyitott heredoc (cat <<EOF > fajl) nem. Utemezest a fo agenstol kerj inter-agent uzenetben. ' +
