@@ -147,8 +147,10 @@ const TRANSIENT_UNIT_PROPERTIES = new Set([
   'CPUQuota', 'MemoryMax', 'MemoryHigh', 'TasksMax', 'RuntimeMaxSec', 'TimeoutStopSec',
   'StandardOutput', 'StandardError', 'Environment',
 ])
+// A word ends at any character that cannot be part of a command name, so `${X}claude`
+// is caught here as it is by the setsid/nohup branch's \bclaude\b.
 const TRANSIENT_PAYLOAD_DENY_WORD_RX =
-  /(?:^|[\s'"();&|`=/])(?:claude(?:-code)?|crontab|launchctl|systemd-run|at|batch|tmux|nohup|setsid|disown|sleep|watch|eval)(?=$|[\s'"();&|`/])/i
+  /(?:^|[^A-Za-z0-9_-])(?:claude(?:-code)?|crontab|launchctl|systemd-run|at|batch|tmux|nohup|setsid|disown|sleep|watch|eval)(?=$|[^A-Za-z0-9_-])/i
 
 // Split a string into shell words: [{ value (quotes removed), start (index of the
 // word's first character, including an opening quote) }]; null if unterminated.

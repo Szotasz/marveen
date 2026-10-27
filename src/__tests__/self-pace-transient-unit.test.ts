@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { gateDecision } from '../../scripts/self-pace-gate.mjs'
+import { gateDecision, transientUserUnitAllowed } from '../../scripts/self-pace-gate.mjs'
 
 // A sub-agent may start ONE immediate, timer-less transient user unit
 // (systemd-run --user --collect ...) so a long test run survives a session
@@ -126,6 +126,8 @@ describe('self-pace-gate: immediate transient user unit', () => {
       'systemd-run --user --collect $"claude" -p hi',
       // a tmux command abbreviation (send = send-keys)
       'systemd-run --user --collect tmux send -t x hi Enter',
+      // bash expands ${X} to nothing in front of the name
+      'systemd-run --user --collect ${X}claude -p hi',
     ]) {
       expect(deny(cmd), cmd).toBe(true)
     }
@@ -165,6 +167,12 @@ describe('self-pace-gate: immediate transient user unit', () => {
       expect(deny(cmd), cmd).toBe(true)
     }
     expect(deny('crontab -l')).toBe(false)
+  })
+
+  it('reports a unit with no command to run as not allowed, without throwing', () => {
+    for (const cmd of ['systemd-run --user --collect', 'systemd-run --user --collect --', 'systemd-run --user --collect --unit=x']) {
+      expect(transientUserUnitAllowed(cmd), cmd).toBe(false)
+    }
   })
 
   it('names the allowed transient-unit form in the gate message', async () => {
