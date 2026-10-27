@@ -21,6 +21,7 @@ describe('self-pace-gate: immediate transient user unit', () => {
       'systemd-run --user --collect -p RuntimeMaxSec=600 -p RuntimeMaxSec=1200 npm test',
       'systemd-run --user --collect -p RuntimeMaxSec=600 -p IOSchedulingClass=idle -p Nice=19 --property=RuntimeMaxSec=3600 npm test > /tmp/s.log 2>&1',
       '  systemd-run --user --collect -p RuntimeMaxSec=600 npm test',
+      'systemd-run --user --collect --property RuntimeMaxSec=600 npm test',
     ]) {
       expect(deny(cmd), cmd).toBe(false)
     }
@@ -233,6 +234,7 @@ describe('self-pace-gate: immediate transient user unit', () => {
       "systemd-run --user --collect --unit=x sh -c 'npm test'",
       'systemd-run --user --collect -p RuntimeMaxSec=infinity npm test',
       'systemd-run --user --collect --property=RuntimeMaxSec=infinity npm test',
+      'systemd-run --user --collect --property RuntimeMaxSec=infinity npm test',
       'systemd-run --user --collect -p RuntimeMaxSec= npm test',
       "systemd-run --user --collect -p 'RuntimeMaxSec=' npm test",
       'systemd-run --user --collect -p RuntimeMaxSec=0 npm test',
@@ -267,6 +269,7 @@ describe('self-pace-gate: immediate transient user unit', () => {
         `--setenv=${name}`,
         `-p Environment=${name}=/tmp/x`,
         `--property=Environment=${name}=/tmp/x`,
+        `--property Environment=${name}=/tmp/x`,
       ]) {
         const cmd = `systemd-run --user --collect -p RuntimeMaxSec=600 ${opt} bash -c true`
         expect(deny(cmd), cmd).toBe(true)
@@ -279,6 +282,7 @@ describe('self-pace-gate: immediate transient user unit', () => {
     for (const opt of [
       '-p TimeoutStopSec=infinity',
       '--property=TimeoutStopSec=infinity',
+      '--property TimeoutStopSec=infinity',
       '-p TimeoutStopSec=',
       '-p TimeoutStopSec=30',
     ]) {
