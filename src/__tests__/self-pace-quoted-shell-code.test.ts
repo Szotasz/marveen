@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 // @ts-expect-error -- plain .mjs hook script, no types
-import { gateDecision } from '../../scripts/self-pace-gate.mjs'
+import { gateDecision, systemctlArmsTimer } from '../../scripts/self-pace-gate.mjs'
 
 // Shell code that bash hands to another shell (sh -c CODE, eval WORDS, a here-string
 // or heredoc read by a shell) is decided like a command of its own, so a scheduler
@@ -314,6 +314,29 @@ describe('self-pace-gate: review round 2', () => {
     ]) {
       expect(deny(cmd), cmd).toBe(false)
     }
+  })
+
+  it('DENIES a hidden command word behind a wrapper or an assignment, and a -c bundle with an o value', () => {
+    for (const cmd of [
+      "env $'\\x73h' -c 'crontab -r'",
+      "sudo s{h,} -c 'crontab -r'",
+      "X=1 $'\\x73h' -c 'crontab -r'",
+      'LC_ALL=C t{mux,} send -t x hi Enter',
+      "bash -co pipefail 'crontab -r'",
+      "bash -eco pipefail 'crontab -r'",
+    ]) {
+      expect(deny(cmd), cmd).toBe(true)
+    }
+  })
+
+  it('ALLOWS trap - with signal names after it (a lone - resets them, nothing runs)', () => {
+    expect(deny("trap - 'crontab -r'")).toBe(false)
+  })
+
+  it('systemctlArmsTimer: a brace-expanded unit after an arm verb can be a timer', () => {
+    const w = (value: string, brace = false) => ({ value, brace })
+    expect(systemctlArmsTimer([w('systemctl'), w('--user'), w('start'), w('x.{timer,service}', true)])).toBe(true)
+    expect(systemctlArmsTimer([w('systemctl'), w('--user'), w('start'), w('x.service')])).toBe(false)
   })
 })
 
