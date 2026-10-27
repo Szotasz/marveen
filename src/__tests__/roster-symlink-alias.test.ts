@@ -78,6 +78,23 @@ describe('a symlink into agents/ itself is an alias, not an agent', () => {
     expect([...listAllAgentNames()].sort()).toEqual(['alpha'])
   })
 
+  it('a relative alias is caught through a symlinked agents/ directory too', () => {
+    rmSync(AGENTS, { recursive: true, force: true })
+    mkdirSync(join(SANDBOX, 'real-agents', 'alpha'), { recursive: true })
+    symlinkSync(join(SANDBOX, 'real-agents'), AGENTS)
+    symlinkSync('alpha', join(AGENTS, 'alias'))
+    expect([...listAllAgentNames()].sort()).toEqual(['alpha'])
+  })
+
+  it('a link outside a symlinked agents/ directory stays a real agent', () => {
+    rmSync(AGENTS, { recursive: true, force: true })
+    mkdirSync(join(SANDBOX, 'real-agents', 'alpha'), { recursive: true })
+    mkdirSync(join(SANDBOX, 'elsewhere', 'gamma'), { recursive: true })
+    symlinkSync(join(SANDBOX, 'real-agents'), AGENTS)
+    symlinkSync(join(SANDBOX, 'elsewhere', 'gamma'), join(AGENTS, 'gamma'))
+    expect([...listAllAgentNames()].sort()).toEqual(['alpha', 'gamma'])
+  })
+
   it('the alias warn fires at most once per entry per process', () => {
     symlinkSync(join(AGENTS, 'alpha'), join(AGENTS, 'alias-once'))
     listAllAgentNames()
