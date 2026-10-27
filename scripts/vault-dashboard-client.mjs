@@ -92,6 +92,17 @@ export function resolveTimeoutMs(env = process.env) {
   return n > 0 && Number.isSafeInteger(n) ? n : VAULT_RESOLVE_DEFAULT_TIMEOUT_MS
 }
 
+// VAULTURLGATE1027: the dashboard the resolver may ask is on this machine. VAULT_RESOLVE_URL (tests, a
+// moved port) is read from the environment, and the request sends the dashboard token, so any other host
+// would carry the token off the machine. Only http(s) to 127.0.0.1, ::1 or localhost, with no user info.
+const LOOPBACK_HOSTS = new Set(['127.0.0.1', '[::1]', 'localhost'])
+
+export function isLoopbackUrl(raw) {
+  let u
+  try { u = new URL(raw) } catch { return false }
+  return (u.protocol === 'http:' || u.protocol === 'https:') && !u.username && !u.password && LOOPBACK_HOSTS.has(u.hostname)
+}
+
 // { ok: true, values, missing, refused } or { ok: false, configured, error }.
 // configured === false means there is no dashboard token at all (not an install).
 export async function resolveViaDashboard(root, ids, { timeoutMs = resolveTimeoutMs() } = {}) {
@@ -102,7 +113,9 @@ export async function resolveViaDashboard(root, ids, { timeoutMs = resolveTimeou
   if (!token) return { ok: false, configured: true, error: 'empty dashboard token' }
   if (!/^[\x21-\x7e]+$/.test(token)) return { ok: false, configured: true, error: 'malformed dashboard token' }
   const url = process.env.VAULT_RESOLVE_URL || `http://127.0.0.1:${installSetting(root, 'WEB_PORT', '3420')}/api/vault/resolve`
-  const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
+  // The request carries the dashboard token: a VAULT_RESOLVE_URL off this machine is refused before it is built.
+  if (!isLoopbackUrl(url)) return { ok: false, configured: true, error: 'VAULT_RESOLVE_URL is not a loopback address' }
+  const headers ={ 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
   const agent = claimedAgentName()
   if (agent) headers['X-Agent-Id'] = agent
   const ctrl = new AbortController()
