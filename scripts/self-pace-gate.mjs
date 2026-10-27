@@ -1855,11 +1855,13 @@ function shellWordRuns(words, i) {
       continue
     }
     if (fish && (v === '--command' || v === '--init-command')) {
+      if (v === '--command') mainGiven = true
       if (words[j + 1]) codes.push(words[j + 1])
       j++
       continue
     }
     if (fish && (v.startsWith('--command=') || v.startsWith('--init-command='))) {
+      if (v.startsWith('--command=')) mainGiven = true
       codes.push({ value: v.slice(v.indexOf('=') + 1), ansi: words[j].ansi })
       continue
     }
@@ -1913,6 +1915,12 @@ function codeSegments(command) {
 // brace expansion.
 const HIDDEN_NAMES = new Set([...SHELL_NAMES, 'eval', 'trap', 'tmux', 'systemctl'])
 const CMD_WRAPPERS = new Set(['env', 'sudo', 'command', 'builtin', 'exec', 'nohup', 'nice', 'time', 'stdbuf', 'setsid', 'xargs'])
+const RESERVED_LEAD = new Set(['!', '{', 'if', 'then', 'elif', 'else', 'do', 'while', 'until'])
+// Index of the command word in a segment: the first word that is not a VAR=val
+// assignment, a wrapper or a reserved leading word; -1 if there is none.
+function commandWordIndex(args) {
+  return args.findIndex((w) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w.value) && !CMD_WRAPPERS.has(w.value) && !RESERVED_LEAD.has(w.value))
+}
 const EVAL_QUOTING_COMMANDS = new Set(['echo', 'printf', 'grep', 'egrep', 'fgrep', 'rg', 'sed', 'awk', 'cat', 'jq', 'test', '[', 'man', 'which', 'type'])
 
 function scanShellCode(command) {
@@ -1936,6 +1944,7 @@ function scanShellCode(command) {
     }
     const args = argWords(words)
     const cmdWord = args.find((w) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w.value) && !CMD_WRAPPERS.has(w.value))
+    const cmdIndex = commandWordIndex(args)
     if (cmdWord && (cmdWord.ansi || cmdWord.brace)) bad = true
     if (args.some((w) => HIDDEN_NAMES.has(baseName(w.value))) && words.some((w) => w.ansi || w.brace)) bad = true
     let stdinBodies = null
@@ -1962,7 +1971,7 @@ function scanShellCode(command) {
         }
         if (args[t]) push(args[t])
       }
-      if ((v === '.' || v === 'source') && args[i + 1]) {
+      if (i === cmdIndex && (v === '.' || v === 'source') && args[i + 1]) {
         for (const c of stdinCodes()) push(c)
       }
       const base = baseName(v)
