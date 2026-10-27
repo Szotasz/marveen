@@ -117,18 +117,181 @@ export function cronDueBetween(cron: string, fromMs: number, toMs: number, tz: s
 // call for opposite decisions, see decideCatchUp in schedule-runner.
 export function cronPrevOccurrence(cron: string, fromMs: number, toMs: number, tz: string = CRON_TZ): number | null {
   try {
-    // `toMs + 1`: cron-parser's prev() returns the last occurrence STRICTLY
-    // before currentDate, so an occurrence landing exactly on the tick boundary
-    // (O === toMs) would be excluded here AND excluded next tick (O === fromMs,
-    // the `> fromMs` is strict) -- a rare "silently lost" occurrence. Nudging
-    // currentDate one ms past toMs makes the window a true half-open (fromMs,
-    // toMs], so a boundary occurrence fires exactly once, never twice.
-    const expr = CronExpressionParser.parse(cron, { tz, currentDate: new Date(toMs + 1) })
-    const prev = expr.prev().getTime()
-    return prev > fromMs ? prev : null
+    // Fast path (every ordinary day): no UTC-offset change within 3h before the
+    // window or inside it, so wall-clock time and real time agree and the plain
+    // prev() below is exact. 3h covers the longest repeated hour plus margin,
+    // see dstCronPrevOccurrence.
+    if (tzOffsetMs(fromMs - DST_LOOKBACK_MS, tz) !== tzOffsetMs(toMs, tz)) {
+      const dst = dstCronPrevOccurrence(cron, fromMs, toMs, tz)
+      if (dst !== undefined) return dst
+    }
+    return plainPrevOccurrence(cron, fromMs, toMs, tz)
   } catch {
     return null
   }
+}
+
+function plainPrevOccurrence(cron: string, fromMs: number, toMs: number, tz: string): number | null {
+  // `toMs + 1`: cron-parser's prev() returns the last occurrence STRICTLY
+  // before currentDate, so an occurrence landing exactly on the tick boundary
+  // (O === toMs) would be excluded here AND excluded next tick (O === fromMs,
+  // the `> fromMs` is strict) -- a rare "silently lost" occurrence. Nudging
+  // currentDate one ms past toMs makes the window a true half-open (fromMs,
+  // toMs], so a boundary occurrence fires exactly once, never twice.
+  const expr = CronExpressionParser.parse(cron, { tz, currentDate: new Date(toMs + 1) })
+  const prev = expr.prev().getTime()
+  return prev > fromMs ? prev : null
+}
+
+// ---- DST handling (card 59458fb6) ------------------------------------------
+//
+// cron-parser matches wall-clock time but hands back UTC instants, and prev()
+// (the direction the runner uses) does not collapse the autumn repeated hour
+// (CronExpression.js: `isDstEnd && !reverse`). Measured 2026-10-25, Budapest:
+//  - autumn: "7 2 * * *" has two instants (00:07Z = 02:07 CEST and 01:07Z =
+//    02:07 CET), each in its own tick window, so the task fired twice;
+//  - spring: "30 2 * * *" has NO instant on 2027-03-28 (02:30 does not exist),
+//    so the task was skipped for the day while next() promised 03:30.
+//
+// Policy, only for wall-clock-anchored crons (the hour field does not cover all
+// 24 hours: "7 2 * * *", "*/30 2 * * *"; see isWallClockAnchored):
+//  - autumn: a slot fires once, at its FIRST occurrence; the repeated second
+//    occurrence maps back onto the first and is dropped if that already passed;
+//  - spring: a slot that falls into the skipped local interval fires once, at
+//    the transition instant (03:00 CEST), the first valid moment afterwards.
+// Interval crons ("*/30 * * * *", "0 * * * *") keep plain elapsed-time
+// semantics: both real passes of the repeated hour fire, nothing is made up in
+// spring. Tip, not verified offline: cronie/Vixie cron makes the same
+// anchored/interval split (it looks at a leading `*` in the minute/hour fields).
+//
+// Stateless on purpose: slot identity comes from the zone data, so a restart
+// cannot lose or double a slot. Accepted limit: on a cold start (no tick state)
+// inside the repeated hour, if the first pass was missed the second pass does
+// not fire either -- a skipped run beats a doubled non-idempotent one.
+
+const DST_LOOKBACK_MS = 3 * 60 * 60 * 1000
+// Bound of the candidate walk: a "* 2 * * *" cron has up to 120 candidates in
+// the repeated hour and its neighbours; this keeps the loop finite regardless.
+const DST_MAX_CANDIDATES = 400
+
+const tzFormatters = new Map<string, Intl.DateTimeFormat>()
+
+// Wall-clock reading of `ms` in `tz`, expressed as if it were UTC ("naive"
+// time). Seconds resolution: sub-second ms are truncated.
+export function naiveWallMs(ms: number, tz: string): number {
+  let fmt = tzFormatters.get(tz)
+  if (!fmt) {
+    fmt = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz,
+      hourCycle: 'h23',
+      year: 'numeric',
+      month: 'numeric',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: 'numeric',
+      second: 'numeric',
+    })
+    tzFormatters.set(tz, fmt)
+  }
+  const p: Record<string, number> = {}
+  for (const part of fmt.formatToParts(new Date(Math.floor(ms / 1000) * 1000))) {
+    if (part.type !== 'literal') p[part.type] = Number(part.value)
+  }
+  return Date.UTC(p.year, p.month - 1, p.day, p.hour % 24, p.minute, p.second)
+}
+
+function tzOffsetMs(ms: number, tz: string): number {
+  return naiveWallMs(ms, tz) - Math.floor(ms / 1000) * 1000
+}
+
+// UTC offset of `tz` at `ms`, in minutes (+120 for Budapest in summer).
+export function tzOffsetMinutes(ms: number, tz: string): number {
+  return tzOffsetMs(ms, tz) / 60000
+}
+
+// A cron is wall-clock anchored when its hour field leaves some hours out, so
+// it names fixed times of day. Read off the parsed value set, not the text, so
+// 6-field and @alias forms behave (`@daily` -> anchored, `@hourly` -> not).
+export function isWallClockAnchored(cron: string): boolean {
+  try {
+    return CronExpressionParser.parse(cron).fields.hour.values.length < 24
+  } catch {
+    return false
+  }
+}
+
+// If `candidateMs` is the second pass of a repeated local hour, the instant of
+// the first pass with the same wall-clock reading; otherwise `candidateMs`.
+function firstPassOf(candidateMs: number, tz: string): number {
+  const offNow = tzOffsetMs(candidateMs, tz)
+  const back = tzOffsetMs(candidateMs - DST_LOOKBACK_MS, tz) - offNow
+  if (back <= 0) return candidateMs
+  const earlier = candidateMs - back
+  return naiveWallMs(earlier, tz) === naiveWallMs(candidateMs, tz) ? earlier : candidateMs
+}
+
+// Smallest instant in (fromMs, toMs] whose offset equals the offset at toMs,
+// given that the offset at fromMs is different (a single transition inside).
+function transitionInstant(fromMs: number, toMs: number, tz: string): number {
+  const target = tzOffsetMs(toMs, tz)
+  let lo = fromMs
+  let hi = toMs
+  while (hi - lo > 1) {
+    const mid = lo + Math.floor((hi - lo) / 2)
+    if (tzOffsetMs(mid, tz) === target) hi = mid
+    else lo = mid
+  }
+  return hi
+}
+
+// Spring: the transition instant T inside (fromMs, toMs] when the cron has a
+// slot in the local interval the jump skipped, else null. The check runs on the
+// naive time axis (tz 'UTC'), where the skipped interval exists and the local
+// date/day-of-week fields apply as the operator wrote them.
+function springCatchUp(cron: string, fromMs: number, toMs: number, tz: string): number | null {
+  const offFrom = tzOffsetMs(fromMs, tz)
+  const offTo = tzOffsetMs(toMs, tz)
+  if (offTo <= offFrom) return null
+  const t = transitionInstant(fromMs, toMs, tz)
+  const naiveT = naiveWallMs(t, tz)
+  try {
+    const slot = CronExpressionParser.parse(cron, { tz: 'UTC', currentDate: new Date(naiveT) }).prev().getTime()
+    return slot >= naiveT - (offTo - offFrom) ? t : null
+  } catch {
+    // No earlier occurrence at all (e.g. a one-off year-bound cron): no slot to make up.
+    return null
+  }
+}
+
+// The DST-aware answer for a window that has an offset change in or just before
+// it. undefined = not applicable (interval cron): the caller uses plain prev().
+function dstCronPrevOccurrence(cron: string, fromMs: number, toMs: number, tz: string): number | null | undefined {
+  if (!isWallClockAnchored(cron)) return undefined
+
+  // Autumn: walk prev() candidates newest-first; the first whose first-pass
+  // instant is still inside the window wins. A dropped candidate (its first pass
+  // fired in an earlier window) does not end the search: an older candidate may
+  // still be a valid slot inside the window.
+  let best: number | null = null
+  const expr = CronExpressionParser.parse(cron, { tz, currentDate: new Date(toMs + 1) })
+  for (let i = 0; i < DST_MAX_CANDIDATES; i++) {
+    let candidate: number
+    try {
+      candidate = expr.prev().getTime()
+    } catch {
+      break
+    }
+    if (candidate <= fromMs) break
+    const first = firstPassOf(candidate, tz)
+    if (first > fromMs) {
+      best = first
+      break
+    }
+  }
+
+  const spring = springCatchUp(cron, fromMs, toMs, tz)
+  if (spring != null && (best == null || spring > best)) best = spring
+  return best
 }
 
 // The tightest gap between consecutive occurrences of a schedule, sampled over
