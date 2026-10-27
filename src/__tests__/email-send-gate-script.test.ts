@@ -319,3 +319,32 @@ describe('Microsoft Graph sends in a script (MAILGATESCRIPT1027)', () => {
     expect(scriptRunSends('npx harmless-report --to qa@example.test', cwd)).toBe(false)
   })
 })
+
+// MAILGATEDIRZIP1027: a real zip app (stored, __main__.py = print(1)); python runs it, the gate does not unpack it
+const HARMLESS_ZIP = Buffer.from(
+  'UEsDBBQAAAAAAEd9W10GHuE8CQAAAAkAAAALAAAAX19tYWluX18ucHlwcmludCgxKQpQSwECFAMUAAAAAABHfVtdBh7hPAkAAAAJAAAACwAAAAAAAAAAAAAAgAEAAAAAX19tYWluX18ucHlQSwUGAAAAAAEAAQA5AAAAMgAAAAAA',
+  'base64',
+)
+
+describe('python runs a directory or a zip app (MAILGATEDIRZIP1027)', () => {
+  it("reads a directory's __main__.py, and a zip app run by python is a send", () => {
+    const cwd = workdir({
+      'mdir/__main__.py': SMTP_SCRIPT,
+      'cdir/__main__.py': 'print(1)\n',
+      'edir/notes.txt': 'x\n',
+      'plain.py': 'print(1)\n',
+    })
+    writeFileSync(join(cwd, 'app.zip'), HARMLESS_ZIP)
+    writeFileSync(join(cwd, 'app.pyz'), HARMLESS_ZIP)
+    writeFileSync(join(cwd, 'shebang.pyz'), Buffer.concat([Buffer.from('#!/usr/bin/env python3\n'), HARMLESS_ZIP]))
+    chmodSync(join(cwd, 'shebang.pyz'), 0o755)
+    for (const cmd of ['python3 mdir', 'python3 mdir/', `python3 ${join(cwd, 'mdir')}`, 'python3 app.zip', 'python3 app.pyz', './shebang.pyz']) {
+      expect(scriptRunSends(cmd, cwd), cmd).toBe(true)
+      expect(bash(cmd, cwd).deny, cmd).toBe(true)
+    }
+    for (const cmd of ['python3 cdir', 'python3 edir', 'python3 cdir/__main__.py', 'python3 plain.py']) {
+      expect(scriptRunSends(cmd, cwd), cmd).toBe(false)
+      expect(bash(cmd, cwd).deny, cmd).toBe(false)
+    }
+  })
+})

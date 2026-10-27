@@ -14,6 +14,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 HOOKS = os.path.join(os.path.dirname(HERE), "hooks")
@@ -206,6 +207,34 @@ try:
     os.chmod(direct, 0o755)
     check("MAILGATESCRIPT1027 a directly executed file with a python #! line importing smtplib",
           ocg.script_run_sends(direct, D) is True)
+
+    # MAILGATEDIRZIP1027: python runs a directory's __main__.py and a zip app; the zip is not unpacked: a send
+    for sub_dir in ("r4dir", "r4clean", "r4empty"):
+        os.makedirs(os.path.join(D, sub_dir), exist_ok=True)
+    put("r4dir/__main__.py", SMTP_SEND)
+    put("r4clean/__main__.py", "print('x')\n")
+    for name in ("r4app.zip", "r4app.pyz"):
+        with zipfile.ZipFile(os.path.join(D, name), "w") as z:
+            z.writestr("__main__.py", "print('x')\n")
+    with open(os.path.join(D, "r4app.zip"), "rb") as fh:
+        zip_bytes = fh.read()
+    shebang = os.path.join(D, "r4shebang.pyz")
+    with open(shebang, "wb") as fh:
+        fh.write(b"#!/usr/bin/env python3\n" + zip_bytes)
+    os.chmod(shebang, 0o755)
+    for cmd, want, what in [
+        ("python3 r4dir", True, "a directory whose __main__.py sends"),
+        ("python3 r4dir/", True, "the same directory with a trailing slash"),
+        (f"python3 {D}/r4dir", True, "the same directory by absolute path"),
+        ("python3 r4clean", False, "a directory whose __main__.py does not send"),
+        ("python3 r4empty", False, "a directory without __main__.py"),
+        ("python3 r4app.zip", True, "a zip app (not unpacked: a send)"),
+        ("python3 r4app.pyz", True, "a .pyz app (not unpacked: a send)"),
+        (shebang, True, "a directly executed zip app with a python #! line"),
+        ("python3 plain.py", False, "control: a plain script that does not send"),
+    ]:
+        got = ocg.script_run_sends(cmd, D)
+        check(f"MAILGATEDIRZIP1027 {what}: {cmd!r} -> {want}", got is want, f"got {got}")
 
     # end to end through the hook process, level 2, no approval
     store = make_store(D, level=2)

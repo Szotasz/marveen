@@ -908,6 +908,21 @@ function fileSends(path, text, kind, readScript) {
   })
 }
 
+// python runs a directory's __main__.py, and a zip app's __main__.py from inside the archive
+// (MAILGATEDIRZIP1027). The archive is not unpacked here, so a zip run by python is a send.
+const ZIP_MAGIC = 'PK\u0003\u0004'
+function scriptFileSends(path, kind, readScript) {
+  let p = path
+  let text = readScript(p)
+  if (text === null && kind === 'py') {
+    p = join(path, '__main__.py')
+    text = readScript(p)
+  }
+  if (text === null) return false
+  if (kind === 'py' && text.includes(ZIP_MAGIC)) return true
+  return fileSends(p, text, kind, readScript)
+}
+
 function headRunsSenderScript(toks, cwd, readScript, depth) {
   if (!toks || !toks.length) return false
   const prog = basename(toks[0])
@@ -939,16 +954,14 @@ function headRunsSenderScript(toks, cwd, readScript, depth) {
       (/\.py$/i.test(toks[0]) ? 'py' : SCRIPT_FILE.test(toks[0]) ? 'node' : null)
     if (!kind) return false
     if (addressFlagGiven(rest)) return true
-    const text = readScript(path)
-    return text !== null && fileSends(path, text, kind, readScript)
+    return scriptFileSends(path, kind, readScript)
   } else {
     return false
   }
   if (script === null) return false
   const path = resolveScriptPath(script, cwd)
   if (!path) return false
-  const text = readScript(path)
-  return text !== null && fileSends(path, text, kind, readScript)
+  return scriptFileSends(path, kind, readScript)
 }
 
 export function scriptRunSends(cmd, cwd = process.cwd(), readScript = readScriptHead, depth = 0) {

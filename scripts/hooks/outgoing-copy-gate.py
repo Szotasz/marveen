@@ -1114,15 +1114,25 @@ def _file_sends(path, text, kind, read_script) -> bool:
     return False
 
 
+# MAILGATEDIRZIP1027: python runs a directory's __main__.py, and a zip app's __main__.py from inside the
+# archive. The archive is not unpacked here, so a zip run by python is a send.
+_ZIP_MAGIC = "PK\x03\x04"
+
+
 def _judge_candidates(paths, kind, read_script):
     """(readable, verdict): a send when ANY readable candidate sends -- the candidates are where the script
     may be (cwd, each `cd` target), and which one runs is not known here; a file over the read limit is a send."""
     readable = False
     for path in paths:
         text = read_script(path, _SCRIPT_READ_LIMIT + 1)
+        if text is None and kind == "py":
+            path = os.path.join(path, "__main__.py")
+            text = read_script(path, _SCRIPT_READ_LIMIT + 1)
         if text is None:
             continue
         readable = True
+        if kind == "py" and _ZIP_MAGIC in text:
+            return True, True
         if len(text.encode("utf-8")) > _SCRIPT_READ_LIMIT or _file_sends(path, text, kind, read_script):
             return True, True
     return readable, False
