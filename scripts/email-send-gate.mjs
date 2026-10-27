@@ -215,9 +215,16 @@ const CODE_SEND_MODULE = new RegExp(
   String.raw`|\bsendMail\s+as\b|\[\s*['"]sendMail['"]\s*\]`,
 )
 // MAILGATESCRIPT1027: a Microsoft Graph send endpoint (sendMail, or send/reply/replyAll/forward of a message)
-const GRAPH_SEND = /\/(?:me|users\/[^\n]{1,120}?)\/(?:sendMail\b|messages\/[^\n]{1,160}?\/(?:send|reply|replyAll|forward)\b)/i
+// MAILGATESCRIPT1027 R1: a send needs the endpoint shape AND Graph evidence in the same text (an application
+// route of the same shape is no send); `\/` is normalised to `/` first (JSON-escaped URLs).
+const GRAPH_SEND = /\/(?:me|users\/[^\n]{1,120}?)\/(?:sendMail(?![\w-])|messages\/[^\n]{1,160}?\/(?:send|reply|replyAll|forward)(?![\w-]))/i
+const GRAPH_EVIDENCE = /graph\.microsoft\.com|microsoft-graph-client|msgraph|\.api\s*\(/i
+const graphSends = (text) => {
+  const t = text.replaceAll('\\/', '/')
+  return GRAPH_SEND.test(t) && GRAPH_EVIDENCE.test(t)
+}
 const codeStringSends = (code) =>
-  CODE_SEND.test(code) || CODE_SEND_MODULE.test(code) || GRAPH_SEND.test(code) ||
+  CODE_SEND.test(code) || CODE_SEND_MODULE.test(code) || graphSends(code) ||
   (CODE_EXECISH.test(code) && CODE_SENDER_LIT.test(code))
 
 // Unquoted newline / backtick / `$(` become segment separators; quoted text is
@@ -776,7 +783,8 @@ const NODE_MAIL_IMPORT = new RegExp(
   'm',
 )
 const PY_LOCAL_IMPORT = /^[ \t]*(?:from[ \t]+([\w.]+)[ \t]+import\b|import[ \t]+([\w., \t]+))/gm
-const NODE_LOCAL_IMPORT = /(?:\brequire\s*\(\s*|^[ \t]*import\b[^\n]*?\bfrom\s*|^[ \t]*import\s*|\bimport\s*\(\s*)['"](\.{1,2}\/[^'"\n]+)['"]/gm
+// MAILGATESCRIPT1027 R1: `export ... from './x'` (an ESM re-export) loads the helper too
+const NODE_LOCAL_IMPORT = /(?:^[ \t]*export\b[^\n]*?\bfrom\s*|\brequire\s*\(\s*|^[ \t]*import\b[^\n]*?\bfrom\s*|^[ \t]*import\s*|\bimport\s*\(\s*)['"](\.{1,2}\/[^'"\n]+)['"]/gm
 const NODE_EXTS = ['', '.js', '.mjs', '.cjs', '.ts', '/index.js', '/index.mjs', '/index.ts']
 const HELPER_LIMIT = 40
 const ADDRESS_FLAG = /^--(?:to|cc|bcc)(?:=(.*))?$/
@@ -850,20 +858,27 @@ function shebangKind(text) {
 
 // One level of local helpers: modules the script imports, resolved next to it.
 function localHelperPaths(path, text, kind) {
-  const dir = dirname(path)
+  // MAILGATESCRIPT1027 R1: next to the script and, for a symlinked entry, next to its real path
+  const dirs = [dirname(path)]
+  try {
+    const real = dirname(realpathSync(path))
+    if (!dirs.includes(real)) dirs.push(real)
+  } catch { /* lexical directory only */ }
   const out = []
-  if (kind === 'py') {
-    for (const m of text.matchAll(PY_LOCAL_IMPORT)) {
-      const names = m[1] ? [m[1]] : m[2].split(',').map((n) => n.trim().split(/\s+/)[0])
-      for (const name of names) {
-        if (!name || name.startsWith('.')) continue
-        const rel = name.split('.').join('/')
-        out.push(join(dir, `${rel}.py`), join(dir, rel, '__init__.py'))
+  for (const dir of dirs) {
+    if (kind === 'py') {
+      for (const m of text.matchAll(PY_LOCAL_IMPORT)) {
+        const names = m[1] ? [m[1]] : m[2].split(',').map((n) => n.trim().split(/\s+/)[0])
+        for (const name of names) {
+          if (!name || name.startsWith('.')) continue
+          const rel = name.split('.').join('/')
+          out.push(join(dir, `${rel}.py`), join(dir, rel, '__init__.py'))
+        }
       }
-    }
-  } else {
-    for (const m of text.matchAll(NODE_LOCAL_IMPORT)) {
-      for (const ext of NODE_EXTS) out.push(resolve(dir, m[1] + ext))
+    } else {
+      for (const m of text.matchAll(NODE_LOCAL_IMPORT)) {
+        for (const ext of NODE_EXTS) out.push(resolve(dir, m[1] + ext))
+      }
     }
   }
   return [...new Set(out)].filter((p) => p !== path).slice(0, HELPER_LIMIT)
@@ -871,10 +886,10 @@ function localHelperPaths(path, text, kind) {
 
 function fileSends(path, text, kind, readScript) {
   const imports = kind === 'py' ? PY_MAIL_IMPORT : NODE_MAIL_IMPORT
-  if (imports.test(text) || GRAPH_SEND.test(text)) return true
+  if (imports.test(text) || graphSends(text)) return true
   return localHelperPaths(path, text, kind).some((h) => {
     const t = readScript(h)
-    return t !== null && (imports.test(t) || GRAPH_SEND.test(t))
+    return t !== null && (imports.test(t) || graphSends(t))
   })
 }
 
@@ -896,8 +911,10 @@ function headRunsSenderScript(toks, cwd, readScript, depth) {
     script = pythonScriptOperand(rest).script
     kind = 'py'
   } else if (NODEISH.test(prog)) {
-    if (addressFlagGiven(rest)) return true
     script = nodeScriptOperand(prog, rest)
+    // MAILGATESCRIPT1027 R1: npx with another package than the tsx / ts-node / node runner form is no script run
+    if (prog === 'npx' && script === null) return false
+    if (addressFlagGiven(rest)) return true
     kind = 'node'
   } else if (SCRIPT_FILE.test(toks[0]) || toks[0].includes('/')) {
     // a directly executed file: its #! line picks the interpreter, else its extension

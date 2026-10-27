@@ -85,6 +85,23 @@ try:
     put("plain.py", "print('x')\n")
     os.makedirs(os.path.join(D, "sub"))
     put("sub/harmless.mjs", GRAPH_SEND)  # same name as the harmless one in D, but it sends
+    # MAILGATESCRIPT1027 R1: fixtures of the review fixes
+    for sub_dir in ("a/b", "sub", "real", "link", "pkg"):
+        os.makedirs(os.path.join(D, sub_dir), exist_ok=True)
+    put("job.mjs", HARMLESS)
+    put("a/b/job.mjs", GRAPH_SEND)
+    os.chmod(put("task", "echo hi\n"), 0o755)
+    os.chmod(put("sub/task", "#!/usr/bin/python3\nimport smtplib\n"), 0o755)
+    put("real/main.mjs", "import './transport.mjs'\n")
+    put("real/transport.mjs", GRAPH_SEND)
+    os.symlink(os.path.join(D, "real", "main.mjs"), os.path.join(D, "link", "main.mjs"))
+    put("pkg/__init__.py", "")
+    put("pkg/main.py", "import smtplib\n")
+    put("reexp.mjs", "export * from './transport2.mjs'\n")
+    put("transport2.mjs", GRAPH_SEND)
+    put("escaped.mjs", 'await fetch("https:\\/\\/graph.microsoft.com\\/v1.0\\/me\\/sendMail", { method: "POST" })\n')
+    put("routes.mjs", "app.get('/me/messages/:id/reply', showReplyPage)\n")
+    put("preview.mjs", "await fetch('https://graph.microsoft.com/v1.0/me/messages/1/send-preview')\n")
     locked = put("locked.mjs", "console.log('x')\n")
     can_lock = os.geteuid() != 0
     if can_lock:
@@ -116,6 +133,21 @@ try:
         (f"python3 {D}/plain.py --to b@example.test", D, True, "an address after --to makes any script run a send"),
         (f"python3 {D}/plain.py", D, False, "the same script without an address"),
         (f"{D}/missing-direct.py", D, True, "a directly run .py file that cannot be read (fail-closed)"),
+        ("cd $DEST && node job.mjs", D, True, "cd to a variable: fail-closed"),
+        ("cd a && cd b && node job.mjs", D, True, "chained relative cd"),
+        ("cd -- a/b && node job.mjs", D, True, "cd -- DIR"),
+        ("cd sub && ./task", D, True, "direct run: each candidate judged with its own kind"),
+        ("./task", D, False, "a shell script run directly is not judged"),
+        ("node link/main.mjs", D, True, "helper next to the real path of a symlinked entry"),
+        ("python3 -m pkg.main", D, True, "python -m a local module that sends"),
+        ("python3 -m pytest", D, False, "python -m an installed module"),
+        ("node reexp.mjs", D, True, "an ESM re-export loads the helper"),
+        ("node escaped.mjs", D, True, "escaped slashes in a Graph URL"),
+        ("node routes.mjs", D, False, "an application route of the same shape, no Graph evidence"),
+        ("node preview.mjs", D, False, "send-preview is no send action"),
+        ("npx harmless-report --to qa@example.test", D, False, "npx with another package and an address"),
+        (f"npx tsx {D}/harmless.mjs --to qa@example.test", D, True, "npx runner with an address"),
+        ("cd $DEST && node --version", D, False, "no script operand under a variable cd"),
     ]
     if can_lock:
         cases.append((f"node {D}/locked.mjs", D, True, "an unreadable script (fail-closed)"))

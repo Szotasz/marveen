@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { spawnSync } from 'node:child_process'
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 // @ts-expect-error -- plain .mjs hook script, no types
@@ -228,7 +228,16 @@ describe('Microsoft Graph sends in a script (MAILGATESCRIPT1027)', () => {
     'harmless.mjs': "console.log('hello')\n",
     'main.mjs': "import './lib.mjs'\nconsole.log('main')\n",
     'lib.mjs': "await fetch('https://graph.microsoft.com/v1.0/me/sendMail', { method: 'POST' })\n",
+    'reexp.mjs': "export * from './transport2.mjs'\n",
+    'transport2.mjs': GRAPH_SEND,
+    'escaped.mjs': 'await fetch("https:\\/\\/graph.microsoft.com\\/v1.0\\/me\\/sendMail", { method: "POST" })\n',
+    'routes.mjs': "app.get('/me/messages/:id/reply', showReplyPage)\n",
+    'preview.mjs': "await fetch('https://graph.microsoft.com/v1.0/me/messages/1/send-preview')\n",
+    'real/main.mjs': "import './transport.mjs'\n",
+    'real/transport.mjs': GRAPH_SEND,
+    'link/.keep': '',
   })
+  symlinkSync(join(cwd, 'real', 'main.mjs'), join(cwd, 'link', 'main.mjs'))
 
   it('is a send for a node file, a .ts file and a file whose helper sends', () => {
     for (const cmd of ['node graph-send.mjs AAMk1', 'tsx graph-reply.ts', 'node main.mjs']) {
@@ -246,5 +255,26 @@ describe('Microsoft Graph sends in a script (MAILGATESCRIPT1027)', () => {
     expect(scriptRunSends('bun run graph-send.mjs', cwd)).toBe(true)
     expect(scriptRunSends('npx tsx graph-send.mjs', cwd)).toBe(true)
     expect(scriptRunSends('npx vitest run', cwd)).toBe(false)
+  })
+
+  it('follows an ESM re-export to the helper', () => {
+    expect(scriptRunSends('node reexp.mjs', cwd)).toBe(true)
+  })
+
+  it('sees a Graph URL with escaped slashes', () => {
+    expect(scriptRunSends('node escaped.mjs', cwd)).toBe(true)
+  })
+
+  it('is no send for an application route of the same shape or for send-preview', () => {
+    expect(scriptRunSends('node routes.mjs', cwd)).toBe(false)
+    expect(scriptRunSends('node preview.mjs', cwd)).toBe(false)
+  })
+
+  it('resolves helpers next to the real path of a symlinked entry', () => {
+    expect(scriptRunSends('node link/main.mjs', cwd)).toBe(true)
+  })
+
+  it('is no script run for npx with another package, even with an address', () => {
+    expect(scriptRunSends('npx harmless-report --to qa@example.test', cwd)).toBe(false)
   })
 })
