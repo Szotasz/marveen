@@ -793,3 +793,12 @@ categories and `maxLevel` are checked as before.
 `store/autonomy-config.json` directly, and the mail gate reads the file, not
 this endpoint. This change closes the token path only; a write guard for that
 file is separate work.
+
+# Vault resolver: only a loopback dashboard
+
+VAULTURLGATE1027. `scripts/vault-dashboard-client.mjs` sends the dashboard
+token with every resolve request, and `VAULT_RESOLVE_URL` comes from the
+environment. The URL is checked before the request is built: `http` or
+`https`, no user info, and the host `127.0.0.1`, `::1` or `localhost`. Any other
+URL is refused like an unreachable dashboard (audit mode: the local fallback with
+a warning; enforce mode: exit 5), so the token never leaves the machine.
