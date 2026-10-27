@@ -104,6 +104,24 @@
    }
   },
   {
+   "name": "resend node SDK, client under another name (Samu 50950 A1)",
+   "file": "rs_client.mjs",
+   "expected": true,
+   "body": "import { Resend } from 'resend'\nconst client = new Resend(key)\nawait client.emails.send({ to, subject, html })\n"
+  },
+  {
+   "name": "resend python SDK",
+   "file": "rs_sdk.py",
+   "expected": true,
+   "body": "import resend\nresend.api_key = key\nmailer = resend.Emails\nmailer.send(params)\nresend.Emails.send(params)\n"
+  },
+  {
+   "name": "gmail node package @googleapis/gmail (Samu 50950 A2)",
+   "file": "gm_pkg.mjs",
+   "expected": true,
+   "body": "import { gmail } from '@googleapis/gmail'\nconst g = gmail({ version: 'v1', auth })\nawait g.users.messages.send({ userId: 'me', requestBody: { raw } })\n"
+  },
+  {
    "name": "gmail REST list (a read)",
    "file": "gm_list.py",
    "expected": false,
@@ -156,6 +174,18 @@
    "file": "mg_client.mjs",
    "expected": true,
    "body": "import formData from 'form-data'\nimport Mailgun from 'mailgun.js'\nconst mg = new Mailgun(formData).client({ username: 'api', key })\nawait mg.messages.create(domain, { to, subject, text })\n"
+  },
+  {
+   "name": "resend SDK used only to list domains",
+   "file": "rs_domains.mjs",
+   "expected": false,
+   "body": "import { Resend } from 'resend'\nconst client = new Resend(key)\nconsole.log(await client.domains.list())\n"
+  },
+  {
+   "name": "an app's own emails.send without any provider evidence",
+   "file": "app_mailer.mjs",
+   "expected": false,
+   "body": "import { mailer } from './lib/mailer-stub.mjs'\nawait mailer.emails.send({ to })\n"
   }
  ]
 }

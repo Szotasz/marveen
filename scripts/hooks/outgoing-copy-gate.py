@@ -161,11 +161,12 @@ _ACTION_END = r"(?![A-Za-z0-9_-]|[^\x00-\x7f])"
 _MAIL_API_RULES = (
     # Gmail: the REST host (also when the URL is assembled from a base) or the Python or Node gmail client;
     # the send shapes are the messages or drafts send call.
-    (re.compile(r"gmail\.googleapis\.com|[/]gmail[/]v1[/]|\bbuild\s*\(\s*['\"]gmail['\"]|\bgoogle\.gmail\s*\(", re.I),
+    (re.compile(r"gmail\.googleapis\.com|[/]gmail[/]v1[/]|\bbuild\s*\(\s*['\"]gmail['\"]|\bgoogle\.gmail\s*\(|['\"]@googleapis/gmail['\"]", re.I),
      re.compile(r"/(?:messages|drafts)/send" + _ACTION_END + r"|\.(?:messages|drafts)\s*(?:\(\s*\))?\s*\.send\s*\(", re.I)),
-    # Resend: the emails endpoint on the API host (and its batch), or the SDK call.
+    # Resend: the emails endpoint on the API host (and its batch), or the SDK's emails.send( on a client
+    # of any name (Samu 50950 A1: `const client = new Resend(k)`), the package being the evidence.
     (re.compile(r"api\.resend\.com|['\"]resend['\"]|\bimport\s+resend\b", re.I),
-     re.compile(r"api\.resend\.com/emails(?:/batch)?" + _ACTION_END + r"|\bresend\.emails\.send\s*\(", re.I)),
+     re.compile(r"api\.resend\.com/emails(?:/batch)?" + _ACTION_END + r"|\.emails\.send\s*\(", re.I)),
     # SendGrid: v3 mail send on the API host, or the mail client.
     (re.compile(r"api\.sendgrid\.com|['\"]@sendgrid/mail['\"]|\bSendGridAPIClient\s*\(", re.I),
      re.compile(r"api\.sendgrid\.com/v3/mail/send" + _ACTION_END + r"|['\"]@sendgrid/mail['\"]|\bSendGridAPIClient\s*\(", re.I)),
