@@ -1827,7 +1827,7 @@ function shellWordRuns(words, i) {
     const v = words[j].value
     if (!/^[-+]/.test(v)) break
     if (v === '--') { j++; break }
-    if (/^[-+][oO]$/.test(v)) { j++; continue }
+    if (/^[-+][oO]$/.test(v) || v === '--rcfile' || v === '--init-file') { j++; continue }
     if (/^-[A-Za-z]+$/.test(v)) {
       if (v.includes('c')) cGiven = true
       if (v.includes('s')) sGiven = true
@@ -1927,13 +1927,34 @@ const SYSTEMCTL_ARM_VERBS = new Set([
   'add-wants', 'add-requires', 'isolate',
 ])
 
-// words: output of splitCodeWords. True for `systemctl <arm verb> ... x.timer|x.path`.
+const SYSTEMCTL_VERBS = new Set([
+  'start', 'stop', 'reload', 'restart', 'try-restart', 'reload-or-restart', 'try-reload-or-restart',
+  'condrestart', 'condreload', 'condstop', 'force-reload', 'isolate', 'kill', 'clean', 'freeze', 'thaw',
+  'set-property', 'bind', 'mount-image', 'service-log-level', 'service-log-target', 'reset-failed', 'whoami',
+  'list-units', 'list-automounts', 'list-paths', 'list-sockets', 'list-timers', 'is-active', 'is-failed',
+  'status', 'show', 'cat', 'help', 'list-dependencies', 'enable', 'disable', 'reenable', 'preset',
+  'preset-all', 'is-enabled', 'mask', 'unmask', 'link', 'revert', 'add-wants', 'add-requires', 'edit',
+  'get-default', 'set-default', 'list-unit-files', 'list-machines', 'list-jobs', 'cancel',
+  'show-environment', 'set-environment', 'unset-environment', 'import-environment', 'daemon-reload',
+  'daemon-reexec', 'log-level', 'log-target', 'service-watchdogs', 'default', 'rescue', 'emergency',
+  'halt', 'poweroff', 'reboot', 'kexec', 'soft-reboot', 'exit', 'switch-root', 'suspend', 'hibernate',
+  'hybrid-sleep', 'suspend-then-hibernate', 'sleep',
+])
+
+// words: output of splitCodeWords. The verb of `systemctl` is the first later
+// word that is a systemctl verb (what precedes it is options and their
+// values). True when that verb is an arm verb and a later word is a .timer or
+// .path unit, or a glob or brace (* ? [ {) that may expand to one: bash
+// expands `x.{timer,service}` and systemctl matches `x.*` against loaded
+// units. A non-arm verb arms nothing, even if `start x.timer` follows it as
+// unit names.
 export function systemctlArmsTimer(words) {
   words = argWords(words)
   for (let i = 0; i < words.length; i++) {
     if (baseName(words[i].value) !== 'systemctl') continue
-    const rest = words.slice(i + 1).map((w) => w.value)
-    if (rest.some((v) => SYSTEMCTL_ARM_VERBS.has(v)) && rest.some((v) => v.endsWith('.timer') || v.endsWith('.path'))) return true
+    const v = words.findIndex((w, k) => k > i && SYSTEMCTL_VERBS.has(w.value))
+    if (v < 0 || !SYSTEMCTL_ARM_VERBS.has(words[v].value)) continue
+    if (words.slice(v + 1).some((w) => w.value.endsWith('.timer') || w.value.endsWith('.path') || /[*?[{]/.test(w.value))) return true
   }
   return false
 }
