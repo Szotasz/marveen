@@ -115,7 +115,7 @@ export async function resolveViaDashboard(root, ids, { timeoutMs = resolveTimeou
   const url = process.env.VAULT_RESOLVE_URL || `http://127.0.0.1:${installSetting(root, 'WEB_PORT', '3420')}/api/vault/resolve`
   // The request carries the dashboard token: a VAULT_RESOLVE_URL off this machine is refused before it is built.
   if (!isLoopbackUrl(url)) return { ok: false, configured: true, error: 'VAULT_RESOLVE_URL is not a loopback address' }
-  const headers ={ 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
+  const headers = { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
   const agent = claimedAgentName()
   if (agent) headers['X-Agent-Id'] = agent
   const ctrl = new AbortController()

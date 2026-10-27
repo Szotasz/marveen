@@ -54,6 +54,9 @@ describe('VAULT_RESOLVE_URL reaches only this machine', () => {
       'http://127.0.0.2:3420/api/vault/resolve',
       'http://localhost.evil.example:3420/api/vault/resolve',
       'http://user:pw@127.0.0.1:3420/api/vault/resolve',
+      'http://user@127.0.0.1:3420/api/vault/resolve',
+      'http://:pw@127.0.0.1:3420/api/vault/resolve',
+      'ftp://127.0.0.1:3420/api/vault/resolve',
       'file:///etc/passwd',
       'not a url',
     ]) {
