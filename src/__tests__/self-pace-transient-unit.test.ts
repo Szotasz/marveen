@@ -15,7 +15,10 @@ describe('self-pace-gate: immediate transient user unit', () => {
       'systemd-run --user --collect -p RuntimeMaxSec=600 --quiet --unit=t1 --same-dir bash -lc "npm test > /tmp/x.log 2>&1"',
       'systemd-run --user -G -p RuntimeMaxSec=600 -u t2.service -q -d npm test',
       'systemd-run --user --collect -p RuntimeMaxSec=600 --unit t3 --description "full suite" --working-directory=/w -- npx vitest run --maxWorkers=4',
-      'systemd-run --user --collect -p RuntimeMaxSec=600 --wait --pipe --nice=19 -E CI=1 --setenv=TZ=UTC npm test',
+      'systemd-run --user --collect -p RuntimeMaxSec=600 --wait --pipe --nice=19 npm test',
+      'systemd-run --user --collect -p RuntimeMaxSec=1 npm test',
+      'systemd-run --user --collect -p RuntimeMaxSec=7200 npm test',
+      'systemd-run --user --collect -p RuntimeMaxSec=600 -p RuntimeMaxSec=1200 npm test',
       'systemd-run --user --collect -p RuntimeMaxSec=600 -p IOSchedulingClass=idle -p Nice=19 --property=RuntimeMaxSec=3600 npm test > /tmp/s.log 2>&1',
       '  systemd-run --user --collect -p RuntimeMaxSec=600 npm test',
     ]) {
@@ -64,7 +67,6 @@ describe('self-pace-gate: immediate transient user unit', () => {
       "systemd-run --user --collect -p RuntimeMaxSec=600 --unit=x.timer sh -c 'npm test'",
       "systemd-run --user --collect -p RuntimeMaxSec=600 --unit=x.path sh -c 'npm test'",
       "systemd-run --user --collect -p RuntimeMaxSec=600 --unit='a b' sh -c 'npm test'",
-      "systemd-run --user --collect -p RuntimeMaxSec=600 -E '1BAD=x' sh -c 'npm test'",
       // a trigger option is denied even when its value looks like an allowed property
       "systemd-run --user --collect -p RuntimeMaxSec=600 --timer-property=Nice=19 sh -c 'npm test'",
       "systemd-run --user --collect -p RuntimeMaxSec=600 --path-property=Nice=19 sh -c 'npm test'",
@@ -156,7 +158,7 @@ describe('self-pace-gate: immediate transient user unit', () => {
       // a process substitution or a second line hidden in an option value
       'systemd-run --user --collect -p RuntimeMaxSec=600 -p WorkingDirectory=<(crontab${IFS}-r) npm test',
       'systemd-run --user --collect -p RuntimeMaxSec=600 -p WorkingDirectory=<(true) npm test',
-      'systemd-run --user --collect -p RuntimeMaxSec=600 -E A=1\ncrontab cronfile',
+      'systemd-run --user --collect -p RuntimeMaxSec=600 --nice=1\ncrontab cronfile',
     ]) {
       expect(deny(cmd), cmd).toBe(true)
     }
@@ -184,7 +186,7 @@ describe('self-pace-gate: immediate transient user unit', () => {
       'systemd-run --user --collect -p RuntimeMaxSec=600 $X --on-active=5m true',
       'systemd-run --user --collect -p RuntimeMaxSec=600 "$X" npm test',
       'systemd-run --user --collect -p RuntimeMaxSec=600 * npm test',
-      'systemd-run --user --collect -p RuntimeMaxSec=600 -E A=$HOME npm test',
+      'systemd-run --user --collect -p RuntimeMaxSec=600 --description=$HOME npm test',
       'systemd-run --user --collect -p RuntimeMaxSec=600 --working-directory=/w/[ab] npm test',
       // bash drops a redirection from argv, so the next word is an option again
       "systemd-run --user --collect -p RuntimeMaxSec=600 2>&1 --on-active=5m sh -c 'npm test'",
@@ -222,5 +224,48 @@ describe('self-pace-gate: immediate transient user unit', () => {
     const src = readFileSync(fileURLToPath(new URL('../../scripts/self-pace-gate.mjs', import.meta.url)), 'utf8')
     const msg = src.slice(src.indexOf('const GATE_MSG'))
     expect(msg.slice(0, 3000)).toContain('systemd-run --user --collect')
+    expect(msg.slice(0, 3000)).toContain('RuntimeMaxSec')
+  })
+
+  it('DENIES a unit without -p RuntimeMaxSec=<1..7200>: missing, infinity, empty, out of range or malformed', () => {
+    for (const cmd of [
+      'systemd-run --user --collect npm test',
+      "systemd-run --user --collect --unit=x sh -c 'npm test'",
+      'systemd-run --user --collect -p RuntimeMaxSec=infinity npm test',
+      'systemd-run --user --collect --property=RuntimeMaxSec=infinity npm test',
+      'systemd-run --user --collect -p RuntimeMaxSec= npm test',
+      "systemd-run --user --collect -p 'RuntimeMaxSec=' npm test",
+      'systemd-run --user --collect -p RuntimeMaxSec=0 npm test',
+      'systemd-run --user --collect -p RuntimeMaxSec=7201 npm test',
+      'systemd-run --user --collect -p RuntimeMaxSec=99999 npm test',
+      'systemd-run --user --collect -p RuntimeMaxSec=0600 npm test',
+      'systemd-run --user --collect -p RuntimeMaxSec=-1 npm test',
+      'systemd-run --user --collect -p RuntimeMaxSec=1h npm test',
+      'systemd-run --user --collect -p RuntimeMaxSec=600s npm test',
+      "systemd-run --user --collect -p 'RuntimeMaxSec=600 ' npm test",
+      // a later assignment overrides an earlier one, so every value must pass
+      'systemd-run --user --collect -p RuntimeMaxSec=600 -p RuntimeMaxSec=infinity npm test',
+      'systemd-run --user --collect -p RuntimeMaxSec=600 -p RuntimeMaxSec= npm test',
+    ]) {
+      expect(deny(cmd), cmd).toBe(true)
+      expect(transientUserUnitAllowed(cmd), cmd).toBe(false)
+    }
+  })
+
+  it('DENIES every environment option, whatever the variable name', () => {
+    for (const name of ['BASH_ENV', 'ENV', 'NODE_OPTIONS', 'LD_PRELOAD', 'DYLD_INSERT_LIBRARIES', 'PYTHONSTARTUP', 'PYTHONPATH', 'PATH', 'CI']) {
+      for (const opt of [
+        `-E ${name}=/tmp/x`,
+        `--setenv=${name}=/tmp/x`,
+        `--setenv ${name}=/tmp/x`,
+        `--setenv=${name}`,
+        `-p Environment=${name}=/tmp/x`,
+        `--property=Environment=${name}=/tmp/x`,
+      ]) {
+        const cmd = `systemd-run --user --collect -p RuntimeMaxSec=600 ${opt} bash -c true`
+        expect(deny(cmd), cmd).toBe(true)
+        expect(transientUserUnitAllowed(cmd), cmd).toBe(false)
+      }
+    }
   })
 })
