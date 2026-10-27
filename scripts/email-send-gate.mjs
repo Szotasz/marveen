@@ -925,9 +925,10 @@ function scriptFileSends(path, kind, readScript) {
     if (pkg !== null) {
       try { main = JSON.parse(pkg)?.main ?? null } catch { return true }
     }
-    p = typeof main === 'string' && main ? resolve(path, main) : join(path, 'index.js')
+    const declared = typeof main === 'string' && main !== ''
+    p = declared ? resolve(path, main) : join(path, 'index.js')
     text = readScript(p)
-    if (text === null && p !== join(path, 'index.js')) return true
+    if (text === null && declared) return true
   }
   if (text === null) return false
   if (kind === 'py' && text.includes(ZIP_MAGIC)) return true
@@ -942,6 +943,9 @@ function pythonModule(rest) {
     const t = rest[i]
     if (t === '-m') return rest[i + 1] ?? null
     if (/^-m[^-]/.test(t)) return t.slice(2)
+    // -m at the end of a cluster of flags without a value (`-um MOD`, `-Im MOD`, `-BmMOD`)
+    const cluster = /^-[bBdEhiIOPqRsSuvVx]+m(.*)$/.exec(t)
+    if (cluster) return cluster[1] || (rest[i + 1] ?? null)
     if (PY_OPT_WITH_ARG.has(t)) { i++; continue }
     if (t.startsWith('-') && t !== '--' && !t.startsWith('-c')) continue
     return null

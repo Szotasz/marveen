@@ -237,7 +237,8 @@ try:
         check(f"MAILGATEDIRZIP1027 {what}: {cmd!r} -> {want}", got is want, f"got {got}")
 
     # MAILGATEDIRZIP1027: node runs DIR/package.json "main", else DIR/index.js
-    for sub_dir in ("r4nmain/lib", "r4nidx", "r4nclean", "r4nbadmain", "r4nbadjson", "r4nempty"):
+    for sub_dir in ("r4nmain/lib", "r4nidx", "r4nclean", "r4nbadmain", "r4nbadjson", "r4nempty", "r4nidxmain",
+                    "r4ndirmain/index.js"):
         os.makedirs(os.path.join(D, sub_dir), exist_ok=True)
     put("r4nmain/package.json", '{"main": "lib/start.js"}')
     put("r4nmain/lib/start.js", NM)
@@ -245,6 +246,9 @@ try:
     put("r4nclean/index.js", "console.log(1)\n")
     put("r4nbadmain/package.json", '{"main": "lib/start"}')
     put("r4nbadjson/package.json", "{ not json")
+    put("r4nidxmain/package.json", '{"main": "index.js"}')
+    put("r4ndirmain/package.json", '{"main": "index.js"}')
+    put("r4ndirmain/index.js/index.js", NM)
     for cmd, want, what in [
         ("node r4nmain", True, "a directory whose package.json main sends"),
         ("node r4nidx", True, "a directory whose index.js sends"),
@@ -252,6 +256,10 @@ try:
         ("node r4nbadmain", True, "a main that cannot be read as named (fail-closed)"),
         ("node r4nbadjson", True, "an unparseable package.json (fail-closed)"),
         ("node r4nempty", False, "a directory without package.json or index.js"),
+        ("node r4nidxmain", True, "a declared main index.js that is missing (fail-closed)"),
+        ("node r4ndirmain", True, "a declared main index.js that is a directory (fail-closed)"),
+        ("python3 -um pkg.main", True, "-m at the end of a flag cluster"),
+        ("python3 -BImpkg.main", True, "-m with its module joined to a flag cluster"),
     ]:
         got = ocg.script_run_sends(cmd, D)
         check(f"MAILGATEDIRZIP1027 {what}: {cmd!r} -> {want}", got is want, f"got {got}")

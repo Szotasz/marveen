@@ -357,11 +357,11 @@ describe('python -m a local module, and node DIR (MAILGATEDIRZIP1027)', () => {
       'mrun/__main__.py': SMTP_SCRIPT,
       'mclean/__main__.py': 'print(1)\n',
     })
-    for (const cmd of ['python3 -m mpkg.main', 'python3 -m mrun', 'python3 -mmrun', 'python3 -u -m mrun']) {
+    for (const cmd of ['python3 -m mpkg.main', 'python3 -m mrun', 'python3 -mmrun', 'python3 -u -m mrun', 'python3 -um mpkg.main', 'python3 -BImmpkg.main']) {
       expect(scriptRunSends(cmd, cwd), cmd).toBe(true)
       expect(bash(cmd, cwd).deny, cmd).toBe(true)
     }
-    for (const cmd of ['python3 -m mclean', 'python3 -m json.tool', 'python3 -m nosuchmodule']) {
+    for (const cmd of ['python3 -m mclean', 'python3 -um mclean', 'python3 -m json.tool', 'python3 -m nosuchmodule']) {
       expect(scriptRunSends(cmd, cwd), cmd).toBe(false)
       expect(bash(cmd, cwd).deny, cmd).toBe(false)
     }
@@ -376,8 +376,11 @@ describe('python -m a local module, and node DIR (MAILGATEDIRZIP1027)', () => {
       'nbadmain/package.json': '{"main": "lib/start"}',
       'nbadjson/package.json': '{ not json',
       'nempty/notes.txt': 'x\n',
+      'nidxmain/package.json': '{"main": "index.js"}',
+      'ndirmain/package.json': '{"main": "index.js"}',
+      'ndirmain/index.js/index.js': "const m = require('nodemailer')\n",
     })
-    for (const cmd of ['node nmain', 'node nidx', 'node nidx/', 'node nbadmain', 'node nbadjson']) {
+    for (const cmd of ['node nmain', 'node nidx', 'node nidx/', 'node nbadmain', 'node nbadjson', 'node nidxmain', 'node ndirmain']) {
       expect(scriptRunSends(cmd, cwd), cmd).toBe(true)
       expect(bash(cmd, cwd).deny, cmd).toBe(true)
     }

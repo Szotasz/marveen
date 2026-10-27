@@ -1138,10 +1138,10 @@ def _judge_candidates(paths, kind, read_script):
                 except ValueError:
                     return True, True
                 main = data.get("main") if isinstance(data, dict) else None
-            index = os.path.join(path, "index.js")
-            path = os.path.normpath(os.path.join(path, main)) if isinstance(main, str) and main else index
+            declared = isinstance(main, str) and main != ""
+            path = os.path.normpath(os.path.join(path, main)) if declared else os.path.join(path, "index.js")
             text = read_script(path, _SCRIPT_READ_LIMIT + 1)
-            if text is None and path != index:
+            if text is None and declared:
                 return True, True
         if text is None:
             continue
@@ -1162,6 +1162,10 @@ def _python_module(rest):
             return rest[i + 1] if i + 1 < len(rest) else None
         if re.match(r"^-m[^-]", t):
             return t[2:]
+        # MAILGATEDIRZIP1027: -m at the end of a cluster of flags without a value (`-um MOD`, `-BmMOD`)
+        cluster = re.match(r"^-[bBdEhiIOPqRsSuvVx]+m(.*)$", t)
+        if cluster:
+            return cluster.group(1) or (rest[i + 1] if i + 1 < len(rest) else None)
         if t in _PY_OPT_WITH_ARG:
             i += 2
             continue
