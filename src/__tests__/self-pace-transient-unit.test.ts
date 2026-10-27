@@ -186,6 +186,11 @@ describe('self-pace-gate: immediate transient user unit', () => {
       'systemd-run --user --collect * npm test',
       'systemd-run --user --collect -E A=$HOME npm test',
       'systemd-run --user --collect --working-directory=/w/[ab] npm test',
+      // bash drops a redirection from argv, so the next word is an option again
+      "systemd-run --user --collect 2>&1 --on-active=5m sh -c 'npm test'",
+      'systemd-run --user --collect >/tmp/l --on-active=5m true',
+      'systemd-run --user --collect > /tmp/l --on-calendar=daily npm test',
+      'systemd-run --user --collect --unit=x >>/tmp/l --on-active=5m npm test',
     ]) {
       expect(deny(cmd), cmd).toBe(true)
     }
