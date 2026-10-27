@@ -189,3 +189,99 @@ the Docker volumes (3) are **separate** and must be moved on their own.
       matches the old machine; Grafana dashboards render.
 - [ ] All your launchd jobs are loaded: `launchctl list | grep com.<MAIN_AGENT_ID>`.
 - [ ] Old machine's pollers are fully stopped (no 409).
+
+---
+
+## 7. Frissítési jegyzetek (meglévő telepítés frissítése)
+
+A fenti útmutató a gépváltásról szól. Az alábbi jegyzetek a migráció másik
+fajtájáról: amikor egy meglévő telepítést helyben frissítesz. Minden tétel
+megmondja, mit lát egy kliens, egy szkript vagy a telepítés a frissítés után,
+és mi a teendő.
+
+### v1.45.0
+
+A v1.45.0 nyolc változása módosítja, mit csinál egy meglévő telepítés a
+frissítés után (bejelentve: #2299). Kettőt a kiadás után újra módosítottunk;
+ezeknél a tétel megmondja, mit csinál a v1.45.0, és mit a következő kiadás.
+
+1. **Ha egy ügynök `evidence` nélkül zár `done`-ra egy kártyát, az `testing`-ben marad.**
+   A `POST /api/kanban/:id/move` és a `PUT /api/kanban/:id` `status: done`-nal,
+   ügynöktől, `evidence` nélkül a kártyát `testing`-be teszi, és HTTP 200-zal
+   válaszol, benne `"status": "testing"` és `"evidence_required": true`. A
+   v1.45.0-ban a válaszban `"ok": true` is áll, ezért egy kliens, amely csak az
+   `ok`-ot nézi, lezártnak jelenti a kártyát. A következő kiadástól (#2296) ilyenkor
+   `ok` értéke `false`; a HTTP-kód és a többi mező nem változik. Teendő: küldj
+   `evidence`-t, és a `status`-t vagy az `evidence_required`-et olvasd, ne csak az `ok`-ot.
+
+2. **A vault-feloldó szkriptek először a dashboardot kérdezik.** A v1.45.0-ban a
+   feloldó kérésenként 10 mp-ig vár, ugyanannyit, mint az ütemezett feladat
+   `preCheck`-korlátja, ezért lassú dashboardnál a `preCheck`-et leállítják,
+   mielőtt a tartalék útig érne, és a feladat ettől függetlenül elindul. A
+   következő kiadástól (#2297) az alapértelmezett várakozás az egész hívásra 5 mp,
+   és a `VAULT_RESOLVE_TIMEOUT_MS` (egész ezredmásodperc, 0-nál nagyobb) felülírja.
+   Szintén a következő kiadástól (#2308): a `VAULT_RESOLVE_URL` csak erre a gépre
+   mutathat (`http` vagy `https`, hoszt `127.0.0.1`, `::1` vagy `localhost`,
+   felhasználó-adat nélkül). Minden más URL-t úgy utasít el, mint egy elérhetetlen
+   dashboardot (audit mód: helyi tartalék figyelmeztetéssel; enforce mód: exit 5),
+   mert a kérés a dashboard-tokent viszi.
+
+3. **Egy ütemezett feladat csak akkor fut, ha a fájljai egyeznek a nyilvántartással.**
+   A futtató csak akkor indít el egy feladatot, ha a `scheduled_task_registry`
+   bejegyzésében ugyanaz a `sha256` áll, mint a lemezen lévő feladaté. A hash a
+   `SKILL.md`-t, a `task-config.json`-t, a `preCheck` szkriptet és a feladat
+   mappájának minden más fájlját lefedi, rekurzívan. Egy naplófájl, mentés vagy
+   jegyzet a feladat mappájában megváltoztatja a hasht: a következő futás
+   `hash-mismatch`-csel kimarad, a mappa érintetlen marad, és a napló feladatonként
+   és hashenként egyszer figyelmeztet. Az 500-nál több bejegyzést vagy 16 MiB-nál
+   többet tartalmazó feladat-mappának nincs hashe, és soha nem fut. A kézzel (nem a
+   dashboard API-n át) létrehozott feladat-mappa `unregistered`, és nem fut.
+   A frissítés utáni első induláskor egy egyszeri visszamenőleges felvétel
+   nyilvántartásba veszi a lemezen már meglévő összes feladatot. Teendő: a naplót
+   és a kimenetet a feladat mappáján kívül tartsd; egy átnézett kézi szerkesztés
+   után nézd meg a `node dist/web/schedule-registry-cli.js status` kimenetét, és a
+   feladat mostani fájljait a `register <név>` paranccsal fogadd el. Lásd:
+   `docs/scheduled-tasks.md`.
+
+4. **A jóváhagyáshoz a gazda dashboard-belépése kell.** A `PATCH /api/approvals/:id`
+   `status: approved`-dal és a `POST /api/approvals` `owner_approved_message_id`-vel
+   403-at ad a közös dashboard-tokenre és az eszközkulcsra is, a hatókörétől
+   függetlenül. Az elutasítás és a lejárat tokennel továbbra is megy. A token
+   egymagában csak olyan telepítésen hagy jóvá, ahol még nincs dashboard-belépés.
+   Így megszakad minden integráció, amely a közös tokennel hagyott jóvá, és egy
+   jóváhagyást már nem zár le az ügynök által továbbított chat-válasz
+   (`IGEN <id>` / `YES <id>`): a gazda a dashboardon hagy jóvá. Lásd:
+   `docs/security-hardening.md`.
+
+5. **Emlék törléséhez jóváhagyás kell.** Ha a `data_delete` 3-as szint alatt van
+   (hiányzó konfig vagy kulcs 1-es szintnek számít), a `DELETE /api/memories/:id`
+   409 `approval_required`-et ad egy `approval_id`-vel, és a jóváhagyást a szerver
+   maga kéri. A törlés csak `?approval_id=<id>`-vel fut, egy jóváhagyott, fel nem
+   használt, ehhez az emlékhez és a mostani tartalmához kötött jóváhagyással; a
+   jóváhagyás utáni szerkesztés érvényteleníti. A frissítés előtt a törlés azonnal lefutott.
+
+6. **A generált és importált skillek a gazdára várnak.** A `POST /api/skills`, a
+   `POST /api/skills/import` és az ügynökönkénti párjaik a `store/skills-pending/<id>/`
+   alá írnak, és `{ ok: true, name, pending: true, id }`-vel válaszolnak (import:
+   `imported`, plusz `pending: true, ids`). Az `ok: true` már nem jelenti, hogy a
+   skill él. A `POST /api/skills/pending/:id/approve` és a `.../reject` a gazda
+   dashboard-belépését kéri; a közös token csak belépés létrehozása előtt működik,
+   az eszközkulcs nem.
+
+7. **A gyanús üzenetet a feladó-sor jelöli.** Ha egy nem megbízható vagy föderált
+   ügynökközi üzenet illeszkedik egy prompt-injekciós szabályra (`src/skill-scan.ts`),
+   a feladó-sorba a frissesség-címke után `[!INJEKCIO-GYANU: <szabályok> ...]` kerül.
+   A 262 144 karakternél (UTF-16 egység) hosszabb üzenet, ha az átnézett részben
+   nincs találat, ehelyett `[!INJEKCIO-VIZSGALAT: ...]`-t kap. A tartalom ettől
+   még kézbesül. A feladó-sort szigorúan olvasó feldolgozónak ezeket a címkéket
+   el kell fogadnia.
+
+8. **A Bash egress-elemző tiltja a `$változót` futtató `while IFS= read` ciklust.**
+   A minden sub-ügynökön futó elemző-hook tiltja azt a parancsszót, amely `$`-ral
+   kezdődik, ha a parancs bárhol `IFS=`-t állít, így a
+   `while IFS= read -r line; do $c "$line"; done < lista` hálózati hívásnak számít,
+   és tiltva van (`ifs-expanded-command` szabály). A javítás a #2298-ban van, még
+   nincs mergelve. Szintén új: a `BASH_EGRESS_HOST_ALLOW` (alapból kikapcsolva).
+   Kikapcsolva a `curl https://` és a `wget` minden ügynökön tiltva marad, mint
+   eddig; bekapcsolva az elemző hoszt szerint dönt (a localhost, a helyi hálózat és
+   a `store/egress-vendor-hosts.json` hosztjai átmennek). Lásd: `docs/bash-sandbox.md`.

@@ -189,3 +189,96 @@ the Docker volumes (3) are **separate** and must be moved on their own.
       matches the old machine; Grafana dashboards render.
 - [ ] All your launchd jobs are loaded: `launchctl list | grep com.<MAIN_AGENT_ID>`.
 - [ ] Old machine's pollers are fully stopped (no 409).
+
+---
+
+## 7. Upgrade notes (updating an existing install)
+
+This runbook is about moving to a new machine. The notes below are about the
+other kind of migration: updating an install in place. Each entry says what a
+client, script or install sees after the update, and the way forward.
+
+### v1.45.0
+
+Eight changes in v1.45.0 alter what an existing install does after the update
+(reported in #2299). Two of them were changed again after the release; their
+entries say what v1.45.0 does and what the next release does.
+
+1. **An agent closing a card to `done` without `evidence` is held in `testing`.**
+   `POST /api/kanban/:id/move` and `PUT /api/kanban/:id` with `status: done`
+   from an agent and no `evidence` move the card to `testing` and answer HTTP
+   200 with `"status": "testing"` and `"evidence_required": true`. In v1.45.0
+   the answer also says `"ok": true`, so a client that reads only `ok` reports
+   the card as closed. From the next release (#2296) `ok` is `false` in that
+   case; the HTTP status and the other fields are unchanged. Forward: send
+   `evidence`, and read `status` or `evidence_required`, not only `ok`.
+
+2. **The vault resolver scripts ask the dashboard first.** In v1.45.0 the
+   resolver waits up to 10 s per request, as long as the scheduled-task
+   `preCheck` limit, so on a slow dashboard the `preCheck` is killed before it
+   reaches its fallback, and the task starts anyway. From the next release
+   (#2297) the default wait is 5 s for the whole call, and
+   `VAULT_RESOLVE_TIMEOUT_MS` (whole milliseconds, greater than 0) overrides it.
+   Also from the next release (#2308): `VAULT_RESOLVE_URL` must point to this
+   machine (`http` or `https`, host `127.0.0.1`, `::1` or `localhost`, no user
+   info). Any other URL is refused like an unreachable dashboard (audit mode:
+   the local fallback with a warning; enforce mode: exit 5), because the request
+   carries the dashboard token.
+
+3. **A scheduled task runs only while its files match the registry.** The runner
+   starts a task only if its `scheduled_task_registry` entry has the same
+   `sha256` as the task on disk. The hash covers `SKILL.md`, `task-config.json`,
+   the `preCheck` script and every other file in the task folder, recursively.
+   A log, backup or note written into the task folder changes the hash: the
+   next run is skipped with `hash-mismatch`, the folder is left as it is, and
+   the log warns once per task and hash. A task folder with more than 500
+   entries or more than 16 MiB has no hash and never runs. A task folder created
+   by hand (not through the dashboard API) is `unregistered` and does not run.
+   On the first start after the update, a one-time backfill registers every
+   task already on disk. Forward: keep logs and outputs outside the task folder;
+   after a reviewed hand edit, check `node dist/web/schedule-registry-cli.js status`
+   and accept the task's current files with its `register <name>` command. See
+   `docs/scheduled-tasks.md`.
+
+4. **Approving takes the owner's dashboard login.** `PATCH /api/approvals/:id`
+   with `status: approved`, and `POST /api/approvals` with
+   `owner_approved_message_id`, answer 403 for the shared dashboard token and
+   for a device key, whatever its scope. Rejecting and timing out still work
+   with the token. The token alone approves only on an install where no
+   dashboard login exists yet. So an integration that approved with the shared
+   token breaks, and an approval can no longer be closed by a chat reply
+   (`YES <id>` / `IGEN <id>`) relayed by the agent: the owner approves in the
+   dashboard. See `docs/security-hardening.md`.
+
+5. **Deleting a memory needs an approval.** With `data_delete` below level 3
+   (a missing config or key reads as level 1), `DELETE /api/memories/:id`
+   answers 409 `approval_required` with an `approval_id`, and the server files
+   the approval itself. The delete runs only with `?approval_id=<id>` of an
+   approved, unused approval bound to that memory in its current content; an
+   edit after the approval voids it. Before the update the delete ran at once.
+
+6. **Generated and imported skills wait for the owner.** `POST /api/skills`,
+   `POST /api/skills/import` and the per-agent routes write to
+   `store/skills-pending/<id>/` and answer `{ ok: true, name, pending: true, id }`
+   (import: `imported` plus `pending: true, ids`). `ok: true` no longer means
+   the skill is live. `POST /api/skills/pending/:id/approve` and `.../reject`
+   take the owner's dashboard login; the shared token works only before a login
+   exists, and a device key does not.
+
+7. **A suspicious message is flagged in its sender line.** An untrusted or
+   federated inter-agent message that matches a prompt-injection rule
+   (`src/skill-scan.ts`) gets `[!INJEKCIO-GYANU: <rules> ...]` after the
+   freshness label. A message longer than 262,144 characters (UTF-16 units)
+   with no match in the scanned part gets `[!INJEKCIO-VIZSGALAT: ...]` instead.
+   The content is still delivered. A parser that reads the sender line strictly
+   must allow these labels.
+
+8. **The Bash egress parser denies a `while IFS= read` loop that runs `$var`.**
+   The parser hook that runs on every sub-agent denies a command word that
+   starts with `$` when the command sets `IFS=` anywhere, so
+   `while IFS= read -r line; do $c "$line"; done < list` is denied as a network
+   call (rule `ifs-expanded-command`). A fix is proposed in #2298 and not yet
+   merged. Also new: `BASH_EGRESS_HOST_ALLOW` (default off). Off, `curl https://`
+   and `wget` stay denied on every agent as before; on, the parser judges them
+   by host (localhost, the local network and `store/egress-vendor-hosts.json`
+   pass). See `docs/bash-sandbox.md`.
