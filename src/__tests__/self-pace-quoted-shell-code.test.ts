@@ -161,8 +161,62 @@ describe('self-pace-gate: shell grammar around the command word', () => {
       'systemctl --user status x.timer 2>/dev/null',
       "bash -c 'npm test' >/tmp/x 2>&1",
       'grep -rn eval src',
-      "echo eval 'crontab -r'",
       '(cd /w && npm test)',
+    ]) {
+      expect(deny(cmd), cmd).toBe(false)
+    }
+  })
+})
+
+describe('self-pace-gate: review round 1, second reviewer', () => {
+  it('DENIES eval at any word position, and the code of trap', () => {
+    for (const cmd of [
+      "f() { eval 'crontab -r'; }; f",
+      "case x in a) eval 'crontab -r';; esac",
+      "time -p eval 'crontab -r'",
+      "command -p eval 'crontab -r'",
+      "trap 'crontab -r' EXIT",
+    ]) {
+      expect(deny(cmd), cmd).toBe(true)
+    }
+  })
+
+  it('DENIES an ANSI-C quoted or brace-expanded word next to a shell, tmux or systemctl', () => {
+    for (const cmd of [
+      "$'tmux' send -t x hi",
+      "$'sh' -c 'crontab -r'",
+      "sh $'-c' 'crontab -r'",
+      "{sh,-c,'crontab -r'}",
+      '{tmux,send,-t,x,hi}',
+    ]) {
+      expect(deny(cmd), cmd).toBe(true)
+    }
+  })
+
+  it('DENIES code a shell or source reads from stdin, and the -c code of other shells', () => {
+    for (const cmd of [
+      'bash /dev/stdin <<EOF\ncrontab -r\nEOF',
+      'bash - <<EOF\ncrontab -r\nEOF',
+      '. /dev/stdin <<EOF\ncrontab -r\nEOF',
+      'source /dev/stdin <<EOF\ncrontab -r\nEOF',
+      "fish -c 'crontab -r'",
+      "csh -c 'crontab -r'",
+      "tcsh -c 'crontab -r'",
+      "mksh -c 'crontab -r'",
+      "rbash -c 'crontab -r'",
+      "yash -c 'crontab -r'",
+    ]) {
+      expect(deny(cmd), cmd).toBe(true)
+    }
+  })
+
+  it('ALLOWS the harmless forms of the same routes', () => {
+    for (const cmd of [
+      "trap 'rm -f /tmp/x' EXIT",
+      '. /dev/stdin <<EOF\nnpm test\nEOF',
+      "fish -c 'npm test'",
+      "cat <<< 'a'\nbash -c 'cd /w && npm test'",
+      "cp x.{js,map} /tmp/out",
     ]) {
       expect(deny(cmd), cmd).toBe(false)
     }
@@ -195,6 +249,8 @@ describe('self-pace-gate: systemctl arming a timer or path unit', () => {
       'systemctl --user start x.[t]imer',
       // an option value in front of the verb
       'systemctl --user -p Id start x.timer',
+      // starting a target pulls in the timers it wants
+      'systemctl --user start timers.target',
     ]) {
       expect(deny(cmd), cmd).toBe(true)
     }
