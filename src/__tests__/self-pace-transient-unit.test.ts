@@ -99,7 +99,7 @@ describe('self-pace-gate: immediate transient user unit', () => {
     for (const cmd of [
       'systemd-run --user --collect --unit=x claude -p hi',
       "systemd-run --user --collect sh -c 'cd /w && claude --continue'",
-      'systemd-run --user --collect /home/u/.local/bin/claude -p hi',
+      'systemd-run --user --collect /opt/u/bin/claude -p hi',
       'systemd-run --user --collect npx @anthropic-ai/claude-code -p hi',
       'systemd-run --user --collect node /opt/claude-code/cli.js -p hi',
       "systemd-run --user --collect sh -c 'crontab -l | crontab -'",
@@ -165,7 +165,7 @@ describe('self-pace-gate: immediate transient user unit', () => {
   it('keeps every other check on an otherwise allowed transient unit', () => {
     // the scheduled-tasks store and the egress allowlist stay write-protected
     expect(deny("systemd-run --user --collect sh -c 'echo x > ~/.claude/scheduled_tasks.json'")).toBe(true)
-    expect(deny("systemd-run --user --collect sh -c 'echo {} > store/egress-allowlist.json'")).toBe(true)
+    expect(deny("systemd-run --user --collect sh -c 'echo {} > data/egress-allowlist.json'")).toBe(true)
   })
 
   it('leaves the other scheduler denials unchanged', () => {
@@ -191,6 +191,10 @@ describe('self-pace-gate: immediate transient user unit', () => {
       'systemd-run --user --collect >/tmp/l --on-active=5m true',
       'systemd-run --user --collect > /tmp/l --on-calendar=daily npm test',
       'systemd-run --user --collect --unit=x >>/tmp/l --on-active=5m npm test',
+      'systemd-run --user --collect &>/tmp/l --on-active=5m true',
+      'systemd-run --user --collect >|/tmp/l --on-active=5m true',
+      'systemd-run --user --collect 3<>/tmp/l --on-active=5m true',
+      'systemd-run --user --collect {fd}>/tmp/l --on-active=5m true',
     ]) {
       expect(deny(cmd), cmd).toBe(true)
     }
@@ -199,6 +203,8 @@ describe('self-pace-gate: immediate transient user unit', () => {
       "systemd-run --user --collect --description='$x {a,b} *' npm test",
       "systemd-run --user --collect sh -c 'npm test > $TMPDIR/x.log 2>&1'",
       'systemd-run --user --collect npx vitest run src/*.test.ts',
+      "systemd-run --user --collect sh -c 'npm test' >/tmp/l 2>&1",
+      'systemd-run --user --collect --description=a\\>b npm test',
     ]) {
       expect(deny(cmd), cmd).toBe(false)
     }
