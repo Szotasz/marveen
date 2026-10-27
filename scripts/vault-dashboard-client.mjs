@@ -79,9 +79,22 @@ export function dashboardConfigured(root) {
   return existsSync(dashboardTokenFile(root))
 }
 
+// How long the resolver scripts wait for the dashboard. A scheduled task's preCheck runs under
+// PRECHECK_TIMEOUT_MS (10 s, src/web/schedule-runner.ts) and is killed at it, so a wait of the same length
+// never reaches the fallback after it (audit: resolve locally, enforce: exit 5) and the runner starts the model
+// anyway. Half the limit leaves the other half to the node start and the local fallback. An install whose
+// dashboard is slower raises it with VAULT_RESOLVE_TIMEOUT_MS (whole milliseconds, > 0; anything else is ignored).
+export const VAULT_RESOLVE_DEFAULT_TIMEOUT_MS = 5_000
+
+export function resolveTimeoutMs(env = process.env) {
+  const raw = (env.VAULT_RESOLVE_TIMEOUT_MS || '').trim()
+  const n = /^\d+$/.test(raw) ? Number(raw) : 0
+  return n > 0 && Number.isSafeInteger(n) ? n : VAULT_RESOLVE_DEFAULT_TIMEOUT_MS
+}
+
 // { ok: true, values, missing, refused } or { ok: false, configured, error }.
 // configured === false means there is no dashboard token at all (not an install).
-export async function resolveViaDashboard(root, ids, { timeoutMs = 10_000 } = {}) {
+export async function resolveViaDashboard(root, ids, { timeoutMs = resolveTimeoutMs() } = {}) {
   const tokenFile = dashboardTokenFile(root)
   if (!existsSync(tokenFile)) return { ok: false, configured: false, error: 'no dashboard token' }
   let token = ''
@@ -116,13 +129,15 @@ export async function resolveViaDashboard(root, ids, { timeoutMs = 10_000 } = {}
 }
 
 // The dashboard accepts at most 100 ids per request: send the ids in batches and merge the answers.
-// Any failed batch fails the whole call (the first failure is returned).
+// Any failed batch fails the whole call (the first failure is returned). The wait (timeoutMs) is one budget for
+// the whole call, not one per batch: three slow batches must not add up to three times the limit.
 export async function resolveInBatches(root, ids, opts, size = 100) {
   const values = Object.create(null)
   const missing = []
   const refused = []
+  const deadline = Date.now() + ((opts && opts.timeoutMs) || resolveTimeoutMs())
   for (let i = 0; i < ids.length; i += size) {
-    const r = await resolveViaDashboard(root, ids.slice(i, i + size), opts)
+    const r = await resolveViaDashboard(root, ids.slice(i, i + size), { ...opts, timeoutMs: deadline - Date.now() })
     if (!r.ok) return r
     for (const k of Object.keys(r.values)) values[k] = r.values[k]
     missing.push(...r.missing)
