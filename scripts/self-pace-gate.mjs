@@ -148,6 +148,9 @@ const SCHEDULER_READ_RX = new RegExp(String.raw`(^|${SCHED_BOUNDARY}\s*)${SCHED_
 // RuntimeMaxSec is mandatory and bounded (whole seconds, 1 to TRANSIENT_UNIT_RUNTIME_MAX_SEC):
 // without it, or with `infinity` or an empty value (which resets it to infinity),
 // the unit is a process with no end the gate can see.
+// TimeoutStopSec is left out for the same reason: when RuntimeMaxSec expires systemd sends
+// SIGTERM and waits TimeoutStopSec before SIGKILL, so `infinity` lets a payload that
+// ignores SIGTERM run on. Without it the user manager's default stop timeout applies.
 // Environment, --setenv and -E are left out on purpose: they pass any variable name,
 // and names such as BASH_ENV, ENV, NODE_OPTIONS, LD_PRELOAD, DYLD_*, PYTHONSTARTUP,
 // PYTHONPATH or PATH make the payload's interpreter load code the payload check never reads.
@@ -155,7 +158,7 @@ const SCHEDULER_READ_RX = new RegExp(String.raw`(^|${SCHED_BOUNDARY}\s*)${SCHED_
 // that runs a script file is not read either.
 const TRANSIENT_UNIT_PROPERTIES = new Set([
   'WorkingDirectory', 'Nice', 'IOSchedulingClass', 'IOSchedulingPriority', 'CPUWeight', 'IOWeight',
-  'CPUQuota', 'MemoryMax', 'MemoryHigh', 'TasksMax', 'RuntimeMaxSec', 'TimeoutStopSec',
+  'CPUQuota', 'MemoryMax', 'MemoryHigh', 'TasksMax', 'RuntimeMaxSec',
 ])
 const TRANSIENT_UNIT_RUNTIME_MAX_SEC = 7200
 // A word ends at any character that cannot be part of a command name, so `${X}claude`
