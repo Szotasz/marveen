@@ -28,6 +28,7 @@ import { parseQualifiedId, formatQualifiedId, isQualifiedId } from '../federatio
 import { getFederationConfig } from '../federation/config.js'
 import { decidePriority, parsePriorityField } from '../message-priority.js'
 import { rankedSenders } from '../../delivery-order.js'
+import { validateAffectsCurrentWork } from '../unblocks-interrupt.js'
 import type { RouteContext } from './types.js'
 
 // A VOICE_CHANNEL_ID that is not a usable agent id was replaced by the default in
@@ -175,8 +176,8 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
 
   if (path === '/api/messages' && method === 'POST') {
     const body = await readBody(req)
-    const { from, to, content, origin_note, priority, urgent } = JSON.parse(body.toString()) as
-      { from: string; to: string; content: string; origin_note?: string; priority?: unknown; urgent?: unknown }
+    const { from, to, content, origin_note, priority, urgent, affects_current_work } = JSON.parse(body.toString()) as
+      { from: string; to: string; content: string; origin_note?: string; priority?: unknown; urgent?: unknown; affects_current_work?: unknown }
     if (!from?.trim() || !to?.trim() || !content?.trim()) {
       json(res, { error: 'from, to, and content are required' }, 400)
       return true
@@ -194,6 +195,13 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     if (urgent === true && !mayMarkUrgent(ctx.auth, URGENT_DEVICE_KEY_IDS)) {
       logger.warn({ from: from.trim(), to: to.trim(), authKind: ctx.auth?.kind ?? 'none', deviceId: ctx.auth?.deviceId }, 'Rejected /api/messages POST: urgent without a listed device key')
       json(res, { error: 'urgent delivery requires a device key listed in MESSAGE_URGENT_DEVICE_IDS; the shared dashboard token (the agent API) cannot send an urgent row' }, 403)
+      return true
+    }
+    // UNBLOCKS925: the optional, named exception to "wait for an idle pane". One value, set by the main agent
+    // alone, never inferred from the text; anything else is a loud 400 so a typo does not send an ordinary row.
+    const affects = validateAffectsCurrentWork(affects_current_work, from.trim(), MAIN_AGENT_ID)
+    if (!affects.ok) {
+      json(res, { error: affects.error }, 400)
       return true
     }
     // HBTEMPLATELEAK1002: a heartbeat report that still carries its template's
@@ -451,7 +459,7 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
       : rankedSenders().includes(from.trim())
         ? { priority: parsedPriority.level === 'high' ? 1 as const : 0 as const, downgraded: false }
         : decidePriority(parsedPriority.level, from.trim(), storedTo, Math.floor(Date.now() / 1000))
-    const msg = createAgentMessage(from.trim(), storedTo, normalizedContent, trimmedOriginNote, null, { urgent: urgent === true, priority: decided.priority })
+    const msg = createAgentMessage(from.trim(), storedTo, normalizedContent, trimmedOriginNote, null, { urgent: urgent === true, priority: decided.priority, affectsCurrentWork: affects.value })
     if (isVoiceMailbox) {
       markMessageDone(msg.id, VOICE_MAILBOX_RESULT)
       logger.info({ id: msg.id, from: msg.from_agent, to: msg.to_agent }, 'Voice-channel answer stored in the mailbox (no session delivery)')

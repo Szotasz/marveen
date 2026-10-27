@@ -8,7 +8,7 @@
 # the HTTP status AND the returned message id, and RETRIES on failure. A message counts as sent only
 # when an id came back.
 #
-# Usage:  bash scripts/agent-msg.sh [--priority high|normal] <from> <to> "<content>"
+# Usage:  bash scripts/agent-msg.sh [--unblocks] [--priority high|normal] <from> <to> "<content>"
 #   content: plain text (quotes / newlines OK) -- the body is built with json.dumps (no quoting pitfalls).
 #   large / multi-line content may come from STDIN when the 3rd arg is "-":
 #     echo "<long text>" | bash scripts/agent-msg.sh <from> <to> -
@@ -31,6 +31,12 @@
 #     and a stderr NOTICE says DOWNGRADED. The switch goes BEFORE <from>; an empty value, or the switch
 #     anywhere else (after the sender, the recipient or the content), also fails here, before anything
 #     is sent.
+#   --unblocks (UNBLOCKS925): the MAIN agent's one named case for reaching a BUSY pane: the message
+#     releases a blocker of the recipient's current work (an approval, a credential, a decision it is
+#     waiting on). The server stores affects_current_work = 'unblocks'; the router then types a SHORT
+#     notice (not the full text) without waiting for an idle pane. Any sender other than the main agent
+#     gets a 400 from the server. It is never inferred from the text. The switch goes FIRST, before
+#     --priority and <from>; anywhere else it fails here, before anything is sent.
 #
 # LOG FORMAT, store/agent-msg-failures.log (tab-separated, one line per failure):
 #   <YYYY-MM-DD HH:MM:SS>  FAIL  from=<a>  to=<b>  url=<endpoint>  http=<code>  resp=<first 200 bytes>
@@ -65,6 +71,8 @@ TOKEN_FILE="${MARVEEN_TOKEN_FILE:-$BASE/store/.dashboard-token}"
 URL="${API_BASE}/api/messages"
 LOG="$BASE/store/agent-msg-failures.log"
 
+UNBLOCKS=0
+if [ "${1:-}" = "--unblocks" ]; then UNBLOCKS=1; shift; fi
 PRIORITY=""; PRIORITY_GIVEN=0
 case "${1:-}" in
   --priority) PRIORITY_GIVEN=1; PRIORITY="${2:-}"; if [ "$#" -ge 2 ]; then shift 2; else shift; fi ;;
@@ -79,6 +87,7 @@ fi
 for arg in "$@"; do
   case "$arg" in
     --priority|--priority=*) echo "FAIL: --priority goes before <from>: agent-msg.sh [--priority high|normal] <from> <to> <content>; nothing was sent"; exit 1 ;;
+    --unblocks) echo "FAIL: --unblocks goes first, before <from>: agent-msg.sh [--unblocks] [--priority high|normal] <from> <to> <content>; nothing was sent"; exit 1 ;;
   esac
 done
 FROM="${1:?from required}"; TO="${2:?to required}"; C="${3:?content required (or - for STDIN)}"
@@ -136,9 +145,10 @@ else
   echo "WARN: homoglyph checker not found at $HG -- sending UNCHECKED." >&2
 fi
 
-BODY="$(FROM="$FROM" TO="$TO" C="$C" P="$PRIORITY" python3 -c 'import json,os
+BODY="$(FROM="$FROM" TO="$TO" C="$C" P="$PRIORITY" U="$UNBLOCKS" python3 -c 'import json,os
 d={"from":os.environ["FROM"],"to":os.environ["TO"],"content":os.environ["C"]}
 if os.environ.get("P"): d["priority"]=os.environ["P"]
+if os.environ.get("U")=="1": d["affects_current_work"]="unblocks"
 print(json.dumps(d))')"
 
 attempt=0; max=3; CODE=""; ID=""
