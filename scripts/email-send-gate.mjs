@@ -918,9 +918,40 @@ function scriptFileSends(path, kind, readScript) {
     p = join(path, '__main__.py')
     text = readScript(p)
   }
+  // node runs DIR/package.json "main", else DIR/index.js; a main that cannot be read as named is a send
+  if (text === null && kind === 'node') {
+    const pkg = readScript(join(path, 'package.json'))
+    let main = null
+    if (pkg !== null) {
+      try { main = JSON.parse(pkg)?.main ?? null } catch { return true }
+    }
+    p = typeof main === 'string' && main ? resolve(path, main) : join(path, 'index.js')
+    text = readScript(p)
+    if (text === null && p !== join(path, 'index.js')) return true
+  }
   if (text === null) return false
   if (kind === 'py' && text.includes(ZIP_MAGIC)) return true
   return fileSends(p, text, kind, readScript)
+}
+
+// MAILGATEDIRZIP1027: MOD of `-m MOD` / `-mMOD` among the interpreter options, else null (the Python twin's
+// _python_module). `python -m MOD` runs MOD.py or MOD/__main__.py under cwd; an installed module cannot be
+// read here, so with no readable candidate it is not a send.
+function pythonModule(rest) {
+  for (let i = 0; i < rest.length; i++) {
+    const t = rest[i]
+    if (t === '-m') return rest[i + 1] ?? null
+    if (/^-m[^-]/.test(t)) return t.slice(2)
+    if (PY_OPT_WITH_ARG.has(t)) { i++; continue }
+    if (t.startsWith('-') && t !== '--' && !t.startsWith('-c')) continue
+    return null
+  }
+  return null
+}
+function pythonModuleSends(module, cwd, readScript) {
+  if (!/^[\w.]+$/.test(module) || !cwd) return false
+  const rel = module.split('.').join('/')
+  return [rel + '.py', join(rel, '__main__.py')].some((c) => scriptFileSends(resolve(cwd, c), 'py', readScript))
 }
 
 function headRunsSenderScript(toks, cwd, readScript, depth) {
@@ -938,6 +969,8 @@ function headRunsSenderScript(toks, cwd, readScript, depth) {
   let kind
   if (PYTHON.test(prog)) {
     if (addressFlagGiven(rest)) return true // also under -m / -c, where no file is named
+    const module = pythonModule(rest)
+    if (module) return pythonModuleSends(module, cwd, readScript)
     script = pythonScriptOperand(rest).script
     kind = 'py'
   } else if (NODEISH.test(prog)) {

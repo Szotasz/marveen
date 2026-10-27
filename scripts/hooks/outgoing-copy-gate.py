@@ -1128,6 +1128,21 @@ def _judge_candidates(paths, kind, read_script):
         if text is None and kind == "py":
             path = os.path.join(path, "__main__.py")
             text = read_script(path, _SCRIPT_READ_LIMIT + 1)
+        if text is None and kind == "node":
+            # node runs DIR/package.json "main", else DIR/index.js; a main that cannot be read as named is a send
+            pkg = read_script(os.path.join(path, "package.json"), _SCRIPT_READ_LIMIT + 1)
+            main = None
+            if pkg is not None:
+                try:
+                    data = json.loads(pkg)
+                except ValueError:
+                    return True, True
+                main = data.get("main") if isinstance(data, dict) else None
+            index = os.path.join(path, "index.js")
+            path = os.path.normpath(os.path.join(path, main)) if isinstance(main, str) and main else index
+            text = read_script(path, _SCRIPT_READ_LIMIT + 1)
+            if text is None and path != index:
+                return True, True
         if text is None:
             continue
         readable = True

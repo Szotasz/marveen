@@ -348,3 +348,42 @@ describe('python runs a directory or a zip app (MAILGATEDIRZIP1027)', () => {
     }
   })
 })
+
+describe('python -m a local module, and node DIR (MAILGATEDIRZIP1027)', () => {
+  it('reads MOD.py or MOD/__main__.py for python -m', () => {
+    const cwd = workdir({
+      'mpkg/__init__.py': '',
+      'mpkg/main.py': SMTP_SCRIPT,
+      'mrun/__main__.py': SMTP_SCRIPT,
+      'mclean/__main__.py': 'print(1)\n',
+    })
+    for (const cmd of ['python3 -m mpkg.main', 'python3 -m mrun', 'python3 -mmrun', 'python3 -u -m mrun']) {
+      expect(scriptRunSends(cmd, cwd), cmd).toBe(true)
+      expect(bash(cmd, cwd).deny, cmd).toBe(true)
+    }
+    for (const cmd of ['python3 -m mclean', 'python3 -m json.tool', 'python3 -m nosuchmodule']) {
+      expect(scriptRunSends(cmd, cwd), cmd).toBe(false)
+      expect(bash(cmd, cwd).deny, cmd).toBe(false)
+    }
+  })
+
+  it('reads package.json main, else index.js, for node DIR', () => {
+    const cwd = workdir({
+      'nmain/package.json': '{"main": "lib/start.js"}',
+      'nmain/lib/start.js': "const m = require('nodemailer')\n",
+      'nidx/index.js': "const m = require('nodemailer')\n",
+      'nclean/index.js': 'console.log(1)\n',
+      'nbadmain/package.json': '{"main": "lib/start"}',
+      'nbadjson/package.json': '{ not json',
+      'nempty/notes.txt': 'x\n',
+    })
+    for (const cmd of ['node nmain', 'node nidx', 'node nidx/', 'node nbadmain', 'node nbadjson']) {
+      expect(scriptRunSends(cmd, cwd), cmd).toBe(true)
+      expect(bash(cmd, cwd).deny, cmd).toBe(true)
+    }
+    for (const cmd of ['node nclean', 'node nempty', 'node nclean/index.js']) {
+      expect(scriptRunSends(cmd, cwd), cmd).toBe(false)
+      expect(bash(cmd, cwd).deny, cmd).toBe(false)
+    }
+  })
+})
