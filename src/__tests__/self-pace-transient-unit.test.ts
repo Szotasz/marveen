@@ -71,6 +71,9 @@ describe('self-pace-gate: immediate transient user unit', () => {
       "systemd-run --user --collect --socket-property=Nice=19 sh -c 'npm test'",
       'systemd-run --user --collect --nice=abc npm test',
       'systemd-run --user --collect --description= npm test',
+      // systemd itself would write the file, which the store-write checks do not see
+      'systemd-run --user --collect -p StandardOutput=file:~/.claude/scheduled_tasks.json echo hi',
+      'systemd-run --user --collect --property=StandardError=append:/tmp/x.log npm test',
     ]) {
       expect(deny(cmd), cmd).toBe(true)
     }

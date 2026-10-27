@@ -142,10 +142,13 @@ const SCHEDULER_READ_RX = new RegExp(String.raw`(^|${SCHED_BOUNDARY}\s*)${SCHED_
 // encoded command, a script file) is not seen; the same is true of the existing
 // setsid/nohup branch. The gate's threat model (see KNOWN LIMITATIONS near
 // splitSegments) is a sub-agent that must not casually self-pace.
+// StandardOutput/StandardError are left out on purpose: `file:PATH` makes systemd write
+// PATH, and the store-write checks above only recognise a shell redirect as a write.
+// A log goes through the payload instead: sh -c 'npm test > /tmp/x.log 2>&1'.
 const TRANSIENT_UNIT_PROPERTIES = new Set([
   'WorkingDirectory', 'Nice', 'IOSchedulingClass', 'IOSchedulingPriority', 'CPUWeight', 'IOWeight',
   'CPUQuota', 'MemoryMax', 'MemoryHigh', 'TasksMax', 'RuntimeMaxSec', 'TimeoutStopSec',
-  'StandardOutput', 'StandardError', 'Environment',
+  'Environment',
 ])
 // A word ends at any character that cannot be part of a command name, so `${X}claude`
 // is caught here as it is by the setsid/nohup branch's \bclaude\b.
