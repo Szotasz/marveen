@@ -1688,15 +1688,20 @@ export function gateDecision(toolName, toolInput, opts = {}) {
 // the word: they are tracked only so a space inside one does not split the word.
 // Unquoted ( and ) end a word and are dropped. Unquoted < and > end a word and
 // start a redirection operator, emitted as its own word with redirect: true; the
-// word after it is its target (target: true).
+// word after it is its target (target: true). A word with an unquoted bash brace
+// expansion (`{a,b}`, `{1..3}`) gets brace: true.
 function splitCodeWords(text) {
   const words = []
   let cur = null
   let i = 0
   let expectTarget = false
+  let braceOpen = false
+  let braceSep = false
   const add = (s, ansi) => {
     if (cur == null) {
       cur = { value: '', ansi: false }
+      braceOpen = false
+      braceSep = false
       if (expectTarget) {
         cur.target = true
         expectTarget = false
@@ -1775,6 +1780,13 @@ function splitCodeWords(text) {
         continue
       } else if (depth > 0 && (c === ')' || c === '}')) depth--
       add(c)
+      if (depth === 0 && !tick) {
+        if (c === '{') {
+          braceOpen = true
+          braceSep = false
+        } else if (braceOpen && (c === ',' || (c === '.' && text[i + 1] === '.'))) braceSep = true
+        else if (c === '}' && braceOpen && braceSep) cur.brace = true
+      }
       i++
     }
   }
@@ -1782,7 +1794,7 @@ function splitCodeWords(text) {
   return words
 }
 
-const SHELL_NAMES = new Set(['sh', 'bash', 'dash', 'zsh', 'ksh', 'ash'])
+const SHELL_NAMES = new Set(['sh', 'bash', 'dash', 'zsh', 'ksh', 'ash', 'fish', 'csh', 'tcsh', 'mksh', 'rbash', 'yash', 'posh'])
 const baseName = (v) => v.slice(v.lastIndexOf('/') + 1)
 
 // The words without redirection operators and their targets: the command's
@@ -1819,6 +1831,8 @@ function tmuxGlobalOptions(words, from) {
 
 // What one shell word in `words` (at index i) runs: { code } for -c, or
 // { stdin } when it reads its code from stdin.
+const STDIN_OPERANDS = new Set(['-', '/dev/stdin', '/dev/fd/0', '/proc/self/fd/0'])
+
 function shellWordRuns(words, i) {
   let j = i + 1
   let cGiven = false
@@ -1834,8 +1848,9 @@ function shellWordRuns(words, i) {
     }
   }
   if (cGiven) return { code: words[j] }
-  // a non-option word after the options is the operand (a script file)
-  return { stdin: sGiven || j >= words.length }
+  // a non-option word after the options is the operand (a script file), unless
+  // it names stdin
+  return { stdin: sGiven || j >= words.length || STDIN_OPERANDS.has(words[j].value) }
 }
 
 // shellSegments cuts at an escaped `\;` (tmux's own command separator); glue
@@ -1847,7 +1862,7 @@ function codeSegments(command) {
     const out = [{ own: whole, bodies: [] }]
     for (const piece of splitSegments(whole)) {
       const own = piece.trim()
-      if (own) out.push({ own, bodies: [] })
+      if (own) out.push({ own, bodies: [], naive: true })
     }
     return out
   }
@@ -1861,40 +1876,61 @@ function codeSegments(command) {
   return out
 }
 
-// Words that may precede `eval` at a command position.
-const EVAL_PREFIX_WORDS = new Set(['builtin', 'command', 'if', 'then', 'else', 'elif', 'do', 'while', 'until', '!', 'time', '{'])
-
 // Every piece of shell code the command hands to another shell as
 // { value, ansi }, plus `bad` when a segment holding a shell word, eval or tmux
-// could not be split (unterminated quote).
+// could not be split (unterminated quote) or hides such a word behind $'..' or a
+// brace expansion.
 function scanShellCode(command) {
   const segs = codeSegments(command)
   const codes = []
+  const seen = new Set()
+  const push = (c) => {
+    if (seen.has(c.value)) return
+    seen.add(c.value)
+    codes.push(c)
+  }
   let bad = false
   for (const seg of segs) {
     const words = splitCodeWords(seg.own)
+    const names = /\b(?:sh|bash|dash|zsh|ksh|ash|fish|csh|tcsh|mksh|rbash|yash|eval|trap|tmux|systemctl)\b/
     if (words == null) {
-      if (/\b(?:sh|bash|dash|zsh|ksh|ash|eval|tmux|systemctl)\b/.test(seg.own)) bad = true
+      // a naive piece can cut a quoted string in two; the whole command is scanned too
+      if (!seg.naive && names.test(seg.own)) bad = true
       continue
     }
+    if (names.test(seg.own) && words.some((w) => w.ansi || w.brace)) bad = true
     const args = argWords(words)
-    let k = 0
-    while (k < args.length && (/^[A-Za-z_][A-Za-z0-9_]*=/.test(args[k].value) || EVAL_PREFIX_WORDS.has(args[k].value))) k++
-    if (args[k]?.value === 'eval') {
-      const rest = args.slice(k + 1)
-      if (rest.length) codes.push({ value: rest.map((w) => w.value).join(' '), ansi: rest.some((w) => w.ansi) })
+    let stdinBodies = null
+    const stdinCodes = () => {
+      if (stdinBodies == null) {
+        stdinBodies = (seg.bodies ?? []).map((b) => ({ value: b, ansi: false }))
+        for (let j = 0; j < words.length; j++) {
+          if (words[j].redirect && /^\d*<<<$/.test(words[j].value) && words[j + 1]?.target) stdinBodies.push(words[j + 1])
+        }
+      }
+      return stdinBodies
     }
     for (let i = 0; i < args.length; i++) {
-      const base = baseName(args[i].value)
-      if (base === 'tmux') codes.push(...tmuxGlobalOptions(args, i + 1).codes)
+      const v = args[i].value
+      if (v === 'eval') {
+        const rest = args.slice(i + 1)
+        if (rest.length) push({ value: rest.map((w) => w.value).join(' '), ansi: rest.some((w) => w.ansi) })
+      }
+      if (v === 'trap') {
+        let t = i + 1
+        while (t < args.length && args[t].value.startsWith('-')) t++
+        if (args[t]) push(args[t])
+      }
+      if ((v === '.' || v === 'source') && args[i + 1] && STDIN_OPERANDS.has(args[i + 1].value)) {
+        for (const c of stdinCodes()) push(c)
+      }
+      const base = baseName(v)
+      if (base === 'tmux') for (const c of tmuxGlobalOptions(args, i + 1).codes) push(c)
       if (!SHELL_NAMES.has(base)) continue
       const runs = shellWordRuns(args, i)
-      if (runs.code) codes.push(runs.code)
+      if (runs.code) push(runs.code)
       if (!runs.stdin) continue
-      for (const b of seg.bodies ?? []) codes.push({ value: b, ansi: false })
-      for (let j = 0; j < words.length; j++) {
-        if (words[j].redirect && /^\d*<<<$/.test(words[j].value) && words[j + 1]?.target) codes.push(words[j + 1])
-      }
+      for (const c of stdinCodes()) push(c)
     }
   }
   return { codes, bad }
@@ -1954,7 +1990,7 @@ export function systemctlArmsTimer(words) {
     if (baseName(words[i].value) !== 'systemctl') continue
     const v = words.findIndex((w, k) => k > i && SYSTEMCTL_VERBS.has(w.value))
     if (v < 0 || !SYSTEMCTL_ARM_VERBS.has(words[v].value)) continue
-    if (words.slice(v + 1).some((w) => w.value.endsWith('.timer') || w.value.endsWith('.path') || /[*?[{]/.test(w.value))) return true
+    if (words.slice(v + 1).some((w) => w.value.endsWith('.timer') || w.value.endsWith('.path') || w.value.endsWith('.target') || /[*?[{]/.test(w.value))) return true
   }
   return false
 }
