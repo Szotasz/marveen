@@ -80,7 +80,7 @@ sender's verified role into the envelope (`sender_role="owner|colleague"`), so
 
 ```json
 "senderRoleGate": {
-  "allowTools": ["mcp__plugin_gromzo-channel_gromzo__reply", "mcp__plugin_gromzo-channel_gromzo__typing"],
+  "allowTools": ["mcp__plugin_gromzo-channel_gromzo__reply", "mcp__plugin_gromzo-channel_gromzo__typing", "ToolSearch"],
   "roles": [
     { "channel": "gromzo", "sender": "owner", "role": "owner" },
     { "channel": "slack", "sender": "<owner's Slack user id>", "role": "owner" }
@@ -100,6 +100,11 @@ main channel provider (`ChannelProviderType` has no gromzo), so it reaches the m
 `channel-monitor.ts`) are the ones that write and pass this `--settings` file. `scripts/stuck-modal-guard.sh`
 respawns with the main plugin only and no `--settings`: no gromzo inbound, no gate. Any new launch path that puts
 gromzo into `--channels` must pass the same file.
+
+`ToolSearch` belongs on the list: Claude Code defers MCP tools, so the agent must load the `reply` schema with
+`ToolSearch` before it can call it. Without it a colleague's turn can never be answered (measured 2026-10-27, CLI
+2.1.310, gromzo-channel 0.3.2: the gate denied `ToolSearch`, then the agent could not reply). It loads tool
+definitions only, no data, and every tool it loads is still checked against this list when called.
 
 Every chat the session listens on needs its owner row: with `allowTools` set, a turn from a channel whose
 owner is not listed is a member turn, and the owner there is held to the allow-list too. gromzo-channel must be
