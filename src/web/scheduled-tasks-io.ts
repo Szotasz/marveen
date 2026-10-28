@@ -9,6 +9,7 @@ import type { ChannelProviderType } from '../channel-provider.js'
 import { logger } from '../logger.js'
 import { atomicWriteFileSync } from './atomic-write.js'
 import { readJsonObjectForWrite } from './agent-config.js'
+import { parseHelperType, parseWatchSpec, type HelperTaskType, type WatchSpec } from './helper/types.js'
 
 export const SCHEDULED_TASKS_DIR = join(homedir(), '.claude', 'scheduled-tasks')
 
@@ -181,6 +182,13 @@ export interface ScheduledTask {
   // main agent's tasks delivered on Telegram; otherwise ignored (see
   // resolveTaskTopicThreadId in schedule-runner.ts).
   telegramTopic?: string
+  // Local helper routing (docs/superpowers/specs/2026-10-26-local-helper-task-routing-design.md 4.3): routes the
+  // task to the helper while HELPER_ENABLED=1 and the active helper provider
+  // ticks this type; otherwise the task runs exactly as it always did. Both
+  // keys are absent (not undefined-valued) on a task that does not set them.
+  helperType?: HelperTaskType
+  // helperType 'watch' / 'wake': the deterministic watch the helper evaluates.
+  watch?: WatchSpec
   // Scheduled-task registry: sha256 over the exact bytes this read
   // parsed (SKILL.md + task-config.json), the preCheck script (see
   // preCheckHashTarget) and every other file under the task dir
@@ -420,13 +428,15 @@ export function readScheduledTask(taskName: string): ScheduledTask | null {
   const skillContent = skillBuf != null ? skillBuf.toString('utf-8') : ''
   const { name, description, body } = parseSkillMdFrontmatter(skillContent)
 
-  let config: { schedule?: string; agent?: string; enabled?: boolean; createdAt?: number; type?: string; skipIfBusy?: boolean; requiresDesktop?: boolean; forceSend?: boolean; targetSession?: string; description?: string; command?: string; timeoutMs?: number; failThreshold?: number; preCheck?: string; catchUpMaxAgeMinutes?: unknown; stuckAfterMinutes?: unknown; requires?: { mcp_servers?: unknown }; injectMetrics?: unknown; sendDigestDirect?: unknown; telegramChatId?: string; channelProvider?: unknown; once?: unknown; onceDisabledAt?: unknown; telegramTopic?: unknown } = {}
+  let config: { schedule?: string; agent?: string; enabled?: boolean; createdAt?: number; type?: string; skipIfBusy?: boolean; requiresDesktop?: boolean; forceSend?: boolean; targetSession?: string; description?: string; command?: string; timeoutMs?: number; failThreshold?: number; preCheck?: string; catchUpMaxAgeMinutes?: unknown; stuckAfterMinutes?: unknown; requires?: { mcp_servers?: unknown }; injectMetrics?: unknown; sendDigestDirect?: unknown; telegramChatId?: string; channelProvider?: unknown; once?: unknown; onceDisabledAt?: unknown; telegramTopic?: unknown; helperType?: unknown; watch?: unknown } = {}
   try {
     config = JSON.parse(configBuf != null ? configBuf.toString('utf-8') : '{}')
   } catch { /* use defaults */ }
   if (config === null || typeof config !== 'object') config = {}
 
   const { contentHash, preCheckSha256, dirFiles } = scheduledTaskHashFromFiles(dir, skillBuf, configBuf)
+  const helperType = parseHelperType(config.helperType)
+  const watch = parseWatchSpec(config.watch)
 
   return {
     name: name || taskName,
@@ -455,6 +465,8 @@ export function readScheduledTask(taskName: string): ScheduledTask | null {
     once: readOnceFlag(taskName, config.once),
     onceDisabledAt: typeof config.onceDisabledAt === 'string' ? config.onceDisabledAt : undefined,
     telegramTopic: typeof config.telegramTopic === 'string' && config.telegramTopic.trim() ? config.telegramTopic.trim() : undefined,
+    ...(helperType ? { helperType } : {}),
+    ...(watch ? { watch } : {}),
     contentHash,
     preCheckSha256,
     dirFiles,
@@ -508,7 +520,7 @@ export interface ScheduledTaskWritten {
 
 export function writeScheduledTask(
   taskName: string,
-  data: { description?: string; prompt?: string; schedule?: string; agent?: string; enabled?: boolean; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; command?: string; timeoutMs?: number; failThreshold?: number; preCheck?: string; catchUpMaxAgeMinutes?: number; stuckAfterMinutes?: number; injectMetrics?: boolean; sendDigestDirect?: boolean; telegramChatId?: string; channelProvider?: ChannelProviderType | null; once?: boolean },
+  data: { description?: string; prompt?: string; schedule?: string; agent?: string; enabled?: boolean; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; command?: string; timeoutMs?: number; failThreshold?: number; preCheck?: string; catchUpMaxAgeMinutes?: number; stuckAfterMinutes?: number; injectMetrics?: boolean; sendDigestDirect?: boolean; telegramChatId?: string; channelProvider?: ChannelProviderType | null; once?: boolean; helperType?: HelperTaskType; watch?: WatchSpec },
 ): ScheduledTaskWritten {
   const dir = join(SCHEDULED_TASKS_DIR, taskName)
   mkdirSync(dir, { recursive: true })
@@ -555,6 +567,8 @@ export function writeScheduledTask(
     if (cp) config.channelProvider = cp
   }
   if (data.once !== undefined) config.once = data.once
+  if (data.helperType !== undefined) config.helperType = data.helperType
+  if (data.watch !== undefined) config.watch = data.watch
   if (data.description !== undefined) config.description = data.description
   if (!config.createdAt) config.createdAt = Math.floor(Date.now() / 1000)
   const configContent = JSON.stringify(config, null, 2)

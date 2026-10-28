@@ -23,6 +23,7 @@ import {
   registerScheduledTask, unregisterScheduledTask, verifyScheduledTask, describeVerdict,
 } from '../schedule-registry.js'
 import { runScheduledTaskNow } from '../schedule-runner.js'
+import { validateHelperTaskFields } from '../helper/dispatch.js'
 import type { RouteContext } from './types.js'
 
 // Resolve a URL-supplied schedule name to an on-disk dir, blocking path
@@ -210,7 +211,7 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
       throw err
     }
     const data = JSON.parse(body.toString()) as {
-      name: string; description: string; prompt: string; schedule: string; agent?: string; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; once?: boolean
+      name: string; description: string; prompt: string; schedule: string; agent?: string; type?: string; skipIfBusy?: boolean; forceSend?: boolean; targetSession?: string; once?: boolean; helperType?: unknown; watch?: unknown
     }
     const name = sanitizeScheduleName(data.name || '')
     if (!name) { json(res, { error: 'Name is required' }, 400); return true }
@@ -224,6 +225,14 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
     if (!data.schedule?.trim()) { json(res, { error: 'Schedule is required' }, 400); return true }
     if (!isValidCronShape(data.schedule)) { json(res, { error: 'Invalid cron expression' }, 400); return true }
     if (data.once !== undefined && typeof data.once !== 'boolean') { json(res, { error: 'once must be true or false' }, 400); return true }
+
+    // Local helper fields (docs/superpowers/specs/2026-10-26-local-helper-task-routing-design.md 4.3). Only checked
+    // when sent, so every existing caller is untouched. A watch is refused
+    // unless the helper would actually take it: written while the helper is
+    // off, the task would fire as an ordinary LLM turn on every tick of its
+    // (typically one-minute) schedule -- the exact burn the helper removes.
+    const helperFields = validateHelperTaskFields(data, (data.agent || MAIN_AGENT_ID))
+    if (helperFields.error) { json(res, { error: helperFields.error }, helperFields.status ?? 400); return true }
 
     const dir = join(SCHEDULED_TASKS_DIR, name)
     if (existsSync(dir)) { json(res, { error: 'Schedule already exists' }, 409); return true }
@@ -239,6 +248,8 @@ Az eredmeny CSAK a kibovitett prompt szovege legyen, semmi mas. Ne hasznalj code
       forceSend: data.forceSend === true,
       targetSession: data.targetSession || undefined,
       once: data.once,
+      ...(helperFields.helperType ? { helperType: helperFields.helperType } : {}),
+      ...(helperFields.watch ? { watch: helperFields.watch } : {}),
     })
     if (!registerAfterWrite(res, name, 'api:create', written, { noUnwrittenDirFiles: true })) return true
     logger.info({ name, schedule: data.schedule, once: data.once === true }, 'Scheduled task created')

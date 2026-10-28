@@ -5,6 +5,7 @@ import {
   saveCustomProvider,
   deleteCustomProvider,
   validateCustomProvider,
+  copyHelperFields,
   type CustomProviderDef,
   type AuthHeaderType,
 } from '../custom-providers.js'
@@ -41,13 +42,16 @@ export async function tryHandleCustomProviders(ctx: RouteContext): Promise<boole
     if (err) { json(res, { error: err }, 400); return true }
 
     const d = data as Record<string, unknown>
-    const def: CustomProviderDef = {
+    // Built field by field on purpose (unknown keys never reach the store);
+    // the optional helper fields are copied by copyHelperFields, and only
+    // when the body carries them.
+    const def: CustomProviderDef = copyHelperFields({
       id: (d.id as string).trim(),
       label: (d.label as string).trim(),
       baseUrl: (d.baseUrl as string).trim(),
       authHeader: d.authHeader as AuthHeaderType,
       vaultKey: d.vaultKey === null || d.vaultKey === undefined ? null : String(d.vaultKey).trim() || null,
-    }
+    }, d)
 
     saveCustomProvider(def)
     json(res, { ok: true, provider: def })

@@ -16988,12 +16988,13 @@ function buildProvidersUI(container, providers) {
     const tableWrap = document.createElement('div')
     tableWrap.style.cssText = 'overflow-x:auto;margin-bottom:16px'
     const table = document.createElement('table')
-    table.style.cssText = 'width:100%;min-width:520px;border-collapse:collapse;font-size:13px'
+    table.style.cssText = 'width:100%;min-width:600px;border-collapse:collapse;font-size:13px'
     table.innerHTML = `<thead><tr style="border-bottom:1px solid var(--border)">
       <th style="text-align:left;padding:6px 8px">Név</th>
       <th style="text-align:left;padding:6px 8px">Base URL</th>
       <th style="text-align:left;padding:6px 8px">Auth</th>
       <th style="text-align:left;padding:6px 8px">Vault kulcs</th>
+      <th style="text-align:left;padding:6px 8px">Helper</th>
       <th style="padding:6px 8px"></th>
     </tr></thead><tbody id="customProvidersTableBody"></tbody>`
     tableWrap.appendChild(table)
@@ -17007,6 +17008,7 @@ function buildProvidersUI(container, providers) {
         <td style="padding:6px 8px;font-family:monospace;font-size:12px;word-break:break-all">${escapeHtml(p.baseUrl)}</td>
         <td style="padding:6px 8px">${escapeHtml(p.authHeader)}</td>
         <td style="padding:6px 8px;font-family:monospace;font-size:12px">${p.vaultKey ? escapeHtml(p.vaultKey) : '<em style="color:var(--text-muted)">nincs</em>'}</td>
+        <td style="padding:6px 8px;font-size:12px">${(() => { const tk = effectiveHelperTicks(p); const n = Object.values(tk).filter(Boolean).length; return p.helperModel ? `${escapeHtml(p.helperModel)} (${n}/6)` : `<em style="color:var(--text-muted)">${n}/6, modell nélkül</em>` })()}</td>
         <td style="padding:6px 8px;text-align:right;white-space:nowrap">
           <button class="btn-secondary btn-compact" data-provider-edit="${escapeHtml(p.id)}" style="margin-right:4px">Szerkesztés</button>
           <button class="btn-secondary btn-compact" style="color:var(--danger)" data-provider-delete="${escapeHtml(p.id)}">Törlés</button>
@@ -17044,6 +17046,61 @@ function buildProvidersUI(container, providers) {
   addBtn.textContent = '+ Új provider'
   addBtn.addEventListener('click', () => openAddProviderModal(container))
   container.appendChild(addBtn)
+}
+
+// Local helper task types (docs/superpowers/specs/2026-10-26-local-helper-task-routing-design.md section 2), the
+// same keys and defaults as src/web/custom-providers.ts: on a provider at
+// localhost/127.x the first four are ticked, a remote one starts all-off;
+// only the rotation decision falls back to an Opus agent by default.
+const HELPER_TASK_TYPE_LABELS = [
+  ['watch', 'Figyelés / várakozás (kártya-komment, üzenet)'],
+  ['wake', 'Egyszeri ébresztés'],
+  ['quietHeartbeat', 'Csendes heartbeat'],
+  ['rotationDecision', 'Kulcs-/keretrotáció döntés'],
+  ['triage', 'Bejövő üzenet előszűrése'],
+  ['summary', 'Napi napló / összefoglalók'],
+]
+const HELPER_LOCAL_DEFAULT_ON = new Set(['watch', 'wake', 'quietHeartbeat', 'rotationDecision'])
+
+function isLocalProviderUrl(baseUrl) {
+  try {
+    const h = new URL(baseUrl).hostname
+    return h === 'localhost' || h.startsWith('127.')
+  } catch { return false }
+}
+
+function effectiveHelperTicks(p) {
+  const local = isLocalProviderUrl(p?.baseUrl || '')
+  const out = {}
+  for (const [k] of HELPER_TASK_TYPE_LABELS) {
+    const stored = p?.taskTypes?.[k]
+    out[k] = typeof stored === 'boolean' ? stored : (local && HELPER_LOCAL_DEFAULT_ON.has(k))
+  }
+  return out
+}
+
+function effectiveHelperFallback(p) {
+  const out = {}
+  for (const [k] of HELPER_TASK_TYPE_LABELS) {
+    const stored = p?.fallback?.[k]
+    out[k] = stored === 'skip' || stored === 'opus' ? stored : (k === 'rotationDecision' ? 'opus' : 'skip')
+  }
+  return out
+}
+
+function helperTaskRowsHtml(p) {
+  const ticks = effectiveHelperTicks(p)
+  const fb = effectiveHelperFallback(p)
+  return HELPER_TASK_TYPE_LABELS.map(([k, label]) => `
+          <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+            <label style="display:flex;align-items:center;gap:6px;flex:1;min-width:200px;font-size:13px">
+              <input type="checkbox" data-helper-type="${escapeHtml(k)}"${ticks[k] ? ' checked' : ''}> ${escapeHtml(label)}
+            </label>
+            <select class="input" data-helper-fallback="${escapeHtml(k)}" style="width:auto;font-size:12px;padding:2px 6px" title="Ha a végpont nem elérhető">
+              <option value="skip"${fb[k] === 'skip' ? ' selected' : ''}>kiesésnél: kihagyás</option>
+              <option value="opus"${fb[k] === 'opus' ? ' selected' : ''}>kiesésnél: Opus ágens</option>
+            </select>
+          </div>`).join('')
 }
 
 function openAddProviderModal(container, editProvider = null) {
@@ -17089,6 +17146,19 @@ function openAddProviderModal(container, editProvider = null) {
           <input type="text" id="cpVaultKey" class="input" placeholder="pl. my-deepseek-api-key" value="${v('vaultKey')}">
           <small style="display:block;margin-top:4px;color:var(--text-muted);font-size:12px">A kulcs értékét a Vault tabon veheted fel.</small>
         </div>
+        <fieldset class="form-group" style="border:1px solid var(--border);border-radius:6px;padding:10px;display:flex;flex-direction:column;gap:8px">
+          <legend class="form-label" style="padding:0 4px">Helyi helper (háttérmunka)</legend>
+          <small style="color:var(--text-muted);font-size:12px;line-height:1.5">Mely háttérfeladatokat veheti át ez a végpont. A helper csak dönt és értesít (egy ágens-üzenet), kódot nem ír, külső üzenetet nem küld. Csak akkor él, ha a Beállításokban HELPER_ENABLED=1 és HELPER_PROVIDER_ID erre a providerre mutat.</small>
+          <div>
+            <label class="form-label">Helper modell</label>
+            <input type="text" id="cpHelperModel" class="input" placeholder="pl. qwen3:14b" value="${v('helperModel')}">
+          </div>
+          <div id="cpHelperTypes" style="display:flex;flex-direction:column;gap:6px">${helperTaskRowsHtml(editProvider)}</div>
+          <div>
+            <label class="form-label">Tartalék Opus ágens <small style="color:var(--text-muted)">(üresen: a feladat saját ágense)</small></label>
+            <input type="text" id="cpFallbackAgent" class="input" placeholder="pl. marveen" value="${v('fallbackAgent')}">
+          </div>
+        </fieldset>
         <p style="font-size:12px;color:var(--text-muted);background:var(--surface-hover);padding:10px;border-radius:6px;line-height:1.5">
           Csak Anthropic Messages API (/v1/messages) kompatibilis végpont működik. Tiszta OpenAI végponthoz (pl. /v1/chat/completions) fordítóproxy szükséges, az most nem támogatott.
         </p>
@@ -17103,6 +17173,14 @@ function openAddProviderModal(container, editProvider = null) {
   const closeModal = () => overlay.remove()
   overlay.querySelector('#addProviderModalClose').addEventListener('click', closeModal)
   overlay.querySelector('#addProviderCancelBtn').addEventListener('click', closeModal)
+
+  // A new provider's default ticks follow its host (local = first four on);
+  // an existing provider keeps what the owner saved.
+  if (!isEdit) {
+    overlay.querySelector('#cpBaseUrl').addEventListener('change', (e) => {
+      overlay.querySelector('#cpHelperTypes').innerHTML = helperTaskRowsHtml({ baseUrl: e.target.value.trim() })
+    })
+  }
 
   overlay.querySelector('#cpAuthHeader').addEventListener('change', (e) => {
     const vkGroup = overlay.querySelector('#cpVaultKeyGroup')
@@ -17119,11 +17197,18 @@ function openAddProviderModal(container, editProvider = null) {
       alert('Töltsd ki az összes kötelező mezőt.')
       return
     }
+    const taskTypes = {}
+    const fallback = {}
+    overlay.querySelectorAll('[data-helper-type]').forEach(cb => { taskTypes[cb.dataset.helperType] = cb.checked })
+    overlay.querySelectorAll('[data-helper-fallback]').forEach(sel => { fallback[sel.dataset.helperFallback] = sel.value })
+    const helperModel = overlay.querySelector('#cpHelperModel').value.trim()
+    const fallbackAgent = overlay.querySelector('#cpFallbackAgent').value.trim()
+    const helperFields = { taskTypes, fallback, ...(helperModel ? { helperModel } : {}), ...(fallbackAgent ? { fallbackAgent } : {}) }
     try {
       const r = await fetch('/api/custom-providers', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id, label, baseUrl, authHeader, vaultKey }),
+        body: JSON.stringify({ id, label, baseUrl, authHeader, vaultKey, ...helperFields }),
       })
       if (!r.ok) {
         const err = await r.json().catch(() => ({}))
