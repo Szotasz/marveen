@@ -1,17 +1,17 @@
 # Ütemezett feladatok (scheduled tasks)
 
-> Cron-alapú, fájlrendszer-vezérelt automatizációk -- minden feladat egy mappa, a runner 60 másodpercenként nézi és kézbesíti az ágens tmux session-jébe.
+> Cron-alapú, fájlrendszer-vezérelt automatizációk -- minden feladat egy mappa, a runner 15 másodpercenként nézi és kézbesíti az ágens tmux session-jébe.
 
 ---
 
 ## Hogyan működik
 
-A schedule runner a dashboard folyamatának részeként fut. 60 másodpercenként végignézi a `~/.claude/scheduled-tasks/` mappában lévő összes feladatot, és amelyiknek a cron kifejezése illeszkedik az aktuális percre, azt kézbesíti a megadott ágens tmux session-jébe mint szöveges promptot.
+A schedule runner a dashboard folyamatának részeként fut. 15 másodpercenként végignézi a `~/.claude/scheduled-tasks/` mappában lévő összes feladatot, és amelyiknek a cron kifejezése illeszkedik az aktuális percre, azt kézbesíti a megadott ágens tmux session-jébe mint szöveges promptot.
 
 Kézbesítés után az ágens normál Claude Code session-ként dolgozza fel -- ugyanúgy, mintha te gépelted volna be a promptot.
 
 ```
-60s tick → cron illeszkedés? → session él? → prompt kézbesítés
+15s tick → cron illeszkedés? → session él? → prompt kézbesítés
                                     ↓ nem
                               auto-start + retry queue
 ```
@@ -226,7 +226,7 @@ Ez a két flag a foglalt session kezelését szabályozza:
 
 ## Busy-session kezelés és retry queue
 
-Ha a célpont session elfoglalt és `skipIfBusy` nincs beállítva, a feladat bekerül a `pending_task_retries` táblába (SQLite, a dashboardon is látható). A runner minden 60s ticken újrapróbálja. Ha 1 órán túl is pending marad, Telegram alertet küld.
+Ha a célpont session elfoglalt és `skipIfBusy` nincs beállítva, a feladat bekerül a `pending_task_retries` táblába (SQLite, a dashboardon is látható). A runner minden 15s ticken újrapróbálja. Ha 1 órán túl is pending marad, Telegram alertet küld.
 
 Ha a session egyáltalán nem fut:
 1. A runner megpróbálja auto-startolni az ágenst

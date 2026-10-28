@@ -367,6 +367,9 @@ describe('scheduled-task source guard (registry)', () => {
     const cfg = JSON.parse(readFileSync(cfgPath, 'utf-8'))
     cfg.enabled = false
     writeFileSync(cfgPath, JSON.stringify(cfg, null, 2))
+    // Two calls: a single call never warns under the two-tick debounce, so
+    // one call would not prove the disabled branch stays silent.
+    expect(cronGatePasses('planted-disabled')).toBe(false)
     expect(cronGatePasses('planted-disabled')).toBe(false)
     expect(skipWarned('planted-disabled')).toBe(false)
   })

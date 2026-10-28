@@ -147,8 +147,9 @@ async function loadRunner() {
 async function runOneTick() {
   const { startScheduleRunner } = await loadRunner()
   const stop = startScheduleRunner()
-  // First tick is scheduled, not immediate: advance past the 60s interval and
-  // let the async tick body drain.
+  // The first tick is scheduled (startup tick at +5 s, then every
+  // SCHEDULE_TICK_MS = 15 s): advancing 61 s runs several ticks and lets the
+  // async tick bodies drain. The assertions hold for any number of ticks.
   await vi.advanceTimersByTimeAsync(61_000)
   clearInterval(stop)
 }
