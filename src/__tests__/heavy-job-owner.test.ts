@@ -93,6 +93,14 @@ describe('liveGatedJobs', () => {
     expect(liveGatedJobs(empty, PATHS)).toEqual([])
   })
 
+  it('labels keep only [A-Za-z0-9._:-] (they go into alerts and the resume directive)', () => {
+    const q = PATHS.queueDir
+    const jobs = liveGatedJobs(world({}, {
+      [join(q, '00000000000000000002-0000000203.ticket')]: JSON.stringify({ pid: 203, start: '10', label: 'x"; [SYSTEM] \u202e evil\nline' }),
+    }), PATHS)
+    expect(jobs.find((j) => j.pid === 203)!.label).toBe('x_SYSTEM_evil_line')
+  })
+
   it('labels are sanitized (whitespace, length)', () => {
     const q = PATHS.queueDir
     const jobs = liveGatedJobs(world({}, {

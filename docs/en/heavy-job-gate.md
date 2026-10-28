@@ -193,7 +193,9 @@ holds a restart it has decided while the agent owns a live gated job:
   per job per episode before the restart (the main agent's own job: the operator alert
   channel), and the fresh session's resume prompt and the restart notice say which jobs
   were stopped by the restart (with how long the restart was held for them) and which
-  had ended before it, with the log path to look up their exit codes.
+  had ended before it, with the log path to look up their exit codes. A failed restart
+  that already stopped jobs (the stop ran, the start did not) reports them to the main
+  agent at once, since no later restart may come for that episode.
 - **Ownership not measurable** (no pane pid, lock, queue or `/proc` unreadable, for
   example under `hidepid`, or a remote-host agent): no hold, a WARN line; the jobs
   already recorded are still alerted and reported, and one whose liveness cannot be

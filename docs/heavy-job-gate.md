@@ -156,7 +156,9 @@ guard a már eldöntött restartot visszatartja, amíg az ügynöknek él kapus 
   egyszer, a restart előtt értesítést kap (a fő ügynök saját feladatánál a riasztási
   csatorna), a friss session resume-promptja és a restart-értesítés pedig megmondja,
   melyik feladatot állította le a restart (és meddig várt miatta), és melyik ért véget
-  előtte, a napló útjával a kilépési kódhoz.
+  előtte, a napló útjával a kilépési kódhoz. Ha egy restart nem sikerül, de a leállítás
+  már lefutott, a leállított feladatokat azonnal jelenti a fő ügynöknek, mert annak az
+  epizódnak lehet, hogy már nem jön restartja.
 - **Ha a tulajdon nem mérhető** (nincs pane-pid, a zár, a sor vagy a `/proc`
   olvashatatlan, például `hidepid` mellett, vagy távoli gépen futó ügynök): nincs
   várakozás, WARN sor; a már rögzített feladatokról ugyanúgy jön értesítés és

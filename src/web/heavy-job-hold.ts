@@ -42,6 +42,9 @@ export interface HoldEntry {
   /** What happened to it inside this episode, once known. */
   outcome?: 'ended' | 'killed'
   outcomeAtMs?: number
+  /** A 'killed' fact was already reported to the main agent (a failed
+   *  restart reports it at once, see unreportedKilled). */
+  reported?: boolean
 }
 export type AgentHolds = Record<string, HoldEntry>
 
@@ -93,7 +96,8 @@ function isEntry(v: unknown): v is HoldEntry {
   return Number.isInteger(e.pid) && typeof e.start === 'string' && typeof e.label === 'string' &&
     (e.state === 'running' || e.state === 'queued') && typeof e.firstSeenMs === 'number' &&
     Number.isFinite(e.firstSeenMs) && typeof e.alerted === 'boolean' &&
-    (e.outcome === undefined || e.outcome === 'ended' || e.outcome === 'killed')
+    (e.outcome === undefined || e.outcome === 'ended' || e.outcome === 'killed') &&
+    (e.reported === undefined || typeof e.reported === 'boolean')
 }
 
 /** Malformed episodes/entries are dropped, never thrown. Anything that is not
@@ -210,6 +214,27 @@ export function planRestart(
     firstSeen,
     capReached: capMinutes > 0 && liveOwned.length > 0 && !withinCap,
   }
+}
+
+/**
+ * The 'killed' facts nobody was told about yet. A fact is reported where it
+ * becomes known (a failed restart that already stopped jobs), never deferred
+ * to a decision that may not come; an episode that closes or is replaced with
+ * one still unreported (its first report failed) reports it before it goes.
+ */
+export function unreportedKilled(episode: Episode | null): HoldEntry[] {
+  return Object.values(episode?.jobs ?? {}).filter((e) => e.outcome === 'killed' && !e.reported)
+}
+
+export function markReported(episode: Episode, entries: HoldEntry[]): Episode {
+  const keys = new Set(entries.map((e) => jobKey(e)))
+  return { ...episode, jobs: Object.fromEntries(Object.entries(episode.jobs).map(([k, e]) => [k, keys.has(k) ? { ...e, reported: true } : e])) }
+}
+
+/** A label as it goes into an alert or the resume directive: quoted, and only
+ *  [A-Za-z0-9._:-] (heavy-job-owner's cleanLabel already restricts it). */
+export function quoteLabel(label: string): string {
+  return `"${label.replace(/[^A-Za-z0-9._:-]/g, '_')}"`
 }
 
 /** Keys of the recorded jobs alive right before the restart call. */

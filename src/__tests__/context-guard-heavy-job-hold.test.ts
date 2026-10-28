@@ -7,11 +7,13 @@
 // per sweep), the job probe and process liveness. "Killing" is simulated by
 // the restart mock removing pids from the live set.
 //
-// The invariant under test (heavy-job-hold.ts):
-//   (a) the hold is per (agent, job), counted from the FIRST sighting, never
-//       reset by busy/idle sweeps, the threshold path, a failed restart or a
-//       dashboard restart; one alert per job;
-//   (b) the report comes from liveness before/after the restart call.
+// The invariant under test (heavy-job-hold.ts): a hold EPISODE is one
+// unbroken run of restarting sweeps for one agent (busy turns inside the same
+// restart sequence included); within it the total hold is at most the cap,
+// whatever jobs come and go; anything else closes it, and a new episode
+// starts fresh. What the restart did to each job comes from liveness before
+// and after the restart call, and a stopped job is reported where that
+// becomes known (a failed restart reports it at once).
 
 import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from 'vitest'
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs'
@@ -43,6 +45,7 @@ const h = vi.hoisted(() => ({
   exitDelayMs: 0,
   notifyOk: true as boolean | undefined,
   mainRunning: false,
+  runState: 'running' as 'running' | 'stopped',
   notifyChannel: null as unknown as import('vitest').Mock<(...a: unknown[]) => Promise<boolean | undefined>>,
   startOk: true,
   sendSystemDirective: null as unknown as import('vitest').Mock<(...a: unknown[]) => Promise<string>>,
@@ -81,7 +84,7 @@ vi.mock('../web/agent-process.js', async () => {
     return h.startOk ? { ok: true } : { ok: false, error: 'lost the start race' }
   })
   return {
-    agentRunState: () => 'running',
+    agentRunState: () => h.runState,
     agentSessionName: (n: string) => `agent-${n}`,
     restartAgentProcess: (...a: unknown[]) => h.restartAgentProcess(...a),
     capturePane: (session: string) => (session.startsWith('agent-') || h.mainRunning ? 'pane' : null),
@@ -170,6 +173,8 @@ function pending(): Record<string, { heavyJobs?: unknown }> {
 }
 const restarts = () => h.restartAgentProcess.mock.calls.length
 const alerts = () => h.createAgentMessage.mock.calls.filter((c) => String(c[2]).includes('LEALLITJA'))
+/** The "a restart STOPPED these jobs" reports to the main agent. */
+const stopReports = () => h.createAgentMessage.mock.calls.filter((c) => String(c[3]) === 'context-guard heavy-job stopped report')
 const resumeTexts = () => h.sendSystemDirective.mock.calls.map((c) => String(c[2])).filter((t) => t.includes('Friss kontextussal indultál'))
 
 beforeEach(() => {
@@ -187,6 +192,7 @@ beforeEach(() => {
   h.exitDelayMs = 0
   h.notifyOk = true
   h.startOk = true
+  h.runState = 'running'
   h.log = { info: [], warn: [], error: [] }
 })
 
@@ -296,8 +302,70 @@ describe('heavy-job gate restart hold', () => {
     expect(alerts()).toHaveLength(1)
     expect(pending().boni.heavyJobs).toEqual({ heldMinutes: 10, ended: [], killed: [{ label: 'video-render', state: 'running' }] })
     const notice = h.createAgentMessage.mock.calls.filter((c) => String(c[2]).includes('Ujrainditottam')).pop()
-    expect(String(notice?.[2])).toContain('LEALLITOTTA: video-render')
+    expect(String(notice?.[2])).toContain('LEALLITOTTA: "video-render"')
     expect(String(notice?.[2])).not.toContain('veget ert')
+    expect(stopReports()).toHaveLength(1)           // and the main agent was told at the failure itself
+  })
+
+  it('failed restart, then the agent is NOT RUNNING: the stopped job is reported at the failure, before the episode closes', async () => {
+    hardTier(10)
+    job(5001, 'video-render')
+    await boot()
+    await at(600)                                   // held
+    h.startOk = false
+    h.restartAgentProcess.mockImplementationOnce(async () => {
+      h.alive.clear(); h.jobs = []; h.runState = 'stopped'   // the stop ran, the start did not
+      return { ok: false, error: 'start failed' }
+    })
+    await at(900)
+    expect(restarts()).toBe(1)
+    expect(stopReports()).toHaveLength(1)
+    expect(String(stopReports()[0]![2])).toContain('"video-render"')
+    expect(h.log.error.some((a) => a.includes('context-guard: a restart of this agent STOPPED its heavy-job gate job(s)'))).toBe(true)
+    await at(1200)                                  // "not running": the sweep closes the episode
+    expect(JSON.parse(readFileSync(HOLDS, 'utf-8'))).toEqual({})
+    expect(stopReports()).toHaveLength(1)           // reported once, not again on close
+  })
+
+  it('failed restart (lost the start race), then a NEW session: the stopped job was reported, the new episode starts clean', async () => {
+    hardTier(10)
+    job(5001, 'video-render')
+    await boot()
+    await at(600)
+    h.restartAgentProcess.mockImplementationOnce(async () => {
+      h.alive.clear(); h.jobs = []; h.panes = [7777]          // another supervisor started a new session
+      return { ok: false, error: 'lost the start race' }
+    })
+    await at(900)
+    expect(stopReports()).toHaveLength(1)
+    expect(String(stopReports()[0]![2])).toContain('"video-render"')
+    await at(1200)                                  // restart decision on the new panes: replaced, fresh episode
+    expect(stopReports()).toHaveLength(1)
+  })
+
+  it('the first report fails: the episode reports the stopped job when it is closed', async () => {
+    hardTier(10)
+    job(5001, 'video-render')
+    await boot()
+    await at(600)
+    h.restartAgentProcess.mockImplementationOnce(async () => {
+      h.alive.clear(); h.jobs = []; h.runState = 'stopped'
+      return { ok: false, error: 'start failed' }
+    })
+    let failOnce = true
+    h.createAgentMessage.mockImplementation((...a: unknown[]) => {
+      if (failOnce && String(a[3]) === 'context-guard heavy-job stopped report') { failOnce = false; return undefined as unknown as { id: number } }
+      return { id: 1 }
+    })
+    try {
+      await at(900)
+      expect(h.log.error.some((a) => a.includes('context-guard: FAILED TO REPORT the stopped heavy-job gate job(s)'))).toBe(true)
+      await at(1200)                                // not running: the closing sweep reports it
+      expect(stopReports()).toHaveLength(2)         // the failed attempt + the one that went out
+      expect(JSON.parse(readFileSync(HOLDS, 'utf-8'))).toEqual({})
+    } finally {
+      h.createAgentMessage.mockImplementation(() => ({ id: 1 }))
+    }
   })
 
   it('a gate that takes seconds to exit after the restart call is still reported as killed', async () => {

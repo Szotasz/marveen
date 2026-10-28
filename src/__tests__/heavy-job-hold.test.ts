@@ -7,10 +7,13 @@ import {
   continuesHoldEpisode,
   heldMinutesOf,
   jobKey,
+  markReported,
   parseHoldStore,
   planRestart,
+  quoteLabel,
   sessionReplaced,
   settleRestart,
+  unreportedKilled,
   type Episode,
 } from '../web/heavy-job-hold.js'
 import type { GatedJob } from '../web/heavy-job-owner.js'
@@ -201,4 +204,22 @@ describe('continuesHoldEpisode: the one rule that keeps an episode open', () => 
     ['resume injection after a restart', { action: 'inject-resume', nextState: { phase: 'cooldown' } }, false],
   ]
   for (const [name, d, want] of cases) it(name, () => expect(continuesHoldEpisode(d)).toBe(want))
+})
+
+describe('stopped jobs are reported where that becomes known', () => {
+  it('a failed restart leaves unreported "killed" facts; once marked, nothing is owed', () => {
+    const ep0 = planRestart(null, [J(1), J(2)], PANES, 0, 45, () => true).episode
+    const failed = settleRestart(ep0, aliveBeforeRestart(ep0, () => true), (pid) => pid === 2, false, MIN, 45).episode
+    expect(unreportedKilled(failed).map((e) => e.label)).toEqual(['job-1'])
+    const marked = markReported(failed!, unreportedKilled(failed))
+    expect(unreportedKilled(marked)).toEqual([])
+    expect(marked.jobs[jobKey(J(1))]).toMatchObject({ outcome: 'killed', reported: true })
+    // still in the episode, so a later successful restart tells the fresh session too
+    expect(settleRestart(marked, new Set(), () => false, true, 2 * MIN, 45).note?.killed).toEqual([{ label: 'job-1', state: 'running' }])
+  })
+
+  it('quoteLabel quotes and keeps only [A-Za-z0-9._:-]', () => {
+    expect(quoteLabel('build-1.2:x_y')).toBe('"build-1.2:x_y"')
+    expect(quoteLabel('a"b c\u202e')).toBe('"a_b_c_"')
+  })
 })

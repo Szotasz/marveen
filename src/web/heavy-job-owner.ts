@@ -157,8 +157,10 @@ function isLiveGate(info: ProcInfo | null, start?: unknown): info is ProcInfo {
   return start === undefined || start === null || String(start) === info.start
 }
 
+/** Labels are free text; they go into alerts and the resume directive, so
+ *  only [A-Za-z0-9._:-] is kept (runs of anything else become one '_'). */
 function cleanLabel(v: unknown): string {
-  return String(v ?? '?').replace(/\s+/g, '_').replace(/[^\x20-\x7e -￿]/g, '?').slice(0, 100) || '?'
+  return String(v ?? '?').replace(/[^A-Za-z0-9._:-]+/g, '_').slice(0, 100) || '?'
 }
 
 /** Every live gated job on the host: the lock holder and the queued waiters. */

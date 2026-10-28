@@ -29,7 +29,11 @@ import {
   continuesHoldEpisode,
   holdStorePath,
   jobKey,
+  markReported,
   planRestart,
+  quoteLabel,
+  sessionReplaced,
+  unreportedKilled,
   readHoldStore,
   settleRestart,
   writeHoldStore,
@@ -251,14 +255,51 @@ function saveEpisode(name: string, episode: Episode | null): void {
 // leave an episode open.
 let episodeContinuesThisSweep = new Set<string>()
 
-/** End of a sweep: an episode is one UNBROKEN run of restarting sweeps. */
-function closeEpisodesAfterSweep(): void {
+/** End of a sweep: an episode is one UNBROKEN run of restarting sweeps. An
+ *  episode still holding an unreported 'killed' fact reports it first. */
+async function closeEpisodesAfterSweep(): Promise<void> {
+  const continuing = episodeContinuesThisSweep
+  episodeContinuesThisSweep = new Set()
   for (const name of Object.keys(loadEpisodes())) {
-    if (episodeContinuesThisSweep.has(name)) continue
+    if (continuing.has(name)) continue
+    await reportKilledFacts(name, episodeFor(name), 'the restart need is over')
     logger.info({ name }, 'context-guard: heavy-job hold episode closed -- the restart need is over')
     saveEpisode(name, null)
   }
-  episodeContinuesThisSweep = new Set()
+}
+
+/**
+ * A gated job the guard's restart stopped is reported where that becomes
+ * known (heavy-job-hold.ts unreportedKilled): a log line with the labels and
+ * a message to the main agent on the same path as the pre-restart alert.
+ * Marked reported only once the message went out; a failed send is logged
+ * and retried by whoever drops the episode. Never throws; returns the
+ * episode as saved.
+ */
+async function reportKilledFacts(name: string, episode: Episode | null, why: string): Promise<Episode | null> {
+  const facts = unreportedKilled(episode)
+  if (!episode || facts.length === 0) return episode
+  const labels = facts.map((e) => `${quoteLabel(e.label)} (${e.state === 'running' ? 'futott, felbeszakadt' : 'sorban vart, el sem indult'})`)
+  logger.error({ name, why, jobs: facts.map((e) => ({ label: e.label, state: e.state, pid: e.pid })) },
+    'context-guard: a restart of this agent STOPPED its heavy-job gate job(s)')
+  const text =
+    `[CONTEXT-GUARD] A(z) "${name}" agens restartja (${why}) LEALLITOTTA a nehez-feladat kapus feladata(i)t: ${labels.join(', ')}. ` +
+    `Az eredmenyuk nincs meg; a kilepesi kodot a ${heavyJobLogForPrompt()} adja. Ha a feladat meg kell, inditsd ujra a kapun at.`
+  try {
+    if (name === MAIN_AGENT_ID) {
+      const delivered: unknown = await notifyChannel(text)
+      if (delivered === false) throw new Error('operator channel send skipped or failed')
+    } else {
+      const msg = createAgentMessage(name, MAIN_AGENT_ID, text, 'context-guard heavy-job stopped report')
+      if (!msg?.id) throw new Error('createAgentMessage returned no id')
+    }
+    const marked = markReported(episode, facts)
+    if (episodeFor(name)) saveEpisode(name, marked)
+    return marked
+  } catch (err) {
+    logger.error({ err, name }, 'context-guard: FAILED TO REPORT the stopped heavy-job gate job(s)')
+    return episode
+  }
 }
 
 // An unreadable /proc entry (EACCES under hidepid, an unparsable stat, ...) is
@@ -321,10 +362,15 @@ function probeAgentJobs(name: string, session: string): { jobs: GatedJob[]; pane
  * planRestart). Returns null to hold, else the jobs the restart will stop
  * that still need their one alert.
  */
-function heavyJobGate(name: string, session: string, nowMs: number, capMinutes: number): HoldEntry[] | null {
+async function heavyJobGate(name: string, session: string, nowMs: number, capMinutes: number): Promise<HoldEntry[] | null> {
   const probe = probeAgentJobs(name, session)
   if (probe === null) {
     logger.warn({ name, session }, 'context-guard: heavy-job ownership unmeasurable -- not holding the restart')
+  }
+  const prior = episodeFor(name)
+  if (prior && probe && sessionReplaced(prior.panes, probe.panes)) {
+    // the episode is dropped by planRestart: what it still owes is said now
+    await reportKilledFacts(name, prior, 'the session was replaced')
   }
   const plan = planRestart(episodeFor(name), probe?.jobs ?? null, probe?.panes ?? null, nowMs, capMinutes, heavyAlive)
   saveEpisode(name, plan.episode)
@@ -478,14 +524,14 @@ export function heavyJobResumeText(note: HeavyJobNote | null | undefined, logPat
   if (running.length > 0 || queued.length > 0) {
     out +=
       `NEHÉZ FELADAT: a restart LEÁLLÍTOTTA a nehéz-feladat kapun (scripts/heavy-job-gate.sh) futó feladatodat` +
-      (running.length > 0 ? ` (futott, félbeszakadt: ${running.join(', ')})` : '') +
-      (queued.length > 0 ? ` (sorban várt, EL SEM INDULT: ${queued.join(', ')})` : '') +
+      (running.length > 0 ? ` (futott, félbeszakadt: ${running.map(quoteLabel).join(', ')})` : '') +
+      (queued.length > 0 ? ` (sorban várt, EL SEM INDULT: ${queued.map(quoteLabel).join(', ')})` : '') +
       ` -- a restartot legfeljebb ~${note.heldMinutes} percig tartottam miatta. Az eredménye NINCS meg: ` +
       `nézd meg a ${logPath} utolsó sorait ezekre a label-ekre, és ha a feladat még kell, indítsd újra a kapun át. `
   }
   if (note.ended.length > 0) {
     out +=
-      `NEHÉZ FELADAT: ez(ek) a kapus feladatod a restart előtt véget ért: ${note.ended.join(', ')}. ` +
+      `NEHÉZ FELADAT: ez(ek) a kapus feladatod a restart előtt véget ért: ${note.ended.map(quoteLabel).join(', ')}. ` +
       `A kimenetét az előző session kapta, nem te: a kilépési kódot a ${logPath} "finish" (vagy "refuse") sora adja, ` +
       `az eredményt a feladat saját kimeneti fájljai. `
   }
@@ -1097,7 +1143,7 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
   // as the agent's decision stops being part of a restart.
   let heavyToAlert: HoldEntry[] = []
   if (decision.action === 'restart') {
-    const gate = heavyJobGate(name, session, nowMs, cfg.heavyJobDeferMaxMinutes)
+    const gate = await heavyJobGate(name, session, nowMs, cfg.heavyJobDeferMaxMinutes)
     if (gate === null) {
       guardStates.set(name, state)
       return
@@ -1192,14 +1238,14 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
           logger.warn({ err, name }, 'context-guard: pre-restart pane snapshot failed')
         }
         if (heavyToAlert.length > 0) {
-          // The restart is about to stop a live gated heavy job: once per (agent,
-          // job), before the restart, marked only after it was sent. Main's
+          // The restart is about to stop a live gated heavy job: once per job
+          // per episode, before the restart, marked only after it was sent. Main's
           // alert goes to the operator channel, for the same reason as the
           // rescue-failure alert below.
           const text =
             `[CONTEXT-GUARD] A(z) "${name}" agenst most ujrainditom, pedig el a nehez-feladat kapus (heavy-job-gate) feladata: ` +
-            heavyToAlert.map((e) => `${e.label} (${e.state === 'running' ? 'fut' : 'sorban var'}, ~${Math.round((nowMs - e.firstSeenMs) / 60_000)} perce latom)`).join(', ') +
-            `. A restartot legfeljebb ${cfg.heavyJobDeferMaxMinutes} percig tartom egy feladatert; a restart ezt LEALLITJA ` +
+            heavyToAlert.map((e) => `${quoteLabel(e.label)} (${e.state === 'running' ? 'fut' : 'sorban var'}, ~${Math.round((nowMs - e.firstSeenMs) / 60_000)} perce latom)`).join(', ') +
+            `. Egy restart-igenyt osszesen legfeljebb ${cfg.heavyJobDeferMaxMinutes} percig tartok vissza, akarhany kapus feladat jon-megy. Most nem tartom tovabb: a restart ezt LEALLITJA ` +
             `(futo: 143, sorban varo: nem indul el). Ok: ${decision.reason}. A friss session resume-promptja megnevezi, mi tortent vele.`
           try {
             if (name === MAIN_AGENT_ID) {
@@ -1232,6 +1278,10 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
             if (heavyBefore.size > 0 && ep) await waitForGatesToExit(ep.jobs, heavyBefore)
             const settled = settleRestart(episodeFor(name), heavyBefore, heavyAlive, ok, Date.now(), cfg.heavyJobDeferMaxMinutes)
             saveEpisode(name, settled.episode)
+            // A failed restart that already stopped jobs: say so NOW. The next
+            // decision may never meet this episode (agent not running, a new
+            // session after a lost start race).
+            if (!ok) await reportKilledFacts(name, settled.episode, 'failed restart')
             return settled.note
           } catch (err) {
             logger.error({ err, name }, 'context-guard: could not settle the heavy-job facts of this restart')
@@ -1266,8 +1316,9 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
             logger.error({ err, name }, 'context-guard: post-restart bookkeeping failed (the restart itself succeeded)')
           } else {
             // A failed restart may already have stopped jobs (stop ran, start
-            // failed): record that as fact now; the next restart decision of the
-            // same run reports it.
+            // failed): reported at once (settleHeavy), and kept in the episode
+            // so a later successful restart of the same run tells the fresh
+            // session too.
             await settleHeavy(false)
             // guardStates was advanced to the post-restart phase BEFORE this
             // switch, so a failed rescue would otherwise be filed as a completed
@@ -1346,9 +1397,9 @@ async function checkAgent(name: string, nowMs: number): Promise<void> {
                 : '') +
             (heavyNote
               ? ' Nehez-feladat kapus feladat:' +
-                (heavyNote.ended.length > 0 ? ` a restart elott veget ert: ${heavyNote.ended.join(', ')};` : '') +
+                (heavyNote.ended.length > 0 ? ` a restart elott veget ert: ${heavyNote.ended.map(quoteLabel).join(', ')};` : '') +
                 (heavyNote.killed.length > 0
-                  ? ` a restart LEALLITOTTA: ${heavyNote.killed.map((k) => `${k.label} (${k.state})`).join(', ')} (legfeljebb ~${heavyNote.heldMinutes} percig tartottam miattuk).`
+                  ? ` a restart LEALLITOTTA: ${heavyNote.killed.map((k) => `${quoteLabel(k.label)} (${k.state})`).join(', ')} (legfeljebb ~${heavyNote.heldMinutes} percig tartottam miattuk).`
                   : '')
               : '') +
             (snapshotPath ? ` Pane-snapshot a restart elotti allapotrol: ${snapshotPath}` : ''),
@@ -1554,7 +1605,7 @@ export function startContextGuardRunner(): NodeJS.Timeout {
           try { await checkAgent(name, now) } catch (err) { logger.debug({ err, agent: name }, 'context-guard: agent check error') }
         }
       } finally {
-        closeEpisodesAfterSweep()
+        await closeEpisodesAfterSweep()
       }
     } finally {
       tickRunning = false
