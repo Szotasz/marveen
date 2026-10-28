@@ -2,7 +2,7 @@ import {
   createAgentMessage, getPendingMessages, listAgentMessages, getRecipientQueueState,
   getAgentConversation, getAgentConversationThreads,
   getKanbanSeqByIdPrefix,
-  markMessageDone, closeOpenMessage, getAgentMessage,
+  markMessageDone, closeOpenMessage, closeMessageAsRecipient, getAgentMessage,
   closeOtelSpan,
   getPendingBacklogByAgent,
   countNewerMessagesForRows,
@@ -749,7 +749,30 @@ export async function tryHandleMessages(ctx: RouteContext): Promise<boolean> {
     // recipient. A repeated PUT after a client timeout gets the same 409; the first
     // close already took effect.
     let ok = false
-    if (newStatus === 'done' || newStatus === 'failed') {
+    // A sub-agent's own token (ctx.auth.tokenAgent) may only close a still-open
+    // message addressed to itself, and that is enforced in the UPDATE
+    // (closeMessageAsRecipient), not by the gate's earlier lookup. 0 rows means
+    // no close and no completion report. The shared token is unchanged.
+    const agentCaller = ctx.auth?.kind === 'token' ? ctx.auth.tokenAgent : undefined
+    if (agentCaller && (newStatus === 'done' || newStatus === 'failed')) {
+      if (!closeMessageAsRecipient(id, agentCaller, newStatus, result)) {
+        const row = getAgentMessage(id)
+        if (row && row.to_agent === agentCaller) {
+          json(res, {
+            error: 'Message already closed',
+            status: row.status,
+            hint: 'the first close already took effect; nothing was changed and no completion report was sent',
+          }, 409)
+        } else {
+          json(res, {
+            error: `identity binding: message ${id} is not addressed to the calling agent '${agentCaller}'. A sub-agent token closes only its own messages; ask ${MAIN_AGENT_ID} via /api/messages for anything else`,
+            rule: 'agent-identity-binding', agent: agentCaller, main_agent: MAIN_AGENT_ID,
+          }, 403)
+        }
+        return true
+      }
+      ok = true
+    } else if (newStatus === 'done' || newStatus === 'failed') {
       ok = closeOpenMessage(id, newStatus, result)
       if (!ok) {
         const current = getAgentMessage(id)

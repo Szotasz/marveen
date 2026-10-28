@@ -156,6 +156,12 @@ Every dashboard-editable setting is a registry entry with the following fields:
 | `OSS_INVENTORY_NOTES_DIRS` | string | `research` | Comma-separated folder names inside each agent folder whose `*.md` research notes the adopted open-source inventory (Connectors page, `GET /api/opensource-inventory`) reads for star counts and measured before/after effects, e.g. `research,kutatas`; plain names only (no `/`, no `..`) | no |
 | `OSS_INVENTORY_OWN_OWNERS` | string | (empty) | Comma-separated repository owner names for the adopted open-source inventory, e.g. your own GitHub account(s). Clones the scan reaches that have a readable http(s) or ssh origin are listed unless their origin owner name is in OSS_INVENTORY_OWN_OWNERS. The scan does not look inside another clone, node_modules, caches, virtual environments, unpacked vendor packages or symlinked folders. The owner name is the first path segment of the clone's own origin URL, matched on any host (the host is not compared); a matched clone, a fork of third-party code kept under such an owner included, is counted (`summary.unlisted_clones`), not listed. Ownership is not inferred from the installation's remotes. Clones without a readable http(s) or ssh origin are counted, not listed | no |
 
+**Registry -- Audit module (excerpt):**
+
+| Key | Type | Default | Description | Restart |
+|-----|------|---------|-------------|---------|
+| `AGENT_TOKENS` | boolean | `0` (off) | Own dashboard token for every sub-agent (`agents/<name>/.dashboard-token`) with a server-side scope and identity binding; see `docs/agens-azonositas-api.md` section 8 | no (applies at the sub-agent's next start) |
+
 **Registry -- Heartbeat module:**
 
 | Key | Type | Default | Constraint | Restart |
@@ -444,6 +450,7 @@ Every sub-agent's directory is gitignored (`agents/` folder), keeping secrets sa
 | `agents/<name>/CLAUDE.md` | manually | Agent instructions and persona |
 | `agents/<name>/SOUL.md` | manually | Optional deeper persona descriptor |
 | `agents/<name>/avatar.png` | manually | Agent Telegram bot profile picture |
+| `agents/<name>/.dashboard-token` | automatic (`AGENT_TOKENS=1`) | The sub-agent's own dashboard token (0600); with it the server allows only the agent API |
 
 ### agent-config.json Structure
 

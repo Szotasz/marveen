@@ -731,6 +731,16 @@ export const SETTINGS_REGISTRY: SettingDefinition[] = [
     requiresRestart: false,
     loosens: (oldValue: string, newValue: string) => oldValue.trim() === 'enforce' && newValue.trim() !== 'enforce',
   },
+  {
+    key: 'AGENT_TOKENS',
+    type: 'boolean',
+    default: '0',
+    description: 'Saját dashboard-token minden al-ügynöknek (agents/<név>/.dashboard-token, 0600). Bekapcsolva az al-ügynök a következő indításkor saját tokent kap, a CLAUDE.md-je erre a fájlra mutat, és a szerver ezzel a tokennel csak az ügynök-API-t engedi (üzenetek, kanban, memória, napi napló, jóváhagyás-kérés, ütemezés- és vault-olvasás a store/vault-acl.json szerint): ütemezést nem írhat, és minden from/agent_id/author mező csak a saját neve lehet. Kikapcsolva (alapértelmezés) minden ügynök a közös store/.dashboard-token-t használja, mint eddig; visszakapcsoláskor az indítás a CLAUDE.md-t visszaírja a közös tokenre. Baleset elleni védelem, nem elzárás: minden ügynök ugyanazzal a felhasználóval fut, és a közös token fájlja olvasható.',
+    module: 'audit',
+    secret: false,
+    requiresRestart: false,
+    loosens: (oldValue: string, newValue: string) => ['1', 'true', 'yes', 'on'].includes(oldValue.trim().toLowerCase()) && !['1', 'true', 'yes', 'on'].includes(newValue.trim().toLowerCase()),
+  },
   // --- Token usage module ---
   {
     key: 'TOKEN_USAGE_RETENTION_DAYS',

@@ -11,6 +11,7 @@ import {
 } from '../../db.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
+import { identityDenialBody } from '../auth-gate.js'
 import { resolveOwnerChatId } from '../../owner-chat.js'
 import { sendOwnerMessage } from '../../notify.js'
 import { sendTelegramMessage } from '../telegram.js'
@@ -520,6 +521,20 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
   // (handleCategoryConsume above).
   const consumeMatch = path.match(/^\/api\/approvals\/([^/]+)\/consume$/)
   if (consumeMatch && method === 'POST') {
+    // A sub-agent's own token (AGENT_TOKENS) reaches this route only for a row
+    // it filed itself (the gate's identity binding). The route repeats the
+    // check so the rule never rests on the gate table alone; a row's agent_id
+    // is written once at creation and never updated.
+    const caller = ctx.auth?.kind === 'token' ? ctx.auth.tokenAgent : undefined
+    if (caller) {
+      const owner = getApproval(consumeMatch[1])?.agent_id
+      if (owner !== caller) {
+        json(res, identityDenialBody(caller, MAIN_AGENT_ID, owner === undefined
+          ? 'the row does not exist (yet); a sub-agent token can only act on an existing row of its own'
+          : `the row belongs to '${owner}', not to the calling agent '${caller}'`), 403)
+        return true
+      }
+    }
     let body: { content_hash?: unknown; consumer?: unknown; message_id?: unknown; category?: unknown }
     try {
       body = JSON.parse((await readBody(req)).toString())

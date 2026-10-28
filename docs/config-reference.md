@@ -159,6 +159,12 @@ Minden dashboard-szerkeszthető beállítás egy bejegyzésként szerepel a regi
 | `OSS_INVENTORY_NOTES_DIRS` | string | `research` | Vesszővel elválasztott mappanevek az ügynök mappáján belül, amelyek `*.md` kutatási jegyzeteiből az átvett nyílt forrású projektek leltára (Kapcsolatok oldal, `GET /api/opensource-inventory`) a csillagszámot és a mért előtte/utána hatást olvassa, pl. `research,kutatas`; csak sima mappanév (nincs `/`, nincs `..`) | nem |
 | `OSS_INVENTORY_OWN_OWNERS` | string | (üres) | Vesszővel elválasztott repó-tulajdonosnevek az átvett nyílt forrású projektek leltárához, pl. a saját GitHub-fiók(ok). A bejárás által elért, olvasható http(s)- vagy ssh-originű klónok a listán vannak, hacsak az origin-tulajdonosnevük nem szerepel az OSS_INVENTORY_OWN_OWNERS beállításban. A bejárás nem néz bele másik klónba, node_modules-ba, gyorsítótárakba, virtuális környezetekbe, kicsomagolt vendor-csomagokba és szimbolikus linkkel bekötött mappákba. A név a klón saját origin-címének első útvonal-tagja, bármelyik hoszton (a hosztot nem nézi); az egyező klónt, egy ilyen tulajdonosnál tartott, harmadik féltől származó forkot is, megszámolja (`summary.unlisted_clones`), nem listázza. A tulajdonjogot nem a telepítés remote-jaiból következteti ki. Az olvasható http(s)- vagy ssh-origin nélküli klónt megszámolja, nem listázza | nem |
 
+**Registry -- Audit modul (részlet):**
+
+| Kulcs | Típus | Alapérték | Leírás | Újraindítás |
+|-------|-------|-----------|--------|-------------|
+| `AGENT_TOKENS` | boolean | `0` (ki) | Saját dashboard-token minden al-ügynöknek (`agents/<név>/.dashboard-token`), szerveroldali hatókörrel és azonosság-kötéssel; lásd `agens-azonositas-api.md` 8. fejezet | nem (az al-ügynök következő indításakor lép életbe) |
+
 **Registry -- Heartbeat modul:**
 
 | Kulcs | Típus | Alapérték | Korlát | Újraindítás |
@@ -451,6 +457,7 @@ Minden sub-ágens mappája gitignore-olt (`agents/` mappa), így a titkos kulcso
 | `agents/<name>/CLAUDE.md` | kézzel | Az ágens instrukciói és személyisége |
 | `agents/<name>/SOUL.md` | kézzel | Opcionális mélyebb személyiség-leíró |
 | `agents/<name>/avatar.png` | kézzel | Az ágens Telegram bot profilképe |
+| `agents/<name>/.dashboard-token` | automatikus (`AGENT_TOKENS=1`) | Az al-ügynök saját dashboard-tokenje (0600); a szerver ezzel csak az ügynök-API-t engedi |
 
 ### agent-config.json struktúra
 

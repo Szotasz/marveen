@@ -7,7 +7,8 @@ import { runLsof } from './lsof.js'
 import { PROJECT_ROOT, WEB_HOST, DASHBOARD_PUBLIC_URL, DASHBOARD_ALLOWED_ORIGINS, MAIN_AGENT_ID, STORE_DIR } from './config.js'
 import { watchEgressAllowlistBaseline, queueAllowlistReport } from './web/egress-allowlist-baseline.js'
 import { loadOrCreateDashboardToken } from './web/dashboard-auth.js'
-import { resolveAuth, requiresAuth, isFederationWireEndpoint, type AuthResult } from './web/auth-gate.js'
+import { gateRequest, requiresAuth, type AuthResult } from './web/auth-gate.js'
+import { createAgentTokenResolver } from './web/agent-tokens.js'
 import { operatorGateDecision } from './web/operator-gate.js'
 import { readOperatorAccess } from './web/operator-access.js'
 import { tryHandleOperatorAccess } from './web/routes/operator-access.js'
@@ -136,6 +137,9 @@ export function startWebServer(port = 3420): http.Server {
   ensureDirs()
 
   const DASHBOARD_TOKEN = loadOrCreateDashboardToken()
+  // Per-agent tokens (agent-tokens.ts): with no agents/<name>/.dashboard-token
+  // on disk (AGENT_TOKENS off, the default) it never matches.
+  const resolveAgentToken = createAgentTokenResolver()
   const allowedOrigins = new Set([
     `http://localhost:${port}`,
     `http://127.0.0.1:${port}`,
@@ -186,17 +190,16 @@ export function startWebServer(port = 3420): http.Server {
     // fleet curl call keeps working with users present or absent. requiresAuth()
     // decides whether a missing principal is a 401 (gated /api/* + fleet
     // manifest) or a public probe (auth status/login, avatars).
-    const auth: AuthResult = resolveAuth(req, url, path, method, DASHBOARD_TOKEN)
-    if (requiresAuth(path, method) && auth.kind === 'none') {
-      if (isFederationWireEndpoint(path, method)) {
-        // 401s are otherwise silent; federation-endpoint auth failures are the
-        // brute-force surface -- make them visible (round-2 scoped-token gate).
-        logger.warn({ path, method }, 'federation: rejected wire-endpoint auth')
-      }
-      res.writeHead(401, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ error: 'Unauthorized' }))
-      return
-    }
+    // gateRequest (auth-gate.ts) is the old inline gate -- resolveAuth, then the
+    // 401 for a gated path with no principal -- plus, for a sub-agent's OWN
+    // token only (AGENT_TOKENS), the allowlist scope and the identity binding
+    // (403). The shared token passes through it unchanged.
+    const auth: AuthResult | null = await gateRequest(req, res, url, path, method, {
+      dashboardToken: DASHBOARD_TOKEN,
+      resolveAgentToken,
+      mainAgentId: MAIN_AGENT_ID,
+    })
+    if (auth === null) return
     // DASHOPERATOR1005: an operator-scoped key reaches /api/operator/* only,
     // decided here, before ANY handler (including network-info below) runs.
     if (requiresAuth(path, method)) {
@@ -210,7 +213,7 @@ export function startWebServer(port = 3420): http.Server {
     }
     const fedPeerForCtx: string | null = auth.kind === 'federation' ? auth.peer : null
     const ctxAuth =
-      auth.kind === 'token' ? { kind: 'token' as const, agent: auth.agent }
+      auth.kind === 'token' ? { kind: 'token' as const, agent: auth.agent, ...(auth.tokenAgent ? { tokenAgent: auth.tokenAgent } : {}) }
       : auth.kind === 'device' ? { kind: 'device' as const, device: auth.device, deviceId: auth.deviceId, scope: auth.scope }
       : auth.kind === 'session' ? { kind: 'session' as const, user: auth.user }
       : auth.kind === 'federation' ? { kind: 'federation' as const, peer: auth.peer }

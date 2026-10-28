@@ -97,6 +97,7 @@ import { filterInheritableMcpServers, readInheritableMcpServerNames, logNotInher
 import { isSingleLineEnvValue, readEnvFile } from '../env.js'
 import { loadProfileTemplate, profileWantsThinChiefHandoff } from './profiles.js'
 import { resolveAgentSecurityProfile } from './agent-team.js'
+import { syncAgentTokenOnStart } from './agent-tokens.js'
 import { enforceStrictPermissionMode, writeAgentSettingsFromProfile, ensureFleetRosterSection, ensureProjectRootInClaudeMd, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSystemDirectiveAuthSection, ensureAgentIdHeaderSection, ensureThinChiefHandoffSection, ensureMemorySearchLabelSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, ensureMessageCloseSection, ensureStrictApiSection, ensureBackgroundCheckpointSection } from './agent-scaffold.js'
 import { schedulePluginUnlockAfterRespawn } from './channel-plugin-unlock.js'
 import { recordInjectedPrompt, forgetInjectedPrompt } from './injected-prompt-registry.js'
@@ -2316,6 +2317,17 @@ export async function startAgentProcess(name: string, opts: StartOpts = {}): Pro
     // without hardcoding agent names.
     const profile = loadProfileTemplate(resolveAgentSecurityProfile(name))
     writeAgentSettingsFromProfile(name, profile)
+    // AGENT_TOKENS (agent-tokens.ts): on -> provision the agent's own dashboard
+    // token (0600, idempotent) and point its CLAUDE.md at it; off -> point it
+    // back at the shared token. BEFORE the generated sections are re-rendered,
+    // so the hand-kept body and the generated blocks converge on one path.
+    // Best-effort: a failure leaves the agent on the shared token (the old
+    // behaviour), never without one.
+    try {
+      syncAgentTokenOnStart(name)
+    } catch (err) {
+      logger.warn({ err, name }, 'per-agent dashboard token sync failed (agent keeps the shared token)')
+    }
     ensureFleetRosterSection(name)
     ensureProjectRootInClaudeMd(name)
     ensureAutonomySection(name)

@@ -24,6 +24,7 @@ const SCAFFOLD = readFileSync(join(__dirname, '..', 'web', 'agent-scaffold.ts'),
 const WEB = readFileSync(join(__dirname, '..', 'web.ts'), 'utf-8')
 const AGENT_PROCESS = readFileSync(join(__dirname, '..', 'web', 'agent-process.ts'), 'utf-8')
 const TEMPLATES = join(__dirname, '..', '..', 'templates')
+const TOKENS = readFileSync(join(__dirname, '..', 'web', 'agent-tokens.ts'), 'utf-8')
 
 const OLD = '/Users/peterszollos/klaudia'
 const NEW = '/Users/pcha0s/klaudia'
@@ -188,7 +189,12 @@ describe('HOSTMOVE923 wiring (source-level)', () => {
   })
 
   it('keeps the absolute token path (the relative form is the measured 401)', () => {
-    expect(SCAFFOLD).toContain("const tokenPath = join(PROJECT_ROOT, 'store', '.dashboard-token')")
+    // The recipes read a PER-AGENT token path (AGENT_TOKENS), resolved
+    // absolutely in agent-tokens.ts (agents/<name>/.dashboard-token, else the
+    // shared store token) -- still absolute, never the relative form.
+    expect(SCAFFOLD).toContain('const tokenPath = dashboardTokenPathFor(name)')
+    expect(TOKENS).toContain("export function mainTokenPath(): string { return join(PROJECT_ROOT, 'store', '.dashboard-token') }")
+    expect(TOKENS).toContain("function agentsBaseDir(): string { return join(PROJECT_ROOT, 'agents') }")
     expect(INSTALL_ANCHORED_SUFFIXES).toContain('/store/.dashboard-token')
   })
 })

@@ -156,3 +156,33 @@ Tervezési döntések, amelyek a kódolás közben dőltek el:
   (`src/db.ts:264`), tehát minden sornak van tulajdonosa; a `!row.agent_id`
   ellenőrzés üres sztringre véd, nem támogatott állapotra. Ezt teszt rögzíti,
   nem komment.
+
+## 8. A B) opció megvalósítása: `AGENT_TOKENS` (opt-in)
+
+A 6-7. fejezet A) opciója (önbevallott `X-Agent-Id`) változatlanul marad. A B) opció mellé
+került, **alapból kikapcsolva**. A 3. fejezet következtetése továbbra is áll: ez balesetek
+ellen véd, nem egy elszánt ügynök ellen. Minden ügynök ugyanazzal a UNIX-felhasználóval fut,
+és a közös `store/.dashboard-token` olvasható marad.
+
+Mit csinál bekapcsolva (`AGENT_TOKENS=1`, `.env` vagy a Beállítások oldal):
+
+| Hol | Mi történik |
+|-----|-------------|
+| al-ügynök létrehozása és minden indítása | `agents/<név>/.dashboard-token` (0600, véletlen, idempotens). Az al-ügynök CLAUDE.md-jében a közös token abszolút útja erre cserélődik, és a generált blokkok is erre mutatnak. A fő ügynök és a heartbeat-worker nem kap saját tokent. |
+| `src/web/agent-tokens.ts` | a szerver a bemutatott tokent ágens-névre képezi (időzítés-biztos összevetés, 5 mp-es cache). Szimlinket, rövid vagy a fő tokennel azonos tartalmú fájlt nem fogad el. |
+| `src/web/auth-gate.ts` `gateRequest` | a saját tokenes hívó (`ctx.auth.tokenAgent`) csak az `AGENT_TOKEN_ALLOWLIST` végpontjait éri el (üzenetek, kanban, memória, napi napló, jóváhagyás kérése/lekérdezése/felhasználása, ütemezések és vault OLVASÁSA, a hook-végpontok); minden más 403 `agent-token-scope`. Ütemezést nem írhat (403 `schedule-writes-main-agent-only`). |
+| ugyanott, `AGENT_IDENTITY_BINDINGS` | minden azonosság, amit a kérés állít (`from`, `agent_id`, `author`, `actor`, `updated_by`, út-beli ágensnév, a szerkesztett sor gazdája) a token ágense kell legyen; a tulajdonosi mezők (`owner_approved_message_id`, kanban `force`) tiltottak. 403 `agent-identity-binding`. |
+| `PUT /api/messages/:id` | saját tokennel csak a NEKI címzett, nyitott üzenet zárható, és ezt maga az UPDATE köti ki (`closeMessageAsRecipient`). |
+| vault | saját tokennel titkot csak a `store/vault-acl.json` szerint lehet olvasni, a `VAULT_ACL_MODE` értékétől függetlenül; üres fájl = egyetlen érték sem. SSH-azonosító és vault-alerőforrás soha. |
+| `mayIssueCredentials` | a saját token sosem tulajdonos, akkor sem, ha még nincs dashboard-felhasználó. |
+
+Kikapcsolva (alapértelmezés): semmi nem jön létre és egyetlen CLAUDE.md sem változik. Token
+fájl híján a feloldó sosem talál, így a csak közös tokenes telepítés pontosan úgy működik, mint
+eddig (`src/__tests__/agent-tokens-scope.test.ts`, "shared-token-only install"). Visszakapcsolás
+után az al-ügynök következő indítása a CLAUDE.md-t visszaírja a közös tokenre. A még meglévő
+token fájl addig a SZŰKÍTETT jogkörrel hitelesít, amíg kézzel ki nem törlöd, tehát a kapcsoló
+lekapcsolása egy futó ügynököt sem dob 401-re.
+
+Ismert korlátok: a szigorú profilú (`dontAsk`) ügynökök receptjei a `scripts/marveen-api.sh`
+segéden mennek, ami a közös tokent olvassa, ezért ők a közös tokenen maradnak. A hookok és a
+flotta-szintű szkriptek szintén a közös tokent olvassák.

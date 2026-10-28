@@ -5122,6 +5122,23 @@ export function closeOpenMessage(id: number, status: 'done' | 'failed', result?:
   return db.prepare(sql).run(...args).changes > 0
 }
 
+// The close a SUB-AGENT token may perform (auth-gate.ts, AGENT_TOKENS),
+// enforced in the write itself: closeOpenMessage plus `to_agent = recipient`,
+// one statement, so nothing can slip between a check and the update. The
+// gate's to_agent lookup runs before the route awaits the rest of its work;
+// a write guarded by `id` alone would let a PUT pre-armed on the NEXT id close
+// another agent's message the moment it is created. Returns false when 0 rows
+// changed; the caller then creates NO completion report. The main-token path
+// keeps closeOpenMessage unchanged.
+export function closeMessageAsRecipient(id: number, recipient: string, status: 'done' | 'failed', result?: string): boolean {
+  const now = Math.floor(Date.now() / 1000)
+  const sql = status === 'done'
+    ? "UPDATE agent_messages SET status = 'done', result = ?, completed_at = ?, delivered_at = COALESCE(delivered_at, ?) WHERE id = ? AND to_agent = ? AND status NOT IN ('done', 'failed')"
+    : "UPDATE agent_messages SET status = 'failed', result = ?, completed_at = ? WHERE id = ? AND to_agent = ? AND status NOT IN ('done', 'failed')"
+  const args = status === 'done' ? [result ?? null, now, now, id, recipient] : [result ?? null, now, id, recipient]
+  return db.prepare(sql).run(...args).changes > 0
+}
+
 // Status-guarded fail for the federation bridge's terminal branches: it must
 // only fire (and only bounce a failure notice) when THIS call actually closed
 // a still-pending row. The unguarded markMessageFailed above would also

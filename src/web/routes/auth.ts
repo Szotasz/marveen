@@ -136,6 +136,9 @@ const DEVICE_KEY_ADMIN_KINDS = ['token', 'session'] as const
 export function mayIssueCredentials(auth: RouteContext['auth'], req?: http.IncomingMessage): boolean {
   if (auth?.kind === 'session') return true
   if (auth?.kind !== 'token') return false
+  // A sub-agent's own token is never the owner, not even before the first
+  // login exists: that bare-token rule is about the SHARED token.
+  if (auth.tokenAgent) return false
   if (countDashboardUsers(true) === 0) return true
   const cookie = req ? parseCookies(req.headers.cookie)[SESSION_COOKIE_NAME] : undefined
   return !!cookie && resolveSession(cookie) !== null
