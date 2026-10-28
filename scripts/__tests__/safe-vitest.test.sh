@@ -7,6 +7,13 @@
 
 set -uo pipefail
 
+# safe-vitest.sh is built on macOS sandbox-exec; without it (Linux CI) the EPERM proof cannot
+# be measured here, which is a counted skip, not a pass.
+if ! command -v sandbox-exec >/dev/null 2>&1; then
+  echo "SKIP (control unmet): sandbox-exec is not available (safe-vitest.sh is macOS-only)"
+  exit 77
+fi
+
 ROOT="$(git rev-parse --show-toplevel)"
 SV="$ROOT/scripts/safe-vitest.sh"
 PARENT="$(dirname "$ROOT")"
