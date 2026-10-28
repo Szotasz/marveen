@@ -1,3 +1,4 @@
+import { isSingleLineEnvValue } from '../../env.js'
 import { existsSync, readFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, unlinkSync, writeFileSync, copyFileSync, renameSync } from 'node:fs'
 import { join, extname, dirname } from 'node:path'
 import { homedir, platform, tmpdir } from 'node:os'
@@ -1490,6 +1491,10 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
       if (!saKeyPath?.trim() || !projectId?.trim() || !subscription?.trim() || !owner?.trim()) {
         json(res, { error: 'Google Chat: saKeyPath, projectId, subscription és owner kötelező' }, 400); return true
       }
+      // Each goes into the channel .env as one KEY=value line (ENVTEAMSNAME1028).
+      if (![saKeyPath, projectId, subscription].every((v) => isSingleLineEnvValue(v.trim()))) {
+        json(res, { error: 'Google Chat: a mezők nem tartalmazhatnak sortörést' }, 400); return true
+      }
       const gcDir = isMain ? channelStateDir(provider) : channelStateDir(provider, agentDir(name))
       mkdirSync(gcDir, { recursive: true })
       const gcEnv =
@@ -1551,6 +1556,10 @@ export async function tryHandleAgents(ctx: RouteContext, webDir: string): Promis
 
     const { botToken, appToken, channelId, extra, allowFrom } = JSON.parse(body.toString()) as { botToken: string; appToken?: string; channelId?: string; extra?: unknown; allowFrom?: unknown }
     if (!botToken?.trim()) { json(res, { error: 'botToken is required' }, 400); return true }
+    // Each token goes into the channel .env as one KEY=value line (ENVTEAMSNAME1028); refused before any network check.
+    if (![botToken, appToken ?? '', channelId ?? ''].every((v) => typeof v === 'string' && isSingleLineEnvValue(v.trim()))) {
+      json(res, { error: 'A token nem tartalmazhat sortörést' }, 400); return true
+    }
 
     // AGENTEXTRACH1006: `extra: true` connects this provider NEXT TO the
     // agent's primary channel instead of replacing it. The primary's

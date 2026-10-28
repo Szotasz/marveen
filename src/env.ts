@@ -44,7 +44,12 @@ const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
 // (FLEETIMPORTENVKEY1021, ENVINJECT1028).
 export function assertEnvEntry(key: string, value: string): void {
   if (!ENV_KEY_RE.test(key)) throw new Error(`refusing to write .env: ${JSON.stringify(key)} is not an env key name`)
-  if (/[\r\n\0]/.test(value)) throw new Error(`refusing to write .env: the value of ${key} holds a line break or NUL`)
+  if (!isSingleLineEnvValue(value)) throw new Error(`refusing to write .env: the value of ${key} holds a line break or NUL`)
+}
+
+/** True when `value` can be one .env value: no CR, LF or NUL. The channel .env writers check this too (ENVTEAMSNAME1028). */
+export function isSingleLineEnvValue(value: string): boolean {
+  return !/[\r\n\0]/.test(value)
 }
 
 // Update (or append) the given keys in .env, preserving every other line,

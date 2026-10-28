@@ -94,7 +94,7 @@ export function fleetVenvPathPrefix(venvDir: string = FLEET_PYTHON_VENV, exists:
 }
 import { getEffectiveSettingValue } from '../settings-store.js'
 import { filterInheritableMcpServers, readInheritableMcpServerNames, logNotInherited } from './mcp-inheritance.js'
-import { readEnvFile } from '../env.js'
+import { isSingleLineEnvValue, readEnvFile } from '../env.js'
 import { loadProfileTemplate, profileWantsThinChiefHandoff } from './profiles.js'
 import { resolveAgentSecurityProfile } from './agent-team.js'
 import { enforceStrictPermissionMode, writeAgentSettingsFromProfile, ensureFleetRosterSection, ensureProjectRootInClaudeMd, ensureAutonomySection, ensureSkillsPathTrapSection, ensureSystemDirectiveAuthSection, ensureAgentIdHeaderSection, ensureThinChiefHandoffSection, ensureMemorySearchLabelSection, ensureFleetAuthSection, ensureEvidenceSection, ensureMcpListChannelSection, ensureMessageCloseSection, ensureStrictApiSection, ensureBackgroundCheckpointSection } from './agent-scaffold.js'
@@ -182,12 +182,18 @@ export function ownChannelProviderForScope(
  */
 export function syncTeamsDisplayName(envPath: string, displayName: string | null | undefined): boolean {
   if (!displayName) return false
+  // One line only (ENVTEAMSNAME1028): the name comes from agent-config.json, and a
+  // line break in it would add a line of its own to this .env.
+  if (!isSingleLineEnvValue(displayName)) {
+    logger.warn({ envPath }, 'teams name sync: display name is not a single line, not written')
+    return false
+  }
   const raw = existsSync(envPath) ? readFileSync(envPath, 'utf-8') : ''
   const current = raw.match(/^TEAMS_BOT_DISPLAY_NAME=(.*)$/m)?.[1]?.trim()
   if (current === displayName) return false
   const line = `TEAMS_BOT_DISPLAY_NAME=${displayName}`
   const next = current !== undefined
-    ? raw.replace(/^TEAMS_BOT_DISPLAY_NAME=.*$/m, line)
+    ? raw.replace(/^TEAMS_BOT_DISPLAY_NAME=.*$/m, () => line) // a function: "$&" or "$`" in the name stays literal
     : (raw === '' || raw.endsWith('\n') ? raw + line + '\n' : raw + '\n' + line + '\n')
   writeFileSync(envPath, next, { mode: 0o600 })
   return true
