@@ -215,7 +215,7 @@ describe('runner tick x registry (real tick, real registry)', () => {
     expect(existsSync(join(tmpHome, 'planted-precheck-ran'))).toBe(false)
     expect(existsSync(join(tmpHome, 'edited-precheck-ran'))).toBe(false)
     // A skip is reported only when it persists to the next tick, so the
-    // "NOT firing" notice needs a second tick, one minute on.
+    // "NOT firing" notice needs a second tick (here simply a later one).
     vi.useFakeTimers({ toFake: ['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'Date'] })
     vi.setSystemTime(new Date('2026-07-31T10:31:00.000Z'))
     await runOneTick()

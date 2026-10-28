@@ -122,7 +122,7 @@ export function verifyScheduledTask(task: Pick<ScheduledTask, 'name' | 'dirName'
 }
 
 // One warning per distinct (task, reason, current hash) per process: the runner
-// ticks every 60 s, and a repeated identical line every minute is the kind of
+// ticks every 15 s (SCHEDULE_TICK_MS), and a repeated identical line every tick is the kind of
 // signal that stops being read. A further edit (new hash) warns again.
 const warned = new Set<string>()
 // Skip keys seen on the PREVIOUS call but not yet confirmed (see

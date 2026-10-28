@@ -3169,9 +3169,11 @@ export function startScheduleRunner(): NodeJS.Timeout {
     tickRunning = true
     try {
     // Scheduled-task registry: only tasks whose files hash-match the server-owned registry
-    // are considered at all (cron fires, catch-ups AND pending retries -- a
-    // retry of a task that was tampered with after queueing finds no taskDef
-    // and is dropped like a deleted task).
+    // are considered at all (cron fires, catch-ups AND pending retries). A
+    // pending retry of a task that is still on disk and enabled but currently
+    // refused by the gate (e.g. edited after queueing) is KEPT, not fired: it
+    // fires once the task passes the gate again. A retry of a task that is gone
+    // from disk or disabled is dropped.
     const onDisk = listScheduledTasks()
     const tasks = filterRegisteredTasks(onDisk, sendRegistrySkipNotice)
     const now = Date.now()

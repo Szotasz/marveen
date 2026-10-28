@@ -71,7 +71,7 @@ vi.mock('../channel-provider.js', async (importOriginal) => {
   }
 })
 
-// SCHEDSRC7FFB: this suite drives the runner with fixture tasks that never went
+// Scheduled-task registry: this suite drives the runner with fixture tasks that never went
 // through the dashboard API; the registry gate is covered by
 // schedule-source-registry.test.ts, so here it is a passthrough.
 vi.mock('../web/schedule-registry.js', () => ({

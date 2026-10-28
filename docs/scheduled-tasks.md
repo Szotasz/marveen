@@ -288,8 +288,9 @@ Ki regisztrál:
 - a `DELETE /api/schedules/<name>` törli a bejegyzést.
 
 Ha a fájl az API megkerülésével jött létre vagy változott (kézi szerkesztés, `cp`, ügynök Write-ja), a runner
-NEM indítja, egyszer figyelmeztet a logban és egy `[scheduler]` üzenetben a fő-ágensnek (csak a feladat nevével,
-a tartalma nélkül), és a feladatot nem törli, nem kapcsolja ki. A `PUT` és a `toggle` ilyen feladatra 409-et ad,
+NEM indítja, és ha az eltérés a következő tickben (15 mp) is fennáll, egyszer figyelmeztet a logban és egy `[scheduler]`
+üzenetben a fő-ágensnek (csak a feladat nevével, a tartalma nélkül); a feladatot nem törli, nem kapcsolja ki, és a
+függő újrapróbáját is megtartja, amíg a feladat a lemezen van és engedélyezett. A `PUT` és a `toggle` ilyen feladatra 409-et ad,
 hogy ne "mossa tisztára" az idegen tartalmat.
 
 Feloldás, ha a változás jogos: mentsd a dashboardon/API-n át, vagy nézd át a fájlokat és regisztráld:
