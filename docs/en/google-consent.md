@@ -18,7 +18,7 @@ the scopes every configured consumer needs, and writes the resulting token into
 each consumer file:
 
 - **Phone friendly.** `link` prints one URL. The owner opens it, approves, and
-  copies the `http://localhost/?code=...` address back (the page itself will not
+  copies the `http://localhost/?state=...&code=...` address back (the page itself will not
   load, that is expected). No local web server, no browser on the host.
 - **Nothing is dropped.** The scopes a consumer file already carries are added to
   the configured floor, so a new consent never quietly loses a scope.
@@ -62,7 +62,7 @@ Override the path with `GOOGLE_CONSENT_CONFIG` or `--config`. Keys:
 python3 scripts/google-consent.py link
 
 # 2. dry run: every check, the list of files and keys that would change, nothing written
-python3 scripts/google-consent.py redeem '<pasted http://localhost/?... URL>' --dry-run
+python3 scripts/google-consent.py redeem '<pasted http://localhost/?state=...&code=... URL>' --dry-run
 
 # 3. the real write (reuses the parked response from the dry run: a code is single use)
 python3 scripts/google-consent.py redeem '<the same URL>'
@@ -85,15 +85,17 @@ token is a 7-day "Testing" token.
 - **No secret is ever printed**: not the client secret, not an access or refresh
   token, not the PKCE verifier. `status` shows which files share a token by group
   letter only.
-- **0600 everywhere.** Token files are written atomically (temp file + rename)
-  with mode 0600 regardless of the umask; every missing directory level is created
+- **0600 everywhere.** Token files are written atomically (a fresh `mkstemp` temp
+  file in the same directory + rename) with mode 0600 regardless of the umask. A
+  token path that is a symlink is refused (exit 2, nothing written) instead of
+  being followed or replaced; every missing directory level is created
   0700. Every existing file is first copied byte for byte to
   `<file>.bak-<timestamp>` (0600, never overwritten).
 - **A code is redeemed only when it is bound to a link this helper issued.** The
   pasted URL's `state` must match a stored PKCE entry (S256), and the exchange
   always sends that entry's `code_verifier`. A bare code, a URL with the `state`
-  removed, or a `state` no `link` issued is refused with exit 2: no network call,
-  nothing written. Otherwise a code someone obtained for their OWN Google account
+  removed, a `state` no `link` issued, or a link older than 60 minutes is refused
+  with exit 2: no network call, nothing written. Otherwise a code someone obtained for their OWN Google account
   on the same client id could be pasted in (social engineering, or a prompt
   injection into an agent running the helper) and would bind every consumer to
   that account. The union and every separate consumer have their own state files,

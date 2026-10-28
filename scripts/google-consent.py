@@ -6,7 +6,7 @@ small API scripts) each keep their own token file, and each one normally asks fo
 its own consent. With one OAuth client that means several refresh tokens that
 expire, get revoked or drift apart independently. This helper asks for ONE consent
 (phone friendly: the owner opens a URL, approves, and copies the
-http://localhost/?code=... address back) and writes the resulting refresh token
+http://localhost/?state=...&code=... address back) and writes the resulting refresh token
 into every configured consumer file, each in that file's own format.
 
 CONFIG (required, untracked, install-specific): store/google-consent.json, or the
@@ -41,11 +41,12 @@ Commands:
   google-consent.py link [--only NAME]
       Prints ONE consent URL on stdout (PKCE S256 + state). The verifier and state
       go to <state_dir>/.google-consent[-NAME]-pkce.json (0600). The last 5 links
-      stay redeemable. No network call.
+      stay redeemable, each for 60 minutes. No network call.
 
-  google-consent.py redeem '<pasted http://localhost/?... URL>' [--only NAME] [--dry-run] [--partial]
-      Refuses a code that is not bound to a link this helper issued (no state, or a
-      state no `link` issued: exit 2, no network call, nothing written); the exchange
+  google-consent.py redeem '<pasted http://localhost/?state=...&code=... URL>' [--only NAME] [--dry-run] [--partial]
+      Refuses a code that is not bound to a link this helper issued (no state, a
+      state no `link` issued, or a link older than 60 minutes: exit 2, no network
+      call, nothing written), and refuses to write through a symlinked token path; the exchange
       always sends that link's PKCE code_verifier. Then redeems the code, checks the
       granted scopes against every consumer, and warns when the response carries
       refresh_token_expires_in (the OAuth app is still in "Testing": the token dies
@@ -83,6 +84,7 @@ import os
 import re
 import secrets
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -96,6 +98,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FORMATS = ("gmail-mcp", "google-auth", "drive-mcp-v2", "raw")
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
 KEEP_LINKS = 5
+LINK_TTL = 3600  # seconds a consent link stays redeemable
 
 # The Gmail MCP keeps short scope names in its top-level "scopes" list (tool filter).
 GMAIL_SHORT = {
@@ -119,6 +122,10 @@ MCP_PATH_OVERRIDES = ("GOOGLE_DRIVE_MCP_TOKEN_PATH", "GOOGLE_CALENDAR_MCP_TOKEN_
 
 class ConfigError(Exception):
     pass
+
+
+class UnsafePath(Exception):
+    """A path this helper would write through is a symlink."""
 
 
 # ---------------------------------------------------------------- small io helpers
@@ -154,11 +161,19 @@ def makedirs_private(d):
         os.chmod(p, 0o700)  # mkdir's mode is masked by the umask
 
 
+def refuse_symlink(path):
+    if os.path.islink(path):
+        raise UnsafePath("refusing to write through a symlink: %s" % path)
+
+
 def write_private(path, text):
-    """Atomic write, final mode 0600, parent dir created 0700 if missing."""
-    makedirs_private(os.path.dirname(path))
-    tmp = "%s.tmp.%d" % (path, os.getpid())
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    """Atomic write, final mode 0600, missing parent dirs created 0700. The temp file is
+    a fresh mkstemp name in the same dir (O_EXCL, never follows a planted link), and a
+    target that is a symlink is refused instead of being replaced or followed."""
+    d = os.path.dirname(path) or "."
+    makedirs_private(d)
+    refuse_symlink(path)
+    fd, tmp = tempfile.mkstemp(dir=d, prefix=".%s.tmp." % os.path.basename(path))
     try:
         with os.fdopen(fd, "w") as f:
             f.write(text)
@@ -173,6 +188,7 @@ def write_private(path, text):
 
 def backup(path, stamp):
     """Byte-exact copy next to the original, mode 0600, never overwrites."""
+    refuse_symlink(path)
     with open(path, "rb") as f:
         raw = f.read()
     base = "%s.bak-%s" % (path, stamp)
@@ -510,9 +526,12 @@ def union_scopes(cfg):
 def load_pkce(path):
     try:
         d = read_json(path)
-        return d if isinstance(d, dict) and isinstance(d.get("entries"), list) else {"entries": []}
     except (OSError, ValueError):
         return {"entries": []}
+    if not isinstance(d, dict) or not isinstance(d.get("entries"), list):
+        return {"entries": []}
+    d["entries"] = [e for e in d["entries"] if isinstance(e, dict)]  # a malformed entry is dropped
+    return d
 
 
 def save_pkce(d, path):
@@ -573,15 +592,16 @@ def cmd_link(cfg, args):
     err("%s%d scopes requested:" % ("SEPARATE consent (%s), " % only if only else "", len(scopes)))
     for s in scopes:
         err("  " + s)
-    err("PKCE verifier + state: %s (0600). Redeem with: redeem %s'<URL>'. The last %d links stay valid."
-        % (path, "--only %s " % only if only else "", KEEP_LINKS))
+    err("PKCE verifier + state: %s (0600). Redeem with: redeem %s'<URL>'. The last %d links stay"
+        " valid, each for %d minutes." % (path, "--only %s " % only if only else "", KEEP_LINKS, LINK_TTL // 60))
     return 0
 
 
 # ---------------------------------------------------------------- redeem
 
 def parse_pasted(raw):
-    """Returns (code, state, error). A bare code comes back with state None; _obtain refuses it."""
+    """Returns (code, state, error). Input without a state (a bare code, or a URL with the
+    state stripped) is parsed with state None, and every caller refuses it (_obtain)."""
     raw = raw.strip().replace("&amp;", "&")
     if "://" in raw or raw.startswith("localhost"):
         if not raw.startswith("http"):
@@ -756,7 +776,7 @@ def _obtain(cfg, code, state, only):
             " helper issued. Nothing was redeemed. Paste the WHOLE http://localhost/?state=...&code=..."
             " address of the link from `link%s`." % (" --only " + only if only else ""))
         return 2
-    if key in pending and isinstance(pending[key], dict) and "response" in pending[key]:
+    if key in pending and isinstance(pending[key], dict) and isinstance(pending[key].get("response"), dict):
         if pending[key].get("state") != state:
             err("ERROR: this code was already redeemed for a different link (state mismatch)."
                 " Nothing was written.")
@@ -777,6 +797,12 @@ def _obtain(cfg, code, state, only):
                 "without --only" if o is None else "with --only %s" % o))
         else:
             err("  Run `link` again and approve the NEW link.")
+        return 2
+    created = entry.get("created")
+    if (not isinstance(created, (int, float)) or isinstance(created, bool)
+            or not -300 < time.time() - created <= LINK_TTL):
+        err("ERROR: this link is older than %d minutes (or has no valid creation time)."
+            " Nothing was redeemed; run `link` again and approve the NEW link." % (LINK_TTL // 60))
         return 2
     verifier = entry.get("verifier")
     if not isinstance(verifier, str) or not verifier:
@@ -812,8 +838,7 @@ def _cleanup(cfg, pending, key, state, only):
         save_pending(pending, pend_path)
     elif os.path.exists(pend_path):
         os.unlink(pend_path)
-    if state:
-        drop_pkce_state(state, pkce_file(cfg, only))
+    drop_pkce_state(state, pkce_file(cfg, only))
 
 
 def _write_one(c, data, text, problem, tok, stamp, dry_run):
@@ -835,9 +860,31 @@ def _write_one(c, data, text, problem, tok, stamp, dry_run):
 
 
 def _no_tokens(resp):
-    if not resp.get("refresh_token") or not resp.get("access_token"):
+    if not all(isinstance(resp.get(k), str) and resp.get(k) for k in ("refresh_token", "access_token")):
         err("ERROR: the response has no refresh_token/access_token. Fields: %s"
             % sorted(k for k in resp if "token" not in k or k.endswith("expires_in")))
+        return True
+    return False
+
+
+def _token(resp, obtained_at):
+    """normalize(), or None with a clean error when a field has the wrong type."""
+    try:
+        return normalize(resp, obtained_at)
+    except (TypeError, ValueError, OverflowError):
+        err("ERROR: the token response has a malformed field (expires_in / obtained_at)."
+            " Nothing was written; run `link` again.")
+        return None
+
+
+def _refuse_symlinked_targets(paths):
+    """Before the first write: a symlinked token path is refused (exit 2), nothing written."""
+    bad = [p for p in paths if os.path.islink(p)]
+    for p in bad:
+        err("ERROR: %s is a symlink; this helper does not write through links. Point the"
+            " consumer's path at the real file." % p)
+    if bad:
+        err("NOTHING was written.")
         return True
     return False
 
@@ -858,7 +905,9 @@ def cmd_redeem_separate(cfg, args):
     resp, obtained_at, pending, key = got
     if _no_tokens(resp):
         return 1
-    tok = normalize(resp, obtained_at)
+    tok = _token(resp, obtained_at)
+    if tok is None:
+        return 1
     granted = set(split_scope(tok["scope"]))
 
     # The grant must be EXACTLY this consumer's scopes (no union scope merged in).
@@ -880,6 +929,8 @@ def cmd_redeem_separate(cfg, args):
         return 3
     testing = _testing_warning(resp, "link --only %s" % only)
 
+    if _refuse_symlinked_targets([c["path"]]):
+        return 2
     stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime())
     print("")
     print("DRY RUN, nothing is written:" if args.dry_run else "Writing:")
@@ -909,7 +960,9 @@ def cmd_redeem(cfg, args):
     resp, obtained_at, pending, key = got
     if _no_tokens(resp):
         return 1
-    tok = normalize(resp, obtained_at)
+    tok = _token(resp, obtained_at)
+    if tok is None:
+        return 1
     granted = set(split_scope(tok["scope"]))
 
     loaded = {n: load_token_file(cfg["consumers"][n]["path"]) for n in cfg["union"]}
@@ -939,6 +992,8 @@ def cmd_redeem(cfg, args):
             " for all of them a new `link` + consent is needed.")
         return 3
 
+    if _refuse_symlinked_targets([cfg["consumers"][n]["path"] for n in cfg["union"] if n not in missing]):
+        return 2
     stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime())
     print("")
     print("DRY RUN, nothing is written:" if args.dry_run else "Writing:")
@@ -1041,7 +1096,8 @@ def main(argv=None):
     lk = sub.add_parser("link", help="print the consent URL")
     lk.add_argument("--only", metavar="NAME", help="separate consent for one separate consumer")
     rd = sub.add_parser("redeem", help="redeem the pasted URL and write the token files")
-    rd.add_argument("url", help="the whole http://localhost/?... address (or the bare code)")
+    rd.add_argument("url", help="the whole http://localhost/?state=...&code=... address the browser"
+                    " landed on after the consent (the state must stay in it)")
     rd.add_argument("--only", metavar="NAME", help="redeem a `link --only NAME` consent")
     rd.add_argument("--dry-run", action="store_true", help="every check, no token file written")
     rd.add_argument("--partial", action="store_true",
@@ -1066,6 +1122,9 @@ def main(argv=None):
     except ConfigError as e:
         err("CONFIG ERROR: %s" % e)
         return 1
+    except UnsafePath as e:
+        err("ERROR: %s. Nothing more was written." % e)
+        return 2
 
 
 if __name__ == "__main__":

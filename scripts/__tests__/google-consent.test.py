@@ -16,6 +16,7 @@ import importlib.util
 import io
 import json
 import os
+import re
 import shutil
 import stat
 import sys
@@ -717,6 +718,166 @@ class UnboundCodeTests(Base):
             with self.assertRaises(self.m.ConfigError):
                 self.m.exchange_code(cfg, "4/0AforeignCODE", v)
         self.assertEqual(self.fake.requests, [])
+
+
+class TextMatchesCodeTests(Base):
+    """Every user-facing text describes exactly the input the code accepts."""
+
+    def help_text(self, *argv):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit) as cm:
+                self.m.main(list(argv) + ["--help"])
+        self.assertEqual(cm.exception.code, 0)
+        return out.getvalue()
+
+    def test_help_never_offers_a_bare_code(self):
+        texts = {a: self.help_text(*a) for a in [(), ("link",), ("redeem",), ("status",)]}
+        for argv, text in texts.items():
+            for bad in ("bare code", "nyers code", "nyers kod"):
+                self.assertNotIn(bad, text.lower(), argv)
+        self.assertIn("?state=", " ".join(texts[("redeem",)].split()))
+
+    def test_example_urls_carry_the_state(self):
+        root = os.path.dirname(SCRIPTS)
+        sources = {"module docstring": self.m.__doc__}
+        for rel in ("docs/google-consent.md", "docs/en/google-consent.md"):
+            with open(os.path.join(root, rel)) as f:
+                sources[rel] = f.read()
+        for name, text in sources.items():
+            for url in re.findall(r"localhost/\?\S*", text):
+                self.assertTrue(url.startswith("localhost/?state="), "%s: %s" % (name, url))
+
+
+class HardeningTests(Base):
+    def test_symlinked_consumer_path_is_refused_before_any_write(self):
+        victim = os.path.join(self.tmp, "victim.json")
+        with open(victim, "w") as f:
+            f.write("VICTIM")
+        os.unlink(self.paths["tags"])
+        os.symlink(victim, self.paths["tags"])
+        _, q = self.link()
+        before = {p: b for p, b in self.snapshot().items() if p in self.paths.values()}
+        self.respond()
+        rc, _, err = self.run_cli("redeem", self.pasted(q["state"][0]))
+        self.assertEqual(rc, 2, err)
+        self.assertIn("is a symlink", err)
+        self.assertIn("NOTHING was written", err)
+        with open(victim) as f:
+            self.assertEqual(f.read(), "VICTIM")
+        self.assertTrue(os.path.islink(self.paths["tags"]))
+        self.assertEqual({p: b for p, b in self.snapshot().items() if p in self.paths.values()}, before)
+        self.assertFalse(os.path.exists(self.paths["reports"]))
+        self.assertEqual(self.backups(), [])
+
+    def test_symlinked_separate_path_is_refused(self):
+        victim = os.path.join(self.tmp, "victim.json")
+        with open(victim, "w") as f:
+            f.write("VICTIM")
+        os.symlink(victim, self.yt_path)
+        _, q = self.link("--only", "youtube")
+        self.respond(scopes=YT, at=YT_AT, rt=YT_RT)
+        rc, _, err = self.run_cli("redeem", "--only", "youtube", self.pasted(q["state"][0]))
+        self.assertEqual(rc, 2, err)
+        with open(victim) as f:
+            self.assertEqual(f.read(), "VICTIM")
+
+    def test_symlinked_state_file_is_refused(self):
+        victim = os.path.join(self.tmp, "victim.json")
+        with open(victim, "w") as f:
+            f.write("VICTIM")
+        os.symlink(victim, self.pkce())
+        rc, out, err = self.run_cli("link")
+        self.assertEqual(rc, 2, err)
+        self.assertIn("symlink", err)
+        self.assertEqual(out, "")
+        with open(victim) as f:
+            self.assertEqual(f.read(), "VICTIM")
+
+    def test_planted_link_at_the_old_temp_name_is_not_followed(self):
+        victim = os.path.join(self.tmp, "victim.json")
+        with open(victim, "w") as f:
+            f.write("VICTIM")
+        os.symlink(victim, "%s.tmp.%d" % (self.paths["tags"], os.getpid()))
+        _, q = self.link()
+        self.respond()
+        rc, _, err = self.run_cli("redeem", self.pasted(q["state"][0]))
+        self.assertEqual(rc, 0, err)
+        with open(victim) as f:
+            self.assertEqual(f.read(), "VICTIM")
+        self.assertEqual(jload(self.paths["tags"])["refresh_token"], NEW_RT)
+        self.assertFalse(os.path.islink(self.paths["tags"]))
+
+    def test_non_dict_pkce_entries_are_ignored_cleanly(self):
+        _, q = self.link()
+        d = jload(self.pkce())
+        d["entries"] = ["junk", 5, None, ["x"]] + d["entries"]
+        write(self.pkce(), d)
+        self.respond()
+        rc, _, err = self.run_cli("redeem", self.pasted(q["state"][0]))
+        self.assertEqual(rc, 0, err)
+
+    def test_only_malformed_pkce_state_refuses_cleanly(self):
+        for content in ({"entries": ["junk", 5, None]}, {"entries": "x"}, ["x"], "not json"):
+            with self.subTest(content=content):
+                with open(self.pkce(), "w") as f:
+                    f.write(content if isinstance(content, str) else json.dumps(content))
+                before = {p: b for p, b in self.snapshot().items() if p in self.paths.values()}
+                self.fake.requests.clear()
+                self.respond()
+                rc, _, err = self.run_cli("redeem", self.pasted("some-state"))
+                self.assertEqual(rc, 2, err)
+                self.assertEqual(self.fake.requests, [])
+                self.assertEqual({p: b for p, b in self.snapshot().items()
+                                  if p in self.paths.values()}, before)
+
+    def test_link_older_than_60_minutes_is_refused(self):
+        import time as _time
+        cases = {"old": _time.time() - 3601, "missing": None, "string": "123",
+                 "bool": True, "future": _time.time() + 3600}
+        for label, created in cases.items():
+            with self.subTest(label):
+                _, q = self.link()
+                d = jload(self.pkce())
+                if created is None:
+                    d["entries"][-1].pop("created")
+                else:
+                    d["entries"][-1]["created"] = created
+                write(self.pkce(), d)
+                self.fake.requests.clear()
+                self.respond()
+                rc, _, err = self.run_cli("redeem", self.pasted(q["state"][0]))
+                self.assertEqual(rc, 2, label)
+                self.assertIn("60 minutes", err)
+                self.assertEqual(self.fake.requests, [])
+        _, q = self.link()
+        d = jload(self.pkce())
+        d["entries"][-1]["created"] = _time.time() - 3540  # 59 minutes: still fine
+        write(self.pkce(), d)
+        self.respond()
+        self.assertEqual(self.run_cli("redeem", self.pasted(q["state"][0]))[0], 0)
+
+    def test_malformed_token_response_is_a_clean_error(self):
+        bodies = {
+            "expires_in text": {"access_token": NEW_AT, "refresh_token": NEW_RT,
+                                "expires_in": "soon", "scope": " ".join(ALL)},
+            "expires_in list": {"access_token": NEW_AT, "refresh_token": NEW_RT,
+                                "expires_in": [1], "scope": " ".join(ALL)},
+            "refresh_token number": {"access_token": NEW_AT, "refresh_token": 12345,
+                                     "expires_in": 3599, "scope": " ".join(ALL)},
+        }
+        for label, body in bodies.items():
+            with self.subTest(label):
+                _, q = self.link()
+                before = {p: b for p, b in self.snapshot().items() if p in self.paths.values()}
+                self.respond(body=body)
+                code = "4/0Acode-" + label.replace(" ", "-")  # each case its own code
+                rc, _, err = self.run_cli("redeem", self.pasted(q["state"][0], code=code))
+                self.assertEqual(rc, 1, label)
+                self.assertIn("ERROR", err)
+                self.assertNotIn("Traceback", err)
+                self.assertEqual({p: b for p, b in self.snapshot().items()
+                                  if p in self.paths.values()}, before)
 
 
 class SeparateConsentTests(Base):

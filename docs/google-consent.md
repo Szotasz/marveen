@@ -18,7 +18,7 @@ beállított fogyasztó scope-jainak unióját hordozza, és az így kapott toke
 fogyasztó fájljába beírja:
 
 - **Telefonbarát.** A `link` egy URL-t ír ki. A gazda megnyitja, jóváhagyja, és a
-  `http://localhost/?code=...` címet visszamásolja (maga az oldal nem töltődik be,
+  `http://localhost/?state=...&code=...` címet visszamásolja (maga az oldal nem töltődik be,
   ez így rendben van). Nincs helyi webszerver, nem kell böngésző a gépen.
 - **Semmi nem vész el.** Amit egy fogyasztó fájlja már hordoz, az hozzáadódik a
   beállított alaphoz, így egy új jóváhagyás nem dob el csendben scope-ot.
@@ -63,7 +63,7 @@ Az útvonal a `GOOGLE_CONSENT_CONFIG` változóval vagy a `--config` kapcsolóva
 python3 scripts/google-consent.py link
 
 # 2. próbafutás: minden ellenőrzés, a változó fájlok és kulcsok listája, írás nélkül
-python3 scripts/google-consent.py redeem '<visszamásolt http://localhost/?... URL>' --dry-run
+python3 scripts/google-consent.py redeem '<visszamásolt http://localhost/?state=...&code=... URL>' --dry-run
 
 # 3. az éles írás (a próbafutás parkolt válaszát használja: a kód egyszer váltható be)
 python3 scripts/google-consent.py redeem '<ugyanaz az URL>'
@@ -86,15 +86,18 @@ ellenőrizve, de a token 7 napos "Testing" token.
 - **Titok sosem kerül a kimenetre**: sem a kliens-titok, sem access vagy refresh
   token, sem a PKCE verifier. A `status` csak csoportbetűvel jelzi, mely fájlok
   osztoznak egy tokenen.
-- **Mindenhol 0600.** A token-fájlok atomikusan íródnak (ideiglenes fájl +
-  átnevezés), 0600 jogosultsággal, a umasktól függetlenül; a hiányzó mappák
+- **Mindenhol 0600.** A token-fájlok atomikusan íródnak (friss `mkstemp`
+  ideiglenes fájl ugyanabban a mappában + átnevezés), 0600 jogosultsággal, a
+  umasktól függetlenül. Ha egy token-útvonal symlink, elutasítja (2-es kód, nincs
+  írás), nem követi és nem cseréli le; a hiányzó mappák
   minden szintje 0700-zal jön létre. Minden meglévő fájlról előbb bájtra pontos másolat készül:
   `<fájl>.bak-<időbélyeg>` (0600, sosem íródik felül).
 - **Kódot csak akkor vált be, ha egy általa kiadott linkhez kötődik.** A
   visszamásolt URL `state` értékének egy tárolt PKCE-bejegyzéshez (S256) kell
   tartoznia, és a beváltás mindig annak a bejegyzésnek a `code_verifier`-ét küldi.
-  A nyers kódot, a `state` nélküli URL-t és az olyan `state`-et, amit egyik `link`
-  sem adott ki, 2-es kóddal elutasítja: nincs hálózati hívás, nincs írás. Enélkül
+  A nyers kódot, a `state` nélküli URL-t, az olyan `state`-et, amit egyik `link`
+  sem adott ki, és a 60 percnél régebbi linket 2-es kóddal elutasítja: nincs
+  hálózati hívás, nincs írás. Enélkül
   egy kód, amit valaki a SAJÁT Google-fiókjára szerzett ugyanazon a kliensen,
   bemásolható lenne (megtévesztéssel, vagy prompt-injekcióval a szkriptet futtató
   ügynökbe), és minden fogyasztót ahhoz a fiókhoz kötne. Az uniónak és minden külön
