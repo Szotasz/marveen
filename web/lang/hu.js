@@ -1851,6 +1851,7 @@ window._i18n.hu = {
   'onboarding.step1.save_btn':   'Token mentése',
   'onboarding.step1.launch_btn': 'Ügynökök életre keltése',
   'onboarding.step1.token_empty':'Illeszd be a tokent.',
+  'onboarding.step1.owner_login_required':'A Claude-belépés cseréjéhez jelentkezz be a dashboardra a tulajdonosi fiókkal, utána próbáld újra.',
   'onboarding.step1.saved_verified':   'Token elmentve és ellenőrizve.',
   'onboarding.step1.saved_unverified': 'Token elmentve (az ellenőrzés nem futott le, ettől még jó lehet).',
   'onboarding.flow_note': 'A négy lépés egymásra épül: a mentések után a rendszer magától újraindul, és a 4. lépés (párosítás) után kezd válaszolni. Addig a hiányzó lépésekre hivatkozó üzenetek normálisak.',

@@ -1848,6 +1848,7 @@ window._i18n.en = {
   'onboarding.step1.save_btn':   'Save token',
   'onboarding.step1.launch_btn': 'Launch agents',
   'onboarding.step1.token_empty':'Paste the token.',
+  'onboarding.step1.owner_login_required':'To change the Claude login, sign in to the dashboard with the owner account, then try again.',
   'onboarding.step1.saved_verified':   'Token saved and verified.',
   'onboarding.step1.saved_unverified': 'Token saved (verification did not run, it may still be valid).',
   'onboarding.flow_note': 'The four steps build on each other: after each save the system restarts itself, and it begins responding after step 4 (pairing). Until then, messages about missing steps are normal.',
