@@ -337,6 +337,54 @@ class Update(Base):
         e = self.p.meta()["hooks"]["Stop"][0]
         self.assertEqual((e["id"], e["purpose"]), ("stop/log-c", "kept"))
 
+    def hand_label_pretooluse(self):
+        meta = self.p.meta()
+        for k, e in enumerate(meta["hooks"]["PreToolUse"]):
+            e["purpose"] = "hand-written sibling %d" % k
+        self.p.save_meta(meta)
+        return [(e["id"], e["purpose"]) for e in meta["hooks"]["PreToolUse"]]
+
+    def test_inserting_a_same_script_group_keeps_siblings_labels(self):
+        # outgoing-copy-gate is wired on several matchers. A new group of the
+        # same script inserted AHEAD of its siblings must not shift their ids
+        # and purposes down by one: each sibling keeps its own.
+        before = self.hand_label_pretooluse()
+        self.p.settings["hooks"]["PreToolUse"].insert(0, group("outgoing-copy-gate.py", "Write"))
+        self.p.write()
+        self.assertEqual(self.p.update()[0], 0)
+        new = self.p.meta()["hooks"]["PreToolUse"]
+        self.assertEqual([(e["id"], e["purpose"]) for e in new[1:]], before)
+        self.assertNotIn(new[0]["id"], [i for i, _ in before])
+        self.assertNotIn("hand-written", new[0]["purpose"])
+        self.assertTrue(new[0]["gate"])
+
+    def test_ambiguous_fallback_gets_a_fresh_id_not_a_guess(self):
+        # Sibling 0 is edited AND a new group of the same script is inserted:
+        # two leftover groups, one leftover entry. Pairing them would be a
+        # guess, so neither inherits it; the untouched sibling keeps its own.
+        before = self.hand_label_pretooluse()
+        pre = self.p.settings["hooks"]["PreToolUse"]
+        pre[0]["hooks"][0]["command"] = cmd("outgoing-copy-gate.py") + " --strict"
+        pre.insert(0, group("outgoing-copy-gate.py", "Write"))
+        self.p.write()
+        self.p.update()
+        new = self.p.meta()["hooks"]["PreToolUse"]
+        self.assertEqual((new[2]["id"], new[2]["purpose"]), before[1])
+        for e in new[:2]:
+            self.assertNotEqual(e["id"], before[0][0])
+            self.assertNotIn("hand-written", e["purpose"])
+
+    def test_editing_every_sibling_keeps_each_label(self):
+        # The common mass edit (one command shared by every sibling changes):
+        # as many leftover groups as leftover entries, paired in order.
+        before = self.hand_label_pretooluse()
+        for g in self.p.settings["hooks"]["PreToolUse"]:
+            g["hooks"][0]["command"] = cmd("outgoing-copy-gate.py") + " --v2"
+        self.p.write()
+        self.assertEqual(self.p.update()[0], 0)
+        new = self.p.meta()["hooks"]["PreToolUse"]
+        self.assertEqual([(e["id"], e["purpose"]) for e in new], before)
+
     def test_same_script_on_several_matchers_gets_unique_ids(self):
         ids = [e["id"] for e in self.p.meta()["hooks"]["PreToolUse"]]
         self.assertEqual(ids, ["pre-tool-use/outgoing-copy-gate", "pre-tool-use/outgoing-copy-gate/send-email"])
@@ -531,6 +579,40 @@ class Cli(Base):
                 with open(self.p.meta_path, "w", encoding="utf-8") as f:
                     f.write(json.dumps(meta, indent=2))  # ensure_ascii: surrogates stay escaped
                 self.assert_preflight_refuses(label)
+
+    def test_update_refuses_settings_without_hooks_key_when_sidecar_has_entries(self):
+        self.p.settings = {"enabledPlugins": {"x": True}}
+        self.p.write()
+        self.assert_preflight_refuses("no hooks key")
+        # Nothing to lose: an empty sidecar (or none) regenerates fine.
+        meta = self.p.meta()
+        meta["hooks"] = {}
+        self.p.save_meta(meta)
+        self.assertEqual(self.p.update()[0], 0)
+        os.remove(self.p.meta_path)
+        self.assertEqual(self.p.update()[0], 0)
+
+    def test_deeply_nested_input_is_exit_2_without_traceback(self):
+        deep = "[" * 200000 + "]" * 200000
+        with open(self.p.meta_path, "rb") as f:
+            pristine = f.read()
+        for target in ("sidecar", "settings"):
+            with self.subTest(target=target):
+                path = self.p.meta_path if target == "sidecar" else self.p.settings_path
+                with open(path, "w") as f:
+                    f.write(deep)
+                if target == "sidecar":
+                    self.assert_preflight_refuses("deep sidecar")
+                else:
+                    with open(self.p.meta_path, "wb") as f:
+                        f.write(pristine)
+                    self.assert_preflight_refuses("deep settings")
+                val = self.run_cli("--settings", self.p.settings_path)
+                self.assertEqual(val.returncode, 2, val.stderr[-300:])
+                self.assertNotIn("Traceback", val.stderr)
+                with open(self.p.meta_path, "wb") as f:
+                    f.write(pristine)
+                self.p.write()
 
     def test_update_preflight_runs_before_any_temp_file(self):
         # A refused run must not even create the temp file: mkstemp is not

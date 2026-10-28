@@ -76,13 +76,16 @@ One invariant, enforced by a single function (`preflight()`) that is the only ga
 
 Carry-over rule: it writes back exactly what it read, except the fields it regenerates (`version`, `_comment` and the `hooks` entries; ids and purposes follow their hook). A present `non_disableable` value is written back verbatim, `null` included. Unknown top-level keys are carried over unchanged rather than refused (the gentler choice: nothing is lost). The `gate` flags come from the effective lock list (built-in floor plus the sidecar's `non_disableable` names); while that list is malformed, an entry keeps its old flag.
 
+Which old entry a group inherits (its `id` and `purpose`), so that a label never moves to a different group: first every exact fingerprint match at the same position, across all groups; then every remaining exact fingerprint match anywhere in the event (a moved hook); only then, for the leftovers (an edited command or matcher), the leftover groups of one script inherit the leftover entries of that script in order, and only when both counts are equal. If they differ (an edit mixed with an insert or delete of the same script), pairing them would be a guess, so those groups get a fresh id and a drafted purpose; an old id that no group inherits is not reused in that run. Inserting a new group of a script that is already wired several times (for example `outgoing-copy-gate`) therefore leaves every sibling's id and purpose where it was.
+
 | Input state | Validator | `--update` |
 |---|---|---|
-| settings: missing, cannot be opened, or not valid JSON | exit 2 (unreadable input) | exit 2, refuses |
+| settings: missing, cannot be opened, not valid JSON, or nested too deeply to parse | exit 2 (unreadable input) | exit 2, refuses |
+| settings: no `hooks` key while the sidecar has entries (a truncated or wrong file is more likely than "every hook removed") | exit 1, `ORPHAN_METADATA` for every entry | exit 2, refuses; remove the entries by hand if every hook really went |
 | settings: top level or `hooks` not an object, an event not an array, a group / handler not an object, a group without a non-empty `hooks` array, a command handler without `command`, text that is not valid UTF-8 | exit 1, `SCHEMA` | exit 2, refuses |
 | settings: a key outside the hook schema (`id`, `description` ...) | exit 1, `FORBIDDEN_KEY` | exit 2, refuses |
 | settings: a command names a missing script | exit 1, `MISSING_SCRIPT` | writes (nothing is lost), then exit 1 `MISSING_SCRIPT` |
-| sidecar: cannot be opened, or not valid JSON (e.g. merge-conflict markers) | exit 2, `cannot read metadata` | exit 2, refuses |
+| sidecar: cannot be opened, not valid JSON (e.g. merge-conflict markers), or nested too deeply to parse | exit 2, `cannot read metadata` | exit 2, refuses |
 | sidecar: top level or `hooks` not an object (or `hooks` missing), an event not an array, an entry not an object | exit 1, `BAD_METADATA` | exit 2, refuses |
 | sidecar entry: an unknown key, a missing key, or a wrong type (`index` int, `id` non-empty string, `hook` string or null, `gate` boolean, `purpose` string, `fingerprint` string), or a repeated `id` | exit 1, `BAD_METADATA` for `index`, `id`, `fingerprint`, `gate`, `hook`; `purpose` is not type-checked (a missing one warns) | exit 2, refuses |
 | sidecar: `version` present and not exactly the integer 1 (`true`, `"1"`, `1.0`, `2`) | not checked | exit 2, refuses |

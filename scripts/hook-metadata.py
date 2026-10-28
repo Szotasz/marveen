@@ -150,7 +150,7 @@ def load_json(path, label):
             return json.load(f)
     except FileNotFoundError:
         msg = "error: %s not found: %s" % (label, path)
-    except (OSError, ValueError) as e:
+    except (OSError, ValueError, RecursionError) as e:
         msg = "error: cannot read %s %s: %s" % (label, path, e)
     print(msg, file=sys.stderr)
     raise SystemExit(2)
@@ -175,6 +175,8 @@ def check_structure(events, project_dir, findings, warnings):
         json.dumps(events, ensure_ascii=False).encode("utf-8")
     except UnicodeEncodeError as e:
         findings.append(Finding("SCHEMA", "hooks", "contains text that is not valid UTF-8 (%s)" % e))
+    except RecursionError:
+        findings.append(Finding("SCHEMA", "hooks", "is nested too deeply to process"))
     for event, groups in events.items():
         if event not in KNOWN_EVENTS:
             warnings.append("unknown hook event %r (typo, or newer than this validator?)" % event)
@@ -376,6 +378,49 @@ def event_slug(event):
     return re.sub(r"(?<!^)(?=[A-Z])", "-", event).lower()
 
 
+def match_old_entries(groups_info, old_meta):
+    """{(event, index): old entry} -- which old entry each settings group inherits.
+
+    An id / purpose follows its hook and never moves to a different group:
+    1. every exact fingerprint match at the same slot, across ALL groups;
+    2. every remaining exact fingerprint match anywhere (a moved hook);
+    3. only for the leftovers (an edited command or matcher): per event and
+       hook name, the leftover groups inherit the leftover entries in order,
+       but ONLY when both counts are equal. Otherwise (an edit mixed with an
+       insert or a delete of the same script) the pairing would be a guess,
+       so those groups get a fresh id and a drafted purpose instead.
+    """
+    old = [(ev, j, e) for ev, entries in old_meta.items() for j, e in enumerate(entries) if isinstance(e, dict)]
+    used, prev_of = set(), {}
+
+    def take(pred):
+        for gi in groups_info:
+            key = (gi[0], gi[1])
+            if key in prev_of:
+                continue
+            for k, (ev, j, e) in enumerate(old):
+                if k not in used and pred(gi, ev, j, e):
+                    used.add(k)
+                    prev_of[key] = e
+                    break
+
+    take(lambda gi, ev, j, e: ev == gi[0] and j == gi[1] and e.get("fingerprint") == gi[3])
+    take(lambda gi, ev, j, e: ev == gi[0] and e.get("fingerprint") == gi[3])
+    left_groups, left_entries = {}, {}
+    for gi in groups_info:
+        if (gi[0], gi[1]) not in prev_of:
+            left_groups.setdefault((gi[0], gi[4]), []).append((gi[0], gi[1]))
+    for k, (ev, j, e) in enumerate(old):
+        if k not in used:
+            left_entries.setdefault((ev, e.get("hook")), []).append(e)
+    for key, slots in left_groups.items():
+        entries = left_entries.get(key, [])
+        if len(entries) == len(slots):
+            for slot, e in zip(slots, entries):
+                prev_of[slot] = e
+    return prev_of
+
+
 def build_metadata(events, old_meta, project_dir, locked_set, carried=None, keep_old_gate=False):
     """A fresh sidecar for `events`.
 
@@ -385,22 +430,19 @@ def build_metadata(events, old_meta, project_dir, locked_set, carried=None, keep
     install's own locks are unknown; an entry keeps its old gate flag (the
     built-in floor still forces gate=true).
     """
-    old_entries = []
-    for event, entries in old_meta.items():
-        for i, e in enumerate(entries):
-            if isinstance(e, dict):
-                old_entries.append((event, i, e))
-    used = set()
-
-    def claim(pred):
-        for k, (ev, j, e) in enumerate(old_entries):
-            if k not in used and pred(ev, j, e):
-                used.add(k)
-                return e
-        return None
+    groups_info = []  # (event, index, group, fingerprint, hook name), settings order
+    for event, groups in events.items():
+        for i, group in enumerate(groups):
+            if isinstance(group, dict):  # preflight refuses anything else
+                groups_info.append((event, i, group, fingerprint(event, group), hook_name(group, project_dir)))
+    prev_of = match_old_entries(groups_info, old_meta)
 
     new = {}
-    taken = set()
+    # An old id that no group inherits is not handed out again in this run:
+    # a fresh id must not look like the label of a different, older hook.
+    inherited = {id(e) for e in prev_of.values()}
+    taken = {e.get("id") for entries in old_meta.values() for e in entries
+             if isinstance(e, dict) and id(e) not in inherited}
     pending = []  # entries that still need a fresh id
     for event, groups in events.items():
         out = []
@@ -409,9 +451,7 @@ def build_metadata(events, old_meta, project_dir, locked_set, carried=None, keep
                 continue
             fp = fingerprint(event, group)
             name = hook_name(group, project_dir)
-            prev = (claim(lambda ev, j, e: ev == event and j == i and e.get("fingerprint") == fp)
-                    or claim(lambda ev, j, e: e.get("fingerprint") == fp)
-                    or claim(lambda ev, j, e: ev == event and j == i and e.get("hook") == name))
+            prev = prev_of.get((event, i))
             entry = {
                 "index": len(out),
                 "id": prev.get("id") if prev and prev.get("id") not in taken else None,
@@ -514,7 +554,7 @@ def read_input(path):
         with open(path, encoding="utf-8") as f:
             text = f.read()
         return text, json.loads(text), None
-    except (OSError, ValueError) as e:
+    except (OSError, ValueError, RecursionError) as e:
         return None, None, str(e)
 
 
@@ -585,6 +625,13 @@ def preflight(settings_path, metadata_path, project_dir):
             reasons.append("cannot read it as JSON (%s)" % why)
         else:
             reasons.extend(sidecar_reasons(raw))
+            has_entries = isinstance(raw, dict) and isinstance(raw.get("hooks"), dict) and any(
+                isinstance(v, list) and v for v in raw["hooks"].values())
+            if has_entries and isinstance(settings, dict) and "hooks" not in settings:
+                # Most likely a truncated or wrong settings file; regenerating
+                # would silently empty every entry (ids, purposes).
+                reasons.append("the settings have no 'hooks' key but the sidecar has entries; "
+                               "if every hook was removed on purpose, delete the sidecar entries by hand")
     if reasons:
         return reasons, None
 

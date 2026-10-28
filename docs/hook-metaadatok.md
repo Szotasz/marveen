@@ -76,13 +76,16 @@ Egyetlen szabály, egyetlen függvény (`preflight()`) őrzi, ez az írás előt
 
 Átviteli szabály: pontosan azt írja vissza, amit beolvasott, kivéve az általa újragenerált mezőket (`version`, `_comment` és a `hooks` bejegyzései; az id és a purpose a hookjával megy). A meglévő `non_disableable` értéket változatlanul visszaírja, a `null`-t is. Az ismeretlen felső szintű kulcsokat megtagadás helyett változatlanul átviszi (a kíméletesebb választás: semmi nem vész el). A `gate` jelzők a tényleges zárolási listából jönnek (beépített alap és az oldalfájl `non_disableable` nevei); amíg ez a lista hibás, a bejegyzés megtartja a régi jelzőjét.
 
+Melyik régi bejegyzést örökli egy csoport (az `id`-jét és a `purpose`-át), úgy, hogy egy címke soha ne kerüljön másik csoporthoz: először minden pontos ujjlenyomat-egyezés ugyanazon a helyen, az összes csoporton át; utána minden maradék pontos ujjlenyomat-egyezés bárhol az eseményen belül (áthelyezett hook); csak ezután, a maradékokra (átírt parancs vagy matcher), egy szkript maradék csoportjai sorrendben öröklik ugyanannak a szkriptnek a maradék bejegyzéseit, és csak akkor, ha a két szám egyenlő. Ha eltér (átírás és ugyanannak a szkriptnek a beszúrása vagy törlése egyszerre), a párosítás találgatás lenne, ezért ezek a csoportok friss id-t és generált purpose-t kapnak; az a régi id, amit egy csoport sem örököl, abban a futásban nem kerül újra kiosztásra. Ha tehát egy többször bekötött szkript (például `outgoing-copy-gate`) új csoportját szúrod be, minden testvér id-je és purpose-a a helyén marad.
+
 | A bemenet állapota | Validátor | `--update` |
 |---|---|---|
-| settings: hiányzik, nem nyitható meg, vagy nem érvényes JSON | 2-es kód (olvashatatlan bemenet) | 2-es kód, megtagadja |
+| settings: hiányzik, nem nyitható meg, nem érvényes JSON, vagy túl mélyen egymásba ágyazott | 2-es kód (olvashatatlan bemenet) | 2-es kód, megtagadja |
+| settings: nincs `hooks` kulcs, miközben az oldalfájlban vannak bejegyzések (valószínűbb a csonka vagy rossz fájl, mint hogy minden hook megszűnt) | 1-es kód, minden bejegyzésre `ORPHAN_METADATA` | 2-es kód, megtagadja; ha tényleg minden hook megszűnt, a bejegyzéseket kézzel töröld |
 | settings: a felső szint vagy a `hooks` nem objektum, egy esemény nem tömb, egy csoport / handler nem objektum, egy csoportnak nincs nem üres `hooks` tömbje, egy command handlernek nincs `command`-ja, nem érvényes UTF-8 szöveg | 1-es kód, `SCHEMA` | 2-es kód, megtagadja |
 | settings: hook-sémán kívüli kulcs (`id`, `description` ...) | 1-es kód, `FORBIDDEN_KEY` | 2-es kód, megtagadja |
 | settings: a parancs nem létező szkriptre mutat | 1-es kód, `MISSING_SCRIPT` | ír (semmi nem vész el), utána 1-es kód, `MISSING_SCRIPT` |
-| oldalfájl: nem nyitható meg, vagy nem érvényes JSON (például merge-konfliktus jelölők) | 2-es kód, `cannot read metadata` | 2-es kód, megtagadja |
+| oldalfájl: nem nyitható meg, nem érvényes JSON (például merge-konfliktus jelölők), vagy túl mélyen egymásba ágyazott | 2-es kód, `cannot read metadata` | 2-es kód, megtagadja |
 | oldalfájl: a felső szint vagy a `hooks` nem objektum (vagy a `hooks` hiányzik), egy esemény nem tömb, egy bejegyzés nem objektum | 1-es kód, `BAD_METADATA` | 2-es kód, megtagadja |
 | oldalfájl-bejegyzés: ismeretlen vagy hiányzó kulcs, rossz típus (`index` egész, `id` nem üres szöveg, `hook` szöveg vagy null, `gate` logikai, `purpose` szöveg, `fingerprint` szöveg), vagy ismételt `id` | 1-es kód, `BAD_METADATA` az `index`, `id`, `fingerprint`, `gate`, `hook` mezőre; a `purpose` típusát nem nézi (a hiányzóra figyelmeztet) | 2-es kód, megtagadja |
 | oldalfájl: a `version` megvan, de nem pontosan az 1-es egész (`true`, `"1"`, `1.0`, `2`) | nem ellenőrzi | 2-es kód, megtagadja |
