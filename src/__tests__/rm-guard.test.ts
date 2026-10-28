@@ -37,6 +37,13 @@ describe('rm-guard (global setup file)', () => {
     if ((fs as unknown as Record<symbol, unknown>)[MARKER] !== true) {
       throw new Error('rm-guard is not installed: the setup file is missing from vitest setupFiles')
     }
+    // The marker sits on the CJS object; the root cases call the NAMED and namespace bindings, so
+    // prove those are wrapped too (harmless probe: a path that does not exist) before any of them runs.
+    for (const [name, call] of [['named rmSync', rmSync], ['namespace fsNs.rmSync', fsNs.rmSync]] as const) {
+      let refused = false
+      try { call(nonexistentOutside(), { recursive: true, force: true }) } catch (e) { refused = REFUSED.test(String(e)) }
+      if (!refused) throw new Error(`rm-guard does not cover the ${name} binding: refusing to run the root cases`)
+    }
   })
 
   it('is installed', () => {
