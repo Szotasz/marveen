@@ -43,7 +43,7 @@ them can write instructions, so a caller treats the text as data.
 ## 🛠 How it works
 
 **Rate limits.** A Graph error with any throttling code of Meta's rate-limiting page is retried, at most 6 calls
-in all: `4` app, `17` user, `32` Pages calls with a user token, `613` custom, and the Business Use Case codes
+per request (`--page` makes two requests, so up to 12 in total): `4` app, `17` user, `32` Pages calls with a user token, `613` custom, and the Business Use Case codes
 `80000` ads insights, `80001` Pages (page or system-user token), `80002` Instagram, `80003` custom audience,
 `80004` ads management, `80005` LeadGen, `80006` Messenger, `80008` WhatsApp Business Management, `80009`
 catalog management, `80014` catalog batch (source: developers.facebook.com/docs/graph-api/overview/rate-limiting,

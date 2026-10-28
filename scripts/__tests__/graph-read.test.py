@@ -117,8 +117,11 @@ def main():
             fh.write(b"\xff\xfe nem utf-8")
         check("szunet-fajl: olvashatatlan .env -> alapertelmezes",
               m.pause_path(root, {}), os.path.join(root, "store", "meta-graph-pause.json"))
-    check("szunet-fajl a modulban: a telepites gyokere alatt",
-          m.PAUSE_PATH.startswith(ROOT + os.sep) or os.path.isabs(m.PAUSE_PATH), True)
+    if os.environ.get("META_GRAPH_PAUSE_FILE", "").strip():
+        print("  SKIP szunet-fajl a modulban (META_GRAPH_PAUSE_FILE be van allitva)")
+    else:
+        check("szunet-fajl a modulban, env nelkul: a telepites gyokere alatt",
+              m.PAUSE_PATH.startswith(ROOT + os.sep), True)
     with tempfile.TemporaryDirectory() as td:
         tokf = os.path.join(td, ".meta-token")
         with open(tokf, "w") as fh:
@@ -448,9 +451,11 @@ def main():
                 if os.path.exists(f):
                     os.remove(f)
 
-        # 12a. app (4), Pages with a user token (32), Pages BUC (80001),
-        # Instagram BUC (80002) and the other BUC codes: retried + pause written
-        for code_ in (4, 32, 80001, 80002, 80005, 80006, 80008, 80009):
+        # 12a. EVERY code of LIMIT_CODES, driven from the tuple itself (a code
+        # added later is tested the day it is added): retried + pause written
+        tested = []
+        for code_ in m.LIMIT_CODES:
+            tested.append(code_)
             fresh2()
             t0 = clock[0]
             op = SeqOpener([("limit", code_, {}), ("ok", {})])
@@ -460,6 +465,15 @@ def main():
             check("korlat-kod %d: ujraprobalva (2 hivas, exit 0, 60 mp)" % code_,
                   (len(op.calls), code, sleeps), (2, 0, [60]))
             check("korlat-kod %d: kozos szunet beirva (t0 + 60)" % code_, bu, t0 + 60)
+        # guard: the loop above walked the whole tuple, and the tuple still
+        # carries every throttling code of Meta's rate-limiting page
+        documented = (4, 17, 32, 613, 80000, 80001, 80002, 80003, 80004, 80005, 80006,
+                      80008, 80009, 80014)
+        check("orszem: minden LIMIT_CODES-kod tesztelve", tested, list(m.LIMIT_CODES))
+        check("orszem: a LIMIT_CODES nem ures, nincs benne ismetles",
+              (len(m.LIMIT_CODES) > 0, len(set(m.LIMIT_CODES)) == len(m.LIMIT_CODES)), (True, True))
+        check("orszem: a dokumentalt kodok mind a LIMIT_CODES-ban",
+              sorted(set(documented) - set(m.LIMIT_CODES)), [])
         fresh2()
         bad_calls = []
 
@@ -568,6 +582,29 @@ def main():
         code, out, err = run(m, ["123/feed", "fields=id"], lambda req, timeout=None: FakeResp(nxt))
         check("paging.next: a token maszkolva, a kurzor megmarad",
               (code, USER_TOK in out, "<token>" in out, "QVFI" in out), (0, False, True, True))
+
+        # 13. review k2: clean exit 1, never an exception
+        def no_exc(label, fn, want=1):
+            try:
+                code_ = fn()
+                check(label, code_, want)
+            except Exception as exc:  # noqa: BLE001
+                check(label + " (kivetel nelkul)", repr(exc), None)
+        with open(tokf, "wb") as fh:
+            fh.write(b"\xff\xfe nem utf-8")
+        no_exc("nem UTF-8 tokenfajl: exit 1",
+               lambda: run(m, ["123", "fields=id"], FakeOpener())[0])
+        with open(tokf, "w") as fh:
+            fh.write(USER_TOK + "\n")
+        for bad_tok in (12345, ["x"], {"t": 1}):
+            no_exc("me/accounts nem szoveges oldal-token (%r): exit 1" % (bad_tok,),
+                   lambda b=bad_tok: run(m, ["111", "fields=id", "--page", "111"],
+                                         lambda req, timeout=None: FakeResp(
+                                             {"data": [{"id": "111", "access_token": b}]}))[0])
+        no_exc("kodolhatatlan argumentum (maganyos surrogate): exit 1",
+               lambda: run(m, ["123", "fields=id\udcff"], FakeOpener())[0])
+        no_exc("kodolhatatlan utvonal-parameter-ertek (since=): exit 1",
+               lambda: run(m, ["123", "since=\ud800"], FakeOpener())[0])
 
     print()
     if fails:

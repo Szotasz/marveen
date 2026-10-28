@@ -42,8 +42,8 @@ hálózati vagy API-hiba.
 
 ## 🛠 Hogyan működik
 
-**Hívásszám-korlát.** A Meta korlátozási oldalán szereplő minden korlát-kódot újrapróbál, összesen legfeljebb 6
-hívásig: `4` alkalmazás, `17` felhasználó, `32` oldal-hívás felhasználói tokennel, `613` egyedi, és a Business
+**Hívásszám-korlát.** A Meta korlátozási oldalán szereplő minden korlát-kódot újrapróbál, kérésenként legfeljebb 6
+hívásig (a `--page` két kérés, így összesen legfeljebb 12): `4` alkalmazás, `17` felhasználó, `32` oldal-hívás felhasználói tokennel, `613` egyedi, és a Business
 Use Case kódok: `80000` hirdetés-statisztika, `80001` oldalak (oldal- vagy rendszerfelhasználói token), `80002`
 Instagram, `80003` egyéni közönség, `80004` hirdetéskezelés, `80005` LeadGen, `80006` Messenger, `80008` WhatsApp
 Business Management, `80009` katalóguskezelés, `80014` katalógus-köteg (forrás:

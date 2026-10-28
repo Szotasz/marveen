@@ -38,8 +38,12 @@ guarantees it is a read:
 
 Rate limits (stdlib only, because this runs on the system python3): a Graph
 error whose code is in LIMIT_CODES (every throttling code of Meta's
-rate-limiting page: 4 app, 17 user, 32 and 80001 Pages, 80002 Instagram, 613
-custom, the other Business Use Case codes 80000-80014) is retried, at most ATTEMPTS calls in all. The wait
+rate-limiting page: 4 app, 17 user, 32 Pages with a user token, 613 custom,
+and the Business Use Case codes 80000 ads insights, 80001 Pages, 80002
+Instagram, 80003 custom audience, 80004 ads management, 80005 LeadGen, 80006
+Messenger, 80008 WhatsApp Business Management, 80009 catalog management,
+80014 catalog batch) is retried, at most ATTEMPTS calls per request (with
+--page, two requests: up to 2 * ATTEMPTS in all). The wait
 comes from the error's headers when they carry one (X-Business-Use-Case-Usage
 estimated_time_to_regain_access in minutes, X-Ad-Account-Usage
 reset_time_duration in seconds; the largest + PAD_SEC), else 60 * 2^(n-1) s,
@@ -440,8 +444,9 @@ def fetch_retry(url, opener, secrets, note, budget):
 
 def user_token():
     try:
-        tok = open(TOKEN_PATH, encoding="utf-8").read().strip()
-    except OSError as exc:
+        with open(TOKEN_PATH, encoding="utf-8") as fh:
+            tok = fh.read().strip()
+    except (OSError, UnicodeDecodeError) as exc:
         raise RuntimeError("a Meta-token nem olvashato (%s): %s"
                            % (TOKEN_PATH, exc.__class__.__name__))
     if not tok:
@@ -498,6 +503,9 @@ def main(argv=None, opener=None, out=None, err=None):
                          if isinstance(p, dict) and str(p.get("id")) == page), None)
             if not ptok:
                 raise RuntimeError("a(z) %s oldalhoz nincs token ezen a fiokon" % page)
+            if not isinstance(ptok, str):
+                raise RuntimeError("a(z) %s oldal tokenje nem szoveg a me/accounts valaszban (%s)"
+                                   % (page, type(ptok).__name__))
             secrets.append(ptok)
             tok = ptok
         data = fetch_retry(build_url(path, params, tok), opener, secrets, note, budget)
@@ -509,7 +517,17 @@ def main(argv=None, opener=None, out=None, err=None):
     except RuntimeError as exc:
         err.write("graph-read: %s\n" % _redact(str(exc), secrets))
         return 1
-    out.write(_redact(json.dumps(_scrub(data), indent=2, ensure_ascii=False), secrets) + "\n")
+    except (ValueError, TypeError) as exc:
+        # e.g. a UnicodeEncodeError of an argument that cannot be URL-encoded
+        err.write("graph-read: ervenytelen bemenet vagy valasz (%s): %s\n"
+                  % (exc.__class__.__name__, _redact(str(exc), secrets)))
+        return 1
+    try:
+        text = json.dumps(_scrub(data), indent=2, ensure_ascii=False)
+    except (ValueError, TypeError) as exc:
+        err.write("graph-read: a valasz nem irhato ki (%s)\n" % exc.__class__.__name__)
+        return 1
+    out.write(_redact(text, secrets) + "\n")
     return 0
 
 
