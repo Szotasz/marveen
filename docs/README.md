@@ -27,6 +27,7 @@ Minden lap két szemszögből mutatja be a funkciót:
 | [Proaktív hírszerző (intel registry)](intel-registry.md) | Óránkénti gyűjtő + napi brief közös SQLite tény-registry-vel, dedup + tény-életciklus |
 | [Háttér-feladatok](background-tasks.md) | Leválasztott, hosszú feladatok futtatása + értesítés |
 | [Piros gomb: a flotta fagyasztása](fleet-freeze.md) | Egy mozdulattal leállítható flotta: eszközhívás-tiltás, álló háttér-ciklusok, feloldás csak a gazdának |
+| [Meta Graph olvasó](meta-graph-olvasas.md) | Csak olvasó Facebook/Instagram Graph-hívások egy paranccsal: kizárólag GET, a token a store-ból, közös hívásszám-szünet ([EN](en/meta-graph-read.md)) |
 | [macOS: Spotlight és a System Data](macos-spotlight.md) | Ha a „System Data” nő: a Spotlight-index a sok napló/jsonl/sqlite írástól; ellenőrzés, javítás a Keresési adatvédelem listával |
 
 *A dokumentáció él; javításokat/bővítéseket szívesen fogadunk.*
