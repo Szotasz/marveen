@@ -38,6 +38,15 @@ export function writeEnvFileFresh(envPath: string, content: string): void {
 
 const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/
 
+// .env is line-based and its values are written unquoted, so a line break (or
+// NUL) in a value, or a key that is not a plain env name, would add a line of
+// the caller's choosing. Every .env writer runs this before touching the file
+// (FLEETIMPORTENVKEY1021, ENVINJECT1028).
+export function assertEnvEntry(key: string, value: string): void {
+  if (!ENV_KEY_RE.test(key)) throw new Error(`refusing to write .env: ${JSON.stringify(key)} is not an env key name`)
+  if (/[\r\n\0]/.test(value)) throw new Error(`refusing to write .env: the value of ${key} holds a line break or NUL`)
+}
+
 // Update (or append) the given keys in .env, preserving every other line,
 // comment, and the original ordering. Used by fleet import to mirror the
 // main-agent identity takeover into .env: the dashboard resolves identity via
@@ -56,13 +65,8 @@ export function updateEnvFile(updates: Record<string, string>): void {
     ([, v]) => typeof v === 'string' && v.length > 0,
   )
   if (entries.length === 0) return
-  // FLEETIMPORTENVKEY1021: values are written unquoted, one KEY=value per line,
-  // so a line break (or NUL) in a value, or a key that is not a plain env name,
-  // would add a line of the caller's choosing. Refused before the file is read.
-  for (const [key, val] of entries) {
-    if (!ENV_KEY_RE.test(key)) throw new Error(`refusing to write .env: ${JSON.stringify(key)} is not an env key name`)
-    if (/[\r\n\0]/.test(val)) throw new Error(`refusing to write .env: the value of ${key} holds a line break or NUL`)
-  }
+  // Refused before the file is read (FLEETIMPORTENVKEY1021).
+  for (const [key, val] of entries) assertEnvEntry(key, val)
 
   let content = ''
   try {

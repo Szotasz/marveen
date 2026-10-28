@@ -19,6 +19,8 @@ import {
 import { liveProbeAuth, stampTokenVerified } from '../claude-credentials-guard.js'
 import { json, readBody } from '../http-helpers.js'
 import { isManagedSettingsReady, getManagedSettingsSudoCommand } from './agents.js'
+import { mayIssueCredentials, OWNER_SESSION_REQUIRED } from './auth.js'
+import { assertEnvEntry } from '../../env.js'
 import type { RouteContext } from './types.js'
 
 const execFileAsync = promisify(execFile)
@@ -194,6 +196,7 @@ function agentsRunning(): boolean {
 // Atomic, idempotent .env update for one key: drop any prior line for the key,
 // keep every other line verbatim, append the new value, chmod 600. Never sed.
 function setEnvKey(key: string, value: string): void {
+  assertEnvEntry(key, value)
   let lines: string[] = []
   try { lines = readFileSync(ENV_FILE, 'utf-8').split('\n') } catch { /* fresh .env */ }
   const kept = lines.filter((l) => l.length > 0 && !l.startsWith(key + '='))
@@ -385,6 +388,13 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
   // Store a Claude setup-token (OAuth) or API key. The value is NEVER logged or
   // echoed back -- only { ok, verified }. Zero owner/access-config clobber.
   if (path === '/api/onboarding/claude-auth' && method === 'POST') {
+    // It replaces the credential the whole fleet runs on, so the shared
+    // dashboard token alone is not enough once a dashboard login exists
+    // (the first-run wizard runs before that, and is unaffected).
+    if (!mayIssueCredentials(ctx.auth, req)) {
+      json(res, OWNER_SESSION_REQUIRED, 403)
+      return true
+    }
     let body: { token?: string; apiKey?: string } = {}
     try { body = JSON.parse((await readBody(req)).toString()) as typeof body } catch { /* empty */ }
     const token = (body.token ?? '').trim()
@@ -392,6 +402,8 @@ export async function tryHandleOnboarding(ctx: RouteContext): Promise<boolean> {
     if (!token && !apiKey) { json(res, { error: 'token vagy apiKey szukseges.', reason: 'missing' }, 400); return true }
     if (token && !/^sk-ant-oat/.test(token)) { json(res, { error: 'A setup-token formatuma nem stimmel (sk-ant-oat...).', reason: 'bad-token' }, 400); return true }
     if (apiKey && !/^sk-ant-/.test(apiKey)) { json(res, { error: 'Az API-kulcs formatuma nem stimmel (sk-ant-...).', reason: 'bad-key' }, 400); return true }
+    // One line only: .env is line-based (ENVINJECT1028). Refused before the live probe and any write.
+    if (/[\r\n\0]/.test(token + apiKey)) { json(res, { error: 'A token/kulcs nem tartalmazhat sortorest.', reason: token ? 'bad-token' : 'bad-key' }, 400); return true }
 
     // Read BEFORE persisting: on a fresh install the channels session is
     // booted by the installer/service unit with NO credentials, so if the
