@@ -24,8 +24,9 @@ Angol változat: [en/heavy-job-gate.md](en/heavy-job-gate.md).
   scope-ot leállítja, így egy háttérben hagyott gyerekfolyamat sem foglal tovább
   memóriát, miután a következő feladat már elindult.
 - **Zárva hibázik:** ha nem tudja mérni a memóriát, nem tudja használni a zárat vagy a
-  sort, vagy nem tud keretes scope-ot létrehozni, akkor nem futtatja a feladatot, és
-  saját kilépési kóddal megmondja, miért.
+  sort, vagy nem tud olyan scope-ot létrehozni, amelynek a memóriakerete
+  bizonyítottan érvényes, akkor nem futtatja a feladatot, és saját kilépési kóddal
+  megmondja, miért.
 
 **Opt-in:** a Marveen magától sehol nem hívja. Egy ügynök (a `CLAUDE.md`-jében lévő
 szabály alapján) vagy egy szkript csomagolja bele a nehéz parancsot. **Csak Linuxon**
@@ -66,8 +67,8 @@ A kapu a parancs saját kilépési kódját adja tovább. A saját kódjai:
 | 74 | a zárfájl vagy a sor nem használható | rendszerhiba: jelezd |
 | 75 | a `MemAvailable` a teljes `--wait-sec` alatt a padló alatt maradt, vagy nem volt olvasható | próbáld később, vagy szabadíts fel memóriát; ne kerüld meg a kaput |
 | 76 | a feladat elindult, de túllépte a `--max-sec`-et, ezért a kapu leállította | a feladat hosszabb a bejelentettnél: emeld a `--max-sec`-et, vagy bontsd fel |
-| 77 | nem hozható létre memóriakeretes scope (nincs `systemd-run`, nincs user manager) | rendszerhiba: jelezd; a `--allow-uncapped` keret nélkül futtat, naplózva, csak tudatos döntésként |
-| 128+n | a hívás a sorban várva n-es jelzést kapott (SIGTERM 143, SIGINT 130, SIGHUP 129); a feladat el sem indult | a naplósorban `reason=signal` áll |
+| 77 | nincs ellenőrzött memóriakeretes scope: nincs `systemd-run`, nincs user manager, vagy a systemd elfogadja a `MemoryMax`-ot, de nem érvényesíti (a memory controller nincs delegálva, a naplóban `cap_probe=cap_not_in_effect`) | rendszerhiba: jelezd (a `cap_not_in_effect` esetén lásd a Követelményeket); a `--allow-uncapped` keret nélkül futtat, naplózva, csak tudatos döntésként |
+| 128+n | a hívás a sorban vagy a memóriára várva n-es jelzést kapott (SIGTERM 143, SIGINT 130, SIGHUP 129); a feladat el sem indult | a naplósorban `reason=signal` áll (a memóriavárásnál `phase=memory`) |
 
 Ha egy keretes feladat 137-tel (vagy 143-mal) hal meg, és a jelzés nem a kapun át
 ment, akkor a memóriakerete vagy valaki a kapun kívülről ölte meg;
@@ -97,7 +98,14 @@ működés, a kapcsolók és a konfiguráció részletes leírása az
   A halott folyamatok jegyeit bárki eltávolítja, aki látja őket, így egy összeomlott
   várakozó nem akasztja meg a sort.
 - **Napló:** `store/heavy-job-log.jsonl`, eseményenként egy JSON-sor (`wait`, `start`,
-  `finish`, `refuse` egy `reason` mezővel, `uncapped`, `nested`, `nested_unverified`).
+  `finish`, `refuse` egy `reason` mezővel, `uncapped`, `ollama_unload`, `nested`,
+  `nested_unverified`).
+- **Ellenőrzött keret:** minden hívás előtt egy próba-scope `MemoryMax=64M`-et kap, és
+  a benne futó gyerekfolyamatnak a saját cgroupja `memory.max` értékét pontosan
+  64 MiB-nak kell visszaolvasnia. Ha ott `max` áll, vagy nincs is ilyen fájl, a keret
+  nem érvényes, és a kapu 77-tel elutasít, ahelyett hogy keret nélkül futtatná a
+  feladatot, miközben keretesnek naplózza. A start-sor `capped: true` értéke azt
+  jelenti, hogy ez az ellenőrzés sikerült.
 - **Konfiguráció környezeti változókkal** (a kapcsoló erősebb): `HEAVY_JOB_MIN_MB`
   (2500), `HEAVY_JOB_MAX_MEM` (2G), `HEAVY_JOB_SWAP_MAX` (256M), `HEAVY_JOB_WAIT_SEC`
   (300), `HEAVY_JOB_RESERVE_MB` (500), `HEAVY_JOB_AGENT`, `HEAVY_JOB_STORE`
@@ -117,6 +125,14 @@ működés, a kapcsolók és a konfiguráció részletes leírása az
   (fej nélküli gépen: `loginctl enable-linger <felhasználó>`). A `MemoryMax`-hoz a
   memory controllernek delegálva kell lennie a user managerhez:
   `cat /sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service/cgroup.controllers`
-  kimenetében legyen ott a `memory`.
+  kimenetében legyen ott a `memory`. A kapu ezt minden hívásnál maga is ellenőrzi
+  (lásd fent): delegálás nélkül 77-tel elutasít, `cap_probe=cap_not_in_effect`.
 - macOS-en nem működik: nincs `systemd-run` (77), és nincs `/proc/meminfo` (75, a
   `--allow-uncapped` mellett is).
+
+### Ismert korlátok
+
+- Ha magát a kaput SIGKILL éri, nem tud takarítani: a kernel elengedi a zárat,
+  miközben a feladat scope-ja tovább fut, így a következő nehéz feladat mellé
+  indulhat; ekkor csak a memória-padló védi a gépet.
+- A további korlátok az [angol változatban](en/heavy-job-gate.md#known-limits).

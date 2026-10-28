@@ -22,8 +22,8 @@
   stopped, so a backgrounded child cannot keep using memory after the gate has let
   the next job in.
 - **Fails closed:** if it cannot measure memory, cannot use its lock or queue, or
-  cannot create the capped scope, it does not run the job, and it says why with
-  its own exit code.
+  cannot create a scope whose memory cap is verified to be in effect, it does not
+  run the job, and it says why with its own exit code.
 
 It is **opt-in**: nothing in Marveen calls it on its own. An agent (by a rule in its
 `CLAUDE.md`) or a script wraps a heavy command in it. **Linux only** (it reads
@@ -64,8 +64,8 @@ The gate passes the command's own exit code through. Its own codes:
 | 74 | the lock file or the queue is unusable | system problem: report it |
 | 75 | `MemAvailable` stayed below the floor for the whole `--wait-sec`, or could not be read | retry later, or free memory; do not bypass the gate |
 | 76 | the job ran and was stopped because it exceeded `--max-sec` | the job is longer than declared: raise `--max-sec` or split it |
-| 77 | the memory-capped scope cannot be created (no `systemd-run`, no user manager) | system problem: report it; `--allow-uncapped` runs without the cap, logged, only as a conscious decision |
-| 128+n | the call got signal n (SIGTERM 143, SIGINT 130, SIGHUP 129) while queued; the job never started | the log line says `reason=signal` |
+| 77 | no verified memory-capped scope: no `systemd-run`, no user manager, or a `MemoryMax` that systemd accepts but does not enforce (memory controller not delegated, `cap_probe=cap_not_in_effect` in the log) | system problem: report it (for `cap_not_in_effect`, see Requirements); `--allow-uncapped` runs without the cap, logged, only as a conscious decision |
+| 128+n | the call got signal n (SIGTERM 143, SIGINT 130, SIGHUP 129) while queued or while waiting for memory; the job never started | the log line says `reason=signal` (`phase=memory` for the memory wait) |
 
 A capped job that dies with 137 (or 143) and was not signalled through the gate was
 killed by its memory cap or by someone outside the gate;
@@ -98,12 +98,18 @@ are system errors: report them to the main agent.
    wait and the memory wait share one deadline (`--wait-sec`).
 3. **Scope.** `systemd-run --user --scope --collect -p MemoryMax=<cap>M
    -p MemorySwapMax=<swap>M -p TimeoutStopSec=5s`. Before anything else the gate
-   probes that a scope can be created at all.
+   verifies that a cap really takes effect: a probe scope gets `MemoryMax=64M`, and
+   its child must read its own cgroup's `memory.max` back as exactly 64 MiB. systemd
+   accepts `MemoryMax` even where the memory controller is not delegated to the user
+   manager and then does not enforce it; there `memory.max` reads `max` or does not
+   exist, and the gate refuses (77) rather than run the job uncapped while logging
+   it as capped. The start line's `capped: true` means this check passed.
 4. **Teardown.** When the main process ends: `systemctl --user stop <unit>.scope`,
    then a bounded check that the cgroup is empty, `cgroup.kill` as the last resort.
 5. **Log.** One JSON line per event in `store/heavy-job-log.jsonl`: `wait`, `start`,
    `finish` (exit code, duration, peak memory, OOM kills, scope stop result),
-   `refuse` (with a `reason`), `uncapped`, `nested`, `nested_unverified`.
+   `refuse` (with a `reason`), `uncapped`, `ollama_unload`, `nested`,
+   `nested_unverified`.
 
 ### Options and configuration
 
@@ -146,7 +152,8 @@ Anything else is treated as a normal call and waits in the queue.
   agents (on a headless host: `loginctl enable-linger <user>`). `MemoryMax` needs the
   memory controller delegated to the user manager:
   `cat /sys/fs/cgroup/user.slice/user-$(id -u).slice/user@$(id -u).service/cgroup.controllers`
-  should list `memory`.
+  should list `memory`. The gate checks this itself on every call (the probe above):
+  without delegation it refuses with 77, `cap_probe=cap_not_in_effect`.
 - macOS is not supported: there is no `systemd-run` (77) and no `/proc/meminfo`
   (75 even with `--allow-uncapped`).
 
@@ -167,3 +174,12 @@ where no user scope can be created (CI container), or with
   until its own `--wait-sec` runs out.
 - It only orders and caps the jobs that go through it; a heavy command started
   without the gate is invisible to it, beyond the free memory it measures.
+- A gate that is itself SIGKILLed cannot tear down: the kernel releases its lock
+  while the job's scope keeps running, so the next heavy job can be admitted beside
+  it, with only the memory floor still protecting the host.
+- The ticket's arrival time is taken just before the ticket is renamed into place;
+  a writer delayed in that window can look older than a waiter that already took
+  the lock.
+- If the probe passes but `systemd-run` then fails to create the job's own scope,
+  that comes back as `systemd-run`'s exit code (usually 1), indistinguishable from
+  the job's own exit 1.

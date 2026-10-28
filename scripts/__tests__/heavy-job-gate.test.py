@@ -52,21 +52,39 @@ def write_meminfo(path, avail_mb):
 
 
 FAKE_SYSTEMD_RUN = r"""#!/bin/sh
-# probe (no "--"): exit $FAKE_SR_PROBE_RC; job: record argv, then exec the
-# command after "--"
-has_dd=0
-for a in "$@"; do
-  case "$a" in --) has_dd=1;; esac
-done
+# Stand-in for systemd-run. Records its argv on request ($FAKE_SR_ARGS).
+# Probe call (--unit=heavy-job-probe-*): exit $FAKE_SR_PROBE_RC if set non-zero;
+# else build a fake probe cgroup whose memory.max follows $FAKE_SR_MEMMAX
+# ("ok" = the requested MemoryMax in bytes, "missing" = no memory.max file, any
+# other value is written as is, e.g. "max"), point the probe child at it
+# through the HEAVY_JOB_PROBE_* hooks, and exec the REAL probe child.
+# Job call: exec the command after "--" (optionally in a fake scope cgroup).
 if [ -n "$FAKE_SR_ARGS" ]; then printf "%s
 " "$@" >> "$FAKE_SR_ARGS"; echo ---- >> "$FAKE_SR_ARGS"; fi
-[ "$has_dd" = 0 ] && exit "${FAKE_SR_PROBE_RC:-0}"
 unit=
+memmax=
 while [ "$#" -gt 0 ] && [ "$1" != "--" ]; do
-  case "$1" in --unit=*) unit="${1#--unit=}";; esac
+  case "$1" in
+    --unit=*) unit="${1#--unit=}";;
+    MemoryMax=*) memmax="${1#MemoryMax=}";;
+  esac
   shift
 done
 shift
+case "$unit" in
+  heavy-job-probe-*)
+    [ "${FAKE_SR_PROBE_RC:-0}" = 0 ] || exit "$FAKE_SR_PROBE_RC"
+    root="$(dirname "$0")/probe-cg"
+    mkdir -p "$root/$unit.scope"
+    case "${FAKE_SR_MEMMAX:-ok}" in
+      ok) echo $(( ${memmax%M} * 1048576 )) > "$root/$unit.scope/memory.max";;
+      missing) ;;
+      *) printf "%s\n" "$FAKE_SR_MEMMAX" > "$root/$unit.scope/memory.max";;
+    esac
+    printf "0::/%s.scope\n" "$unit" > "$root/$unit.proc"
+    export HEAVY_JOB_PROBE_CGROUP_FS="$root" HEAVY_JOB_PROBE_PROC_CGROUP="$root/$unit.proc"
+    exec "$@";;
+esac
 if [ -n "$FAKE_CGFS" ] && [ -n "$unit" ]; then
   # a fake scope cgroup: the job registers itself (and, cooperatively, its
   # background children) in cgroup.procs; the fake systemctl reads it
@@ -343,7 +361,7 @@ def main():
         ev = E.events()
         check("meminfo unreadable at admission -> refused 75", p.returncode == 75, "rc=%s" % p.returncode)
         check("meminfo unreadable: command did not run", not os.path.exists(marker))
-        check("meminfo unreadable: refuse line with ok=meminfo_error",
+        check("meminfo unreadable: refuse line with reason=meminfo_error",
               ev and ev[-1]["event"] == "refuse" and ev[-1].get("reason") == "meminfo_error", ev)
         with open(E.meminfo, "w") as f:
             f.write("MemTotal:        8130352 kB\nMemFree:          100000 kB\n")
@@ -682,7 +700,7 @@ def main():
         rf = [e for e in E.events() if e.get("label") == "TERM"][-1]
         check("SIGTERM while queued -> exit 143, its ticket removed",
               had == 1 and w.returncode == 143 and tickets() == [], (had, w.returncode, tickets()))
-        check("SIGTERM while queued -> refuse line ok=signal, exit 143",
+        check("SIGTERM while queued -> refuse line reason=signal, exit 143",
               rf.get("event") == "refuse" and rf.get("reason") == "signal" and rf.get("exit") == 143, rf)
         # a SIGKILLed waiter cannot clean up: its leftover ticket must not block
         k = waiter("KILL", 0.1)
@@ -706,7 +724,7 @@ def main():
             w.send_signal(signo)
             w.communicate(timeout=10)
             rf = last_line(name)
-            check("SIG%s while queued -> exit %d, ticket removed, refuse ok=signal" % (name, code),
+            check("SIG%s while queued -> exit %d, ticket removed, refuse reason=signal" % (name, code),
                   had == 1 and w.returncode == code and tickets() == []
                   and rf.get("reason") == "signal" and rf.get("exit") == code,
                   (had, w.returncode, tickets(), rf))
@@ -765,9 +783,9 @@ def main():
         # exit 74 / queue_io_error: no ticket can be created at all ...
         with open(os.path.join(td, "plain"), "w") as f:
             f.write("x")
-        p = E.run(["--", "touch", marker], HEAVY_JOB_QUEUE_DIR=os.path.join(td, "plain", "sor"))
+        p = E.run(["--", "touch", marker], HEAVY_JOB_QUEUE_DIR=os.path.join(td, "plain", "queue"))
         rf = E.events()[-1]
-        check("queue dir under a plain file -> refused 74, not run, ok=queue_io_error",
+        check("queue dir under a plain file -> refused 74, not run, reason=queue_io_error",
               p.returncode == 74 and not os.path.exists(marker)
               and rf.get("event") == "refuse" and rf.get("reason") == "queue_io_error"
               and rf.get("exit") == 74, (p.returncode, rf))
@@ -796,7 +814,7 @@ def main():
         os.close(fd)
 
         # the queue directory is overridable (HEAVY_JOB_QUEUE_DIR)
-        alt = os.path.join(td, "alt-sor")
+        alt = os.path.join(td, "alt-queue")
         p = E.run(["--", "sh", "-c", "ls -A %s > %s" % (alt, seen)], HEAVY_JOB_QUEUE_DIR=alt)
         with open(seen) as f:
             view = f.read()
@@ -1115,6 +1133,7 @@ def main():
               code == 0 and stats.get("peak_mb") is None, (code, stats))
 
     config_cases()
+    cap_verification()
     max_sec_and_fairness()
     short_lane()
 
@@ -1212,6 +1231,153 @@ def config_cases():
             check("config: invalid %s=%s -> usage error 64, named in the message" % (var, val),
                   p.returncode == 64 and var in p.stderr, (p.returncode, p.stderr[-200:]))
         check("config: nothing ran or was logged for the invalid env values", E.events() == [], E.events())
+
+
+def cap_max_scenario(td, W):
+    """The probe scope reports memory.max = "max" (MemoryMax accepted, not in
+    effect): the gate must refuse 77 and not run the job. (ok, info)"""
+    E = Env(td)
+    marker = os.path.join(td, "ran")
+    p = subprocess.run([W, "--", "touch", marker], env=E.env(FAKE_SR_MEMMAX="max"),
+                       capture_output=True, text=True, timeout=30)
+    ev = E.events()
+    ok = (p.returncode == 77 and not os.path.exists(marker) and ev and ev[-1].get("reason") == "no_cap"
+          and ev[-1].get("cap_probe") == "cap_not_in_effect")
+    return ok, (p.returncode, ev[-1:], p.stderr[-300:])
+
+
+def cap_verification():
+    """The gate calls a job capped only after it saw a MemoryMax in effect."""
+    # --- own_memory_max, the probe child's reader, on fake files
+    with tempfile.TemporaryDirectory() as td:
+        cg = os.path.join(td, "u.scope")
+        os.makedirs(cg)
+        proc = os.path.join(td, "proc")
+        with open(proc, "w") as f:
+            f.write("1:name=systemd:/x\n0::/u.scope\n")
+
+        def mm(text):
+            mf = os.path.join(cg, "memory.max")
+            if text is None:
+                if os.path.exists(mf):
+                    os.remove(mf)
+            else:
+                with open(mf, "w") as f:
+                    f.write(text)
+            return gate.own_memory_max(td, proc)
+        check("own_memory_max: a number -> (bytes, None)", mm("67108864\n") == (67108864, None), mm("67108864\n"))
+        check("own_memory_max: 'max' -> (None, 'max')", mm("max\n") == (None, "max"), mm("max\n"))
+        check("own_memory_max: no memory.max -> (None, 'missing')", mm(None) == (None, "missing"), mm(None))
+        with open(proc, "w") as f:
+            f.write("12:memory:/user.slice\n")
+        check("own_memory_max: no unified (0::) line -> (None, 'no_unified_cgroup')",
+              gate.own_memory_max(td, proc) == (None, "no_unified_cgroup"), gate.own_memory_max(td, proc))
+        check("own_memory_max: unreadable /proc/self/cgroup -> (None, 'unreadable')",
+              gate.own_memory_max(td, os.path.join(td, "nope")) == (None, "unreadable"))
+
+    # --- through the gate, with the stand-in probe scope
+    with tempfile.TemporaryDirectory() as td:
+        E = Env(td)
+        marker = os.path.join(td, "ran")
+        argfile = os.path.join(td, "sr.args")
+        p = E.run(["--", "true"], FAKE_SR_ARGS=argfile)
+        with open(argfile) as f:
+            probe = f.read().split("----\n")[0].splitlines()
+        st = [e for e in E.events() if e["event"] == "start"]
+        check("cap: the probe sets a real cap (MemoryMax=64M) on a heavy-job-probe-* unit",
+              "MemoryMax=64M" in probe and any(a.startswith("--unit=heavy-job-probe-") for a in probe), probe)
+        check("cap: probe reads its MemoryMax back -> job runs, start line capped=true",
+              p.returncode == 0 and st and st[-1].get("capped") is True, (p.returncode, st[-1:], p.stderr))
+        for memmax, detail in (("max", "none:max"), ("missing", "none:missing"),
+                               ("1048576", "1048576"), ("garbage x", "none:garbage_x")):
+            if os.path.exists(marker):
+                os.remove(marker)
+            p = E.run(["--", "touch", marker], FAKE_SR_MEMMAX=memmax)
+            rf = E.events()[-1]
+            check("cap: probe memory.max %r -> refused 77, not run, reason=no_cap, cap_probe=cap_not_in_effect"
+                  % memmax,
+                  p.returncode == 77 and not os.path.exists(marker) and rf.get("event") == "refuse"
+                  and rf.get("reason") == "no_cap" and rf.get("cap_probe") == "cap_not_in_effect"
+                  and rf.get("cap_probe_detail") == detail, (p.returncode, rf))
+        check("cap: the refusal names the delegation problem",
+              "not in effect" in p.stderr and "delegated" in p.stderr, p.stderr)
+        p = E.run(["--allow-uncapped", "--", "touch", marker], FAKE_SR_MEMMAX="max")
+        ev = E.events()
+        un = [e for e in ev if e["event"] == "uncapped"]
+        st = [e for e in ev if e["event"] == "start"]
+        check("cap: not in effect + --allow-uncapped -> runs, logged uncapped (cap_probe), start capped=false",
+              p.returncode == 0 and os.path.exists(marker) and un and un[-1].get("cap_probe") == "cap_not_in_effect"
+              and st[-1].get("capped") is False and st[-1].get("unit") is None and "WITHOUT" in p.stderr,
+              (p.returncode, un[-1:], st[-1:]))
+        os.remove(marker)
+        p = E.run(["--", "touch", marker], FAKE_SR_PROBE_RC="1")
+        check("cap: probe scope cannot be created -> 77, cap_probe=probe_failed",
+              p.returncode == 77 and E.events()[-1].get("cap_probe") == "probe_failed", E.events()[-1])
+        p = E.run(["--", "touch", marker], HEAVY_JOB_NO_SCOPE="1")
+        check("cap: HEAVY_JOB_NO_SCOPE=1 -> 77, cap_probe=disabled",
+              p.returncode == 77 and E.events()[-1].get("cap_probe") == "disabled", E.events()[-1])
+
+    # --- the mutant without the read-back check must be caught
+    with tempfile.TemporaryDirectory() as mtd:
+        W = mutant_wrapper(mtd, "cap-unchecked",
+                           "            if val.isdigit() and int(val) == PROBE_CAP_MB * 1024 * 1024:\n",
+                           "            if True:\n")
+        if W is None:
+            check("mutant cap-unchecked: applies to the gate source", False, "pattern not found")
+        else:
+            with tempfile.TemporaryDirectory() as td:
+                ok, info = cap_max_scenario(td, W)
+            check("mutant cap-unchecked: caught by cap_max_scenario (the mutant admits an unenforced cap)",
+                  not ok, info)
+    with tempfile.TemporaryDirectory() as td:
+        ok, info = cap_max_scenario(td, WRAPPER)
+        check("cap_max_scenario passes on the real gate", ok, info)
+
+    # --- the lock-record label is sanitized like a ticket label
+    with tempfile.TemporaryDirectory() as td:
+        E = Env(td)
+        p = E.run(["--label", "evil\x1b[31mlabel\tx", "--", "true"])
+        with open(E.lock) as f:
+            rec = f.read()
+        check("lock record label: control characters replaced, whitespace collapsed",
+              p.returncode == 0 and "\x1b" not in rec and "label=evil?[31mlabel_x" in rec, rec)
+
+    # --- SIGTERM while waiting for MEMORY (after the queue): refuse line, 143, not run
+    with tempfile.TemporaryDirectory() as td:
+        E = Env(td, avail_mb=500)
+        marker = os.path.join(td, "ran")
+        g = subprocess.Popen([WRAPPER, "--min-mb", "2000", "--max-mem", "100M", "--wait-sec", "30",
+                              "--label", "MEMSIG", "--", "touch", marker], env=E.env(),
+                             stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        end = time.monotonic() + 10
+        while time.monotonic() < end and not any(e["event"] == "wait" and e.get("reason") == "memory"
+                                                  for e in E.events()):
+            time.sleep(0.02)
+        g.send_signal(signal.SIGTERM)
+        _, err = g.communicate(timeout=10)
+        rf = E.events()[-1]
+        check("SIGTERM during the memory wait -> exit 143, not run, refuse reason=signal phase=memory, lock free",
+              g.returncode == 143 and not os.path.exists(marker) and rf.get("event") == "refuse"
+              and rf.get("reason") == "signal" and rf.get("phase") == "memory" and lock_free(E.lock)
+              and "Traceback" not in err, (g.returncode, rf, err[-300:]))
+
+    # --- LIVE: on this host the real probe must see its cap (skipped without a user manager)
+    if live_scope_possible():
+        check("LIVE: scope_probe() verifies a real MemoryMax here", gate.scope_probe() == (True, None, None),
+              gate.scope_probe())
+    else:
+        print("  SKIP live cap probe (no systemd --user scope here)")
+
+
+def live_scope_possible():
+    if os.environ.get("HEAVY_JOB_TEST_NO_LIVE") == "1":
+        return False
+    try:
+        return subprocess.run(["systemd-run", "--user", "--scope", "--quiet", "--collect", "true"],
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                              timeout=20).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
 
 
 def max_sec_and_fairness():
@@ -1576,9 +1742,9 @@ class Q:
             time.sleep(0.02)
         return {}
 
-    def line(self, label, kind, ok=None):
+    def line(self, label, kind, reason=None):
         ev = [e for e in self.E.events() if e.get("label") == label and e["event"] == kind
-              and (ok is None or e.get("reason") == ok)]
+              and (reason is None or e.get("reason") == reason)]
         return ev[-1] if ev else {}
 
     def hold(self):
@@ -1654,7 +1820,7 @@ def lane_count_started(td, W):
     small = ["--max-mem", "100M", "--min-mb", "0"]   # floor 600 MB: admitted
     q.hold()
     procs = [q.start("L", wait_sec=30, args=small)]
-    procs.append(q.start("S1", wait_sec=3, args=["--max-sec", "60", "--max-mem", "100M",
+    procs.append(q.start("S1", wait_sec=8, args=["--max-sec", "60", "--max-mem", "100M",
                                                  "--min-mb", "2000"]))   # floor 2000 MB: 75
     procs += [q.start("S%d" % i, wait_sec=30, args=small + ["--max-sec", "60"]) for i in (2, 3, 4)]
     q.release()

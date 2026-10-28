@@ -21,6 +21,13 @@ What it does, in order:
                    -p MemorySwapMax=<swap>M
      (both normalized to MB; a bare number on the command line means MB)
      so a runaway job is OOM-killed inside its own cgroup, not the host.
+     Before anything else the gate VERIFIES that such a cap takes effect: a
+     probe scope gets MemoryMax=64M and its child must read its own cgroup's
+     memory.max back as exactly that. systemd accepts MemoryMax even where the
+     memory controller is not delegated to the user manager (cgroup v1 / hybrid,
+     or v2 without delegation) and then does not enforce it; there the probe
+     reads "max" or no memory.max at all, and the gate refuses (77) instead of
+     running the job uncapped while calling it capped.
   4. When the command's main process ends, stops the WHOLE scope
      (systemctl --user stop; the scope has TimeoutStopSec=5s, so a descendant
      that ignores SIGTERM is SIGKILLed) and verifies that its cgroup is empty
@@ -82,10 +89,14 @@ read, or the own ticket vanished and cannot be re-created) the gate fails
 closed: exit 74, "refuse" line with reason=queue_io_error.
 
 Known limits: ordering uses the wall clock (time_ns), so a backward clock step
-can let a later arrival sort before an earlier one. A waiter that is stopped
-(state T, e.g. SIGSTOP) while at the head of the queue is still alive, so it
-blocks everyone behind it until its own --wait-sec deadline or until it is
-continued or killed.
+can let a later arrival sort before an earlier one; the time is also taken just
+before the ticket is renamed into place, so a writer delayed in that window can
+appear "older" than a waiter that already took the lock. A waiter that is
+stopped (state T, e.g. SIGSTOP) while at the head of the queue is still alive,
+so it blocks everyone behind it until its own --wait-sec deadline or until it is
+continued or killed. A gate that is itself SIGKILLed cannot tear down: the
+kernel releases its lock while the job's scope keeps running, so the next heavy
+job can be admitted beside it (only the memory floor still protects the host).
 
 Lock and memory waits share ONE deadline (--wait-sec).
 
@@ -144,14 +155,17 @@ Exit codes of the gate itself (the command's own code is passed through):
       a gate that cannot measure does not admit ("meminfo_error" refuse line)
   76  the job RAN and was stopped by the gate because it exceeded --max-sec
       (only with --max-sec; finish line max_sec_exceeded=true)
-  77  refused: the memory-capped systemd scope is unavailable (no systemd-run,
-      no user manager, the probe failed, or HEAVY_JOB_NO_SCOPE=1). The job is
-      NOT run uncapped unless the caller passes --allow-uncapped, which is
-      logged ("uncapped" line) and warned; the lock and the memory floor still
-      apply then.
+  77  refused: no VERIFIED memory-capped systemd scope (no systemd-run, no user
+      manager, the probe failed, HEAVY_JOB_NO_SCOPE=1, or the probe's MemoryMax
+      was not in effect: refuse line reason=no_cap with cap_probe =
+      disabled / no_systemd_run / probe_failed / cap_not_in_effect and
+      cap_probe_detail). The job is NOT run uncapped unless the caller passes
+      --allow-uncapped, which is logged ("uncapped" line, same fields) and
+      warned; the lock and the memory floor still apply then.
   128 + signo: SIGTERM (143), SIGINT (130) or SIGHUP (129) arrived while the
-      call was waiting in the queue (ticket removed, "refuse" line
-      reason=signal), unless that signal was inherited as ignored
+      call was waiting in the queue or for memory (ticket removed, "refuse"
+      line reason=signal; phase=memory for the memory wait), unless that
+      signal was inherited as ignored. The job never started.
 
 Nested calls (a gated job that itself calls the gate) run the command directly
 without re-locking, but ONLY if that is verifiable: HEAVY_JOB_ACTIVE=1 and
@@ -182,7 +196,9 @@ lock file, so a test lock gets its own queue), HEAVY_JOB_LOG,
 HEAVY_JOB_NO_SCOPE=1 (treat the scope as unavailable), HEAVY_JOB_POLL_SEC (poll
 interval), HEAVY_JOB_CGROUP_FS (cgroup fs root for the post-job emptiness
 check, default /sys/fs/cgroup; never used by the nested check),
-HEAVY_JOB_STOP_WAIT_SEC (emptiness wait bound).
+HEAVY_JOB_STOP_WAIT_SEC (emptiness wait bound), HEAVY_JOB_PROBE_CGROUP_FS and
+HEAVY_JOB_PROBE_PROC_CGROUP (read by the probe child only: the cgroup fs root
+and the /proc/self/cgroup it reads its own memory.max through).
 """
 import fcntl
 import json
@@ -215,6 +231,9 @@ KILL_GRACE_SEC = 5.0  # --max-sec: SIGTERM to the main process, SIGKILL after th
 _AGENT_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 SCOPE_PREFIX = "heavy-job-"
+PROBE_CAP_MB = 64            # the cap the scope probe sets and must read back
+PROBE_FLAG = "--probe-memory-max"   # internal: the probe child's mode
+PROBE_REPORT = "heavy-job-probe memory.max="
 SCOPE_STOP_TIMEOUT = "5s"    # TimeoutStopSec of the scope: SIGTERM, then SIGKILL after this
 SYSTEMCTL_TIMEOUT = 30       # hard bound on one systemctl call (stop waits for the kill)
 DEFAULT_STOP_WAIT_SEC = 10.0  # bound on the cgroup-empty wait after the stop
@@ -405,8 +424,10 @@ def unload_ollama():
         return []
     base = ollama_url().rstrip("/")
     done = []
+    # a local service: never through HTTP(S)_PROXY from the environment
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
-        with urllib.request.urlopen(base + "/api/ps", timeout=3) as r:
+        with opener.open(base + "/api/ps", timeout=3) as r:
             data = json.loads(r.read().decode())
         # external input: validate every level, skip anything malformed
         entries = data.get("models") if isinstance(data, dict) else None
@@ -420,7 +441,7 @@ def unload_ollama():
             req = urllib.request.Request(
                 base + "/api/generate", data=json.dumps({"model": m, "keep_alive": 0}).encode(),
                 headers={"Content-Type": "application/json"})
-            with urllib.request.urlopen(req, timeout=10) as r:
+            with opener.open(req, timeout=10) as r:
                 r.read()
             done.append(m)
     except Exception:  # best effort only: it never admits, and it must not crash the gate
@@ -670,8 +691,9 @@ def acquire_in_turn(fd, ticket, ticket_body, deadline, on_first_wait, lp=None, m
     ahead = []
     while True:
         if not os.path.exists(ticket):
-            # our ticket vanished (e.g. removed by hand, or the directory is
-            # gone): put it back under the same name, so we keep our place
+            # our ticket vanished (e.g. removed by hand): put it back under the
+            # same name, so we keep our place. If the queue directory itself is
+            # gone, write_ticket fails and the call ends in 74 (fail closed).
             try:
                 write_ticket(ticket, ticket_body)
             except OSError as e:
@@ -693,9 +715,12 @@ def acquire_in_turn(fd, ticket, ticket_body, deadline, on_first_wait, lp=None, m
         time.sleep(min(poll_sec(), max(0.01, deadline - time.monotonic())))
 
 
-class QueueSignal(Exception):
+class QueueSignal(BaseException):
+    """Raised by the queue / memory-wait signal handlers. A BaseException, so a
+    best-effort `except Exception` (the ollama unload) cannot swallow it."""
+
     def __init__(self, signo):
-        Exception.__init__(self, signo)
+        BaseException.__init__(self, signo)
         self.signo = signo
 
 
@@ -740,9 +765,10 @@ def holder_info(rec):
         pid = None
     alive = pid_alive(pid) if pid and pid > 0 else None
     state = "unknown" if alive is None else ("alive" if alive else "NOT alive")
+    label = sanitize_label(rec["label"]) if "label" in rec else None
     text = "holder pid %s (%s), label %s, since %s" % (
-        pid if pid else "unknown", state, rec.get("label", "?"), rec.get("since", "?"))
-    return text, {"holder_pid": pid, "holder_alive": alive, "holder_label": rec.get("label"),
+        pid if pid else "unknown", state, label or "?", sanitize_label(rec.get("since", "?")))
+    return text, {"holder_pid": pid, "holder_alive": alive, "holder_label": label,
                   "holder_unit": rec.get("unit")}
 
 
@@ -808,17 +834,72 @@ def nested_check(path):
         os.close(fd)
 
 
-def scope_available():
-    if os.environ.get("HEAVY_JOB_NO_SCOPE") == "1":
-        return False
-    if not shutil.which("systemd-run"):
-        return False
+def own_memory_max(cgfs=None, proc_cgroup=None):
+    """memory.max of the calling process's OWN cgroup: (bytes, None) when it is a
+    number, else (None, detail): "max" (no cap), "missing" (no memory controller
+    in that cgroup), "unreadable", "no_unified_cgroup". The probe child runs this
+    inside the probe scope; the paths are test hooks (HEAVY_JOB_PROBE_CGROUP_FS,
+    HEAVY_JOB_PROBE_PROC_CGROUP), defaults /sys/fs/cgroup and /proc/self/cgroup."""
+    cgfs = cgfs or os.environ.get("HEAVY_JOB_PROBE_CGROUP_FS") or "/sys/fs/cgroup"
+    proc_cgroup = proc_cgroup or os.environ.get("HEAVY_JOB_PROBE_PROC_CGROUP") or "/proc/self/cgroup"
+    rel = None
     try:
-        p = subprocess.run(["systemd-run", "--user", "--scope", "--quiet", "--collect", "true"],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=20)
-        return p.returncode == 0
+        with open(proc_cgroup) as f:
+            for line in f:
+                if line.startswith("0::"):
+                    rel = line[3:].strip()
+                    break
+    except OSError:
+        return None, "unreadable"
+    if not rel or not rel.startswith("/"):
+        return None, "no_unified_cgroup"
+    try:
+        with open(os.path.join(cgfs.rstrip("/") + rel, "memory.max")) as f:
+            text = f.read().strip()
+    except FileNotFoundError:
+        return None, "missing"
+    except OSError:
+        return None, "unreadable"
+    if text.isdigit():
+        return int(text), None
+    return None, sanitize_label(text[:20]) or "empty"
+
+
+def scope_probe():
+    """(True, None) if a transient user scope can be created AND a MemoryMax set
+    on it is in effect: the probe scope gets MemoryMax=PROBE_CAP_MB, and the probe
+    child (this script, PROBE_FLAG) must read its own cgroup's memory.max back as
+    exactly that many bytes. systemd accepts MemoryMax on a host where the memory
+    controller is not delegated to the user manager (cgroup v1 / hybrid, or v2
+    without delegation) but does not enforce it; there memory.max is missing or
+    "max", and the gate must not call the job capped. Else (False, reason, detail)
+    with reason disabled / no_systemd_run / probe_failed / cap_not_in_effect."""
+    if os.environ.get("HEAVY_JOB_NO_SCOPE") == "1":
+        return False, "disabled", None
+    if not shutil.which("systemd-run"):
+        return False, "no_systemd_run", None
+    unit = "%sprobe-%d-%d" % (SCOPE_PREFIX, os.getpid(), time.time_ns())
+    argv = ["systemd-run", "--user", "--scope", "--quiet", "--collect", "--unit=" + unit,
+            "-p", "MemoryMax=%dM" % PROBE_CAP_MB, "--",
+            sys.executable or "python3", os.path.abspath(__file__), PROBE_FLAG]
+    try:
+        p = subprocess.run(argv, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+                           timeout=20)
     except (OSError, subprocess.TimeoutExpired):
-        return False
+        return False, "probe_failed", None
+    if p.returncode != 0:
+        return False, "probe_failed", "rc=%d" % p.returncode
+    for line in reversed(p.stdout.splitlines()):
+        if line.startswith(PROBE_REPORT):
+            val = line[len(PROBE_REPORT):].strip()
+            if val.isdigit() and int(val) == PROBE_CAP_MB * 1024 * 1024:
+                return True, None, None
+            return False, "cap_not_in_effect", sanitize_label(val[:40])
+    return False, "cap_not_in_effect", "no_report"
+
+
+def scope_available():
+    return scope_probe()[0]
 
 
 def cgroup_dir_of(pid):
@@ -1028,8 +1109,34 @@ def run_child(argv, env, unit=None, max_sec=None):
     return code, stats
 
 
+def wait_memory(floor_mb, deadline, label):
+    """Wait until MemAvailable >= floor_mb or the deadline. Returns the last
+    reading (None = unreadable). Unloads idle ollama models once when opted in."""
+    avail = mem_available_mb()
+    if avail is not None and avail < floor_mb:
+        say("MemAvailable %d MB < required %d MB; waiting up to %ds"
+            % (avail, floor_mb, max(0, round(deadline - time.monotonic()))))
+        log({"event": "wait", "reason": "memory", "label": label, "mem_avail_mb": avail,
+             "need_mb": floor_mb})
+        unloaded = unload_ollama()
+        if unloaded:
+            say("unloaded idle ollama model(s): %s" % ", ".join(unloaded))
+            log({"event": "ollama_unload", "label": label, "models": unloaded})
+            time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
+            avail = mem_available_mb()
+        while avail is not None and avail < floor_mb and time.monotonic() < deadline:
+            time.sleep(min(poll_sec(), max(0.01, deadline - time.monotonic())))
+            avail = mem_available_mb()
+    return avail
+
+
 def main(argv=None):
     argv = sys.argv[1:] if argv is None else argv
+    if argv == [PROBE_FLAG]:
+        # the scope probe's child: report this process's own memory.max
+        val, why = own_memory_max()
+        print(PROBE_REPORT + (str(val) if val is not None else "none:" + why))
+        return 0
     try:
         opts, cmd = parse_args(argv)
     except ValueError as e:
@@ -1069,18 +1176,27 @@ def main(argv=None):
         log({"event": "nested_unverified", "label": label, "reason": why})
 
     # 0. the cap must be available before anything else is spent on this job
-    scoped = scope_available()
+    scoped, probe_why, probe_detail = scope_probe()
     if not scoped:
+        probe_fields = {"cap_probe": probe_why}
+        if probe_detail:
+            probe_fields["cap_probe_detail"] = probe_detail
+        if probe_why == "cap_not_in_effect":
+            why_text = ("a user scope can be created, but a MemoryMax set on it is not in effect "
+                        "(memory.max read back as %s): the memory controller is not delegated to "
+                        "the systemd user manager (see docs/heavy-job-gate.md)" % probe_detail)
+        else:
+            why_text = "the memory-capped systemd --user scope is unavailable (%s)" % probe_why
         if not opts["allow_uncapped"]:
-            say("REFUSED: the memory-capped systemd --user scope is unavailable, and this gate "
-                "does not run a heavy job without its cap. Not started. (Explicit override: "
-                "--allow-uncapped, logged.)")
-            log({"event": "refuse", "reason": "no_cap", "label": label, "cmd": cmd_text,
-                 "exit": EXIT_NO_CAP})
+            say("REFUSED: %s, and this gate does not run a heavy job without its cap. Not started. "
+                "(Explicit override: --allow-uncapped, logged.)" % why_text)
+            log(dict({"event": "refuse", "reason": "no_cap", "label": label, "cmd": cmd_text,
+                      "exit": EXIT_NO_CAP}, **probe_fields))
             return EXIT_NO_CAP
-        say("WARNING: --allow-uncapped: running WITHOUT the cgroup memory cap "
-            "(lock and memory floor still apply; only the kernel OOM killer stands behind it)")
-        log({"event": "uncapped", "label": label, "cmd": cmd_text})
+        say("WARNING: --allow-uncapped: %s; running WITHOUT the cgroup memory cap "
+            "(lock and memory floor still apply; only the kernel OOM killer stands behind it)"
+            % why_text)
+        log(dict({"event": "uncapped", "label": label, "cmd": cmd_text}, **probe_fields))
 
     floor_mb = max(opts["min_mb"], cap_mb + reserve)
     wait_sec = opts["wait_sec"]
@@ -1210,7 +1326,7 @@ def main(argv=None):
             # token FIRST, so a reader that stops early can never lose it
             os.pwrite(fd, ("token=%s pid=%d unit=%s since=%s label=%s%s%s\n"
                            % (token, os.getpid(), unit if scoped else "-", since,
-                              re.sub(r"\s+", "_", label)[:100],
+                              sanitize_label(label),
                               (" agent=" + agent) if agent else "", tail)).encode(), 0)
         except OSError as e:
             # without the token a nested call cannot be verified; say so, still run capped
@@ -1218,22 +1334,36 @@ def main(argv=None):
 
     write_record(carry_tail)
 
-    # 2. memory floor
-    avail = mem_available_mb()
-    if avail is not None and avail < floor_mb:
-        say("MemAvailable %d MB < required %d MB; waiting up to %ds"
-            % (avail, floor_mb, max(0, round(deadline - time.monotonic()))))
-        log({"event": "wait", "reason": "memory", "label": label, "mem_avail_mb": avail,
-             "need_mb": floor_mb})
-        unloaded = unload_ollama()
-        if unloaded:
-            say("unloaded idle ollama model(s): %s" % ", ".join(unloaded))
-            log({"event": "ollama_unload", "label": label, "models": unloaded})
-            time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
-            avail = mem_available_mb()
-        while avail is not None and avail < floor_mb and time.monotonic() < deadline:
-            time.sleep(min(poll_sec(), max(0.01, deadline - time.monotonic())))
-            avail = mem_available_mb()
+    # 2. memory floor (SIGTERM/SIGINT/SIGHUP during this wait: refuse line, 128 + signo)
+    mstate = {"done": False, "pending": None}
+
+    def on_mem_signal(signo, _frame):
+        if mstate["done"]:
+            mstate["pending"] = mstate["pending"] or signo
+            return
+        raise QueueSignal(signo)
+
+    mem_handlers = {}
+    for s in QUEUE_SIGNALS:
+        if signal.getsignal(s) != signal.SIG_IGN:
+            mem_handlers[s] = signal.signal(s, on_mem_signal)
+    mem_caught = None
+    try:
+        avail = wait_memory(floor_mb, deadline, label)
+    except QueueSignal as e:
+        mem_caught, avail = e.signo, None
+    finally:
+        mstate["done"] = True
+        for s, h in mem_handlers.items():
+            signal.signal(s, h)
+    mem_caught = mem_caught or mstate["pending"]
+    if mem_caught:
+        say("stopped by signal %d while waiting for memory. Not started." % mem_caught)
+        log({"event": "refuse", "reason": "signal", "phase": "memory", "label": label,
+             "cmd": cmd_text, "signal": mem_caught,
+             "waited_sec": round(time.monotonic() - t0, 1), "exit": 128 + mem_caught})
+        os.close(fd)
+        return 128 + mem_caught
     if avail is None:
         # fail closed: no measurement, no admission
         say("REFUSED: cannot read MemAvailable from %s, so the memory floor cannot be checked. "
@@ -1271,7 +1401,7 @@ def main(argv=None):
         argv_run = list(cmd)   # only reachable with --allow-uncapped (logged above)
 
     start_rec = {"event": "start", "label": label, "cmd": cmd_text, "unit": unit if scoped else None,
-                 "capped": scoped,
+                 "capped": scoped,  # True only after the probe saw a MemoryMax in effect
                  "max_mem": "%dM" % cap_mb, "swap_max": "%dM" % swap_mb, "mem_avail_mb": avail,
                  "need_mb": floor_mb, "waited_sec": round(time.monotonic() - t0, 1)}
     if max_sec is not None:
