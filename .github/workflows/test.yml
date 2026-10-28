@@ -74,6 +74,11 @@ jobs:
       # over-report GROWS with every consolidation round, which is why this
       # runs here and not by hand. Hermetic: throwaway fixture dir.
       - run: python3 scripts/__tests__/memory-link-audit.test.py
+      # HOOKDRIFT926: the hook sidecar validator (drift / reorder / missing
+      # script / forbidden key) and the gate lock list of hook_switches.py,
+      # then the validator itself on the repo's own settings.
+      - run: python3 scripts/__tests__/hook-metadata.test.py
+      - run: python3 scripts/hook-metadata.py
       # The host resource heartbeat's exit code IS its alert (1 = resource
       # warning, 2 = nothing measured): a crash or a bad threshold that exits 1
       # would page someone for nothing. Hermetic: fake /proc files and disk.

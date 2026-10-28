@@ -25,6 +25,8 @@ reports/
 # '*/**/.claude/' keeps nested .claude dirs ignored like before.
 .claude/*
 !.claude/settings.json
+# HOOKDRIFT926: the hook sidecar travels with the settings it describes.
+!.claude/hooks.metadata.json
 */**/.claude/
 .config/
 

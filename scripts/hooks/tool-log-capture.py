@@ -171,10 +171,28 @@ def _success_from_payload(payload: dict) -> bool:
     return True
 
 
+def _read_payload():
+    """stdin through hook_switches (MARVEEN_DISABLED_HOOKS + input size cap).
+
+    Returns None to skip the call: disabled by env, or an oversize payload
+    (pure logging, so both fail open). Without the helper: previous behaviour.
+    """
+    try:
+        import hook_switches  # noqa: E402  (same dir, already on sys.path)
+    except Exception:
+        return json.load(sys.stdin)
+    if hook_switches.is_disabled('tool-log-capture'):
+        return None
+    raw = hook_switches.read_hook_stdin('tool-log-capture')
+    return None if raw is None else json.loads(raw)
+
+
 def main():
     try:
-        payload = json.load(sys.stdin)
+        payload = _read_payload()
     except Exception:
+        sys.exit(0)
+    if not isinstance(payload, dict):
         sys.exit(0)
 
     session_id = payload.get('session_id') or ''

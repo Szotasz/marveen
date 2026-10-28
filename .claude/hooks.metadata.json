@@ -1,0 +1,430 @@
+{
+  "version": 1,
+  "_comment": "Sidecar for the hooks block of settings.json (HOOKDRIFT926). One entry per matcher group, same event and index. After editing hooks run: python3 scripts/hook-metadata.py --update, review the printed diff, fix any TODO purpose, commit both files. Optional top-level 'non_disableable': extra hook names (this install's own gates / audit ledgers) that MARVEEN_DISABLED_HOOKS may never switch off; it can only add to the built-in list in scripts/hooks/hook_switches.py.",
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "index": 0,
+        "id": "user-prompt-submit/ledger-capture",
+        "hook": "ledger-capture",
+        "gate": false,
+        "purpose": "Records every inbound channel message into the conversation ledger before the agent processes it.",
+        "fingerprint": "246ab056550e32276ba44c3ec455d1efc74db0ad59fde32ffe7dcca458adbaac"
+      },
+      {
+        "index": 1,
+        "id": "user-prompt-submit/inbox-drain",
+        "hook": "inbox-drain",
+        "gate": false,
+        "purpose": "UserPromptSubmit hook: PULL the MAIN agent's inter-agent inbox into context.",
+        "fingerprint": "86df4444f9d56a60d6a55c3e31c0bbc95cf284bfe922b5dfc2d5b906d276e7f5"
+      },
+      {
+        "index": 2,
+        "id": "user-prompt-submit/telegram-reply-directive",
+        "hook": "telegram-reply-directive",
+        "gate": false,
+        "purpose": "UserPromptSubmit hook: inject a reply-tool directive whenever an inbound Telegram TEXT message arrives.",
+        "fingerprint": "9f46266186f9320712419054f643e635fbc3ebfa740a4ab6a9f864dc231bb08f"
+      },
+      {
+        "index": 3,
+        "id": "user-prompt-submit/provenance-gate",
+        "hook": "provenance-gate",
+        "gate": true,
+        "purpose": "Blocks a prompt that carries no provenance envelope (channel, scheduled task, peer), i.e. text injected straight into the pane.",
+        "fingerprint": "520c0312902c3b163a7bc77719db7084327fd347596a602a05103a0afa8d3b10"
+      },
+      {
+        "index": 4,
+        "id": "user-prompt-submit/staleness-guard",
+        "hook": "staleness-guard",
+        "gate": true,
+        "purpose": "Warns when an inbound channel message is processed long after it was sent (lagging poller, re-delivery after restart).",
+        "fingerprint": "89775ae782047ec58426acf91c7e5b2ec810963e8737fc7860165197d096cb25"
+      },
+      {
+        "index": 5,
+        "id": "user-prompt-submit/memory-lookup-nudge",
+        "hook": "memory-lookup-nudge",
+        "gate": false,
+        "purpose": "UserPromptSubmit hook: on a human message, remind the agent to look in its memory.",
+        "fingerprint": "f2b2ad224f0b7435dbd64f1c0b2a5b4854ef5f2555e18c3b9647661048d37057"
+      },
+      {
+        "index": 6,
+        "id": "user-prompt-submit/channel-inbox-drain",
+        "hook": "channel-inbox-drain",
+        "gate": false,
+        "purpose": "UserPromptSubmit hook: drain sub-agent Telegram channel notifications.",
+        "fingerprint": "0713f4d4850006d7ff56177ed7e3f036d8e04cce5f9c25d0f24fee97f3f4ab7a"
+      },
+      {
+        "index": 7,
+        "id": "user-prompt-submit/voice-reply-directive",
+        "hook": "voice-reply-directive",
+        "gate": false,
+        "purpose": "UserPromptSubmit hook: voice-reply directive injection + server-side STT.",
+        "fingerprint": "a0713d381fe8fd4b3c2ebff81a3a779ef10db6ce04be3a100f0be1157f679a23"
+      },
+      {
+        "index": 8,
+        "id": "user-prompt-submit/telegram_progress",
+        "hook": "telegram_progress",
+        "gate": false,
+        "purpose": "Posts the Telegram \"processing\" indicator when an inbound message starts a turn.",
+        "fingerprint": "ce79a8f281aee99692992add640a2a6b62a1957e56936660302838b637cf5bd5"
+      },
+      {
+        "index": 9,
+        "id": "user-prompt-submit/slack_progress",
+        "hook": "slack_progress",
+        "gate": false,
+        "purpose": "Posts the Slack \"processing\" indicator when an inbound message starts a turn.",
+        "fingerprint": "7e3e23c5359f3875110819b40a6a39ce6c003b83cb0a945eadad95a2590b47bf"
+      },
+      {
+        "index": 10,
+        "id": "user-prompt-submit/marveen-commands",
+        "hook": "marveen-commands",
+        "gate": false,
+        "purpose": "Answers the owner's slash commands without a model turn.",
+        "fingerprint": "29ce471ed7323b2fd7944c511115313a320549a7988d633e3ff5fbd8e7e5f614"
+      },
+      {
+        "index": 11,
+        "id": "user-prompt-submit/taskstate-stub",
+        "hook": "taskstate-stub",
+        "gate": false,
+        "purpose": "UserPromptSubmit hook: write a minimal task-state stub when a prompt arrives and no live record exists for the agent.",
+        "fingerprint": "8d74b120dafe448b59230966d13bf78dd88630140cc663c3eac0262095634dbc"
+      }
+    ],
+    "PostToolUse": [
+      {
+        "index": 0,
+        "id": "post-tool-use/ledger-outbound",
+        "hook": "ledger-outbound",
+        "gate": false,
+        "purpose": "Records the text of every outbound channel reply into the conversation ledger.",
+        "fingerprint": "35ed1f14c7f8e11ada825babf309cb725af86771f3fa7efce9378862a7696b2c"
+      },
+      {
+        "index": 1,
+        "id": "post-tool-use/tool-log-capture",
+        "hook": "tool-log-capture",
+        "gate": false,
+        "purpose": "PostToolUse + PostToolUseFailure hook: log every tool call to /api/tool-log for the activity dashboard.",
+        "fingerprint": "24f89807b5b4cb478244e827ca6d74e1b2dbf06933eea61be9953343810f8d77"
+      },
+      {
+        "index": 2,
+        "id": "post-tool-use/persona-change-notify",
+        "hook": "persona-change-notify",
+        "gate": false,
+        "purpose": "Notifies the owner when an agent's persona file (CLAUDE.md / SOUL.md) is changed.",
+        "fingerprint": "4938fb0c1b9895386167fe954877fb0a835b1fab91eacd91e0e1fa3835de82df"
+      },
+      {
+        "index": 3,
+        "id": "post-tool-use/telegram_progress_reply_clear",
+        "hook": "telegram_progress_reply_clear",
+        "gate": false,
+        "purpose": "Clears the Telegram progress placeholder as soon as a reply is actually sent.",
+        "fingerprint": "1f672e535ee8fd5592cb69cb76771ac647950793adf8e4d7f5075a938855ad08"
+      },
+      {
+        "index": 4,
+        "id": "post-tool-use/browser-content-notice",
+        "hook": "browser-content-notice",
+        "gate": false,
+        "purpose": "PostToolUse hook: envelope browser / search payloads as untrusted content.",
+        "fingerprint": "431e58bacd7afdad7ce8d2fc773f43279b51d7934a0da876a9131302e2a9d7e9"
+      },
+      {
+        "index": 5,
+        "id": "post-tool-use/slack_progress_reply_clear",
+        "hook": "slack_progress_reply_clear",
+        "gate": false,
+        "purpose": "Clears the Slack progress placeholder as soon as a reply is actually sent.",
+        "fingerprint": "10b98e51a72b0acf734ba6c523783e0167fc38094a139efcb349c31bf8f1a258"
+      },
+      {
+        "index": 6,
+        "id": "post-tool-use/skill-usage-capture",
+        "hook": "skill-usage-capture",
+        "gate": false,
+        "purpose": "PostToolUse hook: log skill usage to the persistent skill_usage table.",
+        "fingerprint": "1543593096a625ed429dde5b1e8e4932cb649b9dc858c450d9fd911ce1f546ee"
+      },
+      {
+        "index": 7,
+        "id": "post-tool-use/memory-frontmatter-bash-gate",
+        "hook": "memory-frontmatter-bash-gate",
+        "gate": true,
+        "purpose": "Memory frontmatter check for memory files written from Bash (after the write).",
+        "fingerprint": "aa6cd306708c96b51c50a7cd351247e2967d164a2cf80ecabf154d5fda126563"
+      }
+    ],
+    "PostToolUseFailure": [
+      {
+        "index": 0,
+        "id": "post-tool-use-failure/tool-log-capture",
+        "hook": "tool-log-capture",
+        "gate": false,
+        "purpose": "PostToolUse + PostToolUseFailure hook: log every tool call to /api/tool-log for the activity dashboard.",
+        "fingerprint": "eb934b37b31996291b9a913ecaeff593b23ce009b9171b473d0639a3a1800519"
+      },
+      {
+        "index": 1,
+        "id": "post-tool-use-failure/memory-frontmatter-bash-gate",
+        "hook": "memory-frontmatter-bash-gate",
+        "gate": true,
+        "purpose": "Memory frontmatter check for memory files written from Bash (failed tool call).",
+        "fingerprint": "d3bb003fb576cc114d69dfd964372e085797215cfa535295916162f33dc60534"
+      }
+    ],
+    "PreToolUse": [
+      {
+        "index": 0,
+        "id": "pre-tool-use/fleet-freeze-gate",
+        "hook": "fleet-freeze-gate",
+        "gate": true,
+        "purpose": "PreToolUse hook (matcher \"*\"), KILLSWITCH1022: while the fleet is frozen (store/fleet-freeze.json exists), every tool call is denied with exit 2.",
+        "fingerprint": "e83e478547d089ac67e2183b0eb99986d30958973f219e6f33d3beed99706381"
+      },
+      {
+        "index": 1,
+        "id": "pre-tool-use/outgoing-copy-gate",
+        "hook": "outgoing-copy-gate",
+        "gate": true,
+        "purpose": "Copy QA gate on outgoing email sent from Bash.",
+        "fingerprint": "ff6e53bd1f418b70b823cde7238b0fc3315bb7ad9d0749ac04287408cbf1331b"
+      },
+      {
+        "index": 2,
+        "id": "pre-tool-use/outgoing-copy-gate/send-email",
+        "hook": "outgoing-copy-gate",
+        "gate": true,
+        "purpose": "Copy QA gate on outgoing email (send_email tools).",
+        "fingerprint": "c394c746154806770e3163dc1ccde9be76c28e90f412891e308a986b42f3b9ee"
+      },
+      {
+        "index": 3,
+        "id": "pre-tool-use/outgoing-copy-gate/manage-email",
+        "hook": "outgoing-copy-gate",
+        "gate": true,
+        "purpose": "Copy QA gate on outgoing email (manage_email tools).",
+        "fingerprint": "21d1eaac63337a66a5a296e9e9bbf560edebf66d75735aefe3b14694fce8977d"
+      },
+      {
+        "index": 4,
+        "id": "pre-tool-use/outgoing-copy-gate/gmail",
+        "hook": "outgoing-copy-gate",
+        "gate": true,
+        "purpose": "Copy QA gate on outgoing email (Gmail connector tools).",
+        "fingerprint": "931cb2a709989038508ed2375e5bc3f48c570da0b0551c116fbcd019a09abb2f"
+      },
+      {
+        "index": 5,
+        "id": "pre-tool-use/outgoing-copy-gate/draft-email",
+        "hook": "outgoing-copy-gate",
+        "gate": true,
+        "purpose": "Copy QA gate on outgoing email drafts (draft_email tools).",
+        "fingerprint": "ef3b4959d9a14558ff871e532b5c5f375aa52aebb2fc4c2e5e715ba5e6814bf2"
+      },
+      {
+        "index": 6,
+        "id": "pre-tool-use/outgoing-copy-gate/mail-tool-family",
+        "hook": "outgoing-copy-gate",
+        "gate": true,
+        "purpose": "Copy QA gate on outgoing email (send / draft / reply / forward tool family).",
+        "fingerprint": "377931b4032bc5f334e7ef61263cb78cdff5b35276161ba44fb5aec785bbf98b"
+      },
+      {
+        "index": 7,
+        "id": "pre-tool-use/outgoing-copy-gate/telegram-reply",
+        "hook": "outgoing-copy-gate",
+        "gate": true,
+        "purpose": "Copy QA gate on outgoing Telegram reply / edit_message text.",
+        "fingerprint": "9958c78989ed7fbf5a0a53e77b70f12fb281caa4ce2832c70469b84ab6b6399e"
+      },
+      {
+        "index": 8,
+        "id": "pre-tool-use/outgoing-copy-gate/discord-reply",
+        "hook": "outgoing-copy-gate",
+        "gate": true,
+        "purpose": "Copy QA gate on outgoing Discord reply / edit_message text.",
+        "fingerprint": "9381080810f59fe04a00a6cdef7767029e5c14bf91d88a7c4ad260ecd95dc939"
+      },
+      {
+        "index": 9,
+        "id": "pre-tool-use/email-approval-gate",
+        "hook": "email-approval-gate",
+        "gate": true,
+        "purpose": "Level-aware approval gate on outgoing email sent from Bash (EMAILKAPU901).",
+        "fingerprint": "aaab71739fefaa88c806cee84a890a0d2178c12e878e571ebed65f4aaaa54fff"
+      },
+      {
+        "index": 10,
+        "id": "pre-tool-use/email-approval-gate/send-email",
+        "hook": "email-approval-gate",
+        "gate": true,
+        "purpose": "Level-aware approval gate on outgoing email (send_email tools).",
+        "fingerprint": "49e7869da6fb49a6da8992d56e1f1f55426292308ab7b5138d6253b340f83abe"
+      },
+      {
+        "index": 11,
+        "id": "pre-tool-use/email-approval-gate/manage-email",
+        "hook": "email-approval-gate",
+        "gate": true,
+        "purpose": "Level-aware approval gate on outgoing email (manage_email tools).",
+        "fingerprint": "7115e2df1f4c3102095bdc55d92260a6dfa6cfe7b70d63c02997549ce9aeb491"
+      },
+      {
+        "index": 12,
+        "id": "pre-tool-use/email-approval-gate/gmail",
+        "hook": "email-approval-gate",
+        "gate": true,
+        "purpose": "Level-aware approval gate on outgoing email (Gmail connector tools).",
+        "fingerprint": "e8b9cbbb3265c886ec5a0ae834b99c83e8bb6552f34afc83a024d798dc9b6358"
+      },
+      {
+        "index": 13,
+        "id": "pre-tool-use/email-approval-gate/draft-email",
+        "hook": "email-approval-gate",
+        "gate": true,
+        "purpose": "Level-aware approval gate on outgoing email drafts (draft_email tools).",
+        "fingerprint": "b6744bc9efbe73b58e9d993024e5381b88dc301de9eeb53ea1bc6a20c63caf04"
+      },
+      {
+        "index": 14,
+        "id": "pre-tool-use/email-approval-gate/mail-tool-family",
+        "hook": "email-approval-gate",
+        "gate": true,
+        "purpose": "Level-aware approval gate on outgoing email (send / draft / reply / forward tool family).",
+        "fingerprint": "72a23ba7706a44b6d2ab90ee1643f7abfbd01a70adcb01128f07f32ada1cb21f"
+      },
+      {
+        "index": 15,
+        "id": "pre-tool-use/channel-image-resize",
+        "hook": "channel-image-resize",
+        "gate": false,
+        "purpose": "PreToolUse hook: auto-resize channel-received large images before Read.",
+        "fingerprint": "6470bb700bcc630a5566246b081d408a8816d9e2380bd7a34569cd1a76afefb6"
+      },
+      {
+        "index": 16,
+        "id": "pre-tool-use/egress-gate",
+        "hook": "egress-gate",
+        "gate": true,
+        "purpose": "PreToolUse hook: WebFetch egress allowlist enforcement.",
+        "fingerprint": "94368f91e67d77d3cef978d63541bd2dcb5824dd82d2cc90404763644b622b87"
+      },
+      {
+        "index": 17,
+        "id": "pre-tool-use/memory-frontmatter-gate",
+        "hook": "memory-frontmatter-gate",
+        "gate": true,
+        "purpose": "Blocks Write/Edit/MultiEdit on memory files whose frontmatter is missing or malformed.",
+        "fingerprint": "bb10f94bf97b6bfd4aaba6dfada4ca01a7f62b2987ea5fa23852905457d4b611"
+      },
+      {
+        "index": 18,
+        "id": "pre-tool-use/memory-frontmatter-bash-gate",
+        "hook": "memory-frontmatter-bash-gate",
+        "gate": true,
+        "purpose": "Memory frontmatter check for memory files written from Bash (before the write).",
+        "fingerprint": "c43f4eb6a848f6abe80c053115250eb63529c59d8119f69463af15c904b6e55b"
+      }
+    ],
+    "Stop": [
+      {
+        "index": 0,
+        "id": "stop/telegram-reply-guard",
+        "hook": "telegram-reply-guard",
+        "gate": true,
+        "purpose": "Stop hook: ENFORCE that an inbound Telegram message is answered through the reply tool before the turn ends.",
+        "fingerprint": "0385c2b6e6a2140cd1e9a892f392f4f8090c678f7385cb98fd2d5a205a624756"
+      },
+      {
+        "index": 1,
+        "id": "stop/telegram_progress_clear",
+        "hook": "telegram_progress_clear",
+        "gate": false,
+        "purpose": "At turn end: clears the Telegram progress placeholder and owns the per-session progress state.",
+        "fingerprint": "4b4028c2901b37155d6fe6feb8e34f1574d2b6580679fa646851f27069680d09"
+      },
+      {
+        "index": 2,
+        "id": "stop/slack_progress_clear",
+        "hook": "slack_progress_clear",
+        "gate": false,
+        "purpose": "At turn end: clears the Slack progress placeholder and owns the per-session progress state.",
+        "fingerprint": "6c883aeafc4088a709f5a2b7684746f67a5604ab1519f789b2272a782907f4de"
+      },
+      {
+        "index": 3,
+        "id": "stop/marveen-commands",
+        "hook": "marveen-commands",
+        "gate": false,
+        "purpose": "Slash-command bookkeeping at turn end (--stop).",
+        "fingerprint": "d075d800e22a013b8a392a8796d6f5da1b6420e977b55eb46ccb059eb00c6c17"
+      }
+    ],
+    "StopFailure": [
+      {
+        "index": 0,
+        "id": "stop-failure/ledger-turn-failure",
+        "hook": "ledger-turn-failure",
+        "gate": false,
+        "purpose": "StopFailure hook: leave a trace when a turn that owed a channel reply died on an API error.",
+        "fingerprint": "2e634c28735c33523857e5d9ac9a6bc1917154a779853a4dd4b597c8222d240e"
+      }
+    ],
+    "SessionStart": [
+      {
+        "index": 0,
+        "id": "session-start/ledger-replay",
+        "hook": "ledger-replay",
+        "gate": false,
+        "purpose": "Replays the recent conversation ledger into a fresh, resumed or cleared session.",
+        "fingerprint": "76482d531bf7a41f9eae4641ba91ce2e49f5e066f5f4aaca4d0ee918befd3e4e"
+      },
+      {
+        "index": 1,
+        "id": "session-start/taskstate-replay",
+        "hook": "taskstate-replay",
+        "gate": false,
+        "purpose": "Re-injects a sub-agent's in-flight TASK-STATE after a compact, resume or respawn.",
+        "fingerprint": "116476602e69af545fb32dd5415c245f98fdb3118b1f75e3ddf69b7526236400"
+      },
+      {
+        "index": 2,
+        "id": "session-start/clear-replay",
+        "hook": "clear-replay",
+        "gate": false,
+        "purpose": "SessionStart hook: hand the cleared thread to the fresh session.",
+        "fingerprint": "b7b88d7852c20a329a4f68ad8708e0fb197d45d93fffde96b3bb379247a49c68"
+      },
+      {
+        "index": 3,
+        "id": "session-start/marveen-commands",
+        "hook": "marveen-commands",
+        "gate": false,
+        "purpose": "Slash-command bookkeeping at session start (--session-start).",
+        "fingerprint": "0008bee949008dc6138e129a6194326944d7d8c5d35031da6fb1aa9524ddaaab"
+      }
+    ],
+    "SessionEnd": [
+      {
+        "index": 0,
+        "id": "session-end/clear-capture",
+        "hook": "clear-capture",
+        "gate": false,
+        "purpose": "SessionEnd hook: save the thread a /clear is about to erase.",
+        "fingerprint": "b3cd6b08d74f1d53e05540f88f356238a2aeaec4424e16aaccd27d9e58f59c2f"
+      }
+    ]
+  }
+}
