@@ -67,6 +67,16 @@ function tightenDbPermissions(dbPath: string): void {
 export const KANBAN_CLAIM_COLUMNS = ['claimed_by TEXT', 'claimed_at INTEGER', 'claim_expires_at INTEGER'] as const
 
 export function ensureKanbanClaimSchema(d: Database.Database): boolean {
+  // ONE immediate transaction for the whole step: two processes starting on the
+  // same file (dashboard + a script) otherwise interleave DROP, DROP, CREATE,
+  // CREATE and the second CREATE fails with "trigger ... already exists", taking
+  // that startup down; the column check-then-ALTER races the same way. The
+  // transaction also closes the window in which a card write would find no
+  // release trigger in place.
+  return d.transaction((): boolean => ensureKanbanClaimSchemaStep(d)).immediate()
+}
+
+function ensureKanbanClaimSchemaStep(d: Database.Database): boolean {
   const present = () => new Set(
     (d.prepare('PRAGMA table_info(kanban_cards)').all() as { name: string }[]).map((c) => c.name),
   )
@@ -640,21 +650,26 @@ export function initDatabase(dbPathOverride?: string): void {
   // identical to what unixepoch() wrote.
   // DROP before CREATE: `CREATE TRIGGER IF NOT EXISTS` is a no-op against the
   // already-installed old body, so an upgrade would keep the broken trigger.
-  db.exec('DROP TRIGGER IF EXISTS memories_touch')
-  db.exec(`
-    CREATE TRIGGER IF NOT EXISTS memories_touch AFTER UPDATE ON memories
-    WHEN (new.content IS NOT old.content
-          OR new.keywords IS NOT old.keywords
-          OR new.category IS NOT old.category
-          OR new.agent_id IS NOT old.agent_id)
-     AND new.updated_at IS old.updated_at
-    BEGIN
-      UPDATE memories SET
-        updated_at = CAST(strftime('%s','now') AS INTEGER),
-        updated_by = CASE WHEN new.updated_by IS old.updated_by THEN NULL ELSE new.updated_by END
-      WHERE id = new.id;
-    END
-  `)
+  // The drop and the create are one immediate transaction, for the same reason
+  // as kanban_cards_version_bump below: two processes starting together would
+  // otherwise both drop, and an update in between would find no trigger.
+  db.transaction(() => {
+    db.exec('DROP TRIGGER IF EXISTS memories_touch')
+    db.exec(`
+      CREATE TRIGGER IF NOT EXISTS memories_touch AFTER UPDATE ON memories
+      WHEN (new.content IS NOT old.content
+            OR new.keywords IS NOT old.keywords
+            OR new.category IS NOT old.category
+            OR new.agent_id IS NOT old.agent_id)
+       AND new.updated_at IS old.updated_at
+      BEGIN
+        UPDATE memories SET
+          updated_at = CAST(strftime('%s','now') AS INTEGER),
+          updated_by = CASE WHEN new.updated_by IS old.updated_by THEN NULL ELSE new.updated_by END
+        WHERE id = new.id;
+      END
+    `)
+  }).immediate()
 
   // Memory version history (card 27ab6a18, 2026-09-14).
   //
@@ -757,24 +772,27 @@ export function initDatabase(dbPathOverride?: string): void {
       resolved_at INTEGER
     )
   `)
-  db.exec('DROP TRIGGER IF EXISTS homoglyph_kanban_comments_ai')
-  db.exec(`
-    CREATE TRIGGER IF NOT EXISTS homoglyph_kanban_comments_ai AFTER INSERT ON kanban_comments
-    WHEN ${triggerLikeClause('NEW.content')}
-    BEGIN
-      INSERT INTO homoglyph_findings (src_table, src_id, sample, found_at)
-      VALUES ('kanban_comments', NEW.id, substr(NEW.content, 1, 120), CAST(strftime('%s','now') AS INTEGER));
-    END
-  `)
-  db.exec('DROP TRIGGER IF EXISTS homoglyph_kanban_cards_ai')
-  db.exec(`
-    CREATE TRIGGER IF NOT EXISTS homoglyph_kanban_cards_ai AFTER INSERT ON kanban_cards
-    WHEN ${triggerLikeClause('NEW.title')}
-    BEGIN
-      INSERT INTO homoglyph_findings (src_table, src_id, sample, found_at)
-      VALUES ('kanban_cards', NEW.id, substr(NEW.title, 1, 120), CAST(strftime('%s','now') AS INTEGER));
-    END
-  `)
+  // Drop + create as one immediate transaction (see kanban_cards_version_bump).
+  db.transaction(() => {
+    db.exec('DROP TRIGGER IF EXISTS homoglyph_kanban_comments_ai')
+    db.exec(`
+      CREATE TRIGGER IF NOT EXISTS homoglyph_kanban_comments_ai AFTER INSERT ON kanban_comments
+      WHEN ${triggerLikeClause('NEW.content')}
+      BEGIN
+        INSERT INTO homoglyph_findings (src_table, src_id, sample, found_at)
+        VALUES ('kanban_comments', NEW.id, substr(NEW.content, 1, 120), CAST(strftime('%s','now') AS INTEGER));
+      END
+    `)
+    db.exec('DROP TRIGGER IF EXISTS homoglyph_kanban_cards_ai')
+    db.exec(`
+      CREATE TRIGGER IF NOT EXISTS homoglyph_kanban_cards_ai AFTER INSERT ON kanban_cards
+      WHEN ${triggerLikeClause('NEW.title')}
+      BEGIN
+        INSERT INTO homoglyph_findings (src_table, src_id, sample, found_at)
+        VALUES ('kanban_cards', NEW.id, substr(NEW.title, 1, 120), CAST(strftime('%s','now') AS INTEGER));
+      END
+    `)
+  }).immediate()
 
   // Status-change audit trail: one row per real status transition so the board
   // can answer "who moved this card, when, from/to status". Written by
