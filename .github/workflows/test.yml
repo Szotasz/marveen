@@ -137,3 +137,8 @@ jobs:
       # 0600 / never-print / write-nothing-on-a-short-grant contract is a gate instrument.
       # Hermetic: temp HOME, a local fake token endpoint, any other URL fails the test.
       - run: python3 scripts/__tests__/google-consent.test.py
+      # The heavy-job gate decides whether a heavy job may start, so its fail-closed exit
+      # codes (73/74/75/77) are gate instruments. Hermetic: fake /proc/meminfo, temp lock,
+      # queue and log, stand-in systemd-run/systemctl on PATH; the LIVE scope section prints
+      # SKIP where the runner has no systemd user manager.
+      - run: python3 scripts/__tests__/heavy-job-gate.test.py
