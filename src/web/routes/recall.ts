@@ -13,10 +13,6 @@ function todayBudapest(): string {
 /** Kept under the old name: the parser itself now lives in src/date-range.ts. */
 export const parseDateExpression = parseDateExpr
 
-function escapeLike(s: string): string {
-  return s.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_')
-}
-
 export async function tryHandleRecall(ctx: RouteContext): Promise<boolean> {
   const { res, path, method, url } = ctx
 
@@ -42,8 +38,11 @@ export async function tryHandleRecall(ctx: RouteContext): Promise<boolean> {
     const result = recallByDateRange(range.from, range.to, agent)
 
     if (query) {
-      const escaped = escapeLike(query)
-      const qLower = escaped.toLowerCase()
+      // A plain JS substring test, so the query is compared as typed. The LIKE
+      // escaper (db.ts escapeLike) is only for `LIKE ? ESCAPE '\'`: applied
+      // here it turned `22%` into `22\%`, so nothing containing `%` or `_`
+      // could ever match.
+      const qLower = query.toLowerCase()
       result.logs = result.logs.filter(l => l.content.toLowerCase().includes(qLower))
       result.memories = result.memories.filter(m => m.content.toLowerCase().includes(qLower) || (m.keywords || '').toLowerCase().includes(qLower))
     }
