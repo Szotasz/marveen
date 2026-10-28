@@ -171,7 +171,7 @@ Mit csinál bekapcsolva (`AGENT_TOKENS=1`, `.env` vagy a Beállítások oldal):
 | al-ügynök létrehozása és minden indítása | `agents/<név>/.dashboard-token` (0600, véletlen, idempotens). Az al-ügynök CLAUDE.md-jében a közös token abszolút útja erre cserélődik, és egy MÁSIK ágens token-fájlára mutató abszolút út is (egy `cp -r`-rel másolt mappa a testvére fájlát nevezi meg), a generált blokkok is erre mutatnak. A fő ügynök és a heartbeat-worker nem kap saját tokent. |
 | `src/web/agent-tokens.ts` | a szerver a bemutatott tokent ágens-névre képezi (időzítés-biztos összevetés, 5 mp-es cache). Szimlinket, rövid vagy a fő tokennel azonos tartalmú fájlt nem fogad el. Azt az értéket, amelyet egynél több ágens fájlja tartalmaz (pl. `cp -r`-rel másolt mappa), EGYIKÜKNEK sem fogadja el; a következő indítás az ismétlődő értéket újra cseréli. Az SSE pane-stream `?token=` paraméterében al-ügynök tokent nem fogad el. |
 | `src/web/auth-gate.ts` `gateRequest` | a saját tokenes hívó (`ctx.auth.tokenAgent`) csak az `AGENT_TOKEN_ALLOWLIST` végpontjait éri el (üzenetek, kanban, memória, napi napló, jóváhagyás kérése/lekérdezése/felhasználása, ütemezések és vault OLVASÁSA, a hook-végpontok); minden más 403 `agent-token-scope`. Ütemezést nem írhat (403 `schedule-writes-main-agent-only`). |
-| ugyanott, `AGENT_IDENTITY_BINDINGS` | minden azonosság, amit a kérés állít (`from`, `agent_id`, `author`, `actor`, `updated_by`, út-beli ágensnév, a szerkesztett sor gazdája) a token ágense kell legyen; a tulajdonosi mezők (`owner_approved_message_id`, kanban `force`) tiltottak. 403 `agent-identity-binding`. |
+| ugyanott, `AGENT_IDENTITY_BINDINGS` | minden azonosság, amit a kérés állít (`from`, `agent_id`, `author`, `actor`, `updated_by`, út-beli ágensnév, a szerkesztett sor gazdája) a token ágense kell legyen; a tulajdonosi mezők (`owner_approved_message_id`, `for_agent`, kanban `force`) tiltottak. 403 `agent-identity-binding`. |
 | `PUT /api/messages/:id` | saját tokennel csak a NEKI címzett, nyitott üzenet zárható, és ezt maga az UPDATE köti ki (`closeMessageAsRecipient`). |
 | vault | saját tokennel titkot csak a `store/vault-acl.json` szerint lehet olvasni, a `VAULT_ACL_MODE` értékétől függetlenül; üres fájl = egyetlen érték sem. SSH-azonosító és vault-alerőforrás soha. |
 | `mayIssueCredentials` | a saját token sosem tulajdonos, akkor sem, ha még nincs dashboard-felhasználó. |
@@ -185,13 +185,16 @@ lekapcsolása egy futó ügynököt sem dob 401-re.
 
 Jóváhagyás felhasználása saját tokennel (`POST /api/approvals/:id/consume`): az al-ügynök a
 SAJÁT kérését használhatja fel (amit a tulajdonos jóváhagyott), vagy azt a sort, amit a fő
-ügynök `for_agent`-tel neki adott ki. A `for_agent` a `POST /api/approvals` opcionális mezője
-(egy ágensnév, 1-64 karakter: betű, szám, `_`, `-`); csak a közös tokennel adható meg, saját
-tokennel 403. Akkor kell, ha a sort a fő ügynök iktatja (például a tulajdonos chaten adott
+ügynök `for_agent`-tel neki iktatott. A `for_agent` a `POST /api/approvals` opcionális mezője
+(egy ágensnév, 1-64 karakter: betű, szám, `_`, `-`); al-ügynök saját tokenjével nem adható meg
+(403), minden más hitelesítéssel igen. CSAK a sor létrehozásakor adható meg, utólag nem: ha egy
+al-ügynök saját tokennel 403-at kap egy sorra, a fő ügynök ÚJ sort iktat neki `for_agent`-tel
+(recept: `seed-skills/approval-request-handling/SKILL.md`), és azt a tulajdonos hagyja jóvá. Akkor kell, ha a sort a fő ügynök iktatja (például a tulajdonos chaten adott
 jóváhagyásával, `owner_approved_message_id`), de a műveletet végző eszköz egy al-ügynök saját
 tokenjével fut. Ha a sor `for_agent`-et visz, CSAK az az ügynök használhatja fel a saját
 tokenjével, az iktató nem. Minden más esetben ugyanaz a 403 jön (`agent-identity-binding`),
-ismeretlen azonosítóra is, így a válasz nem árulja el, létezik-e a sor. A közös token
+ismeretlen azonosítóra is, így a FELHASZNÁLÁS válasza nem árulja el, létezik-e a sor (a
+`GET /api/approvals/:id` lekérdezés ettől még megmutatja). A közös token
 viselkedése nem változik.
 
 Ismert korlátok: a szigorú profilú (`dontAsk`) ügynökök receptjei a `scripts/marveen-api.sh`

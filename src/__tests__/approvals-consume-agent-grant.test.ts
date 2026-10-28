@@ -235,3 +235,41 @@ describe('for_agent on POST /api/approvals is the main agent\'s lane', () => {
     expect((await call('POST', `/api/approvals/${id}/consume`, TOK[X]!, consumeBody())).status).toBe(409)
   })
 })
+
+// The instruction texts this change generates must describe operations the API
+// really offers (review round 1): for_agent exists only at creation, so the way
+// out of a refused consume is a NEW row the main agent files for the sub-agent,
+// approved by the owner -- the recipe in seed-skills/approval-request-handling.
+describe('the documented way out of a refused consume works end to end', () => {
+  it('for_agent cannot be added to an existing row: a PATCH carrying it leaves the grant unset', async () => {
+    const filed = await call('POST', '/api/approvals', MAIN_TOKEN, { agent_id: MAIN, category: CAT, action_description: 'x', content_hash: HASH })
+    const id = filed.body.id as string
+    const r = await call('PATCH', `/api/approvals/${id}`, MAIN_TOKEN, { status: 'approved', resolved_by: 'owner', for_agent: X })
+    expect(r.status, JSON.stringify(r.body)).toBe(200)
+    expect(getApproval(id)!.for_agent).toBeNull()
+    expectNotGranted(await call('POST', `/api/approvals/${id}/consume`, TOK[X]!, consumeBody()), X)
+  })
+
+  it('refused consume -> the main agent files a NEW pending row with for_agent -> the owner approves -> the sub-agent consumes it', async () => {
+    const refused = await mainGrant()
+    expectNotGranted(await call('POST', `/api/approvals/${refused}/consume`, TOK[X]!, consumeBody()), X)
+    // the skill's recipe body, as written there
+    const filed = await call('POST', '/api/approvals', MAIN_TOKEN, { agent_id: MAIN, category: CAT, action_description: 'X inditja', content_hash: HASH, for_agent: X })
+    expect(filed.status, JSON.stringify(filed.body)).toBe(201)
+    expect(filed.body.status).toBe('pending')
+    expect(filed.body.for_agent).toBe(X)
+    const id = filed.body.id as string
+    expect((await call('POST', `/api/approvals/${id}/consume`, TOK[X]!, consumeBody())).status).toBe(409) // not approved yet
+    expect((await call('PATCH', `/api/approvals/${id}`, MAIN_TOKEN, { status: 'approved', resolved_by: 'owner-dashboard' })).status).toBe(200)
+    expect((await call('POST', `/api/approvals/${id}/consume`, TOK[X]!, consumeBody())).status).toBe(200)
+  })
+
+  it('the seed skill carries that recipe and says the grant cannot be added later', async () => {
+    const { readFileSync } = await import('node:fs')
+    const { join } = await import('node:path')
+    const skill = readFileSync(join(process.cwd(), 'seed-skills', 'approval-request-handling', 'SKILL.md'), 'utf-8')
+    expect(skill).toContain('"for_agent":"<al-ügynök neve>"')
+    expect(skill).toContain('CSAK létrehozáskor adható meg')
+    expect(skill).toContain('a tulajdonos hagyja jóvá')
+  })
+})

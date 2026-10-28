@@ -17,7 +17,7 @@ import { loadProfileTemplate, resolveProfileTemplate, profileWantsCredentialGate
 import { resolveAgentSecurityProfile, readAgentTeam } from './agent-team.js'
 import { sanitizeCapabilityTag, CAPABILITY_TAG_MAX_PER_AGENT } from '../prompt-safety.js'
 import { TMP_ROOT_PREFIXES as _TMP_PREFIXES } from './tmp-root-prefixes.js'
-import { agentTokensEnabled, dashboardTokenPathFor, ensureAgentToken } from './agent-tokens.js'
+import { agentTokensEnabled, dashboardTokenPathFor, ensureAgentToken, mainTokenPath } from './agent-tokens.js'
 import { EXTRA_HOOKS_FILE, applyExtraHookEntries, extraHooksDigest, loadExtraHookEntries, type ExtraHookDeps } from './extra-hook-entries.js'
 
 // Resolve the base URL agents should use to reach the dashboard API.
@@ -3225,10 +3225,12 @@ function buildAutonomyBody(name: string, strict = false): string {
       `curl -s -X POST ${dashboardOrigin}/api/approvals/<id>/consume -H "Content-Type: application/json" -H "Authorization: Bearer $(cat ${tokenPath})" -d '{"category":"CATEGORY_KEY","consumer":"${name}"}'`,
       'Csak HTTP 200 után végezd el a műveletet. 409 (already_consumed, expired, not_approved, hash_mismatch) = NE csináld: kérj új jóváhagyást.',
       // AGENT_TOKENS: a sub-agent's OWN token consumes only its own request or a
-      // row the main agent granted to it with for_agent; anything else is 403.
-      // Only said where the recipe really uses the agent's own token.
-      ...(tokenPath === join(PROJECT_ROOT, 'store', '.dashboard-token') ? [] : [
-        `403 (agent-identity-binding) = a jóváhagyás NEM neked szól: a saját tokeneddel csak a saját kérésedet, vagy azt használhatod fel, amit ${MAIN_AGENT_ID} for_agent-tel neked adott ki. Küldd el a jóváhagyás id-ját ${MAIN_AGENT_ID}-nek (inter-agent üzenetben), és kérd a for_agent-es kiadást. NE kérj új jóváhagyást, és NE cselekedj.`,
+      // row the main agent filed for it with for_agent; anything else is 403.
+      // for_agent is set only when a row is CREATED (never added to an existing
+      // one), so the way out is a new row the main agent files, not a grant of
+      // this id. Only said where the recipe really uses the agent's own token.
+      ...(tokenPath === mainTokenPath() ? [] : [
+        `403 (agent-identity-binding) = a jóváhagyás NEM neked szól: a saját tokeneddel csak a saját kérésedet, vagy azt használhatod fel, amit ${MAIN_AGENT_ID} for_agent-tel neked iktatott. NE cselekedj. Kérd meg ${MAIN_AGENT_ID}-t (inter-agent üzenetben, a művelet leírásával és a content_hash-sel), hogy iktassa neked a jóváhagyást "for_agent":"${name}" mezővel; meglévő sorhoz ez utólag nem adható. Az új sort a tulajdonos hagyja jóvá, és annak az id-jával használd fel.`,
       ]),
       'Ha a kérésben content_hash volt, a felhasználásban is ugyanazt add meg. Kivétel: email_send és data_delete kategóriánál NE hívd (409 wrong_category); azokat a küldés, illetve a törlés útja maga használja fel.',
     ]),
@@ -4547,7 +4549,7 @@ export async function generateClaudeMd(name: string, description: string, model:
   // The agent's OWN token file when AGENT_TOKENS is on and scaffoldAgentDir()
   // provisioned it; otherwise the shared path, exactly as before.
   const tokenPath = dashboardTokenPathFor(name)
-  const ownToken = tokenPath !== join(PROJECT_ROOT, 'store', '.dashboard-token')
+  const ownToken = tokenPath !== mainTokenPath()
   const ownTokenIntro = ownToken
     ? `\nEz a SAJÁT tokened, és csak az ügynök-API-ra szól (üzenetek, kanban, memória, napi napló, jóváhagyás-kérés, ütemezések olvasása, vault olvasása). Minden más végpontra a szerver 403-at ad ("rule":"agent-token-scope"): az ilyen kérést küldd a fő-ágensnek (${MAIN_AGENT_ID}) a /api/messages-en. A tokeneddel CSAK a saját nevedben írhatsz: a from, agent_id, author, actor, updated_by mező mindig a saját neved (AGENT_NAME), memóriát csak a sajátodat módosíthatod, és üzenetet csak a neked címzettet zárhatod le; eltérés esetén 403 ("rule":"agent-identity-binding").`
     : ''

@@ -51,7 +51,7 @@ const read = (n: string) => readFileSync(join(tmpRoot, 'agents', n, 'CLAUDE.md')
 const level2 = (text: string) => text.slice(text.indexOf('**Level 2'), text.indexOf('**Level 3'))
 
 describe('ensureAutonomySection: what a 403 on consume means for a sub-agent token', () => {
-  it('a sub-agent on its own token is told: not granted to you, send the id to the main agent for a for_agent grant, do not re-request, do not act', () => {
+  it('a sub-agent on its own token is told: not granted to you, do not act, ask the main agent to file a new row with for_agent=<own name>', () => {
     tokensOn.value = '1'
     setup('consume-sub', true)
     ensureAutonomySection('consume-sub')
@@ -61,7 +61,14 @@ describe('ensureAutonomySection: what a 403 on consume means for a sub-agent tok
     expect(line, block).toBeDefined()
     expect(line).toContain('for_agent')
     expect(line).toContain('agent-a') // the main agent, named as the one to ask
-    expect(line).toContain('NE kérj új jóváhagyást')
+    // for_agent exists only at creation: the text must ask for a NEW row filed
+    // with for_agent=<own name>, never a grant of the refused id, and must not
+    // forbid the new approval that this takes.
+    expect(line).toContain('"for_agent":"consume-sub"')
+    expect(line).toContain('iktassa')
+    expect(line).toContain('utólag nem adható')
+    expect(line).not.toContain('NE kérj új jóváhagyást')
+    expect(line).not.toContain('id-ját')
     expect(line).toContain('NE cselekedj')
     // after the consume recipe, so it reads as the answer to that call
     expect(block.indexOf('/api/approvals/<id>/consume')).toBeLessThan(block.indexOf(line!))
