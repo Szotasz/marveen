@@ -425,6 +425,150 @@ def main():
                   float(json.loads(f.read()).get("blocked_until", 0)) - clock[0], 70.0)
         check("zarfajl: <fajl>.lock", os.path.exists(pause + ".lock"), True)
 
+    # 12. review k1: every documented throttling code, and the cheap fixes
+    with tempfile.TemporaryDirectory() as td:
+        tokf = os.path.join(td, ".meta-token")
+        with open(tokf, "w") as fh:
+            fh.write(USER_TOK + "\n")
+        m.TOKEN_PATH = tokf
+        pause = os.path.join(td, "pause.json")
+        m.PAUSE_PATH = pause
+        clock = [2_000_000.0]
+        sleeps = []
+
+        def fake_sleep2(sec):
+            sleeps.append(sec)
+            clock[0] += sec
+        m._NOW = lambda: clock[0]
+        m._SLEEP = fake_sleep2
+
+        def fresh2():
+            del sleeps[:]
+            for f in (pause, pause + ".lock"):
+                if os.path.exists(f):
+                    os.remove(f)
+
+        # 12a. app (4), Pages with a user token (32), Pages BUC (80001),
+        # Instagram BUC (80002) and the other BUC codes: retried + pause written
+        for code_ in (4, 32, 80001, 80002, 80005, 80006, 80008, 80009):
+            fresh2()
+            t0 = clock[0]
+            op = SeqOpener([("limit", code_, {}), ("ok", {})])
+            code, out, err = run(m, ["123", "fields=id"], op)
+            with open(pause) if os.path.exists(pause) else io.StringIO("{}") as f:
+                bu = json.load(f).get("blocked_until")
+            check("korlat-kod %d: ujraprobalva (2 hivas, exit 0, 60 mp)" % code_,
+                  (len(op.calls), code, sleeps), (2, 0, [60]))
+            check("korlat-kod %d: kozos szunet beirva (t0 + 60)" % code_, bu, t0 + 60)
+        fresh2()
+        bad_calls = []
+
+        def code190(req, timeout=None):
+            bad_calls.append(req.full_url)
+            raise urllib.error.HTTPError(req.full_url, 400, "x", {}, io.BytesIO(
+                json.dumps({"error": {"code": 190, "message": "Invalid OAuth token"}}).encode()))
+        code, _, _ = run(m, ["123", "fields=id"], code190)
+        check("nem korlat-kod (190): nincs ujraproba, nincs szunet",
+              (len(bad_calls), sleeps, code, os.path.exists(pause)), (1, [], 1, False))
+
+        # 12b. the error body is redacted BEFORE it is cut: a token straddling
+        # the old 800-character cut leaves no readable prefix
+        def straddle(req, timeout=None):
+            body = "x" * 790 + USER_TOK + "y" * 50
+            raise urllib.error.HTTPError(req.full_url, 400, "x", {}, io.BytesIO(body.encode()))
+        code, out, err = run(m, ["123", "fields=id"], straddle)
+        check("hibatorzs: a vagas elotti redakcio, token-elotag sincs (exit 1)",
+              (code, USER_TOK[:10] in err), (1, False))
+
+        # 12c. the answer's final URL must be the Graph host; the default
+        # opener refuses redirects
+        class Moved(FakeResp):
+            def geturl(self):
+                return "https://evil.example/x"
+        code, out, err = run(m, ["123", "fields=id"], lambda req, timeout=None: Moved({"a": 1}))
+        check("vegso URL mas hoston: exit 1, kimenet nelkul",
+              (code, out, "Graph hostrol" in err), (1, "", True))
+        nored = getattr(m, "_NoRedirect", None)   # getattr: the old helper has none
+        try:
+            if nored is None:
+                raise AssertionError("no _NoRedirect")
+            nored().redirect_request(None, None, 302, "Found", {}, "https://evil.example/x")
+            check("atiranyitas: megtagadva", False, True)
+        except RuntimeError as exc:
+            check("atiranyitas: megtagadva", "evil.example" in str(exc), True)
+        except AssertionError:
+            check("atiranyitas: megtagadva", False, True)
+        seen = []
+
+        class _FakeBuilt:
+            def open(self, req, timeout=None):
+                return FakeResp({"ok": 1})
+
+        def fake_build(*handlers):
+            seen.extend(handlers)
+            return _FakeBuilt()
+        real_build = m.urllib.request.build_opener
+        m.urllib.request.build_opener = fake_build
+        try:
+            code, _, _ = run(m, ["123", "fields=id"], None)
+        finally:
+            m.urllib.request.build_opener = real_build
+        check("alap opener: atiranyitas-tilto kezelovel", (code, nored is not None and nored in seen), (0, True))
+
+        # 12d. fields= may not ask for a token or alias a field
+        for v in ("id,access_token", "id,ACCESS_TOKEN", "accounts{access_token}",
+                  "name.as(access_token)", "id,name.AS(x)"):
+            op = FakeOpener()
+            code, _, _ = run(m, ["me", "fields=" + v], op)
+            check("fields=%s: megtagadva, 0 hivas" % v, (code, len(op.calls)), (2, 0))
+        op = FakeOpener()
+        code, _, _ = run(m, ["111/videos", "fields=source", "--page", "111"], op)
+        check("--page sajat me/accounts tokenkerese tovabbra is megy", (code, len(op.calls)), (0, 2))
+
+        # 12e. an unreadable error body and a non-object me/accounts answer:
+        # a clean exit 1, no traceback
+        class BadBody(io.RawIOBase):
+            def read(self, *a):
+                raise OSError("connection reset")
+
+        def unreadable(req, timeout=None):
+            raise urllib.error.HTTPError(req.full_url, 500, "x", {}, BadBody())
+        try:
+            code, _, err = run(m, ["123", "fields=id"], unreadable)
+            check("olvashatatlan hibatorzs: exit 1", (code, "HTTP 500" in err), (1, True))
+        except Exception as exc:  # noqa: BLE001
+            check("olvashatatlan hibatorzs: exit 1, nem kivetel", repr(exc), None)
+        for answer in (["nem", "objektum"], {"data": "x"}, {"data": [1, 2]}):
+            try:
+                code, _, err = run(m, ["111", "fields=id", "--page", "111"],
+                                   lambda req, timeout=None, a=answer: FakeResp(a))
+                check("me/accounts %r: exit 1, nem kivetel" % (answer,), code, 1)
+            except Exception as exc:  # noqa: BLE001
+                check("me/accounts %r: exit 1, nem kivetel" % (answer,), repr(exc), None)
+
+        # 12f. ASCII digits only in the version prefix and the page id
+        for argv in (["v١٢.0/123", "fields=id"], ["123", "fields=id", "--page", "١٢٣"]):
+            op = FakeOpener()
+            code, _, _ = run(m, argv, op)
+            check("nem ASCII szamjegy (%r): megtagadva, 0 hivas" % argv[-1], (code, len(op.calls)), (2, 0))
+
+        # 12g. a pause file that cannot be written is said on stderr
+        fresh2()
+        m.PAUSE_PATH = os.path.join(td, "nincs-ilyen-mappa", "pause.json")
+        op = SeqOpener([("limit", 4, {}), ("ok", {})])
+        code, _, err = run(m, ["123", "fields=id"], op)
+        check("irhatatlan szunet-fajl: a hivas megy, a stderr kimondja",
+              (code, "nem irhato" in err), (0, True))
+        m.PAUSE_PATH = pause
+
+        # 12h. paging.next carries the token: it comes back masked
+        nxt = {"data": [], "paging": {"cursors": {"after": "QVFI"},
+               "next": "https://graph.facebook.com/v21.0/123/feed?access_token=%s&after=QVFI"
+                       % urllib.parse.quote(USER_TOK)}}
+        code, out, err = run(m, ["123/feed", "fields=id"], lambda req, timeout=None: FakeResp(nxt))
+        check("paging.next: a token maszkolva, a kurzor megmarad",
+              (code, USER_TOK in out, "<token>" in out, "QVFI" in out), (0, False, True, True))
+
     print()
     if fails:
         print("BUKOTT: %d" % len(fails))
