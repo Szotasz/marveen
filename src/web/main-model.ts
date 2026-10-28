@@ -371,7 +371,9 @@ export const liveModelDeps: ModelDeps = {
   writeEnv: updateEnvFile,
   // ELSOKOR922 D-4: the runner's own messages go out on the main bot, over
   // the Bot API, without a main-session turn (no second bot any more).
-  notify: async (text) => { await notifyChannel(text); return true },
+  // notifyChannel resolves the delivery outcome (false = skipped or lost), so
+  // the dependency's boolean is the real one, not an unconditional true.
+  notify: (text) => notifyChannel(text),
   autoCompactWindow: readAutoCompactWindow,
   lastSentFile: MODEL_LAST_SENT_FILE,
   configuredEffort: () => readConfiguredEffort()?.value ?? null,

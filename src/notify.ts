@@ -36,18 +36,20 @@ export async function slackTargetFor(kind: 'owner' | 'alert', setting?: SettingF
 export async function deliverWithSlack(
   kind: 'owner' | 'alert',
   text: string,
-  telegram: () => Promise<void>,
+  telegram: () => Promise<boolean | void>,
   send?: typeof SendSlack,
-): Promise<void> {
+): Promise<boolean> {
+  // Resolves true when the message reached a channel (Slack, or the Telegram
+  // callback when it did not report a failure), false when it was lost.
   const setting = await loadSetting()
   const noFallback = setting('NOTIFY_TELEGRAM_FALLBACK') === '0'
   const target = await slackTargetFor(kind, setting)
   if (!target) {
     if (noFallback) {
       logger.error({ kind }, 'Ertesites ELVESZETT: nincs Slack-cel, a Telegram-tartalek ki van kapcsolva (NOTIFY_TELEGRAM_FALLBACK=0)')
-      return
+      return false
     }
-    return telegram()
+    return (await telegram()) !== false
   }
   let sendFn: typeof SendSlack
   try {
@@ -58,18 +60,22 @@ export async function deliverWithSlack(
     // unless the owner switched the Telegram fallback off.
     if (noFallback) {
       logger.error({ err: msg }, 'Ertesites ELVESZETT: a Slack modul nem toltheto be, a Telegram-tartalek ki van kapcsolva (NOTIFY_TELEGRAM_FALLBACK=0)')
-      return
+      return false
     }
     logger.warn({ err: msg }, 'Slack modul nem toltheto be; Telegram tartalek')
-    return telegram()
+    return (await telegram()) !== false
   }
   const r = await sendFn(target, markIfTestRun(text), { ownerUserId: setting('SLACK_OWNER_USER_ID') })
   if (!r.ok && noFallback) {
     logger.error({ target, error: r.error }, 'Ertesites ELVESZETT: a Slack-kuldes bukott, a Telegram-tartalek ki van kapcsolva (NOTIFY_TELEGRAM_FALLBACK=0)')
-    return
+    return false
   }
   if (!r.ok) logger.warn({ target, error: r.error }, 'Slack ertesites nem ment ki; Telegram tartalek')
-  if (!r.ok || setting('NOTIFY_TELEGRAM') !== '0') await telegram()
+  if (!r.ok || setting('NOTIFY_TELEGRAM') !== '0') {
+    const tg = (await telegram()) !== false
+    return r.ok ? true : tg
+  }
+  return true
 }
 
 /** What a channel send did, for callers that must react to a miss. */
@@ -118,13 +124,17 @@ export function alertIsRedirected(): boolean {
 }
 
 // Operational alert (watchdogs, restarts, stuck sessions). Goes to
-// ALERT_CHAT_ID when it is set, otherwise to the owner chat.
-export async function notifyChannel(text: string, meta?: AlertMeta): Promise<void> {
+// ALERT_CHAT_ID when it is set, otherwise to the owner chat. Resolves true when
+// the message was handed to a channel (Slack or the channel provider: every
+// chunk), false when the send was skipped (no token/chat) or failed on every
+// route. Never throws; fire-and-forget callers may ignore the result, a caller
+// that records "alert sent" (dedupe, retry) should record it only on true.
+export async function notifyChannel(text: string, meta?: AlertMeta): Promise<boolean> {
   return deliverWithSlack('alert', text, () => {
     const alertChat = normalizeChatId(ALERT_CHAT_ID)
-    // sendToChat reports now, this caller does not care: drop the result so the
-    // callback keeps its Promise<void> shape (slack-notify wiring contract).
-    if (alertChat) return sendToChat(alertChat, text, 'alert', { meta, recipient: 'alert-chat' }).then(() => {})
+    // sendToChat reports a ChannelSendResult; deliverWithSlack takes the
+    // callback's boolean (false = lost), so map it to `sent`.
+    if (alertChat) return sendToChat(alertChat, text, 'alert', { meta, recipient: 'alert-chat' }).then((r) => r.sent)
     return telegramOwner(text, meta)
   })
 }
@@ -163,11 +173,11 @@ function signalOwnerChatMissing(text: string, reason: string): void {
 
 // Owner-facing content (heartbeat digest, security events): always the owner
 // chat, never rerouted by ALERT_CHAT_ID.
-export async function notifyOwner(text: string, meta?: AlertMeta): Promise<void> {
+export async function notifyOwner(text: string, meta?: AlertMeta): Promise<boolean> {
   return deliverWithSlack('owner', text, () => telegramOwner(text, meta))
 }
 
-async function telegramOwner(text: string, meta?: AlertMeta): Promise<void> {
+async function telegramOwner(text: string, meta?: AlertMeta): Promise<boolean> {
   // CHATID0 -- resolveAlertOwnerChat, not a truthiness test on the raw .env
   // value. The installer writes ALLOWED_CHAT_ID=0 as its placeholder, and "0"
   // is neither empty nor falsy, so a plain truthiness/normalizeChatId-only
@@ -191,9 +201,9 @@ async function telegramOwner(text: string, meta?: AlertMeta): Promise<void> {
     // No token means no channel on this install: the log line is enough. A token
     // with no owner chat is the 2026-09-16 shape, and that one must reach someone.
     if (CHANNEL_TOKEN) signalOwnerChatMissing(text, owner.reason ?? 'ismeretlen ok')
-    return
+    return false
   }
-  await sendToChat(owner.chatId, text, 'owner', { meta, recipient: 'owner' })
+  return (await sendToChat(owner.chatId, text, 'owner', { meta, recipient: 'owner' })).sent
 }
 
 // PR1655 review, ask 2: this used to return void and swallow every provider
