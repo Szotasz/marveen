@@ -407,13 +407,15 @@ export interface IdentityLookups {
   messageRecipient(id: number): string | null
   /** agent_id owning memory <id>, or null when the row does not exist. */
   memoryOwner(id: number): string | null
-  /** agent_id that filed approval <id>, or null when the row does not exist. */
-  approvalOwner(id: string): string | null
+  /** The agent that may consume approval <id> with its own token: the row's
+   *  for_agent when the main agent granted it to one, else the agent that
+   *  filed it; null when the row does not exist. */
+  approvalGrantee(id: string): string | null
 }
 
 export const dbIdentityLookups: IdentityLookups = {
   messageRecipient: (id) => getAgentMessage(id)?.to_agent ?? null,
-  approvalOwner: (id) => getApproval(id)?.agent_id ?? null,
+  approvalGrantee: (id) => approvalGranteeOf(getApproval(id)),
   memoryOwner: (id) => {
     const row = getDb().prepare('SELECT agent_id FROM memories WHERE id = ?').get(id) as { agent_id: string } | undefined
     return row?.agent_id ?? null
@@ -434,14 +436,33 @@ export interface IdentityBinding {
   pathAgentGroup?: number
   /** Owner of the row the request edits; must equal the calling agent. */
   rowOwner?: (m: RegExpExecArray, lk: IdentityLookups) => string | null
+  /** The agent a row is GRANTED to (not necessarily its author); must equal
+   *  the calling agent. Missing row, no grant and another agent's grant are
+   *  all refused with ONE reason (approvalNotGrantedReason), so the answer
+   *  says nothing about whether the id exists. */
+  rowGrantee?: (m: RegExpExecArray, lk: IdentityLookups) => string | null
+}
+
+/** Who may consume an approval row with a sub-agent token: the grantee the
+ *  main agent named (for_agent), else the agent that filed it. One rule,
+ *  shared by the gate and the route (routes/approvals.ts). */
+export function approvalGranteeOf(row: { agent_id: string; for_agent?: string | null } | null | undefined): string | null {
+  if (!row) return null
+  return row.for_agent ?? row.agent_id
+}
+
+// The single reason for every refused sub-agent consume, shared with the
+// route's own repeat of the check (routes/approvals.ts).
+export function approvalNotGrantedReason(agent: string): string {
+  return `this approval is not granted to the calling agent '${agent}' (it must be the agent's own request, or the main agent must grant it with for_agent)`
 }
 
 const KANBAN_CARD = '[^/]+'
 export const AGENT_IDENTITY_BINDINGS: readonly IdentityBinding[] = [
-  { methods: ['POST'], pattern: /^\/api\/approvals$/, bodyFields: ['agent_id'], ownerLaneFields: ['owner_approved_message_id'],
-    why: 'a request is filed as the caller; a born-approved row (owner_approved_message_id) is the owner lane' },
-  { methods: ['POST'], pattern: /^\/api\/approvals\/([^/]+)\/consume$/, rowOwner: (m, lk) => lk.approvalOwner(m[1]!),
-    why: 'a sub-agent consumes only a row it filed itself (and the owner approved), never another agent\'s' },
+  { methods: ['POST'], pattern: /^\/api\/approvals$/, bodyFields: ['agent_id'], ownerLaneFields: ['owner_approved_message_id', 'for_agent'],
+    why: 'a request is filed as the caller; a born-approved row (owner_approved_message_id) and a grant to a sub-agent (for_agent) are the owner lane' },
+  { methods: ['POST'], pattern: /^\/api\/approvals\/([^/]+)\/consume$/, rowGrantee: (m, lk) => lk.approvalGrantee(m[1]!),
+    why: 'a sub-agent consumes only its own request or a row the main agent granted to it (for_agent), never another agent\'s' },
   { methods: ['POST'], pattern: /^\/api\/messages$/, bodyFields: ['from'], why: 'a message is sent as the caller' },
   { methods: ['PUT'], pattern: /^\/api\/messages\/(\d+)$/, rowOwner: (m, lk) => lk.messageRecipient(Number(m[1])),
     why: 'only a message addressed to the caller can be closed by it' },
@@ -481,7 +502,7 @@ function matchingBindings(method: string, path: string): Array<{ b: IdentityBind
 // after the client has finished sending, and the route continues from the
 // stashed bytes with no client-timed gap between the check and its write.
 export function identityBindingNeedsBody(method: string, path: string): boolean {
-  return matchingBindings(method, path).some(({ b }) => !!(b.bodyFields || b.defaultsToMain || b.ownerLaneFields || b.rowOwner))
+  return matchingBindings(method, path).some(({ b }) => !!(b.bodyFields || b.defaultsToMain || b.ownerLaneFields || b.rowOwner || b.rowGrantee))
 }
 
 /**
@@ -510,6 +531,13 @@ export function agentIdentityViolation(
       // held open on the NEXT message id until another agent's message lands).
       if (owner === null) return `the row does not exist (yet); a sub-agent token can only act on an existing row of its own`
       if (owner !== agent) return `the row belongs to '${owner}', not to the calling agent '${agent}'`
+    }
+    if (b.rowGrantee) {
+      // Read after the body (identityBindingNeedsBody), like rowOwner.
+      // agent_id and for_agent are written once at creation and never
+      // updated, so no later write can move a grant between this check and
+      // the route's consume.
+      if (b.rowGrantee(m, lk) !== agent) return approvalNotGrantedReason(agent)
     }
     if (body !== undefined) {
       const obj = (body !== null && typeof body === 'object' && !Array.isArray(body) ? body : {}) as Record<string, unknown>

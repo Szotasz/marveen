@@ -11,7 +11,7 @@ import {
 } from '../../db.js'
 import { logger } from '../../logger.js'
 import { readBody, json } from '../http-helpers.js'
-import { identityDenialBody } from '../auth-gate.js'
+import { approvalGranteeOf, approvalNotGrantedReason, identityDenialBody } from '../auth-gate.js'
 import { resolveOwnerChatId } from '../../owner-chat.js'
 import { sendOwnerMessage } from '../../notify.js'
 import { sendTelegramMessage } from '../telegram.js'
@@ -120,6 +120,13 @@ export function isConsumeRef(v: unknown): v is string {
     if (c < 32 || c === 127) return false
   }
   return true
+}
+
+// for_agent names one fleet agent. Same alphabet as sanitizeAgentIdent
+// (prompt-safety.ts) and the 64-char cap of the X-Agent-Id claim, so the stored
+// value is exactly what an agent token resolves to.
+export function isForAgentName(v: unknown): v is string {
+  return typeof v === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(v)
 }
 
 // The window the acting tool asks for, in seconds. Absent = the default;
@@ -391,7 +398,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
 
   // POST /api/approvals -- create new approval request
   if (path === '/api/approvals' && method === 'POST') {
-    let body: { agent_id?: unknown; category?: unknown; action_description?: unknown; action_payload?: unknown; timeout_seconds?: unknown; content_hash?: unknown; owner_approved_message_id?: unknown }
+    let body: { agent_id?: unknown; category?: unknown; action_description?: unknown; action_payload?: unknown; timeout_seconds?: unknown; content_hash?: unknown; owner_approved_message_id?: unknown; for_agent?: unknown }
     try {
       body = JSON.parse((await readBody(req)).toString())
     } catch {
@@ -399,7 +406,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       return true
     }
 
-    const { agent_id, category, action_description, action_payload, timeout_seconds, content_hash, owner_approved_message_id } = body
+    const { agent_id, category, action_description, action_payload, timeout_seconds, content_hash, owner_approved_message_id, for_agent } = body
     if (typeof agent_id !== 'string' || !agent_id.trim()) {
       json(res, { error: 'agent_id is required' }, 400)
       return true
@@ -429,6 +436,24 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
     if (content_hash !== undefined && (typeof content_hash !== 'string' || !/^[0-9a-f]{64}$/.test(content_hash))) {
       json(res, { error: 'content_hash must be a 64-char lowercase sha256 hex string if provided' }, 400)
       return true
+    }
+
+    // for_agent grants the row to ONE sub-agent, whose own token (AGENT_TOKENS)
+    // may then consume it (auth-gate.ts binding on POST /api/approvals/:id/consume).
+    // Granting is the main agent's lane: the gate already refuses the field from
+    // a sub-agent token (owner-lane field, 403); this repeats it at the route so
+    // the grant never rests on the gate table alone.
+    let forAgent: string | null = null
+    if (for_agent !== undefined && for_agent !== null) {
+      if (ctx.auth?.kind === 'token' && ctx.auth.tokenAgent) {
+        json(res, { error: 'for_agent is set only by the main agent; a sub-agent token cannot grant an approval' }, 403)
+        return true
+      }
+      if (!isForAgentName(for_agent)) {
+        json(res, { error: 'for_agent, if given, must be one agent name (1-64 chars: letters, digits, _ or -)' }, 400)
+        return true
+      }
+      forAgent = for_agent
     }
 
     // The main agent may file an approval for an action the
@@ -481,6 +506,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
       action_payload: typeof action_payload === 'string' ? action_payload : null,
       timeout_at,
       content_hash: typeof content_hash === 'string' ? content_hash : null,
+      for_agent: forAgent,
     })
     if (chatApprovedMessageId != null) {
       // Same resolve path as PATCH, so the row is indistinguishable from a
@@ -492,7 +518,7 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
 
     notifyOwner(approval, chatApprovedMessageId)
     notifyMainAgent(approval)
-    logger.info({ id, agent_id, category, chatApprovedMessageId }, chatApprovedMessageId != null ? 'Approval created as already approved in chat' : 'Approval request created')
+    logger.info({ id, agent_id, category, chatApprovedMessageId, forAgent }, chatApprovedMessageId != null ? 'Approval created as already approved in chat' : 'Approval request created')
     json(res, approval, 201)
     return true
   }
@@ -521,19 +547,16 @@ export async function tryHandleApprovals(ctx: RouteContext): Promise<boolean> {
   // (handleCategoryConsume above).
   const consumeMatch = path.match(/^\/api\/approvals\/([^/]+)\/consume$/)
   if (consumeMatch && method === 'POST') {
-    // A sub-agent's own token (AGENT_TOKENS) reaches this route only for a row
-    // it filed itself (the gate's identity binding). The route repeats the
-    // check so the rule never rests on the gate table alone; a row's agent_id
-    // is written once at creation and never updated.
+    // A sub-agent's own token (AGENT_TOKENS) reaches this route only for its
+    // own request or a row the main agent granted to it with for_agent (the
+    // gate's identity binding). The route repeats the check so the rule never
+    // rests on the gate table alone; agent_id and for_agent are written once at
+    // creation and never updated. Same uniform 403 as the gate: no consume,
+    // and nothing said about whether the id exists.
     const caller = ctx.auth?.kind === 'token' ? ctx.auth.tokenAgent : undefined
-    if (caller) {
-      const owner = getApproval(consumeMatch[1])?.agent_id
-      if (owner !== caller) {
-        json(res, identityDenialBody(caller, MAIN_AGENT_ID, owner === undefined
-          ? 'the row does not exist (yet); a sub-agent token can only act on an existing row of its own'
-          : `the row belongs to '${owner}', not to the calling agent '${caller}'`), 403)
-        return true
-      }
+    if (caller && approvalGranteeOf(getApproval(consumeMatch[1])) !== caller) {
+      json(res, identityDenialBody(caller, MAIN_AGENT_ID, approvalNotGrantedReason(caller)), 403)
+      return true
     }
     let body: { content_hash?: unknown; consumer?: unknown; message_id?: unknown; category?: unknown }
     try {

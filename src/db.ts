@@ -1689,6 +1689,14 @@ export function initDatabase(dbPathOverride?: string): void {
   // used it. Rows consumed by the gate leave both NULL.
   try { db.exec('ALTER TABLE approvals ADD COLUMN consumed_by TEXT') } catch { /* already exists */ }
   try { db.exec('ALTER TABLE approvals ADD COLUMN consumed_ref TEXT') } catch { /* already exists */ }
+  // The sub-agent a row is GRANTED to (AGENT_TOKENS). A row the main agent
+  // files (agent_id = main, often born approved via owner_approved_message_id)
+  // may be acted on by a tool that runs under a sub-agent's OWN token; for_agent
+  // names that sub-agent, and only it may consume the row with its token
+  // (auth-gate.ts binding). Set once at creation, by a non-sub-agent principal
+  // only; never updated. NULL (every older row) = no grant: the filer's own
+  // token, and the main token, behave as before.
+  try { db.exec('ALTER TABLE approvals ADD COLUMN for_agent TEXT') } catch { /* already exists */ }
   // Every consume call leaves a row here, the refused ones too: a second send
   // attempt on a used approval is exactly the event worth seeing afterwards.
   // consumed_backfill is for a one-off data fix of rows a past send never
@@ -7221,6 +7229,9 @@ export interface Approval {
   consumed_ref?: string | null
   content_hash: string | null
   consumed_at: number | null
+  // The sub-agent allowed to consume this row with its own token; NULL = none.
+  // Optional in the type only, like consumed_by above.
+  for_agent?: string | null
 }
 
 export function createApproval(params: {
@@ -7231,11 +7242,12 @@ export function createApproval(params: {
   action_payload?: string | null
   timeout_at?: number | null
   content_hash?: string | null
+  for_agent?: string | null
 }): Approval {
   const now = Math.floor(Date.now() / 1000)
   db.prepare(`
-    INSERT INTO approvals (id, agent_id, category, action_description, action_payload, timeout_at, requested_at, content_hash)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO approvals (id, agent_id, category, action_description, action_payload, timeout_at, requested_at, content_hash, for_agent)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     params.id,
     params.agent_id,
@@ -7245,6 +7257,7 @@ export function createApproval(params: {
     params.timeout_at ?? null,
     now,
     params.content_hash ?? null,
+    params.for_agent ?? null,
   )
   return {
     id: params.id,
@@ -7262,6 +7275,7 @@ export function createApproval(params: {
     consumed_ref: null,
     content_hash: params.content_hash ?? null,
     consumed_at: null,
+    for_agent: params.for_agent ?? null,
   }
 }
 

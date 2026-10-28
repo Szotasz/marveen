@@ -3224,6 +3224,12 @@ function buildAutonomyBody(name: string, strict = false): string {
       'status=approved -> a jóváhagyás EGYSZER használható: MIELŐTT cselekszel, használd fel (APPROVALCONSUME1022):',
       `curl -s -X POST ${dashboardOrigin}/api/approvals/<id>/consume -H "Content-Type: application/json" -H "Authorization: Bearer $(cat ${tokenPath})" -d '{"category":"CATEGORY_KEY","consumer":"${name}"}'`,
       'Csak HTTP 200 után végezd el a műveletet. 409 (already_consumed, expired, not_approved, hash_mismatch) = NE csináld: kérj új jóváhagyást.',
+      // AGENT_TOKENS: a sub-agent's OWN token consumes only its own request or a
+      // row the main agent granted to it with for_agent; anything else is 403.
+      // Only said where the recipe really uses the agent's own token.
+      ...(tokenPath === join(PROJECT_ROOT, 'store', '.dashboard-token') ? [] : [
+        `403 (agent-identity-binding) = a jóváhagyás NEM neked szól: a saját tokeneddel csak a saját kérésedet, vagy azt használhatod fel, amit ${MAIN_AGENT_ID} for_agent-tel neked adott ki. Küldd el a jóváhagyás id-ját ${MAIN_AGENT_ID}-nek (inter-agent üzenetben), és kérd a for_agent-es kiadást. NE kérj új jóváhagyást, és NE cselekedj.`,
+      ]),
       'Ha a kérésben content_hash volt, a felhasználásban is ugyanazt add meg. Kivétel: email_send és data_delete kategóriánál NE hívd (409 wrong_category); azokat a küldés, illetve a törlés útja maga használja fel.',
     ]),
     '',

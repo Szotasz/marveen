@@ -183,6 +183,17 @@ után az al-ügynök következő indítása a CLAUDE.md-t visszaírja a közös 
 token fájl addig a SZŰKÍTETT jogkörrel hitelesít, amíg kézzel ki nem törlöd, tehát a kapcsoló
 lekapcsolása egy futó ügynököt sem dob 401-re.
 
+Jóváhagyás felhasználása saját tokennel (`POST /api/approvals/:id/consume`): az al-ügynök a
+SAJÁT kérését használhatja fel (amit a tulajdonos jóváhagyott), vagy azt a sort, amit a fő
+ügynök `for_agent`-tel neki adott ki. A `for_agent` a `POST /api/approvals` opcionális mezője
+(egy ágensnév, 1-64 karakter: betű, szám, `_`, `-`); csak a közös tokennel adható meg, saját
+tokennel 403. Akkor kell, ha a sort a fő ügynök iktatja (például a tulajdonos chaten adott
+jóváhagyásával, `owner_approved_message_id`), de a műveletet végző eszköz egy al-ügynök saját
+tokenjével fut. Ha a sor `for_agent`-et visz, CSAK az az ügynök használhatja fel a saját
+tokenjével, az iktató nem. Minden más esetben ugyanaz a 403 jön (`agent-identity-binding`),
+ismeretlen azonosítóra is, így a válasz nem árulja el, létezik-e a sor. A közös token
+viselkedése nem változik.
+
 Ismert korlátok: a szigorú profilú (`dontAsk`) ügynökök receptjei a `scripts/marveen-api.sh`
 segéden mennek, ami a közös tokent olvassa, ezért ők a közös tokenen maradnak. A hookok és a
 flotta-szintű szkriptek szintén a közös tokent olvassák.
