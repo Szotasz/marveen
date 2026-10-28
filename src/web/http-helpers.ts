@@ -39,25 +39,31 @@ export function readBody(
   return new Promise((resolve, reject) => {
     const chunks: Buffer[] = []
     let total = 0
+    // Exactly one outcome per call, and it is the FIRST intended one. This
+    // matters because req.destroy() emits 'aborted' synchronously on Node 22
+    // and 'close' right after: a listener reacting to either must not replace
+    // a reason readBody has already chosen (e.g. RequestBodyTooLargeError).
+    let settled = false
+    const fail = (err: unknown) => { if (!settled) { settled = true; reject(err) } }
     req.on('data', (c: Buffer) => {
+      if (settled) return
       total += c.length
       if (total > maxBytes) {
+        // Record the rejection BEFORE destroy() triggers the close path.
+        fail(new RequestBodyTooLargeError(maxBytes))
         req.destroy()
-        reject(new RequestBodyTooLargeError(maxBytes))
         return
       }
       chunks.push(c)
     })
-    let ended = false
-    req.on('end', () => { ended = true; resolve(Buffer.concat(chunks)) })
-    req.on('error', reject)
+    req.on('end', () => { if (!settled) { settled = true; resolve(Buffer.concat(chunks)) } })
+    req.on('error', fail)
     // A request destroyed without an error (req.destroy() elsewhere while the
     // body is still awaited) emits only 'aborted' and 'close', never 'end' or
-    // 'error'; without these the promise, and the route awaiting it, would
-    // never settle. 'close' after 'end' is the normal finish and changes nothing.
-    const closedEarly = () => { if (!ended) reject(new Error('request closed before the body ended')) }
-    req.on('aborted', closedEarly)
-    req.on('close', closedEarly)
+    // 'error'; without this the promise, and the route awaiting it, would never
+    // settle. 'close' after 'end' (the normal finish) or after an 'error' is a
+    // no-op. ('aborted' is deprecated and always followed by 'close'.)
+    req.on('close', () => fail(new Error('request closed before the body ended')))
   })
 }
 
