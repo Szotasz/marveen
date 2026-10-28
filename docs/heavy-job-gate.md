@@ -128,6 +128,40 @@ működés, a kapcsolók és a konfiguráció részletes leírása az
   második zár nélkül fut, de csak ha ez ellenőrizhető (a zár tényleg foglalt, a rekord
   a feladat tokenjét hordozza, és a hívó cgroupja a rögzített scope-on belül van).
 
+### Context-guard: a restart vár a kapus feladatra
+
+A context-guard restart megöli az ügynök tmux-paneljét és minden folyamatot, amit az
+ügynök indított, így az ügynök kapus feladata (futó vagy még sorban álló) 143-mal
+leállna vagy el sem indulna, a kimenete pedig a haldokló sessionhöz menne. Ezért a
+guard a már eldöntött restartot visszatartja, amíg az ügynöknek él kapus feladata:
+
+- **Melyik feladat az ügynöké:** a zár-rekord kapu-pidje (a futó feladat) és a sor
+  jegyeinek pidjei (a várakozók), élve és ugyanazzal a folyamat-indulási idővel, ha a
+  kapu-folyamat az ügynök valamelyik tmux-paneljéből származik. A label sosem dönt a
+  tulajdonról. A dashboard az utakat úgy oldja fel, mint a kapu (`HEAVY_JOB_STORE`,
+  különben `<telepítés gyökere>/store`), a saját környezetéből.
+- **Meddig: restart-igényenként egy korlát.** Egy várakozási *epizód* azoknak az
+  egymást követő köröknek a megszakítatlan sora, amelyekben a guard újra akarja
+  indítani az ügynököt: restart-döntések, és ugyanazon restart-folyamaton belül a
+  várakozás egy foglalt kör végére. Az első olyan restart-döntésnél nyílik, amely élő
+  kapus feladatot talál, és benne a restart legfeljebb `heavyJobDeferMaxMinutes`
+  percig vár (context-guard beállítás, alapból 45, `0` = soha nem vár, legfeljebb
+  1440), akárhány kapus feladat jön és megy. Az első olyan körnél zárul, amely nem
+  része ennek a restartnak (a kontextus lecsökkent, a guard ki lett kapcsolva, az
+  ügynök leállt, cooldown), a restart megtörténtekor, vagy ha az ügynök sessionje
+  kicserélődött. A következő restart-igény új epizódot kezd. A nyitott epizódok a
+  `store/context-guard-heavy-holds.json`-ban tartósak, így a dashboard újraindulása
+  nem nullázza őket.
+- **Ha letelt:** a restart megtörténik. A fő ügynök epizódonként és feladatonként
+  egyszer, a restart előtt értesítést kap (a fő ügynök saját feladatánál a riasztási
+  csatorna), a friss session resume-promptja és a restart-értesítés pedig megmondja,
+  melyik feladatot állította le a restart (és meddig várt miatta), és melyik ért véget
+  előtte, a napló útjával a kilépési kódhoz.
+- **Ha a tulajdon nem mérhető** (nincs pane-pid, a zár, a sor vagy a `/proc`
+  olvashatatlan, például `hidepid` mellett, vagy távoli gépen futó ügynök): nincs
+  várakozás, WARN sor; a már rögzített feladatokról ugyanúgy jön értesítés és
+  jelentés, és amelyiknek az élete nem olvasható, élőnek számít, sosem leállítottnak.
+
 ### Követelmények
 
 - Linux, cgroup v2, és systemd user manager az ügynököket futtató felhasználónak

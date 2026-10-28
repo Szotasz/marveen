@@ -75,6 +75,14 @@ export interface ContextGuardConfig {
    *  false, so the auto-restart runner keeps its own nightly restart instead
    *  of standing aside for a tier that can never fire. */
   dailyHandoffTime: string | null
+  /** How long (minutes) one restart need of the agent may be held while it
+   *  owns a live heavy-job gate job (scripts/heavy-job-gate.sh), running or
+   *  queued: at most this long per hold episode, an unbroken run of
+   *  restarting sweeps (src/web/heavy-job-hold.ts), however many jobs come
+   *  and go. A restart kills the agent's process tree, the gated job with it
+   *  (measured: a 36-minute gated test run ended in 143 with no result). Past
+   *  it the restart goes ahead. 0 = never hold. */
+  heavyJobDeferMaxMinutes: number
 }
 
 export const DEFAULT_CONTEXT_GUARD: ContextGuardConfig = {
@@ -130,6 +138,10 @@ export const DEFAULT_CONTEXT_GUARD: ContextGuardConfig = {
   // the tier without naming a time keeps the old nightly restart rather than
   // losing it to a tier that never fires.
   dailyHandoffTime: null,
+  // 45 minutes: longer than the measured gated run that a restart killed
+  // (2182 s = 36 min), shorter than a saturated agent should stay
+  // unreachable. A job that outlives it is killed, loudly.
+  heavyJobDeferMaxMinutes: 45,
 }
 
 /**
@@ -178,6 +190,13 @@ export function normalizeContextGuardConfig(raw: unknown): ContextGuardConfig {
     // not parse as HH:MM becomes null rather than being carried through, so a
     // typo disarms the tier instead of scheduling it at an unreadable time.
     dailyHandoffTime: parseHHMM(o.dailyHandoffTime) !== null ? (o.dailyHandoffTime as string).trim() : null,
+    // 0 is a real value here (never defer), so not mins(): only a finite,
+    // non-negative number is taken, capped at a day so a typo cannot park a
+    // saturated agent indefinitely.
+    heavyJobDeferMaxMinutes:
+      (typeof o.heavyJobDeferMaxMinutes === 'number' && Number.isFinite(o.heavyJobDeferMaxMinutes) && o.heavyJobDeferMaxMinutes >= 0)
+        ? Math.min(o.heavyJobDeferMaxMinutes, 24 * 60)
+        : DEFAULT_CONTEXT_GUARD.heavyJobDeferMaxMinutes,
   }
 }
 

@@ -167,6 +167,38 @@ Anything else is treated as a normal call and waits in the queue.
 - macOS is not supported: there is no `systemd-run` (77) and no `/proc/meminfo`
   (75 even with `--allow-uncapped`).
 
+### Context-guard restart hold
+
+A context-guard restart kills the agent's tmux pane and every process the agent
+started, so a gated job of that agent (running, or still queued) would end with 143
+or never start, and its output would go to the dying session. The guard therefore
+holds a restart it has decided while the agent owns a live gated job:
+
+- **Which job is the agent's:** the lock record's gate pid (the running job) and the
+  queue tickets' pids (the queued ones), each alive with the same process start time,
+  whose gate process descends from one of the agent's tmux panes. Labels are never
+  used for ownership. The dashboard resolves the paths like the gate (`HEAVY_JOB_STORE`,
+  else `<install root>/store`), from its own environment.
+- **How long: one bound per restart need.** A hold *episode* is one unbroken run of
+  sweeps in which the guard is restarting the agent: restart decisions, and the waiting
+  for a busy turn to end inside the same restart sequence. It opens at the first
+  restart decision that finds a live gated job, and within it the restart is held at
+  most `heavyJobDeferMaxMinutes` (context-guard config, default 45, `0` = never hold,
+  capped at 1440), however many gated jobs come and go. It closes at the first sweep
+  that is not part of that restart (the context dropped, guard disabled, agent
+  stopped, cooldown), when the restart happens, or when the agent's session is
+  replaced. The next restart need starts a fresh episode. Open episodes are persisted
+  in `store/context-guard-heavy-holds.json`, so a dashboard restart does not reset one.
+- **When the bound is used up:** the restart goes ahead. The main agent is told once
+  per job per episode before the restart (the main agent's own job: the operator alert
+  channel), and the fresh session's resume prompt and the restart notice say which jobs
+  were stopped by the restart (with how long the restart was held for them) and which
+  had ended before it, with the log path to look up their exit codes.
+- **Ownership not measurable** (no pane pid, lock, queue or `/proc` unreadable, for
+  example under `hidepid`, or a remote-host agent): no hold, a WARN line; the jobs
+  already recorded are still alerted and reported, and one whose liveness cannot be
+  read counts as alive, never as stopped.
+
 ### Tests
 
 `python3 scripts/__tests__/heavy-job-gate.test.py`. Hermetic for the most part (fake
