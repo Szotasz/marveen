@@ -76,7 +76,8 @@ python3 scripts/google-consent.py link --only youtube
 python3 scripts/google-consent.py redeem --only youtube '<visszamásolt URL>'
 ```
 
-Kilépési kódok: `0` rendben, `1` hiba (konfighiba is), `2` hibás hívás, `3`
+Kilépési kódok: `0` rendben, `1` hiba (konfighiba is), `2` hibás hívás vagy
+elutasított kód (lásd Biztonság), `3`
 scope-hiány (külön jóváhagyásnál: nem pontosan a kért scope-ok), `4` megírva vagy
 ellenőrizve, de a token 7 napos "Testing" token.
 
@@ -86,12 +87,18 @@ ellenőrizve, de a token 7 napos "Testing" token.
   token, sem a PKCE verifier. A `status` csak csoportbetűvel jelzi, mely fájlok
   osztoznak egy tokenen.
 - **Mindenhol 0600.** A token-fájlok atomikusan íródnak (ideiglenes fájl +
-  átnevezés), 0600 jogosultsággal, a umasktól függetlenül; a hiányzó szülőmappa
-  0700-zal jön létre. Minden meglévő fájlról előbb bájtra pontos másolat készül:
+  átnevezés), 0600 jogosultsággal, a umasktól függetlenül; a hiányzó mappák
+  minden szintje 0700-zal jön létre. Minden meglévő fájlról előbb bájtra pontos másolat készül:
   `<fájl>.bak-<időbélyeg>` (0600, sosem íródik felül).
-- **PKCE S256 + state.** Ha a visszamásolt URL `state` értéke egyik kiadott
-  linkhez sem tartozik, hálózati hívás előtt elutasítja; az uniónak és minden külön
-  fogyasztónak saját state-fájlja van, így a kódjaik nem keveredhetnek.
+- **Kódot csak akkor vált be, ha egy általa kiadott linkhez kötődik.** A
+  visszamásolt URL `state` értékének egy tárolt PKCE-bejegyzéshez (S256) kell
+  tartoznia, és a beváltás mindig annak a bejegyzésnek a `code_verifier`-ét küldi.
+  A nyers kódot, a `state` nélküli URL-t és az olyan `state`-et, amit egyik `link`
+  sem adott ki, 2-es kóddal elutasítja: nincs hálózati hívás, nincs írás. Enélkül
+  egy kód, amit valaki a SAJÁT Google-fiókjára szerzett ugyanazon a kliensen,
+  bemásolható lenne (megtévesztéssel, vagy prompt-injekcióval a szkriptet futtató
+  ügynökbe), és minden fogyasztót ahhoz a fiókhoz kötne. Az uniónak és minden külön
+  fogyasztónak saját state-fájlja van, így a kódjaik sem keveredhetnek.
 - **Csak a `redeem` megy hálózatra**, és csak a Google token-végpontjára. A
   `GOOGLE_CONSENT_TOKEN_URL` tesztekhez egy loopback `http://` végpontra
   irányíthatja; minden más értéket elutasít.

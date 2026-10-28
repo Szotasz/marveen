@@ -44,7 +44,9 @@ Commands:
       stay redeemable. No network call.
 
   google-consent.py redeem '<pasted http://localhost/?... URL>' [--only NAME] [--dry-run] [--partial]
-      Checks the state against the issued links, redeems the code, checks the
+      Refuses a code that is not bound to a link this helper issued (no state, or a
+      state no `link` issued: exit 2, no network call, nothing written); the exchange
+      always sends that link's PKCE code_verifier. Then redeems the code, checks the
       granted scopes against every consumer, and warns when the response carries
       refresh_token_expires_in (the OAuth app is still in "Testing": the token dies
       in 7 days). Then backs up each consumer file (0600, timestamped, byte copy) and
@@ -63,7 +65,8 @@ Commands:
       token (group letters, no token material), whether an expiry field is present,
       and scope coverage. No network call.
 
-Exit codes: 0 ok, 1 error (also config error), 2 usage, 3 scope shortfall (separate
+Exit codes: 0 ok, 1 error (also config error), 2 usage or a refused code (no state, or a
+state that belongs to no issued link: nothing is redeemed or written), 3 scope shortfall (separate
 consent: granted scopes not exactly the requested ones), 4 written/checked but the
 response carries refresh_token_expires_in.
 
@@ -110,7 +113,8 @@ GMAIL_SHORT = {
 # ones that move the token file somewhere this helper does not write.
 MCP_CLIENT_KEYS = ("GOOGLE_DRIVE_OAUTH_CREDENTIALS", "GOOGLE_OAUTH_CREDENTIALS", "GMAIL_OAUTH_PATH")
 MCP_PATH_OVERRIDES = ("GOOGLE_DRIVE_MCP_TOKEN_PATH", "GOOGLE_CALENDAR_MCP_TOKEN_PATH",
-                      "GMAIL_CREDENTIALS_PATH", "GOOGLE_DRIVE_MCP_CLIENT_ID")
+                      "GMAIL_CREDENTIALS_PATH", "GOOGLE_DRIVE_MCP_CLIENT_ID",
+                      "GOOGLE_DRIVE_MCP_REFRESH_TOKEN")
 
 
 class ConfigError(Exception):
@@ -128,11 +132,31 @@ def read_json(path):
         return json.load(f)
 
 
+def makedirs_private(d):
+    """Create every MISSING level of d with mode 0700 (os.makedirs applies its mode to
+    the leaf only). Existing directories are left as they are."""
+    if not d or os.path.isdir(d):
+        return
+    missing = []
+    while d and not os.path.isdir(d):
+        missing.append(d)
+        parent = os.path.dirname(d)
+        if parent == d:
+            break
+        d = parent
+    for p in reversed(missing):
+        try:
+            os.mkdir(p, 0o700)
+        except FileExistsError:
+            if not os.path.isdir(p):
+                raise
+            continue
+        os.chmod(p, 0o700)  # mkdir's mode is masked by the umask
+
+
 def write_private(path, text):
     """Atomic write, final mode 0600, parent dir created 0700 if missing."""
-    d = os.path.dirname(path)
-    if d and not os.path.isdir(d):
-        os.makedirs(d, mode=0o700, exist_ok=True)
+    makedirs_private(os.path.dirname(path))
     tmp = "%s.tmp.%d" % (path, os.getpid())
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
@@ -557,7 +581,7 @@ def cmd_link(cfg, args):
 # ---------------------------------------------------------------- redeem
 
 def parse_pasted(raw):
-    """Returns (code, state, error). Accepts the whole redirect URL or a bare code."""
+    """Returns (code, state, error). A bare code comes back with state None; _obtain refuses it."""
     raw = raw.strip().replace("&amp;", "&")
     if "://" in raw or raw.startswith("localhost"):
         if not raw.startswith("http"):
@@ -585,11 +609,13 @@ def token_url():
 
 def exchange_code(cfg, code, verifier):
     """POST to the token endpoint. Returns the parsed JSON response or raises SystemExit."""
+    if not verifier:
+        # Never redeem a code that is not bound to an issued PKCE link (see _obtain).
+        raise ConfigError("refusing a token exchange without a PKCE code_verifier")
     cid, secret = load_client(cfg)
     data = {"code": code, "client_id": cid, "client_secret": secret,
-            "redirect_uri": cfg["redirect"], "grant_type": "authorization_code"}
-    if verifier:
-        data["code_verifier"] = verifier
+            "redirect_uri": cfg["redirect"], "grant_type": "authorization_code",
+            "code_verifier": verifier}
     req = urllib.request.Request(token_url(), data=urllib.parse.urlencode(data).encode(),
                                  method="POST")
     try:
@@ -683,7 +709,7 @@ def check_client_consistency(cfg):
                     problems.append("%s / %s: OAuth client file not readable (%s)" % (f, sname, p))
             for k in MCP_PATH_OVERRIDES:
                 if k in env:
-                    problems.append("%s / %s: %s is set; this helper does NOT write that file"
+                    problems.append("%s / %s: %s is set; the MCP may ignore the token file this helper writes"
                                     % (f, sname, k))
     return problems
 
@@ -720,33 +746,44 @@ def _obtain(cfg, code, state, only):
     pend_path, pkce_path = pending_file(cfg, only), pkce_file(cfg, only)
     pending = load_pending(pend_path)
     key = code_key(code)
+    # A code is redeemed ONLY when it is bound to a link this helper issued: the pasted
+    # URL's state must match a stored PKCE entry, and the exchange always sends that
+    # entry's code_verifier. A bare code (or a URL with the state stripped) could be a
+    # code someone obtained for THEIR OWN account on this client id; redeeming it would
+    # bind every consumer to that account.
+    if not state:
+        err("ERROR: the pasted input carries no state, so it cannot be tied to a link this"
+            " helper issued. Nothing was redeemed. Paste the WHOLE http://localhost/?state=...&code=..."
+            " address of the link from `link%s`." % (" --only " + only if only else ""))
+        return 2
     if key in pending and isinstance(pending[key], dict) and "response" in pending[key]:
+        if pending[key].get("state") != state:
+            err("ERROR: this code was already redeemed for a different link (state mismatch)."
+                " Nothing was written.")
+            return 2
         err("This code was already redeemed (--dry-run); reusing the parked response.")
         return pending[key]["response"], pending[key].get("obtained_at", int(time.time())), pending, key
     entries = load_pkce(pkce_path)["entries"]
-    entry = None
-    if state:
-        entry = next((e for e in entries if e.get("state") == state), None)
-        if entry is None:
-            err("ERROR: the state of the pasted URL belongs to no link issued by `link%s`."
-                % (" --only " + only if only else ""))
-            other = [o for o in [None] + cfg["separate"] if o != only
-                     and any(e.get("state") == state for e in load_pkce(pkce_file(cfg, o))["entries"])]
-            if other:
-                o = other[0]
-                err("  It answers %s: redeem it %s." % (
-                    "the UNION link" if o is None else "`link --only %s`" % o,
-                    "without --only" if o is None else "with --only %s" % o))
-            else:
-                err("  Run `link` again and approve the NEW link.")
-            return 1
-    elif entries:
-        entry = entries[-1]
-        err("WARNING: a bare code without state; using the PKCE of the latest link.")
-    elif only:
-        err("ERROR: no `link --only %s` was issued (%s)." % (only, pkce_path))
-        return 1
-    resp = exchange_code(cfg, code, entry.get("verifier") if entry else None)
+    entry = next((e for e in entries if e.get("state") == state), None)
+    if entry is None:
+        err("ERROR: the state of the pasted URL belongs to no link issued by `link%s`."
+            " Nothing was redeemed." % (" --only " + only if only else ""))
+        other = [o for o in [None] + cfg["separate"] if o != only
+                 and any(e.get("state") == state for e in load_pkce(pkce_file(cfg, o))["entries"])]
+        if other:
+            o = other[0]
+            err("  It answers %s: redeem it %s." % (
+                "the UNION link" if o is None else "`link --only %s`" % o,
+                "without --only" if o is None else "with --only %s" % o))
+        else:
+            err("  Run `link` again and approve the NEW link.")
+        return 2
+    verifier = entry.get("verifier")
+    if not isinstance(verifier, str) or not verifier:
+        err("ERROR: the issued link has no PKCE verifier on record (%s). Nothing was redeemed;"
+            " run `link` again." % pkce_path)
+        return 2
+    resp = exchange_code(cfg, code, verifier)
     obtained_at = int(time.time())
     pending[key] = {"obtained_at": obtained_at, "state": state, "response": resp}
     save_pending(pending, pend_path)

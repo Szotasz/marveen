@@ -75,7 +75,8 @@ python3 scripts/google-consent.py link --only youtube
 python3 scripts/google-consent.py redeem --only youtube '<pasted URL>'
 ```
 
-Exit codes: `0` ok, `1` error (also config error), `2` usage, `3` scope shortfall
+Exit codes: `0` ok, `1` error (also config error), `2` usage or a refused code (see
+Safety), `3` scope shortfall
 (separate consent: not exactly the requested scopes), `4` written/checked but the
 token is a 7-day "Testing" token.
 
@@ -85,12 +86,18 @@ token is a 7-day "Testing" token.
   token, not the PKCE verifier. `status` shows which files share a token by group
   letter only.
 - **0600 everywhere.** Token files are written atomically (temp file + rename)
-  with mode 0600 regardless of the umask; a missing parent directory is created
+  with mode 0600 regardless of the umask; every missing directory level is created
   0700. Every existing file is first copied byte for byte to
   `<file>.bak-<timestamp>` (0600, never overwritten).
-- **PKCE S256 + state.** A pasted URL whose `state` belongs to no issued link is
-  refused before any network call; the union and every separate consumer have
-  their own state files, so their codes cannot be crossed.
+- **A code is redeemed only when it is bound to a link this helper issued.** The
+  pasted URL's `state` must match a stored PKCE entry (S256), and the exchange
+  always sends that entry's `code_verifier`. A bare code, a URL with the `state`
+  removed, or a `state` no `link` issued is refused with exit 2: no network call,
+  nothing written. Otherwise a code someone obtained for their OWN Google account
+  on the same client id could be pasted in (social engineering, or a prompt
+  injection into an agent running the helper) and would bind every consumer to
+  that account. The union and every separate consumer have their own state files,
+  so their codes cannot be crossed either.
 - **Only `redeem` touches the network**, and only the Google token endpoint.
   `GOOGLE_CONSENT_TOKEN_URL` can point it at a loopback `http://` endpoint for
   tests; any other value is refused.

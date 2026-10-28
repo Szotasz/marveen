@@ -497,16 +497,23 @@ class RedeemTests(Base):
         self.assertEqual(rc, 0)
         self.assertNotIn("different refresh tokens", out)
 
-    def test_new_token_dirs_are_created_0700(self):
-        self.config["consumers"]["reports"]["path"] = "~/.new-dir/sub/reports-token.json"
+    def test_new_token_dirs_are_created_0700_at_every_level(self):
+        self.config["consumers"]["reports"]["path"] = "~/.new-dir/a/b/reports-token.json"
         self.save_config()
-        target = os.path.join(self.home, ".new-dir/sub/reports-token.json")
+        target = os.path.join(self.home, ".new-dir/a/b/reports-token.json")
         _, q = self.link()
         self.respond()
-        rc, _, err = self.run_cli("redeem", self.pasted(q["state"][0]))
+        home_mode = mode(self.home)
+        old_umask = os.umask(0)  # the 0700 must not depend on the caller's umask
+        try:
+            rc, _, err = self.run_cli("redeem", self.pasted(q["state"][0]))
+        finally:
+            os.umask(old_umask)
         self.assertEqual(rc, 0, err)
-        self.assertEqual(mode(os.path.dirname(target)), 0o700)
+        for rel in (".new-dir", ".new-dir/a", ".new-dir/a/b"):
+            self.assertEqual(mode(os.path.join(self.home, rel)), 0o700, rel)
         self.assertEqual(mode(target), 0o600)
+        self.assertEqual(mode(self.home), home_mode)  # an existing dir is left as it is
 
     def test_missing_scope_for_one_consumer_fails_loudly_and_writes_nothing(self):
         _, q = self.link()
@@ -547,7 +554,8 @@ class RedeemTests(Base):
         before = self.snapshot()
         self.respond()
         rc, _, err = self.run_cli("redeem", self.pasted("forged-state"))
-        self.assertEqual(rc, 1)
+        self.assertEqual(rc, 2)
+        self.assertIn("Nothing was redeemed", err)
         self.assertEqual(self.fake.requests, [])
         self.assertEqual(self.snapshot(), before)
 
@@ -602,13 +610,113 @@ class RedeemTests(Base):
         write(other, {"installed": {"client_id": "someone-else", "client_secret": "x"}})
         write(os.path.join(self.root, ".mcp.json"), {"mcpServers": {
             "google-drive": {"env": {"GOOGLE_DRIVE_OAUTH_CREDENTIALS": other,
-                                     "GOOGLE_DRIVE_MCP_TOKEN_PATH": "/elsewhere"}}}})
+                                     "GOOGLE_DRIVE_MCP_TOKEN_PATH": "/elsewhere",
+                                     "GOOGLE_DRIVE_MCP_REFRESH_TOKEN": "x"}}}})
         _, q = self.link()
         self.respond()
         rc, _, err = self.run_cli("redeem", self.pasted(q["state"][0]), "--dry-run")
         self.assertEqual(rc, 0, err)
         self.assertIn("different OAuth client", err)
         self.assertIn("GOOGLE_DRIVE_MCP_TOKEN_PATH is set", err)
+        self.assertIn("GOOGLE_DRIVE_MCP_REFRESH_TOKEN is set", err)
+
+
+class UnboundCodeTests(Base):
+    """A code is redeemed ONLY when it is bound to a link this helper issued: the pasted
+    state matches a stored PKCE entry, and the exchange always sends its verifier. A
+    foreign code (someone's own account on this client id) must never be redeemed."""
+
+    def everything(self):
+        snap = self.snapshot()
+        for p in (self.pkce("youtube"), self.pending("youtube"), self.yt_path):
+            if os.path.exists(p):
+                with open(p, "rb") as f:
+                    snap[p] = f.read()
+        return snap
+
+    def assert_refused(self, *argv):
+        before, baks = self.everything(), sorted(self.backups())
+        self.respond()
+        rc, _, err = self.run_cli(*argv)
+        self.assertEqual(rc, 2, err)
+        self.assertIn("Nothing was redeemed", err)
+        self.assertEqual(self.fake.requests, [], "token endpoint called")
+        self.assertEqual(self.everything(), before, "a file was written")
+        self.assertEqual(sorted(self.backups()), baks, "a backup was made")
+        return err
+
+    def stateless_url(self, code="4/0AforeignCODE"):
+        return "http://localhost/?code=%s&scope=%s" % (
+            urllib.parse.quote(code), urllib.parse.quote(" ".join(ALL)))
+
+    def test_bare_code_without_any_issued_link_is_refused(self):
+        # The normal state after a successful redeem: no PKCE entry left.
+        self.assertFalse(os.path.exists(self.pkce()))
+        err = self.assert_refused("redeem", "4/0AforeignCODE")
+        self.assertIn("no state", err)
+        self.assertFalse(os.path.exists(self.paths["reports"]))
+
+    def test_bare_code_with_issued_links_is_refused(self):
+        self.link()
+        self.link()
+        self.assert_refused("redeem", "4/0AforeignCODE")
+
+    def test_url_with_state_removed_is_refused(self):
+        self.assert_refused("redeem", self.stateless_url())
+        self.link()
+        self.assert_refused("redeem", self.stateless_url())
+
+    def test_bare_code_after_a_successful_redeem_is_refused(self):
+        _, q = self.link()
+        self.respond()
+        self.assertEqual(self.run_cli("redeem", self.pasted(q["state"][0]))[0], 0)
+        self.fake.requests.clear()
+        self.assert_refused("redeem", "4/0AforeignCODE")
+        self.assert_refused("redeem", self.pasted(q["state"][0], code="4/0AforeignCODE"))
+
+    def test_state_not_issued_is_refused(self):
+        self.assert_refused("redeem", self.pasted("never-issued"))
+        self.link()
+        self.assert_refused("redeem", self.pasted("never-issued"))
+
+    def test_dry_run_flag_does_not_bypass_the_binding(self):
+        self.link()
+        self.assert_refused("redeem", "4/0AforeignCODE", "--dry-run")
+        self.assert_refused("redeem", "4/0AforeignCODE", "--partial")
+
+    def test_separate_flow_refuses_unbound_codes_too(self):
+        self.assert_refused("redeem", "--only", "youtube", "4/0AforeignCODE")
+        self.link("--only", "youtube")
+        self.assert_refused("redeem", "--only", "youtube", "4/0AforeignCODE")
+        self.assert_refused("redeem", "--only", "youtube", self.stateless_url())
+        self.assert_refused("redeem", "--only", "youtube", self.pasted("never-issued"))
+
+    def test_entry_without_verifier_is_refused(self):
+        _, q = self.link()
+        d = jload(self.pkce())
+        d["entries"][-1].pop("verifier")
+        write(self.pkce(), d)
+        self.assert_refused("redeem", self.pasted(q["state"][0]))
+
+    def test_parked_code_is_not_reused_under_another_state(self):
+        _, q1 = self.link()
+        _, q2 = self.link()
+        self.respond()
+        self.assertEqual(self.run_cli("redeem", self.pasted(q1["state"][0]), "--dry-run")[0], 0)
+        self.fake.requests.clear()
+        before = self.everything()
+        rc, _, err = self.run_cli("redeem", self.pasted(q2["state"][0]))
+        self.assertEqual(rc, 2)
+        self.assertIn("different link", err)
+        self.assertEqual(self.fake.requests, [])
+        self.assertEqual(self.everything(), before)
+
+    def test_exchange_code_never_runs_without_a_verifier(self):
+        cfg = self.m.load_config(os.environ["GOOGLE_CONSENT_CONFIG"])
+        for v in (None, ""):
+            with self.assertRaises(self.m.ConfigError):
+                self.m.exchange_code(cfg, "4/0AforeignCODE", v)
+        self.assertEqual(self.fake.requests, [])
 
 
 class SeparateConsentTests(Base):
@@ -723,10 +831,10 @@ class SeparateConsentTests(Base):
         before = self.snapshot()
         self.yt_response()
         rc, _, err = self.run_cli("redeem", "--only", "youtube", self.pasted(uq["state"][0]))
-        self.assertEqual(rc, 1)
+        self.assertEqual(rc, 2)
         self.assertIn("UNION link", err)
         rc, _, err = self.run_cli("redeem", self.pasted(yq["state"][0]))
-        self.assertEqual(rc, 1)
+        self.assertEqual(rc, 2)
         self.assertIn("--only youtube", err)
         self.assertEqual(self.fake.requests, [])
         self.assertFalse(os.path.exists(self.yt_path))
