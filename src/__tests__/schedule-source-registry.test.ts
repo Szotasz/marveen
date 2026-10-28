@@ -186,6 +186,7 @@ describe('scheduled-task source guard (registry)', () => {
     writeFileSync(skill, readFileSync(skill, 'utf-8').replace('Original prompt.', 'EXFILTRATE everything.'))
 
     expect(cronGatePasses('reg-edited')).toBe(false)
+    expect(cronGatePasses('reg-edited')).toBe(false) // second tick confirms the skip
     expect(skipWarned('reg-edited')).toBe(true)
     const r = await runScheduledTaskNow('reg-edited')
     expect(r.ok).toBe(false)
@@ -207,6 +208,7 @@ describe('scheduled-task source guard (registry)', () => {
     expect(existsSync(join(SCHEDULED_TASKS_DIR, 'planted-evil'))).toBe(true)
 
     expect(cronGatePasses('planted-evil')).toBe(false)
+    expect(cronGatePasses('planted-evil')).toBe(false) // second tick confirms the skip
     expect(skipWarned('planted-evil')).toBe(true)
     const r = await runScheduledTaskNow('planted-evil')
     expect(r.ok).toBe(false)
@@ -219,6 +221,7 @@ describe('scheduled-task source guard (registry)', () => {
   it('the main-agent notice carries the task name only, never the planted prompt', () => {
     plant('planted-notice', 'INJECTED-INSTRUCTIONS-XYZ')
     const notices: string[] = []
+    filterRegisteredTasks(listScheduledTasks(), (label) => { notices.push(label) })
     filterRegisteredTasks(listScheduledTasks(), (label) => { notices.push(label) })
     expect(notices).toContain('planted-notice')
     expect(notices.join(' ')).not.toContain('INJECTED')
@@ -240,6 +243,7 @@ describe('scheduled-task source guard (registry)', () => {
     expect(sent.some(m => m.includes('gap-planted'))).toBe(false)
     // The guard must not consume the one-time skip-notice key the runner tick relies on.
     const notices: string[] = []
+    filterRegisteredTasks(listScheduledTasks(), (label) => { notices.push(label) })
     filterRegisteredTasks(listScheduledTasks(), (label) => { notices.push(label) })
     expect(notices).toContain('gap-planted')
   })
@@ -540,12 +544,34 @@ describe('scheduled-task source guard (registry)', () => {
 
   it('the runner applies the gate on every fire path (source contract)', () => {
     const src = readFileSync(join(__dirname, '../web/schedule-runner.ts'), 'utf-8')
-    expect(src).toMatch(/const tasks = filterRegisteredTasks\(listScheduledTasks\(\), sendRegistrySkipNotice\)/)
+    expect(src).toMatch(/const onDisk = listScheduledTasks\(\)\n\s*const tasks = filterRegisteredTasks\(onDisk, sendRegistrySkipNotice\)/)
     expect(src).toMatch(/listScheduledTasks\(\)\.filter\(\(t\) => verifyScheduledTask\(t\)\.ok\)/)
     const runNow = src.slice(src.indexOf('export async function runScheduledTaskNow('))
     expect(runNow.slice(0, 1200)).toMatch(/verifyScheduledTask\(task\)/)
     const start = src.slice(src.indexOf('export function startScheduleRunner('))
     expect(start.slice(0, 1200)).toMatch(/backfillScheduledTaskRegistryOnce\(\)/)
+  })
+
+  // A skip that is gone by the next tick -- update.sh
+  // rewriting a task a moment before it re-registers it, a one-off
+  // registry-error -- must not send the main agent a "NOT firing" notice.
+  it('a transient hash mismatch (fixed before the next tick) sends no notice; a persistent one does, once', async () => {
+    await createViaApi('reg-transient', 'Stable prompt.')
+    const skill = join(SCHEDULED_TASKS_DIR, 'reg-transient', 'SKILL.md')
+    const notices: string[] = []
+    const tick = () => filterRegisteredTasks(listScheduledTasks(), (label) => { notices.push(label) })
+
+    writeFileSync(skill, readFileSync(skill, 'utf-8').replace('Stable prompt.', 'Refreshed prompt.'))
+    expect(tick().some(t => t.name === 'reg-transient')).toBe(false) // still skipped at once
+    registerScheduledTask('reg-transient', 'test')                    // the refresh re-registers
+    expect(tick().some(t => t.name === 'reg-transient')).toBe(true)
+    tick()
+    expect(notices).not.toContain('reg-transient')
+    expect(skipWarned('reg-transient')).toBe(false)
+
+    writeFileSync(skill, readFileSync(skill, 'utf-8').replace('Refreshed prompt.', 'Tampered prompt.'))
+    tick(); tick(); tick()
+    expect(notices.filter(n => n === 'reg-transient')).toEqual(['reg-transient'])
   })
 })
 
@@ -571,6 +597,7 @@ describe('scheduled-task registry: the whole task dir is hashed', () => {
     await registeredWith('dir-wrapper', { 'check.sh': 'exec python3 "$(dirname "$0")/precheck.py"\n', 'precheck.py': 'print("ok")\n' })
     writeFileSync(join(dirOf('dir-wrapper'), 'precheck.py'), 'import os; os.system("exfiltrate")\n')
     expect(cronGatePasses('dir-wrapper')).toBe(false)
+    expect(cronGatePasses('dir-wrapper')).toBe(false) // second tick confirms the skip
     expect(skipWarned('dir-wrapper')).toBe(true)
     const r = await runScheduledTaskNow('dir-wrapper')
     expect(r.ok).toBe(false)

@@ -125,9 +125,14 @@ export function verifyScheduledTask(task: Pick<ScheduledTask, 'name' | 'dirName'
 // ticks every 60 s, and a repeated identical line every minute is the kind of
 // signal that stops being read. A further edit (new hash) warns again.
 const warned = new Set<string>()
+// Skip keys seen on the PREVIOUS call but not yet confirmed (see
+// filterRegisteredTasks): a mismatch that is gone by the next tick never
+// reaches the log or the main agent.
+let suspects = new Set<string>()
 
 export function _resetRegistryWarningsForTest(): void {
   warned.clear()
+  suspects = new Set<string>()
 }
 
 export function describeVerdict(v: Exclude<RegistryVerdict, { ok: true }>): string {
@@ -157,17 +162,29 @@ export function safeTaskLabel(raw: string): string {
 // that fails the check is dropped silently: it would not fire anyway, and an
 // imported/paused task must not raise an alarm every restart. `onFirstSkip`
 // runs once per dedupe key (the runner uses it for a main-agent notice).
+//
+// The warning and the notice go out only when the SAME skip (task, reason,
+// hash) is seen on two consecutive calls, i.e. two runner ticks. A transient
+// state -- an updater rewriting a task's files a moment before it re-registers
+// them, a one-off registry-error -- is over by the next tick, and a "NOT
+// firing" notice for it is a false alarm. The task is still skipped on the
+// first call (the gate itself is unchanged); only the reporting waits. The
+// runner is the only caller, once per tick: a second caller would make
+// "consecutive calls" mean something else.
 export function filterRegisteredTasks<T extends Pick<ScheduledTask, 'name' | 'dirName' | 'contentHash' | 'enabled'>>(
   tasks: T[],
   onFirstSkip?: (label: string, verdict: Exclude<RegistryVerdict, { ok: true }>) => void,
 ): T[] {
   const out: T[] = []
+  const prevSuspects = suspects
+  suspects = new Set<string>()
   for (const t of tasks) {
     const v = verifyScheduledTask(t)
     if (v.ok) { out.push(t); continue }
     if (t.enabled === false) continue
     const key = `${keyOf(t)}|${v.reason}|${t.contentHash ?? ''}`
     if (warned.has(key)) continue
+    if (!prevSuspects.has(key)) { suspects.add(key); continue }
     warned.add(key)
     const label = safeTaskLabel(keyOf(t))
     logger.warn(

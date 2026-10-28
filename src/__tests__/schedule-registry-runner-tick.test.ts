@@ -214,6 +214,15 @@ describe('runner tick x registry (real tick, real registry)', () => {
     expect(sent.some(s => s.prompt.includes('PLANTED') || s.prompt.includes('EDITED'))).toBe(false)
     expect(existsSync(join(tmpHome, 'planted-precheck-ran'))).toBe(false)
     expect(existsSync(join(tmpHome, 'edited-precheck-ran'))).toBe(false)
+    // A skip is reported only when it persists to the next tick, so the
+    // "NOT firing" notice needs a second tick, one minute on.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'setInterval', 'clearTimeout', 'clearInterval', 'Date'] })
+    vi.setSystemTime(new Date('2026-07-31T10:31:00.000Z'))
+    await runOneTick()
+    expect(sentTo('tick-planted')).toHaveLength(0)
+    expect(sentTo('tick-edited')).toHaveLength(0)
+    expect(existsSync(join(tmpHome, 'planted-precheck-ran'))).toBe(false)
+    expect(existsSync(join(tmpHome, 'edited-precheck-ran'))).toBe(false)
     const notFiring = mockWarn.mock.calls.map(c => String(c[1])).filter(m => m.includes('NOT firing'))
     expect(notFiring.some(m => m.includes('"tick-planted"'))).toBe(true)
     expect(notFiring.some(m => m.includes('"tick-edited"'))).toBe(true)
