@@ -39,6 +39,10 @@ export default defineConfig({
     // bump: without this line those three red out as timeouts, with it the
     // suite is green. This is a timeout budget, not a behavioural change.
     testTimeout: 60000,
+    // global-live-install-gate: refuse the whole run ONCE, in the main process,
+    // before any worker starts, when the checkout is a live install (same marker
+    // list as the per-worker gate below, which stays as the second layer).
+    globalSetup: ['./src/__tests__/setup/global-live-install-gate.ts'],
     // Hard gates, run in every worker before any test module is imported:
     //  - assert-not-live-install: refuse to run inside a live install (see that
     //    setup file's header for the 2026-07-27 incident it prevents).
