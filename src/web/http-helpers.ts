@@ -48,8 +48,16 @@ export function readBody(
       }
       chunks.push(c)
     })
-    req.on('end', () => resolve(Buffer.concat(chunks)))
+    let ended = false
+    req.on('end', () => { ended = true; resolve(Buffer.concat(chunks)) })
     req.on('error', reject)
+    // A request destroyed without an error (req.destroy() elsewhere while the
+    // body is still awaited) emits only 'aborted' and 'close', never 'end' or
+    // 'error'; without these the promise, and the route awaiting it, would
+    // never settle. 'close' after 'end' is the normal finish and changes nothing.
+    const closedEarly = () => { if (!ended) reject(new Error('request closed before the body ended')) }
+    req.on('aborted', closedEarly)
+    req.on('close', closedEarly)
   })
 }
 
